@@ -351,6 +351,13 @@ config VIDEO_AD5820
 	  This is a driver for the AD5820 camera lens voice coil.
 	  It is used for example in Nokia RX51.
 
+config VIDEO_ADP1653
+	tristate "ADP1653 flash support"
+	depends on I2C && VIDEO_V4L2 && MEDIA_CONTROLLER
+	---help---
+	  This is a driver for the ADP1653 flash.  It is used for
+	  example in Nokia RX51.
+
 config VIDEO_SAA7110
 	tristate "Philips SAA7110 video decoder"
 	depends on VIDEO_V4L2 && I2C

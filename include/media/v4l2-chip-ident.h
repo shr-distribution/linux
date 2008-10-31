@@ -104,6 +104,9 @@ enum {
 	V4L2_IDENT_KS0127  = 1127,
 	V4L2_IDENT_KS0127B = 1128,
 
+	/* module adp1653: just ident 1653 */
+	V4L2_IDENT_ADP1653 = 1653,
+
 	/* module indycam: just ident 2000 */
 	V4L2_IDENT_INDYCAM = 2000,
 
