@@ -130,6 +130,7 @@ obj-$(CONFIG_VIDEO_OMAP3)	+= isp/
 obj-$(CONFIG_VIDEO_SMIAREGS)  += smiaregs.o
 
 obj-$(CONFIG_VIDEO_ET8EK8)    += et8ek8.o
+obj-$(CONFIG_VIDEO_AD5820)	+= ad5820.o
 
 obj-$(CONFIG_USB_DABUSB)        += dabusb.o
 obj-$(CONFIG_USB_SE401)         += se401.o
