@@ -206,6 +206,7 @@ obj-$(CONFIG_MACH_NOKIA_RX51)		+= board-rx51.o \
 					   sdram-nokia.o \
 					   board-rx51-peripherals.o \
 					   board-rx51-video.o \
+					   board-rx51-camera.o \
 					   hsmmc.o
 obj-$(CONFIG_MACH_OMAP_ZOOM2)		+= board-zoom.o \
 					   board-zoom-peripherals.o \
