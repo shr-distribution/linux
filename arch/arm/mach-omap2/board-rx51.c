@@ -37,6 +37,7 @@
 
 struct omap_sdrc_params *rx51_get_sdram_timings(void);
 extern void rx51_video_mem_init(void);
+extern void rx51_camera_init(void);
 
 static struct gpio_led gpio_leds[] = {
 	{
@@ -133,6 +134,7 @@ static void __init rx51_init(void)
 	omap_serial_init();
 	usb_musb_init(&musb_board_data);
 	rx51_peripherals_init();
+	rx51_camera_init();
 
 	/* Ensure SDRC pins are mux'd for self-refresh */
 	omap_mux_init_signal("sdrc_cke0", OMAP_PIN_OUTPUT);
