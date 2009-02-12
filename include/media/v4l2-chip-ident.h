@@ -296,6 +296,9 @@ enum {
 	/* HV7131R CMOS sensor: just ident 46000 */
 	V4L2_IDENT_HV7131R		= 46000,
 
+	/* SMIA sensor; just ident 46002 */
+	V4L2_IDENT_SMIA = 46002,
+
 	/* Sharp RJ54N1CB0C, 0xCB0C = 51980 */
 	V4L2_IDENT_RJ54N1CB0C = 51980,
 
