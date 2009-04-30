@@ -58,6 +58,7 @@
 #include <linux/kthread.h>
 #include <linux/sched.h>
 #include <linux/gen_timer.h>
+#include <linux/shmem_fs.h>
 
 #include <asm/io.h>
 #include <asm/bugs.h>
@@ -742,6 +743,7 @@ static void __init do_basic_setup(void)
 	/* drivers will send hotplug events */
 	init_workqueues();
 	usermodehelper_init();
+	init_tmpfs();
 	driver_init();
 	init_irq_proc();
 	do_initcalls();
