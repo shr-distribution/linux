@@ -358,7 +358,11 @@ static struct kobject *base_probe(dev_t devt, int *part, void *data)
 
 static int __init genhd_device_init(void)
 {
-	class_register(&block_class);
+	int error;
+
+	error = class_register(&block_class);
+	if (unlikely(error))
+		return error;
 	bdev_map = kobj_map_init(base_probe, &block_class_lock);
 	blk_dev_init();
 
@@ -502,10 +506,20 @@ struct class block_class = {
 	.name		= "block",
 };
 
+static char *block_devnode(struct device *dev, mode_t *mode)
+{
+	struct gendisk *disk = dev_to_disk(dev);
+
+	if (disk->devnode)
+		return disk->devnode(disk, mode);
+	return NULL;
+}
+
 struct device_type disk_type = {
 	.name		= "disk",
 	.groups		= disk_attr_groups,
 	.release	= disk_release,
+	.devnode	= block_devnode,
 };
 
 /*
