@@ -530,6 +530,13 @@ static void __exit cleanup_soundcore(void)
 	class_destroy(sound_class);
 }
 
+static char *sound_devnode(struct device *dev, mode_t *mode)
+{
+	if (MAJOR(dev->devt) == SOUND_MAJOR)
+		return NULL;
+	return kasprintf(GFP_KERNEL, "snd/%s", dev_name(dev));
+}
+
 static int __init init_soundcore(void)
 {
 	if (register_chrdev(SOUND_MAJOR, "sound", &soundcore_fops)==-1) {
@@ -539,6 +546,7 @@ static int __init init_soundcore(void)
 	sound_class = class_create(THIS_MODULE, "sound");
 	if (IS_ERR(sound_class))
 		return PTR_ERR(sound_class);
+	sound_class->devnode = sound_devnode;
 
 	return 0;
 }

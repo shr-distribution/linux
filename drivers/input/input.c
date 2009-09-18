@@ -1182,8 +1182,14 @@ static struct device_type input_dev_type = {
 	.uevent		= input_dev_uevent,
 };
 
+static char *input_devnode(struct device *dev, mode_t *mode)
+{
+	return kasprintf(GFP_KERNEL, "input/%s", dev_name(dev));
+}
+
 struct class input_class = {
 	.name		= "input",
+	.devnode	= input_devnode,
 };
 EXPORT_SYMBOL_GPL(input_class);
 

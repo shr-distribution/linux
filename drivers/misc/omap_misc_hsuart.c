@@ -2861,6 +2861,7 @@ hsuart_probe ( struct platform_device  *dev )
 	memcpy ( &ctxt->fops, &hsuart_def_fops, sizeof(struct file_operations));
 	ctxt->mdev.minor = MISC_DYNAMIC_MINOR;
 	ctxt->mdev.name  = ctxt->dev_name;
+	ctxt->mdev.nodename = ctxt->dev_name;
 	ctxt->mdev.fops  = &ctxt->fops;
 
 	/* Register misc device */
