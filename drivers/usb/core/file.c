@@ -64,6 +64,16 @@ static struct usb_class {
 	struct class *class;
 } *usb_class;
 
+static char *usb_devnode(struct device *dev, mode_t *mode)
+{
+	struct usb_class_driver *drv;
+	
+	drv = dev_get_drvdata(dev);
+	if (!drv || !drv->devnode)
+		return NULL;
+	return drv->devnode(dev, mode);
+}
+
 static int init_usb_class(void)
 {
 	int result = 0;
@@ -87,6 +97,7 @@ static int init_usb_class(void)
 		kfree(usb_class);
 		usb_class = NULL;
 	}
+	usb_class->class->devnode = usb_devnode;
 
 exit:
 	return result;

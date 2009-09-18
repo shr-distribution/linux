@@ -869,24 +869,32 @@ static const struct file_operations memory_fops = {
 static const struct {
 	unsigned int		minor;
 	char			*name;
+	mode_t			dev_mode;
 	umode_t			mode;
 	const struct file_operations	*fops;
 } devlist[] = { /* list of minor devices */
-	{1, "mem",     S_IRUSR | S_IWUSR | S_IRGRP, &mem_fops},
-	{2, "kmem",    S_IRUSR | S_IWUSR | S_IRGRP, &kmem_fops},
-	{3, "null",    S_IRUGO | S_IWUGO,           &null_fops},
+	{1, "mem",     0,    S_IRUSR | S_IWUSR | S_IRGRP, &mem_fops},
+	{2, "kmem",    0,    S_IRUSR | S_IWUSR | S_IRGRP, &kmem_fops},
+	{3, "null",    0666, S_IRUGO | S_IWUGO,           &null_fops},
 #ifdef CONFIG_DEVPORT
-	{4, "port",    S_IRUSR | S_IWUSR | S_IRGRP, &port_fops},
+	{4, "port",    0,    S_IRUSR | S_IWUSR | S_IRGRP, &port_fops},
 #endif
-	{5, "zero",    S_IRUGO | S_IWUGO,           &zero_fops},
-	{7, "full",    S_IRUGO | S_IWUGO,           &full_fops},
-	{8, "random",  S_IRUGO | S_IWUSR,           &random_fops},
-	{9, "urandom", S_IRUGO | S_IWUSR,           &urandom_fops},
-	{11,"kmsg",    S_IRUGO | S_IWUSR,           &kmsg_fops},
+	{5, "zero",    0666, S_IRUGO | S_IWUGO,           &zero_fops},
+	{7, "full",    0666, S_IRUGO | S_IWUGO,           &full_fops},
+	{8, "random",  0666, S_IRUGO | S_IWUSR,           &random_fops},
+	{9, "urandom", 0666, S_IRUGO | S_IWUSR,           &urandom_fops},
+	{11,"kmsg",    0,    S_IRUGO | S_IWUSR,           &kmsg_fops},
 #ifdef CONFIG_CRASH_DUMP
-	{12,"oldmem",    S_IRUSR | S_IWUSR | S_IRGRP, &oldmem_fops},
+	{12,"oldmem",  0,    S_IRUSR | S_IWUSR | S_IRGRP, &oldmem_fops},
 #endif
 };
+
+static char *mem_devnode(struct device *dev, mode_t *mode)
+{
+	if (mode && devlist[MINOR(dev->devt)].dev_mode)
+		*mode = devlist[MINOR(dev->devt)].dev_mode;
+	return NULL;
+}
 
 static struct class *mem_class;
 
@@ -903,6 +911,7 @@ static int __init chr_dev_init(void)
 		printk("unable to get major %d for memory devs\n", MEM_MAJOR);
 
 	mem_class = class_create(THIS_MODULE, "mem");
+	mem_class->devnode = mem_devnode;
 	for (i = 0; i < ARRAY_SIZE(devlist); i++)
 		device_create(mem_class, NULL,
 			      MKDEV(MEM_MAJOR, devlist[i].minor),

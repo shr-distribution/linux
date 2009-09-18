@@ -216,10 +216,19 @@ static int usb_dev_uevent(struct device *dev, struct kobj_uevent_env *env)
 }
 #endif	/* CONFIG_HOTPLUG */
 
+static char *usb_devnode(struct device *dev, mode_t *mode)
+{
+	struct usb_device *usb_dev;
+
+	usb_dev = to_usb_device(dev);
+	return kasprintf(GFP_KERNEL, "bus/usb/%03d/%03d", usb_dev->bus->busnum, usb_dev->devnum);
+}
+
 struct device_type usb_device_type = {
 	.name =		"usb_device",
 	.release =	usb_release_dev,
 	.uevent =	usb_dev_uevent,
+	.devnode = usb_devnode,
 };
 
 #ifdef	CONFIG_PM

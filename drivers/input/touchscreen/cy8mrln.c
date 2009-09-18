@@ -4223,6 +4223,7 @@ cy8mrln_probe(struct spi_device *spi)
 	/* Register as misc device */
 	dev->mdev.minor = MISC_DYNAMIC_MINOR;
 	dev->mdev.name = "touchscreen";
+	dev->mdev.nodename = "touchscreen";
 	dev->mdev.fops = &dev->fops;
 	rc = misc_register(&dev->mdev);
 	if (rc < 0) {

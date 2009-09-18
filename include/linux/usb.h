@@ -991,6 +991,7 @@ extern struct bus_type usb_bus_type;
  * struct usb_class_driver - identifies a USB driver that wants to use the USB major number
  * @name: the usb class device name for this driver.  Will show up in sysfs.
  * @fops: pointer to the struct file_operations of this driver.
+ * @devnode: Callback to provide a naming hint for a possible device node to create
  * @minor_base: the start of the minor range for this driver.
  *
  * This structure is used for the usb_register_dev() and
@@ -999,6 +1000,7 @@ extern struct bus_type usb_bus_type;
  */
 struct usb_class_driver {
 	char *name;
+	char *(*devnode)(struct device *dev, mode_t *mode);
 	const struct file_operations *fops;
 	int minor_base;
 };

@@ -185,7 +185,7 @@ struct class {
 
 	int	(*uevent)(struct class_device *dev, struct kobj_uevent_env *env);
 	int	(*dev_uevent)(struct device *dev, struct kobj_uevent_env *env);
-	char *(*nodename)(struct device *dev);
+	char *(*devnode)(struct device *dev, mode_t *mode);
 
 	void	(*release)(struct class_device *dev);
 	void	(*class_release)(struct class *class);
@@ -332,7 +332,7 @@ struct device_type {
 	int (*uevent)(struct device *dev, struct kobj_uevent_env *env);
 	void (*release)(struct device *dev);
 	int (*suspend)(struct device * dev, pm_message_t state);
-	char *(*nodename)(struct device *dev);
+	char *(*devnode)(struct device *dev, mode_t *mode);
 	int (*resume)(struct device * dev);
 };
 
@@ -508,7 +508,7 @@ extern struct device *device_find_child(struct device *, void *data,
 					int (*match)(struct device *, void *));
 extern int device_rename(struct device *dev, char *new_name);
 extern int device_move(struct device *dev, struct device *new_parent);
-extern const char *device_get_nodename(struct device *dev, const char **tmp);
+extern const char *device_get_devnode(struct device *dev, mode_t *mode, const char **tmp);
 
 /*
  * Manual binding of a device to driver. See drivers/base/bus.c

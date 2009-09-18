@@ -261,6 +261,17 @@ int misc_deregister(struct miscdevice * misc)
 EXPORT_SYMBOL(misc_register);
 EXPORT_SYMBOL(misc_deregister);
 
+static char *misc_devnode(struct device *dev, mode_t *mode)
+{
+	struct miscdevice *c = dev_get_drvdata(dev);
+
+	if (mode && c->mode)
+		*mode = c->mode;
+	if (c->nodename)
+		return kstrdup(c->nodename, GFP_KERNEL);
+	return NULL;
+}
+
 static int __init misc_init(void)
 {
 #ifdef CONFIG_PROC_FS
@@ -273,6 +284,7 @@ static int __init misc_init(void)
 	misc_class = class_create(THIS_MODULE, "misc");
 	if (IS_ERR(misc_class))
 		return PTR_ERR(misc_class);
+	misc_class->devnode = misc_devnode;
 
 	if (register_chrdev(MISC_MAJOR,"misc",&misc_fops)) {
 		printk("unable to get major %d for misc devices\n",
