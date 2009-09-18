@@ -1113,6 +1113,7 @@ static const struct file_operations tun_fops = {
 static struct miscdevice tun_miscdev = {
 	.minor = TUN_MINOR,
 	.name = "tun",
+	.nodename = "net/tun",
 	.fops = &tun_fops,
 };
 

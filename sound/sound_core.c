@@ -26,6 +26,13 @@ MODULE_DESCRIPTION("Core sound module");
 MODULE_AUTHOR("Alan Cox");
 MODULE_LICENSE("GPL");
 
+static char *sound_devnode(struct device *dev, mode_t *mode)
+{
+	if (MAJOR(dev->devt) == SOUND_MAJOR)
+		return NULL;
+	return kasprintf(GFP_KERNEL, "snd/%s", dev_name(dev));
+}
+
 static int __init init_soundcore(void)
 {
 	int rc;
@@ -39,6 +46,8 @@ static int __init init_soundcore(void)
 		cleanup_oss_soundcore();
 		return PTR_ERR(sound_class);
 	}
+
+	sound_class->devnode = sound_devnode;
 
 	return 0;
 }
@@ -586,7 +595,6 @@ static int __init init_oss_soundcore(void)
 		printk(KERN_ERR "soundcore: sound device already in use.\n");
 		return -EBUSY;
 	}
-
 	return 0;
 }
 

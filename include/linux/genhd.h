@@ -148,6 +148,8 @@ struct gendisk {
 	struct disk_part_tbl *part_tbl;
 	struct hd_struct part0;
 
+	char *(*devnode)(struct gendisk *gd, mode_t *mode);
+
 	struct block_device_operations *fops;
 	struct request_queue *queue;
 	void *private_data;

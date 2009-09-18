@@ -264,6 +264,17 @@ int misc_deregister(struct miscdevice *misc)
 EXPORT_SYMBOL(misc_register);
 EXPORT_SYMBOL(misc_deregister);
 
+static char *misc_devnode(struct device *dev, mode_t *mode)
+{
+	struct miscdevice *c = dev_get_drvdata(dev);
+
+	if (mode && c->mode)
+		*mode = c->mode;
+	if (c->nodename)
+		return kstrdup(c->nodename, GFP_KERNEL);
+	return NULL;
+}
+
 static int __init misc_init(void)
 {
 	int err;
@@ -275,6 +286,7 @@ static int __init misc_init(void)
 	err = PTR_ERR(misc_class);
 	if (IS_ERR(misc_class))
 		goto fail_remove;
+	misc_class->devnode = misc_devnode;
 
 	err = -EIO;
 	if (register_chrdev(MISC_MAJOR,"misc",&misc_fops))
