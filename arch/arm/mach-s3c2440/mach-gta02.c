@@ -99,6 +99,8 @@
 #include <mach/gta02-pm-gps.h>
 #include <mach/gta02-pm-wlan.h>
 
+#include <mach/gta02-fiq.h>
+
 #include <linux/jbt6k74.h>
 #include <linux/glamofb.h>
 #include <linux/mfd/glamo.h>
@@ -841,6 +843,7 @@ static struct platform_device *gta02_devices[] __initdata = {
 	&gta02_nor_flash,
 	&s3c_device_timer[0],
 	&s3c_device_timer[1],
+	&s3c_device_timer[2],
 	&s3c_device_timer[3],
 	&s3c_device_iis,
 	&samsung_asoc_dma,
