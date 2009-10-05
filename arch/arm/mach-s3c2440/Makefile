@@ -40,6 +40,7 @@ obj-$(CONFIG_MACH_NEO1973_GTA02) += mach-gta02.o \
 	gta02-pm-gsm.o \
 	gta02-pm-wlan.o \
 	gta02-fiq.o \
+	gta02-hdq.o \
 
 # extra machine support
 
