@@ -84,6 +84,7 @@
 #include <mach/hardware.h>
 
 #include <mach/gta02.h>
+#include <mach/gta02-fiq.h>
 
 #include <plat/regs-serial.h>
 #include <plat/nand.h>
@@ -822,6 +823,7 @@ static struct platform_device *gta02_devices[] __initdata = {
 	&gta02_nor_flash,
 	&s3c_device_timer[0],
 	&s3c_device_timer[1],
+	&s3c_device_timer[2],
 	&s3c_device_timer[3],
 	&s3c_device_iis,
 	&samsung_asoc_dma,
