@@ -152,25 +152,35 @@ int devtmpfs_create_node(struct device *dev)
 	err = vfs_path_lookup(dev_mnt->mnt_root, dev_mnt,
 			      nodename, LOOKUP_PARENT, &nd);
 	if (err == -ENOENT) {
-		/* create missing parent directories */
 		create_path(nodename);
 		err = vfs_path_lookup(dev_mnt->mnt_root, dev_mnt,
 				      nodename, LOOKUP_PARENT, &nd);
-		if (err)
-			goto out;
 	}
+	if (err)
+		goto out;
 
 	dentry = lookup_create(&nd, 0);
 	if (!IS_ERR(dentry)) {
 		err = vfs_mknod(nd.dentry->d_inode,
 				dentry, mode, dev->devt);
-		/* mark as kernel created inode */
-		if (!err)
+		if (!err) {
+			struct iattr newattrs;
+
+			/* fixup possibly umasked mode */
+			newattrs.ia_mode = mode;
+			newattrs.ia_valid = ATTR_MODE;
+			mutex_lock(&dentry->d_inode->i_mutex);
+			notify_change(dentry, &newattrs);
+			mutex_unlock(&dentry->d_inode->i_mutex);
+
+			/* mark as kernel-created inode */
 			dentry->d_inode->i_private = &dev_mnt;
+		}
 		dput(dentry);
 	} else {
 		err = PTR_ERR(dentry);
 	}
+
 	mutex_unlock(&nd.dentry->d_inode->i_mutex);
 
 	path_release(&nd);
@@ -310,7 +320,7 @@ out:
  */
 int devtmpfs_mount(const char *mountpoint)
 {
-	struct nameidata *nd;
+	struct nameidata nd;
 	int err;
 
 	if (!dev_mount)
@@ -319,15 +329,15 @@ int devtmpfs_mount(const char *mountpoint)
 	if (!dev_mnt)
 		return 0;
 
-	err = path_lookup(mountpoint, LOOKUP_FOLLOW, nd);
+	err = path_lookup(mountpoint, LOOKUP_FOLLOW, &nd);
 	if (err)
 		return err;
-	err = do_add_mount(dev_mnt, nd, 0, NULL);
+	err = do_add_mount(dev_mnt, &nd, 0, NULL);
 	if (err)
 		printk(KERN_INFO "devtmpfs: error mounting %i\n", err);
 	else
 		printk(KERN_INFO "devtmpfs: mounted\n");
-	path_release(nd);
+	path_release(&nd);
 	return err;
 }
 
