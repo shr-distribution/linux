@@ -323,9 +323,8 @@ out:
  * If configured, or requested by the commandline, devtmpfs will be
  * auto-mounted after the kernel mounted the root filesystem.
  */
-int devtmpfs_mount(const char *mountpoint)
+int devtmpfs_mount(const char *mntdir)
 {
-	struct nameidata nd;
 	int err;
 
 	if (!dev_mount)
@@ -334,15 +333,11 @@ int devtmpfs_mount(const char *mountpoint)
 	if (!dev_mnt)
 		return 0;
 
-	err = path_lookup(mountpoint, LOOKUP_FOLLOW, &nd);
-	if (err)
-		return err;
-	err = do_add_mount(dev_mnt, &nd, 0, NULL);
+	err = sys_mount("devtmpfs", (char *)mntdir, "devtmpfs", MS_SILENT, NULL);
 	if (err)
 		printk(KERN_INFO "devtmpfs: error mounting %i\n", err);
 	else
 		printk(KERN_INFO "devtmpfs: mounted\n");
-	path_release(&nd);
 	return err;
 }
 
