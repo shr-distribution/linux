@@ -73,38 +73,26 @@ static int dev_mkdir(const char *name, mode_t mode)
 	dentry = lookup_create(&nd, 1);
 	if (!IS_ERR(dentry)) {
 		err = vfs_mkdir(nd.dentry->d_inode, dentry, mode);
+		if (!err)
+			/* mark as kernel-created inode */
+			dentry->d_inode->i_private = &dev_mnt;
 		dput(dentry);
 	} else {
 		err = PTR_ERR(dentry);
 	}
-	mutex_unlock(&nd.dentry->d_inode->i_mutex);
 
+	mutex_unlock(&nd.dentry->d_inode->i_mutex);
 	path_release(&nd);
 	return err;
 }
 
 static int create_path(const char *nodepath)
 {
-	struct nameidata nd;
-	int err = 0;
+	int err;
 
 	read_lock(&dirlock);
-	err = vfs_path_lookup(dev_mnt->mnt_root, dev_mnt,
-			      nodepath, LOOKUP_PARENT, &nd);
-	if (err == 0) {
-		struct dentry *dentry;
-
-		/* create directory right away */
-		dentry = lookup_create(&nd, 1);
-		if (!IS_ERR(dentry)) {
-			err = vfs_mkdir(nd.dentry->d_inode,
-					dentry, 0755);
-			dput(dentry);
-		}
-
-		mutex_unlock(&nd.dentry->d_inode->i_mutex);
-		path_release(&nd);
-	} else if (err == -ENOENT) {
+	err = dev_mkdir(nodepath, 0755);
+	if (err == -ENOENT) {
 		char *path;
 		char *s;
 
@@ -127,7 +115,6 @@ static int create_path(const char *nodepath)
 		kfree(path);
 	}
 	read_unlock(&dirlock);
-
 	return err;
 }
 
@@ -206,16 +193,21 @@ static int dev_rmdir(const char *name)
 	mutex_lock_nested(&nd.dentry->d_inode->i_mutex, I_MUTEX_PARENT);
 	dentry = lookup_one_len(nd.last.name, nd.dentry, nd.last.len);
 	if (!IS_ERR(dentry)) {
-		if (dentry->d_inode)
-			err = vfs_rmdir(nd.dentry->d_inode, dentry);
-		else
+		if (dentry->d_inode) {
+			if (dentry->d_inode->i_private == &dev_mnt)
+				err = vfs_rmdir(nd.dentry->d_inode,
+						dentry);
+			else
+				err = -EPERM;
+		} else {
 			err = -ENOENT;
+		}
 		dput(dentry);
 	} else {
 		err = PTR_ERR(dentry);
 	}
-	mutex_unlock(&nd.dentry->d_inode->i_mutex);
 
+	mutex_unlock(&nd.dentry->d_inode->i_mutex);
 	path_release(&nd);
 	return err;
 }
