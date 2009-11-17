@@ -3,18 +3,30 @@
 
 #include <linux/mfd/glamo.h>
 
+/* Amount of Glamo memory */
+#define GLAMO_INTERNAL_RAM_SIZE 0x800000
+
+/* Arbitrarily determined amount for the hardware cursor */
+#define GLAMO_CURSOR_SIZE (4096)
+#define GLAMO_MMC_BUFFER_SIZE (64 * 1024) /* 64k MMC buffer */
+/* Remaining memory will be used for 2D and 3D graphics */
+#define GLAMO_FB_SIZE (GLAMO_INTERNAL_RAM_SIZE     \
+			 - GLAMO_CURSOR_SIZE       \
+			 - GLAMO_MMC_BUFFER_SIZE)
+/* A 640x480, 16bpp, double-buffered framebuffer */
+#if (GLAMO_FB_SIZE < (640 * 480 * 4))	/* == 0x12c000 */
+#error Not enough Glamo VRAM for framebuffer!
+#endif
+
 /* for the time being, we put the on-screen framebuffer into the lowest
  * VRAM space.  This should make the code easily compatible with the various
- * 2MB/4MB/8MB variants of the Smedia chips */
-#define GLAMO_OFFSET_VRAM	0x800000
-#define GLAMO_OFFSET_FB	(GLAMO_OFFSET_VRAM)
-
-/* we only allocate the minimum possible size for the framebuffer to make
- * sure we have sufficient memory for other functions of the chip */
-/*#define GLAMO_FB_SIZE	(640*480*4)	*//* == 0x12c000 */
-#define GLAMO_INTERNAL_RAM_SIZE 0x800000
-#define GLAMO_MMC_BUFFER_SIZE (64 * 1024)
-#define GLAMO_FB_SIZE	(GLAMO_INTERNAL_RAM_SIZE - GLAMO_MMC_BUFFER_SIZE)
+ * 2MB/4MB/8MB variants of the Smedia chips
+ * glamo-fb.c assumes FB comes first, followed by cursor, so DON'T MOVE THEM
+ * (see glamo_regs[] in glamo-fb.c for more information) */
+#define GLAMO_MEM_BASE 		(0x800000)
+#define GLAMO_OFFSET_FB		(0x000000)
+#define GLAMO_OFFSET_CURSOR	(GLAMO_OFFSET_FB + GLAMO_FB_SIZE)
+#define GLAMO_OFFSET_MMC	(GLAMO_OFFSET_CURSOR + GLAMO_CURSOR_SIZE)
 
 enum glamo_pll {
 	GLAMO_PLL1,

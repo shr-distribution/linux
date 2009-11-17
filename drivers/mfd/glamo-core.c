@@ -246,10 +246,25 @@ static struct resource glamo_fb_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	}, {
 		.name	= "glamo-fb-mem",
-		.start	= GLAMO_OFFSET_FB,
-		.end	= GLAMO_OFFSET_FB + GLAMO_FB_SIZE - 1,
+		.start	= GLAMO_MEM_BASE + GLAMO_OFFSET_FB,
+		.end	= GLAMO_MEM_BASE + GLAMO_OFFSET_FB + GLAMO_FB_SIZE - 1,
 		.flags	= IORESOURCE_MEM,
-	},
+	}, {
+		.name	= "glamo-cmdq-regs",
+		.start  = GLAMO_REGOFS_CMDQUEUE,
+		.end    = GLAMO_REGOFS_RISC - 1,
+		.flags  = IORESOURCE_MEM,
+	}, {
+		.name	= "glamo-2d-regs",
+		.start  = GLAMO_REGOFS_2D,
+		.end    = GLAMO_REGOFS_3D- 1,
+		.flags  = IORESOURCE_MEM,
+	}, {
+		.name	= "glamo-2d-irq",
+		.start	= GLAMO_IRQ_2D,
+		.end	= GLAMO_IRQ_2D,
+		.flags	= IORESOURCE_IRQ,
+	}
 };
 
 static struct resource glamo_mmc_resources[] = {
@@ -260,9 +275,9 @@ static struct resource glamo_mmc_resources[] = {
 		.flags	= IORESOURCE_MEM
 	}, {
 		.name	= "glamo-mmc-mem",
-		.start	= GLAMO_OFFSET_FB + GLAMO_FB_SIZE,
-		.end	= GLAMO_OFFSET_FB + GLAMO_FB_SIZE +
-				  GLAMO_MMC_BUFFER_SIZE - 1,
+		.start	= GLAMO_MEM_BASE + GLAMO_OFFSET_MMC,
+		.end	= GLAMO_MEM_BASE + GLAMO_OFFSET_MMC
+		                         + GLAMO_MMC_BUFFER_SIZE - 1,
 		.flags	= IORESOURCE_MEM
 	}, {
 		.start	= GLAMO_IRQ_MMC,
