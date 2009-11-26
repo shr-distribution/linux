@@ -767,7 +767,6 @@ static int __devexit lis302dl_remove(struct platform_device *pdev)
 #ifdef CONFIG_PM
 
 static u8 regs_to_save[] = {
-	LIS302DL_REG_CTRL1,
 	LIS302DL_REG_CTRL2,
 	LIS302DL_REG_CTRL3,
 	LIS302DL_REG_FF_WU_CFG_1,
@@ -782,7 +781,7 @@ static u8 regs_to_save[] = {
 	LIS302DL_REG_CLICK_TIME_LIMIT,
 	LIS302DL_REG_CLICK_LATENCY,
 	LIS302DL_REG_CLICK_WINDOW,
-
+	LIS302DL_REG_CTRL1,
 };
 
 static int lis302dl_suspend(struct platform_device *pdev, pm_message_t state)
@@ -854,11 +853,6 @@ static int lis302dl_resume(struct platform_device *pdev)
 
 	if (__lis302dl_reset_device(lis))
 		dev_err(&pdev->dev, "device BOOT reload failed\n");
-
-	lis->regs[LIS302DL_REG_CTRL1] |=	LIS302DL_CTRL1_PD |
-						LIS302DL_CTRL1_Xen |
-						LIS302DL_CTRL1_Yen |
-						LIS302DL_CTRL1_Zen;
 
 	/* restore registers after resume */
 	for (n = 0; n < ARRAY_SIZE(regs_to_save); n++)
