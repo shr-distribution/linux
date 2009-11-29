@@ -543,6 +543,7 @@ cnr_out:
 
 	return r;
 }
+EXPORT_SYMBOL(clk_notifier_register);
 
 /*
  * clk_notifier_unregister - remove a clock change notifier
@@ -593,6 +594,7 @@ cnu_out:
 
 	return r;
 }
+EXPORT_SYMBOL(clk_notifier_unregister);
 
 #ifdef CONFIG_OMAP_RESET_CLOCKS
 /*
