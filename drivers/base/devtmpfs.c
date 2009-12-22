@@ -98,8 +98,10 @@ static int create_path(const char *nodepath)
 
 		/* parent directories do not exist, create them */
 		path = kstrdup(nodepath, GFP_KERNEL);
-		if (!path)
-			return -ENOMEM;
+		if (!path) {
+			err = -ENOMEM;
+			goto out;
+		}
 		s = path;
 		for (;;) {
 			s = strchr(s, '/');
@@ -114,6 +116,7 @@ static int create_path(const char *nodepath)
 		}
 		kfree(path);
 	}
+out:
 	mutex_unlock(&dirlock);
 	return err;
 }
