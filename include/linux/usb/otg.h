@@ -110,6 +110,8 @@ struct otg_transceiver {
 	/* start or continue HNP role switch */
 	int	(*start_hnp)(struct otg_transceiver *otg);
 
+	/* detect a charger */
+	int	(*detect_charger)(struct otg_transceiver *otg) __deprecated;
 };
 
 
@@ -228,6 +230,15 @@ static inline int
 otg_start_srp(struct otg_transceiver *otg)
 {
 	return otg->start_srp(otg);
+}
+
+static inline int
+otg_detect_charger(struct otg_transceiver *otg)
+{
+	if (otg->detect_charger)
+		return otg->detect_charger(otg);
+
+	return 0;
 }
 
 /* notifiers */
