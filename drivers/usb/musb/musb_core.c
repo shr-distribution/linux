@@ -1790,6 +1790,27 @@ musb_vbus_show(struct device *dev, struct device_attribute *attr, char *buf)
 }
 static DEVICE_ATTR(vbus, 0644, musb_vbus_show, musb_vbus_store);
 
+static ssize_t
+musb_ma_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct musb	*musb = dev_to_musb(dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", musb->power_draw);
+}
+static DEVICE_ATTR(mA, 0444, musb_ma_show, NULL);
+
+static ssize_t
+musb_charger_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct musb	*musb = dev_to_musb(dev);
+	int		charger;
+
+	charger = otg_detect_charger(musb->xceiv);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", charger);
+}
+static DEVICE_ATTR(charger, 0444, musb_charger_show, NULL);
+
 #ifdef CONFIG_USB_GADGET_MUSB_HDRC
 
 /* Gadget drivers can't know that a host is connected so they might want
@@ -1820,6 +1841,8 @@ static DEVICE_ATTR(srp, 0644, NULL, musb_srp_store);
 static struct attribute *musb_attributes[] = {
 	&dev_attr_mode.attr,
 	&dev_attr_vbus.attr,
+	&dev_attr_mA.attr,
+	&dev_attr_charger.attr,
 #ifdef CONFIG_USB_GADGET_MUSB_HDRC
 	&dev_attr_srp.attr,
 #endif
@@ -1837,10 +1860,16 @@ static void musb_irq_work(struct work_struct *data)
 {
 	struct musb *musb = container_of(data, struct musb, irq_work);
 	static int old_state;
+	static int old_power_draw;
 
 	if (musb->xceiv->state != old_state) {
 		old_state = musb->xceiv->state;
 		sysfs_notify(&musb->controller->kobj, NULL, "mode");
+	}
+
+	if (musb->power_draw != old_power_draw) {
+		old_power_draw = musb->power_draw;
+		sysfs_notify(&musb->controller->kobj, NULL, "mA");
 	}
 }
 
