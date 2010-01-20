@@ -88,27 +88,6 @@ static int snd_msm_volume_put(struct snd_kcontrol *kcontrol,
 	return change;
 }
 
-static int snd_msm_device_info(struct snd_kcontrol *kcontrol,
-				struct snd_ctl_elem_info *uinfo)
-{
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 1; /* Device */
-
-	/*
-	 * The number of devices supported is 26 (0 to 25)
-	 */
-	uinfo->value.integer.min = 0;
-	uinfo->value.integer.max = 25;
-	return 0;
-}
-
-static int snd_msm_device_get(struct snd_kcontrol *kcontrol,
-				struct snd_ctl_elem_value *ucontrol)
-{
-	ucontrol->value.integer.value[0] = (uint32_t)snd_rpc_ids.device;
-	return 0;
-}
-
 int msm_snd_init_rpc_ids(void)
 {
         snd_rpc_ids.prog        = 0x30000002;
@@ -212,34 +191,159 @@ static int snd_msm_device_put(struct snd_kcontrol *kcontrol,
 
 	return rc;
 }
+// Handset,Speaker
+#define ROUTING_POINTS 7
+#define HANDSET			0
+#define SPEAKER			1
+#define HEADSET			2
+#define BT			3
+#define BT_EC_OFF		4
+#define HEADSET_AND_SPEAKER	5
+#define CURRENT			6
+
+long int msm_output_channel[ROUTING_POINTS]={1,0,0,0,0,0,0};
+int device_numbers[ROUTING_POINTS]={0,1,2,3,44,10,256};
+
+static int snd_msm_device_set_routing(int device_number)
+{
+	int rc = 0;
+	struct snd_start_req {
+		struct rpc_request_hdr hdr;
+		uint32_t rpc_snd_device;
+		uint32_t snd_mute_ear_mute;
+		uint32_t snd_mute_mic_mute;
+		uint32_t callback_ptr;
+		uint32_t client_data;
+	} req;
+
+	snd_rpc_ids.device = device_numbers[device_number];
+	req.hdr.type = 0;
+	req.hdr.rpc_vers = 2;
+
+	req.rpc_snd_device = be32_to_cpu(snd_rpc_ids.device);
+	req.snd_mute_ear_mute = be32_to_cpu(1);
+	req.snd_mute_mic_mute = be32_to_cpu(0);
+	req.client_data = be32_to_cpu(0);
+
+	rc = msm_snd_rpc_connect();
+	if (rc < 0)
+		return rc;
+	printk("snd_msm_device_set_routing: RPC connected succesfully\n");
+	req.hdr.prog = snd_rpc_ids.prog;
+	req.hdr.vers = snd_rpc_ids.vers;
+
+	rc = msm_rpc_call(snd_ep, snd_rpc_ids.rpc_set_snd_device , &req, sizeof(req), 5 * HZ);
+
+	if (rc < 0) {
+		printk(KERN_ERR "%s: snd rpc call failed! rc = %d\n",
+			__func__, rc);
+	} else
+		printk(KERN_INFO "snd device connected \n");
+
+	rc = msm_snd_rpc_close();
+
+	return rc;
+}
+
+// Go trough the list and only allow the selected device
+// Muting the rest
+void fix_routing(int routing_id)
+{
+	int count;
+	for(count=0; count<(ROUTING_POINTS); count++) if(count!=routing_id) msm_output_channel[count]=0;
+	for(count=0; count<(ROUTING_POINTS); count++) if(msm_output_channel[count]==1) snd_msm_device_set_routing(count);
+}
+
+// Handset control functions
+static int snd_msm_handset_switch_get(struct snd_kcontrol *kcontrol,
+			struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = msm_output_channel[HANDSET];
+	return 0;
+}
+
+static int snd_msm_handset_switch_put(struct snd_kcontrol *kcontrol,
+			struct snd_ctl_elem_value *ucontrol)
+{
+	msm_output_channel[HANDSET]=ucontrol->value.integer.value[0];
+	fix_routing(HANDSET);
+	return 0;
+}
+
+// Speaker control functions
+static int snd_msm_speaker_switch_get(struct snd_kcontrol *kcontrol,
+			struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = msm_output_channel[SPEAKER];
+	return 0;
+}
+
+static int snd_msm_speaker_switch_put(struct snd_kcontrol *kcontrol,
+			struct snd_ctl_elem_value *ucontrol)
+{
+	msm_output_channel[SPEAKER]=ucontrol->value.integer.value[0];
+	fix_routing(SPEAKER);
+	return 0;
+}
+
+// Headset control functions
+static int snd_msm_headset_switch_get(struct snd_kcontrol *kcontrol,
+			struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = msm_output_channel[HEADSET];
+	return 0;
+}
+
+static int snd_msm_headset_switch_put(struct snd_kcontrol *kcontrol,
+			struct snd_ctl_elem_value *ucontrol)
+{
+	msm_output_channel[HEADSET]=ucontrol->value.integer.value[0];
+	fix_routing(HEADSET);
+	return 0;
+}
 
 /* Supported range -50dB to 18dB */
 static const DECLARE_TLV_DB_LINEAR(db_scale_linear, -5000, 1800);
 
 #define MSM_EXT(xname, xindex, fp_info, fp_get, fp_put, addr) \
-{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
-  .access = SNDRV_CTL_ELEM_ACCESS_READWRITE, \
-  .name = xname, .index = xindex, \
-  .info = fp_info,\
-  .get = fp_get, .put = fp_put, \
-  .private_value = addr, \
+{ \
+	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
+	.access = SNDRV_CTL_ELEM_ACCESS_READWRITE, \
+	.name = xname, \
+	.index = xindex, \
+	.info = fp_info,\
+	.get = fp_get, \
+	.put = fp_put, \
+	.private_value = addr, \
 }
 
 #define MSM_EXT_TLV(xname, xindex, fp_info, fp_get, fp_put, addr, tlv_array) \
-{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
-  .access = (SNDRV_CTL_ELEM_ACCESS_TLV_READ | \
-		SNDRV_CTL_ELEM_ACCESS_READWRITE), \
-  .name = xname, .index = xindex, \
-  .info = fp_info,\
-  .get = fp_get, .put = fp_put, .tlv.p = tlv_array, \
-  .private_value = addr, \
+{ \
+	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
+	.access = (SNDRV_CTL_ELEM_ACCESS_TLV_READ | SNDRV_CTL_ELEM_ACCESS_READWRITE), \
+	.name = xname, \
+	.index = xindex, \
+	.info = fp_info,\
+	.get = fp_get, \
+	.put = fp_put, \
+	.tlv.p = tlv_array, \
+	.private_value = addr, \
+}
+
+#define MSM_EXT_SWITCH(xname, fp_get, fp_put) \
+{ \
+	.iface =	SNDRV_CTL_ELEM_IFACE_MIXER, \
+	.name =		xname " Switch", \
+	.info =		snd_ctl_boolean_mono_info, \
+	.get =		fp_get, \
+	.put =		fp_put, \
 }
 
 static struct snd_kcontrol_new snd_msm_controls[] = {
-	MSM_EXT_TLV("PCM Playback Volume", 0, snd_msm_volume_info, \
-	snd_msm_volume_get, snd_msm_volume_put, 0, db_scale_linear),
-	MSM_EXT("device", 1, snd_msm_device_info, snd_msm_device_get, \
-						 snd_msm_device_put, 0),
+	MSM_EXT_TLV("PCM Playback Volume", 0, snd_msm_volume_info, snd_msm_volume_get, snd_msm_volume_put, 0, db_scale_linear),
+	MSM_EXT_SWITCH("Handset",snd_msm_handset_switch_get,snd_msm_handset_switch_put),
+	MSM_EXT_SWITCH("Speaker",snd_msm_speaker_switch_get,snd_msm_speaker_switch_put),
+	MSM_EXT_SWITCH("Headset",snd_msm_headset_switch_get,snd_msm_headset_switch_put),
 };
 
 static int msm_new_mixer(struct snd_card *card)
