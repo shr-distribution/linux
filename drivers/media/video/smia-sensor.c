@@ -397,7 +397,7 @@ static int smia_power_off(struct v4l2_subdev *subdev)
 	if (rval)
 		return rval;
 
-	return sensor->platform_data->set_power(subdev, 0);
+	return sensor->platform_data->set_xshutdown(subdev, 0);
 }
 
 static int smia_power_on(struct v4l2_subdev *subdev)
@@ -414,7 +414,7 @@ static int smia_power_on(struct v4l2_subdev *subdev)
 		hz = reglist->mode.ext_clock;
 	}
 
-	rval = sensor->platform_data->set_power(subdev, 1);
+	rval = sensor->platform_data->set_xshutdown(subdev, 1);
 	if (rval)
 		goto out;
 
