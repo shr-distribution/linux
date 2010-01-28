@@ -394,10 +394,9 @@ static int smia_power_off(struct v4l2_subdev *subdev)
 	int rval;
 
 	rval = sensor->platform_data->set_xclk(subdev, 0);
-	if (rval)
-		return rval;
+	rval |= sensor->platform_data->set_xshutdown(subdev, 0);
 
-	return sensor->platform_data->set_xshutdown(subdev, 0);
+	return rval;
 }
 
 static int smia_power_on(struct v4l2_subdev *subdev)
