@@ -32,6 +32,7 @@
 #include <linux/i2c.h>
 #include <linux/slab.h>
 #include <linux/version.h>
+#include <linux/regulator/consumer.h>
 #include <linux/v4l2-mediabus.h>
 
 #include <media/media-entity.h>
@@ -112,6 +113,7 @@ struct smia_sensor {
 	struct v4l2_fract timeperframe;
 
 	struct smia_sensor_platform_data *platform_data;
+	struct regulator *vana;
 
 	const struct firmware *fw;
 	struct smia_meta_reglist *meta_reglist;
@@ -395,6 +397,7 @@ static int smia_power_off(struct v4l2_subdev *subdev)
 
 	rval = sensor->platform_data->set_xclk(subdev, 0);
 	rval |= sensor->platform_data->set_xshutdown(subdev, 0);
+	rval |= regulator_disable(sensor->vana);
 
 	return rval;
 }
@@ -412,6 +415,10 @@ static int smia_power_on(struct v4l2_subdev *subdev)
 						 SMIA_REGLIST_POWERON);
 		hz = reglist->mode.ext_clock;
 	}
+
+	rval = regulator_enable(sensor->vana);
+	if (rval)
+		goto out;
 
 	rval = sensor->platform_data->set_xshutdown(subdev, 1);
 	if (rval)
@@ -447,9 +454,17 @@ static int smia_dev_init(struct v4l2_subdev *subdev)
 	u32 model_id, revision_number, manufacturer_id, smia_version;
 	int i, rval;
 
-	rval = smia_power_on(subdev);
-	if (rval)
+	sensor->vana = regulator_get(&client->dev, "VANA");
+	if (IS_ERR(sensor->vana)) {
+		dev_err(&client->dev, "could not get regulator for vana\n");
 		return -ENODEV;
+	}
+
+	rval = smia_power_on(subdev);
+	if (rval) {
+		rval = -ENODEV;
+		goto out_regulator_release;
+	}
 
 	/* Read and check sensor identification registers */
 	if (smia_i2c_read_reg(client, SMIA_REG_16BIT, REG_MODEL_ID, &model_id)
@@ -543,6 +558,9 @@ out_poweroff:
 	sensor->meta_reglist = NULL;
 	sensor->fw = NULL;
 	smia_power_off(subdev);
+out_regulator_release:
+	regulator_put(sensor->vana);
+	sensor->vana = NULL;
 
 	return rval;
 }
@@ -893,6 +911,9 @@ static int __exit smia_remove(struct i2c_client *client)
 
 	v4l2_device_unregister_subdev(&sensor->subdev);
 	media_entity_cleanup(&sensor->subdev.entity);
+	if (sensor->vana)
+		regulator_put(sensor->vana);
+
 	release_firmware(sensor->fw);
 	kfree(sensor);
 	return 0;
