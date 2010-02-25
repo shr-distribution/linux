@@ -78,6 +78,7 @@ struct smia_sensor_type {
 	u8 manufacturer_id;
 	u16 model_id;
 	char *name;
+	int v4l2_ident;	/* v4l2 chip ident */
 };
 
 /* Current values for V4L2 controls */
@@ -119,9 +120,9 @@ struct smia_sensor {
 };
 
 static struct smia_sensor_type smia_sensors[] = {
-	{ 0, 0, "unknown" },
-	{ 0x01, 0x022b, "vs6555" },
-	{ 0x0c, 0x208a, "tcm8330md" },
+	{ 0,	0,	"unknown",	V4L2_IDENT_SMIA },
+	{ 0x01,	0x022b,	"vs6555",	V4L2_IDENT_VS6555 },
+	{ 0x0c,	0x208a,	"tcm8330md",	V4L2_IDENT_TCM8330MD },
 };
 
 static const __u32 smia_mode_ctrls[] = {
@@ -690,9 +691,11 @@ static int
 smia_get_chip_ident(struct v4l2_subdev *subdev,
 		    struct v4l2_dbg_chip_ident *chip)
 {
+	struct smia_sensor *sensor = to_smia_sensor(subdev);
 	struct i2c_client *client = v4l2_get_subdevdata(subdev);
 
-	return v4l2_chip_ident_i2c_client(client, chip, V4L2_IDENT_SMIA, 0);
+	return v4l2_chip_ident_i2c_client(client, chip,
+					  sensor->type->v4l2_ident, 0);
 }
 
 static int
