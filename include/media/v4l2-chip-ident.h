@@ -146,6 +146,9 @@ enum {
 	/* module saa6588: just ident 6588 */
 	V4L2_IDENT_SAA6588 = 6588,
 
+	/* module vs6555: just ident 6555 */
+	V4L2_IDENT_VS6555 = 6555,
+
 	/* module saa6752hs: reserved range 6750-6759 */
 	V4L2_IDENT_SAA6752HS = 6752,
 	V4L2_IDENT_SAA6752HS_AC3 = 6753,
@@ -182,6 +185,9 @@ enum {
 
 	/* module mt9v011, just ident 8243 */
 	V4L2_IDENT_MT9V011 = 8243,
+
+	/* module tcm8330md: just ident 8330 */
+	V4L2_IDENT_TCM8330MD = 8330,
 
 	/* module wm8739: just ident 8739 */
 	V4L2_IDENT_WM8739 = 8739,
