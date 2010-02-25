@@ -489,6 +489,7 @@ static int smia_dev_init(struct v4l2_subdev *subdev)
 		i = 0;			/* Unknown sensor */
 	sensor->type = &smia_sensors[i];
 	strlcpy(sensor->name, smia_sensors[i].name, sizeof(sensor->name));
+	strlcpy(subdev->name, sensor->name, sizeof(subdev->name));
 
 
 	/* Read sensor frame format */
