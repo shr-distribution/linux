@@ -119,6 +119,7 @@ struct smia_sensor {
 	struct smia_meta_reglist *meta_reglist;
 
 	int power;
+	int streaming;
 };
 
 static struct smia_sensor_type smia_sensors[] = {
@@ -375,8 +376,12 @@ fail:
 
 static int smia_s_stream(struct v4l2_subdev *subdev, int streaming)
 {
+	struct smia_sensor *sensor = to_smia_sensor(subdev);
 	struct i2c_client *client = v4l2_get_subdevdata(subdev);
 	int rval;
+
+	if (sensor->streaming == streaming)
+		return 0;
 
 	if (streaming) {
 		rval = smia_configure(subdev);
@@ -386,6 +391,9 @@ static int smia_s_stream(struct v4l2_subdev *subdev, int streaming)
 	 } else {
 		rval = smia_i2c_write_reg(client, SMIA_REG_8BIT, 0x0100, 0x00);
 	 }
+
+	if (rval == 0)
+		sensor->streaming = streaming;
 
 	return rval;
 }
@@ -546,6 +554,7 @@ static int smia_dev_init(struct v4l2_subdev *subdev)
 		goto out_release;
 	}
 
+	sensor->streaming = 0;
 	rval = smia_power_off(subdev);
 	if (rval)
 		goto out_release;
@@ -792,10 +801,13 @@ smia_set_power(struct v4l2_subdev *subdev, int on)
 	if (sensor->power == on)
 		return 0;
 
-	if (on)
+	if (on) {
 		rval = smia_power_on(subdev);
-	else
+	} else {
 		rval = smia_power_off(subdev);
+		if (rval == 0)
+			sensor->streaming = 0;
+	}
 
 	if (rval == 0)
 		sensor->power = on;
@@ -846,16 +858,21 @@ static int smia_suspend(struct i2c_client *client, pm_message_t mesg)
 {
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct smia_sensor *sensor = to_smia_sensor(subdev);
-	int ret;
+	int ret, ss;
 
 	if (!sensor->power)
 		return 0;
+
+	ss = sensor->streaming;
+	if (sensor->streaming)
+		smia_s_stream(subdev, 0);
 
 	ret = smia_set_power(subdev, 0);
 	if (ret < 0)
 		return ret;
 
 	sensor->power = 1;
+	sensor->streaming = ss;
 	return 0;
 }
 
@@ -863,12 +880,21 @@ static int smia_resume(struct i2c_client *client)
 {
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct smia_sensor *sensor = to_smia_sensor(subdev);
+	int rval;
 
 	if (!sensor->power)
 		return 0;
 
 	sensor->power = 0;
-	return smia_set_power(subdev, 1);
+	rval = smia_set_power(subdev, 1);
+	if (rval)
+		return rval;
+
+	if (!sensor->streaming)
+		return 0;
+
+	sensor->streaming = 0;
+	return smia_s_stream(subdev, 1);
 }
 
 #else
