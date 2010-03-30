@@ -454,126 +454,6 @@ out:
 	return rval;
 }
 
-static int smia_dev_init(struct v4l2_subdev *subdev)
-{
-	struct smia_sensor *sensor = to_smia_sensor(subdev);
-	struct i2c_client *client = v4l2_get_subdevdata(subdev);
-	char name[SMIA_MAX_LEN];
-	u32 model_id, revision_number, manufacturer_id, smia_version;
-	int i, rval;
-
-	sensor->vana = regulator_get(&client->dev, "VANA");
-	if (IS_ERR(sensor->vana)) {
-		dev_err(&client->dev, "could not get regulator for vana\n");
-		return -ENODEV;
-	}
-
-	rval = smia_power_on(subdev);
-	if (rval) {
-		rval = -ENODEV;
-		goto out_regulator_release;
-	}
-
-	/* Read and check sensor identification registers */
-	if (smia_i2c_read_reg(client, SMIA_REG_16BIT, REG_MODEL_ID, &model_id)
-	    || smia_i2c_read_reg(client, SMIA_REG_8BIT,
-				 REG_REVISION_NUMBER, &revision_number)
-	    || smia_i2c_read_reg(client, SMIA_REG_8BIT,
-				 REG_MANUFACTURER_ID, &manufacturer_id)
-	    || smia_i2c_read_reg(client, SMIA_REG_8BIT,
-				 REG_SMIA_VERSION, &smia_version)) {
-		rval = -ENODEV;
-		goto out_poweroff;
-	}
-
-	sensor->revision_number = revision_number;
-	sensor->smia_version    = smia_version;
-
-	if (smia_version != 10) {
-		/* We support only SMIA version 1.0 at the moment */
-		dev_err(&client->dev,
-			"unknown sensor 0x%04x detected (smia ver %i.%i)\n",
-			model_id, smia_version / 10, smia_version % 10);
-		rval = -ENODEV;
-		goto out_poweroff;
-	}
-
-	/* Detect which sensor we have */
-	for (i = 1; i < ARRAY_SIZE(smia_sensors); i++) {
-		if (smia_sensors[i].manufacturer_id == manufacturer_id
-		    && smia_sensors[i].model_id == model_id)
-			break;
-	}
-
-	/* This will be exported go the the v4l2_subdev description (through a
-	 * string control) when we'll have one.
-	 */
-	if (i >= ARRAY_SIZE(smia_sensors))
-		i = 0;			/* Unknown sensor */
-	sensor->type = &smia_sensors[i];
-	strlcpy(sensor->name, smia_sensors[i].name, sizeof(sensor->name));
-	strlcpy(subdev->name, sensor->name, sizeof(subdev->name));
-
-
-	/* Read sensor frame format */
-	smia_read_frame_fmt(subdev);
-
-	/* Initialize V4L2 controls */
-	smia_init_controls(subdev);
-
-	/* Import firmware */
-	snprintf(name, sizeof(name), "%s-%02x-%04x-%02x.bin",
-		 SMIA_SENSOR_NAME, sensor->type->manufacturer_id,
-		 sensor->type->model_id, sensor->revision_number);
-
-	if (request_firmware(&sensor->fw, name, &client->dev)) {
-		dev_err(&client->dev, "can't load firmware %s\n", name);
-		rval = -ENODEV;
-		goto out_poweroff;
-	}
-
-	sensor->meta_reglist = (struct smia_meta_reglist *)sensor->fw->data;
-
-	rval = smia_reglist_import(sensor->meta_reglist);
-	if (rval) {
-		dev_err(&client->dev,
-			"invalid register list %s, import failed\n",
-			name);
-		goto out_release;
-	}
-
-	/* Select initial mode */
-	sensor->current_reglist =
-		smia_reglist_find_type(sensor->meta_reglist,
-				       SMIA_REGLIST_MODE);
-	if (!sensor->current_reglist) {
-		dev_err(&client->dev,
-			"invalid register list %s, no mode found\n",
-			name);
-		rval = -ENODEV;
-		goto out_release;
-	}
-
-	sensor->streaming = 0;
-	rval = smia_power_off(subdev);
-	if (rval)
-		goto out_release;
-
-	return 0;
-
-out_release:
-	release_firmware(sensor->fw);
-out_poweroff:
-	sensor->meta_reglist = NULL;
-	sensor->fw = NULL;
-	smia_power_off(subdev);
-out_regulator_release:
-	regulator_put(sensor->vana);
-	sensor->vana = NULL;
-
-	return rval;
-}
-
 static struct v4l2_queryctrl smia_ctrls[] = {
 	{
 		.id		= V4L2_CID_GAIN,
@@ -722,6 +602,133 @@ smia_get_chip_ident(struct v4l2_subdev *subdev,
 
 	return v4l2_chip_ident_i2c_client(client, chip,
 					  sensor->type->v4l2_ident, 0);
+}
+
+static int smia_dev_init(struct v4l2_subdev *subdev)
+{
+	struct smia_sensor *sensor = to_smia_sensor(subdev);
+	struct i2c_client *client = v4l2_get_subdevdata(subdev);
+	struct v4l2_mbus_framefmt *format;
+	char name[SMIA_MAX_LEN];
+	u32 model_id, revision_number, manufacturer_id, smia_version;
+	int i, rval;
+
+	sensor->vana = regulator_get(&client->dev, "VANA");
+	if (IS_ERR(sensor->vana)) {
+		dev_err(&client->dev, "could not get regulator for vana\n");
+		return -ENODEV;
+	}
+
+	rval = smia_power_on(subdev);
+	if (rval) {
+		rval = -ENODEV;
+		goto out_regulator_release;
+	}
+
+	/* Read and check sensor identification registers */
+	if (smia_i2c_read_reg(client, SMIA_REG_16BIT, REG_MODEL_ID, &model_id)
+	    || smia_i2c_read_reg(client, SMIA_REG_8BIT,
+				 REG_REVISION_NUMBER, &revision_number)
+	    || smia_i2c_read_reg(client, SMIA_REG_8BIT,
+				 REG_MANUFACTURER_ID, &manufacturer_id)
+	    || smia_i2c_read_reg(client, SMIA_REG_8BIT,
+				 REG_SMIA_VERSION, &smia_version)) {
+		rval = -ENODEV;
+		goto out_poweroff;
+	}
+
+	sensor->revision_number = revision_number;
+	sensor->smia_version    = smia_version;
+
+	if (smia_version != 10) {
+		/* We support only SMIA version 1.0 at the moment */
+		dev_err(&client->dev,
+			"unknown sensor 0x%04x detected (smia ver %i.%i)\n",
+			model_id, smia_version / 10, smia_version % 10);
+		rval = -ENODEV;
+		goto out_poweroff;
+	}
+
+	/* Detect which sensor we have */
+	for (i = 1; i < ARRAY_SIZE(smia_sensors); i++) {
+		if (smia_sensors[i].manufacturer_id == manufacturer_id
+		    && smia_sensors[i].model_id == model_id)
+			break;
+	}
+
+	/* This will be exported go the the v4l2_subdev description (through a
+	 * string control) when we'll have one.
+	 */
+	if (i >= ARRAY_SIZE(smia_sensors))
+		i = 0;			/* Unknown sensor */
+	sensor->type = &smia_sensors[i];
+	strlcpy(sensor->name, smia_sensors[i].name, sizeof(sensor->name));
+	strlcpy(subdev->name, sensor->name, sizeof(subdev->name));
+
+
+	/* Read sensor frame format */
+	smia_read_frame_fmt(subdev);
+
+	/* Initialize V4L2 controls */
+	smia_init_controls(subdev);
+
+	/* Import firmware */
+	snprintf(name, sizeof(name), "%s-%02x-%04x-%02x.bin",
+		 SMIA_SENSOR_NAME, sensor->type->manufacturer_id,
+		 sensor->type->model_id, sensor->revision_number);
+
+	if (request_firmware(&sensor->fw, name, &client->dev)) {
+		dev_err(&client->dev, "can't load firmware %s\n", name);
+		rval = -ENODEV;
+		goto out_poweroff;
+	}
+
+	sensor->meta_reglist = (struct smia_meta_reglist *)sensor->fw->data;
+
+	rval = smia_reglist_import(sensor->meta_reglist);
+	if (rval) {
+		dev_err(&client->dev,
+			"invalid register list %s, import failed\n",
+			name);
+		goto out_release;
+	}
+
+	/* Select initial mode */
+	sensor->current_reglist =
+		smia_reglist_find_type(sensor->meta_reglist,
+				       SMIA_REGLIST_MODE);
+	if (!sensor->current_reglist) {
+		dev_err(&client->dev,
+			"invalid register list %s, no mode found\n",
+			name);
+		rval = -ENODEV;
+		goto out_release;
+	}
+
+	format = __smia_get_pad_format(sensor, 0, V4L2_SUBDEV_FORMAT_PROBE);
+	smia_reglist_to_mbus(sensor->current_reglist, format);
+
+	format = __smia_get_pad_format(sensor, 0, V4L2_SUBDEV_FORMAT_ACTIVE);
+	smia_reglist_to_mbus(sensor->current_reglist, format);
+
+	sensor->streaming = 0;
+	rval = smia_power_off(subdev);
+	if (rval)
+		goto out_release;
+
+	return 0;
+
+out_release:
+	release_firmware(sensor->fw);
+out_poweroff:
+	sensor->meta_reglist = NULL;
+	sensor->fw = NULL;
+	smia_power_off(subdev);
+out_regulator_release:
+	regulator_put(sensor->vana);
+	sensor->vana = NULL;
+
+	return rval;
 }
 
 static int
