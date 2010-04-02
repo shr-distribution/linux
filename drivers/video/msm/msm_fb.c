@@ -433,6 +433,7 @@ static void msmfb_resume(struct early_suspend *h)
 	msmfb->sleeping = WAKING;
 	DLOG(SUSPEND_RESUME, "ready, waiting for full update\n");
 	spin_unlock_irqrestore(&msmfb->update_lock, irq_flags);
+	panel->unblank(panel);
 }
 #endif
 
