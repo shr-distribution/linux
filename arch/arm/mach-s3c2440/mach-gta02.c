@@ -667,6 +667,57 @@ static void gta02_poweroff(void)
 	pcf50633_reg_set_bit_mask(gta02_pcf, PCF50633_REG_OOCSHDWN, 1, 1);
 }
 
+struct gta02_device_children {
+	const char *dev_name;
+	size_t num_children;
+	struct platform_device **children;
+	void (*probed_callback)(struct device *dev);
+};
+
+static struct gta02_device_children gta02_device_children[] = {
+};
+
+static int gta02_add_child_devices(struct device *parent,
+		struct platform_device **children, size_t num_children)
+{
+	size_t i;
+
+	for (i = 0; i < num_children; ++i)
+		children[i]->dev.parent = parent;
+
+	return platform_add_devices(children, num_children);
+}
+
+static int gta02_device_registered(struct notifier_block *block,
+		unsigned long action, void *data)
+{
+	struct device *dev = data;
+	const char *devname = dev_name(dev);
+	size_t i;
+
+	if (action != BUS_NOTIFY_BOUND_DRIVER)
+		return 0;
+
+	for (i = 0; i < ARRAY_SIZE(gta02_device_children); ++i) {
+		if (strcmp(devname, gta02_device_children[i].dev_name) == 0) {
+			gta02_add_child_devices(dev, gta02_device_children[i].children,
+			gta02_device_children[i].num_children);
+
+			if (gta02_device_children[i].probed_callback)
+				gta02_device_children[i].probed_callback(dev);
+			break;
+		}
+	}
+
+	return 0;
+}
+
+static struct notifier_block gta02_device_register_notifier = {
+	.notifier_call = gta02_device_registered,
+	.priority = INT_MAX,
+};
+
+
 /*
  * Allow the bootloader to enable hw ecc
  * hardware_ecc=1|0
@@ -683,6 +734,9 @@ static void __init gta02_machine_init(void)
 {
 	/* Set the panic callback to turn AUX LED on or off. */
 	panic_blink = gta02_panic_blink;
+
+	bus_register_notifier(&platform_bus_type, &gta02_device_register_notifier);
+	bus_register_notifier(&spi_bus_type, &gta02_device_register_notifier);
 
 	s3c_pm_init();
 
