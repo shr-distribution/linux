@@ -270,6 +270,7 @@ struct pcf50633_platform_data gta02_pcf_pdata = {
 	.charger_reference_current_ma = 1000,
 
 	.backlight_data = &gta02_backlight_data,
+	.gpio_base = GTA02_GPIO_PCF_BASE,
 
 	.reg_init_data = {
 		[PCF50633_REGULATOR_AUTO] = {
