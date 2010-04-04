@@ -479,7 +479,8 @@ comment "S3C2442 Boards"
 config MACH_NEO1973_GTA02
 	bool "Openmoko GTA02 / Freerunner phone"
 	select MFD_PCF50633
-	select PCF50633_GPIO
+	select GPIO_PCF50633
+	select S3C24XX_GPIO_EXTRA64
 	select I2C
 	select POWER_SUPPLY
 	select MACH_NEO1973
