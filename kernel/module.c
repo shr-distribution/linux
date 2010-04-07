@@ -4,8 +4,7 @@
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
+    the Free Software Foundation; version 2 of the License.
 
     This program is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -64,6 +63,7 @@
  * (add/delete uses stop_machine). */
 static DEFINE_MUTEX(module_mutex);
 static LIST_HEAD(modules);
+static DECLARE_MUTEX(notify_mutex);
 
 static BLOCKING_NOTIFIER_HEAD(module_notify_list);
 
@@ -709,6 +709,12 @@ sys_delete_module(const char __user *name_user, unsigned int flags)
 	if (ret != 0)
 		goto out;
 
+	down(&notify_mutex);
+	blocking_notifier_call_chain(&module_notify_list, MODULE_STATE_GOING,
+								 mod);
+	up(&notify_mutex);
+
+
 	/* Never wait if forced. */
 	if (!forced && module_refcount(mod) != 0)
 		wait_for_zero_refcount(mod);
@@ -720,6 +726,11 @@ sys_delete_module(const char __user *name_user, unsigned int flags)
 		mutex_lock(&module_mutex);
 	}
 	free_module(mod);
+
+	down(&notify_mutex);
+	blocking_notifier_call_chain(&module_notify_list, MODULE_STATE_GONE,
+			NULL);
+	up(&notify_mutex);
 
  out:
 	mutex_unlock(&module_mutex);
@@ -834,6 +845,9 @@ static ssize_t show_initstate(struct module_attribute *mattr,
 		break;
 	case MODULE_STATE_GOING:
 		state = "going";
+		break;
+	case MODULE_STATE_GONE:
+		state = "gone";
 		break;
 	}
 	return sprintf(buffer, "%s\n", state);
@@ -1301,6 +1315,11 @@ static void free_module(struct module *mod)
 	/* Arch-specific cleanup. */
 	module_arch_cleanup(mod);
 
+#ifdef CONFIG_KGDB
+	/* kgdb info */
+	vfree(mod->mod_sections);
+#endif
+
 	/* Module unload stuff */
 	module_unload_free(mod);
 
@@ -1559,6 +1578,30 @@ static void setup_modinfo(struct module *mod, Elf_Shdr *sechdrs,
 						attr->attr.name));
 	}
 }
+
+#ifdef CONFIG_KGDB
+int add_modsects(struct module *mod, Elf_Ehdr *hdr, Elf_Shdr *sechdrs,
+		const char *secstrings)
+{
+	 int i;
+
+	 mod->num_sections = hdr->e_shnum - 1;
+	 mod->mod_sections = vmalloc((hdr->e_shnum - 1) *
+		sizeof(struct mod_section));
+
+	 if (mod->mod_sections == NULL)
+		 return -ENOMEM;
+
+	 for (i = 1; i < hdr->e_shnum; i++) {
+		 mod->mod_sections[i - 1].address = (void *)sechdrs[i].sh_addr;
+		 strncpy(mod->mod_sections[i - 1].name, secstrings +
+				 sechdrs[i].sh_name, MAX_SECTNAME);
+		 mod->mod_sections[i - 1].name[MAX_SECTNAME] = '\0';
+	}
+
+	return 0;
+}
+#endif
 
 #ifdef CONFIG_KALLSYMS
 static int is_exported(const char *name, const struct module *mod)
@@ -1991,6 +2034,12 @@ static struct module *load_module(void __user *umod,
 		marker_update_probe_range(mod->markers,
 			mod->markers + mod->num_markers, NULL, NULL);
 #endif
+
+#ifdef CONFIG_KGDB
+	err = add_modsects(mod, hdr, sechdrs, secstrings);
+	 if (err < 0)
+		 goto nomodsectinfo;
+#endif
 	err = module_finalize(hdr, sechdrs, mod);
 	if (err < 0)
 		goto cleanup;
@@ -2054,6 +2103,10 @@ static struct module *load_module(void __user *umod,
  cleanup:
 	kobject_del(&mod->mkobj.kobj);
 	kobject_put(&mod->mkobj.kobj);
+#ifdef CONFIG_KGDB
+ nomodsectinfo:
+	vfree(mod->mod_sections);
+#endif
  free_unload:
 	module_unload_free(mod);
 	module_free(mod, mod->module_init);
@@ -2126,6 +2179,11 @@ sys_init_module(void __user *umod,
 		/* Init routine failed: abort.  Try to protect us from
                    buggy refcounters. */
 		mod->state = MODULE_STATE_GOING;
+		down(&notify_mutex);
+		blocking_notifier_call_chain(&module_notify_list,
+				MODULE_STATE_GOING,
+				mod);
+		up(&notify_mutex);
 		synchronize_sched();
 		module_put(mod);
 		mutex_lock(&module_mutex);

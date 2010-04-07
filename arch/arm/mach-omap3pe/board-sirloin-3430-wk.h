@@ -1,0 +1,8 @@
+#define WAKEUP_SOURCE_RTC	     (1<<0)
+#define WAKEUP_SOURCE_MODEM_UART (1<<1)
+#define WAKEUP_SOURCE_MODEM_USB  (1<<2)
+#define WAKEUP_SOURCE_CORE_NAVI  (1<<3)
+#define WAKEUP_SOURCE_BT		 (1<<4)
+#define WAKEUP_SOURCE_WIFI		 (1<<5)
+#define WAKEUP_SOURCE_OTHER      (1<<6)
+

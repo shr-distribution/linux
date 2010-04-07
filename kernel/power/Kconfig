@@ -37,6 +37,19 @@ config PM_DEBUG
 	code. This is helpful when debugging and reporting PM bugs, like
 	suspend support.
 
+config DISABLE_CONSOLE_SUSPEND
+	bool "Keep console(s) enabled during suspend/resume"
+	depends on PM && PM_DEBUG
+	default n
+	---help---
+	This option turns off the console suspend mechanism that prevents
+	debug messages from reaching the console during the suspend/resume
+	operations. This may be helpful when debugging device drivers'
+	suspend/resume routines, but may itself lead to problems, for example
+	if netconsole is used.
+	Enabling this option is equivalent to passing the argument
+	'no_console_suspend' can be on the kernel command line.
+
 config PM_VERBOSE
 	bool "Verbose Power Management debugging"
 	depends on PM_DEBUG
@@ -97,6 +110,16 @@ config SUSPEND
 	  powered and thus its contents are preserved, such as the
 	  suspend-to-RAM state (i.e. the ACPI S3 state).
 
+config SKIP_SYNC_ON_SUSPEND
+	bool "Skip filesystem sync on suspend to RAM or standby"
+	depends on PM 
+	depends on SUSPEND
+	depends on MACH_SIRLOIN
+	default y
+	---help---
+	  This option is for systems that does filesystem sync as a part
+	  of pre suspend activity or to skip it altogether. 
+
 config HIBERNATION_UP_POSSIBLE
 	bool
 	depends on X86 || PPC64_SWSUSP || PPC32
@@ -108,6 +131,13 @@ config HIBERNATION_SMP_POSSIBLE
 	depends on (X86 && !X86_VOYAGER) || PPC64_SWSUSP
 	depends on SMP
 	default y
+
+config FASTPATH
+	bool "Critical Battery Check"
+	depends on BATTERY_SIMPLE
+	---help---
+	  Uses the RTC to schedule periodic fast wakeup from sleep to
+	  check for critical batttery levels.
 
 config HIBERNATION
 	bool "Hibernation (aka 'suspend to disk')"

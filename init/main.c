@@ -106,6 +106,13 @@ enum system_states system_state;
 EXPORT_SYMBOL(system_state);
 
 /*
+ * Open Embedded build info string
+ */
+#ifdef CONFIG_OE_BUILD_INFO
+const char oe_build_info[] = CONFIG_OE_BUILD_INFO_STRING;
+#endif
+
+/*
  * Boot command-line arguments
  */
 #define MAX_INIT_ARGS CONFIG_INIT_ENV_ARG_LIMIT
