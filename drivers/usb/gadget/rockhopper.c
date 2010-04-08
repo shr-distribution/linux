@@ -153,9 +153,9 @@ static char *rh_config_description[] = {
 	[RH_CONFIG_MAX] = NULL,
 };
 
-static unsigned int config_num = RH_CONFIG_RETAIL; /* 1 */
+static unsigned int config_num = RH_CONFIG_DEV_2; /* 5 */
 module_param(config_num, uint, S_IRUGO);
-MODULE_PARM_DESC(config_num, "config number, default=1 (RETAIL)");
+MODULE_PARM_DESC(config_num, "config number, default=5 (DEV_2)");
 
 static int use_acm = false;
 module_param(use_acm, bool, 0);
