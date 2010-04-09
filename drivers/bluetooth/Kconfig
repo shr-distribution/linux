@@ -219,4 +219,15 @@ config BT_ATH3K
 	  Say Y here to compile support for "Atheros firmware download driver"
 	  into the kernel or say M to compile it as module (ath3k).
 
+config BT_HCIH4P
+	tristate "HCI driver with Nokia H4 extensions"
+	depends on BT
+	select FW_LOADER
+	help
+	  Bluetooth HCI driver with H4 extensions.  This driver provides
+	  support for H4+ Bluetooth chip with vendor-specific H4 extensions.
+
+	  Say Y here to compile support for h4 extended devices into the kernel
+	  or say M to compile it as module (hci_h4p).
+
 endmenu
