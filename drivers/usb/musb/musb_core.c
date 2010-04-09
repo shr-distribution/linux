@@ -1824,6 +1824,15 @@ static DEVICE_ATTR(charger, 0444, musb_charger_show, NULL);
 
 #ifdef CONFIG_USB_GADGET_MUSB_HDRC
 
+static ssize_t
+musb_suspend_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct musb *musb = dev_to_musb(dev);
+
+	return sprintf(buf, "%d\n", musb->is_suspended);
+}
+static DEVICE_ATTR(suspend, 0444, musb_suspend_show, NULL);
+
 /* Gadget drivers can't know that a host is connected so they might want
  * to start SRP, but users can.  This allows userspace to trigger SRP.
  */
@@ -1855,6 +1864,7 @@ static struct attribute *musb_attributes[] = {
 	&dev_attr_mA.attr,
 	&dev_attr_charger.attr,
 #ifdef CONFIG_USB_GADGET_MUSB_HDRC
+	&dev_attr_suspend.attr,
 	&dev_attr_srp.attr,
 #endif
 	NULL
@@ -1870,7 +1880,7 @@ static const struct attribute_group musb_attr_group = {
 static void musb_irq_work(struct work_struct *data)
 {
 	struct musb *musb = container_of(data, struct musb, irq_work);
-	static int old_state;
+	static int old_state, old_suspend;
 	static int old_power_draw;
 
 	if (musb->xceiv->state != old_state) {
@@ -1882,6 +1892,12 @@ static void musb_irq_work(struct work_struct *data)
 		old_power_draw = musb->power_draw;
 		sysfs_notify(&musb->controller->kobj, NULL, "mA");
 	}
+#ifdef CONFIG_USB_GADGET_MUSB_HDRC
+	if (old_suspend != musb->is_suspended) {
+		old_suspend = musb->is_suspended;
+		sysfs_notify(&musb->controller->kobj, NULL, "suspend");
+	}
+#endif
 }
 
 /* --------------------------------------------------------------------------
