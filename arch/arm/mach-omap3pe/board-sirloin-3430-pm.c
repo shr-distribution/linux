@@ -28,6 +28,7 @@
 #include <asm/arch/mux.h>
 #include <asm/arch/power_companion.h>
 
+#include <linux/wake_sources.h>
 #ifdef CONFIG_FASTPATH
 #include <linux/fastpath.h>
 #include "board-sirloin-3430-wk.h"
@@ -51,7 +52,7 @@
 #endif
 
 #ifdef CONFIG_FASTPATH
-int omap3_wakeup_sources_get(void);
+int omap3_wakeup_is_rtc_only(void);
 void omap3_wakeup_sources_clear(void);
 #endif
 
@@ -350,6 +351,9 @@ static int omap3_pm_sirloin_valid(suspend_state_t state)
 		 * sources mask when this happens.
 		 */
 		omap3_wakeup_sources_clear();
+#ifdef CONFIG_WAKE_SOURCES
+		clear_wakeup_events();
+#endif
 
 		valid = 1;
 		break;
@@ -476,7 +480,7 @@ static int omap3_pm_sirloin_fastsleep(void)
 #ifdef CONFIG_FASTPATH
 	int is_rtc_only;
 	/* If RTC is only wakeup source, we may return to sleep. */
-	is_rtc_only = omap3_wakeup_sources_get() == WAKEUP_SOURCE_RTC;
+	is_rtc_only = omap3_wakeup_is_rtc_only();
 	fastsleep = fastpath_fastsleep(is_rtc_only);
 #endif
 	return fastsleep;

@@ -756,6 +756,7 @@ static void twl4030_phy_power(struct twl4030_usb *twl, int on)
 }
 
 extern int musb_otg_state(enum usb_otg_state *state);
+extern int musb_softconn(int is_on);
 
 static int check_musb_idle(void)
 {
@@ -776,6 +777,7 @@ static void phy_suspend(struct twl4030_usb *twl)
 {
 	printk(KERN_INFO "%s: enter\n", __func__);
 
+	musb_softconn(0);
 	twl4030_phy_power(twl, 0);
 	twl->asleep = 1;
 #ifdef USE_USB_POWER_CONSTRAINT
@@ -792,31 +794,34 @@ static void phy_suspend_work(struct work_struct *work)
 					       phy_suspend_work.work);
 	unsigned long flags;
 
+#define NRETRY	10
+
 	spin_lock_irqsave(&twl->lock, flags);
 	if (twl->phy_try_suspending == 0) { /* cancelled */
-		printk(KERN_INFO "%s: cancelled\n", __func__);
 		spin_unlock_irqrestore(&twl->lock, flags);
+		printk(KERN_INFO "%s: cancelled\n", __func__);
 		return;
 	}
-	if (twl->phy_try_suspending > 10) { /* timeout - tried 10 times */
-		printk(KERN_INFO "%s: timeout (retry=%d)\n",
-		       __func__, twl->phy_try_suspending);
+	if (twl->phy_try_suspending >= NRETRY) { /* timeout */
+		int n = twl->phy_try_suspending;
 		twl->phy_try_suspending = 0;
 		spin_unlock_irqrestore(&twl->lock, flags);
+		printk(KERN_INFO "%s: musb is still active after %d retries\n",
+		       __func__, n);
+		gadget_event_host_connected(0); /* musb hasn't done this */
+		phy_suspend(twl);
 		return;
 	}
-
 	if (check_musb_idle() == 0) { /* musb is still active */
 		twl->phy_try_suspending++;
-		printk(KERN_INFO "%s: musb is still active (retry=%d)\n",
-		       __func__, twl->phy_try_suspending);
 		schedule_delayed_work(&twl->phy_suspend_work,
 				      msecs_to_jiffies(10));
 		spin_unlock_irqrestore(&twl->lock, flags);
 		return;
 	}
-
 	spin_unlock_irqrestore(&twl->lock, flags);
+	printk(KERN_INFO "%s: musb went idle after %d retries\n",
+	       __func__, twl->phy_try_suspending);
 	phy_suspend(twl);
 }
 
@@ -835,16 +840,14 @@ static void twl4030_phy_suspend(int irq_disable)
 
 	spin_lock_irqsave(&twl->lock, flags);
 	if (twl->asleep) {
-		printk(KERN_INFO "%s: phy is already asleep\n", __func__);
 		spin_unlock_irqrestore(&twl->lock, flags);
+		printk(KERN_INFO "%s: phy is already asleep\n", __func__);
 		return;
 	}
 
 	if (twl->usb_mode == T2_USB_MODE_ULPI) {
 		if (check_musb_idle() == 0) { /* musb is still active */
 			twl->phy_try_suspending = 1;
-			printk(KERN_INFO "%s: musb is still active (retry=%d)\n",
-			       __func__, twl->phy_try_suspending);
 			schedule_delayed_work(&twl->phy_suspend_work,
 					      msecs_to_jiffies(10));
 			spin_unlock_irqrestore(&twl->lock, flags);
@@ -890,6 +893,7 @@ static void twl4030_phy_resume(void)
 	if (twl->usb_mode == T2_USB_MODE_ULPI)
 		twl4030_i2c_access(0);
 	twl->asleep = 0;
+	musb_softconn(1);
 
 	return;
 }

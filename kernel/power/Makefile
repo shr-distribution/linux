@@ -10,5 +10,7 @@ obj-$(CONFIG_HIBERNATION)	+= swsusp.o disk.o snapshot.o swap.o user.o
 
 obj-$(CONFIG_MAGIC_SYSRQ)	+= poweroff.o
 
-obj-$(CONFIG_FASTPATH) += fastpath.o
+obj-$(CONFIG_WAKE_SOURCES)  += wake_sources.o
 
+obj-$(CONFIG_FASTPATH) += fastpath.o
+obj-$(CONFIG_BATTERY_FASTPATH) += battery_fastpath_client.o

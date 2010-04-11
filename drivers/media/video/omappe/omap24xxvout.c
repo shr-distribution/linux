@@ -158,7 +158,7 @@ static struct videobuf_queue_ops dummy_vbq_ops;
  * Maximum amount of memory to use for rendering buffers.
  * Default is enough to four (RGB24) VGA buffers.
  */
-#define MAX_ALLOWED_VIDBUFFERS            4
+#define MAX_ALLOWED_VIDBUFFERS 20           
 //MAR: render_mem  is not used
 //static int render_mem = VID_MAX_WIDTH * VID_MAX_HEIGHT * 4 * MAX_ALLOWED_VIDBUFFERS;
 

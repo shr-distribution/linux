@@ -55,12 +55,17 @@
 #define MAX7359_MIN_DEBOUNCE 9
 #define MAX7359_REG_DEBOUNCE(x)	((x -MAX7359_MIN_DEBOUNCE )&0x1f)
 
-
 #define MAXIM7359_MAX_KEYS      (64)
 
 struct  key_event {
 	int key;
 	struct timeval tv;
+};
+
+struct key_list {
+	struct list_head link;
+	typeof(jiffies) timeout;
+	int idx;
 };
 
 struct maxim_kp_state {
@@ -71,39 +76,17 @@ struct maxim_kp_state {
 	int suspended;
 	DECLARE_BITMAP(gpio_irq_disabled, 1);
 	typeof(jiffies) key_down_tstamp[MAXIM7359_MAX_KEYS];
+	struct list_head key_up_list_head;
+	struct key_list key_up_list[MAXIM7359_MAX_KEYS];
+	struct timer_list sw_debounce_timer;
 	typeof(jiffies) prox_timeout;
+	typeof(jiffies) sw_debounce_timeout;
+	int             hw_debounce;
 };
 
 #ifdef CONFIG_INPUT_EVDEV_TRACK_QUEUE
 extern int evdev_get_queue_state(struct input_dev *dev);
 #endif
-
-
-/******************************************************************************
-*
-* Sysfs
-*
-******************************************************************************/
-
-static ssize_t 
-key_state_show(	struct device *dev, 
-		struct device_attribute *attr, 
-		char *buf)
-{
-	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
-	int idx;
-	char *cur = buf;
-	
-	for(idx = 0 ; (idx < MAXIM7359_MAX_KEYS) && (cur < buf+PAGE_SIZE); idx++) {
-		if(state->key_down_tstamp[idx]) {
-			cur += snprintf(cur, buf+PAGE_SIZE-cur, "%d:%u\n", state->pdata->keymap[idx], jiffies_to_msecs(jiffies-state->key_down_tstamp[idx]));
-		}
-	}
-
-	return (cur - buf);
-}
-
-static DEVICE_ATTR(key_state, S_IRUGO, key_state_show, NULL );
 
 
 /******************************************************************************
@@ -151,7 +134,7 @@ static void maxim_disable_irq(struct maxim_kp_state *state)
 
 static irqreturn_t maxim_kp_interrupt(int irq, void *dev_id)
 {
-	struct maxim_kp_state *state = dev_id;
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_id;
 	schedule_work(&state->scan_work);
 	return IRQ_HANDLED;
 }
@@ -220,6 +203,181 @@ static int maxim_i2c_write_u8(struct i2c_client *client, u8 index, u8 value)
 	return ret;
 }
 
+#ifdef MAXIM7359_DEBUG
+
+void maxim_dump_regs(struct i2c_client *client) {
+	u8 val;
+	int x;
+
+	for(x=0; x<=6; x++) {
+		if(maxim_i2c_read_u8(client, x, &val) >= 0) {
+			printk("%s: R%d=0x%x\n", MAXIM7359_I2C_DRIVER, x, val);
+		} else{
+			printk("%s: Failed to read R%d\n", MAXIM7359_I2C_DRIVER, x);
+		}
+
+	}
+
+}
+
+#endif
+
+/******************************************************************************
+*
+* Sysfs
+*
+******************************************************************************/
+
+static ssize_t
+key_state_show(	struct device *dev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
+	int idx;
+	char *cur = buf;
+
+	for(idx = 0 ; (idx < MAXIM7359_MAX_KEYS) && (cur < buf+PAGE_SIZE); idx++) {
+		if(state->key_down_tstamp[idx]) {
+			cur += snprintf(cur, buf+PAGE_SIZE-cur, "%d:%u\n", state->pdata->keymap[idx], jiffies_to_msecs(jiffies-state->key_down_tstamp[idx]));
+		}
+	}
+
+	return (cur - buf);
+}
+
+static DEVICE_ATTR(key_state, S_IRUGO, key_state_show, NULL );
+
+#ifdef MAXIM7359_DEBUG
+
+static ssize_t
+hw_debounce_show(	struct device *dev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
+	u8 debounce;
+
+	if(maxim_i2c_read_u8(state->i2c_dev, MAXIM7359_DEBOUNCE, &debounce )<0) {
+		printk(KERN_WARNING "%s: Failed to get debouce\n", MAXIM7359_I2C_DRIVER);
+	} else {
+		debounce += 9;
+		state->hw_debounce = debounce;
+	}
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", state->hw_debounce);
+
+}
+
+static ssize_t
+hw_debounce_store( struct device *dev,
+                struct device_attribute *attr,
+                const char *buf, size_t count)
+{
+	char *endp;
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
+	int new_debounce_time = simple_strtoul(buf, &endp, 10);
+
+	if ( new_debounce_time < MAX7359_MIN_DEBOUNCE) {
+		printk(KERN_WARNING "MAX7359: Does not support debounce < %d mSec\n", MAX7359_MIN_DEBOUNCE);
+		new_debounce_time = MAX7359_MIN_DEBOUNCE;
+	}
+	if ( new_debounce_time > MAX7359_MAX_DEBOUNCE) {
+		printk(KERN_WARNING "MAX7359: Does not support debounce > %d mSec\n", MAX7359_MAX_DEBOUNCE);
+		new_debounce_time = MAX7359_MAX_DEBOUNCE;
+	}
+	state->hw_debounce = new_debounce_time;
+	(void)maxim_i2c_write_u8(state->i2c_dev, MAXIM7359_DEBOUNCE, MAX7359_REG_DEBOUNCE(new_debounce_time) );
+
+	return count;
+}
+
+static DEVICE_ATTR(hw_debounce, S_IWUGO | S_IRUGO, hw_debounce_show, hw_debounce_store);
+
+static ssize_t
+sw_debounce_show(	struct device *dev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", jiffies_to_msecs(state->sw_debounce_timeout));
+}
+
+static ssize_t
+sw_debounce_store( struct device *dev,
+                struct device_attribute *attr,
+                const char *buf, size_t count)
+{
+	char *endp;
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
+	int new_debounce_time = simple_strtoul(buf, &endp, 10);
+
+	state->sw_debounce_timeout = msecs_to_jiffies(new_debounce_time);
+
+	return count;
+}
+
+static DEVICE_ATTR(sw_debounce, S_IWUGO | S_IRUGO, sw_debounce_show, sw_debounce_store);
+
+
+static ssize_t
+autosleep_show(	struct device *dev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
+	u8 sleep = 0;
+
+	if(maxim_i2c_read_u8(state->i2c_dev, MAXIM7359_SLEEP, &sleep )<0) {
+		printk(KERN_WARNING "%s: Failed to get sleep\n", MAXIM7359_I2C_DRIVER);
+	}
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", sleep);
+}
+
+static ssize_t
+autosleep_store( struct device *dev,
+                struct device_attribute *attr,
+                const char *buf, size_t count)
+{
+	char *endp;
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
+	int new_autosleep_time = simple_strtoul(buf, &endp, 10);
+
+	(void)maxim_i2c_write_u8(state->i2c_dev, MAXIM7359_SLEEP, new_autosleep_time & 0x7);
+
+	return count;
+}
+
+static DEVICE_ATTR(autosleep, S_IWUGO | S_IRUGO, autosleep_show, autosleep_store);
+
+#endif
+
+static ssize_t
+fifo_read_show(	struct device *dev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
+	u8 val;
+	int col, row, idx, key, nirq;
+
+	if(maxim_i2c_read_u8(state->i2c_dev, MAXIM7359_FIFO, &val )<0) {
+		printk(KERN_WARNING "%s: Failed to get val from FIFO\n", MAXIM7359_I2C_DRIVER);
+	}
+
+	col = (val & 0x3F) / 8;
+	row = (val & 0x3F) % 8;
+	idx = state->pdata->col_num * row + col;
+	key = state->pdata->keymap[idx];
+
+	nirq = gpio_get_value(irq_to_gpio(state->i2c_dev->irq));
+
+	return snprintf(buf, PAGE_SIZE, "0x%X:%d:%d:%d:%d:%d\n",val, idx, col, row, key, nirq);
+}
+
+static DEVICE_ATTR(fifo_read, S_IRUGO, fifo_read_show, NULL);
 
 
 
@@ -255,39 +413,46 @@ drop_key_down (struct maxim_kp_state *state, int idx)
  *  Check if it is a valid event
  */
 static int 
-is_valid_event (struct maxim_kp_state *state, int idx, int down )
+is_valid_down_event (struct maxim_kp_state *state, int idx)
 {
-	typeof(jiffies) ts;
 
 	if( idx < 0 || idx >= MAXIM7359_MAX_KEYS ) {
 		printk(KERN_WARNING "%s: idx out of range (idx=%d)\n", MAXIM7359_I2C_DRIVER, idx);
 		return 0; // drop it
 	}
 
+	 /* if there is no prox map just return a valid event */
 	if(!state->pdata->key_prox_map) 
-		return 1; // no prox map just return a valid event 
+		return 1;
 
-	if( down ) {
-		if( state->key_down_tstamp[idx] ) {
-			printk(KERN_WARNING "%s: Two key down events (missing up). (idx=%d)\n", MAXIM7359_I2C_DRIVER, idx);
-		}
-		if( drop_key_down(state, idx)) {
-			printk(KERN_INFO "%s: Rejecting neighbouring key (idx=%d)\n", MAXIM7359_I2C_DRIVER, idx);
-			return 0;
-		}
-		ts = jiffies;
-		state->key_down_tstamp[idx] = ts ? ts : 1;
-		return 1;
-	} else {
-		if(!state->key_down_tstamp[idx]) {
-			printk(KERN_WARNING "%s: Got key up with no previous key down. (idx=%d)\n", MAXIM7359_I2C_DRIVER, idx);
-			return 0;  // key was not down (ignore event)
-		}
-		state->key_down_tstamp[idx] = 0;
-		return 1;
+	/* Key mashing and inconsistent state rejection */
+	if( state->key_down_tstamp[idx] ) {
+		printk(KERN_NOTICE "%s: Two key down events (missing up). (idx=%d, time=%d)\n",
+				MAXIM7359_I2C_DRIVER, idx, jiffies_to_msecs(jiffies-state->key_down_tstamp[idx]));
 	}
+	if( drop_key_down(state, idx)) {
+		printk(KERN_NOTICE "%s: Rejecting neighbouring key (idx=%d)\n", MAXIM7359_I2C_DRIVER, idx);
+		return 0;
+	}
+
+	return 1;
+
 }
 
+/*
+ *  Timer handler for reporting deffered up keys
+ */
+
+static void
+up_key_timer(unsigned long data)
+{
+	struct maxim_kp_state *state = (struct maxim_kp_state *)data;
+
+	/* Use the same workhandler to simplify the synchronization */
+	schedule_work(&state->scan_work);
+
+	return;
+}
 
 /******************************************************************************
 *
@@ -307,9 +472,13 @@ is_valid_event (struct maxim_kp_state *state, int idx, int down )
 static void maxim_kp_scan(struct work_struct *work)
 {
 	u8  val;
-	int res, col, row, key, idx, down;
+
+	int res, col, row, key=0, idx=0, down=0;
 	struct maxim_kp_state *state =
 	    container_of(work, struct maxim_kp_state, scan_work);
+	struct key_list *item = NULL, *titem;
+	typeof(jiffies) ts;
+	int readtimeout=10;
 
 	for(;;) {
 		res = maxim_i2c_read_u8(state->i2c_dev, MAXIM7359_FIFO, &val);
@@ -318,7 +487,24 @@ static void maxim_kp_scan(struct work_struct *work)
 			break;
 		}
 		if( val == FIFO_EMPTY ) {
-			break;
+			/* According to Maxim, it is not enough to check for FIFO empty  */
+			/* We must keep reading until FIFO is empty and the irq has      */
+			/* been deasserted                                               */
+			if(gpio_get_value(irq_to_gpio(state->i2c_dev->irq))) {
+				break;
+			} else {
+				/* If for some reason this does not happen for 'timeout' reads */
+				/* then we will set up a timer to check again later and bail   */
+				/* This should *rarely* to *never* happen                      */
+
+				if(!readtimeout--) {
+					/* reuse the same timer we use for debounce */
+					mod_timer(&state->sw_debounce_timer, HZ >> 2);
+					break;
+				}
+
+				continue;
+			}
 		}
 
 		if( val == FIFO_OVERFLOW) {
@@ -336,7 +522,7 @@ static void maxim_kp_scan(struct work_struct *work)
 					key = state->pdata->keymap[idx];
 					printk (KERN_NOTICE "%s: Sending key up for key code %d\n", MAXIM7359_I2C_DRIVER, key);
 					input_report_key(state->inp_dev, key, 0);
-		    			input_sync(state->inp_dev);
+		    		input_sync(state->inp_dev);
 					state->key_down_tstamp[idx] = 0;
 				}
 			}
@@ -351,14 +537,71 @@ static void maxim_kp_scan(struct work_struct *work)
 			printk(KERN_WARNING "%s: received reserved key. (val=0x%X)\n", MAXIM7359_I2C_DRIVER, val);
 			continue; // skip the key
 		}	
-		down  = (val & KEY_RELEASED) ? 0 : 1; 
-		if( is_valid_event(state, idx, down)) {
-		    input_report_key(state->inp_dev, key, down);
-		    input_sync(state->inp_dev);
+		down  = (val & KEY_RELEASED) ? 0 : 1;
+
+#ifdef MAXIM7359_DEBUG
+		printk(KERN_INFO "%s: key %d %s\n", MAXIM7359_I2C_DRIVER, idx, down ? "down" : "up");
+#endif
+
+		if(!down) {
+			/* don't report the up just yet */
+			state->key_up_list[idx].timeout = jiffies + state->sw_debounce_timeout;
+
+			/* Need to be careful not to create a circular link in our list */
+			if(list_empty(&state->key_up_list[idx].link)) {
+				list_add_tail(&state->key_up_list[idx].link, &state->key_up_list_head);
+			}
+			/* don't worry about the timer, it will be kicked off below if necessary */
+
+		}else if( is_valid_down_event(state, idx)) {
+			/* key down is not from button mashing */
+
+			/* check to see if there was recently a key up */
+			if(!list_empty(&state->key_up_list[idx].link)) {
+				printk(KERN_NOTICE "%s: Rejecting key down bounce. (idx=%d)\n", MAXIM7359_I2C_DRIVER, idx);
+				/* this must be a bounce, do not report the key up */
+				list_del_init(&state->key_up_list[idx].link);
+			} else {
+				/* key down must be valid */
+
+				/* update the last valid key down seen */
+				ts = jiffies;
+				state->key_down_tstamp[idx] = ts ? ts : 1;
+
+				input_report_key(state->inp_dev, key, 1);
+				input_sync(state->inp_dev);
+			}
 		} else {
-			printk(KERN_INFO "%s: key event not valid. (idx=%d down=%d)\n", MAXIM7359_I2C_DRIVER, idx, down);
+			printk(KERN_NOTICE "%s: key event not valid. (idx=%d down=%d)\n", MAXIM7359_I2C_DRIVER, idx, down);
 		}
 	}
+
+	/* Now check if it is time to report key ups */
+	list_for_each_entry_safe(item, titem, &state->key_up_list_head, link) {
+
+		/* Is it time to check this up key? */
+		if(time_before(jiffies, item->timeout)) {
+			/* Not yet time, reset the timer and break */
+			mod_timer(&state->sw_debounce_timer, item->timeout);
+			break;
+		}
+
+		/* Check if the previous down was valid */
+		if(!state->key_down_tstamp[item->idx]) {
+			printk(KERN_NOTICE "%s: Got key up with no previous key down. (idx=%d)\n", MAXIM7359_I2C_DRIVER, item->idx);
+		} else {
+			/* the key is now officially up */
+			state->key_down_tstamp[item->idx] = 0;
+
+			key = state->pdata->keymap[item->idx];
+			input_report_key(state->inp_dev, key, 0);
+			input_sync(state->inp_dev);
+		}
+
+		/* We are done with this key */
+		list_del_init(&item->link);
+	}
+
 }
 
 
@@ -404,6 +647,15 @@ static int maxim_i2c_probe(struct i2c_client *client)
 	/* init workq */
 	INIT_WORK(&state->scan_work, maxim_kp_scan);
 
+	/* set up key up debounce */
+	INIT_LIST_HEAD(&state->key_up_list_head);
+	setup_timer(&state->sw_debounce_timer, up_key_timer, (unsigned long)state);
+
+	for(i=0; i<sizeof(state->key_up_list)/sizeof(state->key_up_list[0]);i++) {
+		state->key_up_list[i].idx = i;
+		INIT_LIST_HEAD(&state->key_up_list[i].link);
+	}
+
 	/* setup input device */
 	state->inp_dev = input_allocate_device();
 	if (state->inp_dev == NULL)
@@ -424,12 +676,15 @@ static int maxim_i2c_probe(struct i2c_client *client)
 	for (i = 0; i < state->inp_dev->keycodemax; i++)
 		set_bit(pdata->keymap[i] & KEY_MAX, state->inp_dev->keybit);
 
-	// Use input device default autorepeat settings
+	/* Use input device default autorepeat settings */
 	state->inp_dev->rep[REP_DELAY] = 0;
 	state->inp_dev->rep[REP_PERIOD] = 0;
 
-	// setup key proximity timeout
+	/* setup key proximity timeout */
 	state->prox_timeout = msecs_to_jiffies(pdata->key_prox_timeout); 
+
+	/* setup key sw debounce timeout */
+	state->sw_debounce_timeout = msecs_to_jiffies(pdata->sw_debounce);
 
 	/* register input device */
 	rc = input_register_device(state->inp_dev);
@@ -441,33 +696,59 @@ static int maxim_i2c_probe(struct i2c_client *client)
 		goto err2;
 	}
 
+	rc = device_create_file(&(state->i2c_dev->dev),  &dev_attr_fifo_read);
+	if(rc) {
+		goto err2;
+	}
+
+#ifdef MAXIM7359_DEBUG
+	rc = device_create_file(&(state->i2c_dev->dev),  &dev_attr_hw_debounce);
+	if(rc) {
+		goto err2;
+	}
+
+	rc = device_create_file(&(state->i2c_dev->dev),  &dev_attr_sw_debounce);
+	if(rc) {
+		goto err2;
+	}
+
+	rc = device_create_file(&(state->i2c_dev->dev),  &dev_attr_autosleep);
+	if(rc) {
+		goto err2;
+	}
+#endif
+
 	/* change autorepeat to actual values */
 	state->inp_dev->rep[REP_DELAY]	= pdata->rep_delay;
 	state->inp_dev->rep[REP_PERIOD]	= pdata->rep_period;
 
-	/* Setting debounce time */
-	debounce_time = pdata->debounce;
+	/* Setting hw debounce time on part */
+	debounce_time = pdata->hw_debounce;
 	if ( debounce_time < MAX7359_MIN_DEBOUNCE) {
-		printk(KERN_WARNING "MAX7359: Does not support debounce < %d mSec\n", MAX7359_MIN_DEBOUNCE);
+		printk(KERN_WARNING "%s: Does not support debounce < %d mSec\n",MAXIM7359_I2C_DRIVER, MAX7359_MIN_DEBOUNCE);
 		debounce_time = MAX7359_MIN_DEBOUNCE;
 	}
 	if ( debounce_time > MAX7359_MAX_DEBOUNCE) {
-		printk(KERN_WARNING "MAX7359: Does not support debounce > %d mSec\n", MAX7359_MAX_DEBOUNCE);
+		printk(KERN_WARNING "%s: Does not support debounce > %d mSec\n", MAXIM7359_I2C_DRIVER, MAX7359_MAX_DEBOUNCE);
 		debounce_time = MAX7359_MAX_DEBOUNCE;
 	}
 
+	state->hw_debounce = debounce_time;
 	(void)maxim_i2c_write_u8(client, MAXIM7359_DEBOUNCE, MAX7359_REG_DEBOUNCE(debounce_time) );
 
 	/* Setting Interrupt type */
 	(void)maxim_i2c_write_u8(client, MAXIM7359_INTERRUPT, 0x01);
 
 	/* drain the fifo of any leftover bits */
-	/* DOLATER: The code below might not be enough */
 	{
 		u8 val;
-		for (i=0; i < 16; i++) {
+		int timeout = 100;
+		do {
 			(void)maxim_i2c_read_u8(state->i2c_dev, MAXIM7359_FIFO, &val);
-		}
+		} while(val != FIFO_EMPTY && timeout--);
+
+		if(!timeout)
+			printk(KERN_ERR "%s: keys still in FIFO, keyboard will not work\n", MAXIM7359_I2C_DRIVER);
 	}
 
 	rc = gpio_request(irq_to_gpio(client->irq), pdata->dev_name);
@@ -487,6 +768,10 @@ static int maxim_i2c_probe(struct i2c_client *client)
 	device_can_wakeup(&state->inp_dev->dev) = 1;
 	device_set_wakeup_enable ( &state->inp_dev->dev, pdata->wakeup_en );
 	
+#ifdef MAXIM7359_DEBUG
+	maxim_dump_regs(state->i2c_dev);
+#endif
+
 	return 0;
 
 err3:
@@ -526,6 +811,12 @@ static int maxim_i2c_remove(struct i2c_client *client)
 	input_unregister_device(state->inp_dev);
 
 	device_remove_file(&(state->i2c_dev->dev), &dev_attr_key_state);
+	device_remove_file(&(state->i2c_dev->dev), &dev_attr_fifo_read);
+#ifdef MAXIM7359_DEBUG
+	device_remove_file(&(state->i2c_dev->dev), &dev_attr_sw_debounce);
+	device_remove_file(&(state->i2c_dev->dev), &dev_attr_hw_debounce);
+	device_remove_file(&(state->i2c_dev->dev), &dev_attr_autosleep);
+#endif
 
 	/* add hardware deinitialization here (lowest power mode please) */
 

@@ -853,6 +853,16 @@ vx6852_i2c_write_raw(struct i2c_client* i2c, u8* buf, u16 len)
 
 	rc = i2c_transfer(i2c->adapter, &msg, 1);
 
+#ifdef CONFIG_VIDEO_VX6852_I2C_LOG
+	{
+		int i;
+		printk("vx6852-i2c,,");
+		for (i = 0; i < len; i++) {
+			printk("%02x,", buf[i]);
+		}
+		printk("\n");
+	}
+#endif
 	return (min(rc, 0));
 }
 EXPORT_SYMBOL(vx6852_i2c_write_raw);
@@ -954,6 +964,9 @@ vx6852_apply_setting(struct i2c_client *i2c, struct vx6852_setting *setting)
 		goto exit;
 	}
 
+#ifdef CONFIG_VIDEO_VX6852_I2C_LOG
+	printk("vx6852-init\n");
+#endif
 	smia10_parse_init(&state, setting->fw->data, setting->fw->size);
 
 	while (!(rc = smia10_parse_embedded_data(&state)) && state.size) {
@@ -1369,6 +1382,9 @@ static int vx6852_ioctl_s_fmt(struct v4l2_int_device *dev,
 		goto unlock;
 	}
 
+#ifdef CONFIG_VIDEO_VX6852_I2C_LOG
+	printk("vx6852-set-format\n");
+#endif
 	vx6852_format_to_config(&fmt->fmt.pix, &data->cfg);
 #ifdef CONFIG_VIDEO_VX6852_SILICON_BUG_HACKS
 	vx6852_config_hacks(&data->cfg, data->ilp);
@@ -1549,6 +1565,13 @@ static int vx6852_ioctl_s_ctrl(struct v4l2_int_device *dev,
 		goto exit;
 	}
 
+#ifdef CONFIG_VIDEO_VX6852_I2C_LOG
+	if (V4L2_CID_VX6852_SET_TIME == ctl->id) {
+		printk("vx6852-frame-cfg-end,%d\n", ctl->value);
+		rc = 0;
+		goto exit;
+	}
+#endif
 	switch (CTRL_ID2INDEX(ctl->id)) {
 	case VX6852_CTRL_COARSE_INTEGRATION_TIME:
 		if (ctl->value > MAX_COARSE_INTEGRATION_TIME(dat->cfg.fll)) {
@@ -1715,6 +1738,9 @@ static int vx6852_ioctl_streamon(struct v4l2_int_device *dev,
 	*((u16 *)&buf[len]) = cpu_to_be16(data->cfg.yos);
 	len += 2;
 
+#ifdef CONFIG_VIDEO_VX6852_I2C_LOG
+	printk("vx6852-streamon\n");
+#endif
 	if ((rc = vx6852_i2c_write_raw(data->i2c, buf, len)))
 		goto unlock;
 
@@ -1782,6 +1808,10 @@ vx6852_ioctl_streamoff(struct v4l2_int_device *dev, enum v4l2_buf_type type)
 	SPEW(1, "+++ %s\n", __func__);
 
 	mutex_lock(&data->lock);
+
+#ifdef CONFIG_VIDEO_VX6852_I2C_LOG
+	printk("vx6852-streamoff\n");
+#endif
 	rc = vx6852_set_control(data, VX6852_CTRL_MODE_SELECT,
 				MODE_SELECT_SOFTWARE_STANDBY);
 #ifdef CONFIG_VIDEO_VX6852_SILICON_BUG_HACKS
@@ -1818,6 +1848,9 @@ vx6852_set_power_on(struct vx6852_client_data *data, int init)
 	if (!init)
 		goto powered_on;
 
+#ifdef CONFIG_VIDEO_VX6852_I2C_LOG
+	printk("vx6852-poweron\n");
+#endif
 #ifdef CONFIG_VIDEO_VX6852_SETTING
 	if ((rc = vx6852_apply_setting(data->i2c, &data->once)))
 		goto disable_vdig;
@@ -1882,6 +1915,9 @@ vx6852_set_power_off(struct vx6852_client_data *data)
 
 	SPEW(1, "+++ %s\n", __func__);
 
+#ifdef CONFIG_VIDEO_VX6852_I2C_LOG
+	printk("vx6852-poweroff\n");
+#endif
 	idx = VX6852_CTRL_MODE_SELECT;
 	(void)vx6852_set_control(data, idx, MODE_SELECT_SOFTWARE_STANDBY);
 
@@ -2055,6 +2091,9 @@ vx6852_i2c_probe(struct i2c_client *i2c)
 #ifdef CONFIG_VIDEO_VX6852_SILICON_BUG_HACKS
 	vx6852_config_hacks(&data->cfg, data->ilp);
 #endif /* CONFIG_VIDEO_VX6852_SILICON_BUG_HACKS */
+#ifdef CONFIG_VIDEO_VX6852_I2C_LOG
+	printk("vx6852-description,time,addr-high,addr-low,data1,[data2]\n");
+#endif
 	vx6852_set_power_off(data);
 	strncpy(data->slave.attach_to, V4L2_INT_SMIA10, V4L2NAMESIZE);
 	data->slave.num_ioctls = ARRAY_SIZE(vx6852_ioctls);

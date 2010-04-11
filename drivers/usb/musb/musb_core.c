@@ -2250,8 +2250,6 @@ static int musb_resume(struct platform_device *pdev)
 	if (!musb->clock)
 		return 0;
 
-	spin_lock_irqsave(&musb->lock, flags);
-
 #if 0
 	/* Clocks are autoidled. No need to explicitly enable */
 	if (musb->set_clock)
@@ -2261,6 +2259,8 @@ static int musb_resume(struct platform_device *pdev)
 #endif
 
 	musb_platform_resume(musb);
+
+	spin_lock_irqsave(&musb->lock, flags);
 
 	/* asleep = 0 if clocks are ON */
 	musb->asleep = 0;

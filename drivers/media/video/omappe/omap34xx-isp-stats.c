@@ -13,6 +13,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/version.h>
 #include <linux/vmalloc.h>
 #include <asm/arch/isp.h>
@@ -93,6 +94,8 @@
 struct omap34xx_isp_stats_buffer {
 	struct videobuf_buffer	qbuf;
 	dma_addr_t		aeawb_dma;
+	dma_addr_t		stats_dev;
+	size_t			stats_len;
 	void			*sof_cpu;
 	size_t			sof_len;
 };
@@ -219,7 +222,7 @@ static int omap34xx_isp_stats_isr(struct omap34xx_isp_v4l2_device *dev)
 		dev->input->phy.ccp2.copy_sof(&dev->input->phy.ccp2,
 						buf->sof_cpu, buf->sof_len);
 
-	omap34xx_v4l2_device_videobuf_done(&dev->dev, STATE_DONE);
+	dev->input->finalize_stat_buf = 1;
 	data->stats++;
 exit:
 	return (!!irq0);
@@ -252,6 +255,15 @@ omap34xx_isp_stats_videobuf_align(struct omap34xx_v4l2_device *dev)
 	return (align);
 }
 
+static void omap34xx_isp_stats_videobuf_sync(struct videobuf_buffer *qbuf)
+{
+	struct omap34xx_isp_stats_buffer *buf;
+
+	buf = container_of(qbuf, struct omap34xx_isp_stats_buffer, qbuf);
+	dma_sync_single_for_cpu(NULL, buf->stats_dev, buf->stats_len,
+				DMA_FROM_DEVICE);
+}
+
 static int omap34xx_isp_stats_videobuf_init(struct omap34xx_v4l2_device *dev,
 						struct videobuf_buffer *qbuf)
 {
@@ -279,6 +291,15 @@ static int omap34xx_isp_stats_videobuf_init(struct omap34xx_v4l2_device *dev,
 		goto exit;
 	}
 
+	/*
+	 * the next line relies on this function being called after
+	 * omap34xx_videobuf_init. passing the sync routine during dma pool
+	 * creation would be less brittle, but would require separating the
+	 * video and stats pools.
+	 */
+	get_omap34xx_buf(qbuf)->sync = omap34xx_isp_stats_videobuf_sync;
+	buf->stats_dev = block->dev_addr;
+	buf->stats_len = stats;
 	buf->sof_cpu = block->cpu_addr + stats;
 	buf->sof_len = data->fmt.smia10.sof_size;
 	rc = 0;
@@ -548,6 +569,14 @@ omap34xx_isp_stats_vidioc_streamoff(struct omap34xx_v4l2_device *dev)
 
 	omap_clearl(ISP_CTRL, H3A_CLK_EN_MASK);
 
+	spin_lock(&input->lock);
+	if (input->finalize_stat_buf) {
+		omap34xx_v4l2_device_videobuf_done(&input->isp_v4l2_dev->dev,
+				STATE_ERROR);
+		input->finalize_stat_buf = 0;
+	}
+	spin_unlock(&input->lock);
+
 	/* TODO: not SMP friendly... */
 	if (data->buf) {
 		data->buf = NULL;
@@ -574,6 +603,10 @@ omap34xx_isp_stats_device_probe(struct omap34xx_isp_v4l2_device *dev)
 	data->fmt.h3a_aeawb.aewinblack_winsv = 2;
 
 	dev->isr = omap34xx_isp_stats_isr;
+	dev->input->finalize_stat_buf = 0;
+	spin_lock_init(&dev->input->lock);
+
+	dev->input->isp_v4l2_dev = dev;
 	dev->configure = omap34xx_isp_stats_configure;
 	dev->dev.priv = data;
 	dev->dev.qtype = V4L2_BUF_TYPE_STATS_CAPTURE;

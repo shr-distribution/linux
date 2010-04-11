@@ -57,6 +57,7 @@
 #include <linux/device.h>
 #include <linux/kthread.h>
 #include <linux/sched.h>
+#include <linux/gen_timer.h>
 
 #include <asm/io.h>
 #include <asm/bugs.h>
@@ -575,6 +576,9 @@ asmlinkage void __init start_kernel(void)
 	init_IRQ();
 	pidhash_init();
 	init_timers();
+#ifdef CONFIG_TCP_FASTPATH
+	init_gen_timers();
+#endif
 	hrtimers_init();
 	softirq_init();
 	timekeeping_init();

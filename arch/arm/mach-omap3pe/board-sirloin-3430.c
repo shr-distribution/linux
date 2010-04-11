@@ -521,10 +521,11 @@ static struct maxim7359_platform_data board_kbd_data = {
 	.key_prox_timeout = 200, 
 	.key_prox_width = 6,
 	.key_prox_map   = board_key_prox_map,
-	.rep_period  = 100,   // 100 ms repeat time (10 cps)
-	.rep_delay   = 500,   // 500 ms repeat delay
-        .debounce    = 10,    // 10 msec
-        .wakeup_en   = 1,     // by default enable wakeup.
+	.rep_period  = 100,       // 100 ms repeat time (10 cps)
+	.rep_delay   = 500,       // 500 ms repeat delay
+	.hw_debounce    = 9,      // 9 ms
+	.sw_debounce    = 40,     // 40 ms
+	.wakeup_en   = 1,         // by default enable wakeup.
 };
 
 static struct i2c_board_info maxim7359_i2c_board_info = {
@@ -1808,7 +1809,8 @@ static struct omap34xx_isp_platform_data board_omap34xx_isp_data = {
 	.video_height = 320,
 	.video_fourcc = V4L2_PIX_FMT_UYVY,
 
-	.dma_pool = PAGE_SIZE << 11,
+	/* 1x capture, 2x stats */
+	.dma_pool = (6291456 * 1) + (94208 * 2),
 };
 
 static struct platform_device board_omap34xx_isp_device = {

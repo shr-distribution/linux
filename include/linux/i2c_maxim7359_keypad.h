@@ -38,7 +38,8 @@ struct maxim7359_platform_data {
     void *key_prox_map;     // key proximity map
     int   rep_period; // repeat period (msec) 
     int   rep_delay;  // repeat delay  (msec)
-    int   debounce;   // debounce interval (msec)
+    int   hw_debounce;   // hw debounce interval (msec)
+    int   sw_debounce;   // sw debounce interval (msec)
     int   wakeup_en;  // wake up source enable/disable
 };
 

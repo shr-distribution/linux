@@ -31,6 +31,9 @@ struct omap34xx_isp_input {
 
 	int (*isr)(struct omap34xx_isp_input *);
 	void (*configure)(struct omap34xx_isp_input *);
+	int finalize_stat_buf;
+	spinlock_t lock;
+	struct omap34xx_isp_v4l2_device *isp_v4l2_dev;
 };
 
 static inline int omap34xx_isp_input_isr(struct omap34xx_isp_input *in)

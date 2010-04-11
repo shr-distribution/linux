@@ -884,6 +884,9 @@ static int omap34xx_v4l2_vidioc_s_ext_ctrls(struct file *file, void *notused,
 	if (dev->vidioc_s_ctrl) {
 		omap34xx_v4l2_device_lock(dev);
 
+#ifdef CONFIG_VIDEO_VX6852_I2C_LOG
+		printk("vx6852-frame-cfg-start\n");
+#endif
 		for (i = 0; i < ctls->count; ++i) {
 			ctl.id = ctls->controls[i].id;
 			ctl.value = ctls->controls[i].value;

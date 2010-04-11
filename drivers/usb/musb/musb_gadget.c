@@ -1590,7 +1590,7 @@ musb_gadget_set_self_powered(struct usb_gadget *gadget, int is_selfpowered)
 	return 0;
 }
 
-static void musb_pullup(struct musb *musb, int is_on)
+/*static*/ void musb_pullup(struct musb *musb, int is_on)
 {
 	u8 power;
 
@@ -1630,7 +1630,7 @@ static int musb_gadget_vbus_draw(struct usb_gadget *gadget, unsigned mA)
 	return otg_set_power(&musb->xceiv, mA);
 }
 
-static int musb_gadget_pullup(struct usb_gadget *gadget, int is_on)
+int musb_gadget_pullup(struct usb_gadget *gadget, int is_on)
 {
 	struct musb	*musb = gadget_to_musb(gadget);
 	unsigned long	flags;
@@ -1888,7 +1888,6 @@ int usb_gadget_register_driver(struct usb_gadget_driver *driver)
 		 * userspace hooks up printer hardware or DSP codecs, so
 		 * hosts only see fully functional devices.
 		 */
-
 		if (!is_otg_enabled(musb))
 			musb_start(musb);
 

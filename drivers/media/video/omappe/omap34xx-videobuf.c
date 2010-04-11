@@ -569,6 +569,8 @@ int omap34xx_dma_pool_create(struct omap34xx_dma_pool *pool, unsigned int size)
 	int rc;
 	int order = get_order(size);
 	void *cpu_addr;
+	size_t off;
+	size_t alloc_size;
 	dma_addr_t dev_addr;
 
 	if (!(cpu_addr = (void *)__get_dma_pages(GFP_KERNEL, order))) {
@@ -576,14 +578,19 @@ int omap34xx_dma_pool_create(struct omap34xx_dma_pool *pool, unsigned int size)
 		goto exit;
 	}
 
-	size = PAGE_SIZE << order;
+	size = PAGE_ALIGN(size);
 	dev_addr = virt_to_dma(NULL, cpu_addr);
+	alloc_size = PAGE_SIZE << order;
 
 	/*
 	 * this is a workaround for drivers which do not honor the VM_PFNMAP
 	 * flag set by remap_pfn_range.
 	 */
 	split_page(virt_to_page(cpu_addr), order);
+
+	/* free unrequested pages */
+	for (off = size; off < alloc_size; off += PAGE_SIZE)
+		free_page(cpu_addr + off);
 
 	if ((rc = omap34xx_dma_pool_init(pool, size, cpu_addr, dev_addr,
 					omap34xx_dma_block_mmap,

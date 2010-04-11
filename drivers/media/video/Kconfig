@@ -718,12 +718,12 @@ config VIDEO_VX6852_SILICON_BUG_HACKS
 	bool "Employ hacks for silicon bugs"
 	depends on VIDEO_VX6852
 
-config VIDEO_VX6852_SILICON_BUG_HACKS_DBG
-	bool "Debugging support"
-	depends on VIDEO_VX6852_SILICON_BUG_HACKS
-
 config VIDEO_VX6852_DBG
 	bool "Debugging support"
+	depends on VIDEO_VX6852
+
+config VIDEO_VX6852_I2C_LOG
+	bool "Enable logging for i2c writes to the vx6852 sensor"
 	depends on VIDEO_VX6852
 
 #

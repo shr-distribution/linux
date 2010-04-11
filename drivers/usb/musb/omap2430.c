@@ -386,6 +386,23 @@ int musb_otg_state(enum usb_otg_state *state)
 	return 0;
 }
 
+void musb_pullup(struct musb *musb, int is_on);
+
+void musb_softconn(int is_on)
+{
+	struct musb *musb = the_musb;
+	unsigned long	flags;
+
+	if (!musb)
+		return;
+
+	printk(KERN_INFO "%s: %s\n", __func__, is_on ? "on" : "off");
+
+	spin_lock_irqsave(&musb->lock, flags);
+	musb_pullup(musb, is_on);
+	spin_unlock_irqrestore(&musb->lock, flags);
+}
+
 #if defined(CONFIG_OMAP34XX_OFFMODE)
 struct musb_common_regs{
 	/* common registers */

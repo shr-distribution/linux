@@ -204,6 +204,8 @@ static void omap34xx_isp_smia10_copy_sof(struct omap34xx_isp_ccp2_phy *phy,
 
 	dat = container_of(phy, struct omap34xx_isp_input, phy.ccp2)->mst.priv;
 
+	/* invalidate sof cache lines, then copy: ~50us */
+	dma_sync_single_for_cpu(NULL, dat->sof_dma, dat->sof_len, DMA_FROM_DEVICE);
 	memcpy(buf, dat->sof_cpu, min(len, dat->sof_len));
 }
 
@@ -230,6 +232,14 @@ omap34xx_isp_smia10_isr(struct omap34xx_isp_input *input)
 		LCx_FE_IRQ_MASK(0) & lc0 ? __stringify(FE) : "",
 		LCx_FSC_IRQ_MASK(0) & lc0 ? __stringify(FSC) : "",
 		LCx_FW_IRQ_MASK(0) & lc0 ? __stringify(FW) : "");
+
+	spin_lock(&input->lock);
+	if ((LCx_FS_IRQ_MASK(0) & lc0) && input->finalize_stat_buf) {
+		omap34xx_v4l2_device_videobuf_done(&input->isp_v4l2_dev->dev,
+				STATE_DONE);
+		input->finalize_stat_buf = 0;
+	}
+	spin_unlock(&input->lock);
 
 	if (LCx_FE_IRQ_MASK(0) & lc0)
 		++data->frames;
@@ -393,12 +403,14 @@ omap34xx_isp_smia10_input_probe(struct omap34xx_isp_input *input)
 	input->mst.ioctl_streamon = omap34xx_isp_smia10_ioctl_streamon;
 	input->mst.ioctl_streamoff = omap34xx_isp_smia10_ioctl_streamoff;
 
-	if (!(data->sof_cpu = dma_alloc_coherent(NULL, data->sof_len,
-				&data->sof_dma,
-				GFP_DMA | GFP_KERNEL | __GFP_ZERO))) {
+	data->sof_cpu = (void *)__get_dma_pages(GFP_KERNEL,
+						get_order(data->sof_len));
+	if (!data->sof_cpu) {
 		rc = -ENOMEM;
-		goto dma_alloc_coherent_failed;
+		goto __get_dma_pages_failed;
 	}
+
+	data->sof_dma = virt_to_dma(NULL, data->sof_cpu);
 
 	rc = omap34xx_v4l2_int_master_register(&input->mst, V4L2_INT_SMIA10);
 	if (rc) goto omap34xx_v4l2_int_master_register_failed;
@@ -411,8 +423,8 @@ omap34xx_isp_smia10_input_probe(struct omap34xx_isp_input *input)
 omap34xx_isp_smia10_create_spew_level_failed:
 	v4l2_int_device_unregister(&input->mst.dev);
 omap34xx_v4l2_int_master_register_failed:
-	dma_free_coherent(NULL, data->sof_len, data->sof_cpu, data->sof_dma);
-dma_alloc_coherent_failed:
+	free_pages((unsigned long)data->sof_cpu, get_order(data->sof_len));
+__get_dma_pages_failed:
 	kfree(data);
 exit:
 	return (rc);
@@ -426,7 +438,7 @@ omap34xx_isp_smia10_input_remove(struct omap34xx_isp_input *input)
 
 	omap34xx_isp_smia10_remove_spew_level(&input->mst.parent->dev);
 	v4l2_int_device_unregister(&input->mst.dev);
-	dma_free_coherent(NULL, data->sof_len, data->sof_cpu, data->sof_dma);
+	free_pages((unsigned long)data->sof_cpu, get_order(data->sof_len));
 	kfree(data);
 
 	return (0);
