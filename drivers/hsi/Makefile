@@ -2,4 +2,4 @@
 # Makefile for HSI
 #
 obj-$(CONFIG_HSI)	+= hsi.o
-obj-y			+= controllers/
+obj-y			+= controllers/ clients/
