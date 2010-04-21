@@ -11,5 +11,6 @@ menuconfig HSI
 if HSI
 
 source "drivers/hsi/controllers/Kconfig"
+source "drivers/hsi/clients/Kconfig"
 
 endif # HSI
