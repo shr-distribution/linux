@@ -359,10 +359,7 @@ static int smia_configure(struct v4l2_subdev *subdev)
 	if (rval)
 		goto fail;
 
-	rval = sensor->platform_data->configure_interface(
-		subdev,
-		sensor->sof_rows,
-		sensor->current_reglist->mode.window_height);
+	rval = sensor->platform_data->configure_interface(subdev);
 	if (rval)
 		goto fail;
 
