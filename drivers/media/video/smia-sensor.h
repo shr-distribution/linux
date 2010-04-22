@@ -30,8 +30,7 @@
 #define SMIA_SENSOR_I2C_ADDR	(0x20 >> 1)
 
 struct smia_sensor_platform_data {
-	int (*configure_interface)(struct v4l2_subdev *subdev,
-				   int sof_rows, int height);
+	int (*configure_interface)(struct v4l2_subdev *subdev);
 	int (*set_xclk)(struct v4l2_subdev *subdev, int hz);
 	int (*set_xshutdown)(struct v4l2_subdev *sd, int set);
 };
