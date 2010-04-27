@@ -447,7 +447,11 @@ struct manager_cache_data {
 	/* enlarge the update area if the update area contains scaled
 	 * overlays */
 	bool enlarge_update_area;
+
+	bool in_use;
 };
+
+static int omap_dss_mgr_apply(struct omap_overlay_manager *mgr);
 
 static struct {
 	spinlock_t lock;
@@ -457,7 +461,26 @@ static struct {
 	bool irq_enabled;
 } dss_cache;
 
+void omap_dss_lock_cache(void)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&dss_cache.lock, flags);
+	BUG_ON(dss_cache.manager_cache[0].in_use);
+	dss_cache.manager_cache[0].in_use = true;
+	spin_unlock_irqrestore(&dss_cache.lock, flags);
+}
+EXPORT_SYMBOL(omap_dss_lock_cache);
 
+void omap_dss_unlock_cache(void)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&dss_cache.lock, flags);
+	BUG_ON(!dss_cache.manager_cache[0].in_use);
+	dss_cache.manager_cache[0].in_use = false;
+	spin_unlock_irqrestore(&dss_cache.lock, flags);
+	omap_dss_mgr_apply(omap_dss_get_overlay_manager(0));
+}
+EXPORT_SYMBOL(omap_dss_unlock_cache);
 
 static int omap_dss_set_device(struct omap_overlay_manager *mgr,
 		struct omap_dss_device *dssdev)
@@ -1248,6 +1271,12 @@ static int omap_dss_mgr_apply(struct omap_overlay_manager *mgr)
 			continue;
 
 		oc = &dss_cache.overlay_cache[ovl->id];
+		if (ovl->manager) {
+			mc = &dss_cache.manager_cache[ovl->manager->id];
+
+			if (mc->in_use)
+				continue;
+		}
 
 		if (!overlay_enabled(ovl)) {
 			if (oc->enabled) {
@@ -1319,6 +1348,9 @@ static int omap_dss_mgr_apply(struct omap_overlay_manager *mgr)
 
 		mc = &dss_cache.manager_cache[mgr->id];
 
+		if (mc->in_use)
+			continue;
+
 		if (mgr->device_changed) {
 			mgr->device_changed = false;
 			mgr->info_dirty  = true;
@@ -1376,6 +1408,13 @@ static int omap_dss_mgr_apply(struct omap_overlay_manager *mgr)
 			continue;
 
 		oc = &dss_cache.overlay_cache[ovl->id];
+
+		if (ovl->manager) {
+			mc = &dss_cache.manager_cache[ovl->manager->id];
+
+			if (mc->in_use)
+				continue;
+		}
 
 		if (!oc->enabled)
 			continue;
