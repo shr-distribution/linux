@@ -359,10 +359,6 @@ static int smia_configure(struct v4l2_subdev *subdev)
 	if (rval)
 		goto fail;
 
-	rval = sensor->platform_data->configure_interface(subdev);
-	if (rval)
-		goto fail;
-
 	return 0;
 
 fail:
@@ -545,8 +541,11 @@ static int smia_set_pad_format(struct v4l2_subdev *subdev,
 	smia_reglist_to_mbus(reglist, &fmt->format);
 	*format = fmt->format;
 
-	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE)
+	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
 		sensor->current_reglist = reglist;
+		sensor->platform_data->configure_interface(subdev,
+			&sensor->current_reglist->mode);
+	}
 
 	return 0;
 }
@@ -575,6 +574,9 @@ static int smia_set_frame_interval(struct v4l2_subdev *subdev,
 		return -EINVAL;
 
 	sensor->current_reglist = reglist;
+	sensor->platform_data->configure_interface(subdev,
+		&sensor->current_reglist->mode);
+
 	return smia_update_controls(subdev);
 }
 
@@ -701,6 +703,9 @@ static int smia_dev_init(struct v4l2_subdev *subdev)
 		rval = -ENODEV;
 		goto out_release;
 	}
+
+	sensor->platform_data->configure_interface(subdev,
+		&sensor->current_reglist->mode);
 
 	format = __smia_get_pad_format(sensor, 0, V4L2_SUBDEV_FORMAT_PROBE);
 	smia_reglist_to_mbus(sensor->current_reglist, format);

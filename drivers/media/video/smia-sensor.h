@@ -24,13 +24,15 @@
 #ifndef SMIA_SENSOR_H
 #define SMIA_SENSOR_H
 
+#include <media/smiaregs.h>
 #include <media/v4l2-subdev.h>
 
 #define SMIA_SENSOR_NAME	"smia-sensor"
 #define SMIA_SENSOR_I2C_ADDR	(0x20 >> 1)
 
 struct smia_sensor_platform_data {
-	int (*configure_interface)(struct v4l2_subdev *subdev);
+	void (*configure_interface)(struct v4l2_subdev *subdev,
+				    struct smia_mode *mode);
 	int (*set_xclk)(struct v4l2_subdev *subdev, int hz);
 	int (*set_xshutdown)(struct v4l2_subdev *sd, int set);
 };
