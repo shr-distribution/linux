@@ -258,6 +258,8 @@ static int glamo_crtc_mode_set_base(struct drm_crtc *crtc, int x, int y,
 	u32 addr;
 	u16 addr_low, addr_high;
 
+	printk(KERN_CRIT "Setting base!\n");
+
 	if (!crtc->fb) {
 		DRM_DEBUG("No FB bound\n");
 		return -EINVAL;
@@ -311,6 +313,8 @@ static int glamo_crtc_mode_set(struct drm_crtc *crtc,
 		glamo_lcd_power(gdrm, 1);
 		msleep(500);
 	}
+
+	printk(KERN_CRIT "Setting mode!\n");
 
 	/* Rotate? */
 	if ( (mode->hdisplay == 640) && (mode->vdisplay == 480) ) {
@@ -936,15 +940,18 @@ void glamo_lcd_power(struct glamodrm_handle *gdrm, int mode)
 	struct glamo_crtc *gcrtc = to_glamo_crtc(crtc);
 
 	if ( mode ) {
+		printk(KERN_CRIT "Power on sequence\n");
 		glamo_engine_enable(gdrm->glamo_core, GLAMO_ENGINE_LCD);
 		gcrtc->pixel_clock_on = 1;
 		jbt6k74_setpower(JBT_POWER_MODE_NORMAL);
 		if ( gcrtc->current_mode_set ) {
+			printk(KERN_CRIT "Setting previous mode\n");
 			glamo_crtc_mode_set(crtc, &gcrtc->current_mode,
 			                    &gcrtc->current_mode, 0, 0,
 			                    gcrtc->current_fb);
 		}
 	} else {
+		printk(KERN_CRIT "Power off sequence\n");
 		jbt6k74_setpower(JBT_POWER_MODE_OFF);
 		glamo_engine_suspend(gdrm->glamo_core, GLAMO_ENGINE_LCD);
 		gcrtc->pixel_clock_on = 0;

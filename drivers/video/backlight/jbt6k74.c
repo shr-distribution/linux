@@ -402,7 +402,7 @@ static int jbt6k74_enter_power_mode(struct jbt_info *jbt,
 {
 	int ret = -EINVAL;
 
-	dev_dbg(&jbt->spi->dev, "entering (old_state=%s, new_state=%s)\n",
+	printk(KERN_CRIT "entering (old_state=%s, new_state=%s)\n",
 			jbt_power_mode_names[jbt->power_mode],
 			jbt_power_mode_names[new_mode]);
 
@@ -840,7 +840,9 @@ EXPORT_SYMBOL_GPL(jbt6k74_finish_resolutionchange);
 
 void jbt6k74_setpower(enum jbt_power_mode new_power)
 {
+	printk(KERN_CRIT "About to set power..\n");
 	if ( !jbt_global ) return;
+	printk(KERN_CRIT "Setting JBT power.. %i\n", new_power);
 	jbt6k74_enter_power_mode(jbt_global, new_power);
 }
 EXPORT_SYMBOL_GPL(jbt6k74_setpower);
