@@ -38,7 +38,7 @@ extern int glamo_ioctl_cmdburst(struct drm_device *dev, void *data,
 extern void glamo_cmdq_blank(struct glamodrm_handle *gdrm,
                              struct drm_gem_object *obj);
 
-extern int glamo_cmdq_init(struct glamodrm_handle *gdrm);
+extern int glamo_cmdq_init(struct drm_device *de);
 extern int glamo_cmdq_shutdown(struct glamodrm_handle *gdrm);
 extern void glamo_cmdq_suspend(struct glamodrm_handle *gdrm);
 extern void glamo_cmdq_resume(struct glamodrm_handle *gdrm);

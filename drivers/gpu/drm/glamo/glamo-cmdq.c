@@ -497,10 +497,11 @@ int glamo_cmdq_setup(struct glamodrm_handle *gdrm)
 }
 
 
-int glamo_cmdq_init(struct glamodrm_handle *gdrm)
+int glamo_cmdq_init(struct drm_device *dev)
 {
 	struct drm_gem_object *obj;
 	struct drm_glamo_gem_object *gobj;
+	struct glamodrm_handle *gdrm = dev->dev_private;
 	int ret = 0;
 
 	obj = glamo_gem_object_alloc(dev, GLAMO_CMDQ_SIZE, 4);
@@ -509,9 +510,10 @@ int glamo_cmdq_init(struct glamodrm_handle *gdrm)
 		ret = -ENOMEM;
 		goto out;
 	}
-	gobj = fbo->driver_private;
+	gobj = obj->driver_private;
 	gdrm->cmdq_offs = GLAMO_OFFSET_FB + gobj->block->start;
-	gdrm->cmdq_base = ioremap(gdrm->vram->start + offs, GLAMO_CMDQ_SIZE);
+	gdrm->cmdq_base = ioremap(gdrm->vram->start + gdrm->cmdq_offs,
+	                          GLAMO_CMDQ_SIZE);
 
 	/* Set up registers */
 	glamo_cmdq_setup(gdrm);
@@ -523,6 +525,7 @@ out:
 
 int glamo_cmdq_shutdown(struct glamodrm_handle *gdrm)
 {
+	iounmap(gdrm->cmdq_base);
 	return 0;
 }
 

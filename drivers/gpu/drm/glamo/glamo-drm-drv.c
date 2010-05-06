@@ -129,7 +129,7 @@ static int glamodrm_load(struct drm_device *dev, unsigned long flags)
 	gdrm = dev->dev_private;
 
 	glamo_buffer_init(gdrm);
-	glamo_cmdq_init(gdrm);
+	glamo_cmdq_init(dev);
 	glamo_fence_init(gdrm);
 	glamo_display_init(dev);
 
@@ -238,14 +238,14 @@ static int glamodrm_probe(struct platform_device *pdev)
 	if ( !gdrm->vram ) {
 		dev_err(&pdev->dev, "Unable to find VRAM.\n");
 		rc = -ENOENT;
-		goto out_unmap_cmdq;
+		goto out_unmap_regs;
 	}
 	gdrm->vram = request_mem_region(gdrm->vram->start,
 	                                resource_size(gdrm->vram), pdev->name);
 	if ( !gdrm->vram ) {
 		dev_err(&pdev->dev, "failed to request VRAM region\n");
 		rc = -ENOENT;
-		goto out_unmap_cmdq;
+		goto out_unmap_regs;
 	}
 
 	/* Find the LCD controller */
@@ -317,10 +317,6 @@ out_release_lcd:
 	                   resource_size(gdrm->lcd_regs));
 out_release_vram:
 	release_mem_region(gdrm->vram->start, resource_size(gdrm->vram));
-out_unmap_cmdq:
-	iounmap(gdrm->cmdq_base);
-out_release_cmdq:
-	release_mem_region(gdrm->cmdq->start, resource_size(gdrm->cmdq));
 out_unmap_regs:
 	iounmap(gdrm->reg_base);
 out_release_regs:
@@ -350,9 +346,10 @@ static int glamodrm_remove(struct platform_device *pdev)
 	/* Release VRAM */
 	release_mem_region(gdrm->vram->start, resource_size(gdrm->vram));
 
-	/* Release command queue */
-	iounmap(gdrm->cmdq_base);
-	release_mem_region(gdrm->cmdq->start, resource_size(gdrm->cmdq));
+	/* Release LCD registers */
+	iounmap(gdrm->lcd_base);
+	release_mem_region(gdrm->lcd_regs->start,
+	                   resource_size(gdrm->lcd_regs));
 
 	/* Release 2D engine  */
 	iounmap(gdrm->twod_base);
