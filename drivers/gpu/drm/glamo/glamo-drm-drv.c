@@ -273,7 +273,8 @@ static int glamodrm_probe(struct platform_device *pdev)
 	}
 
 	/* Find the 2D engine */
-	gdrm->twod_regs = platform_get_resource(pdev, IORESOURCE_MEM, 4);
+	gdrm->twod_regs = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+	                                               "glamo-2d-regs");
 	if ( !gdrm->twod_regs ) {
 		dev_err(&pdev->dev, "Unable to find 2D registers.\n");
 		rc = -ENOENT;
