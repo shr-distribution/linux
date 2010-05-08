@@ -625,14 +625,14 @@ void __init s3c24xx_init_irq(void)
 	for (irqno = IRQ_EINT0; irqno <= IRQ_EINT3; irqno++) {
 		irqdbf("registering irq %d (ext int)\n", irqno);
 		irq_set_chip_and_handler(irqno, &s3c_irq_eint0t4,
-					 handle_edge_irq);
+					 handle_level_irq);
 		set_irq_flags(irqno, IRQF_VALID);
 	}
 
 	for (irqno = IRQ_EINT4; irqno <= IRQ_EINT23; irqno++) {
 		irqdbf("registering irq %d (extended s3c irq)\n", irqno);
 		irq_set_chip_and_handler(irqno, &s3c_irqext_chip,
-					 handle_edge_irq);
+					 handle_level_irq);
 		set_irq_flags(irqno, IRQF_VALID);
 	}
 
