@@ -33,7 +33,8 @@ obj-$(CONFIG_ARCH_S3C2440)	+= mach-smdk2440.o
 obj-$(CONFIG_MACH_NEXCODER_2440) += mach-nexcoder.o
 obj-$(CONFIG_MACH_AT2440EVB) += mach-at2440evb.o
 obj-$(CONFIG_MACH_MINI2440) += mach-mini2440.o
-obj-$(CONFIG_MACH_NEO1973_GTA02) += mach-gta02.o
+obj-$(CONFIG_MACH_NEO1973_GTA02) += mach-gta02.o \
+	gta02-pm-bt.o \
 obj-$(CONFIG_MACH_RX1950) += mach-rx1950.o
 
 # extra machine support
