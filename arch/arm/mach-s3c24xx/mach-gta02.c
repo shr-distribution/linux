@@ -150,6 +150,10 @@ static struct s3c2410_uartcfg gta02_uartcfgs[] = {
 	},
 };
 
+static struct platform_device gta02_pm_bt_dev = {
+	.name = "gta02-pm-bt",
+};
+
 #ifdef CONFIG_CHARGER_PCF50633
 /*
  * On GTA02 the 1A charger features a 48K resistor to 0V on the ID pin.
@@ -253,7 +257,11 @@ static struct pcf50633_bl_platform_data gta02_backlight_data = {
 	.ramp_time = 5,
 };
 
-static struct pcf50633_platform_data gta02_pcf_pdata = {
+static struct regulator_consumer_supply __initdata ldo4_consumers[] = {
+	REGULATOR_SUPPLY("BT_3V2", "gta02-pm-bt.0"),
+};
+
+struct pcf50633_platform_data gta02_pcf_pdata = {
 	.resumers = {
 		[0] =	PCF50633_INT1_USBINS |
 			PCF50633_INT1_USBREM |
@@ -343,6 +351,8 @@ static struct pcf50633_platform_data gta02_pcf_pdata = {
 				.valid_ops_mask = REGULATOR_CHANGE_STATUS,
 				.apply_uV = 1,
 			},
+			.num_consumer_supplies = ARRAY_SIZE(ldo4_consumers),
+			.consumer_supplies = ldo4_consumers,
 		},
 		[PCF50633_REGULATOR_LDO5] = {
 			.constraints = {
@@ -623,6 +633,7 @@ static struct platform_device *gta02_devices[] __initdata = {
 	&gta02_pwm_leds_device,
 	&s3c_device_adc,
 	&s3c_device_ts,
+	&gta02_pm_bt_dev,
 };
 
 /* These guys DO need to be children of PMU. */

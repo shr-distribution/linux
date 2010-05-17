@@ -76,7 +76,9 @@ obj-$(CONFIG_MACH_OSIRIS)		+= mach-osiris.o
 obj-$(CONFIG_MACH_RX3715)		+= mach-rx3715.o
 obj-$(CONFIG_ARCH_S3C2440)		+= mach-smdk2440.o
 
-obj-$(CONFIG_MACH_NEO1973_GTA02)	+= mach-gta02.o
+obj-$(CONFIG_MACH_NEO1973_GTA02)	+= mach-gta02.o \
+	gta02-pm-bt.o \
+
 obj-$(CONFIG_MACH_RX1950)		+= mach-rx1950.o
 
 obj-$(CONFIG_MACH_SMDK2443)		+= mach-smdk2443.o
