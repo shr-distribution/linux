@@ -78,6 +78,7 @@ obj-$(CONFIG_ARCH_S3C2440)		+= mach-smdk2440.o
 
 obj-$(CONFIG_MACH_NEO1973_GTA02)	+= mach-gta02.o \
 	gta02-pm-bt.o \
+	gta02-pm-gps.o \
 
 obj-$(CONFIG_MACH_RX1950)		+= mach-rx1950.o
 
