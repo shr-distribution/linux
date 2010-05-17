@@ -7,3 +7,9 @@ menuconfig HSI
 	  The "High speed synchronous Serial Interface" is
 	  synchronous serial interface used mainly to connect
 	  application engines and cellular modems.
+
+if HSI
+
+source "drivers/hsi/controllers/Kconfig"
+
+endif # HSI
