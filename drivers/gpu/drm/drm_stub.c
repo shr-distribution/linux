@@ -246,8 +246,10 @@ static int drm_fill_in_dev(struct drm_device * dev, struct pci_dev *pdev,
 	idr_init(&dev->drw_idr);
 
 	dev->pdev = pdev;
-	dev->pci_device = pdev->device;
-	dev->pci_vendor = pdev->vendor;
+	if (pdev) {
+		dev->pci_device = pdev->device;
+		dev->pci_vendor = pdev->vendor;
+	}
 
 #ifdef __alpha__
 	dev->hose = pdev->sysdata;
@@ -463,6 +465,76 @@ err_g1:
 	return ret;
 }
 EXPORT_SYMBOL(drm_get_dev);
+
+/**
+ *
+ * Register a platform device as a DRM device
+ *
+ * \param pdev - platform device structure
+ * \param driver - the matching drm_driver structure
+ * \return zero on success or a negative number on failure.
+ *
+ * Attempt to gets inter module "drm" information. If we are first
+ * then register the character device and inter module information.
+ * Try and register, if we fail to register, backout previous work.
+ *
+ * \sa drm_get_dev
+ */
+int drm_get_platform_dev(struct platform_device *pdev,
+                         struct drm_driver *driver, void *priv)
+{
+	struct drm_device *dev;
+	int ret;
+	DRM_DEBUG("\n");
+
+	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	if (!dev)
+		return -ENOMEM;
+	dev->dev_private = priv;
+
+	if ((ret = drm_fill_in_dev(dev, NULL, NULL, driver))) {
+		printk(KERN_ERR "DRM: Fill_in_dev failed.\n");
+		goto err_g1;
+	}
+	dev->platform_dev = pdev;
+
+	if (drm_core_check_feature(dev, DRIVER_MODESET)) {
+		ret = drm_get_minor(dev, &dev->control, DRM_MINOR_CONTROL);
+		if (ret)
+			goto err_g2;
+	}
+
+	if ((ret = drm_get_minor(dev, &dev->primary, DRM_MINOR_LEGACY)))
+		goto err_g3;
+
+	if (dev->driver->load) {
+		ret = dev->driver->load(dev, 0);
+		if (ret)
+			goto err_g3;
+	}
+
+        /* setup the grouping for the legacy output */
+	if (drm_core_check_feature(dev, DRIVER_MODESET)) {
+		ret = drm_mode_group_init_legacy_group(dev, &dev->primary->mode_group);
+		if (ret)
+			goto err_g3;
+	}
+
+	list_add_tail(&dev->driver_item, &driver->device_list);
+
+	DRM_INFO("Initialized %s %d.%d.%d %s on minor %d\n",
+	driver->name, driver->major, driver->minor, driver->patchlevel,
+	driver->date, dev->primary->index);
+
+	return 0;
+
+err_g3:
+	drm_put_minor(&dev->primary);
+err_g2:
+err_g1:
+	kfree(dev);
+	return ret;
+}
 
 /**
  * Put a secondary minor number.

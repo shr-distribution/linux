@@ -52,12 +52,28 @@ int drm_name_info(struct seq_file *m, void *data)
 		return 0;
 
 	if (master->unique) {
-		seq_printf(m, "%s %s %s\n",
-			   dev->driver->pci_driver.name,
-			   pci_name(dev->pdev), master->unique);
+
+		if (drm_core_is_platform(dev)) {
+			seq_printf(m, "%s %s %s\n",
+				   dev->driver->name,
+				   dev_name(&dev->platform_dev->dev),
+				   master->unique);
+		} else {
+			seq_printf(m, "%s %s %s\n",
+				   dev->driver->pci_driver.name,
+				   pci_name(dev->pdev), master->unique);
+		}
+
 	} else {
-		seq_printf(m, "%s %s\n", dev->driver->pci_driver.name,
-			   pci_name(dev->pdev));
+
+		if (drm_core_is_platform(dev)) {
+			seq_printf(m, "%s %s\n", dev->driver->name,
+				   dev_name(&dev->platform_dev->dev));
+		} else {
+			seq_printf(m, "%s %s\n", dev->driver->pci_driver.name,
+				   pci_name(dev->pdev));
+		}
+
 	}
 
 	return 0;
@@ -325,4 +341,3 @@ int drm_vma_info(struct seq_file *m, void *data)
 }
 
 #endif
-
