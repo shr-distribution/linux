@@ -707,10 +707,8 @@ static int smia_dev_init(struct v4l2_subdev *subdev)
 	sensor->platform_data->configure_interface(subdev,
 		&sensor->current_reglist->mode);
 
-	format = __smia_get_pad_format(sensor, 0, V4L2_SUBDEV_FORMAT_PROBE);
-	smia_reglist_to_mbus(sensor->current_reglist, format);
-
-	format = __smia_get_pad_format(sensor, 0, V4L2_SUBDEV_FORMAT_ACTIVE);
+	format = __smia_get_pad_format(sensor, NULL, 0,
+				       V4L2_SUBDEV_FORMAT_ACTIVE);
 	smia_reglist_to_mbus(sensor->current_reglist, format);
 
 	sensor->streaming = 0;
