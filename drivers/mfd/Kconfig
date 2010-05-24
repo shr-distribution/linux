@@ -517,6 +517,7 @@ config MFD_WM8994
 
 config MFD_PCF50633
 	tristate "Support for NXP PCF50633"
+	select MFD_CORE
 	depends on I2C
 	select REGMAP_I2C
 	help
