@@ -25,6 +25,7 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/module.h>
+#include <linux/notifier.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
 #include <linux/jiffies.h>
@@ -417,6 +418,8 @@ struct overlay_cache_data {
 	u32 fifo_high;
 
 	bool manual_update;
+
+	bool pending_notify;
 };
 
 struct manager_cache_data {
@@ -449,6 +452,8 @@ struct manager_cache_data {
 	 * overlays */
 	bool enlarge_update_area;
 	bool in_use;
+
+	bool pending_notify;
 };
 
 static int omap_dss_mgr_apply(struct omap_overlay_manager *mgr);
@@ -460,6 +465,144 @@ static struct {
 
 	bool irq_enabled;
 } dss_cache;
+
+static BLOCKING_NOTIFIER_HEAD(dss_notifier_list);
+
+static int dss_notifier_call_chain(unsigned long val, void *v)
+{
+	return blocking_notifier_call_chain(&dss_notifier_list, val, v);
+}
+
+static bool check_mgr_notify(struct omap_overlay_manager *mgr)
+{
+	struct manager_cache_data *mc;
+
+	if (!(mgr->caps & OMAP_DSS_OVL_MGR_CAP_DISPC))
+		return false;
+
+	mc = &dss_cache.manager_cache[mgr->id];
+
+	if (!mc->pending_notify)
+		return false;
+
+	if (mc->manual_update) {
+		if (mc->enabled && mc->in_use && mgr->info_dirty)
+			return false;
+	} else {
+		if (mc->enabled && (mc->dirty || mc->shadow_dirty))
+			return false;
+	}
+
+	return true;
+}
+
+static bool check_ovl_notify(struct omap_overlay *ovl)
+{
+	struct overlay_cache_data *oc;
+	struct manager_cache_data *mc;
+
+	if (!(ovl->caps & OMAP_DSS_OVL_CAP_DISPC))
+		return false;
+
+	oc = &dss_cache.overlay_cache[ovl->id];
+	mc = &dss_cache.manager_cache[oc->channel];
+
+	if (!oc->pending_notify)
+		return false;
+
+	if (oc->manual_update) {
+		if (mc->enabled && oc->enabled &&
+		    mc->in_use && ovl->info_dirty)
+			return false;
+	} else {
+		if (mc->enabled && oc->enabled &&
+		    (oc->dirty || oc->shadow_dirty))
+			return false;
+	}
+
+	return true;
+}
+
+static void dss_notify_worker(struct work_struct *work)
+{
+	struct overlay_cache_data *oc;
+	struct manager_cache_data *mc;
+	const int num_ovls = ARRAY_SIZE(dss_cache.overlay_cache);
+	const int num_mgrs = ARRAY_SIZE(dss_cache.manager_cache);
+	int i;
+	unsigned long flags;
+	bool mgr_notify[2] = { false, false };
+	bool ovl_notify[3] = { false, false, false };
+	struct omap_overlay_manager *mgr;
+	struct omap_overlay *ovl;
+
+	spin_lock_irqsave(&dss_cache.lock, flags);
+
+	list_for_each_entry(mgr, &manager_list, list) {
+		if (!check_mgr_notify(mgr))
+			continue;
+
+		mc = &dss_cache.manager_cache[mgr->id];
+
+		mgr_notify[mgr->id] = true;
+		mc->pending_notify = false;
+	}
+
+	for (i = 0; i < omap_dss_get_num_overlays(); ++i) {
+		ovl = omap_dss_get_overlay(i);
+
+		if (!check_ovl_notify(ovl))
+			continue;
+
+		oc = &dss_cache.overlay_cache[ovl->id];
+
+		ovl_notify[ovl->id] = true;
+		oc->pending_notify = false;
+	}
+
+	spin_unlock_irqrestore(&dss_cache.lock, flags);
+
+	for (i = 0; i < num_mgrs; i++) {
+		if (!mgr_notify[i])
+			continue;
+		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_MGR,
+					(void *)(long)i);
+	}
+
+	for (i = 0; i < num_ovls; i++) {
+		if (!ovl_notify[i])
+			continue;
+		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_OVL,
+					(void *)(long)i);
+	}
+}
+
+static DECLARE_WORK(dss_notify_work, dss_notify_worker);
+
+static void schedule_notify_go(void)
+{
+	int i;
+	struct omap_overlay_manager *mgr;
+	struct omap_overlay *ovl;
+
+	list_for_each_entry(mgr, &manager_list, list) {
+		if (!check_mgr_notify(mgr))
+			continue;
+
+		schedule_work(&dss_notify_work);
+		break;
+	}
+
+	for (i = 0; i < omap_dss_get_num_overlays(); ++i) {
+		ovl = omap_dss_get_overlay(i);
+
+		if (!check_ovl_notify(ovl))
+			continue;
+
+		schedule_work(&dss_notify_work);
+		break;
+	}
+}
 
 void omap_dss_lock_cache(void)
 {
@@ -477,6 +620,7 @@ void omap_dss_unlock_cache(void)
 	spin_lock_irqsave(&dss_cache.lock, flags);
 	BUG_ON(!dss_cache.manager_cache[0].in_use);
 	dss_cache.manager_cache[0].in_use = false;
+	schedule_notify_go();
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
 	omap_dss_mgr_apply(omap_dss_get_overlay_manager(0));
 }
@@ -1015,6 +1159,135 @@ static void make_even(u16 *x, u16 *w)
 	*w = x2 - x1;
 }
 
+static int dss_mgr_notify_go(struct omap_overlay_manager *mgr)
+{
+	struct manager_cache_data *mc;
+	const int num_mgrs = ARRAY_SIZE(dss_cache.manager_cache);
+	unsigned long flags;
+	bool dirty;
+	struct omap_dss_device *dssdev = mgr->device;
+
+	if (mgr->id >= num_mgrs)
+		return -EINVAL;
+
+	if (!dssdev || dssdev->state != OMAP_DSS_DISPLAY_ACTIVE) {
+		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_MGR,
+					(void *)(long)mgr->id);
+		return 0;
+	}
+
+	spin_lock_irqsave(&dss_cache.lock, flags);
+
+	mc = &dss_cache.manager_cache[mgr->id];
+
+	if (mc->manual_update)
+		dirty = mc->enabled && mc->in_use && mgr->info_dirty;
+	else
+		dirty = mc->enabled && (mc->dirty || mc->shadow_dirty);
+
+	mc->pending_notify = dirty;
+
+	spin_unlock_irqrestore(&dss_cache.lock, flags);
+
+	if (!dirty)
+		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_MGR,
+					(void *)(long)mgr->id);
+
+	return 0;
+}
+
+int dss_mgr_notify_go_ovl(struct omap_overlay *ovl)
+{
+	struct overlay_cache_data *oc;
+	struct manager_cache_data *mc;
+	const int num_ovls = ARRAY_SIZE(dss_cache.overlay_cache);
+	unsigned long flags;
+	bool dirty;
+	struct omap_dss_device *dssdev;
+
+	if (ovl->id >= num_ovls)
+		return -EINVAL;
+
+	if (!ovl->manager) {
+		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_OVL,
+					(void *)(long)ovl->id);
+		return 0;
+	}
+
+	dssdev = ovl->manager->device;
+
+	if (!dssdev || dssdev->state != OMAP_DSS_DISPLAY_ACTIVE) {
+		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_OVL,
+					(void *)(long)ovl->id);
+		return 0;
+	}
+
+	spin_lock_irqsave(&dss_cache.lock, flags);
+
+	oc = &dss_cache.overlay_cache[ovl->id];
+	mc = &dss_cache.manager_cache[oc->channel];
+
+	if (oc->manual_update)
+		dirty = mc->enabled && oc->enabled &&
+			mc->in_use && ovl->info_dirty;
+	else
+		dirty = mc->enabled && oc->enabled &&
+			(oc->dirty || oc->shadow_dirty);
+
+	oc->pending_notify = dirty;
+
+	spin_unlock_irqrestore(&dss_cache.lock, flags);
+
+	if (!dirty)
+		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_OVL,
+					(void *)(long)ovl->id);
+
+	return 0;
+}
+
+int omap_dss_request_notify(enum omap_dss_notify_event event,
+			    long value)
+{
+	struct omap_overlay_manager *mgr;
+	struct omap_overlay *ovl;
+
+	switch (event) {
+	case OMAP_DSS_NOTIFY_GO_MGR:
+		mgr = omap_dss_get_overlay_manager(value);
+		if (!mgr)
+			return -EINVAL;
+		if (!mgr->notify_go)
+			return -ENOSYS;
+		mgr->notify_go(mgr);
+		break;
+	case OMAP_DSS_NOTIFY_GO_OVL:
+		ovl = omap_dss_get_overlay(value);
+		if (!ovl)
+			return -EINVAL;
+		if (!ovl->notify_go)
+			return -ENOSYS;
+		ovl->notify_go(ovl);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(omap_dss_request_notify);
+
+int omap_dss_register_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&dss_notifier_list, nb);
+}
+EXPORT_SYMBOL(omap_dss_register_notifier);
+
+int omap_dss_unregister_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&dss_notifier_list, nb);
+}
+EXPORT_SYMBOL(omap_dss_unregister_notifier);
+
 /* Configure dispc for partial update. Return possibly modified update
  * area */
 void dss_setup_partial_planes(struct omap_dss_device *dssdev,
@@ -1232,6 +1505,7 @@ static void dss_apply_irq_handler(void *data, u32 mask)
 	dss_cache.irq_enabled = false;
 
 end:
+	schedule_notify_go();
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
 }
 
@@ -1512,6 +1786,12 @@ static int dss_mgr_disable(struct omap_overlay_manager *mgr)
 	unsigned long flags;
 
 	dispc_enable_channel(mgr->id, 0);
+
+	spin_lock_irqsave(&dss_cache.lock, flags);
+	mc->enabled = false;
+	schedule_notify_go();
+	spin_unlock_irqrestore(&dss_cache.lock, flags);
+
 	return 0;
 }
 
@@ -1558,6 +1838,7 @@ int dss_init_overlay_managers(struct platform_device *pdev)
 		mgr->set_manager_info = &omap_dss_mgr_set_info;
 		mgr->get_manager_info = &omap_dss_mgr_get_info;
 		mgr->wait_for_go = &dss_mgr_wait_for_go;
+		mgr->notify_go = &dss_mgr_notify_go;
 		mgr->wait_for_vsync = &dss_mgr_wait_for_vsync;
 
 		mgr->enable = &dss_mgr_enable;

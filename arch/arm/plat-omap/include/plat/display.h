@@ -23,6 +23,7 @@
 #include <linux/list.h>
 #include <linux/kobject.h>
 #include <linux/device.h>
+#include <linux/notifier.h>
 #include <asm/atomic.h>
 
 #define DISPC_IRQ_FRAMEDONE		(1 << 0)
@@ -172,6 +173,11 @@ enum omap_overlay_manager_caps {
 	OMAP_DSS_OVL_MGR_CAP_DISPC = 1 << 0,
 };
 
+enum omap_dss_notify_event {
+	OMAP_DSS_NOTIFY_GO_MGR,
+	OMAP_DSS_NOTIFY_GO_OVL,
+};
+
 /* RFBI */
 
 struct rfbi_timings {
@@ -304,6 +310,7 @@ struct omap_overlay {
 			struct omap_overlay_info *info);
 
 	int (*wait_for_go)(struct omap_overlay *ovl);
+	int (*notify_go)(struct omap_overlay *ovl);
 };
 
 struct omap_overlay_manager_info {
@@ -347,6 +354,7 @@ struct omap_overlay_manager {
 
 	int (*apply)(struct omap_overlay_manager *mgr);
 	int (*wait_for_go)(struct omap_overlay_manager *mgr);
+	int (*notify_go)(struct omap_overlay_manager *mgr);
 	int (*wait_for_vsync)(struct omap_overlay_manager *mgr);
 
 	int (*enable)(struct omap_overlay_manager *mgr);
@@ -525,6 +533,11 @@ void omap_dss_unlock_cache(void);
 void omapdss_default_get_resolution(struct omap_dss_device *dssdev,
 		u16 *xres, u16 *yres);
 int omapdss_default_get_recommended_bpp(struct omap_dss_device *dssdev);
+
+int omap_dss_register_notifier(struct notifier_block *nb);
+int omap_dss_unregister_notifier(struct notifier_block *nb);
+
+int omap_dss_request_notify(enum omap_dss_notify_event event, long value);
 
 typedef void (*omap_dispc_isr_t) (void *arg, u32 mask);
 int omap_dispc_register_isr(omap_dispc_isr_t isr, void *arg, u32 mask);
