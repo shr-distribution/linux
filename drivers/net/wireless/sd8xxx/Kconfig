@@ -1,0 +1,5 @@
+config SD8XXX
+	tristate "Marvell sd8xxx driver"
+	depends on MAC80211 && WLAN_80211
+	--help--
+    Say Y if you want to have the sd8xxx wlan driver from Marvell
