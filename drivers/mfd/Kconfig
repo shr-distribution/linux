@@ -499,6 +499,7 @@ config MFD_WM8994
 
 config MFD_PCF50633
 	tristate "Support for NXP PCF50633"
+	select MFD_CORE
 	depends on I2C
 	help
 	  Say yes here if you have NXP PCF50633 chip on your board.
