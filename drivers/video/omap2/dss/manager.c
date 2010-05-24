@@ -428,6 +428,8 @@ struct manager_cache_data {
 	 * VSYNC/EVSYNC */
 	bool shadow_dirty;
 
+	bool enabled;
+
 	u32 default_color;
 
 	enum omap_dss_trans_key_type trans_key_type;
@@ -1455,12 +1457,22 @@ static void omap_dss_mgr_get_info(struct omap_overlay_manager *mgr,
 
 static int dss_mgr_enable(struct omap_overlay_manager *mgr)
 {
+	struct manager_cache_data *mc = &dss_cache.manager_cache[mgr->id];
+	unsigned long flags;
+
+	spin_lock_irqsave(&dss_cache.lock, flags);
+	mc->enabled = true;
+	spin_unlock_irqrestore(&dss_cache.lock, flags);
+
 	dispc_enable_channel(mgr->id, 1);
 	return 0;
 }
 
 static int dss_mgr_disable(struct omap_overlay_manager *mgr)
 {
+	struct manager_cache_data *mc = &dss_cache.manager_cache[mgr->id];
+	unsigned long flags;
+
 	dispc_enable_channel(mgr->id, 0);
 	return 0;
 }
