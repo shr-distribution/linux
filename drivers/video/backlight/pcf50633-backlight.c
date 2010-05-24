@@ -44,7 +44,7 @@ struct pcf50633_bl {
  */
 int pcf50633_bl_set_brightness_limit(struct pcf50633 *pcf, unsigned int limit)
 {
-	struct pcf50633_bl *pcf_bl = platform_get_drvdata(pcf->bl_pdev);
+	struct pcf50633_bl *pcf_bl = pcf->bl;
 
 	if (!pcf_bl)
 		return -ENODEV;
@@ -102,6 +102,7 @@ static const struct backlight_ops pcf50633_bl_ops = {
 static int __devinit pcf50633_bl_probe(struct platform_device *pdev)
 {
 	int ret;
+	struct pcf50633 *pcf = dev_to_pcf50633(pdev->dev.parent);
 	struct pcf50633_bl *pcf_bl;
 	struct device *parent = pdev->dev.parent;
 	struct pcf50633_platform_data *pcf50633_data = parent->platform_data;
@@ -124,7 +125,7 @@ static int __devinit pcf50633_bl_probe(struct platform_device *pdev)
 		pcf_bl->brightness_limit = 0x3f;
 	}
 
-	pcf_bl->pcf = dev_to_pcf50633(pdev->dev.parent);
+	pcf_bl->pcf = pcf;
 
 	pcf_bl->bl = backlight_device_register(pdev->name, &pdev->dev, pcf_bl,
 						&pcf50633_bl_ops, &bl_props);
@@ -134,6 +135,7 @@ static int __devinit pcf50633_bl_probe(struct platform_device *pdev)
 		goto err_free;
 	}
 
+	pcf->bl = pcf_bl;
 	platform_set_drvdata(pdev, pcf_bl);
 
 	pcf50633_reg_write(pcf_bl->pcf, PCF50633_REG_LEDDIM, pdata->ramp_time);
@@ -155,6 +157,8 @@ err_free:
 static int __devexit pcf50633_bl_remove(struct platform_device *pdev)
 {
 	struct pcf50633_bl *pcf_bl = platform_get_drvdata(pdev);
+
+	pcf_bl->pcf->bl = NULL;
 
 	backlight_device_unregister(pcf_bl->bl);
 
