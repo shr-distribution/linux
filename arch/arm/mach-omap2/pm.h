@@ -11,6 +11,8 @@
 #ifndef __ARCH_ARM_MACH_OMAP2_PM_H
 #define __ARCH_ARM_MACH_OMAP2_PM_H
 
+#include <linux/err.h>
+
 #include <plat/powerdomain.h>
 
 extern void *omap3_secure_ram_storage;
@@ -84,5 +86,17 @@ extern unsigned int omap34xx_suspend_sz;
 extern unsigned int save_secure_ram_context_sz;
 extern unsigned int omap24xx_cpu_suspend_sz;
 extern unsigned int omap34xx_cpu_suspend_sz;
+
+#ifdef CONFIG_OMAP_SMARTREFLEX
+extern int omap_devinit_smartreflex(void);
+extern void omap_enable_smartreflex_on_init(void);
+#else
+static inline int omap_devinit_smartreflex(void)
+{
+	return -EINVAL;
+}
+
+static inline void omap_enable_smartreflex_on_init(void) {}
+#endif
 
 #endif
