@@ -20,6 +20,7 @@
 
 #include <plat/powerdomain.h>
 #include <plat/clockdomain.h>
+#include <plat/voltage.h>
 
 static struct omap_device_pm_latency *pm_lats;
 
@@ -145,3 +146,10 @@ static int __init omap2_common_pm_init(void)
 }
 postcore_initcall(omap2_common_pm_init);
 
+static int __init omap2_common_pm_late_init(void)
+{
+	omap_voltage_late_init();
+
+	return 0;
+}
+late_initcall(omap2_common_pm_late_init);
