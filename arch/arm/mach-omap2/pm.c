@@ -17,6 +17,7 @@
 #include <plat/omap-pm.h>
 #include <plat/omap_device.h>
 #include <plat/common.h>
+#include <plat/voltage.h>
 
 #include <plat/powerdomain.h>
 #include <plat/clockdomain.h>
@@ -145,3 +146,10 @@ static int __init omap2_common_pm_init(void)
 }
 device_initcall(omap2_common_pm_init);
 
+static int __init omap2_common_pm_late_init(void)
+{
+	omap_voltage_late_init();
+
+	return 0;
+}
+late_initcall(omap2_common_pm_late_init);
