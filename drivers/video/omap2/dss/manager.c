@@ -1165,11 +1165,12 @@ static void dss_apply_irq_handler(void *data, u32 mask)
 	int i, r;
 	bool mgr_busy[MAX_DSS_MANAGERS];
 	u32 irq_mask;
+	unsigned long flags;
 
 	for (i = 0; i < num_mgrs; i++)
 		mgr_busy[i] = dispc_go_busy(i);
 
-	spin_lock(&dss_cache.lock);
+	spin_lock_irqsave(&dss_cache.lock, flags);
 
 	for (i = 0; i < num_ovls; ++i) {
 		oc = &dss_cache.overlay_cache[i];
@@ -1207,7 +1208,7 @@ static void dss_apply_irq_handler(void *data, u32 mask)
 	dss_cache.irq_enabled = false;
 
 end:
-	spin_unlock(&dss_cache.lock);
+	spin_unlock_irqrestore(&dss_cache.lock, flags);
 }
 
 static int omap_dss_mgr_apply(struct omap_overlay_manager *mgr)
