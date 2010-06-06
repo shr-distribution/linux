@@ -538,6 +538,23 @@ static const struct glamo_engine_reg_set glamo_2d_regs[] = {
 	}
 };
 
+static const struct glamo_engine_reg_set glamo_3d_regs[] = {
+	{ GLAMO_REG_CLOCK_3D,
+	GLAMO_CLOCK_3D_EN_M8CLK |
+	GLAMO_CLOCK_3D_DG_M8CLK,
+
+	GLAMO_CLOCK_3D_EN_ECLK |
+	GLAMO_CLOCK_3D_DG_ECLK,
+
+	GLAMO_CLOCK_3D_EN_RCLK |
+	GLAMO_CLOCK_3D_DG_RCLK
+	},
+	{ GLAMO_REG_CLOCK_GEN5_1,
+	0,
+	GLAMO_CLOCK_GEN51_EN_DIV_GCLK,
+	}
+};
+
 static const struct glamo_engine_reg_set glamo_cmdq_regs[] = {
 	{ GLAMO_REG_CLOCK_2D,
 	GLAMO_CLOCK_2D_EN_M6CLK,
@@ -559,6 +576,8 @@ static const struct glamo_engine_desc glamo_engines[] = {
 					glamo_mmc_regs),
 	[GLAMO_ENGINE_2D] = GLAMO_ENGINE("2D", GLAMO_HOSTBUS2_MMIO_EN_2D,
 					glamo_2d_regs),
+	[GLAMO_ENGINE_3D] = GLAMO_ENGINE("3D", GLAMO_HOSTBUS2_MMIO_EN_3D,
+					glamo_3d_regs),
 	[GLAMO_ENGINE_CMDQ] = GLAMO_ENGINE("CMDQ", GLAMO_HOSTBUS2_MMIO_EN_CQ,
 					glamo_cmdq_regs),
 };
@@ -582,6 +601,7 @@ int __glamo_engine_enable(struct glamo_core *glamo, enum glamo_engine engine)
 	case GLAMO_ENGINE_LCD:
 	case GLAMO_ENGINE_MMC:
 	case GLAMO_ENGINE_2D:
+	case GLAMO_ENGINE_3D:
 	case GLAMO_ENGINE_CMDQ:
 		break;
 	default:
@@ -628,6 +648,7 @@ int __glamo_engine_disable(struct glamo_core *glamo, enum glamo_engine engine)
 	case GLAMO_ENGINE_MMC:
 	case GLAMO_ENGINE_2D:
 	case GLAMO_ENGINE_CMDQ:
+	case GLAMO_ENGINE_3D:
 		break;
 	default:
 		return -EINVAL;
@@ -719,6 +740,10 @@ static const struct glamo_script reset_regs[] = {
 	},
 	[GLAMO_ENGINE_2D] = {
 		GLAMO_REG_CLOCK_2D, GLAMO_CLOCK_2D_RESET
+	},
+	[GLAMO_ENGINE_3D] = {
+		GLAMO_REG_CLOCK_3D, GLAMO_CLOCK_3D_BACK_RESET |
+		                    GLAMO_CLOCK_3D_FRONT_RESET
 	},
 	[GLAMO_ENGINE_JPEG] = {
 		GLAMO_REG_CLOCK_JPEG, GLAMO_CLOCK_JPEG_RESET
