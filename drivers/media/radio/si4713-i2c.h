@@ -220,11 +220,12 @@ struct si4713_device {
 	/* private data structures */
 	struct mutex mutex;
 	struct completion work;
-	struct si4713_platform_data *platform_data;
 	struct rds_info rds_info;
 	struct limiter_info limiter_info;
 	struct pilot_info pilot_info;
 	struct acomp_info acomp_info;
+	struct regulator *reg_vdd;
+	int gpio_reset;
 	u32 frequency;
 	u32 preemphasis;
 	u32 mute;
