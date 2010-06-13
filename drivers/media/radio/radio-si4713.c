@@ -28,6 +28,7 @@
 #include <linux/i2c.h>
 #include <linux/videodev2.h>
 #include <linux/slab.h>
+#include <linux/regulator/consumer.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-ioctl.h>
@@ -48,6 +49,7 @@ MODULE_VERSION("0.0.1");
 struct radio_si4713_device {
 	struct v4l2_device		v4l2_dev;
 	struct video_device		*radio_dev;
+	struct regulator		*reg_vio;
 };
 
 /* radio_si4713_fops - file operations interface */
@@ -284,12 +286,22 @@ static int radio_si4713_pdriver_probe(struct platform_device *pdev)
 		goto free_rsdev;
 	}
 
+	rsdev->reg_vio = regulator_get(&pdev->dev, "vio");
+	if (IS_ERR(rsdev->reg_vio)) {
+		dev_err(&pdev->dev, "Cannot get vio regulator\n");
+		rval = PTR_ERR(rsdev->reg_vio);
+		goto unregister_v4l2_dev;
+	}
+	rval = regulator_enable(rsdev->reg_vio);
+	if (rval)
+		goto reg_put;
+
 	adapter = i2c_get_adapter(pdata->i2c_bus);
 	if (!adapter) {
 		dev_err(&pdev->dev, "Cannot get i2c adapter %d\n",
 							pdata->i2c_bus);
 		rval = -ENODEV;
-		goto unregister_v4l2_dev;
+		goto reg_disable;
 	}
 
 	sd = v4l2_i2c_new_subdev_board(&rsdev->v4l2_dev, adapter,
@@ -323,6 +335,10 @@ free_vdev:
 	video_device_release(rsdev->radio_dev);
 put_adapter:
 	i2c_put_adapter(adapter);
+reg_disable:
+	regulator_disable(rsdev->reg_vio);
+reg_put:
+	regulator_put(rsdev->reg_vio);
 unregister_v4l2_dev:
 	v4l2_device_unregister(&rsdev->v4l2_dev);
 free_rsdev:
@@ -344,6 +360,8 @@ static int __exit radio_si4713_pdriver_remove(struct platform_device *pdev)
 
 	video_unregister_device(rsdev->radio_dev);
 	i2c_put_adapter(client->adapter);
+	regulator_disable(rsdev->reg_vio);
+	regulator_put(rsdev->reg_vio);
 	v4l2_device_unregister(&rsdev->v4l2_dev);
 	kfree(rsdev);
 
