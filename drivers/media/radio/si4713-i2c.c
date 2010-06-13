@@ -27,6 +27,8 @@
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
 #include <linux/slab.h>
+#include <linux/gpio.h>
+#include <linux/regulator/consumer.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-common.h>
@@ -369,7 +371,12 @@ static int si4713_powerup(struct si4713_device *sdev)
 	if (sdev->power_state)
 		return 0;
 
-	sdev->platform_data->set_power(1);
+	regulator_enable(sdev->reg_vdd);
+	if (gpio_is_valid(sdev->gpio_reset)) {
+		udelay(50);
+		gpio_set_value(sdev->gpio_reset, 1);
+	}
+
 	err = si4713_send_command(sdev, SI4713_CMD_POWER_UP,
 					args, ARRAY_SIZE(args),
 					resp, ARRAY_SIZE(resp),
@@ -384,7 +391,9 @@ static int si4713_powerup(struct si4713_device *sdev)
 		err = si4713_write_property(sdev, SI4713_GPO_IEN,
 						SI4713_STC_INT | SI4713_CTS);
 	} else {
-		sdev->platform_data->set_power(0);
+		if (gpio_is_valid(sdev->gpio_reset))
+			gpio_set_value(sdev->gpio_reset, 0);
+		regulator_disable(sdev->reg_vdd);
 	}
 
 	return err;
@@ -411,7 +420,9 @@ static int si4713_powerdown(struct si4713_device *sdev)
 		v4l2_dbg(1, debug, &sdev->sd, "Power down response: 0x%02x\n",
 				resp[0]);
 		v4l2_dbg(1, debug, &sdev->sd, "Device in reset mode\n");
-		sdev->platform_data->set_power(0);
+		if (gpio_is_valid(sdev->gpio_reset))
+			gpio_set_value(sdev->gpio_reset, 0);
+		regulator_disable(sdev->reg_vdd);
 		sdev->power_state = POWER_OFF;
 	}
 
@@ -1967,6 +1978,7 @@ static int si4713_probe(struct i2c_client *client,
 					const struct i2c_device_id *id)
 {
 	struct si4713_device *sdev;
+	struct si4713_platform_data *pdata = client->dev.platform_data;
 	int rval;
 
 	sdev = kzalloc(sizeof *sdev, GFP_KERNEL);
@@ -1976,11 +1988,20 @@ static int si4713_probe(struct i2c_client *client,
 		goto exit;
 	}
 
-	sdev->platform_data = client->dev.platform_data;
-	if (!sdev->platform_data) {
-		v4l2_err(&sdev->sd, "No platform data registered.\n");
-		rval = -ENODEV;
-		goto free_sdev;
+	sdev->gpio_reset = -1;
+	if (pdata && gpio_is_valid(pdata->gpio_reset)) {
+		rval = gpio_request(pdata->gpio_reset, "si4713 reset");
+		if (rval)
+			goto free_sdev;
+		sdev->gpio_reset = pdata->gpio_reset;
+		gpio_direction_output(sdev->gpio_reset, 0);
+	}
+
+	sdev->reg_vdd = regulator_get(&client->dev, "vdd");
+	if (IS_ERR(sdev->reg_vdd)) {
+		dev_err(&client->dev, "Cannot get vdd regulator\n");
+		rval = PTR_ERR(sdev->reg_vdd);
+		goto free_gpio;
 	}
 
 	v4l2_i2c_subdev_init(&sdev->sd, client, &si4713_subdev_ops);
@@ -1994,7 +2015,7 @@ static int si4713_probe(struct i2c_client *client,
 			client->name, sdev);
 		if (rval < 0) {
 			v4l2_err(&sdev->sd, "Could not request IRQ\n");
-			goto free_sdev;
+			goto put_reg;
 		}
 		v4l2_dbg(1, debug, &sdev->sd, "IRQ requested.\n");
 	} else {
@@ -2012,6 +2033,11 @@ static int si4713_probe(struct i2c_client *client,
 free_irq:
 	if (client->irq)
 		free_irq(client->irq, sdev);
+put_reg:
+	regulator_put(sdev->reg_vdd);
+free_gpio:
+	if (gpio_is_valid(sdev->gpio_reset))
+		gpio_free(sdev->gpio_reset);
 free_sdev:
 	kfree(sdev);
 exit:
@@ -2031,7 +2057,9 @@ static int si4713_remove(struct i2c_client *client)
 		free_irq(client->irq, sdev);
 
 	v4l2_device_unregister_subdev(sd);
-
+	regulator_put(sdev->reg_vdd);
+	if (gpio_is_valid(sdev->gpio_reset))
+		gpio_free(sdev->gpio_reset);
 	kfree(sdev);
 
 	return 0;
