@@ -798,6 +798,44 @@ static int smia_set_ctrl(struct v4l2_subdev *subdev, struct v4l2_control *vc)
 
 }
 
+static int smia_do_ext_ctrl(struct v4l2_subdev *subdev,
+			      struct v4l2_ext_controls *c,
+			      int (*do_ctrl)(struct v4l2_subdev *,
+					     struct v4l2_control *))
+{
+	struct v4l2_control qctrl;
+	int i, err = 0;
+
+	if (!(c->ctrl_class == V4L2_CTRL_CLASS_CAMERA ||
+	      c->ctrl_class == V4L2_CTRL_CLASS_USER))
+		return -EINVAL;
+
+	for (i = 0; i < c->count; i++) {
+		qctrl.id = c->controls[i].id;
+		qctrl.value = c->controls[i].value;
+		err = do_ctrl(subdev, &qctrl);
+		if (err) {
+			c->error_idx = i;
+			return err;
+		}
+		c->controls[i].value = qctrl.value;
+	}
+
+	return 0;
+}
+
+static int smia_get_ext_ctrls(struct v4l2_subdev *subdev,
+				struct v4l2_ext_controls *c)
+{
+	return smia_do_ext_ctrl(subdev, c, smia_get_ctrl);
+}
+
+static int smia_set_ext_ctrls(struct v4l2_subdev *subdev,
+				struct v4l2_ext_controls *c)
+{
+	return smia_do_ext_ctrl(subdev, c, smia_set_ctrl);
+}
+
 static int
 smia_set_power(struct v4l2_subdev *subdev, int on)
 {
@@ -834,6 +872,8 @@ static const struct v4l2_subdev_core_ops smia_core_ops = {
 	.queryctrl = smia_query_ctrl,
 	.g_ctrl = smia_get_ctrl,
 	.s_ctrl = smia_set_ctrl,
+	.g_ext_ctrls = smia_get_ext_ctrls,
+	.s_ext_ctrls = smia_set_ext_ctrls,
 	.s_power = smia_set_power,
 };
 
