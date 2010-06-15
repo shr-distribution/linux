@@ -104,6 +104,8 @@ int smia_mode_query(const __u32 *ctrls, size_t nctrls, struct v4l2_queryctrl *a)
 		{ .id = V4L2_CID_MODE_PIXELCLOCK,
 		  .name = "Pixel clock [Hz]" },
 		{ .id = V4L2_CID_MODE_SENSITIVITY,    .name = "Sensitivity" },
+		{ .id = V4L2_CID_MODE_OPSYSCLOCK,
+		  .name = "Output pixel clock [Hz]" },
 	};
 	int id, next = 0, i;
 
@@ -167,6 +169,9 @@ int smia_mode_g_ctrl(const __u32 *ctrls, size_t nctrls, struct v4l2_control *vc,
 		break;
 	case V4L2_CID_MODE_SENSITIVITY:
 		vc->value = sm->sensitivity;
+		break;
+	case V4L2_CID_MODE_OPSYSCLOCK:
+		vc->value = sm->opsys_clock;
 		break;
 	default:
 		return -EINVAL;
