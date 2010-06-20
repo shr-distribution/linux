@@ -49,6 +49,11 @@ struct wake_lock main_wake_lock;
 suspend_state_t requested_suspend_state = PM_SUSPEND_MEM;
 static struct wake_lock unknown_wakeup;
 
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+static short resuming = 0;
+#endif
+
+
 #ifdef CONFIG_WAKELOCK_STAT
 static struct wake_lock deleted_wake_locks;
 static ktime_t last_sleep_time_update;
@@ -138,6 +143,19 @@ static int wakelock_stats_show(struct seq_file *m, void *unused)
 	spin_unlock_irqrestore(&list_lock, irqflags);
 	return 0;
 }
+
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+static int wakelocks_suspend_resume_read_proc(char *page, char **start, off_t off,
+			       int count, int *eof, void *data)
+{
+	int len = 0;
+	len = snprintf(page + len, count - len, resuming ? "cycle\n" : "" );
+	resuming = 0;
+	return len;
+}
+
+#endif
+
 
 static void wake_unlock_stat_locked(struct wake_lock *lock, int expired)
 {
@@ -275,6 +293,9 @@ static void suspend(struct work_struct *work)
 	if (debug_mask & DEBUG_SUSPEND)
 		pr_info("suspend: enter suspend\n");
 	ret = pm_suspend(requested_suspend_state);
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+	resuming = 1;
+#endif
 	if (debug_mask & DEBUG_EXIT_SUSPEND) {
 		struct timespec ts;
 		struct rtc_time tm;
@@ -573,8 +594,13 @@ static int __init wakelocks_init(void)
 	proc_create("wakelocks", S_IRUGO, NULL, &wakelock_stats_fops);
 #endif
 
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+	create_proc_read_entry("wakelocks_suspend_resume", S_IRUGO, NULL,
+				wakelocks_suspend_resume_read_proc, NULL);
+#endif
 	return 0;
 
+err_last_lock_alloc_memory:
 err_suspend_work_queue:
 	platform_driver_unregister(&power_driver);
 err_platform_driver_register:
@@ -590,6 +616,9 @@ err_platform_device_register:
 
 static void  __exit wakelocks_exit(void)
 {
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+	remove_proc_entry("wakelocks_suspend_resume", NULL);
+#endif
 #ifdef CONFIG_WAKELOCK_STAT
 	remove_proc_entry("wakelocks", NULL);
 #endif
