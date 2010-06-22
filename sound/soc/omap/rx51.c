@@ -38,6 +38,7 @@
 #include "omap-mcbsp.h"
 #include "omap-pcm.h"
 #include "../codecs/tlv320aic3x.h"
+#include "../codecs/tpa6130a2.h"
 
 #define RX51_TVOUT_SEL_GPIO		40
 #define RX51_JACK_DETECT_GPIO		177
@@ -49,7 +50,8 @@
 
 enum {
 	RX51_JACK_DISABLED,
-	RX51_JACK_TVOUT,		/* tv-out */
+	RX51_JACK_TVOUT,		/* tv-out with stereo audio */
+	RX51_JACK_HP,			/* stereo output, no mic */
 };
 
 static int rx51_spk_func;
@@ -58,6 +60,15 @@ static int rx51_jack_func;
 
 static void rx51_ext_control(struct snd_soc_codec *codec)
 {
+	int hp = 0;
+
+	switch (rx51_jack_func) {
+	case RX51_JACK_TVOUT:
+	case RX51_JACK_HP:
+		hp = 1;
+		break;
+	}
+
 	if (rx51_spk_func)
 		snd_soc_dapm_enable_pin(codec, "Ext Spk");
 	else
@@ -66,6 +77,10 @@ static void rx51_ext_control(struct snd_soc_codec *codec)
 		snd_soc_dapm_enable_pin(codec, "DMic");
 	else
 		snd_soc_dapm_disable_pin(codec, "DMic");
+	if (hp)
+		snd_soc_dapm_enable_pin(codec, "Headphone Jack");
+	else
+		snd_soc_dapm_disable_pin(codec, "Headphone Jack");
 
 	gpio_set_value(RX51_TVOUT_SEL_GPIO,
 		       rx51_jack_func == RX51_JACK_TVOUT);
@@ -212,6 +227,7 @@ static struct snd_soc_jack_gpio rx51_av_jack_gpios[] = {
 static const struct snd_soc_dapm_widget aic34_dapm_widgets[] = {
 	SND_SOC_DAPM_SPK("Ext Spk", rx51_spk_event),
 	SND_SOC_DAPM_MIC("DMic", NULL),
+	SND_SOC_DAPM_HP("Headphone Jack", NULL),
 };
 
 static const struct snd_soc_dapm_route audio_map[] = {
@@ -220,11 +236,16 @@ static const struct snd_soc_dapm_route audio_map[] = {
 
 	{"DMic Rate 64", NULL, "Mic Bias 2V"},
 	{"Mic Bias 2V", NULL, "DMic"},
+
+	{"Headphone Jack", NULL, "TPA6130A2 Headphone Left"},
+	{"Headphone Jack", NULL, "TPA6130A2 Headphone Right"},
+	{"TPA6130A2 Left", NULL, "LLOUT"},
+	{"TPA6130A2 Right", NULL, "RLOUT"},
 };
 
 static const char *spk_function[] = {"Off", "On"};
 static const char *input_function[] = {"ADC", "Digital Mic"};
-static const char *jack_function[] = {"Off", "TV-OUT"};
+static const char *jack_function[] = {"Off", "TV-OUT", "Headphone"};
 
 static const struct soc_enum rx51_enum[] = {
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(spk_function), spk_function),
@@ -260,6 +281,9 @@ static int rx51_aic34_init(struct snd_soc_pcm_runtime *rtd)
 	/* Add RX-51 specific widgets */
 	snd_soc_dapm_new_controls(codec, aic34_dapm_widgets,
 				  ARRAY_SIZE(aic34_dapm_widgets));
+
+	tpa6130a2_add_controls(codec);
+	snd_soc_limit_volume(codec, "TPA6130A2 Headphone Playback Volume", 42);
 
 	/* Set up RX-51 specific audio path audio_map */
 	snd_soc_dapm_add_routes(codec, audio_map, ARRAY_SIZE(audio_map));
