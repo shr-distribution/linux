@@ -26,6 +26,8 @@
 #include <linux/mmc/host.h>
 #include <sound/tlv320aic3x.h>
 #include <linux/bluetooth/hci_h4p.h>
+#include <media/radio-si4713.h>
+#include <media/si4713.h>
 
 #include <plat/mcspi.h>
 #include <plat/board.h>
@@ -52,6 +54,8 @@
 
 #define RX51_WL1251_POWER_GPIO		87
 #define RX51_WL1251_IRQ_GPIO		42
+#define RX51_FMTX_RESET_GPIO		163
+#define RX51_FMTX_IRQ			53
 
 #define RX51_TSC2005_RESET_GPIO		104
 #define RX51_TSC2005_IRQ_GPIO		100
@@ -438,6 +442,8 @@ static struct regulator_consumer_supply rx51_vio_supplies[] = {
 	/* tlv320aic3x digital supplies */
 	REGULATOR_SUPPLY("IOVDD", "2-0018"),
 	REGULATOR_SUPPLY("DVDD", "2-0018"),
+	/* Si4713 IO supply */
+	REGULATOR_SUPPLY("vio", "radio-si4713"),
 };
 
 #if defined(CONFIG_FB_OMAP2) || defined(CONFIG_FB_OMAP2_MODULE)
@@ -451,6 +457,8 @@ static struct regulator_consumer_supply rx51_vaux1_consumers[] = {
 		.dev	= &rx51_display_device.dev,
 	},
 #endif
+	/* Si4713 supply */
+	REGULATOR_SUPPLY("vdd", "2-0063"),
 };
 
 static struct regulator_init_data rx51_vaux1 = {
@@ -593,6 +601,42 @@ static struct regulator_init_data rx51_vio = {
 	.num_consumer_supplies	= ARRAY_SIZE(rx51_vio_supplies),
 	.consumer_supplies	= rx51_vio_supplies,
 };
+
+static struct si4713_platform_data rx51_si4713_i2c_data = {
+	.gpio_reset	= RX51_FMTX_RESET_GPIO,
+};
+
+static struct i2c_board_info rx51_si4713_board_info = {
+	I2C_BOARD_INFO("si4713", SI4713_I2C_ADDR_BUSEN_HIGH),
+	.platform_data	= &rx51_si4713_i2c_data,
+};
+
+static struct radio_si4713_platform_data rx51_si4713_data = {
+	.i2c_bus	= 2,
+	.subdev_board_info = &rx51_si4713_board_info,
+};
+
+static struct platform_device rx51_si4713_dev = {
+	.name	= "radio-si4713",
+	.id	= -1,
+	.dev	= {
+		.platform_data	= &rx51_si4713_data,
+	},
+};
+
+static __init void rx51_init_si4713(void)
+{
+	int err;
+
+	err = gpio_request(RX51_FMTX_IRQ, "si4713");
+	if (err) {
+		printk(KERN_ERR "Cannot request gpio %d\n", RX51_FMTX_IRQ);
+		return;
+	}
+	gpio_direction_input(RX51_FMTX_IRQ);
+	rx51_si4713_board_info.irq = gpio_to_irq(RX51_FMTX_IRQ);
+	platform_device_register(&rx51_si4713_dev);
+}
 
 static int rx51_twlgpio_setup(struct device *dev, unsigned gpio, unsigned n)
 {
@@ -1169,6 +1213,7 @@ void __init rx51_peripherals_init(void)
 	rx51_init_wl1251();
 	rx51_init_tsc2005();
 	rx51_bt_init();
+	rx51_init_si4713();
 	spi_register_board_info(rx51_peripherals_spi_board_info,
 				ARRAY_SIZE(rx51_peripherals_spi_board_info));
 	omap2_hsmmc_init(mmc);
