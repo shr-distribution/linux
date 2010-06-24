@@ -692,151 +692,89 @@ static int dss_mgr_wait_for_vsync(struct omap_overlay_manager *mgr)
 	return omap_dispc_wait_for_irq_interruptible_timeout(irq, timeout);
 }
 
-static int dss_mgr_wait_for_go(struct omap_overlay_manager *mgr)
+struct dss_wait_notify_event {
+	enum omap_dss_notify_event event;
+	int id;
+	struct completion compl;
+	struct list_head list;
+};
+
+static struct {
+	struct notifier_block nb;
+	spinlock_t lock;
+	struct list_head list;
+} dss_wait_notify;
+
+static int dss_wait_notify_callback(struct notifier_block *nb,
+				    unsigned long event, void *data)
+{
+	struct dss_wait_notify_event *e;
+	unsigned long flags;
+
+	spin_lock_irqsave(&dss_wait_notify.lock, flags);
+
+	list_for_each_entry(e, &dss_wait_notify.list, list) {
+		if (event != e->event)
+			continue;
+		if ((long)data != e->id)
+			continue;
+		complete(&e->compl);
+	}
+
+	spin_unlock_irqrestore(&dss_wait_notify.lock, flags);
+
+	return 0;
+}
+
+static int dss_wait_notify_event(enum omap_dss_notify_event event,
+				 int id)
 {
 	unsigned long timeout = msecs_to_jiffies(500);
-	struct manager_cache_data *mc;
-	u32 irq;
+	struct dss_wait_notify_event e = {
+		.event = event,
+		.id = id,
+	};
+	unsigned long flags;
 	int r;
-	int i;
-	struct omap_dss_device *dssdev = mgr->device;
 
-	if (!dssdev || dssdev->state != OMAP_DSS_DISPLAY_ACTIVE)
-		return 0;
+	init_completion(&e.compl);
 
-	if (dssdev->type == OMAP_DISPLAY_TYPE_VENC) {
-		irq = DISPC_IRQ_EVSYNC_ODD | DISPC_IRQ_EVSYNC_EVEN;
-	} else {
-		if (dssdev->caps & OMAP_DSS_DISPLAY_CAP_MANUAL_UPDATE) {
-			enum omap_dss_update_mode mode;
-			mode = dssdev->driver->get_update_mode(dssdev);
-			if (mode != OMAP_DSS_UPDATE_AUTO)
-				return 0;
+	spin_lock_irqsave(&dss_wait_notify.lock, flags);
+	list_add_tail(&e.list, &dss_wait_notify.list);
+	spin_unlock_irqrestore(&dss_wait_notify.lock, flags);
 
-			irq = (dssdev->manager->id == OMAP_DSS_CHANNEL_LCD) ?
-				DISPC_IRQ_FRAMEDONE
-				: DISPC_IRQ_FRAMEDONE2;
-		} else {
-			irq = (dssdev->manager->id == OMAP_DSS_CHANNEL_LCD) ?
-				DISPC_IRQ_VSYNC
-				: DISPC_IRQ_VSYNC2;
-		}
-	}
+	r = omap_dss_request_notify(event, id);
+	if (r)
+		goto list_remove;
 
-	mc = &dss_cache.manager_cache[mgr->id];
-	i = 0;
-	while (1) {
-		unsigned long flags;
-		bool shadow_dirty, dirty;
+	r = wait_for_completion_interruptible_timeout(&e.compl, timeout);
+	if (!r)
+		r = -ETIMEDOUT;
 
-		spin_lock_irqsave(&dss_cache.lock, flags);
-		dirty = mc->dirty;
-		shadow_dirty = mc->shadow_dirty;
-		spin_unlock_irqrestore(&dss_cache.lock, flags);
+ list_remove:
+	spin_lock_irqsave(&dss_wait_notify.lock, flags);
+	list_del(&e.list);
+	spin_unlock_irqrestore(&dss_wait_notify.lock, flags);
 
-		if (!dirty && !shadow_dirty) {
-			r = 0;
-			break;
-		}
+	return r < 0 ? r : 0;
+}
 
-		/* 4 iterations is the worst case:
-		 * 1 - initial iteration, dirty = true (between VFP and VSYNC)
-		 * 2 - first VSYNC, dirty = true
-		 * 3 - dirty = false, shadow_dirty = true
-		 * 4 - shadow_dirty = false */
-		if (i++ == 3) {
-			DSSERR("mgr(%d)->wait_for_go() not finishing\n",
-					mgr->id);
-			r = 0;
-			break;
-		}
+static int dss_mgr_wait_for_go(struct omap_overlay_manager *mgr)
+{
+	int r = dss_wait_notify_event(OMAP_DSS_NOTIFY_GO_MGR, mgr->id);
 
-		r = omap_dispc_wait_for_irq_interruptible_timeout(irq, timeout);
-		if (r == -ERESTARTSYS)
-			break;
-
-		if (r) {
-			DSSERR("mgr(%d)->wait_for_go() timeout\n", mgr->id);
-			break;
-		}
-	}
+	if (r == -ETIMEDOUT)
+		DSSERR("mgr(%d)->wait_for_go() timeout\n", mgr->id);
 
 	return r;
 }
 
 int dss_mgr_wait_for_go_ovl(struct omap_overlay *ovl)
 {
-	unsigned long timeout = msecs_to_jiffies(500);
-	struct overlay_cache_data *oc;
-	struct omap_dss_device *dssdev;
-	u32 irq;
-	int r;
-	int i;
+	int r = dss_wait_notify_event(OMAP_DSS_NOTIFY_GO_OVL, ovl->id);
 
-	if (!ovl->manager)
-		return 0;
-
-	dssdev = ovl->manager->device;
-
-	if (!dssdev || dssdev->state != OMAP_DSS_DISPLAY_ACTIVE)
-		return 0;
-
-	if (dssdev->type == OMAP_DISPLAY_TYPE_VENC) {
-		irq = DISPC_IRQ_EVSYNC_ODD | DISPC_IRQ_EVSYNC_EVEN;
-	} else {
-		if (dssdev->caps & OMAP_DSS_DISPLAY_CAP_MANUAL_UPDATE) {
-			enum omap_dss_update_mode mode;
-			mode = dssdev->driver->get_update_mode(dssdev);
-			if (mode != OMAP_DSS_UPDATE_AUTO)
-				return 0;
-
-			irq = (dssdev->manager->id == OMAP_DSS_CHANNEL_LCD) ?
-				DISPC_IRQ_FRAMEDONE
-				: DISPC_IRQ_FRAMEDONE2;
-		} else {
-			irq = (dssdev->manager->id == OMAP_DSS_CHANNEL_LCD) ?
-				DISPC_IRQ_VSYNC
-				: DISPC_IRQ_VSYNC2;
-		}
-	}
-
-	oc = &dss_cache.overlay_cache[ovl->id];
-	i = 0;
-	while (1) {
-		unsigned long flags;
-		bool shadow_dirty, dirty;
-
-		spin_lock_irqsave(&dss_cache.lock, flags);
-		dirty = oc->dirty;
-		shadow_dirty = oc->shadow_dirty;
-		spin_unlock_irqrestore(&dss_cache.lock, flags);
-
-		if (!dirty && !shadow_dirty) {
-			r = 0;
-			break;
-		}
-
-		/* 4 iterations is the worst case:
-		 * 1 - initial iteration, dirty = true (between VFP and VSYNC)
-		 * 2 - first VSYNC, dirty = true
-		 * 3 - dirty = false, shadow_dirty = true
-		 * 4 - shadow_dirty = false */
-		if (i++ == 3) {
-			DSSERR("ovl(%d)->wait_for_go() not finishing\n",
-					ovl->id);
-			r = 0;
-			break;
-		}
-
-		r = omap_dispc_wait_for_irq_interruptible_timeout(irq, timeout);
-		if (r == -ERESTARTSYS)
-			break;
-
-		if (r) {
-			DSSERR("ovl(%d)->wait_for_go() timeout\n", ovl->id);
-			break;
-		}
-	}
+	if (r == -ETIMEDOUT)
+		DSSERR("ovl(%d)->wait_for_go() timeout\n", ovl->id);
 
 	return r;
 }
@@ -1807,6 +1745,11 @@ int dss_init_overlay_managers(struct platform_device *pdev)
 
 	spin_lock_init(&dss_cache.lock);
 
+	spin_lock_init(&dss_wait_notify.lock);
+	INIT_LIST_HEAD(&dss_wait_notify.list);
+	dss_wait_notify.nb.notifier_call = dss_wait_notify_callback;
+	omap_dss_register_notifier(&dss_wait_notify.nb);
+
 	INIT_LIST_HEAD(&manager_list);
 
 	num_managers = 0;
@@ -1912,6 +1855,8 @@ void dss_uninit_overlay_managers(struct platform_device *pdev)
 		kobject_put(&mgr->kobj);
 		kfree(mgr);
 	}
+
+	omap_dss_unregister_notifier(&dss_wait_notify.nb);
 
 	num_managers = 0;
 }
