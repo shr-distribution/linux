@@ -737,6 +737,26 @@ static int setup_fbmem(struct msmfb_info *msmfb, struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_FB_MSM_REFRESH
+static int msmfb_refresh_thread(void *v)
+{
+       struct fb_info *fb;
+
+       daemonize("msmfb_refreshd");
+       allow_signal(SIGKILL);
+       while (1) {
+               msleep(50);
+
+               if (num_registered_fb > 0) {
+                       fb = registered_fb[0];
+                       msmfb_update(fb, 0, 0, fb->var.xres, fb->var.yres);
+               }
+       }
+
+      return 0;
+}
+#endif
+
 static int msmfb_probe(struct platform_device *pdev)
 {
 	struct fb_info *fb;
@@ -815,6 +835,11 @@ static int msmfb_probe(struct platform_device *pdev)
 		goto error_register_framebuffer;
 
 	msmfb->sleeping = WAKING;
+
+#ifdef CONFIG_FB_MSM_REFRESH
+       /* Start the refresh thread */
+       kernel_thread(msmfb_refresh_thread, NULL, CLONE_KERNEL);
+#endif
 
 #ifdef CONFIG_FB_MSM_LOGO
 	if (!load_565rle_image(INIT_IMAGE_FILE)) {

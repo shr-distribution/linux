@@ -29,3 +29,12 @@ config MSM_KGSL_MMU
 	help
 	  If enabled, the GPU driver will allocate memory from vmalloc
 	  and enable the use of GPU MMU, instead of using pmem.
+
+config FB_MSM_REFRESH
+       bool "Enable MSM Framebuffer Refresh Thread"
+       depends on FB_MSM
+       default n
+       help
+         The refresh thread will constantly perform a full screen
+         update. This is neccesary when using X with the default
+         fbdev driver.
