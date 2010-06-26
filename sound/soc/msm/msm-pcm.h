@@ -193,7 +193,7 @@ extern int alsa_adsp_configure(struct msm_audio *prtd);
 extern int alsa_buffer_read(struct msm_audio *prtd, void __user *buf,
 					size_t count, loff_t *pos);
 ssize_t alsa_send_buffer(struct msm_audio *prtd, const char __user *buf,
-					size_t count, loff_t *pos);
+					size_t count, loff_t *pos, int copy_count);
 int msm_audio_volume_update(unsigned id,
 				int volume, int pan);
 extern struct audio_locks the_locks;

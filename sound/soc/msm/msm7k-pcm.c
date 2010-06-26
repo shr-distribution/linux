@@ -373,14 +373,9 @@ static int msm_pcm_playback_copy(struct snd_pcm_substream *substream, int a,
 	struct msm_audio *prtd = runtime->private_data;
 
 	fbytes = frames_to_bytes(runtime, frames);
-	rc = alsa_send_buffer(prtd, buf, fbytes, NULL);
+	rc = alsa_send_buffer(prtd, buf, fbytes, NULL,copy_count);
 	++copy_count;
 	prtd->pcm_buf_pos += fbytes;
-	if (copy_count == 1) {
-		mutex_lock(&the_locks.lock);
-		alsa_audio_configure(prtd);
-		mutex_unlock(&the_locks.lock);
-	}
 	if ((prtd->running) && (msm_vol_ctl.update)) {
 		rc = msm_audio_volume_update(PCMPLAYBACK_DECODERID,
 				msm_vol_ctl.volume, msm_vol_ctl.pan);
@@ -487,15 +482,18 @@ static struct snd_pcm_ops msm_pcm_ops = {
 
 static int msm_pcm_remove(struct platform_device *devptr)
 {
-#if 0
+#if 1
 	struct snd_soc_device *socdev = platform_get_drvdata(devptr);
 	snd_soc_free_pcms(socdev);
-	kfree(socdev->codec);
+	kfree(socdev->card->codec);
 	platform_set_drvdata(devptr, NULL);
 	return 0;
 #endif
+
+#if 0
 	printk("DISABLED %s\n", __func__);
 	return -1;
+#endif
 }
 
 static int pcm_preallocate_dma_buffer(struct snd_pcm *pcm,

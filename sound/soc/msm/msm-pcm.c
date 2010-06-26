@@ -381,7 +381,7 @@ int alsa_audio_configure(struct msm_audio *prtd)
 EXPORT_SYMBOL(alsa_audio_configure);
 
 ssize_t alsa_send_buffer(struct msm_audio *prtd, const char __user *buf,
-			  size_t count, loff_t *pos)
+			  size_t count, loff_t *pos, int copy_count)
 {
 	unsigned long flag;
 	const char __user *start = buf;
@@ -420,6 +420,12 @@ ssize_t alsa_send_buffer(struct msm_audio *prtd, const char __user *buf,
 			prtd->out_needed--;
 		}
 		spin_unlock_irqrestore(&the_locks.write_dsp_lock, flag);
+
+		if (copy_count == 0){
+			mutex_lock(&the_locks.lock);
+			alsa_audio_configure(prtd);
+			mutex_unlock(&the_locks.lock);
+		}
 	}
 	mutex_unlock(&the_locks.write_lock);
 	if (buf > start)

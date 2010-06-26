@@ -78,7 +78,7 @@ EXPORT_SYMBOL_GPL(msm_dais);
 
 int msm_pcm_probe(struct platform_device *devptr)
 {
-#if 0
+#if 1
 	struct snd_card *card;
 	struct snd_soc_codec *codec;
 	int ret;
@@ -92,7 +92,7 @@ int msm_pcm_probe(struct platform_device *devptr)
 
 	codec->name = "MSM-CARD";
 	codec->owner = THIS_MODULE;
-	socdev->codec = codec;
+	socdev->card->codec=codec;
 	mutex_init(&codec->mutex);
 
 	INIT_LIST_HEAD(&codec->dapm_widgets);
@@ -105,7 +105,7 @@ int msm_pcm_probe(struct platform_device *devptr)
 		goto __nopcm;
 	}
 
-	card = socdev->codec->card;
+	card = socdev->card;
 
 	ret = snd_soc_init_card(socdev);
 	if (ret < 0) {
@@ -121,8 +121,10 @@ __nopcm:
 	kfree(codec);
 	return ret;
 #endif
+#if 0
 	printk("DISABLED %s!!!!!!!!\n", __func__);
 	return -1;
+#endif
 }
 
 struct snd_soc_codec_device soc_codec_dev_msm = {
