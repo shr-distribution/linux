@@ -48,6 +48,7 @@ enum kmemtrace_type_id {
 };
 
 extern struct tracer boot_tracer;
+extern struct tracer duration_trace;
 
 #undef __field
 #define __field(type, item)		type	item;
@@ -157,6 +158,8 @@ struct trace_array {
 	struct trace_array_cpu	*data[NR_CPUS];
 };
 
+extern struct trace_array	global_trace;
+
 #define FTRACE_CMP_TYPE(var, type) \
 	__builtin_types_compatible_p(typeof(var), type *)
 
@@ -253,6 +256,8 @@ struct tracer_flags {
  * @print_line: callback that prints a trace
  * @set_flag: signals one of your private flags changed (trace_options file)
  * @flags: your private flags
+ * @need_options_create: flag option files were not created on first registry
+ *   and need to be created on second registry
  */
 struct tracer {
 	const char		*name;
@@ -284,6 +289,7 @@ struct tracer {
 	struct tracer		*next;
 	int			print_max;
 	struct tracer_flags	*flags;
+	int			need_options_create;
 };
 
 
@@ -366,9 +372,10 @@ int is_tracing_stopped(void);
 
 extern unsigned long nsecs_to_usecs(unsigned long nsecs);
 
+extern unsigned long tracing_thresh;
+
 #ifdef CONFIG_TRACER_MAX_TRACE
 extern unsigned long tracing_max_latency;
-extern unsigned long tracing_thresh;
 
 void update_max_tr(struct trace_array *tr, struct task_struct *tsk, int cpu);
 void update_max_tr_single(struct trace_array *tr,

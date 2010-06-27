@@ -165,7 +165,7 @@ unsigned long long ns2usecs(cycle_t nsec)
  * pages for the buffer for that CPU. Each CPU has the same number
  * of pages allocated for its buffer.
  */
-static struct trace_array	global_trace;
+struct trace_array	global_trace;
 
 static DEFINE_PER_CPU(struct trace_array_cpu, global_trace_cpu);
 
@@ -219,6 +219,11 @@ static int			tracer_enabled = 1;
 int tracing_is_enabled(void)
 {
 	return tracer_enabled;
+}
+
+void tracer_enabled_off(void)
+{
+	tracer_enabled = 0;
 }
 
 /*
@@ -503,9 +508,10 @@ static ssize_t trace_seq_to_buffer(struct trace_seq *s, void *buf, size_t cnt)
 static raw_spinlock_t ftrace_max_lock =
 	(raw_spinlock_t)__RAW_SPIN_LOCK_UNLOCKED;
 
+unsigned long __read_mostly	tracing_thresh;
+
 #ifdef CONFIG_TRACER_MAX_TRACE
 unsigned long __read_mostly	tracing_max_latency;
-unsigned long __read_mostly	tracing_thresh;
 
 /*
  * Copy the new maximum trace into the separate maximum-trace
@@ -607,6 +613,13 @@ update_max_tr_single(struct trace_array *tr, struct task_struct *tsk, int cpu)
 }
 #endif /* CONFIG_TRACER_MAX_TRACE */
 
+struct trace_option_dentry;
+
+struct trace_option_dentry *topts;
+
+static struct trace_option_dentry *
+create_trace_option_files(struct tracer *tracer);
+
 /**
  * register_tracer - register a tracer with the ftrace system.
  * @type - the plugin for the tracer
@@ -644,8 +657,14 @@ __acquires(kernel_lock)
 	for (t = trace_types; t; t = t->next) {
 		if (strcmp(type->name, t->name) == 0) {
 			/* already found */
-			pr_info("Tracer %s already registered\n",
+			pr_info("Tracer '%s' already registered\n",
 				type->name);
+			if (type->need_options_create) {
+				pr_info("Creating options files "
+					"(deferred previously)\n");
+				topts = create_trace_option_files(type);
+				type->need_options_create=0;
+			}
 			ret = -1;
 			goto out;
 		}
@@ -709,6 +728,7 @@ __acquires(kernel_lock)
 	printk(KERN_INFO "Starting tracer '%s'\n", type->name);
 	/* Do we want this tracer to start on bootup? */
 	tracing_set_tracer(type->name);
+
 	default_bootup_tracer = NULL;
 	/* disable other selftests, since this will break it. */
 	tracing_selftest_disabled = 1;
@@ -977,6 +997,38 @@ void tracing_record_cmdline(struct task_struct *tsk)
 
 	trace_save_cmdline(tsk);
 }
+
+#ifdef CONFIG_FUNCTION_DURATION_TRACER
+void __duration_return(struct trace_array *tr,
+				struct ftrace_graph_ret *trace,
+				unsigned long flags,
+				int pc)
+{
+	struct ftrace_event_call *call = &event_funcgraph_exit;
+	struct ring_buffer_event *event;
+	struct ring_buffer *buffer = tr->buffer;
+	struct ftrace_graph_ret_entry *entry;
+
+	if (unlikely(local_read(&__get_cpu_var(ftrace_cpu_disabled))))
+		return;
+
+	/* check duration filter */
+	if (tracing_thresh &&
+			(trace->rettime - trace->calltime) < tracing_thresh) {
+		return;
+	}
+
+	event = trace_buffer_lock_reserve(buffer, TRACE_GRAPH_RET,
+					  sizeof(*entry), flags, pc);
+	if (!event)
+		return;
+	entry	= ring_buffer_event_data(event);
+	entry->ret = *trace;
+
+	if (!filter_current_check_discard(buffer, call, entry, event))
+		ring_buffer_unlock_commit(buffer, event);
+}
+#endif
 
 void
 tracing_generic_entry_update(struct trace_entry *entry, unsigned long flags,
@@ -2679,17 +2731,13 @@ int tracing_update_buffers(void)
 	return ret;
 }
 
-struct trace_option_dentry;
-
-static struct trace_option_dentry *
-create_trace_option_files(struct tracer *tracer);
-
 static void
 destroy_trace_option_files(struct trace_option_dentry *topts);
 
+static int tracer_debugfs_initialized;
+
 static int tracing_set_tracer(const char *buf)
 {
-	static struct trace_option_dentry *topts;
 	struct trace_array *tr = &global_trace;
 	struct tracer *t;
 	int ret = 0;
@@ -2718,11 +2766,17 @@ static int tracing_set_tracer(const char *buf)
 	if (current_trace && current_trace->reset)
 		current_trace->reset(tr);
 
-	destroy_trace_option_files(topts);
+	if (tracer_debugfs_initialized)
+		destroy_trace_option_files(topts);
 
 	current_trace = t;
 
-	topts = create_trace_option_files(current_trace);
+	if (tracer_debugfs_initialized) {
+		topts = create_trace_option_files(current_trace);
+		t->need_options_create = 0;
+	} else {
+		t->need_options_create = 1;
+	}
 
 	if (t->init) {
 		ret = tracer_init(t, tr);
@@ -4177,9 +4231,9 @@ static __init int tracer_init_debugfs(void)
 	trace_create_file("tracing_max_latency", 0644, d_tracer,
 			&tracing_max_latency, &tracing_max_lat_fops);
 
+#endif
 	trace_create_file("tracing_thresh", 0644, d_tracer,
 			&tracing_thresh, &tracing_max_lat_fops);
-#endif
 
 	trace_create_file("README", 0444, d_tracer,
 			NULL, &tracing_readme_fops);
@@ -4212,6 +4266,7 @@ static __init int tracer_init_debugfs(void)
 	for_each_tracing_cpu(cpu)
 		tracing_init_debugfs_percpu(cpu);
 
+	tracer_debugfs_initialized = 1;
 	return 0;
 }
 
@@ -4435,6 +4490,9 @@ __init static int tracer_alloc_buffers(void)
 	current_trace = &nop_trace;
 #ifdef CONFIG_BOOT_TRACER
 	register_tracer(&boot_tracer);
+#endif
+#ifdef CONFIG_FUNCTION_DURATION_TRACER
+	register_tracer(&duration_trace);
 #endif
 	/* All seems OK, enable tracing */
 	tracing_disabled = 0;

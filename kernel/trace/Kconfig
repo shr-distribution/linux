@@ -153,6 +153,14 @@ config FUNCTION_GRAPH_TRACER
 	  the return value. This is done by setting the current return 
 	  address on the current task structure into a stack of calls.
 
+config FUNCTION_DURATION_TRACER
+	bool "Kernel Function Duration Tracer"
+	depends on FUNCTION_GRAPH_TRACER
+	default y
+	help
+	  Enable the kernel to record function durations, with
+	  filtering.  Can also be used in early startup.
+	  See Documentation/trace/func-duration.txt
 
 config IRQSOFF_TRACER
 	bool "Interrupts-off Latency Tracer"

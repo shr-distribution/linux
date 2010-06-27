@@ -1,0 +1,762 @@
+#!/usr/bin/env python
+#
+# fdd (function duration dump):
+# Read data from an ftrace duration dump, and format various ways.
+#
+# Based on kd (kft dump).
+#
+# Written by Tim Bird
+#
+# Copyright 2009 Sony Corporation of America
+#
+# GPL 2.0 applies
+#
+# ChangeLog:
+#  0.7.2 - 2009/09/22 - add option to specify interrupt routine (int_func)
+#	adjust stack handling for int functions, add support for 'Ms time'
+#  0.7.1 - 2009/09/17 - add --fields option
+#  0.7.0 - 2009/07/28 - handle cpu, add filtering, and commmand line
+#    option for dump_list, fix func_stack management
+#
+# ToDo:
+#
+
+MAJOR_VERSION = 0
+MINOR_VERSION = 7
+SUBMINOR_VERSION = 2
+
+# define some constants
+UNKNOWN = "-1"
+PROGNAME_UNKNOWN = "unknown_progname"
+PID_UNKNOWN = "-2"
+TIME_UNKNOWN = "0.000000"
+
+import sys, os
+import time
+import re
+
+debug = 0
+
+class stats_class:
+	def __init__(self):
+		self.missing_callers = 0
+		self.total_functions = 0
+
+def dprint(msg):
+	global debug
+	if debug:
+		print msg
+
+def usage():
+	print """Usage: %s [<options>] <trace-filename>
+This program parses the output from a set of function duration trace lines
+
+Options:
+  -d            Show a list of functions, sorted by calltime and filtered
+                an expressions (if any).
+  -n <num>	Only show the <num> most time-consuming functions.
+  -t <time>     Only show functions with time greater than <time>.
+  -i <int_func> Recognize <int_func> as an interrupt function.  This
+		results in special handling of that function.
+  -e <expr>     Filter data by given expression.  Currently supported
+                expressions are: 'cpu==x' and 'pid==y'
+  -f <format>   Show columns indicated by <format> string.  Each field is
+                represented by a single character. See '--fields'.
+		The default format string is "fctal", which shows
+		"function, count, time, average, local time" in that order.
+  --fields      Show available fields and their format chars.
+  -l            Show long listing (format string is "fctalrsmnx").
+                Use a wide terminal window for this, if possible.
+  -s <col-ID>   Sort by the column with the specified ID.  Can be one
+                of: f,c,t,a,s,l.  Default is to sort by total time, 't'.
+  -w            Show warnings while reading log data, including warnings
+		about functions dropped due to missing trace information.
+  -z            Show some statistics about the data and parse warnings.
+  -h, --help    Show this usage help.
+  -V, --version Show version information.
+""" % os.path.basename(sys.argv[0])
+	sys.exit(1)
+
+def show_output_fields():
+	print """Field help for %s:
+Available fields, identified by format character, are:
+  f = Function name
+  c = Count - number of times function was called
+  t = Time - total time spent in this function
+  a = Average - average time per function call
+  l = Local time - time not spent in sub-routines
+	This is the total time of the function, minus the sub-time,
+	and usually gives a good indication of how long a function
+	takes to do its own work.  Be careful interpreting this value
+	when using filters, since sub-functions (and their time) may
+	be omitted from the trace.
+  r = Range - minimum and maximum times for a single call
+  s = Sub-time - time spent in sub-routines
+  m = Max sub-routine - name of sub-routine with max time
+  n = Max sub-routine count - # of times max sub-routine was called
+  x = Max sub-routine cost - time spent in calls to max sub-routines
+  u = Sub-routine list - this feature is experimental
+""" % os.path.basename(sys.argv[0])
+	sys.exit(1)
+
+class func_node:
+	sort_order = "t"
+	def __init__(self, name, pid):
+		self.name = name
+		self.callers = []
+		# times are int(nanoseconds)
+		self.total_time = 0
+		self.min = 99999999999
+		self.max = 0
+		self.subs = []
+		self.sub_time = 0
+		self.sub_list = {}
+
+	def get_name(self):
+		return self.name
+
+	def add_call(self, caller, fc):
+		dur = int(fc.duration * 1000000000)
+		dprint("in add_call: func: %s, caller: %s, pid: %s, dur: %s" % \
+			(self.name, caller, fc.pid, dur))
+		self.callers.append((caller, fc.pid, dur))
+		self.total_time += dur
+		dprint("%s total_time=%d" % (self.name, self.time()))
+		if dur < self.min:
+			self.min = dur
+		if dur > self.max:
+			self.max = dur
+		dprint("%s local_time=%d" % (self.name, self.local_time()))
+
+	def add_sub(self, fc):
+		dprint("func: %s, sub: %s, pid: %s, dur: %s" % \
+			(fc.name, self.name, fc.pid, fc.duration))
+		dur = int(fc.duration * 1000000000)
+		self.subs.append((fc.name, fc.pid, dur))
+		self.sub_list[fc.name] = 1
+		self.sub_time += dur
+		dprint("new %s sub_time=%1.3f" % (self.name, self.get_sub_time()))
+		dprint("%s local_time=%d" % (self.name, self.local_time()))
+
+	def time(self):
+		return self.total_time/1000
+
+	def call_count(self):
+		return len(self.callers)
+
+	def avg_time(self):
+		count = len(self.callers)
+		if self.total_time==0:
+			return 0
+		else:
+			return ((self.total_time)/1000)/count
+
+	def time_range(self):
+		count = self.call_count()
+		if count >= 1:
+			return "(%d-%d)" % (self.min/1000, self.max/1000)
+		else:
+			return ""
+
+	def get_sub_time(self):
+		return float(self.sub_time)/1000
+
+	def local_time(self):
+		if self.total_time!=0:
+			return (self.total_time - self.sub_time)/1000
+		else:
+			return 0
+
+	def sub_list(self):
+		return str(self.sub_list.keys())
+
+	def __cmp__(self, other):
+		if self.sort_order == "t":
+			return cmp(self.total_time, other.total_time)
+		if self.sort_order == "f":
+			return cmp(self.name, other.name)
+		if self.sort_order == "c":
+			return cmp(self.call_count(), other.call_count())
+		if self.sort_order == "a":
+			return cmp(self.avg_time(), other.avg_time())
+		if self.sort_order == "s":
+			return cmp(self.sub_time, other.sub_time)
+		if self.sort_order == "l":
+			return cmp(self.local_time(), other.local_time())
+		# huh? no match, sort by total time
+		return cmp(self.total_time, other.total_time)
+
+class func_call:
+	def __init__(self, name, depth, calltime, duration, endtime,
+			cpu,  prog_name, pid, line_no):
+		self.name = name
+		self.depth = depth
+		# times are in float(seconds)
+		self.calltime = float(calltime)
+		self.duration = float(duration)/1000000
+		if endtime==TIME_UNKNOWN:
+			self.endtime = self.calltime + self.duration
+		else:
+			self.endtime = float(endtime)
+
+		self.cpu = cpu
+		self.prog_name = prog_name
+		self.pid = pid
+		self.line_no = line_no
+	def __repr__(self):
+		return "func_call: %f:%s" % (self.calltime, self.name)
+
+def cmp_func_calls(a, b):
+	return cmp(a.calltime, b.calltime)
+
+def dump_funcs(funcs):
+	test_keys = ["free_pid", "free_pidmap", "call_rcu", "__call_rcu"]
+	for (key, value) in funcs.items():
+		if key not in test_keys:
+			continue
+		print "func:%s" % key
+		print "   time: %s, call_count: %s, avg_time: %s, local_time: %s, sub_time: %s" % (value.time(), value.call_count(), value.avg_time(), value.local_time(), value.sub_time)
+
+
+def get_max_sub(parent_func):
+	global funcs_for_max_sub
+
+	# stupid kludge for passing funcs here through a global
+	funcs = funcs_for_max_sub
+	max_sub = None
+	for (name, pid, duration) in parent_func.subs:
+		if funcs.has_key(name):
+			sub_func = funcs[name]
+			if not max_sub:
+				max_sub = sub_func
+			else:
+				if sub_func.time() > max_sub.time():
+					max_sub = sub_func
+
+	return max_sub
+
+def max_sub_name(parent_func):
+	max_sub = get_max_sub(parent_func)
+	if max_sub:
+		return max_sub.get_name()
+	else:
+		return ""
+
+def max_sub_count(parent_func):
+	global funcs_for_max_sub
+
+	max_sub = get_max_sub(parent_func)
+
+	funcs = funcs_for_max_sub
+	if max_sub:
+		ms_name = max_sub.get_name()
+		ms_count = 0
+		for (name, pid, duration) in parent_func.subs:
+			if funcs.has_key(name):
+				if name == ms_name:
+					ms_count = ms_count + 1
+		return ms_count
+	else:
+		return 0
+
+def max_sub_time(parent_func):
+	max_sub = get_max_sub(parent_func)
+	if max_sub:
+		return max_sub.time()
+	else:
+		return 0
+
+class display_flags:
+	pass
+
+# print errors or warnings for missing fields
+def check_fields(fields):
+	global show_warnings
+
+	if "TASK/PID" not in fields and show_warnings:
+		print "Warning: trace log is missing TASK/PID field"
+		print "Using this field helps with some calculations"
+		print "Try: echo duration-proc >/debug/tracing/trace_options"
+
+# parse lines from ftrace output
+# by default, each line consists of:
+# CPU  CALLTIME | OVERHEAD DURATION |  FUNCTION CALLS
+# the 3rd commented line may be a key to the printed fields
+#
+# Here's a sample line, with default options (cpu, overhead, duration):
+# 0) 100.123456789 | + 10.167 us   |                mem_serial_in();
+#
+# here's a sample line with proc turned on:
+# 0)    tail-585    |   706.541604750 |  + 13.834 us   |   kmem_cache_alloc
+#
+# Here's a sample line, with abstime turned on:
+# note cpu is with calltime!!
+#   582.159156 | 0) 100.123456789 | ! 576.000 us  |        }
+#
+# Here's a sample line, with abstime and proc turned on:
+# note cpu is with proc info!!
+#  582.159156 |   0)  ash-547     |   9.833 us    |      fd_install();
+#
+# NOTE: Handling this variable format is a big pain!
+
+def parse_funcduration_lines(lines):
+	global stats
+
+	func_list = {}
+	pids = {}
+
+
+	fields = ["CPU", "CALLTIME", "DURATION", "FUNCTION", "CALLS"]
+
+	non_white_pat = re.compile("[^ ]")
+	progname = PROGNAME_UNKNOWN
+	pid = PID_UNKNOWN
+	abstime = TIME_UNKNOWN
+	cpu = "0"
+
+	# find start line:
+	line_no = 0
+	for line in lines:
+		line_no += 1
+
+		# skip blank lines
+		if not line.strip():
+			continue
+
+		# scan comment lines for the field key
+		if line.startswith("#"):
+			# see if it's the key
+			if line.find("FUNCTION")!=-1:
+				fields = line[1:].split()
+				dprint("fields=%s" % fields)
+				check_fields(fields)
+			continue
+
+		line = line.strip()
+		dprint("%d: line=%s" % (line_no, line))
+
+		# possible line formats are:
+		# 1: cpu) calltime | overhead duration units | function
+		# 2: abstime | cpu) calltime | overhead duration units | function
+		# 3: abstime | cpu) task-pid | calltime | overhead duration units | function
+		# 4: calltime | overhead duration units | function
+		# 5: abstime | calltime | overhead duration units | function
+		# 6: task-pid | calltime | overhead duration units | function
+
+		# parse CPU separately, because it doesn't use a
+		# regular delimiter
+
+		if "CPU" in fields:
+			# last item prior to first ')' is cpu number
+			items = line.split(")")
+			front_part = items[0]
+			front_list = front_part.split()
+			cpu = int(front_list[-1])
+			# remake string without cpu
+			del(front_list[-1])
+			front_part = " ".join(front_list)
+			line = front_part+")".join(items[1:])
+
+		parts = line.split("|")
+		if "TIME" in fields:
+			time_part = parts[0]
+			del(parts[0])
+			prev_time = abstime
+			abstime = time_part.strip()
+
+		if "TASK/PID" in fields:
+			proc_part = parts[0]
+			del(parts[0])
+
+			# get progname and pid
+			last_dash = proc_part.rfind("-")
+			progname = proc_part[:last_dash]
+			pid = proc_part[last_dash+1:].strip()
+
+		calltime = parts[0].strip()
+		dur_info = parts[1].split()
+		func_part = parts[2]
+
+		# parse duration information
+		overhead = ""
+		duration = UNKNOWN
+		units = "us"
+		# check for overhead
+		if dur_info[0]=="+" or dur_info[0]=="!":
+			overhead = dur_info[0]
+			dur_info = dur_info[1:]
+		# now get duration
+		duration = dur_info[0]
+		units = dur_info[1]
+
+		# parse function and depth
+		try:
+			m = non_white_pat.search(func_part)
+			func_depth = m.start()/2
+		except:
+			func_depth = 0
+		func_name = func_part.split()[0]
+
+		dprint("task=%s, pid=%s, func_name=%s, func_depth=%s" % \
+			(progname, pid, func_name, func_depth))
+
+		if func_name.startswith("/*"):
+			# skip trace_marker comments
+			continue
+
+		# record function in list
+		fc = func_call(func_name, func_depth, calltime, \
+			duration, abstime, cpu, progname, pid, line_no)
+		if func_list.has_key(cpu):
+			func_list[cpu].append(fc)
+		else:
+			func_list[cpu] = [fc]
+
+	return (func_list)
+
+# func_list is the list of functions, sorted by call entry time
+def generate_stat_info(func_list):
+	funcs = {}
+	root_list = []
+
+	for fl in func_list.values():
+		generate_stat_info_for_cpu(fl, funcs, root_list)
+
+	return(funcs, root_list)
+
+def generate_stat_info_for_cpu(func_list, funcs, root_list):
+	global int_func
+
+	NO_PID = "-1"
+
+	cur_pid = NO_PID
+	# func_stacks[pid] = [list of active funcs]
+	func_stack_for_pid = {}
+	func_stack = []
+
+	for fc in func_list:
+		stats.total_functions += 1
+
+		# determine caller here, using active func_stack
+		caller = UNKNOWN
+
+		# First, detect pid change and change stacks
+		if cur_pid != fc.pid:
+			# save old stack
+			func_stack_for_pid[cur_pid] = func_stack
+			cur_pid = fc.pid
+			# get new stack
+			try:
+				func_stack = func_stack_for_pid[cur_pid]
+			except:
+				func_stack = []
+
+
+		# manage the active function stack
+		# remove expired functions
+		# function is expired if it's depth is greater than current
+		#         function depth
+		# function is expired if it's endtime is less than current
+		#	  function calltime
+		while func_stack and func_stack[-1].depth > fc.depth:
+			dprint("expiring %s from func_stack due to depth" % func_stack[-1])
+			func_stack.pop()
+		while func_stack and func_stack[-1].endtime < fc.calltime:
+			dprint("expiring %s from func_stack due to endtime" % func_stack[-1])
+			func_stack.pop()
+
+		if fc.depth==1 or fc.name==int_func:
+			root_list.append(fc)
+		else:
+			# find caller in active func stack
+			# cc = caller_candidate
+			if func_stack:
+				cc = func_stack[-1]
+				if cc.calltime < fc.calltime and \
+					cc.endtime >= cc.endtime and \
+					cc.depth == fc.depth-1:
+					caller = cc.name
+					dprint("found caller=%s" % caller)
+				else:
+					print "Warning: %s (line %d) is not caller of %s (at line %d)" % \
+						(cc.name, cc.line_no, fc.name, fc.line_no)
+			else:
+				if show_warnings:
+					print "Warning: empty func_stack for func %s at depth %d" % (fc, fc.depth)
+
+		# FIXTHIS - track stats by CPU?
+		if not funcs.has_key(fc.name):
+			funcs[fc.name] = func_node(fc.name, fc.pid)
+
+		funcs[fc.name].add_call(caller, fc)
+
+		if caller != UNKNOWN:
+			if not funcs.has_key(caller):
+				funcs[caller] = func_node(caller, fd.pid)
+			funcs[caller].add_sub(fc)
+		else:
+			if fc.depth != 1:
+				stats.missing_callers += 1
+				if show_warnings:
+					print "Warning: Could not find caller for %s at depth %d" % (fc, fc.depth)
+
+		# add this function to bottom of stack
+		func_stack.append(fc)
+		dprint("cur_pid=%s, func_stack = %s" % (cur_pid, func_stack))
+
+	if (debug):
+		dump_funcs(funcs)
+
+	return(funcs, root_list)
+
+class column:
+	def __init__(self, id, name, len, format, data_func):
+		self.id = id
+		self.name = name
+		self.format = format
+		self.tlen = len
+		self.data_func = data_func
+	def show_title(self):
+		format = "%-"+"%ss" % self.tlen
+		print format % self.name,
+	def show_bar(self):
+		print "-"*self.tlen,
+	def show_data(self, arg):
+		print self.format % self.data_func(arg),
+
+def init_columns():
+	global columns
+
+	columns = {}
+	columns['f'] = column('f', "Function", 30, "%-30s", func_node.get_name)
+	columns['c'] = column('c', "Count", 5, "%5d", func_node.call_count)
+	columns['t'] = column('t', "Time", 8, "%8d", func_node.time)
+	columns['a'] = column('a', "Average", 8, "%8d", func_node.avg_time)
+	columns['r'] = column('r', "Range", 18, "%18s", func_node.time_range)
+	columns['s'] = column('s', "Sub-time", 8, "%8d", func_node.get_sub_time)
+	columns['l'] = column('l', "Local", 8, "%8d", func_node.local_time)
+	columns['m'] = column('m', "Max-sub", 30, "%30s", max_sub_name)
+	columns['n'] = column('n', "Ms cnt", 6, "%6d", max_sub_count)
+	columns['u'] = column('u', "Sub list", 20, "%s", func_node.sub_list)
+	columns['x'] = column('x', "Ms time", 8, "%8d", max_sub_time)
+
+
+def show_func_stats(funcs, show_count, show_time, col_list):
+	global columns, funcs_for_max_sub
+
+	funcs_for_max_sub = funcs
+	funclist = funcs.values()
+	funclist.sort()
+	funclist.reverse()
+
+	if not col_list:
+		col_list = "fctal"
+
+	# filter the col_list to only valid columns
+	col_list_old = col_list
+	col_list = ""
+	for col_id in col_list_old:
+		if not columns.has_key(col_id):
+			print "Invalid column id: %s" % col_id
+		else:
+			col_list = col_list + col_id
+
+	# show titles
+	for col_id in col_list:
+		col = columns[col_id]
+		col.show_title()
+	print
+
+	# show bar underneath title
+	for col_id in col_list:
+		col = columns[col_id]
+		col.show_bar()
+	print
+
+	# show data
+	i = 0
+	for func in funclist:
+		if show_time and func.total_time < show_time:
+			continue
+		if show_count:
+			i = i+1
+			if i>show_count:
+				continue
+		for col_id in col_list:
+			col = columns[col_id]
+			col.show_data(func)
+		print
+
+def dump_list(func_list):
+	print "#   CALLTIME    DURATION          FUNCTION CALLS"
+	print "#      |          |   |             |   |   |   |"
+
+	cpu_list = func_list.keys()
+	cpu_list.sort()
+
+	for cpu in cpu_list:
+		for fc in func_list[cpu]:
+			print "%d) %15.9f | %9.3f |%s%s" %  (fc.cpu, fc.calltime, \
+				fc.duration*1000000, "  "*fc.depth, fc.name)
+
+filter_warning_emitted = 0
+
+def filter_match(filter_expr, fc):
+	global filter_warning_emitted
+
+	if filter_expr.startswith("cpu=="):
+		match_cpu = int(filter_expr[5:])
+		if fc.cpu == match_cpu:
+			return 1
+		else:
+			return 0
+
+	if filter_expr.startswith("pid=="):
+		match_pid = filter_expr[5:]
+		if fc.pid == match_pid:
+			return 1
+		else:
+			return 0
+
+	if not filter_warning_emitted:
+		filter_warning_emitted = 1
+		print "Warning: unknown filter: '%s' - unable to process" % filter_expr
+		# raise an error here?
+	return 1
+
+
+def filter_list(func_list, filter_expr):
+	for cpu in func_list.keys():
+		fl = func_list[cpu]
+		new_fl = []
+		for fc in func_list[cpu]:
+			if filter_match(filter_expr, fc):
+				new_fl.append(fc)
+		func_list[cpu] = new_fl
+
+def main():
+	global debug, show_warnings
+	global show_fdd_stats, stats
+	global int_func
+
+	filein = ""
+	show_count = 0
+	show_time = 0
+	debug = 0
+	col_list = ""
+	sort_order = "t"
+	show_warnings = 0
+	filter_expr = ""
+	show_stats = 1
+	show_dump_list = 0
+	int_func = ""
+
+	stats = stats_class()
+	show_fdd_stats = 0
+
+	args = sys.argv[1:]
+	if "-h" in args or "--help" in args:
+		usage()
+	if "--fields" in args:
+		show_output_fields()
+	if "-V" in args or "--version" in args:
+		print "Function Duration Dump - version %s.%s.%s" % \
+			(MAJOR_VERSION, MINOR_VERSION, SUBMINOR_VERSION)
+		sys.exit(0)
+	if "-l" in args:
+		col_list = "fctalrsmnx"
+		args.remove("-l")
+	if "-d" in args:
+		show_stats = 0
+		show_dump_list = 1
+		args.remove("-d")
+	if "-n" in args:
+		i = args.index("-n")
+		show_count = int(args[i+1])
+		del(args[i+1])
+		del(args[i])
+	if "-i" in args:
+		i = args.index("-i")
+		int_func = args[i+1]
+		del(args[i+1])
+		del(args[i])
+	if "-t" in args:
+		i = args.index("-t")
+		show_time = int(args[i+1])
+		del(args[i+1])
+		del(args[i])
+	if "-f" in args:
+		i = args.index("-f")
+		col_list = args[i+1]
+		del(args[i+1])
+		del(args[i])
+	if "-e" in args:
+		i = args.index("-e")
+		filter_expr = args[i+1]
+		del(args[i+1])
+		del(args[i])
+	if "-s" in args:
+		i = args.index("-s")
+		sort_order = args[i+1]
+		del(args[i+1])
+		del(args[i])
+		if sort_order not in ["f", "c", "t", "a", "s", "l"]:
+			print "Invalid sort order. Use '-h' for help."
+			sys.exit(1)
+	if "-w" in args:
+		show_warnings = 1
+		args.remove("-w")
+	if "-z" in args:
+		show_fdd_stats = 1
+		args.remove("-z")
+	if "--debug" in args:
+		debug = 1
+		args.remove("--debug")
+
+	if len(args)==1:
+		filein = args[0]
+
+	if not filein:
+		print "No filename specified. See usage for help. (Use -h)"
+		sys.exit(1)
+
+	try:
+		lines = open(filein,"r").readlines()
+	except:
+		print "Problem opening file: %s" % filein
+		sys.exit(1)
+
+	func_list = parse_funcduration_lines(lines)
+
+	if filter_expr:
+		filter_list(func_list, filter_expr)
+
+	# sort call list by start time
+	for cpu in func_list.keys():
+		func_list[cpu].sort(cmp_func_calls)
+
+	# show functions sorted by call-time
+	# this can be used in place of cat <file> | sort -k2
+	if show_dump_list:
+		dump_list(func_list)
+
+	if show_stats:
+		(funcs, root_list) = generate_stat_info(func_list)
+
+		init_columns()
+		func_node.sort_order = sort_order
+		show_func_stats(funcs, show_count, show_time, col_list)
+
+	if show_fdd_stats:
+		print "Trace stats:"
+		print "   %d total functions" % stats.total_functions
+		print "   missing callers: %d" % stats.missing_callers
+
+if __name__ == "__main__":
+	try:
+		main()
+	except IOError:
+		# skip broken pipe errors (from e.g. "kd foo | head")
+		(exc_type, exc_value, exc_trace) = sys.exc_info()
+		if str(exc_value)!="[Errno 32] Broken pipe":
+			raise
