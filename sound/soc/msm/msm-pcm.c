@@ -142,7 +142,7 @@ void alsa_dsp_event(void *data, unsigned id, uint16_t *msg)
 			spin_lock_irqsave(&the_locks.write_dsp_lock, flag);
 			if (prtd->running) {
 				prtd->out[idx].used = 0;
-				frame = prtd->out + prtd->out_tail;
+				frame = &prtd->out[prtd->out_tail];
 				if (frame->used) {
 					audio_dsp_send_buffer(prtd,
 							      prtd->out_tail,
@@ -391,7 +391,7 @@ ssize_t alsa_send_buffer(struct msm_audio *prtd, const char __user *buf,
 
 	mutex_lock(&the_locks.write_lock);
 	while (count > 0) {
-		frame = prtd->out + prtd->out_head;
+		frame = &prtd->out[prtd->out_head];
 		rc = wait_event_interruptible(the_locks.write_wait,
 					      (frame->used == 0)
 					      || (prtd->stopped));
