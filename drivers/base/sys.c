@@ -385,7 +385,8 @@ int sysdev_suspend(pm_message_t state)
 	/* Return error code if there are any wake-up interrupts pending */
 	ret = check_wakeup_irqs();
 	if (ret)
-		return ret;
+		//return ret;
+		printk( KERN_INFO "sysdev_suspend: Wakeup IRQs are pending\n" );
 
 	WARN_ONCE(!irqs_disabled(),
 		"Interrupts enabled while suspending system devices\n");
