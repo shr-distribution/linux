@@ -393,7 +393,7 @@ EXPORT_SYMBOL(audpp_set_volume_and_pan);
 int audpp_pause(unsigned id, int pause)
 {
 	/* pause 1 = pause 0 = resume */
-	uint16_t pause_cmd[AUDPP_CMD_DEC_CTRL_LEN / sizeof(unsigned short)];
+	u16 pause_cmd[AUDPP_CMD_DEC_CTRL_LEN / sizeof(unsigned short)];
 
 	if (id >= CH_COUNT)
 		return -EINVAL;
@@ -414,7 +414,7 @@ EXPORT_SYMBOL(audpp_pause);
 
 int audpp_flush(unsigned id)
 {
-	uint16_t flush_cmd[AUDPP_CMD_DEC_CTRL_LEN / sizeof(unsigned short)];
+	u16 flush_cmd[AUDPP_CMD_DEC_CTRL_LEN / sizeof(unsigned short)];
 
 	if (id >= CH_COUNT)
 		return -EINVAL;
