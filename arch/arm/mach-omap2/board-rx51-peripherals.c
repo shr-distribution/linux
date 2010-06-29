@@ -890,6 +890,9 @@ static struct i2c_board_info __initdata rx51_peripherals_i2c_board_info_2[] = {
 		I2C_BOARD_INFO("tlv320aic3x", 0x19),
 		.platform_data = &rx51_aic3x_data2,
 	},
+	{
+		I2C_BOARD_INFO("aic34b_dummy", 0x19),
+	},
 #if defined(CONFIG_SENSORS_TSL2563) || defined(CONFIG_SENSORS_TSL2563_MODULE)
 	{
 		I2C_BOARD_INFO("tsl2563", 0x29),
