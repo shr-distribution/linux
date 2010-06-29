@@ -315,7 +315,8 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"Earpiece", NULL, "34B_HPLOUT"},
 	{"Earpiece", NULL, "34B_HPLCOM"},
 
-	{"LINE1L", NULL, "Mic Jack"},
+	{"LINE1L", NULL, "34B Mic Bias 2.5V"},
+	{"34B Mic Bias 2.5V", NULL, "Mic Jack"}
 };
 
 static const char *spk_function[] = {"Off", "On"};
