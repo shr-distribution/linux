@@ -6,7 +6,7 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
-#include <linux/leds.h>
+#include <linux/backlight.h>
 #include <linux/clk.h>
 #include <linux/err.h>
 
@@ -22,11 +22,11 @@
 #include "proc_comm.h"
 #include "devices.h"
 
-#define TROUT_DEFAULT_BACKLIGHT_BRIGHTNESS 255
+#define TROUT_DEFAULT_BACKLIGHT_BRIGHTNESS 127
 
 static struct clk *gp_clk;
 static int trout_backlight_off;
-static int trout_backlight_brightness = TROUT_DEFAULT_BACKLIGHT_BRIGHTNESS;
+static int trout_backlight_resume_level = TROUT_DEFAULT_BACKLIGHT_BRIGHTNESS;
 static int trout_new_backlight = 1;
 static uint8_t trout_backlight_last_level = 33;
 static DEFINE_MUTEX(trout_backlight_lock);
@@ -467,7 +467,7 @@ static int trout_mddi_panel_unblank(
 		ret = -1;
 	};
 	mutex_lock(&trout_backlight_lock);
-	trout_set_backlight_level(trout_backlight_brightness);
+	trout_set_backlight_level(trout_backlight_resume_level);
 	trout_backlight_off = 0;
 	mutex_unlock(&trout_backlight_lock);
 	client_data->auto_hibernate(client_data, 1);
@@ -512,30 +512,45 @@ static int trout_mddi_panel_blank(
 	return ret;
 }
 
-static void trout_brightness_set(struct led_classdev *led_cdev, enum led_brightness value)
+static int trout_brightness_set(struct backlight_device *bd)
 {
+	int intensity;
 	mutex_lock(&trout_backlight_lock);
-	trout_backlight_brightness = value;
+	intensity = bd->props.brightness;
+
+	/* remember last backlight level as requested by user */
+	trout_backlight_resume_level = intensity;
+
 	if(!trout_backlight_off)
-		trout_set_backlight_level(trout_backlight_brightness);
+		trout_set_backlight_level(intensity);
 	mutex_unlock(&trout_backlight_lock);
+	return 0;
 }
 
-static struct led_classdev trout_backlight_led = {
-	.name			= "lcd-backlight",
-	.brightness = TROUT_DEFAULT_BACKLIGHT_BRIGHTNESS,
-	.brightness_set = trout_brightness_set,
+static int trout_backlight_get_brightness(struct backlight_device *bd){
+	return bd->props.brightness;
+}
+
+static struct backlight_ops trout_backlight_ops = {
+	.options = BL_CORE_SUSPENDRESUME,
+	.update_status	= trout_brightness_set,
+	.get_brightness	= trout_backlight_get_brightness,
 };
 
 static int trout_backlight_probe(struct platform_device *pdev)
 {
-	led_classdev_register(&pdev->dev, &trout_backlight_led);
+	struct backlight_device *bd;
+	bd = backlight_device_register("trout-backlight", &pdev->dev, NULL, &trout_backlight_ops);
+	bd->props.max_brightness = TROUT_DEFAULT_BACKLIGHT_BRIGHTNESS;
+	bd->props.brightness = TROUT_DEFAULT_BACKLIGHT_BRIGHTNESS;
+	trout_brightness_set(bd);
 	return 0;
 }
 
 static int trout_backlight_remove(struct platform_device *pdev)
 {
-	led_classdev_unregister(&trout_backlight_led);
+	struct backlight_device *bl = platform_get_drvdata(pdev);
+	backlight_device_unregister(bl);
 	return 0;
 }
 
