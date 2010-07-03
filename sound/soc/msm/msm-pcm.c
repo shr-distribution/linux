@@ -34,7 +34,7 @@
 
 #include "msm-pcm.h"
 
-#define SEND_REALTIME_BUFFERS 0
+#define SEND_REALTIME_BUFFERS 1
 
 #define MAX_DATA_SIZE 496
 #define AUDPP_ALSA_DECODER	(-1)
