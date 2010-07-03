@@ -34,6 +34,8 @@
 
 #include "msm-pcm.h"
 
+#define SEND_REALTIME_BUFFERS 0
+
 #define MAX_DATA_SIZE 496
 #define AUDPP_ALSA_DECODER	(-1)
 
@@ -380,6 +382,18 @@ int alsa_audio_configure(struct msm_audio *prtd)
 }
 EXPORT_SYMBOL(alsa_audio_configure);
 
+static inline int rt_policy(int policy)
+{
+	if (unlikely(policy == SCHED_FIFO) || unlikely(policy == SCHED_RR))
+		return 1;
+	return 0;
+}
+
+static inline int task_has_rt_policy(struct task_struct *p)
+{
+	return rt_policy(p->policy);
+}
+
 ssize_t alsa_send_buffer(struct msm_audio *prtd, const char __user *buf,
 			  size_t count, loff_t *pos, int copy_count)
 {
@@ -388,7 +402,20 @@ ssize_t alsa_send_buffer(struct msm_audio *prtd, const char __user *buf,
 	struct buffer *frame;
 	size_t xfer;
 	int rc = 0;
+#if SEND_REALTIME_BUFFERS
+	int old_prio = current->rt_priority;
+	int old_policy = current->policy;
+	int cap_nice = cap_raised(current_cap(), CAP_SYS_NICE);
+	struct sched_param s = { .sched_priority = 1 };
 
+	/* just for this write, set us real-time */
+	if (!task_has_rt_policy(current)) {
+		struct cred *new = prepare_creds();
+		cap_raise(new->cap_effective, CAP_SYS_NICE);
+		commit_creds(new);
+		sched_setscheduler(current, SCHED_RR, &s);
+	}
+#endif
 	mutex_lock(&the_locks.write_lock);
 	while (count > 0) {
 		frame = &prtd->out[prtd->out_head];
@@ -428,6 +455,21 @@ ssize_t alsa_send_buffer(struct msm_audio *prtd, const char __user *buf,
 		}
 	}
 	mutex_unlock(&the_locks.write_lock);
+
+#if SEND_REALTIME_BUFFERS
+	/* restore scheduling policy and priority */
+	if (!rt_policy(old_policy)) {
+		struct sched_param v = { .sched_priority = old_prio };
+		sched_setscheduler(current, old_policy, &v);
+		if (likely(!cap_nice)) {
+			struct cred *new = prepare_creds();
+			cap_lower(new->cap_effective, CAP_SYS_NICE);
+			commit_creds(new);
+			sched_setscheduler(current, SCHED_RR, &s);
+		}
+	}
+#endif
+
 	if (buf > start)
 		return buf - start;
 	return rc;
