@@ -489,17 +489,17 @@ static int msm_pcm_playback_close(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct msm_audio *prtd = runtime->private_data;
-
 	int rc = 0;
 
 	printk("+playback_close()\n");
-
+#if 0
 	/* pcm dmamiss message is sent continously
 	 * when decoder is starved so no race
 	 * condition concern
 	 */
 	if(prtd->enabled)
 		rc = wait_event_interruptible(the_locks.eos_wait, prtd->eos_ack);
+#endif
 	prtd->mmap_flag = 0;
 
 	alsa_audio_disable(prtd);
