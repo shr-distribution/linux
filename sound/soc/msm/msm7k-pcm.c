@@ -385,18 +385,6 @@ static int msm_pcm_playback_copy(struct snd_pcm_substream *substream, int a,
 	return  rc;
 }
 
-static int msm_pcm_playback_silence(
-				    struct snd_pcm_substream *substream, 
-				    int a,
-				    snd_pcm_uframes_t pos, 
-				    snd_pcm_uframes_t frames)
-{
-	int rc = 1;
-	//TODO: Work in progress not commited yet.
-	return  rc;
-}
-
-
 static int msm_pcm_playback_close(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -437,15 +425,7 @@ static int msm_pcm_copy(struct snd_pcm_substream *substream, int a,
 static int msm_pcm_silence(struct snd_pcm_substream *substream, 
 	 int channels,snd_pcm_uframes_t pos, snd_pcm_uframes_t frames)
 {
-	int ret = 0;
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		ret = msm_pcm_playback_silence(substream, channels, 
-					    pos, frames);
-/* 	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) */
-/* 		ret = msm_pcm_capture_silence(substream, a, pos,  */
-/* 					   buf, frames); //TODO: untested */
-	return ret;
-
+	return 0;
 }
 
 static int msm_pcm_close(struct snd_pcm_substream *substream)
