@@ -389,7 +389,7 @@ static int msm_pcm_playback_close(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct msm_audio *prtd = runtime->private_data;
-
+#if 0
 	int rc = 0;
 
 	pr_debug("%s()\n", __func__);
@@ -401,7 +401,7 @@ static int msm_pcm_playback_close(struct snd_pcm_substream *substream)
 	if (prtd->enabled)
 		rc = wait_event_interruptible(the_locks.eos_wait,
 					prtd->eos_ack);
-
+#endif
 	alsa_audio_disable(prtd);
 	audmgr_close(&prtd->audmgr);
 	kfree(prtd);
