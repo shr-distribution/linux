@@ -20,7 +20,7 @@
 #include <linux/platform_device.h>
 #include <linux/vmalloc.h>
 #include <linux/err.h>
-#include <linux/wifi_tiwlan.h>
+#include <linux/spi/wl12xx.h>
 
 extern int trout_wifi_set_carddetect(int val);
 extern int trout_wifi_power(int on);
@@ -60,7 +60,7 @@ int __init trout_init_wifi_mem( void )
 }
 #endif
 
-struct wifi_platform_data trout_wifi_control = {
+struct wl12xx_platform_data trout_wifi_control = {
 	.set_power		= trout_wifi_power,
 	.set_reset		= trout_wifi_reset,
 	.set_carddetect		= trout_wifi_set_carddetect,

@@ -75,6 +75,8 @@
 #define TROUT_GPIO_HAPTIC_PWM               (28)
 #define TROUT_GPIO_PS_HOLD                  (25)
 
+#define TROUT_WIFI_IRQ_GPIO                 (29)
+
 #define TROUT_GPIO_MISC2_BASE               (TROUT_GPIO_START + 0x00)
 #define TROUT_GPIO_MISC3_BASE               (TROUT_GPIO_START + 0x08)
 #define TROUT_GPIO_MISC4_BASE               (TROUT_GPIO_START + 0x10)

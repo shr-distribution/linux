@@ -150,6 +150,11 @@ config HTC_PWRSPLY
 	help
 	  Used by HTC devices with a dedicated battery gauge"
 
+config TROUT_WIFI
+	depends on ARCH_MSM
+	default m
+	tristate "Trout Wifi Gpio driver (rfkill)"
+
 config HTC_PWRSINK
 	depends on MSM_SMD
 	default y

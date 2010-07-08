@@ -66,7 +66,7 @@
 #include <mach/htc_headset.h>
 #endif
 #ifdef CONFIG_WIFI_CONTROL_FUNC
-#include <linux/wifi_tiwlan.h>
+#include <linux/spi/wl12xx.h>
 #endif
 
 #include "proc_comm.h"
@@ -80,7 +80,7 @@ extern int trout_init_mmc(unsigned int);
 #ifdef CONFIG_WIFI_MEM_PREALLOC
 extern int trout_init_wifi_mem(void);
 #endif
-extern struct wifi_platform_data trout_wifi_control;
+extern struct wl12xx_platform_data trout_wifi_control;
 #endif
 
 struct trout_axis_info {
@@ -549,6 +549,40 @@ static struct msm_pmem_setting pmem_setting = {
 	.ram_console_size = MSM_RAM_CONSOLE_SIZE,
 };
 
+static void trout_wl1251_init(void)
+{
+       int ret;
+
+        ret = gpio_request(TROUT_GPIO_WIFI_PA_RESETX, "wl1251 nreset");
+        if (ret < 0)
+                goto fail;
+
+        ret = gpio_direction_output(TROUT_GPIO_WIFI_PA_RESETX, 0);
+        if (ret < 0)
+                goto fail_nreset;
+
+        ret = gpio_request(TROUT_WIFI_IRQ_GPIO, "wl1251 irq");
+        if (ret < 0)
+                goto fail_nreset;
+
+        ret = gpio_direction_input(TROUT_WIFI_IRQ_GPIO);
+        if (ret < 0)
+                goto fail_irq;
+
+        trout_wifi_control.irq = gpio_to_irq(TROUT_WIFI_IRQ_GPIO);
+        if (trout_wifi_control.irq < 0)
+                goto fail_irq;
+
+        return;
+
+fail_irq:
+        gpio_free(TROUT_WIFI_IRQ_GPIO);
+fail_nreset:
+        gpio_free(TROUT_GPIO_WIFI_PA_RESETX);
+fail:
+        printk(KERN_ERR "wl1251 board initialisation failed\n");
+}
+
 #ifdef CONFIG_WIFI_CONTROL_FUNC
 static struct platform_device trout_wifi = {
 	.name		= "msm_wifi",
@@ -827,6 +861,7 @@ static void __init trout_init(void)
 
 	/* SD card door should wake the device */
 	set_irq_wake(TROUT_GPIO_TO_INT(TROUT_GPIO_SD_DOOR_N), 1);
+	trout_wl1251_init();
 }
 
 static struct map_desc trout_io_desc[] __initdata = {
