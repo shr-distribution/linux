@@ -140,7 +140,7 @@ struct tag_acorn {
 #define ATAG_BOARD       0x414f4d50
 
 struct tag_omap {
-	u8 data[0];
+	__u8 data[0];
 };
 
 /* footbridge memory clock, see arch/arm/mach-footbridge/arch.c */
