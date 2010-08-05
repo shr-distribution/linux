@@ -1086,6 +1086,8 @@ static struct file_system_type cgroup_fs_type = {
 	.kill_sb = cgroup_kill_sb,
 };
 
+static struct kobject *cgroup_kobj;
+
 static inline struct cgroup *__d_cgrp(struct dentry *dentry)
 {
 	return dentry->d_fsdata;
@@ -2303,9 +2305,17 @@ int __init cgroup_init(void)
 			cgroup_init_subsys(ss);
 	}
 
-	err = register_filesystem(&cgroup_fs_type);
-	if (err < 0)
+	cgroup_kobj = kobject_create_and_add("cgroup", fs_kobj);
+	if (!cgroup_kobj) {
+		err = -ENOMEM;
 		goto out;
+	}
+
+	err = register_filesystem(&cgroup_fs_type);
+	if (err < 0) {
+		kobject_put(cgroup_kobj);
+		goto out;
+	}
 
 	entry = create_proc_entry("cgroups", 0, NULL);
 	if (entry)
