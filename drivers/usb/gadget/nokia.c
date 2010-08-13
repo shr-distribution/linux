@@ -46,6 +46,7 @@
 #include "u_serial.c"
 #include "f_acm.c"
 #include "f_ecm.c"
+#include "f_eem.c"
 #include "f_obex.c"
 #include "f_serial.c"
 #include "f_phonet.c"
@@ -97,6 +98,14 @@ static struct usb_device_descriptor device_desc = {
 
 /*-------------------------------------------------------------------------*/
 
+#ifdef CONFIG_USB_G_NOKIA_EEM
+static int use_eem = 1;
+#else
+static int use_eem;
+#endif
+module_param(use_eem, bool, 0);
+MODULE_PARM_DESC(use_eem, "use CDC EEM mode");
+
 /* Module */
 MODULE_DESCRIPTION("Nokia composite gadget driver for N900");
 MODULE_AUTHOR("Felipe Balbi");
@@ -126,9 +135,15 @@ static int __init nokia_bind_config(struct usb_configuration *c)
 	if (status)
 		printk(KERN_DEBUG "could not bind acm config\n");
 
-	status = ecm_bind_config(c, hostaddr);
-	if (status)
-		printk(KERN_DEBUG "could not bind ecm config\n");
+	if (use_eem) {
+		status = eem_bind_config(c);
+		if (status)
+			printk(KERN_DEBUG "could not bind eem config\n");
+	} else {
+		status = ecm_bind_config(c, hostaddr);
+		if (status)
+			printk(KERN_DEBUG "could not bind ecm config\n");
+	}
 
 	return status;
 }
