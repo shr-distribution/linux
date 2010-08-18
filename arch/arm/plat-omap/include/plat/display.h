@@ -310,7 +310,7 @@ struct omap_overlay {
 			struct omap_overlay_info *info);
 
 	int (*wait_for_go)(struct omap_overlay *ovl);
-	int (*notify_go)(struct omap_overlay *ovl);
+	int (*notify)(struct omap_overlay *ovl);
 };
 
 struct omap_overlay_manager_info {
@@ -354,7 +354,7 @@ struct omap_overlay_manager {
 
 	int (*apply)(struct omap_overlay_manager *mgr);
 	int (*wait_for_go)(struct omap_overlay_manager *mgr);
-	int (*notify_go)(struct omap_overlay_manager *mgr);
+	int (*notify)(struct omap_overlay_manager *mgr);
 	int (*wait_for_vsync)(struct omap_overlay_manager *mgr);
 
 	int (*enable)(struct omap_overlay_manager *mgr);
