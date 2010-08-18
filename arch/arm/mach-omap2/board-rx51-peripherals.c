@@ -42,6 +42,7 @@
 
 #include <sound/tlv320aic3x.h>
 #include <sound/tpa6130a2-plat.h>
+#include <linux/leds-lp5523.h>
 
 #include <../drivers/staging/iio/light/tsl2563.h>
 #include <linux/lis3lv02d.h>
@@ -66,6 +67,8 @@
 
 #define LIS302_IRQ1_GPIO 181
 #define LIS302_IRQ2_GPIO 180  /* Not yet in use */
+
+#define RX51_LP5523_CHIP_EN_GPIO        41
 
 /* list all spi devices here */
 enum {
@@ -151,6 +154,79 @@ static struct lis3lv02d_platform_data rx51_lis3lv02d_data = {
 #if defined(CONFIG_SENSORS_TSL2563) || defined(CONFIG_SENSORS_TSL2563_MODULE)
 static struct tsl2563_platform_data rx51_tsl2563_platform_data = {
 	.cover_comp_gain = 16,
+};
+#endif
+
+#if defined(CONFIG_LEDS_LP5523) || defined(CONFIG_LEDS_LP5523_MODULE)
+static struct lp5523_led_config rx51_lp5523_led_config[] = {
+	{
+		.chan_nr	= 0,
+		.led_current	= 50,
+	}, {
+		.chan_nr	= 1,
+		.led_current	= 50,
+	}, {
+		.chan_nr	= 2,
+		.led_current	= 50,
+	}, {
+		.chan_nr	= 3,
+		.led_current	= 50,
+	}, {
+		.chan_nr	= 4,
+		.led_current	= 50,
+	}, {
+		.chan_nr	= 5,
+		.led_current	= 50,
+	}, {
+		.chan_nr	= 6,
+		.led_current	= 50,
+	}, {
+		.chan_nr	= 7,
+		.led_current	= 50,
+	}, {
+		.chan_nr	= 8,
+		.led_current	= 50,
+	}
+};
+
+static int rx51_lp5523_setup(void)
+{
+	int err;
+
+	err = gpio_request(RX51_LP5523_CHIP_EN_GPIO, "lp5523_enable");
+	if (err < 0) {
+		pr_err("Unable to get lp5523_enable GPIO\n");
+		return err;
+	}
+
+	err = gpio_direction_output(RX51_LP5523_CHIP_EN_GPIO, 1);
+	if (err < 0) {
+		pr_err("Failed to change direction for %d GPIO\n",
+				RX51_LP5523_CHIP_EN_GPIO);
+	}
+	return err;
+}
+
+static void rx51_lp5523_release(void)
+{
+	gpio_free(RX51_LP5523_CHIP_EN_GPIO);
+}
+
+static void rx51_lp5523_enable(bool state)
+{
+	if (state)
+		gpio_set_value(RX51_LP5523_CHIP_EN_GPIO, 1);
+	else
+		gpio_set_value(RX51_LP5523_CHIP_EN_GPIO, 0);
+}
+
+static struct lp5523_platform_data rx51_lp5523_platform_data = {
+	.led_config		= rx51_lp5523_led_config,
+	.num_channels		= ARRAY_SIZE(rx51_lp5523_led_config),
+	.clock_mode		= LP5523_CLOCK_AUTO,
+	.setup_resources	= rx51_lp5523_setup,
+	.release_resources 	= rx51_lp5523_release,
+	.enable			= rx51_lp5523_enable,
 };
 #endif
 
@@ -901,6 +977,12 @@ static struct i2c_board_info __initdata rx51_peripherals_i2c_board_info_2[] = {
 		.platform_data = &rx51_tsl2563_platform_data,
 	},
 #endif
+#if defined(CONFIG_LEDS_LP5523) || defined(CONFIG_LEDS_LP5523_MODULE)
+	{
+		I2C_BOARD_INFO("lp5523", 0x32),
+		.platform_data  = &rx51_lp5523_platform_data,
+	},
+#endif
 	{
 		I2C_BOARD_INFO("tpa6130a2", 0x60),
 		.platform_data = &rx51_tpa6130a2_data,
@@ -1237,4 +1319,3 @@ void __init rx51_peripherals_init(void)
 	omap2_hsmmc_init(mmc);
 	platform_device_register(&rx51_charger_device);
 }
-
