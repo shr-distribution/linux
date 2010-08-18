@@ -430,9 +430,9 @@ static int dss_ovl_wait_for_go(struct omap_overlay *ovl)
 	return dss_mgr_wait_for_go_ovl(ovl);
 }
 
-static int dss_ovl_notify_go(struct omap_overlay *ovl)
+static int dss_ovl_notify(struct omap_overlay *ovl)
 {
-	return dss_mgr_notify_go_ovl(ovl);
+	return dss_mgr_notify_ovl(ovl);
 }
 
 static int omap_dss_set_manager(struct omap_overlay *ovl,
@@ -576,7 +576,7 @@ void dss_init_overlays(struct platform_device *pdev)
 		ovl->set_overlay_info = &dss_ovl_set_overlay_info;
 		ovl->get_overlay_info = &dss_ovl_get_overlay_info;
 		ovl->wait_for_go = &dss_ovl_wait_for_go;
-		ovl->notify_go = &dss_ovl_notify_go;
+		ovl->notify = &dss_ovl_notify;
 
 		ovl->supported_modes =
 			dss_feat_get_supported_color_modes(ovl->id);

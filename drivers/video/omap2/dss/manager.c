@@ -1091,7 +1091,7 @@ static void make_even(u16 *x, u16 *w)
 	*w = x2 - x1;
 }
 
-static int dss_mgr_notify_go(struct omap_overlay_manager *mgr)
+static int dss_mgr_notify(struct omap_overlay_manager *mgr)
 {
 	struct manager_cache_data *mc;
 	const int num_mgrs = ARRAY_SIZE(dss_cache.manager_cache);
@@ -1128,7 +1128,7 @@ static int dss_mgr_notify_go(struct omap_overlay_manager *mgr)
 	return 0;
 }
 
-int dss_mgr_notify_go_ovl(struct omap_overlay *ovl)
+int dss_mgr_notify_ovl(struct omap_overlay *ovl)
 {
 	struct overlay_cache_data *oc;
 	struct manager_cache_data *mc;
@@ -1188,17 +1188,17 @@ int omap_dss_request_notify(enum omap_dss_notify_event event,
 		mgr = omap_dss_get_overlay_manager(value);
 		if (!mgr)
 			return -EINVAL;
-		if (!mgr->notify_go)
+		if (!mgr->notify)
 			return -ENOSYS;
-		mgr->notify_go(mgr);
+		mgr->notify(mgr);
 		break;
 	case OMAP_DSS_NOTIFY_GO_OVL:
 		ovl = omap_dss_get_overlay(value);
 		if (!ovl)
 			return -EINVAL;
-		if (!ovl->notify_go)
+		if (!ovl->notify)
 			return -ENOSYS;
-		ovl->notify_go(ovl);
+		ovl->notify(ovl);
 		break;
 	default:
 		return -EINVAL;
@@ -1761,7 +1761,7 @@ int dss_init_overlay_managers(struct platform_device *pdev)
 		mgr->set_manager_info = &omap_dss_mgr_set_info;
 		mgr->get_manager_info = &omap_dss_mgr_get_info;
 		mgr->wait_for_go = &dss_mgr_wait_for_go;
-		mgr->notify_go = &dss_mgr_notify_go;
+		mgr->notify = &dss_mgr_notify;
 		mgr->wait_for_vsync = &dss_mgr_wait_for_vsync;
 
 		mgr->enable = &dss_mgr_enable;
