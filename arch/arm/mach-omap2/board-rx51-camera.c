@@ -531,17 +531,10 @@ static struct smia_sensor_platform_data rx51_smia_sensor_platform_data = {
  *
  */
 
-#ifdef CONFIG_VIDEO_MACH_RX51_OLD_I2C
-#define ET8EK8_I2C_BUS_NUM		2
-#define AD5820_I2C_BUS_NUM		2
-#define ADP1653_I2C_BUS_NUM		3
-#define SMIA_SENSOR_I2C_BUS_NUM		2
-#else /* CONFIG_VIDEO_MACH_RX51_OLD_I2C */
 #define ET8EK8_I2C_BUS_NUM		3
 #define AD5820_I2C_BUS_NUM		3
 #define ADP1653_I2C_BUS_NUM		2
 #define SMIA_SENSOR_I2C_BUS_NUM		2
-#endif
 
 static struct i2c_board_info rx51_camera_i2c_devices[] = {
 	{
