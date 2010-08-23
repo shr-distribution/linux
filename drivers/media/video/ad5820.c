@@ -210,7 +210,7 @@ ad5820_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 		ad5820_ctrls[CTRL_FOCUS_RAMP_MODE].default_value;
 
 	/* Detect that the chip is there */
-	rval = coil->platform_data->s_power(subdev, 1);
+	rval = coil->platform_data->set_xshutdown(subdev, 1);
 	if (rval)
 		goto not_detected;
 	rval = ad5820_write(coil, status);
@@ -220,7 +220,7 @@ ad5820_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 	if (rval != status)
 		goto not_detected;
 
-	coil->platform_data->s_power(subdev, 0);
+	coil->platform_data->set_xshutdown(subdev, 0);
 	return 0;
 
 not_detected:
@@ -330,7 +330,7 @@ ad5820_set_power(struct v4l2_subdev *subdev, int on)
 	/* Set the hardware power state. This will turn the power line on or
 	 * off.
 	 */
-	ret = coil->platform_data->s_power(subdev, on);
+	ret = coil->platform_data->set_xshutdown(subdev, on);
 	if (ret)
 		goto fail;
 
@@ -351,7 +351,7 @@ fail:
 	coil->power = was_on;
 	coil->standby = !was_on;
 
-	coil->platform_data->s_power(subdev, coil->power);
+	coil->platform_data->set_xshutdown(subdev, coil->power);
 	ad5820_update_hw(coil);
 
 	return ret;
@@ -384,7 +384,7 @@ static int ad5820_suspend(struct i2c_client *client, pm_message_t mesg)
 	if (!coil->power)
 		return 0;
 
-	return coil->platform_data->s_power(subdev, 0);
+	return coil->platform_data->set_xshutdown(subdev, 0);
 }
 
 static int ad5820_resume(struct i2c_client *client)
