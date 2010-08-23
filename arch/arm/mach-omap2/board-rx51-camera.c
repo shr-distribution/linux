@@ -228,7 +228,19 @@ static int rx51_stingray_set_xclk(struct v4l2_subdev *subdev, int hz)
 
 static int rx51_stingray_set_xshutdown(struct v4l2_subdev *subdev, int set)
 {
-	return rx51_camera_set_xshutdown(RX51_CAMERA_STINGRAY, set);
+	int ret;
+
+	ret = rx51_camera_set_xshutdown(RX51_CAMERA_STINGRAY, set);
+	if (ret == 0 && set) {
+		/* CONTROL_CSIRXFE
+		 * Data/strobe, enable transceiver, disable reset
+		 */
+		omap_writel(OMAP343X_CSIB_RESET | OMAP343X_CSIB_PWRDNZ |
+			    OMAP343X_CSIB_SELFORM,
+			    OMAP343X_CTRL_BASE + OMAP343X_CONTROL_CSIRXFE);
+	}
+
+	return ret;
 }
 
 static struct et8ek8_platform_data rx51_et8ek8_platform_data = {
@@ -310,7 +322,18 @@ static int rx51_acmelite_set_xclk(struct v4l2_subdev *subdev, int hz)
 
 static int rx51_acmelite_set_xshutdown(struct v4l2_subdev *subdev, int set)
 {
-	return rx51_camera_set_xshutdown(RX51_CAMERA_ACMELITE, set);
+	int ret;
+
+	ret = rx51_camera_set_xshutdown(RX51_CAMERA_ACMELITE, set);
+	if (ret == 0 && set) {
+		/* CONTROL_CSIRXFE
+		 * Data/clock, enable transceiver, disable reset
+		 */
+		omap_writel(OMAP343X_CSIB_RESET | OMAP343X_CSIB_PWRDNZ,
+			    OMAP343X_CTRL_BASE + OMAP343X_CONTROL_CSIRXFE);
+	}
+
+	return ret;
 }
 
 static struct smia_sensor_platform_data rx51_smia_sensor_platform_data = {
