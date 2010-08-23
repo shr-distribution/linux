@@ -346,10 +346,8 @@ static int et8ek8_power_off(struct v4l2_subdev *subdev)
 	int rval;
 
 	rval = sensor->platform_data->set_xshutdown(subdev, 0);
-	if (rval)
-		return rval;
 	udelay(1);
-	rval = sensor->platform_data->set_xclk(subdev, 0);
+	rval |= sensor->platform_data->set_xclk(subdev, 0);
 	return rval;
 }
 
