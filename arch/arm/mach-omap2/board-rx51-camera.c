@@ -300,15 +300,14 @@ static struct adp1653_platform_data rx51_adp1653_platform_data = {
 
 #define ACMELITE_XCLK		ISP_XCLK_A
 
-static int rx51_acmelite_configure_interface(struct v4l2_subdev *subdev,
-					     int width, int height)
+static void rx51_acmelite_configure_interface(struct v4l2_subdev *subdev,
+					      struct smia_mode *mode)
 {
 	struct isp_device *isp = v4l2_dev_to_isp_device(subdev->v4l2_dev);
 	unsigned int pixelclk;
 
 	pixelclk = rx51_calc_pixelclk(mode);
 	isp->platform_cb.set_pixel_clock(isp, pixelclk);
-	return 0;
 }
 
 static int rx51_acmelite_set_xclk(struct v4l2_subdev *subdev, int hz)
