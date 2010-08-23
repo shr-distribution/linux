@@ -33,6 +33,8 @@
 
 #include <media/v4l2-subdev.h>
 
+struct regulator;
+
 #define AD5820_NAME		"ad5820"
 #define AD5820_I2C_ADDR		(0x18 >> 1)
 
@@ -51,6 +53,7 @@ struct ad5820_platform_data {
 struct ad5820_device {
 	struct v4l2_subdev subdev;
 	struct ad5820_platform_data *platform_data;
+	struct regulator *vana;
 
 	s32 focus_absolute;		/* Current values of V4L2 controls */
 	s32 focus_ramp_time;

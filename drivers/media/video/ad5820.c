@@ -34,6 +34,7 @@
 #include <linux/delay.h>
 #include <linux/bitops.h>
 #include <linux/kernel.h>
+#include <linux/regulator/consumer.h>
 
 #include <mach/io.h>
 #include <mach/gpio.h>
@@ -175,6 +176,59 @@ static int ad5820_update_hw(struct ad5820_device *coil)
 	return ad5820_write(coil, status);
 }
 
+static int ad5820_power_off(struct ad5820_device *coil, int standby)
+{
+	int ret = 0;
+
+	/* Go to standby first as real power off my be denied by the hardware
+	 * (single power line control for both coil and sensor).
+	 */
+	if (standby) {
+		coil->standby = 1;
+		ret = ad5820_update_hw(coil);
+	}
+
+	ret |= coil->platform_data->set_xshutdown(&coil->subdev, 0);
+	ret |= regulator_disable(coil->vana);
+
+	coil->power = 0;
+	return ret;
+}
+
+static int ad5820_power_on(struct ad5820_device *coil, int restore)
+{
+	int ret;
+
+	ret = regulator_enable(coil->vana);
+	if (ret < 0)
+		return ret;
+
+	ret = coil->platform_data->set_xshutdown(&coil->subdev, 1);
+	if (ret)
+		goto fail;
+
+	coil->power = 1;
+
+	if (restore) {
+		/* Restore the hardware settings. */
+		coil->standby = 0;
+		ret = ad5820_update_hw(coil);
+		if (ret)
+			goto fail;
+	}
+
+	return 0;
+
+fail:
+	coil->power = 0;
+	coil->standby = 1;
+
+	coil->platform_data->set_xshutdown(&coil->subdev, 0);
+	regulator_disable(coil->vana);
+
+	return ret;
+}
+
 /* --------------------------------------------------------------------------
  * V4L2 subdev operations
  */
@@ -200,6 +254,12 @@ ad5820_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 	if (platform_data == NULL)
 		return -ENODEV;
 
+	coil->vana = regulator_get(&client->dev, "VANA");
+	if (IS_ERR(coil->vana)) {
+		dev_err(&client->dev, "could not get regulator for vana\n");
+		return -ENODEV;
+	}
+
 	coil->platform_data = platform_data;
 
 	coil->focus_absolute  =
@@ -210,7 +270,7 @@ ad5820_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 		ad5820_ctrls[CTRL_FOCUS_RAMP_MODE].default_value;
 
 	/* Detect that the chip is there */
-	rval = coil->platform_data->set_xshutdown(subdev, 1);
+	rval = ad5820_power_on(coil, 0);
 	if (rval)
 		goto not_detected;
 	rval = ad5820_write(coil, status);
@@ -220,11 +280,13 @@ ad5820_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 	if (rval != status)
 		goto not_detected;
 
-	coil->platform_data->set_xshutdown(subdev, 0);
+	ad5820_power_off(coil, 1);
 	return 0;
 
 not_detected:
 	dev_err(&client->dev, "not detected\n");
+	ad5820_power_off(coil, 0);
+	regulator_put(coil->vana);
 	return -ENODEV;
 }
 
@@ -310,51 +372,11 @@ static int
 ad5820_set_power(struct v4l2_subdev *subdev, int on)
 {
 	struct ad5820_device *coil = to_ad5820_device(subdev);
-	int was_on = coil->power;
-	int ret;
 
-	/* If requesting current state, nothing to be done. */
 	if (coil->power == on)
 		return 0;
 
-	/* If powering off, go to standby first as real power off my be denied
-	 * by the hardware (single power line control for both coil and sensor).
-	 */
-	if (!on) {
-		coil->standby = 1;
-		ret = ad5820_update_hw(coil);
-		if (ret)
-			goto fail;
-	}
-
-	/* Set the hardware power state. This will turn the power line on or
-	 * off.
-	 */
-	ret = coil->platform_data->set_xshutdown(subdev, on);
-	if (ret)
-		goto fail;
-
-	coil->power = on;
-
-	/* If powering on, restore the hardware settings. */
-	if (on) {
-		coil->standby = 0;
-		ret = ad5820_update_hw(coil);
-		if (ret)
-			goto fail;
-	}
-
-	return 0;
-
-fail:
-	/* Try to restore original state and return error code */
-	coil->power = was_on;
-	coil->standby = !was_on;
-
-	coil->platform_data->set_xshutdown(subdev, coil->power);
-	ad5820_update_hw(coil);
-
-	return ret;
+	return on ? ad5820_power_on(coil, 1) : ad5820_power_off(coil, 1);
 }
 
 static const struct v4l2_subdev_core_ops ad5820_core_ops = {
@@ -438,6 +460,9 @@ static int __exit ad5820_remove(struct i2c_client *client)
 
 	v4l2_device_unregister_subdev(&coil->subdev);
 	media_entity_cleanup(&coil->subdev.entity);
+	if (coil->vana)
+		regulator_put(coil->vana);
+
 	kfree(coil);
 	return 0;
 }
