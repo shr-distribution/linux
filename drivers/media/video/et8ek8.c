@@ -345,7 +345,7 @@ static int et8ek8_power_off(struct v4l2_subdev *subdev)
 	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
 	int rval;
 
-	rval = sensor->platform_data->s_power(subdev, 0);
+	rval = sensor->platform_data->set_xshutdown(subdev, 0);
 	if (rval)
 		return rval;
 	udelay(1);
@@ -369,7 +369,7 @@ static int et8ek8_power_on(struct v4l2_subdev *subdev)
 
 	udelay(10);			/* I wish this is a good value */
 
-	rval = sensor->platform_data->s_power(subdev, 1);
+	rval = sensor->platform_data->set_xshutdown(subdev, 1);
 	if (rval)
 		goto out;
 

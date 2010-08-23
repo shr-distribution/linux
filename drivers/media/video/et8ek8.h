@@ -40,7 +40,7 @@ struct et8ek8_platform_data {
 	int (*configure_interface)(struct v4l2_subdev *subdev,
 				   struct smia_mode *mode);
 	int (*set_xclk)(struct v4l2_subdev *subdev, int hz);
-	int (*s_power)(struct v4l2_subdev *subdev, int on);
+	int (*set_xshutdown)(struct v4l2_subdev *subdev, int set);
 };
 
 struct et8ek8_sensor;
