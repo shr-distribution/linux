@@ -43,7 +43,7 @@
 #define AD5820_RAMP_MODE_64_16		(1 << 3)
 
 struct ad5820_platform_data {
-	int (*s_power)(struct v4l2_subdev *subdev, int on);
+	int (*set_xshutdown)(struct v4l2_subdev *subdev, int set);
 };
 
 #define to_ad5820_device(sd)	container_of(sd, struct ad5820_device, subdev)
