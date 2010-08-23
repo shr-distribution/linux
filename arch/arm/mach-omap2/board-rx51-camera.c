@@ -51,6 +51,53 @@
 #define STINGRAY_RESET_GPIO	102
 #define ACMELITE_RESET_GPIO	97	/* Used also to MUX between cameras */
 
+#define RX51_CAMERA_STINGRAY	(1 << 0)
+#define RX51_CAMERA_LENS	(1 << 1)
+#define RX51_CAMERA_ACMELITE	(1 << 2)
+
+#define RX51_CAMERA_PRIMARY	(RX51_CAMERA_STINGRAY | RX51_CAMERA_LENS)
+#define RX51_CAMERA_SECONDARY	RX51_CAMERA_ACMELITE
+
+static DEFINE_MUTEX(rx51_camera_mutex);
+static unsigned int rx51_camera_xshutdown;
+
+static int rx51_camera_set_xshutdown(unsigned int which, int set)
+{
+	unsigned int new = rx51_camera_xshutdown;
+	int ret = 0;
+
+	mutex_lock(&rx51_camera_mutex);
+
+	if (set)
+		new |= which;
+	else
+		new &= ~which;
+
+	/* The primary and secondary cameras can't be powered on at the same
+	 * time.
+	 */
+	if ((new & RX51_CAMERA_PRIMARY) && (new & RX51_CAMERA_SECONDARY)) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	if ((rx51_camera_xshutdown & RX51_CAMERA_PRIMARY) !=
+	    (new & RX51_CAMERA_PRIMARY))
+		gpio_set_value(STINGRAY_RESET_GPIO,
+			       new & RX51_CAMERA_PRIMARY ? 1 : 0);
+
+	if ((rx51_camera_xshutdown & RX51_CAMERA_SECONDARY) !=
+	    (new & RX51_CAMERA_SECONDARY))
+		gpio_set_value(ACMELITE_RESET_GPIO,
+			       new & RX51_CAMERA_SECONDARY ? 1 : 0);
+
+	rx51_camera_xshutdown = new;
+
+out:
+	mutex_unlock(&rx51_camera_mutex);
+	return ret;
+}
+
 static void __init rx51_stingray_init(void)
 {
 	if (gpio_request(STINGRAY_RESET_GPIO, "stingray reset") != 0) {
@@ -124,6 +171,8 @@ static int __init rx51_camera_hw_init(void)
 {
 	int rval;
 
+	mutex_init(&rx51_camera_mutex);
+
 	rval = rx51_adp1653_init();
 	if (rval)
 		return rval;
@@ -177,9 +226,15 @@ static int rx51_stingray_set_xclk(struct v4l2_subdev *subdev, int hz)
 	return 0;
 }
 
+static int rx51_stingray_set_xshutdown(struct v4l2_subdev *subdev, int set)
+{
+	return rx51_camera_set_xshutdown(RX51_CAMERA_STINGRAY, set);
+}
+
 static struct et8ek8_platform_data rx51_et8ek8_platform_data = {
 	.configure_interface	= rx51_stingray_configure_interface,
 	.set_xclk		= rx51_stingray_set_xclk,
+	.set_xshutdown		= rx51_stingray_set_xshutdown,
 };
 
 /*
@@ -188,7 +243,13 @@ static struct et8ek8_platform_data rx51_et8ek8_platform_data = {
  *
  */
 
+static int rx51_ad5820_set_xshutdown(struct v4l2_subdev *subdev, int set)
+{
+	return rx51_camera_set_xshutdown(RX51_CAMERA_LENS, set);
+}
+
 static struct ad5820_platform_data rx51_ad5820_platform_data = {
+	.set_xshutdown		= rx51_ad5820_set_xshutdown,
 };
 
 /*
@@ -247,9 +308,15 @@ static int rx51_acmelite_set_xclk(struct v4l2_subdev *subdev, int hz)
 	return 0;
 }
 
+static int rx51_acmelite_set_xshutdown(struct v4l2_subdev *subdev, int set)
+{
+	return rx51_camera_set_xshutdown(RX51_CAMERA_ACMELITE, set);
+}
+
 static struct smia_sensor_platform_data rx51_smia_sensor_platform_data = {
 	.configure_interface	= rx51_acmelite_configure_interface,
 	.set_xclk		= rx51_acmelite_set_xclk,
+	.set_xshutdown		= rx51_acmelite_set_xshutdown,
 };
 
 /*
