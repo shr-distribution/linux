@@ -30,9 +30,10 @@
 #include <linux/delay.h>
 #include <linux/firmware.h>
 #include <linux/i2c.h>
+#include <linux/kernel.h>
+#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/version.h>
-#include <linux/kernel.h>
 #include <linux/v4l2-mediabus.h>
 
 #include <media/smiaregs.h>
@@ -348,6 +349,7 @@ static int et8ek8_power_off(struct v4l2_subdev *subdev)
 	rval = sensor->platform_data->set_xshutdown(subdev, 0);
 	udelay(1);
 	rval |= sensor->platform_data->set_xclk(subdev, 0);
+	rval |= regulator_disable(sensor->vana);
 	return rval;
 }
 
@@ -357,6 +359,12 @@ static int et8ek8_power_on(struct v4l2_subdev *subdev)
 	struct i2c_client *client = v4l2_get_subdevdata(subdev);
 	unsigned int hz = ET8EK8_XCLK_HZ;
 	int val, rval;
+
+	rval = regulator_enable(sensor->vana);
+	if (rval) {
+		dev_err(&client->dev, "failed to enable vana regulator\n");
+		return rval;
+	}
 
 	if (sensor->current_reglist)
 		hz = sensor->current_reglist->mode.ext_clock;
@@ -638,9 +646,17 @@ static int et8ek8_dev_init(struct v4l2_subdev *subdev)
 	char name[SMIA_MAX_LEN];
 	int rval, rev_l, rev_h;
 
-	rval = et8ek8_power_on(subdev);
-	if (rval)
+	sensor->vana = regulator_get(&client->dev, "VANA");
+	if (IS_ERR(sensor->vana)) {
+		dev_err(&client->dev, "could not get regulator for vana\n");
 		return -ENODEV;
+	}
+
+	rval = et8ek8_power_on(subdev);
+	if (rval) {
+		rval = -ENODEV;
+		goto out_regulator_put;
+	}
 
 	if (smia_i2c_read_reg(client, SMIA_REG_8BIT,
 			      REG_REVISION_NUMBER_L, &rev_l) != 0
@@ -720,6 +736,9 @@ out_poweroff:
 	sensor->meta_reglist = NULL;
 	sensor->fw = NULL;
 	et8ek8_power_off(subdev);
+out_regulator_put:
+	regulator_put(sensor->vana);
+	sensor->vana = NULL;
 
 	return rval;
 }
@@ -1032,6 +1051,9 @@ static int __exit et8ek8_remove(struct i2c_client *client)
 	v4l2_device_unregister_subdev(&sensor->subdev);
 	device_remove_file(&client->dev, &dev_attr_priv_mem);
 	media_entity_cleanup(&sensor->subdev.entity);
+	if (sensor->vana)
+		regulator_put(sensor->vana);
+
 	release_firmware(sensor->fw);
 	kfree(sensor);
 	return 0;

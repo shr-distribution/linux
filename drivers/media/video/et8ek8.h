@@ -29,6 +29,8 @@
 #include <media/v4l2-subdev.h>
 #include <media/media-entity.h>
 
+struct regulator;
+
 #define ET8EK8_NAME		"et8ek8"
 #define ET8EK8_I2C_ADDR		(0x7C >> 1)
 
@@ -62,6 +64,7 @@ struct et8ek8_sensor {
 	struct media_pad pad;
 	struct v4l2_mbus_framefmt format;
 	struct et8ek8_platform_data *platform_data;
+	struct regulator *vana;
 
 	u16 version;
 
