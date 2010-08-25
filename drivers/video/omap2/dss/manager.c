@@ -1180,6 +1180,7 @@ int dss_mgr_notify_ovl(struct omap_overlay *ovl)
 int omap_dss_request_notify(enum omap_dss_notify_event event,
 			    long value)
 {
+	int r;
 	struct omap_overlay_manager *mgr;
 	struct omap_overlay *ovl;
 
@@ -1190,7 +1191,9 @@ int omap_dss_request_notify(enum omap_dss_notify_event event,
 			return -EINVAL;
 		if (!mgr->notify)
 			return -ENOSYS;
-		mgr->notify(mgr);
+		r = mgr->notify(mgr);
+		if (r)
+			return r;
 		break;
 	case OMAP_DSS_NOTIFY_GO_OVL:
 		ovl = omap_dss_get_overlay(value);
@@ -1198,7 +1201,9 @@ int omap_dss_request_notify(enum omap_dss_notify_event event,
 			return -EINVAL;
 		if (!ovl->notify)
 			return -ENOSYS;
-		ovl->notify(ovl);
+		r = ovl->notify(ovl);
+		if (r)
+			return r;
 		break;
 	default:
 		return -EINVAL;
