@@ -178,7 +178,7 @@ int glamo_lcd_cmd_mode(struct glamodrm_handle *gdrm, int on)
 			reg_write_lcd(gdrm, GLAMO_REG_LCD_COMMAND1,
 				  GLAMO_LCD_CMD_TYPE_DISP |
 				  GLAMO_LCD_CMD_DATA_DISP_SYNC);
-
+		mdelay(1);
 		reg_write_lcd(gdrm, GLAMO_REG_LCD_COMMAND1,
 			  GLAMO_LCD_CMD_TYPE_DISP |
 			  GLAMO_LCD_CMD_DATA_DISP_FIRE);
