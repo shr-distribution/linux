@@ -3867,7 +3867,7 @@ EXPORT_SYMBOL_GPL(soc_codec_dev_wm8994);
  *
  * Enable microphone detection via IRQ on the WM8994.  If GPIOs are
  * being used to bring out signals to the processor then only platform
- * data configuration is needed for WM8903 and processor GPIOs should
+ * data configuration is needed for WM8994 and processor GPIOs should
  * be configured using snd_soc_jack_add_gpios() instead.
  *
  * Configuration of detection levels is available via the micbias1_lvl
