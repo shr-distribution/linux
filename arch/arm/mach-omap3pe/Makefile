@@ -67,4 +67,6 @@ obj-$(CONFIG_MMC_HSMMC_PE)		+= board-sirloin-3430-hsmmc.o
 
 obj-$(CONFIG_FASTPATH) += board-sirloin-3430-wk.o
 
+obj-$(CONFIG_SIRLOIN_WIFI) += sirloin_wifi.o
+
 endif
