@@ -41,11 +41,11 @@ board_wifi_slot_power_enable( void *mmc, int power_mode )
 {
 	if( power_mode ) {
 		BUG_ON( power_mode != 1 );
-//		board_wl_vcc_enable(1);
-//		board_wl_rf_vcc_enable(1);
+		board_wl_vcc_enable(1);
+		board_wl_rf_vcc_enable(1);
 	} else {
-//		board_wl_vcc_enable(0);
-//		board_wl_rf_vcc_enable(0);
+		board_wl_vcc_enable(0);
+		board_wl_rf_vcc_enable(0);
 	}
 	return 0;
 }

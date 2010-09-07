@@ -55,6 +55,13 @@ config DISABLE_WFI
 	  You need to enable this option if you want to debug the system with
 	  JTAG as the WFI instruction will cause JTAG to break when executed.
 
+config SIRLOIN_WIFI
+	depends on MACH_SIRLOIN
+	default m
+	tristate "Sirloin Wifi Activator"
+	help
+	  Sirloin Wifi Activator
+
 config INTERCONNECT_IO_POSTING
         bool "Enable bus posting for PIO accesses"
         depends on ARCH_OMAP3
