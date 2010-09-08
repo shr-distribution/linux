@@ -185,7 +185,7 @@ static int __init omap_cpufreq_init(void)
 	return cpufreq_register_driver(&omap_driver);
 }
 
-late_initcall(omap_cpufreq_init);
+arch_initcall(omap_cpufreq_init);
 
 /*
  * if ever we want to remove this, upon cleanup call:
