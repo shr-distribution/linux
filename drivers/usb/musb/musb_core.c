@@ -567,11 +567,16 @@ static irqreturn_t musb_stage0_irq(struct musb *musb, u8 int_usb,
 		 *  - ... to A_WAIT_BCON.
 		 * a_wait_vrise_tmout triggers VBUS_ERROR transitions
 		 */
-		musb_writeb(mbase, MUSB_DEVCTL, MUSB_DEVCTL_SESSION);
-		musb->ep0_stage = MUSB_EP0_START;
-		musb->xceiv->state = OTG_STATE_A_IDLE;
-		MUSB_HST_MODE(musb);
-		musb_set_vbus(musb, 1);
+		if ((devctl & MUSB_DEVCTL_VBUS)
+				&& !(devctl & MUSB_DEVCTL_BDEVICE)) {
+			musb_writeb(mbase, MUSB_DEVCTL, MUSB_DEVCTL_SESSION);
+			musb->ep0_stage = MUSB_EP0_START;
+			musb->xceiv->state = OTG_STATE_A_IDLE;
+			MUSB_HST_MODE(musb);
+			musb_set_vbus(musb, 1);
+		} else {
+			DBG(5, "discarding SESSREQ INT\n");
+		}
 
 		handled = IRQ_HANDLED;
 	}
