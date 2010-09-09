@@ -465,11 +465,11 @@ static struct {
 	bool irq_enabled;
 } dss_cache;
 
-static BLOCKING_NOTIFIER_HEAD(dss_notifier_list);
+static ATOMIC_NOTIFIER_HEAD(dss_notifier_list);
 
 static int dss_notifier_call_chain(unsigned long val, void *v)
 {
-	return blocking_notifier_call_chain(&dss_notifier_list, val, v);
+	return atomic_notifier_call_chain(&dss_notifier_list, val, v);
 }
 
 static bool check_mgr_notify(struct omap_overlay_manager *mgr)
@@ -522,20 +522,13 @@ static bool check_ovl_notify(struct omap_overlay *ovl)
 	return true;
 }
 
-static void dss_notify_worker(struct work_struct *work)
+static void dss_run_notifiers(void)
 {
 	struct overlay_cache_data *oc;
 	struct manager_cache_data *mc;
-	const int num_ovls = ARRAY_SIZE(dss_cache.overlay_cache);
-	const int num_mgrs = ARRAY_SIZE(dss_cache.manager_cache);
 	int i;
-	unsigned long flags;
-	bool mgr_notify[2] = { false, false };
-	bool ovl_notify[3] = { false, false, false };
 	struct omap_overlay_manager *mgr;
 	struct omap_overlay *ovl;
-
-	spin_lock_irqsave(&dss_cache.lock, flags);
 
 	list_for_each_entry(mgr, &manager_list, list) {
 		if (!check_mgr_notify(mgr))
@@ -543,8 +536,9 @@ static void dss_notify_worker(struct work_struct *work)
 
 		mc = &dss_cache.manager_cache[mgr->id];
 
-		mgr_notify[mgr->id] = true;
 		mc->pending_notify = false;
+		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_MGR,
+					(void *)(long)mgr->id);
 	}
 
 	for (i = 0; i < omap_dss_get_num_overlays(); ++i) {
@@ -555,51 +549,10 @@ static void dss_notify_worker(struct work_struct *work)
 
 		oc = &dss_cache.overlay_cache[ovl->id];
 
-		ovl_notify[ovl->id] = true;
 		oc->pending_notify = false;
-	}
 
-	spin_unlock_irqrestore(&dss_cache.lock, flags);
-
-	for (i = 0; i < num_mgrs; i++) {
-		if (!mgr_notify[i])
-			continue;
-		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_MGR,
-					(void *)(long)i);
-	}
-
-	for (i = 0; i < num_ovls; i++) {
-		if (!ovl_notify[i])
-			continue;
 		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_OVL,
-					(void *)(long)i);
-	}
-}
-
-static DECLARE_WORK(dss_notify_work, dss_notify_worker);
-
-static void schedule_notify_go(void)
-{
-	int i;
-	struct omap_overlay_manager *mgr;
-	struct omap_overlay *ovl;
-
-	list_for_each_entry(mgr, &manager_list, list) {
-		if (!check_mgr_notify(mgr))
-			continue;
-
-		schedule_work(&dss_notify_work);
-		break;
-	}
-
-	for (i = 0; i < omap_dss_get_num_overlays(); ++i) {
-		ovl = omap_dss_get_overlay(i);
-
-		if (!check_ovl_notify(ovl))
-			continue;
-
-		schedule_work(&dss_notify_work);
-		break;
+					(void *)(long)ovl->id);
 	}
 }
 
@@ -619,7 +572,7 @@ void omap_dss_unlock_cache(void)
 	spin_lock_irqsave(&dss_cache.lock, flags);
 	BUG_ON(!dss_cache.manager_cache[0].in_use);
 	dss_cache.manager_cache[0].in_use = false;
-	schedule_notify_go();
+	dss_run_notifiers();
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
 	omap_dss_mgr_apply(omap_dss_get_overlay_manager(0));
 }
@@ -1215,13 +1168,13 @@ EXPORT_SYMBOL(omap_dss_request_notify);
 
 int omap_dss_register_notifier(struct notifier_block *nb)
 {
-	return blocking_notifier_chain_register(&dss_notifier_list, nb);
+	return atomic_notifier_chain_register(&dss_notifier_list, nb);
 }
 EXPORT_SYMBOL(omap_dss_register_notifier);
 
 int omap_dss_unregister_notifier(struct notifier_block *nb)
 {
-	return blocking_notifier_chain_unregister(&dss_notifier_list, nb);
+	return atomic_notifier_chain_unregister(&dss_notifier_list, nb);
 }
 EXPORT_SYMBOL(omap_dss_unregister_notifier);
 
@@ -1438,7 +1391,7 @@ static void dss_apply_irq_handler(void *data, u32 mask)
 	dss_cache.irq_enabled = false;
 
 end:
-	schedule_notify_go();
+	dss_run_notifiers();
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
 }
 
@@ -1716,7 +1669,7 @@ static int dss_mgr_disable(struct omap_overlay_manager *mgr)
 
 	spin_lock_irqsave(&dss_cache.lock, flags);
 	mc->enabled = false;
-	schedule_notify_go();
+	dss_run_notifiers();
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
 
 	return 0;
