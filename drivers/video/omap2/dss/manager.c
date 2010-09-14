@@ -487,6 +487,8 @@ static enum omap_dss_notify_event dss_mgr_notify_check(
 		if (mc->enabled && mc->in_use && mgr->info_dirty)
 			events &= ~OMAP_DSS_NOTIFY_GO_MGR;
 
+		if (mc->enabled && mc->in_use)
+			events &= ~OMAP_DSS_NOTIFY_UPDATE_MGR;
 	} else {
 		if (mc->enabled && (mc->dirty || mc->shadow_dirty))
 			events = OMAP_DSS_NOTIFY_NONE;
@@ -506,6 +508,8 @@ static enum omap_dss_notify_event dss_mgr_notify_check_ovl(
 		    && mc->in_use && ovl->info_dirty)
 			events &= ~OMAP_DSS_NOTIFY_GO_OVL;
 
+		if (mc->enabled && oc->enabled && mc->in_use)
+			events &= ~OMAP_DSS_NOTIFY_UPDATE_OVL;
 	} else {
 		if (mc->enabled && oc->enabled
 		    && (oc->dirty || oc->shadow_dirty))
@@ -1088,6 +1092,7 @@ static int dss_mgr_notify(struct omap_overlay_manager *mgr,
 	unsigned long flags;
 	enum omap_dss_notify_event fire_events = OMAP_DSS_NOTIFY_NONE;
 	struct omap_dss_device *dssdev = mgr->device;
+	int r = 0;
 
 	if (mgr->id >= num_mgrs)
 		return -EINVAL;
@@ -1102,17 +1107,23 @@ static int dss_mgr_notify(struct omap_overlay_manager *mgr,
 
 	mc = &dss_cache.manager_cache[mgr->id];
 
+	if (!mc->manual_update && (events & OMAP_DSS_NOTIFY_UPDATE_MGR)) {
+		r = -EINVAL;
+		goto err_out;
+	}
+
 	fire_events = dss_mgr_notify_check(mgr, mc, events);
 
 	mc->pending_notify |= events & ~fire_events;
 
+err_out:
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
 
 	if (fire_events != OMAP_DSS_NOTIFY_NONE)
 		dss_notifier_call_chain(fire_events,
 					(void *)(long)mgr->id);
 
-	return 0;
+	return r;
 }
 
 int dss_mgr_notify_ovl(struct omap_overlay *ovl,
@@ -1124,6 +1135,7 @@ int dss_mgr_notify_ovl(struct omap_overlay *ovl,
 	unsigned long flags;
 	enum omap_dss_notify_event fire_events = OMAP_DSS_NOTIFY_NONE;
 	struct omap_dss_device *dssdev;
+	int r = 0;
 
 	if (ovl->id >= num_ovls)
 		return -EINVAL;
@@ -1147,17 +1159,23 @@ int dss_mgr_notify_ovl(struct omap_overlay *ovl,
 	oc = &dss_cache.overlay_cache[ovl->id];
 	mc = &dss_cache.manager_cache[oc->channel];
 
+	if (!mc->manual_update && (events & OMAP_DSS_NOTIFY_UPDATE_OVL)) {
+		r = -EINVAL;
+		goto err_out;
+	}
+
 	fire_events = dss_mgr_notify_check_ovl(ovl, oc, mc, events);
 
 	oc->pending_notify |= events & ~fire_events;
 
+err_out:
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
 
 	if (fire_events != OMAP_DSS_NOTIFY_NONE)
 		dss_notifier_call_chain(fire_events,
 					(void *)(long)ovl->id);
 
-	return 0;
+	return r;
 }
 
 int omap_dss_request_notify(enum omap_dss_notify_event events,
