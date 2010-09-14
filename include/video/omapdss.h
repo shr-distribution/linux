@@ -189,12 +189,46 @@ enum omap_dss_clk_source {
 	OMAP_DSS_CLK_SRC_DSI2_PLL_HSDIV_DSI,	/* OMAP4: PLL2_CLK2 */
 };
 
+/**
+ * Go event is triggered when all dss caches are clean (including shadow
+ * registers).
+ *
+ * This is used in xserver xv implementation to block writing to overlay until
+ * dss has completed reading same memory area.
+ *
+ * Example use in xv:
+ * If there is manual update triggered by gfx overlay first wait_for_go()
+ * doesn't block but wait_gfx() would block.
+ ** Frame 5 to first "buffer"
+ * wait_for_go()
+ * fill frame
+ * pan to first "buffer"
+ * update_window() for frame 1
+ * request update notify
+ ** Frame 6 to second "buffer" (wait_gfx() would block here)
+ * wait_for_go()
+ * fill frame
+ * pan to second "buffer"
+ ** Frame 7 to first "buffer"
+ * wait_for_go() blocking
+ * First update completes
+ * wait_for_go() returns
+ * update notify arrives
+ * update_window() for frame 2
+ * fill frame
+ * pan to third frame
+ *
+ * Update event is sent when manual update completes. Update event is not
+ * available for automatic update displays (returns -EINVAL).
+ */
 enum omap_dss_notify_event {
 	OMAP_DSS_NOTIFY_NONE		= 0 << 0,
 	OMAP_DSS_NOTIFY_GO_MGR		= 1 << 0,
-	OMAP_DSS_NOTIFY_MASK_MGR	= 1 << 0,
+	OMAP_DSS_NOTIFY_UPDATE_MGR	= 2 << 0,
+	OMAP_DSS_NOTIFY_MASK_MGR	= 3 << 0,
 	OMAP_DSS_NOTIFY_GO_OVL		= 1 << 2,
-	OMAP_DSS_NOTIFY_MASK_OVL	= 1 << 2,
+	OMAP_DSS_NOTIFY_UPDATE_OVL	= 2 << 2,
+	OMAP_DSS_NOTIFY_MASK_OVL	= 3 << 2,
 };
 
 /* RFBI */
