@@ -217,6 +217,8 @@ static __init int s3c24xx_gpiolib_init(void)
 	int gpn;
 
 	for (gpn = 0; gpn < ARRAY_SIZE(s3c24xx_gpios); gpn++, chip++) {
+		if (chip->chip.base >= S3C_GPIO_END)
+			break;
 		if (!chip->config)
 			chip->config = &s3c24xx_gpiocfg_default;
 
