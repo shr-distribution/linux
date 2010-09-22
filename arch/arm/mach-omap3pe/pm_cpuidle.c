@@ -483,7 +483,7 @@ static ssize_t omap_pm_clock_bail_stat_show(struct kset *subsys, char *buf)
 	return n;
 }
 
-static struct subsys_attribute clock_bail_stat = {
+static struct kobj_attribute clock_bail_stat = {
 	.attr = {
 		.name = __stringify(clock_bail_stat),
 		.mode = 0444,
@@ -511,7 +511,7 @@ static ssize_t omap_pm_sleep_idle_state_store(struct kset *subsys,
 	return n;
 }
 
-static struct subsys_attribute sleep_idle_state = {
+static struct kobj_attribute sleep_idle_state = {
 	.attr = {
 		.name = __stringify(cpuidle_deepest_state),
 		.mode = 0644,
@@ -524,13 +524,13 @@ static int __init pm_cpuidle_sysfs_init(void)
 {
 	int rc;
 
-	rc = subsys_create_file(&power_subsys, &sleep_idle_state);
+	rc = sysfs_create_file(&power_subsys.kobj, &sleep_idle_state.attr);
 	if (rc)
 		printk(KERN_ERR "ERROR creating sysfs entry for "
 				"'sleep_idle_state': %d\n", rc);
 
 #ifdef DEBUG_BAIL_STATS
-	rc = subsys_create_file(&power_subsys, &clock_bail_stat);
+	rc = sysfs_create_file(&power_subsys.kobj, &clock_bail_stat.attr);
 	if (rc)
 		printk(KERN_ERR "ERROR creating sysfs entry for "
 				"'clock_bail_stat': %d\n", rc);

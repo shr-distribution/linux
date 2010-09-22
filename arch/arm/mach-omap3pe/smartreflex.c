@@ -1365,7 +1365,7 @@ omap_sr_vdd1_autocomp_store(struct kset *subsys, const char *buf, size_t n)
 	return n;
 }
 
-static struct subsys_attribute sr_vdd1_autocomp = {
+static struct kobj_attribute sr_vdd1_autocomp = {
 	.attr = {
 	.name = __stringify(sr_vdd1_autocomp),
 	.mode = 0644,
@@ -1414,7 +1414,7 @@ static ssize_t omap_sr_vdd2_autocomp_store(struct kset *subsys,
 	return n;
 }
 
-static struct subsys_attribute sr_vdd2_autocomp = {
+static struct kobj_attribute sr_vdd2_autocomp = {
 	.attr = {
 	.name = __stringify(sr_vdd2_autocomp),
 	.mode = 0644,
@@ -1808,13 +1808,13 @@ static int __init omap3_sr_init(void)
 /* Add appropriate power IC function call to Enable SR on T2 */
 #endif /* CONFIG_TWL4030_CORE */
 
-	ret = subsys_create_file(&power_subsys, &sr_vdd1_autocomp);
+	ret = sysfs_create_file(&power_subsys.kobj, &sr_vdd1_autocomp.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = subsys_create_file(&power_subsys, &sr_vdd2_autocomp);
+	ret = sysfs_create_file(&power_subsys.kobj, &sr_vdd2_autocomp.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
 	ret = subsys_create_file(&power_subsys, &sr_setnvalues_test);
 	if (ret)

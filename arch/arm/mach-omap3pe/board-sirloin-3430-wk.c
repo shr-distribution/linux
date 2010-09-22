@@ -213,7 +213,7 @@ void omap3_wakeup_sources_clear(void)
  * Init
  */
 
-static struct subsys_attribute wakeup_sources = {
+static struct kobj_attribute wakeup_sources = {
 	.attr = {
 		.name = __stringify(wakeup_sources),
 		.mode = 0644,
@@ -242,7 +242,7 @@ static int __init wakeup_source_info_init(void)
 
 	omap3_wakeup_source_info = 0;
 
-	retval = subsys_create_file(&power_subsys, &wakeup_sources);
+	retval = sysfs_create_file(&power_subsys.kobj, &wakeup_sources.attr);
 	if (retval) {
 		printk(KERN_ERR
 			"ERROR creating sysfs entry for 'wakeup_source': %d\n", retval);
