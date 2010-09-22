@@ -698,7 +698,7 @@ static ssize_t omap_pm_vdd1_opp_store(struct kset *subsys,
 	return n;
 }
 
-static struct subsys_attribute vdd1_opp = {
+static struct kobj_attribute vdd1_opp = {
 	.attr = {
 		.name = __stringify(vdd1_opp_value),
 		.mode = 0644,
@@ -746,7 +746,7 @@ static ssize_t omap_pm_vdd2_opp_store(struct kset *subsys,
 	return n;
 }
 
-static struct subsys_attribute vdd2_opp = {
+static struct kobj_attribute vdd2_opp = {
 	.attr = {
 		.name = __stringify(vdd2_opp_value),
 		.mode = 0644,
@@ -1505,10 +1505,10 @@ int __init prcm_vdd_clk_init(void)
 
 #if defined(CONFIG_PM) && defined(CONFIG_SYSFS)
 	/* Sysfs entry for setting opp for vdd1 & vdd2 */
-	if (0 != subsys_create_file(&power_subsys, &vdd1_opp)) {
+	if (0 != sysfs_create_file(&power_subsys.kobj, &vdd1_opp.attr)) {
 		printk(KERN_ERR "Could not create sysfs entry for VDD1.\n");
 	}
-	if (0 != subsys_create_file(&power_subsys, &vdd2_opp)) {
+	if (0 != sysfs_create_file(&power_subsys.kobj, &vdd2_opp.attr)) {
 		printk(KERN_ERR "Could not create sysfs entry for VDD2.\n");
 	}
 #endif

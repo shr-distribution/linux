@@ -19,6 +19,8 @@
 #include <linux/kobject.h>
 #include "power.h"
 
+#include <asm/arch/pm.h>
+
 #include <linux/wake_sources.h>
 
 #define MAX_WAKEUP_EVENT_MSG_LEN 129
@@ -193,7 +195,7 @@ static ssize_t wakeup_events_show(struct kset *subsys, char *buf)
 	return len;
 }
 
-static struct subsys_attribute registered_wakeup_sources = {
+static struct kobj_attribute registered_wakeup_sources = {
 	.attr = {
 		.name = __stringify(registered_wakeup_sources),
 		.mode = 0644,
@@ -202,7 +204,7 @@ static struct subsys_attribute registered_wakeup_sources = {
 	.store = NULL,
 };
 
-static struct subsys_attribute wakeup_event_list = {
+static struct kobj_attribute wakeup_event_list = {
 	.attr = {
 		.name = __stringify(wakeup_event_list),
 		.mode = 0644,
@@ -215,13 +217,13 @@ static int __init wakeup_sources_init(void)
 {
 	int ret;
 
-	ret = subsys_create_file(&power_subsys, &registered_wakeup_sources);
+	ret = sysfs_create_file(&power_subsys.kobj, &registered_wakeup_sources.attr);
 	if (ret) {
 		printk(KERN_ERR "Error creating sysfs entry for 'registered_wakeup_sources': %d\n", ret);
 		goto done;
 	}
 
-	ret = subsys_create_file(&power_subsys, &wakeup_event_list);
+	ret = sysfs_create_file(&power_subsys.kobj, &wakeup_event_list.attr);
 	if (ret) {
 		printk(KERN_ERR "Error creating sysfs entry for 'wakeup_event_list': %d\n", ret);
 		goto done;

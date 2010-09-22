@@ -335,7 +335,7 @@ static ssize_t omap_pm_sleep_while_idle_store(struct kset * subsys,
 	return n;
 }
 
-static struct subsys_attribute sleep_while_idle_attr = {
+static struct kobj_attribute sleep_while_idle_attr = {
 	.attr   = {
 		.name = __stringify(sleep_while_idle),
 		.mode = 0644,
@@ -822,9 +822,9 @@ int __init omap2_pm_init(void)
 	pm_set_ops(&omap_pm_ops);
 	pm_idle = omap2_pm_idle;
 
-	l = subsys_create_file(&power_subsys, &sleep_while_idle_attr);
+	l = sysfs_create_file(&power_subsys.kobj, &sleep_while_idle_attr.attr);
 	if (l)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", l);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", l);
 
 	return 0;
 }

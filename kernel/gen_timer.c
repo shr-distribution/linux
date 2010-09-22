@@ -65,7 +65,7 @@ static ssize_t timer_list_show(struct kset *subsys, char *buf)
  * Init
  */
 
-static struct subsys_attribute timerchk_sysfs = {
+static struct kobj_attribute timerchk_sysfs = {
         .attr = {
                 .name = __stringify(timer_list),
                 .mode = 0644,
@@ -78,7 +78,7 @@ int timerchk_sysfs_init(void)
 {
         int retval;
 
-        retval = subsys_create_file(&power_subsys, &timerchk_sysfs);
+        retval = sysfs_create_file(&power_subsys.kobj, &timerchk_sysfs.attr);
         if (retval)
                 goto error;
 	memset(&gtimerstats,0,sizeof(gen_timer_stats_t));

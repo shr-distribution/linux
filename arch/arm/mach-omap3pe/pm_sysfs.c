@@ -31,7 +31,7 @@ static ssize_t omap_pm_off_store(struct kset *subsys,
 }
 
 
-static struct subsys_attribute off_enable = {
+static struct kobj_attribute off_enable = {
 	.attr = {
 		.name = __stringify(enable_mpucoreoff),
 		.mode = 0644,
@@ -44,9 +44,9 @@ int __init omap3_pm_sysfs_init(void)
 {
 	int rc;
 
-	rc = subsys_create_file(&power_subsys, &off_enable);
+	rc = sysfs_create_file(&power_subsys.kobj, &off_enable.attr);
 	if (rc)
-		printk(KERN_ERR "subsys_create_file failed for off: %d\n", rc);
+		printk(KERN_ERR "sysfs_create_file failed for off: %d\n", rc);
 	return rc;
 }
 

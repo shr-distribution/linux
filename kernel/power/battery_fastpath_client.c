@@ -26,6 +26,8 @@
 #include <linux/gen_timer.h>
 #include <linux/fastpath_client.h>
 
+#include <asm/arch/pm.h>
+
 /**
  * Debug
  */
@@ -500,7 +502,7 @@ static int __init batterycheck_init(void)
 
 
 
-static struct subsys_attribute batterycheck_wakeup_sysfs = {
+static struct kobj_attribute batterycheck_wakeup_sysfs = {
 	.attr = {
 		.name = __stringify(batterycheck_wakeup),
 		.mode = 0644,
@@ -513,7 +515,7 @@ static int __init batterycheck_sysfs_init(void)
 {
         int retval;
 
-        retval = subsys_create_file(&power_subsys, &batterycheck_wakeup_sysfs);
+        retval = sysfs_create_file(&power_subsys.kobj, &batterycheck_wakeup_sysfs.attr);
         if (retval)
                 goto error;
 
