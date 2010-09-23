@@ -1325,14 +1325,15 @@ repeat:
 }
 
 /* Sysfs interface to select SR VDD1 auto compensation */
-static ssize_t 
-omap_sr_vdd1_autocomp_show(struct kset *subsys, char *buf)
+static ssize_t omap_sr_vdd1_autocomp_show(struct kobject *kobj,
+										  struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%d\n", sr1.sr_mode );
 }
 
-static ssize_t 
-omap_sr_vdd1_autocomp_store(struct kset *subsys, const char *buf, size_t n)
+static ssize_t omap_sr_vdd1_autocomp_store(struct kobject *kobj,
+										   struct kobj_attribute *attr,
+										   const char *buf, size_t n)
 {
 	unsigned short value;
 
@@ -1375,13 +1376,15 @@ static struct kobj_attribute sr_vdd1_autocomp = {
 };
 
 /* Sysfs interface to select SR VDD2 auto compensation */
-static ssize_t omap_sr_vdd2_autocomp_show(struct kset *subsys, char *buf)
+static ssize_t omap_sr_vdd2_autocomp_show(struct kobject *kobj,
+										  struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%d\n", sr2.sr_mode );
 }
 
-static ssize_t omap_sr_vdd2_autocomp_store(struct kset *subsys,
-				const char *buf, size_t n)
+static ssize_t omap_sr_vdd2_autocomp_store(struct kobject *kobj,
+										   struct kobj_attribute *attr,
+										   const char *buf, size_t n)
 {
 	unsigned short value;
 
@@ -1808,11 +1811,11 @@ static int __init omap3_sr_init(void)
 /* Add appropriate power IC function call to Enable SR on T2 */
 #endif /* CONFIG_TWL4030_CORE */
 
-	ret = sysfs_create_file(&power_subsys.kobj, &sr_vdd1_autocomp.attr);
+	ret = sysfs_create_file(power_kobj, &sr_vdd1_autocomp.attr);
 	if (ret)
 		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = sysfs_create_file(&power_subsys.kobj, &sr_vdd2_autocomp.attr);
+	ret = sysfs_create_file(power_kobj, &sr_vdd2_autocomp.attr);
 	if (ret)
 		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 

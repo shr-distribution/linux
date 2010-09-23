@@ -242,8 +242,8 @@
 extern u8 get_mpu_iva2_vdd1_volts(int opp_num);
 extern u8 get_core_l3_vdd2_volts(int opp_num);
 
-extern struct kset power_subsys;
-
 extern inline int loop_wait(u32 *lcnt, u32 *rcnt, u32 delay);
 extern void omap_udelay(u32 udelay);
 
+extern u32 current_vdd1_opp;
+extern u32 current_vdd2_opp;

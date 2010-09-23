@@ -12,13 +12,15 @@
 
 int enable_off = 1;
 
-static ssize_t omap_pm_off_show(struct kset *subsys, char *buf)
+static ssize_t omap_pm_off_show(struct kobject *kobj,
+								struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%hu\n", enable_off);
 }
 
-static ssize_t omap_pm_off_store(struct kset *subsys,
-				const char *buf, size_t n)
+static ssize_t omap_pm_off_store(struct kobject *kobj,
+								 struct kobj_attribute *attr,
+								 const char *buf, size_t n)
 {
 	unsigned short value;
 	if (sscanf(buf, "%hu", &value) != 1 ||
@@ -44,7 +46,7 @@ int __init omap3_pm_sysfs_init(void)
 {
 	int rc;
 
-	rc = sysfs_create_file(&power_subsys.kobj, &off_enable.attr);
+	rc = sysfs_create_file(power_kobj, &off_enable.attr);
 	if (rc)
 		printk(KERN_ERR "sysfs_create_file failed for off: %d\n", rc);
 	return rc;

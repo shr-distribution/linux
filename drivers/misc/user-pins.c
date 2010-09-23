@@ -56,11 +56,21 @@
 /*
  *  Register user space hardware subsystem
  */
-static decl_subsys(user_hw, NULL, NULL);
+struct kset *user_hw_kset;
 
 static int __init  user_hw_init(void)
 {
-	return subsystem_register ( &user_hw_subsys );
+	int result;
+
+	user_hw_kset = kset_create_and_add("user_hw", NULL, NULL);
+	if (!user_hw_kset) {
+		result = -ENOMEM;
+		printk(KERN_ERR "Register subsys error\n");
+		goto exit;
+	}
+
+exit:
+	return result;
 }
 
 arch_initcall(user_hw_init);
@@ -109,7 +119,7 @@ static struct kobj_type ktype_pin = {
 	.sysfs_ops	= &pin_sysfs_ops,
 };
 
-static decl_subsys ( pins, NULL, NULL );
+struct kset *pins_kset;
 
 struct gpio_pin {
 	int     gpio;
@@ -418,7 +428,7 @@ pin_set_register( struct gpio_pin_set *s, struct platform_device *pdev)
 	if( s == NULL )
 		return -EINVAL;
 
-	s->kobj.parent = &pins_subsys.kobj;
+	s->kobj.parent = &pins_kset->kobj;
 	s->kobj.ktype  = &ktype_pin;
 	kobject_set_name ( &s->kobj, s->set_name );
 	rc = kobject_register ( &s->kobj );
@@ -686,20 +696,21 @@ static int __init
 user_pins_init(void)
 {
 	int rc;
-	
-	/* register pins subsystem */
-	kobj_set_kset_s(&pins_subsys, user_hw_subsys);
-	rc = subsystem_register ( &pins_subsys );
-	if( rc ) {
-		return -ENODEV;
+
+	pins_kset = kset_create_and_add("pins", NULL, &user_hw_kset->kobj);
+	if (!pins_kset) {
+		rc = -ENOMEM;
+		printk(KERN_ERR "Register subsys error\n");
+		goto exit;
 	}
 	
 	/* register pins platform device */
 	rc = platform_driver_register ( &user_pins_driver );
 	if( rc ) {
-		subsystem_unregister (&pins_subsys);
+		kset_unregister (pins_kset);
 	}
 	
+exit:
 	return rc; 
 }
 
@@ -707,7 +718,7 @@ static void __exit
 user_pins_exit(void)
 {
     platform_driver_unregister ( &user_pins_driver );
-    subsystem_unregister       ( &pins_subsys );
+    kset_unregister       ( pins_kset );
 }
 
 

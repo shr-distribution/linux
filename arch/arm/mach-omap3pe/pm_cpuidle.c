@@ -431,7 +431,8 @@ static void clock_bail_trace(const char *s, u32 cond, int id)
 }
 
 #define to_msec(n) (u32)((n) >> 20)
-static ssize_t omap_pm_clock_bail_stat_show(struct kset *subsys, char *buf)
+static ssize_t omap_pm_clock_bail_stat_show(struct kobject *kobj,
+											struct kobj_attribute *attr, char *buf)
 {
 	int i;
 	int len;
@@ -494,13 +495,15 @@ static struct kobj_attribute clock_bail_stat = {
 #define clock_bail_trace(args...)
 #endif /* #ifdef DEBUG_BAIL_STATS */
 
-static ssize_t omap_pm_sleep_idle_state_show(struct kset *subsys, char *buf)
+static ssize_t omap_pm_sleep_idle_state_show(struct kobject *kobj,
+											 struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%hu\n", cpuidle_deepest_st);
 }
 
-static ssize_t omap_pm_sleep_idle_state_store(struct kset *subsys,
-			const char *buf, size_t n)
+static ssize_t omap_pm_sleep_idle_state_store(struct kobject *kobj,
+											  struct kobj_attribute *attr,
+											  const char *buf, size_t n)
 {
 	unsigned short value;
 	if (sscanf(buf, "%hu", &value) != 1 || (value > DEEPEST_SUPPORTED_STATE)) {
@@ -524,13 +527,13 @@ static int __init pm_cpuidle_sysfs_init(void)
 {
 	int rc;
 
-	rc = sysfs_create_file(&power_subsys.kobj, &sleep_idle_state.attr);
+	rc = sysfs_create_file(power_kobj, &sleep_idle_state.attr);
 	if (rc)
 		printk(KERN_ERR "ERROR creating sysfs entry for "
 				"'sleep_idle_state': %d\n", rc);
 
 #ifdef DEBUG_BAIL_STATS
-	rc = sysfs_create_file(&power_subsys.kobj, &clock_bail_stat.attr);
+	rc = sysfs_create_file(power_kobj, &clock_bail_stat.attr);
 	if (rc)
 		printk(KERN_ERR "ERROR creating sysfs entry for "
 				"'clock_bail_stat': %d\n", rc);

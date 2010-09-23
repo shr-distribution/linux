@@ -141,7 +141,7 @@ void clear_wakeup_events(void)
 }
 EXPORT_SYMBOL(clear_wakeup_events);
 
-static ssize_t wakeup_sources_show(struct kset *subsys, char *buf)
+static ssize_t wakeup_sources_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	int len = 0;
 	unsigned long flags;
@@ -156,7 +156,7 @@ static ssize_t wakeup_sources_show(struct kset *subsys, char *buf)
 	return len;
 }
 
-static ssize_t wakeup_events_show(struct kset *subsys, char *buf)
+static ssize_t wakeup_events_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	int len = 0, count;
 	unsigned long flags, nanosec_rem;
@@ -217,13 +217,13 @@ static int __init wakeup_sources_init(void)
 {
 	int ret;
 
-	ret = sysfs_create_file(&power_subsys.kobj, &registered_wakeup_sources.attr);
+	ret = sysfs_create_file(power_kobj, &registered_wakeup_sources.attr);
 	if (ret) {
 		printk(KERN_ERR "Error creating sysfs entry for 'registered_wakeup_sources': %d\n", ret);
 		goto done;
 	}
 
-	ret = sysfs_create_file(&power_subsys.kobj, &wakeup_event_list.attr);
+	ret = sysfs_create_file(power_kobj, &wakeup_event_list.attr);
 	if (ret) {
 		printk(KERN_ERR "Error creating sysfs entry for 'wakeup_event_list': %d\n", ret);
 		goto done;

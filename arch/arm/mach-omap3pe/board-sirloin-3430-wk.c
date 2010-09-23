@@ -166,7 +166,8 @@ void omap3_wakeup_sources_save(void)
 #endif
 }
 
-static ssize_t omap3_wakeup_sources_show(struct kset *subsys, char *buf)
+static ssize_t omap3_wakeup_sources_show(struct kobject *kobj,
+										 struct kobj_attribute *attr, char *buf)
 {
 	int len = 0;
 	int i;
@@ -242,7 +243,7 @@ static int __init wakeup_source_info_init(void)
 
 	omap3_wakeup_source_info = 0;
 
-	retval = sysfs_create_file(&power_subsys.kobj, &wakeup_sources.attr);
+	retval = sysfs_create_file(power_kobj, &wakeup_sources.attr);
 	if (retval) {
 		printk(KERN_ERR
 			"ERROR creating sysfs entry for 'wakeup_source': %d\n", retval);
