@@ -53,7 +53,7 @@ static struct file_system_type dev_fs_type = {
 #ifdef CONFIG_BLOCK
 static inline int is_blockdev(struct device *dev)
 {
-	return 0;
+	return dev->class == &block_class;
 }
 #else
 static inline int is_blockdev(struct device *dev) { return 0; }
