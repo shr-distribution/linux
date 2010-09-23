@@ -267,7 +267,7 @@ int blk_register_queue(struct gendisk *disk)
 	if (!q || !q->request_fn)
 		return -ENXIO;
 
-	q->kobj.parent = kobject_get(&disk->kobj);
+	q->kobj.parent = kobject_get(&disk->dev.kobj);
 
 	ret = kobject_add(&q->kobj);
 	if (ret < 0)
@@ -294,6 +294,6 @@ void blk_unregister_queue(struct gendisk *disk)
 
 		kobject_uevent(&q->kobj, KOBJ_REMOVE);
 		kobject_del(&q->kobj);
-		kobject_put(&disk->kobj);
+		kobject_put(&disk->dev.kobj);
 	}
 }

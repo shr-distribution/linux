@@ -726,13 +726,15 @@ static void sr_configure_vc(void)
 }
 
 /* Sysfs interface to select SR VDD1 auto compensation */
-static ssize_t omap_sr_vdd1_autocomp_show(struct kset *subsys, char *buf)
+static ssize_t omap_sr_vdd1_autocomp_show(struct kobject *kobj,
+										  struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%d\n", sr1.is_autocomp_active);
 }
 
-static ssize_t omap_sr_vdd1_autocomp_store(struct kset *subsys,
-				const char *buf, size_t n)
+static ssize_t omap_sr_vdd1_autocomp_store(struct kobject *kobj,
+										   struct kobj_attribute *attr,
+										   const char *buf, size_t n)
 {
 	u32 current_vdd1opp_no;
 	unsigned short value;
@@ -763,13 +765,15 @@ static struct kobj_attribute sr_vdd1_autocomp = {
 };
 
 /* Sysfs interface to select SR VDD2 auto compensation */
-static ssize_t omap_sr_vdd2_autocomp_show(struct kset *subsys, char *buf)
+static ssize_t omap_sr_vdd2_autocomp_show(struct kobject *kobj,
+										  struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%d\n", sr2.is_autocomp_active);
 }
 
-static ssize_t omap_sr_vdd2_autocomp_store(struct kset *subsys,
-				const char *buf, size_t n)
+static ssize_t omap_sr_vdd2_autocomp_store(struct kobject *kobj,
+										   struct kobj_attribute *attr,
+										   const char *buf, size_t n)
 {
 	u32 current_vdd2opp_no;
 	unsigned short value;
@@ -837,11 +841,11 @@ static int __init omap3_sr_init(void)
 
 	printk(KERN_INFO "OMAP: SmartReflex subsystem initialized.\n");
 
-	ret = sysfs_create_file(&power_subsys.kobj, &sr_vdd1_autocomp.attr);
+	ret = sysfs_create_file(power_kobj, &sr_vdd1_autocomp.attr);
 	if (ret)
 		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = sysfs_create_file(&power_subsys.kobj, &sr_vdd2_autocomp.attr);
+	ret = sysfs_create_file(power_kobj, &sr_vdd2_autocomp.attr);
 	if (ret)
 		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 

@@ -652,14 +652,16 @@ static struct constraint_handle *vdd2_opp_co = NULL;
 /*
  * VDD 1
  */
-static ssize_t omap_pm_vdd1_opp_show(struct kset *subsys, char *buf)
+static ssize_t omap_pm_vdd1_opp_show(struct kobject *kobj, 
+									 struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%x\n",
 			(unsigned int) get_opp_no(current_vdd1_opp));
 }
 
-static ssize_t omap_pm_vdd1_opp_store(struct kset *subsys,
-						const char *buf, size_t n)
+static ssize_t omap_pm_vdd1_opp_store(struct kobject *kobj,
+									  struct kobj_attribute *attr,
+									  const char *buf, size_t n)
 {
 	u32 target_opp_no;
 
@@ -710,14 +712,16 @@ static struct kobj_attribute vdd1_opp = {
 /*
  * VDD 2
  */
-static ssize_t omap_pm_vdd2_opp_show(struct kset *subsys, char *buf)
+static ssize_t omap_pm_vdd2_opp_show(struct kobject *kobj,
+									 struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%x\n",
 			(unsigned int) get_opp_no(current_vdd2_opp));
 }
 
-static ssize_t omap_pm_vdd2_opp_store(struct kset *subsys,
-				      const char *buf, size_t n)
+static ssize_t omap_pm_vdd2_opp_store(struct kobject *kobj,
+									  struct kobj_attribute *attr,
+									  const char *buf, size_t n)
 {
 	u32 target_opp_no;
 
@@ -1505,10 +1509,10 @@ int __init prcm_vdd_clk_init(void)
 
 #if defined(CONFIG_PM) && defined(CONFIG_SYSFS)
 	/* Sysfs entry for setting opp for vdd1 & vdd2 */
-	if (0 != sysfs_create_file(&power_subsys.kobj, &vdd1_opp.attr)) {
+	if (0 != sysfs_create_file(power_kobj, &vdd1_opp.attr)) {
 		printk(KERN_ERR "Could not create sysfs entry for VDD1.\n");
 	}
-	if (0 != sysfs_create_file(&power_subsys.kobj, &vdd2_opp.attr)) {
+	if (0 != sysfs_create_file(power_kobj, &vdd2_opp.attr)) {
 		printk(KERN_ERR "Could not create sysfs entry for VDD2.\n");
 	}
 #endif

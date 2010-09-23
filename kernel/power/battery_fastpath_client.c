@@ -483,7 +483,7 @@ int batterycheck_fastwake_handler(void) {
 	return fastsleep_required;	
 }
 
-static ssize_t batterycheck_wakeup_show(struct kset *subsys, char *buf)
+static ssize_t batterycheck_wakeup_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%s\n", batterycheck_wakeup_to_string());
 }
@@ -515,7 +515,7 @@ static int __init batterycheck_sysfs_init(void)
 {
         int retval;
 
-        retval = sysfs_create_file(&power_subsys.kobj, &batterycheck_wakeup_sysfs.attr);
+        retval = sysfs_create_file(power_kobj, &batterycheck_wakeup_sysfs.attr);
         if (retval)
                 goto error;
 

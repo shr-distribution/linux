@@ -129,5 +129,3 @@
 
 extern u32 current_vdd1_opp;
 extern u32 current_vdd2_opp;
-extern struct kset power_subsys;
-

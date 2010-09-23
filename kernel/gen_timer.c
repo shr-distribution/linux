@@ -30,12 +30,11 @@
 
 spinlock_t timer_lock; 
 struct list_head timer_list_head;
-extern struct kset power_subsys;
 extern unsigned long sleep_offset;
 
 gen_timer_stats_t gtimerstats;
 
-static ssize_t timer_list_show(struct kset *subsys, char *buf)
+static ssize_t timer_list_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	struct list_head *ptr;	
 	unsigned long flags;
@@ -78,7 +77,7 @@ int timerchk_sysfs_init(void)
 {
         int retval;
 
-        retval = sysfs_create_file(&power_subsys.kobj, &timerchk_sysfs.attr);
+        retval = sysfs_create_file(power_kobj, &timerchk_sysfs.attr);
         if (retval)
                 goto error;
 	memset(&gtimerstats,0,sizeof(gen_timer_stats_t));
