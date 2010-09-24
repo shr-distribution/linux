@@ -720,7 +720,7 @@ static inline void hsi_char_tx2ecfg(struct hsc_tx_config *tx_cfg,
 	tx_cfg->arb_mode = cfg->arb_mode;
 }
 
-static int hsi_char_ioctl(struct inode *inode, struct file *file,
+static long hsi_char_ioctl(struct inode *inode, struct file *file,
 					unsigned int cmd, unsigned long arg)
 {
 	struct hsi_char_channel *channel = file->private_data;
@@ -728,7 +728,7 @@ static int hsi_char_ioctl(struct inode *inode, struct file *file,
 	struct hsi_config cfg;
 	struct hsc_rx_config rx_cfg;
 	struct hsc_tx_config tx_cfg;
-	int ret = 0;
+	long ret = 0;
 
 	if (HSI_CHST_OC(channel) != HSI_CHST_OPENED)
 		return -EINVAL;
@@ -954,7 +954,7 @@ static const struct file_operations hsi_char_fops = {
 	.read		= hsi_char_read,
 	.write		= hsi_char_write,
 	.poll		= hsi_char_poll,
-	.ioctl		= hsi_char_ioctl,
+	.unlocked_ioctl	= hsi_char_ioctl,
 	.open		= hsi_char_open,
 	.release	= hsi_char_release,
 	.fasync		= hsi_char_fasync,
