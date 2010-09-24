@@ -214,7 +214,7 @@ int misc_register(struct miscdevice * misc)
 		misc_minors[misc->minor >> 3] |= 1 << (misc->minor & 7);
 	dev = MKDEV(MISC_MAJOR, misc->minor);
 
-	misc->this_device = device_create(misc_class, misc->parent, dev,
+	misc->this_device = device_create_drvdata(misc_class, misc->parent, dev, misc,
 					  "%s", misc->name);
 	if (IS_ERR(misc->this_device)) {
 		err = PTR_ERR(misc->this_device);
@@ -264,7 +264,6 @@ EXPORT_SYMBOL(misc_deregister);
 static char *misc_devnode(struct device *dev, mode_t *mode)
 {
 	struct miscdevice *c = dev_get_drvdata(dev);
-
 	if (mode && c->mode)
 		*mode = c->mode;
 	if (c->nodename)
