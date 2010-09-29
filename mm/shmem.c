@@ -1429,6 +1429,7 @@ shmem_get_inode(struct super_block *sb, int mode, dev_t dev)
 		inode->i_mapping->backing_dev_info = &shmem_backing_dev_info;
 		inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
 		inode->i_generation = get_seconds();
+		INIT_LIST_HEAD(&inode->i_dentry);
 		info = SHMEM_I(inode);
 		memset(info, 0, (char *)inode - (char *)info);
 		spin_lock_init(&info->lock);
@@ -2510,7 +2511,6 @@ out4:
 	shm_mnt = ERR_PTR(error);
 	return error;
 }
-module_init(init_tmpfs)
 
 /*
  * shmem_file_setup - get an unlinked file living in tmpfs
