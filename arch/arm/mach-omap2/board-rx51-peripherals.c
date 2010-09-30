@@ -322,7 +322,7 @@ static struct gpio_keys_button rx51_gpio_keys[] = {
 		.type			= EV_SW,
 		.code			= SW_KEYPAD_SLIDE,
 		.gpio			= RX51_GPIO_KEYPAD_SLIDE,
-		.active_low		= 1,
+		.active_low		= 0,
 		.debounce_interval	= RX51_GPIO_DEBOUNCE_TIMEOUT,
 	}, {
 		.desc			= "Proximity Sensor",
