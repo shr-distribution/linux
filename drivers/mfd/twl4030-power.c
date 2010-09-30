@@ -33,6 +33,11 @@
 
 static u8 twl4030_start_script_address = 0x2b;
 
+#define STS_HW_CONDITIONS		0x0f
+#define STS_VBUS			(1<<7)
+
+#define TWL4030_WATCHDOG_CFG_REG_OFFS	0x3
+
 #define PWR_P1_SW_EVENTS	0x10
 #define PWR_DEVOFF	(1<<0)
 
@@ -510,6 +515,51 @@ int twl4030_remove_script(u8 flags)
 	return err;
 }
 
+static void twl4030_poweroff(void)
+{
+	u8 val[4];
+	int err;
+
+	err = twl_i2c_read_u8(TWL4030_MODULE_PM_MASTER, &val[0],
+			STS_HW_CONDITIONS);
+	if (err)
+		pr_err("I2C error %d while reading TWL4030"
+				" PM_MASTER HW_CONDITIONS\n", err);
+
+	if (val[0] & STS_VBUS) {
+		pr_emerg("twl4030-poweroff: VBUS on,"
+				" forcing restart!\n");
+		/*
+		 * Set watchdog, Triton goes to WAIT-ON state.
+		 * VBUS will cause start up
+		 */
+		twl_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER, 1,
+				TWL4030_WATCHDOG_CFG_REG_OFFS);
+		return;
+	}
+
+	err = twl_i2c_read(TWL4030_MODULE_PM_MASTER, &val[0],
+			PWR_P1_SW_EVENTS, 3);
+	if (err) {
+		printk(KERN_WARNING "I2C error %d while reading TWL4030"
+				"PM_MASTER P1_SW_EVENTS\n", err);
+		return;
+	}
+
+	val[0] |= PWR_DEVOFF;
+	val[1] |= PWR_DEVOFF;
+	val[2] |= PWR_DEVOFF;
+
+	err = twl_i2c_write(TWL4030_MODULE_PM_MASTER, val,
+			PWR_P1_SW_EVENTS, 3);
+
+	if (err) {
+		printk(KERN_WARNING "I2C error %d while writing TWL4030"
+				"PM_MASTER P1_SW_EVENTS\n", err);
+		return ;
+	}
+}
+
 void __init twl4030_power_init(struct twl4030_power_data *twl4030_scripts)
 {
 	int err = 0;
@@ -517,9 +567,14 @@ void __init twl4030_power_init(struct twl4030_power_data *twl4030_scripts)
 	struct twl4030_resconfig *resconfig;
 	u8 address = twl4030_start_script_address;
 
+	pm_power_off = twl4030_poweroff;
+
 	err = twl_i2c_write_u8(TWL4030_MODULE_PM_MASTER,
 			TWL4030_PM_MASTER_KEY_CFG1,
 			TWL4030_PM_MASTER_PROTECT_KEY);
+
+	err = twl_i2c_write_u8(TWL4030_MODULE_PM_MASTER, R_KEY_1,
+				R_PROTECT_KEY);
 	if (err)
 		goto unlock;
 
