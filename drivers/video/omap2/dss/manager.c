@@ -418,7 +418,7 @@ struct overlay_cache_data {
 
 	bool manual_update;
 
-	bool pending_notify;
+	enum omap_dss_notify_event pending_notify;
 };
 
 struct manager_cache_data {
@@ -452,7 +452,7 @@ struct manager_cache_data {
 	bool enlarge_update_area;
 	bool in_use;
 
-	bool pending_notify;
+	enum omap_dss_notify_event pending_notify;
 };
 
 static int omap_dss_mgr_apply(struct omap_overlay_manager *mgr);
@@ -472,54 +472,80 @@ static int dss_notifier_call_chain(unsigned long val, void *v)
 	return atomic_notifier_call_chain(&dss_notifier_list, val, v);
 }
 
-static bool check_mgr_notify(struct omap_overlay_manager *mgr)
+/**
+ * Check from events which should be fired now.
+ *
+ * @return: list of events that should fire now.
+ */
+static enum omap_dss_notify_event dss_mgr_notify_check(
+		struct omap_overlay_manager *mgr,
+		struct manager_cache_data *mc,
+		enum omap_dss_notify_event events)
+{
+	if (mc->manual_update) {
+		if (mc->enabled && mc->in_use && mgr->info_dirty)
+			events &= ~OMAP_DSS_NOTIFY_GO_MGR;
+
+	} else {
+		if (mc->enabled && (mc->dirty || mc->shadow_dirty))
+			events = OMAP_DSS_NOTIFY_NONE;
+	}
+
+	return events;
+}
+
+static enum omap_dss_notify_event dss_mgr_notify_check_ovl(
+		struct omap_overlay *ovl,
+		struct overlay_cache_data *oc,
+		struct manager_cache_data *mc,
+		enum omap_dss_notify_event events)
+{
+	if (mc->manual_update) {
+		if (mc->enabled && oc->enabled
+		    && mc->in_use && ovl->info_dirty)
+			events &= ~OMAP_DSS_NOTIFY_GO_OVL;
+
+	} else {
+		if (mc->enabled && oc->enabled
+		    && (oc->dirty || oc->shadow_dirty))
+			events = OMAP_DSS_NOTIFY_NONE;
+	}
+
+	return events;
+}
+
+static enum omap_dss_notify_event check_mgr_notify(
+		struct omap_overlay_manager *mgr)
 {
 	struct manager_cache_data *mc;
 
 	if (!(mgr->caps & OMAP_DSS_OVL_MGR_CAP_DISPC))
-		return false;
+		return OMAP_DSS_NOTIFY_NONE;
 
 	mc = &dss_cache.manager_cache[mgr->id];
 
-	if (!mc->pending_notify)
-		return false;
+	if (mc->pending_notify == OMAP_DSS_NOTIFY_NONE)
+		return OMAP_DSS_NOTIFY_NONE;
 
-	if (mc->manual_update) {
-		if (mc->enabled && mc->in_use && mgr->info_dirty)
-			return false;
-	} else {
-		if (mc->enabled && (mc->dirty || mc->shadow_dirty))
-			return false;
-	}
-
-	return true;
+	return dss_mgr_notify_check(mgr, mc, mc->pending_notify);
 }
 
-static bool check_ovl_notify(struct omap_overlay *ovl)
+static enum omap_dss_notify_event check_ovl_notify(
+		struct omap_overlay *ovl)
 {
 	struct overlay_cache_data *oc;
 	struct manager_cache_data *mc;
 
 	if (!(ovl->caps & OMAP_DSS_OVL_CAP_DISPC))
-		return false;
+		return OMAP_DSS_NOTIFY_NONE;
 
 	oc = &dss_cache.overlay_cache[ovl->id];
 	mc = &dss_cache.manager_cache[oc->channel];
 
-	if (!oc->pending_notify)
-		return false;
+	if (oc->pending_notify == OMAP_DSS_NOTIFY_NONE)
+		return OMAP_DSS_NOTIFY_NONE;
 
-	if (oc->manual_update) {
-		if (mc->enabled && oc->enabled &&
-		    mc->in_use && ovl->info_dirty)
-			return false;
-	} else {
-		if (mc->enabled && oc->enabled &&
-		    (oc->dirty || oc->shadow_dirty))
-			return false;
-	}
-
-	return true;
+	return dss_mgr_notify_check_ovl(ovl, oc, mc, oc->pending_notify);
 }
 
 static void dss_run_notifiers(void)
@@ -529,29 +555,33 @@ static void dss_run_notifiers(void)
 	int i;
 	struct omap_overlay_manager *mgr;
 	struct omap_overlay *ovl;
+	enum omap_dss_notify_event events;
 
 	list_for_each_entry(mgr, &manager_list, list) {
-		if (!check_mgr_notify(mgr))
+		events = check_mgr_notify(mgr);
+		if (events == OMAP_DSS_NOTIFY_NONE)
 			continue;
 
 		mc = &dss_cache.manager_cache[mgr->id];
 
-		mc->pending_notify = false;
-		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_MGR,
+		mc->pending_notify &= ~events;
+
+		dss_notifier_call_chain(events,
 					(void *)(long)mgr->id);
 	}
 
 	for (i = 0; i < omap_dss_get_num_overlays(); ++i) {
 		ovl = omap_dss_get_overlay(i);
 
-		if (!check_ovl_notify(ovl))
+		events = check_ovl_notify(ovl);
+		if (events == OMAP_DSS_NOTIFY_NONE)
 			continue;
 
 		oc = &dss_cache.overlay_cache[ovl->id];
 
-		oc->pending_notify = false;
+		oc->pending_notify &= ~events;
 
-		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_OVL,
+		dss_notifier_call_chain(events,
 					(void *)(long)ovl->id);
 	}
 }
@@ -663,7 +693,7 @@ static int dss_wait_notify_callback(struct notifier_block *nb,
 	spin_lock_irqsave(&dss_wait_notify.lock, flags);
 
 	list_for_each_entry(e, &dss_wait_notify.list, list) {
-		if (event != e->event)
+		if (!(event & e->event))
 			continue;
 		if ((long)data != e->id)
 			continue;
@@ -1044,19 +1074,20 @@ static void make_even(u16 *x, u16 *w)
 	*w = x2 - x1;
 }
 
-static int dss_mgr_notify(struct omap_overlay_manager *mgr)
+static int dss_mgr_notify(struct omap_overlay_manager *mgr,
+		enum omap_dss_notify_event events)
 {
 	struct manager_cache_data *mc;
 	const int num_mgrs = ARRAY_SIZE(dss_cache.manager_cache);
 	unsigned long flags;
-	bool dirty;
+	enum omap_dss_notify_event fire_events = OMAP_DSS_NOTIFY_NONE;
 	struct omap_dss_device *dssdev = mgr->device;
 
 	if (mgr->id >= num_mgrs)
 		return -EINVAL;
 
 	if (!dssdev || dssdev->state != OMAP_DSS_DISPLAY_ACTIVE) {
-		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_MGR,
+		dss_notifier_call_chain(events,
 					(void *)(long)mgr->id);
 		return 0;
 	}
@@ -1065,36 +1096,34 @@ static int dss_mgr_notify(struct omap_overlay_manager *mgr)
 
 	mc = &dss_cache.manager_cache[mgr->id];
 
-	if (mc->manual_update)
-		dirty = mc->enabled && mc->in_use && mgr->info_dirty;
-	else
-		dirty = mc->enabled && (mc->dirty || mc->shadow_dirty);
+	fire_events = dss_mgr_notify_check(mgr, mc, events);
 
-	mc->pending_notify = dirty;
+	mc->pending_notify |= events & ~fire_events;
 
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
 
-	if (!dirty)
-		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_MGR,
+	if (fire_events != OMAP_DSS_NOTIFY_NONE)
+		dss_notifier_call_chain(fire_events,
 					(void *)(long)mgr->id);
 
 	return 0;
 }
 
-int dss_mgr_notify_ovl(struct omap_overlay *ovl)
+int dss_mgr_notify_ovl(struct omap_overlay *ovl,
+		enum omap_dss_notify_event events)
 {
 	struct overlay_cache_data *oc;
 	struct manager_cache_data *mc;
 	const int num_ovls = ARRAY_SIZE(dss_cache.overlay_cache);
 	unsigned long flags;
-	bool dirty;
+	enum omap_dss_notify_event fire_events = OMAP_DSS_NOTIFY_NONE;
 	struct omap_dss_device *dssdev;
 
 	if (ovl->id >= num_ovls)
 		return -EINVAL;
 
 	if (!ovl->manager) {
-		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_OVL,
+		dss_notifier_call_chain(events,
 					(void *)(long)ovl->id);
 		return 0;
 	}
@@ -1102,7 +1131,7 @@ int dss_mgr_notify_ovl(struct omap_overlay *ovl)
 	dssdev = ovl->manager->device;
 
 	if (!dssdev || dssdev->state != OMAP_DSS_DISPLAY_ACTIVE) {
-		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_OVL,
+		dss_notifier_call_chain(events,
 					(void *)(long)ovl->id);
 		return 0;
 	}
@@ -1112,56 +1141,49 @@ int dss_mgr_notify_ovl(struct omap_overlay *ovl)
 	oc = &dss_cache.overlay_cache[ovl->id];
 	mc = &dss_cache.manager_cache[oc->channel];
 
-	if (oc->manual_update)
-		dirty = mc->enabled && oc->enabled &&
-			mc->in_use && ovl->info_dirty;
-	else
-		dirty = mc->enabled && oc->enabled &&
-			(oc->dirty || oc->shadow_dirty);
+	fire_events = dss_mgr_notify_check_ovl(ovl, oc, mc, events);
 
-	oc->pending_notify = dirty;
+	oc->pending_notify |= events & ~fire_events;
 
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
 
-	if (!dirty)
-		dss_notifier_call_chain(OMAP_DSS_NOTIFY_GO_OVL,
+	if (fire_events != OMAP_DSS_NOTIFY_NONE)
+		dss_notifier_call_chain(fire_events,
 					(void *)(long)ovl->id);
 
 	return 0;
 }
 
-int omap_dss_request_notify(enum omap_dss_notify_event event,
+int omap_dss_request_notify(enum omap_dss_notify_event events,
 			    long value)
 {
 	int r;
 	struct omap_overlay_manager *mgr;
 	struct omap_overlay *ovl;
 
-	switch (event) {
-	case OMAP_DSS_NOTIFY_GO_MGR:
+	if (events & ~(OMAP_DSS_NOTIFY_MASK_MGR | OMAP_DSS_NOTIFY_MASK_OVL))
+		return -EINVAL;
+
+	if (events & OMAP_DSS_NOTIFY_MASK_MGR) {
 		mgr = omap_dss_get_overlay_manager(value);
 		if (!mgr)
 			return -EINVAL;
 		if (!mgr->notify)
 			return -ENOSYS;
-		r = mgr->notify(mgr);
+		r = mgr->notify(mgr, events & OMAP_DSS_NOTIFY_MASK_MGR);
 		if (r)
 			return r;
-		break;
-	case OMAP_DSS_NOTIFY_GO_OVL:
+	}
+	if (events & OMAP_DSS_NOTIFY_MASK_OVL) {
 		ovl = omap_dss_get_overlay(value);
 		if (!ovl)
 			return -EINVAL;
 		if (!ovl->notify)
 			return -ENOSYS;
-		r = ovl->notify(ovl);
+		r = ovl->notify(ovl, events & OMAP_DSS_NOTIFY_MASK_OVL);
 		if (r)
 			return r;
-		break;
-	default:
-		return -EINVAL;
 	}
-
 	return 0;
 }
 EXPORT_SYMBOL(omap_dss_request_notify);
