@@ -190,8 +190,11 @@ enum omap_dss_clk_source {
 };
 
 enum omap_dss_notify_event {
-	OMAP_DSS_NOTIFY_GO_MGR,
-	OMAP_DSS_NOTIFY_GO_OVL,
+	OMAP_DSS_NOTIFY_NONE		= 0 << 0,
+	OMAP_DSS_NOTIFY_GO_MGR		= 1 << 0,
+	OMAP_DSS_NOTIFY_MASK_MGR	= 1 << 0,
+	OMAP_DSS_NOTIFY_GO_OVL		= 1 << 2,
+	OMAP_DSS_NOTIFY_MASK_OVL	= 1 << 2,
 };
 
 /* RFBI */
@@ -355,7 +358,8 @@ struct omap_overlay {
 			struct omap_overlay_info *info);
 
 	int (*wait_for_go)(struct omap_overlay *ovl);
-	int (*notify)(struct omap_overlay *ovl);
+	int (*notify)(struct omap_overlay *ovl,
+			enum omap_dss_notify_event events);
 };
 
 struct omap_overlay_manager_info {
@@ -399,7 +403,8 @@ struct omap_overlay_manager {
 
 	int (*apply)(struct omap_overlay_manager *mgr);
 	int (*wait_for_go)(struct omap_overlay_manager *mgr);
-	int (*notify)(struct omap_overlay_manager *mgr);
+	int (*notify)(struct omap_overlay_manager *mgr,
+			enum omap_dss_notify_event events);
 	int (*wait_for_vsync)(struct omap_overlay_manager *mgr);
 
 	int (*enable)(struct omap_overlay_manager *mgr);
