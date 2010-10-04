@@ -471,9 +471,10 @@ static int dss_ovl_wait_for_go(struct omap_overlay *ovl)
 	return dss_mgr_wait_for_go_ovl(ovl);
 }
 
-static int dss_ovl_notify(struct omap_overlay *ovl)
+static int dss_ovl_notify(struct omap_overlay *ovl,
+		enum omap_dss_notify_event events)
 {
-	return dss_mgr_notify_ovl(ovl);
+	return dss_mgr_notify_ovl(ovl, events);
 }
 
 static int omap_dss_set_manager(struct omap_overlay *ovl,
