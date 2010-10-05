@@ -30,6 +30,7 @@
 #include <media/si4713.h>
 #include <linux/hsi/hsi.h>
 #include <linux/cmt.h>
+#include <linux/irq.h>
 
 #include <plat/mcspi.h>
 #include <plat/board.h>
@@ -1309,6 +1310,7 @@ fail:
 
 static struct cmt_platform_data rx51_cmt_pdata = {
 	.cmt_rst_ind_gpio = 72,
+	.cmt_rst_ind_flags = IRQF_TRIGGER_FALLING,
 };
 
 static struct platform_device rx51_cmt_device = {
