@@ -1248,6 +1248,7 @@ fail:
 
 static struct cmt_platform_data rx51_cmt_pdata = {
 	.cmt_rst_ind_gpio = 72,
+	.cmt_ver = 1,
 };
 
 static struct platform_device rx51_cmt_device = {
