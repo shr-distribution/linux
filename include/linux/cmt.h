@@ -38,10 +38,12 @@ struct cmt_device;
 
 /*
  * struct cmt_platform_data - CMT platform data
- * @ape_rst_rq_gpio: GPIO line number for the CMT reset line
+ * @cmt_rst_ind_gpio: GPIO line number for the CMT reset line
+ * @cmt_rst_ind_glags: flags for the reset line IRQ
  */
 struct cmt_platform_data {
 	unsigned int cmt_rst_ind_gpio;
+	unsigned long cmt_rst_ind_flags;
 };
 
 struct cmt_device *cmt_get(const char *name);
