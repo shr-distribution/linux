@@ -418,7 +418,7 @@ struct overlay_cache_data {
 
 	bool manual_update;
 
-	enum omap_dss_notify_event pending_notify;
+	enum omap_dss_notify_event requested_events;
 };
 
 struct manager_cache_data {
@@ -452,7 +452,7 @@ struct manager_cache_data {
 	bool enlarge_update_area;
 	bool in_use;
 
-	enum omap_dss_notify_event pending_notify;
+	enum omap_dss_notify_event requested_events;
 };
 
 static int omap_dss_mgr_apply(struct omap_overlay_manager *mgr);
@@ -528,10 +528,10 @@ static enum omap_dss_notify_event check_mgr_notify(
 
 	mc = &dss_cache.manager_cache[mgr->id];
 
-	if (mc->pending_notify == OMAP_DSS_NOTIFY_NONE)
+	if (mc->requested_events == OMAP_DSS_NOTIFY_NONE)
 		return OMAP_DSS_NOTIFY_NONE;
 
-	return dss_mgr_notify_check(mgr, mc, mc->pending_notify);
+	return dss_mgr_notify_check(mgr, mc, mc->requested_events);
 }
 
 static enum omap_dss_notify_event check_ovl_notify(
@@ -546,10 +546,10 @@ static enum omap_dss_notify_event check_ovl_notify(
 	oc = &dss_cache.overlay_cache[ovl->id];
 	mc = &dss_cache.manager_cache[oc->channel];
 
-	if (oc->pending_notify == OMAP_DSS_NOTIFY_NONE)
+	if (oc->requested_events == OMAP_DSS_NOTIFY_NONE)
 		return OMAP_DSS_NOTIFY_NONE;
 
-	return dss_mgr_notify_check_ovl(ovl, oc, mc, oc->pending_notify);
+	return dss_mgr_notify_check_ovl(ovl, oc, mc, oc->requested_events);
 }
 
 static void dss_run_notifiers(void)
@@ -568,7 +568,7 @@ static void dss_run_notifiers(void)
 
 		mc = &dss_cache.manager_cache[mgr->id];
 
-		mc->pending_notify &= ~events;
+		mc->requested_events &= ~events;
 
 		dss_notifier_call_chain(events,
 					(void *)(long)mgr->id);
@@ -583,7 +583,7 @@ static void dss_run_notifiers(void)
 
 		oc = &dss_cache.overlay_cache[ovl->id];
 
-		oc->pending_notify &= ~events;
+		oc->requested_events &= ~events;
 
 		dss_notifier_call_chain(events,
 					(void *)(long)ovl->id);
@@ -1108,7 +1108,7 @@ static int dss_mgr_notify(struct omap_overlay_manager *mgr,
 
 	fire_events = dss_mgr_notify_check(mgr, mc, events);
 
-	mc->pending_notify |= events & ~fire_events;
+	mc->requested_events |= events & ~fire_events;
 
 err_out:
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
@@ -1160,7 +1160,7 @@ int dss_mgr_notify_ovl(struct omap_overlay *ovl,
 
 	fire_events = dss_mgr_notify_check_ovl(ovl, oc, mc, events);
 
-	oc->pending_notify |= events & ~fire_events;
+	oc->requested_events |= events & ~fire_events;
 
 err_out:
 	spin_unlock_irqrestore(&dss_cache.lock, flags);
