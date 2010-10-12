@@ -544,7 +544,11 @@ static enum omap_dss_notify_event check_ovl_notify(
 		return OMAP_DSS_NOTIFY_NONE;
 
 	oc = &dss_cache.overlay_cache[ovl->id];
-	mc = &dss_cache.manager_cache[oc->channel];
+
+	if (!ovl->manager)
+		return oc->requested_events;
+
+	mc = &dss_cache.manager_cache[ovl->manager->id];
 
 	if (oc->requested_events == OMAP_DSS_NOTIFY_NONE)
 		return OMAP_DSS_NOTIFY_NONE;
@@ -1151,7 +1155,7 @@ int dss_mgr_notify_ovl(struct omap_overlay *ovl,
 	spin_lock_irqsave(&dss_cache.lock, flags);
 
 	oc = &dss_cache.overlay_cache[ovl->id];
-	mc = &dss_cache.manager_cache[oc->channel];
+	mc = &dss_cache.manager_cache[ovl->manager->id];
 
 	if (!mc->manual_update && (events & OMAP_DSS_NOTIFY_UPDATE_OVL)) {
 		r = -EINVAL;
