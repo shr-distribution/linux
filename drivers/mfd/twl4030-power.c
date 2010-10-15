@@ -562,13 +562,18 @@ static void twl4030_poweroff(void)
 
 void __init twl4030_power_init(struct twl4030_power_data *twl4030_scripts)
 {
+/*
+ * HACK: We are not using power scripts since it causes issues while turning
+ * on panel on N900.
+ */
+#if 0
 	int err = 0;
 	int i;
 	struct twl4030_resconfig *resconfig;
 	u8 address = twl4030_start_script_address;
-
+#endif
 	pm_power_off = twl4030_poweroff;
-
+#if 0
 	err = twl_i2c_write_u8(TWL4030_MODULE_PM_MASTER,
 			TWL4030_PM_MASTER_KEY_CFG1,
 			TWL4030_PM_MASTER_PROTECT_KEY);
@@ -620,4 +625,5 @@ resource:
 	if (err)
 		pr_err("TWL4030 failed to configure resource\n");
 	return;
+#endif
 }
