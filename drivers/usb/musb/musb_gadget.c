@@ -1588,12 +1588,11 @@ static int musb_gadget_vbus_draw(struct usb_gadget *gadget, unsigned mA)
 {
 	struct musb	*musb = gadget_to_musb(gadget);
 
-	/* REVISIT we shouldn't need to be passing
-	 * this kind of value to userland. We have
-	 * now the blocking notifier for transceivers
-	 * which could very well handle this
-	 */
-	musb->power_draw = mA;
+	if (musb->power_draw != mA && mA > 0) {
+		musb->power_draw = mA;
+		otg_notify_event(musb->xceiv, USB_EVENT_ENUMERATED,
+				&musb->power_draw);
+	}
 	schedule_work(&musb->irq_work);
 
 	if (!musb->xceiv->set_power)
