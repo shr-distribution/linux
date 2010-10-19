@@ -64,6 +64,8 @@ struct otg_transceiver {
 	const char		*label;
 	unsigned int		 flags;
 
+	void			*last_event_data;
+	u8			last_event;
 	u8			default_a;
 	enum usb_otg_state	state;
 
@@ -246,6 +248,22 @@ static inline int
 otg_register_notifier(struct otg_transceiver *otg, struct notifier_block *nb)
 {
 	return blocking_notifier_chain_register(&otg->notifier, nb);
+}
+
+static inline int
+otg_notify_event(struct otg_transceiver *otg, enum usb_xceiv_events event,
+		 void *data)
+{
+	otg->last_event = event;
+	otg->last_event_data = data;
+
+	return blocking_notifier_call_chain(&otg->notifier, event, data);
+}
+
+static inline int
+otg_get_last_event(struct otg_transceiver *otg)
+{
+	return otg_notify_event(otg, otg->last_event, otg->last_event_data);
 }
 
 static inline void
