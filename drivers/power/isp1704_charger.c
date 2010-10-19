@@ -318,6 +318,10 @@ static int __devinit isp1704_charger_probe(struct platform_device *pdev)
 
 	dev_info(isp->dev, "registered with product id %s\n", isp->model);
 
+	ret = otg_get_last_event(isp->otg);
+	if (ret)
+		dev_warn(isp->dev, "failed to get last event\n");
+
 	return 0;
 fail2:
 	power_supply_unregister(&isp->psy);
