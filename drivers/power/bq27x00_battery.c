@@ -116,15 +116,15 @@ enum bq27x00_regs {
 	BQ27x00_EE_TCOMP, /* Temperature Compensation constants or ID #1 */
 };
 
-enum bq27000_status_flags {
-	BQ27000_STATUS_CHGS = 0x80, /* 1 = being charged */
-	BQ27000_STATUS_NOACT = 0x40, /* 1 = no activity */
-	BQ27000_STATUS_IMIN = 0x20, /* 1 = Lion taper current mode */
-	BQ27000_STATUS_CI = 0x10, /* 1 = capacity likely  innacurate */
-	BQ27000_STATUS_CALIP = 0x08, /* 1 = calibration in progress */
-	BQ27000_STATUS_VDQ = 0x04, /* 1 = capacity should be accurate */
-	BQ27000_STATUS_EDV1 = 0x02, /* 1 = end of discharge.. <6% left */
-	BQ27000_STATUS_EDVF = 0x01, /* 1 = no, it's really empty now */
+enum bq27x00_status_flags {
+	BQ27x00_STATUS_CHGS = 0x80, /* 1 = being charged */
+	BQ27x00_STATUS_NOACT = 0x40, /* 1 = no activity */
+	BQ27x00_STATUS_IMIN = 0x20, /* 1 = Lion taper current mode */
+	BQ27x00_STATUS_CI = 0x10, /* 1 = capacity likely  innacurate */
+	BQ27x00_STATUS_CALIP = 0x08, /* 1 = calibration in progress */
+	BQ27x00_STATUS_VDQ = 0x04, /* 1 = capacity should be accurate */
+	BQ27x00_STATUS_EDV1 = 0x02, /* 1 = end of discharge.. <6% left */
+	BQ27x00_STATUS_EDVF = 0x01, /* 1 = no, it's really empty now */
 };
 
 #endif
@@ -155,13 +155,19 @@ struct bq27x00_device_info {
 static enum power_supply_property bq27x00_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_CAPACITY,
+//	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_TECHNOLOGY,
+//	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW,
 	POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG,
 	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
+//	POWER_SUPPLY_PROP_CAPACITY,
+//	POWER_SUPPLY_PROP_ONLINE
 };
 
 /*
@@ -239,7 +245,7 @@ static int bq27x00_battery_current(struct bq27x00_device_info *di)
 			dev_err(di->dev, "error reading flags\n");
 			return 0;
 		}
-		if (flags & BQ27000_STATUS_CHGS) {
+		if (flags & BQ27x00_STATUS_CHGS) {
 			dev_dbg(di->dev, "negative current!\n");
 			curr = -curr;
 		}
@@ -269,6 +275,27 @@ static int bq27x00_battery_rsoc(struct bq27x00_device_info *di)
 	return rsoc;
 }
 
+static int bq27x00_battery_health(struct bq27x00_device_info *di,
+				  union power_supply_propval *val)
+{
+	int flags = 0;
+	int ret;
+
+	val->intval = POWER_SUPPLY_HEALTH_UNKNOWN;
+
+	ret = bq27x00_read(BQ27x00_FLAGS, &flags, 0, di);
+	if (ret < 0) {
+		dev_err(di->dev, "error reading flags\n");
+		return ret;
+	}
+	if (flags < 0)
+		return flags;
+	if (flags & BQ27x00_STATUS_VDQ)
+		val->intval = POWER_SUPPLY_HEALTH_GOOD;
+
+	return 0;
+}
+
 static int bq27x00_battery_status(struct bq27x00_device_info *di,
 				  union power_supply_propval *val)
 {
@@ -290,7 +317,7 @@ static int bq27x00_battery_status(struct bq27x00_device_info *di,
 		else
 			status = POWER_SUPPLY_STATUS_CHARGING;
 	} else {
-		if (flags & BQ27000_STATUS_CHGS)
+		if (flags & BQ27x00_STATUS_CHGS)
 			status = POWER_SUPPLY_STATUS_CHARGING;
 		else
 			status = POWER_SUPPLY_STATUS_DISCHARGING;
@@ -343,6 +370,9 @@ static int bq27x00_battery_get_property(struct power_supply *psy,
 		if (psp == POWER_SUPPLY_PROP_PRESENT)
 			val->intval = val->intval <= 0 ? 0 : 1;
 		break;
+	case POWER_SUPPLY_PROP_HEALTH:
+		ret = bq27x00_battery_health(di,val);
+		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		val->intval = bq27x00_battery_current(di);
 		break;
@@ -351,6 +381,9 @@ static int bq27x00_battery_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_TEMP:
 		val->intval = bq27x00_battery_temperature(di);
+		break;
+	case POWER_SUPPLY_PROP_TECHNOLOGY:
+		val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
 		break;
 	case POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW:
 		ret = bq27x00_battery_time(di, BQ27x00_TTE_L, val);
@@ -374,7 +407,8 @@ static void bq27x00_powersupply_init(struct bq27x00_device_info *di)
 	di->bat.properties = bq27x00_battery_props;
 	di->bat.num_properties = ARRAY_SIZE(bq27x00_battery_props);
 	di->bat.get_property = bq27x00_battery_get_property;
-	di->bat.external_power_changed = NULL;
+	di->bat.external_power_changed = NULL; //TODO: seem important, look in bq27000 openmoko driver
+
 }
 
 /*
