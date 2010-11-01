@@ -745,6 +745,7 @@ void __init twl4030_mmc_init(struct twl4030_hsmmc_info *controllers)
 		else
 			sprintf(twl->name, "mmc%islot%i", c->mmc, 1);
 		mmc->slots[0].name = twl->name;
+		mmc->slots[0].mmcblk_devidx = c->mmcblk_devidx;
 		mmc->nr_slots = 1;
 		mmc->slots[0].wires = c->wires;
 		mmc->slots[0].internal_clock = !c->ext_clock;

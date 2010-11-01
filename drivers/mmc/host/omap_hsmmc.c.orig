@@ -1734,7 +1734,6 @@ static int __init omap_hsmmc_probe(struct platform_device *pdev)
 	mmc->max_seg_size = mmc->max_req_size;
 
 	mmc->ocr_avail = mmc_slot(host).ocr_mask;
-	mmc->mmcblk_devidx = mmc_slot(host).mmcblk_devidx;
 	mmc->caps |= MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SD_HIGHSPEED;
 
 	if (mmc_slot(host).wires >= 8)

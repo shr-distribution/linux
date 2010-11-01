@@ -59,6 +59,7 @@ static struct platform_device *rx51_flash_devices[] = {
 static struct twl4030_hsmmc_info mmc[] __initdata = {
 	{
 		.name		= "external",
+		.mmcblk_devidx	= 1,
 		.mmc		= 1,
 		.wires		= 4,
 		.cover_only	= true,
@@ -69,6 +70,7 @@ static struct twl4030_hsmmc_info mmc[] __initdata = {
 	},
 	{
 		.name		= "internal",
+		.mmcblk_devidx	= 0,
 		.mmc		= 2,
 		.wires		= 8,
 		.gpio_cd	= -EINVAL,

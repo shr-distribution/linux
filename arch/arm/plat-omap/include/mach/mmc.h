@@ -110,6 +110,7 @@ struct omap_mmc_platform_data {
 		int (* get_cover_state)(struct device *dev, int slot);
 
 		const char *name;
+		int mmcblk_devidx; /* preferred mmcblkX index for this slot */
 		u32 ocr_mask;
 
 		/* Card detection IRQs */

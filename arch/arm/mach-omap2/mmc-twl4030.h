@@ -19,6 +19,7 @@ struct twl4030_hsmmc_info {
 	int	gpio_cd;	/* or -EINVAL */
 	int	gpio_wp;	/* or -EINVAL */
 	char	*name;		/* or NULL for default */
+	int	mmcblk_devidx;  /* preferred mmcblkX device index */
 };
 
 #if	defined(CONFIG_TWL4030_CORE) && \

@@ -207,7 +207,7 @@ struct mmc_host {
 #endif
 
 	struct dentry		*debugfs_root;
-
+	unsigned int		mmcblk_devidx; /* preferred mmc block device index (mmcblkX) */
 	unsigned long		private[0] ____cacheline_aligned;
 };
 

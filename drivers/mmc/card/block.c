@@ -479,7 +479,7 @@ static struct mmc_blk_data *mmc_blk_alloc(struct mmc_card *card)
 	struct mmc_blk_data *md;
 	int devidx, ret;
 
-	devidx = find_first_zero_bit(dev_use, MMC_NUM_MINORS);
+	devidx = find_next_zero_bit(dev_use, MMC_NUM_MINORS, card->host->mmcblk_devidx);
 	if (devidx >= MMC_NUM_MINORS)
 		return ERR_PTR(-ENOSPC);
 	__set_bit(devidx, dev_use);
