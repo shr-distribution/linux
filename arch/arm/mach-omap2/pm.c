@@ -1,13 +1,18 @@
 /*
  * linux/arch/arm/mach-omap2/pm.c
  *
- * OMAP2 Power Management Routines
- *
- * Copyright (C) 2006 Nokia Corporation
- * Tony Lindgren <tony@atomide.com>
+ * OMAP Power Management Common Routines
  *
  * Copyright (C) 2005 Texas Instruments, Inc.
+ * Copyright (C) 2006-2008 Nokia Corporation
+ *
+ * Written by:
  * Richard Woodruff <r-woodruff2@ti.com>
+ * Tony Lindgren
+ * Juha Yrjola
+ * Amit Kucheria <amit.kucheria@nokia.com>
+ * Igor Stoppa <igor.stoppa@nokia.com>
+ * Jouni Hogander
  *
  * Based on pm.c for omap1
  *
@@ -17,95 +22,278 @@
  */
 
 #include <linux/suspend.h>
-#include <linux/sched.h>
-#include <linux/proc_fs.h>
-#include <linux/interrupt.h>
-#include <linux/sysfs.h>
-#include <linux/module.h>
-#include <linux/delay.h>
-#include <linux/clk.h>
-#include <linux/io.h>
+#include <linux/time.h>
+#include <linux/platform_device.h>
+#include <linux/device.h>
 
-#include <asm/irq.h>
-#include <asm/atomic.h>
+#include <mach/cpu.h>
 #include <asm/mach/time.h>
-#include <asm/mach/irq.h>
+#include <asm/atomic.h>
 
-#include <mach/irqs.h>
-#include <mach/clock.h>
-#include <mach/sram.h>
 #include <mach/pm.h>
+#include <mach/powerdomain.h>
+#include <mach/omapdev.h>
+#include <mach/resource.h>
+#include <mach/omap-pm.h>
 
-static struct clk *vclk;
-static void (*omap2_sram_idle)(void);
-static void (*omap2_sram_suspend)(int dllctrl, int cpu_rev);
-static void (*saved_idle)(void);
+#include "prm-regbits-34xx.h"
+#include "pm.h"
+#include "smartreflex.h"
 
-extern void __init pmdomain_init(void);
-extern void pmdomain_set_autoidle(void);
+unsigned short enable_dyn_sleep;
+unsigned short clocks_off_while_idle;
+unsigned short enable_off_mode;
+EXPORT_SYMBOL(enable_off_mode);
+unsigned short voltage_off_while_idle;
+atomic_t sleep_block = ATOMIC_INIT(0);
+static int vdd1_locked;
+static int vdd2_locked;
 
-static unsigned int omap24xx_sleep_save[OMAP24XX_SLEEP_SAVE_SIZE];
+static ssize_t idle_show(struct kobject *, struct kobj_attribute *, char *);
+static ssize_t idle_store(struct kobject *k, struct kobj_attribute *,
+			  const char *buf, size_t n);
 
-void omap2_pm_idle(void)
+static struct kobj_attribute sleep_while_idle_attr =
+	__ATTR(sleep_while_idle, 0644, idle_show, idle_store);
+
+static struct kobj_attribute clocks_off_while_idle_attr =
+	__ATTR(clocks_off_while_idle, 0644, idle_show, idle_store);
+
+static struct kobj_attribute enable_off_mode_attr =
+	__ATTR(enable_off_mode, 0644, idle_show, idle_store);
+
+static struct kobj_attribute voltage_off_while_idle_attr =
+	__ATTR(voltage_off_while_idle, 0644, idle_show, idle_store);
+
+#ifdef CONFIG_OMAP_PM_SRF
+static ssize_t vdd_opp_show(struct kobject *, struct kobj_attribute *, char *);
+static ssize_t vdd_opp_store(struct kobject *k, struct kobj_attribute *,
+			  const char *buf, size_t n);
+static struct kobj_attribute vdd1_opp_attr =
+	__ATTR(vdd1_opp, 0644, vdd_opp_show, vdd_opp_store);
+
+static struct kobj_attribute vdd2_opp_attr =
+	__ATTR(vdd2_opp, 0644, vdd_opp_show, vdd_opp_store);
+static struct kobj_attribute vdd1_lock_attr =
+	__ATTR(vdd1_lock, 0644, vdd_opp_show, vdd_opp_store);
+static struct kobj_attribute vdd2_lock_attr =
+	__ATTR(vdd2_lock, 0644, vdd_opp_show, vdd_opp_store);
+
+#endif
+
+static ssize_t idle_show(struct kobject *kobj, struct kobj_attribute *attr,
+			 char *buf)
 {
-	local_irq_disable();
-	local_fiq_disable();
-	if (need_resched()) {
-		local_fiq_enable();
-		local_irq_enable();
-		return;
+	if (attr == &sleep_while_idle_attr)
+		return sprintf(buf, "%hu\n", enable_dyn_sleep);
+	else if (attr == &clocks_off_while_idle_attr)
+		return sprintf(buf, "%hu\n", clocks_off_while_idle);
+	else if (attr == &enable_off_mode_attr)
+		return sprintf(buf, "%hu\n", enable_off_mode);
+	else if (attr == &voltage_off_while_idle_attr)
+		return sprintf(buf, "%hu\n", voltage_off_while_idle);
+	else
+		return -EINVAL;
+}
+
+static ssize_t idle_store(struct kobject *kobj, struct kobj_attribute *attr,
+			  const char *buf, size_t n)
+{
+	unsigned short value;
+
+	if (sscanf(buf, "%hu", &value) != 1 ||
+	    (value != 0 && value != 1)) {
+		printk(KERN_ERR "idle_store: Invalid value\n");
+		return -EINVAL;
 	}
 
-	omap2_sram_idle();
-	local_fiq_enable();
-	local_irq_enable();
+	if (attr == &sleep_while_idle_attr) {
+		enable_dyn_sleep = value;
+	} else if (attr == &clocks_off_while_idle_attr) {
+		clocks_off_while_idle = value;
+	} else if (attr == &enable_off_mode_attr) {
+		enable_off_mode = value;
+		omap3_pm_off_mode_enable(enable_off_mode);
+	} else if (attr == &voltage_off_while_idle_attr) {
+		voltage_off_while_idle = value;
+		if (voltage_off_while_idle)
+			prm_set_mod_reg_bits(OMAP3430_SEL_OFF, OMAP3430_GR_MOD,
+					OMAP3_PRM_VOLTCTRL_OFFSET);
+		else
+			prm_clear_mod_reg_bits(OMAP3430_SEL_OFF,
+					OMAP3430_GR_MOD,
+					OMAP3_PRM_VOLTCTRL_OFFSET);
+	} else {
+		return -EINVAL;
+	}
+	return n;
 }
 
-static int omap2_pm_prepare(void)
+#ifdef CONFIG_OMAP_PM_SRF
+static ssize_t vdd_opp_show(struct kobject *kobj, struct kobj_attribute *attr,
+			 char *buf)
 {
-	/* We cannot sleep in idle until we have resumed */
-	saved_idle = pm_idle;
-	pm_idle = NULL;
-	return 0;
+	if (attr == &vdd1_opp_attr)
+		return sprintf(buf, "%hu\n", resource_get_level("vdd1_opp"));
+	else if (attr == &vdd2_opp_attr)
+		return sprintf(buf, "%hu\n", resource_get_level("vdd2_opp"));
+	else if (attr == &vdd1_lock_attr)
+		return sprintf(buf, "%hu\n", resource_get_opp_lock(PRCM_VDD1));
+	else if (attr == &vdd2_lock_attr)
+		return sprintf(buf, "%hu\n", resource_get_opp_lock(PRCM_VDD2));
+	else
+		return -EINVAL;
 }
 
-static int omap2_pm_suspend(void)
+static ssize_t vdd_opp_store(struct kobject *kobj, struct kobj_attribute *attr,
+			  const char *buf, size_t n)
 {
-	return 0;
-}
+	unsigned short value;
+	int flags = 0;
 
-static int omap2_pm_enter(suspend_state_t state)
-{
-	int ret = 0;
+	if (sscanf(buf, "%hu", &value) != 1)
+		return -EINVAL;
 
-	switch (state)
-	{
-	case PM_SUSPEND_STANDBY:
-	case PM_SUSPEND_MEM:
-		ret = omap2_pm_suspend();
-		break;
-	default:
-		ret = -EINVAL;
+	/* Check locks */
+	if (attr == &vdd1_lock_attr) {
+		flags = OPP_IGNORE_LOCK;
+		attr = &vdd1_opp_attr;
+		if (vdd1_locked && value == 0) {
+			resource_unlock_opp(PRCM_VDD1);
+			resource_refresh();
+			vdd1_locked = 0;
+			return n;
+		}
+		if (vdd1_locked == 0 && value != 0) {
+			resource_lock_opp(PRCM_VDD1);
+			vdd1_locked = 1;
+		}
+	} else if (attr == &vdd2_lock_attr) {
+		flags = OPP_IGNORE_LOCK;
+		attr = &vdd2_opp_attr;
+		if (vdd2_locked && value == 0) {
+			resource_unlock_opp(PRCM_VDD2);
+			resource_refresh();
+			vdd2_locked = 0;
+			return n;
+		}
+		if (vdd2_locked == 0 && value != 0) {
+			resource_lock_opp(PRCM_VDD2);
+			vdd2_locked = 1;
+		}
 	}
 
-	return ret;
+	if (attr == &vdd1_opp_attr) {
+		if (value < 1 || value > 5) {
+			printk(KERN_ERR "vdd_opp_store: Invalid value\n");
+			return -EINVAL;
+		}
+		resource_set_opp_level(PRCM_VDD1, value, flags);
+	} else if (attr == &vdd2_opp_attr) {
+		if (value < 1 || value > 3) {
+			printk(KERN_ERR "vdd_opp_store: Invalid value\n");
+			return -EINVAL;
+		}
+		resource_set_opp_level(PRCM_VDD2, value, flags);
+	} else {
+		return -EINVAL;
+	}
+	return n;
+}
+#endif
+
+void omap2_block_sleep(void)
+{
+	atomic_inc(&sleep_block);
 }
 
-static void omap2_pm_finish(void)
+void omap2_allow_sleep(void)
 {
-	pm_idle = saved_idle;
+	int i;
+
+	i = atomic_dec_return(&sleep_block);
+	BUG_ON(i < 0);
 }
 
-static struct platform_suspend_ops omap_pm_ops = {
-	.prepare	= omap2_pm_prepare,
-	.enter		= omap2_pm_enter,
-	.finish		= omap2_pm_finish,
-	.valid		= suspend_valid_only_mem,
-};
-
-int __init omap2_pm_init(void)
+int get_last_off_on_transaction_id(struct device *dev)
 {
+	struct platform_device *pdev = to_platform_device(dev);
+	struct omapdev *odev = omapdev_find_pdev(pdev);
+	struct powerdomain *pwrdm;
+
+	if (odev) {
+		pwrdm = omapdev_get_pwrdm(odev);
+		if (pwrdm)
+			return pwrdm->state_counter[0] & INT_MAX;
+	}
+
 	return 0;
 }
 
-__initcall(omap2_pm_init);
+static int __init omap_pm_init(void)
+{
+	int error = -1;
+
+	if (cpu_is_omap24xx())
+		error = omap2_pm_init();
+	if (cpu_is_omap34xx())
+		error = omap3_pm_init();
+	if (error) {
+		printk(KERN_ERR "omap2|3_pm_init failed: %d\n", error);
+		return error;
+	}
+
+	/* disabled till drivers are fixed */
+	enable_dyn_sleep = 0;
+	error = sysfs_create_file(power_kobj, &sleep_while_idle_attr.attr);
+	if (error)
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
+	error = sysfs_create_file(power_kobj,
+				  &clocks_off_while_idle_attr.attr);
+	if (error)
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
+	error = sysfs_create_file(power_kobj,
+				  &enable_off_mode_attr.attr);
+	if (error) {
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
+		return error;
+	}
+#ifdef CONFIG_OMAP_PM_SRF
+	error = sysfs_create_file(power_kobj,
+				  &vdd1_opp_attr.attr);
+	if (error) {
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
+		return error;
+	}
+	error = sysfs_create_file(power_kobj,
+				  &vdd2_opp_attr.attr);
+	if (error) {
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
+		return error;
+	}
+
+	error = sysfs_create_file(power_kobj, &vdd1_lock_attr.attr);
+	if (error) {
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
+		return error;
+	}
+
+	error = sysfs_create_file(power_kobj, &vdd2_lock_attr.attr);
+	if (error) {
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
+		return error;
+	}
+#endif
+	voltage_off_while_idle = 0;
+	/* Going to 0V on anything under ES2.1 will eventually cause a crash */
+	if (omap_rev() > OMAP3430_REV_ES2_0) {
+		error = sysfs_create_file(power_kobj,
+				  &voltage_off_while_idle_attr.attr);
+		if (error)
+			printk(KERN_ERR "sysfs_create_file failed: %d\n",
+								error);
+	}
+	return error;
+}
+
+late_initcall(omap_pm_init);

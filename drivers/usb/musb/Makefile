@@ -22,6 +22,14 @@ ifeq ($(CONFIG_ARCH_OMAP3430),y)
 	musb_hdrc-objs	+= omap2430.o
 endif
 
+ifeq ($(CONFIG_BF54x),y)
+	musb_hdrc-objs	+= blackfin.o
+endif
+
+ifeq ($(CONFIG_BF52x),y)
+	musb_hdrc-objs	+= blackfin.o
+endif
+
 ifeq ($(CONFIG_USB_GADGET_MUSB_HDRC),y)
 	musb_hdrc-objs		+= musb_gadget_ep0.o musb_gadget.o
 endif
@@ -66,4 +74,9 @@ endif
 
 ifeq ($(CONFIG_USB_MUSB_DEBUG),y)
 	EXTRA_CFLAGS += -DDEBUG
+
+endif
+
+ifeq ($(CONFIG_MUSB_PROC_FS),y)
+	musb_hdrc-objs		+= musb_procfs.o
 endif

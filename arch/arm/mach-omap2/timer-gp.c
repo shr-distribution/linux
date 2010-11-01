@@ -81,8 +81,20 @@ static void omap2_gp_timer_set_mode(enum clock_event_mode mode,
 	case CLOCK_EVT_MODE_ONESHOT:
 		break;
 	case CLOCK_EVT_MODE_UNUSED:
-	case CLOCK_EVT_MODE_SHUTDOWN:
 	case CLOCK_EVT_MODE_RESUME:
+		break;
+	case CLOCK_EVT_MODE_SHUTDOWN:
+		/*
+		 * Wait for min period x 2 to make sure that timer is
+		 * stopped
+		 */
+		udelay(evt->min_delta_ns / 500);
+		/*
+		 * Clear possibly pending interrupt, this will occasionally
+		 * generate spurious timer IRQs during suspend but this
+		 * is okay, as another option is not to enter suspend at all
+		 */
+		omap_dm_timer_write_status(gptimer, OMAP_TIMER_INT_OVERFLOW);
 		break;
 	}
 }
@@ -99,7 +111,7 @@ static void __init omap2_gp_clockevent_init(void)
 {
 	u32 tick_rate;
 
-	gptimer = omap_dm_timer_request_specific(1);
+	gptimer = omap_dm_timer_request_specific(CONFIG_OMAP_TICK_GPTIMER);
 	BUG_ON(gptimer == NULL);
 
 #if defined(CONFIG_OMAP_32K_TIMER)
@@ -108,6 +120,9 @@ static void __init omap2_gp_clockevent_init(void)
 	omap_dm_timer_set_source(gptimer, OMAP_TIMER_SRC_SYS_CLK);
 #endif
 	tick_rate = clk_get_rate(omap_dm_timer_get_fclk(gptimer));
+
+	pr_info("OMAP clockevent source: GPTIMER%d at %u Hz\n",
+		CONFIG_OMAP_TICK_GPTIMER, tick_rate);
 
 	omap2_gp_timer_irq.dev_id = (void *)gptimer;
 	setup_irq(omap_dm_timer_get_irq(gptimer), &omap2_gp_timer_irq);
@@ -118,7 +133,8 @@ static void __init omap2_gp_clockevent_init(void)
 	clockevent_gpt.max_delta_ns =
 		clockevent_delta2ns(0xffffffff, &clockevent_gpt);
 	clockevent_gpt.min_delta_ns =
-		clockevent_delta2ns(1, &clockevent_gpt);
+		clockevent_delta2ns(3, &clockevent_gpt);
+		/* Timer internal resynch latency. */
 
 	clockevent_gpt.cpumask = cpumask_of_cpu(0);
 	clockevents_register_device(&clockevent_gpt);

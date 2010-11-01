@@ -57,6 +57,34 @@ int mmc_deselect_cards(struct mmc_host *host)
 	return _mmc_select_card(host, NULL);
 }
 
+int mmc_card_sleepawake(struct mmc_host *host, int sleep)
+{
+	struct mmc_command cmd;
+	struct mmc_card *card = host->card;
+	int err;
+
+	if (sleep)
+		mmc_deselect_cards(host);
+
+	memset(&cmd, 0, sizeof(struct mmc_command));
+
+	cmd.opcode = MMC_SLEEP_AWAKE;
+	cmd.arg = card->rca << 16;
+	if (sleep)
+		cmd.arg |= 1 << 15;
+
+	cmd.flags = MMC_RSP_R1B | MMC_CMD_AC;
+	err = mmc_wait_for_cmd(host, &cmd, 0);
+
+	if (err)
+		return err;
+
+	if (!sleep)
+		err = mmc_select_card(card);
+
+	return err;
+}
+
 int mmc_go_idle(struct mmc_host *host)
 {
 	int err;
@@ -248,12 +276,16 @@ mmc_send_cxd_data(struct mmc_card *card, struct mmc_host *host,
 
 	sg_init_one(&sg, data_buf, len);
 
-	/*
-	 * The spec states that CSR and CID accesses have a timeout
-	 * of 64 clock cycles.
-	 */
-	data.timeout_ns = 0;
-	data.timeout_clks = 64;
+	if (!mmc_host_is_spi(host) && opcode == MMC_SEND_EXT_CSD)
+		mmc_set_data_timeout(&data, card);
+	else {
+		/*
+		 * The spec states that CSR and CID accesses have a timeout
+		 * of 64 clock cycles (8 for SPI).
+		 */
+		data.timeout_ns = 0;
+		data.timeout_clks = 64;
+	}
 
 	mmc_wait_for_req(host, &mrq);
 
@@ -351,6 +383,7 @@ int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value)
 {
 	int err;
 	struct mmc_command cmd;
+	u32 status;
 
 	BUG_ON(!card);
 	BUG_ON(!card->host);
@@ -367,6 +400,21 @@ int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value)
 	err = mmc_wait_for_cmd(card->host, &cmd, MMC_CMD_RETRIES);
 	if (err)
 		return err;
+
+	err = mmc_send_status(card, &status);
+	if (err)
+		return err;
+
+	if (mmc_host_is_spi(card->host)) {
+		if (status & R1_SPI_ILLEGAL_COMMAND)
+			return -EBADMSG;
+	} else {
+		if (status & 0xFDFFA000)
+			printk(KERN_WARNING "%s: unexpected status %#x after "
+			       "switch", mmc_hostname(card->host), status);
+		if (status & R1_SWITCH_ERROR)
+			return -EBADMSG;
+	}
 
 	return 0;
 }

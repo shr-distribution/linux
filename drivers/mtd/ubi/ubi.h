@@ -74,6 +74,13 @@
 #define UBI_IO_RETRIES 3
 
 /*
+ * Length of the protection queue. The length is effectively equivalent to the
+ * number of (global) erase cycles PEBs are protected from the wear-leveling
+ * worker.
+ */
+#define UBI_PROT_QUEUE_LEN 10
+
+/*
  * Error codes returned by the I/O sub-system.
  *
  * UBI_IO_PEB_EMPTY: the physical eraseblock is empty, i.e. it contains only
@@ -93,9 +100,32 @@ enum {
 	UBI_IO_BITFLIPS
 };
 
+/*
+ * Return codes of the 'ubi_eba_copy_leb()' function.
+ *
+ * MOVE_CANCEL_RACE: canceled because the volume is being deleted, the source
+ *                   PEB was put meanwhile, or there is I/O on the source PEB
+ * MOVE_SOURCE_RD_ERR: canceled because there was a read error from the source
+ *                     PEB
+ * MOVE_TARGET_RD_ERR: canceled because there was a read error from the target
+ *                     PEB
+ * MOVE_TARGET_WR_ERR: canceled because there was a write error to the target
+ *                     PEB
+ * MOVE_CANCEL_BITFLIPS: canceled because a bit-flip was detected in the
+ *                       target PEB
+ */
+enum {
+	MOVE_CANCEL_RACE = 1,
+	MOVE_SOURCE_RD_ERR,
+	MOVE_TARGET_RD_ERR,
+	MOVE_TARGET_WR_ERR,
+	MOVE_CANCEL_BITFLIPS,
+};
+
 /**
  * struct ubi_wl_entry - wear-leveling entry.
- * @rb: link in the corresponding RB-tree
+ * @u.rb: link in the corresponding (free/used) RB-tree
+ * @u.list: link in the protection queue
  * @ec: erase counter
  * @pnum: physical eraseblock number
  *
@@ -104,7 +134,10 @@ enum {
  * RB-trees. See WL sub-system for details.
  */
 struct ubi_wl_entry {
-	struct rb_node rb;
+	union {
+		struct rb_node rb;
+		struct list_head list;
+	} u;
 	int ec;
 	int pnum;
 };
@@ -280,6 +313,8 @@ struct ubi_wl_entry;
  *                @vol->readers, @vol->writers, @vol->exclusive,
  *                @vol->ref_count, @vol->mapping and @vol->eba_tbl.
  * @ref_count: count of references on the UBI device
+ * @image_seq: image sequence number recorded on EC headers
+ * @image_seq_set: indicates @image_seq is known
  *
  * @rsvd_pebs: count of reserved physical eraseblocks
  * @avail_pebs: count of available physical eraseblocks
@@ -288,7 +323,7 @@ struct ubi_wl_entry;
  * @beb_rsvd_level: normal level of PEBs reserved for bad PEB handling
  *
  * @autoresize_vol_id: ID of the volume which has to be auto-resized at the end
- *                     of UBI ititializetion
+ *                     of UBI initialization
  * @vtbl_slots: how many slots are available in the volume table
  * @vtbl_size: size of the volume table in bytes
  * @vtbl: in-RAM volume table copy
@@ -304,20 +339,20 @@ struct ubi_wl_entry;
  * @alc_mutex: serializes "atomic LEB change" operations
  *
  * @used: RB-tree of used physical eraseblocks
+ * @erroneous: RB-tree of erroneous used physical eraseblocks
  * @free: RB-tree of free physical eraseblocks
  * @scrub: RB-tree of physical eraseblocks which need scrubbing
- * @prot: protection trees
- * @prot.pnum: protection tree indexed by physical eraseblock numbers
- * @prot.aec: protection tree indexed by absolute erase counter value
- * @wl_lock: protects the @used, @free, @prot, @lookuptbl, @abs_ec, @move_from,
- *           @move_to, @move_to_put @erase_pending, @wl_scheduled, and @works
- *           fields
+ * @pq: protection queue (contain physical eraseblocks which are temporarily
+ *      protected from the wear-leveling worker)
+ * @pq_head: protection queue head
+ * @wl_lock: protects the @used, @free, @pq, @pq_head, @lookuptbl, @move_from,
+ * 	     @move_to, @move_to_put @erase_pending, @wl_scheduled, @works,
+ * 	     @erroneous, and @erroneous_peb_count fields
  * @move_mutex: serializes eraseblock moves
- * @work_sem: sycnhronizes the WL worker with use tasks
+ * @work_sem: synchronizes the WL worker with use tasks
  * @wl_scheduled: non-zero if the wear-leveling was scheduled
  * @lookuptbl: a table to quickly find a &struct ubi_wl_entry object for any
  *             physical eraseblock
- * @abs_ec: absolute erase counter
  * @move_from: physical eraseblock from where the data is being moved
  * @move_to: physical eraseblock where the data is being moved to
  * @move_to_put: if the "to" PEB was put
@@ -332,6 +367,8 @@ struct ubi_wl_entry;
  * @peb_size: physical eraseblock size
  * @bad_peb_count: count of bad physical eraseblocks
  * @good_peb_count: count of good physical eraseblocks
+ * @erroneous_peb_count: count of erroneous physical eraseblocks in @erroneous
+ * @max_erroneous: maximum allowed amount of erroneous physical eraseblocks
  * @min_io_size: minimal input/output unit size of the underlying MTD device
  * @hdrs_min_io_size: minimal I/O unit size used for VID and EC headers
  * @ro_mode: if the UBI device is in read-only mode
@@ -351,11 +388,11 @@ struct ubi_wl_entry;
  *
  * @peb_buf1: a buffer of PEB size used for different purposes
  * @peb_buf2: another buffer of PEB size used for different purposes
- * @buf_mutex: proptects @peb_buf1 and @peb_buf2
+ * @buf_mutex: protects @peb_buf1 and @peb_buf2
  * @ckvol_mutex: serializes static volume checking when opening
- * @mult_mutex: serializes operations on multiple volumes, like re-nameing
+ * @mult_mutex: serializes operations on multiple volumes, like re-naming
  * @dbg_peb_buf: buffer of PEB size used for debugging
- * @dbg_buf_mutex: proptects @dbg_peb_buf
+ * @dbg_buf_mutex: protects @dbg_peb_buf
  */
 struct ubi_device {
 	struct cdev cdev;
@@ -366,6 +403,8 @@ struct ubi_device {
 	struct ubi_volume *volumes[UBI_MAX_VOLUMES+UBI_INT_VOL_COUNT];
 	spinlock_t volumes_lock;
 	int ref_count;
+	int image_seq;
+	int image_seq_set;
 
 	int rsvd_pebs;
 	int avail_pebs;
@@ -390,18 +429,16 @@ struct ubi_device {
 
 	/* Wear-leveling sub-system's stuff */
 	struct rb_root used;
+	struct rb_root erroneous;
 	struct rb_root free;
 	struct rb_root scrub;
-	struct {
-		struct rb_root pnum;
-		struct rb_root aec;
-	} prot;
+	struct list_head pq[UBI_PROT_QUEUE_LEN];
+	int pq_head;
 	spinlock_t wl_lock;
 	struct mutex move_mutex;
 	struct rw_semaphore work_sem;
 	int wl_scheduled;
 	struct ubi_wl_entry **lookuptbl;
-	unsigned long long abs_ec;
 	struct ubi_wl_entry *move_from;
 	struct ubi_wl_entry *move_to;
 	int move_to_put;
@@ -417,6 +454,8 @@ struct ubi_device {
 	int peb_size;
 	int bad_peb_count;
 	int good_peb_count;
+	int erroneous_peb_count;
+	int max_erroneous;
 	int min_io_size;
 	int hdrs_min_io_size;
 	int ro_mode;

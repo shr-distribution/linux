@@ -1,0 +1,12 @@
+static int sirloin_wifi_probe(struct platform_device *pdev)
+{
+
+}
+
+static struct platform_driver wifi_device = {
+	.probe		= wifi_probe,
+	.remove		= wifi_remove,
+	.driver		= {
+		.name   = "msm_wifi",
+	},
+};

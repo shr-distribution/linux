@@ -1,0 +1,65 @@
+Source: kernel
+Section: utils
+Priority: optional
+Maintainer:  Yauheni Kaliuta <yauheni.kaliuta@nokia.com>
+Build-Depends: debhelper (>= 4.0.0), fiasco-gen
+Build-Depends-Indep: bzip2
+Standards-Version: 3.8.0
+
+Package: kernel
+Architecture: armel
+Description: Flashable Linux kernel
+ This package provides a flashable kernel image
+
+Package: kernel-flasher
+Architecture: armel
+Pre-Depends: kernel (= ${binary:Version}), softupd (>= 0.4.0)
+Description: Linux kernel updater
+ This package will flash the kernel image upon installation
+ and eat kernel's files from /boot.
+
+Package: kernel-headers
+Architecture: armel
+Depends: ${shlibs:Depends}
+Description: Linux kernel headers
+ This package provides kernel headers.
+
+Package: linux-kernel-headers
+Architecture: any
+Depends: ${shlibs:Depends}
+Description: Linux Kernel Headers for development
+ This package provides headers from the Linux kernel. These headers
+ are used by the installed headers for GNU glibc and other system libraries.
+
+Package: kernel-modules
+Architecture: armel
+Depends: module-init-tools (>= 3.3)
+Description: Linux kernel modules
+ This package provides kernel modules
+
+Package: kernel-modules-debug
+Architecture: armel
+Depends: module-init-tools (>= 3.3)
+Description: Linux kernel modules for debugging
+ This package provides kernel modules needed for debugging and profiling
+
+Package: kernel-modules-extra
+Architecture: armel
+Depends: module-init-tools (>= 3.3)
+Description: Linux kernel modules
+ This package provides some extra kernel modules
+
+Package: kernel-debug
+Architecture: armel
+Description: Linux kernel debug symblos
+ This packages provides vmlinux file for the kernel and
+ kernel modules related to debugging.
+
+Package: kernel-source
+Architecture: all
+Section: devel
+Priority: optional
+Provides: kernel-source-2.6
+Recommends: libc6-dev | libc-dev, gcc, make, binutils, bzip2
+Description: Linux kernel sources for rx-51 product
+ This package provides the source code for the Linux kernel

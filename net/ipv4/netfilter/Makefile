@@ -61,6 +61,7 @@ obj-$(CONFIG_IP_NF_TARGET_MASQUERADE) += ipt_MASQUERADE.o
 obj-$(CONFIG_IP_NF_TARGET_NETMAP) += ipt_NETMAP.o
 obj-$(CONFIG_IP_NF_TARGET_REDIRECT) += ipt_REDIRECT.o
 obj-$(CONFIG_IP_NF_TARGET_REJECT) += ipt_REJECT.o
+obj-$(CONFIG_IP_NF_TARGET_IDLETIMER) += ipt_IDLETIMER.o
 obj-$(CONFIG_IP_NF_TARGET_TTL) += ipt_TTL.o
 obj-$(CONFIG_IP_NF_TARGET_ULOG) += ipt_ULOG.o
 
@@ -73,3 +74,4 @@ obj-$(CONFIG_IP_NF_ARPFILTER) += arptable_filter.o
 
 obj-$(CONFIG_IP_NF_QUEUE) += ip_queue.o
 
+obj-$(CONFIG_IP_NF_HB) += iphb.o

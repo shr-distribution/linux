@@ -1,0 +1,90 @@
+/*
+ * linux/arch/arm/mach-omap3pe/board-sirloin-3430-wifi.c
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
+ *
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ */
+
+#include <linux/platform_device.h>
+
+
+static int sirloin_wifi_probe(struct platform_device *pdev)
+{
+
+	srtuct omap_mmc_config mmc_ctrl = 
+		(struct  omap_mmc_config *)(pdev->dev.platform_data);
+
+	struct omap_mmc_conf wifi_ctrl = mmc_ctrl->mmc[1];
+
+	printk("wifi probe start\n");
+	if (!wifi_ctrl){
+		printk("Wifi MMC control not present\n");
+		return -ENODEV
+	}
+	if (wifi_ctrl->board_power_mode){
+		printk("Wifi will power Up\n");
+		wifi_ctrl->board_power_mode(NULL,1);
+		printk("Wifi powered Up\n");
+
+	}else{
+		printk("wifi board power mode not present\n");
+	}
+
+}
+
+
+static int sirloin_wifi_remove(struct platform_device *pdev)
+{
+
+	srtuct omap_mmc_config mmc_ctrl = 
+		(struct  omap_mmc_config *)(pdev->dev.platform_data);
+
+	struct omap_mmc_conf wifi_ctrl = mmc_ctrl->mmc[1];
+
+	printk("wifi probe start\n");
+	if (!wifi_ctrl){
+		printk("Wifi MMC control not present\n");
+		return -ENODEV
+	}
+	if (wifi_ctrl->board_power_mode){
+		printk("Wifi will power Down\n");
+		wifi_ctrl->board_power_mode(NULL,0);
+		printk("Wifi powered Down\n");
+
+	}else{
+		printk("wifi board power mode not present\n");
+	}	
+}
+
+static struct platform_driver sirloin_wifi_device = {
+	.probe		= sirloin_wifi_probe,
+	.remove		= sirloin_wifi_remove,
+	.driver		= {
+		.name   = "sirloin_wifi",
+	},
+};
+
+static int __init sirloin_wifi_sdio_init(void)
+{
+	return platform_driver_register(&sirloin_wifi_device);
+}
+
+static void __exit sirloin_wifi_sdio_exit(void)
+{
+	platform_driver_unregister(&sirloin_wifi_device);
+}
+
+module_init(sirloin_wifi_sdio_init);
+module_exit(sirloin_wifi_sdio_exit);
+MODULE_LICENSE("GPL");

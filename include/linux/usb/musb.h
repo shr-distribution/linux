@@ -46,7 +46,27 @@ struct musb_hdrc_config {
 	u8		dma_req_chan;	/* bitmask for required dma channels */
 	u8		ram_bits;	/* ram address size */
 
+#ifdef CONFIG_BLACKFIN
+        /* A GPIO controlling VRSEL in Blackfin */
+        unsigned int    gpio_vrsel;
+#endif
+
 	struct musb_hdrc_eps_bits *eps_bits;
+#ifdef CONFIG_BLACKFIN
+        /* A GPIO controlling VRSEL in Blackfin */
+        unsigned int    gpio_vrsel;
+#endif
+
+};
+
+struct musb_board_data {
+	/* reset the transceiver */
+	int		(*xceiv_reset)(void);
+
+	int		(*xceiv_power)(bool power);
+
+	/* related to omap3 power management */
+	void		(*set_pm_limits)(struct device *dev, bool set);
 };
 
 struct musb_hdrc_platform_data {
@@ -76,6 +96,9 @@ struct musb_hdrc_platform_data {
 
 	/* MUSB configuration-specific details */
 	struct musb_hdrc_config	*config;
+
+	/* MUSB board-specific details */
+	struct musb_board_data	*board;
 };
 
 

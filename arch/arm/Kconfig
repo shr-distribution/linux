@@ -161,6 +161,12 @@ config GENERIC_HARDIRQS_NO__DO_IRQ
 
 if OPROFILE
 
+config OPROFILE_OMAP_GPTIMER
+	def_bool y
+	depends on ARCH_OMAP
+	select CONFIG_OMAP_32K_TIMER
+	select CONFIG_OMAP_DM_TIMER
+
 config OPROFILE_ARMV6
 	def_bool y
 	depends on CPU_V6 && !SMP
@@ -1275,6 +1281,13 @@ source "drivers/auxdisplay/Kconfig"
 source "drivers/regulator/Kconfig"
 
 source "drivers/uio/Kconfig"
+
+if ARCH_OMAP
+source "drivers/cbus/Kconfig"
+source "drivers/dsp/dspgateway/Kconfig"
+endif
+
+source "drivers/dsp/bridge/Kconfig"
 
 endmenu
 

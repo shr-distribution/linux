@@ -92,11 +92,12 @@ ENTRY(v6_coherent_kern_range)
  *	- the Icache does not read data from the write buffer
  */
 ENTRY(v6_coherent_user_range)
-
 #ifdef HARVARD_CACHE
 	bic	r0, r0, #CACHE_LINE_SIZE - 1
-1:	mcr	p15, 0, r0, c7, c10, 1		@ clean D line
+1:
+ USER(	mcr	p15, 0, r0, c7, c10, 1	)	@ clean D line
 	add	r0, r0, #CACHE_LINE_SIZE
+2:
 	cmp	r0, r1
 	blo	1b
 #endif
@@ -108,6 +109,18 @@ ENTRY(v6_coherent_user_range)
 	mcr	p15, 0, r0, c7, c5, 6		@ invalidate BTB
 #endif
 	mov	pc, lr
+
+/*
+ * Fault handling for the cache operation above. If the virtual address in r0
+ * isn't mapped, just try the next page.
+ */
+9001:
+	mov	r0, r0, lsr #12
+	mov	r0, r0, lsl #12
+	add	r0, r0, #4096
+	b	2b
+ENDPROC(v6_coherent_user_range)
+ENDPROC(v6_coherent_kern_range)
 
 /*
  *	v6_flush_kern_dcache_page(kaddr)

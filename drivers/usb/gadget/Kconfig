@@ -208,17 +208,6 @@ config USB_OMAP
 	default USB_GADGET
 	select USB_GADGET_SELECTED
 
-config USB_OTG
-	boolean "OTG Support"
-	depends on USB_GADGET_OMAP && ARCH_OMAP_OTG && USB_OHCI_HCD
-	help
-	   The most notable feature of USB OTG is support for a
-	   "Dual-Role" device, which can act as either a device
-	   or a host.  The initial role choice can be changed
-	   later, when two dual-role devices talk to each other.
-
-	   Select this only if your OMAP board has a Mini-AB connector.
-
 config USB_GADGET_PXA25X
 	boolean "PXA 25x or IXP 4xx"
 	depends on (ARCH_PXA && PXA25x) || ARCH_IXP4XX
@@ -297,13 +286,13 @@ config USB_S3C2410_DEBUG
 
 # musb builds in ../musb along with host support
 config USB_GADGET_MUSB_HDRC
-	boolean "Inventra HDRC USB Peripheral (TI, ...)"
+	boolean "Inventra HDRC USB Peripheral (TI, ADI, ...)"
 	depends on USB_MUSB_HDRC && (USB_MUSB_PERIPHERAL || USB_MUSB_OTG)
 	select USB_GADGET_DUALSPEED
 	select USB_GADGET_SELECTED
 	help
 	  This OTG-capable silicon IP is used in dual designs including
-	  the TI DaVinci, OMAP 243x, OMAP 343x, and TUSB 6010.
+	  the TI DaVinci, OMAP 243x, OMAP 343x, TUSB 6010, and ADI Blackfin
 
 config USB_GADGET_M66592
 	boolean "Renesas M66592 USB Peripheral Controller"
@@ -672,6 +661,26 @@ config USB_CDC_COMPOSITE
 
 	  Say "y" to link the driver statically, or "m" to build a
 	  dynamically linked module.
+
+config USB_G_NOKIA
+	tristate "Nokia composite gadget"
+	depends on PHONET
+	help
+	  The Nokia composite gadget provides support for acm, obex
+	  and phonet in only one gadget driver.
+
+	  It's only really useful for RX51 hardware. If you're building
+	  a kernel for RX51, say Y or M here. If unsure, say N.
+
+config USB_G_SOFTUPD
+	tristate "Nokia Firmware Upgrade Composite Kernel Driver"
+	depends on PHONET
+	help
+	  The Nokia upgrade gadget provides support for Firmware upgrading
+	  using the userland application softupd.
+
+	  It's only really useful for RX51 hardware. If you're building
+	  a kernel for RX51, say Y or M here. If unsure, say N.
 
 # put drivers that need isochronous transfer support (for audio
 # or video class gadget drivers), or specific hardware, here.

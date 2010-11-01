@@ -632,6 +632,15 @@ static int io_init(struct ubi_device *ubi)
 	}
 
 	/*
+	 * Set maximum amount of physical erroneous eraseblocks to be 10%.
+	 * Erroneous PEB are those which have read errors.
+	 */
+	ubi->max_erroneous = ubi->peb_count / 10;
+	if (ubi->max_erroneous < 16)
+		ubi->max_erroneous = 16;
+	dbg_msg("max_erroneous    %d", ubi->max_erroneous);
+
+	/*
 	 * It may happen that EC and VID headers are situated in one minimal
 	 * I/O unit. In this case we can only accept this UBI image in
 	 * read-only mode.
@@ -815,19 +824,20 @@ int ubi_attach_mtd_dev(struct mtd_info *mtd, int ubi_num, int vid_hdr_offset)
 	if (err)
 		goto out_free;
 
+	err = -ENOMEM;
 	ubi->peb_buf1 = vmalloc(ubi->peb_size);
 	if (!ubi->peb_buf1)
 		goto out_free;
 
 	ubi->peb_buf2 = vmalloc(ubi->peb_size);
 	if (!ubi->peb_buf2)
-		 goto out_free;
+		goto out_free;
 
 #ifdef CONFIG_MTD_UBI_DEBUG
 	mutex_init(&ubi->dbg_buf_mutex);
 	ubi->dbg_peb_buf = vmalloc(ubi->peb_size);
 	if (!ubi->dbg_peb_buf)
-		 goto out_free;
+		goto out_free;
 #endif
 
 	err = attach_by_scanning(ubi);
@@ -869,6 +879,7 @@ int ubi_attach_mtd_dev(struct mtd_info *mtd, int ubi_num, int vid_hdr_offset)
 	ubi_msg("number of PEBs reserved for bad PEB handling: %d",
 		ubi->beb_rsvd_pebs);
 	ubi_msg("max/mean erase counter: %d/%d", ubi->max_ec, ubi->mean_ec);
+	ubi_msg("image sequence number: %d", ubi->image_seq);
 
 	if (!DBG_DISABLE_BGT)
 		ubi->thread_enabled = 1;

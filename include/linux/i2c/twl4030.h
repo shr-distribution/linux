@@ -78,8 +78,17 @@ int twl4030_i2c_read_u8(u8 mod_no, u8 *val, u8 reg);
  * IMPORTANT:  For twl4030_i2c_write(), allocate num_bytes + 1
  * for the value, and populate your data starting at offset 1.
  */
-int twl4030_i2c_write(u8 mod_no, u8 *value, u8 reg, u8 num_bytes);
-int twl4030_i2c_read(u8 mod_no, u8 *value, u8 reg, u8 num_bytes);
+int twl4030_i2c_write(u8 mod_no, u8 *value, u8 reg, unsigned num_bytes);
+int twl4030_i2c_read(u8 mod_no, u8 *value, u8 reg, unsigned num_bytes);
+
+/*----------------------------------------------------------------------*/
+
+/* Update USB suspended state flag for twl4030-poweroff driver */
+#if defined(CONFIG_TWL4030_POWEROFF)
+extern void twl4030_upd_usb_suspended(u8 suspended);
+#else
+#define twl4030_upd_usb_suspended(susp) do { } while (0)
+#endif
 
 /*----------------------------------------------------------------------*/
 
@@ -168,7 +177,7 @@ int twl4030_i2c_read(u8 mod_no, u8 *value, u8 reg, u8 num_bytes);
 /*----------------------------------------------------------------------*/
 
 /*
- * Multichannel ADC register offsets (use TWL4030_MODULE_MADC)
+ * Monitoring ADC register offsets (use TWL4030_MODULE_MADC)
  * ... SIH/interrupt only
  */
 
@@ -218,6 +227,85 @@ int twl4030_i2c_read(u8 mod_no, u8 *value, u8 reg, u8 num_bytes);
 
 /*----------------------------------------------------------------------*/
 
+/* Power bus message definitions */
+
+#define DEV_GRP_NULL		0x0
+#define DEV_GRP_P1		0x1
+#define DEV_GRP_P2		0x2
+#define DEV_GRP_P3		0x4
+
+#define RES_GRP_RES		0x0
+#define RES_GRP_PP		0x1
+#define RES_GRP_RC		0x2
+#define RES_GRP_PP_RC		0x3
+#define RES_GRP_PR		0x4
+#define RES_GRP_PP_PR		0x5
+#define RES_GRP_RC_PR		0x6
+#define RES_GRP_ALL		0x7
+
+#define RES_TYPE2_R0		0x0
+
+#define RES_TYPE_ALL		0x7
+
+#define RES_STATE_WRST		0xF
+#define RES_STATE_ACTIVE	0xE
+#define RES_STATE_SLEEP		0x8
+#define RES_STATE_OFF		0x0
+
+/* Power resources */
+
+#define RES_VAUX1		1
+#define RES_VAUX2		2
+#define RES_VAUX3		3
+#define RES_VAUX4		4
+#define RES_VMMC1		5
+#define RES_VMMC2		6
+#define RES_VPLL1		7
+#define RES_VPLL2		8
+#define RES_VSIM		9
+#define RES_VDAC		10
+#define RES_VINTANA1		11
+#define RES_VINTANA2		12
+#define RES_VINTDIG		13
+#define RES_VIO			14
+#define RES_VDD1		15
+#define RES_VDD2		16
+#define RES_VUSB_1v5		17
+#define RES_VUSB_1v8		18
+#define RES_VUSB_3v1		19
+#define RES_VUSBCP		20
+#define RES_REGEN		21
+#define RES_NRES_PWRON		22
+#define RES_CLKEN		23
+#define RES_SYSEN		24
+#define RES_HFCLKOUT		25
+#define RES_32KCLKOUT		26
+#define RES_RESET		27
+#define RES_Main_Ref		28
+
+/*
+ * Power Bus Message Format ... these can be sent individually by Linux,
+ * but are usually part of downloaded scripts that are run when various
+ * power events are triggered.
+ *
+ *  Broadcast Message (16 Bits):
+ *    DEV_GRP[15:13] MT[12]  RES_GRP[11:9]  RES_TYPE2[8:7] RES_TYPE[6:4]
+ *    RES_STATE[3:0]
+ *
+ *  Singular Message (16 Bits):
+ *    DEV_GRP[15:13] MT[12]  RES_ID[11:4]  RES_STATE[3:0]
+ */
+
+#define MSG_BROADCAST(devgrp, grp, type, type2, state) \
+	( (devgrp) << 13 | 1 << 12 | (grp) << 9 | (type2) << 7 \
+	| (type) << 4 | (state))
+
+#define MSG_SINGULAR(devgrp, id, state) \
+	((devgrp) << 13 | 0 << 12 | (id) << 4 | (state))
+
+
+/*----------------------------------------------------------------------*/
+
 struct twl4030_bci_platform_data {
 	int *battery_tmp_tbl;
 	unsigned int tblsize;
@@ -233,6 +321,9 @@ struct twl4030_gpio_platform_data {
 
 	/* gpio-n should control VMMC(n+1) if BIT(n) in mmc_cd is set */
 	u8		mmc_cd;
+
+	/* if BIT(N) is set, or VMMC(n+1) is linked, debounce GPIO-N */
+	u32		debounce;
 
 	/* For gpio-N, bit (1 << N) in "pullups" is set if that pullup
 	 * should be enabled.  Else, if that bit is set in "pulldowns",
@@ -256,7 +347,6 @@ struct twl4030_keypad_data {
 	int rows;
 	int cols;
 	int *keymap;
-	int irq;
 	unsigned int keymapsize;
 	unsigned int rep:1;
 };
@@ -270,6 +360,47 @@ struct twl4030_usb_data {
 	enum twl4030_usb_mode	usb_mode;
 };
 
+struct twl4030_ins {
+	u16 pmb_message;
+	u8 delay;
+};
+
+#define MAX_EVENTS 4
+
+enum twl4030_event {
+	TRITON_SLEEP 	= 1,
+	TRITON_WAKEUP12 = 2,
+	TRITON_WAKEUP3  = 3,
+	TRITON_WRST 	= 4,
+};
+
+struct twl4030_script_event {
+	/* offset from the start of the script allow overlapping */
+	u8 offset;
+	enum twl4030_event event;
+};
+
+struct twl4030_script {
+	struct twl4030_ins *script;
+	unsigned size;
+	unsigned number_of_events;
+	struct twl4030_script_event events[MAX_EVENTS];
+};
+
+struct twl4030_resconfig {
+	int resource;
+	int devgroup;
+	int type;
+	int type2;
+	int remap;
+};
+
+struct twl4030_power_data {
+	struct twl4030_script **scripts;
+	unsigned scripts_size;
+	struct twl4030_resconfig *resource_config;
+};
+
 struct twl4030_platform_data {
 	unsigned				irq_base, irq_end;
 	struct twl4030_bci_platform_data	*bci;
@@ -277,6 +408,19 @@ struct twl4030_platform_data {
 	struct twl4030_madc_platform_data	*madc;
 	struct twl4030_keypad_data		*keypad;
 	struct twl4030_usb_data			*usb;
+	struct twl4030_power_data		*power;
+
+	/* LDO regulators */
+	struct regulator_init_data		*vdac;
+	struct regulator_init_data		*vpll1;
+	struct regulator_init_data		*vpll2;
+	struct regulator_init_data		*vmmc1;
+	struct regulator_init_data		*vmmc2;
+	struct regulator_init_data		*vsim;
+	struct regulator_init_data		*vaux1;
+	struct regulator_init_data		*vaux2;
+	struct regulator_init_data		*vaux3;
+	struct regulator_init_data		*vaux4;
 
 	/* REVISIT more to come ... _nothing_ should be hard-wired */
 };
@@ -285,53 +429,29 @@ struct twl4030_platform_data {
 
 int twl4030_sih_setup(int module);
 
-/*
- * FIXME completely stop using TWL4030_IRQ_BASE ... instead, pass the
- * IRQ data to subsidiary devices using platform device resources.
- */
-
-/* IRQ information-need base */
-#include <mach/irqs.h>
-/* TWL4030 interrupts */
-
-/* #define TWL4030_MODIRQ_GPIO		(TWL4030_IRQ_BASE + 0) */
-#define TWL4030_MODIRQ_KEYPAD		(TWL4030_IRQ_BASE + 1)
-#define TWL4030_MODIRQ_BCI		(TWL4030_IRQ_BASE + 2)
-#define TWL4030_MODIRQ_MADC		(TWL4030_IRQ_BASE + 3)
-/* #define TWL4030_MODIRQ_USB		(TWL4030_IRQ_BASE + 4) */
-/* #define TWL4030_MODIRQ_PWR		(TWL4030_IRQ_BASE + 5) */
-
-#define TWL4030_PWRIRQ_PWRBTN		(TWL4030_PWR_IRQ_BASE + 0)
-/* #define TWL4030_PWRIRQ_CHG_PRES		(TWL4030_PWR_IRQ_BASE + 1) */
-/* #define TWL4030_PWRIRQ_USB_PRES		(TWL4030_PWR_IRQ_BASE + 2) */
-/* #define TWL4030_PWRIRQ_RTC		(TWL4030_PWR_IRQ_BASE + 3) */
-/* #define TWL4030_PWRIRQ_HOT_DIE		(TWL4030_PWR_IRQ_BASE + 4) */
-/* #define TWL4030_PWRIRQ_PWROK_TIMEOUT	(TWL4030_PWR_IRQ_BASE + 5) */
-/* #define TWL4030_PWRIRQ_MBCHG		(TWL4030_PWR_IRQ_BASE + 6) */
-/* #define TWL4030_PWRIRQ_SC_DETECT	(TWL4030_PWR_IRQ_BASE + 7) */
-
-/* Rest are unsued currently*/
-
 /* Offsets to Power Registers */
 #define TWL4030_VDAC_DEV_GRP		0x3B
 #define TWL4030_VDAC_DEDICATED		0x3E
 #define TWL4030_VAUX1_DEV_GRP		0x17
+#define TWL4030_VAUX1_TYPE		0x18
+#define TWL4030_VAUX1_REMAP		0x19
 #define TWL4030_VAUX1_DEDICATED		0x1A
 #define TWL4030_VAUX2_DEV_GRP		0x1B
+#define TWL4030_VAUX2_TYPE		0x1C
+#define TWL4030_VAUX2_REMAP		0x1D
 #define TWL4030_VAUX2_DEDICATED		0x1E
 #define TWL4030_VAUX3_DEV_GRP		0x1F
+#define TWL4030_VAUX3_TYPE		0x20
+#define TWL4030_VAUX3_REMAP		0x21
 #define TWL4030_VAUX3_DEDICATED		0x22
-
-/* TWL4030 GPIO interrupt definitions */
-
-#define TWL4030_GPIO_IRQ_NO(n)		(TWL4030_GPIO_IRQ_BASE + (n))
-
-/*
- * Exported TWL4030 GPIO APIs
- *
- * WARNING -- use standard GPIO and IRQ calls instead; these will vanish.
- */
-int twl4030_set_gpio_debounce(int gpio, int enable);
+#define TWL4030_VAUX4_DEV_GRP		0x23
+#define TWL4030_VAUX4_TYPE		0x24
+#define TWL4030_VAUX4_REMAP		0x25
+#define TWL4030_VAUX4_DEDICATED		0x26
+#define TWL4030_VMMC2_DEV_GRP		0x2b
+#define TWL4030_VMMC2_TYPE		0x2c
+#define TWL4030_VMMC2_REMAP		0x2d
+#define TWL4030_VMMC2_DEDICATED		0x2e
 
 #if defined(CONFIG_TWL4030_BCI_BATTERY) || \
 	defined(CONFIG_TWL4030_BCI_BATTERY_MODULE)
@@ -340,4 +460,40 @@ int twl4030_set_gpio_debounce(int gpio, int enable);
 	static inline int twl4030charger_usb_en(int enable) { return 0; }
 #endif
 
+/*----------------------------------------------------------------------*/
+
+/* Linux-specific regulator identifiers ... for now, we only support
+ * the LDOs, and leave the three buck converters alone.  VDD1 and VDD2
+ * need to tie into hardware based voltage scaling (cpufreq etc), while
+ * VIO is generally fixed.
+ */
+
+/* EXTERNAL dc-to-dc buck converters */
+#define TWL4030_REG_VDD1	0
+#define TWL4030_REG_VDD2	1
+#define TWL4030_REG_VIO		2
+
+/* EXTERNAL LDOs */
+#define TWL4030_REG_VDAC	3
+#define TWL4030_REG_VPLL1	4
+#define TWL4030_REG_VPLL2	5	/* not on all chips */
+#define TWL4030_REG_VMMC1	6
+#define TWL4030_REG_VMMC2	7	/* not on all chips */
+#define TWL4030_REG_VSIM	8	/* not on all chips */
+#define TWL4030_REG_VAUX1	9	/* not on all chips */
+#define TWL4030_REG_VAUX2_4030	10	/* (twl4030-specific) */
+#define TWL4030_REG_VAUX2	11	/* (twl5030 and newer) */
+#define TWL4030_REG_VAUX3	12	/* not on all chips */
+#define TWL4030_REG_VAUX4	13	/* not on all chips */
+
+/* INTERNAL LDOs */
+#define TWL4030_REG_VINTANA1	14
+#define TWL4030_REG_VINTANA2	15
+#define TWL4030_REG_VINTDIG	16
+#define TWL4030_REG_VUSB1V5	17
+#define TWL4030_REG_VUSB1V8	18
+#define TWL4030_REG_VUSB3V1	19
+
+extern int twl4030_enable_regulator(int res);
+extern int twl4030_disable_regulator(int res);
 #endif /* End of __TWL4030_H */

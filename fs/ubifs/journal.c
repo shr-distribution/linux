@@ -208,7 +208,7 @@ again:
 	offs = 0;
 
 out:
-	err = ubifs_wbuf_seek_nolock(wbuf, lnum, offs, UBI_SHORTTERM);
+	err = ubifs_wbuf_seek_nolock(wbuf, lnum, offs, wbuf->dtype);
 	if (err)
 		goto out_unlock;
 
@@ -469,7 +469,10 @@ static void pack_inode(struct ubifs_info *c, struct ubifs_ino_node *ino,
 	ino->flags = cpu_to_le32(ui->flags);
 	ino->size  = cpu_to_le64(ui->ui_size);
 	ino->nlink = cpu_to_le32(inode->i_nlink);
-	ino->compr_type  = cpu_to_le16(ui->compr_type);
+	if (ui->compr_type == UBIFS_COMPR_LZO999)
+		ino->compr_type  = cpu_to_le16(UBIFS_COMPR_LZO);
+	else
+		ino->compr_type  = cpu_to_le16(ui->compr_type);
 	ino->data_len    = cpu_to_le32(ui->data_len);
 	ino->xattr_cnt   = cpu_to_le32(ui->xattr_cnt);
 	ino->xattr_size  = cpu_to_le32(ui->xattr_size);
@@ -704,7 +707,7 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 	data->size = cpu_to_le32(len);
 	zero_data_node_unused(data);
 
-	if (!(ui->flags && UBIFS_COMPR_FL))
+	if (!(ui->flags & UBIFS_COMPR_FL))
 		/* Compression is disabled for this inode */
 		compr_type = UBIFS_COMPR_NONE;
 	else
@@ -1220,7 +1223,7 @@ int ubifs_jnl_truncate(struct ubifs_info *c, const struct inode *inode,
 	data_key_init(c, &key, inum, blk);
 
 	bit = old_size & (UBIFS_BLOCK_SIZE - 1);
-	blk = (old_size >> UBIFS_BLOCK_SHIFT) - (bit ? 0: 1);
+	blk = (old_size >> UBIFS_BLOCK_SHIFT) - (bit ? 0 : 1);
 	data_key_init(c, &to_key, inum, blk);
 
 	err = ubifs_tnc_remove_range(c, &key, &to_key);

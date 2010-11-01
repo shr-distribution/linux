@@ -34,7 +34,6 @@
 #define IEEE80211_ASSOC_TIMEOUT (HZ / 5)
 #define IEEE80211_ASSOC_MAX_TRIES 3
 #define IEEE80211_MONITORING_INTERVAL (2 * HZ)
-#define IEEE80211_PROBE_INTERVAL (60 * HZ)
 #define IEEE80211_RETRY_AUTH_INTERVAL (1 * HZ)
 #define IEEE80211_SCAN_INTERVAL (2 * HZ)
 #define IEEE80211_SCAN_INTERVAL_SLOW (15 * HZ)
@@ -45,6 +44,8 @@
 
 #define IEEE80211_IBSS_MAX_STA_ENTRIES 128
 
+#define RSSI_HIGHSIGNAL "HIGHSIGNAL"
+#define RSSI_LOWSIGNAL "LOWSIGNAL"
 
 /* utils */
 static int ecw2cw(int ecw)
@@ -568,9 +569,8 @@ static void ieee80211_sta_wmm_params(struct ieee80211_local *local,
 	}
 }
 
-static u32 ieee80211_handle_protect_preamb(struct ieee80211_sub_if_data *sdata,
-					   bool use_protection,
-					   bool use_short_preamble)
+static u32 ieee80211_handle_bss_capability(struct ieee80211_sub_if_data *sdata,
+										   u16 capab, bool erp_valid, u8 erp)
 {
 	struct ieee80211_bss_conf *bss_conf = &sdata->bss_conf;
 #ifdef CONFIG_MAC80211_VERBOSE_DEBUG
@@ -578,6 +578,18 @@ static u32 ieee80211_handle_protect_preamb(struct ieee80211_sub_if_data *sdata,
 	DECLARE_MAC_BUF(mac);
 #endif
 	u32 changed = 0;
+	bool use_protection;
+	bool use_short_preamble;
+	bool use_short_slot;
+
+	if (erp_valid) {
+		use_protection = (erp & WLAN_ERP_USE_PROTECTION) != 0;
+		use_short_preamble = (erp & WLAN_ERP_BARKER_PREAMBLE) == 0;
+	} else {
+		use_protection = false;
+		use_short_preamble = !!(capab & WLAN_CAPABILITY_SHORT_PREAMBLE);
+	}
+	use_short_slot = !!(capab & WLAN_CAPABILITY_SHORT_SLOT_TIME);
 
 	if (use_protection != bss_conf->use_cts_prot) {
 #ifdef CONFIG_MAC80211_VERBOSE_DEBUG
@@ -607,30 +619,18 @@ static u32 ieee80211_handle_protect_preamb(struct ieee80211_sub_if_data *sdata,
 		changed |= BSS_CHANGED_ERP_PREAMBLE;
 	}
 
-	return changed;
-}
-
-static u32 ieee80211_handle_erp_ie(struct ieee80211_sub_if_data *sdata,
-				   u8 erp_value)
-{
-	bool use_protection = (erp_value & WLAN_ERP_USE_PROTECTION) != 0;
-	bool use_short_preamble = (erp_value & WLAN_ERP_BARKER_PREAMBLE) == 0;
-
-	return ieee80211_handle_protect_preamb(sdata,
-			use_protection, use_short_preamble);
-}
-
-static u32 ieee80211_handle_bss_capability(struct ieee80211_sub_if_data *sdata,
-					   struct ieee80211_bss *bss)
-{
-	u32 changed = 0;
-
-	if (bss->has_erp_value)
-		changed |= ieee80211_handle_erp_ie(sdata, bss->erp_value);
-	else {
-		u16 capab = bss->capability;
-		changed |= ieee80211_handle_protect_preamb(sdata, false,
-				(capab & WLAN_CAPABILITY_SHORT_PREAMBLE) != 0);
+	if (use_short_slot != bss_conf->use_short_slot) {
+#ifdef CONFIG_MAC80211_VERBOSE_DEBUG
+		if (net_ratelimit()) {
+			printk(KERN_DEBUG "%s: switched to %s slot"
+			       " (BSSID=%s)\n",
+			       sdata->dev->name,
+			       use_short_slot ? "short" : "long",
+			       ifsta->bssid);
+		}
+#endif
+		bss_conf->use_short_slot = use_short_slot;
+		changed |= BSS_CHANGED_ERP_SLOT;
 	}
 
 	return changed;
@@ -723,7 +723,10 @@ static void ieee80211_set_associated(struct ieee80211_sub_if_data *sdata,
 		sdata->bss_conf.timestamp = bss->timestamp;
 		sdata->bss_conf.dtim_period = bss->dtim_period;
 
-		changed |= ieee80211_handle_bss_capability(sdata, bss);
+		changed |= ieee80211_handle_bss_capability(sdata,
+			bss->capability, bss->has_erp_value, bss->erp_value);
+
+		bss->hold = true;
 
 		ieee80211_rx_bss_put(local, bss);
 	}
@@ -739,6 +742,9 @@ static void ieee80211_set_associated(struct ieee80211_sub_if_data *sdata,
 	memcpy(ifsta->prev_bssid, sdata->u.sta.bssid, ETH_ALEN);
 	ieee80211_sta_send_associnfo(sdata, ifsta);
 
+	ifsta->rssi_state = IEEE80211_RSSI_STATE_HIGH;
+	ifsta->roam_threshold_count = 0;
+
 	ifsta->last_probe = jiffies;
 	ieee80211_led_assoc(local, 1);
 
@@ -750,6 +756,16 @@ static void ieee80211_set_associated(struct ieee80211_sub_if_data *sdata,
 	 */
 	changed |= BSS_CHANGED_BASIC_RATES;
 	ieee80211_bss_info_change_notify(sdata, changed);
+
+	if (local->powersave) {
+		if (local->dynamic_ps_timeout > 0)
+			mod_timer(&local->dynamic_ps_timer, jiffies +
+				  msecs_to_jiffies(local->dynamic_ps_timeout));
+		else {
+			conf->flags |= IEEE80211_CONF_PS;
+			ieee80211_hw_config(local);
+		}
+	}
 
 	netif_tx_start_all_queues(sdata->dev);
 	netif_carrier_on(sdata->dev);
@@ -767,6 +783,8 @@ static void ieee80211_direct_probe(struct ieee80211_sub_if_data *sdata,
 		printk(KERN_DEBUG "%s: direct probe to AP %s timed out\n",
 		       sdata->dev->name, print_mac(mac, ifsta->bssid));
 		ifsta->state = IEEE80211_STA_MLME_DISABLED;
+		ifsta->flags &= ~IEEE80211_STA_ASSOCIATED;
+		ieee80211_sta_send_apinfo(sdata, ifsta);
 		return;
 	}
 
@@ -799,6 +817,8 @@ static void ieee80211_authenticate(struct ieee80211_sub_if_data *sdata,
 		       " timed out\n",
 		       sdata->dev->name, print_mac(mac, ifsta->bssid));
 		ifsta->state = IEEE80211_STA_MLME_DISABLED;
+		ifsta->flags &= ~IEEE80211_STA_ASSOCIATED;
+		ieee80211_sta_send_apinfo(sdata, ifsta);
 		return;
 	}
 
@@ -816,6 +836,8 @@ static void ieee80211_set_disassoc(struct ieee80211_sub_if_data *sdata,
 				   bool self_disconnected, u16 reason)
 {
 	struct ieee80211_local *local = sdata->local;
+	struct ieee80211_conf *conf = &local_to_hw(local)->conf;
+	struct ieee80211_bss *bss;
 	struct sta_info *sta;
 	u32 changed = BSS_CHANGED_ASSOC;
 
@@ -838,6 +860,15 @@ static void ieee80211_set_disassoc(struct ieee80211_sub_if_data *sdata,
 	netif_carrier_off(sdata->dev);
 
 	ieee80211_sta_tear_down_BA_sessions(sdata, sta->sta.addr);
+
+	bss = ieee80211_rx_bss_get(local, ifsta->bssid,
+				   conf->channel->center_freq,
+				   ifsta->ssid, ifsta->ssid_len);
+
+	if (bss) {
+		bss->hold = false;
+		ieee80211_rx_bss_put(local, bss);
+	}
 
 	if (self_disconnected) {
 		if (deauth)
@@ -869,6 +900,14 @@ static void ieee80211_set_disassoc(struct ieee80211_sub_if_data *sdata,
 	sta_info_unlink(&sta);
 
 	rcu_read_unlock();
+
+	del_timer_sync(&local->dynamic_ps_timer);
+	cancel_work_sync(&local->dynamic_ps_enable_work);
+
+	if (local->hw.conf.flags & IEEE80211_CONF_PS) {
+		local->hw.conf.flags &= ~IEEE80211_CONF_PS;
+		ieee80211_hw_config(local);
+	}
 
 	sta_info_destroy(sta);
 }
@@ -922,6 +961,8 @@ static void ieee80211_associate(struct ieee80211_sub_if_data *sdata,
 		       " timed out\n",
 		       sdata->dev->name, print_mac(mac, ifsta->bssid));
 		ifsta->state = IEEE80211_STA_MLME_DISABLED;
+		ifsta->flags &= ~IEEE80211_STA_ASSOCIATED;
+		ieee80211_sta_send_apinfo(sdata, ifsta);
 		return;
 	}
 
@@ -940,13 +981,113 @@ static void ieee80211_associate(struct ieee80211_sub_if_data *sdata,
 	mod_timer(&ifsta->timer, jiffies + IEEE80211_ASSOC_TIMEOUT);
 }
 
+void ieee80211_rssi_changed(struct ieee80211_vif *vif,
+			    enum ieee80211_rssi_state state)
+{
+	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
+	struct ieee80211_if_sta *ifsta = NULL;
+	const char *event = NULL;
+	union iwreq_data wrqu;
+	char *buf = NULL;
+
+	ifsta = &sdata->u.sta;
+
+	if (!ifsta || ifsta->state != IEEE80211_STA_MLME_ASSOCIATED)
+		return;
+
+	if (ifsta->rssi_state == state)
+		return;
+
+	ifsta->rssi_state = state;
+
+	switch (state) {
+	case IEEE80211_RSSI_STATE_HIGH:
+		event = RSSI_HIGHSIGNAL;
+		break;
+	case IEEE80211_RSSI_STATE_LOW:
+		event = RSSI_LOWSIGNAL;
+		break;
+	default:
+		WARN_ON(1);
+		return;
+	}
+
+	buf = kstrdup(event, GFP_ATOMIC);
+	printk(KERN_DEBUG "%s: roaming signal from driver, sending %s\n",
+	       sdata->dev->name, buf);
+	memset(&wrqu, 0, sizeof(wrqu));
+	wrqu.data.length = strlen(buf);
+	wireless_send_event(sdata->dev, IWEVCUSTOM, &wrqu, buf);
+	kfree(buf);
+}
+EXPORT_SYMBOL(ieee80211_rssi_changed);
+
+void ieee80211_sta_rx_notify(struct ieee80211_sub_if_data *sdata,
+			     struct ieee80211_hdr *hdr)
+{
+	struct ieee80211_local *local = sdata->local;
+
+	/*
+	 * We can postpone the sta.timer whenever receiving unicast frames
+	 * from AP because we know that the connection is working both ways
+	 * at that time. But multicast frames (and hence also beacons) must
+	 * be ignored here, because we need to trigger the timer during
+	 * data idle periods for sending the periodical probe request to
+	 * the AP.
+	 */
+	if (!is_multicast_ether_addr(hdr->addr1) &&
+	    !(local->hw.flags & IEEE80211_HW_BEACON_FILTER))
+		mod_timer(&sdata->u.sta.timer,
+			  jiffies + IEEE80211_MONITORING_INTERVAL);
+}
+
+void ieee80211_beacon_loss_work(struct work_struct *work)
+{
+	struct ieee80211_sub_if_data *sdata =
+		container_of(work, struct ieee80211_sub_if_data,
+			     u.sta.beacon_loss_work);
+	struct ieee80211_if_sta *ifsta = &sdata->u.sta;
+	struct ieee80211_local *local = sdata->local;
+
+	if (ifsta->state != IEEE80211_STA_MLME_ASSOCIATED) {
+		printk(KERN_DEBUG "%s reports beacon loss when not "
+		       "associated\n", sdata->dev->name);
+		return;
+	}
+
+	printk(KERN_DEBUG "%s: driver reports beacon loss from AP %pM "
+	       "- sending probe request\n", sdata->dev->name,
+	       sdata->u.sta.bssid);
+
+	ifsta->flags |= IEEE80211_STA_PROBEREQ_POLL;
+
+	if (local->powersave) {
+		/* disable power save before sending the probe request */
+		local->hw.conf.flags &= ~IEEE80211_CONF_PS;
+		ieee80211_hw_config(local);
+	}
+
+	ieee80211_send_probe_req(sdata, ifsta->bssid, ifsta->ssid,
+				 ifsta->ssid_len);
+
+	mod_timer(&ifsta->timer, jiffies + IEEE80211_MONITORING_INTERVAL);
+}
+
+void ieee80211_beacon_loss(struct ieee80211_vif *vif)
+{
+	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
+
+	queue_work(sdata->local->hw.workqueue,
+		   &sdata->u.sta.beacon_loss_work);
+}
+EXPORT_SYMBOL(ieee80211_beacon_loss);
 
 static void ieee80211_associated(struct ieee80211_sub_if_data *sdata,
 				 struct ieee80211_if_sta *ifsta)
 {
 	struct ieee80211_local *local = sdata->local;
 	struct sta_info *sta;
-	int disassoc;
+	bool disassoc = false, send_probe = false;
 	DECLARE_MAC_BUF(mac);
 
 	/* TODO: start monitoring current AP signal quality and number of
@@ -960,42 +1101,57 @@ static void ieee80211_associated(struct ieee80211_sub_if_data *sdata,
 
 	sta = sta_info_get(local, ifsta->bssid);
 	if (!sta) {
-		printk(KERN_DEBUG "%s: No STA entry for own AP %s\n",
-		       sdata->dev->name, print_mac(mac, ifsta->bssid));
-		disassoc = 1;
-	} else {
-		disassoc = 0;
-		if (time_after(jiffies,
-			       sta->last_rx + IEEE80211_MONITORING_INTERVAL)) {
-			if (ifsta->flags & IEEE80211_STA_PROBEREQ_POLL) {
-				printk(KERN_DEBUG "%s: No ProbeResp from "
-				       "current AP %s - assume out of "
-				       "range\n",
-				       sdata->dev->name, print_mac(mac, ifsta->bssid));
-				disassoc = 1;
-			} else
-				ieee80211_send_probe_req(sdata, ifsta->bssid,
-							 ifsta->ssid,
-							 ifsta->ssid_len);
-			ifsta->flags ^= IEEE80211_STA_PROBEREQ_POLL;
-		} else {
-			ifsta->flags &= ~IEEE80211_STA_PROBEREQ_POLL;
-			if (time_after(jiffies, ifsta->last_probe +
-				       IEEE80211_PROBE_INTERVAL)) {
-				ifsta->last_probe = jiffies;
-				ieee80211_send_probe_req(sdata, ifsta->bssid,
-							 ifsta->ssid,
-							 ifsta->ssid_len);
-			}
-		}
+		printk(KERN_DEBUG "%s: No STA entry for own AP %pM\n",
+		       sdata->dev->name, ifsta->bssid);
+		disassoc = true;
+		goto unlock;
 	}
 
+	if ((ifsta->flags & IEEE80211_STA_PROBEREQ_POLL) &&
+	    time_after(jiffies, sta->last_rx + IEEE80211_MONITORING_INTERVAL)) {
+		printk(KERN_DEBUG "%s: no probe response from AP %pM "
+		       "- disassociating\n",
+		       sdata->dev->name, ifsta->bssid);
+		disassoc = true;
+		ifsta->flags &= ~IEEE80211_STA_PROBEREQ_POLL;
+		goto unlock;
+	}
+
+	/*
+	 * Beacon filtering is only enabled with power save and then the
+	 * stack should not check for beacon loss.
+	 */
+	if (!(local->hw.flags & IEEE80211_HW_BEACON_FILTER) &&
+	    time_after(jiffies,
+		       ifsta->last_beacon + IEEE80211_MONITORING_INTERVAL)) {
+		printk(KERN_DEBUG "%s: beacon loss from AP %pM "
+		       "- sending probe request\n",
+		       sdata->dev->name, ifsta->bssid);
+		ifsta->flags |= IEEE80211_STA_PROBEREQ_POLL;
+		send_probe = true;
+		goto unlock;
+
+	}
+
+ unlock:
 	rcu_read_unlock();
+
+	/* config() can sleep so call it after unlock */
+	if (send_probe) {
+		if (local->powersave) {
+			/* disable ps before sending the probe request */
+			local->hw.conf.flags &= ~IEEE80211_CONF_PS;
+			ieee80211_hw_config(local);
+		}
+
+		ieee80211_send_probe_req(sdata, ifsta->bssid, ifsta->ssid,
+					 ifsta->ssid_len);
+	}
 
 	if (disassoc)
 		ieee80211_set_disassoc(sdata, ifsta, true, true,
 					WLAN_REASON_PREV_AUTH_NOT_VALID);
-	else
+	else if (!(local->hw.flags & IEEE80211_HW_BEACON_FILTER))
 		mod_timer(&ifsta->timer, jiffies +
 				      IEEE80211_MONITORING_INTERVAL);
 }
@@ -1139,8 +1295,7 @@ static void ieee80211_rx_mgmt_deauth(struct ieee80211_sub_if_data *sdata,
 		printk(KERN_DEBUG "%s: deauthenticated\n", sdata->dev->name);
 
 	if (ifsta->state == IEEE80211_STA_MLME_AUTHENTICATE ||
-	    ifsta->state == IEEE80211_STA_MLME_ASSOCIATE ||
-	    ifsta->state == IEEE80211_STA_MLME_ASSOCIATED) {
+	    ifsta->state == IEEE80211_STA_MLME_ASSOCIATE) {
 		ifsta->state = IEEE80211_STA_MLME_DIRECT_PROBE;
 		mod_timer(&ifsta->timer, jiffies +
 				      IEEE80211_RETRY_AUTH_INTERVAL);
@@ -1370,6 +1525,12 @@ static void ieee80211_rx_mgmt_assoc_resp(struct ieee80211_sub_if_data *sdata,
 	bss_conf->assoc_capability = capab_info;
 	ieee80211_set_associated(sdata, ifsta);
 
+	/*
+	 * initialise the time of last beacon to be the association time,
+	 * otherwise beacon loss check will trigger immediately
+	 */
+	ifsta->last_beacon = jiffies;
+
 	ieee80211_associated(sdata, ifsta);
 }
 
@@ -1463,6 +1624,7 @@ static int ieee80211_sta_join_ibss(struct ieee80211_sub_if_data *sdata,
 			memcpy(pos, &bss->supp_rates[8], rates);
 		}
 
+		kfree_skb(ifsta->probe_resp);
 		ifsta->probe_resp = skb;
 
 		ieee80211_if_config(sdata, IEEE80211_IFCC_BEACON);
@@ -1639,6 +1801,7 @@ static void ieee80211_rx_mgmt_probe_resp(struct ieee80211_sub_if_data *sdata,
 	size_t baselen;
 	struct ieee802_11_elems elems;
 	struct ieee80211_if_sta *ifsta = &sdata->u.sta;
+	struct ieee80211_local *local = sdata->local;
 
 	if (memcmp(mgmt->da, sdata->dev->dev_addr, ETH_ALEN))
 		return; /* ignore ProbeResp to foreign address */
@@ -1659,6 +1822,19 @@ static void ieee80211_rx_mgmt_probe_resp(struct ieee80211_sub_if_data *sdata,
 		       sdata->dev->name);
 		ieee80211_authenticate(sdata, ifsta);
 	}
+
+	if (ifsta->flags & IEEE80211_STA_PROBEREQ_POLL) {
+		if (local->powersave) {
+			/*
+			 * re-enable power save now that probe response was
+			 * received
+			 */
+			local->hw.conf.flags |= IEEE80211_CONF_PS;
+			ieee80211_hw_config(local);
+		}
+
+		ifsta->flags &= ~IEEE80211_STA_PROBEREQ_POLL;
+	}
 }
 
 
@@ -1673,6 +1849,8 @@ static void ieee80211_rx_mgmt_beacon(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_local *local = sdata->local;
 	struct ieee80211_conf *conf = &local->hw.conf;
 	u32 changed = 0;
+	bool erp_valid;
+	u8 erp_value = 0;
 
 	/* Process beacon from the current BSS */
 	baselen = (u8 *) mgmt->u.beacon.variable - (u8 *) mgmt;
@@ -1694,13 +1872,16 @@ static void ieee80211_rx_mgmt_beacon(struct ieee80211_sub_if_data *sdata,
 	ieee80211_sta_wmm_params(local, ifsta, elems.wmm_param,
 				 elems.wmm_param_len);
 
-	if (elems.erp_info && elems.erp_info_len >= 1)
-		changed |= ieee80211_handle_erp_ie(sdata, elems.erp_info[0]);
-	else {
-		u16 capab = le16_to_cpu(mgmt->u.beacon.capab_info);
-		changed |= ieee80211_handle_protect_preamb(sdata, false,
-				(capab & WLAN_CAPABILITY_SHORT_PREAMBLE) != 0);
+
+	if (elems.erp_info && elems.erp_info_len >= 1) {
+		erp_valid = true;
+		erp_value = elems.erp_info[0];
+	} else {
+		erp_valid = false;
 	}
+	changed |= ieee80211_handle_bss_capability(sdata,
+			le16_to_cpu(mgmt->u.beacon.capab_info),
+			erp_valid, erp_value);
 
 	if (elems.ht_cap_elem && elems.ht_info_elem &&
 	    elems.wmm_param && conf->flags & IEEE80211_CONF_SUPPORT_HT_MODE) {
@@ -2318,6 +2499,7 @@ void ieee80211_sta_setup_sdata(struct ieee80211_sub_if_data *sdata)
 
 	ifsta = &sdata->u.sta;
 	INIT_WORK(&ifsta->work, ieee80211_sta_work);
+	INIT_WORK(&ifsta->beacon_loss_work, ieee80211_beacon_loss_work);
 	setup_timer(&ifsta->timer, ieee80211_sta_timer,
 		    (unsigned long) sdata);
 	skb_queue_head_init(&ifsta->skb_queue);
@@ -2559,4 +2741,40 @@ void ieee80211_mlme_notify_scan_completed(struct ieee80211_local *local)
 	list_for_each_entry_rcu(sdata, &local->interfaces, list)
 		ieee80211_restart_sta_timer(sdata);
 	rcu_read_unlock();
+}
+
+void ieee80211_dynamic_ps_disable_work(struct work_struct *work)
+{
+	struct ieee80211_local *local =
+		container_of(work, struct ieee80211_local,
+			     dynamic_ps_disable_work);
+
+	if (local->hw.conf.flags & IEEE80211_CONF_PS) {
+		local->hw.conf.flags &= ~IEEE80211_CONF_PS;
+		ieee80211_hw_config(local);
+	}
+
+	ieee80211_wake_queues_by_reason(&local->hw,
+					IEEE80211_QUEUE_STOP_REASON_PS);
+}
+
+void ieee80211_dynamic_ps_enable_work(struct work_struct *work)
+{
+	struct ieee80211_local *local =
+		container_of(work, struct ieee80211_local,
+			     dynamic_ps_enable_work);
+
+	if (local->hw.conf.flags & IEEE80211_CONF_PS)
+		return;
+
+	local->hw.conf.flags |= IEEE80211_CONF_PS;
+
+	ieee80211_hw_config(local);
+}
+
+void ieee80211_dynamic_ps_timer(unsigned long data)
+{
+	struct ieee80211_local *local = (void *) data;
+
+	queue_work(local->hw.workqueue, &local->dynamic_ps_enable_work);
 }

@@ -16,29 +16,24 @@
 
 #include "prcm-common.h"
 
-#ifndef __ASSEMBLER__
-#define OMAP_CM_REGADDR(module, reg)					\
-			IO_ADDRESS(OMAP2_CM_BASE + (module) + (reg))
-#else
 #define OMAP2420_CM_REGADDR(module, reg)				\
 			IO_ADDRESS(OMAP2420_CM_BASE + (module) + (reg))
 #define OMAP2430_CM_REGADDR(module, reg)				\
 			IO_ADDRESS(OMAP2430_CM_BASE + (module) + (reg))
 #define OMAP34XX_CM_REGADDR(module, reg)				\
 			IO_ADDRESS(OMAP3430_CM_BASE + (module) + (reg))
-#endif
 
 /*
  * Architecture-specific global CM registers
- * Use cm_{read,write}_reg() with these registers.
+ * Use __raw_{read,write}l() with these registers.
  * These registers appear once per CM module.
  */
 
-#define OMAP3430_CM_REVISION		OMAP_CM_REGADDR(OCP_MOD, 0x0000)
-#define OMAP3430_CM_SYSCONFIG		OMAP_CM_REGADDR(OCP_MOD, 0x0010)
-#define OMAP3430_CM_POLCTRL		OMAP_CM_REGADDR(OCP_MOD, 0x009c)
+#define OMAP3430_CM_REVISION		OMAP34XX_CM_REGADDR(OCP_MOD, 0x0000)
+#define OMAP3430_CM_SYSCONFIG		OMAP34XX_CM_REGADDR(OCP_MOD, 0x0010)
+#define OMAP3430_CM_POLCTRL		OMAP34XX_CM_REGADDR(OCP_MOD, 0x009c)
 
-#define OMAP3430_CM_CLKOUT_CTRL		OMAP_CM_REGADDR(OMAP3430_CCR_MOD, 0x0070)
+#define OMAP3430_CM_CLKOUT_CTRL_OFFSET			0x0070
 
 /*
  * Module specific CM registers from CM_BASE + domain offset
@@ -67,7 +62,6 @@
 #define CM_CLKSEL2					0x0044
 #define CM_CLKSTCTRL					0x0048
 
-
 /* Architecture-specific registers */
 
 #define OMAP24XX_CM_FCLKEN2				0x0004
@@ -80,6 +74,7 @@
 #define OMAP3430ES2_CM_CLKEN2				0x0004
 #define OMAP3430ES2_CM_FCLKEN3				0x0008
 #define OMAP3430_CM_IDLEST_PLL				CM_IDLEST2
+#define OMAP3430_CM_IDLEST3				0x0028
 #define OMAP3430_CM_AUTOIDLE_PLL			CM_AUTOIDLE2
 #define OMAP3430ES2_CM_AUTOIDLE2_PLL			CM_AUTOIDLE2
 #define OMAP3430_CM_CLKSEL1				CM_CLKSEL

@@ -721,7 +721,8 @@ static int rename_volumes(struct ubi_device *ubi,
 		 * It seems we need to remove volume with name @re->new_name,
 		 * if it exists.
 		 */
-		desc = ubi_open_volume_nm(ubi->ubi_num, re->new_name, UBI_EXCLUSIVE);
+		desc = ubi_open_volume_nm(ubi->ubi_num, re->new_name,
+					  UBI_EXCLUSIVE);
 		if (IS_ERR(desc)) {
 			err = PTR_ERR(desc);
 			if (err == -ENODEV)
@@ -789,7 +790,6 @@ static int ubi_cdev_ioctl(struct inode *inode, struct file *file,
 			break;
 		}
 
-		req.name[req.name_len] = '\0';
 		err = verify_mkvol_req(ubi, &req);
 		if (err)
 			break;

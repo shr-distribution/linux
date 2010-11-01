@@ -1,0 +1,21 @@
+#!/bin/sh
+
+set -e
+
+KERNEL=/boot/zImage-@VERSION@.fiasco
+
+FLASHER=/sbin/fiasco-image-update
+
+# they say this is The Right Way (tm) to check for
+# scratchbox environment
+if [ -L /targets/links/scratchbox.config ]; then
+	# hehe
+	true
+else
+	if [ -f $KERNEL -a -x $FLASHER ]; then
+		$FLASHER $KERNEL
+	fi
+fi
+
+#DEBHELPER#
+

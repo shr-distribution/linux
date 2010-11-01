@@ -87,6 +87,8 @@
  *	removable		Default false, boolean for removable media
  *	luns=N			Default N = number of filenames, number of
  *					LUNs to support
+ *	fua=N			Default N = 0, boolean for ignoring FUA flag
+ *					in SCSI WRITE(10,12) commands
  *	stall			Default determined according to the type of
  *					USB device controller (usually true),
  *					boolean to permit the driver to halt
@@ -103,14 +105,14 @@
  *					PAGE_CACHE_SIZE)
  *
  * If CONFIG_USB_FILE_STORAGE_TEST is not set, only the "file", "ro",
- * "removable", "luns", and "stall" options are available; default values
- * are used for everything else.
+ * "removable", "luns", "fua" and "stall" options are available; default
+ * values are used for everything else.
  *
  * The pathnames of the backing files and the ro settings are available in
- * the attribute files "file" and "ro" in the lun<n> subdirectory of the
- * gadget's sysfs directory.  If the "removable" option is set, writing to
- * these files will simulate ejecting/loading the medium (writing an empty
- * line means eject) and adjusting a write-enable tab.  Changes to the ro
+ * the attribute files "file", "ro" and "fua" in the lun<n> subdirectory of
+ * the gadget's sysfs directory.  If the "removable" option is set, writing
+ * to "file" will simulate ejecting/loading the medium (writing an empty
+ * line means eject) and adjusting a write-enable tab.  Changes to the "ro"
  * setting are not allowed when the medium is loaded.
  *
  * This gadget driver is heavily based on "Gadget Zero" by David Brownell.
@@ -238,9 +240,12 @@
 #include <linux/string.h>
 #include <linux/freezer.h>
 #include <linux/utsname.h>
+#include <linux/buffer_head.h>
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
+
+#include <asm/mach-types.h>
 
 #include "gadget_chips.h"
 
@@ -265,6 +270,13 @@
 
 static const char longname[] = DRIVER_DESC;
 static const char shortname[] = DRIVER_NAME;
+
+static const char manufacturer_nokia[] = "Nokia";
+static const char longname_770[] = "Nokia 770";
+static const char longname_n800[] = "Nokia N800 Internet Tablet";
+static const char longname_n810[] = "Nokia N810 Internet Tablet";
+static const char longname_n810_wimax[] = "Nokia N810 Internet Tablet WiMAX Edition";
+static const char longname_rx51[] = "N900 (Storage Mode)";
 
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_AUTHOR("Alan Stern");
@@ -341,6 +353,7 @@ static struct {
 
 	int		removable;
 	int		can_stall;
+	int		fua;
 
 	char		*transport_parm;
 	char		*protocol_parm;
@@ -357,12 +370,13 @@ static struct {
 } mod_data = {					// Default values
 	.transport_parm		= "BBB",
 	.protocol_parm		= "SCSI",
-	.removable		= 0,
-	.can_stall		= 1,
+	.removable		= 1,
+	.can_stall		= 0,
+	.fua			= 0,
 	.vendor			= DRIVER_VENDOR_ID,
 	.product		= DRIVER_PRODUCT_ID,
 	.release		= 0xffff,	// Use controller chip type
-	.buflen			= 16384,
+	.buflen			= 64 * 1024,
 	};
 
 
@@ -382,6 +396,8 @@ MODULE_PARM_DESC(removable, "true to simulate removable media");
 module_param_named(stall, mod_data.can_stall, bool, S_IRUGO);
 MODULE_PARM_DESC(stall, "false to prevent bulk stalls");
 
+module_param_named(fua, mod_data.fua, bool, S_IRUGO);
+MODULE_PARM_DESC(fua, "true to obey SCSI WRITE(6,10,12) FUA bit");
 
 /* In the non-TEST version, only the module parameters listed above
  * are available. */
@@ -553,6 +569,8 @@ struct lun {
 	unsigned int	prevent_medium_removal : 1;
 	unsigned int	registered : 1;
 	unsigned int	info_valid : 1;
+	unsigned int	fua:1;
+	unsigned int	direct:1;
 
 	u32		sense_data;
 	u32		sense_data_info;
@@ -574,7 +592,10 @@ static struct lun *dev_to_lun(struct device *dev)
 #define DELAYED_STATUS	(EP0_BUFSIZE + 999)	// An impossibly large value
 
 /* Number of buffers we will use.  2 is enough for double-buffering */
-#define NUM_BUFFERS	2
+/* FIXME: fsg_buffhd's should be allocated dynamically */
+#define NUM_BUFFERS	256
+/* FIXME: MEMLIMIT should be a parameter */
+#define MEMLIMIT (1024 * 1024)
 
 enum fsg_buffer_state {
 	BUF_STATE_EMPTY = 0,
@@ -582,8 +603,15 @@ enum fsg_buffer_state {
 	BUF_STATE_BUSY
 };
 
+struct fsg_dev;
+
 struct fsg_buffhd {
+	struct rb_node			rb_node;
+	sector_t			sector;
+	int				sectors;
+
 	void				*buf;
+	size_t				buflen;
 	enum fsg_buffer_state		state;
 	struct fsg_buffhd		*next;
 
@@ -596,6 +624,8 @@ struct fsg_buffhd {
 	int				inreq_busy;
 	struct usb_request		*outreq;
 	int				outreq_busy;
+
+	struct fsg_dev *fsg;
 };
 
 enum fsg_state {
@@ -666,6 +696,10 @@ struct fsg_dev {
 	struct fsg_buffhd	*next_buffhd_to_fill;
 	struct fsg_buffhd	*next_buffhd_to_drain;
 	struct fsg_buffhd	buffhds[NUM_BUFFERS];
+	int			num_buffers;
+
+	/* Tree to find direct I/O's with overlapping sectors */
+	struct rb_root		bio_tree;
 
 	int			thread_wakeup_needed;
 	struct completion	thread_notifier;
@@ -718,7 +752,6 @@ static struct fsg_dev			*the_fsg;
 static struct usb_gadget_driver		fsg_driver;
 
 static void	close_backing_file(struct lun *curlun);
-static void	close_all_backing_files(struct fsg_dev *fsg);
 
 
 /*-------------------------------------------------------------------------*/
@@ -816,11 +849,13 @@ static void put_be32(u8 *buf, u32 val)
 #define STRING_MANUFACTURER	1
 #define STRING_PRODUCT		2
 #define STRING_SERIAL		3
-#define STRING_CONFIG		4
-#define STRING_INTERFACE	5
+#define STRING_CONFIG_MAXPOWER	4
+#define STRING_CONFIG_SELFPOWERED	5
+#define STRING_INTERFACE	6
 
-/* There is only one configuration. */
-#define	CONFIG_VALUE		1
+/* The configurations */
+#define	CONFIG_VALUE_MAXPOWER		1
+#define	CONFIG_VALUE_SELFPOWERED	2
 
 static struct usb_device_descriptor
 device_desc = {
@@ -838,20 +873,33 @@ device_desc = {
 	.iManufacturer =	STRING_MANUFACTURER,
 	.iProduct =		STRING_PRODUCT,
 	.iSerialNumber =	STRING_SERIAL,
-	.bNumConfigurations =	1,
+	.bNumConfigurations =	2,
 };
 
 static struct usb_config_descriptor
-config_desc = {
-	.bLength =		sizeof config_desc,
+config_desc_500 = {
+	.bLength =		sizeof config_desc_500,
 	.bDescriptorType =	USB_DT_CONFIG,
 
 	/* wTotalLength computed by usb_gadget_config_buf() */
 	.bNumInterfaces =	1,
-	.bConfigurationValue =	CONFIG_VALUE,
-	.iConfiguration =	STRING_CONFIG,
+	.bConfigurationValue =	CONFIG_VALUE_MAXPOWER,
+	.iConfiguration =	STRING_CONFIG_MAXPOWER,
+	.bmAttributes =		USB_CONFIG_ATT_ONE,	/* Bus powered */
+	.bMaxPower =		250, /* 500mA */
+};
+
+static struct usb_config_descriptor
+config_desc_100 = {
+	.bLength =		sizeof config_desc_100,
+	.bDescriptorType =	USB_DT_CONFIG,
+
+	/* wTotalLength computed by usb_gadget_config_buf() */
+	.bNumInterfaces =	1,
+	.bConfigurationValue =	CONFIG_VALUE_SELFPOWERED,
+	.iConfiguration =	STRING_CONFIG_SELFPOWERED,
 	.bmAttributes =		USB_CONFIG_ATT_ONE | USB_CONFIG_ATT_SELFPOWER,
-	.bMaxPower =		CONFIG_USB_GADGET_VBUS_DRAW / 2,
+	.bMaxPower =		50, /* 100mA */
 };
 
 static struct usb_otg_descriptor
@@ -937,7 +985,7 @@ dev_qualifier = {
 	.bcdUSB =		__constant_cpu_to_le16(0x0200),
 	.bDeviceClass =		USB_CLASS_PER_INTERFACE,
 
-	.bNumConfigurations =	1,
+	.bNumConfigurations =	2,
 };
 
 static struct usb_endpoint_descriptor
@@ -1003,7 +1051,8 @@ static struct usb_string		strings[] = {
 	{STRING_MANUFACTURER,	manufacturer},
 	{STRING_PRODUCT,	longname},
 	{STRING_SERIAL,		serial},
-	{STRING_CONFIG,		"Self-powered"},
+	{STRING_CONFIG_MAXPOWER,	"Max power"},
+	{STRING_CONFIG_SELFPOWERED,	"Self-powered"},
 	{STRING_INTERFACE,	"Mass Storage"},
 	{}
 };
@@ -1013,6 +1062,93 @@ static struct usb_gadget_strings	stringtab = {
 	.strings	= strings,
 };
 
+/*
+ *	Find overlapped bio in fsg->bio_tree rb tree.
+ */
+static int fsg_rbtree_find(struct fsg_dev *fsg, sector_t s,
+		unsigned int sectors)
+{
+	struct rb_node *n;
+	struct fsg_buffhd *tmp;
+	int found = 0;
+
+	spin_lock_irq(&fsg->lock);
+	n = fsg->bio_tree.rb_node;
+	while (n) {
+		tmp = rb_entry(n, struct fsg_buffhd, rb_node);
+		if (s + sectors <= tmp->sector)
+			n = n->rb_left;
+		else if (s >= tmp->sector + tmp->sectors)
+			n = n->rb_right;
+		else {
+			found = 1;
+			break;
+		}
+	}
+	spin_unlock_irq(&fsg->lock);
+	return found;
+}
+
+/*
+ * Insert a node into the fsg->bio_tree rb tree.
+ */
+static void fsg_rbtree_insert(struct fsg_dev *fsg, struct fsg_buffhd *node)
+{
+	struct rb_node **p;
+	struct rb_node *parent = NULL;
+	struct fsg_buffhd *tmp;
+
+	spin_lock_irq(&fsg->lock);
+	p = &fsg->bio_tree.rb_node;
+
+	while (*p) {
+		parent = *p;
+		tmp = rb_entry(parent, struct fsg_buffhd, rb_node);
+		if (node->sector < tmp->sector)
+			p = &(*p)->rb_left;
+		else
+			p = &(*p)->rb_right;
+	}
+	rb_link_node(&node->rb_node, parent, p);
+	rb_insert_color(&node->rb_node, &fsg->bio_tree);
+	spin_unlock_irq(&fsg->lock);
+}
+
+/** UGLY UGLY HACK: Windows problems with multiple
+ * configurations.
+ *
+ * Windows can only handle 1 usb configuration at a time.
+ *
+ * In order to work around that issue, we will have a retry
+ * method implemented in such a way that we try one configuration
+ * at a time until one works.
+ *
+ * What we do is that we connect with 500mA configuration, if that
+ * doesn't work, we disconnect from the bus, change to 100mA and try
+ * again, if that still doesn't work, we disconnect and try 8mA,
+ * if that doesn't work we give up.
+ */
+
+/* To determine whether a configuration worked or no, we use a timer.
+ * If the time required to get a SET_CONFIG request exceeds the timeout,
+ * it means the configuration failed. We then use the next config.
+ */
+static struct timer_list fsg_set_config_timer;
+
+static void fsg_set_config_timeout(unsigned long _gadget)
+{
+	struct usb_gadget	*gadget = (void *) _gadget;
+	struct fsg_dev          *fsg = get_gadget_data(gadget);
+
+	/* Configuration failed, so disconnect from bus and use next config */
+	fsg->gadget->get_config = 0;
+	usb_gadget_disconnect(gadget);
+	/* sleep to allow host see our disconnect */
+	mdelay(500);
+	gadget->cindex++;
+	usb_gadget_connect(gadget);
+	DBG(fsg, "%s cindex %d\n", __func__, gadget->cindex);
+}
 
 /*
  * Config descriptors must agree with the code that sets configurations
@@ -1025,9 +1161,35 @@ static int populate_config_buf(struct usb_gadget *gadget,
 	enum usb_device_speed			speed = gadget->speed;
 	int					len;
 	const struct usb_descriptor_header	**function;
+	struct usb_config_descriptor		*config;
 
-	if (index > 0)
+	if (index > 1)
 		return -EINVAL;
+
+	/** UGLY UGLY HACK: Windows problems with multiple
+	 * configurations.
+	 *
+	 * We need to keep track of which configuration to try this
+	 * time in order to make Windows happy. we don't implement
+	 * the hack if host sends non zero index.
+	 */
+	if (!index) {
+		index = gadget->cindex;
+
+		/** UGLY UGLY HACK: Windows problems with multiple
+		 * configurations.
+		 *
+		 * This is us giving up, if this one doesn't work
+		 * then user will have to take action, we can't
+		 * got any further
+		 */
+		if (index >= 1) {
+			del_timer(&fsg_set_config_timer);
+			gadget->set_config = 1;
+			/* Restrict to the last configuration */
+			index = 1;
+		}
+	}
 
 	if (gadget_is_dualspeed(gadget) && type == USB_DT_OTHER_SPEED_CONFIG)
 		speed = (USB_SPEED_FULL + USB_SPEED_HIGH) - speed;
@@ -1036,11 +1198,23 @@ static int populate_config_buf(struct usb_gadget *gadget,
 	else
 		function = fs_function;
 
+	switch (index) {
+	case 0:
+		config = &config_desc_500;
+		break;
+	case 1:
+	default:
+		config = &config_desc_100;
+		break;
+	}
+
 	/* for now, don't advertise srp-only devices */
-	if (!gadget_is_otg(gadget))
+	if (machine_is_nokia770() || machine_is_nokia_n800()
+			|| machine_is_nokia_rx51()
+			|| !gadget_is_otg(gadget))
 		function++;
 
-	len = usb_gadget_config_buf(&config_desc, buf, EP0_BUFSIZE, function);
+	len = usb_gadget_config_buf(config, buf, EP0_BUFSIZE, function);
 	((struct usb_config_descriptor *) buf)->bDescriptorType = type;
 	return len;
 }
@@ -1092,6 +1266,33 @@ static void fsg_disconnect(struct usb_gadget *gadget)
 
 	DBG(fsg, "disconnect or port reset\n");
 	raise_exception(fsg, FSG_STATE_DISCONNECT);
+	/** UGLY UGLY HACK: Windows problems with multiple
+	 * configurations.
+	 *
+	 * We need to know we're gonna enumerate so we can
+	 * apply our retry method.
+	 */
+	gadget->set_config = 0;
+	gadget->get_config = 0;
+}
+
+/** UGLY UGLY HACK: Windows problems with multiple
+ * configurations.
+ *
+ * This hook was introduced to differentiate between
+ * BUS RESET and DISCONNECT events. All we do here
+ * is delete our retry timer so we don't retry
+ * forever.
+ */
+static void fsg_vbus_disconnect(struct usb_gadget *gadget)
+{
+	struct fsg_dev	*fsg = get_gadget_data(gadget);
+
+	DBG(fsg, "%s\n", __func__);
+	del_timer(&fsg_set_config_timer);
+	gadget->cindex = 0;
+	gadget->set_config = 0;
+	gadget->get_config = 0;
 }
 
 
@@ -1379,6 +1580,13 @@ get_config:
 					req->buf,
 					w_value >> 8,
 					w_value & 0xff);
+			/** UGLY UGLY HACK: Windows problems with multiple
+			 * configurations.
+			 *
+			 * Note that we got a get_config
+			 */
+			fsg->gadget->get_config = 1;
+			DBG(fsg, "get_config = 1\n");
 			break;
 
 		case USB_DT_STRING:
@@ -1397,7 +1605,8 @@ get_config:
 				USB_RECIP_DEVICE))
 			break;
 		VDBG(fsg, "set configuration\n");
-		if (w_value == CONFIG_VALUE || w_value == 0) {
+		if (w_value == CONFIG_VALUE_MAXPOWER || w_value == 0
+				|| w_value == CONFIG_VALUE_SELFPOWERED) {
 			fsg->new_config = w_value;
 
 			/* Raise an exception to wipe out previous transaction
@@ -1405,6 +1614,15 @@ get_config:
 			raise_exception(fsg, FSG_STATE_CONFIG_CHANGE);
 			value = DELAYED_STATUS;
 		}
+		/** UGLY UGLY HACK: Windows problems with multiple
+		 * configurations.
+		 *
+		 * We got a SetConfiguration, meaning Windows accepted
+		 * our configuration descriptor, so stop the retry
+		 * timer and let device work.
+		 */
+		fsg->gadget->set_config = 1;
+		DBG(fsg, "set_config = 1\n");
 		break;
 	case USB_REQ_GET_CONFIGURATION:
 		if (ctrl->bRequestType != (USB_DIR_IN | USB_TYPE_STANDARD |
@@ -1548,6 +1766,96 @@ static int sleep_thread(struct fsg_dev *fsg)
 
 /*-------------------------------------------------------------------------*/
 
+static void direct_read_end_io(struct bio *bio, int err)
+{
+	if (err)
+		clear_bit(BIO_UPTODATE, &bio->bi_flags);
+
+	complete(bio->bi_private);
+}
+
+/*
+ * FIXME: Caller expects entire 'amount' to be read which means either:
+ * a) the maximum buflen must be less-than-or-equal the maximum I/O size
+ * or b) more than one bio must be submitted
+ */
+/* FIXME: Needs an equivalent of readahead */
+static ssize_t direct_read(struct file *file, struct fsg_buffhd *bh,
+		size_t amount, loff_t *pos)
+{
+	DECLARE_COMPLETION_ONSTACK(wait);
+	unsigned max_pages = (amount >> PAGE_SHIFT) + 1;
+	unsigned remains = amount;
+	ssize_t totlen = 0;
+	struct page *page;
+	struct bio *bio;
+	char *p = bh->buf;
+	int rc;
+
+	if (!amount)
+		return 0;
+
+	if (*pos & 511 || amount & 511)
+		return -EINVAL;
+
+	bio = bio_alloc(GFP_KERNEL, max_pages);
+	if (!bio)
+		return -ENOMEM;
+
+	bio->bi_sector = *pos >> 9;
+	bio->bi_bdev = file->f_path.dentry->d_inode->i_bdev;
+	bio->bi_end_io = direct_read_end_io;
+	bio->bi_private = &wait;
+
+	while (remains) {
+		unsigned offset, len;
+
+		page = virt_to_page(p);
+		offset = offset_in_page(p);
+		len = PAGE_SIZE - offset;
+		if (len > remains)
+			len = remains;
+		len = bio_add_page(bio, page, len, offset);
+		if (!len)
+			break;
+		remains -= len;
+		totlen += len;
+		p += len;
+	}
+
+	if (!totlen) {
+		bio_put(bio);
+		return -EINVAL;
+	}
+
+	while (fsg_rbtree_find(bh->fsg, bio->bi_sector,
+		bio_sectors(bio))) {
+		rc = sleep_thread(bh->fsg);
+		if (rc) {
+			bio_put(bio);
+			return rc;
+		}
+	}
+
+	submit_bio(READ, bio);
+
+	wait_for_completion(&wait);
+
+	if (!test_bit(BIO_UPTODATE, &bio->bi_flags)) {
+		totlen = -EIO;
+		goto out;
+	}
+
+	*pos += totlen;
+out:
+	bio_put(bio);
+
+	return totlen;
+}
+
+
+/*-------------------------------------------------------------------------*/
+
 static int do_read(struct fsg_dev *fsg)
 {
 	struct lun		*curlun = fsg->curlun;
@@ -1588,6 +1896,14 @@ static int do_read(struct fsg_dev *fsg)
 
 	for (;;) {
 
+		/* Wait for the next buffer to become available */
+		bh = fsg->next_buffhd_to_fill;
+		while (bh->state != BUF_STATE_EMPTY) {
+			rc = sleep_thread(fsg);
+			if (rc)
+				return rc;
+		}
+
 		/* Figure out how much we need to read:
 		 * Try to read the remaining amount.
 		 * But don't read more than the buffer size.
@@ -1596,21 +1912,13 @@ static int do_read(struct fsg_dev *fsg)
 		 *	the next page.
 		 * If this means reading 0 then we were asked to read past
 		 *	the end of file. */
-		amount = min((unsigned int) amount_left, mod_data.buflen);
+		amount = min((unsigned int) amount_left, bh->buflen);
 		amount = min((loff_t) amount,
 				curlun->file_length - file_offset);
 		partial_page = file_offset & (PAGE_CACHE_SIZE - 1);
 		if (partial_page > 0)
 			amount = min(amount, (unsigned int) PAGE_CACHE_SIZE -
 					partial_page);
-
-		/* Wait for the next buffer to become available */
-		bh = fsg->next_buffhd_to_fill;
-		while (bh->state != BUF_STATE_EMPTY) {
-			rc = sleep_thread(fsg);
-			if (rc)
-				return rc;
-		}
 
 		/* If we were asked to read past the end of file,
 		 * end with an empty buffer. */
@@ -1626,9 +1934,13 @@ static int do_read(struct fsg_dev *fsg)
 
 		/* Perform the read */
 		file_offset_tmp = file_offset;
-		nread = vfs_read(curlun->filp,
-				(char __user *) bh->buf,
-				amount, &file_offset_tmp);
+		if (curlun->direct)
+			nread = direct_read(curlun->filp, bh,
+					amount, &file_offset_tmp);
+		else
+			nread = vfs_read(curlun->filp,
+					(char __user *) bh->buf,
+					amount, &file_offset_tmp);
 		VLDBG(curlun, "file read %u @ %llu -> %d\n", amount,
 				(unsigned long long) file_offset,
 				(int) nread);
@@ -1674,6 +1986,102 @@ static int do_read(struct fsg_dev *fsg)
 
 /*-------------------------------------------------------------------------*/
 
+static void direct_write_end_io(struct bio *bio, int err)
+{
+	struct fsg_buffhd *bh = bio->bi_private;
+	struct fsg_dev *fsg = bh->fsg;
+	unsigned long flags;
+
+	if (err) {
+		/* FIXME: how to let host know about this error */
+		printk(KERN_ERR "direct_write_end_io: err %d\n", err);
+		clear_bit(BIO_UPTODATE, &bio->bi_flags);
+	}
+
+	/* FIXME: smp barriers are not necessary for this this driver */
+	smp_wmb();
+	spin_lock_irqsave(&fsg->lock, flags);
+	rb_erase(&bh->rb_node, &fsg->bio_tree);
+	bh->state = BUF_STATE_EMPTY;
+	wakeup_thread(fsg);
+	spin_unlock_irqrestore(&fsg->lock, flags);
+
+	bio_put(bio);
+}
+
+/*
+ * FIXME: Caller expects entire 'amount' to be written which means either:
+ * a) the maximum buflen must be less-than-or-equal the maximum I/O size
+ * or b) more than one bio must be submitted
+ */
+static ssize_t direct_write(struct file *file, struct fsg_buffhd *bh, size_t amount, loff_t *pos)
+{
+	unsigned max_pages = (amount >> PAGE_SHIFT) + 1;
+	unsigned remains = amount;
+	ssize_t totlen = 0;
+	struct page *page;
+	struct bio *bio;
+	char *p = bh->buf;
+	int rc;
+
+	if (!amount)
+		return 0;
+
+	if (*pos & 511 || amount & 511)
+		return -EINVAL;
+
+	bio = bio_alloc(GFP_KERNEL, max_pages);
+	if (!bio)
+		return -ENOMEM;
+
+	bio->bi_sector = *pos >> 9;
+	bio->bi_bdev = file->f_path.dentry->d_inode->i_bdev;
+	bio->bi_end_io = direct_write_end_io;
+	bio->bi_private = bh;
+
+	while (remains) {
+		unsigned offset, len;
+
+		page = virt_to_page(p);
+		offset = offset_in_page(p);
+		len = PAGE_SIZE - offset;
+		if (len > remains)
+			len = remains;
+		len = bio_add_page(bio, page, len, offset);
+		if (!len)
+			break;
+		remains -= len;
+		totlen += len;
+		p += len;
+	}
+
+	if (!totlen) {
+		bio_put(bio);
+		return -EINVAL;
+	}
+
+	bh->state = BUF_STATE_BUSY;
+	bh->sector = bio->bi_sector;
+	bh->sectors = bio_sectors(bio);
+	while (fsg_rbtree_find(bh->fsg, bh->sector, bh->sectors)) {
+		rc = sleep_thread(bh->fsg);
+		if (rc) {
+			bio_put(bio);
+			return rc;
+		}
+	}
+	fsg_rbtree_insert(bh->fsg, bh);
+
+	submit_bio(WRITE, bio);
+
+	*pos += totlen;
+
+	return totlen;
+}
+
+
+/*-------------------------------------------------------------------------*/
+
 static int do_write(struct fsg_dev *fsg)
 {
 	struct lun		*curlun = fsg->curlun;
@@ -1708,7 +2116,8 @@ static int do_write(struct fsg_dev *fsg)
 			curlun->sense_data = SS_INVALID_FIELD_IN_CDB;
 			return -EINVAL;
 		}
-		if (fsg->cmnd[1] & 0x08)	// FUA
+		/* FUA */
+		if ((fsg->cmnd[1] & 0x08) && curlun->fua)
 			curlun->filp->f_flags |= O_SYNC;
 	}
 	if (lba >= curlun->num_sectors) {
@@ -1736,7 +2145,7 @@ static int do_write(struct fsg_dev *fsg)
 			 * If this means getting 0, then we were asked
 			 *	to write past the end of file.
 			 * Finally, round down to a block boundary. */
-			amount = min(amount_left_to_req, mod_data.buflen);
+			amount = min(amount_left_to_req, bh->buflen);
 			amount = min((loff_t) amount, curlun->file_length -
 					usb_offset);
 			partial_page = usb_offset & (PAGE_CACHE_SIZE - 1);
@@ -1807,9 +2216,13 @@ static int do_write(struct fsg_dev *fsg)
 
 			/* Perform the write */
 			file_offset_tmp = file_offset;
-			nwritten = vfs_write(curlun->filp,
-					(char __user *) bh->buf,
-					amount, &file_offset_tmp);
+			if (curlun->direct)
+				nwritten = direct_write(curlun->filp, bh,
+						amount, &file_offset_tmp);
+			else
+				nwritten = vfs_write(curlun->filp,
+						(char __user *) bh->buf,
+						amount, &file_offset_tmp);
 			VLDBG(curlun, "file write %u @ %llu -> %d\n", amount,
 					(unsigned long long) file_offset,
 					(int) nwritten);
@@ -1971,7 +2384,7 @@ static int do_verify(struct fsg_dev *fsg)
 		 * And don't try to read past the end of the file.
 		 * If this means reading 0 then we were asked to read
 		 * past the end of file. */
-		amount = min((unsigned int) amount_left, mod_data.buflen);
+		amount = min((unsigned int) amount_left, bh->buflen);
 		amount = min((loff_t) amount,
 				curlun->file_length - file_offset);
 		if (amount == 0) {
@@ -2024,6 +2437,21 @@ static int do_inquiry(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	static char vendor_id[] = "Linux   ";
 	static char product_id[] = "File-Stor Gadget";
 
+#if defined(CONFIG_MACH_NOKIA770) || defined(CONFIG_MACH_NOKIA_N800) \
+	|| defined(CONFIG_MACH_NOKIA_N810) || defined(CONFIG_MACH_NOKIA_N810_WIMAX) \
+	|| defined(CONFIG_MACH_NOKIA_RX51)
+		sprintf(vendor_id, "Nokia   ");
+	if (machine_is_nokia770())
+		sprintf(product_id, "770             ");
+	else if (machine_is_nokia_n800())
+		sprintf(product_id, "N800             ");
+	else if (machine_is_nokia_n810())
+		sprintf(product_id, "N810             ");
+	else if (machine_is_nokia_n810_wimax())
+		sprintf(product_id, "N810 WiMAX       ");
+	else
+		sprintf(product_id, "N900             ");
+#endif
 	if (!fsg->curlun) {		// Unsupported LUNs are okay
 		fsg->bad_lun_okay = 1;
 		memset(buf, 0, 36);
@@ -2153,7 +2581,7 @@ static int do_mode_sense(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	} else {			// SC_MODE_SENSE_10
 		buf[3] = (curlun->ro ? 0x80 : 0x00);		// WP, DPOFUA
 		buf += 8;
-		limit = 65535;		// Should really be mod_data.buflen
+		limit = bh->buflen - 1;
 	}
 
 	/* No block descriptors */
@@ -2319,29 +2747,6 @@ static int halt_bulk_in_endpoint(struct fsg_dev *fsg)
 	return rc;
 }
 
-static int wedge_bulk_in_endpoint(struct fsg_dev *fsg)
-{
-	int	rc;
-
-	DBG(fsg, "bulk-in set wedge\n");
-	rc = usb_ep_set_wedge(fsg->bulk_in);
-	if (rc == -EAGAIN)
-		VDBG(fsg, "delayed bulk-in endpoint wedge\n");
-	while (rc != 0) {
-		if (rc != -EAGAIN) {
-			WARNING(fsg, "usb_ep_set_wedge -> %d\n", rc);
-			rc = 0;
-			break;
-		}
-
-		/* Wait for a short time and then try again */
-		if (msleep_interruptible(100) != 0)
-			return -EINTR;
-		rc = usb_ep_set_wedge(fsg->bulk_in);
-	}
-	return rc;
-}
-
 static int pad_with_zeros(struct fsg_dev *fsg)
 {
 	struct fsg_buffhd	*bh = fsg->next_buffhd_to_fill;
@@ -2360,7 +2765,7 @@ static int pad_with_zeros(struct fsg_dev *fsg)
 				return rc;
 		}
 
-		nsend = min(fsg->usb_amount_left, (u32) mod_data.buflen);
+		nsend = min(fsg->usb_amount_left, (u32) bh->buflen);
 		memset(bh->buf + nkeep, 0, nsend - nkeep);
 		bh->inreq->length = nsend;
 		bh->inreq->zero = 0;
@@ -2401,7 +2806,7 @@ static int throw_away_data(struct fsg_dev *fsg)
 		bh = fsg->next_buffhd_to_fill;
 		if (bh->state == BUF_STATE_EMPTY && fsg->usb_amount_left > 0) {
 			amount = min(fsg->usb_amount_left,
-					(u32) mod_data.buflen);
+					(u32) bh->buflen);
 
 			/* amount is always divisible by 512, hence by
 			 * the bulk-out maxpacket size */
@@ -3005,8 +3410,14 @@ static int received_cbw(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 		 * We aren't required to halt the OUT endpoint; instead
 		 * we can simply accept and discard any data received
 		 * until the next reset. */
-		wedge_bulk_in_endpoint(fsg);
-		set_bit(IGNORE_BULK_OUT, &fsg->atomic_bitflags);
+
+		/* USBCV tool expects Clear-Feature(HALT) to be processed
+		 * so don't wedge the IN endpoint, just stall it
+		 */
+
+		if (mod_data.can_stall)
+			halt_bulk_in_endpoint(fsg);
+
 		return -EINVAL;
 	}
 
@@ -3144,7 +3555,7 @@ static int do_set_interface(struct fsg_dev *fsg, int altsetting)
 
 reset:
 	/* Deallocate the requests */
-	for (i = 0; i < NUM_BUFFERS; ++i) {
+	for (i = 0; i < fsg->num_buffers; ++i) {
 		struct fsg_buffhd *bh = &fsg->buffhds[i];
 
 		if (bh->inreq) {
@@ -3202,7 +3613,7 @@ reset:
 	}
 
 	/* Allocate the requests */
-	for (i = 0; i < NUM_BUFFERS; ++i) {
+	for (i = 0; i < fsg->num_buffers; ++i) {
 		struct fsg_buffhd	*bh = &fsg->buffhds[i];
 
 		if ((rc = alloc_request(fsg, fsg->bulk_in, &bh->inreq)) != 0)
@@ -3237,6 +3648,7 @@ reset:
  */
 static int do_set_config(struct fsg_dev *fsg, u8 new_config)
 {
+	unsigned power;
 	int	rc = 0;
 
 	/* Disable the single interface */
@@ -3262,7 +3674,21 @@ static int do_set_config(struct fsg_dev *fsg, u8 new_config)
 			}
 			INFO(fsg, "%s speed config #%d\n", speed, fsg->config);
 		}
+
+		switch (new_config) {
+			case CONFIG_VALUE_MAXPOWER:
+				power = 2 * config_desc_500.bMaxPower;
+				break;
+			case CONFIG_VALUE_SELFPOWERED:
+				power = 2 * config_desc_100.bMaxPower;
+				break;
+			default:
+				power = gadget_is_otg(fsg->gadget) ? 8 : 100;
+		}
+
+		usb_gadget_vbus_draw(fsg->gadget, power);
 	}
+
 	return rc;
 }
 
@@ -3298,7 +3724,7 @@ static void handle_exception(struct fsg_dev *fsg)
 	/* Cancel all the pending transfers */
 	if (fsg->intreq_busy)
 		usb_ep_dequeue(fsg->intr_in, fsg->intreq);
-	for (i = 0; i < NUM_BUFFERS; ++i) {
+	for (i = 0; i < fsg->num_buffers; ++i) {
 		bh = &fsg->buffhds[i];
 		if (bh->inreq_busy)
 			usb_ep_dequeue(fsg->bulk_in, bh->inreq);
@@ -3309,7 +3735,7 @@ static void handle_exception(struct fsg_dev *fsg)
 	/* Wait until everything is idle */
 	for (;;) {
 		num_active = fsg->intreq_busy;
-		for (i = 0; i < NUM_BUFFERS; ++i) {
+		for (i = 0; i < fsg->num_buffers; ++i) {
 			bh = &fsg->buffhds[i];
 			num_active += bh->inreq_busy + bh->outreq_busy;
 		}
@@ -3331,7 +3757,7 @@ static void handle_exception(struct fsg_dev *fsg)
 	 * state, and the exception.  Then invoke the handler. */
 	spin_lock_irq(&fsg->lock);
 
-	for (i = 0; i < NUM_BUFFERS; ++i) {
+	for (i = 0; i < fsg->num_buffers; ++i) {
 		bh = &fsg->buffhds[i];
 		bh->state = BUF_STATE_EMPTY;
 	}
@@ -3489,12 +3915,10 @@ static int fsg_main_thread(void *fsg_)
 	fsg->thread_task = NULL;
 	spin_unlock_irq(&fsg->lock);
 
-	/* In case we are exiting because of a signal, unregister the
-	 * gadget driver and close the backing file. */
-	if (test_and_clear_bit(REGISTERED, &fsg->atomic_bitflags)) {
+	/* If we are exiting because of a signal, unregister the
+	 * gadget driver. */
+	if (test_and_clear_bit(REGISTERED, &fsg->atomic_bitflags))
 		usb_gadget_unregister_driver(&fsg_driver);
-		close_all_backing_files(fsg);
-	}
 
 	/* Let the unbind and cleanup routines know the thread has exited */
 	complete_and_exit(&fsg->thread_notifier, 0);
@@ -3534,7 +3958,10 @@ static int open_backing_file(struct lun *curlun, const char *filename)
 
 	if (filp->f_path.dentry)
 		inode = filp->f_path.dentry->d_inode;
+	curlun->direct = 0;
 	if (inode && S_ISBLK(inode->i_mode)) {
+		/* FIXME: memory-limiting mode should be optional */
+		curlun->direct = 1;
 		if (bdev_read_only(inode->i_bdev))
 			ro = 1;
 	} else if (!inode || !S_ISREG(inode->i_mode)) {
@@ -3564,12 +3991,35 @@ static int open_backing_file(struct lun *curlun, const char *filename)
 		goto out;
 	}
 
+	if (curlun->direct) {
+		/*
+		 * We are going to go around the caches, so make sure they
+		 * are sync'ed and invalidated. Note that typically, the block
+		 * device had a file system on it, which has just been
+		 * unmounted and the unmount has already cleared the caches
+		 * anyway.
+		 */
+		curlun->ro = ro;
+		curlun->filp = filp;
+		rc = fsync_sub(curlun);
+		if (rc) {
+			LINFO(curlun, "could not fsync: %s\n", filename);
+			curlun->filp = NULL;
+			goto out;
+		}
+		invalidate_mapping_pages(inode->i_mapping, 0, -1);
+		invalidate_bdev(inode->i_bdev);
+	}
+
 	get_file(filp);
 	curlun->ro = ro;
 	curlun->filp = filp;
 	curlun->file_length = size;
 	curlun->num_sectors = num_sectors;
 	LDBG(curlun, "open backing file: %s\n", filename);
+	if (curlun->direct)
+		LDBG(curlun, "using direct I/O with %u bytes memory limit\n",
+		     MEMLIMIT);
 	rc = 0;
 
 out:
@@ -3587,20 +4037,20 @@ static void close_backing_file(struct lun *curlun)
 	}
 }
 
-static void close_all_backing_files(struct fsg_dev *fsg)
-{
-	int	i;
-
-	for (i = 0; i < fsg->nluns; ++i)
-		close_backing_file(&fsg->luns[i]);
-}
-
 
 static ssize_t show_ro(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct lun	*curlun = dev_to_lun(dev);
 
 	return sprintf(buf, "%d\n", curlun->ro);
+}
+
+static ssize_t show_fua(struct device *dev, struct device_attribute *attr,
+		char *buf)
+{
+	struct lun	*curlun = dev_to_lun(dev);
+
+	return sprintf(buf, "%u\n", curlun->fua);
 }
 
 static ssize_t show_file(struct device *dev, struct device_attribute *attr,
@@ -3691,9 +4141,27 @@ static ssize_t store_file(struct device *dev, struct device_attribute *attr,
 }
 
 
+static ssize_t store_fua(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	struct lun	*curlun = dev_to_lun(dev);
+	unsigned long 	attr_val = 0;
+
+	if (strict_strtoul(buf, 2, &attr_val))
+		return -EINVAL;
+
+	if (!(curlun->fua))
+		fsync_sub(curlun);
+
+	curlun->fua = attr_val ? 1 : 0;
+
+	return count;
+}
+
 /* The write permissions and store_xxx pointers are set in fsg_bind() */
 static DEVICE_ATTR(ro, 0444, show_ro, NULL);
 static DEVICE_ATTR(file, 0444, show_file, NULL);
+static DEVICE_ATTR(fua, 0644, show_fua, store_fua);
 
 
 /*-------------------------------------------------------------------------*/
@@ -3729,6 +4197,7 @@ static void /* __init_or_exit */ fsg_unbind(struct usb_gadget *gadget)
 		if (curlun->registered) {
 			device_remove_file(&curlun->dev, &dev_attr_ro);
 			device_remove_file(&curlun->dev, &dev_attr_file);
+			close_backing_file(curlun);
 			device_unregister(&curlun->dev);
 			curlun->registered = 0;
 		}
@@ -3744,7 +4213,7 @@ static void /* __init_or_exit */ fsg_unbind(struct usb_gadget *gadget)
 	}
 
 	/* Free the data buffers */
-	for (i = 0; i < NUM_BUFFERS; ++i)
+	for (i = 0; i < fsg->num_buffers; ++i)
 		kfree(fsg->buffhds[i].buf);
 
 	/* Free the request and buffer for endpoint 0 */
@@ -3851,11 +4320,22 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 	struct usb_ep		*ep;
 	struct usb_request	*req;
 	char			*pathbuf, *p;
+	ssize_t			memlimit;
 
 	fsg->gadget = gadget;
 	set_gadget_data(gadget, fsg);
 	fsg->ep0 = gadget->ep0;
 	fsg->ep0->driver_data = fsg;
+
+	/** UGLY UGLY HACK: Windows problems with multiple
+	 * configurations.
+	 *
+	 * On bind time, init our variables to zero so we
+	 * know our starting point.
+	 */
+	fsg->gadget->cindex = 0;
+	fsg->gadget->set_config = 0;
+	fsg->gadget->get_config = 0;
 
 	if ((rc = check_parameters(fsg)) != 0)
 		goto out;
@@ -3888,6 +4368,7 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 	for (i = 0; i < fsg->nluns; ++i) {
 		curlun = &fsg->luns[i];
 		curlun->ro = mod_data.ro[i];
+		curlun->fua = mod_data.fua;
 		curlun->dev.release = lun_release;
 		curlun->dev.parent = &gadget->dev;
 		curlun->dev.driver = &fsg_driver.driver;
@@ -3902,7 +4383,9 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 		if ((rc = device_create_file(&curlun->dev,
 					&dev_attr_ro)) != 0 ||
 				(rc = device_create_file(&curlun->dev,
-					&dev_attr_file)) != 0) {
+					&dev_attr_file)) != 0 ||
+				(rc = device_create_file(&curlun->dev,
+					&dev_attr_fua)) != 0) {
 			device_unregister(&curlun->dev);
 			goto out;
 		}
@@ -3942,10 +4425,36 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 		fsg->intr_in = ep;
 	}
 
-	/* Fix up the descriptors */
-	device_desc.bMaxPacketSize0 = fsg->ep0->maxpacket;
+#if defined(CONFIG_MACH_NOKIA770) || defined(CONFIG_MACH_NOKIA_N800) \
+	|| defined(CONFIG_MACH_NOKIA_N810) || defined(CONFIG_MACH_NOKIA_N810_WIMAX) \
+	|| defined(CONFIG_MACH_NOKIA_RX51)
+	/* REVISIT: Get configuration from platform_data in board-*.c files */
+	strings[0].s		= manufacturer_nokia;
+	device_desc.idVendor	= 0x0421;	/* Nokia */
+
+	if (machine_is_nokia770()) {
+		strings[1].s		= longname_770;
+		device_desc.idProduct	= 0x0431;	/* 770 */
+	} else if (machine_is_nokia_n800()) {
+		strings[1].s		= longname_n800;
+		device_desc.idProduct	= 0x04c3;	/* N800 */
+	} else if (machine_is_nokia_n810()) {
+		strings[1].s		= longname_n810;
+		device_desc.idProduct	= 0x0096;	/* N810 */
+	} else if (machine_is_nokia_n810_wimax()){
+		strings[1].s		= longname_n810_wimax;
+		device_desc.idProduct	= 0x0189;	/* N810 WiMAX*/
+	} else {
+		strings[1].s		= longname_rx51;
+		device_desc.idProduct	= 0x01c7;	/* N900 */
+	}
+#else
 	device_desc.idVendor = cpu_to_le16(mod_data.vendor);
 	device_desc.idProduct = cpu_to_le16(mod_data.product);
+#endif
+
+	/* Fix up the descriptors */
+	device_desc.bMaxPacketSize0 = fsg->ep0->maxpacket;
 	device_desc.bcdDevice = cpu_to_le16(mod_data.release);
 
 	i = (transport_is_cbi() ? 3 : 2);	// Number of endpoints
@@ -3984,21 +4493,54 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 	req->complete = ep0_complete;
 
 	/* Allocate the data buffers */
-	for (i = 0; i < NUM_BUFFERS; ++i) {
+	/* FIXME: memory-limiting should be optional */
+	/* FIXME: buffers should be allocated and freed
+	 * when the first / last backing file is opened / closed
+	 */
+	memlimit = MEMLIMIT;
+	fsg->num_buffers = 0;
+	for (i = 0; i < NUM_BUFFERS && memlimit > 0; ++i) {
 		struct fsg_buffhd	*bh = &fsg->buffhds[i];
+		unsigned int		buflen = mod_data.buflen;
 
 		/* Allocate for the bulk-in endpoint.  We assume that
 		 * the buffer will also work with the bulk-out (and
-		 * interrupt-in) endpoint. */
-		bh->buf = kmalloc(mod_data.buflen, GFP_KERNEL);
-		if (!bh->buf)
+		 * interrupt-in) endpoint.
+		 *
+		 * We try to workaround problems with memory fragmentation
+		 * but we're not miracle men, so we stop trying allocation
+		 * when it can't allocate 4k buffers
+		 */
+		while (buflen >= PAGE_SIZE) {
+			gfp_t flags = GFP_KERNEL;
+
+			if (buflen == PAGE_SIZE)
+				flags |= __GFP_NOWARN;
+
+			bh->buf = kmalloc(buflen, flags);
+			if (bh->buf)
+				break;
+
+			buflen >>= 1;
+		}
+
+		if (buflen == PAGE_SIZE && bh->buf)
+			dev_dbg(&gadget->dev, "unable to allocate large buffer"
+					" fall back to small transfers\n");
+
+		bh->buflen = buflen;
+		bh->fsg = fsg;
+
+		if (!bh->buf) {
+			dev_err(&gadget->dev, "unable to allocate memory\n");
 			goto out;
+		}
+		memlimit -= buflen;
+		fsg->num_buffers += 1;
 		bh->next = bh + 1;
 	}
-	fsg->buffhds[NUM_BUFFERS - 1].next = &fsg->buffhds[0];
-
-	/* This should reflect the actual gadget power source */
-	usb_gadget_set_selfpowered(gadget);
+	fsg->buffhds[fsg->num_buffers - 1].next = &fsg->buffhds[0];
+	fsg->bio_tree = RB_ROOT;
 
 	snprintf(manufacturer, sizeof manufacturer, "%s %s with %s",
 			init_utsname()->sysname, init_utsname()->release,
@@ -4022,7 +4564,8 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 	}
 
 	INFO(fsg, DRIVER_DESC ", version: " DRIVER_VERSION "\n");
-	INFO(fsg, "Number of LUNs=%d\n", fsg->nluns);
+	INFO(fsg, "Number of LUNs=%d Number of buffers=%d\n",
+	     fsg->nluns, fsg->num_buffers);
 
 	pathbuf = kmalloc(PATH_MAX, GFP_KERNEL);
 	for (i = 0; i < fsg->nluns; ++i) {
@@ -4035,8 +4578,8 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 				if (IS_ERR(p))
 					p = NULL;
 			}
-			LINFO(curlun, "ro=%d, file: %s\n",
-					curlun->ro, (p ? p : "(error)"));
+			LINFO(curlun, "ro=%d, fua=%d file: %s\n",
+				curlun->ro, curlun->fua, (p ? p : "(error)"));
 		}
 	}
 	kfree(pathbuf);
@@ -4056,6 +4599,14 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 
 	/* Tell the thread to start working */
 	wake_up_process(fsg->thread_task);
+
+	/** UGLY UGLY HACK: Windows problems with multiple
+	 * configurations.
+	 *
+	 * setup our retry timer.
+	 */
+	setup_timer(&fsg_set_config_timer, fsg_set_config_timeout,
+				(unsigned long) gadget);
 	return 0;
 
 autoconf_fail:
@@ -4065,19 +4616,35 @@ autoconf_fail:
 out:
 	fsg->state = FSG_STATE_TERMINATED;	// The thread is dead
 	fsg_unbind(gadget);
-	close_all_backing_files(fsg);
+	complete(&fsg->thread_notifier);
 	return rc;
 }
 
 
 /*-------------------------------------------------------------------------*/
 
+/** UGLY UGLY HACK: Windows problems with multiple
+ * configurations.
+ *
+ * when we suspend, we disconnect and retry with another configuration
+ */
 static void fsg_suspend(struct usb_gadget *gadget)
 {
 	struct fsg_dev		*fsg = get_gadget_data(gadget);
 
 	DBG(fsg, "suspend\n");
 	set_bit(SUSPENDED, &fsg->atomic_bitflags);
+
+	/** UGLY UGLY HACK: Windows problems with multiple
+	 * configurations.
+	 *
+	 * we try another configuration if we have received
+	 * a get_config but not a set_config
+	 */
+	if (gadget->get_config && !gadget->set_config) {
+		mod_timer(&fsg_set_config_timer,
+				jiffies + msecs_to_jiffies(10));
+	}
 }
 
 static void fsg_resume(struct usb_gadget *gadget)
@@ -4101,6 +4668,7 @@ static struct usb_gadget_driver		fsg_driver = {
 	.bind		= fsg_bind,
 	.unbind		= fsg_unbind,
 	.disconnect	= fsg_disconnect,
+	.vbus_disconnect = fsg_vbus_disconnect,
 	.setup		= fsg_setup,
 	.suspend	= fsg_suspend,
 	.resume		= fsg_resume,
@@ -4158,7 +4726,6 @@ static void __exit fsg_cleanup(void)
 	/* Wait for the thread to finish up */
 	wait_for_completion(&fsg->thread_notifier);
 
-	close_all_backing_files(fsg);
 	kref_put(&fsg->ref, fsg_release);
 }
 module_exit(fsg_cleanup);

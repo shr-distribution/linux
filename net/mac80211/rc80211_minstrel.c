@@ -179,6 +179,8 @@ minstrel_tx_status(void *priv, struct ieee80211_supported_band *sband,
 
 	if (!mp->has_mrr || (ar[0].rate_idx < 0)) {
 		ndx = rix_to_ndx(mi, info->tx_rate_idx);
+		if (ndx < 0)
+			return;
 		tries = info->status.retry_count + 1;
 		mi->r[ndx].success += success;
 		mi->r[ndx].attempts += tries;
@@ -190,6 +192,8 @@ minstrel_tx_status(void *priv, struct ieee80211_supported_band *sband,
 			break;
 
 		ndx = rix_to_ndx(mi, ar[i].rate_idx);
+		if (ndx < 0)
+			continue;
 		mi->r[ndx].attempts += ar[i].limit + 1;
 
 		if ((i != 3) && (ar[i + 1].rate_idx < 0))
@@ -224,7 +228,7 @@ minstrel_get_next_sample(struct minstrel_sta_info *mi)
 	unsigned int sample_ndx;
 	sample_ndx = SAMPLE_TBL(mi, mi->sample_idx, mi->sample_column);
 	mi->sample_idx++;
-	if (mi->sample_idx > (mi->n_rates - 2)) {
+	if ((int) mi->sample_idx > (mi->n_rates - 2)) {
 		mi->sample_idx = 0;
 		mi->sample_column++;
 		if (mi->sample_column >= SAMPLE_COLUMNS)
@@ -389,13 +393,16 @@ minstrel_rate_init(void *priv, struct ieee80211_supported_band *sband,
 {
 	struct minstrel_sta_info *mi = priv_sta;
 	struct minstrel_priv *mp = priv;
-	struct minstrel_rate *mr_ctl;
+	struct ieee80211_local *local = hw_to_local(mp->hw);
+	struct ieee80211_rate *ctl_rate;
 	unsigned int i, n = 0;
 	unsigned int t_slot = 9; /* FIXME: get real slot time */
 
 	mi->lowest_rix = rate_lowest_index(sband, sta);
-	mr_ctl = &mi->r[rix_to_ndx(mi, mi->lowest_rix)];
-	mi->sp_ack_dur = mr_ctl->ack_time;
+	ctl_rate = &sband->bitrates[mi->lowest_rix];
+	mi->sp_ack_dur = ieee80211_frame_duration(local, 10, ctl_rate->bitrate,
+						  !!(ctl_rate->flags &
+						  IEEE80211_RATE_ERP_G), 1);
 
 	for (i = 0; i < sband->n_bitrates; i++) {
 		struct minstrel_rate *mr = &mi->r[n];
@@ -410,8 +417,7 @@ minstrel_rate_init(void *priv, struct ieee80211_supported_band *sband,
 
 		mr->rix = i;
 		mr->bitrate = sband->bitrates[i].bitrate / 5;
-		calc_rate_durations(mi, hw_to_local(mp->hw), mr,
-				&sband->bitrates[i]);
+		calc_rate_durations(mi, local, mr, &sband->bitrates[i]);
 
 		/* calculate maximum number of retransmissions before
 		 * fallback (based on maximum segment size) */
@@ -467,8 +473,8 @@ minstrel_alloc_sta(void *priv, struct ieee80211_sta *sta, gfp_t gfp)
 		return NULL;
 
 	for (i = 0; i < IEEE80211_NUM_BANDS; i++) {
-		sband = hw->wiphy->bands[hw->conf.channel->band];
-		if (sband->n_bitrates > max_rates)
+		sband = hw->wiphy->bands[i];
+		if (sband && sband->n_bitrates > max_rates)
 			max_rates = sband->n_bitrates;
 	}
 

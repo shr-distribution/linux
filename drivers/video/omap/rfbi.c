@@ -2,7 +2,7 @@
  * OMAP2 Remote Frame Buffer Interface support
  *
  * Copyright (C) 2005 Nokia Corporation
- * Author: Juha Yrjölä <juha.yrjola@nokia.com>
+ * Author: Juha Yrjï¿½lï¿½ <juha.yrjola@nokia.com>
  *	   Imre Deak <imre.deak@nokia.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -26,8 +26,7 @@
 #include <linux/interrupt.h>
 #include <linux/clk.h>
 #include <linux/io.h>
-
-#include <mach/omapfb.h>
+#include <linux/omapfb.h>
 
 #include "dispc.h"
 
@@ -57,6 +56,7 @@
 
 #define DISPC_BASE		0x48050400
 #define DISPC_CONTROL		0x0040
+#define DISPC_IRQ_FRAMEMASK     0x0001
 
 static struct {
 	void __iomem	*base;
@@ -551,7 +551,8 @@ static int rfbi_init(struct omapfb_device *fbdev)
 	l = (0x01 << 2);
 	rfbi_write_reg(RFBI_CONTROL, l);
 
-	if ((r = omap_dispc_request_irq(rfbi_dma_callback, NULL)) < 0) {
+	if ((r = omap_dispc_request_irq(DISPC_IRQ_FRAMEMASK, rfbi_dma_callback,
+                                        NULL)) < 0) {
 		dev_err(fbdev->dev, "can't get DISPC irq\n");
 		rfbi_enable_clocks(0);
 		return r;
@@ -568,7 +569,7 @@ static int rfbi_init(struct omapfb_device *fbdev)
 
 static void rfbi_cleanup(void)
 {
-	omap_dispc_free_irq();
+	omap_dispc_free_irq(DISPC_IRQ_FRAMEMASK, rfbi_dma_callback, NULL);
 	rfbi_put_clocks();
 	iounmap(rfbi.base);
 }

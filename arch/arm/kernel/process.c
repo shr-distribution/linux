@@ -29,6 +29,7 @@
 #include <linux/tick.h>
 #include <linux/utsname.h>
 #include <linux/uaccess.h>
+#include <linux/kobject.h>
 
 #include <asm/leds.h>
 #include <asm/processor.h>
@@ -199,6 +200,33 @@ void machine_restart(char * __unused)
 	arm_pm_restart(reboot_mode);
 }
 
+static ssize_t reboot_mode_show(struct kobject *kobj,
+				struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%c\n", reboot_mode);
+}
+
+static ssize_t reboot_mode_store(struct kobject *kobj,
+				 struct kobj_attribute *attr,
+				 const char *buf, size_t n)
+{
+	if (n < 1)
+		return -EINVAL;
+	reboot_mode = buf[0];
+
+	return n;
+}
+
+static struct kobj_attribute reboot_mode_attr =
+	__ATTR(reboot_mode, 0644, reboot_mode_show, reboot_mode_store);
+
+static int __init reboot_mode_sysfs_init(void)
+{
+	return sysfs_create_file(kernel_kobj, &reboot_mode_attr.attr);
+}
+
+__initcall(reboot_mode_sysfs_init);
+
 void __show_regs(struct pt_regs *regs)
 {
 	unsigned long flags;
@@ -318,6 +346,15 @@ copy_thread(int nr, unsigned long clone_flags, unsigned long stack_start,
 		thread->tp_value = regs->ARM_r3;
 
 	return 0;
+}
+
+/*
+ * Fill in the task's elfregs structure for a core dump
+ */
+int dump_task_regs(struct task_struct *t, elf_gregset_t *elfregs)
+{
+	elf_core_copy_regs(elfregs, task_pt_regs(t));
+	return 1;
 }
 
 /*
