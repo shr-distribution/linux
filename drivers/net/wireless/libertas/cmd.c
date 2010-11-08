@@ -819,6 +819,37 @@ static int wlan_cmd_802_11_eeprom_access(wlan_private * priv,
 	return 0;
 }
 
+static int wlan_cmd_fw_wakeup_method(wlan_private *priv,
+									struct cmd_ds_command *cmd,
+									u16 cmd_action, void *pdata_buf)
+{
+	struct cmd_ds_802_11_fw_wakeup_method *fwwm = &cmd->params.fwwm;
+	u16 method = *((u16*) pdata_buf);
+
+	lbs_deb_enter(LBS_DEB_CMD);
+
+	cmd->command = cpu_to_le16(CMD_802_11_FW_WAKE_METHOD);
+	cmd->size = cpu_to_le16(sizeof(struct cmd_ds_802_11_fw_wakeup_method) + 
+							S_DS_GEN);
+	cmd->result = 0;
+
+	fwwm->action = cpu_to_le16(cmd_action);
+
+	switch (cmd_action)
+	{
+	case CMD_ACT_SET:
+		fwwm->method = cpu_to_le16(method);
+		break;
+	default:
+		fwwm->method = 0;
+		break;
+	}
+
+	lbs_deb_leave(LBS_DEB_CMD);
+
+	return 0;
+}
+
 static int wlan_cmd_bt_access(wlan_private * priv,
 			       struct cmd_ds_command *cmd,
 			       u16 cmd_action, void *pdata_buf)
@@ -1106,7 +1137,8 @@ int libertas_set_mac_packet_filter(wlan_private * priv)
 
 	/* Send MAC control command to station */
 	ret = libertas_prepare_and_send_command(priv,
-				    CMD_MAC_CONTROL, 0, 0, 0, NULL);
+					CMD_MAC_CONTROL, 0, CMD_OPTION_WAITFORRSP, 
+					0, &priv->current_packet_filter);
 
 	lbs_deb_leave_args(LBS_DEB_CMD, "ret %d", ret);
 	return ret;
@@ -1378,6 +1410,11 @@ int libertas_prepare_and_send_command(wlan_private * priv,
 
 		ret = 0;
 		break;
+
+	case CMD_802_11_FW_WAKE_METHOD:
+		wlan_cmd_fw_wakeup_method(priv, cmdptr, cmd_action, pdata_buf);
+		break;
+
 	case CMD_BT_ACCESS:
 		ret = wlan_cmd_bt_access(priv, cmdptr, cmd_action, pdata_buf);
 		break;
@@ -1400,6 +1437,11 @@ int libertas_prepare_and_send_command(wlan_private * priv,
 					   S_DS_GEN);
 		ret = 0;
 		break;
+	
+	case CMD_PALM_UNKNOWN:
+		/* FIXME */
+		break;
+
 	default:
 		lbs_deb_host("PREP_CMD: unknown command 0x%04x\n", cmd_no);
 		ret = -1;
