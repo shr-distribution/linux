@@ -98,6 +98,8 @@
 
 #define CMD_802_11_LED_GPIO_CTRL         0x004e
 
+#define CMD_802_11_FW_WAKE_METHOD 0x0074
+
 #define CMD_802_11_SUBSCRIBE_EVENT       0x0075
 
 #define CMD_802_11_RATE_ADAPT_RATESET    0x0076
@@ -107,6 +109,8 @@
 #define CMD_GET_TSF                      0x0080
 
 #define CMD_BT_ACCESS                 0x0087
+
+#define CMD_PALM_UNKNOWN 0x0088
 
 #define CMD_FWT_ACCESS                0x0095
 

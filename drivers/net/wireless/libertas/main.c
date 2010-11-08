@@ -929,6 +929,15 @@ static int wlan_setup_firmware(wlan_private * priv)
 
 	lbs_deb_enter(LBS_DEB_FW);
 
+	/* Some unknown command Palm sends to the Wifi chip */
+	ret = libertas_prepare_and_send_command(priv, CMD_PALM_UNKNOWN,
+											0, CMD_OPTION_WAITFORRSP, 0, NULL);
+	if (ret)
+	{
+		ret = -1;
+		goto done;
+	}
+
 	/*
 	 * Read MAC address from HW
 	 */
@@ -937,41 +946,40 @@ static int wlan_setup_firmware(wlan_private * priv)
 	ret = libertas_prepare_and_send_command(priv, CMD_GET_HW_SPEC,
 				    0, CMD_OPTION_WAITFORRSP, 0, NULL);
 
-	if (ret) {
+	if (ret) 
+	{
 		ret = -1;
 		goto done;
 	}
 
 	libertas_set_mac_packet_filter(priv);
 
-	/* Get the supported Data rates */
-	ret = libertas_prepare_and_send_command(priv, CMD_802_11_DATA_RATE,
-				    CMD_ACT_GET_TX_RATE,
-				    CMD_OPTION_WAITFORRSP, 0, NULL);
-
-	if (ret) {
+	ret = libertas_prepare_and_send_command(priv, CMD_802_11_FW_WAKE_METHOD, 
+											CMD_ACT_GET, CMD_OPTION_WAITFORRSP,
+											0, &adapter->fw_wakeup_method);
+	if (ret)
+	{
 		ret = -1;
 		goto done;
 	}
 
-	/* Disable mesh autostart */
-	if (priv->mesh_dev) {
-		memset(&mesh_access, 0, sizeof(mesh_access));
-		mesh_access.data[0] = cpu_to_le32(0);
-		ret = libertas_prepare_and_send_command(priv,
-				CMD_MESH_ACCESS,
-				CMD_ACT_MESH_SET_AUTOSTART_ENABLED,
-				CMD_OPTION_WAITFORRSP, 0, (void *)&mesh_access);
-		if (ret) {
-			ret = -1;
-			goto done;
-		}
-		priv->mesh_autostart_enabled = 0;
+	ret = libertas_prepare_and_send_command(priv, CMD_802_11_RADIO_CONTROL,
+											CMD_ACT_GET, CMD_OPTION_WAITFORRSP, 
+											0, NULL);
+	if (ret)
+	{ 
+		ret = -1;
+		goto done;
 	}
 
-       /* Set the boot2 version in firmware */
-       ret = libertas_prepare_and_send_command(priv, CMD_SET_BOOT2_VER,
-                                   0, CMD_OPTION_WAITFORRSP, 0, NULL);
+	ret = libertas_prepare_and_send_command(priv, CMD_802_11_RF_TX_POWER,
+											CMD_ACT_GET, CMD_OPTION_WAITFORRSP,
+											0, NULL);
+	if (ret)
+	{
+		ret = -1;
+		goto done;
+	}
 
 	ret = 0;
 done:
