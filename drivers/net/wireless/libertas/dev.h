@@ -143,6 +143,8 @@ struct _wlan_private {
 	   all other bits reserved 0 */
 	u8 dnld_sent;
 
+	u16 current_packet_filter;
+
 	struct device *hotplug_device;
 
 	/** thread to service interrupts */
@@ -251,6 +253,8 @@ struct _wlan_adapter {
 	unsigned int tx_queue_idx;
 
 	u8 hisregcpy;
+
+	u16 fw_wakeup_method;
 
 	/** current ssid/bssid related parameters*/
 	struct current_bss_params curbssparams;

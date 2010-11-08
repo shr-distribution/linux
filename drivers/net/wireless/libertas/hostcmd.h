@@ -563,6 +563,11 @@ struct cmd_ds_802_11_afc {
 	};
 } __attribute__ ((packed));
 
+struct cmd_ds_802_11_fw_wakeup_method {
+	u16 action;
+	u16 method;
+} __attribute__ ((packed));
+
 struct cmd_tx_rate_query {
 	__le16 txrate;
 } __attribute__ ((packed));
@@ -668,6 +673,7 @@ struct cmd_ds_command {
 		struct cmd_ds_set_boot2_ver boot2_ver;
 		struct cmd_ds_get_tsf gettsf;
 		struct cmd_ds_802_11_subscribe_event subscribe_event;
+		struct cmd_ds_802_11_fw_wakeup_method fwwm;
 	} params;
 } __attribute__ ((packed));
 
