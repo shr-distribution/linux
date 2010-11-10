@@ -25,7 +25,6 @@
 #include <linux/time.h>
 #include <linux/wait.h>
 #include <linux/platform_device.h>
-#include <sound/driver.h>
 #include <sound/core.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -37,10 +36,8 @@
 #include <linux/dma-mapping.h>
 
 #include "msm-pcm.h"
-//#include <asm/mach-types.h>
-//#include <mach/msm_rpcrouter.h>
 #include <asm/mach-types.h>
-#include <asm/arch/msm_rpcrouter.h>
+#include <mach/msm_rpcrouter.h>
 
 static struct msm_rpc_endpoint *snd_ep;
 
@@ -114,8 +111,14 @@ static int snd_msm_device_get(struct snd_kcontrol *kcontrol,
 
 int msm_snd_init_rpc_ids(void)
 {
-	snd_rpc_ids.prog	= 0x30000002;
-	snd_rpc_ids.vers	= 0x00020001;
+        snd_rpc_ids.prog        = 0x30000002;
+#ifdef CONFIG_MSM_AMSS_VERSION_6225
+        //TODO: complete for other versions
+        snd_rpc_ids.vers        = 0xaa2b1a44;
+#else
+        //seem a new magich number...not in arch/arm/mach-msm and it seem to be for a new amss version
+        snd_rpc_ids.vers        = 0x00020001;
+#endif
 	/*
 	 * The magic number 2 corresponds to the rpc call
 	 * index for snd_set_device
@@ -138,7 +141,7 @@ int msm_snd_rpc_connect(void)
 		return -ENODATA;
 	}
 
-	snd_ep = msm_rpc_connect_compatible(snd_rpc_ids.prog,
+	snd_ep = msm_rpc_connect(snd_rpc_ids.prog,
 				snd_rpc_ids.vers, 0);
 	if (IS_ERR(snd_ep)) {
 		printk(KERN_ERR "%s: failed (compatible VERS = %ld)\n",
@@ -276,18 +279,17 @@ static struct snd_soc_dai_link msm_dai = {
 	.init	= msm_soc_dai_init,
 };
 
-struct snd_soc_machine snd_soc_card_msm = {
+struct snd_soc_card snd_soc_card_msm = {
 	.name 		= "msm-audio",
 	.dai_link	= &msm_dai,
 	.num_links = 1,
-
+	.platform = &msm_soc_platform,
 };
 
 /* msm_audio audio subsystem */
 static struct snd_soc_device msm_audio_snd_devdata = {
-	.machine = &snd_soc_card_msm,
 	.codec_dev = &soc_codec_dev_msm,
-	.platform = &msm_soc_platform,
+        .card = &snd_soc_card_msm,
 };
 
 

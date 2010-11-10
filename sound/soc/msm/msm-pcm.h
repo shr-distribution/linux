@@ -20,24 +20,12 @@
 #ifndef _MSM_PCM_H
 #define _MSM_PCM_H
 
-/*
 #include <mach/qdsp5/qdsp5audppcmdi.h>
 #include <mach/qdsp5/qdsp5audppmsg.h>
 #include <mach/qdsp5/qdsp5audreccmdi.h>
 #include <mach/qdsp5/qdsp5audrecmsg.h>
 #include <mach/qdsp5/qdsp5audpreproccmdi.h>
 #include <mach/qdsp5/qdsp5audpreprocmsg.h>
-
-#include <../arch/arm/mach-msm/qdsp5/adsp.h>
-#include <../arch/arm/mach-msm/qdsp5/audmgr.h>
-*/
-
-#include <asm/arch/qdsp5/qdsp5audppcmdi.h>
-#include <asm/arch/qdsp5/qdsp5audppmsg.h>
-#include <asm/arch/qdsp5/qdsp5audreccmdi.h>
-#include <asm/arch/qdsp5/qdsp5audrecmsg.h>
-#include <asm/arch/qdsp5/qdsp5audpreproccmdi.h>
-#include <asm/arch/qdsp5/qdsp5audpreprocmsg.h>
 
 #include <../arch/arm/mach-msm/qdsp5/adsp.h>
 #include <../arch/arm/mach-msm/qdsp5/audmgr.h>
@@ -192,8 +180,8 @@ struct msm_audio {
 /* platform data */
 extern int audio_dsp_out_enable(struct msm_audio *prtd, int yes);
 extern struct snd_soc_platform msm_soc_platform;
-extern struct snd_soc_codec_dai msm_dai_codec[];
-extern struct snd_soc_cpu_dai msm_dai_cpu[];
+extern struct snd_soc_dai msm_dai_codec[];
+extern struct snd_soc_dai msm_dai_cpu[];
 extern struct snd_soc_codec_device soc_codec_dev_msm;
 
 int audrec_encoder_config(struct msm_audio *prtd);

@@ -25,14 +25,13 @@
 #include <linux/delay.h>
 #include <linux/clk.h>
 #include <linux/platform_device.h>
-#include <sound/driver.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/initval.h>
 #include <sound/soc.h>
 #include "msm-pcm.h"
 
-struct snd_soc_codec_dai msm_dai_codec[] = {
+struct snd_soc_dai msm_dai_codec[] = {
 {
 	.name = "CODEC_DAI",
 	.playback = {
@@ -56,7 +55,7 @@ struct snd_soc_codec_dai msm_dai_codec[] = {
 };
 EXPORT_SYMBOL_GPL(msm_dai_codec);
 
-struct snd_soc_cpu_dai msm_dai_cpu[] = {
+struct snd_soc_dai msm_dai_cpu[] = {
 {
 	.name = "CPU_DAI",
 	.id = 0,
@@ -94,7 +93,7 @@ int msm_pcm_probe(struct platform_device *devptr)
 
 	codec->name = "MSM-CARD";
 	codec->owner = THIS_MODULE;
-	socdev->codec = codec;
+	socdev->card->codec = codec;
 	mutex_init(&codec->mutex);
 
 	INIT_LIST_HEAD(&codec->dapm_widgets);
@@ -107,9 +106,9 @@ int msm_pcm_probe(struct platform_device *devptr)
 		goto __nopcm;
 	}
 
-	card = socdev->codec->card;
+	card = socdev->card;
 
-	ret = snd_soc_register_card(socdev);
+	ret = snd_soc_init_card(socdev);
 	if (ret < 0) {
 		printk(KERN_ERR "msm_soc: failed to register card\n");
 		goto __nodev;
