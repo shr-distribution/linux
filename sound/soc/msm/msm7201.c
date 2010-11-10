@@ -288,8 +288,8 @@ struct snd_soc_card snd_soc_card_msm = {
 
 /* msm_audio audio subsystem */
 static struct snd_soc_device msm_audio_snd_devdata = {
+	.card = &snd_soc_card_msm,
 	.codec_dev = &soc_codec_dev_msm,
-        .card = &snd_soc_card_msm,
 };
 
 

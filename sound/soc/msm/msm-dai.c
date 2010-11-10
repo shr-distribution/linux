@@ -93,7 +93,7 @@ int msm_pcm_probe(struct platform_device *devptr)
 
 	codec->name = "MSM-CARD";
 	codec->owner = THIS_MODULE;
-	socdev->card->codec = codec;
+	socdev->card->codec=codec;
 	mutex_init(&codec->mutex);
 
 	INIT_LIST_HEAD(&codec->dapm_widgets);
@@ -131,12 +131,18 @@ EXPORT_SYMBOL_GPL(soc_codec_dev_msm);
 
 static int __init msm_dai_init(void)
 {
-	return 0;//snd_soc_register_dais(msm_dais, ARRAY_SIZE(msm_dais));
+	int ret = 0;
+	ret = snd_soc_register_dai(msm_dai_codec);
+	if (ret != 0)
+		return ret;
+
+	return snd_soc_register_dai(msm_dai_cpu);
 }
 
 static void __exit msm_dai_exit(void)
 {
-//	snd_soc_unregister_dais(msm_dais, ARRAY_SIZE(msm_dais));
+	snd_soc_unregister_dai(msm_dai_codec);
+	snd_soc_unregister_dai(msm_dai_cpu);
 }
 
 module_init(msm_dai_init);

@@ -680,13 +680,13 @@ EXPORT_SYMBOL(msm_soc_platform);
 
 static int __init msm_soc_platform_init(void)
 {
-	return 0;//snd_soc_register_platform(&msm_soc_platform);
+	return snd_soc_register_platform(&msm_soc_platform);
 }
 module_init(msm_soc_platform_init);
 
 static void __exit msm_soc_platform_exit(void)
 {
-//	snd_soc_unregister_platform(&msm_soc_platform);
+	snd_soc_unregister_platform(&msm_soc_platform);
 }
 module_exit(msm_soc_platform_exit);
 
