@@ -53,7 +53,7 @@
 #include <linux/notifier.h>
 #include <linux/reboot.h>
 #include <linux/wlan_plat.h>
-#include <linux/mfd/wm8994/wm8994_pdata.h>
+#include <linux/mfd/wm8994/pdata.h>
 
 #ifdef CONFIG_ANDROID_PMEM
 #include <linux/android_pmem.h>
@@ -2103,10 +2103,39 @@ static void sec_jack_set_micbias_state(bool on)
 		gpio_set_value(GPIO_EAR_MICBIAS_EN, on);
 }
 
-static struct wm8994_platform_data wm8994_pdata = {
-	.ldo = GPIO_CODEC_LDO_EN,
-	.ear_sel = GPIO_EAR_SEL,
-	.set_mic_bias = wm8994_set_mic_bias,
+/* This is complete nonsense but I don't have enough schematics to do
+ * it properly. */
+static struct regulator_consumer_supply wm8994_ldo1_supplies[] = {
+	{ .dev_name = "4-001a", .supply = "AVDD1" },
+	{ .dev_name = "4-001a", .supply = "AVDD2" },
+	{ .dev_name = "4-001a", .supply = "DBVDD" },
+	{ .dev_name = "4-001a", .supply = "DCVDD" },
+	{ .dev_name = "4-001a", .supply = "CPVDD" },
+	{ .dev_name = "4-001a", .supply = "SPKVDD1" },
+	{ .dev_name = "4-001a", .supply = "SPKVDD2" },
+};
+
+static struct regulator_init_data wm8994_ldo1 = {
+	.num_consumer_supplies = ARRAY_SIZE(wm8994_ldo1_supplies),
+	.consumer_supplies = wm8994_ldo1_supplies,
+	.constraints = {
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static struct regulator_init_data wm8994_ldo2 = {
+};
+
+static struct wm8994_pdata wm8994_pdata = {
+	.ldo = {
+		{
+			.enable = GPIO_CODEC_LDO_EN,
+			.init_data = &wm8994_ldo1
+		},
+		{
+			.init_data = &wm8994_ldo2
+		},
+	},
 };
 
 /*

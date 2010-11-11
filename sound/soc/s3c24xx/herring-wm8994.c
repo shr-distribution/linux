@@ -38,7 +38,7 @@
 /*  BLC(bits-per-channel) --> BFS(bit clock shud be >= FS*(Bit-per-channel)*2)*/
 /*  BFS --> RFS(must be a multiple of BFS)                                  */
 /*  RFS & SRC_CLK --> Prescalar Value(SRC_CLK / RFS_VAL / fs - 1)           */
-int smdkc110_hw_params(struct snd_pcm_substream *substream,
+static int smdkc110_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
@@ -46,10 +46,6 @@ int smdkc110_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *codec_dai = rtd->dai->codec_dai;
 	int bfs, rfs, ret;
 	u32 ap_codec_clk;
-#ifndef CONFIG_SND_S5P_WM8994_MASTER
-	struct clk    *clk_out, *clk_epll;
-	int psr;
-#endif
 	debug_msg("%s\n", __func__);
 
 	/* Choose BFS and RFS values combination that is supported by
@@ -78,7 +74,6 @@ int smdkc110_hw_params(struct snd_pcm_substream *substream,
 			return -EINVAL;
 	}
 
-#ifdef CONFIG_SND_S5P_WM8994_MASTER
 	/* Set the Codec DAI configuration */
 	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
 				SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBM_CFM);
@@ -154,131 +149,20 @@ int smdkc110_hw_params(struct snd_pcm_substream *substream,
 		break;
 	}
 
-	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_FLL,
+	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_MCLK1,
+				  24000000, ap_codec_clk);
+	if (ret < 0) {
+		pr_err("snd_soc_dai_set_pll failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_FLL1,
 					ap_codec_clk, 0);
-	if (ret < 0)
-		return ret;
-#else
-	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
-				SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
-
-	if (ret < 0)
-		return ret;
-	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
-				SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
-
-	if (ret < 0)
-
-		return ret;
-	ret = snd_soc_dai_set_sysclk(cpu_dai, S3C64XX_CLKSRC_CDCLK,
-					params_rate(params), SND_SOC_CLOCK_OUT);
-	if (ret < 0)
-		return ret;
-#ifdef USE_CLKAUDIO
-	ret = snd_soc_dai_set_sysclk(cpu_dai, S3C_CLKSRC_CLKAUDIO,
-					params_rate(params), SND_SOC_CLOCK_OUT);
-
 	if (ret < 0) {
-		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params : \
-			AP sys clock setting error!\n");
-		return ret;
-	}
-#endif
-	clk_out = clk_get(NULL, "clk_out");
-	if (IS_ERR(clk_out)) {
-			printk(KERN_ERR
-				"failed to get CLK_OUT\n");
-			return -EBUSY;
-	}
-
-	clk_epll = clk_get(NULL, "fout_epll");
-	if (IS_ERR(clk_epll)) {
-		printk(KERN_ERR
-			"failed to get fout_epll\n");
-		clk_put(clk_out);
-		return -EBUSY;
-	}
-
-	if (clk_set_parent(clk_out, clk_epll)) {
-		printk(KERN_ERR
-			"failed to set CLK_EPLL as parent of CLK_OUT\n");
-		clk_put(clk_out);
-		clk_put(clk_epll);
-		return -EBUSY;
-	}
-
-
-	switch (params_rate(params)) {
-	case 8000:
-	case 16000:
-	case 32000:
-	case 48000:
-	case 64000:
-	case 96000:
-		clk_set_rate(clk_out, 12288000);
-		ap_codec_clk = SRC_CLK/4;
-		break;
-	case 11025:
-	case 22050:
-	case 44100:
-	case 88200:
-	default:
-		clk_set_rate(clk_out, 11289600);
-		ap_codec_clk = SRC_CLK/6;
-		break;
-	}
-
-	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_MCLK,
-							ap_codec_clk, 0);
-	if (ret < 0) {
-		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params : \
-				Codec sys clock setting error!\n");
+		pr_err("snd_soc_dai_set_sysclk failed: %d\n", ret);
 		return ret;
 	}
 
-	/* Calculate Prescalare/PLL values for supported Rates */
-	psr = SRC_CLK / rfs / params_rate(params);
-	ret = SRC_CLK / rfs - psr * params_rate(params);
-	/* round off */
-	if (ret >= params_rate(params)/2)
-		psr += 1;
-
-	psr -= 1;
-	printk(KERN_INFO
-		"SRC_CLK=%d PSR=%d RFS=%d BFS=%d\n", SRC_CLK, psr, rfs, bfs);
-
-	/* Set the AP Prescalar/Pll */
-	ret = snd_soc_dai_set_clkdiv(cpu_dai, S3C_I2SV2_DIV_PRESCALER, psr);
-
-	if (ret < 0) {
-		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params :\
-				AP prescalar setting error!\n");
-		return ret;
-	}
-
-	/* Set the AP RFS */
-	ret = snd_soc_dai_set_clkdiv(cpu_dai, S3C_I2SV2_DIV_RCLK, rfs);
-	if (ret < 0) {
-		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params : AP RFS setting error!\n");
-		return ret;
-	}
-
-	/* Set the AP BFS */
-	ret = snd_soc_dai_set_clkdiv(cpu_dai, S3C_I2SV2_DIV_BCLK, bfs);
-
-	if (ret < 0) {
-		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params : AP BCLK setting error!\n");
-		return ret;
-	}
-
-	clk_put(clk_epll);
-	clk_put(clk_out);
-#endif
 	return 0;
 
 }
@@ -293,7 +177,7 @@ static struct snd_soc_dai_link smdkc1xx_dai = {
 	.name = "WM8994",
 	.stream_name = "WM8994 HiFi Playback",
 	.cpu_dai = &s3c64xx_i2s_dai[I2S_NUM],
-	.codec_dai = &wm8994_dai,
+	.codec_dai = &wm8994_dai[0],
 	.ops = &smdkc110_ops,
 };
 
@@ -304,20 +188,10 @@ static struct snd_soc_card smdkc100 = {
 	.num_links = 1,
 };
 
-static struct wm8994_setup_data smdkc110_wm8994_setup = {
-	/*
-		The I2C address of the WM89940 is 0x34. To the I2C driver
-		the address is a 7-bit number hence the right shift .
-	*/
-	.i2c_address = 0x34,
-	.i2c_bus = 4,
-};
-
 /* audio subsystem */
 static struct snd_soc_device smdkc1xx_snd_devdata = {
 	.card = &smdkc100,
 	.codec_dev = &soc_codec_dev_wm8994,
-	.codec_data = &smdkc110_wm8994_setup,
 };
 
 static struct platform_device *smdkc1xx_snd_device;
