@@ -21,5 +21,5 @@ CBUILD			:= -O2						\
 			   -DPVR_BUILD_DIR="\"$(PVR_BUILD_DIR)\""	\
 			   -DPVR_BUILD_DATE="\"$(DATE)\""
 
-ccflags-y		+= $(CBUILD) -include $(src)/pvrconfig.h
+ccflags-y		+= $(CBUILD) -include $(KBUILD_SRC)/$(src)/pvrconfig.h
 

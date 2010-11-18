@@ -68,12 +68,14 @@ case "$1" in
 		check
 		;;
 	"-ccflags")
-		ccflags
+		#ccflags
+		echo '-DCURSES_LOC="<ncurses.h>"'
 		;;
 	"-ldflags")
 		shift
 		cc="$@"
-		ldflags
+		#ldflags
+		echo "-lncurses"
 		;;
 	"*")
 		usage
