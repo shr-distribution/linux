@@ -346,7 +346,7 @@ ppp_asynctty_poll(struct tty_struct *tty, struct file *file, poll_table *wait)
  * This can now be called from hard interrupt level as well
  * as soft interrupt level or mainline.
  */
-static void
+static int
 ppp_asynctty_receive(struct tty_struct *tty, const unsigned char *buf,
 		  char *cflags, int count)
 {
@@ -354,7 +354,7 @@ ppp_asynctty_receive(struct tty_struct *tty, const unsigned char *buf,
 	unsigned long flags;
 
 	if (!ap)
-		return;
+		return 0;
 	spin_lock_irqsave(&ap->recv_lock, flags);
 	ppp_async_input(ap, buf, cflags, count);
 	spin_unlock_irqrestore(&ap->recv_lock, flags);
@@ -362,6 +362,7 @@ ppp_asynctty_receive(struct tty_struct *tty, const unsigned char *buf,
 		tasklet_schedule(&ap->tsk);
 	ap_put(ap);
 	tty_unthrottle(tty);
+	return count;
 }
 
 static void
