@@ -57,6 +57,9 @@ static unsigned int def_sampling_rate;
 #define DEF_SAMPLING_RATE_LATENCY_MULTIPLIER	(1000)
 #define TRANSITION_LATENCY_LIMIT		(10 * 1000 * 1000)
 
+static int avoid_frequencies_count=0;
+static unsigned int avoid_frequencies_table[16];
+
 static void do_dbs_timer(struct work_struct *work);
 
 /* Sampling types */
@@ -104,6 +107,52 @@ static struct dbs_tuners {
 	.ignore_nice = 0,
 	.powersave_bias = 0,
 };
+
+static unsigned int find_min_frequency(struct cpufreq_policy *policy, 
+		struct cpufreq_frequency_table *table)
+{
+	int i, f;
+	f=policy->max;
+	i=0;
+	while(table[i].frequency!=CPUFREQ_TABLE_END) {
+	       if((table[i].frequency<f) &&
+		  (table[i].frequency>=policy->min))
+		       f=table[i].frequency;
+	       i++;
+	}
+	return f;
+}
+
+static unsigned int find_max_frequency(struct cpufreq_policy *policy, 
+		struct cpufreq_frequency_table *table)
+{
+	int i, f;
+	f=policy->min;
+	i=0;
+	while(table[i].frequency!=CPUFREQ_TABLE_END) {
+	       if((table[i].frequency>f) &&
+		  (table[i].frequency<=policy->max))
+		       f=table[i].frequency;
+	       i++;
+	}
+	return f;
+}
+
+static unsigned int find_lower_frequency(struct cpufreq_policy *policy, 
+		struct cpufreq_frequency_table *table,
+		unsigned int freq) 
+{
+	int i, f;
+	f=find_min_frequency(policy, table);
+	i=0;
+	while(table[i].frequency!=CPUFREQ_TABLE_END) {
+	       if((table[i].frequency>f) &&
+		  (table[i].frequency<=freq))
+		       f=table[i].frequency;
+	       i++;
+	}
+	return f;
+}
 
 static inline cputime64_t get_cpu_idle_time_jiffy(unsigned int cpu,
 							cputime64_t *wall)
@@ -218,8 +267,32 @@ static void ondemand_powersave_bias_init(void)
 	int i;
 	for_each_online_cpu(i) {
 		struct cpu_dbs_info_s *dbs_info = &per_cpu(cpu_dbs_info, i);
-		dbs_info->freq_table = cpufreq_frequency_get_table(i);
+		struct cpufreq_frequency_table *table;
+		int l, k;
+		table = cpufreq_frequency_get_table(i);
+		l=0;
+		k=0;
+		while(table[k].frequency != CPUFREQ_TABLE_END) { 
+			if(table[k].frequency != CPUFREQ_ENTRY_INVALID) {
+				int t,j;
+				t=1;
+				for(j=0;j<avoid_frequencies_count;j++) if(table[k].frequency==avoid_frequencies_table[j]) t=0;
+				l+=t;
+			}
+			k++;
+		}
+		if(dbs_info->freq_table) kfree(dbs_info->freq_table );
+		dbs_info->freq_table = kzalloc(sizeof(struct cpufreq_frequency_table)*(l+1), GFP_KERNEL);
+		for(l=0,k=0; (table[l].frequency != CPUFREQ_TABLE_END); l++)
+			if (table[l].frequency != CPUFREQ_ENTRY_INVALID) {
+				int t,j;
+				t=1;
+				for(j=0;j<avoid_frequencies_count;j++) if(table[l].frequency==avoid_frequencies_table[j]) t=0;
+				if(t)memcpy(&dbs_info->freq_table[k++], &table[l], sizeof(struct cpufreq_frequency_table));
+			}
+		dbs_info->freq_table[k].frequency = CPUFREQ_TABLE_END;
 		dbs_info->freq_lo = 0;
+		
 	}
 }
 
@@ -357,6 +430,49 @@ define_one_rw(up_threshold);
 define_one_rw(ignore_nice_load);
 define_one_rw(powersave_bias);
 
+static ssize_t show_avoid_frequencies(struct cpufreq_policy *unused,
+                                        char *buf)
+{
+        int i;
+        char *b=buf;
+        for(i=0;i<avoid_frequencies_count;i++)
+                b+=sprintf(b, "%d ", avoid_frequencies_table[i]);
+        b+=sprintf(b, "\n");
+        return b-buf;
+}
+
+static ssize_t store_avoid_frequencies(struct cpufreq_policy *unused,
+                                        const char *buf, size_t n)
+{
+        unsigned int value[16];
+        int i;
+
+        i=sscanf(buf, "%u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u",
+                                &value[0], &value[1], &value[2], &value[3],
+                                &value[4], &value[5], &value[6], &value[7],
+                                &value[8], &value[9], &value[10], &value[11],
+                                &value[12], &value[13], &value[14], &value[15]
+                                );
+	if(i<0) {
+                printk(KERN_ERR "avoid_frequencies: Invalid value\n");
+                return -EINVAL;
+        }
+
+	avoid_frequencies_count=i;
+
+        for(i=0;i<avoid_frequencies_count;i++) {
+		avoid_frequencies_table[i]=value[i];
+        }
+
+	mutex_lock(&dbs_mutex);
+	ondemand_powersave_bias_init();
+	mutex_unlock(&dbs_mutex);
+
+	return n;
+};
+
+define_one_rw(avoid_frequencies);
+
 static struct attribute * dbs_attributes[] = {
 	&sampling_rate_max.attr,
 	&sampling_rate_min.attr,
@@ -364,6 +480,7 @@ static struct attribute * dbs_attributes[] = {
 	&up_threshold.attr,
 	&ignore_nice_load.attr,
 	&powersave_bias.attr,
+	&avoid_frequencies.attr,
 	NULL
 };
 
@@ -439,10 +556,9 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 	if (max_load_freq > dbs_tuners_ins.up_threshold * policy->cur) {
 		/* if we are already at full speed then break out early */
 		if (!dbs_tuners_ins.powersave_bias) {
-			if (policy->cur == policy->max)
+			if (policy->cur == find_max_frequency(policy, this_dbs_info->freq_table))
 				return;
-
-			__cpufreq_driver_target(policy, policy->max,
+			__cpufreq_driver_target(policy, find_max_frequency(policy, this_dbs_info->freq_table),
 				CPUFREQ_RELATION_H);
 		} else {
 			int freq = powersave_bias_target(policy, policy->max,
@@ -472,7 +588,8 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 				 dbs_tuners_ins.down_differential);
 
 		if (!dbs_tuners_ins.powersave_bias) {
-			__cpufreq_driver_target(policy, freq_next,
+			
+			__cpufreq_driver_target(policy, find_lower_frequency(policy, this_dbs_info->freq_table, freq_next),
 					CPUFREQ_RELATION_L);
 		} else {
 			int freq = powersave_bias_target(policy, freq_next,
@@ -550,7 +667,7 @@ static void dbs_refresh_callback(struct work_struct *unused)
 	this_dbs_info = &per_cpu(cpu_dbs_info, 0);
 	policy = this_dbs_info->cur_policy;
 
-	__cpufreq_driver_target(policy, policy->max,
+	__cpufreq_driver_target(policy, find_max_frequency(policy, this_dbs_info->freq_table),
 				CPUFREQ_RELATION_L);
 	this_dbs_info->prev_cpu_idle = get_cpu_idle_time(0,
 			&this_dbs_info->prev_cpu_wall);
