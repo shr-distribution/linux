@@ -1804,8 +1804,8 @@ static int __init omap_hsmmc_probe(struct platform_device *pdev)
 	omap_hsmmc_protect_card(host);
 
 	mmc_add_host(mmc);
-
 	if (mmc_slot(host).name != NULL) {
+		if (mmc_slot(host).name[0]=='e') mmc->mmcblk_devidx=1; /* 'e'xternal slot should start at mmcblk1 */
 		ret = device_create_file(&mmc->class_dev, &dev_attr_slot_name);
 		if (ret < 0)
 			goto err_slot_name;
