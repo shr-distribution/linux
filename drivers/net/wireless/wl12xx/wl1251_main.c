@@ -1923,6 +1923,11 @@ static int wl1251_init_ieee80211(struct wl1251 *wl)
 		IEEE80211_HW_NOISE_DBM |
 		IEEE80211_HW_BEACON_FILTER;
 
+	wl->hw->wiphy->interface_modes =
+		BIT(NL80211_IFTYPE_STATION) |
+		BIT(NL80211_IFTYPE_ADHOC) |
+		BIT(NL80211_IFTYPE_MONITOR);
+
 	wl->hw->wiphy->bands[IEEE80211_BAND_2GHZ] = &wl1251_band_2ghz;
 
 	wl->hw->queues = 4;
