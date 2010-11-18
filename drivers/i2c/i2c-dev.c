@@ -391,9 +391,6 @@ static long i2cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if ((arg > 0x3ff) ||
 		    (((client->flags & I2C_M_TEN) == 0) && arg > 0x7f))
 			return -EINVAL;
-		if (cmd == I2C_SLAVE && i2cdev_check_addr(client->adapter, arg))
-			return -EBUSY;
-		/* REVISIT: address could become busy later */
 		client->addr = arg;
 		return 0;
 	case I2C_TENBIT:
