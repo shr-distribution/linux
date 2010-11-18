@@ -667,7 +667,11 @@ static int wl1251_plt_init(struct wl1251 *wl)
 	if (ret < 0)
 		return ret;
 
-	ret = wl1251_cmd_data_path(wl, wl->channel, 1);
+	ret = wl1251_cmd_data_path_rx(wl, wl->channel, 1);
+	if (ret < 0)
+		return ret;
+
+	ret = wl1251_cmd_data_path_tx(wl, wl->channel, 1);
 	if (ret < 0)
 		return ret;
 
@@ -967,6 +971,12 @@ static int wl1251_op_add_interface(struct ieee80211_hw *hw,
 		goto out;
 	}
 
+	ret = wl1251_acx_feature_cfg(wl, 0);
+	if (ret < 0) {
+		wl1251_warning("couldn't set feature config");
+		goto out;
+	}
+
 	wl->vif = conf->vif;
 
 	switch (conf->type) {
@@ -998,10 +1008,19 @@ static void wl1251_op_remove_interface(struct ieee80211_hw *hw,
 					 struct ieee80211_if_init_conf *conf)
 {
 	struct wl1251 *wl = hw->priv;
+	int ret = 0;
 
 	mutex_lock(&wl->mutex);
+
 	wl1251_debug(DEBUG_MAC80211, "mac80211 remove interface");
+
 	wl->vif = NULL;
+
+	ret = wl1251_acx_feature_cfg(wl, DF_SNIFF_MODE_ENABLE);
+	if (ret < 0) {
+		wl1251_warning("couldn't set feature config");
+	}
+
 	mutex_unlock(&wl->mutex);
 }
 
@@ -1179,6 +1198,13 @@ static int wl1251_op_config(struct ieee80211_hw *hw,
 	ret = wl1251_ps_elp_wakeup(wl);
 	if (ret < 0)
 		goto out;
+
+	/* Monitor mode */
+	if (wl->vif == NULL && wl->channel != channel) {
+		ret = wl1251_cmd_data_path_rx(wl, channel, 1);
+		if (ret < 0)
+			goto out_sleep;
+	}
 
 	wl->channel = channel;
 
