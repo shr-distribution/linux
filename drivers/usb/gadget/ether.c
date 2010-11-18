@@ -241,7 +241,8 @@ static struct usb_configuration rndis_config_driver = {
 	.bind			= rndis_do_config,
 	.bConfigurationValue	= 2,
 	/* .iConfiguration = DYNAMIC */
-	.bmAttributes		= USB_CONFIG_ATT_SELFPOWER,
+	.bmAttributes	= USB_CONFIG_ATT_ONE,
+	.bMaxPower	= 250, /* 500mA */
 };
 
 /*-------------------------------------------------------------------------*/
@@ -269,7 +270,8 @@ static struct usb_configuration eth_config_driver = {
 	.bind			= eth_do_config,
 	.bConfigurationValue	= 1,
 	/* .iConfiguration = DYNAMIC */
-	.bmAttributes		= USB_CONFIG_ATT_SELFPOWER,
+	.bmAttributes	= USB_CONFIG_ATT_ONE,
+	.bMaxPower	= 250, /* 500mA */
 };
 
 /*-------------------------------------------------------------------------*/
