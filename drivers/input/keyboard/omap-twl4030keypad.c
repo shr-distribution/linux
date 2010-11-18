@@ -325,6 +325,18 @@ static irqreturn_t do_kp_irq(int irq, void *_kp)
 static DEVICE_ATTR(disable_kp, 0664, twl4030_kp_disable_show,
 		   twl4030_kp_disable_store);
 
+extern void keyb_led_set(int v);
+static int ledkbd_event(struct input_dev *dev, unsigned int type, unsigned int code, int value)
+{
+
+	switch (type) {
+		case EV_LED: 
+			keyb_led_set(value); 
+			//printk(KERN_ERR "call keyb_led_set(%i)\n", value); 
+			break; 
+	}
+	return 0;
+}
 /*
  * Registers keypad device with input sub system
  * and configures TWL4030 keypad registers
@@ -368,6 +380,9 @@ static int __init omap_kp_probe(struct platform_device *pdev)
 
 	/* setup input device */
 	set_bit(EV_KEY, kp->omap_twl4030kp->evbit);
+	set_bit(EV_LED, kp->omap_twl4030kp->evbit);
+	kp->omap_twl4030kp->ledbit[0] = BIT_MASK(LED_SCROLLL);
+	kp->omap_twl4030kp->event = ledkbd_event;
 
 	/* Enable auto repeat feature of Linux input subsystem */
 	if (pdata->rep)
