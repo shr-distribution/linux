@@ -22,6 +22,8 @@
 #include <linux/leds.h>
 #include "leds.h"
 
+#define LED_FLAG_DBRIGHTNESS 0x100
+
 static struct class *leds_class;
 
 static void led_update_brightness(struct led_classdev *led_cdev)
@@ -50,6 +52,9 @@ static ssize_t led_brightness_store(struct device *dev,
 	unsigned long state = simple_strtoul(buf, &after, 10);
 	size_t count = after - buf;
 
+	if (led_cdev->flags & LED_FLAG_DBRIGHTNESS) 
+		return size;
+
 	if (*after && isspace(*after))
 		count++;
 
@@ -68,6 +73,51 @@ static DEVICE_ATTR(brightness, 0644, led_brightness_show, led_brightness_store);
 #ifdef CONFIG_LEDS_TRIGGERS
 static DEVICE_ATTR(trigger, 0644, led_trigger_show, led_trigger_store);
 #endif
+
+static ssize_t led_dbrightness_show(struct device *dev, 
+		struct device_attribute *attr, char *buf)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+
+	if (!(led_cdev->flags & LED_FLAG_DBRIGHTNESS)) 
+		return sprintf(buf, "-1\n");
+		
+	/* no lock needed for this */
+	led_update_brightness(led_cdev);
+
+	return sprintf(buf, "%u\n", led_cdev->brightness);
+}
+
+static ssize_t led_dbrightness_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+	ssize_t ret = -EINVAL;
+	char *after;
+	unsigned long state = simple_strtol(buf, &after, 10);
+	size_t count = after - buf;
+
+	if (state == -1) {
+		led_cdev->flags &= ~LED_FLAG_DBRIGHTNESS;
+		return size;
+	}
+
+	if (*after && isspace(*after))
+		count++;
+
+	if (count == size) {
+		ret = count;
+
+		led_cdev->flags |= LED_FLAG_DBRIGHTNESS;
+		if (state == LED_OFF)
+			led_trigger_remove(led_cdev);
+		led_set_brightness(led_cdev, state);
+	}
+
+	return ret;
+}
+
+static DEVICE_ATTR(dbrightness, 0644, led_dbrightness_show, led_dbrightness_store);
 
 /**
  * led_classdev_suspend - suspend an led_classdev.
@@ -110,6 +160,10 @@ int led_classdev_register(struct device *parent, struct led_classdev *led_cdev)
 	if (rc)
 		goto err_out;
 
+	rc = device_create_file(led_cdev->dev, &dev_attr_dbrightness);
+	if (rc)
+		goto err_out_dbrightness;
+
 #ifdef CONFIG_LEDS_TRIGGERS
 	init_rwsem(&led_cdev->trigger_lock);
 #endif
@@ -135,9 +189,11 @@ int led_classdev_register(struct device *parent, struct led_classdev *led_cdev)
 
 #ifdef CONFIG_LEDS_TRIGGERS
 err_out_led_list:
-	device_remove_file(led_cdev->dev, &dev_attr_brightness);
+	device_remove_file(led_cdev->dev, &dev_attr_dbrightness);
 	list_del(&led_cdev->node);
 #endif
+err_out_dbrightness:
+	device_remove_file(led_cdev->dev, &dev_attr_brightness);
 err_out:
 	device_unregister(led_cdev->dev);
 	return rc;
