@@ -330,6 +330,7 @@ ieee80211_tx_h_unicast_ps_buf(struct ieee80211_tx_data *tx)
 	struct sta_info *sta = tx->sta;
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(tx->skb);
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)tx->skb->data;
+	struct ieee80211_local *local = tx->local;
 	u32 staflags;
 	DECLARE_MAC_BUF(mac);
 
@@ -367,6 +368,8 @@ ieee80211_tx_h_unicast_ps_buf(struct ieee80211_tx_data *tx)
 
 		info->control.jiffies = jiffies;
 		skb_queue_tail(&sta->ps_tx_buf, tx->skb);
+		mod_timer(&local->sta_cleanup,
+			  round_jiffies(jiffies + STA_INFO_CLEANUP_INTERVAL));
 		return TX_QUEUED;
 	}
 #ifdef CONFIG_MAC80211_VERBOSE_PS_DEBUG
@@ -1463,6 +1466,19 @@ int ieee80211_subif_start_xmit(struct sk_buff *skb,
 	if (unlikely(skb->len < ETH_HLEN)) {
 		ret = 0;
 		goto fail;
+	}
+
+	if (!(local->hw.flags & IEEE80211_HW_NO_STACK_DYNAMIC_PS) &&
+	    local->dynamic_ps_timeout > 0) {
+		if (local->hw.conf.flags & IEEE80211_CONF_PS) {
+			ieee80211_stop_queues_by_reason(&local->hw,
+							IEEE80211_QUEUE_STOP_REASON_PS);
+			queue_work(local->hw.workqueue,
+				   &local->dynamic_ps_disable_work);
+		}
+
+		mod_timer(&local->dynamic_ps_timer, jiffies +
+			  msecs_to_jiffies(local->dynamic_ps_timeout));
 	}
 
 	nh_pos = skb_network_header(skb) - skb->data;

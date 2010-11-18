@@ -27,6 +27,10 @@
 #define UDC_BASE			OMAP2_UDC_BASE
 #define OMAP_OHCI_BASE			OMAP2_OHCI_BASE
 
+struct musb_board_data;
+void __init usb_musb_init(struct musb_board_data *);
+void __init usb_ehci_init(void);
+
 #endif
 
 /*-------------------------------------------------------------------------*/

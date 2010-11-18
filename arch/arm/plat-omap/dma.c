@@ -51,6 +51,12 @@ enum { DMA_CHAIN_STARTED, DMA_CHAIN_NOTSTARTED };
 
 static int enable_1510_mode;
 
+static struct omap_dma_global_context_registers {
+	u32 dma_irqenable_l0;
+	u32 dma_ocp_sysconfig;
+	u32 dma_gcr;
+} omap_dma_global_context;
+
 struct omap_dma_lch {
 	int next_lch;
 	int dev_id;
@@ -279,10 +285,7 @@ void omap_set_dma_transfer_params(int lch, int data_type, int elem_count,
 
 		val = dma_read(CCR(lch));
 		val &= ~(3 << 19);
-		if (dma_trigger > 63)
-			val |= 1 << 20;
-		if (dma_trigger > 31)
-			val |= 1 << 19;
+		val |= ((dma_trigger & ~(0x1f)) << 14);
 
 		val &= ~(0x1f);
 		val |= (dma_trigger & 0x1f);
@@ -312,41 +315,62 @@ EXPORT_SYMBOL(omap_set_dma_transfer_params);
 
 void omap_set_dma_color_mode(int lch, enum omap_dma_color_mode mode, u32 color)
 {
-	u16 w;
-
 	BUG_ON(omap_dma_in_1510_mode());
 
+	if (cpu_class_is_omap1()) {
+		u16 w;
+
+		w = dma_read(CCR2(lch));
+		w &= ~0x03;
+
+		switch (mode) {
+		case OMAP_DMA_CONSTANT_FILL:
+			w |= 0x01;
+			break;
+		case OMAP_DMA_TRANSPARENT_COPY:
+			w |= 0x02;
+			break;
+		case OMAP_DMA_COLOR_DIS:
+			break;
+		default:
+			BUG();
+		}
+		dma_write(w, CCR2(lch));
+
+		w = dma_read(LCH_CTRL(lch));
+		w &= ~0x0f;
+		/* Default is channel type 2D */
+		if (mode) {
+			dma_write((u16)color, COLOR_L(lch));
+			dma_write((u16)(color >> 16), COLOR_U(lch));
+			w |= 1;		/* Channel type G */
+		}
+		dma_write(w, LCH_CTRL(lch));
+	}
+
 	if (cpu_class_is_omap2()) {
-		REVISIT_24XX();
-		return;
-	}
+		u32 val;
 
-	w = dma_read(CCR2(lch));
-	w &= ~0x03;
+		val = dma_read(CCR(lch));
+		val &= ~((1 << 17) | (1 << 16));
 
-	switch (mode) {
-	case OMAP_DMA_CONSTANT_FILL:
-		w |= 0x01;
-		break;
-	case OMAP_DMA_TRANSPARENT_COPY:
-		w |= 0x02;
-		break;
-	case OMAP_DMA_COLOR_DIS:
-		break;
-	default:
-		BUG();
-	}
-	dma_write(w, CCR2(lch));
+		switch (mode) {
+		case OMAP_DMA_CONSTANT_FILL:
+			val |= 1 << 16;
+			break;
+		case OMAP_DMA_TRANSPARENT_COPY:
+			val |= 1 << 17;
+			break;
+		case OMAP_DMA_COLOR_DIS:
+			break;
+		default:
+			BUG();
+		}
+		dma_write(val, CCR(lch));
 
-	w = dma_read(LCH_CTRL(lch));
-	w &= ~0x0f;
-	/* Default is channel type 2D */
-	if (mode) {
-		dma_write((u16)color, COLOR_L(lch));
-		dma_write((u16)(color >> 16), COLOR_U(lch));
-		w |= 1;		/* Channel type G */
+		color &= 0xffffff;
+		dma_write(color, COLOR(lch));
 	}
-	dma_write(w, LCH_CTRL(lch));
 }
 EXPORT_SYMBOL(omap_set_dma_color_mode);
 
@@ -712,6 +736,7 @@ int omap_request_dma(int dev_id, const char *dev_name,
 	chan->dev_name = dev_name;
 	chan->callback = callback;
 	chan->data = data;
+	chan->flags = 0;
 
 #ifndef CONFIG_ARCH_OMAP1
 	if (cpu_class_is_omap2()) {
@@ -761,18 +786,11 @@ void omap_free_dma(int lch)
 {
 	unsigned long flags;
 
-	spin_lock_irqsave(&dma_chan_lock, flags);
 	if (dma_chan[lch].dev_id == -1) {
 		pr_err("omap_dma: trying to free unallocated DMA channel %d\n",
 		       lch);
-		spin_unlock_irqrestore(&dma_chan_lock, flags);
 		return;
 	}
-
-	dma_chan[lch].dev_id = -1;
-	dma_chan[lch].next_lch = -1;
-	dma_chan[lch].callback = NULL;
-	spin_unlock_irqrestore(&dma_chan_lock, flags);
 
 	if (cpu_class_is_omap1()) {
 		/* Disable all DMA interrupts for the channel. */
@@ -799,6 +817,12 @@ void omap_free_dma(int lch)
 		dma_write(0, CCR(lch));
 		omap_clear_dma(lch);
 	}
+
+	spin_lock_irqsave(&dma_chan_lock, flags);
+	dma_chan[lch].dev_id = -1;
+	dma_chan[lch].next_lch = -1;
+	dma_chan[lch].callback = NULL;
+	spin_unlock_irqrestore(&dma_chan_lock, flags);
 }
 EXPORT_SYMBOL(omap_free_dma);
 
@@ -1848,9 +1872,22 @@ static int omap2_dma_handle_ch(int ch)
 		printk(KERN_INFO
 		       "DMA synchronization event drop occurred with device "
 		       "%d\n", dma_chan[ch].dev_id);
-	if (unlikely(status & OMAP2_DMA_TRANS_ERR_IRQ))
+	if (unlikely(status & OMAP2_DMA_TRANS_ERR_IRQ)) {
 		printk(KERN_INFO "DMA transaction error with device %d\n",
 		       dma_chan[ch].dev_id);
+		if (cpu_class_is_omap2()) {
+			/* Errata: sDMA Channel is not disabled
+			 * after a transaction error. So we explicitely
+			 * disable the channel
+			 */
+			u32 ccr;
+
+			ccr = dma_read(CCR(ch));
+			ccr &= ~OMAP_DMA_CCR_EN;
+			dma_write(ccr, CCR(ch));
+			dma_chan[ch].flags &= ~OMAP_DMA_ACTIVE;
+		}
+	}
 	if (unlikely(status & OMAP2_DMA_SECURE_ERR_IRQ))
 		printk(KERN_INFO "DMA secure error with device %d\n",
 		       dma_chan[ch].dev_id);
@@ -1878,10 +1915,10 @@ static int omap2_dma_handle_ch(int ch)
 		status = dma_read(CSR(ch));
 	}
 
+	dma_write(status, CSR(ch));
+
 	if (likely(dma_chan[ch].callback != NULL))
 		dma_chan[ch].callback(ch, status, dma_chan[ch].data);
-
-	dma_write(status, CSR(ch));
 
 	return 0;
 }
@@ -1889,7 +1926,7 @@ static int omap2_dma_handle_ch(int ch)
 /* STATUS register count is from 1-32 while our is 0-31 */
 static irqreturn_t omap2_dma_irq_handler(int irq, void *dev_id)
 {
-	u32 val;
+	u32 val, enable_reg;
 	int i;
 
 	val = dma_read(IRQSTATUS_L0);
@@ -1898,6 +1935,8 @@ static irqreturn_t omap2_dma_irq_handler(int irq, void *dev_id)
 			printk(KERN_WARNING "Spurious DMA IRQ\n");
 		return IRQ_HANDLED;
 	}
+	enable_reg = dma_read(IRQENABLE_L0);
+	val &= enable_reg; /* Dispatch only relevant interrupts */
 	for (i = 0; i < dma_lch_count && val != 0; i++) {
 		if (val & 1)
 			omap2_dma_handle_ch(i);
@@ -2290,6 +2329,54 @@ void omap_stop_lcd_dma(void)
 }
 EXPORT_SYMBOL(omap_stop_lcd_dma);
 
+void omap_dma_global_context_save(void)
+{
+	omap_dma_global_context.dma_irqenable_l0 =
+		dma_read(IRQENABLE_L0);
+	omap_dma_global_context.dma_ocp_sysconfig =
+		dma_read(OCP_SYSCONFIG);
+	omap_dma_global_context.dma_gcr = dma_read(GCR);
+}
+EXPORT_SYMBOL(omap_dma_global_context_save);
+
+void omap_dma_global_context_restore(void)
+{
+	int ch;
+
+	dma_write(omap_dma_global_context.dma_gcr, GCR);
+	dma_write(omap_dma_global_context.dma_ocp_sysconfig,
+		OCP_SYSCONFIG);
+	dma_write(omap_dma_global_context.dma_irqenable_l0,
+		IRQENABLE_L0);
+
+	/*
+	 * A bug in ROM code leaves IRQ status for channels 0 and 1 uncleared
+	 * after secure sram context save and restore. Hence we need to
+	 * manually clear those IRQs to avoid spurious interrupts. This
+	 * affects only secure devices.
+	 */
+	if (cpu_is_omap34xx() && (omap_type() != OMAP2_DEVICE_TYPE_GP)) {
+		dma_write(0x3 , IRQSTATUS_L0);
+	}
+
+	for (ch = 0; ch < dma_chan_count; ch++)
+		if (dma_chan[ch].dev_id != -1)
+			omap_clear_dma(ch);
+}
+EXPORT_SYMBOL(omap_dma_global_context_restore);
+
+void omap_dma_disable_irq(int lch)
+{
+	u32 val;
+
+	if (cpu_class_is_omap2()) {
+		/* Disable interrupts */
+		val = dma_read(IRQENABLE_L0);
+		val &= ~(1 << lch);
+		dma_write(val, IRQENABLE_L0);
+	}
+}
+
 /*----------------------------------------------------------------------------*/
 
 static int __init omap_init_dma(void)
@@ -2405,6 +2492,26 @@ static int __init omap_init_dma(void)
 
 	if (cpu_class_is_omap2())
 		setup_irq(INT_24XX_SDMA_IRQ0, &omap24xx_dma_irq);
+
+	if (cpu_is_omap34xx()) {
+		/* Enable smartidle idlemodes and autoidle */
+		u32 v = dma_read(OCP_SYSCONFIG);
+		v &= ~(DMA_SYSCONFIG_MIDLEMODE_MASK |
+				DMA_SYSCONFIG_SIDLEMODE_MASK |
+				DMA_SYSCONFIG_AUTOIDLE);
+		v |= (DMA_SYSCONFIG_MIDLEMODE(DMA_IDLEMODE_SMARTIDLE) |
+			DMA_SYSCONFIG_SIDLEMODE(DMA_IDLEMODE_SMARTIDLE) |
+			DMA_SYSCONFIG_AUTOIDLE);
+		dma_write(v , OCP_SYSCONFIG);
+		/* reserve dma channels 0 and 1 in high security devices */
+		if (omap_type() != OMAP2_DEVICE_TYPE_GP) {
+			printk(KERN_INFO "Reserving DMA channels 0 and 1 for "
+					"HS ROM code\n");
+			dma_chan[0].dev_id = 0;
+			dma_chan[1].dev_id = 1;
+		}
+	}
+
 
 	/* FIXME: Update LCD DMA to work on 24xx */
 	if (cpu_class_is_omap1()) {

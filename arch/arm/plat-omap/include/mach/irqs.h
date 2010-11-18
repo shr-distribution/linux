@@ -339,8 +339,6 @@
 #define INT_34XX_MMC3_IRQ	94
 #define INT_34XX_GPT12_IRQ	95
 
-#define	INT_34XX_BENCH_MPU_EMUL	3
-
 /* Max. 128 level 2 IRQs (OMAP1610), 192 GPIOs (OMAP730) and
  * 16 MPUIO lines */
 #define OMAP_MAX_GPIO_LINES	192
@@ -384,8 +382,14 @@
 
 #define OMAP_IRQ_BIT(irq)	(1 << ((irq) % 32))
 
+#define INTCPS_NR_MIR_REGS	3
+#define INTCPS_NR_IRQS		96
+
 #ifndef __ASSEMBLY__
 extern void omap_init_irq(void);
+extern int omap_irq_pending(void);
+void omap3_intc_save_context(void);
+void omap3_intc_restore_context(void);
 #endif
 
 #include <mach/hardware.h>

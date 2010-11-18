@@ -51,6 +51,13 @@
  */
 #define UBIFS_MIN_COMPR_LEN 128
 
+/*
+ * If compressed data length is less than %UBIFS_MIN_COMPRESS_DIFF bytes
+ * shorter than uncompressed data length, UBIFS preferes to leave this data
+ * node uncompress, because it'll be read faster.
+ */
+#define UBIFS_MIN_COMPRESS_DIFF 64
+
 /* Root inode number */
 #define UBIFS_ROOT_INO 1
 
@@ -296,12 +303,14 @@ enum {
  * UBIFS_COMPR_NONE: no compression
  * UBIFS_COMPR_LZO: LZO compression
  * UBIFS_COMPR_ZLIB: ZLIB compression
+ * UBIFS_COMPR_LZO999: LZO999 compression
  * UBIFS_COMPR_TYPES_CNT: count of supported compression types
  */
 enum {
 	UBIFS_COMPR_NONE,
 	UBIFS_COMPR_LZO,
 	UBIFS_COMPR_ZLIB,
+	UBIFS_COMPR_LZO999,
 	UBIFS_COMPR_TYPES_CNT,
 };
 

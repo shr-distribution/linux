@@ -365,13 +365,16 @@
 /* PM_PREPWSTST_GFX specific bits */
 
 /* PM_WKEN_WKUP specific bits */
+#define OMAP3430_EN_IO_CHAIN				(1 << 16)
 #define OMAP3430_EN_IO					(1 << 8)
+#define OMAP3430_EN_GPIO1				(1 << 3)
 
 /* PM_MPUGRPSEL_WKUP specific bits */
 
 /* PM_IVA2GRPSEL_WKUP specific bits */
 
 /* PM_WKST_WKUP specific bits */
+#define OMAP3430_ST_IO_CHAIN				(1 << 16)
 #define OMAP3430_ST_IO					(1 << 8)
 
 /* PRM_CLKSEL */
@@ -408,7 +411,7 @@
 /* PM_PREPWSTST_CAM specific bits */
 
 /* PM_PWSTCTRL_USBHOST specific bits */
-#define OMAP3430ES2_SAVEANDRESTORE_SHIFT		(1 << 4)
+#define OMAP3430ES2_SAVEANDRESTORE_SHIFT		4
 
 /* RM_RSTST_PER specific bits */
 
@@ -434,10 +437,10 @@
 /* PM_PWSTST_EMU specific bits */
 
 /* PRM_VC_SMPS_SA */
-#define OMAP3430_PRM_VC_SMPS_SA_SA1_SHIFT		16
-#define OMAP3430_PRM_VC_SMPS_SA_SA1_MASK		(0x7f << 16)
-#define OMAP3430_PRM_VC_SMPS_SA_SA0_SHIFT		0
-#define OMAP3430_PRM_VC_SMPS_SA_SA0_MASK		(0x7f << 0)
+#define OMAP3430_SMPS_SA1_SHIFT				16
+#define OMAP3430_SMPS_SA1_MASK				(0x7f << 16)
+#define OMAP3430_SMPS_SA0_SHIFT				0
+#define OMAP3430_SMPS_SA0_MASK				(0x7f << 0)
 
 /* PRM_VC_SMPS_VOL_RA */
 #define OMAP3430_VOLRA1_SHIFT				16
@@ -451,9 +454,15 @@
 #define OMAP3430_CMDRA0_SHIFT				0
 #define OMAP3430_CMDRA0_MASK				(0xff << 0)
 
-/* PRM_VC_CMD_VAL_0 specific bits */
-
-/* PRM_VC_CMD_VAL_1 specific bits */
+/* PRM_VC_CMD_VAL */
+#define OMAP3430_VC_CMD_ON_SHIFT			24
+#define OMAP3430_VC_CMD_ON_MASK				(0xFF << 24)
+#define OMAP3430_VC_CMD_ONLP_SHIFT			16
+#define OMAP3430_VC_CMD_ONLP_MASK			(0xFF << 16)
+#define OMAP3430_VC_CMD_RET_SHIFT			8
+#define OMAP3430_VC_CMD_RET_MASK			(0xFF << 8)
+#define OMAP3430_VC_CMD_OFF_SHIFT			0
+#define OMAP3430_VC_CMD_OFF_MASK			(0xFF << 0)
 
 /* PRM_VC_CH_CONF */
 #define OMAP3430_CMD1					(1 << 20)
@@ -511,6 +520,13 @@
 #define OMAP3430_AUTO_OFF				(1 << 2)
 #define OMAP3430_AUTO_RET				(1 << 1)
 #define OMAP3430_AUTO_SLEEP				(1 << 0)
+
+/* Constants to define setup durations */
+#define OMAP3430_CLKSETUP_DURATION			0xff
+#define OMAP3430_VOLTSETUP_TIME2			0xfff
+#define OMAP3430_VOLTSETUP_TIME1			0xfff
+#define OMAP3430_VOLTOFFSET_DURATION			0xff
+#define OMAP3430_VOLTSETUP2_DURATION			0xff
 
 /* PRM_SRAM_PCHARGE */
 #define OMAP3430_PCHARGE_TIME_SHIFT			0

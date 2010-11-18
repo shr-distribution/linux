@@ -98,7 +98,7 @@ static const struct ieee80211_regdomain us_regdom = {
 	.alpha2 =  "US",
 	.reg_rules = {
 		/* IEEE 802.11b/g, channels 1..11 */
-		REG_RULE(2412-10, 2462+10, 40, 6, 27, 0),
+		REG_RULE(2412-10, 2462+10, 40, 6, 20, 0),
 		/* IEEE 802.11a, channel 36 */
 		REG_RULE(5180-10, 5180+10, 40, 6, 23, 0),
 		/* IEEE 802.11a, channel 40 */
@@ -156,7 +156,7 @@ static const struct ieee80211_regdomain eu_regdom = {
 	}
 };
 
-static const struct ieee80211_regdomain *static_regdom(char *alpha2)
+static const struct ieee80211_regdomain *static_regdom(const char *alpha2)
 {
 	if (alpha2[0] == 'U' && alpha2[1] == 'S')
 		return &us_regdom;
@@ -275,29 +275,6 @@ static bool regdom_changed(const char *alpha2)
 	if (alpha2_equal(cfg80211_regdomain->alpha2, alpha2))
 		return false;
 	return true;
-}
-
-/* This lets us keep regulatory code which is updated on a regulatory
- * basis in userspace. */
-static int call_crda(const char *alpha2)
-{
-	char country_env[9 + 2] = "COUNTRY=";
-	char *envp[] = {
-		country_env,
-		NULL
-	};
-
-	if (!is_world_regdom((char *) alpha2))
-		printk(KERN_INFO "cfg80211: Calling CRDA for country: %c%c\n",
-			alpha2[0], alpha2[1]);
-	else
-		printk(KERN_INFO "cfg80211: Calling CRDA to update world "
-			"regulatory domain\n");
-
-	country_env[8] = alpha2[0];
-	country_env[9] = alpha2[1];
-
-	return kobject_uevent_env(&reg_pdev->dev.kobj, KOBJ_CHANGE, envp);
 }
 
 /* This has the logic which determines when a new request
@@ -582,6 +559,7 @@ void wiphy_update_regulatory(struct wiphy *wiphy, enum reg_set_by setby)
 int __regulatory_hint(struct wiphy *wiphy, enum reg_set_by set_by,
 		      const char *alpha2, struct ieee80211_regdomain *rd)
 {
+	const struct ieee80211_regdomain *rdd;
 	struct regulatory_request *request;
 	char *rd_alpha2;
 	int r = 0;
@@ -613,11 +591,12 @@ int __regulatory_hint(struct wiphy *wiphy, enum reg_set_by set_by,
 		list_add_tail(&request->list, &regulatory_requests);
 		if (rd)
 			break;
-		r = call_crda(alpha2);
-#ifndef CONFIG_WIRELESS_OLD_REGULATORY
-		if (r)
-			printk(KERN_ERR "cfg80211: Failed calling CRDA\n");
+
+#ifdef CONFIG_WIRELESS_OLD_REGULATORY
+		rdd = static_regdom(alpha2);
+		r = set_regdom(rdd);
 #endif
+
 		break;
 	default:
 		r = -ENOTSUPP;
@@ -658,7 +637,7 @@ static void print_rd_rules(const struct ieee80211_regdomain *rd)
 	const struct ieee80211_freq_range *freq_range = NULL;
 	const struct ieee80211_power_rule *power_rule = NULL;
 
-	printk(KERN_INFO "\t(start_freq - end_freq @ bandwidth), "
+	printk(KERN_DEBUG "\t(start_freq - end_freq @ bandwidth), "
 		"(max_antenna_gain, max_eirp)\n");
 
 	for (i = 0; i < rd->n_reg_rules; i++) {
@@ -669,7 +648,7 @@ static void print_rd_rules(const struct ieee80211_regdomain *rd)
 		/* There may not be documentation for max antenna gain
 		 * in certain regions */
 		if (power_rule->max_antenna_gain)
-			printk(KERN_INFO "\t(%d KHz - %d KHz @ %d KHz), "
+			printk(KERN_DEBUG "\t(%d KHz - %d KHz @ %d KHz), "
 				"(%d mBi, %d mBm)\n",
 				freq_range->start_freq_khz,
 				freq_range->end_freq_khz,
@@ -677,7 +656,7 @@ static void print_rd_rules(const struct ieee80211_regdomain *rd)
 				power_rule->max_antenna_gain,
 				power_rule->max_eirp);
 		else
-			printk(KERN_INFO "\t(%d KHz - %d KHz @ %d KHz), "
+			printk(KERN_DEBUG "\t(%d KHz - %d KHz @ %d KHz), "
 				"(N/A, %d mBm)\n",
 				freq_range->start_freq_khz,
 				freq_range->end_freq_khz,
@@ -690,15 +669,15 @@ static void print_regdomain(const struct ieee80211_regdomain *rd)
 {
 
 	if (is_world_regdom(rd->alpha2))
-		printk(KERN_INFO "cfg80211: World regulatory "
+		printk(KERN_DEBUG "cfg80211: World regulatory "
 			"domain updated:\n");
 	else {
 		if (is_unknown_alpha2(rd->alpha2))
-			printk(KERN_INFO "cfg80211: Regulatory domain "
+			printk(KERN_DEBUG "cfg80211: Regulatory domain "
 				"changed to driver built-in settings "
 				"(unknown country)\n");
 		else
-			printk(KERN_INFO "cfg80211: Regulatory domain "
+			printk(KERN_DEBUG "cfg80211: Regulatory domain "
 				"changed to country: %c%c\n",
 				rd->alpha2[0], rd->alpha2[1]);
 	}
@@ -707,7 +686,7 @@ static void print_regdomain(const struct ieee80211_regdomain *rd)
 
 void print_regdomain_info(const struct ieee80211_regdomain *rd)
 {
-	printk(KERN_INFO "cfg80211: Regulatory domain: %c%c\n",
+	printk(KERN_DEBUG "cfg80211: Regulatory domain: %c%c\n",
 		rd->alpha2[0], rd->alpha2[1]);
 	print_rd_rules(rd);
 }
@@ -752,12 +731,6 @@ static int __set_regdom(const struct ieee80211_regdomain *rd)
 	case REGDOM_SET_BY_CORE:
 	case REGDOM_SET_BY_DRIVER:
 	case REGDOM_SET_BY_USER:
-		if (!is_valid_rd(rd)) {
-			printk(KERN_ERR "cfg80211: Invalid "
-				"regulatory domain detected:\n");
-			print_regdomain_info(rd);
-			return -EINVAL;
-		}
 		break;
 	case REGDOM_SET_BY_COUNTRY_IE: /* Not yet */
 		WARN_ON(1);
@@ -832,7 +805,7 @@ int regulatory_init(void)
 #ifdef CONFIG_WIRELESS_OLD_REGULATORY
 	cfg80211_regdomain = static_regdom(ieee80211_regdom);
 
-	printk(KERN_INFO "cfg80211: Using static regulatory domain info\n");
+	printk(KERN_DEBUG "cfg80211: Using static regulatory domain info\n");
 	print_regdomain_info(cfg80211_regdomain);
 	/* The old code still requests for a new regdomain and if
 	 * you have CRDA you get it updated, otherwise you get

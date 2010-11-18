@@ -13,6 +13,7 @@
 #include <linux/linkage.h>
 #include <linux/init.h>
 #include <asm/assembler.h>
+#include <asm/page.h>
 
 #include "proc-macros.S"
 
@@ -26,6 +27,7 @@
  *	- mm    - mm_struct describing address space
  */
 ENTRY(v7_flush_dcache_all)
+	dmb					@ ensure ordering with previous memory accesses
 	mrc	p15, 1, r0, c0, c0, 1		@ read clidr
 	ands	r3, r0, #0x7000000		@ extract loc from clidr
 	mov	r3, r3, lsr #23			@ left align loc bit field
@@ -64,6 +66,7 @@ skip:
 finished:
 	mov	r10, #0				@ swith back to cache level 0
 	mcr	p15, 2, r10, c0, c0, 0		@ select current cache level in cssr
+	dsb
 	isb
 	mov	pc, lr
 ENDPROC(v7_flush_dcache_all)
@@ -148,17 +151,21 @@ ENTRY(v7_coherent_user_range)
 	dcache_line_size r2, r3
 	sub	r3, r2, #1
 	bic	r0, r0, r3
-1:	mcr	p15, 0, r0, c7, c11, 1		@ clean D line to the point of unification
+1:
+USER(	mcr	p15, 0, r0, c7, c11, 1)		@ clean D line to the point of unification
 	dsb
 	mcr	p15, 0, r0, c7, c5, 1		@ invalidate I line
 	add	r0, r0, r2
-	cmp	r0, r1
+2:	cmp	r0, r1
 	blo	1b
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c5, 6		@ invalidate BTB
 	dsb
 	isb
 	mov	pc, lr
+
+9001:	add	r0, r0, #PAGE_SIZE
+	b	2b
 ENDPROC(v7_coherent_kern_range)
 ENDPROC(v7_coherent_user_range)
 
