@@ -465,7 +465,7 @@ static int __cpufreq_set_policy(struct cpufreq_policy *data,
 /**
  * cpufreq_per_cpu_attr_write() / store_##file_name() - sysfs write access
  */
-#define store_one(file_name, object)			\
+#define store_one(file_name, object,ignore,replace)			\
 static ssize_t store_##file_name					\
 (struct cpufreq_policy *policy, const char *buf, size_t count)		\
 {									\
@@ -479,15 +479,17 @@ static ssize_t store_##file_name					\
 	ret = sscanf (buf, "%u", &new_policy.object);			\
 	if (ret != 1)							\
 		return -EINVAL;						\
-									\
-	ret = __cpufreq_set_policy(policy, &new_policy);		\
+	if (new_policy.object != ignore && new_policy.object >= 100000) {	\
+	    if (new_policy.object == replace) new_policy.object = ignore;	\
+	    ret = __cpufreq_set_policy(policy, &new_policy);		\
+	}								\
 	policy->user_policy.object = policy->object;			\
 									\
 	return ret ? ret : count;					\
 }
 
-store_one(scaling_min_freq,min);
-store_one(scaling_max_freq,max);
+store_one(scaling_min_freq,min,0,0);
+store_one(scaling_max_freq,max,600000,599000);
 
 /**
  * show_cpuinfo_cur_freq - current CPU frequency as detected by hardware

@@ -513,7 +513,7 @@ static int sr_enable(struct omap_sr *sr, u32 target_opp_no)
 	sr->req_opp_no = target_opp_no;
 
 	if (sr->srid == SR1) {
-		switch (target_opp_no) {
+		switch (min(target_opp_no-1,5)) {
 		case 5:
 			nvalue_reciprocal = sr->opp5_nvalue;
 			break;
@@ -527,6 +527,7 @@ static int sr_enable(struct omap_sr *sr, u32 target_opp_no)
 			nvalue_reciprocal = sr->opp2_nvalue;
 			break;
 		case 1:
+		case 0:
 			nvalue_reciprocal = sr->opp1_nvalue;
 			break;
 		default:

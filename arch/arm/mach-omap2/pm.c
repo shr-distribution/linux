@@ -39,6 +39,62 @@
 #include "prm-regbits-34xx.h"
 #include "pm.h"
 #include "smartreflex.h"
+#include "resource34xx_mutex.h"
+#include "omap3-opp.h"
+
+struct omap_opp omap3_mpu_rate_table[] = {
+	{0, 0, 0},
+	{0, 1, 0x1E},
+	/*underclocking*/
+	{S125M, 2, 0x1E},
+	/*default*/
+	{S250M, 3, 0x26},
+	{S500M, 4, 0x30},
+	{S550M, 5, 0x36},
+	{S600M, 6, 0x3C},
+	/*overclocking*/
+	{S700M, 7, 0x3C},
+	{S750M, 8, 0x3C},
+	{S805M, 9, 0x3C},
+	{S850M, 10, 0x3C},
+	{S900M, 11, 0x3C},
+	{S950M, 12, 0x3C},
+	{S1000M, 13, 0x3C},
+	{S1100M, 14, 0x48},
+	{S1150M, 15, 0x48},
+};
+
+struct omap_opp omap3_l3_rate_table[] = {
+	{0, 0, 0},
+	/*OPP1*/
+	{0, VDD2_OPP1, 0x1E},
+	/*OPP2*/
+	{S83M, VDD2_OPP2, 0x24},
+	/*OPP3*/
+	{S166M, VDD2_OPP3, 0x2C},
+};
+
+struct omap_opp omap3_dsp_rate_table[] = {
+	{0, 0, 0},
+	/*underclocking*/
+	{S90M,  1, 0x1E},
+	/*default*/
+	{S90M,  2, 0x1E},
+	{S180M, 3, 0x26},
+	{S360M, 4, 0x30},
+	{S400M, 5, 0x36},
+	{S430M, 6, 0x3C},
+	/*overclocking*/
+	{S430M, 7, 0x3C},
+	{S430M, 8, 0x3C},
+	{S430M, 9, 0x3C},/*800MHz*/
+	{S500M, 10, 0x3C},
+	{S500M, 11, 0x3C},
+	{S500M, 12, 0x3C},
+	{S500M, 13, 0x3C},
+	{S520M, 14, 0x48},
+	{S520M, 15, 0x48},
+};
 
 unsigned short enable_dyn_sleep;
 unsigned short clocks_off_while_idle;
@@ -80,6 +136,108 @@ static struct kobj_attribute vdd2_lock_attr =
 	__ATTR(vdd2_lock, 0644, vdd_opp_show, vdd_opp_store);
 
 #endif
+
+static ssize_t omap_vdd1_opps_vsel_show(struct kobject *kobj,
+					struct kobj_attribute *attr, char *buf)
+{
+	int i;
+	char *b=buf;
+	for(i=1;i<=MAX_VDD1_OPP;i++)
+		b+=sprintf(b, "%hu ", mpu_opps[i].vsel);
+	b+=sprintf(b, "\n");
+	return b-buf;
+}
+
+static ssize_t omap_vdd1_opps_vsel_store(struct kobject *kobj,
+					struct kobj_attribute *attr,
+					const char *buf, size_t n)
+{
+	u16 value[16];
+	int i;
+
+	if (sscanf(buf, "%hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu",
+				&value[0], &value[1], &value[2], &value[3],
+				&value[4], &value[5], &value[6], &value[7],
+				&value[8], &value[9], &value[10], &value[11],
+				&value[12], &value[13], &value[14], &value[15]
+				) != MAX_VDD1_OPP) {
+		printk(KERN_ERR "vdd1_opps_vsel: Invalid value\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&dvfs_mutex);
+
+	for(i=1;i<=MAX_VDD1_OPP;i++) {
+		if(value[i-1]<0x49) {
+			mpu_opps[i].vsel = value[i-1];
+		}
+	}
+
+	mutex_unlock(&dvfs_mutex);
+
+	return n;
+}
+
+static struct kobj_attribute vdd1_opps_vsel = {
+	.attr = {
+	.name = __stringify(vdd1_opps_vsel),
+	.mode = 0644,
+	},
+	.show = omap_vdd1_opps_vsel_show,
+	.store = omap_vdd1_opps_vsel_store,
+};
+
+static ssize_t omap_dsp_opps_rate_show(struct kobject *kobj,
+					struct kobj_attribute *attr, char *buf)
+{
+	int i;
+	char *b=buf;
+	for(i=1;i<=MAX_VDD1_OPP;i++)
+		b+=sprintf(b, "%u ", (u16) (dsp_opps[i].rate/1000000));
+	b+=sprintf(b, "\n");
+	return b-buf;
+}
+
+static ssize_t omap_dsp_opps_rate_store(struct kobject *kobj,
+					struct kobj_attribute *attr,
+					const char *buf, size_t n)
+{
+	u16 value[16];
+	int i;
+
+	if (sscanf(buf, "%hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu",
+				&value[0], &value[1], &value[2], &value[3],
+				&value[4], &value[5], &value[6], &value[7],
+				&value[8], &value[9], &value[10], &value[11],
+				&value[12], &value[13], &value[14], &value[15]
+				) != MAX_VDD1_OPP) {
+		printk(KERN_ERR "dsp_opps_rate: Invalid value\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&dvfs_mutex);
+
+	for(i=1;i<=MAX_VDD1_OPP;i++) {
+		if(value[i-1]<=600) {
+			dsp_opps[i].rate = 1000000 * (u32)value[i-1];
+		}
+	}
+
+	mutex_unlock(&dvfs_mutex);
+
+	return n;
+}
+
+static struct kobj_attribute dsp_opps_rate = {
+	.attr = {
+	.name = __stringify(dsp_opps_rate),
+	.mode = 0644,
+	},
+	.show = omap_dsp_opps_rate_show,
+	.store = omap_dsp_opps_rate_store,
+};
+
+
 
 static ssize_t idle_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 char *buf)
@@ -258,6 +416,17 @@ static int __init omap_pm_init(void)
 		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
 		return error;
 	}
+	error = sysfs_create_file(power_kobj, &vdd1_opps_vsel.attr);
+	if (error) {
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
+		return error;
+	}
+	error = sysfs_create_file(power_kobj, &dsp_opps_rate.attr);
+	if (error) {
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", error);
+		return error;
+	}
+
 #ifdef CONFIG_OMAP_PM_SRF
 	error = sysfs_create_file(power_kobj,
 				  &vdd1_opp_attr.attr);

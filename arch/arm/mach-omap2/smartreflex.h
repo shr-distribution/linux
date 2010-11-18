@@ -254,7 +254,7 @@
 /* XXX: end remove/move */
 
 /* SR_MAX_LOW_OPP: the highest of the "low OPPs", 1 and 2. */
-#define SR_MAX_LOW_OPP		2
+#define SR_MAX_LOW_OPP		3
 
 /* XXX: find more appropriate place for these once DVFS is in place */
 extern u32 current_vdd1_opp;

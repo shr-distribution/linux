@@ -148,10 +148,13 @@ static int __init omap_cpu_init(struct cpufreq_policy *policy)
 							VERY_HI_RATE) / 1000;
 	}
 
-	clk_set_rate(mpu_clk, policy->cpuinfo.max_freq * 1000);
+	/*clk_set_rate(mpu_clk, policy->cpuinfo.max_freq * 1000);*/
+	clk_set_rate(mpu_clk, 600000 * 1000); /*N900 hack: set default max to 600MHz */
 
-	policy->min = policy->cpuinfo.min_freq;
-	policy->max = policy->cpuinfo.max_freq;
+	/*policy->min = policy->cpuinfo.min_freq;*/
+	/*policy->max = policy->cpuinfo.max_freq;*/
+	policy->min = 250000;
+	policy->max = 600000; /*N900 hack: set default to 250-600MHz */
 	policy->cur = omap_getspeed(0);
 
 	policy->cpuinfo.transition_latency = 300 * 1000;
