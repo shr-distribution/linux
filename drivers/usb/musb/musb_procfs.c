@@ -479,7 +479,8 @@ static int dump_header_stats(struct musb *musb, char *buffer)
 #elif defined(CONFIG_USB_MUSB_HDRC_HCD)
 			"host"
 #endif
-			", debug=%d [eps=%d]\n",
+			", debug=%d [eps=%d]"
+			", version_hostmode=" MUSB_VERSION_HOSTMODE "\n",
 		musb_debug,
 		musb->nr_endpoints);
 	if (code <= 0)
@@ -651,6 +652,75 @@ static int musb_proc_write(struct file *file, const char __user *buffer,
 		reg = musb_readb(mbase, MUSB_DEVCTL);
 		reg |= MUSB_DEVCTL_SESSION;
 		musb_writeb(mbase, MUSB_DEVCTL, reg);
+
+		/* Pretend there's a session request */
+		musb->ep0_stage = MUSB_EP0_START;
+		musb->xceiv->state = OTG_STATE_A_IDLE;
+		MUSB_HST_MODE(musb);
+		musb_set_vbus(musb, 1);
+
+		/* Connect request */
+		{
+		struct usb_hcd *hcd = musb_to_hcd(musb);
+		u8 testmode, line;
+
+		musb->is_active = 1;
+		set_bit(HCD_FLAG_SAW_IRQ, &hcd->flags);
+
+		musb->ep0_stage = MUSB_EP0_START;
+
+#ifdef CONFIG_USB_MUSB_OTG
+		/* flush endpoints when transitioning from Device Mode */
+		if (is_peripheral_active(musb)) {
+			/* REVISIT HNP; just force disconnect */
+		}
+		musb_writew(mbase, MUSB_INTRTXE, musb->epmask);
+		musb_writew(mbase, MUSB_INTRRXE, musb->epmask & 0xfffe);
+		musb_writeb(mbase, MUSB_INTRUSBE, 0xf7);
+#endif
+		musb->port1_status &= ~(USB_PORT_STAT_LOW_SPEED
+					|USB_PORT_STAT_HIGH_SPEED
+					|USB_PORT_STAT_ENABLE
+					);
+		musb->port1_status |= USB_PORT_STAT_CONNECTION
+					|(USB_PORT_STAT_C_CONNECTION << 16);
+
+		line = musb_ulpi_readb(mbase, ISP1704_DEBUG);
+		testmode = musb_readb(mbase, MUSB_TESTMODE);
+
+		switch (line) {
+		case 1: /* pullup indicates a full/high-speed device */
+			if (!(testmode & (MUSB_TEST_FORCE_FS | MUSB_TEST_FORCE_HS)))
+				pr_err("Forced hostmode error: a full/high-speed device attached but low-speed mode selected\n"); 
+			break;
+		case 2: /* pullup indicates a low-speed device */
+			if (testmode & (MUSB_TEST_FORCE_FS | MUSB_TEST_FORCE_HS))
+				pr_err("Forced hostmode error: a low-speed device attached but full/high-speed mode selected\n"); 
+			break;
+		default:
+			pr_err("Forced hostmode error: no device attached\n");
+		}
+ 
+		if (!(testmode & (MUSB_TEST_FORCE_FS | MUSB_TEST_FORCE_HS)))
+			musb->port1_status |= USB_PORT_STAT_LOW_SPEED;
+
+		if (hcd->status_urb)
+			usb_hcd_poll_rh_status(hcd);
+		else
+			usb_hcd_resume_root_hub(hcd);
+
+		MUSB_HST_MODE(musb);
+
+		/* indicate new connection to OTG machine */
+		switch (musb->xceiv->state) {
+		default:
+				musb->xceiv->state = OTG_STATE_A_HOST;
+				hcd->self.is_b_host = 0;
+			break;
+		}
+		DBG(1, "CONNECT (%s) devctl %02x\n",
+				otg_state_string(musb), devctl);
+		}
 		break;
 
 	case 'H':

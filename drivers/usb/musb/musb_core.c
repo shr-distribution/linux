@@ -230,6 +230,8 @@ static int musb_charger_detect(struct musb *musb)
 	 * change it unless you really know what you're doing
 	 */
 
+	DBG(4, "Some asshole called musb_charger_detect!");
+
 	switch(musb->xceiv->state) {
 		case OTG_STATE_B_IDLE:
 			/* we always reset transceiver */
@@ -349,7 +351,7 @@ void musb_write_fifo(struct musb_hw_ep *hw_ep, u16 len, const u8 *src)
 
 	prefetch((u8 *)src);
 
-	DBG(4, "%cX ep%d fifo %p count %d buf %p\n",
+	DBG_nonverb(4, "%cX ep%d fifo %p count %d buf %p\n",
 			'T', hw_ep->epnum, fifo, len, src);
 
 	/* we can't assume unaligned reads work */
@@ -387,7 +389,7 @@ void musb_read_fifo(struct musb_hw_ep *hw_ep, u16 len, u8 *dst)
 {
 	void __iomem *fifo = hw_ep->fifo;
 
-	DBG(4, "%cX ep%d fifo %p count %d buf %p\n",
+	DBG_nonverb(4, "%cX ep%d fifo %p count %d buf %p\n",
 			'R', hw_ep->epnum, fifo, len, dst);
 
 	/* we can't assume unaligned writes work */
@@ -576,8 +578,8 @@ static irqreturn_t musb_stage0_irq(struct musb *musb, u8 int_usb,
 	void __iomem *mbase = musb->mregs;
 	u8 r;
 
-	DBG(3, "<== Power=%02x, DevCtl=%02x, int_usb=0x%x\n", power, devctl,
-		int_usb);
+        DBG(3, "<== State=%s Power=%02x, DevCtl=%02x, int_usb=0x%x\n",
+                otg_state_string(musb), power, devctl, int_usb);
 
 	/* in host mode, the peripheral may issue remote wakeup.
 	 * in peripheral mode, the host may resume the link.
@@ -2028,12 +2030,16 @@ musb_mode_store(struct device *dev, struct device_attribute *attr,
 	int		status;
 
 	mutex_lock(&musb->mutex);
-	if (sysfs_streq(buf, "host"))
-		status = musb_platform_set_mode(musb, MUSB_HOST);
+        if (sysfs_streq(buf, "hostl"))
+                status = musb_platform_set_mode(musb, MUSB_HOST, 0);
+        else if (sysfs_streq(buf, "hostf"))
+                status = musb_platform_set_mode(musb, MUSB_HOST, 1);
+        else if (sysfs_streq(buf, "hosth"))
+                status = musb_platform_set_mode(musb, MUSB_HOST, 2);
 	else if (sysfs_streq(buf, "peripheral"))
-		status = musb_platform_set_mode(musb, MUSB_PERIPHERAL);
+		status = musb_platform_set_mode(musb, MUSB_PERIPHERAL, 0);
 	else if (sysfs_streq(buf, "otg"))
-		status = musb_platform_set_mode(musb, MUSB_OTG);
+		status = musb_platform_set_mode(musb, MUSB_OTG, 0);
 	else
 		status = -EINVAL;
 	mutex_unlock(&musb->mutex);

@@ -14,7 +14,7 @@ extern int is_targeted(struct usb_device *);
 #else
 static inline int is_targeted(struct usb_device *d)
 {
-	return 0;
+	return 1;
 }
 #endif
 

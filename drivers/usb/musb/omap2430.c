@@ -73,6 +73,8 @@ static void musb_do_idle(unsigned long _musb)
 
 	spin_lock_irqsave(&musb->lock, flags);
 
+	DBG(3, "%s\n", otg_state_string(musb));
+
 	devctl = musb_readb(musb->mregs, MUSB_DEVCTL);
 
 	switch (musb->xceiv->state) {
@@ -211,14 +213,11 @@ static int omap_set_power(struct otg_transceiver *x, unsigned mA)
 
 static int musb_platform_resume(struct musb *musb);
 
-int musb_platform_set_mode(struct musb *musb, u8 musb_mode)
+int musb_platform_set_mode(struct musb *musb, u8 musb_mode, u8 hostspeed)
 {
 	struct usb_hcd	*hcd;
 	struct usb_bus	*host;
 	u8		devctl = musb_readb(musb->mregs, MUSB_DEVCTL);
-
-	devctl |= MUSB_DEVCTL_SESSION;
-	musb_writeb(musb->mregs, MUSB_DEVCTL, devctl);
 
 	switch (musb_mode) {
 #ifdef CONFIG_USB_MUSB_HDRC_HCD
@@ -227,10 +226,36 @@ int musb_platform_set_mode(struct musb *musb, u8 musb_mode)
 		host = hcd_to_bus(hcd);
 
 		otg_set_host(musb->xceiv, host);
+ 
+                if (machine_is_nokia_rx51()) {
+                        u8 testmode;
+ 
+                        musb_platform_resume(musb);
+ 
+                        devctl |= MUSB_DEVCTL_SESSION;
+                        musb_writeb(musb->mregs, MUSB_DEVCTL, devctl);
+ 
+                        testmode = MUSB_TEST_FORCE_HOST;
+                        if (hostspeed == 1)
+                                testmode |= MUSB_TEST_FORCE_FS;
+                        else if (hostspeed == 2)
+                                testmode |= MUSB_TEST_FORCE_HS;
+                        musb_writeb(musb->mregs, MUSB_TESTMODE, testmode);
+                }
 		break;
 #endif
 #ifdef CONFIG_USB_GADGET_MUSB_HDRC
 	case MUSB_PERIPHERAL:
+                if (machine_is_nokia_rx51()) {
+                        musb_platform_resume(musb);
+                        musb_set_vbus(musb, 0);
+ 
+                        devctl &= ~MUSB_DEVCTL_SESSION;
+                        musb_writeb(musb->mregs, MUSB_DEVCTL, devctl);
+ 
+                        musb_writeb(musb->mregs, MUSB_TESTMODE, 0);
+                }
+ 
 		otg_set_peripheral(musb->xceiv, &musb->g);
 		break;
 #endif

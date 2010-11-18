@@ -63,6 +63,9 @@ struct musb_ep;
 #include "../core/hcd.h"
 #include "musb_host.h"
 
+/* This is the version of forced hostmode userspace<->kernelspace API.
+ * Do not update to the build date, bump only on API changes */
+#define MUSB_VERSION_HOSTMODE	"20101110"
 
 #ifdef CONFIG_USB_MUSB_OTG
 
@@ -591,7 +594,7 @@ extern void musb_platform_disable(struct musb *musb);
 
 extern void musb_hnp_stop(struct musb *musb);
 
-extern int musb_platform_set_mode(struct musb *musb, u8 musb_mode);
+extern int musb_platform_set_mode(struct musb *musb, u8 musb_mode, u8 hostspeed);
 
 #if defined(CONFIG_USB_TUSB6010) || defined(CONFIG_BLACKFIN) || \
 	defined(CONFIG_ARCH_OMAP2430) || defined(CONFIG_ARCH_OMAP34XX)

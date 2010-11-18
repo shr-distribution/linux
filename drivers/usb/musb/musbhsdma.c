@@ -131,7 +131,7 @@ static void configure_channel(struct dma_channel *channel,
 	u8 bchannel = musb_channel->idx;
 	u16 csr = 0;
 
-	DBG(4, "%p, pkt_sz %d, addr 0x%x, len %d, mode %d\n",
+	DBG_nonverb(4, "%p, pkt_sz %d, addr 0x%x, len %d, mode %d\n",
 			channel, packet_sz, dma_addr, len, mode);
 
 	if (mode)
@@ -167,7 +167,7 @@ static int dma_channel_program(struct dma_channel *channel,
 {
 	struct musb_dma_channel *musb_channel = channel->private_data;
 
-	DBG(2, "ep%d-%s pkt_sz %d, dma_addr 0x%x length %d, mode %d\n",
+	DBG_nonverb(2, "ep%d-%s pkt_sz %d, dma_addr 0x%x length %d, mode %d\n",
 		musb_channel->epnum,
 		musb_channel->transmit ? "Tx" : "Rx",
 		packet_sz, dma_addr, len, mode);

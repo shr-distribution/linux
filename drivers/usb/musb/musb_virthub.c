@@ -112,7 +112,7 @@ static void musb_port_suspend(struct musb *musb, bool do_suspend)
 
 static void musb_port_reset(struct musb *musb, bool do_reset)
 {
-	u8		power;
+	u8		power, testmode;
 	void __iomem	*mbase = musb->mregs;
 
 #ifdef CONFIG_USB_MUSB_OTG
@@ -162,10 +162,16 @@ static void musb_port_reset(struct musb *musb, bool do_reset)
 
 		musb->ignore_disconnect = false;
 
+		testmode = musb_readb(mbase, MUSB_TESTMODE);
 		power = musb_readb(mbase, MUSB_POWER);
 		if (power & MUSB_POWER_HSMODE) {
 			DBG(4, "high-speed device connected\n");
 			musb->port1_status |= USB_PORT_STAT_HIGH_SPEED;
+			if (!(testmode & MUSB_TEST_FORCE_HS))
+				pr_err("Forced hostmode error: a high-speed device attached but not high-speed mode selected\n"); 
+		} else {
+			if (testmode & MUSB_TEST_FORCE_HS)
+				pr_err("Forced hostmode error: a full/low-speed device attached but high-speed mode selected\n"); 
 		}
 
 		musb->port1_status &= ~USB_PORT_STAT_RESET;

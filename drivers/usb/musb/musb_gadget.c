@@ -816,12 +816,12 @@ static int musb_gadget_enable(struct usb_ep *ep,
 	if (!ep || !desc)
 		return -EINVAL;
 
+        musb_ep = to_musb_ep(ep);
+        musb = musb_ep->musb;
 	DBG(1, "===> enabling %s\n", ep->name);
 
-	musb_ep = to_musb_ep(ep);
 	hw_ep = musb_ep->hw_ep;
 	regs = hw_ep->regs;
-	musb = musb_ep->musb;
 	mbase = musb->mregs;
 	epnum = musb_ep->current_epnum;
 
@@ -949,8 +949,8 @@ static int musb_gadget_disable(struct usb_ep *ep)
 	int		status = 0;
 
 	musb_ep = to_musb_ep(ep);
-	DBG(4, "disabling %s\n", musb_ep->name);
 	musb = musb_ep->musb;
+	DBG(4, "disabling %s\n", musb_ep->name);
 	epnum = musb_ep->current_epnum;
 	epio = musb->endpoints[epnum].regs;
 

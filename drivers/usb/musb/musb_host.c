@@ -118,7 +118,7 @@ static void musb_h_tx_flush_fifo(struct musb_hw_ep *ep)
 	csr = musb_readw(epio, MUSB_TXCSR);
 	while (csr & MUSB_TXCSR_FIFONOTEMPTY) {
 		if (csr != lastcsr)
-			DBG(3, "Host TX FIFONOTEMPTY csr: %02x\n", csr);
+			DBG_nonverb(3, "Host TX FIFONOTEMPTY csr: %02x\n", csr);
 		lastcsr = csr;
 		csr |= MUSB_TXCSR_FLUSHFIFO;
 		musb_writew(epio, MUSB_TXCSR, csr);
@@ -2036,7 +2036,7 @@ static int musb_cleanup_urb(struct urb *urb, struct musb_qh *qh, int is_in)
 		dma = is_in ? ep->rx_channel : ep->tx_channel;
 		if (dma) {
 			status = ep->musb->dma_controller->channel_abort(dma);
-			DBG(status ? 1 : 3,
+			DBG_nonverb(status ? 1 : 3,
 				"abort %cX%d DMA for urb %p --> %d\n",
 				is_in ? 'R' : 'T', ep->epnum,
 				urb, status);

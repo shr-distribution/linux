@@ -330,7 +330,7 @@ static inline u8 musb_ulpi_readb(void __iomem *addr, u8 offset)
 	while (!(musb_readb(addr, ULPI_REG_CONTROL) & ULPI_REG_CMPLT)) {
 		i++;
 		if (i == 10000) {
-			DBG(3, "ULPI read timed out\n");
+			DBG_nonverb(3, "ULPI read timed out\n");
 			return 0;
 		}
 
@@ -355,7 +355,7 @@ static inline void musb_ulpi_writeb(void __iomem *addr,
 	while(!(musb_readb(addr, ULPI_REG_CONTROL) & ULPI_REG_CMPLT)) {
 		i++;
 		if (i == 10000) {
-			DBG(3, "ULPI write timed out\n");
+			DBG_nonverb(3, "ULPI write timed out\n");
 			return;
 		}
 	}

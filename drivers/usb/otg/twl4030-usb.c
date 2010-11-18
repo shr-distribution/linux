@@ -371,6 +371,7 @@ static enum linkstat twl4030_usb_linkstat(struct twl4030_usb *twl)
 
 	spin_lock_irq(&twl->lock);
 	twl->linkstat = linkstat;
+#if 0
 	if (linkstat == USB_LINK_ID) {
 		twl->otg.default_a = true;
 		twl->otg.state = OTG_STATE_A_IDLE;
@@ -378,6 +379,7 @@ static enum linkstat twl4030_usb_linkstat(struct twl4030_usb *twl)
 		twl->otg.default_a = false;
 		twl->otg.state = OTG_STATE_B_IDLE;
 	}
+#endif
 	spin_unlock_irq(&twl->lock);
 
 	return linkstat;

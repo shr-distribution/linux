@@ -141,10 +141,13 @@ static struct musb_hdrc_platform_data musb_plat = {
 	.config		= &musb_config,
 
 	/* REVISIT charge pump on TWL4030 can supply up to
-	 * 100 mA ... but this value is board-specific, like
+	 * 200 mA ... but this value is board-specific, like
 	 * "mode", and should be passed to usb_musb_init().
+         *
+         * Since the power can come from a Y-cable, let the user
+         * decide on power constraints and not limit anything here.
 	 */
-	.power		= 50,			/* up to 100 mA */
+	.power		= 0,			/* use default of 500 mA */
 };
 
 static u64 musb_dmamask = DMA_32BIT_MASK;

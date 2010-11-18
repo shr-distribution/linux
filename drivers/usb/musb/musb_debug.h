@@ -46,6 +46,21 @@ extern const char *otg_state_string(struct musb *);
 
 #ifdef CONFIG_USB_MUSB_DEBUG
 
+#define xprintk_verb(level, facility, format, args...) do { \
+        if (_dbg_level(level)) { \
+                        u8 testmode, devctl, power/*, otg_ctrl, func_ctrl, isp_debug*/; \
+                        testmode = musb_readb(musb->mregs, MUSB_TESTMODE); \
+                        devctl = musb_readb(musb->mregs, MUSB_DEVCTL); \
+                        power = musb_readb(musb->mregs, MUSB_POWER); \
+                        /*otg_ctrl = musb_ulpi_readb(musb->mregs, ISP1704_OTG_CTRL); \
+                        func_ctrl = musb_ulpi_readb(musb->mregs, ISP1704_FUNC_CTRL); \
+                        isp_debug = musb_ulpi_readb(musb->mregs, ISP1704_DEBUG); */ \
+                        printk(facility "State=%s Testmode=%02x Power=%02x, DevCtl=%02x\n", \
+                                otg_state_string(musb), testmode, power, devctl/*, otg_ctrl, func_ctrl, isp_debug*/); \
+                        printk(facility "%-20s %4d: " format , \
+                                __func__, __LINE__ , ## args); \
+        } } while (0)
+
 #define xprintk(level, facility, format, args...) do { \
 	if (_dbg_level(level)) { \
 		printk(facility "%-20s %4d: " format , \
@@ -58,7 +73,8 @@ static inline int _dbg_level(unsigned l)
 {
 	return musb_debug >= l;
 }
-#define DBG(level, fmt, args...) xprintk(level, KERN_DEBUG, fmt, ## args)
+#define DBG(level, fmt, args...) xprintk_verb(level, KERN_DEBUG, fmt, ## args)
+#define DBG_nonverb(level, fmt, args...) xprintk(level, KERN_DEBUG, fmt, ## args)
 #else
 #define DBG(level, fmt, args...)	do {} while(0)
 #endif	/* CONFIG_USB_MUSB_DEBUG */
