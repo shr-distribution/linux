@@ -358,6 +358,22 @@ static struct i2c_driver bq27200_battery_driver = {
 	.id_table = bq27200_id,
 };
 
+struct bq27200_platform_data {
+	int dummy;
+};
+
+static struct bq27200_platform_data bq27200_config = {
+	.dummy = 0,
+};
+
+static struct i2c_board_info rx51_camera_board_info_2 =
+	{
+		I2C_BOARD_INFO("bq27200", 0x55),
+		.platform_data = &bq27200_config,
+	};
+
+static struct i2c_client *client;
+
 static int __init bq27x00_battery_init(void)
 {
 	int ret;
@@ -365,6 +381,7 @@ static int __init bq27x00_battery_init(void)
 	ret = i2c_add_driver(&bq27200_battery_driver);
 	if (ret)
 		printk(KERN_ERR "Unable to register BQ27200 driver\n");
+	client = i2c_new_device(i2c_get_adapter(2), &rx51_camera_board_info_2);
 
 	return ret;
 }
