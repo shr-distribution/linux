@@ -200,8 +200,8 @@ static ssize_t si4713_lock_write(struct device *dev,
 
 	sscanf(buf, "%d", &l);
 
-	if (l != 0)
-		config_locked = 1;
+//	if (l != 0)
+//		config_locked = 1;
 
 	return count;
 }
