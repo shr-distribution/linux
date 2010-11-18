@@ -1087,8 +1087,7 @@ extern int	   jbd2_journal_clear_err  (journal_t *);
 extern int	   jbd2_journal_bmap(journal_t *, unsigned long, unsigned long long *);
 extern int	   jbd2_journal_force_commit(journal_t *);
 extern int	   jbd2_journal_file_inode(handle_t *handle, struct jbd2_inode *inode);
-extern int	   jbd2_journal_begin_ordered_truncate(journal_t *journal,
-				struct jbd2_inode *inode, loff_t new_size);
+extern int	   jbd2_journal_begin_ordered_truncate(struct jbd2_inode *inode, loff_t new_size);
 extern void	   jbd2_journal_init_jbd_inode(struct jbd2_inode *jinode, struct inode *inode);
 extern void	   jbd2_journal_release_jbd_inode(journal_t *journal, struct jbd2_inode *jinode);
 
@@ -1148,8 +1147,8 @@ int jbd2_log_wait_commit(journal_t *journal, tid_t tid);
 int jbd2_log_do_checkpoint(journal_t *journal);
 
 void __jbd2_log_wait_for_space(journal_t *journal);
-extern void	__jbd2_journal_drop_transaction(journal_t *, transaction_t *);
-extern int	jbd2_cleanup_journal_tail(journal_t *);
+extern void __jbd2_journal_drop_transaction(journal_t *, transaction_t *);
+extern int jbd2_cleanup_journal_tail(journal_t *);
 
 /* Debugging code only: */
 
