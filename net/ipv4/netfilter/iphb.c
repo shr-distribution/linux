@@ -276,6 +276,11 @@ static unsigned int net_out_hook(unsigned int hook,
 	tsk = tcp_sk(skb->sk);
 	tcp = tcp_hdr(skb);
 
+	if (! tcp || ! tsk) {
+		flush_keepalives(1);
+		return NF_ACCEPT;	
+	}
+
 	len -= hlen;           /* ip4/6 header len     */
 	len -= tcp->doff << 2; /* tcp header + options */
 
