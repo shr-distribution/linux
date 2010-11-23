@@ -2596,6 +2596,8 @@ static int __devexit wm8994_codec_remove(struct platform_device *pdev)
 	wm8994_free_irq(codec->control_data, WM8994_IRQ_MIC2_DET, wm8994);
 	wm8994_free_irq(codec->control_data, WM8994_IRQ_MIC1_SHRT, wm8994);
 	wm8994_free_irq(codec->control_data, WM8994_IRQ_MIC1_DET, wm8994);
+	kfree(wm8994->retune_mobile_texts);
+	kfree(wm8994->drc_texts);
 	kfree(wm8994);
 	wm8994_codec = NULL;
 
