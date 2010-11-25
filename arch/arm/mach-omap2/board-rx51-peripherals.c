@@ -667,8 +667,10 @@ static struct regulator_init_data rx51_vdac = {
 		.valid_ops_mask		= REGULATOR_CHANGE_MODE
 					| REGULATOR_CHANGE_STATUS,
 	},
+#if defined(CONFIG_FB_OMAP2) || defined(CONFIG_FB_OMAP2_MODULE)
 	.num_consumer_supplies	= 1,
 	.consumer_supplies	= rx51_vdac_supply,
+#endif
 };
 
 static struct regulator_init_data rx51_vio = {
