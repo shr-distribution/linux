@@ -461,6 +461,16 @@ static struct regulator_consumer_supply rx51_vaux1_consumers[] = {
 	REGULATOR_SUPPLY("vdd", "2-0063"),
 };
 
+
+#if defined(CONFIG_FB_OMAP2) || defined(CONFIG_FB_OMAP2_MODULE)
+static struct regulator_consumer_supply rx51_vdac_supply[] = {
+	{
+		.supply	= "vdda_dac",
+		.dev	= &rx51_display_device.dev,
+	},
+};
+#endif
+
 static struct regulator_init_data rx51_vaux1 = {
 	.constraints = {
 		.name			= "V28",
@@ -578,14 +588,19 @@ static struct regulator_init_data rx51_vsim = {
 
 static struct regulator_init_data rx51_vdac = {
 	.constraints = {
+		.name			= "VDAC",
 		.min_uV			= 1800000,
 		.max_uV			= 1800000,
+		.apply_uV		= true,
 		.valid_modes_mask	= REGULATOR_MODE_NORMAL
 					| REGULATOR_MODE_STANDBY,
-		.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
-					| REGULATOR_CHANGE_MODE
+		.valid_ops_mask		= REGULATOR_CHANGE_MODE
 					| REGULATOR_CHANGE_STATUS,
 	},
+#if defined(CONFIG_FB_OMAP2) || defined(CONFIG_FB_OMAP2_MODULE)
+	.num_consumer_supplies	= 1,
+	.consumer_supplies	= rx51_vdac_supply,
+#endif
 };
 
 static struct regulator_init_data rx51_vio = {
