@@ -195,12 +195,12 @@ static void s3c2410_timer_setup (void)
 
 		/* configure clock tick */
 
-		timer_usec_ticks = timer_mask_usec_ticks(6, pclk);
+		timer_usec_ticks = timer_mask_usec_ticks(12, pclk);
 
 		tscaler = clk_get_parent(tdiv);
 
-		clk_set_rate(tscaler, pclk / 3);
-		clk_set_rate(tdiv, pclk / 6);
+		clk_set_rate(tscaler, pclk / 6);
+		clk_set_rate(tdiv, pclk / 12);
 		clk_set_parent(tin, tdiv);
 
 		tcnt = clk_get_rate(tin) / HZ;
