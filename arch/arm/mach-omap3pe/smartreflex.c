@@ -663,6 +663,7 @@ static int sr_reset_voltage(int srid)
 
 /******************************************************************************/
 
+#ifdef CONFIG_MACH_SIRLOIN_3630
 static u8 sr1errminlimit[5] = {
 //	0x00, /* OPP1, not used */
 	SR1_ERRMINLIMIT_OPP2,
@@ -692,6 +693,7 @@ static u32 vp2errgain[5] = {
 	PRM_VP2_CONFIG_ERRORGAIN_OPP2,
 	PRM_VP2_CONFIG_ERRORGAIN_OPP3
 };
+#endif
 
 static void sr_enable(struct omap_sr *sr, u32 target_opp_no)
 {
@@ -801,8 +803,10 @@ static void sr_enable(struct omap_sr *sr, u32 target_opp_no)
 			(ERRCONFIG_VPBOUNDINTEN | ERRCONFIG_VPBOUNDINTST),
 			(ERRCONFIG_VPBOUNDINTEN | ERRCONFIG_VPBOUNDINTST));
 
+#ifdef CONFIG_MACH_SIRLOIN_3630
 	sr_modify_reg(sr, ERRCONFIG,
 			(SR1_ERRORMINLIMIT_MASK), (errorminlimit));
+#endif
 
 	if (sr->srid == SR1) {
 		/* set/latch init voltage */
@@ -1188,12 +1192,14 @@ repeat:
 		reg_addr = R_VDD2_SR_CONTROL;
 	}
 
+#ifdef CONFIG_MACH_SIRLOIN_3630
 	if (vdd == PRCM_VDD1) {
 		/* We only need to do this here for 5->non-5 transitions */
 		if( cur_opp_no == FBB_OPP && target_opp_no != FBB_OPP ) {
 			omap3630_abb_change_active_opp(target_opp_no);
 		}
 	}
+#endif
 
 #ifdef CONFIG_OMAP_VOLT_SR_BYPASS
 	vc_bypass_value = (vsel << PRM_VC_BYPASS_DATA_SHIFT) |
@@ -1469,6 +1475,7 @@ static struct subsys_attribute sr_setnvalues_test = {
 /******************************************************************************/
 
 /* Sysfs interface to set VP1 error gain values */
+#ifdef CONFIG_MACH_SIRLOIN_3630
 static ssize_t omap_sr_vp1errgain_show(struct kset *subsys, char *buf)
 {
 	return sprintf(buf, "1 %02x\n2 %02x\n3 %02x\n4 %02x\n5 %02x\n",
@@ -1608,6 +1615,7 @@ static struct subsys_attribute sr_sr2errminlimit= {
 	.show  = omap_sr_sr2errminlimit_show,
 	.store = omap_sr_sr2errminlimit_store,
 };
+#endif
 
 static ssize_t 
 vdd1_vsel_show(struct kset *subsys, char *buf)
@@ -1820,6 +1828,7 @@ static int __init omap3_sr_init(void)
 	if (ret)
 		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
 
+#ifdef CONFIG_MACH_SIRLOIN_3630
 	ret = subsys_create_file(&power_subsys, &sr_vp1errgain);
 	if (ret)
 		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
@@ -1835,6 +1844,7 @@ static int __init omap3_sr_init(void)
 	ret = subsys_create_file(&power_subsys, &sr_sr2errminlimit);
 	if (ret)
 		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+#endif
 
 	ret = subsys_create_file(&power_subsys, &vdd1_vsel);
 	if (ret)

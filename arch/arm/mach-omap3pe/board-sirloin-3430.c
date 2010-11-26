@@ -1491,7 +1491,9 @@ static struct controller_platform_data board_lcd_controller_data = {
 	.sdi_pll_to_pclk_ratio	= 0x0f,		/* PDIV */
 	.sdi_freq_selector	= 0x7,		/* 1.75-2Mhz (optimal) */
 	.sdi_power_enable	= board_sdi_vcc_enable,
+#ifdef CONFIG_MACH_SIRLOIN_3630
 	.lvds_power_enable	= board_lvds_enable,
+#endif
 };
 
 static struct platform_device board_lcd_controller = {
