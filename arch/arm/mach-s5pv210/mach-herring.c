@@ -2136,6 +2136,15 @@ static struct wm8994_pdata wm8994_pdata = {
 			.init_data = &wm8994_ldo2
 		},
 	},
+
+	/*
+	 * Mark the line outputs as differential so that the driver
+	 * knows that it can power the CODEC down to cold without
+	 * worrying about audible noise (the line outputs being VMID
+	 * referenced on this device).
+	 */
+	.lineout1_diff = true,
+	.lineout2_diff = true,
 };
 
 /*
