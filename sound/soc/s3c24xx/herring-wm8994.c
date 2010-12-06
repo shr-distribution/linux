@@ -35,6 +35,71 @@
 #define debug_msg(x...)
 #endif
 
+/*
+ * Since we don't want to reclock on the fly (as it will glitch audio)
+ * and we ensure that the CODEC is always clocked from the highest
+ * clock we might want to use in any use case.  As the AP always sends
+ * us 44.1kHz audio we clock AIF1 at 256fs of that using the FLL,
+ * making this much higher than the rates we need for telephony
+ * clocks.  This ensures that the CODEC is always clocked from AIF1
+ * and we can therefore always activate AIF1 if need be.
+ *
+ * TODO: Manage the AP clock here as well; we can control the clock
+ * which provides MCLK1.
+ */
+static int set_bias_level_post(struct snd_soc_card *card,
+			       enum snd_soc_bias_level level)
+{
+	static enum snd_soc_bias_level cur_level;
+	struct snd_soc_codec *codec = card->codec;
+	struct snd_soc_dai *aif1 = &codec->dai[0];
+	int ret = 0;
+
+	switch (level) {
+	case SND_SOC_BIAS_STANDBY:
+		if (cur_level == SND_SOC_BIAS_OFF) {
+			ret = snd_soc_dai_set_pll(aif1, WM8994_FLL1,
+						  WM8994_FLL_SRC_MCLK1,
+						  24000000, 44100 * 256);
+			if (ret < 0)
+				pr_err("snd_soc_dai_set_pll failed: %d\n",
+				       ret);
+
+			ret = snd_soc_dai_set_sysclk(aif1,
+						     WM8994_SYSCLK_FLL1,
+						     44100 * 256, 0);
+			if (ret < 0) {
+				pr_err("snd_soc_dai_set_sysclk failed: %d\n",
+				       ret);
+			}
+		}
+		break;
+
+	case SND_SOC_BIAS_OFF:
+		ret = snd_soc_dai_set_sysclk(aif1,
+					     WM8994_SYSCLK_MCLK1,
+					     24000000, 0);
+		if (ret < 0) {
+			pr_err("snd_soc_dai_set_sysclk failed: %d\n",
+			       ret);
+		}
+
+		ret = snd_soc_dai_set_pll(aif1, 0, 0, 0, 0);
+		if (ret < 0) {
+			pr_err("snd_soc_dai_set_pll failed: %d\n",
+			       ret);
+		}
+		break;
+
+	default:
+		break;
+	}
+
+	cur_level = level;
+
+	return 0;
+}
+
 /*  BLC(bits-per-channel) --> BFS(bit clock shud be >= FS*(Bit-per-channel)*2)*/
 /*  BFS --> RFS(must be a multiple of BFS)                                  */
 /*  RFS & SRC_CLK --> Prescalar Value(SRC_CLK / RFS_VAL / fs - 1)           */
@@ -45,7 +110,6 @@ static int smdkc110_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *cpu_dai = rtd->dai->cpu_dai;
 	struct snd_soc_dai *codec_dai = rtd->dai->codec_dai;
 	int bfs, rfs, ret;
-	u32 ap_codec_clk;
 	debug_msg("%s\n", __func__);
 
 	/* Choose BFS and RFS values combination that is supported by
@@ -115,51 +179,15 @@ static int smdkc110_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
-	switch (params_rate(params)) {
+	return 0;
+}
 
-	case 8000:
-		ap_codec_clk = 4096000;
-		break;
-	case 11025:
-		ap_codec_clk = 2822400;
-		break;
-	case 12000:
-		ap_codec_clk = 6144000;
-		break;
-	case 16000:
-		ap_codec_clk = 4096000;
-		break;
-	case 22050:
-		ap_codec_clk = 6144000;
-		break;
-	case 24000:
-		ap_codec_clk = 6144000;
-		break;
-	case 32000:
-		ap_codec_clk = 8192000;
-		break;
-	case 44100:
-		ap_codec_clk = 11289600;
-		break;
-	case 48000:
-		ap_codec_clk = 12288000;
-		break;
-	default:
-		ap_codec_clk = 11289600;
-		break;
-	}
-
-	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_MCLK1,
-				  24000000, ap_codec_clk);
+/* machine stream operations */
+static struct snd_soc_ops smdkc110_ops = {
+	.hw_params = smdkc110_hw_params,
+};
 	if (ret < 0) {
-		pr_err("snd_soc_dai_set_pll failed: %d\n", ret);
-		return ret;
-	}
-
-	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_FLL1,
-					ap_codec_clk, 0);
-	if (ret < 0) {
-		pr_err("snd_soc_dai_set_sysclk failed: %d\n", ret);
+		pr_err("snd_soc_dai_set_sysclk failed: %d\n",  ret);
 		return ret;
 	}
 
@@ -167,9 +195,6 @@ static int smdkc110_hw_params(struct snd_pcm_substream *substream,
 
 }
 
-/* machine stream operations */
-static struct snd_soc_ops smdkc110_ops = {
-	.hw_params = smdkc110_hw_params,
 };
 
 /* digital audio interface glue - connects codec <--> CPU */
@@ -186,6 +211,7 @@ static struct snd_soc_card smdkc100 = {
 	.platform = &s3c_dma_wrapper,
 	.dai_link = &smdkc1xx_dai,
 	.num_links = 1,
+	.set_bias_level_post = set_bias_level_post,
 };
 
 /* audio subsystem */
