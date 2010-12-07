@@ -228,7 +228,7 @@ static int omap3_pm_suspend(void)
 	omap_disable_system_timer();
 #endif
 
-#if CONFIG_MACH_SIRLOIN_3630
+#ifdef CONFIG_MACH_SIRLOIN_3630
 	if( cpu_is_omap36xx() && is_omap3_rev_equal_to(OMAP3630_REV_ES1_1)) {
 		/*  
 		 * As a part of JEDEC violation workaround for 3630ES1.1

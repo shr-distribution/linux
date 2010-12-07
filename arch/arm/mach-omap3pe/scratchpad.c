@@ -79,7 +79,7 @@ void save_scratchpad_contents(void)
 	scratchpad_address = (u32 *) &SCRATCHPAD_BASE;
 
 	/* Get Restore pointer to jump to while waking up from OFF */
-#if CONFIG_MACH_SIRLOIN_3630
+#ifdef CONFIG_MACH_SIRLOIN_3630
 	if( cpu_is_omap36xx()) {
 		/* Errata 1.90. Self_Refresh Exit issue after OFF mode */
 		if( is_omap3_rev_equal_to(OMAP3630_REV_ES1_1))
@@ -185,7 +185,7 @@ void save_scratchpad_contents(void)
 	*(scratchpad_address++) = 0x0;
 
 
-#if CONFIG_MACH_SIRLOIN_3630
+#ifdef CONFIG_MACH_SIRLOIN_3630
 	if( cpu_is_omap36xx()) {
 		u32 v = SDRC_POWER_REG;
 		if( is_omap3_rev_equal_to(OMAP3630_REV_ES1_1)) {

@@ -1661,7 +1661,7 @@ int prcm_set_chip_power_mode(struct system_power_state *trg_st)
 
 	DUMP_REGS_BEFORE_SLEEP();
 
-#if CONFIG_MACH_SIRLOIN_3630
+#ifdef CONFIG_MACH_SIRLOIN_3630
 	if( cpu_is_omap36xx() && is_omap3_rev_equal_to(OMAP3630_REV_ES1_1)) {
 		/*  
 		 * Errata 1.90. Override CKE1 padconfig in scratchpad memory

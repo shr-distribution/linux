@@ -53,13 +53,13 @@ static u32 sr_nvalues = 0x0;
 /*
  *  SR v1.5 support
  */
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
 
 #define SR15_CONVERGANCE_TIMEOUT   (5)
 
 typedef struct sr15_t {
-	int             target_valid;    /* set if target_vsel is valid */  
-	int             target_vsel;     /* target voltage */  
+	int             target_valid;    /* set if target_vsel is valid */
+	int             target_vsel;     /* target voltage */
 	typeof(jiffies) expires;
 } sr15_t;
 
@@ -85,8 +85,8 @@ struct omap_sr {
 	u32 senp_mod, senn_mod;
 	u32 srbase_addr;
 	u32 vpbase_addr;
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
-	int    sr15_active;     
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
+	int    sr15_active;
 	int    sr15_opp_num;
 	struct sr15_t *sr15_opp;
 #endif
@@ -97,14 +97,14 @@ static struct omap_sr sr1 = {
 	.enabled = 0,
 	.sr_mode = SR_MODE_0,
 	.srbase_addr = OMAP34XX_SR1_BASE,
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
 	.sr15_active  = 0,
 	.sr15_opp_num = ARRAY_SIZE(vdd1_sr15),
 	.sr15_opp     = vdd1_sr15,
 	.sr_mode      = SR_MODE_15,
-#else	
+#else
 	.sr_mode     = SR_MODE_0,
-#endif	
+#endif
 };
 
 static struct omap_sr sr2 = {
@@ -112,14 +112,14 @@ static struct omap_sr sr2 = {
 	.enabled = 0,
 	.sr_mode = SR_MODE_0,
 	.srbase_addr = OMAP34XX_SR2_BASE,
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
 	.sr15_active  = 0,
 	.sr15_opp_num = ARRAY_SIZE(vdd2_sr15),
 	.sr15_opp     = vdd2_sr15,
 	.sr_mode      = SR_MODE_15,
-#else	
+#else
 	.sr_mode      = SR_MODE_0,
-#endif	
+#endif
 };
 
 
@@ -128,7 +128,7 @@ static inline void sr_write_reg(struct omap_sr *sr, int offset, u32 value)
 	omap_writel(value, sr->srbase_addr + offset);
 }
 
-static inline void sr_modify_reg(struct omap_sr *sr, 
+static inline void sr_modify_reg(struct omap_sr *sr,
 				 int offset, u32 mask, u32 value)
 {
 	u32 reg_val;
@@ -201,7 +201,7 @@ void sr_dump_vp_regs(void)
 	printk("####### PRM_VP2_VLIMITTO   = 0x%08x\n",	PRM_VP2_VLIMITTO);
 	printk("####### PRM_VP2_VOLTAGE    = 0x%08x\n",	PRM_VP2_VOLTAGE);
 	printk("####### PRM_VP2_STATUS     = 0x%08x\n",	PRM_VP2_STATUS);
-	
+
 	printk("####### PRM_LDO_ABB_SETUP  = 0x%08x\n",	PRM_LDO_ABB_SETUP);
 	printk("####### PRM_LDO_ABB_CTRL   = 0x%08x\n",	PRM_LDO_ABB_CTRL);
 }
@@ -216,7 +216,7 @@ static int sr_clk_enable(struct omap_sr *sr)
 
 #ifndef CONFIG_MACH_SIRLOIN_3630
 	/* set fclk- active , iclk- idle */
-	sr_modify_reg(sr, ERRCONFIG, 
+	sr_modify_reg(sr, ERRCONFIG,
 			SR_CLKACTIVITY_MASK, SR_CLKACTIVITY_IOFF_FON);
 #endif
 
@@ -230,7 +230,7 @@ static int sr_clk_disable(struct omap_sr *sr)
 {
 #ifndef CONFIG_MACH_SIRLOIN_3630
 	/* set fclk, iclk- idle */
-	sr_modify_reg(sr, ERRCONFIG, 
+	sr_modify_reg(sr, ERRCONFIG,
 			SR_CLKACTIVITY_MASK, SR_CLKACTIVITY_IOFF_FOFF);
 #endif
 
@@ -274,17 +274,17 @@ static u32 cal_test_nvalue(u32 sennval, u32 senpval)
 
 
 #ifdef CONFIG_MACH_SIRLOIN_3630
-static int sr_set_efuse_nvalues(void) 
-{ 
+static int sr_set_efuse_nvalues(void)
+{
 	sr1.opp2_nvalue = omap_readl(CONTROL_FUSE_OPP50_VDD1 ) & 0xFFFFFF;
 	sr1.opp3_nvalue = omap_readl(CONTROL_FUSE_OPP100_VDD1) & 0xFFFFFF;
 	sr1.opp4_nvalue = omap_readl(CONTROL_FUSE_OPP130_VDD1) & 0xFFFFFF;
 	sr1.opp5_nvalue = omap_readl(CONTROL_FUSE_OPP1G_VDD1 ) & 0xFFFFFF;
-	
-	if( sr1.opp2_nvalue == 0 || sr1.opp3_nvalue == 0 || 
+
+	if( sr1.opp2_nvalue == 0 || sr1.opp3_nvalue == 0 ||
 	    sr1.opp4_nvalue == 0 || sr1.opp5_nvalue == 0 )
 		return 0;
-		
+
 
 	sr2.opp2_nvalue = omap_readl(CONTROL_FUSE_OPP50_VDD2  ) & 0xFFFFFF;
 	sr2.opp3_nvalue = omap_readl(CONTROL_FUSE_OPP100_VDD2 ) & 0xFFFFFF;
@@ -305,7 +305,7 @@ static int sr_set_efuse_nvalues(void)
 	printk("FUSE_OPP100_VDD2=0x%08x @ 0x%08x\n", omap_readl(CONTROL_FUSE_OPP100_VDD2), CONTROL_FUSE_OPP100_VDD2);
 #endif
 
-	return USE_EFUSE_NVALUES; 
+	return USE_EFUSE_NVALUES;
 }
 #else
 static int sr_set_efuse_nvalues(void)
@@ -401,9 +401,9 @@ static void sr_configure_vp(int srid)
 #ifdef CONFIG_MACH_SIRLOIN_3630
 		vpconfig = PRM_VP1_CONFIG_ERROROFFSET | PRM_VP1_CONFIG_TIMEOUTEN;
 #else
-		vpconfig = PRM_VP1_CONFIG_ERROROFFSET 
+		vpconfig = PRM_VP1_CONFIG_ERROROFFSET
 			 | PRM_VP1_CONFIG_ERRORGAIN
-			 | PRM_VP1_CONFIG_INITVOLTAGE 
+			 | PRM_VP1_CONFIG_INITVOLTAGE
 			 | PRM_VP1_CONFIG_TIMEOUTEN;
 #endif
 
@@ -423,12 +423,12 @@ static void sr_configure_vp(int srid)
 
 	} else if (srid == SR2) {
 #ifdef CONFIG_MACH_SIRLOIN_3630
-		vpconfig = PRM_VP1_CONFIG_ERROROFFSET 
+		vpconfig = PRM_VP1_CONFIG_ERROROFFSET
 			 | PRM_VP1_CONFIG_TIMEOUTEN;
 #else
-		vpconfig = PRM_VP2_CONFIG_ERROROFFSET 
+		vpconfig = PRM_VP2_CONFIG_ERROROFFSET
 			 | PRM_VP2_CONFIG_ERRORGAIN
-			 | PRM_VP2_CONFIG_INITVOLTAGE 
+			 | PRM_VP2_CONFIG_INITVOLTAGE
 			 | PRM_VP2_CONFIG_TIMEOUTEN;
 #endif
 
@@ -439,8 +439,8 @@ static void sr_configure_vp(int srid)
 		PRM_VP2_VSTEPMAX = PRM_VP2_VSTEPMAX_SMPSWAITTIMEMAX
 				 | PRM_VP2_VSTEPMAX_VSTEPMAX;
 
-		PRM_VP2_VLIMITTO = PRM_VP2_VLIMITTO_VDDMAX 
-				 | PRM_VP2_VLIMITTO_VDDMIN 
+		PRM_VP2_VLIMITTO = PRM_VP2_VLIMITTO_VDDMAX
+				 | PRM_VP2_VLIMITTO_VDDMIN
 				 | PRM_VP2_VLIMITTO_TIMEOUT;
 
 		PRM_VP2_CONFIG |=  PRM_VP2_CONFIG_INITVDD;
@@ -469,13 +469,13 @@ static void sr_configure_vc(void)
 
 #ifdef CONFIG_TWL4030_CORE
 	if (is_twl5030() && is_twl_rev_equal_to(TWL5030_REV_ES1_0)) {
-		PRM_VC_CMD_VAL_1 = 
+		PRM_VC_CMD_VAL_1 =
 			(PRM_VC_CMD_VAL1_ON << PRM_VC_CMD_ON_SHIFT)   |
 			(PRM_VC_CMD_VAL1_ON << PRM_VC_CMD_ONLP_SHIFT) |
 			(PRM_VC_CMD_VAL1_ON << PRM_VC_CMD_RET_SHIFT)  |
 			(PRM_VC_CMD_VAL1_ON << PRM_VC_CMD_OFF_SHIFT);
 	} else {
-		PRM_VC_CMD_VAL_1 = 
+		PRM_VC_CMD_VAL_1 =
 			(PRM_VC_CMD_VAL1_ON   << PRM_VC_CMD_ON_SHIFT)   |
 			(PRM_VC_CMD_VAL1_ONLP << PRM_VC_CMD_ONLP_SHIFT) |
 			(PRM_VC_CMD_VAL1_RET  << PRM_VC_CMD_RET_SHIFT)  |
@@ -487,14 +487,14 @@ static void sr_configure_vc(void)
 
 	PRM_VC_CH_CONF = PRM_VC_CH_CONF_CMD1 | PRM_VC_CH_CONF_RAV1;
 
-	PRM_VC_I2C_CFG =  PRM_VC_I2C_CFG_MCODE 
+	PRM_VC_I2C_CFG =  PRM_VC_I2C_CFG_MCODE
 			| PRM_VC_I2C_CFG_HSEN
-			
+
 	/* Errata ID: i531 (3630)
 	 * 2.10. 1 Extra Power consumed when Repeated Start operation
 	 * mode is enabled on I2C interface dedicated for Smart Reflex (I2C4)
 	 */
-#if 0	 
+#if 0
 			| PRM_VC_I2C_CFG_SREN
 #endif
 			;
@@ -570,11 +570,11 @@ static void sr_configure(struct omap_sr *sr)
 		sr_write_reg(sr, SRCONFIG, sr_config);
 
 #ifdef CONFIG_MACH_SIRLOIN_3630
-		sr_modify_reg(sr, ERRCONFIG, 
+		sr_modify_reg(sr, ERRCONFIG,
 			(SR_ERRWEIGHT_MASK | SR_ERRMAXLIMIT_MASK),
 			(SR1_ERRWEIGHT | SR1_ERRMAXLIMIT));
 #else
-		sr_modify_reg(sr, ERRCONFIG, 
+		sr_modify_reg(sr, ERRCONFIG,
 			(SR_ERRWEIGHT_MASK | SR_ERRMAXLIMIT_MASK | SR_ERRMINLIMIT_MASK),
 			(SR1_ERRWEIGHT | SR1_ERRMAXLIMIT | SR1_ERRMINLIMIT));
 #endif
@@ -599,11 +599,11 @@ static void sr_configure(struct omap_sr *sr)
 		sr_write_reg(sr, SRCONFIG, sr_config);
 
 #ifdef CONFIG_MACH_SIRLOIN_3630
-		sr_modify_reg(sr, ERRCONFIG, 
+		sr_modify_reg(sr, ERRCONFIG,
 			(SR_ERRWEIGHT_MASK | SR_ERRMAXLIMIT_MASK),
 			(SR2_ERRWEIGHT | SR2_ERRMAXLIMIT));
 #else
-		sr_modify_reg(sr, ERRCONFIG, 
+		sr_modify_reg(sr, ERRCONFIG,
 			(SR_ERRWEIGHT_MASK | SR_ERRMAXLIMIT_MASK | SR_ERRMINLIMIT_MASK),
 			(SR2_ERRWEIGHT | SR2_ERRMAXLIMIT | SR2_ERRMINLIMIT));
 #endif
@@ -663,6 +663,7 @@ static int sr_reset_voltage(int srid)
 
 /******************************************************************************/
 
+#ifdef CONFIG_MACH_SIRLOIN_3630
 static u8 sr1errminlimit[5] = {
 //	0x00, /* OPP1, not used */
 	SR1_ERRMINLIMIT_OPP2,
@@ -692,6 +693,8 @@ static u32 vp2errgain[5] = {
 	PRM_VP2_CONFIG_ERRORGAIN_OPP2,
 	PRM_VP2_CONFIG_ERRORGAIN_OPP3
 };
+
+#endif /* CONFIG_MACH_SIRLOIN_3630 */
 
 static void sr_enable(struct omap_sr *sr, u32 target_opp_no)
 {
@@ -801,8 +804,10 @@ static void sr_enable(struct omap_sr *sr, u32 target_opp_no)
 			(ERRCONFIG_VPBOUNDINTEN | ERRCONFIG_VPBOUNDINTST),
 			(ERRCONFIG_VPBOUNDINTEN | ERRCONFIG_VPBOUNDINTST));
 
+#ifdef CONFIG_MACH_SIRLOIN_3630
 	sr_modify_reg(sr, ERRCONFIG,
 			(SR1_ERRORMINLIMIT_MASK), (errorminlimit));
+#endif /* CONFIG_MACH_SIRLOIN_3630 */
 
 	if (sr->srid == SR1) {
 		/* set/latch init voltage */
@@ -852,7 +857,7 @@ static void sr_disable(struct omap_sr *sr)
 	}
 }
 
-static void 
+static void
 sr_start_vddautocomp(struct omap_sr *sr, u32 target_opp_no)
 {
 	if (!sr->enabled) {
@@ -862,7 +867,7 @@ sr_start_vddautocomp(struct omap_sr *sr, u32 target_opp_no)
 	}
 }
 
-static int  
+static int
 sr_stop_vddautocomp(struct omap_sr *sr)
 {
 	if (sr->enabled) {
@@ -876,13 +881,13 @@ sr_stop_vddautocomp(struct omap_sr *sr)
 void enable_smartreflex(int srid)
 {
 	if (srid == SR1) {
-		sr_start_vddautocomp ( &sr1, 
+		sr_start_vddautocomp ( &sr1,
 			get_opp_no(prcm_get_current_vdd1_opp()));
 		return;
 
 	}
 	if (srid == SR2) {
-		sr_start_vddautocomp ( &sr2, 
+		sr_start_vddautocomp ( &sr2,
 			get_opp_no(prcm_get_current_vdd2_opp()));
 		return;
 	}
@@ -929,7 +934,7 @@ int disable_smartreflex(int srid)
 #ifdef CONFIG_MACH_SIRLOIN_3630
 
 #define  FBB_OPP   CO_VDD1_OPP5
- 
+
 static void omap3630_abb_change_active_opp(u32 target_opp_no)
 {
 	u32 val;
@@ -976,7 +981,7 @@ static void omap3630_abb_change_active_opp(u32 target_opp_no)
 #endif /* CONFIG_MACH_SIRLOIN_3630 */
 
 
-static u32 
+static u32
 sr_get_curr_vsel(struct omap_sr *sr, u32 opp_no)
 {
 	if (sr->srid == SR1) {
@@ -996,7 +1001,7 @@ sr_get_curr_vsel(struct omap_sr *sr, u32 opp_no)
 	return 0;
 }
 
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
 
 static u32
 sr_get_nominal_voltage(int vdd, int opp_no)
@@ -1041,7 +1046,7 @@ sr15_update_target_opp(int vdd, int opp_no, int msec )
 		sr->sr15_active = 0;
 		sr->sr15_opp[opp_no-1].target_vsel  = new_vsel;
 		sr->sr15_opp[opp_no-1].target_valid = 1;
-		sr->sr15_opp[opp_no-1].expires = jiffies + 
+		sr->sr15_opp[opp_no-1].expires = jiffies +
 				       sr15_reeval_period * HZ;
 		printk( KERN_NOTICE "SR%d: OPP%d: update vsel %d => %d\n",
 		        sr->srid, opp_no, old_vsel, new_vsel );
@@ -1062,7 +1067,7 @@ sr15_invalidate_opps(struct omap_sr *sr)
 	}
 }
 
-static  u32 
+static  u32
 sr_get_target_voltage (int vdd, int target_no, int curr_no )
 {
 	u32 target_vsel;
@@ -1107,7 +1112,7 @@ sr_get_target_voltage (int vdd, int target_no, int curr_no )
 
 #else  /* CONFIG_OMAP_SMARTREFLEX_v15 */
 
-static  u32 
+static  u32
 sr_get_target_voltage (int vdd, int target_no, int curr_no )
 {
 	u32 target_vsel = 0;
@@ -1154,7 +1159,7 @@ repeat:
 		t2_smps_steps = abs(vsel - sr_get_curr_vsel( &sr1, cur_opp_no));
 		sr_status = sr_stop_vddautocomp (&sr1);
 
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
 		/* override sr_status if we use sr15 */
 		if (sr1.sr_mode == SR_MODE_15) {
 			if( sr1.sr15_active )
@@ -1163,7 +1168,7 @@ repeat:
 				sr_status = SR_FALSE;
 		}
 #endif
-		
+
 
 		PRM_VC_CMD_VAL_0 = (PRM_VC_CMD_VAL_0 & ~PRM_VC_CMD_ON_MASK) |
 				    (vsel << PRM_VC_CMD_ON_SHIFT);
@@ -1173,7 +1178,7 @@ repeat:
 		t2_smps_steps = abs(vsel - sr_get_curr_vsel( &sr2, cur_opp_no));
 		sr_status = sr_stop_vddautocomp (&sr2);
 
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
 		/* override sr_status if we use sr15 */
 		if (sr1.sr_mode == SR_MODE_15) {
 			if( sr2.sr15_active )
@@ -1182,18 +1187,20 @@ repeat:
 				sr_status = SR_FALSE;
 		}
 #endif
- 
+
 		PRM_VC_CMD_VAL_1 = (PRM_VC_CMD_VAL_1 & ~PRM_VC_CMD_ON_MASK) |
 				    (vsel << PRM_VC_CMD_ON_SHIFT);
 		reg_addr = R_VDD2_SR_CONTROL;
 	}
 
+#ifdef CONFIG_MACH_SIRLOIN_3630
 	if (vdd == PRCM_VDD1) {
 		/* We only need to do this here for 5->non-5 transitions */
 		if( cur_opp_no == FBB_OPP && target_opp_no != FBB_OPP ) {
 			omap3630_abb_change_active_opp(target_opp_no);
 		}
 	}
+#endif /* CONFIG_MACH_SIRLOIN_3630 */
 
 #ifdef CONFIG_OMAP_VOLT_SR_BYPASS
 	vc_bypass_value = (vsel << PRM_VC_BYPASS_DATA_SHIFT) |
@@ -1274,7 +1281,7 @@ repeat:
 			panic("%s: Voltage ForceUpdate timed out.\n", "VDD2");
 		}
 		/* Clear interrupt status */
-		PRM_IRQSTATUS_MPU = OMAP3630_VP2_TRANXDONE_ST; 
+		PRM_IRQSTATUS_MPU = OMAP3630_VP2_TRANXDONE_ST;
 	}
 #endif
 
@@ -1350,18 +1357,18 @@ static ssize_t omap_sr_vdd1_autocomp_store(struct kobject *kobj,
 	if (value == 0 ) {
 		sr1.sr_mode = SR_MODE_0;
 		disable_smartreflex (SR1);
-	} 
+	}
 	else if (value == 1 || value == 30) {
 		sr1.sr_mode = SR_MODE_30;
 		enable_smartreflex  (SR1);
 	}
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
 	else if (value == 15) {
 		sr1.sr_mode = SR_MODE_15;
 		disable_smartreflex (SR1);
 		sr15_invalidate_opps(&sr1);
 	}
-#endif	
+#endif
 
 	return n;
 }
@@ -1401,12 +1408,12 @@ static ssize_t omap_sr_vdd2_autocomp_store(struct kobject *kobj,
 	if (value == 0 ) {
 		sr2.sr_mode = SR_MODE_0;
 		disable_smartreflex (SR2);
-	} 
+	}
 	else if (value == 1 || value == 30) {
 		sr2.sr_mode = SR_MODE_30;
 		enable_smartreflex  (SR2);
 	}
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
 	else if (value == 15 ) {
 		sr2.sr_mode = SR_MODE_15;
 		disable_smartreflex (SR2);
@@ -1443,7 +1450,7 @@ static ssize_t omap_sr_setnvalues_test_store(struct kset *subsys,
 	}
 
 	if ((sr1.enabled == 1) || (sr2.enabled == 1)) {
-		printk(KERN_ERR 
+		printk(KERN_ERR
 			"\nDisable SR autocomp before changing nvalues\n");
 		return -EINVAL;
 	}
@@ -1460,7 +1467,7 @@ static ssize_t omap_sr_setnvalues_test_store(struct kset *subsys,
 	return n;
 }
 
-static struct subsys_attribute sr_setnvalues_test = {
+static struct kobj_attribute sr_setnvalues_test = {
 	.attr = {
 	.name = __stringify(sr_setnvalues_test),
 	.mode = 0644,
@@ -1471,6 +1478,7 @@ static struct subsys_attribute sr_setnvalues_test = {
 
 /******************************************************************************/
 
+#ifdef CONFIG_MACH_SIRLOIN_3630
 /* Sysfs interface to set VP1 error gain values */
 static ssize_t omap_sr_vp1errgain_show(struct kset *subsys, char *buf)
 {
@@ -1498,7 +1506,7 @@ static ssize_t omap_sr_vp1errgain_store(struct kset *subsys,
 	return n;
 }
 
-static struct subsys_attribute sr_vp1errgain = {
+static struct kobj_attribute sr_vp1errgain = {
 	.attr = {
 	.name = __stringify(sr_vp1errgain),
 	.mode = 0644,
@@ -1532,7 +1540,7 @@ static ssize_t omap_sr_vp2errgain_store(struct kset *subsys,
 	return n;
 }
 
-static struct subsys_attribute sr_vp2errgain = {
+static struct kobj_attribute sr_vp2errgain = {
 	.attr = {
 	.name = __stringify(sr_vp2errgain),
 	.mode = 0644,
@@ -1569,7 +1577,7 @@ static ssize_t omap_sr_sr1errminlimit_store(struct kset *subsys,
 	return n;
 }
 
-static struct subsys_attribute sr_sr1errminlimit= {
+static struct kobj_attribute sr_sr1errminlimit= {
 	.attr = {
 	.name = __stringify(sr_sr1errminlimit),
 	.mode = 0644,
@@ -1603,7 +1611,7 @@ static ssize_t omap_sr_sr2errminlimit_store(struct kset *subsys,
 	return n;
 }
 
-static struct subsys_attribute sr_sr2errminlimit= {
+static struct kobj_attribute sr_sr2errminlimit= {
 	.attr = {
 	.name = __stringify(sr_sr2errminlimit),
 	.mode = 0644,
@@ -1612,14 +1620,16 @@ static struct subsys_attribute sr_sr2errminlimit= {
 	.store = omap_sr_sr2errminlimit_store,
 };
 
-static ssize_t 
+#endif /* CONFIG_MACH_SIRLOIN_3630 */
+
+static ssize_t
 vdd1_vsel_show(struct kset *subsys, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", PRM_VP1_VOLTAGE );
 }
 
 
-static struct subsys_attribute vdd1_vsel = {
+static struct kobj_attribute vdd1_vsel = {
 	.attr = {
 	.name = __stringify(vdd1_vsel),
 	.mode = 0444,
@@ -1628,14 +1638,14 @@ static struct subsys_attribute vdd1_vsel = {
 };
 
 
-static ssize_t 
+static ssize_t
 vdd2_vsel_show(struct kset *subsys, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", PRM_VP2_VOLTAGE );
 }
 
 
-static struct subsys_attribute vdd2_vsel = {
+static struct kobj_attribute vdd2_vsel = {
 	.attr = {
 	.name = __stringify(vdd2_vsel),
 	.mode = 0444,
@@ -1644,15 +1654,15 @@ static struct subsys_attribute vdd2_vsel = {
 };
 
 
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
 
-static ssize_t 
+static ssize_t
 sr15_period_show(struct kset *subsys, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", sr15_reeval_period );
 }
 
-static ssize_t 
+static ssize_t
 sr15_period_store(struct kset *subsys, const char *buf, size_t n)
 {
 	u32 value;
@@ -1675,7 +1685,7 @@ sr15_period_store(struct kset *subsys, const char *buf, size_t n)
 }
 
 
-static struct subsys_attribute sr15_period = {
+static struct kobj_attribute sr15_period = {
 	.attr = {
 	.name = __stringify(sr15_period),
 	.mode = 0644,
@@ -1684,14 +1694,14 @@ static struct subsys_attribute sr15_period = {
 	.store = sr15_period_store,
 };
 
-static ssize_t 
+static ssize_t
 sr15_vdd1_opp_state_show(struct kset *subsys, char *buf)
 {
 	int i, len, vsel;
 
 	len = 0;
 	for ( i = 0; i < sr1.sr15_opp_num; i++ ) {
-		vsel = get_mpu_iva2_vdd1_volts(i+1); 
+		vsel = get_mpu_iva2_vdd1_volts(i+1);
 		len += snprintf(buf + len, PAGE_SIZE, "%3d ", vsel);
 	}
 	len += snprintf(buf + len, PAGE_SIZE, "\n");
@@ -1699,9 +1709,9 @@ sr15_vdd1_opp_state_show(struct kset *subsys, char *buf)
 	for ( i = 0; i < sr1.sr15_opp_num; i++ ) {
 		if (sr1.sr15_opp[i].target_valid)
 			vsel = sr1.sr15_opp[i].target_vsel;
-		else 
+		else
 			vsel = 0;
-		
+
 		len += snprintf(buf + len, PAGE_SIZE, "%3d ", vsel);
 	}
 
@@ -1711,7 +1721,7 @@ sr15_vdd1_opp_state_show(struct kset *subsys, char *buf)
 }
 
 
-static struct subsys_attribute sr15_vdd1_opp_state = {
+static struct kobj_attribute sr15_vdd1_opp_state = {
 	.attr = {
 	.name = __stringify(sr15_vdd1_opp_state),
 	.mode = 0444,
@@ -1720,7 +1730,7 @@ static struct subsys_attribute sr15_vdd1_opp_state = {
 };
 
 
-static ssize_t 
+static ssize_t
 sr15_vdd2_opp_state_show(struct kset *subsys, char *buf)
 {
 	int i, len, vsel;
@@ -1736,9 +1746,9 @@ sr15_vdd2_opp_state_show(struct kset *subsys, char *buf)
 	for ( i = 0; i < sr2.sr15_opp_num; i++ ) {
 		if (sr2.sr15_opp[i].target_valid)
 			vsel = sr2.sr15_opp[i].target_vsel;
-		else 
+		else
 			vsel = 0;
-		
+
 		len += snprintf(buf + len, PAGE_SIZE, "%3d ", vsel);
 	}
 
@@ -1748,7 +1758,7 @@ sr15_vdd2_opp_state_show(struct kset *subsys, char *buf)
 }
 
 
-static struct subsys_attribute sr15_vdd2_opp_state = {
+static struct kobj_attribute sr15_vdd2_opp_state = {
 	.attr = {
 	.name = __stringify(sr15_vdd2_opp_state),
 	.mode = 0444,
@@ -1794,7 +1804,7 @@ static int __init omap3_sr_init(void)
 
 	sr_configure_vc();
 
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
 	sr15_invalidate_opps(&sr1);
 	sr15_invalidate_opps(&sr2);
 #endif
@@ -1819,46 +1829,49 @@ static int __init omap3_sr_init(void)
 	if (ret)
 		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = subsys_create_file(&power_subsys, &sr_setnvalues_test);
+	ret = sysfs_create_file(power_kobj, &sr_setnvalues_test.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = subsys_create_file(&power_subsys, &sr_vp1errgain);
+#ifdef CONFIG_MACH_SIRLOIN_3630
+	ret = sysfs_create_file(power_kobj, &sr_vp1errgain.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = subsys_create_file(&power_subsys, &sr_vp2errgain);
+	ret = sysfs_create_file(power_kobj, &sr_vp2errgain.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = subsys_create_file(&power_subsys, &sr_sr1errminlimit);
+	ret = sysfs_create_file(power_kobj, &sr_sr1errminlimit.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = subsys_create_file(&power_subsys, &sr_sr2errminlimit);
+	ret = sysfs_create_file(power_kobj, &sr_sr2errminlimit.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = subsys_create_file(&power_subsys, &vdd1_vsel);
-	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+#endif /* CONFIG_MACH_SIRLOIN_3630 */
 
-	ret = subsys_create_file(&power_subsys, &vdd2_vsel);
+	ret = sysfs_create_file(power_kobj, &vdd1_vsel.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-#ifdef CONFIG_OMAP_SMARTREFLEX_v15 
-	ret = subsys_create_file(&power_subsys, &sr15_period);
+	ret = sysfs_create_file(power_kobj, &vdd2_vsel.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = subsys_create_file(&power_subsys, &sr15_vdd1_opp_state);
+#ifdef CONFIG_OMAP_SMARTREFLEX_v15
+	ret = sysf_create_file(power_kobj, &sr15_period.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
-	ret = subsys_create_file(&power_subsys, &sr15_vdd2_opp_state);
+	ret = sysfs_create_file(power_kobj, &sr15_vdd1_opp_state.attr);
 	if (ret)
-		printk(KERN_ERR "subsys_create_file failed: %d\n", ret);
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
+
+	ret = sysfs_create_file(power_kobj, &sr15_vdd2_opp_state.attr);
+	if (ret)
+		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 #endif
 
 	printk(KERN_INFO "SmartReflex Driver: Initialized\n");
