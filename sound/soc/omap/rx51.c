@@ -281,7 +281,7 @@ static struct snd_soc_jack_gpio rx51_av_jack_gpios[] = {
 	{
 		.gpio = RX51_JACK_DETECT_GPIO,
 		.name = "avdet-gpio",
-		.report = SND_JACK_VIDEOOUT,
+		.report = SND_JACK_HEADSET,
 		.invert = 1,
 		.debounce_time = 200,
 	},
@@ -379,7 +379,7 @@ static int rx51_aic34_init(struct snd_soc_pcm_runtime *rtd)
 
 	/* AV jack detection */
 	err = snd_soc_jack_new(codec, "AV Jack",
-			       SND_JACK_VIDEOOUT, &rx51_av_jack);
+			       SND_JACK_HEADSET, &rx51_av_jack);
 	if (err)
 		return err;
 	err = snd_soc_jack_add_gpios(&rx51_av_jack,
