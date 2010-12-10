@@ -1046,6 +1046,7 @@ twl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	/* Disable TWL4030/TWL5030 I2C Pull-up on I2C1 and I2C4(SR) interface.
 	 * Program I2C_SCL_CTRL_PU(bit 0)=0, I2C_SDA_CTRL_PU (bit 2)=0,
 	 * SR_I2C_SCL_CTRL_PU(bit 4)=0 and SR_I2C_SDA_CTRL_PU(bit 6)=0.
+	 * Also enable the smartreflex I2S bit.
 	 */
 
 	if (twl_class_is_4030()) {
@@ -1053,6 +1054,18 @@ twl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		temp &= ~(SR_I2C_SDA_CTRL_PU | SR_I2C_SCL_CTRL_PU | \
 		I2C_SDA_CTRL_PU | I2C_SCL_CTRL_PU);
 		twl_i2c_write_u8(TWL4030_MODULE_INTBR, temp, REG_GPPUPDCTR1);
+
+		/* The smartreflex bit on twl4030 needs to be enabled by
+		 * default irrespective of whether smartreflex module is
+		 * enabled on the OMAP side or not. This is because without
+		 * this bit enabled the voltage scaling through
+		 * vp forceupdate does not function properly.
+		 */
+		twl_i2c_read_u8(TWL4030_MODULE_PM_RECEIVER, &temp,
+			TWL4030_PM_RECEIVER_DCDC_GLOBAL_CFG);
+		temp |= SMARTREFLEX_ENABLE;
+		twl_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER, temp,
+			TWL4030_PM_RECEIVER_DCDC_GLOBAL_CFG);
 	}
 
 	status = add_children(pdata, id->driver_data);

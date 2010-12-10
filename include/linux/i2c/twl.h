@@ -434,6 +434,17 @@ static inline int twl6030_mmc_card_detect(struct device *dev, int slot)
 
 /*----------------------------------------------------------------------*/
 
+/*
+ * PM Receiver module register offsets (use TWL4030_MODULE_PM_RECEIVER)
+ */
+
+#define TWL4030_PM_RECEIVER_DCDC_GLOBAL_CFG	0x06
+
+/* Smartreflex I2S bus enable/ vmode enable bit */
+#define SMARTREFLEX_ENABLE			BIT(3)
+
+/*----------------------------------------------------------------------*/
+
 /* Power bus message definitions */
 
 /* The TWL4030/5030 splits its power-management resources (the various
