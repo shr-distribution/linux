@@ -84,7 +84,7 @@ static int set_bias_level_post(struct snd_soc_card *card,
 			       ret);
 		}
 
-		ret = snd_soc_dai_set_pll(aif1, 0, 0, 0, 0);
+		ret = snd_soc_dai_set_pll(aif1, WM8994_FLL1, 0, 0, 0);
 		if (ret < 0) {
 			pr_err("snd_soc_dai_set_pll failed: %d\n",
 			       ret);
