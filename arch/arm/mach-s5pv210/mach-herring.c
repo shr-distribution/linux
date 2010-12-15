@@ -2208,7 +2208,7 @@ static struct wm8994_pdata wm8994_pdata = {
 	/* AIF2 and AIF3 in AIF function mode, other GPIOs not in use */
 	.gpio_defaults = {
 		 0xa101, 0x8100, 0x0100, 0x0100, 0x8100, 0xa101,
-		 0x0100, 0xa101, 0xa101, 0xa101, 0xa101
+		 0x0100, 0x8100, 0x0100, 0x0100, 0x0100
 	 },
 	 .drc_cfgs = wm8994_crespo_drc_cfgs,
 	 .num_drc_cfgs = ARRAY_SIZE(wm8994_crespo_drc_cfgs),
