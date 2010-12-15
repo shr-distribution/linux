@@ -89,8 +89,14 @@ struct platform_device rx51_display_device = {
 	},
 };
 
+static struct platform_device rx51_sgx_device = {
+	.name		= "pvrsrvkm",
+	.id		= -1,
+};
+
 static struct platform_device *rx51_video_devices[] __initdata = {
 	&rx51_display_device,
+	&rx51_sgx_device,
 };
 
 static int __init rx51_video_init(void)
