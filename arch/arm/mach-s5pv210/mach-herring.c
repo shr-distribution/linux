@@ -2149,6 +2149,51 @@ static struct regulator_init_data wm8994_ldo2 = {
 	.consumer_supplies	= wm8994_dcvdd_supply,
 };
 
+/*
+ * If application layer need to set drc and eq through codec device,
+ * use platform_data of wm8994 chip.
+ * because user can extend the number of drc and eq,
+ * use array.
+ */
+struct wm8994_drc_cfg wm8994_crespo_drc_cfgs[] = {
+	{
+		.name = "Hifi_Playback_DRC",
+		.regs[0] = 0x00BC,
+		.regs[1] = 0x0845,
+		.regs[2] = 0x0028,
+		.regs[3] = 0x0186,
+		.regs[4] = 0x0000,
+	},
+};
+
+struct wm8994_retune_mobile_cfg wm8994_crespo_eq_cfgs[] = {
+	{
+		.name = "Hifi_Playback_EQ",
+		.rate = 44100,
+		.regs[0] = 0x0019,/* 480h */
+		.regs[1] = 0x6280,/* 481h */
+		.regs[2] = 0x0FC3,/* 482h */
+		.regs[3] = 0x03FD,/* 483h */
+		.regs[4] = 0x00F4,/* 484h */
+		.regs[5] = 0x1F30,/* 485h */
+		.regs[6] = 0xF0CD,/* 486h */
+		.regs[7] = 0x040A,/* 487h */
+		.regs[8] = 0x032C,/* 488h */
+		.regs[9] = 0x1C52,/* 489h */
+		.regs[10] = 0xF379,/* 48Ah */
+		.regs[11] = 0x040A,/* 48Bh */
+		.regs[12] = 0x0DC1,/* 48Ch */
+		.regs[13] = 0x168E,/* 48Dh */
+		.regs[14] = 0xF829,/* 48Eh */
+		.regs[15] = 0x07AD,/* 48Fh */
+		.regs[16] = 0x1103,/* 490h */
+		.regs[17] = 0x0564,/* 491h */
+		.regs[18] = 0x0559,/* 492h */
+		.regs[19] = 0x4000,/* 493h */
+	},
+};
+
+
 static struct wm8994_pdata wm8994_pdata = {
 	.ldo = {
 		{
@@ -2165,6 +2210,10 @@ static struct wm8994_pdata wm8994_pdata = {
 		 0xa101, 0x8100, 0x0100, 0x0100, 0x8100, 0xa101,
 		 0x0100, 0xa101, 0xa101, 0xa101, 0xa101
 	 },
+	 .drc_cfgs = wm8994_crespo_drc_cfgs,
+	 .num_drc_cfgs = ARRAY_SIZE(wm8994_crespo_drc_cfgs),
+	 .retune_mobile_cfgs = wm8994_crespo_eq_cfgs,
+	 .num_retune_mobile_cfgs = ARRAY_SIZE(wm8994_crespo_eq_cfgs),
 
 	/*
 	 * Mark the line outputs as differential so that the driver
