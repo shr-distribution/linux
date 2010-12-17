@@ -103,7 +103,7 @@ static int set_bias_level_post(struct snd_soc_card *card,
 /*  BLC(bits-per-channel) --> BFS(bit clock shud be >= FS*(Bit-per-channel)*2)*/
 /*  BFS --> RFS(must be a multiple of BFS)                                  */
 /*  RFS & SRC_CLK --> Prescalar Value(SRC_CLK / RFS_VAL / fs - 1)           */
-static int smdkc110_hw_params(struct snd_pcm_substream *substream,
+static int herring_hifi_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
@@ -143,7 +143,7 @@ static int smdkc110_hw_params(struct snd_pcm_substream *substream,
 				SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBM_CFM);
 
 	if (ret < 0) {
-		printk(KERN_ERR "smdkc110_wm8994_hw_params :\
+		printk(KERN_ERR "herring_hifi_hw_params :\
 				 Codec DAI configuration error!\n");
 		return ret;
 	}
@@ -154,7 +154,7 @@ static int smdkc110_hw_params(struct snd_pcm_substream *substream,
 
 	if (ret < 0) {
 		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params :\
+			"herring_hifi_hw_params :\
 				AP DAI configuration error!\n");
 		return ret;
 	}
@@ -165,7 +165,7 @@ static int smdkc110_hw_params(struct snd_pcm_substream *substream,
 
 	if (ret < 0) {
 		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params :\
+			"herring_hifi_hw_params :\
 			AP sys clock INT setting error!\n");
 		return ret;
 	}
@@ -174,7 +174,7 @@ static int smdkc110_hw_params(struct snd_pcm_substream *substream,
 					params_rate(params), SND_SOC_CLOCK_IN);
 	if (ret < 0) {
 		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params :\
+			"herring_hifi_hw_params :\
 			AP sys clock I2SEXT setting error!\n");
 		return ret;
 	}
@@ -183,8 +183,8 @@ static int smdkc110_hw_params(struct snd_pcm_substream *substream,
 }
 
 /* machine stream operations */
-static struct snd_soc_ops smdkc110_ops = {
-	.hw_params = smdkc110_hw_params,
+static struct snd_soc_ops hifi_ops = {
+	.hw_params = herring_hifi_hw_params,
 };
 
 static int aif2_clk_control(struct snd_soc_dai *dai, bool enable, int rate)
@@ -318,7 +318,7 @@ static struct snd_soc_dai_link herring_dai[] = {
 		.stream_name = "WM8994 HiFi",
 		.cpu_dai = &s3c64xx_i2s_dai[I2S_NUM],
 		.codec_dai = &wm8994_dai[0],
-		.ops = &smdkc110_ops,
+		.ops = &hifi_ops,
 	},
 	{
 		.name = "CP",
@@ -332,12 +332,12 @@ static struct snd_soc_dai_link herring_dai[] = {
 		.stream_name = "BT",
 		.cpu_dai = &bt_dai,
 		.codec_dai = &wm8994_dai[2],
-		.ops = &smdkc110_ops,
+		.ops = &hifi_ops,
 	},
 };
 
-static struct snd_soc_card smdkc100 = {
-	.name = "smdkc110",
+static struct snd_soc_card herring = {
+	.name = "herring",
 	.platform = &s3c_dma_wrapper,
 	.dai_link = herring_dai,
 	.num_links = ARRAY_SIZE(herring_dai),
@@ -345,13 +345,13 @@ static struct snd_soc_card smdkc100 = {
 };
 
 /* audio subsystem */
-static struct snd_soc_device smdkc1xx_snd_devdata = {
-	.card = &smdkc100,
+static struct snd_soc_device herring_snd_devdata = {
+	.card = &herring,
 	.codec_dev = &soc_codec_dev_wm8994,
 };
 
-static struct platform_device *smdkc1xx_snd_device;
-static int __init smdkc110_audio_init(void)
+static struct platform_device *herring_snd_device;
+static int __init herring_audio_init(void)
 {
 	int ret;
 
@@ -360,30 +360,30 @@ static int __init smdkc110_audio_init(void)
 	snd_soc_register_dai(&cp_dai);
 	snd_soc_register_dai(&bt_dai);
 
-	smdkc1xx_snd_device = platform_device_alloc("soc-audio", 0);
-	if (!smdkc1xx_snd_device)
+	herring_snd_device = platform_device_alloc("soc-audio", 0);
+	if (!herring_snd_device)
 		return -ENOMEM;
 
-	platform_set_drvdata(smdkc1xx_snd_device, &smdkc1xx_snd_devdata);
-	smdkc1xx_snd_devdata.dev = &smdkc1xx_snd_device->dev;
-	ret = platform_device_add(smdkc1xx_snd_device);
+	platform_set_drvdata(herring_snd_device, &herring_snd_devdata);
+	herring_snd_devdata.dev = &herring_snd_device->dev;
+	ret = platform_device_add(herring_snd_device);
 
 	if (ret)
-		platform_device_put(smdkc1xx_snd_device);
+		platform_device_put(herring_snd_device);
 
 	return ret;
 }
 
-static void __exit smdkc110_audio_exit(void)
+static void __exit herring_audio_exit(void)
 {
 	debug_msg("%s\n", __func__);
 
-	platform_device_unregister(smdkc1xx_snd_device);
+	platform_device_unregister(herring_snd_device);
 }
 
-module_init(smdkc110_audio_init);
-module_exit(smdkc110_audio_exit);
+module_init(herring_audio_init);
+module_exit(herring_audio_exit);
 
 /* Module information */
-MODULE_DESCRIPTION("ALSA SoC SMDKC110 WM8994");
+MODULE_DESCRIPTION("ALSA SoC WM8994 Herring(C110)");
 MODULE_LICENSE("GPL");
