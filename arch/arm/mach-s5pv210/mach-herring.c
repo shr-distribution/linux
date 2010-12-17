@@ -5720,6 +5720,8 @@ static void __init sound_init(void)
 	__raw_writel(reg, S5P_CLK_OUT);
 
 	gpio_request(GPIO_MICBIAS_EN, "micbias_enable");
+
+	gpio_request(GPIO_EAR_SEL, "earsel_enable");
 }
 
 static s8 accel_rotation_wimax_rev0[9] = {

@@ -18,6 +18,9 @@
 #include <sound/soc-dapm.h>
 #include <mach/regs-clock.h>
 #include <plat/regs-iis.h>
+#include <mach/gpio.h>
+#include <mach/gpio-herring.h>
+
 #include "../codecs/wm8994.h"
 #include "s3c-dma.h"
 #include "s5pc1xx-i2s.h"
@@ -34,6 +37,53 @@
 #else
 #define debug_msg(x...)
 #endif
+
+static const char *hp_analogue_text[] = {
+	"Playback Mode", "VoiceCall Mode"
+};
+
+static const struct soc_enum hp_mode_enum[] = {
+	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(hp_analogue_text), hp_analogue_text),
+};
+
+static int get_hp_output_mode(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	printk(KERN_DEBUG "It doens't support get() func. user doesn't need to read\n");
+
+	return 0;
+}
+
+static int set_hp_output_mode(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	unsigned int mode = ucontrol->value.integer.value[0];
+
+	debug_msg("set hp mode : %s\n", hp_analogue_text[mode]);
+
+	gpio_set_value(GPIO_EAR_SEL, mode);
+
+	return 0;
+}
+
+static const struct snd_kcontrol_new herring_controls[] = {
+	SOC_ENUM_EXT("HP Output Mode", hp_mode_enum[0],
+			get_hp_output_mode, set_hp_output_mode),
+};
+
+static int herring_wm8994_init(struct snd_soc_codec *codec)
+{
+	int err;
+
+	/* add herring specific kcontorls */
+	err = snd_soc_add_controls(codec, herring_controls,
+			ARRAY_SIZE(herring_controls));
+
+	if (err < 0)
+		return err;
+
+	return 0;
+}
 
 /*
  * Since we don't want to reclock on the fly (as it will glitch audio)
@@ -319,6 +369,7 @@ static struct snd_soc_dai_link herring_dai[] = {
 		.cpu_dai = &s3c64xx_i2s_dai[I2S_NUM],
 		.codec_dai = &wm8994_dai[0],
 		.ops = &hifi_ops,
+		.init = herring_wm8994_init,
 	},
 	{
 		.name = "CP",
