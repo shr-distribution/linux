@@ -2069,38 +2069,9 @@ static struct s3c_adc_mach_info s3c_adc_platform __initdata = {
 };
 #endif
 
-/* in revisions before 0.9, there is a common mic bias gpio */
-
-static DEFINE_SPINLOCK(mic_bias_lock);
-static bool wm8994_mic_bias;
-static bool jack_mic_bias;
-static void set_shared_mic_bias(void)
-{
-	gpio_set_value(GPIO_MICBIAS_EN, wm8994_mic_bias || jack_mic_bias);
-}
-
-static void wm8994_set_mic_bias(bool on)
-{
-	if (system_rev < 0x09) {
-		unsigned long flags;
-		spin_lock_irqsave(&mic_bias_lock, flags);
-		wm8994_mic_bias = on;
-		set_shared_mic_bias();
-		spin_unlock_irqrestore(&mic_bias_lock, flags);
-	} else
-		gpio_set_value(GPIO_MICBIAS_EN, on);
-}
-
 static void sec_jack_set_micbias_state(bool on)
 {
-	if (system_rev < 0x09) {
-		unsigned long flags;
-		spin_lock_irqsave(&mic_bias_lock, flags);
-		jack_mic_bias = on;
-		set_shared_mic_bias();
-		spin_unlock_irqrestore(&mic_bias_lock, flags);
-	} else
-		gpio_set_value(GPIO_EAR_MICBIAS_EN, on);
+	gpio_set_value(GPIO_EAR_MICBIAS_EN, on);
 }
 
 static struct regulator_consumer_supply wm8994_avdd1_supply[] = {

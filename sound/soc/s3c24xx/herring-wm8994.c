@@ -71,6 +71,25 @@ static const struct snd_kcontrol_new herring_controls[] = {
 			get_hp_output_mode, set_hp_output_mode),
 };
 
+static int main_mic_event(struct snd_soc_dapm_widget *w,
+		struct snd_kcontrol *kcontrol, int event)
+{
+	debug_msg("mic event = %d\n", event);
+
+	gpio_set_value(GPIO_MICBIAS_EN, SND_SOC_DAPM_EVENT_ON(event) ? 1 : 0);
+
+	return 0;
+}
+
+static const struct snd_soc_dapm_widget herring_dapm_widgets[] = {
+	SND_SOC_DAPM_MIC("Main Mic", main_mic_event),
+};
+
+static const struct snd_soc_dapm_route herring_dapm_routes[] = {
+	{"IN1LN", NULL, "Main Mic"},
+	{"IN1LP", NULL, "Main Mic"},
+};
+
 static int herring_wm8994_init(struct snd_soc_codec *codec)
 {
 	int err;
@@ -81,6 +100,16 @@ static int herring_wm8994_init(struct snd_soc_codec *codec)
 
 	if (err < 0)
 		return err;
+
+	/* add herring specific widgets */
+	snd_soc_dapm_new_controls(codec, herring_dapm_widgets,
+			ARRAY_SIZE(herring_dapm_widgets));
+
+	/* set up herring specific audio routes */
+	snd_soc_dapm_add_routes(codec, herring_dapm_routes,
+			ARRAY_SIZE(herring_dapm_routes));
+
+	snd_soc_dapm_sync(codec);
 
 	return 0;
 }
