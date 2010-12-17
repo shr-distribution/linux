@@ -42,7 +42,6 @@
 #include <linux/slab.h>
 #include <linux/version.h>
 #include <media/adp1653.h>
-#include <media/smiaregs.h>
 #include <media/v4l2-chip-ident.h>
 #include <media/v4l2-device.h>
 
@@ -124,6 +123,223 @@ static int adp1653_get_fault(struct adp1653_flash *flash)
 }
 
 /* --------------------------------------------------------------------------
+ * V4L2 controls
+ */
+
+static int adp1653_get_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct adp1653_flash *flash =
+		container_of(ctrl->handler, struct adp1653_flash, ctrls);
+	int fault;
+
+	fault = adp1653_get_fault(flash);
+
+	switch (ctrl->id) {
+	case V4L2_CID_FLASH_ADP1653_FAULT_SCP:
+		ctrl->cur.val = !!(fault & ADP1653_REG_FAULT_FLT_SCP);
+		break;
+	case V4L2_CID_FLASH_ADP1653_FAULT_OT:
+		ctrl->cur.val = !!(fault & ADP1653_REG_FAULT_FLT_OT);
+		break;
+	case V4L2_CID_FLASH_ADP1653_FAULT_TMR:
+		ctrl->cur.val = !!(fault & ADP1653_REG_FAULT_FLT_TMR);
+		break;
+	case V4L2_CID_FLASH_ADP1653_FAULT_OV:
+		ctrl->cur.val = !!(fault & ADP1653_REG_FAULT_FLT_OV);
+		break;
+	}
+
+	return 0;
+}
+
+static int adp1653_set_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct adp1653_flash *flash =
+		container_of(ctrl->handler, struct adp1653_flash, ctrls);
+
+	switch (ctrl->id) {
+	case V4L2_CID_FLASH_STROBE:
+		return adp1653_strobe(flash);
+	case V4L2_CID_FLASH_TIMEOUT:
+		flash->flash_timeout = ctrl->val;
+		break;
+	case V4L2_CID_FLASH_INTENSITY:
+		flash->flash_intensity = ctrl->val;
+		break;
+	case V4L2_CID_TORCH_INTENSITY:
+		flash->torch_intensity = ctrl->val;
+		break;
+	case V4L2_CID_INDICATOR_INTENSITY:
+		flash->indicator_intensity = ctrl->val;
+		break;
+	}
+
+	return adp1653_update_hw(flash);
+}
+
+static const struct v4l2_ctrl_ops adp1653_ctrl_ops = {
+	.g_volatile_ctrl = adp1653_get_ctrl,
+	.s_ctrl = adp1653_set_ctrl,
+};
+
+static const struct v4l2_ctrl_config adp1653_ctrls[] = {
+	{
+		.ops		= &adp1653_ctrl_ops,
+		.id		= V4L2_CID_FLASH_STROBE,
+		.type		= V4L2_CTRL_TYPE_BUTTON,
+		.name		= "Flash strobe",
+		.min		= 0,
+		.max		= 1,
+		.step		= 0,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_UPDATE,
+	},
+	{
+		.ops		= &adp1653_ctrl_ops,
+		.id		= V4L2_CID_FLASH_TIMEOUT,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Flash timeout [us]",
+		.min		= 1000,
+		.max		= 820000,
+		.step		= 54600,
+		.def		= 1000,
+		.flags		= V4L2_CTRL_FLAG_SLIDER,
+	},
+	{
+		.ops		= &adp1653_ctrl_ops,
+		.id		= V4L2_CID_FLASH_INTENSITY,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Flash intensity",
+		.min		= ADP1653_FLASH_INTENSITY_MIN,
+		.max		= ADP1653_FLASH_INTENSITY_MAX,
+		.step		= 1,
+		.def		= ADP1653_FLASH_INTENSITY_MIN,
+		.flags		= V4L2_CTRL_FLAG_SLIDER,
+	},
+	{
+		.ops		= &adp1653_ctrl_ops,
+		.id		= V4L2_CID_TORCH_INTENSITY,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Torch intensity",
+		.min		= ADP1653_TORCH_INTENSITY_MIN,
+		.max		= ADP1653_TORCH_INTENSITY_MAX,
+		.step		= 1,
+		.def		= ADP1653_TORCH_INTENSITY_MIN,
+		.flags		= V4L2_CTRL_FLAG_SLIDER,
+	},
+	{
+		.ops		= &adp1653_ctrl_ops,
+		.id		= V4L2_CID_INDICATOR_INTENSITY,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Indicator intensity",
+		.min		= ADP1653_INDICATOR_INTENSITY_MIN,
+		.max		= ADP1653_INDICATOR_INTENSITY_MAX,
+		.step		= 1,
+		.def		= ADP1653_INDICATOR_INTENSITY_MIN,
+		.flags		= V4L2_CTRL_FLAG_SLIDER,
+	},
+	/* Faults */
+	{
+		.ops		= &adp1653_ctrl_ops,
+		.id		= V4L2_CID_FLASH_ADP1653_FAULT_SCP,
+		.type		= V4L2_CTRL_TYPE_BOOLEAN,
+		.name		= "Short-circuit fault",
+		.min		= 0,
+		.max		= 1,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	},
+	{
+		.ops		= &adp1653_ctrl_ops,
+		.id		= V4L2_CID_FLASH_ADP1653_FAULT_OT,
+		.type		= V4L2_CTRL_TYPE_BOOLEAN,
+		.name		= "Overtemperature fault",
+		.min		= 0,
+		.max		= 1,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	},
+	{
+		.ops		= &adp1653_ctrl_ops,
+		.id		= V4L2_CID_FLASH_ADP1653_FAULT_TMR,
+		.type		= V4L2_CTRL_TYPE_BOOLEAN,
+		.name		= "Timeout fault",
+		.min		= 0,
+		.max		= 1,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	},
+	{
+		.ops		= &adp1653_ctrl_ops,
+		.id		= V4L2_CID_FLASH_ADP1653_FAULT_OV,
+		.type		= V4L2_CTRL_TYPE_BOOLEAN,
+		.name		= "Overvoltage fault",
+		.min		= 0,
+		.max		= 1,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	}
+};
+
+static int adp1653_init_controls(struct adp1653_flash *flash)
+{
+	struct v4l2_ctrl *ctrl;
+	unsigned int i;
+
+	v4l2_ctrl_handler_init(&flash->ctrls, ARRAY_SIZE(adp1653_ctrls));
+
+	for (i = 0; i < ARRAY_SIZE(adp1653_ctrls); ++i) {
+		v4l2_ctrl_new_custom(&flash->ctrls, &adp1653_ctrls[i], NULL);
+		if (flash->ctrls.error) {
+			printk(KERN_INFO "%s: error registering control %u\n", __func__, i);
+			break;
+		}
+	}
+
+	if (flash->ctrls.error)
+		return flash->ctrls.error;
+
+	/* Update the controls limits using the value passed through platform
+	 * data, and initialize the parameters stored in the adp1653 structure
+	 * with default values.
+	 */
+
+	/* V4L2_CID_FLASH_TIMEOUT */
+	ctrl = v4l2_ctrl_find(&flash->ctrls, V4L2_CID_FLASH_TIMEOUT);
+	ctrl->maximum = flash->platform_data->max_flash_timeout;
+	ctrl->default_value = ctrl->maximum;
+	ctrl->cur.val = ctrl->default_value;
+	ctrl->val = ctrl->default_value;
+	flash->flash_timeout = ctrl->default_value;
+
+	/* V4L2_CID_FLASH_INTENSITY */
+	ctrl = v4l2_ctrl_find(&flash->ctrls, V4L2_CID_FLASH_INTENSITY);
+	ctrl->maximum = flash->platform_data->max_flash_intensity;
+	flash->flash_intensity = ctrl->default_value;
+
+	/* V4L2_CID_TORCH_INTENSITY */
+	ctrl = v4l2_ctrl_find(&flash->ctrls, V4L2_CID_TORCH_INTENSITY);
+	ctrl->maximum = flash->platform_data->max_torch_intensity;
+	flash->torch_intensity = ctrl->default_value;
+
+	/* V4L2_CID_INDICATOR_INTENSITY */
+	ctrl = v4l2_ctrl_find(&flash->ctrls, V4L2_CID_INDICATOR_INTENSITY);
+	ctrl->maximum = flash->platform_data->max_indicator_intensity;
+	flash->indicator_intensity = ctrl->default_value;
+
+	flash->subdev.ctrl_handler = &flash->ctrls;
+	return 0;
+}
+
+/* --------------------------------------------------------------------------
  * V4L2 subdev operations
  */
 static int
@@ -133,230 +349,6 @@ adp1653_get_chip_ident(struct v4l2_subdev *subdev,
 	struct i2c_client *client = v4l2_get_subdevdata(subdev);
 
 	return v4l2_chip_ident_i2c_client(client, chip, V4L2_IDENT_ADP1653, 0);
-}
-
-#define CTRL_FLASH_STROBE			0
-#define CTRL_FLASH_TIMEOUT			1
-#define CTRL_FLASH_INTENSITY			2
-#define CTRL_TORCH_INTENSITY			3
-#define CTRL_INDICATOR_INTENSITY		4
-#define CTRL_FLASH_FAULT_SCP			5
-#define CTRL_FLASH_FAULT_OT			6
-#define CTRL_FLASH_FAULT_TMR			7
-#define CTRL_FLASH_FAULT_OV			8
-
-static const struct v4l2_queryctrl adp1653_ctrls[] = {
-	{
-		.id		= V4L2_CID_FLASH_STROBE,
-		.type		= V4L2_CTRL_TYPE_BUTTON,
-		.name		= "Flash strobe",
-		.minimum	= 0,
-		.maximum	= 0,
-		.step		= 0,
-		.default_value	= 0,
-		.flags		= V4L2_CTRL_FLAG_UPDATE,
-	},
-
-	{
-		.id		= V4L2_CID_FLASH_TIMEOUT,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Flash timeout [us]",
-		.minimum	= 1000,
-		.maximum	= 820000,
-		.step		= 54600,
-		.default_value	= 1000,
-		.flags		= V4L2_CTRL_FLAG_SLIDER,
-	},
-	{
-		.id		= V4L2_CID_FLASH_INTENSITY,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Flash intensity",
-		.minimum	= ADP1653_FLASH_INTENSITY_MIN,
-		.minimum	= ADP1653_FLASH_INTENSITY_MAX,
-		.step		= 1,
-		.default_value	= ADP1653_FLASH_INTENSITY_MIN,
-		.flags		= V4L2_CTRL_FLAG_SLIDER,
-	},
-	{
-		.id		= V4L2_CID_TORCH_INTENSITY,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Torch intensity",
-		.minimum	= ADP1653_TORCH_INTENSITY_MIN,
-		.maximum	= ADP1653_TORCH_INTENSITY_MAX,
-		.step		= 1,
-		.default_value	= ADP1653_TORCH_INTENSITY_MIN,
-		.flags		= V4L2_CTRL_FLAG_SLIDER,
-	},
-	{
-		.id		= V4L2_CID_INDICATOR_INTENSITY,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Indicator intensity",
-		.minimum	= ADP1653_INDICATOR_INTENSITY_MIN,
-		.maximum	= ADP1653_INDICATOR_INTENSITY_MAX,
-		.step		= 1,
-		.default_value	= ADP1653_INDICATOR_INTENSITY_MIN,
-		.flags		= V4L2_CTRL_FLAG_SLIDER,
-	},
-
-	/* Faults */
-	{
-		.id		= V4L2_CID_FLASH_ADP1653_FAULT_SCP,
-		.type		= V4L2_CTRL_TYPE_BOOLEAN,
-		.name		= "Short-circuit fault",
-		.minimum	= 0,
-		.maximum	= 1,
-		.step		= 1,
-		.default_value	= 0,
-		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
-	},
-	{
-		.id		= V4L2_CID_FLASH_ADP1653_FAULT_OT,
-		.type		= V4L2_CTRL_TYPE_BOOLEAN,
-		.name		= "Overtemperature fault",
-		.minimum	= 0,
-		.maximum	= 1,
-		.step		= 1,
-		.default_value	= 0,
-		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
-	},
-	{
-		.id		= V4L2_CID_FLASH_ADP1653_FAULT_TMR,
-		.type		= V4L2_CTRL_TYPE_BOOLEAN,
-		.name		= "Timeout fault",
-		.minimum	= 0,
-		.maximum	= 1,
-		.step		= 1,
-		.default_value	= 0,
-		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
-	},
-	{
-		.id		= V4L2_CID_FLASH_ADP1653_FAULT_OV,
-		.type		= V4L2_CTRL_TYPE_BOOLEAN,
-		.name		= "Overvoltage fault",
-		.minimum	= 0,
-		.maximum	= 1,
-		.step		= 1,
-		.default_value	= 0,
-		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
-	}
-};
-
-static int
-adp1653_query_ctrl(struct v4l2_subdev *subdev, struct v4l2_queryctrl *ctrl)
-{
-	struct adp1653_flash *flash = to_adp1653_flash(subdev);
-	int rval;
-
-	rval = smia_ctrl_query(adp1653_ctrls, ARRAY_SIZE(adp1653_ctrls), ctrl);
-	if (rval < 0)
-		return rval;
-
-	/* Override global values with platform-specific data. */
-	switch (ctrl->id) {
-	case V4L2_CID_FLASH_TIMEOUT:
-		ctrl->maximum = flash->platform_data->max_flash_timeout;
-		ctrl->default_value = flash->platform_data->max_flash_timeout;
-		break;
-	case V4L2_CID_FLASH_INTENSITY:
-		ctrl->maximum = flash->platform_data->max_flash_intensity;
-		break;
-	case V4L2_CID_TORCH_INTENSITY:
-		ctrl->maximum = flash->platform_data->max_torch_intensity;
-		break;
-	case V4L2_CID_INDICATOR_INTENSITY:
-		ctrl->maximum = flash->platform_data->max_indicator_intensity;
-		break;
-	}
-
-	return 0;
-}
-
-static int
-adp1653_get_ctrl(struct v4l2_subdev *subdev, struct v4l2_control *vc)
-{
-	struct adp1653_flash *flash = to_adp1653_flash(subdev);
-
-	switch (vc->id) {
-	case V4L2_CID_FLASH_TIMEOUT:
-		vc->value = flash->flash_timeout;
-		break;
-	case V4L2_CID_FLASH_INTENSITY:
-		vc->value = flash->flash_intensity;
-		break;
-	case V4L2_CID_TORCH_INTENSITY:
-		vc->value = flash->torch_intensity;
-		break;
-	case V4L2_CID_INDICATOR_INTENSITY:
-		vc->value = flash->indicator_intensity;
-		break;
-
-	case V4L2_CID_FLASH_ADP1653_FAULT_SCP:
-		vc->value = (adp1653_get_fault(flash)
-			    & ADP1653_REG_FAULT_FLT_SCP) != 0;
-		break;
-	case V4L2_CID_FLASH_ADP1653_FAULT_OT:
-		vc->value = (adp1653_get_fault(flash)
-			    & ADP1653_REG_FAULT_FLT_OT) != 0;
-		break;
-	case V4L2_CID_FLASH_ADP1653_FAULT_TMR:
-		vc->value = (adp1653_get_fault(flash)
-			    & ADP1653_REG_FAULT_FLT_TMR) != 0;
-		break;
-	case V4L2_CID_FLASH_ADP1653_FAULT_OV:
-		vc->value = (adp1653_get_fault(flash)
-			    & ADP1653_REG_FAULT_FLT_OV) != 0;
-		break;
-	default:
-		return -EINVAL;
-	}
-	return 0;
-}
-
-static int
-adp1653_set_ctrl(struct v4l2_subdev *subdev, struct v4l2_control *vc)
-{
-	struct adp1653_flash *flash = to_adp1653_flash(subdev);
-	const struct v4l2_queryctrl *ctrl;
-	unsigned int index;
-	s32 maximum;
-	u32 *value;
-
-	switch (vc->id) {
-	case V4L2_CID_FLASH_STROBE:
-		return adp1653_strobe(flash);
-
-	case V4L2_CID_FLASH_TIMEOUT:
-		index = CTRL_FLASH_TIMEOUT;
-		maximum = flash->platform_data->max_flash_timeout;
-		value = &flash->flash_timeout;
-		break;
-	case V4L2_CID_FLASH_INTENSITY:
-		index = CTRL_FLASH_INTENSITY;
-		maximum = flash->platform_data->max_flash_intensity;
-		value = &flash->flash_intensity;
-		break;
-	case V4L2_CID_TORCH_INTENSITY:
-		index = CTRL_TORCH_INTENSITY;
-		maximum = flash->platform_data->max_torch_intensity;
-		value = &flash->torch_intensity;
-		break;
-	case V4L2_CID_INDICATOR_INTENSITY:
-		index = CTRL_INDICATOR_INTENSITY;
-		maximum = flash->platform_data->max_indicator_intensity;
-		value = &flash->indicator_intensity;
-		break;
-
-	default:
-		return -EINVAL;
-	}
-
-	ctrl = &adp1653_ctrls[index];
-	vc->value = clamp(vc->value, ctrl->minimum, maximum);
-	vc->value = DIV_ROUND_CLOSEST(vc->value - ctrl->minimum, ctrl->step);
-	vc->value = vc->value * ctrl->step + ctrl->minimum;
-	*value = vc->value;
-
-	return adp1653_update_hw(flash);
 }
 
 static int
@@ -369,16 +361,7 @@ adp1653_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 
 	flash->platform_data = platform_data;
 
-	flash->flash_timeout =
-		flash->platform_data->max_flash_timeout;
-	flash->flash_intensity =
-		adp1653_ctrls[CTRL_FLASH_INTENSITY].default_value;
-	flash->torch_intensity =
-		adp1653_ctrls[CTRL_TORCH_INTENSITY].default_value;
-	flash->indicator_intensity =
-		adp1653_ctrls[CTRL_INDICATOR_INTENSITY].default_value;
-
-	return 0;
+	return adp1653_init_controls(flash);
 }
 
 static int
@@ -445,9 +428,6 @@ adp1653_set_power(struct v4l2_subdev *subdev, int on)
 static const struct v4l2_subdev_core_ops adp1653_core_ops = {
 	.g_chip_ident = adp1653_get_chip_ident,
 	.s_config = adp1653_set_config,
-	.queryctrl = adp1653_query_ctrl,
-	.g_ctrl = adp1653_get_ctrl,
-	.s_ctrl = adp1653_set_ctrl,
 	.s_power = adp1653_set_power,
 };
 

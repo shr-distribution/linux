@@ -25,8 +25,9 @@
 #ifndef ADP1653_H
 #define ADP1653_H
 
-#include <linux/videodev2.h>
 #include <linux/i2c.h>
+#include <linux/videodev2.h>
+#include <media/v4l2-ctrls.h>
 #include <media/v4l2-subdev.h>
 
 #define ADP1653_NAME				"adp1653"
@@ -76,6 +77,7 @@ struct adp1653_flash {
 	struct v4l2_subdev subdev;
 	struct adp1653_platform_data *platform_data;
 
+	struct v4l2_ctrl_handler ctrls;
 	u32 flash_timeout;
 	u32 flash_intensity;
 	u32 torch_intensity;
