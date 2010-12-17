@@ -186,31 +186,161 @@ static int smdkc110_hw_params(struct snd_pcm_substream *substream,
 static struct snd_soc_ops smdkc110_ops = {
 	.hw_params = smdkc110_hw_params,
 };
-	if (ret < 0) {
-		pr_err("snd_soc_dai_set_sysclk failed: %d\n",  ret);
-		return ret;
+
+static int aif2_clk_control(struct snd_soc_dai *dai, bool enable, int rate)
+{
+	static int refcount;
+	int ret;
+
+	if (enable) {
+		refcount++;
+
+		if (refcount == 1) {
+			ret = snd_soc_dai_set_pll(dai, WM8994_FLL2,
+						  WM8994_FLL_SRC_MCLK1,
+						  24000000, rate * 256);
+			if (ret < 0) {
+				pr_err("snd_soc_dai_set_pll failed: %d\n",
+				       ret);
+				return ret;
+			}
+
+			ret = snd_soc_dai_set_sysclk(dai,
+						     WM8994_SYSCLK_FLL2,
+						     rate * 256, 0);
+			if (ret < 0) {
+				pr_err("snd_soc_dai_set_sysclk failed: %d\n",
+				       ret);
+				return ret;
+			}
+		}
+	} else {
+		refcount--;
+
+		if (refcount == 0) {
+			ret = snd_soc_dai_set_sysclk(dai,
+						     WM8994_SYSCLK_MCLK1,
+						     24000000, 0);
+			if (ret < 0) {
+				pr_err("snd_soc_dai_set_sysclk failed: %d\n",
+				       ret);
+			}
+
+			ret = snd_soc_dai_set_pll(dai, 0, 0, 0, 0);
+			if (ret < 0) {
+				pr_err("snd_soc_dai_set_pll failed: %d\n",
+				       ret);
+			}
+		}
 	}
 
 	return 0;
-
 }
 
+static int cp_hw_params(struct snd_pcm_substream *substream,
+	struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai *codec_dai = rtd->dai->codec_dai;
+	int ret;
+
+	/* Ideally the CP would be bus master so we could ensure everything
+	 * is synced against the network clock.
+	 */
+	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_LEFT_J |
+				SND_SOC_DAIFMT_IB_IF | SND_SOC_DAIFMT_CBM_CFM);
+
+	if (ret < 0) {
+		pr_err("Failed to configure AIF2 for CP\n");
+		return ret;
+	}
+
+	ret = aif2_clk_control(codec_dai, true, params_rate(params));
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static void cp_shutdown(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai *codec_dai = rtd->dai->codec_dai;
+
+	aif2_clk_control(codec_dai, false, 0);
+}
+
+static struct snd_soc_ops cp_ops = {
+	.hw_params = cp_hw_params,
+	.shutdown = cp_shutdown,
+};
+
+static struct snd_soc_dai cp_dai = {
+	.name = "CP",
+	.id = 0,
+	.playback = {
+		.channels_min = 1,
+		.channels_max = 1,
+		.rates = SNDRV_PCM_RATE_8000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	},
+	.capture = {
+		.channels_min = 1,
+		.channels_max = 1,
+		.rates = SNDRV_PCM_RATE_8000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	 },
+	.symmetric_rates = 1,
+};
+
+static struct snd_soc_dai bt_dai = {
+	.name = "BT",
+	.id = 0,
+	.playback = {
+		.channels_min = 1,
+		.channels_max = 1,
+		.rates = SNDRV_PCM_RATE_8000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	},
+	.capture = {
+		.channels_min = 1,
+		.channels_max = 1,
+		.rates = SNDRV_PCM_RATE_8000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	 },
+	.symmetric_rates = 1,
 };
 
 /* digital audio interface glue - connects codec <--> CPU */
-static struct snd_soc_dai_link smdkc1xx_dai = {
-	.name = "WM8994",
-	.stream_name = "WM8994 HiFi Playback",
-	.cpu_dai = &s3c64xx_i2s_dai[I2S_NUM],
-	.codec_dai = &wm8994_dai[0],
-	.ops = &smdkc110_ops,
+static struct snd_soc_dai_link herring_dai[] = {
+	{
+		.name = "AP",
+		.stream_name = "WM8994 HiFi",
+		.cpu_dai = &s3c64xx_i2s_dai[I2S_NUM],
+		.codec_dai = &wm8994_dai[0],
+		.ops = &smdkc110_ops,
+	},
+	{
+		.name = "CP",
+		.stream_name = "CP",
+		.cpu_dai = &cp_dai,
+		.codec_dai = &wm8994_dai[1],
+		.ops = &cp_ops,
+	},
+	{
+		.name = "BT",
+		.stream_name = "BT",
+		.cpu_dai = &bt_dai,
+		.codec_dai = &wm8994_dai[2],
+		.ops = &smdkc110_ops,
+	},
 };
 
 static struct snd_soc_card smdkc100 = {
 	.name = "smdkc110",
 	.platform = &s3c_dma_wrapper,
-	.dai_link = &smdkc1xx_dai,
-	.num_links = 1,
+	.dai_link = herring_dai,
+	.num_links = ARRAY_SIZE(herring_dai),
 	.set_bias_level_post = set_bias_level_post,
 };
 
@@ -226,6 +356,9 @@ static int __init smdkc110_audio_init(void)
 	int ret;
 
 	debug_msg("%s\n", __func__);
+
+	snd_soc_register_dai(&cp_dai);
+	snd_soc_register_dai(&bt_dai);
 
 	smdkc1xx_snd_device = platform_device_alloc("soc-audio", 0);
 	if (!smdkc1xx_snd_device)
