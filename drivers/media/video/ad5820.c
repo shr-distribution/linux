@@ -43,58 +43,8 @@
 #include <media/v4l2-chip-ident.h>
 #include <media/v4l2-device.h>
 
-#include <media/smiaregs.h>
-
 #define CODE_TO_RAMP_US(s)	((s) == 0 ? 0 : (1 << ((s) - 1)) * 50)
 #define RAMP_US_TO_CODE(c)	fls(((c) + ((c)>>1)) / 50)
-
-#define CTRL_FOCUS_ABSOLUTE		0
-#define CTRL_FOCUS_RAMP_TIME		1
-#define CTRL_FOCUS_RAMP_MODE		2
-
-static struct v4l2_queryctrl ad5820_ctrls[] = {
-	/* Minimum current is 0 mA, maximum is 100 mA. Thus,
-	 * 1 code is equivalent to 100/1023 = 0.0978 mA.
-	 * Nevertheless, we do not use [mA] for focus position,
-	 * because it is meaningless for user. Meaningful would
-	 * be to use focus distance or even its inverse, but
-	 * since the driver doesn't have sufficiently knowledge
-	 * to do the conversion, we will just use abstract codes here.
-	 * In any case, smaller value = focus position farther from camera.
-	 * The default zero value means focus at infinity,
-	 * and also least current consumption.
-	 */
-	{
-		.id		= V4L2_CID_FOCUS_ABSOLUTE,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Focus, Absolute",
-		.minimum	= 0,
-		.maximum	= 1023,
-		.step		= 1,
-		.default_value	= 0,
-		.flags		= 0,
-	},
-	{
-		.id		= V4L2_CID_FOCUS_AD5820_RAMP_TIME,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Focus ramping time [us]",
-		.minimum	= 0,
-		.maximum	= 3200,
-		.step		= 50,
-		.default_value	= 0,
-		.flags		= 0,
-	},
-	{
-		.id		= V4L2_CID_FOCUS_AD5820_RAMP_MODE,
-		.type		= V4L2_CTRL_TYPE_MENU,
-		.name		= "Focus ramping mode",
-		.minimum	= 0,
-		.maximum	= 1,
-		.step		= 1,
-		.default_value	= 0,
-		.flags		= 0,
-	},
-};
 
 /**
  * @brief I2C write using i2c_transfer().
@@ -230,6 +180,106 @@ fail:
 }
 
 /* --------------------------------------------------------------------------
+ * V4L2 controls
+ */
+static int ad5820_set_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct ad5820_device *coil =
+		container_of(ctrl->handler, struct ad5820_device, ctrls);
+	u32 code;
+	int r = 0;
+
+	switch (ctrl->id) {
+	case V4L2_CID_FOCUS_ABSOLUTE:
+		coil->focus_absolute = ctrl->val;
+		return ad5820_update_hw(coil);
+
+	case V4L2_CID_FOCUS_AD5820_RAMP_TIME:
+		code = RAMP_US_TO_CODE(ctrl->val);
+		ctrl->val = CODE_TO_RAMP_US(code);
+		coil->focus_ramp_time = ctrl->val;
+		break;
+
+	case V4L2_CID_FOCUS_AD5820_RAMP_MODE:
+		coil->focus_ramp_mode = ctrl->val;
+		break;
+	}
+
+	return r;
+}
+
+static const struct v4l2_ctrl_ops ad5820_ctrl_ops = {
+	.s_ctrl = ad5820_set_ctrl,
+};
+
+static const char *ad5820_focus_menu[] = {
+	"Linear ramp",
+	"64/16 ramp",
+};
+
+static const struct v4l2_ctrl_config ad5820_ctrls[] = {
+	{
+		.ops		= &ad5820_ctrl_ops,
+		.id		= V4L2_CID_FOCUS_AD5820_RAMP_TIME,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Focus ramping time [us]",
+		.min		= 0,
+		.max		= 3200,
+		.step		= 50,
+		.def		= 0,
+		.flags		= 0,
+	},
+	{
+		.ops		= &ad5820_ctrl_ops,
+		.id		= V4L2_CID_FOCUS_AD5820_RAMP_MODE,
+		.type		= V4L2_CTRL_TYPE_MENU,
+		.name		= "Focus ramping mode",
+		.min		= 0,
+		.max		= ARRAY_SIZE(ad5820_focus_menu),
+		.step		= 0,
+		.def		= 0,
+		.flags		= 0,
+		.qmenu		= ad5820_focus_menu,
+	},
+};
+
+
+static int ad5820_init_controls(struct ad5820_device *coil)
+{
+	unsigned int i;
+
+	v4l2_ctrl_handler_init(&coil->ctrls, ARRAY_SIZE(ad5820_ctrls) + 1);
+
+	/* V4L2_CID_FOCUS_ABSOLUTE
+	 *
+	 * Minimum current is 0 mA, maximum is 100 mA. Thus, 1 code is
+	 * equivalent to 100/1023 = 0.0978 mA. Nevertheless, we do not use [mA]
+	 * for focus position, because it is meaningless for user. Meaningful
+	 * would be to use focus distance or even its inverse, but since the
+	 * driver doesn't have sufficiently knowledge to do the conversion, we
+	 * will just use abstract codes here. In any case, smaller value = focus
+	 * position farther from camera. The default zero value means focus at
+	 * infinity, and also least current consumption.
+	 */
+	v4l2_ctrl_new_std(&coil->ctrls, &ad5820_ctrl_ops,
+			  V4L2_CID_FOCUS_ABSOLUTE, 0, 1023, 1, 0);
+
+	/* V4L2_CID_TEST_PATTERN and V4L2_CID_MODE_* */
+	for (i = 0; i < ARRAY_SIZE(ad5820_ctrls); ++i)
+		v4l2_ctrl_new_custom(&coil->ctrls, &ad5820_ctrls[i], NULL);
+
+	if (coil->ctrls.error)
+		return coil->ctrls.error;
+
+	coil->focus_absolute = 0;
+	coil->focus_ramp_time = 0;
+	coil->focus_ramp_mode = 0;
+
+	coil->subdev.ctrl_handler = &coil->ctrls;
+	return 0;
+}
+
+/* --------------------------------------------------------------------------
  * V4L2 subdev operations
  */
 static int
@@ -262,13 +312,6 @@ ad5820_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 
 	coil->platform_data = platform_data;
 
-	coil->focus_absolute  =
-		ad5820_ctrls[CTRL_FOCUS_ABSOLUTE].default_value;
-	coil->focus_ramp_time =
-		ad5820_ctrls[CTRL_FOCUS_RAMP_TIME].default_value;
-	coil->focus_ramp_mode =
-		ad5820_ctrls[CTRL_FOCUS_RAMP_MODE].default_value;
-
 	/* Detect that the chip is there */
 	rval = ad5820_power_on(coil, 0);
 	if (rval)
@@ -281,91 +324,14 @@ ad5820_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 		goto not_detected;
 
 	ad5820_power_off(coil, 1);
-	return 0;
+
+	return ad5820_init_controls(coil);
 
 not_detected:
 	dev_err(&client->dev, "not detected\n");
 	ad5820_power_off(coil, 0);
 	regulator_put(coil->vana);
 	return -ENODEV;
-}
-
-static int
-ad5820_query_ctrl(struct v4l2_subdev *subdev, struct v4l2_queryctrl *ctrl)
-{
-	return smia_ctrl_query(ad5820_ctrls, ARRAY_SIZE(ad5820_ctrls), ctrl);
-}
-
-static int
-ad5820_query_menu(struct v4l2_subdev *subdev, struct v4l2_querymenu *qm)
-{
-	switch (qm->id) {
-	case V4L2_CID_FOCUS_AD5820_RAMP_MODE:
-		if (qm->index & ~1)
-			return -EINVAL;
-		strcpy(qm->name, qm->index == 0 ? "Linear ramp" : "64/16 ramp");
-		break;
-	default:
-		return -EINVAL;
-	}
-	return 0;
-}
-
-static int
-ad5820_get_ctrl(struct v4l2_subdev *subdev, struct v4l2_control *vc)
-{
-	struct ad5820_device *coil = to_ad5820_device(subdev);
-
-	switch (vc->id) {
-	case V4L2_CID_FOCUS_ABSOLUTE:
-		vc->value = coil->focus_absolute;
-		break;
-	case V4L2_CID_FOCUS_AD5820_RAMP_TIME:
-		vc->value = coil->focus_ramp_time;
-		break;
-	case V4L2_CID_FOCUS_AD5820_RAMP_MODE:
-		vc->value = coil->focus_ramp_mode;
-		break;
-	default:
-		return -EINVAL;
-	}
-	return 0;
-}
-
-static int
-ad5820_set_ctrl(struct v4l2_subdev *subdev, struct v4l2_control *vc)
-{
-	struct ad5820_device *coil = to_ad5820_device(subdev);
-	u32 code;
-	int r = 0;
-
-	switch (vc->id) {
-	case V4L2_CID_FOCUS_ABSOLUTE:
-		coil->focus_absolute = clamp(vc->value,
-				ad5820_ctrls[CTRL_FOCUS_ABSOLUTE].minimum,
-				ad5820_ctrls[CTRL_FOCUS_ABSOLUTE].maximum);
-		r = ad5820_update_hw(coil);
-		break;
-
-	case V4L2_CID_FOCUS_AD5820_RAMP_TIME:
-		code = clamp(vc->value,
-				ad5820_ctrls[CTRL_FOCUS_RAMP_TIME].minimum,
-				ad5820_ctrls[CTRL_FOCUS_RAMP_TIME].maximum);
-		code = RAMP_US_TO_CODE(code);
-		coil->focus_ramp_time = CODE_TO_RAMP_US(code);
-		break;
-
-	case V4L2_CID_FOCUS_AD5820_RAMP_MODE:
-		coil->focus_ramp_mode = clamp(vc->value,
-				ad5820_ctrls[CTRL_FOCUS_RAMP_MODE].minimum,
-				ad5820_ctrls[CTRL_FOCUS_RAMP_MODE].maximum);
-		break;
-
-	default:
-		return -EINVAL;
-	}
-
-	return r;
 }
 
 static int
@@ -382,10 +348,6 @@ ad5820_set_power(struct v4l2_subdev *subdev, int on)
 static const struct v4l2_subdev_core_ops ad5820_core_ops = {
 	.g_chip_ident = ad5820_get_chip_ident,
 	.s_config = ad5820_set_config,
-	.queryctrl = ad5820_query_ctrl,
-	.querymenu = ad5820_query_menu,
-	.g_ctrl = ad5820_get_ctrl,
-	.s_ctrl = ad5820_set_ctrl,
 	.s_power = ad5820_set_power,
 };
 

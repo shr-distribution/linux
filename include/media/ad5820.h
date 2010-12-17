@@ -27,10 +27,10 @@
 #ifndef AD5820_H
 #define AD5820_H
 
+#include <linux/i2c.h>
 #include <linux/videodev2.h>
 
-#include <linux/i2c.h>
-
+#include <media/v4l2-ctrls.h>
 #include <media/v4l2-subdev.h>
 
 struct regulator;
@@ -55,9 +55,10 @@ struct ad5820_device {
 	struct ad5820_platform_data *platform_data;
 	struct regulator *vana;
 
-	s32 focus_absolute;		/* Current values of V4L2 controls */
-	s32 focus_ramp_time;
-	s32 focus_ramp_mode;
+	struct v4l2_ctrl_handler ctrls;
+	u32 focus_absolute;
+	u32 focus_ramp_time;
+	u32 focus_ramp_mode;
 
 	int power : 1;
 	int standby : 1;
