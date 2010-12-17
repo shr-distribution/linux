@@ -125,6 +125,63 @@ static struct et8ek8_gain {
 
 #define USE_CRC			1
 
+/*
+ * Return time of one row in microseconds, .8 fixed point format.
+ * If the sensor is not set to any mode, return zero.
+ */
+static int et8ek8_get_row_time(struct et8ek8_sensor *sensor)
+{
+	unsigned int clock;	/* Pixel clock in Hz>>10 fixed point */
+	unsigned int rt;	/* Row time in .8 fixed point */
+
+	if (!sensor->current_reglist)
+		return 0;
+
+	clock = sensor->current_reglist->mode.pixel_clock;
+	clock = (clock + (1 << 9)) >> 10;
+	rt = sensor->current_reglist->mode.width * (1000000 >> 2);
+	rt = (rt + (clock >> 1)) / clock;
+
+	return rt;
+}
+
+/*
+ * Convert exposure time `us' to rows. Modify `us' to make it to
+ * correspond to the actual exposure time.
+ */
+static int et8ek8_exposure_us_to_rows(struct et8ek8_sensor *sensor, u32 *us)
+{
+	unsigned int rows;	/* Exposure value as written to HW (ie. rows) */
+	unsigned int rt;	/* Row time in .8 fixed point */
+
+	/* Assume that the maximum exposure time is at most ~8 s,
+	 * and the maximum width (with blanking) ~8000 pixels.
+	 * The formula here is in principle as simple as
+	 *    rows = exptime / 1e6 / width * pixel_clock
+	 * but to get accurate results while coping with value ranges,
+	 * have to do some fixed point math.
+	 */
+
+	rt = et8ek8_get_row_time(sensor);
+	rows = ((*us << 8) + (rt >> 1)) / rt;
+
+	if (rows > sensor->current_reglist->mode.max_exp)
+		rows = sensor->current_reglist->mode.max_exp;
+
+	/* Set the exposure time to the rounded value */
+	*us = (rt * rows + (1 << 7)) >> 8;
+
+	return rows;
+}
+
+/*
+ * Convert exposure time in rows to microseconds
+ */
+static int et8ek8_exposure_rows_to_us(struct et8ek8_sensor *sensor, int rows)
+{
+	return (et8ek8_get_row_time(sensor) * rows + (1 << 7)) >> 8;
+}
+
 /* Called to change the V4L2 gain control value. This function
  * rounds and clamps the given value and updates the V4L2 control value.
  * If power is on, also updates the sensor analog and digital gains.
@@ -136,14 +193,7 @@ static int et8ek8_set_gain(struct et8ek8_sensor *sensor, s32 gain)
 	struct et8ek8_gain new;
 	int r;
 
-	sensor->controls[CTRL_GAIN].value = clamp(gain,
-		sensor->controls[CTRL_GAIN].minimum,
-		sensor->controls[CTRL_GAIN].maximum);
-
-	if (!sensor->power)
-		return 0;
-
-	new = et8ek8_gain_table[sensor->controls[CTRL_GAIN].value];
+	new = et8ek8_gain_table[gain];
 
 	/* FIXME: optimise I2C writes! */
 	r = smia_i2c_write_reg(client, SMIA_REG_8BIT,
@@ -165,55 +215,10 @@ static int et8ek8_set_gain(struct et8ek8_sensor *sensor, s32 gain)
 	return r;
 }
 
-/* Called to change the V4L2 exposure control value. This function
- * rounds and clamps the given value and updates the V4L2 control value.
- * If power is on, also update the sensor exposure time.
- * exptime is in microseconds.
- */
-static int et8ek8_set_exposure(struct et8ek8_sensor *sensor, s32 exptime)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(&sensor->subdev);
-	unsigned int clock;	/* Pixel clock in Hz>>10 fixed point */
-	unsigned int rt;	/* Row time in .8 fixed point */
-	unsigned int rows;	/* Exposure value as written to HW (ie. rows) */
-
-	exptime = clamp(exptime, sensor->controls[CTRL_EXPOSURE].minimum,
-				 sensor->controls[CTRL_EXPOSURE].maximum);
-
-	/* Assume that the maximum exposure time is at most ~8 s,
-	 * and the maximum width (with blanking) ~8000 pixels.
-	 * The formula here is in principle as simple as
-	 *    rows = exptime / 1e6 / width * pixel_clock
-	 * but to get accurate results while coping with value ranges,
-	 * have to do some fixed point math.
-	 */
-	clock = sensor->current_reglist->mode.pixel_clock;
-	clock = (clock + (1 << 9)) >> 10;
-	rt = sensor->current_reglist->mode.width * (1000000 >> 2);
-	rt = (rt + (clock >> 1)) / clock;
-	rows = ((exptime << 8) + (rt >> 1)) / rt;
-
-	/* Set the V4L2 control for exposure time to the rounded value */
-	sensor->controls[CTRL_EXPOSURE].value = (rt * rows + (1 << 7)) >> 8;
-
-	if (!sensor->power)
-		return 0;
-
-	return smia_i2c_write_reg(client, SMIA_REG_16BIT, 0x1243, swab16(rows));
-}
-
 static int et8ek8_set_test_pattern(struct et8ek8_sensor *sensor, s32 mode)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&sensor->subdev);
 	int cbh_mode, cbv_mode, tp_mode, din_sw, r1420, rval;
-
-	if (mode < 0 || mode > 8)
-		return -EINVAL;
-
-	sensor->controls[CTRL_TEST_PATTERN].value = mode;
-
-	if (!sensor->power)
-		return 0;
 
 	/* Values for normal mode */
 	cbh_mode = 0;
@@ -259,47 +264,251 @@ static int et8ek8_set_test_pattern(struct et8ek8_sensor *sensor, s32 mode)
 
 out:
 	return rval;
-
 }
 
-static int et8ek8_update_controls(struct v4l2_subdev *subdev)
+/* -----------------------------------------------------------------------------
+ * V4L2 controls
+ */
+
+static int et8ek8_get_ctrl(struct v4l2_ctrl *ctrl)
 {
-	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
-	struct i2c_client *client = v4l2_get_subdevdata(subdev);
-	unsigned int rt;	/* Row time in us */
-	unsigned int clock;	/* Pixel clock in Hz>>2 fixed point */
-	int i;
+	struct et8ek8_sensor *sensor =
+		container_of(ctrl->handler, struct et8ek8_sensor, ctrl_handler);
+	const struct smia_mode *mode = &sensor->current_reglist->mode;
 
-	if (sensor->current_reglist->mode.pixel_clock <= 0 ||
-	    sensor->current_reglist->mode.width <= 0) {
-		dev_err(&client->dev, "bad firmware\n");
-		return -EIO;
+	switch (ctrl->id) {
+	case V4L2_CID_MODE_FRAME_WIDTH:
+		ctrl->cur.val = mode->width;
+		break;
+	case V4L2_CID_MODE_FRAME_HEIGHT:
+		ctrl->cur.val = mode->height;
+		break;
+	case V4L2_CID_MODE_VISIBLE_WIDTH:
+		ctrl->cur.val = mode->window_width;
+		break;
+	case V4L2_CID_MODE_VISIBLE_HEIGHT:
+		ctrl->cur.val = mode->window_height;
+		break;
+	case V4L2_CID_MODE_PIXELCLOCK:
+		ctrl->cur.val = mode->pixel_clock;
+		break;
+	case V4L2_CID_MODE_SENSITIVITY:
+		ctrl->cur.val = mode->sensitivity;
+		break;
+	case V4L2_CID_MODE_OPSYSCLOCK:
+		ctrl->cur.val = mode->opsys_clock;
+		break;
 	}
 
-	clock = sensor->current_reglist->mode.pixel_clock;
-	clock = (clock + (1 << 1)) >> 2;
-	rt = sensor->current_reglist->mode.width * (1000000 >> 2);
-	rt = (rt + (clock >> 1)) / clock;
-
-	sensor->controls[CTRL_EXPOSURE].minimum = rt;
-	sensor->controls[CTRL_EXPOSURE].maximum =
-		sensor->current_reglist->mode.max_exp * rt;
-	sensor->controls[CTRL_EXPOSURE].step = rt;
-	sensor->controls[CTRL_EXPOSURE].default_value =
-		sensor->controls[CTRL_EXPOSURE].maximum;
-	if (sensor->controls[CTRL_EXPOSURE].value == 0)
-		sensor->controls[CTRL_EXPOSURE].value =
-			sensor->controls[CTRL_EXPOSURE].maximum;
-
-	/* Adjust V4L2 control values and write them to the sensor */
-
-	for (i=0; i<ARRAY_SIZE(sensor->controls); i++) {
-		int rval = sensor->controls[i].set(sensor,
-			sensor->controls[i].value);
-		if (rval)
-			return rval;
-	}
 	return 0;
+}
+
+static int et8ek8_set_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct et8ek8_sensor *sensor =
+		container_of(ctrl->handler, struct et8ek8_sensor, ctrl_handler);
+	struct i2c_client *client = v4l2_get_subdevdata(&sensor->subdev);
+	int uninitialized_var(rows);
+
+	if (ctrl->id == V4L2_CID_EXPOSURE)
+		rows = et8ek8_exposure_us_to_rows(sensor, (u32 *)&ctrl->val);
+
+	if (!sensor->power)
+		return 0;
+
+	switch (ctrl->id) {
+	case V4L2_CID_GAIN:
+		return et8ek8_set_gain(sensor, ctrl->val);
+
+	case V4L2_CID_EXPOSURE:
+		return smia_i2c_write_reg(client, SMIA_REG_16BIT, 0x1243,
+					  swab16(rows));
+
+	case V4L2_CID_TEST_PATTERN:
+		return et8ek8_set_test_pattern(sensor, ctrl->val);
+
+	default:
+		return -EINVAL;
+	}
+}
+
+static const struct v4l2_ctrl_ops et8ek8_ctrl_ops = {
+	.g_volatile_ctrl = et8ek8_get_ctrl,
+	.s_ctrl = et8ek8_set_ctrl,
+};
+
+static const char *et8ek8_test_pattern_menu[] = {
+	"Normal",
+	"Vertical colorbar",
+	"Horizontal colorbar",
+	"Scale",
+	"Ramp",
+	"Small vertical colorbar",
+	"Small horizontal colorbar",
+	"Small scale",
+	"Small ramp",
+};
+
+static const struct v4l2_ctrl_config et8ek8_ctrls[] = {
+	{
+		.ops		= &et8ek8_ctrl_ops,
+		.id		= V4L2_CID_TEST_PATTERN,
+		.type		= V4L2_CTRL_TYPE_MENU,
+		.name		= "Test pattern mode",
+		.min		= 0,
+		.max		= ARRAY_SIZE(et8ek8_test_pattern_menu) - 1,
+		.step		= 0,
+		.def		= 0,
+		.flags		= 0,
+		.qmenu		= et8ek8_test_pattern_menu,
+	},
+	{
+		.id		= V4L2_CID_MODE_CLASS,
+		.type		= V4L2_CTRL_TYPE_CTRL_CLASS,
+		.name		= "SMIA-type sensor information",
+		.min		= 0,
+		.max		= 0,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY
+				| V4L2_CTRL_FLAG_WRITE_ONLY,
+	},
+	{
+		.ops		= &et8ek8_ctrl_ops,
+		.id		= V4L2_CID_MODE_FRAME_WIDTH,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Frame width",
+		.min		= 0,
+		.max		= 0,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	},
+	{
+		.ops		= &et8ek8_ctrl_ops,
+		.id		= V4L2_CID_MODE_FRAME_HEIGHT,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Frame height",
+		.min		= 0,
+		.max		= 0,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	},
+	{
+		.ops		= &et8ek8_ctrl_ops,
+		.id		= V4L2_CID_MODE_VISIBLE_WIDTH,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Visible width",
+		.min		= 0,
+		.max		= 0,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	},
+	{
+		.ops		= &et8ek8_ctrl_ops,
+		.id		= V4L2_CID_MODE_VISIBLE_HEIGHT,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Visible height",
+		.min		= 0,
+		.max		= 0,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	},
+	{
+		.ops		= &et8ek8_ctrl_ops,
+		.id		= V4L2_CID_MODE_PIXELCLOCK,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Pixel clock [Hz]",
+		.min		= 0,
+		.max		= 0,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	},
+	{
+		.ops		= &et8ek8_ctrl_ops,
+		.id		= V4L2_CID_MODE_SENSITIVITY,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Sensivity",
+		.min		= 0,
+		.max		= 0,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	},
+	{
+		.ops		= &et8ek8_ctrl_ops,
+		.id		= V4L2_CID_MODE_OPSYSCLOCK,
+		.type		= V4L2_CTRL_TYPE_INTEGER,
+		.name		= "Output pixel clock [Hz]",
+		.min		= 0,
+		.max		= 0,
+		.step		= 1,
+		.def		= 0,
+		.flags		= V4L2_CTRL_FLAG_READ_ONLY,
+		.is_volatile	= 1,
+	},
+};
+
+static int et8ek8_init_controls(struct et8ek8_sensor *sensor)
+{
+	unsigned int i;
+	u32 min, max;
+
+	v4l2_ctrl_handler_init(&sensor->ctrl_handler,
+			       ARRAY_SIZE(et8ek8_ctrls) + 2);
+
+	/* V4L2_CID_GAIN */
+	v4l2_ctrl_new_std(&sensor->ctrl_handler, &et8ek8_ctrl_ops,
+			  V4L2_CID_GAIN, 0, ARRAY_SIZE(et8ek8_gain_table) - 1,
+			  1, 0);
+
+	/* V4L2_CID_EXPOSURE */
+	min = et8ek8_exposure_rows_to_us(sensor, 1);
+	max = et8ek8_exposure_rows_to_us(sensor,
+				sensor->current_reglist->mode.max_exp);
+	sensor->exposure =
+		v4l2_ctrl_new_std(&sensor->ctrl_handler, &et8ek8_ctrl_ops,
+				  V4L2_CID_EXPOSURE, min, max, min, max);
+
+	/* V4L2_CID_TEST_PATTERN and V4L2_CID_MODE_* */
+	for (i = 0; i < ARRAY_SIZE(et8ek8_ctrls); ++i)
+		v4l2_ctrl_new_custom(&sensor->ctrl_handler, &et8ek8_ctrls[i],
+				     NULL);
+
+	if (sensor->ctrl_handler.error)
+		return sensor->ctrl_handler.error;
+
+	sensor->subdev.ctrl_handler = &sensor->ctrl_handler;
+	return 0;
+}
+
+static void et8ek8_update_controls(struct et8ek8_sensor *sensor)
+{
+	struct v4l2_ctrl *ctrl = sensor->exposure;
+	u32 min, max;
+
+	min = et8ek8_exposure_rows_to_us(sensor, 1);
+	max = et8ek8_exposure_rows_to_us(sensor,
+					 sensor->current_reglist->mode.max_exp);
+
+	v4l2_ctrl_lock(ctrl);
+	ctrl->minimum = min;
+	ctrl->maximum = max;
+	ctrl->step = min;
+	ctrl->default_value = max;
+	ctrl->val = max;
+	ctrl->cur.val = max;
+	v4l2_ctrl_unlock(ctrl);
 }
 
 static int et8ek8_configure(struct v4l2_subdev *subdev)
@@ -308,16 +517,20 @@ static int et8ek8_configure(struct v4l2_subdev *subdev)
 	struct i2c_client *client = v4l2_get_subdevdata(subdev);
 	int rval;
 
-	rval = et8ek8_update_controls(subdev);
-	if (rval)
-		goto fail;
-
 	rval = smia_i2c_write_regs(client, sensor->current_reglist->regs);
 	if (rval)
 		goto fail;
 
 	rval = sensor->platform_data->configure_interface(
 		subdev, &sensor->current_reglist->mode);
+	if (rval)
+		goto fail;
+
+	/* Controls set while the power to the sensor is turned off are saved
+	 * but not applied to the hardware. Now that we're about to start
+	 * streaming apply all the current values to the hardware.
+	 */
+	rval = v4l2_ctrl_handler_setup(&sensor->ctrl_handler);
 	if (rval)
 		goto fail;
 
@@ -341,6 +554,7 @@ static int et8ek8_s_stream(struct v4l2_subdev *subdev, int streaming)
 /* --------------------------------------------------------------------------
  * V4L2 subdev operations
  */
+
 static int et8ek8_power_off(struct v4l2_subdev *subdev)
 {
 	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
@@ -412,44 +626,10 @@ out:
 	return rval;
 }
 
-static struct v4l2_queryctrl et8ek8_ctrls[] = {
-	{
-		.id		= V4L2_CID_GAIN,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Gain [0.1 EV]",
-		.flags		= V4L2_CTRL_FLAG_SLIDER,
-	},
-	{
-		.id		= V4L2_CID_EXPOSURE,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Exposure time [us]",
-		.flags		= V4L2_CTRL_FLAG_SLIDER,
-	},
-	{
-		.id		= V4L2_CID_TEST_PATTERN,
-		.type		= V4L2_CTRL_TYPE_MENU,
-		.name		= "Test pattern mode",
-		.flags		= 0,
-		.minimum	= 0,
-		.maximum	= 8,
-		.step		= 1,
-		.default_value	= 0,
-	},
-};
-
-static const __u32 et8ek8_mode_ctrls[] = {
-	V4L2_CID_MODE_FRAME_WIDTH,
-	V4L2_CID_MODE_FRAME_HEIGHT,
-	V4L2_CID_MODE_VISIBLE_WIDTH,
-	V4L2_CID_MODE_VISIBLE_HEIGHT,
-	V4L2_CID_MODE_PIXELCLOCK,
-	V4L2_CID_MODE_SENSITIVITY,
-	V4L2_CID_MODE_OPSYSCLOCK,
-};
-
 /* --------------------------------------------------------------------------
  * V4L2 subdev video operations
  */
+
 static int et8ek8_enum_mbus_code(struct v4l2_subdev *subdev,
 				 struct v4l2_subdev_fh *fh,
 				 struct v4l2_subdev_mbus_code_enum *code)
@@ -523,8 +703,10 @@ static int et8ek8_set_pad_format(struct v4l2_subdev *subdev,
 	smia_reglist_to_mbus(reglist, &fmt->format);
 	*format = fmt->format;
 
-	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE)
+	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
 		sensor->current_reglist = reglist;
+		et8ek8_update_controls(sensor);
+	}
 
 	return 0;
 }
@@ -558,8 +740,9 @@ static int et8ek8_set_frame_interval(struct v4l2_subdev *subdev,
 		return -EINVAL;
 
 	sensor->current_reglist = reglist;
+	et8ek8_update_controls(sensor);
 
-	return et8ek8_update_controls(subdev);
+	return 0;
 }
 
 static int et8ek8_g_priv_mem(struct v4l2_subdev *subdev)
@@ -793,161 +976,45 @@ et8ek8_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 		return -EBUSY;
 	}
 
-	/* Gain is initialized here permanently */
-	sensor->controls[CTRL_GAIN].minimum = 0;
-	sensor->controls[CTRL_GAIN].maximum = ARRAY_SIZE(et8ek8_gain_table) - 1;
-	sensor->controls[CTRL_GAIN].step = 1;
-	sensor->controls[CTRL_GAIN].default_value = 0;
-	sensor->controls[CTRL_GAIN].value = 0;
-	sensor->controls[CTRL_GAIN].set = et8ek8_set_gain;
-
-	/* Exposure parameters may change at each mode change, just zero here */
-	sensor->controls[CTRL_EXPOSURE].minimum = 0;
-	sensor->controls[CTRL_EXPOSURE].maximum = 0;
-	sensor->controls[CTRL_EXPOSURE].step = 0;
-	sensor->controls[CTRL_EXPOSURE].default_value = 0;
-	sensor->controls[CTRL_EXPOSURE].value = 0;
-	sensor->controls[CTRL_EXPOSURE].set = et8ek8_set_exposure;
-
-	/* Test pattern mode control */
-	sensor->controls[CTRL_TEST_PATTERN].minimum =
-		et8ek8_ctrls[CTRL_TEST_PATTERN].minimum;
-	sensor->controls[CTRL_TEST_PATTERN].maximum =
-		et8ek8_ctrls[CTRL_TEST_PATTERN].maximum;
-	sensor->controls[CTRL_TEST_PATTERN].step =
-		et8ek8_ctrls[CTRL_TEST_PATTERN].step;
-	sensor->controls[CTRL_TEST_PATTERN].default_value =
-		et8ek8_ctrls[CTRL_TEST_PATTERN].default_value;
-	sensor->controls[CTRL_TEST_PATTERN].value = 0;
-	sensor->controls[CTRL_TEST_PATTERN].set = et8ek8_set_test_pattern;
-
 	rval = et8ek8_dev_init(subdev);
 	if (rval)
 		return rval;
+
+	rval = et8ek8_init_controls(sensor);
+	if (rval) {
+		dev_err(&client->dev, "controls initialization failed\n");
+		return rval;
+	}
 
 	format = __et8ek8_get_pad_format(sensor, NULL, 0,
 					 V4L2_SUBDEV_FORMAT_ACTIVE);
 	return 0;
 }
 
-static int et8ek8_query_ctrl(struct v4l2_subdev *subdev,
-				  struct v4l2_queryctrl *a)
-{
-	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
-	int rval, ctrl;
-
-	rval = smia_ctrl_query(et8ek8_ctrls, ARRAY_SIZE(et8ek8_ctrls), a);
-	if (rval) {
-		return smia_mode_query(et8ek8_mode_ctrls,
-					ARRAY_SIZE(et8ek8_mode_ctrls), a);
-	}
-
-	ctrl = CID_TO_CTRL(a->id);
-	if (ctrl < 0)
-		return ctrl;
-
-	a->minimum       = sensor->controls[ctrl].minimum;
-	a->maximum       = sensor->controls[ctrl].maximum;
-	a->step          = sensor->controls[ctrl].step;
-	a->default_value = sensor->controls[ctrl].default_value;
-
-	return 0;
-}
-
-static int et8ek8_query_menu(struct v4l2_subdev *subdev,
-				  struct v4l2_querymenu *qm)
-{
-	static const char *menu_name[] = {
-		"Normal",
-		"Vertical colorbar",
-		"Horizontal colorbar",
-		"Scale",
-		"Ramp",
-		"Small vertical colorbar",
-		"Small horizontal colorbar",
-		"Small scale",
-		"Small ramp",
-	};
-
-	switch (qm->id) {
-	case V4L2_CID_TEST_PATTERN:
-		if (qm->index >= ARRAY_SIZE(menu_name))
-			return -EINVAL;
-		strcpy(qm->name, menu_name[qm->index]);
-		break;
-	default:
-		return -EINVAL;
-	}
-	return 0;
-}
-
-static int et8ek8_get_ctrl(struct v4l2_subdev *subdev,
-			       struct v4l2_control *vc)
-{
-	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
-	int ctrl;
-
-	int rval = smia_mode_g_ctrl(et8ek8_mode_ctrls,
-			ARRAY_SIZE(et8ek8_mode_ctrls),
-			vc, &sensor->current_reglist->mode);
-	if (rval == 0)
-		return 0;
-
-	ctrl = CID_TO_CTRL(vc->id);
-	if (ctrl < 0)
-		return ctrl;
-	vc->value = sensor->controls[ctrl].value;
-	return 0;
-}
-
-static int et8ek8_set_ctrl(struct v4l2_subdev *subdev,
-			       struct v4l2_control *vc)
-{
-	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
-	int ctrl = CID_TO_CTRL(vc->id);
-	if (ctrl < 0)
-		return ctrl;
-	return sensor->controls[ctrl].set(sensor, vc->value);
-}
-
 static int et8ek8_set_power(struct v4l2_subdev *subdev, int on)
 {
 	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
-	int rval = 0;
+	int rval;
 
-	/* If we are already in this mode, do nothing */
 	if (sensor->power == on)
 		return 0;
 
-	/* Disable power if so requested (it was enabled) */
-	if (!on) {
-		rval = et8ek8_power_off(subdev);
-		goto out;
-	}
-
-	/* Either STANDBY or ON requested */
-
-	/* Enable power and move to standby if it was off */
-	if (on) {
+	if (on)
 		rval = et8ek8_power_on(subdev);
-		if (rval)
-			goto out;
-	}
+	else
+		rval = et8ek8_power_off(subdev);
 
-	/* Now sensor is powered (standby or streaming) */
+	if (rval)
+		return rval;
+
+	sensor->power = on;
 
 	if (on) {
-		/* Standby -> streaming */
+		/* Restore the sensor settings */
 		rval = et8ek8_configure(subdev);
-		if (rval) {
-			et8ek8_power_off(subdev);
-			goto out;
-		}
+		if (rval)
+			sensor->power = 0;
 	}
-
-out:
-	if (rval == 0)
-		sensor->power = on;
 
 	return rval;
 }
@@ -961,10 +1028,6 @@ static const struct v4l2_subdev_video_ops et8ek8_video_ops = {
 static const struct v4l2_subdev_core_ops et8ek8_core_ops = {
 	.g_chip_ident = et8ek8_get_chip_ident,
 	.s_config = et8ek8_set_config,
-	.queryctrl = et8ek8_query_ctrl,
-	.querymenu = et8ek8_query_menu,
-	.g_ctrl = et8ek8_get_ctrl,
-	.s_ctrl = et8ek8_set_ctrl,
 	.s_power = et8ek8_set_power,
 };
 
