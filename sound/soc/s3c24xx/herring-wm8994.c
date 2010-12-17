@@ -305,7 +305,7 @@ static int aif2_clk_control(struct snd_soc_dai *dai, bool enable, int rate)
 				       ret);
 			}
 
-			ret = snd_soc_dai_set_pll(dai, 0, 0, 0, 0);
+			ret = snd_soc_dai_set_pll(dai, WM8994_FLL2, 0, 0, 0);
 			if (ret < 0) {
 				pr_err("snd_soc_dai_set_pll failed: %d\n",
 				       ret);
