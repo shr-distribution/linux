@@ -25,9 +25,10 @@
 #define ET8EK8_H
 
 #include <linux/i2c.h>
-#include <media/smiaregs.h>
-#include <media/v4l2-subdev.h>
 #include <media/media-entity.h>
+#include <media/smiaregs.h>
+#include <media/v4l2-ctrls.h>
+#include <media/v4l2-subdev.h>
 
 struct regulator;
 
@@ -45,20 +46,6 @@ struct et8ek8_platform_data {
 	int (*set_xshutdown)(struct v4l2_subdev *subdev, int set);
 };
 
-struct et8ek8_sensor;
-
-/* Current values for V4L2 controls */
-struct et8ek8_control {
-	s32 minimum;
-	s32 maximum;
-	s32 step;
-	s32 default_value;
-	s32 value;
-	int (*set)(struct et8ek8_sensor *sensor, s32 value);
-};
-
-#define to_et8ek8_sensor(sd)	container_of(sd, struct et8ek8_sensor, subdev)
-
 struct et8ek8_sensor {
 	struct v4l2_subdev subdev;
 	struct media_pad pad;
@@ -68,8 +55,8 @@ struct et8ek8_sensor {
 
 	u16 version;
 
-	struct et8ek8_control controls[ET8EK8_NCTRLS];
-
+	struct v4l2_ctrl_handler ctrl_handler;
+	struct v4l2_ctrl *exposure;
 	struct smia_reglist *current_reglist;
 
 	const struct firmware *fw;
@@ -78,5 +65,7 @@ struct et8ek8_sensor {
 
 	int power : 1;
 };
+
+#define to_et8ek8_sensor(sd)	container_of(sd, struct et8ek8_sensor, subdev)
 
 #endif /* ET8EK8_H */
