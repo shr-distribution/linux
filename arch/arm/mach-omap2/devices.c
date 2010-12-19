@@ -34,6 +34,8 @@
 #include "mux.h"
 #include "control.h"
 
+#include "devices.h"
+
 #if defined(CONFIG_VIDEO_OMAP2) || defined(CONFIG_VIDEO_OMAP2_MODULE)
 
 static struct resource cam_resources[] = {
@@ -109,13 +111,33 @@ static struct resource omap3isp_resources[] = {
 		.flags		= IORESOURCE_MEM,
 	},
 	{
-		.start		= OMAP3430_ISP_CSI2A_BASE,
-		.end		= OMAP3430_ISP_CSI2A_END,
+		.start		= OMAP3430_ISP_CSI2A_REGS1_BASE,
+		.end		= OMAP3430_ISP_CSI2A_REGS1_END,
 		.flags		= IORESOURCE_MEM,
 	},
 	{
-		.start		= OMAP3430_ISP_CSI2PHY_BASE,
-		.end		= OMAP3430_ISP_CSI2PHY_END,
+		.start		= OMAP3430_ISP_CSIPHY2_BASE,
+		.end		= OMAP3430_ISP_CSIPHY2_END,
+		.flags		= IORESOURCE_MEM,
+	},
+	{
+		.start		= OMAP3630_ISP_CSI2A_REGS2_BASE,
+		.end		= OMAP3630_ISP_CSI2A_REGS2_END,
+		.flags		= IORESOURCE_MEM,
+	},
+	{
+		.start		= OMAP3630_ISP_CSI2C_REGS1_BASE,
+		.end		= OMAP3630_ISP_CSI2C_REGS1_END,
+		.flags		= IORESOURCE_MEM,
+	},
+	{
+		.start		= OMAP3630_ISP_CSIPHY1_BASE,
+		.end		= OMAP3630_ISP_CSIPHY1_END,
+		.flags		= IORESOURCE_MEM,
+	},
+	{
+		.start		= OMAP3630_ISP_CSI2C_REGS2_BASE,
+		.end		= OMAP3630_ISP_CSI2C_REGS2_END,
 		.flags		= IORESOURCE_MEM,
 	},
 	{
@@ -124,16 +146,28 @@ static struct resource omap3isp_resources[] = {
 	}
 };
 
-static struct platform_device omap3isp_device = {
+static void omap3isp_release(struct device *dev)
+{
+	/* Zero the device structure to avoid re-initialization complaints from
+	 * kobject when the device will be re-registered.
+	 */
+	memset(dev, 0, sizeof(*dev));
+	dev->release = omap3isp_release;
+}
+
+struct platform_device omap3isp_device = {
 	.name		= "omap3isp",
 	.id		= -1,
 	.num_resources	= ARRAY_SIZE(omap3isp_resources),
 	.resource	= omap3isp_resources,
+	.dev = {
+		.release	= omap3isp_release,
+	},
 };
+EXPORT_SYMBOL_GPL(omap3isp_device);
 
 static inline void omap_init_camera(void)
 {
-	platform_device_register(&omap3isp_device);
 }
 #else
 static inline void omap_init_camera(void)

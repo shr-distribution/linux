@@ -476,6 +476,14 @@ static struct regulator_init_data rx51_vaux1 = {
 	.consumer_supplies	= rx51_vaux1_consumers,
 };
 
+static struct regulator_consumer_supply rx51_vaux2_consumers[] = {
+	REGULATOR_SUPPLY("VDD_CSIPHY1", "omap3isp"),	/* OMAP ISP */
+	REGULATOR_SUPPLY("VDD_CSIPHY2", "omap3isp"),	/* OMAP ISP */
+	{
+		.supply		= "vaux2",
+	},
+};
+
 static struct regulator_init_data rx51_vaux2 = {
 	.constraints = {
 		.name			= "VCSI",
@@ -486,6 +494,8 @@ static struct regulator_init_data rx51_vaux2 = {
 		.valid_ops_mask		= REGULATOR_CHANGE_MODE
 					| REGULATOR_CHANGE_STATUS,
 	},
+	.num_consumer_supplies	= ARRAY_SIZE(rx51_vaux2_consumers),
+	.consumer_supplies	= rx51_vaux2_consumers,
 };
 
 /* VAUX3 - adds more power to VIO_18 rail */

@@ -369,7 +369,8 @@ EXPORT_SYMBOL_GPL(v4l2_i2c_subdev_init);
 /* Load an i2c sub-device. */
 struct v4l2_subdev *v4l2_i2c_new_subdev_board(struct v4l2_device *v4l2_dev,
 		struct i2c_adapter *adapter, const char *module_name,
-		struct i2c_board_info *info, const unsigned short *probe_addrs)
+		struct i2c_board_info *info, const unsigned short *probe_addrs,
+		int enable_devnode)
 {
 	struct v4l2_subdev *sd = NULL;
 	struct i2c_client *client;
@@ -402,9 +403,12 @@ struct v4l2_subdev *v4l2_i2c_new_subdev_board(struct v4l2_device *v4l2_dev,
 	if (!try_module_get(client->driver->driver.owner))
 		goto error;
 	sd = i2c_get_clientdata(client);
+	if (!enable_devnode)
+		sd->flags &= ~V4L2_SUBDEV_FL_HAS_DEVNODE;
 
 	/* Register with the v4l2_device which increases the module's
 	   use count as well. */
+	sd->initialized = 0;
 	if (v4l2_device_register_subdev(v4l2_dev, sd))
 		sd = NULL;
 	/* Decrease the module use count to match the first try_module_get. */
@@ -419,6 +423,8 @@ struct v4l2_subdev *v4l2_i2c_new_subdev_board(struct v4l2_device *v4l2_dev,
 		if (err && err != -ENOIOCTLCMD) {
 			v4l2_device_unregister_subdev(sd);
 			sd = NULL;
+		} else {
+			sd->initialized = 1;
 		}
 	}
 
@@ -431,10 +437,9 @@ error:
 }
 EXPORT_SYMBOL_GPL(v4l2_i2c_new_subdev_board);
 
-struct v4l2_subdev *v4l2_i2c_new_subdev_cfg(struct v4l2_device *v4l2_dev,
+struct v4l2_subdev *v4l2_i2c_new_subdev(struct v4l2_device *v4l2_dev,
 		struct i2c_adapter *adapter,
 		const char *module_name, const char *client_type,
-		int irq, void *platform_data,
 		u8 addr, const unsigned short *probe_addrs)
 {
 	struct i2c_board_info info;
@@ -444,13 +449,11 @@ struct v4l2_subdev *v4l2_i2c_new_subdev_cfg(struct v4l2_device *v4l2_dev,
 	memset(&info, 0, sizeof(info));
 	strlcpy(info.type, client_type, sizeof(info.type));
 	info.addr = addr;
-	info.irq = irq;
-	info.platform_data = platform_data;
 
 	return v4l2_i2c_new_subdev_board(v4l2_dev, adapter, module_name,
-			&info, probe_addrs);
+			&info, probe_addrs, 0);
 }
-EXPORT_SYMBOL_GPL(v4l2_i2c_new_subdev_cfg);
+EXPORT_SYMBOL_GPL(v4l2_i2c_new_subdev);
 
 /* Return i2c client address of v4l2_subdev. */
 unsigned short v4l2_i2c_subdev_addr(struct v4l2_subdev *sd)

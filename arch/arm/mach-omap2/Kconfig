@@ -126,6 +126,16 @@ config MACH_OMAP3_BEAGLE
 	depends on ARCH_OMAP3
 	default y
 	select OMAP_PACKAGE_CBB
+	select VIDEO_MACH_RX51 if VIDEO_HELPER_CHIPS_AUTO
+
+config VIDEO_MACH_RX51
+	tristate "Nokia RX-51 board camera"
+	depends on MACH_NOKIA_RX51 && VIDEO_DEV && TWL4030_CORE
+	select VIDEO_OMAP3
+	select VIDEO_ET8EK8
+	select VIDEO_AD5820
+	select VIDEO_ADP1653
+	select VIDEO_SMIA_SENSOR
 
 config MACH_DEVKIT8000
 	bool "DEVKIT8000 board"

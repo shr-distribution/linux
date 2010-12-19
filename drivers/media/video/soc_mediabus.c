@@ -10,9 +10,9 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/v4l2-mediabus.h>
 
 #include <media/v4l2-device.h>
-#include <media/v4l2-mediabus.h>
 #include <media/soc_mediabus.h>
 
 #define MBUS_IDX(f) (V4L2_MBUS_FMT_ ## f - V4L2_MBUS_FMT_FIXED - 1)
