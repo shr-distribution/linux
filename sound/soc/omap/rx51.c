@@ -39,9 +39,11 @@
 #include "omap-pcm.h"
 #include "../codecs/tlv320aic3x.h"
 #include "../codecs/tpa6130a2.h"
+#include "aic34b_dummy.h"
 
 #define RX51_TVOUT_SEL_GPIO		40
 #define RX51_JACK_DETECT_GPIO		177
+#define RX51_ECI_SW2_GPIO		182
 /*
  * REVISIT: TWL4030 GPIO base in RX-51. Now statically defined to 192. This
  * gpio is reserved in arch/arm/mach-omap2/board-rx51-peripherals.c
@@ -52,18 +54,22 @@ enum {
 	RX51_JACK_DISABLED,
 	RX51_JACK_TVOUT,		/* tv-out with stereo audio */
 	RX51_JACK_HP,			/* stereo output, no mic */
+	RX51_JACK_HS,			/* stereo output with mic input */
 };
 
 static int rx51_spk_func;
 static int rx51_dmic_func;
 static int rx51_jack_func;
 static int rx51_fmtx_func;
+static int rx51_ear_func;
 
 static void rx51_ext_control(struct snd_soc_codec *codec)
 {
-	int hp = 0;
+	int hp = 0, mic = 0;
 
 	switch (rx51_jack_func) {
+	case RX51_JACK_HS:
+		mic = 1;
 	case RX51_JACK_TVOUT:
 	case RX51_JACK_HP:
 		hp = 1;
@@ -89,6 +95,14 @@ static void rx51_ext_control(struct snd_soc_codec *codec)
 		snd_soc_dapm_enable_pin(codec, "FM Transmitter");
 	else
 		snd_soc_dapm_disable_pin(codec, "FM Transmitter");
+	if (rx51_ear_func)
+		snd_soc_dapm_enable_pin(codec, "Earpiece");
+	else
+		snd_soc_dapm_disable_pin(codec, "Earpiece");
+	if (mic)
+		snd_soc_dapm_enable_pin(codec, "Mic Jack");
+	else
+		snd_soc_dapm_disable_pin(codec, "Mic Jack");
 
 	gpio_set_value(RX51_TVOUT_SEL_GPIO,
 		       rx51_jack_func == RX51_JACK_TVOUT);
@@ -242,6 +256,28 @@ static int rx51_set_fmtx(struct snd_kcontrol *kcontrol,
 	return 1;
 }
 
+static int rx51_get_ear(struct snd_kcontrol *kcontrol,
+			struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = rx51_ear_func;
+
+	return 0;
+}
+
+static int rx51_set_ear(struct snd_kcontrol *kcontrol,
+			struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_codec *codec =  snd_kcontrol_chip(kcontrol);
+
+	if (rx51_ear_func == ucontrol->value.integer.value[0])
+		return 0;
+
+	rx51_ear_func = ucontrol->value.integer.value[0];
+	rx51_ext_control(codec);
+
+	return 1;
+}
+
 static struct snd_soc_jack rx51_av_jack;
 
 static struct snd_soc_jack_gpio rx51_av_jack_gpios[] = {
@@ -259,6 +295,8 @@ static const struct snd_soc_dapm_widget aic34_dapm_widgets[] = {
 	SND_SOC_DAPM_MIC("DMic", NULL),
 	SND_SOC_DAPM_HP("Headphone Jack", NULL),
 	SND_SOC_DAPM_LINE("FM Transmitter", NULL),
+	SND_SOC_DAPM_SPK("Earpiece", NULL),
+	SND_SOC_DAPM_MIC("Mic Jack", NULL),
 };
 
 static const struct snd_soc_dapm_route audio_map[] = {
@@ -275,18 +313,27 @@ static const struct snd_soc_dapm_route audio_map[] = {
 
 	{"FM Transmitter", NULL, "LLOUT"},
 	{"FM Transmitter", NULL, "RLOUT"},
+
+	{"34B_LINE2R", NULL, "MONO_LOUT"},
+	{"Earpiece", NULL, "34B_HPLOUT"},
+	{"Earpiece", NULL, "34B_HPLCOM"},
+
+	{"LINE1L", NULL, "34B Mic Bias 2.5V"},
+	{"34B Mic Bias 2.5V", NULL, "Mic Jack"}
 };
 
 static const char *spk_function[] = {"Off", "On"};
 static const char *input_function[] = {"ADC", "Digital Mic"};
-static const char *jack_function[] = {"Off", "TV-OUT", "Headphone"};
+static const char *jack_function[] = {"Off", "TV-OUT", "Headphone", "Headset"};
 static const char *fmtx_function[] = {"Off", "On"};
+static const char *ear_function[] = {"Off", "On"};
 
 static const struct soc_enum rx51_enum[] = {
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(spk_function), spk_function),
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(input_function), input_function),
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(jack_function), jack_function),
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(fmtx_function), fmtx_function),
+	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(ear_function), ear_function),
 };
 
 static const struct snd_kcontrol_new aic34_rx51_controls[] = {
@@ -298,6 +345,8 @@ static const struct snd_kcontrol_new aic34_rx51_controls[] = {
 		     rx51_get_jack, rx51_set_jack),
 	SOC_ENUM_EXT("FMTX Function", rx51_enum[3],
 		     rx51_get_fmtx, rx51_set_fmtx),
+	SOC_ENUM_EXT("Earpiece Function",  rx51_enum[4],
+		     rx51_get_ear, rx51_set_ear),
 };
 
 static int rx51_aic34_init(struct snd_soc_pcm_runtime *rtd)
@@ -323,6 +372,8 @@ static int rx51_aic34_init(struct snd_soc_pcm_runtime *rtd)
 
 	tpa6130a2_add_controls(codec);
 	snd_soc_limit_volume(codec, "TPA6130A2 Headphone Playback Volume", 42);
+
+	aic34b_add_controls(codec);
 
 	/* Set up RX-51 specific audio path audio_map */
 	snd_soc_dapm_add_routes(codec, audio_map, ARRAY_SIZE(audio_map));
@@ -375,6 +426,10 @@ static int __init rx51_soc_init(void)
 	if (err)
 		goto err_gpio_tvout_sel;
 	gpio_direction_output(RX51_TVOUT_SEL_GPIO, 0);
+	err = gpio_request(RX51_ECI_SW2_GPIO, "eci_sw2");
+	if (err)
+		goto err_gpio_eci_sw2;
+	gpio_direction_output(RX51_ECI_SW2_GPIO, 1);
 
 	rx51_snd_device = platform_device_alloc("soc-audio", -1);
 	if (!rx51_snd_device) {
@@ -392,6 +447,8 @@ static int __init rx51_soc_init(void)
 err2:
 	platform_device_put(rx51_snd_device);
 err1:
+	gpio_free(RX51_ECI_SW2_GPIO);
+err_gpio_eci_sw2:
 	gpio_free(RX51_TVOUT_SEL_GPIO);
 err_gpio_tvout_sel:
 
@@ -404,6 +461,7 @@ static void __exit rx51_soc_exit(void)
 				rx51_av_jack_gpios);
 
 	platform_device_unregister(rx51_snd_device);
+	gpio_free(RX51_ECI_SW2_GPIO);
 	gpio_free(RX51_TVOUT_SEL_GPIO);
 }
 
