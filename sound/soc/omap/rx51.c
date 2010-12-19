@@ -352,7 +352,7 @@ static const struct snd_kcontrol_new aic34_rx51_controls[] = {
 static int rx51_aic34_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_codec *codec = rtd->codec;
-	struct snd_soc_card *card = codec->socdev->card;
+	struct snd_soc_card *card = codec->card;
 	int err;
 
 	/* Set up NC codec pins */
