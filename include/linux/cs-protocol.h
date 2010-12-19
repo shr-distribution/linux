@@ -58,7 +58,8 @@
 
 /* parameters to CS_CONFIG_BUFS ioctl */
 #define CS_FEAT_TSTAMP_RX_CTRL		(1 << 0)
-#define CS_FEAT_ROLLING_RX_COUNTER	(2 << 0)
+#define CS_FEAT_ROLLING_RX_COUNTER	(1 << 1)
+#define CS_FEAT_BURST_MODE		(1 << 2)
 
 /* parameters to CS_GET_STATE ioctl */
 #define CS_STATE_CLOSED			0
