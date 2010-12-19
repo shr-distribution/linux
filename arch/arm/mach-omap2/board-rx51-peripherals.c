@@ -26,6 +26,8 @@
 #include <linux/mmc/host.h>
 #include <linux/bluetooth/hci_h4p.h>
 #include <sound/tlv320aic3x.h>
+#include <media/radio-si4713.h>
+#include <media/si4713.h>
 
 #include <plat/mcspi.h>
 #include <plat/board.h>
@@ -38,7 +40,6 @@
 
 #include <mach/board-rx51.h>
 
-#include <sound/tlv320aic3x.h>
 #include <sound/tpa6130a2-plat.h>
 
 #include <../drivers/staging/iio/light/tsl2563.h>
@@ -52,6 +53,8 @@
 
 #define RX51_WL1251_POWER_GPIO		87
 #define RX51_WL1251_IRQ_GPIO		42
+#define RX51_FMTX_RESET_GPIO		163
+#define RX51_FMTX_IRQ			53
 
 #define RX51_TSC2005_RESET_GPIO		104
 #define RX51_TSC2005_IRQ_GPIO		100
@@ -451,6 +454,8 @@ static struct regulator_consumer_supply rx51_vaux1_consumers[] = {
 		.dev	= &rx51_display_device.dev,
 	},
 #endif
+	/* Si4713 supply */
+	REGULATOR_SUPPLY("vdd", "2-0063"),
 };
 
 static struct regulator_init_data rx51_vaux1 = {
@@ -593,6 +598,42 @@ static struct regulator_init_data rx51_vio = {
 	.num_consumer_supplies	= ARRAY_SIZE(rx51_vio_supplies),
 	.consumer_supplies	= rx51_vio_supplies,
 };
+
+static struct si4713_platform_data rx51_si4713_i2c_data = {
+	.gpio_reset	= RX51_FMTX_RESET_GPIO,
+};
+
+static struct i2c_board_info rx51_si4713_board_info = {
+	I2C_BOARD_INFO("si4713", SI4713_I2C_ADDR_BUSEN_HIGH),
+	.platform_data	= &rx51_si4713_i2c_data,
+};
+
+static struct radio_si4713_platform_data rx51_si4713_data = {
+	.i2c_bus	= 2,
+	.subdev_board_info = &rx51_si4713_board_info,
+};
+
+static struct platform_device rx51_si4713_dev = {
+	.name	= "radio-si4713",
+	.id	= -1,
+	.dev	= {
+		.platform_data	= &rx51_si4713_data,
+	},
+};
+
+static __init void rx51_init_si4713(void)
+{
+	int err;
+
+	err = gpio_request(RX51_FMTX_IRQ, "si4713");
+	if (err) {
+		printk(KERN_ERR "Cannot request gpio %d\n", RX51_FMTX_IRQ);
+		return;
+	}
+	gpio_direction_input(RX51_FMTX_IRQ);
+	rx51_si4713_board_info.irq = gpio_to_irq(RX51_FMTX_IRQ);
+	platform_device_register(&rx51_si4713_dev);
+}
 
 static int rx51_twlgpio_setup(struct device *dev, unsigned gpio, unsigned n)
 {
@@ -808,6 +849,15 @@ static struct tpa6130a2_platform_data rx51_tpa6130a2_data __initdata = {
 	.power_gpio		= 98,
 };
 
+static struct aic3x_pdata rx51_aic3x_data __initdata = {
+	.gpio_reset		= 60,
+};
+
+static struct tpa6130a2_platform_data rx51_tpa6130a2_data __initdata = {
+	.id			= TPA6130A2,
+	.power_gpio		= 98,
+};
+
 static struct i2c_board_info __initdata rx51_peripherals_i2c_board_info_1[] = {
 	{
 		I2C_BOARD_INFO("twl5030", 0x48),
@@ -853,6 +903,10 @@ static struct i2c_board_info __initdata rx51_peripherals_i2c_board_info_3[] = {
 		.irq = OMAP_GPIO_IRQ(LIS302_IRQ1_GPIO),
 	},
 #endif
+	{
+		I2C_BOARD_INFO("tpa6130a2", 0x60),
+		.platform_data = &rx51_tpa6130a2_data,
+	},
 };
 
 static int __init rx51_i2c_init(void)
@@ -1121,6 +1175,7 @@ void __init rx51_peripherals_init(void)
 	rx51_init_wl1251();
 	rx51_init_tsc2005();
 	rx51_bt_init();
+	rx51_init_si4713();
 	spi_register_board_info(rx51_peripherals_spi_board_info,
 				ARRAY_SIZE(rx51_peripherals_spi_board_info));
 	omap2_hsmmc_init(mmc);
