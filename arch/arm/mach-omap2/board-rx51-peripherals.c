@@ -938,15 +938,6 @@ static struct tpa6130a2_platform_data rx51_tpa6130a2_data __initdata = {
 	.power_gpio		= 98,
 };
 
-static struct aic3x_pdata rx51_aic3x_data __initdata = {
-	.gpio_reset		= 60,
-};
-
-static struct tpa6130a2_platform_data rx51_tpa6130a2_data __initdata = {
-	.id			= TPA6130A2,
-	.power_gpio		= 98,
-};
-
 static struct i2c_board_info __initdata rx51_peripherals_i2c_board_info_1[] = {
 	{
 		I2C_BOARD_INFO("twl5030", 0x48),
