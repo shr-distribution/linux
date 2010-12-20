@@ -81,13 +81,21 @@ static int main_mic_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+/*
+ * Main Mic Bias : is controlled by DAPM widget
+ * HeadSet Mic Bias : is controlled by jack driver
+ * send_end key interrupt must be worked when stream is unactive
+ */
 static const struct snd_soc_dapm_widget herring_dapm_widgets[] = {
 	SND_SOC_DAPM_MIC("Main Mic", main_mic_event),
+	SND_SOC_DAPM_MIC("Headset Mic", NULL),
 };
 
 static const struct snd_soc_dapm_route herring_dapm_routes[] = {
 	{"IN1LN", NULL, "Main Mic"},
 	{"IN1LP", NULL, "Main Mic"},
+	{"IN1RN", NULL, "Headset Mic"},
+	{"IN1RP", NULL, "Headset Mic"},
 };
 
 static int herring_wm8994_init(struct snd_soc_codec *codec)
@@ -118,6 +126,17 @@ static int herring_wm8994_init(struct snd_soc_codec *codec)
 	snd_soc_dapm_nc_pin(codec, "LINEOUT2P");
 	snd_soc_dapm_nc_pin(codec, "SPKOUTRN");
 	snd_soc_dapm_nc_pin(codec, "SPKOUTRP");
+
+	/*
+	  * ignore codec suspend if both end points are connected
+	  * if use-case is only one endpoint,
+	  * AP can't enter sleep(playback or capture)
+	  */
+	snd_soc_dapm_ignore_suspend(codec, "Main Mic");
+	snd_soc_dapm_ignore_suspend(codec, "Headset Mic");
+	snd_soc_dapm_ignore_suspend(codec, "Earpiece Driver");
+	snd_soc_dapm_ignore_suspend(codec, "SPKL Driver");
+	snd_soc_dapm_ignore_suspend(codec, "Headphone Supply");
 
 	snd_soc_dapm_sync(codec);
 
