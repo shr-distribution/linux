@@ -294,22 +294,6 @@ const struct v4l2_file_operations v4l2_subdev_fops = {
 	.poll = subdev_poll,
 };
 
-void v4l2_subdev_init(struct v4l2_subdev *sd, const struct v4l2_subdev_ops *ops)
-{
-	INIT_LIST_HEAD(&sd->list);
-	BUG_ON(!ops);
-	sd->ops = ops;
-	sd->v4l2_dev = NULL;
-	sd->flags = 0;
-	sd->name[0] = '\0';
-	sd->grp_id = 0;
-	sd->dev_priv = NULL;
-	sd->host_priv = NULL;
-	sd->entity.name = sd->name;
-	sd->entity.type = MEDIA_ENTITY_TYPE_SUBDEV;
-	sd->initialized = 1;
-}
-EXPORT_SYMBOL(v4l2_subdev_init);
 
 int v4l2_subdev_set_power(struct media_entity *entity, int power)
 {

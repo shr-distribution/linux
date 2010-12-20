@@ -553,6 +553,9 @@ static inline void v4l2_subdev_init(struct v4l2_subdev *sd,
 	sd->grp_id = 0;
 	sd->dev_priv = NULL;
 	sd->host_priv = NULL;
+	sd->entity.name = sd->name;
+	sd->entity.type = MEDIA_ENTITY_TYPE_SUBDEV;
+	sd->initialized = 1;
 }
 
 int v4l2_subdev_set_power(struct media_entity *entity, int power);
