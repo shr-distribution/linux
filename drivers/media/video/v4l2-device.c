@@ -132,10 +132,10 @@ int v4l2_device_register_subdev(struct v4l2_device *v4l2_dev,
 
 	/* Register the entity. */
 	if (v4l2_dev->mdev) {
-		ret = media_device_register_entity(v4l2_dev->mdev, entity);
-		if (ret < 0) {
+		err = media_device_register_entity(v4l2_dev->mdev, entity);
+		if (err < 0) {
 			module_put(sd->owner);
-			return ret;
+			return err;
 		}
 	}
 
@@ -155,11 +155,11 @@ int v4l2_device_register_subdev(struct v4l2_device *v4l2_dev,
 	vdev->fops = &v4l2_subdev_fops;
 	vdev->release = video_device_release_empty;
 	if (sd->flags & V4L2_SUBDEV_FL_HAS_DEVNODE) {
-		ret = __video_register_device(vdev, VFL_TYPE_SUBDEV, -1, 1,
+		err = __video_register_device(vdev, VFL_TYPE_SUBDEV, -1, 1,
 					      sd->owner);
-		if (ret < 0) {
+		if (err < 0) {
 			v4l2_device_unregister_subdev(sd);
-			return ret;
+			return err;
 		}
 	}
 
