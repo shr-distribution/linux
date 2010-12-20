@@ -109,6 +109,16 @@ static int herring_wm8994_init(struct snd_soc_codec *codec)
 	snd_soc_dapm_add_routes(codec, herring_dapm_routes,
 			ARRAY_SIZE(herring_dapm_routes));
 
+	/* set endpoints to not connected */
+	snd_soc_dapm_nc_pin(codec, "IN2LP:VXRN");
+	snd_soc_dapm_nc_pin(codec, "IN2LP:VXRP");
+	snd_soc_dapm_nc_pin(codec, "LINEOUT1N");
+	snd_soc_dapm_nc_pin(codec, "LINEOUT1P");
+	snd_soc_dapm_nc_pin(codec, "LINEOUT2N");
+	snd_soc_dapm_nc_pin(codec, "LINEOUT2P");
+	snd_soc_dapm_nc_pin(codec, "SPKOUTRN");
+	snd_soc_dapm_nc_pin(codec, "SPKOUTRP");
+
 	snd_soc_dapm_sync(codec);
 
 	return 0;
