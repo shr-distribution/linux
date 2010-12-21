@@ -143,6 +143,27 @@ static int herring_wm8994_init(struct snd_soc_codec *codec)
 	return 0;
 }
 
+static int set_main_clk_on_suspend(bool on)
+{
+	struct clk *codec_main_clk;
+
+	codec_main_clk = clk_get(NULL, "usb_osc");
+
+	if (!codec_main_clk)
+		return -EINVAL;
+
+	if (on) {
+		clk_enable(codec_main_clk);
+		debug_msg("Main clk was enabled on suspend\n");
+	} else {
+		clk_disable(codec_main_clk);
+		debug_msg("Main clk was disabled on suspend\n");
+	}
+
+	return 1;
+
+}
+
 /*
  * Since we don't want to reclock on the fly (as it will glitch audio)
  * and we ensure that the CODEC is always clocked from the highest
@@ -166,6 +187,8 @@ static int set_bias_level_post(struct snd_soc_card *card,
 	switch (level) {
 	case SND_SOC_BIAS_STANDBY:
 		if (cur_level == SND_SOC_BIAS_OFF) {
+			set_main_clk_on_suspend(1);
+
 			ret = snd_soc_dai_set_pll(aif1, WM8994_FLL1,
 						  WM8994_FLL_SRC_MCLK1,
 						  24000000, 44100 * 256);
@@ -197,6 +220,7 @@ static int set_bias_level_post(struct snd_soc_card *card,
 			pr_err("snd_soc_dai_set_pll failed: %d\n",
 			       ret);
 		}
+		set_main_clk_on_suspend(0);
 		break;
 
 	default:
