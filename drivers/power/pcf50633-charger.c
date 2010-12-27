@@ -24,8 +24,26 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 
+#include <linux/interrupt.h>
+
 #include <linux/mfd/pcf50633/core.h>
 #include <linux/mfd/pcf50633/mbc.h>
+
+enum pcf50633_mbc_irqs {
+	PCF50633_MBC_IRQ_ADPINS,
+	PCF50633_MBC_IRQ_ADPREM,
+	PCF50633_MBC_IRQ_USBINS,
+	PCF50633_MBC_IRQ_USBREM,
+	PCF50633_MBC_IRQ_BATFULL,
+	PCF50633_MBC_IRQ_CHGHALT,
+	PCF50633_MBC_IRQ_THLIMON,
+	PCF50633_MBC_IRQ_THLIMOFF,
+	PCF50633_MBC_IRQ_USBLIMON,
+	PCF50633_MBC_IRQ_USBLIMOFF,
+	PCF50633_MBC_IRQ_LOWSYS,
+	PCF50633_MBC_IRQ_LOWBAT,
+	PCF50633_MBC_NUM_IRQS,
+};
 
 struct pcf50633_mbc {
 	struct pcf50633 *pcf;
@@ -36,11 +54,13 @@ struct pcf50633_mbc {
 	struct power_supply usb;
 	struct power_supply adapter;
 	struct power_supply ac;
+
+	int irqs[PCF50633_MBC_NUM_IRQS];
 };
 
-int pcf50633_mbc_usb_curlim_set(struct pcf50633 *pcf, int ma)
+static int __pcf50633_mbc_usb_curlim_set(struct pcf50633_mbc *mbc, int ma)
 {
-	struct pcf50633_mbc *mbc = pcf->mbc;
+	struct pcf50633 *pcf = mbc->pcf;
 	int ret = 0;
 	u8 bits;
 	int charging_start = 1;
@@ -80,14 +100,14 @@ int pcf50633_mbc_usb_curlim_set(struct pcf50633 *pcf, int ma)
 	 * gets reset to the wrong thing
 	 */
 
-	if (mbc->pcf->pdata->charger_reference_current_ma) {
-		mbcc5 = (ma << 8) / mbc->pcf->pdata->charger_reference_current_ma;
+	if (pcf->pdata->charger_reference_current_ma) {
+		mbcc5 = (ma << 8) / pcf->pdata->charger_reference_current_ma;
 		if (mbcc5 > 255)
 			mbcc5 = 255;
-		pcf50633_reg_write(mbc->pcf, PCF50633_REG_MBCC5, mbcc5);
+		pcf50633_reg_write(pcf, PCF50633_REG_MBCC5, mbcc5);
 	}
 
-	mbcs2 = pcf50633_reg_read(mbc->pcf, PCF50633_REG_MBCS2);
+	mbcs2 = pcf50633_reg_read(pcf, PCF50633_REG_MBCS2);
 	chgmod = (mbcs2 & PCF50633_MBCS2_MBC_MASK);
 
 	/* If chgmod == BATFULL, setting chgena has no effect.
@@ -108,7 +128,18 @@ int pcf50633_mbc_usb_curlim_set(struct pcf50633 *pcf, int ma)
 
 	return ret;
 }
+
+int pcf50633_mbc_usb_curlim_set(struct pcf50633 *pcf, int ma)
+{
+	struct pcf50633_mbc *mbc = pcf->mbc;
+
+	if (!mbc)
+		return -ENODEV;
+
+	return __pcf50633_mbc_usb_curlim_set(mbc, ma);
+}
 EXPORT_SYMBOL_GPL(pcf50633_mbc_usb_curlim_set);
+
 
 int pcf50633_mbc_get_status(struct pcf50633 *pcf)
 {
@@ -119,7 +150,7 @@ int pcf50633_mbc_get_status(struct pcf50633 *pcf)
 	if (!mbc)
 		return 0;
 
-	chgmod = pcf50633_reg_read(mbc->pcf, PCF50633_REG_MBCS2)
+	chgmod = pcf50633_reg_read(pcf, PCF50633_REG_MBCS2)
 		& PCF50633_MBCS2_MBC_MASK;
 
 	if (mbc->usb_online)
@@ -195,7 +226,7 @@ static ssize_t set_usblim(struct device *dev,
 	if (ret)
 		return -EINVAL;
 
-	pcf50633_mbc_usb_curlim_set(mbc->pcf, ma);
+	__pcf50633_mbc_usb_curlim_set(mbc, ma);
 
 	return count;
 }
@@ -259,31 +290,34 @@ static struct attribute_group mbc_attr_group = {
 	.attrs	= pcf50633_mbc_sysfs_entries,
 };
 
-static void
-pcf50633_mbc_irq_handler(int irq, void *data)
+static irqreturn_t pcf50633_mbc_irq_handler(int irq, void *data)
 {
 	struct pcf50633_mbc *mbc = data;
 
 	/* USB */
-	if (irq == PCF50633_IRQ_USBINS) {
+	if (irq == mbc->irqs[PCF50633_MBC_IRQ_USBINS]) {
 		mbc->usb_online = 1;
-	} else if (irq == PCF50633_IRQ_USBREM) {
+	} else if (irq == mbc->irqs[PCF50633_MBC_IRQ_USBREM]) {
 		mbc->usb_online = 0;
-		pcf50633_mbc_usb_curlim_set(mbc->pcf, 0);
+		__pcf50633_mbc_usb_curlim_set(mbc, 0);
 	}
 
 	/* Adapter */
-	if (irq == PCF50633_IRQ_ADPINS)
+	if (irq == mbc->irqs[PCF50633_MBC_IRQ_ADPINS])
 		mbc->adapter_online = 1;
-	else if (irq == PCF50633_IRQ_ADPREM)
+	else if (irq == mbc->irqs[PCF50633_MBC_IRQ_ADPREM])
 		mbc->adapter_online = 0;
 
 	power_supply_changed(&mbc->ac);
 	power_supply_changed(&mbc->usb);
 	power_supply_changed(&mbc->adapter);
 
-	if (mbc->pcf->pdata->mbc_event_callback)
+	if (mbc->pcf->pdata->mbc_event_callback) {
+		irq -= mbc->pcf->irq_base;
 		mbc->pcf->pdata->mbc_event_callback(mbc->pcf, irq);
+	}
+
+	return IRQ_HANDLED;
 }
 
 static int adapter_get_property(struct power_supply *psy,
@@ -351,19 +385,19 @@ static enum power_supply_property power_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 };
 
-static const u8 mbc_irq_handlers[] = {
-	PCF50633_IRQ_ADPINS,
-	PCF50633_IRQ_ADPREM,
-	PCF50633_IRQ_USBINS,
-	PCF50633_IRQ_USBREM,
-	PCF50633_IRQ_BATFULL,
-	PCF50633_IRQ_CHGHALT,
-	PCF50633_IRQ_THLIMON,
-	PCF50633_IRQ_THLIMOFF,
-	PCF50633_IRQ_USBLIMON,
-	PCF50633_IRQ_USBLIMOFF,
-	PCF50633_IRQ_LOWSYS,
-	PCF50633_IRQ_LOWBAT,
+static const char *pcf50633_mbc_irq_names[PCF50633_MBC_NUM_IRQS] = {
+	"ADPINS",
+	"ADPREM",
+	"USBINS",
+	"USBREM",
+	"BATFULL",
+	"CHGHALT",
+	"THLIMON",
+	"THLIMOFF",
+	"USBLIMON",
+	"USBLIMOFF",
+	"LOWSYS",
+	"LOWBAT",
 };
 
 static int __devinit pcf50633_mbc_probe(struct platform_device *pdev)
@@ -371,6 +405,7 @@ static int __devinit pcf50633_mbc_probe(struct platform_device *pdev)
 	struct pcf50633 *pcf = dev_to_pcf50633(pdev->dev.parent);
 	struct pcf50633_mbc *mbc;
 	int ret;
+	int irq;
 	int i;
 	u8 mbcs1;
 
@@ -378,13 +413,19 @@ static int __devinit pcf50633_mbc_probe(struct platform_device *pdev)
 	if (!mbc)
 		return -ENOMEM;
 
+	for (i = 0; i < PCF50633_MBC_NUM_IRQS; ++i) {
+		irq = platform_get_irq_byname(pdev, pcf50633_mbc_irq_names[i]);
+		if (irq <= 0) {
+			dev_err(&pdev->dev, "Failed to get %s irq: %d\n",
+					pcf50633_mbc_irq_names[i], irq);
+			ret = irq ?: -EINVAL;
+			goto err_free;
+		}
+		mbc->irqs[i] = irq;
+	}
+
 	platform_set_drvdata(pdev, mbc);
 	mbc->pcf = pcf;
-
-	/* Set up IRQ handlers */
-	for (i = 0; i < ARRAY_SIZE(mbc_irq_handlers); i++)
-		pcf50633_register_irq(mbc->pcf, mbc_irq_handlers[i],
-					pcf50633_mbc_irq_handler, mbc);
 
 	/* Create power supplies */
 	mbc->adapter.name		= "adapter";
@@ -414,40 +455,63 @@ static int __devinit pcf50633_mbc_probe(struct platform_device *pdev)
 	ret = power_supply_register(&pdev->dev, &mbc->adapter);
 	if (ret) {
 		dev_err(mbc->pcf->dev, "failed to register adapter\n");
-		kfree(mbc);
-		return ret;
+		goto err_free;
 	}
 
 	ret = power_supply_register(&pdev->dev, &mbc->usb);
 	if (ret) {
 		dev_err(mbc->pcf->dev, "failed to register usb\n");
-		power_supply_unregister(&mbc->adapter);
-		kfree(mbc);
-		return ret;
+		goto err_unregister_adapter;
 	}
 
 	ret = power_supply_register(&pdev->dev, &mbc->ac);
 	if (ret) {
 		dev_err(mbc->pcf->dev, "failed to register ac\n");
-		power_supply_unregister(&mbc->adapter);
-		power_supply_unregister(&mbc->usb);
-		kfree(mbc);
-		return ret;
+		goto err_unregister_usb;
 	}
 
 	ret = sysfs_create_group(&pdev->dev.kobj, &mbc_attr_group);
-	if (ret)
+	if (ret) {
 		dev_err(mbc->pcf->dev, "failed to create sysfs entries\n");
+		goto err_unregister_ac;
+	}
+
+	/* Set up IRQ handlers */
+	for (i = 0; i < PCF50633_MBC_NUM_IRQS; ++i) {
+		ret = request_threaded_irq(mbc->irqs[i], NULL,
+				pcf50633_mbc_irq_handler, 0,
+				pcf50633_mbc_irq_names[i], mbc);
+		if (ret) {
+			dev_err(&pdev->dev, "Failed to request %s irq: %d\n",
+						pcf50633_mbc_irq_names[i], ret);
+			goto err_free_irq;
+		}
+	}
 
 	mbcs1 = pcf50633_reg_read(mbc->pcf, PCF50633_REG_MBCS1);
 	if (mbcs1 & PCF50633_MBCS1_USBPRES)
-		pcf50633_mbc_irq_handler(PCF50633_IRQ_USBINS, mbc);
+		pcf50633_mbc_irq_handler(mbc->irqs[PCF50633_MBC_IRQ_USBINS], mbc);
 	if (mbcs1 & PCF50633_MBCS1_ADAPTPRES)
-		pcf50633_mbc_irq_handler(PCF50633_IRQ_ADPINS, mbc);
+		pcf50633_mbc_irq_handler(mbc->irqs[PCF50633_MBC_IRQ_ADPINS], mbc);
 
 	pcf->mbc = mbc;
 
 	return 0;
+
+err_free_irq:
+	for (--i; i >= 0; --i)
+		free_irq(mbc->irqs[i], mbc);
+	sysfs_remove_group(&pdev->dev.kobj, &mbc_attr_group);
+err_unregister_ac:
+	power_supply_unregister(&mbc->ac);
+err_unregister_usb:
+	power_supply_unregister(&mbc->usb);
+err_unregister_adapter:
+	power_supply_unregister(&mbc->adapter);
+err_free:
+	kfree(mbc);
+
+	return ret;
 }
 
 static int __devexit pcf50633_mbc_remove(struct platform_device *pdev)
@@ -458,8 +522,8 @@ static int __devexit pcf50633_mbc_remove(struct platform_device *pdev)
 	mbc->pcf->mbc = NULL;
 
 	/* Remove IRQ handlers */
-	for (i = 0; i < ARRAY_SIZE(mbc_irq_handlers); i++)
-		pcf50633_free_irq(mbc->pcf, mbc_irq_handlers[i]);
+	for (i = PCF50633_MBC_NUM_IRQS - 1; i >= 0; --i)
+		free_irq(mbc->irqs[i], mbc);
 
 	sysfs_remove_group(&pdev->dev.kobj, &mbc_attr_group);
 	power_supply_unregister(&mbc->usb);

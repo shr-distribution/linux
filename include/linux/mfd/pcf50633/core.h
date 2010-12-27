@@ -1,4 +1,5 @@
 /*
+
  * core.h  -- Core driver for NXP PCF50633
  *
  * (C) 2006-2008 by Openmoko, Inc.
@@ -14,12 +15,10 @@
 #define __LINUX_MFD_PCF50633_CORE_H
 
 #include <linux/i2c.h>
-#include <linux/workqueue.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/power_supply.h>
 #include <linux/mfd/pcf50633/backlight.h>
-#include <linux/gpio.h>
 
 struct pcf50633;
 
@@ -50,19 +49,6 @@ struct pcf50633_platform_data {
 
 	int gpio_base;
 };
-
-struct pcf50633_irq {
-	void (*handler) (int, void *);
-	void *data;
-};
-
-int pcf50633_register_irq(struct pcf50633 *pcf, int irq,
-			void (*handler) (int, void *), void *data);
-int pcf50633_free_irq(struct pcf50633 *pcf, int irq);
-
-int pcf50633_irq_mask(struct pcf50633 *pcf, int irq);
-int pcf50633_irq_unmask(struct pcf50633 *pcf, int irq);
-int pcf50633_irq_mask_get(struct pcf50633 *pcf, int irq);
 
 int pcf50633_read_block(struct pcf50633 *, u8 reg,
 					int nr_regs, u8 *data);
@@ -141,18 +127,19 @@ struct pcf50633 {
 
 	struct pcf50633_platform_data *pdata;
 	int irq;
-	struct pcf50633_irq irq_handler[PCF50633_NUM_IRQ];
-	struct work_struct irq_work;
-	struct workqueue_struct *work_queue;
 	struct mutex lock;
+	struct mutex irq_lock;
 
 	u8 mask_regs[5];
+	u8 mask_regs_cur[5];
 
 	u8 suspend_irq_masks[5];
 	u8 resume_reason[5];
 	int is_suspended;
 
 	int onkey1s_held;
+
+	unsigned int irq_base;
 
 	struct pcf50633_mbc *mbc;
 	struct pcf50633_adc *adc;

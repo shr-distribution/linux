@@ -2,7 +2,7 @@
  *
  * (C) 2006-2008 by Openmoko, Inc.
  * Author: Harald Welte <laforge@openmoko.org>
- * 	   Balaji Rao <balajirrao@openmoko.org>
+ * 		Balaji Rao <balajirrao@openmoko.org>
  * All rights reserved.
  *
  *  This program is free software; you can redistribute  it and/or modify it
@@ -12,6 +12,7 @@
  *
  */
 
+#include <linux/irq.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/mutex.h>
@@ -25,92 +26,63 @@
 #define PCF50633_MBCS1_USBPRES 		0x01
 #define PCF50633_MBCS1_ADAPTPRES	0x01
 
-int pcf50633_register_irq(struct pcf50633 *pcf, int irq,
-			void (*handler) (int, void *), void *data)
+static void pcf50633_irq_lock(struct irq_data *data)
 {
-	if (irq < 0 || irq >= PCF50633_NUM_IRQ || !handler)
-		return -EINVAL;
+	struct pcf50633 *pcf = irq_data_get_irq_chip_data(data);
 
-	if (WARN_ON(pcf->irq_handler[irq].handler))
-		return -EBUSY;
-
-	mutex_lock(&pcf->lock);
-	pcf->irq_handler[irq].handler = handler;
-	pcf->irq_handler[irq].data = data;
-	mutex_unlock(&pcf->lock);
-
-	return 0;
+	mutex_lock(&pcf->irq_lock);
 }
-EXPORT_SYMBOL_GPL(pcf50633_register_irq);
 
-int pcf50633_free_irq(struct pcf50633 *pcf, int irq)
+static void pcf50633_irq_sync_unlock(struct irq_data *data)
 {
-	if (irq < 0 || irq >= PCF50633_NUM_IRQ)
-		return -EINVAL;
+	struct pcf50633 *pcf = irq_data_get_irq_chip_data(data);
+	unsigned int i;
 
-	mutex_lock(&pcf->lock);
-	pcf->irq_handler[irq].handler = NULL;
-	mutex_unlock(&pcf->lock);
+	for (i = 0; i < ARRAY_SIZE(pcf->mask_regs); ++i) {
+		if (pcf->mask_regs[i] == pcf->mask_regs_cur[i])
+			continue;
 
-	return 0;
+		pcf->mask_regs[i] = pcf->mask_regs_cur[i];
+		pcf50633_reg_write(pcf, PCF50633_REG_INT1M + i,
+				pcf->mask_regs[i]);
+	}
+
+	mutex_unlock(&pcf->irq_lock);
 }
-EXPORT_SYMBOL_GPL(pcf50633_free_irq);
 
-static int __pcf50633_irq_mask_set(struct pcf50633 *pcf, int irq, u8 mask)
+static void pcf50633_irq_mask(struct irq_data *data)
 {
-	u8 reg, bit;
-	int ret = 0, idx;
+	struct pcf50633 *pcf = irq_data_get_irq_chip_data(data);
+	int irq = data->irq;
+	u8 bit;
+	int idx;
 
 	idx = irq >> 3;
-	reg = PCF50633_REG_INT1M + idx;
 	bit = 1 << (irq & 0x07);
 
-	pcf50633_reg_set_bit_mask(pcf, reg, bit, mask ? bit : 0);
-
-	mutex_lock(&pcf->lock);
-
-	if (mask)
-		pcf->mask_regs[idx] |= bit;
-	else
-		pcf->mask_regs[idx] &= ~bit;
-
-	mutex_unlock(&pcf->lock);
-
-	return ret;
+	pcf->mask_regs[idx] |= bit;
 }
 
-int pcf50633_irq_mask(struct pcf50633 *pcf, int irq)
+static void pcf50633_irq_unmask(struct irq_data *data)
 {
-	dev_dbg(pcf->dev, "Masking IRQ %d\n", irq);
+	struct pcf50633 *pcf = irq_data_get_irq_chip_data(data);
+	int irq = data->irq;
+	u8 bit;
+	int idx;
 
-	return __pcf50633_irq_mask_set(pcf, irq, 1);
+	idx = irq >> 3;
+	bit = 1 << (irq & 0x07);
+
+	pcf->mask_regs[idx] &= ~bit;
 }
-EXPORT_SYMBOL_GPL(pcf50633_irq_mask);
 
-int pcf50633_irq_unmask(struct pcf50633 *pcf, int irq)
-{
-	dev_dbg(pcf->dev, "Unmasking IRQ %d\n", irq);
-
-	return __pcf50633_irq_mask_set(pcf, irq, 0);
-}
-EXPORT_SYMBOL_GPL(pcf50633_irq_unmask);
-
-int pcf50633_irq_mask_get(struct pcf50633 *pcf, int irq)
-{
-	u8 reg, bits;
-
-	reg =  irq >> 3;
-	bits = 1 << (irq & 0x07);
-
-	return pcf->mask_regs[reg] & bits;
-}
-EXPORT_SYMBOL_GPL(pcf50633_irq_mask_get);
-
-static void pcf50633_irq_call_handler(struct pcf50633 *pcf, int irq)
-{
-	if (pcf->irq_handler[irq].handler)
-		pcf->irq_handler[irq].handler(irq, pcf->irq_handler[irq].data);
-}
+static struct irq_chip pcf50633_irq_chip = {
+	.name = "pcf50633-irq",
+	.irq_mask = pcf50633_irq_mask,
+	.irq_unmask = pcf50633_irq_unmask,
+	.irq_bus_lock = pcf50633_irq_lock,
+	.irq_bus_sync_unlock = pcf50633_irq_sync_unlock,
+};
 
 /* Maximum amount of time ONKEY is held before emergency action is taken */
 #define PCF50633_ONKEY1S_TIMEOUT 8
@@ -214,13 +186,16 @@ static irqreturn_t pcf50633_irq(int irq, void *data)
 		pcf_int[1] &= ~(PCF50633_INT2_ONKEYR | PCF50633_INT2_ONKEYF);
 	}
 
+	irq = pcf->irq_base;
 	for (i = 0; i < ARRAY_SIZE(pcf_int); i++) {
 		/* Unset masked interrupts */
 		pcf_int[i] &= ~pcf->mask_regs[i];
 
-		for (j = 0; j < 8 ; j++)
+		for (j = 0; j < 8 ; j++) {
 			if (pcf_int[i] & (1 << j))
-				pcf50633_irq_call_handler(pcf, (i * 8) + j);
+				handle_nested_irq(irq);
+			++irq;
+		}
 	}
 
 out:
@@ -239,15 +214,6 @@ int pcf50633_irq_suspend(struct pcf50633 *pcf)
 	/* Make sure our interrupt handlers are not called
 	 * henceforth */
 	disable_irq(pcf->irq);
-
-	/* Save the masks */
-	ret = pcf50633_read_block(pcf, PCF50633_REG_INT1M,
-				ARRAY_SIZE(pcf->suspend_irq_masks),
-					pcf->suspend_irq_masks);
-	if (ret < 0) {
-		dev_err(pcf->dev, "error saving irq masks\n");
-		goto out;
-	}
 
 	/* Write wakeup irq masks */
 	for (i = 0; i < ARRAY_SIZE(res); i++)
@@ -272,8 +238,8 @@ int pcf50633_irq_resume(struct pcf50633 *pcf)
 
 	/* Write the saved mask registers */
 	ret = pcf50633_write_block(pcf, PCF50633_REG_INT1M,
-				ARRAY_SIZE(pcf->suspend_irq_masks),
-					pcf->suspend_irq_masks);
+				ARRAY_SIZE(pcf->mask_regs),
+					pcf->mask_regs);
 	if (ret < 0)
 		dev_err(pcf->dev, "Error restoring saved suspend masks\n");
 
@@ -286,28 +252,55 @@ int pcf50633_irq_resume(struct pcf50633 *pcf)
 
 int pcf50633_irq_init(struct pcf50633 *pcf, int irq)
 {
+	int irq_base;
 	int ret;
+	int i;
 
+	irq_base = irq_alloc_descs(-1, 0, PCF50633_NUM_IRQ, 0);
+	if (irq_base < 0) {
+		dev_err(pcf->dev, "Failed to allocate irq descs: %d\n", irq_base);
+		return irq_base;
+	}
+
+	mutex_init(&pcf->irq_lock);
 	pcf->irq = irq;
+	pcf->irq_base = irq_base;
 
-	/* Enable all interrupts except RTC SECOND */
-	pcf->mask_regs[0] = 0x80;
-	pcf50633_reg_write(pcf, PCF50633_REG_INT1M, pcf->mask_regs[0]);
-	pcf50633_reg_write(pcf, PCF50633_REG_INT2M, 0x00);
-	pcf50633_reg_write(pcf, PCF50633_REG_INT3M, 0x00);
-	pcf50633_reg_write(pcf, PCF50633_REG_INT4M, 0x00);
-	pcf50633_reg_write(pcf, PCF50633_REG_INT5M, 0x00);
+	/* Mask all irqs */
+	for (i = 0; i < 5; ++i)
+		pcf->mask_regs[i] = 0xff;
+
+	ret = pcf50633_write_block(pcf, PCF50633_REG_INT1M,
+					ARRAY_SIZE(pcf->mask_regs), pcf->mask_regs);
+	if (ret < 0)
+		goto err_irq_free_descs;
+
+
+	for (i = irq_base; i < irq_base + PCF50633_NUM_IRQ; ++i) {
+		irq_set_chip_data(i, pcf);
+		irq_set_nested_thread(i, 1);
+		irq_set_chip_and_handler(i, &pcf50633_irq_chip, handle_simple_irq);
+		irq_modify_status(i, IRQ_NOREQUEST, IRQ_NOPROBE);
+	}
 
 	ret = request_threaded_irq(irq, NULL, pcf50633_irq,
 					IRQF_TRIGGER_LOW | IRQF_ONESHOT,
 					"pcf50633", pcf);
 
-	if (ret)
+	if (ret) {
 		dev_err(pcf->dev, "Failed to request IRQ %d\n", ret);
+		goto err_irq_free_descs;
+	}
 
 	if (enable_irq_wake(irq) < 0)
 		dev_err(pcf->dev, "IRQ %u cannot be enabled as wake-up source"
 			"in this hardware revision", irq);
+
+
+	return 0;
+
+err_irq_free_descs:
+	irq_free_descs(pcf->irq_base, PCF50633_NUM_IRQ);
 
 	return ret;
 }
@@ -315,4 +308,5 @@ int pcf50633_irq_init(struct pcf50633 *pcf, int irq)
 void pcf50633_irq_free(struct pcf50633 *pcf)
 {
 	free_irq(pcf->irq, pcf);
+	irq_free_descs(pcf->irq_base, PCF50633_NUM_IRQ);
 }
