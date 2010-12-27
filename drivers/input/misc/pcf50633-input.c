@@ -20,6 +20,7 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/input.h>
+#include <linux/interrupt.h>
 #include <linux/slab.h>
 
 #include <linux/mfd/pcf50633/core.h>
@@ -31,26 +32,27 @@
 struct pcf50633_input {
 	struct pcf50633 *pcf;
 	struct input_dev *input_dev;
+	int irq_pressed;
+	int irq_released;
 };
 
-static void
-pcf50633_input_irq(int irq, void *data)
+static irqreturn_t pcf50633_input_irq(int irq, void *data)
 {
-	struct pcf50633_input *input;
+	struct pcf50633_input *input = data;
 	int onkey_released;
-
-	input = data;
 
 	/* We report only one event depending on the key press status */
 	onkey_released = pcf50633_reg_read(input->pcf, PCF50633_REG_OOCSTAT)
 						& PCF50633_OOCSTAT_ONKEY;
 
-	if (irq == PCF50633_IRQ_ONKEYF && !onkey_released)
+	if (irq == input->irq_pressed && !onkey_released)
 		input_report_key(input->input_dev, KEY_POWER, 1);
-	else if (irq == PCF50633_IRQ_ONKEYR && onkey_released)
+	else if (irq == input->irq_released && onkey_released)
 		input_report_key(input->input_dev, KEY_POWER, 0);
 
 	input_sync(input->input_dev);
+
+	return IRQ_HANDLED;
 }
 
 static int __devinit pcf50633_input_probe(struct platform_device *pdev)
@@ -58,7 +60,22 @@ static int __devinit pcf50633_input_probe(struct platform_device *pdev)
 	struct pcf50633_input *input;
 	struct input_dev *input_dev;
 	int ret;
+	int irq_released;
+	int irq_pressed;
 
+	irq_released = platform_get_irq_byname(pdev, "ONKEYR");
+	if (irq_released <= 0) {
+		dev_err(&pdev->dev, "Failed to get released irq: %d\n",
+			irq_released);
+		return irq_released ?: -EINVAL;
+	}
+
+	irq_pressed = platform_get_irq_byname(pdev, "ONKEYF");
+	if (irq_pressed <= 0) {
+		dev_err(&pdev->dev, "Failed to get pressed irq: %d\n",
+			irq_pressed);
+		return irq_pressed ?: -EINVAL;
+	}
 
 	input = kzalloc(sizeof(*input), GFP_KERNEL);
 	if (!input)
@@ -85,20 +102,41 @@ static int __devinit pcf50633_input_probe(struct platform_device *pdev)
 		kfree(input);
 		return ret;
 	}
-	pcf50633_register_irq(input->pcf, PCF50633_IRQ_ONKEYR,
-				pcf50633_input_irq, input);
-	pcf50633_register_irq(input->pcf, PCF50633_IRQ_ONKEYF,
-				pcf50633_input_irq, input);
+
+	ret = request_threaded_irq(irq_released, NULL, pcf50633_input_irq, 0,
+			"onkey released", input);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to request released irq: %d\n", ret);
+		goto err_input_unregister;
+	}
+	ret = request_threaded_irq(irq_pressed, NULL, pcf50633_input_irq, 0,
+			"onkey pressed", input);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to request pressed irq: %d\n", ret);
+		goto err_free_irq;
+	}
+
+	input->irq_released = irq_released;
+	input->irq_pressed = irq_pressed;
+
 
 	return 0;
+
+err_free_irq:
+	free_irq(irq_pressed, input);
+err_input_unregister:
+	input_unregister_device(input->input_dev);
+	kfree(input);
+
+	return ret;
 }
 
 static int __devexit pcf50633_input_remove(struct platform_device *pdev)
 {
 	struct pcf50633_input *input  = platform_get_drvdata(pdev);
 
-	pcf50633_free_irq(input->pcf, PCF50633_IRQ_ONKEYR);
-	pcf50633_free_irq(input->pcf, PCF50633_IRQ_ONKEYF);
+	free_irq(input->irq_released, input);
+	free_irq(input->irq_pressed, input);
 
 	input_unregister_device(input->input_dev);
 	kfree(input);
