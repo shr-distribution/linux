@@ -28,6 +28,7 @@
 #include <linux/etherdevice.h>
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
+#include <linux/inetdevice.h>
 
 #include "wl1251.h"
 #include "wl12xx_80211.h"
@@ -41,6 +42,7 @@
 #include "init.h"
 #include "debugfs.h"
 #include "boot.h"
+#include "netlink.h"
 
 void wl1251_enable_interrupts(struct wl1251 *wl)
 {
@@ -374,6 +376,85 @@ out_sleep:
 out:
 	mutex_unlock(&wl->mutex);
 }
+
+static int wl1251_plt_init(struct wl1251 *wl)
+{
+	int ret;
+
+	ret = wl1251_hw_init_mem_config(wl);
+	if (ret < 0)
+		return ret;
+
+	ret = wl1251_cmd_data_path(wl, wl->channel, 1);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+int wl1251_plt_start(struct wl1251 *wl)
+{
+	int ret;
+
+	mutex_lock(&wl->mutex);
+
+	wl1251_notice("power up");
+
+	if (wl->state != WL1251_STATE_OFF) {
+		wl1251_error("cannot go into PLT state because not "
+			     "in off state: %d", wl->state);
+		ret = -EBUSY;
+		goto out;
+	}
+
+	wl->state = WL1251_STATE_PLT;
+
+	ret = wl1251_chip_wakeup(wl);
+	if (ret < 0)
+		goto out;
+
+	ret = wl1251_boot(wl);
+	if (ret < 0)
+		goto out;
+
+	wl1251_notice("firmware booted in PLT mode (%s)", wl->fw_ver);
+
+	ret = wl1251_plt_init(wl);
+	if (ret < 0)
+		goto out;
+
+out:
+	mutex_unlock(&wl->mutex);
+
+	return ret;
+}
+
+int wl1251_plt_stop(struct wl1251 *wl)
+{
+	int ret = 0;
+
+	mutex_lock(&wl->mutex);
+
+	wl1251_notice("power down");
+
+	if (wl->state != WL1251_STATE_PLT) {
+		wl1251_error("cannot power down because not in PLT "
+			     "state: %d", wl->state);
+		ret = -EBUSY;
+		goto out;
+	}
+
+	wl1251_disable_interrupts(wl);
+	wl1251_power_off(wl);
+
+	wl->state = WL1251_STATE_OFF;
+
+out:
+	mutex_unlock(&wl->mutex);
+
+	return ret;
+}
+
 
 static int wl1251_op_tx(struct ieee80211_hw *hw, struct sk_buff *skb)
 {
@@ -1325,6 +1406,10 @@ int wl1251_init_ieee80211(struct wl1251 *wl)
 	if (ret)
 		goto out;
 
+	ret = wl1251_nl_register();
+	if (ret)
+		goto out;
+
 	wl1251_debugfs_init(wl);
 	wl1251_notice("initialized");
 
@@ -1427,6 +1512,7 @@ int wl1251_free_hw(struct wl1251 *wl)
 	wl->rx_descriptor = NULL;
 
 	ieee80211_free_hw(wl->hw);
+	wl1251_nl_unregister();
 
 	return 0;
 }
