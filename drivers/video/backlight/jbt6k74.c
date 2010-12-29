@@ -265,8 +265,12 @@ static int jbt_standby_to_sleep(struct jbt_info *jbt)
 	int ret;
 	struct jbt6k74_platform_data *pdata = jbt->spi->dev.platform_data;
 
-	gpio_set_value_cansleep(pdata->gpio_reset, 1);
 	ret = regulator_bulk_enable(ARRAY_SIZE(jbt->supplies), jbt->supplies);
+	if (ret)
+		return ret;
+
+	gpio_set_value_cansleep(pdata->gpio_reset, 1);
+	mdelay(100);
 
 	/* three times command zero */
 	ret |= jbt_reg_write_nodata(jbt, 0x00);
@@ -354,11 +358,10 @@ static int jbt_sleep_to_standby(struct jbt_info *jbt)
 
 	ret = jbt_reg_write(jbt, JBT_REG_POWER_ON_OFF, 0x00);
 
-	if (!ret)
-		ret = regulator_bulk_disable(ARRAY_SIZE(jbt->supplies), jbt->supplies);
-
-	if (!ret)
+	if (!ret) {
 		gpio_set_value_cansleep(pdata->gpio_reset, 0);
+		ret = regulator_bulk_disable(ARRAY_SIZE(jbt->supplies), jbt->supplies);
+	}
 
 	return ret;
 }
