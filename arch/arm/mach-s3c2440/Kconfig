@@ -101,6 +101,7 @@ config MACH_NEO1973_GTA02
 	select MACH_NEO1973
 	select S3C2410_PWM
 	select S3C_DEV_USB_HOST
+	select SPARSE_IRQ
 	help
 	   Say Y here if you are using the Openmoko GTA02 / Freerunner GSM Phone
 
