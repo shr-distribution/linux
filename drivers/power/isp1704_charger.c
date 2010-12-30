@@ -216,6 +216,10 @@ static void isp1704_charger_work(struct work_struct *data)
 	struct isp1704_charger	*isp =
 		container_of(data, struct isp1704_charger, work);
 	static DEFINE_MUTEX(lock);
+	unsigned online_old = isp->online;
+	unsigned present_old = isp->present;
+	unsigned current_max_old = isp->current_max;
+
 	event = isp->event;
 	power = isp->max_power;
 
@@ -282,6 +286,13 @@ static void isp1704_charger_work(struct work_struct *data)
 	power_supply_changed(&isp->psy);
 out:
 	mutex_unlock(&lock);
+
+	if (isp->online != online_old)
+		sysfs_notify(&isp->psy.dev->kobj, NULL, "online");
+	if (isp->present != present_old)
+		sysfs_notify(&isp->psy.dev->kobj, NULL, "present");
+	if (isp->current_max != current_max_old)
+		sysfs_notify(&isp->psy.dev->kobj, NULL, "current_max");
 }
 
 static int isp1704_notifier_call(struct notifier_block *nb,
