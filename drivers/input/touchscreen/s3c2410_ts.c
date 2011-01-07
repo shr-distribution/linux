@@ -20,7 +20,7 @@
  * Copyright 2009 Simtec Electronics <linux@simtec.co.uk>
  *
  * Additional work by Herbert Pötzl <herbert@13thfloor.at> and
- * Harald Welte <laforge@openmoko.org>
+ * Harald Welte <laforge@openmoko.org> and Gennady Kupava <gb@bsdmn.com>
  */
 
 #include <linux/errno.h>
@@ -85,9 +85,14 @@ struct s3c2410ts {
 	int count;
 	int shift;
 	int features;
+	int expectedintr; /* kind of interrupt we are waiting for */
 };
 
 static struct s3c2410ts ts;
+
+#define WAITFORINT_UP (0)
+#define WAITFORINT_DOWN (1)
+#define WAITFORINT_NOTHING (2)
 
 /**
  * get_down - return the down state of the pen
@@ -143,7 +148,8 @@ static void touch_timer_fire(unsigned long data)
 		input_report_key(ts.input, BTN_TOUCH, 0);
 		input_report_abs(ts.input, ABS_PRESSURE, 0);
 		input_sync(ts.input);
-
+		
+		ts.expectedintr = WAITFORINT_DOWN;
 		writel(WAIT4INT | INT_DOWN, ts.io + S3C2410_ADCTSC);
 	}
 }
@@ -168,9 +174,18 @@ static irqreturn_t stylus_irq(int irq, void *dev_id)
 
 	down = get_down(data0, data1);
 
-	/* TODO we should never get an interrupt with down set while
-	 * the timer is running, but maybe we ought to verify that the
-	 * timer isn't running anyways. */
+	/* sitautions below can actually happen on openmoko hardware while 
+	   various debugging facilities are turned off */
+	if (ts.expectedintr == WAITFORINT_NOTHING)
+	  return IRQ_HANDLED;
+	if (!down && ts.expectedintr == WAITFORINT_DOWN) {
+	  writel(WAIT4INT | INT_DOWN, ts.io + S3C2410_ADCTSC);
+	  return IRQ_HANDLED;
+	} else if (down && ts.expectedintr == WAITFORINT_UP) {
+	  writel(WAIT4INT | INT_UP, ts.io + S3C2410_ADCTSC);
+	  return IRQ_HANDLED;
+	}
+	ts.expectedintr = WAITFORINT_NOTHING;
 
 	if (down)
 		s3c_adc_start(ts.client, 0, 1 << ts.shift);
@@ -229,6 +244,7 @@ static void s3c24xx_ts_select(struct s3c_adc_client *client, unsigned select)
 		       ts.io + S3C2410_ADCTSC);
 	} else {
 		mod_timer(&touch_timer, jiffies+1);
+		ts.expectedintr = WAITFORINT_UP;
 		writel(WAIT4INT | INT_UP, ts.io + S3C2410_ADCTSC);
 	}
 }
@@ -306,6 +322,7 @@ static int __devinit s3c2410ts_probe(struct platform_device *pdev)
 	if ((info->delay & 0xffff) > 0)
 		writel(info->delay & 0xffff, ts.io + S3C2410_ADCDLY);
 
+	ts.expectedintr = WAITFORINT_DOWN;
 	writel(WAIT4INT | INT_DOWN, ts.io + S3C2410_ADCTSC);
 
 	input_dev = input_allocate_device();
@@ -385,6 +402,7 @@ static int __devexit s3c2410ts_remove(struct platform_device *pdev)
 #ifdef CONFIG_PM
 static int s3c2410ts_suspend(struct device *dev)
 {
+  	ts.expectedintr = WAITFORINT_NOTHING;
 	writel(TSC_SLEEP, ts.io + S3C2410_ADCTSC);
 	disable_irq(ts.irq_tc);
 	clk_disable(ts.clock);
@@ -404,6 +422,7 @@ static int s3c2410ts_resume(struct device *dev)
 	if ((info->delay & 0xffff) > 0)
 		writel(info->delay & 0xffff, ts.io + S3C2410_ADCDLY);
 
+	ts.expectedintr = WAITFORINT_DOWN;
 	writel(WAIT4INT | INT_DOWN, ts.io + S3C2410_ADCTSC);
 
 	return 0;
