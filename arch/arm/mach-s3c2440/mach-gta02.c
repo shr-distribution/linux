@@ -126,6 +126,10 @@ static long gta02_panic_blink(int state)
 	return delay;
 }
 
+struct platform_device gta02_resume_reason_device = {
+	.name 		= "neo1973-resume",
+	.num_resources	= 0,
+};
 
 static struct map_desc gta02_iodesc[] __initdata = {
 	{
@@ -1052,6 +1056,7 @@ static struct platform_device *gta02_devices[] __initdata = {
 static struct platform_device *gta02_devices_pmu_children[] = {
 	&gta02_hdq_device,
 	&gta02_platform_bat,
+	&gta02_resume_reason_device,
 };
 
 
