@@ -86,6 +86,10 @@ struct s3c2410ts {
 	int shift;
 	int features;
 	int expectedintr; /* kind of interrupt we are waiting for */
+#ifdef CONFIG_MACH_NEO1973_GTA02
+	void          (*before_adc_hook)(void);
+	void          (*after_adc_hook)(void);
+#endif
 };
 
 static struct s3c2410ts ts;
@@ -139,6 +143,9 @@ static void touch_timer_fire(unsigned long data)
 			ts.count = 0;
 		}
 
+#ifdef CONFIG_MACH_NEO1973_GTA02
+		ts.before_adc_hook();
+#endif
 		s3c_adc_start(ts.client, 0, 1 << ts.shift);
 	} else {
 		ts.xp = 0;
@@ -187,9 +194,9 @@ static irqreturn_t stylus_irq(int irq, void *dev_id)
 	}
 	ts.expectedintr = WAITFORINT_NOTHING;
 
-	if (down)
-		s3c_adc_start(ts.client, 0, 1 << ts.shift);
-	else
+	if (down) {
+		mod_timer(&touch_timer, jiffies + 2);
+	} else
 		dev_dbg(ts.dev, "%s: count=%d\n", __func__, ts.count);
 
 	if (ts.features & FEAT_PEN_IRQ) {
@@ -220,6 +227,11 @@ static void s3c24xx_ts_conversion(struct s3c_adc_client *client,
 
 	ts.count++;
 
+#ifdef CONFIG_MACH_NEO1973_GTA02
+	if (!*left) 
+		ts.after_adc_hook();
+#endif
+
 	/* From tests, it seems that it is unlikely to get a pen-up
 	 * event during the conversion process which means we can
 	 * ignore any pen-up events with less than the requisite
@@ -243,7 +255,7 @@ static void s3c24xx_ts_select(struct s3c_adc_client *client, unsigned select)
 		writel(S3C2410_ADCTSC_PULL_UP_DISABLE | AUTOPST,
 		       ts.io + S3C2410_ADCTSC);
 	} else {
-		mod_timer(&touch_timer, jiffies+1);
+		mod_timer(&touch_timer, jiffies + 3);
 		ts.expectedintr = WAITFORINT_UP;
 		writel(WAIT4INT | INT_UP, ts.io + S3C2410_ADCTSC);
 	}
@@ -347,6 +359,11 @@ static int __devinit s3c2410ts_probe(struct platform_device *pdev)
 
 	ts.shift = info->oversampling_shift;
 	ts.features = platform_get_device_id(pdev)->driver_data;
+
+#ifdef CONFIG_MACH_NEO1973_GTA02
+	ts.before_adc_hook = info->before_adc_hook;
+	ts.after_adc_hook = info->after_adc_hook;
+#endif
 
 	ret = request_irq(ts.irq_tc, stylus_irq, IRQF_DISABLED,
 			  "s3c2410_ts_pen", ts.input);
