@@ -479,6 +479,11 @@ static struct regulator_consumer_supply hcldo_consumers[] = {
 	REGULATOR_SUPPLY("SD_3V3", "glamo3362.0"),
 };
 
+static void gta02_poweroff(void)
+{
+	pcf50633_reg_set_bit_mask(gta02_pcf, PCF50633_REG_OOCSHDWN, 1, 1);
+}
+
 static struct pcf50633_platform_data gta02_pcf_pdata = {
 	.resumers = {
 		[0] =	PCF50633_INT1_USBINS |
@@ -606,6 +611,7 @@ static struct pcf50633_platform_data gta02_pcf_pdata = {
 	},
 	.probe_done = gta02_pmu_attach_child_devices,
 	.mbc_event_callback = gta02_pmu_event_callback,
+	.force_shutdown = gta02_poweroff,
 };
 
 
@@ -1064,11 +1070,6 @@ static void gta02_pmu_attach_child_devices(struct pcf50633 *pcf)
 
 	platform_add_devices(gta02_devices_pmu_children,
 			     ARRAY_SIZE(gta02_devices_pmu_children));
-}
-
-static void gta02_poweroff(void)
-{
-	pcf50633_reg_set_bit_mask(gta02_pcf, PCF50633_REG_OOCSHDWN, 1, 1);
 }
 
 struct gta02_device_children {
