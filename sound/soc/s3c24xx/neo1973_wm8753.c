@@ -23,6 +23,7 @@
 #include <sound/pcm.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
+#include <sound/jack.h>
 #include <sound/tlv.h>
 
 #include <asm/mach-types.h>
@@ -252,6 +253,8 @@ static const struct snd_kcontrol_new wm8753_neo1973_controls[] = {
 
 /* GTA01 specific controlls */
 
+static struct snd_soc_jack hs_jack;
+
 #ifdef CONFIG_MACH_NEO1973_GTA01
 
 static const struct snd_soc_dapm_widget wm8753_dapm_widgets_gta01[] = {
@@ -317,6 +320,29 @@ static const struct snd_soc_dapm_route audio_map_gta02[]= {};
 static const struct snd_kcontrol_new wm8753_neo1973_gta02_controls[] = {};
 static const struct snd_soc_dapm_widget wm8753_dapm_widgets_gta02[] = {};
 #endif
+
+static struct snd_soc_jack_pin hs_jack_pins[] = {
+	{
+		.pin = "Headset Mic",
+		.mask = SND_JACK_MICROPHONE,
+	},
+	{
+		.pin = "Stereo Out",
+		.mask = SND_JACK_HEADPHONE,
+		.invert = 1,
+	},
+};
+
+static struct snd_soc_jack_gpio hs_jack_gpios[] = {
+	{
+		.gpio = GTA02_GPIO_JACK_INSERT,
+		.name = "headset-gpio",
+		.report = SND_JACK_HEADSET,
+		.debounce_time = 100,
+	},
+};
+
+
 
 static int neo1973_wm8753_init(struct snd_soc_pcm_runtime *rtd)
 {
@@ -396,6 +422,24 @@ static int neo1973_wm8753_init(struct snd_soc_pcm_runtime *rtd)
 	}
 
 	snd_soc_dapm_sync(codec);
+
+	err = snd_soc_jack_new(codec, "Headset Jack", SND_JACK_HEADSET, &hs_jack);
+	if (err) {
+		dev_err(codec->card->dev, "failed to alloc headset jack\n");
+		return err;
+	}
+
+	err = snd_soc_jack_add_pins(&hs_jack, ARRAY_SIZE(hs_jack_pins), hs_jack_pins);
+	if (err) {
+		dev_err(codec->card->dev, "failed to add headset jack pins\n");
+		return err;
+	}
+
+	err = snd_soc_jack_add_gpios(&hs_jack, ARRAY_SIZE(hs_jack_gpios), hs_jack_gpios);
+	if (err) {
+		dev_err(codec->card->dev, "failed to add headset jack gpios\n");
+		return err;
+	}
 
 	return 0;
 }
@@ -551,6 +595,7 @@ static inline void neo1973_gta02_exit(void) {}
 static void __exit neo1973_exit(void)
 {
 	snd_soc_unregister_dais(&neo1973_snd_device->dev, 1);
+	snd_soc_jack_free_gpios(&hs_jack, ARRAY_SIZE(hs_jack_gpios), hs_jack_gpios);
 	platform_device_unregister(neo1973_snd_device);
 
 	if (machine_is_neo1973_gta02())
