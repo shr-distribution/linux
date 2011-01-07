@@ -83,6 +83,7 @@ obj-$(CONFIG_MACH_NEO1973_GTA02)	+= mach-gta02.o \
 	gta02-pm-wlan.o \
 	gta02-fiq.o \
 	gta02-hdq.o \
+	gta02-pm-usbhost.o \
 
 obj-$(CONFIG_MACH_RX1950)		+= mach-rx1950.o
 
