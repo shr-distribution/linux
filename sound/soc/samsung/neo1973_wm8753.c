@@ -19,6 +19,7 @@
 #include <linux/gpio.h>
 
 #include <sound/soc.h>
+#include <sound/jack.h>
 
 #include <asm/mach-types.h>
 #include <plat/regs-iis.h>
@@ -204,6 +205,29 @@ static const struct snd_soc_dapm_widget neo1973_wm8753_dapm_widgets[] = {
 	SND_SOC_DAPM_MIC("Handset Mic", NULL),
 };
 
+static struct snd_soc_jack hs_jack;
+
+static struct snd_soc_jack_pin hs_jack_pins[] = {
+	{
+		.pin = "Headset Mic",
+		.mask = SND_JACK_MICROPHONE,
+	},
+	{
+		.pin = "Stereo Out",
+		.mask = SND_JACK_HEADPHONE,
+		.invert = 1,
+	},
+};
+
+static struct snd_soc_jack_gpio hs_jack_gpios[] = {
+	{
+		.gpio = GTA02_GPIO_JACK_INSERT,
+		.name = "headset-gpio",
+		.report = SND_JACK_HEADSET,
+		.debounce_time = 100,
+	},
+};
+
 static const struct snd_soc_dapm_route neo1973_wm8753_routes[] = {
 	/* Connections to the GSM Module */
 	{"GSM Line Out", NULL, "MONO1"},
@@ -310,6 +334,24 @@ static int neo1973_gta02_wm8753_init(struct snd_soc_codec *codec)
 	snd_soc_dapm_disable_pin(dapm, "Handset Spk");
 	snd_soc_dapm_ignore_suspend(dapm, "Stereo Out");
 	snd_soc_dapm_ignore_suspend(dapm, "Handset Spk");
+
+	ret = snd_soc_jack_new(codec, "Headset Jack", SND_JACK_HEADSET, &hs_jack);
+	if (ret) {
+		dev_err(codec->card->dev, "failed to alloc headset jack\n");
+		return ret;
+	}
+
+	ret = snd_soc_jack_add_pins(&hs_jack, ARRAY_SIZE(hs_jack_pins), hs_jack_pins);
+	if (ret) {
+		dev_err(codec->card->dev, "failed to add headset jack pins\n");
+		return ret;
+	}
+
+	ret = snd_soc_jack_add_gpios(&hs_jack, ARRAY_SIZE(hs_jack_gpios), hs_jack_gpios);
+	if (ret) {
+		dev_err(codec->card->dev, "failed to add headset jack gpios\n");
+		return ret;
+	}
 
 	return 0;
 }
@@ -526,6 +568,7 @@ module_init(neo1973_init);
 
 static void __exit neo1973_exit(void)
 {
+	snd_soc_jack_free_gpios(&hs_jack, ARRAY_SIZE(hs_jack_gpios), hs_jack_gpios);
 	platform_device_unregister(neo1973_snd_device);
 
 	if (machine_is_neo1973_gta02()) {
