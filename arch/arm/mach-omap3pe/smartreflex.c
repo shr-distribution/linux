@@ -1434,12 +1434,12 @@ static struct kobj_attribute sr_vdd2_autocomp = {
 };
 
 /* Sysfs interface to set TEST NVALUES */
-static ssize_t omap_sr_setnvalues_test_show(struct kset *subsys, char *buf)
+static ssize_t omap_sr_setnvalues_test_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%d\n", (sr_nvalues - 1));
 }
 
-static ssize_t omap_sr_setnvalues_test_store(struct kset *subsys,
+static ssize_t omap_sr_setnvalues_test_store(struct kobject *kobj, struct kobj_attribute *attr,
 				const char *buf, size_t n)
 {
 	unsigned short value;
@@ -1480,7 +1480,7 @@ static struct kobj_attribute sr_setnvalues_test = {
 
 #ifdef CONFIG_MACH_SIRLOIN_3630
 /* Sysfs interface to set VP1 error gain values */
-static ssize_t omap_sr_vp1errgain_show(struct kset *subsys, char *buf)
+static ssize_t omap_sr_vp1errgain_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "1 %02x\n2 %02x\n3 %02x\n4 %02x\n5 %02x\n",
 			vp1errgain[0] >> 16,
@@ -1490,7 +1490,7 @@ static ssize_t omap_sr_vp1errgain_show(struct kset *subsys, char *buf)
 			vp1errgain[4] >> 16);
 }
 
-static ssize_t omap_sr_vp1errgain_store(struct kset *subsys,
+static ssize_t omap_sr_vp1errgain_store(struct kobject *kobj, struct kobj_attribute *attr,
 				const char *buf, size_t n)
 {
 	u32 idx;
@@ -1516,7 +1516,7 @@ static struct kobj_attribute sr_vp1errgain = {
 };
 
 /* Sysfs interface to set VP2 error gain values */
-static ssize_t omap_sr_vp2errgain_show(struct kset *subsys, char *buf)
+static ssize_t omap_sr_vp2errgain_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "1 %02x\n2 %02x\n3 %02x\n",
 			vp2errgain[0] >> 16,
@@ -1524,7 +1524,7 @@ static ssize_t omap_sr_vp2errgain_show(struct kset *subsys, char *buf)
 			vp2errgain[2] >> 16);
 }
 
-static ssize_t omap_sr_vp2errgain_store(struct kset *subsys,
+static ssize_t omap_sr_vp2errgain_store(struct kobject *kobj, struct kobj_attribute *attr,
 				const char *buf, size_t n)
 {
 	u32 idx;
@@ -1551,7 +1551,7 @@ static struct kobj_attribute sr_vp2errgain = {
 
 
 /* Sysfs interface to set SR1 error min values */
-static ssize_t omap_sr_sr1errminlimit_show(struct kset *subsys, char *buf)
+static ssize_t omap_sr_sr1errminlimit_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "1 %02x\n2 %02x\n3 %02x\n4 %02x\n5 %02x\n",
 			sr1errminlimit[0],
@@ -1561,7 +1561,7 @@ static ssize_t omap_sr_sr1errminlimit_show(struct kset *subsys, char *buf)
 			sr1errminlimit[4]);
 }
 
-static ssize_t omap_sr_sr1errminlimit_store(struct kset *subsys,
+static ssize_t omap_sr_sr1errminlimit_store(struct kobject *kobj, struct kobj_attribute *attr,
 				const char *buf, size_t n)
 {
 	u32 idx;
@@ -1587,7 +1587,7 @@ static struct kobj_attribute sr_sr1errminlimit= {
 };
 
 /* Sysfs interface to set SR2 error min values */
-static ssize_t omap_sr_sr2errminlimit_show(struct kset *subsys, char *buf)
+static ssize_t omap_sr_sr2errminlimit_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	return sprintf(buf, "1 %02x\n2 %02x\n3 %02x\n",
 			sr2errminlimit[0],
@@ -1595,7 +1595,7 @@ static ssize_t omap_sr_sr2errminlimit_show(struct kset *subsys, char *buf)
 			sr2errminlimit[2]);
 }
 
-static ssize_t omap_sr_sr2errminlimit_store(struct kset *subsys,
+static ssize_t omap_sr_sr2errminlimit_store(struct kobject *kobj, struct kobj_attribute *attr,
 				const char *buf, size_t n)
 {
 	u32 idx;
@@ -1623,7 +1623,7 @@ static struct kobj_attribute sr_sr2errminlimit= {
 #endif /* CONFIG_MACH_SIRLOIN_3630 */
 
 static ssize_t
-vdd1_vsel_show(struct kset *subsys, char *buf)
+vdd1_vsel_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", PRM_VP1_VOLTAGE );
 }
@@ -1639,7 +1639,7 @@ static struct kobj_attribute vdd1_vsel = {
 
 
 static ssize_t
-vdd2_vsel_show(struct kset *subsys, char *buf)
+vdd2_vsel_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", PRM_VP2_VOLTAGE );
 }
@@ -1657,13 +1657,13 @@ static struct kobj_attribute vdd2_vsel = {
 #ifdef CONFIG_OMAP_SMARTREFLEX_v15
 
 static ssize_t
-sr15_period_show(struct kset *subsys, char *buf)
+sr15_period_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", sr15_reeval_period );
 }
 
 static ssize_t
-sr15_period_store(struct kset *subsys, const char *buf, size_t n)
+sr15_period_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t n)
 {
 	u32 value;
 
@@ -1695,7 +1695,7 @@ static struct kobj_attribute sr15_period = {
 };
 
 static ssize_t
-sr15_vdd1_opp_state_show(struct kset *subsys, char *buf)
+sr15_vdd1_opp_state_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	int i, len, vsel;
 
@@ -1731,7 +1731,7 @@ static struct kobj_attribute sr15_vdd1_opp_state = {
 
 
 static ssize_t
-sr15_vdd2_opp_state_show(struct kset *subsys, char *buf)
+sr15_vdd2_opp_state_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	int i, len, vsel;
 
@@ -1861,7 +1861,7 @@ static int __init omap3_sr_init(void)
 		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
 #ifdef CONFIG_OMAP_SMARTREFLEX_v15
-	ret = sysf_create_file(power_kobj, &sr15_period.attr);
+	ret = sysfs_create_file(power_kobj, &sr15_period.attr);
 	if (ret)
 		printk(KERN_ERR "sysfs_create_file failed: %d\n", ret);
 
