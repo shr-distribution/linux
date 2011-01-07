@@ -15,6 +15,8 @@ struct s3c2410_ts_mach_info {
        int             presc;
        int             oversampling_shift;
 	void    (*cfg_gpio)(struct platform_device *dev);
+       void          (*before_adc_hook)(void);
+       void          (*after_adc_hook)(void);
 };
 
 extern void s3c24xx_ts_set_platdata(struct s3c2410_ts_mach_info *);
