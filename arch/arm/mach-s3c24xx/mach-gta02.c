@@ -149,6 +149,11 @@ static struct spi_board_info gta02_spi_board_info[] = {
 	},
 };
 
+struct platform_device gta02_resume_reason_device = {
+	.name 		= "neo1973-resume",
+	.num_resources	= 0,
+};
+
 static struct map_desc gta02_iodesc[] __initdata = {
 	{
 		.virtual	= 0xe0000000,
@@ -1037,6 +1042,7 @@ static struct platform_device *gta02_devices[] __initdata = {
 static struct platform_device *gta02_devices_pmu_children[] = {
 	&gta02_hdq_device,
 	&gta02_platform_bat,
+	&gta02_resume_reason_device,
 };
 
 
