@@ -206,6 +206,7 @@ static bool radeon_atom_apply_quirks(struct drm_device *dev,
 				     uint16_t *line_mux,
 				     struct radeon_hpd *hpd)
 {
+	struct radeon_device *rdev = dev->dev_private;
 
 	/* Asus M2A-VM HDMI board lists the DVI port as HDMI */
 	if ((dev->pdev->device == 0x791e) &&
@@ -280,6 +281,15 @@ static bool radeon_atom_apply_quirks(struct drm_device *dev,
 		}
 	}
 
+	/* ASUS HD 3600 board lists the DVI port as HDMI */
+	if ((dev->pdev->device == 0x9598) &&
+	    (dev->pdev->subsystem_vendor == 0x1043) &&
+	    (dev->pdev->subsystem_device == 0x01e4)) {
+		if (*connector_type == DRM_MODE_CONNECTOR_HDMIA) {
+			*connector_type = DRM_MODE_CONNECTOR_DVII;
+		}
+	}
+
 	/* ASUS HD 3450 board lists the DVI port as HDMI */
 	if ((dev->pdev->device == 0x95C5) &&
 	    (dev->pdev->subsystem_vendor == 0x1043) &&
@@ -299,13 +309,22 @@ static bool radeon_atom_apply_quirks(struct drm_device *dev,
 		}
 	}
 
-	/* Acer laptop reports DVI-D as DVI-I */
+	/* Acer laptop reports DVI-D as DVI-I and hpd pins reversed */
 	if ((dev->pdev->device == 0x95c4) &&
 	    (dev->pdev->subsystem_vendor == 0x1025) &&
 	    (dev->pdev->subsystem_device == 0x013c)) {
+		struct radeon_gpio_rec gpio;
+
 		if ((*connector_type == DRM_MODE_CONNECTOR_DVII) &&
-		    (supported_device == ATOM_DEVICE_DFP1_SUPPORT))
+		    (supported_device == ATOM_DEVICE_DFP1_SUPPORT)) {
+			gpio = radeon_lookup_gpio(rdev, 6);
+			*hpd = radeon_atom_get_hpd_info_from_gpio(rdev, &gpio);
 			*connector_type = DRM_MODE_CONNECTOR_DVID;
+		} else if ((*connector_type == DRM_MODE_CONNECTOR_HDMIA) &&
+			   (supported_device == ATOM_DEVICE_DFP1_SUPPORT)) {
+			gpio = radeon_lookup_gpio(rdev, 7);
+			*hpd = radeon_atom_get_hpd_info_from_gpio(rdev, &gpio);
+		}
 	}
 
 	/* XFX Pine Group device rv730 reports no VGA DDC lines
@@ -530,6 +549,8 @@ bool radeon_get_atom_connector_info_from_object_table(struct drm_device *dev)
 			}
 
 			/* look up gpio for ddc, hpd */
+			ddc_bus.valid = false;
+			hpd.hpd = RADEON_HPD_NONE;
 			if ((le16_to_cpu(path->usDeviceTag) &
 			     (ATOM_DEVICE_TV_SUPPORT | ATOM_DEVICE_CV_SUPPORT)) == 0) {
 				for (j = 0; j < con_obj->ucNumberOfObjects; j++) {
@@ -585,9 +606,6 @@ bool radeon_get_atom_connector_info_from_object_table(struct drm_device *dev)
 						break;
 					}
 				}
-			} else {
-				hpd.hpd = RADEON_HPD_NONE;
-				ddc_bus.valid = false;
 			}
 
 			/* needed for aux chan transactions */
@@ -1016,17 +1034,21 @@ bool radeon_atombios_sideport_present(struct radeon_device *rdev)
 	u8 frev, crev;
 	u16 data_offset;
 
+	/* sideport is AMD only */
+	if (rdev->family == CHIP_RS600)
+		return false;
+
 	if (atom_parse_data_header(mode_info->atom_context, index, NULL,
 				   &frev, &crev, &data_offset)) {
 		igp_info = (union igp_info *)(mode_info->atom_context->bios +
 				      data_offset);
 		switch (crev) {
 		case 1:
-			if (igp_info->info.ucMemoryType & 0xf0)
+			if (igp_info->info.ulBootUpMemoryClock)
 				return true;
 			break;
 		case 2:
-			if (igp_info->info_2.ucMemoryType & 0x0f)
+			if (igp_info->info_2.ulBootUpSidePortClock)
 				return true;
 			break;
 		default:
@@ -1174,7 +1196,7 @@ struct radeon_encoder_atom_dig *radeon_atombios_get_lvds_info(struct
 		lvds->native_mode.vtotal = lvds->native_mode.vdisplay +
 			le16_to_cpu(lvds_info->info.sLCDTiming.usVBlanking_Time);
 		lvds->native_mode.vsync_start = lvds->native_mode.vdisplay +
-			le16_to_cpu(lvds_info->info.sLCDTiming.usVSyncWidth);
+			le16_to_cpu(lvds_info->info.sLCDTiming.usVSyncOffset);
 		lvds->native_mode.vsync_end = lvds->native_mode.vsync_start +
 			le16_to_cpu(lvds_info->info.sLCDTiming.usVSyncWidth);
 		lvds->panel_pwr_delay =
