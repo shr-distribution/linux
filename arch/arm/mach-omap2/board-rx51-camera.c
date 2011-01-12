@@ -30,7 +30,6 @@
 #include <linux/videodev2.h>
 
 #include <asm/gpio.h>
-#include <plat/control.h>
 
 #include "../../../drivers/media/video/isp/isp.h"
 #include "../../../drivers/media/video/isp/ispreg.h"
@@ -41,6 +40,7 @@
 #include <media/adp1653.h>
 #include <media/smiaregs.h>
 
+#include "control.h"
 #include "devices.h"
 
 #define ADP1653_GPIO_ENABLE	88	/* Used for resetting ADP1653 */
