@@ -26,6 +26,7 @@
 #define ADP1653_H
 
 #include <linux/i2c.h>
+#include <linux/mutex.h>
 #include <linux/videodev2.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-subdev.h>
@@ -83,7 +84,8 @@ struct adp1653_flash {
 	u32 torch_intensity;
 	u32 indicator_intensity;
 
-	int power;			/* Requested power state */
+	struct mutex power_lock;
+	int power_count;
 };
 
 #endif /* ADP1653_H */

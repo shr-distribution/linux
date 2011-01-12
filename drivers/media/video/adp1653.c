@@ -47,16 +47,13 @@
 #define TIMEOUT_US_TO_CODE(t)	((820000 + 27300 - (t))/54600)
 #define TIMEOUT_CODE_TO_US(c)	(820000 - (c) * 54600)
 
-/* Write values into ADP1653 registers. Do nothing if power is off. */
+/* Write values into ADP1653 registers. */
 static int adp1653_update_hw(struct adp1653_flash *flash)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&flash->subdev);
 	u8 out_sel;
 	u8 config;
 	int rval;
-
-	if (!flash->power)
-		return 0;
 
 	out_sel = flash->indicator_intensity << ADP1653_REG_OUT_SEL_ILED_SHIFT;
 	/* Set torch intensity to zero--prevents false triggering of SC Fault */
@@ -391,29 +388,58 @@ adp1653_init_device(struct adp1653_flash *flash)
 }
 
 static int
-adp1653_set_power(struct v4l2_subdev *subdev, int on)
+__adp1653_set_power(struct adp1653_flash *flash, int on)
 {
-	struct adp1653_flash *flash = to_adp1653_flash(subdev);
-	int rval = 0;
+	int ret;
 
-	if (on == flash->power)
-		return 0;
+	ret = flash->platform_data->power(&flash->subdev, on);
+	if (ret < 0)
+		return ret;
 
-	rval = flash->platform_data->power(subdev, on);
-	if (rval)
-		return rval;
-
-	flash->power = on;
 	if (!on)
 		return 0;
 
-	rval = adp1653_init_device(flash);
-	if (rval) {
-		flash->platform_data->power(subdev, 0);
-		flash->power = 0;
+	ret = adp1653_init_device(flash);
+	if (ret < 0)
+		flash->platform_data->power(&flash->subdev, 0);
+
+	return ret;
+}
+
+static int
+adp1653_set_power(struct v4l2_subdev *subdev, int on)
+{
+	struct adp1653_flash *flash = to_adp1653_flash(subdev);
+	int ret = 0;
+
+	mutex_lock(&flash->power_lock);
+
+	/* If the power count is modified from 0 to != 0 or from != 0 to 0,
+	 * update the power state.
+	 */
+	if (flash->power_count == !on) {
+		ret = __adp1653_set_power(flash, !!on);
+		if (ret < 0)
+			goto done;
 	}
 
-	return rval;
+	/* Update the power count. */
+	flash->power_count += on ? 1 : -1;
+	WARN_ON(flash->power_count < 0);
+
+done:
+	mutex_unlock(&flash->power_lock);
+	return ret;
+}
+
+static int adp1653_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+{
+	return adp1653_set_power(sd, 1);
+}
+
+static int adp1653_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+{
+	return adp1653_set_power(sd, 0);
 }
 
 static const struct v4l2_subdev_core_ops adp1653_core_ops = {
@@ -421,8 +447,14 @@ static const struct v4l2_subdev_core_ops adp1653_core_ops = {
 	.s_power = adp1653_set_power,
 };
 
+static const struct v4l2_subdev_file_ops adp1653_file_ops = {
+	.open = adp1653_open,
+	.close = adp1653_close,
+};
+
 static const struct v4l2_subdev_ops adp1653_ops = {
 	.core = &adp1653_core_ops,
+	.file = &adp1653_file_ops,
 };
 
 /* --------------------------------------------------------------------------
@@ -435,10 +467,10 @@ static int adp1653_suspend(struct i2c_client *client, pm_message_t mesg)
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct adp1653_flash *flash = to_adp1653_flash(subdev);
 
-	if (!flash->power)
+	if (!flash->power_count)
 		return 0;
 
-	return flash->platform_data->power(subdev, 0);
+	return __adp1653_set_power(flash, 0);
 }
 
 static int adp1653_resume(struct i2c_client *client)
@@ -446,11 +478,10 @@ static int adp1653_resume(struct i2c_client *client)
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct adp1653_flash *flash = to_adp1653_flash(subdev);
 
-	if (!flash->power)
+	if (!flash->power_count)
 		return 0;
 
-	flash->power = 0;
-	return adp1653_set_power(subdev, 1);
+	return __adp1653_set_power(flash, 1);
 }
 
 #else
@@ -459,10 +490,6 @@ static int adp1653_resume(struct i2c_client *client)
 #define adp1653_resume	NULL
 
 #endif /* CONFIG_PM */
-
-static const struct media_entity_operations adp1653_entity_ops = {
-	.set_power = v4l2_subdev_set_power,
-};
 
 static int adp1653_probe(struct i2c_client *client,
 			 const struct i2c_device_id *devid)
@@ -474,10 +501,11 @@ static int adp1653_probe(struct i2c_client *client,
 	if (flash == NULL)
 		return -ENOMEM;
 
+	mutex_init(&flash->power_lock);
+
 	v4l2_i2c_subdev_init(&flash->subdev, client, &adp1653_ops);
 	flash->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 
-	flash->subdev.entity.ops = &adp1653_entity_ops;
 	ret = media_entity_init(&flash->subdev.entity, 0, NULL, 0);
 	if (ret < 0)
 		kfree(flash);
