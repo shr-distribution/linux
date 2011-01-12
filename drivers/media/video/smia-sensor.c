@@ -37,7 +37,6 @@
 
 #include <media/media-entity.h>
 #include <media/smiaregs.h>
-#include <media/v4l2-chip-ident.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
 
@@ -79,7 +78,6 @@ struct smia_sensor_type {
 	u8 manufacturer_id;
 	u16 model_id;
 	char *name;
-	int v4l2_ident;	/* v4l2 chip ident */
 };
 
 /* Current values for V4L2 controls */
@@ -123,9 +121,9 @@ struct smia_sensor {
 };
 
 static struct smia_sensor_type smia_sensors[] = {
-	{ 0,	0,	"unknown",	V4L2_IDENT_SMIA },
-	{ 0x01,	0x022b,	"vs6555",	V4L2_IDENT_VS6555 },
-	{ 0x0c,	0x208a,	"tcm8330md",	V4L2_IDENT_TCM8330MD },
+	{ 0,	0,	"unknown" },
+	{ 0x01,	0x022b,	"vs6555" },
+	{ 0x0c,	0x208a,	"tcm8330md" },
 };
 
 static const __u32 smia_mode_ctrls[] = {
@@ -592,16 +590,6 @@ smia_get_skip_top_lines(struct v4l2_subdev *subdev, u32 *lines)
 /* --------------------------------------------------------------------------
  * V4L2 subdev core operations
  */
-static int
-smia_get_chip_ident(struct v4l2_subdev *subdev,
-		    struct v4l2_dbg_chip_ident *chip)
-{
-	struct smia_sensor *sensor = to_smia_sensor(subdev);
-	struct i2c_client *client = v4l2_get_subdevdata(subdev);
-
-	return v4l2_chip_ident_i2c_client(client, chip,
-					  sensor->type->v4l2_ident, 0);
-}
 
 static int smia_dev_init(struct v4l2_subdev *subdev)
 {
@@ -867,7 +855,6 @@ static const struct v4l2_subdev_video_ops smia_video_ops = {
 };
 
 static const struct v4l2_subdev_core_ops smia_core_ops = {
-	.g_chip_ident = smia_get_chip_ident,
 	.s_config = smia_set_config,
 	.queryctrl = smia_query_ctrl,
 	.g_ctrl = smia_get_ctrl,
