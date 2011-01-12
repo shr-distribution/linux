@@ -42,7 +42,6 @@
 #include <linux/slab.h>
 #include <linux/version.h>
 #include <media/adp1653.h>
-#include <media/v4l2-chip-ident.h>
 #include <media/v4l2-device.h>
 
 #define TIMEOUT_US_TO_CODE(t)	((820000 + 27300 - (t))/54600)
@@ -342,14 +341,6 @@ static int adp1653_init_controls(struct adp1653_flash *flash)
 /* --------------------------------------------------------------------------
  * V4L2 subdev operations
  */
-static int
-adp1653_get_chip_ident(struct v4l2_subdev *subdev,
-		       struct v4l2_dbg_chip_ident *chip)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(subdev);
-
-	return v4l2_chip_ident_i2c_client(client, chip, V4L2_IDENT_ADP1653, 0);
-}
 
 static int
 adp1653_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
@@ -426,7 +417,6 @@ adp1653_set_power(struct v4l2_subdev *subdev, int on)
 }
 
 static const struct v4l2_subdev_core_ops adp1653_core_ops = {
-	.g_chip_ident = adp1653_get_chip_ident,
 	.s_config = adp1653_set_config,
 	.s_power = adp1653_set_power,
 };
