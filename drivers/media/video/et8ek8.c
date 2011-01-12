@@ -37,7 +37,6 @@
 #include <linux/v4l2-mediabus.h>
 
 #include <media/smiaregs.h>
-#include <media/v4l2-chip-ident.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
 
@@ -949,14 +948,6 @@ static DEVICE_ATTR(priv_mem, S_IRUGO, et8ek8_priv_mem_read, NULL);
 /* --------------------------------------------------------------------------
  * V4L2 subdev core operations
  */
-static int
-et8ek8_get_chip_ident(struct v4l2_subdev *subdev,
-		      struct v4l2_dbg_chip_ident *chip)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(subdev);
-
-	return v4l2_chip_ident_i2c_client(client, chip, V4L2_IDENT_ET8EK8, 0);
-}
 
 static int
 et8ek8_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
@@ -1026,7 +1017,6 @@ static const struct v4l2_subdev_video_ops et8ek8_video_ops = {
 };
 
 static const struct v4l2_subdev_core_ops et8ek8_core_ops = {
-	.g_chip_ident = et8ek8_get_chip_ident,
 	.s_config = et8ek8_set_config,
 	.s_power = et8ek8_set_power,
 };
