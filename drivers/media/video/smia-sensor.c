@@ -938,10 +938,6 @@ static int smia_resume(struct i2c_client *client)
 
 #endif /* CONFIG_PM */
 
-static const struct media_entity_operations smia_entity_ops = {
-	.set_power = v4l2_subdev_set_power,
-};
-
 static int smia_probe(struct i2c_client *client,
 			const struct i2c_device_id *devid)
 {
@@ -956,7 +952,6 @@ static int smia_probe(struct i2c_client *client,
 	sensor->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 
 	sensor->pad.flags = MEDIA_PAD_FLAG_OUTPUT;
-	sensor->subdev.entity.ops = &smia_entity_ops;
 	ret = media_entity_init(&sensor->subdev.entity, 1, &sensor->pad, 0);
 	if (ret < 0)
 		kfree(sensor);
