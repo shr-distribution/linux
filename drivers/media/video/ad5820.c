@@ -111,9 +111,6 @@ static int ad5820_update_hw(struct ad5820_device *coil)
 {
 	u16 status;
 
-	if (!coil->power)
-		return 0;
-
 	status = RAMP_US_TO_CODE(coil->focus_ramp_time);
 	status |= coil->focus_ramp_mode
 		? AD5820_RAMP_MODE_64_16 : AD5820_RAMP_MODE_LINEAR;
@@ -124,6 +121,10 @@ static int ad5820_update_hw(struct ad5820_device *coil)
 
 	return ad5820_write(coil, status);
 }
+
+/* --------------------------------------------------------------------------
+ * Power handling
+ */
 
 static int ad5820_power_off(struct ad5820_device *coil, int standby)
 {
@@ -140,7 +141,6 @@ static int ad5820_power_off(struct ad5820_device *coil, int standby)
 	ret |= coil->platform_data->set_xshutdown(&coil->subdev, 0);
 	ret |= regulator_disable(coil->vana);
 
-	coil->power = 0;
 	return ret;
 }
 
@@ -156,8 +156,6 @@ static int ad5820_power_on(struct ad5820_device *coil, int restore)
 	if (ret)
 		goto fail;
 
-	coil->power = 1;
-
 	if (restore) {
 		/* Restore the hardware settings. */
 		coil->standby = 0;
@@ -169,7 +167,6 @@ static int ad5820_power_on(struct ad5820_device *coil, int restore)
 	return 0;
 
 fail:
-	coil->power = 0;
 	coil->standby = 1;
 
 	coil->platform_data->set_xshutdown(&coil->subdev, 0);
@@ -181,6 +178,7 @@ fail:
 /* --------------------------------------------------------------------------
  * V4L2 controls
  */
+
 static int ad5820_set_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct ad5820_device *coil =
@@ -329,11 +327,36 @@ static int
 ad5820_set_power(struct v4l2_subdev *subdev, int on)
 {
 	struct ad5820_device *coil = to_ad5820_device(subdev);
+	int ret = 0;
 
-	if (coil->power == on)
-		return 0;
+	mutex_lock(&coil->power_lock);
 
-	return on ? ad5820_power_on(coil, 1) : ad5820_power_off(coil, 1);
+	/* If the power count is modified from 0 to != 0 or from != 0 to 0,
+	 * update the power state.
+	 */
+	if (coil->power_count == !on) {
+		ret = on ? ad5820_power_on(coil, 1) : ad5820_power_off(coil, 1);
+		if (ret < 0)
+			goto done;
+	}
+
+	/* Update the power count. */
+	coil->power_count += on ? 1 : -1;
+	WARN_ON(coil->power_count < 0);
+
+done:
+	mutex_unlock(&coil->power_lock);
+	return ret;
+}
+
+static int ad5820_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+{
+	return ad5820_set_power(sd, 1);
+}
+
+static int ad5820_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+{
+	return ad5820_set_power(sd, 0);
 }
 
 static const struct v4l2_subdev_core_ops ad5820_core_ops = {
@@ -341,8 +364,14 @@ static const struct v4l2_subdev_core_ops ad5820_core_ops = {
 	.s_power = ad5820_set_power,
 };
 
+static const struct v4l2_subdev_file_ops ad5820_file_ops = {
+	.open = ad5820_open,
+	.close = ad5820_close,
+};
+
 static const struct v4l2_subdev_ops ad5820_ops = {
 	.core = &ad5820_core_ops,
+	.file = &ad5820_file_ops,
 };
 
 /* --------------------------------------------------------------------------
@@ -355,10 +384,10 @@ static int ad5820_suspend(struct i2c_client *client, pm_message_t mesg)
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct ad5820_device *coil = to_ad5820_device(subdev);
 
-	if (!coil->power)
+	if (!coil->power_count)
 		return 0;
 
-	return coil->platform_data->set_xshutdown(subdev, 0);
+	return ad5820_power_off(coil, 0);
 }
 
 static int ad5820_resume(struct i2c_client *client)
@@ -366,11 +395,10 @@ static int ad5820_resume(struct i2c_client *client)
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct ad5820_device *coil = to_ad5820_device(subdev);
 
-	if (!coil->power)
+	if (!coil->power_count)
 		return 0;
 
-	coil->power = 0;
-	return ad5820_set_power(subdev, 1);
+	return ad5820_power_on(coil, 1);
 }
 
 #else
@@ -379,10 +407,6 @@ static int ad5820_resume(struct i2c_client *client)
 #define ad5820_resume	NULL
 
 #endif /* CONFIG_PM */
-
-static const struct media_entity_operations ad5820_entity_ops = {
-	.set_power = v4l2_subdev_set_power,
-};
 
 static int ad5820_probe(struct i2c_client *client,
 			const struct i2c_device_id *devid)
@@ -394,10 +418,11 @@ static int ad5820_probe(struct i2c_client *client,
 	if (coil == NULL)
 		return -ENOMEM;
 
+	mutex_init(&coil->power_lock);
+
 	v4l2_i2c_subdev_init(&coil->subdev, client, &ad5820_ops);
 	coil->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 
-	coil->subdev.entity.ops = &ad5820_entity_ops;
 	ret = media_entity_init(&coil->subdev.entity, 0, NULL, 0);
 	if (ret < 0)
 		kfree(coil);

@@ -28,6 +28,7 @@
 #define AD5820_H
 
 #include <linux/i2c.h>
+#include <linux/mutex.h>
 #include <linux/videodev2.h>
 
 #include <media/v4l2-ctrls.h>
@@ -60,7 +61,9 @@ struct ad5820_device {
 	u32 focus_ramp_time;
 	u32 focus_ramp_mode;
 
-	int power : 1;
+	struct mutex power_lock;
+	int power_count;
+
 	int standby : 1;
 };
 
