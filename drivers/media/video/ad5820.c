@@ -40,7 +40,6 @@
 #include <mach/gpio.h>
 
 #include <media/ad5820.h>
-#include <media/v4l2-chip-ident.h>
 #include <media/v4l2-device.h>
 
 #define CODE_TO_RAMP_US(s)	((s) == 0 ? 0 : (1 << ((s) - 1)) * 50)
@@ -282,14 +281,6 @@ static int ad5820_init_controls(struct ad5820_device *coil)
 /* --------------------------------------------------------------------------
  * V4L2 subdev operations
  */
-static int
-ad5820_get_chip_ident(struct v4l2_subdev *subdev,
-		      struct v4l2_dbg_chip_ident *chip)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(subdev);
-
-	return v4l2_chip_ident_i2c_client(client, chip, V4L2_IDENT_AD5820, 0);
-}
 
 static int
 ad5820_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
@@ -346,7 +337,6 @@ ad5820_set_power(struct v4l2_subdev *subdev, int on)
 }
 
 static const struct v4l2_subdev_core_ops ad5820_core_ops = {
-	.g_chip_ident = ad5820_get_chip_ident,
 	.s_config = ad5820_set_config,
 	.s_power = ad5820_set_power,
 };
