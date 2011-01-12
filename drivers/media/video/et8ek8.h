@@ -25,6 +25,7 @@
 #define ET8EK8_H
 
 #include <linux/i2c.h>
+#include <linux/mutex.h>
 #include <media/media-entity.h>
 #include <media/smiaregs.h>
 #include <media/v4l2-ctrls.h>
@@ -63,7 +64,8 @@ struct et8ek8_sensor {
 	struct smia_meta_reglist *meta_reglist;
 	u8 priv_mem[ET8EK8_PRIV_MEM_SIZE];
 
-	int power : 1;
+	struct mutex power_lock;
+	int power_count;
 };
 
 #define to_et8ek8_sensor(sd)	container_of(sd, struct et8ek8_sensor, subdev)

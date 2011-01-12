@@ -312,9 +312,6 @@ static int et8ek8_set_ctrl(struct v4l2_ctrl *ctrl)
 	if (ctrl->id == V4L2_CID_EXPOSURE)
 		rows = et8ek8_exposure_us_to_rows(sensor, (u32 *)&ctrl->val);
 
-	if (!sensor->power)
-		return 0;
-
 	switch (ctrl->id) {
 	case V4L2_CID_GAIN:
 		return et8ek8_set_gain(sensor, ctrl->val);
@@ -510,9 +507,9 @@ static void et8ek8_update_controls(struct et8ek8_sensor *sensor)
 	v4l2_ctrl_unlock(ctrl);
 }
 
-static int et8ek8_configure(struct v4l2_subdev *subdev)
+static int et8ek8_configure(struct et8ek8_sensor *sensor)
 {
-	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
+	struct v4l2_subdev *subdev = &sensor->subdev;
 	struct i2c_client *client = v4l2_get_subdevdata(subdev);
 	int rval;
 
@@ -554,9 +551,9 @@ static int et8ek8_s_stream(struct v4l2_subdev *subdev, int streaming)
  * V4L2 subdev operations
  */
 
-static int et8ek8_power_off(struct v4l2_subdev *subdev)
+static int et8ek8_power_off(struct et8ek8_sensor *sensor)
 {
-	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
+	struct v4l2_subdev *subdev = &sensor->subdev;
 	int rval;
 
 	rval = sensor->platform_data->set_xshutdown(subdev, 0);
@@ -566,9 +563,9 @@ static int et8ek8_power_off(struct v4l2_subdev *subdev)
 	return rval;
 }
 
-static int et8ek8_power_on(struct v4l2_subdev *subdev)
+static int et8ek8_power_on(struct et8ek8_sensor *sensor)
 {
-	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
+	struct v4l2_subdev *subdev = &sensor->subdev;
 	struct i2c_client *client = v4l2_get_subdevdata(subdev);
 	unsigned int hz = ET8EK8_XCLK_HZ;
 	int val, rval;
@@ -620,7 +617,7 @@ static int et8ek8_power_on(struct v4l2_subdev *subdev)
 
 out:
 	if (rval)
-		et8ek8_power_off(subdev);
+		et8ek8_power_off(sensor);
 
 	return rval;
 }
@@ -734,8 +731,7 @@ static int et8ek8_set_frame_interval(struct v4l2_subdev *subdev,
 	if (!reglist)
 		return -EINVAL;
 
-	if (sensor->power &&
-	    sensor->current_reglist->mode.ext_clock != reglist->mode.ext_clock)
+	if (sensor->current_reglist->mode.ext_clock != reglist->mode.ext_clock)
 		return -EINVAL;
 
 	sensor->current_reglist = reglist;
@@ -834,7 +830,7 @@ static int et8ek8_dev_init(struct v4l2_subdev *subdev)
 		return -ENODEV;
 	}
 
-	rval = et8ek8_power_on(subdev);
+	rval = et8ek8_power_on(sensor);
 	if (rval) {
 		rval = -ENODEV;
 		goto out_regulator_put;
@@ -906,7 +902,7 @@ static int et8ek8_dev_init(struct v4l2_subdev *subdev)
 	if (rval)
 		goto out_release;
 
-	rval = et8ek8_power_off(subdev);
+	rval = et8ek8_power_off(sensor);
 	if (rval)
 		goto out_release;
 
@@ -917,7 +913,7 @@ out_release:
 out_poweroff:
 	sensor->meta_reglist = NULL;
 	sensor->fw = NULL;
-	et8ek8_power_off(subdev);
+	et8ek8_power_off(sensor);
 out_regulator_put:
 	regulator_put(sensor->vana);
 	sensor->vana = NULL;
@@ -982,32 +978,54 @@ et8ek8_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 	return 0;
 }
 
+static int __et8ek8_set_power(struct et8ek8_sensor *sensor, int on)
+{
+	int ret;
+
+	ret = on ? et8ek8_power_on(sensor) : et8ek8_power_off(sensor);
+	if (ret < 0)
+		return ret;
+
+	if (!on)
+		return 0;
+
+	/* Restore the sensor settings */
+	return et8ek8_configure(sensor);
+}
+
 static int et8ek8_set_power(struct v4l2_subdev *subdev, int on)
 {
 	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
-	int rval;
+	int ret = 0;
 
-	if (sensor->power == on)
-		return 0;
+	mutex_lock(&sensor->power_lock);
 
-	if (on)
-		rval = et8ek8_power_on(subdev);
-	else
-		rval = et8ek8_power_off(subdev);
-
-	if (rval)
-		return rval;
-
-	sensor->power = on;
-
-	if (on) {
-		/* Restore the sensor settings */
-		rval = et8ek8_configure(subdev);
-		if (rval)
-			sensor->power = 0;
+	/* If the power count is modified from 0 to != 0 or from != 0 to 0,
+	 * update the power state.
+	 */
+	if (sensor->power_count == !on) {
+		ret = __et8ek8_set_power(sensor, !!on);
+		if (ret < 0)
+			goto done;
 	}
 
-	return rval;
+	/* Update the power count. */
+	sensor->power_count += on ? 1 : -1;
+	WARN_ON(sensor->power_count < 0);
+
+done:
+	mutex_unlock(&sensor->power_lock);
+	return ret;
+}
+
+static int et8ek8_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+{
+	return et8ek8_set_power(sd, 1);
+}
+
+static int et8ek8_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+{
+	return et8ek8_set_power(sd, 0);
 }
 
 static const struct v4l2_subdev_video_ops et8ek8_video_ops = {
@@ -1021,6 +1039,11 @@ static const struct v4l2_subdev_core_ops et8ek8_core_ops = {
 	.s_power = et8ek8_set_power,
 };
 
+static const struct v4l2_subdev_file_ops et8ek8_file_ops = {
+	.open = et8ek8_open,
+	.close = et8ek8_close,
+};
+
 static const struct v4l2_subdev_pad_ops et8ek8_pad_ops = {
 	.enum_mbus_code = et8ek8_enum_mbus_code,
         .enum_frame_size = et8ek8_enum_frame_size,
@@ -1031,6 +1054,7 @@ static const struct v4l2_subdev_pad_ops et8ek8_pad_ops = {
 
 static const struct v4l2_subdev_ops et8ek8_ops = {
 	.core = &et8ek8_core_ops,
+	.file = &et8ek8_file_ops,
 	.video = &et8ek8_video_ops,
 	.pad = &et8ek8_pad_ops,
 };
@@ -1045,10 +1069,10 @@ static int et8ek8_suspend(struct i2c_client *client, pm_message_t mesg)
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
 
-	if (!sensor->power)
+	if (!sensor->power_count)
 		return 0;
 
-	return et8ek8_set_power(subdev, 0);
+	return __et8ek8_set_power(sensor, 0);
 }
 
 static int et8ek8_resume(struct i2c_client *client)
@@ -1056,11 +1080,10 @@ static int et8ek8_resume(struct i2c_client *client)
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
 
-	if (!sensor->power)
+	if (!sensor->power_count)
 		return 0;
 
-	sensor->power = 0;
-	return et8ek8_set_power(subdev, 1);
+	return __et8ek8_set_power(sensor, 1);
 }
 
 #else
@@ -1069,10 +1092,6 @@ static int et8ek8_resume(struct i2c_client *client)
 #define et8ek8_resume	NULL
 
 #endif /* CONFIG_PM */
-
-static const struct media_entity_operations et8ek8_entity_ops = {
-	.set_power = v4l2_subdev_set_power,
-};
 
 static int et8ek8_probe(struct i2c_client *client,
 			const struct i2c_device_id *devid)
@@ -1084,11 +1103,12 @@ static int et8ek8_probe(struct i2c_client *client,
 	if (sensor == NULL)
 		return -ENOMEM;
 
+	mutex_init(&sensor->power_lock);
+
 	v4l2_i2c_subdev_init(&sensor->subdev, client, &et8ek8_ops);
 	sensor->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 
 	sensor->pad.flags = MEDIA_PAD_FLAG_OUTPUT;
-	sensor->subdev.entity.ops = &et8ek8_entity_ops;
 	ret = media_entity_init(&sensor->subdev.entity, 1, &sensor->pad, 0);
 	if (ret < 0)
 		kfree(sensor);
