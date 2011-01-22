@@ -576,7 +576,7 @@ void __init omap_vram_reserve_sdram_memblock(void)
 			return;
 		}
 	} else {
-		paddr = memblock_alloc(size, SZ_2M);
+		paddr = memblock_alloc(size, PAGE_SIZE);
 	}
 
 	memblock_free(paddr, size);
