@@ -41,6 +41,7 @@
 #include <plat/clock.h>
 #include <plat/ssi.h>
 #include <../arch/arm/mach-omap2/cm.h>
+#include <../arch/arm/mach-omap2/cm2xxx_3xxx.h>
 
 #define SSI_MAX_CHANNELS	8
 #define SSI_MAX_GDD_LCH		8
@@ -188,9 +189,9 @@ static void ssi_disable_dpll3_autoidle(void)
 {
 	u32 v;
 
-	v = cm_read_mod_reg(PLL_MOD, CM_AUTOIDLE);
+	v = omap2_cm_read_mod_reg(PLL_MOD, CM_AUTOIDLE);
 	v &= ~0x7;
-	cm_write_mod_reg(v, PLL_MOD, CM_AUTOIDLE);
+	omap2_cm_write_mod_reg(v, PLL_MOD, CM_AUTOIDLE);
 }
 
 /*
@@ -200,9 +201,9 @@ static void ssi_enable_dpll3_autoidle(void)
 {
 	u32 v;
 
-	v = cm_read_mod_reg(PLL_MOD, CM_AUTOIDLE);
+	v = omap2_cm_read_mod_reg(PLL_MOD, CM_AUTOIDLE);
 	v |= 1;
-	cm_write_mod_reg(v, PLL_MOD, CM_AUTOIDLE);
+	omap2_cm_write_mod_reg(v, PLL_MOD, CM_AUTOIDLE);
 }
 
 static int ssi_for_each_port(struct hsi_controller *ssi, void *data,
