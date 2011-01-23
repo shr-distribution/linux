@@ -24,6 +24,8 @@
 #include <linux/gpio.h>
 #include <linux/gpio_keys.h>
 #include <linux/mmc/host.h>
+#include <sound/tlv320aic3x.h>
+#include <linux/bluetooth/hci_h4p.h>
 
 #include <plat/mcspi.h>
 #include <plat/board.h>
@@ -32,10 +34,10 @@
 #include <plat/gpmc.h>
 #include <plat/onenand.h>
 #include <plat/gpmc-smc91x.h>
+#include <plat/serial.h>
 
 #include <mach/board-rx51.h>
 
-#include <sound/tlv320aic3x.h>
 #include <sound/tpa6130a2-plat.h>
 
 #include <../drivers/staging/iio/light/tsl2563.h>
@@ -51,6 +53,10 @@
 
 #define RX51_TSC2005_RESET_GPIO		104
 #define RX51_TSC2005_IRQ_GPIO		100
+
+#define RX51_HCI_H4P_RESET_GPIO		91
+#define RX51_HCI_H4P_HOSTWU_GPIO	101
+#define RX51_HCI_H4P_BTWU_GPIO		37
 
 /* list all spi devices here */
 enum {
@@ -955,6 +961,72 @@ error:
 	 */
 }
 
+static void rx51_hci_h4p_set_power(bool enable)
+{
+	gpio_set_value(RX51_HCI_H4P_RESET_GPIO, enable);
+}
+
+static void rx51_hci_h4p_set_bt_wu(bool enable)
+{
+	gpio_set_value(RX51_HCI_H4P_BTWU_GPIO, enable);
+}
+
+static bool rx51_hci_h4p_get_host_wu(void)
+{
+	return gpio_get_value(RX51_HCI_H4P_HOSTWU_GPIO);
+}
+
+struct hci_h4p_platform_data bt_plat_data = {
+	.uart_irq	= INT_24XX_UART2_IRQ,
+	.host_wu	= rx51_hci_h4p_get_host_wu,
+	.bt_wu		= rx51_hci_h4p_set_bt_wu,
+	.reset		= rx51_hci_h4p_set_power,
+	.host_wu_gpio	= RX51_HCI_H4P_HOSTWU_GPIO,
+};
+
+static struct platform_device rx51_bt_device = {
+	.name		= "hci_h4p",
+	.id		= -1,
+	.num_resources	= 0,
+	.dev = {
+		.platform_data = (void *)&bt_plat_data,
+	}
+};
+
+void __init rx51_bt_init(void)
+{
+	int err;
+
+	err = gpio_request(RX51_HCI_H4P_RESET_GPIO, "bt_reset");
+	if (err < 0)
+		return;
+
+	err = gpio_request(RX51_HCI_H4P_BTWU_GPIO, "bt_wakeup");
+	if (err < 0)
+		goto fail;
+
+	err = gpio_request(RX51_HCI_H4P_HOSTWU_GPIO, "host_wakeup");
+	if (err < 0)
+		goto fail2;
+
+	gpio_direction_output(RX51_HCI_H4P_RESET_GPIO, 0);
+	gpio_direction_output(RX51_HCI_H4P_BTWU_GPIO, 0);
+	gpio_direction_input(RX51_HCI_H4P_HOSTWU_GPIO);
+
+	bt_plat_data.uart_base = ioremap(OMAP3_UART2_BASE, SZ_2K);
+
+	err = platform_device_register(&rx51_bt_device);
+	if (!err)
+		return;
+
+	gpio_free(RX51_HCI_H4P_HOSTWU_GPIO);
+fail2:
+	gpio_free(RX51_HCI_H4P_BTWU_GPIO);
+fail:
+	gpio_free(RX51_HCI_H4P_RESET_GPIO);
+	printk(KERN_ERR "Bluetooth device registration failed\n");
+}
+
 void __init rx51_peripherals_init(void)
 {
 	rx51_i2c_init();
@@ -963,6 +1035,7 @@ void __init rx51_peripherals_init(void)
 	rx51_add_gpio_keys();
 	rx51_init_wl1251();
 	rx51_init_tsc2005();
+	rx51_bt_init();
 	spi_register_board_info(rx51_peripherals_spi_board_info,
 				ARRAY_SIZE(rx51_peripherals_spi_board_info));
 
