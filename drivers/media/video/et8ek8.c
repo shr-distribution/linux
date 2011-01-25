@@ -1022,6 +1022,15 @@ done:
 
 static int et8ek8_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
+	struct et8ek8_sensor *sensor = to_et8ek8_sensor(sd);
+	struct v4l2_mbus_framefmt *format;
+	struct smia_reglist *reglist;
+
+	reglist = smia_reglist_find_type(sensor->meta_reglist,
+					 SMIA_REGLIST_MODE);
+	format = __et8ek8_get_pad_format(sensor, fh, 0, V4L2_SUBDEV_FORMAT_TRY);
+	smia_reglist_to_mbus(reglist, format);
+
 	return et8ek8_set_power(sd, 1);
 }
 
