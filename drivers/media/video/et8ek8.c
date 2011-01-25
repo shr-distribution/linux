@@ -882,6 +882,8 @@ static int et8ek8_dev_init(struct v4l2_subdev *subdev)
 		goto out_release;
 	}
 
+	smia_reglist_to_mbus(sensor->current_reglist, &sensor->format);
+
 	rval = smia_i2c_reglist_find_write(client,
 					   sensor->meta_reglist,
 					   SMIA_REGLIST_POWERON);
