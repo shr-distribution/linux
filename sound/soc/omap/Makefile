@@ -24,7 +24,7 @@ snd-soc-zoom2-objs := zoom2.o
 snd-soc-igep0020-objs := igep0020.o
 
 obj-$(CONFIG_SND_OMAP_SOC_N810) += snd-soc-n810.o
-obj-$(CONFIG_SND_OMAP_SOC_RX51) += snd-soc-rx51.o aic34b_dummy.o
+obj-$(CONFIG_SND_OMAP_SOC_RX51) += snd-soc-rx51.o
 obj-$(CONFIG_SND_OMAP_SOC_AMS_DELTA) += snd-soc-ams-delta.o
 obj-$(CONFIG_SND_OMAP_SOC_OSK5912) += snd-soc-osk5912.o
 obj-$(CONFIG_SND_OMAP_SOC_OVERO) += snd-soc-overo.o
