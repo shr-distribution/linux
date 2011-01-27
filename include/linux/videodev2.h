@@ -328,6 +328,10 @@ struct v4l2_pix_format {
 #define V4L2_PIX_FMT_SGBRG10 v4l2_fourcc('G', 'B', '1', '0') /* 10  GBGB.. RGRG.. */
 #define V4L2_PIX_FMT_SGRBG10 v4l2_fourcc('B', 'A', '1', '0') /* 10  GRGR.. BGBG.. */
 #define V4L2_PIX_FMT_SRGGB10 v4l2_fourcc('R', 'G', '1', '0') /* 10  RGRG.. GBGB.. */
+#define V4L2_PIX_FMT_SBGGR12 v4l2_fourcc('B', 'G', '1', '2') /* 12  BGBG.. GRGR.. */
+#define V4L2_PIX_FMT_SGBRG12 v4l2_fourcc('G', 'B', '1', '2') /* 12  GBGB.. RGRG.. */
+#define V4L2_PIX_FMT_SGRBG12 v4l2_fourcc('B', 'A', '1', '2') /* 12  GRGR.. BGBG.. */
+#define V4L2_PIX_FMT_SRGGB12 v4l2_fourcc('R', 'G', '1', '2') /* 12  RGRG.. GBGB.. */
 	/* 10bit raw bayer DPCM compressed to 8 bits */
 #define V4L2_PIX_FMT_SGRBG10DPCM8 v4l2_fourcc('B', 'D', '1', '0')
 	/*
@@ -932,6 +936,7 @@ struct v4l2_ext_controls {
 #define V4L2_CTRL_CLASS_MPEG 0x00990000	/* MPEG-compression controls */
 #define V4L2_CTRL_CLASS_CAMERA 0x009a0000	/* Camera class controls */
 #define V4L2_CTRL_CLASS_FM_TX 0x009b0000	/* FM Modulator control class */
+#define V4L2_CTRL_CLASS_MODE 0x009c0000		/* Sensor mode information */
 
 #define V4L2_CTRL_ID_MASK      	  (0x0fffffff)
 #define V4L2_CTRL_ID2CLASS(id)    ((id) & 0x0fff0000UL)
@@ -1332,6 +1337,38 @@ enum v4l2_preemphasis {
 };
 #define V4L2_CID_TUNE_POWER_LEVEL		(V4L2_CID_FM_TX_CLASS_BASE + 113)
 #define V4L2_CID_TUNE_ANTENNA_CAPACITOR		(V4L2_CID_FM_TX_CLASS_BASE + 114)
+
+/* Flash and privacy (indicator) light controls */
+#define V4L2_CID_FLASH_STROBE			(V4L2_CID_CAMERA_CLASS_BASE+17)
+#define V4L2_CID_FLASH_TIMEOUT			(V4L2_CID_CAMERA_CLASS_BASE+18)
+#define V4L2_CID_FLASH_INTENSITY		(V4L2_CID_CAMERA_CLASS_BASE+19)
+#define V4L2_CID_TORCH_INTENSITY		(V4L2_CID_CAMERA_CLASS_BASE+20)
+#define V4L2_CID_INDICATOR_INTENSITY		(V4L2_CID_CAMERA_CLASS_BASE+21)
+
+#define V4L2_CID_TEST_PATTERN			(V4L2_CTRL_CLASS_CAMERA | 0x107e)
+
+/* SMIA-type sensor information */
+#define V4L2_CID_MODE_CLASS_BASE		(V4L2_CTRL_CLASS_MODE | 0x900)
+#define V4L2_CID_MODE_CLASS			(V4L2_CTRL_CLASS_MODE | 1)
+#define V4L2_CID_MODE_FRAME_WIDTH		(V4L2_CID_MODE_CLASS_BASE+1)
+#define V4L2_CID_MODE_FRAME_HEIGHT		(V4L2_CID_MODE_CLASS_BASE+2)
+#define V4L2_CID_MODE_VISIBLE_WIDTH		(V4L2_CID_MODE_CLASS_BASE+3)
+#define V4L2_CID_MODE_VISIBLE_HEIGHT		(V4L2_CID_MODE_CLASS_BASE+4)
+#define V4L2_CID_MODE_PIXELCLOCK		(V4L2_CID_MODE_CLASS_BASE+5)
+#define V4L2_CID_MODE_SENSITIVITY		(V4L2_CID_MODE_CLASS_BASE+6)
+#define V4L2_CID_MODE_OPSYSCLOCK		(V4L2_CID_MODE_CLASS_BASE+7)
+
+/*  Control IDs specific to the AD5820 driver as defined by V4L2 */
+#define V4L2_CID_FOCUS_AD5820_BASE 		(V4L2_CTRL_CLASS_CAMERA | 0x10af)
+#define V4L2_CID_FOCUS_AD5820_RAMP_TIME		(V4L2_CID_FOCUS_AD5820_BASE+0)
+#define V4L2_CID_FOCUS_AD5820_RAMP_MODE		(V4L2_CID_FOCUS_AD5820_BASE+1)
+
+/*  Control IDs specific to the ADP1653 flash driver as defined by V4L2 */
+#define V4L2_CID_FLASH_ADP1653_BASE 		(V4L2_CTRL_CLASS_CAMERA | 0x10f1)
+#define V4L2_CID_FLASH_ADP1653_FAULT_SCP	(V4L2_CID_FLASH_ADP1653_BASE+0)
+#define V4L2_CID_FLASH_ADP1653_FAULT_OT		(V4L2_CID_FLASH_ADP1653_BASE+1)
+#define V4L2_CID_FLASH_ADP1653_FAULT_TMR	(V4L2_CID_FLASH_ADP1653_BASE+2)
+#define V4L2_CID_FLASH_ADP1653_FAULT_OV		(V4L2_CID_FLASH_ADP1653_BASE+3)
 
 /*
  *	T U N I N G
