@@ -433,6 +433,7 @@ static int __exit ad5820_remove(struct i2c_client *client)
 	struct ad5820_device *coil = to_ad5820_device(subdev);
 
 	v4l2_device_unregister_subdev(&coil->subdev);
+	v4l2_ctrl_handler_free(&coil->ctrls);
 	media_entity_cleanup(&coil->subdev.entity);
 	if (coil->vana)
 		regulator_put(coil->vana);
