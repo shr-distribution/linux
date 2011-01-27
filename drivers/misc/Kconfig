@@ -453,6 +453,7 @@ config PCH_PHUB
 	  be called pch_phub.
 
 source "drivers/misc/c2port/Kconfig"
+source "drivers/misc/cmt/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
 source "drivers/misc/iwmc3200top/Kconfig"
