@@ -3570,6 +3570,7 @@ static void fbcon_exit(void)
 /* 
  * Allow the bootloader to disable the framebuffer console.
  */
+
 static int enable_fbcon = 1;
 
 static int __init
@@ -3587,8 +3588,10 @@ static int __init fb_console_init(void)
 {
 	int i;
 
+#if CONFIG_FRAMEBUFFER_CONSOLE_FORCE_ENABLE
 	if (!enable_fbcon)
 		return 0;
+#endif
 
 	acquire_console_sem();
 	fb_register_client(&fbcon_event_notifier);
