@@ -118,6 +118,16 @@ config FRAMEBUFFER_CONSOLE
 	help
 	  Low-level framebuffer-based console driver.
 
+config FRAMEBUFFER_CONSOLE_FORCE_ENABLE
+    bool "Framebuffer Console always enabled"
+    depends on FB
+    default n
+    help
+      The bootloader can select with the fbcon= argument if it wants the
+      framebuffer console to be enabled. If we can not touch the bootloader
+      this forces the framebuffer console to be always enabled never mind 
+      what the bootloader says.
+
 config FRAMEBUFFER_CONSOLE_DETECT_PRIMARY
        bool "Map the console to the primary display device"
        depends on FRAMEBUFFER_CONSOLE
