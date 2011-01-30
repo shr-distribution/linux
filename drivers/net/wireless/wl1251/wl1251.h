@@ -369,6 +369,8 @@ struct wl1251 {
 	/* in dBm */
 	int power_level;
 
+	int rssi_thold;
+
 	struct wl1251_stats stats;
 	struct wl1251_debugfs debugfs;
 
@@ -431,5 +433,8 @@ void wl1251_disable_interrupts(struct wl1251 *wl);
 #define WL1251_PART_WORK_MEM_SIZE	0x14000
 #define WL1251_PART_WORK_REG_START	REGISTERS_BASE
 #define WL1251_PART_WORK_REG_SIZE	REGISTERS_WORK_SIZE
+
+#define WL1251_DEFAULT_LOW_RSSI_WEIGHT          10
+#define WL1251_DEFAULT_LOW_RSSI_DEPTH           10
 
 #endif
