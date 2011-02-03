@@ -1579,6 +1579,13 @@ static const struct snd_soc_dapm_route intercon[] = {
 	{ "Right Headphone Mux", "DAC", "DAC1R" },
 };
 
+static const struct snd_soc_dapm_route wm8994_revd_intercon[] = {
+	{ "AIF1DACDAT", NULL, "AIF2DACDAT" },
+	{ "AIF2DACDAT", NULL, "AIF1DACDAT" },
+	{ "AIF1ADCDAT", NULL, "AIF2ADCDAT" },
+	{ "AIF2ADCDAT", NULL, "AIF1ADCDAT" },
+};
+
 static const struct snd_soc_dapm_route wm8994_intercon[] = {
 	{ "AIF2DACL", NULL, "AIF2DAC Mux" },
 	{ "AIF2DACR", NULL, "AIF2DAC Mux" },
@@ -2704,6 +2711,7 @@ static int wm8994_probe(struct platform_device *pdev)
 {
 	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
 	struct snd_soc_codec *codec;
+	struct wm8994_priv *wm8994;
 	struct wm8994 *control;
 	int ret = 0;
 
@@ -2715,6 +2723,7 @@ static int wm8994_probe(struct platform_device *pdev)
 	socdev->card->codec = wm8994_codec;
 	codec = wm8994_codec;
 	control = codec->control_data;
+	wm8994 = snd_soc_codec_get_drvdata(codec);
 
 	/* register pcms */
 	ret = snd_soc_new_pcms(socdev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1);
@@ -2751,6 +2760,11 @@ static int wm8994_probe(struct platform_device *pdev)
 	case WM8994:
 		snd_soc_dapm_add_routes(codec, wm8994_intercon,
 					ARRAY_SIZE(wm8994_intercon));
+
+		if (wm8994->revision < 4)
+			snd_soc_dapm_add_routes(codec, wm8994_revd_intercon,
+						ARRAY_SIZE(wm8994_revd_intercon));
+			
 		break;
 	case WM8958:
 		snd_soc_dapm_add_routes(codec, wm8958_intercon,
