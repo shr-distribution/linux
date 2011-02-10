@@ -720,8 +720,8 @@ static inline void hsi_char_tx2ecfg(struct hsc_tx_config *tx_cfg,
 	tx_cfg->arb_mode = cfg->arb_mode;
 }
 
-static long hsi_char_ioctl(struct inode *inode, struct file *file,
-					unsigned int cmd, unsigned long arg)
+static long hsi_char_ioctl(struct file *file, unsigned int cmd,
+							unsigned long arg)
 {
 	struct hsi_char_channel *channel = file->private_data;
 	unsigned int state;
