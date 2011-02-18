@@ -211,10 +211,6 @@ EXPORT_SYMBOL_GPL(aic34b_add_controls);
 static int aic34b_dummy_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
-	if (aic34b_read(client, AIC3X_PLL_PROGA_REG) != 0x10) {
-		/* Chip not present */
-		return -ENODEV;
-	}
 	aic34b_client = client;
 
 	return 0;
