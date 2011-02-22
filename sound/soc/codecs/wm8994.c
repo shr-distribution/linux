@@ -2859,6 +2859,13 @@ static void wm8994_handle_pdata(struct wm8994_priv *wm8994)
 	else
 		snd_soc_add_controls(&wm8994->codec, wm8994_eq_controls,
 				     ARRAY_SIZE(wm8994_eq_controls));
+
+	for (i = 0; i < ARRAY_SIZE(pdata->micbias); i++) {
+		if (pdata->micbias[i]) {
+			snd_soc_write(codec, WM8958_MICBIAS1 + i,
+				pdata->micbias[i] & 0xffff);
+		}
+	}
 }
 
 static int wm8994_probe(struct platform_device *pdev)
