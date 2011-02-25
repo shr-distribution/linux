@@ -212,6 +212,11 @@ static void tsc2005_update_pen_state(struct tsc2005 *ts,
 		input_report_abs(ts->idev, ABS_Y, y);
 		input_report_abs(ts->idev, ABS_PRESSURE, pressure);
 		if (!ts->pen_down) {
+			/*
+			 * Report movement before button press in case
+			 * userspace reads mouse interface instead of evdev.
+			 */
+			input_sync(ts->idev);
 			input_report_key(ts->idev, BTN_TOUCH, !!pressure);
 			ts->pen_down = 1;
 		}
