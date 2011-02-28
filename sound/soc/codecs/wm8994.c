@@ -112,6 +112,9 @@ struct wm8994_priv {
 
 	unsigned int aif1clk_enable:1;
 	unsigned int aif2clk_enable:1;
+
+	unsigned int aif1clk_disable:1;
+	unsigned int aif2clk_disable:1;
 };
 
 static int wm8994_readable(unsigned int reg)
@@ -1009,14 +1012,18 @@ static int late_enable_ev(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		if (wm8994->aif1clk_enable)
+		if (wm8994->aif1clk_enable) {
 			snd_soc_update_bits(codec, WM8994_AIF1_CLOCKING_1,
 					    WM8994_AIF1CLK_ENA_MASK,
 					    WM8994_AIF1CLK_ENA);
-		if (wm8994->aif2clk_enable)
+			wm8994->aif1clk_enable = 0;
+		}
+		if (wm8994->aif2clk_enable) {
 			snd_soc_update_bits(codec, WM8994_AIF2_CLOCKING_1,
 					    WM8994_AIF2CLK_ENA_MASK,
 					    WM8994_AIF2CLK_ENA);
+			wm8994->aif2clk_enable = 0;
+		}
 		break;
 	}
 
@@ -1031,15 +1038,15 @@ static int late_disable_ev(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMD:
-		if (wm8994->aif1clk_enable) {
+		if (wm8994->aif1clk_disable) {
 			snd_soc_update_bits(codec, WM8994_AIF1_CLOCKING_1,
 					    WM8994_AIF1CLK_ENA_MASK, 0);
-			wm8994->aif1clk_enable = 0;
+			wm8994->aif1clk_disable = 0;
 		}
-		if (wm8994->aif2clk_enable) {
+		if (wm8994->aif2clk_disable) {
 			snd_soc_update_bits(codec, WM8994_AIF2_CLOCKING_1,
 					    WM8994_AIF2CLK_ENA_MASK, 0);
-			wm8994->aif2clk_enable = 0;
+			wm8994->aif2clk_disable = 0;
 		}
 		break;
 	}
@@ -1057,6 +1064,9 @@ static int aif1clk_ev(struct snd_soc_dapm_widget *w,
 	case SND_SOC_DAPM_PRE_PMU:
 		wm8994->aif1clk_enable = 1;
 		break;
+	case SND_SOC_DAPM_POST_PMD:
+		wm8994->aif1clk_disable = 1;
+		break;
 	}
 
 	return 0;
@@ -1071,6 +1081,9 @@ static int aif2clk_ev(struct snd_soc_dapm_widget *w,
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
 		wm8994->aif2clk_enable = 1;
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		wm8994->aif2clk_disable = 1;
 		break;
 	}
 
