@@ -97,6 +97,9 @@ static ssize_t store_class_device_state(struct class_device *cdev,
 		ret = -EINVAL;
 	}
 
+	/* notify change to state sysfs node so select works with this */
+	sysfs_notify(&cdev->kobj, NULL, "state");
+
 	return ret;
 }
 
