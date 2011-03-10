@@ -139,9 +139,14 @@ static int omap_target(struct cpufreq_policy *policy,
 	/* Update loops per jiffy */
 	freqs.new = omap_getspeed(policy->cpu);
 	for_each_cpu(i, policy->cpus)
+#if defined(CONFIG_SMP)
 		per_cpu(cpu_data, i).loops_per_jiffy =
 		cpufreq_scale(per_cpu(cpu_data, i).loops_per_jiffy,
 				freqs.old, freqs.new);
+#else
+		loops_per_jiffy = cpufreq_scale(loops_per_jiffy,
+						freqs.old, freqs.new);
+#endif
 
 	/* post notifiers */
 	for_each_cpu(i, policy->cpus) {
