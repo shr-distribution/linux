@@ -2967,12 +2967,21 @@ static int wm8994_probe(struct platform_device *pdev)
 				     ARRAY_SIZE(wm8958_snd_controls));
 		snd_soc_dapm_new_controls(codec, wm8958_dapm_widgets,
 					  ARRAY_SIZE(wm8958_dapm_widgets));
-		snd_soc_dapm_new_controls(codec, wm8994_lateclk_widgets,
-					  ARRAY_SIZE(wm8994_lateclk_widgets));
-		snd_soc_dapm_new_controls(codec, wm8994_dac_widgets,
-					  ARRAY_SIZE(wm8994_dac_widgets));
-		snd_soc_dapm_new_controls(codec, wm8994_adc_widgets,
-					  ARRAY_SIZE(wm8994_adc_widgets));
+		if (wm8994->revision < 1) {
+			snd_soc_dapm_new_controls(codec, wm8994_lateclk_revd_widgets,
+						  ARRAY_SIZE(wm8994_lateclk_revd_widgets));
+			snd_soc_dapm_new_controls(codec, wm8994_dac_revd_widgets,
+						  ARRAY_SIZE(wm8994_dac_revd_widgets));
+			snd_soc_dapm_new_controls(codec, wm8994_adc_revd_widgets,
+						  ARRAY_SIZE(wm8994_adc_revd_widgets));
+		} else {
+			snd_soc_dapm_new_controls(codec, wm8994_lateclk_widgets,
+						  ARRAY_SIZE(wm8994_lateclk_widgets));
+			snd_soc_dapm_new_controls(codec, wm8994_dac_widgets,
+						  ARRAY_SIZE(wm8994_dac_widgets));
+			snd_soc_dapm_new_controls(codec, wm8994_adc_widgets,
+						  ARRAY_SIZE(wm8994_adc_widgets));
+		}
 		break;
 	}
 
@@ -2992,8 +3001,15 @@ static int wm8994_probe(struct platform_device *pdev)
 		}
 		break;
 	case WM8958:
-		snd_soc_dapm_add_routes(codec, wm8994_lateclk_intercon,
-					ARRAY_SIZE(wm8994_lateclk_intercon));
+		if (wm8994->revision < 1) {
+			snd_soc_dapm_add_routes(codec, wm8994_revd_intercon,
+						ARRAY_SIZE(wm8994_revd_intercon));
+			snd_soc_dapm_add_routes(codec, wm8994_lateclk_revd_intercon,
+						ARRAY_SIZE(wm8994_lateclk_revd_intercon));
+		} else {
+			snd_soc_dapm_add_routes(codec, wm8994_lateclk_intercon,
+						ARRAY_SIZE(wm8994_lateclk_intercon));
+		}
 		snd_soc_dapm_add_routes(codec, wm8958_intercon,
 					ARRAY_SIZE(wm8958_intercon));
 		break;
