@@ -369,6 +369,10 @@ static int rx51_aic34_init(struct snd_soc_pcm_runtime *rtd)
 	tpa6130a2_add_controls(codec);
 	snd_soc_limit_volume(codec, "TPA6130A2 Headphone Playback Volume", 42);
 
+	err = omap_mcbsp_st_add_controls(codec, 1);
+	if (err < 0)
+		return err;
+
 	aic34b_add_controls(codec);
 
 	/* Set up RX-51 specific audio path audio_map */
