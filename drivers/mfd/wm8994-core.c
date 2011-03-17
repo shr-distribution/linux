@@ -106,9 +106,7 @@ static int wm8994_write(struct wm8994 *wm8994, unsigned short reg,
 
 	for (i = 0; i < bytes / 2; i++) {
 		dev_vdbg(wm8994->dev, "Write %04x to R%d(0x%x)\n",
-			 buf[i], reg + i, reg + i);
-
-		buf[i] = cpu_to_be16(buf[i]);
+			 be16_to_cpu(buf[i]), reg + i, reg + i);
 	}
 
 	return wm8994->write_dev(wm8994, reg, bytes, src);
@@ -126,6 +124,8 @@ int wm8994_reg_write(struct wm8994 *wm8994, unsigned short reg,
 {
 	int ret;
 
+	val = cpu_to_be16(val);
+
 	mutex_lock(&wm8994->io_lock);
 
 	ret = wm8994_write(wm8994, reg, 2, &val);
@@ -142,7 +142,7 @@ EXPORT_SYMBOL_GPL(wm8994_reg_write);
  * @wm8994: Device to write to
  * @reg: First register
  * @count: Number of registers
- * @buf: Buffer to write from.
+ * @buf: Buffer to write from.  Data must be big-endian formatted.
  */
 int wm8994_bulk_write(struct wm8994 *wm8994, unsigned short reg,
 		      int count, u16 *buf)
@@ -181,6 +181,8 @@ int wm8994_set_bits(struct wm8994 *wm8994, unsigned short reg,
 
 	r &= ~mask;
 	r |= val;
+
+	r = cpu_to_be16(r);
 
 	ret = wm8994_write(wm8994, reg, 2, &r);
 
