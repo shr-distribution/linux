@@ -216,6 +216,17 @@ const char * const *v4l2_ctrl_get_menu(u32 id)
 		"75 useconds",
 		NULL,
 	};
+	static const char * const flash_led_mode[] = {
+		"Off",
+		"Flash",
+		"Torch",
+		NULL,
+	};
+	static const char * const flash_strobe_source[] = {
+		"Software",
+		"External",
+		NULL,
+	};
 
 	switch (id) {
 	case V4L2_CID_MPEG_AUDIO_SAMPLING_FREQ:
@@ -256,6 +267,10 @@ const char * const *v4l2_ctrl_get_menu(u32 id)
 		return colorfx;
 	case V4L2_CID_TUNE_PREEMPHASIS:
 		return tune_preemphasis;
+	case V4L2_CID_FLASH_LED_MODE:
+		return flash_led_mode;
+	case V4L2_CID_FLASH_STROBE_SOURCE:
+		return flash_strobe_source;
 	default:
 		return NULL;
 	}
@@ -389,6 +404,21 @@ const char *v4l2_ctrl_get_name(u32 id)
 	case V4L2_CID_TUNE_POWER_LEVEL:		return "Tune Power Level";
 	case V4L2_CID_TUNE_ANTENNA_CAPACITOR:	return "Tune Antenna Capacitor";
 
+	/* Flash controls */
+	case V4L2_CID_FLASH_CLASS:		return "Flash controls";
+	case V4L2_CID_FLASH_LED_MODE:		return "LED mode";
+	case V4L2_CID_FLASH_STROBE_SOURCE:	return "Strobe source";
+	case V4L2_CID_FLASH_STROBE:		return "Strobe";
+	case V4L2_CID_FLASH_STROBE_STOP:	return "Stop strobe";
+	case V4L2_CID_FLASH_STROBE_STATUS:	return "Strobe status";
+	case V4L2_CID_FLASH_TIMEOUT:		return "Strobe timeout";
+	case V4L2_CID_FLASH_INTENSITY:		return "Intensity, flash mode";
+	case V4L2_CID_FLASH_TORCH_INTENSITY:	return "Intensity, torch mode";
+	case V4L2_CID_FLASH_INDICATOR_INTENSITY: return "Intensity, indicator";
+	case V4L2_CID_FLASH_FAULT:		return "Faults";
+	case V4L2_CID_FLASH_CHARGE:		return "Charge";
+	case V4L2_CID_FLASH_READY:		return "Ready to strobe";
+
 	default:
 		return NULL;
 	}
@@ -423,12 +453,17 @@ void v4l2_ctrl_fill(u32 id, const char **name, enum v4l2_ctrl_type *type,
 	case V4L2_CID_PILOT_TONE_ENABLED:
 	case V4L2_CID_ILLUMINATORS_1:
 	case V4L2_CID_ILLUMINATORS_2:
+	case V4L2_CID_FLASH_STROBE_STATUS:
+	case V4L2_CID_FLASH_CHARGE:
+	case V4L2_CID_FLASH_READY:
 		*type = V4L2_CTRL_TYPE_BOOLEAN;
 		*min = 0;
 		*max = *step = 1;
 		break;
 	case V4L2_CID_PAN_RESET:
 	case V4L2_CID_TILT_RESET:
+	case V4L2_CID_FLASH_STROBE:
+	case V4L2_CID_FLASH_STROBE_STOP:
 		*type = V4L2_CTRL_TYPE_BUTTON;
 		*flags |= V4L2_CTRL_FLAG_WRITE_ONLY;
 		*min = *max = *step = *def = 0;
@@ -452,6 +487,8 @@ void v4l2_ctrl_fill(u32 id, const char **name, enum v4l2_ctrl_type *type,
 	case V4L2_CID_EXPOSURE_AUTO:
 	case V4L2_CID_COLORFX:
 	case V4L2_CID_TUNE_PREEMPHASIS:
+	case V4L2_CID_FLASH_LED_MODE:
+	case V4L2_CID_FLASH_STROBE_SOURCE:
 		*type = V4L2_CTRL_TYPE_MENU;
 		break;
 	case V4L2_CID_RDS_TX_PS_NAME:
@@ -462,6 +499,7 @@ void v4l2_ctrl_fill(u32 id, const char **name, enum v4l2_ctrl_type *type,
 	case V4L2_CID_CAMERA_CLASS:
 	case V4L2_CID_MPEG_CLASS:
 	case V4L2_CID_FM_TX_CLASS:
+	case V4L2_CID_FLASH_CLASS:
 		*type = V4L2_CTRL_TYPE_CTRL_CLASS;
 		/* You can neither read not write these */
 		*flags |= V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_WRITE_ONLY;
@@ -473,6 +511,9 @@ void v4l2_ctrl_fill(u32 id, const char **name, enum v4l2_ctrl_type *type,
 		*min = 0;
 		/* Max is calculated as RGB888 that is 2^24 */
 		*max = 0xFFFFFF;
+		break;
+	case V4L2_CID_FLASH_FAULT:
+		*type = V4L2_CTRL_TYPE_BITMASK;
 		break;
 	default:
 		*type = V4L2_CTRL_TYPE_INTEGER;
@@ -518,6 +559,10 @@ void v4l2_ctrl_fill(u32 id, const char **name, enum v4l2_ctrl_type *type,
 	case V4L2_CID_IRIS_RELATIVE:
 	case V4L2_CID_ZOOM_RELATIVE:
 		*flags |= V4L2_CTRL_FLAG_WRITE_ONLY;
+		break;
+	case V4L2_CID_FLASH_STROBE_STATUS:
+	case V4L2_CID_FLASH_READY:
+		*flags |= V4L2_CTRL_FLAG_READ_ONLY;
 		break;
 	}
 }

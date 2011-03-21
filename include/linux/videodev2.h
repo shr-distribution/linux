@@ -1026,8 +1026,8 @@ struct v4l2_ext_controls {
 #define V4L2_CTRL_CLASS_MPEG 0x00990000	/* MPEG-compression controls */
 #define V4L2_CTRL_CLASS_CAMERA 0x009a0000	/* Camera class controls */
 #define V4L2_CTRL_CLASS_FM_TX 0x009b0000	/* FM Modulator control class */
+#define V4L2_CTRL_CLASS_MODE 0x009b0000		/* Sensor mode information */
 #define V4L2_CTRL_CLASS_FLASH 0x009c0000	/* Camera flash controls */
-#define V4L2_CTRL_CLASS_MODE 0x009e0000		/* Sensor mode information */
 
 #define V4L2_CTRL_ID_MASK      	  (0x0fffffff)
 #define V4L2_CTRL_ID2CLASS(id)    ((id) & 0x0fff0000UL)
