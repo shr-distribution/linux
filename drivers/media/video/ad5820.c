@@ -364,14 +364,13 @@ static const struct v4l2_subdev_core_ops ad5820_core_ops = {
 	.s_power = ad5820_set_power,
 };
 
-static const struct v4l2_subdev_file_ops ad5820_file_ops = {
-	.open = ad5820_open,
-	.close = ad5820_close,
-};
-
 static const struct v4l2_subdev_ops ad5820_ops = {
 	.core = &ad5820_core_ops,
-	.file = &ad5820_file_ops,
+};
+
+static const struct v4l2_subdev_internal_ops ad5820_internal_ops = {
+	.open = ad5820_open,
+	.close = ad5820_close,
 };
 
 /* --------------------------------------------------------------------------
@@ -422,6 +421,7 @@ static int ad5820_probe(struct i2c_client *client,
 
 	v4l2_i2c_subdev_init(&coil->subdev, client, &ad5820_ops);
 	coil->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+	coil->subdev.internal_ops = &ad5820_internal_ops;
 
 	ret = media_entity_init(&coil->subdev.entity, 0, NULL, 0);
 	if (ret < 0)
