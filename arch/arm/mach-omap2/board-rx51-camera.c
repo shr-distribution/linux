@@ -31,8 +31,8 @@
 
 #include <asm/gpio.h>
 
-#include "../../../drivers/media/video/isp/isp.h"
-#include "../../../drivers/media/video/isp/ispreg.h"
+#include "../../../drivers/media/video/omap3isp/isp.h"
+#include "../../../drivers/media/video/omap3isp/ispreg.h"
 #include "../../../drivers/media/video/et8ek8.h"
 #include "../../../drivers/media/video/smia-sensor.h"
 
