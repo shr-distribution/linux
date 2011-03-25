@@ -206,7 +206,7 @@ static struct platform_driver pcf50633_gpio_driver = {
 	.probe = pcf50633_gpio_probe,
 	.remove = __devexit_p(pcf50633_gpio_remove),
 	.driver = {
-		.name = "pcf50633-gpio",
+		.name = "pcf50633-gpio.0",
 		.owner = THIS_MODULE,
 	},
 };

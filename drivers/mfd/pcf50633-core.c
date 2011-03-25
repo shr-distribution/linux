@@ -376,7 +376,7 @@ static struct mfd_cell pcf50633_cells[] = {
 	PCF50633_CELL_RESOURCES("pcf50633-mbc", pcf50633_mbc_resources),
 	PCF50633_CELL_RESOURCES("pcf50633-adc", pcf50633_adc_resources),
 	PCF50633_CELL("pcf50633-backlight"),
-	PCF50633_CELL("pcf50633-gpio"),
+	PCF50633_CELL("pcf50633-gpio.0"),
 	PCF50633_CELL_ID("pcf50633-regltr", 0),
 	PCF50633_CELL_ID("pcf50633-regltr", 1),
 	PCF50633_CELL_ID("pcf50633-regltr", 2),
