@@ -1119,7 +1119,7 @@ static int et8ek8_probe(struct i2c_client *client,
 	v4l2_i2c_subdev_init(&sensor->subdev, client, &et8ek8_ops);
 	sensor->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 
-	sensor->pad.flags = MEDIA_PAD_FL_OUTPUT;
+	sensor->pad.flags = MEDIA_PAD_FL_SOURCE;
 	ret = media_entity_init(&sensor->subdev.entity, 1, &sensor->pad, 0);
 	if (ret < 0)
 		kfree(sensor);
