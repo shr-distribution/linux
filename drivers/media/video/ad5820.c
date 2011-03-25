@@ -281,7 +281,7 @@ static int ad5820_init_controls(struct ad5820_device *coil)
  */
 
 static int
-ad5820_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
+ad5820_registered(struct v4l2_subdev *subdev)
 {
 	static const int CHECK_VALUE = 0x3FF0;
 
@@ -290,16 +290,11 @@ ad5820_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
 	u16 status = AD5820_POWER_DOWN | CHECK_VALUE;
 	int rval;
 
-	if (platform_data == NULL)
-		return -ENODEV;
-
 	coil->vana = regulator_get(&client->dev, "VANA");
 	if (IS_ERR(coil->vana)) {
 		dev_err(&client->dev, "could not get regulator for vana\n");
 		return -ENODEV;
 	}
-
-	coil->platform_data = platform_data;
 
 	/* Detect that the chip is there */
 	rval = ad5820_power_on(coil, 0);
@@ -360,7 +355,6 @@ static int ad5820_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 }
 
 static const struct v4l2_subdev_core_ops ad5820_core_ops = {
-	.s_config = ad5820_set_config,
 	.s_power = ad5820_set_power,
 };
 
@@ -369,6 +363,7 @@ static const struct v4l2_subdev_ops ad5820_ops = {
 };
 
 static const struct v4l2_subdev_internal_ops ad5820_internal_ops = {
+	.registered = ad5820_registered,
 	.open = ad5820_open,
 	.close = ad5820_close,
 };
@@ -416,6 +411,8 @@ static int ad5820_probe(struct i2c_client *client,
 	coil = kzalloc(sizeof(*coil), GFP_KERNEL);
 	if (coil == NULL)
 		return -ENOMEM;
+
+	coil->platform_data = client->dev.platform_data;
 
 	mutex_init(&coil->power_lock);
 
