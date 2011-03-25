@@ -1050,11 +1050,6 @@ static const struct v4l2_subdev_core_ops et8ek8_core_ops = {
 	.s_power = et8ek8_set_power,
 };
 
-static const struct v4l2_subdev_file_ops et8ek8_file_ops = {
-	.open = et8ek8_open,
-	.close = et8ek8_close,
-};
-
 static const struct v4l2_subdev_pad_ops et8ek8_pad_ops = {
 	.enum_mbus_code = et8ek8_enum_mbus_code,
         .enum_frame_size = et8ek8_enum_frame_size,
@@ -1065,9 +1060,13 @@ static const struct v4l2_subdev_pad_ops et8ek8_pad_ops = {
 
 static const struct v4l2_subdev_ops et8ek8_ops = {
 	.core = &et8ek8_core_ops,
-	.file = &et8ek8_file_ops,
 	.video = &et8ek8_video_ops,
 	.pad = &et8ek8_pad_ops,
+};
+
+static const struct v4l2_subdev_internal_ops et8ek8_internal_ops = {
+	.open = et8ek8_open,
+	.close = et8ek8_close,
 };
 
 /* --------------------------------------------------------------------------
@@ -1118,6 +1117,7 @@ static int et8ek8_probe(struct i2c_client *client,
 
 	v4l2_i2c_subdev_init(&sensor->subdev, client, &et8ek8_ops);
 	sensor->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+	sensor->subdev.internal_ops = &et8ek8_internal_ops;
 
 	sensor->pad.flags = MEDIA_PAD_FL_SOURCE;
 	ret = media_entity_init(&sensor->subdev.entity, 1, &sensor->pad, 0);
