@@ -1141,7 +1141,7 @@ static int __exit et8ek8_remove(struct i2c_client *client)
 
 	v4l2_device_unregister_subdev(&sensor->subdev);
 	device_remove_file(&client->dev, &dev_attr_priv_mem);
-	v4l2_ctrl_handler_free(&sensor->ctrls);
+	v4l2_ctrl_handler_free(&sensor->ctrl_handler);
 	media_entity_cleanup(&sensor->subdev.entity);
 	if (sensor->vana)
 		regulator_put(sensor->vana);
