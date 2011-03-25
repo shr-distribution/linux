@@ -948,17 +948,12 @@ static DEVICE_ATTR(priv_mem, S_IRUGO, et8ek8_priv_mem_read, NULL);
  */
 
 static int
-et8ek8_set_config(struct v4l2_subdev *subdev, int irq, void *platform_data)
+et8ek8_registered(struct v4l2_subdev *subdev)
 {
 	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
 	struct i2c_client *client = v4l2_get_subdevdata(subdev);
 	struct v4l2_mbus_framefmt *format;
 	int rval;
-
-	if (platform_data == NULL)
-		return -ENODEV;
-
-	sensor->platform_data = platform_data;
 
 	if (device_create_file(&client->dev, &dev_attr_priv_mem) != 0) {
 		dev_err(&client->dev, "could not register sysfs entry\n");
@@ -1046,7 +1041,6 @@ static const struct v4l2_subdev_video_ops et8ek8_video_ops = {
 };
 
 static const struct v4l2_subdev_core_ops et8ek8_core_ops = {
-	.s_config = et8ek8_set_config,
 	.s_power = et8ek8_set_power,
 };
 
@@ -1065,6 +1059,7 @@ static const struct v4l2_subdev_ops et8ek8_ops = {
 };
 
 static const struct v4l2_subdev_internal_ops et8ek8_internal_ops = {
+	.registered = et8ek8_registered,
 	.open = et8ek8_open,
 	.close = et8ek8_close,
 };
@@ -1112,6 +1107,8 @@ static int et8ek8_probe(struct i2c_client *client,
 	sensor = kzalloc(sizeof(*sensor), GFP_KERNEL);
 	if (sensor == NULL)
 		return -ENOMEM;
+
+	sensor->platform_data = client->dev.platform_data;
 
 	mutex_init(&sensor->power_lock);
 
