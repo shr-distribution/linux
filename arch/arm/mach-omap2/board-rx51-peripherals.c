@@ -1030,6 +1030,11 @@ static struct i2c_board_info __initdata rx51_peripherals_i2c_board_info_2[] = {
 		.platform_data  = &rx51_lp5523_platform_data,
 	},
 #endif
+#if defined(CONFIG_BATTERY_BQ27X00_I2C) || defined(CONFIG_BATTERY_BQ27X00_I2C_MODULE)
+	{
+		I2C_BOARD_INFO("bq27200", 0x55),
+	},
+#endif
 	{
 		I2C_BOARD_INFO("tpa6130a2", 0x60),
 		.platform_data = &rx51_tpa6130a2_data,
