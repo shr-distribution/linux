@@ -31,6 +31,7 @@
 #include <linux/hsi/hsi.h>
 #include <linux/cmt.h>
 #include <linux/irq.h>
+#include <linux/power/isp1704_charger.h>
 
 #include <plat/mcspi.h>
 #include <plat/board.h>
@@ -73,6 +74,8 @@
 #define LIS302_IRQ2_GPIO 180  /* Not yet in use */
 
 #define RX51_LP5523_CHIP_EN_GPIO        41
+
+#define RX51_USB_TRANSCEIVER_RST_GPIO	67
 
 /* list all spi devices here */
 enum {
@@ -277,9 +280,29 @@ static struct spi_board_info rx51_peripherals_spi_board_info[] __initdata = {
 	},
 };
 
-static struct platform_device rx51_charger_device = {
-	.name = "isp1704_charger",
+static void rx51_charger_set_power(bool on)
+{
+	gpio_set_value(RX51_USB_TRANSCEIVER_RST_GPIO, on);
+}
+
+static struct isp1704_charger_data rx51_charger_data = {
+	.set_power	= rx51_charger_set_power,
 };
+
+static struct platform_device rx51_charger_device = {
+	.name	= "isp1704_charger",
+	.dev	= {
+		.platform_data = &rx51_charger_data,
+	},
+};
+
+static void __init rx51_charger_init(void)
+{
+	WARN_ON(gpio_request_one(RX51_USB_TRANSCEIVER_RST_GPIO,
+		GPIOF_OUT_INIT_LOW, "isp1704_reset"));
+
+	platform_device_register(&rx51_charger_device);
+}
 
 #if defined(CONFIG_KEYBOARD_GPIO) || defined(CONFIG_KEYBOARD_GPIO_MODULE)
 
@@ -1404,5 +1427,5 @@ void __init rx51_peripherals_init(void)
 	spi_register_board_info(rx51_peripherals_spi_board_info,
 				ARRAY_SIZE(rx51_peripherals_spi_board_info));
 	omap2_hsmmc_init(mmc);
-	platform_device_register(&rx51_charger_device);
+	rx51_charger_init();
 }
