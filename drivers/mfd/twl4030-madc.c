@@ -33,11 +33,15 @@
 #include <linux/i2c/twl4030-madc.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
+#include <linux/regulator/consumer.h>
 
 #define TWL4030_MADC_PFX	"twl4030-madc: "
 
 struct twl4030_madc_data {
 	struct device		*dev;
+	struct regulator	*usb1v5;
+	struct regulator	*usb1v8;
+	struct regulator	*usb3v1;
 	struct mutex		lock;
 	struct work_struct	ws;
 	struct twl4030_madc_request	requests[TWL4030_MADC_NUM_METHODS];
@@ -382,6 +386,10 @@ static int twl4030_madc_set_power(struct twl4030_madc_data *madc, int on)
 	u8 regval;
 
 	if (on) {
+		regulator_enable(madc->usb3v1);
+		regulator_enable(madc->usb1v8);
+		regulator_enable(madc->usb1v5);
+
 		regval = twl4030_madc_read(madc, TWL4030_MADC_CTRL1);
 		regval |= TWL4030_MADC_MADCON;
 		twl4030_madc_write(madc, TWL4030_MADC_CTRL1, regval);
@@ -394,6 +402,10 @@ static int twl4030_madc_set_power(struct twl4030_madc_data *madc, int on)
 		regval = twl4030_madc_read(madc, TWL4030_MADC_CTRL1);
 		regval &= ~TWL4030_MADC_MADCON;
 		twl4030_madc_write(madc, TWL4030_MADC_CTRL1, regval);
+
+		regulator_disable(madc->usb1v5);
+		regulator_disable(madc->usb1v8);
+		regulator_disable(madc->usb3v1);
 	}
 	return ret;
 }
@@ -492,6 +504,18 @@ static int __init twl4030_madc_probe(struct platform_device *pdev)
 		goto err_irq;
 	}
 
+	madc->usb3v1 = regulator_get(madc->dev, "usb3v1");
+	if (IS_ERR(madc->usb3v1))
+		goto err_reg1;
+
+	madc->usb1v5 = regulator_get(madc->dev, "usb1v5");
+	if (IS_ERR(madc->usb1v5))
+		goto err_reg2;
+
+	madc->usb1v8 = regulator_get(madc->dev, "usb1v8");
+	if (IS_ERR(madc->usb1v8))
+		goto err_reg3;
+
 	platform_set_drvdata(pdev, madc);
 	mutex_init(&madc->lock);
 	INIT_WORK(&madc->ws, twl4030_madc_work);
@@ -500,6 +524,14 @@ static int __init twl4030_madc_probe(struct platform_device *pdev)
 
 	return 0;
 
+err_reg3:
+	regulator_put(madc->usb1v5);
+err_reg2:
+	regulator_put(madc->usb3v1);
+err_reg1:
+	free_irq(platform_get_irq(pdev, 0), madc);
+	dev_err(madc->dev, "Failed to get vusb regulators\n");
+	ret = -ENODEV;
 err_irq:
 	misc_deregister(&twl4030_madc_device);
 
@@ -516,6 +548,10 @@ static int __exit twl4030_madc_remove(struct platform_device *pdev)
 
 	free_irq(platform_get_irq(pdev, 0), madc);
 	cancel_work_sync(&madc->ws);
+	regulator_put(madc->usb1v5);
+	regulator_put(madc->usb1v8);
+	regulator_put(madc->usb3v1);
+
 	misc_deregister(&twl4030_madc_device);
 
 	return 0;
