@@ -202,7 +202,16 @@ int __init musb_platform_init(struct musb *musb, void *board_data)
 		return -ENODEV;
 	}
 
-	musb_platform_resume(musb);
+	if (musb->clock) {
+		if (musb->set_clock)
+			musb->set_clock(musb->clock, 1);
+		else
+			clk_enable(musb->clock);
+
+		l = musb_readl(musb->mregs, OTG_FORCESTDBY);
+		l &= ~ENABLEFORCE;	/* disable MSTANDBY */
+		musb_writel(musb->mregs, OTG_FORCESTDBY, l);
+	}
 
 	l = musb_readl(musb->mregs, OTG_SYSCONFIG);
 	l &= ~ENABLEWAKEUP;	/* disable wakeup */
