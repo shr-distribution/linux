@@ -45,7 +45,7 @@ static struct cpufreq_frequency_table *freq_table;
 #ifdef CONFIG_ARCH_OMAP1
 #define MPU_CLK		"mpu"
 #elif defined(CONFIG_ARCH_OMAP3)
-#define MPU_CLK		"arm_fck"
+#define MPU_CLK		"dpll1_ck"
 #else
 #define MPU_CLK		"virt_prcm_set"
 #endif
