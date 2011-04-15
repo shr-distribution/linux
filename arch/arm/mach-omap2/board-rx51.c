@@ -17,6 +17,7 @@
 #include <linux/io.h>
 #include <linux/gpio.h>
 #include <linux/leds.h>
+#include <linux/opp.h>
 
 #include <mach/hardware.h>
 #include <asm/mach-types.h>
@@ -29,6 +30,7 @@
 #include <plat/dma.h>
 #include <plat/gpmc.h>
 #include <plat/usb.h>
+#include <plat/omap_device.h>
 
 #include "mux.h"
 #include "pm.h"
@@ -111,6 +113,49 @@ static void __init rx51_init_irq(void)
 	omap_init_irq();
 	omap_gpio_init();
 }
+
+static void __init rx51_opp_init(void)
+{
+	/*
+	 * Init opp tables to default values and then
+	 * remove 125MHz from available cpu clock rates.
+	 */
+
+	int r = 0;
+
+	if (r=omap3_opp_init()) {
+		/*
+		 * FIXME: We are now called with late_initcall() and
+		 * thus omap3_opp_init() has already been run once,
+		 * so we will get -EEXIST. This check should be removed
+		 * when our backport of opp/dvfs code gets updated
+		 * and late_initcall removed.
+		 */
+		if (r != -EEXIST) {
+			pr_err("%s: failed to init default opp table: %d\n", __func__, r);
+			return;
+		}
+	}
+
+	struct omap_hwmod *mpu = omap_hwmod_lookup("mpu");
+	struct device *dev;
+	if (!mpu) {
+		pr_err("%s: omap_hwmod_lookup failed\n", __func__);
+		return;
+	}
+	dev = &mpu->od->pdev.dev;
+	r = opp_disable(dev, 125000000);
+	if (r) {
+		pr_err("%s: failed to disable opp, err: %d\n", __func__, r);
+	}
+}
+/*
+ * FIXME: using late_initcall to get this working with current backported
+ * version of opp/dvfs support. Currently rx51_opp_init will fail if run
+ * from rx51_init due to some hwmod related inits that are not yet done.
+ * Move to normal call in rx51_init when updating the backport.
+ */
+late_initcall(rx51_opp_init);
 
 extern void __init rx51_peripherals_init(void);
 
