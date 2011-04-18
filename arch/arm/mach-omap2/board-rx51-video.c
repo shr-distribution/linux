@@ -30,6 +30,36 @@
 
 #if defined(CONFIG_FB_OMAP2) || defined(CONFIG_FB_OMAP2_MODULE)
 
+/* Enable input logic and pull all lines up when SDI display is on. */
+static struct omap_board_mux rx51_sdi_on_mux[] = {
+	OMAP3_MUX(DSS_DATA10, OMAP_PIN_OUTPUT | OMAP_MUX_MODE1),
+	OMAP3_MUX(DSS_DATA11, OMAP_PIN_OUTPUT | OMAP_MUX_MODE1),
+	OMAP3_MUX(DSS_DATA12, OMAP_PIN_OUTPUT | OMAP_MUX_MODE1),
+	OMAP3_MUX(DSS_DATA13, OMAP_PIN_OUTPUT | OMAP_MUX_MODE1),
+	OMAP3_MUX(DSS_DATA22, OMAP_PIN_OUTPUT | OMAP_MUX_MODE1),
+	OMAP3_MUX(DSS_DATA23, OMAP_PIN_OUTPUT | OMAP_MUX_MODE1),
+	{ .reg_offset = OMAP_MUX_TERMINATOR },
+};
+
+/* Disable input logic and pull all lines down when SDI display is off. */
+static struct omap_board_mux rx51_sdi_off_mux[] = {
+	OMAP3_MUX(DSS_DATA10, OMAP_PULL_ENA | OMAP_PULL_UP | OMAP_MUX_MODE7),
+	OMAP3_MUX(DSS_DATA11, OMAP_PULL_ENA | OMAP_PULL_UP | OMAP_MUX_MODE7),
+	OMAP3_MUX(DSS_DATA12, OMAP_PULL_ENA | OMAP_PULL_UP | OMAP_MUX_MODE7),
+	OMAP3_MUX(DSS_DATA13, OMAP_PULL_ENA | OMAP_PULL_UP | OMAP_MUX_MODE7),
+	OMAP3_MUX(DSS_DATA22, OMAP_PULL_ENA | OMAP_PULL_UP | OMAP_MUX_MODE7),
+	OMAP3_MUX(DSS_DATA23, OMAP_PULL_ENA | OMAP_PULL_UP | OMAP_MUX_MODE7),
+	{ .reg_offset = OMAP_MUX_TERMINATOR },
+};
+
+static void rx51_set_mux(int on)
+{
+	if (on)
+		omap_mux_write_array(rx51_sdi_on_mux);
+	else
+		omap_mux_write_array(rx51_sdi_off_mux);
+}
+
 static int rx51_lcd_enable(struct omap_dss_device *dssdev)
 {
 	gpio_set_value(dssdev->reset_gpio, 1);
@@ -79,6 +109,7 @@ static struct omap_dss_board_info rx51_dss_board_info = {
 	.num_devices	= ARRAY_SIZE(rx51_dss_devices),
 	.devices	= rx51_dss_devices,
 	.default_device	= &rx51_lcd_device,
+	.set_mux	= rx51_set_mux,
 };
 
 struct platform_device rx51_display_device = {
