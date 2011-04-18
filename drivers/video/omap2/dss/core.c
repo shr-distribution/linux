@@ -554,7 +554,7 @@ static int omap_dss_probe(struct platform_device *pdev)
 	}
 
 	if (cpu_is_omap34xx()) {
-		r = sdi_init(skip_init);
+		r = sdi_init(pdata, skip_init);
 		if (r) {
 			DSSERR("Failed to initialize SDI\n");
 			goto err_sdi;

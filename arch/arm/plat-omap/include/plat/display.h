@@ -258,6 +258,8 @@ int dsi_vc_send_bta_sync(int channel);
 /* Board specific data */
 struct omap_dss_board_info {
 	int (*get_last_off_on_transaction_id)(struct device *dev);
+	/* set pin multiplexing (pad configuration) when powering on/off */
+	void (*set_mux)(int on);
 	int num_devices;
 	struct omap_dss_device **devices;
 	struct omap_dss_device *default_device;

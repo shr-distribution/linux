@@ -33,7 +33,12 @@ static struct {
 	bool skip_init;
 	bool update_enabled;
 	struct regulator *vdds_sdi_reg;
+	void (*set_mux)(int on);
 } sdi;
+
+static void sdi_mux_null(int on)
+{
+}
 
 static void sdi_basic_init(void)
 {
@@ -63,6 +68,8 @@ int omapdss_sdi_display_enable(struct omap_dss_device *dssdev)
 	r = regulator_enable(sdi.vdds_sdi_reg);
 	if (r)
 		goto err1;
+
+	sdi.set_mux(1);
 
 	/* In case of skip_init sdi_init has already enabled the clocks */
 	if (!sdi.skip_init)
@@ -143,6 +150,7 @@ void omapdss_sdi_display_disable(struct omap_dss_device *dssdev)
 
 	dss_clk_disable(DSS_CLK_ICK | DSS_CLK_FCK1);
 
+	sdi.set_mux(0);
 	regulator_disable(sdi.vdds_sdi_reg);
 
 	omap_dss_stop_device(dssdev);
@@ -156,10 +164,14 @@ int sdi_init_display(struct omap_dss_device *dssdev)
 	return 0;
 }
 
-int sdi_init(bool skip_init)
+int sdi_init(struct omap_dss_board_info *pdata, bool skip_init)
 {
 	/* we store this for first display enable, then clear it */
 	sdi.skip_init = skip_init;
+	if (pdata->set_mux)
+		sdi.set_mux = pdata->set_mux;
+	else
+		sdi.set_mux = &sdi_mux_null;
 
 	sdi.vdds_sdi_reg = dss_get_vdds_sdi();
 	if (IS_ERR(sdi.vdds_sdi_reg)) {
