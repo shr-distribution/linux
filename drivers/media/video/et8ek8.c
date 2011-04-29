@@ -517,11 +517,6 @@ static int et8ek8_configure(struct et8ek8_sensor *sensor)
 	if (rval)
 		goto fail;
 
-	rval = sensor->platform_data->configure_interface(
-		subdev, &sensor->current_reglist->mode);
-	if (rval)
-		goto fail;
-
 	/* Controls set while the power to the sensor is turned off are saved
 	 * but not applied to the hardware. Now that we're about to start
 	 * streaming apply all the current values to the hardware.
@@ -537,14 +532,33 @@ fail:
 	return rval;
 }
 
+static int et8ek8_stream_on(struct et8ek8_sensor *sensor)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(&sensor->subdev);
+
+	return smia_i2c_write_reg(client, SMIA_REG_8BIT, 0x1252, 0xb0);
+}
+
+static int et8ek8_stream_off(struct et8ek8_sensor *sensor)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(&sensor->subdev);
+
+	return smia_i2c_write_reg(client, SMIA_REG_8BIT, 0x1252, 0x30);
+}
+
 static int et8ek8_s_stream(struct v4l2_subdev *subdev, int streaming)
 {
-	struct i2c_client *client = v4l2_get_subdevdata(subdev);
+	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
+	int ret;
 
-	if (streaming)
-		return smia_i2c_write_reg(client, SMIA_REG_8BIT, 0x1252, 0xB0);
-	else
-		return smia_i2c_write_reg(client, SMIA_REG_8BIT, 0x1252, 0x30);
+	if (!streaming)
+		return et8ek8_stream_off(sensor);
+
+	ret = et8ek8_configure(sensor);
+	if (ret < 0)
+		return ret;
+
+	return et8ek8_stream_on(sensor);
 }
 
 /* --------------------------------------------------------------------------
@@ -689,7 +703,8 @@ static int et8ek8_set_pad_format(struct v4l2_subdev *subdev,
 	struct et8ek8_sensor *sensor = to_et8ek8_sensor(subdev);
 	struct v4l2_mbus_framefmt *format;
         struct smia_reglist *reglist;
- 
+	int ret;
+
 	format = __et8ek8_get_pad_format(sensor, fh, fmt->pad, fmt->which);
 	if (format == NULL)
 		return -EINVAL;
@@ -701,6 +716,11 @@ static int et8ek8_set_pad_format(struct v4l2_subdev *subdev,
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
 		sensor->current_reglist = reglist;
+		ret = sensor->platform_data->configure_interface(subdev,
+						&sensor->current_reglist->mode);
+		if (ret < 0)
+			return ret;
+
 		et8ek8_update_controls(sensor);
 	}
 
@@ -893,14 +913,14 @@ static int et8ek8_dev_init(struct v4l2_subdev *subdev)
 			name);
 		goto out_release;
 	}
-	rval = et8ek8_s_stream(subdev, 1);	/* Needed to be able to read EEPROM */
+	rval = et8ek8_stream_on(sensor);	/* Needed to be able to read EEPROM */
 	if (rval)
 		goto out_release;
 	rval = et8ek8_g_priv_mem(subdev);
 	if (rval)
 		dev_warn(&client->dev,
 			"can not read OTP (EEPROM) memory from sensor\n");
-	rval = et8ek8_s_stream(subdev, 0);
+	rval = et8ek8_stream_off(sensor);
 	if (rval)
 		goto out_release;
 
@@ -977,17 +997,7 @@ et8ek8_registered(struct v4l2_subdev *subdev)
 
 static int __et8ek8_set_power(struct et8ek8_sensor *sensor, int on)
 {
-	int ret;
-
-	ret = on ? et8ek8_power_on(sensor) : et8ek8_power_off(sensor);
-	if (ret < 0)
-		return ret;
-
-	if (!on)
-		return 0;
-
-	/* Restore the sensor settings */
-	return et8ek8_configure(sensor);
+	return on ? et8ek8_power_on(sensor) : et8ek8_power_off(sensor);
 }
 
 static int et8ek8_set_power(struct v4l2_subdev *subdev, int on)
