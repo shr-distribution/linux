@@ -525,6 +525,13 @@ static struct omap2_hsmmc_info mmc[] __initdata = {
 static struct regulator_consumer_supply rx51_vmmc1_supply =
 	REGULATOR_SUPPLY("vmmc", "mmci-omap-hs.0");
 
+static struct regulator_consumer_supply rx51_vaux2_supplies[] = {
+	REGULATOR_SUPPLY("vdds_csib", "omap3isp"),
+	{
+		.supply = "vaux2",
+	},
+};
+
 static struct regulator_consumer_supply rx51_vaux3_supply =
 	REGULATOR_SUPPLY("vmmc", "mmci-omap-hs.1");
 
@@ -599,6 +606,8 @@ static struct regulator_init_data rx51_vaux2 = {
 		.valid_ops_mask		= REGULATOR_CHANGE_MODE
 					| REGULATOR_CHANGE_STATUS,
 	},
+	.num_consumer_supplies	= ARRAY_SIZE(rx51_vaux2_supplies),
+	.consumer_supplies	= rx51_vaux2_supplies,
 };
 
 /* VAUX3 - adds more power to VIO_18 rail */
