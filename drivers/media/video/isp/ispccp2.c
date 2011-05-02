@@ -30,6 +30,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/uaccess.h>
+#include <linux/regulator/consumer.h>
 
 #include "isp.h"
 #include "ispreg.h"
@@ -163,6 +164,9 @@ static void ispccp2_if_enable(struct isp_ccp2_device *ccp2, u8 enable)
 	struct isp_pipeline *pipe = to_isp_pipeline(&ccp2->subdev.entity);
 	int i;
 
+	if (enable && ccp2->vdds_csib)
+		regulator_enable(ccp2->vdds_csib);
+
 	/* Enable/Disable all the LCx channels */
 	for (i = 0; i < CCP2_LCx_CHANS_NUM; i++)
 		isp_reg_clr_set(isp, OMAP3_ISP_IOMEM_CCP2, ISPCCP2_LCx_CTRL(i),
@@ -186,6 +190,8 @@ static void ispccp2_if_enable(struct isp_ccp2_device *ccp2, u8 enable)
 				    ISPCCP2_LC01_IRQENABLE,
 				    ISPCCP2_LC01_IRQSTATUS_LC0_FS_IRQ);
 	}
+	if (!enable && ccp2->vdds_csib)
+		regulator_disable(ccp2->vdds_csib);
 }
 
 /*
@@ -1156,6 +1162,10 @@ error:
  */
 void isp_ccp2_cleanup(struct isp_device *isp)
 {
+	struct isp_ccp2_device *ccp2 = &isp->isp_ccp2;
+
+	if (isp->revision == ISP_REVISION_2_0)
+		regulator_put(ccp2->vdds_csib);
 }
 
 /*
@@ -1174,10 +1184,22 @@ int isp_ccp2_init(struct isp_device *isp)
 	 * the CSI2c or CSI2a receivers. The PHY then needs to be explicitly
 	 * configured.
 	 *
+	 * On the OMAP34xx the CSI1/CCB is operated in the CSIb IO complex,
+	 * which is powered by vdds_csib power rail. Hence the request for
+	 * the regulator.
+	 *
 	 * TODO: Don't hardcode the usage of PHY1 (shared with CSI2c).
 	 */
-	if (isp->revision == ISP_REVISION_15_0)
+	if (isp->revision == ISP_REVISION_15_0) {
 		ccp2->phy = &isp->isp_csiphy1;
+	} else if (isp->revision == ISP_REVISION_2_0) {
+		ccp2->vdds_csib = regulator_get(isp->dev, "vdds_csib");
+		if (IS_ERR(ccp2->vdds_csib)) {
+			dev_dbg(isp->dev,
+				"Could not get regulator vdds_csib\n");
+			ccp2->vdds_csib = NULL;
+		}
+	}
 
 	ret = isp_ccp2_init_entities(ccp2);
 	if (ret < 0)
