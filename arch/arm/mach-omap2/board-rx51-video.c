@@ -14,6 +14,7 @@
 #include <linux/gpio.h>
 #include <linux/spi/spi.h>
 #include <linux/mm.h>
+#include <linux/pvr.h>
 #include <asm/mach-types.h>
 #include <plat/display.h>
 #include <plat/vram.h>
@@ -120,9 +121,16 @@ struct platform_device rx51_display_device = {
 	},
 };
 
+static struct sgx_platform_data rx51_sgx_data = {
+	.fclock_max = 110666666,
+};
+
 static struct platform_device rx51_sgx_device = {
 	.name		= "pvrsrvkm",
 	.id		= -1,
+	.dev		= {
+		.platform_data = &rx51_sgx_data,
+	},
 };
 
 static struct platform_device *rx51_video_devices[] __initdata = {
