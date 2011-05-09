@@ -229,7 +229,7 @@ int smia_reglist_import(struct smia_meta_reglist *meta)
 		return -EILSEQ;
 	}
 
-	printk(KERN_ALERT "%s: meta_reglist version %s\n",
+	printk(KERN_INFO "%s: meta_reglist version %s\n",
 	       __func__, meta->version);
 
 	while (meta->reglist[nlists].offset != 0) {
