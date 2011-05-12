@@ -846,7 +846,7 @@ static int rx51_twlgpio_setup(struct device *dev, unsigned gpio, unsigned n)
 	gpio_request(gpio + 6, "backlight_pwm");
 	gpio_direction_output(gpio + 6, 0);
 	gpio_request(gpio + 7, "speaker_en");
-	gpio_direction_output(gpio + 7, 1);
+	gpio_direction_output(gpio + 7, 0);
 
 	return 0;
 }
