@@ -1213,8 +1213,8 @@ static struct tsc2005_platform_data tsc2005_pdata = {
 	.ts_x_max	   = 4096,
 	.ts_x_fudge	   = 4,
 	.ts_y_max	   = 4096,
-	.ts_y_fudge	   = 7,
-	.ts_x_plate_ohm	   = 280,
+	.ts_y_fudge	   = 4,
+	.ts_x_plate_ohm	   = 320,
 	.esd_timeout_ms	   = 8000,
 };
 

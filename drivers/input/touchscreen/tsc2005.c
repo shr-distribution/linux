@@ -101,6 +101,7 @@
 #define MAX_12BIT			0xfff
 #define TSC2005_SPI_MAX_SPEED_HZ	10000000
 #define TSC2005_PENUP_TIME_MS		40
+#define TS_SAMPLES			4
 
 struct tsc2005_spi_rd {
 	struct spi_transfer	spi_xfer;
@@ -122,11 +123,28 @@ struct tsc2005 {
 
 	struct mutex		mutex;
 
+	/* previously reported x,y,p (if pen_down) */
+	int			out_x;
+	int			out_y;
+	int			out_p;
+
+	/* fudge parameters - changes must exceed one of these. */
+	int			fudge_x;
+	int			fudge_y;
+	int			fudge_p;
+
 	/* raw copy of previous x,y,z */
 	int			in_x;
 	int			in_y;
 	int                     in_z1;
 	int			in_z2;
+
+	/* average accumulators for each component */
+	int			sample_cnt;
+	int			avg_x;
+	int			avg_y;
+	int			avg_z1;
+	int			avg_z2;
 
 	struct timer_list	penup_timer;
 	struct work_struct	penup_work;
@@ -136,7 +154,10 @@ struct tsc2005 {
 	struct work_struct	esd_work;
 
 	unsigned int		x_plate_ohm;
+	int			p_max;
+	int			ts_pressure;
 
+	unsigned int		sample_sent;
 	bool			disabled;
 	unsigned int		disable_depth;
 	unsigned int		pen_down;
@@ -246,7 +267,7 @@ static irqreturn_t tsc2005_irq_handler(int irq, void *dev_id)
 static irqreturn_t tsc2005_irq_thread(int irq, void *_ts)
 {
 	struct tsc2005 *ts = _ts;
-	unsigned int pressure;
+	unsigned int pressure, pressure_limit, inside_rect;
 	u32 x;
 	u32 y;
 	u32 z1;
@@ -290,25 +311,66 @@ static irqreturn_t tsc2005_irq_thread(int irq, void *_ts)
 	ts->in_z1 = z1;
 	ts->in_z2 = z2;
 
+	/* don't run average on the "pen down" event */
+	if (ts->sample_sent) {
+		ts->avg_x += x;
+		ts->avg_y += y;
+		ts->avg_z1 += z1;
+		ts->avg_z2 += z2;
+
+		if (++ts->sample_cnt < TS_SAMPLES)
+			goto out;
+
+		x = ts->avg_x / TS_SAMPLES;
+		y = ts->avg_y / TS_SAMPLES;
+		z1 = ts->avg_z1 / TS_SAMPLES;
+		z2 = ts->avg_z2 / TS_SAMPLES;
+	}
+	ts->sample_cnt = 0;
+	ts->avg_x = 0;
+	ts->avg_y = 0;
+	ts->avg_z1 = 0;
+	ts->avg_z2 = 0;
+
 	/* compute touch pressure resistance using equation #1 */
 	pressure = x * (z2 - z1) / z1;
 	pressure = pressure * ts->x_plate_ohm / 4096;
-	if (unlikely(pressure > MAX_12BIT))
+	pressure_limit = ts->sample_sent ? ts->p_max : ts->ts_pressure;
+	if (unlikely(pressure > pressure_limit)) {
+		/* printk(KERN_ERR "skipping ts event, pressure(%u) > pressure_limit(%u)\n", pressure, pressure_limit); */
 		goto out;
+	}
+	/* Discard the event if it still is within the previous rect -
+	 * unless the pressure is clearly harder, but then use previous
+	 * x,y position. If any coordinate deviates enough, fudging
+	 * of all three will still take place in the input layer.
+	 */
+	inside_rect = (ts->sample_sent &&
+		x > (int)ts->out_x - ts->fudge_x &&
+		x < (int)ts->out_x + ts->fudge_x &&
+		y > (int)ts->out_y - ts->fudge_y &&
+		y < (int)ts->out_y + ts->fudge_y);
+	if (inside_rect)
+		x = ts->out_x, y = ts->out_y;
 
-	tsc2005_update_pen_state(ts, x, y, pressure);
+	if (!inside_rect || pressure < (ts->out_p - ts->fudge_p)) {
+		tsc2005_update_pen_state(ts, x, y, pressure);
+		ts->sample_sent = 1;
+		ts->out_x = x;
+		ts->out_y = y;
+		ts->out_p = pressure;
+	}
+	if (ts->sample_sent) {
+		/* set the penup timer */
+		mod_timer(&ts->penup_timer,
+			  jiffies + msecs_to_jiffies(TSC2005_PENUP_TIME_MS));
 
-	/* set the penup timer */
-	mod_timer(&ts->penup_timer,
-		  jiffies + msecs_to_jiffies(TSC2005_PENUP_TIME_MS));
-
-	if (!ts->esd_timeout)
-		goto out;
-
-	/* update the watchdog timer */
-	mod_timer(&ts->esd_timer,
-		  round_jiffies(jiffies + msecs_to_jiffies(ts->esd_timeout)));
-
+		if (ts->esd_timeout) {
+			/* update the watchdog timer */
+			mod_timer(&ts->esd_timer,
+				  round_jiffies(jiffies + msecs_to_jiffies(ts->esd_timeout)));
+		}
+	}
 out:
 	mutex_unlock(&ts->mutex);
 	return IRQ_HANDLED;
@@ -327,6 +389,7 @@ static void tsc2005_penup_work(struct work_struct *work)
 
 	mutex_lock(&ts->mutex);
 	tsc2005_update_pen_state(ts, 0, 0, 0);
+	ts->sample_sent = 0;
 	mutex_unlock(&ts->mutex);
 }
 
@@ -524,10 +587,6 @@ static int __devinit tsc2005_setup(struct tsc2005 *ts,
 				   struct tsc2005_platform_data *pdata)
 {
 	int r;
-	int fudge_x;
-	int fudge_y;
-	int fudge_p;
-	int p_max;
 	int x_max;
 	int y_max;
 
@@ -539,13 +598,14 @@ static int __devinit tsc2005_setup(struct tsc2005 *ts,
 	setup_timer(&ts->penup_timer, tsc2005_penup_timer, (unsigned long)ts);
 	INIT_WORK(&ts->penup_work, tsc2005_penup_work);
 
-	fudge_x		= pdata->ts_x_fudge	   ? : 4;
-	fudge_y		= pdata->ts_y_fudge	   ? : 8;
-	fudge_p		= pdata->ts_pressure_fudge ? : 2;
+	ts->fudge_x	= pdata->ts_x_fudge	   ? : 4;
+	ts->fudge_y	= pdata->ts_y_fudge	   ? : 8;
+	ts->fudge_p	= pdata->ts_pressure_fudge ? : 2;
 	x_max		= pdata->ts_x_max 	   ? : MAX_12BIT;
 	y_max		= pdata->ts_y_max	   ? : MAX_12BIT;
-	p_max		= pdata->ts_pressure_max   ? : MAX_12BIT;
-	ts->x_plate_ohm	= pdata->ts_x_plate_ohm	   ? : 280;
+	ts->p_max	= pdata->ts_pressure_max   ? : MAX_12BIT;
+	ts->ts_pressure = 1200;
+	ts->x_plate_ohm	= pdata->ts_x_plate_ohm;
 	ts->esd_timeout	= pdata->esd_timeout_ms;
 	ts->set_reset	= pdata->set_reset;
 
@@ -560,9 +620,9 @@ static int __devinit tsc2005_setup(struct tsc2005 *ts,
 	ts->idev->absbit[0] = BIT(ABS_X) | BIT(ABS_Y) | BIT(ABS_PRESSURE);
 	ts->idev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
 
-	input_set_abs_params(ts->idev, ABS_X, 0, x_max, fudge_x, 0);
-	input_set_abs_params(ts->idev, ABS_Y, 0, y_max, fudge_y, 0);
-	input_set_abs_params(ts->idev, ABS_PRESSURE, 0, p_max, fudge_p, 0);
+	input_set_abs_params(ts->idev, ABS_X, 0, x_max, ts->fudge_x, 0);
+	input_set_abs_params(ts->idev, ABS_Y, 0, y_max, ts->fudge_y, 0);
+	input_set_abs_params(ts->idev, ABS_PRESSURE, 0, ts->p_max, ts->fudge_p, 0);
 
 	r = request_threaded_irq(ts->spi->irq, tsc2005_irq_handler,
 				 tsc2005_irq_thread, IRQF_TRIGGER_RISING,
