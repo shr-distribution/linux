@@ -27,6 +27,9 @@
 #include "../codecs/wm8753.h"
 #include "s3c24xx-i2s.h"
 
+/* HACK */
+#define machine_is_neo1973_gta01() (0)
+
 static int neo1973_hifi_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params)
 {
