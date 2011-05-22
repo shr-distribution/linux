@@ -69,6 +69,10 @@ static int set_hp_output_mode(struct snd_kcontrol *kcontrol,
 static const struct snd_kcontrol_new herring_controls[] = {
 	SOC_ENUM_EXT("HP Output Mode", hp_mode_enum[0],
 			get_hp_output_mode, set_hp_output_mode),
+
+	SOC_DAPM_PIN_SWITCH("HP"),
+	SOC_DAPM_PIN_SWITCH("SPK"),
+	SOC_DAPM_PIN_SWITCH("RCV"),
 };
 
 static int main_mic_event(struct snd_soc_dapm_widget *w,
@@ -89,6 +93,10 @@ static int main_mic_event(struct snd_soc_dapm_widget *w,
 static const struct snd_soc_dapm_widget herring_dapm_widgets[] = {
 	SND_SOC_DAPM_MIC("Main Mic", main_mic_event),
 	SND_SOC_DAPM_MIC("Headset Mic", NULL),
+
+	SND_SOC_DAPM_HP("HP", NULL),
+	SND_SOC_DAPM_SPK("RCV", NULL),
+	SND_SOC_DAPM_SPK("SPK", NULL),
 };
 
 static const struct snd_soc_dapm_route herring_dapm_routes[] = {
@@ -96,6 +104,13 @@ static const struct snd_soc_dapm_route herring_dapm_routes[] = {
 	{"IN1LP", NULL, "Main Mic"},
 	{"IN1RN", NULL, "Headset Mic"},
 	{"IN1RP", NULL, "Headset Mic"},
+
+	{"HP", NULL, "HPOUT1L"},
+	{"HP", NULL, "HPOUT1R"},
+	{"SPK", NULL, "SPKOUTLN"},
+	{"SPK", NULL, "SPKOUTLP"},
+	{"RCV", NULL, "HPOUT2N"},
+	{"RCV", NULL, "HPOUT2P"},
 };
 
 static int herring_wm8994_init(struct snd_soc_codec *codec)
