@@ -701,6 +701,7 @@ static int et8ek8_set_pad_format(struct v4l2_subdev *subdev,
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
 		sensor->current_reglist = reglist;
+		et8ek8_configure(sensor);
 		et8ek8_update_controls(sensor);
 	}
 
