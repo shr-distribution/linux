@@ -59,7 +59,6 @@ static int mmc_queue_thread(void *d)
 		mq->mqrq_cur->req = req;
 		spin_unlock_irq(q->queue_lock);
 
-		mq->issue_fn(mq, req);
 		if (!req) {
 			if (kthread_should_stop()) {
 				set_current_state(TASK_RUNNING);
@@ -72,6 +71,7 @@ static int mmc_queue_thread(void *d)
 		}
 		set_current_state(TASK_RUNNING);
 
+		mq->issue_fn(mq, req);
 	} while (1);
 	up(&mq->thread_sem);
 

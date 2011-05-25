@@ -516,75 +516,24 @@ static enum mmc_blk_status mmc_blk_get_status(struct mmc_blk_request *brq,
 
 }
 
-static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
+static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *req)
 {
 	struct mmc_blk_data *md = mq->data;
 	struct mmc_card *card = md->queue.card;
-	struct mmc_blk_request *brqc = &mq->mqrq_cur->brq;
-	struct mmc_blk_request *brqp = &mq->mqrq_prev->brq;
-	struct mmc_queue_req  *mqrqp = mq->mqrq_prev;
-	struct request *rqp = mqrqp->req;
-	int ret = 0;
-	int disable_multi = 0;
+	struct mmc_blk_request *brq = &mq->mqrq_cur->brq;
+	int ret = 1, disable_multi = 0;
 	enum mmc_blk_status status;
 
-	if (!rqc && !rqp)
-		return 0;
+	mmc_claim_host(card->host);
 
-	if (rqc) {
-		/* Claim host for the first request in a serie of requests */
-		if (!rqp)
-			mmc_claim_host(card->host);
-
-		/* Prepare a new request */
-		mmc_blk_rw_rq_prep(mq->mqrq_cur, card, 0, mq);
-		mmc_pre_req(card->host, &brqc->mrq, !rqp);
-	}
 	do {
-		/*
-		 * If there is an ongoing request, indicated by rqp, wait for
-		 * it to finish before starting a new one.
-		 */
-		if (rqp)
-			mmc_wait_for_req_done(&brqp->mrq);
-		else {
-			/* start a new asynchronous request */
-			mmc_start_req(card->host, &brqc->mrq);
-			goto out;
-		}
-		status = mmc_blk_get_status(brqp, rqp, card, md);
-		if (status != MMC_BLK_SUCCESS) {
-			mmc_post_req(card->host, &brqp->mrq, -EINVAL);
-			mmc_queue_bounce_post(mqrqp);
-			if (rqc)
-				mmc_post_req(card->host, &brqc->mrq, -EINVAL);
-		}
+		mmc_blk_rw_rq_prep(mq->mqrq_cur, card, disable_multi, mq);
+		mmc_wait_for_req(card->host, &brq->mrq);
+
+		mmc_queue_bounce_post(mq->mqrq_cur);
+		status = mmc_blk_get_status(brq, req, card, md);
 
 		switch (status) {
-		case MMC_BLK_SUCCESS:
-			/*
-			 * A block was successfully transferred.
-			 */
-
-			/*
-			 * All data is transferred without errors.
-			 * Defer mmc post processing and _blk_end_request
-			 * until after the new request is started.
-			 */
-			if (blk_rq_bytes(rqp) == brqp->data.bytes_xfered)
-				break;
-
-			mmc_post_req(card->host, &brqp->mrq, 0);
-			mmc_queue_bounce_post(mqrqp);
-
-			spin_lock_irq(&md->lock);
-			ret = __blk_end_request(rqp, 0,
-						brqp->data.bytes_xfered);
-			spin_unlock_irq(&md->lock);
-
-			if (rqc)
-				mmc_post_req(card->host, &brqc->mrq, -EINVAL);
-			break;
 		case MMC_BLK_CMD_ERR:
 			goto cmd_err;
 			break;
@@ -599,73 +548,27 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 			 * read a single sector.
 			 */
 			spin_lock_irq(&md->lock);
-			ret = __blk_end_request(rqp, -EIO, brqp->data.blksz);
+			ret = __blk_end_request(req, -EIO,
+						brq->data.blksz);
 			spin_unlock_irq(&md->lock);
-			if (rqc && !ret)
-				mmc_pre_req(card->host, &brqc->mrq, false);
-			break;
-		}
 
-		if (ret) {
+			break;
+		case MMC_BLK_SUCCESS:
 			/*
-			 * In case of a none complete request
-			 * prepare it again and resend.
+			 * A block was successfully transferred.
 			 */
-			mmc_blk_rw_rq_prep(mqrqp, card, disable_multi, mq);
-			mmc_pre_req(card->host, &brqp->mrq, true);
-			mmc_start_req(card->host, &brqp->mrq);
-			if (rqc)
-				mmc_pre_req(card->host, &brqc->mrq, false);
+			spin_lock_irq(&md->lock);
+			ret = __blk_end_request(req, 0, brq->data.bytes_xfered);
+			spin_unlock_irq(&md->lock);
+			break;
 		}
 	} while (ret);
 
-	/* Previous request is completed, start the new request if any */
-	if (rqc)
-		mmc_start_req(card->host, &brqc->mrq);
+	mmc_release_host(card->host);
 
-	/*
-	 * Post process the previous request while the new request is active.
-	 * In case of error the reuqest is already ended.
-	 */
-	if (status == MMC_BLK_SUCCESS) {
-		mmc_post_req(card->host, &brqp->mrq, 0);
-		mmc_queue_bounce_post(mqrqp);
-
-		spin_lock_irq(&md->lock);
-		ret = __blk_end_request(rqp, 0, brqp->data.bytes_xfered);
-		spin_unlock_irq(&md->lock);
-
-		if (ret) {
-			/* If this happen it is a bug */
-			printk(KERN_ERR "[%s] BUG: rq_bytes %d xfered %d\n",
-			       __func__, blk_rq_bytes(rqp),
-			       brqp->data.bytes_xfered);
-			goto cmd_err;
-		}
-	}
-
-	/* 1 indicates one request has been completed */
-	ret = 1;
- out:
-	/*
-	 * TODO: Find out if it is OK to only release host after the
-	 *       last request. For the last request the current request
-	 *        is NULL, which means no requests are pending.
-	 */
-	/* Release host for the last request in a serie of requests */
-	if (!rqc)
-		mmc_release_host(card->host);
-
-	/* Current request becomes previous request and vice versa. */
-	mqrqp->brq.mrq.data = NULL;
-	mqrqp->req = NULL;
-	mq->mqrq_prev = mq->mqrq_cur;
-	mq->mqrq_cur = mqrqp;
-
-	return ret;
+	return 1;
 
  cmd_err:
-
  	/*
  	 * If this is an SD card and we're writing, we can first
  	 * mark the known good sectors as ok.
@@ -680,12 +583,12 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 		blocks = mmc_sd_num_wr_blocks(card);
 		if (blocks != (u32)-1) {
 			spin_lock_irq(&md->lock);
-			ret = __blk_end_request(rqp, 0, blocks << 9);
+			ret = __blk_end_request(req, 0, blocks << 9);
 			spin_unlock_irq(&md->lock);
 		}
 	} else {
 		spin_lock_irq(&md->lock);
-		ret = __blk_end_request(rqp, 0, brqp->data.bytes_xfered);
+		ret = __blk_end_request(req, 0, brq->data.bytes_xfered);
 		spin_unlock_irq(&md->lock);
 	}
 
@@ -693,27 +596,15 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 
 	spin_lock_irq(&md->lock);
 	while (ret)
-		ret = __blk_end_request(rqp, -EIO, blk_rq_cur_bytes(rqp));
+		ret = __blk_end_request(req, -EIO, blk_rq_cur_bytes(req));
 	spin_unlock_irq(&md->lock);
-
-	if (rqc) {
-		mmc_claim_host(card->host);
-		mmc_pre_req(card->host, &brqc->mrq, false);
-		mmc_start_req(card->host, &brqc->mrq);
-	}
-
-	/* Current request becomes previous request and vice versa. */
-	mqrqp->brq.mrq.data = NULL;
-	mqrqp->req = NULL;
-	mq->mqrq_prev = mq->mqrq_cur;
-	mq->mqrq_cur = mqrqp;
 
 	return 0;
 }
 
 static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 {
-	if (req && req->cmd_flags & REQ_DISCARD) {
+	if (req->cmd_flags & REQ_DISCARD) {
 		if (req->cmd_flags & REQ_SECURE)
 			return mmc_blk_issue_secdiscard_rq(mq, req);
 		else
