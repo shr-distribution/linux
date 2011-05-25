@@ -198,73 +198,8 @@ mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 
 static void mmc_wait_done(struct mmc_request *mrq)
 {
-	complete(&mrq->completion);
+	complete(mrq->done_data);
 }
-
-/**
- *	mmc_pre_req - Prepare for a new request
- *	@host: MMC host to prepare command
- *	@mrq: MMC request to prepare for
- *	@is_first_req: true if there is no previous started request
- *                     that may run in parellel to this call, otherwise false
- *
- *	mmc_pre_req() is called in prior to mmc_start_req() to let
- *	host prepare for the new request. Preparation of a request may be
- *	performed while another request is running on the host.
- */
-void mmc_pre_req(struct mmc_host *host, struct mmc_request *mrq,
-		 bool is_first_req)
-{
-	if (host->ops->pre_req)
-		host->ops->pre_req(host, mrq, is_first_req);
-}
-EXPORT_SYMBOL(mmc_pre_req);
-
-/**
- *	mmc_post_req - Post process a completed request
- *	@host: MMC host to post process command
- *	@mrq: MMC request to post process for
- *	@err: Error, if none zero, clean up any resources made in pre_req
- *
- *	Let the host post process a completed request. Post processing of
- *	a request may be performed while another reuqest is running.
- */
-void mmc_post_req(struct mmc_host *host, struct mmc_request *mrq, int err)
-{
-	if (host->ops->post_req)
-		host->ops->post_req(host, mrq, err);
-}
-EXPORT_SYMBOL(mmc_post_req);
-
-/**
- *	mmc_start_req - start a request
- *	@host: MMC host to start command
- *	@mrq: MMC request to start
- *
- *	Start a new MMC custom command request for a host.
- *	Does not wait for the command to complete.
- */
-void mmc_start_req(struct mmc_host *host, struct mmc_request *mrq)
-{
-	init_completion(&mrq->completion);
-	mrq->done = mmc_wait_done;
-
-	mmc_start_request(host, mrq);
-}
-EXPORT_SYMBOL(mmc_start_req);
-
-/**
- *	mmc_wait_for_req_done - wait for completion of request
- *	@mrq: MMC request to wait for
- *
- *	Wait for the command to complete. Does not attempt to parse the
- *	response.
- */
-void mmc_wait_for_req_done(struct mmc_request *mrq)
-{
-	wait_for_completion(&mrq->completion);
-}
-EXPORT_SYMBOL(mmc_wait_for_req_done);
 
 /**
  *	mmc_wait_for_req - start a request and wait for completion
@@ -277,9 +212,16 @@ EXPORT_SYMBOL(mmc_wait_for_req_done);
  */
 void mmc_wait_for_req(struct mmc_host *host, struct mmc_request *mrq)
 {
-	mmc_start_req(host, mrq);
-	mmc_wait_for_req_done(mrq);
+	DECLARE_COMPLETION_ONSTACK(complete);
+
+	mrq->done_data = &complete;
+	mrq->done = mmc_wait_done;
+
+	mmc_start_request(host, mrq);
+
+	wait_for_completion(&complete);
 }
+
 EXPORT_SYMBOL(mmc_wait_for_req);
 
 /**

@@ -117,7 +117,6 @@ struct mmc_data {
 
 	unsigned int		sg_len;		/* size of scatter list */
 	struct scatterlist	*sg;		/* I/O scatter list */
-	s32			host_cookie;	/* host private data */
 };
 
 struct mmc_request {
@@ -125,19 +124,13 @@ struct mmc_request {
 	struct mmc_data		*data;
 	struct mmc_command	*stop;
 
-	struct completion	completion;
+	void			*done_data;	/* completion data */
 	void			(*done)(struct mmc_request *);/* completion function */
 };
 
 struct mmc_host;
 struct mmc_card;
 
-extern void mmc_pre_req(struct mmc_host *host, struct mmc_request *mrq,
-			bool is_first_req);
-extern void mmc_post_req(struct mmc_host *host, struct mmc_request *mrq,
-			 int err);
-extern void mmc_start_req(struct mmc_host *host, struct mmc_request *mrq);
-extern void mmc_wait_for_req_done(struct mmc_request *mrq);
 extern void mmc_wait_for_req(struct mmc_host *, struct mmc_request *);
 extern int mmc_wait_for_cmd(struct mmc_host *, struct mmc_command *, int);
 extern int mmc_wait_for_app_cmd(struct mmc_host *, struct mmc_card *,
