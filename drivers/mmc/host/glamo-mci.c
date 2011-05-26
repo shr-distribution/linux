@@ -49,10 +49,10 @@ struct glamo_mci_host {
 	unsigned short vdd;
 	char power_mode;
 
-	unsigned long transfer_start;
-	unsigned long request_start;
-
 	unsigned char request_counter;
+
+	struct workqueue_struct *workqueue;
+	struct work_struct read_work;
 };
 
 static void glamo_mci_send_request(struct mmc_host *mmc,
@@ -165,21 +165,12 @@ static int glamo_mci_clock_enable(struct mmc_host *mmc)
 	return 0;
 }
 
-static void __iomem *glamo_mci_get_data_addr(struct glamo_mci_host *host,
-	struct mmc_data *data)
-{
-	void __iomem *addr = host->data_base;
 
-	if (data->host_cookie & 1)
-		addr += resource_size(host->data_mem) / 2;
-
-	return addr;
-}
-
+#ifndef GLAMO_MCI_WORKER
 static void do_pio_read(struct glamo_mci_host *host, struct mmc_data *data)
 {
-	void __iomem *from_ptr = glamo_mci_get_data_addr(host, data);
 	struct sg_mapping_iter miter;
+	uint16_t __iomem *from_ptr = host->data_base;
 
 	dev_dbg(&host->pdev->dev, "pio_read():\n");
 
@@ -187,7 +178,9 @@ static void do_pio_read(struct glamo_mci_host *host, struct mmc_data *data)
 
 	while (sg_miter_next(&miter)) {
 		memcpy(miter.addr, from_ptr, miter.length);
-		from_ptr += miter.length;
+		from_ptr += miter.length >> 1;
+
+		data->bytes_xfered += miter.length;
 	}
 
 	sg_miter_stop(&miter);
@@ -195,18 +188,19 @@ static void do_pio_read(struct glamo_mci_host *host, struct mmc_data *data)
 	dev_dbg(&host->pdev->dev, "pio_read(): "
 			"complete (no more data)\n");
 }
+#endif
 
 static void do_pio_write(struct glamo_mci_host *host, struct mmc_data *data)
 {
-	void __iomem *to_ptr = glamo_mci_get_data_addr(host, data);
 	struct sg_mapping_iter miter;
+	uint16_t __iomem *to_ptr = host->data_base;
 
 	dev_dbg(&host->pdev->dev, "pio_write():\n");
 	sg_miter_start(&miter, data->sg, data->sg_len, SG_MITER_FROM_SG);
 
 	while (sg_miter_next(&miter)) {
 		memcpy(to_ptr, miter.addr, miter.length);
-		to_ptr += miter.length;
+		to_ptr += miter.length >> 1;
 
 		data->bytes_xfered += miter.length;
 	}
@@ -284,11 +278,12 @@ static irqreturn_t glamo_mci_irq(int irq, void *data)
 	if (mrq->stop)
 		glamo_mci_send_command(host, mrq->stop);
 
-	if (mrq->data && (mrq->data->flags & MMC_DATA_READ)) {
-		mrq->data->bytes_xfered = mrq->data->blocks * mrq->data->blksz;
-		if (!mrq->data->host_cookie)
-			do_pio_read(host, mrq->data);
-	}
+	if (cmd->data->flags & MMC_DATA_READ)
+#ifndef GLAMO_MCI_WORKER
+		do_pio_read(host, cmd->data);
+#else
+		flush_workqueue(host->workqueue);
+#endif
 
 	if (mrq->stop)
 		mrq->stop->error = glamo_mci_wait_idle(host, jiffies + HZ);
@@ -299,6 +294,64 @@ done:
 
 	return IRQ_HANDLED;
 }
+
+#ifdef GLAMO_MCI_WORKER
+static void glamo_mci_read_worker(struct work_struct *work)
+{
+	struct glamo_mci_host *host = container_of(work, struct glamo_mci_host,
+							read_work);
+	struct mmc_command *cmd;
+	uint16_t status;
+	uint16_t blocks_ready;
+	size_t data_read = 0;
+	size_t data_ready;
+	struct scatterlist *sg;
+	uint16_t __iomem *from_ptr = host->data_base;
+	void *sg_pointer;
+
+
+	cmd = host->mrq->cmd;
+	sg = cmd->data->sg;
+	do {
+		/*
+		 * TODO: How to get rid of that?
+		 * Maybe just drop it... In fact, it is already handled in
+		 * the IRQ handler, maybe we should only check cmd->error.
+		 * But the question is: what happens between the moment
+		 * the error occurs, and the moment the IRQ handler handles it?
+		 */
+		status = glamomci_reg_read(host, GLAMO_REG_MMC_RB_STAT1);
+
+		if (status & (GLAMO_STAT1_MMC_RTOUT | GLAMO_STAT1_MMC_DTOUT))
+			cmd->error = -ETIMEDOUT;
+		if (status & (GLAMO_STAT1_MMC_BWERR | GLAMO_STAT1_MMC_BRERR))
+			cmd->error = -EILSEQ;
+		if (cmd->error) {
+			dev_info(&host->pdev->dev, "Error after cmd: 0x%x\n",
+				status);
+			return;
+		}
+
+		blocks_ready = glamomci_reg_read(host, GLAMO_REG_MMC_RB_BLKCNT);
+		data_ready = blocks_ready * cmd->data->blksz;
+
+		if (data_ready == data_read)
+			yield();
+
+		while (sg && data_read + sg->length <= data_ready) {
+			sg_pointer = page_address(sg_page(sg)) + sg->offset;
+			memcpy(sg_pointer, from_ptr, sg->length);
+			from_ptr += sg->length >> 1;
+
+			data_read += sg->length;
+
+			sg = sg_next(sg);
+		}
+
+	} while (sg);
+	cmd->data->bytes_xfered = data_read;
+}
+#endif
 
 static void glamo_mci_send_command(struct glamo_mci_host *host,
 		struct mmc_command *cmd)
@@ -480,29 +533,28 @@ static void glamo_mci_send_command(struct glamo_mci_host *host,
 					   (readw(&reg_resp[2]) << 24);
 		}
 	}
+
+#ifdef GLAMO_MCI_WORKER
+	/* We'll only get an interrupt when all data has been transfered.
+	   By starting to copy data when it's avaiable we can increase
+	   throughput by up to 30%. */
+	if (cmd->data && (cmd->data->flags & MMC_DATA_READ))
+		queue_work(host->workqueue, &host->read_work);
+#endif
+
 }
 
 static int glamo_mci_prepare_pio(struct glamo_mci_host *host,
 		struct mmc_data *data)
 {
-	unsigned long addr = host->data_mem->start;
-
-	if (data->host_cookie & 1)
-		addr += resource_size(host->data_mem) / 2;
-
 	/* set up the block info */
 	glamomci_reg_write(host, GLAMO_REG_MMC_DATBLKLEN, data->blksz);
 	glamomci_reg_write(host, GLAMO_REG_MMC_DATBLKCNT, data->blocks);
 
-	if (data->flags & MMC_DATA_WRITE) {
-		glamomci_reg_write(host, GLAMO_REG_MMC_WDATADS1, addr);
-		glamomci_reg_write(host, GLAMO_REG_MMC_WDATADS2, addr >> 16);
-	} else {
-		glamomci_reg_write(host, GLAMO_REG_MMC_RDATADS1, addr);
-		glamomci_reg_write(host, GLAMO_REG_MMC_RDATADS2, addr >> 16);
-	}
+	data->bytes_xfered = 0;
 
-	if ((data->flags & MMC_DATA_WRITE) && !data->host_cookie)
+	/* if write, prep the write into the shared RAM before the command */
+	if (data->flags & MMC_DATA_WRITE)
 		do_pio_write(host, data);
 
 	dev_dbg(&host->pdev->dev, "(blksz=%d, count=%d)\n",
@@ -517,8 +569,6 @@ static void glamo_mci_send_request(struct mmc_host *mmc,
 	struct mmc_command *cmd = mrq->cmd;
 
 	host->request_counter++;
-	host->request_start = jiffies;
-
 	if (cmd->data) {
 		if (glamo_mci_prepare_pio(host, cmd->data)) {
 			cmd->error = -EIO;
@@ -639,42 +689,21 @@ static void glamo_mci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		mmc_host_lazy_disable(host->mmc);
 }
 
-static void glamo_mci_pre_request(struct mmc_host *mmc,
-		struct mmc_request *mrq, bool is_first_req)
+
+/*
+ * no physical write protect supported by us
+ */
+static int glamo_mci_get_ro(struct mmc_host *mmc)
 {
-	struct glamo_mci_host *host = mmc_priv(mmc);
-
-	mrq->data->host_cookie = (host->request_counter & 1) | 2;
-
-	/* if write, prep the write into the shared RAM before the command */
-	if (mrq->data->flags & MMC_DATA_WRITE)
-		do_pio_write(host, mrq->data);
-}
-
-static void glamo_mci_post_request(struct mmc_host *mmc,
-		struct mmc_request *mrq, int err)
-{
-	struct glamo_mci_host *host = mmc_priv(mmc);
-
-	if (!mrq->data->host_cookie)
-		return;
-
-	if (err)
-		return;
-
-	if (mrq->data->flags & MMC_DATA_READ)
-		do_pio_read(host, mrq->data);
-
-	mrq->data->host_cookie = 0;
+	return 0;
 }
 
 static struct mmc_host_ops glamo_mci_ops = {
 	.enable		= glamo_mci_clock_enable,
 	.disable	= glamo_mci_clock_disable,
 	.request	= glamo_mci_send_request,
-	.post_req	= glamo_mci_post_request,
-	.pre_req	= glamo_mci_pre_request,
 	.set_ios	= glamo_mci_set_ios,
+	.get_ro		= glamo_mci_get_ro,
 };
 
 static int __devinit glamo_mci_probe(struct platform_device *pdev)
@@ -701,6 +730,11 @@ static int __devinit glamo_mci_probe(struct platform_device *pdev)
 	host->core = core;
 
 	host->irq = platform_get_irq(pdev, 0);
+
+#ifdef GLAMO_MCI_WORKER
+	INIT_WORK(&host->read_work, glamo_mci_read_worker);
+	host->workqueue = create_singlethread_workqueue("glamo-mci-read");
+#endif
 
 	host->regulator = regulator_get(pdev->dev.parent, "SD_3V3");
 	if (IS_ERR(host->regulator)) {
@@ -789,7 +823,7 @@ static int __devinit glamo_mci_probe(struct platform_device *pdev)
 
 	mmc->max_blk_count = (1 << 16) - 1; /* GLAMO_REG_MMC_RB_BLKCNT */
 	mmc->max_blk_size  = (1 << 12) - 1; /* GLAMO_REG_MMC_RB_BLKLEN */
-	mmc->max_req_size  = resource_size(host->data_mem) / 2;
+	mmc->max_req_size  = resource_size(host->data_mem);
 	mmc->max_seg_size  = mmc->max_req_size;
 	mmc->max_segs = 128;
 
@@ -834,6 +868,9 @@ probe_free_mem_region_mmio:
 probe_regulator_put:
 	regulator_put(host->regulator);
 probe_free_host:
+#ifdef GLAMO_MCI_WORKER
+	destroy_workqueue(host->workqueue);
+#endif
 	mmc_free_host(mmc);
 probe_out:
 	return ret;
@@ -843,6 +880,11 @@ static int __devexit glamo_mci_remove(struct platform_device *pdev)
 {
 	struct mmc_host	*mmc = platform_get_drvdata(pdev);
 	struct glamo_mci_host *host = mmc_priv(mmc);
+
+#ifdef GLAMO_MCI_WORKER
+	flush_workqueue(host->workqueue);
+	destroy_workqueue(host->workqueue);
+#endif
 
 	mmc_host_enable(mmc);
 	mmc_remove_host(mmc);
