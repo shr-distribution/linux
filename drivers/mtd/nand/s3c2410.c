@@ -790,6 +790,7 @@ static void s3c2410_nand_init_chip(struct s3c2410_nand_info *info,
 	chip->priv	   = nmtd;
 	chip->options	   = set->options;
 	chip->controller   = &info->controller;
+	chip->badblockbits = 8;
 
 	switch (info->cpu_type) {
 	case TYPE_S3C2410:
