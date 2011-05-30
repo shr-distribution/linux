@@ -121,6 +121,16 @@ static unsigned sgtable_nents(size_t bytes, u32 da, u32 pa)
 	return nr_entries;
 }
 
+static struct scatterlist *sg_alloc(unsigned int nents, gfp_t gfp_mask)
+{
+	return kmalloc(nents * sizeof(struct scatterlist), gfp_mask);
+}
+
+static void sg_free(struct scatterlist *sg, unsigned int nents)
+{
+	kfree(sg);
+}
+
 /* allocate and initialize sg_table header(a kind of 'superblock') */
 static struct sg_table *sgtable_alloc(const size_t bytes, u32 flags,
 							u32 da, u32 pa)
@@ -146,7 +156,7 @@ static struct sg_table *sgtable_alloc(const size_t bytes, u32 flags,
 	if (!sgt)
 		return ERR_PTR(-ENOMEM);
 
-	err = sg_alloc_table(sgt, nr_entries, GFP_KERNEL);
+	err = __sg_alloc_table(sgt, nr_entries, -1, GFP_KERNEL, sg_alloc);
 	if (err) {
 		kfree(sgt);
 		return ERR_PTR(err);
@@ -163,7 +173,7 @@ static void sgtable_free(struct sg_table *sgt)
 	if (!sgt)
 		return;
 
-	sg_free_table(sgt);
+	__sg_free_table(sgt, -1, sg_free);
 	kfree(sgt);
 
 	pr_debug("%s: sgt:%p\n", __func__, sgt);
