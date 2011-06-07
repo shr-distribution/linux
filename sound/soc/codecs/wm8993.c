@@ -1577,6 +1577,7 @@ static int wm8993_i2c_probe(struct i2c_client *i2c,
 
 	wm8993->hubs_data.hp_startup_mode = 1;
 	wm8993->hubs_data.dcs_codes = -2;
+	wm8993->hubs_data.series_startup = 1;
 
 	memcpy(wm8993->reg_cache, wm8993_reg_defaults,
 	       sizeof(wm8993->reg_cache));
