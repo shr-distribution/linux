@@ -191,7 +191,7 @@ static int wm8753_set_dai(struct snd_kcontrol *kcontrol,
 	u16 ioctl;
 
 	if (wm8753->dai_func == ucontrol->value.integer.value[0])
-		return 0;
+		return 1;
 
 	if (codec->active)
 		return -EBUSY;
