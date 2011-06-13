@@ -709,6 +709,10 @@ static void omap3_clk_init_cpufreq_table(struct cpufreq_frequency_table **table)
 
 	prcm = vdd1_rate_table + ARRAY_SIZE(vdd1_rate_table) -1;
 	for (; prcm->speed; prcm--) {
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_STRIPOPP
+		// Damn l-users!!!!  This will fix them!!!
+		if((prcm->speed / 1000) < 500000) continue;
+#endif
 		freq_table[i].index = i;
 		freq_table[i].frequency = prcm->speed / 1000;
 		i++;

@@ -14,3 +14,5 @@ obj-$(CONFIG_CPU_FREQ_GOV_SCREENSTATE)	+= cpufreq_screenstate.o
 # CPUfreq cross-arch helpers
 obj-$(CONFIG_CPU_FREQ_TABLE)		+= freq_table.o
 
+# CPUfreq override
+obj-$(CONFIG_CPU_FREQ_OVERRIDE)		+= cpufreq_override.o

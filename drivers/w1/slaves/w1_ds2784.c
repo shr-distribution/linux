@@ -1133,11 +1133,20 @@ static DEVICE_ATTR(mac, S_IRUGO|S_IWUSR, show_ds2784_mac, store_ds2784_mac);
 */
 static struct device *battery_device = NULL;
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE
+int ds2784_getpercent(int *ret_percent)
+{
+        if (!battery_device) return -1;
+        return ds2784_getpercent_dev(battery_device, ret_percent);
+}
+EXPORT_SYMBOL(ds2784_getpercent);
+#else
 static int ds2784_getpercent(int *ret_percent)
 {
 	if (!battery_device) return -1;
 	return ds2784_getpercent_dev(battery_device, ret_percent);
 }
+#endif
 
 static int ds2784_getvoltage(int *ret_voltage)
 {

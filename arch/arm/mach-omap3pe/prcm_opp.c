@@ -1596,4 +1596,48 @@ err_out:
 	return -1;
 }
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE
+void omap_pm_opp_get_volts(u8 *vdd1_volts[]) {
+      memcpy(vdd1_volts,mpu_iva2_vdd1_volts,sizeof(mpu_iva2_vdd1_volts));
+}
+EXPORT_SYMBOL(omap_pm_opp_get_volts);
 
+void omap_pm_opp_set_volts(u8 vdd1_volts[]) {
+      memcpy(mpu_iva2_vdd1_volts,vdd1_volts,sizeof(mpu_iva2_vdd1_volts));
+      prcm_do_voltage_scaling(current_vdd1_opp, current_vdd1_opp-1);
+}
+EXPORT_SYMBOL(omap_pm_opp_set_volts);
+
+void omap_pm_opp_get_vdd2_volts(u8 *vdd2_volts[]) {
+        memcpy(vdd2_volts,core_l3_vdd2_volts,sizeof(core_l3_vdd2_volts));
+}
+EXPORT_SYMBOL(omap_pm_opp_get_vdd2_volts);
+
+void omap_pm_opp_set_vdd2_volts(u8 vdd2_volts[]) {
+        memcpy(core_l3_vdd2_volts,vdd2_volts,sizeof(core_l3_vdd2_volts));
+        prcm_do_voltage_scaling(current_vdd2_opp, current_vdd2_opp-1);
+}
+EXPORT_SYMBOL(omap_pm_opp_set_vdd2_volts);
+
+void omap_pm_opp_get_vdd2_freq(u8 *vdd2_freqs[]) {
+      int i;
+      u8 f[MAX_VDD2_OPP];
+
+      for(i=0;i < MAX_VDD2_OPP;i++)
+              f[i]=(u8 )vdd2_core_freq[i].freq;
+      memcpy(vdd2_freqs,f,sizeof(f));
+}
+EXPORT_SYMBOL(omap_pm_opp_get_vdd2_freq);
+
+unsigned short get_vdd1_arm_opp_for_freq(unsigned int freq)
+{
+        int i;
+        for (i = 0; i < ARRAY_SIZE(vdd1_arm_dsp_freq); i++) {
+                if (vdd1_arm_dsp_freq[i].freq_mpu == (freq / 1000)) {
+                        return i+1;
+                }
+        }
+        return 0;
+}
+EXPORT_SYMBOL(get_vdd1_arm_opp_for_freq);
+#endif

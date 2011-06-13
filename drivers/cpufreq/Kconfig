@@ -53,6 +53,57 @@ config CPU_FREQ_STAT_DETAILS
 
 	  If in doubt, say N.
 
+config CPU_FREQ_OVERRIDE
+	bool "Extra on-demand CPU tweaking options"
+	default y
+	help
+	  This will give options to tweak CPU settings in-demand.
+
+	  If in doubt, say Y.
+
+config CPU_FREQ_OVERRIDE_STRIPOPP
+	bool "Strip OPP1 and OPP2 from available frequencies list"
+	depends on CPU_FREQ_OVERRIDE
+	default y
+	help
+	  This will hide 125MHz and 250MHz from scaling_available_frequencies.
+
+	  If in doubt, say N.
+
+config CPU_FREQ_OVERRIDE
+	bool "Extra on-demand CPU tweaking options"
+	default y
+	help
+	  This will give options to tweak CPU settings in-demand.
+
+	  If in doubt, say Y.
+
+config CPU_FREQ_OVERRIDE_STRIPOPP
+	bool "Strip OPP1 and OPP2 from available frequencies list"
+	depends on CPU_FREQ_OVERRIDE
+	default y
+	help
+	  This will hide 125MHz and 250MHz from scaling_available_frequencies.
+
+	  If in doubt, say N.
+
+config CPU_FREQ_OVERRIDE
+	bool "Extra on-demand CPU tweaking options"
+	default y
+	help
+	  This will give options to tweak CPU settings in-demand.
+
+	  If in doubt, say Y.
+
+config CPU_FREQ_OVERRIDE_STRIPOPP
+	bool "Strip OPP1 and OPP2 from available frequencies list"
+	depends on CPU_FREQ_OVERRIDE
+	default y
+	help
+	  This will hide 125MHz and 250MHz from scaling_available_frequencies.
+
+	  If in doubt, say N.
+
 choice
 	prompt "Default CPUFreq governor"
 	default CPU_FREQ_DEFAULT_GOV_USERSPACE if CPU_FREQ_SA1100 || CPU_FREQ_SA1110
