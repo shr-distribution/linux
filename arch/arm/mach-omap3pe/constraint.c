@@ -67,7 +67,7 @@ static struct atomic_notifier_head freq_dsp_pre_notifier_list;
 static struct atomic_notifier_head freq_dsp_post_notifier_list;
 
 #define min_vdd1_opp    CO_VDD1_OPP1
-#define max_vdd1_opp    CO_VDD1_OPP5
+#define max_vdd1_opp    CO_VDD1_OPP7
 #define min_vdd2_opp    CO_VDD2_OPP2
 #define max_vdd2_opp    CO_VDD2_OPP3
 

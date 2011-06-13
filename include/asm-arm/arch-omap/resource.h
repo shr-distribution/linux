@@ -32,7 +32,7 @@
 #define curr_vdd1_opp   3
 #define curr_vdd2_opp   3
 #define min_vdd1_opp    CO_VDD1_OPP1
-#define max_vdd1_opp    CO_VDD1_OPP5
+#define max_vdd1_opp    CO_VDD1_OPP7
 #define min_vdd2_opp    CO_VDD2_OPP2
 #define max_vdd2_opp    CO_VDD2_OPP3
 
@@ -121,6 +121,8 @@
 #define CO_VDD1_OPP3		0x3
 #define CO_VDD1_OPP4		0x4
 #define CO_VDD1_OPP5		0x5
+#define CO_VDD1_OPP6		0x6
+#define CO_VDD1_OPP7		0x7
 
 /* VDD2 OPP constraint levels */
 #define CO_VDD2_OPP1		0x1
@@ -274,11 +276,11 @@
 #define curr_arm_freq 	500
 #define curr_dsp_freq 	360
 #define min_arm_freq 	125
-#define max_arm_freq 	600
+#define max_arm_freq 	1000
 #define min_dsp_freq 	90
-#define max_dsp_freq 	430
+#define max_dsp_freq 	360
 #define MIN_VDD1_OPP 	CO_VDD1_OPP1
-#define MAX_VDD1_OPP 	CO_VDD1_OPP5
+#define MAX_VDD1_OPP 	CO_VDD1_OPP7
 #define MIN_VDD2_OPP 	CO_VDD2_OPP2
 #define MAX_VDD2_OPP 	CO_VDD2_OPP3
 

@@ -139,16 +139,28 @@ config OMAP3ES2_VDD1_OPP3
 	  Select this option if you want to boot at OPP3.
 
 config OMAP3ES2_VDD1_OPP4
-	bool "MPU-550Mhz/DSP-396Mhz(OPP4)"
+	bool "MPU-600Mhz/DSP-360Mhz(OPP4)"
 	depends on OMAP3_PM
 	help
 	  Select this option if you want to boot at OPP4.
 
 config OMAP3ES2_VDD1_OPP5
-	bool "MPU-625Mhz/DSP-430Mhz(OPP5)"
+	bool "MPU-720Mhz/DSP-360Mhz(OPP5)"
 	depends on OMAP3_PM
 	help
 	  Select this option if you want to boot at OPP5.
+
+config OMAP3ES2_VDD1_OPP6
+        bool "MPU-800Mhz/DSP-360Mhz(OPP6)"
+        depends on OMAP3_PM
+        help
+          Select this option if you want to boot at OPP6.
+
+config OMAP3ES2_VDD1_OPP7
+        bool "MPU-1000Mhz/DSP-360Mhz(OPP7)"
+        depends on OMAP3_PM
+        help
+          Select this option if you want to boot at OPP7.
 
 endchoice
 

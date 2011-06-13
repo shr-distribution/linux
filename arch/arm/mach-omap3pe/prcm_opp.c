@@ -56,8 +56,8 @@
 
 static u8 mpu_iva2_vdd1_volts [PRCM_NO_VDD1_OPPS] = {
 	/* Vsel corresponding to 0.975V (OPP1), 1.050V (OPP2),
-				1.20V (OPP3), 1.27V (OPP4), 1.35 (OPP5) */
-	0x1e, 0x24, 0x30, 0x36, 0x3C
+  1.20V (OPP3), 1.35V (OPP4), 1.413V (OPP5), 1.425V (OPP6), 1.46V (OPP7) */
+		0x1E, 0x24, 0x30, 0x3C, 0x41, 0x42, 0x45
 };
 
 static u8 core_l3_vdd2_volts [PRCM_NO_VDD2_OPPS] = { /* only 3 OPPs */
@@ -138,7 +138,7 @@ u32 prcm_get_current_vdd2_opp(void)
 
 u32 omap3_max_vdd1_opp(void)
 {
-	return 5;
+	return 0;
 
 	/* This function call is used in the bridgedriver.
 	 *
@@ -146,7 +146,7 @@ u32 omap3_max_vdd1_opp(void)
 	 * OPP based on silicon revision and part binning. We are not using
 	 * this code right now but are keeping it here for future reference.
 	 *
-	 * For our kernel we are always returning 5 as max OPP.
+	 * For our kernel we are always returning 7 as max OPP.
 	 */
 #if 0
 	u32 sku_id;
@@ -187,20 +187,32 @@ static struct dpll_param mpu_dpll_param[5][PRCM_NO_VDD1_OPPS] = {
 	/* OPP3(500 Mhz) and OPP4(550 Mhz)*/
 	{0x0FA, 0x05, 0x07, 0x01}, {0x113, 0x05, 0x07, 0x01},
 	/* OPP5 (600 Mhz) */
+	{0x12C, 0x05, 0x07, 0x01},
+	/* OPP6 (720 Mhz) */
+	{0x12C, 0x05, 0x07, 0x01},
+	/* OPP7 (800 Mhz) */
 	{0x12C, 0x05, 0x07, 0x01} },
 	/* 13M values */
 	/* OPP1(125 Mhz) and OPP2(250 Mhz)*/
 	{{0x1F4, 0x0C, 0x03, 0x04}, {0x1F4, 0x0C, 0x03, 0x02},
-	/* OPP3(500 Mhz) and OPP4(550 Mhz)*/
-	{0x1F4, 0x0C, 0x03, 0x01}, {0x226, 0x0C, 0x03, 0x01},
-	/* OPP5 (600 Mhz) */
-	{0x258, 0x0C, 0x03, 0x01} },
+	/* OPP3(500 Mhz) and OPP4(600 Mhz)*/
+	{0x1F4, 0x0C, 0x03, 0x01}, {0x258, 0x0C, 0x03, 0x01},
+	/* OPP5 (720 Mhz) */
+	{0x2D0, 0x0C, 0x03, 0x01},
+	/* OPP6 (800 Mhz) */
+	{0x320, 0x0C, 0x03, 0x01},
+	/* OPP7 (1000 Mhz) */
+	{0x3E8, 0x0C, 0x03, 0x01} },
 	/* 19.2M values */
 	/* OPP1(125 Mhz) and OPP2(250 Mhz)*/
 	{{0x271, 0x17, 0x03, 0x04}, {0x271, 0x17, 0x03, 0x02},
 	/* OPP3(500 Mhz) and OPP4(550 Mhz)*/
 	{0x271, 0x17, 0x03, 0x01}, {0x191, 0x0D, 0x05, 0x01},
 	/* OPP5 (600 Mhz) */
+	{0x177, 0x0B, 0x06, 0x01},
+	/* OPP6 (720 Mhz) */
+	{0x177, 0x0B, 0x06, 0x01},
+	/* OPP7 (800 Mhz) */
 	{0x177, 0x0B, 0x06, 0x01} },
 	/* 26M values */
 	/* OPP1(125 Mhz) and OPP2(250 Mhz)*/
@@ -208,13 +220,21 @@ static struct dpll_param mpu_dpll_param[5][PRCM_NO_VDD1_OPPS] = {
 	/* OPP3(500 Mhz) and OPP4(550 Mhz)*/
 	{0x0FA, 0x0C, 0x07, 0x01}, {0x113, 0x0C, 0x07, 0x01},
 	/* OPP5 (600 Mhz) */
-	{0x12C, 0x0C, 0x07, 0x01} },
+	{0x12C, 0x0C, 0x07, 0x01},
+	/* OPP6 (720 Mhz) */
+	{0x168, 0x0C, 0x07, 0x01},
+	/* OPP7 (800 Mhz) */
+	{0x190, 0x0C, 0x07, 0x01} },
 	/* 38.4M values */
 	/* OPP1(125 Mhz) and OPP2(250 Mhz)*/
 	{{0x271, 0x2F, 0x03, 0x04}, {0x271, 0x2F, 0x03, 0x02},
 	/* OPP3(500 Mhz) and OPP4(550 Mhz)*/
 	{0x271, 0x2F, 0x03, 0x01}, {0x1BC, 0x1E, 0x04, 0x01},
 	/* OPP5 (600 Mhz) */
+	{0x177, 0x17, 0x06, 0x01},
+	/* OPP6 (720 Mhz) */
+	{0x177, 0x17, 0x06, 0x01},
+	/* OPP7 (800 Mhz) */
 	{0x177, 0x17, 0x06, 0x01} },
 };
 
@@ -226,13 +246,21 @@ static struct dpll_param iva_dpll_param[5][PRCM_NO_VDD1_OPPS] = {
 	/* OPP3(360 Mhz) and OPP4(396 Mhz)*/
 	 {0x0B4, 0x05, 0x07, 0x01}, {0x0C6, 0x05, 0x07, 0x01},
 	/* OPP5 (430 Mhz) */
-	 {0x0D7, 0x05, 0x07, 0x01} },
+	 {0x0D7, 0x05, 0x07, 0x01},
+        /* OPP6 (520 Mhz) */
+        {0x0D7, 0x05, 0x07, 0x01},
+        /* OPP7 (600 Mhz) */
+        {0x0D7, 0x05, 0x07, 0x01} },
 	/* 13M values */
 	/* OPP1(90 Mhz) and OPP2(180 Mhz)*/
 	{{0x168, 0x0C, 0x03, 0x04}, {0x168, 0x0C, 0x03, 0x02},
 	/* OPP3(360 Mhz) and OPP4(400 Mhz)*/
 	 {0x168, 0x0C, 0x03, 0x01}, {0x190, 0x0C, 0x03, 0x01},
 	/* OPP5 (430 Mhz) */
+	 {0x1AE, 0x0C, 0x03, 0x01},
+	/* OPP6 (430 Mhz) */
+	 {0x1AE, 0x0C, 0x03, 0x01},
+	/* OPP7 (430 Mhz) */
 	 {0x1AE, 0x0C, 0x03, 0x01} },
 	/* 19.2M values */
 	/* OPP1(90 Mhz) and OPP2(180 Mhz)*/
@@ -240,21 +268,33 @@ static struct dpll_param iva_dpll_param[5][PRCM_NO_VDD1_OPPS] = {
 	/* OPP3(360 Mhz) and OPP4(396 Mhz)*/
 	 {0x0E1, 0x0B, 0x06, 0x01}, {0x14A, 0x0F, 0x04, 0x01},
 	/* OPP5 (430 Mhz) */
-	 {0x203, 0x16, 0x03, 0x01} },
+	 {0x203, 0x16, 0x03, 0x01},
+        /* OPP6 (520 Mhz) */
+        {0x203, 0x16, 0x03, 0x01},
+        /* OPP7 (600 Mhz) */
+        {0x203, 0x16, 0x03, 0x01} },
 	/* 26M values */
 	/* OPP1(90 Mhz) and OPP2(180 Mhz)*/
 	{{0x0B4, 0x0C, 0x07, 0x04}, {0x0B4, 0x0C, 0x07, 0x02},
 	/* OPP3(360 Mhz) and OPP4(396 Mhz)*/
 	 {0x0B4, 0x0C, 0x07, 0x01}, {0x0C6, 0x0C, 0x07, 0x01},
 	/* OPP5 (430 Mhz) */
-	 {0x0D7, 0x0C, 0x07, 0x01} },
+	 {0x0D7, 0x0C, 0x07, 0x01},
+        /* OPP6 (520 Mhz) */
+        {0x104, 0x0C, 0x07, 0x01},
+        /* OPP7 (600 Mhz) */
+        {0x12c, 0x0C, 0x07, 0x01} },
 	/* 38.4M values */
 	/* OPP1(90 Mhz) and OPP2(180 Mhz)*/
 	{{0x0E1, 0x17, 0x06, 0x04}, {0x0E1, 0x17, 0x06, 0x02},
 	/* OPP3(360 Mhz) and OPP4(396 Mhz)*/
 	 {0x0E1, 0x17, 0x06, 0x01}, {0x14A, 0x1F, 0x04, 0x01},
 	/* OPP5 (430 Mhz) */
-	 {0x23B, 0x32, 0x01, 0x01} },
+	 {0x23B, 0x32, 0x01, 0x01},
+        /* OPP6 (520 Mhz) */
+        {0x23B, 0x32, 0x03, 0x01},
+        /* OPP7 (600 Mhz) */
+        {0x23B, 0x32, 0x03, 0x01} },
 };
 
 /* CORE parameters */
@@ -490,11 +530,18 @@ void prcm_scale_finish(void)
 			valid_rate = clk_round_rate(p_vdd1_clk, S500M);
 			break;
 		case PRCM_VDD1_OPP4:
-			valid_rate = clk_round_rate(p_vdd1_clk, S550M);
-			break;
-		case PRCM_VDD1_OPP5:
 			valid_rate = clk_round_rate(p_vdd1_clk, S600M);
 			break;
+		case PRCM_VDD1_OPP5:
+			valid_rate = clk_round_rate(p_vdd1_clk, S720M);
+			break;
+                case PRCM_VDD1_OPP6:
+                        valid_rate = clk_round_rate(p_vdd1_clk, S800M);
+                        break;
+                case PRCM_VDD1_OPP7:
+                        valid_rate = clk_round_rate(p_vdd1_clk, S1000M);
+                        break;
+
 		}
 		p_vdd1_clk->set_rate(p_vdd1_clk, valid_rate);
 	}
@@ -507,11 +554,14 @@ static struct vdd1_arm_dsp_freq_d {
 	unsigned int constraint;
 	unsigned int opp;
 } vdd1_arm_dsp_freq[MAX_VDD1_OPP] = {
-	{125,  90, CO_VDD1_OPP1, PRCM_VDD1_OPP1},
+	{125, 90, CO_VDD1_OPP1, PRCM_VDD1_OPP1},
 	{250, 180, CO_VDD1_OPP2, PRCM_VDD1_OPP2},
 	{500, 360, CO_VDD1_OPP3, PRCM_VDD1_OPP3},
-	{550, 396, CO_VDD1_OPP4, PRCM_VDD1_OPP4},
-	{600, 430, CO_VDD1_OPP5, PRCM_VDD1_OPP5},
+	{600, 360, CO_VDD1_OPP4, PRCM_VDD1_OPP4},
+	{720, 360, CO_VDD1_OPP5, PRCM_VDD1_OPP5},
+	{800, 360, CO_VDD1_OPP6, PRCM_VDD1_OPP6},
+	{1000, 360, CO_VDD1_OPP7, PRCM_VDD1_OPP7},
+
 };
 static struct vdd2_core_freq_d {
 	unsigned int freq;
@@ -523,8 +573,8 @@ static struct vdd2_core_freq_d {
 	{166, CO_VDD2_OPP3, PRCM_VDD2_OPP3},
 };
 
-static unsigned int rnd_rate_vdd1[5] = {
-	S125M, S250M, S500M, S550M, S600M
+static unsigned int rnd_rate_vdd1[7] = {
+	S125M, S250M, S500M, S600M, S720M, S800M, S1000M
 };
 static unsigned int rnd_rate_vdd2[3] = {
 	0, S83M, S166M
@@ -1466,6 +1516,11 @@ int __init prcm_vdd_clk_init(void)
 	target_vdd1_opp = PRCM_VDD1_OPP4;
 #elif defined(CONFIG_OMAP3ES2_VDD1_OPP5)
 	target_vdd1_opp = PRCM_VDD1_OPP5;
+#elif defined(CONFIG_OMAP3ES2_VDD1_OPP6)
+        target_vdd1_opp = PRCM_VDD1_OPP6;
+#elif defined(CONFIG_OMAP3ES2_VDD1_OPP7)
+        target_vdd1_opp = PRCM_VDD1_OPP7;
+
 #endif
         target_mpu_khz  = get_arm_freq_for_opp(get_opp_no(target_vdd1_opp));
 

@@ -609,7 +609,12 @@
 							| ID_OPP_NO(0x4))
 #define PRCM_VDD1_OPP5		(OMAP(AT_3430)| OTHER_ID_TYPE(ID_OPP) | ID_VDD(PRCM_VDD1)\
 							| ID_OPP_NO(0x5))
-#define PRCM_NO_VDD1_OPPS	5
+#define PRCM_VDD1_OPP6          (OMAP(AT_3430)| OTHER_ID_TYPE(ID_OPP) | ID_VDD(PRCM_VDD1)\
+                                                        | ID_OPP_NO(0x6))
+#define PRCM_VDD1_OPP7          (OMAP(AT_3430)| OTHER_ID_TYPE(ID_OPP) | ID_VDD(PRCM_VDD1)\
+                                                        | ID_OPP_NO(0x7))
+
+#define PRCM_NO_VDD1_OPPS	7
 
 /* VDD2 OPPs */
 #define PRCM_VDD2_OPP1		(OMAP(AT_3430)| OTHER_ID_TYPE(ID_OPP) | ID_VDD(PRCM_VDD2)\
