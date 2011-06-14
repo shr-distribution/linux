@@ -82,12 +82,16 @@ int wm8994_bulk_read(struct wm8994 *wm8994, unsigned short reg,
 		     int count, u16 *buf)
 {
 	int ret;
+	int i;
 
 	mutex_lock(&wm8994->io_lock);
 
 	ret = wm8994_read(wm8994, reg, count * 2, buf);
 
 	mutex_unlock(&wm8994->io_lock);
+
+	for (i = 0; i < count; i++)
+		buf[i] = be16_to_cpu(buf[i]);
 
 	return ret;
 }
