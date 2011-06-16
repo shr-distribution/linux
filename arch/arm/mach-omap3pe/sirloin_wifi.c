@@ -23,7 +23,7 @@
 #include <asm/arch/gpio.h>
 #include "prcm-regs.h"
 
-#define WIFI_RESET_SET		0x8b
+#define WIFI_RESET_SET		0x7f
 
 unsigned int wifi_irq_count = 0;
 
