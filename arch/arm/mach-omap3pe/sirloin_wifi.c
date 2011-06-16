@@ -23,7 +23,12 @@
 #include <asm/arch/gpio.h>
 #include "prcm-regs.h"
 
+/* For the palmpre2 we have another gpio for the reset line */
+#ifdef CONFIG_MACH_SIRLOIN_3630
+#define WIFI_RESET_SET		0x7f
+#else
 #define WIFI_RESET_SET		0x8b
+#endif
 
 unsigned int wifi_irq_count = 0;
 
