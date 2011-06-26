@@ -20,7 +20,7 @@
 #include <linux/gpio.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/leds.h>
+#include <linux/backlight.h>
 #include <linux/platform_device.h>
 #include <linux/workqueue.h>
 
@@ -34,7 +34,6 @@
 
 #include "board-mahimahi.h"
 #include "devices.h"
-
 
 #define SPI_CONFIG              (0x00000000)
 #define SPI_IO_CONTROL          (0x00000004)
@@ -893,17 +892,16 @@ err_clk_get:
 	return ret;
 }
 
-static void mahimahi_brightness_set(struct led_classdev *led_cdev,
-				    enum led_brightness val)
+static int  mahimahi_brightness_set(struct backlight_device *bd)
 {
 	unsigned long flags;
-	led_cdev->brightness = val;
 
 	spin_lock_irqsave(&brightness_lock, flags);
-	new_val = val;
+	new_val = bd->props.brightness;
 	spin_unlock_irqrestore(&brightness_lock, flags);
 
 	schedule_work(&brightness_delayed_work);
+	return 0;
 }
 
 static void mahimahi_brightness_amoled_set_work(struct work_struct *work_ptr)
@@ -934,15 +932,21 @@ static void mahimahi_brightness_tft_set_work(struct work_struct *work_ptr)
 	mutex_unlock(&panel_lock);
 }
 
-static struct led_classdev mahimahi_brightness_led = {
-	.name = "lcd-backlight",
-	.brightness = LED_FULL,
-	.brightness_set = mahimahi_brightness_set,
+static int mahimahi_brightness_get(struct backlight_device *bd){
+	return bd->props.brightness;
+}
+
+static struct backlight_ops mahimahi_backlight_ops = {
+	.options = BL_CORE_SUSPENDRESUME,
+	.update_status =  mahimahi_brightness_set,
+	.get_brightness = mahimahi_brightness_get,
 };
 
 int __init mahimahi_init_panel(void)
 {
 	int ret;
+	struct backlight_device *bd;
+	struct backlight_properties bp;
 
 	if (!machine_is_mahimahi())
 		return 0;
@@ -986,11 +990,12 @@ int __init mahimahi_init_panel(void)
 	if (ret != 0)
 		return ret;
 
-	ret = led_classdev_register(NULL, &mahimahi_brightness_led);
-	if (ret != 0) {
-		pr_err("%s: Cannot register brightness led\n", __func__);
-		return ret;
-	}
+	memset(&bp, 0, sizeof(struct backlight_properties));
+	bp.brightness = SAMSUNG_OLED_DEFAULT_VAL;
+	bp.max_brightness = SAMSUNG_OLED_MAX_VAL;
+
+	bd = backlight_device_register("mahimahi-backlight",
+				       NULL, NULL, &mahimahi_backlight_ops,&bp);
 
 	return 0;
 }

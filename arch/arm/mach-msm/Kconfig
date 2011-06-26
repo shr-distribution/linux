@@ -279,6 +279,8 @@ config MACH_SAPPHIRE
 
 config MACH_MAHIMAHI
 	depends on ARCH_QSD8X50
+	select BACKLIGHT_LCD_SUPPORT
+	select BACKLIGHT_CLASS_DEVICE
 	default y
 	bool "Mahi-Mahi"
 	help
