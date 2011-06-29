@@ -61,7 +61,7 @@ enum A1026_NS_states {
 /* IOCTLs for Audience A1026 */
 #define A1026_IOCTL_MAGIC 'u'
 
-#define A1026_BOOTUP_INIT  _IOW(A1026_IOCTL_MAGIC, 0x01, struct a1026img *)
+#define A1026_BOOTUP_INIT  _IOW(A1026_IOCTL_MAGIC, 0x01, struct a1026img)
 #define A1026_SET_CONFIG   _IOW(A1026_IOCTL_MAGIC, 0x02, enum A1026_PathID)
 #define A1026_SET_NS_STATE _IOW(A1026_IOCTL_MAGIC, 0x03, enum A1026_NS_states)
 
