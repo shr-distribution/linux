@@ -2128,6 +2128,9 @@ static int wm8994_set_bias_level(struct snd_soc_codec *codec,
 							    WM8958_CP_DISCH);
 				}
 				break;
+
+			case WM1811:
+				break;
 			}
 
 			/* Discharge LINEOUT1 & 2 */
@@ -2291,10 +2294,18 @@ static int wm8994_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 
 	/* The AIF2 format configuration needs to be mirrored to AIF3
 	 * on WM8958 if it's in use so just do it all the time. */
-	if (control->type == WM8958 && dai->id == 2)
-		snd_soc_update_bits(codec, WM8958_AIF3_CONTROL_1,
-				    WM8994_AIF1_LRCLK_INV |
-				    WM8958_AIF3_FMT_MASK, aif1);
+	switch (control->type) {
+	case WM1811:
+	case WM8958:
+		if (dai->id == 2)
+			snd_soc_update_bits(codec, WM8958_AIF3_CONTROL_1,
+					    WM8994_AIF1_LRCLK_INV |
+					    WM8958_AIF3_FMT_MASK, aif1);
+		break;
+
+	default:
+		break;
+	}
 
 	snd_soc_update_bits(codec, aif1_reg,
 			    WM8994_AIF1_BCLK_INV | WM8994_AIF1_LRCLK_INV |
@@ -2381,6 +2392,7 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 		break;
 	case 3:
 		switch (control->type) {
+		case WM1811:
 		case WM8958:
 			aif1_reg = WM8958_AIF3_CONTROL_1;
 			break;
@@ -2507,6 +2519,7 @@ static int wm8994_aif3_hw_params(struct snd_pcm_substream *substream,
 	switch (dai->id) {
 	case 3:
 		switch (control->type) {
+		case WM1811:
 		case WM8958:
 			aif1_reg = WM8958_AIF3_CONTROL_1;
 			break;
@@ -2695,6 +2708,7 @@ static int wm8994_suspend(struct platform_device *pdev, pm_message_t state)
 	case WM8994:
 		snd_soc_update_bits(codec, WM8994_MICBIAS, WM8994_MICD_ENA, 0);
 		break;
+	case WM1811:
 	case WM8958:
 		snd_soc_update_bits(codec, WM8958_MIC_DETECT_1,
 				    WM8958_MICD_ENA, 0);
@@ -2779,6 +2793,7 @@ static int wm8994_resume(struct platform_device *pdev)
 			snd_soc_update_bits(codec, WM8994_MICBIAS,
 					    WM8994_MICD_ENA, WM8994_MICD_ENA);
 		break;
+	case WM1811:
 	case WM8958:
 		if (wm8994->jack_cb)
 			snd_soc_update_bits(codec, WM8958_MIC_DETECT_1,
@@ -3036,6 +3051,18 @@ static int wm8994_probe(struct platform_device *pdev)
 						  ARRAY_SIZE(wm8994_adc_widgets));
 		}
 		break;
+	case WM1811:
+		snd_soc_add_controls(codec, wm8958_snd_controls,
+				     ARRAY_SIZE(wm8958_snd_controls));
+		snd_soc_dapm_new_controls(codec, wm8958_dapm_widgets,
+					  ARRAY_SIZE(wm8958_dapm_widgets));
+		snd_soc_dapm_new_controls(codec, wm8994_lateclk_widgets,
+					  ARRAY_SIZE(wm8994_lateclk_widgets));
+		snd_soc_dapm_new_controls(codec, wm8994_adc_widgets,
+					  ARRAY_SIZE(wm8994_adc_widgets));
+		snd_soc_dapm_new_controls(codec, wm8994_dac_widgets,
+					  ARRAY_SIZE(wm8994_dac_widgets));
+		break;
 	}
 
 	wm_hubs_add_analogue_routes(codec, 0, 0);
@@ -3066,6 +3093,13 @@ static int wm8994_probe(struct platform_device *pdev)
 		snd_soc_dapm_add_routes(codec, wm8958_intercon,
 					ARRAY_SIZE(wm8958_intercon));
 		break;
+	case WM1811:
+		snd_soc_dapm_add_routes(codec, wm8994_lateclk_intercon,
+					ARRAY_SIZE(wm8994_lateclk_intercon));
+		snd_soc_dapm_add_routes(codec, wm8958_intercon,
+					ARRAY_SIZE(wm8958_intercon));
+		break;
+
 	}
 
 	return 0;
@@ -3229,8 +3263,13 @@ int wm8958_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
 	struct wm8994 *control = codec->control_data;
 
-	if (control->type != WM8958)
+	switch (control->type) {
+	case WM1811:
+	case WM8958:
+		break;
+	default:
 		return -EINVAL;
+	}
 
 	if (jack) {
 		if (!cb) {
@@ -3381,6 +3420,11 @@ static int wm8994_codec_probe(struct platform_device *pdev)
 		wm8994->hubs.dcs_readback_mode = 1;
 		break;
 
+	case WM1811:
+		wm8994->hubs.dcs_readback_mode = 1;
+		wm8994->hubs.no_series_update = 1;
+		break;
+
 	default:
 		break;
 	}
@@ -3437,6 +3481,7 @@ static int wm8994_codec_probe(struct platform_device *pdev)
 		break;
 
 	case WM8958:
+	case WM1811:
 		if (wm8994->micdet_irq) {
 			ret = request_threaded_irq(wm8994->micdet_irq, NULL,
 						   wm8958_mic_irq,
@@ -3619,6 +3664,7 @@ static int __devexit wm8994_codec_remove(struct platform_device *pdev)
 				wm8994);
 		break;
 
+	case WM1811:
 	case WM8958:
 		if (wm8994->micdet_irq)
 			free_irq(wm8994->micdet_irq, wm8994);
