@@ -141,6 +141,7 @@ static struct gpio_chip template_chip = {
 	.direction_output	= wm8994_gpio_direction_out,
 	.set			= wm8994_gpio_set,
 	.dbg_show		= wm8994_gpio_dbg_show,
+	.to_irq			= wm8994_gpio_to_irq,
 	.can_sleep		= 1,
 };
 
