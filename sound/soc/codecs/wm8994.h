@@ -10,6 +10,7 @@
 #define _WM8994_H
 
 #include <sound/soc.h>
+#include <linux/completion.h>
 
 extern struct snd_soc_codec_device soc_codec_dev_wm8994;
 extern struct snd_soc_dai wm8994_dai[];

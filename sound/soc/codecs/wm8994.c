@@ -79,6 +79,8 @@ struct wm8994_priv {
 	int mclk[2];
 	int aifclk[2];
 	struct fll_config fll[2], fll_suspend[2];
+	struct completion fll_locked[2];
+	bool fll_locked_irq;
 
 	int dac_rates[2];
 	int lrclk_shared[2];
@@ -1881,6 +1883,7 @@ static int wm8994_set_fll(struct snd_soc_dai *dai, int id, int src,
 	int reg_offset, ret;
 	struct fll_div fll;
 	u16 reg, aif1, aif2;
+	unsigned long timeout;
 
 	aif1 = snd_soc_read(codec, WM8994_AIF1_CLOCKING_1)
 		& WM8994_AIF1CLK_ENA;
@@ -1972,7 +1975,15 @@ static int wm8994_set_fll(struct snd_soc_dai *dai, int id, int src,
 				    WM8994_FLL1_ENA | WM8994_FLL1_FRAC,
 				    reg);
 
-		msleep(5);
+		if (wm8994->fll_locked_irq) {
+			timeout = wait_for_completion_timeout(&wm8994->fll_locked[id],
+							      msecs_to_jiffies(10));
+			if (timeout == 0)
+				dev_warn(codec->dev,
+					 "Timed out waiting for FLL lock\n");
+		} else {
+			msleep(5);
+		}
 	}
 
 	wm8994->fll[id].in = freq_in;
@@ -1988,6 +1999,15 @@ static int wm8994_set_fll(struct snd_soc_dai *dai, int id, int src,
 	configure_clock(codec);
 
 	return 0;
+}
+
+static irqreturn_t wm8994_fll_locked_irq(int irq, void *data)
+{
+	struct completion *completion = data;
+
+	complete(completion);
+
+	return IRQ_HANDLED;
 }
 
 static int opclk_divs[] = { 10, 20, 30, 40, 55, 60, 80, 120, 160 };
@@ -3305,6 +3325,9 @@ static int wm8994_codec_probe(struct platform_device *pdev)
 
 	wm8994->pdata = pdev->dev.parent->platform_data;
 
+	for (i = 0; i < ARRAY_SIZE(wm8994->fll_locked); i++)
+		init_completion(&wm8994->fll_locked[i]);
+
 	if (wm8994->pdata && wm8994->pdata->micdet_irq)
 		wm8994->micdet_irq = wm8994->pdata->micdet_irq;
 	else if (wm8994->pdata && wm8994->pdata->irq_base)
@@ -3413,6 +3436,16 @@ static int wm8994_codec_probe(struct platform_device *pdev)
 					 "Failed to request Mic detect IRQ: %d\n",
 					 ret);
 		}
+	}
+
+	wm8994->fll_locked_irq = true;
+	for (i = 0; i < ARRAY_SIZE(wm8994->fll_locked); i++) {
+		ret = wm8994_request_irq(codec->control_data,
+					 WM8994_IRQ_FLL1_LOCK + i,
+					 wm8994_fll_locked_irq, "FLL lock",
+					 &wm8994->fll_locked[i]);
+		if (ret != 0)
+			wm8994->fll_locked_irq = false;
 	}
 
 	/* Remember if AIFnLRCLK is configured as a GPIO.  This should be
@@ -3534,6 +3567,9 @@ err_irq:
 	wm8994_free_irq(codec->control_data, WM8994_IRQ_MIC1_SHRT, wm8994);
 	if (wm8994->micdet_irq)
 		free_irq(wm8994->micdet_irq, wm8994);
+	for (i = 0; i < ARRAY_SIZE(wm8994->fll_locked); i++)
+		wm8994_free_irq(codec->control_data, WM8994_IRQ_FLL1_LOCK + i,
+				&wm8994->fll_locked[i]);
 	wm8994_free_irq(codec->control_data, WM8994_IRQ_DCS_DONE,
 			&wm8994->hubs);
 err:
@@ -3546,8 +3582,13 @@ static int __devexit wm8994_codec_remove(struct platform_device *pdev)
 	struct wm8994_priv *wm8994 = platform_get_drvdata(pdev);
 	struct snd_soc_codec *codec = &wm8994->codec;
 	struct wm8994 *control = codec->control_data;
+	int i;
 
 	wm8994_set_bias_level(codec, SND_SOC_BIAS_OFF);
+
+	for (i = 0; i < ARRAY_SIZE(wm8994->fll_locked); i++)
+		wm8994_free_irq(codec->control_data, WM8994_IRQ_FLL1_LOCK + i,
+				&wm8994->fll_locked[i]);
 
 	wm8994_free_irq(codec->control_data, WM8994_IRQ_DCS_DONE,
 			&wm8994->hubs);
