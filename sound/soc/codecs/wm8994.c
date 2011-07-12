@@ -3353,6 +3353,12 @@ static int wm8994_codec_probe(struct platform_device *pdev)
 		break;
 	}
 
+	ret = wm8994_request_irq(codec->control_data, WM8994_IRQ_DCS_DONE,
+				 wm_hubs_dcs_done, "DC servo done",
+				 &wm8994->hubs);
+	if (ret == 0)
+		wm8994->hubs.dcs_done_irq = true;
+
 	switch (control->type) {
 	case WM8994:
 		if (wm8994->micdet_irq) {
@@ -3528,6 +3534,8 @@ err_irq:
 	wm8994_free_irq(codec->control_data, WM8994_IRQ_MIC1_SHRT, wm8994);
 	if (wm8994->micdet_irq)
 		free_irq(wm8994->micdet_irq, wm8994);
+	wm8994_free_irq(codec->control_data, WM8994_IRQ_DCS_DONE,
+			&wm8994->hubs);
 err:
 	kfree(wm8994);
 	return ret;
@@ -3540,6 +3548,9 @@ static int __devexit wm8994_codec_remove(struct platform_device *pdev)
 	struct wm8994 *control = codec->control_data;
 
 	wm8994_set_bias_level(codec, SND_SOC_BIAS_OFF);
+
+	wm8994_free_irq(codec->control_data, WM8994_IRQ_DCS_DONE,
+			&wm8994->hubs);
 
 	switch (control->type) {
 	case WM8994:
