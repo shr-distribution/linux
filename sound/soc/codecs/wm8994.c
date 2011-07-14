@@ -3281,6 +3281,15 @@ out:
 	return IRQ_HANDLED;
 }
 
+static irqreturn_t wm8994_fifo_error(int irq, void *data)
+{
+	struct snd_soc_codec *codec = data;
+
+	dev_err(codec->dev, "FIFO error\n");
+
+	return IRQ_HANDLED;
+}
+
 static int wm8994_codec_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -3375,6 +3384,9 @@ static int wm8994_codec_probe(struct platform_device *pdev)
 	default:
 		break;
 	}
+
+	wm8994_request_irq(codec->control_data, WM8994_IRQ_FIFOS_ERR,
+			   wm8994_fifo_error, "FIFO error", codec);
 
 	ret = wm8994_request_irq(codec->control_data, WM8994_IRQ_DCS_DONE,
 				 wm_hubs_dcs_done, "DC servo done",
@@ -3572,6 +3584,7 @@ err_irq:
 				&wm8994->fll_locked[i]);
 	wm8994_free_irq(codec->control_data, WM8994_IRQ_DCS_DONE,
 			&wm8994->hubs);
+	wm8994_free_irq(codec->control_data, WM8994_IRQ_FIFOS_ERR, codec);
 err:
 	kfree(wm8994);
 	return ret;
@@ -3592,6 +3605,7 @@ static int __devexit wm8994_codec_remove(struct platform_device *pdev)
 
 	wm8994_free_irq(codec->control_data, WM8994_IRQ_DCS_DONE,
 			&wm8994->hubs);
+	wm8994_free_irq(codec->control_data, WM8994_IRQ_FIFOS_ERR, codec);
 
 	switch (control->type) {
 	case WM8994:
