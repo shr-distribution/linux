@@ -1,0 +1,15 @@
+menu "Palm general setup"
+
+config PANIC_ON_OOPS
+	int "Panic when encountering OOPS"
+	default 0
+	help
+	  If 1, sets behavior on OOPS to panic.
+
+config WARN_ABOUT_MAX_FILES
+	bool "Warn when file-max limit is close"
+	default n
+	help
+	  If enabled, a log will start showing warnings
+
+endmenu		# General setup
