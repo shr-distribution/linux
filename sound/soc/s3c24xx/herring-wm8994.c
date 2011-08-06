@@ -508,7 +508,7 @@ static int __init herring_audio_init(void)
 	snd_soc_register_dai(&cp_dai);
 	snd_soc_register_dai(&bt_dai);
 
-	herring_snd_device = platform_device_alloc("soc-audio", 0);
+	herring_snd_device = platform_device_alloc("soc-audio", -1);
 	if (!herring_snd_device)
 		return -ENOMEM;
 
