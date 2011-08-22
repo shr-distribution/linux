@@ -676,8 +676,9 @@ static int __init tsc2007_init(void)
 		return -ENXIO;
 	}
 //	gpio_export(TS_PENIRQ_GPIO, 0);
-	omap_set_gpio_debounce(TS_PENIRQ_GPIO, 1);
-	omap_set_gpio_debounce_time(TS_PENIRQ_GPIO, 0xa);
+// 	omap_set_gpio_debounce(TS_PENIRQ_GPIO, 1);
+// 	omap_set_gpio_debounce_time(TS_PENIRQ_GPIO, 0xa);
+	gpio_set_debounce(TS_PENIRQ_GPIO, (0x0a+1)*31);
 // 	set_irq_type(OMAP_GPIO_IRQ(TS_PENIRQ_GPIO), IRQ_TYPE_EDGE_FALLING);
 	irq_set_irq_type(OMAP_GPIO_IRQ(TS_PENIRQ_GPIO), IRQ_TYPE_EDGE_FALLING);
 	return 0;
@@ -719,8 +720,9 @@ static int __init bmp085_init(void)
 		return -ENXIO;
 	}
 //	gpio_export(BMP085_EOC_IRQ_GPIO, 0);
-	omap_set_gpio_debounce(BMP085_EOC_IRQ_GPIO, 1);
-	omap_set_gpio_debounce_time(BMP085_EOC_IRQ_GPIO, 0xa);
+// 	omap_set_gpio_debounce(BMP085_EOC_IRQ_GPIO, 1);
+// 	omap_set_gpio_debounce_time(BMP085_EOC_IRQ_GPIO, 0xa);
+	gpio_set_debounce(BMP085_EOC_IRQ_GPIO, (0xa+1)*31);
 	set_irq_type(OMAP_GPIO_IRQ(BMP085_EOC_IRQ_GPIO), IRQ_TYPE_EDGE_FALLING);
 	return 0;
 }
