@@ -92,6 +92,7 @@ static u8 gta04_version;	/* counts 2..9 */
 static void __init gta04_init_rev(void)
 {
 	int ret;
+	early_printk("Running gta04_init_rev()\n");
 	u16 gta04_rev = 0;
 	static char revision[8] = {	/* revision table defined by pull-down R305, R306, R307 */
 		9,
@@ -134,7 +135,7 @@ static void __init gta04_init_rev(void)
 				| (gpio_get_value(172) << 1)
 				| (gpio_get_value(173) << 2);
 	
-	printk("gta04_rev %u\n", gta04_rev);
+	early_printk("gta04_rev %u\n", gta04_rev);
 
 	gta04_version = revision[gta04_rev];
 	
@@ -145,7 +146,7 @@ fail2:
 fail1:
 	gpio_free(171);
 fail0:
-	printk(KERN_ERR "Unable to get revision detection GPIO pins\n");
+	early_printk(KERN_ERR "Unable to get revision detection GPIO pins\n");
 	gta04_version = 0;
 
 	return;
@@ -675,11 +676,7 @@ static int __init tsc2007_init(void)
 			   "input\n", TS_PENIRQ_GPIO);
 		return -ENXIO;
 	}
-//	gpio_export(TS_PENIRQ_GPIO, 0);
-// 	omap_set_gpio_debounce(TS_PENIRQ_GPIO, 1);
-// 	omap_set_gpio_debounce_time(TS_PENIRQ_GPIO, 0xa);
 	gpio_set_debounce(TS_PENIRQ_GPIO, (0x0a+1)*31);
-// 	set_irq_type(OMAP_GPIO_IRQ(TS_PENIRQ_GPIO), IRQ_TYPE_EDGE_FALLING);
 	irq_set_irq_type(OMAP_GPIO_IRQ(TS_PENIRQ_GPIO), IRQ_TYPE_EDGE_FALLING);
 	return 0;
 }
@@ -837,14 +834,12 @@ static struct platform_device keys_gpio = {
 	},
 };
 
-static void __init gta04_init_irq(void)
+static void __init gta04_init_early(void)
 {
-// 	omap_init_irq();
-// #ifdef CONFIG_OMAP_32K_TIMER
-// 	omap2_gp_clockevent_set_gptimer(12);
-// #endif
-// 	omap_gpio_init();
-	omap3_init_irq();
+	early_printk("Doing gta04_init_early()\n");
+	omap2_init_common_infrastructure();
+	omap2_init_common_devices(mt46h32m32lf6_sdrc_params,
+				  mt46h32m32lf6_sdrc_params);
 }
 
 #if defined(CONFIG_HDQ_MASTER_OMAP)
@@ -968,27 +963,33 @@ static struct omap_board_mux board_mux[] __initdata = {
 
 static void __init gta04_init(void)
 {
+	early_printk("running gta04_init()\n");
 	omap3_mux_init(board_mux, OMAP_PACKAGE_CBB);
 	gta04_init_rev();
 	gta04_i2c_init();
 	platform_add_devices(gta04_devices,
 						 ARRAY_SIZE(gta04_devices));
-	omap_serial_init();
-	
-	printk(KERN_INFO "Revision GTA04A%d\n", gta04_version);
 
 #ifdef CONFIG_OMAP_MUX
 
 	// for a definition of the mux names see arch/arm/mach-omap2/mux34xx.c
 	// the syntax of the first paramter to omap_mux_init_signal() is "muxname" or "m0name.muxname" (for ambiguous modes)
 	// note: calling omap_mux_init_signal() overwrites the parameter string...
-	
-	omap_mux_init_signal("mcbsp3_clkx.uart2_tx", OMAP_PIN_OUTPUT);	// gpio 142 / GPS TX
-	omap_mux_init_signal("mcbsp3_fsx.uart2_rx", OMAP_PIN_INPUT);	// gpio 143 / GPS RX	
+
+//	omap_mux_init_signal("mcbsp3_clkx.uart2_tx", OMAP_PIN_OUTPUT);	// gpio 142 / GPS TX
+//	omap_mux_init_signal("mcbsp3_fsx.uart2_rx", OMAP_PIN_INPUT);	// gpio 143 / GPS RX	
+
 #else
 #error we need CONFIG_OMAP_MUX
 #endif
 
+ 	early_printk("running omap_serial_init()\n");
+ 	udelay(100);
+ 	omap_serial_init();
+	udelay(100);
+	early_printk("done omap_serial_init()!\n");
+	printk("First output!\n");
+	printk(KERN_INFO "Revision GTA04A%d\n", gta04_version);
 	// gpio_export() allows to access through /sys/devices/virtual/gpio/gpio*/value
 	
 #if 0
@@ -1051,11 +1052,11 @@ MACHINE_START(GTA04, "GTA04")
 	/* Maintainer: Nikolaus Schaller - http://www.gta04.org */
 // 	.phys_io	= 0x48000000,
 // 	.io_pg_offst	= ((0xfa000000) >> 18) & 0xfffc,
-	.boot_params	= 0x80000100,
-	.reserve	= omap_reserve,
-// 	.map_io		= gta04_map_io,
-	.map_io		= omap3_map_io,
-	.init_irq	= gta04_init_irq,
-	.init_machine	= gta04_init,
-	.timer		= &omap3_secure_timer,
+	.boot_params	=	0x80000100,
+	.reserve		=	omap_reserve,
+	.map_io			=	omap3_map_io,
+	.init_irq		=	omap3_init_irq,
+	.init_early		=	gta04_init_early,
+	.init_machine	=	gta04_init,
+	.timer			=	&omap3_secure_timer,
 MACHINE_END
