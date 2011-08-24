@@ -107,6 +107,8 @@ source "sound/parisc/Kconfig"
 
 source "sound/soc/Kconfig"
 
+source "sound/htcleo/Kconfig"
+
 endif # SND
 
 menuconfig SOUND_PRIME
