@@ -568,7 +568,7 @@ static int __init htcleo_alsa_init(void)
 {
     int rc = 0; 
 
-    if (!machine_is_htcleo())
+    if (!(machine_is_htcleo() || machine_is_mahimahi()))
     {
         return 0;
     }
