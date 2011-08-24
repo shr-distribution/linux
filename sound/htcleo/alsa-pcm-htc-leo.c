@@ -39,6 +39,7 @@ this file use q6audio_* function primary, some new was added
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>   
+#include <linux/slab.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>

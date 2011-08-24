@@ -30,6 +30,7 @@
 #define __DAL_AUDIO_H__
 
 #include "dal_audio_format.h"
+#include "../dal.h"
 
 #define AUDIO_DAL_DEVICE 0x02000028
 #define AUDIO_DAL_PORT "DSP_DAL_AQ_AUD"
