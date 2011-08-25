@@ -287,15 +287,15 @@ static struct omap_dss_device gta04_tv_device = {
 };
 
 static struct omap_dss_device *gta04_dss_devices[] = {
-	&gta04_dvi_device,
-	&gta04_tv_device,
+// 	&gta04_dvi_device,
+// 	&gta04_tv_device,
 	&gta04_lcd_device,
 };
 
 static struct omap_dss_board_info gta04_dss_data = {
 	.num_devices = ARRAY_SIZE(gta04_dss_devices),
 	.devices = gta04_dss_devices,
-	.default_device = &gta04_dvi_device,
+	.default_device = &gta04_lcd_device,
 };
 
 static struct platform_device gta04_dss_device = {
@@ -340,21 +340,6 @@ static struct regulator_consumer_supply gta04_vdvi_supply = {
 	.supply		= "vdds_dsi",
 	.dev		= &gta04_dss_device.dev,
 };
-
-static void __init gta04_display_init(void)
-{
-/* N/A on GTA04
-	int r;
- 
-	r = gpio_request(gta04_dvi_device.reset_gpio, "DVI reset");
-	if (r < 0) {
-		printk(KERN_ERR "Unable to get DVI reset GPIO %d\n", gta04_dvi_device.reset_gpio);
-		return;
-	}
-
-	gpio_direction_output(gta04_dvi_device.reset_gpio, 0);
- */
-}
 
 #include "sdram-micron-mt46h32m32lf-6.h"
 
@@ -1044,8 +1029,8 @@ static void __init gta04_init(void)
 	omap_mux_init_gpio(TWL4030_MSECURE_GPIO, OMAP_PIN_OUTPUT);	// this needs CONFIG_OMAP_MUX!
 	gpio_request(TWL4030_MSECURE_GPIO, "mSecure");
 	gpio_direction_output(TWL4030_MSECURE_GPIO, true);
-
-	gta04_display_init();
+	
+	omap_display_init(&gta04_dss_data);
 
 	early_printk("gta04_init done...\n");
 }
