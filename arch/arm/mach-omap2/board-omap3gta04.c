@@ -56,6 +56,7 @@
 #include <plat/clock.h>
 #include <plat/omap-pm.h>
 #include <plat/mcspi.h>
+#include <plat/omap-serial.h>
 
 #include "mux.h"
 #include "hsmmc.h"
@@ -362,17 +363,14 @@ static struct gpio_led gpio_leds[];
 static struct omap2_hsmmc_info mmc[] = {
 	{
 		.mmc		= 1,
-//		.wires		= 8,
-// 		.wires		= 4,	// only 4 are connected
-		.caps		= MMC_CAP_4_BIT_DATA,
+		.caps		= MMC_CAP_4_BIT_DATA, // only 4 wires are connected
 		.gpio_cd	= -EINVAL,	// no card detect
 //		.gpio_wp	= 29,
 		.gpio_wp	= -EINVAL,	// no write protect
 	},
 	{ // this is the WiFi SDIO interface
 		.mmc		= 2,
-// 		.wires		= 4,
-		.caps		= MMC_CAP_4_BIT_DATA,
+		.caps		= MMC_CAP_4_BIT_DATA, // only 4 wires are connected
 		.gpio_cd	= -EINVAL,	// no card detect
 		.gpio_wp	= -EINVAL,	// no write protect
 		.transceiver	= true,	// external transceiver
@@ -836,7 +834,7 @@ static struct platform_device keys_gpio = {
 
 static void __init gta04_init_early(void)
 {
-	early_printk("Doing gta04_init_early()\n");
+// 	early_printk("Doing gta04_init_early()\n");
 	omap2_init_common_infrastructure();
 	omap2_init_common_devices(mt46h32m32lf6_sdrc_params,
 				  mt46h32m32lf6_sdrc_params);
@@ -953,13 +951,20 @@ static const struct usbhs_omap_board_data usbhs_bdata __initconst = {
 	.reset_gpio_port[2]  = -EINVAL
 };
 
-#ifdef CONFIG_OMAP_MUX
+// #ifdef CONFIG_OMAP_MUX
 static struct omap_board_mux board_mux[] __initdata = {
 	{ .reg_offset = OMAP_MUX_TERMINATOR },
 };
-#else
-#define board_mux	NULL
-#endif
+// #else
+// #define board_mux	NULL
+// #endif
+
+static inline void gta04_serial_init(void)
+{
+	early_printk("running gta04_serial_init()\n");
+	omap_serial_init();
+	early_printk("ran omap_serial_init()\n");
+}
 
 static void __init gta04_init(void)
 {
@@ -969,27 +974,22 @@ static void __init gta04_init(void)
 	gta04_i2c_init();
 	platform_add_devices(gta04_devices,
 						 ARRAY_SIZE(gta04_devices));
+	gta04_serial_init();
 
-#ifdef CONFIG_OMAP_MUX
+// #ifdef CONFIG_OMAP_MUX
 
 	// for a definition of the mux names see arch/arm/mach-omap2/mux34xx.c
 	// the syntax of the first paramter to omap_mux_init_signal() is "muxname" or "m0name.muxname" (for ambiguous modes)
 	// note: calling omap_mux_init_signal() overwrites the parameter string...
 
-//	omap_mux_init_signal("mcbsp3_clkx.uart2_tx", OMAP_PIN_OUTPUT);	// gpio 142 / GPS TX
-//	omap_mux_init_signal("mcbsp3_fsx.uart2_rx", OMAP_PIN_INPUT);	// gpio 143 / GPS RX	
+// 	omap_mux_init_signal("mcbsp3_clkx.uart2_tx", OMAP_PIN_OUTPUT);	// gpio 142 / GPS TX
+// 	omap_mux_init_signal("mcbsp3_fsx.uart2_rx", OMAP_PIN_INPUT);	// gpio 143 / GPS RX
 
-#else
-#error we need CONFIG_OMAP_MUX
-#endif
+// #else
+// #error we need CONFIG_OMAP_MUX
+// #endif
 
- 	early_printk("running omap_serial_init()\n");
- 	udelay(100);
- 	omap_serial_init();
-	udelay(100);
-	early_printk("done omap_serial_init()!\n");
-	printk("First output!\n");
-	printk(KERN_INFO "Revision GTA04A%d\n", gta04_version);
+	early_printk(KERN_INFO "Revision GTA04A%d\n", gta04_version);
 	// gpio_export() allows to access through /sys/devices/virtual/gpio/gpio*/value
 	
 #if 0
@@ -1044,8 +1044,10 @@ static void __init gta04_init(void)
 	omap_mux_init_gpio(TWL4030_MSECURE_GPIO, OMAP_PIN_OUTPUT);	// this needs CONFIG_OMAP_MUX!
 	gpio_request(TWL4030_MSECURE_GPIO, "mSecure");
 	gpio_direction_output(TWL4030_MSECURE_GPIO, true);
-	
+
 	gta04_display_init();
+
+	early_printk("gta04_init done...\n");
 }
 
 MACHINE_START(GTA04, "GTA04")

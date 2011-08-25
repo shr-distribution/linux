@@ -1338,6 +1338,7 @@ static struct platform_driver serial_omap_driver = {
 static int __init serial_omap_init(void)
 {
 	int ret;
+	early_printk("%s: nitializing TTYs\n",DRIVER_NAME);
 
 	ret = uart_register_driver(&serial_omap_reg);
 	if (ret != 0)
@@ -1356,6 +1357,7 @@ static void __exit serial_omap_exit(void)
 
 module_init(serial_omap_init);
 module_exit(serial_omap_exit);
+core_initcall(serial_omap_init);
 
 MODULE_DESCRIPTION("OMAP High Speed UART driver");
 MODULE_LICENSE("GPL");
