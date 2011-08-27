@@ -36,11 +36,16 @@
 #include <linux/i2c/tsc2007.h>
 
 #include <linux/i2c/bmp085.h>
-#include <linux/power/bq27x00_battery.h>
 
 #include <linux/sysfs.h>
 
 #include <mach/hardware.h>
+
+#if defined(CONFIG_BATTERY_BQ27x00)
+#include <mach/gta04-hdq.h>
+#include <linux/power/bq27x00_battery.h>
+#endif
+
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
@@ -845,23 +850,16 @@ static struct platform_device gta04_hdq_device = {
 
 #if defined(CONFIG_BATTERY_BQ27x00)
 
-int hdq_read(struct device *dev, unsigned int reg)
-{
-	// read function - should do the HDQ transfer... but how do we connect this to the HDQ stack?
-	return -EINVAL;
-}
-
-static struct bq27000_platform_data gta04_bq27000_info = {
-	.name		= "bq27000",
-	.read		= hdq_read,
+static struct bq27000_platform_data bq27000_pdata = {
+        .read = hdq_read,
+        .name = "battery",
 };
 
-static struct platform_device gta04_bq27000_device = {
-	.name		= "bq27000-battery",
-	.id			= -1,
-	.dev		= {
-		.platform_data	= &gta04_bq27000_device,
-	},
+static struct platform_device bq27000_battery_device = {
+        .name = "bq27000-battery",
+        .dev = {
+                .platform_data = &bq27000_pdata,
+        },
 };
 
 #endif
@@ -917,7 +915,7 @@ static struct platform_device *gta04_devices[] __initdata = {
 	&gta04_hdq_device,
 #endif
 #if defined(CONFIG_BATTERY_BQ27x00)
-	&gta04_bq27000_device,
+	&bq27000_battery_device,
 #endif
 #if defined(CONFIG_W1_SLAVE_BQ27000)
 #endif
