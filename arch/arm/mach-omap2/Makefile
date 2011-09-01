@@ -191,7 +191,6 @@ obj-$(CONFIG_MACH_OMAP_APOLLON)		+= board-apollon.o
 obj-$(CONFIG_MACH_OMAP3_BEAGLE)		+= board-omap3beagle.o \
 					   hsmmc.o
 obj-$(CONFIG_MACH_GTA04)		+= board-omap3gta04.o \
-                                           gta04-hdq.o \
 					   hsmmc.o
 obj-$(CONFIG_MACH_DEVKIT8000)     	+= board-devkit8000.o \
                                            hsmmc.o
