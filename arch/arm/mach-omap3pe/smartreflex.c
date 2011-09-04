@@ -201,7 +201,6 @@ void sr_dump_vp_regs(void)
 	printk("####### PRM_VP2_VLIMITTO   = 0x%08x\n",	PRM_VP2_VLIMITTO);
 	printk("####### PRM_VP2_VOLTAGE    = 0x%08x\n",	PRM_VP2_VOLTAGE);
 	printk("####### PRM_VP2_STATUS     = 0x%08x\n",	PRM_VP2_STATUS);
-
 	printk("####### PRM_LDO_ABB_SETUP  = 0x%08x\n",	PRM_LDO_ABB_SETUP);
 	printk("####### PRM_LDO_ABB_CTRL   = 0x%08x\n",	PRM_LDO_ABB_CTRL);
 }
@@ -284,7 +283,6 @@ static int sr_set_efuse_nvalues(void)
 	if( sr1.opp2_nvalue == 0 || sr1.opp3_nvalue == 0 ||
 	    sr1.opp4_nvalue == 0 || sr1.opp5_nvalue == 0 )
 		return 0;
-
 
 	sr2.opp2_nvalue = omap_readl(CONTROL_FUSE_OPP50_VDD2  ) & 0xFFFFFF;
 	sr2.opp3_nvalue = omap_readl(CONTROL_FUSE_OPP100_VDD2 ) & 0xFFFFFF;
@@ -489,7 +487,6 @@ static void sr_configure_vc(void)
 
 	PRM_VC_I2C_CFG =  PRM_VC_I2C_CFG_MCODE
 			| PRM_VC_I2C_CFG_HSEN
-
 	/* Errata ID: i531 (3630)
 	 * 2.10. 1 Extra Power consumed when Repeated Start operation
 	 * mode is enabled on I2C interface dedicated for Smart Reflex (I2C4)
@@ -693,7 +690,6 @@ static u32 vp2errgain[5] = {
 	PRM_VP2_CONFIG_ERRORGAIN_OPP2,
 	PRM_VP2_CONFIG_ERRORGAIN_OPP3
 };
-
 #endif /* CONFIG_MACH_SIRLOIN_3630 */
 
 static void sr_enable(struct omap_sr *sr, u32 target_opp_no)
@@ -934,7 +930,6 @@ int disable_smartreflex(int srid)
 #ifdef CONFIG_MACH_SIRLOIN_3630
 
 #define  FBB_OPP   CO_VDD1_OPP5
-
 static void omap3630_abb_change_active_opp(u32 target_opp_no)
 {
 	u32 val;
@@ -1168,8 +1163,6 @@ repeat:
 				sr_status = SR_FALSE;
 		}
 #endif
-
-
 		PRM_VC_CMD_VAL_0 = (PRM_VC_CMD_VAL_0 & ~PRM_VC_CMD_ON_MASK) |
 				    (vsel << PRM_VC_CMD_ON_SHIFT);
 		reg_addr = R_VDD1_SR_CONTROL;
@@ -1711,7 +1704,6 @@ sr15_vdd1_opp_state_show(struct kobject *kobj, struct kobj_attribute *attr, char
 			vsel = sr1.sr15_opp[i].target_vsel;
 		else
 			vsel = 0;
-
 		len += snprintf(buf + len, PAGE_SIZE, "%3d ", vsel);
 	}
 
@@ -1719,7 +1711,6 @@ sr15_vdd1_opp_state_show(struct kobject *kobj, struct kobj_attribute *attr, char
 
 	return len;
 }
-
 
 static struct kobj_attribute sr15_vdd1_opp_state = {
 	.attr = {

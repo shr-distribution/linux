@@ -31,6 +31,11 @@
 
 #include "lcd.h"
 
+#ifdef CONFIG_CPU_FREQ_GOV_SCREENSTATE
+void cpufreq_gov_screenstate_lcdon(void);
+void cpufreq_gov_screenstate_lcdoff(void);
+#endif
+
 #define MOD_NAME 		"LCD: "
 
 #undef MODDEBUG
@@ -51,7 +56,6 @@
 #define DISPLAY_CONTROLLER_STATE_OFF   0
 #define DISPLAY_BACKLIGHT_STATE_ON     1
 #define DISPLAY_BACKLIGHT_STATE_OFF    0
-
 
 struct lcd_params {
 	struct display_device *disp_dev;
@@ -128,6 +132,11 @@ static void panel_set_state(struct lcd_params *params, unsigned int state)
 						DISPLAY_BACKLIGHT_STATE_ON);
 		}
 		params->panel_state = DISPLAY_DEVICE_STATE_ON;
+
+#ifdef CONFIG_CPU_FREQ_GOV_SCREENSTATE
+		cpufreq_gov_screenstate_lcdon();
+#endif
+
 	} else {
 		if (params->panel_state == DISPLAY_DEVICE_STATE_OFF) {
 			DPRINTK(" %s:  Panel already off, returning...\n",
@@ -156,6 +165,10 @@ static void panel_set_state(struct lcd_params *params, unsigned int state)
 						DISPLAY_CONTROLLER_STATE_OFF);
 		}
 		params->panel_state = DISPLAY_DEVICE_STATE_OFF;
+
+#ifdef CONFIG_CPU_FREQ_GOV_SCREENSTATE
+		cpufreq_gov_screenstate_lcdoff();
+#endif
 	}
 
 unlock:

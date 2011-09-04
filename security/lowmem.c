@@ -116,7 +116,11 @@ static ctl_table lowmem_root_table[] = {
 };
 
 #define KERNEL_ATTR_RO(_name) \
+<<<<<<< HEAD
 static struct kobj_attribute _name##_attr = __ATTR_RO(_name)
+=======
+static struct subsys_attribute _name##_attr = __ATTR_RO(_name)
+>>>>>>> palmpre/master
 
 static int low_watermark_reached, high_watermark_reached;
 
