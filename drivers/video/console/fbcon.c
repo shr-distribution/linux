@@ -3588,7 +3588,7 @@ static int __init fb_console_init(void)
 {
 	int i;
 
-#if CONFIG_FRAMEBUFFER_CONSOLE_FORCE_ENABLE
+#if !CONFIG_FRAMEBUFFER_CONSOLE_FORCE_ENABLE
 	if (!enable_fbcon)
 		return 0;
 #endif
