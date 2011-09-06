@@ -821,6 +821,18 @@ static struct omap_dss_board_info sdp4430_dss_data = {
 	.default_device	= &sdp4430_lcd_device,
 };
 
+static int omap_4430sdp_hack_backlight(void)
+{
+#define LED_PWM2ON		0x03
+#define LED_PWM2OFF		0x04
+#define TWL6030_TOGGLE3		0x92
+	twl_i2c_write_u8(TWL_MODULE_PWM, 0x7f, LED_PWM2OFF);
+	twl_i2c_write_u8(TWL_MODULE_PWM, 0x7f, LED_PWM2ON);
+	twl_i2c_write_u8(TWL6030_MODULE_ID1, 0x30, TWL6030_TOGGLE3);
+	return 0;
+}
+late_initcall(omap_4430sdp_hack_backlight);
+
 static void omap_4430sdp_display_init(void)
 {
 	int r;
