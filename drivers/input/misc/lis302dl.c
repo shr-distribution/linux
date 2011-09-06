@@ -710,7 +710,7 @@ static int __devinit lis302dl_probe(struct platform_device *pdev)
 
 	lis->pdata = pdata;
 
-	set_irq_handler(lis->pdata->interrupt, handle_level_irq);
+	irq_set_handler(lis->pdata->interrupt, handle_level_irq);
 
 	rc = request_irq(lis->pdata->interrupt, lis302dl_interrupt,
 			 IRQF_TRIGGER_LOW, "lis302dl", lis);
