@@ -32,6 +32,7 @@
 #include <linux/mmc/host.h>
 
 #include <linux/regulator/machine.h>
+#include <linux/regulator/fixed.h>
 #include <linux/i2c/twl.h>
 #include <linux/i2c/tsc2007.h>
 
@@ -295,12 +296,12 @@ static struct omap_dss_device *gta04_dss_devices[] = {
 static struct omap_dss_board_info gta04_dss_data = {
 	.num_devices = ARRAY_SIZE(gta04_dss_devices),
 	.devices = gta04_dss_devices,
-	.default_device = &gta04_lcd_device,
+//	.default_device = &gta04_lcd_device,
 };
 
 static struct platform_device gta04_dss_device = {
 	.name          = "omapdss",
-	.id            = -1,
+	.id            = 0,
 	.dev            = {
 		.platform_data = &gta04_dss_data,
 	},
@@ -323,7 +324,7 @@ static struct generic_bl_info gta04_bl_platform_data = {
 
 static struct platform_device gta04_bklight_device = {
 	.name		= "generic-bl",
-	.id			= -1,
+	.id			= 0,
 	.dev		= {
 		.parent		= &gta04_dss_device.dev,
 		.platform_data	= &gta04_bl_platform_data,
@@ -359,13 +360,19 @@ static struct omap2_hsmmc_info mmc[] = {
 		.gpio_cd	= -EINVAL,	// no card detect
 		.gpio_wp	= -EINVAL,	// no write protect
 		.transceiver	= true,	// external transceiver
-		.ocr_mask	= 0x00100000,	/* fixed 3.3V */
+// 		.ocr_mask	= 0x00100000,	/* fixed 3.3V */
 	},
 	{}	/* Terminator */
 };
 
-static struct regulator_consumer_supply gta04_vmmc1_supply = {
-	.supply			= "vmmc",
+static struct regulator_consumer_supply gta04_vmmc1_supply[] = {
+	REGULATOR_SUPPLY("vmmc", "omap_hsmmc.0"),
+// 	.supply			= "vmmc",
+};
+
+static struct regulator_consumer_supply gta04_vmmc2_supply[] = {
+	REGULATOR_SUPPLY("vmmc", "omap_hsmmc.1"),
+// 	.supply			= "vmmc",
 };
 
 static struct regulator_consumer_supply gta04_vsim_supply = {
@@ -375,10 +382,20 @@ static struct regulator_consumer_supply gta04_vsim_supply = {
 static int gta04_twl_gpio_setup(struct device *dev,
 		unsigned gpio, unsigned ngpio)
 {
+	int ret, gpio_32khz;
+
 	// we should keep enabling mmc, vmmc1, nEN_USB_PWR, maybe CAM_EN
-	
+	mmc[0].gpio_cd = gpio + 0;
+	mmc[1].gpio_cd = gpio + 1;
 	omap2_hsmmc_init(mmc);
 
+	/* gpio + 13 drives 32kHz buffer for wifi module */
+	gpio_32khz = gpio + 13;
+	ret = gpio_request_one(gpio_32khz, GPIOF_OUT_INIT_HIGH, "wifi 32kHz");
+	if (ret < 0) {
+		pr_err("Cannot get GPIO line %d, ret=%d\n", gpio_32khz, ret);
+		return -ENODEV;
+	}
 	/* link regulators to MMC adapters */
 // 	gta04_vmmc1_supply.dev = mmc[0].dev;
 //	gta04_vsim_supply.dev = mmc[0].dev;	/* supply for upper 4 bits */
@@ -387,7 +404,7 @@ static int gta04_twl_gpio_setup(struct device *dev,
 	// this should enable power control for WLAN/BT
 //	gta04_vmmc2_supply.dev = mmc[1].dev;
 #endif
-	
+
 	return 0;
 }
 
@@ -415,7 +432,35 @@ static struct regulator_init_data gta04_vmmc1 = {
 					| REGULATOR_CHANGE_STATUS,
 	},
 	.num_consumer_supplies	= 1,
-	.consumer_supplies	= &gta04_vmmc1_supply,
+	.consumer_supplies	= gta04_vmmc1_supply,
+};
+
+/* Fixed regulator internal to Wifi module */
+static struct regulator_init_data gta04_vmmc2 = {
+	.constraints = {
+		.name			= "VMMC2",
+		.valid_ops_mask		= REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies	= ARRAY_SIZE(gta04_vmmc2_supply),
+	.consumer_supplies	= gta04_vmmc2_supply,
+};
+
+static struct fixed_voltage_config gta04_vwlan = {
+	.supply_name		= "vwlan",
+	.microvolts		= 3300000, /* 3.3V */
+// 	.gpio			= PANDORA_WIFI_NRESET_GPIO,
+	.startup_delay		= 100000, /* 100ms */
+	.enable_high		= 0,
+	.enabled_at_boot	= 0,
+	.init_data		= &gta04_vmmc2,
+};
+
+static struct platform_device gta04_vwlan_device = {
+	.name		= "reg-fixed-voltage",
+	.id		= 1,
+	.dev = {
+		.platform_data = &gta04_vwlan,
+	},
 };
 
 /* VAUX4 powers Bluetooth and WLAN */
@@ -829,38 +874,9 @@ static void __init gta04_init_early(void)
 
 static struct platform_device gta04_hdq_device = {
 	.name		= "omap-hdq",
-	.id			= -1,
+	.id			= 0,
 	.dev		= {
 		.platform_data	= NULL,
-	},
-};
-
-#endif
-
-#if defined(CONFIG_W1_SLAVE_BQ27000)
-
-#endif
-
-/* HDQ access to the chip inside the battery */
-
-#if defined(CONFIG_BATTERY_BQ27x00)
-
-int hdq_read(struct device *dev, unsigned int reg)
-{
-	// read function - should do the HDQ transfer... but how do we connect this to the HDQ stack?
-	return -EINVAL;
-}
-
-static struct bq27000_platform_data gta04_bq27000_info = {
-	.name		= "bq27000",
-	.read		= hdq_read,
-};
-
-static struct platform_device gta04_bq27000_device = {
-	.name		= "bq27000-battery",
-	.id			= -1,
-	.dev		= {
-		.platform_data	= &gta04_bq27000_device,
 	},
 };
 
@@ -905,8 +921,9 @@ static struct platform_device gta04_vaux4_virtual_regulator_device = {
 static struct platform_device *gta04_devices[] __initdata = {
 //	&leds_gpio,
 	&keys_gpio,
-	&gta04_dss_device,
-	&gta04_bklight_device,
+// 	&gta04_dss_device,
+// 	&gta04_bklight_device,
+	&gta04_vwlan_device,
 #if defined(CONFIG_REGULATOR_VIRTUAL_CONSUMER)
 	&gta04_vaux1_virtual_regulator_device,
 	&gta04_vaux2_virtual_regulator_device,
@@ -914,12 +931,7 @@ static struct platform_device *gta04_devices[] __initdata = {
 	&gta04_vaux4_virtual_regulator_device,
 #endif
 #if defined(CONFIG_HDQ_MASTER_OMAP)
-	&gta04_hdq_device,
-#endif
-#if defined(CONFIG_BATTERY_BQ27x00)
-	&gta04_bq27000_device,
-#endif
-#if defined(CONFIG_W1_SLAVE_BQ27000)
+ 	&gta04_hdq_device,
 #endif
 };
 
@@ -944,22 +956,17 @@ static struct omap_board_mux board_mux[] __initdata = {
 // #define board_mux	NULL
 // #endif
 
-static inline void gta04_serial_init(void)
-{
-	early_printk("running gta04_serial_init()\n");
-	omap_serial_init();
-	early_printk("ran omap_serial_init()\n");
-}
-
 static void __init gta04_init(void)
 {
 	early_printk("running gta04_init()\n");
 	omap3_mux_init(board_mux, OMAP_PACKAGE_CBB);
 	gta04_init_rev();
 	gta04_i2c_init();
+
+	omap_serial_init();
+
 	platform_add_devices(gta04_devices,
 						 ARRAY_SIZE(gta04_devices));
-	gta04_serial_init();
 
 // #ifdef CONFIG_OMAP_MUX
 
