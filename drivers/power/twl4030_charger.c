@@ -11,6 +11,8 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
+#define DEBUG 1
+
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -21,6 +23,7 @@
 #include <linux/power_supply.h>
 #include <linux/notifier.h>
 #include <linux/usb/otg.h>
+
 
 #define TWL4030_BCIMSTATEC	0x02
 #define TWL4030_BCIICHG		0x08
@@ -61,8 +64,8 @@
 #define TWL4030_MSTATEC_COMPLETE1	0x0b
 #define TWL4030_MSTATEC_COMPLETE4	0x0e
 
-static bool allow_usb;
-module_param(allow_usb, bool, 0644);
+static bool allow_usb = true;
+module_param(allow_usb, bool, 1);
 MODULE_PARM_DESC(allow_usb, "Allow USB charge drawing default current");
 
 struct twl4030_bci {
@@ -141,7 +144,7 @@ static int twl4030_bci_have_vbus(struct twl4030_bci *bci)
 	if (ret < 0)
 		return 0;
 
-	dev_dbg(bci->dev, "check_vbus: HW_CONDITIONS %02x\n", hwsts);
+	dev_dbg(bci->dev, "twl4030_bci_have_vbus: HW_CONDITIONS %02x\n", hwsts);
 
 	/* in case we also have STS_USB_ID, VBUS is driven by TWL itself */
 	if ((hwsts & TWL4030_STS_VBUS) && !(hwsts & TWL4030_STS_USB_ID))
@@ -156,12 +159,12 @@ static int twl4030_bci_have_vbus(struct twl4030_bci *bci)
 static int twl4030_charger_enable_usb(struct twl4030_bci *bci, bool enable)
 {
 	int ret;
+	dev_dbg(bci->dev, "twl4030_charger_enable_usb: enable %d\n", enable);
 
 	if (enable) {
 		/* Check for USB charger conneted */
 		if (!twl4030_bci_have_vbus(bci))
 			return -ENODEV;
-
 		/*
 		 * Until we can find out what current the device can provide,
 		 * require a module param to enable USB charging.
@@ -246,8 +249,11 @@ static irqreturn_t twl4030_bci_interrupt(int irq, void *arg)
 	if (irqs1 & (TWL4030_TBATOR2 | TWL4030_TBATOR1))
 		dev_warn(bci->dev, "battery temperature out of range\n");
 
-	if (irqs1 & TWL4030_BATSTS)
-		dev_crit(bci->dev, "battery disconnected\n");
+	if (irqs1 & TWL4030_BATSTS) {
+		dev_crit(bci->dev, "battery disconnected\n");		
+		twl_i2c_write_u8(TWL4030_MODULE_INTERRUPTS,TWL4030_BATSTS,
+						 TWL4030_INTERRUPTS_BCIISR1A);
+	}
 
 	if (irqs2 & TWL4030_VBATOV)
 		dev_crit(bci->dev, "VBAT overvoltage\n");
@@ -266,12 +272,12 @@ static void twl4030_bci_usb_work(struct work_struct *data)
 	struct twl4030_bci *bci = container_of(data, struct twl4030_bci, work);
 
 	switch (bci->event) {
-	case USB_EVENT_VBUS:
-	case USB_EVENT_CHARGER:
-		twl4030_charger_enable_usb(bci, true);
-		break;
-	case USB_EVENT_NONE:
-		twl4030_charger_enable_usb(bci, false);
+		case USB_EVENT_VBUS:
+		case USB_EVENT_CHARGER:
+			twl4030_charger_enable_usb(bci, true);
+			break;
+		case USB_EVENT_NONE:
+			twl4030_charger_enable_usb(bci, false);
 		break;
 	}
 }
@@ -280,6 +286,7 @@ static int twl4030_bci_usb_ncb(struct notifier_block *nb, unsigned long val,
 			       void *priv)
 {
 	struct twl4030_bci *bci = container_of(nb, struct twl4030_bci, otg_nb);
+	printk("twl4030_charger notifier called\n");
 
 	dev_dbg(bci->dev, "OTG notify %lu\n", val);
 
@@ -425,7 +432,9 @@ static int __init twl4030_bci_probe(struct platform_device *pdev)
 {
 	struct twl4030_bci *bci;
 	int ret;
-	u32 reg;
+	int reg;
+
+	printk("twl4030_charger probe()\n");
 
 	bci = kzalloc(sizeof(*bci), GFP_KERNEL);
 	if (bci == NULL)
@@ -483,10 +492,11 @@ static int __init twl4030_bci_probe(struct platform_device *pdev)
 	if (bci->transceiver != NULL) {
 		bci->otg_nb.notifier_call = twl4030_bci_usb_ncb;
 		otg_register_notifier(bci->transceiver, &bci->otg_nb);
+		printk("twl4030_charger notifier registered\n");
 	}
 
 	/* Enable interrupts now. */
-	reg = ~(u32)(TWL4030_ICHGLOW | TWL4030_ICHGEOC | TWL4030_TBATOR2 |
+	reg = ~(TWL4030_ICHGLOW | TWL4030_ICHGEOC | TWL4030_TBATOR2 |
 		TWL4030_TBATOR1 | TWL4030_BATSTS);
 	ret = twl_i2c_write_u8(TWL4030_MODULE_INTERRUPTS, reg,
 			       TWL4030_INTERRUPTS_BCIIMR1A);
@@ -495,7 +505,7 @@ static int __init twl4030_bci_probe(struct platform_device *pdev)
 		goto fail_unmask_interrupts;
 	}
 
-	reg = ~(u32)(TWL4030_VBATOV | TWL4030_VBUSOV | TWL4030_ACCHGOV);
+	reg = ~(TWL4030_VBATOV | TWL4030_VBUSOV | TWL4030_ACCHGOV);
 	ret = twl_i2c_write_u8(TWL4030_MODULE_INTERRUPTS, reg,
 			       TWL4030_INTERRUPTS_BCIIMR2A);
 	if (ret < 0)
@@ -503,7 +513,14 @@ static int __init twl4030_bci_probe(struct platform_device *pdev)
 
 	twl4030_charger_enable_ac(true);
 	twl4030_charger_enable_usb(bci, true);
-
+#if 1
+	{
+	u8 irqs2;
+	ret = twl_i2c_read_u8(TWL4030_MODULE_INTERRUPTS, &irqs2,
+						  TWL4030_INTERRUPTS_BCISIHCTRL);
+	printk("twl BCISIHCTRL=%02x\n", irqs2);
+	}
+#endif
 	return 0;
 
 fail_unmask_interrupts:
@@ -572,7 +589,7 @@ static void __exit twl4030_bci_exit(void)
 }
 module_exit(twl4030_bci_exit);
 
-MODULE_AUTHOR("Gražvydas Ignotas");
+MODULE_AUTHOR("Gražydas Ignotas");
 MODULE_DESCRIPTION("TWL4030 Battery Charger Interface driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:twl4030_bci");
