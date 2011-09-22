@@ -75,7 +75,7 @@ static int jbt_spi_xfer(int wordnum, int bitlen, u_int16_t *dout)
 	u_int16_t tmpdout = 0;
 	int   i, j;
 	
-//	printk("jbt_spi_xfer: dout %08X wordnum %u bitlen %d\n", *(uint *)dout, wordnum, bitlen);
+	printk("jbt_spi_xfer: dout %08X wordnum %u bitlen %d\n", *(uint *)dout, wordnum, bitlen);
 	
 	SPI_CS(0);
 	
@@ -151,7 +151,7 @@ int jbt_reg_init(void)
 	int failed=0;
 	int r;
 	
-//	printk("jbt_reg_init()\n");
+	printk("jbt_reg_init()\n");
 	
 	SPI_CS(1);	// unselect
 	SPI_SCL(1);	// inactive
@@ -185,7 +185,7 @@ int jbt_reg_init(void)
 			int bit=i&1;
 			SPI_SDA(bit);	// write bit
 			SPI_DELAY();
-#if 0
+#if 1
 			printk("bit: %d out: %d in: %d (%d)\n", bit, gpio_get_value(GPIO_DOUT), gpio_get_value(GPIO_DIN), SPI_READ());
 #endif
 			if(SPI_READ() != bit)	// did not read back correctly
@@ -199,7 +199,7 @@ int jbt_reg_init(void)
 		}
 #endif
 	
-//	printk("did jbt_reg_init()\n");
+	printk("did jbt_reg_init()\n");
 	return 0;
 }
 
@@ -260,7 +260,7 @@ static int td028ttec1_panel_probe(struct omap_dss_device *dssdev)
 {
 	int rc;
 	
-//	printk("td028ttec1_panel_probe()\n");
+	printk("td028ttec1_panel_probe()\n");
 	dssdev->panel.config = OMAP_DSS_LCD_TFT | OMAP_DSS_LCD_ONOFF | OMAP_DSS_LCD_IPC | OMAP_DSS_LCD_IVS | OMAP_DSS_LCD_IHS;
 	dssdev->panel.acb = 0x28;
 	dssdev->panel.timings = td028ttec1_panel_timings;
@@ -273,7 +273,7 @@ static int td028ttec1_panel_probe(struct omap_dss_device *dssdev)
 
 static void td028ttec1_panel_remove(struct omap_dss_device *dssdev)
 {
-//	printk("td028ttec1_panel_remove()\n");
+	printk("td028ttec1_panel_remove()\n");
 	// disable GPIOs?
 }
 
@@ -281,7 +281,7 @@ static int td028ttec1_panel_suspend(struct omap_dss_device *dssdev)
 { // normal_to_sleep()
 	int rc;
 	
-//	printk("td028ttec1_panel_suspend()\n");
+	printk("td028ttec1_panel_suspend()\n");
 	rc = jbt_reg_write_nodata(jbt, JBT_REG_DISPLAY_OFF);
 	rc |= jbt_reg_write16(jbt, JBT_REG_OUTPUT_CONTROL, 0x8002);
 	rc |= jbt_reg_write_nodata(jbt, JBT_REG_SLEEP_IN);
@@ -295,7 +295,7 @@ static int td028ttec1_panel_resume(struct omap_dss_device *dssdev)
 { // sleep_to_normal()
 	int rc;
 	
-//	printk("td028ttec1_panel_resume()\n");
+	printk("td028ttec1_panel_resume()\n");
 	/* RGB I/F on, RAM write off, QVGA through, SIGCON enable */
 	rc = jbt_reg_write(jbt, JBT_REG_DISPLAY_MODE, 0x80);
 	
@@ -376,7 +376,7 @@ static int td028ttec1_panel_enable(struct omap_dss_device *dssdev)
 {
 	int rc = 0;
 	
-//	printk("td028ttec1_panel_enable()\n");
+	printk("td028ttec1_panel_enable()\n");
 	if (dssdev->platform_enable)
 		rc = dssdev->platform_enable(dssdev);	// enable e.g. power, backlight
 
@@ -406,7 +406,7 @@ static int td028ttec1_panel_enable(struct omap_dss_device *dssdev)
 static void td028ttec1_panel_disable(struct omap_dss_device *dssdev)
 {
 	
-//	printk("td028ttec1_panel_disable()\n");
+	printk("td028ttec1_panel_disable()\n");
 	if (dssdev->platform_disable)
 		dssdev->platform_disable(dssdev);
 	
