@@ -296,7 +296,7 @@ static struct omap_dss_device *gta04_dss_devices[] = {
 static struct omap_dss_board_info gta04_dss_data = {
 	.num_devices = ARRAY_SIZE(gta04_dss_devices),
 	.devices = gta04_dss_devices,
-//	.default_device = &gta04_lcd_device,
+	.default_device = &gta04_lcd_device,
 };
 
 static struct platform_device gta04_dss_device = {
@@ -360,7 +360,7 @@ static struct omap2_hsmmc_info mmc[] = {
 		.gpio_cd	= -EINVAL,	// no card detect
 		.gpio_wp	= -EINVAL,	// no write protect
 		.transceiver	= true,	// external transceiver
-// 		.ocr_mask	= 0x00100000,	/* fixed 3.3V */
+		.ocr_mask	= 0x00100000,	/* fixed 3.3V */
 	},
 	{}	/* Terminator */
 };
@@ -370,10 +370,12 @@ static struct regulator_consumer_supply gta04_vmmc1_supply[] = {
 // 	.supply			= "vmmc",
 };
 
+#ifndef CONFIG_TWL4030_ALLOW_UNSUPPORTED
 static struct regulator_consumer_supply gta04_vmmc2_supply[] = {
 	REGULATOR_SUPPLY("vmmc", "omap_hsmmc.1"),
 // 	.supply			= "vmmc",
 };
+#endif
 
 static struct regulator_consumer_supply gta04_vsim_supply = {
 	.supply			= "vmmc_aux",
@@ -382,20 +384,20 @@ static struct regulator_consumer_supply gta04_vsim_supply = {
 static int gta04_twl_gpio_setup(struct device *dev,
 		unsigned gpio, unsigned ngpio)
 {
-	int ret, gpio_32khz;
+// 	int ret, gpio_32khz;
 
 	// we should keep enabling mmc, vmmc1, nEN_USB_PWR, maybe CAM_EN
-	mmc[0].gpio_cd = gpio + 0;
-	mmc[1].gpio_cd = gpio + 1;
+// 	mmc[0].gpio_cd = gpio + 0;
+// 	mmc[1].gpio_cd = gpio + 1;
 	omap2_hsmmc_init(mmc);
 
 	/* gpio + 13 drives 32kHz buffer for wifi module */
-	gpio_32khz = gpio + 13;
-	ret = gpio_request_one(gpio_32khz, GPIOF_OUT_INIT_HIGH, "wifi 32kHz");
-	if (ret < 0) {
-		pr_err("Cannot get GPIO line %d, ret=%d\n", gpio_32khz, ret);
-		return -ENODEV;
-	}
+// 	gpio_32khz = gpio + 13;
+// 	ret = gpio_request_one(gpio_32khz, GPIOF_OUT_INIT_HIGH, "wifi 32kHz");
+// 	if (ret < 0) {
+// 		pr_err("Cannot get GPIO line %d, ret=%d\n", gpio_32khz, ret);
+// 		return -ENODEV;
+// 	}
 	/* link regulators to MMC adapters */
 // 	gta04_vmmc1_supply.dev = mmc[0].dev;
 //	gta04_vsim_supply.dev = mmc[0].dev;	/* supply for upper 4 bits */
@@ -435,7 +437,9 @@ static struct regulator_init_data gta04_vmmc1 = {
 	.consumer_supplies	= gta04_vmmc1_supply,
 };
 
+#ifndef CONFIG_TWL4030_ALLOW_UNSUPPORTED
 /* Fixed regulator internal to Wifi module */
+
 static struct regulator_init_data gta04_vmmc2 = {
 	.constraints = {
 		.name			= "VMMC2",
@@ -451,7 +455,7 @@ static struct fixed_voltage_config gta04_vwlan = {
 // 	.gpio			= PANDORA_WIFI_NRESET_GPIO,
 	.startup_delay		= 100000, /* 100ms */
 	.enable_high		= 0,
-	.enabled_at_boot	= 0,
+	.enabled_at_boot	= 1,
 	.init_data		= &gta04_vmmc2,
 };
 
@@ -462,6 +466,7 @@ static struct platform_device gta04_vwlan_device = {
 		.platform_data = &gta04_vwlan,
 	},
 };
+#endif
 
 /* VAUX4 powers Bluetooth and WLAN */
 
@@ -923,7 +928,9 @@ static struct platform_device *gta04_devices[] __initdata = {
 	&keys_gpio,
 // 	&gta04_dss_device,
 // 	&gta04_bklight_device,
+#ifndef CONFIG_TWL4030_ALLOW_UNSUPPORTED
 	&gta04_vwlan_device,
+#endif
 #if defined(CONFIG_REGULATOR_VIRTUAL_CONSUMER)
 	&gta04_vaux1_virtual_regulator_device,
 	&gta04_vaux2_virtual_regulator_device,
@@ -967,6 +974,8 @@ static void __init gta04_init(void)
 
 	platform_add_devices(gta04_devices,
 						 ARRAY_SIZE(gta04_devices));
+
+	omap_display_init(&gta04_dss_data);
 
 // #ifdef CONFIG_OMAP_MUX
 
@@ -1036,8 +1045,6 @@ static void __init gta04_init(void)
 	omap_mux_init_gpio(TWL4030_MSECURE_GPIO, OMAP_PIN_OUTPUT);	// this needs CONFIG_OMAP_MUX!
 	gpio_request(TWL4030_MSECURE_GPIO, "mSecure");
 	gpio_direction_output(TWL4030_MSECURE_GPIO, true);
-	
-	omap_display_init(&gta04_dss_data);
 
 	early_printk("gta04_init done...\n");
 }
