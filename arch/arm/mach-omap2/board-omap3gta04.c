@@ -216,7 +216,7 @@ static int gta04_enable_lcd(struct omap_dss_device *dssdev)
 {
 	printk("gta04_enable_lcd()\n");
 	// whatever we need, e.g. enable power
-//	gpio_set_value(170, 0);	// DVI off
+	gpio_set_value(170, 0);	// DVI off
 	gpio_set_value(57, 1);	// enable backlight
 	return 0;
 }
@@ -296,7 +296,7 @@ static struct omap_dss_device *gta04_dss_devices[] = {
 static struct omap_dss_board_info gta04_dss_data = {
 	.num_devices = ARRAY_SIZE(gta04_dss_devices),
 	.devices = gta04_dss_devices,
-	.default_device = &gta04_lcd_device,
+// 	.default_device = &gta04_lcd_device,
 };
 
 static struct platform_device gta04_dss_device = {
@@ -360,7 +360,7 @@ static struct omap2_hsmmc_info mmc[] = {
 		.gpio_cd	= -EINVAL,	// no card detect
 		.gpio_wp	= -EINVAL,	// no write protect
 		.transceiver	= true,	// external transceiver
-		.ocr_mask	= 0x00100000,	/* fixed 3.3V */
+// 		.ocr_mask	= 0x00100000,	/* fixed 3.3V */
 	},
 	{}	/* Terminator */
 };
@@ -370,12 +370,10 @@ static struct regulator_consumer_supply gta04_vmmc1_supply[] = {
 // 	.supply			= "vmmc",
 };
 
-#ifndef CONFIG_TWL4030_ALLOW_UNSUPPORTED
 static struct regulator_consumer_supply gta04_vmmc2_supply[] = {
 	REGULATOR_SUPPLY("vmmc", "omap_hsmmc.1"),
 // 	.supply			= "vmmc",
 };
-#endif
 
 static struct regulator_consumer_supply gta04_vsim_supply = {
 	.supply			= "vmmc_aux",
@@ -437,7 +435,6 @@ static struct regulator_init_data gta04_vmmc1 = {
 	.consumer_supplies	= gta04_vmmc1_supply,
 };
 
-#ifndef CONFIG_TWL4030_ALLOW_UNSUPPORTED
 /* Fixed regulator internal to Wifi module */
 
 static struct regulator_init_data gta04_vmmc2 = {
@@ -452,7 +449,6 @@ static struct regulator_init_data gta04_vmmc2 = {
 static struct fixed_voltage_config gta04_vwlan = {
 	.supply_name		= "vwlan",
 	.microvolts		= 3300000, /* 3.3V */
-// 	.gpio			= PANDORA_WIFI_NRESET_GPIO,
 	.startup_delay		= 100000, /* 100ms */
 	.enable_high		= 0,
 	.enabled_at_boot	= 1,
@@ -466,7 +462,6 @@ static struct platform_device gta04_vwlan_device = {
 		.platform_data = &gta04_vwlan,
 	},
 };
-#endif
 
 /* VAUX4 powers Bluetooth and WLAN */
 
@@ -928,9 +923,7 @@ static struct platform_device *gta04_devices[] __initdata = {
 	&keys_gpio,
 // 	&gta04_dss_device,
 // 	&gta04_bklight_device,
-#ifndef CONFIG_TWL4030_ALLOW_UNSUPPORTED
 	&gta04_vwlan_device,
-#endif
 #if defined(CONFIG_REGULATOR_VIRTUAL_CONSUMER)
 	&gta04_vaux1_virtual_regulator_device,
 	&gta04_vaux2_virtual_regulator_device,
@@ -969,13 +962,17 @@ static void __init gta04_init(void)
 	omap3_mux_init(board_mux, OMAP_PACKAGE_CBB);
 	gta04_init_rev();
 	gta04_i2c_init();
-
 	omap_serial_init();
+
+	//Before we initialize the display we have to ensure the right mux-mode
+// 	omap_mux_init_signal("mcbsp5_clkr", OMAP_PIN_OUTPUT);
+// 	omap_mux_init_signal("mcbsp5_fsx", OMAP_PIN_OUTPUT);
+// 	omap_mux_init_signal("mcbsp5_dx", OMAP_PIN_OUTPUT);
+// 	omap_mux_init_signal("mcbsp5_dr", OMAP_PIN_INPUT);
+	omap_display_init(&gta04_dss_data);
 
 	platform_add_devices(gta04_devices,
 						 ARRAY_SIZE(gta04_devices));
-
-	omap_display_init(&gta04_dss_data);
 
 // #ifdef CONFIG_OMAP_MUX
 

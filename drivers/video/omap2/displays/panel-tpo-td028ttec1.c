@@ -68,7 +68,7 @@ static struct jbt_info _jbt, *jbt = &_jbt;
 /* 150uS minimum clock cycle, we have two of this plus our other
  * instructions */
 
-#define SPI_DELAY()	udelay(150)
+#define SPI_DELAY()	udelay(200)
 
 static int jbt_spi_xfer(int wordnum, int bitlen, u_int16_t *dout)
 {
@@ -179,7 +179,7 @@ int jbt_reg_init(void)
 	 * seems unreliable with later LCM batches, increasing to 90ms */
 	mdelay(90);
 	
-#if 1
+#if 0
 	for(i=0; i<16; i++)
 		{ // check for connection between GPIO158 -> GPIO159; since we have 10 kOhm pse. make sure that the PUP/PDN is disabled in the MUX config!
 			int bit=i&1;
@@ -287,7 +287,9 @@ static int td028ttec1_panel_suspend(struct omap_dss_device *dssdev)
 	rc |= jbt_reg_write_nodata(jbt, JBT_REG_SLEEP_IN);
 	
 	// turn off backlight
-	
+
+	dssdev->state = OMAP_DSS_DISPLAY_SUSPENDED;
+
 	return rc ? -EIO : 0;
 }
 
@@ -366,8 +368,11 @@ static int td028ttec1_panel_resume(struct omap_dss_device *dssdev)
 #endif
 	
 	jbt_reg_write_nodata(jbt, JBT_REG_DISPLAY_ON);
-	
+
+	omapdss_dpi_display_enable(dssdev);
+
 	// turn on backlight
+	dssdev->state = OMAP_DSS_DISPLAY_ACTIVE;
 	
 	return rc ? -EIO : 0;
 }
@@ -375,8 +380,11 @@ static int td028ttec1_panel_resume(struct omap_dss_device *dssdev)
 static int td028ttec1_panel_enable(struct omap_dss_device *dssdev)
 {
 	int rc = 0;
-	
+	if (dssdev->state == OMAP_DSS_DISPLAY_ACTIVE)
+		return 0;
+
 	printk("td028ttec1_panel_enable()\n");
+	
 	if (dssdev->platform_enable)
 		rc = dssdev->platform_enable(dssdev);	// enable e.g. power, backlight
 
@@ -399,24 +407,45 @@ static int td028ttec1_panel_enable(struct omap_dss_device *dssdev)
 	// 2. sleep_to_normal()
 	
 	td028ttec1_panel_resume(dssdev);
-	
+
 	return rc ? -EIO : 0;
 }
 
 static void td028ttec1_panel_disable(struct omap_dss_device *dssdev)
 {
-	
 	printk("td028ttec1_panel_disable()\n");
 	if (dssdev->platform_disable)
 		dssdev->platform_disable(dssdev);
-	
+
 	// 1. normal_to_sleep()
-	
+
 	td028ttec1_panel_suspend(dssdev);
 
 	// 2. sleep_to_standby()
-	
+
 	jbt_reg_write(jbt, JBT_REG_POWER_ON_OFF, 0x00);
+
+	omapdss_dpi_display_disable(dssdev);
+
+	dssdev->state=OMAP_DSS_DISPLAY_DISABLED;
+}
+
+static void td028ttec1_panel_set_timings(struct omap_dss_device *dssdev,
+		struct omap_video_timings *timings)
+{
+	dpi_set_timings(dssdev, timings);
+}
+
+static void td028ttec1_panel_get_timings(struct omap_dss_device *dssdev,
+		struct omap_video_timings *timings)
+{
+	*timings = dssdev->panel.timings;
+}
+
+static int td028ttec1_panel_check_timings(struct omap_dss_device *dssdev,
+		struct omap_video_timings *timings)
+{
+	return dpi_check_timings(dssdev, timings);
 }
 
 static struct omap_dss_driver td028ttec1_driver = {
@@ -427,6 +456,10 @@ static struct omap_dss_driver td028ttec1_driver = {
 	.disable	= td028ttec1_panel_disable,
 	.suspend	= td028ttec1_panel_suspend,
 	.resume		= td028ttec1_panel_resume,
+
+	.set_timings	= td028ttec1_panel_set_timings,
+	.get_timings	= td028ttec1_panel_get_timings,
+	.check_timings	= td028ttec1_panel_check_timings,
 
 	.driver         = {
 		.name   = "td028ttec1_panel",
