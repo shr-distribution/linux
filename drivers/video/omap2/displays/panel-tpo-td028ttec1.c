@@ -75,7 +75,7 @@ static int jbt_spi_xfer(int wordnum, int bitlen, u_int16_t *dout)
 	u_int16_t tmpdout = 0;
 	int   i, j;
 	
-	printk("jbt_spi_xfer: dout %08X wordnum %u bitlen %d\n", *(uint *)dout, wordnum, bitlen);
+// 	printk("jbt_spi_xfer: dout %08X wordnum %u bitlen %d\n", *(uint *)dout, wordnum, bitlen);
 	
 	SPI_CS(0);
 	
@@ -282,11 +282,16 @@ static int td028ttec1_panel_suspend(struct omap_dss_device *dssdev)
 	int rc;
 	
 	printk("td028ttec1_panel_suspend()\n");
+
+	omapdss_dpi_display_disable(dssdev);
+
 	rc = jbt_reg_write_nodata(jbt, JBT_REG_DISPLAY_OFF);
 	rc |= jbt_reg_write16(jbt, JBT_REG_OUTPUT_CONTROL, 0x8002);
 	rc |= jbt_reg_write_nodata(jbt, JBT_REG_SLEEP_IN);
 	
 	// turn off backlight
+	if (dssdev->platform_disable)
+		dssdev->platform_disable(dssdev);
 
 	dssdev->state = OMAP_DSS_DISPLAY_SUSPENDED;
 
@@ -369,7 +374,9 @@ static int td028ttec1_panel_resume(struct omap_dss_device *dssdev)
 	
 	jbt_reg_write_nodata(jbt, JBT_REG_DISPLAY_ON);
 
-	omapdss_dpi_display_enable(dssdev);
+	rc = omapdss_dpi_display_enable(dssdev);
+	if(rc)
+		return -EIO;
 
 	// turn on backlight
 	dssdev->state = OMAP_DSS_DISPLAY_ACTIVE;
@@ -424,8 +431,6 @@ static void td028ttec1_panel_disable(struct omap_dss_device *dssdev)
 	// 2. sleep_to_standby()
 
 	jbt_reg_write(jbt, JBT_REG_POWER_ON_OFF, 0x00);
-
-	omapdss_dpi_display_disable(dssdev);
 
 	dssdev->state=OMAP_DSS_DISPLAY_DISABLED;
 }
