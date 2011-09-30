@@ -30,6 +30,8 @@
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/nand.h>
 #include <linux/mmc/host.h>
+#include <linux/mmc/card.h>
+#include <linux/mmc/sdio.h>
 
 #include <linux/regulator/machine.h>
 #include <linux/regulator/fixed.h>
@@ -346,6 +348,12 @@ static struct regulator_consumer_supply gta04_vdvi_supply = {
 
 static struct gpio_led gpio_leds[];
 
+static void gta04_init_wifi_card(struct mmc_card *card)
+{
+	printk("%s: trying to detect the wifi card\n",__func__);
+	mmc_detect_change(card->host, msecs_to_jiffies(100));
+}
+
 static struct omap2_hsmmc_info mmc[] = {
 	{
 		.mmc		= 1,
@@ -356,10 +364,11 @@ static struct omap2_hsmmc_info mmc[] = {
 	},
 	{ // this is the WiFi SDIO interface
 		.mmc		= 2,
-		.caps		= MMC_CAP_4_BIT_DATA, // only 4 wires are connected
+		.caps		= MMC_CAP_4_BIT_DATA | MMC_CAP_POWER_OFF_CARD, // only 4 wires are connected
 		.gpio_cd	= -EINVAL,	// no card detect
 		.gpio_wp	= -EINVAL,	// no write protect
 		.transceiver	= true,	// external transceiver
+		.init_card	= gta04_init_wifi_card,
 // 		.ocr_mask	= 0x00100000,	/* fixed 3.3V */
 	},
 	{}	/* Terminator */
@@ -449,7 +458,7 @@ static struct regulator_init_data gta04_vmmc2 = {
 static struct fixed_voltage_config gta04_vwlan = {
 	.supply_name		= "vwlan",
 	.microvolts		= 3300000, /* 3.3V */
-	.startup_delay		= 100000, /* 100ms */
+	.startup_delay		= 10000, /* 10ms */
 	.enable_high		= 0,
 	.enabled_at_boot	= 1,
 	.init_data		= &gta04_vmmc2,
@@ -964,11 +973,6 @@ static void __init gta04_init(void)
 	gta04_i2c_init();
 	omap_serial_init();
 
-	//Before we initialize the display we have to ensure the right mux-mode
-// 	omap_mux_init_signal("mcbsp5_clkr", OMAP_PIN_OUTPUT);
-// 	omap_mux_init_signal("mcbsp5_fsx", OMAP_PIN_OUTPUT);
-// 	omap_mux_init_signal("mcbsp5_dx", OMAP_PIN_OUTPUT);
-// 	omap_mux_init_signal("mcbsp5_dr", OMAP_PIN_INPUT);
 	omap_display_init(&gta04_dss_data);
 
 	platform_add_devices(gta04_devices,
