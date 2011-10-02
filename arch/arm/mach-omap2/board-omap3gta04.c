@@ -879,6 +879,7 @@ static void __init gta04_init_early(void)
 				  mt46h32m32lf6_sdrc_params);
 }
 
+#if 0
 #if defined(CONFIG_HDQ_MASTER_OMAP)
 
 static struct platform_device gta04_hdq_device = {
@@ -889,6 +890,7 @@ static struct platform_device gta04_hdq_device = {
 	},
 };
 
+#endif
 #endif
 
 #if defined(CONFIG_REGULATOR_VIRTUAL_CONSUMER)
@@ -927,20 +929,37 @@ static struct platform_device gta04_vaux4_virtual_regulator_device = {
 
 #endif
 
+#ifdef CONFIG_TWL4030_BCI_BATTERY
+static struct platform_device omap_bci_battery_device = {
+	.name           = "twl4030-bci-battery",
+	.id             = 0,
+	.dev			= {
+		.platform_data = &gta04_bci_data,
+	},
+	.num_resources  = 0,
+// 	.resource       = NULL,
+};
+#endif
+
 static struct platform_device *gta04_devices[] __initdata = {
 //	&leds_gpio,
 	&keys_gpio,
 // 	&gta04_dss_device,
 // 	&gta04_bklight_device,
 	&gta04_vwlan_device,
+#if 0
+#if defined(CONFIG_HDQ_MASTER_OMAP)
+	&gta04_hdq_device,
+#endif
+#endif
+#ifdef CONFIG_TWL4030_BCI_BATTERY
+	&omap_bci_battery_device,
+#endif
 #if defined(CONFIG_REGULATOR_VIRTUAL_CONSUMER)
 	&gta04_vaux1_virtual_regulator_device,
 	&gta04_vaux2_virtual_regulator_device,
 	&gta04_vaux3_virtual_regulator_device,
 	&gta04_vaux4_virtual_regulator_device,
-#endif
-#if defined(CONFIG_HDQ_MASTER_OMAP)
- 	&gta04_hdq_device,
 #endif
 };
 
@@ -965,6 +984,8 @@ static struct omap_board_mux board_mux[] __initdata = {
 // #define board_mux	NULL
 // #endif
 
+
+
 static void __init gta04_init(void)
 {
 	early_printk("running gta04_init()\n");
@@ -976,7 +997,7 @@ static void __init gta04_init(void)
 	omap_display_init(&gta04_dss_data);
 
 	platform_add_devices(gta04_devices,
-						 ARRAY_SIZE(gta04_devices));
+						ARRAY_SIZE(gta04_devices));
 
 // #ifdef CONFIG_OMAP_MUX
 
