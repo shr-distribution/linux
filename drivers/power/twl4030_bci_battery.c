@@ -146,7 +146,7 @@
 
 #define CURR_STEP_SIZE         147
 #define CURR_PSR_R1            44
-#define CURR_PSR_R2            80
+// #define CURR_PSR_R2            80
 
 #define BK_VOLT_STEP_SIZE      441
 #define BK_VOLT_PSR_R          100
@@ -927,13 +927,13 @@ static int twl4030_bci_battery_probe(struct  platform_device *dev)
 	   int irq;
        struct twl4030_bci_platform_data *pdata = dev->dev.platform_data;
 
-       therm_tbl = pdata->battery_tmp_tbl;
+//        therm_tbl = pdata->battery_tmp_tbl;
 
        di = kzalloc(sizeof(*di), GFP_KERNEL);
        if (!di)
                return -ENOMEM;
 
-       platform_set_drvdata(dev, di);
+//        platform_set_drvdata(dev, di);
 
        di->dev = &dev->dev;
        di->bat.name = "twl4030_bci_battery";
@@ -967,6 +967,8 @@ static int twl4030_bci_battery_probe(struct  platform_device *dev)
        twl4030battery_hw_level_en(ENABLE);
        twl4030battery_hw_presence_en(ENABLE);
 
+	   platform_set_drvdata(dev, di);
+
        /* settings for temperature sensing */
        ret = twl4030battery_temp_setup();
        if (ret)
@@ -980,7 +982,7 @@ static int twl4030_bci_battery_probe(struct  platform_device *dev)
        /* request BCI interruption */
 	    irq = platform_get_irq(dev, 1);
     	ret = request_irq(irq, twl4030battery_interrupt,
-						  0, dev->name, NULL);
+						  0, dev->name, di);
 	    if (ret) {
                pr_err("BATTERY DRIVER: (BCI) IRQ%d is not free.\n",
                        irq);
