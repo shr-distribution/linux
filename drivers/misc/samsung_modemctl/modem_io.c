@@ -598,6 +598,45 @@ static long pipe_ioctl(struct file *filp, unsigned int cmd, unsigned long _arg)
 	}
 }
 
+static ssize_t pipe_write(struct file *filp, const char __user *buf, size_t count, loff_t *ppos)
+{
+	struct m_pipe *pipe = filp->private_data;
+	struct modem_io mio;
+	int ret;
+
+	if (copy_from_user(&mio, buf, sizeof(mio)) != 0)
+		return -EFAULT;
+
+	if (mutex_lock_interruptible(&pipe->tx_lock))
+		return -EINTR;
+
+	ret = modem_pipe_send(pipe, &mio);
+	mutex_unlock(&pipe->tx_lock);
+
+	return ret;
+}
+
+static ssize_t pipe_read(struct file *filp, const char __user *buf, size_t count, loff_t *ppos)
+{
+	struct m_pipe *pipe = filp->private_data;
+	struct modem_io mio;
+	int ret;
+
+	if (copy_from_user(&mio, buf, sizeof(mio)) != 0)
+		return -EFAULT;
+
+	if (mutex_lock_interruptible(&pipe->rx_lock))
+		return -EINTR;
+
+	ret = modem_pipe_recv(pipe, &mio);
+	mutex_unlock(&pipe->rx_lock);
+
+	if (copy_to_user((void*) buf, &mio, sizeof(mio)) != 0)
+		return -EFAULT;
+
+	return ret;
+}
+
 static unsigned int pipe_poll(struct file *filp, poll_table *wait)
 {
 	unsigned long flags;
@@ -620,6 +659,8 @@ static const struct file_operations modem_io_fops = {
 	.owner =		THIS_MODULE,
 	.open =			pipe_open,
 	.poll =			pipe_poll,
+	.read =			pipe_read,
+	.write =		pipe_write,
 	.unlocked_ioctl =	pipe_ioctl,
 };
 
