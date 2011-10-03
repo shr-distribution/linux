@@ -39,7 +39,7 @@
 #include <linux/i2c/tsc2007.h>
 
 #include <linux/i2c/bmp085.h>
-#include <linux/power/bq27x00_battery.h>
+// #include <linux/power/bq27x00_battery.h>
 
 #include <linux/sysfs.h>
 
@@ -332,7 +332,6 @@ static struct platform_device gta04_bklight_device = {
 		.platform_data	= &gta04_bl_platform_data,
 	},
 };
-
 
 static struct regulator_consumer_supply gta04_vdac_supply = {
 	.supply		= "vdda_dac",
@@ -879,20 +878,6 @@ static void __init gta04_init_early(void)
 				  mt46h32m32lf6_sdrc_params);
 }
 
-#if 0
-#if defined(CONFIG_HDQ_MASTER_OMAP)
-
-static struct platform_device gta04_hdq_device = {
-	.name		= "omap-hdq",
-	.id			= 0,
-	.dev		= {
-		.platform_data	= NULL,
-	},
-};
-
-#endif
-#endif
-
 #if defined(CONFIG_REGULATOR_VIRTUAL_CONSUMER)
 
 static struct platform_device gta04_vaux1_virtual_regulator_device = {
@@ -929,17 +914,13 @@ static struct platform_device gta04_vaux4_virtual_regulator_device = {
 
 #endif
 
-#ifdef CONFIG_TWL4030_BCI_BATTERY
-static struct platform_device omap_bci_battery_device = {
-	.name           = "twl4030-bci-battery",
-	.id             = 0,
-	.dev			= {
-		.platform_data = &gta04_bci_data,
-	},
-	.num_resources  = 0,
-// 	.resource       = NULL,
+/* Loading the power supply part of the driver which talks
+ to the chip within the akkumulator we have strapped to they
+ internal HDQ controller of our CPU */
+static struct platform_device gta04_hdq_battery = {
+	.name		= "bq27000-bat",
+	.id			= 0,
 };
-#endif
 
 static struct platform_device *gta04_devices[] __initdata = {
 //	&leds_gpio,
@@ -947,14 +928,7 @@ static struct platform_device *gta04_devices[] __initdata = {
 // 	&gta04_dss_device,
 // 	&gta04_bklight_device,
 	&gta04_vwlan_device,
-#if 0
-#if defined(CONFIG_HDQ_MASTER_OMAP)
-	&gta04_hdq_device,
-#endif
-#endif
-#ifdef CONFIG_TWL4030_BCI_BATTERY
-	&omap_bci_battery_device,
-#endif
+// 	&gta04_hdq_battery,
 #if defined(CONFIG_REGULATOR_VIRTUAL_CONSUMER)
 	&gta04_vaux1_virtual_regulator_device,
 	&gta04_vaux2_virtual_regulator_device,
