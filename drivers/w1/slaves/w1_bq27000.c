@@ -20,6 +20,10 @@
 #include "../w1_int.h"
 #include "../w1_family.h"
 
+#ifdef CONFIG_BATTERY_BQ27x00
+#include "linux/power/bq27x00_battery.h"
+#endif
+
 #define HDQ_CMD_READ	(0)
 #define HDQ_CMD_WRITE	(1<<7)
 
@@ -54,6 +58,18 @@ int w1_bq27000_read(struct device *dev, u8 reg)
 }
 EXPORT_SYMBOL(w1_bq27000_read);
 
+#ifdef CONFIG_BATTERY_BQ27x00
+static inline void bq27000_init_regulator(struct platform_device *pdev)
+{
+	struct bq27000_platform_data bq27000_info;
+	bq27000_info.name = "bq27000-battery";
+	bq27000_info.read = w1_bq27000_read;
+	platform_device_add_data(pdev, &bq27000_info,sizeof(bq27000_info));
+}
+#else
+static inline void bq27000_init_regulator(struct platform_device *pdev){}
+#endif
+
 static int w1_bq27000_add_slave(struct w1_slave *sl)
 {
 	int ret;
@@ -72,6 +88,8 @@ static int w1_bq27000_add_slave(struct w1_slave *sl)
 		goto pdev_add_failed;
 
 	dev_set_drvdata(&sl->dev, pdev);
+
+	bq27000_init_regulator(pdev);
 
 	goto success;
 

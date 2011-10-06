@@ -39,7 +39,6 @@
 #include <linux/i2c/tsc2007.h>
 
 #include <linux/i2c/bmp085.h>
-// #include <linux/power/bq27x00_battery.h>
 
 #include <linux/sysfs.h>
 
@@ -914,21 +913,12 @@ static struct platform_device gta04_vaux4_virtual_regulator_device = {
 
 #endif
 
-/* Loading the power supply part of the driver which talks
- to the chip within the akkumulator we have strapped to they
- internal HDQ controller of our CPU */
-static struct platform_device gta04_hdq_battery = {
-	.name		= "bq27000-bat",
-	.id			= 0,
-};
-
 static struct platform_device *gta04_devices[] __initdata = {
 //	&leds_gpio,
 	&keys_gpio,
 // 	&gta04_dss_device,
 // 	&gta04_bklight_device,
 	&gta04_vwlan_device,
-// 	&gta04_hdq_battery,
 #if defined(CONFIG_REGULATOR_VIRTUAL_CONSUMER)
 	&gta04_vaux1_virtual_regulator_device,
 	&gta04_vaux2_virtual_regulator_device,
