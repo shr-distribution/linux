@@ -59,12 +59,22 @@ int w1_bq27000_read(struct device *dev, u8 reg)
 EXPORT_SYMBOL(w1_bq27000_read);
 
 #ifdef CONFIG_BATTERY_BQ27x00
+
+static struct bq27000_platform_data bq27000_battery_info = {
+	.read	= w1_bq27000_read,
+	.name	= "battery",
+};
+
+static struct platform_device bq27000_battery_device = {
+	.name	= "bq27000-battery",
+	.dev	= {
+		.platform_data = &bq27000_battery_info,
+	},
+};
+
 static inline void bq27000_init_regulator(struct platform_device *pdev)
 {
-	struct bq27000_platform_data bq27000_info;
-	bq27000_info.name = "bq27000-battery";
-	bq27000_info.read = w1_bq27000_read;
-	platform_device_add_data(pdev, &bq27000_info,sizeof(bq27000_info));
+	platform_device_add_data(pdev,&bq27000_battery_device,sizeof(bq27000_battery_device));
 }
 #else
 static inline void bq27000_init_regulator(struct platform_device *pdev){}
@@ -83,13 +93,14 @@ static int w1_bq27000_add_slave(struct w1_slave *sl)
 	}
 	pdev->dev.parent = &sl->dev;
 
+	bq27000_init_regulator(pdev);
+
 	ret = platform_device_add(pdev);
 	if (ret)
 		goto pdev_add_failed;
 
 	dev_set_drvdata(&sl->dev, pdev);
 
-	bq27000_init_regulator(pdev);
 
 	goto success;
 
