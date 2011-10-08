@@ -311,11 +311,13 @@ err:
 
 static void report_input_data(struct mxt224_data *data)
 {
-	int i;
+	int i, invalid_fingers = 0;
 
 	for (i = 0; i < data->num_fingers; i++) {
-		if (data->fingers[i].z == -1)
+		if (data->fingers[i].z == -1) {
+			invalid_fingers++;
 			continue;
+		}
 
 #ifdef CONFIG_SCREEN_DIMMER
 #ifdef CONFIG_TOUCH_WAKE
@@ -359,6 +361,11 @@ static void report_input_data(struct mxt224_data *data)
 		if (data->fingers[i].z == 0)
 		    data->fingers[i].z = -1;
 	}
+
+	/* If we don't have any fingers on the screen still send a mt sync event */
+	if (invalid_fingers == data->num_fingers)
+		input_mt_sync(data->input_dev);
+
 	data->finger_mask = 0;
 
 	input_sync(data->input_dev);
@@ -406,10 +413,10 @@ static irqreturn_t mxt224_irq_thread(int irq, void *ptr)
 						"\n", msg[0], msg[1]);
 			continue;
 		}
-	} while (!gpio_get_value(data->gpio_read_done));
 
-	if (data->finger_mask)
 		report_input_data(data);
+
+	} while (!gpio_get_value(data->gpio_read_done));
 
 	return IRQ_HANDLED;
 }
