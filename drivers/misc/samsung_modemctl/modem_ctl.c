@@ -98,12 +98,15 @@ static int read_multiple_data(struct modemctl *mc, int offset, char *buf,
 static int dpram_write_from_user(struct modemctl *mc, int addr,
 				const char __user *data, size_t size)
 {
+	int rc = 0;
+
 	if (!read_semaphore(mc)) {
 		pr_err("Semaphore is held by modem!");
 		return -EINVAL;
 	}
 
-	if (copy_from_user(mc->mmio + addr, data, size) < 0) {
+	rc = copy_from_user(mc->mmio + addr, data, size);
+	if (rc < 0) {
 		pr_err("[%s:%d] Copy from user failed\n", __func__, __LINE__);
 		return -EINVAL;
 	}
@@ -336,6 +339,7 @@ static int dpram_chk_delta_update(struct modemctl *mc,
 	char buf[DPRAM_MODEM_MSG_SIZE];
 	int debugprint = false;
 	int wait = 0;
+	int rc = 0;
 	/* check mailboxAB for the modem status */
 	status = get_mailbox_ab(mc);
 
@@ -393,7 +397,8 @@ out:
 	mc->dpram_prev_status = status;
 	if (put_user(percent, pct) < 0)
 		pr_err("[%s:%d] Copy to user failed\n", __func__, __LINE__);
-	if (copy_to_user((void *)msg, (void *)buf, DPRAM_MODEM_MSG_SIZE) < 0)
+	rc = copy_to_user((void *)msg, (void *)buf, DPRAM_MODEM_MSG_SIZE);
+	if (rc < 0)
 		pr_err("[%s:%d] Copy to user failed\n", __func__, __LINE__);
 	return err;
 }
@@ -839,12 +844,13 @@ static long modemctl_ioctl(struct file *filp,
 	/* CDMA modem update in recovery mode */
 	case IOCTL_MODEM_FW_UPDATE:
 		pr_info("IOCTL_MODEM_FW_UPDATE\n");
-		if (arg == NULL) {
+		if (arg == 0) {
 			pr_err("No firmware");
 			break;
 		}
 
-		if (copy_from_user((void *)&fw, (void *)arg, sizeof(fw)) < 0) {
+		ret = copy_from_user((void *)&fw, (void *)arg, sizeof(fw));
+		if (ret < 0) {
 			pr_err("copy from user failed!");
 			ret = -EINVAL;
 		} else if (dpram_process_modem_update(mc, &fw) < 0) {
@@ -870,6 +876,45 @@ static long modemctl_ioctl(struct file *filp,
 	pr_info("modemctl_ioctl() %d\n", ret);
 	return ret;
 }
+
+static ssize_t power_mode_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct modemctl *mc = (struct modemctl*) platform_get_drvdata(pdev);
+	int modem_status = modem_pwr_status(mc);
+	return snprintf(buf, PAGE_SIZE, "%d\n", modem_status ? 1 : 0);
+}
+
+static ssize_t power_mode_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct modemctl *mc = (struct modemctl*) platform_get_drvdata(pdev);
+	int val = simple_strtoul(buf, NULL, 0);
+
+	if (val)
+		modem_start(mc, 0);
+	else
+		modem_off(mc);
+
+	return count;
+}
+
+static ssize_t reset_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct modemctl *mc = (struct modemctl*) platform_get_drvdata(pdev);
+	int val = simple_strtoul(buf, NULL, 0);
+
+	if (val) {
+		modem_reset(mc);
+		MODEM_COUNT(mc,resets);
+	}
+
+	return count;
+}
+
+static DEVICE_ATTR(power_mode, S_IRUGO | S_IWUGO, power_mode_show, power_mode_store);
+static DEVICE_ATTR(reset, S_IWUGO, NULL, reset_store);
 
 static const struct file_operations modemctl_fops = {
 	.owner =		THIS_MODULE,
@@ -1138,6 +1183,14 @@ static int __devinit modemctl_probe(struct platform_device *pdev)
 	enable_irq_wake(mc->irq_mbox);
 
 	modem_debugfs_init(mc);
+
+	/* create sysfs nodes */
+	r = sysfs_create_file(&pdev->dev.kobj, &dev_attr_power_mode.attr);
+	if (r)
+		return r;
+	r = sysfs_create_file(&pdev->dev.kobj, &dev_attr_reset.attr);
+	if (r)
+		return r;
 
 	return 0;
 
