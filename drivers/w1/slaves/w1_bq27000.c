@@ -31,7 +31,7 @@ static int F_ID;
 
 void w1_bq27000_write(struct device *dev, u8 buf, u8 reg)
 {
-	struct w1_slave *sl = container_of(dev, struct w1_slave, dev);
+	struct w1_slave *sl = dev_to_w1_slave(dev);
 
 	if (!dev) {
 		pr_info("Could not obtain slave dev ptr\n");
@@ -46,61 +46,57 @@ EXPORT_SYMBOL(w1_bq27000_write);
 int w1_bq27000_read(struct device *dev, u8 reg)
 {
 	u8 val;
-	struct w1_slave *sl = container_of(dev, struct w1_slave, dev);
 
 	if (!dev)
 		return 0;
 
-	w1_write_8(sl->master, HDQ_CMD_READ | reg);
-	val = w1_read_8(sl->master);
+	struct w1_slave *sl = dev_to_w1_slave(dev);
+	struct w1_master *md = sl->master;
+
+	if(!sl)
+	{
+		printk("%s: sl is NULL, catching the OOPs\n",__func__);
+		return 0;
+	}
+
+	if(!md)
+	{
+		printk("%s: w1-master is NULL, catching the OOPs\n",__func__);
+		return 0;
+	}
+
+	w1_write_8(md, HDQ_CMD_READ | reg);
+	val = w1_read_8(md);
 
 	return val;
 }
 EXPORT_SYMBOL(w1_bq27000_read);
 
-#ifdef CONFIG_BATTERY_BQ27x00
-
 static struct bq27000_platform_data bq27000_battery_info = {
-	.read	= w1_bq27000_read,
-	.name	= "battery",
+	.read   = w1_bq27000_read,
+	.name   = "bq27000-battery",
 };
-
-static struct platform_device bq27000_battery_device = {
-	.name	= "bq27000-battery",
-	.dev	= {
-		.platform_data = &bq27000_battery_info,
-	},
-};
-
-static inline void bq27000_init_regulator(struct platform_device *pdev)
-{
-	platform_device_add_data(pdev,&bq27000_battery_device,sizeof(bq27000_battery_device));
-}
-#else
-static inline void bq27000_init_regulator(struct platform_device *pdev){}
-#endif
 
 static int w1_bq27000_add_slave(struct w1_slave *sl)
 {
 	int ret;
-	int id = 1;
 	struct platform_device *pdev;
 
-	pdev = platform_device_alloc("bq27000-battery", id);
+	pdev = platform_device_alloc("bq27000-battery", 0);
 	if (!pdev) {
 		ret = -ENOMEM;
 		return ret;
 	}
-	pdev->dev.parent = &sl->dev;
 
-	bq27000_init_regulator(pdev);
+	ret = platform_device_add_data(pdev, &bq27000_battery_info,sizeof(bq27000_battery_info));
+
+	pdev->dev.parent=&sl->dev;
 
 	ret = platform_device_add(pdev);
 	if (ret)
 		goto pdev_add_failed;
 
 	dev_set_drvdata(&sl->dev, pdev);
-
 
 	goto success;
 

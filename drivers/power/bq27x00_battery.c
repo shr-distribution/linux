@@ -86,6 +86,9 @@ struct bq27x00_reg_cache {
 
 struct bq27x00_device_info {
 	struct device 		*dev;
+#ifdef CONFIG_W1_SLAVE_BQ27000
+	struct device		*w1_dev;
+#endif
 	int			id;
 	enum bq27x00_chip	chip;
 
@@ -714,11 +717,28 @@ static inline void bq27x00_battery_i2c_exit(void) {};
 static int bq27000_read_platform(struct bq27x00_device_info *di, u8 reg,
 			bool single)
 {
-	struct device *dev = di->dev;
-	struct bq27000_platform_data *pdata = dev->platform_data;
+	struct device *dev = di->w1_dev;
+	
+	if(!dev) {
+		printk("%s: dev points to NULL\n",__func__);
+		return 0;
+	}
+	
+	struct bq27000_platform_data *pdata = di->dev->platform_data;
+	
+	if(!pdata) {
+		printk("%s: platform_data points to NULL\n",__func__);
+		return 0;
+	}
+	
 	unsigned int timeout = 3;
 	int upper, lower;
 	int temp;
+
+	if(!(pdata->read)) {
+		printk("%s: pdata->read points to NULL\n",__func__);
+		return 0;
+	}
 
 	if (!single) {
 		/* Make sure the value has not changed in between reading the
@@ -770,6 +790,7 @@ static int __devinit bq27000_battery_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, di);
 
 	di->dev = &pdev->dev;
+	di->w1_dev = pdev->dev.parent;
 	di->chip = BQ27000;
 
 	di->bat.name = pdata->name ?: dev_name(&pdev->dev);
