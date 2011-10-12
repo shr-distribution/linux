@@ -1142,8 +1142,6 @@ void s3cfb_early_suspend(struct early_suspend *h)
 	struct s3cfb_global *fbdev =
 		container_of(h, struct s3cfb_global, early_suspend);
 
-	return;
-
 	pr_debug("s3cfb_early_suspend is called\n");
 
 	s3cfb_display_off(fbdev);
