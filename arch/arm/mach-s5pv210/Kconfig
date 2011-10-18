@@ -145,6 +145,12 @@ config MACH_HERRING
 	help
 	  Machine support for Herring
 
+config HERRING_WIFI
+	select WIRELESS_EXT
+	depends on MACH_HERRING
+	default m
+	tristate "Herring wifi activator"
+
 config S5PV210_SETUP_FB
 	bool
 	depends on FB_S3C
