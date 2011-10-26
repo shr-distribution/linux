@@ -661,7 +661,7 @@ struct _pll_div {
  * to allow rounding later */
 #define FIXED_PLL_SIZE ((1 << 22) * 10)
 
-static void pll_factors(struct _pll_div *pll_div, unsigned int target,
+static noinline void pll_factors(struct _pll_div *pll_div, unsigned int target,
 	unsigned int source)
 {
 	u64 Kpart;
