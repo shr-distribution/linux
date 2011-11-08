@@ -16,7 +16,7 @@
 #include <plat/map-base.h>
 #include <plat/map-s5p.h>
 
-#define S5PV210_PA_SDRAM		0x20000000
+#define S5PV210_PA_SDRAM		0x30000000
 
 #define S5PV210_PA_SROM_BANK5		0xA8000000
 

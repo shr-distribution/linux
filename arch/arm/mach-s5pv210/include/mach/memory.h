@@ -13,7 +13,7 @@
 #ifndef __ASM_ARCH_MEMORY_H
 #define __ASM_ARCH_MEMORY_H
 
-#define PLAT_PHYS_OFFSET		UL(0x20000000)
+#define PLAT_PHYS_OFFSET		UL(0x30000000)
 
 /*
  * Sparsemem support
@@ -24,4 +24,7 @@
 #define MAX_PHYSMEM_BITS	31
 #define SECTION_SIZE_BITS	28
 
+#if defined(CONFIG_MACH_S5PC110_CRESPO)
+#define NODE_MEM_SIZE_BITS   28
+ #endif
 #endif /* __ASM_ARCH_MEMORY_H */
