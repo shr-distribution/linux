@@ -12,12 +12,15 @@ typedef struct page *new_page_t(struct page *, unsigned long private, int **);
 extern int putback_lru_pages(struct list_head *l);
 extern int migrate_page(struct address_space *,
 			struct page *, struct page *);
-extern int migrate_pages(struct list_head *l, new_page_t x, unsigned long);
+extern int migrate_pages(struct list_head *l, new_page_t x,
+			unsigned long private, int offlining,
+			bool sync);
 
 extern int fail_migrate_page(struct address_space *,
 			struct page *, struct page *);
 
 extern int migrate_prep(void);
+extern int migrate_prep_local(void);
 extern int migrate_vmas(struct mm_struct *mm,
 		const nodemask_t *from, const nodemask_t *to,
 		unsigned long flags);
@@ -26,12 +29,11 @@ extern int migrate_vmas(struct mm_struct *mm,
 
 static inline int putback_lru_pages(struct list_head *l) { return 0; }
 static inline int migrate_pages(struct list_head *l, new_page_t x,
-		unsigned long private) { return -ENOSYS; }
-
-static inline int migrate_pages_to(struct list_head *pagelist,
-			struct vm_area_struct *vma, int dest) { return 0; }
+		unsigned long private, int offlining,
+		bool sync) { return -ENOSYS; }
 
 static inline int migrate_prep(void) { return -ENOSYS; }
+static inline int migrate_prep_local(void) { return -ENOSYS; }
 
 static inline int migrate_vmas(struct mm_struct *mm,
 		const nodemask_t *from, const nodemask_t *to,

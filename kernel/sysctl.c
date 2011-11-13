@@ -36,6 +36,7 @@
 #include <linux/sysrq.h>
 #include <linux/highuid.h>
 #include <linux/writeback.h>
+#include <linux/compaction.h>
 #include <linux/hugetlb.h>
 #include <linux/initrd.h>
 #include <linux/key.h>
@@ -77,8 +78,13 @@ extern int core_uses_pid;
 extern int suid_dumpable;
 extern char core_pattern[];
 extern unsigned int core_pipe_limit;
+#ifdef CONFIG_MINI_CORE
+extern char minicore_pattern[];
+extern int minicore_timeout;
+#endif
 extern int pid_max;
 extern int min_free_kbytes;
+extern int min_free_order_shift;
 extern int pid_max_min, pid_max_max;
 extern int sysctl_drop_caches;
 extern int percpu_pagelist_fraction;
@@ -248,6 +254,11 @@ static int min_sched_granularity_ns = 100000;		/* 100 usecs */
 static int max_sched_granularity_ns = NSEC_PER_SEC;	/* 1 second */
 static int min_wakeup_granularity_ns;			/* 0 usecs */
 static int max_wakeup_granularity_ns = NSEC_PER_SEC;	/* 1 second */
+#endif
+
+#ifdef CONFIG_COMPACTION
+static int min_extfrag_threshold;
+static int max_extfrag_threshold = 1000;
 #endif
 
 static struct ctl_table kern_table[] = {
@@ -438,6 +449,25 @@ static struct ctl_table kern_table[] = {
 		.maxlen 	= sizeof(long),
 		.mode		= 0644,
 		.proc_handler	= &proc_taint,
+	},
+#endif
+#ifdef CONFIG_MINI_CORE
+	{
+		.ctl_name	= KERN_MINICORE_PATTERN,
+		.procname	= "minicore_pattern",
+		.data		= minicore_pattern,
+		.maxlen		= 64,
+		.mode		= 0644,
+		.proc_handler	= &proc_dostring,
+		.strategy	= &sysctl_string,
+	},
+	{
+		.ctl_name	= KERN_MINICORE_TIMEOUT,
+		.procname	= "minicore_timeout",
+		.data		= &minicore_timeout,
+		.maxlen		= sizeof(minicore_timeout),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
 	},
 #endif
 #ifdef CONFIG_LATENCYTOP
@@ -1218,6 +1248,25 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= drop_caches_sysctl_handler,
 		.strategy	= &sysctl_intvec,
 	},
+#ifdef CONFIG_COMPACTION
+	{
+		.procname	= "compact_memory",
+		.data		= &sysctl_compact_memory,
+		.maxlen		= sizeof(int),
+		.mode		= 0200,
+		.proc_handler	= sysctl_compaction_handler,
+	},
+	{
+		.procname	= "extfrag_threshold",
+		.data		= &sysctl_extfrag_threshold,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= sysctl_extfrag_handler,
+		.extra1		= &min_extfrag_threshold,
+		.extra2		= &max_extfrag_threshold,
+	},
+
+#endif /* CONFIG_COMPACTION */
 	{
 		.ctl_name	= VM_MIN_FREE_KBYTES,
 		.procname	= "min_free_kbytes",
@@ -1227,6 +1276,14 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= &min_free_kbytes_sysctl_handler,
 		.strategy	= &sysctl_intvec,
 		.extra1		= &zero,
+	},
+	{
+		.ctl_name	= CTL_UNNUMBERED,
+		.procname	= "min_free_order_shift",
+		.data		= &min_free_order_shift,
+		.maxlen		= sizeof(min_free_order_shift),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec
 	},
 	{
 		.ctl_name	= VM_PERCPU_PAGELIST_FRACTION,
@@ -1345,6 +1402,7 @@ static struct ctl_table vm_table[] = {
 		.strategy	= &sysctl_jiffies,
 	},
 #endif
+#ifdef CONFIG_MMU
 	{
 		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "mmap_min_addr",
@@ -1353,6 +1411,7 @@ static struct ctl_table vm_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &mmap_min_addr_handler,
 	},
+#endif
 #ifdef CONFIG_NUMA
 	{
 		.ctl_name	= CTL_UNNUMBERED,
@@ -1605,7 +1664,8 @@ static struct ctl_table debug_table[] = {
 		.data		= &show_unhandled_signals,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= proc_dointvec
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
 	},
 #endif
 	{ .ctl_name = 0 }
