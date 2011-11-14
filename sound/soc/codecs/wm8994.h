@@ -20,6 +20,10 @@ extern struct snd_soc_dai wm8994_dai[];
 #define WM8994_SYSCLK_FLL1  3
 #define WM8994_SYSCLK_FLL2  4
 
+/* From Samsung */
+#define WM8994_SYSCLK_MCLK  1
+#define WM8994_SYSCLK_FLL   2
+
 #define WM8994_FLL1 1
 #define WM8994_FLL2 2
 
@@ -27,6 +31,11 @@ extern struct snd_soc_dai wm8994_dai[];
 #define WM8994_FLL_SRC_MCLK2  2
 #define WM8994_FLL_SRC_LRCLK  3
 #define WM8994_FLL_SRC_BCLK   4
+
+struct wm8994_setup_data {
+	int i2c_bus;
+	unsigned short i2c_address;
+};
 
 int wm8994_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
 		      int micbias, int det, int shrt);
