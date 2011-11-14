@@ -53,7 +53,7 @@
 #include <linux/notifier.h>
 #include <linux/reboot.h>
 #include <linux/wlan_plat.h>
-#include <linux/mfd/wm8994/wm8994_pdata.h>
+#include <linux/mfd/wm8994/pdata.h>
 
 #ifdef CONFIG_ANDROID_PMEM
 #include <linux/android_pmem.h>
@@ -2103,10 +2103,12 @@ static void sec_jack_set_micbias_state(bool on)
 		gpio_set_value(GPIO_EAR_MICBIAS_EN, on);
 }
 
-static struct wm8994_platform_data wm8994_pdata = {
+static struct wm8994_pdata wm8994_platform_data = {
+#if 0
 	.ldo = GPIO_CODEC_LDO_EN,
 	.ear_sel = GPIO_EAR_SEL,
 	.set_mic_bias = wm8994_set_mic_bias,
+#endif
 };
 
 /*
@@ -2727,7 +2729,7 @@ static struct i2c_board_info i2c_devs0[] __initdata = {
 static struct i2c_board_info i2c_devs4[] __initdata = {
 	{
 		I2C_BOARD_INFO("wm8994", (0x34>>1)),
-		.platform_data = &wm8994_pdata,
+		.platform_data = &wm8994_platform_data,
 	},
 };
 
