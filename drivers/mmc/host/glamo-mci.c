@@ -672,8 +672,10 @@ static struct mmc_host_ops glamo_mci_ops = {
 	.enable		= glamo_mci_clock_enable,
 	.disable	= glamo_mci_clock_disable,
 	.request	= glamo_mci_send_request,
+/*	
 	.post_req	= glamo_mci_post_request,
 	.pre_req	= glamo_mci_pre_request,
+*/
 	.set_ios	= glamo_mci_set_ios,
 };
 
