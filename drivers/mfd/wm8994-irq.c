@@ -182,7 +182,7 @@ static void wm8994_irq_sync_unlock(unsigned int irq)
 	mutex_unlock(&wm8994->irq_lock);
 }
 
-static void wm8994_irq_unmask(unsigned int irq)
+static void wm8994_irq_enable(unsigned int irq)
 {
 	struct wm8994 *wm8994 = get_irq_chip_data(irq);
 	struct wm8994_irq_data *irq_data = irq_to_wm8994_irq(wm8994, irq);
@@ -190,7 +190,7 @@ static void wm8994_irq_unmask(unsigned int irq)
 	wm8994->irq_masks_cur[irq_data->reg - 1] &= ~irq_data->mask;
 }
 
-static void wm8994_irq_mask(unsigned int irq)
+static void wm8994_irq_disable(unsigned int irq)
 {
 	struct wm8994 *wm8994 = get_irq_chip_data(irq);
 	struct wm8994_irq_data *irq_data = irq_to_wm8994_irq(wm8994, irq);
@@ -202,8 +202,8 @@ static struct irq_chip wm8994_irq_chip = {
 	.name = "wm8994",
 	.bus_lock = wm8994_irq_lock,
 	.bus_sync_unlock = wm8994_irq_sync_unlock,
-	.mask = wm8994_irq_mask,
-	.unmask = wm8994_irq_unmask,
+	.enable = wm8994_irq_enable,
+	.disable = wm8994_irq_disable,
 };
 
 /* The processing of the primary interrupt occurs in a thread so that
@@ -223,9 +223,11 @@ static irqreturn_t wm8994_irq_thread(int irq, void *data)
 		return IRQ_NONE;
 	}
 
-	/* Apply masking */
-	for (i = 0; i < WM8994_NUM_IRQ_REGS; i++)
+	/* Bit swap and apply masking */
+	for (i = 0; i < WM8994_NUM_IRQ_REGS; i++) {
+		status[i] = be16_to_cpu(status[i]);
 		status[i] &= ~wm8994->irq_masks_cur[i];
+	}
 
 	/* Report */
 	for (i = 0; i < ARRAY_SIZE(wm8994_irqs); i++) {

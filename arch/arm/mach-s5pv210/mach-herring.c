@@ -53,7 +53,7 @@
 #include <linux/notifier.h>
 #include <linux/reboot.h>
 #include <linux/wlan_plat.h>
-#include <linux/mfd/wm8994/wm8994_pdata.h>
+#include <linux/mfd/wm8994/pdata.h>
 
 #ifdef CONFIG_ANDROID_PMEM
 #include <linux/android_pmem.h>
@@ -1542,7 +1542,7 @@ static struct platform_device s3c_device_i2c12 = {
 static struct i2c_gpio_platform_data i2c14_platdata = {
 	.sda_pin		= NFC_SDA_18V,
 	.scl_pin		= NFC_SCL_18V,
-	.udelay			= 2,
+	.udelay			= 1,
 	.sda_is_open_drain      = 0,
 	.scl_is_open_drain      = 0,
 	.scl_is_output_only     = 0,
@@ -2069,44 +2069,131 @@ static struct s3c_adc_mach_info s3c_adc_platform __initdata = {
 };
 #endif
 
-/* in revisions before 0.9, there is a common mic bias gpio */
-
-static DEFINE_SPINLOCK(mic_bias_lock);
-static bool wm8994_mic_bias;
-static bool jack_mic_bias;
-static void set_shared_mic_bias(void)
-{
-	gpio_set_value(GPIO_MICBIAS_EN, wm8994_mic_bias || jack_mic_bias);
-}
-
-static void wm8994_set_mic_bias(bool on)
-{
-	if (system_rev < 0x09) {
-		unsigned long flags;
-		spin_lock_irqsave(&mic_bias_lock, flags);
-		wm8994_mic_bias = on;
-		set_shared_mic_bias();
-		spin_unlock_irqrestore(&mic_bias_lock, flags);
-	} else
-		gpio_set_value(GPIO_MICBIAS_EN, on);
-}
-
 static void sec_jack_set_micbias_state(bool on)
 {
-	if (system_rev < 0x09) {
-		unsigned long flags;
-		spin_lock_irqsave(&mic_bias_lock, flags);
-		jack_mic_bias = on;
-		set_shared_mic_bias();
-		spin_unlock_irqrestore(&mic_bias_lock, flags);
-	} else
-		gpio_set_value(GPIO_EAR_MICBIAS_EN, on);
+	gpio_set_value(GPIO_EAR_MICBIAS_EN, on);
 }
 
-static struct wm8994_platform_data wm8994_pdata = {
-	.ldo = GPIO_CODEC_LDO_EN,
-	.ear_sel = GPIO_EAR_SEL,
-	.set_mic_bias = wm8994_set_mic_bias,
+static struct regulator_consumer_supply wm8994_avdd1_supply[] = {
+	{
+		.dev_name	= "4-001a",
+		.supply		= "AVDD1",
+	}, {
+		.dev_name	= "4-001a",
+		.supply		= "DBVDD",
+	}, {
+		.dev_name	= "4-001a",
+		.supply		= "AVDD2",
+	}, {
+		.dev_name	= "4-001a",
+		.supply		= "CPVDD",
+	}, {
+		.dev_name	= "4-001a",
+		.supply		= "SPKVDD1",
+	}, {
+		.dev_name	= "4-001a",
+		.supply		= "SPKVDD2",
+	},
+};
+
+static struct regulator_consumer_supply wm8994_dcvdd_supply[] = {
+	{
+		.dev_name	= "4-001a",
+		.supply		= "DCVDD",
+	},
+};
+
+static struct regulator_init_data wm8994_ldo1 = {
+	.constraints	= {
+		.name		= "AVDD1_3.0V",
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies	= ARRAY_SIZE(wm8994_avdd1_supply),
+	.consumer_supplies	= wm8994_avdd1_supply,
+};
+
+static struct regulator_init_data wm8994_ldo2 = {
+	.constraints	= {
+		.name		= "DCVDD_1.0V",
+	},
+	.num_consumer_supplies	= ARRAY_SIZE(wm8994_dcvdd_supply),
+	.consumer_supplies	= wm8994_dcvdd_supply,
+};
+
+/*
+ * If application layer need to set drc and eq through codec device,
+ * use platform_data of wm8994 chip.
+ * because user can extend the number of drc and eq,
+ * use array.
+ */
+struct wm8994_drc_cfg wm8994_crespo_drc_cfgs[] = {
+	{
+		.name = "Hifi_Playback_DRC",
+		.regs[0] = 0x00BC,
+		.regs[1] = 0x0845,
+		.regs[2] = 0x0028,
+		.regs[3] = 0x0186,
+		.regs[4] = 0x0000,
+	},
+};
+
+struct wm8994_retune_mobile_cfg wm8994_crespo_eq_cfgs[] = {
+	{
+		.name = "Hifi_Playback_EQ",
+		.rate = 44100,
+		.regs[0] = 0x0019,/* 480h */
+		.regs[1] = 0x6280,/* 481h */
+		.regs[2] = 0x0FC3,/* 482h */
+		.regs[3] = 0x03FD,/* 483h */
+		.regs[4] = 0x00F4,/* 484h */
+		.regs[5] = 0x1F30,/* 485h */
+		.regs[6] = 0xF0CD,/* 486h */
+		.regs[7] = 0x040A,/* 487h */
+		.regs[8] = 0x032C,/* 488h */
+		.regs[9] = 0x1C52,/* 489h */
+		.regs[10] = 0xF379,/* 48Ah */
+		.regs[11] = 0x040A,/* 48Bh */
+		.regs[12] = 0x0DC1,/* 48Ch */
+		.regs[13] = 0x168E,/* 48Dh */
+		.regs[14] = 0xF829,/* 48Eh */
+		.regs[15] = 0x07AD,/* 48Fh */
+		.regs[16] = 0x1103,/* 490h */
+		.regs[17] = 0x0564,/* 491h */
+		.regs[18] = 0x0559,/* 492h */
+		.regs[19] = 0x4000,/* 493h */
+	},
+};
+
+
+static struct wm8994_pdata wm8994_pdata = {
+	.ldo = {
+		{
+			.enable = GPIO_CODEC_LDO_EN,
+			.init_data = &wm8994_ldo1
+		},
+		{
+			.init_data = &wm8994_ldo2
+		},
+	},
+
+	/* AIF2 and AIF3 in AIF function mode, other GPIOs not in use */
+	.gpio_defaults = {
+		 0xa101, 0x8100, 0x0100, 0x0100, 0x8100, 0xa101,
+		 0x0100, 0x8100, 0x0100, 0x0100, 0x0100
+	 },
+	 .drc_cfgs = wm8994_crespo_drc_cfgs,
+	 .num_drc_cfgs = ARRAY_SIZE(wm8994_crespo_drc_cfgs),
+	 .retune_mobile_cfgs = wm8994_crespo_eq_cfgs,
+	 .num_retune_mobile_cfgs = ARRAY_SIZE(wm8994_crespo_eq_cfgs),
+
+	/*
+	 * Mark the line outputs as differential so that the driver
+	 * knows that it can power the CODEC down to cold without
+	 * worrying about audible noise (the line outputs being VMID
+	 * referenced on this device).
+	 */
+	.lineout1_diff = true,
+	.lineout2_diff = true,
 };
 
 /*
@@ -5604,6 +5691,8 @@ static void __init sound_init(void)
 	__raw_writel(reg, S5P_CLK_OUT);
 
 	gpio_request(GPIO_MICBIAS_EN, "micbias_enable");
+
+	gpio_request(GPIO_EAR_SEL, "earsel_enable");
 }
 
 static s8 accel_rotation_wimax_rev0[9] = {
@@ -5893,9 +5982,8 @@ void otg_phy_init(void)
 	writel(readl(S3C_USBOTG_PHYTUNE) | (0x1<<20),
 			S3C_USBOTG_PHYTUNE);
 
-	/* set DC level as 6 (6%) */
-	writel((readl(S3C_USBOTG_PHYTUNE) & ~(0xf)) | (0x1<<2) | (0x1<<1),
-			S3C_USBOTG_PHYTUNE);
+	/* set DC level as 0xf (24%) */
+	writel(readl(S3C_USBOTG_PHYTUNE) | 0xf, S3C_USBOTG_PHYTUNE);
 }
 EXPORT_SYMBOL(otg_phy_init);
 

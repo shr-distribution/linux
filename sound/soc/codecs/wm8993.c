@@ -730,6 +730,7 @@ static int class_w_put(struct snd_kcontrol *kcontrol,
 					    0);
 		}
 		wm8993->class_w_users++;
+		wm8993->hubs_data.class_w = true;
 	}
 
 	/* Implement the change */
@@ -746,6 +747,7 @@ static int class_w_put(struct snd_kcontrol *kcontrol,
 					    WM8993_CP_DYN_V);
 		}
 		wm8993->class_w_users--;
+		wm8993->hubs_data.class_w = false;
 	}
 
 	dev_dbg(codec->dev, "Indirect DAC use count now %d\n",
@@ -870,7 +872,7 @@ SND_SOC_DAPM_MIXER("SPKL", WM8993_POWER_MANAGEMENT_3, 8, 0,
 		   left_speaker_mixer, ARRAY_SIZE(left_speaker_mixer)),
 SND_SOC_DAPM_MIXER("SPKR", WM8993_POWER_MANAGEMENT_3, 9, 0,
 		   right_speaker_mixer, ARRAY_SIZE(right_speaker_mixer)),
-
+SND_SOC_DAPM_PGA("Direct Voice", SND_SOC_NOPM, 0, 0, NULL, 0),
 };
 
 static const struct snd_soc_dapm_route routes[] = {
@@ -1575,6 +1577,7 @@ static int wm8993_i2c_probe(struct i2c_client *i2c,
 
 	wm8993->hubs_data.hp_startup_mode = 1;
 	wm8993->hubs_data.dcs_codes = -2;
+	wm8993->hubs_data.series_startup = 1;
 
 	memcpy(wm8993->reg_cache, wm8993_reg_defaults,
 	       sizeof(wm8993->reg_cache));

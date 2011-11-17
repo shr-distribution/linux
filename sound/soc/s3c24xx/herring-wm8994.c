@@ -18,6 +18,9 @@
 #include <sound/soc-dapm.h>
 #include <mach/regs-clock.h>
 #include <plat/regs-iis.h>
+#include <mach/gpio.h>
+#include <mach/gpio-herring.h>
+
 #include "../codecs/wm8994.h"
 #include "s3c-dma.h"
 #include "s5pc1xx-i2s.h"
@@ -35,21 +38,225 @@
 #define debug_msg(x...)
 #endif
 
+static const char *hp_analogue_text[] = {
+	"Playback Mode", "VoiceCall Mode"
+};
+
+static const struct soc_enum hp_mode_enum[] = {
+	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(hp_analogue_text), hp_analogue_text),
+};
+
+static int get_hp_output_mode(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	printk(KERN_DEBUG "It doens't support get() func. user doesn't need to read\n");
+
+	return 0;
+}
+
+static int set_hp_output_mode(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	unsigned int mode = ucontrol->value.integer.value[0];
+
+	debug_msg("set hp mode : %s\n", hp_analogue_text[mode]);
+
+	gpio_set_value(GPIO_EAR_SEL, mode);
+
+	return 0;
+}
+
+static const struct snd_kcontrol_new herring_controls[] = {
+	SOC_ENUM_EXT("HP Output Mode", hp_mode_enum[0],
+			get_hp_output_mode, set_hp_output_mode),
+
+	SOC_DAPM_PIN_SWITCH("HP"),
+	SOC_DAPM_PIN_SWITCH("SPK"),
+	SOC_DAPM_PIN_SWITCH("RCV"),
+};
+
+static int main_mic_event(struct snd_soc_dapm_widget *w,
+		struct snd_kcontrol *kcontrol, int event)
+{
+	debug_msg("mic event = %d\n", event);
+
+	gpio_set_value(GPIO_MICBIAS_EN, SND_SOC_DAPM_EVENT_ON(event) ? 1 : 0);
+
+	return 0;
+}
+
+/*
+ * Main Mic Bias : is controlled by DAPM widget
+ * HeadSet Mic Bias : is controlled by jack driver
+ * send_end key interrupt must be worked when stream is unactive
+ */
+static const struct snd_soc_dapm_widget herring_dapm_widgets[] = {
+	SND_SOC_DAPM_MIC("Main Mic", main_mic_event),
+	SND_SOC_DAPM_MIC("Headset Mic", NULL),
+
+	SND_SOC_DAPM_HP("HP", NULL),
+	SND_SOC_DAPM_SPK("RCV", NULL),
+	SND_SOC_DAPM_SPK("SPK", NULL),
+};
+
+static const struct snd_soc_dapm_route herring_dapm_routes[] = {
+	{"IN1LN", NULL, "Main Mic"},
+	{"IN1LP", NULL, "Main Mic"},
+	{"IN1RN", NULL, "Headset Mic"},
+	{"IN1RP", NULL, "Headset Mic"},
+
+	{"HP", NULL, "HPOUT1L"},
+	{"HP", NULL, "HPOUT1R"},
+	{"SPK", NULL, "SPKOUTLN"},
+	{"SPK", NULL, "SPKOUTLP"},
+	{"RCV", NULL, "HPOUT2N"},
+	{"RCV", NULL, "HPOUT2P"},
+};
+
+static int herring_wm8994_init(struct snd_soc_codec *codec)
+{
+	int err;
+
+	/* add herring specific kcontorls */
+	err = snd_soc_add_controls(codec, herring_controls,
+			ARRAY_SIZE(herring_controls));
+
+	if (err < 0)
+		return err;
+
+	/* add herring specific widgets */
+	snd_soc_dapm_new_controls(codec, herring_dapm_widgets,
+			ARRAY_SIZE(herring_dapm_widgets));
+
+	/* set up herring specific audio routes */
+	snd_soc_dapm_add_routes(codec, herring_dapm_routes,
+			ARRAY_SIZE(herring_dapm_routes));
+
+	/* set endpoints to not connected */
+	snd_soc_dapm_nc_pin(codec, "IN2LP:VXRN");
+	snd_soc_dapm_nc_pin(codec, "IN2LP:VXRP");
+	snd_soc_dapm_nc_pin(codec, "LINEOUT1N");
+	snd_soc_dapm_nc_pin(codec, "LINEOUT1P");
+	snd_soc_dapm_nc_pin(codec, "LINEOUT2N");
+	snd_soc_dapm_nc_pin(codec, "LINEOUT2P");
+	snd_soc_dapm_nc_pin(codec, "SPKOUTRN");
+	snd_soc_dapm_nc_pin(codec, "SPKOUTRP");
+
+	/*
+	  * ignore codec suspend if both end points are connected
+	  * if use-case is only one endpoint,
+	  * AP can't enter sleep(playback or capture)
+	  */
+	snd_soc_dapm_ignore_suspend(codec, "Main Mic");
+	snd_soc_dapm_ignore_suspend(codec, "Headset Mic");
+	snd_soc_dapm_ignore_suspend(codec, "Earpiece Driver");
+	snd_soc_dapm_ignore_suspend(codec, "SPKL Driver");
+	snd_soc_dapm_ignore_suspend(codec, "Headphone Supply");
+
+	snd_soc_dapm_sync(codec);
+
+	return 0;
+}
+
+static int set_main_clk_on_suspend(bool on)
+{
+	struct clk *codec_main_clk;
+
+	codec_main_clk = clk_get(NULL, "usb_osc");
+
+	if (!codec_main_clk)
+		return -EINVAL;
+
+	if (on) {
+		clk_enable(codec_main_clk);
+		debug_msg("Main clk was enabled on suspend\n");
+	} else {
+		clk_disable(codec_main_clk);
+		debug_msg("Main clk was disabled on suspend\n");
+	}
+
+	return 1;
+
+}
+
+/*
+ * Since we don't want to reclock on the fly (as it will glitch audio)
+ * and we ensure that the CODEC is always clocked from the highest
+ * clock we might want to use in any use case.  As the AP always sends
+ * us 44.1kHz audio we clock AIF1 at 256fs of that using the FLL,
+ * making this much higher than the rates we need for telephony
+ * clocks.  This ensures that the CODEC is always clocked from AIF1
+ * and we can therefore always activate AIF1 if need be.
+ *
+ * TODO: Manage the AP clock here as well; we can control the clock
+ * which provides MCLK1.
+ */
+static int set_bias_level_post(struct snd_soc_card *card,
+			       enum snd_soc_bias_level level)
+{
+	static enum snd_soc_bias_level cur_level;
+	struct snd_soc_codec *codec = card->codec;
+	struct snd_soc_dai *aif1 = &codec->dai[0];
+	int ret = 0;
+
+	switch (level) {
+	case SND_SOC_BIAS_STANDBY:
+		if (cur_level == SND_SOC_BIAS_OFF) {
+			set_main_clk_on_suspend(1);
+
+			ret = snd_soc_dai_set_pll(aif1, WM8994_FLL1,
+						  WM8994_FLL_SRC_MCLK1,
+						  24000000, 44100 * 256);
+			if (ret < 0)
+				pr_err("snd_soc_dai_set_pll failed: %d\n",
+				       ret);
+
+			ret = snd_soc_dai_set_sysclk(aif1,
+						     WM8994_SYSCLK_FLL1,
+						     44100 * 256, 0);
+			if (ret < 0) {
+				pr_err("snd_soc_dai_set_sysclk failed: %d\n",
+				       ret);
+			}
+		}
+		break;
+
+	case SND_SOC_BIAS_OFF:
+		ret = snd_soc_dai_set_sysclk(aif1,
+					     WM8994_SYSCLK_MCLK1,
+					     24000000, 0);
+		if (ret < 0) {
+			pr_err("snd_soc_dai_set_sysclk failed: %d\n",
+			       ret);
+		}
+
+		ret = snd_soc_dai_set_pll(aif1, WM8994_FLL1, 0, 0, 0);
+		if (ret < 0) {
+			pr_err("snd_soc_dai_set_pll failed: %d\n",
+			       ret);
+		}
+		set_main_clk_on_suspend(0);
+		break;
+
+	default:
+		break;
+	}
+
+	cur_level = level;
+
+	return 0;
+}
+
 /*  BLC(bits-per-channel) --> BFS(bit clock shud be >= FS*(Bit-per-channel)*2)*/
 /*  BFS --> RFS(must be a multiple of BFS)                                  */
 /*  RFS & SRC_CLK --> Prescalar Value(SRC_CLK / RFS_VAL / fs - 1)           */
-int smdkc110_hw_params(struct snd_pcm_substream *substream,
+static int herring_hifi_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *cpu_dai = rtd->dai->cpu_dai;
 	struct snd_soc_dai *codec_dai = rtd->dai->codec_dai;
 	int bfs, rfs, ret;
-	u32 ap_codec_clk;
-#ifndef CONFIG_SND_S5P_WM8994_MASTER
-	struct clk    *clk_out, *clk_epll;
-	int psr;
-#endif
 	debug_msg("%s\n", __func__);
 
 	/* Choose BFS and RFS values combination that is supported by
@@ -78,13 +285,12 @@ int smdkc110_hw_params(struct snd_pcm_substream *substream,
 			return -EINVAL;
 	}
 
-#ifdef CONFIG_SND_S5P_WM8994_MASTER
 	/* Set the Codec DAI configuration */
 	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
 				SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBM_CFM);
 
 	if (ret < 0) {
-		printk(KERN_ERR "smdkc110_wm8994_hw_params :\
+		printk(KERN_ERR "herring_hifi_hw_params :\
 				 Codec DAI configuration error!\n");
 		return ret;
 	}
@@ -95,7 +301,7 @@ int smdkc110_hw_params(struct snd_pcm_substream *substream,
 
 	if (ret < 0) {
 		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params :\
+			"herring_hifi_hw_params :\
 				AP DAI configuration error!\n");
 		return ret;
 	}
@@ -106,7 +312,7 @@ int smdkc110_hw_params(struct snd_pcm_substream *substream,
 
 	if (ret < 0) {
 		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params :\
+			"herring_hifi_hw_params :\
 			AP sys clock INT setting error!\n");
 		return ret;
 	}
@@ -115,242 +321,217 @@ int smdkc110_hw_params(struct snd_pcm_substream *substream,
 					params_rate(params), SND_SOC_CLOCK_IN);
 	if (ret < 0) {
 		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params :\
+			"herring_hifi_hw_params :\
 			AP sys clock I2SEXT setting error!\n");
 		return ret;
 	}
 
-	switch (params_rate(params)) {
-
-	case 8000:
-		ap_codec_clk = 4096000;
-		break;
-	case 11025:
-		ap_codec_clk = 2822400;
-		break;
-	case 12000:
-		ap_codec_clk = 6144000;
-		break;
-	case 16000:
-		ap_codec_clk = 4096000;
-		break;
-	case 22050:
-		ap_codec_clk = 6144000;
-		break;
-	case 24000:
-		ap_codec_clk = 6144000;
-		break;
-	case 32000:
-		ap_codec_clk = 8192000;
-		break;
-	case 44100:
-		ap_codec_clk = 11289600;
-		break;
-	case 48000:
-		ap_codec_clk = 12288000;
-		break;
-	default:
-		ap_codec_clk = 11289600;
-		break;
-	}
-
-	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_FLL,
-					ap_codec_clk, 0);
-	if (ret < 0)
-		return ret;
-#else
-	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
-				SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
-
-	if (ret < 0)
-		return ret;
-	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
-				SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
-
-	if (ret < 0)
-
-		return ret;
-	ret = snd_soc_dai_set_sysclk(cpu_dai, S3C64XX_CLKSRC_CDCLK,
-					params_rate(params), SND_SOC_CLOCK_OUT);
-	if (ret < 0)
-		return ret;
-#ifdef USE_CLKAUDIO
-	ret = snd_soc_dai_set_sysclk(cpu_dai, S3C_CLKSRC_CLKAUDIO,
-					params_rate(params), SND_SOC_CLOCK_OUT);
-
-	if (ret < 0) {
-		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params : \
-			AP sys clock setting error!\n");
-		return ret;
-	}
-#endif
-	clk_out = clk_get(NULL, "clk_out");
-	if (IS_ERR(clk_out)) {
-			printk(KERN_ERR
-				"failed to get CLK_OUT\n");
-			return -EBUSY;
-	}
-
-	clk_epll = clk_get(NULL, "fout_epll");
-	if (IS_ERR(clk_epll)) {
-		printk(KERN_ERR
-			"failed to get fout_epll\n");
-		clk_put(clk_out);
-		return -EBUSY;
-	}
-
-	if (clk_set_parent(clk_out, clk_epll)) {
-		printk(KERN_ERR
-			"failed to set CLK_EPLL as parent of CLK_OUT\n");
-		clk_put(clk_out);
-		clk_put(clk_epll);
-		return -EBUSY;
-	}
-
-
-	switch (params_rate(params)) {
-	case 8000:
-	case 16000:
-	case 32000:
-	case 48000:
-	case 64000:
-	case 96000:
-		clk_set_rate(clk_out, 12288000);
-		ap_codec_clk = SRC_CLK/4;
-		break;
-	case 11025:
-	case 22050:
-	case 44100:
-	case 88200:
-	default:
-		clk_set_rate(clk_out, 11289600);
-		ap_codec_clk = SRC_CLK/6;
-		break;
-	}
-
-	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_MCLK,
-							ap_codec_clk, 0);
-	if (ret < 0) {
-		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params : \
-				Codec sys clock setting error!\n");
-		return ret;
-	}
-
-	/* Calculate Prescalare/PLL values for supported Rates */
-	psr = SRC_CLK / rfs / params_rate(params);
-	ret = SRC_CLK / rfs - psr * params_rate(params);
-	/* round off */
-	if (ret >= params_rate(params)/2)
-		psr += 1;
-
-	psr -= 1;
-	printk(KERN_INFO
-		"SRC_CLK=%d PSR=%d RFS=%d BFS=%d\n", SRC_CLK, psr, rfs, bfs);
-
-	/* Set the AP Prescalar/Pll */
-	ret = snd_soc_dai_set_clkdiv(cpu_dai, S3C_I2SV2_DIV_PRESCALER, psr);
-
-	if (ret < 0) {
-		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params :\
-				AP prescalar setting error!\n");
-		return ret;
-	}
-
-	/* Set the AP RFS */
-	ret = snd_soc_dai_set_clkdiv(cpu_dai, S3C_I2SV2_DIV_RCLK, rfs);
-	if (ret < 0) {
-		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params : AP RFS setting error!\n");
-		return ret;
-	}
-
-	/* Set the AP BFS */
-	ret = snd_soc_dai_set_clkdiv(cpu_dai, S3C_I2SV2_DIV_BCLK, bfs);
-
-	if (ret < 0) {
-		printk(KERN_ERR
-			"smdkc110_wm8994_hw_params : AP BCLK setting error!\n");
-		return ret;
-	}
-
-	clk_put(clk_epll);
-	clk_put(clk_out);
-#endif
 	return 0;
-
 }
 
 /* machine stream operations */
-static struct snd_soc_ops smdkc110_ops = {
-	.hw_params = smdkc110_hw_params,
+static struct snd_soc_ops hifi_ops = {
+	.hw_params = herring_hifi_hw_params,
+};
+
+static int aif2_clk_control(struct snd_soc_dai *dai, bool enable, int rate)
+{
+	static int refcount;
+	int ret;
+
+	if (enable) {
+		refcount++;
+
+		if (refcount == 1) {
+			ret = snd_soc_dai_set_pll(dai, WM8994_FLL2,
+						  WM8994_FLL_SRC_MCLK1,
+						  24000000, rate * 256);
+			if (ret < 0) {
+				pr_err("snd_soc_dai_set_pll failed: %d\n",
+				       ret);
+				return ret;
+			}
+
+			ret = snd_soc_dai_set_sysclk(dai,
+						     WM8994_SYSCLK_FLL2,
+						     rate * 256, 0);
+			if (ret < 0) {
+				pr_err("snd_soc_dai_set_sysclk failed: %d\n",
+				       ret);
+				return ret;
+			}
+		}
+	} else {
+		refcount--;
+
+		if (refcount == 0) {
+			ret = snd_soc_dai_set_sysclk(dai,
+						     WM8994_SYSCLK_MCLK1,
+						     24000000, 0);
+			if (ret < 0) {
+				pr_err("snd_soc_dai_set_sysclk failed: %d\n",
+				       ret);
+			}
+
+			ret = snd_soc_dai_set_pll(dai, WM8994_FLL2, 0, 0, 0);
+			if (ret < 0) {
+				pr_err("snd_soc_dai_set_pll failed: %d\n",
+				       ret);
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int cp_hw_params(struct snd_pcm_substream *substream,
+	struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai *codec_dai = rtd->dai->codec_dai;
+	int ret;
+
+	/* Ideally the CP would be bus master so we could ensure everything
+	 * is synced against the network clock.
+	 */
+	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_LEFT_J |
+				SND_SOC_DAIFMT_IB_IF | SND_SOC_DAIFMT_CBM_CFM);
+
+	if (ret < 0) {
+		pr_err("Failed to configure AIF2 for CP\n");
+		return ret;
+	}
+
+	ret = aif2_clk_control(codec_dai, true, params_rate(params));
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static void cp_shutdown(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai *codec_dai = rtd->dai->codec_dai;
+
+	aif2_clk_control(codec_dai, false, 0);
+}
+
+static struct snd_soc_ops cp_ops = {
+	.hw_params = cp_hw_params,
+	.shutdown = cp_shutdown,
+};
+
+static struct snd_soc_dai cp_dai = {
+	.name = "CP",
+	.id = 0,
+	.playback = {
+		.channels_min = 1,
+		.channels_max = 1,
+		.rates = SNDRV_PCM_RATE_8000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	},
+	.capture = {
+		.channels_min = 1,
+		.channels_max = 1,
+		.rates = SNDRV_PCM_RATE_8000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	 },
+	.symmetric_rates = 1,
+};
+
+static struct snd_soc_dai bt_dai = {
+	.name = "BT",
+	.id = 0,
+	.playback = {
+		.channels_min = 1,
+		.channels_max = 1,
+		.rates = SNDRV_PCM_RATE_8000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	},
+	.capture = {
+		.channels_min = 1,
+		.channels_max = 1,
+		.rates = SNDRV_PCM_RATE_8000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	 },
+	.symmetric_rates = 1,
 };
 
 /* digital audio interface glue - connects codec <--> CPU */
-static struct snd_soc_dai_link smdkc1xx_dai = {
-	.name = "WM8994",
-	.stream_name = "WM8994 HiFi Playback",
-	.cpu_dai = &s3c64xx_i2s_dai[I2S_NUM],
-	.codec_dai = &wm8994_dai,
-	.ops = &smdkc110_ops,
+static struct snd_soc_dai_link herring_dai[] = {
+	{
+		.name = "AP",
+		.stream_name = "WM8994 HiFi",
+		.cpu_dai = &s3c64xx_i2s_dai[I2S_NUM],
+		.codec_dai = &wm8994_dai[0],
+		.ops = &hifi_ops,
+		.init = herring_wm8994_init,
+	},
+	{
+		.name = "CP",
+		.stream_name = "CP",
+		.cpu_dai = &cp_dai,
+		.codec_dai = &wm8994_dai[1],
+		.ops = &cp_ops,
+	},
+	{
+		.name = "BT",
+		.stream_name = "BT",
+		.cpu_dai = &bt_dai,
+		.codec_dai = &wm8994_dai[2],
+		.ops = &hifi_ops,
+	},
 };
 
-static struct snd_soc_card smdkc100 = {
-	.name = "smdkc110",
+static struct snd_soc_card herring = {
+	.name = "herring",
 	.platform = &s3c_dma_wrapper,
-	.dai_link = &smdkc1xx_dai,
-	.num_links = 1,
-};
-
-static struct wm8994_setup_data smdkc110_wm8994_setup = {
-	/*
-		The I2C address of the WM89940 is 0x34. To the I2C driver
-		the address is a 7-bit number hence the right shift .
-	*/
-	.i2c_address = 0x34,
-	.i2c_bus = 4,
+	.dai_link = herring_dai,
+	.num_links = ARRAY_SIZE(herring_dai),
+	.set_bias_level_post = set_bias_level_post,
 };
 
 /* audio subsystem */
-static struct snd_soc_device smdkc1xx_snd_devdata = {
-	.card = &smdkc100,
+static struct snd_soc_device herring_snd_devdata = {
+	.card = &herring,
 	.codec_dev = &soc_codec_dev_wm8994,
-	.codec_data = &smdkc110_wm8994_setup,
 };
 
-static struct platform_device *smdkc1xx_snd_device;
-static int __init smdkc110_audio_init(void)
+static struct platform_device *herring_snd_device;
+static int __init herring_audio_init(void)
 {
 	int ret;
 
 	debug_msg("%s\n", __func__);
 
-	smdkc1xx_snd_device = platform_device_alloc("soc-audio", 0);
-	if (!smdkc1xx_snd_device)
+	snd_soc_register_dai(&cp_dai);
+	snd_soc_register_dai(&bt_dai);
+
+	herring_snd_device = platform_device_alloc("soc-audio", -1);
+	if (!herring_snd_device)
 		return -ENOMEM;
 
-	platform_set_drvdata(smdkc1xx_snd_device, &smdkc1xx_snd_devdata);
-	smdkc1xx_snd_devdata.dev = &smdkc1xx_snd_device->dev;
-	ret = platform_device_add(smdkc1xx_snd_device);
+	platform_set_drvdata(herring_snd_device, &herring_snd_devdata);
+	herring_snd_devdata.dev = &herring_snd_device->dev;
+	ret = platform_device_add(herring_snd_device);
 
 	if (ret)
-		platform_device_put(smdkc1xx_snd_device);
+		platform_device_put(herring_snd_device);
 
 	return ret;
 }
 
-static void __exit smdkc110_audio_exit(void)
+static void __exit herring_audio_exit(void)
 {
 	debug_msg("%s\n", __func__);
 
-	platform_device_unregister(smdkc1xx_snd_device);
+	platform_device_unregister(herring_snd_device);
 }
 
-module_init(smdkc110_audio_init);
-module_exit(smdkc110_audio_exit);
+module_init(herring_audio_init);
+module_exit(herring_audio_exit);
 
 /* Module information */
-MODULE_DESCRIPTION("ALSA SoC SMDKC110 WM8994");
+MODULE_DESCRIPTION("ALSA SoC WM8994 Herring(C110)");
 MODULE_LICENSE("GPL");
