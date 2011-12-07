@@ -49,6 +49,11 @@ struct wake_lock main_wake_lock;
 suspend_state_t requested_suspend_state = PM_SUSPEND_MEM;
 static struct wake_lock unknown_wakeup;
 
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+static short resumed = 0;
+static struct wake_lock* wakeup_wakelock;
+#endif
+
 #ifdef CONFIG_WAKELOCK_STAT
 static struct wake_lock deleted_wake_locks;
 static ktime_t last_sleep_time_update;
@@ -138,6 +143,26 @@ static int wakelock_stats_show(struct seq_file *m, void *unused)
 	spin_unlock_irqrestore(&list_lock, irqflags);
 	return 0;
 }
+
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+static int wakelocks_suspend_resume_read_proc(char *page, char **start, off_t off,
+			       int count, int *eof, void *data)
+{
+	int len = snprintf( page, count, "%s\n", resumed ? "cycle" : "" );
+	resumed = 0;
+	return len;
+}
+
+static int wakelocks_resume_reason_read_proc(char *page, char **start, off_t off,
+			       int count, int *eof, void *data)
+{
+	int len = snprintf( page, count, "%s\n", wakeup_wakelock ? wakeup_wakelock->name : "" );
+	wakeup_wakelock = 0;
+	return len;
+}
+
+#endif
+
 
 static void wake_unlock_stat_locked(struct wake_lock *lock, int expired)
 {
@@ -275,6 +300,7 @@ static void suspend(struct work_struct *work)
 	if (debug_mask & DEBUG_SUSPEND)
 		pr_info("suspend: enter suspend\n");
 	ret = pm_suspend(requested_suspend_state);
+	resumed = 1;
 	if (debug_mask & DEBUG_EXIT_SUSPEND) {
 		struct timespec ts;
 		struct rtc_time tm;
@@ -289,6 +315,9 @@ static void suspend(struct work_struct *work)
 		if (debug_mask & DEBUG_SUSPEND)
 			pr_info("suspend: pm_suspend returned with no event\n");
 		wake_lock_timeout(&unknown_wakeup, HZ / 2);
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+		wakeup_wakelock = &unknown_wakeup;
+#endif
 	}
 }
 static DECLARE_WORK(suspend_work, suspend);
@@ -406,6 +435,26 @@ static void wake_lock_internal(
 			pr_info("wakeup wake lock: %s\n", lock->name);
 		wait_for_wakeup = 0;
 		lock->stat.wakeup_count++;
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+		if ( !wakeup_wakelock )
+		{
+			pr_info( "wakeup wake lock: saving to /proc/wakelocks_suspend_resume\n" );
+			wakeup_wakelock = lock;
+		}
+		else
+		{
+			pr_info( "wakeup wake lock: already set; lets check whether it's something else than SMD_RPCCALL...\n" );
+			if ( strcmp( lock->name, "SMD_RPCCALL" ) != 0 )
+			{
+				pr_info( "wakeup wake lock: yes, overriding old value\n" );
+				wakeup_wakelock = lock;
+			}
+			else
+			{
+				pr_info( "wakeup wake lock: no, keeping old value\n" );
+			}
+		}
+#endif
 	}
 	if ((lock->flags & WAKE_LOCK_AUTO_EXPIRE) &&
 	    (long)(lock->expires - jiffies) <= 0) {
@@ -573,6 +622,12 @@ static int __init wakelocks_init(void)
 	proc_create("wakelocks", S_IRUGO, NULL, &wakelock_stats_fops);
 #endif
 
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+	create_proc_read_entry("wakelocks_suspend_resume", S_IRUGO, NULL,
+				wakelocks_suspend_resume_read_proc, NULL);
+	create_proc_read_entry("wakelocks_resume_reason", S_IRUGO, NULL,
+				wakelocks_resume_reason_read_proc, NULL);
+#endif
 	return 0;
 
 err_suspend_work_queue:
@@ -590,6 +645,10 @@ err_platform_device_register:
 
 static void  __exit wakelocks_exit(void)
 {
+#ifdef CONFIG_WAKELOCK_SUSPEND_RESUME
+	remove_proc_entry("wakelocks_suspend_resume", NULL);
+	remove_proc_entry("wakelocks_resume_reason", NULL);
+#endif
 #ifdef CONFIG_WAKELOCK_STAT
 	remove_proc_entry("wakelocks", NULL);
 #endif
