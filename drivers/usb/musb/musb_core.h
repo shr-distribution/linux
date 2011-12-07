@@ -352,6 +352,8 @@ struct musb {
 
 	struct timer_list	otg_timer;
 	struct notifier_block	nb;
+	struct work_struct	notify_work;
+	unsigned long		event;
 
 	struct dma_controller	*dma_controller;
 
