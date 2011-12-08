@@ -2052,12 +2052,14 @@ bool dispc_mgr_is_enabled(enum omap_channel channel)
 
 void dispc_mgr_enable(enum omap_channel channel, bool enable)
 {
+	dispc_runtime_get();
 	if (dispc_mgr_is_lcd(channel))
 		dispc_mgr_enable_lcd_out(channel, enable);
 	else if (channel == OMAP_DSS_CHANNEL_DIGIT)
 		dispc_mgr_enable_digit_out(enable);
 	else
 		BUG();
+	dispc_runtime_put();
 }
 
 void dispc_lcd_enable_signal_polarity(bool act_high)
