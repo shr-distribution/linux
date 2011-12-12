@@ -151,6 +151,12 @@ config HERRING_WIFI
 	default m
 	tristate "Herring wifi activator"
 
+config HERRING_TOUCHKEY_LED
+	select EARLYSUSPEND
+	depends on MACH_HERRING
+	default n
+	tristate "Herring Touchkey LED automatic status handling support"
+
 config S5PV210_SETUP_FB
 	bool
 	depends on FB_S3C
