@@ -165,7 +165,8 @@ MODULE_DEVICE_TABLE(i2c, tca6507);
 static int choose_times(int msec, int *c1p, int *c2p)
 {
 	/* Chose two timecodes which add to 'msec' as near as possible.
-	 * The first returned should be the larger.
+	 * The first returned should be the larger and is the 'on' of 'off' time.
+	 * The second will be used as a 'fade-on' or 'fade-off' time.
 	 * If cannot get within 1/8, fail.
 	 * If two possibilities are equally good (e.g. 512+0, 256+256), choose
 	 * the first pair so there is more change-time visible (i.e. it is softer).
@@ -175,7 +176,10 @@ static int choose_times(int msec, int *c1p, int *c2p)
 	int tmin = msec * 7 / 8;
 	int diff = 65536;
 
-	for (c1 = 1; c1 <= TIMECODES; c1++) {
+	/* We start at '1' to ensure we never even think of choosing a
+	 * total time of '0'.
+	 */
+	for (c1 = 1; c1 < TIMECODES; c1++) {
 		int t = time_codes[c1];
 		if (t*2 < tmin)
 			continue;
