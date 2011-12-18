@@ -149,9 +149,11 @@ struct tca6507_chip {
 		int			bank;	/* Bank used, or -1 */
 		int			blink;	/* 1 if we are hardware-blinking */
 	} leds[NUM_LEDS];
+#ifdef CONFIG_GPIOLIB
 	struct gpio_chip		gpio;
 	const char			*gpio_name[NUM_LEDS];
 	int				gpio_map[NUM_LEDS];
+#endif
 };
 
 static const struct i2c_device_id tca6507_id[] = {
@@ -520,6 +522,7 @@ static int tca6507_blink_set(struct led_classdev *led_cdev,
 	return 0;
 }
 
+#ifdef CONFIG_GPIOLIB
 static void tca6507_gpio_set_value(struct gpio_chip *gc,
 				   unsigned offset, int val)
 {
@@ -542,6 +545,51 @@ static int tca6507_gpio_direction_output(struct gpio_chip *gc,
 	tca6507_gpio_set_value(gc, offset, val);
 	return 0;
 }
+static int tca6507_probe_gpios(struct i2c_client *client,
+			       struct tca6507_chip *tca,
+			       struct tca6507_platform_data *pdata)
+{
+	int err;
+	int i = 0;
+	int gpios = 0;
+
+	for (i = 0; i < NUM_LEDS; i++)
+		if (pdata->leds.leds[i].name && pdata->leds.leds[i].flags) {
+			/* Configure as a gpio */
+			tca->gpio_name[gpios] = pdata->leds.leds[i].name;
+			tca->gpio_map[gpios] = i;
+			gpios++;
+		}
+
+	if (!gpios)
+		return 0;
+
+	tca->gpio.label = "gpio-tca6507";
+	tca->gpio.names = tca->gpio_name;
+	tca->gpio.ngpio = gpios;
+	tca->gpio.base = pdata->gpio_base;
+	tca->gpio.owner = THIS_MODULE;
+	tca->gpio.direction_output = tca6507_gpio_direction_output;
+	tca->gpio.set = tca6507_gpio_set_value;
+	tca->gpio.dev = &client->dev;
+	err = gpiochip_add(&tca->gpio);
+	if (err) {
+		tca->gpio.ngpio = 0;
+		return err;
+	}
+	if (pdata->setup)
+		pdata->setup(tca->gpio.base, tca->gpio.ngpio);
+	return 0;
+}
+
+#else /* CONFIG_GPIOLIB */
+static int tca6507_probe_gpios(struct i2c_client *client,
+			       struct tca6507_chip *tca,
+			       struct tca6507_platform_data *pdata)
+{
+	return 0;
+}
+#endif /* CONFIG_GPIOLIB */
 
 static int __devinit tca6507_probe(struct i2c_client *client,
 				   const struct i2c_device_id *id)
@@ -551,7 +599,6 @@ static int __devinit tca6507_probe(struct i2c_client *client,
 	struct tca6507_platform_data *pdata;
 	int err;
 	int i = 0;
-	int gpios = 0;
 
 	adapter = to_i2c_adapter(client->dev.parent);
 	pdata = client->dev.platform_data;
@@ -590,30 +637,10 @@ static int __devinit tca6507_probe(struct i2c_client *client,
 			if (err < 0)
 				goto exit;
 		}
-		if (pdata->leds.leds[i].name && pdata->leds.leds[i].flags) {
-			/* Configure as a gpio */
-			tca->gpio_name[gpios] = pdata->leds.leds[i].name;
-			tca->gpio_map[gpios] = i;
-			gpios++;
-		}
 	}
-	if (gpios) {
-		tca->gpio.label = "gpio-tca6507";
-		tca->gpio.names = tca->gpio_name;
-		tca->gpio.ngpio = gpios;
-		tca->gpio.base = pdata->gpio_base;
-		tca->gpio.owner = THIS_MODULE;
-		tca->gpio.direction_output = tca6507_gpio_direction_output;
-		tca->gpio.set = tca6507_gpio_set_value;
-		tca->gpio.dev = &client->dev;
-		err = gpiochip_add(&tca->gpio);
-		if (err) {
-			tca->gpio.ngpio = 0;
-			goto exit;
-		}
-		if (pdata->setup)
-			pdata->setup(tca->gpio.base, tca->gpio.ngpio);
-	}
+	err = tca6507_probe_gpios(client, tca, pdata);
+	if (err)
+		goto exit;
 	i2c_set_clientdata(client, tca);
 	/* set all registers to known state - zero */
 	tca->reg_set = 0x7f;
