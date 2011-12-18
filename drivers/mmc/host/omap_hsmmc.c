@@ -2295,7 +2295,7 @@ static void __exit omap_hsmmc_cleanup(void)
 	platform_driver_unregister(&omap_hsmmc_driver);
 }
 
-module_init(omap_hsmmc_init);
+late_initcall(omap_hsmmc_init);
 module_exit(omap_hsmmc_cleanup);
 
 MODULE_DESCRIPTION("OMAP High Speed Multimedia Card driver");
