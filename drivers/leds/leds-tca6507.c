@@ -185,7 +185,7 @@ static int choose_times(int msec, int *c1p, int *c2p)
 			continue;
 		if (t > tmax)
 			break;
-		for (c2 = 0; c2 <= c1; c2--) {
+		for (c2 = 0; c2 <= c1; c2++) {
 			int tt = t + time_codes[c2];
 			int d;
 			if (tt < tmin)
@@ -204,8 +204,14 @@ static int choose_times(int msec, int *c1p, int *c2p)
 				return 0;
 		}
 	}
-	if (diff < 65536)
+	if (diff < 65536) {
+		if (msec & 1) {
+			c1 = *c2p;
+			*c2p = *c1p;
+			*c1p = c1;
+		}
 		return 0;
+	}
 	/* No close match */
 	return -EINVAL;
 }
@@ -268,11 +274,15 @@ static void set_times(struct tca6507_chip *tca, int bank)
 	int c1, c2;
 
 	choose_times(tca->bank[bank].ontime, &c1, &c2);
+	printk("Chose on  times %d(%d) %d(%d)\n", c1, time_codes[c1],
+	       c2, time_codes[c2]);
 	set_code(tca, TCA6507_FADE_ON, bank, c2);
 	set_code(tca, TCA6507_FULL_ON, bank, c1);
 	tca->bank[bank].ontime = time_codes[c1] + time_codes[c2];
 
 	choose_times(tca->bank[bank].offtime, &c1, &c2);
+	printk("Chose off times %d(%d) %d(%d)\n", c1, time_codes[c1],
+	       c2, time_codes[c2]);
 	set_code(tca, TCA6507_FADE_OFF, bank, c2);
 	set_code(tca, TCA6507_FIRST_OFF, bank, c1);
 	set_code(tca, TCA6507_SECOND_OFF, bank, c1);
@@ -292,11 +302,11 @@ static void tca6507_work(struct work_struct *work)
 	u8 file[TCA6507_REG_CNT];
 	int r;
 
-	spin_lock(&tca->lock);
+	spin_lock_irq(&tca->lock);
 	set = tca->reg_set;
 	memcpy(file, tca->reg_file, TCA6507_REG_CNT);
 	tca->reg_set = 0;
-	spin_unlock(&tca->lock);
+	spin_unlock_irq(&tca->lock);
 
 	for (r = 0; r < TCA6507_REG_CNT; r++)
 		if (set & (1<<r))
@@ -349,7 +359,7 @@ static int led_prepare(struct tca6507_led *led)
 			return 0;
 		}
 
-		for (i = MASTER; i >= BANK0; i++) {
+		for (i = MASTER; i >= BANK0; i--) {
 			int d;
 			if (tca->bank[i].level == level ||
 			    tca->bank[i].level_use == 0) {
@@ -459,8 +469,9 @@ static int led_assign(struct tca6507_led *led)
 {
 	struct tca6507_chip *tca = led->chip;
 	int err;
+	unsigned long flags;
 
-	spin_lock(&tca->lock);
+	spin_lock_irqsave(&tca->lock, flags);
 	led_release(led);
 	err = led_prepare(led);
 	if (err) {
@@ -471,7 +482,7 @@ static int led_assign(struct tca6507_led *led)
 		led->offtime = 0;
 		led_prepare(led);
 	}
-	spin_unlock(&tca->lock);
+	spin_unlock_irqrestore(&tca->lock, flags);
 
 	if (tca->reg_set)
 		schedule_work(&tca->work);
@@ -531,14 +542,15 @@ static void tca6507_gpio_set_value(struct gpio_chip *gc,
 				   unsigned offset, int val)
 {
 	struct tca6507_chip *tca = container_of(gc, struct tca6507_chip, gpio);
+	unsigned long flags;
 
-	spin_lock(&tca->lock);
+	spin_lock_irqsave(&tca->lock, flags);
 	/* 'OFF' is floating high, and 'ON' is pulled down, so it has
 	 * the inverse sense of 'val'.
 	 */
 	set_select(tca, tca->gpio_map[offset],
 		   val ? TCA6507_LS_LED_OFF : TCA6507_LS_LED_ON);
-	spin_unlock(&tca->lock);
+	spin_unlock_irqrestore(&tca->lock, flags);
 	if (tca->reg_set)
 		schedule_work(&tca->work);
 }
@@ -642,10 +654,10 @@ static int __devinit tca6507_probe(struct i2c_client *client,
 				goto exit;
 		}
 	}
+	i2c_set_clientdata(client, tca);
 	err = tca6507_probe_gpios(client, tca, pdata);
 	if (err)
 		goto exit;
-	i2c_set_clientdata(client, tca);
 	/* set all registers to known state - zero */
 	tca->reg_set = 0x7f;
 	schedule_work(&tca->work);
@@ -655,6 +667,7 @@ exit:
 	while (i--)
 		if (tca->leds[i].led_cdev.name)
 			led_classdev_unregister(&tca->leds[i].led_cdev);
+	i2c_set_clientdata(client, NULL);
 	kfree(tca);
 	return err;
 }
