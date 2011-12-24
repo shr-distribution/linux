@@ -124,7 +124,7 @@ bool preserve_vbus;
 module_param(preserve_vbus, bool, 0644);
 MODULE_PARM_DESC(preserve_vbus, "Keep PHY awake while VBUS is present to"
 		 " support battery charging\n");
-
+EXPORT_SYMBOL_GPL(preserve_vbus);
 
 /*-------------------------------------------------------------------------*/
 
