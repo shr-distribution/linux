@@ -211,9 +211,33 @@ static irqreturn_t hdq_isr(int irq, void *_hdq)
 {
 	struct hdq_data *hdq_data = _hdq;
 	unsigned long irqflags;
+	u8 status;
 
 	spin_lock_irqsave(&hdq_data->hdq_spinlock, irqflags);
-	hdq_data->hdq_irqstatus = hdq_reg_in(hdq_data, OMAP_HDQ_INT_STATUS);
+	status = hdq_reg_in(hdq_data, OMAP_HDQ_INT_STATUS);
+	if (!status) {
+		/* I sometimes see a zero status even though the read
+		 * seems to have been successful.  Very strange.
+		 * But we did get an interrupt, so figure out what
+		 * must have happened.
+		 */
+		u8 ctrl = hdq_reg_in(hdq_data, OMAP_HDQ_CTRL_STATUS);
+		dev_dbg(hdq_data->dev, "hdr_isr: INT=0!  CTRL=0x%02x\n", ctrl);
+		if (!(ctrl & OMAP_HDQ_CTRL_STATUS_GO)) {
+			/* It has definitely finished.. */
+			if (ctrl & OMAP_HDQ_CTRL_STATUS_DIR) {
+				/* A read finished or timed-out */
+				u8 data = hdq_reg_in(hdq_data,
+						      OMAP_HDQ_RX_DATA);
+				if (data == 0xFF)
+					status = OMAP_HDQ_INT_STATUS_TIMEOUT;
+				else
+					status = OMAP_HDQ_INT_STATUS_RXCOMPLETE;
+			} else
+				status = OMAP_HDQ_INT_STATUS_TXCOMPLETE;
+		}
+	}
+	hdq_data->hdq_irqstatus = status;
 	spin_unlock_irqrestore(&hdq_data->hdq_spinlock, irqflags);
 	dev_dbg(hdq_data->dev, "hdq_isr: %x", hdq_data->hdq_irqstatus);
 
