@@ -28,6 +28,7 @@
 #define TWL4030_BCIVBUS		0x0c
 #define TWL4030_BCIMFSTS4	0x10
 #define TWL4030_BCICTL1		0x23
+#define TWL4030_BB_CFG		0x12
 
 #define TWL4030_BCIAUTOWEN	BIT(5)
 #define TWL4030_CONFIG_DONE	BIT(4)
@@ -37,6 +38,7 @@
 #define TWL4030_USBFASTMCHG	BIT(2)
 #define TWL4030_STS_VBUS	BIT(7)
 #define TWL4030_STS_USB_ID	BIT(2)
+#define TWL4030_BBCHEN		BIT(4)
 
 /* BCI interrupts */
 #define TWL4030_WOVF		BIT(0) /* Watchdog overflow */
@@ -64,6 +66,9 @@
 static bool allow_usb;
 module_param(allow_usb, bool, 0644);
 MODULE_PARM_DESC(allow_usb, "Allow USB charge drawing default current");
+static bool charge_backup;
+module_param(charge_backup, bool,  0644);
+MODULE_PARM_DESC(charge_backup, "Attempt to charge backup battery");
 
 struct twl4030_bci {
 	struct device		*dev;
@@ -103,7 +108,7 @@ static int twl4030_bci_read(u8 reg, u8 *val)
 
 static int twl4030_clear_set_boot_bci(u8 clear, u8 set)
 {
-	return twl4030_clear_set(TWL4030_MODULE_PM_MASTER, 0,
+	return twl4030_clear_set(TWL4030_MODULE_PM_MASTER, clear,
 			TWL4030_CONFIG_DONE | TWL4030_BCIAUTOWEN | set,
 			TWL4030_PM_MASTER_BOOT_BCI);
 }
@@ -143,22 +148,18 @@ static int twl4030_bci_have_vbus(struct twl4030_bci *bci)
 
 	dev_dbg(bci->dev, "check_vbus: HW_CONDITIONS %02x\n", hwsts);
 
-	/* in case we also have STS_USB_ID, VBUS is driven by TWL itself */
-	if ((hwsts & TWL4030_STS_VBUS) && !(hwsts & TWL4030_STS_USB_ID))
-		return 1;
-
-	return 0;
+	return (hwsts & TWL4030_STS_VBUS);
 }
 
 /*
- * Enable/Disable USB Charge funtionality.
+ * Enable/Disable USB Charge functionality.
  */
 static int twl4030_charger_enable_usb(struct twl4030_bci *bci, bool enable)
 {
 	int ret;
 
 	if (enable) {
-		/* Check for USB charger conneted */
+		/* Check for USB charger connected */
 		if (!twl4030_bci_have_vbus(bci))
 			return -ENODEV;
 
@@ -198,6 +199,22 @@ static int twl4030_charger_enable_ac(bool enable)
 	else
 		ret = twl4030_clear_set_boot_bci(TWL4030_BCIAUTOAC, 0);
 
+	return ret;
+}
+
+/*
+ * Enable/Disable charging of Backup Battery.
+ */
+static int twl4030_charger_enable_backup(bool enable)
+{
+	int ret;
+
+	if (enable)
+		ret = twl4030_clear_set(TWL4030_MODULE_PM_RECEIVER,
+					0, TWL4030_BBCHEN, TWL4030_BB_CFG);
+	else
+		ret = twl4030_clear_set(TWL4030_MODULE_PM_RECEIVER,
+					TWL4030_BBCHEN, 0, TWL4030_BB_CFG);
 	return ret;
 }
 
@@ -503,6 +520,7 @@ static int __init twl4030_bci_probe(struct platform_device *pdev)
 
 	twl4030_charger_enable_ac(true);
 	twl4030_charger_enable_usb(bci, true);
+	twl4030_charger_enable_backup(charge_backup);
 
 	return 0;
 
@@ -531,6 +549,7 @@ static int __exit twl4030_bci_remove(struct platform_device *pdev)
 
 	twl4030_charger_enable_ac(false);
 	twl4030_charger_enable_usb(bci, false);
+	twl4030_charger_enable_backup(false);
 
 	/* mask interrupts */
 	twl_i2c_write_u8(TWL4030_MODULE_INTERRUPTS, 0xff,
