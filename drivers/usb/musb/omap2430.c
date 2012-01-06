@@ -254,6 +254,10 @@ static int musb_otg_notifications(struct notifier_block *nb,
 
 		if (musb->gadget_driver)
 			pm_runtime_get_sync(musb->controller);
+		if (preserve_vbus && !musb->vbus_awake) {
+			musb->vbus_awake = true;
+			pm_runtime_get_sync(musb->controller);
+		}
 		otg_init(musb->xceiv);
 		break;
 
@@ -261,10 +265,16 @@ static int musb_otg_notifications(struct notifier_block *nb,
 		dev_dbg(musb->controller, "VBUS Disconnect\n");
 
 		if (is_otg_enabled(musb) || is_peripheral_enabled(musb))
-			if (musb->gadget_driver) {
+			if (musb->gadget_driver || musb->vbus_awake) {
 				pm_runtime_mark_last_busy(musb->controller);
 				pm_runtime_put_autosuspend(musb->controller);
 			}
+
+		if (musb->vbus_awake) {
+			pm_runtime_mark_last_busy(musb->controller);
+			pm_runtime_put_autosuspend(musb->controller);
+			musb->vbus_awake = false;
+		}
 
 		if (data->interface_type == MUSB_INTERFACE_UTMI) {
 			if (musb->xceiv->set_vbus)
