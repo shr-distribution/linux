@@ -223,11 +223,11 @@ static inline void omap2430_low_level_init(struct musb *musb)
 	musb_writel(musb->mregs, OTG_FORCESTDBY, l);
 }
 
-/* blocking notifier support */
-static int musb_otg_notifications(struct notifier_block *nb,
-		unsigned long event, void *unused)
+/* work function for atomic notifier  */
+static void musb_otg_notify_work(struct work_struct *ws)
 {
-	struct musb	*musb = container_of(nb, struct musb, nb);
+	struct musb	*musb = container_of(ws, struct musb, notify_work);
+	unsigned long event = musb->event;
 	struct device *dev = musb->controller;
 	struct musb_hdrc_platform_data *pdata = dev->platform_data;
 	struct omap_musb_board_data *data = pdata->board_data;
@@ -254,6 +254,10 @@ static int musb_otg_notifications(struct notifier_block *nb,
 
 		if (musb->gadget_driver)
 			pm_runtime_get_sync(musb->controller);
+		if (preserve_vbus && !musb->vbus_awake) {
+			musb->vbus_awake = true;
+			pm_runtime_get_sync(musb->controller);
+		}
 		otg_init(musb->xceiv);
 		break;
 
@@ -261,10 +265,16 @@ static int musb_otg_notifications(struct notifier_block *nb,
 		dev_dbg(musb->controller, "VBUS Disconnect\n");
 
 		if (is_otg_enabled(musb) || is_peripheral_enabled(musb))
-			if (musb->gadget_driver) {
+			if (musb->gadget_driver || musb->vbus_awake) {
 				pm_runtime_mark_last_busy(musb->controller);
 				pm_runtime_put_autosuspend(musb->controller);
 			}
+
+		if (musb->vbus_awake) {
+			pm_runtime_mark_last_busy(musb->controller);
+			pm_runtime_put_autosuspend(musb->controller);
+			musb->vbus_awake = false;
+		}
 
 		if (data->interface_type == MUSB_INTERFACE_UTMI) {
 			if (musb->xceiv->set_vbus)
@@ -274,8 +284,18 @@ static int musb_otg_notifications(struct notifier_block *nb,
 		break;
 	default:
 		dev_dbg(musb->controller, "ID float\n");
-		return NOTIFY_DONE;
+		break;
 	}
+}
+
+static int musb_otg_notifications(struct notifier_block *nb,
+				  unsigned long event,
+				  void *unused)
+{
+	struct musb *musb = container_of(nb, struct musb, nb);
+
+	musb->event = event;
+	schedule_work(&musb->notify_work);
 
 	return NOTIFY_OK;
 }
@@ -323,6 +343,7 @@ static int omap2430_musb_init(struct musb *musb)
 			musb_readl(musb->mregs, OTG_INTERFSEL),
 			musb_readl(musb->mregs, OTG_SIMENABLE));
 
+	INIT_WORK(&musb->notify_work, musb_otg_notify_work);
 	musb->nb.notifier_call = musb_otg_notifications;
 	status = otg_register_notifier(musb->xceiv, &musb->nb);
 
@@ -386,6 +407,7 @@ static void omap2430_musb_disable(struct musb *musb)
 static int omap2430_musb_exit(struct musb *musb)
 {
 	del_timer_sync(&musb_idle_timer);
+	cancel_work_sync(&musb->notify_work);
 
 	omap2430_low_level_exit(musb);
 	otg_put_transceiver(musb->xceiv);

@@ -557,6 +557,8 @@ struct twl4030_clock_init_data {
 struct twl4030_bci_platform_data {
 	int *battery_tmp_tbl;
 	unsigned int tblsize;
+	int	bb_uvolt;	/* voltage to charge backup battery */
+	int	bb_uamp;	/* current for backup battery charging */
 };
 
 /* TWL4030_GPIO_MAX (18) GPIOs, with interrupts */
@@ -652,10 +654,12 @@ struct twl4030_power_data {
 	unsigned num;
 	struct twl4030_resconfig *resource_config;
 #define TWL4030_RESCONFIG_UNDEF	((u8)-1)
+	bool use_poweroff;	/* Board is wired for TWL poweroff */
 };
 
 extern void twl4030_power_init(struct twl4030_power_data *triton2_scripts);
 extern int twl4030_remove_script(u8 flags);
+extern void twl4030_power_off(void);
 
 struct twl4030_codec_data {
 	unsigned int digimic_delay; /* in ms */

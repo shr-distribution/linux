@@ -338,6 +338,8 @@ struct musb {
 
 	enum musb_h_ep0_state	ep0_stage;
 
+	bool			vbus_awake;	/* vbus is keeping device awake */
+
 	/* bulk traffic normally dedicates endpoint hardware, and each
 	 * direction has its own ring of host side endpoints.
 	 * we try to progress the transfer at the head of each endpoint's
@@ -352,6 +354,8 @@ struct musb {
 
 	struct timer_list	otg_timer;
 	struct notifier_block	nb;
+	struct work_struct	notify_work;
+	unsigned long		event;
 
 	struct dma_controller	*dma_controller;
 
@@ -531,6 +535,8 @@ static inline void musb_configure_ep0(struct musb *musb)
 /***************************** Glue it together *****************************/
 
 extern const char musb_driver_name[];
+
+extern bool preserve_vbus;
 
 extern void musb_start(struct musb *musb);
 extern void musb_stop(struct musb *musb);

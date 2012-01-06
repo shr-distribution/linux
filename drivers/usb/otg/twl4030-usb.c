@@ -267,15 +267,16 @@ static enum usb_xceiv_events twl4030_usb_linkstat(struct twl4030_usb *twl)
 			STS_HW_CONDITIONS);
 	if (status < 0)
 		dev_err(twl->dev, "USB link status err %d\n", status);
-	else if (status & (BIT(7) | BIT(2))) {
-		if (status & (BIT(7)))
-                        twl->vbus_supplied = true;
-
-		if (status & BIT(2))
-			linkstat = USB_EVENT_ID;
-		else
-			linkstat = USB_EVENT_VBUS;
-	} else
+	else if (status & (BIT(7))) {
+		/* We have VBUS so ignore ID_PRES - it is only meaningful
+		 * as an indicator of an A plug when there is no
+		 * VBUS.
+		 */
+		twl->vbus_supplied = true;
+		linkstat = USB_EVENT_VBUS;
+	} else if (status & BIT(2))
+		linkstat = USB_EVENT_ID;
+	else
 		linkstat = USB_EVENT_NONE;
 
 	dev_dbg(twl->dev, "HW_CONDITIONS 0x%02x/%d; link %d\n",
@@ -556,6 +557,12 @@ static int twl4030_set_suspend(struct otg_transceiver *x, int suspend)
 		twl4030_phy_suspend(twl, 1);
 	else
 		twl4030_phy_resume(twl);
+
+	atomic_notifier_call_chain(&twl->otg.notifier,
+				   suspend
+				   ? USB_EVENT_NONE
+				   : twl4030_usb_linkstat(twl),
+				   twl->otg.gadget);
 
 	return 0;
 }
