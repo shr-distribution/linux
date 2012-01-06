@@ -558,6 +558,12 @@ static int twl4030_set_suspend(struct otg_transceiver *x, int suspend)
 	else
 		twl4030_phy_resume(twl);
 
+	atomic_notifier_call_chain(&twl->otg.notifier,
+				   suspend
+				   ? USB_EVENT_NONE
+				   : twl4030_usb_linkstat(twl),
+				   twl->otg.gadget);
+
 	return 0;
 }
 
