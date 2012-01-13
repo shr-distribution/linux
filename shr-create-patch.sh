@@ -2,11 +2,11 @@
 
 cat <<EOF > shr.patch
 All patches from shr kernel repository
-rebased on top of openmoko kernel repository (om-2.6.39-stable)
+rebased on top latest stable patch (linux-stable tag v3.2.1 now)
 
-https://gitorious.org/shr/linux/commits/shr-2.6.39-nodrm
+https://gitorious.org/shr/linux/commits/shr-3.2-nodrm
 
-$(git log --pretty=format:"%h: %s" gitorious/om-2.6.39-stable..)
+$(git log --pretty=format:"%h: %s" v3.2.1..)
 
-$(git diff om-2.6.39-stable)
+$(git diff v3.2.1)
 EOF
