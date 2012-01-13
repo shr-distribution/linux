@@ -183,6 +183,9 @@ static int next_valid_state(struct cpuidle_device *dev,
 			core_deepest_state = PWRDM_POWER_OFF;
 	}
 
+	if (!omap_uart_can_sleep())
+		core_deepest_state = PWRDM_POWER_RET;
+
 	/* Check if current state is valid */
 	if ((cx->valid) &&
 	    (cx->mpu_state >= mpu_deepest_state) &&
@@ -243,11 +246,6 @@ static int omap3_enter_idle_bm(struct cpuidle_device *dev,
 	u32 core_next_state, per_next_state = 0, per_saved_state = 0, cam_state;
 	struct omap3_idle_statedata *cx;
 	int ret;
-
-	if (!omap3_can_sleep()) {
-		new_state_idx = drv->safe_state_index;
-		goto select_state;
-	}
 
 	/*
 	 * Prevent idle completely if CAM is active.
