@@ -787,8 +787,7 @@ static inline bool can_support_rndis(struct usb_configuration *c)
  * for calling @gether_cleanup() before module unload.
  */
 int
-rndis_bind_config(struct usb_configuration *c, u8 ethaddr[ETH_ALEN],
-				u32 vendorID, const char *manufacturer)
+rndis_bind_config(struct usb_configuration *c, u8 ethaddr[ETH_ALEN])
 {
 	struct f_rndis	*rndis;
 	int		status;
@@ -833,8 +832,6 @@ rndis_bind_config(struct usb_configuration *c, u8 ethaddr[ETH_ALEN],
 		goto fail;
 
 	memcpy(rndis->ethaddr, ethaddr, ETH_ALEN);
-	rndis->vendorID = vendorID;
-	rndis->manufacturer = manufacturer;
 
 	/* RNDIS activates when the host changes this filter */
 	rndis->port.cdc_filter = 0;
