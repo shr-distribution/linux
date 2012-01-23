@@ -29,6 +29,7 @@ static void herring_touchkey_led_onoff(int onoff)
 		gpio_direction_output(S5PV210_GPJ3(led_gpios[i]), !!onoff);
 }
 
+#ifdef CONFIG_WAKELOCK
 static void herring_touchkey_led_early_suspend(struct early_suspend *h)
 {
 	herring_touchkey_led_onoff(0);
@@ -44,6 +45,7 @@ static struct early_suspend early_suspend = {
 	.suspend = herring_touchkey_led_early_suspend,
 	.resume = herring_touchkey_led_late_resume,
 };
+#endif // CONFIG_WAKELOCK
 
 static int __init herring_init_touchkey_led(void)
 {

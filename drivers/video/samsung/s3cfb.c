@@ -1143,6 +1143,8 @@ static int __devexit s3cfb_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_HAS_EARLYSUSPEND
+
 void s3cfb_early_suspend(struct early_suspend *h)
 {
 	struct s3cfb_global *fbdev =
@@ -1222,6 +1224,8 @@ void s3cfb_late_resume(struct early_suspend *h)
 	pr_info("s3cfb_late_resume is complete\n");
 	return ;
 }
+
+#endif
 
 static struct platform_driver s3cfb_driver = {
 	.probe = s3cfb_probe,
