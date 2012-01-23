@@ -25,6 +25,7 @@
 #define HDQ_CMD_WRITE	(1<<7)
 
 static int F_ID;
+static DEFINE_MUTEX(bq27000_mutex);
 
 void w1_bq27000_write(struct device *dev, u8 buf, u8 reg)
 {
@@ -35,8 +36,10 @@ void w1_bq27000_write(struct device *dev, u8 buf, u8 reg)
 		return;
 	}
 
+	mutex_lock(&bq27000_mutex);
 	w1_write_8(sl->master, HDQ_CMD_WRITE | reg);
 	w1_write_8(sl->master, buf);
+	mutex_unlock(&bq27000_mutex);
 }
 EXPORT_SYMBOL(w1_bq27000_write);
 
@@ -48,8 +51,10 @@ static int w1_bq27000_read(struct device *dev, unsigned int reg)
 	if (!dev)
 		return 0;
 
+	mutex_lock(&bq27000_mutex);
 	w1_write_8(sl->master, HDQ_CMD_READ | reg);
 	val = w1_read_8(sl->master);
+	mutex_unlock(&bq27000_mutex);
 
 	return val;
 }
