@@ -349,6 +349,8 @@ int devtmpfs_mount(const char *mntdir)
 	return err;
 }
 
+static char options[] = "mode=0755";
+
 /*
  * Create devtmpfs instance, driver-core devices will add their device
  * nodes here.
@@ -357,7 +359,6 @@ int __init devtmpfs_init(void)
 {
 	int err;
 	struct vfsmount *mnt;
-	char options[] = "mode=0755";
 
 	err = register_filesystem(&dev_fs_type);
 	if (err) {
