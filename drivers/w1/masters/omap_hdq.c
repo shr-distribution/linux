@@ -54,6 +54,12 @@
 
 static DECLARE_WAIT_QUEUE_HEAD(hdq_wait_queue);
 static int w1_id;
+static atomic_t busy;
+
+int omap_hdq_can_sleep(void)
+{
+	return atomic_read(&busy) == 0;
+}
 
 struct hdq_data {
 	struct device		*dev;
@@ -439,6 +445,7 @@ static int omap_hdq_get(struct hdq_data *hdq_data)
 		goto out;
 	} else {
 		hdq_data->hdq_usecount++;
+		atomic_inc(&busy);
 		try_module_get(THIS_MODULE);
 		if (1 == hdq_data->hdq_usecount) {
 			if (clk_enable(hdq_data->hdq_ick)) {
@@ -452,6 +459,8 @@ static int omap_hdq_get(struct hdq_data *hdq_data)
 				ret = -ENODEV;
 				goto clk_err;
 			}
+
+			_omap_hdq_reset(hdq_data);
 
 			/* make sure HDQ is out of reset */
 			if (!(hdq_reg_in(hdq_data, OMAP_HDQ_SYSSTATUS) &
@@ -496,6 +505,7 @@ static int omap_hdq_put(struct hdq_data *hdq_data)
 		ret = -EINVAL;
 	} else {
 		hdq_data->hdq_usecount--;
+		atomic_dec(&busy);
 		module_put(THIS_MODULE);
 		if (0 == hdq_data->hdq_usecount) {
 			clk_disable(hdq_data->hdq_ick);

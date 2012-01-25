@@ -104,6 +104,8 @@ static int omap3_enter_idle(struct cpuidle_device *dev,
 	struct timespec ts_preidle, ts_postidle, ts_idle;
 	u32 mpu_state = cx->mpu_state, core_state = cx->core_state;
 	int idle_time;
+	extern int omap_hdq_can_sleep(void);
+	int can_sleep = omap_hdq_can_sleep();
 
 	/* Used to keep track of the total time in idle */
 	getnstimeofday(&ts_preidle);
@@ -118,7 +120,7 @@ static int omap3_enter_idle(struct cpuidle_device *dev,
 		goto return_sleep_time;
 
 	/* Deny idle for C1 */
-	if (index == 0) {
+	if (index == 0 || !can_sleep) {
 		pwrdm_for_each_clkdm(mpu_pd, _cpuidle_deny_idle);
 		pwrdm_for_each_clkdm(core_pd, _cpuidle_deny_idle);
 	}
@@ -127,7 +129,7 @@ static int omap3_enter_idle(struct cpuidle_device *dev,
 	omap_sram_idle();
 
 	/* Re-allow idle for C1 */
-	if (index == 0) {
+	if (index == 0 || !can_sleep) {
 		pwrdm_for_each_clkdm(mpu_pd, _cpuidle_allow_idle);
 		pwrdm_for_each_clkdm(core_pd, _cpuidle_allow_idle);
 	}
