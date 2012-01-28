@@ -239,7 +239,7 @@ static struct omap_hwmod_ocp_if omap3xxx_l4_core__hdq1w = {
 	.clk		= "hdq_ick",
 	.addr		= omap2_hdq1w_addr_space,
 	.user		= OCP_USER_MPU | OCP_USER_SDMA,
-	.flags		= OMAP_FIREWALL_L4
+	.flags		= OMAP_FIREWALL_L4 | OCPIF_SWSUP_IDLE,
 };
 
 /* L4 CORE -> UART1 interface */
