@@ -142,6 +142,8 @@ static int wm8994_readable(struct snd_soc_codec *codec, unsigned int reg)
 	case WM8994_GPIO_11:
 	case WM8994_INTERRUPT_STATUS_1:
 	case WM8994_INTERRUPT_STATUS_2:
+	case WM8994_INTERRUPT_STATUS_1_MASK:
+	case WM8994_INTERRUPT_STATUS_2_MASK:
 	case WM8994_INTERRUPT_RAW_STATUS_2:
 		return 1;
 
