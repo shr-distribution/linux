@@ -3955,6 +3955,7 @@ static struct snd_soc_codec_driver soc_codec_dev_wm8994 = {
 	.volatile_register = wm8994_volatile,
 	.set_bias_level = wm8994_set_bias_level,
 
+	.max_register = WM8994_MAX_REGISTER,
 	.reg_cache_size = WM8994_CACHE_SIZE,
 	.reg_cache_default = wm8994_reg_defaults,
 	.reg_word_size = 2,
