@@ -134,11 +134,12 @@ config SND_SOC_SAMSUNG_H1940_UDA1380
 	help
 	  This driver provides audio support for HP iPAQ h1940 PDA.
 
-config SND_SOC_SAMSUNG_HERRING_WM8994
-	tristate "SoC I2S Audio support for HERRING - WM8994"
+config SND_SOC_HERRING
+	tristate "Audio support for Nexus S"
 	depends on SND_SOC_SAMSUNG && (MACH_HERRING)
 	select SND_S5PC1XX_I2S
-	select SND_SOC_WM8994_SAMSUNG
+	select SND_SOC_WM8994
+	select S5P_INTERNAL_DMA
 	select SND_S5P_WM8994_MASTER
 	help
 	  Say Y if you want to add support for SoC audio on herring
