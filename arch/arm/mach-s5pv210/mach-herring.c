@@ -53,7 +53,7 @@
 #include <linux/notifier.h>
 #include <linux/reboot.h>
 #include <linux/wlan_plat.h>
-#include <linux/mfd/wm8994/wm8994_pdata.h>
+#include <linux/mfd/wm8994/pdata.h>
 
 #ifdef CONFIG_ANDROID_PMEM
 #include <linux/android_pmem.h>
@@ -2080,44 +2080,49 @@ static struct s3c_adc_mach_info s3c_adc_platform __initdata = {
 };
 #endif
 
-/* in revisions before 0.9, there is a common mic bias gpio */
+static struct regulator_consumer_supply wm8994_ldo1_consumers[] = {
+	REGULATOR_SUPPLY("AVDD1", "4-001a"),
 
-static DEFINE_SPINLOCK(mic_bias_lock);
-static bool wm8994_mic_bias;
-static bool jack_mic_bias;
-static void set_shared_mic_bias(void)
-{
-	gpio_set_value(GPIO_MICBIAS_EN, wm8994_mic_bias || jack_mic_bias);
-}
+	/*
+	 * These aren't really supplied by LDO1, hooking here due to
+	 * partial schematics.
+	 */
+	REGULATOR_SUPPLY("AVDD2", "4-001a"),
+	REGULATOR_SUPPLY("CPVDD", "4-001a"),
+	REGULATOR_SUPPLY("DBVDD", "4-001a"),
+	REGULATOR_SUPPLY("SPKVDD1", "4-001a"),
+	REGULATOR_SUPPLY("SPKVDD2", "4-001a"),
+};
 
-static void wm8994_set_mic_bias(bool on)
-{
-	if (system_rev < 0x09) {
-		unsigned long flags;
-		spin_lock_irqsave(&mic_bias_lock, flags);
-		wm8994_mic_bias = on;
-		set_shared_mic_bias();
-		spin_unlock_irqrestore(&mic_bias_lock, flags);
-	} else
-		gpio_set_value(GPIO_MICBIAS_EN, on);
-}
+static struct regulator_init_data wm8994_ldo1 = {
+	.constraints = {
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.consumer_supplies = wm8994_ldo1_consumers,
+	.num_consumer_supplies = ARRAY_SIZE(wm8994_ldo1_consumers),
+};
 
-static void sec_jack_set_micbias_state(bool on)
-{
-	if (system_rev < 0x09) {
-		unsigned long flags;
-		spin_lock_irqsave(&mic_bias_lock, flags);
-		jack_mic_bias = on;
-		set_shared_mic_bias();
-		spin_unlock_irqrestore(&mic_bias_lock, flags);
-	} else
-		gpio_set_value(GPIO_EAR_MICBIAS_EN, on);
-}
+static struct regulator_consumer_supply wm8994_ldo2_consumers[] = {
+	REGULATOR_SUPPLY("DCVDD", "4-001a"),
+};
 
-static struct wm8994_platform_data wm8994_pdata = {
-	.ldo = GPIO_CODEC_LDO_EN,
-	.ear_sel = GPIO_EAR_SEL,
-	.set_mic_bias = wm8994_set_mic_bias,
+static struct regulator_init_data wm8994_ldo2 = {
+	.constraints = {
+		.always_on = true,
+	},
+	.consumer_supplies = wm8994_ldo2_consumers,
+	.num_consumer_supplies = ARRAY_SIZE(wm8994_ldo2_consumers),
+};
+
+static struct wm8994_pdata wm8994_pdata = {
+	.ldo = {
+		{ .init_data = &wm8994_ldo1, .enable = GPIO_CODEC_LDO_EN, },
+		{ .init_data = &wm8994_ldo2 },
+	},
+
+	/* Not connected but lets the driver know we don't care about VMID */
+	.lineout1_diff = true,
+	.lineout2_diff = true,
 };
 
 /*
@@ -2737,7 +2742,7 @@ static struct i2c_board_info i2c_devs0[] __initdata = {
 
 static struct i2c_board_info i2c_devs4[] __initdata = {
 	{
-		I2C_BOARD_INFO("wm8994-samsung", (0x34>>1)),
+		I2C_BOARD_INFO("wm8994", 0x1a),
 		.platform_data = &wm8994_pdata,
 	},
 };
@@ -3263,7 +3268,7 @@ static int sec_jack_get_adc_value(void)
 }
 
 struct sec_jack_platform_data sec_jack_pdata = {
-	.set_micbias_state = sec_jack_set_micbias_state,
+	/*.set_micbias_state = sec_jack_set_micbias_state,*/
 	.get_adc_value = sec_jack_get_adc_value,
 	.zones = sec_jack_zones,
 	.num_zones = ARRAY_SIZE(sec_jack_zones),
