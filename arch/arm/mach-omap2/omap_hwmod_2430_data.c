@@ -64,6 +64,7 @@ static struct omap_hwmod omap2430_mcspi2_hwmod;
 static struct omap_hwmod omap2430_mcspi3_hwmod;
 static struct omap_hwmod omap2430_mmc1_hwmod;
 static struct omap_hwmod omap2430_mmc2_hwmod;
+static struct omap_hwmod omap2430_hdq1w_hwmod;
 
 /* L3 -> L4_CORE interface */
 static struct omap_hwmod_ocp_if omap2430_l3_main__l4_core = {
@@ -289,6 +290,16 @@ static struct omap_hwmod_ocp_if omap2430_l4_core__mcspi3 = {
 	.clk		= "mcspi3_ick",
 	.addr		= omap2430_mcspi3_addr_space,
 	.user		= OCP_USER_MPU | OCP_USER_SDMA,
+};
+
+/* L4 CORE -> HDQ1W interface */
+static struct omap_hwmod_ocp_if omap2430_l4_core__hdq1w = {
+	.master		= &omap2430_l4_core_hwmod,
+	.slave		= &omap2430_hdq1w_hwmod,
+	.clk		= "hdq_ick",
+	.addr		= omap2_hdq1w_addr_space,
+	.user		= OCP_USER_MPU | OCP_USER_SDMA,
+	.flags		= OMAP_FIREWALL_L4,
 };
 
 /* L4 WKUP */
@@ -2001,6 +2012,30 @@ static struct omap_hwmod omap2430_mmc2_hwmod = {
 	.class		= &omap2430_mmc_class,
 };
 
+/* HDQ1W/1-wire */
+
+static struct omap_hwmod_ocp_if *omap2430_hdq1w_slaves[] = {
+	&omap2430_l4_core__hdq1w,
+};
+
+static struct omap_hwmod omap2430_hdq1w_hwmod = {
+	.name		= "hdq1w",
+	.mpu_irqs	= omap2_hdq1w_mpu_irqs,
+	.main_clk	= "hdq_fck",
+	.prcm		= {
+		.omap2 = {
+			.module_offs = CORE_MOD,
+			.prcm_reg_id = 1,
+			.module_bit = OMAP24XX_EN_HDQ_SHIFT,
+			.idlest_reg_id = 1,
+			.idlest_idle_bit = OMAP24XX_ST_HDQ_SHIFT,
+		},
+	},
+	.slaves		= omap2430_hdq1w_slaves,
+	.slaves_cnt	= ARRAY_SIZE(omap2430_hdq1w_slaves),
+	.class		= &omap2_hdq1w_class,
+};
+
 static __initdata struct omap_hwmod *omap2430_hwmods[] = {
 	&omap2430_l3_main_hwmod,
 	&omap2430_l4_core_hwmod,
@@ -2063,6 +2098,9 @@ static __initdata struct omap_hwmod *omap2430_hwmods[] = {
 
 	/* usbotg class*/
 	&omap2430_usbhsotg_hwmod,
+
+	/* hdq1w class */
+	&omap2430_hdq1w_hwmod,
 
 	NULL,
 };
