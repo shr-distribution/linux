@@ -5441,6 +5441,11 @@ static struct platform_device watchdog_device = {
 	.id = -1,
 };
 
+struct platform_device herring_audio_device = {
+	.name	= "herring-audio",
+	.id	= -1,
+};
+
 static struct platform_device *herring_devices[] __initdata = {
 	&watchdog_device,
 #ifdef CONFIG_FIQ_DEBUGGER
@@ -5559,6 +5564,7 @@ static struct platform_device *herring_devices[] __initdata = {
 	&ram_console_device,
 	&sec_device_wifi,
 	&samsung_asoc_dma,
+	&herring_audio_device,
 };
 
 unsigned int HWREV;
