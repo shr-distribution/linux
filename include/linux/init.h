@@ -159,6 +159,18 @@ extern void (*late_time_init)(void);
 
 extern bool initcall_debug;
 
+
+#ifdef MODULE
+static inline int initcall_schedule(void)
+{
+	return -1;
+}
+#else
+extern int initcall_schedule(void);
+struct mutex;
+extern void initcall_lock(struct mutex *);
+#endif
+
 #endif
   
 #ifndef MODULE
