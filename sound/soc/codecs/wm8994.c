@@ -901,6 +901,9 @@ static void vmid_reference(struct snd_soc_codec *codec)
 				    WM8994_BIAS_ENA | 0x2);
 
 		msleep(50);
+
+		snd_soc_update_bits(codec, WM8994_ANTIPOP_2,
+				    WM8994_VMID_RAMP_MASK, 0);
 	}
 }
 
