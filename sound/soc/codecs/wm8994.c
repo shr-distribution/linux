@@ -895,8 +895,10 @@ static void vmid_reference(struct snd_soc_codec *codec)
 
 		/* Remove discharge for line out */
 		snd_soc_update_bits(codec, WM8994_ANTIPOP_1,
+				    WM8994_LINEOUT_VMID_BUF_ENA |
 				    WM8994_LINEOUT1_DISCH |
-				    WM8994_LINEOUT2_DISCH, 0);
+				    WM8994_LINEOUT2_DISCH,
+				    WM8994_LINEOUT_VMID_BUF_ENA);
 
 		/* Main bias enable, VMID=2x40k */
 		snd_soc_update_bits(codec, WM8994_POWER_MANAGEMENT_1,
@@ -907,7 +909,8 @@ static void vmid_reference(struct snd_soc_codec *codec)
 		msleep(50);
 
 		snd_soc_update_bits(codec, WM8994_ANTIPOP_2,
-				    WM8994_VMID_RAMP_MASK, 0);
+				    WM8994_VMID_RAMP_MASK | WM8994_BIAS_SRC,
+				    0);
 	}
 }
 
