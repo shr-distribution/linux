@@ -879,6 +879,7 @@ static void vmid_reference(struct snd_soc_codec *codec)
 		wm8994->vmid_refcount);
 
 	if (wm8994->vmid_refcount == 1) {
+
 		/* Startup bias, VMID ramp & buffer */
 		snd_soc_update_bits(codec, WM8994_ANTIPOP_2,
 				    WM8994_VMID_DISCH |
@@ -889,6 +890,7 @@ static void vmid_reference(struct snd_soc_codec *codec)
 				    WM8994_VMID_BUF_ENA |
 				    (0x3 << WM8994_VMID_RAMP_SHIFT));
 
+		wm_hubs_vmid_ena(codec);
 		/* Lower VROI resistance for ramp */
 		snd_soc_update_bits(codec, WM8994_ADDITIONAL_CONTROL,
 				    WM8994_VROI, WM8994_VROI);
@@ -2295,6 +2297,9 @@ static int wm8994_set_bias_level(struct snd_soc_codec *codec,
 		}
 		break;
 	}
+
+	wm_hubs_set_bias_level(codec, level);
+
 	codec->dapm.bias_level = level;
 
 	return 0;
