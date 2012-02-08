@@ -893,9 +893,6 @@ static void vmid_reference(struct snd_soc_codec *codec)
 				    (0x3 << WM8994_VMID_RAMP_SHIFT));
 
 		wm_hubs_vmid_ena(codec);
-		/* Lower VROI resistance for ramp */
-		snd_soc_update_bits(codec, WM8994_ADDITIONAL_CONTROL,
-				    WM8994_VROI, WM8994_VROI);
 
 		/* Remove discharge for line out */
 		snd_soc_update_bits(codec, WM8994_ANTIPOP_1,
@@ -943,9 +940,6 @@ static void vmid_dereference(struct snd_soc_codec *codec)
 		snd_soc_update_bits(codec, WM8994_POWER_MANAGEMENT_1,
 				    WM8994_BIAS_ENA |
 				    WM8994_VMID_SEL_MASK, 0);
-
-		snd_soc_update_bits(codec, WM8994_ADDITIONAL_CONTROL,
-				    WM8994_VROI, 0);
 
 		/* Discharge VMID */
 		snd_soc_update_bits(codec, WM8994_ANTIPOP_2,
@@ -2199,9 +2193,6 @@ static int wm8994_set_bias_level(struct snd_soc_codec *codec,
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
-		/* High resistance VROI for inactive outputs */
-		snd_soc_update_bits(codec, WM8994_ADDITIONAL_CONTROL,
-				    WM8994_VROI, 0);
 		break;
 
 	case SND_SOC_BIAS_PREPARE:
