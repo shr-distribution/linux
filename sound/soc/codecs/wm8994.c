@@ -882,10 +882,12 @@ static void vmid_reference(struct snd_soc_codec *codec)
 
 		/* Startup bias, VMID ramp & buffer */
 		snd_soc_update_bits(codec, WM8994_ANTIPOP_2,
+				    WM8994_BIAS_SRC |
 				    WM8994_VMID_DISCH |
 				    WM8994_STARTUP_BIAS_ENA |
 				    WM8994_VMID_BUF_ENA |
 				    WM8994_VMID_RAMP_MASK,
+				    WM8994_BIAS_SRC |
 				    WM8994_STARTUP_BIAS_ENA |
 				    WM8994_VMID_BUF_ENA |
 				    (0x3 << WM8994_VMID_RAMP_SHIFT));
