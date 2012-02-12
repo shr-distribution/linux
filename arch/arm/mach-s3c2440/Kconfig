@@ -89,6 +89,7 @@ config MACH_ANUBIS
 config MACH_NEO1973_GTA02
 	bool "Openmoko GTA02 / Freerunner phone"
 	select CPU_S3C2442
+	select CPU_S3C2440
 	select S3C24XX_GPIO_EXTRA64
 	select MFD_PCF50633
 	select GPIO_PCF50633
