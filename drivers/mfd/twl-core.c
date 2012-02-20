@@ -694,8 +694,9 @@ add_children(struct twl4030_platform_data *pdata, unsigned long features)
 		static struct regulator_consumer_supply usb1v8 = {
 			.supply =	"usb1v8",
 		};
-		static struct regulator_consumer_supply usb3v1 = {
-			.supply =	"usb3v1",
+		static struct regulator_consumer_supply usb3v1[] = {
+			{ .supply =	"usb3v1" },
+			{ .supply =	"bci3v1" },
 		};
 
 	/* First add the regulators so that they can be used by transceiver */
@@ -723,7 +724,7 @@ add_children(struct twl4030_platform_data *pdata, unsigned long features)
 				return PTR_ERR(child);
 
 			child = add_regulator_linked(TWL4030_REG_VUSB3V1,
-						      &usb_fixed, &usb3v1, 1,
+						      &usb_fixed, usb3v1, 2,
 						      features);
 			if (IS_ERR(child))
 				return PTR_ERR(child);
@@ -744,7 +745,7 @@ add_children(struct twl4030_platform_data *pdata, unsigned long features)
 		if (twl_has_regulator() && child) {
 			usb1v5.dev = child;
 			usb1v8.dev = child;
-			usb3v1.dev = child;
+			usb3v1[0].dev = child;
 		}
 	}
 	if (twl_has_usb() && pdata->usb && twl_class_is_6030()) {
