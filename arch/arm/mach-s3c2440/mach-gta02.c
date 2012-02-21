@@ -171,34 +171,16 @@ static struct s3c2410_uartcfg gta02_uartcfgs[] = {
 	},
 };
 
-static struct platform_device gta02_pm_bt_dev = {
-	.name = "gta02-pm-bt",
-};
-
-static struct platform_device gta02_pm_gps_dev = {
-	.name = "gta02-pm-gps",
-};
-
-static struct platform_device gta02_pm_gsm_dev = {
-	.name = "gta02-pm-gsm",
-};
-
-static struct platform_device gta02_pm_usbhost_dev = {
-	.name = "gta02-pm-usbhost",
-};
-
 static struct platform_device gta02_pm_wlan_dev = {
 	.name = "gta02-pm-wlan",
 };
 
-static struct regulator_consumer_supply gsm_supply_consumer = {
-	.dev = &gta02_pm_gsm_dev.dev,
-	.supply = "GSM",
+static struct regulator_consumer_supply gsm_supply_consumer[] = {
+	REGULATOR_SUPPLY("GSM","gta02-pm-gsm"),
 };
 
-static struct regulator_consumer_supply usbhost_supply_consumer = {
-	.dev = &gta02_pm_usbhost_dev.dev,
-	.supply = "USBHOST",
+static struct regulator_consumer_supply usbhost_supply_consumer[] = {
+	REGULATOR_SUPPLY("USBHOST","gta02-pm-usbhost"),
 };
 
 static struct regulator_init_data gsm_supply_init_data = {
@@ -208,8 +190,8 @@ static struct regulator_init_data gsm_supply_init_data = {
 		.valid_modes_mask = REGULATOR_MODE_NORMAL,
 		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
 	},
-	.num_consumer_supplies = 1,
-	.consumer_supplies = &gsm_supply_consumer,
+	.num_consumer_supplies = ARRAY_SIZE(gsm_supply_consumer),
+	.consumer_supplies = gsm_supply_consumer,
 };
 
 static struct regulator_init_data usbhost_supply_init_data = {
@@ -219,8 +201,8 @@ static struct regulator_init_data usbhost_supply_init_data = {
 		.valid_modes_mask = REGULATOR_MODE_NORMAL,
 		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
 	},
-	.num_consumer_supplies = 1,
-	.consumer_supplies = &usbhost_supply_consumer,
+	.num_consumer_supplies = ARRAY_SIZE(usbhost_supply_consumer),
+	.consumer_supplies = usbhost_supply_consumer,
 };
 
 static struct fixed_voltage_config gsm_supply_config = {
@@ -700,17 +682,11 @@ static struct pcf50633_bl_platform_data gta02_backlight_data = {
 };
 
 static struct regulator_consumer_supply ldo4_consumers[] = {
-	{
-		.dev = &gta02_pm_bt_dev.dev,
-		.supply = "BT_3V2",
-	},
+	REGULATOR_SUPPLY("BT_3V2","gta02-pm-bt"),
 };
 
 static struct regulator_consumer_supply ldo5_consumers[] = {
-	{
-		.dev = &gta02_pm_gps_dev.dev,
-		.supply = "RF_3V",
-	},
+	REGULATOR_SUPPLY("RF_3V","gta02-pm-gps"),
 };
 
 static struct regulator_consumer_supply ldo6_consumers[] = {
@@ -719,10 +695,7 @@ static struct regulator_consumer_supply ldo6_consumers[] = {
 };
 
 static struct regulator_consumer_supply hcldo_consumers[] = {
-	{
-		.dev = &gta02_glamo_dev.dev,
-		.supply = "SD_3V3",
-	},
+	REGULATOR_SUPPLY("SD_3V3","glamo3362"),
 };
 
 static void gta02_poweroff(void)
@@ -1306,8 +1279,6 @@ static struct platform_device *gta02_devices[] __initdata = {
 	&gta02_pwm_leds_device,
 	&s3c_device_adc,
 	&s3c_device_ts,
-	&gta02_pm_bt_dev,
-	&gta02_pm_gps_dev,
 	&gta02_pm_wlan_dev,
 	&gta02_glamo_dev,
 };
@@ -1363,19 +1334,11 @@ static struct platform_device *gta02_pcf50633_gpio_children[] = {
 	&gta02_usbhost_supply_device,
 };
 
-static struct platform_device *gta02_gsm_supply_children[] = {
-	&gta02_pm_gsm_dev,
-};
-
-static struct platform_device* gta02_usbhost_supply_children[] = {
-	&gta02_pm_usbhost_dev,
-};
-
 static struct platform_device *gta02_hdq_children[] = {
 	&bq27000_battery_device,
 };
 
-
+#if 0
 static struct gta02_device_children gta02_device_children[] = {
  	{
 		.dev_name = "glamo-gpio.0",
@@ -1407,7 +1370,7 @@ static struct gta02_device_children gta02_device_children[] = {
 		.children = gta02_hdq_children,
 	},
 };
-
+#endif
 static int gta02_add_child_devices(struct device *parent,
 		struct platform_device **children, size_t num_children)
 {
@@ -1418,7 +1381,7 @@ static int gta02_add_child_devices(struct device *parent,
 
 	return platform_add_devices(children, num_children);
 }
-
+#if 0
 static int gta02_device_registered(struct notifier_block *block,
 		unsigned long action, void *data)
 {
@@ -1442,13 +1405,12 @@ static int gta02_device_registered(struct notifier_block *block,
 
 	return 0;
 }
-
 static struct notifier_block gta02_device_register_notifier = {
 	.notifier_call = gta02_device_registered,
 	.priority = INT_MAX,
 };
 
-
+#endif
 /*
  * Allow the bootloader to enable hw ecc
  * hardware_ecc=1|0
