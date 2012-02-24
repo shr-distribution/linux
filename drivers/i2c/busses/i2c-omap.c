@@ -593,6 +593,7 @@ static int omap_i2c_xfer_msg(struct i2c_adapter *adap,
 	if (r < 0)
 		return r;
 	if (r == 0) {
+		WARN_ON(1);
 		dev_err(dev->dev, "controller timed out\n");
 		omap_i2c_init(dev);
 		return -ETIMEDOUT;
@@ -633,7 +634,9 @@ omap_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 	int i;
 	int r;
 
-	pm_runtime_get_sync(dev->dev);
+	int err = pm_runtime_get_sync(dev->dev);
+
+	WARN(err < 0, "omap_i2c_xfer: cannot get pm: %d\n", err);
 
 	r = omap_i2c_wait_for_bb(dev);
 	if (r < 0)
