@@ -382,7 +382,8 @@ static void twl4030_phy_power(struct twl4030_usb *twl, int on)
 		twl_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER, 0,
 							VUSB_DEDICATED2);
 		regulator_enable(twl->usb1v5);
-		__twl4030_phy_power(twl, 1);
+		if (!twl->vbus_supplied)
+			__twl4030_phy_power(twl, 1);
 		twl4030_usb_write(twl, PHY_CLK_CTRL,
 				  twl4030_usb_read(twl, PHY_CLK_CTRL) |
 					(PHY_CLK_CTRL_CLOCKGATING_EN |
