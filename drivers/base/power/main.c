@@ -918,7 +918,9 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 	}
 
  End:
-	if (!error) {
+	if (!error && strncmp(dev_name(dev), "omap_i2c", 8) == 0)
+		/* Don't suspend me - please */;
+	else if (!error) {
 		dev->power.is_suspended = true;
 		if (dev->power.wakeup_path
 		    && dev->parent && !dev->parent->power.ignore_children)
