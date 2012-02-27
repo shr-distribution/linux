@@ -270,8 +270,6 @@ typedef struct cmd_tlv {
 #define TLV_TYPE_CHANNEL			'C'
 #endif
 
-#if defined(CSCAN)
-
 typedef struct cscan_tlv {
 	char prefix;
 	char version;
@@ -303,7 +301,5 @@ extern int wl_iw_parse_ssid_list_tlv(char** list_str, wlc_ssid_t* ssid, \
 extern int wl_iw_parse_ssid_list(char** list_str, wlc_ssid_t* ssid, int idx, int max);
 
 extern int wl_iw_parse_channel_list(char** list_str, uint16* channel_list, int channel_num);
-
-#endif
 
 #endif

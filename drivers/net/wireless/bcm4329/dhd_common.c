@@ -2179,8 +2179,6 @@ int dhd_keep_alive_onoff(dhd_pub_t *dhd, int ka_on)
 }
 #endif /* defined(KEEP_ALIVE) */
 
-#if defined(CSCAN)
-
 /* Androd ComboSCAN support */
 /*
  *  data parsing from ComboScan tlv list
@@ -2428,5 +2426,3 @@ wl_iw_parse_channel_list(char** list_str, uint16* channel_list, int channel_num)
 	*list_str = str;
 	return num;
 }
-
-#endif
