@@ -1156,7 +1156,7 @@ static int __init wake_3G_init(void)
 		return -ENXIO;
 
 	gpio_export(WO3G_GPIO, 0);
-	gpio_set_debounce(WO3G_GPIO, 350);
+//	gpio_set_debounce(WO3G_GPIO, 350);
 	irq_set_irq_type(OMAP_GPIO_IRQ(WO3G_GPIO), IRQ_TYPE_EDGE_RISING);
 	irq_set_irq_wake(OMAP_GPIO_IRQ(WO3G_GPIO), 1);
 
