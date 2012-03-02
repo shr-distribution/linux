@@ -282,7 +282,7 @@ static irqreturn_t prcm_interrupt_handler (int irq, void *dev_id)
 			 * Is the MPU PRCM interrupt handler racing with the
 			 * IVA2 PRCM interrupt handler ?
 			 */
-			WARN(c == 0, "prcm: WARNING: PRCM indicated MPU wakeup "
+			WARN_ONCE(c == 0, "prcm: WARNING: PRCM indicated MPU wakeup "
 			     "but no wakeup sources are marked\n");
 		} else {
 			/* XXX we need to expand our PRCM interrupt handler */
