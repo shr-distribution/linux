@@ -486,7 +486,6 @@ static void setup_4430ohci_io_mux(const enum usbhs_omap_port_mode *port_mode)
 void __init usbhs_init(const struct usbhs_omap_board_data *pdata)
 {
 	struct omap_hwmod	*oh[2];
-	struct omap_device	*od;
 	struct platform_device *pdev;
 	int			bus_id = -1;
 	int			i;
