@@ -3472,8 +3472,8 @@ wl_iw_set_scan(
 
 #if WIRELESS_EXT > 17
 	
-	if (wrqu->data.length == sizeof(struct iw_scan_req)) {
-		if (wrqu->data.flags & IW_SCAN_THIS_ESSID) {
+	if (1 || wrqu->data.length == sizeof(struct iw_scan_req)) {
+		if (1 || wrqu->data.flags & IW_SCAN_THIS_ESSID) {
 			struct iw_scan_req *req = (struct iw_scan_req *)extra;
 #if defined(CONFIG_FIRST_SCAN)
 			if (g_first_broadcast_scan != BROADCAST_SCAN_FIRST_RESULT_CONSUMED) {
@@ -3613,9 +3613,9 @@ wl_iw_iscan_set_scan(
 	memset(&ssid, 0, sizeof(ssid));
 
 #if WIRELESS_EXT > 17
-	
-	if (wrqu->data.length == sizeof(struct iw_scan_req)) {
-		if (wrqu->data.flags & IW_SCAN_THIS_ESSID) {
+
+	if (1 || wrqu->data.length == sizeof(struct iw_scan_req)) {
+		if (1 || wrqu->data.flags & IW_SCAN_THIS_ESSID) {
 			int as = 0;
 			struct iw_scan_req *req = (struct iw_scan_req *)extra;
 			ssid.SSID_len = MIN(sizeof(ssid.SSID), req->essid_len);
@@ -7338,7 +7338,7 @@ static const iw_handler wl_iw_handler[] =
 	(iw_handler) wl_iw_iscan_get_scan,	
 #else
 	(iw_handler) wl_iw_set_scan,		
-	(iw_handler) wl_iw_get_scan,		
+	(iw_handler) wl_iw_set_scan,
 #endif
 #else	
 	(iw_handler) NULL,			
