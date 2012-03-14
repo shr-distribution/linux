@@ -64,6 +64,8 @@ static int fixed_voltage_disable(struct regulator_dev *dev)
 	if (gpio_is_valid(data->gpio)) {
 		gpio_set_value_cansleep(data->gpio, !data->enable_high);
 		data->is_enabled = false;
+		udelay(10);
+		gpio_set_value_cansleep(data->gpio, data->enable_high);
 	}
 
 	return 0;
