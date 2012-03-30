@@ -2023,7 +2023,6 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 		pm_runtime_get_sync(musb->controller);
 		musb->vbus_awake = true;
 	}
-	pm_runtime_put(musb->controller);
 
 	status = musb_init_debugfs(musb);
 	if (status < 0)
