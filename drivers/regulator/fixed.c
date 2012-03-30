@@ -50,6 +50,8 @@ static int fixed_voltage_enable(struct regulator_dev *dev)
 	struct fixed_voltage_data *data = rdev_get_drvdata(dev);
 
 	if (gpio_is_valid(data->gpio)) {
+		gpio_set_value_cansleep(data->gpio, !data->enable_high);
+		udelay(10);
 		gpio_set_value_cansleep(data->gpio, data->enable_high);
 		data->is_enabled = true;
 	}
