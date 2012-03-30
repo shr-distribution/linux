@@ -17,7 +17,9 @@
 static irqreturn_t wimax_hostwake_isr(int irq, void *dev)
 {
 	struct net_adapter	*adapter = dev;
+#ifdef CONFIG_WAKELOCK
 	wake_lock_timeout(&adapter->pdata->g_cfg->wimax_wake_lock, 1 * HZ);
+#endif
 
 	return IRQ_HANDLED;
 }
