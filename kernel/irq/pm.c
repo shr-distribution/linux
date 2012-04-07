@@ -106,6 +106,12 @@ int check_wakeup_irqs(void)
 		if (irqd_is_wakeup_set(&desc->irq_data)) {
 			if (desc->istate & IRQS_PENDING)
 				return -EBUSY;
+			if (irqd_irq_masked(&desc->irq_data))
+				/* Probably a level interrupt
+				 * which fired recently and as
+				 * masked
+				 */
+				unmask_irq(desc);
 			continue;
 		}
 		/*
