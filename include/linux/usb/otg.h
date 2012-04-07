@@ -71,6 +71,7 @@ struct otg_transceiver {
 	struct usb_bus		*host;
 	struct usb_gadget	*gadget;
 
+	struct device			*io_dev;
 	struct otg_io_access_ops	*io_ops;
 	void __iomem			*io_priv;
 

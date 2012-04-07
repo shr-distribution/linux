@@ -120,6 +120,11 @@ MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:" MUSB_DRIVER_NAME);
 
+bool preserve_vbus;
+module_param(preserve_vbus, bool, 0644);
+MODULE_PARM_DESC(preserve_vbus, "Keep PHY awake while VBUS is present to"
+		 " support battery charging\n");
+
 
 /*-------------------------------------------------------------------------*/
 
@@ -137,6 +142,9 @@ static int musb_ulpi_read(struct otg_transceiver *otg, u32 offset)
 	int	i = 0;
 	u8	r;
 	u8	power;
+	int	ret;
+
+	pm_runtime_get_sync(otg->io_dev);
 
 	/* Make sure the transceiver is not in low power mode */
 	power = musb_readb(addr, MUSB_POWER);
@@ -154,15 +162,22 @@ static int musb_ulpi_read(struct otg_transceiver *otg, u32 offset)
 	while (!(musb_readb(addr, MUSB_ULPI_REG_CONTROL)
 				& MUSB_ULPI_REG_CMPLT)) {
 		i++;
-		if (i == 10000)
-			return -ETIMEDOUT;
+		if (i == 10000) {
+			ret = -ETIMEDOUT;
+			goto out;
+		}
 
 	}
 	r = musb_readb(addr, MUSB_ULPI_REG_CONTROL);
 	r &= ~MUSB_ULPI_REG_CMPLT;
 	musb_writeb(addr, MUSB_ULPI_REG_CONTROL, r);
 
-	return musb_readb(addr, MUSB_ULPI_REG_DATA);
+	ret = musb_readb(addr, MUSB_ULPI_REG_DATA);
+
+out:
+	pm_runtime_put(otg->io_dev);
+
+	return ret;
 }
 
 static int musb_ulpi_write(struct otg_transceiver *otg,
@@ -172,6 +187,9 @@ static int musb_ulpi_write(struct otg_transceiver *otg,
 	int	i = 0;
 	u8	r = 0;
 	u8	power;
+	int	ret = 0;
+
+	pm_runtime_get_sync(otg->io_dev);
 
 	/* Make sure the transceiver is not in low power mode */
 	power = musb_readb(addr, MUSB_POWER);
@@ -185,15 +203,20 @@ static int musb_ulpi_write(struct otg_transceiver *otg,
 	while (!(musb_readb(addr, MUSB_ULPI_REG_CONTROL)
 				& MUSB_ULPI_REG_CMPLT)) {
 		i++;
-		if (i == 10000)
-			return -ETIMEDOUT;
+		if (i == 10000) {
+			ret = -ETIMEDOUT;
+			goto out;
+		}
 	}
 
 	r = musb_readb(addr, MUSB_ULPI_REG_CONTROL);
 	r &= ~MUSB_ULPI_REG_CMPLT;
 	musb_writeb(addr, MUSB_ULPI_REG_CONTROL, r);
 
-	return 0;
+out:
+	pm_runtime_put(otg->io_dev);
+
+	return ret;
 }
 #else
 #define musb_ulpi_read		NULL
@@ -1904,13 +1927,16 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 
 	if (!musb->isr) {
 		status = -ENODEV;
-		goto fail3;
+		goto fail2;
 	}
 
 	if (!musb->xceiv->io_ops) {
+		musb->xceiv->io_dev = musb->controller;
 		musb->xceiv->io_priv = musb->mregs;
 		musb->xceiv->io_ops = &musb_ulpi_access;
 	}
+
+	pm_runtime_get_sync(musb->controller);
 
 #ifndef CONFIG_MUSB_PIO_ONLY
 	if (use_dma && dev->dma_mask) {
@@ -2013,6 +2039,13 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 	if (status < 0)
 		goto fail3;
 
+	if (preserve_vbus
+	    && musb->xceiv->last_event == USB_EVENT_VBUS
+	    && !musb->vbus_awake) {
+		pm_runtime_get_sync(musb->controller);
+		musb->vbus_awake = true;
+	}
+
 	status = musb_init_debugfs(musb);
 	if (status < 0)
 		goto fail4;
@@ -2022,6 +2055,8 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 	if (status)
 		goto fail5;
 #endif
+
+	pm_runtime_put(musb->controller);
 
 	dev_info(dev, "USB %s mode controller at %p using %s, IRQ %d\n",
 			({char *s;
@@ -2047,6 +2082,9 @@ fail4:
 		musb_gadget_cleanup(musb);
 
 fail3:
+	pm_runtime_put_sync(musb->controller);
+
+fail2:
 	if (musb->irq_wake)
 		device_init_wakeup(dev, 0);
 	musb_platform_exit(musb);
@@ -2116,6 +2154,10 @@ static int __exit musb_remove(struct platform_device *pdev)
 	musb_exit_debugfs(musb);
 	musb_shutdown(pdev);
 
+	if (musb->vbus_awake) {
+		musb->vbus_awake = false;
+		pm_runtime_put(musb->controller);
+	}
 	pm_runtime_put(musb->controller);
 	musb_free(musb);
 	iounmap(ctrl_base);

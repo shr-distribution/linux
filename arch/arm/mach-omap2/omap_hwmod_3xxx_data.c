@@ -2,6 +2,7 @@
  * omap_hwmod_3xxx_data.c - hardware modules present on the OMAP3xxx chips
  *
  * Copyright (C) 2009-2011 Nokia Corporation
+ * Copyright (C) 2012 Texas Instruments, Inc.
  * Paul Walmsley
  *
  * This program is free software; you can redistribute it and/or modify
@@ -86,6 +87,7 @@ static struct omap_hwmod omap3xxx_mcbsp2_sidetone_hwmod;
 static struct omap_hwmod omap3xxx_mcbsp3_sidetone_hwmod;
 static struct omap_hwmod omap3xxx_usb_host_hs_hwmod;
 static struct omap_hwmod omap3xxx_usb_tll_hs_hwmod;
+static struct omap_hwmod omap3xxx_hdq1w_hwmod;
 
 /* L3 -> L4_CORE interface */
 static struct omap_hwmod_ocp_if omap3xxx_l3_main__l4_core = {
@@ -228,6 +230,16 @@ static struct omap_hwmod_ocp_if omap3xxx_l4_core__mmc3 = {
 	.addr		= omap3xxx_mmc3_addr_space,
 	.user		= OCP_USER_MPU | OCP_USER_SDMA,
 	.flags		= OMAP_FIREWALL_L4
+};
+
+/* L4 CORE -> HDQ1W interface */
+static struct omap_hwmod_ocp_if omap3xxx_l4_core__hdq1w = {
+	.master		= &omap3xxx_l4_core_hwmod,
+	.slave		= &omap3xxx_hdq1w_hwmod,
+	.clk		= "hdq_ick",
+	.addr		= omap2_hdq1w_addr_space,
+	.user		= OCP_USER_MPU | OCP_USER_SDMA,
+	.flags		= OMAP_FIREWALL_L4 | OCPIF_SWSUP_IDLE,
 };
 
 /* L4 CORE -> UART1 interface */
@@ -3520,6 +3532,30 @@ static struct omap_hwmod omap3xxx_usb_tll_hs_hwmod = {
 	.slaves_cnt	= ARRAY_SIZE(omap3xxx_usb_tll_hs_slaves),
 };
 
+/* HDQ1W/1-wire */
+
+static struct omap_hwmod_ocp_if *omap3xxx_hdq1w_slaves[] = {
+	&omap3xxx_l4_core__hdq1w,
+};
+
+static struct omap_hwmod omap3xxx_hdq1w_hwmod = {
+	.name		= "hdq1w",
+	.mpu_irqs	= omap2_hdq1w_mpu_irqs,
+	.main_clk	= "hdq_fck",
+	.prcm		= {
+		.omap2 = {
+			.module_offs = CORE_MOD,
+			.prcm_reg_id = 1,
+			.module_bit = OMAP3430_EN_HDQ_SHIFT,
+			.idlest_reg_id = 1,
+			.idlest_idle_bit = OMAP3430_ST_HDQ_SHIFT,
+		},
+	},
+	.slaves		= omap3xxx_hdq1w_slaves,
+	.slaves_cnt	= ARRAY_SIZE(omap3xxx_hdq1w_slaves),
+	.class		= &omap2_hdq1w_class,
+};
+
 static __initdata struct omap_hwmod *omap3xxx_hwmods[] = {
 	&omap3xxx_l3_main_hwmod,
 	&omap3xxx_l4_core_hwmod,
@@ -3621,6 +3657,7 @@ static __initdata struct omap_hwmod *omap34xx_hwmods[] = {
 	&omap34xx_sr1_hwmod,
 	&omap34xx_sr2_hwmod,
 	&omap3xxx_mailbox_hwmod,
+	&omap3xxx_hdq1w_hwmod,
 	NULL
 };
 
@@ -3637,6 +3674,7 @@ static __initdata struct omap_hwmod *omap36xx_hwmods[] = {
 	&omap3xxx_usb_tll_hs_hwmod,
 	&omap3xxx_es3plus_mmc1_hwmod,
 	&omap3xxx_es3plus_mmc2_hwmod,
+	&omap3xxx_hdq1w_hwmod,
 	NULL
 };
 
@@ -3648,6 +3686,7 @@ static __initdata struct omap_hwmod *am35xx_hwmods[] = {
 	&omap3xxx_usb_tll_hs_hwmod,
 	&omap3xxx_es3plus_mmc1_hwmod,
 	&omap3xxx_es3plus_mmc2_hwmod,
+	&omap3xxx_hdq1w_hwmod,
 	NULL
 };
 

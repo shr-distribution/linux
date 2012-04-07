@@ -54,11 +54,9 @@
 
 struct omap_uart_state {
 	int num;
-	int can_sleep;
 
 	struct list_head node;
 	struct omap_hwmod *oh;
-	struct platform_device *pdev;
 };
 
 static LIST_HEAD(uart_list);
@@ -336,6 +334,10 @@ void __init omap_serial_init_port(struct omap_board_data *bdata,
 	if (WARN_ON(bdata->id >= num_uarts))
 		return;
 
+	if (bdata->pads_cnt < 0 &&
+	    (cpu_is_omap44xx() || cpu_is_omap34xx()))
+		omap_serial_fill_default_pads(bdata);
+
 	list_for_each_entry(uart, &uart_list, node)
 		if (bdata->id == uart->num)
 			break;
@@ -381,8 +383,6 @@ void __init omap_serial_init_port(struct omap_board_data *bdata,
 
 	oh->mux = omap_hwmod_mux_init(bdata->pads, bdata->pads_cnt);
 
-	uart->pdev = pdev;
-
 	oh->dev_attr = uart;
 
 	if (((cpu_is_omap34xx() || cpu_is_omap44xx()) && bdata->pads)
@@ -407,10 +407,7 @@ void __init omap_serial_board_init(struct omap_uart_port_info *info)
 		bdata.id = uart->num;
 		bdata.flags = 0;
 		bdata.pads = NULL;
-		bdata.pads_cnt = 0;
-
-		if (cpu_is_omap44xx() || cpu_is_omap34xx())
-			omap_serial_fill_default_pads(&bdata);
+		bdata.pads_cnt = -1;
 
 		if (!info)
 			omap_serial_init_port(&bdata, NULL);

@@ -2,6 +2,7 @@
  * omap_hwmod_2xxx_3xxx_ipblock_data.c - common IP block data for OMAP2/3
  *
  * Copyright (C) 2011 Nokia Corporation
+ * Copyright (C) 2012 Texas Instruments, Inc.
  * Paul Walmsley
  *
  * This program is free software; you can redistribute it and/or modify
@@ -12,6 +13,7 @@
 #include <plat/serial.h>
 #include <plat/dma.h>
 #include <plat/common.h>
+#include <plat/hdq1w.h>
 
 #include <mach/irqs.h>
 
@@ -53,6 +55,28 @@ struct omap_hwmod_class omap2_dss_hwmod_class = {
 	.name	= "dss",
 	.sysc	= &omap2_dss_sysc,
 	.reset	= omap_dss_reset,
+};
+
+/*
+ * 'dispc' class
+ * display controller
+ */
+
+static struct omap_hwmod_class_sysconfig omap2_dispc_sysc = {
+	.rev_offs	= 0x0000,
+	.sysc_offs	= 0x0010,
+	.syss_offs	= 0x0014,
+	.sysc_flags	= (SYSC_HAS_SIDLEMODE | SYSC_HAS_MIDLEMODE |
+			   SYSC_HAS_SOFTRESET | SYSC_HAS_AUTOIDLE |
+			   SYSC_HAS_ENAWAKEUP),
+	.idlemodes	= (SIDLE_FORCE | SIDLE_NO | SIDLE_SMART |
+			   MSTANDBY_FORCE | MSTANDBY_NO | MSTANDBY_SMART),
+	.sysc_fields	= &omap_hwmod_sysc_type1,
+};
+
+struct omap_hwmod_class omap2_dispc_hwmod_class = {
+	.name	= "dispc",
+	.sysc	= &omap2_dispc_sysc,
 };
 
 /*
@@ -299,6 +323,26 @@ struct omap_hwmod_irq_info omap2_mcspi1_mpu_irqs[] = {
 
 struct omap_hwmod_irq_info omap2_mcspi2_mpu_irqs[] = {
 	{ .irq = 66 },
+	{ .irq = -1 }
+};
+
+struct omap_hwmod_class_sysconfig omap2_hdq1w_sysc = {
+	.rev_offs	= 0x0,
+	.sysc_offs	= 0x14,
+	.syss_offs	= 0x18,
+	.sysc_flags	= (SYSC_HAS_SOFTRESET | SYSC_HAS_AUTOIDLE |
+			   SYSS_HAS_RESET_STATUS),
+	.sysc_fields    = &omap_hwmod_sysc_type1,
+};
+
+struct omap_hwmod_class omap2_hdq1w_class = {
+	.name	= "hdq1w",
+	.sysc	= &omap2_hdq1w_sysc,
+	.reset	= &omap_hdq1w_reset,
+};
+
+struct omap_hwmod_irq_info omap2_hdq1w_mpu_irqs[] = {
+	{ .irq = 58, },
 	{ .irq = -1 }
 };
 

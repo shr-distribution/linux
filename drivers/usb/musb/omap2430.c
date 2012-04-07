@@ -256,6 +256,10 @@ static void musb_otg_notifier_work(struct work_struct *data_notifier_work)
 
 		if (musb->gadget_driver)
 			pm_runtime_get_sync(musb->controller);
+		if (preserve_vbus && !musb->vbus_awake) {
+			musb->vbus_awake = true;
+			pm_runtime_get_sync(musb->controller);
+		}
 		otg_init(musb->xceiv);
 		break;
 
@@ -263,10 +267,16 @@ static void musb_otg_notifier_work(struct work_struct *data_notifier_work)
 		dev_dbg(musb->controller, "VBUS Disconnect\n");
 
 		if (is_otg_enabled(musb) || is_peripheral_enabled(musb))
-			if (musb->gadget_driver) {
+			if (musb->gadget_driver || musb->vbus_awake) {
 				pm_runtime_mark_last_busy(musb->controller);
 				pm_runtime_put_autosuspend(musb->controller);
 			}
+
+		if (musb->vbus_awake) {
+			pm_runtime_mark_last_busy(musb->controller);
+			pm_runtime_put_autosuspend(musb->controller);
+			musb->vbus_awake = false;
+		}
 
 		if (data->interface_type == MUSB_INTERFACE_UTMI) {
 			if (musb->xceiv->set_vbus)
@@ -332,6 +342,7 @@ static int omap2430_musb_init(struct musb *musb)
 
 	setup_timer(&musb_idle_timer, musb_do_idle, (unsigned long) musb);
 
+	pm_runtime_put_noidle(musb->controller);
 	return 0;
 
 err1:
@@ -477,7 +488,6 @@ static int __exit omap2430_remove(struct platform_device *pdev)
 
 	platform_device_del(glue->musb);
 	platform_device_put(glue->musb);
-	pm_runtime_put(&pdev->dev);
 	kfree(glue);
 
 	return 0;

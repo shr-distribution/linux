@@ -2,6 +2,7 @@
  * omap_hwmod_2420_data.c - hardware modules present on the OMAP2420 chips
  *
  * Copyright (C) 2009-2011 Nokia Corporation
+ * Copyright (C) 2012 Texas Instruments, Inc.
  * Paul Walmsley
  *
  * This program is free software; you can redistribute it and/or modify
@@ -54,6 +55,7 @@ static struct omap_hwmod omap2420_gpio4_hwmod;
 static struct omap_hwmod omap2420_dma_system_hwmod;
 static struct omap_hwmod omap2420_mcspi1_hwmod;
 static struct omap_hwmod omap2420_mcspi2_hwmod;
+static struct omap_hwmod omap2420_hdq1w_hwmod;
 
 /* L3 -> L4_CORE interface */
 static struct omap_hwmod_ocp_if omap2420_l3_main__l4_core = {
@@ -181,6 +183,17 @@ static struct omap_hwmod_ocp_if omap2420_l4_core__i2c2 = {
 	.addr		= omap2_i2c2_addr_space,
 	.user		= OCP_USER_MPU | OCP_USER_SDMA,
 };
+
+/* L4 CORE -> HDQ1W interface */
+static struct omap_hwmod_ocp_if omap2420_l4_core__hdq1w = {
+	.master		= &omap2420_l4_core_hwmod,
+	.slave		= &omap2420_hdq1w_hwmod,
+	.clk		= "hdq_ick",
+	.addr		= omap2_hdq1w_addr_space,
+	.user		= OCP_USER_MPU | OCP_USER_SDMA,
+	.flags		= OMAP_FIREWALL_L4
+};
+
 
 /* Slave interfaces on the L4_CORE interconnect */
 static struct omap_hwmod_ocp_if *omap2420_l4_core_slaves[] = {
@@ -1513,6 +1526,30 @@ static struct omap_hwmod omap2420_mcbsp2_hwmod = {
 	.slaves_cnt	= ARRAY_SIZE(omap2420_mcbsp2_slaves),
 };
 
+/* HDQ1W/1-wire */
+
+static struct omap_hwmod_ocp_if *omap2420_hdq1w_slaves[] = {
+	&omap2420_l4_core__hdq1w,
+};
+
+static struct omap_hwmod omap2420_hdq1w_hwmod = {
+	.name		= "hdq1w",
+	.mpu_irqs	= omap2_hdq1w_mpu_irqs,
+	.main_clk	= "hdq_fck",
+	.prcm		= {
+		.omap2 = {
+			.module_offs = CORE_MOD,
+			.prcm_reg_id = 1,
+			.module_bit = OMAP24XX_EN_HDQ_SHIFT,
+			.idlest_reg_id = 1,
+			.idlest_idle_bit = OMAP24XX_ST_HDQ_SHIFT,
+		},
+	},
+	.slaves		= omap2420_hdq1w_slaves,
+	.slaves_cnt	= ARRAY_SIZE(omap2420_hdq1w_slaves),
+	.class		= &omap2_hdq1w_class,
+};
+
 static __initdata struct omap_hwmod *omap2420_hwmods[] = {
 	&omap2420_l3_main_hwmod,
 	&omap2420_l4_core_hwmod,
@@ -1565,6 +1602,10 @@ static __initdata struct omap_hwmod *omap2420_hwmods[] = {
 	/* mcspi class */
 	&omap2420_mcspi1_hwmod,
 	&omap2420_mcspi2_hwmod,
+
+	/* hdq1w class */
+	&omap2420_hdq1w_hwmod,
+
 	NULL,
 };
 

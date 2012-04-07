@@ -744,6 +744,7 @@ int twl4030_init_irq(int irq_num, unsigned irq_base, unsigned irq_end)
 		pr_err("twl4030: could not claim irq%d: %d\n", irq_num, status);
 		goto fail_rqirq;
 	}
+	enable_irq_wake(irq_num);
 
 	return status;
 fail_rqirq:
