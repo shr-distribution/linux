@@ -120,11 +120,6 @@ MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:" MUSB_DRIVER_NAME);
 
-bool preserve_vbus;
-module_param(preserve_vbus, bool, 0644);
-MODULE_PARM_DESC(preserve_vbus, "Keep PHY awake while VBUS is present to"
-		 " support battery charging\n");
-
 
 /*-------------------------------------------------------------------------*/
 
@@ -2039,13 +2034,6 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 	if (status < 0)
 		goto fail3;
 
-	if (preserve_vbus
-	    && musb->xceiv->last_event == USB_EVENT_VBUS
-	    && !musb->vbus_awake) {
-		pm_runtime_get_sync(musb->controller);
-		musb->vbus_awake = true;
-	}
-
 	status = musb_init_debugfs(musb);
 	if (status < 0)
 		goto fail4;
@@ -2154,10 +2142,6 @@ static int __exit musb_remove(struct platform_device *pdev)
 	musb_exit_debugfs(musb);
 	musb_shutdown(pdev);
 
-	if (musb->vbus_awake) {
-		musb->vbus_awake = false;
-		pm_runtime_put(musb->controller);
-	}
 	pm_runtime_put(musb->controller);
 	musb_free(musb);
 	iounmap(ctrl_base);
