@@ -13,6 +13,7 @@ ccflags-y := \
 	-Werror\
 	-fno-strict-aliasing\
 	-Wno-pointer-arith\
+	-Wno-maybe-uninitialized\
 	-Os
 
 ccflags-y += -DLINUX -D__linux__ -DANDROID
