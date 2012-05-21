@@ -71,6 +71,7 @@ struct pwm_device {
 	const char						  *label;
 	unsigned int					   use_count;
 	unsigned int					   pwm_id;
+	int					duty_ns, period_ns;
 };
 
 /* Function Prototypes */
@@ -203,6 +204,11 @@ int pwm_config(struct pwm_device *pwm, int duty_ns, int period_ns)
 			"duty cycle: %d, period %d\n",
 			duty_ns, period_ns);
 
+	if (pwm->duty_ns == duty_ns &&
+	    pwm->period_ns == period_ns)
+		/* No change - don't cause any transients */
+		return 0;
+
 	clk_rate = clk_get_rate(omap_dm_timer_get_fclk(pwm->dm_timer));
 
 	/* Calculate the appropriate load and match values based on the
@@ -247,6 +253,8 @@ int pwm_config(struct pwm_device *pwm, int duty_ns, int period_ns)
 	 */
 
 	omap_dm_timer_disable(pwm->dm_timer);
+	pwm->duty_ns = duty_ns;
+	pwm->period_ns = period_ns;
 
 	return status;
 }
@@ -349,6 +357,8 @@ static int __devinit omap_pwm_probe(struct platform_device *pdev)
 	 * device.
 	 */
 
+	pwm->duty_ns = -1;
+	pwm->period_ns = -1;
 	pwm->pdev = pdev;
 	pwm->pwm_id = pdev->id;
 	pwm->config = *pdata;
