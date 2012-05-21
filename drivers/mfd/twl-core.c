@@ -224,13 +224,6 @@
 #define HIGH_PERF_SQ			(1 << 3)
 #define CK32K_LOWPWR_EN			(1 << 7)
 
-
-/* chip-specific feature flags, for i2c_device_id.driver_data */
-#define TWL4030_VAUX2		BIT(0)	/* pre-5030 voltage ranges */
-#define TPS_SUBSET		BIT(1)	/* tps659[23]0 have fewer LDOs */
-#define TWL5031			BIT(2)  /* twl5031 has different registers */
-#define TWL6030_CLASS		BIT(3)	/* TWL6030 class */
-
 /*----------------------------------------------------------------------*/
 
 /* is driver active, bound to a chip? */
@@ -723,8 +716,9 @@ add_children(struct twl4030_platform_data *pdata, unsigned irq_base,
 		static struct regulator_consumer_supply usb1v8 = {
 			.supply =	"usb1v8",
 		};
-		static struct regulator_consumer_supply usb3v1 = {
-			.supply =	"usb3v1",
+		static struct regulator_consumer_supply usb3v1[] = {
+			{ .supply =	"usb3v1" },
+			{ .supply =	"bci3v1" },
 		};
 
 	/* First add the regulators so that they can be used by transceiver */
@@ -752,7 +746,7 @@ add_children(struct twl4030_platform_data *pdata, unsigned irq_base,
 				return PTR_ERR(child);
 
 			child = add_regulator_linked(TWL4030_REG_VUSB3V1,
-						      &usb_fixed, &usb3v1, 1,
+						      &usb_fixed, usb3v1, 2,
 						      features);
 			if (IS_ERR(child))
 				return PTR_ERR(child);
@@ -773,7 +767,7 @@ add_children(struct twl4030_platform_data *pdata, unsigned irq_base,
 		if (twl_has_regulator() && child) {
 			usb1v5.dev_name = dev_name(child);
 			usb1v8.dev_name = dev_name(child);
-			usb3v1.dev_name = dev_name(child);
+			usb3v1[0].dev_name = dev_name(child);
 		}
 	}
 	if (twl_has_usb() && pdata->usb && twl_class_is_6030()) {

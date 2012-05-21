@@ -299,12 +299,12 @@ static int omap_hsmmc_reg_get(struct omap_hsmmc_host *host)
 	struct regulator *reg;
 	int ocr_value = 0;
 
-	mmc_slot(host).set_power = omap_hsmmc_set_power;
-
 	reg = regulator_get(host->dev, "vmmc");
 	if (IS_ERR(reg)) {
 		dev_dbg(host->dev, "vmmc regulator missing\n");
+		return PTR_ERR(reg);
 	} else {
+		mmc_slot(host).set_power = omap_hsmmc_set_power;
 		host->vcc = reg;
 		ocr_value = mmc_regulator_get_ocrmask(reg);
 		if (!mmc_slot(host).ocr_mask) {
@@ -1790,7 +1790,7 @@ static int __devinit omap_hsmmc_probe(struct platform_device *pdev)
 	struct omap_mmc_platform_data *pdata = pdev->dev.platform_data;
 	struct mmc_host *mmc;
 	struct omap_hsmmc_host *host = NULL;
-	struct resource *res;
+	struct resource *res, *mem_res;
 	int ret, irq;
 	const struct of_device_id *match;
 
@@ -1818,8 +1818,8 @@ static int __devinit omap_hsmmc_probe(struct platform_device *pdev)
 	if (res == NULL || irq < 0)
 		return -ENXIO;
 
-	res = request_mem_region(res->start, resource_size(res), pdev->name);
-	if (res == NULL)
+	mem_res = request_mem_region(res->start, resource_size(res), pdev->name);
+	if (mem_res == NULL)
 		return -EBUSY;
 
 	ret = omap_hsmmc_gpio_init(pdata);
@@ -1841,7 +1841,7 @@ static int __devinit omap_hsmmc_probe(struct platform_device *pdev)
 	host->dma_ch	= -1;
 	host->irq	= irq;
 	host->slot_id	= 0;
-	host->mapbase	= res->start + pdata->reg_offset;
+	host->mapbase	= mem_res->start + pdata->reg_offset;
 	host->base	= ioremap(host->mapbase, SZ_4K);
 	host->power_mode = MMC_POWER_OFF;
 	host->next_data.cookie = 1;
@@ -2030,7 +2030,7 @@ err1:
 err_alloc:
 	omap_hsmmc_gpio_free(pdata);
 err:
-	release_mem_region(res->start, resource_size(res));
+	release_mem_region(mem_res->start, resource_size(mem_res));
 	return ret;
 }
 

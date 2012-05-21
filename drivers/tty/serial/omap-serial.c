@@ -136,7 +136,6 @@ static void serial_omap_enable_ms(struct uart_port *port)
 static void serial_omap_stop_tx(struct uart_port *port)
 {
 	struct uart_omap_port *up = (struct uart_omap_port *)port;
-	struct omap_uart_port_info *pdata = up->pdev->dev.platform_data;
 
 	if (up->use_dma &&
 		up->uart_dma.tx_dma_channel != OMAP_UART_DMA_CH_FREE) {
@@ -158,9 +157,6 @@ static void serial_omap_stop_tx(struct uart_port *port)
 		up->ier &= ~UART_IER_THRI;
 		serial_out(up, UART_IER, up->ier);
 	}
-
-	if (!up->use_dma && pdata && pdata->set_forceidle)
-		pdata->set_forceidle(up->pdev);
 
 	pm_runtime_mark_last_busy(&up->pdev->dev);
 	pm_runtime_put_autosuspend(&up->pdev->dev);
@@ -251,6 +247,7 @@ ignore_char:
 static void transmit_chars(struct uart_omap_port *up)
 {
 	struct circ_buf *xmit = &up->port.state->xmit;
+	struct omap_uart_port_info *pdata = up->pdev->dev.platform_data;
 	int count;
 
 	if (up->port.x_char) {
@@ -261,6 +258,8 @@ static void transmit_chars(struct uart_omap_port *up)
 	}
 	if (uart_circ_empty(xmit) || uart_tx_stopped(&up->port)) {
 		serial_omap_stop_tx(&up->port);
+		if (!up->use_dma && pdata && pdata->set_forceidle)
+			pdata->set_forceidle(up->pdev);
 		return;
 	}
 	count = up->port.fifosize / 4;
@@ -274,9 +273,6 @@ static void transmit_chars(struct uart_omap_port *up)
 
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(&up->port);
-
-	if (uart_circ_empty(xmit))
-		serial_omap_stop_tx(&up->port);
 }
 
 static inline void serial_omap_enable_ier_thri(struct uart_omap_port *up)
@@ -440,7 +436,8 @@ static unsigned int serial_omap_tx_empty(struct uart_port *port)
 	spin_lock_irqsave(&up->port.lock, flags);
 	ret = serial_in(up, UART_LSR) & UART_LSR_TEMT ? TIOCSER_TEMT : 0;
 	spin_unlock_irqrestore(&up->port.lock, flags);
-	pm_runtime_put(&up->pdev->dev);
+	pm_runtime_mark_last_busy(&up->pdev->dev);
+	pm_runtime_put_autosuspend(&up->pdev->dev);
 	return ret;
 }
 
@@ -707,28 +704,37 @@ serial_omap_set_termios(struct uart_port *port, struct ktermios *termios,
 	unsigned char cval = 0;
 	unsigned char efr = 0;
 	unsigned long flags = 0;
-	unsigned int baud, quot;
+	unsigned int baud, quot, bits;
 
 	switch (termios->c_cflag & CSIZE) {
 	case CS5:
 		cval = UART_LCR_WLEN5;
+		bits = 5;
 		break;
 	case CS6:
 		cval = UART_LCR_WLEN6;
+		bits = 6;
 		break;
 	case CS7:
 		cval = UART_LCR_WLEN7;
+		bits = 7;
 		break;
 	default:
 	case CS8:
 		cval = UART_LCR_WLEN8;
+		bits = 8;
 		break;
 	}
 
-	if (termios->c_cflag & CSTOPB)
+	bits += 2; /* start bit plus stop bit */
+	if (termios->c_cflag & CSTOPB) {
 		cval |= UART_LCR_STOP;
-	if (termios->c_cflag & PARENB)
+		bits++;
+	}
+	if (termios->c_cflag & PARENB) {
 		cval |= UART_LCR_PARITY;
+		bits++;
+	}
 	if (!(termios->c_cflag & PARODD))
 		cval |= UART_LCR_EPAR;
 
@@ -740,7 +746,10 @@ serial_omap_set_termios(struct uart_port *port, struct ktermios *termios,
 	quot = serial_omap_get_divisor(port, baud);
 
 	/* calculate wakeup latency constraint */
-	up->calc_latency = (USEC_PER_SEC * up->port.fifosize) / (baud / 8);
+	if (termios->c_cflag & CRTSCTS)
+		up->calc_latency = PM_QOS_CPU_DMA_LAT_DEFAULT_VALUE;
+	else
+		up->calc_latency = (USEC_PER_SEC * up->port.fifosize) / (baud / bits);
 	up->latency = up->calc_latency;
 	schedule_work(&up->qos_work);
 

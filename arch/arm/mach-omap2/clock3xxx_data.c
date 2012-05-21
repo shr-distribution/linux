@@ -1,7 +1,7 @@
 /*
  * OMAP3 clock data
  *
- * Copyright (C) 2007-2010 Texas Instruments, Inc.
+ * Copyright (C) 2007-2010, 2012 Texas Instruments, Inc.
  * Copyright (C) 2007-2011 Nokia Corporation
  *
  * Written by Paul Walmsley
@@ -1640,6 +1640,7 @@ static struct clk hdq_fck = {
 	.name		= "hdq_fck",
 	.ops		= &clkops_omap2_dflt_wait,
 	.parent		= &core_12m_fck,
+	.clkdm_name	= "core_l4_clkdm",
 	.enable_reg	= OMAP_CM_REGADDR(CORE_MOD, CM_FCLKEN1),
 	.enable_bit	= OMAP3430_EN_HDQ_SHIFT,
 	.recalc		= &followparent_recalc,
@@ -1888,6 +1889,7 @@ static struct clk hdq_ick = {
 	.enable_bit	= OMAP3430_EN_HDQ_SHIFT,
 	.clkdm_name	= "core_l4_clkdm",
 	.recalc		= &followparent_recalc,
+	.flags		= SWSUP_ICLK_IDLE,
 };
 
 static struct clk mcspi4_ick = {
