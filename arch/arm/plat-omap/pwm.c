@@ -218,6 +218,10 @@ int pwm_config(struct pwm_device *pwm, int duty_ns, int period_ns)
 	 */
 
 	omap_dm_timer_enable(pwm->dm_timer);
+	/* omap_dm_timer_stop does a 'disable', so we do 2 enabled to keep
+	 * it enabled while we do some more settings.
+	 */
+	omap_dm_timer_enable(pwm->dm_timer);
 	omap_dm_timer_stop(pwm->dm_timer);
 
 	omap_dm_timer_set_load(pwm->dm_timer, autoreload, load_value);
@@ -280,7 +284,7 @@ void pwm_disable(struct pwm_device *pwm)
 {
 	omap_dm_timer_enable(pwm->dm_timer);
 	omap_dm_timer_stop(pwm->dm_timer);
-	omap_dm_timer_disable(pwm->dm_timer);
+	/* omap_dm_timer_stop does a 'disable' so we don't need to */
 }
 EXPORT_SYMBOL(pwm_disable);
 
