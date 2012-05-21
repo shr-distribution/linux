@@ -136,7 +136,6 @@ static void serial_omap_enable_ms(struct uart_port *port)
 static void serial_omap_stop_tx(struct uart_port *port)
 {
 	struct uart_omap_port *up = (struct uart_omap_port *)port;
-	struct omap_uart_port_info *pdata = up->pdev->dev.platform_data;
 
 	if (up->use_dma &&
 		up->uart_dma.tx_dma_channel != OMAP_UART_DMA_CH_FREE) {
@@ -158,9 +157,6 @@ static void serial_omap_stop_tx(struct uart_port *port)
 		up->ier &= ~UART_IER_THRI;
 		serial_out(up, UART_IER, up->ier);
 	}
-
-	if (!up->use_dma && pdata && pdata->set_forceidle)
-		pdata->set_forceidle(up->pdev);
 
 	pm_runtime_mark_last_busy(&up->pdev->dev);
 	pm_runtime_put_autosuspend(&up->pdev->dev);
@@ -251,6 +247,7 @@ ignore_char:
 static void transmit_chars(struct uart_omap_port *up)
 {
 	struct circ_buf *xmit = &up->port.state->xmit;
+	struct omap_uart_port_info *pdata = up->pdev->dev.platform_data;
 	int count;
 
 	if (up->port.x_char) {
@@ -261,6 +258,8 @@ static void transmit_chars(struct uart_omap_port *up)
 	}
 	if (uart_circ_empty(xmit) || uart_tx_stopped(&up->port)) {
 		serial_omap_stop_tx(&up->port);
+		if (!up->use_dma && pdata && pdata->set_forceidle)
+			pdata->set_forceidle(up->pdev);
 		return;
 	}
 	count = up->port.fifosize / 4;
@@ -274,9 +273,6 @@ static void transmit_chars(struct uart_omap_port *up)
 
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(&up->port);
-
-	if (uart_circ_empty(xmit))
-		serial_omap_stop_tx(&up->port);
 }
 
 static inline void serial_omap_enable_ier_thri(struct uart_omap_port *up)

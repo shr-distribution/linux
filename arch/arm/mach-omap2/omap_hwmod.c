@@ -980,7 +980,7 @@ static void _enable_sysc(struct omap_hwmod *oh)
 	v = oh->_sysc_cache;
 	sf = oh->class->sysc->sysc_flags;
 
-	if (sf & SYSC_HAS_SIDLEMODE) {
+	if (strcmp(oh->name, "uart3") && sf & SYSC_HAS_SIDLEMODE) {
 		idlemode = (oh->flags & HWMOD_SWSUP_SIDLE) ?
 			HWMOD_IDLEMODE_NO : HWMOD_IDLEMODE_SMART;
 		_set_slave_idlemode(oh, idlemode, &v);
@@ -1047,7 +1047,7 @@ static void _idle_sysc(struct omap_hwmod *oh)
 	v = oh->_sysc_cache;
 	sf = oh->class->sysc->sysc_flags;
 
-	if (sf & SYSC_HAS_SIDLEMODE) {
+	if (strcmp(oh->name, "uart3") && sf & SYSC_HAS_SIDLEMODE) {
 		idlemode = (oh->flags & HWMOD_SWSUP_SIDLE) ?
 			HWMOD_IDLEMODE_FORCE : HWMOD_IDLEMODE_SMART;
 		_set_slave_idlemode(oh, idlemode, &v);
