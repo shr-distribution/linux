@@ -1166,6 +1166,53 @@ static int __init wake_3G_init(void)
 	return err;
 }
 
+static struct omap_device_pad gta04_uart2_pads[] __initdata = {
+	/* uart2 (ttyO1) - the GPS - uses RTS to turn GPS on/off
+	 * and RTS to read which antenna is in use.  Both are
+	 * configured as GPIOs.
+	 */
+	{
+		.name	= "uart2_cts.uart2_cts",
+		.enable	= OMAP_PIN_INPUT_PULLUP | OMAP_MUX_MODE4,
+	},
+	{
+		.name	= "uart2_rts.uart2_rts",
+		.enable	= (OMAP_PIN_OUTPUT | OMAP_MUX_MODE4 |
+			   OMAP_PIN_OFF_OUTPUT_HIGH),
+	},
+	{
+		.name	= "uart2_tx.uart2_tx",
+		.enable	= OMAP_PIN_OUTPUT | OMAP_MUX_MODE0,
+	},
+	{
+		.name	= "uart2_rx.uart2_rx",
+		.flags	= OMAP_DEVICE_PAD_REMUX | OMAP_DEVICE_PAD_WAKEUP,
+		.enable	= OMAP_PIN_INPUT_PULLUP | OMAP_MUX_MODE0,
+		.idle	= OMAP_PIN_INPUT_PULLUP | OMAP_MUX_MODE0,
+	},
+};
+
+static void gta04_serial_init(void)
+{
+	struct omap_board_data bdata;
+
+	bdata.flags = 0;
+	bdata.pads = NULL;
+	bdata.pads_cnt = -1; /* use default pads */
+
+	bdata.id = 0;
+	omap_serial_init_port(&bdata, NULL);
+
+	bdata.id = 1;
+	bdata.pads = gta04_uart2_pads;
+	bdata.pads_cnt = ARRAY_SIZE(gta04_uart2_pads);
+	omap_serial_init_port(&bdata, NULL);
+
+	bdata.id = 2;
+	bdata.pads_cnt = -1; /* use default pads */
+	omap_serial_init_port(&bdata, NULL);
+}
+
 static void __init gta04_init(void)
 {
 	int err;
@@ -1176,7 +1223,7 @@ static void __init gta04_init(void)
 	gta04_i2c_init();
 
 	regulator_has_full_constraints_listed(all_reg_data);
-	omap_serial_init();
+	gta04_serial_init();
 	omap_sdrc_init(mt46h32m32lf6_sdrc_params,
 		       mt46h32m32lf6_sdrc_params);
 
@@ -1210,11 +1257,12 @@ static void __init gta04_init(void)
 	gpio_export(170, 0);	// no direction change
 #endif
 
+	omap_mux_init_gpio(145, OMAP_PIN_OUTPUT);
 	gpio_request(145, "GPS_ON");
 	gpio_direction_output(145, false);
 	gpio_export(145, 0);	// no direction change
 
-	// omap_mux_init_signal("gpio138", OMAP_PIN_INPUT);	// gpio 138 - with no pullup/pull-down
+	omap_mux_init_gpio(144, OMAP_PIN_INPUT);
 	gpio_request(144, "EXT_ANT");
 	gpio_direction_input(144);
 	gpio_export(144, 0);	// no direction change
