@@ -103,7 +103,8 @@ int check_wakeup_irqs(void)
 	int irq;
 
 	for_each_irq_desc(irq, desc) {
-		if (irqd_is_wakeup_set(&desc->irq_data)) {
+		if (desc->depth == 1 &&
+		    irqd_is_wakeup_set(&desc->irq_data)) {
 			if (desc->istate & IRQS_PENDING)
 				return -EBUSY;
 			continue;
