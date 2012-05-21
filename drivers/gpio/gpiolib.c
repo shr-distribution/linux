@@ -1193,6 +1193,7 @@ int gpio_request(unsigned gpio, const char *label)
 
 	if (!gpio_is_valid(gpio))
 		goto done;
+	status = -EPROBE_DEFER;
 	desc = &gpio_desc[gpio];
 	chip = desc->chip;
 	if (chip == NULL)
