@@ -214,11 +214,11 @@ static struct platform_device gta02_pm_wlan_dev = {
 };
 
 static struct regulator_consumer_supply __initdata gsm_supply_consumer[] = {
-	REGULATOR_SUPPLY("GSM", "gta02-pm-gsm"),
+	REGULATOR_SUPPLY("GSM", "gta02-pm-gsm.0"),
 };
 
 static struct regulator_consumer_supply __initdata usbhost_supply_consumer[] = {
-	REGULATOR_SUPPLY("USBHOST", "gta02-pm-usbhost"),
+	REGULATOR_SUPPLY("USBHOST", "gta02-pm-usbhost.0"),
 };
 
 static struct regulator_init_data gsm_supply_init_data = {
@@ -698,11 +698,11 @@ static struct pcf50633_bl_platform_data gta02_backlight_data = {
 };
 
 static struct regulator_consumer_supply __initdata ldo4_consumers[] = {
-	REGULATOR_SUPPLY("BT_3V2", "gta02-pm-bt"),
+	REGULATOR_SUPPLY("BT_3V2", "gta02-pm-bt.0"),
 };
 
 static struct regulator_consumer_supply __initdata ldo5_consumers[] = {
-	REGULATOR_SUPPLY("RF_3V", "gta02-pm-gps"),
+	REGULATOR_SUPPLY("RF_3V", "gta02-pm-gps.0"),
 };
 
 static struct regulator_consumer_supply __initdata ldo6_consumers[] = {
@@ -711,7 +711,7 @@ static struct regulator_consumer_supply __initdata ldo6_consumers[] = {
 };
 
 static struct regulator_consumer_supply __initdata hcldo_consumers[] = {
-	REGULATOR_SUPPLY("SD_3V3", "glamo3362"),
+	REGULATOR_SUPPLY("SD_3V3", "glamo3362.0"),
 };
 
 static void gta02_poweroff(void)
