@@ -99,6 +99,8 @@
 #include <mach/gta02-pm-gps.h>
 #include <mach/gta02-pm-wlan.h>
 
+#include <linux/jbt6k74.h>
+
 static struct pcf50633 *gta02_pcf;
 
 /*
@@ -116,6 +118,27 @@ static long gta02_panic_blink(int state)
 	return delay;
 }
 
+/* JBT6k74 display controller */
+static void gta02_jbt6k74_probe_completed(struct device *dev)
+{
+	pcf50633_bl_set_brightness_limit(gta02_pcf, 0x3f);
+}
+
+const static struct jbt6k74_platform_data jbt6k74_pdata = {
+	.gpio_reset = GTA02_GPIO_GLAMO(4),
+};
+
+static struct spi_board_info gta02_spi_board_info[] = {
+	{
+		.modalias       = "jbt6k74",
+		.platform_data  = &jbt6k74_pdata,
+		.controller_data = (void *)GTA02_GPIO_GLAMO(12),
+		/* irq */
+		.max_speed_hz   = 100 * 1000,
+		.bus_num        = 2,
+		.chip_select    = 0
+	},
+};
 
 static struct map_desc gta02_iodesc[] __initdata = {
 	{
@@ -313,6 +336,11 @@ static struct regulator_consumer_supply __initdata ldo5_consumers[] = {
 	REGULATOR_SUPPLY("RF_3V", "gta02-pm-gps"),
 };
 
+static struct regulator_consumer_supply __initdata ldo6_consumers[] = {
+	REGULATOR_SUPPLY("VDC", "spi2.0"),
+	REGULATOR_SUPPLY("VDDIO", "spi2.0"),
+};
+
 struct pcf50633_platform_data gta02_pcf_pdata = {
 	.resumers = {
 		[0] =	PCF50633_INT1_USBINS |
@@ -422,7 +450,10 @@ struct pcf50633_platform_data gta02_pcf_pdata = {
 				.min_uV = 3000000,
 				.max_uV = 3000000,
 				.valid_modes_mask = REGULATOR_MODE_NORMAL,
+				.valid_ops_mask = REGULATOR_CHANGE_STATUS,
 			},
+			.num_consumer_supplies = ARRAY_SIZE(ldo6_consumers),
+			.consumer_supplies = ldo6_consumers,
 		},
 		[PCF50633_REGULATOR_MEMLDO] = {
 			.constraints = {
@@ -755,7 +786,11 @@ static struct gta02_device_children gta02_device_children[] = {
 		.dev_name = "reg-fixed-voltage.1",
 		.num_children = 1,
 		.children = gta02_gsm_supply_children,
-	}
+	},
+	{
+		.dev_name = "spi2.0",
+		.probed_callback = gta02_jbt6k74_probe_completed,
+	},
 };
 
 static int gta02_add_child_devices(struct device *parent,
