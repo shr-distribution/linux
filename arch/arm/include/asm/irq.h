@@ -3,11 +3,7 @@
 
 #define NR_IRQS_LEGACY	16
 
-#ifndef CONFIG_SPARSE_IRQ
 #include <mach/irqs.h>
-#else
-#define NR_IRQS NR_IRQS_LEGACY
-#endif
 
 #ifndef irq_canonicalize
 #define irq_canonicalize(i)	(i)
