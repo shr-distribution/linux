@@ -80,6 +80,7 @@ obj-$(CONFIG_MACH_NEO1973_GTA02)	+= mach-gta02.o \
 	gta02-pm-bt.o \
 	gta02-pm-gps.o \
 	gta02-pm-gsm.o \
+	gta02-pm-wlan.o \
 
 obj-$(CONFIG_MACH_RX1950)		+= mach-rx1950.o
 
