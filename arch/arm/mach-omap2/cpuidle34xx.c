@@ -180,7 +180,7 @@ static int next_valid_state(struct cpuidle_device *dev,
 	int idx;
 	int next_index = -1;
 
-	if (enable_off_mode) {
+	if (1 || enable_off_mode) {
 		mpu_deepest_state = PWRDM_POWER_OFF;
 		/*
 		 * Erratum i583: valable for ES rev < Es1.2 on 3630.
