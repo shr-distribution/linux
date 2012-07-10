@@ -880,7 +880,6 @@ static void vmid_reference(struct snd_soc_codec *codec)
 
 	if (wm8994->vmid_refcount == 1) {
 		snd_soc_update_bits(codec, WM8994_ANTIPOP_1,
-				    WM8994_LINEOUT_VMID_BUF_ENA,
 				    WM8994_LINEOUT1_DISCH |
 				    WM8994_LINEOUT2_DISCH,
 				    WM8994_LINEOUT_VMID_BUF_ENA);
