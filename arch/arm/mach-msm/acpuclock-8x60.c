@@ -627,10 +627,8 @@ int acpuclk_set_rate(int cpu, unsigned long rate, enum setrate_reason reason)
 	unsigned long flags;
 	int rc = 0;
 
-	if (cpu > num_possible_cpus()) {
-		rc = -EINVAL;
-		goto out;
-	}
+	if (cpu > num_possible_cpus())
+		return -EINVAL;
 
 	if (reason == SETRATE_CPUFREQ || reason == SETRATE_HOTPLUG)
 		mutex_lock(&drv_state.lock);
