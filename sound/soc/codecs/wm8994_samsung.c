@@ -362,24 +362,9 @@ static int wm8994_get_path(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int wm8994_set_path(struct snd_kcontrol *kcontrol,
-			   struct snd_ctl_elem_value *ucontrol)
+static int wm8994_set_path_real(struct snd_soc_codec *codec, struct wm8994_priv *wm8994, int path_num)
 {
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
-	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
-	struct soc_enum *mc = (struct soc_enum *)kcontrol->private_value;
 	int val;
-	int path_num = ucontrol->value.integer.value[0];
-
-	if (wm8994->power_state == CODEC_OFF) {
-		DEBUG_LOG_ERR("Can't adjust path when codec is powered off!");
-		return -ENODEV;
-	}
-
-	if (strcmp(mc->texts[path_num], playback_path[path_num])) {
-		DEBUG_LOG_ERR("Unknown path %s\n", mc->texts[path_num]);
-		return -ENODEV;
-	}
 
 	if (path_num > MAX_PLAYBACK_PATHS) {
 		DEBUG_LOG_ERR("Unknown Path\n");
@@ -396,18 +381,18 @@ static int wm8994_set_path(struct snd_kcontrol *kcontrol,
 	case HP_NO_MIC:
 	case BT:
 	case SPK_HP:
-		DEBUG_LOG("routing to %s\n", mc->texts[path_num]);
+		// DEBUG_LOG("routing to %s\n", mc->texts[path_num]);
 		wm8994->ringtone_active = RING_OFF;
 		break;
 	case RING_SPK:
 	case RING_HP:
 	case RING_NO_MIC:
-		DEBUG_LOG("routing to %s\n", mc->texts[path_num]);
+		// DEBUG_LOG("routing to %s\n", mc->texts[path_num]);
 		wm8994->ringtone_active = RING_ON;
 		path_num -= 5;
 		break;
 	case RING_SPK_HP:
-		DEBUG_LOG("routing to %s\n", mc->texts[path_num]);
+		// DEBUG_LOG("routing to %s\n", mc->texts[path_num]);
 		wm8994->ringtone_active = RING_ON;
 		path_num -= 4;
 		break;
@@ -431,6 +416,27 @@ static int wm8994_set_path(struct snd_kcontrol *kcontrol,
 	wm8994->universal_playback_path[wm8994->cur_path] (codec);
 
 	return 0;
+}
+
+static int wm8994_set_path(struct snd_kcontrol *kcontrol,
+			   struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
+	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
+	struct soc_enum *mc = (struct soc_enum *)kcontrol->private_value;
+	int path_num = ucontrol->value.integer.value[0];
+
+	if (wm8994->power_state == CODEC_OFF) {
+		DEBUG_LOG_ERR("Can't adjust path when codec is powered off!");
+		return -ENODEV;
+	}
+
+	if (strcmp(mc->texts[path_num], playback_path[path_num])) {
+		DEBUG_LOG_ERR("Unknown path %s\n", mc->texts[path_num]);
+		return -ENODEV;
+	}
+
+	return wm8994_set_path_real(codec, wm8994, path_num);
 }
 
 static int wm8994_get_voice_path(struct snd_kcontrol *kcontrol,
@@ -1098,6 +1104,10 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 	wm8994_write(codec, WM8994_AIF1_RATE, clocking3);
 	wm8994_write(codec, WM8994_AIF1_CONTROL_1, aif1);
 
+	/* Check wether we have to restore routing after suspend */
+	if ( wm8994->cur_path != OFF )
+		wm8994_set_path_real(codec, wm8994, wm8994->cur_path);
+
 	return 0;
 }
 
@@ -1180,7 +1190,6 @@ static void wm8994_shutdown(struct snd_pcm_substream *substream,
 		DEBUG_LOG("Turn off Codec!!");
 		wm8994->pdata->set_mic_bias(false);
 		wm8994->power_state = CODEC_OFF;
-		wm8994->cur_path = OFF;
 		wm8994->rec_path = MIC_OFF;
 		wm8994->ringtone_active = RING_OFF;
 		wm8994_write(codec, WM8994_SOFTWARE_RESET, 0x0000);
@@ -2980,7 +2989,7 @@ static int wm8994_init(struct wm8994_priv *wm8994_private,
 card_err:
 	//snd_soc_free_pcms(wm8994_socdev);
 	//snd_soc_dapm_free(wm8994_socdev);
-pcm_err:
+// pcm_err:
 
 	return ret;
 }
