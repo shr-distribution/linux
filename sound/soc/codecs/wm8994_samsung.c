@@ -531,6 +531,40 @@ static int wm8994_set_input_source(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+static int wm8994_get_lock(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
+	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
+
+	ucontrol->value.enumerated.item[0] = wm8994->lock_state;
+
+	return 0;
+}
+
+static int wm8994_put_lock(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
+	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
+	int lock_state = ucontrol->value.enumerated.item[0];
+
+	if (lock_state > 1)
+		return -EINVAL;
+
+	if (wm8994->power_state == CODEC_OFF) {
+		DEBUG_LOG_ERR("Can't adjust lock state when codec is powered off!");
+		return -ENODEV;
+	}
+
+	wm8994->lock_state= lock_state;
+	if (wm8994->lock_state)
+		wm8994->codec_state |= LOCK_STATE;
+	else wm8994->codec_state &= ~(LOCK_STATE);
+
+	return 0;
+}
+
 #define  SOC_WM899X_OUTPGA_DOUBLE_R_TLV(xname, reg_left, reg_right,\
 		xshift, xmax, xinvert, tlv_array) \
 {	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = (xname),\
@@ -599,6 +633,8 @@ static const struct snd_kcontrol_new wm8994_snd_controls[] = {
 	SOC_ENUM_EXT("Input Source", path_control_enum[3],
 		     wm8994_get_input_source, wm8994_set_input_source),
 
+	SOC_SINGLE_BOOL_EXT("Codec Lock Switch", 0, wm8994_get_lock,
+		     wm8994_put_lock),
 };
 
 /* Add non-DAPM controls */
@@ -2937,6 +2973,7 @@ static int wm8994_init(struct wm8994_priv *wm8994_private,
 	wm8994->universal_mic_path = universal_wm8994_mic_paths;
 	wm8994->universal_clock_control = universal_clock_controls;
 	wm8994->stream_state = PCM_STREAM_DEACTIVE;
+	wm8994->lock_state = 0;
 	wm8994->cur_path = OFF;
 	wm8994->rec_path = MIC_OFF;
 	wm8994->power_state = CODEC_OFF;

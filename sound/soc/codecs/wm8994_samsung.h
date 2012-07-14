@@ -36,6 +36,7 @@
 #define PLAYBACK_ACTIVE		0x01
 #define CAPTURE_ACTIVE		0x02
 #define CALL_ACTIVE		0x04
+#define LOCK_STATE		0x08
 
 #define PCM_STREAM_DEACTIVE	0x00
 #define PCM_STREAM_PLAYBACK	0x01
@@ -144,6 +145,7 @@ struct wm8994_priv {
 	unsigned int hw_version;
 	unsigned int codec_state;
 	unsigned int  stream_state;
+	unsigned int lock_state; // 0 = unlocked, 1 = locked
 	enum audio_path cur_path;
 	enum mic_path rec_path;
 	enum power_state power_state;
