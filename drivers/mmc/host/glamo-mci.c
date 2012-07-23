@@ -762,7 +762,7 @@ static int __devinit glamo_mci_probe(struct platform_device *pdev)
 		goto probe_free_mem_region_data;
 	}
 
-	ret = request_threaded_irq(host->irq, NULL, glamo_mci_irq, IRQF_SHARED,
+	ret = request_threaded_irq(host->irq, NULL, glamo_mci_irq, IRQF_SHARED|IRQF_ONESHOT,
 				   pdev->name, host);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register irq.\n");
