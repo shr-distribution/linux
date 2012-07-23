@@ -30,6 +30,7 @@
 #include <linux/of_gpio.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/regulator/machine.h>
+#include <linux/delay.h>
 
 struct fixed_voltage_data {
 	struct regulator_desc desc;
@@ -107,6 +108,8 @@ static int fixed_voltage_enable(struct regulator_dev *dev)
 {
 	struct fixed_voltage_data *data = rdev_get_drvdata(dev);
 
+	gpio_set_value_cansleep(data->gpio, !data->enable_high);
+	udelay(10);
 	gpio_set_value_cansleep(data->gpio, data->enable_high);
 	data->is_enabled = true;
 
@@ -118,6 +121,8 @@ static int fixed_voltage_disable(struct regulator_dev *dev)
 	struct fixed_voltage_data *data = rdev_get_drvdata(dev);
 
 	gpio_set_value_cansleep(data->gpio, !data->enable_high);
+	udelay(10);
+	gpio_set_value_cansleep(data->gpio, data->enable_high);
 	data->is_enabled = false;
 
 	return 0;
