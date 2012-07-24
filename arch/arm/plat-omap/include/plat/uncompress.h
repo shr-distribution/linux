@@ -165,6 +165,7 @@ static inline void __arch_decomp_setup(unsigned long arch_id)
 		DEBUG_LL_OMAP3(3, omap3517evm);
 		DEBUG_LL_OMAP3(3, omap3_beagle);
 		DEBUG_LL_OMAP3(3, omap3_pandora);
+		DEBUG_LL_OMAP3(3, gta04);
 		DEBUG_LL_OMAP3(3, omap_ldp);
 		DEBUG_LL_OMAP3(3, overo);
 		DEBUG_LL_OMAP3(3, touchbook);
