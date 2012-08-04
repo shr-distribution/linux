@@ -939,7 +939,7 @@ static void tsc2007_exit(void)
 	gpio_free(TS_PENIRQ_GPIO);
 }
 
-struct tsc2007_platform_data tsc2007_info = {
+struct tsc2007_platform_data __initdata tsc2007_info = {
 	.model			= 2007,
 	.x_plate_ohms		= 600,	// range: 250 .. 900
 	.get_pendown_state	= ts_get_pendown_state,
@@ -954,7 +954,7 @@ struct tsc2007_platform_data tsc2007_info = {
 
 #define BMP085_EOC_IRQ_GPIO		113	/* BMP085 end of conversion GPIO */
 
-struct bmp085_platform_data bmp085_info = {
+struct bmp085_platform_data __initdata bmp085_info = {
 	.gpio = BMP085_EOC_IRQ_GPIO,
 };
 
@@ -986,7 +986,7 @@ static struct tca6507_platform_data tca6507_info = {
 #endif
 
 #ifdef CONFIG_TOUCHSCREEN_TSC2007
-static struct i2c_board_info tsc2007_boardinfo =
+static struct i2c_board_info __initdata tsc2007_boardinfo =
 {
 	I2C_BOARD_INFO("tsc2007", 0x48),
 	.type		= "tsc2007",
@@ -994,7 +994,7 @@ static struct i2c_board_info tsc2007_boardinfo =
 };
 #endif
 #ifdef CONFIG_BMP085
-static struct i2c_board_info bmp085_boardinfo =
+static struct i2c_board_info __initdata bmp085_boardinfo =
 {
 	I2C_BOARD_INFO("bmp085", 0x77),
 	.type		= "bmp085",
@@ -1306,8 +1306,6 @@ static void __init gta04_opp_init(void)
 
 static void __init gta04_init(void)
 {
-	int err;
-
 	printk("running gta04_init()\n");
 	omap3_mux_init(board_mux, OMAP_PACKAGE_CBB);
 	gta04_init_rev();

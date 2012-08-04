@@ -463,7 +463,7 @@ snd_fail:
 	return err;
 }
 
-static int __devexit snd_uac2_remove(struct platform_device *pdev)
+static int snd_uac2_remove(struct platform_device *pdev)
 {
 	struct snd_card *card = platform_get_drvdata(pdev);
 
@@ -1314,7 +1314,7 @@ afunc_setup(struct usb_function *fn, const struct usb_ctrlrequest *cr)
 	return value;
 }
 
-static int audio_bind_config(struct usb_configuration *cfg)
+static int __init audio_bind_config(struct usb_configuration *cfg)
 {
 	int id, res;
 
