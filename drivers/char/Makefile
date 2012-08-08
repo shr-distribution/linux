@@ -7,17 +7,12 @@
 #
 FONTMAPFILE = cp437.uni
 
-obj-y	 += mem.o random.o tty_io.o n_tty.o tty_ioctl.o tty_ldisc.o tty_buffer.o tty_port.o
-
-obj-$(CONFIG_LEGACY_PTYS)	+= pty.o
-obj-$(CONFIG_UNIX98_PTYS)	+= pty.o
+obj-y				+= mem.o random.o
 obj-y				+= misc.o
 obj-$(CONFIG_VT)		+= vt_ioctl.o vc_screen.o selection.o keyboard.o
 obj-$(CONFIG_BFIN_JTAG_COMM)	+= bfin_jtag_comm.o
 obj-$(CONFIG_CONSOLE_TRANSLATIONS) += consolemap.o consolemap_deftbl.o
 obj-$(CONFIG_HW_CONSOLE)	+= vt.o defkeymap.o
-obj-$(CONFIG_AUDIT)		+= tty_audit.o
-obj-$(CONFIG_MAGIC_SYSRQ)	+= sysrq.o
 obj-$(CONFIG_MVME147_SCC)	+= generic_serial.o vme_scc.o
 obj-$(CONFIG_MVME162_SCC)	+= generic_serial.o vme_scc.o
 obj-$(CONFIG_BVME6000_SCC)	+= generic_serial.o vme_scc.o
@@ -39,8 +34,6 @@ obj-$(CONFIG_ISI)		+= isicom.o
 obj-$(CONFIG_SYNCLINK)		+= synclink.o
 obj-$(CONFIG_SYNCLINKMP)	+= synclinkmp.o
 obj-$(CONFIG_SYNCLINK_GT)	+= synclink_gt.o
-obj-$(CONFIG_N_HDLC)		+= n_hdlc.o
-obj-$(CONFIG_N_GSM)		+= n_gsm.o
 obj-$(CONFIG_AMIGA_BUILTIN_SERIAL) += amiserial.o
 obj-$(CONFIG_SX)		+= sx.o generic_serial.o
 obj-$(CONFIG_RIO)		+= rio/ generic_serial.o
@@ -72,7 +65,6 @@ obj-$(CONFIG_APM_EMULATION)	+= apm-emulation.o
 
 
 obj-$(CONFIG_DTLK)		+= dtlk.o
-obj-$(CONFIG_R3964)		+= n_r3964.o
 obj-$(CONFIG_APPLICOM)		+= applicom.o
 obj-$(CONFIG_SONYPI)		+= sonypi.o
 obj-$(CONFIG_RTC)		+= rtc.o
