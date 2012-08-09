@@ -15,7 +15,7 @@ quiet_cmd_conmk = CONMK   $@
       cmd_conmk = scripts/conmakehash $< > $@
 
 $(obj)/consolemap_deftbl.c: $(src)/$(FONTMAPFILE)
-   $(call cmd,conmk)
+	$(call cmd,conmk)
 
 $(obj)/defkeymap.o:  $(obj)/defkeymap.c
 
@@ -33,8 +33,8 @@ ifdef GENERATE_KEYMAP
 
 # $(obj)/defkeymap.c: $(obj)/%.c: $(src)/%.map
 $(obj)/defkeymap.c : $(src)/$(KEYMAP).map
-   loadkeys --mktable $< > $@.tmp
-   sed -e 's/^static *//' $@.tmp > $@
-   rm $@.tmp
+	loadkeys --mktable $< > $@.tmp
+	sed -e 's/^static *//' $@.tmp > $@
+	rm $@.tmp
 
 endif
