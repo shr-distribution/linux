@@ -178,16 +178,21 @@ static irqreturn_t mms_ts_interrupt(int irq, void *dev_id)
 			input_mt_slot(info->input_dev, id);
 			input_mt_report_slot_state(info->input_dev,
 						   MT_TOOL_FINGER, false);
+			input_report_key(info->input_dev, BTN_TOUCH, false);
 			continue;
 		}
 
 		input_mt_slot(info->input_dev, id);
 		input_mt_report_slot_state(info->input_dev,
 					   MT_TOOL_FINGER, true);
+		input_report_key(info->input_dev, BTN_TOUCH, true);
 		input_report_abs(info->input_dev, ABS_MT_TOUCH_MAJOR, tmp[4]);
 		input_report_abs(info->input_dev, ABS_MT_PRESSURE, tmp[5]);
 		input_report_abs(info->input_dev, ABS_MT_POSITION_X, x);
 		input_report_abs(info->input_dev, ABS_MT_POSITION_Y, y);
+		input_report_abs(info->input_dev, ABS_X, x);
+		input_report_abs(info->input_dev, ABS_Y, y);
+		input_report_abs(info->input_dev, ABS_PRESSURE,tmp[5]);
 
 		dev_dbg(&client->dev,
 			"finger %d: x=%d y=%d p=%d w=%d\n", id, x, y, tmp[5],
@@ -801,6 +806,8 @@ static int __devinit mms_ts_probe(struct i2c_client *client,
 	input_dev->close = mms_ts_input_close;
 
 	__set_bit(EV_ABS, input_dev->evbit);
+	__set_bit(EV_KEY, input_dev->evbit);
+	__set_bit(BTN_TOUCH, input_dev->keybit);
 	__set_bit(INPUT_PROP_DIRECT, input_dev->propbit);
 	input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, 0, MAX_WIDTH, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_PRESSURE, 0, MAX_PRESSURE, 0, 0);
@@ -808,7 +815,13 @@ static int __devinit mms_ts_probe(struct i2c_client *client,
 			     0, info->max_x - 1, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_POSITION_Y,
 			     0, info->max_y - 1, 0, 0);
-
+	input_set_abs_params(input_dev, ABS_X,
+				0, info->max_x, 0, 0);
+	input_set_abs_params(input_dev, ABS_Y,
+				0, info->max_y, 0, 0);
+	input_set_abs_params(input_dev, ABS_PRESSURE,
+				0, 255, 0, 0);
+	input_set_abs_params(input_dev, BTN_TOUCH, 0, 1, 0, 0);
 	input_set_drvdata(input_dev, info);
 
 	ret = input_register_device(input_dev);
