@@ -1154,6 +1154,12 @@ static struct platform_device gta04_vaux3_virtual_regulator_device = {
 };
 #endif
 
+
+static struct platform_device madc_hwmon = {
+	.name	= "twl4030_madc_hwmon",
+	.id	= -1,
+};
+
 static struct platform_device *gta04_devices[] __initdata = {
 //	&leds_gpio,
 	&keys_gpio,
@@ -1178,6 +1184,7 @@ static struct platform_device *gta04_devices[] __initdata = {
 #if defined(CONFIG_SND_SOC_W2CBW003)
 	&gta04_w2cbw003_codec_audio_device,
 #endif
+	&madc_hwmon,
 };
 
 static const struct usbhs_omap_board_data usbhs_bdata __initconst = {
