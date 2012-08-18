@@ -616,7 +616,7 @@ static int __init twl4030_bci_probe(struct platform_device *pdev)
 
 	bci->usb_reg = regulator_get(bci->dev, "bci3v1");
 	if (IS_ERR(bci->usb_reg)) {
-		dev_warn(&bci->dev, "regulator get bci3v1 failed\n");
+		dev_warn(&pdev->dev, "regulator get bci3v1 failed\n");
 		bci->usb_reg = NULL;
 	}
 
