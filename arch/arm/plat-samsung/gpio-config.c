@@ -24,7 +24,6 @@
 int s3c_gpio_cfgpin(unsigned int pin, unsigned int config)
 {
 	struct s3c_gpio_chip *chip = s3c_gpiolib_getchip(pin);
-	unsigned long flags;
 	int offset;
 	int ret;
 
@@ -33,9 +32,7 @@ int s3c_gpio_cfgpin(unsigned int pin, unsigned int config)
 
 	offset = pin - chip->chip.base;
 
-	s3c_gpio_lock(chip, flags);
 	ret = s3c_gpio_do_setcfg(chip, offset, config);
-	s3c_gpio_unlock(chip, flags);
 
 	return ret;
 }
