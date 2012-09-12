@@ -381,8 +381,6 @@ static int __devinit hdq_probe(struct platform_device *pdev)
 
 	hdq_priv.hdq_probed = 1; /* we are ready to do stuff now */
 
-	hdq_priv.pdata = pdata;
-
 	return 0;
 }
 
