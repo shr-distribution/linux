@@ -16,6 +16,8 @@
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <mach/gta02-hdq.h>
+#include <linux/gpio.h>
+#include <mach/gta02.h>
 
 #define HDQ_READ 0
 
@@ -77,7 +79,8 @@ int hdq_fiq_handler(void)
 		if (hdq_priv.hdq_request_ctr == hdq_priv.hdq_transaction_ctr)
 			break;
 		hdq_priv.hdq_ctr = 250 / HDQ_SAMPLE_PERIOD_US;
-		hdq_priv.pdata->gpio_set(0);
+		gpio_set_value(GTA02v5_GPIO_HDQ, 0);
+		//hdq_priv.pdata->gpio_set(0);
 		hdq_priv.pdata->gpio_dir_out();
 		hdq_priv.hdq_tx_data_done = 0;
 		hdq_priv.hdq_state = HDQB_TX_BREAK;
@@ -87,7 +90,8 @@ int hdq_fiq_handler(void)
 		if (--hdq_priv.hdq_ctr == 0) {
 			hdq_priv.hdq_ctr = 60 / HDQ_SAMPLE_PERIOD_US;
 			hdq_priv.hdq_state = HDQB_TX_BREAK_RECOVERY;
-			hdq_priv.pdata->gpio_set(1);
+			gpio_set_value(GTA02v5_GPIO_HDQ, 1);
+			//hdq_priv.pdata->gpio_set(1);
 		}
 		break;
 
@@ -109,13 +113,15 @@ int hdq_fiq_handler(void)
 		hdq_priv.hdq_state = HDQB_ADS_LOW;
 		hdq_priv.hdq_shifter >>= 1;
 		hdq_priv.hdq_bit--;
-		hdq_priv.pdata->gpio_set(0);
+		gpio_set_value(GTA02v5_GPIO_HDQ, 0);
+		//hdq_priv.pdata->gpio_set(0);
 		break;
 
 	case HDQB_ADS_LOW:
 		if (--hdq_priv.hdq_ctr)
 			break;
-		hdq_priv.pdata->gpio_set(1);
+		gpio_set_value(GTA02v5_GPIO_HDQ, 1);
+		//hdq_priv.pdata->gpio_set(1);
 		hdq_priv.hdq_state = HDQB_ADS_HIGH;
 		break;
 
