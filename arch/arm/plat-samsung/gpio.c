@@ -97,18 +97,13 @@ static void s3c_gpiolib_set(struct gpio_chip *chip,
 {
 	struct s3c_gpio_chip *ourchip = to_s3c_gpio(chip);
 	void __iomem *base = ourchip->base;
-	unsigned long flags;
 	unsigned long dat;
-
-	s3c_gpio_lock(ourchip, flags);
 
 	dat = __raw_readl(base + 0x04);
 	dat &= ~(1 << offset);
 	if (value)
 		dat |= 1 << offset;
 	__raw_writel(dat, base + 0x04);
-
-	s3c_gpio_unlock(ourchip, flags);
 }
 
 static int s3c_gpiolib_get(struct gpio_chip *chip, unsigned offset)
