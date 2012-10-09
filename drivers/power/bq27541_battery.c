@@ -79,7 +79,6 @@ static int ac_on ;
 static int usb_on ;
 static unsigned int 	battery_current;
 static unsigned int  battery_remaining_capacity;
-static atomic_t device_count;
 static unsigned int bat_check_interval = BATTERY_POLLING_RATE;
 struct workqueue_struct *battery_work_queue = NULL;
 
