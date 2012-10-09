@@ -20,6 +20,8 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -65,7 +67,7 @@
 
 /* Debug Message */
 #define BAT_NOTICE(format, arg...)	\
-	printk(KERN_NOTICE "%s " format , __FUNCTION__ , ## arg)
+	pr_debug("%s " format, __func__, ##arg)
 
 #define BAT_ERR(format, arg...)		\
 	printk(KERN_ERR format , ## arg)
@@ -540,8 +542,10 @@ static int bq27541_get_psp(int reg_offset, enum power_supply_property psp,
 		BAT_NOTICE("voltage_now= %u uV\n", val->intval);
 	}
 	if (psp == POWER_SUPPLY_PROP_STATUS) {
-		ret = bq27541_device->bat_status = rt_value;
+#if defined(DEBUG) || defined(CONFIG_DYNAMIC_DEBUG)
 		static char *status_text[] = {"Unknown", "Charging", "Discharging", "Not charging", "Full"};
+#endif
+		ret = bq27541_device->bat_status = rt_value;
 
 		if (ac_on || usb_on) {            /* Charging detected */
 			if (bq27541_device->old_capacity == 100)
