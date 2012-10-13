@@ -262,6 +262,8 @@ static int omap_target(struct cpufreq_policy *policy,
 	return ret;
 }
 
+#ifdef CONFIG_HAS_EARLYSUSPEND
+
 static void omap_cpu_early_suspend(struct early_suspend *h)
 {
 	unsigned int cur;
@@ -301,6 +303,8 @@ static struct early_suspend omap_cpu_early_suspend_handler = {
 	.suspend = omap_cpu_early_suspend,
 	.resume = omap_cpu_late_resume,
 };
+
+#endif
 
 static inline void freq_table_free(void)
 {
@@ -497,7 +501,9 @@ static int __init omap_cpufreq_init(void)
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_HAS_EARLYSUSPEND
 	register_early_suspend(&omap_cpu_early_suspend_handler);
+#endif
 
 	ret = cpufreq_register_driver(&omap_driver);
 	omap_cpufreq_ready = !ret;
@@ -522,7 +528,10 @@ static void __exit omap_cpufreq_exit(void)
 {
 	cpufreq_unregister_driver(&omap_driver);
 
+#ifdef CONFIG_HAS_EARLYSUSPEND
 	unregister_early_suspend(&omap_cpu_early_suspend_handler);
+#endif
+
 	platform_driver_unregister(&omap_cpufreq_platform_driver);
 	platform_device_unregister(&omap_cpufreq_device);
 }
