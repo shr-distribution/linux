@@ -129,10 +129,17 @@ static int wakelock_stats_show(struct seq_file *m, void *unused)
 
 	spin_lock_irqsave(&list_lock, irqflags);
 
+	seq_printf(m, "Inactive wake locks\n");
+	seq_printf(m, "================================================================================\n");
 	ret = seq_puts(m, "name\tcount\texpire_count\twake_count\tactive_since"
 			"\ttotal_time\tsleep_time\tmax_time\tlast_change\n");
 	list_for_each_entry(lock, &inactive_locks, link)
 		ret = print_lock_stat(m, lock);
+
+	seq_printf(m, "\nActive wake locks\n");
+	seq_printf(m, "================================================================================\n");
+	ret = seq_puts(m, "name\tcount\texpire_count\twake_count\tactive_since"
+			"\ttotal_time\tsleep_time\tmax_time\tlast_change\n");
 	for (type = 0; type < WAKE_LOCK_TYPE_COUNT; type++) {
 		list_for_each_entry(lock, &active_wake_locks[type], link)
 			ret = print_lock_stat(m, lock);
