@@ -375,7 +375,7 @@ static void max17040_update(struct max17040_chip *chip)
 		power_supply_changed(&chip->battery);
 
 	if (VERBOSE_ENABLED) {
-		dev_info(&chip->client->dev, "online = %d vcell = %d soc = %d "
+		dev_dbg(&chip->client->dev, "online = %d vcell = %d soc = %d "
 			"status = %d health = %d temp = %d "
 			"charger status = %d\n", chip->online, chip->vcell,
 			chip->soc, chip->status, chip->bat_health, chip->bat_temp,
