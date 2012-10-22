@@ -42,6 +42,8 @@
 #include <mach/pinmux.h>
 #include "../board.h"
 #include "../board-grouper.h"
+#include <sound/core.h>
+#include <sound/control.h>
 MODULE_DESCRIPTION("Headset detection driver");
 MODULE_LICENSE("GPL");
 
@@ -155,6 +157,51 @@ static ssize_t headset_state_show(struct switch_dev *sdev, char *buf)
 	return -EINVAL;
 }
 
+/* Backport of sound/core/ctljack.c to the 3.1 kernel.
+   Original code written by Takashi Iwai. */
+#define jack_detect_kctl_info	snd_ctl_boolean_mono_info
+
+static int jack_detect_kctl_get(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = kcontrol->private_value;
+	return 0;
+}
+
+static struct snd_kcontrol_new jack_detect_kctl = {
+	/* name is filled later */
+	.iface = SNDRV_CTL_ELEM_IFACE_CARD,
+	.access = SNDRV_CTL_ELEM_ACCESS_READ,
+	.info = jack_detect_kctl_info,
+	.get = jack_detect_kctl_get,
+};
+
+static struct snd_kcontrol *
+snd_kctl_jack_new(const char *name, int idx, void *private_data)
+{
+	struct snd_kcontrol *kctl;
+	kctl = snd_ctl_new1(&jack_detect_kctl, private_data);
+	if (!kctl)
+		return NULL;
+	snprintf(kctl->id.name, sizeof(kctl->id.name), "%s Jack", name);
+	kctl->id.index = idx;
+	kctl->private_value = 0;
+	return kctl;
+}
+
+static void snd_kctl_jack_report(struct snd_card *card,
+			  struct snd_kcontrol *kctl, bool status)
+{
+	if (!kctl) 
+		return;
+	if (kctl->private_value == status)
+		return;
+	kctl->private_value = status;
+	snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_VALUE, &kctl->id);
+}
+
+struct snd_kcontrol *jack_kctl = NULL;
+
 static void tristate_uart(void)
 {
         enum tegra_pingroup pingroup = TEGRA_PINGROUP_ULPI_DATA0;
@@ -239,6 +286,7 @@ static void insert_headset(void)
 		headset_alive = true;
 	}
 	hs_data->debouncing_time = ktime_set(0, 100000000);  /* 100 ms */
+	snd_kctl_jack_report(rt5640_audio_codec->card->snd_card, jack_kctl, 1);
 }
 static void remove_headset(void)
 {
@@ -247,6 +295,7 @@ static void remove_headset(void)
 	headset_alive = false;
 	tristate_uart();
 	gpio_direction_output(UART_HEADPHONE_SWITCH, 0);
+	snd_kctl_jack_report(rt5640_audio_codec->card->snd_card, jack_kctl, 0);
 }
 
 static void detection_work(struct work_struct *work)
@@ -578,6 +627,21 @@ static int __init headset_init(void)
 	/* Make sure dock switches are correct at boot */
 	set_dock_switches();
 
+	if (rt5640_audio_codec && rt5640_audio_codec->card && rt5640_audio_codec->card->snd_card) {
+		struct snd_card *c = rt5640_audio_codec->card->snd_card;
+		jack_kctl = snd_kctl_jack_new("HP-detect", 0, c);
+		if (!jack_kctl) {
+			printk("(Jack kctl) Out of memory\n");
+			return NOTIFY_OK;
+		}
+		if (snd_ctl_add(c, jack_kctl) < 0) {
+			printk("(Jack kctl) Control addition failed\n");
+			return NOTIFY_OK;
+		}
+	}
+	else 
+		printk("No jack detection through the kctl interface :(\n");
+
 	g_detection_work_queue = create_workqueue("detection");
 
 	hrtimer_init(&hs_data->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -621,6 +685,7 @@ static void __exit headset_exit(void)
 	switch_dev_unregister(&hs_data->sdev);
 	switch_dev_unregister(&dock_switch);
 	switch_dev_unregister(&audio_switch);
+	jack_kctl = NULL;
 }
 
 module_init(headset_init);
