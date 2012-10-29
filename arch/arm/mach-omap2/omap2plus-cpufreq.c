@@ -27,8 +27,6 @@
 #include <linux/io.h>
 #include <linux/opp.h>
 #include <linux/cpu.h>
-#include <linux/earlysuspend.h>
-#include <linux/platform_device.h>
 
 #include <asm/system.h>
 #include <asm/smp_plat.h>
@@ -60,14 +58,9 @@ static struct device *mpu_dev;
 static DEFINE_MUTEX(omap_cpufreq_lock);
 
 static unsigned int max_thermal;
-static unsigned int max_capped;
 static unsigned int max_freq;
 static unsigned int current_target_freq;
-static unsigned int screen_off_max_freq;
 static bool omap_cpufreq_ready;
-static bool omap_cpufreq_suspended;
-
-static int oc_val;
 
 static unsigned int omap_getspeed(unsigned int cpu)
 {
@@ -96,13 +89,8 @@ static int omap_cpufreq_scale(unsigned int target_freq, unsigned int cur_freq)
 	if (freqs.new > max_thermal)
 		freqs.new = max_thermal;
 
-	if (max_capped && freqs.new > max_capped)
-		freqs.new = max_capped;
-
 	if ((freqs.old == freqs.new) && (cur_freq = freqs.new))
 		return 0;
-
-	get_online_cpus();
 
 	/* notifiers */
 	for_each_online_cpu(freqs.cpu)
@@ -146,8 +134,6 @@ static int omap_cpufreq_scale(unsigned int target_freq, unsigned int cur_freq)
 	for_each_online_cpu(freqs.cpu)
 		cpufreq_notify_transition(&freqs, CPUFREQ_POSTCHANGE);
 
-	put_online_cpus();
-
 	return ret;
 }
 
@@ -187,11 +173,9 @@ void omap_thermal_throttle(void)
 	pr_warn("%s: temperature too high, cpu throttle at max %u\n",
 		__func__, max_thermal);
 
-	if (!omap_cpufreq_suspended) {
-		cur = omap_getspeed(0);
-		if (cur > max_thermal)
-			omap_cpufreq_scale(max_thermal, cur);
-	}
+	cur = omap_getspeed(0);
+	if (cur > max_thermal)
+		omap_cpufreq_scale(max_thermal, cur);
 
 	mutex_unlock(&omap_cpufreq_lock);
 }
@@ -214,10 +198,8 @@ void omap_thermal_unthrottle(void)
 
 	pr_warn("%s: temperature reduced, ending cpu throttling\n", __func__);
 
-	if (!omap_cpufreq_suspended) {
-		cur = omap_getspeed(0);
-		omap_cpufreq_scale(current_target_freq, cur);
-	}
+	cur = omap_getspeed(0);
+	omap_cpufreq_scale(current_target_freq, cur);
 
 out:
 	mutex_unlock(&omap_cpufreq_lock);
@@ -255,58 +237,12 @@ static int omap_target(struct cpufreq_policy *policy,
 
 	current_target_freq = freq_table[i].frequency;
 
-	if (!omap_cpufreq_suspended)
-		ret = omap_cpufreq_scale(current_target_freq, policy->cur);
-
+	ret = omap_cpufreq_scale(current_target_freq, policy->cur);
 
 	mutex_unlock(&omap_cpufreq_lock);
 
 	return ret;
 }
-
-#ifdef CONFIG_HAS_EARLYSUSPEND
-
-static void omap_cpu_early_suspend(struct early_suspend *h)
-{
-	unsigned int cur;
-
-	mutex_lock(&omap_cpufreq_lock);
-
-	if (screen_off_max_freq) {
-		max_capped = screen_off_max_freq;
-
-		cur = omap_getspeed(0);
-		if (cur > max_capped)
-			omap_cpufreq_scale(max_capped, cur);
-	}
-
-	mutex_unlock(&omap_cpufreq_lock);
-}
-
-static void omap_cpu_late_resume(struct early_suspend *h)
-{
-	unsigned int cur;
-
-	mutex_lock(&omap_cpufreq_lock);
-
-	if (max_capped) {
-		max_capped = 0;
-
-		cur = omap_getspeed(0);
-		if (cur != current_target_freq)
-			omap_cpufreq_scale(current_target_freq, cur);
-	}
-
-	mutex_unlock(&omap_cpufreq_lock);
-}
-
-static struct early_suspend omap_cpu_early_suspend_handler = {
-	.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN,
-	.suspend = omap_cpu_early_suspend,
-	.resume = omap_cpu_late_resume,
-};
-
-#endif
 
 static inline void freq_table_free(void)
 {
@@ -365,8 +301,8 @@ static int __cpuinit omap_cpu_init(struct cpufreq_policy *policy)
 		cpumask_setall(policy->cpus);
 	}
 
-	/* FIXME: Program the actual transition time to 10us on OMAP 4406 */
-	policy->cpuinfo.transition_latency = 10 * 1000;
+	/* FIXME: what's the actual transition time? */
+	policy->cpuinfo.transition_latency = 300 * 1000;
 
 	return 0;
 
@@ -384,96 +320,8 @@ static int omap_cpu_exit(struct cpufreq_policy *policy)
 	return 0;
 }
 
-static ssize_t show_screen_off_freq(struct cpufreq_policy *policy, char *buf)
-{
-	return sprintf(buf, "%u\n", screen_off_max_freq);
-}
-
-static ssize_t store_screen_off_freq(struct cpufreq_policy *policy,
-	const char *buf, size_t count)
-{
-	unsigned int freq = 0;
-	int ret;
-	int index;
-
-	if (!freq_table)
-		return -EINVAL;
-
-	ret = sscanf(buf, "%u", &freq);
-	if (ret != 1)
-		return -EINVAL;
-
-	mutex_lock(&omap_cpufreq_lock);
-
-	ret = cpufreq_frequency_table_target(policy, freq_table, freq,
-		CPUFREQ_RELATION_H, &index);
-	if (ret)
-		goto out;
-
-	screen_off_max_freq = freq_table[index].frequency;
-
-	ret = count;
-
-out:
-	mutex_unlock(&omap_cpufreq_lock);
-	return ret;
-}
-
-struct freq_attr omap_cpufreq_attr_screen_off_freq = {
-	.attr = { .name = "screen_off_max_freq",
-		  .mode = 0644,
-		},
-	.show = show_screen_off_freq,
-	.store = store_screen_off_freq,
-};
-
-/*
- * Variable GPU OC - sysfs interface for cycling through different GPU top speeds
- * Author: imoseyon@gmail.com
- *
-*/
-static ssize_t show_gpu_oc(struct cpufreq_policy *policy, char *buf)
-{
-	return sprintf(buf, "%d\n", oc_val);
-}
-static ssize_t store_gpu_oc(struct cpufreq_policy *policy, const char *buf, size_t size)
-{
-	int prev_oc, ret1, ret2; 
-        struct device *dev;
-	unsigned long gpu_freqs[3] = {307200000,384000000,512000000};
-
-	prev_oc = oc_val;
-	if (prev_oc < 0 || prev_oc > 2) {
-		// shouldn't be here
-		pr_info("[imoseyon] gpu_oc error - bailing\n");	
-		return size;
-	}
-	
-	sscanf(buf, "%d\n", &oc_val);
-	if (oc_val < 0 ) oc_val = 0;
-	if (oc_val > 2 ) oc_val = 2;
-	if (prev_oc == oc_val) return size;
-
-        dev = omap_hwmod_name_get_dev("gpu");
-        ret1 = opp_disable(dev, gpu_freqs[prev_oc]);
-        ret2 = opp_enable(dev, gpu_freqs[oc_val]);
-        pr_info("[imoseyon] gpu top speed changed from %lu to %lu (%d,%d)\n", 
-		gpu_freqs[prev_oc], gpu_freqs[oc_val], ret1, ret2);
-	
-	return size;
-}
-
-static struct freq_attr gpu_oc = {
-	.attr = {.name = "gpu_oc", .mode=0666,},
-	.show = show_gpu_oc,
-	.store = store_gpu_oc,
-};
-
-
 static struct freq_attr *omap_cpufreq_attr[] = {
 	&cpufreq_freq_attr_scaling_available_freqs,
-	&omap_cpufreq_attr_screen_off_freq,
-	&gpu_oc,
 	NULL,
 };
 
@@ -488,46 +336,9 @@ static struct cpufreq_driver omap_driver = {
 	.attr		= omap_cpufreq_attr,
 };
 
-static int omap_cpufreq_suspend_noirq(struct device *dev)
-{
-	mutex_lock(&omap_cpufreq_lock);
-	omap_cpufreq_suspended = true;
-	mutex_unlock(&omap_cpufreq_lock);
-	return 0;
-}
-
-static int omap_cpufreq_resume_noirq(struct device *dev)
-{
-	unsigned int cur;
-
-	mutex_lock(&omap_cpufreq_lock);
-	cur = omap_getspeed(0);
-	if (cur != current_target_freq)
-		omap_cpufreq_scale(current_target_freq, cur);
-
-	omap_cpufreq_suspended = false;
-	mutex_unlock(&omap_cpufreq_lock);
-	return 0;
-}
-
-static struct dev_pm_ops omap_cpufreq_driver_pm_ops = {
-	.suspend_noirq = omap_cpufreq_suspend_noirq,
-	.resume_noirq = omap_cpufreq_resume_noirq,
-};
-
-static struct platform_driver omap_cpufreq_platform_driver = {
-	.driver.name = "omap_cpufreq",
-	.driver.pm = &omap_cpufreq_driver_pm_ops,
-};
-static struct platform_device omap_cpufreq_device = {
-	.name = "omap_cpufreq",
-};
-
 static int __init omap_cpufreq_init(void)
 {
 	int ret;
-
-	oc_val = 0;
 
 	if (cpu_is_omap24xx())
 		mpu_clk_name = "virt_prcm_set";
@@ -549,39 +360,14 @@ static int __init omap_cpufreq_init(void)
 		return -EINVAL;
 	}
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
-	register_early_suspend(&omap_cpu_early_suspend_handler);
-#endif
-
 	ret = cpufreq_register_driver(&omap_driver);
 	omap_cpufreq_ready = !ret;
-
-	if (!ret) {
-		int t;
-
-		t = platform_device_register(&omap_cpufreq_device);
-		if (t)
-			pr_warn("%s_init: platform_device_register failed\n",
-				__func__);
-		t = platform_driver_register(&omap_cpufreq_platform_driver);
-		if (t)
-			pr_warn("%s_init: platform_driver_register failed\n",
-				__func__);
-	}
-
 	return ret;
 }
 
 static void __exit omap_cpufreq_exit(void)
 {
 	cpufreq_unregister_driver(&omap_driver);
-
-#ifdef CONFIG_HAS_EARLYSUSPEND
-	unregister_early_suspend(&omap_cpu_early_suspend_handler);
-#endif
-
-	platform_driver_unregister(&omap_cpufreq_platform_driver);
-	platform_device_unregister(&omap_cpufreq_device);
 }
 
 MODULE_DESCRIPTION("cpufreq driver for OMAP2PLUS SOCs");
