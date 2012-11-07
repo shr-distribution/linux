@@ -172,38 +172,51 @@ void __naked get_fiq_regs(struct pt_regs *regs)
 static void (*current_fiq_c_isr)(void);
 #define FIQ_C_ISR_STACK_SIZE 	256
 
-static void __attribute__((naked)) __jump_to_isr(void)
+#ifndef __ASSEMBLER__
+extern unsigned char fiq_start, fiq_end;
+
+#endif
+
+/* define of constant are not available to asm
+ * Thus FIQ_C_ISR_STACK_SIZE current value is
+ * directly written for the .space and sp (256)
+ */
+void __naked __fiq_c_handler(void)
 {
-	asm __volatile__ ("mov pc, r8");
-}
-
-
-static void __attribute__((naked)) __actual_isr(void)
-{
-	asm __volatile__ (
-		"stmdb	sp!, {r0-r12, lr};"
-		"mov     fp, sp;"
-	);
-
-	current_fiq_c_isr();
-
-	asm __volatile__ (
-		"ldmia	sp!, {r0-r12, lr};"
-		"subs	pc, lr, #4;"
-	);
+        asm volatile (
+	".global fiq_start\n\
+fiq_start:\n\
+        ldr     r11, =current_fiq_c_isr\n\
+        ldr     r11, [r11]\n\
+        adr     r9, regpool\n\
+        stmia   r9, {r0-r8, fp, sp, lr}\n\
+        adr     sp, fiq_sp\n\
+        ldr     sp, [sp]\n\
+        add     lr, pc, #4\n\
+        bx      r11\n\
+        adr     r9, regpool\n\
+        ldmia   r9, {r0-r8, fp, sp, lr}\n\
+        subs   pc, lr, #4;\n\
+fiq_sp: .long fiq_stack + 256 - 4\n\
+fiq_stack:      .space 256\n\
+regpool:        .space 48\n\
+                .pool\n\
+                .align 5\n\
+	.global fiq_end\n\
+fiq_end:");
 }
 
 void set_fiq_c_handler(void (*isr)(void))
 {
 	struct pt_regs regs;
+	void *fiqhandler_start = &fiq_start;
+	unsigned int fiqhandler_length = &fiq_end - &fiq_start;
 
 	memset(&regs, 0, sizeof(regs));
-	regs.ARM_r8 = (unsigned long) __actual_isr;
-	regs.ARM_sp = 0xffff001c + FIQ_C_ISR_STACK_SIZE;
-
-	set_fiq_handler(__jump_to_isr, 4);
 
 	current_fiq_c_isr = isr;
+
+	set_fiq_handler(fiqhandler_start, fiqhandler_length);
 
 	set_fiq_regs(&regs);
 }
