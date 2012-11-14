@@ -222,7 +222,16 @@ static int ptrace_attach(struct task_struct *task)
 		task->ptrace |= PT_PTRACE_CAP;
 
 	__ptrace_link(task, current);
-	send_sig_info(SIGSTOP, SEND_SIG_FORCED, task);
+
+	/*
+	 * If doing coredump, just convert directly to TASK_TRACED.
+	 * A dying process doesn't process signals normally.
+	 */
+	if (unlikely(task->mm->core_state)) {
+		set_task_state(task, TASK_TRACED);
+	} else {
+		send_sig_info(SIGSTOP, SEND_SIG_FORCED, task);
+	}
 
 	spin_lock(&task->sighand->siglock);
 
