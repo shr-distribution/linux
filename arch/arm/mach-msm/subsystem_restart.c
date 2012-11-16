@@ -349,9 +349,12 @@ static int subsystem_restart_thread(void *data)
 	 * sequence for these subsystems. In the latter case, panic and bail
 	 * out, since a subsystem died in its powerup sequence.
 	 */
-	if (!mutex_trylock(powerup_lock))
-		panic("%s[%p]: Subsystem died during powerup!",
-						__func__, current);
+	if (!mutex_trylock(powerup_lock)) {
+		mutex_unlock(shutdown_lock);
+		printk(KERN_ERR "%s: Subsystem '%s' died during powerup!?!", __func__, subsys->name);
+		kfree(data);
+		do_exit(0);
+	}
 
 	do_epoch_check(subsys);
 
