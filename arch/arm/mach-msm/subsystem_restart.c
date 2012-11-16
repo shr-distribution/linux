@@ -601,7 +601,7 @@ static int __init subsys_restart_init(void)
 		restart_level = RESET_SUBSYS_COUPLED;
 	else
 #endif
-	restart_level = RESET_SOC;
+	restart_level = RESET_SUBSYS_INDEPENDENT;
 
 	ret = ssr_init_soc_restart_orders();
 
