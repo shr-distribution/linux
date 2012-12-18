@@ -173,7 +173,10 @@ static void gta04_audio_jack_work(struct work_struct *work)
 	 * short circuit = around 800
 	 * microphone   = around 830-840 !!!
 	 */
-	if (val < 100) {
+
+	if (val < 0){
+		printk(KERN_WARNING "twl4030_get_madc_conversion failed with error %d\n",val);
+	} else if (val < 100) {
 		/* open circuit */
 		jackbits = 0;
 		jack.present = 0;
