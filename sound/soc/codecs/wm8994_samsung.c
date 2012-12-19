@@ -1178,7 +1178,7 @@ static void wm8994_shutdown(struct snd_pcm_substream *substream,
 		wm8994->codec_state &= ~(PLAYBACK_ACTIVE);
 		wm8994->stream_state &= ~(PCM_STREAM_PLAYBACK);
 	}
-
+#if 0
 	if ((wm8994->codec_state == DEACTIVE) &&
 			(wm8994->stream_state == PCM_STREAM_DEACTIVE)) {
 		DEBUG_LOG("Stream is deactivated; not turning codec off and keeping it's state ...");
@@ -1211,6 +1211,7 @@ static void wm8994_shutdown(struct snd_pcm_substream *substream,
 		} else
 			wm8994_disable_path(codec);
 	}
+#endif
 }
 
 //static struct snd_soc_device *wm8994_socdev;
@@ -2963,15 +2964,16 @@ static int wm8994_init(struct wm8994_priv *wm8994_private,
 		ret = PTR_ERR(wm8994->codec_clk);
 		goto card_err;
 	}
-
+#if 1
 	wm8994_write(codec, WM8994_SOFTWARE_RESET, 0x0000);
-
+#endif
 	wm8994_write(codec, WM8994_POWER_MANAGEMENT_1,
 			0x3 << WM8994_VMID_SEL_SHIFT | WM8994_BIAS_ENA);
 	msleep(50);
+#if 1
 	wm8994_write(codec, WM8994_POWER_MANAGEMENT_1,
 			WM8994_VMID_SEL_NORMAL | WM8994_BIAS_ENA);
-
+#endif
 	wm8994->hw_version = wm8994_read(codec, 0x100);
 
 	//wm8994_socdev->card->codec = codec;
