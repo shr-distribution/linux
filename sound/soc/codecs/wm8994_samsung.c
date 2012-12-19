@@ -238,11 +238,6 @@ static int wm899x_outpga_put_volsw_vu(struct snd_kcontrol *kcontrol,
 
 	DEBUG_LOG("");
 
-	if (wm8994->power_state == CODEC_OFF) {
-		DEBUG_LOG_ERR("Can't adjust output volume when codec is powered off!");
-		return -ENODEV;
-	}
-
 	ret = snd_soc_put_volsw_2r(kcontrol, ucontrol);
 	if (ret < 0)
 		return ret;
@@ -264,16 +259,9 @@ static int wm899x_inpga_put_volsw_vu(struct snd_kcontrol *kcontrol,
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct soc_mixer_control *mc =
 	    (struct soc_mixer_control *)kcontrol->private_value;
-	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
-
 	int reg = mc->reg;
 	int ret;
 	u16 val;
-
-	if (wm8994->power_state == CODEC_OFF) {
-		DEBUG_LOG_ERR("Can't adjust input volume when codec is powered off!");
-		return -ENODEV;
-	}
 
 	ret = snd_soc_put_volsw(kcontrol, ucontrol);
 
@@ -322,11 +310,6 @@ static int wm8994_set_mic_path(struct snd_kcontrol *kcontrol,
 
 	DEBUG_LOG("");
 
-	if (wm8994->power_state == CODEC_OFF) {
-		DEBUG_LOG_ERR("Can't adjust mic path when codec is powered off!");
-		return -ENODEV;
-	}
-
 	wm8994->codec_state |= CAPTURE_ACTIVE;
 
 	switch (ucontrol->value.integer.value[0]) {
@@ -370,11 +353,6 @@ static int wm8994_set_path(struct snd_kcontrol *kcontrol,
 	struct soc_enum *mc = (struct soc_enum *)kcontrol->private_value;
 	int val;
 	int path_num = ucontrol->value.integer.value[0];
-
-	if (wm8994->power_state == CODEC_OFF) {
-		DEBUG_LOG_ERR("Can't adjust path when codec is powered off!");
-		return -ENODEV;
-	}
 
 	if (strcmp(mc->texts[path_num], playback_path[path_num])) {
 		DEBUG_LOG_ERR("Unknown path %s\n", mc->texts[path_num]);
@@ -453,11 +431,6 @@ static int wm8994_set_voice_path(struct snd_kcontrol *kcontrol,
 
 	int path_num = ucontrol->value.integer.value[0];
 
-	if (wm8994->power_state == CODEC_OFF) {
-		DEBUG_LOG_ERR("Can't adjust voice path when codec is powered off!");
-		return -ENODEV;
-	}
-
 	if (strcmp(mc->texts[path_num], voicecall_path[path_num])) {
 		DEBUG_LOG_ERR("Unknown path %s\n", mc->texts[path_num]);
 		return -ENODEV;
@@ -517,11 +490,6 @@ static int wm8994_set_input_source(struct snd_kcontrol *kcontrol,
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
 
 	int control_flag = ucontrol->value.integer.value[0];
-
-	if (wm8994->power_state == CODEC_OFF) {
-		DEBUG_LOG_ERR("Can't adjust input path when codec is powered off!");
-		return -ENODEV;
-	}
 
 	DEBUG_LOG("Changed input_source state [%d] => [%d]",
 			wm8994->input_source, control_flag);
