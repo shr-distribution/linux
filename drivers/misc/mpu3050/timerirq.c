@@ -16,6 +16,7 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
   $
  */
+
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -38,7 +39,7 @@
 #include <linux/timer.h>
 #include <linux/slab.h>
 
-#include "mpu.h"
+#include <linux/mpu.h>
 #include "mltypes.h"
 #include "timerirq.h"
 
@@ -63,9 +64,6 @@ static void timerirq_handler(unsigned long arg)
 	struct timerirq_data *data = (struct timerirq_data *)arg;
 	struct timeval irqtime;
 
-	/* dev_info(data->dev->this_device,
-	   "%s, %ld\n", __func__, (unsigned long)data); */
-
 	data->data.interruptcount++;
 
 	data->data_ready = 1;
@@ -74,6 +72,10 @@ static void timerirq_handler(unsigned long arg)
 	data->data.irqtime = (((long long) irqtime.tv_sec) << 32);
 	data->data.irqtime += irqtime.tv_usec;
 	data->data.data_type |= 1;
+
+	dev_dbg(data->dev->this_device,
+		"%s, %lld, %ld\n", __func__, data->data.irqtime,
+		(unsigned long)data);
 
 	wake_up_interruptible(&data->timerirq_wait);
 
@@ -97,12 +99,6 @@ static int start_timerirq(struct timerirq_data *data)
 	if (!data->period)
 		return -EINVAL;
 
-	if (data->period > 200)
-		data->period = 200;
-
-	printk(KERN_DEBUG "[GSNR][MPU3050][TIMERIRQ]%s: data->period = %lu\n",
-		__func__, data->period);
-
 	data->run = TRUE;
 	data->data_ready = FALSE;
 
@@ -117,9 +113,6 @@ static int stop_timerirq(struct timerirq_data *data)
 {
 	dev_dbg(data->dev->this_device,
 		"%s current->pid %lx\n", __func__, (unsigned long)data);
-
-	printk(KERN_DEBUG "[GSNR][MPU3050][TIMERIRQ]%s: data->period = %lu\n",
-		__func__, data->period);
 
 	if (data->run) {
 		data->run = FALSE;
@@ -168,7 +161,9 @@ static ssize_t timerirq_read(struct file *file,
 	int len, err;
 	struct timerirq_data *data = file->private_data;
 
-	if (!data->data_ready) {
+	if (!data->data_ready &&
+		data->timeout &&
+		!(file->f_flags & O_NONBLOCK)) {
 		wait_event_interruptible_timeout(data->timerirq_wait,
 						 data->data_ready,
 						 data->timeout);
@@ -178,6 +173,7 @@ static ssize_t timerirq_read(struct file *file,
 	    && count >= sizeof(data->data)) {
 		err = copy_to_user(buf, &data->data, sizeof(data->data));
 		data->data.data_type = 0;
+		dev_dbg(data->dev->this_device, "%s:copy_to_user\n", __func__);
 	} else {
 		return 0;
 	}
@@ -191,12 +187,14 @@ static ssize_t timerirq_read(struct file *file,
 	return len;
 }
 
-unsigned int timerirq_poll(struct file *file, struct poll_table_struct *poll)
+static unsigned int timerirq_poll(struct file *file,
+				struct poll_table_struct *poll)
 {
 	int mask = 0;
 	struct timerirq_data *data = file->private_data;
 
 	poll_wait(file, &data->timerirq_wait, poll);
+	dev_dbg(data->dev->this_device, "%s:poll_wait\n", __func__);
 	if (data->data_ready)
 		mask |= POLLIN | POLLRDNORM;
 	return mask;
@@ -279,6 +277,8 @@ static int __init timerirq_init(void)
 			res);
 		return res;
 	}
+
+	dev_dbg(data->this_device, "%s\n", __func__);
 
 	return res;
 }

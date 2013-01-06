@@ -25,6 +25,8 @@
 #include "mlsl.h"
 #include "mlos.h"
 
+#include <linux/i2c/lsm303dlh.h>
+
 #include <log.h>
 #undef MPL_LOG_TAG
 #define MPL_LOG_TAG "MPL-compass"
@@ -89,18 +91,26 @@ enum LSM_MODE {
     Accelerometer Initialization Functions
 *****************************************/
 
+#ifdef CONFIG_INPUT_LSM303DLH
+static struct lsm303dlh_mag_data* lsm303dlh_mag_misc_data = NULL;
+
+extern struct lsm303dlh_mag_data * lsm303dlh_mag_get_instance_ext(void);
+extern int lsm303dlh_mag_enable_ext(struct lsm303dlh_mag_data *mag);
+extern int lsm303dlh_mag_disable_ext(struct lsm303dlh_mag_data *mag);
+#endif
+
 int lsm303dlhm_suspend(void *mlsl_handle,
 		       struct ext_slave_descr *slave,
 		       struct ext_slave_platform_data *pdata)
 {
 	int result = ML_SUCCESS;
-
+#ifdef CONFIG_INPUT_LSM303DLH
 	result =
 	    MLSLSerialWriteSingle(mlsl_handle, pdata->address,
 				  LSM_REG_MODE, LSM_MODE_SLEEP);
 	ERROR_CHECK(result);
 	MLOSSleep(3);
-
+#endif
 	return result;
 }
 
@@ -109,6 +119,23 @@ int lsm303dlhm_resume(void *mlsl_handle,
 		      struct ext_slave_platform_data *pdata)
 {
 	int result = ML_SUCCESS;
+
+#ifdef CONFIG_INPUT_LSM303DLH
+	if (!lsm303dlh_mag_misc_data)
+	{
+		lsm303dlh_mag_misc_data = lsm303dlh_mag_get_instance_ext();
+	}
+	if (lsm303dlh_mag_misc_data)
+	{
+		lsm303dlh_mag_misc_data->ext_handle=mlsl_handle;
+		result = lsm303dlh_mag_enable_ext(lsm303dlh_mag_misc_data);
+		MLOSSleep(50);
+	}
+	else
+	{
+		pr_err("%s: lsm303dlh_mag_misc_data is NULL\n", __func__);
+	}
+#endif
 
 	/* Use single measurement mode. Start at sleep state. */
 	result =
@@ -136,7 +163,7 @@ int lsm303dlhm_read(void *mlsl_handle,
 {
 	unsigned char stat;
 	tMLError result = ML_SUCCESS;
-	short axisFixed;
+	short zAxisfixed;
 
 	/* Read status reg. to check if data is ready */
 	result =
@@ -152,38 +179,17 @@ int lsm303dlhm_read(void *mlsl_handle,
 		/*drop data if overflows */
 		if ((data[0] == 0xf0) || (data[2] == 0xf0)
 		    || (data[4] == 0xf0)) {
-			/* trigger next measurement read */
-			result =
-				MLSLSerialWriteSingle(mlsl_handle,
-							pdata->address,
-							LSM_REG_MODE,
-							LSM_MODE_SINGLE);
-			ERROR_CHECK(result);
 			return ML_ERROR_COMPASS_DATA_OVERFLOW;
 		}
 		/* convert to fixed point and apply sensitivity correction for
 		   Z-axis */
-		axisFixed =
+		zAxisfixed =
 		    (short) ((unsigned short) data[5] +
 			     (unsigned short) data[4] * 256);
-		/* scale up by 1.125 (36/32) approximate of 1.122 (320/285) */
-		axisFixed = (short) (axisFixed * 36);
-		data[4] = axisFixed >> 8;
-		data[5] = axisFixed & 0xFF;
-
-		axisFixed =
-		    (short) ((unsigned short) data[3] +
-			     (unsigned short) data[2] * 256);
-		axisFixed = (short) (axisFixed * 32);
-		data[2] = axisFixed >> 8;
-		data[3] = axisFixed & 0xFF;
-
-		axisFixed =
-		    (short) ((unsigned short) data[1] +
-			     (unsigned short) data[0] * 256);
-		axisFixed = (short) (axisFixed * 32);
-		data[0] = axisFixed >> 8;
-		data[1] = axisFixed & 0xFF;
+		/* scale up by 1.122 (320/285) */
+		zAxisfixed = (short) (zAxisfixed * 9) >> 3;
+		data[4] = zAxisfixed >> 8;
+		data[5] = zAxisfixed & 0xFF;
 
 		/* trigger next measurement read */
 		result =
@@ -210,6 +216,7 @@ struct ext_slave_descr lsm303dlhm_descr = {
 	/*.resume           = */ lsm303dlhm_resume,
 	/*.read             = */ lsm303dlhm_read,
 	/*.config           = */ NULL,
+	/*.get_config       = */ NULL,
 	/*.name             = */ "lsm303dlhm",
 	/*.type             = */ EXT_SLAVE_TYPE_COMPASS,
 	/*.id               = */ COMPASS_ID_LSM303,

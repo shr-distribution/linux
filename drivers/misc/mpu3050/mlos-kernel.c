@@ -36,43 +36,43 @@ void *MLOSMalloc(unsigned int numBytes)
 	return kmalloc(numBytes, GFP_KERNEL);
 }
 
-tMLError MLOSFree(void *ptr)
+unchar MLOSFree(void *ptr)
 {
 	kfree(ptr);
 	return ML_SUCCESS;
 }
 
-tMLError MLOSCreateMutex(HANDLE *mutex)
+unchar MLOSCreateMutex(uint *mutex)
 {
 	/* @todo implement if needed */
 	return ML_ERROR_FEATURE_NOT_IMPLEMENTED;
 }
 
-tMLError MLOSLockMutex(HANDLE mutex)
+unchar MLOSLockMutex(uint mutex)
 {
 	/* @todo implement if needed */
 	return ML_ERROR_FEATURE_NOT_IMPLEMENTED;
 }
 
-tMLError MLOSUnlockMutex(HANDLE mutex)
+unchar MLOSUnlockMutex(uint mutex)
 {
 	/* @todo implement if needed */
 	return ML_ERROR_FEATURE_NOT_IMPLEMENTED;
 }
 
-tMLError MLOSDestroyMutex(HANDLE handle)
+unchar MLOSDestroyMutex(uint handle)
 {
 	/* @todo implement if needed */
 	return ML_ERROR_FEATURE_NOT_IMPLEMENTED;
 }
 
-FILE *MLOSFOpen(char *filename)
+uint *MLOSFOpen(char *filename)
 {
 	/* @todo implement if needed */
 	return NULL;
 }
 
-void MLOSFClose(FILE *fp)
+void MLOSFClose(uint *fp)
 {
 	/* @todo implement if needed */
 }

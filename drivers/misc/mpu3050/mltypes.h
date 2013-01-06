@@ -148,6 +148,16 @@ typedef int_fast8_t bool;
 		}							\
 	}
 
+#define ERROR_CHECK_MUTEX(x, y)                                         \
+	do {								\
+		if (ML_SUCCESS != x) {					\
+			MPL_LOGE("%s|%s|%d returning %d\n",		\
+				__FILE__, __func__, __LINE__, x);	\
+			mutex_unlock(&y);				\
+			return x;					\
+		}							\
+	} while (0)
+
 #define ERROR_CHECK_FIRST(first, x)                                     \
 	{ if (ML_SUCCESS == first) first = x; }
 

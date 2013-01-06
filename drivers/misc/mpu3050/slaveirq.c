@@ -16,6 +16,7 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
   $
  */
+
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -39,7 +40,7 @@
 #include <linux/wait.h>
 #include <linux/slab.h>
 
-#include "mpu.h"
+#include <linux/mpu.h>
 #include "slaveirq.h"
 #include "mldl_cfg.h"
 #include "mpu-i2c.h"
@@ -89,7 +90,11 @@ static ssize_t slaveirq_read(struct file *file,
 	struct slaveirq_dev_data *data =
 		container_of(file->private_data, struct slaveirq_dev_data, dev);
 
-	if (!data->data_ready) {
+	//dev_dbg(data->dev.this_device, "%s\n", __func__);
+
+	if (!data->data_ready &&
+		data->timeout &&
+		!(file->f_flags & O_NONBLOCK)) {
 		wait_event_interruptible_timeout(data->slaveirq_wait,
 						 data->data_ready,
 						 data->timeout);
@@ -112,12 +117,14 @@ static ssize_t slaveirq_read(struct file *file,
 	return len;
 }
 
-unsigned int slaveirq_poll(struct file *file, struct poll_table_struct *poll)
+static unsigned int slaveirq_poll(struct file *file,
+				struct poll_table_struct *poll)
 {
 	int mask = 0;
 	struct slaveirq_dev_data *data =
 		container_of(file->private_data, struct slaveirq_dev_data, dev);
 
+	//dev_dbg(data->dev.this_device, "%s\n", __func__);
 	poll_wait(file, &data->slaveirq_wait, poll);
 	if (data->data_ready)
 		mask |= POLLIN | POLLRDNORM;
@@ -133,6 +140,7 @@ static long slaveirq_ioctl(struct file *file,
 	struct slaveirq_dev_data *data =
 		container_of(file->private_data, struct slaveirq_dev_data, dev);
 
+	//dev_dbg(data->dev.this_device, "%s cmd:%d\n", __func__, cmd);
 	switch (cmd) {
 	case SLAVEIRQ_SET_TIMEOUT:
 		data->timeout = arg;
@@ -165,10 +173,11 @@ static irqreturn_t slaveirq_handler(int irq, void *dev_id)
 	struct timeval irqtime;
 	mycount++;
 
+	//dev_dbg(data->dev.this_device, "%s\n", __func__);
+
 	data->data.interruptcount++;
 
 	/* wake up (unblock) for reading data from userspace */
-	/* and ignore first interrupt generated in module init */
 	data->data_ready = 1;
 
 	do_gettimeofday(&irqtime);

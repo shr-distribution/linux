@@ -26,6 +26,9 @@
 #include "mlsl.h"
 #include "mlos.h"
 
+#include <linux/i2c/lsm303dlh.h>
+#include <linux/i2c.h>
+
 #include <log.h>
 #undef MPL_LOG_TAG
 #define MPL_LOG_TAG "MPL-acc"
@@ -41,11 +44,20 @@
     Accelerometer Initialization Functions
 *****************************************/
 
+#ifdef CONFIG_INPUT_LSM303DLH
+static struct lsm303dlh_acc_data* lsm303dlh_acc_misc_data=NULL;
+
+extern struct lsm303dlh_acc_data * lsm303dlh_acc_get_instance_ext(void);
+extern int lsm303dlh_acc_enable_ext(struct lsm303dlh_acc_data *acc);
+extern int lsm303dlh_acc_disable_ext(struct lsm303dlh_acc_data *acc);
+#endif
+
 int lsm303dlha_suspend(void *mlsl_handle,
 		       struct ext_slave_descr *slave,
 		       struct ext_slave_platform_data *pdata)
 {
-	int result;
+	int result = ML_SUCCESS;
+#ifndef CONFIG_INPUT_LSM303DLH
 	unsigned char reg;
 
 	result =
@@ -57,6 +69,7 @@ int lsm303dlha_suspend(void *mlsl_handle,
 	    MLSLSerialWriteSingle(mlsl_handle, pdata->address,
 				  ACCEL_ST_SLEEP_REG, reg);
 	ERROR_CHECK(result);
+#endif
 	return result;
 }
 
@@ -70,6 +83,25 @@ int lsm303dlha_resume(void *mlsl_handle,
 {
 	int result = ML_SUCCESS;
 	unsigned char reg;
+
+#ifdef CONFIG_INPUT_LSM303DLH
+	if (!lsm303dlh_acc_misc_data)
+	{
+		lsm303dlh_acc_misc_data = lsm303dlh_acc_get_instance_ext();
+		//lsm303dlh_acc_misc_data->send_cb = MLSLSerialWrite;
+	}
+	if (lsm303dlh_acc_misc_data)
+	{
+		lsm303dlh_acc_misc_data->ext_handle=mlsl_handle;
+		result = lsm303dlh_acc_enable_ext(lsm303dlh_acc_misc_data);
+		//pr_err(" ##### Wade %s: result:%d\n", __func__, result);
+		MLOSSleep(50);
+	}
+	else
+	{
+		pr_err("%s: lsm303dlh_acc_misc_data is NULL\n", __func__);
+	}
+#endif
 
 	result =
 	    MLSLSerialRead(mlsl_handle, pdata->address, ACCEL_ST_SLEEP_REG,
@@ -91,18 +123,16 @@ int lsm303dlha_resume(void *mlsl_handle,
 
 	/* Full Scale */
 	reg &= ~ACCEL_ST_CTRL_MASK;
-	if (slave->range.mantissa == 4) {
-		slave->range.fraction = 960;
-		reg |= 0x10;
-	} else if (slave->range.mantissa == 8) {
-		slave->range.fraction = 1920;
-		reg |= 0x30;
-	} else {
-		slave->range.mantissa = 2;
-		slave->range.fraction = 480;
+	if (slave->range.mantissa == 2
+	    && slave->range.fraction == 480) {
 		reg |= 0x00;
+	} else if (slave->range.mantissa == 4
+		   && slave->range.fraction == 960) {
+		reg |= 0x10;
+	} else if (slave->range.mantissa == 8
+		   && slave->range.fraction == 1920) {
+		reg |= 0x30;
 	}
-
 	result =
 	    MLSLSerialWriteSingle(mlsl_handle, pdata->address, 0x23, reg);
 	ERROR_CHECK(result);
@@ -131,7 +161,10 @@ int lsm303dlha_read(void *mlsl_handle,
 		    struct ext_slave_platform_data *pdata,
 		    unsigned char *data)
 {
-	return ML_ERROR_FEATURE_NOT_IMPLEMENTED;
+	int result;
+	result = MLSLSerialRead(mlsl_handle, pdata->address,
+				slave->reg, slave->len, data);
+	return result;
 }
 
 struct ext_slave_descr lsm303dlha_descr = {
@@ -141,6 +174,7 @@ struct ext_slave_descr lsm303dlha_descr = {
 	/*.resume           = */ lsm303dlha_resume,
 	/*.read             = */ lsm303dlha_read,
 	/*.config           = */ NULL,
+	/*.get_config       = */ NULL,
 	/*.name             = */ "lsm303dlha",
 	/*.type             = */ EXT_SLAVE_TYPE_ACCELEROMETER,
 	/*.id               = */ ACCEL_ID_LSM303,
