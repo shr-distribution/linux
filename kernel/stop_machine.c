@@ -8,6 +8,7 @@
  *
  * This file is released under the GPLv2 and any later version.
  */
+#include <linux/kernel.h>
 #include <linux/completion.h>
 #include <linux/cpu.h>
 #include <linux/init.h>
@@ -452,7 +453,8 @@ static int stop_machine_cpu_stop(void *data)
 		is_active = cpu == cpumask_first(cpu_online_mask);
 	else
 		is_active = cpumask_test_cpu(cpu, smdata->active_cpus);
-	printk("stop_machine_cpu_stop smp=%u\n",cpu);
+	if (system_state != SYSTEM_RUNNING)
+		printk("stop_machine_cpu_stop smp=%u\n",cpu);
 	/* Simple state machine */
 	do {
 		/* Chill out and ensure we re-read stopmachine_state. */
