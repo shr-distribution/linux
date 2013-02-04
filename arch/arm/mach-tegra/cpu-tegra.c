@@ -332,8 +332,8 @@ static int tegra_cpu_edp_notify(
 				edp_update_limit();
 			}
 
-			printk(KERN_DEBUG "tegra CPU:%sforce EDP limit %u kHz"
-				"\n", ret ? " failed to " : " ", new_speed);
+			if (system_state != SYSTEM_RUNNING)
+				printk(KERN_DEBUG "tegra CPU:%sforce EDP limit %u kHz\n", ret ? " failed to " : " ", new_speed);
 		}
 		mutex_unlock(&tegra_cpu_lock);
 		break;
