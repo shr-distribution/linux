@@ -75,7 +75,10 @@ static int hp_amp_count = 0;
 #include "rt5640-dsp.h"
 #endif
 
-#define RT5640_REG_RW 1 /* for debug */
+/* #define RT5640_REG_RW 1  for debug */
+/* This "Register Control" interfers with save/restore of mixer state */
+#undef RT5640_REG_RW
+
 struct snd_soc_codec *rt5640_audio_codec = NULL;
 EXPORT_SYMBOL(rt5640_audio_codec);
 static struct rt5640_priv *rt5640_dsp = NULL;
