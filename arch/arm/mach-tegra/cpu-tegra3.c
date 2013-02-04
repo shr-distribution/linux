@@ -48,6 +48,9 @@ static struct mutex *tegra3_cpu_lock;
 static struct workqueue_struct *hotplug_wq;
 static struct delayed_work hotplug_work;
 
+static bool debug;
+module_param(debug, bool, 0644);
+
 static bool no_lp;
 module_param(no_lp, bool, 0644);
 
@@ -291,13 +294,17 @@ static void tegra_auto_hotplug_work_func(struct work_struct *work)
 
 	if (cpu < nr_cpu_ids) {
 		if (up){
-			printk("cpu_up(%u)+\n",cpu);
+			if (debug)
+				printk("cpu_up(%u)+\n",cpu);
 			cpu_up(cpu);
-			printk("cpu_up(%u)-\n",cpu);
+			if (debug)
+				printk("cpu_up(%u)-\n",cpu);
 		}else{
-			printk("cpu_down(%u)+\n",cpu);
+			if (debug)
+				printk("cpu_down(%u)+\n",cpu);
 			cpu_down(cpu);
-			printk("cpu_down(%u)-\n",cpu);
+			if (debug)
+				printk("cpu_down(%u)-\n",cpu);
 		}
 	}
 }
