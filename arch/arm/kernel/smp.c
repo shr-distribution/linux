@@ -7,6 +7,7 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/init.h>
@@ -215,7 +216,8 @@ void __cpu_die(unsigned int cpu)
 		pr_err("CPU%u: cpu didn't die\n", cpu);
 		return;
 	}
-	printk(KERN_NOTICE "CPU%u: shutdown\n", cpu);
+	if (system_state != SYSTEM_RUNNING)
+		printk(KERN_NOTICE "CPU%u: shutdown\n", cpu);
 
 	if (!platform_cpu_kill(cpu))
 		printk("CPU%u: unable to kill\n", cpu);
@@ -280,7 +282,8 @@ asmlinkage void __cpuinit secondary_start_kernel(void)
 	struct mm_struct *mm = &init_mm;
 	unsigned int cpu = smp_processor_id();
 
-	printk("CPU%u: Booted secondary processor\n", cpu);
+	if (system_state != SYSTEM_RUNNING)
+		printk("CPU%u: Booted secondary processor\n", cpu);
 
 	/*
 	 * All kernel threads share the same mm context; grab a
