@@ -551,6 +551,23 @@ static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 	policy->user_policy.policy = policy->policy;
 	policy->user_policy.governor = policy->governor;
 
+	/* added this here to test if it change the way the governor is applied to both cores */
+#ifdef CONFIG_LINK_CPU_GOVERNORS
+	ret = cpufreq_get_policy(&new_policy, policy->cpu ? 0 : 1);
+	if(!ret) {
+		struct cpufreq_policy* cpu_alt=cpufreq_cpu_get(policy->cpu ? 0 : 1);
+		if (cpu_alt != NULL) {
+			cpufreq_parse_governor(str_governor, &new_policy.policy,
+			&new_policy.governor);
+			__cpufreq_set_policy(cpu_alt, &new_policy);
+			cpu_alt->user_policy.policy = cpu_alt->policy;
+			cpu_alt->user_policy.governor = cpu_alt->governor;
+			cpufreq_cpu_put(cpu_alt);
+		}
+	}
+#endif
+	/* end addition */
+
 	if (ret)
 		return ret;
 	else
@@ -1279,7 +1296,7 @@ static void handle_update(struct work_struct *work)
 }
 
 /**
- *	cpufreq_out_of_sync - If actual and saved CPU frequency differs, we're in deep trouble.
+ *	cpufreq_out_of_syncsync - If actual and saved CPU frequency differs, we're in deep trouble.
  *	@cpu: cpu number
  *	@old_freq: CPU frequency the kernel thinks the CPU runs at
  *	@new_freq: CPU frequency the CPU actually runs at
