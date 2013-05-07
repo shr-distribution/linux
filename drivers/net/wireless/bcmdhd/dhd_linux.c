@@ -539,8 +539,10 @@ static void dhd_set_packet_filter(int value, dhd_pub_t *dhd)
 static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 {
 	int power_mode = PM_MAX;
+#if defined(CONFIG_HAS_EARLYSUSPEND)
 	if (wifi_pm == 1)
 		power_mode = PM_FAST;
+#endif
 	/* wl_pkt_filter_enable_t	enable_parm; */
 	char iovbuf[32];
 	int bcn_li_dtim = 3;
