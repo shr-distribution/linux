@@ -57,6 +57,8 @@
 #define ISL29023_NUM_CACHABLE_REGS	8
 #define DEF_RANGE			2
 
+#define ISL29023_MAXVALUE		32768
+
 struct isl29023_data {
 	struct i2c_client *client;
 	struct mutex lock;
@@ -320,7 +322,7 @@ static int isl29023_get_power_state(struct i2c_client *client)
 static int isl29023_get_adc_value(struct i2c_client *client)
 {
 	struct isl29023_data *data = i2c_get_clientdata(client);
-	int lsb, msb, range, bitdepth;
+	int lsb, msb, range, bitdepth, lux;
 
 	mutex_lock(&data->lock);
 	lsb = i2c_smbus_read_byte_data(client, ISL29023_REG_LSB_SENSOR);
@@ -338,8 +340,14 @@ static int isl29023_get_adc_value(struct i2c_client *client)
 
 	range = isl29023_get_range(client);
 	bitdepth = (4 - isl29023_get_resolution(client)) * 4;
-	return (((msb << 8) | lsb) * ((gain_range[range] * 499) / data->rext))
+	lux = (((msb << 8) | lsb) * ((gain_range[range] * 499) / data->rext))
 		>> bitdepth;
+
+	/* keep als lux value in its boundaries and prevent negative bogus vals*/
+	lux = lux>ISL29023_MAXVALUE ? ISL29023_MAXVALUE : lux;
+	lux = lux<0 ? ISL29023_MAXVALUE : lux;
+
+	return lux;
 }
 
 static int isl29023_get_int_lt_value(struct i2c_client *client)
