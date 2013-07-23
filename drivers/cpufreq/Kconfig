@@ -53,11 +53,11 @@ config CPU_FREQ_STAT_DETAILS
 
 	  If in doubt, say N.
 
-config LINK_CPU_GOVERNORS
-	bool "Link CPU Governors"
+config LINK_CPU_POLICIES
+	bool "Link CPU policies"
 	depends on CPU_FREQ
 	help
-	  "This will force both governors to stay synced"
+	  "This will force both governors & min/max freq to stay synced"
 
 choice
 	prompt "Default CPUFreq governor"

@@ -490,7 +490,7 @@ static ssize_t store_##file_name					\
 	return ret ? ret : count;					\
 }
 
-#ifdef CONFIG_LINK_CPU_GOVERNORS
+#ifdef CONFIG_LINK_CPU_POLICIES
 static ssize_t store_scaling_min_freq
 (struct cpufreq_policy *policy, const char *buf, size_t count)
 {							
@@ -608,7 +608,7 @@ static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 	char	str_governor[16];
 	struct cpufreq_policy new_policy;
 
-#ifdef CONFIG_LINK_CPU_GOVERNORS
+#ifdef CONFIG_LINK_CPU_POLICIES
 	int cpu_alt_id = 0;
 #endif
 
@@ -632,7 +632,7 @@ static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 	policy->user_policy.governor = policy->governor;
 
 	/* if defined force governor changes from one core to apply to the other */
-#ifdef CONFIG_LINK_CPU_GOVERNORS
+#ifdef CONFIG_LINK_CPU_POLICIES
 	cpu_alt_id = policy->cpu ? 0 : 1;
 	if (!cpu_online(cpu_alt_id)) {					
 		cpu_up(cpu_alt_id);
