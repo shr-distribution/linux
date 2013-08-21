@@ -73,6 +73,46 @@ static int __secure_tz_entry(u32 cmd, u32 val)
 }
 #endif /* CONFIG_MSM_SECURE_IO */
 
+static int __gpuclk_store(int max, struct device *dev,
+						  struct device_attribute *attr,
+						  const char *buf, size_t count)
+{	int ret, i, delta = 5000000;
+	unsigned long val;
+	struct kgsl_device *device = kgsl_device_from_dev(dev);
+	struct kgsl_pwrctrl *pwr;
+
+	if (device == NULL)
+		return 0;
+	pwr = &device->pwrctrl;
+
+	ret = sscanf(buf, "%ld", &val);
+	if (ret != 1)
+		return count;
+
+	mutex_lock(&device->mutex);
+	for (i = 0; i < pwr->num_pwrlevels; i++) {
+		if (abs(pwr->pwrlevels[i].gpu_freq - val) < delta) {
+			if (max)
+				pwr->thermal_pwrlevel = i;
+			break;
+		}
+	}
+
+	if (i == pwr->num_pwrlevels)
+		goto done;
+
+
+	if (pwr->pwrlevels[pwr->active_pwrlevel].gpu_freq >
+	    pwr->pwrlevels[pwr->thermal_pwrlevel].gpu_freq)
+		kgsl_pwrctrl_pwrlevel_change(device, pwr->thermal_pwrlevel);
+	else if (!max)
+		kgsl_pwrctrl_pwrlevel_change(device, i);
+
+done:
+	mutex_unlock(&device->mutex);
+	return count;
+}
+
 /* Returns the requested update to our power level. *
  * Either up/down (-1/1) a level, or stay the same (0). */
 static inline int kgsl_pwrctrl_tz_update(u32 idle)
@@ -117,30 +157,7 @@ static int kgsl_pwrctrl_gpuclk_store(struct device *dev,
 				     struct device_attribute *attr,
 				     const char *buf, size_t count)
 {
-	char temp[20];
-	int i, delta = 5000000;
-	unsigned long val;
-	struct kgsl_device *device = kgsl_device_from_dev(dev);
-	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
-
-	snprintf(temp, sizeof(temp), "%.*s",
-			 (int)min(count, sizeof(temp) - 1), buf);
-	strict_strtoul(temp, 0, &val);
-
-	mutex_lock(&device->mutex);
-	/* Find the best match for the requested freq, if it exists */
-
-	for (i = 0; i < pwr->num_pwrlevels; i++)
-		if (abs(pwr->pwrlevels[i].gpu_freq - val) < delta) {
-			pwr->thermal_pwrlevel = i;
-			break;
-		}
-
-	kgsl_pwrctrl_pwrlevel_change(device, i);
-
-	mutex_unlock(&device->mutex);
-
-	return count;
+	return __gpuclk_store(0, dev, attr, buf, count);
 }
 
 static int kgsl_pwrctrl_gpuclk_show(struct device *dev,
@@ -151,6 +168,26 @@ static int kgsl_pwrctrl_gpuclk_show(struct device *dev,
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 	return sprintf(buf, "%d\n",
 			pwr->pwrlevels[pwr->active_pwrlevel].gpu_freq);
+}
+
+static int kgsl_pwrctrl_max_gpuclk_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	return __gpuclk_store(1, dev, attr, buf, count);
+}
+
+static int kgsl_pwrctrl_max_gpuclk_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct kgsl_device *device = kgsl_device_from_dev(dev);
+	struct kgsl_pwrctrl *pwr;
+	if (device == NULL)
+		return 0;
+	pwr = &device->pwrctrl;
+	return snprintf(buf, PAGE_SIZE, "%d\n",
+			pwr->pwrlevels[pwr->thermal_pwrlevel].gpu_freq);
 }
 
 static int kgsl_pwrctrl_pwrnap_store(struct device *dev,
@@ -309,6 +346,12 @@ static struct device_attribute gpubusy_attr = {
 	.show = kgsl_pwrctrl_gpubusy_show,
 };
 
+static struct device_attribute max_gpuclk_attr = {
+	.attr = { .name = "max_gpuclk", .mode = 0644, },
+	.show = kgsl_pwrctrl_max_gpuclk_show,
+	.store = kgsl_pwrctrl_max_gpuclk_store,
+};
+
 int kgsl_pwrctrl_init_sysfs(struct kgsl_device *device)
 {
 	int ret = 0;
@@ -321,6 +364,8 @@ int kgsl_pwrctrl_init_sysfs(struct kgsl_device *device)
 		ret = device_create_file(device->dev, &scaling_governor_attr);
 	if (ret == 0)
 		ret = device_create_file(device->dev, &gpubusy_attr);
+	if (ret == 0)
+		ret = device_create_file(device->dev, &max_gpuclk_attr);
 	return ret;
 }
 
@@ -339,7 +384,8 @@ void kgsl_pwrctrl_uninit_sysfs(struct kgsl_device *device)
 	device_remove_file(device->dev, &pwrnap_attr);
 	device_remove_file(device->dev, &idle_timer_attr);
 	device_remove_file(device->dev, &scaling_governor_attr);
-	device_remove_file(device->dev, &gpuclk_attr);
+	device_remove_file(device->dev, &gpubusy_attr);
+	device_remove_file(device->dev, &max_gpuclk_attr);
 }
 
 static void kgsl_pwrctrl_idle_calc(struct kgsl_device *device)
