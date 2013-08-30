@@ -51,7 +51,7 @@ CONFIG_SYSVIPC_SYSCTL=y
 # CONFIG_POSIX_MQUEUE is not set
 # CONFIG_BSD_PROCESS_ACCT is not set
 # CONFIG_TASKSTATS is not set
-# CONFIG_AUDIT is not set
+CONFIG_AUDIT=y
 
 #
 # RCU Subsystem
