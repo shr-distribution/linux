@@ -858,9 +858,10 @@ static struct twl4030_platform_data gta04_twldata = {
 static struct platform_device gta04_gtm601_codec_audio_device = {
 	.name	= "gtm601_codec_audio",
 	.id	= -1,
-	.dev	= {
-		.platform_data	= NULL,
-	},
+};
+static struct platform_device gta04_voice_device = {
+	.name = "gta04-voice",
+	.id = -1,
 };
 #endif
 
@@ -880,9 +881,10 @@ static struct platform_device gta04_si47xx_codec_audio_device = {
 static struct platform_device gta04_w2cbw003_codec_audio_device = {
 	.name	= "w2cbw003_codec_audio",
 	.id	= -1,
-	.dev	= {
-		.platform_data	= NULL,
-	},
+};
+static struct platform_device gta04_headset_device = {
+	.name = "gta04-headset",
+	.id = -1,
 };
 #endif
 
@@ -1187,12 +1189,14 @@ static struct platform_device *gta04_devices[] __initdata = {
 #endif
 #if defined(CONFIG_SND_SOC_GTM601)
 	&gta04_gtm601_codec_audio_device,
+	&gta04_voice_device,
 #endif
 #if defined(CONFIG_SND_SOC_SI47XX)
 	&gta04_si47xx_codec_audio_device,
 #endif
 #if defined(CONFIG_SND_SOC_W2CBW003)
 	&gta04_w2cbw003_codec_audio_device,
+	&gta04_headset_device,
 #endif
 	&madc_hwmon,
 };

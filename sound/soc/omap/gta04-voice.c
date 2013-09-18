@@ -105,41 +105,39 @@ static struct snd_soc_card gta04_voice_card = {
 	.num_links	= 1,
 };
 
-static struct platform_device *gta04_voice_snd_device;
-
-static int __init gta04_voice_soc_init(void)
+static __devinit int gta04_voice_probe(struct platform_device *pdev)
 {
-	struct device *dev;
+	struct snd_soc_card *card = &gta04_voice_card;
 	int ret;
 
 	pr_info("gta04-voice SoC init\n");
 
-	gta04_voice_snd_device = platform_device_alloc("soc-audio", 1);
-	if (!gta04_voice_snd_device) {
-		printk(KERN_ERR "platform device allocation failed\n");
-		return -ENOMEM;
-	}
-
-	dev = &gta04_voice_snd_device->dev;
-
-	platform_set_drvdata(gta04_voice_snd_device, &gta04_voice_card);
-
-	ret = platform_device_add(gta04_voice_snd_device);
+	card->dev = &pdev->dev;
+	ret= snd_soc_register_card(card);
 	if (ret) {
-		printk(KERN_ERR "unable to add platform device\n");
-		platform_device_put(gta04_voice_snd_device);
+		printk(KERN_ERR "unable to register voice audio device\n");
+		card->dev = NULL;
 	}
-
 	return ret;
 }
 
-static void __exit gta04_voice_soc_exit(void)
+static __devexit int gta04_voice_remove(struct platform_device *pdev)
 {
-	platform_device_unregister(gta04_voice_snd_device);
+	struct snd_soc_card *card = &gta04_voice_card;
+	snd_soc_unregister_card(card);
+	card->dev = NULL;
+	return 0;
 }
 
-module_init(gta04_voice_soc_init);
-module_exit(gta04_voice_soc_exit);
+static struct platform_driver gta04_voice_driver = {
+	.driver = {
+		.name = "gta04-voice",
+		.owner = THIS_MODULE,
+	},
+	.probe = gta04_voice_probe,
+	.remove = __devexit_p(gta04_voice_remove),
+};
+module_platform_driver(gta04_voice_driver);
 
 MODULE_AUTHOR("John Ogness <john.ogness@linutronix.de>");
 MODULE_DESCRIPTION("ALSA SoC GTA04 Voice");
