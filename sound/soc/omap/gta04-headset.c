@@ -32,30 +32,29 @@ static int gta04_headset_hw_params(struct snd_pcm_substream *substream,
 {
 	/* setup codec dai and cpu dai hardware params */
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	//	struct snd_soc_dai *codec_dai = rtd->dai->codec_dai;
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
 	unsigned int fmt;
 	int ret;
-	
+
 	fmt =	SND_SOC_DAIFMT_I2S |	// I2S
 			SND_SOC_DAIFMT_IB_IF |	// positive sync pulse, driven on rising, sampled on falling clock
 			SND_SOC_DAIFMT_CBM_CFM;	// clocks come from bluetooth modem - but this can be configured in the Modem chip
-	
+
 	/* Set cpu DAI configuration */
 	ret = snd_soc_dai_set_fmt(cpu_dai, fmt);
 	if (ret < 0) {
 		printk(KERN_ERR "can't set cpu DAI configuration\n");
 		return ret;
 	}
-	
+
 	ret = snd_soc_dai_set_sysclk(cpu_dai, OMAP_MCBSP_SYSCLK_CLKX_EXT, 0,
 								 SND_SOC_CLOCK_IN);
 	// FIXME: set clock divisor
 	if (ret < 0) {
 		printk(KERN_ERR "can't set cpu system clock\n");
 		return ret;
-	}	
-	
+	}
+
 	return 0;
 }
 
@@ -89,14 +88,14 @@ static struct snd_soc_ops gta04_headset_ops = {
 
 /* digital headset interface glue - connects codec <--> cpu */
 static struct snd_soc_dai_link gta04_headset_dai = {
-	.name 		= "W2CBW003",
-	.stream_name 	= "W2CBW003",
+	.name		= "W2CBW003",
+	.stream_name	= "W2CBW003",
 	.cpu_dai_name	= "omap-mcbsp.3",
 	.platform_name	= "omap-pcm-audio",
 	.codec_dai_name	= "W2CBW003",
 	.codec_name	= "w2cbw003_codec_audio",
 	.init		= gta04_headset_init,
-	.ops 		= &gta04_headset_ops,
+	.ops		= &gta04_headset_ops,
 };
 
 /* headset machine driver */

@@ -32,35 +32,27 @@ static int gta04_voice_hw_params(struct snd_pcm_substream *substream,
 {
 	/* setup codec dai and cpu dai hardware params */
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-//	struct snd_soc_dai *codec_dai = rtd->dai->codec_dai;
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
 	unsigned int fmt;
 	int ret;
-	
+
 	fmt =	SND_SOC_DAIFMT_I2S |	// I2S
 		//	SND_SOC_DAIFMT_GATED |	// try to power down if not needed
 			SND_SOC_DAIFMT_IB_IF |	// positive sync pulse, driven on rising, sampled on falling clock
 			SND_SOC_DAIFMT_CBM_CFM;	// clocks come from GSM modem
-	
-#if 0	// set clocks to be outputs
 
-	fmt =	SND_SOC_DAIFMT_I2S |
-			SND_SOC_DAIFMT_IB_IF |
-			SND_SOC_DAIFMT_CBS_CFS;
-
-#endif	
 	/* Set cpu DAI configuration */
 	ret = snd_soc_dai_set_fmt(cpu_dai, fmt);
 	if (ret < 0) {
 		printk(KERN_ERR "can't set cpu DAI configuration\n");
 		return ret;
 	}
-	
+
 	if (ret < 0) {
 		printk(KERN_ERR "can't set cpu system clock\n");
 		return ret;
-	}	
-		
+	}
+
 	return 0;
 }
 
@@ -96,14 +88,14 @@ static struct snd_soc_ops gta04_voice_ops = {
 
 /* digital voice interface glue - connects codec <--> cpu */
 static struct snd_soc_dai_link gta04_voice_dai = {
-	.name 		= "GTM601",
-	.stream_name 	= "GTM601",
+	.name		= "GTM601",
+	.stream_name	= "GTM601",
 	.cpu_dai_name	= "omap-mcbsp.4",
 	.platform_name	= "omap-pcm-audio",
 	.codec_dai_name = "GTM601",
 	.codec_name	= "gtm601_codec_audio",
 	.init		= gta04_voice_init,
-	.ops 		= &gta04_voice_ops,
+	.ops		= &gta04_voice_ops,
 };
 
 /* voice machine driver */
@@ -112,12 +104,6 @@ static struct snd_soc_card gta04_voice_card = {
 	.dai_link	= &gta04_voice_dai,
 	.num_links	= 1,
 };
-
-/* voice subsystem */
-/*static struct snd_soc_device gta04_voice_devdata = {
-	.card		= &gta04_voice_card,
-	.codec_dev	= &soc_codec_dev_gtm601,
-};*/
 
 static struct platform_device *gta04_voice_snd_device;
 

@@ -36,26 +36,26 @@ static int gta04_fm_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
 	unsigned int fmt;
 	int ret;
-	
+
 	fmt =	SND_SOC_DAIFMT_I2S |	// I2S
 			SND_SOC_DAIFMT_IB_IF |	// positive sync pulse, driven on rising, sampled on falling clock
 			SND_SOC_DAIFMT_CBM_CFM;	// clocks come from FM tuner
-	
+
 	/* Set cpu DAI configuration */
 	ret = snd_soc_dai_set_fmt(cpu_dai, fmt);
 	if (ret < 0) {
 		printk(KERN_ERR "can't set cpu DAI configuration\n");
 		return ret;
 	}
-	
+
 	ret = snd_soc_dai_set_sysclk(cpu_dai, OMAP_MCBSP_SYSCLK_CLKX_EXT, 0,
 								 SND_SOC_CLOCK_IN);
 	// FIXME: set clock divisor
 	if (ret < 0) {
 		printk(KERN_ERR "can't set cpu system clock\n");
 		return ret;
-	}	
-	
+	}
+
 	return 0;
 }
 
@@ -89,13 +89,13 @@ static struct snd_soc_ops gta04_fm_ops = {
 
 /* digital fm interface glue - connects codec <--> cpu */
 static struct snd_soc_dai_link gta04_fm_dai = {
-	.name 		= "Si47xx",
-	.stream_name 	= "Si47xx",
+	.name		= "Si47xx",
+	.stream_name	= "Si47xx",
 	.cpu_dai_name	= "omap-mcbsp.1",
 	.platform_name	= "omap-pcm-audio",
 	.codec_dai_name = "Si47xx",
 	.init		= gta04_fm_init,
-	.ops 		= &gta04_fm_ops,
+	.ops		= &gta04_fm_ops,
 };
 
 /* fm machine driver */
