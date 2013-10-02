@@ -1069,12 +1069,6 @@ static int snd_soc_put_twl4030_opmode_enum_double(struct snd_kcontrol *kcontrol,
 	unsigned short val;
 	unsigned short mask;
 
-	if (twl4030->configured) {
-		dev_err(codec->dev,
-			"operation mode cannot be changed on-the-fly\n");
-		return -EBUSY;
-	}
-
 	if (ucontrol->value.enumerated.item[0] > e->max - 1)
 		return -EINVAL;
 
@@ -1085,6 +1079,17 @@ static int snd_soc_put_twl4030_opmode_enum_double(struct snd_kcontrol *kcontrol,
 			return -EINVAL;
 		val |= ucontrol->value.enumerated.item[1] << e->shift_r;
 		mask |= e->mask << e->shift_r;
+	}
+
+	if (!!(twl4030_read_reg_cache(codec, TWL4030_REG_CODEC_MODE)
+	       & TWL4030_OPTION_1) == !!val)
+		/* No change */
+		return 0;
+
+	if (twl4030->configured) {
+		dev_err(codec->dev,
+			"operation mode cannot be changed on-the-fly\n");
+		return -EBUSY;
 	}
 
 	return snd_soc_update_bits(codec, e->reg, mask, val);
