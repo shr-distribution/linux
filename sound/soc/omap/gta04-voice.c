@@ -26,6 +26,7 @@
 #include "omap-mcbsp.h"
 #include "omap-pcm.h"
 #include "../codecs/gtm601.h"
+#include "../mux.h"
 
 static int gta04_voice_hw_params(struct snd_pcm_substream *substream,
 				 struct snd_pcm_hw_params *params)
@@ -71,6 +72,7 @@ static int gta04_voice_startup(struct snd_pcm_substream *substream)
 {
 	/* enable clock used by codec */
 	/* clock is provided by the GTM601 */
+	omap_mux_set_gpio(OMAP_MUX_MODE0 | OMAP_PIN_OUTPUT, 154);
 	return 0;
 }
 
@@ -78,6 +80,7 @@ static void gta04_voice_shutdown(struct snd_pcm_substream *substream)
 {
 	/* disable clock used by codec */
 	/* clock is provided by the GTM601 */
+	omap_mux_set_gpio(OMAP_MUX_MODE7, 154);
 }
 
 static struct snd_soc_ops gta04_voice_ops = {
@@ -118,6 +121,8 @@ static __devinit int gta04_voice_probe(struct platform_device *pdev)
 		printk(KERN_ERR "unable to register voice audio device\n");
 		card->dev = NULL;
 	}
+	/* tri-state output until driver activated */
+	omap_mux_set_gpio(OMAP_MUX_MODE7, 154);
 	return ret;
 }
 
