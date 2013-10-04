@@ -865,6 +865,9 @@ struct msm_rpmrs_limits *msm_rpmrs_lowest_limits(
 		if (latency_us < level->latency_us)
 			continue;
 
+		if (sleep_us <= level->time_overhead_us)
+			continue;
+
 		if (sleep_us <= 1) {
 			power = level->energy_overhead;
 		} else if (sleep_us <= level->time_overhead_us) {
@@ -894,13 +897,10 @@ int msm_rpmrs_enter_sleep(
 {
 	int rc;
 
-	rc = msm_rpmrs_flush_buffer(sclk_count, limits, from_idle);
-	if (rc)
-		return rc;
-
 	if (container_of(limits, struct msm_rpmrs_level, rs_limits)->use_mpm)
 		msm_mpm_enter_sleep(from_idle);
 
+	rc = msm_rpmrs_flush_buffer(sclk_count, limits, from_idle);
 	return 0;
 }
 
