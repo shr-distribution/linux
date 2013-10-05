@@ -339,6 +339,8 @@ static struct twl4030_codec_data *twl4030_get_pdata(struct snd_soc_codec *codec)
 	return pdata;
 }
 
+static int twl4030_voice_set_codec_fmt(struct snd_soc_codec *codec,
+				       unsigned int fmt);
 static void twl4030_init_chip(struct snd_soc_codec *codec)
 {
 	struct twl4030_codec_data *pdata;
@@ -425,11 +427,15 @@ static void twl4030_init_chip(struct snd_soc_codec *codec)
 
 	/* Make sure that the reg_cache has the same value as the HW */
 	twl4030_write_reg_cache(codec, TWL4030_REG_ANAMICL, byte);
-	twl_i2c_write_u8(TWL4030_MODULE_AUDIO_VOICE,
-                                        TWL4030_VIF_TRI_EN,
-                                        TWL4030_REG_VOICE_IF);
-        printk("TPS Voice IF set to tristate\n");
-
+	if (twl4030->pdata->voice_fmt) {
+		/* Configure voice format but keep interface
+		 * tri-state until enabled */
+		twl4030_voice_set_codec_fmt(codec,
+					    twl4030->pdata->voice_fmt);
+		twl_i2c_write_u8(TWL4030_MODULE_AUDIO_VOICE,
+				 TWL4030_VIF_TRI_EN,
+				 TWL4030_REG_VOICE_IF);
+	}
 
 	twl4030_codec_enable(codec, 0);
 }
@@ -1090,6 +1096,15 @@ static int snd_soc_put_twl4030_opmode_enum_double(struct snd_kcontrol *kcontrol,
 		dev_err(codec->dev,
 			"operation mode cannot be changed on-the-fly\n");
 		return -EBUSY;
+	}
+	if (twl4030->pdata->voice_fmt) {
+		/* There is no SND interface to voice, we need to control
+		 * it here.
+		 */
+		/* If 'val' then voice is disabled, so tri-state it as well */
+		snd_soc_update_bits(codec, TWL4030_REG_VOICE_IF,
+				    TWL4030_VIF_TRI_EN,
+				    val ? 0xff : 0);
 	}
 
 	return snd_soc_update_bits(codec, e->reg, mask, val);
@@ -2154,10 +2169,9 @@ static int twl4030_voice_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 	return 0;
 }
 
-static int twl4030_voice_set_dai_fmt(struct snd_soc_dai *codec_dai,
+static int twl4030_voice_set_codec_fmt(struct snd_soc_codec *codec,
 		unsigned int fmt)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
 	struct twl4030_priv *twl4030 = snd_soc_codec_get_drvdata(codec);
 	u8 old_format, format;
 
@@ -2204,6 +2218,13 @@ static int twl4030_voice_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	}
 
 	return 0;
+}
+
+static int twl4030_voice_set_dai_fmt(struct snd_soc_dai *codec_dai,
+		unsigned int fmt)
+{
+	struct snd_soc_codec *codec = codec_dai->codec;
+	return twl4030_voice_set_codec_fmt(codec, fmt);
 }
 
 static int twl4030_voice_set_tristate(struct snd_soc_dai *dai, int tristate)

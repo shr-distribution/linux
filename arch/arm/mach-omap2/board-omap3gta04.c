@@ -57,6 +57,8 @@
 #include <asm/mach/map.h>
 #include <asm/mach/flash.h>
 
+#include <sound/soc.h>
+
 #include "common.h"
 #include <video/omapdss.h>
 #include <video/omap-panel-generic-dpi.h>
@@ -684,7 +686,9 @@ static struct twl4030_usb_data gta04_usb_data = {
 	.usb_mode	= T2_USB_MODE_ULPI,
 };
 
-static struct twl4030_codec_data omap3_codec;
+static struct twl4030_codec_data omap3_codec = {
+	.voice_fmt	= SND_SOC_DAIFMT_CBS_CFS | SND_SOC_DAIFMT_IB_NF,
+};
 
 static struct twl4030_vibra_data gta04_vibra_data = {
 	.coexist	=	0,

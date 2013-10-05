@@ -665,6 +665,9 @@ struct twl4030_codec_data {
 	unsigned int reset_registers:1;
 	unsigned int hs_extmute:1;
 	int hs_extmute_gpio;
+	unsigned int voice_fmt;	/* If != 0, gives format for external
+				 * voice connection.
+				 */
 };
 
 struct twl4030_vibra_data {
