@@ -1315,12 +1315,14 @@ static int __init gta04_opp_init(void)
 		}
 		/* Enable MPU 1GHz and lower opps */
 		r = opp_enable(mpu_dev,   800000000);
-		r |= opp_enable(mpu_dev, 1000000000);
+		if (omap3_has_mpu_1ghz())
+			r |= opp_enable(mpu_dev, 1000000000);
 		/* TODO: MPU 1GHz needs SR and ABB */
 
 		/* Enable IVA 800MHz and lower opps */
 		r |= opp_enable(iva_dev, 660000000);
-		r |= opp_enable(iva_dev, 800000000);
+		if (omap3_has_mpu_1ghz())
+			r |= opp_enable(iva_dev, 800000000);
 		/* TODO: DSP 800MHz needs SR and ABB */
 		if (r) {
 			pr_err("%s: failed to enable higher opp %d\n",

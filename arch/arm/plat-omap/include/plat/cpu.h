@@ -461,6 +461,7 @@ extern u32 omap_features;
 #define OMAP3_HAS_IO_WAKEUP		BIT(6)
 #define OMAP3_HAS_SDRC			BIT(7)
 #define OMAP3_HAS_IO_CHAIN_CTRL		BIT(8)
+#define OMAP3_HAS_MPU_1GHZ		BIT(9)
 #define OMAP4_HAS_MPU_1GHZ		BIT(9)
 #define OMAP4_HAS_MPU_1_2GHZ		BIT(10)
 #define OMAP4_HAS_MPU_1_5GHZ		BIT(11)
@@ -481,6 +482,7 @@ OMAP3_HAS_FEATURE(192mhz_clk, 192MHZ_CLK)
 OMAP3_HAS_FEATURE(io_wakeup, IO_WAKEUP)
 OMAP3_HAS_FEATURE(sdrc, SDRC)
 OMAP3_HAS_FEATURE(io_chain_ctrl, IO_CHAIN_CTRL)
+OMAP3_HAS_FEATURE(mpu_1ghz, MPU_1GHZ)
 
 /*
  * Runtime detection of OMAP4 features

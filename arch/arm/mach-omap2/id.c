@@ -247,6 +247,8 @@ void __init omap3xxx_check_features(void)
 	if (cpu_is_omap3630() || omap_rev() == OMAP3430_REV_ES3_1 ||
 	    omap_rev() == OMAP3430_REV_ES3_1_2)
 		omap_features |= OMAP3_HAS_IO_CHAIN_CTRL;
+	if (cpu_is_omap3630())
+		OMAP3_CHECK_FEATURE(status, MPU_1GHZ);
 
 	omap_features |= OMAP3_HAS_SDRC;
 

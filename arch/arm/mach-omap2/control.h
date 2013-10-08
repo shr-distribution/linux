@@ -378,6 +378,12 @@
 #define		FEAT_L2CACHE_128KB	2
 #define		FEAT_L2CACHE_256KB	3
 
+/* AM/DM37x has this bit */
+#define OMAP3_MPU_1GHZ_SHIFT		9
+#define OMAP3_MPU_1GHZ_MASK		(1 << OMAP3_MPU_1GHZ_SHIFT)
+#define		FEAT_MPU_1GHZ_NONE	0
+#define		FEAT_MPU_1GHZ		1
+
 #define OMAP3_ISP_SHIFT			5
 #define OMAP3_ISP_MASK			(1 << OMAP3_ISP_SHIFT)
 #define		FEAT_ISP		0
