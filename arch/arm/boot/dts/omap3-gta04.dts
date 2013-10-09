@@ -14,6 +14,9 @@
 / {
 	model = "OMAP3 GTA04";
 	compatible = "ti,omap3-gta04", "ti,omap3";
+	chosen {
+		bootargs = "console=ttyO2,115200n8 vram=12M omapfb.rotate_type=0 omapdss.def_disp=lcd root=/dev/mmcblk0p2 rw rootfstype=ext3 rootwait twl4030_charger.allow_usb=1 musb_hdrc.preserve_vbus=1 log_buf_len=8M ignore_loglevel no_console_suspend";
+	};
 
 	cpus {
 		cpu@0 {
