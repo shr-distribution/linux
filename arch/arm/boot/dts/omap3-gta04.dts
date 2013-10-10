@@ -29,14 +29,16 @@
 		reg = <0x80000000 0x20000000>; /* 512 MB */
 	};
 
-	gpio-keys {
+	aux-keys {
 		compatible = "gpio-keys";
 
 		aux-button {
 			label = "aux";
 			linux,code = <169>;
-			gpios = <&gpio1 7 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>;
 			gpio-key,wakeup;
+			pinctrl-names = "default";
+			pinctrl-0 = <&aux_pins>;
 		};
 	};
 
@@ -91,6 +93,12 @@
 	incoming_pins: pinmux_incoming_pins {
 		pinctrl-single.pins = <
 			0x1a2 (PIN_INPUT_PULLUP | MUX_MODE4)	/* mcspi1_cs2.gpio_176 */
+		>;
+	};
+
+	aux_pins: pinmux_aux_pins {
+		pinctrl-single,pins = <
+			0x9e4 (PIN_INPUT_PULLUP | MUX_MODE4) /* sys_boot5 */
 		>;
 	};
 };
