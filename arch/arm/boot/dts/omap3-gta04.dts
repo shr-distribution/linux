@@ -226,3 +226,7 @@
 	pinctrl-0 = <&uart3_pins>;
 };
 
+&twl_power {
+	ti,use_poweroff;
+};
+
