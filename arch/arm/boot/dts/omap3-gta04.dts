@@ -39,6 +39,20 @@
 			gpio-key,wakeup;
 		};
 	};
+
+	incoming-keys {
+		compatible = "gpio-keys";
+
+		incoming-button {
+			label = "Option";
+			linux,code = <240>;
+			/* 176 for A3, 10 for A4 */
+			gpios = <&gpio6 16 GPIO_ACTIVE_HIGH>;
+			gpio-key,wakeup;
+			pinctrl-names = "default";
+			pinctrl-0 = <&incoming_pins>;
+		};
+	};
 };
 
 &omap3_pmx_core {
@@ -71,6 +85,12 @@
 			0x11a (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc1_dat1.sdmmc1_dat1 */
 			0x11c (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc1_dat2.sdmmc1_dat2 */
 			0x11e (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc1_dat3.sdmmc1_dat3 */
+		>;
+	};
+
+	incoming_pins: pinmux_incoming_pins {
+		pinctrl-single.pins = <
+			0x1a2 (PIN_INPUT_PULLUP | MUX_MODE4)	/* mcspi1_cs2.gpio_176 */
 		>;
 	};
 };
