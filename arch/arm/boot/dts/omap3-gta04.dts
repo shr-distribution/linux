@@ -74,6 +74,21 @@
 		din-gpio   = <&gpio1 18 0>;
 		dout-gpio  = <&gpio1 20 0>;
 	};
+
+	backlight {
+		compatible = "pwm-backlight";
+		pwms = <&pwm 0 2000000>;
+		brightness-levels = <0 11 20 30 40 50 60 70 80 90 100>;
+		default-brightness-level = <10>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&backlight_pins>;
+	};
+
+	pwm: omap-pwm {
+		compatible = "ti,omap-pwm";
+		timers = <&timer11>;
+		#pwm-cells = <2>;
+	};
 };
 
 &omap3_pmx_core {
@@ -118,6 +133,12 @@
 	aux_pins: pinmux_aux_pins {
 		pinctrl-single,pins = <
 			0x9e4 (PIN_INPUT_PULLUP | MUX_MODE4) /* sys_boot5 */
+		>;
+	};
+
+	backlight_pins: pinmux_backlight_pins {
+		pinctrl-single,pins = <
+			0x08a (PIN_OUTPUT | MUX_MODE3) /* gpmc_ncs6.gpt11_pwm_evt */
 		>;
 	};
 };
