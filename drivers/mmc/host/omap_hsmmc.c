@@ -1779,6 +1779,9 @@ static struct omap_mmc_platform_data *of_get_hsmmc_pdata(struct device *dev)
 	if (of_find_property(np, "ti,needs-special-hs-handling", NULL))
 		pdata->slots[0].features |= HSMMC_HAS_HSPE_SUPPORT;
 
+	if (of_find_property(np, "cap-power-off-card", NULL))
+		pdata->slots[0].caps |= MMC_CAP_POWER_OFF_CARD;
+
 	return pdata;
 }
 #else
