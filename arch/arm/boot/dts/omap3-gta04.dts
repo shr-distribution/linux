@@ -145,7 +145,7 @@
 		pinctrl-single,pins = <
 			0x114 (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc1_clk.sdmmc1_clk */
 			0x116 (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc1_cmd.sdmmc1_cmd */
-			0x118 (PIN_INPUT_PULLUP | MUX_MODE0) 	/* sdmmc1_dat0.sdmmc1_dat0 */
+			0x118 (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc1_dat0.sdmmc1_dat0 */
 			0x11a (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc1_dat1.sdmmc1_dat1 */
 			0x11c (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc1_dat2.sdmmc1_dat2 */
 			0x11e (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc1_dat3.sdmmc1_dat3 */
@@ -167,6 +167,22 @@
 	backlight_pins: pinmux_backlight_pins {
 		pinctrl-single,pins = <
 			0x08a (PIN_OUTPUT | MUX_MODE3) /* gpmc_ncs6.gpt11_pwm_evt */
+		>;
+	};
+
+	mmc2_pins: pinmux_mmc2_pins {
+		pinctrl-single,pins = <
+			0x128 (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc2_clk.sdmmc2_clk */
+			0x12a (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc2_cmd.sdmmc2_cmd */
+			0x12c (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc2_dat0.sdmmc2_dat0 */
+			0x12e (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc2_dat1.sdmmc2_dat1 */
+			0x130 (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc2_dat2.sdmmc2_dat2 */
+			0x132 (PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc2_dat3.sdmmc1_dat3 */
+		>;
+	};
+	mmc2_cirq_pin: pinmux_cirq_pin {
+		pinctrl-single,pins = <
+			0x012e (PIN_INPUT_PULLUP | MUX_MODE4)	/* MMC2_DAT1 as GPIO5_5 */
 		>;
 	};
 };
@@ -301,6 +317,13 @@
 	ti,non-removable;
 	cap-power-off-card;
 	reset-gpios = <&tca 0 GPIO_ACTIVE_HIGH>;
+
+	ti,quirk-swakeup-missing;
+	pinctrl-names = "default", "active", "idle";
+	pinctrl-0 = <&mmc2_pins>;
+	pinctrl-1 = <&mmc2_pins>;
+	pinctrl-2 = <&mmc2_cirq_pin>;
+	ti,cirq-gpio = <&gpio5 5 0>; /* GPIO133 = 128+5 */
 };
 
 &mmc3 {
