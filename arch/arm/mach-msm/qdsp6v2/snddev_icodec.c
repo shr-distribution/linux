@@ -378,7 +378,7 @@ static int snddev_icodec_open_rx(struct snddev_icodec_state *icodec)
 
 	icodec->enabled = 1;
 
-	wake_unlock(&drv->rx_idlelock);
+	//wake_unlock(&drv->rx_idlelock);
 	return 0;
 
 error_pamp:
@@ -492,7 +492,7 @@ static int snddev_icodec_open_tx(struct snddev_icodec_state *icodec)
 #endif
 	icodec->enabled = 1;
 
-	wake_unlock(&drv->tx_idlelock);
+	//wake_unlock(&drv->tx_idlelock);
 	return 0;
 
 error_invalid_freq:
