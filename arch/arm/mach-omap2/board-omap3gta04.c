@@ -203,33 +203,6 @@ static struct mtd_partition gta04_nand_partitions[] = {
 	},
 };
 
-/* DSS */
-
-static int gta04_enable_dvi(struct omap_dss_device *dssdev)
-{
-	if (dssdev->reset_gpio != -1)
-		gpio_set_value(dssdev->reset_gpio, 1);
-
-	return 0;
-}
-
-static void gta04_disable_dvi(struct omap_dss_device *dssdev)
-{
-	if (dssdev->reset_gpio != -1)
-		gpio_set_value(dssdev->reset_gpio, 0);
-}
-
-static struct omap_dss_device gta04_dvi_device = {
-	.type = OMAP_DISPLAY_TYPE_DPI,
-	.name = "dvi",
-	.driver_name = "generic_panel",
-	.phy.dpi.data_lines = 24,
-//	.reset_gpio = 170,
-	.reset_gpio = -1,
-	.platform_enable = gta04_enable_dvi,
-	.platform_disable = gta04_disable_dvi,
-};
-
 static struct omap_pwm_pdata pwm_pdata = {
 	.timer_id = 11,
 };
@@ -288,74 +261,13 @@ static struct omap_dss_device gta04_lcd_device = {
 	.platform_disable = gta04_disable_lcd,
 };
 
-static int gta04_panel_enable_tv(struct omap_dss_device *dssdev)
-{
-	u32 reg;
-
-#define ENABLE_VDAC_DEDICATED           0x03
-#define ENABLE_VDAC_DEV_GRP             0x20
-#define OMAP2_TVACEN				(1 << 11)
-#define OMAP2_TVOUTBYPASS			(1 << 18)
-
-	twl_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER,
-			ENABLE_VDAC_DEDICATED,
-			TWL4030_VDAC_DEDICATED);
-	twl_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER,
-			ENABLE_VDAC_DEV_GRP, TWL4030_VDAC_DEV_GRP);
-
-	/* taken from https://e2e.ti.com/support/dsp/omap_applications_processors/f/447/p/94072/343691.aspx */
-	reg = omap_ctrl_readl(OMAP343X_CONTROL_DEVCONF1);
-//	printk(KERN_INFO "Value of DEVCONF1 was: %08x\n", reg);
-	reg |= OMAP2_TVOUTBYPASS;	/* enable TV bypass mode for external video driver (for OPA362 driver) */
-	reg |= OMAP2_TVACEN;		/* assume AC coupling to remove DC offset */
-	omap_ctrl_writel(reg, OMAP343X_CONTROL_DEVCONF1);
-	reg = omap_ctrl_readl(OMAP343X_CONTROL_DEVCONF1);
-//	printk(KERN_INFO "Value of DEVCONF1 now: %08x\n", reg);
-
-	gpio_set_value(23, 1);	// enable output driver (OPA362)
-
-	return 0;
-}
-
-static void gta04_panel_disable_tv(struct omap_dss_device *dssdev)
-{
-	gpio_set_value(23, 0);	// disable output driver (and re-enable microphone)
-
-	twl_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER, 0x00,
-			TWL4030_VDAC_DEDICATED);
-	twl_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER, 0x00,
-			TWL4030_VDAC_DEV_GRP);
-}
-
-static struct omap_dss_device gta04_tv_device = {
-	.name = "tv",
-	.driver_name = "venc",
-	.type = OMAP_DISPLAY_TYPE_VENC,
-	/* GTA04 has a single composite output (with external video driver) */
-	.phy.venc.type = OMAP_DSS_VENC_TYPE_COMPOSITE, /*OMAP_DSS_VENC_TYPE_SVIDEO, */
-	.phy.venc.invert_polarity = true,	/* needed if we use external video driver */
-	.platform_enable = gta04_panel_enable_tv,
-	.platform_disable = gta04_panel_disable_tv,
-};
-
 static struct omap_dss_device *gta04_dss_devices[] = {
-// 	&gta04_dvi_device,
-// 	&gta04_tv_device,
 	&gta04_lcd_device,
 };
 
 static struct omap_dss_board_info gta04_dss_data = {
 	.num_devices = ARRAY_SIZE(gta04_dss_devices),
 	.devices = gta04_dss_devices,
-// 	.default_device = &gta04_lcd_device,
-};
-
-static struct platform_device gta04_dss_device = {
-	.name          = "omapdss",
-	.id            = 0,
-	.dev            = {
-		.platform_data = &gta04_dss_data,
-	},
 };
 
 static struct regulator_consumer_supply gta04_vdac_supply =
@@ -403,7 +315,6 @@ static struct omap2_hsmmc_info mmc[] = {
 
 static struct regulator_consumer_supply gta04_vmmc1_supply[] = {
 	REGULATOR_SUPPLY("vmmc", "omap_hsmmc.0"),
-// 	.supply			= "vmmc",
 };
 
 static struct regulator_consumer_supply gta04_vsim_supply[] = {
@@ -437,46 +348,6 @@ static struct regulator_init_data gta04_vmmc1 = {
 	.consumer_supplies	= gta04_vmmc1_supply,
 };
 
-#if 0
-/* Pseudo Fixed regulator to provide reset toggle to Wifi module */
-static struct regulator_consumer_supply gta04_vwlan_supply[] = {
-	REGULATOR_SUPPLY("vmmc", "omap_hsmmc.1"), // wlan
-};
-
-static struct regulator_init_data gta04_vwlan_data = {
-	.supply_regulator = "VAUX4",
-	.constraints = {
-		.name			= "VWLAN",
-		.min_uV			= 2800000,
-		.max_uV			= 3150000,
-		.valid_modes_mask	= (REGULATOR_MODE_NORMAL
-					   | REGULATOR_MODE_STANDBY),
-		.valid_ops_mask		= (REGULATOR_CHANGE_VOLTAGE
-					   | REGULATOR_CHANGE_MODE
-					   | REGULATOR_CHANGE_STATUS),
-	},
-	.num_consumer_supplies	= ARRAY_SIZE(gta04_vwlan_supply),
-	.consumer_supplies	= gta04_vwlan_supply,
-};
-
-static struct fixed_voltage_config gta04_vwlan = {
-	.supply_name		= "vwlan",
-	.microvolts		= 3150000, /* 3.15V */
-	.gpio			= GPIO_WIFI_RESET,
-	.startup_delay		= 10000, /* 10ms */
-	.enable_high		= 1,
-	.enabled_at_boot	= 0,
-	.init_data		= &gta04_vwlan_data,
-};
-
-static struct platform_device gta04_vwlan_device = {
-	.name		= "reg-fixed-voltage",
-	.id		= 1,
-	.dev = {
-		.platform_data = &gta04_vwlan,
-	},
-};
-#endif
 /* VAUX4 powers Bluetooth and WLAN */
 
 static struct regulator_consumer_supply gta04_vaux4_supply[] = {
@@ -615,21 +486,6 @@ static struct regulator_init_data gta04_vpll2 = {
 	.consumer_supplies	= gta04_vdvi_supplies,
 };
 
-#if 0
-static struct regulator_init_data *all_reg_data[] = {
-	&gta04_vmmc1,
-//	&gta04_vwlan_data,
-	&gta04_vaux4,
-	&gta04_vaux3,
-	&gta04_vaux2,
-	&gta04_vaux1,
-	&gta04_vsim,
-	&gta04_vdac,
-	&gta04_vpll2,
-	NULL
-};
-#endif
-
 /* rfkill devices for GPS and Bluetooth to control regulators */
 
 static struct rfkill_regulator_platform_data gps_rfkill_data = {
@@ -703,9 +559,6 @@ static struct twl4030_audio_data omap3_audio_pdata = {
 static struct twl4030_madc_platform_data gta04_madc_data = {
 	.irq_line	= 1,
 };
-
-// FIXME: we could copy more scripts from board-sdp3430.c if we understand what they do... */
-
 
 static struct twl4030_ins __initdata sleep_on_seq[] = {
 	/* Turn off HFCLKOUT */
@@ -894,28 +747,15 @@ static struct platform_device gta04_headset_device = {
 
 #ifdef CONFIG_TOUCHSCREEN_TSC2007
 
-// TODO: see also http://e2e.ti.com/support/arm174_microprocessors/omap_applications_processors/f/42/t/33262.aspx for an example...
-// and http://www.embedded-bits.co.uk/?tag=struct-i2c_board_info for a description of how struct i2c_board_info works
-
 /* TouchScreen */
 
 static int ts_get_pendown_state(void)
 {
-#if 1
 	int val = 0;
-	//	gpio_free(GPIO_FN_INTC_IRQ0);	// what does this change or not change on the board we have copied the code from?
-//	gpio_request(TS_PENIRQ_GPIO, "tsc2007_pen_down");
-//	gpio_direction_input(TS_PENIRQ_GPIO);
 
 	val = gpio_get_value(TS_PENIRQ_GPIO);
 
-//	gpio_free(TS_PENIRQ_GPIO);
-	//	gpio_request(GPIO_FN_INTC_IRQ0, NULL);
-//	printk("ts_get_pendown_state() -> %d\n", val);
 	return val ? 0 : 1;
-#else
-	return 0;
-#endif
 }
 
 static int __init tsc2007_init(void)
@@ -1071,28 +911,6 @@ static int __init gta04_i2c_init(void)
 	return 0;
 }
 
-#if 0
-// FIXME: initialize SPIs and McBSPs
-
-static struct spi_board_info gta04fpga_mcspi_board_info[] = {
-	// spi 4.0
-	{
-		.modalias	= "spidev",
-		.max_speed_hz	= 48000000, //48 Mbps
-		.bus_num	= 4,	// McSPI4
-		.chip_select	= 0,
-		.mode = SPI_MODE_1,
-	},
-};
-
-static void __init gta04fpga_init_spi(void)
-{
-		/* hook the spi ports to the spidev driver */
-		spi_register_board_info(gta04fpga_mcspi_board_info,
-			ARRAY_SIZE(gta04fpga_mcspi_board_info));
-}
-#endif
-
 static struct gpio_keys_button gpio_buttons[] = {
 	{
 		.code			= KEY_PHONE,
@@ -1136,12 +954,6 @@ static struct platform_device keys_3G_gpio = {
 	},
 };
 
-static void __init gta04_init_early(void)
-{
-// 	printk("Doing gta04_init_early()\n");
-	omap3_init_early();
-}
-
 #if defined(CONFIG_REGULATOR_VIRTUAL_CONSUMER)
 
 static struct platform_device gta04_vaux1_virtual_regulator_device = {
@@ -1177,11 +989,8 @@ static struct platform_device madc_hwmon = {
 
 static struct platform_device *gta04_devices[] __initdata = {
 	&pwm_device,
-//	&leds_gpio,
 	&keys_gpio,
 	&keys_3G_gpio,
-// 	&gta04_dss_device,
-//	&gta04_vwlan_device,
 	&gps_rfkill_device,
 	&bt_gpio_reg_device,
 	&gps_gpio_device,
@@ -1224,33 +1033,6 @@ static struct omap_board_mux board_mux[] __initdata = {
 
 	{ .reg_offset = OMAP_MUX_TERMINATOR },
 };
-
-static irqreturn_t wake_3G_irq(int irq, void *handle)
-{
-	printk("3G Wakeup\n");
-	return IRQ_HANDLED;
-}
-
-static int __init wake_3G_init(void)
-{
-	int err;
-
-	omap_mux_init_gpio(WO3G_GPIO, OMAP_PIN_INPUT | OMAP_WAKEUP_EN);
-	if (gpio_request(WO3G_GPIO, "3G_wakeup"))
-		return -ENODEV;
-
-	if (gpio_direction_input(WO3G_GPIO))
-		return -ENXIO;
-
-	gpio_export(WO3G_GPIO, 0);
-	gpio_set_debounce(WO3G_GPIO, 350);
-	irq_set_irq_wake(gpio_to_irq(WO3G_GPIO), 1);
-
-	err = request_irq(gpio_to_irq(WO3G_GPIO),
-			  wake_3G_irq, IRQF_SHARED|IRQF_TRIGGER_RISING,
-			  "wake_3G", (void*)wake_3G_init);
-	return err;
-}
 
 #define DEFAULT_RXDMA_POLLRATE		1	/* RX DMA polling rate (us) */
 #define DEFAULT_RXDMA_BUFSIZE		4096	/* RX DMA buffer size */
@@ -1361,50 +1143,17 @@ static void __init gta04_init(void)
 			     ARRAY_SIZE(gta04_devices));
 	omap_hsmmc_init(mmc);
 
-// #ifdef CONFIG_OMAP_MUX
-
-	// for a definition of the mux names see arch/arm/mach-omap2/mux34xx.c
-	// the syntax of the first paramter to omap_mux_init_signal() is "muxname" or "m0name.muxname" (for ambiguous modes)
-	// note: calling omap_mux_init_signal() overwrites the parameter string...
-
-// 	omap_mux_init_signal("mcbsp3_clkx.uart2_tx", OMAP_PIN_OUTPUT);	// gpio 142 / GPS TX
-// 	omap_mux_init_signal("mcbsp3_fsx.uart2_rx", OMAP_PIN_INPUT);	// gpio 143 / GPS RX
-
-// #else
-// #error we need CONFIG_OMAP_MUX
-// #endif
-
 	printk(KERN_INFO "Revision GTA04A%d\n", gta04_version);
-	// gpio_export() allows to access through /sys/devices/virtual/gpio/gpio*/value
-
-#if 0
-	//	omap_mux_init_gpio(170, OMAP_PIN_INPUT);
-	omap_mux_init_gpio(170, OMAP_PIN_OUTPUT);
-	gpio_request(170, "DVI_nPD");
-	gpio_direction_output(170, false);	/* leave DVI powered down until it's needed ... */
-	gpio_export(170, 0);	// no direction change
-#endif
 
 	gpio_request(13, "IrDA_select");
 	gpio_direction_output(13, true);
-#if 0
-	omap_mux_init_gpio(144, OMAP_PIN_INPUT);
-	gpio_request(144, "EXT_ANT");
-	gpio_direction_input(144);
-	gpio_export(144, 0);	// no direction change
-#endif
 
 	if(gta04_version >= 4) { /* feature of GTA04A4 */
 		omap_mux_init_gpio(186, OMAP_PIN_OUTPUT);    // this needs CONFIG_OMAP_MUX!
 		gpio_request(186, "WWAN_RESET");
-		gpio_direction_output(186, 0); // keep initial value 
+		gpio_direction_output(186, 0); // keep initial value
 		gpio_export(186, 0);    // no direction change
         }
-
-#ifdef GTA04A2
-	// has different pins but neither chips are installed
-
-#else
 
 	// enable AUX out/Headset switch
 	gpio_request(55, "AUX_OUT");
@@ -1415,14 +1164,6 @@ static void __init gta04_init(void)
 	gpio_request(23, "VIDEO_OUT");
 	gpio_direction_output(23, false);
 	gpio_export(23, 0);	// no direction change
-
-#endif
-
-#if 0
-	err = wake_3G_init();
-	if (err)
-		printk("Failed to init 3G wake interrupt: %d\n", err);
-#endif
 
 	pwm_add_table(board_pwm_lookup, ARRAY_SIZE(board_pwm_lookup));
 
@@ -1451,15 +1192,12 @@ static void __init gta04_init(void)
 
 MACHINE_START(GTA04, "GTA04")
 	/* Maintainer: Nikolaus Schaller - http://www.gta04.org */
-// 	.phys_io	= 0x48000000,
-// 	.io_pg_offst	= ((0xfa000000) >> 18) & 0xfffc,
-//	.boot_params	=	0x80000100,
 	.atag_offset	=	0x100,
 	.reserve	=	omap_reserve,
 	.map_io		=	omap3_map_io,
 	.init_irq	=	omap3_init_irq,
 	.handle_irq	=	omap3_intc_handle_irq,
-	.init_early	=	gta04_init_early,
+	.init_early	=	omap3_init_early,
 	.init_machine	=	gta04_init,
 	.init_late	=	omap3630_init_late,
 	.timer		=	&omap3_secure_timer,
