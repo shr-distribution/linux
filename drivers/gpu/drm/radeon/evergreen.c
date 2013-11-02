@@ -1313,14 +1313,18 @@ void evergreen_mc_stop(struct radeon_device *rdev, struct evergreen_mc_save *sav
 				if (!(tmp & EVERGREEN_CRTC_BLANK_DATA_EN)) {
 					radeon_wait_for_vblank(rdev, i);
 					tmp |= EVERGREEN_CRTC_BLANK_DATA_EN;
+					WREG32(EVERGREEN_CRTC_UPDATE_LOCK + crtc_offsets[i], 1);
 					WREG32(EVERGREEN_CRTC_BLANK_CONTROL + crtc_offsets[i], tmp);
+					WREG32(EVERGREEN_CRTC_UPDATE_LOCK + crtc_offsets[i], 0);
 				}
 			} else {
 				tmp = RREG32(EVERGREEN_CRTC_CONTROL + crtc_offsets[i]);
 				if (!(tmp & EVERGREEN_CRTC_DISP_READ_REQUEST_DISABLE)) {
 					radeon_wait_for_vblank(rdev, i);
 					tmp |= EVERGREEN_CRTC_DISP_READ_REQUEST_DISABLE;
+					WREG32(EVERGREEN_CRTC_UPDATE_LOCK + crtc_offsets[i], 1);
 					WREG32(EVERGREEN_CRTC_CONTROL + crtc_offsets[i], tmp);
+					WREG32(EVERGREEN_CRTC_UPDATE_LOCK + crtc_offsets[i], 0);
 				}
 			}
 			/* wait for the next frame */
@@ -1345,6 +1349,8 @@ void evergreen_mc_stop(struct radeon_device *rdev, struct evergreen_mc_save *sav
 		blackout &= ~BLACKOUT_MODE_MASK;
 		WREG32(MC_SHARED_BLACKOUT_CNTL, blackout | 1);
 	}
+	/* wait for the MC to settle */
+	udelay(100);
 }
 
 void evergreen_mc_resume(struct radeon_device *rdev, struct evergreen_mc_save *save)
@@ -1378,11 +1384,15 @@ void evergreen_mc_resume(struct radeon_device *rdev, struct evergreen_mc_save *s
 			if (ASIC_IS_DCE6(rdev)) {
 				tmp = RREG32(EVERGREEN_CRTC_BLANK_CONTROL + crtc_offsets[i]);
 				tmp |= EVERGREEN_CRTC_BLANK_DATA_EN;
+				WREG32(EVERGREEN_CRTC_UPDATE_LOCK + crtc_offsets[i], 1);
 				WREG32(EVERGREEN_CRTC_BLANK_CONTROL + crtc_offsets[i], tmp);
+				WREG32(EVERGREEN_CRTC_UPDATE_LOCK + crtc_offsets[i], 0);
 			} else {
 				tmp = RREG32(EVERGREEN_CRTC_CONTROL + crtc_offsets[i]);
 				tmp &= ~EVERGREEN_CRTC_DISP_READ_REQUEST_DISABLE;
+				WREG32(EVERGREEN_CRTC_UPDATE_LOCK + crtc_offsets[i], 1);
 				WREG32(EVERGREEN_CRTC_CONTROL + crtc_offsets[i], tmp);
+				WREG32(EVERGREEN_CRTC_UPDATE_LOCK + crtc_offsets[i], 0);
 			}
 			/* wait for the next frame */
 			frame_count = radeon_get_vblank_counter(rdev, i);
@@ -1821,7 +1831,7 @@ static void evergreen_gpu_init(struct radeon_device *rdev)
 	case CHIP_SUMO:
 		rdev->config.evergreen.num_ses = 1;
 		rdev->config.evergreen.max_pipes = 4;
-		rdev->config.evergreen.max_tile_pipes = 2;
+		rdev->config.evergreen.max_tile_pipes = 4;
 		if (rdev->pdev->device == 0x9648)
 			rdev->config.evergreen.max_simds = 3;
 		else if ((rdev->pdev->device == 0x9647) ||
@@ -1844,7 +1854,7 @@ static void evergreen_gpu_init(struct radeon_device *rdev)
 		rdev->config.evergreen.sc_prim_fifo_size = 0x40;
 		rdev->config.evergreen.sc_hiz_tile_fifo_size = 0x30;
 		rdev->config.evergreen.sc_earlyz_tile_fifo_size = 0x130;
-		gb_addr_config = REDWOOD_GB_ADDR_CONFIG_GOLDEN;
+		gb_addr_config = SUMO_GB_ADDR_CONFIG_GOLDEN;
 		break;
 	case CHIP_SUMO2:
 		rdev->config.evergreen.num_ses = 1;
@@ -1866,7 +1876,7 @@ static void evergreen_gpu_init(struct radeon_device *rdev)
 		rdev->config.evergreen.sc_prim_fifo_size = 0x40;
 		rdev->config.evergreen.sc_hiz_tile_fifo_size = 0x30;
 		rdev->config.evergreen.sc_earlyz_tile_fifo_size = 0x130;
-		gb_addr_config = REDWOOD_GB_ADDR_CONFIG_GOLDEN;
+		gb_addr_config = SUMO2_GB_ADDR_CONFIG_GOLDEN;
 		break;
 	case CHIP_BARTS:
 		rdev->config.evergreen.num_ses = 2;
@@ -1914,7 +1924,7 @@ static void evergreen_gpu_init(struct radeon_device *rdev)
 		break;
 	case CHIP_CAICOS:
 		rdev->config.evergreen.num_ses = 1;
-		rdev->config.evergreen.max_pipes = 4;
+		rdev->config.evergreen.max_pipes = 2;
 		rdev->config.evergreen.max_tile_pipes = 2;
 		rdev->config.evergreen.max_simds = 2;
 		rdev->config.evergreen.max_backends = 1 * rdev->config.evergreen.num_ses;
@@ -2035,9 +2045,20 @@ static void evergreen_gpu_init(struct radeon_device *rdev)
 	WREG32(DMIF_ADDR_CONFIG, gb_addr_config);
 	WREG32(HDP_ADDR_CONFIG, gb_addr_config);
 
-	tmp = gb_addr_config & NUM_PIPES_MASK;
-	tmp = r6xx_remap_render_backend(rdev, tmp, rdev->config.evergreen.max_backends,
-					EVERGREEN_MAX_BACKENDS, disabled_rb_mask);
+	if ((rdev->config.evergreen.max_backends == 1) &&
+	    (rdev->flags & RADEON_IS_IGP)) {
+		if ((disabled_rb_mask & 3) == 1) {
+			/* RB0 disabled, RB1 enabled */
+			tmp = 0x11111111;
+		} else {
+			/* RB1 disabled, RB0 enabled */
+			tmp = 0x00000000;
+		}
+	} else {
+		tmp = gb_addr_config & NUM_PIPES_MASK;
+		tmp = r6xx_remap_render_backend(rdev, tmp, rdev->config.evergreen.max_backends,
+						EVERGREEN_MAX_BACKENDS, disabled_rb_mask);
+	}
 	WREG32(GB_BACKEND_MAP, tmp);
 
 	WREG32(CGTS_SYS_TCC_DISABLE, 0);
@@ -3092,6 +3113,16 @@ restart_ih:
 				DRM_ERROR("Unhandled interrupt: %d %d\n", src_id, src_data);
 				break;
 			}
+			break;
+		case 146:
+		case 147:
+			dev_err(rdev->dev, "GPU fault detected: %d 0x%08x\n", src_id, src_data);
+			dev_err(rdev->dev, "  VM_CONTEXT1_PROTECTION_FAULT_ADDR   0x%08X\n",
+				RREG32(VM_CONTEXT1_PROTECTION_FAULT_ADDR));
+			dev_err(rdev->dev, "  VM_CONTEXT1_PROTECTION_FAULT_STATUS 0x%08X\n",
+				RREG32(VM_CONTEXT1_PROTECTION_FAULT_STATUS));
+			/* reset addr and status */
+			WREG32_P(VM_CONTEXT1_CNTL2, 1, ~1);
 			break;
 		case 176: /* CP_INT in ring buffer */
 		case 177: /* CP_INT in IB1 */

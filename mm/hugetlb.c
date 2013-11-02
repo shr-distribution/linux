@@ -1906,14 +1906,12 @@ static int __init hugetlb_init(void)
 		default_hstate.max_huge_pages = default_hstate_max_huge_pages;
 
 	hugetlb_init_hstates();
-
 	gather_bootmem_prealloc();
-
 	report_hugepages();
 
 	hugetlb_sysfs_init();
-
 	hugetlb_register_all_nodes();
+	hugetlb_cgroup_file_init();
 
 	return 0;
 }
@@ -1943,13 +1941,6 @@ void __init hugetlb_add_hstate(unsigned order)
 	h->next_nid_to_free = first_node(node_states[N_HIGH_MEMORY]);
 	snprintf(h->name, HSTATE_NAME_LEN, "hugepages-%lukB",
 					huge_page_size(h)/1024);
-	/*
-	 * Add cgroup control files only if the huge page consists
-	 * of more than two normal pages. This is because we use
-	 * page[2].lru.next for storing cgoup details.
-	 */
-	if (order >= HUGETLB_CGROUP_MIN_ORDER)
-		hugetlb_cgroup_file_init(hugetlb_max_hstate - 1);
 
 	parsed_hstate = h;
 }
@@ -3037,6 +3028,7 @@ void hugetlb_change_protection(struct vm_area_struct *vma,
 		if (!huge_pte_none(huge_ptep_get(ptep))) {
 			pte = huge_ptep_get_and_clear(mm, address, ptep);
 			pte = pte_mkhuge(pte_modify(pte, newprot));
+			pte = arch_make_huge_pte(pte, vma, NULL, 0);
 			set_huge_pte_at(mm, address, ptep, pte);
 		}
 	}

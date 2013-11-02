@@ -174,9 +174,9 @@ static struct regulator_ops s2mps11_buck_ops = {
 	.min_uV		= S2MPS11_BUCK_MIN2,			\
 	.uV_step	= S2MPS11_BUCK_STEP2,			\
 	.n_voltages	= S2MPS11_BUCK_N_VOLTAGES,		\
-	.vsel_reg	= S2MPS11_REG_B9CTRL2,			\
+	.vsel_reg	= S2MPS11_REG_B10CTRL2,			\
 	.vsel_mask	= S2MPS11_BUCK_VSEL_MASK,		\
-	.enable_reg	= S2MPS11_REG_B9CTRL1,			\
+	.enable_reg	= S2MPS11_REG_B10CTRL1,			\
 	.enable_mask	= S2MPS11_ENABLE_MASK			\
 }
 
@@ -269,16 +269,16 @@ static __devinit int s2mps11_pmic_probe(struct platform_device *pdev)
 
 	if (ramp_enable) {
 		if (s2mps11->buck2_ramp)
-			ramp_reg |= get_ramp_delay(s2mps11->ramp_delay2) >> 6;
+			ramp_reg |= get_ramp_delay(s2mps11->ramp_delay2) << 6;
 		if (s2mps11->buck3_ramp || s2mps11->buck4_ramp)
-			ramp_reg |= get_ramp_delay(s2mps11->ramp_delay34) >> 4;
+			ramp_reg |= get_ramp_delay(s2mps11->ramp_delay34) << 4;
 		sec_reg_write(iodev, S2MPS11_REG_RAMP, ramp_reg | ramp_enable);
 	}
 
 	ramp_reg &= 0x00;
-	ramp_reg |= get_ramp_delay(s2mps11->ramp_delay5) >> 6;
-	ramp_reg |= get_ramp_delay(s2mps11->ramp_delay16) >> 4;
-	ramp_reg |= get_ramp_delay(s2mps11->ramp_delay7810) >> 2;
+	ramp_reg |= get_ramp_delay(s2mps11->ramp_delay5) << 6;
+	ramp_reg |= get_ramp_delay(s2mps11->ramp_delay16) << 4;
+	ramp_reg |= get_ramp_delay(s2mps11->ramp_delay7810) << 2;
 	ramp_reg |= get_ramp_delay(s2mps11->ramp_delay9);
 	sec_reg_write(iodev, S2MPS11_REG_RAMP_BUCK, ramp_reg);
 
