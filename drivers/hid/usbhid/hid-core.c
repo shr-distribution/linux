@@ -1441,16 +1441,6 @@ static struct usb_driver hid_driver = {
 	.supports_autosuspend = 1,
 };
 
-static const struct hid_device_id hid_usb_table[] = {
-	{ HID_USB_DEVICE(HID_ANY_ID, HID_ANY_ID) },
-	{ }
-};
-
-static struct hid_driver hid_usb_driver = {
-	.name = "generic-usb",
-	.id_table = hid_usb_table,
-};
-
 static int __init hid_init(void)
 {
 	int retval = -ENOMEM;
@@ -1458,9 +1448,6 @@ static int __init hid_init(void)
 	resumption_waker = create_freezeable_workqueue("usbhid_resumer");
 	if (!resumption_waker)
 		goto no_queue;
-	retval = hid_register_driver(&hid_usb_driver);
-	if (retval)
-		goto hid_register_fail;
 	retval = usbhid_quirks_init(quirks_param);
 	if (retval)
 		goto usbhid_quirks_init_fail;
@@ -1478,8 +1465,6 @@ usb_register_fail:
 hiddev_init_fail:
 	usbhid_quirks_exit();
 usbhid_quirks_init_fail:
-	hid_unregister_driver(&hid_usb_driver);
-hid_register_fail:
 	destroy_workqueue(resumption_waker);
 no_queue:
 	return retval;
@@ -1490,7 +1475,6 @@ static void __exit hid_exit(void)
 	usb_deregister(&hid_driver);
 	hiddev_exit();
 	usbhid_quirks_exit();
-	hid_unregister_driver(&hid_usb_driver);
 	destroy_workqueue(resumption_waker);
 }
 
