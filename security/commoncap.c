@@ -88,9 +88,13 @@ int cap_capable(struct task_struct *tsk, const struct cred *cred, int cap,
 		int audit)
 {
 #ifdef CONFIG_ANDROID_PARANOID_NETWORK
-	if (cap == CAP_NET_RAW && in_egroup_p(AID_NET_RAW))
+	if (cap == CAP_NET_RAW &&
+			(in_egroup_p(AID_NET_RAW) || in_egroup_p(AID_NET_BT))
+			)
 		return 0;
-	if (cap == CAP_NET_ADMIN && in_egroup_p(AID_NET_ADMIN))
+	if (cap == CAP_NET_ADMIN &&
+			(in_egroup_p(AID_NET_ADMIN) || in_egroup_p(AID_NET_BT_ADMIN))
+			)
 		return 0;
 #endif
 	return cap_raised(cred->cap_effective, cap) ? 0 : -EPERM;
