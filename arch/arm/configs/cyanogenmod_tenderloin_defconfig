@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
 # Linux kernel version: 2.6.35
-# Fri Aug  2 04:48:06 2013
+# Sat Aug  3 17:14:41 2013
 #
 CONFIG_ARM=y
 CONFIG_SYS_SUPPORTS_APM_EMULATION=y
@@ -2057,6 +2057,7 @@ CONFIG_SND_SOC_WM8994=y
 CONFIG_HID_SUPPORT=y
 CONFIG_HID=y
 # CONFIG_HIDRAW is not set
+CONFIG_UHID=y
 
 #
 # USB Input Devices
