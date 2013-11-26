@@ -485,6 +485,11 @@ s3c_irq_demux_extint8(unsigned int irq,
 	eintpnd &= ~eintmsk;
 	eintpnd &= ~0xff;	/* ignore lower irqs */
 
+	/* in case no IRQ is pending but we got here we still
+	   must ack the parent or else we get an irq storm */
+	if (!eintpnd)
+		s3c_irq_ack(irq_get_irq_data(IRQ_EINT8t23));
+	
 	/* we may as well handle all the pending IRQs here */
 
 	while (eintpnd) {
