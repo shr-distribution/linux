@@ -884,6 +884,7 @@ ar6000_avail_ev(HTC_HANDLE HTCHandle)
         ar6000_destroy(dev, 0);
         return;
     }
+    netif_carrier_off(dev);
 
     HTCSetInstance(ar->arHtcTarget, ar);
 
@@ -2319,6 +2320,7 @@ ar6000_connect_event(AR_SOFTC_T *ar, A_UINT16 channel, A_UINT8 *bssid,
     ar6000_TxDataCleanup(ar);
 
     netif_start_queue(ar->arNetDev);
+    netif_carrier_on(ar->arNetDev);
 
     if ((OPEN_AUTH == ar->arDot11AuthMode) &&
         (NONE_AUTH == ar->arAuthMode)      &&
@@ -2408,6 +2410,8 @@ ar6000_disconnect_event(AR_SOFTC_T *ar, A_UINT8 reason, A_UINT8 *bssid,
 #endif /* USER_KEYS */
 
     netif_stop_queue(ar->arNetDev);
+    netif_carrier_off(ar->arNetDev);
+
     A_MEMZERO(ar->arBssid, sizeof(ar->arBssid));
     ar->arBssChannel = 0;
     ar->arBeaconInterval = 0;
