@@ -165,7 +165,8 @@ struct pppolac_opt {
 struct pppopns_opt {
 	__u16	local;
 	__u16	remote;
-	__u32	sequence;
+	__u32	recv_sequence;
+	__u32	xmit_sequence;
 	void	(*data_ready)(struct sock *sk_raw, int length);
 	int	(*backlog_rcv)(struct sock *sk_raw, struct sk_buff *skb);
 };
