@@ -3663,6 +3663,174 @@ struct resource msm_camera_resources[] = {
 		.flags	= IORESOURCE_IRQ,
 	},
 };
+
+#ifdef CONFIG_WEBCAM_MT9M113
+static int camera_mt9m113_gpios[] = {
+	TENDERLOIN_CAM_I2C_DATA,
+	TENDERLOIN_CAM_I2C_CLK,
+	TENDERLOIN_CAMIF_MCLK,
+	TENDERLOIN_WEBCAM_RST,
+	TENDERLOIN_WEBCAM_PWDN,
+};
+
+struct regulator *votg_lvs0 = NULL;
+struct regulator *votg_vreg_l11 = NULL;
+bool gpios_web_cam_mt9m113_on = false;
+
+static int config_camera_on_gpios_web_cam_mt9m113(void)
+{
+	int rc = 0;
+
+	printk("+++ %s\n", __func__);
+	if ( !gpios_web_cam_mt9m113_on ) {
+
+		configure_gpiomux_gpios(1, camera_mt9m113_gpios,
+			ARRAY_SIZE(camera_mt9m113_gpios));
+
+		votg_lvs0 = regulator_get(NULL, "8058_lvs0");
+		if (IS_ERR_OR_NULL(votg_lvs0)) {
+			printk("%s: unable to get votg_lvs0\n", __func__);
+			goto err;
+		}
+
+		if (regulator_enable(votg_lvs0)) {
+			printk("%s:Unable to enable the regulator votg_lvs0\n", __func__);
+			goto err1;
+		}
+		else {
+			printk("%s:enable the regulator votg_lvs0 succeed\n", __func__);
+		}
+
+		votg_vreg_l11 = regulator_get(NULL, "8058_l11");
+		if (IS_ERR_OR_NULL(votg_vreg_l11)) {
+			printk("%s: unable to get votg_vreg_l11\n", __func__);
+			goto err1;
+		}
+
+		if(regulator_set_voltage(votg_vreg_l11, 2850000, 2850000)) {
+			printk("%s: Unable to set regulator voltage:"
+			" votg_l11\n", __func__);
+			goto err2;
+		}
+
+		if (regulator_enable(votg_vreg_l11)) {
+			printk("%s:Unable to enable the regulator votg_vreg_l11\n", __func__);
+			goto err2;
+		}
+		else {
+			printk("%s:enable the regulator votg_vreg_l11 succeed\n", __func__);
+		}
+
+		gpios_web_cam_mt9m113_on = true;
+	}
+
+	printk("--- %s\n", __func__);
+	return 0;
+
+err2:
+	regulator_disable(votg_vreg_l11);
+	regulator_put(votg_vreg_l11);
+	votg_vreg_l11 = NULL;
+
+err1:
+	regulator_disable(votg_lvs0);
+	regulator_put(votg_lvs0);
+	votg_lvs0 = NULL;
+
+err:
+	configure_gpiomux_gpios(0, camera_mt9m113_gpios,
+			ARRAY_SIZE(camera_mt9m113_gpios));
+
+	//If error code is not specified return -1
+	if (!rc) {
+		rc = -1;
+	}
+
+	printk("--- %s\n", __func__);
+	return rc;
+}
+
+static void config_camera_off_gpios_web_cam_mt9m113(void)
+{
+	printk("+++ %s\n", __func__);
+
+	if (gpios_web_cam_mt9m113_on) {
+
+		configure_gpiomux_gpios(0, camera_mt9m113_gpios,
+				ARRAY_SIZE(camera_mt9m113_gpios));
+
+		if (IS_ERR_OR_NULL(votg_lvs0)) {
+			printk("%s: unable to get votg_lvs0\n", __func__);
+		} else {
+
+			if (regulator_disable(votg_lvs0)) {
+				printk("%s:Unable to disable the regulator: votg_lvs0\n", __func__);
+			}
+			else {
+				printk("%s:disable the regulator: votg_lvs0 succeed\n", __func__);
+			}
+
+			regulator_put(votg_lvs0);
+			votg_lvs0 = NULL;
+		}
+
+		if (IS_ERR_OR_NULL(votg_vreg_l11)) {
+			printk("%s: unable to get votg_vreg_l11\n", __func__);
+		} else {
+
+			if (regulator_disable(votg_vreg_l11)) {
+				printk("%s:Unable to disable the regulator: votg_vreg_l11\n", __func__);
+			}
+			else {
+				printk("%s:disable the regulator: votg_vreg_l11 succeed\n", __func__);
+			}
+
+			regulator_put(votg_vreg_l11);
+			votg_vreg_l11 = NULL;
+		}
+
+		gpios_web_cam_mt9m113_on = false;
+	}
+
+	printk("--- %s\n", __func__);
+}
+
+struct msm_camera_device_platform_data msm_camera_device_data_web_cam_mt9m113 = {
+	.camera_gpio_on  = config_camera_on_gpios_web_cam_mt9m113,
+	.camera_gpio_off = config_camera_off_gpios_web_cam_mt9m113,
+	.ioext.csiphy = 0x04900000,
+	.ioext.csisz  = 0x00000400,
+	.ioext.csiirq = CSI_1_IRQ,
+	.ioclk.mclk_clk_rate = 24000000,
+	.ioclk.vfe_clk_rate  = 228570000,
+};
+
+static struct msm_camera_sensor_flash_data msm_flash_none = {
+       .flash_type = MSM_CAMERA_FLASH_NONE,
+       .flash_src  = NULL
+};
+
+static struct msm_camera_sensor_info msm_camera_sensor_mt9m113_data = {
+	.sensor_name	= "mt9m113",
+	.sensor_reset	= 106,
+	.sensor_pwd		= 107,
+	.vcm_pwd		= 1,
+	.vcm_enable		= 0,
+	.pdata			= &msm_camera_device_data_web_cam_mt9m113,
+	.resource		= msm_camera_resources,
+	.num_resources	= ARRAY_SIZE(msm_camera_resources),
+	.flash_data		= &msm_flash_none,
+	.csi_if			= 1
+};
+
+struct platform_device msm_camera_sensor_webcam_mt9m113 = {
+	.name	= "msm_camera_mt9m113",
+	.dev	= {
+		.platform_data = &msm_camera_sensor_mt9m113_data,
+	},
+};
+#endif
+
 #ifdef CONFIG_MT9E013
 static struct msm_camera_sensor_platform_info mt9e013_sensor_8660_info = {
 	.mount_angle = 0
@@ -3851,6 +4019,11 @@ struct platform_device msm_camera_sensor_qs_s5k4e1 = {
 };
 #endif
 static struct i2c_board_info msm_camera_boardinfo[] __initdata = {
+	#ifdef CONFIG_WEBCAM_MT9M113
+	{
+		I2C_BOARD_INFO("mt9m113", 0x78),
+	},
+	#endif
 	#ifdef CONFIG_MT9E013
 	{
 		I2C_BOARD_INFO("mt9e013", 0x6C >> 2),
@@ -4565,7 +4738,7 @@ unsigned char hdmi_is_primary;
 #endif  /* CONFIG_FB_MSM_OVERLAY1_WRITEBACK */
 
 #define MSM_PMEM_KERNEL_EBI1_SIZE  0x600000
-#define MSM_PMEM_ADSP_SIZE         0x4200000
+#define MSM_PMEM_ADSP_SIZE         0x600000 /* 6 Mbytes */
 #define MSM_PMEM_AUDIO_SIZE        0x28B000
 
 #define MSM_SMI_BASE          0x38000000
@@ -4579,7 +4752,7 @@ unsigned char hdmi_is_primary;
 #define MSM_PMEM_SMIPOOL_SIZE USER_SMI_SIZE
 
 #define MSM_ION_SF_SIZE		0x4000000 /* 64MB */
-#define MSM_ION_CAMERA_SIZE     MSM_PMEM_ADSP_SIZE
+#define MSM_ION_CAMERA_SIZE     0x4000000 /* 64MB */
 #define MSM_ION_MM_FW_SIZE	0x200000 /* (2MB) */
 #define MSM_ION_MM_SIZE		0x3600000 /* (54MB) Must be a multiple of 64K */
 #define MSM_ION_MFC_SIZE	SZ_8K
@@ -4758,7 +4931,7 @@ static struct platform_device android_pmem_device = {
 	.id = 0,
 	.dev = {.platform_data = &android_pmem_pdata},
 };
-
+#endif
 static struct android_pmem_platform_data android_pmem_adsp_pdata = {
 	.name = "pmem_adsp",
 	.allocator_type = PMEM_ALLOCATORTYPE_BITMAP,
@@ -4771,7 +4944,6 @@ static struct platform_device android_pmem_adsp_device = {
 	.id = 2,
 	.dev = { .platform_data = &android_pmem_adsp_pdata },
 };
-#endif
 static struct android_pmem_platform_data android_pmem_audio_pdata = {
 	.name = "pmem_audio",
 	.allocator_type = PMEM_ALLOCATORTYPE_BITMAP,
@@ -6486,9 +6658,9 @@ static struct platform_device *rumi_sim_devices[] __initdata = {
 #ifdef CONFIG_ANDROID_PMEM
 #ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
 	&android_pmem_device,
-	&android_pmem_adsp_device,
 	&android_pmem_smipool_device,
 #endif
+	&android_pmem_adsp_device,
 	&android_pmem_audio_device,
 #endif
 #ifdef CONFIG_MSM_ROTATOR
@@ -6504,6 +6676,9 @@ static struct platform_device *rumi_sim_devices[] __initdata = {
 #endif /* CONFIG_FB_MSM_HDMI_MSM_PANEL */
 #ifdef CONFIG_MSM_CAMERA
 #ifndef CONFIG_MSM_CAMERA_V4L2
+#ifdef CONFIG_WEBCAM_MT9M113
+	&msm_camera_sensor_webcam_mt9m113,
+#endif
 #ifdef CONFIG_MT9E013
 	&msm_camera_sensor_mt9e013,
 #endif
@@ -7440,9 +7615,9 @@ static struct platform_device *surf_devices[] __initdata = {
 #ifdef CONFIG_ANDROID_PMEM
 #ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
 	&android_pmem_device,
-	&android_pmem_adsp_device,
 	&android_pmem_smipool_device,
 #endif
+	&android_pmem_adsp_device,
 	&android_pmem_audio_device,
 #endif
 #ifdef CONFIG_MSM_ROTATOR
@@ -7471,6 +7646,9 @@ static struct platform_device *surf_devices[] __initdata = {
 #endif
 #ifdef CONFIG_MSM_CAMERA
 #ifndef CONFIG_MSM_CAMERA_V4L2
+#ifdef CONFIG_WEBCAM_MT9M113
+	&msm_camera_sensor_webcam_mt9m113,
+#endif
 #ifdef CONFIG_MT9E013
 	&msm_camera_sensor_mt9e013,
 #endif
@@ -7770,13 +7948,13 @@ static void __init size_pmem_devices(void)
 {
 #ifdef CONFIG_ANDROID_PMEM
 #ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
-	android_pmem_adsp_pdata.size = pmem_adsp_size;
 	android_pmem_smipool_pdata.size = MSM_PMEM_SMIPOOL_SIZE;
 
 	if (hdmi_is_primary)
 		pmem_sf_size = MSM_HDMI_PRIM_PMEM_SF_SIZE;
 	android_pmem_pdata.size = pmem_sf_size;
 #endif
+	android_pmem_adsp_pdata.size = pmem_adsp_size;
 	android_pmem_audio_pdata.size = MSM_PMEM_AUDIO_SIZE;
 #endif
 }
@@ -7790,10 +7968,10 @@ static void __init reserve_pmem_memory(void)
 {
 #ifdef CONFIG_ANDROID_PMEM
 #ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
-	reserve_memory_for(&android_pmem_adsp_pdata);
 	reserve_memory_for(&android_pmem_smipool_pdata);
 	reserve_memory_for(&android_pmem_pdata);
 #endif
+	reserve_memory_for(&android_pmem_adsp_pdata);
 	reserve_memory_for(&android_pmem_audio_pdata);
 	msm8x60_reserve_table[MEMTYPE_EBI1].size += pmem_kernel_ebi1_size;
 #endif
