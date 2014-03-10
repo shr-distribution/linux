@@ -965,7 +965,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 		if (io_data->aio) {
 			req = usb_ep_alloc_request(ep->ep, GFP_KERNEL);
 			if (unlikely(!req))
-				goto error;
+				goto error_lock;
 
 			req->buf      = data;
 			req->length   = io_data->len;
@@ -980,7 +980,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 			ret = usb_ep_queue(ep->ep, req, GFP_ATOMIC);
 			if (unlikely(ret)) {
 				usb_ep_free_request(ep->ep, req);
-				goto error;
+				goto error_lock;
 			}
 			ret = -EIOCBQUEUED;
 
@@ -1018,6 +1018,10 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 
 	mutex_unlock(&epfile->mutex);
 	return ret;
+
+error_lock:
+	spin_unlock_irq(&epfile->ffs->eps_lock);
+	mutex_unlock(&epfile->mutex);
 error:
 	kfree(data);
 	return ret;
