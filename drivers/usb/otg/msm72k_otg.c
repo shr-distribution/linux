@@ -142,6 +142,11 @@ static void enable_idgnd(struct msm_otg *dev)
 {
 	unsigned temp;
 
+	/* Do nothing if OTG PIN detection is disabled */
+#ifdef CONFIG_USB_DISABLE_OTG_PIN
+	return;
+#endif
+
 	/* Do nothing if instead of ID pin, USER controls mode switch */
 	if (dev->pdata->otg_mode == OTG_USER_CONTROL)
 		return;
@@ -156,6 +161,11 @@ static void enable_idgnd(struct msm_otg *dev)
 static void disable_idgnd(struct msm_otg *dev)
 {
 	unsigned temp;
+
+	/* Do nothing if OTG PIN detection is disabled */
+#ifdef CONFIG_USB_DISABLE_OTG_PIN
+	return;
+#endif
 
 	/* Do nothing if instead of ID pin, USER controls mode switch */
 	if (dev->pdata->otg_mode == OTG_USER_CONTROL)
