@@ -34,9 +34,11 @@ static struct pwm_device *bl_pwm0;
  * If PWM_LEVEL is greater than 64 and If we use PMIC8058-PWM,
  * PMIC must be in 9bit modulation mode.
  */
-#define PWM_FREQ_HZ 300
+#define PWM_FREQ_HZ 20000
+#define PWM_LEVEL 256
+// prevent pwm level 3 and under to prevent cut-out
+#define PWM_LEVEL_MIN 3
 #define PWM_PERIOD_USEC (USEC_PER_SEC / PWM_FREQ_HZ)
-#define PWM_LEVEL 15
 #define PWM_DUTY_LEVEL (PWM_PERIOD_USEC / PWM_LEVEL)
 #endif
 
@@ -67,12 +69,9 @@ static void lcdc_lg_panel_set_backlight(struct msm_fb_data_type *mfd)
 #ifdef CONFIG_PMIC8058_PWM
 	if (bl_pwm0)
     {
-#if 1 // green - this is noop in .35 too
-		ret = pwm_config(bl_pwm0, PWM_DUTY_LEVEL * bl_level,
-				PWM_PERIOD_USEC);
+		ret = pwm_config2(bl_pwm0, bl_level, PWM_LEVEL, PWM_PERIOD_USEC);
 		if (ret)
 			printk(KERN_ERR "pwm_config on pwm 0 failed %d\n", ret);
-#endif
 
         ret = pwm_enable(bl_pwm0);
 		if (ret)
@@ -156,8 +155,8 @@ static int __init lcdc_lg_panel_init(void)
 	pinfo->bpp = 18;
 	pinfo->fb_num = 2;
 	pinfo->clk_rate = 96000000;
-	pinfo->bl_max = 15;
-	pinfo->bl_min = 1;
+	pinfo->bl_max = PWM_LEVEL;
+	pinfo->bl_min = PWM_LEVEL_MIN;
 
 	pinfo->lcdc.h_back_porch = 400;
 	pinfo->lcdc.h_front_porch = 272;
