@@ -14323,6 +14323,64 @@ static void __init tenderloin_setup_pin_table(void)
 #endif
 }
 
+/*
+ *   S3A_1V8
+ */
+static struct regulator *board_S3A_1V8 = NULL;
+static void __init board_setup_S3A_1V8 (void)
+{
+	int rc = 0;
+
+#if 1
+	/*
+	 * Enable S3A_1V8 regulator and force it to HPM mode.
+	 *
+	 * Ideally, this regulator should be in HPM mode when WiFi is ON
+	 * (even in suspend) or system is not in suspend.
+	 *
+	 * The code below is not optimal. It forces S3A_1V8 regulator to HPM
+	 * mode all the time, even in suspend, which add extra 300uA to
+	 * suspend power draw.
+	 *
+	 */
+	board_S3A_1V8 = regulator_get(NULL, "8058_s3");
+	if (IS_ERR(board_S3A_1V8)) {
+		pr_err("%s: unable to get %s\n",
+			__func__, "8058_s3");
+	}
+	rc = regulator_set_voltage(board_S3A_1V8, 1800000, 1800000);
+	if (rc) {
+		pr_err("%s: unable (%d) to set voltage for %s\n",
+			__func__, rc, "8058_s3");
+	}
+	if (regulator_enable(board_S3A_1V8)) {
+		pr_err("%s: Unable to enable %s\n",
+			 __func__, "8058_s3");
+	}
+	rc = regulator_set_optimum_mode(board_S3A_1V8, 100000);
+	if (rc < 0) {
+		pr_err("%s: unable (%d) to set opt mode for %s\n",
+			__func__, rc, "8058_s3");
+
+	}
+	pr_info("%s: %s: forcing HPM mode (%d)\n",
+			__func__, "8058_s3", rc );
+#else
+	/*
+	 *   The Alternative approach would be to call rpm_vreg_set_voltage
+	 *   API with sleep parameter set to zero. Regulator must be configured
+	 *   as sleep_selectable.
+	 */
+	rc = rpm_vreg_set_voltage(RPM_VREG_ID_PM8058_S3,
+				  enum rpm_vreg_voter voter, ??
+				  0, ??
+				  0);
+
+#endif
+
+	return;
+}
+
 
 struct msm_board_data {
 	struct msm_gpiomux_configs *gpiomux_cfgs;
@@ -14751,6 +14809,9 @@ static void __init msm8x60_init(struct msm_board_data *board_data)
 
 #ifdef CONFIG_A6
 	init_a6();
+#endif
+#ifdef CONFIG_MACH_TENDERLOIN
+	board_setup_S3A_1V8();
 #endif
 }
 
