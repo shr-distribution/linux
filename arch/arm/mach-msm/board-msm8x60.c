@@ -12613,9 +12613,9 @@ static int lcdc_common_panel_power(int on)
 	int rc;
 	static int isOn = 0;
 
-	printk(KERN_ERR "%s: on=%d isOn=%d\n", __func__, on, isOn);
-
 	if (on == isOn) return 0;
+
+	printk(KERN_ERR "%s: %s\n", __func__, on ? "off->on" : "on->off");
 
 	/* VDD_LVDS_3.3V*/
 	if(!votg_l10)

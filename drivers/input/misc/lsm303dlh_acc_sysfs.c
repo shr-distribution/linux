@@ -196,7 +196,7 @@ static int lsm303dlh_acc_hw_init(struct lsm303dlh_acc_data *acc)
 	int err = -1;
 	u8 buf[6];
 
-	printk(KERN_INFO "%s: hw init start\n", LSM303DLH_ACC_DEV_NAME);
+	// printk(KERN_INFO "%s: hw init start\n", LSM303DLH_ACC_DEV_NAME);
 
 	buf[0] = WHO_AM_I;
 	err = lsm303dlh_acc_i2c_read(acc, buf, 1);
@@ -254,7 +254,7 @@ static int lsm303dlh_acc_hw_init(struct lsm303dlh_acc_data *acc)
 		goto err_resume_state;
 
 	acc->hw_initialized = 1;
-	printk(KERN_INFO "%s: hw init done\n", LSM303DLH_ACC_DEV_NAME);
+	// printk(KERN_INFO "%s: hw init done\n", LSM303DLH_ACC_DEV_NAME);
 	return 0;
 
 err_firstread:
