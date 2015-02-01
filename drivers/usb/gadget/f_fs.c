@@ -1083,6 +1083,7 @@ static ssize_t ffs_epfile_aio_write(struct kiocb *kiocb,
 				    unsigned long nr_segs, loff_t loff)
 {
 	struct ffs_io_data *io_data;
+	ssize_t res;
 
 	ENTER();
 
@@ -1102,7 +1103,10 @@ static ssize_t ffs_epfile_aio_write(struct kiocb *kiocb,
 
 	kiocb->ki_cancel = ffs_aio_cancel;
 
-	return ffs_epfile_io(kiocb->ki_filp, io_data);
+	res = ffs_epfile_io(kiocb->ki_filp, io_data);
+	if (res != -EIOCBQUEUED)
+		kfree(io_data);
+	return res;
 }
 
 static ssize_t ffs_epfile_aio_read(struct kiocb *kiocb,
@@ -1111,6 +1115,7 @@ static ssize_t ffs_epfile_aio_read(struct kiocb *kiocb,
 {
 	struct ffs_io_data *io_data;
 	struct iovec *iovec_copy;
+	ssize_t res;
 
 	ENTER();
 
@@ -1138,7 +1143,12 @@ static ssize_t ffs_epfile_aio_read(struct kiocb *kiocb,
 
 	kiocb->ki_cancel = ffs_aio_cancel;
 
-	return ffs_epfile_io(kiocb->ki_filp, io_data);
+	res = ffs_epfile_io(kiocb->ki_filp, io_data);
+	if (res != -EIOCBQUEUED) {
+		kfree(io_data);
+		kfree(iovec_copy);
+	}
+	return res;
 }
 
 static int
