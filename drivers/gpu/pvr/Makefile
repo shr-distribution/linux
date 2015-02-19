@@ -22,5 +22,5 @@ CBUILD			:= -O2						\
 			   -DPVR_BUILD_DATE="\"$(DATE)\""	\
 			   -DAUTOCONF_INCLUDED
 
-ccflags-y		+= $(CBUILD) -include $(src)/pvrconfig.h
+ccflags-y		+= $(CBUILD) -include $(srctree)/$(src)/pvrconfig.h
 
