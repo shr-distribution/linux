@@ -984,12 +984,24 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 
 			if (unlikely(ret < 0)) {
 				/* nop */
-			} else if (unlikely(
-				   wait_for_completion_interruptible(&done))) {
-				ret = -EINTR;
-				usb_ep_dequeue(ep->ep, req);
 			} else {
-				ret = ep->status;
+				bool interrupted = false;
+
+				if (unlikely(wait_for_completion_interruptible(
+								&done))) {
+					/*
+					 * To avoid race condition with
+					 * ffs_epfile_io_complete, dequeue the
+					 * request first then check status.
+					 * usb_ep_dequeue API should guarantee
+					 * no race condition with req->complete
+					 * callback.
+					 */
+					usb_ep_dequeue(ep->ep, req);
+					interrupted = ep->status < 0;
+				}
+
+				ret = interrupted ? -EINTR : ep->status;
 				if (io_data->read && ret > 0 &&
 				    unlikely(copy_to_user(io_data->buf, data,
 							  ret)))
