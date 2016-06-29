@@ -3398,6 +3398,7 @@ int mgmt_remote_class(u16 index, bdaddr_t *bdaddr, u8 dev_class[3])
 
 	return mgmt_event(MGMT_EV_REMOTE_CLASS, index, &ev, sizeof(ev), NULL);
 }
+<<<<<<< HEAD
 
 int mgmt_remote_version(u16 index, bdaddr_t *bdaddr, u8 ver, u16 mnf,
 							u16 sub_ver)
@@ -3426,3 +3427,5 @@ int mgmt_remote_features(u16 index, bdaddr_t *bdaddr, u8 features[8])
 	return mgmt_event(MGMT_EV_REMOTE_FEATURES, index, &ev, sizeof(ev),
 									NULL);
 }
+=======
+>>>>>>> parent of d888141... Bluetooth: Reading remote device lmp_version from controller.

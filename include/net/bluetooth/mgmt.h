@@ -391,6 +391,7 @@ struct mgmt_ev_remote_class {
 	bdaddr_t bdaddr;
 	__u8 dev_class[3];
 } __packed;
+<<<<<<< HEAD
 
 #define MGMT_EV_REMOTE_VERSION		0x0018
 struct mgmt_ev_remote_version {
@@ -419,3 +420,5 @@ struct mgmt_ev_le_conn_params {
 	__u16 latency;
 	__u16 timeout;
 } __packed;
+=======
+>>>>>>> parent of d888141... Bluetooth: Reading remote device lmp_version from controller.
