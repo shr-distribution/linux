@@ -24,6 +24,8 @@
 #include <linux/regulator/consumer.h>
 #include <linux/regulator/machine.h>
 
+#define CONFIG_BCM4335BT 1
+
 #ifdef CONFIG_BCM4335BT
 #include <linux/fs.h>
 #include <linux/uaccess.h>
@@ -38,9 +40,6 @@
 #define BTRFKILLDBG(fmt, arg...)
 #endif
 #endif /* CONFIG_BCM4335BT */
-
-static struct rfkill *bt_rfk;
-static const char bt_name[] = "brcm_Bluetooth_rfkill";
 
 #ifdef CONFIG_BCM4335BT
 #define BTLOCK_NAME     "btlock"
@@ -194,14 +193,10 @@ static int bluetooth_set_power(void *data, bool blocked)
 	return 0;
 }
 
-static struct rfkill_ops bluetooth_rfkill_ops = {
-	.set_block = bluetooth_set_power,
-};
 
 static int bluetooth_rfkill_probe(struct platform_device *pdev)
 {
 	int rc = 0;
-	bool default_state = true;  /* off */
 
 #ifdef CONFIG_BCM4335BT
 	bcm_btlock_init();
@@ -220,30 +215,9 @@ static int bluetooth_rfkill_probe(struct platform_device *pdev)
 	}
 	gpio_direction_output(GPIO_BT_RESET_N, 0);
 
-	bluetooth_set_power(NULL, default_state);
-
-	bt_rfk = rfkill_alloc(bt_name, &pdev->dev, RFKILL_TYPE_BLUETOOTH,
-			&bluetooth_rfkill_ops, NULL);
-	if (!bt_rfk) {
-		printk(KERN_ERR "rfkill alloc failed.\n");
-		rc = -ENOMEM;
-		goto err_rfkill_alloc;
-	}
-
-	rfkill_set_states(bt_rfk, default_state, false);
-
-	/* userspace cannot take exclusive control */
-
-	rc = rfkill_register(bt_rfk);
-	if (rc)
-		goto err_rfkill_reg;
-
+	bluetooth_set_power(NULL, false);
 	return 0;
 
-
-err_rfkill_reg:
-	rfkill_destroy(bt_rfk);
-err_rfkill_alloc:
 err_gpio_reset:
 	gpio_free(GPIO_BT_RESET_N);
 	printk(KERN_ERR "bluetooth_rfkill_probe error!\n");
@@ -252,8 +226,6 @@ err_gpio_reset:
 
 static int bluetooth_rfkill_remove(struct platform_device *dev)
 {
-	rfkill_unregister(bt_rfk);
-	rfkill_destroy(bt_rfk);
 	gpio_free(GPIO_BT_RESET_N);
 
 #ifdef CONFIG_BCM4335BT

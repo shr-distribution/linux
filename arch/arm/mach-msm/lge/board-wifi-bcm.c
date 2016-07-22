@@ -32,6 +32,8 @@
 #include <asm/io.h>
 #include <mach/board_lge.h>
 
+#define CONFIG_BCM4335BT 1
+
 #define WLAN_STATIC_SCAN_BUF0           5
 #define WLAN_STATIC_SCAN_BUF1           6
 #define PREALLOC_WLAN_SEC_NUM           4
