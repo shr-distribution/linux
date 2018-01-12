@@ -822,8 +822,11 @@ static void ffs_user_copy_worker(struct work_struct *work)
 					 io_data->req->actual;
 
 	if (io_data->read && ret > 0) {
+		mm_segment_t oldfs = get_fs();
 		int i;
 		size_t pos = 0;
+
+		set_fs(USER_DS);
 		use_mm(io_data->mm);
 		for (i = 0; i < io_data->nr_segs; i++) {
 			if (unlikely(copy_to_user(io_data->iovec[i].iov_base,
@@ -835,6 +838,7 @@ static void ffs_user_copy_worker(struct work_struct *work)
 			pos += io_data->iovec[i].iov_len;
 		}
 		unuse_mm(io_data->mm);
+		set_fs(oldfs);
 	}
 
 	aio_complete(io_data->kiocb, ret, ret);
