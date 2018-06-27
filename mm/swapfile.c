@@ -9,6 +9,7 @@
 #include <linux/hugetlb.h>
 #include <linux/mman.h>
 #include <linux/slab.h>
+#include <linux/kernel.h>
 #include <linux/kernel_stat.h>
 #include <linux/swap.h>
 #include <linux/vmalloc.h>
@@ -2667,6 +2668,7 @@ void si_swapinfo(struct sysinfo *val)
 	val->totalswap = total_swap_pages + nr_to_be_unused;
 	spin_unlock(&swap_lock);
 }
+EXPORT_SYMBOL(si_swapinfo);
 
 /*
  * Verify that a swap entry is valid and increment its swap map count.
