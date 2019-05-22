@@ -8,6 +8,22 @@ config ANDROID
 
 if ANDROID
 
+config ANDROID_PERSISTENT_RAM
+	bool "Android persistent RAM"
+	select REED_SOLOMON
+	select REED_SOLOMON_ENC8
+	select REED_SOLOMON_DEC8
+	default n
+	---help---
+	  Enables Android persistent RAM
+
+config ANDROID_RAM_CONSOLE
+	bool "Android RAM buffer console"
+	select ANDROID_PERSISTENT_RAM
+	default n
+	---help---
+	  Enables Android RAM console
+
 config ANDROID_BINDER_IPC
 	bool "Android Binder IPC Driver"
 	depends on MMU
