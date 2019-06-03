@@ -1053,6 +1053,7 @@ ffs_epfile_write(struct file *file, const char __user *buf, size_t len,
 
 	ENTER();
 
+	memset(&io_data, 0, sizeof(io_data));
 	io_data.aio = false;
 	io_data.read = false;
 	io_data.buf = (char * __user)buf;
@@ -1068,6 +1069,7 @@ ffs_epfile_read(struct file *file, char __user *buf, size_t len, loff_t *ptr)
 
 	ENTER();
 
+	memset(&io_data, 0, sizeof(io_data));
 	io_data.aio = false;
 	io_data.read = true;
 	io_data.buf = buf;
@@ -1125,7 +1127,7 @@ static ssize_t ffs_epfile_aio_write(struct kiocb *kiocb,
 
 	ENTER();
 
-	io_data = kmalloc(sizeof(*io_data), GFP_KERNEL);
+	io_data = kzalloc(sizeof(*io_data), GFP_KERNEL);
 	if (unlikely(!io_data))
 		return -ENOMEM;
 
@@ -1163,7 +1165,7 @@ static ssize_t ffs_epfile_aio_read(struct kiocb *kiocb,
 
 	memcpy(iovec_copy, iovec, sizeof(struct iovec)*nr_segs);
 
-	io_data = kmalloc(sizeof(*io_data), GFP_KERNEL);
+	io_data = kzalloc(sizeof(*io_data), GFP_KERNEL);
 	if (unlikely(!io_data)) {
 		kfree(iovec_copy);
 		return -ENOMEM;
