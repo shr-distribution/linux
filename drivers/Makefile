@@ -8,6 +8,9 @@
 obj-y				+= irqchip/
 obj-y				+= bus/
 
+# Anbox
+obj-$(CONFIG_ANBOX) += anbox/
+
 obj-$(CONFIG_GENERIC_PHY)	+= phy/
 
 # GPIO must come after pinctrl as gpios may need to mux pins etc
