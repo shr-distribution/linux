@@ -123,7 +123,7 @@ struct afe_ctl {
 	int set_custom_topology;
 	int dev_acdb_id[AFE_MAX_PORTS];
 	routing_cb rt_cb;
-#ifdef CONFIG_SND_SOC_MAX98927
+#if defined(CONFIG_SND_SOC_MAX98927) && !defined(CONFIG_MACH_XIAOMI_MIDO)
 	uint8_t *dsm_payload;
 #endif
 };
@@ -299,7 +299,7 @@ static int32_t sp_make_afe_callback(uint32_t *payload, uint32_t payload_size)
 			atomic_set(&this_afe.state, -1);
 		}
 	}
-#ifdef CONFIG_SND_SOC_MAX98927
+#if defined(CONFIG_SND_SOC_MAX98927) && !defined(CONFIG_MACH_XIAOMI_MIDO)
 	if (param_id == AFE_PARAM_ID_DSM_CFG) {
 		struct afe_dsm_get_resp *dsm_resp =
 			(struct afe_dsm_get_resp *) payload;
@@ -1070,7 +1070,7 @@ fail_cmd:
 return ret;
 }
 
-#ifdef CONFIG_SND_SOC_MAX98927
+#if defined(CONFIG_SND_SOC_MAX98927) && !defined(CONFIG_MACH_XIAOMI_MIDO)
 int afe_dsm_setget_params(uint8_t *payload, int size, int dir)
 {
 	struct afe_dsm_set_command *set = NULL;
