@@ -128,7 +128,6 @@ static int reloc_insn_movw(enum aarch64_reloc_op op, void *place, u64 val,
 			 */
 			imm = ~imm;
 		}
-		imm_type = AARCH64_INSN_IMM_MOVK;
 	}
 
 	/* Update the instruction with the new encoding. */
