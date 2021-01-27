@@ -65,6 +65,7 @@ bool global_negative_flag;
 static struct target_cap schedtune_target_cap[16];
 static int cpu_cluster_nr;
 #ifdef CONFIG_CPU_FREQ_GOV_SCHEDPLUS
+#ifdef CONFIG_CGROUP_SCHEDTUNE
 static char met_dvfs_info2[5][32] = {
 	"sched_dvfs_boostmin_cid0",
 	"sched_dvfs_boostmin_cid1",
@@ -80,6 +81,7 @@ static char met_dvfs_info3[5][32] = {
 	"NULL",
 	"NULL"
 };
+#endif
 #endif
 
 static int
