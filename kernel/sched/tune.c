@@ -1530,6 +1530,25 @@ schedtune_accept_deltas(int nrg_delta, int cap_delta,
 			perf_boost_idx, perf_constrain_idx);
 }
 
+int prefer_idle_for_perf_idx(int idx, int prefer_idle)
+{
+	return 0;
+}
+
+int boost_write_for_perf_idx(int group_idx, int boost_value) {
+    return 0;
+}
+
+int linear_real_boost(int linear_boost)
+{
+	return 0;
+}
+
+int linear_real_boost_pid(int linear_boost, int pid)
+{
+	return 0;
+}
+
 #endif /* CONFIG_CGROUP_SCHEDTUNE */
 
 int
