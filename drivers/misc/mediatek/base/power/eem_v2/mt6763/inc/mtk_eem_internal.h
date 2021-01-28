@@ -19,7 +19,7 @@
  * bit operation
  */
 #undef  BIT
-#define BIT(bit)	(1U << (bit))
+#define BIT(bit)	(1UL << (bit))
 
 #define MSB(range)	(1 ? range)
 #define LSB(range)	(0 ? range)
