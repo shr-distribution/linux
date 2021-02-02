@@ -1971,7 +1971,16 @@ KBUILD_CPPFLAGS += $(CDEFINES)
 ifeq ($(call cc-option-yn, -Wmaybe-uninitialized),y)
 EXTRA_CFLAGS += -Wmaybe-uninitialized
 endif
+EXTRA_CFLAGS += -Wno-maybe-uninitialized
 EXTRA_CFLAGS += -Wmissing-prototypes
+EXTRA_CFLAGS += -Wno-misleading-indentation
+EXTRA_CFLAGS += -Wno-address-of-packed-member
+EXTRA_CFLAGS += -Wno-sizeof-pointer-div
+EXTRA_CFLAGS += -Wno-format-truncation
+EXTRA_CFLAGS += -Wno-bool-compare
+EXTRA_CFLAGS += -Wno-missing-attributes
+EXTRA_CFLAGS += -Wno-unused-value
+EXTRA_CFLAGS += -Wno-format
 
 ifeq ($(call cc-option-yn, -Wheader-guard),y)
 EXTRA_CFLAGS += -Wheader-guard
