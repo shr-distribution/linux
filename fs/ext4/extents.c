@@ -3459,6 +3459,10 @@ static int ext4_ext_convert_to_initialized(handle_t *handle,
 	zero_ex2.ee_len = 0;
 	zero_ex1.ee_start_lo = 0;
 	zero_ex2.ee_start_lo = 0;
+	zero_ex1.ee_start_hi = 0;
+	zero_ex2.ee_start_hi = 0;
+	zero_ex1.ee_block = 0;
+	zero_ex2.ee_block = 0;
 
 	trace_ext4_ext_convert_to_initialized_enter(inode, map, ex);
 

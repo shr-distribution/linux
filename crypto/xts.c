@@ -279,7 +279,7 @@ static void exit_tfm(struct crypto_tfm *tfm)
 	crypto_free_cipher(ctx->tweak);
 }
 
-static struct crypto_instance *alloc(struct rtattr **tb)
+static struct crypto_instance *__alloc(struct rtattr **tb)
 {
 	struct crypto_instance *inst;
 	struct crypto_alg *alg;
@@ -329,7 +329,7 @@ out_put_alg:
 	return inst;
 }
 
-static void free(struct crypto_instance *inst)
+static void __free(struct crypto_instance *inst)
 {
 	crypto_drop_spawn(crypto_instance_ctx(inst));
 	kfree(inst);
@@ -337,8 +337,8 @@ static void free(struct crypto_instance *inst)
 
 static struct crypto_template crypto_tmpl = {
 	.name = "xts",
-	.alloc = alloc,
-	.free = free,
+	.alloc = __alloc,
+	.free = __free,
 	.module = THIS_MODULE,
 };
 

@@ -186,6 +186,8 @@ ifeq ($(call cc-option-yn, -Wheader-guard),y)
 EXTRA_CFLAGS += -Wheader-guard
 endif
 
+EXTRA_CFLAGS += -Wno-error=memset-elt-size -Wno-error=restrict -Wno-error=maybe-uninitialized
+
 
 ifeq ($(KERNEL_BUILD), 0)
 KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/vendor/qcom/opensource/audio-kernel/ipc/Module.symvers
