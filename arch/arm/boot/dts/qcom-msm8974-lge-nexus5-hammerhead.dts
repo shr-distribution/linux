@@ -247,6 +247,10 @@
 	status = "okay";
 };
 
+&gpu {
+	status = "okay";
+};
+
 &otg {
 	status = "okay";
 
