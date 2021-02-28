@@ -269,6 +269,10 @@
 			qcom,init-seq = /bits/ 8 <0x1 0x64>;
 		};
 	};
+
+	adreno@fdb00000 {
+		status = "okay";
+	};
 };
 
 &pm8941_gpios {
