@@ -240,7 +240,7 @@ static int bcmsdh_sdmmc_resume(struct device *pdev)
 	struct sdio_func *func = dev_to_sdio_func(pdev);
 #endif
 	int wakeup = 0;
-#if defined(CONFIG_PARTIALRESUME) || defined(DHD_WAKE_STATUS)
+#if defined(CONFIG_PARTIALRESUME)
 	wakeup = check_wakeup_reason(bcmsdh_get_irq());
 #endif /* CONFIG_PARTIALRESUME || DHD_WAKE_STATUS */
 	sd_trace(("%s Enter\n", __FUNCTION__));
