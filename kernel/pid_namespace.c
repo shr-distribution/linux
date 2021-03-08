@@ -91,6 +91,7 @@ static struct pid_namespace *create_pid_namespace(struct pid_namespace *parent_p
 	err = proc_alloc_inum(&ns->proc_inum);
 	if (err)
 		goto out_free_map;
+
 	kref_init(&ns->kref);
 	ns->level = level;
 	ns->parent = get_pid_ns(parent_pid_ns);
@@ -272,12 +273,32 @@ static void pidns_put(void *ns)
 
 static int pidns_install(struct nsproxy *nsproxy, void *ns)
 {
-	return -EINVAL;
-#ifdef notyet
+	struct pid_namespace *active = task_active_pid_ns(current);
+	struct pid_namespace *ancestor, *new = ns;
+
+	if (!ns_capable(new->user_ns, CAP_SYS_ADMIN))
+		return -EPERM;
+
+	/*
+	 * Only allow entering the current active pid namespace
+	 * or a child of the current active pid namespace.
+	 *
+	 * This is required for fork to return a usable pid value and
+	 * this maintains the property that processes and their
+	 * children can not escape their current pid namespace.
+	 */
+	if (new->level < active->level)
+		return -EINVAL;
+
+	ancestor = new;
+	while (ancestor->level > active->level)
+		ancestor = ancestor->parent;
+	if (ancestor != active)
+		return -EINVAL;
+
 	put_pid_ns(nsproxy->pid_ns);
-	nsproxy->pid_ns = get_pid_ns(ns);
+	nsproxy->pid_ns = get_pid_ns(new);
 	return 0;
-#endif
 }
 
 const struct proc_ns_operations pidns_operations = {
@@ -287,6 +308,7 @@ const struct proc_ns_operations pidns_operations = {
 	.put		= pidns_put,
 	.install	= pidns_install,
 };
+
 static __init int pid_namespaces_init(void)
 {
 	pid_ns_cachep = KMEM_CACHE(pid_namespace, SLAB_PANIC);
