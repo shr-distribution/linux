@@ -142,16 +142,6 @@ int seq_put_decimal_ull(struct seq_file *m, char delimiter,
 int seq_put_decimal_ll(struct seq_file *m, char delimiter,
 			long long num);
 
-static inline struct user_namespace *seq_user_ns(struct seq_file *seq)
-{
-#ifdef CONFIG_USER_NS
-	return seq->user_ns;
-#else
-	extern struct user_namespace init_user_ns;
-	return &init_user_ns;
-#endif
-}
-
 /**
  * seq_show_options - display mount options with appropriate escapes.
  * @m: the seq_file handle
