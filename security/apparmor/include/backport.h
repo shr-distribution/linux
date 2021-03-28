@@ -30,15 +30,6 @@ int iterate_fd(struct files_struct *, unsigned,
 /* 3.6 backport commit 8280d16172243702ed43432f826ca6130edb4086 */
 int replace_fd(unsigned fd, struct file *file, unsigned flags);
 
-/* 3.6 backport, commit d2b31ca644fdc8704de3367a6a56a5c958c77f53 */
-#define kuid_t uid_t
-#define kgid_t gid_t
-
-/* 3.6 backport, commit 2db81452931eb51cc739d6e495cf1bd4860c3c99 */
-#define GLOBAL_ROOT_UID 0
-#define from_kuid(X, UID) UID
-#define uid_eq(X, Y) ((X) == (Y))
-
 /* 3.5 backport commit 765927b2d508712d320c8934db963bbe14c3fcec */
 #define dentry_open(P, F, C) (dentry_open)((P)->dentry, (P)->mnt, (F), (C))
 
