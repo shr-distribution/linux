@@ -177,13 +177,13 @@ extern int __put_user_8(void *, unsigned long long);
 	({								\
 		unsigned long __limit = current_thread_info()->addr_limit - 1; \
 		const typeof(*(p)) __user *__tmp_p = (p);		\
-		register const typeof(*(p)) __r2 asm("r2") = (x);	\
+		register typeof(*(p)) __r2 asm("r2") = (x);	\
 		register const typeof(*(p)) __user *__p asm("r0") = __tmp_p; \
 		register unsigned long __l asm("r1") = __limit;		\
 		register int __e asm("r0");				\
 		switch (sizeof(*(__p))) {				\
 		case 1:							\
-			__put_user_x(__r2, __p, __e, __l, 1);		\
+            __put_user_x(__r2, __p, __e, __l, 1);		\
 			break;						\
 		case 2:							\
 			__put_user_x(__r2, __p, __e, __l, 2);		\
