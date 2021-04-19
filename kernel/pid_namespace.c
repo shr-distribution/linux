@@ -273,32 +273,12 @@ static void pidns_put(void *ns)
 
 static int pidns_install(struct nsproxy *nsproxy, void *ns)
 {
-	struct pid_namespace *active = task_active_pid_ns(current);
-	struct pid_namespace *ancestor, *new = ns;
-
-	if (!ns_capable(new->user_ns, CAP_SYS_ADMIN))
-		return -EPERM;
-
-	/*
-	 * Only allow entering the current active pid namespace
-	 * or a child of the current active pid namespace.
-	 *
-	 * This is required for fork to return a usable pid value and
-	 * this maintains the property that processes and their
-	 * children can not escape their current pid namespace.
-	 */
-	if (new->level < active->level)
-		return -EINVAL;
-
-	ancestor = new;
-	while (ancestor->level > active->level)
-		ancestor = ancestor->parent;
-	if (ancestor != active)
-		return -EINVAL;
-
+	return -EINVAL;
+#ifdef notyet
 	put_pid_ns(nsproxy->pid_ns);
-	nsproxy->pid_ns = get_pid_ns(new);
+	nsproxy->pid_ns = get_pid_ns(ns);
 	return 0;
+#endif
 }
 
 const struct proc_ns_operations pidns_operations = {
