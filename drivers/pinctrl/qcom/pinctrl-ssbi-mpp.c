@@ -782,6 +782,7 @@ static const struct of_device_id pm8xxx_mpp_of_match[] = {
 	{ .compatible = "qcom,pm8038-mpp", .data = (void *) 6 },
 	{ .compatible = "qcom,pm8058-mpp", .data = (void *) 12 },
 	{ .compatible = "qcom,pm8821-mpp", .data = (void *) 4 },
+	{ .compatible = "qcom,pm8901-mpp", .data = (void *) 4 },
 	{ .compatible = "qcom,pm8917-mpp", .data = (void *) 10 },
 	{ .compatible = "qcom,pm8921-mpp", .data = (void *) 12 },
 	{ },
