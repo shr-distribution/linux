@@ -100,6 +100,52 @@
 					output-high;
 				};
 			};
+
+			charger_gpios: max8903b {
+				mux {
+					pins = "gpio30", "gpio33", "gpio34", "gpio35", "gpio36", "gpio41", "gpio42", "gpio133", "gpio140";
+					function = "gpio";
+				};
+				in {
+					pins = "gpio35", "gpio36", "gpio140";
+					drive-strength = <2>;
+					input-enable;
+					bias-pull-up;
+				};
+				out {
+					pins = "gpio30", "gpio33", "gpio34", "gpio41", "gpio42", "gpio133";
+					drive-strength = <2>;
+				};
+				/* Safe initial state, charging disabled */
+				dcm {
+					pins = "gpio42";
+					output-high;
+				};
+				/* 500 mA USB charging. Not controlled by driver. */
+				iusb {
+					pins = "gpio133";
+					output-high;
+				};
+				usus {
+					pins = "gpio33";
+					output-low;
+				};
+				cen {
+					pins = "gpio41";
+					output-low;
+				};
+				/*
+				 * Limit DC charging current to 750 mA, the
+				 * minimum value. Appears to control a
+				 * multiplexed set of resistors connected to
+				 * the IDC pin. This functionality is not
+				 * supported by the MAX8903 driver.
+				 */
+				d_iset {
+					pins = "gpio34", "gpio30";
+					output-low;
+				};
+			};
 		};
 
 		qcom,ssbi@500000 {
@@ -474,5 +520,33 @@
 				vqmmc-supply = <&pm8901_lvs0>;
 			};
 		};
+	};
+
+	/*
+	 * Fast charging at up to 1400 mA is supported by the hardware, but
+	 * requires cooperation with the USB controller and A6 battery
+	 * controller. The USB port is connected to both the DC and USB
+	 * inputs, so DCM must not be enabled unless we know the port can
+	 * supply the configured current. The DC mode charging current is
+	 * configured by a multiplexed set of resistors connected to IDC. As
+	 * configured here, the device will always charge at 500 mA. This is
+	 * technically USB non-compliant (enumeration is required), but
+	 * should generally be safe. Unfortunately, at 500 mA the device
+	 * will slowly discharge the battery if the screen is on.
+	 */
+	charger: max8903b {
+		compatible = "maxim,max8903";
+		pinctrl-names = "default";
+		pinctrl-0 = <&charger_gpios>;
+		cen-gpios = <&tlmm 41 GPIO_ACTIVE_HIGH>;
+		chg-gpios = <&tlmm 36 GPIO_ACTIVE_LOW>;
+		flt-gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;
+		usus-gpios = <&tlmm 33 GPIO_ACTIVE_LOW>;
+		dcm-gpios = <&tlmm 42 GPIO_ACTIVE_LOW>;
+		/*
+		 * This is actually DOK, but this would cause the driver to
+		 * enable high current charging.
+		 */
+		uok-gpios = <&tlmm 140 GPIO_ACTIVE_LOW>;
 	};
 };
