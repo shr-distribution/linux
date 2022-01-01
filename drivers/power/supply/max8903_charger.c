@@ -103,6 +103,10 @@ static irqreturn_t max8903_dcin(int irq, void *_data)
 	if (data->dcm)
 		gpiod_set_value(data->dcm, ta_in);
 
+	/* Set USB-Suspend 1:Suspended 0:Active */
+	if (data->usus)
+		gpiod_set_value(data->usus, ta_in);
+
 	/* Charger Enable / Disable */
 	if (data->cen) {
 		int val;
@@ -311,7 +315,15 @@ static int max8903_setup_gpios(struct platform_device *pdev)
 				     "failed to get FLT GPIO");
 	gpiod_set_consumer_name(data->flt, data->psy_desc.name);
 
-	data->usus = devm_gpiod_get_optional(dev, "usus", GPIOD_IN);
+	/*
+	 * Suspend the USB input if the DC charger is connected.
+	 *
+	 * The USUS line should be marked GPIO_ACTIVE_HIGH in the
+	 * device tree. Driving it low will enable the USB charger
+	 * input.
+	 */
+	flags = ta_in ? GPIOD_OUT_HIGH : GPIOD_OUT_LOW;
+	data->usus = devm_gpiod_get_optional(dev, "usus", flags);
 	if (IS_ERR(data->usus))
 		return dev_err_probe(dev, PTR_ERR(data->usus),
 				     "failed to get USUS GPIO");
