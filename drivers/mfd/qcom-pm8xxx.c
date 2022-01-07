@@ -500,6 +500,7 @@ static const struct of_device_id pm8xxx_id_table[] = {
 	{ .compatible = "qcom,pm8018", .data = &pm8xxx_data},
 	{ .compatible = "qcom,pm8058", .data = &pm8xxx_data},
 	{ .compatible = "qcom,pm8821", .data = &pm8821_data},
+	{ .compatible = "qcom,pm8901", .data = &pm8xxx_data},
 	{ .compatible = "qcom,pm8921", .data = &pm8xxx_data},
 	{ }
 };
