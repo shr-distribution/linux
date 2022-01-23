@@ -83,6 +83,12 @@ static int msm_v4l2_open(struct file *f)
 {
 	int rc = 0;
 	D("%s\n", __func__);
+	
+	if(!g_pmsm_v4l2_dev || !g_pmsm_v4l2_dev->opencnt) {
+		D("%s pointer NULL, aborting open!\n", __func__);
+		return -ENOMEM;
+	}
+	
 	mutex_lock(&msm_v4l2_opencnt_lock);
 	if (!g_pmsm_v4l2_dev->opencnt) {
 		rc = g_pmsm_v4l2_dev->drv->open(
