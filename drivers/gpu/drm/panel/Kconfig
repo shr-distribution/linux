@@ -92,6 +92,7 @@ config DRM_PANEL_SIMPLE
 	depends on OF
 	depends on BACKLIGHT_CLASS_DEVICE
 	depends on PM
+	depends on DRM_KMS_HELPER
 	select VIDEOMODE_HELPERS
 	help
 	  DRM panel driver for dumb non-eDP panels that need at most a regulator
