@@ -308,8 +308,6 @@ struct ffs_ep {
 	struct usb_endpoint_descriptor	*descs[2];
 
 	u8				num;
-
-	int				status;	/* P: epfile->mutex */
 };
 
 struct ffs_epfile {
@@ -347,6 +345,9 @@ struct ffs_io_data {
 
 	struct usb_ep *ep;
 	struct usb_request *req;
+
+	int status;
+	struct completion done;
 };
 
 static int  __must_check ffs_epfiles_create(struct ffs_data *ffs);
@@ -806,12 +807,15 @@ static const struct file_operations ffs_ep0_operations = {
 
 static void ffs_epfile_io_complete(struct usb_ep *_ep, struct usb_request *req)
 {
+	struct ffs_io_data *io_data = req->context;
+
 	ENTER();
-	if (likely(req->context)) {
-		struct ffs_ep *ep = _ep->driver_data;
-		ep->status = req->status ? req->status : req->actual;
-		complete(req->context);
-	}
+	if (req->status)
+		io_data->status = req->status;
+	else
+		io_data->status = req->actual;
+
+	complete(&io_data->done);
 }
 
 static void ffs_user_copy_worker(struct work_struct *work)
@@ -973,13 +977,12 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 
 			spin_unlock_irq(&epfile->ffs->eps_lock);
 		} else {
-			DECLARE_COMPLETION_ONSTACK(done);
-
 			req = ep->req;
 			req->buf      = data;
 			req->length   = io_data->len;
 
-			req->context  = &done;
+			init_completion(&io_data->done);
+			req->context  = io_data;
 			req->complete = ffs_epfile_io_complete;
 
 			ret = usb_ep_queue(ep->ep, req, GFP_ATOMIC);
@@ -992,7 +995,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 				bool interrupted = false;
 
 				if (unlikely(wait_for_completion_interruptible(
-								&done))) {
+							&io_data->done))) {
 					/*
 					 * To avoid race condition with
 					 * ffs_epfile_io_complete, dequeue the
@@ -1002,11 +1005,11 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 					 * callback.
 					 */
 					usb_ep_dequeue(ep->ep, req);
-					wait_for_completion(&done);
-					interrupted = ep->status < 0;
+					wait_for_completion(&io_data->done);
+					interrupted = io_data->status < 0;
 				}
 
-				ret = interrupted ? -EINTR : ep->status;
+				ret = interrupted ? -EINTR : io_data->status;
 				if (io_data->read && ret > 0 &&
 				    unlikely(copy_to_user(io_data->buf, data,
 							  ret)))
