@@ -996,6 +996,11 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 
 				if (unlikely(wait_for_completion_interruptible(
 							&io_data->done))) {
+					spin_lock_irq(&epfile->ffs->eps_lock);
+					if (epfile->ep != ep) {
+						ret = -ESHUTDOWN;
+						goto error_lock;
+					}
 					/*
 					 * To avoid race condition with
 					 * ffs_epfile_io_complete, dequeue the
@@ -1005,6 +1010,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 					 * callback.
 					 */
 					usb_ep_dequeue(ep->ep, req);
+					spin_unlock_irq(&epfile->ffs->eps_lock);
 					wait_for_completion(&io_data->done);
 					interrupted = io_data->status < 0;
 				}
