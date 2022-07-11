@@ -253,7 +253,7 @@ int main(int argc, char *argv[])
 #include <linux/types.h>\n\
 \n\
 u8 dfont_unicount[%d] = \n\
-{\n\t", argv[1], fontlen);
+{\n\t", argv[2], fontlen);
 
   for ( i = 0 ; i < fontlen ; i++ )
     {
