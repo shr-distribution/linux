@@ -15,7 +15,7 @@ clean-files := consolemap_deftbl.c defkeymap.c
 hostprogs += conmakehash
 
 quiet_cmd_conmk = CONMK   $@
-      cmd_conmk = $(obj)/conmakehash $< > $@
+      cmd_conmk = $(obj)/conmakehash $< $(shell basename $<) > $@
 
 $(obj)/consolemap_deftbl.c: $(src)/$(FONTMAPFILE) $(obj)/conmakehash
 	$(call cmd,conmk)
