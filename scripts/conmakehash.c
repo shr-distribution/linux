@@ -80,6 +80,7 @@ int main(int argc, char *argv[])
 {
   FILE *ctbl;
   char *tblname;
+  char *rel_tblname;
   char buffer[65536];
   int fontlen;
   int i, nuni, nent;
@@ -103,6 +104,19 @@ int main(int argc, char *argv[])
 	  exit(EX_NOINPUT);
 	}
     }
+
+  /* Strip $srctree from the input path so the generated file doesn't
+     embed the build path (Kbuild exports srctree as an absolute path
+     for O= builds). */
+  rel_tblname = tblname;
+  {
+    char *srctree = getenv("srctree");
+    size_t srctree_len = srctree ? strlen(srctree) : 0;
+
+    if (srctree_len && !strncmp(tblname, srctree, srctree_len) &&
+	tblname[srctree_len] == '/')
+      rel_tblname = tblname + srctree_len + 1;
+  }
 
   /* For now we assume the default font is always 256 characters. */
   fontlen = 256;
@@ -256,7 +270,7 @@ int main(int argc, char *argv[])
 #include <linux/types.h>\n\
 \n\
 u8 dfont_unicount[%d] = \n\
-{\n\t", argv[1], fontlen);
+{\n\t", rel_tblname, fontlen);
 
   for ( i = 0 ; i < fontlen ; i++ )
     {
