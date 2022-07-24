@@ -246,6 +246,10 @@
 	status = "okay";
 };
 
+&gpu {
+	status = "okay";
+};
+
 &otg {
 	status = "okay";
 
@@ -268,10 +272,6 @@
 
 			qcom,init-seq = /bits/ 8 <0x1 0x64>;
 		};
-	};
-
-	adreno@fdb00000 {
-		status = "okay";
 	};
 };
 
