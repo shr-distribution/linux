@@ -843,6 +843,7 @@
 	// 78: mt9m113
 };
 
+#if 0
 &gsbi6 {
 	status = "okay";
 	qcom,mode = <GSBI_PROT_UART_W_FC>;
@@ -854,7 +855,6 @@
 #define BT_WAKE				131
 #define BT_HOST_WAKE	129
 */
-
 &gsbi6_serial {
 	status = "okay";
 
@@ -873,6 +873,7 @@
 		//shutdown-gpios = <&msmgpio 41 GPIO_ACTIVE_HIGH>;
 	}; */
 };
+#endif
 
 &gsbi7 {
 	status = "okay";
