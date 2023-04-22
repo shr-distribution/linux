@@ -155,4 +155,14 @@ config TOUCHSCREEN_MTK_FOCALTECH_FHD
 	  Say Y here if you have Focaltech touch panel.
 	  If unsure, say N.
 
+config TOUCHSCREEN_MTK_SYNAPTICS
+	bool "Synaptics DSX for Mediatek package"
+	default n
+	help
+	  Say Y here if you have Synaptics DSX touch panel.
+
+	  If unsure, say N.
+
+source "drivers/input/touchscreen/mediatek/synaptics_dsx/Kconfig"
+
 endif
