@@ -28,7 +28,11 @@ DTB_LIST := $(dtb-y)
 endif
 DTB_OBJS := $(addprefix $(obj)/dts/,$(DTB_LIST))
 
-$(obj)/Image: vmlinux $(obj)/mtk.dtb FORCE
+ifneq ($(DTB_OBJS),)
+MTK_DTB := $(obj)/mtk.dtb
+endif
+
+$(obj)/Image: vmlinux $(MTK_DTB) FORCE
 	$(call if_changed,objcopy)
 
 $(obj)/Image.bz2: $(obj)/Image FORCE
