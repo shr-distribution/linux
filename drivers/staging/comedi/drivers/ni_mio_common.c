@@ -1838,7 +1838,6 @@ static int ni_ai_insn_read(struct comedi_device *dev,
 	int i, n;
 	unsigned int signbits;
 	unsigned int d;
-	unsigned long dl;
 
 	ni_load_channelgain_list(dev, s, 1, &insn->chanspec);
 
@@ -1889,15 +1888,15 @@ static int ni_ai_insn_read(struct comedi_device *dev,
 			 * bit to move a single 16bit stranded sample into
 			 * the FIFO.
 			 */
-			dl = 0;
+			d = 0;
 			for (i = 0; i < NI_TIMEOUT; i++) {
 				if (ni_readl(dev, NI6143_AI_FIFO_STATUS_REG) &
 				    0x01) {
 					/* Get stranded sample into FIFO */
 					ni_writel(dev, 0x01,
 						  NI6143_AI_FIFO_CTRL_REG);
-					dl = ni_readl(dev,
-						      NI6143_AI_FIFO_DATA_REG);
+					d = ni_readl(dev,
+						     NI6143_AI_FIFO_DATA_REG);
 					break;
 				}
 			}
@@ -1905,7 +1904,7 @@ static int ni_ai_insn_read(struct comedi_device *dev,
 				dev_err(dev->class_dev, "timeout\n");
 				return -ETIME;
 			}
-			data[n] = (((dl >> 16) & 0xFFFF) + signbits) & 0xFFFF;
+			data[n] = (((d >> 16) & 0xFFFF) + signbits) & 0xFFFF;
 		}
 	} else {
 		for (n = 0; n < insn->n; n++) {
@@ -1921,9 +1920,9 @@ static int ni_ai_insn_read(struct comedi_device *dev,
 				return -ETIME;
 			}
 			if (devpriv->is_m_series) {
-				dl = ni_readl(dev, NI_M_AI_FIFO_DATA_REG);
-				dl &= mask;
-				data[n] = dl;
+				d = ni_readl(dev, NI_M_AI_FIFO_DATA_REG);
+				d &= mask;
+				data[n] = d;
 			} else {
 				d = ni_readw(dev, NI_E_AI_FIFO_DATA_REG);
 				d += signbits;
@@ -1965,7 +1964,8 @@ static unsigned int ni_timer_to_ns(const struct comedi_device *dev, int timer)
 static void ni_cmd_set_mite_transfer(struct mite_ring *ring,
 				     struct comedi_subdevice *sdev,
 				     const struct comedi_cmd *cmd,
-				     unsigned int max_count) {
+				     unsigned int max_count)
+{
 #ifdef PCIDMA
 	unsigned int nbytes = max_count;
 
@@ -2730,66 +2730,36 @@ static int ni_ao_insn_write(struct comedi_device *dev,
 	return insn->n;
 }
 
-static int ni_ao_insn_config(struct comedi_device *dev,
-			     struct comedi_subdevice *s,
-			     struct comedi_insn *insn, unsigned int *data)
-{
-	const struct ni_board_struct *board = dev->board_ptr;
-	struct ni_private *devpriv = dev->private;
-	unsigned int nbytes;
-
-	switch (data[0]) {
-	case INSN_CONFIG_GET_HARDWARE_BUFFER_SIZE:
-		switch (data[1]) {
-		case COMEDI_OUTPUT:
-			nbytes = comedi_samples_to_bytes(s,
-							 board->ao_fifo_depth);
-			data[2] = 1 + nbytes;
-			if (devpriv->mite)
-				data[2] += devpriv->mite->fifo_size;
-			break;
-		case COMEDI_INPUT:
-			data[2] = 0;
-			break;
-		default:
-			return -EINVAL;
-		}
-		return 0;
-	default:
-		break;
-	}
-
-	return -EINVAL;
-}
-
-static int ni_ao_inttrig(struct comedi_device *dev,
-			 struct comedi_subdevice *s,
-			 unsigned int trig_num)
+/*
+ * Arms the AO device in preparation for a trigger event.
+ * This function also allocates and prepares a DMA channel (or FIFO if DMA is
+ * not used).  As a part of this preparation, this function preloads the DAC
+ * registers with the first values of the output stream.  This ensures that the
+ * first clock cycle after the trigger can be used for output.
+ *
+ * Note that this function _must_ happen after a user has written data to the
+ * output buffers via either mmap or write(fileno,...).
+ */
+static int ni_ao_arm(struct comedi_device *dev,
+		     struct comedi_subdevice *s)
 {
 	struct ni_private *devpriv = dev->private;
-	struct comedi_cmd *cmd = &s->async->cmd;
 	int ret;
 	int interrupt_b_bits;
 	int i;
 	static const int timeout = 1000;
 
 	/*
-	 * Require trig_num == cmd->start_arg when cmd->start_src == TRIG_INT.
-	 * For backwards compatibility, also allow trig_num == 0 when
-	 * cmd->start_src != TRIG_INT (i.e. when cmd->start_src == TRIG_EXT);
-	 * in that case, the internal trigger is being used as a pre-trigger
-	 * before the external trigger.
+	 * Prevent ao from doing things like trying to allocate the ao dma
+	 * channel multiple times.
 	 */
-	if (!(trig_num == cmd->start_arg ||
-	      (trig_num == 0 && cmd->start_src != TRIG_INT)))
+	if (!devpriv->ao_needs_arming) {
+		dev_dbg(dev->class_dev, "%s: device does not need arming!\n",
+			__func__);
 		return -EINVAL;
+	}
 
-	/*
-	 * Null trig at beginning prevent ao start trigger from executing more
-	 * than once per command (and doing things like trying to allocate the
-	 * ao dma channel multiple times).
-	 */
-	s->async->inttrig = NULL;
+	devpriv->ao_needs_arming = 0;
 
 	ni_set_bits(dev, NISTC_INTB_ENA_REG,
 		    NISTC_INTB_ENA_AO_FIFO | NISTC_INTB_ENA_AO_ERR, 0);
@@ -2840,6 +2810,75 @@ static int ni_ao_inttrig(struct comedi_device *dev,
 			   NISTC_AO_CMD1_BC_ARM |
 			   devpriv->ao_cmd1,
 		      NISTC_AO_CMD1_REG);
+
+	return 0;
+}
+
+static int ni_ao_insn_config(struct comedi_device *dev,
+			     struct comedi_subdevice *s,
+			     struct comedi_insn *insn, unsigned int *data)
+{
+	const struct ni_board_struct *board = dev->board_ptr;
+	struct ni_private *devpriv = dev->private;
+	unsigned int nbytes;
+
+	switch (data[0]) {
+	case INSN_CONFIG_GET_HARDWARE_BUFFER_SIZE:
+		switch (data[1]) {
+		case COMEDI_OUTPUT:
+			nbytes = comedi_samples_to_bytes(s,
+							 board->ao_fifo_depth);
+			data[2] = 1 + nbytes;
+			if (devpriv->mite)
+				data[2] += devpriv->mite->fifo_size;
+			break;
+		case COMEDI_INPUT:
+			data[2] = 0;
+			break;
+		default:
+			return -EINVAL;
+		}
+		return 0;
+	case INSN_CONFIG_ARM:
+		return ni_ao_arm(dev, s);
+	default:
+		break;
+	}
+
+	return -EINVAL;
+}
+
+static int ni_ao_inttrig(struct comedi_device *dev,
+			 struct comedi_subdevice *s,
+			 unsigned int trig_num)
+{
+	struct ni_private *devpriv = dev->private;
+	struct comedi_cmd *cmd = &s->async->cmd;
+	int ret;
+
+	/*
+	 * Require trig_num == cmd->start_arg when cmd->start_src == TRIG_INT.
+	 * For backwards compatibility, also allow trig_num == 0 when
+	 * cmd->start_src != TRIG_INT (i.e. when cmd->start_src == TRIG_EXT);
+	 * in that case, the internal trigger is being used as a pre-trigger
+	 * before the external trigger.
+	 */
+	if (!(trig_num == cmd->start_arg ||
+	      (trig_num == 0 && cmd->start_src != TRIG_INT)))
+		return -EINVAL;
+
+	/*
+	 * Null trig at beginning prevent ao start trigger from executing more
+	 * than once per command.
+	 */
+	s->async->inttrig = NULL;
+
+	if (devpriv->ao_needs_arming) {
+		/* only arm this device if it still needs arming */
+		ret = ni_ao_arm(dev, s);
+		if (ret)
+			return ret;
+	}
 
 	ni_stc_writew(dev, NISTC_AO_CMD2_START1_PULSE | devpriv->ao_cmd2,
 		      NISTC_AO_CMD2_REG);
@@ -3227,10 +3266,17 @@ static int ni_ao_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 	ni_ao_cmd_set_interrupts(dev, s);
 
 	/*
-	 * arm(ing) and star(ting) happen in ni_ao_inttrig, which _must_ be
-	 * called for ao commands since 1) TRIG_NOW is not supported and 2) DMA
-	 * must be setup and initially written to before arm/start happen.
+	 * arm(ing) must happen later so that DMA can be setup and DACs
+	 * preloaded with the actual output buffer before starting.
+	 *
+	 * start(ing) must happen _after_ arming is completed.  Starting can be
+	 * done either via ni_ao_inttrig, or via an external trigger.
+	 *
+	 * **Currently, ni_ao_inttrig will automatically attempt a call to
+	 * ni_ao_arm if the device still needs arming at that point.  This
+	 * allows backwards compatibility.
 	 */
+	devpriv->ao_needs_arming = 1;
 	return 0;
 }
 
@@ -3477,6 +3523,7 @@ static int ni_cdio_check_chanlist(struct comedi_device *dev,
 static int ni_cdio_cmdtest(struct comedi_device *dev,
 			   struct comedi_subdevice *s, struct comedi_cmd *cmd)
 {
+	unsigned int bytes_per_scan;
 	int err = 0;
 	int tmp;
 
@@ -3506,9 +3553,12 @@ static int ni_cdio_cmdtest(struct comedi_device *dev,
 	err |= comedi_check_trigger_arg_is(&cmd->convert_arg, 0);
 	err |= comedi_check_trigger_arg_is(&cmd->scan_end_arg,
 					   cmd->chanlist_len);
-	err |= comedi_check_trigger_arg_max(&cmd->stop_arg,
-					    s->async->prealloc_bufsz /
-					    comedi_bytes_per_scan(s));
+	bytes_per_scan = comedi_bytes_per_scan_cmd(s, cmd);
+	if (bytes_per_scan) {
+		err |= comedi_check_trigger_arg_max(&cmd->stop_arg,
+						    s->async->prealloc_bufsz /
+						    bytes_per_scan);
+	}
 
 	if (err)
 		return 3;
@@ -4941,7 +4991,10 @@ static int ni_valid_rtsi_output_source(struct comedi_device *dev,
 	case NI_RTSI_OUTPUT_G_SRC0:
 	case NI_RTSI_OUTPUT_G_GATE0:
 	case NI_RTSI_OUTPUT_RGOUT0:
-	case NI_RTSI_OUTPUT_RTSI_BRD_0:
+	case NI_RTSI_OUTPUT_RTSI_BRD(0):
+	case NI_RTSI_OUTPUT_RTSI_BRD(1):
+	case NI_RTSI_OUTPUT_RTSI_BRD(2):
+	case NI_RTSI_OUTPUT_RTSI_BRD(3):
 		return 1;
 	case NI_RTSI_OUTPUT_RTSI_OSC:
 		return (devpriv->is_m_series) ? 1 : 0;
@@ -4962,11 +5015,18 @@ static int ni_set_rtsi_routing(struct comedi_device *dev,
 		devpriv->rtsi_trig_a_output_reg |= NISTC_RTSI_TRIG(chan, src);
 		ni_stc_writew(dev, devpriv->rtsi_trig_a_output_reg,
 			      NISTC_RTSI_TRIGA_OUT_REG);
-	} else if (chan < 8) {
+	} else if (chan < NISTC_RTSI_TRIG_NUM_CHAN(devpriv->is_m_series)) {
 		devpriv->rtsi_trig_b_output_reg &= ~NISTC_RTSI_TRIG_MASK(chan);
 		devpriv->rtsi_trig_b_output_reg |= NISTC_RTSI_TRIG(chan, src);
 		ni_stc_writew(dev, devpriv->rtsi_trig_b_output_reg,
 			      NISTC_RTSI_TRIGB_OUT_REG);
+	} else if (chan != NISTC_RTSI_TRIG_OLD_CLK_CHAN) {
+		/* probably should never reach this, since the
+		 * ni_valid_rtsi_output_source above errors out if chan is too
+		 * high
+		 */
+		dev_err(dev->class_dev, "%s: unknown rtsi channel\n", __func__);
+		return -EINVAL;
 	}
 	return 2;
 }
@@ -4982,12 +5042,12 @@ static unsigned int ni_get_rtsi_routing(struct comedi_device *dev,
 	} else if (chan < NISTC_RTSI_TRIG_NUM_CHAN(devpriv->is_m_series)) {
 		return NISTC_RTSI_TRIG_TO_SRC(chan,
 					      devpriv->rtsi_trig_b_output_reg);
-	} else {
-		if (chan == NISTC_RTSI_TRIG_OLD_CLK_CHAN)
-			return NI_RTSI_OUTPUT_RTSI_OSC;
-		dev_err(dev->class_dev, "bug! should never get here?\n");
-		return 0;
+	} else if (chan == NISTC_RTSI_TRIG_OLD_CLK_CHAN) {
+		return NI_RTSI_OUTPUT_RTSI_OSC;
 	}
+
+	dev_err(dev->class_dev, "%s: unknown rtsi channel\n", __func__);
+	return -EINVAL;
 }
 
 static int ni_rtsi_insn_config(struct comedi_device *dev,
@@ -5407,11 +5467,11 @@ static int ni_E_init(struct comedi_device *dev,
 	/* Digital I/O (PFI) subdevice */
 	s = &dev->subdevices[NI_PFI_DIO_SUBDEV];
 	s->type		= COMEDI_SUBD_DIO;
-	s->subdev_flags	= SDF_READABLE | SDF_WRITABLE | SDF_INTERNAL;
 	s->maxdata	= 1;
 	if (devpriv->is_m_series) {
 		s->n_chan	= 16;
 		s->insn_bits	= ni_pfi_insn_bits;
+		s->subdev_flags	= SDF_READABLE | SDF_WRITABLE | SDF_INTERNAL;
 
 		ni_writew(dev, s->state, NI_M_PFI_DO_REG);
 		for (i = 0; i < NUM_PFI_OUTPUT_SELECT_REGS; ++i) {
@@ -5420,6 +5480,7 @@ static int ni_E_init(struct comedi_device *dev,
 		}
 	} else {
 		s->n_chan	= 10;
+		s->subdev_flags	= SDF_INTERNAL;
 	}
 	s->insn_config	= ni_pfi_insn_config;
 

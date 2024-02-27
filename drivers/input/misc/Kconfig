@@ -117,17 +117,6 @@ config INPUT_E3X0_BUTTON
 	  To compile this driver as a module, choose M here: the
 	  module will be called e3x0_button.
 
-config INPUT_HBTP_INPUT
-	tristate "HBTP input driver support"
-	help
-	  This option enables an input driver for the host based touch
-	  processing.
-
-	  Say Y to enable HBTP input driver.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called hbtp_input.
-
 config INPUT_PCSPKR
 	tristate "PC Speaker support"
 	depends on PCSPKR_PLATFORM
@@ -154,7 +143,7 @@ config INPUT_PM8941_PWRKEY
 
 config INPUT_PM8XXX_VIBRATOR
 	tristate "Qualcomm PM8XXX vibrator support"
-	depends on MFD_PM8XXX
+	depends on MFD_PM8XXX || MFD_SPMI_PMIC
 	select INPUT_FF_MEMLESS
 	help
 	  This option enables device driver support for the vibrator
@@ -174,15 +163,6 @@ config INPUT_PMIC8XXX_PWRKEY
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called pmic8xxx-pwrkey.
-
-config INPUT_QPNP_POWER_ON
-	tristate "QPNP PMIC Power-on support"
-	depends on SPMI
-	help
-	  This option enables device driver support for the power-on
-	  functionality of Qualcomm Technologies, Inc. PNP PMICs.  It supports
-	  reporting the change in status of the KPDPWR_N line (connected to the
-	  power-key) as well as reset features.
 
 config INPUT_SPARCSPKR
 	tristate "SPARC Speaker support"
@@ -253,16 +233,6 @@ config INPUT_MMA8450
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called mma8450.
-
-config INPUT_MPU3050
-	tristate "MPU3050 Triaxial gyroscope sensor"
-	depends on I2C
-	help
-	  Say Y here if you want to support InvenSense MPU3050
-	  connected via an I2C bus.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called mpu3050.
 
 config INPUT_APANEL
 	tristate "Fujitsu Lifebook Application Panel buttons"
@@ -346,6 +316,16 @@ config INPUT_COBALT_BTNS
 	  To compile this driver as a module, choose M here: the
 	  module will be called cobalt_btns.
 
+config INPUT_CPCAP_PWRBUTTON
+	tristate "CPCAP OnKey"
+	depends on MFD_CPCAP
+	help
+	  Say Y here if you want to enable power key reporting via the
+	  Motorola CPCAP chip.
+
+	  To compile this driver as a module, choose M here. The module will
+	  be called cpcap-pwrbutton.
+
 config INPUT_WISTRON_BTNS
 	tristate "x86 Wistron laptop button interface"
 	depends on X86_32
@@ -386,29 +366,6 @@ config INPUT_ATI_REMOTE2
 
 	  To compile this driver as a module, choose M here: the module will be
 	  called ati_remote2.
-
-config INPUT_KEYCHORD
-	tristate "Key chord input driver support"
-	help
-	  Say Y here if you want to enable the key chord driver
-	  accessible at /dev/keychord.  This driver can be used
-	  for receiving notifications when client specified key
-	  combinations are pressed.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called keychord.
-
-
-config STMVL53L0X
-        tristate "STM VL53L0X Ranging Sensor"
-        depends on I2C
-        help
-	  Say Y here if you want to enable the key chord driver
-          This is a Time-of-Flight (ToF) laser-ranging sensor, provide
-	  the distance from obstacle.
-
-	  To compile this driver as a module, choose M here: the module will
-	  be called vl5310x.
 
 config INPUT_KEYSPAN_REMOTE
 	tristate "Keyspan DMR USB remote control"
@@ -629,6 +586,29 @@ config INPUT_PWM_BEEPER
 	  To compile this driver as a module, choose M here: the module will be
 	  called pwm-beeper.
 
+config INPUT_PWM_VIBRA
+	tristate "PWM vibrator support"
+	depends on PWM
+	select INPUT_FF_MEMLESS
+	help
+	  Say Y here to get support for PWM based vibrator devices.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called pwm-vibra.
+
+config INPUT_RK805_PWRKEY
+	tristate "Rockchip RK805 PMIC power key support"
+	depends on MFD_RK808
+	help
+	  Select this option to enable power key driver for RK805.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called rk805_pwrkey.
+
 config INPUT_GPIO_ROTARY_ENCODER
 	tristate "Rotary encoders connected to GPIO pins"
 	depends on GPIOLIB || COMPILE_TEST
@@ -673,11 +653,12 @@ config INPUT_DA9055_ONKEY
 	  will be called da9055_onkey.
 
 config INPUT_DA9063_ONKEY
-	tristate "Dialog DA9062/63 OnKey"
+	tristate "Dialog DA9063/62/61 OnKey"
 	depends on MFD_DA9063 || MFD_DA9062
 	help
-	  Support the ONKEY of Dialog DA9063 and DA9062 Power Management ICs
-	  as an input device capable of reporting the power button status.
+	  Support the ONKEY of Dialog DA9063, DA9062 and DA9061 Power
+	  Management ICs as an input device capable of reporting the
+	  power button status.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called da9063_onkey.
@@ -848,17 +829,6 @@ config INPUT_DRV260X_HAPTICS
 	  To compile this driver as a module, choose M here: the
 	  module will be called drv260x-haptics.
 
-config INPUT_DRV2624_HAPTICS
-	tristate "TI DRV2624 haptics support"
-	depends on INPUT && I2C
-	select INPUT_FF_MEMLESS
-	select REGMAP_I2C
-	help
-	  Say Y to enable support for the TI DRV2624 haptics driver.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called drv2624-haptics.
-
 config INPUT_DRV2665_HAPTICS
 	tristate "TI DRV2665 haptics support"
 	depends on INPUT && I2C
@@ -891,7 +861,3 @@ config INPUT_HISI_POWERKEY
 	  module will be called hisi_powerkey.
 
 endif
-
-source "drivers/input/misc/vd6281/Kconfig"
-source "drivers/input/misc/fpc_fingerprint/Kconfig"
-source "drivers/input/misc/fpr_FingerprintCard/Kconfig"

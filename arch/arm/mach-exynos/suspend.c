@@ -57,7 +57,6 @@ struct exynos_wkup_irq {
 struct exynos_pm_data {
 	const struct exynos_wkup_irq *wkup_irq;
 	unsigned int wake_disable_mask;
-	unsigned int *release_ret_regs;
 
 	void (*pm_prepare)(void);
 	void (*pm_resume_prepare)(void);
@@ -66,7 +65,7 @@ struct exynos_pm_data {
 	int (*cpu_suspend)(unsigned long);
 };
 
-static const struct exynos_pm_data *pm_data;
+static const struct exynos_pm_data *pm_data __ro_after_init;
 
 static int exynos5420_cpu_state;
 static unsigned int exynos_pmu_spare3;
@@ -93,47 +92,6 @@ static const struct exynos_wkup_irq exynos5250_wkup_irq[] = {
 	{ 43, BIT(1) }, /* RTC alarm */
 	{ 44, BIT(2) }, /* RTC tick */
 	{ /* sentinel */ },
-};
-
-static unsigned int exynos_release_ret_regs[] = {
-	S5P_PAD_RET_MAUDIO_OPTION,
-	S5P_PAD_RET_GPIO_OPTION,
-	S5P_PAD_RET_UART_OPTION,
-	S5P_PAD_RET_MMCA_OPTION,
-	S5P_PAD_RET_MMCB_OPTION,
-	S5P_PAD_RET_EBIA_OPTION,
-	S5P_PAD_RET_EBIB_OPTION,
-	REG_TABLE_END,
-};
-
-static unsigned int exynos3250_release_ret_regs[] = {
-	S5P_PAD_RET_MAUDIO_OPTION,
-	S5P_PAD_RET_GPIO_OPTION,
-	S5P_PAD_RET_UART_OPTION,
-	S5P_PAD_RET_MMCA_OPTION,
-	S5P_PAD_RET_MMCB_OPTION,
-	S5P_PAD_RET_EBIA_OPTION,
-	S5P_PAD_RET_EBIB_OPTION,
-	S5P_PAD_RET_MMC2_OPTION,
-	S5P_PAD_RET_SPI_OPTION,
-	REG_TABLE_END,
-};
-
-static unsigned int exynos5420_release_ret_regs[] = {
-	EXYNOS_PAD_RET_DRAM_OPTION,
-	EXYNOS_PAD_RET_MAUDIO_OPTION,
-	EXYNOS_PAD_RET_JTAG_OPTION,
-	EXYNOS5420_PAD_RET_GPIO_OPTION,
-	EXYNOS5420_PAD_RET_UART_OPTION,
-	EXYNOS5420_PAD_RET_MMCA_OPTION,
-	EXYNOS5420_PAD_RET_MMCB_OPTION,
-	EXYNOS5420_PAD_RET_MMCC_OPTION,
-	EXYNOS5420_PAD_RET_HSI_OPTION,
-	EXYNOS_PAD_RET_EBIA_OPTION,
-	EXYNOS_PAD_RET_EBIB_OPTION,
-	EXYNOS5420_PAD_RET_SPI_OPTION,
-	EXYNOS5420_PAD_RET_DRAM_COREBLK_OPTION,
-	REG_TABLE_END,
 };
 
 static int exynos_irq_set_wake(struct irq_data *data, unsigned int state)
@@ -229,21 +187,20 @@ static int __init exynos_pmu_irq_init(struct device_node *node,
 	struct irq_domain *parent_domain, *domain;
 
 	if (!parent) {
-		pr_err("%s: no parent, giving up\n", node->full_name);
+		pr_err("%pOF: no parent, giving up\n", node);
 		return -ENODEV;
 	}
 
 	parent_domain = irq_find_host(parent);
 	if (!parent_domain) {
-		pr_err("%s: unable to obtain parent domain\n", node->full_name);
+		pr_err("%pOF: unable to obtain parent domain\n", node);
 		return -ENXIO;
 	}
 
 	pmu_base_addr = of_iomap(node, 0);
 
 	if (!pmu_base_addr) {
-		pr_err("%s: failed to find exynos pmu register\n",
-		       node->full_name);
+		pr_err("%pOF: failed to find exynos pmu register\n", node);
 		return -ENOMEM;
 	}
 
@@ -252,6 +209,7 @@ static int __init exynos_pmu_irq_init(struct device_node *node,
 					  NULL);
 	if (!domain) {
 		iounmap(pmu_base_addr);
+		pmu_base_addr = NULL;
 		return -ENOMEM;
 	}
 
@@ -270,7 +228,6 @@ EXYNOS_PMU_IRQ(exynos3250_pmu_irq, "samsung,exynos3250-pmu");
 EXYNOS_PMU_IRQ(exynos4210_pmu_irq, "samsung,exynos4210-pmu");
 EXYNOS_PMU_IRQ(exynos4212_pmu_irq, "samsung,exynos4212-pmu");
 EXYNOS_PMU_IRQ(exynos4412_pmu_irq, "samsung,exynos4412-pmu");
-EXYNOS_PMU_IRQ(exynos4415_pmu_irq, "samsung,exynos4415-pmu");
 EXYNOS_PMU_IRQ(exynos5250_pmu_irq, "samsung,exynos5250-pmu");
 EXYNOS_PMU_IRQ(exynos5420_pmu_irq, "samsung,exynos5420-pmu");
 
@@ -344,7 +301,7 @@ static void exynos_pm_prepare(void)
 	exynos_pm_enter_sleep_mode();
 
 	/* ensure at least INFORM0 has the resume address */
-	pmu_raw_writel(virt_to_phys(exynos_cpu_resume), S5P_INFORM0);
+	pmu_raw_writel(__pa_symbol(exynos_cpu_resume), S5P_INFORM0);
 }
 
 static void exynos3250_pm_prepare(void)
@@ -361,7 +318,7 @@ static void exynos3250_pm_prepare(void)
 	exynos_pm_enter_sleep_mode();
 
 	/* ensure at least INFORM0 has the resume address */
-	pmu_raw_writel(virt_to_phys(exynos_cpu_resume), S5P_INFORM0);
+	pmu_raw_writel(__pa_symbol(exynos_cpu_resume), S5P_INFORM0);
 }
 
 static void exynos5420_pm_prepare(void)
@@ -386,11 +343,11 @@ static void exynos5420_pm_prepare(void)
 
 	/* ensure at least INFORM0 has the resume address */
 	if (IS_ENABLED(CONFIG_EXYNOS5420_MCPM))
-		pmu_raw_writel(virt_to_phys(mcpm_entry_point), S5P_INFORM0);
+		pmu_raw_writel(__pa_symbol(mcpm_entry_point), S5P_INFORM0);
 
-	tmp = pmu_raw_readl(EXYNOS5_ARM_L2_OPTION);
-	tmp &= ~EXYNOS5_USE_RETENTION;
-	pmu_raw_writel(tmp, EXYNOS5_ARM_L2_OPTION);
+	tmp = pmu_raw_readl(EXYNOS_L2_OPTION(0));
+	tmp &= ~EXYNOS_L2_USE_RETENTION;
+	pmu_raw_writel(tmp, EXYNOS_L2_OPTION(0));
 
 	tmp = pmu_raw_readl(EXYNOS5420_SFR_AXI_CGDIS1);
 	tmp |= EXYNOS5420_UFS;
@@ -442,24 +399,12 @@ static int exynos5420_pm_suspend(void)
 	return 0;
 }
 
-static void exynos_pm_release_retention(void)
-{
-	unsigned int i;
-
-	for (i = 0; (pm_data->release_ret_regs[i] != REG_TABLE_END); i++)
-		pmu_raw_writel(EXYNOS_WAKEUP_FROM_LOWPWR,
-				pm_data->release_ret_regs[i]);
-}
-
 static void exynos_pm_resume(void)
 {
 	u32 cpuid = read_cpuid_part();
 
 	if (exynos_pm_central_resume())
 		goto early_wakeup;
-
-	/* For release retention */
-	exynos_pm_release_retention();
 
 	if (cpuid == ARM_CPU_PART_CORTEX_A9)
 		scu_enable(S5P_VA_SCU);
@@ -482,9 +427,6 @@ static void exynos3250_pm_resume(void)
 	if (exynos_pm_central_resume())
 		goto early_wakeup;
 
-	/* For release retention */
-	exynos_pm_release_retention();
-
 	pmu_raw_writel(S5P_USE_STANDBY_WFI_ALL, S5P_CENTRAL_SEQ_OPTION);
 
 	if (call_firmware_op(resume) == -ENOSYS
@@ -499,8 +441,27 @@ early_wakeup:
 
 static void exynos5420_prepare_pm_resume(void)
 {
+	unsigned int mpidr, cluster;
+
+	mpidr = read_cpuid_mpidr();
+	cluster = MPIDR_AFFINITY_LEVEL(mpidr, 1);
+
 	if (IS_ENABLED(CONFIG_EXYNOS5420_MCPM))
 		WARN_ON(mcpm_cpu_powered_up());
+
+	if (IS_ENABLED(CONFIG_HW_PERF_EVENTS) && cluster != 0) {
+		/*
+		 * When system is resumed on the LITTLE/KFC core (cluster 1),
+		 * the DSCR is not properly updated until the power is turned
+		 * on also for the cluster 0. Enable it for a while to
+		 * propagate the SPNIDEN and SPIDEN signals from Secure JTAG
+		 * block and avoid undefined instruction issue on CP14 reset.
+		 */
+		pmu_raw_writel(S5P_CORE_LOCAL_PWR_EN,
+				EXYNOS_COMMON_CONFIGURATION(0));
+		pmu_raw_writel(0,
+				EXYNOS_COMMON_CONFIGURATION(0));
+	}
 }
 
 static void exynos5420_pm_resume(void)
@@ -521,9 +482,6 @@ static void exynos5420_pm_resume(void)
 
 	if (exynos_pm_central_resume())
 		goto early_wakeup;
-
-	/* For release retention */
-	exynos_pm_release_retention();
 
 	pmu_raw_writel(exynos_pmu_spare3, S5P_PMU_SPARE3);
 
@@ -637,7 +595,6 @@ static const struct platform_suspend_ops exynos_suspend_ops = {
 static const struct exynos_pm_data exynos3250_pm_data = {
 	.wkup_irq	= exynos3250_wkup_irq,
 	.wake_disable_mask = ((0xFF << 8) | (0x1F << 1)),
-	.release_ret_regs = exynos3250_release_ret_regs,
 	.pm_suspend	= exynos_pm_suspend,
 	.pm_resume	= exynos3250_pm_resume,
 	.pm_prepare	= exynos3250_pm_prepare,
@@ -647,7 +604,6 @@ static const struct exynos_pm_data exynos3250_pm_data = {
 static const struct exynos_pm_data exynos4_pm_data = {
 	.wkup_irq	= exynos4_wkup_irq,
 	.wake_disable_mask = ((0xFF << 8) | (0x1F << 1)),
-	.release_ret_regs = exynos_release_ret_regs,
 	.pm_suspend	= exynos_pm_suspend,
 	.pm_resume	= exynos_pm_resume,
 	.pm_prepare	= exynos_pm_prepare,
@@ -657,7 +613,6 @@ static const struct exynos_pm_data exynos4_pm_data = {
 static const struct exynos_pm_data exynos5250_pm_data = {
 	.wkup_irq	= exynos5250_wkup_irq,
 	.wake_disable_mask = ((0xFF << 8) | (0x1F << 1)),
-	.release_ret_regs = exynos_release_ret_regs,
 	.pm_suspend	= exynos_pm_suspend,
 	.pm_resume	= exynos_pm_resume,
 	.pm_prepare	= exynos_pm_prepare,
@@ -667,7 +622,6 @@ static const struct exynos_pm_data exynos5250_pm_data = {
 static const struct exynos_pm_data exynos5420_pm_data = {
 	.wkup_irq	= exynos5250_wkup_irq,
 	.wake_disable_mask = (0x7F << 7) | (0x1F << 1),
-	.release_ret_regs = exynos5420_release_ret_regs,
 	.pm_resume_prepare = exynos5420_prepare_pm_resume,
 	.pm_resume	= exynos5420_pm_resume,
 	.pm_suspend	= exynos5420_pm_suspend,
@@ -714,8 +668,10 @@ void __init exynos_pm_init(void)
 
 	if (WARN_ON(!of_find_property(np, "interrupt-controller", NULL))) {
 		pr_warn("Outdated DT detected, suspend/resume will NOT work\n");
+		of_node_put(np);
 		return;
 	}
+	of_node_put(np);
 
 	pm_data = (const struct exynos_pm_data *) match->data;
 

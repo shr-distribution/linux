@@ -19,7 +19,7 @@
 #include <linux/linkage.h>
 
 #include <asm/cache.h>
-#include <asm/uaccess.h>
+#include <asm/asm-uaccess.h>
 
 /*
  * Copy from user space to user space (alignment handled by the hardware)
@@ -64,6 +64,7 @@
 	.endm
 
 end	.req	x5
+
 ENTRY(__arch_copy_in_user)
 	uaccess_enable_not_uao x3, x4, x5
 	add	end, x0, x2
@@ -76,5 +77,6 @@ ENDPROC(__arch_copy_in_user)
 	.section .fixup,"ax"
 	.align	2
 9998:	sub	x0, end, dst			// bytes not copied
+	uaccess_disable_not_uao x3, x4
 	ret
 	.previous

@@ -604,6 +604,8 @@ static const struct usb_device_id id_table_combined[] = {
 		.driver_info = (kernel_ulong_t)&ftdi_jtag_quirk },
 	{ USB_DEVICE(FTDI_VID, FTDI_NT_ORIONLXM_PID),
 		.driver_info = (kernel_ulong_t)&ftdi_jtag_quirk },
+	{ USB_DEVICE(FTDI_VID, FTDI_NT_ORIONLX_PLUS_PID) },
+	{ USB_DEVICE(FTDI_VID, FTDI_NT_ORION_IO_PID) },
 	{ USB_DEVICE(FTDI_VID, FTDI_SYNAPSE_SS200_PID) },
 	{ USB_DEVICE(FTDI_VID, FTDI_CUSTOMWARE_MINIPLEX_PID) },
 	{ USB_DEVICE(FTDI_VID, FTDI_CUSTOMWARE_MINIPLEX2_PID) },
@@ -1020,6 +1022,15 @@ static const struct usb_device_id id_table_combined[] = {
 	{ USB_DEVICE(CYPRESS_VID, CYPRESS_WICED_BT_USB_PID) },
 	{ USB_DEVICE(CYPRESS_VID, CYPRESS_WICED_WL_USB_PID) },
 	{ USB_DEVICE(AIRBUS_DS_VID, AIRBUS_DS_P8GR) },
+	/* EZPrototypes devices */
+	{ USB_DEVICE(EZPROTOTYPES_VID, HJELMSLUND_USB485_ISO_PID) },
+	{ USB_DEVICE_INTERFACE_NUMBER(UNJO_VID, UNJO_ISODEBUG_V1_PID, 1) },
+	/* Sienna devices */
+	{ USB_DEVICE(FTDI_VID, FTDI_SIENNA_PID) },
+	{ USB_DEVICE(ECHELON_VID, ECHELON_U20_PID) },
+	/* U-Blox devices */
+	{ USB_DEVICE(UBLOX_VID, UBLOX_C099F9P_ZED_PID) },
+	{ USB_DEVICE(UBLOX_VID, UBLOX_C099F9P_ODIN_PID) },
 	{ }					/* Terminating entry */
 };
 
@@ -1249,42 +1260,13 @@ static __u32 get_ftdi_divisor(struct tty_struct *tty,
 	int div_okay = 1;
 	int baud;
 
-	/*
-	 * The logic involved in setting the baudrate can be cleanly split into
-	 * 3 steps.
-	 * 1. Standard baud rates are set in tty->termios->c_cflag
-	 * 2. If these are not enough, you can set any speed using alt_speed as
-	 * follows:
-	 *    - set tty->termios->c_cflag speed to B38400
-	 *    - set your real speed in tty->alt_speed; it gets ignored when
-	 *      alt_speed==0, (or)
-	 *    - call TIOCSSERIAL ioctl with (struct serial_struct) set as
-	 *	follows:
-	 *      flags & ASYNC_SPD_MASK == ASYNC_SPD_[HI, VHI, SHI, WARP],
-	 *	this just sets alt_speed to (HI: 57600, VHI: 115200,
-	 *	SHI: 230400, WARP: 460800)
-	 * ** Steps 1, 2 are done courtesy of tty_get_baud_rate
-	 * 3. You can also set baud rate by setting custom divisor as follows
-	 *    - set tty->termios->c_cflag speed to B38400
-	 *    - call TIOCSSERIAL ioctl with (struct serial_struct) set as
-	 *	follows:
-	 *      o flags & ASYNC_SPD_MASK == ASYNC_SPD_CUST
-	 *      o custom_divisor set to baud_base / your_new_baudrate
-	 * ** Step 3 is done courtesy of code borrowed from serial.c
-	 *    I should really spend some time and separate + move this common
-	 *    code to serial.c, it is replicated in nearly every serial driver
-	 *    you see.
-	 */
-
-	/* 1. Get the baud rate from the tty settings, this observes
-	      alt_speed hack */
-
 	baud = tty_get_baud_rate(tty);
 	dev_dbg(dev, "%s - tty_get_baud_rate reports speed %d\n", __func__, baud);
 
-	/* 2. Observe async-compatible custom_divisor hack, update baudrate
-	   if needed */
-
+	/*
+	 * Observe deprecated async-compatible custom_divisor hack, update
+	 * baudrate if needed.
+	 */
 	if (baud == 38400 &&
 	    ((priv->flags & ASYNC_SPD_MASK) == ASYNC_SPD_CUST) &&
 	     (priv->custom_divisor)) {
@@ -1292,8 +1274,6 @@ static __u32 get_ftdi_divisor(struct tty_struct *tty,
 		dev_dbg(dev, "%s - custom divisor %d sets baud rate to %d\n",
 			__func__, priv->custom_divisor, baud);
 	}
-
-	/* 3. Convert baudrate to device-specific divisor */
 
 	if (!baud)
 		baud = 9600;
@@ -1412,6 +1392,9 @@ static int write_latency_timer(struct usb_serial_port *port)
 	int rv;
 	int l = priv->latency;
 
+	if (priv->chip_type == SIO || priv->chip_type == FT8U232AM)
+		return -EINVAL;
+
 	if (priv->flags & ASYNC_LOW_LATENCY)
 		l = 1;
 
@@ -1428,7 +1411,7 @@ static int write_latency_timer(struct usb_serial_port *port)
 	return rv;
 }
 
-static int read_latency_timer(struct usb_serial_port *port)
+static int _read_latency_timer(struct usb_serial_port *port)
 {
 	struct ftdi_private *priv = usb_get_serial_port_data(port);
 	struct usb_device *udev = port->serial->dev;
@@ -1446,16 +1429,34 @@ static int read_latency_timer(struct usb_serial_port *port)
 			     0, priv->interface,
 			     buf, 1, WDR_TIMEOUT);
 	if (rv < 1) {
-		dev_err(&port->dev, "Unable to read latency timer: %i\n", rv);
 		if (rv >= 0)
 			rv = -EIO;
 	} else {
-		priv->latency = buf[0];
+		rv = buf[0];
 	}
 
 	kfree(buf);
 
 	return rv;
+}
+
+static int read_latency_timer(struct usb_serial_port *port)
+{
+	struct ftdi_private *priv = usb_get_serial_port_data(port);
+	int rv;
+
+	if (priv->chip_type == SIO || priv->chip_type == FT8U232AM)
+		return -EINVAL;
+
+	rv = _read_latency_timer(port);
+	if (rv < 0) {
+		dev_err(&port->dev, "Unable to read latency timer: %i\n", rv);
+		return rv;
+	}
+
+	priv->latency = rv;
+
+	return 0;
 }
 
 static int get_serial_info(struct usb_serial_port *port,
@@ -1464,8 +1465,6 @@ static int get_serial_info(struct usb_serial_port *port,
 	struct ftdi_private *priv = usb_get_serial_port_data(port);
 	struct serial_struct tmp;
 
-	if (!retinfo)
-		return -EFAULT;
 	memset(&tmp, 0, sizeof(tmp));
 	tmp.flags = priv->flags;
 	tmp.baud_base = priv->baud_base;
@@ -1491,8 +1490,7 @@ static int set_serial_info(struct tty_struct *tty,
 	/* Do error checking and permission checking */
 
 	if (!capable(CAP_SYS_ADMIN)) {
-		if (((new_serial.flags & ~ASYNC_USR_MASK) !=
-		     (priv->flags & ~ASYNC_USR_MASK))) {
+		if ((new_serial.flags ^ priv->flags) & ~ASYNC_USR_MASK) {
 			mutex_unlock(&priv->cfg_lock);
 			return -EPERM;
 		}
@@ -1516,23 +1514,14 @@ static int set_serial_info(struct tty_struct *tty,
 check_and_exit:
 	write_latency_timer(port);
 
-	if ((old_priv.flags & ASYNC_SPD_MASK) !=
-	     (priv->flags & ASYNC_SPD_MASK)) {
-		if ((priv->flags & ASYNC_SPD_MASK) == ASYNC_SPD_HI)
-			tty->alt_speed = 57600;
-		else if ((priv->flags & ASYNC_SPD_MASK) == ASYNC_SPD_VHI)
-			tty->alt_speed = 115200;
-		else if ((priv->flags & ASYNC_SPD_MASK) == ASYNC_SPD_SHI)
-			tty->alt_speed = 230400;
-		else if ((priv->flags & ASYNC_SPD_MASK) == ASYNC_SPD_WARP)
-			tty->alt_speed = 460800;
-		else
-			tty->alt_speed = 0;
-	}
-	if (((old_priv.flags & ASYNC_SPD_MASK) !=
-	     (priv->flags & ASYNC_SPD_MASK)) ||
-	    (((priv->flags & ASYNC_SPD_MASK) == ASYNC_SPD_CUST) &&
-	     (old_priv.custom_divisor != priv->custom_divisor))) {
+	if ((priv->flags ^ old_priv.flags) & ASYNC_SPD_MASK ||
+			((priv->flags & ASYNC_SPD_MASK) == ASYNC_SPD_CUST &&
+			 priv->custom_divisor != old_priv.custom_divisor)) {
+
+		/* warn about deprecation unless clearing */
+		if (priv->flags & ASYNC_SPD_MASK)
+			dev_warn_ratelimited(&port->dev, "use of SPD flags is deprecated\n");
+
 		change_speed(tty, port);
 		mutex_unlock(&priv->cfg_lock);
 	}
@@ -1542,13 +1531,10 @@ check_and_exit:
 }
 
 static int get_lsr_info(struct usb_serial_port *port,
-			struct serial_struct __user *retinfo)
+			unsigned int __user *retinfo)
 {
 	struct ftdi_private *priv = usb_get_serial_port_data(port);
 	unsigned int result = 0;
-
-	if (!retinfo)
-		return -EFAULT;
 
 	if (priv->transmit_empty)
 		result = TIOCSER_TEMT;
@@ -1614,9 +1600,19 @@ static void ftdi_determine_type(struct usb_serial_port *port)
 		priv->baud_base = 12000000 / 16;
 	} else if (version < 0x400) {
 		/* Assume it's an FT8U232AM (or FT8U245AM) */
-		/* (It might be a BM because of the iSerialNumber bug,
-		 * but it will still work as an AM device.) */
 		priv->chip_type = FT8U232AM;
+		/*
+		 * It might be a BM type because of the iSerialNumber bug.
+		 * If iSerialNumber==0 and the latency timer is readable,
+		 * assume it is BM type.
+		 */
+		if (udev->descriptor.iSerialNumber == 0 &&
+				_read_latency_timer(port) >= 0) {
+			dev_dbg(&port->dev,
+				"%s: has latency timer so not an AM type\n",
+				__func__);
+			priv->chip_type = FT232BM;
+		}
 	} else if (version < 0x600) {
 		/* Assume it's an FT232BM (or FT245BM) */
 		priv->chip_type = FT232BM;
@@ -1696,8 +1692,11 @@ static ssize_t latency_timer_store(struct device *dev,
 {
 	struct usb_serial_port *port = to_usb_serial_port(dev);
 	struct ftdi_private *priv = usb_get_serial_port_data(port);
-	int v = simple_strtoul(valbuf, NULL, 10);
+	u8 v;
 	int rv;
+
+	if (kstrtou8(valbuf, 10, &v))
+		return -EINVAL;
 
 	priv->latency = v;
 	rv = write_latency_timer(port);
@@ -1715,10 +1714,13 @@ static ssize_t store_event_char(struct device *dev,
 	struct usb_serial_port *port = to_usb_serial_port(dev);
 	struct ftdi_private *priv = usb_get_serial_port_data(port);
 	struct usb_device *udev = port->serial->dev;
-	int v = simple_strtoul(valbuf, NULL, 10);
+	unsigned int v;
 	int rv;
 
-	dev_dbg(&port->dev, "%s: setting event char = %i\n", __func__, v);
+	if (kstrtouint(valbuf, 0, &v) || v >= 0x200)
+		return -EINVAL;
+
+	dev_dbg(&port->dev, "%s: setting event char = 0x%03x\n", __func__, v);
 
 	rv = usb_control_msg(udev,
 			     usb_sndctrlpipe(udev, 0),
@@ -2502,20 +2504,15 @@ static int ftdi_ioctl(struct tty_struct *tty,
 					unsigned int cmd, unsigned long arg)
 {
 	struct usb_serial_port *port = tty->driver_data;
+	void __user *argp = (void __user *)arg;
 
-	/* Based on code from acm.c and others */
 	switch (cmd) {
-
-	case TIOCGSERIAL: /* gets serial port data */
-		return get_serial_info(port,
-					(struct serial_struct __user *) arg);
-
-	case TIOCSSERIAL: /* sets serial port data */
-		return set_serial_info(tty, port,
-					(struct serial_struct __user *) arg);
+	case TIOCGSERIAL:
+		return get_serial_info(port, argp);
+	case TIOCSSERIAL:
+		return set_serial_info(tty, port, argp);
 	case TIOCSERGETLSR:
-		return get_lsr_info(port, (struct serial_struct __user *)arg);
-		break;
+		return get_lsr_info(port, argp);
 	default:
 		break;
 	}

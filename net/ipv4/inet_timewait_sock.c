@@ -9,7 +9,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/kmemcheck.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <net/inet_hashtables.h>
@@ -76,7 +75,7 @@ void inet_twsk_free(struct inet_timewait_sock *tw)
 
 void inet_twsk_put(struct inet_timewait_sock *tw)
 {
-	if (atomic_dec_and_test(&tw->tw_refcnt))
+	if (refcount_dec_and_test(&tw->tw_refcnt))
 		inet_twsk_free(tw);
 }
 EXPORT_SYMBOL_GPL(inet_twsk_put);
@@ -131,7 +130,7 @@ void __inet_twsk_hashdance(struct inet_timewait_sock *tw, struct sock *sk,
 	 * We can use atomic_set() because prior spin_lock()/spin_unlock()
 	 * committed into memory all tw fields.
 	 */
-	atomic_set(&tw->tw_refcnt, 4);
+	refcount_set(&tw->tw_refcnt, 4);
 	inet_twsk_add_node_rcu(tw, &ehead->chain);
 
 	/* Step 3: Remove SK from hash chain */
@@ -167,8 +166,6 @@ struct inet_timewait_sock *inet_twsk_alloc(const struct sock *sk,
 	if (tw) {
 		const struct inet_sock *inet = inet_sk(sk);
 
-		kmemcheck_annotate_bitfield(tw, flags);
-
 		tw->tw_dr	    = dr;
 		/* Give us an identity. */
 		tw->tw_daddr	    = inet->inet_daddr;
@@ -196,7 +193,7 @@ struct inet_timewait_sock *inet_twsk_alloc(const struct sock *sk,
 		 * to a non null value before everything is setup for this
 		 * timewait socket.
 		 */
-		atomic_set(&tw->tw_refcnt, 0);
+		refcount_set(&tw->tw_refcnt, 0);
 
 		__module_get(tw->tw_prot->owner);
 	}
@@ -258,8 +255,7 @@ void __inet_twsk_schedule(struct inet_timewait_sock *tw, int timeo, bool rearm)
 }
 EXPORT_SYMBOL_GPL(__inet_twsk_schedule);
 
-void inet_twsk_purge(struct inet_hashinfo *hashinfo,
-		     struct inet_timewait_death_row *twdr, int family)
+void inet_twsk_purge(struct inet_hashinfo *hashinfo, int family)
 {
 	struct inet_timewait_sock *tw;
 	struct sock *sk;
@@ -280,7 +276,7 @@ restart:
 				atomic_read(&twsk_net(tw)->count))
 				continue;
 
-			if (unlikely(!atomic_inc_not_zero(&tw->tw_refcnt)))
+			if (unlikely(!refcount_inc_not_zero(&tw->tw_refcnt)))
 				continue;
 
 			if (unlikely((tw->tw_family != family) ||

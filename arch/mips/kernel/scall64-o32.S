@@ -125,7 +125,7 @@ trace_a_syscall:
 	subu	t1, v0,  __NR_O32_Linux
 	move	a1, v0
 	bnez	t1, 1f /* __NR_syscall at offset 0 */
-	lw	a1, PT_R4(sp) /* Arg1 for __NR_syscall case */
+	ld	a1, PT_R4(sp) /* Arg1 for __NR_syscall case */
 	.set	pop
 
 1:	jal	syscall_trace_enter
@@ -198,7 +198,6 @@ LEAF(sys32_syscall)
 	dsll	t1, t0, 3
 	beqz	v0, einval
 	ld	t2, sys32_call_table(t1)		# syscall routine
-	sd	a0, PT_R2(sp)		# call routine directly on restart
 
 	move	a0, a1			# shift argument registers
 	move	a1, a2
@@ -207,11 +206,6 @@ LEAF(sys32_syscall)
 	move	a4, a5
 	move	a5, a6
 	move	a6, a7
-	sd	a0, PT_R4(sp)		# ... and push back a0 - a3, some
-	sd	a1, PT_R5(sp)		# syscalls expect them there
-	sd	a2, PT_R6(sp)
-	sd	a3, PT_R7(sp)
-	sd	a3, PT_R26(sp)		# update a3 for syscall restarting
 	jr	t2
 	/* Unreached */
 
@@ -588,4 +582,5 @@ EXPORT(sys32_call_table)
 	PTR	sys_pkey_mprotect
 	PTR	sys_pkey_alloc
 	PTR	sys_pkey_free			/* 4365 */
+	PTR	sys_statx
 	.size	sys32_call_table,.-sys32_call_table

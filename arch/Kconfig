@@ -1,8 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # General architecture dependent options
 #
 
+config CRASH_CORE
+	bool
+
 config KEXEC_CORE
+	select CRASH_CORE
+	bool
+
+config HAVE_IMA_KEXEC
 	bool
 
 config HOTPLUG_SMT
@@ -29,7 +37,7 @@ config OPROFILE_EVENT_MULTIPLEX
 	  The number of hardware counters is limited. The multiplexing
 	  feature enables OProfile to gather more events than counters
 	  are provided by the hardware. This is realized by switching
-	  between events at an user specified time interval.
+	  between events at a user specified time interval.
 
 	  If unsure, say N.
 
@@ -86,7 +94,7 @@ config STATIC_KEYS_SELFTEST
 config OPTPROBES
 	def_bool y
 	depends on KPROBES && HAVE_OPTPROBES
-	depends on !PREEMPT
+	select TASKS_RCU if PREEMPT
 
 config KPROBES_ON_FTRACE
 	def_bool y
@@ -99,6 +107,7 @@ config KPROBES_ON_FTRACE
 
 config UPROBES
 	def_bool n
+	depends on ARCH_SUPPORTS_UPROBES
 	help
 	  Uprobes is the user-space counterpart to kprobes: they
 	  enable instrumentation applications (such as 'perf probe')
@@ -193,9 +202,6 @@ config HAVE_KPROBES_ON_FTRACE
 config HAVE_NMI
 	bool
 
-config HAVE_NMI_WATCHDOG
-	depends on HAVE_NMI
-	bool
 #
 # An arch should select this if it provides all these things:
 #
@@ -227,13 +233,9 @@ config ARCH_HAS_FORTIFY_SOURCE
 	  An architecture should select this when it can successfully
 	  build and run with CONFIG_FORTIFY_SOURCE.
 
-config FORTIFY_COMPILE_CHECK
-	depends on ARCH_HAS_FORTIFY_SOURCE
+# Select if arch has all set_memory_ro/rw/x/nx() functions in asm/cacheflush.h
+config ARCH_HAS_SET_MEMORY
 	bool
-	help
-	  Disable compile time size check for string routines as part
-	  of fortify source. Selecting this option will not enforce compile
-	  time size check for string functions.
 
 # Select if arch init_task initializer is different to init/init_task.c
 config ARCH_INIT_TASK
@@ -293,6 +295,28 @@ config HAVE_PERF_EVENTS_NMI
 	  subsystem.  Also has support for calculating CPU cycle events
 	  to determine how many clock cycles in a given period.
 
+config HAVE_HARDLOCKUP_DETECTOR_PERF
+	bool
+	depends on HAVE_PERF_EVENTS_NMI
+	help
+	  The arch chooses to use the generic perf-NMI-based hardlockup
+	  detector. Must define HAVE_PERF_EVENTS_NMI.
+
+config HAVE_NMI_WATCHDOG
+	depends on HAVE_NMI
+	bool
+	help
+	  The arch provides a low level NMI watchdog. It provides
+	  asm/nmi.h, and defines its own arch_touch_nmi_watchdog().
+
+config HAVE_HARDLOCKUP_DETECTOR_ARCH
+	bool
+	select HAVE_NMI_WATCHDOG
+	help
+	  The arch chooses to provide its own hardlockup detector, which is
+	  a superset of the HAVE_NMI_WATCHDOG. It also conforms to config
+	  interfaces and parameters provided by hardlockup detector subsystem.
+
 config HAVE_PERF_REGS
 	bool
 	help
@@ -312,6 +336,9 @@ config HAVE_ARCH_JUMP_LABEL
 config HAVE_RCU_TABLE_FREE
 	bool
 
+config HAVE_RCU_TABLE_INVALIDATE
+	bool
+
 config ARCH_HAVE_NMI_SAFE_CMPXCHG
 	bool
 
@@ -327,6 +354,9 @@ config HAVE_CMPXCHG_LOCAL
 	bool
 
 config HAVE_CMPXCHG_DOUBLE
+	bool
+
+config ARCH_WEAK_RELEASE_ACQUIRE
 	bool
 
 config ARCH_WANT_IPC_PARSE_VERSION
@@ -380,8 +410,9 @@ menuconfig GCC_PLUGINS
 	  See Documentation/gcc-plugins.txt for details.
 
 config GCC_PLUGIN_CYC_COMPLEXITY
-	bool "Compute the cyclomatic complexity of a function"
+	bool "Compute the cyclomatic complexity of a function" if EXPERT
 	depends on GCC_PLUGINS
+	depends on !COMPILE_TEST
 	help
 	  The complexity M of a function's control flow graph is defined as:
 	   M = E - N + 2P
@@ -390,6 +421,10 @@ config GCC_PLUGIN_CYC_COMPLEXITY
 	  E = the number of edges
 	  N = the number of nodes
 	  P = the number of connected components (exit nodes).
+
+	  Enabling this plugin reports the complexity to stderr during the
+	  build. It mainly serves as a simple example of how to create a
+	  gcc plugin for the kernel.
 
 config GCC_PLUGIN_SANCOV
 	bool
@@ -417,6 +452,76 @@ config GCC_PLUGIN_LATENT_ENTROPY
 	  This plugin was ported from grsecurity/PaX. More information at:
 	   * https://grsecurity.net/
 	   * https://pax.grsecurity.net/
+
+config GCC_PLUGIN_STRUCTLEAK
+	bool "Force initialization of variables containing userspace addresses"
+	depends on GCC_PLUGINS
+	help
+	  This plugin zero-initializes any structures containing a
+	  __user attribute. This can prevent some classes of information
+	  exposures.
+
+	  This plugin was ported from grsecurity/PaX. More information at:
+	   * https://grsecurity.net/
+	   * https://pax.grsecurity.net/
+
+config GCC_PLUGIN_STRUCTLEAK_BYREF_ALL
+	bool "Force initialize all struct type variables passed by reference"
+	depends on GCC_PLUGIN_STRUCTLEAK
+	help
+	  Zero initialize any struct type local variable that may be passed by
+	  reference without having been initialized.
+
+config GCC_PLUGIN_STRUCTLEAK_VERBOSE
+	bool "Report forcefully initialized variables"
+	depends on GCC_PLUGIN_STRUCTLEAK
+	depends on !COMPILE_TEST
+	help
+	  This option will cause a warning to be printed each time the
+	  structleak plugin finds a variable it thinks needs to be
+	  initialized. Since not all existing initializers are detected
+	  by the plugin, this can produce false positive warnings.
+
+config GCC_PLUGIN_RANDSTRUCT
+	bool "Randomize layout of sensitive kernel structures"
+	depends on GCC_PLUGINS
+	select MODVERSIONS if MODULES
+	help
+	  If you say Y here, the layouts of structures that are entirely
+	  function pointers (and have not been manually annotated with
+	  __no_randomize_layout), or structures that have been explicitly
+	  marked with __randomize_layout, will be randomized at compile-time.
+	  This can introduce the requirement of an additional information
+	  exposure vulnerability for exploits targeting these structure
+	  types.
+
+	  Enabling this feature will introduce some performance impact,
+	  slightly increase memory usage, and prevent the use of forensic
+	  tools like Volatility against the system (unless the kernel
+	  source tree isn't cleaned after kernel installation).
+
+	  The seed used for compilation is located at
+	  scripts/gcc-plgins/randomize_layout_seed.h.  It remains after
+	  a make clean to allow for external modules to be compiled with
+	  the existing seed and will be removed by a make mrproper or
+	  make distclean.
+
+	  Note that the implementation requires gcc 4.7 or newer.
+
+	  This plugin was ported from grsecurity/PaX. More information at:
+	   * https://grsecurity.net/
+	   * https://pax.grsecurity.net/
+
+config GCC_PLUGIN_RANDSTRUCT_PERFORMANCE
+	bool "Use cacheline-aware structure randomization"
+	depends on GCC_PLUGIN_RANDSTRUCT
+	depends on !COMPILE_TEST
+	help
+	  If you say Y here, the RANDSTRUCT randomization will make a
+	  best effort at restricting randomization to cacheline-sized
+	  groups of elements.  It will further not randomize bitfields
+	  in structures.  This reduces the performance hit of RANDSTRUCT
+	  at the cost of weakened randomization.
 
 config HAVE_CC_STACKPROTECTOR
 	bool
@@ -486,7 +591,7 @@ config CC_STACKPROTECTOR_STRONG
 endchoice
 
 config THIN_ARCHIVES
-	bool
+	def_bool y
 	help
 	  Select this if the architecture wants to use thin archives
 	  instead of ld -r to create the built-in.o files.
@@ -517,6 +622,18 @@ config ARCH_SUPPORTS_LTO_CLANG
 	  - compiling inline assembly with clang's integrated assembler,
 	  - and linking with either lld or GNU gold w/ LLVMgold.
 
+config ARCH_SUPPORTS_THINLTO
+	bool
+	help
+	  An architecture should select this if it supports clang's ThinLTO.
+
+config THINLTO
+	bool "Use clang ThinLTO (EXPERIMENTAL)"
+	depends on LTO_CLANG && ARCH_SUPPORTS_THINLTO
+	default y
+	help
+	  Use ThinLTO to speed up Link Time Optimization.
+
 choice
 	prompt "Link-Time Optimization (LTO) (EXPERIMENTAL)"
 	default LTO_NONE
@@ -530,9 +647,9 @@ config LTO_CLANG
 	bool "Use clang Link Time Optimization (LTO) (EXPERIMENTAL)"
 	depends on ARCH_SUPPORTS_LTO_CLANG
 	depends on !FTRACE_MCOUNT_RECORD || HAVE_C_RECORDMCOUNT
+	depends on !KASAN
 	select LTO
 	select THIN_ARCHIVES
-	select LD_DEAD_CODE_DATA_ELIMINATION
 	help
           This option enables clang's Link Time Optimization (LTO), which allows
           the compiler to optimize the kernel globally at link time. If you
@@ -574,31 +691,51 @@ config CFI_CLANG_SHADOW
 	  If you select this option, the kernel builds a fast look-up table of
 	  CFI check functions in loaded modules to reduce overhead.
 
-config ARCH_SUPPORTS_SAFESTACK
+config ARCH_SUPPORTS_SHADOW_CALL_STACK
 	bool
 	help
-	  An architecture should select this if it supports clang SafeStack,
-	  has asm/safestack.h, and implements __safestack_pointer_address().
+	  An architecture should select this if it supports Clang's Shadow
+	  Call Stack, has asm/scs.h, and implements runtime support for shadow
+	  stack switching.
 
-config SAFESTACK
-	bool "Use clang SafeStack"
-	depends on ARCH_SUPPORTS_SAFESTACK
+choice
+	prompt "Return-oriented programming (ROP) protection"
+	default ROP_PROTECTION_NONE
 	help
-	  This option enables clang SafeStack, which protects function return
-	  addresses against attacks based on stack buffer overflows.
+	  This option controls kernel protections against return-oriented
+	  programming (ROP) attacks, which involve overwriting function return
+	  addresses.
 
-	  SafeStack splits the kernel stack into safe and unsafe parts. Safe
-	  stack is used only for data that's at compile time determined to be
-	  only accessed in a safe way. This prevents a buffer overflow in the
-	  unsafe stack from overwriting any data in the safe stack, including
-	  the return address.
+config ROP_PROTECTION_NONE
+	bool "None"
 
-config SAFESTACK_COLORING
-	bool "Use clang SafeStack coloring (EXPERIMENTAL)"
-	depends on SAFESTACK
+config SHADOW_CALL_STACK
+	bool "Clang Shadow Call Stack"
+	depends on ARCH_SUPPORTS_SHADOW_CALL_STACK
 	help
-	  This option enables clang SafeStack coloring, which reduces unsafe
-	  stack usage.
+	  This option enables Clang's Shadow Call Stack, which uses a
+	  shadow stack to protect function return addresses from being
+	  overwritten by an attacker. More information can be found from
+	  Clang's documentation:
+
+	    https://clang.llvm.org/docs/ShadowCallStack.html
+
+	  Note that security guarantees in the kernel differ from the ones
+	  documented for user space. The kernel must store addresses of shadow
+	  stacks used by other tasks and interrupt handlers in memory, which
+	  means an attacker capable reading and writing arbitrary memory may
+	  be able to locate them and hijack control flow by modifying shadow
+	  stacks that are not currently in use.
+
+endchoice
+
+config SHADOW_CALL_STACK_VMAP
+	bool "Use virtually mapped shadow call stacks"
+	depends on SHADOW_CALL_STACK
+	help
+	  Use virtually mapped shadow call stacks. Selecting this option
+	  provides better stack exhaustion protection, but increases per-thread
+	  memory consumption as a full page is allocated for each shadow stack.
 
 config HAVE_ARCH_WITHIN_STACK_FRAMES
 	bool
@@ -623,6 +760,9 @@ config HAVE_CONTEXT_TRACKING
 config HAVE_VIRT_CPU_ACCOUNTING
 	bool
 
+config ARCH_HAS_SCALED_CPUTIME
+	bool
+
 config HAVE_VIRT_CPU_ACCOUNTING_GEN
 	bool
 	default y if 64BIT
@@ -642,6 +782,9 @@ config HAVE_IRQ_TIME_ACCOUNTING
 	  support irq time accounting and then call enable_sched_clock_irqtime().
 
 config HAVE_ARCH_TRANSPARENT_HUGEPAGE
+	bool
+
+config HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
 	bool
 
 config HAVE_ARCH_HUGE_VMAP
@@ -770,6 +913,13 @@ config ARCH_MMAP_RND_COMPAT_BITS
 	  This value can be changed after boot using the
 	  /proc/sys/vm/mmap_rnd_compat_bits tunable
 
+config HAVE_ARCH_COMPAT_MMAP_BASES
+	bool
+	help
+	  This allows 64bit applications to invoke 32-bit mmap() syscall
+	  and vice-versa 32-bit applications to call 64-bit mmap().
+	  Required for applications doing different bitness syscalls.
+
 config HAVE_COPY_THREAD_TLS
 	bool
 	help
@@ -782,6 +932,12 @@ config HAVE_STACK_VALIDATION
 	help
 	  Architecture supports the 'objtool check' host tool command, which
 	  performs compile-time stack metadata validation.
+
+config HAVE_RELIABLE_STACKTRACE
+	bool
+	help
+	  Architecture has a save_stack_trace_tsk_reliable() function which
+	  only returns a stack trace if it can guarantee the trace is reliable.
 
 config HAVE_ARCH_HASH
 	bool
@@ -879,5 +1035,82 @@ config VMAP_STACK
 	  This is presently incompatible with KASAN because KASAN expects
 	  the stack to map directly to the KASAN shadow map using a formula
 	  that is incorrect if the stack is in vmalloc space.
+
+config ARCH_OPTIONAL_KERNEL_RWX
+	def_bool n
+
+config ARCH_OPTIONAL_KERNEL_RWX_DEFAULT
+	def_bool n
+
+config ARCH_HAS_STRICT_KERNEL_RWX
+	def_bool n
+
+config STRICT_KERNEL_RWX
+	bool "Make kernel text and rodata read-only" if ARCH_OPTIONAL_KERNEL_RWX
+	depends on ARCH_HAS_STRICT_KERNEL_RWX
+	default !ARCH_OPTIONAL_KERNEL_RWX || ARCH_OPTIONAL_KERNEL_RWX_DEFAULT
+	help
+	  If this is set, kernel text and rodata memory will be made read-only,
+	  and non-text memory will be made non-executable. This provides
+	  protection against certain security exploits (e.g. executing the heap
+	  or modifying text)
+
+	  These features are considered standard security practice these days.
+	  You should say Y here in almost all cases.
+
+config ARCH_HAS_STRICT_MODULE_RWX
+	def_bool n
+
+config STRICT_MODULE_RWX
+	bool "Set loadable kernel module data as NX and text as RO" if ARCH_OPTIONAL_KERNEL_RWX
+	depends on ARCH_HAS_STRICT_MODULE_RWX && MODULES
+	default !ARCH_OPTIONAL_KERNEL_RWX || ARCH_OPTIONAL_KERNEL_RWX_DEFAULT
+	help
+	  If this is set, module text and rodata memory will be made read-only,
+	  and non-text memory will be made non-executable. This provides
+	  protection against certain security exploits (e.g. writing to text)
+
+config ARCH_HAS_REFCOUNT
+	bool
+	help
+	  An architecture selects this when it has implemented refcount_t
+	  using open coded assembly primitives that provide an optimized
+	  refcount_t implementation, possibly at the expense of some full
+	  refcount state checks of CONFIG_REFCOUNT_FULL=y.
+
+	  The refcount overflow check behavior, however, must be retained.
+	  Catching overflows is the primary security concern for protecting
+	  against bugs in reference counts.
+
+config REFCOUNT_FULL
+	bool "Perform full reference count validation at the expense of speed"
+	help
+	  Enabling this switches the refcounting infrastructure from a fast
+	  unchecked atomic_t implementation to a fully state checked
+	  implementation, which can be (slightly) slower but provides protections
+	  against various use-after-free conditions that can be used in
+	  security flaw exploits.
+
+config HAVE_ARCH_COMPILER_H
+	bool
+	help
+	  An architecture can select this if it provides an
+	  asm/compiler.h header that should be included after
+	  linux/compiler-*.h in order to override macro definitions that those
+	  headers generally provide.
+
+# Select if the architecture has support for applying RELR relocations.
+config ARCH_HAS_RELR
+	bool
+
+config RELR
+	bool "Use RELR relocation packing"
+	depends on ARCH_HAS_RELR && TOOLS_SUPPORT_RELR
+	default y
+	help
+	  Store the kernel's dynamic relocations in the RELR relocation packing
+	  format. Requires a compatible linker (LLD supports this feature), as
+	  well as compatible NM and OBJCOPY utilities (llvm-nm and llvm-objcopy
+	  are compatible).
 
 source "kernel/gcov/Kconfig"

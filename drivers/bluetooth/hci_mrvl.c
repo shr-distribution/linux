@@ -66,6 +66,9 @@ static int mrvl_open(struct hci_uart *hu)
 
 	BT_DBG("hu %p", hu);
 
+	if (!hci_uart_has_flow_control(hu))
+		return -EOPNOTSUPP;
+
 	mrvl = kzalloc(sizeof(*mrvl), GFP_KERNEL);
 	if (!mrvl)
 		return -ENOMEM;
@@ -328,7 +331,7 @@ static int mrvl_load_firmware(struct hci_dev *hdev, const char *name)
 		}
 		bt_cb(skb)->pkt_type = MRVL_RAW_DATA;
 
-		memcpy(skb_put(skb, mrvl->tx_len), fw_ptr, mrvl->tx_len);
+		skb_put_data(skb, fw_ptr, mrvl->tx_len);
 		fw_ptr += mrvl->tx_len;
 
 		set_bit(STATE_FW_REQ_PENDING, &mrvl->flags);

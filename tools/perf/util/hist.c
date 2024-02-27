@@ -1,14 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "util.h"
 #include "build-id.h"
 #include "hist.h"
 #include "map.h"
 #include "session.h"
+#include "namespaces.h"
 #include "sort.h"
 #include "evlist.h"
 #include "evsel.h"
 #include "annotate.h"
+#include "srcline.h"
+#include "thread.h"
 #include "ui/progress.h"
+#include <errno.h>
 #include <math.h>
+#include <sys/param.h>
 
 static bool hists__filter_entry_by_dso(struct hists *hists,
 				       struct hist_entry *he);
@@ -69,7 +75,7 @@ void hists__calc_col_len(struct hists *hists, struct hist_entry *h)
 	 */
 	if (h->ms.sym) {
 		symlen = h->ms.sym->namelen + 4;
-		if (verbose)
+		if (verbose > 0)
 			symlen += BITS_PER_LONG / 4 + 2 + 3;
 		hists__new_col_len(hists, HISTC_SYMBOL, symlen);
 	} else {
@@ -93,7 +99,7 @@ void hists__calc_col_len(struct hists *hists, struct hist_entry *h)
 	if (h->branch_info) {
 		if (h->branch_info->from.sym) {
 			symlen = (int)h->branch_info->from.sym->namelen + 4;
-			if (verbose)
+			if (verbose > 0)
 				symlen += BITS_PER_LONG / 4 + 2 + 3;
 			hists__new_col_len(hists, HISTC_SYMBOL_FROM, symlen);
 
@@ -107,7 +113,7 @@ void hists__calc_col_len(struct hists *hists, struct hist_entry *h)
 
 		if (h->branch_info->to.sym) {
 			symlen = (int)h->branch_info->to.sym->namelen + 4;
-			if (verbose)
+			if (verbose > 0)
 				symlen += BITS_PER_LONG / 4 + 2 + 3;
 			hists__new_col_len(hists, HISTC_SYMBOL_TO, symlen);
 
@@ -162,6 +168,10 @@ void hists__calc_col_len(struct hists *hists, struct hist_entry *h)
 			symlen = unresolved_col_width + 4 + 2;
 			hists__set_unres_dso_col_len(hists, HISTC_MEM_DADDR_DSO);
 		}
+
+		hists__new_col_len(hists, HISTC_MEM_PHYS_DADDR,
+				   unresolved_col_width + 4 + 2);
+
 	} else {
 		symlen = unresolved_col_width + 4 + 2;
 		hists__new_col_len(hists, HISTC_MEM_DADDR_SYMBOL, symlen);
@@ -169,6 +179,7 @@ void hists__calc_col_len(struct hists *hists, struct hist_entry *h)
 		hists__set_unres_dso_col_len(hists, HISTC_MEM_DADDR_DSO);
 	}
 
+	hists__new_col_len(hists, HISTC_CGROUP_ID, 20);
 	hists__new_col_len(hists, HISTC_CPU, 3);
 	hists__new_col_len(hists, HISTC_SOCKET, 6);
 	hists__new_col_len(hists, HISTC_MEM_LOCKED, 6);
@@ -574,9 +585,14 @@ __hists__add_entry(struct hists *hists,
 		   bool sample_self,
 		   struct hist_entry_ops *ops)
 {
+	struct namespaces *ns = thread__namespaces(al->thread);
 	struct hist_entry entry = {
 		.thread	= al->thread,
 		.comm = thread__comm(al->thread),
+		.cgroup_id = {
+			.dev = ns ? ns->link_info[CGROUP_NS_INDEX].dev : 0,
+			.ino = ns ? ns->link_info[CGROUP_NS_INDEX].ino : 0,
+		},
 		.ms = {
 			.map	= al->map,
 			.sym	= al->sym,
@@ -738,12 +754,9 @@ iter_prepare_branch_entry(struct hist_entry_iter *iter, struct addr_location *al
 }
 
 static int
-iter_add_single_branch_entry(struct hist_entry_iter *iter,
+iter_add_single_branch_entry(struct hist_entry_iter *iter __maybe_unused,
 			     struct addr_location *al __maybe_unused)
 {
-	/* to avoid calling callback function */
-	iter->he = NULL;
-
 	return 0;
 }
 
@@ -1027,8 +1040,10 @@ int hist_entry_iter__add(struct hist_entry_iter *iter, struct addr_location *al,
 
 	err = sample__resolve_callchain(iter->sample, &callchain_cursor, &iter->parent,
 					iter->evsel, al, max_stack_depth);
-	if (err)
+	if (err) {
+		map__put(alm);
 		return err;
+	}
 
 	err = iter->ops->prepare_entry(iter, al);
 	if (err)
@@ -1127,6 +1142,11 @@ void hist_entry__delete(struct hist_entry *he)
 		zfree(&he->mem_info);
 	}
 
+	if (he->inline_node) {
+		inline_node__delete(he->inline_node);
+		he->inline_node = NULL;
+	}
+
 	zfree(&he->stat_acc);
 	free_srcline(he->srcline);
 	if (he->srcfile && he->srcfile[0])
@@ -1200,6 +1220,7 @@ static void hist_entry__check_and_remove_filter(struct hist_entry *he,
 	case HIST_FILTER__GUEST:
 	case HIST_FILTER__HOST:
 	case HIST_FILTER__SOCKET:
+	case HIST_FILTER__C2C:
 	default:
 		return;
 	}
@@ -1483,7 +1504,7 @@ int hists__collapse_resort(struct hists *hists, struct ui_progress *prog)
 	return 0;
 }
 
-static int hist_entry__sort(struct hist_entry *a, struct hist_entry *b)
+static int64_t hist_entry__sort(struct hist_entry *a, struct hist_entry *b)
 {
 	struct hists *hists = a->hists;
 	struct perf_hpp_fmt *fmt;
@@ -1742,6 +1763,8 @@ void perf_evsel__output_resort(struct perf_evsel *evsel, struct ui_progress *pro
 		use_callchain = evsel->attr.sample_type & PERF_SAMPLE_CALLCHAIN;
 	else
 		use_callchain = symbol_conf.use_callchain;
+
+	use_callchain |= symbol_conf.show_branchflag_count;
 
 	output_resort(evsel__hists(evsel), prog, use_callchain, NULL);
 }
@@ -2443,8 +2466,10 @@ int parse_filter_percentage(const struct option *opt __maybe_unused,
 		symbol_conf.filter_relative = true;
 	else if (!strcmp(arg, "absolute"))
 		symbol_conf.filter_relative = false;
-	else
+	else {
+		pr_debug("Invalid percentage: %s\n", arg);
 		return -1;
+	}
 
 	return 0;
 }

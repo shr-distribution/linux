@@ -17,6 +17,9 @@
 
 #include <linux/errno.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/smp.h>
@@ -35,7 +38,7 @@
 #include <linux/rcupdate.h>
 
 #include <asm/pgtable.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/platform.h>
@@ -85,18 +88,21 @@ void coprocessor_release_all(struct thread_info *ti)
 
 void coprocessor_flush_all(struct thread_info *ti)
 {
-	unsigned long cpenable;
+	unsigned long cpenable, old_cpenable;
 	int i;
 
 	preempt_disable();
 
+	RSR_CPENABLE(old_cpenable);
 	cpenable = ti->cpenable;
+	WSR_CPENABLE(cpenable);
 
 	for (i = 0; i < XCHAL_CP_MAX; i++) {
 		if ((cpenable & 1) != 0 && coprocessor_owner[i] == ti)
 			coprocessor_flush(ti, i);
 		cpenable >>= 1;
 	}
+	WSR_CPENABLE(old_cpenable);
 
 	preempt_enable();
 }
@@ -201,8 +207,8 @@ int copy_thread(unsigned long clone_flags, unsigned long usp_thread_fn,
 #endif
 
 	/* Create a call4 dummy-frame: a0 = 0, a1 = childregs. */
-	*((int*)childregs - 3) = (unsigned long)childregs;
-	*((int*)childregs - 4) = 0;
+	SPILL_SLOT(childregs, 1) = (unsigned long)childregs;
+	SPILL_SLOT(childregs, 0) = 0;
 
 	p->thread.sp = (unsigned long)childregs;
 
@@ -263,8 +269,8 @@ int copy_thread(unsigned long clone_flags, unsigned long usp_thread_fn,
 		/* pass parameters to ret_from_kernel_thread:
 		 * a2 = thread_fn, a3 = thread_fn arg
 		 */
-		*((int *)childregs - 1) = thread_fn_arg;
-		*((int *)childregs - 2) = usp_thread_fn;
+		SPILL_SLOT(childregs, 3) = thread_fn_arg;
+		SPILL_SLOT(childregs, 2) = usp_thread_fn;
 
 		/* Childregs are only used when we're going to userspace
 		 * in which case start_thread will set them up.
@@ -308,8 +314,8 @@ unsigned long get_wchan(struct task_struct *p)
 
 		/* Stack layout: sp-4: ra, sp-3: sp' */
 
-		pc = MAKE_PC_FROM_RA(*(unsigned long*)sp - 4, sp);
-		sp = *(unsigned long *)sp - 3;
+		pc = MAKE_PC_FROM_RA(SPILL_SLOT(sp, 0), sp);
+		sp = SPILL_SLOT(sp, 1);
 	} while (count++ < 16);
 	return 0;
 }

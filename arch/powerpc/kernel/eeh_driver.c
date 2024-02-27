@@ -443,7 +443,7 @@ static void *eeh_add_virt_device(void *data, void *userdata)
 
 	if (!(edev->physfn)) {
 		pr_warn("%s: EEH dev %04x:%02x:%02x.%01x not for VF\n",
-			__func__, edev->phb->global_number, pdn->busno,
+			__func__, pdn->phb->global_number, pdn->busno,
 			PCI_SLOT(pdn->devfn), PCI_FUNC(pdn->devfn));
 		return NULL;
 	}
@@ -520,12 +520,6 @@ static void *eeh_rmv_device(void *data, void *userdata)
 
 		pci_iov_remove_virtfn(edev->physfn, pdn->vf_index, 0);
 		edev->pdev = NULL;
-
-		/*
-		 * We have to set the VF PE number to invalid one, which is
-		 * required to plug the VF successfully.
-		 */
-		pdn->pe_number = IODA_INVALID_PE;
 #endif
 		if (rmv_data)
 			list_add(&edev->rmv_list, &rmv_data->edev_list);
@@ -607,7 +601,7 @@ int eeh_pe_reset_and_recover(struct eeh_pe *pe)
 	eeh_pe_dev_traverse(pe, eeh_dev_save_state, NULL);
 
 	/* Issue reset */
-	ret = eeh_reset_pe(pe);
+	ret = eeh_pe_reset_full(pe);
 	if (ret) {
 		eeh_pe_state_clear(pe, EEH_PE_RECOVERING);
 		return ret;
@@ -678,7 +672,7 @@ static int eeh_reset_device(struct eeh_pe *pe, struct pci_bus *bus,
 	 * config accesses. So we prefer to block them. However, controlled
 	 * PCI config accesses initiated from EEH itself are allowed.
 	 */
-	rc = eeh_reset_pe(pe);
+	rc = eeh_pe_reset_full(pe);
 	if (rc)
 		return rc;
 
@@ -743,6 +737,15 @@ static int eeh_reset_device(struct eeh_pe *pe, struct pci_bus *bus,
  */
 #define MAX_WAIT_FOR_RECOVERY 300
 
+/**
+ * eeh_handle_normal_event - Handle EEH events on a specific PE
+ * @pe: EEH PE
+ *
+ * Attempts to recover the given PE.  If recovery fails or the PE has failed
+ * too many times, remove the PE.
+ *
+ * Returns true if @pe should no longer be used, else false.
+ */
 static bool eeh_handle_normal_event(struct eeh_pe *pe)
 {
 	struct pci_bus *frozen_bus;
@@ -753,15 +756,20 @@ static bool eeh_handle_normal_event(struct eeh_pe *pe)
 
 	frozen_bus = eeh_pe_bus_get(pe);
 	if (!frozen_bus) {
-		pr_err("%s: Cannot find PCI bus for PHB#%d-PE#%x\n",
+		pr_err("%s: Cannot find PCI bus for PHB#%x-PE#%x\n",
 			__func__, pe->phb->global_number, pe->addr);
 		return false;
 	}
 
 	eeh_pe_update_time_stamp(pe);
 	pe->freeze_count++;
-	if (pe->freeze_count > eeh_max_freezes)
-		goto excess_failures;
+	if (pe->freeze_count > eeh_max_freezes) {
+		pr_err("EEH: PHB#%x-PE#%x has failed %d times in the\n"
+		       "last hour and has been permanently disabled.\n",
+		       pe->phb->global_number, pe->addr,
+		       pe->freeze_count);
+		goto hard_fail;
+	}
 	pr_warn("EEH: This PCI device has failed %d times in the last hour\n",
 		pe->freeze_count);
 
@@ -891,25 +899,16 @@ static bool eeh_handle_normal_event(struct eeh_pe *pe)
 
 	return false;
 
-excess_failures:
+hard_fail:
 	/*
 	 * About 90% of all real-life EEH failures in the field
 	 * are due to poorly seated PCI cards. Only 10% or so are
 	 * due to actual, failed cards.
 	 */
-	pr_err("EEH: PHB#%d-PE#%x has failed %d times in the\n"
-	       "last hour and has been permanently disabled.\n"
-	       "Please try reseating or replacing it.\n",
-		pe->phb->global_number, pe->addr,
-		pe->freeze_count);
-	goto perm_error;
-
-hard_fail:
-	pr_err("EEH: Unable to recover from failure from PHB#%d-PE#%x.\n"
+	pr_err("EEH: Unable to recover from failure from PHB#%x-PE#%x.\n"
 	       "Please try reseating or replacing it\n",
 		pe->phb->global_number, pe->addr);
 
-perm_error:
 	eeh_slot_error_detail(pe, EEH_LOG_PERM);
 
 	/* Notify all devices that they're about to go down. */
@@ -942,6 +941,13 @@ perm_error:
 	return false;
 }
 
+/**
+ * eeh_handle_special_event - Handle EEH events without a specific failing PE
+ *
+ * Called when an EEH event is detected but can't be narrowed down to a
+ * specific PE.  Iterates through possible failures and handles them as
+ * necessary.
+ */
 static void eeh_handle_special_event(void)
 {
 	struct eeh_pe *pe, *phb_pe;
@@ -1030,7 +1036,7 @@ static void eeh_handle_special_event(void)
 				bus = eeh_pe_bus_get(phb_pe);
 				if (!bus) {
 					pr_err("%s: Cannot find PCI bus for "
-					       "PHB#%d-PE#%x\n",
+					       "PHB#%x-PE#%x\n",
 					       __func__,
 					       pe->phb->global_number,
 					       pe->addr);

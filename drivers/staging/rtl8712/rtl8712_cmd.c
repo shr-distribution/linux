@@ -32,6 +32,7 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/slab.h>
+#include <linux/sched/signal.h>
 #include <linux/module.h>
 #include <linux/kref.h>
 #include <linux/netdevice.h>
@@ -158,17 +159,9 @@ static u8 write_macreg_hdl(struct _adapter *padapter, u8 *pbuf)
 
 static u8 read_bbreg_hdl(struct _adapter *padapter, u8 *pbuf)
 {
-	u32 val;
-	void (*pcmd_callback)(struct _adapter *dev, struct cmd_obj	*pcmd);
 	struct cmd_obj *pcmd  = (struct cmd_obj *)pbuf;
 
-	if (pcmd->rsp && pcmd->rspsz > 0)
-		memcpy(pcmd->rsp, (u8 *)&val, pcmd->rspsz);
-	pcmd_callback = cmd_callback[pcmd->cmdcode].callback;
-	if (!pcmd_callback)
-		r8712_free_cmd_obj(pcmd);
-	else
-		pcmd_callback(padapter, pcmd);
+	r8712_free_cmd_obj(pcmd);
 	return H2C_SUCCESS;
 }
 
@@ -314,7 +307,8 @@ void r8712_fw_cmd_data(struct _adapter *pAdapter, u32 *value, u8 flag)
 int r8712_cmd_thread(void *context)
 {
 	struct cmd_obj *pcmd;
-	unsigned int cmdsz, wr_sz, *pcmdbuf;
+	unsigned int cmdsz, wr_sz;
+	__le32 *pcmdbuf;
 	struct tx_desc *pdesc;
 	void (*pcmd_callback)(struct _adapter *dev, struct cmd_obj *pcmd);
 	struct _adapter *padapter = context;
@@ -334,7 +328,7 @@ _next:
 			r8712_unregister_cmd_alive(padapter);
 			continue;
 		}
-		pcmdbuf = (unsigned int *)pcmdpriv->cmd_buf;
+		pcmdbuf = (__le32 *)pcmdpriv->cmd_buf;
 		pdesc = (struct tx_desc *)pcmdbuf;
 		memset(pdesc, 0, TXDESC_SIZE);
 		pcmd = cmd_hdl_filter(padapter, pcmd);
@@ -383,7 +377,7 @@ _next:
 			if (blnPending)
 				wr_sz += 8;   /* Append 8 bytes */
 			r8712_write_mem(padapter, RTL8712_DMA_H2CCMD, wr_sz,
-				       (u8 *)pdesc);
+					(u8 *)pdesc);
 			pcmdpriv->cmd_seq++;
 			if (pcmd->cmdcode == GEN_CMD_CODE(_CreateBss)) {
 				pcmd->res = H2C_SUCCESS;
@@ -424,7 +418,7 @@ _next:
 	thread_exit();
 }
 
-void r8712_event_handle(struct _adapter *padapter, uint *peventbuf)
+void r8712_event_handle(struct _adapter *padapter, __le32 *peventbuf)
 {
 	u8 evt_code, evt_seq;
 	u16 evt_sz;

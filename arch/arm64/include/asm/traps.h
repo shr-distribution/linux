@@ -37,6 +37,17 @@ void unregister_undef_hook(struct undef_hook *hook);
 
 void arm64_notify_segfault(struct pt_regs *regs, unsigned long addr);
 
+/*
+ * Move regs->pc to next instruction and do necessary setup before it
+ * is executed.
+ */
+void arm64_skip_faulting_instruction(struct pt_regs *regs, unsigned long size);
+
+#ifdef CONFIG_MEDIATEK_SOLUTION
+int register_async_abort_handler(
+		void (*fn)(struct pt_regs *regs, void *), void *priv);
+#endif
+
 static inline int __in_irqentry_text(unsigned long ptr)
 {
 	return ptr >= (unsigned long)&__irqentry_text_start &&
@@ -53,4 +64,9 @@ static inline int in_exception_text(unsigned long ptr)
 	return in ? : __in_irqentry_text(ptr);
 }
 
+static inline int in_entry_text(unsigned long ptr)
+{
+	return ptr >= (unsigned long)&__entry_text_start &&
+	       ptr < (unsigned long)&__entry_text_end;
+}
 #endif

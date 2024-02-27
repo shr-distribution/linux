@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_PCI_H
 #define __ASM_PCI_H
 #ifdef __KERNEL__
@@ -22,6 +23,8 @@
  */
 #define PCI_DMA_BUS_IS_PHYS	(0)
 
+#define ARCH_GENERIC_PCI_MMAP_RESOURCE	1
+
 extern int isa_dma_bridge_buggy;
 
 #ifdef CONFIG_PCI
@@ -39,8 +42,3 @@ static inline int pci_proc_domain(struct pci_bus *bus)
 
 #endif  /* __KERNEL__ */
 #endif  /* __ASM_PCI_H */
-
-#ifdef CONFIG_PCI_MSM
-#define arch_setup_msi_irqs arch_setup_msi_irqs
-#define arch_teardown_msi_irqs arch_teardown_msi_irqs
-#endif

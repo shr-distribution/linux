@@ -5,20 +5,9 @@
 menu "Near Field Communication (NFC) devices"
 	depends on NFC
 
-config NFC_WILINK
-	tristate "Texas Instruments NFC WiLink driver"
-	depends on TI_ST && NFC_NCI
-	help
-	  This enables the NFC driver for Texas Instrument's BT/FM/GPS/NFC
-	  combo devices. This makes use of shared transport line discipline
-	  core driver to communicate with the NFC core of the combo chip.
-
-	  Say Y here to compile support for Texas Instrument's NFC WiLink driver
-	  into the kernel or say M to compile it as module.
-
 config NFC_TRF7970A
 	tristate "Texas Instruments TRF7970a NFC driver"
-	depends on SPI && NFC_DIGITAL
+	depends on SPI && NFC_DIGITAL && GPIOLIB
 	help
 	  This option enables the NFC driver for Texas Instruments' TRF7970a
 	  device. Such device supports 5 different protocols: ISO14443A,
@@ -70,20 +59,3 @@ source "drivers/nfc/nxp-nci/Kconfig"
 source "drivers/nfc/s3fwrn5/Kconfig"
 source "drivers/nfc/st95hf/Kconfig"
 endmenu
-
-config NFC_NQ
-	tristate "QTI NCI based NFC Controller Driver for NQx"
-	depends on I2C
-	help
-	  This enables the NFC driver for NQx based devices.
-	  This is for i2c connected version. NCI protocol logic
-	  resides in the usermode and it has no other NFC dependencies.
-
-config NFC_NQ_PN81A
-	tristate "NFC eSE driver for NXP PN81A using NFC_NQ"
-	depends on I2C
-	depends on SPI
-	depends on NFC_NQ
-	help
-	  This enables the SPI driver for the NXP PN81A-based embedded
-	  secure element using the NFC_NQ driver to control the power.

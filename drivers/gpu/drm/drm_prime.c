@@ -29,10 +29,19 @@
 #include <linux/export.h>
 #include <linux/dma-buf.h>
 #include <linux/rbtree.h>
-#include <drm/drmP.h>
+#include <drm/drm_prime.h>
 #include <drm/drm_gem.h>
+#include <drm/drmP.h>
 
 #include "drm_internal.h"
+#include "mtk_drm_mmp.h"
+//#include "mtk_log.h"
+
+unsigned long long prime_time_start;
+unsigned long long prime_time_end;
+long long prime_time_period;
+unsigned int prime_time_once;
+const char *prime_locker;
 
 /*
  * DMA-BUF/GEM Object references and lifetime overview:
@@ -40,8 +49,11 @@
  * On the export the dma_buf holds a reference to the exporting GEM
  * object. It takes this reference in handle_to_fd_ioctl, when it
  * first calls .prime_export and stores the exporting GEM object in
- * the dma_buf priv. This reference is released when the dma_buf
- * object goes away in the driver .release function.
+ * the dma_buf priv. This reference needs to be released when the
+ * final reference to the &dma_buf itself is dropped and its
+ * &dma_buf_ops.release function is called. For GEM-based drivers,
+ * the dma_buf should be exported using drm_gem_dmabuf_export() and
+ * then released by drm_gem_dmabuf_release().
  *
  * On the import the importing GEM object holds a reference to the
  * dma_buf (which in turn holds a ref to the exporting GEM object).
@@ -50,6 +62,16 @@
  * attachment in the GEM object. When this attachment is destroyed
  * when the imported object is destroyed, we remove the attachment
  * and drop the reference to the dma_buf.
+ *
+ * When all the references to the &dma_buf are dropped, i.e. when
+ * userspace has closed both handles to the imported GEM object (through the
+ * FD_TO_HANDLE IOCTL) and closed the file descriptor of the exported
+ * (through the HANDLE_TO_FD IOCTL) dma_buf, and all kernel-internal references
+ * are also gone, then the dma_buf gets destroyed.  This can also happen as a
+ * part of the clean up procedure in the drm_release() function if userspace
+ * fails to properly clean up.  Note that both the kernel and userspace (by
+ * keeeping the PRIME file descriptors open) can hold references onto a
+ * &dma_buf.
  *
  * Thus the chain of references always flows in one direction
  * (avoiding loops): importing_gem -> dmabuf -> exporting_gem
@@ -85,6 +107,7 @@ static int drm_prime_add_buf_handle(struct drm_prime_file_private *prime_fpriv,
 		return -ENOMEM;
 
 	get_dma_buf(dma_buf);
+	DRM_MMP_MARK(dma_get, __LINE__, (unsigned long)dma_buf);
 	member->dma_buf = dma_buf;
 	member->handle = handle;
 
@@ -228,6 +251,7 @@ void drm_prime_remove_buf_handle_locked(struct drm_prime_file_private *prime_fpr
 			rb_erase(&member->handle_rb, &prime_fpriv->handles);
 			rb_erase(&member->dmabuf_rb, &prime_fpriv->dmabufs);
 
+			DRM_MMP_MARK(dma_put, __LINE__, (unsigned long)dma_buf);
 			dma_buf_put(dma_buf);
 			kfree(member);
 			return;
@@ -290,7 +314,8 @@ static void drm_gem_unmap_dma_buf(struct dma_buf_attachment *attach,
  *
  * This wraps dma_buf_export() for use by generic GEM drivers that are using
  * drm_gem_dmabuf_release(). In addition to calling dma_buf_export(), we take
- * a reference to the drm_device which is released by drm_gem_dmabuf_release().
+ * a reference to the &drm_device and the exported &drm_gem_object (stored in
+ * &dma_buf_export_info.priv) which is released by drm_gem_dmabuf_release().
  *
  * Returns the new dmabuf.
  */
@@ -300,8 +325,11 @@ struct dma_buf *drm_gem_dmabuf_export(struct drm_device *dev,
 	struct dma_buf *dma_buf;
 
 	dma_buf = dma_buf_export(exp_info);
-	if (!IS_ERR(dma_buf))
-		drm_dev_ref(dev);
+	if (IS_ERR(dma_buf))
+		return dma_buf;
+
+	drm_dev_ref(dev);
+	drm_gem_object_get(exp_info->priv);
 
 	return dma_buf;
 }
@@ -322,7 +350,7 @@ void drm_gem_dmabuf_release(struct dma_buf *dma_buf)
 	struct drm_device *dev = obj->dev;
 
 	/* drop the reference on the export fd holds */
-	drm_gem_object_unreference_unlocked(obj);
+	drm_gem_object_put_unlocked(obj);
 
 	drm_dev_unref(dev);
 }
@@ -385,10 +413,10 @@ static const struct dma_buf_ops drm_gem_prime_dmabuf_ops =  {
 	.map_dma_buf = drm_gem_map_dma_buf,
 	.unmap_dma_buf = drm_gem_unmap_dma_buf,
 	.release = drm_gem_dmabuf_release,
-	.kmap = drm_gem_dmabuf_kmap,
-	.kmap_atomic = drm_gem_dmabuf_kmap_atomic,
-	.kunmap = drm_gem_dmabuf_kunmap,
-	.kunmap_atomic = drm_gem_dmabuf_kunmap_atomic,
+	.map = drm_gem_dmabuf_kmap,
+	.map_atomic = drm_gem_dmabuf_kmap_atomic,
+	.unmap = drm_gem_dmabuf_kunmap,
+	.unmap_atomic = drm_gem_dmabuf_kunmap_atomic,
 	.mmap = drm_gem_dmabuf_mmap,
 	.vmap = drm_gem_dmabuf_vmap,
 	.vunmap = drm_gem_dmabuf_vunmap,
@@ -472,8 +500,7 @@ static struct dma_buf *export_and_register_object(struct drm_device *dev,
 	 */
 	obj->dma_buf = dmabuf;
 	get_dma_buf(obj->dma_buf);
-	/* Grab a new ref since the callers is now used by the dma-buf */
-	drm_gem_object_reference(obj);
+	DRM_MMP_MARK(dma_get, __LINE__, (unsigned long)dmabuf);
 
 	return dmabuf;
 }
@@ -510,6 +537,7 @@ int drm_gem_prime_handle_to_fd(struct drm_device *dev,
 	dmabuf = drm_prime_lookup_buf_by_handle(&file_priv->prime, handle);
 	if (dmabuf) {
 		get_dma_buf(dmabuf);
+		DRM_MMP_MARK(dma_get, __LINE__, (unsigned long)dmabuf);
 		goto out_have_handle;
 	}
 
@@ -518,11 +546,13 @@ int drm_gem_prime_handle_to_fd(struct drm_device *dev,
 	if (obj->import_attach) {
 		dmabuf = obj->import_attach->dmabuf;
 		get_dma_buf(dmabuf);
+		DRM_MMP_MARK(dma_get, __LINE__, (unsigned long)dmabuf);
 		goto out_have_obj;
 	}
 
 	if (obj->dma_buf) {
 		get_dma_buf(obj->dma_buf);
+		DRM_MMP_MARK(dma_get, __LINE__, (unsigned long)dmabuf);
 		dmabuf = obj->dma_buf;
 		goto out_have_obj;
 	}
@@ -568,9 +598,10 @@ out_have_handle:
 	goto out;
 
 fail_put_dmabuf:
+	DRM_MMP_MARK(dma_put, __LINE__, (unsigned long)dmabuf);
 	dma_buf_put(dmabuf);
 out:
-	drm_gem_object_unreference_unlocked(obj);
+	drm_gem_object_put_unlocked(obj);
 out_unlock:
 	mutex_unlock(&file_priv->prime.lock);
 
@@ -579,15 +610,55 @@ out_unlock:
 EXPORT_SYMBOL(drm_gem_prime_handle_to_fd);
 
 /**
- * drm_gem_prime_import - helper library implementation of the import callback
+ * drm_gem_prime_mmap - PRIME mmap function for GEM drivers
+ * @obj: GEM object
+ * @vma: Virtual address range
+ *
+ * This function sets up a userspace mapping for PRIME exported buffers using
+ * the same codepath that is used for regular GEM buffer mapping on the DRM fd.
+ * The fake GEM offset is added to vma->vm_pgoff and &drm_driver->fops->mmap is
+ * called to set up the mapping.
+ *
+ * Drivers can use this as their &drm_driver.gem_prime_mmap callback.
+ */
+int drm_gem_prime_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma)
+{
+	/* Used by drm_gem_mmap() to lookup the GEM object */
+	struct drm_file priv = {
+		.minor = obj->dev->primary,
+	};
+	struct file fil = {
+		.private_data = &priv,
+	};
+	int ret;
+
+	ret = drm_vma_node_allow(&obj->vma_node, &priv);
+	if (ret)
+		return ret;
+
+	vma->vm_pgoff += drm_vma_node_start(&obj->vma_node);
+
+	ret = obj->dev->driver->fops->mmap(&fil, vma);
+
+	drm_vma_node_revoke(&obj->vma_node, &priv);
+
+	return ret;
+}
+EXPORT_SYMBOL(drm_gem_prime_mmap);
+
+/**
+ * drm_gem_prime_import_dev - core implementation of the import callback
  * @dev: drm_device to import into
  * @dma_buf: dma-buf object to import
+ * @attach_dev: struct device to dma_buf attach
  *
- * This is the implementation of the gem_prime_import functions for GEM drivers
- * using the PRIME helpers.
+ * This is the core of drm_gem_prime_import. It's designed to be called by
+ * drivers who want to use a different device structure than dev->dev for
+ * attaching via dma_buf.
  */
-struct drm_gem_object *drm_gem_prime_import(struct drm_device *dev,
-					    struct dma_buf *dma_buf)
+struct drm_gem_object *drm_gem_prime_import_dev(struct drm_device *dev,
+					    struct dma_buf *dma_buf,
+					    struct device *attach_dev)
 {
 	struct dma_buf_attachment *attach;
 	struct sg_table *sgt;
@@ -601,7 +672,7 @@ struct drm_gem_object *drm_gem_prime_import(struct drm_device *dev,
 			 * Importing dmabuf exported from out own gem increases
 			 * refcount on gem itself instead of f_count of dmabuf.
 			 */
-			drm_gem_object_reference(obj);
+			drm_gem_object_get(obj);
 			return obj;
 		}
 	}
@@ -609,11 +680,12 @@ struct drm_gem_object *drm_gem_prime_import(struct drm_device *dev,
 	if (!dev->driver->gem_prime_import_sg_table)
 		return ERR_PTR(-EINVAL);
 
-	attach = dma_buf_attach(dma_buf, dev->dev);
+	attach = dma_buf_attach(dma_buf, attach_dev);
 	if (IS_ERR(attach))
 		return ERR_CAST(attach);
 
 	get_dma_buf(dma_buf);
+	DRM_MMP_MARK(dma_get, __LINE__, (unsigned long)dma_buf);
 
 	sgt = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
 	if (IS_ERR(sgt)) {
@@ -635,9 +707,25 @@ fail_unmap:
 	dma_buf_unmap_attachment(attach, sgt, DMA_BIDIRECTIONAL);
 fail_detach:
 	dma_buf_detach(dma_buf, attach);
+	DRM_MMP_MARK(dma_put, __LINE__, (unsigned long)dma_buf);
 	dma_buf_put(dma_buf);
 
 	return ERR_PTR(ret);
+}
+EXPORT_SYMBOL(drm_gem_prime_import_dev);
+
+/**
+ * drm_gem_prime_import - helper library implementation of the import callback
+ * @dev: drm_device to import into
+ * @dma_buf: dma-buf object to import
+ *
+ * This is the implementation of the gem_prime_import functions for GEM drivers
+ * using the PRIME helpers.
+ */
+struct drm_gem_object *drm_gem_prime_import(struct drm_device *dev,
+					    struct dma_buf *dma_buf)
+{
+	return drm_gem_prime_import_dev(dev, dma_buf, dev->dev);
 }
 EXPORT_SYMBOL(drm_gem_prime_import);
 
@@ -664,8 +752,10 @@ int drm_gem_prime_fd_to_handle(struct drm_device *dev,
 	dma_buf = dma_buf_get(prime_fd);
 	if (IS_ERR(dma_buf))
 		return PTR_ERR(dma_buf);
+	DRM_MMP_MARK(dma_get, __LINE__, (unsigned long)dma_buf);
 
 	mutex_lock(&file_priv->prime.lock);
+	prime_time_start = sched_clock();
 
 	ret = drm_prime_lookup_buf_handle(&file_priv->prime,
 			dma_buf, handle);
@@ -685,20 +775,32 @@ int drm_gem_prime_fd_to_handle(struct drm_device *dev,
 	} else {
 		obj->dma_buf = dma_buf;
 		get_dma_buf(dma_buf);
+		DRM_MMP_MARK(dma_get, __LINE__, (unsigned long)dma_buf);
 	}
 
 	/* _handle_create_tail unconditionally unlocks dev->object_name_lock. */
 	ret = drm_gem_handle_create_tail(file_priv, obj, handle);
-	drm_gem_object_unreference_unlocked(obj);
+	drm_gem_object_put_unlocked(obj);
 	if (ret)
 		goto out_put;
 
 	ret = drm_prime_add_buf_handle(&file_priv->prime,
 			dma_buf, *handle);
+	prime_locker = NULL;
+	prime_time_end = sched_clock();
+	prime_time_period = prime_time_end - prime_time_start;
+	if ((prime_time_period > 1000000000) && (!prime_time_once)) {
+#ifdef CONFIG_DRM_MEDIATEK
+		DDPMSG("P2G:%s[%d] timeout:<%lld ns>!\n",
+			__func__, __LINE__, prime_time_period);
+#endif
+		prime_time_once = 1;
+	}
 	mutex_unlock(&file_priv->prime.lock);
 	if (ret)
 		goto fail;
 
+	DRM_MMP_MARK(dma_put, __LINE__, (unsigned long)dma_buf);
 	dma_buf_put(dma_buf);
 
 	return 0;
@@ -708,14 +810,18 @@ fail:
 	 * to detach.. which seems ok..
 	 */
 	drm_gem_handle_delete(file_priv, *handle);
+	DRM_MMP_MARK(dma_put, __LINE__, (unsigned long)dma_buf);
 	dma_buf_put(dma_buf);
+
 	return ret;
 
 out_unlock:
 	mutex_unlock(&dev->object_name_lock);
 out_put:
 	mutex_unlock(&file_priv->prime.lock);
+	DRM_MMP_MARK(dma_put, __LINE__, (unsigned long)dma_buf);
 	dma_buf_put(dma_buf);
+
 	return ret;
 }
 EXPORT_SYMBOL(drm_gem_prime_fd_to_handle);
@@ -847,6 +953,7 @@ void drm_prime_gem_destroy(struct drm_gem_object *obj, struct sg_table *sg)
 	dma_buf = attach->dmabuf;
 	dma_buf_detach(attach->dmabuf, attach);
 	/* remove the reference */
+	DRM_MMP_MARK(dma_put, __LINE__, (unsigned long)dma_buf);
 	dma_buf_put(dma_buf);
 }
 EXPORT_SYMBOL(drm_prime_gem_destroy);

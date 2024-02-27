@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for Inertial Measurement Units
 #
@@ -15,6 +16,7 @@ obj-$(CONFIG_IIO_ADIS_LIB) += adis_lib.o
 
 obj-y += bmi160/
 obj-y += inv_mpu6050/
-obj-y += inv_icm20602/
 
 obj-$(CONFIG_KMX61) += kmx61.o
+
+obj-y += st_lsm6dsx/

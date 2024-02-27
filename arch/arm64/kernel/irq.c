@@ -23,15 +23,20 @@
 
 #include <linux/kernel_stat.h>
 #include <linux/irq.h>
+#include <linux/memory.h>
 #include <linux/smp.h>
 #include <linux/init.h>
 #include <linux/irqchip.h>
 #include <linux/seq_file.h>
+#include <linux/vmalloc.h>
+#include <asm/scs.h>
 
 unsigned long irq_err_count;
 
-/* irq stack only needs to be 16 byte aligned - not IRQ_STACK_SIZE aligned. */
-DEFINE_PER_CPU(unsigned long [IRQ_STACK_SIZE/sizeof(long)], irq_stack) __aligned(16);
+/* Only access this in an NMI enter/exit */
+DEFINE_PER_CPU(struct nmi_ctx, nmi_contexts);
+
+DEFINE_PER_CPU(unsigned long *, irq_stack_ptr);
 
 int arch_show_interrupts(struct seq_file *p, int prec)
 {
@@ -50,8 +55,44 @@ void __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
 	handle_arch_irq = handle_irq;
 }
 
+#ifdef CONFIG_VMAP_STACK
+static void init_irq_stacks(void)
+{
+	int cpu;
+	unsigned long *p;
+
+	for_each_possible_cpu(cpu) {
+		/*
+		* To ensure that VMAP'd stack overflow detection works
+		* correctly, the IRQ stacks need to have the same
+		* alignment as other stacks.
+		*/
+		p = __vmalloc_node_range(IRQ_STACK_SIZE, THREAD_ALIGN,
+					 VMALLOC_START, VMALLOC_END,
+					 THREADINFO_GFP, PAGE_KERNEL,
+					 0, cpu_to_node(cpu),
+					 __builtin_return_address(0));
+
+		per_cpu(irq_stack_ptr, cpu) = p;
+	}
+}
+#else
+/* irq stack only needs to be 16 byte aligned - not IRQ_STACK_SIZE aligned. */
+DEFINE_PER_CPU_ALIGNED(unsigned long [IRQ_STACK_SIZE/sizeof(long)], irq_stack);
+
+static void init_irq_stacks(void)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		per_cpu(irq_stack_ptr, cpu) = per_cpu(irq_stack, cpu);
+}
+#endif
+
 void __init init_IRQ(void)
 {
+	init_irq_stacks();
+	scs_init_irq();
 	irqchip_init();
 	if (!handle_arch_irq)
 		panic("No interrupt controller found.");

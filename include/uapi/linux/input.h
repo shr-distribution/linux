@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Copyright (c) 1999-2002 Vojtech Pavlik
  *
@@ -17,81 +18,6 @@
 #endif
 
 #include "input-event-codes.h"
-
-/*
- * sec Log
- */
-#define SECLOG			"[sec_input]"
-#define INPUT_LOG_BUF_SIZE	512
-
-#ifdef CONFIG_SEC_DEBUG_TSP_LOG
-#include <linux/sec_debug.h>
-
-#define input_dbg(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	snprintf(input_log_buf, sizeof(input_log_buf), "%s %s", SECLOG, fmt);	\
-	dev_dbg(dev, input_log_buf, ## __VA_ARGS__);				\
-	if (mode) {								\
-		if (dev)							\
-			snprintf(input_log_buf, sizeof(input_log_buf), "%s %s",	\
-					dev_driver_string(dev), dev_name(dev));	\
-		else								\
-			snprintf(input_log_buf, sizeof(input_log_buf), "NULL");	\
-		sec_debug_tsp_log_msg(input_log_buf, fmt, ## __VA_ARGS__);	\
-	}									\
-})
-#define input_info(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	snprintf(input_log_buf, sizeof(input_log_buf), "%s %s", SECLOG, fmt);	\
-	dev_info(dev, input_log_buf, ## __VA_ARGS__);				\
-	if (mode) {								\
-		if (dev)							\
-			snprintf(input_log_buf, sizeof(input_log_buf), "%s %s",	\
-					dev_driver_string(dev), dev_name(dev));	\
-		else								\
-			snprintf(input_log_buf, sizeof(input_log_buf), "NULL");	\
-		sec_debug_tsp_log_msg(input_log_buf, fmt, ## __VA_ARGS__);	\
-	}									\
-})
-#define input_err(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	snprintf(input_log_buf, sizeof(input_log_buf), "%s %s", SECLOG, fmt);	\
-	dev_err(dev, input_log_buf, ## __VA_ARGS__);				\
-	if (mode) {								\
-		if (dev)							\
-			snprintf(input_log_buf, sizeof(input_log_buf), "%s %s",	\
-					dev_driver_string(dev), dev_name(dev));	\
-		else								\
-			snprintf(input_log_buf, sizeof(input_log_buf), "NULL");	\
-		sec_debug_tsp_log_msg(input_log_buf, fmt, ## __VA_ARGS__);	\
-	}									\
-})
-#define input_log_fix() {}
-#else
-#define input_dbg(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	snprintf(input_log_buf, sizeof(input_log_buf), "%s %s", SECLOG, fmt);	\
-	dev_dbg(dev, input_log_buf, ## __VA_ARGS__);				\
-})
-#define input_info(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	snprintf(input_log_buf, sizeof(input_log_buf), "%s %s", SECLOG, fmt);	\
-	dev_info(dev, input_log_buf, ## __VA_ARGS__);				\
-})
-#define input_err(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	snprintf(input_log_buf, sizeof(input_log_buf), "%s %s", SECLOG, fmt);	\
-	dev_err(dev, input_log_buf, ## __VA_ARGS__);				\
-})
-#define input_log_fix() {}
-#endif
-
 
 /*
  * The event structure itself

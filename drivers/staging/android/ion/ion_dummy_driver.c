@@ -1,7 +1,7 @@
 /*
  * drivers/gpu/ion/ion_dummy_driver.c
  *
- * Copyright (C) 2013 Linaro, Inc
+ * Copyright (C) 2013 MediaTek, Inc
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -74,7 +74,6 @@ static int __init ion_dummy_init(void)
 			GFP_KERNEL);
 	if (!heaps)
 		return -ENOMEM;
-
 
 	/* Allocate a dummy carveout heap */
 	carveout_ptr = alloc_pages_exact(
@@ -153,4 +152,5 @@ static void __exit ion_dummy_exit(void)
 		chunk_ptr = NULL;
 	}
 }
+
 __exitcall(ion_dummy_exit);

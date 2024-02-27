@@ -25,6 +25,12 @@ config NF_CONNTRACK_IPV6
 
 	  To compile it as a module, choose M here.  If unsure, say N.
 
+config NF_SOCKET_IPV6
+	tristate "IPv6 socket lookup support"
+	help
+	  This option enables the IPv6 socket lookup infrastructure. This
+	  is used by the ip6tables socket match.
+
 if NF_TABLES
 
 config NF_TABLES_IPV6
@@ -42,6 +48,34 @@ config NFT_CHAIN_ROUTE_IPV6
 	  fields such as the source, destination, flowlabel, hop-limit and
 	  the packet mark.
 
+if NF_NAT_IPV6
+
+config NFT_CHAIN_NAT_IPV6
+	tristate "IPv6 nf_tables nat chain support"
+	help
+	  This option enables the "nat" chain for IPv6 in nf_tables. This
+	  chain type is used to perform Network Address Translation (NAT)
+	  packet transformations such as the source, destination address and
+	  source and destination ports.
+
+config NFT_MASQ_IPV6
+	tristate "IPv6 masquerade support for nf_tables"
+	depends on NFT_MASQ
+	select NF_NAT_MASQUERADE_IPV6
+	help
+	  This is the expression that provides IPv4 masquerading support for
+	  nf_tables.
+
+config NFT_REDIR_IPV6
+	tristate "IPv6 redirect support for nf_tables"
+	depends on NFT_REDIR
+	select NF_NAT_REDIRECT
+	help
+	  This is the expression that provides IPv4 redirect support for
+	  nf_tables.
+
+endif # NF_NAT_IPV6
+
 config NFT_REJECT_IPV6
 	select NF_REJECT_IPV6
 	default NFT_REJECT
@@ -53,6 +87,14 @@ config NFT_DUP_IPV6
 	select NF_DUP_IPV6
 	help
 	  This module enables IPv6 packet duplication support for nf_tables.
+
+config NFT_FIB_IPV6
+	tristate "nf_tables fib / ipv6 route lookup support"
+	select NFT_FIB
+	help
+	  This module enables IPv6 FIB lookups, e.g. for reverse path filtering.
+	  It also allows query of the FIB for the route type, e.g. local, unicast,
+	  multicast or blackhole.
 
 endif # NF_TABLES_IPV6
 endif # NF_TABLES
@@ -85,38 +127,11 @@ config NF_NAT_IPV6
 
 if NF_NAT_IPV6
 
-config NFT_CHAIN_NAT_IPV6
-	depends on NF_TABLES_IPV6
-	tristate "IPv6 nf_tables nat chain support"
-	help
-	  This option enables the "nat" chain for IPv6 in nf_tables. This
-	  chain type is used to perform Network Address Translation (NAT)
-	  packet transformations such as the source, destination address and
-	  source and destination ports.
-
 config NF_NAT_MASQUERADE_IPV6
 	tristate "IPv6 masquerade support"
 	help
 	  This is the kernel functionality to provide NAT in the masquerade
 	  flavour (automatic source address selection) for IPv6.
-
-config NFT_MASQ_IPV6
-	tristate "IPv6 masquerade support for nf_tables"
-	depends on NF_TABLES_IPV6
-	depends on NFT_MASQ
-	select NF_NAT_MASQUERADE_IPV6
-	help
-	  This is the expression that provides IPv4 masquerading support for
-	  nf_tables.
-
-config NFT_REDIR_IPV6
-	tristate "IPv6 redirect support for nf_tables"
-	depends on NF_TABLES_IPV6
-	depends on NFT_REDIR
-	select NF_NAT_REDIRECT
-	help
-	  This is the expression that provides IPv4 redirect support for
-	  nf_tables.
 
 endif # NF_NAT_IPV6
 
@@ -134,18 +149,6 @@ config IP6_NF_IPTABLES
 	  To compile it as a module, choose M here.  If unsure, say N.
 
 if IP6_NF_IPTABLES
-
-config IP6_NF_IPTABLES_128
-	tristate "128 bit arithmetic for iptables matching"
-	depends on IP6_NF_IPTABLES
-	help
-	  This enables 128 bit matching in ip6tables to help optimize cases
-          where there is no match required. ip6tables matching for ipv6 always
-	  has a mask if an address is specified for match. Adding a check for
-	  mask prior to that helps to improve performance as it avoids the
-	  masked comparison.
-
-	  Note that this feature depends on the architecture. If unsure, say N.
 
 # The simple matches.
 config IP6_NF_MATCH_AH

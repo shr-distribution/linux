@@ -1,5 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef ISCSI_TARGET_H
 #define ISCSI_TARGET_H
+
+#include <linux/types.h>
+#include <linux/spinlock.h>
+
+struct iscsi_cmd;
+struct iscsi_conn;
+struct iscsi_np;
+struct iscsi_portal_group;
+struct iscsi_session;
+struct iscsi_tpg_np;
+struct kref;
+struct sockaddr_storage;
 
 extern struct iscsi_tiqn *iscsit_get_tiqn_for_login(unsigned char *);
 extern struct iscsi_tiqn *iscsit_get_tiqn(unsigned char *, int);
@@ -30,7 +43,6 @@ extern int iscsi_target_rx_thread(void *);
 extern int iscsit_close_connection(struct iscsi_conn *);
 extern int iscsit_close_session(struct iscsi_session *);
 extern void iscsit_fail_session(struct iscsi_session *);
-extern int iscsit_free_session(struct iscsi_session *);
 extern void iscsit_stop_session(struct iscsi_session *, int, int);
 extern int iscsit_release_sessions_for_tpg(struct iscsi_portal_group *, int);
 

@@ -1,9 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __IO_PGTABLE_H
 #define __IO_PGTABLE_H
 #include <linux/bitops.h>
-
-#include <linux/scatterlist.h>
-#include <soc/qcom/msm_tz_smmu.h>
 
 /*
  * Public API for use by IOMMU drivers
@@ -14,8 +12,6 @@ enum io_pgtable_fmt {
 	ARM_64_LPAE_S1,
 	ARM_64_LPAE_S2,
 	ARM_V7S,
-	ARM_V8L_FAST,
-	ARM_MSM_SECURE,
 	IO_PGTABLE_NUM_FMTS,
 };
 
@@ -27,10 +23,6 @@ enum io_pgtable_fmt {
  * @tlb_sync:      Ensure any queued TLB invalidation has taken effect, and
  *                 any corresponding page table updates are visible to the
  *                 IOMMU.
- * @alloc_pages_exact: Allocate page table memory (optional, defaults to
- *                     alloc_pages_exact)
- * @free_pages_exact:  Free page table memory (optional, defaults to
- *                     free_pages_exact)
  *
  * Note that these can all be called in atomic context and must therefore
  * not block.
@@ -40,8 +32,6 @@ struct iommu_gather_ops {
 	void (*tlb_add_flush)(unsigned long iova, size_t size, size_t granule,
 			      bool leaf, void *cookie);
 	void (*tlb_sync)(void *cookie);
-	void *(*alloc_pages_exact)(void *cookie, size_t size, gfp_t gfp_mask);
-	void (*free_pages_exact)(void *cookie, void *virt, size_t size);
 };
 
 /**
@@ -72,31 +62,21 @@ struct io_pgtable_cfg {
 	 *	(unmapped) entries but the hardware might do so anyway, perform
 	 *	TLB maintenance when mapping as well as when unmapping.
 	 *
-	 * IO_PGTABLE_QUIRK_ARM_MTK_4GB: (ARM v7s format) Set bit 9 in all
-	 *	PTEs, for Mediatek IOMMUs which treat it as a 33rd address bit
-	 *	when the SoC is in "4GB mode" and they can only access the high
-	 *	remap of DRAM (0x1_00000000 to 0x1_ffffffff).
+	 * IO_PGTABLE_QUIRK_ARM_MTK_4GB: (ARM v7s format) Set bit 4 and 9 in all
+	 *	PTEs, for Mediatek IOMMUs which treat it as the 33rd and 32rd
+	 *	address bit when the SoC dram is over 4GB and they can access
+	 *	the physical address from 0x4000_0000 to 0x3_ffff_ffff.
 	 *
-	 * IO_PGTABLE_QUIRK_QCOM_USE_UPSTREAM_HINT: Override the attributes
-	 *	set in TCR for the page table walker. Use attributes specified
-	 *	by the upstream hw instead.
-	 *
-	 * IO_PGTABLE_QUIRK_PAGE_TABLE_COHERENT: Set the page table as
-	 *	coherent.
-	 *
-	 * IO_PGTABLE_QUIRK_QSMMUV500_NON_SHAREABLE:
-	 *	Having page tables which are non coherent, but cached in a
-	 *	system cache requires SH=Non-Shareable. This applies to the
-	 *	qsmmuv500 model. For data buffers SH=Non-Shareable is not
-	 *	required.
+	 * IO_PGTABLE_QUIRK_NO_DMA: Guarantees that the tables will only ever
+	 *	be accessed by a fully cache-coherent IOMMU or CPU (e.g. for a
+	 *	software-emulated IOMMU), such that pagetable updates need not
+	 *	be treated as explicit DMA data.
 	 */
 	#define IO_PGTABLE_QUIRK_ARM_NS		BIT(0)
 	#define IO_PGTABLE_QUIRK_NO_PERMS	BIT(1)
 	#define IO_PGTABLE_QUIRK_TLBI_ON_MAP	BIT(2)
 	#define IO_PGTABLE_QUIRK_ARM_MTK_4GB	BIT(3)
-	#define IO_PGTABLE_QUIRK_QCOM_USE_UPSTREAM_HINT	BIT(4)
-	#define IO_PGTABLE_QUIRK_PAGE_TABLE_COHERENT BIT(5)
-	#define IO_PGTABLE_QUIRK_QSMMUV500_NON_SHAREABLE BIT(6)
+	#define IO_PGTABLE_QUIRK_NO_DMA		BIT(4)
 	unsigned long			quirks;
 	unsigned long			pgsize_bitmap;
 	unsigned int			ias;
@@ -123,18 +103,6 @@ struct io_pgtable_cfg {
 			u32	nmrr;
 			u32	prrr;
 		} arm_v7s_cfg;
-
-		struct {
-			u64	ttbr[2];
-			u64	tcr;
-			u64	mair[2];
-			void	*pmds;
-		} av8l_fast_cfg;
-
-		struct {
-			enum tz_smmu_device_id sec_id;
-			int cbndx;
-		} arm_msm_secure_cfg;
 	};
 };
 
@@ -142,9 +110,6 @@ struct io_pgtable_cfg {
  * struct io_pgtable_ops - Page table manipulation API for IOMMU drivers.
  *
  * @map:          Map a physically contiguous memory region.
- * @map_sg:	  Map a scatterlist.  Returns the number of bytes mapped,
- *		  or 0 on failure.  The size parameter contains the size
- *		  of the partial mapping in case of failure.
  * @unmap:        Unmap a physically contiguous memory region.
  * @iova_to_phys: Translate iova to physical address.
  *
@@ -154,18 +119,15 @@ struct io_pgtable_cfg {
 struct io_pgtable_ops {
 	int (*map)(struct io_pgtable_ops *ops, unsigned long iova,
 		   phys_addr_t paddr, size_t size, int prot);
-	int (*map_sg)(struct io_pgtable_ops *ops, unsigned long iova,
-		      struct scatterlist *sg, unsigned int nents,
-		      int prot, size_t *size);
-	size_t (*unmap)(struct io_pgtable_ops *ops, unsigned long iova,
+	int (*unmap)(struct io_pgtable_ops *ops, unsigned long iova,
 		     size_t size);
 	phys_addr_t (*iova_to_phys)(struct io_pgtable_ops *ops,
 				    unsigned long iova);
-	bool (*is_iova_coherent)(struct io_pgtable_ops *ops,
-				unsigned long iova);
-	uint64_t (*iova_to_pte)(struct io_pgtable_ops *ops,
-		    unsigned long iova);
-
+#ifdef CONFIG_MTK_IOMMU_V2
+	int (*switch_acp)(struct io_pgtable_ops *ops,
+				    unsigned long iova, size_t size,
+				    bool is_acp);
+#endif
 };
 
 /**
@@ -202,14 +164,12 @@ void free_io_pgtable_ops(struct io_pgtable_ops *ops);
  * @fmt:    The page table format.
  * @cookie: An opaque token provided by the IOMMU driver and passed back to
  *          any callback routines.
- * @tlb_sync_pending: Private flag for optimising out redundant syncs.
  * @cfg:    A copy of the page table configuration.
  * @ops:    The page table operations in use for this set of page tables.
  */
 struct io_pgtable {
 	enum io_pgtable_fmt	fmt;
 	void			*cookie;
-	bool			tlb_sync_pending;
 	struct io_pgtable_cfg	cfg;
 	struct io_pgtable_ops	ops;
 };
@@ -218,29 +178,18 @@ struct io_pgtable {
 
 static inline void io_pgtable_tlb_flush_all(struct io_pgtable *iop)
 {
-	if (!iop->cfg.tlb)
-		return;
 	iop->cfg.tlb->tlb_flush_all(iop->cookie);
-	iop->tlb_sync_pending = true;
 }
 
 static inline void io_pgtable_tlb_add_flush(struct io_pgtable *iop,
 		unsigned long iova, size_t size, size_t granule, bool leaf)
 {
-	if (!iop->cfg.tlb)
-		return;
 	iop->cfg.tlb->tlb_add_flush(iova, size, granule, leaf, iop->cookie);
-	iop->tlb_sync_pending = true;
 }
 
 static inline void io_pgtable_tlb_sync(struct io_pgtable *iop)
 {
-	if (!iop->cfg.tlb)
-		return;
-	if (iop->tlb_sync_pending) {
-		iop->cfg.tlb->tlb_sync(iop->cookie);
-		iop->tlb_sync_pending = false;
-	}
+	iop->cfg.tlb->tlb_sync(iop->cookie);
 }
 
 /**
@@ -260,31 +209,5 @@ extern struct io_pgtable_init_fns io_pgtable_arm_32_lpae_s2_init_fns;
 extern struct io_pgtable_init_fns io_pgtable_arm_64_lpae_s1_init_fns;
 extern struct io_pgtable_init_fns io_pgtable_arm_64_lpae_s2_init_fns;
 extern struct io_pgtable_init_fns io_pgtable_arm_v7s_init_fns;
-extern struct io_pgtable_init_fns io_pgtable_av8l_fast_init_fns;
-extern struct io_pgtable_init_fns io_pgtable_arm_msm_secure_init_fns;
-
-/**
- * io_pgtable_alloc_pages_exact:
- *	allocate an exact number of physically-contiguous pages.
- * @size: the number of bytes to allocate
- * @gfp_mask: GFP flags for the allocation
- *
- * Like alloc_pages_exact(), but with some additional accounting for debug
- * purposes.
- */
-void *io_pgtable_alloc_pages_exact(struct io_pgtable_cfg *cfg, void *cookie,
-				   size_t size, gfp_t gfp_mask);
-
-/**
- * io_pgtable_free_pages_exact:
- *	release memory allocated via io_pgtable_alloc_pages_exact()
- * @virt: the value returned by alloc_pages_exact.
- * @size: size of allocation, same value as passed to alloc_pages_exact().
- *
- * Like free_pages_exact(), but with some additional accounting for debug
- * purposes.
- */
-void io_pgtable_free_pages_exact(struct io_pgtable_cfg *cfg, void *cookie,
-				 void *virt, size_t size);
 
 #endif /* __IO_PGTABLE_H */

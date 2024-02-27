@@ -2,7 +2,7 @@
  * common LSM auditing functions
  *
  * Based on code written for SELinux by :
- *			Stephen Smalley, <sds@epoch.ncsc.mil>
+ *			Stephen Smalley, <sds@tycho.nsa.gov>
  * 			James Morris <jmorris@redhat.com>
  * Author : Etienne Basset, <etienne.basset@ensta.org>
  *
@@ -321,6 +321,7 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 		if (a->u.net->sk) {
 			struct sock *sk = a->u.net->sk;
 			struct unix_sock *u;
+			struct unix_address *addr;
 			int len = 0;
 			char *p = NULL;
 
@@ -351,14 +352,15 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 #endif
 			case AF_UNIX:
 				u = unix_sk(sk);
+				addr = smp_load_acquire(&u->addr);
+				if (!addr)
+					break;
 				if (u->path.dentry) {
 					audit_log_d_path(ab, " path=", &u->path);
 					break;
 				}
-				if (!u->addr)
-					break;
-				len = u->addr->len-sizeof(short);
-				p = &u->addr->name->sun_path[0];
+				len = addr->len-sizeof(short);
+				p = &addr->name->sun_path[0];
 				audit_log_format(ab, " path=");
 				if (*p)
 					audit_log_untrustedstring(ab, p);
@@ -409,6 +411,22 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 	case LSM_AUDIT_DATA_KMOD:
 		audit_log_format(ab, " kmod=");
 		audit_log_untrustedstring(ab, a->u.kmod_name);
+		break;
+	case LSM_AUDIT_DATA_IBPKEY: {
+		struct in6_addr sbn_pfx;
+
+		memset(&sbn_pfx.s6_addr, 0,
+		       sizeof(sbn_pfx.s6_addr));
+		memcpy(&sbn_pfx.s6_addr, &a->u.ibpkey->subnet_prefix,
+		       sizeof(a->u.ibpkey->subnet_prefix));
+		audit_log_format(ab, " pkey=0x%x subnet_prefix=%pI6c",
+				 a->u.ibpkey->pkey, &sbn_pfx);
+		break;
+	}
+	case LSM_AUDIT_DATA_IBENDPORT:
+		audit_log_format(ab, " device=%s port_num=%u",
+				 a->u.ibendport->dev_name,
+				 a->u.ibendport->port);
 		break;
 	} /* switch (a->type) */
 }

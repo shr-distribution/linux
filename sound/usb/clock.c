@@ -151,7 +151,7 @@ static bool uac_clock_source_is_valid(struct snd_usb_audio *chip, int source_id)
 
 	/* If a clock source can't tell us whether it's valid, we assume it is */
 	if (!uac2_control_is_readable(cs_desc->bmControls,
-				      UAC2_CS_CONTROL_CLOCK_VALID))
+				      UAC2_CS_CONTROL_CLOCK_VALID - 1))
 		return 1;
 
 	err = snd_usb_ctl_msg(dev, usb_rcvctrlpipe(dev, 0), UAC2_CS_CUR,
@@ -376,8 +376,7 @@ static int set_sample_rate_v2(struct snd_usb_audio *chip, int iface,
 		return 0;
 
 	cs_desc = snd_usb_find_clock_source(chip->ctrl_intf, clock);
-	writeable = uac2_control_is_writeable(cs_desc->bmControls,
-					      UAC2_CS_CONTROL_SAM_FREQ);
+	writeable = uac2_control_is_writeable(cs_desc->bmControls, UAC2_CS_CONTROL_SAM_FREQ - 1);
 	if (writeable) {
 		data = cpu_to_le32(rate);
 		err = snd_usb_ctl_msg(dev, usb_sndctrlpipe(dev, 0), UAC2_CS_CUR,
@@ -432,10 +431,6 @@ int snd_usb_init_sample_rate(struct snd_usb_audio *chip, int iface,
 
 	case UAC_VERSION_2:
 		return set_sample_rate_v2(chip, iface, alts, fmt, rate);
-
-	/* Clock rate is fixed at 48 kHz for BADD devices */
-	case UAC_VERSION_3:
-		return 0;
 	}
 }
 

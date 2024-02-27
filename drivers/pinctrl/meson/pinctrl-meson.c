@@ -260,7 +260,6 @@ static int meson_pinconf_set(struct pinctrl_dev *pcdev, unsigned int pin,
 	enum pin_config_param param;
 	unsigned int reg, bit;
 	int i, ret;
-	u16 arg;
 
 	ret = meson_get_bank(pc, pin, &bank);
 	if (ret)
@@ -268,14 +267,14 @@ static int meson_pinconf_set(struct pinctrl_dev *pcdev, unsigned int pin,
 
 	for (i = 0; i < num_configs; i++) {
 		param = pinconf_to_config_param(configs[i]);
-		arg = pinconf_to_config_argument(configs[i]);
 
 		switch (param) {
 		case PIN_CONFIG_BIAS_DISABLE:
 			dev_dbg(pc->dev, "pin %u: disable bias\n", pin);
 
-			meson_calc_reg_and_bit(bank, pin, REG_PULL, &reg, &bit);
-			ret = regmap_update_bits(pc->reg_pull, reg,
+			meson_calc_reg_and_bit(bank, pin, REG_PULLEN, &reg,
+					       &bit);
+			ret = regmap_update_bits(pc->reg_pullen, reg,
 						 BIT(bit), 0);
 			if (ret)
 				return ret;
@@ -524,6 +523,14 @@ static const struct of_device_id meson_pinctrl_dt_match[] = {
 		.compatible = "amlogic,meson-gxbb-aobus-pinctrl",
 		.data = &meson_gxbb_aobus_pinctrl_data,
 	},
+	{
+		.compatible = "amlogic,meson-gxl-periphs-pinctrl",
+		.data = &meson_gxl_periphs_pinctrl_data,
+	},
+	{
+		.compatible = "amlogic,meson-gxl-aobus-pinctrl",
+		.data = &meson_gxl_aobus_pinctrl_data,
+	},
 	{ },
 };
 
@@ -549,22 +556,10 @@ static int meson_gpiolib_register(struct meson_pinctrl *pc)
 	if (ret) {
 		dev_err(pc->dev, "can't add gpio chip %s\n",
 			pc->data->name);
-		goto fail;
-	}
-
-	ret = gpiochip_add_pin_range(&pc->chip, dev_name(pc->dev),
-				     0, pc->data->pin_base,
-				     pc->chip.ngpio);
-	if (ret) {
-		dev_err(pc->dev, "can't add pin range\n");
-		goto fail;
+		return ret;
 	}
 
 	return 0;
-fail:
-	gpiochip_remove(&pc->chip);
-
-	return ret;
 }
 
 static struct regmap_config meson_regmap_config = {

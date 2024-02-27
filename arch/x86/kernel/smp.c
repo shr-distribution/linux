@@ -125,7 +125,7 @@ static bool smp_no_nmi_ipi = false;
 static void native_smp_send_reschedule(int cpu)
 {
 	if (unlikely(cpu_is_offline(cpu))) {
-		WARN_ON(1);
+		WARN(1, "sched: Unexpected reschedule of offline CPU#%d!\n", cpu);
 		return;
 	}
 	apic->send_IPI(cpu, RESCHEDULE_VECTOR);
@@ -181,6 +181,12 @@ asmlinkage __visible void smp_reboot_interrupt(void)
 	irq_exit();
 }
 
+static int register_stop_handler(void)
+{
+	return register_nmi_handler(NMI_LOCAL, smp_stop_nmi_callback,
+				    NMI_FLAG_FIRST, "smp_stop");
+}
+
 static void native_stop_other_cpus(int wait)
 {
 	unsigned long flags;
@@ -214,39 +220,41 @@ static void native_stop_other_cpus(int wait)
 		apic->send_IPI_allbutself(REBOOT_VECTOR);
 
 		/*
-		 * Don't wait longer than a second if the caller
-		 * didn't ask us to wait.
+		 * Don't wait longer than a second for IPI completion. The
+		 * wait request is not checked here because that would
+		 * prevent an NMI shutdown attempt in case that not all
+		 * CPUs reach shutdown state.
 		 */
 		timeout = USEC_PER_SEC;
-		while (num_online_cpus() > 1 && (wait || timeout--))
+		while (num_online_cpus() > 1 && timeout--)
 			udelay(1);
 	}
-	
+
 	/* if the REBOOT_VECTOR didn't work, try with the NMI */
-	if ((num_online_cpus() > 1) && (!smp_no_nmi_ipi))  {
-		if (register_nmi_handler(NMI_LOCAL, smp_stop_nmi_callback,
-					 NMI_FLAG_FIRST, "smp_stop"))
-			/* Note: we ignore failures here */
-			/* Hope the REBOOT_IRQ is good enough */
-			goto finish;
-
-		/* sync above data before sending IRQ */
-		wmb();
-
-		pr_emerg("Shutting down cpus with NMI\n");
-
-		apic->send_IPI_allbutself(NMI_VECTOR);
-
+	if (num_online_cpus() > 1) {
 		/*
-		 * Don't wait longer than a 10 ms if the caller
-		 * didn't ask us to wait.
+		 * If NMI IPI is enabled, try to register the stop handler
+		 * and send the IPI. In any case try to wait for the other
+		 * CPUs to stop.
+		 */
+		if (!smp_no_nmi_ipi && !register_stop_handler()) {
+			/* Sync above data before sending IRQ */
+			wmb();
+
+			pr_emerg("Shutting down cpus with NMI\n");
+
+			apic->send_IPI_allbutself(NMI_VECTOR);
+		}
+		/*
+		 * Don't wait longer than 10 ms if the caller didn't
+		 * reqeust it. If wait is true, the machine hangs here if
+		 * one or more CPUs do not reach shutdown state.
 		 */
 		timeout = USEC_PER_MSEC * 10;
 		while (num_online_cpus() > 1 && (wait || timeout--))
 			udelay(1);
 	}
 
-finish:
 	local_irq_save(flags);
 	disable_local_APIC();
 	mcheck_cpu_clear(this_cpu_ptr(&cpu_info));
@@ -254,87 +262,46 @@ finish:
 }
 
 /*
- * Reschedule call back.
+ * Reschedule call back. KVM uses this interrupt to force a cpu out of
+ * guest mode
  */
-static inline void __smp_reschedule_interrupt(void)
-{
-	inc_irq_stat(irq_resched_count);
-	scheduler_ipi();
-}
-
 __visible void __irq_entry smp_reschedule_interrupt(struct pt_regs *regs)
 {
-	irq_enter();
 	ack_APIC_irq();
-	__smp_reschedule_interrupt();
-	irq_exit();
-	/*
-	 * KVM uses this interrupt to force a cpu out of guest mode
-	 */
+	inc_irq_stat(irq_resched_count);
 	kvm_set_cpu_l1tf_flush_l1d();
-}
 
-__visible void __irq_entry smp_trace_reschedule_interrupt(struct pt_regs *regs)
-{
-	/*
-	 * Need to call irq_enter() before calling the trace point.
-	 * __smp_reschedule_interrupt() calls irq_enter/exit() too (in
-	 * scheduler_ipi(). This is OK, since those functions are allowed
-	 * to nest.
-	 */
-	ipi_entering_ack_irq();
-	trace_reschedule_entry(RESCHEDULE_VECTOR);
-	__smp_reschedule_interrupt();
-	trace_reschedule_exit(RESCHEDULE_VECTOR);
-	exiting_irq();
-	/*
-	 * KVM uses this interrupt to force a cpu out of guest mode
-	 */
-}
-
-static inline void __smp_call_function_interrupt(void)
-{
-	generic_smp_call_function_interrupt();
-	inc_irq_stat(irq_call_count);
+	if (trace_resched_ipi_enabled()) {
+		/*
+		 * scheduler_ipi() might call irq_enter() as well, but
+		 * nested calls are fine.
+		 */
+		irq_enter();
+		trace_reschedule_entry(RESCHEDULE_VECTOR);
+		scheduler_ipi();
+		trace_reschedule_exit(RESCHEDULE_VECTOR);
+		irq_exit();
+		return;
+	}
+	scheduler_ipi();
 }
 
 __visible void __irq_entry smp_call_function_interrupt(struct pt_regs *regs)
 {
 	ipi_entering_ack_irq();
-	__smp_call_function_interrupt();
-	exiting_irq();
-}
-
-__visible void __irq_entry
-smp_trace_call_function_interrupt(struct pt_regs *regs)
-{
-	ipi_entering_ack_irq();
 	trace_call_function_entry(CALL_FUNCTION_VECTOR);
-	__smp_call_function_interrupt();
+	inc_irq_stat(irq_call_count);
+	generic_smp_call_function_interrupt();
 	trace_call_function_exit(CALL_FUNCTION_VECTOR);
 	exiting_irq();
 }
 
-static inline void __smp_call_function_single_interrupt(void)
-{
-	generic_smp_call_function_single_interrupt();
-	inc_irq_stat(irq_call_count);
-}
-
-__visible void __irq_entry
-smp_call_function_single_interrupt(struct pt_regs *regs)
-{
-	ipi_entering_ack_irq();
-	__smp_call_function_single_interrupt();
-	exiting_irq();
-}
-
-__visible void __irq_entry
-smp_trace_call_function_single_interrupt(struct pt_regs *regs)
+__visible void __irq_entry smp_call_function_single_interrupt(struct pt_regs *r)
 {
 	ipi_entering_ack_irq();
 	trace_call_function_single_entry(CALL_FUNCTION_SINGLE_VECTOR);
-	__smp_call_function_single_interrupt();
+	inc_irq_stat(irq_call_count);
+	generic_smp_call_function_single_interrupt();
 	trace_call_function_single_exit(CALL_FUNCTION_SINGLE_VECTOR);
 	exiting_irq();
 }

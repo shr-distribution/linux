@@ -23,6 +23,8 @@
 
 #include <linux/printk.h>
 #include <linux/slab.h>
+#include <linux/mm_types.h>
+
 #include "kfd_priv.h"
 #include "kfd_mqd_manager.h"
 #include "cik_regs.h"
@@ -41,10 +43,6 @@ static int init_mqd(struct mqd_manager *mm, void **mqd,
 	uint64_t addr;
 	struct cik_mqd *m;
 	int retval;
-
-	BUG_ON(!mm || !q || !mqd);
-
-	pr_debug("kfd: In func %s\n", __func__);
 
 	retval = kfd_gtt_sa_allocate(mm->dev, sizeof(struct cik_mqd),
 					mqd_mem_obj);
@@ -99,7 +97,7 @@ static int init_mqd(struct mqd_manager *mm, void **mqd,
 		m->cp_hqd_iq_rptr = AQL_ENABLE;
 
 	*mqd = m;
-	if (gart_addr != NULL)
+	if (gart_addr)
 		*gart_addr = addr;
 	retval = mm->update_mqd(mm, m, q);
 
@@ -113,8 +111,6 @@ static int init_mqd_sdma(struct mqd_manager *mm, void **mqd,
 	int retval;
 	struct cik_sdma_rlc_registers *m;
 
-	BUG_ON(!mm || !mqd || !mqd_mem_obj);
-
 	retval = kfd_gtt_sa_allocate(mm->dev,
 					sizeof(struct cik_sdma_rlc_registers),
 					mqd_mem_obj);
@@ -127,7 +123,7 @@ static int init_mqd_sdma(struct mqd_manager *mm, void **mqd,
 	memset(m, 0, sizeof(struct cik_sdma_rlc_registers));
 
 	*mqd = m;
-	if (gart_addr != NULL)
+	if (gart_addr)
 		*gart_addr = (*mqd_mem_obj)->gpu_addr;
 
 	retval = mm->update_mqd(mm, m, q);
@@ -138,27 +134,31 @@ static int init_mqd_sdma(struct mqd_manager *mm, void **mqd,
 static void uninit_mqd(struct mqd_manager *mm, void *mqd,
 			struct kfd_mem_obj *mqd_mem_obj)
 {
-	BUG_ON(!mm || !mqd);
 	kfd_gtt_sa_free(mm->dev, mqd_mem_obj);
 }
 
 static void uninit_mqd_sdma(struct mqd_manager *mm, void *mqd,
 				struct kfd_mem_obj *mqd_mem_obj)
 {
-	BUG_ON(!mm || !mqd);
 	kfd_gtt_sa_free(mm->dev, mqd_mem_obj);
 }
 
 static int load_mqd(struct mqd_manager *mm, void *mqd, uint32_t pipe_id,
-			uint32_t queue_id, uint32_t __user *wptr)
+		    uint32_t queue_id, struct queue_properties *p,
+		    struct mm_struct *mms)
 {
-	return mm->dev->kfd2kgd->hqd_load
-		(mm->dev->kgd, mqd, pipe_id, queue_id, wptr);
+	/* AQL write pointer counts in 64B packets, PM4/CP counts in dwords. */
+	uint32_t wptr_shift = (p->format == KFD_QUEUE_FORMAT_AQL ? 4 : 0);
+	uint32_t wptr_mask = (uint32_t)((p->queue_size / sizeof(uint32_t)) - 1);
+
+	return mm->dev->kfd2kgd->hqd_load(mm->dev->kgd, mqd, pipe_id, queue_id,
+					  (uint32_t __user *)p->write_ptr,
+					  wptr_shift, wptr_mask, mms);
 }
 
 static int load_mqd_sdma(struct mqd_manager *mm, void *mqd,
-			uint32_t pipe_id, uint32_t queue_id,
-			uint32_t __user *wptr)
+			 uint32_t pipe_id, uint32_t queue_id,
+			 struct queue_properties *p, struct mm_struct *mms)
 {
 	return mm->dev->kfd2kgd->hqd_sdma_load(mm->dev->kgd, mqd);
 }
@@ -167,10 +167,6 @@ static int update_mqd(struct mqd_manager *mm, void *mqd,
 			struct queue_properties *q)
 {
 	struct cik_mqd *m;
-
-	BUG_ON(!mm || !q || !mqd);
-
-	pr_debug("kfd: In func %s\n", __func__);
 
 	m = get_mqd(mqd);
 	m->cp_hqd_pq_control = DEFAULT_RPTR_BLOCK_SIZE |
@@ -186,21 +182,17 @@ static int update_mqd(struct mqd_manager *mm, void *mqd,
 	m->cp_hqd_pq_base_hi = upper_32_bits((uint64_t)q->queue_address >> 8);
 	m->cp_hqd_pq_rptr_report_addr_lo = lower_32_bits((uint64_t)q->read_ptr);
 	m->cp_hqd_pq_rptr_report_addr_hi = upper_32_bits((uint64_t)q->read_ptr);
-	m->cp_hqd_pq_doorbell_control = DOORBELL_EN |
-					DOORBELL_OFFSET(q->doorbell_off);
+	m->cp_hqd_pq_doorbell_control = DOORBELL_OFFSET(q->doorbell_off);
 
 	m->cp_hqd_vmid = q->vmid;
 
-	if (q->format == KFD_QUEUE_FORMAT_AQL) {
+	if (q->format == KFD_QUEUE_FORMAT_AQL)
 		m->cp_hqd_pq_control |= NO_UPDATE_RPTR;
-	}
 
-	m->cp_hqd_active = 0;
 	q->is_active = false;
 	if (q->queue_size > 0 &&
 			q->queue_address != 0 &&
 			q->queue_percent > 0) {
-		m->cp_hqd_active = 1;
 		q->is_active = true;
 	}
 
@@ -211,8 +203,6 @@ static int update_mqd_sdma(struct mqd_manager *mm, void *mqd,
 				struct queue_properties *q)
 {
 	struct cik_sdma_rlc_registers *m;
-
-	BUG_ON(!mm || !mqd || !q);
 
 	m = get_sdma_mqd(mqd);
 	m->sdma_rlc_rb_cntl = (ffs(q->queue_size / sizeof(unsigned int)) - 1)
@@ -252,7 +242,7 @@ static int destroy_mqd(struct mqd_manager *mm, void *mqd,
 			unsigned int timeout, uint32_t pipe_id,
 			uint32_t queue_id)
 {
-	return mm->dev->kfd2kgd->hqd_destroy(mm->dev->kgd, type, timeout,
+	return mm->dev->kfd2kgd->hqd_destroy(mm->dev->kgd, mqd, type, timeout,
 					pipe_id, queue_id);
 }
 
@@ -295,71 +285,13 @@ static int init_mqd_hiq(struct mqd_manager *mm, void **mqd,
 		struct kfd_mem_obj **mqd_mem_obj, uint64_t *gart_addr,
 		struct queue_properties *q)
 {
-	uint64_t addr;
-	struct cik_mqd *m;
-	int retval;
-
-	BUG_ON(!mm || !q || !mqd || !mqd_mem_obj);
-
-	pr_debug("kfd: In func %s\n", __func__);
-
-	retval = kfd_gtt_sa_allocate(mm->dev, sizeof(struct cik_mqd),
-					mqd_mem_obj);
-
-	if (retval != 0)
-		return -ENOMEM;
-
-	m = (struct cik_mqd *) (*mqd_mem_obj)->cpu_ptr;
-	addr = (*mqd_mem_obj)->gpu_addr;
-
-	memset(m, 0, ALIGN(sizeof(struct cik_mqd), 256));
-
-	m->header = 0xC0310800;
-	m->compute_pipelinestat_enable = 1;
-	m->compute_static_thread_mgmt_se0 = 0xFFFFFFFF;
-	m->compute_static_thread_mgmt_se1 = 0xFFFFFFFF;
-	m->compute_static_thread_mgmt_se2 = 0xFFFFFFFF;
-	m->compute_static_thread_mgmt_se3 = 0xFFFFFFFF;
-
-	m->cp_hqd_persistent_state = DEFAULT_CP_HQD_PERSISTENT_STATE |
-					PRELOAD_REQ;
-	m->cp_hqd_quantum = QUANTUM_EN | QUANTUM_SCALE_1MS |
-				QUANTUM_DURATION(10);
-
-	m->cp_mqd_control             = MQD_CONTROL_PRIV_STATE_EN;
-	m->cp_mqd_base_addr_lo        = lower_32_bits(addr);
-	m->cp_mqd_base_addr_hi        = upper_32_bits(addr);
-
-	m->cp_hqd_ib_control = DEFAULT_MIN_IB_AVAIL_SIZE;
-
-	/*
-	 * Pipe Priority
-	 * Identifies the pipe relative priority when this queue is connected
-	 * to the pipeline. The pipe priority is against the GFX pipe and HP3D.
-	 * In KFD we are using a fixed pipe priority set to CS_MEDIUM.
-	 * 0 = CS_LOW (typically below GFX)
-	 * 1 = CS_MEDIUM (typically between HP3D and GFX
-	 * 2 = CS_HIGH (typically above HP3D)
-	 */
-	m->cp_hqd_pipe_priority = 1;
-	m->cp_hqd_queue_priority = 15;
-
-	*mqd = m;
-	if (gart_addr)
-		*gart_addr = addr;
-	retval = mm->update_mqd(mm, m, q);
-
-	return retval;
+	return init_mqd(mm, mqd, mqd_mem_obj, gart_addr, q);
 }
 
 static int update_mqd_hiq(struct mqd_manager *mm, void *mqd,
 				struct queue_properties *q)
 {
 	struct cik_mqd *m;
-
-	BUG_ON(!mm || !q || !mqd);
-
-	pr_debug("kfd: In func %s\n", __func__);
 
 	m = get_mqd(mqd);
 	m->cp_hqd_pq_control = DEFAULT_RPTR_BLOCK_SIZE |
@@ -398,8 +330,6 @@ struct cik_sdma_rlc_registers *get_sdma_mqd(void *mqd)
 {
 	struct cik_sdma_rlc_registers *m;
 
-	BUG_ON(!mqd);
-
 	m = (struct cik_sdma_rlc_registers *)mqd;
 
 	return m;
@@ -410,12 +340,10 @@ struct mqd_manager *mqd_manager_init_cik(enum KFD_MQD_TYPE type,
 {
 	struct mqd_manager *mqd;
 
-	BUG_ON(!dev);
-	BUG_ON(type >= KFD_MQD_TYPE_MAX);
+	if (WARN_ON(type >= KFD_MQD_TYPE_MAX))
+		return NULL;
 
-	pr_debug("kfd: In func %s\n", __func__);
-
-	mqd = kzalloc(sizeof(struct mqd_manager), GFP_KERNEL);
+	mqd = kzalloc(sizeof(*mqd), GFP_KERNEL);
 	if (!mqd)
 		return NULL;
 

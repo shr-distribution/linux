@@ -88,14 +88,10 @@ struct stm_data {
 	unsigned int		sw_nchannels;
 	unsigned int		sw_mmiosz;
 	unsigned int		hw_override;
-	bool			(*ost_configured)(void);
 	ssize_t			(*packet)(struct stm_data *, unsigned int,
 					  unsigned int, unsigned int,
 					  unsigned int, unsigned int,
 					  const unsigned char *);
-	ssize_t			(*ost_packet)(struct stm_data *stm_data,
-					  unsigned int size,
-					  const unsigned char *buf);
 	phys_addr_t		(*mmio_addr)(struct stm_data *, unsigned int,
 					     unsigned int, unsigned int);
 	int			(*link)(struct stm_data *, unsigned int,
@@ -137,7 +133,7 @@ int stm_source_register_device(struct device *parent,
 			       struct stm_source_data *data);
 void stm_source_unregister_device(struct stm_source_data *data);
 
-int stm_source_write(struct stm_source_data *data, unsigned int chan,
-		     const char *buf, size_t count);
+int notrace stm_source_write(struct stm_source_data *data, unsigned int chan,
+			     const char *buf, size_t count);
 
 #endif /* _STM_H_ */

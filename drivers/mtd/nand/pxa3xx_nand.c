@@ -21,7 +21,7 @@
 #include <linux/delay.h>
 #include <linux/clk.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -1681,8 +1681,9 @@ static int pxa3xx_nand_scan(struct mtd_info *mtd)
 	chip->ecc.strength = pdata->ecc_strength;
 	chip->ecc.size = pdata->ecc_step_size;
 
-	if (nand_scan_ident(mtd, 1, NULL))
-		return -ENODEV;
+	ret = nand_scan_ident(mtd, 1, NULL);
+	if (ret)
+		return ret;
 
 	if (!pdata->keep_config) {
 		ret = pxa3xx_nand_init(host);
@@ -1775,8 +1776,11 @@ static int alloc_nand_resource(struct platform_device *pdev)
 	int ret, irq, cs;
 
 	pdata = dev_get_platdata(&pdev->dev);
-	if (pdata->num_cs <= 0)
+	if (pdata->num_cs <= 0) {
+		dev_err(&pdev->dev, "invalid number of chip selects\n");
 		return -ENODEV;
+	}
+
 	info = devm_kzalloc(&pdev->dev,
 			    sizeof(*info) + sizeof(*host) * pdata->num_cs,
 			    GFP_KERNEL);
@@ -1809,13 +1813,16 @@ static int alloc_nand_resource(struct platform_device *pdev)
 		chip->write_buf		= pxa3xx_nand_write_buf;
 		chip->options		|= NAND_NO_SUBPAGE_WRITE;
 		chip->cmdfunc		= nand_cmdfunc;
+		chip->onfi_set_features	= nand_onfi_get_set_features_notsupp;
+		chip->onfi_get_features	= nand_onfi_get_set_features_notsupp;
 	}
 
 	nand_hw_control_init(chip->controller);
 	info->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(info->clk)) {
-		dev_err(&pdev->dev, "failed to get nand clock\n");
-		return PTR_ERR(info->clk);
+		ret = PTR_ERR(info->clk);
+		dev_err(&pdev->dev, "failed to get nand clock: %d\n", ret);
+		return ret;
 	}
 	ret = clk_prepare_enable(info->clk);
 	if (ret < 0)
@@ -1843,6 +1850,7 @@ static int alloc_nand_resource(struct platform_device *pdev)
 	info->mmio_base = devm_ioremap_resource(&pdev->dev, r);
 	if (IS_ERR(info->mmio_base)) {
 		ret = PTR_ERR(info->mmio_base);
+		dev_err(&pdev->dev, "failed to map register space: %d\n", ret);
 		goto fail_disable_clk;
 	}
 	info->mmio_phys = r->start;
@@ -1862,7 +1870,7 @@ static int alloc_nand_resource(struct platform_device *pdev)
 				   pxa3xx_nand_irq_thread, IRQF_ONESHOT,
 				   pdev->name, info);
 	if (ret < 0) {
-		dev_err(&pdev->dev, "failed to request IRQ\n");
+		dev_err(&pdev->dev, "failed to request IRQ: %d\n", ret);
 		goto fail_free_buf;
 	}
 
@@ -1907,7 +1915,7 @@ static int pxa3xx_nand_remove(struct platform_device *pdev)
 	clk_disable_unprepare(info->clk);
 
 	for (cs = 0; cs < pdata->num_cs; cs++)
-		nand_release(nand_to_mtd(&info->host[cs]->chip));
+		nand_release(&info->host[cs]->chip);
 	return 0;
 }
 
@@ -1961,10 +1969,8 @@ static int pxa3xx_nand_probe(struct platform_device *pdev)
 	}
 
 	ret = alloc_nand_resource(pdev);
-	if (ret) {
-		dev_err(&pdev->dev, "alloc nand resource failed\n");
+	if (ret)
 		return ret;
-	}
 
 	info = platform_get_drvdata(pdev);
 	probe_success = 0;

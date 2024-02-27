@@ -89,8 +89,8 @@ static int ivtv_yuv_prep_user_dma(struct ivtv *itv, struct ivtv_user_dma *dma,
 
 		if (y_pages == y_dma.page_count) {
 			IVTV_DEBUG_WARN
-				("failed to map uv user pages, returned %d "
-				 "expecting %d\n", uv_pages, uv_dma.page_count);
+				("failed to map uv user pages, returned %d expecting %d\n",
+				 uv_pages, uv_dma.page_count);
 
 			if (uv_pages >= 0) {
 				for (i = 0; i < uv_pages; i++)
@@ -101,8 +101,8 @@ static int ivtv_yuv_prep_user_dma(struct ivtv *itv, struct ivtv_user_dma *dma,
 			}
 		} else {
 			IVTV_DEBUG_WARN
-				("failed to map y user pages, returned %d "
-				 "expecting %d\n", y_pages, y_dma.page_count);
+				("failed to map y user pages, returned %d expecting %d\n",
+				 y_pages, y_dma.page_count);
 		}
 		if (y_pages >= 0) {
 			for (i = 0; i < y_pages; i++)
@@ -935,7 +935,7 @@ static void ivtv_yuv_init(struct ivtv *itv)
 	}
 
 	/* We need a buffer for blanking when Y plane is offset - non-fatal if we can't get one */
-	yi->blanking_ptr = kzalloc(720 * 16, GFP_KERNEL|__GFP_NOWARN);
+	yi->blanking_ptr = kzalloc(720 * 16, GFP_ATOMIC|__GFP_NOWARN);
 	if (yi->blanking_ptr) {
 		yi->blanking_dmaptr = pci_map_single(itv->pdev, yi->blanking_ptr, 720*16, PCI_DMA_TODEVICE);
 	} else {

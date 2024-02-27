@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015, 2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -118,23 +118,11 @@ static const struct regmap_config spmi_regmap_config = {
 	.fast_io	= true,
 };
 
-static const struct regmap_config spmi_regmap_can_sleep_config = {
-	.reg_bits	= 16,
-	.val_bits	= 8,
-	.max_register	= 0xffff,
-	.fast_io	= false,
-};
-
 static int pmic_spmi_probe(struct spmi_device *sdev)
 {
-	struct device_node *root = sdev->dev.of_node;
 	struct regmap *regmap;
 
-	if (of_property_read_bool(root, "qcom,can-sleep"))
-		regmap = devm_regmap_init_spmi_ext(sdev,
-						&spmi_regmap_can_sleep_config);
-	else
-		regmap = devm_regmap_init_spmi_ext(sdev, &spmi_regmap_config);
+	regmap = devm_regmap_init_spmi_ext(sdev, &spmi_regmap_config);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
@@ -142,30 +130,19 @@ static int pmic_spmi_probe(struct spmi_device *sdev)
 	if (sdev->usid % 2 == 0)
 		pmic_spmi_show_revid(regmap, &sdev->dev);
 
-	return of_platform_populate(root, NULL, NULL, &sdev->dev);
-}
-
-static void pmic_spmi_remove(struct spmi_device *sdev)
-{
-	of_platform_depopulate(&sdev->dev);
+	return devm_of_platform_populate(&sdev->dev);
 }
 
 MODULE_DEVICE_TABLE(of, pmic_spmi_id_table);
 
 static struct spmi_driver pmic_spmi_driver = {
 	.probe = pmic_spmi_probe,
-	.remove = pmic_spmi_remove,
 	.driver = {
 		.name = "pmic-spmi",
 		.of_match_table = pmic_spmi_id_table,
 	},
 };
-
-int __init pmic_spmi_init(void)
-{
-	return spmi_driver_register(&pmic_spmi_driver);
-}
-arch_initcall(pmic_spmi_init);
+module_spmi_driver(pmic_spmi_driver);
 
 MODULE_DESCRIPTION("Qualcomm SPMI PMIC driver");
 MODULE_ALIAS("spmi:spmi-pmic");

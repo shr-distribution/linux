@@ -31,16 +31,29 @@ static const struct of_device_id brcmstb_machine_match[] = {
 
 bool soc_is_brcmstb(void)
 {
+	const struct of_device_id *match;
 	struct device_node *root;
 
 	root = of_find_node_by_path("/");
 	if (!root)
 		return false;
 
-	return of_match_node(brcmstb_machine_match, root) != NULL;
+	match = of_match_node(brcmstb_machine_match, root);
+	of_node_put(root);
+
+	return match != NULL;
 }
 
 static const struct of_device_id sun_top_ctrl_match[] = {
+	{ .compatible = "brcm,bcm7125-sun-top-ctrl", },
+	{ .compatible = "brcm,bcm7346-sun-top-ctrl", },
+	{ .compatible = "brcm,bcm7358-sun-top-ctrl", },
+	{ .compatible = "brcm,bcm7360-sun-top-ctrl", },
+	{ .compatible = "brcm,bcm7362-sun-top-ctrl", },
+	{ .compatible = "brcm,bcm7420-sun-top-ctrl", },
+	{ .compatible = "brcm,bcm7425-sun-top-ctrl", },
+	{ .compatible = "brcm,bcm7429-sun-top-ctrl", },
+	{ .compatible = "brcm,bcm7435-sun-top-ctrl", },
 	{ .compatible = "brcm,brcmstb-sun-top-ctrl", },
 	{ }
 };

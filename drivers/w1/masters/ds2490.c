@@ -25,8 +25,7 @@
 #include <linux/usb.h>
 #include <linux/slab.h>
 
-#include "../w1_int.h"
-#include "../w1.h"
+#include <linux/w1.h>
 
 /* USB Standard */
 /* USB Control request vendor type */
@@ -179,27 +178,8 @@ struct ds_status
 	u8			reserved2;
 };
 
-static struct usb_device_id ds_id_table [] = {
-	{ USB_DEVICE(0x04fa, 0x2490) },
-	{ },
-};
-MODULE_DEVICE_TABLE(usb, ds_id_table);
-
-static int ds_probe(struct usb_interface *, const struct usb_device_id *);
-static void ds_disconnect(struct usb_interface *);
-
-static int ds_send_control(struct ds_device *, u16, u16);
-static int ds_send_control_cmd(struct ds_device *, u16, u16);
-
 static LIST_HEAD(ds_devices);
 static DEFINE_MUTEX(ds_mutex);
-
-static struct usb_driver ds_driver = {
-	.name =		"DS9490R",
-	.probe =	ds_probe,
-	.disconnect =	ds_disconnect,
-	.id_table =	ds_id_table,
-};
 
 static int ds_send_control_cmd(struct ds_device *dev, u16 value, u16 index)
 {
@@ -909,11 +889,10 @@ static void ds9490r_write_block(void *data, const u8 *buf, int len)
 	if (len <= 0)
 		return;
 
-	tbuf = kmalloc(len, GFP_KERNEL);
+	tbuf = kmemdup(buf, len, GFP_KERNEL);
 	if (!tbuf)
 		return;
 
-	memcpy(tbuf, buf, len);
 	ds_write_block(dev, tbuf, len);
 
 	kfree(tbuf);
@@ -1039,15 +1018,15 @@ static int ds_probe(struct usb_interface *intf,
 	/* alternative 3, 1ms interrupt (greatly speeds search), 64 byte bulk */
 	alt = 3;
 	err = usb_set_interface(dev->udev,
-		intf->altsetting[alt].desc.bInterfaceNumber, alt);
+		intf->cur_altsetting->desc.bInterfaceNumber, alt);
 	if (err) {
 		dev_err(&dev->udev->dev, "Failed to set alternative setting %d "
 			"for %d interface: err=%d.\n", alt,
-			intf->altsetting[alt].desc.bInterfaceNumber, err);
+			intf->cur_altsetting->desc.bInterfaceNumber, err);
 		goto err_out_clear;
 	}
 
-	iface_desc = &intf->altsetting[alt];
+	iface_desc = intf->cur_altsetting;
 	if (iface_desc->desc.bNumEndpoints != NUM_EP-1) {
 		pr_info("Num endpoints=%d. It is not DS9490R.\n",
 			iface_desc->desc.bNumEndpoints);
@@ -1109,8 +1088,20 @@ static void ds_disconnect(struct usb_interface *intf)
 	kfree(dev);
 }
 
+static const struct usb_device_id ds_id_table[] = {
+	{ USB_DEVICE(0x04fa, 0x2490) },
+	{ },
+};
+MODULE_DEVICE_TABLE(usb, ds_id_table);
+
+static struct usb_driver ds_driver = {
+	.name =		"DS9490R",
+	.probe =	ds_probe,
+	.disconnect =	ds_disconnect,
+	.id_table =	ds_id_table,
+};
 module_usb_driver(ds_driver);
 
-MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>");
 MODULE_DESCRIPTION("DS2490 USB <-> W1 bus master driver (DS9490*)");
+MODULE_LICENSE("GPL");

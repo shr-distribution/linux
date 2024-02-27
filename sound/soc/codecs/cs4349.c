@@ -255,7 +255,7 @@ static struct snd_soc_dai_driver cs4349_dai = {
 	.symmetric_rates = 1,
 };
 
-static struct snd_soc_codec_driver soc_codec_dev_cs4349 = {
+static const struct snd_soc_codec_driver soc_codec_dev_cs4349 = {
 	.component_driver = {
 		.controls		= cs4349_snd_controls,
 		.num_controls		= ARRAY_SIZE(cs4349_snd_controls),
@@ -380,6 +380,7 @@ static struct i2c_driver cs4349_i2c_driver = {
 	.driver = {
 		.name		= "cs4349",
 		.of_match_table	= cs4349_of_match,
+		.pm = &cs4349_runtime_pm,
 	},
 	.id_table	= cs4349_i2c_id,
 	.probe		= cs4349_i2c_probe,

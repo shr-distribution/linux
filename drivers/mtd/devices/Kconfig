@@ -50,19 +50,6 @@ config MTD_MS02NV
 	  say M here and read <file:Documentation/kbuild/modules.txt>.
 	  The module will be called ms02-nv.
 
-config MTD_MSM_QPIC_NAND
-	tristate "MSM QPIC NAND Device Support"
-	depends on MTD && (ARCH_QCOM || ARCH_MSM) && !MTD_MSM_NAND
-	select CRC16
-	select BITREVERSE
-	select MTD_NAND_IDS
-	default n
-	help
-	  Support for NAND controller in Qualcomm Technologies, Inc.
-	  Parallel Interface controller (QPIC). This new controller
-	  supports BAM mode and BCH error correction mechanism. Based on the
-	  device capabilities either 4 bit or 8 bit BCH ECC will be used.
-
 config MTD_DATAFLASH
 	tristate "Support for AT45xxx DataFlash"
 	depends on SPI_MASTER
@@ -107,6 +94,16 @@ config MTD_M25P80
 	  Set up your spi devices with the right board-specific platform data,
 	  if you want to specify device partitioning or to use a device which
 	  doesn't support the JEDEC ID instruction.
+
+config MTD_MCHP23K256
+	tristate "Microchip 23K256 SRAM"
+	depends on SPI_MASTER
+	help
+	  This enables access to Microchip 23K256 SRAM chips, using SPI.
+
+	  Set up your spi devices with the right board-specific
+	  platform data, or a device tree description if you want to
+	  specify device partitioning
 
 config MTD_SPEAR_SMI
 	tristate "SPEAR MTD NOR Support through SMI controller"
@@ -209,7 +206,7 @@ comment "Disk-On-Chip Device Drivers"
 config MTD_DOCG3
 	tristate "M-Systems Disk-On-Chip G3"
 	select BCH
-	select BCH_CONST_PARAMS
+	select BCH_CONST_PARAMS if !MTD_NAND_BCH
 	select BITREVERSE
 	---help---
 	  This provides an MTD device driver for the M-Systems DiskOnChip

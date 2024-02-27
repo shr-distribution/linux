@@ -98,7 +98,7 @@ static ssize_t opal_msglog_read(struct file *file, struct kobject *kobj,
 }
 
 static struct bin_attribute opal_msglog_attr = {
-	.attr = {.name = "msglog", .mode = 0444},
+	.attr = {.name = "msglog", .mode = 0400},
 	.read = opal_msglog_read
 };
 
@@ -122,6 +122,10 @@ void __init opal_msglog_init(void)
 		pr_warn("OPAL: memory console version is invalid\n");
 		return;
 	}
+
+	/* Report maximum size */
+	opal_msglog_attr.size =  be32_to_cpu(mc->ibuf_size) +
+		be32_to_cpu(mc->obuf_size);
 
 	opal_memcons = mc;
 }

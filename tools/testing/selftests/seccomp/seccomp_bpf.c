@@ -45,7 +45,7 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 
-#include "test_harness.h"
+#include "../kselftest_harness.h"
 
 #ifndef PR_SET_PTRACER
 # define PR_SET_PTRACER 0x59616d61
@@ -76,23 +76,81 @@
 #define SECCOMP_MODE_FILTER 2
 #endif
 
-#ifndef SECCOMP_RET_KILL
-#define SECCOMP_RET_KILL        0x00000000U /* kill the task immediately */
-#define SECCOMP_RET_TRAP        0x00030000U /* disallow and force a SIGSYS */
-#define SECCOMP_RET_ERRNO       0x00050000U /* returns an errno */
-#define SECCOMP_RET_TRACE       0x7ff00000U /* pass to a tracer or disallow */
-#define SECCOMP_RET_ALLOW       0x7fff0000U /* allow */
-
-/* Masks for the return value sections. */
-#define SECCOMP_RET_ACTION      0x7fff0000U
-#define SECCOMP_RET_DATA        0x0000ffffU
-
+#ifndef SECCOMP_RET_ALLOW
 struct seccomp_data {
 	int nr;
 	__u32 arch;
 	__u64 instruction_pointer;
 	__u64 args[6];
 };
+#endif
+
+#ifndef SECCOMP_RET_KILL_PROCESS
+#define SECCOMP_RET_KILL_PROCESS 0x80000000U /* kill the process */
+#define SECCOMP_RET_KILL_THREAD	 0x00000000U /* kill the thread */
+#endif
+#ifndef SECCOMP_RET_KILL
+#define SECCOMP_RET_KILL	 SECCOMP_RET_KILL_THREAD
+#define SECCOMP_RET_TRAP	 0x00030000U /* disallow and force a SIGSYS */
+#define SECCOMP_RET_ERRNO	 0x00050000U /* returns an errno */
+#define SECCOMP_RET_TRACE	 0x7ff00000U /* pass to a tracer or disallow */
+#define SECCOMP_RET_ALLOW	 0x7fff0000U /* allow */
+#endif
+#ifndef SECCOMP_RET_LOG
+#define SECCOMP_RET_LOG		 0x7ffc0000U /* allow after logging */
+#endif
+
+#ifndef __NR_seccomp
+# if defined(__i386__)
+#  define __NR_seccomp 354
+# elif defined(__x86_64__)
+#  define __NR_seccomp 317
+# elif defined(__arm__)
+#  define __NR_seccomp 383
+# elif defined(__aarch64__)
+#  define __NR_seccomp 277
+# elif defined(__hppa__)
+#  define __NR_seccomp 338
+# elif defined(__powerpc__)
+#  define __NR_seccomp 358
+# elif defined(__s390__)
+#  define __NR_seccomp 348
+# else
+#  warning "seccomp syscall number unknown for this architecture"
+#  define __NR_seccomp 0xffff
+# endif
+#endif
+
+#ifndef SECCOMP_SET_MODE_STRICT
+#define SECCOMP_SET_MODE_STRICT 0
+#endif
+
+#ifndef SECCOMP_SET_MODE_FILTER
+#define SECCOMP_SET_MODE_FILTER 1
+#endif
+
+#ifndef SECCOMP_GET_ACTION_AVAIL
+#define SECCOMP_GET_ACTION_AVAIL 2
+#endif
+
+#ifndef SECCOMP_FILTER_FLAG_TSYNC
+#define SECCOMP_FILTER_FLAG_TSYNC (1UL << 0)
+#endif
+
+#ifndef SECCOMP_FILTER_FLAG_LOG
+#define SECCOMP_FILTER_FLAG_LOG (1UL << 1)
+#endif
+
+#ifndef SECCOMP_FILTER_FLAG_SPEC_ALLOW
+#define SECCOMP_FILTER_FLAG_SPEC_ALLOW (1UL << 2)
+#endif
+
+#ifndef seccomp
+int seccomp(unsigned int op, unsigned int flags, void *args)
+{
+	errno = 0;
+	return syscall(__NR_seccomp, op, flags, args);
+}
 #endif
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -115,7 +173,7 @@ TEST(mode_strict_support)
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Kernel does not support CONFIG_SECCOMP");
 	}
-	syscall(__NR_exit, 1);
+	syscall(__NR_exit, 0);
 }
 
 TEST_SIGNAL(mode_strict_cannot_call_prctl, SIGKILL)
@@ -144,7 +202,7 @@ TEST(no_new_privs_support)
 	}
 }
 
-/* Tests kernel support by checking for a copy_from_user() fault on * NULL. */
+/* Tests kernel support by checking for a copy_from_user() fault on NULL. */
 TEST(mode_filter_support)
 {
 	long ret;
@@ -350,6 +408,28 @@ TEST(empty_prog)
 	EXPECT_EQ(EINVAL, errno);
 }
 
+TEST(log_all)
+{
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_LOG),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)ARRAY_SIZE(filter),
+		.filter = filter,
+	};
+	long ret;
+	pid_t parent = getppid();
+
+	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+	ASSERT_EQ(0, ret);
+
+	/* getppid() should succeed and be logged (no check for logging) */
+	EXPECT_EQ(parent, syscall(__NR_getppid));
+}
+
 TEST_SIGNAL(unknown_ret_is_kill_inside, SIGSYS)
 {
 	struct sock_filter filter[] = {
@@ -528,6 +608,117 @@ TEST_SIGNAL(KILL_one_arg_six, SIGSYS)
 	close(fd);
 }
 
+/* This is a thread task to die via seccomp filter violation. */
+void *kill_thread(void *data)
+{
+	bool die = (bool)data;
+
+	if (die) {
+		prctl(PR_GET_SECCOMP, 0, 0, 0, 0);
+		return (void *)SIBLING_EXIT_FAILURE;
+	}
+
+	return (void *)SIBLING_EXIT_UNKILLED;
+}
+
+/* Prepare a thread that will kill itself or both of us. */
+void kill_thread_or_group(struct __test_metadata *_metadata, bool kill_process)
+{
+	pthread_t thread;
+	void *status;
+	/* Kill only when calling __NR_prctl. */
+	struct sock_filter filter_thread[] = {
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
+			offsetof(struct seccomp_data, nr)),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_prctl, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL_THREAD),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog_thread = {
+		.len = (unsigned short)ARRAY_SIZE(filter_thread),
+		.filter = filter_thread,
+	};
+	struct sock_filter filter_process[] = {
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
+			offsetof(struct seccomp_data, nr)),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_prctl, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL_PROCESS),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog_process = {
+		.len = (unsigned short)ARRAY_SIZE(filter_process),
+		.filter = filter_process,
+	};
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
+	ASSERT_EQ(0, seccomp(SECCOMP_SET_MODE_FILTER, 0,
+			     kill_process ? &prog_process : &prog_thread));
+
+	/*
+	 * Add the KILL_THREAD rule again to make sure that the KILL_PROCESS
+	 * flag cannot be downgraded by a new filter.
+	 */
+	ASSERT_EQ(0, seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog_thread));
+
+	/* Start a thread that will exit immediately. */
+	ASSERT_EQ(0, pthread_create(&thread, NULL, kill_thread, (void *)false));
+	ASSERT_EQ(0, pthread_join(thread, &status));
+	ASSERT_EQ(SIBLING_EXIT_UNKILLED, (unsigned long)status);
+
+	/* Start a thread that will die immediately. */
+	ASSERT_EQ(0, pthread_create(&thread, NULL, kill_thread, (void *)true));
+	ASSERT_EQ(0, pthread_join(thread, &status));
+	ASSERT_NE(SIBLING_EXIT_FAILURE, (unsigned long)status);
+
+	/*
+	 * If we get here, only the spawned thread died. Let the parent know
+	 * the whole process didn't die (i.e. this thread, the spawner,
+	 * stayed running).
+	 */
+	exit(42);
+}
+
+TEST(KILL_thread)
+{
+	int status;
+	pid_t child_pid;
+
+	child_pid = fork();
+	ASSERT_LE(0, child_pid);
+	if (child_pid == 0) {
+		kill_thread_or_group(_metadata, false);
+		_exit(38);
+	}
+
+	ASSERT_EQ(child_pid, waitpid(child_pid, &status, 0));
+
+	/* If only the thread was killed, we'll see exit 42. */
+	ASSERT_TRUE(WIFEXITED(status));
+	ASSERT_EQ(42, WEXITSTATUS(status));
+}
+
+TEST(KILL_process)
+{
+	int status;
+	pid_t child_pid;
+
+	child_pid = fork();
+	ASSERT_LE(0, child_pid);
+	if (child_pid == 0) {
+		kill_thread_or_group(_metadata, true);
+		_exit(38);
+	}
+
+	ASSERT_EQ(child_pid, waitpid(child_pid, &status, 0));
+
+	/* If the entire process was killed, we'll see SIGSYS. */
+	ASSERT_TRUE(WIFSIGNALED(status));
+	ASSERT_EQ(SIGSYS, WTERMSIG(status));
+}
+
 /* TODO(wad) add 64-bit versus 32-bit arg tests. */
 TEST(arg_out_of_range)
 {
@@ -549,26 +740,30 @@ TEST(arg_out_of_range)
 	EXPECT_EQ(EINVAL, errno);
 }
 
+#define ERRNO_FILTER(name, errno)					\
+	struct sock_filter _read_filter_##name[] = {			\
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,				\
+			offsetof(struct seccomp_data, nr)),		\
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_read, 0, 1),	\
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO | errno),	\
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),		\
+	};								\
+	struct sock_fprog prog_##name = {				\
+		.len = (unsigned short)ARRAY_SIZE(_read_filter_##name),	\
+		.filter = _read_filter_##name,				\
+	}
+
+/* Make sure basic errno values are correctly passed through a filter. */
 TEST(ERRNO_valid)
 {
-	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
-			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_read, 0, 1),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO | E2BIG),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-	};
-	struct sock_fprog prog = {
-		.len = (unsigned short)ARRAY_SIZE(filter),
-		.filter = filter,
-	};
+	ERRNO_FILTER(valid, E2BIG);
 	long ret;
 	pid_t parent = getppid();
 
 	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
-	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog_valid);
 	ASSERT_EQ(0, ret);
 
 	EXPECT_EQ(parent, syscall(__NR_getppid));
@@ -576,26 +771,17 @@ TEST(ERRNO_valid)
 	EXPECT_EQ(E2BIG, errno);
 }
 
+/* Make sure an errno of zero is correctly handled by the arch code. */
 TEST(ERRNO_zero)
 {
-	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
-			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_read, 0, 1),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO | 0),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-	};
-	struct sock_fprog prog = {
-		.len = (unsigned short)ARRAY_SIZE(filter),
-		.filter = filter,
-	};
+	ERRNO_FILTER(zero, 0);
 	long ret;
 	pid_t parent = getppid();
 
 	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
-	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog_zero);
 	ASSERT_EQ(0, ret);
 
 	EXPECT_EQ(parent, syscall(__NR_getppid));
@@ -603,31 +789,57 @@ TEST(ERRNO_zero)
 	EXPECT_EQ(0, read(0, NULL, 0));
 }
 
+/*
+ * The SECCOMP_RET_DATA mask is 16 bits wide, but errno is smaller.
+ * This tests that the errno value gets capped correctly, fixed by
+ * 580c57f10768 ("seccomp: cap SECCOMP_RET_ERRNO data to MAX_ERRNO").
+ */
 TEST(ERRNO_capped)
 {
-	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
-			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_read, 0, 1),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO | 4096),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-	};
-	struct sock_fprog prog = {
-		.len = (unsigned short)ARRAY_SIZE(filter),
-		.filter = filter,
-	};
+	ERRNO_FILTER(capped, 4096);
 	long ret;
 	pid_t parent = getppid();
 
 	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
-	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog_capped);
 	ASSERT_EQ(0, ret);
 
 	EXPECT_EQ(parent, syscall(__NR_getppid));
 	EXPECT_EQ(-1, read(0, NULL, 0));
 	EXPECT_EQ(4095, errno);
+}
+
+/*
+ * Filters are processed in reverse order: last applied is executed first.
+ * Since only the SECCOMP_RET_ACTION mask is tested for return values, the
+ * SECCOMP_RET_DATA mask results will follow the most recently applied
+ * matching filter return (and not the lowest or highest value).
+ */
+TEST(ERRNO_order)
+{
+	ERRNO_FILTER(first,  11);
+	ERRNO_FILTER(second, 13);
+	ERRNO_FILTER(third,  12);
+	long ret;
+	pid_t parent = getppid();
+
+	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog_first);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog_second);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog_third);
+	ASSERT_EQ(0, ret);
+
+	EXPECT_EQ(parent, syscall(__NR_getppid));
+	EXPECT_EQ(-1, read(0, NULL, 0));
+	EXPECT_EQ(12, errno);
 }
 
 FIXTURE_DATA(TRAP) {
@@ -743,6 +955,7 @@ TEST_F(TRAP, handler)
 
 FIXTURE_DATA(precedence) {
 	struct sock_fprog allow;
+	struct sock_fprog log;
 	struct sock_fprog trace;
 	struct sock_fprog error;
 	struct sock_fprog trap;
@@ -753,6 +966,13 @@ FIXTURE_SETUP(precedence)
 {
 	struct sock_filter allow_insns[] = {
 		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_filter log_insns[] = {
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
+			offsetof(struct seccomp_data, nr)),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 1, 0),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_LOG),
 	};
 	struct sock_filter trace_insns[] = {
 		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
@@ -790,6 +1010,7 @@ FIXTURE_SETUP(precedence)
 	memcpy(self->_x.filter, &_x##_insns, sizeof(_x##_insns)); \
 	self->_x.len = (unsigned short)ARRAY_SIZE(_x##_insns)
 	FILTER_ALLOC(allow);
+	FILTER_ALLOC(log);
 	FILTER_ALLOC(trace);
 	FILTER_ALLOC(error);
 	FILTER_ALLOC(trap);
@@ -800,6 +1021,7 @@ FIXTURE_TEARDOWN(precedence)
 {
 #define FILTER_FREE(_x) if (self->_x.filter) free(self->_x.filter)
 	FILTER_FREE(allow);
+	FILTER_FREE(log);
 	FILTER_FREE(trace);
 	FILTER_FREE(error);
 	FILTER_FREE(trap);
@@ -816,6 +1038,8 @@ TEST_F(precedence, allow_ok)
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->allow);
+	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
 	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trace);
 	ASSERT_EQ(0, ret);
@@ -840,6 +1064,8 @@ TEST_F_SIGNAL(precedence, kill_is_highest, SIGSYS)
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->allow);
+	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
 	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trace);
 	ASSERT_EQ(0, ret);
@@ -872,6 +1098,8 @@ TEST_F_SIGNAL(precedence, kill_is_highest_in_any_order, SIGSYS)
 	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->error);
 	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
+	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trace);
 	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trap);
@@ -892,6 +1120,8 @@ TEST_F_SIGNAL(precedence, trap_is_second, SIGSYS)
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->allow);
+	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
 	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trace);
 	ASSERT_EQ(0, ret);
@@ -918,6 +1148,8 @@ TEST_F_SIGNAL(precedence, trap_is_second_in_any_order, SIGSYS)
 	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trap);
 	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
+	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trace);
 	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->error);
@@ -939,6 +1171,8 @@ TEST_F(precedence, errno_is_third)
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->allow);
 	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
+	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trace);
 	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->error);
@@ -957,6 +1191,8 @@ TEST_F(precedence, errno_is_third_in_any_order)
 	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
+	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->error);
 	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trace);
@@ -979,6 +1215,8 @@ TEST_F(precedence, trace_is_fourth)
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->allow);
 	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
+	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trace);
 	ASSERT_EQ(0, ret);
 	/* Should work just fine. */
@@ -1000,10 +1238,52 @@ TEST_F(precedence, trace_is_fourth_in_any_order)
 	ASSERT_EQ(0, ret);
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->allow);
 	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
+	ASSERT_EQ(0, ret);
 	/* Should work just fine. */
 	EXPECT_EQ(parent, syscall(__NR_getppid));
 	/* No ptracer */
 	EXPECT_EQ(-1, syscall(__NR_getpid));
+}
+
+TEST_F(precedence, log_is_fifth)
+{
+	pid_t mypid, parent;
+	long ret;
+
+	mypid = getpid();
+	parent = getppid();
+	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->allow);
+	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
+	ASSERT_EQ(0, ret);
+	/* Should work just fine. */
+	EXPECT_EQ(parent, syscall(__NR_getppid));
+	/* Should also work just fine */
+	EXPECT_EQ(mypid, syscall(__NR_getpid));
+}
+
+TEST_F(precedence, log_is_fifth_in_any_order)
+{
+	pid_t mypid, parent;
+	long ret;
+
+	mypid = getpid();
+	parent = getppid();
+	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->log);
+	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->allow);
+	ASSERT_EQ(0, ret);
+	/* Should work just fine. */
+	EXPECT_EQ(parent, syscall(__NR_getppid));
+	/* Should also work just fine */
+	EXPECT_EQ(mypid, syscall(__NR_getpid));
 }
 
 #ifndef PTRACE_O_TRACESECCOMP
@@ -1270,6 +1550,22 @@ TEST_F(TRACE_poke, getpid_runs_normally)
 # error "Do not know how to find your architecture's registers and syscalls"
 #endif
 
+/* When the syscall return can't be changed, stub out the tests for it. */
+#ifdef SYSCALL_NUM_RET_SHARE_REG
+# define EXPECT_SYSCALL_RETURN(val, action)	EXPECT_EQ(-1, action)
+#else
+# define EXPECT_SYSCALL_RETURN(val, action)		\
+	do {						\
+		errno = 0;				\
+		if (val < 0) {				\
+			EXPECT_EQ(-1, action);		\
+			EXPECT_EQ(-(val), errno);	\
+		} else {				\
+			EXPECT_EQ(val, action);		\
+		}					\
+	} while (0)
+#endif
+
 /* Use PTRACE_GETREGS and PTRACE_SETREGS when available. This is useful for
  * architectures without HAVE_ARCH_TRACEHOOK (e.g. User-mode Linux).
  */
@@ -1306,7 +1602,7 @@ int get_syscall(struct __test_metadata *_metadata, pid_t tracee)
 
 /* Architecture-specific syscall changing routine. */
 void change_syscall(struct __test_metadata *_metadata,
-		    pid_t tracee, int syscall)
+		    pid_t tracee, int syscall, int result)
 {
 	int ret;
 	ARCH_REGS regs;
@@ -1365,7 +1661,7 @@ void change_syscall(struct __test_metadata *_metadata,
 #ifdef SYSCALL_NUM_RET_SHARE_REG
 		TH_LOG("Can't modify syscall return on this architecture");
 #else
-		regs.SYSCALL_RET = 1;
+		regs.SYSCALL_RET = result;
 #endif
 
 #ifdef HAVE_GETREGS
@@ -1393,14 +1689,19 @@ void tracer_syscall(struct __test_metadata *_metadata, pid_t tracee,
 	case 0x1002:
 		/* change getpid to getppid. */
 		EXPECT_EQ(__NR_getpid, get_syscall(_metadata, tracee));
-		change_syscall(_metadata, tracee, __NR_getppid);
+		change_syscall(_metadata, tracee, __NR_getppid, 0);
 		break;
 	case 0x1003:
-		/* skip gettid. */
+		/* skip gettid with valid return code. */
 		EXPECT_EQ(__NR_gettid, get_syscall(_metadata, tracee));
-		change_syscall(_metadata, tracee, -1);
+		change_syscall(_metadata, tracee, -1, 45000);
 		break;
 	case 0x1004:
+		/* skip openat with error. */
+		EXPECT_EQ(__NR_openat, get_syscall(_metadata, tracee));
+		change_syscall(_metadata, tracee, -1, -ESRCH);
+		break;
+	case 0x1005:
 		/* do nothing (allow getppid) */
 		EXPECT_EQ(__NR_getppid, get_syscall(_metadata, tracee));
 		break;
@@ -1433,7 +1734,11 @@ void tracer_ptrace(struct __test_metadata *_metadata, pid_t tracee,
 	nr = get_syscall(_metadata, tracee);
 
 	if (nr == __NR_getpid)
-		change_syscall(_metadata, tracee, __NR_getppid);
+		change_syscall(_metadata, tracee, __NR_getppid, 0);
+	if (nr == __NR_gettid)
+		change_syscall(_metadata, tracee, -1, 45000);
+	if (nr == __NR_openat)
+		change_syscall(_metadata, tracee, -1, -ESRCH);
 }
 
 FIXTURE_DATA(TRACE_syscall) {
@@ -1450,8 +1755,10 @@ FIXTURE_SETUP(TRACE_syscall)
 		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE | 0x1002),
 		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_gettid, 0, 1),
 		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE | 0x1003),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getppid, 0, 1),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_openat, 0, 1),
 		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE | 0x1004),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getppid, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE | 0x1005),
 		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 
@@ -1488,6 +1795,39 @@ FIXTURE_TEARDOWN(TRACE_syscall)
 		free(self->prog.filter);
 }
 
+TEST_F(TRACE_syscall, ptrace_syscall_redirected)
+{
+	/* Swap SECCOMP_RET_TRACE tracer for PTRACE_SYSCALL tracer. */
+	teardown_trace_fixture(_metadata, self->tracer);
+	self->tracer = setup_trace_fixture(_metadata, tracer_ptrace, NULL,
+					   true);
+
+	/* Tracer will redirect getpid to getppid. */
+	EXPECT_NE(self->mypid, syscall(__NR_getpid));
+}
+
+TEST_F(TRACE_syscall, ptrace_syscall_errno)
+{
+	/* Swap SECCOMP_RET_TRACE tracer for PTRACE_SYSCALL tracer. */
+	teardown_trace_fixture(_metadata, self->tracer);
+	self->tracer = setup_trace_fixture(_metadata, tracer_ptrace, NULL,
+					   true);
+
+	/* Tracer should skip the open syscall, resulting in ESRCH. */
+	EXPECT_SYSCALL_RETURN(-ESRCH, syscall(__NR_openat));
+}
+
+TEST_F(TRACE_syscall, ptrace_syscall_faked)
+{
+	/* Swap SECCOMP_RET_TRACE tracer for PTRACE_SYSCALL tracer. */
+	teardown_trace_fixture(_metadata, self->tracer);
+	self->tracer = setup_trace_fixture(_metadata, tracer_ptrace, NULL,
+					   true);
+
+	/* Tracer should skip the gettid syscall, resulting fake pid. */
+	EXPECT_SYSCALL_RETURN(45000, syscall(__NR_gettid));
+}
+
 TEST_F(TRACE_syscall, syscall_allowed)
 {
 	long ret;
@@ -1518,7 +1858,7 @@ TEST_F(TRACE_syscall, syscall_redirected)
 	EXPECT_NE(self->mypid, syscall(__NR_getpid));
 }
 
-TEST_F(TRACE_syscall, syscall_dropped)
+TEST_F(TRACE_syscall, syscall_errno)
 {
 	long ret;
 
@@ -1528,14 +1868,22 @@ TEST_F(TRACE_syscall, syscall_dropped)
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog, 0, 0);
 	ASSERT_EQ(0, ret);
 
-#ifdef SYSCALL_NUM_RET_SHARE_REG
-	/* gettid has been skipped */
-	EXPECT_EQ(-1, syscall(__NR_gettid));
-#else
+	/* openat has been skipped and an errno return. */
+	EXPECT_SYSCALL_RETURN(-ESRCH, syscall(__NR_openat));
+}
+
+TEST_F(TRACE_syscall, syscall_faked)
+{
+	long ret;
+
+	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog, 0, 0);
+	ASSERT_EQ(0, ret);
+
 	/* gettid has been skipped and an altered return value stored. */
-	EXPECT_EQ(1, syscall(__NR_gettid));
-#endif
-	EXPECT_NE(self->mytid, syscall(__NR_gettid));
+	EXPECT_SYSCALL_RETURN(45000, syscall(__NR_gettid));
 }
 
 TEST_F(TRACE_syscall, skip_after_RET_TRACE)
@@ -1565,6 +1913,7 @@ TEST_F(TRACE_syscall, skip_after_RET_TRACE)
 	ASSERT_EQ(0, ret);
 
 	/* Tracer will redirect getpid to getppid, and we should see EPERM. */
+	errno = 0;
 	EXPECT_EQ(-1, syscall(__NR_getpid));
 	EXPECT_EQ(EPERM, errno);
 }
@@ -1661,51 +2010,6 @@ TEST_F_SIGNAL(TRACE_syscall, kill_after_ptrace, SIGSYS)
 	/* Tracer will redirect getpid to getppid, and we should die. */
 	EXPECT_NE(self->mypid, syscall(__NR_getpid));
 }
-
-#ifndef __NR_seccomp
-# if defined(__i386__)
-#  define __NR_seccomp 354
-# elif defined(__x86_64__)
-#  define __NR_seccomp 317
-# elif defined(__arm__)
-#  define __NR_seccomp 383
-# elif defined(__aarch64__)
-#  define __NR_seccomp 277
-# elif defined(__hppa__)
-#  define __NR_seccomp 338
-# elif defined(__powerpc__)
-#  define __NR_seccomp 358
-# elif defined(__s390__)
-#  define __NR_seccomp 348
-# else
-#  warning "seccomp syscall number unknown for this architecture"
-#  define __NR_seccomp 0xffff
-# endif
-#endif
-
-#ifndef SECCOMP_SET_MODE_STRICT
-#define SECCOMP_SET_MODE_STRICT 0
-#endif
-
-#ifndef SECCOMP_SET_MODE_FILTER
-#define SECCOMP_SET_MODE_FILTER 1
-#endif
-
-#ifndef SECCOMP_FILTER_FLAG_TSYNC
-#define SECCOMP_FILTER_FLAG_TSYNC (1UL << 0)
-#endif
-
-#ifndef SECCOMP_FILTER_FLAG_SPEC_ALLOW
-#define SECCOMP_FILTER_FLAG_SPEC_ALLOW (1UL << 2)
-#endif
-
-#ifndef seccomp
-int seccomp(unsigned int op, unsigned int flags, void *args)
-{
-	errno = 0;
-	return syscall(__NR_seccomp, op, flags, args);
-}
-#endif
 
 TEST(seccomp_syscall)
 {
@@ -1805,6 +2109,7 @@ TEST(seccomp_syscall_mode_lock)
 TEST(detect_seccomp_filter_flags)
 {
 	unsigned int flags[] = { SECCOMP_FILTER_FLAG_TSYNC,
+				 SECCOMP_FILTER_FLAG_LOG,
 				 SECCOMP_FILTER_FLAG_SPEC_ALLOW };
 	unsigned int flag, all_flags;
 	int i;
@@ -1906,6 +2211,23 @@ struct tsync_sibling {
 	struct __test_metadata *metadata;
 };
 
+/*
+ * To avoid joining joined threads (which is not allowed by Bionic),
+ * make sure we both successfully join and clear the tid to skip a
+ * later join attempt during fixture teardown. Any remaining threads
+ * will be directly killed during teardown.
+ */
+#define PTHREAD_JOIN(tid, status)					\
+	do {								\
+		int _rc = pthread_join(tid, status);			\
+		if (_rc) {						\
+			TH_LOG("pthread_join of tid %u failed: %d\n",	\
+				(unsigned int)tid, _rc);		\
+		} else {						\
+			tid = 0;					\
+		}							\
+	} while (0)
+
 FIXTURE_DATA(TSYNC) {
 	struct sock_fprog root_prog, apply_prog;
 	struct tsync_sibling sibling[TSYNC_SIBLINGS];
@@ -1974,14 +2296,14 @@ FIXTURE_TEARDOWN(TSYNC)
 
 	for ( ; sib < self->sibling_count; ++sib) {
 		struct tsync_sibling *s = &self->sibling[sib];
-		void *status;
 
 		if (!s->tid)
 			continue;
-		if (pthread_kill(s->tid, 0)) {
-			pthread_cancel(s->tid);
-			pthread_join(s->tid, &status);
-		}
+		/*
+		 * If a thread is still running, it may be stuck, so hit
+		 * it over the head really hard.
+		 */
+		pthread_kill(s->tid, 9);
 	}
 	pthread_mutex_destroy(&self->mutex);
 	pthread_cond_destroy(&self->cond);
@@ -2071,9 +2393,9 @@ TEST_F(TSYNC, siblings_fail_prctl)
 	pthread_mutex_unlock(&self->mutex);
 
 	/* Ensure diverging sibling failed to call prctl. */
-	pthread_join(self->sibling[0].tid, &status);
+	PTHREAD_JOIN(self->sibling[0].tid, &status);
 	EXPECT_EQ(SIBLING_EXIT_FAILURE, (long)status);
-	pthread_join(self->sibling[1].tid, &status);
+	PTHREAD_JOIN(self->sibling[1].tid, &status);
 	EXPECT_EQ(SIBLING_EXIT_UNKILLED, (long)status);
 }
 
@@ -2113,9 +2435,9 @@ TEST_F(TSYNC, two_siblings_with_ancestor)
 	}
 	pthread_mutex_unlock(&self->mutex);
 	/* Ensure they are both killed and don't exit cleanly. */
-	pthread_join(self->sibling[0].tid, &status);
+	PTHREAD_JOIN(self->sibling[0].tid, &status);
 	EXPECT_EQ(0x0, (long)status);
-	pthread_join(self->sibling[1].tid, &status);
+	PTHREAD_JOIN(self->sibling[1].tid, &status);
 	EXPECT_EQ(0x0, (long)status);
 }
 
@@ -2139,9 +2461,9 @@ TEST_F(TSYNC, two_sibling_want_nnp)
 	pthread_mutex_unlock(&self->mutex);
 
 	/* Ensure they are both upset about lacking nnp. */
-	pthread_join(self->sibling[0].tid, &status);
+	PTHREAD_JOIN(self->sibling[0].tid, &status);
 	EXPECT_EQ(SIBLING_EXIT_NEWPRIVS, (long)status);
-	pthread_join(self->sibling[1].tid, &status);
+	PTHREAD_JOIN(self->sibling[1].tid, &status);
 	EXPECT_EQ(SIBLING_EXIT_NEWPRIVS, (long)status);
 }
 
@@ -2179,9 +2501,9 @@ TEST_F(TSYNC, two_siblings_with_no_filter)
 	pthread_mutex_unlock(&self->mutex);
 
 	/* Ensure they are both killed and don't exit cleanly. */
-	pthread_join(self->sibling[0].tid, &status);
+	PTHREAD_JOIN(self->sibling[0].tid, &status);
 	EXPECT_EQ(0x0, (long)status);
-	pthread_join(self->sibling[1].tid, &status);
+	PTHREAD_JOIN(self->sibling[1].tid, &status);
 	EXPECT_EQ(0x0, (long)status);
 }
 
@@ -2224,9 +2546,9 @@ TEST_F(TSYNC, two_siblings_with_one_divergence)
 	pthread_mutex_unlock(&self->mutex);
 
 	/* Ensure they are both unkilled. */
-	pthread_join(self->sibling[0].tid, &status);
+	PTHREAD_JOIN(self->sibling[0].tid, &status);
 	EXPECT_EQ(SIBLING_EXIT_UNKILLED, (long)status);
-	pthread_join(self->sibling[1].tid, &status);
+	PTHREAD_JOIN(self->sibling[1].tid, &status);
 	EXPECT_EQ(SIBLING_EXIT_UNKILLED, (long)status);
 }
 
@@ -2283,7 +2605,7 @@ TEST_F(TSYNC, two_siblings_not_under_filter)
 		TH_LOG("cond broadcast non-zero");
 	}
 	pthread_mutex_unlock(&self->mutex);
-	pthread_join(self->sibling[sib].tid, &status);
+	PTHREAD_JOIN(self->sibling[sib].tid, &status);
 	EXPECT_EQ(SIBLING_EXIT_UNKILLED, (long)status);
 	/* Poll for actual task death. pthread_join doesn't guarantee it. */
 	while (!kill(self->sibling[sib].system_tid, 0))
@@ -2308,7 +2630,7 @@ TEST_F(TSYNC, two_siblings_not_under_filter)
 		TH_LOG("cond broadcast non-zero");
 	}
 	pthread_mutex_unlock(&self->mutex);
-	pthread_join(self->sibling[sib].tid, &status);
+	PTHREAD_JOIN(self->sibling[sib].tid, &status);
 	EXPECT_EQ(0, (long)status);
 	/* Poll for actual task death. pthread_join doesn't guarantee it. */
 	while (!kill(self->sibling[sib].system_tid, 0))
@@ -2488,6 +2810,99 @@ TEST(syscall_restart)
 		_metadata->passed = 0;
 }
 
+TEST_SIGNAL(filter_flag_log, SIGSYS)
+{
+	struct sock_filter allow_filter[] = {
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_filter kill_filter[] = {
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
+			offsetof(struct seccomp_data, nr)),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog allow_prog = {
+		.len = (unsigned short)ARRAY_SIZE(allow_filter),
+		.filter = allow_filter,
+	};
+	struct sock_fprog kill_prog = {
+		.len = (unsigned short)ARRAY_SIZE(kill_filter),
+		.filter = kill_filter,
+	};
+	long ret;
+	pid_t parent = getppid();
+
+	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	/* Verify that the FILTER_FLAG_LOG flag isn't accepted in strict mode */
+	ret = seccomp(SECCOMP_SET_MODE_STRICT, SECCOMP_FILTER_FLAG_LOG,
+		      &allow_prog);
+	ASSERT_NE(ENOSYS, errno) {
+		TH_LOG("Kernel does not support seccomp syscall!");
+	}
+	EXPECT_NE(0, ret) {
+		TH_LOG("Kernel accepted FILTER_FLAG_LOG flag in strict mode!");
+	}
+	EXPECT_EQ(EINVAL, errno) {
+		TH_LOG("Kernel returned unexpected errno for FILTER_FLAG_LOG flag in strict mode!");
+	}
+
+	/* Verify that a simple, permissive filter can be added with no flags */
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &allow_prog);
+	EXPECT_EQ(0, ret);
+
+	/* See if the same filter can be added with the FILTER_FLAG_LOG flag */
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_LOG,
+		      &allow_prog);
+	ASSERT_NE(EINVAL, errno) {
+		TH_LOG("Kernel does not support the FILTER_FLAG_LOG flag!");
+	}
+	EXPECT_EQ(0, ret);
+
+	/* Ensure that the kill filter works with the FILTER_FLAG_LOG flag */
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_LOG,
+		      &kill_prog);
+	EXPECT_EQ(0, ret);
+
+	EXPECT_EQ(parent, syscall(__NR_getppid));
+	/* getpid() should never return. */
+	EXPECT_EQ(0, syscall(__NR_getpid));
+}
+
+TEST(get_action_avail)
+{
+	__u32 actions[] = { SECCOMP_RET_KILL_THREAD, SECCOMP_RET_TRAP,
+			    SECCOMP_RET_ERRNO, SECCOMP_RET_TRACE,
+			    SECCOMP_RET_LOG,   SECCOMP_RET_ALLOW };
+	__u32 unknown_action = 0x10000000U;
+	int i;
+	long ret;
+
+	ret = seccomp(SECCOMP_GET_ACTION_AVAIL, 0, &actions[0]);
+	ASSERT_NE(ENOSYS, errno) {
+		TH_LOG("Kernel does not support seccomp syscall!");
+	}
+	ASSERT_NE(EINVAL, errno) {
+		TH_LOG("Kernel does not support SECCOMP_GET_ACTION_AVAIL operation!");
+	}
+	EXPECT_EQ(ret, 0);
+
+	for (i = 0; i < ARRAY_SIZE(actions); i++) {
+		ret = seccomp(SECCOMP_GET_ACTION_AVAIL, 0, &actions[i]);
+		EXPECT_EQ(ret, 0) {
+			TH_LOG("Expected action (0x%X) not available!",
+			       actions[i]);
+		}
+	}
+
+	/* Check that an unknown action is handled properly (EOPNOTSUPP) */
+	ret = seccomp(SECCOMP_GET_ACTION_AVAIL, 0, &unknown_action);
+	EXPECT_EQ(ret, -1);
+	EXPECT_EQ(errno, EOPNOTSUPP);
+}
+
 /*
  * TODO:
  * - add microbenchmarks
@@ -2496,6 +2911,8 @@ TEST(syscall_restart)
  * - endianness checking when appropriate
  * - 64-bit arg prodding
  * - arch value testing (x86 modes especially)
+ * - verify that FILTER_FLAG_LOG filters generate log messages
+ * - verify that RET_LOG generates log messages
  * - ...
  */
 

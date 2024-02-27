@@ -185,7 +185,7 @@
 	bv,n	0(%r3)
 	nop
 	.word	0		/* checksum (will be patched) */
-	.word	PA(os_hpmc)	/* address of handler */
+	.word	0		/* address of handler */
 	.word	0		/* length of handler */
 	.endm
 
@@ -1386,7 +1386,7 @@ nadtlb_nullify:
 
 	/* 
 		When there is no translation for the probe address then we
-		must nullify the insn and return zero in the target regsiter.
+		must nullify the insn and return zero in the target register.
 		This will indicate to the calling code that it does not have 
 		write/read privileges to this address.
 

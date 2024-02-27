@@ -72,19 +72,19 @@ static const char *sync_status_str(int status)
 }
 
 static void sync_print_fence(struct seq_file *s,
-			     struct fence *fence, bool show)
+			     struct dma_fence *fence, bool show)
 {
-	struct sync_timeline *parent = fence_parent(fence);
+	struct sync_timeline *parent = dma_fence_parent(fence);
 	int status;
 
-	status = fence_get_status_locked(fence);
+	status = dma_fence_get_status_locked(fence);
 
 	seq_printf(s, "  %s%sfence %s",
 		   show ? parent->name : "",
 		   show ? "_" : "",
 		   sync_status_str(status));
 
-	if (status) {
+	if (test_bit(DMA_FENCE_FLAG_TIMESTAMP_BIT, &fence->flags)) {
 		struct timespec64 ts64 =
 			ktime_to_timespec64(fence->timestamp);
 
@@ -110,7 +110,7 @@ static void sync_print_fence(struct seq_file *s,
 		}
 	}
 
-	seq_puts(s, "\n");
+	seq_putc(s, '\n');
 }
 
 static void sync_print_obj(struct seq_file *s, struct sync_timeline *obj)
@@ -130,13 +130,15 @@ static void sync_print_obj(struct seq_file *s, struct sync_timeline *obj)
 static void sync_print_sync_file(struct seq_file *s,
 				  struct sync_file *sync_file)
 {
+	char buf[128];
 	int i;
 
-	seq_printf(s, "[%p] %s: %s\n", sync_file, sync_file->name,
-		   sync_status_str(fence_get_status(sync_file->fence)));
+	seq_printf(s, "[%p] %s: %s\n", sync_file,
+		   sync_file_get_name(sync_file, buf, sizeof(buf)),
+		   sync_status_str(dma_fence_get_status(sync_file->fence)));
 
-	if (fence_is_array(sync_file->fence)) {
-		struct fence_array *array = to_fence_array(sync_file->fence);
+	if (dma_fence_is_array(sync_file->fence)) {
+		struct dma_fence_array *array = to_dma_fence_array(sync_file->fence);
 
 		for (i = 0; i < array->num_fences; ++i)
 			sync_print_fence(s, array->fences[i], true);
@@ -158,7 +160,7 @@ static int sync_debugfs_show(struct seq_file *s, void *unused)
 				     sync_timeline_list);
 
 		sync_print_obj(s, obj);
-		seq_puts(s, "\n");
+		seq_putc(s, '\n');
 	}
 	spin_unlock_irq(&sync_timeline_list_lock);
 
@@ -170,7 +172,7 @@ static int sync_debugfs_show(struct seq_file *s, void *unused)
 			container_of(pos, struct sync_file, sync_file_list);
 
 		sync_print_sync_file(s, sync_file);
-		seq_puts(s, "\n");
+		seq_putc(s, '\n');
 	}
 	spin_unlock_irq(&sync_file_list_lock);
 	return 0;

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __NOUVEAU_DRV_H__
 #define __NOUVEAU_DRV_H__
 
@@ -43,7 +44,7 @@
 #include <nvif/device.h>
 #include <nvif/ioctl.h>
 
-#include <drmP.h>
+#include <drm/drmP.h>
 
 #include <drm/ttm/ttm_bo_api.h>
 #include <drm/ttm/ttm_bo_driver.h>
@@ -86,14 +87,17 @@ enum nouveau_drm_handle {
 
 struct nouveau_cli {
 	struct nvif_client base;
+	struct drm_device *dev;
+	struct mutex mutex;
+
+	struct nvif_device device;
+
 	struct nvkm_vm *vm; /*XXX*/
 	struct list_head head;
-	struct mutex mutex;
 	void *abi16;
 	struct list_head objects;
 	struct list_head notifys;
 	char name[32];
-	struct drm_device *dev;
 };
 
 static inline struct nouveau_cli *
@@ -105,13 +109,10 @@ nouveau_cli(struct drm_file *fpriv)
 #include <nvif/object.h>
 #include <nvif/device.h>
 
-extern int nouveau_runtime_pm;
-
 struct nouveau_drm {
 	struct nouveau_cli client;
 	struct drm_device *dev;
 
-	struct nvif_device device;
 	struct list_head clients;
 
 	struct {
@@ -163,6 +164,7 @@ struct nouveau_drm {
 	struct nvbios vbios;
 	struct nouveau_display *display;
 	struct backlight_device *backlight;
+	struct list_head bl_connectors;
 	struct work_struct hpd_work;
 	struct work_struct fbcon_work;
 	int fbcon_new_state;
@@ -173,6 +175,9 @@ struct nouveau_drm {
 	/* power management */
 	struct nouveau_hwmon *hwmon;
 	struct nouveau_debugfs *debugfs;
+
+	/* led management */
+	struct nouveau_led *led;
 
 	/* display power reference */
 	bool have_disp_power_ref;
@@ -189,6 +194,7 @@ nouveau_drm(struct drm_device *dev)
 
 int nouveau_pmops_suspend(struct device *);
 int nouveau_pmops_resume(struct device *);
+bool nouveau_pmops_runtime(void);
 
 #include <nvkm/core/tegra.h>
 
@@ -207,6 +213,10 @@ void nouveau_drm_device_remove(struct drm_device *dev);
 #define NV_INFO(drm,f,a...) NV_PRINTK(info, &(drm)->client, f, ##a)
 #define NV_DEBUG(drm,f,a...) do {                                              \
 	if (unlikely(drm_debug & DRM_UT_DRIVER))                               \
+		NV_PRINTK(info, &(drm)->client, f, ##a);                       \
+} while(0)
+#define NV_ATOMIC(drm,f,a...) do {                                             \
+	if (unlikely(drm_debug & DRM_UT_ATOMIC))                               \
 		NV_PRINTK(info, &(drm)->client, f, ##a);                       \
 } while(0)
 

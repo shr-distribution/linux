@@ -21,6 +21,8 @@
 #define NVMF_MAX_QUEUE_SIZE	1024
 #define NVMF_DEF_QUEUE_SIZE	128
 #define NVMF_DEF_RECONNECT_DELAY	10
+/* default to 600 seconds of reconnect attempts before giving up */
+#define NVMF_DEF_CTRL_LOSS_TMO		600
 
 /*
  * Define a host as seen by the target.  We allocate one at boot, but also
@@ -34,7 +36,7 @@ struct nvmf_host {
 	struct kref		ref;
 	struct list_head	list;
 	char			nqn[NVMF_NQN_SIZE];
-	uuid_be			id;
+	uuid_t			id;
 };
 
 /**
@@ -53,6 +55,8 @@ enum {
 	NVMF_OPT_HOSTNQN	= 1 << 8,
 	NVMF_OPT_RECONNECT_DELAY = 1 << 9,
 	NVMF_OPT_HOST_TRADDR	= 1 << 10,
+	NVMF_OPT_CTRL_LOSS_TMO	= 1 << 11,
+	NVMF_OPT_HOST_ID	= 1 << 12,
 };
 
 /**
@@ -77,6 +81,9 @@ enum {
  * @discovery_nqn: indicates if the subsysnqn is the well-known discovery NQN.
  * @kato:	Keep-alive timeout.
  * @host:	Virtual NVMe host, contains the NQN and Host ID.
+ * @max_reconnects: maximum number of allowed reconnect attempts before removing
+ *              the controller, (-1) means reconnect forever, zero means remove
+ *              immediately;
  */
 struct nvmf_ctrl_options {
 	unsigned		mask;
@@ -91,6 +98,7 @@ struct nvmf_ctrl_options {
 	bool			discovery_nqn;
 	unsigned int		kato;
 	struct nvmf_host	*host;
+	int			max_reconnects;
 };
 
 /*
@@ -128,10 +136,40 @@ int nvmf_reg_read64(struct nvme_ctrl *ctrl, u32 off, u64 *val);
 int nvmf_reg_write32(struct nvme_ctrl *ctrl, u32 off, u32 val);
 int nvmf_connect_admin_queue(struct nvme_ctrl *ctrl);
 int nvmf_connect_io_queue(struct nvme_ctrl *ctrl, u16 qid);
-void nvmf_register_transport(struct nvmf_transport_ops *ops);
+int nvmf_register_transport(struct nvmf_transport_ops *ops);
 void nvmf_unregister_transport(struct nvmf_transport_ops *ops);
 void nvmf_free_options(struct nvmf_ctrl_options *opts);
-const char *nvmf_get_subsysnqn(struct nvme_ctrl *ctrl);
 int nvmf_get_address(struct nvme_ctrl *ctrl, char *buf, int size);
+bool nvmf_should_reconnect(struct nvme_ctrl *ctrl);
+
+static inline blk_status_t nvmf_check_init_req(struct nvme_ctrl *ctrl,
+		struct request *rq)
+{
+	struct nvme_command *cmd = nvme_req(rq)->cmd;
+
+	/*
+	 * We cannot accept any other command until the connect command has
+	 * completed, so only allow connect to pass.
+	 */
+	if (!blk_rq_is_passthrough(rq) ||
+	    cmd->common.opcode != nvme_fabrics_command ||
+	    cmd->fabrics.fctype != nvme_fabrics_type_connect) {
+		/*
+		 * Reconnecting state means transport disruption, which can take
+		 * a long time and even might fail permanently, fail fast to
+		 * give upper layers a chance to failover.
+		 * Deleting state means that the ctrl will never accept commands
+		 * again, fail it permanently.
+		 */
+		if (ctrl->state == NVME_CTRL_RECONNECTING ||
+		    ctrl->state == NVME_CTRL_DELETING) {
+			nvme_req(rq)->status = NVME_SC_ABORT_REQ;
+			return BLK_STS_IOERR;
+		}
+		return BLK_STS_RESOURCE; /* try again later */
+	}
+
+	return BLK_STS_OK;
+}
 
 #endif /* _NVME_FABRICS_H */

@@ -114,7 +114,7 @@ void *__wrap_devm_memremap_pages(struct device *dev, struct resource *res,
 		return nfit_res->buf + offset - nfit_res->res.start;
 	return devm_memremap_pages(dev, res, ref, altmap);
 }
-EXPORT_SYMBOL(__wrap_devm_memremap_pages);
+EXPORT_SYMBOL_GPL(__wrap_devm_memremap_pages);
 
 pfn_t __wrap_phys_to_pfn_t(phys_addr_t addr, unsigned long flags)
 {
@@ -370,7 +370,7 @@ acpi_status __wrap_acpi_evaluate_object(acpi_handle handle, acpi_string path,
 }
 EXPORT_SYMBOL(__wrap_acpi_evaluate_object);
 
-union acpi_object * __wrap_acpi_evaluate_dsm(acpi_handle handle, const u8 *uuid,
+union acpi_object * __wrap_acpi_evaluate_dsm(acpi_handle handle, const guid_t *guid,
 		u64 rev, u64 func, union acpi_object *argv4)
 {
 	union acpi_object *obj = ERR_PTR(-ENXIO);
@@ -379,11 +379,11 @@ union acpi_object * __wrap_acpi_evaluate_dsm(acpi_handle handle, const u8 *uuid,
 	rcu_read_lock();
 	ops = list_first_or_null_rcu(&iomap_head, typeof(*ops), list);
 	if (ops)
-		obj = ops->evaluate_dsm(handle, uuid, rev, func, argv4);
+		obj = ops->evaluate_dsm(handle, guid, rev, func, argv4);
 	rcu_read_unlock();
 
 	if (IS_ERR(obj))
-		return acpi_evaluate_dsm(handle, uuid, rev, func, argv4);
+		return acpi_evaluate_dsm(handle, guid, rev, func, argv4);
 	return obj;
 }
 EXPORT_SYMBOL(__wrap_acpi_evaluate_dsm);

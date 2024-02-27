@@ -17,7 +17,6 @@ source "drivers/gpu/vga/Kconfig"
 
 source "drivers/gpu/host1x/Kconfig"
 source "drivers/gpu/ipu-v3/Kconfig"
-source "drivers/gpu/msm/Kconfig"
 
 source "drivers/gpu/drm/Kconfig"
 
@@ -26,7 +25,6 @@ source "drivers/video/fbdev/Kconfig"
 endmenu
 
 source "drivers/video/backlight/Kconfig"
-source "drivers/video/adf/Kconfig"
 
 config VGASTATE
        tristate

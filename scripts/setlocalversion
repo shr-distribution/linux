@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
 #
 # This scripts adds local version information from the version
 # control systems git, mercurial (hg) and subversion (svn).
@@ -28,11 +29,16 @@ if test $# -gt 0 -o ! -d "$srctree"; then
 	usage
 fi
 
-_scm_version()
+scm_version()
 {
 	local short
 	short=false
 
+	cd "$srctree"
+	if test -e .scmversion; then
+		cat .scmversion
+		return
+	fi
 	if test "$1" = "--short"; then
 		short=true
 	fi
@@ -67,8 +73,16 @@ _scm_version()
 			printf -- '-svn%s' "`git svn find-rev $head`"
 		fi
 
-		# Check for uncommitted changes
-		if git diff-index --name-only HEAD | grep -qv "^scripts/package"; then
+		# Check for uncommitted changes.
+		# First, with git-status, but --no-optional-locks is only
+		# supported in git >= 2.14, so fall back to git-diff-index if
+		# it fails. Note that git-diff-index does not refresh the
+		# index, so it may give misleading results. See
+		# git-update-index(1), git-diff-index(1), and git-status(1).
+		if {
+			git --no-optional-locks status -uno --porcelain 2>/dev/null ||
+			git diff-index --name-only HEAD
+		} | grep -qvE '^(.. )?scripts/package'; then
 			printf '%s' -dirty
 		fi
 
@@ -107,33 +121,6 @@ _scm_version()
 
 		# All done with svn
 		return
-	fi
-}
-
-scm_version()
-{
-	local git_path res git_all_proj name
-	cd "$srctree"
-	if test -e .scmversion; then
-		cat .scmversion
-		return
-	fi
-	git_all_proj=$(find . -name .git -type d | sort)
-	if [ ! -z "$git_all_proj" ] ; then
-		res=""
-		for git_path in $git_all_proj; do
-			git_path=${git_path%.git}
-			name=$(basename ${git_path})
-			if [ $name = "." ] ; then
-				name=""
-			else
-				name="_$name"
-			fi
-			res="$res$name$(cd $git_path;_scm_version)"
-		done
-		printf -- '%s' "$res"
-	else
-		_scm_version
 	fi
 }
 

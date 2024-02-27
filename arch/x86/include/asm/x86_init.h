@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_PLATFORM_H
 #define _ASM_X86_PLATFORM_H
 
@@ -59,7 +60,7 @@ struct x86_init_irqs {
 
 /**
  * struct x86_init_oem - oem platform specific customizing functions
- * @arch_setup:			platform specific architecure setup
+ * @arch_setup:			platform specific architecture setup
  * @banner:			print a platform specific banner
  */
 struct x86_init_oem {
@@ -114,6 +115,18 @@ struct x86_init_pci {
 };
 
 /**
+ * struct x86_hyper_init - x86 hypervisor init functions
+ * @init_platform:		platform setup
+ * @x2apic_available:		X2APIC detection
+ * @init_mem_mapping:		setup early mappings during init_mem_mapping()
+ */
+struct x86_hyper_init {
+	void (*init_platform)(void);
+	bool (*x2apic_available)(void);
+	void (*init_mem_mapping)(void);
+};
+
+/**
  * struct x86_init_ops - functions for platform specific setup
  *
  */
@@ -126,6 +139,7 @@ struct x86_init_ops {
 	struct x86_init_timers		timers;
 	struct x86_init_iommu		iommu;
 	struct x86_init_pci		pci;
+	struct x86_hyper_init		hyper;
 };
 
 /**
@@ -165,8 +179,25 @@ struct x86_legacy_devices {
 };
 
 /**
+ * enum x86_legacy_i8042_state - i8042 keyboard controller state
+ * @X86_LEGACY_I8042_PLATFORM_ABSENT: the controller is always absent on
+ *	given platform/subarch.
+ * @X86_LEGACY_I8042_FIRMWARE_ABSENT: firmware reports that the controller
+ *	is absent.
+ * @X86_LEGACY_i8042_EXPECTED_PRESENT: the controller is likely to be
+ *	present, the i8042 driver should probe for controller existence.
+ */
+enum x86_legacy_i8042_state {
+	X86_LEGACY_I8042_PLATFORM_ABSENT,
+	X86_LEGACY_I8042_FIRMWARE_ABSENT,
+	X86_LEGACY_I8042_EXPECTED_PRESENT,
+};
+
+/**
  * struct x86_legacy_features - legacy x86 features
  *
+ * @i8042: indicated if we expect the device to have i8042 controller
+ *	present.
  * @rtc: this device has a CMOS real-time clock present
  * @reserve_bios_regions: boot code will search for the EBDA address and the
  * 	start of the 640k - 1M BIOS region.  If false, the platform must
@@ -175,9 +206,19 @@ struct x86_legacy_devices {
  * 	documentation for further details.
  */
 struct x86_legacy_features {
+	enum x86_legacy_i8042_state i8042;
 	int rtc;
 	int reserve_bios_regions;
 	struct x86_legacy_devices devices;
+};
+
+/**
+ * struct x86_hyper_runtime - x86 hypervisor specific runtime callbacks
+ *
+ * @pin_vcpu:		pin current vcpu to specified physical cpu (run rarely)
+ */
+struct x86_hyper_runtime {
+	void (*pin_vcpu)(int cpu);
 };
 
 /**
@@ -188,18 +229,18 @@ struct x86_legacy_features {
  * @set_wallclock:		set time back to HW clock
  * @is_untracked_pat_range	exclude from PAT logic
  * @nmi_init			enable NMI on cpus
- * @i8042_detect		pre-detect if i8042 controller exists
  * @save_sched_clock_state:	save state for sched_clock() on suspend
  * @restore_sched_clock_state:	restore state for sched_clock() on resume
- * @apic_post_init:		adjust apic if neeeded
+ * @apic_post_init:		adjust apic if needed
  * @legacy:			legacy features
  * @set_legacy_features:	override legacy features. Use of this callback
  * 				is highly discouraged. You should only need
  * 				this if your hardware platform requires further
- * 				custom fine tuning far beyong what may be
+ * 				custom fine tuning far beyond what may be
  * 				possible in x86_early_init_platform_quirks() by
  * 				only using the current x86_hardware_subarch
  * 				semantics.
+ * @hyper:			x86 hypervisor specific runtime callbacks
  */
 struct x86_platform_ops {
 	unsigned long (*calibrate_cpu)(void);
@@ -210,12 +251,12 @@ struct x86_platform_ops {
 	bool (*is_untracked_pat_range)(u64 start, u64 end);
 	void (*nmi_init)(void);
 	unsigned char (*get_nmi_reason)(void);
-	int (*i8042_detect)(void);
 	void (*save_sched_clock_state)(void);
 	void (*restore_sched_clock_state)(void);
 	void (*apic_post_init)(void);
 	struct x86_legacy_features legacy;
 	void (*set_legacy_features)(void);
+	struct x86_hyper_runtime hyper;
 };
 
 struct pci_dev;

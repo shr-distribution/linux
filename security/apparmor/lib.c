@@ -4,7 +4,7 @@
  * This file contains basic common functions used in AppArmor
  *
  * Copyright (C) 1998-2008 Novell/SUSE
- * Copyright 2009-2013 Canonical Ltd.
+ * Copyright 2009-2010 Canonical Ltd.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -18,9 +18,8 @@
 #include <linux/string.h>
 #include <linux/vmalloc.h>
 
-#include "include/apparmor.h"
 #include "include/audit.h"
-#include "include/label.h"
+#include "include/apparmor.h"
 #include "include/lib.h"
 #include "include/perms.h"
 #include "include/policy.h"
@@ -78,7 +77,7 @@ char *aa_split_fqname(char *fqname, char **ns_name)
 
 const char *skipn_spaces(const char *str, size_t n)
 {
-	for (;n && isspace(*str); --n)
+	for (; n && isspace(*str); --n)
 		++str;
 	if (n)
 		return (char *)str;
@@ -90,10 +89,13 @@ const char *aa_splitn_fqname(const char *fqname, size_t n, const char **ns_name,
 {
 	const char *end = fqname + n;
 	const char *name = skipn_spaces(fqname, n);
-	if (!name)
-		return NULL;
+
 	*ns_name = NULL;
 	*ns_len = 0;
+
+	if (!name)
+		return NULL;
+
 	if (name[0] == ':') {
 		char *split = strnchr(&name[1], end - &name[1], ':');
 		*ns_name = skipn_spaces(&name[1], end - &name[1]);
@@ -127,45 +129,17 @@ void aa_info_message(const char *str)
 {
 	if (audit_enabled) {
 		DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, NULL);
+
 		aad(&sa)->info = str;
 		aa_audit_msg(AUDIT_APPARMOR_STATUS, &sa, NULL);
 	}
 	printk(KERN_INFO "AppArmor: %s\n", str);
 }
 
-/**
- * __aa_kvmalloc - do allocation preferring kmalloc but falling back to vmalloc
- * @size: how many bytes of memory are required
- * @flags: the type of memory to allocate (see kmalloc).
- *
- * Return: allocated buffer or NULL if failed
- *
- * It is possible that policy being loaded from the user is larger than
- * what can be allocated by kmalloc, in those cases fall back to vmalloc.
- */
-void *__aa_kvmalloc(size_t size, gfp_t flags)
-{
-	void *buffer = NULL;
-
-	if (size == 0)
-		return NULL;
-
-	/* do not attempt kmalloc if we need more than 16 pages at once */
-	if (size <= (16*PAGE_SIZE))
-		buffer = kmalloc(size, flags | GFP_NOIO | __GFP_NOWARN);
-	if (!buffer) {
-		if (flags & __GFP_ZERO)
-			buffer = vzalloc(size);
-		else
-			buffer = vmalloc(size);
-	}
-	return buffer;
-}
-
-
 __counted char *aa_str_alloc(int size, gfp_t gfp)
 {
 	struct counted_str *str;
+
 	str = kmalloc(sizeof(struct counted_str) + size, gfp);
 	if (!str)
 		return NULL;
@@ -231,6 +205,7 @@ const char *aa_file_perm_names[] = {
 void aa_perm_mask_to_str(char *str, const char *chrs, u32 mask)
 {
 	unsigned int i, perm = 1;
+
 	for (i = 0; i < 32; perm <<= 1, i++) {
 		if (mask & perm)
 			*str++ = chrs[i];
@@ -243,6 +218,7 @@ void aa_audit_perm_names(struct audit_buffer *ab, const char **names, u32 mask)
 	const char *fmt = "%s";
 	unsigned int i, perm = 1;
 	bool prev = false;
+
 	for (i = 0; i < 32; perm <<= 1, i++) {
 		if (mask & perm) {
 			audit_log_format(ab, fmt, names[i]);
@@ -326,10 +302,11 @@ void aa_apply_modes_to_perms(struct aa_profile *profile, struct aa_perms *perms)
 		perms->kill = ALL_PERMS_MASK;
 	else if (COMPLAIN_MODE(profile))
 		perms->complain = ALL_PERMS_MASK;
-/* TODO:
-	else if (PROMPT_MODE(profile))
-		perms->prompt = ALL_PERMS_MASK;
-*/
+/*
+ *  TODO:
+ *	else if (PROMPT_MODE(profile))
+ *		perms->prompt = ALL_PERMS_MASK;
+ */
 }
 
 static u32 map_other(u32 x)
@@ -403,6 +380,7 @@ void aa_profile_match_label(struct aa_profile *profile, struct aa_label *label,
 {
 	/* TODO: doesn't yet handle extended types */
 	unsigned int state;
+
 	state = aa_dfa_next(profile->policy.dfa,
 			    profile->policy.start[AA_CLASS_LABEL],
 			    type);
@@ -416,6 +394,7 @@ int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
 			  struct common_audit_data *sa)
 {
 	struct aa_perms perms;
+
 	aad(sa)->label = &profile->label;
 	aad(sa)->peer = &target->label;
 	aad(sa)->request = request;
@@ -446,11 +425,12 @@ int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
  */
 int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
 		   u32 request, struct common_audit_data *sa,
-		   void (*cb) (struct audit_buffer *, void *))
+		   void (*cb)(struct audit_buffer *, void *))
 {
 	int type, error;
 	bool stop = false;
 	u32 denied = request & (~perms->allow | perms->deny);
+
 	if (likely(!denied)) {
 		/* mask off perms that are not being force audited */
 		request &= perms->audit;
@@ -493,26 +473,6 @@ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
 	return error;
 }
 
-const char *aa_imode_name(umode_t mode)
-{
-	switch(mode & S_IFMT) {
-	case S_IFSOCK:
-		return "sock";
-	case S_IFLNK:
-		return "link";
-	case S_IFREG:
-		return "reg";
-	case S_IFBLK:
-		return "blkdev";
-	case S_IFDIR:
-		return "dir";
-	case S_IFCHR:
-		return "chrdev";
-	case S_IFIFO:
-		return "fifo";
-	}
-	return "unknown";
-}
 
 /**
  * aa_policy_init - initialize a policy structure
@@ -541,14 +501,14 @@ bool aa_policy_init(struct aa_policy *policy, const char *prefix,
 			strcpy(hname, name);
 	}
 	if (!hname)
-		return 0;
+		return false;
 	policy->hname = hname;
 	/* base.name is a substring of fqname */
-	policy->name = (char *) basename(policy->hname);
+	policy->name = basename(policy->hname);
 	INIT_LIST_HEAD(&policy->list);
 	INIT_LIST_HEAD(&policy->profiles);
 
-	return 1;
+	return true;
 }
 
 /**

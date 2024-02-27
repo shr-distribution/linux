@@ -197,9 +197,15 @@ static int mlx5e_am_stats_compare(struct mlx5e_rx_am_stats *curr,
 		return (curr->bpms > prev->bpms) ? MLX5E_AM_STATS_BETTER :
 						   MLX5E_AM_STATS_WORSE;
 
+	if (!prev->ppms)
+		return curr->ppms ? MLX5E_AM_STATS_BETTER :
+				    MLX5E_AM_STATS_SAME;
+
 	if (IS_SIGNIFICANT_DIFF(curr->ppms, prev->ppms))
 		return (curr->ppms > prev->ppms) ? MLX5E_AM_STATS_BETTER :
 						   MLX5E_AM_STATS_WORSE;
+	if (!prev->epms)
+		return MLX5E_AM_STATS_SAME;
 
 	if (IS_SIGNIFICANT_DIFF(curr->epms, prev->epms))
 		return (curr->epms < prev->epms) ? MLX5E_AM_STATS_BETTER :
@@ -299,7 +305,7 @@ void mlx5e_rx_am_work(struct work_struct *work)
 	struct mlx5e_rq *rq = container_of(am, struct mlx5e_rq, am);
 	struct mlx5e_cq_moder cur_profile = profile[am->mode][am->profile_ix];
 
-	mlx5_core_modify_cq_moderation(rq->priv->mdev, &rq->cq.mcq,
+	mlx5_core_modify_cq_moderation(rq->mdev, &rq->cq.mcq,
 				       cur_profile.usec, cur_profile.pkts);
 
 	am->state = MLX5E_AM_START_MEASURE;

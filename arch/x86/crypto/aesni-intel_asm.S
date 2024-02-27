@@ -47,28 +47,48 @@
 
 #ifdef __x86_64__
 
-.data
+# constants in mergeable sections, linker can reorder and merge
+.section	.rodata.cst16.gf128mul_x_ble_mask, "aM", @progbits, 16
 .align 16
 .Lgf128mul_x_ble_mask:
 	.octa 0x00000000000000010000000000000087
+.section	.rodata.cst16.POLY, "aM", @progbits, 16
+.align 16
 POLY:   .octa 0xC2000000000000000000000000000001
+.section	.rodata.cst16.TWOONE, "aM", @progbits, 16
+.align 16
 TWOONE: .octa 0x00000001000000000000000000000001
+
+.section	.rodata.cst16.SHUF_MASK, "aM", @progbits, 16
+.align 16
+SHUF_MASK:  .octa 0x000102030405060708090A0B0C0D0E0F
+.section	.rodata.cst16.MASK1, "aM", @progbits, 16
+.align 16
+MASK1:      .octa 0x0000000000000000ffffffffffffffff
+.section	.rodata.cst16.MASK2, "aM", @progbits, 16
+.align 16
+MASK2:      .octa 0xffffffffffffffff0000000000000000
+.section	.rodata.cst16.ONE, "aM", @progbits, 16
+.align 16
+ONE:        .octa 0x00000000000000000000000000000001
+.section	.rodata.cst16.F_MIN_MASK, "aM", @progbits, 16
+.align 16
+F_MIN_MASK: .octa 0xf1f2f3f4f5f6f7f8f9fafbfcfdfeff0
+.section	.rodata.cst16.dec, "aM", @progbits, 16
+.align 16
+dec:        .octa 0x1
+.section	.rodata.cst16.enc, "aM", @progbits, 16
+.align 16
+enc:        .octa 0x2
 
 # order of these constants should not change.
 # more specifically, ALL_F should follow SHIFT_MASK,
-# and ZERO should follow ALL_F
-
-SHUF_MASK:  .octa 0x000102030405060708090A0B0C0D0E0F
-MASK1:      .octa 0x0000000000000000ffffffffffffffff
-MASK2:      .octa 0xffffffffffffffff0000000000000000
+# and zero should follow ALL_F
+.section	.rodata, "a", @progbits
+.align 16
 SHIFT_MASK: .octa 0x0f0e0d0c0b0a09080706050403020100
 ALL_F:      .octa 0xffffffffffffffffffffffffffffffff
-ZERO:       .octa 0x00000000000000000000000000000000
-ONE:        .octa 0x00000000000000000000000000000001
-F_MIN_MASK: .octa 0xf1f2f3f4f5f6f7f8f9fafbfcfdfeff0
-dec:        .octa 0x1
-enc:        .octa 0x2
-
+            .octa 0x00000000000000000000000000000000
 
 .text
 
@@ -213,6 +233,37 @@ enc:        .octa 0x2
 	pxor      \TMP1, \GH            # result is in TMP1
 .endm
 
+# Reads DLEN bytes starting at DPTR and stores in XMMDst
+# where 0 < DLEN < 16
+# Clobbers %rax, DLEN and XMM1
+.macro READ_PARTIAL_BLOCK DPTR DLEN XMM1 XMMDst
+        cmp $8, \DLEN
+        jl _read_lt8_\@
+        mov (\DPTR), %rax
+        MOVQ_R64_XMM %rax, \XMMDst
+        sub $8, \DLEN
+        jz _done_read_partial_block_\@
+	xor %eax, %eax
+_read_next_byte_\@:
+        shl $8, %rax
+        mov 7(\DPTR, \DLEN, 1), %al
+        dec \DLEN
+        jnz _read_next_byte_\@
+        MOVQ_R64_XMM %rax, \XMM1
+	pslldq $8, \XMM1
+        por \XMM1, \XMMDst
+	jmp _done_read_partial_block_\@
+_read_lt8_\@:
+	xor %eax, %eax
+_read_next_byte_lt8_\@:
+        shl $8, %rax
+        mov -1(\DPTR, \DLEN, 1), %al
+        dec \DLEN
+        jnz _read_next_byte_lt8_\@
+        MOVQ_R64_XMM %rax, \XMMDst
+_done_read_partial_block_\@:
+.endm
+
 /*
 * if a = number of total plaintext bytes
 * b = floor(a/16)
@@ -229,35 +280,37 @@ enc:        .octa 0x2
 XMM2 XMM3 XMM4 XMMDst TMP6 TMP7 i i_seq operation
         MOVADQ     SHUF_MASK(%rip), %xmm14
 	mov	   arg7, %r10           # %r10 = AAD
-	mov	   arg8, %r12           # %r12 = aadLen
-	mov	   %r12, %r11
+	mov	   arg8, %r11           # %r11 = aadLen
 	pxor	   %xmm\i, %xmm\i
-
-_get_AAD_loop\num_initial_blocks\operation:
-	movd	   (%r10), \TMP1
-	pslldq	   $12, \TMP1
-	psrldq	   $4, %xmm\i
-	pxor	   \TMP1, %xmm\i
-	add	   $4, %r10
-	sub	   $4, %r12
-	jne	   _get_AAD_loop\num_initial_blocks\operation
+	pxor       \XMM2, \XMM2
 
 	cmp	   $16, %r11
-	je	   _get_AAD_loop2_done\num_initial_blocks\operation
+	jl	   _get_AAD_rest\num_initial_blocks\operation
+_get_AAD_blocks\num_initial_blocks\operation:
+	movdqu	   (%r10), %xmm\i
+	PSHUFB_XMM %xmm14, %xmm\i # byte-reflect the AAD data
+	pxor	   %xmm\i, \XMM2
+	GHASH_MUL  \XMM2, \TMP3, \TMP1, \TMP2, \TMP4, \TMP5, \XMM1
+	add	   $16, %r10
+	sub	   $16, %r11
+	cmp	   $16, %r11
+	jge	   _get_AAD_blocks\num_initial_blocks\operation
 
-	mov	   $16, %r12
-_get_AAD_loop2\num_initial_blocks\operation:
-	psrldq	   $4, %xmm\i
-	sub	   $4, %r12
-	cmp	   %r11, %r12
-	jne	   _get_AAD_loop2\num_initial_blocks\operation
+	movdqu	   \XMM2, %xmm\i
 
-_get_AAD_loop2_done\num_initial_blocks\operation:
+	/* read the last <16B of AAD */
+_get_AAD_rest\num_initial_blocks\operation:
+	cmp	   $0, %r11
+	je	   _get_AAD_done\num_initial_blocks\operation
+
+	READ_PARTIAL_BLOCK %r10, %r11, \TMP1, %xmm\i
 	PSHUFB_XMM   %xmm14, %xmm\i # byte-reflect the AAD data
+	pxor	   \XMM2, %xmm\i
+	GHASH_MUL  %xmm\i, \TMP3, \TMP1, \TMP2, \TMP4, \TMP5, \XMM1
 
+_get_AAD_done\num_initial_blocks\operation:
 	xor	   %r11, %r11 # initialise the data pointer offset as zero
-
-        # start AES for num_initial_blocks blocks
+	# start AES for num_initial_blocks blocks
 
 	mov	   %arg5, %rax                      # %rax = *Y0
 	movdqu	   (%rax), \XMM0                    # XMM0 = Y0
@@ -302,7 +355,7 @@ aes_loop_initial_dec\num_initial_blocks:
                 # prepare plaintext/ciphertext for GHASH computation
 .endr
 .endif
-	GHASH_MUL  %xmm\i, \TMP3, \TMP1, \TMP2, \TMP4, \TMP5, \XMM1
+
         # apply GHASH on num_initial_blocks blocks
 
 .if \i == 5
@@ -454,31 +507,37 @@ _initial_blocks_done\num_initial_blocks\operation:
 XMM2 XMM3 XMM4 XMMDst TMP6 TMP7 i i_seq operation
         MOVADQ     SHUF_MASK(%rip), %xmm14
 	mov	   arg7, %r10           # %r10 = AAD
-	mov	   arg8, %r12           # %r12 = aadLen
-	mov	   %r12, %r11
+	mov	   arg8, %r11           # %r11 = aadLen
 	pxor	   %xmm\i, %xmm\i
-_get_AAD_loop\num_initial_blocks\operation:
-	movd	   (%r10), \TMP1
-	pslldq	   $12, \TMP1
-	psrldq	   $4, %xmm\i
-	pxor	   \TMP1, %xmm\i
-	add	   $4, %r10
-	sub	   $4, %r12
-	jne	   _get_AAD_loop\num_initial_blocks\operation
+	pxor	   \XMM2, \XMM2
+
 	cmp	   $16, %r11
-	je	   _get_AAD_loop2_done\num_initial_blocks\operation
-	mov	   $16, %r12
-_get_AAD_loop2\num_initial_blocks\operation:
-	psrldq	   $4, %xmm\i
-	sub	   $4, %r12
-	cmp	   %r11, %r12
-	jne	   _get_AAD_loop2\num_initial_blocks\operation
-_get_AAD_loop2_done\num_initial_blocks\operation:
+	jl	   _get_AAD_rest\num_initial_blocks\operation
+_get_AAD_blocks\num_initial_blocks\operation:
+	movdqu	   (%r10), %xmm\i
 	PSHUFB_XMM   %xmm14, %xmm\i # byte-reflect the AAD data
+	pxor	   %xmm\i, \XMM2
+	GHASH_MUL  \XMM2, \TMP3, \TMP1, \TMP2, \TMP4, \TMP5, \XMM1
+	add	   $16, %r10
+	sub	   $16, %r11
+	cmp	   $16, %r11
+	jge	   _get_AAD_blocks\num_initial_blocks\operation
 
+	movdqu	   \XMM2, %xmm\i
+
+	/* read the last <16B of AAD */
+_get_AAD_rest\num_initial_blocks\operation:
+	cmp	   $0, %r11
+	je	   _get_AAD_done\num_initial_blocks\operation
+
+	READ_PARTIAL_BLOCK %r10, %r11, \TMP1, %xmm\i
+	PSHUFB_XMM   %xmm14, %xmm\i # byte-reflect the AAD data
+	pxor	   \XMM2, %xmm\i
+	GHASH_MUL  %xmm\i, \TMP3, \TMP1, \TMP2, \TMP4, \TMP5, \XMM1
+
+_get_AAD_done\num_initial_blocks\operation:
 	xor	   %r11, %r11 # initialise the data pointer offset as zero
-
-        # start AES for num_initial_blocks blocks
+	# start AES for num_initial_blocks blocks
 
 	mov	   %arg5, %rax                      # %rax = *Y0
 	movdqu	   (%rax), \XMM0                    # XMM0 = Y0
@@ -523,7 +582,7 @@ aes_loop_initial_enc\num_initial_blocks:
 		# prepare plaintext/ciphertext for GHASH computation
 .endr
 .endif
-	GHASH_MUL  %xmm\i, \TMP3, \TMP1, \TMP2, \TMP4, \TMP5, \XMM1
+
         # apply GHASH on num_initial_blocks blocks
 
 .if \i == 5
@@ -1270,14 +1329,6 @@ _esb_loop_\@:
 *
 *                        AAD Format with 64-bit Extended Sequence Number
 *
-* aadLen:
-*       from the definition of the spec, aadLen can only be 8 or 12 bytes.
-*       The code supports 16 too but for other sizes, the code will fail.
-*
-* TLen:
-*       from the definition of the spec, TLen can only be 8, 12 or 16 bytes.
-*       For other sizes, the code will fail.
-*
 * poly = x^128 + x^127 + x^126 + x^121 + 1
 *
 *****************************************************************************/
@@ -1371,19 +1422,16 @@ _zero_cipher_left_decrypt:
 	PSHUFB_XMM %xmm10, %xmm0
 
 	ENCRYPT_SINGLE_BLOCK  %xmm0, %xmm1    # E(K, Yn)
-	sub $16, %r11
-	add %r13, %r11
-	movdqu (%arg3,%r11,1), %xmm1   # receive the last <16 byte block
-	lea SHIFT_MASK+16(%rip), %r12
-	sub %r13, %r12
-# adjust the shuffle mask pointer to be able to shift 16-%r13 bytes
-# (%r13 is the number of bytes in plaintext mod 16)
-	movdqu (%r12), %xmm2           # get the appropriate shuffle mask
-	PSHUFB_XMM %xmm2, %xmm1            # right shift 16-%r13 butes
 
+	lea (%arg3,%r11,1), %r10
+	mov %r13, %r12
+	READ_PARTIAL_BLOCK %r10 %r12 %xmm2 %xmm1
+
+	lea ALL_F+16(%rip), %r12
+	sub %r13, %r12
 	movdqa  %xmm1, %xmm2
 	pxor %xmm1, %xmm0            # Ciphertext XOR E(K, Yn)
-	movdqu ALL_F-SHIFT_MASK(%r12), %xmm1
+	movdqu (%r12), %xmm1
 	# get the appropriate mask to mask out top 16-%r13 bytes of %xmm0
 	pand %xmm1, %xmm0            # mask out top 16-%r13 bytes of %xmm0
 	pand    %xmm1, %xmm2
@@ -1392,9 +1440,6 @@ _zero_cipher_left_decrypt:
 
 	pxor %xmm2, %xmm8
 	GHASH_MUL %xmm8, %xmm13, %xmm9, %xmm10, %xmm11, %xmm5, %xmm6
-	          # GHASH computation for the last <16 byte block
-	sub %r13, %r11
-	add $16, %r11
 
         # output %r13 bytes
 	MOVQ_R64_XMM	%xmm0, %rax
@@ -1434,18 +1479,35 @@ _return_T_decrypt:
 	mov	arg10, %r11               # %r11 = auth_tag_len
 	cmp	$16, %r11
 	je	_T_16_decrypt
-	cmp	$12, %r11
-	je	_T_12_decrypt
+	cmp	$8, %r11
+	jl	_T_4_decrypt
 _T_8_decrypt:
 	MOVQ_R64_XMM	%xmm0, %rax
 	mov	%rax, (%r10)
-	jmp	_return_T_done_decrypt
-_T_12_decrypt:
-	MOVQ_R64_XMM	%xmm0, %rax
-	mov	%rax, (%r10)
+	add	$8, %r10
+	sub	$8, %r11
 	psrldq	$8, %xmm0
+	cmp	$0, %r11
+	je	_return_T_done_decrypt
+_T_4_decrypt:
 	movd	%xmm0, %eax
-	mov	%eax, 8(%r10)
+	mov	%eax, (%r10)
+	add	$4, %r10
+	sub	$4, %r11
+	psrldq	$4, %xmm0
+	cmp	$0, %r11
+	je	_return_T_done_decrypt
+_T_123_decrypt:
+	movd	%xmm0, %eax
+	cmp	$2, %r11
+	jl	_T_1_decrypt
+	mov	%ax, (%r10)
+	cmp	$2, %r11
+	je	_return_T_done_decrypt
+	add	$2, %r10
+	sar	$16, %eax
+_T_1_decrypt:
+	mov	%al, (%r10)
 	jmp	_return_T_done_decrypt
 _T_16_decrypt:
 	movdqu	%xmm0, (%r10)
@@ -1530,14 +1592,6 @@ ENDPROC(aesni_gcm_dec)
 *       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 *
 *                         AAD Format with 64-bit Extended Sequence Number
-*
-* aadLen:
-*       from the definition of the spec, aadLen can only be 8 or 12 bytes.
-*       The code supports 16 too but for other sizes, the code will fail.
-*
-* TLen:
-*       from the definition of the spec, TLen can only be 8, 12 or 16 bytes.
-*       For other sizes, the code will fail.
 *
 * poly = x^128 + x^127 + x^126 + x^121 + 1
 ***************************************************************************/
@@ -1631,19 +1685,16 @@ _zero_cipher_left_encrypt:
         movdqa SHUF_MASK(%rip), %xmm10
 	PSHUFB_XMM %xmm10, %xmm0
 
-
 	ENCRYPT_SINGLE_BLOCK	%xmm0, %xmm1        # Encrypt(K, Yn)
-	sub $16, %r11
-	add %r13, %r11
-	movdqu (%arg3,%r11,1), %xmm1     # receive the last <16 byte blocks
-	lea SHIFT_MASK+16(%rip), %r12
+
+	lea (%arg3,%r11,1), %r10
+	mov %r13, %r12
+	READ_PARTIAL_BLOCK %r10 %r12 %xmm2 %xmm1
+
+	lea ALL_F+16(%rip), %r12
 	sub %r13, %r12
-	# adjust the shuffle mask pointer to be able to shift 16-r13 bytes
-	# (%r13 is the number of bytes in plaintext mod 16)
-	movdqu	(%r12), %xmm2           # get the appropriate shuffle mask
-	PSHUFB_XMM	%xmm2, %xmm1            # shift right 16-r13 byte
 	pxor	%xmm1, %xmm0            # Plaintext XOR Encrypt(K, Yn)
-	movdqu	ALL_F-SHIFT_MASK(%r12), %xmm1
+	movdqu	(%r12), %xmm1
 	# get the appropriate mask to mask out top 16-r13 bytes of xmm0
 	pand	%xmm1, %xmm0            # mask out top 16-r13 bytes of xmm0
         movdqa SHUF_MASK(%rip), %xmm10
@@ -1652,9 +1703,6 @@ _zero_cipher_left_encrypt:
 	pxor	%xmm0, %xmm8
 	GHASH_MUL %xmm8, %xmm13, %xmm9, %xmm10, %xmm11, %xmm5, %xmm6
 	# GHASH computation for the last <16 byte block
-	sub	%r13, %r11
-	add	$16, %r11
-
 	movdqa SHUF_MASK(%rip), %xmm10
 	PSHUFB_XMM %xmm10, %xmm0
 
@@ -1698,18 +1746,35 @@ _return_T_encrypt:
 	mov	arg10, %r11                    # %r11 = auth_tag_len
 	cmp	$16, %r11
 	je	_T_16_encrypt
-	cmp	$12, %r11
-	je	_T_12_encrypt
+	cmp	$8, %r11
+	jl	_T_4_encrypt
 _T_8_encrypt:
 	MOVQ_R64_XMM	%xmm0, %rax
 	mov	%rax, (%r10)
-	jmp	_return_T_done_encrypt
-_T_12_encrypt:
-	MOVQ_R64_XMM	%xmm0, %rax
-	mov	%rax, (%r10)
+	add	$8, %r10
+	sub	$8, %r11
 	psrldq	$8, %xmm0
+	cmp	$0, %r11
+	je	_return_T_done_encrypt
+_T_4_encrypt:
 	movd	%xmm0, %eax
-	mov	%eax, 8(%r10)
+	mov	%eax, (%r10)
+	add	$4, %r10
+	sub	$4, %r11
+	psrldq	$4, %xmm0
+	cmp	$0, %r11
+	je	_return_T_done_encrypt
+_T_123_encrypt:
+	movd	%xmm0, %eax
+	cmp	$2, %r11
+	jl	_T_1_encrypt
+	mov	%ax, (%r10)
+	cmp	$2, %r11
+	je	_return_T_done_encrypt
+	add	$2, %r10
+	sar	$16, %eax
+_T_1_encrypt:
+	mov	%al, (%r10)
 	jmp	_return_T_done_encrypt
 _T_16_encrypt:
 	movdqu	%xmm0, (%r10)

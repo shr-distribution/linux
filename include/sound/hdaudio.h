@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * HD-audio core stuff
  */
@@ -227,9 +228,6 @@ struct hdac_io_ops {
 #define HDA_UNSOL_QUEUE_SIZE	64
 #define HDA_MAX_CODECS		8	/* limit by controller side */
 
-/* HD Audio class code */
-#define PCI_CLASS_MULTIMEDIA_HD_AUDIO	0x0403
-
 /*
  * CORB/RIRB
  *
@@ -356,6 +354,7 @@ void snd_hdac_bus_init_cmd_io(struct hdac_bus *bus);
 void snd_hdac_bus_stop_cmd_io(struct hdac_bus *bus);
 void snd_hdac_bus_enter_link_reset(struct hdac_bus *bus);
 void snd_hdac_bus_exit_link_reset(struct hdac_bus *bus);
+int snd_hdac_bus_reset_link(struct hdac_bus *bus, bool full_reset);
 
 void snd_hdac_bus_update_rirb(struct hdac_bus *bus);
 int snd_hdac_bus_handle_stream_irq(struct hdac_bus *bus, unsigned int status,
@@ -368,24 +367,32 @@ void snd_hdac_bus_free_stream_pages(struct hdac_bus *bus);
 /*
  * macros for easy use
  */
-#define _snd_hdac_chip_write(type, chip, reg, value) \
-	((chip)->io_ops->reg_write ## type(value, (chip)->remap_addr + (reg)))
-#define _snd_hdac_chip_read(type, chip, reg) \
-	((chip)->io_ops->reg_read ## type((chip)->remap_addr + (reg)))
+#define _snd_hdac_chip_writeb(chip, reg, value) \
+	((chip)->io_ops->reg_writeb(value, (chip)->remap_addr + (reg)))
+#define _snd_hdac_chip_readb(chip, reg) \
+	((chip)->io_ops->reg_readb((chip)->remap_addr + (reg)))
+#define _snd_hdac_chip_writew(chip, reg, value) \
+	((chip)->io_ops->reg_writew(value, (chip)->remap_addr + (reg)))
+#define _snd_hdac_chip_readw(chip, reg) \
+	((chip)->io_ops->reg_readw((chip)->remap_addr + (reg)))
+#define _snd_hdac_chip_writel(chip, reg, value) \
+	((chip)->io_ops->reg_writel(value, (chip)->remap_addr + (reg)))
+#define _snd_hdac_chip_readl(chip, reg) \
+	((chip)->io_ops->reg_readl((chip)->remap_addr + (reg)))
 
 /* read/write a register, pass without AZX_REG_ prefix */
 #define snd_hdac_chip_writel(chip, reg, value) \
-	_snd_hdac_chip_write(l, chip, AZX_REG_ ## reg, value)
+	_snd_hdac_chip_writel(chip, AZX_REG_ ## reg, value)
 #define snd_hdac_chip_writew(chip, reg, value) \
-	_snd_hdac_chip_write(w, chip, AZX_REG_ ## reg, value)
+	_snd_hdac_chip_writew(chip, AZX_REG_ ## reg, value)
 #define snd_hdac_chip_writeb(chip, reg, value) \
-	_snd_hdac_chip_write(b, chip, AZX_REG_ ## reg, value)
+	_snd_hdac_chip_writeb(chip, AZX_REG_ ## reg, value)
 #define snd_hdac_chip_readl(chip, reg) \
-	_snd_hdac_chip_read(l, chip, AZX_REG_ ## reg)
+	_snd_hdac_chip_readl(chip, AZX_REG_ ## reg)
 #define snd_hdac_chip_readw(chip, reg) \
-	_snd_hdac_chip_read(w, chip, AZX_REG_ ## reg)
+	_snd_hdac_chip_readw(chip, AZX_REG_ ## reg)
 #define snd_hdac_chip_readb(chip, reg) \
-	_snd_hdac_chip_read(b, chip, AZX_REG_ ## reg)
+	_snd_hdac_chip_readb(chip, AZX_REG_ ## reg)
 
 /* update a register, pass without AZX_REG_ prefix */
 #define snd_hdac_chip_updatel(chip, reg, mask, val) \

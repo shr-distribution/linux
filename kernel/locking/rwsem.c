@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* kernel/rwsem.c: R/W semaphores, public implementation
  *
  * Written by David Howells (dhowells@redhat.com).
@@ -7,11 +8,15 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/export.h>
 #include <linux/rwsem.h>
 #include <linux/atomic.h>
 
 #include "rwsem.h"
+#ifdef CONFIG_MTK_TASK_TURBO
+#include <mt-plat/turbo_common.h>
+#endif
 
 /*
  * lock for reading
@@ -113,6 +118,9 @@ void up_write(struct rw_semaphore *sem)
 	rwsem_release(&sem->dep_map, 1, _RET_IP_);
 
 	rwsem_clear_owner(sem);
+#ifdef CONFIG_MTK_TASK_TURBO
+	rwsem_stop_turbo_inherit(sem);
+#endif
 	__up_write(sem);
 }
 
@@ -123,11 +131,12 @@ EXPORT_SYMBOL(up_write);
  */
 void downgrade_write(struct rw_semaphore *sem)
 {
-	/*
-	 * lockdep: a downgraded write will live on as a write
-	 * dependency.
-	 */
+	lock_downgrade(&sem->dep_map, _RET_IP_);
+
 	rwsem_set_reader_owned(sem);
+#ifdef CONFIG_MTK_TASK_TURBO
+	rwsem_stop_turbo_inherit(sem);
+#endif
 	__downgrade_write(sem);
 }
 
@@ -201,5 +210,3 @@ void up_read_non_owner(struct rw_semaphore *sem)
 EXPORT_SYMBOL(up_read_non_owner);
 
 #endif
-
-

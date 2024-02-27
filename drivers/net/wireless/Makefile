@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the Linux Wireless network device drivers.
 #
@@ -17,6 +18,7 @@ obj-$(CONFIG_WLAN_VENDOR_RSI) += rsi/
 obj-$(CONFIG_WLAN_VENDOR_ST) += st/
 obj-$(CONFIG_WLAN_VENDOR_TI) += ti/
 obj-$(CONFIG_WLAN_VENDOR_ZYDAS) += zydas/
+obj-$(CONFIG_WLAN_VENDOR_QUANTENNA) += quantenna/
 
 # 16-bit wireless PCMCIA client drivers
 obj-$(CONFIG_PCMCIA_RAYCS)	+= ray_cs.o
@@ -26,9 +28,4 @@ obj-$(CONFIG_USB_NET_RNDIS_WLAN)	+= rndis_wlan.o
 
 obj-$(CONFIG_MAC80211_HWSIM)	+= mac80211_hwsim.o
 
-obj-$(CONFIG_CNSS2)	+= cnss2/
-obj-$(CONFIG_CNSS)              += cnss/
-obj-$(CONFIG_WCNSS_MEM_PRE_ALLOC) += cnss_prealloc/
-obj-$(CONFIG_CNSS_UTILS) += cnss_utils/
-obj-$(CONFIG_CNSS_GENL) += cnss_genl/
-obj-$(CONFIG_CNSS_CRYPTO) += cnss_crypto/
+obj-$(CONFIG_VIRT_WIFI)	+= virt_wifi.o

@@ -44,7 +44,7 @@ struct etnaviv_iommu {
 	struct list_head mappings;
 	struct drm_mm mm;
 	u32 last_iova;
-	bool need_flush;
+	unsigned int flush_seq;
 };
 
 struct etnaviv_gem_object;
@@ -62,10 +62,12 @@ void etnaviv_iommu_unmap_gem(struct etnaviv_iommu *mmu,
 	struct etnaviv_vram_mapping *mapping);
 void etnaviv_iommu_destroy(struct etnaviv_iommu *iommu);
 
-u32 etnaviv_iommu_get_cmdbuf_va(struct etnaviv_gpu *gpu,
-				struct etnaviv_cmdbuf *buf);
-void etnaviv_iommu_put_cmdbuf_va(struct etnaviv_gpu *gpu,
-				 struct etnaviv_cmdbuf *buf);
+int etnaviv_iommu_get_suballoc_va(struct etnaviv_gpu *gpu, dma_addr_t paddr,
+				  struct drm_mm_node *vram_node, size_t size,
+				  u32 *iova);
+void etnaviv_iommu_put_suballoc_va(struct etnaviv_gpu *gpu,
+				   struct drm_mm_node *vram_node, size_t size,
+				   u32 iova);
 
 size_t etnaviv_iommu_dump_size(struct etnaviv_iommu *iommu);
 void etnaviv_iommu_dump(struct etnaviv_iommu *iommu, void *buf);

@@ -29,7 +29,7 @@
 #define PREFIX "snd-bcd2000: "
 #define BUFSIZE 64
 
-static struct usb_device_id id_table[] = {
+static const struct usb_device_id id_table[] = {
 	{ USB_DEVICE(0x1397, 0x00bd) },
 	{ },
 };
@@ -252,13 +252,13 @@ static void bcd2000_input_complete(struct urb *urb)
 			__func__, ret);
 }
 
-static struct snd_rawmidi_ops bcd2000_midi_output = {
+static const struct snd_rawmidi_ops bcd2000_midi_output = {
 	.open =    bcd2000_midi_output_open,
 	.close =   bcd2000_midi_output_close,
 	.trigger = bcd2000_midi_output_trigger,
 };
 
-static struct snd_rawmidi_ops bcd2000_midi_input = {
+static const struct snd_rawmidi_ops bcd2000_midi_input = {
 	.open =    bcd2000_midi_input_open,
 	.close =   bcd2000_midi_input_close,
 	.trigger = bcd2000_midi_input_trigger,
@@ -341,6 +341,13 @@ static int bcd2000_init_midi(struct bcd2000 *bcd2k)
 				usb_sndintpipe(bcd2k->dev, 0x1),
 				bcd2k->midi_out_buf, BUFSIZE,
 				bcd2000_output_complete, bcd2k, 1);
+
+	/* sanity checks of EPs before actually submitting */
+	if (usb_urb_ep_type_check(bcd2k->midi_in_urb) ||
+	    usb_urb_ep_type_check(bcd2k->midi_out_urb)) {
+		dev_err(&bcd2k->dev->dev, "invalid MIDI EP\n");
+		return -EINVAL;
+	}
 
 	bcd2000_init_device(bcd2k);
 

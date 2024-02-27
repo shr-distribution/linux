@@ -1,7 +1,7 @@
 /*
  * drivers/staging/android/uapi/ion.h
  *
- * Copyright (C) 2011 Google, Inc.
+ * Copyright (C) 2011 MediaTek, Inc.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -65,6 +65,5 @@ struct ion_test_rw_data {
  */
 #define ION_IOC_TEST_KERNEL_MAPPING \
 			_IOW(ION_IOC_MAGIC, 0xf2, struct ion_test_rw_data)
-
 
 #endif /* _UAPI_LINUX_ION_H */

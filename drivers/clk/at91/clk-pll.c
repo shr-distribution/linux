@@ -133,6 +133,9 @@ static unsigned long clk_pll_recalc_rate(struct clk_hw *hw,
 {
 	struct clk_pll *pll = to_clk_pll(hw);
 
+	if (!pll->div || !pll->mul)
+		return 0;
+
 	return (parent_rate / pll->div) * (pll->mul + 1);
 }
 
@@ -388,18 +391,18 @@ of_at91_clk_pll_get_characteristics(struct device_node *np)
 	if (!characteristics)
 		return NULL;
 
-	output = kzalloc(sizeof(*output) * num_output, GFP_KERNEL);
+	output = kcalloc(num_output, sizeof(*output), GFP_KERNEL);
 	if (!output)
 		goto out_free_characteristics;
 
 	if (num_cells > 2) {
-		out = kzalloc(sizeof(*out) * num_output, GFP_KERNEL);
+		out = kcalloc(num_output, sizeof(*out), GFP_KERNEL);
 		if (!out)
 			goto out_free_output;
 	}
 
 	if (num_cells > 3) {
-		icpll = kzalloc(sizeof(*icpll) * num_output, GFP_KERNEL);
+		icpll = kcalloc(num_output, sizeof(*icpll), GFP_KERNEL);
 		if (!icpll)
 			goto out_free_output;
 	}

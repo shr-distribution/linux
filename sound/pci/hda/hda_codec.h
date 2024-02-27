@@ -68,6 +68,7 @@ struct hda_bus {
 	unsigned int response_reset:1;	/* controller was reset */
 	unsigned int in_reset:1;	/* during reset operation */
 	unsigned int no_response_fallback:1; /* don't fallback at RIRB error */
+	unsigned int bus_probing :1;	/* during probing process */
 
 	int primary_dig_out_type;	/* primary digital out PCM type */
 	unsigned int mixer_assigned;	/* codec addr for mixer name */
@@ -164,6 +165,7 @@ enum {
 	HDA_PCM_NTYPES
 };
 
+#define SNDRV_PCM_INVALID_DEVICE	(-1)
 /* for PCM creation */
 struct hda_pcm {
 	char *name;
@@ -256,6 +258,7 @@ struct hda_codec {
 	unsigned int dump_coef:1; /* dump processing coefs in codec proc file */
 	unsigned int power_save_node:1; /* advanced PM for each widget */
 	unsigned int auto_runtime_pm:1; /* enable automatic codec runtime pm */
+	unsigned int force_pin_prefix:1; /* Add location prefix */
 #ifdef CONFIG_PM
 	unsigned long power_on_acct;
 	unsigned long power_off_acct;
@@ -349,8 +352,11 @@ int snd_hda_override_conn_list(struct hda_codec *codec, hda_nid_t nid, int nums,
 			  const hda_nid_t *list);
 int snd_hda_get_conn_index(struct hda_codec *codec, hda_nid_t mux,
 			   hda_nid_t nid, int recursive);
+unsigned int snd_hda_get_num_devices(struct hda_codec *codec, hda_nid_t nid);
 int snd_hda_get_devices(struct hda_codec *codec, hda_nid_t nid,
 			u8 *dev_list, int max_devices);
+int snd_hda_get_dev_select(struct hda_codec *codec, hda_nid_t nid);
+int snd_hda_set_dev_select(struct hda_codec *codec, hda_nid_t nid, int dev_id);
 
 struct hda_verb {
 	hda_nid_t nid;

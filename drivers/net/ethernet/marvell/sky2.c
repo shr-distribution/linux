@@ -46,6 +46,7 @@
 #include <linux/mii.h>
 #include <linux/of_device.h>
 #include <linux/of_net.h>
+#include <linux/dmi.h>
 
 #include <asm/irq.h>
 
@@ -93,7 +94,7 @@ static int copybreak __read_mostly = 128;
 module_param(copybreak, int, 0);
 MODULE_PARM_DESC(copybreak, "Receive copy threshold");
 
-static int disable_msi = 0;
+static int disable_msi = -1;
 module_param(disable_msi, int, 0);
 MODULE_PARM_DESC(disable_msi, "Disable Message Signaled Interrupt (MSI)");
 
@@ -2398,16 +2399,6 @@ static int sky2_change_mtu(struct net_device *dev, int new_mtu)
 	u16 ctl, mode;
 	u32 imask;
 
-	/* MTU size outside the spec */
-	if (new_mtu < ETH_ZLEN || new_mtu > ETH_JUMBO_MTU)
-		return -EINVAL;
-
-	/* MTU > 1500 on yukon FE and FE+ not allowed */
-	if (new_mtu > ETH_DATA_LEN &&
-	    (hw->chip_id == CHIP_ID_YUKON_FE ||
-	     hw->chip_id == CHIP_ID_YUKON_FE_P))
-		return -EINVAL;
-
 	if (!netif_running(dev)) {
 		dev->mtu = new_mtu;
 		netdev_update_features(dev);
@@ -2676,7 +2667,7 @@ static inline void sky2_rx_done(struct sky2_hw *hw, unsigned port,
 	sky2->rx_stats.bytes += bytes;
 	u64_stats_update_end(&sky2->rx_stats.syncp);
 
-	dev->last_rx = jiffies;
+	sky2->last_rx = jiffies;
 	sky2_rx_update(netdev_priv(dev), rxqaddr[port]);
 }
 
@@ -2963,7 +2954,7 @@ static int sky2_rx_hung(struct net_device *dev)
 	u8 fifo_lev = sky2_read8(hw, Q_ADDR(rxq, Q_RL));
 
 	/* If idle and MAC or PCI is stuck */
-	if (sky2->check.last == dev->last_rx &&
+	if (sky2->check.last == sky2->last_rx &&
 	    ((mac_rp == sky2->check.mac_rp &&
 	      mac_lev != 0 && mac_lev >= sky2->check.mac_lev) ||
 	     /* Check if the PCI RX hang */
@@ -2975,7 +2966,7 @@ static int sky2_rx_hung(struct net_device *dev)
 			      fifo_rp, sky2_read8(hw, Q_ADDR(rxq, Q_WP)));
 		return 1;
 	} else {
-		sky2->check.last = dev->last_rx;
+		sky2->check.last = sky2->last_rx;
 		sky2->check.mac_rp = mac_rp;
 		sky2->check.mac_lev = mac_lev;
 		sky2->check.fifo_rp = fifo_rp;
@@ -3599,47 +3590,59 @@ static u32 sky2_supported_modes(const struct sky2_hw *hw)
 			| SUPPORTED_1000baseT_Full;
 }
 
-static int sky2_get_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
+static int sky2_get_link_ksettings(struct net_device *dev,
+				   struct ethtool_link_ksettings *cmd)
 {
 	struct sky2_port *sky2 = netdev_priv(dev);
 	struct sky2_hw *hw = sky2->hw;
+	u32 supported, advertising;
 
-	ecmd->transceiver = XCVR_INTERNAL;
-	ecmd->supported = sky2_supported_modes(hw);
-	ecmd->phy_address = PHY_ADDR_MARV;
+	supported = sky2_supported_modes(hw);
+	cmd->base.phy_address = PHY_ADDR_MARV;
 	if (sky2_is_copper(hw)) {
-		ecmd->port = PORT_TP;
-		ethtool_cmd_speed_set(ecmd, sky2->speed);
-		ecmd->supported |=  SUPPORTED_Autoneg | SUPPORTED_TP;
+		cmd->base.port = PORT_TP;
+		cmd->base.speed = sky2->speed;
+		supported |=  SUPPORTED_Autoneg | SUPPORTED_TP;
 	} else {
-		ethtool_cmd_speed_set(ecmd, SPEED_1000);
-		ecmd->port = PORT_FIBRE;
-		ecmd->supported |=  SUPPORTED_Autoneg | SUPPORTED_FIBRE;
+		cmd->base.speed = SPEED_1000;
+		cmd->base.port = PORT_FIBRE;
+		supported |=  SUPPORTED_Autoneg | SUPPORTED_FIBRE;
 	}
 
-	ecmd->advertising = sky2->advertising;
-	ecmd->autoneg = (sky2->flags & SKY2_FLAG_AUTO_SPEED)
+	advertising = sky2->advertising;
+	cmd->base.autoneg = (sky2->flags & SKY2_FLAG_AUTO_SPEED)
 		? AUTONEG_ENABLE : AUTONEG_DISABLE;
-	ecmd->duplex = sky2->duplex;
+	cmd->base.duplex = sky2->duplex;
+
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
+						supported);
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising,
+						advertising);
+
 	return 0;
 }
 
-static int sky2_set_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
+static int sky2_set_link_ksettings(struct net_device *dev,
+				   const struct ethtool_link_ksettings *cmd)
 {
 	struct sky2_port *sky2 = netdev_priv(dev);
 	const struct sky2_hw *hw = sky2->hw;
 	u32 supported = sky2_supported_modes(hw);
+	u32 new_advertising;
 
-	if (ecmd->autoneg == AUTONEG_ENABLE) {
-		if (ecmd->advertising & ~supported)
+	ethtool_convert_link_mode_to_legacy_u32(&new_advertising,
+						cmd->link_modes.advertising);
+
+	if (cmd->base.autoneg == AUTONEG_ENABLE) {
+		if (new_advertising & ~supported)
 			return -EINVAL;
 
 		if (sky2_is_copper(hw))
-			sky2->advertising = ecmd->advertising |
+			sky2->advertising = new_advertising |
 					    ADVERTISED_TP |
 					    ADVERTISED_Autoneg;
 		else
-			sky2->advertising = ecmd->advertising |
+			sky2->advertising = new_advertising |
 					    ADVERTISED_FIBRE |
 					    ADVERTISED_Autoneg;
 
@@ -3648,30 +3651,30 @@ static int sky2_set_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
 		sky2->speed = -1;
 	} else {
 		u32 setting;
-		u32 speed = ethtool_cmd_speed(ecmd);
+		u32 speed = cmd->base.speed;
 
 		switch (speed) {
 		case SPEED_1000:
-			if (ecmd->duplex == DUPLEX_FULL)
+			if (cmd->base.duplex == DUPLEX_FULL)
 				setting = SUPPORTED_1000baseT_Full;
-			else if (ecmd->duplex == DUPLEX_HALF)
+			else if (cmd->base.duplex == DUPLEX_HALF)
 				setting = SUPPORTED_1000baseT_Half;
 			else
 				return -EINVAL;
 			break;
 		case SPEED_100:
-			if (ecmd->duplex == DUPLEX_FULL)
+			if (cmd->base.duplex == DUPLEX_FULL)
 				setting = SUPPORTED_100baseT_Full;
-			else if (ecmd->duplex == DUPLEX_HALF)
+			else if (cmd->base.duplex == DUPLEX_HALF)
 				setting = SUPPORTED_100baseT_Half;
 			else
 				return -EINVAL;
 			break;
 
 		case SPEED_10:
-			if (ecmd->duplex == DUPLEX_FULL)
+			if (cmd->base.duplex == DUPLEX_FULL)
 				setting = SUPPORTED_10baseT_Full;
-			else if (ecmd->duplex == DUPLEX_HALF)
+			else if (cmd->base.duplex == DUPLEX_HALF)
 				setting = SUPPORTED_10baseT_Half;
 			else
 				return -EINVAL;
@@ -3684,7 +3687,7 @@ static int sky2_set_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
 			return -EINVAL;
 
 		sky2->speed = speed;
-		sky2->duplex = ecmd->duplex;
+		sky2->duplex = cmd->base.duplex;
 		sky2->flags &= ~SKY2_FLAG_AUTO_SPEED;
 	}
 
@@ -3898,8 +3901,8 @@ static void sky2_set_multicast(struct net_device *dev)
 	gma_write16(hw, port, GM_RX_CTRL, reg);
 }
 
-static struct rtnl_link_stats64 *sky2_get_stats(struct net_device *dev,
-						struct rtnl_link_stats64 *stats)
+static void sky2_get_stats(struct net_device *dev,
+			   struct rtnl_link_stats64 *stats)
 {
 	struct sky2_port *sky2 = netdev_priv(dev);
 	struct sky2_hw *hw = sky2->hw;
@@ -3939,8 +3942,6 @@ static struct rtnl_link_stats64 *sky2_get_stats(struct net_device *dev,
 	stats->rx_dropped = dev->stats.rx_dropped;
 	stats->rx_fifo_errors = dev->stats.rx_fifo_errors;
 	stats->tx_fifo_errors = dev->stats.tx_fifo_errors;
-
-	return stats;
 }
 
 /* Can have one global because blinking is controlled by
@@ -4417,8 +4418,6 @@ static int sky2_set_features(struct net_device *dev, netdev_features_t features)
 }
 
 static const struct ethtool_ops sky2_ethtool_ops = {
-	.get_settings	= sky2_get_settings,
-	.set_settings	= sky2_set_settings,
 	.get_drvinfo	= sky2_get_drvinfo,
 	.get_wol	= sky2_get_wol,
 	.set_wol	= sky2_set_wol,
@@ -4441,6 +4440,8 @@ static const struct ethtool_ops sky2_ethtool_ops = {
 	.set_phys_id	= sky2_set_phys_id,
 	.get_sset_count = sky2_get_sset_count,
 	.get_ethtool_stats = sky2_get_ethtool_stats,
+	.get_link_ksettings = sky2_get_link_ksettings,
+	.set_link_ksettings = sky2_set_link_ksettings,
 };
 
 #ifdef CONFIG_SKY2_DEBUG
@@ -4544,7 +4545,7 @@ static int sky2_debug_show(struct seq_file *seq, void *v)
 		   sky2_read32(hw, B0_Y2_SP_ICR));
 
 	if (!netif_running(dev)) {
-		seq_printf(seq, "network not running\n");
+		seq_puts(seq, "network not running\n");
 		return 0;
 	}
 
@@ -4808,6 +4809,14 @@ static struct net_device *sky2_init_netdev(struct sky2_hw *hw, unsigned port,
 
 	dev->features |= dev->hw_features;
 
+	/* MTU range: 60 - 1500 or 9000 */
+	dev->min_mtu = ETH_ZLEN;
+	if (hw->chip_id == CHIP_ID_YUKON_FE ||
+	    hw->chip_id == CHIP_ID_YUKON_FE_P)
+		dev->max_mtu = ETH_DATA_LEN;
+	else
+		dev->max_mtu = ETH_JUMBO_MTU;
+
 	/* try to get mac address in the following order:
 	 * 1) from device tree data
 	 * 2) from internal registers set by bootloader
@@ -4923,6 +4932,38 @@ static const char *sky2_name(u8 chipid, char *buf, int sz)
 	return buf;
 }
 
+static const struct dmi_system_id msi_blacklist[] = {
+	{
+		.ident = "Dell Inspiron 1545",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Inspiron 1545"),
+		},
+	},
+	{
+		.ident = "Gateway P-79",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Gateway"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "P-79"),
+		},
+	},
+	{
+		.ident = "ASUS P6T",
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK Computer INC."),
+			DMI_MATCH(DMI_BOARD_NAME, "P6T"),
+		},
+	},
+	{
+		.ident = "ASUS P6X",
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK Computer INC."),
+			DMI_MATCH(DMI_BOARD_NAME, "P6X"),
+		},
+	},
+	{}
+};
+
 static int sky2_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct net_device *dev, *dev1;
@@ -5034,6 +5075,9 @@ static int sky2_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_out_free_pci;
 	}
 
+	if (disable_msi == -1)
+		disable_msi = !!dmi_check_system(msi_blacklist);
+
 	if (!disable_msi && pci_enable_msi(pdev) == 0) {
 		err = sky2_test_msi(hw);
 		if (err) {
@@ -5079,7 +5123,7 @@ static int sky2_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	INIT_WORK(&hw->restart_work, sky2_restart);
 
 	pci_set_drvdata(pdev, hw);
-	pdev->d3_delay = 200;
+	pdev->d3_delay = 300;
 
 	return 0;
 

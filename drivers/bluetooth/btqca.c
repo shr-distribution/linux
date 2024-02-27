@@ -1,7 +1,7 @@
 /*
  *  Bluetooth supports for Qualcomm Atheros chips
  *
- *  Copyright (c) 2017 The Linux Foundation. All rights reserved.
+ *  Copyright (c) 2015 The Linux Foundation. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2
@@ -26,9 +26,6 @@
 #include "btqca.h"
 
 #define VERSION "0.1"
-
-#define MAX_PATCH_FILE_SIZE (100*1024)
-#define MAX_NVM_FILE_SIZE   (10*1024)
 
 static int rome_patch_ver_req(struct hci_dev *hdev, u32 *rome_version)
 {
@@ -84,7 +81,7 @@ static int rome_patch_ver_req(struct hci_dev *hdev, u32 *rome_version)
 	 * and lower 2 bytes from patch will be used.
 	 */
 	*rome_version = (le32_to_cpu(ver->soc_id) << 16) |
-		        (le16_to_cpu(ver->rome_ver) & 0x0000ffff);
+			(le16_to_cpu(ver->rome_ver) & 0x0000ffff);
 
 out:
 	kfree_skb(skb);
@@ -288,63 +285,27 @@ static int rome_download_firmware(struct hci_dev *hdev,
 				  struct rome_config *config)
 {
 	const struct firmware *fw;
-	u32 type_len, length;
-	struct tlv_type_hdr *tlv;
 	int ret;
 
-	BT_INFO("%s: ROME Downloading file: %s", hdev->name, config->fwname);
-	ret = request_firmware(&fw, config->fwname, &hdev->dev);
+	BT_INFO("%s: ROME Downloading %s", hdev->name, config->fwname);
 
-	if (ret || !fw || !fw->data || fw->size <= 0) {
-		BT_ERR("Failed to request file: err = (%d)", ret);
-		ret = ret ? ret : -EINVAL;
+	ret = request_firmware(&fw, config->fwname, &hdev->dev);
+	if (ret) {
+		BT_ERR("%s: Failed to request file: %s (%d)", hdev->name,
+		       config->fwname, ret);
 		return ret;
 	}
 
-	if (config->type != TLV_TYPE_NVM &&
-		config->type != TLV_TYPE_PATCH) {
-		ret = -EINVAL;
-		BT_ERR("TLV_NVM dload: wrong config type selected");
-		goto exit;
-	}
-
-	if (config->type == TLV_TYPE_PATCH &&
-		(fw->size > MAX_PATCH_FILE_SIZE)) {
-		ret = -EINVAL;
-		BT_ERR("TLV_PATCH dload: wrong patch file sizes");
-		goto exit;
-	} else if (config->type == TLV_TYPE_NVM &&
-		(fw->size > MAX_NVM_FILE_SIZE)) {
-		ret = -EINVAL;
-		BT_ERR("TLV_NVM dload: wrong NVM file sizes");
-		goto exit;
-	}
-
-	if (fw->size < sizeof(struct tlv_type_hdr)) {
-		ret = -EINVAL;
-		BT_ERR("Firware size smaller to fit minimum value");
-		goto exit;
-	}
-
-	tlv = (struct tlv_type_hdr *)fw->data;
-	type_len = le32_to_cpu(tlv->type_len);
-	length = (type_len >> 8) & 0x00ffffff;
-
-	if (fw->size - 4 != length) {
-		ret = -EINVAL;
-		BT_ERR("Requested size not matching size in header");
-		goto exit;
-	}
-
 	rome_tlv_check_data(config, fw);
-	ret = rome_tlv_download_request(hdev, fw);
 
+	ret = rome_tlv_download_request(hdev, fw);
 	if (ret) {
-		BT_ERR("Failed to download FW: error = (%d)", ret);
+		BT_ERR("%s: Failed to download file: %s (%d)", hdev->name,
+		       config->fwname, ret);
 	}
 
-exit:
 	release_firmware(fw);
+
 	return ret;
 }
 
@@ -355,9 +316,8 @@ int qca_set_bdaddr_rome(struct hci_dev *hdev, const bdaddr_t *bdaddr)
 	int err;
 
 	cmd[0] = EDL_NVM_ACCESS_SET_REQ_CMD;
-	/* Set the TAG ID of 0x02 for NVM set and size of tag */
-	cmd[1] = 0x02;
-	cmd[2] = sizeof(bdaddr_t);
+	cmd[1] = 0x02; 			/* TAG ID */
+	cmd[2] = sizeof(bdaddr_t);	/* size */
 	memcpy(cmd + 3, bdaddr, sizeof(bdaddr_t));
 	skb = __hci_cmd_sync_ev(hdev, EDL_NVM_ACCESS_OPCODE, sizeof(cmd), cmd,
 				HCI_VENDOR_PKT, HCI_INIT_TIMEOUT);
@@ -402,6 +362,9 @@ int qca_uart_setup_rome(struct hci_dev *hdev, uint8_t baudrate)
 		BT_ERR("%s: Failed to download patch (%d)", hdev->name, err);
 		return err;
 	}
+
+	/* Give the controller some time to get ready to receive the NVM */
+	msleep(10);
 
 	/* Download NVM configuration */
 	config.type = TLV_TYPE_NVM;

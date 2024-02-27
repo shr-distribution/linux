@@ -91,7 +91,7 @@ config SND_USB_CAIAQ_INPUT
 
 config SND_USB_US122L
 	tristate "Tascam US-122L USB driver"
-	depends on X86
+	depends on X86 || COMPILE_TEST
 	select SND_HWDEP
 	select SND_RAWMIDI
 	help
@@ -160,15 +160,16 @@ config SND_BCD2000
 	  To compile this driver as a module, choose M here: the module
 	  will be called snd-bcd2000.
 
-source "sound/usb/line6/Kconfig"
-
-config SND_USB_AUDIO_QMI
-	tristate "USB Audio QMI Service driver"
-	depends on MSM_QMI_INTERFACE
+config MTK_UAC_POWER_SAVING
+	tristate "MediaTek USB audio power saving mechanism support"
+	default n
 	help
-	  Starts USB Audio QMI server to communicate with remote entity
-	  to perform operations like enable or disable particular audio
-	  stream on a connected USB device.
+	  Say Y here if your system support using Mediatek usb audio.
+
+	  To select the MediaTek USB driver using sram and enter power
+	  saving mode when cpu is idle.
+
+source "sound/usb/line6/Kconfig"
 
 endif	# SND_USB
 

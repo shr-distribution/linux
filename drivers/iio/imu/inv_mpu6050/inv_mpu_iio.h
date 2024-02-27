@@ -14,6 +14,7 @@
 #include <linux/i2c-mux.h>
 #include <linux/kfifo.h>
 #include <linux/spinlock.h>
+#include <linux/mutex.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/buffer.h>
 #include <linux/regmap.h>
@@ -72,6 +73,7 @@ enum inv_devices {
 	INV_MPU6500,
 	INV_MPU6000,
 	INV_MPU9150,
+	INV_MPU9250,
 	INV_ICM20608,
 	INV_NUM_PARTS
 };
@@ -81,7 +83,6 @@ enum inv_devices {
  *  @fsr:		Full scale range.
  *  @lpf:		Digital low pass filter frequency.
  *  @accl_fs:		accel full scale range.
- *  @enable:		master enable state.
  *  @accl_fifo_enable:	enable accel data output
  *  @gyro_fifo_enable:	enable gyro data output
  *  @fifo_rate:		FIFO update rate.
@@ -90,7 +91,6 @@ struct inv_mpu6050_chip_config {
 	unsigned int fsr:2;
 	unsigned int lpf:3;
 	unsigned int accl_fs:2;
-	unsigned int enable:1;
 	unsigned int accl_fifo_enable:1;
 	unsigned int gyro_fifo_enable:1;
 	u16 fifo_rate;
@@ -113,6 +113,7 @@ struct inv_mpu6050_hw {
 /*
  *  struct inv_mpu6050_state - Driver state variables.
  *  @TIMESTAMP_FIFO_SIZE: fifo size for timestamp.
+ *  @lock:              Chip access lock.
  *  @trig:              IIO trigger.
  *  @chip_config:	Cached attribute information.
  *  @reg:		Map of important registers.
@@ -127,6 +128,7 @@ struct inv_mpu6050_hw {
  */
 struct inv_mpu6050_state {
 #define TIMESTAMP_FIFO_SIZE 16
+	struct mutex lock;
 	struct iio_trigger  *trig;
 	struct inv_mpu6050_chip_config chip_config;
 	const struct inv_mpu6050_reg_map *reg;
@@ -229,6 +231,7 @@ struct inv_mpu6050_state {
 #define INV_MPU6050_WHOAMI_VALUE		0x68
 #define INV_MPU6500_WHOAMI_VALUE		0x70
 #define INV_MPU9150_WHOAMI_VALUE		0x68
+#define INV_MPU9250_WHOAMI_VALUE		0x71
 #define INV_ICM20608_WHOAMI_VALUE		0xAF
 
 /* scan element definition */

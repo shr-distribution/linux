@@ -119,23 +119,6 @@ static inline void write_elapsed_second(unsigned long sec)
 	spin_unlock_irq(&rtc_lock);
 }
 
-static void vr41xx_rtc_release(struct device *dev)
-{
-
-	spin_lock_irq(&rtc_lock);
-
-	rtc1_write(ECMPLREG, 0);
-	rtc1_write(ECMPMREG, 0);
-	rtc1_write(ECMPHREG, 0);
-	rtc1_write(RTCL1LREG, 0);
-	rtc1_write(RTCL1HREG, 0);
-
-	spin_unlock_irq(&rtc_lock);
-
-	disable_irq(aie_irq);
-	disable_irq(pie_irq);
-}
-
 static int vr41xx_rtc_read_time(struct device *dev, struct rtc_time *time)
 {
 	unsigned long epoch_sec, elapsed_sec;
@@ -272,7 +255,6 @@ static irqreturn_t rtclong1_interrupt(int irq, void *dev_id)
 }
 
 static const struct rtc_class_ops vr41xx_rtc_ops = {
-	.release		= vr41xx_rtc_release,
 	.ioctl			= vr41xx_rtc_ioctl,
 	.read_time		= vr41xx_rtc_read_time,
 	.set_time		= vr41xx_rtc_set_time,
@@ -310,12 +292,13 @@ static int rtc_probe(struct platform_device *pdev)
 		goto err_rtc1_iounmap;
 	}
 
-	rtc = devm_rtc_device_register(&pdev->dev, rtc_name, &vr41xx_rtc_ops,
-					THIS_MODULE);
+	rtc = devm_rtc_allocate_device(&pdev->dev);
 	if (IS_ERR(rtc)) {
 		retval = PTR_ERR(rtc);
 		goto err_iounmap_all;
 	}
+
+	rtc->ops = &vr41xx_rtc_ops;
 
 	rtc->max_user_freq = MAX_PERIODIC_RATE;
 
@@ -357,6 +340,10 @@ static int rtc_probe(struct platform_device *pdev)
 	disable_irq(pie_irq);
 
 	dev_info(&pdev->dev, "Real Time Clock of NEC VR4100 series\n");
+
+	retval = rtc_register_device(rtc);
+	if (retval)
+		goto err_iounmap_all;
 
 	return 0;
 

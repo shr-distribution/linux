@@ -32,11 +32,15 @@
 #define AZX_DCAPS_NO_MSI	(1 << 9)	/* No MSI support */
 #define AZX_DCAPS_SNOOP_MASK	(3 << 10)	/* snoop type mask */
 #define AZX_DCAPS_SNOOP_OFF	(1 << 12)	/* snoop default off */
-/* 13 unused */
+#ifdef CONFIG_SND_HDA_I915
+#define AZX_DCAPS_I915_COMPONENT (1 << 13)	/* bind with i915 gfx */
+#else
+#define AZX_DCAPS_I915_COMPONENT 0		/* NOP */
+#endif
 /* 14 unused */
 #define AZX_DCAPS_CTX_WORKAROUND (1 << 15)	/* X-Fi workaround */
 #define AZX_DCAPS_POSFIX_LPIB	(1 << 16)	/* Use LPIB as default */
-/* 17 unused */
+#define AZX_DCAPS_AMD_WORKAROUND (1 << 17)	/* AMD-specific workaround */
 #define AZX_DCAPS_NO_64BIT	(1 << 18)	/* No 64bit address */
 #define AZX_DCAPS_SYNC_WRITE	(1 << 19)	/* sync each cmd write */
 #define AZX_DCAPS_OLD_SSYNC	(1 << 20)	/* Old SSYNC reg for ICH */
@@ -150,11 +154,13 @@ struct azx {
 	int bdl_pos_adj;
 	int poll_count;
 	unsigned int running:1;
+	unsigned int fallback_to_single_cmd:1;
 	unsigned int single_cmd:1;
 	unsigned int polling_mode:1;
 	unsigned int msi:1;
 	unsigned int probing:1; /* codec probing phase */
 	unsigned int snoop:1;
+	unsigned int uc_buffer:1; /* non-cached pages for stream buffers */
 	unsigned int align_buffer_size:1;
 	unsigned int region_requested:1;
 	unsigned int disabled:1; /* disabled by vga_switcheroo */
@@ -170,11 +176,10 @@ struct azx {
 #define azx_bus(chip)	(&(chip)->bus.core)
 #define bus_to_azx(_bus)	container_of(_bus, struct azx, bus.core)
 
-#ifdef CONFIG_X86
-#define azx_snoop(chip)		((chip)->snoop)
-#else
-#define azx_snoop(chip)		true
-#endif
+static inline bool azx_snoop(struct azx *chip)
+{
+	return !IS_ENABLED(CONFIG_X86) || chip->snoop;
+}
 
 /*
  * macros for easy use

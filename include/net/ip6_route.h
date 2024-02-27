@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NET_IP6_ROUTE_H
 #define _NET_IP6_ROUTE_H
 
@@ -39,6 +40,16 @@ struct route_info {
  * Unlike IPv4, hdr->seg_len doesn't include the IPv6 header
  */
 #define IP6_MAX_MTU (0xFFFF + sizeof(struct ipv6hdr))
+
+/* Use to control all vzw feature*/
+#define MTK_IPV6_VZW_ALL        0x000C
+
+/* Use to control vzw feature except for
+ * the fixed rs interval time of 4 seconds
+ */
+#define MTK_IPV6_EX_RS_INTERVAL 0x01F7
+
+extern int sysctl_optr;
 
 /*
  * rt6_srcprefs2flags() and rt6_flags2srcprefs() translate
@@ -91,7 +102,7 @@ void ip6_route_cleanup(void);
 
 int ipv6_route_ioctl(struct net *net, unsigned int cmd, void __user *arg);
 
-int ip6_route_add(struct fib6_config *cfg);
+int ip6_route_add(struct fib6_config *cfg, struct netlink_ext_ack *extack);
 int ip6_ins_rt(struct rt6_info *);
 int ip6_del_rt(struct rt6_info *);
 
@@ -115,9 +126,9 @@ static inline int ip6_route_get_saddr(struct net *net, struct rt6_info *rt,
 
 struct rt6_info *rt6_lookup(struct net *net, const struct in6_addr *daddr,
 			    const struct in6_addr *saddr, int oif, int flags);
+u32 rt6_multipath_hash(const struct flowi6 *fl6, const struct sk_buff *skb);
 
 struct dst_entry *icmp6_dst_alloc(struct net_device *dev, struct flowi6 *fl6);
-int icmp6_dst_gc(void);
 
 void fib6_force_start_gc(struct net *net);
 
@@ -133,6 +144,9 @@ struct rt6_info *ip6_dst_alloc(struct net *net, struct net_device *dev,
  */
 struct rt6_info *rt6_get_dflt_router(const struct in6_addr *addr,
 				     struct net_device *dev);
+
+struct rt6_info *rt6_get_dflt_router_expires(struct net_device *dev);
+
 struct rt6_info *rt6_add_dflt_router(const struct in6_addr *gwaddr,
 				     struct net_device *dev, unsigned int pref);
 
@@ -164,6 +178,19 @@ void rt6_mtu_change(struct net_device *dev, unsigned int mtu);
 void rt6_remove_prefsrc(struct inet6_ifaddr *ifp);
 void rt6_clean_tohost(struct net *net, struct in6_addr *gateway);
 
+void rt6_uncached_list_add(struct rt6_info *rt);
+void rt6_uncached_list_del(struct rt6_info *rt);
+
+static inline const struct rt6_info *skb_rt6_info(const struct sk_buff *skb)
+{
+	const struct dst_entry *dst = skb_dst(skb);
+	const struct rt6_info *rt6 = NULL;
+
+	if (dst)
+		rt6 = container_of(dst, struct rt6_info, dst);
+
+	return rt6;
+}
 
 /*
  *	Store a destination cache entry in a socket
@@ -195,7 +222,8 @@ static inline bool ipv6_anycast_destination(const struct dst_entry *dst,
 	struct rt6_info *rt = (struct rt6_info *)dst;
 
 	return rt->rt6i_flags & RTF_ANYCAST ||
-		(rt->rt6i_dst.plen != 128 &&
+		(rt->rt6i_dst.plen < 127 &&
+		 !(rt->rt6i_flags & (RTF_GATEWAY | RTF_NONEXTHOP)) &&
 		 ipv6_addr_equal(&rt->rt6i_dst.addr, daddr));
 }
 

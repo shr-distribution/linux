@@ -40,6 +40,10 @@
 
 /*-------------------------------------------------------------------------*/
 
+/* PID Codes that are used here, from EHCI specification, Table 3-16. */
+#define PID_CODE_IN    1
+#define PID_CODE_SETUP 2
+
 /* fill a qtd, returning how much of the buffer we were able to queue up */
 
 static int
@@ -203,7 +207,7 @@ static int qtd_copy_status (
 	int	status = -EINPROGRESS;
 
 	/* count IN/OUT bytes, not SETUP (even short packets) */
-	if (likely (QTD_PID (token) != 2))
+	if (likely(QTD_PID(token) != PID_CODE_SETUP))
 		urb->actual_length += length - QTD_LENGTH (token);
 
 	/* don't modify error codes */
@@ -219,6 +223,13 @@ static int qtd_copy_status (
 		if (token & QTD_STS_BABBLE) {
 			/* FIXME "must" disable babbling device's port too */
 			status = -EOVERFLOW;
+		/*
+		 * When MMF is active and PID Code is IN, queue is halted.
+		 * EHCI Specification, Table 4-13.
+		 */
+		} else if ((token & QTD_STS_MMF) &&
+					(QTD_PID(token) == PID_CODE_IN)) {
+			status = -EPROTO;
 		/* CERR nonzero + halt --> stall */
 		} else if (QTD_CERR(token)) {
 			status = -EPIPE;
@@ -268,7 +279,7 @@ ehci_urb_done(struct ehci_hcd *ehci, struct urb *urb, int status)
 
 #ifdef EHCI_URB_TRACE
 	ehci_dbg (ehci,
-		"%s %s urb %pK ep%d%s status %d len %d/%d\n",
+		"%s %s urb %p ep%d%s status %d len %d/%d\n",
 		__func__, urb->dev->devpath, urb,
 		usb_pipeendpoint (urb->pipe),
 		usb_pipein (urb->pipe) ? "in" : "out",
@@ -354,7 +365,7 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 			/* Report Data Buffer Error: non-fatal but useful */
 			if (token & QTD_STS_DBE)
 				ehci_dbg(ehci,
-					"detected DataBufferErr for urb %pK ep%d%s len %d, qtd %pK [qh %pK]\n",
+					"detected DataBufferErr for urb %p ep%d%s len %d, qtd %p [qh %p]\n",
 					urb,
 					usb_endpoint_num(&urb->ep->desc),
 					usb_endpoint_dir_in(&urb->ep->desc) ? "in" : "out",
@@ -550,11 +561,6 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 
 /*-------------------------------------------------------------------------*/
 
-// high bandwidth multiplier, as encoded in highspeed endpoint descriptors
-#define hb_mult(wMaxPacketSize) (1 + (((wMaxPacketSize) >> 11) & 0x03))
-// ... and packet size, for any kind of endpoint descriptor
-#define max_packet(wMaxPacketSize) ((wMaxPacketSize) & 0x07ff)
-
 /*
  * reverse of qh_urb_transaction:  free a list of TDs.
  * used for cleanup after errors, before HC sees an URB's TDs.
@@ -651,7 +657,7 @@ qh_urb_transaction (
 		token |= (1 /* "in" */ << 8);
 	/* else it's already initted to "out" pid (0 << 8) */
 
-	maxpacket = max_packet(usb_maxpacket(urb->dev, urb->pipe, !is_input));
+	maxpacket = usb_maxpacket(urb->dev, urb->pipe, !is_input);
 
 	/*
 	 * buffer gets wrapped in one or more qtds;
@@ -770,9 +776,11 @@ qh_make (
 	gfp_t			flags
 ) {
 	struct ehci_qh		*qh = ehci_qh_alloc (ehci, flags);
+	struct usb_host_endpoint *ep;
 	u32			info1 = 0, info2 = 0;
 	int			is_input, type;
 	int			maxp = 0;
+	int			mult;
 	struct usb_tt		*tt = urb->dev->tt;
 	struct ehci_qh_hw	*hw;
 
@@ -787,13 +795,15 @@ qh_make (
 
 	is_input = usb_pipein (urb->pipe);
 	type = usb_pipetype (urb->pipe);
-	maxp = usb_maxpacket (urb->dev, urb->pipe, !is_input);
+	ep = usb_pipe_endpoint (urb->dev, urb->pipe);
+	maxp = usb_endpoint_maxp (&ep->desc);
+	mult = usb_endpoint_maxp_mult (&ep->desc);
 
 	/* 1024 byte maxpacket is a hardware ceiling.  High bandwidth
 	 * acts like up to 3KB, but is built from smaller packets.
 	 */
-	if (max_packet(maxp) > 1024) {
-		ehci_dbg(ehci, "bogus qh maxpacket %d\n", max_packet(maxp));
+	if (maxp > 1024) {
+		ehci_dbg(ehci, "bogus qh maxpacket %d\n", maxp);
 		goto done;
 	}
 
@@ -809,8 +819,7 @@ qh_make (
 		unsigned	tmp;
 
 		qh->ps.usecs = NS_TO_US(usb_calc_bus_time(USB_SPEED_HIGH,
-				is_input, 0,
-				hb_mult(maxp) * max_packet(maxp)));
+				is_input, 0, mult * maxp));
 		qh->ps.phase = NO_FRAME;
 
 		if (urb->dev->speed == USB_SPEED_HIGH) {
@@ -854,7 +863,7 @@ qh_make (
 			think_time = tt ? tt->think_time : 0;
 			qh->ps.tt_usecs = NS_TO_US(think_time +
 					usb_calc_bus_time (urb->dev->speed,
-					is_input, 0, max_packet (maxp)));
+					is_input, 0, maxp));
 			if (urb->interval > ehci->periodic_size)
 				urb->interval = ehci->periodic_size;
 			qh->ps.period = urb->interval;
@@ -925,15 +934,15 @@ qh_make (
 			 * to help them do so.  So now people expect to use
 			 * such nonconformant devices with Linux too; sigh.
 			 */
-			info1 |= max_packet(maxp) << 16;
+			info1 |= maxp << 16;
 			info2 |= (EHCI_TUNE_MULT_HS << 30);
 		} else {		/* PIPE_INTERRUPT */
-			info1 |= max_packet (maxp) << 16;
-			info2 |= hb_mult (maxp) << 30;
+			info1 |= maxp << 16;
+			info2 |= mult << 30;
 		}
 		break;
 	default:
-		ehci_dbg(ehci, "bogus dev %pK speed %d\n", urb->dev,
+		ehci_dbg(ehci, "bogus dev %p speed %d\n", urb->dev,
 			urb->dev->speed);
 done:
 		qh_destroy(ehci, qh);
@@ -1121,7 +1130,7 @@ submit_async (
 		struct ehci_qtd *qtd;
 		qtd = list_entry(qtd_list->next, struct ehci_qtd, qtd_list);
 		ehci_dbg(ehci,
-			 "%s %s urb %pK ep%d%s len %d, qtd %pK [qh %pK]\n",
+			 "%s %s urb %p ep%d%s len %d, qtd %p [qh %p]\n",
 			 __func__, urb->dev->devpath, urb,
 			 epnum & 0x0f, (epnum & USB_DIR_IN) ? "in" : "out",
 			 urb->transfer_buffer_length,
@@ -1221,7 +1230,7 @@ static int submit_single_step_set_feature(
 
 	token |= (1 /* "in" */ << 8);  /*This is IN stage*/
 
-	maxpacket = max_packet(usb_maxpacket(urb->dev, urb->pipe, 0));
+	maxpacket = usb_maxpacket(urb->dev, urb->pipe, 0);
 
 	qtd_fill(ehci, qtd, buf, len, token, maxpacket);
 

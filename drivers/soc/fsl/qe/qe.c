@@ -66,7 +66,7 @@ static unsigned int qe_num_of_snum;
 
 static phys_addr_t qebase = -1;
 
-phys_addr_t get_qe_base(void)
+static phys_addr_t get_qe_base(void)
 {
 	struct device_node *qe;
 	int ret;
@@ -89,8 +89,6 @@ phys_addr_t get_qe_base(void)
 
 	return qebase;
 }
-
-EXPORT_SYMBOL(get_qe_base);
 
 void qe_reset(void)
 {
@@ -202,6 +200,9 @@ unsigned int qe_get_brg_clk(void)
 }
 EXPORT_SYMBOL(qe_get_brg_clk);
 
+#define PVR_VER_836x	0x8083
+#define PVR_VER_832x	0x8084
+
 /* Program the BRG to the given sampling rate and multiplier
  *
  * @brg: the BRG, QE_BRG1 - QE_BRG16
@@ -228,8 +229,9 @@ int qe_setbrg(enum qe_clock brg, unsigned int rate, unsigned int multiplier)
 	/* Errata QE_General4, which affects some MPC832x and MPC836x SOCs, says
 	   that the BRG divisor must be even if you're not using divide-by-16
 	   mode. */
-	if (!div16 && (divisor & 1) && (divisor > 3))
-		divisor++;
+	if (pvr_version_is(PVR_VER_836x) || pvr_version_is(PVR_VER_832x))
+		if (!div16 && (divisor & 1) && (divisor > 3))
+			divisor++;
 
 	tempval = ((divisor - 1) << QE_BRGC_DIVISOR_SHIFT) |
 		QE_BRGC_ENABLE | div16;
@@ -730,9 +732,5 @@ static struct platform_driver qe_driver = {
 	.resume = qe_resume,
 };
 
-static int __init qe_drv_init(void)
-{
-	return platform_driver_register(&qe_driver);
-}
-device_initcall(qe_drv_init);
+builtin_platform_driver(qe_driver);
 #endif /* defined(CONFIG_SUSPEND) && defined(CONFIG_PPC_85xx) */

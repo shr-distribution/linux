@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #if !defined(_TRACE_KVMMMU_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_KVMMMU_H
 
@@ -30,8 +31,9 @@
 								        \
 	role.word = __entry->role;					\
 									\
-	trace_seq_printf(p, "sp gen %lx gfn %llx %u%s q%u%s %s%s"	\
-			 " %snxe root %u %s%c",	__entry->mmu_valid_gen,	\
+	trace_seq_printf(p, "sp gen %lx gfn %llx l%u%s q%u%s %s%s"	\
+			 " %snxe %sad root %u %s%c",			\
+			 __entry->mmu_valid_gen,			\
 			 __entry->gfn, role.level,			\
 			 role.cr4_pae ? " pae" : "",			\
 			 role.quadrant,					\
@@ -39,6 +41,7 @@
 			 access_str[role.access],			\
 			 role.invalid ? " invalid" : "",		\
 			 role.nxe ? "" : "!",				\
+			 role.ad_disabled ? "!" : "",			\
 			 __entry->root_count,				\
 			 __entry->unsync ? "unsync" : "sync", 0);	\
 	saved_ptr;							\
@@ -322,6 +325,65 @@ TRACE_EVENT(
 		  __entry->kvm_gen == __entry->spte_gen
 	)
 );
+
+TRACE_EVENT(
+	kvm_mmu_set_spte,
+	TP_PROTO(int level, gfn_t gfn, u64 *sptep),
+	TP_ARGS(level, gfn, sptep),
+
+	TP_STRUCT__entry(
+		__field(u64, gfn)
+		__field(u64, spte)
+		__field(u64, sptep)
+		__field(u8, level)
+		/* These depend on page entry type, so compute them now.  */
+		__field(bool, r)
+		__field(bool, x)
+		__field(u8, u)
+	),
+
+	TP_fast_assign(
+		__entry->gfn = gfn;
+		__entry->spte = *sptep;
+		__entry->sptep = virt_to_phys(sptep);
+		__entry->level = level;
+		__entry->r = shadow_present_mask || (__entry->spte & PT_PRESENT_MASK);
+		__entry->x = is_executable_pte(__entry->spte);
+		__entry->u = shadow_user_mask ? !!(__entry->spte & shadow_user_mask) : -1;
+	),
+
+	TP_printk("gfn %llx spte %llx (%s%s%s%s) level %d at %llx",
+		  __entry->gfn, __entry->spte,
+		  __entry->r ? "r" : "-",
+		  __entry->spte & PT_WRITABLE_MASK ? "w" : "-",
+		  __entry->x ? "x" : "-",
+		  __entry->u == -1 ? "" : (__entry->u ? "u" : "-"),
+		  __entry->level, __entry->sptep
+	)
+);
+
+TRACE_EVENT(
+	kvm_mmu_spte_requested,
+	TP_PROTO(gpa_t addr, int level, kvm_pfn_t pfn),
+	TP_ARGS(addr, level, pfn),
+
+	TP_STRUCT__entry(
+		__field(u64, gfn)
+		__field(u64, pfn)
+		__field(u8, level)
+	),
+
+	TP_fast_assign(
+		__entry->gfn = addr >> PAGE_SHIFT;
+		__entry->pfn = pfn | (__entry->gfn & (KVM_PAGES_PER_HPAGE(level) - 1));
+		__entry->level = level;
+	),
+
+	TP_printk("gfn %llx pfn %llx level %d",
+		  __entry->gfn, __entry->pfn, __entry->level
+	)
+);
+
 #endif /* _TRACE_KVMMMU_H */
 
 #undef TRACE_INCLUDE_PATH

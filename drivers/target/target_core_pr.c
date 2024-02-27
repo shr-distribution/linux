@@ -29,6 +29,8 @@
 #include <linux/list.h>
 #include <linux/vmalloc.h>
 #include <linux/file.h>
+#include <linux/fcntl.h>
+#include <linux/fs.h>
 #include <scsi/scsi_proto.h>
 #include <asm/unaligned.h>
 
@@ -255,8 +257,7 @@ target_scsi2_reservation_reserve(struct se_cmd *cmd)
 
 	if ((cmd->t_task_cdb[1] & 0x01) &&
 	    (cmd->t_task_cdb[1] & 0x02)) {
-		pr_err("LongIO and Obselete Bits set, returning"
-				" ILLEGAL_REQUEST\n");
+		pr_err("LongIO and Obsolete Bits set, returning ILLEGAL_REQUEST\n");
 		return TCM_UNSUPPORTED_SCSI_OPCODE;
 	}
 	/*
@@ -789,7 +790,7 @@ static struct t10_pr_registration *__core_scsi3_alloc_registration(
 			 * __core_scsi3_add_registration()
 			 */
 			dest_lun = rcu_dereference_check(deve_tmp->se_lun,
-				atomic_read(&deve_tmp->pr_kref.refcount) != 0);
+				kref_read(&deve_tmp->pr_kref) != 0);
 
 			pr_reg_atp = __core_scsi3_do_alloc_registration(dev,
 						nacl_tmp, dest_lun, deve_tmp,
@@ -1464,7 +1465,7 @@ static int core_scsi3_lunacl_depend_item(struct se_dev_entry *se_deve)
 	 * For nacl->dynamic_node_acl=1
 	 */
 	lun_acl = rcu_dereference_check(se_deve->se_lun_acl,
-				atomic_read(&se_deve->pr_kref.refcount) != 0);
+				kref_read(&se_deve->pr_kref) != 0);
 	if (!lun_acl)
 		return 0;
 
@@ -1479,7 +1480,7 @@ static void core_scsi3_lunacl_undepend_item(struct se_dev_entry *se_deve)
 	 * For nacl->dynamic_node_acl=1
 	 */
 	lun_acl = rcu_dereference_check(se_deve->se_lun_acl,
-				atomic_read(&se_deve->pr_kref.refcount) != 0);
+				kref_read(&se_deve->pr_kref) != 0);
 	if (!lun_acl) {
 		kref_put(&se_deve->pr_kref, target_pr_kref_release);
 		return;
@@ -1563,10 +1564,7 @@ core_scsi3_decode_spec_i_port(
 	 * first extract TransportID Parameter Data Length, and make sure
 	 * the value matches up to the SCSI expected data transfer length.
 	 */
-	tpdl = (buf[24] & 0xff) << 24;
-	tpdl |= (buf[25] & 0xff) << 16;
-	tpdl |= (buf[26] & 0xff) << 8;
-	tpdl |= buf[27] & 0xff;
+	tpdl = get_unaligned_be32(&buf[24]);
 
 	if ((tpdl + 28) != cmd->data_length) {
 		pr_err("SPC-3 PR: Illegal tpdl: %u + 28 byte header"
@@ -1760,7 +1758,7 @@ core_scsi3_decode_spec_i_port(
 		 * 2nd loop which will never fail.
 		 */
 		dest_lun = rcu_dereference_check(dest_se_deve->se_lun,
-				atomic_read(&dest_se_deve->pr_kref.refcount) != 0);
+				kref_read(&dest_se_deve->pr_kref) != 0);
 
 		dest_pr_reg = __core_scsi3_alloc_registration(cmd->se_dev,
 					dest_node_acl, dest_lun, dest_se_deve,
@@ -1978,6 +1976,7 @@ static int __core_scsi3_write_aptpl_to_file(
 	char path[512];
 	u32 pr_aptpl_buf_len;
 	int ret;
+	loff_t pos = 0;
 
 	memset(path, 0, 512);
 
@@ -1997,7 +1996,7 @@ static int __core_scsi3_write_aptpl_to_file(
 
 	pr_aptpl_buf_len = (strlen(buf) + 1); /* Add extra for NULL */
 
-	ret = kernel_write(file, buf, pr_aptpl_buf_len, 0);
+	ret = kernel_write(file, buf, pr_aptpl_buf_len, &pos);
 
 	if (ret < 0)
 		pr_debug("Error writing APTPL metadata file: %s\n", path);
@@ -3222,12 +3221,8 @@ core_scsi3_emulate_pro_register_and_move(struct se_cmd *cmd, u64 res_key,
 		goto out_put_pr_reg;
 	}
 
-	rtpi = (buf[18] & 0xff) << 8;
-	rtpi |= buf[19] & 0xff;
-	tid_len = (buf[20] & 0xff) << 24;
-	tid_len |= (buf[21] & 0xff) << 16;
-	tid_len |= (buf[22] & 0xff) << 8;
-	tid_len |= buf[23] & 0xff;
+	rtpi = get_unaligned_be16(&buf[18]);
+	tid_len = get_unaligned_be32(&buf[20]);
 	transport_kunmap_data_sg(cmd);
 	buf = NULL;
 
@@ -3467,7 +3462,7 @@ after_iport_check:
 					iport_ptr);
 	if (!dest_pr_reg) {
 		struct se_lun *dest_lun = rcu_dereference_check(dest_se_deve->se_lun,
-				atomic_read(&dest_se_deve->pr_kref.refcount) != 0);
+				kref_read(&dest_se_deve->pr_kref) != 0);
 
 		spin_unlock(&dev->dev_reservation_lock);
 		if (core_scsi3_alloc_registration(cmd->se_dev, dest_node_acl,
@@ -3553,16 +3548,6 @@ out_put_pr_reg:
 	return ret;
 }
 
-static unsigned long long core_scsi3_extract_reservation_key(unsigned char *cdb)
-{
-	unsigned int __v1, __v2;
-
-	__v1 = (cdb[0] << 24) | (cdb[1] << 16) | (cdb[2] << 8) | cdb[3];
-	__v2 = (cdb[4] << 24) | (cdb[5] << 16) | (cdb[6] << 8) | cdb[7];
-
-	return ((unsigned long long)__v2) | (unsigned long long)__v1 << 32;
-}
-
 /*
  * See spc4r17 section 6.14 Table 170
  */
@@ -3603,7 +3588,7 @@ target_scsi3_emulate_pr_out(struct se_cmd *cmd)
 	if (cmd->data_length < 24) {
 		pr_warn("SPC-PR: Received PR OUT parameter list"
 			" length too small: %u\n", cmd->data_length);
-		return TCM_INVALID_PARAMETER_LIST;
+		return TCM_PARAMETER_LIST_LENGTH_ERROR;
 	}
 
 	/*
@@ -3620,8 +3605,8 @@ target_scsi3_emulate_pr_out(struct se_cmd *cmd)
 	/*
 	 * From PERSISTENT_RESERVE_OUT parameter list (payload)
 	 */
-	res_key = core_scsi3_extract_reservation_key(&buf[0]);
-	sa_res_key = core_scsi3_extract_reservation_key(&buf[8]);
+	res_key = get_unaligned_be64(&buf[0]);
+	sa_res_key = get_unaligned_be64(&buf[8]);
 	/*
 	 * REGISTER_AND_MOVE uses a different SA parameter list containing
 	 * SCSI TransportIDs.
@@ -3647,7 +3632,7 @@ target_scsi3_emulate_pr_out(struct se_cmd *cmd)
 	/*
 	 * SPEC_I_PT=1 is only valid for Service action: REGISTER
 	 */
-	if (spec_i_pt && ((cdb[1] & 0x1f) != PRO_REGISTER))
+	if (spec_i_pt && (sa != PRO_REGISTER))
 		return TCM_INVALID_PARAMETER_LIST;
 
 	/*
@@ -3659,11 +3644,11 @@ target_scsi3_emulate_pr_out(struct se_cmd *cmd)
 	 * the sense key set to ILLEGAL REQUEST, and the additional sense
 	 * code set to PARAMETER LIST LENGTH ERROR.
 	 */
-	if (!spec_i_pt && ((cdb[1] & 0x1f) != PRO_REGISTER_AND_MOVE) &&
+	if (!spec_i_pt && (sa != PRO_REGISTER_AND_MOVE) &&
 	    (cmd->data_length != 24)) {
 		pr_warn("SPC-PR: Received PR OUT illegal parameter"
 			" list length: %u\n", cmd->data_length);
-		return TCM_INVALID_PARAMETER_LIST;
+		return TCM_PARAMETER_LIST_LENGTH_ERROR;
 	}
 
 	/*
@@ -3703,7 +3688,7 @@ target_scsi3_emulate_pr_out(struct se_cmd *cmd)
 		break;
 	default:
 		pr_err("Unknown PERSISTENT_RESERVE_OUT service"
-			" action: 0x%02x\n", cdb[1] & 0x1f);
+			" action: 0x%02x\n", sa);
 		return TCM_INVALID_CDB_FIELD;
 	}
 
@@ -3735,10 +3720,7 @@ core_scsi3_pri_read_keys(struct se_cmd *cmd)
 	if (!buf)
 		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 
-	buf[0] = ((dev->t10_pr.pr_generation >> 24) & 0xff);
-	buf[1] = ((dev->t10_pr.pr_generation >> 16) & 0xff);
-	buf[2] = ((dev->t10_pr.pr_generation >> 8) & 0xff);
-	buf[3] = (dev->t10_pr.pr_generation & 0xff);
+	put_unaligned_be32(dev->t10_pr.pr_generation, buf);
 
 	spin_lock(&dev->t10_pr.registration_lock);
 	list_for_each_entry(pr_reg, &dev->t10_pr.registration_list,
@@ -3747,26 +3729,21 @@ core_scsi3_pri_read_keys(struct se_cmd *cmd)
 		 * Check for overflow of 8byte PRI READ_KEYS payload and
 		 * next reservation key list descriptor.
 		 */
-		if ((add_len + 8) > (cmd->data_length - 8))
-			break;
-
-		buf[off++] = ((pr_reg->pr_res_key >> 56) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 48) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 40) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 32) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 24) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 16) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 8) & 0xff);
-		buf[off++] = (pr_reg->pr_res_key & 0xff);
-
+		if (off + 8 <= cmd->data_length) {
+			put_unaligned_be64(pr_reg->pr_res_key, &buf[off]);
+			off += 8;
+		}
+		/*
+		 * SPC5r17: 6.16.2 READ KEYS service action
+		 * The ADDITIONAL LENGTH field indicates the number of bytes in
+		 * the Reservation key list. The contents of the ADDITIONAL
+		 * LENGTH field are not altered based on the allocation length
+		 */
 		add_len += 8;
 	}
 	spin_unlock(&dev->t10_pr.registration_lock);
 
-	buf[4] = ((add_len >> 24) & 0xff);
-	buf[5] = ((add_len >> 16) & 0xff);
-	buf[6] = ((add_len >> 8) & 0xff);
-	buf[7] = (add_len & 0xff);
+	put_unaligned_be32(add_len, &buf[4]);
 
 	transport_kunmap_data_sg(cmd);
 
@@ -3797,10 +3774,7 @@ core_scsi3_pri_read_reservation(struct se_cmd *cmd)
 	if (!buf)
 		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 
-	buf[0] = ((dev->t10_pr.pr_generation >> 24) & 0xff);
-	buf[1] = ((dev->t10_pr.pr_generation >> 16) & 0xff);
-	buf[2] = ((dev->t10_pr.pr_generation >> 8) & 0xff);
-	buf[3] = (dev->t10_pr.pr_generation & 0xff);
+	put_unaligned_be32(dev->t10_pr.pr_generation, &buf[0]);
 
 	spin_lock(&dev->dev_reservation_lock);
 	pr_reg = dev->dev_pr_res_holder;
@@ -3808,10 +3782,7 @@ core_scsi3_pri_read_reservation(struct se_cmd *cmd)
 		/*
 		 * Set the hardcoded Additional Length
 		 */
-		buf[4] = ((add_len >> 24) & 0xff);
-		buf[5] = ((add_len >> 16) & 0xff);
-		buf[6] = ((add_len >> 8) & 0xff);
-		buf[7] = (add_len & 0xff);
+		put_unaligned_be32(add_len, &buf[4]);
 
 		if (cmd->data_length < 22)
 			goto err;
@@ -3838,14 +3809,7 @@ core_scsi3_pri_read_reservation(struct se_cmd *cmd)
 		else
 			pr_res_key = pr_reg->pr_res_key;
 
-		buf[8] = ((pr_res_key >> 56) & 0xff);
-		buf[9] = ((pr_res_key >> 48) & 0xff);
-		buf[10] = ((pr_res_key >> 40) & 0xff);
-		buf[11] = ((pr_res_key >> 32) & 0xff);
-		buf[12] = ((pr_res_key >> 24) & 0xff);
-		buf[13] = ((pr_res_key >> 16) & 0xff);
-		buf[14] = ((pr_res_key >> 8) & 0xff);
-		buf[15] = (pr_res_key & 0xff);
+		put_unaligned_be64(pr_res_key, &buf[8]);
 		/*
 		 * Set the SCOPE and TYPE
 		 */
@@ -3883,8 +3847,7 @@ core_scsi3_pri_report_capabilities(struct se_cmd *cmd)
 	if (!buf)
 		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 
-	buf[0] = ((add_len >> 8) & 0xff);
-	buf[1] = (add_len & 0xff);
+	put_unaligned_be16(add_len, &buf[0]);
 	buf[2] |= 0x10; /* CRH: Compatible Reservation Hanlding bit. */
 	buf[2] |= 0x08; /* SIP_C: Specify Initiator Ports Capable bit */
 	buf[2] |= 0x04; /* ATP_C: All Target Ports Capable bit */
@@ -3948,10 +3911,7 @@ core_scsi3_pri_read_full_status(struct se_cmd *cmd)
 	if (!buf)
 		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 
-	buf[0] = ((dev->t10_pr.pr_generation >> 24) & 0xff);
-	buf[1] = ((dev->t10_pr.pr_generation >> 16) & 0xff);
-	buf[2] = ((dev->t10_pr.pr_generation >> 8) & 0xff);
-	buf[3] = (dev->t10_pr.pr_generation & 0xff);
+	put_unaligned_be32(dev->t10_pr.pr_generation, &buf[0]);
 
 	spin_lock(&dev->dev_reservation_lock);
 	if (dev->dev_pr_res_holder) {
@@ -3993,14 +3953,8 @@ core_scsi3_pri_read_full_status(struct se_cmd *cmd)
 		/*
 		 * Set RESERVATION KEY
 		 */
-		buf[off++] = ((pr_reg->pr_res_key >> 56) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 48) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 40) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 32) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 24) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 16) & 0xff);
-		buf[off++] = ((pr_reg->pr_res_key >> 8) & 0xff);
-		buf[off++] = (pr_reg->pr_res_key & 0xff);
+		put_unaligned_be64(pr_reg->pr_res_key, &buf[off]);
+		off += 8;
 		off += 4; /* Skip Over Reserved area */
 
 		/*
@@ -4042,8 +3996,8 @@ core_scsi3_pri_read_full_status(struct se_cmd *cmd)
 		if (!pr_reg->pr_reg_all_tg_pt) {
 			u16 sep_rtpi = pr_reg->tg_pt_sep_rtpi;
 
-			buf[off++] = ((sep_rtpi >> 8) & 0xff);
-			buf[off++] = (sep_rtpi & 0xff);
+			put_unaligned_be16(sep_rtpi, &buf[off]);
+			off += 2;
 		} else
 			off += 2; /* Skip over RELATIVE TARGET PORT IDENTIFIER */
 
@@ -4063,10 +4017,8 @@ core_scsi3_pri_read_full_status(struct se_cmd *cmd)
 		/*
 		 * Set the ADDITIONAL DESCRIPTOR LENGTH
 		 */
-		buf[off++] = ((desc_len >> 24) & 0xff);
-		buf[off++] = ((desc_len >> 16) & 0xff);
-		buf[off++] = ((desc_len >> 8) & 0xff);
-		buf[off++] = (desc_len & 0xff);
+		put_unaligned_be32(desc_len, &buf[off]);
+		off += 4;
 		/*
 		 * Size of full desctipor header minus TransportID
 		 * containing $FABRIC_MOD specific) initiator device/port
@@ -4083,10 +4035,7 @@ core_scsi3_pri_read_full_status(struct se_cmd *cmd)
 	/*
 	 * Set ADDITIONAL_LENGTH
 	 */
-	buf[4] = ((add_len >> 24) & 0xff);
-	buf[5] = ((add_len >> 16) & 0xff);
-	buf[6] = ((add_len >> 8) & 0xff);
-	buf[7] = (add_len & 0xff);
+	put_unaligned_be32(add_len, &buf[4]);
 
 	transport_kunmap_data_sg(cmd);
 
@@ -4148,7 +4097,7 @@ target_check_reservation(struct se_cmd *cmd)
 		return 0;
 	if (dev->se_hba->hba_flags & HBA_FLAGS_INTERNAL_USE)
 		return 0;
-	if (dev->transport->transport_flags & TRANSPORT_FLAG_PASSTHROUGH)
+	if (dev->transport->transport_flags & TRANSPORT_FLAG_PASSTHROUGH_PGR)
 		return 0;
 
 	spin_lock(&dev->dev_reservation_lock);

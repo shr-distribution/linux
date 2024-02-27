@@ -6,7 +6,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2017, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -220,6 +220,10 @@ void acpi_ns_detach_object(struct acpi_namespace_node *node)
 		if (obj_desc->common.type == ACPI_TYPE_METHOD) {
 			ACPI_FREE(obj_desc->method.aml_start);
 		}
+	}
+
+	if (obj_desc->common.type == ACPI_TYPE_REGION) {
+		acpi_ut_remove_address_range(obj_desc->region.space_id, node);
 	}
 
 	/* Clear the Node entry in all cases */

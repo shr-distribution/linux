@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2014 Anna Schumaker <Anna.Schumaker@Netapp.com>
  */
@@ -12,6 +13,7 @@
 #include "nfs42.h"
 #include "iostat.h"
 #include "pnfs.h"
+#include "nfs4session.h"
 #include "internal.h"
 
 #define NFSDBG_FACILITY NFSDBG_PROC
@@ -145,7 +147,7 @@ static ssize_t _nfs42_proc_copy(struct file *src,
 	loff_t pos_src = args->src_pos;
 	loff_t pos_dst = args->dst_pos;
 	size_t count = args->count;
-	int status;
+	ssize_t status;
 
 	status = nfs4_set_rw_stateid(&args->src_stateid, src_lock->open_context,
 				     src_lock, FMODE_READ);
@@ -166,23 +168,29 @@ static ssize_t _nfs42_proc_copy(struct file *src,
 	if (status)
 		return status;
 
+	res->commit_res.verf = kzalloc(sizeof(struct nfs_writeverf), GFP_NOFS);
+	if (!res->commit_res.verf)
+		return -ENOMEM;
 	status = nfs4_call_sync(server->client, server, &msg,
 				&args->seq_args, &res->seq_res, 0);
 	if (status == -ENOTSUPP)
 		server->caps &= ~NFS_CAP_COPY;
 	if (status)
-		return status;
+		goto out;
 
-	if (res->write_res.verifier.committed != NFS_FILE_SYNC) {
-		status = nfs_commit_file(dst, &res->write_res.verifier.verifier);
-		if (status)
-			return status;
+	if (nfs_write_verifier_cmp(&res->write_res.verifier.verifier,
+				    &res->commit_res.verf->verifier)) {
+		status = -EAGAIN;
+		goto out;
 	}
 
 	truncate_pagecache_range(dst_inode, pos_dst,
 				 pos_dst + res->write_res.count);
 
-	return res->write_res.count;
+	status = res->write_res.count;
+out:
+	kfree(res->commit_res.verf);
+	return status;
 }
 
 ssize_t nfs42_proc_copy(struct file *src, loff_t pos_src,
@@ -239,6 +247,9 @@ ssize_t nfs42_proc_copy(struct file *src, loff_t pos_src,
 		if (err == -ENOTSUPP) {
 			err = -EOPNOTSUPP;
 			break;
+		} if (err == -EAGAIN) {
+			dst_exception.retry = 1;
+			continue;
 		}
 
 		err2 = nfs4_handle_exception(server, err, &src_exception);
@@ -342,9 +353,8 @@ nfs42_layoutstat_prepare(struct rpc_task *task, void *calldata)
 	}
 	nfs4_stateid_copy(&data->args.stateid, &lo->plh_stateid);
 	spin_unlock(&inode->i_lock);
-	nfs41_setup_sequence(nfs4_get_session(server), &data->args.seq_args,
-			     &data->res.seq_res, task);
-
+	nfs4_setup_sequence(server->nfs_client, &data->args.seq_args,
+			    &data->res.seq_res, task);
 }
 
 static void
@@ -379,6 +389,7 @@ nfs42_layoutstat_done(struct rpc_task *task, void *calldata)
 			pnfs_mark_layout_stateid_invalid(lo, &head);
 			spin_unlock(&inode->i_lock);
 			pnfs_free_lseg_list(&head);
+			nfs_commit_inode(inode, 0);
 		} else
 			spin_unlock(&inode->i_lock);
 		break;
@@ -400,18 +411,19 @@ nfs42_layoutstat_done(struct rpc_task *task, void *calldata)
 	case -EOPNOTSUPP:
 		NFS_SERVER(inode)->caps &= ~NFS_CAP_LAYOUTSTATS;
 	}
-
-	dprintk("%s server returns %d\n", __func__, task->tk_status);
 }
 
 static void
 nfs42_layoutstat_release(void *calldata)
 {
 	struct nfs42_layoutstat_data *data = calldata;
-	struct nfs_server *nfss = NFS_SERVER(data->args.inode);
+	struct nfs42_layoutstat_devinfo *devinfo = data->args.devinfo;
+	int i;
 
-	if (nfss->pnfs_curr_ld->cleanup_layoutstats)
-		nfss->pnfs_curr_ld->cleanup_layoutstats(data);
+	for (i = 0; i < data->args.num_dev; i++) {
+		if (devinfo[i].ld_private.ops && devinfo[i].ld_private.ops->free)
+			devinfo[i].ld_private.ops->free(&devinfo[i].ld_private);
+	}
 
 	pnfs_put_layout_hdr(NFS_I(data->args.inode)->layout);
 	smp_mb__before_atomic();

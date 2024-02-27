@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 menu "Device Drivers"
 
 source "drivers/amba/Kconfig"
@@ -7,6 +8,8 @@ source "drivers/base/Kconfig"
 source "drivers/bus/Kconfig"
 
 source "drivers/connector/Kconfig"
+
+source "drivers/gnss/Kconfig"
 
 source "drivers/mtd/Kconfig"
 
@@ -56,8 +59,6 @@ source "drivers/i2c/Kconfig"
 
 source "drivers/spi/Kconfig"
 
-source "drivers/slimbus/Kconfig"
-
 source "drivers/spmi/Kconfig"
 
 source "drivers/hsi/Kconfig"
@@ -77,6 +78,8 @@ source "drivers/power/Kconfig"
 source "drivers/hwmon/Kconfig"
 
 source "drivers/thermal/Kconfig"
+
+source "drivers/trusty/Kconfig"
 
 source "drivers/watchdog/Kconfig"
 
@@ -113,8 +116,6 @@ source "drivers/infiniband/Kconfig"
 source "drivers/edac/Kconfig"
 
 source "drivers/rtc/Kconfig"
-
-source "drivers/esoc/Kconfig"
 
 source "drivers/dma/Kconfig"
 
@@ -194,6 +195,8 @@ source "drivers/thunderbolt/Kconfig"
 
 source "drivers/android/Kconfig"
 
+source "drivers/gpu/trace/Kconfig"
+
 source "drivers/nvdimm/Kconfig"
 
 source "drivers/dax/Kconfig"
@@ -206,8 +209,10 @@ source "drivers/hwtracing/intel_th/Kconfig"
 
 source "drivers/fpga/Kconfig"
 
-source "drivers/sensors/Kconfig"
+source "drivers/fsi/Kconfig"
 
 source "drivers/tee/Kconfig"
+
+source "drivers/mux/Kconfig"
 
 endmenu

@@ -96,7 +96,7 @@ static int udl_mode_valid(struct drm_connector *connector,
 static enum drm_connector_status
 udl_detect(struct drm_connector *connector, bool force)
 {
-	if (drm_device_is_unplugged(connector->dev))
+	if (drm_dev_is_unplugged(connector->dev))
 		return connector_status_disconnected;
 	return connector_status_connected;
 }
@@ -105,7 +105,7 @@ static struct drm_encoder*
 udl_best_single_encoder(struct drm_connector *connector)
 {
 	int enc_id = connector->encoder_ids[0];
-	return drm_encoder_find(connector->dev, enc_id);
+	return drm_encoder_find(connector->dev, NULL, enc_id);
 }
 
 static int udl_connector_set_property(struct drm_connector *connector,

@@ -104,7 +104,8 @@
 #define PCIE_ISR1_MASK_REG			(CONTROL_BASE_ADDR + 0x4C)
 #define     PCIE_ISR1_POWER_STATE_CHANGE	BIT(4)
 #define     PCIE_ISR1_FLUSH			BIT(5)
-#define     PCIE_ISR1_ALL_MASK			GENMASK(5, 4)
+#define     PCIE_ISR1_INTX_ASSERT(val)		BIT(8 + (val))
+#define     PCIE_ISR1_ALL_MASK			GENMASK(11, 4)
 #define PCIE_MSI_ADDR_LOW_REG			(CONTROL_BASE_ADDR + 0x50)
 #define PCIE_MSI_ADDR_HIGH_REG			(CONTROL_BASE_ADDR + 0x54)
 #define PCIE_MSI_STATUS_REG			(CONTROL_BASE_ADDR + 0x58)
@@ -190,7 +191,6 @@
 #define LINK_WAIT_USLEEP_MIN		90000
 #define LINK_WAIT_USLEEP_MAX		100000
 
-#define LEGACY_IRQ_NUM			4
 #define MSI_IRQ_NUM			32
 
 struct advk_pcie {
@@ -199,10 +199,12 @@ struct advk_pcie {
 	struct list_head resources;
 	struct irq_domain *irq_domain;
 	struct irq_chip irq_chip;
-	struct msi_controller msi;
 	struct irq_domain *msi_domain;
+	struct irq_domain *msi_inner_domain;
+	struct irq_chip msi_bottom_irq_chip;
 	struct irq_chip msi_irq_chip;
-	DECLARE_BITMAP(msi_irq_in_use, MSI_IRQ_NUM);
+	struct msi_domain_info msi_domain_info;
+	DECLARE_BITMAP(msi_used, MSI_IRQ_NUM);
 	struct mutex msi_used_lock;
 	u16 msi_msg;
 	int root_bus_nr;
@@ -362,10 +364,6 @@ static void advk_pcie_setup_hw(struct advk_pcie *pcie)
 	advk_writel(pcie, reg, PCIE_CORE_LINK_CTRL_STAT_REG);
 
 	advk_pcie_wait_for_link(pcie);
-
-	reg = PCIE_CORE_LINK_L0S_ENTRY |
-		(1 << PCIE_CORE_LINK_WIDTH_SHIFT);
-	advk_writel(pcie, reg, PCIE_CORE_LINK_CTRL_STAT_REG);
 
 	reg = advk_readl(pcie, PCIE_CORE_CMD_STATUS_REG);
 	reg |= PCIE_CORE_CMD_MEM_ACCESS_EN |
@@ -545,94 +543,64 @@ static struct pci_ops advk_pcie_ops = {
 	.write = advk_pcie_wr_conf,
 };
 
-static int advk_pcie_alloc_msi(struct advk_pcie *pcie)
+static void advk_msi_irq_compose_msi_msg(struct irq_data *data,
+					 struct msi_msg *msg)
 {
-	int hwirq;
+	struct advk_pcie *pcie = irq_data_get_irq_chip_data(data);
+	phys_addr_t msi_msg = virt_to_phys(&pcie->msi_msg);
+
+	msg->address_lo = lower_32_bits(msi_msg);
+	msg->address_hi = upper_32_bits(msi_msg);
+	msg->data = data->irq;
+}
+
+static int advk_msi_set_affinity(struct irq_data *irq_data,
+				 const struct cpumask *mask, bool force)
+{
+	return -EINVAL;
+}
+
+static int advk_msi_irq_domain_alloc(struct irq_domain *domain,
+				     unsigned int virq,
+				     unsigned int nr_irqs, void *args)
+{
+	struct advk_pcie *pcie = domain->host_data;
+	int hwirq, i;
 
 	mutex_lock(&pcie->msi_used_lock);
-	hwirq = find_first_zero_bit(pcie->msi_irq_in_use, MSI_IRQ_NUM);
-	if (hwirq >= MSI_IRQ_NUM)
-		hwirq = -ENOSPC;
-	else
-		set_bit(hwirq, pcie->msi_irq_in_use);
+	hwirq = bitmap_find_next_zero_area(pcie->msi_used, MSI_IRQ_NUM,
+					   0, nr_irqs, 0);
+	if (hwirq >= MSI_IRQ_NUM) {
+		mutex_unlock(&pcie->msi_used_lock);
+		return -ENOSPC;
+	}
+
+	bitmap_set(pcie->msi_used, hwirq, nr_irqs);
 	mutex_unlock(&pcie->msi_used_lock);
+
+	for (i = 0; i < nr_irqs; i++)
+		irq_domain_set_info(domain, virq + i, hwirq + i,
+				    &pcie->msi_bottom_irq_chip,
+				    domain->host_data, handle_simple_irq,
+				    NULL, NULL);
 
 	return hwirq;
 }
 
-static void advk_pcie_free_msi(struct advk_pcie *pcie, int hwirq)
+static void advk_msi_irq_domain_free(struct irq_domain *domain,
+				     unsigned int virq, unsigned int nr_irqs)
 {
-	struct device *dev = &pcie->pdev->dev;
+	struct irq_data *d = irq_domain_get_irq_data(domain, virq);
+	struct advk_pcie *pcie = domain->host_data;
 
 	mutex_lock(&pcie->msi_used_lock);
-	if (!test_bit(hwirq, pcie->msi_irq_in_use))
-		dev_err(dev, "trying to free unused MSI#%d\n", hwirq);
-	else
-		clear_bit(hwirq, pcie->msi_irq_in_use);
+	bitmap_clear(pcie->msi_used, d->hwirq, nr_irqs);
 	mutex_unlock(&pcie->msi_used_lock);
 }
 
-static int advk_pcie_setup_msi_irq(struct msi_controller *chip,
-				   struct pci_dev *pdev,
-				   struct msi_desc *desc)
-{
-	struct advk_pcie *pcie = pdev->bus->sysdata;
-	struct msi_msg msg;
-	int virq, hwirq;
-	phys_addr_t msi_msg_phys;
-
-	/* We support MSI, but not MSI-X */
-	if (desc->msi_attrib.is_msix)
-		return -EINVAL;
-
-	hwirq = advk_pcie_alloc_msi(pcie);
-	if (hwirq < 0)
-		return hwirq;
-
-	virq = irq_create_mapping(pcie->msi_domain, hwirq);
-	if (!virq) {
-		advk_pcie_free_msi(pcie, hwirq);
-		return -EINVAL;
-	}
-
-	irq_set_msi_desc(virq, desc);
-
-	msi_msg_phys = virt_to_phys(&pcie->msi_msg);
-
-	msg.address_lo = lower_32_bits(msi_msg_phys);
-	msg.address_hi = upper_32_bits(msi_msg_phys);
-	msg.data = virq;
-
-	pci_write_msi_msg(virq, &msg);
-
-	return 0;
-}
-
-static void advk_pcie_teardown_msi_irq(struct msi_controller *chip,
-				       unsigned int irq)
-{
-	struct irq_data *d = irq_get_irq_data(irq);
-	struct msi_desc *msi = irq_data_get_msi_desc(d);
-	struct advk_pcie *pcie = msi_desc_to_pci_sysdata(msi);
-	unsigned long hwirq = d->hwirq;
-
-	irq_dispose_mapping(irq);
-	advk_pcie_free_msi(pcie, hwirq);
-}
-
-static int advk_pcie_msi_map(struct irq_domain *domain,
-			     unsigned int virq, irq_hw_number_t hw)
-{
-	struct advk_pcie *pcie = domain->host_data;
-
-	irq_set_chip_and_handler(virq, &pcie->msi_irq_chip,
-				 handle_simple_irq);
-
-	return 0;
-}
-
-static const struct irq_domain_ops advk_pcie_msi_irq_ops = {
-	.map = advk_pcie_msi_map,
+static const struct irq_domain_ops advk_msi_domain_ops = {
+	.alloc = advk_msi_irq_domain_alloc,
+	.free = advk_msi_irq_domain_free,
 };
 
 static void advk_pcie_irq_mask(struct irq_data *d)
@@ -641,9 +609,9 @@ static void advk_pcie_irq_mask(struct irq_data *d)
 	irq_hw_number_t hwirq = irqd_to_hwirq(d);
 	u32 mask;
 
-	mask = advk_readl(pcie, PCIE_ISR0_MASK_REG);
-	mask |= PCIE_ISR0_INTX_ASSERT(hwirq);
-	advk_writel(pcie, mask, PCIE_ISR0_MASK_REG);
+	mask = advk_readl(pcie, PCIE_ISR1_MASK_REG);
+	mask |= PCIE_ISR1_INTX_ASSERT(hwirq);
+	advk_writel(pcie, mask, PCIE_ISR1_MASK_REG);
 }
 
 static void advk_pcie_irq_unmask(struct irq_data *d)
@@ -652,9 +620,9 @@ static void advk_pcie_irq_unmask(struct irq_data *d)
 	irq_hw_number_t hwirq = irqd_to_hwirq(d);
 	u32 mask;
 
-	mask = advk_readl(pcie, PCIE_ISR0_MASK_REG);
-	mask &= ~PCIE_ISR0_INTX_ASSERT(hwirq);
-	advk_writel(pcie, mask, PCIE_ISR0_MASK_REG);
+	mask = advk_readl(pcie, PCIE_ISR1_MASK_REG);
+	mask &= ~PCIE_ISR1_INTX_ASSERT(hwirq);
+	advk_writel(pcie, mask, PCIE_ISR1_MASK_REG);
 }
 
 static int advk_pcie_irq_map(struct irq_domain *h,
@@ -680,30 +648,25 @@ static int advk_pcie_init_msi_irq_domain(struct advk_pcie *pcie)
 {
 	struct device *dev = &pcie->pdev->dev;
 	struct device_node *node = dev->of_node;
-	struct irq_chip *msi_irq_chip;
-	struct msi_controller *msi;
+	struct irq_chip *bottom_ic, *msi_ic;
+	struct msi_domain_info *msi_di;
 	phys_addr_t msi_msg_phys;
-	int ret;
-
-	msi_irq_chip = &pcie->msi_irq_chip;
-
-	msi_irq_chip->name = devm_kasprintf(dev, GFP_KERNEL, "%s-msi",
-					    dev_name(dev));
-	if (!msi_irq_chip->name)
-		return -ENOMEM;
-
-	msi_irq_chip->irq_enable = pci_msi_unmask_irq;
-	msi_irq_chip->irq_disable = pci_msi_mask_irq;
-	msi_irq_chip->irq_mask = pci_msi_mask_irq;
-	msi_irq_chip->irq_unmask = pci_msi_unmask_irq;
-
-	msi = &pcie->msi;
-
-	msi->setup_irq = advk_pcie_setup_msi_irq;
-	msi->teardown_irq = advk_pcie_teardown_msi_irq;
-	msi->of_node = node;
 
 	mutex_init(&pcie->msi_used_lock);
+
+	bottom_ic = &pcie->msi_bottom_irq_chip;
+
+	bottom_ic->name = "MSI";
+	bottom_ic->irq_compose_msi_msg = advk_msi_irq_compose_msi_msg;
+	bottom_ic->irq_set_affinity = advk_msi_set_affinity;
+
+	msi_ic = &pcie->msi_irq_chip;
+	msi_ic->name = "advk-MSI";
+
+	msi_di = &pcie->msi_domain_info;
+	msi_di->flags = MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
+		MSI_FLAG_MULTI_PCI_MSI;
+	msi_di->chip = msi_ic;
 
 	msi_msg_phys = virt_to_phys(&pcie->msi_msg);
 
@@ -712,16 +675,18 @@ static int advk_pcie_init_msi_irq_domain(struct advk_pcie *pcie)
 	advk_writel(pcie, upper_32_bits(msi_msg_phys),
 		    PCIE_MSI_ADDR_HIGH_REG);
 
-	pcie->msi_domain =
+	pcie->msi_inner_domain =
 		irq_domain_add_linear(NULL, MSI_IRQ_NUM,
-				      &advk_pcie_msi_irq_ops, pcie);
-	if (!pcie->msi_domain)
+				      &advk_msi_domain_ops, pcie);
+	if (!pcie->msi_inner_domain)
 		return -ENOMEM;
 
-	ret = of_pci_msi_chip_add(msi);
-	if (ret < 0) {
-		irq_domain_remove(pcie->msi_domain);
-		return ret;
+	pcie->msi_domain =
+		pci_msi_create_irq_domain(of_node_to_fwnode(node),
+					  msi_di, pcie->msi_inner_domain);
+	if (!pcie->msi_domain) {
+		irq_domain_remove(pcie->msi_inner_domain);
+		return -ENOMEM;
 	}
 
 	return 0;
@@ -729,8 +694,8 @@ static int advk_pcie_init_msi_irq_domain(struct advk_pcie *pcie)
 
 static void advk_pcie_remove_msi_irq_domain(struct advk_pcie *pcie)
 {
-	of_pci_msi_chip_remove(&pcie->msi);
 	irq_domain_remove(pcie->msi_domain);
+	irq_domain_remove(pcie->msi_inner_domain);
 }
 
 static int advk_pcie_init_irq_domain(struct advk_pcie *pcie)
@@ -760,7 +725,7 @@ static int advk_pcie_init_irq_domain(struct advk_pcie *pcie)
 	irq_chip->irq_unmask = advk_pcie_irq_unmask;
 
 	pcie->irq_domain =
-		irq_domain_add_linear(pcie_intc_node, LEGACY_IRQ_NUM,
+		irq_domain_add_linear(pcie_intc_node, PCI_NUM_INTX,
 				      &advk_pcie_irq_domain_ops, pcie);
 	if (!pcie->irq_domain) {
 		dev_err(dev, "Failed to get a INTx IRQ domain\n");
@@ -800,29 +765,35 @@ static void advk_pcie_handle_msi(struct advk_pcie *pcie)
 
 static void advk_pcie_handle_int(struct advk_pcie *pcie)
 {
-	u32 val, mask, status;
+	u32 isr0_val, isr0_mask, isr0_status;
+	u32 isr1_val, isr1_mask, isr1_status;
 	int i, virq;
 
-	val = advk_readl(pcie, PCIE_ISR0_REG);
-	mask = advk_readl(pcie, PCIE_ISR0_MASK_REG);
-	status = val & ((~mask) & PCIE_ISR0_ALL_MASK);
+	isr0_val = advk_readl(pcie, PCIE_ISR0_REG);
+	isr0_mask = advk_readl(pcie, PCIE_ISR0_MASK_REG);
+	isr0_status = isr0_val & ((~isr0_mask) & PCIE_ISR0_ALL_MASK);
 
-	if (!status) {
-		advk_writel(pcie, val, PCIE_ISR0_REG);
+	isr1_val = advk_readl(pcie, PCIE_ISR1_REG);
+	isr1_mask = advk_readl(pcie, PCIE_ISR1_MASK_REG);
+	isr1_status = isr1_val & ((~isr1_mask) & PCIE_ISR1_ALL_MASK);
+
+	if (!isr0_status && !isr1_status) {
+		advk_writel(pcie, isr0_val, PCIE_ISR0_REG);
+		advk_writel(pcie, isr1_val, PCIE_ISR1_REG);
 		return;
 	}
 
 	/* Process MSI interrupts */
-	if (status & PCIE_ISR0_MSI_INT_PENDING)
+	if (isr0_status & PCIE_ISR0_MSI_INT_PENDING)
 		advk_pcie_handle_msi(pcie);
 
 	/* Process legacy interrupts */
-	for (i = 0; i < LEGACY_IRQ_NUM; i++) {
-		if (!(status & PCIE_ISR0_INTX_ASSERT(i)))
+	for (i = 0; i < PCI_NUM_INTX; i++) {
+		if (!(isr1_status & PCIE_ISR1_INTX_ASSERT(i)))
 			continue;
 
-		advk_writel(pcie, PCIE_ISR0_INTX_ASSERT(i),
-			    PCIE_ISR0_REG);
+		advk_writel(pcie, PCIE_ISR1_INTX_ASSERT(i),
+			    PCIE_ISR1_REG);
 
 		virq = irq_find_mapping(pcie->irq_domain, i);
 		generic_handle_irq(virq);
@@ -917,14 +888,14 @@ static int advk_pcie_probe(struct platform_device *pdev)
 	struct advk_pcie *pcie;
 	struct resource *res;
 	struct pci_bus *bus, *child;
-	struct msi_controller *msi;
-	struct device_node *msi_node;
+	struct pci_host_bridge *bridge;
 	int ret, irq;
 
-	pcie = devm_kzalloc(dev, sizeof(struct advk_pcie), GFP_KERNEL);
-	if (!pcie)
+	bridge = devm_pci_alloc_host_bridge(dev, sizeof(struct advk_pcie));
+	if (!bridge)
 		return -ENOMEM;
 
+	pcie = pci_host_bridge_priv(bridge);
 	pcie->pdev = pdev;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -962,20 +933,24 @@ static int advk_pcie_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	msi_node = of_parse_phandle(dev->of_node, "msi-parent", 0);
-	if (msi_node)
-		msi = of_pci_find_msi_chip_by_node(msi_node);
-	else
-		msi = NULL;
+	list_splice_init(&pcie->resources, &bridge->windows);
+	bridge->dev.parent = dev;
+	bridge->sysdata = pcie;
+	bridge->busnr = 0;
+	bridge->ops = &advk_pcie_ops;
+	bridge->map_irq = of_irq_parse_and_map_pci;
+	bridge->swizzle_irq = pci_common_swizzle;
 
-	bus = pci_scan_root_bus_msi(dev, 0, &advk_pcie_ops,
-				    pcie, &pcie->resources, &pcie->msi);
-	if (!bus) {
+	ret = pci_scan_root_bus_bridge(bridge);
+	if (ret < 0) {
 		advk_pcie_remove_msi_irq_domain(pcie);
 		advk_pcie_remove_irq_domain(pcie);
-		return -ENOMEM;
+		return ret;
 	}
 
+	bus = bridge->bus;
+
+	pci_bus_size_bridges(bus);
 	pci_bus_assign_resources(bus);
 
 	list_for_each_entry(child, &bus->children, node)

@@ -42,6 +42,10 @@ static void hda_codec_unsol_event(struct hdac_device *dev, unsigned int ev)
 {
 	struct hda_codec *codec = container_of(dev, struct hda_codec, core);
 
+	/* ignore unsol events during shutdown */
+	if (codec->bus->shutdown)
+		return;
+
 	if (codec->patch_ops.unsol_event)
 		codec->patch_ops.unsol_event(codec, ev);
 }
@@ -100,7 +104,7 @@ static int hda_codec_driver_probe(struct device *dev)
 	if (patch) {
 		err = patch(codec);
 		if (err < 0)
-			goto error_module;
+			goto error_module_put;
 	}
 
 	err = snd_hda_codec_build_pcms(codec);
@@ -109,7 +113,8 @@ static int hda_codec_driver_probe(struct device *dev)
 	err = snd_hda_codec_build_controls(codec);
 	if (err < 0)
 		goto error_module;
-	if (codec->card->registered) {
+	/* only register after the bus probe finished; otherwise it's racy */
+	if (!codec->bus->bus_probing && codec->card->registered) {
 		err = snd_card_register(codec->card);
 		if (err < 0)
 			goto error_module;
@@ -120,6 +125,9 @@ static int hda_codec_driver_probe(struct device *dev)
 	return 0;
 
  error_module:
+	if (codec->patch_ops.free)
+		codec->patch_ops.free(codec);
+ error_module_put:
 	module_put(owner);
 
  error:

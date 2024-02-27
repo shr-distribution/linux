@@ -1,135 +1,342 @@
-/*
- * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- */
+// SPDX-License-Identifier: GPL-2.0
 
-#include "fuse_passthrough.h"
+#include "fuse_i.h"
 
-#include <linux/aio.h>
-#include <linux/fs_stack.h>
+#include <linux/file.h>
+#include <linux/fuse.h>
+#include <linux/idr.h>
+#include <linux/uio.h>
 
-void fuse_setup_passthrough(struct fuse_conn *fc, struct fuse_req *req)
+#define PASSTHROUGH_IOCB_MASK \
+	(IOCB_APPEND | IOCB_DSYNC | IOCB_HIPRI | IOCB_NOWAIT | IOCB_SYNC)
+
+struct fuse_aio_req {
+	struct kiocb iocb;
+	struct kiocb *iocb_fuse;
+};
+
+static inline void kiocb_clone(struct kiocb *kiocb, struct kiocb *kiocb_src,
+					struct file *filp)
 {
-	int daemon_fd, fs_stack_depth;
-	unsigned int open_out_index;
+	*kiocb = (struct kiocb){
+		.ki_filp = filp,
+		.ki_flags = kiocb_src->ki_flags,
+		.ki_hint = kiocb_src->ki_hint,
+		.ki_pos = kiocb_src->ki_pos,
+	};
+}
+
+static void fuse_copyattr(struct file *dst_file, struct file *src_file)
+{
+	struct inode *dst = file_inode(dst_file);
+	struct inode *src = file_inode(src_file);
+
+	i_size_write(dst, i_size_read(src));
+}
+
+static inline rwf_t iocb_to_rw_flags(int ifl)
+{
+	rwf_t flags = 0;
+
+	if (ifl & IOCB_APPEND)
+		flags |= RWF_APPEND;
+	if (ifl & IOCB_DSYNC)
+		flags |= RWF_DSYNC;
+	if (ifl & IOCB_HIPRI)
+		flags |= RWF_HIPRI;
+	if (ifl & IOCB_NOWAIT)
+		flags |= RWF_NOWAIT;
+	if (ifl & IOCB_SYNC)
+		flags |= RWF_SYNC;
+
+	return flags;
+}
+
+static void fuse_aio_cleanup_handler(struct fuse_aio_req *aio_req)
+{
+	struct kiocb *iocb = &aio_req->iocb;
+	struct kiocb *iocb_fuse = aio_req->iocb_fuse;
+
+	if (iocb->ki_flags & IOCB_WRITE) {
+		__sb_writers_acquired(file_inode(iocb->ki_filp)->i_sb,
+						SB_FREEZE_WRITE);
+		file_end_write(iocb->ki_filp);
+		fuse_copyattr(iocb_fuse->ki_filp, iocb->ki_filp);
+	}
+
+	iocb_fuse->ki_pos = iocb->ki_pos;
+	kfree(aio_req);
+}
+
+static void fuse_aio_rw_complete(struct kiocb *iocb, long res, long res2)
+{
+	struct fuse_aio_req *aio_req =
+		container_of(iocb, struct fuse_aio_req, iocb);
+	struct kiocb *iocb_fuse = aio_req->iocb_fuse;
+
+	fuse_aio_cleanup_handler(aio_req);
+	iocb_fuse->ki_complete(iocb_fuse, res, res2);
+}
+
+ssize_t fuse_passthrough_read_iter(struct kiocb *iocb_fuse,
+					struct iov_iter *iter)
+{
+	ssize_t ret;
+	const struct cred *old_cred;
+	struct file *fuse_filp = iocb_fuse->ki_filp;
+	struct fuse_file *ff = fuse_filp->private_data;
+	struct file *passthrough_filp = ff->passthrough.filp;
+
+	if (!iov_iter_count(iter))
+		return 0;
+
+	old_cred = override_creds(ff->passthrough.cred);
+	if (is_sync_kiocb(iocb_fuse)) {
+		ret = vfs_iter_read(passthrough_filp, iter, &iocb_fuse->ki_pos,
+							iocb_to_rw_flags(iocb_fuse->ki_flags));
+	} else {
+		struct fuse_aio_req *aio_req;
+
+		aio_req = kmalloc(sizeof(struct fuse_aio_req), GFP_KERNEL);
+		if (!aio_req) {
+			ret = -ENOMEM;
+			goto out;
+		}
+
+		aio_req->iocb_fuse = iocb_fuse;
+		kiocb_clone(&aio_req->iocb, iocb_fuse, passthrough_filp);
+		aio_req->iocb.ki_complete = fuse_aio_rw_complete;
+		ret = call_read_iter(passthrough_filp, &aio_req->iocb, iter);
+		if (ret != -EIOCBQUEUED)
+			fuse_aio_cleanup_handler(aio_req);
+	}
+out:
+	revert_creds(old_cred);
+
+	return ret;
+}
+
+ssize_t fuse_passthrough_write_iter(struct kiocb *iocb_fuse,
+					struct iov_iter *iter)
+{
+	ssize_t ret;
+	const struct cred *old_cred;
+	struct file *fuse_filp = iocb_fuse->ki_filp;
+	struct fuse_file *ff = fuse_filp->private_data;
+	struct inode *fuse_inode = file_inode(fuse_filp);
+	struct file *passthrough_filp = ff->passthrough.filp;
+	struct inode *passthrough_inode = file_inode(passthrough_filp);
+
+	if (!iov_iter_count(iter))
+		return 0;
+
+	inode_lock(fuse_inode);
+
+	old_cred = override_creds(ff->passthrough.cred);
+	if (is_sync_kiocb(iocb_fuse)) {
+		file_start_write(passthrough_filp);
+		ret = vfs_iter_write(passthrough_filp, iter, &iocb_fuse->ki_pos,
+							iocb_to_rw_flags(iocb_fuse->ki_flags));
+		file_end_write(passthrough_filp);
+		if (ret > 0)
+			fuse_copyattr(fuse_filp, passthrough_filp);
+	} else {
+		struct fuse_aio_req *aio_req;
+
+		aio_req = kmalloc(sizeof(struct fuse_aio_req), GFP_KERNEL);
+		if (!aio_req) {
+			ret = -ENOMEM;
+			goto out;
+		}
+
+		file_start_write(passthrough_filp);
+		__sb_writers_release(passthrough_inode->i_sb, SB_FREEZE_WRITE);
+
+		aio_req->iocb_fuse = iocb_fuse;
+		kiocb_clone(&aio_req->iocb, iocb_fuse, passthrough_filp);
+		aio_req->iocb.ki_complete = fuse_aio_rw_complete;
+		ret = call_write_iter(passthrough_filp, &aio_req->iocb, iter);
+		if (ret != -EIOCBQUEUED)
+			fuse_aio_cleanup_handler(aio_req);
+	}
+out:
+	revert_creds(old_cred);
+	inode_unlock(fuse_inode);
+
+	return ret;
+}
+
+ssize_t fuse_passthrough_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	int ret;
+	const struct cred *old_cred;
+	struct fuse_file *ff = file->private_data;
+	struct inode *fuse_inode = file_inode(file);
+	struct file *passthrough_filp = ff->passthrough.filp;
+	struct inode *passthrough_inode = file_inode(passthrough_filp);
+
+	if (!passthrough_filp->f_op->mmap)
+		return -ENODEV;
+
+	if (WARN_ON(file != vma->vm_file))
+		return -EIO;
+
+	vma->vm_file = get_file(passthrough_filp);
+
+	old_cred = override_creds(ff->passthrough.cred);
+	ret = call_mmap(vma->vm_file, vma);
+	revert_creds(old_cred);
+
+	if (ret)
+		fput(passthrough_filp);
+	else
+		fput(file);
+
+	if (file->f_flags & O_NOATIME)
+		return ret;
+
+	if ((!timespec_equal(&fuse_inode->i_mtime,
+			       &passthrough_inode->i_mtime) ||
+	     !timespec_equal(&fuse_inode->i_ctime,
+			       &passthrough_inode->i_ctime))) {
+		fuse_inode->i_mtime = passthrough_inode->i_mtime;
+		fuse_inode->i_ctime = passthrough_inode->i_ctime;
+	}
+	touch_atime(&file->f_path);
+
+	return ret;
+}
+
+int fuse_passthrough_enable(struct fuse_dev *fud,
+						struct fuse_open_out *openarg)
+{
+	int ll_fd;
+	int res_id;
+	int err;
+	struct fuse_passthrough_out pto = {0};
+
+	if (!fud->fc->passthrough)
+		return -EPERM;
+
+	pr_debug("FUSE: try to enable passthrough for file handle: %llu, open flags: %u\n",
+			openarg->fh, openarg->open_flags);
+	err = get_user(ll_fd, (int *) openarg->fh);
+	if (err) {
+		pr_warn("FUSE: get file descriptor fail: %d\n", err);
+		return err;
+	}
+	pto.fd = ll_fd;
+	res_id = fuse_passthrough_open(fud, &pto);
+	if (res_id > 0) {
+		pr_debug("FUSE: open passthrough res id(%d) for fh: %llu, fd: %d\n",
+				res_id, openarg->fh, ll_fd);
+		openarg->passthrough_fh = res_id;
+	} else {
+		pr_warn("FUSE: open passthrough res id fail(%d) for fh: %llu, fd: %d\n",
+				res_id, openarg->fh, ll_fd);
+	}
+	return res_id;
+}
+
+int fuse_passthrough_open(struct fuse_dev *fud,
+			  struct fuse_passthrough_out *pto)
+{
+	int res;
 	struct file *passthrough_filp;
+	struct fuse_conn *fc = fud->fc;
 	struct inode *passthrough_inode;
 	struct super_block *passthrough_sb;
-	struct fuse_open_out *open_out;
+	struct fuse_passthrough *passthrough;
 
-	req->passthrough_filp = NULL;
+	if (!fc->passthrough)
+		return -EPERM;
 
-	if (!(fc->passthrough))
-		return;
+	/* This field is reserved for future implementation */
+	if (pto->len != 0)
+		return -EINVAL;
 
-	if ((req->in.h.opcode != FUSE_OPEN) &&
-	    (req->in.h.opcode != FUSE_CREATE))
-		return;
+	passthrough_filp = fget(pto->fd);
+	if (!passthrough_filp) {
+		pr_err("FUSE: invalid file descriptor for passthrough.\n");
+		return -EBADF;
+	}
 
-	open_out_index = req->in.numargs - 1;
-
-	WARN_ON(open_out_index != 0 && open_out_index != 1);
-	WARN_ON(req->out.args[open_out_index].size != sizeof(*open_out));
-
-	open_out = req->out.args[open_out_index].value;
-
-	daemon_fd = (int)open_out->passthrough_fd;
-	if (daemon_fd < 0)
-		return;
-
-	passthrough_filp = fget_raw(daemon_fd);
-	if (!passthrough_filp)
-		return;
+	if (!passthrough_filp->f_op->read_iter ||
+	    !passthrough_filp->f_op->write_iter) {
+		pr_err("FUSE: passthrough file misses file operations.\n");
+		res = -EBADF;
+		goto err_free_file;
+	}
 
 	passthrough_inode = file_inode(passthrough_filp);
 	passthrough_sb = passthrough_inode->i_sb;
-	fs_stack_depth = passthrough_sb->s_stack_depth + 1;
-
-	/* If we reached the stacking limit go through regular io */
-	if (fs_stack_depth > FILESYSTEM_MAX_STACK_DEPTH) {
-		/* Release the passthrough file. */
-		fput(passthrough_filp);
-		pr_err("FUSE: maximum fs stacking depth exceeded, cannot use passthrough for this file\n");
-		return;
-	}
-	req->passthrough_filp = passthrough_filp;
-}
-
-
-static ssize_t fuse_passthrough_read_write_iter(struct kiocb *iocb,
-					    struct iov_iter *iter, int do_write)
-{
-	ssize_t ret_val;
-	struct fuse_file *ff;
-	struct file *fuse_file, *passthrough_filp;
-	struct inode *fuse_inode, *passthrough_inode;
-	struct fuse_conn *fc;
-
-	ff = iocb->ki_filp->private_data;
-	fuse_file = iocb->ki_filp;
-	passthrough_filp = ff->passthrough_filp;
-	fc = ff->fc;
-
-	/* lock passthrough file to prevent it from being released */
-	get_file(passthrough_filp);
-	iocb->ki_filp = passthrough_filp;
-	fuse_inode = fuse_file->f_path.dentry->d_inode;
-	passthrough_inode = file_inode(passthrough_filp);
-
-	if (do_write) {
-		if (!passthrough_filp->f_op->write_iter)
-			return -EIO;
-
-		ret_val = passthrough_filp->f_op->write_iter(iocb, iter);
-
-		if (ret_val >= 0 || ret_val == -EIOCBQUEUED) {
-			spin_lock(&fc->lock);
-			fsstack_copy_inode_size(fuse_inode, passthrough_inode);
-			spin_unlock(&fc->lock);
-			fsstack_copy_attr_times(fuse_inode, passthrough_inode);
-		}
-	} else {
-		if (!passthrough_filp->f_op->read_iter)
-			return -EIO;
-
-		ret_val = passthrough_filp->f_op->read_iter(iocb, iter);
-		if (ret_val >= 0 || ret_val == -EIOCBQUEUED)
-			fsstack_copy_attr_atime(fuse_inode, passthrough_inode);
+	if (passthrough_sb->s_stack_depth >= FILESYSTEM_MAX_STACK_DEPTH) {
+		pr_err("FUSE: fs stacking depth exceeded for passthrough\n");
+		res = -EINVAL;
+		goto err_free_file;
 	}
 
-	iocb->ki_filp = fuse_file;
+	passthrough = kmalloc(sizeof(struct fuse_passthrough), GFP_KERNEL);
+	if (!passthrough) {
+		res = -ENOMEM;
+		goto err_free_file;
+	}
 
-	/* unlock passthrough file */
+	passthrough->filp = passthrough_filp;
+	passthrough->cred = prepare_creds();
+
+	idr_preload(GFP_KERNEL);
+	spin_lock(&fc->passthrough_req_lock);
+	res = idr_alloc(&fc->passthrough_req, passthrough, 1, 0, GFP_ATOMIC);
+	spin_unlock(&fc->passthrough_req_lock);
+	idr_preload_end();
+
+	if (res > 0)
+		return res;
+
+	fuse_passthrough_release(passthrough);
+	kfree(passthrough);
+
+err_free_file:
 	fput(passthrough_filp);
 
-	return ret_val;
+	return res;
 }
 
-ssize_t fuse_passthrough_read_iter(struct kiocb *iocb, struct iov_iter *to)
+int fuse_passthrough_setup(struct fuse_conn *fc, struct fuse_file *ff,
+			   struct fuse_open_out *openarg)
 {
-	return fuse_passthrough_read_write_iter(iocb, to, 0);
+	struct fuse_passthrough *passthrough;
+	int passthrough_fh = openarg->passthrough_fh;
+
+	if (!fc->passthrough)
+		return -EPERM;
+
+	/* Default case, passthrough is not requested */
+	if (passthrough_fh <= 0)
+		return -EINVAL;
+
+	spin_lock(&fc->passthrough_req_lock);
+	passthrough = idr_remove(&fc->passthrough_req, passthrough_fh);
+	spin_unlock(&fc->passthrough_req_lock);
+
+	if (!passthrough)
+		return -EINVAL;
+
+	ff->passthrough = *passthrough;
+	kfree(passthrough);
+
+	return 0;
 }
 
-ssize_t fuse_passthrough_write_iter(struct kiocb *iocb, struct iov_iter *from)
+void fuse_passthrough_release(struct fuse_passthrough *passthrough)
 {
-	return fuse_passthrough_read_write_iter(iocb, from, 1);
-}
-
-void fuse_passthrough_release(struct fuse_file *ff)
-{
-	if (!(ff->passthrough_filp))
-		return;
-
-	/* Release the passthrough file. */
-	fput(ff->passthrough_filp);
-	ff->passthrough_filp = NULL;
+	if (passthrough->filp) {
+		fput(passthrough->filp);
+		passthrough->filp = NULL;
+	}
+	if (passthrough->cred) {
+		put_cred(passthrough->cred);
+		passthrough->cred = NULL;
+	}
 }

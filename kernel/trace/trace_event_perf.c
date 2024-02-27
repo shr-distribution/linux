@@ -7,6 +7,7 @@
 
 #include <linux/module.h>
 #include <linux/kprobes.h>
+#include <linux/security.h>
 #include "trace.h"
 
 static char __percpu *perf_trace_buf[PERF_NR_CONTEXTS];
@@ -24,8 +25,10 @@ static int	total_ref_count;
 static int perf_trace_event_perm(struct trace_event_call *tp_event,
 				 struct perf_event *p_event)
 {
+	int ret;
+
 	if (tp_event->perf_perm) {
-		int ret = tp_event->perf_perm(tp_event, p_event);
+		ret = tp_event->perf_perm(tp_event, p_event);
 		if (ret)
 			return ret;
 	}
@@ -44,8 +47,9 @@ static int perf_trace_event_perm(struct trace_event_call *tp_event,
 
 	/* The ftrace function trace is allowed only for root. */
 	if (ftrace_event_is_function(tp_event)) {
-		if (perf_paranoid_tracepoint_raw() && !capable(CAP_SYS_ADMIN))
-			return -EPERM;
+		ret = perf_allow_tracepoint(&p_event->attr);
+		if (ret)
+			return ret;
 
 		if (!is_sampling_event(p_event))
 			return 0;
@@ -80,8 +84,9 @@ static int perf_trace_event_perm(struct trace_event_call *tp_event,
 	 * ...otherwise raw tracepoint data can be a severe data leak,
 	 * only allow root to have these.
 	 */
-	if (perf_paranoid_tracepoint_raw() && !capable(CAP_SYS_ADMIN))
-		return -EPERM;
+	ret = perf_allow_tracepoint(&p_event->attr);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -259,8 +264,7 @@ int perf_trace_add(struct perf_event *p_event, int flags)
 void perf_trace_del(struct perf_event *p_event, int flags)
 {
 	struct trace_event_call *tp_event = p_event->tp_event;
-	if (!hlist_unhashed(&p_event->hlist_entry))
-		hlist_del_rcu(&p_event->hlist_entry);
+	hlist_del_rcu(&p_event->hlist_entry);
 	tp_event->class->reg(tp_event, TRACE_REG_PERF_DEL, p_event);
 }
 
@@ -307,6 +311,7 @@ static void
 perf_ftrace_function_call(unsigned long ip, unsigned long parent_ip,
 			  struct ftrace_ops *ops, struct pt_regs *pt_regs)
 {
+	struct perf_event *event;
 	struct ftrace_entry *entry;
 	struct hlist_head *head;
 	struct pt_regs regs;
@@ -330,8 +335,9 @@ perf_ftrace_function_call(unsigned long ip, unsigned long parent_ip,
 
 	entry->ip = ip;
 	entry->parent_ip = parent_ip;
+	event = container_of(ops, struct perf_event, ftrace_ops);
 	perf_trace_buf_submit(entry, ENTRY_SIZE, rctx, TRACE_FN,
-			      1, &regs, head, NULL);
+			      1, &regs, head, NULL, event);
 
 #undef ENTRY_SIZE
 }

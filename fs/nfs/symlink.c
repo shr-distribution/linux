@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/nfs/symlink.c
  *
@@ -25,8 +26,9 @@
  * and straight-forward than readdir caching.
  */
 
-static int nfs_symlink_filler(struct inode *inode, struct page *page)
+static int nfs_symlink_filler(struct file *file, struct page *page)
 {
+	struct inode *inode = (struct inode *)file;
 	int error;
 
 	error = NFS_PROTO(inode)->readlink(inode, page, 0, PAGE_SIZE);
@@ -65,7 +67,7 @@ static const char *nfs_get_link(struct dentry *dentry,
 		if (err)
 			return err;
 		page = read_cache_page(&inode->i_data, 0,
-					(filler_t *)nfs_symlink_filler, inode);
+					nfs_symlink_filler, inode);
 		if (IS_ERR(page))
 			return ERR_CAST(page);
 	}
@@ -77,7 +79,6 @@ static const char *nfs_get_link(struct dentry *dentry,
  * symlinks can't do much...
  */
 const struct inode_operations nfs_symlink_inode_operations = {
-	.readlink	= generic_readlink,
 	.get_link	= nfs_get_link,
 	.getattr	= nfs_getattr,
 	.setattr	= nfs_setattr,

@@ -326,6 +326,9 @@ int rt2x00mac_config(struct ieee80211_hw *hw, u32 changed)
 	 */
 	rt2x00queue_stop_queue(rt2x00dev->rx);
 
+	/* Do not race with with link tuner. */
+	mutex_lock(&rt2x00dev->conf_mutex);
+
 	/*
 	 * When we've just turned on the radio, we want to reprogram
 	 * everything to ensure a consistent state
@@ -340,6 +343,8 @@ int rt2x00mac_config(struct ieee80211_hw *hw, u32 changed)
 	 * have been made since the last configuration change.
 	 */
 	rt2x00lib_config_antenna(rt2x00dev, rt2x00dev->default_ant);
+
+	mutex_unlock(&rt2x00dev->conf_mutex);
 
 	/* Turn RX back on */
 	rt2x00queue_start_queue(rt2x00dev->rx);
@@ -545,9 +550,8 @@ int rt2x00mac_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			 struct ieee80211_sta *sta)
 {
 	struct rt2x00_dev *rt2x00dev = hw->priv;
-	struct rt2x00_sta *sta_priv = sta_to_rt2x00_sta(sta);
 
-	return rt2x00dev->ops->lib->sta_remove(rt2x00dev, sta_priv->wcid);
+	return rt2x00dev->ops->lib->sta_remove(rt2x00dev, sta);
 }
 EXPORT_SYMBOL_GPL(rt2x00mac_sta_remove);
 
@@ -666,17 +670,7 @@ void rt2x00mac_bss_info_changed(struct ieee80211_hw *hw,
 			rt2x00dev->intf_associated--;
 
 		rt2x00leds_led_assoc(rt2x00dev, !!rt2x00dev->intf_associated);
-
-		clear_bit(CONFIG_QOS_DISABLED, &rt2x00dev->flags);
 	}
-
-	/*
-	 * Check for access point which do not support 802.11e . We have to
-	 * generate data frames sequence number in S/W for such AP, because
-	 * of H/W bug.
-	 */
-	if (changes & BSS_CHANGED_QOS && !bss_conf->qos)
-		set_bit(CONFIG_QOS_DISABLED, &rt2x00dev->flags);
 
 	/*
 	 * When the erp information has changed, we should perform
@@ -745,7 +739,8 @@ void rt2x00mac_flush(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		return;
 
 	tx_queue_for_each(rt2x00dev, queue)
-		rt2x00queue_flush_queue(queue, drop);
+		if (!rt2x00queue_empty(queue))
+			rt2x00queue_flush_queue(queue, drop);
 }
 EXPORT_SYMBOL_GPL(rt2x00mac_flush);
 

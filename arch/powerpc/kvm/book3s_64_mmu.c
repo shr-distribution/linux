@@ -235,6 +235,7 @@ static int kvmppc_mmu_book3s_64_xlate(struct kvm_vcpu *vcpu, gva_t eaddr,
 		gpte->may_read = true;
 		gpte->may_write = true;
 		gpte->page_size = MMU_PAGE_4K;
+		gpte->wimg = HPTE_R_M;
 
 		return 0;
 	}
@@ -265,7 +266,8 @@ do_second:
 		goto no_page_found;
 
 	if(copy_from_user(pteg, (void __user *)ptegp, sizeof(pteg))) {
-		printk(KERN_ERR "KVM can't copy data from 0x%lx!\n", ptegp);
+		printk_ratelimited(KERN_ERR
+			"KVM: Can't copy data from 0x%lx!\n", ptegp);
 		goto no_page_found;
 	}
 
@@ -318,6 +320,7 @@ do_second:
 		gpte->may_execute = true;
 	gpte->may_read = false;
 	gpte->may_write = false;
+	gpte->wimg = r & HPTE_R_WIMG;
 
 	switch (pp) {
 	case 0:

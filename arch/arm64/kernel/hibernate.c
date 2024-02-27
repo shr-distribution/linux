@@ -28,6 +28,7 @@
 #include <asm/cacheflush.h>
 #include <asm/cputype.h>
 #include <asm/irqflags.h>
+#include <asm/kexec.h>
 #include <asm/memory.h>
 #include <asm/mmu_context.h>
 #include <asm/pgalloc.h>
@@ -102,7 +103,8 @@ int pfn_is_nosave(unsigned long pfn)
 	unsigned long nosave_begin_pfn = sym_to_pfn(&__nosave_begin);
 	unsigned long nosave_end_pfn = sym_to_pfn(&__nosave_end - 1);
 
-	return (pfn >= nosave_begin_pfn) && (pfn <= nosave_end_pfn);
+	return ((pfn >= nosave_begin_pfn) && (pfn <= nosave_end_pfn)) ||
+		crash_is_nosave(pfn);
 }
 
 void notrace save_processor_state(void)
@@ -133,7 +135,7 @@ int arch_hibernation_header_save(void *addr, unsigned int max_size)
 
 	/* Save the mpidr of the cpu we called cpu_suspend() on... */
 	if (sleep_cpu < 0) {
-		pr_err("Failing to hibernate on an unkown CPU.\n");
+		pr_err("Failing to hibernate on an unknown CPU.\n");
 		return -ENODEV;
 	}
 	hdr->sleep_cpu_mpidr = cpu_logical_map(sleep_cpu);
@@ -244,8 +246,7 @@ static int create_safe_exec_page(void *src_start, size_t length,
 	}
 
 	pte = pte_offset_kernel(pmd, dst_addr);
-	set_pte(pte, __pte(virt_to_phys((void *)dst) |
-			 pgprot_val(PAGE_KERNEL_EXEC)));
+	set_pte(pte, pfn_pte(virt_to_pfn(dst), PAGE_KERNEL_EXEC));
 
 	/*
 	 * Load our new page tables. A strict BBM approach requires that we
@@ -286,6 +287,9 @@ int swsusp_arch_suspend(void)
 	local_dbg_save(flags);
 
 	if (__cpu_suspend_enter(&state)) {
+		/* make the crash dump kernel image visible/saveable */
+		crash_prepare_suspend();
+
 		sleep_cpu = smp_processor_id();
 		ret = swsusp_save();
 	} else {
@@ -294,8 +298,13 @@ int swsusp_arch_suspend(void)
 		dcache_clean_range(__idmap_text_start, __idmap_text_end);
 
 		/* Clean kvm setup code to PoC? */
-		if (el2_reset_needed())
+		if (el2_reset_needed()) {
 			dcache_clean_range(__hyp_idmap_text_start, __hyp_idmap_text_end);
+			dcache_clean_range(__hyp_text_start, __hyp_text_end);
+		}
+
+		/* make the crash dump kernel image protected again */
+		crash_post_resume();
 
 		/*
 		 * Tell the hibernation core that we've just restored
@@ -333,7 +342,7 @@ static void _copy_pte(pte_t *dst_pte, pte_t *src_pte, unsigned long addr)
 		 * read only (code, rodata). Clear the RDONLY bit from
 		 * the temporary mappings we use during restore.
 		 */
-		set_pte(dst_pte, pte_clear_rdonly(pte));
+		set_pte(dst_pte, pte_mkwrite(pte));
 	} else if (debug_pagealloc_enabled() && !pte_none(pte)) {
 		/*
 		 * debug_pagealloc will removed the PTE_VALID bit if
@@ -346,7 +355,7 @@ static void _copy_pte(pte_t *dst_pte, pte_t *src_pte, unsigned long addr)
 		 */
 		BUG_ON(!pfn_valid(pte_pfn(pte)));
 
-		set_pte(dst_pte, pte_mkpresent(pte_clear_rdonly(pte)));
+		set_pte(dst_pte, pte_mkpresent(pte_mkwrite(pte)));
 	}
 }
 
@@ -479,7 +488,7 @@ int swsusp_arch_resume(void)
 	 */
 	tmp_pg_dir = (pgd_t *)get_safe_page(GFP_ATOMIC);
 	if (!tmp_pg_dir) {
-		pr_err("Failed to allocate memory for temporary page tables.");
+		pr_err("Failed to allocate memory for temporary page tables.\n");
 		rc = -ENOMEM;
 		goto out;
 	}
@@ -493,7 +502,7 @@ int swsusp_arch_resume(void)
 	 */
 	zero_page = (void *)get_safe_page(GFP_ATOMIC);
 	if (!zero_page) {
-		pr_err("Failed to allocate zero page.");
+		pr_err("Failed to allocate zero page.\n");
 		rc = -ENOMEM;
 		goto out;
 	}
@@ -513,7 +522,7 @@ int swsusp_arch_resume(void)
 				   &phys_hibernate_exit,
 				   (void *)get_safe_page, GFP_ATOMIC);
 	if (rc) {
-		pr_err("Failed to create safe executable page for hibernate_exit code.");
+		pr_err("Failed to create safe executable page for hibernate_exit code.\n");
 		goto out;
 	}
 
@@ -548,7 +557,7 @@ out:
 int hibernate_resume_nonboot_cpu_disable(void)
 {
 	if (sleep_cpu < 0) {
-		pr_err("Failing to resume from hibernate on an unkown CPU.\n");
+		pr_err("Failing to resume from hibernate on an unknown CPU.\n");
 		return -ENODEV;
 	}
 

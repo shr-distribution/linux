@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* interrupt.h */
 #ifndef _LINUX_INTERRUPT_H
 #define _LINUX_INTERRUPT_H
@@ -19,6 +20,8 @@
 #include <asm/ptrace.h>
 #include <asm/irq.h>
 #include <asm/sections.h>
+
+#include <mt-plat/mtk_sched_mon.h>
 
 /*
  * These correspond to the IORESOURCE_IRQ_* defines in
@@ -153,10 +156,19 @@ request_any_context_irq(unsigned int irq, irq_handler_t handler,
 			unsigned long flags, const char *name, void *dev_id);
 
 extern int __must_check
-request_percpu_irq(unsigned int irq, irq_handler_t handler,
-		   const char *devname, void __percpu *percpu_dev_id);
+__request_percpu_irq(unsigned int irq, irq_handler_t handler,
+		     unsigned long flags, const char *devname,
+		     void __percpu *percpu_dev_id);
 
-extern void free_irq(unsigned int, void *);
+static inline int __must_check
+request_percpu_irq(unsigned int irq, irq_handler_t handler,
+		   const char *devname, void __percpu *percpu_dev_id)
+{
+	return __request_percpu_irq(irq, handler, 0,
+				    devname, percpu_dev_id);
+}
+
+extern const void *free_irq(unsigned int, void *);
 extern void free_percpu_irq(unsigned int, void __percpu *);
 
 struct device;
@@ -233,6 +245,18 @@ struct irq_affinity_notify {
 	void (*release)(struct kref *ref);
 };
 
+/**
+ * struct irq_affinity - Description for automatic irq affinity assignements
+ * @pre_vectors:	Don't apply affinity to @pre_vectors at beginning of
+ *			the MSI(-X) vector space
+ * @post_vectors:	Don't apply affinity to @post_vectors at end of
+ *			the MSI(-X) vector space
+ */
+struct irq_affinity {
+	int	pre_vectors;
+	int	post_vectors;
+};
+
 #if defined(CONFIG_SMP)
 
 extern cpumask_var_t irq_default_affinity;
@@ -279,8 +303,8 @@ extern int irq_set_affinity_hint(unsigned int irq, const struct cpumask *m);
 extern int
 irq_set_affinity_notifier(unsigned int irq, struct irq_affinity_notify *notify);
 
-struct cpumask *irq_create_affinity_masks(const struct cpumask *affinity, int nvec);
-int irq_calc_affinity_vectors(const struct cpumask *affinity, int maxvec);
+struct cpumask *irq_create_affinity_masks(int nvec, const struct irq_affinity *affd);
+int irq_calc_affinity_vectors(int minvec, int maxvec, const struct irq_affinity *affd);
 
 #else /* CONFIG_SMP */
 
@@ -314,13 +338,13 @@ irq_set_affinity_notifier(unsigned int irq, struct irq_affinity_notify *notify)
 }
 
 static inline struct cpumask *
-irq_create_affinity_masks(const struct cpumask *affinity, int nvec)
+irq_create_affinity_masks(int nvec, const struct irq_affinity *affd)
 {
 	return NULL;
 }
 
 static inline int
-irq_calc_affinity_vectors(const struct cpumask *affinity, int maxvec)
+irq_calc_affinity_vectors(int minvec, int maxvec, const struct irq_affinity *affd)
 {
 	return maxvec;
 }
@@ -451,12 +475,6 @@ enum
 };
 
 #define SOFTIRQ_STOP_IDLE_MASK (~(1 << RCU_SOFTIRQ))
-/* Softirq's where the handling might be long: */
-#define LONG_SOFTIRQ_MASK ((1 << NET_TX_SOFTIRQ)       | \
-			   (1 << NET_RX_SOFTIRQ)       | \
-			   (1 << BLOCK_SOFTIRQ)        | \
-			   (1 << IRQ_POLL_SOFTIRQ)     | \
-			   (1 << TASKLET_SOFTIRQ))
 
 /* map softirq index to softirq name. update 'softirq_to_name' in
  * kernel/softirq.c when adding a new softirq.
@@ -492,7 +510,6 @@ extern void raise_softirq_irqoff(unsigned int nr);
 extern void raise_softirq(unsigned int nr);
 
 DECLARE_PER_CPU(struct task_struct *, ksoftirqd);
-DECLARE_PER_CPU(__u32, active_softirqs);
 
 static inline struct task_struct *this_cpu_ksoftirqd(void)
 {
@@ -578,21 +595,6 @@ static inline void tasklet_hi_schedule(struct tasklet_struct *t)
 	if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
 		__tasklet_hi_schedule(t);
 }
-
-extern void __tasklet_hi_schedule_first(struct tasklet_struct *t);
-
-/*
- * This version avoids touching any other tasklets. Needed for kmemcheck
- * in order not to take any page faults while enqueueing this tasklet;
- * consider VERY carefully whether you really need this or
- * tasklet_hi_schedule()...
- */
-static inline void tasklet_hi_schedule_first(struct tasklet_struct *t)
-{
-	if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
-		__tasklet_hi_schedule_first(t);
-}
-
 
 static inline void tasklet_disable_nosync(struct tasklet_struct *t)
 {
@@ -697,6 +699,12 @@ extern void init_irq_proc(void);
 static inline void init_irq_proc(void)
 {
 }
+#endif
+
+#ifdef CONFIG_IRQ_TIMINGS
+void irq_timings_enable(void);
+void irq_timings_disable(void);
+u64 irq_timings_next_event(u64 now);
 #endif
 
 struct seq_file;

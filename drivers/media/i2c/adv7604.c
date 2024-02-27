@@ -33,6 +33,7 @@
 #include <linux/i2c.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of_graph.h>
 #include <linux/slab.h>
 #include <linux/v4l2-dv-timings.h>
 #include <linux/videodev2.h>
@@ -45,7 +46,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-dv-timings.h>
-#include <media/v4l2-of.h>
+#include <media/v4l2-fwnode.h>
 
 static int debug;
 module_param(debug, int, 0644);
@@ -617,7 +618,7 @@ static int adv76xx_read_reg(struct v4l2_subdev *sd, unsigned int reg)
 	unsigned int val;
 	int err;
 
-	if (!(BIT(page) & state->info->page_mask))
+	if (page >= ADV76XX_PAGE_MAX || !(BIT(page) & state->info->page_mask))
 		return -EINVAL;
 
 	reg &= 0xff;
@@ -632,7 +633,7 @@ static int adv76xx_write_reg(struct v4l2_subdev *sd, unsigned int reg, u8 val)
 	struct adv76xx_state *state = to_state(sd);
 	unsigned int page = reg >> 8;
 
-	if (!(BIT(page) & state->info->page_mask))
+	if (page >= ADV76XX_PAGE_MAX || !(BIT(page) & state->info->page_mask))
 		return -EINVAL;
 
 	reg &= 0xff;
@@ -777,7 +778,7 @@ static const struct v4l2_dv_timings_cap adv7604_timings_cap_analog = {
 	.type = V4L2_DV_BT_656_1120,
 	/* keep this initialization for compatibility with GCC < 4.4.6 */
 	.reserved = { 0 },
-	V4L2_INIT_BT_TIMINGS(0, 1920, 0, 1200, 25000000, 170000000,
+	V4L2_INIT_BT_TIMINGS(640, 1920, 350, 1200, 25000000, 170000000,
 		V4L2_DV_BT_STD_CEA861 | V4L2_DV_BT_STD_DMT |
 			V4L2_DV_BT_STD_GTF | V4L2_DV_BT_STD_CVT,
 		V4L2_DV_BT_CAP_PROGRESSIVE | V4L2_DV_BT_CAP_REDUCED_BLANKING |
@@ -788,7 +789,7 @@ static const struct v4l2_dv_timings_cap adv76xx_timings_cap_digital = {
 	.type = V4L2_DV_BT_656_1120,
 	/* keep this initialization for compatibility with GCC < 4.4.6 */
 	.reserved = { 0 },
-	V4L2_INIT_BT_TIMINGS(0, 1920, 0, 1200, 25000000, 225000000,
+	V4L2_INIT_BT_TIMINGS(640, 1920, 350, 1200, 25000000, 225000000,
 		V4L2_DV_BT_STD_CEA861 | V4L2_DV_BT_STD_DMT |
 			V4L2_DV_BT_STD_GTF | V4L2_DV_BT_STD_CVT,
 		V4L2_DV_BT_CAP_PROGRESSIVE | V4L2_DV_BT_CAP_REDUCED_BLANKING |
@@ -1566,10 +1567,24 @@ static int adv76xx_query_dv_timings(struct v4l2_subdev *sd,
 		V4L2_DV_INTERLACED : V4L2_DV_PROGRESSIVE;
 
 	if (is_digital_input(sd)) {
+		bool hdmi_signal = hdmi_read(sd, 0x05) & 0x80;
+		u8 vic = 0;
+		u32 w, h;
+
+		w = hdmi_read16(sd, 0x07, info->linewidth_mask);
+		h = hdmi_read16(sd, 0x09, info->field0_height_mask);
+
+		if (hdmi_signal && (io_read(sd, 0x60) & 1))
+			vic = infoframe_read(sd, 0x04);
+
+		if (vic && v4l2_find_dv_timings_cea861_vic(timings, vic) &&
+		    bt->width == w && bt->height == h)
+			goto found;
+
 		timings->type = V4L2_DV_BT_656_1120;
 
-		bt->width = hdmi_read16(sd, 0x07, info->linewidth_mask);
-		bt->height = hdmi_read16(sd, 0x09, info->field0_height_mask);
+		bt->width = w;
+		bt->height = h;
 		bt->pixelclock = info->read_hdmi_pixelclock(sd);
 		bt->hfrontporch = hdmi_read16(sd, 0x20, info->hfrontporch_mask);
 		bt->hsync = hdmi_read16(sd, 0x22, info->hsync_mask);
@@ -2036,7 +2051,7 @@ static void adv76xx_cec_isr(struct v4l2_subdev *sd, bool *handled)
 
 static int adv76xx_cec_adap_enable(struct cec_adapter *adap, bool enable)
 {
-	struct adv76xx_state *state = adap->priv;
+	struct adv76xx_state *state = cec_get_drvdata(adap);
 	struct v4l2_subdev *sd = &state->sd;
 
 	if (!state->cec_enabled_adap && enable) {
@@ -2066,7 +2081,7 @@ static int adv76xx_cec_adap_enable(struct cec_adapter *adap, bool enable)
 
 static int adv76xx_cec_adap_log_addr(struct cec_adapter *adap, u8 addr)
 {
-	struct adv76xx_state *state = adap->priv;
+	struct adv76xx_state *state = cec_get_drvdata(adap);
 	struct v4l2_subdev *sd = &state->sd;
 	unsigned int i, free_idx = ADV76XX_MAX_ADDRS;
 
@@ -2121,7 +2136,7 @@ static int adv76xx_cec_adap_log_addr(struct cec_adapter *adap, u8 addr)
 static int adv76xx_cec_adap_transmit(struct cec_adapter *adap, u8 attempts,
 				     u32 signal_free_time, struct cec_msg *msg)
 {
-	struct adv76xx_state *state = adap->priv;
+	struct adv76xx_state *state = cec_get_drvdata(adap);
 	struct v4l2_subdev *sd = &state->sd;
 	u8 len = msg->len;
 	unsigned int i;
@@ -2280,8 +2295,10 @@ static int adv76xx_set_edid(struct v4l2_subdev *sd, struct v4l2_edid *edid)
 		state->aspect_ratio.numerator = 16;
 		state->aspect_ratio.denominator = 9;
 
-		if (!state->edid.present)
+		if (!state->edid.present) {
 			state->edid.blocks = 0;
+			cec_phys_addr_invalidate(state->cec_adap);
+		}
 
 		v4l2_dbg(2, debug, sd, "%s: clear EDID pad %d, edid.present = 0x%x\n",
 				__func__, edid->pad, state->edid.present);
@@ -2617,9 +2634,10 @@ static int adv76xx_subscribe_event(struct v4l2_subdev *sd,
 static int adv76xx_registered(struct v4l2_subdev *sd)
 {
 	struct adv76xx_state *state = to_state(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int err;
 
-	err = cec_register_adapter(state->cec_adap);
+	err = cec_register_adapter(state->cec_adap, &client->dev);
 	if (err)
 		cec_delete_adapter(state->cec_adap);
 	return err;
@@ -3054,7 +3072,7 @@ MODULE_DEVICE_TABLE(of, adv76xx_of_id);
 
 static int adv76xx_parse_dt(struct adv76xx_state *state)
 {
-	struct v4l2_of_endpoint bus_cfg;
+	struct v4l2_fwnode_endpoint bus_cfg;
 	struct device_node *endpoint;
 	struct device_node *np;
 	unsigned int flags;
@@ -3068,18 +3086,18 @@ static int adv76xx_parse_dt(struct adv76xx_state *state)
 	if (!endpoint)
 		return -EINVAL;
 
-	ret = v4l2_of_parse_endpoint(endpoint, &bus_cfg);
+	ret = v4l2_fwnode_endpoint_parse(of_fwnode_handle(endpoint), &bus_cfg);
 	if (ret) {
 		of_node_put(endpoint);
 		return ret;
 	}
 
-	if (!of_property_read_u32(endpoint, "default-input", &v))
+	of_node_put(endpoint);
+
+	if (!of_property_read_u32(np, "default-input", &v))
 		state->pdata.default_input = v;
 	else
 		state->pdata.default_input = -1;
-
-	of_node_put(endpoint);
 
 	flags = bus_cfg.bus.parallel.flags;
 
@@ -3499,9 +3517,7 @@ static int adv76xx_probe(struct i2c_client *client,
 #if IS_ENABLED(CONFIG_VIDEO_ADV7604_CEC)
 	state->cec_adap = cec_allocate_adapter(&adv76xx_cec_adap_ops,
 		state, dev_name(&client->dev),
-		CEC_CAP_TRANSMIT | CEC_CAP_LOG_ADDRS |
-		CEC_CAP_PASSTHROUGH | CEC_CAP_RC, ADV76XX_MAX_ADDRS,
-		&client->dev);
+		CEC_CAP_DEFAULTS, ADV76XX_MAX_ADDRS);
 	err = PTR_ERR_OR_ZERO(state->cec_adap);
 	if (err)
 		goto err_entity;

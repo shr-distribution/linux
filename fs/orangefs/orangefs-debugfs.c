@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * What:		/sys/kernel/debug/orangefs/debug-help
  * Date:		June 2015
@@ -304,6 +305,7 @@ static void *help_start(struct seq_file *m, loff_t *pos)
 
 static void *help_next(struct seq_file *m, void *v, loff_t *pos)
 {
+	(*pos)++;
 	gossip_debug(GOSSIP_DEBUGFS_DEBUG, "help_next: start\n");
 
 	return NULL;
@@ -434,10 +436,14 @@ static ssize_t orangefs_debug_write(struct file *file,
 	char *debug_string;
 	struct orangefs_kernel_op_s *new_op = NULL;
 	struct client_debug_mask c_mask = { NULL, 0, 0 };
+	char *s;
 
 	gossip_debug(GOSSIP_DEBUGFS_DEBUG,
 		"orangefs_debug_write: %pD\n",
 		file);
+
+	if (count == 0)
+		return 0;
 
 	/*
 	 * Thwart users who try to jamb a ridiculous number
@@ -521,8 +527,9 @@ static ssize_t orangefs_debug_write(struct file *file,
 	}
 
 	mutex_lock(&orangefs_debug_lock);
-	memset(file->f_inode->i_private, 0, ORANGEFS_MAX_DEBUG_STRING_LEN);
-	sprintf((char *)file->f_inode->i_private, "%s\n", debug_string);
+	s = file_inode(file)->i_private;
+	memset(s, 0, ORANGEFS_MAX_DEBUG_STRING_LEN);
+	sprintf(s, "%s\n", debug_string);
 	mutex_unlock(&orangefs_debug_lock);
 
 	*ppos += count;
@@ -566,11 +573,8 @@ static int orangefs_prepare_cdm_array(char *debug_array_string)
 		goto out;
 	}
 
-	cdm_array =
-		kzalloc(cdm_element_count * sizeof(struct client_debug_mask),
-			GFP_KERNEL);
+	cdm_array = kcalloc(cdm_element_count, sizeof(*cdm_array), GFP_KERNEL);
 	if (!cdm_array) {
-		pr_info("malloc failed for cdm_array!\n");
 		rc = -ENOMEM;
 		goto out;
 	}

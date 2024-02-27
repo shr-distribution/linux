@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -16,7 +16,6 @@
 
 #include <linux/clk-provider.h>
 #include "clk-regmap.h"
-#include "clk-pll.h"
 
 struct pll_vco {
 	unsigned long min_freq;
@@ -24,71 +23,60 @@ struct pll_vco {
 	u32 val;
 };
 
-enum pll_type {
-	ALPHA_PLL,
-	FABIA_PLL,
-	TRION_PLL,
-};
-
 /**
  * struct clk_alpha_pll - phase locked loop (PLL)
  * @offset: base address of registers
- * @inited: flag that's set when the PLL is initialized
  * @vco_table: array of VCO settings
  * @clkr: regmap clock handle
- * @pll_type: Specify the type of PLL
  */
 struct clk_alpha_pll {
 	u32 offset;
-	struct pll_config *config;
-	bool inited;
 
 	const struct pll_vco *vco_table;
 	size_t num_vco;
+#define SUPPORTS_OFFLINE_REQ	BIT(0)
+#define SUPPORTS_16BIT_ALPHA	BIT(1)
+#define SUPPORTS_FSM_MODE	BIT(2)
+	u8 flags;
 
 	struct clk_regmap clkr;
-	u32 config_ctl_val;
-#define PLLOUT_MAIN	BIT(0)
-#define PLLOUT_AUX	BIT(1)
-#define PLLOUT_AUX2	BIT(2)
-#define PLLOUT_EARLY	BIT(3)
-	u32 pllout_flags;
-	enum pll_type type;
 };
 
 /**
  * struct clk_alpha_pll_postdiv - phase locked loop (PLL) post-divider
  * @offset: base address of registers
  * @width: width of post-divider
- * @post_div_shift: shift to differentiate between odd and even post-divider
- * @post_div_table: table with PLL odd and even post-divider settings
- * @num_post_div: Number of PLL post-divider settings
  * @clkr: regmap clock handle
  */
 struct clk_alpha_pll_postdiv {
 	u32 offset;
 	u8 width;
-	int post_div_shift;
-	const struct clk_div_table *post_div_table;
-	size_t num_post_div;
+
 	struct clk_regmap clkr;
+};
+
+struct alpha_pll_config {
+	u32 l;
+	u32 alpha;
+	u32 config_ctl_val;
+	u32 config_ctl_hi_val;
+	u32 main_output_mask;
+	u32 aux_output_mask;
+	u32 aux2_output_mask;
+	u32 early_output_mask;
+	u32 pre_div_val;
+	u32 pre_div_mask;
+	u32 post_div_val;
+	u32 post_div_mask;
+	u32 vco_val;
+	u32 vco_mask;
 };
 
 extern const struct clk_ops clk_alpha_pll_ops;
 extern const struct clk_ops clk_alpha_pll_hwfsm_ops;
 extern const struct clk_ops clk_alpha_pll_postdiv_ops;
-extern const struct clk_ops clk_fabia_pll_ops;
-extern const struct clk_ops clk_fabia_fixed_pll_ops;
-extern const struct clk_ops clk_generic_pll_postdiv_ops;
-extern const struct clk_ops clk_trion_pll_ops;
-extern const struct clk_ops clk_trion_fixed_pll_ops;
-extern const struct clk_ops clk_trion_pll_postdiv_ops;
 
 void clk_alpha_pll_configure(struct clk_alpha_pll *pll, struct regmap *regmap,
-		const struct pll_config *config);
-void clk_fabia_pll_configure(struct clk_alpha_pll *pll,
-		struct regmap *regmap, const struct pll_config *config);
-int clk_trion_pll_configure(struct clk_alpha_pll *pll, struct regmap *regmap,
-		const struct pll_config *config);
+			     const struct alpha_pll_config *config);
 
 #endif

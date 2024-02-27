@@ -102,7 +102,7 @@ struct rxe_type_info rxe_type_info[RXE_NUM_TYPES] = {
 	},
 };
 
-static inline char *pool_name(struct rxe_pool *pool)
+static inline const char *pool_name(struct rxe_pool *pool)
 {
 	return rxe_type_info[pool->type].name;
 }
@@ -112,11 +112,16 @@ static inline struct kmem_cache *pool_cache(struct rxe_pool *pool)
 	return rxe_type_info[pool->type].cache;
 }
 
-static inline enum rxe_elem_type rxe_type(void *arg)
+static void rxe_cache_clean(size_t cnt)
 {
-	struct rxe_pool_entry *elem = arg;
+	int i;
+	struct rxe_type_info *type;
 
-	return elem->pool->type;
+	for (i = 0; i < cnt; i++) {
+		type = &rxe_type_info[i];
+		kmem_cache_destroy(type->cache);
+		type->cache = NULL;
+	}
 }
 
 int rxe_cache_init(void)
@@ -143,24 +148,14 @@ int rxe_cache_init(void)
 	return 0;
 
 err1:
-	while (--i >= 0) {
-		kmem_cache_destroy(type->cache);
-		type->cache = NULL;
-	}
+	rxe_cache_clean(i);
 
 	return err;
 }
 
 void rxe_cache_exit(void)
 {
-	int i;
-	struct rxe_type_info *type;
-
-	for (i = 0; i < RXE_NUM_TYPES; i++) {
-		type = &rxe_type_info[i];
-		kmem_cache_destroy(type->cache);
-		type->cache = NULL;
-	}
+	rxe_cache_clean(RXE_NUM_TYPES);
 }
 
 static int rxe_pool_init_index(struct rxe_pool *pool, u32 max, u32 min)
@@ -180,7 +175,6 @@ static int rxe_pool_init_index(struct rxe_pool *pool, u32 max, u32 min)
 	size = BITS_TO_LONGS(max - min + 1) * sizeof(long);
 	pool->table = kmalloc(size, GFP_KERNEL);
 	if (!pool->table) {
-		pr_warn("no memory for bit table\n");
 		err = -ENOMEM;
 		goto out;
 	}
@@ -196,7 +190,7 @@ int rxe_pool_init(
 	struct rxe_dev		*rxe,
 	struct rxe_pool		*pool,
 	enum rxe_elem_type	type,
-	unsigned		max_elem)
+	unsigned int		max_elem)
 {
 	int			err = 0;
 	size_t			size = rxe_type_info[type].size;
@@ -402,23 +396,25 @@ void *rxe_alloc(struct rxe_pool *pool)
 
 	kref_get(&pool->rxe->ref_cnt);
 
-	if (atomic_inc_return(&pool->num_elem) > pool->max_elem) {
-		atomic_dec(&pool->num_elem);
-		rxe_dev_put(pool->rxe);
-		rxe_pool_put(pool);
-		return NULL;
-	}
+	if (atomic_inc_return(&pool->num_elem) > pool->max_elem)
+		goto out_put_pool;
 
 	elem = kmem_cache_zalloc(pool_cache(pool),
 				 (pool->flags & RXE_POOL_ATOMIC) ?
 				 GFP_ATOMIC : GFP_KERNEL);
 	if (!elem)
-		return NULL;
+		goto out_put_pool;
 
 	elem->pool = pool;
 	kref_init(&elem->ref_cnt);
 
 	return elem;
+
+out_put_pool:
+	atomic_dec(&pool->num_elem);
+	rxe_dev_put(pool->rxe);
+	rxe_pool_put(pool);
+	return NULL;
 }
 
 void rxe_elem_release(struct kref *kref)
@@ -465,7 +461,7 @@ void *rxe_pool_get_index(struct rxe_pool *pool, u32 index)
 
 out:
 	spin_unlock_irqrestore(&pool->pool_lock, flags);
-	return node ? (void *)elem : NULL;
+	return node ? elem : NULL;
 }
 
 void *rxe_pool_get_key(struct rxe_pool *pool, void *key)
@@ -501,5 +497,5 @@ void *rxe_pool_get_key(struct rxe_pool *pool, void *key)
 
 out:
 	spin_unlock_irqrestore(&pool->pool_lock, flags);
-	return node ? ((void *)elem) : NULL;
+	return node ? elem : NULL;
 }

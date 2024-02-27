@@ -20,7 +20,7 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/gpio.h>
 #include <linux/platform_data/gpio-omap.h>
@@ -234,10 +234,9 @@ static int ams_delta_init(struct platform_device *pdev)
 		goto out_gpio;
 
 	/* Scan to find existence of the device */
-	if (nand_scan(ams_delta_mtd, 1)) {
-		err = -ENXIO;
+	err = nand_scan(ams_delta_mtd, 1);
+	if (err)
 		goto out_mtd;
-	}
 
 	/* Register the partitions */
 	mtd_device_register(ams_delta_mtd, partition_info,
@@ -264,7 +263,7 @@ static int ams_delta_cleanup(struct platform_device *pdev)
 	void __iomem *io_base = platform_get_drvdata(pdev);
 
 	/* Release resources, unregister device */
-	nand_release(ams_delta_mtd);
+	nand_release(mtd_to_nand(ams_delta_mtd));
 
 	gpio_free_array(_mandatory_gpio, ARRAY_SIZE(_mandatory_gpio));
 	gpio_free(AMS_DELTA_GPIO_PIN_NAND_RB);

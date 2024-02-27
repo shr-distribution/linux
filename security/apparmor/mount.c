@@ -4,7 +4,7 @@
  * This file contains AppArmor mediation of files
  *
  * Copyright (C) 1998-2008 Novell/SUSE
- * Copyright 2009-2012 Canonical Ltd.
+ * Copyright 2009-2017 Canonical Ltd.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -130,11 +130,11 @@ static void audit_cb(struct audit_buffer *ab, void *va)
  *
  * Returns: %0 or error on failure
  */
-static int audit_mount(struct aa_profile *profile, const char *op, const char *name,
-		       const char *src_name, const char *type,
-		       const char *trans, unsigned long flags,
-		       const void *data, u32 request, struct aa_perms *perms,
-		       const char *info, int error)
+static int audit_mount(struct aa_profile *profile, const char *op,
+		       const char *name, const char *src_name,
+		       const char *type, const char *trans,
+		       unsigned long flags, const void *data, u32 request,
+		       struct aa_perms *perms, const char *info, int error)
 {
 	int audit_type = AUDIT_APPARMOR_AUTO;
 	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, op);
@@ -227,7 +227,7 @@ static struct aa_perms compute_mnt_perms(struct aa_dfa *dfa,
 	return perms;
 }
 
-static const char *mnt_info_table[] = {
+static const char * const mnt_info_table[] = {
 	"match succeeded",
 	"failed mntpnt match",
 	"failed srcname match",
@@ -316,10 +316,11 @@ static int path_flags(struct aa_profile *profile, const struct path *path)
  *
  * Returns: 0 on success else error
  */
-static int match_mnt_path_str(struct aa_profile *profile, const struct path *mntpath,
-			      char *buffer, const char *devname,
-			      const char *type, unsigned long flags,
-			      void *data, bool binary, const char *devinfo)
+static int match_mnt_path_str(struct aa_profile *profile,
+			      const struct path *mntpath, char *buffer,
+			      const char *devname, const char *type,
+			      unsigned long flags, void *data, bool binary,
+			      const char *devinfo)
 {
 	struct aa_perms perms = { };
 	const char *mntpnt = NULL, *info = NULL;
@@ -328,6 +329,9 @@ static int match_mnt_path_str(struct aa_profile *profile, const struct path *mnt
 	AA_BUG(!profile);
 	AA_BUG(!mntpath);
 	AA_BUG(!buffer);
+
+	if (!PROFILE_MEDIATES(profile, AA_CLASS_MOUNT))
+		return 0;
 
 	error = aa_path_name(mntpath, path_flags(profile, mntpath), buffer,
 			     &mntpnt, &info, profile->disconnected);
@@ -379,6 +383,9 @@ static int match_mnt(struct aa_profile *profile, const struct path *path,
 
 	AA_BUG(!profile);
 	AA_BUG(devpath && !devbuffer);
+
+	if (!PROFILE_MEDIATES(profile, AA_CLASS_MOUNT))
+		return 0;
 
 	if (devpath) {
 		error = aa_path_name(devpath, path_flags(profile, devpath),
@@ -511,6 +518,7 @@ int aa_new_mount(struct aa_label *label, const char *dev_name,
 
 	if (type) {
 		struct file_system_type *fstype;
+
 		fstype = get_fs_type(type);
 		if (!fstype)
 			return -ENODEV;
@@ -557,6 +565,9 @@ static int profile_umount(struct aa_profile *profile, struct path *path,
 	AA_BUG(!profile);
 	AA_BUG(!path);
 
+	if (!PROFILE_MEDIATES(profile, AA_CLASS_MOUNT))
+		return 0;
+
 	error = aa_path_name(path, path_flags(profile, path), buffer, &name,
 			     &info, profile->disconnected);
 	if (error)
@@ -579,7 +590,7 @@ int aa_umount(struct aa_label *label, struct vfsmount *mnt, int flags)
 	struct aa_profile *profile;
 	char *buffer = NULL;
 	int error;
-	struct path path = { mnt, mnt->mnt_root };
+	struct path path = { .mnt = mnt, .dentry = mnt->mnt_root };
 
 	AA_BUG(!label);
 	AA_BUG(!mnt);
@@ -604,7 +615,6 @@ static struct aa_label *build_pivotroot(struct aa_profile *profile,
 {
 	const char *old_name, *new_name = NULL, *info = NULL;
 	const char *trans_name = NULL;
-	struct aa_label *target = NULL;
 	struct aa_perms perms = { };
 	unsigned int state;
 	int error;
@@ -613,7 +623,8 @@ static struct aa_label *build_pivotroot(struct aa_profile *profile,
 	AA_BUG(!new_path);
 	AA_BUG(!old_path);
 
-	if (profile_unconfined(profile))
+	if (profile_unconfined(profile) ||
+	    !PROFILE_MEDIATES(profile, AA_CLASS_MOUNT))
 		return aa_get_newest_label(&profile->label);
 
 	error = aa_path_name(old_path, path_flags(profile, old_path),
@@ -635,25 +646,15 @@ static struct aa_label *build_pivotroot(struct aa_profile *profile,
 	state = aa_dfa_match(profile->policy.dfa, state, old_name);
 	perms = compute_mnt_perms(profile->policy.dfa, state);
 
-	if (AA_MAY_PIVOTROOT & perms.allow) {
+	if (AA_MAY_PIVOTROOT & perms.allow)
 		error = 0;
-		if ((perms.xindex & AA_X_TYPE_MASK) == AA_X_TABLE) {
-			target = x_table_lookup(profile, perms.xindex,
-						&trans_name);
-			if (!target)
-				error = -ENOENT;
-		}
-	}
 
 audit:
 	error = audit_mount(profile, OP_PIVOTROOT, new_name, old_name,
 			    NULL, trans_name, 0, NULL, AA_MAY_PIVOTROOT,
 			    &perms, info, error);
-	if (error) {
-		aa_put_label(target);
+	if (error)
 		return ERR_PTR(error);
-	} else if (target)
-		return target;
 
 	return aa_get_newest_label(&profile->label);
 }

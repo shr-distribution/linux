@@ -1260,7 +1260,7 @@ static struct drm_encoder *mtk_hdmi_conn_best_enc(struct drm_connector *conn)
 }
 
 static const struct drm_connector_funcs mtk_hdmi_connector_funcs = {
-	.dpms = drm_atomic_helper_connector_dpms,
+	/* .dpms = drm_atomic_helper_connector_dpms, */
 	.detect = hdmi_conn_detect,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.destroy = hdmi_conn_destroy,
@@ -1316,7 +1316,7 @@ static int mtk_hdmi_bridge_attach(struct drm_bridge *bridge)
 
 	if (bridge->next) {
 		bridge->next->encoder = bridge->encoder;
-		ret = drm_bridge_attach(bridge->encoder->dev, bridge->next);
+		ret = drm_bridge_attach(bridge->encoder, bridge->next, NULL);
 		if (ret) {
 			dev_err(hdmi->dev,
 				"Failed to attach external bridge: %d\n", ret);
@@ -1678,7 +1678,7 @@ static void mtk_hdmi_register_audio_driver(struct device *dev)
 	if (IS_ERR(pdev))
 		return;
 
-	DRM_INFO("%s driver bound to HDMI\n", HDMI_CODEC_DRV_NAME);
+	DDPINFO("%s driver bound to HDMI\n", HDMI_CODEC_DRV_NAME);
 }
 
 static int mtk_drm_hdmi_probe(struct platform_device *pdev)
@@ -1803,7 +1803,7 @@ static int __init mtk_hdmitx_init(void)
 	for (i = 0; i < ARRAY_SIZE(mtk_hdmi_drivers); i++) {
 		ret = platform_driver_register(mtk_hdmi_drivers[i]);
 		if (ret < 0) {
-			pr_err("Failed to register %s driver: %d\n",
+			DDPPR_ERR("Failed to register %s driver: %d\n",
 			       mtk_hdmi_drivers[i]->driver.name, ret);
 			goto err;
 		}

@@ -15,7 +15,7 @@
 #include <linux/platform_device.h>
 #include <linux/of.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/clk.h>
 #include <linux/err.h>
@@ -54,13 +54,16 @@ static void orion_nand_read_buf(struct mtd_info *mtd, uint8_t *buf, int len)
 {
 	struct nand_chip *chip = mtd_to_nand(mtd);
 	void __iomem *io_base = chip->IO_ADDR_R;
+#if __LINUX_ARM_ARCH__ >= 5
 	uint64_t *buf64;
+#endif
 	int i = 0;
 
 	while (len && (unsigned long)buf & 7) {
 		*buf++ = readb(io_base);
 		len--;
 	}
+#if __LINUX_ARM_ARCH__ >= 5
 	buf64 = (uint64_t *)buf;
 	while (i < len/8) {
 		/*
@@ -74,6 +77,10 @@ static void orion_nand_read_buf(struct mtd_info *mtd, uint8_t *buf, int len)
 		buf64[i++] = x;
 	}
 	i *= 8;
+#else
+	readsl(io_base, buf, len/4);
+	i = len / 4 * 4;
+#endif
 	while (i < len)
 		buf[i++] = readb(io_base);
 }
@@ -156,27 +163,37 @@ static int __init orion_nand_probe(struct platform_device *pdev)
 	/* Not all platforms can gate the clock, so it is not
 	   an error if the clock does not exists. */
 	info->clk = devm_clk_get(&pdev->dev, NULL);
-	if (!IS_ERR(info->clk))
-		clk_prepare_enable(info->clk);
-
-	if (nand_scan(mtd, 1)) {
-		ret = -ENXIO;
-		goto no_dev;
+	if (IS_ERR(info->clk)) {
+		ret = PTR_ERR(info->clk);
+		if (ret == -ENOENT) {
+			info->clk = NULL;
+		} else {
+			dev_err(&pdev->dev, "failed to get clock!\n");
+			return ret;
+		}
 	}
+
+	ret = clk_prepare_enable(info->clk);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to prepare clock!\n");
+		return ret;
+	}
+
+	ret = nand_scan(mtd, 1);
+	if (ret)
+		goto no_dev;
 
 	mtd->name = "orion_nand";
 	ret = mtd_device_register(mtd, board->parts, board->nr_parts);
 	if (ret) {
-		nand_release(mtd);
+		nand_cleanup(nc);
 		goto no_dev;
 	}
 
 	return 0;
 
 no_dev:
-	if (!IS_ERR(info->clk))
-		clk_disable_unprepare(info->clk);
-
+	clk_disable_unprepare(info->clk);
 	return ret;
 }
 
@@ -184,12 +201,10 @@ static int orion_nand_remove(struct platform_device *pdev)
 {
 	struct orion_nand_info *info = platform_get_drvdata(pdev);
 	struct nand_chip *chip = &info->chip;
-	struct mtd_info *mtd = nand_to_mtd(chip);
 
-	nand_release(mtd);
+	nand_release(chip);
 
-	if (!IS_ERR(info->clk))
-		clk_disable_unprepare(info->clk);
+	clk_disable_unprepare(info->clk);
 
 	return 0;
 }

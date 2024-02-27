@@ -1210,6 +1210,7 @@ static int create_lkb(struct dlm_ls *ls, struct dlm_lkb **lkb_ret)
 
 	if (rv < 0) {
 		log_error(ls, "create_lkb idr error %d", rv);
+		dlm_free_lkb(lkb);
 		return rv;
 	}
 
@@ -1395,7 +1396,6 @@ static int nodeid_warned(int nodeid, int num_nodes, int *warned)
 void dlm_scan_waiters(struct dlm_ls *ls)
 {
 	struct dlm_lkb *lkb;
-	ktime_t zero = ktime_set(0, 0);
 	s64 us;
 	s64 debug_maxus = 0;
 	u32 debug_scanned = 0;
@@ -1409,7 +1409,7 @@ void dlm_scan_waiters(struct dlm_ls *ls)
 	mutex_lock(&ls->ls_waiters_mutex);
 
 	list_for_each_entry(lkb, &ls->ls_waiters, lkb_wait_reply) {
-		if (ktime_equal(lkb->lkb_wait_time, zero))
+		if (!lkb->lkb_wait_time)
 			continue;
 
 		debug_scanned++;
@@ -1419,7 +1419,7 @@ void dlm_scan_waiters(struct dlm_ls *ls)
 		if (us < dlm_config.ci_waitwarn_us)
 			continue;
 
-		lkb->lkb_wait_time = zero;
+		lkb->lkb_wait_time = 0;
 
 		debug_expired++;
 		if (us > debug_maxus)
@@ -1427,7 +1427,7 @@ void dlm_scan_waiters(struct dlm_ls *ls)
 
 		if (!num_nodes) {
 			num_nodes = ls->ls_num_nodes;
-			warned = kzalloc(num_nodes * sizeof(int), GFP_KERNEL);
+			warned = kcalloc(num_nodes, sizeof(int), GFP_KERNEL);
 		}
 		if (!warned)
 			continue;
@@ -4177,6 +4177,7 @@ static int receive_convert(struct dlm_ls *ls, struct dlm_message *ms)
 			  (unsigned long long)lkb->lkb_recover_seq,
 			  ms->m_header.h_nodeid, ms->m_lkid);
 		error = -ENOENT;
+		dlm_put_lkb(lkb);
 		goto fail;
 	}
 
@@ -4230,6 +4231,7 @@ static int receive_unlock(struct dlm_ls *ls, struct dlm_message *ms)
 			  lkb->lkb_id, lkb->lkb_remid,
 			  ms->m_header.h_nodeid, ms->m_lkid);
 		error = -ENOENT;
+		dlm_put_lkb(lkb);
 		goto fail;
 	}
 
@@ -5120,11 +5122,9 @@ void dlm_recover_waiters_pre(struct dlm_ls *ls)
 	int wait_type, stub_unlock_result, stub_cancel_result;
 	int dir_nodeid;
 
-	ms_stub = kmalloc(sizeof(struct dlm_message), GFP_KERNEL);
-	if (!ms_stub) {
-		log_error(ls, "dlm_recover_waiters_pre no mem");
+	ms_stub = kmalloc(sizeof(*ms_stub), GFP_KERNEL);
+	if (!ms_stub)
 		return;
-	}
 
 	mutex_lock(&ls->ls_waiters_mutex);
 
@@ -5792,20 +5792,20 @@ int dlm_user_request(struct dlm_ls *ls, struct dlm_user_args *ua,
 			goto out;
 		}
 	}
-
-	/* After ua is attached to lkb it will be freed by dlm_free_lkb().
-	   When DLM_IFL_USER is set, the dlm knows that this is a userspace
-	   lock and that lkb_astparam is the dlm_user_args structure. */
-
 	error = set_lock_args(mode, &ua->lksb, flags, namelen, timeout_cs,
 			      fake_astfn, ua, fake_bastfn, &args);
-	lkb->lkb_flags |= DLM_IFL_USER;
-
 	if (error) {
+		kfree(ua->lksb.sb_lvbptr);
+		ua->lksb.sb_lvbptr = NULL;
+		kfree(ua);
 		__put_lkb(ls, lkb);
 		goto out;
 	}
 
+	/* After ua is attached to lkb it will be freed by dlm_free_lkb().
+	   When DLM_IFL_USER is set, the dlm knows that this is a userspace
+	   lock and that lkb_astparam is the dlm_user_args structure. */
+	lkb->lkb_flags |= DLM_IFL_USER;
 	error = request_lock(ls, lkb, name, namelen, &args);
 
 	switch (error) {

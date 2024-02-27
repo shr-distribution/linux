@@ -46,6 +46,9 @@ struct br_ip_list {
 #define BR_LEARNING_SYNC	BIT(9)
 #define BR_PROXYARP_WIFI	BIT(10)
 #define BR_MCAST_FLOOD		BIT(11)
+#define BR_MULTICAST_TO_UNICAST	BIT(12)
+#define BR_VLAN_TUNNEL		BIT(13)
+#define BR_BCAST_FLOOD		BIT(14)
 
 #define BR_DEFAULT_AGEING_TIME	(300 * HZ)
 
@@ -53,14 +56,13 @@ extern void brioctl_set(int (*ioctl_hook)(struct net *, unsigned int, void __use
 
 typedef int br_should_route_hook_t(struct sk_buff *skb);
 extern br_should_route_hook_t __rcu *br_should_route_hook;
-extern struct net_device *br_port_dev_get(struct net_device *dev,
-						unsigned char *addr);
 
 #if IS_ENABLED(CONFIG_BRIDGE) && IS_ENABLED(CONFIG_BRIDGE_IGMP_SNOOPING)
 int br_multicast_list_adjacent(struct net_device *dev,
 			       struct list_head *br_ip_list);
 bool br_multicast_has_querier_anywhere(struct net_device *dev, int proto);
 bool br_multicast_has_querier_adjacent(struct net_device *dev, int proto);
+bool br_multicast_enabled(const struct net_device *dev);
 #else
 static inline int br_multicast_list_adjacent(struct net_device *dev,
 					     struct list_head *br_ip_list)
@@ -74,6 +76,19 @@ static inline bool br_multicast_has_querier_anywhere(struct net_device *dev,
 }
 static inline bool br_multicast_has_querier_adjacent(struct net_device *dev,
 						     int proto)
+{
+	return false;
+}
+static inline bool br_multicast_enabled(const struct net_device *dev)
+{
+	return false;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_BRIDGE) && IS_ENABLED(CONFIG_BRIDGE_VLAN_FILTERING)
+bool br_vlan_enabled(const struct net_device *dev);
+#else
+static inline bool br_vlan_enabled(const struct net_device *dev)
 {
 	return false;
 }

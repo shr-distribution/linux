@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This header is used to share core functionality between the
  * standalone connection tracking module, and the compatibility layer's use
@@ -20,9 +21,6 @@
 /* This header is used to share core functionality between the
    standalone connection tracking module, and the compatibility layer's use
    of connection tracking. */
-
-extern unsigned int nf_conntrack_hash_rnd;
-
 unsigned int nf_conntrack_in(struct net *net, u_int8_t pf, unsigned int hooknum,
 			     struct sk_buff *skb);
 
@@ -53,10 +51,6 @@ bool nf_ct_invert_tuple(struct nf_conntrack_tuple *inverse,
 			const struct nf_conntrack_tuple *orig,
 			const struct nf_conntrack_l3proto *l3proto,
 			const struct nf_conntrack_l4proto *l4proto);
-extern void (*delete_sfe_entry)(struct nf_conn *ct);
-extern bool (*nattype_refresh_timer)
-			(unsigned long nattype,
-			unsigned long timeout_value);
 
 /* Find a connection corresponding to a tuple. */
 struct nf_conntrack_tuple_hash *
@@ -69,10 +63,10 @@ int __nf_conntrack_confirm(struct sk_buff *skb);
 /* Confirm a connection: returns NF_DROP if packet must be dropped. */
 static inline int nf_conntrack_confirm(struct sk_buff *skb)
 {
-	struct nf_conn *ct = (struct nf_conn *)skb->nfct;
+	struct nf_conn *ct = (struct nf_conn *)skb_nfct(skb);
 	int ret = NF_ACCEPT;
 
-	if (ct && !nf_ct_is_untracked(ct)) {
+	if (ct) {
 		if (!nf_ct_is_confirmed(ct))
 			ret = __nf_conntrack_confirm(skb);
 		if (likely(ret == NF_ACCEPT))
@@ -92,10 +86,5 @@ extern spinlock_t nf_conntrack_locks[CONNTRACK_LOCKS];
 void nf_conntrack_lock(spinlock_t *lock);
 
 extern spinlock_t nf_conntrack_expect_lock;
-
-struct sip_list {
-	struct nf_queue_entry *entry;
-	struct list_head list;
-};
 
 #endif /* _NF_CONNTRACK_CORE_H */

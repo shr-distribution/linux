@@ -22,7 +22,7 @@
 #include "label.h"
 #include "policy_ns.h"
 
-#define cred_ctx(X) (X)->security
+#define cred_ctx(X) ((X)->security)
 #define current_ctx() cred_ctx(current_cred())
 
 /**
@@ -66,12 +66,13 @@ struct aa_label *aa_get_task_label(struct task_struct *task);
 static inline struct aa_label *aa_cred_raw_label(const struct cred *cred)
 {
 	struct aa_task_ctx *ctx = cred_ctx(cred);
-	BUG_ON(!ctx || !ctx->label);
+
+	AA_BUG(!ctx || !ctx->label);
 	return ctx->label;
 }
 
 /**
- * aa_get_newest_cred_label - obtain the newest version of the label on a cred
+ * aa_get_newest_cred_label - obtain the newest label on a cred
  * @cred: cred to obtain label from (NOT NULL)
  *
  * Returns: newest version of confining label
@@ -136,41 +137,65 @@ static inline struct aa_label *aa_get_current_label(void)
 	return aa_get_label(l);
 }
 
+#define __end_current_label_crit_section(X) end_current_label_crit_section(X)
+
 /**
- * aa_end_current_label - put a reference found with aa_begin_current_label
+ * end_label_crit_section - put a reference found with begin_current_label..
  * @label: label reference to put
  *
- * Should only be used with a reference obtained with aa_begin_current_label
- * and never used in situations where the task cred may be updated
+ * Should only be used with a reference obtained with
+ * begin_current_label_crit_section and never used in situations where the
+ * task cred may be updated
  */
-static inline void aa_end_current_label(struct aa_label *label)
+static inline void end_current_label_crit_section(struct aa_label *label)
 {
 	if (label != aa_current_raw_label())
 		aa_put_label(label);
 }
 
 /**
- * aa_begin_current_label - find the current tasks confining label and update it
- * @update: whether the current label can be updated
+ * __begin_current_label_crit_section - current's confining label
  *
  * Returns: up to date confining label or the ns unconfined label (NOT NULL)
  *
- * If @update is true this fn will update the tasks cred structure if the
- *   label has been replaced.  Not safe to call inside locks
- * else
- *   just return the up to date label
+ * safe to call inside locks
  *
- * The returned reference must be put with aa_end_current_label()
+ * The returned reference must be put with __end_current_label_crit_section()
  * This must NOT be used if the task cred could be updated within the
- * critical section between aa_begin_current_label() .. aa_end_current_label()
+ * critical section between __begin_current_label_crit_section() ..
+ * __end_current_label_crit_section()
  */
-static inline struct aa_label *aa_begin_current_label(bool update)
+static inline struct aa_label *__begin_current_label_crit_section(void)
 {
 	struct aa_label *label = aa_current_raw_label();
 
+	if (label_is_stale(label))
+		label = aa_get_newest_label(label);
+
+	return label;
+}
+
+/**
+ * begin_current_label_crit_section - current's confining label and update it
+ *
+ * Returns: up to date confining label or the ns unconfined label (NOT NULL)
+ *
+ * Not safe to call inside locks
+ *
+ * The returned reference must be put with end_current_label_crit_section()
+ * This must NOT be used if the task cred could be updated within the
+ * critical section between begin_current_label_crit_section() ..
+ * end_current_label_crit_section()
+ */
+static inline struct aa_label *begin_current_label_crit_section(void)
+{
+	struct aa_label *label = aa_current_raw_label();
+
+	might_sleep();
+
 	if (label_is_stale(label)) {
 		label = aa_get_newest_label(label);
-		if (update && aa_replace_current_label(label) == 0)
+		if (aa_replace_current_label(label) == 0)
 			/* task cred will keep the reference */
 			aa_put_label(label);
 	}
@@ -178,14 +203,14 @@ static inline struct aa_label *aa_begin_current_label(bool update)
 	return label;
 }
 
-#define NO_UPDATE false
-#define DO_UPDATE true
-
 static inline struct aa_ns *aa_get_current_ns(void)
 {
-	struct aa_label *label = aa_begin_current_label(NO_UPDATE);
-	struct aa_ns *ns = aa_get_ns(labels_ns(label));
-	aa_end_current_label(label);
+	struct aa_label *label;
+	struct aa_ns *ns;
+
+	label  = __begin_current_label_crit_section();
+	ns = aa_get_ns(labels_ns(label));
+	__end_current_label_crit_section(label);
 
 	return ns;
 }

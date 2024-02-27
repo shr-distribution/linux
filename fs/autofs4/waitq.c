@@ -10,6 +10,7 @@
 #include <linux/slab.h>
 #include <linux/time.h>
 #include <linux/signal.h>
+#include <linux/sched/signal.h>
 #include <linux/file.h>
 #include "autofs_i.h"
 
@@ -55,27 +56,20 @@ static int autofs4_write(struct autofs_sb_info *sbi,
 			 struct file *file, const void *addr, int bytes)
 {
 	unsigned long sigpipe, flags;
-	mm_segment_t fs;
 	const char *data = (const char *)addr;
 	ssize_t wr = 0;
 
 	sigpipe = sigismember(&current->pending.signal, SIGPIPE);
 
-	/* Save pointer to user space and point back to kernel space */
-	fs = get_fs();
-	set_fs(KERNEL_DS);
-
 	mutex_lock(&sbi->pipe_mutex);
 	while (bytes) {
-		wr = __vfs_write(file, data, bytes, &file->f_pos);
+		wr = __kernel_write(file, data, bytes, &file->f_pos);
 		if (wr <= 0)
 			break;
 		data += wr;
 		bytes -= wr;
 	}
 	mutex_unlock(&sbi->pipe_mutex);
-
-	set_fs(fs);
 
 	/* Keep the currently executing process from receiving a
 	 * SIGPIPE unless it was already supposed to get one
@@ -262,8 +256,9 @@ autofs4_find_wait(struct autofs_sb_info *sbi, const struct qstr *qstr)
 static int validate_request(struct autofs_wait_queue **wait,
 			    struct autofs_sb_info *sbi,
 			    const struct qstr *qstr,
-			    struct dentry *dentry, enum autofs_notify notify)
+			    const struct path *path, enum autofs_notify notify)
 {
+	struct dentry *dentry = path->dentry;
 	struct autofs_wait_queue *wq;
 	struct autofs_info *ino;
 
@@ -326,6 +321,7 @@ static int validate_request(struct autofs_wait_queue **wait,
 	 */
 	if (notify == NFY_MOUNT) {
 		struct dentry *new = NULL;
+		struct path this;
 		int valid = 1;
 
 		/*
@@ -345,7 +341,9 @@ static int validate_request(struct autofs_wait_queue **wait,
 					dentry = new;
 			}
 		}
-		if (have_submounts(dentry))
+		this.mnt = path->mnt;
+		this.dentry = dentry;
+		if (path_has_submounts(&this))
 			valid = 0;
 
 		if (new)
@@ -357,8 +355,9 @@ static int validate_request(struct autofs_wait_queue **wait,
 }
 
 int autofs4_wait(struct autofs_sb_info *sbi,
-		 struct dentry *dentry, enum autofs_notify notify)
+		 const struct path *path, enum autofs_notify notify)
 {
+	struct dentry *dentry = path->dentry;
 	struct autofs_wait_queue *wq;
 	struct qstr qstr;
 	char *name;
@@ -417,7 +416,7 @@ int autofs4_wait(struct autofs_sb_info *sbi,
 		return -EINTR;
 	}
 
-	ret = validate_request(&wq, sbi, &qstr, dentry, notify);
+	ret = validate_request(&wq, sbi, &qstr, path, notify);
 	if (ret <= 0) {
 		if (ret != -EINTR)
 			mutex_unlock(&sbi->wq_mutex);

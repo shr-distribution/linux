@@ -19,6 +19,7 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/stacktrace.h>
+#include <linux/rculist.h>
 
 #include "tracing_map.h"
 #include "trace.h"
@@ -871,9 +872,10 @@ static inline void add_to_key(char *compound_key, void *key,
 		/* ensure NULL-termination */
 		if (size > key_field->size - 1)
 			size = key_field->size - 1;
-	}
 
-	memcpy(compound_key + key_field->offset, key, size);
+		strncpy(compound_key + key_field->offset, (char *)key, size);
+	} else
+		memcpy(compound_key + key_field->offset, key, size);
 }
 
 static void event_hist_trigger(struct event_trigger_data *data, void *rec)

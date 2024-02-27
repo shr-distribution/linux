@@ -15,6 +15,7 @@
 #include <linux/capability.h>
 #include <linux/errno.h>
 #include <linux/gfp.h>
+#include <linux/security.h>
 
 #include "include/apparmor.h"
 #include "include/capability.h"
@@ -27,8 +28,8 @@
  */
 #include "capability_names.h"
 
-struct aa_fs_entry aa_fs_entry_caps[] = {
-	AA_FS_FILE_STRING("mask", AA_FS_CAPS_MASK),
+struct aa_sfs_entry aa_sfs_entry_caps[] = {
+	AA_SFS_FILE_STRING("mask", AA_SFS_CAPS_MASK),
 	{ }
 };
 
@@ -47,6 +48,7 @@ static DEFINE_PER_CPU(struct audit_cache, audit_cache);
 static void audit_cb(struct audit_buffer *ab, void *va)
 {
 	struct common_audit_data *sa = va;
+
 	audit_log_format(ab, " capname=");
 	audit_log_untrustedstring(ab, capability_names[sa->u.cap]);
 }
@@ -68,6 +70,7 @@ static int audit_caps(struct common_audit_data *sa, struct aa_profile *profile,
 {
 	struct audit_cache *ent;
 	int type = AUDIT_APPARMOR_AUTO;
+
 	aad(sa)->error = error;
 
 	if (likely(!error)) {
@@ -115,24 +118,24 @@ static int audit_caps(struct common_audit_data *sa, struct aa_profile *profile,
 static int profile_capable(struct aa_profile *profile, int cap, int audit,
 			   struct common_audit_data *sa)
 {
-       int error;
+	int error;
 
-       if (cap_raised(profile->caps.allow, cap) &&
-           !cap_raised(profile->caps.denied, cap))
-               error = 0;
-       else
-               error = -EPERM;
+	if (cap_raised(profile->caps.allow, cap) &&
+	    !cap_raised(profile->caps.denied, cap))
+		error = 0;
+	else
+		error = -EPERM;
 
-       if (audit == SECURITY_CAP_NOAUDIT) {
-               if (!COMPLAIN_MODE(profile))
-		       return error;
-	       /* audit the cap request in complain mode but note that it
-		* should be optional.
-		*/
-	       aad(sa)->info = "optional: no audit";
-       }
+	if (audit == SECURITY_CAP_NOAUDIT) {
+		if (!COMPLAIN_MODE(profile))
+			return error;
+		/* audit the cap request in complain mode but note that it
+		 * should be optional.
+		 */
+		aad(sa)->info = "optional: no audit";
+	}
 
-       return audit_caps(sa, profile, cap, error);
+	return audit_caps(sa, profile, cap, error);
 }
 
 /**
@@ -150,8 +153,8 @@ int aa_capable(struct aa_label *label, int cap, int audit)
 	struct aa_profile *profile;
 	int error = 0;
 	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_CAP, OP_CAPABLE);
-	sa.u.cap = cap;
 
+	sa.u.cap = cap;
 	error = fn_for_each_confined(label, profile,
 			profile_capable(profile, cap, audit, &sa));
 

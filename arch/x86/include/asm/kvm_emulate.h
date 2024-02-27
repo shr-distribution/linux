@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  * x86_emulate.h
  *
@@ -23,6 +24,7 @@ struct x86_exception {
 	u16 error_code;
 	bool nested_page_fault;
 	u64 address; /* cr2 or nested page fault gpa */
+	u8 async_page_fault;
 };
 
 /*
@@ -220,8 +222,8 @@ struct x86_emulate_ops {
 			 struct x86_instruction_info *info,
 			 enum x86_intercept_stage stage);
 
-	void (*get_cpuid)(struct x86_emulate_ctxt *ctxt,
-			  u32 *eax, u32 *ebx, u32 *ecx, u32 *edx);
+	bool (*get_cpuid)(struct x86_emulate_ctxt *ctxt, u32 *eax, u32 *ebx,
+			  u32 *ecx, u32 *edx, bool check_limit);
 	void (*set_nmi_mask)(struct x86_emulate_ctxt *ctxt, bool masked);
 
 	unsigned (*get_hflags)(struct x86_emulate_ctxt *ctxt);
@@ -446,5 +448,6 @@ int emulator_task_switch(struct x86_emulate_ctxt *ctxt,
 int emulate_int_real(struct x86_emulate_ctxt *ctxt, int irq);
 void emulator_invalidate_register_cache(struct x86_emulate_ctxt *ctxt);
 void emulator_writeback_register_cache(struct x86_emulate_ctxt *ctxt);
+bool emulator_can_use_gpa(struct x86_emulate_ctxt *ctxt);
 
 #endif /* _ASM_X86_KVM_X86_EMULATE_H */

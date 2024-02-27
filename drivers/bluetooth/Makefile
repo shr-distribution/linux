@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the Linux Bluetooth HCI device drivers.
 #
@@ -25,16 +26,13 @@ obj-$(CONFIG_BT_BCM)		+= btbcm.o
 obj-$(CONFIG_BT_RTL)		+= btrtl.o
 obj-$(CONFIG_BT_QCA)		+= btqca.o
 
-obj-$(CONFIG_MSM_BT_POWER)	+= bluetooth-power.o
-
-obj-$(CONFIG_BTFM_SLIM)		+= btfm_slim.o
-obj-$(CONFIG_BTFM_SLIM)		+= btfm_slim_codec.o
-obj-$(CONFIG_BTFM_SLIM_WCN3990)	+= btfm_slim_wcn3990.o
+obj-$(CONFIG_BT_HCIUART_NOKIA)	+= hci_nokia.o
 
 btmrvl-y			:= btmrvl_main.o
 btmrvl-$(CONFIG_DEBUG_FS)	+= btmrvl_debugfs.o
 
 hci_uart-y				:= hci_ldisc.o
+hci_uart-$(CONFIG_BT_HCIUART_SERDEV)	+= hci_serdev.o
 hci_uart-$(CONFIG_BT_HCIUART_H4)	+= hci_h4.o
 hci_uart-$(CONFIG_BT_HCIUART_BCSP)	+= hci_bcsp.o
 hci_uart-$(CONFIG_BT_HCIUART_LL)	+= hci_ll.o
@@ -46,5 +44,3 @@ hci_uart-$(CONFIG_BT_HCIUART_QCA)	+= hci_qca.o
 hci_uart-$(CONFIG_BT_HCIUART_AG6XX)	+= hci_ag6xx.o
 hci_uart-$(CONFIG_BT_HCIUART_MRVL)	+= hci_mrvl.o
 hci_uart-objs				:= $(hci_uart-y)
-
-ccflags-y += -D__CHECK_ENDIAN__

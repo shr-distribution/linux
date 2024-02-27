@@ -15,6 +15,23 @@ menuconfig THERMAL
 
 if THERMAL
 
+config THERMAL_EMERGENCY_POWEROFF_DELAY_MS
+	int "Emergency poweroff delay in milli-seconds"
+	depends on THERMAL
+	default 0
+	help
+	  Thermal subsystem will issue a graceful shutdown when
+	  critical temperatures are reached using orderly_poweroff(). In
+	  case of failure of an orderly_poweroff(), the thermal emergency
+	  poweroff kicks in after a delay has elapsed and shuts down the system.
+	  This config is number of milliseconds to delay before emergency
+	  poweroff kicks in. Similarly to the critical trip point,
+	  the delay should be carefully profiled so as to give adequate
+	  time for orderly_poweroff() to finish on regular execution.
+	  If set to 0 emergency poweroff will not be supported.
+
+	  In doubt, leave as 0.
+
 config THERMAL_HWMON
 	bool
 	prompt "Expose thermal sensors as hwmon device"
@@ -60,6 +77,16 @@ choice
 	  This option sets which thermal governor shall be loaded at
 	  startup. If in doubt, select 'step_wise'.
 
+config THERMAL_DEFAULT_GOV_BACKWARD_COMPATIBLE
+	bool "backward_compatible"
+	select THERMAL_BACKWARD_COMPATIBLE
+	help
+	  Use the backward_compatible governor as default. This throttles the
+	  devices when the temperature is over each trip point.
+	  Backward-compatible governor resembles the behaviors of thermal
+	  framework in Linux kernel 2.6. It sets cooler states whenever
+	  temperature is updated no meter cooler state change or not.
+
 config THERMAL_DEFAULT_GOV_STEP_WISE
 	bool "step_wise"
 	select THERMAL_GOV_STEP_WISE
@@ -92,6 +119,14 @@ config THERMAL_DEFAULT_GOV_POWER_ALLOCATOR
 
 endchoice
 
+config THERMAL_BACKWARD_COMPATIBLE
+	bool "Backward-compatible thermal governor"
+	help
+	  Enable this to manage platform thermals using backward-compatible governor.
+	  Backward-compatible governor resembles the behaviors of thermal
+	  framework in Linux kernel 2.6. It sets cooler states whenever
+	  temperature is updated no meter cooler state change or not.
+
 config THERMAL_GOV_FAIR_SHARE
 	bool "Fair-share thermal governor"
 	help
@@ -117,16 +152,6 @@ config THERMAL_GOV_USER_SPACE
 	bool "User_space thermal governor"
 	help
 	  Enable this to let the user space manage the platform thermals.
-
-config THERMAL_GOV_LOW_LIMITS
-	bool "Low limits mitigation governor"
-	help
-	  Enable this to manage platform limits using low limits
-	  governor.
-
-	  Enable this governor to monitor and trigger floor mitigation.
-	  This governor will monitor the limits going below a
-	  trip threshold to trigger a floor mitigation.
 
 config THERMAL_GOV_POWER_ALLOCATOR
 	bool "Power allocator thermal governor"
@@ -187,8 +212,10 @@ config THERMAL_EMULATION
 
 config HISI_THERMAL
 	tristate "Hisilicon thermal driver"
-	depends on (ARCH_HISI && CPU_THERMAL && OF) || COMPILE_TEST
+	depends on ARCH_HISI || COMPILE_TEST
 	depends on HAS_IOMEM
+	depends on OF
+	default y
 	help
 	  Enable this to plug hisilicon's thermal sensor driver into the Linux
 	  thermal framework. cpufreq is used as the cooling device to throttle
@@ -253,6 +280,15 @@ config RCAR_THERMAL
 	  Enable this to plug the R-Car thermal sensor driver into the Linux
 	  thermal framework.
 
+config RCAR_GEN3_THERMAL
+	tristate "Renesas R-Car Gen3 thermal driver"
+	depends on ARCH_RENESAS || COMPILE_TEST
+	depends on HAS_IOMEM
+	depends on OF
+	help
+	  Enable this to plug the R-Car Gen3 thermal sensor driver into the Linux
+	  thermal framework.
+
 config KIRKWOOD_THERMAL
 	tristate "Temperature sensor on Marvell Kirkwood SoCs"
 	depends on MACH_KIRKWOOD || COMPILE_TEST
@@ -290,17 +326,15 @@ config ARMADA_THERMAL
 	  Enable this option if you want to have support for thermal management
 	  controller present in Armada 370 and Armada XP SoC.
 
-config DB8500_CPUFREQ_COOLING
-	tristate "DB8500 cpufreq cooling"
-	depends on ARCH_U8500 || COMPILE_TEST
-	depends on HAS_IOMEM
-	depends on CPU_THERMAL
-	default y
+config DA9062_THERMAL
+	tristate "DA9062/DA9061 Dialog Semiconductor thermal driver"
+	depends on MFD_DA9062 || COMPILE_TEST
+	depends on OF
 	help
-	  Adds DB8500 cpufreq cooling devices, and these cooling devices can be
-	  bound to thermal zone trip points. When a trip point reached, the
-	  bound cpufreq cooling device turns active to set CPU frequency low to
-	  cool down the CPU.
+	  Enable this for the Dialog Semiconductor thermal sensor driver.
+	  This will report PMIC junction over-temperature for one thermal trip
+	  zone.
+	  Compatible with the DA9062 and DA9061 PMICs.
 
 config INTEL_POWERCLAMP
 	tristate "Intel PowerClamp idle injection driver"
@@ -364,7 +398,7 @@ endmenu
 
 config INTEL_BXT_PMIC_THERMAL
 	tristate "Intel Broxton PMIC thermal driver"
-	depends on X86 && INTEL_SOC_PMIC && REGMAP
+	depends on X86 && INTEL_SOC_PMIC_BXTWC && REGMAP
 	help
 	  Select this driver for Intel Broxton PMIC with ADC channels monitoring
 	  system temperature measurements and alerts.
@@ -390,6 +424,11 @@ config MTK_THERMAL
 	help
 	  Enable this option if you want to have support for thermal management
 	  controller present in Mediatek SoCs
+
+menu "Broadcom thermal drivers"
+depends on ARCH_BCM || ARCH_BCM2835 || COMPILE_TEST
+source "drivers/thermal/broadcom/Kconfig"
+endmenu
 
 menu "Texas Instruments thermal drivers"
 depends on ARCH_HAS_BANDGAP || COMPILE_TEST
@@ -429,20 +468,6 @@ config QCOM_SPMI_TEMP_ALARM
 	  real time die temperature if an ADC is present or an estimate of the
 	  temperature based upon the over temperature stage value.
 
-config THERMAL_QPNP
-	tristate "Qualcomm Technologies, Inc. QPNP PMIC Temperature Alarm"
-	depends on OF && SPMI
-	help
-	  This enables a thermal Sysfs driver for Qualcomm Technologies, Inc.
-	  QPNP PMIC devices. It shows up in Sysfs as a thermal zone with
-	  multiple trip points. The temperature reported by the thermal zone
-	  reflects the real time die temperature if an ADC is present or an
-	  estimate of the temperature based upon the over temperature stage
-	  value if no ADC is available. If allowed via compile time
-	  configuration; enabling the thermal zone device via the mode file
-	  results in shifting PMIC over temperature shutdown control from
-	  hardware to software.
-
 config GENERIC_ADC_THERMAL
 	tristate "Generic ADC based thermal sensor"
 	depends on IIO
@@ -453,30 +478,25 @@ config GENERIC_ADC_THERMAL
 	  to this driver. This driver reports the temperature by reading ADC
 	  channel and converts it to temperature based on lookup table.
 
-config THERMAL_QPNP_ADC_TM
-	tristate "Qualcomm Technologies Inc. Thermal Monitor ADC Driver"
-	depends on THERMAL
-	depends on  SPMI
-	help
-	  This enables the thermal Sysfs driver for the ADC thermal monitoring
-	  device. It shows up in Sysfs as a thermal zone with multiple trip points.
-	  Disabling the thermal zone device via the mode file results in disabling
-	  the sensor. Also able to set threshold temperature for both hot and cold
-	  and update when a threshold is reached.
-
-config THERMAL_TSENS
-	tristate "Qualcomm Technologies Inc. TSENS Temperature driver"
-	depends on THERMAL
-	help
-	  This enables the thermal sysfs driver for the TSENS device. It shows
-	  up in Sysfs as a thermal zone with multiple trip points. Also able
-	  to set threshold temperature for both warm and cool and update
-	  thermal userspace client when a threshold is reached. Warm/Cool
-	  temperature thresholds can be set independently for each sensor.
-
 menu "Qualcomm thermal drivers"
 depends on (ARCH_QCOM && OF) || COMPILE_TEST
 source "drivers/thermal/qcom/Kconfig"
 endmenu
 
+config ZX2967_THERMAL
+	tristate "Thermal sensors on zx2967 SoC"
+	depends on ARCH_ZX || COMPILE_TEST
+	help
+	  Enable the zx2967 thermal sensors driver, which supports
+	  the primitive temperature sensor embedded in zx2967 SoCs.
+	  This sensor generates the real time die temperature.
+
+config UNIPHIER_THERMAL
+	tristate "Socionext UniPhier thermal driver"
+	depends on ARCH_UNIPHIER || COMPILE_TEST
+	depends on THERMAL_OF && MFD_SYSCON
+	help
+	  Enable this to plug in UniPhier on-chip PVT thermal driver into the
+	  thermal framework. The driver supports CPU thermal zone temperature
+	  reporting and a couple of trip points.
 endif

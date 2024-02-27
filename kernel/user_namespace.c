@@ -8,6 +8,7 @@
 #include <linux/export.h>
 #include <linux/nsproxy.h>
 #include <linux/slab.h>
+#include <linux/sched/signal.h>
 #include <linux/user_namespace.h>
 #include <linux/proc_ns.h>
 #include <linux/highuid.h>
@@ -649,7 +650,16 @@ static ssize_t map_write(struct file *file, const char __user *buf,
 	unsigned idx;
 	struct uid_gid_extent *extent = NULL;
 	char *kbuf = NULL, *pos, *next_line;
-	ssize_t ret = -EINVAL;
+	ssize_t ret;
+
+	/* Only allow < page size writes at the beginning of the file */
+	if ((*ppos != 0) || (count >= PAGE_SIZE))
+		return -EINVAL;
+
+	/* Slurp in the user data */
+	kbuf = memdup_user_nul(buf, count);
+	if (IS_ERR(kbuf))
+		return PTR_ERR(kbuf);
 
 	/*
 	 * The userns_state_mutex serializes all writes to any given map.
@@ -682,19 +692,6 @@ static ssize_t map_write(struct file *file, const char __user *buf,
 	 */
 	if (cap_valid(cap_setid) && !file_ns_capable(file, ns, CAP_SYS_ADMIN))
 		goto out;
-
-	/* Only allow < page size writes at the beginning of the file */
-	ret = -EINVAL;
-	if ((*ppos != 0) || (count >= PAGE_SIZE))
-		goto out;
-
-	/* Slurp in the user data */
-	kbuf = memdup_user_nul(buf, count);
-	if (IS_ERR(kbuf)) {
-		ret = PTR_ERR(kbuf);
-		kbuf = NULL;
-		goto out;
-	}
 
 	/* Parse the user data */
 	ret = -EINVAL;
@@ -985,17 +982,21 @@ bool userns_may_setgroups(const struct user_namespace *ns)
 }
 
 /*
- * Returns true if @ns is the same namespace as or a descendant of
- * @target_ns.
+ * Returns true if @child is the same namespace or a descendant of
+ * @ancestor.
  */
+bool in_userns(const struct user_namespace *ancestor,
+	       const struct user_namespace *child)
+{
+	const struct user_namespace *ns;
+	for (ns = child; ns->level > ancestor->level; ns = ns->parent)
+		;
+	return (ns == ancestor);
+}
+
 bool current_in_userns(const struct user_namespace *target_ns)
 {
-	struct user_namespace *ns;
-	for (ns = current_user_ns(); ns; ns = ns->parent) {
-		if (ns == target_ns)
-			return true;
-	}
-	return false;
+	return in_userns(target_ns, current_user_ns());
 }
 
 static inline struct user_namespace *to_user_ns(struct ns_common *ns)

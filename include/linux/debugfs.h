@@ -9,7 +9,7 @@
  *	2 as published by the Free Software Foundation.
  *
  *  debugfs is for people to use instead of /proc or /sys.
- *  See Documentation/DocBook/filesystems for more details.
+ *  See Documentation/filesystems/ for more details.
  */
 
 #ifndef _DEBUGFS_H_
@@ -54,10 +54,14 @@ static const struct file_operations __fops = {				\
 	.release = simple_attr_release,					\
 	.read	 = debugfs_attr_read,					\
 	.write	 = debugfs_attr_write,					\
-	.llseek  = generic_file_llseek,					\
+	.llseek  = no_llseek,						\
 }
 
+typedef struct vfsmount *(*debugfs_automount_t)(struct dentry *, void *);
+
 #if defined(CONFIG_DEBUG_FS)
+
+struct dentry *debugfs_lookup(const char *name, struct dentry *parent);
 
 struct dentry *debugfs_create_file(const char *name, umode_t mode,
 				   struct dentry *parent, void *data,
@@ -76,7 +80,6 @@ struct dentry *debugfs_create_dir(const char *name, struct dentry *parent);
 struct dentry *debugfs_create_symlink(const char *name, struct dentry *parent,
 				      const char *dest);
 
-typedef struct vfsmount *(*debugfs_automount_t)(struct dentry *, void *);
 struct dentry *debugfs_create_automount(const char *name,
 					struct dentry *parent,
 					debugfs_automount_t f,
@@ -161,8 +164,22 @@ ssize_t debugfs_write_file_bool(struct file *file, const char __user *user_buf,
  * want to duplicate the design decision mistakes of procfs and devfs again.
  */
 
+static inline struct dentry *debugfs_lookup(const char *name,
+					    struct dentry *parent)
+{
+	return ERR_PTR(-ENODEV);
+}
+
 static inline struct dentry *debugfs_create_file(const char *name, umode_t mode,
 					struct dentry *parent, void *data,
+					const struct file_operations *fops)
+{
+	return ERR_PTR(-ENODEV);
+}
+
+static inline struct dentry *debugfs_create_file_unsafe(const char *name,
+					umode_t mode, struct dentry *parent,
+					void *data,
 					const struct file_operations *fops)
 {
 	return ERR_PTR(-ENODEV);
@@ -191,7 +208,7 @@ static inline struct dentry *debugfs_create_symlink(const char *name,
 
 static inline struct dentry *debugfs_create_automount(const char *name,
 					struct dentry *parent,
-					struct vfsmount *(*f)(void *),
+					debugfs_automount_t f,
 					void *data)
 {
 	return ERR_PTR(-ENODEV);
@@ -202,6 +219,8 @@ static inline void debugfs_remove(struct dentry *dentry)
 
 static inline void debugfs_remove_recursive(struct dentry *dentry)
 { }
+
+const struct file_operations *debugfs_real_fops(const struct file *filp);
 
 static inline int debugfs_file_get(struct dentry *dentry)
 {
@@ -254,6 +273,14 @@ static inline struct dentry *debugfs_create_u32(const char *name, umode_t mode,
 static inline struct dentry *debugfs_create_u64(const char *name, umode_t mode,
 						struct dentry *parent,
 						u64 *value)
+{
+	return ERR_PTR(-ENODEV);
+}
+
+static inline struct dentry *debugfs_create_ulong(const char *name,
+						umode_t mode,
+						struct dentry *parent,
+						unsigned long *value)
 {
 	return ERR_PTR(-ENODEV);
 }

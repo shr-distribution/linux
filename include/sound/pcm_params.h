@@ -110,14 +110,10 @@ static inline void snd_mask_reset_range(struct snd_mask *mask,
 
 static inline void snd_mask_leave(struct snd_mask *mask, unsigned int val)
 {
-	unsigned int v, bits_index;
-
-	bits_index = MASK_OFS(val);
-	if (bits_index < ((SNDRV_MASK_MAX+31)/32)) {
-		v = mask->bits[bits_index] & MASK_BIT(val);
-		snd_mask_none(mask);
-		mask->bits[bits_index] = v;
-	}
+	unsigned int v;
+	v = mask->bits[MASK_OFS(val)] & MASK_BIT(val);
+	snd_mask_none(mask);
+	mask->bits[MASK_OFS(val)] = v;
 }
 
 static inline void snd_mask_intersect(struct snd_mask *mask,
@@ -251,11 +247,13 @@ static inline int snd_interval_empty(const struct snd_interval *i)
 static inline int snd_interval_single(const struct snd_interval *i)
 {
 	return (i->min == i->max || 
-		(i->min + 1 == i->max && i->openmax));
+		(i->min + 1 == i->max && (i->openmin || i->openmax)));
 }
 
 static inline int snd_interval_value(const struct snd_interval *i)
 {
+	if (i->openmin && !i->openmax)
+		return i->max;
 	return i->min;
 }
 

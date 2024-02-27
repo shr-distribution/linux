@@ -1,12 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef ISCSI_TARGET_CORE_H
 #define ISCSI_TARGET_CORE_H
 
-#include <linux/in.h>
-#include <linux/configfs.h>
-#include <net/sock.h>
-#include <net/tcp.h>
-#include <scsi/iscsi_proto.h>
-#include <target/target_core_base.h>
+#include <linux/dma-direction.h>     /* enum dma_data_direction */
+#include <linux/list.h>              /* struct list_head */
+#include <linux/socket.h>            /* struct sockaddr_storage */
+#include <linux/types.h>             /* u8 */
+#include <scsi/iscsi_proto.h>        /* itt_t */
+#include <target/target_core_base.h> /* struct se_cmd */
+
+struct sock;
 
 #define ISCSIT_VERSION			"v4.1.0"
 #define ISCSI_MAX_DATASN_MISSING_COUNT	16
@@ -566,7 +569,6 @@ struct iscsi_conn {
 #define LOGIN_FLAGS_INITIAL_PDU		8
 	unsigned long		login_flags;
 	struct delayed_work	login_work;
-	struct delayed_work	login_cleanup_work;
 	struct iscsi_login	*login;
 	struct timer_list	nopin_timer;
 	struct timer_list	nopin_response_timer;
@@ -671,7 +673,7 @@ struct iscsi_session {
 	atomic_t		session_logout;
 	atomic_t		session_reinstatement;
 	atomic_t		session_stop_active;
-	atomic_t		sleep_on_sess_wait_comp;
+	atomic_t		session_close;
 	/* connection list */
 	struct list_head	sess_conn_list;
 	struct list_head	cr_active_list;

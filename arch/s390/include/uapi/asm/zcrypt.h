@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
  *  include/asm-s390/zcrypt.h
  *
@@ -160,8 +161,8 @@ struct ica_xcRB {
  * @cprb_len:		CPRB header length [0x0020]
  * @cprb_ver_id:	CPRB version id.   [0x04]
  * @pad_000:		Alignment pad bytes
- * @flags:		Admin cmd [0x80] or functional cmd [0x00]
- * @func_id:		Function id / subtype [0x5434]
+ * @flags:		Admin bit [0x80], Special bit [0x20]
+ * @func_id:		Function id / subtype [0x5434] "T4"
  * @source_id:		Source id [originator id]
  * @target_id:		Target id [usage/ctrl domain id]
  * @ret_code:		Return code
@@ -214,6 +215,42 @@ struct ep11_urb {
 	uint64_t		resp_len;
 	uint64_t		resp;
 } __attribute__((packed));
+
+/**
+ * struct zcrypt_device_status
+ * @hwtype:		raw hardware type
+ * @qid:		6 bit device index, 8 bit domain
+ * @functions:		AP device function bit field 'abcdef'
+ *			a, b, c = reserved
+ *			d = CCA coprocessor
+ *			e = Accelerator
+ *			f = EP11 coprocessor
+ * @online		online status
+ * @reserved		reserved
+ */
+struct zcrypt_device_status {
+	unsigned int hwtype:8;
+	unsigned int qid:14;
+	unsigned int online:1;
+	unsigned int functions:6;
+	unsigned int reserved:3;
+};
+
+#define MAX_ZDEV_CARDIDS 64
+#define MAX_ZDEV_DOMAINS 256
+
+/**
+ * Maximum number of zcrypt devices
+ */
+#define MAX_ZDEV_ENTRIES (MAX_ZDEV_CARDIDS * MAX_ZDEV_DOMAINS)
+
+/**
+ * zcrypt_device_matrix
+ * Device matrix of all zcrypt devices
+ */
+struct zcrypt_device_matrix {
+	struct zcrypt_device_status device[MAX_ZDEV_ENTRIES];
+};
 
 #define AUTOSELECT ((unsigned int)0xFFFFFFFF)
 
@@ -321,6 +358,7 @@ struct ep11_urb {
 #define ICARSACRT	_IOC(_IOC_READ|_IOC_WRITE, ZCRYPT_IOCTL_MAGIC, 0x06, 0)
 #define ZSECSENDCPRB	_IOC(_IOC_READ|_IOC_WRITE, ZCRYPT_IOCTL_MAGIC, 0x81, 0)
 #define ZSENDEP11CPRB	_IOC(_IOC_READ|_IOC_WRITE, ZCRYPT_IOCTL_MAGIC, 0x04, 0)
+#define ZDEVICESTATUS	_IOC(_IOC_READ|_IOC_WRITE, ZCRYPT_IOCTL_MAGIC, 0x4f, 0)
 
 /* New status calls */
 #define Z90STAT_TOTALCOUNT	_IOR(ZCRYPT_IOCTL_MAGIC, 0x40, int)

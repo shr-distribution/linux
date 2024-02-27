@@ -32,8 +32,8 @@
 static const u8 REG_VOLTAGE[5] = { 0x09, 0x0a, 0x0c, 0x0d, 0x0e };
 
 static const u8 REG_VOLTAGE_LIMIT_LSB[2][5] = {
-	{ 0x40, 0x00, 0x42, 0x44, 0x46 },
-	{ 0x3f, 0x00, 0x41, 0x43, 0x45 },
+	{ 0x46, 0x00, 0x40, 0x42, 0x44 },
+	{ 0x45, 0x00, 0x3f, 0x41, 0x43 },
 };
 
 static const u8 REG_VOLTAGE_LIMIT_MSB[5] = { 0x48, 0x00, 0x47, 0x47, 0x48 };
@@ -704,7 +704,7 @@ static umode_t nct7802_temp_is_visible(struct kobject *kobj,
 	return attr->mode;
 }
 
-static struct attribute_group nct7802_temp_group = {
+static const struct attribute_group nct7802_temp_group = {
 	.attrs = nct7802_temp_attrs,
 	.is_visible = nct7802_temp_is_visible,
 };
@@ -768,7 +768,7 @@ static struct attribute *nct7802_in_attrs[] = {
 	&sensor_dev_attr_in3_alarm.dev_attr.attr,
 	&sensor_dev_attr_in3_beep.dev_attr.attr,
 
-	&sensor_dev_attr_in4_input.dev_attr.attr,	/* 17 */
+	&sensor_dev_attr_in4_input.dev_attr.attr,	/* 16 */
 	&sensor_dev_attr_in4_min.dev_attr.attr,
 	&sensor_dev_attr_in4_max.dev_attr.attr,
 	&sensor_dev_attr_in4_alarm.dev_attr.attr,
@@ -794,15 +794,15 @@ static umode_t nct7802_in_is_visible(struct kobject *kobj,
 
 	if (index >= 6 && index < 11 && (reg & 0x03) != 0x03)	/* VSEN1 */
 		return 0;
-	if (index >= 11 && index < 17 && (reg & 0x0c) != 0x0c)	/* VSEN2 */
+	if (index >= 11 && index < 16 && (reg & 0x0c) != 0x0c)	/* VSEN2 */
 		return 0;
-	if (index >= 17 && (reg & 0x30) != 0x30)		/* VSEN3 */
+	if (index >= 16 && (reg & 0x30) != 0x30)		/* VSEN3 */
 		return 0;
 
 	return attr->mode;
 }
 
-static struct attribute_group nct7802_in_group = {
+static const struct attribute_group nct7802_in_group = {
 	.attrs = nct7802_in_attrs,
 	.is_visible = nct7802_in_is_visible,
 };
@@ -880,7 +880,7 @@ static umode_t nct7802_fan_is_visible(struct kobject *kobj,
 	return attr->mode;
 }
 
-static struct attribute_group nct7802_fan_group = {
+static const struct attribute_group nct7802_fan_group = {
 	.attrs = nct7802_fan_attrs,
 	.is_visible = nct7802_fan_is_visible,
 };
@@ -898,7 +898,7 @@ static struct attribute *nct7802_pwm_attrs[] = {
 	NULL
 };
 
-static struct attribute_group nct7802_pwm_group = {
+static const struct attribute_group nct7802_pwm_group = {
 	.attrs = nct7802_pwm_attrs,
 };
 
@@ -1011,7 +1011,7 @@ static struct attribute *nct7802_auto_point_attrs[] = {
 	NULL
 };
 
-static struct attribute_group nct7802_auto_point_group = {
+static const struct attribute_group nct7802_auto_point_group = {
 	.attrs = nct7802_auto_point_attrs,
 };
 

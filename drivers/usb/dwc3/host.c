@@ -52,17 +52,14 @@ out:
 	return irq;
 }
 
-#define NUMBER_OF_PROPS	5
 int dwc3_host_init(struct dwc3 *dwc)
 {
-	struct property_entry	props[NUMBER_OF_PROPS];
+	struct property_entry	props[3];
 	struct platform_device	*xhci;
 	int			ret, irq;
 	struct resource		*res;
 	struct platform_device	*dwc3_pdev = to_platform_device(dwc->dev);
 	int			prop_idx = 0;
-	struct property_entry	imod_prop;
-	struct property_entry	core_id_prop;
 
 	irq = dwc3_host_get_irq(dwc);
 	if (irq < 0)
@@ -104,24 +101,6 @@ int dwc3_host_init(struct dwc3 *dwc)
 	if (dwc->usb3_lpm_capable)
 		props[prop_idx++].name = "usb3-lpm-capable";
 
-	if (dwc->xhci_imod_value) {
-		imod_prop.name  = "xhci-imod-value";
-		imod_prop.length  = sizeof(u32);
-		imod_prop.is_string = false;
-		imod_prop.is_array = false;
-		imod_prop.value.u32_data = dwc->xhci_imod_value;
-		props[prop_idx++] = imod_prop;
-	}
-
-	if (dwc->core_id >= 0) {
-		core_id_prop.name  = "usb-core-id";
-		core_id_prop.length  = sizeof(u32);
-		core_id_prop.is_string = false;
-		core_id_prop.is_array = false;
-		core_id_prop.value.u32_data = dwc->core_id;
-		props[prop_idx++] = core_id_prop;
-	}
-
 	/**
 	 * WORKAROUND: dwc3 revisions <=3.00a have a limitation
 	 * where Port Disable command doesn't work.
@@ -150,10 +129,15 @@ int dwc3_host_init(struct dwc3 *dwc)
 	ret = platform_device_add(xhci);
 	if (ret) {
 		dev_err(dwc->dev, "failed to register xHCI device\n");
-		goto err1;
+		goto err2;
 	}
 
 	return 0;
+err2:
+	phy_remove_lookup(dwc->usb2_generic_phy, "usb2-phy",
+			  dev_name(dwc->dev));
+	phy_remove_lookup(dwc->usb3_generic_phy, "usb3-phy",
+			  dev_name(dwc->dev));
 err1:
 	platform_device_put(xhci);
 	return ret;

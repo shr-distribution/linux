@@ -56,7 +56,6 @@ typedef struct xfs_inode {
 	/* Transaction and locking information. */
 	struct xfs_inode_log_item *i_itemp;	/* logging information */
 	mrlock_t		i_lock;		/* inode lock */
-	mrlock_t		i_iolock;	/* inode IO lock */
 	mrlock_t		i_mmaplock;	/* inode mmap IO lock */
 	atomic_t		i_pincount;	/* inode pin count */
 	spinlock_t		i_flags_lock;	/* inode i_flags lock */
@@ -193,8 +192,8 @@ static inline void
 xfs_set_projid(struct xfs_inode *ip,
 		prid_t projid)
 {
-	ip->i_d.di_projid_hi = (__uint16_t) (projid >> 16);
-	ip->i_d.di_projid_lo = (__uint16_t) (projid & 0xffff);
+	ip->i_d.di_projid_hi = (uint16_t) (projid >> 16);
+	ip->i_d.di_projid_lo = (uint16_t) (projid & 0xffff);
 }
 
 static inline prid_t
@@ -334,7 +333,7 @@ static inline void xfs_ifunlock(struct xfs_inode *ip)
  * IOLOCK values
  *
  * 0-3		subclass value
- * 4-7		PARENT subclass values
+ * 4-7		unused
  *
  * MMAPLOCK values
  *
@@ -349,10 +348,8 @@ static inline void xfs_ifunlock(struct xfs_inode *ip)
  * 
  */
 #define XFS_IOLOCK_SHIFT		16
-#define XFS_IOLOCK_PARENT_VAL		4
-#define XFS_IOLOCK_MAX_SUBCLASS		(XFS_IOLOCK_PARENT_VAL - 1)
+#define XFS_IOLOCK_MAX_SUBCLASS		3
 #define XFS_IOLOCK_DEP_MASK		0x000f0000
-#define	XFS_IOLOCK_PARENT		(XFS_IOLOCK_PARENT_VAL << XFS_IOLOCK_SHIFT)
 
 #define XFS_MMAPLOCK_SHIFT		20
 #define XFS_MMAPLOCK_NUMORDER		0
@@ -448,9 +445,6 @@ int	xfs_zero_eof(struct xfs_inode *ip, xfs_off_t offset,
 		     xfs_fsize_t isize, bool *did_zeroing);
 int	xfs_zero_range(struct xfs_inode *ip, xfs_off_t pos, xfs_off_t count,
 		bool *did_zero);
-loff_t	__xfs_seek_hole_data(struct inode *inode, loff_t start,
-			     loff_t eof, int whence);
-
 
 /* from xfs_iops.c */
 extern void xfs_setup_inode(struct xfs_inode *ip);

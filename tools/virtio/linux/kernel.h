@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef KERNEL_H
 #define KERNEL_H
 #include <stdbool.h>
@@ -21,6 +22,10 @@
 #define PAGE_SIZE getpagesize()
 #define PAGE_MASK (~(PAGE_SIZE-1))
 #define PAGE_ALIGN(x) ((x + PAGE_SIZE - 1) & PAGE_MASK)
+
+/* generic data direction definitions */
+#define READ                    0
+#define WRITE                   1
 
 typedef unsigned long long phys_addr_t;
 typedef unsigned long long dma_addr_t;

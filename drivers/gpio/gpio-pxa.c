@@ -451,7 +451,9 @@ static irqreturn_t pxa_gpio_demux_handler(int in_irq, void *d)
 			for_each_set_bit(n, &gedr, BITS_PER_LONG) {
 				loop = 1;
 
-				generic_handle_irq(gpio_to_irq(gpio + n));
+				generic_handle_irq(
+					irq_find_mapping(pchip->irqdomain,
+							 gpio + n));
 			}
 		}
 		handled += loop;
@@ -465,9 +467,9 @@ static irqreturn_t pxa_gpio_direct_handler(int in_irq, void *d)
 	struct pxa_gpio_chip *pchip = d;
 
 	if (in_irq == pchip->irq0) {
-		generic_handle_irq(gpio_to_irq(0));
+		generic_handle_irq(irq_find_mapping(pchip->irqdomain, 0));
 	} else if (in_irq == pchip->irq1) {
-		generic_handle_irq(gpio_to_irq(1));
+		generic_handle_irq(irq_find_mapping(pchip->irqdomain, 1));
 	} else {
 		pr_err("%s() unknown irq %d\n", __func__, in_irq);
 		return IRQ_NONE;
@@ -601,7 +603,7 @@ static int pxa_gpio_probe_dt(struct platform_device *pdev,
 	nr_gpios = gpio_id->gpio_nums;
 	pxa_last_gpio = nr_gpios - 1;
 
-	irq_base = irq_alloc_descs(-1, 0, nr_gpios, 0);
+	irq_base = devm_irq_alloc_descs(&pdev->dev, -1, 0, nr_gpios, 0);
 	if (irq_base < 0) {
 		dev_err(&pdev->dev, "Failed to allocate IRQ numbers\n");
 		return irq_base;
@@ -660,6 +662,8 @@ static int pxa_gpio_probe(struct platform_device *pdev)
 	pchip->irq0 = irq0;
 	pchip->irq1 = irq1;
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res)
+		return -EINVAL;
 	gpio_reg_base = devm_ioremap(&pdev->dev, res->start,
 				     resource_size(res));
 	if (!gpio_reg_base)
@@ -772,6 +776,9 @@ static int pxa_gpio_suspend(void)
 	struct pxa_gpio_bank *c;
 	int gpio;
 
+	if (!pchip)
+		return 0;
+
 	for_each_gpio_bank(gpio, c, pchip) {
 		c->saved_gplr = readl_relaxed(c->regbase + GPLR_OFFSET);
 		c->saved_gpdr = readl_relaxed(c->regbase + GPDR_OFFSET);
@@ -789,6 +796,9 @@ static void pxa_gpio_resume(void)
 	struct pxa_gpio_chip *pchip = pxa_gpio_chip;
 	struct pxa_gpio_bank *c;
 	int gpio;
+
+	if (!pchip)
+		return;
 
 	for_each_gpio_bank(gpio, c, pchip) {
 		/* restore level with set/clear */

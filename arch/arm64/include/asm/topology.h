@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_TOPOLOGY_H
 #define __ASM_TOPOLOGY_H
 
@@ -21,7 +22,6 @@ extern struct cpu_topology cpu_topology[NR_CPUS];
 void init_cpu_topology(void);
 void store_cpu_topology(unsigned int cpuid);
 const struct cpumask *cpu_coregroup_mask(int cpu);
-unsigned long arch_get_cpu_efficiency(int cpu);
 
 #ifdef CONFIG_NUMA
 
@@ -32,20 +32,34 @@ int pcibus_to_node(struct pci_bus *bus);
 				 cpumask_of_node(pcibus_to_node(bus)))
 
 #endif /* CONFIG_NUMA */
-struct sched_domain;
-#ifdef CONFIG_CPU_FREQ
-#define arch_scale_freq_capacity cpufreq_scale_freq_capacity
-extern unsigned long cpufreq_scale_freq_capacity(struct sched_domain *sd, int cpu);
-#define arch_scale_max_freq_capacity cpufreq_scale_max_freq_capacity
-extern unsigned long cpufreq_scale_max_freq_capacity(struct sched_domain *sd, int cpu);
-#define arch_scale_min_freq_capacity cpufreq_scale_min_freq_capacity
-extern unsigned long cpufreq_scale_min_freq_capacity(struct sched_domain *sd, int cpu);
-#endif
-#define arch_scale_cpu_capacity scale_cpu_capacity
-extern unsigned long scale_cpu_capacity(struct sched_domain *sd, int cpu);
 
-#define arch_update_cpu_capacity update_cpu_power_capacity
-extern void update_cpu_power_capacity(int cpu);
+#include <linux/arch_topology.h>
+
+/* Replace task scheduler's default frequency-invariant accounting */
+#define arch_scale_freq_capacity topology_get_freq_scale
+
+/* Replace task scheduler's default max-frequency-invariant accounting */
+#define arch_scale_max_freq_capacity topology_get_max_freq_scale
+
+/* Replace task scheduler's default cpu-invariant accounting */
+#define arch_scale_cpu_capacity topology_get_cpu_scale
+
+/* Enable topology flag updates */
+#define arch_update_cpu_topology topology_update_cpu_topology
+
+/* Arch max frequency */
+#define arch_max_cpu_freq topology_get_max_cpu_freq
+
+/* Ceiling/floor frequency sacle */
+#define arch_max_freq_scale topology_get_max_freq_scale
+#define arch_min_freq_scale topology_get_min_freq_scale
+
+/* Extras of CPU & Cluster functions */
+int arch_is_multi_cluster(void);
+int arch_is_smp(void);
+int arch_get_nr_clusters(void);
+int arch_get_cluster_id(unsigned int cpu);
+void arch_build_cpu_topology_domain(void);
 
 #include <asm-generic/topology.h>
 

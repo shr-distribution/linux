@@ -52,7 +52,7 @@ struct gb_sdio_host {
 
 static inline bool single_op(struct mmc_command *cmd)
 {
-	uint32_t opcode = cmd->opcode;
+	u32 opcode = cmd->opcode;
 
 	return opcode == MMC_WRITE_BLOCK ||
 	       opcode == MMC_READ_SINGLE_BLOCK;
@@ -191,9 +191,8 @@ static int _gb_sdio_process_events(struct gb_sdio_host *host, u8 event)
 		state_changed = 1;
 	}
 
-	if (event & GB_SDIO_WP) {
+	if (event & GB_SDIO_WP)
 		host->read_only = true;
-	}
 
 	if (state_changed) {
 		dev_info(mmc_dev(host->mmc), "card %s now event\n",
@@ -413,6 +412,7 @@ static int gb_sdio_command(struct gb_sdio_host *host, struct mmc_command *cmd)
 	struct gb_sdio_command_request request = {0};
 	struct gb_sdio_command_response response;
 	struct mmc_data *data = host->mrq->data;
+	unsigned int timeout_ms;
 	u8 cmd_flags;
 	u8 cmd_type;
 	int i;
@@ -471,9 +471,12 @@ static int gb_sdio_command(struct gb_sdio_host *host, struct mmc_command *cmd)
 		request.data_blksz = cpu_to_le16(data->blksz);
 	}
 
-	ret = gb_operation_sync(host->connection, GB_SDIO_TYPE_COMMAND,
-				&request, sizeof(request), &response,
-				sizeof(response));
+	timeout_ms = cmd->busy_timeout ? cmd->busy_timeout :
+		GB_OPERATION_TIMEOUT_DEFAULT;
+
+	ret = gb_operation_sync_timeout(host->connection, GB_SDIO_TYPE_COMMAND,
+					&request, sizeof(request), &response,
+					sizeof(response), timeout_ms);
 	if (ret < 0)
 		goto out;
 

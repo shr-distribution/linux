@@ -88,7 +88,7 @@ static void kbtab_irq(struct urb *urb)
 			__func__, retval);
 }
 
-static struct usb_device_id kbtab_ids[] = {
+static const struct usb_device_id kbtab_ids[] = {
 	{ USB_DEVICE(USB_VENDOR_ID_KBGEAR, 0x1001), .driver_info = 0 },
 	{ }
 };
@@ -123,6 +123,10 @@ static int kbtab_probe(struct usb_interface *intf, const struct usb_device_id *i
 	int error = -ENOMEM;
 
 	if (intf->cur_altsetting->desc.bNumEndpoints < 1)
+		return -ENODEV;
+
+	endpoint = &intf->cur_altsetting->endpoint[0].desc;
+	if (!usb_endpoint_is_int_in(endpoint))
 		return -ENODEV;
 
 	kbtab = kzalloc(sizeof(struct kbtab), GFP_KERNEL);
@@ -162,8 +166,6 @@ static int kbtab_probe(struct usb_interface *intf, const struct usb_device_id *i
 	input_set_abs_params(input_dev, ABS_X, 0, 0x2000, 4, 0);
 	input_set_abs_params(input_dev, ABS_Y, 0, 0x1750, 4, 0);
 	input_set_abs_params(input_dev, ABS_PRESSURE, 0, 0xff, 0, 0);
-
-	endpoint = &intf->cur_altsetting->endpoint[0].desc;
 
 	usb_fill_int_urb(kbtab->irq, dev,
 			 usb_rcvintpipe(dev, endpoint->bEndpointAddress),

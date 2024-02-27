@@ -13,9 +13,15 @@
 #define _INTERNAL_H
 
 #include <linux/sched.h>
+#include <linux/wait_bit.h>
+#include <linux/cred.h>
 #include <linux/key-type.h>
 #include <linux/task_work.h>
 #include <linux/keyctl.h>
+#include <linux/refcount.h>
+#include <linux/compat.h>
+#include <linux/mm.h>
+#include <linux/vmalloc.h>
 
 struct iovec;
 
@@ -52,7 +58,7 @@ struct key_user {
 	struct rb_node		node;
 	struct mutex		cons_lock;	/* construction initiation lock */
 	spinlock_t		lock;
-	atomic_t		usage;		/* for accessing qnkeys & qnbytes */
+	refcount_t		usage;		/* for accessing qnkeys & qnbytes */
 	atomic_t		nkeys;		/* number of keys */
 	atomic_t		nikeys;		/* number of instantiated keys */
 	kuid_t			uid;
@@ -154,8 +160,6 @@ extern struct key *request_key_and_link(struct key_type *type,
 
 extern bool lookup_user_key_possessed(const struct key *key,
 				      const struct key_match_data *match_data);
-extern key_ref_t lookup_user_key(key_serial_t id, unsigned long flags,
-				 key_perm_t perm);
 #define KEY_LOOKUP_CREATE	0x01
 #define KEY_LOOKUP_PARTIAL	0x02
 #define KEY_LOOKUP_FOR_UNLINK	0x04
@@ -166,6 +170,8 @@ extern void key_change_session_keyring(struct callback_head *twork);
 extern struct work_struct key_gc_work;
 extern unsigned key_gc_delay;
 extern void keyring_gc(struct key *keyring, time_t limit);
+extern void keyring_restriction_gc(struct key *keyring,
+				   struct key_type *dead_type);
 extern void key_schedule_gc(time_t gc_at);
 extern void key_schedule_gc_links(void);
 extern void key_gc_keytype(struct key_type *ktype);
@@ -182,20 +188,9 @@ static inline int key_permission(const key_ref_t key_ref, unsigned perm)
 	return key_task_permission(key_ref, current_cred(), perm);
 }
 
-/*
- * Authorisation record for request_key().
- */
-struct request_key_auth {
-	struct key		*target_key;
-	struct key		*dest_keyring;
-	const struct cred	*cred;
-	void			*callout_info;
-	size_t			callout_len;
-	pid_t			pid;
-};
-
 extern struct key_type key_type_request_key_auth;
 extern struct key *request_key_auth_new(struct key *target,
+					const char *op,
 					const void *callout_info,
 					size_t callout_len,
 					struct key *dest_keyring);
@@ -248,6 +243,9 @@ struct iov_iter;
 extern long keyctl_instantiate_key_common(key_serial_t,
 					  struct iov_iter *,
 					  key_serial_t);
+extern long keyctl_restrict_keyring(key_serial_t id,
+				    const char __user *_type,
+				    const char __user *_restriction);
 #ifdef CONFIG_PERSISTENT_KEYRINGS
 extern long keyctl_get_persistent(uid_t, key_serial_t);
 extern unsigned persistent_keyring_expiry;
@@ -260,14 +258,33 @@ static inline long keyctl_get_persistent(uid_t uid, key_serial_t destring)
 
 #ifdef CONFIG_KEY_DH_OPERATIONS
 extern long keyctl_dh_compute(struct keyctl_dh_params __user *, char __user *,
-			      size_t, void __user *);
+			      size_t, struct keyctl_kdf_params __user *);
+extern long __keyctl_dh_compute(struct keyctl_dh_params __user *, char __user *,
+				size_t, struct keyctl_kdf_params *);
+#ifdef CONFIG_KEYS_COMPAT
+extern long compat_keyctl_dh_compute(struct keyctl_dh_params __user *params,
+				char __user *buffer, size_t buflen,
+				struct compat_keyctl_kdf_params __user *kdf);
+#endif
+#define KEYCTL_KDF_MAX_OUTPUT_LEN	1024	/* max length of KDF output */
+#define KEYCTL_KDF_MAX_OI_LEN		64	/* max length of otherinfo */
 #else
 static inline long keyctl_dh_compute(struct keyctl_dh_params __user *params,
 				     char __user *buffer, size_t buflen,
-				     void __user *reserved)
+				     struct keyctl_kdf_params __user *kdf)
 {
 	return -EOPNOTSUPP;
 }
+
+#ifdef CONFIG_KEYS_COMPAT
+static inline long compat_keyctl_dh_compute(
+				struct keyctl_dh_params __user *params,
+				char __user *buffer, size_t buflen,
+				struct keyctl_kdf_params __user *kdf)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 #endif
 
 /*
@@ -287,5 +304,4 @@ static inline void key_check(const struct key *key)
 #define key_check(key) do {} while(0)
 
 #endif
-
 #endif /* _INTERNAL_H */

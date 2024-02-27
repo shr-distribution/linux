@@ -543,6 +543,7 @@ enum wmi_tlv_peer_flags {
 	WMI_TLV_PEER_VHT = 0x02000000,
 	WMI_TLV_PEER_80MHZ = 0x04000000,
 	WMI_TLV_PEER_PMF = 0x08000000,
+	WMI_TLV_PEER_160MHZ = 0x20000000,
 };
 
 enum wmi_tlv_tag {
@@ -1227,6 +1228,11 @@ struct wmi_tlv_resource_config {
 	__le32 keep_alive_pattern_size;
 	__le32 max_tdls_concurrent_sleep_sta;
 	__le32 max_tdls_concurrent_buffer_sta;
+	__le32 wmi_send_separate;
+	__le32 num_ocb_vdevs;
+	__le32 num_ocb_channels;
+	__le32 num_ocb_schedules;
+	__le32 host_capab;
 } __packed;
 
 struct wmi_tlv_init_cmd {

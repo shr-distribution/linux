@@ -28,11 +28,12 @@
 #include <crypto/aes.h>
 #include <crypto/scatterwalk.h>
 #include <crypto/xts.h>
+#include <crypto/skcipher.h>
 
 #include "aesp8-ppc.h"
 
 struct p8_aes_xts_ctx {
-	struct crypto_blkcipher *fallback;
+	struct crypto_skcipher *fallback;
 	struct aes_key enc_key;
 	struct aes_key dec_key;
 	struct aes_key tweak_key;
@@ -40,29 +41,22 @@ struct p8_aes_xts_ctx {
 
 static int p8_aes_xts_init(struct crypto_tfm *tfm)
 {
-	const char *alg;
-	struct crypto_blkcipher *fallback;
+	const char *alg = crypto_tfm_alg_name(tfm);
+	struct crypto_skcipher *fallback;
 	struct p8_aes_xts_ctx *ctx = crypto_tfm_ctx(tfm);
 
-	if (!(alg = crypto_tfm_alg_name(tfm))) {
-		printk(KERN_ERR "Failed to get algorithm name.\n");
-		return -ENOENT;
-	}
-
-	fallback =
-		crypto_alloc_blkcipher(alg, 0, CRYPTO_ALG_NEED_FALLBACK);
+	fallback = crypto_alloc_skcipher(alg, 0,
+			CRYPTO_ALG_ASYNC | CRYPTO_ALG_NEED_FALLBACK);
 	if (IS_ERR(fallback)) {
 		printk(KERN_ERR
 			"Failed to allocate transformation for '%s': %ld\n",
 			alg, PTR_ERR(fallback));
 		return PTR_ERR(fallback);
 	}
-	printk(KERN_INFO "Using '%s' as fallback implementation.\n",
-		crypto_tfm_alg_driver_name((struct crypto_tfm *) fallback));
 
-	crypto_blkcipher_set_flags(
+	crypto_skcipher_set_flags(
 		fallback,
-		crypto_blkcipher_get_flags((struct crypto_blkcipher *)tfm));
+		crypto_skcipher_get_flags((struct crypto_skcipher *)tfm));
 	ctx->fallback = fallback;
 
 	return 0;
@@ -73,7 +67,7 @@ static void p8_aes_xts_exit(struct crypto_tfm *tfm)
 	struct p8_aes_xts_ctx *ctx = crypto_tfm_ctx(tfm);
 
 	if (ctx->fallback) {
-		crypto_free_blkcipher(ctx->fallback);
+		crypto_free_skcipher(ctx->fallback);
 		ctx->fallback = NULL;
 	}
 }
@@ -98,7 +92,7 @@ static int p8_aes_xts_setkey(struct crypto_tfm *tfm, const u8 *key,
 	pagefault_enable();
 	preempt_enable();
 
-	ret += crypto_blkcipher_setkey(ctx->fallback, key, keylen);
+	ret += crypto_skcipher_setkey(ctx->fallback, key, keylen);
 	return ret;
 }
 
@@ -113,42 +107,48 @@ static int p8_aes_xts_crypt(struct blkcipher_desc *desc,
 	struct blkcipher_walk walk;
 	struct p8_aes_xts_ctx *ctx =
 		crypto_tfm_ctx(crypto_blkcipher_tfm(desc->tfm));
-	struct blkcipher_desc fallback_desc = {
-		.tfm = ctx->fallback,
-		.info = desc->info,
-		.flags = desc->flags
-	};
 
 	if (in_interrupt()) {
-		ret = enc ? crypto_blkcipher_encrypt(&fallback_desc, dst, src, nbytes) :
-                            crypto_blkcipher_decrypt(&fallback_desc, dst, src, nbytes);
+		SKCIPHER_REQUEST_ON_STACK(req, ctx->fallback);
+		skcipher_request_set_tfm(req, ctx->fallback);
+		skcipher_request_set_callback(req, desc->flags, NULL, NULL);
+		skcipher_request_set_crypt(req, src, dst, nbytes, desc->info);
+		ret = enc? crypto_skcipher_encrypt(req) : crypto_skcipher_decrypt(req);
+		skcipher_request_zero(req);
 	} else {
+		blkcipher_walk_init(&walk, dst, src, nbytes);
+
+		ret = blkcipher_walk_virt(desc, &walk);
+
 		preempt_disable();
 		pagefault_disable();
 		enable_kernel_vsx();
 
-		blkcipher_walk_init(&walk, dst, src, nbytes);
-
-		ret = blkcipher_walk_virt(desc, &walk);
 		iv = walk.iv;
 		memset(tweak, 0, AES_BLOCK_SIZE);
 		aes_p8_encrypt(iv, tweak, &ctx->tweak_key);
 
+		disable_kernel_vsx();
+		pagefault_enable();
+		preempt_enable();
+
 		while ((nbytes = walk.nbytes)) {
+			preempt_disable();
+			pagefault_disable();
+			enable_kernel_vsx();
 			if (enc)
 				aes_p8_xts_encrypt(walk.src.virt.addr, walk.dst.virt.addr,
 						nbytes & AES_BLOCK_MASK, &ctx->enc_key, NULL, tweak);
 			else
 				aes_p8_xts_decrypt(walk.src.virt.addr, walk.dst.virt.addr,
 						nbytes & AES_BLOCK_MASK, &ctx->dec_key, NULL, tweak);
+			disable_kernel_vsx();
+			pagefault_enable();
+			preempt_enable();
 
 			nbytes &= AES_BLOCK_SIZE - 1;
 			ret = blkcipher_walk_done(desc, &walk, nbytes);
 		}
-
-		disable_kernel_vsx();
-		pagefault_enable();
-		preempt_enable();
 	}
 	return ret;
 }

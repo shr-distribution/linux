@@ -65,7 +65,7 @@ struct bmp280_data {
 	struct bmp180_calib calib;
 	struct regulator *vddd;
 	struct regulator *vdda;
-	unsigned int start_up_time; /* in milliseconds */
+	unsigned int start_up_time; /* in microseconds */
 
 	/* log of base 2 of oversampling rate */
 	u8 oversampling_press;
@@ -182,6 +182,8 @@ static u32 bmp280_compensate_humidity(struct bmp280_data *data,
 		+ (s32)2097152) * H2 + 8192) >> 14);
 	var -= ((((var >> 15) * (var >> 15)) >> 7) * (s32)H1) >> 4;
 
+	var = clamp_val(var, 0, 419430400);
+
 	return var >> 12;
 };
 
@@ -282,6 +284,11 @@ static int bmp280_read_temp(struct bmp280_data *data,
 	}
 
 	adc_temp = be32_to_cpu(tmp) >> 12;
+	if (adc_temp == BMP280_TEMP_SKIPPED) {
+		/* reading was skipped */
+		dev_err(data->dev, "reading temperature skipped\n");
+		return -EIO;
+	}
 	comp_temp = bmp280_compensate_temp(data, adc_temp);
 
 	/*
@@ -317,6 +324,11 @@ static int bmp280_read_press(struct bmp280_data *data,
 	}
 
 	adc_press = be32_to_cpu(tmp) >> 12;
+	if (adc_press == BMP280_PRESS_SKIPPED) {
+		/* reading was skipped */
+		dev_err(data->dev, "reading pressure skipped\n");
+		return -EIO;
+	}
 	comp_press = bmp280_compensate_press(data, adc_press);
 
 	*val = comp_press;
@@ -345,6 +357,11 @@ static int bmp280_read_humid(struct bmp280_data *data, int *val, int *val2)
 	}
 
 	adc_humidity = be16_to_cpu(tmp);
+	if (adc_humidity == BMP280_HUMIDITY_SKIPPED) {
+		/* reading was skipped */
+		dev_err(data->dev, "reading humidity skipped\n");
+		return -EIO;
+	}
 	comp_humidity = bmp280_compensate_humidity(data, adc_humidity);
 
 	*val = comp_humidity * 1000 / 1024;
@@ -596,14 +613,20 @@ static const struct bmp280_chip_info bmp280_chip_info = {
 
 static int bme280_chip_config(struct bmp280_data *data)
 {
-	int ret = bmp280_chip_config(data);
+	int ret;
 	u8 osrs = BMP280_OSRS_HUMIDITIY_X(data->oversampling_humid + 1);
+
+	/*
+	 * Oversampling of humidity must be set before oversampling of
+	 * temperature/pressure is set to become effective.
+	 */
+	ret = regmap_update_bits(data->regmap, BMP280_REG_CTRL_HUMIDITY,
+				  BMP280_OSRS_HUMIDITY_MASK, osrs);
 
 	if (ret < 0)
 		return ret;
 
-	return regmap_update_bits(data->regmap, BMP280_REG_CTRL_HUMIDITY,
-				  BMP280_OSRS_HUMIDITY_MASK, osrs);
+	return bmp280_chip_config(data);
 }
 
 static const struct bmp280_chip_info bme280_chip_info = {
@@ -630,7 +653,7 @@ static int bmp180_measure(struct bmp280_data *data, u8 ctrl_meas)
 	unsigned int ctrl;
 
 	if (data->use_eoc)
-		init_completion(&data->done);
+		reinit_completion(&data->done);
 
 	ret = regmap_write(data->regmap, BMP280_REG_CTRL_MEAS, ctrl_meas);
 	if (ret)
@@ -886,6 +909,9 @@ static int bmp085_fetch_eoc_irq(struct device *dev,
 			"trying to enforce it\n");
 		irq_trig = IRQF_TRIGGER_RISING;
 	}
+
+	init_completion(&data->done);
+
 	ret = devm_request_threaded_irq(dev,
 			irq,
 			bmp085_eoc_irq,
@@ -935,14 +961,14 @@ int bmp280_common_probe(struct device *dev,
 		data->chip_info = &bmp180_chip_info;
 		data->oversampling_press = ilog2(8);
 		data->oversampling_temp = ilog2(1);
-		data->start_up_time = 10;
+		data->start_up_time = 10000;
 		break;
 	case BMP280_CHIP_ID:
 		indio_dev->num_channels = 2;
 		data->chip_info = &bmp280_chip_info;
 		data->oversampling_press = ilog2(16);
 		data->oversampling_temp = ilog2(2);
-		data->start_up_time = 2;
+		data->start_up_time = 2000;
 		break;
 	case BME280_CHIP_ID:
 		indio_dev->num_channels = 3;
@@ -950,7 +976,7 @@ int bmp280_common_probe(struct device *dev,
 		data->oversampling_press = ilog2(16);
 		data->oversampling_humid = ilog2(16);
 		data->oversampling_temp = ilog2(2);
-		data->start_up_time = 2;
+		data->start_up_time = 2000;
 		break;
 	default:
 		return -EINVAL;
@@ -979,7 +1005,7 @@ int bmp280_common_probe(struct device *dev,
 		goto out_disable_vddd;
 	}
 	/* Wait to make sure we started up properly */
-	mdelay(data->start_up_time);
+	usleep_range(data->start_up_time, data->start_up_time + 100);
 
 	/* Bring chip out of reset if there is an assigned GPIO line */
 	gpiod = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
@@ -1038,7 +1064,7 @@ int bmp280_common_probe(struct device *dev,
 	 * Set autosuspend to two orders of magnitude larger than the
 	 * start-up time.
 	 */
-	pm_runtime_set_autosuspend_delay(dev, data->start_up_time *100);
+	pm_runtime_set_autosuspend_delay(dev, data->start_up_time / 10);
 	pm_runtime_use_autosuspend(dev);
 	pm_runtime_put(dev);
 
@@ -1101,7 +1127,7 @@ static int bmp280_runtime_resume(struct device *dev)
 	ret = regulator_enable(data->vdda);
 	if (ret)
 		return ret;
-	msleep(data->start_up_time);
+	usleep_range(data->start_up_time, data->start_up_time + 100);
 	return data->chip_info->chip_config(data);
 }
 #endif /* CONFIG_PM */

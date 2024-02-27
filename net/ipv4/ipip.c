@@ -96,7 +96,7 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
 #include <linux/in.h>
@@ -121,7 +121,7 @@ static bool log_ecn_error = true;
 module_param(log_ecn_error, bool, 0644);
 MODULE_PARM_DESC(log_ecn_error, "Log packets received with corrupted ECN");
 
-static int ipip_net_id __read_mostly;
+static unsigned int ipip_net_id __read_mostly;
 
 static int ipip_tunnel_init(struct net_device *dev);
 static struct rtnl_link_ops ipip_link_ops __read_mostly;
@@ -400,7 +400,8 @@ static int ipip_tunnel_init(struct net_device *dev)
 	return ip_tunnel_init(dev);
 }
 
-static int ipip_tunnel_validate(struct nlattr *tb[], struct nlattr *data[])
+static int ipip_tunnel_validate(struct nlattr *tb[], struct nlattr *data[],
+				struct netlink_ext_ack *extack)
 {
 	u8 proto;
 
@@ -415,7 +416,8 @@ static int ipip_tunnel_validate(struct nlattr *tb[], struct nlattr *data[])
 }
 
 static void ipip_netlink_parms(struct nlattr *data[],
-			       struct ip_tunnel_parm *parms, bool *collect_md)
+			       struct ip_tunnel_parm *parms, bool *collect_md,
+			       __u32 *fwmark)
 {
 	memset(parms, 0, sizeof(*parms));
 
@@ -453,6 +455,9 @@ static void ipip_netlink_parms(struct nlattr *data[],
 
 	if (data[IFLA_IPTUN_COLLECT_METADATA])
 		*collect_md = true;
+
+	if (data[IFLA_IPTUN_FWMARK])
+		*fwmark = nla_get_u32(data[IFLA_IPTUN_FWMARK]);
 }
 
 /* This function returns true when ENCAP attributes are present in the nl msg */
@@ -490,11 +495,13 @@ static bool ipip_netlink_encap_parms(struct nlattr *data[],
 }
 
 static int ipip_newlink(struct net *src_net, struct net_device *dev,
-			struct nlattr *tb[], struct nlattr *data[])
+			struct nlattr *tb[], struct nlattr *data[],
+			struct netlink_ext_ack *extack)
 {
 	struct ip_tunnel *t = netdev_priv(dev);
 	struct ip_tunnel_parm p;
 	struct ip_tunnel_encap ipencap;
+	__u32 fwmark = 0;
 
 	if (ipip_netlink_encap_parms(data, &ipencap)) {
 		int err = ip_tunnel_encap_setup(t, &ipencap);
@@ -503,26 +510,28 @@ static int ipip_newlink(struct net *src_net, struct net_device *dev,
 			return err;
 	}
 
-	ipip_netlink_parms(data, &p, &t->collect_md);
-	return ip_tunnel_newlink(dev, tb, &p);
+	ipip_netlink_parms(data, &p, &t->collect_md, &fwmark);
+	return ip_tunnel_newlink(dev, tb, &p, fwmark);
 }
 
 static int ipip_changelink(struct net_device *dev, struct nlattr *tb[],
-			   struct nlattr *data[])
+			   struct nlattr *data[],
+			   struct netlink_ext_ack *extack)
 {
+	struct ip_tunnel *t = netdev_priv(dev);
 	struct ip_tunnel_parm p;
 	struct ip_tunnel_encap ipencap;
 	bool collect_md;
+	__u32 fwmark = t->fwmark;
 
 	if (ipip_netlink_encap_parms(data, &ipencap)) {
-		struct ip_tunnel *t = netdev_priv(dev);
 		int err = ip_tunnel_encap_setup(t, &ipencap);
 
 		if (err < 0)
 			return err;
 	}
 
-	ipip_netlink_parms(data, &p, &collect_md);
+	ipip_netlink_parms(data, &p, &collect_md, &fwmark);
 	if (collect_md)
 		return -EINVAL;
 
@@ -530,7 +539,7 @@ static int ipip_changelink(struct net_device *dev, struct nlattr *tb[],
 	    (!(dev->flags & IFF_POINTOPOINT) && p.iph.daddr))
 		return -EINVAL;
 
-	return ip_tunnel_changelink(dev, tb, &p);
+	return ip_tunnel_changelink(dev, tb, &p, fwmark);
 }
 
 static size_t ipip_get_size(const struct net_device *dev)
@@ -560,6 +569,8 @@ static size_t ipip_get_size(const struct net_device *dev)
 		nla_total_size(2) +
 		/* IFLA_IPTUN_COLLECT_METADATA */
 		nla_total_size(0) +
+		/* IFLA_IPTUN_FWMARK */
+		nla_total_size(4) +
 		0;
 }
 
@@ -575,7 +586,8 @@ static int ipip_fill_info(struct sk_buff *skb, const struct net_device *dev)
 	    nla_put_u8(skb, IFLA_IPTUN_TOS, parm->iph.tos) ||
 	    nla_put_u8(skb, IFLA_IPTUN_PROTO, parm->iph.protocol) ||
 	    nla_put_u8(skb, IFLA_IPTUN_PMTUDISC,
-		       !!(parm->iph.frag_off & htons(IP_DF))))
+		       !!(parm->iph.frag_off & htons(IP_DF))) ||
+	    nla_put_u32(skb, IFLA_IPTUN_FWMARK, tunnel->fwmark))
 		goto nla_put_failure;
 
 	if (nla_put_u16(skb, IFLA_IPTUN_ENCAP_TYPE,
@@ -610,6 +622,7 @@ static const struct nla_policy ipip_policy[IFLA_IPTUN_MAX + 1] = {
 	[IFLA_IPTUN_ENCAP_SPORT]	= { .type = NLA_U16 },
 	[IFLA_IPTUN_ENCAP_DPORT]	= { .type = NLA_U16 },
 	[IFLA_IPTUN_COLLECT_METADATA]	= { .type = NLA_FLAG },
+	[IFLA_IPTUN_FWMARK]		= { .type = NLA_U32 },
 };
 
 static struct rtnl_link_ops ipip_link_ops __read_mostly = {
@@ -689,7 +702,7 @@ out:
 
 rtnl_link_failed:
 #if IS_ENABLED(CONFIG_MPLS)
-	xfrm4_tunnel_deregister(&mplsip_handler, AF_INET);
+	xfrm4_tunnel_deregister(&mplsip_handler, AF_MPLS);
 xfrm_tunnel_mplsip_failed:
 
 #endif

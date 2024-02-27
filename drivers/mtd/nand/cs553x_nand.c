@@ -24,7 +24,7 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/nand_ecc.h>
 #include <linux/mtd/partitions.h>
 
@@ -242,10 +242,9 @@ static int __init cs553x_init_one(int cs, int mmio, unsigned long adr)
 	}
 
 	/* Scan to find existence of the device */
-	if (nand_scan(new_mtd, 1)) {
-		err = -ENXIO;
+	err = nand_scan(new_mtd, 1);
+	if (err)
 		goto out_free;
-	}
 
 	cs553x_mtd[cs] = new_mtd;
 	goto out;
@@ -339,7 +338,7 @@ static void __exit cs553x_cleanup(void)
 		mmio_base = this->IO_ADDR_R;
 
 		/* Release resources, unregister device */
-		nand_release(mtd);
+		nand_release(this);
 		kfree(mtd->name);
 		cs553x_mtd[i] = NULL;
 

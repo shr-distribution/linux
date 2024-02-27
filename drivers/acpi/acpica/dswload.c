@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2017, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -397,7 +397,7 @@ acpi_ds_load1_begin_op(struct acpi_walk_state *walk_state,
 	/* Initialize the op */
 
 #if (defined (ACPI_NO_METHOD_EXECUTION) || defined (ACPI_CONSTANT_EVAL_ONLY))
-	op->named.path = ACPI_CAST_PTR(u8, path);
+	op->named.path = path;
 #endif
 
 	if (node) {
@@ -434,11 +434,36 @@ acpi_status acpi_ds_load1_end_op(struct acpi_walk_state *walk_state)
 	acpi_object_type object_type;
 	acpi_status status = AE_OK;
 
+#ifdef ACPI_ASL_COMPILER
+	u8 param_count;
+#endif
+
 	ACPI_FUNCTION_TRACE(ds_load1_end_op);
 
 	op = walk_state->op;
 	ACPI_DEBUG_PRINT((ACPI_DB_DISPATCH, "Op=%p State=%p\n", op,
 			  walk_state));
+
+	/*
+	 * Disassembler: handle create field operators here.
+	 *
+	 * create_buffer_field is a deferred op that is typically processed in load
+	 * pass 2. However, disassembly of control method contents walk the parse
+	 * tree with ACPI_PARSE_LOAD_PASS1 and AML_CREATE operators are processed
+	 * in a later walk. This is a problem when there is a control method that
+	 * has the same name as the AML_CREATE object. In this case, any use of the
+	 * name segment will be detected as a method call rather than a reference
+	 * to a buffer field.
+	 *
+	 * This earlier creation during disassembly solves this issue by inserting
+	 * the named object in the ACPI namespace so that references to this name
+	 * would be a name string rather than a method call.
+	 */
+	if ((walk_state->parse_flags & ACPI_PARSE_DISASSEMBLE) &&
+	    (walk_state->op_info->flags & AML_CREATE)) {
+		status = acpi_ds_create_buffer_field(op, walk_state);
+		return_ACPI_STATUS(status);
+	}
 
 	/* We are only interested in opcodes that have an associated name */
 
@@ -514,6 +539,38 @@ acpi_status acpi_ds_load1_end_op(struct acpi_walk_state *walk_state)
 			}
 		}
 	}
+#ifdef ACPI_ASL_COMPILER
+	/*
+	 * For external opcode, get the object type from the argument and
+	 * get the parameter count from the argument's next.
+	 */
+	if (acpi_gbl_disasm_flag &&
+	    op->common.node && op->common.aml_opcode == AML_EXTERNAL_OP) {
+		/*
+		 * Note, if this external is not a method
+		 * Op->Common.Value.Arg->Common.Next->Common.Value.Integer == 0
+		 * Therefore, param_count will be 0.
+		 */
+		param_count =
+		    (u8)op->common.value.arg->common.next->common.value.integer;
+		object_type = (u8)op->common.value.arg->common.value.integer;
+		op->common.node->flags |= ANOBJ_IS_EXTERNAL;
+		op->common.node->type = (u8)object_type;
+
+		acpi_dm_create_subobject_for_external((u8)object_type,
+						      &op->common.node,
+						      param_count);
+
+		/*
+		 * Add the external to the external list because we may be
+		 * emitting code based off of the items within the external list.
+		 */
+		acpi_dm_add_op_to_external_list(op, op->named.path,
+						(u8)object_type, param_count,
+						ACPI_EXT_ORIGIN_FROM_OPCODE |
+						ACPI_EXT_RESOLVED_REFERENCE);
+	}
+#endif
 
 	/*
 	 * If we are executing a method, do not create any namespace objects
@@ -563,7 +620,9 @@ acpi_status acpi_ds_load1_end_op(struct acpi_walk_state *walk_state)
 
 	/* Pop the scope stack (only if loading a table) */
 
-	if (!walk_state->method_node && acpi_ns_opens_scope(object_type)) {
+	if (!walk_state->method_node &&
+	    op->common.aml_opcode != AML_EXTERNAL_OP &&
+	    acpi_ns_opens_scope(object_type)) {
 		ACPI_DEBUG_PRINT((ACPI_DB_DISPATCH,
 				  "(%s): Popping scope for Op %p\n",
 				  acpi_ut_get_type_name(object_type), op));

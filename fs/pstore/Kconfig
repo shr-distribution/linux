@@ -86,10 +86,4 @@ config PSTORE_RAM
 	  Note that for historical reasons, the module will be named
 	  "ramoops.ko".
 
-	  For more information, see Documentation/ramoops.txt.
-
-config BLDR_DEBUG_LOG
-	bool "Append bootloader log to ramoops"
-	depends on PSTORE_CONSOLE
-	help
-	  Say Y here if you want to have bootloader log in ram console
+	  For more information, see Documentation/admin-guide/ramoops.rst.

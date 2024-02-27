@@ -230,7 +230,7 @@ int wusb_dev_sec_add(struct wusbhc *wusbhc,
 
 	result = usb_get_descriptor(usb_dev, USB_DT_SECURITY,
 				    0, secd, sizeof(*secd));
-	if (result < sizeof(*secd)) {
+	if (result < (int)sizeof(*secd)) {
 		dev_err(dev, "Can't read security descriptor or "
 			"not enough data: %d\n", result);
 		goto out;
@@ -240,6 +240,7 @@ int wusb_dev_sec_add(struct wusbhc *wusbhc,
 	if (new_secd == NULL) {
 		dev_err(dev,
 			"Can't allocate space for security descriptors\n");
+		result = -ENOMEM;
 		goto out;
 	}
 	secd = new_secd;

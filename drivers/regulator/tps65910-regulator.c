@@ -1102,11 +1102,14 @@ static int tps65910_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, pmic);
 
 	/* Give control of all register to control port */
-	tps65910_reg_set_bits(pmic->mfd, TPS65910_DEVCTRL,
+	err = tps65910_reg_set_bits(pmic->mfd, TPS65910_DEVCTRL,
 				DEVCTRL_SR_CTL_I2C_SEL_MASK);
+	if (err < 0)
+		return err;
 
 	switch (tps65910_chip_id(tps65910)) {
 	case TPS65910:
+		BUILD_BUG_ON(TPS65910_NUM_REGS < ARRAY_SIZE(tps65910_regs));
 		pmic->get_ctrl_reg = &tps65910_get_ctrl_register;
 		pmic->num_regulators = ARRAY_SIZE(tps65910_regs);
 		pmic->ext_sleep_control = tps65910_ext_sleep_control;
@@ -1119,6 +1122,7 @@ static int tps65910_probe(struct platform_device *pdev)
 					DCDCCTRL_DCDCCKSYNC_MASK);
 		break;
 	case TPS65911:
+		BUILD_BUG_ON(TPS65910_NUM_REGS < ARRAY_SIZE(tps65911_regs));
 		pmic->get_ctrl_reg = &tps65911_get_ctrl_register;
 		pmic->num_regulators = ARRAY_SIZE(tps65911_regs);
 		pmic->ext_sleep_control = tps65911_ext_sleep_control;
@@ -1144,8 +1148,7 @@ static int tps65910_probe(struct platform_device *pdev)
 	if (!pmic->rdev)
 		return -ENOMEM;
 
-	for (i = 0; i < pmic->num_regulators && i < TPS65910_NUM_REGS;
-			i++, info++) {
+	for (i = 0; i < pmic->num_regulators; i++, info++) {
 		/* Register the regulators */
 		pmic->info[i] = info;
 

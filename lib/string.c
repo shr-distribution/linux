@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/lib/string.c
  *
@@ -131,7 +132,7 @@ EXPORT_SYMBOL(strncpy);
  * @src: Where to copy the string from
  * @size: size of destination buffer
  *
- * Compatible with *BSD: the result is always a valid
+ * Compatible with ``*BSD``: the result is always a valid
  * NUL-terminated string that fits in the buffer (unless,
  * of course, the buffer size is zero). It does not pad
  * out the result like strncpy() does.
@@ -202,7 +203,7 @@ ssize_t strscpy(char *dest, const char *src, size_t count)
 	while (max >= sizeof(unsigned long)) {
 		unsigned long c, data;
 
-		c = *(unsigned long *)(src+res);
+		c = read_word_at_a_time(src+res);
 		if (has_zero(c, &data, &constants)) {
 			data = prep_zero_mask(c, data, &constants);
 			data = create_zero_mask(data);
@@ -723,6 +724,72 @@ void memzero_explicit(void *s, size_t count)
 }
 EXPORT_SYMBOL(memzero_explicit);
 
+#ifndef __HAVE_ARCH_MEMSET16
+/**
+ * memset16() - Fill a memory area with a uint16_t
+ * @s: Pointer to the start of the area.
+ * @v: The value to fill the area with
+ * @count: The number of values to store
+ *
+ * Differs from memset() in that it fills with a uint16_t instead
+ * of a byte.  Remember that @count is the number of uint16_ts to
+ * store, not the number of bytes.
+ */
+void *memset16(uint16_t *s, uint16_t v, size_t count)
+{
+	uint16_t *xs = s;
+
+	while (count--)
+		*xs++ = v;
+	return s;
+}
+EXPORT_SYMBOL(memset16);
+#endif
+
+#ifndef __HAVE_ARCH_MEMSET32
+/**
+ * memset32() - Fill a memory area with a uint32_t
+ * @s: Pointer to the start of the area.
+ * @v: The value to fill the area with
+ * @count: The number of values to store
+ *
+ * Differs from memset() in that it fills with a uint32_t instead
+ * of a byte.  Remember that @count is the number of uint32_ts to
+ * store, not the number of bytes.
+ */
+void *memset32(uint32_t *s, uint32_t v, size_t count)
+{
+	uint32_t *xs = s;
+
+	while (count--)
+		*xs++ = v;
+	return s;
+}
+EXPORT_SYMBOL(memset32);
+#endif
+
+#ifndef __HAVE_ARCH_MEMSET64
+/**
+ * memset64() - Fill a memory area with a uint64_t
+ * @s: Pointer to the start of the area.
+ * @v: The value to fill the area with
+ * @count: The number of values to store
+ *
+ * Differs from memset() in that it fills with a uint64_t instead
+ * of a byte.  Remember that @count is the number of uint64_ts to
+ * store, not the number of bytes.
+ */
+void *memset64(uint64_t *s, uint64_t v, size_t count)
+{
+	uint64_t *xs = s;
+
+	while (count--)
+		*xs++ = v;
+	return s;
+}
+EXPORT_SYMBOL(memset64);
+#endif
+
 #ifndef __HAVE_ARCH_MEMCPY
 /**
  * memcpy - Copy one area of memory to another
@@ -796,6 +863,26 @@ __visible int memcmp(const void *cs, const void *ct, size_t count)
 	return res;
 }
 EXPORT_SYMBOL(memcmp);
+#endif
+
+#ifndef __HAVE_ARCH_BCMP
+/**
+ * bcmp - returns 0 if and only if the buffers have identical contents.
+ * @a: pointer to first buffer.
+ * @b: pointer to second buffer.
+ * @len: size of buffers.
+ *
+ * The sign or magnitude of a non-zero return value has no particular
+ * meaning, and architectures may implement their own more efficient bcmp(). So
+ * while this particular implementation is a simple (tail) call to memcmp, do
+ * not rely on anything but whether the return value is zero or non-zero.
+ */
+#undef bcmp
+int bcmp(const void *a, const void *b, size_t len)
+{
+	return memcmp(a, b, len);
+}
+EXPORT_SYMBOL(bcmp);
 #endif
 
 #ifndef __HAVE_ARCH_MEMSCAN
@@ -985,3 +1072,144 @@ void fortify_panic(const char *name)
 	BUG();
 }
 EXPORT_SYMBOL(fortify_panic);
+
+#ifdef CONFIG_STRING_SELFTEST
+#include <linux/slab.h>
+#include <linux/module.h>
+
+static __init int memset16_selftest(void)
+{
+	unsigned i, j, k;
+	u16 v, *p;
+
+	p = kmalloc(256 * 2 * 2, GFP_KERNEL);
+	if (!p)
+		return -1;
+
+	for (i = 0; i < 256; i++) {
+		for (j = 0; j < 256; j++) {
+			memset(p, 0xa1, 256 * 2 * sizeof(v));
+			memset16(p + i, 0xb1b2, j);
+			for (k = 0; k < 512; k++) {
+				v = p[k];
+				if (k < i) {
+					if (v != 0xa1a1)
+						goto fail;
+				} else if (k < i + j) {
+					if (v != 0xb1b2)
+						goto fail;
+				} else {
+					if (v != 0xa1a1)
+						goto fail;
+				}
+			}
+		}
+	}
+
+fail:
+	kfree(p);
+	if (i < 256)
+		return (i << 24) | (j << 16) | k;
+	return 0;
+}
+
+static __init int memset32_selftest(void)
+{
+	unsigned i, j, k;
+	u32 v, *p;
+
+	p = kmalloc(256 * 2 * 4, GFP_KERNEL);
+	if (!p)
+		return -1;
+
+	for (i = 0; i < 256; i++) {
+		for (j = 0; j < 256; j++) {
+			memset(p, 0xa1, 256 * 2 * sizeof(v));
+			memset32(p + i, 0xb1b2b3b4, j);
+			for (k = 0; k < 512; k++) {
+				v = p[k];
+				if (k < i) {
+					if (v != 0xa1a1a1a1)
+						goto fail;
+				} else if (k < i + j) {
+					if (v != 0xb1b2b3b4)
+						goto fail;
+				} else {
+					if (v != 0xa1a1a1a1)
+						goto fail;
+				}
+			}
+		}
+	}
+
+fail:
+	kfree(p);
+	if (i < 256)
+		return (i << 24) | (j << 16) | k;
+	return 0;
+}
+
+static __init int memset64_selftest(void)
+{
+	unsigned i, j, k;
+	u64 v, *p;
+
+	p = kmalloc(256 * 2 * 8, GFP_KERNEL);
+	if (!p)
+		return -1;
+
+	for (i = 0; i < 256; i++) {
+		for (j = 0; j < 256; j++) {
+			memset(p, 0xa1, 256 * 2 * sizeof(v));
+			memset64(p + i, 0xb1b2b3b4b5b6b7b8ULL, j);
+			for (k = 0; k < 512; k++) {
+				v = p[k];
+				if (k < i) {
+					if (v != 0xa1a1a1a1a1a1a1a1ULL)
+						goto fail;
+				} else if (k < i + j) {
+					if (v != 0xb1b2b3b4b5b6b7b8ULL)
+						goto fail;
+				} else {
+					if (v != 0xa1a1a1a1a1a1a1a1ULL)
+						goto fail;
+				}
+			}
+		}
+	}
+
+fail:
+	kfree(p);
+	if (i < 256)
+		return (i << 24) | (j << 16) | k;
+	return 0;
+}
+
+static __init int string_selftest_init(void)
+{
+	int test, subtest;
+
+	test = 1;
+	subtest = memset16_selftest();
+	if (subtest)
+		goto fail;
+
+	test = 2;
+	subtest = memset32_selftest();
+	if (subtest)
+		goto fail;
+
+	test = 3;
+	subtest = memset64_selftest();
+	if (subtest)
+		goto fail;
+
+	pr_info("String selftests succeeded\n");
+	return 0;
+fail:
+	pr_crit("String selftest failure %d.%08x\n", test, subtest);
+	return 0;
+}
+
+module_init(string_selftest_init);
+#endif	/* CONFIG_STRING_SELFTEST */

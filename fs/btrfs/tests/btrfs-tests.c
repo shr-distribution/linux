@@ -79,7 +79,7 @@ static void btrfs_destroy_test_fs(void)
 	unregister_filesystem(&test_type);
 }
 
-struct btrfs_fs_info *btrfs_alloc_dummy_fs_info(void)
+struct btrfs_fs_info *btrfs_alloc_dummy_fs_info(u32 nodesize, u32 sectorsize)
 {
 	struct btrfs_fs_info *fs_info = kzalloc(sizeof(struct btrfs_fs_info),
 						GFP_KERNEL);
@@ -100,6 +100,9 @@ struct btrfs_fs_info *btrfs_alloc_dummy_fs_info(void)
 		return NULL;
 	}
 
+	fs_info->nodesize = nodesize;
+	fs_info->sectorsize = sectorsize;
+
 	if (init_srcu_struct(&fs_info->subvol_srcu)) {
 		kfree(fs_info->fs_devices);
 		kfree(fs_info->super_copy);
@@ -112,7 +115,6 @@ struct btrfs_fs_info *btrfs_alloc_dummy_fs_info(void)
 	spin_lock_init(&fs_info->qgroup_op_lock);
 	spin_lock_init(&fs_info->super_lock);
 	spin_lock_init(&fs_info->fs_roots_radix_lock);
-	spin_lock_init(&fs_info->tree_mod_seq_lock);
 	mutex_init(&fs_info->qgroup_ioctl_lock);
 	mutex_init(&fs_info->qgroup_rescan_lock);
 	rwlock_init(&fs_info->tree_mod_log_lock);
@@ -162,6 +164,7 @@ void btrfs_free_dummy_fs_info(struct btrfs_fs_info *fs_info)
 				slot = radix_tree_iter_retry(&iter);
 			continue;
 		}
+		slot = radix_tree_iter_resume(slot, &iter);
 		spin_unlock(&fs_info->buffer_lock);
 		free_extent_buffer_stale(eb);
 		spin_lock(&fs_info->buffer_lock);
@@ -189,7 +192,8 @@ void btrfs_free_dummy_root(struct btrfs_root *root)
 }
 
 struct btrfs_block_group_cache *
-btrfs_alloc_dummy_block_group(unsigned long length, u32 sectorsize)
+btrfs_alloc_dummy_block_group(struct btrfs_fs_info *fs_info,
+			      unsigned long length)
 {
 	struct btrfs_block_group_cache *cache;
 
@@ -206,8 +210,8 @@ btrfs_alloc_dummy_block_group(unsigned long length, u32 sectorsize)
 	cache->key.objectid = 0;
 	cache->key.offset = length;
 	cache->key.type = BTRFS_BLOCK_GROUP_ITEM_KEY;
-	cache->sectorsize = sectorsize;
-	cache->full_stripe_len = sectorsize;
+	cache->full_stripe_len = fs_info->sectorsize;
+	cache->fs_info = fs_info;
 
 	INIT_LIST_HEAD(&cache->list);
 	INIT_LIST_HEAD(&cache->cluster_list);
@@ -231,7 +235,6 @@ void btrfs_init_dummy_trans(struct btrfs_trans_handle *trans)
 {
 	memset(trans, 0, sizeof(*trans));
 	trans->transid = 1;
-	INIT_LIST_HEAD(&trans->qgroup_ref_list);
 	trans->type = __TRANS_DUMMY;
 }
 

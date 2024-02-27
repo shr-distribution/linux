@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __PERF_MACHINE_H
 #define __PERF_MACHINE_H
 
@@ -97,6 +98,9 @@ int machine__process_itrace_start_event(struct machine *machine,
 					union perf_event *event);
 int machine__process_switch_event(struct machine *machine,
 				  union perf_event *event);
+int machine__process_namespaces_event(struct machine *machine,
+				      union perf_event *event,
+				      struct perf_sample *sample);
 int machine__process_mmap_event(struct machine *machine, union perf_event *event,
 				struct perf_sample *sample);
 int machine__process_mmap2_event(struct machine *machine, union perf_event *event,
@@ -129,6 +133,7 @@ char *machine__mmap_name(struct machine *machine, char *bf, size_t size);
 void machines__set_comm_exec(struct machines *machines, bool comm_exec);
 
 struct machine *machine__new_host(void);
+struct machine *machine__new_kallsyms(void);
 int machine__init(struct machine *machine, const char *root_dir, pid_t pid);
 void machine__exit(struct machine *machine);
 void machine__delete_threads(struct machine *machine);
@@ -163,6 +168,9 @@ static inline bool machine__is_host(struct machine *machine)
 {
 	return machine ? machine->pid == HOST_KERNEL_ID : false;
 }
+
+bool machine__is(struct machine *machine, const char *arch);
+int machine__nr_cpus_avail(struct machine *machine);
 
 struct thread *__machine__findnew_thread(struct machine *machine, pid_t pid, pid_t tid);
 struct thread *machine__findnew_thread(struct machine *machine, pid_t pid, pid_t tid);
@@ -205,7 +213,7 @@ struct symbol *machine__find_kernel_function_by_name(struct machine *machine,
 
 struct map *machine__findnew_module_map(struct machine *machine, u64 start,
 					const char *filename);
-int arch__fix_module_text_start(u64 *start, const char *name);
+int arch__fix_module_text_start(u64 *start, u64 *size, const char *name);
 
 int __machine__load_kallsyms(struct machine *machine, const char *filename,
 			     enum map_type type, bool no_kcore);
@@ -257,5 +265,8 @@ int machine__set_current_tid(struct machine *machine, int cpu, pid_t pid,
  * For use with libtraceevent's pevent_set_function_resolver()
  */
 char *machine__resolve_kernel_addr(void *vmachine, unsigned long long *addrp, char **modp);
+
+int machine__map_x86_64_entry_trampolines(struct machine *machine,
+					  struct dso *kernel);
 
 #endif /* __PERF_MACHINE_H */

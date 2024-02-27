@@ -41,7 +41,7 @@ menuconfig USB_GADGET
 	   don't have this kind of hardware (except maybe inside Linux PDAs).
 
 	   For more information, see <http://www.linux-usb.org/gadget> and
-	   the kernel DocBook documentation for this API.
+	   the kernel documentation for this API.
 
 if USB_GADGET
 
@@ -130,7 +130,7 @@ config USB_GADGET_STORAGE_NUM_BUFFERS
 
 config U_SERIAL_CONSOLE
 	bool "Serial gadget console support"
-	depends on USB_G_SERIAL
+	depends on USB_U_SERIAL
 	help
 	   It supports the serial gadget can be used as a console.
 
@@ -158,6 +158,9 @@ config USB_U_SERIAL
 config USB_U_ETHER
 	tristate
 
+config USB_U_AUDIO
+	tristate
+
 config USB_F_SERIAL
 	tristate
 
@@ -182,13 +185,6 @@ config USB_F_SUBSET
 config USB_F_RNDIS
 	tristate
 
-config USB_F_QCRNDIS
-	tristate
-
-config USB_F_RMNET_BAM
-	def_tristate y
-	tristate
-
 config USB_F_MASS_STORAGE
 	tristate
 
@@ -196,6 +192,9 @@ config USB_F_FS
 	tristate
 
 config USB_F_UAC1
+	tristate
+
+config USB_F_UAC1_LEGACY
 	tristate
 
 config USB_F_UAC2
@@ -216,37 +215,16 @@ config USB_F_PRINTER
 config USB_F_TCM
 	tristate
 
-config USB_F_MTP
-	tristate
-
-config USB_F_PTP
-        tristate
-
 config USB_F_AUDIO_SRC
 	tristate
 
 config USB_F_ACC
 	tristate
 
-config USB_F_DIAG
-	tristate
-
-config USB_F_CDEV
-	tristate
-
-config USB_F_CCID
-	tristate
-
-config USB_F_GSI
-	tristate
-
-config USB_F_QDSS
-	tristate
-
 # this first set of drivers all depend on bulk-capable hardware.
 
 config USB_CONFIGFS
-	tristate "USB functions configurable through configfs"
+	tristate "USB Gadget functions configurable through configfs"
 	select USB_LIBCOMPOSITE
 	help
 	  A Linux USB "gadget" can be set up through configfs.
@@ -319,14 +297,6 @@ config USB_CONFIGFS_ECM_SUBSET
 	  On hardware that can't implement the full protocol,
 	  a simple CDC subset is used, placing fewer demands on USB.
 
-config USB_CONFIGFS_QCRNDIS
-	bool "QCRNDIS"
-	depends on USB_CONFIGFS
-	depends on RNDIS_IPA
-	depends on NET
-	select USB_U_ETHER
-	select USB_F_QCRNDIS
-
 config USB_CONFIGFS_RNDIS
 	bool "RNDIS"
 	depends on USB_CONFIGFS
@@ -342,12 +312,6 @@ config USB_CONFIGFS_RNDIS
 	   as the "driver info file".  For versions of MS-Windows older than
 	   XP, you'll need to download drivers from Microsoft's website; a URL
 	   is given in comments found in that info file.
-
-config USB_CONFIGFS_RMNET_BAM
-	bool "RMNET_BAM"
-	depends on USB_CONFIGFS
-	depends on IPA
-	select USB_F_RMNET_BAM
 
 config USB_CONFIGFS_EEM
 	bool "Ethernet Emulation Model (EEM)"
@@ -410,23 +374,10 @@ config USB_CONFIGFS_F_FS
 	  implemented in kernel space (for instance Ethernet, serial or
 	  mass storage) and other are implemented in user space.
 
-config USB_CONFIGFS_F_MTP
-	boolean "MTP gadget"
-	depends on USB_CONFIGFS
-	select USB_F_MTP
-	help
-	  USB gadget MTP support
-
-config USB_CONFIGFS_F_PTP
-	boolean "PTP gadget"
-	depends on USB_CONFIGFS && USB_CONFIGFS_F_MTP
-	select USB_F_PTP
-	help
-	  USB gadget PTP support
-
 config USB_CONFIGFS_F_ACC
 	boolean "Accessory gadget"
 	depends on USB_CONFIGFS
+	depends on HID=y
 	select USB_F_ACC
 	help
 	  USB gadget Accessory support
@@ -454,12 +405,30 @@ config USB_CONFIGFS_F_UAC1
 	depends on SND
 	select USB_LIBCOMPOSITE
 	select SND_PCM
+	select USB_U_AUDIO
 	select USB_F_UAC1
 	help
 	  This Audio function implements 1 AudioControl interface,
 	  1 AudioStreaming Interface each for USB-OUT and USB-IN.
-	  This driver requires a real Audio codec to be present
-	  on the device.
+	  This driver doesn't expect any real Audio codec to be present
+	  on the device - the audio streams are simply sinked to and
+	  sourced from a virtual ALSA sound card created. The user-space
+	  application may choose to do whatever it wants with the data
+	  received from the USB Host and choose to provide whatever it
+	  wants as audio data to the USB Host.
+
+config USB_CONFIGFS_F_UAC1_LEGACY
+	bool "Audio Class 1.0 (legacy implementation)"
+	depends on USB_CONFIGFS
+	depends on SND
+	select USB_LIBCOMPOSITE
+	select SND_PCM
+	select USB_F_UAC1_LEGACY
+	help
+	  This Audio function implements 1 AudioControl interface,
+	  1 AudioStreaming Interface each for USB-OUT and USB-IN.
+	  This is a legacy driver and requires a real Audio codec
+	  to be present on the device.
 
 config USB_CONFIGFS_F_UAC2
 	bool "Audio Class 2.0"
@@ -467,6 +436,7 @@ config USB_CONFIGFS_F_UAC2
 	depends on SND
 	select USB_LIBCOMPOSITE
 	select SND_PCM
+	select USB_U_AUDIO
 	select USB_F_UAC2
 	help
 	  This Audio function is compatible with USB Audio Class
@@ -543,66 +513,6 @@ config USB_CONFIGFS_F_TCM
 	  Both protocols can work on USB2.0 and USB3.0.
 	  UAS utilizes the USB 3.0 feature called streams support.
 
-config USB_CONFIGFS_F_DIAG
-	bool "USB Diag function"
-	select USB_F_DIAG
-	depends on USB_CONFIGFS
-	help
-	  Diag function driver enables support for Qualcomm diagnostics
-	  port over USB.
-
-config USB_CONFIGFS_F_CDEV
-	bool "USB Serial Character function"
-	select USB_F_CDEV
-	depends on USB_CONFIGFS
-	help
-	  Generic USB serial character function driver to support DUN/NMEA.
-
-config USB_CONFIGFS_F_CCID
-	bool "USB CCID function"
-	select USB_F_CCID
-	depends on USB_CONFIGFS
-	help
-	  USB CCID function driver creates transport layer between the
-	  userspace CCID component and the Windows Host.
-
-config USB_CONFIGFS_F_GSI
-	bool "USB GSI function"
-	select USB_F_GSI
-	select USB_U_ETHER
-	depends on USB_CONFIGFS
-	help
-	  Generic function driver to support h/w acceleration to IPA over GSI.
-
-config USB_CONFIGFS_F_QDSS
-        bool "USB QDSS function"
-	select USB_F_QDSS
-	depends on USB_CONFIGFS
-	help
-          USB QDSS function driver to get hwtracing related data over USB.
-
-choice
-	tristate "USB Gadget Drivers"
-	default USB_ETH
-	optional
-	help
-	  A Linux "Gadget Driver" talks to the USB Peripheral Controller
-	  driver through the abstract "gadget" API.  Some other operating
-	  systems call these "client" drivers, of which "class drivers"
-	  are a subset (implementing a USB device class specification).
-	  A gadget driver implements one or more USB functions using
-	  the peripheral hardware.
-
-	  Gadget drivers are hardware-neutral, or "platform independent",
-	  except that they sometimes must understand quirks or limitations
-	  of the particular controllers they work with.  For example, when
-	  a controller doesn't support alternate configurations or provide
-	  enough of the right types of endpoints, the gadget driver might
-	  not be able work with that controller, or might need to implement
-	  a less common variant of a device class protocol.
-
 source "drivers/usb/gadget/legacy/Kconfig"
-
-endchoice
 
 endif # USB_GADGET

@@ -35,10 +35,10 @@ static inline int should_deliver(const struct net_bridge_port *p,
 
 int br_dev_queue_push_xmit(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
+	skb_push(skb, ETH_HLEN);
 	if (!is_skb_forwardable(skb->dev, skb))
 		goto drop;
 
-	skb_push(skb, ETH_HLEN);
 	br_drop_fake_rtable(skb);
 
 	if (skb->ip_summed == CHECKSUM_PARTIAL &&
@@ -80,7 +80,7 @@ static void __br_forward(const struct net_bridge_port *to,
 	int br_hook;
 
 	vg = nbp_vlan_group_rcu(to);
-	skb = br_handle_vlan(to->br, vg, skb);
+	skb = br_handle_vlan(to->br, to, vg, skb);
 	if (!skb)
 		return;
 
@@ -96,12 +96,11 @@ static void __br_forward(const struct net_bridge_port *to,
 		net = dev_net(indev);
 	} else {
 		if (unlikely(netpoll_tx_running(to->br->dev))) {
-			if (!is_skb_forwardable(skb->dev, skb)) {
+			skb_push(skb, ETH_HLEN);
+			if (!is_skb_forwardable(skb->dev, skb))
 				kfree_skb(skb);
-			} else {
-				skb_push(skb, ETH_HLEN);
+			else
 				br_netpoll_send_skb(to, skb);
-			}
 			return;
 		}
 		br_hook = NF_BR_LOCAL_OUT;
@@ -183,13 +182,23 @@ void br_flood(struct net_bridge *br, struct sk_buff *skb,
 	struct net_bridge_port *p;
 
 	list_for_each_entry_rcu(p, &br->port_list, list) {
-		/* Do not flood unicast traffic to ports that turn it off */
-		if (pkt_type == BR_PKT_UNICAST && !(p->flags & BR_FLOOD))
-			continue;
-		/* Do not flood if mc off, except for traffic we originate */
-		if (pkt_type == BR_PKT_MULTICAST &&
-		    !(p->flags & BR_MCAST_FLOOD) && skb->dev != br->dev)
-			continue;
+		/* Do not flood unicast traffic to ports that turn it off, nor
+		 * other traffic if flood off, except for traffic we originate
+		 */
+		switch (pkt_type) {
+		case BR_PKT_UNICAST:
+			if (!(p->flags & BR_FLOOD))
+				continue;
+			break;
+		case BR_PKT_MULTICAST:
+			if (!(p->flags & BR_MCAST_FLOOD) && skb->dev != br->dev)
+				continue;
+			break;
+		case BR_PKT_BROADCAST:
+			if (!(p->flags & BR_BCAST_FLOOD) && skb->dev != br->dev)
+				continue;
+			break;
+		}
 
 		/* Do not flood to ports that enable proxy ARP */
 		if (p->flags & BR_PROXYARP)
@@ -221,6 +230,31 @@ out:
 }
 
 #ifdef CONFIG_BRIDGE_IGMP_SNOOPING
+static void maybe_deliver_addr(struct net_bridge_port *p, struct sk_buff *skb,
+			       const unsigned char *addr, bool local_orig)
+{
+	struct net_device *dev = BR_INPUT_SKB_CB(skb)->brdev;
+	const unsigned char *src = eth_hdr(skb)->h_source;
+
+	if (!should_deliver(p, skb))
+		return;
+
+	/* Even with hairpin, no soliloquies - prevent breaking IPv6 DAD */
+	if (skb->dev == p->dev && ether_addr_equal(src, addr))
+		return;
+
+	skb = skb_copy(skb, GFP_ATOMIC);
+	if (!skb) {
+		dev->stats.tx_dropped++;
+		return;
+	}
+
+	if (!is_broadcast_ether_addr(addr))
+		memcpy(eth_hdr(skb)->h_dest, addr, ETH_ALEN);
+
+	__br_forward(p, skb, local_orig);
+}
+
 /* called with rcu_read_lock */
 void br_multicast_flood(struct net_bridge_mdb_entry *mdst,
 			struct sk_buff *skb,
@@ -242,10 +276,20 @@ void br_multicast_flood(struct net_bridge_mdb_entry *mdst,
 		rport = rp ? hlist_entry(rp, struct net_bridge_port, rlist) :
 			     NULL;
 
-		port = (unsigned long)lport > (unsigned long)rport ?
-		       lport : rport;
+		if ((unsigned long)lport > (unsigned long)rport) {
+			port = lport;
+
+			if (port->flags & BR_MULTICAST_TO_UNICAST) {
+				maybe_deliver_addr(lport, skb, p->eth_addr,
+						   local_orig);
+				goto delivered;
+			}
+		} else {
+			port = rport;
+		}
 
 		prev = maybe_deliver(prev, port, skb, local_orig);
+delivered:
 		if (IS_ERR(prev))
 			goto out;
 		if (prev == port)

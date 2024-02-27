@@ -65,12 +65,14 @@ struct verbs_txreq {
 	struct sdma_engine     *sde;
 	struct send_context     *psc;
 	u16                     hdr_dwords;
+	u16			s_cur_size;
 };
 
 struct hfi1_ibdev;
 struct verbs_txreq *__get_txreq(struct hfi1_ibdev *dev,
 				struct rvt_qp *qp);
 
+#define VERBS_TXREQ_GFP (GFP_ATOMIC | __GFP_NOWARN)
 static inline struct verbs_txreq *get_txreq(struct hfi1_ibdev *dev,
 					    struct rvt_qp *qp)
 	__must_hold(&qp->slock)
@@ -78,7 +80,7 @@ static inline struct verbs_txreq *get_txreq(struct hfi1_ibdev *dev,
 	struct verbs_txreq *tx;
 	struct hfi1_qp_priv *priv = qp->priv;
 
-	tx = kmem_cache_alloc(dev->verbs_txreq_cache, GFP_ATOMIC);
+	tx = kmem_cache_alloc(dev->verbs_txreq_cache, VERBS_TXREQ_GFP);
 	if (unlikely(!tx)) {
 		/* call slow path to get the lock */
 		tx = __get_txreq(dev, qp);

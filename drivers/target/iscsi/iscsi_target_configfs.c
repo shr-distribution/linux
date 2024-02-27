@@ -21,10 +21,11 @@
 #include <linux/ctype.h>
 #include <linux/export.h>
 #include <linux/inet.h>
+#include <linux/module.h>
+#include <net/ipv6.h>
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
 #include <target/iscsi/iscsi_transport.h>
-
 #include <target/iscsi/iscsi_target_core.h>
 #include "iscsi_target_parameters.h"
 #include "iscsi_target_device.h"
@@ -166,10 +167,7 @@ static struct se_tpg_np *lio_target_call_addnptotpg(
 	struct iscsi_portal_group *tpg;
 	struct iscsi_tpg_np *tpg_np;
 	char *str, *str2, *ip_str, *port_str;
-	struct sockaddr_storage sockaddr;
-	struct sockaddr_in *sock_in;
-	struct sockaddr_in6 *sock_in6;
-	unsigned long port;
+	struct sockaddr_storage sockaddr = { };
 	int ret;
 	char buf[MAX_PORTAL_LEN + 1];
 
@@ -181,21 +179,19 @@ static struct se_tpg_np *lio_target_call_addnptotpg(
 	memset(buf, 0, MAX_PORTAL_LEN + 1);
 	snprintf(buf, MAX_PORTAL_LEN + 1, "%s", name);
 
-	memset(&sockaddr, 0, sizeof(struct sockaddr_storage));
-
 	str = strstr(buf, "[");
 	if (str) {
-		const char *end;
-
 		str2 = strstr(str, "]");
 		if (!str2) {
 			pr_err("Unable to locate trailing \"]\""
 				" in IPv6 iSCSI network portal address\n");
 			return ERR_PTR(-EINVAL);
 		}
-		str++; /* Skip over leading "[" */
+
+		ip_str = str + 1; /* Skip over leading "[" */
 		*str2 = '\0'; /* Terminate the unbracketed IPv6 address */
 		str2++; /* Skip over the \0 */
+
 		port_str = strstr(str2, ":");
 		if (!port_str) {
 			pr_err("Unable to locate \":port\""
@@ -204,23 +200,8 @@ static struct se_tpg_np *lio_target_call_addnptotpg(
 		}
 		*port_str = '\0'; /* Terminate string for IP */
 		port_str++; /* Skip over ":" */
-
-		ret = kstrtoul(port_str, 0, &port);
-		if (ret < 0) {
-			pr_err("kstrtoul() failed for port_str: %d\n", ret);
-			return ERR_PTR(ret);
-		}
-		sock_in6 = (struct sockaddr_in6 *)&sockaddr;
-		sock_in6->sin6_family = AF_INET6;
-		sock_in6->sin6_port = htons((unsigned short)port);
-		ret = in6_pton(str, -1,
-				(void *)&sock_in6->sin6_addr.in6_u, -1, &end);
-		if (ret <= 0) {
-			pr_err("in6_pton returned: %d\n", ret);
-			return ERR_PTR(-EINVAL);
-		}
 	} else {
-		str = ip_str = &buf[0];
+		ip_str = &buf[0];
 		port_str = strstr(ip_str, ":");
 		if (!port_str) {
 			pr_err("Unable to locate \":port\""
@@ -229,17 +210,15 @@ static struct se_tpg_np *lio_target_call_addnptotpg(
 		}
 		*port_str = '\0'; /* Terminate string for IP */
 		port_str++; /* Skip over ":" */
-
-		ret = kstrtoul(port_str, 0, &port);
-		if (ret < 0) {
-			pr_err("kstrtoul() failed for port_str: %d\n", ret);
-			return ERR_PTR(ret);
-		}
-		sock_in = (struct sockaddr_in *)&sockaddr;
-		sock_in->sin_family = AF_INET;
-		sock_in->sin_port = htons((unsigned short)port);
-		sock_in->sin_addr.s_addr = in_aton(ip_str);
 	}
+
+	ret = inet_pton_with_scope(&init_net, AF_UNSPEC, ip_str,
+			port_str, &sockaddr);
+	if (ret) {
+		pr_err("malformed ip/port passed: %s\n", name);
+		return ERR_PTR(ret);
+	}
+
 	tpg = container_of(se_tpg, struct iscsi_portal_group, tpg_se_tpg);
 	ret = iscsit_get_tpg(tpg);
 	if (ret < 0)
@@ -1400,11 +1379,10 @@ static u32 lio_sess_get_initiator_sid(
 static int lio_queue_data_in(struct se_cmd *se_cmd)
 {
 	struct iscsi_cmd *cmd = container_of(se_cmd, struct iscsi_cmd, se_cmd);
+	struct iscsi_conn *conn = cmd->conn;
 
 	cmd->i_state = ISTATE_SEND_DATAIN;
-	cmd->conn->conn_transport->iscsit_queue_data_in(cmd->conn, cmd);
-
-	return 0;
+	return conn->conn_transport->iscsit_queue_data_in(conn, cmd);
 }
 
 static int lio_write_pending(struct se_cmd *se_cmd)
@@ -1433,16 +1411,14 @@ static int lio_write_pending_status(struct se_cmd *se_cmd)
 static int lio_queue_status(struct se_cmd *se_cmd)
 {
 	struct iscsi_cmd *cmd = container_of(se_cmd, struct iscsi_cmd, se_cmd);
+	struct iscsi_conn *conn = cmd->conn;
 
 	cmd->i_state = ISTATE_SEND_STATUS;
 
 	if (cmd->se_cmd.scsi_status || cmd->sense_reason) {
-		iscsit_add_cmd_to_response_queue(cmd, cmd->conn, cmd->i_state);
-		return 0;
+		return iscsit_add_cmd_to_response_queue(cmd, conn, cmd->i_state);
 	}
-	cmd->conn->conn_transport->iscsit_queue_status(cmd->conn, cmd);
-
-	return 0;
+	return conn->conn_transport->iscsit_queue_status(conn, cmd);
 }
 
 static void lio_queue_tm_rsp(struct se_cmd *se_cmd)
@@ -1527,20 +1503,23 @@ static void lio_tpg_close_session(struct se_session *se_sess)
 	spin_lock(&sess->conn_lock);
 	if (atomic_read(&sess->session_fall_back_to_erl0) ||
 	    atomic_read(&sess->session_logout) ||
+	    atomic_read(&sess->session_close) ||
 	    (sess->time2retain_timer_flags & ISCSI_TF_EXPIRED)) {
 		spin_unlock(&sess->conn_lock);
 		spin_unlock_bh(&se_tpg->session_lock);
 		return;
 	}
+	iscsit_inc_session_usage_count(sess);
 	atomic_set(&sess->session_reinstatement, 1);
 	atomic_set(&sess->session_fall_back_to_erl0, 1);
+	atomic_set(&sess->session_close, 1);
 	spin_unlock(&sess->conn_lock);
 
 	iscsit_stop_time2retain_timer(sess);
 	spin_unlock_bh(&se_tpg->session_lock);
 
 	iscsit_stop_session(sess, 1, 1);
-	iscsit_close_session(sess);
+	iscsit_dec_session_usage_count(sess);
 }
 
 static u32 lio_tpg_get_inst_index(struct se_portal_group *se_tpg)

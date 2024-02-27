@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -38,6 +39,10 @@
 #define HUGETLBFS_MAGIC        0x958458f6
 #endif
 
+#ifndef BPF_FS_MAGIC
+#define BPF_FS_MAGIC           0xcafe4a11
+#endif
+
 static const char * const sysfs__fs_known_mountpoints[] = {
 	"/sys",
 	0,
@@ -75,11 +80,17 @@ static const char * const hugetlbfs__known_mountpoints[] = {
 	0,
 };
 
+static const char * const bpf_fs__known_mountpoints[] = {
+	"/sys/fs/bpf",
+	0,
+};
+
 struct fs {
 	const char		*name;
 	const char * const	*mounts;
 	char			 path[PATH_MAX];
 	bool			 found;
+	bool			 checked;
 	long			 magic;
 };
 
@@ -89,6 +100,7 @@ enum {
 	FS__DEBUGFS = 2,
 	FS__TRACEFS = 3,
 	FS__HUGETLBFS = 4,
+	FS__BPF_FS = 5,
 };
 
 #ifndef TRACEFS_MAGIC
@@ -100,26 +112,37 @@ static struct fs fs__entries[] = {
 		.name	= "sysfs",
 		.mounts	= sysfs__fs_known_mountpoints,
 		.magic	= SYSFS_MAGIC,
+		.checked = false,
 	},
 	[FS__PROCFS] = {
 		.name	= "proc",
 		.mounts	= procfs__known_mountpoints,
 		.magic	= PROC_SUPER_MAGIC,
+		.checked = false,
 	},
 	[FS__DEBUGFS] = {
 		.name	= "debugfs",
 		.mounts	= debugfs__known_mountpoints,
 		.magic	= DEBUGFS_MAGIC,
+		.checked = false,
 	},
 	[FS__TRACEFS] = {
 		.name	= "tracefs",
 		.mounts	= tracefs__known_mountpoints,
 		.magic	= TRACEFS_MAGIC,
+		.checked = false,
 	},
 	[FS__HUGETLBFS] = {
 		.name	= "hugetlbfs",
 		.mounts = hugetlbfs__known_mountpoints,
 		.magic	= HUGETLBFS_MAGIC,
+		.checked = false,
+	},
+	[FS__BPF_FS] = {
+		.name	= "bpf",
+		.mounts = bpf_fs__known_mountpoints,
+		.magic	= BPF_FS_MAGIC,
+		.checked = false,
 	},
 };
 
@@ -142,6 +165,7 @@ static bool fs__read_mounts(struct fs *fs)
 	}
 
 	fclose(fp);
+	fs->checked = true;
 	return fs->found = found;
 }
 
@@ -194,6 +218,7 @@ static bool fs__env_override(struct fs *fs)
 	size_t name_len = strlen(fs->name);
 	/* name + "_PATH" + '\0' */
 	char upper_name[name_len + 5 + 1];
+
 	memcpy(upper_name, fs->name, name_len);
 	mem_toupper(upper_name, name_len);
 	strcpy(&upper_name[name_len], "_PATH");
@@ -203,7 +228,9 @@ static bool fs__env_override(struct fs *fs)
 		return false;
 
 	fs->found = true;
-	strncpy(fs->path, override_path, sizeof(fs->path));
+	fs->checked = true;
+	strncpy(fs->path, override_path, sizeof(fs->path) - 1);
+	fs->path[sizeof(fs->path) - 1] = '\0';
 	return true;
 }
 
@@ -227,6 +254,14 @@ static const char *fs__mountpoint(int idx)
 
 	if (fs->found)
 		return (const char *)fs->path;
+
+	/* the mount point was already checked for the mount point
+	 * but and did not exist, so return NULL to avoid scanning again.
+	 * This makes the found and not found paths cost equivalent
+	 * in case of multiple calls.
+	 */
+	if (fs->checked)
+		return NULL;
 
 	return fs__get_mountpoint(fs);
 }
@@ -280,6 +315,7 @@ FS(procfs,  FS__PROCFS);
 FS(debugfs, FS__DEBUGFS);
 FS(tracefs, FS__TRACEFS);
 FS(hugetlbfs, FS__HUGETLBFS);
+FS(bpf_fs, FS__BPF_FS);
 
 int filename__read_int(const char *filename, int *value)
 {
@@ -371,6 +407,22 @@ int filename__read_str(const char *filename, char **buf, size_t *sizep)
 	return err;
 }
 
+int filename__write_int(const char *filename, int value)
+{
+	int fd = open(filename, O_WRONLY), err = -1;
+	char buf[64];
+
+	if (fd < 0)
+		return err;
+
+	sprintf(buf, "%d", value);
+	if (write(fd, buf, sizeof(buf)) == sizeof(buf))
+		err = 0;
+
+	close(fd);
+	return err;
+}
+
 int procfs__read_str(const char *entry, char **buf, size_t *sizep)
 {
 	char path[PATH_MAX];
@@ -423,6 +475,35 @@ int sysfs__read_str(const char *entry, char **buf, size_t *sizep)
 	return filename__read_str(path, buf, sizep);
 }
 
+int sysfs__read_bool(const char *entry, bool *value)
+{
+	char *buf;
+	size_t size;
+	int ret;
+
+	ret = sysfs__read_str(entry, &buf, &size);
+	if (ret < 0)
+		return ret;
+
+	switch (buf[0]) {
+	case '1':
+	case 'y':
+	case 'Y':
+		*value = true;
+		break;
+	case '0':
+	case 'n':
+	case 'N':
+		*value = false;
+		break;
+	default:
+		ret = -1;
+	}
+
+	free(buf);
+
+	return ret;
+}
 int sysctl__read_int(const char *sysctl, int *value)
 {
 	char path[PATH_MAX];
@@ -434,4 +515,18 @@ int sysctl__read_int(const char *sysctl, int *value)
 	snprintf(path, sizeof(path), "%s/sys/%s", procfs, sysctl);
 
 	return filename__read_int(path, value);
+}
+
+int sysfs__write_int(const char *entry, int value)
+{
+	char path[PATH_MAX];
+	const char *sysfs = sysfs__mountpoint();
+
+	if (!sysfs)
+		return -1;
+
+	if (snprintf(path, sizeof(path), "%s/%s", sysfs, entry) >= PATH_MAX)
+		return -1;
+
+	return filename__write_int(path, value);
 }

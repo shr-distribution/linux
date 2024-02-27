@@ -30,7 +30,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-
+#include <linux/vmalloc.h>
 #include "rxe.h"
 #include "rxe_loc.h"
 #include "rxe_queue.h"
@@ -69,6 +69,14 @@ err1:
 static void rxe_send_complete(unsigned long data)
 {
 	struct rxe_cq *cq = (struct rxe_cq *)data;
+	unsigned long flags;
+
+	spin_lock_irqsave(&cq->cq_lock, flags);
+	if (cq->is_dying) {
+		spin_unlock_irqrestore(&cq->cq_lock, flags);
+		return;
+	}
+	spin_unlock_irqrestore(&cq->cq_lock, flags);
 
 	cq->ibcq.comp_handler(&cq->ibcq, cq->ibcq.cq_context);
 }
@@ -89,13 +97,15 @@ int rxe_cq_from_init(struct rxe_dev *rxe, struct rxe_cq *cq, int cqe,
 	err = do_mmap_info(rxe, udata, false, context, cq->queue->buf,
 			   cq->queue->buf_size, &cq->queue->ip);
 	if (err) {
-		kvfree(cq->queue->buf);
+		vfree(cq->queue->buf);
 		kfree(cq->queue);
 		return err;
 	}
 
 	if (udata)
 		cq->is_user = 1;
+
+	cq->is_dying = false;
 
 	tasklet_init(&cq->comp_task, rxe_send_complete, (unsigned long)cq);
 
@@ -156,9 +166,18 @@ int rxe_cq_post(struct rxe_cq *cq, struct rxe_cqe *cqe, int solicited)
 	return 0;
 }
 
-void rxe_cq_cleanup(void *arg)
+void rxe_cq_disable(struct rxe_cq *cq)
 {
-	struct rxe_cq *cq = arg;
+	unsigned long flags;
+
+	spin_lock_irqsave(&cq->cq_lock, flags);
+	cq->is_dying = true;
+	spin_unlock_irqrestore(&cq->cq_lock, flags);
+}
+
+void rxe_cq_cleanup(struct rxe_pool_entry *arg)
+{
+	struct rxe_cq *cq = container_of(arg, typeof(*cq), pelem);
 
 	if (cq->queue)
 		rxe_queue_cleanup(cq->queue);

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM irq
 
@@ -157,54 +158,6 @@ DEFINE_EVENT(softirq, softirq_raise,
 	TP_PROTO(unsigned int vec_nr),
 
 	TP_ARGS(vec_nr)
-);
-
-/**
- * tasklet_entry - called immediately before the tasklet handler
- * @t: pointer to struct tasklet_struct
- *
- * When used in combination with the tasklet_exit tracepoint we can
- * determine the tasklet latency.
- */
-TRACE_EVENT(tasklet_entry,
-
-	TP_PROTO(struct tasklet_struct *t),
-
-	TP_ARGS(t),
-
-	TP_STRUCT__entry(
-		__field(void *, func)
-	),
-
-	TP_fast_assign(
-		__entry->func = t->func;
-	),
-
-	TP_printk("func=%pf", __entry->func)
-);
-
-/**
- * tasklet_exit - called immediately after the tasklet handler returns
- * @t: pointer to struct tasklet_struct
- *
- * When used in combination with the tasklet_entry tracepoint we can
- * determine the tasklet latency.
- */
-TRACE_EVENT(tasklet_exit,
-
-	TP_PROTO(struct tasklet_struct *t),
-
-	TP_ARGS(t),
-
-	TP_STRUCT__entry(
-		__field(void *, func)
-	),
-
-	TP_fast_assign(
-		__entry->func = t->func;
-	),
-
-	TP_printk("func=%pf", __entry->func)
 );
 
 #endif /*  _TRACE_IRQ_H */

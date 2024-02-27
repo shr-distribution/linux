@@ -27,6 +27,7 @@
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
 
+#include <soc/tegra/flowctrl.h>
 #include <soc/tegra/fuse.h>
 #include <soc/tegra/pm.h>
 #include <soc/tegra/pmc.h>
@@ -38,7 +39,6 @@
 #include <asm/suspend.h>
 #include <asm/tlbflush.h>
 
-#include "flowctrl.h"
 #include "iomap.h"
 #include "pm.h"
 #include "reset.h"
@@ -192,13 +192,13 @@ void tegra_idle_lp2_last(void)
 {
 	tegra_pm_set(TEGRA_SUSPEND_LP2);
 
-	cpu_cluster_pm_enter(0);
+	cpu_cluster_pm_enter();
 	suspend_cpu_complex();
 
 	cpu_suspend(PHYS_OFFSET - PAGE_OFFSET, &tegra_sleep_cpu);
 
 	restore_cpu_complex();
-	cpu_cluster_pm_exit(0);
+	cpu_cluster_pm_exit();
 }
 
 enum tegra_suspend_mode tegra_pm_validate_suspend_mode(

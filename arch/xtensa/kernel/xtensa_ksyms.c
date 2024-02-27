@@ -19,7 +19,7 @@
 #include <asm/irq.h>
 #include <linux/in6.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/cacheflush.h>
 #include <asm/checksum.h>
 #include <asm/dma.h>
@@ -113,13 +113,6 @@ EXPORT_SYMBOL(__invalidate_icache_range);
 #if defined(CONFIG_VGA_CONSOLE) || defined(CONFIG_DUMMY_CONSOLE)
 // FIXME EXPORT_SYMBOL(screen_info);
 #endif
-
-EXPORT_SYMBOL(outsb);
-EXPORT_SYMBOL(outsw);
-EXPORT_SYMBOL(outsl);
-EXPORT_SYMBOL(insb);
-EXPORT_SYMBOL(insw);
-EXPORT_SYMBOL(insl);
 
 extern long common_exception_return;
 EXPORT_SYMBOL(common_exception_return);

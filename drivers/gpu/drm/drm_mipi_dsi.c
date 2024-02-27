@@ -165,14 +165,14 @@ of_mipi_dsi_device_add(struct mipi_dsi_host *host, struct device_node *node)
 	u32 reg;
 
 	if (of_modalias_node(node, info.type, sizeof(info.type)) < 0) {
-		dev_err(dev, "modalias failure on %s\n", node->full_name);
+		dev_err(dev, "modalias failure on %pOF\n", node);
 		return ERR_PTR(-EINVAL);
 	}
 
 	ret = of_property_read_u32(node, "reg", &reg);
 	if (ret) {
-		dev_err(dev, "device node %s has no valid reg property: %d\n",
-			node->full_name, ret);
+		dev_err(dev, "device node %pOF has no valid reg property: %d\n",
+			node, ret);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -232,7 +232,8 @@ mipi_dsi_device_register_full(struct mipi_dsi_host *host,
 
 	ret = mipi_dsi_device_add(dsi);
 	if (ret) {
-		dev_err(dev, "failed to add DSI device %d\n", ret);
+		dev_err(dev, "failed to add DSI device:%s ret:%d\n",
+			dsi->name, ret);
 		kfree(dsi);
 		return ERR_PTR(ret);
 	}
@@ -360,9 +361,6 @@ static ssize_t mipi_dsi_device_transfer(struct mipi_dsi_device *dsi,
 
 	if (dsi->mode_flags & MIPI_DSI_MODE_LPM)
 		msg->flags |= MIPI_DSI_MSG_USE_LPM;
-	msg->flags |= MIPI_DSI_MSG_LASTCOMMAND;
-
-	msg->flags |= MIPI_DSI_MSG_LASTCOMMAND;
 
 	return ops->transfer(dsi->host, msg);
 }
@@ -396,7 +394,6 @@ bool mipi_dsi_packet_format_is_short(u8 type)
 	case MIPI_DSI_DCS_SHORT_WRITE_PARAM:
 	case MIPI_DSI_DCS_READ:
 	case MIPI_DSI_SET_MAXIMUM_RETURN_PACKET_SIZE:
-	case MIPI_DSI_COMPRESSION_MODE:
 		return true;
 	}
 
@@ -428,7 +425,6 @@ bool mipi_dsi_packet_format_is_long(u8 type)
 	case MIPI_DSI_PACKED_PIXEL_STREAM_18:
 	case MIPI_DSI_PIXEL_STREAM_3BYTE_18:
 	case MIPI_DSI_PACKED_PIXEL_STREAM_24:
-	case MIPI_DSI_PPS:
 		return true;
 	}
 
@@ -459,7 +455,7 @@ int mipi_dsi_create_packet(struct mipi_dsi_packet *packet,
 		return -EINVAL;
 
 	memset(packet, 0, sizeof(*packet));
-	packet->header[2] = ((msg->channel & 0x3) << 6) | (msg->type & 0x3f);
+	packet->header[0] = ((msg->channel & 0x3) << 6) | (msg->type & 0x3f);
 
 	/* TODO: compute ECC if hardware support is not available */
 
@@ -471,16 +467,16 @@ int mipi_dsi_create_packet(struct mipi_dsi_packet *packet,
 	 * and 2.
 	 */
 	if (mipi_dsi_packet_format_is_long(msg->type)) {
-		packet->header[0] = (msg->tx_len >> 0) & 0xff;
-		packet->header[1] = (msg->tx_len >> 8) & 0xff;
+		packet->header[1] = (msg->tx_len >> 0) & 0xff;
+		packet->header[2] = (msg->tx_len >> 8) & 0xff;
 
 		packet->payload_length = msg->tx_len;
 		packet->payload = msg->tx_buf;
 	} else {
 		const u8 *tx = msg->tx_buf;
 
-		packet->header[0] = (msg->tx_len > 0) ? tx[0] : 0;
-		packet->header[1] = (msg->tx_len > 1) ? tx[1] : 0;
+		packet->header[1] = (msg->tx_len > 0) ? tx[0] : 0;
+		packet->header[2] = (msg->tx_len > 1) ? tx[1] : 0;
 	}
 
 	packet->size = sizeof(packet->header) + packet->payload_length;
@@ -1051,33 +1047,17 @@ EXPORT_SYMBOL(mipi_dsi_dcs_set_tear_scanline);
  *    display
  * @dsi: DSI peripheral device
  * @brightness: brightness value
- * @num_params: Number of parameters (bytes) to encode brightness value in. The
- *              MIPI specification states that one parameter shall be sent for
- *              devices that support 8-bit brightness levels. For devices that
- *              support brightness levels wider than 8-bit, two parameters
- *              shall be sent.
  *
  * Return: 0 on success or a negative error code on failure.
  */
 int mipi_dsi_dcs_set_display_brightness(struct mipi_dsi_device *dsi,
-					u16 brightness, size_t num_params)
+					u16 brightness)
 {
-	u8 payload[2];
+	u8 payload[2] = { brightness & 0xff, brightness >> 8 };
 	ssize_t err;
 
-	switch (num_params) {
-	case 1:
-		payload[0] = brightness & 0xff;
-		break;
-	case 2:
-		payload[0] = brightness >> 8;
-		payload[1] = brightness & 0xff;
-		break;
-	default:
-		return -EINVAL;
-	}
 	err = mipi_dsi_dcs_write(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
-				 payload, num_params);
+				 payload, sizeof(payload));
 	if (err < 0)
 		return err;
 
@@ -1090,39 +1070,21 @@ EXPORT_SYMBOL(mipi_dsi_dcs_set_display_brightness);
  *    of the display
  * @dsi: DSI peripheral device
  * @brightness: brightness value
- * @num_params: Number of parameters (i.e. bytes) the brightness value is
- *              encoded in. The MIPI specification states that one parameter
- *              shall be returned from devices that support 8-bit brightness
- *              levels. Devices that support brightness levels wider than
- *              8-bit return two parameters (i.e. bytes).
  *
  * Return: 0 on success or a negative error code on failure.
  */
 int mipi_dsi_dcs_get_display_brightness(struct mipi_dsi_device *dsi,
-					u16 *brightness, size_t num_params)
+					u16 *brightness)
 {
-	u8 payload[2];
 	ssize_t err;
 
-	if (!(num_params == 1 || num_params == 2))
-		return -EINVAL;
-
 	err = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_BRIGHTNESS,
-				payload, num_params);
+				brightness, sizeof(*brightness));
 	if (err <= 0) {
 		if (err == 0)
 			err = -ENODATA;
 
 		return err;
-	}
-
-	switch (num_params) {
-	case 1:
-		*brightness = payload[0];
-		break;
-	case 2:
-		*brightness = payload[0] << 8 || payload[1];
-		break;
 	}
 
 	return 0;

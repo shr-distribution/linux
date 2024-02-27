@@ -1,5 +1,5 @@
 /*
- * da9062_wdt.c - WDT device driver for DA9062
+ * Watchdog device driver for DA9062 and DA9061 PMICs
  * Copyright (C) 2015  Dialog Semiconductor Ltd.
  *
  * This program is free software; you can redistribute it and/or
@@ -94,11 +94,6 @@ static int da9062_wdt_update_timeout_register(struct da9062_watchdog *wdt,
 					      unsigned int regval)
 {
 	struct da9062 *chip = wdt->hw;
-	int ret;
-
-	ret = da9062_reset_watchdog_timer(wdt);
-	if (ret)
-		return ret;
 
 	return regmap_update_bits(chip->regmap,
 				  DA9062AA_CONTROL_D,
@@ -125,13 +120,6 @@ static int da9062_wdt_stop(struct watchdog_device *wdd)
 {
 	struct da9062_watchdog *wdt = watchdog_get_drvdata(wdd);
 	int ret;
-
-	ret = da9062_reset_watchdog_timer(wdt);
-	if (ret) {
-		dev_err(wdt->hw->dev, "Failed to ping the watchdog (err = %d)\n",
-			ret);
-		return ret;
-	}
 
 	ret = regmap_update_bits(wdt->hw->regmap,
 				 DA9062AA_CONTROL_D,
@@ -188,6 +176,13 @@ static const struct watchdog_ops da9062_watchdog_ops = {
 	.set_timeout = da9062_wdt_set_timeout,
 };
 
+static const struct of_device_id da9062_compatible_id_table[] = {
+	{ .compatible = "dlg,da9062-watchdog", },
+	{ },
+};
+
+MODULE_DEVICE_TABLE(of, da9062_compatible_id_table);
+
 static int da9062_wdt_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -213,9 +208,8 @@ static int da9062_wdt_probe(struct platform_device *pdev)
 	wdt->wdtdev.parent = &pdev->dev;
 
 	watchdog_set_drvdata(&wdt->wdtdev, wdt);
-	dev_set_drvdata(&pdev->dev, wdt);
 
-	ret = watchdog_register_device(&wdt->wdtdev);
+	ret = devm_watchdog_register_device(&pdev->dev, &wdt->wdtdev);
 	if (ret < 0) {
 		dev_err(wdt->hw->dev,
 			"watchdog registration failed (%d)\n", ret);
@@ -224,31 +218,19 @@ static int da9062_wdt_probe(struct platform_device *pdev)
 
 	da9062_set_window_start(wdt);
 
-	ret = da9062_wdt_ping(&wdt->wdtdev);
-	if (ret < 0)
-		watchdog_unregister_device(&wdt->wdtdev);
-
-	return ret;
-}
-
-static int da9062_wdt_remove(struct platform_device *pdev)
-{
-	struct da9062_watchdog *wdt = dev_get_drvdata(&pdev->dev);
-
-	watchdog_unregister_device(&wdt->wdtdev);
-	return 0;
+	return da9062_wdt_ping(&wdt->wdtdev);
 }
 
 static struct platform_driver da9062_wdt_driver = {
 	.probe = da9062_wdt_probe,
-	.remove = da9062_wdt_remove,
 	.driver = {
 		.name = "da9062-watchdog",
+		.of_match_table = da9062_compatible_id_table,
 	},
 };
 module_platform_driver(da9062_wdt_driver);
 
 MODULE_AUTHOR("S Twiss <stwiss.opensource@diasemi.com>");
-MODULE_DESCRIPTION("WDT device driver for Dialog DA9062");
+MODULE_DESCRIPTION("WDT device driver for Dialog DA9062 and DA9061");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:da9062-watchdog");

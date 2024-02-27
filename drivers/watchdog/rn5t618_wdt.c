@@ -130,7 +130,7 @@ static int rn5t618_wdt_ping(struct watchdog_device *wdt_dev)
 				  RN5T618_PWRIRQ_IR_WDOG, 0);
 }
 
-static struct watchdog_info rn5t618_wdt_info = {
+static const struct watchdog_info rn5t618_wdt_info = {
 	.options	= WDIOF_SETTIMEOUT | WDIOF_MAGICCLOSE |
 			  WDIOF_KEEPALIVEPING,
 	.identity	= DRIVER_NAME,
@@ -193,6 +193,7 @@ static struct platform_driver rn5t618_wdt_driver = {
 
 module_platform_driver(rn5t618_wdt_driver);
 
+MODULE_ALIAS("platform:rn5t618-wdt");
 MODULE_AUTHOR("Beniamino Galvani <b.galvani@gmail.com>");
 MODULE_DESCRIPTION("RN5T618 watchdog driver");
 MODULE_LICENSE("GPL v2");

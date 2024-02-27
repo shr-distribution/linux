@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * bcache sysfs interfaces
  *
@@ -13,6 +14,7 @@
 
 #include <linux/blkdev.h>
 #include <linux/sort.h>
+#include <linux/sched/clock.h>
 
 static const char * const cache_replacement_policies[] = {
 	"lru",
@@ -215,7 +217,9 @@ STORE(__cached_dev)
 	d_strtoul(writeback_rate_d_term);
 	d_strtoul_nonzero(writeback_rate_p_term_inverse);
 
-	d_strtoi_h(sequential_cutoff);
+	sysfs_strtoul_clamp(sequential_cutoff,
+			    dc->sequential_cutoff,
+			    0, UINT_MAX);
 	d_strtoi_h(readahead);
 
 	if (attr == &sysfs_clear_stats)
@@ -617,8 +621,21 @@ STORE(__bch_cache_set)
 		bch_cache_accounting_clear(&c->accounting);
 	}
 
-	if (attr == &sysfs_trigger_gc)
+	if (attr == &sysfs_trigger_gc) {
+		/*
+		 * Garbage collection thread only works when sectors_to_gc < 0,
+		 * when users write to sysfs entry trigger_gc, most of time
+		 * they want to forcibly triger gargage collection. Here -1 is
+		 * set to c->sectors_to_gc, to make gc_should_run() give a
+		 * chance to permit gc thread to run. "give a chance" means
+		 * before going into gc_should_run(), there is still chance
+		 * that c->sectors_to_gc being set to other positive value. So
+		 * writing sysfs entry trigger_gc won't always make sure gc
+		 * thread takes effect.
+		 */
+		atomic_set(&c->sectors_to_gc, -1);
 		wake_up_gc(c);
+	}
 
 	if (attr == &sysfs_prune_cache) {
 		struct shrink_control sc;
@@ -645,8 +662,17 @@ STORE(__bch_cache_set)
 		c->error_limit = strtoul_or_return(buf) << IO_ERROR_SHIFT;
 
 	/* See count_io_errors() for why 88 */
-	if (attr == &sysfs_io_error_halflife)
-		c->error_decay = strtoul_or_return(buf) / 88;
+	if (attr == &sysfs_io_error_halflife) {
+		unsigned long v = 0;
+		ssize_t ret;
+
+		ret = strtoul_safe_clamp(buf, v, 0, UINT_MAX);
+		if (!ret) {
+			c->error_decay = v / 88;
+			return size;
+		}
+		return ret;
+	}
 
 	sysfs_strtoul(journal_delay_ms,		c->journal_delay_ms);
 	sysfs_strtoul(verify,			c->verify);

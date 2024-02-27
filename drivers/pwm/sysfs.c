@@ -223,60 +223,11 @@ static ssize_t capture_show(struct device *child,
 	return sprintf(buf, "%u %u\n", result.period, result.duty_cycle);
 }
 
-static ssize_t output_type_show(struct device *child,
-			     struct device_attribute *attr,
-			     char *buf)
-{
-	const struct pwm_device *pwm = child_to_pwm_device(child);
-	const char *output_type = "unknown";
-	struct pwm_state state;
-
-	pwm_get_state(pwm, &state);
-	switch (state.output_type) {
-	case PWM_OUTPUT_FIXED:
-		output_type = "fixed";
-		break;
-	case PWM_OUTPUT_MODULATED:
-		output_type = "modulated";
-		break;
-	default:
-		break;
-	}
-
-	return snprintf(buf, PAGE_SIZE, "%s\n", output_type);
-}
-
-static ssize_t output_type_store(struct device *child,
-			      struct device_attribute *attr,
-			      const char *buf, size_t size)
-{
-	struct pwm_export *export = child_to_pwm_export(child);
-	struct pwm_device *pwm = export->pwm;
-	struct pwm_state state;
-	int ret = -EINVAL;
-
-	mutex_lock(&export->lock);
-	pwm_get_state(pwm, &state);
-	if (sysfs_streq(buf, "fixed"))
-		state.output_type = PWM_OUTPUT_FIXED;
-	else if (sysfs_streq(buf, "modulated"))
-		state.output_type = PWM_OUTPUT_MODULATED;
-	else
-		goto unlock;
-
-	ret = pwm_apply_state(pwm, &state);
-unlock:
-	mutex_unlock(&export->lock);
-
-	return ret ? : size;
-}
-
 static DEVICE_ATTR_RW(period);
 static DEVICE_ATTR_RW(duty_cycle);
 static DEVICE_ATTR_RW(enable);
 static DEVICE_ATTR_RW(polarity);
 static DEVICE_ATTR_RO(capture);
-static DEVICE_ATTR_RW(output_type);
 
 static struct attribute *pwm_attrs[] = {
 	&dev_attr_period.attr,
@@ -284,7 +235,6 @@ static struct attribute *pwm_attrs[] = {
 	&dev_attr_enable.attr,
 	&dev_attr_polarity.attr,
 	&dev_attr_capture.attr,
-	&dev_attr_output_type.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(pwm);
@@ -449,19 +399,6 @@ void pwmchip_sysfs_export(struct pwm_chip *chip)
 void pwmchip_sysfs_unexport(struct pwm_chip *chip)
 {
 	struct device *parent;
-
-	parent = class_find_device(&pwm_class, NULL, chip,
-				   pwmchip_sysfs_match);
-	if (parent) {
-		/* for class_find_device() */
-		put_device(parent);
-		device_unregister(parent);
-	}
-}
-
-void pwmchip_sysfs_unexport_children(struct pwm_chip *chip)
-{
-	struct device *parent;
 	unsigned int i;
 
 	parent = class_find_device(&pwm_class, NULL, chip,
@@ -477,6 +414,7 @@ void pwmchip_sysfs_unexport_children(struct pwm_chip *chip)
 	}
 
 	put_device(parent);
+	device_unregister(parent);
 }
 
 static int __init pwm_sysfs_init(void)

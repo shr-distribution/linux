@@ -234,12 +234,16 @@ static void i2c_davinci_calc_clk_dividers(struct davinci_i2c_dev *dev)
 	/*
 	 * It's not always possible to have 1 to 2 ratio when d=7, so fall back
 	 * to minimal possible clkh in this case.
+	 *
+	 * Note:
+	 * CLKH is not allowed to be 0, in this case I2C clock is not generated
+	 * at all
 	 */
-	if (clk >= clkl + d) {
+	if (clk > clkl + d) {
 		clkh = clk - clkl - d;
 		clkl -= d;
 	} else {
-		clkh = 0;
+		clkh = 1;
 		clkl = clk - (d << 1);
 	}
 
@@ -733,7 +737,7 @@ static inline void i2c_davinci_cpufreq_deregister(struct davinci_i2c_dev *dev)
 }
 #endif
 
-static struct i2c_algorithm i2c_davinci_algo = {
+static const struct i2c_algorithm i2c_davinci_algo = {
 	.master_xfer	= i2c_davinci_xfer,
 	.functionality	= i2c_davinci_func,
 };
@@ -801,7 +805,7 @@ static int davinci_i2c_probe(struct platform_device *pdev)
 
 	dev->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(dev->clk))
-		return -ENODEV;
+		return PTR_ERR(dev->clk);
 	clk_prepare_enable(dev->clk);
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -876,8 +880,7 @@ static int davinci_i2c_remove(struct platform_device *pdev)
 #ifdef CONFIG_PM
 static int davinci_i2c_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct davinci_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
+	struct davinci_i2c_dev *i2c_dev = dev_get_drvdata(dev);
 
 	/* put I2C into reset */
 	davinci_i2c_reset_ctrl(i2c_dev, 0);
@@ -888,8 +891,7 @@ static int davinci_i2c_suspend(struct device *dev)
 
 static int davinci_i2c_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct davinci_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
+	struct davinci_i2c_dev *i2c_dev = dev_get_drvdata(dev);
 
 	clk_prepare_enable(i2c_dev->clk);
 	/* take I2C out of reset */

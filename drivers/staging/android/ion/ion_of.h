@@ -29,8 +29,9 @@ struct ion_of_heap {
 	.align = PAGE_SIZE, \
 }
 
-struct ion_platform_data *ion_parse_dt(struct platform_device *pdev,
-					struct ion_of_heap *compatible);
+struct ion_platform_data *ion_parse_dt(
+	struct platform_device *pdev,
+	struct ion_of_heap *compatible);
 
 void ion_destroy_platform_data(struct ion_platform_data *data);
 

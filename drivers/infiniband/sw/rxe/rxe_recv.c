@@ -225,9 +225,14 @@ static int hdr_check(struct rxe_pkt_info *pkt)
 		goto err1;
 	}
 
+	if (unlikely(qpn == 0)) {
+		pr_warn_once("QP 0 not supported");
+		goto err1;
+	}
+
 	if (qpn != IB_MULTICAST_QPN) {
-		index = (qpn == 0) ? port->qp_smi_index :
-			((qpn == 1) ? port->qp_gsi_index : qpn);
+		index = (qpn == 1) ? port->qp_gsi_index : qpn;
+
 		qp = rxe_pool_get_index(&rxe->qp_pool, index);
 		if (unlikely(!qp)) {
 			pr_warn_ratelimited("no qp matches qpn 0x%x\n", qpn);
@@ -387,22 +392,23 @@ int rxe_rcv(struct sk_buff *skb)
 	pack_icrc = be32_to_cpu(*icrcp);
 
 	calc_icrc = rxe_icrc_hdr(pkt, skb);
-	calc_icrc = crc32_le(calc_icrc, (u8 *)payload_addr(pkt),
-			     payload_size(pkt));
-	calc_icrc = cpu_to_be32(~calc_icrc);
+	calc_icrc = rxe_crc32(rxe, calc_icrc, (u8 *)payload_addr(pkt),
+			      payload_size(pkt) + bth_pad(pkt));
+	calc_icrc = (__force u32)cpu_to_be32(~calc_icrc);
 	if (unlikely(calc_icrc != pack_icrc)) {
-		char saddr[sizeof(struct in6_addr)];
-
 		if (skb->protocol == htons(ETH_P_IPV6))
-			sprintf(saddr, "%pI6", &ipv6_hdr(skb)->saddr);
+			pr_warn_ratelimited("bad ICRC from %pI6c\n",
+					    &ipv6_hdr(skb)->saddr);
 		else if (skb->protocol == htons(ETH_P_IP))
-			sprintf(saddr, "%pI4", &ip_hdr(skb)->saddr);
+			pr_warn_ratelimited("bad ICRC from %pI4\n",
+					    &ip_hdr(skb)->saddr);
 		else
-			sprintf(saddr, "unknown");
+			pr_warn_ratelimited("bad ICRC from unknown\n");
 
-		pr_warn_ratelimited("bad ICRC from %s\n", saddr);
 		goto drop;
 	}
+
+	rxe_counter_inc(rxe, RXE_CNT_RCVD_PKTS);
 
 	if (unlikely(bth_qpn(pkt) == IB_MULTICAST_QPN))
 		rxe_rcv_mcast_pkt(rxe, skb);
@@ -418,4 +424,3 @@ drop:
 	kfree_skb(skb);
 	return 0;
 }
-EXPORT_SYMBOL(rxe_rcv);

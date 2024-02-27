@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ARM Ltd. Versatile Express
  *
@@ -39,6 +40,8 @@
 			reg = <0>;
 			cci-control-port = <&cci_control1>;
 			cpu-idle-states = <&CLUSTER_SLEEP_BIG>;
+			capacity-dmips-mhz = <1024>;
+			sched-energy-costs = <&CPU_COST_A15 &CLUSTER_COST_A15>;
 		};
 
 		cpu1: cpu@1 {
@@ -47,6 +50,8 @@
 			reg = <1>;
 			cci-control-port = <&cci_control1>;
 			cpu-idle-states = <&CLUSTER_SLEEP_BIG>;
+			capacity-dmips-mhz = <1024>;
+			sched-energy-costs = <&CPU_COST_A15 &CLUSTER_COST_A15>;
 		};
 
 		cpu2: cpu@2 {
@@ -55,6 +60,8 @@
 			reg = <0x100>;
 			cci-control-port = <&cci_control2>;
 			cpu-idle-states = <&CLUSTER_SLEEP_LITTLE>;
+			capacity-dmips-mhz = <516>;
+			sched-energy-costs = <&CPU_COST_A7 &CLUSTER_COST_A7>;
 		};
 
 		cpu3: cpu@3 {
@@ -63,6 +70,8 @@
 			reg = <0x101>;
 			cci-control-port = <&cci_control2>;
 			cpu-idle-states = <&CLUSTER_SLEEP_LITTLE>;
+			capacity-dmips-mhz = <516>;
+			sched-energy-costs = <&CPU_COST_A7 &CLUSTER_COST_A7>;
 		};
 
 		cpu4: cpu@4 {
@@ -71,6 +80,8 @@
 			reg = <0x102>;
 			cci-control-port = <&cci_control2>;
 			cpu-idle-states = <&CLUSTER_SLEEP_LITTLE>;
+			capacity-dmips-mhz = <516>;
+			sched-energy-costs = <&CPU_COST_A7 &CLUSTER_COST_A7>;
 		};
 
 		idle-states {
@@ -88,6 +99,77 @@
 				entry-latency-us = <1000>;
 				exit-latency-us = <500>;
 				min-residency-us = <2500>;
+			};
+		};
+
+		energy-costs {
+			CPU_COST_A15: core-cost0 {
+				busy-cost-data = <
+					426    2021
+					512    2312
+					597    2756
+					682    3125
+					768    3524
+					853    3846
+					938    5177
+					1024   6997
+				>;
+				idle-cost-data = <
+					0
+					0
+					0
+				>;
+			};
+			CPU_COST_A7: core-cost1 {
+				busy-cost-data = <
+					150    187
+					172    275
+					215    334
+					258    407
+					301    447
+					344    549
+					387    761
+					430    1024
+				>;
+				idle-cost-data = <
+					0
+					0
+					0
+				>;
+			};
+			CLUSTER_COST_A15: cluster-cost0 {
+				busy-cost-data = <
+					426    7920
+					512    8165
+					597    8172
+					682    8195
+					768    8265
+					853    8446
+					938    11426
+					1024   15200
+				>;
+				idle-cost-data = <
+					 70
+					 70
+					 25
+				>;
+			};
+			CLUSTER_COST_A7: cluster-cost1 {
+				busy-cost-data = <
+					150    2967
+					172    2792
+					215    2810
+					258    2815
+					301    2919
+					344    2847
+					387    3917
+					430    4905
+				>;
+				idle-cost-data = <
+					25
+					25
+					10
+				>;
 			};
 		};
 	};
@@ -126,7 +208,7 @@
 		#address-cells = <0>;
 		interrupt-controller;
 		reg = <0 0x2c001000 0 0x1000>,
-		      <0 0x2c002000 0 0x1000>,
+		      <0 0x2c002000 0 0x2000>,
 		      <0 0x2c004000 0 0x2000>,
 		      <0 0x2c006000 0 0x2000>;
 		interrupts = <1 9 0xf04>;
@@ -380,7 +462,7 @@
 		};
 	};
 
-	etb@0,20010000 {
+	etb@20010000 {
 		compatible = "arm,coresight-etb10", "arm,primecell";
 		reg = <0 0x20010000 0 0x1000>;
 
@@ -394,7 +476,7 @@
 		};
 	};
 
-	tpiu@0,20030000 {
+	tpiu@20030000 {
 		compatible = "arm,coresight-tpiu", "arm,primecell";
 		reg = <0 0x20030000 0 0x1000>;
 
@@ -444,7 +526,7 @@
 		};
 	};
 
-	funnel@0,20040000 {
+	funnel@20040000 {
 		compatible = "arm,coresight-funnel", "arm,primecell";
 		reg = <0 0x20040000 0 0x1000>;
 
@@ -508,7 +590,7 @@
 		};
 	};
 
-	ptm@0,2201c000 {
+	ptm@2201c000 {
 		compatible = "arm,coresight-etm3x", "arm,primecell";
 		reg = <0 0x2201c000 0 0x1000>;
 
@@ -522,7 +604,7 @@
 		};
 	};
 
-	ptm@0,2201d000 {
+	ptm@2201d000 {
 		compatible = "arm,coresight-etm3x", "arm,primecell";
 		reg = <0 0x2201d000 0 0x1000>;
 
@@ -536,7 +618,7 @@
 		};
 	};
 
-	etm@0,2203c000 {
+	etm@2203c000 {
 		compatible = "arm,coresight-etm3x", "arm,primecell";
 		reg = <0 0x2203c000 0 0x1000>;
 
@@ -550,7 +632,7 @@
 		};
 	};
 
-	etm@0,2203d000 {
+	etm@2203d000 {
 		compatible = "arm,coresight-etm3x", "arm,primecell";
 		reg = <0 0x2203d000 0 0x1000>;
 
@@ -564,7 +646,7 @@
 		};
 	};
 
-	etm@0,2203e000 {
+	etm@2203e000 {
 		compatible = "arm,coresight-etm3x", "arm,primecell";
 		reg = <0 0x2203e000 0 0x1000>;
 
@@ -578,7 +660,7 @@
 		};
 	};
 
-	smb@08000000 {
+	smb@8000000 {
 		compatible = "simple-bus";
 
 		#address-cells = <2>;

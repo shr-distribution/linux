@@ -190,6 +190,9 @@ int dev_pm_set_dedicated_wake_irq(struct device *dev, int irq)
 	wirq->irq = irq;
 	irq_set_status_flags(irq, IRQ_NOAUTOEN);
 
+	/* Prevent deferred spurious wakeirqs with disable_irq_nosync() */
+	irq_set_status_flags(irq, IRQ_DISABLE_UNLAZY);
+
 	/*
 	 * Consumer device may need to power up and restore state
 	 * so we use a threaded irq.
@@ -319,8 +322,13 @@ void dev_pm_arm_wake_irq(struct wake_irq *wirq)
 	if (!wirq)
 		return;
 
-	if (device_may_wakeup(wirq->dev))
+	if (device_may_wakeup(wirq->dev)) {
+		if (wirq->status & WAKE_IRQ_DEDICATED_ALLOCATED &&
+		    !pm_runtime_status_suspended(wirq->dev))
+			enable_irq(wirq->irq);
+
 		enable_irq_wake(wirq->irq);
+	}
 }
 
 /**
@@ -335,6 +343,11 @@ void dev_pm_disarm_wake_irq(struct wake_irq *wirq)
 	if (!wirq)
 		return;
 
-	if (device_may_wakeup(wirq->dev))
+	if (device_may_wakeup(wirq->dev)) {
 		disable_irq_wake(wirq->irq);
+
+		if (wirq->status & WAKE_IRQ_DEDICATED_ALLOCATED &&
+		    !pm_runtime_status_suspended(wirq->dev))
+			disable_irq_nosync(wirq->irq);
+	}
 }

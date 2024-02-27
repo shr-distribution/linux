@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * PCI Backend Operations - respond to PCI requests from Frontend
  *
@@ -125,8 +126,6 @@ void xen_pcibk_reset_device(struct pci_dev *dev)
 #endif
 		if (pci_is_enabled(dev))
 			pci_disable_device(dev);
-
-		pci_write_config_word(dev, PCI_COMMAND, 0);
 
 		dev->is_busmaster = 0;
 	} else {

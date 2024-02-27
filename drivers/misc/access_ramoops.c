@@ -1,7 +1,7 @@
 /*
  * Persistent memory accessor
  *
- * Copyright (C) 2018 Google, Inc.
+ * Copyright (C) 2019 Google, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -144,7 +144,7 @@ static int access_ramoops_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static struct file_operations access_ramoops_fops = {
+static const struct file_operations access_ramoops_fops = {
 	.owner		= THIS_MODULE,
 	.open		= access_ramoops_open,
 	.read		= access_ramoops_read,
@@ -250,3 +250,4 @@ module_platform_driver_probe(access_ramoops_driver, access_ramoops_probe);
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Patrick Tjin <pattjin@google.com>");
 MODULE_DESCRIPTION("Persistent memory access driver");
+

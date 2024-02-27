@@ -64,7 +64,7 @@ static int qxl_map_ioctl(struct drm_device *dev, void *data,
 	struct qxl_device *qdev = dev->dev_private;
 	struct drm_qxl_map *qxl_map = data;
 
-	return qxl_mode_dumb_mmap(file_priv, qdev->ddev, qxl_map->handle,
+	return qxl_mode_dumb_mmap(file_priv, &qdev->ddev, qxl_map->handle,
 				  &qxl_map->offset);
 }
 
@@ -163,7 +163,7 @@ static int qxl_process_single_command(struct qxl_device *qdev,
 		return -EINVAL;
 
 	if (!access_ok(VERIFY_READ,
-		       (void *)(unsigned long)cmd->command,
+		       u64_to_user_ptr(cmd->command),
 		       cmd->command_size))
 		return -EFAULT;
 
@@ -183,7 +183,9 @@ static int qxl_process_single_command(struct qxl_device *qdev,
 
 	/* TODO copy slow path code from i915 */
 	fb_cmd = qxl_bo_kmap_atomic_page(qdev, cmd_bo, (release->release_offset & PAGE_SIZE));
-	unwritten = __copy_from_user_inatomic_nocache(fb_cmd + sizeof(union qxl_release_info) + (release->release_offset & ~PAGE_SIZE), (void *)(unsigned long)cmd->command, cmd->command_size);
+	unwritten = __copy_from_user_inatomic_nocache
+		(fb_cmd + sizeof(union qxl_release_info) + (release->release_offset & ~PAGE_SIZE),
+		 u64_to_user_ptr(cmd->command), cmd->command_size);
 
 	{
 		struct qxl_drawable *draw = fb_cmd;
@@ -201,10 +203,9 @@ static int qxl_process_single_command(struct qxl_device *qdev,
 	num_relocs = 0;
 	for (i = 0; i < cmd->relocs_num; ++i) {
 		struct drm_qxl_reloc reloc;
+		struct drm_qxl_reloc __user *u = u64_to_user_ptr(cmd->relocs);
 
-		if (copy_from_user(&reloc,
-				       &((struct drm_qxl_reloc *)(uintptr_t)cmd->relocs)[i],
-				       sizeof(reloc))) {
+		if (copy_from_user(&reloc, u + i, sizeof(reloc))) {
 			ret = -EFAULT;
 			goto out_free_bos;
 		}
@@ -256,11 +257,8 @@ static int qxl_process_single_command(struct qxl_device *qdev,
 			apply_surf_reloc(qdev, &reloc_info[i]);
 	}
 
+	qxl_release_fence_buffer_objects(release);
 	ret = qxl_push_command_ring_release(qdev, release, cmd->type, true);
-	if (ret)
-		qxl_release_backoff_reserve_list(release);
-	else
-		qxl_release_fence_buffer_objects(release);
 
 out_free_bos:
 out_free_release:
@@ -282,10 +280,10 @@ static int qxl_execbuffer_ioctl(struct drm_device *dev, void *data,
 
 	for (cmd_num = 0; cmd_num < execbuffer->commands_num; ++cmd_num) {
 
-		struct drm_qxl_command *commands =
-			(struct drm_qxl_command *)(uintptr_t)execbuffer->commands;
+		struct drm_qxl_command __user *commands =
+			u64_to_user_ptr(execbuffer->commands);
 
-		if (copy_from_user(&user_cmd, &commands[cmd_num],
+		if (copy_from_user(&user_cmd, commands + cmd_num,
 				       sizeof(user_cmd)))
 			return -EFAULT;
 
@@ -375,7 +373,7 @@ static int qxl_clientcap_ioctl(struct drm_device *dev, void *data,
 	byte = param->index / 8;
 	idx = param->index % 8;
 
-	if (qdev->pdev->revision < 4)
+	if (dev->pdev->revision < 4)
 		return -ENOSYS;
 
 	if (byte >= 58)

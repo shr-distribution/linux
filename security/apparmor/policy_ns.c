@@ -4,7 +4,7 @@
  * This file contains AppArmor policy manipulation functions
  *
  * Copyright (C) 1998-2008 Novell/SUSE
- * Copyright 2009-2015 Canonical Ltd.
+ * Copyright 2009-2017 Canonical Ltd.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -76,8 +76,9 @@ const char *aa_ns_name(struct aa_ns *curr, struct aa_ns *view, bool subns)
 		 * from the visible tail of the views hname
 		 */
 		return view->base.hname + strlen(curr->base.hname) + 2;
-	} else
-		return aa_hidden_ns_name;
+	}
+
+	return aa_hidden_ns_name;
 }
 
 /**
@@ -99,10 +100,11 @@ static struct aa_ns *alloc_ns(const char *prefix, const char *name)
 		goto fail_ns;
 
 	INIT_LIST_HEAD(&ns->sub_ns);
+	INIT_LIST_HEAD(&ns->rawdata_list);
 	mutex_init(&ns->lock);
 	init_waitqueue_head(&ns->wait);
 
-	/* released by free_namespace */
+	/* released by aa_free_ns() */
 	ns->unconfined = aa_alloc_profile("unconfined", NULL, GFP_KERNEL);
 	if (!ns->unconfined)
 		goto fail_unconfined;
@@ -110,6 +112,8 @@ static struct aa_ns *alloc_ns(const char *prefix, const char *name)
 	ns->unconfined->label.flags |= FLAG_IX_ON_NAME_ERROR |
 		FLAG_IMMUTIBLE | FLAG_NS_COUNT | FLAG_UNCONFINED;
 	ns->unconfined->mode = APPARMOR_UNCONFINED;
+	ns->unconfined->file.dfa = aa_get_dfa(nulldfa);
+	ns->unconfined->policy.dfa = aa_get_dfa(nulldfa);
 
 	/* ns and ns->unconfined share ns->unconfined refcount */
 	ns->unconfined->ns = ns;
@@ -149,7 +153,7 @@ void aa_free_ns(struct aa_ns *ns)
 }
 
 /**
- * aa_find_ns  -  look up a profile namespace on the namespace list
+ * aa_findn_ns  -  look up a profile namespace on the namespace list
  * @root: namespace to search in  (NOT NULL)
  * @name: name of namespace to find  (NOT NULL)
  * @n: length of @name
@@ -185,6 +189,60 @@ struct aa_ns *aa_find_ns(struct aa_ns *root, const char *name)
 	return aa_findn_ns(root, name, strlen(name));
 }
 
+/**
+ * __aa_lookupn_ns - lookup the namespace matching @hname
+ * @base: base list to start looking up profile name from  (NOT NULL)
+ * @hname: hierarchical ns name  (NOT NULL)
+ * @n: length of @hname
+ *
+ * Requires: rcu_read_lock be held
+ *
+ * Returns: unrefcounted ns pointer or NULL if not found
+ *
+ * Do a relative name lookup, recursing through profile tree.
+ */
+struct aa_ns *__aa_lookupn_ns(struct aa_ns *view, const char *hname, size_t n)
+{
+	struct aa_ns *ns = view;
+	const char *split;
+
+	for (split = strnstr(hname, "//", n); split;
+	     split = strnstr(hname, "//", n)) {
+		ns = __aa_findn_ns(&ns->sub_ns, hname, split - hname);
+		if (!ns)
+			return NULL;
+
+		n -= split + 2 - hname;
+		hname = split + 2;
+	}
+
+	if (n)
+		return __aa_findn_ns(&ns->sub_ns, hname, n);
+	return NULL;
+}
+
+/**
+ * aa_lookupn_ns  -  look up a policy namespace relative to @view
+ * @view: namespace to search in  (NOT NULL)
+ * @name: name of namespace to find  (NOT NULL)
+ * @n: length of @name
+ *
+ * Returns: a refcounted namespace on the list, or NULL if no namespace
+ *          called @name exists.
+ *
+ * refcount released by caller
+ */
+struct aa_ns *aa_lookupn_ns(struct aa_ns *view, const char *name, size_t n)
+{
+	struct aa_ns *ns = NULL;
+
+	rcu_read_lock();
+	ns = aa_get_ns(__aa_lookupn_ns(view, name, n));
+	rcu_read_unlock();
+
+	return ns;
+}
+
 static struct aa_ns *__aa_create_ns(struct aa_ns *parent, const char *name,
 				    struct dentry *dir)
 {
@@ -199,20 +257,19 @@ static struct aa_ns *__aa_create_ns(struct aa_ns *parent, const char *name,
 	if (!ns)
 		return NULL;
 	mutex_lock(&ns->lock);
-	error = __aa_fs_ns_mkdir(ns, ns_subns_dir(parent), name, dir);
+	error = __aafs_ns_mkdir(ns, ns_subns_dir(parent), name, dir);
 	if (error) {
 		AA_ERROR("Failed to create interface for ns %s\n",
 			 ns->base.name);
 		mutex_unlock(&ns->lock);
 		aa_free_ns(ns);
 		return ERR_PTR(error);
-	} else {
-		ns->parent = aa_get_ns(parent);
-		ns->level = parent->level + 1;
-		list_add_rcu(&ns->base.list, &parent->sub_ns);
-		/* add list ref */
-		aa_get_ns(ns);
 	}
+	ns->parent = aa_get_ns(parent);
+	ns->level = parent->level + 1;
+	list_add_rcu(&ns->base.list, &parent->sub_ns);
+	/* add list ref */
+	aa_get_ns(ns);
 	mutex_unlock(&ns->lock);
 
 	return ns;
@@ -226,12 +283,13 @@ static struct aa_ns *__aa_create_ns(struct aa_ns *parent, const char *name,
  *
  * Returns: the a refcounted ns that has been add or an ERR_PTR
  */
-struct aa_ns *aa_create_ns(struct aa_ns *parent, const char *name,
-			   struct dentry *dir)
+struct aa_ns *__aa_find_or_create_ns(struct aa_ns *parent, const char *name,
+				     struct dentry *dir)
 {
 	struct aa_ns *ns;
 
-	mutex_lock(&parent->lock);
+	AA_BUG(!mutex_is_locked(&parent->lock));
+
 	/* try and find the specified ns */
 	/* released by caller */
 	ns = aa_get_ns(__aa_find_ns(&parent->sub_ns, name));
@@ -239,7 +297,6 @@ struct aa_ns *aa_create_ns(struct aa_ns *parent, const char *name,
 		ns = __aa_create_ns(parent, name, dir);
 	else
 		ns = ERR_PTR(-EEXIST);
-	mutex_unlock(&parent->lock);
 
 	/* return ref */
 	return ns;
@@ -271,7 +328,7 @@ struct aa_ns *aa_prepare_ns(struct aa_ns *parent, const char *name)
 static void __ns_list_release(struct list_head *head);
 
 /**
- * destroy_namespace - remove everything contained by @ns
+ * destroy_ns - remove everything contained by @ns
  * @ns: namespace to have it contents removed  (NOT NULL)
  */
 static void destroy_ns(struct aa_ns *ns)
@@ -288,12 +345,13 @@ static void destroy_ns(struct aa_ns *ns)
 
 	if (ns->parent) {
 		unsigned long flags;
+
 		write_lock_irqsave(&ns->labels.lock, flags);
 		__aa_proxy_redirect(ns_unconfined(ns),
 				    ns_unconfined(ns->parent));
 		write_unlock_irqrestore(&ns->labels.lock, flags);
 	}
-	__aa_fs_ns_rmdir(ns);
+	__aafs_ns_rmdir(ns);
 	mutex_unlock(&ns->lock);
 }
 
@@ -320,6 +378,7 @@ void __aa_remove_ns(struct aa_ns *ns)
 static void __ns_list_release(struct list_head *head)
 {
 	struct aa_ns *ns, *tmp;
+
 	list_for_each_entry_safe(ns, tmp, head, base.list)
 		__aa_remove_ns(ns);
 
@@ -345,8 +404,9 @@ int __init aa_alloc_root_ns(void)
   * aa_free_root_ns - free the root profile namespace
   */
 void __init aa_free_root_ns(void)
- {
+{
 	 struct aa_ns *ns = root_ns;
+
 	 root_ns = NULL;
 
 	 destroy_ns(ns);

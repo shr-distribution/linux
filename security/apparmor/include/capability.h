@@ -38,7 +38,7 @@ struct aa_caps {
 	kernel_cap_t extended;
 };
 
-extern struct aa_fs_entry aa_fs_entry_caps[];
+extern struct aa_sfs_entry aa_sfs_entry_caps[];
 
 int aa_capable(struct aa_label *label, int cap, int audit);
 

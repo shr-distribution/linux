@@ -144,7 +144,7 @@ static void i2c_mux_lock_bus(struct i2c_adapter *adapter, unsigned int flags)
 	struct i2c_mux_priv *priv = adapter->algo_data;
 	struct i2c_adapter *parent = priv->muxc->parent;
 
-	rt_mutex_lock(&parent->mux_lock);
+	rt_mutex_lock_nested(&parent->mux_lock, i2c_adapter_depth(adapter));
 	if (!(flags & I2C_LOCK_ROOT_ADAPTER))
 		return;
 	i2c_lock_bus(parent, flags);
@@ -181,7 +181,7 @@ static void i2c_parent_lock_bus(struct i2c_adapter *adapter,
 	struct i2c_mux_priv *priv = adapter->algo_data;
 	struct i2c_adapter *parent = priv->muxc->parent;
 
-	rt_mutex_lock(&parent->mux_lock);
+	rt_mutex_lock_nested(&parent->mux_lock, i2c_adapter_depth(adapter));
 	i2c_lock_bus(parent, flags);
 }
 
@@ -395,15 +395,20 @@ int i2c_mux_add_adapter(struct i2c_mux_core *muxc,
 	if (force_nr) {
 		priv->adap.nr = force_nr;
 		ret = i2c_add_numbered_adapter(&priv->adap);
+		if (ret < 0) {
+			dev_err(&parent->dev,
+				"failed to add mux-adapter %u as bus %u (error=%d)\n",
+				chan_id, force_nr, ret);
+			goto err_free_priv;
+		}
 	} else {
 		ret = i2c_add_adapter(&priv->adap);
-	}
-	if (ret < 0) {
-		dev_err(&parent->dev,
-			"failed to add mux-adapter (error=%d)\n",
-			ret);
-		kfree(priv);
-		return ret;
+		if (ret < 0) {
+			dev_err(&parent->dev,
+				"failed to add mux-adapter %u (error=%d)\n",
+				chan_id, ret);
+			goto err_free_priv;
+		}
 	}
 
 	WARN(sysfs_create_link(&priv->adap.dev.kobj, &muxc->dev->kobj,
@@ -419,6 +424,10 @@ int i2c_mux_add_adapter(struct i2c_mux_core *muxc,
 
 	muxc->adapter[muxc->num_adapters++] = &priv->adap;
 	return 0;
+
+err_free_priv:
+	kfree(priv);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(i2c_mux_add_adapter);
 

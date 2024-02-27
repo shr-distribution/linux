@@ -87,6 +87,8 @@ struct cachepolicy {
 #define s2_policy(policy)	0
 #endif
 
+unsigned long kimage_voffset __ro_after_init;
+
 static struct cachepolicy cache_policies[] __initdata = {
 	{
 		.policy		= "uncached",
@@ -413,6 +415,11 @@ void __set_fixmap(enum fixed_addresses idx, phys_addr_t phys, pgprot_t prot)
 	BUILD_BUG_ON(FIXADDR_START + (__end_of_fixed_addresses * PAGE_SIZE) >
 		     FIXADDR_END);
 	BUG_ON(idx >= __end_of_fixed_addresses);
+
+	/* we only support device mappings until pgprot_kernel has been set */
+	if (WARN_ON(pgprot_val(prot) != pgprot_val(FIXMAP_PAGE_IO) &&
+		    pgprot_val(pgprot_kernel) == 0))
+		return;
 
 	if (pgprot_val(prot))
 		set_pte_at(NULL, vaddr, pte,
@@ -1168,22 +1175,28 @@ void __init adjust_lowmem_bounds(void)
 	 */
 	vmalloc_limit = (u64)(uintptr_t)vmalloc_min - PAGE_OFFSET + PHYS_OFFSET;
 
-#ifdef CONFIG_ENABLE_VMALLOC_SAVING
-	struct memblock_region *prev_reg = NULL;
-
+	/*
+	 * The first usable region must be PMD aligned. Mark its start
+	 * as MEMBLOCK_NOMAP if it isn't
+	 */
 	for_each_memblock(memory, reg) {
-		if (prev_reg == NULL) {
-			prev_reg = reg;
-			continue;
+		if (!memblock_is_nomap(reg)) {
+			if (!IS_ALIGNED(reg->base, PMD_SIZE)) {
+				phys_addr_t len;
+
+				len = round_up(reg->base, PMD_SIZE) - reg->base;
+				memblock_mark_nomap(reg->base, len);
+			}
+			break;
 		}
-		vmalloc_limit += reg->base - (prev_reg->base + prev_reg->size);
-		prev_reg = reg;
 	}
-#endif
 
 	for_each_memblock(memory, reg) {
 		phys_addr_t block_start = reg->base;
 		phys_addr_t block_end = reg->base + reg->size;
+
+		if (memblock_is_nomap(reg))
+			continue;
 
 		if (reg->base < vmalloc_limit) {
 			if (block_end > lowmem_limit)
@@ -1435,27 +1448,14 @@ static void __init kmap_init(void)
 static void __init map_lowmem(void)
 {
 	struct memblock_region *reg;
-#ifdef CONFIG_XIP_KERNEL
-	phys_addr_t kernel_x_start = round_down(__pa(_sdata), SECTION_SIZE);
-#else
-	phys_addr_t kernel_x_start = round_down(__pa(_stext), SECTION_SIZE);
-#endif
+	phys_addr_t kernel_x_start = round_down(__pa(KERNEL_START), SECTION_SIZE);
 	phys_addr_t kernel_x_end = round_up(__pa(__init_end), SECTION_SIZE);
-	struct static_vm *svm;
-	phys_addr_t start;
-	phys_addr_t end;
-	unsigned long vaddr;
-	unsigned long pfn;
-	unsigned long length;
-	unsigned int type;
-	int nr = 0;
 
 	/* Map all the lowmem memory banks. */
 	for_each_memblock(memory, reg) {
+		phys_addr_t start = reg->base;
+		phys_addr_t end = start + reg->size;
 		struct map_desc map;
-		start = reg->base;
-		end = start + reg->size;
-		nr++;
 
 		if (memblock_is_nomap(reg))
 			continue;
@@ -1507,34 +1507,6 @@ static void __init map_lowmem(void)
 			}
 		}
 	}
-	svm = early_alloc_aligned(sizeof(*svm) * nr, __alignof__(*svm));
-
-	for_each_memblock(memory, reg) {
-		struct vm_struct *vm;
-
-		start = reg->base;
-		end = start + reg->size;
-
-		if (end > arm_lowmem_limit)
-			end = arm_lowmem_limit;
-		if (start >= end)
-			break;
-
-		vm = &svm->vm;
-		pfn = __phys_to_pfn(start);
-		vaddr = __phys_to_virt(start);
-		length = end - start;
-		type = MT_MEMORY_RW;
-
-		vm->addr = (void *)(vaddr & PAGE_MASK);
-		vm->size = PAGE_ALIGN(length + (vaddr & ~PAGE_MASK));
-		vm->phys_addr = __pfn_to_phys(pfn);
-		vm->flags = VM_LOWMEM;
-		vm->flags |= VM_ARM_MTYPE(type);
-		vm->caller = map_lowmem;
-		add_static_vm_early(svm++);
-		mark_vmalloc_reserved_area(vm->addr, vm->size);
-	}
 }
 
 #ifdef CONFIG_ARM_PV_FIXUP
@@ -1546,7 +1518,7 @@ pgtables_remap lpae_pgtables_remap_asm;
  * early_paging_init() recreates boot time page table setup, allowing machines
  * to switch over to a high (>4G) address space on LPAE systems
  */
-void __init early_paging_init(const struct machine_desc *mdesc)
+static void __init early_paging_init(const struct machine_desc *mdesc)
 {
 	pgtables_remap *lpae_pgtables_remap;
 	unsigned long pa_pgd;
@@ -1614,7 +1586,7 @@ void __init early_paging_init(const struct machine_desc *mdesc)
 
 #else
 
-void __init early_paging_init(const struct machine_desc *mdesc)
+static void __init early_paging_init(const struct machine_desc *mdesc)
 {
 	long long offset;
 
@@ -1631,119 +1603,6 @@ void __init early_paging_init(const struct machine_desc *mdesc)
 	add_taint(TAINT_CPU_OUT_OF_SPEC, LOCKDEP_STILL_OK);
 }
 
-#endif
-
-#ifdef CONFIG_FORCE_PAGES
-/*
- * remap a PMD into pages
- * We split a single pmd here none of this two pmd nonsense
- */
-static noinline void __init split_pmd(pmd_t *pmd, unsigned long addr,
-				unsigned long end, unsigned long pfn,
-				const struct mem_type *type)
-{
-	pte_t *pte, *start_pte;
-	pmd_t *base_pmd;
-
-	base_pmd = pmd_offset(
-			pud_offset(pgd_offset(&init_mm, addr), addr), addr);
-
-	if (pmd_none(*base_pmd) || pmd_bad(*base_pmd)) {
-		start_pte = early_alloc(PTE_HWTABLE_OFF + PTE_HWTABLE_SIZE);
-#ifndef CONFIG_ARM_LPAE
-		/*
-		 * Following is needed when new pte is allocated for pmd[1]
-		 * cases, which may happen when base (start) address falls
-		 * under pmd[1].
-		 */
-		if (addr & SECTION_SIZE)
-			start_pte += pte_index(addr);
-#endif
-	} else {
-		start_pte = pte_offset_kernel(base_pmd, addr);
-	}
-
-	pte = start_pte;
-
-	do {
-		set_pte_ext(pte, pfn_pte(pfn, type->prot_pte), 0);
-		pfn++;
-	} while (pte++, addr += PAGE_SIZE, addr != end);
-
-	*pmd = __pmd((__pa(start_pte) + PTE_HWTABLE_OFF) | type->prot_l1);
-	mb(); /* let pmd be programmed */
-	flush_pmd_entry(pmd);
-	flush_tlb_all();
-}
-
-/*
- * It's significantly easier to remap as pages later after all memory is
- * mapped. Everything is sections so all we have to do is split
- */
-static void __init remap_pages(void)
-{
-	struct memblock_region *reg;
-
-	for_each_memblock(memory, reg) {
-		phys_addr_t phys_start = reg->base;
-		phys_addr_t phys_end = reg->base + reg->size;
-		unsigned long addr = (unsigned long)__va(phys_start);
-		unsigned long end = (unsigned long)__va(phys_end);
-		pmd_t *pmd = NULL;
-		unsigned long next;
-		unsigned long pfn = __phys_to_pfn(phys_start);
-		bool fixup = false;
-		unsigned long saved_start = addr;
-
-		if (phys_start > arm_lowmem_limit)
-			break;
-		if (phys_end > arm_lowmem_limit)
-			end = (unsigned long)__va(arm_lowmem_limit);
-		if (phys_start >= phys_end)
-			break;
-
-		pmd = pmd_offset(
-			pud_offset(pgd_offset(&init_mm, addr), addr), addr);
-
-#ifndef	CONFIG_ARM_LPAE
-		if (addr & SECTION_SIZE) {
-			fixup = true;
-			pmd_empty_section_gap((addr - SECTION_SIZE) & PMD_MASK);
-			pmd++;
-		}
-
-		if (end & SECTION_SIZE)
-			pmd_empty_section_gap(end);
-#endif
-
-		do {
-			next = addr + SECTION_SIZE;
-
-			if (pmd_none(*pmd) || pmd_bad(*pmd))
-				split_pmd(pmd, addr, next, pfn,
-						&mem_types[MT_MEMORY_RWX]);
-			pmd++;
-			pfn += SECTION_SIZE >> PAGE_SHIFT;
-
-		} while (addr = next, addr < end);
-
-		if (fixup) {
-			/*
-			 * Put a faulting page table here to avoid detecting no
-			 * pmd when accessing an odd section boundary. This
-			 * needs to be faulting to help catch errors and avoid
-			 * speculation
-			 */
-			pmd = pmd_off_k(saved_start);
-			pmd[0] = pmd[1] & ~1;
-		}
-	}
-}
-#else
-static void __init remap_pages(void)
-{
-
-}
 #endif
 
 static void __init early_fixmap_shutdown(void)
@@ -1783,13 +1642,11 @@ void __init paging_init(const struct machine_desc *mdesc)
 {
 	void *zero_page;
 
-	build_mem_type_table();
 	prepare_page_table();
 	map_lowmem();
 	memblock_set_current_limit(arm_lowmem_limit);
 	dma_contiguous_remap();
 	early_fixmap_shutdown();
-	remap_pages();
 	devicemaps_init(mdesc);
 	kmap_init();
 	tcm_init();
@@ -1803,4 +1660,13 @@ void __init paging_init(const struct machine_desc *mdesc)
 
 	empty_zero_page = virt_to_page(zero_page);
 	__flush_dcache_page(NULL, empty_zero_page);
+
+	/* Compute the virt/idmap offset, mostly for the sake of KVM */
+	kimage_voffset = (unsigned long)&kimage_voffset - virt_to_idmap(&kimage_voffset);
+}
+
+void __init early_mm_init(const struct machine_desc *mdesc)
+{
+	build_mem_type_table();
+	early_paging_init(mdesc);
 }

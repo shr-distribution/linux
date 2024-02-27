@@ -27,9 +27,53 @@
 
 #define BAR_MASK (BIT(TH_MMIO_CONFIG) | BIT(TH_MMIO_SW))
 
+#define PCI_REG_NPKDSC	0x80
+#define NPKDSC_TSACT	BIT(5)
+
+static int intel_th_pci_activate(struct intel_th *th)
+{
+	struct pci_dev *pdev = to_pci_dev(th->dev);
+	u32 npkdsc;
+	int err;
+
+	if (!INTEL_TH_CAP(th, tscu_enable))
+		return 0;
+
+	err = pci_read_config_dword(pdev, PCI_REG_NPKDSC, &npkdsc);
+	if (!err) {
+		npkdsc |= NPKDSC_TSACT;
+		err = pci_write_config_dword(pdev, PCI_REG_NPKDSC, npkdsc);
+	}
+
+	if (err)
+		dev_err(&pdev->dev, "failed to read NPKDSC register\n");
+
+	return err;
+}
+
+static void intel_th_pci_deactivate(struct intel_th *th)
+{
+	struct pci_dev *pdev = to_pci_dev(th->dev);
+	u32 npkdsc;
+	int err;
+
+	if (!INTEL_TH_CAP(th, tscu_enable))
+		return;
+
+	err = pci_read_config_dword(pdev, PCI_REG_NPKDSC, &npkdsc);
+	if (!err) {
+		npkdsc |= NPKDSC_TSACT;
+		err = pci_write_config_dword(pdev, PCI_REG_NPKDSC, npkdsc);
+	}
+
+	if (err)
+		dev_err(&pdev->dev, "failed to read NPKDSC register\n");
+}
+
 static int intel_th_pci_probe(struct pci_dev *pdev,
 			      const struct pci_device_id *id)
 {
+	struct intel_th_drvdata *drvdata = (void *)id->driver_data;
 	struct intel_th *th;
 	int err;
 
@@ -41,10 +85,15 @@ static int intel_th_pci_probe(struct pci_dev *pdev,
 	if (err)
 		return err;
 
-	th = intel_th_alloc(&pdev->dev, pdev->resource,
+	th = intel_th_alloc(&pdev->dev, drvdata, pdev->resource,
 			    DEVICE_COUNT_RESOURCE, pdev->irq);
 	if (IS_ERR(th))
 		return PTR_ERR(th);
+
+	th->activate   = intel_th_pci_activate;
+	th->deactivate = intel_th_pci_deactivate;
+
+	pci_set_master(pdev);
 
 	return 0;
 }
@@ -55,6 +104,10 @@ static void intel_th_pci_remove(struct pci_dev *pdev)
 
 	intel_th_free(th);
 }
+
+static const struct intel_th_drvdata intel_th_2x = {
+	.tscu_enable	= 1,
+};
 
 static const struct pci_device_id intel_th_pci_id_table[] = {
 	{
@@ -86,19 +139,94 @@ static const struct pci_device_id intel_th_pci_id_table[] = {
 		.driver_data = (kernel_ulong_t)0,
 	},
 	{
-		/* Cannon Lake H */
-		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0xa326),
+		/* Denverton */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x19e1),
 		.driver_data = (kernel_ulong_t)0,
 	},
 	{
-		/* Cannon Lake LP */
-		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x9da6),
+		/* Lewisburg PCH */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0xa1a6),
+		.driver_data = (kernel_ulong_t)0,
+	},
+	{
+		/* Lewisburg PCH */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0xa226),
 		.driver_data = (kernel_ulong_t)0,
 	},
 	{
 		/* Gemini Lake */
 		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x318e),
-		.driver_data = (kernel_ulong_t)0,
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Cannon Lake H */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0xa326),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Cannon Lake LP */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x9da6),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Cedar Fork PCH */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x18e1),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Ice Lake PCH */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x34a6),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Comet Lake */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x02a6),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Comet Lake PCH */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x06a6),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Comet Lake PCH-V */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0xa3a6),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Ice Lake NNPI */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x45c5),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Ice Lake CPU */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x8a29),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Tiger Lake CPU */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x9a33),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Tiger Lake PCH */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0xa0a6),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Jasper Lake PCH */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x4da6),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Elkhart Lake CPU */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x4529),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
+	},
+	{
+		/* Elkhart Lake */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x4b26),
+		.driver_data = (kernel_ulong_t)&intel_th_2x,
 	},
 	{ 0 },
 };

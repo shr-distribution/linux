@@ -60,16 +60,16 @@ struct pmc_clk_init_data {
 
 static DEFINE_SPINLOCK(clk_out_lock);
 
-static const char *clk_out1_parents[] = { "clk_m", "clk_m_div2",
-	"clk_m_div4", "extern1",
+static const char *clk_out1_parents[] = { "osc", "osc_div2",
+	"osc_div4", "extern1",
 };
 
-static const char *clk_out2_parents[] = { "clk_m", "clk_m_div2",
-	"clk_m_div4", "extern2",
+static const char *clk_out2_parents[] = { "osc", "osc_div2",
+	"osc_div4", "extern2",
 };
 
-static const char *clk_out3_parents[] = { "clk_m", "clk_m_div2",
-	"clk_m_div4", "extern3",
+static const char *clk_out3_parents[] = { "osc", "osc_div2",
+	"osc_div4", "extern3",
 };
 
 static struct pmc_clk_init_data pmc_clks[] = {
@@ -95,7 +95,8 @@ void __init tegra_pmc_clk_init(void __iomem *pmc_base,
 			continue;
 
 		clk = clk_register_mux(NULL, data->mux_name, data->parents,
-				data->num_parents, CLK_SET_RATE_NO_REPARENT,
+				data->num_parents,
+				CLK_SET_RATE_NO_REPARENT | CLK_SET_RATE_PARENT,
 				pmc_base + PMC_CLK_OUT_CNTRL, data->mux_shift,
 				3, 0, &clk_out_lock);
 		*dt_clk = clk;
@@ -106,7 +107,8 @@ void __init tegra_pmc_clk_init(void __iomem *pmc_base,
 			continue;
 
 		clk = clk_register_gate(NULL, data->gate_name, data->mux_name,
-					0, pmc_base + PMC_CLK_OUT_CNTRL,
+					CLK_SET_RATE_PARENT,
+					pmc_base + PMC_CLK_OUT_CNTRL,
 					data->gate_shift, 0, &clk_out_lock);
 		*dt_clk = clk;
 		clk_register_clkdev(clk, data->dev_name, data->gate_name);

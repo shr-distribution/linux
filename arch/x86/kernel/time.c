@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Copyright (c) 1991,1992,1995  Linus Torvalds
  *  Copyright (c) 1994  Alan Modra
@@ -22,10 +23,6 @@
 #include <asm/timer.h>
 #include <asm/hpet.h>
 #include <asm/time.h>
-
-#ifdef CONFIG_X86_64
-__visible volatile unsigned long jiffies __cacheline_aligned = INITIAL_JIFFIES;
-#endif
 
 unsigned long profile_pc(struct pt_regs *regs)
 {
@@ -67,7 +64,7 @@ static struct irqaction irq0  = {
 	.name = "timer"
 };
 
-void __init setup_default_timer_irq(void)
+static void __init setup_default_timer_irq(void)
 {
 	if (!nr_legacy_irqs())
 		return;

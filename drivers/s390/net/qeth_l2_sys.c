@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    Copyright IBM Corp. 2013
  *    Author(s): Eugene Crosser <eugene.crosser@ru.ibm.com>
@@ -7,9 +8,6 @@
 #include <asm/ebcdic.h>
 #include "qeth_core.h"
 #include "qeth_l2.h"
-
-#define QETH_DEVICE_ATTR(_id, _name, _mode, _show, _store) \
-struct device_attribute dev_attr_##_id = __ATTR(_name, _mode, _show, _store)
 
 static ssize_t qeth_bridge_port_role_state_show(struct device *dev,
 				struct device_attribute *attr, char *buf,

@@ -39,7 +39,7 @@ static int bcm2835aux_serial_probe(struct platform_device *pdev)
 
 	/* initialize data */
 	spin_lock_init(&data->uart.port.lock);
-	data->uart.capabilities = UART_CAP_FIFO;
+	data->uart.capabilities = UART_CAP_FIFO | UART_CAP_MINI;
 	data->uart.port.dev = &pdev->dev;
 	data->uart.port.regshift = 2;
 	data->uart.port.type = PORT_16550;
@@ -119,7 +119,7 @@ static int bcm2835aux_serial_remove(struct platform_device *pdev)
 {
 	struct bcm2835aux_data *data = platform_get_drvdata(pdev);
 
-	serial8250_unregister_port(data->uart.port.line);
+	serial8250_unregister_port(data->line);
 	clk_disable_unprepare(data->clk);
 
 	return 0;

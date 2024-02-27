@@ -116,7 +116,7 @@ static int send_control_msg(struct usb_serial_port *port, u8 requesttype,
 	retval = usb_control_msg(serial->dev, usb_sndctrlpipe(serial->dev, 0),
 				requesttype,
 				USB_DIR_OUT|USB_TYPE_VENDOR|USB_RECIP_INTERFACE,
-				0, 0, buffer, 1, 0);
+				0, 0, buffer, 1, USB_CTRL_SET_TIMEOUT);
 	kfree(buffer);
 
 	if (retval < 0)
@@ -336,9 +336,6 @@ static int get_serial_info(struct usb_serial_port *port,
 {
 	struct serial_struct tmp;
 
-	if (!serial)
-		return -EFAULT;
-
 	memset(&tmp, 0x00, sizeof(tmp));
 
 	/* fake emulate a 16550 uart to make userspace code happy */
@@ -346,7 +343,6 @@ static int get_serial_info(struct usb_serial_port *port,
 	tmp.line		= port->minor;
 	tmp.port		= 0;
 	tmp.irq			= 0;
-	tmp.flags		= ASYNC_SKIP_TEST | ASYNC_AUTO_IRQ;
 	tmp.xmit_fifo_size	= 1024;
 	tmp.baud_base		= 9600;
 	tmp.close_delay		= 5*HZ;
@@ -369,16 +365,6 @@ static int opticon_ioctl(struct tty_struct *tty,
 	}
 
 	return -ENOIOCTLCMD;
-}
-
-static int opticon_startup(struct usb_serial *serial)
-{
-	if (!serial->num_bulk_in) {
-		dev_err(&serial->dev->dev, "no bulk in endpoint\n");
-		return -ENODEV;
-	}
-
-	return 0;
 }
 
 static int opticon_port_probe(struct usb_serial_port *port)
@@ -412,8 +398,8 @@ static struct usb_serial_driver opticon_device = {
 	},
 	.id_table =		id_table,
 	.num_ports =		1,
+	.num_bulk_in =		1,
 	.bulk_in_size =		256,
-	.attach =		opticon_startup,
 	.port_probe =		opticon_port_probe,
 	.port_remove =		opticon_port_remove,
 	.open =			opticon_open,

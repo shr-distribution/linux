@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 
 #ifdef CONFIG_SCHEDSTATS
 
@@ -53,6 +54,92 @@ rq_sched_info_depart(struct rq *rq, unsigned long long delta)
 #define schedstat_val(var)		0
 #define schedstat_val_or_zero(var)	0
 #endif /* CONFIG_SCHEDSTATS */
+
+#ifdef CONFIG_PSI
+/*
+ * PSI tracks state that persists across sleeps, such as iowaits and
+ * memory stalls. As a result, it has to distinguish between sleeps,
+ * where a task's runnable state changes, and requeues, where a task
+ * and its state are being moved between CPUs and runqueues.
+ */
+static inline void psi_enqueue(struct task_struct *p, bool wakeup)
+{
+	int clear = 0, set = TSK_RUNNING;
+
+	if (static_branch_likely(&psi_disabled))
+		return;
+
+	if (!wakeup || p->sched_psi_wake_requeue) {
+		if (p->flags & PF_MEMSTALL)
+			set |= TSK_MEMSTALL;
+		if (p->sched_psi_wake_requeue)
+			p->sched_psi_wake_requeue = 0;
+	} else {
+		if (p->in_iowait)
+			clear |= TSK_IOWAIT;
+	}
+
+	psi_task_change(p, clear, set);
+}
+
+static inline void psi_dequeue(struct task_struct *p, bool sleep)
+{
+	int clear = TSK_RUNNING, set = 0;
+
+	if (static_branch_likely(&psi_disabled))
+		return;
+
+	if (!sleep) {
+		if (p->flags & PF_MEMSTALL)
+			clear |= TSK_MEMSTALL;
+	} else {
+		if (p->in_iowait)
+			set |= TSK_IOWAIT;
+	}
+
+	psi_task_change(p, clear, set);
+}
+
+static inline void psi_ttwu_dequeue(struct task_struct *p)
+{
+	if (static_branch_likely(&psi_disabled))
+		return;
+	/*
+	 * Is the task being migrated during a wakeup? Make sure to
+	 * deregister its sleep-persistent psi states from the old
+	 * queue, and let psi_enqueue() know it has to requeue.
+	 */
+	if (unlikely(p->in_iowait || (p->flags & PF_MEMSTALL))) {
+		struct rq_flags rf;
+		struct rq *rq;
+		int clear = 0;
+
+		if (p->in_iowait)
+			clear |= TSK_IOWAIT;
+		if (p->flags & PF_MEMSTALL)
+			clear |= TSK_MEMSTALL;
+
+		rq = __task_rq_lock(p, &rf);
+		psi_task_change(p, clear, 0);
+		p->sched_psi_wake_requeue = 1;
+		__task_rq_unlock(rq, &rf);
+	}
+}
+
+static inline void psi_task_tick(struct rq *rq)
+{
+	if (static_branch_likely(&psi_disabled))
+		return;
+
+	if (unlikely(rq->curr->flags & PF_MEMSTALL))
+		psi_memstall_tick(rq->curr, cpu_of(rq));
+}
+#else /* CONFIG_PSI */
+static inline void psi_enqueue(struct task_struct *p, bool wakeup) {}
+static inline void psi_dequeue(struct task_struct *p, bool sleep) {}
+static inline void psi_ttwu_dequeue(struct task_struct *p) {}
+static inline void psi_task_tick(struct rq *rq) {}
+#endif /* CONFIG_PSI */
 
 #ifdef CONFIG_SCHED_INFO
 static inline void sched_info_reset_dequeued(struct task_struct *t)
@@ -164,106 +251,3 @@ sched_info_switch(struct rq *rq,
 #define sched_info_arrive(rq, next)		do { } while (0)
 #define sched_info_switch(rq, t, next)		do { } while (0)
 #endif /* CONFIG_SCHED_INFO */
-
-/*
- * The following are functions that support scheduler-internal time accounting.
- * These functions are generally called at the timer tick.  None of this depends
- * on CONFIG_SCHEDSTATS.
- */
-
-/**
- * cputimer_running - return true if cputimer is running
- *
- * @tsk:	Pointer to target task.
- */
-static inline bool cputimer_running(struct task_struct *tsk)
-
-{
-	struct thread_group_cputimer *cputimer = &tsk->signal->cputimer;
-
-	/* Check if cputimer isn't running. This is accessed without locking. */
-	if (!READ_ONCE(cputimer->running))
-		return false;
-
-	/*
-	 * After we flush the task's sum_exec_runtime to sig->sum_sched_runtime
-	 * in __exit_signal(), we won't account to the signal struct further
-	 * cputime consumed by that task, even though the task can still be
-	 * ticking after __exit_signal().
-	 *
-	 * In order to keep a consistent behaviour between thread group cputime
-	 * and thread group cputimer accounting, lets also ignore the cputime
-	 * elapsing after __exit_signal() in any thread group timer running.
-	 *
-	 * This makes sure that POSIX CPU clocks and timers are synchronized, so
-	 * that a POSIX CPU timer won't expire while the corresponding POSIX CPU
-	 * clock delta is behind the expiring timer value.
-	 */
-	if (unlikely(!tsk->sighand))
-		return false;
-
-	return true;
-}
-
-/**
- * account_group_user_time - Maintain utime for a thread group.
- *
- * @tsk:	Pointer to task structure.
- * @cputime:	Time value by which to increment the utime field of the
- *		thread_group_cputime structure.
- *
- * If thread group time is being maintained, get the structure for the
- * running CPU and update the utime field there.
- */
-static inline void account_group_user_time(struct task_struct *tsk,
-					   cputime_t cputime)
-{
-	struct thread_group_cputimer *cputimer = &tsk->signal->cputimer;
-
-	if (!cputimer_running(tsk))
-		return;
-
-	atomic64_add(cputime, &cputimer->cputime_atomic.utime);
-}
-
-/**
- * account_group_system_time - Maintain stime for a thread group.
- *
- * @tsk:	Pointer to task structure.
- * @cputime:	Time value by which to increment the stime field of the
- *		thread_group_cputime structure.
- *
- * If thread group time is being maintained, get the structure for the
- * running CPU and update the stime field there.
- */
-static inline void account_group_system_time(struct task_struct *tsk,
-					     cputime_t cputime)
-{
-	struct thread_group_cputimer *cputimer = &tsk->signal->cputimer;
-
-	if (!cputimer_running(tsk))
-		return;
-
-	atomic64_add(cputime, &cputimer->cputime_atomic.stime);
-}
-
-/**
- * account_group_exec_runtime - Maintain exec runtime for a thread group.
- *
- * @tsk:	Pointer to task structure.
- * @ns:		Time value by which to increment the sum_exec_runtime field
- *		of the thread_group_cputime structure.
- *
- * If thread group time is being maintained, get the structure for the
- * running CPU and update the sum_exec_runtime field there.
- */
-static inline void account_group_exec_runtime(struct task_struct *tsk,
-					      unsigned long long ns)
-{
-	struct thread_group_cputimer *cputimer = &tsk->signal->cputimer;
-
-	if (!cputimer_running(tsk))
-		return;
-
-	atomic64_add(ns, &cputimer->cputime_atomic.sum_exec_runtime);
-}

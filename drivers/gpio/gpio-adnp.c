@@ -132,8 +132,10 @@ static int adnp_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 	if (err < 0)
 		goto out;
 
-	if (err & BIT(pos))
-		err = -EACCES;
+	if (value & BIT(pos)) {
+		err = -EPERM;
+		goto out;
+	}
 
 	err = 0;
 
@@ -468,16 +470,18 @@ static int adnp_irq_setup(struct adnp *adnp)
 		return err;
 	}
 
-	err = gpiochip_irqchip_add(chip,
-				   &adnp_irq_chip,
-				   0,
-				   handle_simple_irq,
-				   IRQ_TYPE_NONE);
+	err = gpiochip_irqchip_add_nested(chip,
+					  &adnp_irq_chip,
+					  0,
+					  handle_simple_irq,
+					  IRQ_TYPE_NONE);
 	if (err) {
 		dev_err(chip->parent,
 			"could not connect irqchip to gpiochip\n");
 		return err;
 	}
+
+	gpiochip_set_nested_irqchip(chip, &adnp_irq_chip, adnp->client->irq);
 
 	return 0;
 }

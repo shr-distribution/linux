@@ -79,8 +79,10 @@ static void audit_pre(struct audit_buffer *ab, void *ca)
 
 	if (aad(sa)->label) {
 		struct aa_label *label = aad(sa)->label;
+
 		if (label_isprofile(label)) {
 			struct aa_profile *profile = labels_profile(label);
+
 			if (profile->ns != root_ns) {
 				audit_log_format(ab, " namespace=");
 				audit_log_untrustedstring(ab,
@@ -109,11 +111,6 @@ static void audit_pre(struct audit_buffer *ab, void *ca)
 void aa_audit_msg(int type, struct common_audit_data *sa,
 		  void (*cb) (struct audit_buffer *, void *))
 {
-	/* TODO: redirect messages for profile to the correct ns
-	 *       rejects from subns should goto the audit associated
-	 *       with it, and audits from parent ns should got ns
-	 *       associated with it
-	 */
 	aad(sa)->type = type;
 	common_lsm_audit(sa, audit_pre, cb);
 }
@@ -132,7 +129,7 @@ void aa_audit_msg(int type, struct common_audit_data *sa,
 int aa_audit(int type, struct aa_profile *profile, struct common_audit_data *sa,
 	     void (*cb) (struct audit_buffer *, void *))
 {
-	BUG_ON(!profile);
+	AA_BUG(!profile);
 
 	if (type == AUDIT_APPARMOR_AUTO) {
 		if (likely(!aad(sa)->error)) {
@@ -147,7 +144,7 @@ int aa_audit(int type, struct aa_profile *profile, struct common_audit_data *sa,
 	if (AUDIT_MODE(profile) == AUDIT_QUIET ||
 	    (type == AUDIT_APPARMOR_DENIED &&
 	     AUDIT_MODE(profile) == AUDIT_QUIET))
-	  return aad(sa)->error;
+		return aad(sa)->error;
 
 	if (KILL_MODE(profile) && type == AUDIT_APPARMOR_DENIED)
 		type = AUDIT_APPARMOR_KILL;
@@ -162,7 +159,7 @@ int aa_audit(int type, struct aa_profile *profile, struct common_audit_data *sa,
 				    sa->u.tsk : current);
 
 	if (aad(sa)->type == AUDIT_APPARMOR_ALLOWED)
-	  return complain_error(aad(sa)->error);
+		return complain_error(aad(sa)->error);
 
 	return aad(sa)->error;
 }

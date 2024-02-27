@@ -123,15 +123,13 @@ struct apparmor_audit_data {
 			struct aa_label *peer;
 			union {
 				struct {
-					kuid_t ouid;
 					const char *target;
+					kuid_t ouid;
 				} fs;
 				struct {
-					int type, protocol;
-					struct sock *peer_sk;
-					void *addr;
-					int addrlen;
-				} net;
+					int rlim;
+					unsigned long max;
+				} rlim;
 				int signal;
 			};
 		};
@@ -140,10 +138,6 @@ struct apparmor_audit_data {
 			const char *ns;
 			long pos;
 		} iface;
-		struct {
-			int rlim;
-			unsigned long max;
-		} rlim;
 		struct {
 			const char *src_name;
 			const char *type;
@@ -155,7 +149,7 @@ struct apparmor_audit_data {
 };
 
 /* macros for dealing with  apparmor_audit_data structure */
-#define aad(SA) (SA)->apparmor_audit_data
+#define aad(SA) ((SA)->apparmor_audit_data)
 #define DEFINE_AUDIT_DATA(NAME, T, X)					\
 	/* TODO: cleanup audit init so we don't need _aad = {0,} */	\
 	struct apparmor_audit_data NAME ## _aad = { .op = (X), };	\

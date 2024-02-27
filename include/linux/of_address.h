@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __OF_ADDRESS_H
 #define __OF_ADDRESS_H
 #include <linux/ioport.h>
@@ -37,8 +38,6 @@ extern struct device_node *of_find_matching_node_by_address(
 					const struct of_device_id *matches,
 					u64 base_address);
 extern void __iomem *of_iomap(struct device_node *device, int index);
-extern void __iomem *of_iomap_by_name(struct device_node *device,
-					const char *name);
 void __iomem *of_io_request_and_map(struct device_node *device,
 				    int index, const char *name);
 
@@ -48,8 +47,6 @@ void __iomem *of_io_request_and_map(struct device_node *device,
  */
 extern const __be32 *of_get_address(struct device_node *dev, int index,
 			   u64 *size, unsigned int *flags);
-extern const __be32 *of_get_address_by_name(struct device_node *dev,
-			   const char *name, u64 *size, unsigned int *flags);
 
 extern int of_pci_range_parser_init(struct of_pci_range_parser *parser,
 			struct device_node *node);

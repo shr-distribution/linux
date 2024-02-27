@@ -24,6 +24,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/stop_machine.h>
+#include <linux/sched/debug.h>
 #include <linux/stringify.h>
 #include <asm/traps.h>
 #include <asm/opcodes.h>
@@ -181,7 +182,8 @@ void __kprobes kprobes_remove_breakpoint(void *addr, unsigned int insn)
 		.addr = addr,
 		.insn = insn,
 	};
-	stop_machine(__kprobes_remove_breakpoint, &p, cpu_online_mask);
+	stop_machine_cpuslocked(__kprobes_remove_breakpoint, &p,
+				cpu_online_mask);
 }
 
 void __kprobes arch_disarm_kprobe(struct kprobe *p)
@@ -265,11 +267,20 @@ void __kprobes kprobe_handler(struct pt_regs *regs)
 #endif
 
 	if (p) {
-		if (cur) {
+		if (!p->ainsn.insn_check_cc(regs->ARM_cpsr)) {
+			/*
+			 * Probe hit but conditional execution check failed,
+			 * so just skip the instruction and continue as if
+			 * nothing had happened.
+			 * In this case, we can skip recursing check too.
+			 */
+			singlestep_skip(p, regs);
+		} else if (cur) {
 			/* Kprobe is pending, so we're recursing. */
 			switch (kcb->kprobe_status) {
 			case KPROBE_HIT_ACTIVE:
 			case KPROBE_HIT_SSDONE:
+			case KPROBE_HIT_SS:
 				/* A pre- or post-handler probe got us here. */
 				kprobes_inc_nmissed_count(p);
 				save_previous_kprobe(kcb);
@@ -278,11 +289,16 @@ void __kprobes kprobe_handler(struct pt_regs *regs)
 				singlestep(p, regs, kcb);
 				restore_previous_kprobe(kcb);
 				break;
+			case KPROBE_REENTER:
+				/* A nested probe was hit in FIQ, it is a BUG */
+				pr_warn("Unrecoverable kprobe detected.\n");
+				dump_kprobe(p);
+				/* fall through */
 			default:
 				/* impossible cases */
 				BUG();
 			}
-		} else if (p->ainsn.insn_check_cc(regs->ARM_cpsr)) {
+		} else {
 			/* Probe hit and conditional execution check ok. */
 			set_current_kprobe(p);
 			kcb->kprobe_status = KPROBE_HIT_ACTIVE;
@@ -303,13 +319,6 @@ void __kprobes kprobe_handler(struct pt_regs *regs)
 				}
 				reset_current_kprobe();
 			}
-		} else {
-			/*
-			 * Probe hit but conditional execution check failed,
-			 * so just skip the instruction and continue as if
-			 * nothing had happened.
-			 */
-			singlestep_skip(p, regs);
 		}
 	} else if (cur) {
 		/* We probably hit a jprobe.  Call its break handler. */

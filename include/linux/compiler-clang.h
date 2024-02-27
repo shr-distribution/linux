@@ -1,4 +1,5 @@
-#ifndef __LINUX_COMPILER_H
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __LINUX_COMPILER_TYPES_H
 #error "Please don't include <linux/compiler-clang.h> directly, include <linux/compiler.h> instead."
 #endif
 
@@ -16,13 +17,25 @@
  */
 #define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __COUNTER__)
 
-/*
- * GCC does not warn about unused static inline functions for
- * -Wunused-function.  This turns out to avoid the need for complex #ifdef
- * directives.  Suppress the warning in clang as well.
- */
-#undef inline
-#define inline inline __attribute__((unused)) notrace
+/* all clang versions usable with the kernel support KASAN ABI version 5 */
+#define KASAN_ABI_VERSION 5
+
+/* __no_sanitize_address has been already defined compiler-gcc.h */
+#undef __no_sanitize_address
+
+#if __has_feature(address_sanitizer) || __has_feature(hwaddress_sanitizer)
+/* emulate gcc's __SANITIZE_ADDRESS__ flag */
+#define __SANITIZE_ADDRESS__
+#define __no_sanitize_address \
+		__attribute__((no_sanitize("address", "hwaddress")))
+#else
+#define __no_sanitize_address
+#endif
+
+/* Clang doesn't have a way to turn it off per-function, yet. */
+#ifdef __noretpoline
+#undef __noretpoline
+#endif
 
 #ifdef CONFIG_LTO_CLANG
 #ifdef CONFIG_FTRACE_MCOUNT_RECORD
@@ -33,24 +46,22 @@
 #define __nocfi		__attribute__((no_sanitize("cfi")))
 #endif
 
-#define __nosafestack	__attribute__((no_sanitize("safe-stack")))
-
-/* all clang versions usable with the kernel support KASAN ABI version 5 */
-#define KASAN_ABI_VERSION 5
-
-/* emulate gcc's __SANITIZE_ADDRESS__ flag */
-#if __has_feature(address_sanitizer)
-#define __SANITIZE_ADDRESS__
+/*
+ * Not all versions of clang implement the the type-generic versions
+ * of the builtin overflow checkers. Fortunately, clang implements
+ * __has_builtin allowing us to avoid awkward version
+ * checks. Unfortunately, we don't know which version of gcc clang
+ * pretends to be, so the macro may or may not be defined.
+ */
+#undef COMPILER_HAS_GENERIC_BUILTIN_OVERFLOW
+#if __has_builtin(__builtin_mul_overflow) && \
+    __has_builtin(__builtin_add_overflow) && \
+    __has_builtin(__builtin_sub_overflow)
+#define COMPILER_HAS_GENERIC_BUILTIN_OVERFLOW 1
 #endif
 
-#undef __no_sanitize_address
-#if __has_feature(address_sanitizer)
-#define __no_sanitize_address __attribute__((no_sanitize("kernel-address")))
+#if __has_feature(shadow_call_stack)
+# define __noscs	__attribute__((__no_sanitize__("shadow-call-stack")))
 #else
-#define __no_sanitize_address
-#endif
-
-/* Clang doesn't have a way to turn it off per-function, yet. */
-#ifdef __noretpoline
-#undef __noretpoline
+# define __noscs
 #endif

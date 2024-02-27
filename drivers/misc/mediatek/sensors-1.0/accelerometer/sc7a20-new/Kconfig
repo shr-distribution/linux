@@ -1,0 +1,9 @@
+config MTK_SC7A20_NEW
+	bool "SC7A20 for MediaTek package"
+	default n
+	help
+	  The SC7A20 is a highly integrated,
+	  low power internal measurement unit
+	  that provides precise acceleration
+	  measurement.
+	  this config will turn on accelerometer feature.

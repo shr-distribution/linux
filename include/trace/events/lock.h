@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM lock
 
@@ -78,6 +79,41 @@ DEFINE_EVENT(lock, lock_acquired,
 );
 
 #endif
+
+TRACE_EVENT(lock_dbg,
+
+	TP_PROTO(const char *buf),
+
+	TP_ARGS(buf),
+
+	TP_STRUCT__entry(
+		__string(mbuf, buf)
+	),
+
+	TP_fast_assign(
+		__assign_str(mbuf, buf);
+	),
+
+	TP_printk("%s", __get_str(mbuf))
+);
+
+TRACE_EVENT(lock_monitor,
+
+	TP_PROTO(const char *buf),
+
+	TP_ARGS(buf),
+
+	TP_STRUCT__entry(
+		__string(mbuf, buf)
+	),
+
+	TP_fast_assign(
+		__assign_str(mbuf, buf);
+	),
+
+	TP_printk("%s", __get_str(mbuf))
+);
+
 #endif
 
 #endif /* _TRACE_LOCK_H */

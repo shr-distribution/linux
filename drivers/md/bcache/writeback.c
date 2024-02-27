@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * background writeback - scan btree for dirty data and write it to the backing
  * device
@@ -13,6 +14,7 @@
 
 #include <linux/delay.h>
 #include <linux/kthread.h>
+#include <linux/sched/clock.h>
 #include <trace/events/bcache.h>
 
 /* Rate limiting */
@@ -107,14 +109,13 @@ static void dirty_init(struct keybuf_key *w)
 	struct dirty_io *io = w->private;
 	struct bio *bio = &io->bio;
 
-	bio_init(bio);
+	bio_init(bio, bio->bi_inline_vecs,
+		 DIV_ROUND_UP(KEY_SIZE(&w->key), PAGE_SECTORS));
 	if (!io->dc->writeback_percent)
 		bio_set_prio(bio, IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0));
 
 	bio->bi_iter.bi_size	= KEY_SIZE(&w->key) << 9;
-	bio->bi_max_vecs	= DIV_ROUND_UP(KEY_SIZE(&w->key), PAGE_SECTORS);
 	bio->bi_private		= w;
-	bio->bi_io_vec		= bio->bi_inline_vecs;
 	bch_bio_map(bio, NULL);
 }
 
@@ -168,7 +169,7 @@ static void dirty_endio(struct bio *bio)
 	struct keybuf_key *w = bio->bi_private;
 	struct dirty_io *io = w->private;
 
-	if (bio->bi_error)
+	if (bio->bi_status)
 		SET_KEY_DIRTY(&w->key, false);
 
 	closure_put(&io->cl);
@@ -182,7 +183,7 @@ static void write_dirty(struct closure *cl)
 	dirty_init(w);
 	bio_set_op_attrs(&io->bio, REQ_OP_WRITE, 0);
 	io->bio.bi_iter.bi_sector = KEY_START(&w->key);
-	io->bio.bi_bdev		= io->dc->bdev;
+	bio_set_dev(&io->bio, io->dc->bdev);
 	io->bio.bi_end_io	= dirty_endio;
 
 	closure_bio_submit(&io->bio, cl);
@@ -196,7 +197,7 @@ static void read_dirty_endio(struct bio *bio)
 	struct dirty_io *io = w->private;
 
 	bch_count_io_errors(PTR_CACHE(io->dc->disk.c, &w->key, 0),
-			    bio->bi_error, "reading dirty data from cache");
+			    bio->bi_status, "reading dirty data from cache");
 
 	dirty_endio(bio);
 }
@@ -251,8 +252,7 @@ static void read_dirty(struct cached_dev *dc)
 		dirty_init(w);
 		bio_set_op_attrs(&io->bio, REQ_OP_READ, 0);
 		io->bio.bi_iter.bi_sector = PTR_OFFSET(&w->key, 0);
-		io->bio.bi_bdev		= PTR_CACHE(dc->disk.c,
-						    &w->key, 0)->bdev;
+		bio_set_dev(&io->bio, PTR_CACHE(dc->disk.c, &w->key, 0)->bdev);
 		io->bio.bi_end_io	= read_dirty_endio;
 
 		if (bio_alloc_pages(&io->bio, GFP_KERNEL))
@@ -456,8 +456,10 @@ static int bch_writeback_thread(void *arg)
 			 * data on cache. BCACHE_DEV_DETACHING flag is set in
 			 * bch_cached_dev_detach().
 			 */
-			if (test_bit(BCACHE_DEV_DETACHING, &dc->disk.flags))
+			if (test_bit(BCACHE_DEV_DETACHING, &dc->disk.flags)) {
+				up_write(&dc->writeback_lock);
 				break;
+			}
 		}
 
 		up_write(&dc->writeback_lock);

@@ -222,7 +222,7 @@ static int __init param_setup_earlycon(char *buf)
 		if (IS_ENABLED(CONFIG_ACPI_SPCR_TABLE)) {
 			earlycon_init_is_deferred = true;
 			return 0;
-		} else {
+		} else if (!buf) {
 			return early_init_dt_scan_chosen_stdout();
 		}
 	}
@@ -254,7 +254,6 @@ int __init of_setup_earlycon(const struct earlycon_id *match,
 		return -ENXIO;
 	}
 	port->mapbase = addr;
-	port->uartclk = BASE_BAUD * 16;
 
 	val = of_get_flat_dt_prop(node, "reg-offset", NULL);
 	if (val)
@@ -285,7 +284,16 @@ int __init of_setup_earlycon(const struct earlycon_id *match,
 		}
 	}
 
+	val = of_get_flat_dt_prop(node, "current-speed", NULL);
+	if (val)
+		early_console_dev.baud = be32_to_cpu(*val);
+
+	val = of_get_flat_dt_prop(node, "clock-frequency", NULL);
+	if (val)
+		port->uartclk = be32_to_cpu(*val);
+
 	if (options) {
+		early_console_dev.baud = simple_strtoul(options, NULL, 0);
 		strlcpy(early_console_dev.options, options,
 			sizeof(early_console_dev.options));
 	}

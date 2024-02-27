@@ -56,7 +56,8 @@ static int hi6220_ion_probe(struct platform_device *pdev)
 	if (IS_ERR(ipdev->data))
 		return PTR_ERR(ipdev->data);
 
-	ipdev->heaps = devm_kzalloc(&pdev->dev,
+	ipdev->heaps = devm_kzalloc(
+				&pdev->dev,
 				sizeof(struct ion_heap) * ipdev->data->nr,
 				GFP_KERNEL);
 	if (!ipdev->heaps) {

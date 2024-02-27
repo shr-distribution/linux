@@ -105,8 +105,9 @@ static inline int tcp_probe_avail(void)
  * Note: arguments must match tcp_rcv_established()!
  */
 static void jtcp_rcv_established(struct sock *sk, struct sk_buff *skb,
-				 const struct tcphdr *th, unsigned int len)
+				 const struct tcphdr *th)
 {
+	unsigned int len = skb->len;
 	const struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_sock *inet = inet_sk(sk);
 
@@ -117,7 +118,7 @@ static void jtcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 	     (fwmark > 0 && skb->mark == fwmark)) &&
 	    (full || tp->snd_cwnd != tcp_probe.lastcwnd)) {
 
-		spin_lock_bh(&tcp_probe.lock);
+		spin_lock(&tcp_probe.lock);
 		/* If log fills, just silently drop */
 		if (tcp_probe_avail() > 1) {
 			struct tcp_log *p = tcp_probe.log + tcp_probe.head;
@@ -145,7 +146,7 @@ static void jtcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				BUG();
 			}
 
-			p->length = skb->len;
+			p->length = len;
 			p->snd_nxt = tp->snd_nxt;
 			p->snd_una = tp->snd_una;
 			p->snd_cwnd = tp->snd_cwnd;
@@ -157,7 +158,7 @@ static void jtcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 			tcp_probe.head = (tcp_probe.head + 1) & (bufsize - 1);
 		}
 		tcp_probe.lastcwnd = tp->snd_cwnd;
-		spin_unlock_bh(&tcp_probe.lock);
+		spin_unlock(&tcp_probe.lock);
 
 		wake_up(&tcp_probe.wait);
 	}

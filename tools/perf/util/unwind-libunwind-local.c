@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Post mortem Dwarf CFI based unwinding on top of regs and stack dumps.
  *
@@ -16,8 +17,10 @@
  */
 
 #include <elf.h>
+#include <errno.h>
 #include <gelf.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
@@ -35,6 +38,7 @@
 #include "util.h"
 #include "debug.h"
 #include "asm/bug.h"
+#include "dso.h"
 
 extern int
 UNW_OBJ(dwarf_search_unwind_table) (unw_addr_space_t as,
@@ -297,15 +301,58 @@ static int read_unwind_spec_debug_frame(struct dso *dso,
 	int fd;
 	u64 ofs = dso->data.debug_frame_offset;
 
+	/* debug_frame can reside in:
+	 *  - dso
+	 *  - debug pointed by symsrc_filename
+	 *  - gnu_debuglink, which doesn't necessary
+	 *    has to be pointed by symsrc_filename
+	 */
 	if (ofs == 0) {
 		fd = dso__data_get_fd(dso, machine);
-		if (fd < 0)
-			return -EINVAL;
+		if (fd >= 0) {
+			ofs = elf_section_offset(fd, ".debug_frame");
+			dso__data_put_fd(dso);
+		}
 
-		/* Check the .debug_frame section for unwinding info */
-		ofs = elf_section_offset(fd, ".debug_frame");
+		if (ofs <= 0) {
+			fd = open(dso->symsrc_filename, O_RDONLY);
+			if (fd >= 0) {
+				ofs = elf_section_offset(fd, ".debug_frame");
+				close(fd);
+			}
+		}
+
+		if (ofs <= 0) {
+			char *debuglink = malloc(PATH_MAX);
+			int ret = 0;
+
+			ret = dso__read_binary_type_filename(
+				dso, DSO_BINARY_TYPE__DEBUGLINK,
+				machine->root_dir, debuglink, PATH_MAX);
+			if (!ret) {
+				fd = open(debuglink, O_RDONLY);
+				if (fd >= 0) {
+					ofs = elf_section_offset(fd,
+							".debug_frame");
+					close(fd);
+				}
+			}
+			if (ofs > 0) {
+				if (dso->symsrc_filename != NULL) {
+					pr_warning(
+						"%s: overwrite symsrc(%s,%s)\n",
+							__func__,
+							dso->symsrc_filename,
+							debuglink);
+					free(dso->symsrc_filename);
+				}
+				dso->symsrc_filename = debuglink;
+			} else {
+				free(debuglink);
+			}
+		}
+
 		dso->data.debug_frame_offset = ofs;
-		dso__data_put_fd(dso);
 	}
 
 	*offset = ofs;
@@ -357,8 +404,8 @@ find_proc_info(unw_addr_space_t as, unw_word_t ip, unw_proc_info_t *pi,
 		di.format   = UNW_INFO_FORMAT_REMOTE_TABLE;
 		di.start_ip = map->start;
 		di.end_ip   = map->end;
-		di.u.rti.segbase    = map->start + segbase;
-		di.u.rti.table_data = map->start + table_data;
+		di.u.rti.segbase    = map->start + segbase - map->pgoff;
+		di.u.rti.table_data = map->start + table_data - map->pgoff;
 		di.u.rti.table_len  = fde_count * sizeof(struct table_entry)
 				      / sizeof(unw_word_t);
 		ret = dwarf_search_unwind_table(as, ip, &di, pi,
@@ -584,9 +631,8 @@ static unw_accessors_t accessors = {
 
 static int _unwind__prepare_access(struct thread *thread)
 {
-	if (callchain_param.record_mode != CALLCHAIN_DWARF)
+	if (!dwarf_callchain_users)
 		return 0;
-
 	thread->addr_space = unw_create_addr_space(&accessors, 0);
 	if (!thread->addr_space) {
 		pr_err("unwind: Can't create unwind address space.\n");
@@ -599,17 +645,15 @@ static int _unwind__prepare_access(struct thread *thread)
 
 static void _unwind__flush_access(struct thread *thread)
 {
-	if (callchain_param.record_mode != CALLCHAIN_DWARF)
+	if (!dwarf_callchain_users)
 		return;
-
 	unw_flush_cache(thread->addr_space, 0, 0);
 }
 
 static void _unwind__finish_access(struct thread *thread)
 {
-	if (callchain_param.record_mode != CALLCHAIN_DWARF)
+	if (!dwarf_callchain_users)
 		return;
-
 	unw_destroy_addr_space(thread->addr_space);
 }
 

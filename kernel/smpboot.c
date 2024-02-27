@@ -9,6 +9,7 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/sched/task.h>
 #include <linux/export.h>
 #include <linux/percpu.h>
 #include <linux/kthread.h>
@@ -31,7 +32,7 @@ struct task_struct *idle_thread_get(unsigned int cpu)
 
 	if (!tsk)
 		return ERR_PTR(-ENOMEM);
-	init_idle(tsk, cpu, true);
+	init_idle(tsk, cpu);
 	return tsk;
 }
 
@@ -121,45 +122,7 @@ static int smpboot_thread_fn(void *data)
 		}
 
 		if (kthread_should_park()) {
-			/*
-			 * Serialize against wakeup. If we take the lock first,
-			 * wakeup is skipped. If we run later, we observe,
-			 * TASK_RUNNING update from wakeup path, before moving
-			 * forward. This helps avoid the race, where wakeup
-			 * observes TASK_INTERRUPTIBLE, and also observes
-			 * the TASK_PARKED in kthread_parkme() before updating
-			 * task state to TASK_RUNNING. In this case, kthread
-			 * gets parked in TASK_RUNNING state. This results
-			 * in panic later on in kthread_unpark(), as it sees
-			 * KTHREAD_IS_PARKED flag set but fails to rebind the
-			 * kthread, due to it being not in TASK_PARKED state.
-			 *
-			 * Control thread                      Hotplug Thread
-			 *
-			 * kthread_park()
-			 *   set KTHREAD_SHOULD_PARK
-			 *                                smpboot_thread_fn()
-			 *                                  set_current_state(
-			 *                                  TASK_INTERRUPTIBLE);
-			 *                                  kthread_parkme()
-			 *
-			 *   wake_up_process()
-			 *
-			 * raw_spin_lock_irqsave(&p->pi_lock, flags);
-			 * if (!(p->state & state))
-			 *            goto out;
-			 *
-			 *                                  __set_current_state(
-			 *                                  TASK_PARKED);
-			 *
-			 * if (p->on_rq && ttwu_remote(p, wake_flags))
-			 *   ttwu_remote()
-			 *     p->state = TASK_RUNNING;
-			 *                                   schedule();
-			 */
-			raw_spin_lock(&current->pi_lock);
 			__set_current_state(TASK_RUNNING);
-			raw_spin_unlock(&current->pi_lock);
 			preempt_enable();
 			if (ht->park && td->status == HP_THREAD_ACTIVE) {
 				BUG_ON(td->cpu != smp_processor_id());
@@ -381,39 +344,30 @@ EXPORT_SYMBOL_GPL(smpboot_unregister_percpu_thread);
  * by the client, but only by calling this function.
  * This function can only be called on a registered smp_hotplug_thread.
  */
-int smpboot_update_cpumask_percpu_thread(struct smp_hotplug_thread *plug_thread,
-					 const struct cpumask *new)
+void smpboot_update_cpumask_percpu_thread(struct smp_hotplug_thread *plug_thread,
+					  const struct cpumask *new)
 {
 	struct cpumask *old = plug_thread->cpumask;
-	cpumask_var_t tmp;
+	static struct cpumask tmp;
 	unsigned int cpu;
 
-	if (!alloc_cpumask_var(&tmp, GFP_KERNEL))
-		return -ENOMEM;
-
-	get_online_cpus();
+	lockdep_assert_cpus_held();
 	mutex_lock(&smpboot_threads_lock);
 
 	/* Park threads that were exclusively enabled on the old mask. */
-	cpumask_andnot(tmp, old, new);
-	for_each_cpu_and(cpu, tmp, cpu_online_mask)
+	cpumask_andnot(&tmp, old, new);
+	for_each_cpu_and(cpu, &tmp, cpu_online_mask)
 		smpboot_park_thread(plug_thread, cpu);
 
 	/* Unpark threads that are exclusively enabled on the new mask. */
-	cpumask_andnot(tmp, new, old);
-	for_each_cpu_and(cpu, tmp, cpu_online_mask)
+	cpumask_andnot(&tmp, new, old);
+	for_each_cpu_and(cpu, &tmp, cpu_online_mask)
 		smpboot_unpark_thread(plug_thread, cpu);
 
 	cpumask_copy(old, new);
 
 	mutex_unlock(&smpboot_threads_lock);
-	put_online_cpus();
-
-	free_cpumask_var(tmp);
-
-	return 0;
 }
-EXPORT_SYMBOL_GPL(smpboot_update_cpumask_percpu_thread);
 
 static DEFINE_PER_CPU(atomic_t, cpu_hotplug_state) = ATOMIC_INIT(CPU_POST_DEAD);
 

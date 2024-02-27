@@ -31,9 +31,8 @@
 #include <linux/types.h>
 #include <linux/usb.h>
 #include <linux/wait.h>
+#include <linux/sched/task.h>
 #include <uapi/linux/usbip.h>
-
-#define USBIP_VERSION "1.0.0"
 
 #undef pr_fmt
 
@@ -135,6 +134,13 @@ extern struct device_attribute dev_attr_usbip_debug;
 
 #define USBIP_DIR_OUT	0x00
 #define USBIP_DIR_IN	0x01
+
+/*
+ * Arbitrary limit for the maximum number of isochronous packets in an URB,
+ * compare for example the uhci_submit_isochronous function in
+ * drivers/usb/host/uhci-q.c
+ */
+#define USBIP_MAX_ISO_PACKETS 1024
 
 /**
  * struct usbip_header_basic - data pertinent to every request

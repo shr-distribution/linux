@@ -761,11 +761,11 @@ static void sctp_ulpq_retrieve_ordered(struct sctp_ulpq *ulpq,
 	struct sk_buff_head *event_list;
 	struct sk_buff *pos, *tmp;
 	struct sctp_ulpevent *cevent;
-	struct sctp_stream *in;
+	struct sctp_stream *stream;
 	__u16 sid, csid, cssn;
 
 	sid = event->stream;
-	in  = &ulpq->asoc->ssnmap->in;
+	stream  = &ulpq->asoc->stream;
 
 	event_list = (struct sk_buff_head *) sctp_event2skb(event)->prev;
 
@@ -783,11 +783,11 @@ static void sctp_ulpq_retrieve_ordered(struct sctp_ulpq *ulpq,
 		if (csid < sid)
 			continue;
 
-		if (cssn != sctp_ssn_peek(in, sid))
+		if (cssn != sctp_ssn_peek(stream, in, sid))
 			break;
 
-		/* Found it, so mark in the ssnmap. */
-		sctp_ssn_next(in, sid);
+		/* Found it, so mark in the stream. */
+		sctp_ssn_next(stream, in, sid);
 
 		__skb_unlink(pos, &ulpq->lobby);
 
@@ -850,7 +850,7 @@ static struct sctp_ulpevent *sctp_ulpq_order(struct sctp_ulpq *ulpq,
 					     struct sctp_ulpevent *event)
 {
 	__u16 sid, ssn;
-	struct sctp_stream *in;
+	struct sctp_stream *stream;
 
 	/* Check if this message needs ordering.  */
 	if (SCTP_DATA_UNORDERED & event->msg_flags)
@@ -859,10 +859,10 @@ static struct sctp_ulpevent *sctp_ulpq_order(struct sctp_ulpq *ulpq,
 	/* Note: The stream ID must be verified before this routine.  */
 	sid = event->stream;
 	ssn = event->ssn;
-	in  = &ulpq->asoc->ssnmap->in;
+	stream  = &ulpq->asoc->stream;
 
 	/* Is this the expected SSN for this stream ID?  */
-	if (ssn != sctp_ssn_peek(in, sid)) {
+	if (ssn != sctp_ssn_peek(stream, in, sid)) {
 		/* We've received something out of order, so find where it
 		 * needs to be placed.  We order by stream and then by SSN.
 		 */
@@ -871,7 +871,7 @@ static struct sctp_ulpevent *sctp_ulpq_order(struct sctp_ulpq *ulpq,
 	}
 
 	/* Mark that the next chunk has been found.  */
-	sctp_ssn_next(in, sid);
+	sctp_ssn_next(stream, in, sid);
 
 	/* Go find any other chunks that were waiting for
 	 * ordering.
@@ -889,12 +889,12 @@ static void sctp_ulpq_reap_ordered(struct sctp_ulpq *ulpq, __u16 sid)
 	struct sk_buff *pos, *tmp;
 	struct sctp_ulpevent *cevent;
 	struct sctp_ulpevent *event;
-	struct sctp_stream *in;
+	struct sctp_stream *stream;
 	struct sk_buff_head temp;
 	struct sk_buff_head *lobby = &ulpq->lobby;
 	__u16 csid, cssn;
 
-	in  = &ulpq->asoc->ssnmap->in;
+	stream = &ulpq->asoc->stream;
 
 	/* We are holding the chunks by stream, by SSN.  */
 	skb_queue_head_init(&temp);
@@ -913,7 +913,7 @@ static void sctp_ulpq_reap_ordered(struct sctp_ulpq *ulpq, __u16 sid)
 			continue;
 
 		/* see if this ssn has been marked by skipping */
-		if (!SSN_lt(cssn, sctp_ssn_peek(in, csid)))
+		if (!SSN_lt(cssn, sctp_ssn_peek(stream, in, csid)))
 			break;
 
 		__skb_unlink(pos, lobby);
@@ -933,8 +933,8 @@ static void sctp_ulpq_reap_ordered(struct sctp_ulpq *ulpq, __u16 sid)
 		csid = cevent->stream;
 		cssn = cevent->ssn;
 
-		if (csid == sid && cssn == sctp_ssn_peek(in, csid)) {
-			sctp_ssn_next(in, csid);
+		if (csid == sid && cssn == sctp_ssn_peek(stream, in, csid)) {
+			sctp_ssn_next(stream, in, csid);
 			__skb_unlink(pos, lobby);
 			__skb_queue_tail(&temp, pos);
 			event = sctp_skb2event(pos);
@@ -956,17 +956,17 @@ static void sctp_ulpq_reap_ordered(struct sctp_ulpq *ulpq, __u16 sid)
  */
 void sctp_ulpq_skip(struct sctp_ulpq *ulpq, __u16 sid, __u16 ssn)
 {
-	struct sctp_stream *in;
+	struct sctp_stream *stream;
 
 	/* Note: The stream ID must be verified before this routine.  */
-	in  = &ulpq->asoc->ssnmap->in;
+	stream  = &ulpq->asoc->stream;
 
 	/* Is this an old SSN?  If so ignore. */
-	if (SSN_lt(ssn, sctp_ssn_peek(in, sid)))
+	if (SSN_lt(ssn, sctp_ssn_peek(stream, in, sid)))
 		return;
 
 	/* Mark that we are no longer expecting this SSN or lower. */
-	sctp_ssn_skip(in, sid, ssn);
+	sctp_ssn_skip(stream, in, sid, ssn);
 
 	/* Go find any other chunks that were waiting for
 	 * ordering and deliver them if needed.
@@ -1084,29 +1084,21 @@ void sctp_ulpq_partial_delivery(struct sctp_ulpq *ulpq,
 void sctp_ulpq_renege(struct sctp_ulpq *ulpq, struct sctp_chunk *chunk,
 		      gfp_t gfp)
 {
-	struct sctp_association *asoc;
-	__u16 needed, freed;
+	struct sctp_association *asoc = ulpq->asoc;
+	__u32 freed = 0;
+	__u16 needed;
 
-	asoc = ulpq->asoc;
-
-	if (chunk) {
-		needed = ntohs(chunk->chunk_hdr->length);
-		needed -= sizeof(sctp_data_chunk_t);
-	} else
-		needed = SCTP_DEFAULT_MAXWINDOW;
-
-	freed = 0;
+	needed = ntohs(chunk->chunk_hdr->length) -
+		 sizeof(struct sctp_data_chunk);
 
 	if (skb_queue_empty(&asoc->base.sk->sk_receive_queue)) {
 		freed = sctp_ulpq_renege_order(ulpq, needed);
-		if (freed < needed) {
+		if (freed < needed)
 			freed += sctp_ulpq_renege_frags(ulpq, needed - freed);
-		}
 	}
 	/* If able to free enough room, accept this chunk. */
-	if (chunk && (freed >= needed)) {
-		int retval;
-		retval = sctp_ulpq_tail_data(ulpq, chunk, gfp);
+	if (freed >= needed) {
+		int retval = sctp_ulpq_tail_data(ulpq, chunk, gfp);
 		/*
 		 * Enter partial delivery if chunk has not been
 		 * delivered; otherwise, drain the reassembly queue.

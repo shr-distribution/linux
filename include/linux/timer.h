@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_TIMER_H
 #define _LINUX_TIMER_H
 
@@ -20,6 +21,9 @@ struct timer_list {
 	unsigned long		data;
 	u32			flags;
 
+#ifdef CONFIG_CFI_CLANG
+	void			(*__function)(struct timer_list *);
+#endif
 #ifdef CONFIG_LOCKDEP
 	struct lockdep_map	lockdep_map;
 #endif
@@ -60,6 +64,8 @@ struct timer_list {
 #define TIMER_IRQSAFE		0x00200000
 #define TIMER_ARRAYSHIFT	22
 #define TIMER_ARRAYMASK		0xFFC00000
+
+#define TIMER_TRACE_FLAGMASK	(TIMER_MIGRATING | TIMER_DEFERRABLE | TIMER_PINNED | TIMER_IRQSAFE)
 
 #define __TIMER_INITIALIZER(_function, _expires, _data, _flags) { \
 		.entry = { .next = TIMER_ENTRY_STATIC },	\
@@ -166,6 +172,45 @@ static inline void init_timer_on_stack_key(struct timer_list *timer,
 #define setup_pinned_deferrable_timer_on_stack(timer, fn, data)		\
 	__setup_timer_on_stack((timer), (fn), (data), TIMER_DEFERRABLE | TIMER_PINNED)
 
+#define TIMER_DATA_TYPE		unsigned long
+#define TIMER_FUNC_TYPE		void (*)(TIMER_DATA_TYPE)
+
+#ifdef CONFIG_CFI_CLANG
+/*
+ * With CFI_CLANG, we cannot cast the callback function to TIMER_FUNC_TYPE
+ * without tripping an indirect call check in call_timer_fn. Therefore, we
+ * add a new field to struct timer_list and use __timer_callback to perform
+ * the indirect call using the correct function pointer.
+ */
+static inline void __timer_callback(unsigned long data)
+{
+	struct timer_list *timer = (struct timer_list *)data;
+
+	timer->__function(timer);
+}
+
+static inline void timer_setup(struct timer_list *timer,
+			       void (*callback)(struct timer_list *),
+			       unsigned int flags)
+{
+	timer->__function = callback;
+
+	__setup_timer(timer, __timer_callback,
+		      (TIMER_DATA_TYPE)timer, flags);
+}
+#else
+static inline void timer_setup(struct timer_list *timer,
+			       void (*callback)(struct timer_list *),
+			       unsigned int flags)
+{
+	__setup_timer(timer, (TIMER_FUNC_TYPE)callback,
+		      (TIMER_DATA_TYPE)timer, flags);
+}
+#endif
+
+#define from_timer(var, callback_timer, timer_fieldname) \
+	container_of(callback_timer, typeof(*var), timer_fieldname)
+
 /**
  * timer_pending - is a timer pending?
  * @timer: the timer in question
@@ -185,9 +230,6 @@ extern void add_timer_on(struct timer_list *timer, int cpu);
 extern int del_timer(struct timer_list * timer);
 extern int mod_timer(struct timer_list *timer, unsigned long expires);
 extern int mod_timer_pending(struct timer_list *timer, unsigned long expires);
-#ifdef CONFIG_SMP
-extern bool check_pending_deferrable_timers(int cpu);
-#endif
 
 /*
  * The jiffies value which is added to now, when there is no timer
@@ -201,8 +243,6 @@ extern void timer_quiesce_cpu(void *cpup);
 extern void add_timer(struct timer_list *timer);
 
 extern int try_to_del_timer_sync(struct timer_list *timer);
-
-extern struct timer_base timer_base_deferrable;
 
 #ifdef CONFIG_SMP
   extern int del_timer_sync(struct timer_list *timer);
@@ -218,7 +258,7 @@ struct hrtimer;
 extern enum hrtimer_restart it_real_fn(struct hrtimer *);
 
 #if defined(CONFIG_SMP) && defined(CONFIG_NO_HZ_COMMON)
-#include <linux/sysctl.h>
+struct ctl_table;
 
 extern unsigned int sysctl_timer_migration;
 int timer_migration_handler(struct ctl_table *table, int write,

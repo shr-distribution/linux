@@ -35,7 +35,7 @@ struct exynos_bus {
 	unsigned int edev_count;
 	struct mutex lock;
 
-	struct dev_pm_opp *curr_opp;
+	unsigned long curr_freq;
 
 	struct regulator *regulator;
 	struct clk *clk;
@@ -99,23 +99,21 @@ static int exynos_bus_target(struct device *dev, unsigned long *freq, u32 flags)
 {
 	struct exynos_bus *bus = dev_get_drvdata(dev);
 	struct dev_pm_opp *new_opp;
-	unsigned long old_freq, new_freq, old_volt, new_volt, tol;
+	unsigned long old_freq, new_freq, new_volt, tol;
 	int ret = 0;
 
 	/* Get new opp-bus instance according to new bus clock */
-	rcu_read_lock();
 	new_opp = devfreq_recommended_opp(dev, freq, flags);
 	if (IS_ERR(new_opp)) {
 		dev_err(dev, "failed to get recommended opp instance\n");
-		rcu_read_unlock();
 		return PTR_ERR(new_opp);
 	}
 
 	new_freq = dev_pm_opp_get_freq(new_opp);
 	new_volt = dev_pm_opp_get_voltage(new_opp);
-	old_freq = dev_pm_opp_get_freq(bus->curr_opp);
-	old_volt = dev_pm_opp_get_voltage(bus->curr_opp);
-	rcu_read_unlock();
+	dev_pm_opp_put(new_opp);
+
+	old_freq = bus->curr_freq;
 
 	if (old_freq == new_freq)
 		return 0;
@@ -146,10 +144,10 @@ static int exynos_bus_target(struct device *dev, unsigned long *freq, u32 flags)
 			goto out;
 		}
 	}
-	bus->curr_opp = new_opp;
+	bus->curr_freq = new_freq;
 
-	dev_dbg(dev, "Set the frequency of bus (%lukHz -> %lukHz)\n",
-			old_freq/1000, new_freq/1000);
+	dev_dbg(dev, "Set the frequency of bus (%luHz -> %luHz, %luHz)\n",
+			old_freq, new_freq, clk_get_rate(bus->clk));
 out:
 	mutex_unlock(&bus->lock);
 
@@ -163,9 +161,7 @@ static int exynos_bus_get_dev_status(struct device *dev,
 	struct devfreq_event_data edata;
 	int ret;
 
-	rcu_read_lock();
-	stat->current_frequency = dev_pm_opp_get_freq(bus->curr_opp);
-	rcu_read_unlock();
+	stat->current_frequency = bus->curr_freq;
 
 	ret = exynos_bus_get_event(bus, &edata);
 	if (ret < 0) {
@@ -198,11 +194,10 @@ static void exynos_bus_exit(struct device *dev)
 	if (ret < 0)
 		dev_warn(dev, "failed to disable the devfreq-event devices\n");
 
-	if (bus->regulator)
-		regulator_disable(bus->regulator);
-
 	dev_pm_opp_of_remove_table(dev);
 	clk_disable_unprepare(bus->clk);
+	if (bus->regulator)
+		regulator_disable(bus->regulator);
 }
 
 /*
@@ -217,17 +212,16 @@ static int exynos_bus_passive_target(struct device *dev, unsigned long *freq,
 	int ret = 0;
 
 	/* Get new opp-bus instance according to new bus clock */
-	rcu_read_lock();
 	new_opp = devfreq_recommended_opp(dev, freq, flags);
 	if (IS_ERR(new_opp)) {
 		dev_err(dev, "failed to get recommended opp instance\n");
-		rcu_read_unlock();
 		return PTR_ERR(new_opp);
 	}
 
 	new_freq = dev_pm_opp_get_freq(new_opp);
-	old_freq = dev_pm_opp_get_freq(bus->curr_opp);
-	rcu_read_unlock();
+	dev_pm_opp_put(new_opp);
+
+	old_freq = bus->curr_freq;
 
 	if (old_freq == new_freq)
 		return 0;
@@ -242,10 +236,10 @@ static int exynos_bus_passive_target(struct device *dev, unsigned long *freq,
 	}
 
 	*freq = new_freq;
-	bus->curr_opp = new_opp;
+	bus->curr_freq = new_freq;
 
-	dev_dbg(dev, "Set the frequency of bus (%lukHz -> %lukHz)\n",
-			old_freq/1000, new_freq/1000);
+	dev_dbg(dev, "Set the frequency of bus (%luHz -> %luHz, %luHz)\n",
+			old_freq, new_freq, clk_get_rate(bus->clk));
 out:
 	mutex_unlock(&bus->lock);
 
@@ -335,6 +329,7 @@ static int exynos_bus_parse_of(struct device_node *np,
 			      struct exynos_bus *bus)
 {
 	struct device *dev = bus->dev;
+	struct dev_pm_opp *opp;
 	unsigned long rate;
 	int ret;
 
@@ -352,23 +347,22 @@ static int exynos_bus_parse_of(struct device_node *np,
 	}
 
 	/* Get the freq and voltage from OPP table to scale the bus freq */
-	rcu_read_lock();
 	ret = dev_pm_opp_of_add_table(dev);
 	if (ret < 0) {
 		dev_err(dev, "failed to get OPP table\n");
-		rcu_read_unlock();
 		goto err_clk;
 	}
 
 	rate = clk_get_rate(bus->clk);
-	bus->curr_opp = devfreq_recommended_opp(dev, &rate, 0);
-	if (IS_ERR(bus->curr_opp)) {
+
+	opp = devfreq_recommended_opp(dev, &rate, 0);
+	if (IS_ERR(opp)) {
 		dev_err(dev, "failed to find dev_pm_opp\n");
-		rcu_read_unlock();
-		ret = PTR_ERR(bus->curr_opp);
+		ret = PTR_ERR(opp);
 		goto err_opp;
 	}
-	rcu_read_unlock();
+	bus->curr_freq = dev_pm_opp_get_freq(opp);
+	dev_pm_opp_put(opp);
 
 	return 0;
 
@@ -391,6 +385,7 @@ static int exynos_bus_probe(struct platform_device *pdev)
 	struct exynos_bus *bus;
 	int ret, max_state;
 	unsigned long min_freq, max_freq;
+	bool passive = false;
 
 	if (!np) {
 		dev_err(dev, "failed to find devicetree node\n");
@@ -404,27 +399,27 @@ static int exynos_bus_probe(struct platform_device *pdev)
 	bus->dev = &pdev->dev;
 	platform_set_drvdata(pdev, bus);
 
-	/* Parse the device-tree to get the resource information */
-	ret = exynos_bus_parse_of(np, bus);
-	if (ret < 0)
-		return ret;
-
 	profile = devm_kzalloc(dev, sizeof(*profile), GFP_KERNEL);
-	if (!profile) {
-		ret = -ENOMEM;
-		goto err;
-	}
+	if (!profile)
+		return -ENOMEM;
 
 	node = of_parse_phandle(dev->of_node, "devfreq", 0);
 	if (node) {
 		of_node_put(node);
-		goto passive;
+		passive = true;
 	} else {
 		ret = exynos_bus_parent_parse_of(np, bus);
+		if (ret < 0)
+			return ret;
 	}
 
+	/* Parse the device-tree to get the resource information */
+	ret = exynos_bus_parse_of(np, bus);
 	if (ret < 0)
-		goto err;
+		goto err_reg;
+
+	if (passive)
+		goto passive;
 
 	/* Initialize the struct profile and governor data for parent device */
 	profile->polling_ms = 50;
@@ -514,6 +509,9 @@ out:
 err:
 	dev_pm_opp_of_remove_table(dev);
 	clk_disable_unprepare(bus->clk);
+err_reg:
+	if (!passive)
+		regulator_disable(bus->regulator);
 
 	return ret;
 }

@@ -25,6 +25,8 @@
 #include <linux/module.h>
 #include <linux/mISDNif.h>
 #include <linux/mutex.h>
+#include <linux/sched/signal.h>
+
 #include "core.h"
 
 static DEFINE_MUTEX(mISDN_mutex);
@@ -168,8 +170,8 @@ dev_expire_timer(unsigned long data)
 	spin_lock_irqsave(&timer->dev->lock, flags);
 	if (timer->id >= 0)
 		list_move_tail(&timer->list, &timer->dev->expired);
-	spin_unlock_irqrestore(&timer->dev->lock, flags);
 	wake_up_interruptible(&timer->dev->wait);
+	spin_unlock_irqrestore(&timer->dev->lock, flags);
 }
 
 static int

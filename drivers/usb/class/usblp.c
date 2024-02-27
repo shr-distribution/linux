@@ -49,7 +49,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/signal.h>
 #include <linux/poll.h>
 #include <linux/slab.h>
@@ -294,7 +294,7 @@ static int usblp_ctrl_msg(struct usblp *usblp, int request, int type, int dir, i
 
 /*
  * See the description for usblp_select_alts() below for the usage
- * explanation.  Look into your /proc/bus/usb/devices and dmesg in
+ * explanation.  Look into your /sys/kernel/debug/usb/devices and dmesg in
  * case of any trouble.
  */
 static int proto_bias = -1;
@@ -458,6 +458,7 @@ static void usblp_cleanup(struct usblp *usblp)
 	kfree(usblp->readbuf);
 	kfree(usblp->device_id_string);
 	kfree(usblp->statusbuf);
+	usb_put_intf(usblp->intf);
 	kfree(usblp);
 }
 
@@ -474,11 +475,14 @@ static int usblp_release(struct inode *inode, struct file *file)
 
 	mutex_lock(&usblp_mutex);
 	usblp->used = 0;
-	if (usblp->present) {
+	if (usblp->present)
 		usblp_unlink_urbs(usblp);
-		usb_autopm_put_interface(usblp->intf);
-	} else		/* finish cleanup from disconnect */
-		usblp_cleanup(usblp);
+
+	usb_autopm_put_interface(usblp->intf);
+
+	if (!usblp->present)		/* finish cleanup from disconnect */
+		usblp_cleanup(usblp);	/* any URBs must be dead */
+
 	mutex_unlock(&usblp_mutex);
 	return 0;
 }
@@ -1118,7 +1122,7 @@ static int usblp_probe(struct usb_interface *intf,
 	init_waitqueue_head(&usblp->wwait);
 	init_usb_anchor(&usblp->urbs);
 	usblp->ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
-	usblp->intf = intf;
+	usblp->intf = usb_get_intf(intf);
 
 	/* Malloc device ID string buffer to the largest expected length,
 	 * since we can re-query it on an ioctl and a dynamic string
@@ -1207,6 +1211,7 @@ abort:
 	kfree(usblp->readbuf);
 	kfree(usblp->statusbuf);
 	kfree(usblp->device_id_string);
+	usb_put_intf(usblp->intf);
 	kfree(usblp);
 abort_ret:
 	return retval;
@@ -1239,8 +1244,9 @@ static int usblp_select_alts(struct usblp *usblp)
 {
 	struct usb_interface *if_alt;
 	struct usb_host_interface *ifd;
-	struct usb_endpoint_descriptor *epd, *epwrite, *epread;
-	int p, i, e;
+	struct usb_endpoint_descriptor *epwrite, *epread;
+	int p, i;
+	int res;
 
 	if_alt = usblp->intf;
 
@@ -1260,31 +1266,21 @@ static int usblp_select_alts(struct usblp *usblp)
 		    ifd->desc.bInterfaceProtocol > USBLP_LAST_PROTOCOL)
 			continue;
 
-		/* Look for bulk OUT and IN endpoints. */
-		epwrite = epread = NULL;
-		for (e = 0; e < ifd->desc.bNumEndpoints; e++) {
-			epd = &ifd->endpoint[e].desc;
-
-			if (usb_endpoint_is_bulk_out(epd))
-				if (!epwrite)
-					epwrite = epd;
-
-			if (usb_endpoint_is_bulk_in(epd))
-				if (!epread)
-					epread = epd;
+		/* Look for the expected bulk endpoints. */
+		if (ifd->desc.bInterfaceProtocol > 1) {
+			res = usb_find_common_endpoints(ifd,
+					&epread, &epwrite, NULL, NULL);
+		} else {
+			epread = NULL;
+			res = usb_find_bulk_out_endpoint(ifd, &epwrite);
 		}
 
 		/* Ignore buggy hardware without the right endpoints. */
-		if (!epwrite || (ifd->desc.bInterfaceProtocol > 1 && !epread))
+		if (res)
 			continue;
 
-		/*
-		 * Turn off reads for USB_CLASS_PRINTER/1/1 (unidirectional)
-		 * interfaces and buggy bidirectional printers.
-		 */
-		if (ifd->desc.bInterfaceProtocol == 1) {
-			epread = NULL;
-		} else if (usblp->quirks & USBLP_QUIRK_BIDIR) {
+		/* Turn off reads for buggy bidirectional printers. */
+		if (usblp->quirks & USBLP_QUIRK_BIDIR) {
 			printk(KERN_INFO "usblp%d: Disabling reads from "
 			    "problematic bidirectional printer\n",
 			    usblp->minor);
@@ -1393,9 +1389,11 @@ static void usblp_disconnect(struct usb_interface *intf)
 
 	usblp_unlink_urbs(usblp);
 	mutex_unlock(&usblp->mut);
+	usb_poison_anchored_urbs(&usblp->urbs);
 
 	if (!usblp->used)
 		usblp_cleanup(usblp);
+
 	mutex_unlock(&usblp_mutex);
 }
 

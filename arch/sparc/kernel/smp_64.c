@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* smp.c: Sparc64 SMP support.
  *
  * Copyright (C) 1997, 2007, 2008 David S. Miller (davem@davemloft.net)
@@ -5,7 +6,8 @@
 
 #include <linux/export.h>
 #include <linux/kernel.h>
-#include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/hotplug.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/threads.h>
@@ -43,7 +45,7 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/oplib.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/starfire.h>
 #include <asm/tlb.h>
 #include <asm/sections.h>
@@ -72,6 +74,9 @@ EXPORT_SYMBOL(cpu_core_sib_map);
 EXPORT_SYMBOL(cpu_core_sib_cache_map);
 
 static cpumask_t smp_commenced_mask;
+
+static DEFINE_PER_CPU(bool, poke);
+static bool cpu_poke;
 
 void smp_info(struct seq_file *m)
 {
@@ -122,7 +127,7 @@ void smp_callin(void)
 	current_thread_info()->new_child = 0;
 
 	/* Attach to the address space of init_task. */
-	atomic_inc(&init_mm.mm_count);
+	mmgrab(&init_mm);
 	current->active_mm = &init_mm;
 
 	/* inform the notifiers about the new cpu */
@@ -1438,15 +1443,86 @@ void __init smp_cpus_done(unsigned int max_cpus)
 {
 }
 
+static void send_cpu_ipi(int cpu)
+{
+	xcall_deliver((u64) &xcall_receive_signal,
+			0, 0, cpumask_of(cpu));
+}
+
+void scheduler_poke(void)
+{
+	if (!cpu_poke)
+		return;
+
+	if (!__this_cpu_read(poke))
+		return;
+
+	__this_cpu_write(poke, false);
+	set_softint(1 << PIL_SMP_RECEIVE_SIGNAL);
+}
+
+static unsigned long send_cpu_poke(int cpu)
+{
+	unsigned long hv_err;
+
+	per_cpu(poke, cpu) = true;
+	hv_err = sun4v_cpu_poke(cpu);
+	if (hv_err != HV_EOK) {
+		per_cpu(poke, cpu) = false;
+		pr_err_ratelimited("%s: sun4v_cpu_poke() fails err=%lu\n",
+				    __func__, hv_err);
+	}
+
+	return hv_err;
+}
+
 void smp_send_reschedule(int cpu)
 {
 	if (cpu == smp_processor_id()) {
 		WARN_ON_ONCE(preemptible());
 		set_softint(1 << PIL_SMP_RECEIVE_SIGNAL);
-	} else {
-		xcall_deliver((u64) &xcall_receive_signal,
-			      0, 0, cpumask_of(cpu));
+		return;
 	}
+
+	/* Use cpu poke to resume idle cpu if supported. */
+	if (cpu_poke && idle_cpu(cpu)) {
+		unsigned long ret;
+
+		ret = send_cpu_poke(cpu);
+		if (ret == HV_EOK)
+			return;
+	}
+
+	/* Use IPI in following cases:
+	 * - cpu poke not supported
+	 * - cpu not idle
+	 * - send_cpu_poke() returns with error
+	 */
+	send_cpu_ipi(cpu);
+}
+
+void smp_init_cpu_poke(void)
+{
+	unsigned long major;
+	unsigned long minor;
+	int ret;
+
+	if (tlb_type != hypervisor)
+		return;
+
+	ret = sun4v_hvapi_get(HV_GRP_CORE, &major, &minor);
+	if (ret) {
+		pr_debug("HV_GRP_CORE is not registered\n");
+		return;
+	}
+
+	if (major == 1 && minor >= 6) {
+		/* CPU POKE is registered. */
+		cpu_poke = true;
+		return;
+	}
+
+	pr_debug("CPU_POKE not supported\n");
 }
 
 void __irq_entry smp_receive_signal_client(int irq, struct pt_regs *regs)
@@ -1457,6 +1533,7 @@ void __irq_entry smp_receive_signal_client(int irq, struct pt_regs *regs)
 
 static void stop_this_cpu(void *dummy)
 {
+	set_cpu_online(smp_processor_id(), false);
 	prom_stopself();
 }
 
@@ -1472,6 +1549,8 @@ void smp_send_stop(void)
 		for_each_online_cpu(cpu) {
 			if (cpu == this_cpu)
 				continue;
+
+			set_cpu_online(cpu, false);
 #ifdef CONFIG_SUN_LDOMS
 			if (ldom_domaining_enabled) {
 				unsigned long hv_err;

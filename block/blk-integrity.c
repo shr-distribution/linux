@@ -384,12 +384,12 @@ static struct kobj_type integrity_ktype = {
 	.sysfs_ops	= &integrity_ops,
 };
 
-static int blk_integrity_nop_fn(struct blk_integrity_iter *iter)
+static blk_status_t blk_integrity_nop_fn(struct blk_integrity_iter *iter)
 {
-	return 0;
+	return BLK_STS_OK;
 }
 
-static struct blk_integrity_profile nop_profile = {
+static const struct blk_integrity_profile nop_profile = {
 	.name = "nop",
 	.generate_fn = blk_integrity_nop_fn,
 	.verify_fn = blk_integrity_nop_fn,

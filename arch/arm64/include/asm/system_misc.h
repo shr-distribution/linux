@@ -39,14 +39,17 @@ void hook_debug_fault_code(int nr, int (*fn)(unsigned long, unsigned int,
 					     struct pt_regs *),
 			   int sig, int code, const char *name);
 
+#ifdef CONFIG_MEDIATEK_SOLUTION
+void hook_fault_code(int nr, int (*fn)(unsigned long, unsigned int,
+			struct pt_regs *),
+		int sig, int code, const char *name);
+#endif
+
 struct mm_struct;
-extern void show_pte(struct mm_struct *mm, unsigned long addr);
+extern void show_pte(unsigned long addr);
 extern void __show_regs(struct pt_regs *);
 
 extern void (*arm_pm_restart)(enum reboot_mode reboot_mode, const char *cmd);
-extern char* (*arch_read_hardware_id)(void);
-
-const char * __init arch_read_machine_name(void);
 
 #define show_unhandled_signals_ratelimited()				\
 ({									\
@@ -58,6 +61,8 @@ const char * __init arch_read_machine_name(void);
 		__show_ratelimited = true;				\
 	__show_ratelimited;						\
 })
+
+int handle_guest_sea(phys_addr_t addr, unsigned int esr);
 
 #endif	/* __ASSEMBLY__ */
 

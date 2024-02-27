@@ -202,6 +202,8 @@ static int get_boost_mode(unsigned int cpu)
 		printf(_("    Boost States: %d\n"), b_states);
 		printf(_("    Total States: %d\n"), pstate_no);
 		for (i = 0; i < pstate_no; i++) {
+			if (!pstates[i])
+				continue;
 			if (i < b_states)
 				printf(_("    Pstate-Pb%d: %luMHz (boost state)"
 					 "\n"), i, pstates[i]);
@@ -285,20 +287,24 @@ static int get_freq_hardware(unsigned int cpu, unsigned int human)
 
 /* --hwlimits / -l */
 
-static int get_hardware_limits(unsigned int cpu)
+static int get_hardware_limits(unsigned int cpu, unsigned int human)
 {
 	unsigned long min, max;
 
-	printf(_("  hardware limits: "));
 	if (cpufreq_get_hardware_limits(cpu, &min, &max)) {
 		printf(_("Not Available\n"));
 		return -EINVAL;
 	}
 
-	print_speed(min);
-	printf(" - ");
-	print_speed(max);
-	printf("\n");
+	if (human) {
+		printf(_("  hardware limits: "));
+		print_speed(min);
+		printf(" - ");
+		print_speed(max);
+		printf("\n");
+	} else {
+		printf("%lu %lu\n", min, max);
+	}
 	return 0;
 }
 
@@ -456,7 +462,7 @@ static void debug_output_one(unsigned int cpu)
 	get_related_cpus(cpu);
 	get_affected_cpus(cpu);
 	get_latency(cpu, 1);
-	get_hardware_limits(cpu);
+	get_hardware_limits(cpu, 1);
 
 	freqs = cpufreq_get_available_frequencies(cpu);
 	if (freqs) {
@@ -622,7 +628,7 @@ int cmd_freq_info(int argc, char **argv)
 			ret = get_driver(cpu);
 			break;
 		case 'l':
-			ret = get_hardware_limits(cpu);
+			ret = get_hardware_limits(cpu, human);
 			break;
 		case 'w':
 			ret = get_freq_hardware(cpu, human);
@@ -639,7 +645,6 @@ int cmd_freq_info(int argc, char **argv)
 		}
 		if (ret)
 			return ret;
-		printf("\n");
 	}
 	return ret;
 }

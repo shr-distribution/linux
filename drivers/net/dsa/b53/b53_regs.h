@@ -143,6 +143,7 @@
 /* Software reset register (8 bit) */
 #define B53_SOFTRESET			0x79
 #define   SW_RST			BIT(7)
+#define   EN_CH_RST			BIT(6)
 #define   EN_SW_RST			BIT(4)
 
 /* Fast Aging Control register (8 bit) */
@@ -210,6 +211,38 @@
 #define   BRCM_HDR_P8_EN		BIT(0) /* Enable tagging on port 8 */
 #define   BRCM_HDR_P5_EN		BIT(1) /* Enable tagging on port 5 */
 
+/* Mirror capture control register (16 bit) */
+#define B53_MIR_CAP_CTL			0x10
+#define  CAP_PORT_MASK			0xf
+#define  BLK_NOT_MIR			BIT(14)
+#define  MIRROR_EN			BIT(15)
+
+/* Ingress mirror control register (16 bit) */
+#define B53_IG_MIR_CTL			0x12
+#define  MIRROR_MASK			0x1ff
+#define  DIV_EN				BIT(13)
+#define  MIRROR_FILTER_MASK		0x3
+#define  MIRROR_FILTER_SHIFT		14
+#define  MIRROR_ALL			0
+#define  MIRROR_DA			1
+#define  MIRROR_SA			2
+
+/* Ingress mirror divider register (16 bit) */
+#define B53_IG_MIR_DIV			0x14
+#define  IN_MIRROR_DIV_MASK		0x3ff
+
+/* Ingress mirror MAC address register (48 bit) */
+#define B53_IG_MIR_MAC			0x16
+
+/* Egress mirror control register (16 bit) */
+#define B53_EG_MIR_CTL			0x1C
+
+/* Egress mirror divider register (16 bit) */
+#define B53_EG_MIR_DIV			0x1E
+
+/* Egress mirror MAC address register (48 bit) */
+#define B53_EG_MIR_MAC			0x20
+
 /* Device ID register (8 or 32 bit) */
 #define B53_DEVICE_ID			0x30
 
@@ -261,7 +294,7 @@
  *
  * BCM5325 and BCM5365 share most definitions below
  */
-#define B53_ARLTBL_MAC_VID_ENTRY(n)	(0x10 * (n))
+#define B53_ARLTBL_MAC_VID_ENTRY(n)	((0x10 * (n)) + 0x10)
 #define   ARLTBL_MAC_MASK		0xffffffffffffULL
 #define   ARLTBL_VID_S			48
 #define   ARLTBL_VID_MASK_25		0xff
@@ -273,12 +306,15 @@
 #define   ARLTBL_VALID_25		BIT(63)
 
 /* ARL Table Data Entry N Registers (32 bit) */
-#define B53_ARLTBL_DATA_ENTRY(n)	((0x10 * (n)) + 0x08)
+#define B53_ARLTBL_DATA_ENTRY(n)	((0x10 * (n)) + 0x18)
 #define   ARLTBL_DATA_PORT_ID_MASK	0x1ff
 #define   ARLTBL_TC(tc)			((3 & tc) << 11)
 #define   ARLTBL_AGE			BIT(14)
 #define   ARLTBL_STATIC			BIT(15)
 #define   ARLTBL_VALID			BIT(16)
+
+/* Maximum number of bin entries in the ARL for all switches */
+#define B53_ARLTBL_MAX_BIN_ENTRIES	4
 
 /* ARL Search Control Register (8 bit) */
 #define B53_ARL_SRCH_CTL		0x50

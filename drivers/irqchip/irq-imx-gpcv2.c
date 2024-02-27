@@ -145,6 +145,7 @@ static struct irq_chip gpcv2_irqchip_data_chip = {
 	.irq_unmask		= imx_gpcv2_irq_unmask,
 	.irq_set_wake		= imx_gpcv2_irq_set_wake,
 	.irq_retrigger		= irq_chip_retrigger_hierarchy,
+	.irq_set_type		= irq_chip_set_type_parent,
 #ifdef CONFIG_SMP
 	.irq_set_affinity	= irq_chip_set_affinity_parent,
 #endif
@@ -200,7 +201,7 @@ static int imx_gpcv2_domain_alloc(struct irq_domain *domain,
 					    &parent_fwspec);
 }
 
-static struct irq_domain_ops gpcv2_irqchip_data_domain_ops = {
+static const struct irq_domain_ops gpcv2_irqchip_data_domain_ops = {
 	.translate	= imx_gpcv2_domain_translate,
 	.alloc		= imx_gpcv2_domain_alloc,
 	.free		= irq_domain_free_irqs_common,
@@ -214,13 +215,13 @@ static int __init imx_gpcv2_irqchip_init(struct device_node *node,
 	int i;
 
 	if (!parent) {
-		pr_err("%s: no parent, giving up\n", node->full_name);
+		pr_err("%pOF: no parent, giving up\n", node);
 		return -ENODEV;
 	}
 
 	parent_domain = irq_find_host(parent);
 	if (!parent_domain) {
-		pr_err("%s: unable to get parent domain\n", node->full_name);
+		pr_err("%pOF: unable to get parent domain\n", node);
 		return -ENXIO;
 	}
 
@@ -268,6 +269,11 @@ static int __init imx_gpcv2_irqchip_init(struct device_node *node,
 	imx_gpcv2_instance = cd;
 	register_syscore_ops(&imx_gpcv2_syscore_ops);
 
+	/*
+	 * Clear the OF_POPULATED flag set in of_irq_init so that
+	 * later the GPC power domain driver will not be skipped.
+	 */
+	of_node_clear_flag(node, OF_POPULATED);
 	return 0;
 }
 

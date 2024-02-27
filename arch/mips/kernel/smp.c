@@ -28,7 +28,7 @@
 #include <linux/export.h>
 #include <linux/time.h>
 #include <linux/timex.h>
-#include <linux/sched.h>
+#include <linux/sched/mm.h>
 #include <linux/cpumask.h>
 #include <linux/cpu.h>
 #include <linux/err.h>
@@ -42,13 +42,11 @@
 #include <asm/processor.h>
 #include <asm/idle.h>
 #include <asm/r4k-timer.h>
-#include <asm/mips-cpc.h>
+#include <asm/mips-cps.h>
 #include <asm/mmu_context.h>
 #include <asm/time.h>
 #include <asm/setup.h>
 #include <asm/maar.h>
-
-cpumask_t cpu_callin_map;		/* Bitmask of started secondaries */
 
 int __cpu_number_map[NR_CPUS];		/* Map physical to logical */
 EXPORT_SYMBOL(__cpu_number_map);
@@ -99,8 +97,7 @@ static inline void set_cpu_sibling_map(int cpu)
 
 	if (smp_num_siblings > 1) {
 		for_each_cpu(i, &cpu_sibling_setup_map) {
-			if (cpu_data[cpu].package == cpu_data[i].package &&
-				    cpu_data[cpu].core == cpu_data[i].core) {
+			if (cpus_are_siblings(cpu, i)) {
 				cpumask_set_cpu(i, &cpu_sibling_map[cpu]);
 				cpumask_set_cpu(cpu, &cpu_sibling_map[i]);
 			}
@@ -137,8 +134,7 @@ void calculate_cpu_foreign_map(void)
 	for_each_online_cpu(i) {
 		core_present = 0;
 		for_each_cpu(k, &temp_foreign_map)
-			if (cpu_data[i].package == cpu_data[k].package &&
-			    cpu_data[i].core == cpu_data[k].core)
+			if (cpus_are_siblings(i, k))
 				core_present = 1;
 		if (!core_present)
 			cpumask_set_cpu(i, &temp_foreign_map);
@@ -149,10 +145,10 @@ void calculate_cpu_foreign_map(void)
 			       &temp_foreign_map, &cpu_sibling_map[i]);
 }
 
-struct plat_smp_ops *mp_ops;
+const struct plat_smp_ops *mp_ops;
 EXPORT_SYMBOL(mp_ops);
 
-void register_smp_ops(struct plat_smp_ops *ops)
+void register_smp_ops(const struct plat_smp_ops *ops)
 {
 	if (mp_ops)
 		printk(KERN_WARNING "Overriding previously set SMP ops\n");
@@ -189,13 +185,13 @@ void mips_smp_send_ipi_mask(const struct cpumask *mask, unsigned int action)
 
 	if (mips_cpc_present()) {
 		for_each_cpu(cpu, mask) {
-			core = cpu_data[cpu].core;
-
-			if (core == current_cpu_data.core)
+			if (cpus_are_siblings(cpu, smp_processor_id()))
 				continue;
 
+			core = cpu_core(&cpu_data[cpu]);
+
 			while (!cpumask_test_cpu(cpu, &cpu_coherent_mask)) {
-				mips_cm_lock_other(core, 0);
+				mips_cm_lock_other_cpu(cpu, CM_GCR_Cx_OTHER_BLOCK_LOCAL);
 				mips_cpc_lock_other(core);
 				write_cpc_co_cmd(CPC_Cx_CMD_PWRUP);
 				mips_cpc_unlock_other();
@@ -264,16 +260,20 @@ int mips_smp_ipi_allocate(const struct cpumask *mask)
 		ipidomain = irq_find_matching_host(NULL, DOMAIN_BUS_IPI);
 
 	/*
-	 * There are systems which only use IPI domains some of the time,
-	 * depending upon configuration we don't know until runtime. An
-	 * example is Malta where we may compile in support for GIC & the
-	 * MT ASE, but run on a system which has multiple VPEs in a single
-	 * core and doesn't include a GIC. Until all IPI implementations
-	 * have been converted to use IPI domains the best we can do here
-	 * is to return & hope some other code sets up the IPIs.
+	 * There are systems which use IPI IRQ domains, but only have one
+	 * registered when some runtime condition is met. For example a Malta
+	 * kernel may include support for GIC & CPU interrupt controller IPI
+	 * IRQ domains, but if run on a system with no GIC & no MT ASE then
+	 * neither will be supported or registered.
+	 *
+	 * We only have a problem if we're actually using multiple CPUs so fail
+	 * loudly if that is the case. Otherwise simply return, skipping IPI
+	 * setup, if we're running with only a single CPU.
 	 */
-	if (!ipidomain)
+	if (!ipidomain) {
+		BUG_ON(num_present_cpus() > 1);
 		return 0;
+	}
 
 	virq = irq_reserve_ipi(ipidomain, mask);
 	BUG_ON(!virq);
@@ -334,6 +334,9 @@ int mips_smp_ipi_free(const struct cpumask *mask)
 
 static int __init mips_smp_ipi_init(void)
 {
+	if (num_possible_cpus() == 1)
+		return 0;
+
 	mips_smp_ipi_allocate(cpu_possible_mask);
 
 	call_desc = irq_to_desc(call_virq);
@@ -446,7 +449,11 @@ void smp_prepare_boot_cpu(void)
 
 int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 {
-	mp_ops->boot_secondary(cpu, tidle);
+	int err;
+
+	err = mp_ops->boot_secondary(cpu, tidle);
+	if (err)
+		return err;
 
 	/* Wait for CPU to start and be ready to sync counters */
 	if (!wait_for_completion_timeout(&cpu_starting,
@@ -650,32 +657,15 @@ void flush_tlb_one(unsigned long vaddr)
 EXPORT_SYMBOL(flush_tlb_page);
 EXPORT_SYMBOL(flush_tlb_one);
 
-#if defined(CONFIG_KEXEC)
-void (*dump_ipi_function_ptr)(void *) = NULL;
-void dump_send_ipi(void (*dump_ipi_callback)(void *))
-{
-	int i;
-	int cpu = smp_processor_id();
-
-	dump_ipi_function_ptr = dump_ipi_callback;
-	smp_mb();
-	for_each_online_cpu(i)
-		if (i != cpu)
-			mp_ops->send_ipi_single(i, SMP_DUMP);
-
-}
-EXPORT_SYMBOL(dump_send_ipi);
-#endif
-
 #ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
 
 static DEFINE_PER_CPU(atomic_t, tick_broadcast_count);
-static DEFINE_PER_CPU(struct call_single_data, tick_broadcast_csd);
+static DEFINE_PER_CPU(call_single_data_t, tick_broadcast_csd);
 
 void tick_broadcast(const struct cpumask *mask)
 {
 	atomic_t *count;
-	struct call_single_data *csd;
+	call_single_data_t *csd;
 	int cpu;
 
 	for_each_cpu(cpu, mask) {
@@ -696,7 +686,7 @@ static void tick_broadcast_callee(void *info)
 
 static int __init tick_broadcast_init(void)
 {
-	struct call_single_data *csd;
+	call_single_data_t *csd;
 	int cpu;
 
 	for (cpu = 0; cpu < NR_CPUS; cpu++) {

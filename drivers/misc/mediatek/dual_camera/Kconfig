@@ -1,0 +1,7 @@
+config MTK_SUPPORT_CAMLP
+	bool "Support cam light sensor board"
+	default n
+	---help---
+	  LED driver for cam light sensor support.
+	  Set y to support.
+	  Set n to disable.

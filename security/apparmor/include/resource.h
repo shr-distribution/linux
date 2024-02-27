@@ -34,10 +34,10 @@ struct aa_rlimit {
 	struct rlimit limits[RLIM_NLIMITS];
 };
 
-extern struct aa_fs_entry aa_fs_entry_rlimit[];
+extern struct aa_sfs_entry aa_sfs_entry_rlimit[];
 
 int aa_map_resource(int resource);
-int aa_task_setrlimit(struct aa_label *label, struct task_struct *,
+int aa_task_setrlimit(struct aa_label *label, struct task_struct *task,
 		      unsigned int resource, struct rlimit *new_rlim);
 
 void __aa_transition_rlimits(struct aa_label *old, struct aa_label *new);

@@ -76,7 +76,9 @@ config PWM_ATMEL_TCB
 
 config PWM_BCM_IPROC
 	tristate "iProc PWM support"
-	depends on ARCH_BCM_IPROC
+	depends on ARCH_BCM_IPROC || COMPILE_TEST
+	depends on COMMON_CLK
+	default ARCH_BCM_IPROC
 	help
 	  Generic PWM framework driver for Broadcom iProc PWM block. This
 	  block is used in Broadcom iProc SoC's.
@@ -174,6 +176,15 @@ config PWM_FSL_FTM
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-fsl-ftm.
+
+config PWM_HIBVT
+	tristate "HiSilicon BVT PWM support"
+	depends on ARCH_HISI || COMPILE_TEST
+	help
+	  Generic PWM framework driver for HiSilicon BVT SoCs.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-hibvt.
 
 config PWM_IMG
 	tristate "Imagination Technologies PWM driver"
@@ -273,14 +284,21 @@ config PWM_MESON
 
 config PWM_MTK_DISP
 	tristate "MediaTek display PWM driver"
-	depends on ARCH_MEDIATEK || COMPILE_TEST
-	depends on HAS_IOMEM
 	help
 	  Generic PWM framework driver for MediaTek disp-pwm device.
 	  The PWM is used to control the backlight brightness for display.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-mtk-disp.
+
+config PWM_MEDIATEK
+	tristate "MediaTek PWM support"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	  Generic PWM framework driver for Mediatek ARM SoC.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-mediatek.
 
 config PWM_MXS
 	tristate "Freescale MXS PWM support"
@@ -329,16 +347,6 @@ config PWM_PXA
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-pxa.
 
-config PWM_QPNP
-	tristate "Qualcomm Technologies, Inc. QPNP LPG/PWM support"
-	depends on SPMI
-	help
-	  This driver supports PWM/LPG devices in Qualcomm Technologies, Inc.
-	  PMIC chips which comply with QPNP.  QPNP is an SPMI based PMIC
-	  implementation.  These devices support Pulse Width Modulation output
-	  with user generated patterns. They share a lookup table with size of
-	  64 entries.
-
 config PWM_RCAR
 	tristate "Renesas R-Car PWM support"
 	depends on ARCH_RENESAS || COMPILE_TEST
@@ -349,16 +357,6 @@ config PWM_RCAR
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-rcar.
-
-config PWM_QTI_LPG
-	tristate "Qualcomm Technologies, Inc. LPG driver"
-	depends on  MFD_SPMI_PMIC && OF
-	help
-	  This driver supports the LPG (Light Pulse Generator) module found in
-	  Qualcomm Technologies, Inc. PMIC chips. Each LPG channel can be
-	  configured to operate in PWM mode to output a fixed amplitude with
-	  variable duty cycle or in LUT (Look up table) mode to output PWM
-	  signal with a modulated amplitude.
 
 config PWM_RENESAS_TPU
 	tristate "Renesas TPU PWM support"
@@ -408,6 +406,25 @@ config PWM_STI
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-sti.
 
+config PWM_STM32
+	tristate "STMicroelectronics STM32 PWM"
+	depends on MFD_STM32_TIMERS || COMPILE_TEST
+	help
+	  Generic PWM framework driver for STM32 SoCs.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-stm32.
+
+config PWM_STM32_LP
+	tristate "STMicroelectronics STM32 PWM LP"
+	depends on MFD_STM32_LPTIMER || COMPILE_TEST
+	help
+	  Generic PWM framework driver for STMicroelectronics STM32 SoCs
+	  with Low-Power Timer (LPTIM).
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-stm32-lp.
+
 config PWM_STMPE
 	bool "STMPE expander PWM export"
 	depends on MFD_STMPE
@@ -437,7 +454,7 @@ config PWM_TEGRA
 
 config  PWM_TIECAP
 	tristate "ECAP PWM support"
-	depends on ARCH_OMAP2PLUS || ARCH_DAVINCI_DA8XX
+	depends on ARCH_OMAP2PLUS || ARCH_DAVINCI_DA8XX || ARCH_KEYSTONE
 	help
 	  PWM driver support for the ECAP APWM controller found on AM33XX
 	  TI SOC
@@ -490,5 +507,14 @@ config PWM_VT8500
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-vt8500.
+
+config PWM_ZX
+	tristate "ZTE ZX PWM support"
+	depends on ARCH_ZX
+	help
+	  Generic PWM framework driver for ZTE ZX family SoCs.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-zx.
 
 endif

@@ -144,14 +144,14 @@ static inline bool kvm_vcpu_dabt_issext(struct kvm_vcpu *vcpu)
 	return kvm_vcpu_get_hsr(vcpu) & HSR_SSE;
 }
 
+static inline bool kvm_vcpu_dabt_issf(const struct kvm_vcpu *vcpu)
+{
+	return false;
+}
+
 static inline int kvm_vcpu_dabt_get_rd(struct kvm_vcpu *vcpu)
 {
 	return (kvm_vcpu_get_hsr(vcpu) & HSR_SRT_MASK) >> HSR_SRT_SHIFT;
-}
-
-static inline bool kvm_vcpu_dabt_isextabt(struct kvm_vcpu *vcpu)
-{
-	return kvm_vcpu_get_hsr(vcpu) & HSR_DABT_EA;
 }
 
 static inline bool kvm_vcpu_dabt_iss1tw(struct kvm_vcpu *vcpu)
@@ -204,6 +204,25 @@ static inline u8 kvm_vcpu_trap_get_fault(struct kvm_vcpu *vcpu)
 static inline u8 kvm_vcpu_trap_get_fault_type(struct kvm_vcpu *vcpu)
 {
 	return kvm_vcpu_get_hsr(vcpu) & HSR_FSC_TYPE;
+}
+
+static inline bool kvm_vcpu_dabt_isextabt(struct kvm_vcpu *vcpu)
+{
+	switch (kvm_vcpu_trap_get_fault_type(vcpu)) {
+	case FSC_SEA:
+	case FSC_SEA_TTW0:
+	case FSC_SEA_TTW1:
+	case FSC_SEA_TTW2:
+	case FSC_SEA_TTW3:
+	case FSC_SECC:
+	case FSC_SECC_TTW0:
+	case FSC_SECC_TTW1:
+	case FSC_SECC_TTW2:
+	case FSC_SECC_TTW3:
+		return true;
+	default:
+		return false;
+	}
 }
 
 static inline u32 kvm_vcpu_hvc_get_imm(struct kvm_vcpu *vcpu)

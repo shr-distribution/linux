@@ -226,7 +226,7 @@ static int tpm_nsc_send(struct tpm_chip *chip, u8 * buf, size_t count)
 	}
 	outb(NSC_COMMAND_EOC, priv->base + NSC_COMMAND);
 
-	return count;
+	return 0;
 }
 
 static void tpm_nsc_cancel(struct tpm_chip *chip)
@@ -277,6 +277,18 @@ static struct platform_driver nsc_drv = {
 		.pm      = &tpm_nsc_pm,
 	},
 };
+
+static inline int tpm_read_index(int base, int index)
+{
+	outb(index, base);
+	return inb(base+1) & 0xFF;
+}
+
+static inline void tpm_write_index(int base, int index, int value)
+{
+	outb(index, base);
+	outb(value & 0xFF, base+1);
+}
 
 static int __init init_nsc(void)
 {

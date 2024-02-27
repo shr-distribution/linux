@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2013, 2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -90,10 +90,6 @@ static int msm_rng_read(struct hwrng *hwrng, void *data, size_t max, bool wait)
 	/* calculate max size bytes to transfer back to caller */
 	maxsize = min_t(size_t, MAX_HW_FIFO_SIZE, max);
 
-	/* no room for word data */
-	if (maxsize < WORD_SZ)
-		return 0;
-
 	ret = clk_prepare_enable(rng->clk);
 	if (ret)
 		return ret;
@@ -156,7 +152,6 @@ static int msm_rng_probe(struct platform_device *pdev)
 	rng->hwrng.init = msm_rng_init,
 	rng->hwrng.cleanup = msm_rng_cleanup,
 	rng->hwrng.read = msm_rng_read,
-	rng->hwrng.quality = 700;
 
 	ret = devm_hwrng_register(&pdev->dev, &rng->hwrng);
 	if (ret) {

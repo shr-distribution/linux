@@ -1,16 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_BOOK3S_64_HASH_64K_H
 #define _ASM_POWERPC_BOOK3S_64_HASH_64K_H
 
 #define H_PTE_INDEX_SIZE  8
-#define H_PMD_INDEX_SIZE  5
-#define H_PUD_INDEX_SIZE  5
-#define H_PGD_INDEX_SIZE  12
+#define H_PMD_INDEX_SIZE  10
+#define H_PUD_INDEX_SIZE  7
+#define H_PGD_INDEX_SIZE  8
 
-/* With 4k base page size, hugepage PTEs go at the PMD level */
-#define MIN_HUGEPTE_SHIFT	PAGE_SHIFT
-
-#define H_PAGE_COMBO	0x00001000 /* this is a combo 4k page */
-#define H_PAGE_4K_PFN	0x00002000 /* PFN is for a single 4k page */
+/*
+ * 64k aligned address free up few of the lower bits of RPN for us
+ * We steal that here. For more deatils look at pte_pfn/pfn_pte()
+ */
+#define H_PAGE_COMBO	_RPAGE_RPN0 /* this is a combo 4k page */
+#define H_PAGE_4K_PFN	_RPAGE_RPN1 /* PFN is for a single 4k page */
 /*
  * We need to differentiate between explicit huge page and THP huge
  * page, since THP huge page also need to track real subpage details
@@ -179,7 +181,7 @@ static inline void mark_hpte_slot_valid(unsigned char *hpte_slot_array,
  */
 static inline int hash__pmd_trans_huge(pmd_t pmd)
 {
-	return !!((pmd_val(pmd) & (_PAGE_PTE | H_PAGE_THP_HUGE)) ==
+	return !!((pmd_val(pmd) & (_PAGE_PTE | H_PAGE_THP_HUGE | _PAGE_DEVMAP)) ==
 		  (_PAGE_PTE | H_PAGE_THP_HUGE));
 }
 
@@ -207,6 +209,12 @@ extern pmd_t hash__pmdp_huge_get_and_clear(struct mm_struct *mm,
 				       unsigned long addr, pmd_t *pmdp);
 extern int hash__has_transparent_hugepage(void);
 #endif /*  CONFIG_TRANSPARENT_HUGEPAGE */
+
+static inline pmd_t hash__pmd_mkdevmap(pmd_t pmd)
+{
+	return __pmd(pmd_val(pmd) | (_PAGE_PTE | H_PAGE_THP_HUGE | _PAGE_DEVMAP));
+}
+
 #endif	/* __ASSEMBLY__ */
 
 #endif /* _ASM_POWERPC_BOOK3S_64_HASH_64K_H */

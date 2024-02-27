@@ -195,7 +195,7 @@ static void sr_stop_vddautocomp(struct omap_sr *sr)
 }
 
 /*
- * This function handles the intializations which have to be done
+ * This function handles the initializations which have to be done
  * only when both sr device and class driver regiter has
  * completed. This will be attempted to be called from both sr class
  * driver register and sr device intializtion API's. Only one call
@@ -671,7 +671,7 @@ int sr_register_class(struct omap_sr_class_data *class_data)
 	sr_class = class_data;
 
 	/*
-	 * Call into late init to do intializations that require
+	 * Call into late init to do initializations that require
 	 * both sr driver and sr class driver to be initiallized.
 	 */
 	list_for_each_entry(sr_info, &sr_list, node)
@@ -899,7 +899,7 @@ static int __init omap_sr_probe(struct platform_device *pdev)
 	list_add(&sr_info->node, &sr_list);
 
 	/*
-	 * Call into late init to do intializations that require
+	 * Call into late init to do initializations that require
 	 * both sr driver and sr class driver to be initiallized.
 	 */
 	if (sr_class) {
@@ -994,8 +994,7 @@ static int omap_sr_remove(struct platform_device *pdev)
 
 	if (sr_info->autocomp_active)
 		sr_stop_vddautocomp(sr_info);
-	if (sr_info->dbg_dir)
-		debugfs_remove_recursive(sr_info->dbg_dir);
+	debugfs_remove_recursive(sr_info->dbg_dir);
 
 	pm_runtime_disable(&pdev->dev);
 	list_del(&sr_info->node);

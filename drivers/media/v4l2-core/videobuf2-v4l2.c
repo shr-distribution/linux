@@ -60,14 +60,13 @@ static int __verify_planes_array(struct vb2_buffer *vb, const struct v4l2_buffer
 
 	/* Is memory for copying plane information present? */
 	if (b->m.planes == NULL) {
-		dprintk(1, "multi-planar buffer passed but "
-			   "planes array not provided\n");
+		dprintk(1, "multi-planar buffer passed but planes array not provided\n");
 		return -EINVAL;
 	}
 
 	if (b->length < vb->num_planes || b->length > VB2_MAX_PLANES) {
-		dprintk(1, "incorrect planes array length, "
-			   "expected %d, got %d\n", vb->num_planes, b->length);
+		dprintk(1, "incorrect planes array length, expected %d, got %d\n",
+			vb->num_planes, b->length);
 		return -EINVAL;
 	}
 
@@ -146,7 +145,6 @@ static void vb2_warn_zero_bytesused(struct vb2_buffer *vb)
 		return;
 
 	check_once = true;
-	WARN_ON(1);
 
 	pr_warn("use of bytesused == 0 is deprecated and will be removed in the future,\n");
 	if (vb->vb2_queue->allow_zero_bytesused)
@@ -316,8 +314,7 @@ static int __fill_vb2_buffer(struct vb2_buffer *vb,
 		 * that just says that it is either a top or a bottom field,
 		 * but not which of the two it is.
 		 */
-		dprintk(1, "the field is incorrectly set to ALTERNATE "
-					"for an output buffer\n");
+		dprintk(1, "the field is incorrectly set to ALTERNATE for an output buffer\n");
 		return -EINVAL;
 	}
 	vb->timestamp = 0;
@@ -330,8 +327,6 @@ static int __fill_vb2_buffer(struct vb2_buffer *vb,
 					b->m.planes[plane].m.userptr;
 				planes[plane].length =
 					b->m.planes[plane].length;
-				planes[plane].data_offset =
-					b->m.planes[plane].data_offset;
 			}
 		}
 		if (b->memory == VB2_MEMORY_DMABUF) {
@@ -340,8 +335,6 @@ static int __fill_vb2_buffer(struct vb2_buffer *vb,
 					b->m.planes[plane].m.fd;
 				planes[plane].length =
 					b->m.planes[plane].length;
-				planes[plane].data_offset =
-					b->m.planes[plane].data_offset;
 			}
 		}
 
@@ -549,6 +542,9 @@ int vb2_create_bufs(struct vb2_queue *q, struct v4l2_create_buffers *create)
 	case V4L2_BUF_TYPE_SDR_CAPTURE:
 	case V4L2_BUF_TYPE_SDR_OUTPUT:
 		requested_sizes[0] = f->fmt.sdr.buffersize;
+		break;
+	case V4L2_BUF_TYPE_META_CAPTURE:
+		requested_sizes[0] = f->fmt.meta.buffersize;
 		break;
 	default:
 		return -EINVAL;

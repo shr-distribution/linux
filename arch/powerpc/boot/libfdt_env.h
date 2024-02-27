@@ -1,8 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ARCH_POWERPC_BOOT_LIBFDT_ENV_H
 #define _ARCH_POWERPC_BOOT_LIBFDT_ENV_H
 
 #include <types.h>
 #include <string.h>
+
+#define INT_MAX			((int)(~0U>>1))
+#define UINT32_MAX		((u32)~0U)
+#define INT32_MAX		((s32)(UINT32_MAX >> 1))
 
 #include "of.h"
 

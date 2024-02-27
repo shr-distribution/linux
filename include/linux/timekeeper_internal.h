@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * You SHOULD NOT be including this unless you're vsyscall
  * handling code or timekeeping internal code!
@@ -29,8 +30,8 @@
  */
 struct tk_read_base {
 	struct clocksource	*clock;
-	cycle_t			mask;
-	cycle_t			cycle_last;
+	u64			mask;
+	u64			cycle_last;
 	u32			mult;
 	u32			shift;
 	u64			xtime_nsec;
@@ -96,7 +97,7 @@ struct timekeeper {
 	u64			raw_sec;
 
 	/* The following members are for timekeeping internal use */
-	cycle_t			cycle_interval;
+	u64			cycle_interval;
 	u64			xtime_interval;
 	s64			xtime_remainder;
 	u64			raw_interval;
@@ -135,7 +136,7 @@ extern void update_vsyscall_tz(void);
 
 extern void update_vsyscall_old(struct timespec *ts, struct timespec *wtm,
 				struct clocksource *c, u32 mult,
-				cycle_t cycle_last);
+				u64 cycle_last);
 extern void update_vsyscall_tz(void);
 
 #else

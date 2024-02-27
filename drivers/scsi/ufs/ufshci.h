@@ -48,7 +48,7 @@ enum {
 	REG_UFS_VERSION				= 0x08,
 	REG_CONTROLLER_DEV_ID			= 0x10,
 	REG_CONTROLLER_PROD_ID			= 0x14,
-	REG_AUTO_HIBERN8_IDLE_TIMER		= 0x18,
+	REG_AUTO_HIBERNATE_IDLE_TIMER		= 0x18,
 	REG_INTERRUPT_STATUS			= 0x20,
 	REG_INTERRUPT_ENABLE			= 0x24,
 	REG_CONTROLLER_STATUS			= 0x30,
@@ -64,6 +64,7 @@ enum {
 	REG_UTP_TRANSFER_REQ_DOOR_BELL		= 0x58,
 	REG_UTP_TRANSFER_REQ_LIST_CLEAR		= 0x5C,
 	REG_UTP_TRANSFER_REQ_LIST_RUN_STOP	= 0x60,
+	REG_UTP_TRANSFER_REQ_LIST_COMP_NOTIFY	= 0x64,  /* MTK PATCH */
 	REG_UTP_TASK_REQ_LIST_BASE_L		= 0x70,
 	REG_UTP_TASK_REQ_LIST_BASE_H		= 0x74,
 	REG_UTP_TASK_REQ_DOOR_BELL		= 0x78,
@@ -79,7 +80,22 @@ enum {
 	REG_UFS_CCAP				= 0x100,
 	REG_UFS_CRYPTOCAP			= 0x104,
 
-	UFSHCI_CRYPTO_REG_SPACE_SIZE		= 0x400,
+	/* MTK PATCH */
+	REG_UFS_ADDR_XOUFS_ST			= 0x144,
+
+	/* MTK PATCH: vendor-specific registers */
+	REG_UFS_MTK_START = 0x2100, /* the start offset of MTK registers */
+	REG_UFS_MTK_EXTREG1 = 0x2100, /* shall be equal to REG_UFS_MTK_START */
+	REG_UFS_MTK_MPHYCTRL			= 0x2200,
+	REG_UFS_MTK_AUTO_DEEP_STALL		= 0x2210,
+	REG_UFS_MTK_HW_VER			= 0x2240,
+	REG_UFS_MTK_OCS_ERR_STATUS		= 0x2244,
+	REG_UFS_MTK_COMMAND_MON			= 0x2288,
+	REG_UFS_MTK_DATAOUT_MON			= 0x2290,
+	REG_UFS_MTK_RTT_MON			= 0x22A0,
+	REG_UFS_MTK_DEBUG_SEL			= 0x22C0,
+	REG_UFS_MTK_PROBE			= 0x22C8,
+	REG_UFS_MTK_SIZE = (REG_UFS_MTK_PROBE - REG_UFS_MTK_START + 16)
 };
 
 /* Controller capability masks */
@@ -92,6 +108,8 @@ enum {
 	MASK_UIC_DME_TEST_MODE_SUPPORT		= 0x04000000,
 	MASK_CRYPTO_SUPPORT			= 0x10000000,
 };
+
+#define UFS_MASK(mask, offset)		((mask) << (offset))
 
 /* UFS Version 08h */
 #define MINOR_VERSION_NUM_MASK		UFS_MASK(0xFFFF, 0)
@@ -119,19 +137,14 @@ enum {
 #define MANUFACTURE_ID_MASK	UFS_MASK(0xFFFF, 0)
 #define PRODUCT_ID_MASK		UFS_MASK(0xFFFF, 16)
 
-/*
- * AHIT - Auto-Hibernate Idle Timer  18h
- */
-#define AUTO_HIBERN8_IDLE_TIMER_MASK		UFS_MASK(0x3FF, 0)
-#define AUTO_HIBERN8_TIMER_SCALE_MASK		UFS_MASK(0x7, 10)
-#define AUTO_HIBERN8_TIMER_SCALE_1_US		UFS_MASK(0x0, 10)
-#define AUTO_HIBERN8_TIMER_SCALE_10_US		UFS_MASK(0x1, 10)
-#define AUTO_HIBERN8_TIMER_SCALE_100_US		UFS_MASK(0x2, 10)
-#define AUTO_HIBERN8_TIMER_SCALE_1_MS		UFS_MASK(0x3, 10)
-#define AUTO_HIBERN8_TIMER_SCALE_10_MS		UFS_MASK(0x4, 10)
-#define AUTO_HIBERN8_TIMER_SCALE_100_MS		UFS_MASK(0x5, 10)
+#define UFS_BIT(x)	(1L << (x))
 
-/* IS - Interrupt status (20h) / IE - Interrupt enable (24h) */
+/* AHIT - Auto-Hibernate Idle Timer */
+#define UFSHCI_AHIBERN8_TIMER_MASK		GENMASK(9, 0)
+#define UFSHCI_AHIBERN8_SCALE_MASK		GENMASK(12, 10)
+#define UFSHCI_AHIBERN8_SCALE_FACTOR		10
+#define UFSHCI_AHIBERN8_MAX			(1023 * 100000)
+
 #define UTP_TRANSFER_REQ_COMPL			UFS_BIT(0)
 #define UIC_DME_END_PT_RESET			UFS_BIT(1)
 #define UIC_ERROR				UFS_BIT(2)
@@ -148,13 +161,15 @@ enum {
 #define SYSTEM_BUS_FATAL_ERROR			UFS_BIT(17)
 #define CRYPTO_ENGINE_FATAL_ERROR		UFS_BIT(18)
 
-#define UFSHCD_UIC_PWR_MASK	(UIC_HIBERNATE_ENTER |\
-				UIC_HIBERNATE_EXIT |\
+#define UFSHCD_UIC_HIBERN8_MASK	(UIC_HIBERNATE_ENTER |\
+				UIC_HIBERNATE_EXIT)
+
+#define UFSHCD_UIC_PWR_MASK	(UFSHCD_UIC_HIBERN8_MASK |\
 				UIC_POWER_MODE)
 
 #define UFSHCD_UIC_MASK		(UIC_COMMAND_COMPL | UFSHCD_UIC_PWR_MASK)
 
-#define UFSHCD_ERROR_MASK	(UIC_ERROR | UIC_LINK_LOST |\
+#define UFSHCD_ERROR_MASK	(UIC_ERROR |\
 				DEVICE_FATAL_ERROR |\
 				CONTROLLER_FATAL_ERROR |\
 				SYSTEM_BUS_FATAL_ERROR |\
@@ -174,6 +189,10 @@ enum {
 #define DEVICE_ERROR_INDICATOR			UFS_BIT(5)
 #define UIC_POWER_MODE_CHANGE_REQ_STATUS_MASK	UFS_MASK(0x7, 8)
 
+#define UFSHCD_STATUS_READY	(UTP_TRANSFER_REQ_LIST_READY |\
+				UTP_TASK_REQ_LIST_READY |\
+				UIC_COMMAND_READY)
+
 enum {
 	PWR_OK		= 0x0,
 	PWR_LOCAL	= 0x01,
@@ -183,47 +202,10 @@ enum {
 	PWR_FATAL_ERROR	= 0x05,
 };
 
-/* Host UIC error type */
-enum ufshcd_uic_err_type {
-	UFS_UIC_ERROR_PA,
-	UFS_UIC_ERROR_DL,
-	UFS_UIC_ERROR_DME,
-};
-
-/* Host UIC error code PHY adapter layer */
-enum ufshcd_ec_pa {
-	UFS_EC_PA_LANE_0,
-	UFS_EC_PA_LANE_1,
-	UFS_EC_PA_LANE_2,
-	UFS_EC_PA_LANE_3,
-	UFS_EC_PA_LINE_RESET,
-	UFS_EC_PA_MAX,
-};
-
-/* Host UIC error code data link layer */
-enum ufshcd_ec_dl {
-	UFS_EC_DL_NAC_RECEIVED,
-	UFS_EC_DL_TCx_REPLAY_TIMER_EXPIRED,
-	UFS_EC_DL_AFCx_REQUEST_TIMER_EXPIRED,
-	UFS_EC_DL_FCx_PROTECT_TIMER_EXPIRED,
-	UFS_EC_DL_CRC_ERROR,
-	UFS_EC_DL_RX_BUFFER_OVERFLOW,
-	UFS_EC_DL_MAX_FRAME_LENGTH_EXCEEDED,
-	UFS_EC_DL_WRONG_SEQUENCE_NUMBER,
-	UFS_EC_DL_AFC_FRAME_SYNTAX_ERROR,
-	UFS_EC_DL_NAC_FRAME_SYNTAX_ERROR,
-	UFS_EC_DL_EOF_SYNTAX_ERROR,
-	UFS_EC_DL_FRAME_SYNTAX_ERROR,
-	UFS_EC_DL_BAD_CTRL_SYMBOL_TYPE,
-	UFS_EC_DL_PA_INIT_ERROR,
-	UFS_EC_DL_PA_ERROR_IND_RECEIVED,
-	UFS_EC_DL_MAX,
-};
-
 /* HCE - Host Controller Enable 34h */
 #define CONTROLLER_ENABLE	UFS_BIT(0)
-#define CRYPTO_GENERAL_ENABLE	UFS_BIT(1)
 #define CONTROLLER_DISABLE	0x0
+#define CRYPTO_GENERAL_ENABLE	UFS_BIT(1)
 
 /* UECPA - Host UIC Error Code PHY Adapter Layer 38h */
 #define UIC_PHY_ADAPTER_LAYER_ERROR			UFS_BIT(31)
@@ -284,6 +266,12 @@ enum ufshcd_ec_dl {
 #define UIC_ARG_ATTR_TYPE(t)		(((t) & 0xFF) << 16)
 #define UIC_GET_ATTR_ID(v)		(((v) >> 16) & 0xFFFF)
 
+/* Link Status*/
+enum link_status {
+	UFSHCD_LINK_IS_DOWN	= 1,
+	UFSHCD_LINK_IS_UP	= 2,
+};
+
 /* UIC Commands */
 enum uic_cmd_dme {
 	UIC_CMD_DME_GET			= 0x01,
@@ -335,6 +323,61 @@ enum {
 	INTERRUPT_MASK_ALL_VER_21	= 0x71FFF,
 };
 
+/* CCAP - Crypto Capability 100h */
+union ufs_crypto_capabilities {
+	__le32 reg_val;
+	struct {
+		u8 num_crypto_cap;
+		u8 config_count;
+		u8 reserved;
+		u8 config_array_ptr;
+	};
+};
+
+enum ufs_crypto_key_size {
+	UFS_CRYPTO_KEY_SIZE_INVALID	= 0x0,
+	UFS_CRYPTO_KEY_SIZE_128		= 0x1,
+	UFS_CRYPTO_KEY_SIZE_192		= 0x2,
+	UFS_CRYPTO_KEY_SIZE_256		= 0x3,
+	UFS_CRYPTO_KEY_SIZE_512		= 0x4,
+};
+
+enum ufs_crypto_alg {
+	UFS_CRYPTO_ALG_AES_XTS			= 0x0,
+	UFS_CRYPTO_ALG_BITLOCKER_AES_CBC	= 0x1,
+	UFS_CRYPTO_ALG_AES_ECB			= 0x2,
+	UFS_CRYPTO_ALG_ESSIV_AES_CBC		= 0x3,
+};
+
+/* x-CRYPTOCAP - Crypto Capability X */
+union ufs_crypto_cap_entry {
+	__le32 reg_val;
+	struct {
+		u8 algorithm_id;
+		u8 sdus_mask; /* Supported data unit size mask */
+		u8 key_size;
+		u8 reserved;
+	};
+};
+
+#define UFS_CRYPTO_CONFIGURATION_ENABLE (1 << 7)
+#define UFS_CRYPTO_KEY_MAX_SIZE 64
+/* x-CRYPTOCFG - Crypto Configuration X */
+union ufs_crypto_cfg_entry {
+	__le32 reg_val[32];
+	struct {
+		u8 crypto_key[UFS_CRYPTO_KEY_MAX_SIZE];
+		u8 data_unit_size;
+		u8 crypto_cap_idx;
+		u8 reserved_1;
+		u8 config_enable;
+		u8 reserved_multi_host;
+		u8 reserved_2;
+		u8 vsb[2];
+		u8 reserved_3[56];
+	};
+};
+
 /*
  * Request Descriptor Definitions
  */
@@ -346,11 +389,17 @@ enum {
 	UTP_CMD_TYPE_DEV_MANAGE		= 0x2,
 };
 
+/* To accommodate UFS2.0 required Command type */
+enum {
+	UTP_CMD_TYPE_UFS_STORAGE	= 0x1,
+};
+
 enum {
 	UTP_SCSI_COMMAND		= 0x00000000,
 	UTP_NATIVE_UFS_COMMAND		= 0x10000000,
 	UTP_DEVICE_MANAGEMENT_FUNCTION	= 0x20000000,
 	UTP_REQ_DESC_INT_CMD		= 0x01000000,
+	UTP_REQ_DESC_CRYPTO_ENABLE_CMD	= 0x00800000,
 };
 
 /* UTP Transfer Request Data Direction (DD) */
@@ -394,21 +443,27 @@ struct ufshcd_sg_entry {
 	__le32    upper_addr;
 	__le32    reserved;
 	__le32    size;
+	/*
+	 * followed by variant-specific fields if
+	 * hba->sg_entry_size != sizeof(struct ufshcd_sg_entry)
+	 */
 };
 
 /**
  * struct utp_transfer_cmd_desc - UFS Command Descriptor structure
  * @command_upiu: Command UPIU Frame address
  * @response_upiu: Response UPIU Frame address
- * @prd_table: Physical Region Descriptor
+ * @prd_table: Physical Region Descriptor: an array of SG_ALL struct
+ *	ufshcd_sg_entry's.  Variant-specific fields may be present after each.
  */
 struct utp_transfer_cmd_desc {
 	u8 command_upiu[ALIGNED_UPIU_SIZE];
 	u8 response_upiu[ALIGNED_UPIU_SIZE];
-	struct ufshcd_sg_entry    prd_table[SG_ALL];
+	u8 prd_table[];
 };
 
-#define UTRD_CRYPTO_ENABLE	UFS_BIT(23)
+#define sizeof_utp_transfer_cmd_desc(hba)	\
+	(sizeof(struct utp_transfer_cmd_desc) + SG_ALL * (hba)->sg_entry_size)
 
 /**
  * struct request_desc_header - Descriptor Header common to both UTRD and UTMRD

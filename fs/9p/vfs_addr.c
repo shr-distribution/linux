@@ -34,6 +34,7 @@
 #include <linux/idr.h>
 #include <linux/sched.h>
 #include <linux/uio.h>
+#include <linux/bvec.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 
@@ -49,8 +50,9 @@
  * @page: structure to page
  *
  */
-static int v9fs_fid_readpage(struct p9_fid *fid, struct page *page)
+static int v9fs_fid_readpage(struct file *data, struct page *page)
 {
+	struct p9_fid *fid = (struct p9_fid *)data;
 	struct inode *inode = page->mapping->host;
 	struct bio_vec bvec = {.bv_page = page, .bv_len = PAGE_SIZE};
 	struct iov_iter to;
@@ -121,7 +123,8 @@ static int v9fs_vfs_readpages(struct file *filp, struct address_space *mapping,
 	if (ret == 0)
 		return ret;
 
-	ret = read_cache_pages(mapping, pages, (void *)v9fs_vfs_readpage, filp);
+	ret = read_cache_pages(mapping, pages, v9fs_fid_readpage,
+			filp->private_data);
 	p9_debug(P9_DEBUG_VFS, "  = %d\n", ret);
 	return ret;
 }
@@ -291,7 +294,7 @@ start:
 	if (len == PAGE_SIZE)
 		goto out;
 
-	retval = v9fs_fid_readpage(v9inode->writeback_fid, page);
+	retval = v9fs_fid_readpage((struct file *)v9inode->writeback_fid, page);
 	put_page(page);
 	if (!retval)
 		goto start;
@@ -309,18 +312,14 @@ static int v9fs_write_end(struct file *filp, struct address_space *mapping,
 
 	p9_debug(P9_DEBUG_VFS, "filp %p, mapping %p\n", filp, mapping);
 
-	if (unlikely(copied < len)) {
-		/*
-		 * zero out the rest of the area
-		 */
-		unsigned from = pos & (PAGE_SIZE - 1);
-
-		zero_user(page, from + copied, len - copied);
-		flush_dcache_page(page);
+	if (!PageUptodate(page)) {
+		if (unlikely(copied < len)) {
+			copied = 0;
+			goto out;
+		} else if (len == PAGE_SIZE) {
+			SetPageUptodate(page);
+		}
 	}
-
-	if (!PageUptodate(page))
-		SetPageUptodate(page);
 	/*
 	 * No need to use i_size_read() here, the i_size
 	 * cannot change under us because we hold the i_mutex.
@@ -330,6 +329,7 @@ static int v9fs_write_end(struct file *filp, struct address_space *mapping,
 		i_size_write(inode, last_pos);
 	}
 	set_page_dirty(page);
+out:
 	unlock_page(page);
 	put_page(page);
 

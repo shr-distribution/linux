@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * kernel/lockdep_internals.h
  *
@@ -46,13 +47,13 @@ enum {
 		(LOCKF_USED_IN_HARDIRQ_READ | LOCKF_USED_IN_SOFTIRQ_READ)
 
 /*
- * CONFIG_PROVE_LOCKING_SMALL is defined for sparc. Sparc requires .text,
+ * CONFIG_LOCKDEP_SMALL is defined for sparc. Sparc requires .text,
  * .data and .bss to fit in required 32MB limit for the kernel. With
- * PROVE_LOCKING we could go over this limit and cause system boot-up problems.
+ * CONFIG_LOCKDEP we could go over this limit and cause system boot-up problems.
  * So, reduce the static allocations for lockdeps related structures so that
  * everything fits in current required size limit.
  */
-#ifdef CONFIG_PROVE_LOCKING_SMALL
+#ifdef CONFIG_LOCKDEP_SMALL
 /*
  * MAX_LOCKDEP_ENTRIES is the maximum number of lock dependencies
  * we track.
@@ -68,7 +69,7 @@ enum {
 #else
 #define MAX_LOCKDEP_ENTRIES	32768UL
 
-#define MAX_LOCKDEP_CHAINS_BITS	16
+#define MAX_LOCKDEP_CHAINS_BITS	17
 
 /*
  * Stack-trace: tightly packed array of stack backtrace
@@ -143,6 +144,8 @@ struct lockdep_stats {
 	int	redundant_softirqs_on;
 	int	redundant_softirqs_off;
 	int	nr_unused_locks;
+	int	nr_redundant_checks;
+	int	nr_redundant;
 	int	nr_cyclic_checks;
 	int	nr_cyclic_check_recursions;
 	int	nr_find_usage_forwards_checks;
@@ -181,4 +184,20 @@ DECLARE_PER_CPU(struct lockdep_stats, lockdep_stats);
 # define debug_atomic_inc(ptr)		do { } while (0)
 # define debug_atomic_dec(ptr)		do { } while (0)
 # define debug_atomic_read(ptr)		0
+#endif
+
+#include <kernel/sched/sched.h>
+#ifdef CONFIG_MTK_AEE_FEATURE
+#include <mt-plat/aee.h>
+#endif
+#ifdef CONFIG_MTK_RAM_CONSOLE
+#include <mt-plat/mtk_ram_console.h>
+#endif
+
+void lockdep_test_init(void);
+
+#ifdef MTK_LOCK_MONITOR
+#include <asm/stacktrace.h>
+#include <linux/sched/task_stack.h>
+void lock_monitor_init(void);
 #endif

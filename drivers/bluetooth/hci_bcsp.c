@@ -125,7 +125,7 @@ static void bcsp_slip_msgdelim(struct sk_buff *skb)
 {
 	const char pkt_delim = 0xc0;
 
-	memcpy(skb_put(skb, 1), &pkt_delim, 1);
+	skb_put_data(skb, &pkt_delim, 1);
 }
 
 static void bcsp_slip_one_byte(struct sk_buff *skb, u8 c)
@@ -135,13 +135,13 @@ static void bcsp_slip_one_byte(struct sk_buff *skb, u8 c)
 
 	switch (c) {
 	case 0xc0:
-		memcpy(skb_put(skb, 2), &esc_c0, 2);
+		skb_put_data(skb, &esc_c0, 2);
 		break;
 	case 0xdb:
-		memcpy(skb_put(skb, 2), &esc_db, 2);
+		skb_put_data(skb, &esc_db, 2);
 		break;
 	default:
-		memcpy(skb_put(skb, 1), &c, 1);
+		skb_put_data(skb, &c, 1);
 	}
 }
 
@@ -423,7 +423,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		BT_DBG("Found a LE conf pkt");
 		if (!nskb)
 			return;
-		memcpy(skb_put(nskb, 4), conf_rsp_pkt, 4);
+		skb_put_data(nskb, conf_rsp_pkt, 4);
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
 		skb_queue_head(&bcsp->unrel, nskb);
@@ -447,7 +447,7 @@ static inline void bcsp_unslip_one_byte(struct bcsp_struct *bcsp, unsigned char 
 			bcsp->rx_esc_state = BCSP_ESCSTATE_ESC;
 			break;
 		default:
-			memcpy(skb_put(bcsp->rx_skb, 1), &byte, 1);
+			skb_put_data(bcsp->rx_skb, &byte, 1);
 			if ((bcsp->rx_skb->data[0] & 0x40) != 0 &&
 			    bcsp->rx_state != BCSP_W4_CRC)
 				bcsp_crc_update(&bcsp->message_crc, byte);
@@ -458,7 +458,7 @@ static inline void bcsp_unslip_one_byte(struct bcsp_struct *bcsp, unsigned char 
 	case BCSP_ESCSTATE_ESC:
 		switch (byte) {
 		case 0xdc:
-			memcpy(skb_put(bcsp->rx_skb, 1), &c0, 1);
+			skb_put_data(bcsp->rx_skb, &c0, 1);
 			if ((bcsp->rx_skb->data[0] & 0x40) != 0 &&
 			    bcsp->rx_state != BCSP_W4_CRC)
 				bcsp_crc_update(&bcsp->message_crc, 0xc0);
@@ -467,7 +467,7 @@ static inline void bcsp_unslip_one_byte(struct bcsp_struct *bcsp, unsigned char 
 			break;
 
 		case 0xdd:
-			memcpy(skb_put(bcsp->rx_skb, 1), &db, 1);
+			skb_put_data(bcsp->rx_skb, &db, 1);
 			if ((bcsp->rx_skb->data[0] & 0x40) != 0 &&
 			    bcsp->rx_state != BCSP_W4_CRC)
 				bcsp_crc_update(&bcsp->message_crc, 0xdb);
@@ -605,6 +605,7 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 			if (*ptr == 0xc0) {
 				BT_ERR("Short BCSP packet");
 				kfree_skb(bcsp->rx_skb);
+				bcsp->rx_skb = NULL;
 				bcsp->rx_state = BCSP_W4_PKT_START;
 				bcsp->rx_count = 0;
 			} else
@@ -620,6 +621,7 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 			    bcsp->rx_skb->data[2])) != bcsp->rx_skb->data[3]) {
 				BT_ERR("Error in BCSP hdr checksum");
 				kfree_skb(bcsp->rx_skb);
+				bcsp->rx_skb = NULL;
 				bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
 				bcsp->rx_count = 0;
 				continue;
@@ -644,6 +646,7 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 				       bscp_get_crc(bcsp));
 
 				kfree_skb(bcsp->rx_skb);
+				bcsp->rx_skb = NULL;
 				bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
 				bcsp->rx_count = 0;
 				continue;
@@ -733,9 +736,7 @@ static int bcsp_open(struct hci_uart *hu)
 	skb_queue_head_init(&bcsp->rel);
 	skb_queue_head_init(&bcsp->unrel);
 
-	init_timer(&bcsp->tbcsp);
-	bcsp->tbcsp.function = bcsp_timed_event;
-	bcsp->tbcsp.data     = (u_long)hu;
+	setup_timer(&bcsp->tbcsp, bcsp_timed_event, (u_long)hu);
 
 	bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
 
@@ -758,6 +759,11 @@ static int bcsp_close(struct hci_uart *hu)
 	skb_queue_purge(&bcsp->unack);
 	skb_queue_purge(&bcsp->rel);
 	skb_queue_purge(&bcsp->unrel);
+
+	if (bcsp->rx_skb) {
+		kfree_skb(bcsp->rx_skb);
+		bcsp->rx_skb = NULL;
+	}
 
 	kfree(bcsp);
 	return 0;

@@ -272,6 +272,22 @@ Description:	Parameters for the CPU cache attributes
 				     the modified cache line is written to main
 				     memory only when it is replaced
 
+
+What:		/sys/devices/system/cpu/cpu*/cache/index*/id
+Date:		September 2016
+Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
+Description:	Cache id
+
+		The id provides a unique number for a specific instance of
+		a cache of a particular type. E.g. there may be a level
+		3 unified cache on each socket in a server and we may
+		assign them ids 0, 1, 2, ...
+
+		Note that id value can be non-contiguous. E.g. level 1
+		caches typically exist per core, but there may not be a
+		power of two cores on a socket, so these caches may be
+		numbered 0, 1, 2, 3, 4, 5, 8, 9, 10, ...
+
 What:		/sys/devices/system/cpu/cpuX/cpufreq/throttle_stats
 		/sys/devices/system/cpu/cpuX/cpufreq/throttle_stats/turbo_stat
 		/sys/devices/system/cpu/cpuX/cpufreq/throttle_stats/sub_turbo_stat
@@ -351,12 +367,23 @@ Description:	AArch64 CPU registers
 		'identification' directory exposes the CPU ID registers for
 		 identifying model and revision of the CPU.
 
+What:		/sys/devices/system/cpu/cpu#/cpu_capacity
+Date:		December 2016
+Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
+Description:	information about CPUs heterogeneity.
+
+		cpu_capacity: capacity of cpu#.
+
 What:		/sys/devices/system/cpu/vulnerabilities
 		/sys/devices/system/cpu/vulnerabilities/meltdown
 		/sys/devices/system/cpu/vulnerabilities/spectre_v1
 		/sys/devices/system/cpu/vulnerabilities/spectre_v2
 		/sys/devices/system/cpu/vulnerabilities/spec_store_bypass
 		/sys/devices/system/cpu/vulnerabilities/l1tf
+		/sys/devices/system/cpu/vulnerabilities/mds
+		/sys/devices/system/cpu/vulnerabilities/srbds
+		/sys/devices/system/cpu/vulnerabilities/tsx_async_abort
+		/sys/devices/system/cpu/vulnerabilities/itlb_multihit
 Date:		January 2018
 Contact:	Linux kernel mailing list <linux-kernel@vger.kernel.org>
 Description:	Information about CPU vulnerabilities
@@ -369,8 +396,7 @@ Description:	Information about CPU vulnerabilities
 		"Vulnerable"	  CPU is affected and no mitigation in effect
 		"Mitigation: $M"  CPU is affected and mitigation $M is in effect
 
-		Details about the l1tf file can be found in
-		Documentation/admin-guide/l1tf.rst
+		See also: Documentation/admin-guide/hw-vuln/index.rst
 
 What:		/sys/devices/system/cpu/smt
 		/sys/devices/system/cpu/smt/active

@@ -151,7 +151,9 @@
 		compatible = "maxim,max8997-pmic";
 		reg = <0x66>;
 		interrupt-parent = <&gpx0>;
-		interrupts = <4 0>, <3 0>;
+		interrupts = <4 IRQ_TYPE_NONE>, <3 IRQ_TYPE_NONE>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&max8997_irq>;
 
 		max8997,pmic-buck1-dvs-voltage = <1350000>;
 		max8997,pmic-buck2-dvs-voltage = <1100000>;
@@ -289,6 +291,13 @@
 	};
 };
 
+&pinctrl_1 {
+	max8997_irq: max8997-irq {
+		samsung,pins = "gpx0-3", "gpx0-4";
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
 &sdhci_0 {
 	bus-width = <4>;
 	pinctrl-0 = <&sd0_clk &sd0_cmd &sd0_bus4 &sd0_cd>;
@@ -326,9 +335,5 @@
 };
 
 &tmu {
-	status = "okay";
-};
-
-&watchdog {
 	status = "okay";
 };

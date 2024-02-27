@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Definitions and wrapper functions for kernel decompressor
  *
@@ -6,7 +7,7 @@
  * Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/page.h>
 #include <asm/sclp.h>
 #include <asm/ipl.h>
@@ -66,7 +67,7 @@ static unsigned long free_mem_end_ptr;
 
 static int puts(const char *s)
 {
-	_sclp_print_early(s);
+	sclp_early_printk(s);
 	return 0;
 }
 

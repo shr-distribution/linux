@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the USB Mass Storage device drivers.
 #
@@ -6,6 +7,7 @@
 #
 
 ccflags-y := -Idrivers/scsi
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/usb_boost
 
 obj-$(CONFIG_USB_UAS)		+= uas.o
 obj-$(CONFIG_USB_STORAGE)	+= usb-storage.o

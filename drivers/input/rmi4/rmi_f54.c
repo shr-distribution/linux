@@ -31,9 +31,6 @@
 #define F54_GET_REPORT          1
 #define F54_FORCE_CAL           2
 
-/* Fixed sizes of reports */
-#define F54_QUERY_LEN			27
-
 /* F54 capabilities */
 #define F54_CAP_BASELINE	(1 << 2)
 #define F54_CAP_IMAGE8		(1 << 3)
@@ -95,7 +92,6 @@ struct rmi_f54_reports {
 struct f54_data {
 	struct rmi_function *fn;
 
-	u8 qry[F54_QUERY_LEN];
 	u8 num_rx_electrodes;
 	u8 num_tx_electrodes;
 	u8 capabilities;
@@ -217,8 +213,10 @@ unlock:
 
 static size_t rmi_f54_get_report_size(struct f54_data *f54)
 {
-	u8 rx = f54->num_rx_electrodes ? : f54->num_rx_electrodes;
-	u8 tx = f54->num_tx_electrodes ? : f54->num_tx_electrodes;
+	struct rmi_device *rmi_dev = f54->fn->rmi_dev;
+	struct rmi_driver_data *drv_data = dev_get_drvdata(&rmi_dev->dev);
+	u8 rx = drv_data->num_rx_electrodes ? : f54->num_rx_electrodes;
+	u8 tx = drv_data->num_tx_electrodes ? : f54->num_tx_electrodes;
 	size_t size;
 
 	switch (rmi_f54_get_reptype(f54, f54->input)) {
@@ -364,7 +362,7 @@ static const struct vb2_ops rmi_f54_queue_ops = {
 static const struct vb2_queue rmi_f54_queue = {
 	.type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
 	.io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF | VB2_READ,
-	.buf_struct_size = sizeof(struct vb2_buffer),
+	.buf_struct_size = sizeof(struct vb2_v4l2_buffer),
 	.ops = &rmi_f54_queue_ops,
 	.mem_ops = &vb2_vmalloc_memops,
 	.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC,
@@ -402,6 +400,10 @@ static int rmi_f54_vidioc_enum_input(struct file *file, void *priv,
 
 static int rmi_f54_set_input(struct f54_data *f54, unsigned int i)
 {
+	struct rmi_device *rmi_dev = f54->fn->rmi_dev;
+	struct rmi_driver_data *drv_data = dev_get_drvdata(&rmi_dev->dev);
+	u8 rx = drv_data->num_rx_electrodes ? : f54->num_rx_electrodes;
+	u8 tx = drv_data->num_tx_electrodes ? : f54->num_tx_electrodes;
 	struct v4l2_pix_format *f = &f54->format;
 	enum rmi_f54_report_type reptype;
 	int ret;
@@ -416,8 +418,8 @@ static int rmi_f54_set_input(struct f54_data *f54, unsigned int i)
 
 	f54->input = i;
 
-	f->width = f54->num_rx_electrodes;
-	f->height = f54->num_tx_electrodes;
+	f->width = rx;
+	f->height = tx;
 	f->field = V4L2_FIELD_NONE;
 	f->colorspace = V4L2_COLORSPACE_RAW;
 	f->bytesperline = f->width * sizeof(u16);
@@ -617,7 +619,7 @@ static int rmi_f54_config(struct rmi_function *fn)
 {
 	struct rmi_driver *drv = fn->rmi_dev->driver;
 
-	drv->set_irq_bits(fn->rmi_dev, fn->irq_mask);
+	drv->clear_irq_bits(fn->rmi_dev, fn->irq_mask);
 
 	return 0;
 }
@@ -626,22 +628,23 @@ static int rmi_f54_detect(struct rmi_function *fn)
 {
 	int error;
 	struct f54_data *f54;
+	u8 buf[6];
 
 	f54 = dev_get_drvdata(&fn->dev);
 
 	error = rmi_read_block(fn->rmi_dev, fn->fd.query_base_addr,
-			       &f54->qry, sizeof(f54->qry));
+			       buf, sizeof(buf));
 	if (error) {
 		dev_err(&fn->dev, "%s: Failed to query F54 properties\n",
 			__func__);
 		return error;
 	}
 
-	f54->num_rx_electrodes = f54->qry[0];
-	f54->num_tx_electrodes = f54->qry[1];
-	f54->capabilities = f54->qry[2];
-	f54->clock_rate = f54->qry[3] | (f54->qry[4] << 8);
-	f54->family = f54->qry[5];
+	f54->num_rx_electrodes = buf[0];
+	f54->num_tx_electrodes = buf[1];
+	f54->capabilities = buf[2];
+	f54->clock_rate = buf[3] | (buf[4] << 8);
+	f54->family = buf[5];
 
 	rmi_dbg(RMI_DEBUG_FN, &fn->dev, "F54 num_rx_electrodes: %d\n",
 		f54->num_rx_electrodes);
@@ -744,6 +747,7 @@ static void rmi_f54_remove(struct rmi_function *fn)
 
 	video_unregister_device(&f54->vdev);
 	v4l2_device_unregister(&f54->v4l2);
+	destroy_workqueue(f54->workqueue);
 }
 
 struct rmi_function_handler rmi_f54_handler = {

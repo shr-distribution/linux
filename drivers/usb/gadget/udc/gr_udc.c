@@ -1539,7 +1539,7 @@ static int gr_ep_enable(struct usb_ep *_ep,
 	 * additional transactions.
 	 */
 	max = 0x7ff & usb_endpoint_maxp(desc);
-	nt = 0x3 & (usb_endpoint_maxp(desc) >> 11);
+	nt = usb_endpoint_maxp_mult(desc) - 1;
 	buffer_size = GR_BUFFER_SIZE(epctrl);
 	if (nt && (mode == 0 || mode == 2)) {
 		dev_err(dev->dev,
@@ -1841,7 +1841,7 @@ static void gr_fifo_flush(struct usb_ep *_ep)
 	spin_unlock(&ep->dev->lock);
 }
 
-static struct usb_ep_ops gr_ep_ops = {
+static const struct usb_ep_ops gr_ep_ops = {
 	.enable		= gr_ep_enable,
 	.disable	= gr_ep_disable,
 
@@ -2200,8 +2200,6 @@ static int gr_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	spin_lock(&dev->lock);
-
 	/* Inside lock so that no gadget can use this udc until probe is done */
 	retval = usb_add_gadget_udc(dev->dev, &dev->gadget);
 	if (retval) {
@@ -2210,14 +2208,20 @@ static int gr_probe(struct platform_device *pdev)
 	}
 	dev->added = 1;
 
-	retval = gr_udc_init(dev);
-	if (retval)
-		goto out;
+	spin_lock(&dev->lock);
 
-	gr_dfs_create(dev);
+	retval = gr_udc_init(dev);
+	if (retval) {
+		spin_unlock(&dev->lock);
+		goto out;
+	}
 
 	/* Clear all interrupt enables that might be left on since last boot */
 	gr_disable_interrupts_and_pullup(dev);
+
+	spin_unlock(&dev->lock);
+
+	gr_dfs_create(dev);
 
 	retval = gr_request_irq(dev, dev->irq);
 	if (retval) {
@@ -2247,8 +2251,6 @@ static int gr_probe(struct platform_device *pdev)
 		dev_info(dev->dev, "regs: %p, irq %d\n", dev->regs, dev->irq);
 
 out:
-	spin_unlock(&dev->lock);
-
 	if (retval)
 		gr_remove(pdev);
 

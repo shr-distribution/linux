@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_PGTABLE_BE_TYPES_H
 #define _ASM_POWERPC_PGTABLE_BE_TYPES_H
 
@@ -103,6 +104,14 @@ static inline bool pmd_xchg(pmd_t *pmdp, pmd_t old, pmd_t new)
 					     (__force unsigned long)pmd_raw(new));
 
 	return pmd_raw(old) == prev;
+}
+
+typedef struct { __be64 pdbe; } hugepd_t;
+#define __hugepd(x) ((hugepd_t) { cpu_to_be64(x) })
+
+static inline unsigned long hpd_val(hugepd_t x)
+{
+	return be64_to_cpu(x.pdbe);
 }
 
 #endif /* _ASM_POWERPC_PGTABLE_BE_TYPES_H */

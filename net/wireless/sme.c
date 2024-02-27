@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * SME code for cfg80211
  * both driver SME event handling and the SME implementation
@@ -49,29 +50,6 @@ struct cfg80211_conn {
 	size_t ie_len;
 	bool auto_auth, prev_bssid_valid;
 };
-
-static bool cfg80211_is_all_countryie_ignore(void)
-{
-	struct cfg80211_registered_device *rdev;
-	struct wireless_dev *wdev;
-	bool is_all_countryie_ignore = true;
-
-	list_for_each_entry(rdev, &cfg80211_rdev_list, list) {
-		list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
-			wdev_lock(wdev);
-			if (!(wdev->wiphy->regulatory_flags &
-				REGULATORY_COUNTRY_IE_IGNORE)) {
-				is_all_countryie_ignore = false;
-				wdev_unlock(wdev);
-				goto out;
-			}
-			wdev_unlock(wdev);
-		}
-	}
-
-out:
-	return is_all_countryie_ignore;
-}
 
 static void cfg80211_sme_free(struct wireless_dev *wdev)
 {
@@ -664,11 +642,15 @@ static bool cfg80211_is_all_idle(void)
 	 * All devices must be idle as otherwise if you are actively
 	 * scanning some new beacon hints could be learned and would
 	 * count as new regulatory hints.
+	 * Also if there is any other active beaconing interface we
+	 * need not issue a disconnect hint and reset any info such
+	 * as chan dfs state, etc.
 	 */
 	list_for_each_entry(rdev, &cfg80211_rdev_list, list) {
 		list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
 			wdev_lock(wdev);
-			if (wdev->conn || wdev->current_bss)
+			if (wdev->conn || wdev->current_bss ||
+			    cfg80211_beaconing_iface_active(wdev))
 				is_all_idle = false;
 			wdev_unlock(wdev);
 		}
@@ -680,13 +662,12 @@ static bool cfg80211_is_all_idle(void)
 static void disconnect_work(struct work_struct *work)
 {
 	rtnl_lock();
-	if (cfg80211_is_all_idle() &&
-	    !cfg80211_is_all_countryie_ignore())
+	if (cfg80211_is_all_idle())
 		regulatory_hint_disconnect();
 	rtnl_unlock();
 }
 
-static DECLARE_WORK(cfg80211_disconnect_work, disconnect_work);
+DECLARE_WORK(cfg80211_disconnect_work, disconnect_work);
 
 
 /*
@@ -1192,7 +1173,7 @@ int cfg80211_disconnect(struct cfg80211_registered_device *rdev,
 		err = cfg80211_sme_disconnect(wdev, reason);
 	else if (!rdev->ops->disconnect)
 		cfg80211_mlme_down(rdev, dev);
-	else if (wdev->current_bss)
+	else if (wdev->ssid_len)
 		err = rdev_disconnect(rdev, dev, reason);
 
 	/*

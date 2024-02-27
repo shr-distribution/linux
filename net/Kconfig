@@ -55,8 +55,10 @@ menu "Networking options"
 
 source "net/packet/Kconfig"
 source "net/unix/Kconfig"
+source "net/tls/Kconfig"
 source "net/xfrm/Kconfig"
 source "net/iucv/Kconfig"
+source "net/smc/Kconfig"
 
 config INET
 	bool "TCP/IP networking"
@@ -88,12 +90,6 @@ source "net/ipv6/Kconfig"
 source "net/netlabel/Kconfig"
 
 endif # if INET
-
-config ANDROID_PARANOID_NETWORK
-	bool "Only allow certain groups to create sockets"
-	default y
-	help
-		none
 
 config NETWORK_SECMARK
 	bool "Security Marking"
@@ -170,13 +166,6 @@ menuconfig NETFILTER
 
 if NETFILTER
 
-config NETFILTER_DEBUG
-	bool "Network packet filtering debugging"
-	depends on NETFILTER
-	help
-	  You can say Y here if you want to get additional messages useful in
-	  debugging the netfilter code.
-
 config NETFILTER_ADVANCED
 	bool "Advanced netfilter configuration"
 	depends on NETFILTER
@@ -239,12 +228,12 @@ source "net/openvswitch/Kconfig"
 source "net/vmw_vsock/Kconfig"
 source "net/netlink/Kconfig"
 source "net/mpls/Kconfig"
+source "net/nsh/Kconfig"
 source "net/hsr/Kconfig"
 source "net/switchdev/Kconfig"
 source "net/l3mdev/Kconfig"
 source "net/qrtr/Kconfig"
 source "net/ncsi/Kconfig"
-source "net/rmnet_data/Kconfig"
 
 config RPS
 	bool
@@ -295,7 +284,6 @@ config BPF_JIT
 	bool "enable BPF Just In Time compiler"
 	depends on HAVE_CBPF_JIT || HAVE_EBPF_JIT
 	depends on MODULES
-	depends on !CFI
 	---help---
 	  Berkeley Packet Filter filtering capabilities are normally handled
 	  by an interpreter. This option allows kernel to generate a native
@@ -304,7 +292,20 @@ config BPF_JIT
 
 	  Note, admin should enable this feature changing:
 	  /proc/sys/net/core/bpf_jit_enable
-	  /proc/sys/net/core/bpf_jit_harden (optional)
+	  /proc/sys/net/core/bpf_jit_harden   (optional)
+	  /proc/sys/net/core/bpf_jit_kallsyms (optional)
+
+config BPF_STREAM_PARSER
+	bool "enable BPF STREAM_PARSER"
+	depends on BPF_SYSCALL
+	select STREAM_PARSER
+	---help---
+	 Enabling this allows a stream parser to be used with
+	 BPF_MAP_TYPE_SOCKMAP.
+
+	 BPF_MAP_TYPE_SOCKMAP provides a map type to use with network sockets.
+	 It can be used to enforce socket policy, implement socket redirects,
+	 etc.
 
 config NET_FLOW_LIMIT
 	bool
@@ -317,15 +318,6 @@ config NET_FLOW_LIMIT
 	  maintain capacity for the other flows. This feature provides servers
 	  with many clients some protection against DoS by a single (spoofed)
 	  flow that greatly exceeds average workload.
-
-config SOCKEV_NLMCAST
-	bool "Enable SOCKEV Netlink Multicast"
-	default n
-	---help---
-	  Default client for SOCKEV notifier events. Sends multicast netlink
-	  messages whenever the socket event notifier is invoked. Enable if
-	  user space entities need to be notified of socket events without
-	  having to poll /proc
 
 menu "Network testing"
 
@@ -378,7 +370,6 @@ endmenu
 
 source "net/ax25/Kconfig"
 source "net/can/Kconfig"
-source "net/irda/Kconfig"
 source "net/bluetooth/Kconfig"
 source "net/rxrpc/Kconfig"
 source "net/kcm/Kconfig"
@@ -406,6 +397,8 @@ source "net/9p/Kconfig"
 source "net/caif/Kconfig"
 source "net/ceph/Kconfig"
 source "net/nfc/Kconfig"
+source "net/psample/Kconfig"
+source "net/ife/Kconfig"
 
 config LWTUNNEL
 	bool "Network light weight tunnels"
@@ -415,7 +408,19 @@ config LWTUNNEL
 	  weight tunnel endpoint. Tunnel encapsulation parameters are stored
 	  with light weight tunnel state associated with fib routes.
 
+config LWTUNNEL_BPF
+	bool "Execute BPF program as route nexthop action"
+	depends on LWTUNNEL
+	default y if LWTUNNEL=y
+	---help---
+	  Allows to run BPF programs as a nexthop action following a route
+	  lookup for incoming and outgoing packets.
+
 config DST_CACHE
+	bool
+	default n
+
+config GRO_CELLS
 	bool
 	default n
 
@@ -435,8 +440,6 @@ config MAY_USE_DEVLINK
 	  on MAY_USE_DEVLINK to ensure they do not cause link errors when
 	  devlink is a loadable module and the driver using it is built-in.
 
-source "net/ipc_router/Kconfig"
-
 endif   # if NET
 
 # Used by archs to tell that they support BPF JIT compiler plus which flavour.
@@ -450,3 +453,8 @@ config HAVE_CBPF_JIT
 # Extended BPF JIT (eBPF)
 config HAVE_EBPF_JIT
 	bool
+
+config MTK_NET_LOGGING
+	bool "Enable MTK Network debug log"
+	---help---
+	  This config helps to enable/disable Network debug log

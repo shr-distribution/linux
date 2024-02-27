@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 # Objects to go into the VDSO.
 obj-vdso-y := elf.o gettimeofday.o sigreturn.o
 
@@ -6,11 +7,15 @@ ccflags-vdso := \
 	$(filter -I%,$(KBUILD_CFLAGS)) \
 	$(filter -E%,$(KBUILD_CFLAGS)) \
 	$(filter -mmicromips,$(KBUILD_CFLAGS)) \
-	$(filter -march=%,$(KBUILD_CFLAGS))
+	$(filter -march=%,$(KBUILD_CFLAGS)) \
+	$(filter -m%-float,$(KBUILD_CFLAGS)) \
+	$(filter -mno-loongson-%,$(KBUILD_CFLAGS)) \
+	-D__VDSO__
 cflags-vdso := $(ccflags-vdso) \
 	$(filter -W%,$(filter-out -Wa$(comma)%,$(KBUILD_CFLAGS))) \
 	-O2 -g -fPIC -fno-strict-aliasing -fno-common -fno-builtin -G 0 \
 	-DDISABLE_BRANCH_PROFILING \
+	$(call cc-option, -fno-asynchronous-unwind-tables) \
 	$(call cc-option, -fno-stack-protector)
 aflags-vdso := $(ccflags-vdso) \
 	-D__ASSEMBLY__ -Wa,-gdwarf-2
@@ -49,6 +54,9 @@ GCOV_PROFILE := n
 quiet_cmd_vdsold = VDSO    $@
       cmd_vdsold = $(CC) $(c_flags) $(VDSO_LDFLAGS) \
                    -Wl,-T $(filter %.lds,$^) $(filter %.o,$^) -o $@
+
+quiet_cmd_vdsoas_o_S = AS       $@
+      cmd_vdsoas_o_S = $(CC) $(a_flags) -c -o $@ $<
 
 # Strip rule for the raw .so files
 $(obj)/%.so.raw: OBJCOPYFLAGS := -S
@@ -110,13 +118,13 @@ $(obj-vdso-o32): KBUILD_CFLAGS := $(cflags-vdso) -mabi=32
 $(obj-vdso-o32): KBUILD_AFLAGS := $(aflags-vdso) -mabi=32
 
 $(obj)/%-o32.o: $(src)/%.S FORCE
-	$(call if_changed_dep,as_o_S)
+	$(call if_changed_dep,vdsoas_o_S)
 
 $(obj)/%-o32.o: $(src)/%.c FORCE
 	$(call cmd,force_checksrc)
 	$(call if_changed_rule,cc_o_c)
 
-$(obj)/vdso-o32.lds: KBUILD_CPPFLAGS := -mabi=32
+$(obj)/vdso-o32.lds: KBUILD_CPPFLAGS := $(ccflags-vdso) -mabi=32
 $(obj)/vdso-o32.lds: $(src)/vdso.lds.S FORCE
 	$(call if_changed_dep,cpp_lds_S)
 
@@ -150,13 +158,13 @@ $(obj-vdso-n32): KBUILD_CFLAGS := $(cflags-vdso) -mabi=n32
 $(obj-vdso-n32): KBUILD_AFLAGS := $(aflags-vdso) -mabi=n32
 
 $(obj)/%-n32.o: $(src)/%.S FORCE
-	$(call if_changed_dep,as_o_S)
+	$(call if_changed_dep,vdsoas_o_S)
 
 $(obj)/%-n32.o: $(src)/%.c FORCE
 	$(call cmd,force_checksrc)
 	$(call if_changed_rule,cc_o_c)
 
-$(obj)/vdso-n32.lds: KBUILD_CPPFLAGS := -mabi=n32
+$(obj)/vdso-n32.lds: KBUILD_CPPFLAGS := $(ccflags-vdso) -mabi=n32
 $(obj)/vdso-n32.lds: $(src)/vdso.lds.S FORCE
 	$(call if_changed_dep,cpp_lds_S)
 

@@ -20,7 +20,6 @@
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/slab.h>
-#include <linux/regulator/consumer.h>
 
 struct gpio_led_data {
 	struct led_classdev cdev;
@@ -78,7 +77,7 @@ static int gpio_blink_set(struct led_classdev *led_cdev,
 
 static int create_gpio_led(const struct gpio_led *template,
 	struct gpio_led_data *led_dat, struct device *parent,
-	gpio_blink_set_t blink_set)
+	struct device_node *np, gpio_blink_set_t blink_set)
 {
 	int ret, state;
 
@@ -135,17 +134,18 @@ static int create_gpio_led(const struct gpio_led *template,
 		led_dat->cdev.flags |= LED_CORE_SUSPENDRESUME;
 	if (template->panic_indicator)
 		led_dat->cdev.flags |= LED_PANIC_INDICATOR;
+	if (template->retain_state_shutdown)
+		led_dat->cdev.flags |= LED_RETAIN_AT_SHUTDOWN;
 
 	ret = gpiod_direction_output(led_dat->gpiod, state);
 	if (ret < 0)
 		return ret;
 
-	return devm_led_classdev_register(parent, &led_dat->cdev);
+	return devm_of_led_classdev_register(parent, np, &led_dat->cdev);
 }
 
 struct gpio_leds_priv {
 	int num_leds;
-	struct regulator *vdd_ldo_1, *vdd_ldo_2;
 	struct gpio_led_data leds[];
 };
 
@@ -160,7 +160,8 @@ static struct gpio_leds_priv *gpio_leds_create(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct fwnode_handle *child;
 	struct gpio_leds_priv *priv;
-	int count, ret, error;
+	int count, ret;
+
 	count = device_get_child_node_count(dev);
 	if (!count)
 		return ERR_PTR(-ENODEV);
@@ -175,18 +176,20 @@ static struct gpio_leds_priv *gpio_leds_create(struct platform_device *pdev)
 		const char *state = NULL;
 		struct device_node *np = to_of_node(child);
 
-		led.gpiod = devm_get_gpiod_from_child(dev, NULL, child);
-		if (IS_ERR(led.gpiod)) {
-			fwnode_handle_put(child);
-			return ERR_CAST(led.gpiod);
-		}
-
 		ret = fwnode_property_read_string(child, "label", &led.name);
 		if (ret && IS_ENABLED(CONFIG_OF) && np)
 			led.name = np->name;
 		if (!led.name) {
 			fwnode_handle_put(child);
 			return ERR_PTR(-EINVAL);
+		}
+
+		led.gpiod = devm_fwnode_get_gpiod_from_child(dev, NULL, child,
+							     GPIOD_ASIS,
+							     led.name);
+		if (IS_ERR(led.gpiod)) {
+			fwnode_handle_put(child);
+			return ERR_CAST(led.gpiod);
 		}
 
 		fwnode_property_read_string(child, "linux,default-trigger",
@@ -204,10 +207,12 @@ static struct gpio_leds_priv *gpio_leds_create(struct platform_device *pdev)
 
 		if (fwnode_property_present(child, "retain-state-suspended"))
 			led.retain_state_suspended = 1;
+		if (fwnode_property_present(child, "retain-state-shutdown"))
+			led.retain_state_shutdown = 1;
 		if (fwnode_property_present(child, "panic-indicator"))
 			led.panic_indicator = 1;
 
-		ret = create_gpio_led(&led, led_dat, dev, NULL);
+		ret = create_gpio_led(&led, led_dat, dev, np, NULL);
 		if (ret < 0) {
 			fwnode_handle_put(child);
 			return ERR_PTR(ret);
@@ -215,28 +220,7 @@ static struct gpio_leds_priv *gpio_leds_create(struct platform_device *pdev)
 		led_dat->cdev.dev->of_node = np;
 		priv->num_leds++;
 	}
-	priv->vdd_ldo_1 = regulator_get(&pdev->dev, "vdd_ldo_1");
-	if (IS_ERR(priv->vdd_ldo_1)) {
-		error = PTR_ERR(priv->vdd_ldo_1);
-		pr_err("%s: regulator get failed vdd_ldo_1 rc=%d\n",
-			__func__, error);
-	}
-	ret = regulator_enable(priv->vdd_ldo_1);
-	if (ret) {
-		pr_err("%s: Regulator vdd_ldo_1 enable failed rc=%d\n",
-			__func__, ret);
-	}
-	priv->vdd_ldo_2 = regulator_get(&pdev->dev, "vdd_ldo_2");
-	if (IS_ERR(priv->vdd_ldo_2)) {
-		error = PTR_ERR(priv->vdd_ldo_2);
-		pr_err("%s: regulator get failed vdd_ldo_2 rc=%d\n",
-			__func__, error);
-	}
-	ret = regulator_enable(priv->vdd_ldo_2);
-	if (ret) {
-		pr_err("%s: Regulator vdd_ldo_2 enable failed rc=%d\n",
-			__func__, ret);
-	}
+
 	return priv;
 }
 
@@ -252,6 +236,7 @@ static int gpio_led_probe(struct platform_device *pdev)
 	struct gpio_led_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct gpio_leds_priv *priv;
 	int i, ret = 0;
+
 	if (pdata && pdata->num_leds) {
 		priv = devm_kzalloc(&pdev->dev,
 				sizeof_gpio_leds_priv(pdata->num_leds),
@@ -261,9 +246,9 @@ static int gpio_led_probe(struct platform_device *pdev)
 
 		priv->num_leds = pdata->num_leds;
 		for (i = 0; i < priv->num_leds; i++) {
-			ret = create_gpio_led(&pdata->leds[i],
-					      &priv->leds[i],
-					      &pdev->dev, pdata->gpio_blink_set);
+			ret = create_gpio_led(&pdata->leds[i], &priv->leds[i],
+					      &pdev->dev, NULL,
+					      pdata->gpio_blink_set);
 			if (ret < 0)
 				return ret;
 		}
@@ -286,52 +271,9 @@ static void gpio_led_shutdown(struct platform_device *pdev)
 	for (i = 0; i < priv->num_leds; i++) {
 		struct gpio_led_data *led = &priv->leds[i];
 
-		gpio_led_set(&led->cdev, LED_OFF);
+		if (!(led->cdev.flags & LED_RETAIN_AT_SHUTDOWN))
+			gpio_led_set(&led->cdev, LED_OFF);
 	}
-}
-
-static int gpio_led_suspend(struct platform_device *pdev, pm_message_t message)
-{
-	int ret;
-	struct gpio_leds_priv *priv = platform_get_drvdata(pdev);
-
-	if (priv->vdd_ldo_1) {
-		ret = regulator_disable(priv->vdd_ldo_1);
-		if (ret) {
-			pr_err("%s: Regulator vdd_ldo_1 disable failed rc=%d\n",
-				__func__, ret);
-			return ret;
-		}
-	}
-	if (priv->vdd_ldo_2) {
-		ret = regulator_disable(priv->vdd_ldo_2);
-		if (ret) {
-			pr_err("%s: Regulator vdd_ldo_2 disable failed rc=%d\n",
-				__func__, ret);
-			return ret;
-		}
-	}
-	return 0;
-}
-
-static int gpio_led_resume(struct platform_device *pdev)
-{
-	int ret;
-	struct gpio_leds_priv *priv = platform_get_drvdata(pdev);
-
-	ret = regulator_enable(priv->vdd_ldo_1);
-	if (ret) {
-		pr_err("%s: Regulator vdd_ldo_1 enable failed rc=%d\n",
-			__func__, ret);
-		return ret;
-	}
-	ret = regulator_enable(priv->vdd_ldo_2);
-	if (ret) {
-		pr_err("%s: Regulator vdd_ldo_2 enable failed rc=%d\n",
-			__func__, ret);
-		return ret;
-	}
-	return 0;
 }
 
 static struct platform_driver gpio_led_driver = {
@@ -341,8 +283,6 @@ static struct platform_driver gpio_led_driver = {
 		.name	= "leds-gpio",
 		.of_match_table = of_gpio_leds_match,
 	},
-	.suspend = gpio_led_suspend,
-	.resume = gpio_led_resume,
 };
 
 module_platform_driver(gpio_led_driver);

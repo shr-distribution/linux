@@ -45,7 +45,6 @@ static void vnt_cmd_timer_wait(struct vnt_private *priv, unsigned long msecs)
 
 static int vnt_cmd_complete(struct vnt_private *priv)
 {
-
 	priv->command_state = WLAN_CMD_IDLE;
 	if (priv->free_cmd_queue == CMD_Q_SIZE) {
 		/* Command Queue Empty */
@@ -110,6 +109,7 @@ void vnt_run_command(struct work_struct *work)
 		if (vnt_init(priv)) {
 			/* If fail all ends TODO retry */
 			dev_err(&priv->usb->dev, "failed to start\n");
+			usb_set_intfdata(priv->intf, NULL);
 			ieee80211_free_hw(priv->hw);
 			return;
 		}
@@ -139,7 +139,7 @@ void vnt_run_command(struct work_struct *work)
 
 	case WLAN_CMD_CHANGE_ANTENNA_START:
 		dev_dbg(&priv->usb->dev, "Change from Antenna%d to",
-							priv->rx_antenna_sel);
+			priv->rx_antenna_sel);
 
 		if (priv->rx_antenna_sel == 0) {
 			priv->rx_antenna_sel = 1;
@@ -165,7 +165,6 @@ void vnt_run_command(struct work_struct *work)
 
 int vnt_schedule_command(struct vnt_private *priv, enum vnt_cmd command)
 {
-
 	if (priv->free_cmd_queue == 0)
 		return false;
 
@@ -178,7 +177,6 @@ int vnt_schedule_command(struct vnt_private *priv, enum vnt_cmd command)
 		vnt_cmd_complete(priv);
 
 	return true;
-
 }
 
 void vnt_reset_command_timer(struct vnt_private *priv)

@@ -2,7 +2,6 @@
  * Universal Flash Storage Host Performance Booster
  *
  * Copyright (C) 2017-2018 Samsung Electronics Co., Ltd.
- * Copyright (C) 2018, Google, Inc.
  *
  * Authors:
  *	Yongmyung Lee <ymhungry.lee@samsung.com>
@@ -39,107 +38,78 @@
 #ifndef _UFSHPB_H_
 #define _UFSHPB_H_
 
-#include <linux/spinlock.h>
-#include <linux/circ_buf.h>
-#include <linux/workqueue.h>
+#include <linux/interrupt.h>
+#include <linux/sysfs.h>
+#include <linux/blktrace_api.h>
+#include <linux/blkdev.h>
+#include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_driver.h>
+
+#include "../../../block/blk.h"
+#include "../scsi_priv.h"
 
 /* Version info*/
-#define UFSHPB_VER				0x0103
-#define UFSHPB_DD_VER				0x0135
+#define UFSHPB_VER				0x0200
+#define UFSHPB_DD_VER				0x0208
 
 /* Constant value*/
-#define SECTOR					512
-#define BLOCK					4096
-#define SECTORS_PER_BLOCK			(BLOCK / SECTOR)
-#define BITS_PER_DWORD				32
-#define MAX_MAP_REQ				16
 #define MAX_ACTIVE_NUM				2
 #define MAX_INACTIVE_NUM			2
 
 #define HPB_ENTRY_SIZE				0x08
-#define OS_PAGE_SIZE				4096
 #define HPB_ENTREIS_PER_OS_PAGE			(OS_PAGE_SIZE / HPB_ENTRY_SIZE)
-#define IOCTL_DEV_CTX_MAX_SIZE			OS_PAGE_SIZE
-#define OS_PAGE_SHIFT				12
+
+#define RETRY_DELAY_MS				5000
+
+/* HPB Support Chunk Size */
+#define HPB_MULTI_CHUNK_LOW			9
+#define HPB_MULTI_CHUNK_HIGH			128
+#define MAX_HPB_CONTEXT_ID			0x7f
 
 /* Description */
-#define UFS_FEATURE_SUPPORT_HPB_BIT			0x80
-#define UFSHPB_QUERY_DESC_DEVICE_MAX_SIZE		0x48
-#define UFSHPB_QUERY_DESC_CONFIGURAION_MAX_SIZE		0xD0
-#define UFSHPB_QUERY_DESC_UNIT_MAX_SIZE			0x2C
-#define UFSHPB_QUERY_DESC_GEOMETRY_MAX_SIZE		0x50
-
-/* Configuration for HPB */
-#define UFSHPB_CONF_LU_ENABLE			0x00
-#define UFSHPB_CONF_ACTIVE_REGIONS		0x10
-#define UFSHPB_CONF_PINNED_START		0x12
-#define UFSHPB_CONF_PINNED_NUM			0x14
-
-/* Parameter Macros */
-#define HPB_DEV(h)	((h)->hba->dev)
-#define MAX_BVEC_SIZE	128
-
-/* Use for HPB activate */
-#define UFSHPB_CONFIG_LEN	0xd0
-
-enum ufshpb_lu_set {
-	LU_DISABLE	= 0x00,
-	LU_ENABLE	= 0x01,
-	LU_HPB_ENABLE	= 0x02,
-	LU_SET_MAX,
-};
-
-struct ufshpb_config_desc {
-	unsigned char conf_dev_desc[16];
-	unsigned char unit[UFS_UPIU_MAX_GENERAL_LUN][24];
-};
+#define UFS_FEATURE_SUPPORT_HPB_BIT		0x80
 
 /* Response UPIU types */
-#define HPB_RSP_NONE					0x00
-#define HPB_RSP_REQ_REGION_UPDATE			0x01
-#define PER_ACTIVE_INFO_BYTES				4
-#define PER_INACTIVE_INFO_BYTES				2
+#define HPB_RSP_NONE				0x00
+#define HPB_RSP_REQ_REGION_UPDATE		0x01
 
 /* Vender defined OPCODE */
-#define UFSHPB_READ_BUFFER				0xF9
+#define UFSHPB_READ_BUFFER			0xF9
+#define UFSHPB_WRITE_BUFFER			0xFA
 
-#define DEV_DATA_SEG_LEN				0x14
-#define DEV_SENSE_SEG_LEN				0x12
-#define DEV_DES_TYPE					0x80
-#define DEV_ADDITIONAL_LEN				0x11
+#define UFSHPB_GROUP_NUMBER			0x11
+#define UFSHPB_READ_BUFFER_ID			0x01
+#define UFSHPB_WRITE_BUFFER_ID			0x02
+#define TRANSFER_LEN				0x01
 
-/* BYTE SHIFT */
-#define ZERO_BYTE_SHIFT					0
-#define ONE_BYTE_SHIFT					8
-#define TWO_BYTE_SHIFT					16
-#define THREE_BYTE_SHIFT				24
-#define FOUR_BYTE_SHIFT					32
-#define FIVE_BYTE_SHIFT					40
-#define SIX_BYTE_SHIFT					48
-#define SEVEN_BYTE_SHIFT				56
+#define DEV_DATA_SEG_LEN			0x14
+#define DEV_SENSE_SEG_LEN			0x12
+#define DEV_DES_TYPE				0x80
+#define DEV_ADDITIONAL_LEN			0x10
 
-#define SHIFT_BYTE_0(num)		((num) << ZERO_BYTE_SHIFT)
-#define SHIFT_BYTE_1(num)		((num) << ONE_BYTE_SHIFT)
-#define SHIFT_BYTE_2(num)		((num) << TWO_BYTE_SHIFT)
-#define SHIFT_BYTE_3(num)		((num) << THREE_BYTE_SHIFT)
-#define SHIFT_BYTE_4(num)		((num) << FOUR_BYTE_SHIFT)
-#define SHIFT_BYTE_5(num)		((num) << FIVE_BYTE_SHIFT)
-#define SHIFT_BYTE_6(num)		((num) << SIX_BYTE_SHIFT)
-#define SHIFT_BYTE_7(num)		((num) << SEVEN_BYTE_SHIFT)
+/* For read10 debug */
+#define READ10_DEBUG_LUN			0x7F
+#define READ10_DEBUG_LBA			0x48504230
 
-#define GET_BYTE_0(num)			(((num) >> ZERO_BYTE_SHIFT) & 0xff)
-#define GET_BYTE_1(num)			(((num) >> ONE_BYTE_SHIFT) & 0xff)
-#define GET_BYTE_2(num)			(((num) >> TWO_BYTE_SHIFT) & 0xff)
-#define GET_BYTE_3(num)			(((num) >> THREE_BYTE_SHIFT) & 0xff)
-#define GET_BYTE_4(num)			(((num) >> FOUR_BYTE_SHIFT) & 0xff)
-#define GET_BYTE_5(num)			(((num) >> FIVE_BYTE_SHIFT) & 0xff)
-#define GET_BYTE_6(num)			(((num) >> SIX_BYTE_SHIFT) & 0xff)
-#define GET_BYTE_7(num)			(((num) >> SEVEN_BYTE_SHIFT) & 0xff)
+/*
+ * UFSHPB DEBUG
+ */
 
-#define BE_BYTE(p, i)							\
-		((u16) SHIFT_BYTE_1(*((u8 *)(p) + (i))) |		\
-		(u16) SHIFT_BYTE_0(*((u8 *)(p) + (i + 1))))
-#define REGION_UNIT_SIZE(bit_offset)		(0x01 << (bit_offset))
+#define HPB_DEBUG(hpb, msg, args...)			\
+	do { if (hpb->debug)				\
+		printk(KERN_ERR "%s:%d " msg "\n",	\
+		       __func__, __LINE__, ##args);	\
+	} while (0)
+
+#define TMSG_CMD(hpb, msg, rq, rgn, srgn)				\
+	do { if (hpb->ufsf->sdev_ufs_lu[hpb->lun] &&			\
+		 hpb->ufsf->sdev_ufs_lu[hpb->lun]->request_queue)	\
+			blk_add_trace_msg(				\
+			hpb->ufsf->sdev_ufs_lu[hpb->lun]->request_queue,\
+			"%llu + %u " msg " %d - %d",			\
+			(unsigned long long) blk_rq_pos(rq),		\
+			(unsigned int) blk_rq_sectors(rq), rgn, srgn);	\
+	} while (0)
 
 enum UFSHPB_STATE {
 	HPB_PRESENT = 1,
@@ -150,9 +120,7 @@ enum UFSHPB_STATE {
 };
 
 enum HPBREGION_STATE {
-	HPBREGION_INACTIVE,
-	HPBREGION_ACTIVE,
-	HPBREGION_PINNED,
+	HPBREGION_INACTIVE, HPBREGION_ACTIVE, HPBREGION_PINNED,
 };
 
 enum HPBSUBREGION_STATE {
@@ -162,86 +130,30 @@ enum HPBSUBREGION_STATE {
 	HPBSUBREGION_ISSUED,
 };
 
-struct ufshpb_func_desc {
-	/*** Device Descriptor ***/
-	/* 06h bNumberLU */
-	int lu_cnt;
-	/* 40h HPB Version */
-	u16 hpb_ver;
-
-	/*** Geometry Descriptor ***/
-	/* 48h bHPBRegionSize (UNIT: 512KB) */
-	u8 hpb_region_size;
-	/* 49h bHPBNumberLU */
-	u8 hpb_number_lu;
-	/* 4Ah bHPBSubRegionSize */
-	u8 hpb_subregion_size;
-	/* 4B:4Ch wDeviceMaxActiveHPBRegions */
-	u16 hpb_device_max_active_regions;
+struct ufshpb_dev_info {
+	bool hpb_device;
+	int hpb_number_lu;
+	int hpb_ver;
+	int hpb_rgn_size;
+	int hpb_srgn_size;
+	int hpb_device_max_active_rgns;
 };
 
-struct ufshpb_lu_desc {
-	/*** Unit Descriptor ****/
-	/* 03h bLUEnable */
-	int lu_enable;
-	/* 06h lu queue depth info*/
-	int lu_queue_depth;
-	/* 0Ah bLogicalBlockSize. default 0x0C = 4KB */
-	int lu_logblk_size;
-	/* 0Bh qLogicalBlockCount. same as the read_capacity ret val. */
-	u64 lu_logblk_cnt;
-
-	/* 23h:24h wLUMaxActiveHPBRegions */
-	u16 lu_max_active_hpb_regions;
-	/* 25h:26h wHPBPinnedRegionStartIdx */
-	u16 hpb_pinned_region_startidx;
-	/* 27h:28h wNumHPBPinnedRegions */
-	u16 lu_num_hpb_pinned_regions;
-
-
-	/* if 03h value is 02h, hpb_enable is set. */
-	bool lu_hpb_enable;
-
-	int lu_hpb_pinned_end_offset;
-};
-
-struct ufshpb_rsp_active_list {
-	u16 region[MAX_ACTIVE_NUM];
-	u16 subregion[MAX_ACTIVE_NUM];
-};
-
-struct ufshpb_rsp_inactive_list {
-	u16 region[MAX_INACTIVE_NUM];
-};
-
-struct ufshpb_rsp_update_entry {
-	unsigned int lpn;
-	unsigned long long ppn;
-};
-
-struct ufshpb_rsp_info {
-	int type;
-	int active_cnt;
-	int inactive_cnt;
-	struct ufshpb_rsp_active_list active_list;
-	struct ufshpb_rsp_inactive_list inactive_list;
-
-	__u64 RSP_start;
-	__u64 RSP_tasklet_enter;
-
-	struct list_head list_rsp_info;
+struct ufshpb_active_field {
+	__be16 active_rgn;
+	__be16 active_srgn;
 };
 
 struct ufshpb_rsp_field {
-	u8 sense_data_len[2];
+	__be16 sense_data_len;
 	u8 desc_type;
 	u8 additional_len;
 	u8 hpb_type;
 	u8 reserved;
-	u8 active_region_cnt;
-	u8 inactive_region_cnt;
-	u8 hpb_active_field[8];
-	u8 hpb_inactive_field[4];
+	u8 active_rgn_cnt;
+	u8 inactive_rgn_cnt;
+	struct ufshpb_active_field hpb_active_field[2];
+	__be16 hpb_inactive_field[2];
 };
 
 struct ufshpb_map_ctx {
@@ -253,135 +165,135 @@ struct ufshpb_map_ctx {
 
 struct ufshpb_subregion {
 	struct ufshpb_map_ctx *mctx;
-	enum HPBSUBREGION_STATE subregion_state;
-	int region;
-	int subregion;
+	enum HPBSUBREGION_STATE srgn_state;
+	int rgn_idx;
+	int srgn_idx;
 
-	struct list_head list_subregion;
+	/* below information is used by rsp_list */
+	struct list_head list_act_srgn;
 };
 
 struct ufshpb_region {
-	struct ufshpb_subregion *subregion_tbl;
-	enum HPBREGION_STATE region_state;
-	int region;
-	int subregion_count;
+	struct ufshpb_subregion *srgn_tbl;
+	enum HPBREGION_STATE rgn_state;
+	int rgn_idx;
+	int srgn_cnt;
 
-	/*below information is used by lru*/
-	struct list_head list_region;
-	int hit_count;
+	/* below information is used by rsp_list */
+	struct list_head list_inact_rgn;
+
+	/* below information is used by lru */
+	struct list_head list_lru_rgn;
 };
 
-struct ufshpb_map_req {
+struct ufshpb_req {
+	struct request *req;
+	struct bio *bio;
 	struct ufshpb_lu *hpb;
-	struct ufshpb_map_ctx *mctx;
-	struct request req;
-	struct bio bio;
-	struct bio_vec bvec[MAX_BVEC_SIZE];
+	struct list_head list_req;
 	void (*end_io)(struct request *rq, int err);
 	void *end_io_data;
-	int region;
-	int subregion;
-	int lun;
-	int retry_cnt;
-
-	/* for debug : RSP Profiling */
-	__u64 RSP_start; // get the request from device
-	__u64 RSP_tasklet_enter1; // tesklet sched time
-	__u64 RSP_issue; // issue scsi cmd
-	__u64 RSP_endio;
-	__u64 RSP_tasklet_enter2;
-	__u64 RSP_end;	 // complete the request
-
 	char sense[SCSI_SENSE_BUFFERSIZE];
 
-	struct list_head list_map_req;
+	union {
+		struct {
+			struct ufshpb_map_ctx *mctx;
+			unsigned int rgn_idx;
+			unsigned int srgn_idx;
+			unsigned int lun;
+		} rb;
+		struct {
+			struct page *m_page;
+			unsigned int len;
+			unsigned long lpn;
+		} wb;
+	};
 };
 
 enum selection_type {
 	LRU = 1,
-	LFU = 2,
 };
 
 struct victim_select_info {
 	int selection_type;
-	struct list_head lru;
-	int max_lru_active_cnt;	// supported hpb #region - pinned #region
+	struct list_head lh_lru_rgn;
+	int max_lru_active_cnt; /* supported hpb #region - pinned #region */
 	atomic64_t active_cnt;
 };
 
 struct ufshpb_lu {
-	struct ufshpb_region *region_tbl;
-	struct ufshpb_rsp_info *rsp_info;
-	struct ufshpb_map_req *map_req;
-
-	struct list_head lh_map_ctx;
-	struct list_head lh_subregion_req;
-	struct list_head lh_rsp_info;
-
-	struct list_head lh_rsp_info_free;
-	struct list_head lh_map_req_free;
-	struct list_head lh_map_req_retry;
-	int debug_free_table;
-
-	bool lu_hpb_enable;
-
-	struct work_struct ufshpb_work;
-	struct delayed_work ufshpb_retry_work;
-	struct tasklet_struct ufshpb_tasklet;
-	struct bio_vec bvec[MAX_BVEC_SIZE];
-
-	int subregions_per_lu;
-	int regions_per_lu;
-	int subregion_mem_size;
-
-	/* for selecting victim */
-	struct victim_select_info lru_info;
-
-	int hpb_ver;
-	int lu_max_active_regions;
-
-	int entries_per_subregion;
-	int entries_per_subregion_shift;
-	int entries_per_subregion_mask;
-
-	int entries_per_region_shift;
-	int entries_per_region_mask;
-	int subregions_per_region;
-
-	int dwords_per_subregion;
-	unsigned long long subregion_unit_size;
-
-	int mpage_bytes;
-	int mpages_per_subregion;
-
-	/* for debug constant variables */
-	int lu_num_blocks;
-
-	int lun;
-
-	struct ufs_hba *hba;
+	struct ufsf_feature *ufsf;
+	u8 lun;
+	int qd;
+	struct ufshpb_region *rgn_tbl;
 
 	spinlock_t hpb_lock;
+
+	struct ufshpb_req *map_req;
+	int num_inflight_map_req;
+	int throttle_map_req;
+	struct list_head lh_map_req_free;
+	struct list_head lh_map_req_retry;
+	struct list_head lh_map_ctx_free;
+
 	spinlock_t rsp_list_lock;
+	struct list_head lh_pinned_srgn;
+	struct list_head lh_act_srgn;
+	struct list_head lh_inact_rgn;
 
 	struct kobject kobj;
 	struct mutex sysfs_lock;
 	struct ufshpb_sysfs_entry *sysfs_entries;
 
+	struct ufshpb_req *pre_req;
+	int num_inflight_pre_req;
+	int throttle_pre_req;
+	struct list_head lh_pre_req_free;
+	struct list_head lh_pre_req_dummy; /* dummy for blk_start_requests() */
+	int ctx_id_ticket;
+	int pre_req_min_tr_len;
+	int pre_req_max_tr_len;
+
+	struct work_struct ufshpb_work;
+	struct delayed_work ufshpb_retry_work;
+	struct work_struct ufshpb_task_workq;
+
+	/* for selecting victim */
+	struct victim_select_info lru_info;
+
+	int hpb_ver;
+	int lu_max_active_rgns;
+	int lu_pinned_rgn_startidx;
+	int lu_pinned_end_offset;
+	int lu_num_pinned_rgns;
+	int srgns_per_lu;
+	int rgns_per_lu;
+	int srgns_per_rgn;
+	int srgn_mem_size;
+	int entries_per_rgn_shift;
+	int entries_per_rgn_mask;
+	int entries_per_srgn;
+	int entries_per_srgn_shift;
+	int entries_per_srgn_mask;
+	int dwords_per_srgn;
+	unsigned long long srgn_unit_size;
+	int mpage_bytes;
+	int mpages_per_srgn;
+	int lu_num_blocks;
+
 	/* for debug */
+	int alloc_mctx;
+	int debug_free_table;
 	bool force_disable;
 	bool force_map_req_disable;
-	bool read_buf_debug;
+	bool debug;
 	atomic64_t hit;
 	atomic64_t miss;
-	atomic64_t region_miss;
-	atomic64_t subregion_miss;
-	atomic64_t entry_dirty_miss;
 	atomic64_t rb_noti_cnt;
+	atomic64_t rb_active_cnt;
+	atomic64_t rb_inactive_cnt;
 	atomic64_t map_req_cnt;
-	atomic64_t region_add;
-	atomic64_t region_evict;
-	atomic64_t rb_fail;
+	atomic64_t pre_req_cnt;
 };
 
 struct ufshpb_sysfs_entry {
@@ -390,25 +302,23 @@ struct ufshpb_sysfs_entry {
 	ssize_t (*store)(struct ufshpb_lu *hpb, const char *, size_t);
 };
 
-static inline void *kvzalloc(size_t size, gfp_t flags)
-{
-	void *ret;
-
-	ret = kzalloc(size, flags | __GFP_NOWARN);
-	if (!ret)
-		ret = __vmalloc(size, flags | __GFP_ZERO, PAGE_KERNEL);
-	return ret;
-}
-
+struct ufs_hba;
 struct ufshcd_lrb;
 
-void ufshcd_init_hpb(struct ufs_hba *hba);
+int ufshpb_prepare_pre_req(struct ufsf_feature *ufsf, struct scsi_cmnd *cmd,
+			   u8 lun);
+int ufshpb_prepare_add_lrbp(struct ufsf_feature *ufsf, int add_tag);
+void ufshpb_end_pre_req(struct ufsf_feature *ufsf, struct request *req);
+void ufshpb_get_dev_info(struct ufshpb_dev_info *hpb_dev_info, u8 *desc_buf);
+void ufshpb_get_geo_info(struct ufshpb_dev_info *hpb_dev_info, u8 *geo_buf);
+int ufshpb_get_lu_info(struct ufsf_feature *ufsf, u8 lun, u8 *unit_buf);
 void ufshpb_init_handler(struct work_struct *work);
-void ufshpb_prep_fn(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
-void ufshpb_rsp_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
-void ufshpb_release(struct ufs_hba *hba, int state);
+void ufshpb_reset_handler(struct work_struct *work);
+void ufshpb_prep_fn(struct ufsf_feature *ufsf, struct ufshcd_lrb *lrbp);
+void ufshpb_rsp_upiu(struct ufsf_feature *ufsf, struct ufshcd_lrb *lrbp);
+void ufshpb_release(struct ufsf_feature *ufsf, int state);
 int ufshpb_issue_req_dev_ctx(struct ufshpb_lu *hpb, unsigned char *buf,
-				int buf_length);
-int ufshpb_control_validation(struct ufs_hba *hba,
-				struct ufshpb_config_desc *config);
+			     int buf_length);
+void ufshpb_resume(struct ufsf_feature *ufsf);
+void ufshpb_suspend(struct ufsf_feature *ufsf);
 #endif /* End of Header */

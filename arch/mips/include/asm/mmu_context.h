@@ -13,8 +13,10 @@
 
 #include <linux/errno.h>
 #include <linux/sched.h>
+#include <linux/mm_types.h>
 #include <linux/smp.h>
 #include <linux/slab.h>
+
 #include <asm/cacheflush.h>
 #include <asm/dsemul.h>
 #include <asm/hazards.h>
@@ -29,9 +31,11 @@ do {									\
 	}								\
 } while (0)
 
+extern void tlbmiss_handler_setup_pgd(unsigned long);
+
+/* Note: This is also implemented with uasm in arch/mips/kvm/entry.c */
 #define TLBMISS_HANDLER_SETUP_PGD(pgd)					\
 do {									\
-	extern void tlbmiss_handler_setup_pgd(unsigned long);		\
 	tlbmiss_handler_setup_pgd((unsigned long)(pgd));		\
 	htw_set_pwbase((unsigned long)pgd);				\
 } while (0)
@@ -71,14 +75,14 @@ extern unsigned long pgd_current[];
  *  All unused by hardware upper bits will be considered
  *  as a software asid extension.
  */
-static unsigned long asid_version_mask(unsigned int cpu)
+static inline u64 asid_version_mask(unsigned int cpu)
 {
 	unsigned long asid_mask = cpu_asid_mask(&cpu_data[cpu]);
 
-	return ~(asid_mask | (asid_mask - 1));
+	return ~(u64)(asid_mask | (asid_mask - 1));
 }
 
-static unsigned long asid_first_version(unsigned int cpu)
+static inline u64 asid_first_version(unsigned int cpu)
 {
 	return ~asid_version_mask(cpu) + 1;
 }
@@ -97,19 +101,12 @@ static inline void enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
 static inline void
 get_new_mmu_context(struct mm_struct *mm, unsigned long cpu)
 {
-	extern void kvm_local_flush_tlb_all(void);
-	unsigned long asid = asid_cache(cpu);
+	u64 asid = asid_cache(cpu);
 
 	if (!((asid += cpu_asid_inc()) & cpu_asid_mask(&cpu_data[cpu]))) {
 		if (cpu_has_vtag_icache)
 			flush_icache_all();
-#ifdef CONFIG_KVM
-		kvm_local_flush_tlb_all();      /* start new asid cycle */
-#else
 		local_flush_tlb_all();	/* start new asid cycle */
-#endif
-		if (!asid)		/* fix version if needed */
-			asid = asid_first_version(cpu);
 	}
 
 	cpu_context(cpu, mm) = asid_cache(cpu) = asid;

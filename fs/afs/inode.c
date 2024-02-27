@@ -28,6 +28,11 @@ struct afs_iget_data {
 	struct afs_volume	*volume;	/* volume on which resides */
 };
 
+static const struct inode_operations afs_symlink_inode_operations = {
+	.get_link	= page_get_link,
+	.listxattr	= afs_listxattr,
+};
+
 /*
  * map the AFS file status to the inode member variables
  */
@@ -54,8 +59,21 @@ static int afs_inode_map_status(struct afs_vnode *vnode, struct key *key)
 		inode->i_fop	= &afs_dir_file_operations;
 		break;
 	case AFS_FTYPE_SYMLINK:
-		inode->i_mode	= S_IFLNK | vnode->status.mode;
-		inode->i_op	= &page_symlink_inode_operations;
+		/* Symlinks with a mode of 0644 are actually mountpoints. */
+		if ((vnode->status.mode & 0777) == 0644) {
+			inode->i_flags |= S_AUTOMOUNT;
+
+			spin_lock(&vnode->lock);
+			set_bit(AFS_VNODE_MOUNTPOINT, &vnode->flags);
+			spin_unlock(&vnode->lock);
+
+			inode->i_mode	= S_IFDIR | 0555;
+			inode->i_op	= &afs_mntpt_inode_operations;
+			inode->i_fop	= &afs_mntpt_file_operations;
+		} else {
+			inode->i_mode	= S_IFLNK | vnode->status.mode;
+			inode->i_op	= &afs_symlink_inode_operations;
+		}
 		inode_nohighmem(inode);
 		break;
 	default:
@@ -79,18 +97,6 @@ static int afs_inode_map_status(struct afs_vnode *vnode, struct key *key)
 	inode->i_generation	= vnode->fid.unique;
 	inode->i_version	= vnode->status.data_version;
 	inode->i_mapping->a_ops	= &afs_fs_aops;
-
-	/* check to see whether a symbolic link is really a mountpoint */
-	if (vnode->status.type == AFS_FTYPE_SYMLINK) {
-		afs_mntpt_check_symlink(vnode, key);
-
-		if (test_bit(AFS_VNODE_MOUNTPOINT, &vnode->flags)) {
-			inode->i_mode	= S_IFDIR | vnode->status.mode;
-			inode->i_op	= &afs_mntpt_inode_operations;
-			inode->i_fop	= &afs_mntpt_file_operations;
-		}
-	}
-
 	return 0;
 }
 
@@ -376,12 +382,10 @@ error_unlock:
 /*
  * read the attributes of an inode
  */
-int afs_getattr(struct vfsmount *mnt, struct dentry *dentry,
-		      struct kstat *stat)
+int afs_getattr(const struct path *path, struct kstat *stat,
+		u32 request_mask, unsigned int query_flags)
 {
-	struct inode *inode;
-
-	inode = d_inode(dentry);
+	struct inode *inode = d_inode(path->dentry);
 
 	_enter("{ ino=%lu v=%u }", inode->i_ino, inode->i_generation);
 
@@ -447,7 +451,7 @@ void afs_evict_inode(struct inode *inode)
 
 	mutex_lock(&vnode->permits_lock);
 	permits = vnode->permits;
-	rcu_assign_pointer(vnode->permits, NULL);
+	RCU_INIT_POINTER(vnode->permits, NULL);
 	mutex_unlock(&vnode->permits_lock);
 	if (permits)
 		call_rcu(&permits->rcu, afs_zap_permits);

@@ -31,7 +31,7 @@
 #include <linux/acpi.h>
 #include <acpi/processor.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #define PREFIX "ACPI: "
 
@@ -926,7 +926,7 @@ static int acpi_processor_get_throttling(struct acpi_processor *pr)
 	if (!cpu_online(pr->id))
 		return -ENODEV;
 
-	return work_on_cpu(pr->id, __acpi_processor_get_throttling, pr);
+	return call_on_cpu(pr->id, __acpi_processor_get_throttling, pr, false);
 }
 
 static int acpi_processor_get_fadt_info(struct acpi_processor *pr)
@@ -1074,13 +1074,6 @@ static long acpi_processor_throttling_fn(void *data)
 
 	return pr->throttling.acpi_processor_set_throttling(pr,
 			arg->target_state, arg->force);
-}
-
-static int call_on_cpu(int cpu, long (*fn)(void *), void *arg, bool direct)
-{
-	if (direct)
-		return fn(arg);
-	return work_on_cpu(cpu, fn, arg);
 }
 
 static int __acpi_processor_set_throttling(struct acpi_processor *pr,

@@ -28,6 +28,7 @@
 #include <asm/fixmap.h>
 #include <asm/tlbflush.h>
 #include <asm/pgalloc.h>
+#include <mt-plat/devapc_public.h>
 
 static void __iomem *__ioremap_caller(phys_addr_t phys_addr, size_t size,
 				      pgprot_t prot, void *caller)
@@ -64,6 +65,10 @@ static void __iomem *__ioremap_caller(phys_addr_t phys_addr, size_t size,
 	addr = (unsigned long)area->addr;
 	area->phys_addr = phys_addr;
 
+#ifdef CONFIG_DEVAPC_MMAP_DEBUG
+	devapc_catch_illegal_range(phys_addr, size);
+#endif
+
 	err = ioremap_page_range(addr, addr + size, phys_addr, prot);
 	if (err) {
 		vunmap((void *)addr);
@@ -88,7 +93,7 @@ void __iounmap(volatile void __iomem *io_addr)
 	 * We could get an address outside vmalloc range in case
 	 * of ioremap_cache() reusing a RAM mapping.
 	 */
-	if (VMALLOC_START <= addr && addr < VMALLOC_END)
+	if (is_vmalloc_addr((void *)addr))
 		vunmap((void *)addr);
 }
 EXPORT_SYMBOL(__iounmap);

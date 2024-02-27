@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Implementation of s390 diagnose codes
  *
@@ -5,7 +6,8 @@
  * Author(s): Michael Holzheu <holzheu@de.ibm.com>
  */
 
-#include <linux/module.h>
+#include <linux/export.h>
+#include <linux/init.h>
 #include <linux/cpu.h>
 #include <linux/seq_file.h>
 #include <linux/debugfs.h>
@@ -37,6 +39,7 @@ static const struct diag_desc diag_map[NR_DIAG_STAT] = {
 	[DIAG_STAT_X224] = { .code = 0x224, .name = "EBCDIC-Name Table" },
 	[DIAG_STAT_X250] = { .code = 0x250, .name = "Block I/O" },
 	[DIAG_STAT_X258] = { .code = 0x258, .name = "Page-Reference Services" },
+	[DIAG_STAT_X26C] = { .code = 0x26c, .name = "Certain System Information" },
 	[DIAG_STAT_X288] = { .code = 0x288, .name = "Time Bomb" },
 	[DIAG_STAT_X2C4] = { .code = 0x2c4, .name = "FTP Services" },
 	[DIAG_STAT_X2FC] = { .code = 0x2fc, .name = "Guest Performance Data" },
@@ -76,7 +79,7 @@ static int show_diag_stat(struct seq_file *m, void *v)
 
 static void *show_diag_stat_start(struct seq_file *m, loff_t *pos)
 {
-	return *pos <= nr_cpu_ids ? (void *)((unsigned long) *pos + 1) : NULL;
+	return *pos <= NR_DIAG_STAT ? (void *)((unsigned long) *pos + 1) : NULL;
 }
 
 static void *show_diag_stat_next(struct seq_file *m, void *v, loff_t *pos)
@@ -125,7 +128,7 @@ void diag_stat_inc(enum diag_stat_enum nr)
 }
 EXPORT_SYMBOL(diag_stat_inc);
 
-void diag_stat_inc_norecursion(enum diag_stat_enum nr)
+void notrace diag_stat_inc_norecursion(enum diag_stat_enum nr)
 {
 	this_cpu_inc(diag_stat.counter[nr]);
 	trace_s390_diagnose_norecursion(diag_map[nr].code);
@@ -235,3 +238,31 @@ int diag224(void *ptr)
 	return rc;
 }
 EXPORT_SYMBOL(diag224);
+
+/*
+ * Diagnose 26C: Access Certain System Information
+ */
+static inline int __diag26c(void *req, void *resp, enum diag26c_sc subcode)
+{
+	register unsigned long _req asm("2") = (addr_t) req;
+	register unsigned long _resp asm("3") = (addr_t) resp;
+	register unsigned long _subcode asm("4") = subcode;
+	register unsigned long _rc asm("5") = -EOPNOTSUPP;
+
+	asm volatile(
+		"	sam31\n"
+		"	diag	%[rx],%[ry],0x26c\n"
+		"0:	sam64\n"
+		EX_TABLE(0b,0b)
+		: "+d" (_rc)
+		: [rx] "d" (_req), "d" (_resp), [ry] "d" (_subcode)
+		: "cc", "memory");
+	return _rc;
+}
+
+int diag26c(void *req, void *resp, enum diag26c_sc subcode)
+{
+	diag_stat_inc(DIAG_STAT_X26C);
+	return __diag26c(req, resp, subcode);
+}
+EXPORT_SYMBOL(diag26c);

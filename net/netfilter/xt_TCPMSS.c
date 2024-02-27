@@ -62,11 +62,9 @@ static u_int32_t tcpmss_reverse_mtu(struct net *net,
 		memset(fl6, 0, sizeof(*fl6));
 		fl6->daddr = ipv6_hdr(skb)->saddr;
 	}
-	rcu_read_lock();
 	ai = nf_get_afinfo(family);
 	if (ai != NULL)
 		ai->route(net, (struct dst_entry **)&rt, &fl, false);
-	rcu_read_unlock();
 
 	if (rt != NULL) {
 		mtu = dst_mtu(&rt->dst);
@@ -108,7 +106,7 @@ tcpmss_mangle_packet(struct sk_buff *skb,
 		return -1;
 
 	if (info->mss == XT_TCPMSS_CLAMP_PMTU) {
-		struct net *net = par->net;
+		struct net *net = xt_net(par);
 		unsigned int in_mtu = tcpmss_reverse_mtu(net, skb, family);
 		unsigned int min_mtu = min(dst_mtu(skb_dst(skb)), in_mtu);
 
@@ -176,7 +174,7 @@ tcpmss_mangle_packet(struct sk_buff *skb,
 	 * length IPv6 header of 60, ergo the default MSS value is 1220
 	 * Since no MSS was provided, we must use the default values
 	 */
-	if (par->family == NFPROTO_IPV4)
+	if (xt_family(par) == NFPROTO_IPV4)
 		newmss = min(newmss, (u16)536);
 	else
 		newmss = min(newmss, (u16)1220);

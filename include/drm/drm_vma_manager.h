@@ -25,7 +25,6 @@
 
 #include <drm/drm_mm.h>
 #include <linux/mm.h>
-#include <linux/module.h>
 #include <linux/rbtree.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
@@ -42,6 +41,7 @@ struct drm_vma_offset_node {
 	rwlock_t vm_lock;
 	struct drm_mm_node vm_node;
 	struct rb_root vm_files;
+	bool readonly:1;
 };
 
 struct drm_vma_offset_manager {

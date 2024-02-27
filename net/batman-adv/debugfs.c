@@ -1,4 +1,4 @@
-/* Copyright (C) 2010-2016  B.A.T.M.A.N. contributors:
+/* Copyright (C) 2010-2017  B.A.T.M.A.N. contributors:
  *
  * Marek Lindner
  *
@@ -18,8 +18,9 @@
 #include "debugfs.h"
 #include "main.h"
 
+#include <linux/dcache.h>
 #include <linux/debugfs.h>
-#include <linux/device.h>
+#include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/export.h>
 #include <linux/fs.h>
@@ -186,7 +187,7 @@ struct batadv_debuginfo batadv_debuginfo_##_name = {	\
 /* the following attributes are general and therefore they will be directly
  * placed in the BATADV_DEBUGFS_SUBDIR subdirectory of debugfs
  */
-static BATADV_DEBUGINFO(routing_algos, S_IRUGO, batadv_algorithms_open);
+static BATADV_DEBUGINFO(routing_algos, 0444, batadv_algorithms_open);
 
 static struct batadv_debuginfo *batadv_general_debuginfos[] = {
 	&batadv_debuginfo_routing_algos,
@@ -194,26 +195,24 @@ static struct batadv_debuginfo *batadv_general_debuginfos[] = {
 };
 
 /* The following attributes are per soft interface */
-static BATADV_DEBUGINFO(neighbors, S_IRUGO, neighbors_open);
-static BATADV_DEBUGINFO(originators, S_IRUGO, batadv_originators_open);
-static BATADV_DEBUGINFO(gateways, S_IRUGO, batadv_gateways_open);
-static BATADV_DEBUGINFO(transtable_global, S_IRUGO,
-			batadv_transtable_global_open);
+static BATADV_DEBUGINFO(neighbors, 0444, neighbors_open);
+static BATADV_DEBUGINFO(originators, 0444, batadv_originators_open);
+static BATADV_DEBUGINFO(gateways, 0444, batadv_gateways_open);
+static BATADV_DEBUGINFO(transtable_global, 0444, batadv_transtable_global_open);
 #ifdef CONFIG_BATMAN_ADV_BLA
-static BATADV_DEBUGINFO(bla_claim_table, S_IRUGO, batadv_bla_claim_table_open);
-static BATADV_DEBUGINFO(bla_backbone_table, S_IRUGO,
+static BATADV_DEBUGINFO(bla_claim_table, 0444, batadv_bla_claim_table_open);
+static BATADV_DEBUGINFO(bla_backbone_table, 0444,
 			batadv_bla_backbone_table_open);
 #endif
 #ifdef CONFIG_BATMAN_ADV_DAT
-static BATADV_DEBUGINFO(dat_cache, S_IRUGO, batadv_dat_cache_open);
+static BATADV_DEBUGINFO(dat_cache, 0444, batadv_dat_cache_open);
 #endif
-static BATADV_DEBUGINFO(transtable_local, S_IRUGO,
-			batadv_transtable_local_open);
+static BATADV_DEBUGINFO(transtable_local, 0444, batadv_transtable_local_open);
 #ifdef CONFIG_BATMAN_ADV_NC
-static BATADV_DEBUGINFO(nc_nodes, S_IRUGO, batadv_nc_nodes_open);
+static BATADV_DEBUGINFO(nc_nodes, 0444, batadv_nc_nodes_open);
 #endif
 #ifdef CONFIG_BATMAN_ADV_MCAST
-static BATADV_DEBUGINFO(mcast_flags, S_IRUGO, batadv_mcast_flags_open);
+static BATADV_DEBUGINFO(mcast_flags, 0444, batadv_mcast_flags_open);
 #endif
 
 static struct batadv_debuginfo *batadv_mesh_debuginfos[] = {
@@ -253,7 +252,7 @@ struct batadv_debuginfo batadv_hardif_debuginfo_##_name = {	\
 	},							\
 }
 
-static BATADV_HARDIF_DEBUGINFO(originators, S_IRUGO,
+static BATADV_HARDIF_DEBUGINFO(originators, 0444,
 			       batadv_originators_hardif_open);
 
 static struct batadv_debuginfo *batadv_hardif_debuginfos[] = {
@@ -340,7 +339,26 @@ out:
 }
 
 /**
- * batadv_debugfs_del_hardif - delete the base directory for a hard interface
+ * batadv_debugfs_rename_hardif() - Fix debugfs path for renamed hardif
+ * @hard_iface: hard interface which was renamed
+ */
+void batadv_debugfs_rename_hardif(struct batadv_hard_iface *hard_iface)
+{
+	const char *name = hard_iface->net_dev->name;
+	struct dentry *dir;
+	struct dentry *d;
+
+	dir = hard_iface->debug_dir;
+	if (!dir)
+		return;
+
+	d = debugfs_rename(dir->d_parent, dir, dir->d_parent, name);
+	if (!d)
+		pr_err("Can't rename debugfs dir to %s\n", name);
+}
+
+/**
+ * batadv_debugfs_del_hardif() - delete the base directory for a hard interface
  *  in debugfs.
  * @hard_iface: hard interface which is deleted.
  */
@@ -403,6 +421,30 @@ out:
 	return -ENOMEM;
 }
 
+/**
+ * batadv_debugfs_rename_meshif() - Fix debugfs path for renamed softif
+ * @dev: net_device which was renamed
+ */
+void batadv_debugfs_rename_meshif(struct net_device *dev)
+{
+	struct batadv_priv *bat_priv = netdev_priv(dev);
+	const char *name = dev->name;
+	struct dentry *dir;
+	struct dentry *d;
+
+	dir = bat_priv->debug_dir;
+	if (!dir)
+		return;
+
+	d = debugfs_rename(dir->d_parent, dir, dir->d_parent, name);
+	if (!d)
+		pr_err("Can't rename debugfs dir to %s\n", name);
+}
+
+/**
+ * batadv_debugfs_del_meshif() - Remove interface dependent debugfs entries
+ * @dev: netdev struct of the soft interface
+ */
 void batadv_debugfs_del_meshif(struct net_device *dev)
 {
 	struct batadv_priv *bat_priv = netdev_priv(dev);

@@ -84,7 +84,7 @@ static inline int atomic_fetch_##op(int i, atomic_t *v)			\
 	"1:	llock   %[orig], [%[ctr]]		\n"		\
 	"	" #asm_op " %[val], %[orig], %[i]	\n"		\
 	"	scond   %[val], [%[ctr]]		\n"		\
-	"						\n"		\
+	"	bnz     1b				\n"		\
 	: [val]	"=&r"	(val),						\
 	  [orig] "=&r" (orig)						\
 	: [ctr]	"r"	(&v->counter),					\
@@ -122,6 +122,8 @@ static inline void atomic_set(atomic_t *v, int i)
 	WRITE_ONCE(v->counter, i);
 	atomic_ops_unlock(flags);
 }
+
+#define atomic_set_release(v, i)	atomic_set((v), (i))
 
 #endif
 

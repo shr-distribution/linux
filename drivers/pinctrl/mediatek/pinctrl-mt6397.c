@@ -38,9 +38,11 @@ static const struct mtk_pinctrl_devdata mt6397_pinctrl_data = {
 	.pinmux_offset = (MT6397_PIN_REG_BASE + 0x0c0),
 	.type1_start = 41,
 	.type1_end = 41,
+	.regmap_num = 1,
 	.port_shf = 3,
 	.port_mask = 0x3,
 	.port_align = 2,
+	.port_pin_shf = 4,
 };
 
 static int mt6397_pinctrl_probe(struct platform_device *pdev)
@@ -64,8 +66,4 @@ static struct platform_driver mtk_pinctrl_driver = {
 	},
 };
 
-static int __init mtk_pinctrl_init(void)
-{
-	return platform_driver_register(&mtk_pinctrl_driver);
-}
-device_initcall(mtk_pinctrl_init);
+builtin_platform_driver(mtk_pinctrl_driver);

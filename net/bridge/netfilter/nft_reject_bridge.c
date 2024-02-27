@@ -28,12 +28,18 @@ static void nft_reject_br_push_etherhdr(struct sk_buff *oldskb,
 {
 	struct ethhdr *eth;
 
-	eth = (struct ethhdr *)skb_push(nskb, ETH_HLEN);
+	eth = skb_push(nskb, ETH_HLEN);
 	skb_reset_mac_header(nskb);
 	ether_addr_copy(eth->h_source, eth_hdr(oldskb)->h_dest);
 	ether_addr_copy(eth->h_dest, eth_hdr(oldskb)->h_source);
 	eth->h_proto = eth_hdr(oldskb)->h_proto;
 	skb_pull(nskb, ETH_HLEN);
+
+	if (skb_vlan_tag_present(oldskb)) {
+		u16 vid = skb_vlan_tag_get(oldskb);
+
+		__vlan_hwaccel_put_tag(nskb, oldskb->vlan_proto, vid);
+	}
 }
 
 static int nft_bridge_iphdr_validate(struct sk_buff *skb)
@@ -107,11 +113,10 @@ static void nft_reject_br_send_v4_unreach(struct net *net,
 	struct iphdr *niph;
 	struct icmphdr *icmph;
 	unsigned int len;
-	void *payload;
 	__wsum csum;
 	u8 proto;
 
-	if (oldskb->csum_bad || !nft_bridge_iphdr_validate(oldskb))
+	if (!nft_bridge_iphdr_validate(oldskb))
 		return;
 
 	/* IP header checks: fragment. */
@@ -147,13 +152,11 @@ static void nft_reject_br_send_v4_unreach(struct net *net,
 				   net->ipv4.sysctl_ip_default_ttl);
 
 	skb_reset_transport_header(nskb);
-	icmph = (struct icmphdr *)skb_put(nskb, sizeof(struct icmphdr));
-	memset(icmph, 0, sizeof(*icmph));
+	icmph = skb_put_zero(nskb, sizeof(struct icmphdr));
 	icmph->type     = ICMP_DEST_UNREACH;
 	icmph->code	= code;
 
-	payload = skb_put(nskb, len);
-	memcpy(payload, skb_network_header(oldskb), len);
+	skb_put_data(nskb, skb_network_header(oldskb), len);
 
 	csum = csum_partial((void *)icmph, len + sizeof(struct icmphdr), 0);
 	icmph->checksum = csum_fold(csum);
@@ -226,9 +229,6 @@ static bool reject6_br_csum_ok(struct sk_buff *skb, int hook)
 	__be16 fo;
 	u8 proto = ip6h->nexthdr;
 
-	if (skb->csum_bad)
-		return false;
-
 	if (skb_csum_unnecessary(skb))
 		return true;
 
@@ -236,6 +236,7 @@ static bool reject6_br_csum_ok(struct sk_buff *skb, int hook)
 	    pskb_trim_rcsum(skb, ntohs(ip6h->payload_len) + sizeof(*ip6h)))
 		return false;
 
+	ip6h = ipv6_hdr(skb);
 	thoff = ipv6_skip_exthdr(skb, ((u8*)(ip6h+1) - skb->data), &proto, &fo);
 	if (thoff < 0 || thoff >= skb->len || (fo & htons(~0x7)) != 0)
 		return false;
@@ -252,7 +253,6 @@ static void nft_reject_br_send_v6_unreach(struct net *net,
 	struct ipv6hdr *nip6h;
 	struct icmp6hdr *icmp6h;
 	unsigned int len;
-	void *payload;
 
 	if (!nft_bridge_ip6hdr_validate(oldskb))
 		return;
@@ -278,13 +278,11 @@ static void nft_reject_br_send_v6_unreach(struct net *net,
 				     net->ipv6.devconf_all->hop_limit);
 
 	skb_reset_transport_header(nskb);
-	icmp6h = (struct icmp6hdr *)skb_put(nskb, sizeof(struct icmp6hdr));
-	memset(icmp6h, 0, sizeof(*icmp6h));
+	icmp6h = skb_put_zero(nskb, sizeof(struct icmp6hdr));
 	icmp6h->icmp6_type = ICMPV6_DEST_UNREACH;
 	icmp6h->icmp6_code = code;
 
-	payload = skb_put(nskb, len);
-	memcpy(payload, skb_network_header(oldskb), len);
+	skb_put_data(nskb, skb_network_header(oldskb), len);
 	nip6h->payload_len = htons(nskb->len - sizeof(struct ipv6hdr));
 
 	icmp6h->icmp6_cksum =
@@ -315,17 +313,20 @@ static void nft_reject_bridge_eval(const struct nft_expr *expr,
 	case htons(ETH_P_IP):
 		switch (priv->type) {
 		case NFT_REJECT_ICMP_UNREACH:
-			nft_reject_br_send_v4_unreach(pkt->net, pkt->skb,
-						      pkt->in, pkt->hook,
+			nft_reject_br_send_v4_unreach(nft_net(pkt), pkt->skb,
+						      nft_in(pkt),
+						      nft_hook(pkt),
 						      priv->icmp_code);
 			break;
 		case NFT_REJECT_TCP_RST:
-			nft_reject_br_send_v4_tcp_reset(pkt->net, pkt->skb,
-							pkt->in, pkt->hook);
+			nft_reject_br_send_v4_tcp_reset(nft_net(pkt), pkt->skb,
+							nft_in(pkt),
+							nft_hook(pkt));
 			break;
 		case NFT_REJECT_ICMPX_UNREACH:
-			nft_reject_br_send_v4_unreach(pkt->net, pkt->skb,
-						      pkt->in, pkt->hook,
+			nft_reject_br_send_v4_unreach(nft_net(pkt), pkt->skb,
+						      nft_in(pkt),
+						      nft_hook(pkt),
 						      nft_reject_icmp_code(priv->icmp_code));
 			break;
 		}
@@ -333,17 +334,20 @@ static void nft_reject_bridge_eval(const struct nft_expr *expr,
 	case htons(ETH_P_IPV6):
 		switch (priv->type) {
 		case NFT_REJECT_ICMP_UNREACH:
-			nft_reject_br_send_v6_unreach(pkt->net, pkt->skb,
-						      pkt->in, pkt->hook,
+			nft_reject_br_send_v6_unreach(nft_net(pkt), pkt->skb,
+						      nft_in(pkt),
+						      nft_hook(pkt),
 						      priv->icmp_code);
 			break;
 		case NFT_REJECT_TCP_RST:
-			nft_reject_br_send_v6_tcp_reset(pkt->net, pkt->skb,
-							pkt->in, pkt->hook);
+			nft_reject_br_send_v6_tcp_reset(nft_net(pkt), pkt->skb,
+							nft_in(pkt),
+							nft_hook(pkt));
 			break;
 		case NFT_REJECT_ICMPX_UNREACH:
-			nft_reject_br_send_v6_unreach(pkt->net, pkt->skb,
-						      pkt->in, pkt->hook,
+			nft_reject_br_send_v6_unreach(nft_net(pkt), pkt->skb,
+						      nft_in(pkt),
+						      nft_hook(pkt),
 						      nft_reject_icmpv6_code(priv->icmp_code));
 			break;
 		}
@@ -369,11 +373,7 @@ static int nft_reject_bridge_init(const struct nft_ctx *ctx,
 				  const struct nlattr * const tb[])
 {
 	struct nft_reject *priv = nft_expr_priv(expr);
-	int icmp_code, err;
-
-	err = nft_reject_bridge_validate(ctx, expr, NULL);
-	if (err < 0)
-		return err;
+	int icmp_code;
 
 	if (tb[NFTA_REJECT_TYPE] == NULL)
 		return -EINVAL;

@@ -411,7 +411,7 @@ ath_cmn_process_ht20_40_fft(struct ath_rx_status *rs,
 
 		ath_dbg(common, SPECTRAL_SCAN,
 			"Calculated new upper max 0x%X at %i\n",
-			tmp_mag, i);
+			tmp_mag, fft_sample_40.upper_max_index);
 	} else
 	for (i = dc_pos; i < SPECTRAL_HT20_40_NUM_BINS; i++) {
 		if (fft_sample_40.data[i] == (upper_mag >> max_exp))
@@ -479,14 +479,16 @@ ath_cmn_is_fft_buf_full(struct ath_spec_scan_priv *spec_priv)
 {
 	int i = 0;
 	int ret = 0;
+	struct rchan_buf *buf;
 	struct rchan *rc = spec_priv->rfs_chan_spec_scan;
 
-	for_each_online_cpu(i)
-		ret += relay_buf_full(rc->buf[i]);
+	for_each_possible_cpu(i) {
+		if ((buf = *per_cpu_ptr(rc->buf, i))) {
+			ret += relay_buf_full(buf);
+		}
+	}
 
-	i = num_online_cpus();
-
-	if (ret == i)
+	if (ret)
 		return 1;
 	else
 		return 0;
@@ -741,6 +743,9 @@ void ath9k_cmn_spectral_scan_trigger(struct ath_common *common,
 		ath_err(common, "spectrum analyzer not implemented on this hardware\n");
 		return;
 	}
+
+	if (!spec_priv->spec_config.enabled)
+		return;
 
 	ath_ps_ops(common)->wakeup(common);
 	rxfilter = ath9k_hw_getrxfilter(ah);
@@ -1075,7 +1080,7 @@ static struct rchan_callbacks rfs_spec_scan_cb = {
 
 void ath9k_cmn_spectral_deinit_debug(struct ath_spec_scan_priv *spec_priv)
 {
-	if (IS_ENABLED(CONFIG_ATH9K_DEBUGFS) && spec_priv->rfs_chan_spec_scan) {
+	if (spec_priv->rfs_chan_spec_scan) {
 		relay_close(spec_priv->rfs_chan_spec_scan);
 		spec_priv->rfs_chan_spec_scan = NULL;
 	}

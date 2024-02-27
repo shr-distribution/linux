@@ -27,10 +27,34 @@ config NVME_TARGET_LOOP
 
 config NVME_TARGET_RDMA
 	tristate "NVMe over Fabrics RDMA target support"
-	depends on INFINIBAND
+	depends on INFINIBAND && INFINIBAND_ADDR_TRANS
 	depends on NVME_TARGET
 	help
 	  This enables the NVMe RDMA target support, which allows exporting NVMe
 	  devices over RDMA.
+
+	  If unsure, say N.
+
+config NVME_TARGET_FC
+	tristate "NVMe over Fabrics FC target driver"
+	depends on NVME_TARGET
+	depends on HAS_DMA
+	help
+	  This enables the NVMe FC target support, which allows exporting NVMe
+	  devices over FC.
+
+	  If unsure, say N.
+
+config NVME_TARGET_FCLOOP
+	tristate "NVMe over Fabrics FC Transport Loopback Test driver"
+	depends on NVME_TARGET
+	select NVME_CORE
+	select NVME_FABRICS
+	select SG_POOL
+	depends on NVME_FC
+	depends on NVME_TARGET_FC
+	help
+	  This enables the NVMe FC loopback test support, which can be useful
+	  to test NVMe-FC transport interfaces.
 
 	  If unsure, say N.

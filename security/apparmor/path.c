@@ -204,7 +204,6 @@ int aa_path_name(const struct path *path, int flags, char *buffer,
 	char *str = NULL;
 	int error = d_namespace_path(path, buffer, &str, flags, disconnected);
 
-
 	if (info && error) {
 		if (error == -ENOENT)
 			*info = "Failed name lookup - deleted entry";
@@ -217,5 +216,6 @@ int aa_path_name(const struct path *path, int flags, char *buffer,
 	}
 
 	*name = str;
+
 	return error;
 }

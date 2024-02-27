@@ -12,12 +12,15 @@
 #include <linux/pid_namespace.h>
 #include <linux/user_namespace.h>
 #include <linux/syscalls.h>
+#include <linux/cred.h>
 #include <linux/err.h>
 #include <linux/acct.h>
 #include <linux/slab.h>
 #include <linux/proc_ns.h>
 #include <linux/reboot.h>
 #include <linux/export.h>
+#include <linux/sched/task.h>
+#include <linux/sched/signal.h>
 
 struct pid_cache {
 	int nr_ids;
@@ -97,6 +100,10 @@ static struct pid_namespace *create_pid_namespace(struct user_namespace *user_ns
 	struct ucounts *ucounts;
 	int i;
 	int err;
+
+	err = -EINVAL;
+	if (!in_userns(parent_pid_ns->user_ns, user_ns))
+		goto out;
 
 	err = -ENOSPC;
 	if (level > MAX_PID_NS_LEVEL)
@@ -344,7 +351,7 @@ int reboot_pid_ns(struct pid_namespace *pid_ns, int cmd)
 	}
 
 	read_lock(&tasklist_lock);
-	force_sig(SIGKILL, pid_ns->child_reaper);
+	send_sig(SIGKILL, pid_ns->child_reaper, 1);
 	read_unlock(&tasklist_lock);
 
 	do_exit(0);
@@ -367,6 +374,29 @@ static struct ns_common *pidns_get(struct task_struct *task)
 	if (ns)
 		get_pid_ns(ns);
 	rcu_read_unlock();
+
+	return ns ? &ns->ns : NULL;
+}
+
+static struct ns_common *pidns_for_children_get(struct task_struct *task)
+{
+	struct pid_namespace *ns = NULL;
+
+	task_lock(task);
+	if (task->nsproxy) {
+		ns = task->nsproxy->pid_ns_for_children;
+		get_pid_ns(ns);
+	}
+	task_unlock(task);
+
+	if (ns) {
+		read_lock(&tasklist_lock);
+		if (!ns->child_reaper) {
+			put_pid_ns(ns);
+			ns = NULL;
+		}
+		read_unlock(&tasklist_lock);
+	}
 
 	return ns ? &ns->ns : NULL;
 }
@@ -434,6 +464,17 @@ const struct proc_ns_operations pidns_operations = {
 	.name		= "pid",
 	.type		= CLONE_NEWPID,
 	.get		= pidns_get,
+	.put		= pidns_put,
+	.install	= pidns_install,
+	.owner		= pidns_owner,
+	.get_parent	= pidns_get_parent,
+};
+
+const struct proc_ns_operations pidns_for_children_operations = {
+	.name		= "pid_for_children",
+	.real_ns_name	= "pid",
+	.type		= CLONE_NEWPID,
+	.get		= pidns_for_children_get,
 	.put		= pidns_put,
 	.install	= pidns_install,
 	.owner		= pidns_owner,

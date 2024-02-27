@@ -250,7 +250,7 @@ static inline void hwsim_clear_chanctx_magic(struct ieee80211_chanctx_conf *c)
 	cp->magic = 0;
 }
 
-static int hwsim_net_id;
+static unsigned int hwsim_net_id;
 
 static int hwsim_netgroup;
 
@@ -350,6 +350,7 @@ static const struct ieee80211_channel hwsim_channels_5ghz[] = {
 	CHAN5G(5785), /* Channel 157 */
 	CHAN5G(5805), /* Channel 161 */
 	CHAN5G(5825), /* Channel 165 */
+	CHAN5G(5845), /* Channel 169 */
 };
 
 static const struct ieee80211_rate hwsim_rates[] = {
@@ -389,7 +390,7 @@ static int mac80211_hwsim_vendor_cmd_test(struct wiphy *wiphy,
 	u32 val;
 
 	err = nla_parse(tb, QCA_WLAN_VENDOR_ATTR_MAX, data, data_len,
-			hwsim_vendor_test_policy);
+			hwsim_vendor_test_policy, NULL);
 	if (err)
 		return err;
 	if (!tb[QCA_WLAN_VENDOR_ATTR_TEST])
@@ -525,6 +526,11 @@ struct mac80211_hwsim_data {
 	struct ieee80211_vif *hw_scan_vif;
 	int scan_chan_idx;
 	u8 scan_addr[ETH_ALEN];
+	struct {
+		struct ieee80211_channel *channel;
+		unsigned long next_start, start, end;
+	} survey_data[ARRAY_SIZE(hwsim_channels_2ghz) +
+		      ARRAY_SIZE(hwsim_channels_5ghz)];
 
 	struct ieee80211_channel *channel;
 	u64 beacon_int	/* beacon interval in us */;
@@ -585,15 +591,8 @@ struct hwsim_radiotap_ack_hdr {
 	__le16 rt_chbitmask;
 } __packed;
 
-/* MAC80211_HWSIM netlinf family */
-static struct genl_family hwsim_genl_family = {
-	.id = GENL_ID_GENERATE,
-	.hdrsize = 0,
-	.name = "MAC80211_HWSIM",
-	.version = 1,
-	.maxattr = HWSIM_ATTR_MAX,
-	.netnsok = true,
-};
+/* MAC80211_HWSIM netlink family */
+static struct genl_family hwsim_genl_family;
 
 enum hwsim_multicast_groups {
 	HWSIM_MCGRP_CONFIG,
@@ -651,7 +650,7 @@ static void hwsim_send_ps_poll(void *dat, u8 *mac, struct ieee80211_vif *vif)
 	skb = dev_alloc_skb(sizeof(*pspoll));
 	if (!skb)
 		return;
-	pspoll = (void *) skb_put(skb, sizeof(*pspoll));
+	pspoll = skb_put(skb, sizeof(*pspoll));
 	pspoll->frame_control = cpu_to_le16(IEEE80211_FTYPE_CTL |
 					    IEEE80211_STYPE_PSPOLL |
 					    IEEE80211_FCTL_PM);
@@ -682,7 +681,7 @@ static void hwsim_send_nullfunc(struct mac80211_hwsim_data *data, u8 *mac,
 	skb = dev_alloc_skb(sizeof(*hdr));
 	if (!skb)
 		return;
-	hdr = (void *) skb_put(skb, sizeof(*hdr) - ETH_ALEN);
+	hdr = skb_put(skb, sizeof(*hdr) - ETH_ALEN);
 	hdr->frame_control = cpu_to_le16(IEEE80211_FTYPE_DATA |
 					 IEEE80211_STYPE_NULLFUNC |
 					 (ps ? IEEE80211_FCTL_PM : 0));
@@ -854,7 +853,7 @@ static void mac80211_hwsim_monitor_rx(struct ieee80211_hw *hw,
 	if (skb == NULL)
 		return;
 
-	hdr = (struct hwsim_radiotap_hdr *) skb_push(skb, sizeof(*hdr));
+	hdr = skb_push(skb, sizeof(*hdr));
 	hdr->hdr.it_version = PKTHDR_RADIOTAP_VERSION;
 	hdr->hdr.it_pad = 0;
 	hdr->hdr.it_len = cpu_to_le16(sizeof(*hdr));
@@ -898,7 +897,7 @@ static void mac80211_hwsim_monitor_ack(struct ieee80211_channel *chan,
 	if (skb == NULL)
 		return;
 
-	hdr = (struct hwsim_radiotap_ack_hdr *) skb_put(skb, sizeof(*hdr));
+	hdr = skb_put(skb, sizeof(*hdr));
 	hdr->hdr.it_version = PKTHDR_RADIOTAP_VERSION;
 	hdr->hdr.it_pad = 0;
 	hdr->hdr.it_len = cpu_to_le16(sizeof(*hdr));
@@ -910,7 +909,7 @@ static void mac80211_hwsim_monitor_ack(struct ieee80211_channel *chan,
 	flags = IEEE80211_CHAN_2GHZ;
 	hdr->rt_chbitmask = cpu_to_le16(flags);
 
-	hdr11 = (struct ieee80211_hdr *) skb_put(skb, 10);
+	hdr11 = skb_put(skb, 10);
 	hdr11->frame_control = cpu_to_le16(IEEE80211_FTYPE_CTL |
 					   IEEE80211_STYPE_ACK);
 	hdr11->duration_id = cpu_to_le16(0);
@@ -1152,7 +1151,7 @@ static void mac80211_hwsim_add_vendor_rtap(struct sk_buff *skb)
 	 * Note that this code requires the headroom in the SKB
 	 * that was allocated earlier.
 	 */
-	rtap = (void *)skb_push(skb, sizeof(*rtap) + 8 + 4);
+	rtap = skb_push(skb, sizeof(*rtap) + 8 + 4);
 	rtap->oui[0] = HWSIM_RADIOTAP_OUI[0];
 	rtap->oui[1] = HWSIM_RADIOTAP_OUI[1];
 	rtap->oui[2] = HWSIM_RADIOTAP_OUI[2];
@@ -1198,18 +1197,24 @@ static bool mac80211_hwsim_tx_frame_no_nl(struct ieee80211_hw *hw,
 	if (info->control.rates[0].flags & IEEE80211_TX_RC_VHT_MCS) {
 		rx_status.rate_idx =
 			ieee80211_rate_get_vht_mcs(&info->control.rates[0]);
-		rx_status.vht_nss =
+		rx_status.nss =
 			ieee80211_rate_get_vht_nss(&info->control.rates[0]);
-		rx_status.flag |= RX_FLAG_VHT;
+		rx_status.encoding = RX_ENC_VHT;
 	} else {
 		rx_status.rate_idx = info->control.rates[0].idx;
 		if (info->control.rates[0].flags & IEEE80211_TX_RC_MCS)
-			rx_status.flag |= RX_FLAG_HT;
+			rx_status.encoding = RX_ENC_HT;
 	}
 	if (info->control.rates[0].flags & IEEE80211_TX_RC_40_MHZ_WIDTH)
-		rx_status.flag |= RX_FLAG_40MHZ;
+		rx_status.bw = RATE_INFO_BW_40;
+	else if (info->control.rates[0].flags & IEEE80211_TX_RC_80_MHZ_WIDTH)
+		rx_status.bw = RATE_INFO_BW_80;
+	else if (info->control.rates[0].flags & IEEE80211_TX_RC_160_MHZ_WIDTH)
+		rx_status.bw = RATE_INFO_BW_160;
+	else
+		rx_status.bw = RATE_INFO_BW_20;
 	if (info->control.rates[0].flags & IEEE80211_TX_RC_SHORT_GI)
-		rx_status.flag |= RX_FLAG_SHORT_GI;
+		rx_status.enc_flags |= RX_ENC_FLAG_SHORT_GI;
 	/* TODO: simulate real signal strength (and optional packet loss) */
 	rx_status.signal = -50;
 	if (info->control.vif)
@@ -1586,6 +1591,7 @@ static int mac80211_hwsim_config(struct ieee80211_hw *hw, u32 changed)
 		[IEEE80211_SMPS_STATIC] = "static",
 		[IEEE80211_SMPS_DYNAMIC] = "dynamic",
 	};
+	int idx;
 
 	if (conf->chandef.chan)
 		wiphy_debug(hw->wiphy,
@@ -1608,9 +1614,33 @@ static int mac80211_hwsim_config(struct ieee80211_hw *hw, u32 changed)
 
 	data->idle = !!(conf->flags & IEEE80211_CONF_IDLE);
 
-	data->channel = conf->chandef.chan;
+	WARN_ON(conf->chandef.chan && data->use_chanctx);
 
-	WARN_ON(data->channel && data->use_chanctx);
+	mutex_lock(&data->mutex);
+	if (data->scanning && conf->chandef.chan) {
+		for (idx = 0; idx < ARRAY_SIZE(data->survey_data); idx++) {
+			if (data->survey_data[idx].channel == data->channel) {
+				data->survey_data[idx].start =
+					data->survey_data[idx].next_start;
+				data->survey_data[idx].end = jiffies;
+				break;
+			}
+		}
+
+		data->channel = conf->chandef.chan;
+
+		for (idx = 0; idx < ARRAY_SIZE(data->survey_data); idx++) {
+			if (data->survey_data[idx].channel &&
+			    data->survey_data[idx].channel != data->channel)
+				continue;
+			data->survey_data[idx].channel = data->channel;
+			data->survey_data[idx].next_start = jiffies;
+			break;
+		}
+	} else {
+		data->channel = conf->chandef.chan;
+	}
+	mutex_unlock(&data->mutex);
 
 	if (!data->started || !data->beacon_int)
 		tasklet_hrtimer_cancel(&data->beacon_timer);
@@ -1796,28 +1826,37 @@ static int mac80211_hwsim_conf_tx(
 	return 0;
 }
 
-static int mac80211_hwsim_get_survey(
-	struct ieee80211_hw *hw, int idx,
-	struct survey_info *survey)
+static int mac80211_hwsim_get_survey(struct ieee80211_hw *hw, int idx,
+				     struct survey_info *survey)
 {
-	struct ieee80211_conf *conf = &hw->conf;
+	struct mac80211_hwsim_data *hwsim = hw->priv;
 
-	wiphy_debug(hw->wiphy, "%s (idx=%d)\n", __func__, idx);
-
-	if (idx != 0)
+	if (idx < 0 || idx >= ARRAY_SIZE(hwsim->survey_data))
 		return -ENOENT;
 
-	/* Current channel */
-	survey->channel = conf->chandef.chan;
+	mutex_lock(&hwsim->mutex);
+	survey->channel = hwsim->survey_data[idx].channel;
+	if (!survey->channel) {
+		mutex_unlock(&hwsim->mutex);
+		return -ENOENT;
+	}
 
 	/*
-	 * Magically conjured noise level --- this is only ok for simulated hardware.
+	 * Magically conjured dummy values --- this is only ok for simulated hardware.
 	 *
-	 * A real driver which cannot determine the real channel noise MUST NOT
-	 * report any noise, especially not a magically conjured one :-)
+	 * A real driver which cannot determine real values noise MUST NOT
+	 * report any, especially not a magically conjured ones :-)
 	 */
-	survey->filled = SURVEY_INFO_NOISE_DBM;
+	survey->filled = SURVEY_INFO_NOISE_DBM |
+			 SURVEY_INFO_TIME |
+			 SURVEY_INFO_TIME_BUSY;
 	survey->noise = -92;
+	survey->time =
+		jiffies_to_msecs(hwsim->survey_data[idx].end -
+				 hwsim->survey_data[idx].start);
+	/* report 12.5% of channel time is used */
+	survey->time_busy = survey->time/8;
+	mutex_unlock(&hwsim->mutex);
 
 	return 0;
 }
@@ -1861,7 +1900,7 @@ static int mac80211_hwsim_testmode_cmd(struct ieee80211_hw *hw,
 	int err, ps;
 
 	err = nla_parse(tb, HWSIM_TM_ATTR_MAX, data, len,
-			hwsim_testmode_policy);
+			hwsim_testmode_policy, NULL);
 	if (err)
 		return err;
 
@@ -1984,8 +2023,7 @@ static void hw_scan_work(struct work_struct *work)
 			memcpy(mgmt->bssid, req->bssid, ETH_ALEN);
 
 			if (req->ie_len)
-				memcpy(skb_put(probe, req->ie_len), req->ie,
-				       req->ie_len);
+				skb_put_data(probe, req->ie, req->ie_len);
 
 			local_bh_disable();
 			mac80211_hwsim_tx_frame(hwsim->hw, probe,
@@ -1995,6 +2033,10 @@ static void hw_scan_work(struct work_struct *work)
 	}
 	ieee80211_queue_delayed_work(hwsim->hw, &hwsim->hw_scan,
 				     msecs_to_jiffies(dwell));
+	hwsim->survey_data[hwsim->scan_chan_idx].channel = hwsim->tmp_chan;
+	hwsim->survey_data[hwsim->scan_chan_idx].start = jiffies;
+	hwsim->survey_data[hwsim->scan_chan_idx].end =
+		jiffies + msecs_to_jiffies(dwell);
 	hwsim->scan_chan_idx++;
 	mutex_unlock(&hwsim->mutex);
 }
@@ -2020,6 +2062,7 @@ static int mac80211_hwsim_hw_scan(struct ieee80211_hw *hw,
 				     hw_req->req.mac_addr_mask);
 	else
 		memcpy(hwsim->scan_addr, vif->addr, ETH_ALEN);
+	memset(hwsim->survey_data, 0, sizeof(hwsim->survey_data));
 	mutex_unlock(&hwsim->mutex);
 
 	wiphy_debug(hw->wiphy, "hwsim hw_scan request\n");
@@ -2066,6 +2109,7 @@ static void mac80211_hwsim_sw_scan(struct ieee80211_hw *hw,
 
 	memcpy(hwsim->scan_addr, mac_addr, ETH_ALEN);
 	hwsim->scanning = true;
+	memset(hwsim->survey_data, 0, sizeof(hwsim->survey_data));
 
 out:
 	mutex_unlock(&hwsim->mutex);
@@ -2256,35 +2300,51 @@ static void mac80211_hwsim_get_et_stats(struct ieee80211_hw *hw,
 	WARN_ON(i != MAC80211_HWSIM_SSTATS_LEN);
 }
 
+#define HWSIM_COMMON_OPS					\
+	.tx = mac80211_hwsim_tx,				\
+	.start = mac80211_hwsim_start,				\
+	.stop = mac80211_hwsim_stop,				\
+	.add_interface = mac80211_hwsim_add_interface,		\
+	.change_interface = mac80211_hwsim_change_interface,	\
+	.remove_interface = mac80211_hwsim_remove_interface,	\
+	.config = mac80211_hwsim_config,			\
+	.configure_filter = mac80211_hwsim_configure_filter,	\
+	.bss_info_changed = mac80211_hwsim_bss_info_changed,	\
+	.sta_add = mac80211_hwsim_sta_add,			\
+	.sta_remove = mac80211_hwsim_sta_remove,		\
+	.sta_notify = mac80211_hwsim_sta_notify,		\
+	.set_tim = mac80211_hwsim_set_tim,			\
+	.conf_tx = mac80211_hwsim_conf_tx,			\
+	.get_survey = mac80211_hwsim_get_survey,		\
+	CFG80211_TESTMODE_CMD(mac80211_hwsim_testmode_cmd)	\
+	.ampdu_action = mac80211_hwsim_ampdu_action,		\
+	.flush = mac80211_hwsim_flush,				\
+	.get_tsf = mac80211_hwsim_get_tsf,			\
+	.set_tsf = mac80211_hwsim_set_tsf,			\
+	.get_et_sset_count = mac80211_hwsim_get_et_sset_count,	\
+	.get_et_stats = mac80211_hwsim_get_et_stats,		\
+	.get_et_strings = mac80211_hwsim_get_et_strings,
+
 static const struct ieee80211_ops mac80211_hwsim_ops = {
-	.tx = mac80211_hwsim_tx,
-	.start = mac80211_hwsim_start,
-	.stop = mac80211_hwsim_stop,
-	.add_interface = mac80211_hwsim_add_interface,
-	.change_interface = mac80211_hwsim_change_interface,
-	.remove_interface = mac80211_hwsim_remove_interface,
-	.config = mac80211_hwsim_config,
-	.configure_filter = mac80211_hwsim_configure_filter,
-	.bss_info_changed = mac80211_hwsim_bss_info_changed,
-	.sta_add = mac80211_hwsim_sta_add,
-	.sta_remove = mac80211_hwsim_sta_remove,
-	.sta_notify = mac80211_hwsim_sta_notify,
-	.set_tim = mac80211_hwsim_set_tim,
-	.conf_tx = mac80211_hwsim_conf_tx,
-	.get_survey = mac80211_hwsim_get_survey,
-	CFG80211_TESTMODE_CMD(mac80211_hwsim_testmode_cmd)
-	.ampdu_action = mac80211_hwsim_ampdu_action,
+	HWSIM_COMMON_OPS
 	.sw_scan_start = mac80211_hwsim_sw_scan,
 	.sw_scan_complete = mac80211_hwsim_sw_scan_complete,
-	.flush = mac80211_hwsim_flush,
-	.get_tsf = mac80211_hwsim_get_tsf,
-	.set_tsf = mac80211_hwsim_set_tsf,
-	.get_et_sset_count = mac80211_hwsim_get_et_sset_count,
-	.get_et_stats = mac80211_hwsim_get_et_stats,
-	.get_et_strings = mac80211_hwsim_get_et_strings,
 };
 
-static struct ieee80211_ops mac80211_hwsim_mchan_ops;
+static const struct ieee80211_ops mac80211_hwsim_mchan_ops = {
+	HWSIM_COMMON_OPS
+	.hw_scan = mac80211_hwsim_hw_scan,
+	.cancel_hw_scan = mac80211_hwsim_cancel_hw_scan,
+	.sw_scan_start = NULL,
+	.sw_scan_complete = NULL,
+	.remain_on_channel = mac80211_hwsim_roc,
+	.cancel_remain_on_channel = mac80211_hwsim_croc,
+	.add_chanctx = mac80211_hwsim_add_chanctx,
+	.remove_chanctx = mac80211_hwsim_remove_chanctx,
+	.change_chanctx = mac80211_hwsim_change_chanctx,
+	.assign_vif_chanctx = mac80211_hwsim_assign_vif_chanctx,
+	.unassign_vif_chanctx = mac80211_hwsim_unassign_vif_chanctx,
+};
 
 struct hwsim_new_radio_params {
 	unsigned int channels;
@@ -2429,6 +2489,9 @@ static int mac80211_hwsim_new_radio(struct genl_info *info,
 		goto failed;
 	}
 
+	/* ieee80211_alloc_hw_nm may have used a default name */
+	param->hwname = wiphy_name(hw->wiphy);
+
 	if (info)
 		net = genl_info_net(info);
 	else
@@ -2569,9 +2632,6 @@ static int mac80211_hwsim_new_radio(struct genl_info *info,
 				IEEE80211_VHT_CAP_SHORT_GI_80 |
 				IEEE80211_VHT_CAP_SHORT_GI_160 |
 				IEEE80211_VHT_CAP_TXSTBC |
-				IEEE80211_VHT_CAP_RXSTBC_1 |
-				IEEE80211_VHT_CAP_RXSTBC_2 |
-				IEEE80211_VHT_CAP_RXSTBC_3 |
 				IEEE80211_VHT_CAP_RXSTBC_4 |
 				IEEE80211_VHT_CAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK;
 			sband->vht_cap.vht_mcs.rx_mcs_map =
@@ -2636,6 +2696,12 @@ static int mac80211_hwsim_new_radio(struct genl_info *info,
 	if (param->no_vif)
 		ieee80211_hw_set(hw, NO_AUTO_VIF);
 
+	wiphy_ext_feature_set(hw->wiphy, NL80211_EXT_FEATURE_CQM_RSSI_LIST);
+
+	tasklet_hrtimer_init(&data->beacon_timer,
+			     mac80211_hwsim_beacon,
+			     CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+
 	err = ieee80211_register_hw(hw);
 	if (err < 0) {
 		printk(KERN_DEBUG "mac80211_hwsim: ieee80211_register_hw failed (%d)\n",
@@ -2660,16 +2726,11 @@ static int mac80211_hwsim_new_radio(struct genl_info *info,
 				    data->debugfs,
 				    data, &hwsim_simulate_radar);
 
-	tasklet_hrtimer_init(&data->beacon_timer,
-			     mac80211_hwsim_beacon,
-			     CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-
 	spin_lock_bh(&hwsim_radio_lock);
 	list_add_tail(&data->list, &hwsim_radios);
 	spin_unlock_bh(&hwsim_radio_lock);
 
-	if (idx > 0)
-		hwsim_mcast_new_radio(idx, info, param);
+	hwsim_mcast_new_radio(idx, info, param);
 
 	return idx;
 
@@ -2791,7 +2852,6 @@ static void mac80211_hwsim_free(void)
 
 static const struct net_device_ops hwsim_netdev_ops = {
 	.ndo_start_xmit 	= hwsim_mon_xmit,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
@@ -2799,7 +2859,7 @@ static const struct net_device_ops hwsim_netdev_ops = {
 static void hwsim_mon_setup(struct net_device *dev)
 {
 	dev->netdev_ops = &hwsim_netdev_ops;
-	dev->destructor = free_netdev;
+	dev->needs_free_netdev = true;
 	ether_setup(dev);
 	dev->priv_flags |= IFF_NO_QUEUE;
 	dev->type = ARPHRD_IEEE80211_RADIOTAP;
@@ -2959,7 +3019,7 @@ static int hwsim_cloned_frame_received_nl(struct sk_buff *skb_2,
 		goto err;
 
 	/* Copy the data */
-	memcpy(skb_put(skb, frame_data_len), frame_data, frame_data_len);
+	skb_put_data(skb, frame_data, frame_data_len);
 
 	data2 = get_hwsim_data_ref_from_addr(dst);
 	if (!data2)
@@ -3060,13 +3120,23 @@ static int hwsim_new_radio_nl(struct sk_buff *msg, struct genl_info *info)
 	if (info->attrs[HWSIM_ATTR_CHANNELS])
 		param.channels = nla_get_u32(info->attrs[HWSIM_ATTR_CHANNELS]);
 
+	if (param.channels < 1) {
+		GENL_SET_ERR_MSG(info, "must have at least one channel");
+		return -EINVAL;
+	}
+
+	if (param.channels > CFG80211_MAX_NUM_DIFFERENT_CHANNELS) {
+		GENL_SET_ERR_MSG(info, "too many channels specified");
+		return -EINVAL;
+	}
+
 	if (info->attrs[HWSIM_ATTR_NO_VIF])
 		param.no_vif = true;
 
 	if (info->attrs[HWSIM_ATTR_RADIO_NAME]) {
-		hwname = kasprintf(GFP_KERNEL, "%.*s",
-				   nla_len(info->attrs[HWSIM_ATTR_RADIO_NAME]),
-				   (char *)nla_data(info->attrs[HWSIM_ATTR_RADIO_NAME]));
+		hwname = kstrndup((char *)nla_data(info->attrs[HWSIM_ATTR_RADIO_NAME]),
+				  nla_len(info->attrs[HWSIM_ATTR_RADIO_NAME]),
+				  GFP_KERNEL);
 		if (!hwname)
 			return -ENOMEM;
 		param.hwname = hwname;
@@ -3105,9 +3175,9 @@ static int hwsim_del_radio_nl(struct sk_buff *msg, struct genl_info *info)
 	if (info->attrs[HWSIM_ATTR_RADIO_ID]) {
 		idx = nla_get_u32(info->attrs[HWSIM_ATTR_RADIO_ID]);
 	} else if (info->attrs[HWSIM_ATTR_RADIO_NAME]) {
-		hwname = kasprintf(GFP_KERNEL, "%.*s",
-				   nla_len(info->attrs[HWSIM_ATTR_RADIO_NAME]),
-				   (char *)nla_data(info->attrs[HWSIM_ATTR_RADIO_NAME]));
+		hwname = kstrndup((char *)nla_data(info->attrs[HWSIM_ATTR_RADIO_NAME]),
+				  nla_len(info->attrs[HWSIM_ATTR_RADIO_NAME]),
+				  GFP_KERNEL);
 		if (!hwname)
 			return -ENOMEM;
 	} else
@@ -3171,7 +3241,7 @@ static int hwsim_get_radio_nl(struct sk_buff *msg, struct genl_info *info)
 			goto out_err;
 		}
 
-		genlmsg_reply(skb, info);
+		res = genlmsg_reply(skb, info);
 		break;
 	}
 
@@ -3255,6 +3325,18 @@ static const struct genl_ops hwsim_ops[] = {
 	},
 };
 
+static struct genl_family hwsim_genl_family __ro_after_init = {
+	.name = "MAC80211_HWSIM",
+	.version = 1,
+	.maxattr = HWSIM_ATTR_MAX,
+	.netnsok = true,
+	.module = THIS_MODULE,
+	.ops = hwsim_ops,
+	.n_ops = ARRAY_SIZE(hwsim_ops),
+	.mcgrps = hwsim_mcgrps,
+	.n_mcgrps = ARRAY_SIZE(hwsim_mcgrps),
+};
+
 static void destroy_radio(struct work_struct *work)
 {
 	struct mac80211_hwsim_data *data =
@@ -3302,15 +3384,13 @@ static struct notifier_block hwsim_netlink_notifier = {
 	.notifier_call = mac80211_hwsim_netlink_notify,
 };
 
-static int hwsim_init_netlink(void)
+static int __init hwsim_init_netlink(void)
 {
 	int rc;
 
 	printk(KERN_INFO "mac80211_hwsim: initializing netlink\n");
 
-	rc = genl_register_family_with_ops_groups(&hwsim_genl_family,
-						  hwsim_ops,
-						  hwsim_mcgrps);
+	rc = genl_register_family(&hwsim_genl_family);
 	if (rc)
 		goto failure;
 
@@ -3382,21 +3462,6 @@ static int __init init_mac80211_hwsim(void)
 	if (channels < 1)
 		return -EINVAL;
 
-	mac80211_hwsim_mchan_ops = mac80211_hwsim_ops;
-	mac80211_hwsim_mchan_ops.hw_scan = mac80211_hwsim_hw_scan;
-	mac80211_hwsim_mchan_ops.cancel_hw_scan = mac80211_hwsim_cancel_hw_scan;
-	mac80211_hwsim_mchan_ops.sw_scan_start = NULL;
-	mac80211_hwsim_mchan_ops.sw_scan_complete = NULL;
-	mac80211_hwsim_mchan_ops.remain_on_channel = mac80211_hwsim_roc;
-	mac80211_hwsim_mchan_ops.cancel_remain_on_channel = mac80211_hwsim_croc;
-	mac80211_hwsim_mchan_ops.add_chanctx = mac80211_hwsim_add_chanctx;
-	mac80211_hwsim_mchan_ops.remove_chanctx = mac80211_hwsim_remove_chanctx;
-	mac80211_hwsim_mchan_ops.change_chanctx = mac80211_hwsim_change_chanctx;
-	mac80211_hwsim_mchan_ops.assign_vif_chanctx =
-		mac80211_hwsim_assign_vif_chanctx;
-	mac80211_hwsim_mchan_ops.unassign_vif_chanctx =
-		mac80211_hwsim_unassign_vif_chanctx;
-
 	spin_lock_init(&hwsim_radio_lock);
 
 	err = register_pernet_device(&hwsim_net_ops);
@@ -3407,15 +3472,15 @@ static int __init init_mac80211_hwsim(void)
 	if (err)
 		goto out_unregister_pernet;
 
+	err = hwsim_init_netlink();
+	if (err)
+		goto out_unregister_driver;
+
 	hwsim_class = class_create(THIS_MODULE, "mac80211_hwsim");
 	if (IS_ERR(hwsim_class)) {
 		err = PTR_ERR(hwsim_class);
-		goto out_unregister_driver;
+		goto out_exit_netlink;
 	}
-
-	err = hwsim_init_netlink();
-	if (err < 0)
-		goto out_unregister_driver;
 
 	for (i = 0; i < radios; i++) {
 		struct hwsim_new_radio_params param = { 0 };
@@ -3522,6 +3587,8 @@ out_free_mon:
 	free_netdev(hwsim_mon);
 out_free_radios:
 	mac80211_hwsim_free();
+out_exit_netlink:
+	hwsim_exit_netlink();
 out_unregister_driver:
 	platform_driver_unregister(&mac80211_hwsim_driver);
 out_unregister_pernet:

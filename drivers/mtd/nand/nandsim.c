@@ -33,13 +33,14 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/nand_bch.h>
 #include <linux/mtd/partitions.h>
 #include <linux/delay.h>
 #include <linux/list.h>
 #include <linux/random.h>
 #include <linux/sched.h>
+#include <linux/sched/mm.h>
 #include <linux/fs.h>
 #include <linux/pagemap.h>
 #include <linux/seq_file.h>
@@ -286,11 +287,6 @@ MODULE_PARM_DESC(bch,		 "Enable BCH ecc and set how many bits should "
 /* Maximum page cache pages needed to read or write a NAND page to the cache_file */
 #define NS_MAX_HELD_PAGES 16
 
-struct nandsim_debug_info {
-	struct dentry *dfs_root;
-	struct dentry *dfs_wear_report;
-};
-
 /*
  * A union to represent flash memory contents and flash buffer.
  */
@@ -369,8 +365,6 @@ struct nandsim {
 	void *file_buf;
 	struct page *held_pages[NS_MAX_HELD_PAGES];
 	int held_cnt;
-
-	struct nandsim_debug_info dbg;
 };
 
 /*
@@ -523,44 +517,28 @@ static const struct file_operations dfs_fops = {
  */
 static int nandsim_debugfs_create(struct nandsim *dev)
 {
-	struct nandsim_debug_info *dbg = &dev->dbg;
+	struct dentry *root = nsmtd->dbg.dfs_dir;
 	struct dentry *dent;
-	int err;
 
-	if (!IS_ENABLED(CONFIG_DEBUG_FS))
+	/*
+	 * Just skip debugfs initialization when the debugfs directory is
+	 * missing.
+	 */
+	if (IS_ERR_OR_NULL(root)) {
+		if (IS_ENABLED(CONFIG_DEBUG_FS) &&
+		    !IS_ENABLED(CONFIG_MTD_PARTITIONED_MASTER))
+			NS_WARN("CONFIG_MTD_PARTITIONED_MASTER must be enabled to expose debugfs stuff\n");
 		return 0;
-
-	dent = debugfs_create_dir("nandsim", NULL);
-	if (IS_ERR_OR_NULL(dent)) {
-		int err = dent ? -ENODEV : PTR_ERR(dent);
-
-		NS_ERR("cannot create \"nandsim\" debugfs directory, err %d\n",
-			err);
-		return err;
 	}
-	dbg->dfs_root = dent;
 
-	dent = debugfs_create_file("wear_report", S_IRUSR,
-				   dbg->dfs_root, dev, &dfs_fops);
-	if (IS_ERR_OR_NULL(dent))
-		goto out_remove;
-	dbg->dfs_wear_report = dent;
+	dent = debugfs_create_file("nandsim_wear_report", S_IRUSR,
+				   root, dev, &dfs_fops);
+	if (IS_ERR_OR_NULL(dent)) {
+		NS_ERR("cannot create \"nandsim_wear_report\" debugfs entry\n");
+		return -1;
+	}
 
 	return 0;
-
-out_remove:
-	debugfs_remove_recursive(dbg->dfs_root);
-	err = dent ? PTR_ERR(dent) : -ENODEV;
-	return err;
-}
-
-/**
- * nandsim_debugfs_remove - destroy all debugfs files
- */
-static void nandsim_debugfs_remove(struct nandsim *ns)
-{
-	if (IS_ENABLED(CONFIG_DEBUG_FS))
-		debugfs_remove_recursive(ns->dbg.dfs_root);
 }
 
 /*
@@ -906,7 +884,7 @@ static int parse_weakpages(void)
 		zero_ok = (*w == '0' ? 1 : 0);
 		page_no = simple_strtoul(w, &w, 0);
 		if (!zero_ok && !page_no) {
-			NS_ERR("invalid weakpagess.\n");
+			NS_ERR("invalid weakpages.\n");
 			return -EINVAL;
 		}
 		max_writes = 3;
@@ -1373,31 +1351,18 @@ static int get_pages(struct nandsim *ns, struct file *file, size_t count, loff_t
 	return 0;
 }
 
-static int set_memalloc(void)
-{
-	if (current->flags & PF_MEMALLOC)
-		return 0;
-	current->flags |= PF_MEMALLOC;
-	return 1;
-}
-
-static void clear_memalloc(int memalloc)
-{
-	if (memalloc)
-		current->flags &= ~PF_MEMALLOC;
-}
-
 static ssize_t read_file(struct nandsim *ns, struct file *file, void *buf, size_t count, loff_t pos)
 {
 	ssize_t tx;
-	int err, memalloc;
+	int err;
+	unsigned int noreclaim_flag;
 
 	err = get_pages(ns, file, count, pos);
 	if (err)
 		return err;
-	memalloc = set_memalloc();
-	tx = kernel_read(file, pos, buf, count);
-	clear_memalloc(memalloc);
+	noreclaim_flag = memalloc_noreclaim_save();
+	tx = kernel_read(file, buf, count, &pos);
+	memalloc_noreclaim_restore(noreclaim_flag);
 	put_pages(ns);
 	return tx;
 }
@@ -1405,14 +1370,15 @@ static ssize_t read_file(struct nandsim *ns, struct file *file, void *buf, size_
 static ssize_t write_file(struct nandsim *ns, struct file *file, void *buf, size_t count, loff_t pos)
 {
 	ssize_t tx;
-	int err, memalloc;
+	int err;
+	unsigned int noreclaim_flag;
 
 	err = get_pages(ns, file, count, pos);
 	if (err)
 		return err;
-	memalloc = set_memalloc();
-	tx = kernel_write(file, buf, count, pos);
-	clear_memalloc(memalloc);
+	noreclaim_flag = memalloc_noreclaim_save();
+	tx = kernel_write(file, buf, count, &pos);
+	memalloc_noreclaim_restore(noreclaim_flag);
 	put_pages(ns);
 	return tx;
 }
@@ -2313,8 +2279,6 @@ static int __init ns_init_module(void)
 	retval = nand_scan_ident(nsmtd, 1, NULL);
 	if (retval) {
 		NS_ERR("cannot scan NAND Simulator device\n");
-		if (retval > 0)
-			retval = -ENXIO;
 		goto error;
 	}
 
@@ -2350,8 +2314,6 @@ static int __init ns_init_module(void)
 	retval = nand_scan_tail(nsmtd);
 	if (retval) {
 		NS_ERR("can't register NAND Simulator\n");
-		if (retval > 0)
-			retval = -ENXIO;
 		goto error;
 	}
 
@@ -2372,9 +2334,6 @@ static int __init ns_init_module(void)
 	if ((retval = setup_wear_reporting(nsmtd)) != 0)
 		goto err_exit;
 
-	if ((retval = nandsim_debugfs_create(nand)) != 0)
-		goto err_exit;
-
 	if ((retval = init_nandsim(nsmtd)) != 0)
 		goto err_exit;
 
@@ -2390,11 +2349,14 @@ static int __init ns_init_module(void)
 	if (retval != 0)
 		goto err_exit;
 
+	if ((retval = nandsim_debugfs_create(nand)) != 0)
+		goto err_exit;
+
         return 0;
 
 err_exit:
 	free_nandsim(nand);
-	nand_release(nsmtd);
+	nand_release(chip);
 	for (i = 0;i < ARRAY_SIZE(nand->partitions); ++i)
 		kfree(nand->partitions[i].name);
 error:
@@ -2415,9 +2377,8 @@ static void __exit ns_cleanup_module(void)
 	struct nandsim *ns = nand_get_controller_data(chip);
 	int i;
 
-	nandsim_debugfs_remove(ns);
 	free_nandsim(ns);    /* Free nandsim private resources */
-	nand_release(nsmtd); /* Unregister driver */
+	nand_release(chip); /* Unregister driver */
 	for (i = 0;i < ARRAY_SIZE(ns->partitions); ++i)
 		kfree(ns->partitions[i].name);
 	kfree(mtd_to_nand(nsmtd));        /* Free other structures */

@@ -630,14 +630,8 @@ static const struct pinctrl_pin_desc lpc18xx_pins[] = {
 	LPC18XX_PIN(i2c0_sda, PIN_I2C0_SDA),
 };
 
-/**
- * enum lpc18xx_pin_config_param - possible pin configuration parameters
- * @PIN_CONFIG_GPIO_PIN_INT: route gpio to the gpio pin interrupt
- * 	controller.
- */
-enum lpc18xx_pin_config_param {
-	PIN_CONFIG_GPIO_PIN_INT = PIN_CONFIG_END + 1,
-};
+/* PIN_CONFIG_GPIO_PIN_INT: route gpio to the gpio pin interrupt controller */
+#define PIN_CONFIG_GPIO_PIN_INT		(PIN_CONFIG_END + 1)
 
 static const struct pinconf_generic_params lpc18xx_params[] = {
 	{"nxp,gpio-pin-interrupt", PIN_CONFIG_GPIO_PIN_INT, 0},
@@ -904,7 +898,7 @@ static int lpc18xx_pconf_get(struct pinctrl_dev *pctldev, unsigned pin,
 
 static int lpc18xx_pconf_set_usb1(struct pinctrl_dev *pctldev,
 				  enum pin_config_param param,
-				  u16 param_val, u32 *reg)
+				  u32 param_val, u32 *reg)
 {
 	switch (param) {
 	case PIN_CONFIG_LOW_POWER_MODE:
@@ -932,7 +926,7 @@ static int lpc18xx_pconf_set_usb1(struct pinctrl_dev *pctldev,
 
 static int lpc18xx_pconf_set_i2c0(struct pinctrl_dev *pctldev,
 				  enum pin_config_param param,
-				  u16 param_val, u32 *reg,
+				  u32 param_val, u32 *reg,
 				  unsigned pin)
 {
 	u8 shift;
@@ -982,7 +976,7 @@ static int lpc18xx_pconf_set_i2c0(struct pinctrl_dev *pctldev,
 }
 
 static int lpc18xx_pconf_set_gpio_pin_int(struct pinctrl_dev *pctldev,
-					  u16 param_val, unsigned pin)
+					  u32 param_val, unsigned pin)
 {
 	struct lpc18xx_scu_data *scu = pinctrl_dev_get_drvdata(pctldev);
 	u32 val, reg_val, reg_offset = LPC18XX_SCU_PINTSEL0;
@@ -1008,7 +1002,7 @@ static int lpc18xx_pconf_set_gpio_pin_int(struct pinctrl_dev *pctldev,
 }
 
 static int lpc18xx_pconf_set_pin(struct pinctrl_dev *pctldev, unsigned param,
-				 u16 param_val, u32 *reg, unsigned pin,
+				 u32 param_val, u32 *reg, unsigned pin,
 				 struct lpc18xx_pin_caps *pin_cap)
 {
 	switch (param) {
@@ -1088,7 +1082,7 @@ static int lpc18xx_pconf_set(struct pinctrl_dev *pctldev, unsigned pin,
 	struct lpc18xx_scu_data *scu = pinctrl_dev_get_drvdata(pctldev);
 	struct lpc18xx_pin_caps *pin_cap;
 	enum pin_config_param param;
-	u16 param_val;
+	u32 param_val;
 	u32 reg;
 	int ret;
 	int i;

@@ -132,7 +132,7 @@ static void at91_lpddr_poweroff(void)
 		  "r" cpu_to_le32(AT91_DDRSDRC_LPDDR2_PWOFF),
 		  "r" (at91_shdwc->at91_shdwc_base),
 		  "r" cpu_to_le32(AT91_SHDW_KEY | AT91_SHDW_SHDW)
-		: "r0");
+		: "r6");
 }
 
 static u32 at91_shdwc_debouncer_value(struct platform_device *pdev,
@@ -171,8 +171,8 @@ static u32 at91_shdwc_get_wakeup_input(struct platform_device *pdev,
 
 	for_each_child_of_node(np, cnp) {
 		if (of_property_read_u32(cnp, "reg", &wk_input)) {
-			dev_warn(&pdev->dev, "reg property is missing for %s\n",
-				 cnp->full_name);
+			dev_warn(&pdev->dev, "reg property is missing for %pOF\n",
+				 cnp);
 			continue;
 		}
 
@@ -245,6 +245,9 @@ static int __init at91_shdwc_probe(struct platform_device *pdev)
 
 	if (!pdev->dev.of_node)
 		return -ENODEV;
+
+	if (at91_shdwc)
+		return -EBUSY;
 
 	at91_shdwc = devm_kzalloc(&pdev->dev, sizeof(*at91_shdwc), GFP_KERNEL);
 	if (!at91_shdwc)

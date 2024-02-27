@@ -43,12 +43,12 @@ static long native_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 struct v4l2_clip32 {
 	struct v4l2_rect        c;
-	compat_caddr_t		next;
+	compat_caddr_t 		next;
 };
 
 struct v4l2_window32 {
 	struct v4l2_rect        w;
-	__u32			field;	/* enum v4l2_field */
+	__u32		  	field;	/* enum v4l2_field */
 	__u32			chromakey;
 	compat_caddr_t		clips; /* actually struct v4l2_clip32 * */
 	__u32			clipcount;
@@ -139,6 +139,7 @@ struct v4l2_format32 {
 		struct v4l2_vbi_format	vbi;
 		struct v4l2_sliced_vbi_format	sliced;
 		struct v4l2_sdr_format	sdr;
+		struct v4l2_meta_format	meta;
 		__u8	raw_data[200];        /* user-defined */
 	} fmt;
 };
@@ -226,6 +227,9 @@ static int __get_v4l2_format32(struct v4l2_format __user *kp,
 	case V4L2_BUF_TYPE_SDR_OUTPUT:
 		return copy_in_user(&kp->fmt.sdr, &up->fmt.sdr,
 				    sizeof(kp->fmt.sdr)) ? -EFAULT : 0;
+	case V4L2_BUF_TYPE_META_CAPTURE:
+		return copy_in_user(&kp->fmt.meta, &up->fmt.meta,
+				    sizeof(kp->fmt.meta)) ? -EFAULT : 0;
 	default:
 		return -EINVAL;
 	}
@@ -292,6 +296,9 @@ static int __put_v4l2_format32(struct v4l2_format __user *kp,
 	case V4L2_BUF_TYPE_SDR_OUTPUT:
 		return copy_in_user(&up->fmt.sdr, &kp->fmt.sdr,
 				    sizeof(kp->fmt.sdr)) ? -EFAULT : 0;
+	case V4L2_BUF_TYPE_META_CAPTURE:
+		return copy_in_user(&up->fmt.meta, &kp->fmt.meta,
+				    sizeof(kp->fmt.meta)) ? -EFAULT : 0;
 	default:
 		return -EINVAL;
 	}
@@ -393,9 +400,7 @@ static int get_v4l2_plane32(struct v4l2_plane __user *up,
 
 	if (copy_in_user(up, up32, 2 * sizeof(__u32)) ||
 	    copy_in_user(&up->data_offset, &up32->data_offset,
-			 sizeof(up->data_offset)) ||
-	    copy_in_user(up->reserved, up32->reserved,
-			 sizeof(up->reserved)))
+			 sizeof(up->data_offset)))
 		return -EFAULT;
 
 	switch (memory) {
@@ -427,9 +432,7 @@ static int put_v4l2_plane32(struct v4l2_plane __user *up,
 
 	if (copy_in_user(up32, up, 2 * sizeof(__u32)) ||
 	    copy_in_user(&up32->data_offset, &up->data_offset,
-			 sizeof(up->data_offset)) ||
-	    copy_in_user(up32->reserved, up->reserved,
-			 sizeof(up32->reserved)))
+			 sizeof(up->data_offset)))
 		return -EFAULT;
 
 	switch (memory) {
@@ -490,6 +493,8 @@ static int get_v4l2_buffer32(struct v4l2_buffer __user *kp,
 	struct v4l2_plane __user *uplane;
 	compat_caddr_t p;
 	int ret;
+	u32 reserved;
+	u32 reserved2;
 
 	if (!access_ok(VERIFY_READ, up, sizeof(*up)) ||
 	    assign_in_user(&kp->index, &up->index) ||
@@ -499,7 +504,11 @@ static int get_v4l2_buffer32(struct v4l2_buffer __user *kp,
 	    get_user(memory, &up->memory) ||
 	    put_user(memory, &kp->memory) ||
 	    get_user(length, &up->length) ||
-	    put_user(length, &kp->length))
+	    put_user(length, &kp->length) ||
+	    get_user(reserved2, &up->reserved2) ||
+	    put_user(reserved2, &kp->reserved2) ||
+	    get_user(reserved, &up->reserved) ||
+	    put_user(reserved, &kp->reserved))
 		return -EFAULT;
 
 	if (V4L2_TYPE_IS_OUTPUT(type))
@@ -652,7 +661,7 @@ static int put_v4l2_buffer32(struct v4l2_buffer __user *kp,
 struct v4l2_framebuffer32 {
 	__u32			capability;
 	__u32			flags;
-	compat_caddr_t		base;
+	compat_caddr_t 		base;
 	struct {
 		__u32		width;
 		__u32		height;
@@ -985,7 +994,7 @@ static int put_v4l2_edid32(struct v4l2_edid __user *kp,
 #define VIDIOC_ENUMINPUT32	_IOWR('V', 26, struct v4l2_input32)
 #define VIDIOC_G_EDID32		_IOWR('V', 40, struct v4l2_edid32)
 #define VIDIOC_S_EDID32		_IOWR('V', 41, struct v4l2_edid32)
-#define VIDIOC_TRY_FMT32	_IOWR('V', 64, struct v4l2_format32)
+#define VIDIOC_TRY_FMT32      	_IOWR('V', 64, struct v4l2_format32)
 #define VIDIOC_G_EXT_CTRLS32    _IOWR('V', 71, struct v4l2_ext_controls32)
 #define VIDIOC_S_EXT_CTRLS32    _IOWR('V', 72, struct v4l2_ext_controls32)
 #define VIDIOC_TRY_EXT_CTRLS32  _IOWR('V', 73, struct v4l2_ext_controls32)

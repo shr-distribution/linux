@@ -169,7 +169,7 @@ make_checksum_hmac_md5(struct krb5_ctx *kctx, char *header, int hdrlen,
 	struct scatterlist              sg[1];
 	int err = -1;
 	u8 *checksumdata;
-	u8 rc4salt[4];
+	u8 *rc4salt;
 	struct crypto_ahash *md5;
 	struct crypto_ahash *hmac_md5;
 	struct ahash_request *req;
@@ -183,14 +183,18 @@ make_checksum_hmac_md5(struct krb5_ctx *kctx, char *header, int hdrlen,
 		return GSS_S_FAILURE;
 	}
 
+	rc4salt = kmalloc_array(4, sizeof(*rc4salt), GFP_NOFS);
+	if (!rc4salt)
+		return GSS_S_FAILURE;
+
 	if (arcfour_hmac_md5_usage_to_salt(usage, rc4salt)) {
 		dprintk("%s: invalid usage value %u\n", __func__, usage);
-		return GSS_S_FAILURE;
+		goto out_free_rc4salt;
 	}
 
 	checksumdata = kmalloc(GSS_KRB5_MAX_CKSUM_LEN, GFP_NOFS);
 	if (!checksumdata)
-		return GSS_S_FAILURE;
+		goto out_free_rc4salt;
 
 	md5 = crypto_alloc_ahash("md5", 0, CRYPTO_ALG_ASYNC);
 	if (IS_ERR(md5))
@@ -201,7 +205,7 @@ make_checksum_hmac_md5(struct krb5_ctx *kctx, char *header, int hdrlen,
 	if (IS_ERR(hmac_md5))
 		goto out_free_md5;
 
-	req = ahash_request_alloc(md5, GFP_KERNEL);
+	req = ahash_request_alloc(md5, GFP_NOFS);
 	if (!req)
 		goto out_free_hmac_md5;
 
@@ -231,7 +235,7 @@ make_checksum_hmac_md5(struct krb5_ctx *kctx, char *header, int hdrlen,
 		goto out;
 
 	ahash_request_free(req);
-	req = ahash_request_alloc(hmac_md5, GFP_KERNEL);
+	req = ahash_request_alloc(hmac_md5, GFP_NOFS);
 	if (!req)
 		goto out_free_hmac_md5;
 
@@ -258,6 +262,8 @@ out_free_md5:
 	crypto_free_ahash(md5);
 out_free_cksum:
 	kfree(checksumdata);
+out_free_rc4salt:
+	kfree(rc4salt);
 	return err ? GSS_S_FAILURE : 0;
 }
 
@@ -297,7 +303,7 @@ make_checksum(struct krb5_ctx *kctx, char *header, int hdrlen,
 	if (IS_ERR(tfm))
 		goto out_free_cksum;
 
-	req = ahash_request_alloc(tfm, GFP_KERNEL);
+	req = ahash_request_alloc(tfm, GFP_NOFS);
 	if (!req)
 		goto out_free_ahash;
 
@@ -395,7 +401,7 @@ make_checksum_v2(struct krb5_ctx *kctx, char *header, int hdrlen,
 		goto out_free_cksum;
 	checksumlen = crypto_ahash_digestsize(tfm);
 
-	req = ahash_request_alloc(tfm, GFP_KERNEL);
+	req = ahash_request_alloc(tfm, GFP_NOFS);
 	if (!req)
 		goto out_free_ahash;
 
@@ -961,7 +967,7 @@ krb5_rc4_setup_seq_key(struct krb5_ctx *kctx, struct crypto_skcipher *cipher,
 	}
 
 	desc = kmalloc(sizeof(*desc) + crypto_shash_descsize(hmac),
-		       GFP_KERNEL);
+		       GFP_NOFS);
 	if (!desc) {
 		dprintk("%s: failed to allocate shash descriptor for '%s'\n",
 			__func__, kctx->gk5e->cksum_name);
@@ -1028,7 +1034,7 @@ krb5_rc4_setup_enc_key(struct krb5_ctx *kctx, struct crypto_skcipher *cipher,
 	}
 
 	desc = kmalloc(sizeof(*desc) + crypto_shash_descsize(hmac),
-		       GFP_KERNEL);
+		       GFP_NOFS);
 	if (!desc) {
 		dprintk("%s: failed to allocate shash descriptor for '%s'\n",
 			__func__, kctx->gk5e->cksum_name);

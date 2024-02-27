@@ -47,9 +47,9 @@ struct xfs_dir_ops {
 	struct xfs_dir2_sf_entry *
 		(*sf_nextentry)(struct xfs_dir2_sf_hdr *hdr,
 				struct xfs_dir2_sf_entry *sfep);
-	__uint8_t (*sf_get_ftype)(struct xfs_dir2_sf_entry *sfep);
+	uint8_t (*sf_get_ftype)(struct xfs_dir2_sf_entry *sfep);
 	void	(*sf_put_ftype)(struct xfs_dir2_sf_entry *sfep,
-				__uint8_t ftype);
+				uint8_t ftype);
 	xfs_ino_t (*sf_get_ino)(struct xfs_dir2_sf_hdr *hdr,
 				struct xfs_dir2_sf_entry *sfep);
 	void	(*sf_put_ino)(struct xfs_dir2_sf_hdr *hdr,
@@ -60,9 +60,9 @@ struct xfs_dir_ops {
 				     xfs_ino_t ino);
 
 	int	(*data_entsize)(int len);
-	__uint8_t (*data_get_ftype)(struct xfs_dir2_data_entry *dep);
+	uint8_t (*data_get_ftype)(struct xfs_dir2_data_entry *dep);
 	void	(*data_put_ftype)(struct xfs_dir2_data_entry *dep,
-				__uint8_t ftype);
+				uint8_t ftype);
 	__be16 * (*data_entry_tag_p)(struct xfs_dir2_data_entry *dep);
 	struct xfs_dir2_data_free *
 		(*data_bestfree_p)(struct xfs_dir2_data_hdr *hdr);
@@ -159,6 +159,9 @@ extern int xfs_dir2_isleaf(struct xfs_da_args *args, int *r);
 extern int xfs_dir2_shrink_inode(struct xfs_da_args *args, xfs_dir2_db_t db,
 				struct xfs_buf *bp);
 
+extern void xfs_dir2_data_freescan_int(struct xfs_da_geometry *geo,
+		const struct xfs_dir_ops *ops,
+		struct xfs_dir2_data_hdr *hdr, int *loghead);
 extern void xfs_dir2_data_freescan(struct xfs_inode *dp,
 		struct xfs_dir2_data_hdr *hdr, int *loghead);
 extern void xfs_dir2_data_log_entry(struct xfs_da_args *args,
@@ -178,6 +181,8 @@ extern void xfs_dir2_data_use_free(struct xfs_da_args *args,
 extern struct xfs_dir2_data_free *xfs_dir2_data_freefind(
 		struct xfs_dir2_data_hdr *hdr, struct xfs_dir2_data_free *bf,
 		struct xfs_dir2_data_unused *dup);
+
+extern int xfs_dir_ino_validate(struct xfs_mount *mp, xfs_ino_t ino);
 
 extern const struct xfs_buf_ops xfs_dir3_block_buf_ops;
 extern const struct xfs_buf_ops xfs_dir3_leafn_buf_ops;

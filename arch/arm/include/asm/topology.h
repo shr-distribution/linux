@@ -1,9 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_ARM_TOPOLOGY_H
 #define _ASM_ARM_TOPOLOGY_H
 
 #ifdef CONFIG_ARM_CPU_TOPOLOGY
 
-#include <linux/cpufreq.h>
 #include <linux/cpumask.h>
 
 struct cputopo_arm {
@@ -24,18 +24,29 @@ extern struct cputopo_arm cpu_topology[NR_CPUS];
 void init_cpu_topology(void);
 void store_cpu_topology(unsigned int cpuid);
 const struct cpumask *cpu_coregroup_mask(int cpu);
-unsigned long arch_get_cpu_efficiency(int cpu);
+int arch_is_multi_cluster(void);
+int arch_is_smp(void);
 
-#ifdef CONFIG_CPU_FREQ
-#define arch_scale_freq_capacity cpufreq_scale_freq_capacity
-#define arch_scale_max_freq_capacity cpufreq_scale_max_freq_capacity
-#define arch_scale_min_freq_capacity cpufreq_scale_min_freq_capacity
-#endif
-#define arch_scale_cpu_capacity scale_cpu_capacity
-extern unsigned long scale_cpu_capacity(struct sched_domain *sd, int cpu);
+#include <linux/arch_topology.h>
 
-#define arch_update_cpu_capacity update_cpu_power_capacity
-extern void update_cpu_power_capacity(int cpu);
+/* Replace task scheduler's default frequency-invariant accounting */
+#define arch_scale_freq_capacity topology_get_freq_scale
+
+/* Replace task scheduler's default max-frequency-invariant accounting */
+#define arch_scale_max_freq_capacity topology_get_max_freq_scale
+
+/* Replace task scheduler's default cpu-invariant accounting */
+#define arch_scale_cpu_capacity topology_get_cpu_scale
+
+/* Enable topology flag updates */
+#define arch_update_cpu_topology topology_update_cpu_topology
+
+/* Arch max frequency */
+#define arch_max_cpu_freq topology_get_max_cpu_freq
+
+/* Ceiling/floor frequency sacle */
+#define arch_max_freq_scale topology_get_max_freq_scale
+#define arch_min_freq_scale topology_get_min_freq_scale
 
 #else
 
@@ -43,6 +54,8 @@ static inline void init_cpu_topology(void) { }
 static inline void store_cpu_topology(unsigned int cpuid) { }
 
 #endif
+
+void arch_build_cpu_topology_domain(void);
 
 #include <asm-generic/topology.h>
 

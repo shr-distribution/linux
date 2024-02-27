@@ -93,6 +93,7 @@ static inline unsigned long __percpu_##op(void *ptr,			\
 		: [val] "Ir" (val));					\
 		break;							\
 	default:							\
+		ret = 0;						\
 		BUILD_BUG();						\
 	}								\
 									\
@@ -110,18 +111,19 @@ static inline unsigned long __percpu_read(void *ptr, int size)
 
 	switch (size) {
 	case 1:
-		ret = ACCESS_ONCE(*(u8 *)ptr);
+		ret = READ_ONCE(*(u8 *)ptr);
 		break;
 	case 2:
-		ret = ACCESS_ONCE(*(u16 *)ptr);
+		ret = READ_ONCE(*(u16 *)ptr);
 		break;
 	case 4:
-		ret = ACCESS_ONCE(*(u32 *)ptr);
+		ret = READ_ONCE(*(u32 *)ptr);
 		break;
 	case 8:
-		ret = ACCESS_ONCE(*(u64 *)ptr);
+		ret = READ_ONCE(*(u64 *)ptr);
 		break;
 	default:
+		ret = 0;
 		BUILD_BUG();
 	}
 
@@ -132,16 +134,16 @@ static inline void __percpu_write(void *ptr, unsigned long val, int size)
 {
 	switch (size) {
 	case 1:
-		ACCESS_ONCE(*(u8 *)ptr) = (u8)val;
+		WRITE_ONCE(*(u8 *)ptr, (u8)val);
 		break;
 	case 2:
-		ACCESS_ONCE(*(u16 *)ptr) = (u16)val;
+		WRITE_ONCE(*(u16 *)ptr, (u16)val);
 		break;
 	case 4:
-		ACCESS_ONCE(*(u32 *)ptr) = (u32)val;
+		WRITE_ONCE(*(u32 *)ptr, (u32)val);
 		break;
 	case 8:
-		ACCESS_ONCE(*(u64 *)ptr) = (u64)val;
+		WRITE_ONCE(*(u64 *)ptr, (u64)val);
 		break;
 	default:
 		BUILD_BUG();
@@ -191,6 +193,7 @@ static inline unsigned long __percpu_xchg(void *ptr, unsigned long val,
 		: [val] "r" (val));
 		break;
 	default:
+		ret = 0;
 		BUILD_BUG();
 	}
 

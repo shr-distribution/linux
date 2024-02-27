@@ -9,3 +9,4 @@ Description
 
 The access_ramoops driver allows userspace access to the persistent RAM storage
 used for oops and panics as well as the metadata required to decrypt that data.
+

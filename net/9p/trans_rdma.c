@@ -43,6 +43,7 @@
 #include <linux/parser.h>
 #include <linux/semaphore.h>
 #include <linux/slab.h>
+#include <linux/seq_file.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 #include <net/9p/transport.h>
@@ -70,6 +71,8 @@
  * @dm_mr: DMA Memory Region pointer
  * @lkey: The local access only memory region key
  * @timeout: Number of uSecs to wait for connection management events
+ * @privport: Whether a privileged port may be used
+ * @port: The port to use
  * @sq_depth: The depth of the Send Queue
  * @sq_sem: Semaphore for the SQ
  * @rq_depth: The depth of the Receive Queue.
@@ -95,6 +98,8 @@ struct p9_trans_rdma {
 	struct ib_qp *qp;
 	struct ib_cq *cq;
 	long timeout;
+	bool privport;
+	u16 port;
 	int sq_depth;
 	struct semaphore sq_sem;
 	int rq_depth;
@@ -133,10 +138,10 @@ struct p9_rdma_context {
  */
 struct p9_rdma_opts {
 	short port;
+	bool privport;
 	int sq_depth;
 	int rq_depth;
 	long timeout;
-	int privport;
 };
 
 /*
@@ -159,6 +164,23 @@ static match_table_t tokens = {
 	{Opt_err, NULL},
 };
 
+static int p9_rdma_show_options(struct seq_file *m, struct p9_client *clnt)
+{
+	struct p9_trans_rdma *rdma = clnt->trans;
+
+	if (rdma->port != P9_PORT)
+		seq_printf(m, ",port=%u", rdma->port);
+	if (rdma->sq_depth != P9_RDMA_SQ_DEPTH)
+		seq_printf(m, ",sq=%u", rdma->sq_depth);
+	if (rdma->rq_depth != P9_RDMA_RQ_DEPTH)
+		seq_printf(m, ",rq=%u", rdma->rq_depth);
+	if (rdma->timeout != P9_RDMA_TIMEOUT)
+		seq_printf(m, ",timeout=%lu", rdma->timeout);
+	if (rdma->privport)
+		seq_puts(m, ",privport");
+	return 0;
+}
+
 /**
  * parse_opts - parse mount options into rdma options structure
  * @params: options string passed from mount
@@ -177,7 +199,7 @@ static int parse_opts(char *params, struct p9_rdma_opts *opts)
 	opts->sq_depth = P9_RDMA_SQ_DEPTH;
 	opts->rq_depth = P9_RDMA_RQ_DEPTH;
 	opts->timeout = P9_RDMA_TIMEOUT;
-	opts->privport = 0;
+	opts->privport = false;
 
 	if (!params)
 		return 0;
@@ -218,7 +240,7 @@ static int parse_opts(char *params, struct p9_rdma_opts *opts)
 			opts->timeout = option;
 			break;
 		case Opt_privport:
-			opts->privport = 1;
+			opts->privport = true;
 			break;
 		default:
 			continue;
@@ -254,8 +276,7 @@ p9_cm_event_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 	case RDMA_CM_EVENT_DISCONNECTED:
 		if (rdma)
 			rdma->state = P9_RDMA_CLOSED;
-		if (c)
-			c->status = Disconnected;
+		c->status = Disconnected;
 		break;
 
 	case RDMA_CM_EVENT_TIMEWAIT_EXIT:
@@ -454,7 +475,7 @@ static int rdma_request(struct p9_client *client, struct p9_req_t *req)
 
 	err = post_recv(client, rpl_context);
 	if (err) {
-		p9_debug(P9_DEBUG_FCALL, "POST RECV failed\n");
+		p9_debug(P9_DEBUG_ERROR, "POST RECV failed: %d\n", err);
 		goto recv_error;
 	}
 	/* remove posted receive buffer from request structure */
@@ -523,7 +544,7 @@ dont_need_post_recv:
  recv_error:
 	kfree(rpl_context);
 	spin_lock_irqsave(&rdma->req_lock, flags);
-	if (rdma->state < P9_RDMA_CLOSING) {
+	if (err != -EINTR && rdma->state < P9_RDMA_CLOSING) {
 		rdma->state = P9_RDMA_CLOSING;
 		spin_unlock_irqrestore(&rdma->req_lock, flags);
 		rdma_disconnect(rdma->cm_id);
@@ -560,6 +581,8 @@ static struct p9_trans_rdma *alloc_rdma(struct p9_rdma_opts *opts)
 	if (!rdma)
 		return NULL;
 
+	rdma->port = opts->port;
+	rdma->privport = opts->privport;
 	rdma->sq_depth = opts->sq_depth;
 	rdma->rq_depth = opts->rq_depth;
 	rdma->timeout = opts->timeout;
@@ -621,6 +644,9 @@ rdma_create_trans(struct p9_client *client, const char *addr, char *args)
 	struct p9_trans_rdma *rdma;
 	struct rdma_conn_param conn_param;
 	struct ib_qp_init_attr qp_attr;
+
+	if (addr == NULL)
+		return -EINVAL;
 
 	/* Parse the transport specific mount options */
 	err = parse_opts(args, &opts);
@@ -733,6 +759,7 @@ static struct p9_trans_module p9_rdma_trans = {
 	.request = rdma_request,
 	.cancel = rdma_cancel,
 	.cancelled = rdma_cancelled,
+	.show_options = p9_rdma_show_options,
 };
 
 /**

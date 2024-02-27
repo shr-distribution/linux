@@ -106,9 +106,7 @@ static int iser_create_device_ib_res(struct iser_device *device)
 
 	INIT_IB_EVENT_HANDLER(&device->event_handler, ib_dev,
 			      iser_event_handler);
-	if (ib_register_event_handler(&device->event_handler))
-		goto cq_err;
-
+	ib_register_event_handler(&device->event_handler);
 	return 0;
 
 cq_err:
@@ -141,7 +139,7 @@ static void iser_free_device_ib_res(struct iser_device *device)
 		comp->cq = NULL;
 	}
 
-	(void)ib_unregister_event_handler(&device->event_handler);
+	ib_unregister_event_handler(&device->event_handler);
 	ib_dealloc_pd(device->pd);
 
 	kfree(device->comps);
@@ -599,7 +597,9 @@ static void iser_free_ib_conn_res(struct iser_conn *iser_conn,
 		  iser_conn, ib_conn->cma_id, ib_conn->qp);
 
 	if (ib_conn->qp != NULL) {
+		mutex_lock(&ig.connlist_mutex);
 		ib_conn->comp->active_qps--;
+		mutex_unlock(&ig.connlist_mutex);
 		rdma_destroy_qp(ib_conn->cma_id);
 		ib_conn->qp = NULL;
 	}
@@ -706,21 +706,16 @@ iser_calc_scsi_params(struct iser_conn *iser_conn,
 	unsigned short sg_tablesize, sup_sg_tablesize;
 
 	sg_tablesize = DIV_ROUND_UP(max_sectors * 512, SIZE_4K);
-	sup_sg_tablesize = min_t(unsigned, ISCSI_ISER_MAX_SG_TABLESIZE,
-				 device->ib_device->attrs.max_fast_reg_page_list_len);
+	if (device->ib_device->attrs.device_cap_flags &
+			IB_DEVICE_MEM_MGT_EXTENSIONS)
+		sup_sg_tablesize =
+			min_t(
+			 uint, ISCSI_ISER_MAX_SG_TABLESIZE,
+			 device->ib_device->attrs.max_fast_reg_page_list_len);
+	else
+		sup_sg_tablesize = ISCSI_ISER_MAX_SG_TABLESIZE;
 
-	if (sg_tablesize > sup_sg_tablesize) {
-		sg_tablesize = sup_sg_tablesize;
-		iser_conn->scsi_max_sectors = sg_tablesize * SIZE_4K / 512;
-	} else {
-		iser_conn->scsi_max_sectors = max_sectors;
-	}
-
-	iser_conn->scsi_sg_tablesize = sg_tablesize;
-
-	iser_dbg("iser_conn %p, sg_tablesize %u, max_sectors %u\n",
-		 iser_conn, iser_conn->scsi_sg_tablesize,
-		 iser_conn->scsi_max_sectors);
+	iser_conn->scsi_sg_tablesize = min(sg_tablesize, sup_sg_tablesize);
 }
 
 /**
@@ -892,11 +887,14 @@ static int iser_cma_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *eve
 	case RDMA_CM_EVENT_ESTABLISHED:
 		iser_connected_handler(cma_id, event->param.conn.private_data);
 		break;
+	case RDMA_CM_EVENT_REJECTED:
+		iser_info("Connection rejected: %s\n",
+			 rdma_reject_msg(cma_id, event->status));
+		/* FALLTHROUGH */
 	case RDMA_CM_EVENT_ADDR_ERROR:
 	case RDMA_CM_EVENT_ROUTE_ERROR:
 	case RDMA_CM_EVENT_CONNECT_ERROR:
 	case RDMA_CM_EVENT_UNREACHABLE:
-	case RDMA_CM_EVENT_REJECTED:
 		iser_connect_error(cma_id);
 		break;
 	case RDMA_CM_EVENT_DISCONNECTED:
@@ -1110,7 +1108,9 @@ u8 iser_check_task_pi_status(struct iscsi_iser_task *iser_task,
 					 IB_MR_CHECK_SIG_STATUS, &mr_status);
 		if (ret) {
 			pr_err("ib_check_mr_status failed, ret %d\n", ret);
-			goto err;
+			/* Not a lot we can do, return ambiguous guard error */
+			*sector = 0;
+			return 0x1;
 		}
 
 		if (mr_status.fail_status & IB_MR_CHECK_SIG_STATUS) {
@@ -1138,9 +1138,6 @@ u8 iser_check_task_pi_status(struct iscsi_iser_task *iser_task,
 	}
 
 	return 0;
-err:
-	/* Not alot we can do here, return ambiguous guard error */
-	return 0x1;
 }
 
 void iser_err_comp(struct ib_wc *wc, const char *type)

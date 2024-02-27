@@ -17,7 +17,9 @@
 #include <linux/compiler.h>
 #include <linux/types.h>
 #include <linux/io.h>
-#include <linux/ratelimit.h>
+#include <linux/leds.h>
+#include <linux/interrupt.h>
+
 #include <linux/mmc/host.h>
 
 /*
@@ -132,6 +134,7 @@
 #define  SDHCI_INT_CARD_REMOVE	0x00000080
 #define  SDHCI_INT_CARD_INT	0x00000100
 #define  SDHCI_INT_RETUNE	0x00001000
+#define  SDHCI_INT_CQE		0x00004000
 #define  SDHCI_INT_ERROR	0x00008000
 #define  SDHCI_INT_TIMEOUT	0x00010000
 #define  SDHCI_INT_CRC		0x00020000
@@ -149,24 +152,26 @@
 
 #define  SDHCI_INT_CMD_MASK	(SDHCI_INT_RESPONSE | SDHCI_INT_TIMEOUT | \
 		SDHCI_INT_CRC | SDHCI_INT_END_BIT | SDHCI_INT_INDEX | \
-				 SDHCI_INT_AUTO_CMD_ERR)
-
+		SDHCI_INT_AUTO_CMD_ERR)
 #define  SDHCI_INT_DATA_MASK	(SDHCI_INT_DATA_END | SDHCI_INT_DMA_END | \
 		SDHCI_INT_DATA_AVAIL | SDHCI_INT_SPACE_AVAIL | \
 		SDHCI_INT_DATA_TIMEOUT | SDHCI_INT_DATA_CRC | \
 		SDHCI_INT_DATA_END_BIT | SDHCI_INT_ADMA_ERROR | \
 		SDHCI_INT_BLK_GAP)
-
-#define SDHCI_INT_CMDQ_EN	(0x1 << 14)
 #define SDHCI_INT_ALL_MASK	((unsigned int)-1)
 
-#define SDHCI_AUTO_CMD_ERR		0x3C
-#define SDHCI_AUTO_CMD12_NOT_EXEC	0x0001
-#define SDHCI_AUTO_CMD_TIMEOUT_ERR	0x0002
-#define SDHCI_AUTO_CMD_CRC_ERR		0x0004
-#define SDHCI_AUTO_CMD_ENDBIT_ERR	0x0008
-#define SDHCI_AUTO_CMD_INDEX_ERR	0x0010
-#define SDHCI_AUTO_CMD12_NOT_ISSUED	0x0080
+#define SDHCI_CQE_INT_ERR_MASK ( \
+	SDHCI_INT_ADMA_ERROR | SDHCI_INT_BUS_POWER | SDHCI_INT_DATA_END_BIT | \
+	SDHCI_INT_DATA_CRC | SDHCI_INT_DATA_TIMEOUT | SDHCI_INT_INDEX | \
+	SDHCI_INT_END_BIT | SDHCI_INT_CRC | SDHCI_INT_TIMEOUT)
+
+#define SDHCI_CQE_INT_MASK (SDHCI_CQE_INT_ERR_MASK | SDHCI_INT_CQE)
+
+#define SDHCI_AUTO_CMD_STATUS	0x3C
+#define  SDHCI_AUTO_CMD_TIMEOUT	0x00000002
+#define  SDHCI_AUTO_CMD_CRC	0x00000004
+#define  SDHCI_AUTO_CMD_END_BIT	0x00000008
+#define  SDHCI_AUTO_CMD_INDEX	0x00000010
 
 #define SDHCI_HOST_CONTROL2		0x3E
 #define  SDHCI_CTRL_UHS_MASK		0x0007
@@ -184,7 +189,6 @@
 #define   SDHCI_CTRL_DRV_TYPE_D		0x0030
 #define  SDHCI_CTRL_EXEC_TUNING		0x0040
 #define  SDHCI_CTRL_TUNED_CLK		0x0080
-#define  SDHCI_CTRL_ASYNC_INT_ENABLE	0x4000
 #define  SDHCI_CTRL_PRESET_VAL_ENABLE	0x8000
 
 #define SDHCI_CAPABILITIES	0x40
@@ -206,7 +210,6 @@
 #define  SDHCI_CAN_VDD_300	0x02000000
 #define  SDHCI_CAN_VDD_180	0x04000000
 #define  SDHCI_CAN_64BIT	0x10000000
-#define  SDHCI_CAN_ASYNC_INT	0x20000000
 
 #define  SDHCI_SUPPORT_SDR50	0x00000001
 #define  SDHCI_SUPPORT_SDR104	0x00000002
@@ -340,12 +343,6 @@ enum sdhci_cookie {
 	COOKIE_MAPPED,		/* mapped by sdhci_prepare_data() */
 };
 
-enum sdhci_power_policy {
-	SDHCI_PERFORMANCE_MODE,
-	SDHCI_POWER_SAVE_MODE,
-	SDHCI_POWER_POLICY_NUM /* Always keep this one last */
-};
-
 struct sdhci_host {
 	/* Data set by hardware interface driver */
 	const char *hw_name;	/* Hardware bus name */
@@ -443,86 +440,14 @@ struct sdhci_host {
 #define SDHCI_QUIRK2_ACMD23_BROKEN			(1<<14)
 /* Broken Clock divider zero in controller */
 #define SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN		(1<<15)
-/*
- * Read Transfer Active/ Write Transfer Active may be not
- * de-asserted after end of transaction. Issue reset for DAT line.
- */
-#define SDHCI_QUIRK2_RDWR_TX_ACTIVE_EOT                 (1<<17)
-/*
- * Slow interrupt clearance at 400KHz may cause
- * host controller driver interrupt handler to
- * be called twice.
-*/
-#define SDHCI_QUIRK2_SLOW_INT_CLR			(1<<18)
-
-/*
- * If the base clock can be scalable, then there should be no further
- * clock dividing as the input clock itself will be scaled down to
- * required frequency.
- */
-#define SDHCI_QUIRK2_ALWAYS_USE_BASE_CLOCK		(1<<19)
-
-/*
- * Ignore data timeout error for R1B commands as there will be no
- * data associated and the busy timeout value for these commands
- * could be lager than the maximum timeout value that controller
- * can handle.
- */
-#define SDHCI_QUIRK2_IGNORE_DATATOUT_FOR_R1BCMD		(1<<20)
-
-/*
- * The preset value registers are not properly initialized by
- * some hardware and hence preset value must not be enabled for
- * such controllers.
- */
-#define SDHCI_QUIRK2_BROKEN_PRESET_VALUE		(1<<21)
-/*
- * Some controllers define the usage of 0xF in data timeout counter
- * register (0x2E) which is actually a reserved bit as per
- * specification.
- */
-#define SDHCI_QUIRK2_USE_RESERVED_MAX_TIMEOUT		(1<<22)
-/*
- * This is applicable for controllers that advertize timeout clock
- * value in capabilities register (bit 5-0) as just 50MHz whereas the
- * base clock frequency is 200MHz. So, the controller internally
- * multiplies the value in timeout control register by 4 with the
- * assumption that driver always uses fixed timeout clock value from
- * capabilities register to calculate the timeout. But when the driver
- * uses SDHCI_QUIRK2_ALWAYS_USE_BASE_CLOCK base clock frequency is directly
- * controller by driver and it's rate varies upto max. 200MHz. This new quirk
- * will be used in such cases to avoid controller mulplication when timeout is
- * calculated based on the base clock.
- */
-#define SDHCI_QUIRK2_DIVIDE_TOUT_BY_4 (1 << 23)
-
-/*
- * Some SDHC controllers are unable to handle data-end bit error in
- * 1-bit mode of SDIO.
- */
-#define SDHCI_QUIRK2_IGN_DATA_END_BIT_ERROR             (1<<24)
-
-/* Use reset workaround in case sdhci reset timeouts */
-#define SDHCI_QUIRK2_USE_RESET_WORKAROUND		(1<<26)
-
-/* Some controllers doesn't have have any LED control */
-#define SDHCI_QUIRK2_BROKEN_LED_CONTROL			(1<<27)
-
-/*
- * Some controllers doesn't follow the tuning procedure as defined in spec.
- * The tuning data has to be compared from SW driver to validate the correct
- * phase.
- */
-#define SDHCI_QUIRK2_NON_STANDARD_TUNING (1 << 28)
-/*
- * Some controllers may use PIO mode to workaround HW issues in ADMA for
- * eMMC tuning commands.
- */
-#define SDHCI_QUIRK2_USE_PIO_FOR_EMMC_TUNING (1 << 29)
-
+/* Controller has CRC in 136 bit Command Response */
+#define SDHCI_QUIRK2_RSP_136_HAS_CRC			(1<<16)
 
 	int irq;		/* Device IRQ */
 	void __iomem *ioaddr;	/* Mapped address */
+	char *bounce_buffer;	/* For packing SDMA reads/writes */
+	dma_addr_t bounce_addr;
+	unsigned int bounce_buffer_size;
 
 	const struct sdhci_ops *ops;	/* Low level hw interface */
 
@@ -530,7 +455,6 @@ struct sdhci_host {
 	struct mmc_host *mmc;	/* MMC structure */
 	struct mmc_host_ops mmc_host_ops;	/* MMC host ops */
 	u64 dma_mask;		/* custom DMA mask */
-	u64 coherent_dma_mask;
 
 #if IS_ENABLED(CONFIG_LEDS_CLASS)
 	struct led_classdev led;	/* LED control */
@@ -554,7 +478,6 @@ struct sdhci_host {
 #define SDHCI_SIGNALING_330	(1<<14)	/* Host is capable of 3.3V signaling */
 #define SDHCI_SIGNALING_180	(1<<15)	/* Host is capable of 1.8V signaling */
 #define SDHCI_SIGNALING_120	(1<<16)	/* Host is capable of 1.2V signaling */
-#define SDHCI_HOST_IRQ_STATUS	 (1<<17) /* host->irq status */
 
 	unsigned int version;	/* SDHCI spec. version */
 
@@ -569,10 +492,8 @@ struct sdhci_host {
 	bool bus_on;		/* Bus power prevents runtime suspend */
 	bool preset_enabled;	/* Preset is enabled */
 	bool pending_reset;	/* Cmd/data reset is pending */
-	bool cdr_support;
 
 	struct mmc_request *mrqs_done[SDHCI_MAX_MRQS];	/* Requests done */
-	struct mmc_request *mrq;	/* Current request */
 	struct mmc_command *cmd;	/* Current command */
 	struct mmc_command *data_cmd;	/* Current data command */
 	struct mmc_data *data;	/* Current data request */
@@ -615,6 +536,10 @@ struct sdhci_host {
 	/* cached registers */
 	u32			ier;
 
+	bool			cqe_on;		/* CQE is operating */
+	u32			cqe_ier;	/* CQE interrupt mask */
+	u32			cqe_err_ier;	/* CQE error interrupt mask */
+
 	wait_queue_head_t	buf_ready_int;	/* Waitqueue for Buffer Read Ready interrupt */
 	unsigned int		tuning_done;	/* Condition flag set when CMD19 succeeds */
 
@@ -623,21 +548,11 @@ struct sdhci_host {
 #define SDHCI_TUNING_MODE_1	0
 #define SDHCI_TUNING_MODE_2	1
 #define SDHCI_TUNING_MODE_3	2
+	/* Delay (ms) between tuning commands */
+	int			tuning_delay;
 
-	ktime_t data_start_time;
-
-	enum sdhci_power_policy power_policy;
-
-	bool sdio_irq_async_status;
-	bool is_crypto_en;
-	bool crypto_reset_reqd;
-
-	u32 auto_cmd_err_sts;
-	struct ratelimit_state dbg_dump_rs;
-	struct cmdq_host *cq_host;
-	int reset_wa_applied; /* reset workaround status */
-	ktime_t reset_wa_t; /* time when the reset workaround is applied */
-	int reset_wa_cnt; /* total number of times workaround is used */
+	/* Host SDMA buffer boundary. */
+	u32			sdma_boundary;
 
 	unsigned long private[0] ____cacheline_aligned;
 };
@@ -656,9 +571,12 @@ struct sdhci_ops {
 	void	(*set_power)(struct sdhci_host *host, unsigned char mode,
 			     unsigned short vdd);
 
+	u32		(*irq)(struct sdhci_host *host, u32 intmask);
+
 	int		(*enable_dma)(struct sdhci_host *host);
 	unsigned int	(*get_max_clock)(struct sdhci_host *host);
 	unsigned int	(*get_min_clock)(struct sdhci_host *host);
+	/* get_timeout_clock should return clk rate in unit of Hz */
 	unsigned int	(*get_timeout_clock)(struct sdhci_host *host);
 	unsigned int	(*get_max_timeout_count)(struct sdhci_host *host);
 	void		(*set_timeout)(struct sdhci_host *host,
@@ -669,45 +587,11 @@ struct sdhci_ops {
 	unsigned int    (*get_ro)(struct sdhci_host *host);
 	void		(*reset)(struct sdhci_host *host, u8 mask);
 	int	(*platform_execute_tuning)(struct sdhci_host *host, u32 opcode);
-	int	(*crypto_engine_cfg)(struct sdhci_host *host,
-				struct mmc_request *mrq, u32 slot);
-	int	(*crypto_engine_cmdq_cfg)(struct sdhci_host *host,
-			struct mmc_request *mrq, u32 slot, u64 *ice_ctx);
-	int	(*crypto_engine_cfg_end)(struct sdhci_host *host,
-					struct mmc_request *mrq);
-	int	(*crypto_engine_reset)(struct sdhci_host *host);
-	void	(*crypto_cfg_reset)(struct sdhci_host *host, unsigned int slot);
 	void	(*set_uhs_signaling)(struct sdhci_host *host, unsigned int uhs);
 	void	(*hw_reset)(struct sdhci_host *host);
 	void    (*adma_workaround)(struct sdhci_host *host, u32 intmask);
-	unsigned int	(*get_max_segments)(void);
-#define REQ_BUS_OFF	(1 << 0)
-#define REQ_BUS_ON	(1 << 1)
-#define REQ_IO_LOW	(1 << 2)
-#define REQ_IO_HIGH	(1 << 3)
 	void    (*card_event)(struct sdhci_host *host);
-	int	(*enhanced_strobe)(struct sdhci_host *host);
-	void	(*platform_bus_voting)(struct sdhci_host *host, u32 enable);
-	void	(*toggle_cdr)(struct sdhci_host *host, bool enable);
-	void	(*check_power_status)(struct sdhci_host *host, u32 req_type);
-	int	(*config_auto_tuning_cmd)(struct sdhci_host *host,
-					  bool enable,
-					  u32 type);
-	int	(*enable_controller_clock)(struct sdhci_host *host);
-	void	(*clear_set_dumpregs)(struct sdhci_host *host, bool set);
-	void	(*enhanced_strobe_mask)(struct sdhci_host *host, bool set);
-	void	(*dump_vendor_regs)(struct sdhci_host *host);
 	void	(*voltage_switch)(struct sdhci_host *host);
-	int	(*select_drive_strength)(struct sdhci_host *host,
-					 struct mmc_card *card,
-					 unsigned int max_dtr, int host_drv,
-					 int card_drv, int *drv_type);
-	int	(*notify_load)(struct sdhci_host *host, enum mmc_load state);
-	void	(*reset_workaround)(struct sdhci_host *host, u32 enable);
-	void	(*init)(struct sdhci_host *host);
-	void	(*pre_req)(struct sdhci_host *host, struct mmc_request *req);
-	void	(*post_req)(struct sdhci_host *host, struct mmc_request *req);
-	unsigned int	(*get_current_limit)(struct sdhci_host *host);
 };
 
 #ifdef CONFIG_MMC_SDHCI_IO_ACCESSORS
@@ -794,24 +678,23 @@ static inline u8 sdhci_readb(struct sdhci_host *host, int reg)
 
 #endif /* CONFIG_MMC_SDHCI_IO_ACCESSORS */
 
-extern struct sdhci_host *sdhci_alloc_host(struct device *dev,
-	size_t priv_size);
-extern void sdhci_free_host(struct sdhci_host *host);
+struct sdhci_host *sdhci_alloc_host(struct device *dev, size_t priv_size);
+void sdhci_free_host(struct sdhci_host *host);
 
 static inline void *sdhci_priv(struct sdhci_host *host)
 {
-	return (void *)host->private;
+	return host->private;
 }
 
-extern void sdhci_card_detect(struct sdhci_host *host);
-extern void __sdhci_read_caps(struct sdhci_host *host, u16 *ver, u32 *caps,
-			      u32 *caps1);
-extern int sdhci_setup_host(struct sdhci_host *host);
-extern int __sdhci_add_host(struct sdhci_host *host);
-extern int sdhci_add_host(struct sdhci_host *host);
-extern void sdhci_remove_host(struct sdhci_host *host, int dead);
-extern void sdhci_send_command(struct sdhci_host *host,
-				struct mmc_command *cmd);
+void sdhci_card_detect(struct sdhci_host *host);
+void __sdhci_read_caps(struct sdhci_host *host, u16 *ver, u32 *caps,
+		       u32 *caps1);
+int sdhci_setup_host(struct sdhci_host *host);
+void sdhci_cleanup_host(struct sdhci_host *host);
+int __sdhci_add_host(struct sdhci_host *host);
+int sdhci_add_host(struct sdhci_host *host);
+void sdhci_remove_host(struct sdhci_host *host, int dead);
+void sdhci_send_command(struct sdhci_host *host, struct mmc_command *cmd);
 
 static inline void sdhci_read_caps(struct sdhci_host *host)
 {
@@ -826,6 +709,7 @@ static inline bool sdhci_sdio_irq_enabled(struct sdhci_host *host)
 u16 sdhci_calc_clk(struct sdhci_host *host, unsigned int clock,
 		   unsigned int *actual_clock);
 void sdhci_set_clock(struct sdhci_host *host, unsigned int clock);
+void sdhci_enable_clk(struct sdhci_host *host, u16 clk);
 void sdhci_set_power(struct sdhci_host *host, unsigned char mode,
 		     unsigned short vdd);
 void sdhci_set_power_noreg(struct sdhci_host *host, unsigned char mode,
@@ -833,14 +717,25 @@ void sdhci_set_power_noreg(struct sdhci_host *host, unsigned char mode,
 void sdhci_set_bus_width(struct sdhci_host *host, int width);
 void sdhci_reset(struct sdhci_host *host, u8 mask);
 void sdhci_set_uhs_signaling(struct sdhci_host *host, unsigned timing);
+int sdhci_execute_tuning(struct mmc_host *mmc, u32 opcode);
+void sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios);
+int sdhci_start_signal_voltage_switch(struct mmc_host *mmc,
+				      struct mmc_ios *ios);
+void sdhci_enable_sdio_irq(struct mmc_host *mmc, int enable);
 
 #ifdef CONFIG_PM
-extern int sdhci_suspend_host(struct sdhci_host *host);
-extern int sdhci_resume_host(struct sdhci_host *host);
-extern void sdhci_enable_irq_wakeups(struct sdhci_host *host);
-extern int sdhci_runtime_suspend_host(struct sdhci_host *host);
-extern int sdhci_runtime_resume_host(struct sdhci_host *host);
+int sdhci_suspend_host(struct sdhci_host *host);
+int sdhci_resume_host(struct sdhci_host *host);
+void sdhci_enable_irq_wakeups(struct sdhci_host *host);
+int sdhci_runtime_suspend_host(struct sdhci_host *host);
+int sdhci_runtime_resume_host(struct sdhci_host *host);
 #endif
 
-void sdhci_cfg_irq(struct sdhci_host *host, bool enable, bool sync);
+void sdhci_cqe_enable(struct mmc_host *mmc);
+void sdhci_cqe_disable(struct mmc_host *mmc, bool recovery);
+bool sdhci_cqe_irq(struct sdhci_host *host, u32 intmask, int *cmd_error,
+		   int *data_error);
+
+void sdhci_dumpregs(struct sdhci_host *host);
+
 #endif /* __SDHCI_HW_H */
