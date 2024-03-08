@@ -2066,19 +2066,25 @@ AF_EXIT:
 	/* 0: PASS, 1:  check driver, 2: check module en, 3: check image window
 	 * 4: check alignment, 5: check AFO size, 6: check TH
 	*/
-	if (rst == 0)
+	if (rst == 0) {
 		LOG_INF("af check pass\n");
-	else if (rst == 2)
+	}
+	else if (rst == 2) {
 		camera_isp_aee("AF data error", "Error: AF module enable is over HW constraint.");
-	else if (rst == 3)
+	}
+	else if (rst == 3) {
 		camera_isp_aee("AF data error", "Error: AF image window is over HW constraint.");
-	else if (rst == 4)
+	}
+	else if (rst == 4) {
 		camera_isp_aee("AF data error", "Error: AF alignment is over HW constraint.");
-	else if (rst == 5)
+	}
+	else if (rst == 5) {
 		camera_isp_aee("AF data error", "Error: AFO size is over HW constraint.");
-	else if (rst == 6)
+	}
+	else if (rst == 6) {
 		camera_isp_aee("AF data error", "Error: AF TH is over HW constraint.");
-	else
+	}
+	else {
 		LOG_INF("af check fail: check driver\n");
 
 
@@ -2178,6 +2184,8 @@ AF_EXIT:
 			rst = 3;
 			goto AA_EXIT;
 		}
+	}
+
 AA_EXIT:
 	/* 0: PASS, 1:  check driver, 2: check AWB size, 3: check AE size */
 	if (rst == 0)
