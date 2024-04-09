@@ -346,6 +346,8 @@ struct ffs_io_data {
 	struct usb_ep *ep;
 	struct usb_request *req;
 
+	struct ffs_data *ffs;
+
 	int status;
 	struct completion done;
 };
@@ -823,6 +825,7 @@ static void ffs_user_copy_worker(struct work_struct *work)
 	struct ffs_io_data *io_data = container_of(work, struct ffs_io_data,
 						   work);
 	int ret = io_data->status;
+	unsigned long flags;
 
 	if (io_data->read && ret > 0) {
 		mm_segment_t oldfs = get_fs();
@@ -846,6 +849,11 @@ static void ffs_user_copy_worker(struct work_struct *work)
 
 	aio_complete(io_data->kiocb, ret, ret);
 
+	spin_lock_irqsave(&io_data->ffs->eps_lock, flags);
+	usb_ep_free_request(io_data->ep, io_data->req);
+	io_data->req = NULL;
+	spin_unlock_irqrestore(&io_data->ffs->eps_lock, flags);
+
 	if (io_data->read)
 		kfree(io_data->iovec);
 	kfree(io_data->buf);
@@ -860,7 +868,6 @@ static void ffs_epfile_async_io_complete(struct usb_ep *_ep,
 	ENTER();
 
 	io_data->status = req->status ? req->status : req->actual;
-	usb_ep_free_request(_ep, req);
 
 	INIT_WORK(&io_data->work, ffs_user_copy_worker);
 	schedule_work(&io_data->work);
@@ -963,6 +970,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 			io_data->buf = data;
 			io_data->ep = ep->ep;
 			io_data->req = req;
+			io_data->ffs = epfile->ffs;
 
 			req->context  = io_data;
 			req->complete = ffs_epfile_async_io_complete;
