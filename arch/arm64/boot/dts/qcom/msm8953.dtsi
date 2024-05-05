@@ -1953,10 +1953,11 @@
 
 			#cooling-cells = <2>;
 
-			status = "disabled";
+			status = "okay";
 
 			zap-shader {
 				memory-region = <&zap_shader_region>;
+				firmware-name = "a506_zap.mdt";
 			};
 
 			gpu_opp_table: opp-table {
