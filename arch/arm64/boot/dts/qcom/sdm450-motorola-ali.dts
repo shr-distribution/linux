@@ -57,6 +57,10 @@
 	};
 };
 
+&mdss {
+	status = "okay";
+};
+
 &mdss_dsi0 {
 	vdda-supply = <&pm8953_s3>;
 	vddio-supply = <&pm8953_l6>;
@@ -64,7 +68,7 @@
 	status = "okay";
 
 	panel@0 {
-		compatible = "tianma,tl057fvxp01";
+		compatible = "motorola,ali-panel";
 		reg = <0>;
 
 		backlight = <&pmi8950_wled>;
@@ -91,6 +95,14 @@
 
 &mdss_dsi0_phy {
 	vcca-supply = <&pm8953_l3>;
+
+	status = "okay";
+};
+
+&mpss {
+	pll-supply = <&pm8953_l7>;
+
+	status = "okay";
 };
 
 &hsusb_phy {
