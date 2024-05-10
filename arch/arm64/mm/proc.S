@@ -140,7 +140,7 @@ ENTRY(cpu_do_switch_mm)
 	b	post_ttbr_update_workaround	// Back to C code...
 ENDPROC(cpu_do_switch_mm)
 
-	.section ".text.init", #alloc, #execinstr
+	.section ".text.init", "ax"
 
 /*
  *	__cpu_setup
