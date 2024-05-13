@@ -1,4 +1,4 @@
-/*
+d/*
 * Copyright (C) 2016 MediaTek Inc.
 *
 * This program is free software; you can redistribute it and/or modify
@@ -787,7 +787,7 @@ static int psc5415A_enable_charging(struct charger_device *chg_dev, bool en)
 		psc5415A_set_ce(0);
 		psc5415A_set_hz_mode(0);
 		psc5415A_set_opa_mode(0);
-        psc5415A_disable_charging(0);
+        //psc5415A_disable_charging(0);
 		psc5415A_set_tmr_rst(1);
 		psc5415A_reg_config_interface(0x06, 0x5a);
 		psc5415A_reg_config_interface(0x00, 0xC0);

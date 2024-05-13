@@ -33,7 +33,10 @@ subdir-ccflags-y += -I$(MTK_DRIVER_PATH)/camera/$(MTK_PLATFORM) \
              -I$(MTK_DRIVER_PATH)/imgsensor/src/$(CONFIG_MTK_PLATFORM_SENSOR)
 
 
-CUSTOM_KERNEL_FLAGS := $(addprefix -D, $(shell echo \
+             #EXTRA_CFLAGS += -D DEBUG_DO -fno-pic
+
+
+CUSTOM_KERNEL_FLAGS := -fpic $(addprefix -D, $(shell echo \
              $(CONFIG_CUSTOM_KERNEL_IMGSENSOR) | tr a-z A-Z))
 subdir-ccflags-y += $(CUSTOM_KERNEL_FLAGS)
 

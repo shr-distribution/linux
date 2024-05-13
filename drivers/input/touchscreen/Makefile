@@ -109,6 +109,6 @@ obj-$(CONFIG_TOUCHSCREEN_ROHM_BU21023)	+= rohm_bu21023.o
 TOUCH_LISTS := $(subst ",,$(CONFIG_TOUCHSCREEN_MTK_TOUCH))
 obj-y += $(foreach TOUCH,$(TOUCH_LISTS),$(TOUCH)/)
 
-obj-y += gsl_point_id.o
-$(obj)/gsl_point_id.o: $(srctree)/$(obj)/gsl_point_id
-	cp $(srctree)/$(obj)/gsl_point_id  $(obj)/gsl_point_id.o
+#obj-y += gsl_point_id.o
+#$(obj)/gsl_point_id.o: $(srctree)/$(obj)/gsl_point_id
+#	cp $(srctree)/$(obj)/gsl_point_id $(obj)/gsl_point_id.o
