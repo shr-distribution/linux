@@ -30,11 +30,11 @@ static int init_v1(struct fh_pll_domain *d,
 	regs = d->regs;
 
 	if (regs->reg_hp_en) {
-		FHDBG("domain<%s> inited\n", name);
+		//FHDBG("domain<%s> inited\n", name);
 		return 0;
 	}
 
-	FHDBG("init domain<%s>\n", name);
+	//FHDBG("init domain<%s>\n", name);
 	while (data->dds_mask != 0) {
 		int regs_offset;
 
@@ -66,8 +66,8 @@ static int init_v1(struct fh_pll_domain *d,
 		regs->reg_con_pcw = REG_ADDR(apmixed_base,
 				offset->offset_con_pcw);
 
-		FHDBG("pll<%s>, dds_mask<%d>\n",
-				data->name, data->dds_mask);
+		/*FHDBG("pll<%s>, dds_mask<%d>\n",
+				data->name, data->dds_mask);*/
 		data++;
 		offset++;
 		regs++;
@@ -255,7 +255,7 @@ static struct fh_pll_domain **get_list(char *comp)
 			if (strcmp(comp,
 						(*match)->compatible) == 0) {
 				list = (*match)->domain_list;
-				FHDBG("target<%s>\n", comp);
+				//FHDBG("target<%s>\n", comp);
 				break;
 			}
 			match++;

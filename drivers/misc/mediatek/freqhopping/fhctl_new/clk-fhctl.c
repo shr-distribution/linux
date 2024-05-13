@@ -42,7 +42,7 @@ int mt_dfs_general_pll(int fh_id, int dds)
 	int num_pll = array->num_pll;
 
 	if (!_inited) {
-		FHDBG("!_inited\n");
+		//FHDBG("!_inited\n");
 		return -1;
 	}
 
@@ -59,8 +59,8 @@ int mt_dfs_general_pll(int fh_id, int dds)
 				array->fh_id,
 				dds, 9999);
 
-	FHDBG("hdlr<%x>, perms<%x>",
-			hdlr, array->perms);
+	/*FHDBG("hdlr<%x>, perms<%x>",
+			hdlr, array->perms);*/
 	return -1;
 }
 EXPORT_SYMBOL(mt_dfs_general_pll);
@@ -82,7 +82,7 @@ int freqhopping_config(unsigned int fh_id
 	static DEFINE_MUTEX(lock);
 
 	if (!_inited) {
-		FHDBG("!_inited\n");
+		//FHDBG("!_inited\n");
 		return -1;
 	}
 
@@ -94,28 +94,28 @@ int freqhopping_config(unsigned int fh_id
 	}
 
 	if (!hdlr || fh_id != FH_ID_MEM_6739) {
-		FHDBG("err!, hdlr<%x>, fh_id<%d>\n",
-				hdlr, fh_id);
+		/*FHDBG("err!, hdlr<%x>, fh_id<%d>\n",
+				hdlr, fh_id);*/
 		return -1;
 	}
 
 	mutex_lock(&lock);
 	if (!on && enable) {
-		FHDBG("enable\n");
+		//FHDBG("enable\n");
 		hdlr->ops->ssc_enable(hdlr->data,
 				array->domain,
 				array->fh_id,
 				8);
 		on = true;
 	} else if (on && !enable) {
-		FHDBG("disable\n");
+		//FHDBG("disable\n");
 		hdlr->ops->ssc_disable(hdlr->data,
 				array->domain,
 				array->fh_id);
 		on = false;
 	} else
-		FHDBG("already %s\n",
-				on ? "enabled" : "disabled");
+		/*FHDBG("already %s\n",
+				on ? "enabled" : "disabled");*/
 	mutex_unlock(&lock);
 
 	return 0;
@@ -145,9 +145,9 @@ static struct pll_dts *parse_dt(struct platform_device *pdev)
 
 	size = sizeof(*array)*num_pll;
 	array = kzalloc(size, GFP_KERNEL);
-	FHDBG("array<%x>, num_pll<%d>, comp<%s>\n",
+	/*FHDBG("array<%x>, num_pll<%d>, comp<%s>\n",
 			array, num_pll,
-			match->compatible);
+			match->compatible);*/
 	for_each_child_of_node(root, child) {
 		struct device_node *m, *n;
 		void __iomem *fhctl_base, *apmixed_base;
@@ -161,14 +161,14 @@ static struct pll_dts *parse_dt(struct platform_device *pdev)
 
 		m = child;
 		num = 0;
-		FHDBG("---------------------\n");
+		//FHDBG("---------------------\n");
 		for_each_child_of_node(m, n) {
 			int fh_id, pll_id;
 			int perms, ssc_rate;
 
 			if (pll_idx >= num_pll) {
-				FHDBG("pll<%s> skipped\n",
-						n->name);
+				/*FHDBG("pll<%s> skipped\n",
+						n->name);*/
 				pll_idx++;
 				continue;
 			}
@@ -197,10 +197,10 @@ static struct pll_dts *parse_dt(struct platform_device *pdev)
 		}
 		iomap_idx++;
 
-		FHDBG("domain<%s>, method<%s>\n", domain, method);
-		FHDBG("base<%x,%x>\n", fhctl_base, apmixed_base);
-		FHDBG("num<%d>\n", num);
-		FHDBG("---------------------\n");
+		//FHDBG("domain<%s>, method<%s>\n", domain, method);
+		//FHDBG("base<%x,%x>\n", fhctl_base, apmixed_base);
+		//FHDBG("num<%d>\n", num);
+		//FHDBG("---------------------\n");
 	}
 
 	set_dts_array(array);
@@ -232,10 +232,10 @@ static int fh_plt_drv_probe(struct platform_device *pdev)
 		struct fh_hdlr *hdlr = array->hdlr;
 
 		if (!hdlr) {
-			FHDBG("hdlr is NULL!!! <%s,%s,%s>\n",
+			/*FHDBG("hdlr is NULL!!! <%s,%s,%s>\n",
 					array->pll_name,
 					array->domain,
-					array->method);
+					array->method);*/
 			return -1;
 		}
 	}
@@ -283,7 +283,7 @@ static int __init fhctl_driver_init(void)
 	int ret;
 
 	ret = platform_driver_register(&fhctl_driver);
-	FHDBG("ret<%d>\n", ret);
+	//FHDBG("ret<%d>\n", ret);
 	return ret;
 }
 subsys_initcall(fhctl_driver_init);

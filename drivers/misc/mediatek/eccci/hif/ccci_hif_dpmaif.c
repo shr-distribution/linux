@@ -419,7 +419,7 @@ static void dpmaif_dump_bat_status(struct hif_dpmaif_ctrl *hif_ctrl)
 }
 #endif
 
-static void dump_drb_queue_data(unsigned int qno)
+/*static void dump_drb_queue_data(unsigned int qno)
 {
 	struct dpmaif_tx_queue *txq;
 	int i, drb_buf_size, mod64, count;
@@ -489,7 +489,7 @@ static void dump_drb_queue_data(unsigned int qno)
 
 	DPMA_DRB_DATA_INFO("DPMAIF [%s] for q:%d info: end --------\n",
 			__func__, qno);
-}
+}*/
 
 /*actrually, length is dump flag's private argument*/
 static int dpmaif_dump_status(unsigned char hif_id,
@@ -497,8 +497,8 @@ static int dpmaif_dump_status(unsigned char hif_id,
 {
 	struct hif_dpmaif_ctrl *hif_ctrl = dpmaif_ctrl;
 
-	dump_drb_queue_data(0);
-	dump_drb_queue_data(1);
+	//dump_drb_queue_data(0);
+	//dump_drb_queue_data(1);
 
 	CCCI_MEM_LOG_TAG(hif_ctrl->md_id, TAG,
 		"%s: q_bitmap = %d\n", __func__, length);

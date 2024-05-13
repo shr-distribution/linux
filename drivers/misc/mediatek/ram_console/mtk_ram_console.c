@@ -3415,10 +3415,8 @@ void aee_rr_show_last_bus(struct seq_file *m)
 	char *reg_buf = kmalloc(4096, GFP_KERNEL);
 
 	if (reg_buf) {
-		if (mt_lastbus_dump) {
-			if (mt_lastbus_dump(reg_buf) == 0)
+		if (mt_lastbus_dump(reg_buf) == 0)
 				seq_printf(m, "%s\n", reg_buf);
-		}
 		kfree(reg_buf);
 	}
 }

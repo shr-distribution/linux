@@ -462,10 +462,10 @@ static int mmdvfs_apply_vcore_hw_configurtion_by_step(
 	if (mmdvfs_step == MMDVFS_FINE_STEP_UNREQUEST) {
 		vcore_step = OPP_UNREQ;
 	} else {
-		/* Check if the step is legall */
+		/* Check if the step is legall 
 		if (mmdvfs_step < 0 || mmdvfs_step >= self->step_num
 		|| (self->step_profile_mappings + mmdvfs_step) == NULL)
-			return -1;
+			return -1;*/
 
 		/* Get hw configurtion fot the step */
 		hw_config_ptr =
@@ -631,9 +631,9 @@ static int mmdvfs_apply_clk_hw_configurtion_by_step(
 		mmdvfs_step = mmdvfs_step_request;
 
 	/* Check if the step is legall */
-	if (mmdvfs_step < 0 || mmdvfs_step >= self->step_num
+	/*if (mmdvfs_step < 0 || mmdvfs_step >= self->step_num
 	|| (self->step_profile_mappings + mmdvfs_step) == NULL)
-		return -1;
+		return -1;*/
 
 	/* Get hw configurtion fot the step */
 	hw_config_ptr =

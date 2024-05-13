@@ -630,7 +630,7 @@ int mtk_kick_CmdQ(struct musb *musb,
 					= gpd_used_count;
 
 			if (tx_max_number_of_pkts[hw_ep->epnum]
-				< urb->number_of_packets)
+				< urb->number_of_packets) {
 
 				tx_max_number_of_pkts[hw_ep->epnum]
 				= urb->number_of_packets;
@@ -643,7 +643,7 @@ int mtk_kick_CmdQ(struct musb *musb,
 					tx_max_number_of_pkts
 					[hw_ep->epnum],
 					mtk_host_active_dev_cnt);
-
+			}
 #ifdef CONFIG_MTK_UAC_POWER_SAVING
 			DBG(1,
 				"mode:%d, activate:%d, ep:%d-%s, mtk_host_active_dev_cnt:%d\n",

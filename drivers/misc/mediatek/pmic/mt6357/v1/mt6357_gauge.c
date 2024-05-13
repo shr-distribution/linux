@@ -409,7 +409,7 @@ static int fgauge_read_current(
 		bm_trace(
 		"[%s] current(charging) = %d mA\r\n", __func__,
 			 dvalue);
-	else
+	else {
 		bm_trace(
 		"[%s] current(discharging) = %d mA\r\n", __func__,
 			 dvalue);
@@ -440,8 +440,9 @@ static int fgauge_read_current(
 			gauge_dev->fg_cust_data->car_tune_value);
 
 		*data = dvalue;
-
+	}
 	return 0;
+	
 }
 
 static int fgauge_get_coulomb(struct gauge_device *gauge_dev, int *data)

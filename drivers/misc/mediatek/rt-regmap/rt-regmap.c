@@ -181,15 +181,16 @@ static struct reg_index_offset find_register_index(
 		if (reg > rm[index]->addr) {
 			if ((reg - rm[index]->addr) < rm[index]->size) {
 				rio.index = index;
-				while (&rd->props.group[i] != NULL) {
+				for (i = 0; rd->props.group[i].mode != RT_DUMMY_MODE;
+									i++) {
 					if (reg >= rd->props.group[i].start
 					&& reg <= rd->props.group[i].end) {
 						unit =
 							rd->props.group[i].mode;
 						break;
 					}
-					i++;
-					unit = RT_1BYTE_MODE;
+					//i++;
+					//unit = RT_1BYTE_MODE;
 				}
 				rio.offset =
 					(reg-rm[index]->addr)*unit;

@@ -38,15 +38,15 @@ static struct pll_dts *get_dts_array(void) {return _array; }
 static void dump_hw(struct fh_pll_regs *regs,
 		struct fh_pll_data *data)
 {
-	FHDBG("hp_en<%x>,clk_con<%x>,slope0<%x>,slope1<%x>\n",
+	/*FHDBG("hp_en<%x>,clk_con<%x>,slope0<%x>,slope1<%x>\n",
 			readl(regs->reg_hp_en), readl(regs->reg_clk_con),
-			readl(regs->reg_slope0), readl(regs->reg_slope1));
-	FHDBG("cfg<%x>,lmt<%x>,dds<%x>,dvfs<%x>,mon<%x>\n",
+			readl(regs->reg_slope0), readl(regs->reg_slope1));*/
+	/*FHDBG("cfg<%x>,lmt<%x>,dds<%x>,dvfs<%x>,mon<%x>\n",
 			readl(regs->reg_cfg), readl(regs->reg_updnlmt),
 			readl(regs->reg_dds), readl(regs->reg_dvfs),
-			readl(regs->reg_mon));
-	FHDBG("pcw<%x>\n",
-			readl(regs->reg_con_pcw));
+			readl(regs->reg_mon));*/
+	/*FHDBG("pcw<%x>\n",
+			readl(regs->reg_con_pcw));*/
 }
 
 #define FH_ID_MEM_6739 4
@@ -79,8 +79,8 @@ static int get_hw_sem_6739(void)
 
 		udelay(10);
 	}
-	FHDBG("ap_sema_reg<%x>, i<%d>\n",
-			ap_sema_reg, i);
+	/*FHDBG("ap_sema_reg<%x>, i<%d>\n",
+			ap_sema_reg, i);*/
 	return -1;
 }
 static void release_hw_sem_6739(void)
@@ -295,7 +295,7 @@ static int ap_ssc_enable_6739(void *priv_data, char *domain_name, int fh_id,
 
 	mutex_lock(lock);
 
-	FHDBG("rate<%d>\n", rate);
+	//FHDBG("rate<%d>\n", rate);
 
 	domain = d->domain;
 	regs = &domain->regs[fh_id];
@@ -320,7 +320,7 @@ static int ap_ssc_disable_6739(void *priv_data, char *domain_name, int fh_id)
 
 	mutex_lock(lock);
 
-	FHDBG("\n");
+	//FHDBG("\n");
 
 	domain = d->domain;
 	regs = &domain->regs[fh_id];
@@ -347,9 +347,9 @@ static void do_ssc_work(struct work_struct *data)
 	struct pll_dts *dts_array = get_dts_array();
 	int i;
 
-	FHDBG_LIMIT(1, "<%s>, rate<%d>",
+	/*FHDBG_LIMIT(1, "<%s>, rate<%d>",
 			array->pll_name,
-			array->ssc_rate);
+			array->ssc_rate);*/
 
 	for (i = 0; i < dts_array->num_pll; i++) {
 		if (!(dts_array->hdlr)) {
@@ -377,7 +377,7 @@ void issue_ssc_work(struct pll_dts *array)
 
 	work = kzalloc(sizeof(struct ssc_work), GFP_ATOMIC);
 	if (!work) {
-		FHDBG("!work\n");
+		//FHDBG("!work\n");
 		return;
 	}
 
@@ -397,10 +397,10 @@ static int ap_init_6739(struct pll_dts *array, struct match *match)
 	struct fh_pll_data *data;
 	int mask = BIT(fh_id);
 
-	FHDBG("array<%x>,%s %s\n",
+	/*FHDBG("array<%x>,%s %s\n",
 			array,
 			array->pll_name,
-			array->domain);
+			array->domain);*/
 
 	priv_data = kzalloc(sizeof(*priv_data), GFP_KERNEL);
 	hdlr = kzalloc(sizeof(*hdlr), GFP_KERNEL);
@@ -589,7 +589,7 @@ static int ap_ssc_enable_v1(void *priv_data,
 
 	mutex_lock(lock);
 
-	FHDBG("rate<%d>\n", rate);
+	//FHDBG("rate<%d>\n", rate);
 
 	domain = d->domain;
 	regs = &domain->regs[fh_id];
@@ -615,7 +615,7 @@ static int ap_ssc_disable_v1(void *priv_data,
 
 	mutex_lock(lock);
 
-	FHDBG("\n");
+	//FHDBG("\n");
 
 	domain = d->domain;
 	regs = &domain->regs[fh_id];
@@ -635,10 +635,10 @@ static int ap_init_v1(struct pll_dts *array, struct match *match)
 	struct hdlr_data_v1 *priv_data;
 	struct fh_hdlr *hdlr;
 
-	FHDBG("array<%x>,%s %s\n",
+	/*FHDBG("array<%x>,%s %s\n",
 			array,
 			array->pll_name,
-			array->domain);
+			array->domain);*/
 
 	priv_data = kzalloc(sizeof(*priv_data), GFP_KERNEL);
 	hdlr = kzalloc(sizeof(*hdlr), GFP_KERNEL);
@@ -711,7 +711,7 @@ int fhctl_ap_init(struct platform_device *pdev,
 	int num_pll;
 	struct match **match;
 
-	FHDBG("\n");
+	//FHDBG("\n");
 	match = matches;
 	num_pll = array->num_pll;
 
@@ -730,7 +730,7 @@ int fhctl_ap_init(struct platform_device *pdev,
 	}
 
 	if (*match == NULL) {
-		FHDBG("no match!\n");
+		//FHDBG("no match!\n");
 		return -1;
 	}
 
@@ -744,6 +744,6 @@ int fhctl_ap_init(struct platform_device *pdev,
 		}
 	}
 
-	FHDBG("\n");
+	//FHDBG("\n");
 	return 0;
 }

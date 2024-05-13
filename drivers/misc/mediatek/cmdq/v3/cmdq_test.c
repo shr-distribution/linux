@@ -8076,8 +8076,8 @@ static ssize_t cmdq_write_test_proc_config(struct file *file,
 	const char __user *userBuf, size_t count, loff_t *data)
 {
 	char desc[50];
-	long long testConfig[CMDQ_TESTCASE_PARAMETER_MAX];
-	u64 len = 0ULL;
+	u64 testConfig[CMDQ_TESTCASE_PARAMETER_MAX];
+	s32 len = 0;
 
 	do {
 		/* copy user input */

@@ -21,6 +21,7 @@ enum rt_access_mode {
 	RT_1BYTE_MODE = 1,
 	RT_2BYTE_MODE = 2,
 	RT_4BYTE_MODE = 4,
+	RT_DUMMY_MODE = -1,
 };
 
 /* start : the start address of group

@@ -360,7 +360,7 @@ static int get_larb_idx_by_ovl_idx(int ovl_idx, int disp_idx)
 	return larb_idx;
 }
 
-static char *get_scale_name(int scale)
+/*static char *get_scale_name(int scale)
 {
 	switch (scale) {
 	case HRT_SCALE_NONE:
@@ -376,7 +376,7 @@ static char *get_scale_name(int scale)
 	default:
 		return "unknown";
 	}
-}
+}*/
 
 static void dump_disp_info(struct disp_layer_info *disp_info,
 	enum DISP_DEBUG_LEVEL debug_level)
@@ -390,14 +390,14 @@ static void dump_disp_info(struct disp_layer_info *disp_info,
 	"L%d->%d/of(%d,%d)/swh(%d,%d)/dwh(%d,%d)/fmt:0x%x/ext:%d/caps:0x%x\n"
 
 	if (debug_level < DISP_DEBUG_LEVEL_INFO) {
-		DISPMSG(_HRT_FMT,
+		/*DISPMSG(_HRT_FMT,
 			disp_info->hrt_num,
 			l_rule_info->primary_fps,
 			l_rule_info->dal_enable,
 			HRT_GET_PATH_ID(l_rule_info->disp_path),
 			get_scale_name(l_rule_info->scale_rate),
 			l_rule_info->layer_tb_idx, l_rule_info->bound_tb_idx,
-			HRT_GET_DC_FLAG(disp_info->hrt_num));
+			HRT_GET_DC_FLAG(disp_info->hrt_num));*/
 		for (i = 0 ; i < 2 ; i++) {
 			if (disp_info->layer_num[i] <= 0)
 				continue;
@@ -425,14 +425,14 @@ static void dump_disp_info(struct disp_layer_info *disp_info,
 			}
 		}
 	} else {
-		DISPMSG(_HRT_FMT,
+		/*DISPMSG(_HRT_FMT,
 			disp_info->hrt_num,
 			l_rule_info->primary_fps,
 			l_rule_info->dal_enable,
 			HRT_GET_PATH_ID(l_rule_info->disp_path),
 			get_scale_name(l_rule_info->scale_rate),
 			l_rule_info->layer_tb_idx, l_rule_info->bound_tb_idx,
-			HRT_GET_DC_FLAG(disp_info->hrt_num));
+			HRT_GET_DC_FLAG(disp_info->hrt_num));*/
 
 		for (i = 0 ; i < 2 ; i++) {
 			if (disp_info->layer_num[i] <= 0)

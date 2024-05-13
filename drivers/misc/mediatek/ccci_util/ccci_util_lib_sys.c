@@ -264,10 +264,6 @@ int __attribute__((weak)) ccci_get_plat_ft_inf(char buf[], int size)
 
 static ssize_t ccci_ft_inf_show(char *buf)
 {
-	if (ccci_get_plat_ft_inf) {
-		CCCI_UTIL_INF_MSG("using platform setting\n");
-		return (ssize_t)ccci_get_plat_ft_inf(buf, 4095);
-	}
 	/* Enter here means using default setting */
 	return (ssize_t)ccci_get_plat_ft_inf(buf, 4095);
 }
