@@ -1916,6 +1916,8 @@ static const struct camss_resources msm8916_resources = {
 
 static const struct camss_resources msm8953_resources = {
 	.version = CAMSS_8x53,
+	.icc_res = icc_res_8x53,
+	.icc_path_num = ARRAY_SIZE(icc_res_8x53),
 	.csiphy_res = csiphy_res_8x96,
 	.csid_res = csid_res_8x53,
 	.ispif_res = &ispif_res_8x53,
