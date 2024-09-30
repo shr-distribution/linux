@@ -23,9 +23,10 @@
 
 #include "imgsensor_hw.h"
 
-extern atomic_t trigger_gc030a_thread_flag;
-extern int camlight_pdn_enable(int cmd);
-
+/* FIXME Simply disable for now 
+//extern atomic_t trigger_gc030a_thread_flag;
+//extern int camlight_pdn_enable(int cmd);
+*/
 enum IMGSENSOR_RETURN imgsensor_hw_release_all(struct IMGSENSOR_HW *phw)
 {
 	int i;
@@ -271,6 +272,7 @@ enum IMGSENSOR_RETURN imgsensor_hw_power(
 	    sensor_power_sequence,
 	    curr_sensor_name);
 
+	/* FIXME Simply disable for now
 	if((sensor_idx == 0) && (pwr_status == 1))
 	   {
 			 camlight_pdn_enable(1);   
@@ -282,6 +284,7 @@ enum IMGSENSOR_RETURN imgsensor_hw_power(
 			 atomic_set(&trigger_gc030a_thread_flag, 0);
 			 camlight_pdn_enable(0);
 	   } 
+	*/
 
 
 	return IMGSENSOR_RETURN_SUCCESS;
