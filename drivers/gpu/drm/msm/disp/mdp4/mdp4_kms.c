@@ -386,7 +386,8 @@ static int mdp4_kms_init(struct drm_device *dev)
 	unsigned long max_clk;
 
 	/* TODO: Chips that aren't apq8064 have a 200 Mhz max_clk */
-	max_clk = 266667000;
+	//max_clk = 266667000;
+	max_clk = 128000000;
 
 	ret = mdp_kms_init(&mdp4_kms->base, &kms_funcs);
 	if (ret) {
