@@ -741,9 +741,9 @@ static void panel_simple_shutdown(struct device *dev)
 	 * device link), we could add a WARN_ON here to help move forward.
 	 */
 	if (panel->base.enabled)
-		drm_panel_disable(&panel->base);
+	drm_panel_disable(&panel->base);
 	if (panel->base.prepared)
-		drm_panel_unprepare(&panel->base);
+	drm_panel_unprepare(&panel->base);
 }
 
 static void panel_simple_remove(struct device *dev)
@@ -2921,6 +2921,30 @@ static const struct panel_desc lg_lb070wv8 = {
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
+static const struct drm_display_mode lg_xga_mode = {
+	.clock = 96000,
+	.hdisplay = 1024,
+	.hsync_start = 1024 + 272,
+	.hsync_end = 1024 + 272 + 328,
+	.htotal = 1024 + 272 + 328 + 400,
+	.vdisplay = 768,
+	.vsync_start = 768 + 10,
+	.vsync_end = 768 + 10 + 7,
+	.vtotal = 768 + 10 + 7 + 6,
+/*	.vrefresh = 60, */
+};
+static const struct panel_desc lg_xga = {
+	.modes = &lg_xga_mode,
+	.num_modes = 1,
+	.bpc = 6,
+	.size = {
+		.width = 272,
+		.height = 181,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB666_1X7X3_SPWG,
+	.connector_type = DRM_MODE_CONNECTOR_LVDS,
+};
+
 static const struct drm_display_mode lincolntech_lcd185_101ct_mode = {
 	.clock = 155127,
 	.hdisplay = 1920,
@@ -4872,6 +4896,9 @@ static const struct of_device_id platform_of_match[] = {
 	}, {
 		.compatible = "lg,lb070wv8",
 		.data = &lg_lb070wv8,
+	}, {
+		.compatible = "lg,xga",
+		.data = &lg_xga,
 	}, {
 		.compatible = "lincolntech,lcd185-101ct",
 		.data = &lincolntech_lcd185_101ct,
