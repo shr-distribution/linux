@@ -1420,12 +1420,21 @@ static const struct sdio_device_id ath6kl_sdio_devices[] = {
 
 MODULE_DEVICE_TABLE(sdio, ath6kl_sdio_devices);
 
+static const struct of_device_id ath6kl_of_match[] = {
+	{ .compatible = "atheros,ath6kl", },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, ath6kl_of_match);
+
 static struct sdio_driver ath6kl_sdio_driver = {
 	.name = "ath6kl_sdio",
 	.id_table = ath6kl_sdio_devices,
 	.probe = ath6kl_sdio_probe,
 	.remove = ath6kl_sdio_remove,
-	.drv.pm = ATH6KL_SDIO_PM_OPS,
+	.drv = {
+		.pm = ATH6KL_SDIO_PM_OPS,
+		.of_match_table = ath6kl_of_match,
+	}
 };
 module_sdio_driver(ath6kl_sdio_driver);
 
