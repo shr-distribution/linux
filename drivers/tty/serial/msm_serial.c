@@ -782,7 +782,6 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	dma_async_issue_pending(dma->chan);
 
 	msm_write(uart, MSM_UART_CR_CMD_RESET_STALE_INT, MSM_UART_CR);
-	msm_write(uart, MSM_UART_CR_CMD_STALE_EVENT_ENABLE, MSM_UART_CR);
 
 	val = msm_read(uart, UARTDM_DMEN);
 	val |= dma->enable_bit;
@@ -791,6 +790,8 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 		msm_write(uart, val, UARTDM_DMEN);
 
 	msm_write(uart, UARTDM_RX_SIZE, UARTDM_DMRX);
+
+	msm_write(uart, MSM_UART_CR_CMD_STALE_EVENT_ENABLE, MSM_UART_CR);
 
 	if (msm_port->is_uartdm > UARTDM_1P3)
 		msm_write(uart, val, UARTDM_DMEN);
@@ -1168,6 +1169,13 @@ static void msm_reset(struct uart_port *port)
 	msm_write(port, MSM_UART_CR_CMD_RESET_BREAK_INT, MSM_UART_CR);
 	msm_write(port, MSM_UART_CR_CMD_RESET_CTS, MSM_UART_CR);
 	msm_write(port, MSM_UART_CR_CMD_RESET_RFR, MSM_UART_CR);
+
+	msm_write(port, MSM_UART_CR_CMD_PROTECTION_EN, MSM_UART_CR);
+	// msm_write (i_p_port,UART_DM_CR_CMD_CLR_STALE (8<<4),UART_DM_CR) val=80 (128) off=10 (16)
+	msm_write(port, MSM_UART_CR_CMD_RESET_STALE_INT, MSM_UART_CR);
+	// msm_write (i_p_port,UART_DM_CR_CMD_CLR_TX_DONE (0x11 << 4),UART_DM_CR) val=110 (272) off=10 (16)
+	msm_write(port, /*UART_DM_CR_CMD_CLR_TX_DONE*/ (0x11 << 4), MSM_UART_CR);
+	
 	mr = msm_read(port, MSM_UART_MR1);
 	mr &= ~MSM_UART_MR1_RX_RDY_CTL;
 	msm_write(port, mr, MSM_UART_MR1);
@@ -1335,17 +1343,28 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 	/* set TX watermark */
 	msm_write(port, 10, MSM_UART_TFWR);
 
-	msm_write(port, MSM_UART_CR_CMD_PROTECTION_EN, MSM_UART_CR);
 	msm_reset(port);
 
 	/* Enable RX and TX */
 	msm_write(port, MSM_UART_CR_TX_ENABLE | MSM_UART_CR_RX_ENABLE, MSM_UART_CR);
 
-	/* turn on RX and CTS interrupts */
-	msm_port->imr = MSM_UART_IMR_RXLEV | MSM_UART_IMR_RXSTALE |
-			MSM_UART_IMR_CURRENT_CTS | MSM_UART_IMR_RXBREAK_START;
+	if (port->line != 2) {
+		/* turn on RX and CTS interrupts */
+		msm_port->imr = MSM_UART_IMR_RXLEV | MSM_UART_IMR_RXSTALE |
+				MSM_UART_IMR_CURRENT_CTS | MSM_UART_IMR_RXBREAK_START;
+		msm_write(port, msm_port->imr, MSM_UART_IMR);
+	}
+	else {
+		/* Reset UART */
+		/* TODO: amir - move to a function to do more generic configuraion */
+		msm_write(port,
+			  MSM_UART_MR2_BITS_PER_CHAR_8 | MSM_UART_MR2_STOP_BIT_LEN_ONE,
+			  MSM_UART_MR2);	/* 8N1 */
 
-	msm_write(port, msm_port->imr, MSM_UART_IMR);
+		msm_port->imr = MSM_UART_IMR_RXLEV | MSM_UART_IMR_RXSTALE |
+				 MSM_UART_IMR_CURRENT_CTS /* | MSM_UART_IMR_RXBREAK_START */;
+		msm_write(port, msm_port->imr, MSM_UART_IMR);
+	}
 
 	if (msm_port->is_uartdm) {
 		msm_write(port, MSM_UART_CR_CMD_RESET_STALE_INT, MSM_UART_CR);
