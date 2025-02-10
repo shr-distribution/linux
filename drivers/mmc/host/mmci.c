@@ -872,8 +872,12 @@ int mmci_dmae_setup(struct mmci_host *host)
 	 * attempt to use it bidirectionally, however if it
 	 * is specified but cannot be located, DMA will be disabled.
 	 */
-	if (dmae->rx_channel && !dmae->tx_channel)
+	if (dmae->rx_channel && !dmae->tx_channel) {
 		dmae->tx_channel = dmae->rx_channel;
+
+		/* fix the reference count */
+		dmae->rx_channel->client_count++;
+	}
 
 	if (dmae->rx_channel)
 		rxname = dma_chan_name(dmae->rx_channel);

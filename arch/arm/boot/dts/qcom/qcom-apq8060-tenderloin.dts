@@ -14,6 +14,9 @@
 // there can be only one
 #define USE_I2C_TOUCHSCREEN_DRIVER 0
 #define USE_ADM_DMA 1
+#if USE_ADM_DMA
+#define USE_SDCC_DMA 1
+#endif
 
 // beware, framebuffer conflicts with jack UART debugging
 #define USE_FRAMEBUFFER 0
@@ -118,6 +121,8 @@
 		 * address could be 0x18320000   INT_ADM0_AARM = irq 171
 		 * but maybe we want 0x18300000  INT_ADM0_MASTER = irq 170, like on ipq8064 ?
 		 * Note: there is also an ADM1 at 0x18420000 !
+		 *           0x18420000   INT_ADM1_AARM = irq 167
+		 *        or 0x18400000   INT_ADM1_MASTER = irq 166
 		 */
 #if USE_ADM_DMA
 		adm_dma0: dma-controller@18300000 {
@@ -137,10 +142,9 @@
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			qcom,ee = <0>;
 		};
-		/*
 		adm_dma1: dma-controller@18420000 {
 			compatible = "qcom,adm";
-			reg = <0x18420000 0x100000>;
+			reg = <0x18400000 0x100000>;
 			interrupts = <GIC_SPI 167 IRQ_TYPE_LEVEL_HIGH>;
 			#dma-cells = <1>;
 
@@ -155,7 +159,6 @@
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			qcom,ee = <0>;
 		};
-		*/
 #endif
 		
 		gsbi4: gsbi@16300000 {
@@ -1012,6 +1015,11 @@
 	pinctrl-0 = <&emmc_pins>;
 	vmmc-supply = <&pm8901_l5>;
 	vqmmc-supply = <&pm8901_lvs0>;
+#if USE_SDCC_DMA
+  // only define the "rx" DMA channel, so that sdio mmc driver uses it bidirectionally
+	dmas = <&adm_dma1 2>;
+	dma-names = "rx";
+#endif
 };
 
 // if enabled, then the initramfs won't find mmcblk0p13 for some reason
