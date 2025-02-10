@@ -15,6 +15,7 @@
 #define USE_I2C_TOUCHSCREEN_DRIVER 0
 #define USE_ADM_DMA 1
 #if USE_ADM_DMA
+#define ADM_USE_MASTER 1
 #define USE_SDCC_DMA 1
 #endif
 
@@ -125,10 +126,18 @@
 		 *        or 0x18400000   INT_ADM1_MASTER = irq 166
 		 */
 #if USE_ADM_DMA
+
+#if ADM_USE_MASTER
 		adm_dma0: dma-controller@18300000 {
 			compatible = "qcom,adm";
 			reg = <0x18300000 0x100000>;
 			interrupts = <GIC_SPI 170 IRQ_TYPE_LEVEL_HIGH>;
+#else
+		adm_dma0: dma-controller@18320000 {
+			compatible = "qcom,adm";
+			reg = <0x18320000 0x100000>;
+			interrupts = <GIC_SPI 171 IRQ_TYPE_LEVEL_HIGH>;
+#endif
 			#dma-cells = <1>;
 
 			clocks = <&gcc ADM0_CLK>, <&gcc ADM0_PBUS_CLK>;
@@ -142,10 +151,17 @@
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			qcom,ee = <0>;
 		};
-		adm_dma1: dma-controller@18420000 {
+#if ADM_USE_MASTER
+		adm_dma1: dma-controller@18400000 {
 			compatible = "qcom,adm";
 			reg = <0x18400000 0x100000>;
+			interrupts = <GIC_SPI 166 IRQ_TYPE_LEVEL_HIGH>;
+#else
+		adm_dma1: dma-controller@18420000 {
+			compatible = "qcom,adm";
+			reg = <0x18420000 0x100000>;
 			interrupts = <GIC_SPI 167 IRQ_TYPE_LEVEL_HIGH>;
+#endif
 			#dma-cells = <1>;
 
 			clocks = <&gcc ADM1_CLK>, <&gcc ADM1_PBUS_CLK>;
