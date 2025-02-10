@@ -364,7 +364,11 @@ static struct variant_data variant_qcom = {
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
 	.start_err		= MCI_STARTBITERR,
 	.opendrain		= MCI_ROD,
+#ifndef CONFIG_MMC_QCOM_DML
+	.init			= mmci_variant_init,
+#else
 	.init			= qcom_variant_init,
+#endif
 };
 
 /* Busy detection for the ST Micro variant */
