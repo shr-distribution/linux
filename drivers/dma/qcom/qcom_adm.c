@@ -499,7 +499,6 @@ static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 	unsigned long flag;
 
 	struct adm_device *adev = achan->adev;
-	dev_info(adev->dev, "*** entering adm_slave_config");
 
 	spin_lock_irqsave(&achan->vc.lock, flag);
 	memcpy(&achan->slave, cfg, sizeof(struct dma_slave_config));
@@ -519,8 +518,6 @@ static void adm_start_dma(struct adm_chan *achan)
 	struct virt_dma_desc *vd = vchan_next_desc(&achan->vc);
 	struct adm_device *adev = achan->adev;
 	struct adm_async_desc *async_desc;
-
-	dev_info(adev->dev, "*** entering adm_start_dma");
 
 	lockdep_assert_held(&achan->vc.lock);
 
