@@ -49,6 +49,7 @@
 static void mmci_variant_init(struct mmci_host *host);
 static void ux500_variant_init(struct mmci_host *host);
 static void ux500v2_variant_init(struct mmci_host *host);
+static void qcom_noqml_variant_init(struct mmci_host *host);
 
 static unsigned int fmax = 515633;
 
@@ -359,14 +360,15 @@ static struct variant_data variant_qcom = {
 	.f_max			= 208000000,
 	.explicit_mclk_control	= true,
 	.qcom_fifo		= true,
-	.qcom_dml		= true,
 	.mmcimask1		= true,
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
 	.start_err		= MCI_STARTBITERR,
 	.opendrain		= MCI_ROD,
 #ifndef CONFIG_MMC_QCOM_DML
-	.init			= mmci_variant_init,
+	.dma_flow_controller	= true,
+	.init			= qcom_noqml_variant_init,
 #else
+	.qcom_dml		= true,
 	.init			= qcom_variant_init,
 #endif
 };
@@ -1211,6 +1213,16 @@ static void ux500v2_variant_init(struct mmci_host *host)
 	host->ops = &mmci_variant_ops;
 	host->ops->busy_complete = ux500_busy_complete;
 	host->ops->get_datactrl_cfg = ux500v2_get_dctrl_cfg;
+}
+
+static u32 qcom_get_dctrl_cfg(struct mmci_host *host)
+{
+	return MCI_DPSM_ENABLE | (host->data->blksz << 4);
+}
+static void qcom_noqml_variant_init(struct mmci_host *host)
+{
+	host->ops = &mmci_variant_ops;
+	host->ops->get_datactrl_cfg = qcom_get_dctrl_cfg;
 }
 
 static void mmci_pre_request(struct mmc_host *mmc, struct mmc_request *mrq)
