@@ -1032,9 +1032,14 @@
 	vmmc-supply = <&pm8901_l5>;
 	vqmmc-supply = <&pm8901_lvs0>;
 #if USE_SDCC_DMA
+  // #define DMOV_SDC1_CHAN         18 ==> adm 1, chan 2
+  // #define DMOV_SDC1_CRCI         1
+
   // only define the "rx" DMA channel, so that sdio mmc driver uses it bidirectionally
 	dmas = <&adm_dma1 2>;
 	dma-names = "rx";
+	qcom,rx-crci = <1>;
+	qcom,tx-crci = <1>;
 #endif
 };
 

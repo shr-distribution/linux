@@ -31,6 +31,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
+#include <linux/dma/qcom_adm.h>
 #include <linux/amba/mmci.h>
 #include <linux/pm_runtime.h>
 #include <linux/types.h>
@@ -843,6 +844,8 @@ struct mmci_dmae_priv {
 	struct dma_chan	*cur;
 	struct dma_chan	*rx_channel;
 	struct dma_chan	*tx_channel;
+	u32    rx_crci;
+	u32    tx_crci;
 	struct dma_async_tx_descriptor	*desc_current;
 	struct mmci_dmae_next next_data;
 };
@@ -884,6 +887,10 @@ int mmci_dmae_setup(struct mmci_host *host)
 		/* fix the reference count */
 		dmae->rx_channel->client_count++;
 	}
+
+	dmae->rx_crci = dmae->tx_crci = 0;
+	of_property_read_u32(mmc_dev(host->mmc)->of_node, "qcom,rx-crci", &(dmae->rx_crci));
+	of_property_read_u32(mmc_dev(host->mmc)->of_node, "qcom,tx-crci", &(dmae->tx_crci));
 
 	if (dmae->rx_channel)
 		rxname = dma_chan_name(dmae->rx_channel);
@@ -1032,18 +1039,27 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		.dst_maxburst = variant->fifohalfsize >> 2, /* # of words */
 		.device_fc = variant->dma_flow_controller,
 	};
+	struct qcom_adm_peripheral_config periph_conf = {};
 	struct dma_chan *chan;
 	struct dma_device *device;
 	struct dma_async_tx_descriptor *desc;
 	int nr_sg;
 	unsigned long flags = DMA_CTRL_ACK;
+	u32 crci = 0;
 
 	if (data->flags & MMC_DATA_READ) {
 		conf.direction = DMA_DEV_TO_MEM;
 		chan = dmae->rx_channel;
+		crci = dmae->rx_crci;
 	} else {
 		conf.direction = DMA_MEM_TO_DEV;
 		chan = dmae->tx_channel;
+		crci = dmae->tx_crci;
+	}
+	if (crci) {
+		conf.peripheral_config = &periph_conf;
+		conf.peripheral_size = sizeof(periph_conf);
+		periph_conf.crci = crci;
 	}
 
 	/* If there's no DMA channel, fall back to PIO */
