@@ -196,7 +196,10 @@ static int adm_get_blksize(unsigned int burst)
 	int ret;
 
 	switch (burst) {
+	case 8:
 	case 16:
+		ret = 1;
+		break;
 	case 32:
 	case 64:
 	case 128:
