@@ -40,7 +40,7 @@
 #define ADM_CH_RSLT(chan, ee)		(0x40 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_FLUSH_STATE0(chan, ee)	(0x80 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_STATUS_SD(chan, ee)	(0x200 + ADM_CHAN_EE_OFFS(chan, ee))
-#define ADM_CH_CONF(chan)		(0x240 + ADM_CHAN_OFFS(chan))
+#define ADM_CH_CONF(chan, ee)		(0x240 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_RSLT_CONF(chan, ee)	(0x300 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_SEC_DOMAIN_IRQ_STATUS(ee)	(0x380 + ADM_EE_OFFS(ee))
 #define ADM_CI_CONF(ci)			(0x390 + (ci) * ADM_CI_MULTI)
@@ -539,7 +539,7 @@ static void adm_start_dma(struct adm_chan *achan)
 		       ADM_CH_CONF_PERM_MPU_CONF |
 		       ADM_CH_CONF_MPU_DISABLE |
 		       ADM_CH_CONF_SEC_DOMAIN(adev->ee),
-		       adev->regs + ADM_CH_CONF(achan->id));
+		       adev->regs + ADM_CH_CONF(achan->id, adev->ee));
 
 		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
 		       adev->regs + ADM_CH_RSLT_CONF(achan->id, adev->ee));
