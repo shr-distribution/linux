@@ -542,7 +542,7 @@ static void adm_start_dma(struct adm_chan *achan)
 		       ADM_CH_CONF_PERM_MPU_CONF |
 		       ADM_CH_CONF_MPU_DISABLE |
 		       ADM_CH_CONF_SEC_DOMAIN(adev->ee),
-		       adev->regs + ADM_CH_CONF(achan->id, adev->ee));
+		       adev->regs + ADM_CH_CONF(achan->id, 0 /*adev->ee*/));
 
 		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
 		       adev->regs + ADM_CH_RSLT_CONF(achan->id, adev->ee));
@@ -580,6 +580,8 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 
 	srcs = readl_relaxed(adev->regs +
 			ADM_SEC_DOMAIN_IRQ_STATUS(adev->ee));
+
+	dev_info(adev->dev, "adm_dma_irq: src=0x%x\n",srcs);
 
 	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
 		struct adm_chan *achan = &adev->channels[i];
@@ -905,6 +907,8 @@ err_disable_clks:
 	clk_disable_unprepare(adev->iface_clk);
 err_disable_core_clk:
 	clk_disable_unprepare(adev->core_clk);
+
+	dev_err(adev->dev, "ADM probe FAILED.\n");
 
 	return ret;
 }
