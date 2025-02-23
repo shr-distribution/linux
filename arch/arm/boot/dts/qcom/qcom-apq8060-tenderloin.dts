@@ -15,8 +15,8 @@
 #define USE_I2C_TOUCHSCREEN_DRIVER 0
 #define USE_ADM_DMA 1
 #if USE_ADM_DMA
-#define ADM_USE_MASTER 1
-#define USE_SDCC_DMA 1
+#define ADM_USE_MASTER 0
+#define USE_SDCC_DMA 0
 #endif
 
 // beware, framebuffer conflicts with jack UART debugging
@@ -38,7 +38,7 @@
 
 	chosen {
 		/* Bootloader passes console=tty1, which overrides stdout-path */
-		bootargs = "console=ttyMSM0,115200 earlycon clk_ignore_unused log_buf_len=32M";
+		bootargs = "console=ttyMSM0,115200 earlycon clk_ignore_unused log_buf_len=32M loglevel=6";
 		stdout-path = "serial0:115200n8";
 #if USE_FRAMEBUFFER
 		#address-cells = <1>;
@@ -126,18 +126,10 @@
 		 *        or 0x18400000   INT_ADM1_MASTER = irq 166
 		 */
 #if USE_ADM_DMA
-
-#if ADM_USE_MASTER
-		adm_dma0: dma-controller@18300000 {
-			compatible = "qcom,adm";
-			reg = <0x18300000 0x100000>;
-			interrupts = <GIC_SPI 170 IRQ_TYPE_LEVEL_HIGH>;
-#else
 		adm_dma0: dma-controller@18320000 {
 			compatible = "qcom,adm";
 			reg = <0x18320000 0x100000>;
 			interrupts = <GIC_SPI 171 IRQ_TYPE_LEVEL_HIGH>;
-#endif
 			#dma-cells = <1>;
 
 			clocks = <&gcc ADM0_CLK>, <&gcc ADM0_PBUS_CLK>;
@@ -149,7 +141,7 @@
 				 <&gcc ADM0_C1_RESET>,
 				 <&gcc ADM0_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
-			qcom,ee = <0>;
+			qcom,ee = <1>;
 		};
 #if ADM_USE_MASTER
 		adm_dma1: dma-controller@18400000 {
@@ -173,7 +165,11 @@
 				 <&gcc ADM1_C1_RESET>,
 				 <&gcc ADM1_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
+#if ADM_USE_MASTER
 			qcom,ee = <0>;
+#else
+			qcom,ee = <1>;
+#endif
 		};
 #endif
 		
@@ -221,8 +217,8 @@
 				clocks = <&gcc GSBI10_UART_CLK>, <&gcc GSBI10_H_CLK>;
 				clock-names = "core", "iface";
 #if USE_ADM_DMA
-				dmas = <&adm_dma0 7>, <&adm_dma0 8>;
-				dma-names = "tx", "rx";
+				dmas = <&adm_dma0 8>;
+				dma-names = "rx";
 /*
   // This is some sneak Palm change to make uart2 to talk to gsbi10
 	#define ADM3_0_B_GSBI10_OUT_CRCI        9
@@ -232,8 +228,8 @@
 	#define DMOV_HSUART2_RX_CHAN   8
 	#define DMOV_HSUART2_RX_CRCI   ((1 << 4) + ADM3_0_B_GSBI10_IN_CRCI)  // 16 + 10 = 26
  */				
-				qcom,tx-crci = <25>;
-				qcom,rx-crci = <26>;
+				// qcom,tx-crci = <25>;
+				qcom,rx-crci = <10>;
 #endif
 				status = "disabled";
 			};
@@ -1043,7 +1039,6 @@
 #endif
 };
 
-// if enabled, then the initramfs won't find mmcblk0p13 for some reason
 &sdcc4 {
 	status = "okay";
 	pinctrl-names = "default";
@@ -1057,13 +1052,17 @@
 	mmc-pwrseq = <&ath6kl_pwrseq>;
 	// mpm_sdiowakeup_int = MSM_MPM_PIN_SDC4_DAT1 /* 24 */
 
-	/*
-	 * To intiialize correctly, wifi needs to enable the following regulators:
-	 *  "8901_l3"  - 3.3V - VREG_L3B_3V3      - WLAN_PA_3V3
-	 *  "8901_l1"  - 3.3V - VREG_L1B_3V3      - VDD_WLAN_3V3
-	 *  "8058_l19" - 1.8V - VREG_L19A_1V8     - VDD_1.8
-	 *  "8058_s3"  - 1.8V - VREG_S3A_1V8_WLAN - DVDD_SDIO_1V8 etc.
-	 */
+#if USE_SDCC_DMA
+	// #define DMOV_SDC4_CHAN         21 ==> adm 1, chan 5
+	// #define DMOV_SDC4_CRCI         5
+
+  // only define the "rx" DMA channel, so that sdio mmc driver uses it bidirectionally
+	dmas = <&adm_dma1 5>;
+	dma-names = "rx";
+	qcom,rx-crci = <5>;
+	qcom,tx-crci = <5>;
+#endif
+
 	atheros@1 {
 		compatible = "atheros,ath6kl";
 		reg = <1>;
