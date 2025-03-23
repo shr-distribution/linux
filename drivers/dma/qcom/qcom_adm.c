@@ -63,6 +63,8 @@
 #define ADM_CH_CONF_PERM_MPU_CONF	BIT(9)
 #define ADM_CH_CONF_FORCE_RSLT_EN	BIT(7)
 #define ADM_CH_CONF_SEC_DOMAIN(ee)	((((ee) & 0x3) << 4) | (((ee) & 0x4) << 11))
+#define ADM_CH_CONF_IRQ_EN            BIT(6)
+#define ADM_CH_CONF_PRIORITY(n)       (n << 0)
 
 /* channel result conf */
 #define ADM_CH_RSLT_CONF_FLUSH_EN	BIT(1)
@@ -541,8 +543,10 @@ static void adm_start_dma(struct adm_chan *achan)
 		writel(ADM_CH_CONF_SHADOW_EN |
 		       ADM_CH_CONF_PERM_MPU_CONF |
 		       ADM_CH_CONF_MPU_DISABLE |
+		       ADM_CH_CONF_FORCE_RSLT_EN | ADM_CH_CONF_IRQ_EN |
+		       ADM_CH_CONF_PRIORITY(6) |
 		       ADM_CH_CONF_SEC_DOMAIN(adev->ee),
-		       adev->regs + ADM_CH_CONF(achan->id, 0 /*adev->ee*/));
+		       adev->regs + ADM_CH_CONF(achan->id, adev->ee));
 
 		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
 		       adev->regs + ADM_CH_RSLT_CONF(achan->id, adev->ee));
