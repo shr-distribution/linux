@@ -685,6 +685,23 @@ static void adm_issue_pending(struct dma_chan *chan)
 	spin_unlock_irqrestore(&achan->vc.lock, flags);
 }
 
+static void adm_synchronize(struct dma_chan *chan)
+{
+	struct adm_chan *achan = to_adm_chan(chan);
+	struct adm_device *adev = achan->adev;
+	unsigned long flags;
+
+	dev_info(adev->dev, "adm_synchronize: chan=0x%d\n",achan->id);
+
+	spin_lock_irqsave(&achan->vc.lock, flags);
+
+	/* send flush command to terminate current transaction */
+	writel_relaxed(0x0,
+		       adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
+
+	spin_unlock_irqrestore(&achan->vc.lock, flags);
+}
+
 /**
  * adm_dma_free_desc - free descriptor memory
  * @vd: virtual descriptor
@@ -886,6 +903,7 @@ static int adm_dma_probe(struct platform_device *pdev)
 	adev->common.device_issue_pending = adm_issue_pending;
 	adev->common.device_tx_status = adm_tx_status;
 	adev->common.device_terminate_all = adm_terminate_all;
+	adev->common.device_synchronize = adm_synchronize;
 	adev->common.device_config = adm_slave_config;
 
 	ret = dma_async_device_register(&adev->common);
