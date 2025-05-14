@@ -600,6 +600,8 @@ static void __exit disp_exit(void)
 	class_destroy(disp_class);
 }
 
+extern int agold_lcmldo_enable(void);
+
 static int __init disp_late(void)
 {
 	int ret = 0;
@@ -611,6 +613,8 @@ static int __init disp_late(void)
 		pr_err("get dsv_pos fail, ret = %d\n", ret);
 
 	display_bias_enable();
+
+	agold_lcmldo_enable();
 
 	DDPMSG("disp driver(1) %s end\n", __func__);
 	return 0;

@@ -113,7 +113,7 @@ static struct LCM_setting_table init_setting[] = {
 };
 
 static int agold_power_setting[] = {
-	0, 1, 175, -1, -1, -1
+	0, 1, 175, -1, -1, -1, 0
 };
 
 static struct regulator *lcm_ldo;
@@ -142,7 +142,7 @@ int lcd_ldo_regulator_init(void)
 	return ret; /* must be 0 */
 }
 
-int lcd_ldo_enable(void)
+int agold_lcmldo_enable(void)
 {
 	int ret = 0;
 	int retval = 0;
@@ -164,7 +164,7 @@ int lcd_ldo_enable(void)
 	return retval;
 }
 
-int lcd_ldo_disable(void)
+int agold_lcmldo_disable(void)
 {
 	int ret = 0;
 	int retval = 0;
@@ -227,7 +227,7 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	params->physical_width = 81;
 	params->physical_height = 81;
     // enable tearing-free
-    params->dbi.te_mode 			= LCM_DBI_TE_MODE_VSYNC_ONLY;
+    params->dbi.te_mode 			= LCM_DBI_TE_MODE_VSYNC_OR_HSYNC;
     params->dbi.io_driving_current = 2;
     //params->dbi.te_edge_polarity		= LCM_POLARITY_RISING;
 
@@ -249,7 +249,7 @@ static void lcm_get_params(struct LCM_PARAMS *params)
     // Not support in MT6573
     params->dsi.packet_size=256;
     // Video mode setting
-    params->dsi.intermediat_buffer_num = 2;
+    params->dsi.intermediat_buffer_num = 0; /* unused by DSI driver */
 
     params->dsi.PS=LCM_PACKED_PS_24BIT_RGB888;
 
@@ -276,7 +276,7 @@ static void lcm_power_on(void)
 		agold_gpio_set(agold_power_setting[2], 1);
 
 	if (agold_power_setting[1] == 1) {
-		lcd_ldo_enable();
+		agold_lcmldo_enable();
 	} else if (!agold_power_setting[1]) {
 		agold_gpio_set(agold_power_setting[3], 1u);
 	}
@@ -285,6 +285,26 @@ static void lcm_power_on(void)
 		display_bias_enable();
 
 	LCM_LOGI("lcm_power_on end\n");
+}
+
+static void lcm_power_off(void)
+{
+	LCM_LOGI("lcm_power_off start\n");
+	if (!agold_power_setting[0] && !agold_power_setting[6])
+		agold_gpio_set(agold_power_setting[2], 0);
+
+	if (agold_power_setting[1] == 1) {
+		agold_lcmldo_disable();
+	} else if (!agold_power_setting[1]) {
+		agold_gpio_set(agold_power_setting[3], 0);
+	}
+
+	if (agold_power_setting[4] != -1 && agold_power_setting[5] != -1) {
+		display_bias_disable();
+		agold_lcmldo_disable();
+	}
+
+	LCM_LOGI("lcm_power_off end\n");
 }
 
 static void lcm_init_power(void)
@@ -333,12 +353,14 @@ static void lcm_suspend(void)
 	dsi_set_cmdq(&data, 1, 1);
 	data = 0x100500;
 	dsi_set_cmdq(&data, 1, 1);
-	MDELAY(120);
+	MDELAY(20);
 	agold_gpio_set(45, 0);
-	SET_RESET_PIN(0);
+	agold_gpio_set(18, 0);
+	MDELAY(10);
+	lcm_power_off();
 	MDELAY(10);
 	agold_gpio_set(157, 0);
-	MDELAY(10);
+	MDELAY(200);
 
 	LCM_LOGD("lcm_suspend end\n");
 }
