@@ -74,7 +74,7 @@
 #define AW9523_I2C_NAME "Integrated keyboard"
 
 // These masks must have the lowest bits set and top bits clear.  No skipping rows.
-#define P0_KROW_MASK 0xff
+#define P0_KROW_MASK 0x7f
 #define P1_KCOL_MASK 0x7f
 
 #define KROW_P0_0 0
@@ -131,71 +131,64 @@
 
 KEY_STATE key_map[] = {
 //      name        code          val        row        col
-        {"1",       KEY_1,          0, KROW_P0_0, KROW_P1_0}, // {"1",       KEY_1,          0, KROW_P0_0, KROW_P1_0},
-        {"U",       KEY_U,          0, KROW_P0_1, KROW_P1_0}, // {"U",       KEY_U,          0, KROW_P0_1, KROW_P1_0},
-        {"S",       KEY_S,          0, KROW_P0_2, KROW_P1_0}, // {"S",       KEY_S,          0, KROW_P0_2, KROW_P1_0},
-        {"Z",       KEY_Z,          0, KROW_P0_3, KROW_P1_0}, // {"Z",       KEY_Z,          0, KROW_P0_3, KROW_P1_0},
-        {",",       KEY_COMMA,      0, KROW_P0_4, KROW_P1_0}, // {",",       KEY_COMMA,      0, KROW_P0_4, KROW_P1_0},
-        {"~",       KEY_APOSTROPHE, 0, KROW_P0_5, KROW_P1_0}, // {"~",       KEY_APOSTROPHE, 0, KROW_P0_5, KROW_P1_0},
-        {"8",       KEY_8,          0, KROW_P0_6, KROW_P1_0}, // {"8",       KEY_8,          0, KROW_P0_6, KROW_P1_0},
-        {"J",       KEY_J,          0, KROW_P0_7, KROW_P1_0}, // {"J",       KEY_J,          0, KROW_P0_7, KROW_P1_0},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_0, KROW_P1_0},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_1, KROW_P1_0},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_2, KROW_P1_0},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_3, KROW_P1_0},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_4, KROW_P1_0},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_5, KROW_P1_0},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_6, KROW_P1_0},
 
-        {"Y",       KEY_Y,          0, KROW_P0_0, KROW_P1_1}, // {"2",       KEY_2,          0, KROW_P0_0, KROW_P1_1},
-        {"U",       KEY_U,          0, KROW_P0_1, KROW_P1_1}, // {"W",       KEY_W,          0, KROW_P0_1, KROW_P1_1},
-        {"I",       KEY_I,          0, KROW_P0_2, KROW_P1_1}, // {"D",       KEY_D,          0, KROW_P0_2, KROW_P1_1},
-        {"O",       KEY_O,          0, KROW_P0_3, KROW_P1_1}, // {"C",       KEY_C,          0, KROW_P0_3, KROW_P1_1},
-        {"P",       KEY_P,          0, KROW_P0_4, KROW_P1_1}, // {"ALT-L",   KEY_LEFTALT,    0, KROW_P0_4, KROW_P1_1},
-        {"SHIFT-L", KEY_LEFTSHIFT,  0, KROW_P0_5, KROW_P1_1}, // {"LEFT",    KEY_LEFT,       0, KROW_P0_5, KROW_P1_1},
-        {"ALT-R",   KEY_RIGHTALT,   0, KROW_P0_6, KROW_P1_1}, // {"9",       KEY_9,          0, KROW_P0_6, KROW_P1_1},
-        {"ALT-L",   KEY_LEFTALT,    0, KROW_P0_7, KROW_P1_1}, // {"K",       KEY_K,          0, KROW_P0_7, KROW_P1_1},
+        {"B",       KEY_B,          0, KROW_P0_0, KROW_P1_1},
+        {"Z",       KEY_Z,          0, KROW_P0_1, KROW_P1_1},
+        {"SHIFT-L", KEY_LEFTSHIFT,  0, KROW_P0_2, KROW_P1_1},
+        {"R",       KEY_R,          0, KROW_P0_3, KROW_P1_1},
+        {"O",       KEY_O,          0, KROW_P0_4, KROW_P1_1},
+        {"P",       KEY_P,          0, KROW_P0_5, KROW_P1_1},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_6, KROW_P1_1},
 
-        {"T",       KEY_T,          0, KROW_P0_0, KROW_P1_2}, // {"3",       KEY_3,          0, KROW_P0_0, KROW_P1_2},
-        {"R",       KEY_R,          0, KROW_P0_1, KROW_P1_2}, // {"Y",       KEY_Y,          0, KROW_P0_1, KROW_P1_2},
-        {"E",       KEY_E,          0, KROW_P0_2, KROW_P1_2}, // {"TAB",     KEY_TAB,        0, KROW_P0_2, KROW_P1_2},
-        {"W",       KEY_W,          0, KROW_P0_3, KROW_P1_2}, // {"W",       KEY_N,          0, KROW_P0_3, KROW_P1_2},
-        {"Q",       KEY_Q,          0, KROW_P0_4, KROW_P1_2}, // {"M",       KEY_M,          0, KROW_P0_4, KROW_P1_2},
-        {"CTRL",    KEY_LEFTCTRL,   0, KROW_P0_5, KROW_P1_2}, // {"PGDN",    KEY_DOWN,       0, KROW_P0_5, KROW_P1_2},
-        {"DEL",     KEY_BACKSPACE,  0, KROW_P0_6, KROW_P1_2}, // {"DEL",     KEY_BACKSPACE,  0, KROW_P0_6, KROW_P1_2},
-        {"I",       KEY_I,          0, KROW_P0_7, KROW_P1_2}, // {"I",       KEY_I,          0, KROW_P0_7, KROW_P1_2},
+        {"V",       KEY_V,          0, KROW_P0_0, KROW_P1_2},
+        {"A",       KEY_A,          0, KROW_P0_1, KROW_P1_2},
+        {"E",       KEY_E,          0, KROW_P0_2, KROW_P1_2},
+        {"T",       KEY_T,          0, KROW_P0_3, KROW_P1_2},
+        {"CTRL",    KEY_LEFTCTRL,   0, KROW_P0_4, KROW_P1_2},
+        {"ENTER",   KEY_ENTER,      0, KROW_P0_5, KROW_P1_2},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_6, KROW_P1_2},
 
-        {"G",       KEY_G,          0, KROW_P0_0, KROW_P1_3}, // {"4",       KEY_4,          0, KROW_P0_0, KROW_P1_3},
-        {"F",       KEY_F,          0, KROW_P0_1, KROW_P1_3}, // {"T",       KEY_T,          0, KROW_P0_1, KROW_P1_3},
-        {"D",       KEY_D,          0, KROW_P0_2, KROW_P1_3}, // {"F",       KEY_F,          0, KROW_P0_2, KROW_P1_3},
-        {"S",       KEY_S,          0, KROW_P0_3, KROW_P1_3}, // {"X",       KEY_X,          0, KROW_P0_3, KROW_P1_3},
-        {"A",       KEY_A,          0, KROW_P0_4, KROW_P1_3}, // {"META-L",  KEY_LEFTMETA,   0, KROW_P0_4, KROW_P1_3},
-        {"ESC",     KEY_ESC,        0, KROW_P0_5, KROW_P1_3}, // {"SHIFT-R", KEY_RIGHTSHIFT, 0, KROW_P0_5, KROW_P1_3},
-        {"P",       KEY_P,          0, KROW_P0_6, KROW_P1_3}, // {"P",       KEY_P,          0, KROW_P0_6, KROW_P1_3},
-        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_7, KROW_P1_3}, // {"NULL",    KEY_UNKNOWN,    0, KROW_P0_7, KROW_P1_3},
+        {"N",       KEY_N,          0, KROW_P0_0, KROW_P1_3},
+        {"Q",       KEY_Q,          0, KROW_P0_1, KROW_P1_3},
+        {"F",       KEY_F,          0, KROW_P0_2, KROW_P1_3},
+        {"Y",       KEY_Y,          0, KROW_P0_3, KROW_P1_3},
+        {"ALT-L",   KEY_LEFTALT,    0, KROW_P0_4, KROW_P1_3},
+        {"BKSP",    KEY_BACKSPACE,  0, KROW_P0_5, KROW_P1_3},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_6, KROW_P1_3},
 
-        {"DEL",     KEY_BACKSPACE,  0, KROW_P0_0, KROW_P1_4}, // {"5",       KEY_5,          0, KROW_P0_0, KROW_P1_4},
-        {"L",       KEY_L,          0, KROW_P0_1, KROW_P1_4}, // {"E",       KEY_E,          0, KROW_P0_1, KROW_P1_4},
-        {"K",       KEY_K,          0, KROW_P0_2, KROW_P1_4}, // {"G",       KEY_G,          0, KROW_P0_2, KROW_P1_4},
-        {"J",       KEY_J,          0, KROW_P0_3, KROW_P1_4}, // {"V",       KEY_V,          0, KROW_P0_3, KROW_P1_4},
-        {"H",       KEY_H,          0, KROW_P0_4, KROW_P1_4}, // {"SPACE",   KEY_SPACE,      0, KROW_P0_4, KROW_P1_4},
-        {"META-L",  KEY_LEFTMETA,   0, KROW_P0_5, KROW_P1_4}, // {"PGUP",    KEY_UP,         0, KROW_P0_5, KROW_P1_4},
-        {"O",       KEY_O,          0, KROW_P0_6, KROW_P1_4}, // {"O",       KEY_O,          0, KROW_P0_6, KROW_P1_4},
-        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_7, KROW_P1_4}, // {"NULL",    KEY_UNKNOWN,    0, KROW_P0_7, KROW_P1_4},
+        {"C",       KEY_C,          0, KROW_P0_0, KROW_P1_4},
+        {"S",       KEY_S,          0, KROW_P0_1, KROW_P1_4},
+        {"J",       KEY_J,          0, KROW_P0_2, KROW_P1_4},
+        {"U",       KEY_U,          0, KROW_P0_3, KROW_P1_4},
+        {"I",       KEY_I,          0, KROW_P0_4, KROW_P1_4},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_5, KROW_P1_4},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_6, KROW_P1_4},
 
-        {"V",       KEY_V,          0, KROW_P0_0, KROW_P1_5}, // {"6",       KEY_6,          0, KROW_P0_0, KROW_P1_5},
-        {"C",       KEY_C,          0, KROW_P0_1, KROW_P1_5}, // {"Q",       KEY_Q,          0, KROW_P0_1, KROW_P1_5},
-        {"X",       KEY_X,          0, KROW_P0_2, KROW_P1_5}, // {"A",       KEY_A,          0, KROW_P0_2, KROW_P1_5},
-        {"Z",       KEY_Z,          0, KROW_P0_3, KROW_P1_5}, // {"B",       KEY_B,          0, KROW_P0_3, KROW_P1_5},
-        {"SPACE",   KEY_SPACE,      0, KROW_P0_4, KROW_P1_5}, // {"?",       KEY_DOT,        0, KROW_P0_4, KROW_P1_5},
-        {"RIGHT",   KEY_RIGHT,      0, KROW_P0_5, KROW_P1_5}, // {"RIGHT",   KEY_RIGHT,      0, KROW_P0_5, KROW_P1_5},
-        {"ENTER",   KEY_ENTER,      0, KROW_P0_6, KROW_P1_5}, // {"ENTER",   KEY_ENTER,      0, KROW_P0_6, KROW_P1_5},
-        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_7, KROW_P1_5}, // {"NULL",    KEY_UNKNOWN,    0, KROW_P0_7, KROW_P1_5},
+        {"X",       KEY_X,          0, KROW_P0_0, KROW_P1_5},
+        {"W",       KEY_W,          0, KROW_P0_1, KROW_P1_5},
+        {"G",       KEY_G,          0, KROW_P0_2, KROW_P1_5},
+        {"K",       KEY_K,          0, KROW_P0_3, KROW_P1_5},
+        {"M",       KEY_M,          0, KROW_P0_4, KROW_P1_5},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_5, KROW_P1_5},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_6, KROW_P1_5},
 
-        {"N",       KEY_N,          0, KROW_P0_0, KROW_P1_6}, // {"7",       KEY_7,          0, KROW_P0_0, KROW_P1_6},
-        {"B",       KEY_B,          0, KROW_P0_1, KROW_P1_6}, // {"R",       KEY_R,          0, KROW_P0_1, KROW_P1_6},
-        {"M",       KEY_M,          0, KROW_P0_2, KROW_P1_6}, // {"H",       KEY_H,          0, KROW_P0_2, KROW_P1_6},
-        {"ENTER",   KEY_ENTER,      0, KROW_P0_3, KROW_P1_6}, // {"SHIFT-L", KEY_LEFTSHIFT,  0, KROW_P0_3, KROW_P1_6},
-        {"CTRL",    KEY_LEFTCTRL,   0, KROW_P0_4, KROW_P1_6}, // {"CTRL",    KEY_LEFTCTRL,   0, KROW_P0_4, KROW_P1_6},
-        {"L",       KEY_L,          0, KROW_P0_5, KROW_P1_6}, // {"L",       KEY_L,          0, KROW_P0_5, KROW_P1_6},
-        {"0",       KEY_0,          0, KROW_P0_6, KROW_P1_6}, // {"0",       KEY_0,          0, KROW_P0_6, KROW_P1_6},
-        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_7, KROW_P1_6}, // {"NULL",    KEY_UNKNOWN,    0, KROW_P0_7, KROW_P1_6},
+        {"SPACE",   KEY_SPACE,      0, KROW_P0_0, KROW_P1_6},
+        {"D",       KEY_D,          0, KROW_P0_1, KROW_P1_6},
+        {"H",       KEY_H,          0, KROW_P0_2, KROW_P1_6},
+        {"META-L",  KEY_LEFTMETA,   0, KROW_P0_3, KROW_P1_6},
+        {"L",       KEY_L,          0, KROW_P0_4, KROW_P1_6},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_5, KROW_P1_6},
+        {"NULL",    KEY_UNKNOWN,    0, KROW_P0_6, KROW_P1_6},
 };
 
-#define P0_NUM_MAX   8
+#define P0_NUM_MAX   7
 #define P1_NUM_MAX   7
 #define KEYST_MAX    2
 #define KEYST_OLD    0
@@ -420,36 +413,20 @@ static void aw9523_key_eint_work(struct work_struct *work) {
 #endif
             if (setKeyValue) {
                 keyst_new[i] = (val & P0_KROW_MASK);
+                AW9523_LOG("Column %d, keyst_new value: 0x%02x\n", i, keyst_new[i]);  // DEBUG: Print filtered value
             }
-            //AW9523_LOG("0x%02x, ", keyst_new[i]);                //i=p1 keyst[i]=p0
         }
     }
-    // AW9523_LOG("\n");
-
+    // Print full keyst_new array for debugging
+    AW9523_LOG("Full keyst_new array: [0x%02x, 0x%02x, 0x%02x, 0x%02x, 0x%02x, 0x%02x, 0x%02x]\n",
+               keyst_new[0], keyst_new[1], keyst_new[2], keyst_new[3],
+               keyst_new[4], keyst_new[5], keyst_new[6]);
 
     /* This routine prevents ghosting.  As an example, if Control+L_Shift+N is pressed,
      * the keyboard detects both N & M at the same time due to the electronic circuit.
      * Rather than detect both keys, block both keys until either Control or L_Shift is
      * released, then detect the correct keypress. See youtu.be/L3ByBtM-w9I */
     if (memcmp(keyst_old, keyst_new, P1_NUM_MAX)) {    // keyst changed
-
-        // Special cases for ctrl+shift with z/x/c/v clear unlikely combination
-        if (((keyst_new[KROW_P1_6] & (1 << KROW_P0_3)) == 0) && //l_shift
-            ((keyst_new[KROW_P1_6] & (1 << KROW_P0_4)) == 0)) { //ctrl
-            if ((keyst_new[KROW_P1_0] & (1 << KROW_P0_3)) == 0) { //z
-                keyst_new[KROW_P1_0] |= (1 << KROW_P0_4); // -/
-            }
-            if ((keyst_new[KROW_P1_3] & (1 << KROW_P0_3)) == 0) { //x
-                keyst_new[KROW_P1_3] |= (1 << KROW_P0_4); // -fn
-            }
-            if ((keyst_new[KROW_P1_1] & (1 << KROW_P0_3)) == 0) { //c
-                keyst_new[KROW_P1_1] |= (1 << KROW_P0_4); // -alt
-            }
-            if ((keyst_new[KROW_P1_4] & (1 << KROW_P0_3)) == 0) { //v
-                keyst_new[KROW_P1_4] |= (1 << KROW_P0_4); // -space
-            }
-        }
-
         val = P0_KROW_MASK; // The distinct columns used
         y = 0;
         update_now = true; // Now by default, do the update since keyst changed.
