@@ -919,7 +919,7 @@ static int tpd_set_page(struct synaptics_rmi4_data *rmi4_data,
 	struct i2c_client *i2c = rmi4_data->i2c_client;
 
 	page = ((addr >> 8) & MASK_8BIT);
-    TPD_DMESG("tpd_set_page, page = %d\n", page);
+    TP_LOGD("tpd_set_page, page = %d\n", page);
 	if (page != rmi4_data->current_page) {
 		buf[0] = MASK_8BIT;
 		buf[1] = page;
@@ -2299,12 +2299,12 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 		return retval;
 
 	/* Maximum x and y */
-	rmi4_data->sensor_max_x = SENSOR_MAX_X;
-			//((unsigned short)ctrl_8.max_x_coord_lsb << 0) |
-			//((unsigned short)ctrl_8.max_x_coord_msb << 8);
-	rmi4_data->sensor_max_y = SENSOR_MAX_Y;
-			//((unsigned short)ctrl_8.max_y_coord_lsb << 0) |
-			//((unsigned short)ctrl_8.max_y_coord_msb << 8);
+	rmi4_data->sensor_max_x = // SENSOR_MAX_X;
+			((unsigned short)ctrl_8.max_x_coord_lsb << 0) |
+			((unsigned short)ctrl_8.max_x_coord_msb << 8);
+	rmi4_data->sensor_max_y = // SENSOR_MAX_Y;
+			((unsigned short)ctrl_8.max_y_coord_lsb << 0) |
+			((unsigned short)ctrl_8.max_y_coord_msb << 8);
 
 		/* It's recommended to parse max_x and max_y from contrel register, but this does not match MTK's mtk-tpd.c */
 
