@@ -148,6 +148,7 @@ obj-$(CONFIG_THERMAL)   += thermal/
 obj-$(CONFIG_MTK_MTD_NAND) += nand/
 obj-y += performance/
 obj-$(CONFIG_MEDIATEK_SOLUTION) += cmo/
+obj-$(CONFIG_MTK_SMARTPA_SOUND) += smartpa/
 obj-$(CONFIG_MTK_VOW_SUPPORT)  += vow/
 obj-y += io_boost/
 obj-y += mtprintk/
