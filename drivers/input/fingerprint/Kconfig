@@ -46,5 +46,14 @@ config GOODIX_SENSOR_TYPE
 	  GF516M GF816M GF3208 GF3206 GF3266
 	  GF3288 GF5206 GF5216 GF5208
 endif
+
+if MTK_FINGERPRINT_SELECT = "CS3711"
+config CS3711_FINGERPRINT
+	bool "CS3711 Fingerprint"
+	default y
+	help
+	  Chipsailing CS3711 fingerprint device.
+endif
+
 endif
 endmenu
