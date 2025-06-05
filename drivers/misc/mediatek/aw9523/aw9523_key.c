@@ -159,7 +159,7 @@ KEY_STATE key_map[] = {
         {"Q",       KEY_Q,          0, KROW_P0_1, KROW_P1_3},
         {"F",       KEY_F,          0, KROW_P0_2, KROW_P1_3},
         {"Y",       KEY_Y,          0, KROW_P0_3, KROW_P1_3},
-        {"ALT-L",   KEY_LEFTALT,    0, KROW_P0_4, KROW_P1_3},
+        {"ALT-R",   KEY_RIGHTALT,   0, KROW_P0_4, KROW_P1_3},
         {"BKSP",    KEY_BACKSPACE,  0, KROW_P0_5, KROW_P1_3},
         {"NULL",    KEY_UNKNOWN,    0, KROW_P0_6, KROW_P1_3},
 
@@ -780,7 +780,7 @@ static void aw9523_input_register(void) {
     input_set_capability(aw9523_key->input_dev, EV_KEY, KEY_B);
     input_set_capability(aw9523_key->input_dev, EV_KEY, KEY_LEFTSHIFT);
     input_set_capability(aw9523_key->input_dev, EV_KEY, KEY_COMMA);
-    input_set_capability(aw9523_key->input_dev, EV_KEY, KEY_LEFTALT);
+    input_set_capability(aw9523_key->input_dev, EV_KEY, KEY_RIGHTALT);
     input_set_capability(aw9523_key->input_dev, EV_KEY, KEY_M);
     input_set_capability(aw9523_key->input_dev, EV_KEY, KEY_LEFTMETA);
     input_set_capability(aw9523_key->input_dev, EV_KEY, KEY_SPACE);
