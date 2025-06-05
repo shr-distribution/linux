@@ -43,6 +43,7 @@ obj-$(CONFIG_MTK_IRRX) += irrx/
 obj-$(CONFIG_MTK_COMBO) += connectivity/
 obj-$(CONFIG_MTK_BTIF) += btif/
 obj-$(CONFIG_MTK_CONN_MD) += conn_md/
+obj-$(CONFIG_NFC_CHIP_SUPPORT) += nfc/
 
 obj-$(CONFIG_MTK_SECURITY_SW_SUPPORT) +=masp/
 
