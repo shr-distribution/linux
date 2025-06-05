@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Touchpad driver configuration
+#
+
+config MTK_TOUCHPAD
+	tristate "MediaTek Touchpad support"
+	depends on I2C
+	help
+	  Say Y here if you want to use MediaTek touchpad.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called pad.
+
+config MTK_TOUCHPAD_DEBUG
+	bool "MediaTek Touchpad debugging utilities"
+	depends on MTK_TOUCHPAD
+	help
+	  Say Y here to enable MediaTek touchpad debugging utilities.
+	  This enables additional features for debugging touchpad issues.
+
+	  If unsure, say N.
+
+
+config MTK_TOUCHPAD_SYNAPTICS
+	tristate "Synaptics DSX touchpad for Mediatek"
+	default n
+	help
+	  Say Y here if you have Synaptics DSX touchpad.
+
+	  If unsure, say N.
