@@ -205,8 +205,6 @@ static const struct of_device_id synaptics_dt_match[] = {
 	{},
 };
 
-static struct kobject *touchscreen_link;
-
 #ifdef CONFIG_OF_TOUCH
 static int of_get_synaptic_platform_data(struct device *dev)
 {
@@ -639,6 +637,16 @@ struct synaptics_rmi4_exp_fn_data {
 };
 
 static struct synaptics_rmi4_exp_fn_data exp_data;
+
+#define CREATE_FILE_WORK_DELAY_MS 500
+struct synaptics_rmi4_create_work {
+	bool queue_work;
+	struct delayed_work work;
+	struct workqueue_struct *workqueue;
+	struct synaptics_rmi4_data *rmi4_data;
+};
+
+static struct synaptics_rmi4_create_work create_attr;
 
 static struct device_attribute attrs[] = {
 	__ATTR(reset, 0660,
@@ -2947,12 +2955,16 @@ static int synaptics_rmi4_set_input_dev(struct synaptics_rmi4_data *rmi4_data)
 {
 	int retval;
 
+#ifdef PAD_DEVICE
+	rmi4_data->input_dev = pad->dev;
+#else
 	rmi4_data->input_dev = input_allocate_device();
 	if (rmi4_data->input_dev == NULL) {
 		TP_LOGE("Failed to allocate input device\n");
 		retval = -ENOMEM;
 		goto err_input_device;
 	}
+#endif
 
 	retval = synaptics_rmi4_query_device(rmi4_data);
 	if (retval < 0) {
@@ -2960,12 +2972,14 @@ static int synaptics_rmi4_set_input_dev(struct synaptics_rmi4_data *rmi4_data)
 		goto err_query_device;
 	}
 
+#ifndef PAD_DEVICE
 	rmi4_data->input_dev->name = DRIVER_NAME;
 	rmi4_data->input_dev->phys = INPUT_PHYS_NAME;
 	rmi4_data->input_dev->id.product = SYNAPTICS_DSX_DRIVER_PRODUCT;
 	rmi4_data->input_dev->id.version = SYNAPTICS_DSX_DRIVER_VERSION;
 	rmi4_data->input_dev->id.bustype = BUS_I2C;
 	rmi4_data->input_dev->dev.parent = &rmi4_data->i2c_client->dev;
+#endif
 	input_set_drvdata(rmi4_data->input_dev, rmi4_data);
 
 	set_bit(EV_SYN, rmi4_data->input_dev->evbit);
@@ -2979,20 +2993,25 @@ static int synaptics_rmi4_set_input_dev(struct synaptics_rmi4_data *rmi4_data)
 
 	synaptics_rmi4_set_params(rmi4_data);
 
+#ifndef PAD_DEVICE
 	retval = input_register_device(rmi4_data->input_dev);
 	if (retval) {
 		TP_LOGE("Failed to register input device\n");
 		goto err_register_input;
 	}
+#endif
 
 	return 0;
 
+#ifndef PAD_DEVICE
 err_register_input:
+#endif
 err_query_device:
 	synaptics_rmi4_empty_fn_list(rmi4_data);
+#ifndef PAD_DEVICE
 	input_free_device(rmi4_data->input_dev);
-
 err_input_device:
+#endif
 	return retval;
 }
 
@@ -3274,6 +3293,35 @@ exit:
 }
 EXPORT_SYMBOL(synaptics_pad_rmi4_new_function);
 
+/**
+* synaptics_rmi4_create_file_work()
+*
+* This function is a work thread that creates attribute files
+* for the object of mtk_tpd inpudt device
+*/
+static void synaptics_rmi4_create_file_work(struct work_struct *work)
+{
+	unsigned char attr_count;
+	int retval;
+	struct synaptics_rmi4_data *rmi4_data = create_attr.rmi4_data;
+
+	TP_LOGI("%s: entry\n", __func__);
+
+	if (!pad_register_flag) {
+		TP_LOGE("mtk_tpd input device is not registered\n");
+		return;
+	}
+
+	for (attr_count = 0; attr_count < ARRAY_SIZE(attrs); attr_count++) {
+		retval = sysfs_create_file(&rmi4_data->input_dev->dev.kobj,
+				&attrs[attr_count].attr);
+		if (retval < 0) {
+			TP_LOGE("Failed to create sysfs attributes\n");
+			return;
+		}
+	}
+
+}
 
 static ssize_t synaptics_rmi4_f34_configid_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -3364,8 +3412,6 @@ static int synaptics_rmi4_probe(struct i2c_client *client,
 #endif
 {
 	int retval;
-	int err;
-	unsigned char attr_count;
 	struct synaptics_rmi4_data *rmi4_data;
 
 	TP_LOGI("probe start\n");
@@ -3476,35 +3522,19 @@ static int synaptics_rmi4_probe(struct i2c_client *client,
 			&exp_data.work,
 			msecs_to_jiffies(EXP_FN_WORK_DELAY_MS));
 
-	for (attr_count = 0; attr_count < ARRAY_SIZE(attrs); attr_count++) {
-		retval = sysfs_create_file(&rmi4_data->input_dev->dev.kobj,
-				&attrs[attr_count].attr);
-		if (retval < 0) {
-			TP_LOGE("Failed to create sysfs attributes\n");
-			goto err_sysfs;
-		}
-	}
+	// create a delayed work to add the attributes onto the mtk_tpd
+	create_attr.workqueue = create_singlethread_workqueue("dsx_sysfs_workqueue");
+	INIT_DELAYED_WORK(&create_attr.work, synaptics_rmi4_create_file_work);
+	create_attr.rmi4_data = rmi4_data;
+	create_attr.queue_work = true;
+	queue_delayed_work(create_attr.workqueue,
+			&create_attr.work,
+			msecs_to_jiffies(CREATE_FILE_WORK_DELAY_MS));
 
 	retval = sysfs_create_group(&client->dev.kobj, &attr_group);
 	if (retval < 0) {
 		TP_LOGE("Failed to create sysfs attributes\n");
 		goto err_sysfs;
-	}
-
-	/* create sysfs link to input dev */
-	touchscreen_link = kobject_create_and_add("touchscreen", NULL);
-	if (touchscreen_link != NULL) {
-		err = sysfs_create_link(touchscreen_link, &client->dev.kobj,
-				"link_i2c_dev");
-		if (err < 0) {
-			TP_LOGW("Failed to create sysfs link for i2c_dev\n");
-		}
-
-		err = sysfs_create_link(touchscreen_link, &rmi4_data->input_dev->dev.kobj,
-				"link_input_dev");
-		if (err < 0) {
-			TP_LOGW("Failed to create sysfs link for input_dev\n");
-		}
 	}
 
 	pad_load_status = 1;
@@ -3516,10 +3546,10 @@ static int synaptics_rmi4_probe(struct i2c_client *client,
 
 err_sysfs:
 	sysfs_remove_group(&client->dev.kobj, &attr_group);
-	for (attr_count--; attr_count >= 0; attr_count--) {
-		sysfs_remove_file(&rmi4_data->input_dev->dev.kobj,
-				&attrs[attr_count].attr);
-	}
+
+	cancel_delayed_work_sync(&create_attr.work);
+	flush_workqueue(create_attr.workqueue);
+	destroy_workqueue(create_attr.workqueue);
 
 	cancel_delayed_work_sync(&exp_data.work);
 	flush_workqueue(exp_data.workqueue);
@@ -3564,6 +3594,10 @@ static int synaptics_rmi4_remove(struct i2c_client *client)
 		sysfs_remove_file(&rmi4_data->input_dev->dev.kobj,
 				&attrs[attr_count].attr);
 	}
+
+	cancel_delayed_work_sync(&create_attr.work);
+	flush_workqueue(create_attr.workqueue);
+	destroy_workqueue(create_attr.workqueue);
 
 	cancel_delayed_work_sync(&exp_data.work);
 	flush_workqueue(exp_data.workqueue);

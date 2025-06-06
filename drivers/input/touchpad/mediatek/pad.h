@@ -109,7 +109,9 @@ struct pad_driver_t {
     struct pad_attrs attrs;
 };
 
+extern struct pad_device *pad;
 extern const struct of_device_id pad_of_match[];
+extern int pad_register_flag;
 
 /* Function declarations */
 int pad_driver_add(struct pad_driver_t *pad_drv);
