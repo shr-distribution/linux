@@ -426,8 +426,6 @@ feature_control:
             adrp x8, .L_ffffff8009c7b638
             ldrb w8,[x8,:lo12:.L_ffffff8009c7b638]
             mov w9,#3448
-.L_ffffff8008704f9c:
-
             adrp x10, .L_ffffff8009c7b634
             cmp w8,#0
             csel w8,w9,wzr,ne
@@ -437,6 +435,7 @@ feature_control:
             strh w8,[x19,#2]
             str w9,[x20]
             b .L_ffffff8008706198
+.L_ffffff8008704fc0:
 
             adrp x21, .L_ffffff8009c7b630
             ldrb w8,[x21,:lo12:.L_ffffff8009c7b630]
@@ -1040,8 +1039,6 @@ feature_control:
             mov w9,#2
             mov w10,#65530
             csel w9,w20,w9,hi
-.L_ffffff8008705754:
-
             cmp w10,w9, uxth
             mov w10,#-6
             csel w20,w9,w10,hi
@@ -1421,6 +1418,7 @@ feature_control:
             adrp x9, .L_ffffff8008f29808
             add x9,x9, :lo12:.L_ffffff8008f29808
             b .L_ffffff8008705c54
+.L_ffffff8008705c34:
 
             adrp x9, .L_ffffff8008f29848
             add x9,x9, :lo12:.L_ffffff8008f29848
@@ -1937,8 +1935,6 @@ control:
 
             adrp x19, .L_ffffff8009c7b62c
             add x19,x19, :lo12:.L_ffffff8009c7b62c
-.L_ffffff800870629c:
-
             mov x0,x19
             bl _raw_spin_lock
 
@@ -1998,6 +1994,7 @@ control:
 
             mov w0,#4
             b .L_ffffff8008707b40
+.L_ffffff8008706368:
 
             adrp x0, .L_ffffff8009184428
             adrp x1, .L_ffffff8009262aba
@@ -2078,8 +2075,6 @@ control:
 
             ldrb w2,[x20,:lo12:.L_ffffff8009907988]
             add x0,sp,#4
-.L_ffffff8008706480:
-
             mov w1,#3
             strh w24,[sp,#4]
             strb w19,[sp,#6]
@@ -2145,8 +2140,6 @@ control:
 
             ldrb w2,[x20,:lo12:.L_ffffff8009907988]
             mov w8,#25089
-.L_ffffff8008706564:
-
             strh w8,[sp,#4]
             mov w8,#13
             add x0,sp,#4
@@ -2222,8 +2215,6 @@ control:
 
             ldrb w2,[x20,:lo12:.L_ffffff8009907988]
             mov w8,#27393
-.L_ffffff800870666c:
-
             strh w8,[sp,#4]
             mov w8,#159
             add x0,sp,#4
@@ -2557,6 +2548,7 @@ control:
             mov w0,wzr
             strb wzr,[x19,:lo12:.L_ffffff8009c7b628]
             b .L_ffffff8008707b40
+.L_ffffff8008706af8:
 
             adrp x0, .L_ffffff8009184428
             adrp x1, .L_ffffff8009184bd7
@@ -2816,6 +2808,7 @@ control:
             strh w8,[sp,#4]
             mov w8,#208
             b .L_ffffff8008707638
+.L_ffffff8008706e88:
 
             adrp x0, .L_ffffff8009184428
             adrp x1, .L_ffffff8009184bf9
@@ -3116,6 +3109,7 @@ control:
             strh w8,[sp,#4]
             strb wzr,[sp,#6]
             b .L_ffffff80087076c8
+.L_ffffff80087072a8:
 
             adrp x19, .L_ffffff8009184428
             add x19,x19, :lo12:.L_ffffff8009184428
@@ -3658,30 +3652,35 @@ control:
             strh w23,[sp,#4]
             strb w21,[sp,#6]
             b .L_ffffff8008707b20
+.L_ffffff8008707a0c:
 
             adrp x0, .L_ffffff8009184428
             adrp x1, .L_ffffff8009184c31
             add x0,x0, :lo12:.L_ffffff8009184428
             add x1,x1, :lo12:.L_ffffff8009184c31
             b .L_ffffff8008707a6c
+.L_ffffff8008707a20:
 
             adrp x0, .L_ffffff8009184428
             adrp x1, .L_ffffff8009184c39
             add x0,x0, :lo12:.L_ffffff8009184428
             add x1,x1, :lo12:.L_ffffff8009184c39
             b .L_ffffff8008707a6c
+.L_ffffff8008707a34:
 
             adrp x0, .L_ffffff8009184428
             adrp x1, .L_ffffff8009184c41
             add x0,x0, :lo12:.L_ffffff8009184428
             add x1,x1, :lo12:.L_ffffff8009184c41
             b .L_ffffff8008707a6c
+.L_ffffff8008707a48:
 
             adrp x0, .L_ffffff8009184428
             adrp x1, .L_ffffff8009184c49
             add x0,x0, :lo12:.L_ffffff8009184428
             add x1,x1, :lo12:.L_ffffff8009184c49
             b .L_ffffff8008707a6c
+.L_ffffff8008707a5c:
 
             adrp x0, .L_ffffff8009184428
             adrp x1, .L_ffffff8009184c51

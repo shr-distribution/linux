@@ -5,7 +5,7 @@
 .align 8
 .L_ffffff8008f295b8:
           .short (.L_ffffff8008704f90-.L_ffffff8008704f90)/4
-          .short (.L_ffffff8008704f9c-.L_ffffff8008704f90)/4
+          .short (.L_ffffff8008704fc0-.L_ffffff8008704f90)/4
           .byte 0x1e
           .byte 0x0
           .byte 0x82
@@ -210,7 +210,7 @@
           .byte 0x1
 .L_ffffff8008f29686:
           .short (.L_ffffff80087055b4-.L_ffffff80087055b4)/4
-          .short (.L_ffffff8008705754-.L_ffffff80087055b4)/4
+          .short (.L_ffffff8008705c34-.L_ffffff80087055b4)/4
           .byte 0xa3
           .byte 0x1
           .byte 0xa6
@@ -258,20 +258,15 @@
           .byte 0x0
 .L_ffffff8008f296b6:
           .short (.L_ffffff8008706258-.L_ffffff8008706258)/4
-          .short (.L_ffffff800870629c-.L_ffffff8008706258)/4
-          .short (.L_ffffff8008706480-.L_ffffff8008706258)/4
-          .short (.L_ffffff8008706564-.L_ffffff8008706258)/4
-          .short (.L_ffffff800870666c-.L_ffffff8008706258)/4
-          .byte 0xed
-          .byte 0x5
-          .byte 0xf2
-          .byte 0x5
-          .byte 0xf7
-          .byte 0x5
-          .byte 0xfc
-          .byte 0x5
-          .byte 0x1
-          .byte 0x6
+          .short (.L_ffffff8008706368-.L_ffffff8008706258)/4
+          .short (.L_ffffff8008706af8-.L_ffffff8008706258)/4
+          .short (.L_ffffff8008706e88-.L_ffffff8008706258)/4
+          .short (.L_ffffff80087072a8-.L_ffffff8008706258)/4
+          .short (.L_ffffff8008707a0c-.L_ffffff8008706258)/4
+          .short (.L_ffffff8008707a20-.L_ffffff8008706258)/4
+          .short (.L_ffffff8008707a34-.L_ffffff8008706258)/4
+          .short (.L_ffffff8008707a48-.L_ffffff8008706258)/4
+          .short (.L_ffffff8008707a5c-.L_ffffff8008706258)/4
           .byte 0x0
           .byte 0x0
           .byte 0x19
