@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
 /*
- * HP TouchPad device tree
+ * HP TouchPad "Topaz" device tree (most common variant)
  *
- * This is the default Topaz variant (most common, WiFi-only).
- * Topaz exists in both WiFi-only and 3G versions.
- * For the Opal variant, use qcom-apq8060-opal.dts instead.
+ * Topaz is the default board type and exists in both WiFi-only
+ * and 3G versions. Both use the same hardware configuration.
  */
 
 /dts-v1/;
@@ -12,8 +11,8 @@
 #include "qcom-apq8060-tenderloin-common.dtsi"
 
 / {
-	model = "HP TouchPad";
-	compatible = "hp,tenderloin", "qcom,apq8060-tenderloin", "qcom,msm8660";
+	model = "HP TouchPad (Topaz)";
+	compatible = "hp,topaz", "qcom,apq8060-tenderloin", "qcom,msm8660";
 };
 
 /* Topaz-specific camera power configuration */

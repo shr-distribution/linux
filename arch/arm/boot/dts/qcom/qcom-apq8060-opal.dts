@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * HP TouchPad "Opal" WiFi-only production variant device tree
+ */
+
+/dts-v1/;
+
+#include "qcom-apq8060-tenderloin-common.dtsi"
+
+/ {
+	model = "HP TouchPad (Opal WiFi)";
+	compatible = "hp,opal", "qcom,apq8060-tenderloin", "qcom,msm8660";
+};
+
+/* Opal-specific camera power configuration (verified from Opal schematics) */
+&gsbi4_i2c {
+	camera: camera@78 {
+		compatible = "aptina,mt9m114";
+		reg = <0x78>;
+
+		vddio-supply = <&pm8058_lvs0>; // 1.8V I/O (VREG_LVS0A_1V8 per Opal schematic)
+		vdd-supply = <&pm8058_l11>;    // 2.85V core (VREG_L11A_2V85 per Opal schematic)
+		vaa-supply = <&pm8058_l11>;    // 2.85V analog (VREG_L11A_2V85 per Opal schematic)
+
+		clocks = <&gcc 0>;
+		clock-names = "extclk";
+
+		/* Port configuration pending CAMSS driver support */
+	};
+};
