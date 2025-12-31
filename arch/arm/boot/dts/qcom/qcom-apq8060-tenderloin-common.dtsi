@@ -749,9 +749,69 @@
 				port@3 {
 					reg = <3>;
 					mdp_dtv_out: endpoint {
+						remote-endpoint = <&hdmi_in>;
 					};
 				};
 			};
+		};
+
+		hdmi: hdmi-tx@4a00000 {
+			compatible = "qcom,hdmi-tx-8660";
+			reg = <0x04a00000 0x2f0>;
+			reg-names = "core_physical";
+
+			interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_HIGH>;
+
+			clocks = <&mmcc HDMI_APP_CLK>,
+				 <&mmcc HDMI_M_AHB_CLK>,
+				 <&mmcc HDMI_S_AHB_CLK>;
+			clock-names = "core",
+				      "master_iface",
+				      "slave_iface";
+
+			core-vdda-supply = <&pm8058_l10>;
+			hdmi-mux-supply = <&pm8901_mvs>;
+
+			hpd-gpios = <&tlmm 172 GPIO_ACTIVE_HIGH>;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&hdmi_pinctrl>;
+
+			phys = <&hdmi_phy>;
+			phy-names = "hdmi-phy";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					hdmi_in: endpoint {
+						remote-endpoint = <&mdp_dtv_out>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					hdmi_out: endpoint {
+						/* External HDMI connector */
+					};
+				};
+			};
+		};
+
+		hdmi_phy: hdmi-phy@4a00400 {
+			compatible = "qcom,hdmi-phy-8660";
+			reg = <0x4a00400 0x60>,
+			      <0x4a00500 0x100>;
+			reg-names = "hdmi_phy",
+				    "hdmi_pll";
+
+			clocks = <&mmcc HDMI_S_AHB_CLK>;
+			clock-names = "slave_iface";
+
+			#phy-cells = <0>;
+			#clock-cells = <0>;
 		};
 
 		/* 16MiB for scanouts, drm/msm doesn't use the base address */
@@ -1252,6 +1312,29 @@
 			function = "gsbi10";
 			drive-strength = <2>;
 			bias-disable;
+		};
+	};
+
+	hdmi_pinctrl: hdmi-state {
+		ddc-pins {
+			pins = "gpio170", "gpio171";
+			function = "hdmi";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+
+		hpd-pins {
+			pins = "gpio172";
+			function = "hdmi";
+			drive-strength = <16>;
+			bias-disable;
+		};
+
+		cec-pins {
+			pins = "gpio169";
+			function = "hdmi";
+			drive-strength = <16>;
+			bias-pull-down;
 		};
 	};
 };
