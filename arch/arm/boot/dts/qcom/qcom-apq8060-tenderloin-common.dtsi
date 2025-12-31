@@ -1257,9 +1257,16 @@
 	#address-cells = <1>;
 	#size-cells = <0>;
 	disable-wp;
-	
-	vmmc-supply = <&pm8901_l1>; // 3V3
-	
+
+	/* WiFi power supplies (from legacy kernel wifi_power function):
+	 * - pm8901_l1: 3.3V VDD_WLAN_3V3 (main supply)
+	 * - pm8901_l3: 3.3V WLAN_PA_3V3 (power amplifier, always-on)
+	 * - pm8058_l19: 1.8V VDD_1.8 (I/O supply, always-on)
+	 * - pm8058_s3: 1.8V DVDD_SDIO_1V8 (SDIO I/O, always-on)
+	 */
+	vmmc-supply = <&pm8901_l1>;   /* 3.3V main supply */
+	vqmmc-supply = <&pm8058_s3>;  /* 1.8V SDIO I/O supply */
+
 	mmc-pwrseq = <&ath6kl_pwrseq>;
 	// mpm_sdiowakeup_int = MSM_MPM_PIN_SDC4_DAT1 /* 24 */
 

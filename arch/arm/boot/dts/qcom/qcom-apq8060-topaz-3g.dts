@@ -64,7 +64,50 @@
 };
 
 /* 3G-specific GPIO overrides */
+
+/* Override WiFi reset GPIOs for 3G model */
+/ {
+	ath6kl_pwrseq: ath6kl-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		/* 3G model uses different GPIOs: WL_HOST_WAKE=93, HOST_WAKE_WL=80, WLAN_RST_N=28 */
+		reset-gpios = <&tlmm 93 GPIO_ACTIVE_HIGH
+		               &tlmm 80 GPIO_ACTIVE_HIGH
+		               &tlmm 28 GPIO_ACTIVE_LOW>;
+	};
+};
+
 &tlmm {
+	/* Override WiFi pinctrl for 3G model */
+	wlan_gpios_reset: wlan-reset-state {
+		irq-pins {
+			pins = "gpio28";  /* WLAN_RST_N_3G instead of 135 */
+			function = "gpio";
+			bias-disable;
+		};
+	};
+
+	wlan_gpios: wlan-state {
+		irq-pins {
+			pins = "gpio93", "gpio80";  /* HOST_WAKE_WL_3G = 80 instead of 137 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/* Override Bluetooth pinctrl for 3G model */
+	bt_pin: bt-state {
+		hostwake-pins {
+			pins = "gpio50";  /* BT_HOST_WAKE_3G instead of 129 */
+			function = "gpio";
+		};
+
+		devwake-pins {
+			pins = "gpio131";  /* BT_WAKE - same for both */
+			function = "gpio";
+		};
+	};
+
 	/* Override touchscreen pinctrl for 3G model (GPIO 45 vs 123 for wake) */
 	cy8ctma395_default_state: cy8ctma395-default-state {
 		xres-pins {
@@ -82,6 +125,16 @@
 			bias-disable;
 			output-high;
 		};
+	};
+};
+
+/* Override Bluetooth GPIOs for 3G model */
+&gsbi6_serial {
+	bluetooth {
+		reset-gpios = <&tlmm 122 GPIO_ACTIVE_HIGH>;      /* BT_RST_N_3G instead of 138 */
+		host-wakeup-gpios = <&tlmm 50 GPIO_ACTIVE_HIGH>;  /* BT_HOST_WAKE_3G instead of 129 */
+		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>; /* BT_WAKE - same */
+		shutdown-gpios = <&tlmm 110 GPIO_ACTIVE_HIGH>;   /* BT_POWER_3G instead of 130 */
 	};
 };
 
