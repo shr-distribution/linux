@@ -924,6 +924,66 @@
 		bias-disable;
 	};
 
+	/* A6 Battery Controller 0 (0x31) - SBW/JTAG pins */
+	a6_0_default: a6-0-default-state {
+		sbw-pins {
+			pins = "gpio157", "gpio158";  /* TCK, TDIO */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		wakeup-pins {
+			pins = "gpio155";  /* WAKEUP */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		irq-pins {
+			pins = "gpio156";  /* IRQ */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/* A6 Battery Controller 1 (0x32) - SBW/JTAG pins */
+	a6_1_default: a6-1-default-state {
+		sbw-pins {
+			pins = "gpio115", "gpio116";  /* TCK, TDIO */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		wakeup-pins {
+			pins = "gpio141";  /* WAKEUP */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		irq-pins {
+			pins = "gpio132";  /* IRQ */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/* LM8502 LED Controller */
+	lm8502_pins: lm8502-state {
+		enable-pins {
+			pins = "gpio121";  /* Enable */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		irq-pins {
+			pins = "gpio128";  /* Interrupt */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
 	mpu3050_gpios: mpu-state {
 		irq-pins {
 			pins = "gpio125";
@@ -1278,7 +1338,13 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		enable-gpio = <&tlmm 26 GPIO_ACTIVE_HIGH>;
+		enable-gpio = <&tlmm 121 GPIO_ACTIVE_HIGH>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <128 IRQ_TYPE_EDGE_FALLING>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&lm8502_pins>;
 
 		led@0 {
 			reg = <0>;
@@ -1299,7 +1365,48 @@
 		};
 	};
 
-	// a6_0 at 0x31, a6_1 at 0x32 - battery controllers
+	/*
+	 * A6 Battery Controllers - TI MSP430 microcontrollers
+	 * These provide battery monitoring, fuel gauge, power management,
+	 * and Touchstone (inductive charging) support
+	 */
+	a6_0: battery@31 {
+		compatible = "palm,a6-battery";
+		reg = <0x31>;
+
+		palm,device-index = <0>;
+
+		/* GPIO pins for SBW (Spy-Bi-Wire) firmware programming */
+		tck-gpios = <&tlmm 157 GPIO_ACTIVE_HIGH>;
+		tdio-gpios = <&tlmm 158 GPIO_ACTIVE_HIGH>;
+		wakeup-gpios = <&tlmm 155 GPIO_ACTIVE_HIGH>;
+
+		/* Interrupt GPIO */
+		interrupt-parent = <&tlmm>;
+		interrupts = <156 IRQ_TYPE_EDGE_FALLING>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&a6_0_default>;
+	};
+
+	a6_1: battery@32 {
+		compatible = "palm,a6-battery";
+		reg = <0x32>;
+
+		palm,device-index = <1>;
+
+		/* GPIO pins for SBW (Spy-Bi-Wire) firmware programming */
+		tck-gpios = <&tlmm 115 GPIO_ACTIVE_HIGH>;
+		tdio-gpios = <&tlmm 116 GPIO_ACTIVE_HIGH>;
+		wakeup-gpios = <&tlmm 141 GPIO_ACTIVE_HIGH>;
+
+		/* Interrupt GPIO */
+		interrupt-parent = <&tlmm>;
+		interrupts = <132 IRQ_TYPE_EDGE_FALLING>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&a6_1_default>;
+	};
 };
 
 &gsbi10 {
