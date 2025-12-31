@@ -1798,5 +1798,23 @@
 &usb_hs1_phy {
 	v3p3-supply = <&pm8058_l6>;
 	v1p8-supply = <&pm8058_l7>;
+
+	/*
+	 * HP TouchPad USB PHY tuning parameters from legacy kernel:
+	 * - Pre-emphasis: 20% (PRE_EMPHASIS_WITH_20_PERCENT = 0x30)
+	 * - HS driver slope: 0x05
+	 * - CDR auto reset: DISABLE (bit 1 = 0x02)
+	 * - SE1 gating: DISABLE (bit 2 = 0x04)
+	 *
+	 * These are written to ULPI vendor-specific registers, but the
+	 * mainline qcom-usb-hs-phy driver only supports extended vendor
+	 * registers (0x80+) via qcom,init-seq. The legacy parameters
+	 * targeted registers 0x32 and 0x36 which are in the standard
+	 * vendor range (0x30-0x3F).
+	 *
+	 * For now, we rely on driver defaults which should be safe.
+	 * TODO: Investigate if these legacy tuning values need to be
+	 * ported to improve signal quality or compatibility.
+	 */
 };
 
