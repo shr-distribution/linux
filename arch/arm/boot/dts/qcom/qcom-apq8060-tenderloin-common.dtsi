@@ -1332,11 +1332,21 @@
 
 		/*
 		 * Port/endpoint configuration for camera interface
-		 * TODO: Add when camera interface driver is integrated
+		 *
+		 * NOTE: MSM8660/APQ8060 uses VFE31 (Video Front End 3.1) camera
+		 * subsystem which is not supported in mainline Linux. The CAMSS
+		 * driver only supports MSM8916 (VFE 4.1) and newer platforms.
+		 * Porting VFE31 support would require significant driver work.
+		 *
+		 * The MT9M113 sensor driver is ready and will auto-detect the
+		 * chip once a camera interface driver is available.
+		 *
+		 * TODO: Port MSM8660 VFE31 camera subsystem to mainline CAMSS
 		 *
 		 * port {
 		 *     mt9m113_ep: endpoint {
-		 *         remote-endpoint = <&camif_ep>;
+		 *         bus-type = <5>; // MEDIA_BUS_TYPE_PARALLEL
+		 *         remote-endpoint = <&vfe31_ep>;
 		 *     };
 		 * };
 		 */
