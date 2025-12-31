@@ -689,10 +689,10 @@
 
 			qcom,gpu-pwrlevels {
 				compatible = "qcom,gpu-pwrlevels";
-				qcom,gpu-pwrlevel@0 {
+				qcom,gpu-pwrlevel-0 {
 					qcom,gpu-freq = <266667000>;
 				};
-				qcom,gpu-pwrlevel@1 {
+				qcom,gpu-pwrlevel-1 {
 					qcom,gpu-freq = <27000000>;
 				};
 			};
