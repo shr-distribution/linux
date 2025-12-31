@@ -1323,7 +1323,7 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&gsbi3_i2c_pins>;
 
-	mpu3050@68 {
+	mpu3050: mpu3050@68 {
 		/* Gyrometer */
 		compatible = "invensense,mpu3050";
 		reg = <0x68>;
@@ -1335,7 +1335,7 @@
 		vdd-supply = <&pm8058_l15>; // 2.85V
 	};
 
-	lsm303dlh@18 {
+	lsm303dlh_accel: lsm303dlh@18 {
 		/* Accelerometer */
 		compatible = "st,lsm303dlh-accel";
 		st,drdy-int-pin = <1>;
@@ -1350,7 +1350,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&accel_pins>;
 	};
-	lsm303dlh@1e {
+	lsm303dlh_magn: lsm303dlh@1e {
 		/* Magnetometer */
 		compatible = "st,lsm303dlh-magn";
 		reg = <0x1e>;

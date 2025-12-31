@@ -126,6 +126,82 @@
 			output-high;
 		};
 	};
+
+	/* Override sensor pinctrl for 3G model */
+	mpu3050_gpios: mpu-state {
+		irq-pins {
+			pins = "gpio75";  /* GYRO_INT_3G instead of 125 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/* Override LED controller pinctrl for 3G model */
+	lm8502_pins: lm8502-state {
+		enable-pins {
+			pins = "gpio121";  /* Enable - same */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		irq-pins {
+			pins = "gpio77";  /* LM8502_INT_3G instead of 128 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/* Override charger pinctrl for 3G model */
+	charger_gpios: max8903b-state {
+		in-pins {
+			pins = "gpio35", "gpio36", "gpio86";  /* gpio86 for DC_OK_3G instead of gpio140 */
+			function = "gpio";
+			drive-strength = <2>;
+			input-enable;
+			bias-pull-up;
+		};
+		out-pins {
+			pins = "gpio30", "gpio33", "gpio34", "gpio41", "gpio42", "gpio134";  /* gpio134 for USB_CHG_MODE_3G instead of gpio133 */
+			function = "gpio";
+			drive-strength = <2>;
+		};
+		/* Safe initial state, charging disabled */
+		dcm-pins {
+			pins = "gpio42";
+			function = "gpio";
+			output-high;
+		};
+		/* 500 mA USB charging. Not controlled by driver. */
+		iusb-pins {
+			pins = "gpio134";  /* USB_CHG_MODE_3G instead of 133 */
+			function = "gpio";
+			output-high;
+		};
+		usus-pins {
+			pins = "gpio33";
+			function = "gpio";
+			output-low;
+		};
+		cen-pins {
+			pins = "gpio41";
+			function = "gpio";
+			output-low;
+		};
+		/*
+		 * Limit DC charging current to 750 mA, the
+		 * minimum value. Appears to control a
+		 * multiplexed set of resistors connected to
+		 * the IDC pin. This functionality is not
+		 * supported by the MAX8903 driver.
+		 */
+		d-iset-pins {
+			pins = "gpio34", "gpio30";
+			function = "gpio";
+			output-low;
+		};
+	};
 };
 
 /* Override Bluetooth GPIOs for 3G model */
@@ -138,13 +214,43 @@
 	};
 };
 
+/* Override sensor GPIOs for 3G model */
+&mpu3050 {
+	interrupts-extended = <&tlmm 75 IRQ_TYPE_EDGE_FALLING>;  /* GYRO_INT_3G instead of 125 */
+};
+
+&lsm303dlh_accel {
+	/* Accelerometer interrupt not defined for 3G variant - disable it */
+	/delete-property/ interrupts;
+	/delete-property/ interrupt-parent;
+};
+
+/* Override LED controller GPIO for 3G model */
+&lm8502 {
+	interrupts = <77 IRQ_TYPE_EDGE_FALLING>;  /* LM8502_INT_3G instead of 128 */
+};
+
+/* Override charger GPIOs for 3G model */
+&charger {
+	uok-gpios = <&tlmm 86 GPIO_ACTIVE_LOW>;  /* DC_OK_3G instead of 140 */
+};
+
+/* Override A6 battery controller interrupt GPIOs for 3G model (DVT hardware) */
+&a6_0 {
+	interrupt-parent = <&tlmm>;
+	interrupts = <37 IRQ_TYPE_EDGE_FALLING>;  /* A6_0_IRQ_3G instead of 156 */
+};
+
+&a6_1 {
+	interrupt-parent = <&tlmm>;
+	interrupts = <94 IRQ_TYPE_EDGE_FALLING>;  /* A6_1_IRQ_3G instead of 132 */
+};
+
 /*
- * This device tree currently uses the WiFi-only configuration.
- * Actual 3G hardware will NOT work correctly with this DTS.
- *
- * To properly support 3G variant:
- * 1. Create qcom-msm8660-tenderloin-3g-common.dtsi
- * 2. Add all GPIO overrides for 3G-specific pins
- * 3. Add MDM6600 modem device node
- * 4. Test on actual 3G hardware
+ * Remaining 3G-specific items to add:
+ * - MDM6600 3G modem device node with GPIOs:
+ *   - 3G_WAKE_N: GPIO 38
+ *   - 3G_UIM_CD_N: GPIO 61 (SIM card detect)
+ *   - 3G_3V3_EN: GPIO 82 or 106 (revision dependent)
+ *   - 3G_DISABLE_N: GPIO 171
  */
