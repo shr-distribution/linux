@@ -436,9 +436,136 @@
 };
 
 /*
- * TODO: Add device nodes for Opal-specific hardware:
- * - Front/rear cameras
- * - Proximity sensor
- * - NFC chip (PN544 on PM8058 GPIOs 15/16/17)
- * - Cover detect sensor
+ * Opal-specific hardware device nodes
  */
+
+/* Front camera on GSBI4 I2C */
+&gsbi4_i2c {
+	status = "okay";
+
+	camera@78 {
+		compatible = "aptina,mt9m113";
+		reg = <0x78>;
+
+		reset-gpios = <&pm8058_gpio 7 GPIO_ACTIVE_LOW>;  /* PM8058 GPIO 8 (0-indexed = 7) */
+		powerdown-gpios = <&tlmm 107 GPIO_ACTIVE_HIGH>;
+
+		vdd-supply = <&pm8058_l15>;     /* 2.85V core */
+		vddio-supply = <&pm8058_s3>;    /* 1.8V I/O */
+		vaa-supply = <&pm8058_l15>;     /* 2.85V analog */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_pins>;
+
+		/*
+		 * TODO: Add clock reference when CAMIF MCLK support is implemented
+		 * clocks = <&camif_mclk>;
+		 * clock-names = "extclk";
+		 *
+		 * TODO: Add port/endpoint when camera interface is implemented
+		 * port {
+		 *     endpoint {
+		 *         bus-type = <5>;
+		 *         remote-endpoint = <&camif_ep>;
+		 *     };
+		 * };
+		 */
+	};
+};
+
+/* NFC chip on GSBI7 I2C */
+&gsbi7_i2c {
+	pn544: nfc@28 {
+		compatible = "nxp,pn544-i2c";
+		reg = <0x28>;
+
+		interrupt-parent = <&pm8058_gpio>;
+		interrupts = <14 IRQ_TYPE_EDGE_RISING>;  /* PM8058 GPIO 15 (0-indexed = 14) */
+
+		enable-gpios = <&pm8058_gpio 15 GPIO_ACTIVE_HIGH>;    /* PM8058 GPIO 16 */
+		firmware-gpios = <&pm8058_gpio 16 GPIO_ACTIVE_HIGH>;  /* PM8058 GPIO 17 */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&nfc_pins>;
+	};
+};
+
+/* Cover detect sensor (Hall effect or similar) */
+/ {
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cover_detect_pins>;
+
+		cover-detect {
+			label = "Cover Detect";
+			gpios = <&tlmm 31 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			wakeup-source;
+			debounce-interval = <15>;
+		};
+	};
+};
+
+/* Proximity sensor - needs identification */
+/*
+ * TODO: Determine proximity sensor model from hardware
+ * Legacy kernel uses GPIOs 68/69 for I2C and GPIO 39 for interrupt
+ * Likely on bit-banged I2C or GSBI
+ */
+
+/*
+ * Audio codec WM8958 is already defined in tenderloin-common.dtsi
+ * Opal uses the same codec with additional GPIOs for LDO control:
+ * - GPIO 57: Headset mic detect (already configured in common)
+ * - GPIO 66: AUD_LDO1_EN
+ * - GPIO 108: AUD_LDO2_EN
+ * These may need to be configured as regulators if audio issues occur.
+ */
+
+&pm8058_gpio {
+	/* NFC pin configuration */
+	nfc_pins: nfc-state {
+		/* GPIO 15: NFC IRQ output */
+		gpio@e {
+			pins = "gpio15";
+			function = "normal";
+			input-enable;
+			bias-pull-down;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+
+		/* GPIO 16: NFC enable */
+		gpio@f {
+			pins = "gpio16";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+
+		/* GPIO 17: NFC firmware mode */
+		gpio@10 {
+			pins = "gpio17";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+	};
+
+	/* Camera reset pin */
+	camera_reset_pin: camera-reset-state {
+		/* GPIO 8: Front camera reset */
+		gpio@7 {
+			pins = "gpio8";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+	};
+};
