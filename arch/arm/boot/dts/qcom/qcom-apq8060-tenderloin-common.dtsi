@@ -109,6 +109,36 @@
 			regulator-max-microvolt = <3000000>;
 			regulator-name = "dummy1";
 		};
+
+		/*
+		 * Audio LDO regulators for WM8958 codec
+		 * Optional - codec may work with PMIC regulators alone
+		 */
+		aud_ldo1: regulator-fixed-aud-ldo1 {
+			compatible = "regulator-fixed";
+			regulator-name = "aud_ldo1";
+			regulator-min-microvolt = <2850000>;
+			regulator-max-microvolt = <2850000>;
+
+			gpio = <&tlmm 66 GPIO_ACTIVE_HIGH>;
+			enable-active-high;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&aud_ldo1_pins>;
+		};
+
+		aud_ldo2: regulator-fixed-aud-ldo2 {
+			compatible = "regulator-fixed";
+			regulator-name = "aud_ldo2";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+
+			gpio = <&tlmm 108 GPIO_ACTIVE_HIGH>;
+			enable-active-high;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&aud_ldo2_pins>;
+		};
 	};
 
 	ath6kl_pwrseq: ath6kl-pwrseq {
@@ -993,6 +1023,54 @@
 		};
 	};
 
+	accel_pins: accel-state {
+		irq-pins {
+			pins = "gpio124";  /* G-Sensor INT */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	camera_pins: camera-state {
+		reset-pins {
+			pins = "gpio106";  /* WEBCAM_RST */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		pwdn-pins {
+			pins = "gpio107";  /* WEBCAM_PWDN */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		mclk-pins {
+			pins = "gpio32";   /* CAMIF_MCLK */
+			function = "cam_mclk";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	aud_ldo1_pins: aud-ldo1-state {
+		ldo1-pins {
+			pins = "gpio66";  /* AUD_LDO1_EN */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	aud_ldo2_pins: aud-ldo2-state {
+		ldo2-pins {
+			pins = "gpio108";  /* AUD_LDO2_EN */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
 	/* Headphone UART pins */
 	headphone_uart_pins: gsbi12-serial-state {
 		rx-pins {
@@ -1192,8 +1270,15 @@
 		compatible = "st,lsm303dlh-accel";
 		st,drdy-int-pin = <1>;
 		reg = <0x18>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <124 IRQ_TYPE_EDGE_RISING>;
+
 		vdd-supply = <&pm8058_l15>;   // 2.85V
 		vddio-supply = <&pm8058_s3>;  // 1.8V s3
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&accel_pins>;
 	};
 	lsm303dlh@1e {
 		/* Magnetometer */
@@ -1224,7 +1309,38 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&gsbi4_i2c_pins>;
 
-	/* Camera node is variant-specific - defined in topaz/opal dts */
+	/*
+	 * MT9M113 1.3MP Front-facing Webcam
+	 * Note: Topaz uses regular GPIOs, Opal uses PMIC GPIO for reset
+	 */
+	camera@3c {
+		compatible = "aptina,mt9m113";
+		reg = <0x3c>;
+
+		reset-gpios = <&tlmm 106 GPIO_ACTIVE_LOW>;
+		powerdown-gpios = <&tlmm 107 GPIO_ACTIVE_LOW>;
+
+		clocks = <&mmcc CAMCLK0_CLK>;
+		clock-names = "xvclk";
+
+		vdd-supply = <&pm8058_lvs0>;    // Digital 1.8V
+		vddio-supply = <&pm8058_l11>;   // I/O 2.85V
+		vaa-supply = <&pm8058_l11>;     // Analog 2.85V
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_pins>;
+
+		/*
+		 * Port/endpoint configuration for camera interface
+		 * TODO: Add when camera interface driver is integrated
+		 *
+		 * port {
+		 *     mt9m113_ep: endpoint {
+		 *         remote-endpoint = <&camif_ep>;
+		 *     };
+		 * };
+		 */
+	};
 };
 
 &gsbi6 {
