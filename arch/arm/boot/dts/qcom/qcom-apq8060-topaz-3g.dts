@@ -247,10 +247,93 @@
 };
 
 /*
+ * Disable HDMI on 3G variant - GPIO 172 (HDMI HPD) is used for ISP1763 INT
+ * 3G variant does not have HDMI output capability
+ */
+&hdmi {
+	status = "disabled";
+};
+
+/* Enable EBI2 controller for ISP1763 USB host */
+&ebi2 {
+	status = "okay";
+
+	isp1763: usb@3,0 {
+		compatible = "nxp,usb-isp1763";
+		reg = <3 0x0 0x6000>;  /* CS3, offset 0, 24KB */
+
+		interrupts-extended = <&tlmm 172 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "host";
+
+		bus-width = <16>;
+		dr_mode = "host";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&isp1763_pins>;
+
+		/*
+		 * Power control for 3G modem and ISP1763 USB hub.
+		 * GPIO 106 for DVT+ hardware, GPIO 82 for EVT hardware.
+		 */
+		power-gpios = <&tlmm 106 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 152 GPIO_ACTIVE_HIGH>;
+
+		status = "okay";
+	};
+};
+
+&tlmm {
+	isp1763_pins: isp1763-state {
+		int-pins {
+			pins = "gpio172";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+
+		rst-pins {
+			pins = "gpio152";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		dack-pins {
+			pins = "gpio169";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		dreq-pins {
+			pins = "gpio29";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-down;
+		};
+
+		power-pins {
+			pins = "gpio106";  /* DVT: gpio106, EVT: gpio82 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		modem-disable-pins {
+			pins = "gpio171";  /* 3G_DISABLE_N - active low */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+};
+
+/*
  * Remaining 3G-specific items to add:
  * - MDM6600 3G modem device node with GPIOs:
  *   - 3G_WAKE_N: GPIO 38
  *   - 3G_UIM_CD_N: GPIO 61 (SIM card detect)
- *   - 3G_3V3_EN: GPIO 82 or 106 (revision dependent)
- *   - 3G_DISABLE_N: GPIO 171
+ *   - 3G_3V3_EN: GPIO 106 (configured above for ISP1763 power)
+ *   - 3G_DISABLE_N: GPIO 171 (configured above)
  */
