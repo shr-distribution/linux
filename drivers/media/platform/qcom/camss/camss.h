@@ -77,6 +77,7 @@ enum pm_domain {
 };
 
 enum camss_version {
+	CAMSS_8x60,
 	CAMSS_8x16,
 	CAMSS_8x53,
 	CAMSS_8x96,

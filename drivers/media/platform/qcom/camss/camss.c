@@ -34,6 +34,26 @@
 
 static const struct parent_dev_ops vfe_parent_dev_ops;
 
+/* MSM8660/APQ8060 - VFE 3.1 with parallel camera interface (CAMIF) */
+static const struct camss_subdev_resources vfe_res_8x60[] = {
+	/* VFE0 */
+	{
+		.regulators = {},
+		.clock = { "vfe", "vfe_axi", "vfe_ahb" },
+		.clock_rate = { { 122880000, 228570000, 266670000 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "vfe0" },
+		.interrupt = { "vfe0" },
+		.vfe = {
+			.line_num = 1,  /* Only PIX line for parallel camera */
+			.hw_ops = &vfe_ops_3_1,
+			.formats_rdi = NULL,  /* No RDI support in VFE31 */
+			.formats_pix = &vfe_formats_pix_8x16
+		}
+	}
+};
+
 static const struct camss_subdev_resources csiphy_res_8x16[] = {
 	/* CSIPHY0 */
 	{
@@ -2532,6 +2552,18 @@ static void camss_remove(struct platform_device *pdev)
 	camss_genpd_cleanup(camss);
 }
 
+static const struct camss_resources msm8660_resources = {
+	.version = CAMSS_8x60,
+	.csiphy_res = NULL,  /* No MIPI CSI support yet - parallel camera only */
+	.csid_res = NULL,
+	.ispif_res = NULL,   /* ISPIF not used in VFE31 - direct CAMIF */
+	.vfe_res = vfe_res_8x60,
+	.csiphy_num = 0,
+	.csid_num = 0,
+	.vfe_num = ARRAY_SIZE(vfe_res_8x60),
+	.link_entities = camss_link_entities
+};
+
 static const struct camss_resources msm8916_resources = {
 	.version = CAMSS_8x16,
 	.csiphy_res = csiphy_res_8x16,
@@ -2623,6 +2655,7 @@ static const struct camss_resources sc8280xp_resources = {
 };
 
 static const struct of_device_id camss_dt_match[] = {
+	{ .compatible = "qcom,msm8660-camss", .data = &msm8660_resources },
 	{ .compatible = "qcom,msm8916-camss", .data = &msm8916_resources },
 	{ .compatible = "qcom,msm8953-camss", .data = &msm8953_resources },
 	{ .compatible = "qcom,msm8996-camss", .data = &msm8996_resources },
