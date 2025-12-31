@@ -339,10 +339,59 @@
 };
 
 /*
- * Remaining 3G-specific items to add:
- * - MDM6600 3G modem device node with GPIOs:
- *   - 3G_WAKE_N: GPIO 38
- *   - 3G_UIM_CD_N: GPIO 61 (SIM card detect)
- *   - 3G_3V3_EN: GPIO 106 (configured above for ISP1763 power)
- *   - 3G_DISABLE_N: GPIO 171 (configured above)
+ * MDM6600 3G Modem
+ *
+ * The HP TouchPad uses a simplified MDM6600 integration compared to Motorola devices.
+ * Power control is handled through ISP1763 USB hub GPIOs (106, 171).
+ * The modem appears as a USB device downstream of the ISP1763 hub.
+ *
+ * Legacy kernel power-on sequence (from board-tenderloin.c):
+ * 1. Set GPIO 171 (DISABLE_N) = 0, GPIO 106 (3V3_EN) = 0
+ * 2. Wait 300ms
+ * 3. Set GPIO 106 (3V3_EN) = 1
+ * 4. Set GPIO 171 (DISABLE_N) = 1
+ *
+ * TODO: Implement proper modem driver or regulator control
  */
+/ {
+	mdm6600-modem {
+		compatible = "motorola,mdm6600-simple";
+		status = "disabled";  /* No mainline driver yet */
+
+		/*
+		 * Power and disable GPIOs are controlled by ISP1763 node above.
+		 * Listed here for documentation:
+		 * - power: GPIO 106 (3G_3V3_EN)
+		 * - enable: GPIO 171 (3G_DISABLE_N, active low)
+		 */
+
+		/* Wake signal to modem */
+		wake-gpios = <&tlmm 38 GPIO_ACTIVE_LOW>;  /* 3G_WAKE_N */
+
+		/* SIM card detection */
+		sim-detect-gpios = <&tlmm 61 GPIO_ACTIVE_LOW>;  /* 3G_UIM_CD_N */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&mdm6600_pins>;
+	};
+};
+
+&tlmm {
+	mdm6600_pins: mdm6600-state {
+		wake-pins {
+			pins = "gpio38";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-low;
+		};
+
+		sim-detect-pins {
+			pins = "gpio61";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+};
