@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/palm,a6-battery.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Palm A6 Battery Controller
+
+maintainers:
+  - HP TouchPad Kernel Developers <linux-arm-msm@vger.kernel.org>
+
+description: |
+  The Palm A6 battery controller consists of two TI MSP430 microcontrollers
+  that provide battery monitoring, fuel gauge functionality, power management,
+  and Touchstone inductive charging support for the HP TouchPad.
+
+  The controllers communicate via I2C and support in-system firmware updates
+  through a Spy-Bi-Wire (SBW) programming interface.
+
+properties:
+  compatible:
+    const: palm,a6-battery
+
+  reg:
+    maxItems: 1
+    description: I2C address (0x31 for A6_0, 0x32 for A6_1)
+
+  interrupts:
+    maxItems: 1
+    description: |
+      GPIO interrupt for battery events including low voltage, critical
+      battery, temperature alerts, and A2A (Accessory-to-Accessory)
+      connection changes for Touchstone inductive charging.
+
+  tck-gpios:
+    maxItems: 1
+    description: |
+      Spy-Bi-Wire test clock GPIO for firmware programming. This is the
+      clock line used for in-system programming of the MSP430 microcontroller.
+
+  tdio-gpios:
+    maxItems: 1
+    description: |
+      Spy-Bi-Wire test data I/O GPIO (bidirectional). This is the data line
+      used for in-system programming of the MSP430 microcontroller.
+
+  wakeup-gpios:
+    maxItems: 1
+    description: |
+      Wake signal GPIO to the A6 chip. Used to wake the MSP430 from low-power
+      sleep modes for command processing.
+
+  palm,device-index:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [0, 1]
+    description: |
+      Device index for multi-chip systems. HP TouchPad uses two A6 controllers
+      (index 0 and 1) for redundancy and monitoring separate battery packs or
+      cells. Index 0 corresponds to A6_0 at address 0x31, index 1 corresponds
+      to A6_1 at address 0x32.
+
+required:
+  - compatible
+  - reg
+  - tck-gpios
+  - tdio-gpios
+  - wakeup-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        battery@31 {
+            compatible = "palm,a6-battery";
+            reg = <0x31>;
+
+            palm,device-index = <0>;
+
+            interrupt-parent = <&tlmm>;
+            interrupts = <156 IRQ_TYPE_EDGE_FALLING>;
+
+            tck-gpios = <&tlmm 157 GPIO_ACTIVE_HIGH>;
+            tdio-gpios = <&tlmm 158 GPIO_ACTIVE_HIGH>;
+            wakeup-gpios = <&tlmm 155 GPIO_ACTIVE_HIGH>;
+
+            pinctrl-names = "default";
+            pinctrl-0 = <&a6_0_default>;
+        };
+
+        battery@32 {
+            compatible = "palm,a6-battery";
+            reg = <0x32>;
+
+            palm,device-index = <1>;
+
+            interrupt-parent = <&tlmm>;
+            interrupts = <132 IRQ_TYPE_EDGE_FALLING>;
+
+            tck-gpios = <&tlmm 115 GPIO_ACTIVE_HIGH>;
+            tdio-gpios = <&tlmm 116 GPIO_ACTIVE_HIGH>;
+            wakeup-gpios = <&tlmm 141 GPIO_ACTIVE_HIGH>;
+
+            pinctrl-names = "default";
+            pinctrl-0 = <&a6_1_default>;
+        };
+    };
