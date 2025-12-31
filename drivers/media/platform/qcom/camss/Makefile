@@ -14,6 +14,7 @@ qcom-camss-objs += \
 		camss-csiphy-3ph-1-0.o \
 		camss-csiphy.o \
 		camss-ispif.o \
+		camss-vfe-3-1.o \
 		camss-vfe-4-1.o \
 		camss-vfe-4-7.o \
 		camss-vfe-4-8.o \
