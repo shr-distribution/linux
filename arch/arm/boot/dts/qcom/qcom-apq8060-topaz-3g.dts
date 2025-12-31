@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * HP TouchPad - Topaz 3G variant
+ *
+ * Codename: TENDERLOIN_3G
+ * Hardware: Qualcomm MSM8660 with MDM6600 3G modem
+ *
+ * IMPORTANT: This is a PLACEHOLDER device tree.
+ * The 3G variant has significant GPIO differences from WiFi-only Topaz
+ * and requires additional work to properly support.
+ *
+ * Key differences from Topaz WiFi:
+ * ==================================
+ *
+ * WiFi:
+ *   - HOST_WAKE_WL: GPIO 80 (was 137)
+ *   - WLAN_RST_N: GPIO 28 (was 135)
+ *   - WL_HOST_WAKE: GPIO 93 (same)
+ *
+ * Bluetooth:
+ *   - BT_RST_N: GPIO 122 (was 138)
+ *   - BT_POWER: GPIO 110 (was 130)
+ *   - BT_WAKE: GPIO 131 (same)
+ *   - BT_HOST_WAKE: GPIO 50 (was 129)
+ *
+ * Touchscreen:
+ *   - IRQ: GPIO 45 (was 123)
+ *   - RESET: GPIO 70 (same)
+ *
+ * Sensors:
+ *   - Gyro INT: GPIO 75 (was 125)
+ *   - Accel INT: Not defined in 3G variant
+ *
+ * LEDs:
+ *   - LM8502 INT: GPIO 77 (was 128)
+ *   - LM8502 EN: GPIO 121 (same)
+ *
+ * Charger:
+ *   - DC_OK: GPIO 86 (was 140)
+ *   - USB_CHG_MODE: GPIO 134 (was 133)
+ *
+ * A6 Battery (DVT hardware):
+ *   - A6_0 IRQ: GPIO 37 (was 156)
+ *   - A6_1 IRQ: GPIO 94 (was 132)
+ *
+ * 3G Modem (NEW - not in WiFi variant):
+ *   - 3G_WAKE_N: GPIO 38
+ *   - 3G_UIM_CD_N: GPIO 61 (SIM card detect)
+ *   - 3G_3V3_EN: GPIO 82 or 106 (revision dependent)
+ *   - 3G_DISABLE_N: GPIO 171
+ *
+ * TODO: Create proper tenderloin-3g-common.dtsi with these differences
+ * TODO: Add MDM6600 3G modem device node
+ * TODO: Test on actual 3G hardware
+ */
+
+/dts-v1/;
+
+#include "qcom-apq8060-tenderloin-common.dtsi"
+
+/ {
+	model = "HP TouchPad (Topaz 3G) - PLACEHOLDER";
+	compatible = "hp,topaz-3g", "qcom,msm8660";
+};
+
+/*
+ * This device tree currently uses the WiFi-only configuration.
+ * Actual 3G hardware will NOT work correctly with this DTS.
+ *
+ * To properly support 3G variant:
+ * 1. Create qcom-msm8660-tenderloin-3g-common.dtsi
+ * 2. Add all GPIO overrides for 3G-specific pins
+ * 3. Add MDM6600 modem device node
+ * 4. Test on actual 3G hardware
+ */
