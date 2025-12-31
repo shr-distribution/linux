@@ -2951,22 +2951,34 @@ static const struct qcom_reset_map mmcc_msm8960_resets[] = {
 };
 
 static struct clk_regmap *mmcc_msm8660_clks[] = {
+	/* AHB Clocks - using MSM8960 clock IDs (MSM8660 shares the driver) */
+	[VFE_AHB_CLK] = &vfe_ahb_clk.clkr,
 	[MDP_AHB_CLK] = &mdp_ahb_clk.clkr,
+	[GFX3D_AHB_CLK] = &gfx3d_ahb_clk.clkr,
+	[MMSS_IMEM_AHB_CLK] = &mmss_imem_ahb_clk.clkr,
+	/* AXI Clocks */
+	[VFE_AXI_CLK] = &vfe_axi_clk.clkr,
 	[MDP_AXI_CLK] = &mdp_axi_clk.clkr,
+	[GMEM_AXI_CLK] = &gmem_axi_clk.clkr,
+	[MMSS_IMEM_AXI_CLK] = &mmss_imem_axi_clk.clkr,
+	[GFX3D_AXI_CLK] = &gfx3d_axi_clk.clkr,
+	/* Core Clocks */
+	[VFE_SRC] = &vfe_src.clkr,
+	[VFE_CLK] = &vfe_clk.clkr,
 	[MDP_SRC] = &mdp_src.clkr,
 	[MDP_CLK] = &mdp_clk.clkr,
-	[HDMI_TV_CLK] = &hdmi_tv_clk.clkr,
-	[MDP_TV_CLK] = &mdp_tv_clk.clkr,
-	[MMSS_IMEM_AHB_CLK] = &mmss_imem_ahb_clk.clkr,
-	[MMSS_IMEM_AXI_CLK] = &mmss_imem_axi_clk.clkr,
-	[GMEM_AXI_CLK] = &gmem_axi_clk.clkr,
-	[GFX3D_AHB_CLK] = &gfx3d_ahb_clk.clkr,
-	[GFX3D_SRC] = &gfx3d_src.clkr,
-	[GFX3D_CLK] = &gfx3d_clk.clkr,
-	[PLL2] = &pll2.clkr,
 	[MDP_PIXEL_SRC] = &mdp_pixel_src.clkr,
 	[MDP_PIXEL_CLK] = &mdp_pixel_clk.clkr,
 	[MDP_LCDC_CLK] = &mdp_lcdc_clk.clkr,
+	[GFX3D_SRC] = &gfx3d_src.clkr,
+	[GFX3D_CLK] = &gfx3d_clk.clkr,
+	[HDMI_TV_CLK] = &hdmi_tv_clk.clkr,
+	[MDP_TV_CLK] = &mdp_tv_clk.clkr,
+	/* Camera Clocks */
+	[CAMCLK0_SRC] = &camclk0_src.clkr,
+	[CAMCLK0_CLK] = &camclk0_clk.clkr,
+	/* PLL */
+	[PLL2] = &pll2.clkr,
 };
 static const struct qcom_reset_map mmcc_msm8660_resets[] = {
 };

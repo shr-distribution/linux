@@ -119,6 +119,15 @@
 			clock-names = "pxo", "cxo";
 		};
 
+		mmcc: clock-controller@4000000 {
+			compatible = "qcom,mmcc-msm8660";
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			reg = <0x04000000 0x1000>;
+			clocks = <&pxo_board>, <&gcc PLL8_VOTE>;
+			clock-names = "pxo", "pll8_vote";
+		};
+
 		gsbi1: gsbi@16000000 {
 			compatible = "qcom,gsbi-v1.0.0";
 			cell-index = <12>;
@@ -434,9 +443,6 @@
 		 * Camera Subsystem - VFE 3.1
 		 * Note: MSM8660 uses VFE31 with parallel camera interface (CAMIF).
 		 * No MIPI CSI-2 support (CSIPHY/CSID/ISPIF not used).
-		 *
-		 * TODO: Requires MMCC (Multimedia Clock Controller) support which is not
-		 * yet available in mainline. This node is disabled until MMCC driver is added.
 		 */
 		camss: camss@04500000 {
 			compatible = "qcom,msm8660-camss";
@@ -447,15 +453,12 @@
 
 			/*
 			 * Clock names based on VFE31 requirements (see vfe_res_8x60 in camss.c):
-			 * - vfe: VFE core clock
-			 * - vfe_axi: VFE AXI bus interface clock
-			 * - vfe_ahb: VFE AHB bus clock
-			 *
-			 * TODO: These clocks need to be defined in an MMCC node once
-			 * the MSM8660 MMCC driver is added to mainline.
+			 * - vfe: VFE core clock (from MMCC)
+			 * - vfe_axi: VFE AXI bus interface clock (from MMCC)
+			 * - vfe_ahb: VFE AHB bus clock (from MMCC)
 			 */
-			/* clocks = <&mmcc VFE_CLK>, <&mmcc VFE_AXI_CLK>, <&mmcc VFE_AHB_CLK>; */
-			/* clock-names = "vfe", "vfe_axi", "vfe_ahb"; */
+			clocks = <&mmcc VFE_CLK>, <&mmcc VFE_AXI_CLK>, <&mmcc VFE_AHB_CLK>;
+			clock-names = "vfe", "vfe_axi", "vfe_ahb";
 
 			status = "disabled";
 

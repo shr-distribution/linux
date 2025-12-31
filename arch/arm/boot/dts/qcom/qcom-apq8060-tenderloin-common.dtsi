@@ -1333,8 +1333,8 @@
 		/*
 		 * Port/endpoint configuration for parallel camera interface.
 		 *
-		 * VFE31 driver has been ported to mainline CAMSS but requires
-		 * MMCC clock controller support before it can be fully enabled.
+		 * VFE31 driver has been ported to mainline CAMSS with MMCC
+		 * clock controller support. Camera is ready to be enabled.
 		 */
 		port {
 			mt9m113_ep: endpoint {
@@ -1348,12 +1348,11 @@
 /*
  * Enable camera subsystem and connect to MT9M113 sensor.
  *
- * Note: CAMSS is currently disabled because MSM8660 MMCC (Multimedia Clock
- * Controller) is not yet supported in mainline. Once MMCC driver is added,
- * uncomment the "status" line below to enable the camera subsystem.
+ * MMCC (Multimedia Clock Controller) support has been added with VFE31 driver.
+ * Camera subsystem is ready to use.
  */
 &camss {
-	/* status = "okay"; */  /* Enable once MMCC is available */
+	status = "okay";
 
 	ports {
 		port@0 {
