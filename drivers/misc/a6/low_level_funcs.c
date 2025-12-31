@@ -159,7 +159,6 @@ unsigned long AllShifts(word Format, unsigned long Data)
    unsigned long TDOword = 0x00000000;
    unsigned long MSB = 0x00000000;
    word i;
-   unsigned long flags = 0;
 
    //DisableInterrupts(flags);
    switch(Format)

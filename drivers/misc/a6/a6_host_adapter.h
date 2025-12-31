@@ -9,7 +9,6 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
-#include <linux/hres_counter.h>
 
 #include <linux/a6_sbw_interface.h>
 #include <linux/a6.h>
@@ -50,8 +49,8 @@ typedef unsigned char   byte;
 /* Host adapter for the sbw layer */
 /********/
 // per-target functions (separate implementation per target)
-#define   DisableInterrupts(flags)   (a6_disable_interrupts(flags))
-#define   EnableInterrupts(flags)    (a6_enable_interrupts(flags))
+#define   DisableInterrupts(flags)   a6_disable_interrupts(flags)
+#define   EnableInterrupts(flags)    a6_enable_interrupts(flags)
 
 #define MsDelay(milliseconds) {delay(milliseconds * 1000);}      // millisecond delay loop
 #define	usDelay(microseconds)  {delay(microseconds);}             // microsecond delay loop

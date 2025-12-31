@@ -4,6 +4,7 @@
 #include "a6_host_adapter.h"       // Maps function calls to host porting-layer implementations
 #include "jtag_funcs.h"	        	// Spy-by-wire JTAG functions
 #include "low_level_funcs.h"		// low level user functions
+#include "high_level_funcs.h"		// Function prototypes
 
 #define LOCAL_TRACE 0
 
@@ -55,7 +56,7 @@ static int hexval(char c)
 	return 0;
 }
 
-SBW_STATE_CODE sbw_get_token(uint8_t* read_p, uint8_t* write_p, uint32_t* read_len_p, uint32_t* write_len_p)
+static SBW_STATE_CODE sbw_get_token(uint8_t* read_p, uint8_t* write_p, uint32_t* read_len_p, uint32_t* write_len_p)
 {
 	SBW_STATE_CODE ret;
 
@@ -121,7 +122,7 @@ SBW_STATE_CODE sbw_get_token(uint8_t* read_p, uint8_t* write_p, uint32_t* read_l
 }
 
 
-SBW_STATE_CODE sbw_parse_line(uint8_t* read_p, uint8_t* write_p, uint32_t* read_len_p, uint32_t* write_len_p)
+static SBW_STATE_CODE sbw_parse_line(uint8_t* read_p, uint8_t* write_p, uint32_t* read_len_p, uint32_t* write_len_p)
 {
 	SBW_STATE_CODE ret;
 	uint32_t total_read_len = 0, total_write_len = 0, val = 0, r_len = 0, w_len = 0;
@@ -160,7 +161,7 @@ SBW_STATE_CODE sbw_parse_line(uint8_t* read_p, uint8_t* write_p, uint32_t* read_
 }
 
 
-SBW_STATE_CODE sbw_parse_section(uint8_t* read_p, uint8_t* write_p, uint32_t* read_len_p, uint32_t* write_len_p)
+static SBW_STATE_CODE sbw_parse_section(uint8_t* read_p, uint8_t* write_p, uint32_t* read_len_p, uint32_t* write_len_p)
 {
 	SBW_STATE_CODE ret;
 	uint32_t total_read_len = 0, total_write_len = 0, r_len = 0, w_len = 0;
@@ -202,7 +203,7 @@ sec_info_struct sec_info;
 int32_t sec_index = 0;
 
 
-SBW_STATE_CODE sbw_parse_image(uint8_t* read_p, uint8_t* write_p, uint32_t* read_len_p, uint32_t* write_len_p)
+static SBW_STATE_CODE sbw_parse_image(uint8_t* read_p, uint8_t* write_p, uint32_t* read_len_p, uint32_t* write_len_p)
 {
 	SBW_STATE_CODE ret;
 	uint32_t total_read_len = 0, total_write_len = 0, r_len = 0, w_len = 0, val = 0;

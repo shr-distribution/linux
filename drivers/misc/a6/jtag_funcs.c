@@ -1,6 +1,8 @@
 #include "a6_host_adapter.h"
 #include "low_level_funcs.h"
 #include "jtag_funcs.h"
+#include <linux/ktime.h>
+#include <linux/math64.h>
 
 #define LOCAL_TRACE 1
 
@@ -427,7 +429,7 @@ static word SyncJtag_AssertPor (void)
                     bit 7 has been cleared)
 */
 
-byte pmicWriteRead(byte addr, byte wdat)
+static byte pmicWriteRead(byte addr, byte wdat)
 {
   byte rdat;
 
@@ -492,7 +494,7 @@ byte pmicWriteRead(byte addr, byte wdat)
   return rdat;
 }
 
-signed char ClearWatchDogEnable(void)
+static signed char ClearWatchDogEnable(void)
 {
 
    if (pmicWriteRead(0x7e,0x02) !=  0x02) // vmon_mode reg
@@ -511,7 +513,7 @@ signed char ClearWatchDogEnable(void)
 */
 word GetDevice_430Xv2(void)
 {
-  uint32_t t1_val, t2_val, t3_val, t4_val;
+  ktime_t t1_val, t2_val, t3_val, t4_val;
   int32_t i;
   word wd_stat;
   unsigned long flags = 0;
@@ -519,19 +521,19 @@ word GetDevice_430Xv2(void)
   i = 20;
   DisableInterrupts(flags);
   do {
-	t1_val = hres_get_counter();
+	t1_val = ktime_get();
 	if(GetCoreID () != STATUS_OK) {
 		printk("GetCoreID failed.\n");
 	}
 
-	t2_val = hres_get_counter();
+	t2_val = ktime_get();
 	if(SyncJtag_AssertPor() != STATUS_OK) {
 		printk("SyncJtag_AssertPor failed.\n");
 	}
 
-	t3_val = hres_get_counter();
+	t3_val = ktime_get();
 	wd_stat = ClearWatchDogEnable();
-	t4_val = hres_get_counter();
+	t4_val = ktime_get();
 
 	// disable write protection...
 	WriteMem_430Xv2(F_WORD, 0x120, 0xa500 );
@@ -539,11 +541,11 @@ word GetDevice_430Xv2(void)
 
 	pmicWriteRead(0x2c,0x00); // 1-wire mode_status: clr DQ
 
-	printk("T1 %lu T2 %lu T3 %lu Total %lu\n",
-	       hres_get_delta_usec(t1_val, t2_val)/USEC_PER_MSEC,
-	       hres_get_delta_usec(t2_val, t3_val)/USEC_PER_MSEC,
-	       hres_get_delta_usec(t3_val, t4_val)/USEC_PER_MSEC,
-	       hres_get_delta_usec(t1_val, t4_val)/USEC_PER_MSEC);
+	printk("T1 %lld T2 %lld T3 %lld Total %lld\n",
+	       div_s64(ktime_us_delta(t2_val, t1_val), USEC_PER_MSEC),
+	       div_s64(ktime_us_delta(t3_val, t2_val), USEC_PER_MSEC),
+	       div_s64(ktime_us_delta(t4_val, t3_val), USEC_PER_MSEC),
+	       div_s64(ktime_us_delta(t4_val, t1_val), USEC_PER_MSEC));
 	t1_val = t2_val = t3_val = t4_val = 0;
 	if ( wd_stat == STATUS_OK ) {
 		break;
@@ -833,7 +835,7 @@ struct section_map_desc ttf_extract_smap =
 	.sec_len =  {0x200,  0x200,  0x200,  0x1c00}, // double-byte length
 };
 
-int ttf_extract_conv_fn
+static int ttf_extract_conv_fn
 	(const unsigned short inp_data, unsigned char* op_data, unsigned int count)
 {
 	int ret;

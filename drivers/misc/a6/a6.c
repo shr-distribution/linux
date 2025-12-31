@@ -48,6 +48,7 @@
 #include <linux/of_device.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
+#include <linux/kthread.h>
 #include <linux/mod_devicetable.h>
 
 #include "high_level_funcs.h"
@@ -500,6 +501,7 @@ struct a6_device_state {
 	uint8_t debug_flush_aiq;
 	uint8_t debug_unused_01;
 	uint8_t debug_unused_02;
+	struct task_struct* restart_aid_task;
 #endif
 #endif
 
@@ -591,7 +593,7 @@ static ssize_t a6_diag_store(struct device *dev, struct device_attribute *dev_at
 			     size_t count);
 static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *attr, char *buf);
 
-void a6_force_wake_timer_callback(ulong data);
+static void a6_force_wake_timer_callback(struct timer_list *t);
 /*
  Note:  16-bit accesses comprising an LSB, MSB register pair must be specified in LSB:MSB order
 	in the corresponding a6_register_desc struct. This is because an a6-fw constraint
@@ -1202,8 +1204,7 @@ static int32_t a6_restart_aid_thread_fn(void* param)
 	struct a6_device_state* state = param;
 	int32_t rc = 0;
 
-	daemonize("dbg_aidrst_%s", state->plat_data->dev_name);
-	while (!state->dbgflg_kill_raid) {
+	while (!kthread_should_stop() && !state->dbgflg_kill_raid) {
 		// stop aid task
 		rc = a6_stop_ai_dispatch_task(state);
 		if (rc) {
@@ -1237,7 +1238,6 @@ static int32_t a6_restart_aid_thread_fn(void* param)
 static int a6_test_restart_aid_set(void *data, u64 val)
 {
 	int32_t rc = 0;
-	pid_t aiq_flush_pid = 0;
 	struct a6_device_state* state = data;
 	uint8_t in_val, curr_val;
 
@@ -1259,8 +1259,9 @@ static int a6_test_restart_aid_set(void *data, u64 val)
 				goto err0;
 			}
 			// create ai dispatcher task...
-			aiq_flush_pid = kernel_thread(a6_restart_aid_thread_fn, state, CLONE_KERNEL);
-			ASSERT(aiq_flush_pid >= 0);
+			state->restart_aid_task = kthread_run(a6_restart_aid_thread_fn, state,
+							      "dbg_aidrst_%s", state->plat_data->dev_name);
+			ASSERT(!IS_ERR(state->restart_aid_task));
 			state->debug_restart_aid = in_val;
 		}
 		else {
@@ -1336,7 +1337,7 @@ struct a6_action_item {
 /*
  enq_a6_action_item: q's action item and blocks till action completion...
 */
-int32_t enq_a6_action_item(struct a6_device_state* state, struct a6_action_item* ai, bool enq_tail)
+static int32_t enq_a6_action_item(struct a6_device_state* state, struct a6_action_item* ai, bool enq_tail)
 {
 	int32_t rc = 0;
 
@@ -1362,7 +1363,7 @@ int32_t enq_a6_action_item(struct a6_device_state* state, struct a6_action_item*
 /*
  dq_a6_action_item: dq's head item from action item list...
 */
-struct a6_action_item* dq_a6_action_item(struct a6_device_state* state)
+static struct a6_action_item* dq_a6_action_item(struct a6_device_state* state)
 {
 	struct a6_action_item* ai = NULL;
 
@@ -1414,7 +1415,7 @@ struct ai_i2c_payload {
 /*
  do_i2c_action_item: i2c-specific action implementation...
 */
-int32_t do_i2c_action_item(void* payload_param)
+static int32_t do_i2c_action_item(void* payload_param)
 {
 	struct ai_i2c_payload* trf_data = (struct ai_i2c_payload*)payload_param;
 
@@ -1433,7 +1434,7 @@ err0:
 /*
  i2c_ret_code: i2c-specific ret-code reference retrieval...
 */
-int32_t* i2c_ret_code(void* payload_param)
+static int32_t* i2c_ret_code(void* payload_param)
 {
 	struct ai_i2c_payload* trf_data = (struct ai_i2c_payload*)payload_param;
 
@@ -1443,7 +1444,7 @@ int32_t* i2c_ret_code(void* payload_param)
 /*
  q_a6_i2c_action_item: creates the action item structure and enq's it...
 */
-int32_t q_a6_i2c_action_item(struct i2c_client* client, struct i2c_msg* msg, uint32_t num_msgs)
+static int32_t q_a6_i2c_action_item(struct i2c_client* client, struct i2c_msg* msg, uint32_t num_msgs)
 {
 	int32_t ret = 0;
 	struct ai_i2c_payload data = {
@@ -1471,20 +1472,19 @@ int32_t q_a6_i2c_action_item(struct i2c_client* client, struct i2c_msg* msg, uin
 /*
  ai_dispatch_thread_fn: function that handles ai processing in the aid task...
 */
-int ai_dispatch_thread_fn(void* param)
+static int ai_dispatch_thread_fn(void* param)
 {
 	int32_t rc = 0;
 	struct a6_action_item* ai;
 	struct a6_device_state* state = param;
 
-	daemonize("aid_%s", state->plat_data->dev_name);
 	do {
 		A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: about to wait for ai enq complete.\n", __func__);
 		// wait for ai to be enq'd
 		rc = wait_for_completion_interruptible(&state->aq_enq_complete);
 		if (rc >= 0) {
 			// check kill status: intent to kill?
-			if (test_bit(KILLING_AID_TASK, state->flags)) {
+			if (kthread_should_stop() || test_bit(KILLING_AID_TASK, state->flags)) {
 				// remove all items from q
 				flush_a6_action_items(state);
 				// and signal killer before exiting stage...
@@ -1528,7 +1528,7 @@ int ai_dispatch_thread_fn(void* param)
 #endif  // A6_PQ
 
 
-int32_t __a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, uint8_t* out)
+static int32_t __a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, uint8_t* out)
 {
 	int32_t ret = 0, i;
 	uint16_t swp_addr[num_ids];
@@ -1636,7 +1636,7 @@ err0:
 	return ret;
 }
 
-int32_t a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, uint8_t* out)
+static int32_t a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, uint8_t* out)
 {
 	int32_t ret;
 #ifdef A6_I2C_RETRY
@@ -1656,7 +1656,7 @@ int32_t a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids, uint32_t
 	return ret;
 }
 
-int32_t __a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, const uint8_t* in)
+static int32_t __a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, const uint8_t* in)
 {
 	int32_t ret = 0, i;
 	uint8_t i2c_buf[(2+1)*num_ids];
@@ -1749,7 +1749,7 @@ err0:
 	return ret;
 }
 
-int32_t a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, const uint8_t* in)
+static int32_t a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, const uint8_t* in)
 {
 	int32_t ret;
 #ifdef A6_I2C_RETRY
@@ -1770,7 +1770,7 @@ int32_t a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids, uint32_
 }
 
 
-uint8_t _convert_hex_char_to_decimal(uint8_t x)
+static uint8_t _convert_hex_char_to_decimal(uint8_t x)
 {
 	x -= '0';
 	if (x > 9) {
@@ -1880,7 +1880,7 @@ static struct a6_sbw_interface a6_gpio_sbw_ops = {
 	},
 };
 
-int32_t a6_init_state(struct i2c_client *client)
+static int32_t a6_init_state(struct i2c_client *client)
 {
 	int32_t ret = 0;
 	struct a6_device_state* state = i2c_get_clientdata(client);
@@ -1956,9 +1956,9 @@ int32_t a6_init_state(struct i2c_client *client)
 		}
 	}
 	/* periodic wake capability not defined: force a6 awake using SBW_WAKEUP */
-	else {
+	else if (state->wakeup_gpio) {
 		printk(KERN_ERR "%s: permanently forcing A6 awake.\n", __func__);
-		gpio_set_value(state->plat_data->sbw_wkup_gpio, 1);
+		gpiod_set_value_cansleep(state->wakeup_gpio, 1);
 	}
 
 	/* (2) cache rsense val */
@@ -3060,7 +3060,7 @@ static ssize_t a6_diag_show(struct device *dev, struct device_attribute *attr, c
 	return rc;
 }
 
-int32_t a6_create_dev_files(struct a6_device_state* state, struct device* dev)
+static int32_t a6_create_dev_files(struct a6_device_state* state, struct device* dev)
 {
 	int32_t rc = 0, reg_cnt = sizeof(a6_register_desc_arr)/sizeof(struct a6_register_desc);
 	int32_t idx = 0, cust_idx = 0;
@@ -3103,7 +3103,7 @@ err0:
 
 }
 
-void a6_remove_dev_files(struct a6_device_state* state, struct device* dev)
+static void a6_remove_dev_files(struct a6_device_state* state, struct device* dev)
 {
 	int32_t reg_cnt = sizeof(a6_register_desc_arr)/sizeof(struct a6_register_desc);
 	int32_t idx;
@@ -3132,7 +3132,7 @@ struct a6_pgm_thread_params {
 	struct completion a6_flash_thread_exit;
 };
 
-int a6_pgm_thread_fn(void* param)
+static int a6_pgm_thread_fn(void* param)
 {
 	int32_t ret_val;
 
@@ -3233,7 +3233,6 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 					(struct a6_sbw_interface*)state->plat_data->sbw_ops;
 			uint8_t* a6_fw_buffer;
 			struct task_struct* pgm_worker_task;
-			pid_t pgm_worker_task_pid;
 			struct a6_pgm_thread_params t_params;
 
 			// reset force-wake state to always force wake on first i2c txn
@@ -3276,8 +3275,8 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 			}
 
 			printk(KERN_ERR "A6: Starting flashing sequence.\n");
-			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "A6: parent task nice value: %d; pri: %d\n",
-				   task_nice(current), task_prio(current));
+			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "A6: parent task nice value: %d\n",
+				   task_nice(current));
 
 			// initialize worker task params
 			init_completion(&t_params.a6_flash_thread_nice);
@@ -3289,20 +3288,18 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 					A6_PROGAM_AND_VERIFY_FW : A6_VERIFY_FW;
 
 			// create worker task...
-			pgm_worker_task_pid = kernel_thread(a6_pgm_thread_fn, &t_params,
-					CLONE_KERNEL);
-			if (pgm_worker_task_pid < 0) {
+			pgm_worker_task = kthread_run(a6_pgm_thread_fn, &t_params,
+						      "a6_pgm_%s", state->plat_data->dev_name);
+			if (IS_ERR(pgm_worker_task)) {
 				printk(KERN_ERR "A6: failed to create pgm worker task.\n");
-				rc = -EIO;
+				rc = PTR_ERR(pgm_worker_task);
+				pgm_worker_task = NULL;
 				break;
 			}
-
-			// retrieve worker task struct
-			pgm_worker_task = get_pid_task(find_get_pid(pgm_worker_task_pid), PIDTYPE_PID);
 			// re-nice worker task
 			//set_user_nice(pgm_worker_task, 10);
-			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "A6: pgm worker task nice value: %d; pri: %d\n",
-				   task_nice(pgm_worker_task), task_prio(pgm_worker_task));
+			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "A6: pgm worker task nice value: %d\n",
+				   task_nice(pgm_worker_task));
 
 			/* hold cpu at max freq before signaling worker thread to commence sbw */
 #ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_TICKLE
@@ -3741,7 +3738,6 @@ struct file_operations a6_fops = {
 static irqreturn_t a6_irq(int irq, void *dev_id)
 {
 	struct a6_device_state* state = (struct a6_device_state *)dev_id;
-	int rc;
 
 	a6_tp_irq_count++;
 #if defined PROFILE_USAGE
@@ -3766,7 +3762,7 @@ static irqreturn_t a6_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-void a6_irq_work_handler(struct work_struct *work)
+static void a6_irq_work_handler(struct work_struct *work)
 {
 	struct a6_device_state* state =
 			container_of(work, struct a6_device_state, a6_irq_work);
@@ -4125,11 +4121,12 @@ int32_t a6_start_ai_dispatch_task(struct a6_device_state* state)
 
 
 	// create ai dispatcher task...
-	ai_dispatch_pid = kernel_thread(ai_dispatch_thread_fn, state,
-					CLONE_KERNEL);
-	if (ai_dispatch_pid < 0) {
+	state->ai_dispatch_task = kthread_run(ai_dispatch_thread_fn, state,
+					      "aid_%s", state->plat_data->dev_name);
+	if (IS_ERR(state->ai_dispatch_task)) {
 		printk(KERN_ERR "%s: failed to create ai dispatcher task.\n", __func__);
-		rc = -EIO;
+		rc = PTR_ERR(state->ai_dispatch_task);
+		state->ai_dispatch_task = NULL;
 		goto err0;
 	}
 
@@ -4154,7 +4151,7 @@ err0:
 }
 #endif // A6_PQ
 
-void a6_force_wake_work_handler(struct work_struct *work)
+static void a6_force_wake_work_handler(struct work_struct *work)
 {
 	struct a6_device_state* state =
 			container_of(work, struct a6_device_state, a6_force_wake_work);
@@ -4317,12 +4314,9 @@ static int a6_battery_get_property(struct power_supply *psy,
 				   enum power_supply_property psp,
 				   union power_supply_propval *val)
 {
-	struct a6_device_state *state = power_supply_get_drvdata(psy);
-	uint8_t reg_val[2];
-	int16_t signed_val;
-	int rc;
-
 	/* For now, return stub values - actual implementation will read from A6 */
+	/* TODO: Use psy to read actual values from A6 registers */
+	(void)psy;  /* Suppress unused parameter warning */
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
 		val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
@@ -4597,7 +4591,7 @@ err_misc:
 /******************************************************************************
 * a6_i2c_remove()
 ******************************************************************************/
-static int a6_i2c_remove(struct i2c_client *client)
+static void a6_i2c_remove(struct i2c_client *client)
 {
 	struct a6_device_state* state = (struct a6_device_state*)i2c_get_clientdata(client);
 
@@ -4610,8 +4604,6 @@ static int a6_i2c_remove(struct i2c_client *client)
 	if (state->ka6d_fw_workqueue) {
 		destroy_workqueue(state->ka6d_fw_workqueue);
 	}
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -4647,6 +4639,7 @@ static int a6_resume(struct device *dev)
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(a6_pm_ops, a6_suspend, a6_resume);
+#endif /* CONFIG_PM */
 
 /******************************************************************************
 * Device tree match table
