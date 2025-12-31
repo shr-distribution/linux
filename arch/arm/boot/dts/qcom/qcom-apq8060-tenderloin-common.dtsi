@@ -1083,6 +1083,30 @@
 		};
 	};
 
+	wm8958_pins: wm8958-state {
+		micdet-pins {
+			pins = "gpio57";  /* HEAD_MIC_DET_IRQ */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+
+		ldo1-pins {
+			pins = "gpio66";  /* AUD_LDO1_EN */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		ldo2-pins {
+			pins = "gpio108";  /* AUD_LDO2_EN */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
 	/* Headphone UART pins */
 	headphone_uart_pins: gsbi12-serial-state {
 		rx-pins {
@@ -1496,6 +1520,10 @@
 
 		#sound-dai-cells = <0>;
 
+		/* Headphone microphone detection interrupt */
+		interrupt-parent = <&tlmm>;
+		interrupts = <57 IRQ_TYPE_EDGE_FALLING>;
+
 		/* Power supplies */
 		AVDD2-supply = <&pm8058_l4>;      // 2.85V
 		CPVDD-supply = <&pm8058_l4>;      // 2.85V
@@ -1506,6 +1534,37 @@
 		AVDD1-supply = <&pm8058_l4>;      // 2.85V
 		SPKVDD1-supply = <&pm8058_l4>;    // 2.85V
 		SPKVDD2-supply = <&pm8058_l4>;    // 2.85V
+		LDO1VDD-supply = <&pm8058_l4>;    // 2.85V supply for internal LDO1
+		LDO2VDD-supply = <&pm8058_s3>;    // 1.8V supply for internal LDO2
+
+		/* LDO enable GPIO control */
+		wlf,ldo1ena-gpios = <&tlmm 66 GPIO_ACTIVE_HIGH>;
+		wlf,ldo2ena-gpios = <&tlmm 108 GPIO_ACTIVE_HIGH>;
+
+		/* GPIO configuration for WM8958 internal GPIOs */
+		wlf,gpio-cfg = <
+			0x0001  /* GPIO1: AUDIO_AMP_EN (write 0x41 to enable AMP) */
+			0x8001  /* GPIO2: MCLK2 Pull Control */
+			0x8001  /* GPIO3: BCLK2 Pull Control */
+			0x8001  /* GPIO4: DACLRCLK2 Pull Control */
+			0x8001  /* GPIO5: DACDAT2 Pull Control */
+			0x2005  /* GPIO6: HEAD_MIC_DET routed to GPIO57 */
+			0xa101  /* GPIO7: N/A on WM8958 */
+			0xa101  /* GPIO8: Not used */
+			0xa101  /* GPIO9: Not used */
+			0xa101  /* GPIO10: Not used */
+			0xa101  /* GPIO11: Not used */
+		>;
+
+		/* MICBIAS configuration */
+		wlf,micbias-cfg = <0x0029 0x002d>;
+
+		/* Line outputs in differential mode */
+		wlf,lineout1-diff;
+		wlf,lineout2-diff;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&wm8958_pins>;
 	};
 };
 
