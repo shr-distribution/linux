@@ -358,6 +358,11 @@
  * Data Structures
  */
 
+enum mt9m114_model {
+	MT9M113_MODEL = 0x2480,
+	MT9M114_MODEL = 0x2481,
+};
+
 enum mt9m114_format_flag {
 	MT9M114_FMT_FLAG_PARALLEL = BIT(0),
 	MT9M114_FMT_FLAG_CSI2 = BIT(1),
@@ -372,6 +377,7 @@ struct mt9m114_format_info {
 struct mt9m114 {
 	struct i2c_client *client;
 	struct regmap *regmap;
+	enum mt9m114_model model;
 
 	struct clk *clk;
 	struct gpio_desc *reset;
@@ -2276,7 +2282,18 @@ static int mt9m114_identify(struct mt9m114 *sensor)
 		return -ENXIO;
 	}
 
-	if (value != 0x2481) {
+	switch (value) {
+	case MT9M113_MODEL:
+		sensor->model = MT9M113_MODEL;
+		dev_info(&sensor->client->dev, "Detected MT9M113 chip ID 0x%04llx\n",
+			 value);
+		break;
+	case MT9M114_MODEL:
+		sensor->model = MT9M114_MODEL;
+		dev_info(&sensor->client->dev, "Detected MT9M114 chip ID 0x%04llx\n",
+			 value);
+		break;
+	default:
 		dev_err(&sensor->client->dev, "Invalid chip ID 0x%04llx\n",
 			value);
 		return -ENXIO;
@@ -2479,6 +2496,7 @@ static void mt9m114_remove(struct i2c_client *client)
 }
 
 static const struct of_device_id mt9m114_of_ids[] = {
+	{ .compatible = "aptina,mt9m113" },
 	{ .compatible = "onnn,mt9m114" },
 	{ /* sentinel */ },
 };

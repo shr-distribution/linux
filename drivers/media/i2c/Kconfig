@@ -280,11 +280,12 @@ config VIDEO_MT9M111
 	  Micron/Aptina
 
 config VIDEO_MT9M114
-	tristate "onsemi MT9M114 sensor support"
+	tristate "Aptina MT9M113 and onsemi MT9M114 sensor support"
 	select V4L2_CCI_I2C
 	help
-	  This is a Video4Linux2 sensor-level driver for the onsemi MT9M114
-	  camera.
+	  This is a Video4Linux2 sensor-level driver for the Aptina MT9M113
+	  and onsemi MT9M114 cameras. Both are 1/6-inch CMOS sensors with
+	  embedded image processing.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called mt9m114.
