@@ -1,7 +1,6 @@
 //#define DEBUG
 
 #include "cy8ctma395.h"
-#include <linux/cpufreq.h>
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/ihex.h>
@@ -370,7 +369,11 @@ static int port_acquire(struct device *dev, u32 *id, u8 *rev)
 	gpio_set_value(pdat->xres, 0);
 	usleep_range(pdat->xres_us, pdat->xres_us+500);
 
-	CPUFREQ_HOLD_SYNC();
+	/*
+	 * Disable interrupts during timing-critical SWD communication.
+	 * This prevents the CPU from being preempted which could violate
+	 * the strict timing requirements of the SWD protocol.
+	 */
 	local_irq_disable();
 	{
 		u8 response;
@@ -392,7 +395,6 @@ retry:
 
 enable:
 	local_irq_enable();
-	CPUFREQ_UNHOLD();
 
 	if (rc < 0) {
 		dev_err(dev, "failed to acquire port\n");
