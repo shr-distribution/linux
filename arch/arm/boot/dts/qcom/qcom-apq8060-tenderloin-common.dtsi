@@ -842,8 +842,20 @@
 	};
 
 #if !USE_I2C_TOUCHSCREEN_DRIVER
+	/* SWD firmware programmer for CY8CTMA395 touchscreen controller */
 	touchscreen: cy8ctma395 {
 		compatible = "cypress,cy8ctma395";
+
+		/* Power supplies for touchscreen controller */
+		vdd-supply = <&pm8058_l10>;     /* 3.05V digital supply */
+		vcpin-supply = <&vdd50_boost>;  /* 5V analog supply */
+
+		/* GPIOs for SWD programming interface
+		 * Note: wake GPIO differs between WiFi (123) and 3G (45) models
+		 * This is handled by device-specific overlays
+		 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&cy8ctma395_default_state>;
 	};
 #endif
 };
@@ -1166,6 +1178,33 @@
 			drive-strength = <2>;
 			bias-disable;
 		};
+	};
+
+	/* CY8CTMA395 SWD programming interface
+	 * Note: GPIOs 72/73 are normally I2C but get reconfigured for SWD programming
+	 * The driver handles GPIO muxing via swdck_request/swdio_request callbacks
+	 */
+	cy8ctma395_default_state: cy8ctma395-default-state {
+		xres-pins {
+			pins = "gpio70";  /* TP_PWR_RST / XRES */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		wake-pins {
+			pins = "gpio123";  /* GPIO_CTP_WAKE (WiFi), GPIO 45 on 3G */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		/* Note: GPIO 72 (SDA/SWDIO) and 73 (SCL/SWDCK) are configured
+		 * by gsbi10_i2c_pins when in normal I2C mode, and dynamically
+		 * reconfigured by the driver during SWD firmware programming
+		 */
 	};
 
 	gsbi10_i2c_pins: i2c10-state {

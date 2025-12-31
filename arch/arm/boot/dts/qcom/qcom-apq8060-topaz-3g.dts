@@ -63,6 +63,28 @@
 	compatible = "hp,topaz-3g", "qcom,msm8660";
 };
 
+/* 3G-specific GPIO overrides */
+&tlmm {
+	/* Override touchscreen pinctrl for 3G model (GPIO 45 vs 123 for wake) */
+	cy8ctma395_default_state: cy8ctma395-default-state {
+		xres-pins {
+			pins = "gpio70";  /* TP_PWR_RST / XRES */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		wake-pins {
+			pins = "gpio45";  /* GPIO_CTP_WAKE_3G instead of 123 */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+	};
+};
+
 /*
  * This device tree currently uses the WiFi-only configuration.
  * Actual 3G hardware will NOT work correctly with this DTS.
