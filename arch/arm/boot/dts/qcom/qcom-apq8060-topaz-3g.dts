@@ -235,15 +235,24 @@
 	uok-gpios = <&tlmm 86 GPIO_ACTIVE_LOW>;  /* DC_OK_3G instead of 140 */
 };
 
-/* Override A6 battery controller interrupt GPIOs for 3G model (DVT hardware) */
+/* Override A6 battery controller GPIOs for 3G model (DVT hardware) */
 &a6_0 {
 	interrupt-parent = <&tlmm>;
-	interrupts = <37 IRQ_TYPE_EDGE_FALLING>;  /* A6_0_IRQ_3G instead of 156 */
+	interrupts = <37 IRQ_TYPE_EDGE_FALLING>;  /* A6_0_IRQ_3G_DVT instead of 156 */
+
+	/* SBW programming GPIOs differ on 3G variant */
+	tck-gpios = <&tlmm 156 GPIO_ACTIVE_HIGH>;   /* A6_0_TCK_3G_DVT instead of 157 */
+	tdio-gpios = <&tlmm 170 GPIO_ACTIVE_HIGH>;  /* A6_0_TDIO_3G instead of 158 */
+	/* wakeup-gpios stays at 155 (same as WiFi) */
 };
 
 &a6_1 {
 	interrupt-parent = <&tlmm>;
-	interrupts = <94 IRQ_TYPE_EDGE_FALLING>;  /* A6_1_IRQ_3G instead of 132 */
+	interrupts = <94 IRQ_TYPE_EDGE_FALLING>;  /* A6_1_IRQ_3G_DVT instead of 132 */
+
+	/* WAKEUP GPIO differs on 3G variant */
+	wakeup-gpios = <&tlmm 78 GPIO_ACTIVE_HIGH>;  /* A6_1_WAKEUP_3G instead of 141 */
+	/* tck-gpios and tdio-gpios stay at 115/116 (same as WiFi) */
 };
 
 /*
