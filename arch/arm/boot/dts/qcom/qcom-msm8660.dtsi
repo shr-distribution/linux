@@ -429,6 +429,49 @@
 			compatible = "qcom,tcsr-msm8660", "syscon";
 			reg = <0x16b00000 0x80>;
 		};
+
+		/*
+		 * Camera Subsystem - VFE 3.1
+		 * Note: MSM8660 uses VFE31 with parallel camera interface (CAMIF).
+		 * No MIPI CSI-2 support (CSIPHY/CSID/ISPIF not used).
+		 *
+		 * TODO: Requires MMCC (Multimedia Clock Controller) support which is not
+		 * yet available in mainline. This node is disabled until MMCC driver is added.
+		 */
+		camss: camss@04500000 {
+			compatible = "qcom,msm8660-camss";
+			reg = <0x04500000 0x1000>;
+			reg-names = "vfe0";
+			interrupts = <GIC_SPI 78 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "vfe0";
+
+			/*
+			 * Clock names based on VFE31 requirements (see vfe_res_8x60 in camss.c):
+			 * - vfe: VFE core clock
+			 * - vfe_axi: VFE AXI bus interface clock
+			 * - vfe_ahb: VFE AHB bus clock
+			 *
+			 * TODO: These clocks need to be defined in an MMCC node once
+			 * the MSM8660 MMCC driver is added to mainline.
+			 */
+			/* clocks = <&mmcc VFE_CLK>, <&mmcc VFE_AXI_CLK>, <&mmcc VFE_AHB_CLK>; */
+			/* clock-names = "vfe", "vfe_axi", "vfe_ahb"; */
+
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* Parallel camera input port */
+				port@0 {
+					reg = <0>;
+					camss_in: endpoint {
+						/* Connected to camera sensor */
+					};
+				};
+			};
+		};
 	};
 
 };

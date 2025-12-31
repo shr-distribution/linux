@@ -1331,25 +1331,42 @@
 		pinctrl-0 = <&camera_pins>;
 
 		/*
-		 * Port/endpoint configuration for camera interface
+		 * Port/endpoint configuration for parallel camera interface.
 		 *
-		 * NOTE: MSM8660/APQ8060 uses VFE31 (Video Front End 3.1) camera
-		 * subsystem which is not supported in mainline Linux. The CAMSS
-		 * driver only supports MSM8916 (VFE 4.1) and newer platforms.
-		 * Porting VFE31 support would require significant driver work.
-		 *
-		 * The MT9M113 sensor driver is ready and will auto-detect the
-		 * chip once a camera interface driver is available.
-		 *
-		 * TODO: Port MSM8660 VFE31 camera subsystem to mainline CAMSS
-		 *
-		 * port {
-		 *     mt9m113_ep: endpoint {
-		 *         bus-type = <5>; // MEDIA_BUS_TYPE_PARALLEL
-		 *         remote-endpoint = <&vfe31_ep>;
-		 *     };
-		 * };
+		 * VFE31 driver has been ported to mainline CAMSS but requires
+		 * MMCC clock controller support before it can be fully enabled.
 		 */
+		port {
+			mt9m113_ep: endpoint {
+				bus-type = <5>; /* MEDIA_BUS_TYPE_PARALLEL */
+				remote-endpoint = <&camss_ep>;
+			};
+		};
+	};
+};
+
+/*
+ * Enable camera subsystem and connect to MT9M113 sensor.
+ *
+ * Note: CAMSS is currently disabled because MSM8660 MMCC (Multimedia Clock
+ * Controller) is not yet supported in mainline. Once MMCC driver is added,
+ * uncomment the "status" line below to enable the camera subsystem.
+ */
+&camss {
+	/* status = "okay"; */  /* Enable once MMCC is available */
+
+	ports {
+		port@0 {
+			camss_ep: endpoint {
+				bus-type = <5>; /* MEDIA_BUS_TYPE_PARALLEL */
+				remote-endpoint = <&mt9m113_ep>;
+
+				/* Parallel interface timing */
+				hsync-active = <1>;
+				vsync-active = <1>;
+				pclk-sample = <1>;
+			};
+		};
 	};
 };
 
