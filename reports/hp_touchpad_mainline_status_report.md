@@ -63,6 +63,9 @@ The HP TouchPad family mainline device tree implementation represents production
 35. **GPU cache sync fix** for A2xx (`drivers/gpu/drm/msm/adreno/a2xx_gpummu.c`) ⭐
 36. **GPU OPP table** converted from downstream `qcom,gpu-pwrlevels` to mainline `operating-points-v2`
 37. **LPASS enabled** in TouchPad device tree (`&lpass { status = "okay"; }`)
+38. **VIDC 1080p video codec driver** created (`drivers/media/platform/qcom/vidc/`) ⭐
+39. **VIDC device tree node** added to MSM8660 dtsi (video-codec@4400000)
+40. **MMCC reset header** included for VIDC reset support
 
 ---
 
@@ -181,7 +184,27 @@ The HP TouchPad family mainline device tree implementation represents production
 - **Firmware**: `leia_pfp_470.fw`, `leia_pm4_470.fw` (TouchPad-specific recommended)
 - **Status**: PRODUCTION READY (better than legacy, cache fix applied)
 
-#### 11. PMIC (PM8058/PM8901)
+#### 11. Video Codec (VIDC 1080p) ⭐ NEW
+- **Base Address**: 0x04400000
+- **Size**: 0x100000 (1MB)
+- **IRQ**: GIC SPI 49
+- **Clocks**: VCODEC_CLK (up to 200MHz), VCODEC_AHB_CLK, VCODEC_AXI_CLK
+- **Resets**: VCODEC_RESET via MMCC
+- **Firmware**: `qcom/vidc_1080p.fw` (500KB, proprietary)
+- **Driver**: New qcom-vidc driver (`drivers/media/platform/qcom/vidc/`)
+- **Supported Codecs**:
+  - Decode: H.264, MPEG-4, H.263, MPEG-2, VC1, DivX 3.11/4.12/5.02/5.03
+  - Encode: H.264, MPEG-4, H.263
+- **Max Resolution**: 1080p (1920x1080)
+- **Architecture**: Direct register HOST2RISC/RISC2HOST command interface
+  - Unlike newer Venus cores which use HFI (Host Firmware Interface)
+  - VIDC 1.0 uses RISC processor with direct register communication
+- **Status**: SKELETON DRIVER IMPLEMENTED (compiles, device tree ready)
+  - Core driver with clocks, power, firmware loading
+  - V4L2 M2M registration in progress
+  - Requires firmware extraction from device
+
+#### 12. PMIC (PM8058/PM8901)
 - **PM8058**:
   - All LDOs (L0-L25) configured with correct voltages
   - All SMPS (S0-S4) configured
@@ -200,7 +223,7 @@ The HP TouchPad family mainline device tree implementation represents production
 
 - **Status**: PRODUCTION READY (100% complete)
 
-#### 12. LPASS QDSP6v2 (Audio DSP) ⭐ ENABLED
+#### 13. LPASS QDSP6v2 (Audio DSP) ⭐ ENABLED
 - **Processor**: Qualcomm Hexagon V2 DSP
 - **Subsystem**: LPASS (Low Power Audio Subsystem)
 - **Controller Address**: 0x28800000 (QDSP6SS)
@@ -217,23 +240,23 @@ The HP TouchPad family mainline device tree implementation represents production
 - **Device Tree**: Enabled in tenderloin-common.dtsi (`&lpass { status = "okay"; }`)
 - **Status**: PRODUCTION READY, NEEDS TESTING ⭐
 
-#### 13. Storage
+#### 14. Storage
 - **eMMC (SDCC1)**: Fully configured
 - **Status**: PRODUCTION READY
 
-#### 14. Vibrator
+#### 15. Vibrator
 - **Control**: GPIO 79
 - **Power**: pm8058_l5 (2.85V)
 - **Status**: PRODUCTION READY
 
-#### 15. Regulators
+#### 16. Regulators
 - **VPH**: 3.7V main battery power
 - **VDD50_BOOST**: 5V boost for touchscreen (GPIO 102 control)
 - **AUD_LDO1**: 2.85V audio LDO (GPIO 66)
 - **AUD_LDO2**: 1.8V audio LDO (GPIO 108)
 - **Status**: PRODUCTION READY
 
-#### 16. HDMI Output
+#### 17. HDMI Output
 - **Controller**: MSM8660 internal HDMI TX at 0x04A00000
 - **PHY**: HDMI PHY at 0x04A00400 with PLL at 0x04A00500
 - **Compatible**: qcom,hdmi-tx-8660, qcom,hdmi-phy-8660
