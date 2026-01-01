@@ -166,6 +166,10 @@ struct vidc_inst {
 	u32 sequence_out;
 	u32 sequence_cap;
 
+	/* Encoder parameters */
+	u32 framerate;
+	u32 bitrate;
+
 	/* Sequence info from firmware */
 	u32 seq_width;
 	u32 seq_height;
