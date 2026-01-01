@@ -26,6 +26,26 @@
 
 #define CY_NUM_RETRY		16 /* max number of retries for read ops */
 
+/* Palm: Touch tracking constants */
+#define CY_NUM_TRK_ID		16	/* Maximum tracking IDs */
+#define CY_NUM_MT_TCH_ID	4	/* Maximum simultaneous touches */
+#define CY_NUM_ST_TCH_ID	1	/* Single touch tracking */
+#define CY_NTCH			0	/* No touch */
+
+/* Palm: IRQ counter validation */
+#define CY_IRQ_CNT_MASK		0x000000FF	/* Mask for counter register */
+#define CY_IRQ_CNT_REG		0x00		/* Offset in tt_undef[] - reg 0x1B */
+
+/* Palm: Power states - restored from legacy driver */
+#define CY_PWR_IDLE_STATE	0	/* Bootloader mode */
+#define CY_PWR_ACTIVE_STATE	1	/* Full operational mode */
+#define CY_PWR_LOW_STATE	2	/* Low power scanning mode */
+#define CY_PWR_SLEEP_STATE	3	/* Deep sleep mode */
+
+/* Palm: Sleep mode configuration */
+#define CY_USE_DEEP_SLEEP_SEL	0x01	/* Use deep sleep vs low power */
+#define CY_USE_SLEEP		0x02	/* Enable sleep mode */
+
 struct cyttsp_tch {
 	__be16 x, y;
 	u8 z;
@@ -121,6 +141,24 @@ struct cyttsp {
 	struct completion bl_ready;
 	enum cyttsp_state state;
 	bool suspended;
+
+	/* Palm: Power state tracking */
+	u8 power_state;		/* Current power state */
+	u8 use_sleep;		/* Sleep mode configuration */
+
+	/* Palm: IRQ counter validation */
+	u8 irq_cnt;		/* Driver-side interrupt counter */
+	u32 irq_cnt_total;	/* Total interrupts received */
+	u32 irq_err_cnt;	/* Count of counter mismatches */
+	bool use_irq_cnt;	/* Enable IRQ counter validation */
+
+	/* Palm: Enhanced touch tracking */
+	u16 act_trk[CY_NUM_TRK_ID];	/* Active tracking IDs */
+	u16 prv_mt_pos[CY_NUM_TRK_ID][2]; /* Previous MT positions */
+	u8 prv_mt_tch[CY_NUM_MT_TCH_ID]; /* Previous MT touch IDs */
+	u8 num_prv_tch;			/* Number of previous touches */
+	u32 spurious_reset_cnt;		/* Count of spurious resets */
+	bool enhanced_tracking;		/* Enable enhanced tracking */
 
 	struct gpio_desc *reset_gpio;
 	bool use_hndshk;

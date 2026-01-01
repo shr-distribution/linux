@@ -8,10 +8,27 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/pm_qos.h>
 
 #ifdef CONFIG_STATE_NOTIFIER
 #include <linux/state_notifier.h>
 #endif
+
+/*
+ * Palm: CPU latency requirement for SWD timing-critical operations.
+ * The SWD protocol requires precise GPIO timing. Deep CPU idle states
+ * can cause unacceptable wake latencies. Default 50us should prevent
+ * most deep idle states while allowing some power savings.
+ */
+static int swd_cpu_latency_us = 50;
+module_param(swd_cpu_latency_us, int, 0644);
+MODULE_PARM_DESC(swd_cpu_latency_us,
+		 "Maximum CPU latency (us) during SWD operations (default: 50)");
+
+/* Disable CPU latency QoS (for debugging timing issues) */
+static bool swd_disable_qos;
+module_param(swd_disable_qos, bool, 0644);
+MODULE_PARM_DESC(swd_disable_qos, "Disable CPU latency QoS (default: false)");
 
 #define BLOCK_LEN			256
 #define ECC_LEN				32
@@ -67,6 +84,8 @@ struct program_row {
 
 struct cy8ctma395_device_data {
 	int	last_swdio_bit;
+	struct pm_qos_request pm_qos_req;
+	bool pm_qos_active;
 };
 
 static int swd_read_bit(struct device *dev, int fast)
@@ -349,6 +368,22 @@ exit:
 	return (rc);
 }
 
+/* Palm: Request low CPU latency for timing-critical SWD operations */
+static void swd_pm_qos_request(struct cy8ctma395_device_data *dat, bool active)
+{
+	if (swd_disable_qos)
+		return;
+
+	if (active && !dat->pm_qos_active) {
+		cpu_latency_qos_add_request(&dat->pm_qos_req,
+					    swd_cpu_latency_us);
+		dat->pm_qos_active = true;
+	} else if (!active && dat->pm_qos_active) {
+		cpu_latency_qos_remove_request(&dat->pm_qos_req);
+		dat->pm_qos_active = false;
+	}
+}
+
 static int port_acquire(struct device *dev, u32 *id, u8 *rev)
 {
 	int rc;
@@ -364,15 +399,20 @@ static int port_acquire(struct device *dev, u32 *id, u8 *rev)
 	if (rc < 0)
 		goto request_swdio_failed;
 
+	/* Palm: Request low CPU latency for SWD timing */
+	swd_pm_qos_request(dat, true);
+
 	gpio_set_value(pdat->swdck, 1);
 	gpio_set_value(pdat->swdio, dat->last_swdio_bit = 1);
 	gpio_set_value(pdat->xres, 0);
 	usleep_range(pdat->xres_us, pdat->xres_us+500);
 
 	/*
-	 * Disable interrupts during timing-critical SWD communication.
+	 * Palm: Disable interrupts during timing-critical SWD communication.
 	 * This prevents the CPU from being preempted which could violate
 	 * the strict timing requirements of the SWD protocol.
+	 * The legacy driver used CPUFREQ_HOLD_SYNC() here, but that API
+	 * is deprecated. We use PM QoS + local_irq_disable() instead.
 	 */
 	local_irq_disable();
 	{
@@ -436,6 +476,7 @@ enable:
 	return (0);
 
 acquire_failed:
+	swd_pm_qos_request(dat, false);
 	gpio_set_value(pdat->xres, 0);
 	usleep_range(pdat->xres_us, pdat->xres_us+500);
 	gpio_set_value(pdat->xres, 1);
@@ -449,8 +490,10 @@ request_swdck_failed:
 
 static void port_release(struct device *dev)
 {
+	struct cy8ctma395_device_data *dat = dev_get_drvdata(dev);
 	struct cy8ctma395_platform_data *pdat = dev->platform_data;
 
+	swd_pm_qos_request(dat, false);
 	gpio_set_value(pdat->xres, 0);
 	usleep_range(pdat->xres_us, pdat->xres_us+500);
 	gpio_set_value(pdat->xres, 1);
@@ -1153,6 +1196,9 @@ static int cy8ctma395_device_probe(struct platform_device *pdev)
 		goto failed;
 	}
 
+	/* Palm: Initialize PM QoS state */
+	dat->pm_qos_active = false;
+
 	platform_set_drvdata(pdev, dat);
 
 	rc = device_create_file(&pdev->dev, &cy8ctma395_attr_checksum);
@@ -1218,6 +1264,10 @@ static void cy8ctma395_device_remove(struct platform_device *pdev)
 {
 	struct cy8ctma395_device_data *dat = platform_get_drvdata(pdev);
 	struct cy8ctma395_platform_data *pdat = pdev->dev.platform_data;
+
+	/* Palm: Clean up any active QoS request */
+	if (dat->pm_qos_active)
+		swd_pm_qos_request(dat, false);
 
 	if (pdat->vdd_enable)
 		device_remove_file(&pdev->dev, &cy8ctma395_attr_vdd);
