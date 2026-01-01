@@ -428,6 +428,39 @@ static struct clk_regmap *lcc_msm8960_clks[] = {
 	[SPARE_I2S_SPKR_BIT_CLK] = &spare_i2s_spkr_bit_clk.clkr,
 };
 
+/* MSM8660/APQ8060 doesn't have slimbus */
+static struct clk_regmap *lcc_msm8660_clks[] = {
+	[PLL4] = &pll4.clkr,
+	[MI2S_OSR_SRC] = &mi2s_osr_src.clkr,
+	[MI2S_OSR_CLK] = &mi2s_osr_clk.clkr,
+	[MI2S_DIV_CLK] = &mi2s_div_clk.clkr,
+	[MI2S_BIT_DIV_CLK] = &mi2s_bit_div_clk.clkr,
+	[MI2S_BIT_CLK] = &mi2s_bit_clk.clkr,
+	[PCM_SRC] = &pcm_src.clkr,
+	[PCM_CLK_OUT] = &pcm_clk_out.clkr,
+	[PCM_CLK] = &pcm_clk.clkr,
+	[CODEC_I2S_MIC_OSR_SRC] = &codec_i2s_mic_osr_src.clkr,
+	[CODEC_I2S_MIC_OSR_CLK] = &codec_i2s_mic_osr_clk.clkr,
+	[CODEC_I2S_MIC_DIV_CLK] = &codec_i2s_mic_div_clk.clkr,
+	[CODEC_I2S_MIC_BIT_DIV_CLK] = &codec_i2s_mic_bit_div_clk.clkr,
+	[CODEC_I2S_MIC_BIT_CLK] = &codec_i2s_mic_bit_clk.clkr,
+	[SPARE_I2S_MIC_OSR_SRC] = &spare_i2s_mic_osr_src.clkr,
+	[SPARE_I2S_MIC_OSR_CLK] = &spare_i2s_mic_osr_clk.clkr,
+	[SPARE_I2S_MIC_DIV_CLK] = &spare_i2s_mic_div_clk.clkr,
+	[SPARE_I2S_MIC_BIT_DIV_CLK] = &spare_i2s_mic_bit_div_clk.clkr,
+	[SPARE_I2S_MIC_BIT_CLK] = &spare_i2s_mic_bit_clk.clkr,
+	[CODEC_I2S_SPKR_OSR_SRC] = &codec_i2s_spkr_osr_src.clkr,
+	[CODEC_I2S_SPKR_OSR_CLK] = &codec_i2s_spkr_osr_clk.clkr,
+	[CODEC_I2S_SPKR_DIV_CLK] = &codec_i2s_spkr_div_clk.clkr,
+	[CODEC_I2S_SPKR_BIT_DIV_CLK] = &codec_i2s_spkr_bit_div_clk.clkr,
+	[CODEC_I2S_SPKR_BIT_CLK] = &codec_i2s_spkr_bit_clk.clkr,
+	[SPARE_I2S_SPKR_OSR_SRC] = &spare_i2s_spkr_osr_src.clkr,
+	[SPARE_I2S_SPKR_OSR_CLK] = &spare_i2s_spkr_osr_clk.clkr,
+	[SPARE_I2S_SPKR_DIV_CLK] = &spare_i2s_spkr_div_clk.clkr,
+	[SPARE_I2S_SPKR_BIT_DIV_CLK] = &spare_i2s_spkr_bit_div_clk.clkr,
+	[SPARE_I2S_SPKR_BIT_CLK] = &spare_i2s_spkr_bit_clk.clkr,
+};
+
 static const struct regmap_config lcc_msm8960_regmap_config = {
 	.reg_bits	= 32,
 	.reg_stride	= 4,
@@ -442,10 +475,18 @@ static const struct qcom_cc_desc lcc_msm8960_desc = {
 	.num_clks = ARRAY_SIZE(lcc_msm8960_clks),
 };
 
+static const struct qcom_cc_desc lcc_msm8660_desc = {
+	.config = &lcc_msm8960_regmap_config,
+	.clks = lcc_msm8660_clks,
+	.num_clks = ARRAY_SIZE(lcc_msm8660_clks),
+};
+
 static const struct of_device_id lcc_msm8960_match_table[] = {
-	{ .compatible = "qcom,lcc-msm8960" },
-	{ .compatible = "qcom,lcc-apq8064" },
-	{ .compatible = "qcom,lcc-mdm9615" },
+	{ .compatible = "qcom,lcc-msm8960", .data = &lcc_msm8960_desc },
+	{ .compatible = "qcom,lcc-apq8064", .data = &lcc_msm8960_desc },
+	{ .compatible = "qcom,lcc-mdm9615", .data = &lcc_msm8960_desc },
+	{ .compatible = "qcom,lcc-msm8660", .data = &lcc_msm8660_desc },
+	{ .compatible = "qcom,lcc-apq8060", .data = &lcc_msm8660_desc },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, lcc_msm8960_match_table);
@@ -454,6 +495,15 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 {
 	u32 val;
 	struct regmap *regmap;
+	const struct qcom_cc_desc *desc;
+	bool has_slimbus;
+
+	desc = of_device_get_match_data(&pdev->dev);
+	if (!desc)
+		return -EINVAL;
+
+	/* MSM8660/APQ8060 doesn't have slimbus */
+	has_slimbus = (desc->clks == lcc_msm8960_clks);
 
 	/* patch for the cxo <-> pxo difference */
 	if (of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-mdm9615")) {
@@ -463,14 +513,15 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 		lcc_pxo_pll4[0].name = "cxo_board";
 	}
 
-	regmap = qcom_cc_map(pdev, &lcc_msm8960_desc);
+	regmap = qcom_cc_map(pdev, desc);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
 	/* Use the correct frequency plan depending on speed of PLL4 */
 	regmap_read(regmap, 0x4, &val);
 	if (val == 0x12) {
-		slimbus_src.freq_tbl = clk_tbl_aif_osr_492;
+		if (has_slimbus)
+			slimbus_src.freq_tbl = clk_tbl_aif_osr_492;
 		mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_492;
 		codec_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_492;
 		spare_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_492;
@@ -481,7 +532,7 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 	/* Enable PLL4 source on the LPASS Primary PLL Mux */
 	regmap_write(regmap, 0xc4, 0x1);
 
-	return qcom_cc_really_probe(&pdev->dev, &lcc_msm8960_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, desc, regmap);
 }
 
 static struct platform_driver lcc_msm8960_driver = {
