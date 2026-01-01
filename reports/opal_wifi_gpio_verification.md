@@ -1,5 +1,5 @@
 # HP TouchPad Go (Opal) WiFi GPIO Verification
-**Date:** 2025-12-31
+**Date:** 2026-01-01 (Updated)
 **Device:** opal-Wifi-dvt1 (DVT1 hardware)
 **Legacy Kernel:** 2.6.35-palm-shortloin
 **Mainline DT:** qcom-apq8060-opal.dts
@@ -101,13 +101,66 @@ camera_pins: camera-state {
     flash-pins { pins = "gpio158"; };
 };
 
+/* Front camera - MT9M113 1.3MP on MIPI CSI-1 */
 camera@78 {
+    compatible = "aptina,mt9m113";
+    reg = <0x78>;
     reset-gpios = <&pm8058_gpio 7 GPIO_ACTIVE_LOW>;
     powerdown-gpios = <&tlmm 107 GPIO_ACTIVE_HIGH>;
+    port {
+        opal_mt9m113_ep: endpoint {
+            bus-type = <5>; /* MIPI CSI-2 D-PHY */
+            clock-lanes = <0>;
+            data-lanes = <1>;
+            remote-endpoint = <&opal_camss_csi1_in>;
+        };
+    };
+};
+
+/* Rear camera - VX6953 5.1MP EDOF on MIPI CSI-0 */
+camera@20 {
+    compatible = "st,vx6953";
+    reg = <0x20>;
+    status = "disabled";  /* No mainline driver yet */
+    powerdown-gpios = <&pm8058_gpio 8 GPIO_ACTIVE_HIGH>;
+    port {
+        opal_vx6953_ep: endpoint {
+            bus-type = <5>; /* MIPI CSI-2 D-PHY */
+            clock-lanes = <0>;
+            data-lanes = <1 2>;
+            remote-endpoint = <&opal_camss_csi0_in>;
+        };
+    };
+};
+
+/* CAMSS with MIPI CSI-2 support */
+&camss {
+    status = "okay";
+    ports {
+        port@0 { reg = <0>; };  /* Parallel (unused) */
+        port@1 {  /* MIPI CSI-0 - Rear camera */
+            reg = <1>;
+            opal_camss_csi0_in: endpoint {
+                clock-lanes = <0>;
+                data-lanes = <1 2>;
+                remote-endpoint = <&opal_vx6953_ep>;
+            };
+        };
+        port@2 {  /* MIPI CSI-1 - Front camera */
+            reg = <2>;
+            opal_camss_csi1_in: endpoint {
+                clock-lanes = <0>;
+                data-lanes = <1>;
+                remote-endpoint = <&opal_mt9m113_ep>;
+            };
+        };
+    };
 };
 ```
 
-**Status:** ✅ **Configured**
+**Status:** ✅ **Configured with MIPI CSI-2 support**
+- Front camera (MT9M113): CSI-1, 1 data lane, mainline driver available
+- Rear camera (VX6953): CSI-0, 2 data lanes, awaiting driver port
 
 ---
 
