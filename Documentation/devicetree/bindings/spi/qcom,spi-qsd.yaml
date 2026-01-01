@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/spi/qcom,spi-qsd.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm QSD SPI Controller
+
+maintainers:
+  - webOS Community <webos-ports.org>
+
+description: |
+  The QSD SPI controller is the legacy SPI controller found on older
+  Qualcomm SoCs such as the MSM7x30 family. It predates the QUP
+  (Qualcomm Universal Peripheral) unified serial controller.
+
+allOf:
+  - $ref: spi-controller.yaml#
+
+properties:
+  compatible:
+    const: qcom,spi-qsd
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    minItems: 1
+    maxItems: 2
+
+  clock-names:
+    minItems: 1
+    items:
+      - const: core
+      - const: iface
+
+  spi-max-frequency:
+    maximum: 50000000
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/qcom,gcc-msm7x30.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    spi@a8000000 {
+        compatible = "qcom,spi-qsd";
+        reg = <0xa8000000 0x1000>;
+        interrupts = <0>;
+        clocks = <&gcc SPI_CLK>, <&gcc SPI_P_CLK>;
+        clock-names = "core", "iface";
+        spi-max-frequency = <26000000>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        touchscreen@0 {
+            compatible = "cypress,cy8ctma300";
+            reg = <0>;
+            spi-max-frequency = <1000000>;
+        };
+    };
