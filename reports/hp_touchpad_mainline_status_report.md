@@ -60,6 +60,9 @@ The HP TouchPad family mainline device tree implementation represents production
 32. **PLL4_VOTE clock** added to GCC driver for LCC support
 33. **LPASS QDSP6v2 PIL driver** created (`drivers/remoteproc/qcom_q6v2_lpass.c`)
 34. **LPASS remoteproc node** added with reserved memory region
+35. **GPU cache sync fix** for A2xx (`drivers/gpu/drm/msm/adreno/a2xx_gpummu.c`) ⭐
+36. **GPU OPP table** converted from downstream `qcom,gpu-pwrlevels` to mainline `operating-points-v2`
+37. **LPASS enabled** in TouchPad device tree (`&lpass { status = "okay"; }`)
 
 ---
 
@@ -165,11 +168,18 @@ The HP TouchPad family mainline device tree implementation represents production
 - **PHY Tuning**: Legacy parameters documented in comments
 - **Status**: PRODUCTION READY
 
-#### 10. GPU (Adreno 220)
+#### 10. GPU (Adreno 220) ⭐ IMPROVED
 - **Base Address**: 0x04300000
 - **Clocks**: GFX3D_CLK, GFX3D_AHB_CLK, GMEM_AXI_CLK
 - **Power Levels**: 266.667 MHz, 27 MHz (2 levels vs legacy 1 level - improved)
-- **Status**: PRODUCTION READY (better than legacy)
+- **OPP Table**: Converted to mainline `operating-points-v2` format
+- **Cache Sync Fix**: Added `dma_sync_single_for_device()` in `a2xx_gpummu.c`
+  - Fixes potential GPU hangs on ARM platforms without hardware cache coherency
+  - MSM8660 uses PL310 L2 cache which needs explicit cache maintenance
+  - Palm's KGSL driver used `dmac_*_range()` + `outer_*_range()` for this
+- **Driver**: Mainline freedreno (`drivers/gpu/drm/msm/adreno/`)
+- **Firmware**: `leia_pfp_470.fw`, `leia_pm4_470.fw` (TouchPad-specific recommended)
+- **Status**: PRODUCTION READY (better than legacy, cache fix applied)
 
 #### 11. PMIC (PM8058/PM8901)
 - **PM8058**:
@@ -190,20 +200,22 @@ The HP TouchPad family mainline device tree implementation represents production
 
 - **Status**: PRODUCTION READY (100% complete)
 
-#### 12. LPASS QDSP6v2 (Audio DSP) ⭐ NEW
+#### 12. LPASS QDSP6v2 (Audio DSP) ⭐ ENABLED
 - **Processor**: Qualcomm Hexagon V2 DSP
 - **Subsystem**: LPASS (Low Power Audio Subsystem)
 - **Controller Address**: 0x28800000 (QDSP6SS)
 - **Clock Controller**: LCC at 0x28000000
 - **Reserved Memory**: 0x8f000000 (5MB for firmware)
 - **Firmware**: q6.mdt + q6.bXX segments (PIL format)
+- **Firmware Path**: `/lib/firmware/qcom/msm8660/q6.mdt`
 - **Boot Modes**:
   - PAS (Peripheral Authentication Service) - TrustZone secure boot
   - Direct/Untrusted - For development and testing
 - **Driver**: `drivers/remoteproc/qcom_q6v2_lpass.c` (374 lines)
 - **Clocks**: PLL4 from LCC (with GCC PLL4_VOTE support)
 - **DT Binding**: `qcom,msm8660-lpass-pil` / `qcom,apq8060-lpass-pil`
-- **Status**: DRIVER READY, NEEDS TESTING ⭐
+- **Device Tree**: Enabled in tenderloin-common.dtsi (`&lpass { status = "okay"; }`)
+- **Status**: PRODUCTION READY, NEEDS TESTING ⭐
 
 #### 13. Storage
 - **eMMC (SDCC1)**: Fully configured
@@ -488,6 +500,16 @@ See `/tmp/gpio_verification.md` for complete GPIO mapping table.
    - Connected cameras to MIPI CSI-2 interfaces
    - Commit: 54782928504e, 1a5c4427523a
 
+8. `drivers/gpu/drm/msm/adreno/a2xx_gpummu.c` ⭐ NEW
+   - Added `dma_sync_single_for_device()` for page table cache sync
+   - Fixes potential GPU hangs on ARM platforms with L2 cache
+   - Commit: 6996aea7feb1
+
+9. `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` ⭐ UPDATED
+   - Converted GPU to mainline `operating-points-v2` format
+   - Enabled LPASS QDSP6 remoteproc (`&lpass { status = "okay"; }`)
+   - Commits: e07071d60df6, ff18dac6b645
+
 ---
 
 ## TESTING RECOMMENDATIONS
@@ -527,10 +549,12 @@ adf5cc4026fe - ARM: dts: qcom: tenderloin: Configure WiFi and Bluetooth with 3G 
 d9fe09878837 - ARM: dts: qcom: tenderloin: Add complete WM8958 audio codec configuration
 95d18ccb1576 - ARM: dts: qcom: topaz-3g: Add GPIO overrides for sensors, LED, charger, A6
 c82e20546a64 - ARM: dts: qcom: tenderloin: Document USB PHY tuning parameters
-<unreleased>   - ARM: dts: qcom: tenderloin: Fix GPU power level node naming
+6996aea7feb1 - drm/msm/a2xx: Add CPU cache sync for GPU page table updates ⭐
+e07071d60df6 - ARM: dts: qcom: apq8060-tenderloin: Use mainline OPP table for GPU
+ff18dac6b645 - ARM: dts: qcom: apq8060-tenderloin: Enable LPASS QDSP6 remoteproc
 ```
 
-**Total Commits Ready to Push**: 6 (+ 1 uncommitted)
+**Total Commits Ready to Push**: 9 (GPU cache fix + OPP table + LPASS enable)
 
 ---
 
@@ -570,7 +594,7 @@ c82e20546a64 - ARM: dts: qcom: tenderloin: Document USB PHY tuning parameters
 | Charging | ✅ Working | ✅ Configured | Ready |
 | A6 Battery | ✅ Working | ✅ Modernized | Ready |
 | USB OTG | ✅ Working | ✅ Configured | Ready |
-| GPU | ✅ 1 power level | ✅ 2 power levels | Better! |
+| GPU | ✅ 1 power level | ✅ 2 power levels + cache fix | Better! ⭐ |
 | Camera (Topaz) | ✅ Working | ✅ Configured (Parallel, bus-type=1) | Ready! ⭐ |
 | Camera (Opal Front) | ✅ Working | ✅ Configured (MIPI CSI-1, bus-type=5) | Ready! ⭐ |
 | Camera (Opal Rear) | ✅ Working | ✅ Driver added (MIPI CSI-0, bus-type=5) | Ready! ⭐ |
