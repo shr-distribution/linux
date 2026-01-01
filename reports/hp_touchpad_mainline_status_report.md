@@ -41,34 +41,35 @@ The HP TouchPad family mainline device tree implementation represents production
 15. **Opal WiFi device tree** (HP TouchPad Go)
 
 **Session 2 (2026-01-01):**
-16. **GPS support for all variants** (Broadcom BCM4751 on GSBI5 UART)
-17. **GSBI5 device node** added to qcom-msm8660.dtsi base file
-18. **Opal front camera** device node (MT9M113 1.3MP)
-19. **Opal rear camera** device node (VX6953 5.1MP EDOF)
-20. **Opal NFC** device node (PN544 on PM8058 GPIOs)
-21. **Opal cover detect** sensor (gpio-keys SW_LID)
-22. **Opal proximity sensor identified** (Cypress CY8C20236A PSoC CapSense)
-23. **Opal audio LDO controls** documentation
-24. **Opal camera flash LED** documentation
-25. **MIPI CSI-2 support** for MSM8660/APQ8060 (CSIPHY, CSID resources)
-26. **CAMSS driver** updated with MSM8660 MIPI CSI-2 support
-27. **Opal cameras connected** to MIPI CSI-2 interfaces (CSI0/CSI1)
-28. **VX6953 camera driver** added (`drivers/media/i2c/vx6953.c`)
-29. **CAMCLK0 clock references** added to all camera nodes
-30. **Topaz camera bus-type fix** (parallel interface uses bus-type=1, not 5)
-31. **LCC (LPASS Clock Controller)** node added to MSM8660 dtsi
-32. **PLL4_VOTE clock** added to GCC driver for LCC support
-33. **LPASS QDSP6v2 PIL driver** created (`drivers/remoteproc/qcom_q6v2_lpass.c`)
-34. **LPASS remoteproc node** added with reserved memory region
-35. **GPU cache sync fix** for A2xx (`drivers/gpu/drm/msm/adreno/a2xx_gpummu.c`) ⭐
-36. **GPU OPP table** converted from downstream `qcom,gpu-pwrlevels` to mainline `operating-points-v2`
-37. **LPASS enabled** in TouchPad device tree (`&lpass { status = "okay"; }`)
-38. **VIDC 1080p video codec driver** created (`drivers/media/platform/qcom/vidc/`) ⭐
-39. **VIDC device tree node** added to MSM8660 dtsi (video-codec@4400000)
-40. **MMCC reset header** included for VIDC reset support
-41. **V4L2 M2M decoder** implementation (H.264/MPEG4/H.263/MPEG2/VC1/XVID → NV12) ⭐
-42. **V4L2 M2M encoder** implementation (NV12 → H.264/MPEG4/H.263) ⭐
-43. **VIDC hardware command interface** integration (register programming, IRQ handling) ⭐
+16. **Cypress TTSP Palm features restored** (cyttsp_core.c, cyttsp_core.h, cy8ctma395.c)
+17. **GPS support for all variants** (Broadcom BCM4751 on GSBI5 UART)
+18. **GSBI5 device node** added to qcom-msm8660.dtsi base file
+19. **Opal front camera** device node (MT9M113 1.3MP)
+20. **Opal rear camera** device node (VX6953 5.1MP EDOF)
+21. **Opal NFC** device node (PN544 on PM8058 GPIOs)
+22. **Opal cover detect** sensor (gpio-keys SW_LID)
+23. **Opal proximity sensor identified** (Cypress CY8C20236A PSoC CapSense)
+24. **Opal audio LDO controls** documentation
+25. **Opal camera flash LED** documentation
+26. **MIPI CSI-2 support** for MSM8660/APQ8060 (CSIPHY, CSID resources)
+27. **CAMSS driver** updated with MSM8660 MIPI CSI-2 support
+28. **Opal cameras connected** to MIPI CSI-2 interfaces (CSI0/CSI1)
+29. **VX6953 camera driver** added (`drivers/media/i2c/vx6953.c`)
+30. **CAMCLK0 clock references** added to all camera nodes
+31. **Topaz camera bus-type fix** (parallel interface uses bus-type=1, not 5)
+32. **LCC (LPASS Clock Controller)** node added to MSM8660 dtsi
+33. **PLL4_VOTE clock** added to GCC driver for LCC support
+34. **LPASS QDSP6v2 PIL driver** created (`drivers/remoteproc/qcom_q6v2_lpass.c`)
+35. **LPASS remoteproc node** added with reserved memory region
+36. **GPU cache sync fix** for A2xx (`drivers/gpu/drm/msm/adreno/a2xx_gpummu.c`) ⭐
+37. **GPU OPP table** converted from downstream `qcom,gpu-pwrlevels` to mainline `operating-points-v2`
+38. **LPASS enabled** in TouchPad device tree (`&lpass { status = "okay"; }`)
+39. **VIDC 1080p video codec driver** created (`drivers/media/platform/qcom/vidc/`) ⭐
+40. **VIDC device tree node** added to MSM8660 dtsi (video-codec@4400000)
+41. **MMCC reset header** included for VIDC reset support
+42. **V4L2 M2M decoder** implementation (H.264/MPEG4/H.263/MPEG2/VC1/XVID → NV12) ⭐
+43. **V4L2 M2M encoder** implementation (NV12 → H.264/MPEG4/H.263) ⭐
+44. **VIDC hardware command interface** integration (register programming, IRQ handling) ⭐
 
 ---
 
@@ -82,12 +83,25 @@ The HP TouchPad family mainline device tree implementation represents production
 - **Power**: pm8058_l10 (3.3V)
 - **Status**: PRODUCTION READY
 
-#### 2. Touchscreen (Cypress CY8CTMA395)
+#### 2. Touchscreen (Cypress CY8CTMA395) ⭐ PALM FEATURES RESTORED
 - **WiFi Model**: IRQ GPIO 123, Reset GPIO 70
 - **3G Model**: IRQ GPIO 45 (correctly overridden), Reset GPIO 70
 - **Power**: pm8058_l10 (3.05V), vdd50_boost (5V)
 - **Driver Mode**: SWD firmware programmer (UART mode)
-- **Features**: CPU frequency locking for timing-critical SWD operations
+- **Palm Features Restored**:
+  - Multi-state power management (IDLE/ACTIVE/LOW_POWER/SLEEP)
+  - IRQ counter validation for firmware health monitoring
+  - Enhanced touch tracking with position history
+  - Spurious reset detection and recovery
+  - CPU latency QoS for SWD timing-critical operations
+- **New Device Tree Properties**:
+  - `use-deep-sleep`: Use deep sleep instead of low power mode
+  - `disable-sleep`: Disable sleep mode entirely
+  - `use-irq-counter`: Enable IRQ counter validation
+  - `enhanced-tracking`: Enable enhanced touch tracking
+- **Module Parameters** (cy8ctma395):
+  - `swd_cpu_latency_us`: Max CPU latency during SWD (default: 50µs)
+  - `swd_disable_qos`: Disable QoS for debugging
 - **Status**: PRODUCTION READY (both variants)
 
 #### 3. WiFi (Atheros AR6003 / ath6kl)
@@ -518,35 +532,57 @@ See `/tmp/gpio_verification.md` for complete GPIO mapping table.
    - Commits: adf5cc4026fe, 95d18ccb1576
 
 ### Session 2 (2026-01-01):
-4. `drivers/media/platform/qcom/camss/camss.c`
+4. `drivers/input/touchscreen/cyttsp_core.h` ⭐ PALM FEATURES
+   - Added Palm touch tracking constants (CY_NUM_TRK_ID, CY_NUM_MT_TCH_ID)
+   - Added IRQ counter validation defines
+   - Added power state defines (CY_PWR_IDLE/ACTIVE/LOW/SLEEP)
+   - Added struct fields for power state, IRQ tracking, touch tracking
+   - Commit: a1c3edb6e07f
+
+5. `drivers/input/touchscreen/cyttsp_core.c` ⭐ PALM FEATURES
+   - Added multi-state power management
+   - Added IRQ counter validation function
+   - Added touch position tracking for gesture detection
+   - Added spurious reset detection
+   - Added configurable sleep mode (deep sleep vs low power)
+   - Added device tree property parsing for Palm features
+   - Commit: a1c3edb6e07f
+
+6. `drivers/input/touchscreen/cy8ctma395.c` ⭐ PALM FEATURES
+   - Added PM QoS for CPU latency during SWD operations
+   - Added module parameters for QoS configuration
+   - Replaced deprecated CPUFREQ_HOLD_SYNC with modern PM QoS API
+   - Commit: a1c3edb6e07f
+
+7. `drivers/media/platform/qcom/camss/camss.c`
    - Added MSM8660 CSIPHY resources (2 interfaces)
    - Added MSM8660 CSID resources (2 decoders)
    - Updated VFE to support 3 lines (PIX + 2 RDI)
    - Commit: 19c40b0f9b5c
 
-5. `arch/arm/boot/dts/qcom/qcom-msm8660.dtsi`
+8. `arch/arm/boot/dts/qcom/qcom-msm8660.dtsi`
    - Added MMCC header include
    - Added MIPI CSI-2 register resources
    - Added CSI0/CSI1 clocks from MMCC
    - Added MIPI CSI-2 ports (port@1, port@2)
    - Commit: 1a5c4427523a
 
-6. `arch/arm/boot/dts/qcom/qcom-apq8060-opal.dts`
+9. `arch/arm/boot/dts/qcom/qcom-apq8060-opal.dts`
    - Added VX6953 rear camera device node
    - Connected cameras to MIPI CSI-2 interfaces
    - Commit: 54782928504e, 1a5c4427523a
 
-7. `arch/arm/boot/dts/qcom/qcom-apq8060-opal-3g.dts`
+10. `arch/arm/boot/dts/qcom/qcom-apq8060-opal-3g.dts`
    - Added VX6953 rear camera device node
    - Connected cameras to MIPI CSI-2 interfaces
    - Commit: 54782928504e, 1a5c4427523a
 
-8. `drivers/gpu/drm/msm/adreno/a2xx_gpummu.c` ⭐ NEW
+11. `drivers/gpu/drm/msm/adreno/a2xx_gpummu.c` ⭐ NEW
    - Added `dma_sync_single_for_device()` for page table cache sync
    - Fixes potential GPU hangs on ARM platforms with L2 cache
    - Commit: 6996aea7feb1
 
-9. `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` ⭐ UPDATED
+12. `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` ⭐ UPDATED
    - Converted GPU to mainline `operating-points-v2` format
    - Enabled LPASS QDSP6 remoteproc (`&lpass { status = "okay"; }`)
    - Commits: e07071d60df6, ff18dac6b645
@@ -584,6 +620,7 @@ See `/tmp/gpio_verification.md` for complete GPIO mapping table.
 ## COMMIT HISTORY (This Session)
 
 ```
+a1c3edb6e07f - Input: cyttsp: Restore Palm/HP-specific features from webOS kernel ⭐ NEW
 7d6b293e5818 - input: cy8ctma395: Add CPU frequency locking for SWD timing
 03066a967373 - ARM: dts: qcom: tenderloin: Add cy8ctma395 device tree properties
 adf5cc4026fe - ARM: dts: qcom: tenderloin: Configure WiFi and Bluetooth with 3G overrides
@@ -602,7 +639,7 @@ d83d745c7276 - media: qcom: vidc: Add V4L2 M2M encoder implementation ⭐
 27eb0894b38e - media: qcom: vidc: Add hardware command interface integration ⭐
 ```
 
-**Total Commits Ready to Push**: 16 (GPU cache fix + OPP table + LPASS enable + VIDC driver + V4L2 M2M + HW integration)
+**Total Commits Ready to Push**: 17 (CYTTSP Palm features + GPU cache fix + OPP table + LPASS enable + VIDC driver + V4L2 M2M + HW integration)
 
 ---
 
@@ -633,7 +670,7 @@ d83d745c7276 - media: qcom: vidc: Add V4L2 M2M encoder implementation ⭐
 | Feature | Legacy (3.0.5) | Mainline (6.x) | Status |
 |---------|----------------|----------------|--------|
 | Display | ✅ Working | ✅ Configured | Ready |
-| Touch | ✅ I2C mode | ✅ SWD mode | Different mode |
+| Touch | ✅ I2C mode | ✅ SWD mode + Palm features | Ready! ⭐ |
 | WiFi | ✅ Working | ✅ Configured | Ready |
 | Bluetooth | ✅ Working | ✅ Configured | Ready |
 | Audio | ✅ Working | ✅ Configured | Ready |
@@ -666,9 +703,9 @@ d83d745c7276 - media: qcom: vidc: Add V4L2 M2M encoder implementation ⭐
 - PMIC regulators
 - Sensors
 - Audio codec
+- Touchscreen (Palm features restored) ⭐
 
 ### Medium Risk (Needs Testing):
-- Touchscreen (different mode than legacy)
 - Camera (new mainline driver)
 - A6 battery (modernized driver, needs hardware testing)
 - Charging (complex state machine)
