@@ -235,7 +235,7 @@ The HP TouchPad family mainline device tree implementation represents production
 - **Interface**: Parallel CAMIF (legacy), I2C 0x3c on GSBI4
 - **GPIOs**: RESET=106, PWDN=107, MCLK=32
 - **Power**: pm8058_lvs0 (1.8V), pm8058_l11 (2.85V)
-- **Driver**: Mainline mt9m113 driver (aptina,mt9m113)
+- **Driver**: Mainline `drivers/media/i2c/mt9m114.c` (compatible: aptina,mt9m113)
 - **Status**: CONFIGURED, READY FOR TESTING
 
 #### 3. Opal Front Camera (Aptina MT9M113)
@@ -243,7 +243,7 @@ The HP TouchPad family mainline device tree implementation represents production
 - **Interface**: MIPI CSI-1 (1 data lane), I2C 0x78 on GSBI4 ⭐
 - **GPIOs**: PM8058 GPIO 8 (reset), GPIO 107 (powerdown), GPIO 32 (MCLK)
 - **Power**: pm8058_l15 (2.85V core/analog), pm8058_s3 (1.8V I/O)
-- **Driver**: Mainline mt9m113 driver (aptina,mt9m113)
+- **Driver**: Mainline `drivers/media/i2c/mt9m114.c` (compatible: aptina,mt9m113)
 - **Status**: PRODUCTION READY ✅
 
 #### 4. Opal Rear Camera (STMicroelectronics VX6953) ⭐ DRIVER ADDED
@@ -301,7 +301,7 @@ The HP TouchPad family mainline device tree implementation represents production
 - **I2C**: Dedicated camera I2C on GPIOs 47/48
 - **Power**: pm8058_l15 (2.85V core/analog), pm8058_s3 (1.8V I/O)
 - **Variants**: Opal WiFi, Opal 3G
-- **Driver**: Mainline mt9m113 driver (aptina,mt9m113)
+- **Driver**: Mainline `drivers/media/i2c/mt9m114.c` (compatible: aptina,mt9m113)
 - **Status**: PRODUCTION READY ✅
 
 #### 2. Rear Camera (STMicroelectronics VX6953) ⭐ DRIVER ADDED
@@ -541,7 +541,7 @@ c82e20546a64 - ARM: dts: qcom: tenderloin: Document USB PHY tuning parameters
 | GPU | ✅ 1 power level | ✅ 2 power levels | Better! |
 | Camera (Topaz) | ✅ Working | ✅ Configured (Parallel CAMIF) | Ready to test |
 | Camera (Opal Front) | ✅ Working | ✅ Configured (MIPI CSI-1) | Ready to test ⭐ |
-| Camera (Opal Rear) | ✅ Working | ⏳ Documented (MIPI CSI-0) | Driver needed |
+| Camera (Opal Rear) | ✅ Working | ✅ Driver added (MIPI CSI-0) | Ready to test ⭐ |
 | GPS | ✅ Working | ✅ Configured (all variants) | Ready! ⭐ |
 | HDMI | ✅ Working (WiFi) | ✅ Configured (WiFi only) | Ready! |
 | ISP1763 USB Host | ✅ Working (3G) | ✅ Configured (3G only) | Ready! |
