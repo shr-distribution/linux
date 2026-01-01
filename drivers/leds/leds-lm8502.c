@@ -21,6 +21,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
@@ -296,7 +297,8 @@ static int lm8502_flash_set(struct led_classdev *cdev,
 			    enum led_brightness brightness)
 {
 	struct lm8502 *chip = container_of(cdev, struct lm8502, flash_cdev);
-	u8 idx, reg;
+	unsigned int reg;
+	u8 idx;
 	int ret;
 
 	mutex_lock(&chip->lock);
@@ -325,7 +327,8 @@ static int lm8502_torch_set(struct led_classdev *cdev,
 			    enum led_brightness brightness)
 {
 	struct lm8502 *chip = container_of(cdev, struct lm8502, torch_cdev);
-	u8 idx, reg;
+	unsigned int reg;
+	u8 idx;
 	int ret;
 
 	mutex_lock(&chip->lock);
@@ -365,7 +368,7 @@ static void lm8502_set_engine_mode(struct lm8502 *chip, int engine,
 	regmap_write(chip->regmap, cntrl_reg, reg);
 }
 
-static int lm8502_run_engine(struct lm8502 *chip, int engine)
+static int __maybe_unused lm8502_run_engine(struct lm8502 *chip, int engine)
 {
 	int page_start, page_end;
 	int engine_pc, prog_start;
@@ -507,7 +510,7 @@ static int lm8502_parse_led_dt(struct lm8502 *chip, struct device_node *np,
 	led->chip = chip;
 	led->hw_group = 0;
 
-	of_property_read_u32(np, "ti,hw-group", &led->hw_group);
+	of_property_read_u8(np, "ti,hw-group", &led->hw_group);
 
 	led->cdev.brightness_set_blocking = lm8502_led_set;
 	led->cdev.max_brightness = LED_FULL;
