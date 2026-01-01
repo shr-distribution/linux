@@ -246,16 +246,20 @@ The HP TouchPad family mainline device tree implementation represents production
 - **Driver**: Mainline mt9m113 driver (aptina,mt9m113)
 - **Status**: PRODUCTION READY ✅
 
-#### 4. Opal Rear Camera (STMicroelectronics VX6953) ⭐ NEW
+#### 4. Opal Rear Camera (STMicroelectronics VX6953) ⭐ DRIVER ADDED
 - **Resolution**: 5.1MP EDOF (Extended Depth of Field)
-- **Sensor Size**: 2608x1960 pixels
+- **Sensor Size**: 2608x1960 pixels (full), 1304x980 (preview 2x2 binning)
 - **Interface**: MIPI CSI-0 (2 data lanes), I2C 0x20 on GSBI4
 - **GPIOs**: PM8058 GPIO 9 (powerdown only, no reset pin), GPIO 32 (MCLK shared)
 - **Flash LED**: GPIO 158 (DVT+) / GPIO 69 (EVT1)
-- **Power**: pm8058_l15 (2.85V core/analog), pm8058_s3 (1.8V I/O)
-- **Driver Status**: NO mainline driver (legacy driver is 3876 lines, needs porting)
-- **Device Tree**: Complete hardware documentation as placeholder (status="disabled")
-- **Status**: DOCUMENTED, AWAITING DRIVER ⏳
+- **Power**: pm8058_l15 (2.85V analog), pm8058_s3 (1.8V digital/I/O)
+- **Output Format**: RAW10 Bayer (SGRBG10)
+- **Driver**: Modern V4L2 subdev driver ported from legacy CAF driver
+  - `drivers/media/i2c/vx6953.c` (993 lines)
+  - Supports: exposure, analog/digital gain, test patterns
+  - Uses CCI regmap for I2C, pm_runtime for power management
+- **Device Tree**: Complete with binding documentation
+- **Status**: DRIVER READY FOR TESTING ⏳
 
 ---
 
@@ -300,16 +304,16 @@ The HP TouchPad family mainline device tree implementation represents production
 - **Driver**: Mainline mt9m113 driver (aptina,mt9m113)
 - **Status**: PRODUCTION READY ✅
 
-#### 2. Rear Camera (STMicroelectronics VX6953) ⭐ NEW
+#### 2. Rear Camera (STMicroelectronics VX6953) ⭐ DRIVER ADDED
 - **Resolution**: 5.1MP EDOF (Extended Depth of Field)
-- **Sensor Size**: 2608x1960 pixels
+- **Sensor Size**: 2608x1960 pixels (full), 1304x980 (preview)
 - **Interface**: MIPI CSI-0 (2 data lanes), I2C 0x20 on GSBI4
 - **GPIOs**: PM8058 GPIO 9 (powerdown), GPIO 32 (MCLK shared), Flash LED GPIO 158/69
 - **I2C**: Shared camera I2C on GPIOs 47/48
-- **Power**: pm8058_l15 (2.85V), pm8058_s3 (1.8V)
+- **Power**: pm8058_l15 (2.85V analog), pm8058_s3 (1.8V digital/I/O)
 - **Variants**: Opal WiFi, Opal 3G
-- **Driver Status**: NO mainline driver (legacy 3876 lines, needs porting)
-- **Status**: DOCUMENTED, AWAITING DRIVER ⏳
+- **Driver**: `drivers/media/i2c/vx6953.c` - Modern V4L2 subdev driver
+- **Status**: DRIVER READY FOR TESTING ⏳
 
 #### 3. NFC Controller (NXP PN544)
 - **Interface**: I2C address 0x28 on GSBI7
