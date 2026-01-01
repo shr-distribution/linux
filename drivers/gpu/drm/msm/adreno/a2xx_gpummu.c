@@ -32,9 +32,10 @@ static int a2xx_gpummu_map(struct msm_mmu *mmu, uint64_t iova,
 		struct sg_table *sgt, size_t len, int prot)
 {
 	struct a2xx_gpummu *gpummu = to_a2xx_gpummu(mmu);
-	unsigned idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
+	unsigned int idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
+	unsigned int start_idx = idx;
 	struct sg_dma_page_iter dma_iter;
-	unsigned prot_bits = 0;
+	unsigned int prot_bits = 0;
 
 	if (prot & IOMMU_WRITE)
 		prot_bits |= 1;
@@ -49,6 +50,18 @@ static int a2xx_gpummu_map(struct msm_mmu *mmu, uint64_t iova,
 			gpummu->table[idx++] = (addr + i) | prot_bits;
 	}
 
+	/*
+	 * Sync page table updates to device memory. On ARM platforms without
+	 * hardware cache coherency (e.g., MSM8660 with PL310 L2 cache), the
+	 * GPU may see stale page table entries if we don't explicitly flush
+	 * the CPU caches. This was identified as a potential cause of GPU
+	 * hangs on the HP TouchPad (Adreno 220).
+	 */
+	dma_sync_single_for_device(mmu->dev,
+		gpummu->pt_base + start_idx * sizeof(uint32_t),
+		(idx - start_idx) * sizeof(uint32_t),
+		DMA_TO_DEVICE);
+
 	/* we can improve by deferring flush for multiple map() */
 	gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE,
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
@@ -59,11 +72,19 @@ static int a2xx_gpummu_map(struct msm_mmu *mmu, uint64_t iova,
 static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 {
 	struct a2xx_gpummu *gpummu = to_a2xx_gpummu(mmu);
-	unsigned idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
-	unsigned i;
+	unsigned int idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
+	unsigned int start_idx = idx;
+	unsigned int num_entries = len / GPUMMU_PAGE_SIZE;
+	unsigned int i;
 
-	for (i = 0; i < len / GPUMMU_PAGE_SIZE; i++, idx++)
-                gpummu->table[idx] = 0;
+	for (i = 0; i < num_entries; i++, idx++)
+		gpummu->table[idx] = 0;
+
+	/* Sync cleared page table entries to device memory */
+	dma_sync_single_for_device(mmu->dev,
+		gpummu->pt_base + start_idx * sizeof(uint32_t),
+		num_entries * sizeof(uint32_t),
+		DMA_TO_DEVICE);
 
 	gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE,
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
