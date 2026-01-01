@@ -4,6 +4,7 @@
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/clock/qcom,gcc-msm8660.h>
+#include <dt-bindings/clock/qcom,mmcc-msm8960.h>
 #include <dt-bindings/soc/qcom,gsbi.h>
 
 / {
@@ -475,25 +476,58 @@
 		};
 
 		/*
-		 * Camera Subsystem - VFE 3.1
-		 * Note: MSM8660 uses VFE31 with parallel camera interface (CAMIF).
-		 * No MIPI CSI-2 support (CSIPHY/CSID/ISPIF not used).
+		 * Camera Subsystem - VFE 3.1 with MIPI CSI-2
+		 * MSM8660 supports both parallel camera (CAMIF) and MIPI CSI-2.
+		 * Includes 2 CSIPHY/CSID interfaces integrated at CSI_0 and CSI_1.
 		 */
 		camss: camss@04500000 {
 			compatible = "qcom,msm8660-camss";
-			reg = <0x04500000 0x1000>;
-			reg-names = "vfe0";
-			interrupts = <GIC_SPI 78 IRQ_TYPE_EDGE_RISING>;
-			interrupt-names = "vfe0";
+			reg = <0x04500000 0x1000>,
+			      <0x04800000 0x1000>,
+			      <0x04800000 0x1000>,
+			      <0x04900000 0x1000>,
+			      <0x04900000 0x1000>;
+			reg-names = "vfe0",
+				    "csiphy0",
+				    "csid0",
+				    "csiphy1",
+				    "csid1";
+			interrupts = <GIC_SPI 78 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "vfe0",
+					  "csiphy0",
+					  "csid0",
+					  "csiphy1",
+					  "csid1";
 
 			/*
-			 * Clock names based on VFE31 requirements (see vfe_res_8x60 in camss.c):
-			 * - vfe: VFE core clock (from MMCC)
-			 * - vfe_axi: VFE AXI bus interface clock (from MMCC)
-			 * - vfe_ahb: VFE AHB bus clock (from MMCC)
+			 * Clock names based on VFE31 and CSI requirements:
+			 * VFE: vfe, vfe_axi, vfe_ahb
+			 * CSI0: csi0_src, csi0, csi0_phy
+			 * CSI1: csi1_src, csi1, csi1_phy
+			 *
 			 */
-			clocks = <&mmcc VFE_CLK>, <&mmcc VFE_AXI_CLK>, <&mmcc VFE_AHB_CLK>;
-			clock-names = "vfe", "vfe_axi", "vfe_ahb";
+			clocks = <&mmcc VFE_CLK>,
+				 <&mmcc VFE_AXI_CLK>,
+				 <&mmcc VFE_AHB_CLK>,
+				 <&mmcc CSI0_SRC>,
+				 <&mmcc CSI0_CLK>,
+				 <&mmcc CSI0_PHY_CLK>,
+				 <&mmcc CSI1_SRC>,
+				 <&mmcc CSI1_CLK>,
+				 <&mmcc CSI1_PHY_CLK>;
+			clock-names = "vfe",
+				      "vfe_axi",
+				      "vfe_ahb",
+				      "csi0_src",
+				      "csi0",
+				      "csi0_phy",
+				      "csi1_src",
+				      "csi1",
+				      "csi1_phy";
 
 			status = "disabled";
 
@@ -504,9 +538,16 @@
 				/* Parallel camera input port */
 				port@0 {
 					reg = <0>;
-					camss_in: endpoint {
-						/* Connected to camera sensor */
-					};
+				};
+
+				/* MIPI CSI-2 input port 1 (CSI0) */
+				port@1 {
+					reg = <1>;
+				};
+
+				/* MIPI CSI-2 input port 2 (CSI1) */
+				port@2 {
+					reg = <2>;
 				};
 			};
 		};

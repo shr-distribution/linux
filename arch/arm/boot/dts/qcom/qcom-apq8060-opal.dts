@@ -333,6 +333,9 @@
 &gsbi4_i2c {
 	status = "okay";
 
+	/* Delete Topaz camera node - Opal uses different I2C address and config */
+	/delete-node/ camera@3c;
+
 	/* Front camera - MT9M113 1.3MP */
 	camera@78 {
 		compatible = "aptina,mt9m113";
@@ -352,15 +355,16 @@
 		 * TODO: Add clock reference when CAMIF MCLK support is implemented
 		 * clocks = <&camif_mclk>;
 		 * clock-names = "extclk";
-		 *
-		 * TODO: Add port/endpoint when camera interface is implemented
-		 * port {
-		 *     mt9m113_ep: endpoint {
-		 *         bus-type = <5>;
-		 *         remote-endpoint = <&camif_csi1>;
-		 *     };
-		 * };
 		 */
+
+		port {
+			opal_mt9m113_ep: endpoint {
+				bus-type = <5>; /* MIPI CSI-2 D-PHY */
+				clock-lanes = <0>;
+				data-lanes = <1>;
+				remote-endpoint = <&opal_camss_csi1_in>;
+			};
+		};
 	};
 
 	/*
@@ -408,15 +412,16 @@
 		 * clocks = <&camif_mclk>;
 		 * clock-names = "extclk";
 		 * clock-frequency = <24000000>;
-		 *
-		 * TODO: Add port/endpoint when camera interface is implemented
-		 * port {
-		 *     vx6953_ep: endpoint {
-		 *         bus-type = <5>;
-		 *         remote-endpoint = <&camif_csi0>;
-		 *     };
-		 * };
 		 */
+
+		port {
+			opal_vx6953_ep: endpoint {
+				bus-type = <5>; /* MIPI CSI-2 D-PHY */
+				clock-lanes = <0>;
+				data-lanes = <1 2>;
+				remote-endpoint = <&opal_camss_csi0_in>;
+			};
+		};
 	};
 };
 
@@ -583,6 +588,41 @@
 			output-low;
 			power-source = <PM8058_GPIO_S3>;
 			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+	};
+};
+
+/* Camera Subsystem - Override for MIPI CSI-2 interfaces (Opal-specific) */
+&camss {
+	/delete-node/ ports;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* Port 0: Parallel camera (unused on Opal) */
+		port@0 {
+			reg = <0>;
+		};
+
+		/* Port 1: MIPI CSI-2 interface 0 (CSI0) - Rear camera */
+		port@1 {
+			reg = <1>;
+			opal_camss_csi0_in: endpoint {
+				clock-lanes = <0>;
+				data-lanes = <1 2>;
+				remote-endpoint = <&opal_vx6953_ep>;
+			};
+		};
+
+		/* Port 2: MIPI CSI-2 interface 1 (CSI1) - Front camera */
+		port@2 {
+			reg = <2>;
+			opal_camss_csi1_in: endpoint {
+				clock-lanes = <0>;
+				data-lanes = <1>;
+				remote-endpoint = <&opal_mt9m113_ep>;
+			};
 		};
 	};
 };
