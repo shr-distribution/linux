@@ -518,6 +518,17 @@ config QCOM_MPM
 	  MSM Power Manager driver to manage and configure wakeup
 	  IRQs for Qualcomm Technologies Inc (QTI) mobile chips.
 
+config QCOM_MSM_VIC
+	bool "Qualcomm MSM VIC interrupt controller"
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on ARM
+	select IRQ_DOMAIN
+	help
+	  Support for the Vectored Interrupt Controller found in
+	  Qualcomm MSM7x30, QSD8x50, and similar Scorpion-based SoCs.
+	  This is a custom Qualcomm VIC that supports 128 interrupts
+	  with per-interrupt edge/level and polarity configuration.
+
 config CSKY_MPINTC
 	bool
 	depends on CSKY

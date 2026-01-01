@@ -51,6 +51,7 @@ obj-$(CONFIG_CLKSRC_SAMSUNG_PWM)	+= samsung_pwm_timer.o
 obj-$(CONFIG_FSL_FTM_TIMER)	+= timer-fsl-ftm.o
 obj-$(CONFIG_NXP_PIT_TIMER)	+= timer-nxp-pit.o
 obj-$(CONFIG_CLKSRC_QCOM)	+= timer-qcom.o
+obj-$(CONFIG_CLKSRC_QCOM_MSM)	+= timer-msm.o
 obj-$(CONFIG_MTK_TIMER)		+= timer-mediatek.o
 obj-$(CONFIG_MTK_CPUX_TIMER)	+= timer-mediatek-cpux.o
 obj-$(CONFIG_CLKSRC_PISTACHIO)	+= timer-pistachio.o

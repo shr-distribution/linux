@@ -582,6 +582,16 @@ config CLKSRC_QCOM
 	  This enables the clocksource and the per CPU clockevent driver for the
 	  Qualcomm SoCs.
 
+config CLKSRC_QCOM_MSM
+	bool "Qualcomm MSM7x30 timer driver" if COMPILE_TEST
+	depends on ARM
+	select TIMER_OF
+	select CLKSRC_MMIO
+	help
+	  This enables support for the timer block on older Qualcomm MSM7x30
+	  SoCs. This driver provides clocksource using the DGT (Debug Timer)
+	  at 6.144 MHz and clockevent using the GPT at 32.768 kHz.
+
 config CLKSRC_VERSATILE
 	bool "ARM Versatile (Express) reference platforms clock source" if COMPILE_TEST
 	depends on GENERIC_SCHED_CLOCK

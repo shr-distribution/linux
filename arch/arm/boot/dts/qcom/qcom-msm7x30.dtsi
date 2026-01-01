@@ -1,0 +1,427 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2024, Linux community
+ *
+ * Device Tree Source for Qualcomm MSM7x30 SoC
+ *
+ * MSM7x30 family includes MSM7230, MSM7630, MSM8x55
+ * Single-core Scorpion ARMv7 @ up to 1GHz
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/clock/qcom,gcc-msm7x30.h>
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	interrupt-parent = <&vic>;
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "qcom,scorpion";
+			reg = <0>;
+			clocks = <&gcc ACPU_CLK>;
+			clock-names = "cpu";
+		};
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x0>;
+	};
+
+	clocks {
+		cxo: cxo-board {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <19200000>;
+			clock-output-names = "cxo_board";
+		};
+
+		pxo: pxo-board {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <27000000>;
+			clock-output-names = "pxo_board";
+		};
+
+		sleep_clk: sleep-clk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <32768>;
+			clock-output-names = "sleep_clk";
+		};
+	};
+
+	soc: soc {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * VIC - Vectored Interrupt Controller
+		 * MSM7x30 uses legacy VIC, not GIC
+		 */
+		vic: interrupt-controller@c0080000 {
+			compatible = "qcom,msm-vic";
+			reg = <0xc0080000 0x1000>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+		};
+
+		/*
+		 * Timer block
+		 * DGT (Debug Timer): LPXO/4 = 24.576 MHz / 4 = 6.144 MHz
+		 * GPT (General Purpose Timer): 32.768 kHz from sleep clock
+		 * IRQ 0 = DGT, IRQ 1 = GPT
+		 */
+		timer@c0100000 {
+			compatible = "qcom,msm-timer";
+			reg = <0xc0100000 0x1000>;
+			interrupts = <0>, <1>;
+			/* LPXO frequency - driver divides by 4 for DGT */
+			clock-frequency = <24576000>;
+		};
+
+		/*
+		 * Global Clock Controller
+		 */
+		gcc: clock-controller@ab800000 {
+			compatible = "qcom,gcc-msm7x30";
+			reg = <0xab800000 0x1000>,
+			      <0xaba01000 0x1000>;  /* SH2 */
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			clocks = <&cxo>, <&pxo>;
+			clock-names = "cxo", "pxo";
+		};
+
+		/*
+		 * Top Control and Status Register
+		 */
+		tcsr: syscon@ab600000 {
+			compatible = "qcom,tcsr-msm7x30", "syscon";
+			reg = <0xab600000 0x1000>;
+		};
+
+		/*
+		 * TLMM - Top-Level Mode Multiplexer (GPIO + Pinctrl)
+		 * MSM7x30 has two GPIO blocks
+		 */
+		tlmm: pinctrl@ac001000 {
+			compatible = "qcom,msm7x30-pinctrl";
+			reg = <0xac001000 0x1000>,   /* GPIO1 */
+			      <0xac101000 0x1000>;   /* GPIO2 */
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-ranges = <&tlmm 0 0 182>;
+
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			interrupts = <50>, <51>;  /* GPIO_GROUP1, GPIO_GROUP2 */
+		};
+
+		/*
+		 * SSBI - Single-wire Serial Bus Interface for PMIC
+		 * Bus 6 - PM8058 PMIC
+		 */
+		ssbi: ssbi@ad900000 {
+			compatible = "qcom,ssbi";
+			reg = <0xad900000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/* PM8058 PMIC - configured via pm8058.dtsi */
+		};
+
+		/*
+		 * SSBI - Bus 7 (auxiliary)
+		 */
+		ssbi7: ssbi@ac800000 {
+			compatible = "qcom,ssbi";
+			reg = <0xac800000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
+		 * Serial ports - Legacy UART (simple/debug)
+		 */
+		uart1: serial@aca00000 {
+			compatible = "qcom,msm-uart";
+			reg = <0xaca00000 0x1000>;
+			interrupts = <67>;
+			clocks = <&gcc UART1_CLK>, <&gcc UART1_P_CLK>;
+			clock-names = "core", "iface";
+			status = "disabled";
+		};
+
+		uart2: serial@acb00000 {
+			compatible = "qcom,msm-uart";
+			reg = <0xacb00000 0x1000>;
+			interrupts = <69>;
+			clocks = <&gcc UART2_CLK>, <&gcc UART2_P_CLK>;
+			clock-names = "core", "iface";
+			status = "disabled";
+		};
+
+		uart3: serial@acc00000 {
+			compatible = "qcom,msm-uart";
+			reg = <0xacc00000 0x1000>;
+			interrupts = <71>;
+			clocks = <&gcc UART3_CLK>, <&gcc UART3_P_CLK>;
+			clock-names = "core", "iface";
+			status = "disabled";
+		};
+
+		/*
+		 * High-Speed UART with DMA (UART DM)
+		 */
+		uart1dm: serial@a3300000 {
+			compatible = "qcom,msm-uartdm-v1.1", "qcom,msm-uartdm";
+			reg = <0xa3300000 0x1000>;
+			interrupts = <73>;
+			clocks = <&gcc UART1DM_CLK>, <&gcc UART1DM_P_CLK>;
+			clock-names = "core", "iface";
+			status = "disabled";
+		};
+
+		uart2dm: serial@a3200000 {
+			compatible = "qcom,msm-uartdm-v1.1", "qcom,msm-uartdm";
+			reg = <0xa3200000 0x1000>;
+			interrupts = <75>;
+			clocks = <&gcc UART2DM_CLK>, <&gcc UART2DM_P_CLK>;
+			clock-names = "core", "iface";
+			status = "disabled";
+		};
+
+		/*
+		 * I2C Controllers
+		 */
+		i2c0: i2c@acd00000 {
+			compatible = "qcom,i2c-qup-v1.1.1";
+			reg = <0xacd00000 0x1000>;
+			interrupts = <53>;
+			clocks = <&gcc I2C_CLK>, <&gcc I2C_P_CLK>;
+			clock-names = "core", "iface";
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		i2c2: i2c@acf00000 {
+			compatible = "qcom,i2c-qup-v1.1.1";
+			reg = <0xacf00000 0x1000>;
+			interrupts = <54>;
+			clocks = <&gcc I2C_2_CLK>, <&gcc I2C_2_P_CLK>;
+			clock-names = "core", "iface";
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
+		 * QUP I2C (GSBI-based)
+		 */
+		i2c4: i2c@a8300000 {
+			compatible = "qcom,i2c-qup-v1.1.1";
+			reg = <0xa8301000 0x1000>,  /* QUP */
+			      <0xa8300000 0x1000>;  /* GSBI */
+			reg-names = "qup", "gsbi";
+			interrupts = <102>, <103>, <104>;
+			interrupt-names = "qup_in", "qup_out", "qup_err";
+			clocks = <&gcc QUP_I2C_CLK>, <&gcc QUP_I2C_P_CLK>;
+			clock-names = "core", "iface";
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
+		 * SDCC - Secure Digital Card Controller
+		 * SDC1: eMMC (8-bit)
+		 */
+		sdc1: mmc@a0400000 {
+			compatible = "arm,pl18x", "arm,primecell";
+			reg = <0xa0400000 0x1000>;
+			interrupts = <94>, <95>;
+			arm,primecell-periphid = <0x00051180>;
+			clocks = <&gcc SDC1_CLK>, <&gcc SDC1_P_CLK>;
+			clock-names = "mclk", "apb_pclk";
+			bus-width = <8>;
+			max-frequency = <48000000>;
+			cap-mmc-highspeed;
+			non-removable;
+			status = "disabled";
+		};
+
+		/*
+		 * SDC2: SD Card slot (if present)
+		 */
+		sdc2: mmc@a0500000 {
+			compatible = "arm,pl18x", "arm,primecell";
+			reg = <0xa0500000 0x1000>;
+			interrupts = <98>, <99>;
+			arm,primecell-periphid = <0x00051180>;
+			clocks = <&gcc SDC2_CLK>, <&gcc SDC2_P_CLK>;
+			clock-names = "mclk", "apb_pclk";
+			bus-width = <4>;
+			max-frequency = <48000000>;
+			cap-sd-highspeed;
+			status = "disabled";
+		};
+
+		/*
+		 * SDC3: WiFi SDIO
+		 */
+		sdc3: mmc@a3000000 {
+			compatible = "arm,pl18x", "arm,primecell";
+			reg = <0xa3000000 0x1000>;
+			interrupts = <96>, <97>;
+			arm,primecell-periphid = <0x00051180>;
+			clocks = <&gcc SDC3_CLK>, <&gcc SDC3_P_CLK>;
+			clock-names = "mclk", "apb_pclk";
+			bus-width = <4>;
+			max-frequency = <48000000>;
+			status = "disabled";
+		};
+
+		/*
+		 * SDC4: Additional SDIO
+		 */
+		sdc4: mmc@a3100000 {
+			compatible = "arm,pl18x", "arm,primecell";
+			reg = <0xa3100000 0x1000>;
+			interrupts = <100>, <101>;
+			arm,primecell-periphid = <0x00051180>;
+			clocks = <&gcc SDC4_CLK>, <&gcc SDC4_P_CLK>;
+			clock-names = "mclk", "apb_pclk";
+			bus-width = <4>;
+			max-frequency = <48000000>;
+			status = "disabled";
+		};
+
+		/*
+		 * USB High-Speed OTG Controller
+		 */
+		usb: usb@a3600000 {
+			compatible = "qcom,ci-hdrc";
+			reg = <0xa3600000 0x1000>;
+			interrupts = <60>;
+			clocks = <&gcc USB_HS_CLK>, <&gcc USB_HS_P_CLK>;
+			clock-names = "core", "iface";
+			dr_mode = "otg";
+			status = "disabled";
+		};
+
+		/*
+		 * ADM - Application Data Mover (DMA)
+		 */
+		adm: dma-controller@ac400000 {
+			compatible = "qcom,adm";
+			reg = <0xac400000 0x1000>;
+			interrupts = <78>, <79>;
+			#dma-cells = <2>;
+			clocks = <&gcc ADM_CLK>;
+			clock-names = "core";
+			status = "disabled";
+		};
+
+		/*
+		 * MDP - Mobile Display Processor
+		 */
+		mdp: display-controller@aa200000 {
+			compatible = "qcom,mdp4";
+			reg = <0xaa200000 0x100000>;
+			interrupts = <80>;
+			clocks = <&gcc MDP_CLK>,
+				 <&gcc MDP_P_CLK>,
+				 <&gcc MDP_LCDC_PCLK_CLK>,
+				 <&gcc MDP_LCDC_PAD_PCLK_CLK>,
+				 <&gcc MDP_VSYNC_CLK>;
+			clock-names = "core", "iface", "lut", "src", "vsync";
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					/* LCDC output */
+				};
+
+				port@1 {
+					reg = <1>;
+					/* MDDI output */
+				};
+			};
+		};
+
+		/*
+		 * MDDI - Mobile Display Digital Interface
+		 */
+		mddi0: mddi@aa600000 {
+			compatible = "qcom,mddi";
+			reg = <0xaa600000 0x1000>;
+			interrupts = <44>;
+			clocks = <&gcc PMDH_CLK>, <&gcc PMDH_P_CLK>;
+			clock-names = "core", "iface";
+			status = "disabled";
+		};
+
+		/*
+		 * Kgsl - Graphics (Adreno 205)
+		 */
+		gpu: gpu@a3500000 {
+			compatible = "qcom,adreno-2xx";
+			reg = <0xa3500000 0x20000>;
+			interrupts = <82>, <83>;
+			interrupt-names = "2d", "3d";
+			clocks = <&gcc GRP_2D_CLK>,
+				 <&gcc GRP_2D_P_CLK>,
+				 <&gcc GRP_3D_CLK>,
+				 <&gcc GRP_3D_P_CLK>,
+				 <&gcc IMEM_CLK>;
+			clock-names = "core_2d", "iface_2d",
+				      "core_3d", "iface_3d", "mem";
+			status = "disabled";
+		};
+
+		/*
+		 * VFE - Video Front End (Camera ISP)
+		 */
+		vfe: camera@a6000000 {
+			compatible = "qcom,vfe";
+			reg = <0xa6000000 0x100000>;
+			interrupts = <87>;
+			clocks = <&gcc VFE_CLK>, <&gcc VFE_P_CLK>;
+			clock-names = "core", "iface";
+			status = "disabled";
+		};
+
+		/*
+		 * Rotator
+		 */
+		rotator: rotator@a3e00000 {
+			compatible = "qcom,rotator";
+			reg = <0xa3e00000 0x100000>;
+			interrupts = <84>;
+			clocks = <&gcc ROTATOR_CLK>, <&gcc ROTATOR_P_CLK>;
+			clock-names = "core", "iface";
+			status = "disabled";
+		};
+	};
+};
