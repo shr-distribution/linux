@@ -1394,6 +1394,86 @@ static struct clk_branch mdp_vsync_clk = {
 	},
 };
 
+static const struct freq_tbl clk_tbl_mdp_pixel[] = {
+	{  25200000, P_PLL8, 1, 33, 502 },
+	{  27000000, P_PXO,  1,  0,   0 },
+	{  40000000, P_PLL8, 1,  5,  48 },
+	{  46000000, P_PLL8, 1, 23, 192 },
+	{  50000000, P_PLL8, 1,  1,   8 },
+	{  65000000, P_PLL8, 1, 13,  76 },
+	{  74250000, P_PLL8, 1, 99, 512 },
+	{  83950000, P_PLL8, 1,  1,   5 },
+	{ }
+};
+
+static struct clk_rcg mdp_pixel_src = {
+	.ns_reg = 0x00e0,
+	.md_reg = 0x00d8,
+	.mn = {
+		.mnctr_en_bit = 5,
+		.mnctr_reset_bit = 7,
+		.mnctr_mode_shift = 6,
+		.n_val_shift = 16,
+		.m_val_shift = 8,
+		.width = 8,
+	},
+	.p = {
+		.pre_div_shift = 12,
+		.pre_div_width = 4,
+	},
+	.s = {
+		.src_sel_shift = 0,
+		.parent_map = mmcc_pxo_pll8_pll2_map,
+	},
+	.freq_tbl = clk_tbl_mdp_pixel,
+	.clkr = {
+		.enable_reg = 0x00d4,
+		.enable_mask = BIT(2),
+		.hw.init = &(struct clk_init_data){
+			.name = "mdp_pixel_src",
+			.parent_data = mmcc_pxo_pll8_pll2,
+			.num_parents = ARRAY_SIZE(mmcc_pxo_pll8_pll2),
+			.ops = &clk_rcg_ops,
+		},
+	},
+};
+
+static struct clk_branch mdp_pixel_clk = {
+	.halt_reg = 0x01d0,
+	.halt_bit = 23,
+	.clkr = {
+		.enable_reg = 0x00d4,
+		.enable_mask = BIT(0),
+		.hw.init = &(struct clk_init_data){
+			.name = "mdp_pixel_clk",
+			.parent_hws = (const struct clk_hw*[]){
+				&mdp_pixel_src.clkr.hw,
+			},
+			.num_parents = 1,
+			.ops = &clk_branch_ops,
+			.flags = CLK_SET_RATE_PARENT,
+		},
+	},
+};
+
+static struct clk_branch mdp_lcdc_clk = {
+	.halt_reg = 0x01d0,
+	.halt_bit = 24,
+	.clkr = {
+		.enable_reg = 0x00d4,
+		.enable_mask = BIT(8),
+		.hw.init = &(struct clk_init_data){
+			.name = "mdp_lcdc_clk",
+			.parent_hws = (const struct clk_hw*[]){
+				&mdp_pixel_src.clkr.hw,
+			},
+			.num_parents = 1,
+			.ops = &clk_branch_ops,
+			.flags = CLK_SET_RATE_PARENT,
+		},
+	},
+};
+
 static const struct freq_tbl clk_tbl_rot[] = {
 	{  27000000, P_PXO,   1 },
 	{  29540000, P_PLL8, 13 },
