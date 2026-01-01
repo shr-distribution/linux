@@ -775,6 +775,20 @@ config VIDEO_VGXY61
 	  This is a Video4Linux2 sensor driver for the ST VGXY61
 	  camera sensor.
 
+config VIDEO_VX6953
+	tristate "STMicroelectronics VX6953 sensor support"
+	depends on I2C && VIDEO_DEV
+	select MEDIA_CONTROLLER
+	select VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	help
+	  This is a Video4Linux2 sensor driver for the STMicroelectronics
+	  VX6953 5MP camera sensor with integrated ISP and autofocus.
+	  This sensor was used in devices like the HP TouchPad (Opal).
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called vx6953.
+
 source "drivers/media/i2c/ccs/Kconfig"
 source "drivers/media/i2c/et8ek8/Kconfig"
 

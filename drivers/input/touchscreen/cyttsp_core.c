@@ -14,7 +14,6 @@
  */
 
 #include <linux/delay.h>
-#include <linux/export.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
@@ -25,6 +24,23 @@
 #include <linux/regulator/consumer.h>
 
 #include "cyttsp_core.h"
+
+/* Palm: Power state string for debugging */
+static const char *cyttsp_power_state_string(u8 power_state)
+{
+	switch (power_state) {
+	case CY_PWR_IDLE_STATE:
+		return "IDLE";
+	case CY_PWR_ACTIVE_STATE:
+		return "ACTIVE";
+	case CY_PWR_LOW_STATE:
+		return "LOW_POWER";
+	case CY_PWR_SLEEP_STATE:
+		return "SLEEP";
+	default:
+		return "UNKNOWN";
+	}
+}
 
 /* Bootloader number of command keys */
 #define CY_NUM_BL_KEYS		8
@@ -312,6 +328,68 @@ static const struct cyttsp_tch *cyttsp_get_tch(struct cyttsp_xydata *xy_data,
 	}
 }
 
+/*
+ * Palm: Validate IRQ counter between driver and device.
+ * The touchscreen controller maintains an internal interrupt counter
+ * that we can use to detect lost interrupts or firmware issues.
+ */
+static void cyttsp_validate_irq_cnt(struct cyttsp *ts)
+{
+	u8 dev_cnt;
+
+	if (!ts->use_irq_cnt)
+		return;
+
+	/* The IRQ counter is in the tt_undef area of the xy_data */
+	dev_cnt = ts->xy_data.tt_undef[CY_IRQ_CNT_REG];
+
+	ts->irq_cnt_total++;
+	ts->irq_cnt++;
+
+	if (ts->irq_cnt != dev_cnt) {
+		ts->irq_err_cnt++;
+		dev_dbg(ts->dev,
+			"IRQ count mismatch: drv=%u dev=%u hst_mode=0x%02X "
+			"total=%u errors=%u\n",
+			ts->irq_cnt, dev_cnt, ts->xy_data.hst_mode,
+			ts->irq_cnt_total, ts->irq_err_cnt);
+
+		/* Sync with device counter */
+		ts->irq_cnt = dev_cnt;
+	}
+}
+
+/*
+ * Palm: Store current touch positions for next frame comparison.
+ * This enables gesture detection based on position deltas.
+ */
+static void cyttsp_store_touch_positions(struct cyttsp *ts,
+					 int num_tch, int *ids)
+{
+	struct cyttsp_xydata *xy_data = &ts->xy_data;
+	const struct cyttsp_tch *tch;
+	int i;
+
+	if (!ts->enhanced_tracking)
+		return;
+
+	/* Clear active tracking */
+	for (i = 0; i < CY_NUM_TRK_ID; i++)
+		ts->act_trk[i] = 0;
+
+	for (i = 0; i < num_tch && i < CY_NUM_MT_TCH_ID; i++) {
+		tch = cyttsp_get_tch(xy_data, i);
+		if (tch && ids[i] < CY_NUM_TRK_ID) {
+			ts->prv_mt_pos[ids[i]][0] = be16_to_cpu(tch->x);
+			ts->prv_mt_pos[ids[i]][1] = be16_to_cpu(tch->y);
+			ts->prv_mt_tch[i] = ids[i];
+			ts->act_trk[ids[i]] = 1;
+		}
+	}
+
+	ts->num_prv_tch = num_tch;
+}
+
 static void cyttsp_report_tchdata(struct cyttsp *ts)
 {
 	struct cyttsp_xydata *xy_data = &ts->xy_data;
@@ -334,6 +412,19 @@ static void cyttsp_report_tchdata(struct cyttsp *ts)
 		/* terminate all active tracks */
 		num_tch = 0;
 		dev_dbg(ts->dev, "%s: Invalid buffer detected\n", __func__);
+	}
+
+	/*
+	 * Palm: Check for spurious reset - if we had touches but now
+	 * the device is in bootloader mode, something went wrong.
+	 */
+	if (ts->enhanced_tracking && ts->num_prv_tch > 0 && num_tch == 0) {
+		if (GET_BOOTLOADERMODE(xy_data->tt_mode)) {
+			ts->spurious_reset_cnt++;
+			dev_warn(ts->dev,
+				 "Spurious reset detected (count=%u), had %u touches\n",
+				 ts->spurious_reset_cnt, ts->num_prv_tch);
+		}
 	}
 
 	cyttsp_extract_track_ids(xy_data, ids);
@@ -360,6 +451,9 @@ static void cyttsp_report_tchdata(struct cyttsp *ts)
 		input_mt_report_slot_inactive(input);
 	}
 
+	/* Palm: Store positions for next frame comparison */
+	cyttsp_store_touch_positions(ts, num_tch, ids);
+
 	input_sync(input);
 }
 
@@ -383,6 +477,9 @@ static irqreturn_t cyttsp_irq(int irq, void *handle)
 	error = cyttsp_handshake(ts);
 	if (error)
 		goto out;
+
+	/* Palm: Validate IRQ counter */
+	cyttsp_validate_irq_cnt(ts);
 
 	if (unlikely(ts->state == CY_IDLE_STATE))
 		goto out;
@@ -450,7 +547,9 @@ static int cyttsp_power_on(struct cyttsp *ts)
 	if (error)
 		return error;
 
+	/* Palm: Set both state machine state and power state */
 	ts->state = CY_ACTIVE_STATE;
+	ts->power_state = CY_PWR_ACTIVE_STATE;
 
 	return 0;
 }
@@ -481,10 +580,23 @@ static int cyttsp_enable(struct cyttsp *ts)
 static int cyttsp_disable(struct cyttsp *ts)
 {
 	int error;
+	u8 sleep_mode;
 
-	error = ttsp_send_command(ts, CY_LOW_POWER_MODE);
+	/* Palm: Use configured sleep mode instead of always low power */
+	if (ts->use_sleep & CY_USE_DEEP_SLEEP_SEL)
+		sleep_mode = CY_DEEP_SLEEP_MODE;
+	else
+		sleep_mode = CY_LOW_POWER_MODE;
+
+	error = ttsp_send_command(ts, sleep_mode);
 	if (error)
 		return error;
+
+	/* Palm: Track power state */
+	if (sleep_mode == CY_DEEP_SLEEP_MODE)
+		ts->power_state = CY_PWR_SLEEP_STATE;
+	else
+		ts->power_state = CY_PWR_LOW_STATE;
 
 	disable_irq(ts->irq);
 
@@ -496,13 +608,28 @@ static int cyttsp_suspend(struct device *dev)
 	struct cyttsp *ts = dev_get_drvdata(dev);
 	int retval = 0;
 
+	dev_dbg(dev, "Enter Sleep (current state: %s)\n",
+		cyttsp_power_state_string(ts->power_state));
+
 	mutex_lock(&ts->input->mutex);
 
-	if (input_device_enabled(ts->input)) {
-		retval = cyttsp_disable(ts);
-		if (retval == 0)
-			ts->suspended = true;
+	if (ts->suspended) {
+		dev_dbg(dev, "Already in sleep state\n");
+		mutex_unlock(&ts->input->mutex);
+		return 0;
 	}
+
+	if (input_device_enabled(ts->input) &&
+	    (ts->use_sleep & CY_USE_SLEEP) &&
+	    (ts->power_state == CY_PWR_ACTIVE_STATE)) {
+		retval = cyttsp_disable(ts);
+	}
+
+	if (retval == 0)
+		ts->suspended = true;
+
+	dev_dbg(dev, "Sleep Power state is %s\n",
+		cyttsp_power_state_string(ts->power_state));
 
 	mutex_unlock(&ts->input->mutex);
 
@@ -512,17 +639,29 @@ static int cyttsp_suspend(struct device *dev)
 static int cyttsp_resume(struct device *dev)
 {
 	struct cyttsp *ts = dev_get_drvdata(dev);
+	int retval = 0;
+
+	dev_dbg(dev, "Wake Up (current state: %s)\n",
+		cyttsp_power_state_string(ts->power_state));
 
 	mutex_lock(&ts->input->mutex);
 
-	if (input_device_enabled(ts->input))
-		cyttsp_enable(ts);
+	if (ts->suspended && input_device_enabled(ts->input) &&
+	    (ts->power_state != CY_PWR_ACTIVE_STATE)) {
+		retval = cyttsp_enable(ts);
+		if (retval == 0)
+			ts->power_state = CY_PWR_ACTIVE_STATE;
+	}
 
 	ts->suspended = false;
 
+	dev_dbg(dev, "Wake Up %s (state: %s)\n",
+		retval < 0 ? "FAIL" : "PASS",
+		cyttsp_power_state_string(ts->power_state));
+
 	mutex_unlock(&ts->input->mutex);
 
-	return 0;
+	return retval;
 }
 
 EXPORT_GPL_SIMPLE_DEV_PM_OPS(cyttsp_pm_ops, cyttsp_suspend, cyttsp_resume);
@@ -562,6 +701,20 @@ static int cyttsp_parse_properties(struct cyttsp *ts)
 	ts->act_intrvl = CY_ACT_INTRVL_DFLT;
 	ts->tch_tmout = CY_TCH_TMOUT_DFLT;
 	ts->lp_intrvl = CY_LP_INTRVL_DFLT;
+
+	/* Palm: Initialize power state and tracking defaults */
+	ts->use_sleep = CY_USE_SLEEP | CY_USE_DEEP_SLEEP_SEL;
+	ts->power_state = CY_PWR_IDLE_STATE;
+	ts->irq_cnt = 0;
+	ts->irq_cnt_total = 0;
+	ts->irq_err_cnt = 0;
+	ts->use_irq_cnt = false;
+	ts->num_prv_tch = 0;
+	ts->spurious_reset_cnt = 0;
+	ts->enhanced_tracking = false;
+	memset(ts->act_trk, 0, sizeof(ts->act_trk));
+	memset(ts->prv_mt_pos, 0, sizeof(ts->prv_mt_pos));
+	memset(ts->prv_mt_tch, 0, sizeof(ts->prv_mt_tch));
 
 	ret = device_property_read_u8_array(dev, "bootloader-key",
 					    ts->bl_keys, CY_NUM_BL_KEYS);
@@ -611,6 +764,19 @@ static int cyttsp_parse_properties(struct cyttsp *ts)
 		/* Register value is expressed in 0.01s / bit */
 		ts->tch_tmout = dt_value / 10;
 	}
+
+	/* Palm: Parse sleep mode configuration */
+	if (device_property_present(dev, "use-deep-sleep"))
+		ts->use_sleep |= CY_USE_DEEP_SLEEP_SEL;
+
+	if (device_property_present(dev, "disable-sleep"))
+		ts->use_sleep &= ~CY_USE_SLEEP;
+
+	/* Palm: Enable IRQ counter validation if requested */
+	ts->use_irq_cnt = device_property_present(dev, "use-irq-counter");
+
+	/* Palm: Enable enhanced touch tracking if requested */
+	ts->enhanced_tracking = device_property_present(dev, "enhanced-tracking");
 
 	return 0;
 }
