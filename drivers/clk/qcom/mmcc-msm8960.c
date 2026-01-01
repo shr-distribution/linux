@@ -3392,7 +3392,17 @@ static const struct qcom_cc_desc mmcc_apq8064_desc = {
 	.num_resets = ARRAY_SIZE(mmcc_apq8064_resets),
 };
 
+static const struct qcom_cc_desc mmcc_msm8660_desc = {
+	.config = &mmcc_msm8660_regmap_config,
+	.clks = mmcc_msm8660_clks,
+	.num_clks = ARRAY_SIZE(mmcc_msm8660_clks),
+	.resets = mmcc_msm8660_resets,
+	.num_resets = ARRAY_SIZE(mmcc_msm8660_resets),
+};
+
 static const struct of_device_id mmcc_msm8960_match_table[] = {
+	{ .compatible = "qcom,mmcc-msm8660", .data = &mmcc_msm8660_desc },
+	{ .compatible = "qcom,mmcc-apq8060", .data = &mmcc_msm8660_desc },
 	{ .compatible = "qcom,mmcc-msm8960", .data = &mmcc_msm8960_desc },
 	{ .compatible = "qcom,mmcc-apq8064", .data = &mmcc_apq8064_desc },
 	{ }
@@ -3416,7 +3426,12 @@ static int mmcc_msm8960_probe(struct platform_device *pdev)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	clk_pll_configure_sr(&pll15, regmap, &pll15_config, false);
+	if (desc == &mmcc_apq8064_desc)
+		clk_pll_configure_sr(&pll15, regmap, &pll15_config, false);
+
+	/* Enable PLL2 for MSM8660/APQ8060 multimedia clocks */
+	if (desc == &mmcc_msm8660_desc)
+		regmap_update_bits(regmap, 0x31c, BIT(7), BIT(7));
 
 	return qcom_cc_really_probe(&pdev->dev, desc, regmap);
 }
