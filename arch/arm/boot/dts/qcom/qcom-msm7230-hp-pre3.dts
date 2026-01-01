@@ -263,7 +263,7 @@
 	status = "okay";
 
 	pinctrl-names = "default";
-	pinctrl-0 = <&i2c4_default>;
+	pinctrl-0 = <&i2c4_default>, <&sensors_default>;
 
 	clock-frequency = <400000>;
 
@@ -329,6 +329,40 @@
 			color = <LED_COLOR_ID_WHITE>;
 			default-brightness = <200>;
 		};
+
+	/* ST LIS331DLH Accelerometer */
+	accelerometer@19 {
+		compatible = "st,lis331dlh-accel";
+		reg = <0x19>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <26 IRQ_TYPE_EDGE_RISING>;
+
+		vdd-supply = <&vreg_gp2>;
+		vddio-supply = <&vreg_gp2>;
+
+		st,drdy-int-pin = <1>;
+	};
+
+	/* ST LSM303DLH Magnetometer */
+	magnetometer@1e {
+		compatible = "st,lsm303dlh-magn";
+		reg = <0x1e>;
+
+		vdd-supply = <&vreg_gp2>;
+		vddio-supply = <&vreg_gp2>;
+	};
+
+	/* Intersil ISL29040 Proximity/Light Sensor */
+	proximity@44 {
+		compatible = "isil,isl29040";
+		reg = <0x44>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <18 IRQ_TYPE_EDGE_FALLING>;
+
+		vdd-supply = <&vreg_gp2>;
+	};
 	};
 };
 
@@ -567,6 +601,24 @@
 		};
 	};
 
+
+	sensors_default: sensors-default-state {
+		accel-irq-pins {
+			pins = "gpio26";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+
+		prox-irq-pins {
+			pins = "gpio18";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
 	speaker_default: speaker-default-state {
 		pins = "gpio82";
 		function = "gpio";
