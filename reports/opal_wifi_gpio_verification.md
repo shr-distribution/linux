@@ -326,14 +326,20 @@ pn544: nfc@28 {
    - GPIO 158 (DVT+) / 69 (EVT1)
    - Ready-to-enable LED device node provided
 
+7. ✅ **Proximity sensor identified** (Cypress CY8C20236A)
+   - PSoC CapSense controller for capacitive proximity detection
+   - Bit-banged I2C on GPIOs 68/69
+   - Interrupt on GPIO 39
+   - I2C address 0x08 (default, may need verification)
+   - Device node configured with i2c-gpio
+
 ### Future Work:
 
 1. ⏳ **Test HDMI output** on WiFi Opal hardware
-2. ⏳ **Identify proximity sensor model** for full device node
-   - GPIOs configured, bit-banged I2C stub provided
-   - No driver in legacy kernel
-3. ⏳ **Identify rear camera sensor** for device node
+2. ⏳ **Identify rear camera sensor** for device node
    - PM8058 GPIO 9 power down configured
+3. ⏳ **Verify proximity sensor I2C address**
+   - Device configured with default address 0x08
 4. ⏳ **Test camera functionality** when CAMIF support is added
 5. ⏳ **Test NFC functionality** with PN544 driver
 

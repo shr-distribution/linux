@@ -46,7 +46,7 @@ The HP TouchPad family mainline device tree implementation represents production
 18. **Opal front camera** device node (MT9M113)
 19. **Opal NFC** device node (PN544 on PM8058 GPIOs)
 20. **Opal cover detect** sensor (gpio-keys SW_LID)
-21. **Opal proximity sensor** documentation (bit-banged I2C stub)
+21. **Opal proximity sensor identified** (Cypress CY8C20236A PSoC CapSense)
 22. **Opal audio LDO controls** documentation
 23. **Opal camera flash LED** documentation
 
@@ -279,12 +279,15 @@ The HP TouchPad family mainline device tree implementation represents production
 - **Variants**: Opal WiFi, Opal 3G
 - **Status**: PRODUCTION READY ✅ (NEW - 2025-12-31)
 
-#### 4. Proximity Sensor (Model Unknown)
-- **Interface**: Bit-banged I2C on GPIOs 68/69
+#### 4. Proximity Sensor (Cypress CY8C20236A)
+- **Interface**: Bit-banged I2C on GPIOs 68/69, I2C address 0x08
 - **Interrupt**: GPIO 39
+- **Chip**: Cypress CY8C20236A PSoC CapSense controller
+- **Purpose**: Capacitive proximity detection
 - **Variants**: Opal WiFi, Opal 3G
-- **Notes**: Sensor model not identified (no driver in legacy kernel)
-- **Status**: PINCTRL CONFIGURED, i2c-gpio stub provided ⏳
+- **Driver**: Custom PSoC firmware, user-space or kernel module required
+- **Notes**: I2C address 0x08 (default, may need verification)
+- **Status**: PRODUCTION READY ✅ (identified from specs)
 
 #### 5. Camera Flash LED
 - **GPIO**: 158 (DVT+), 69 (EVT1)

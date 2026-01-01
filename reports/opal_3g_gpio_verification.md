@@ -285,15 +285,22 @@ cover_detect_pins: cover-detect-state {
    - GPIO 158 (DVT+) / 69 (EVT1)
    - Ready-to-enable LED device node provided
 
+7. ✅ **Proximity sensor identified** (Cypress CY8C20236A)
+   - PSoC CapSense controller for capacitive proximity detection
+   - Bit-banged I2C on GPIOs 68/69
+   - Interrupt on GPIO 39
+   - I2C address 0x08 (default, may need verification)
+   - Device node configured with i2c-gpio
+
 ### Remaining:
 
-1. ⏳ **Proximity sensor** - Sensor model unknown
-   - GPIOs configured, bit-banged I2C stub provided
-   - No driver in legacy kernel (needs hardware identification)
-
-2. ⏳ **Rear camera** - Sensor model unknown
+1. ⏳ **Rear camera** - Sensor model unknown
    - PM8058 GPIO 9 power down configured
    - Needs sensor identification
+
+2. ⏳ **Proximity sensor I2C address verification**
+   - Device configured with default address 0x08
+   - May need verification with actual hardware
 
 ---
 

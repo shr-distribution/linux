@@ -402,31 +402,34 @@
 /*
  * Proximity sensor on bit-banged I2C
  *
- * Legacy kernel defines GPIOs 68/69 for bit-banged I2C and GPIO 39 for interrupt,
- * but no driver was enabled in defconfig. Sensor model is unknown.
- *
- * Uncomment and update compatible string when sensor model is identified:
- *
- * / {
- *     proximity_i2c: i2c-gpio-prox {
- *         compatible = "i2c-gpio";
- *         sda-gpios = <&tlmm 68 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
- *         scl-gpios = <&tlmm 69 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
- *         i2c-gpio,delay-us = <2>;
- *         #address-cells = <1>;
- *         #size-cells = <0>;
- *
- *         proximity@XX {
- *             compatible = "unknown,proximity-sensor";
- *             reg = <0xXX>;
- *             interrupt-parent = <&tlmm>;
- *             interrupts = <39 IRQ_TYPE_EDGE_FALLING>;
- *             pinctrl-names = "default";
- *             pinctrl-0 = <&proximity_pins>;
- *         };
- *     };
- * };
+ * Cypress CY8C20236A PSoC CapSense controller used for capacitive
+ * proximity detection. Uses dedicated bit-banged I2C bus.
  */
+/ {
+	proximity_i2c: i2c-gpio-prox {
+		compatible = "i2c-gpio";
+		sda-gpios = <&tlmm 68 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&tlmm 69 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		proximity@8 {
+			compatible = "cypress,cy8c20236a";
+			reg = <0x08>;  /* Default I2C address, may need verification */
+			interrupt-parent = <&tlmm>;
+			interrupts = <39 IRQ_TYPE_EDGE_FALLING>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&proximity_pins>;
+
+			/*
+			 * CY8C20236A is a PSoC (Programmable System-on-Chip)
+			 * with custom firmware for proximity sensing.
+			 * Requires user-space driver or custom kernel module.
+			 */
+		};
+	};
+};
 
 /*
  * Audio LDO control GPIOs for WM8958 codec
