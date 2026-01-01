@@ -425,30 +425,31 @@
 	dr_mode = "peripheral";
 };
 
-/* SPI - Touchscreen */
+/*
+ * SPI Controller - Available for peripherals
+ * Note: The QSD SPI controller is functional but currently unused.
+ * The touchscreen was previously thought to use SPI but appears to
+ * use either I2C or HSUART based on legacy kernel analysis.
+ */
 &spi0 {
-	status = "okay";
+	status = "disabled";
 	pinctrl-names = "default";
-	pinctrl-0 = <&spi0_default>, <&touch_default>;
-
-	/*
-	 * Cypress CY8CTMA300 Capacitive Touchscreen
-	 * Note: No mainline driver exists yet
-	 */
-	touchscreen@0 {
-		compatible = "cypress,cy8ctma300";
-		reg = <0>;
-		spi-max-frequency = <1000000>;
-
-		interrupt-parent = <&tlmm>;
-		interrupts = <85 IRQ_TYPE_EDGE_FALLING>;
-
-		reset-gpios = <&tlmm 128 GPIO_ACTIVE_LOW>;
-
-		touchscreen-size-x = <480>;
-		touchscreen-size-y = <800>;
-	};
+	pinctrl-0 = <&spi0_default>;
 };
+
+/*
+ * Touchscreen configuration
+ *
+ * The HP Pre3 uses a Cypress CY8CTMA300 capacitive touchscreen.
+ * Based on legacy kernel analysis, the touchscreen communicates via
+ * HSUART at 3Mbps for touch data, with GPIO-based ISSP for firmware.
+ *
+ * An I2C driver is provided as an alternative if I2C mode is supported.
+ * The I2C address needs to be determined through hardware testing.
+ *
+ * TODO: Determine actual interface and I2C address through hardware testing
+ *       Common Cypress I2C addresses: 0x24, 0x4d
+ */
 
 /* Pinctrl definitions */
 &tlmm {
