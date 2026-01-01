@@ -255,6 +255,21 @@ config QCOM_Q6V5_WCSS
 	  Hexagon V5 based WCSS remote processors on e.g. IPQ8074.  This is
 	  a non-TrustZone wireless subsystem.
 
+config QCOM_Q6V2_LPASS
+	tristate "Qualcomm MSM8660 LPASS QDSP6v2 Peripheral Image Loader"
+	depends on OF && ARCH_QCOM
+	select QCOM_MDT_LOADER
+	select QCOM_PIL_INFO
+	select QCOM_RPROC_COMMON
+	select QCOM_SCM
+	help
+	  Say y here to support the Peripheral Image Loader for the LPASS
+	  QDSP6v2 (Hexagon V2) DSP on MSM8660 and APQ8060 platforms. This
+	  driver loads and boots the LPASS firmware for audio processing.
+
+	  The firmware can be authenticated using the Peripheral Authentication
+	  System (PAS) in TrustZone, or loaded directly in untrusted mode.
+
 config QCOM_SYSMON
 	tristate "Qualcomm sysmon driver"
 	depends on RPMSG
