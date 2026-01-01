@@ -443,6 +443,7 @@
 &gsbi4_i2c {
 	status = "okay";
 
+	/* Front camera - MT9M113 1.3MP */
 	camera@78 {
 		compatible = "aptina,mt9m113";
 		reg = <0x78>;
@@ -464,9 +465,65 @@
 		 *
 		 * TODO: Add port/endpoint when camera interface is implemented
 		 * port {
-		 *     endpoint {
+		 *     mt9m113_ep: endpoint {
 		 *         bus-type = <5>;
-		 *         remote-endpoint = <&camif_ep>;
+		 *         remote-endpoint = <&camif_csi1>;
+		 *     };
+		 * };
+		 */
+	};
+
+	/*
+	 * Rear camera - STMicroelectronics VX6953 5.1MP EDOF
+	 *
+	 * EDOF = Extended Depth of Field
+	 * Resolution: 2608x1960 (5.1 megapixel)
+	 * Interface: CSI-0 (vs CSI-1 for front camera)
+	 * Flash LED: GPIO 158 (DVT+) / GPIO 69 (EVT1)
+	 *
+	 * Hardware configuration verified from legacy kernel:
+	 * - No dedicated reset pin (uses powerdown only)
+	 * - PM8058 GPIO 9 for powerdown control
+	 * - I2C address 0x20
+	 * - Uses same MCLK as front camera (GPIO 32)
+	 *
+	 * DRIVER STATUS: No mainline Linux driver exists for VX6953.
+	 * The legacy driver (drivers/media/video/msm/vx6953.c, 3876 lines)
+	 * uses the Qualcomm MSM camera framework. Porting to modern V4L2
+	 * would require significant effort.
+	 *
+	 * This node documents the hardware configuration for future driver
+	 * development. The device will not probe without a compatible driver.
+	 */
+	camera@20 {
+		compatible = "st,vx6953";
+		reg = <0x20>;
+		status = "disabled";  /* No driver available */
+
+		/* VX6953 has no reset pin, only powerdown */
+		powerdown-gpios = <&pm8058_gpio 8 GPIO_ACTIVE_HIGH>;  /* PM8058 GPIO 9 (0-indexed = 8) */
+
+		vdd-supply = <&pm8058_l15>;     /* 2.85V core */
+		vddio-supply = <&pm8058_s3>;    /* 1.8V I/O */
+		vaa-supply = <&pm8058_l15>;     /* 2.85V analog */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_pins>;
+
+		/*
+		 * TODO: Add flash LED when LED subsystem support is added
+		 * flash-leds = <&camera_flash>;
+		 *
+		 * TODO: Add clock reference when CAMIF MCLK support is implemented
+		 * clocks = <&camif_mclk>;
+		 * clock-names = "extclk";
+		 * clock-frequency = <24000000>;
+		 *
+		 * TODO: Add port/endpoint when camera interface is implemented
+		 * port {
+		 *     vx6953_ep: endpoint {
+		 *         bus-type = <5>;
+		 *         remote-endpoint = <&camif_csi0>;
 		 *     };
 		 * };
 		 */
