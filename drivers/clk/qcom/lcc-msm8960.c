@@ -12,6 +12,7 @@
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
 
+#include <dt-bindings/clock/qcom,lcc-msm8660.h>
 #include <dt-bindings/clock/qcom,lcc-msm8960.h>
 
 #include "common.h"
@@ -443,6 +444,8 @@ static const struct qcom_cc_desc lcc_msm8960_desc = {
 };
 
 static const struct of_device_id lcc_msm8960_match_table[] = {
+	{ .compatible = "qcom,lcc-msm8660" },
+	{ .compatible = "qcom,lcc-apq8060" },
 	{ .compatible = "qcom,lcc-msm8960" },
 	{ .compatible = "qcom,lcc-apq8064" },
 	{ .compatible = "qcom,lcc-mdm9615" },
