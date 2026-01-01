@@ -137,10 +137,14 @@ struct vidc_core {
 	unsigned int num_instances;
 };
 
+/* Forward declaration */
+struct vidc_format;
+
 struct vidc_inst {
 	struct vidc_core *core;
 	struct v4l2_fh fh;
 	struct v4l2_ctrl_handler ctrl_handler;
+	struct v4l2_m2m_dev *m2m_dev;
 	struct v4l2_m2m_ctx *m2m_ctx;
 	struct mutex lock;
 	struct list_head list;
@@ -149,10 +153,18 @@ struct vidc_inst {
 	bool decoder;
 
 	/* Format info */
+	const struct vidc_format *fmt_out;
+	const struct vidc_format *fmt_cap;
 	u32 width;
 	u32 height;
-	u32 out_fmt;
-	u32 cap_fmt;
+	u32 out_width;
+	u32 out_height;
+
+	/* Streaming state */
+	bool streamon_out;
+	bool streamon_cap;
+	u32 sequence_out;
+	u32 sequence_cap;
 
 	/* Sequence info from firmware */
 	u32 seq_width;

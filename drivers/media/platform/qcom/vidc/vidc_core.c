@@ -27,6 +27,7 @@
 #include <media/videobuf2-dma-contig.h>
 
 #include "vidc_core.h"
+#include "vidc_dec.h"
 
 #define VIDC_FW_NAME		"qcom/vidc_1080p.fw"
 #define VIDC_FW_SIZE_MAX	(512 * 1024)
@@ -385,6 +386,13 @@ static int vidc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	/* Register decoder video device */
+	ret = vidc_dec_register(core);
+	if (ret) {
+		dev_err(dev, "failed to register decoder: %d\n", ret);
+		goto err_v4l2_unregister;
+	}
+
 	platform_set_drvdata(pdev, core);
 
 	pm_runtime_enable(dev);
@@ -392,6 +400,10 @@ static int vidc_probe(struct platform_device *pdev)
 	dev_info(dev, "Qualcomm VIDC 1080p driver probed\n");
 
 	return 0;
+
+err_v4l2_unregister:
+	v4l2_device_unregister(&core->v4l2_dev);
+	return ret;
 }
 
 static void vidc_remove(struct platform_device *pdev)
@@ -399,6 +411,7 @@ static void vidc_remove(struct platform_device *pdev)
 	struct vidc_core *core = platform_get_drvdata(pdev);
 
 	pm_runtime_disable(core->dev);
+	vidc_dec_unregister(core);
 	vidc_core_deinit(core);
 	v4l2_device_unregister(&core->v4l2_dev);
 }
