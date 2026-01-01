@@ -111,6 +111,35 @@ The TouchPad firmware files are **SIGNIFICANTLY DIFFERENT** from the linux-firmw
 
 **Recommendation:** Test with TouchPad firmware first, fall back to linux-firmware if issues occur
 
+### Palm Kernel Patch Analysis
+
+From `kernel-3.0.5.txt` Palm's patches reveal:
+
+1. **Custom Cache Syscall** - Palm added `kgsl_palm_cache_inv_range()` function called from a
+   custom cacheflush syscall for GPU memory coherency (lines 627653-627658)
+
+2. **Standard CAF KGSL Driver** - The KGSL driver is mostly standard Code Aurora Forum code
+   with Palm's cache function additions. No major firmware loading changes.
+
+3. **GPU Configuration** - MSM8x60 platform data:
+   - 3D GPU max freq: 266.667 MHz (`max_grp3d_freq = 266667000`)
+   - 2D GPU freq: 160 MHz (Z180 core)
+   - AXI bus: 200 KHz for 3D, 160 KHz for 2D
+
+4. **Chip ID Detection** - Code checks for `KGSL_CHIPID_LEIA_REV470` (0x2010000) to select
+   between Leia (A220) and Yamato (A200) firmware
+
+**Possible explanations for firmware differences:**
+- **Different firmware version**: TouchPad (2011) may have older CAF firmware, linux-firmware (2022) has newer
+- **webOS-specific customization**: Palm may have requested custom GPU microcode for their graphics stack
+- **Silicon stepping**: Different Adreno 220 revisions may require different firmware
+
+**Impact on freedreno:**
+The postmarketOS wiki reports freedreno segfaults in ringbuffer code on TouchPad. This could be due to:
+- Firmware command packet format differences
+- Register initialization sequence differences
+- Memory management/cache coherency (Palm's custom cache syscall)
+
 ---
 
 ### 5. DSP (Qualcomm Hexagon QDSP6v2 - LPASS)
