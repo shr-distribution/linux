@@ -775,6 +775,19 @@ config VIDEO_VGXY61
 	  This is a Video4Linux2 sensor driver for the ST VGXY61
 	  camera sensor.
 
+config VIDEO_VX6953
+	tristate "STMicroelectronics VX6953 sensor support"
+	select V4L2_CCI_I2C
+	depends on OF && GPIOLIB
+	help
+	  This is a Video4Linux2 sensor driver for the STMicroelectronics
+	  VX6953 5.1 megapixel EDOF (Extended Depth of Field) camera sensor.
+
+	  This sensor was used in devices like the HP TouchPad Go (Opal).
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called vx6953.
+
 source "drivers/media/i2c/ccs/Kconfig"
 source "drivers/media/i2c/et8ek8/Kconfig"
 
