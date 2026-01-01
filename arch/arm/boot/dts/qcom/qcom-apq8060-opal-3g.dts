@@ -458,14 +458,11 @@
 		vddio-supply = <&pm8058_s3>;    /* 1.8V I/O */
 		vaa-supply = <&pm8058_l15>;     /* 2.85V analog */
 
+		clocks = <&mmcc CAMCLK0_CLK>;
+		clock-names = "extclk";
+
 		pinctrl-names = "default";
 		pinctrl-0 = <&camera_pins>;
-
-		/*
-		 * TODO: Add clock reference when CAMIF MCLK support is implemented
-		 * clocks = <&camif_mclk>;
-		 * clock-names = "extclk";
-		 */
 
 		port {
 			opal_mt9m113_ep: endpoint {
@@ -506,17 +503,16 @@
 		vdig-supply = <&pm8058_s3>;     /* 1.8V digital */
 		vio-supply = <&pm8058_s3>;      /* 1.8V I/O */
 
+		/* Both cameras share CAMCLK0 via GPIO 32 */
+		clocks = <&mmcc CAMCLK0_CLK>;
+		clock-names = "xclk";
+
 		pinctrl-names = "default";
 		pinctrl-0 = <&camera_pins>;
 
 		/*
 		 * TODO: Add flash LED when LED subsystem support is added
 		 * flash-leds = <&camera_flash>;
-		 *
-		 * TODO: Add clock reference when CAMIF MCLK support is implemented
-		 * clocks = <&camif_mclk>;
-		 * clock-names = "extclk";
-		 * clock-frequency = <24000000>;
 		 */
 
 		port {
