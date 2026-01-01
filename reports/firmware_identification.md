@@ -86,6 +86,31 @@
 **Note:** The "Yamato" firmware is for older Adreno 200/205 GPUs (A200 chip ID 0x02000000).
 The HP TouchPad uses Adreno 220 which requires the "Leia" firmware.
 
+### ⚠️ CRITICAL: TouchPad Firmware vs linux-firmware Differences
+
+The TouchPad firmware files are **SIGNIFICANTLY DIFFERENT** from the linux-firmware versions:
+
+| File | Same Size | Bytes Different | % Different |
+|------|-----------|-----------------|-------------|
+| leia_pfp_470.fw | 1156 bytes | 644 bytes | **56%** |
+| leia_pm4_470.fw | 9220 bytes | 3335 bytes | **36%** |
+
+**TouchPad firmware checksums:**
+- `leia_pfp_470.fw`: `b045ebdaf1e3fa4ecfa06f677e9fa6a1`
+- `leia_pm4_470.fw`: `2a81fc15f3651c763b0bfec95d6b4cee`
+
+**linux-firmware checksums (from April 2022, Dmitry Baryshkov):**
+- `leia_pfp_470.fw`: `73697be0acbc0093cda74d4987cf7ab1`
+- `leia_pm4_470.fw`: `dbc0f42b3dce0ae3fcb558b737fb073f`
+
+**Implications:**
+1. Palm/HP likely used **custom GPU microcode** for webOS
+2. The linux-firmware files are from a different MSM8x60 device/source
+3. This may explain why [freedreno has issues on TouchPad](https://wiki.postmarketos.org/wiki/HP_TouchPad_(hp-tenderloin)) (segfaults in ringbuffer code)
+4. **Testing required**: Try TouchPad firmware with freedreno to see if it improves compatibility
+
+**Recommendation:** Test with TouchPad firmware first, fall back to linux-firmware if issues occur
+
 ---
 
 ### 5. DSP (Qualcomm Hexagon QDSP6v2 - LPASS)
