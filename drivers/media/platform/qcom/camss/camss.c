@@ -34,6 +34,94 @@
 
 static const struct parent_dev_ops vfe_parent_dev_ops;
 
+/*
+ * MSM8660/APQ8060 - VFE 3.1 with MIPI CSI-2 support
+ */
+static const struct camss_subdev_resources csiphy_res_8x60[] = {
+	/* CSIPHY0 */
+	{
+		.regulators = {},
+		.clock = { "csi0_src", "csi0", "csi0_phy" },
+		.clock_rate = { { 0 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csiphy0" },
+		.interrupt = { "csiphy0" },
+		.csiphy = {
+			.id = 0,
+			.hw_ops = &csiphy_ops_2ph_1_0,
+			.formats = &csiphy_formats_8x16
+		}
+	},
+	/* CSIPHY1 */
+	{
+		.regulators = {},
+		.clock = { "csi1_src", "csi1", "csi1_phy" },
+		.clock_rate = { { 0 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csiphy1" },
+		.interrupt = { "csiphy1" },
+		.csiphy = {
+			.id = 1,
+			.hw_ops = &csiphy_ops_2ph_1_0,
+			.formats = &csiphy_formats_8x16
+		}
+	}
+};
+
+static const struct camss_subdev_resources csid_res_8x60[] = {
+	/* CSID0 */
+	{
+		.regulators = {},
+		.clock = { "csi0_src", "csi0", "csi0_phy" },
+		.clock_rate = { { 0 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csid0" },
+		.interrupt = { "csid0" },
+		.csid = {
+			.hw_ops = &csid_ops_4_1,
+			.parent_dev_ops = &vfe_parent_dev_ops,
+			.formats = &csid_formats_4_1
+		}
+	},
+	/* CSID1 */
+	{
+		.regulators = {},
+		.clock = { "csi1_src", "csi1", "csi1_phy" },
+		.clock_rate = { { 0 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csid1" },
+		.interrupt = { "csid1" },
+		.csid = {
+			.hw_ops = &csid_ops_4_1,
+			.parent_dev_ops = &vfe_parent_dev_ops,
+			.formats = &csid_formats_4_1
+		}
+	}
+};
+
+static const struct camss_subdev_resources vfe_res_8x60[] = {
+	/* VFE0 */
+	{
+		.regulators = {},
+		.clock = { "vfe", "vfe_axi", "vfe_ahb" },
+		.clock_rate = { { 122880000, 228570000, 266670000 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "vfe0" },
+		.interrupt = { "vfe0" },
+		.vfe = {
+			.line_num = 3,
+			.hw_ops = &vfe_ops_3_1,
+			.formats_rdi = &vfe_formats_rdi_8x16,
+			.formats_pix = &vfe_formats_pix_8x16
+		}
+	}
+};
+
 static const struct camss_subdev_resources csiphy_res_8x16[] = {
 	/* CSIPHY0 */
 	{
@@ -4291,6 +4379,16 @@ static void camss_remove(struct platform_device *pdev)
 	camss_genpd_cleanup(camss);
 }
 
+static const struct camss_resources msm8660_resources = {
+	.version = CAMSS_8x60,
+	.csiphy_res = csiphy_res_8x60,
+	.csid_res = csid_res_8x60,
+	.vfe_res = vfe_res_8x60,
+	.csiphy_num = ARRAY_SIZE(csiphy_res_8x60),
+	.csid_num = ARRAY_SIZE(csid_res_8x60),
+	.vfe_num = ARRAY_SIZE(vfe_res_8x60),
+};
+
 static const struct camss_resources msm8916_resources = {
 	.version = CAMSS_8x16,
 	.csiphy_res = csiphy_res_8x16,
@@ -4467,6 +4565,8 @@ static const struct camss_resources x1e80100_resources = {
 };
 
 static const struct of_device_id camss_dt_match[] = {
+	{ .compatible = "qcom,msm8660-camss", .data = &msm8660_resources },
+	{ .compatible = "qcom,apq8060-camss", .data = &msm8660_resources },
 	{ .compatible = "qcom,msm8916-camss", .data = &msm8916_resources },
 	{ .compatible = "qcom,msm8953-camss", .data = &msm8953_resources },
 	{ .compatible = "qcom,msm8996-camss", .data = &msm8996_resources },
