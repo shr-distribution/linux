@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * IIO driver for the light sensor ISL29028.
- * ISL29028 is Concurrent Ambient Light and Proximity Sensor
+ * ISL29028/29030/29040 are Concurrent Ambient Light and Proximity Sensors
  *
  * Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
  * Copyright (c) 2016-2017 Brian Masney <masneyb@onstation.org>
@@ -675,6 +675,7 @@ static DEFINE_RUNTIME_DEV_PM_OPS(isl29028_pm_ops, isl29028_suspend,
 static const struct i2c_device_id isl29028_id[] = {
 	{ "isl29028" },
 	{ "isl29030" },
+	{ "isl29040" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, isl29028_id);
@@ -683,6 +684,7 @@ static const struct of_device_id isl29028_of_match[] = {
 	{ .compatible = "isl,isl29028", }, /* for backward compat., don't use */
 	{ .compatible = "isil,isl29028", },
 	{ .compatible = "isil,isl29030", },
+	{ .compatible = "isil,isl29040", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, isl29028_of_match);
