@@ -4,6 +4,7 @@
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/clock/qcom,gcc-msm8660.h>
+#include <dt-bindings/clock/qcom,lcc-msm8660.h>
 #include <dt-bindings/clock/qcom,mmcc-msm8960.h>
 #include <dt-bindings/soc/qcom,gsbi.h>
 
@@ -127,6 +128,24 @@
 			reg = <0x04000000 0x1000>;
 			clocks = <&pxo_board>, <&gcc PLL8_VOTE>;
 			clock-names = "pxo", "pll8_vote";
+		};
+
+		lcc: clock-controller@28000000 {
+			compatible = "qcom,lcc-msm8660";
+			reg = <0x28000000 0x1000>;
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			clocks = <&pxo_board>,
+				 <&gcc PLL4_VOTE>,
+				 <0>, <0>, <0>, <0>, <0>, <0>;
+			clock-names = "pxo",
+				      "pll4_vote",
+				      "mi2s_codec_clk",
+				      "codec_i2s_mic_codec_clk",
+				      "spare_i2s_mic_codec_clk",
+				      "codec_i2s_spkr_codec_clk",
+				      "spare_i2s_spkr_codec_clk",
+				      "pcm_codec_clk";
 		};
 
 		gsbi1: gsbi@16000000 {
