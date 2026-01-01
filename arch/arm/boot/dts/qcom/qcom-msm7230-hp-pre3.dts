@@ -425,6 +425,31 @@
 	dr_mode = "peripheral";
 };
 
+/* SPI - Touchscreen */
+&spi0 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi0_default>, <&touch_default>;
+
+	/*
+	 * Cypress CY8CTMA300 Capacitive Touchscreen
+	 * Note: No mainline driver exists yet
+	 */
+	touchscreen@0 {
+		compatible = "cypress,cy8ctma300";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <85 IRQ_TYPE_EDGE_FALLING>;
+
+		reset-gpios = <&tlmm 128 GPIO_ACTIVE_LOW>;
+
+		touchscreen-size-x = <480>;
+		touchscreen-size-y = <800>;
+	};
+};
+
 /* Pinctrl definitions */
 &tlmm {
 	uart3_default: uart3-default-state {
@@ -524,6 +549,36 @@
 		function = "qup_i2c";
 		drive-strength = <16>;
 		bias-disable;
+	};
+
+	spi0_default: spi0-default-state {
+		clk-pins {
+			pins = "gpio46";
+			function = "spi";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		mosi-pins {
+			pins = "gpio47";
+			function = "spi";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		miso-pins {
+			pins = "gpio48";
+			function = "spi";
+			drive-strength = <8>;
+			bias-pull-down;
+		};
+
+		cs-pins {
+			pins = "gpio49";
+			function = "spi";
+			drive-strength = <8>;
+			bias-disable;
+		};
 	};
 
 	lcd_reset_default: lcd-reset-default-state {

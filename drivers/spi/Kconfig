@@ -933,6 +933,17 @@ config SPI_QUP
 	  This driver can also be built as a module.  If so, the module
 	  will be called spi_qup.
 
+config SPI_QCOM_QSD
+	tristate "Qualcomm QSD SPI controller"
+	depends on ARCH_MSM7X30 || COMPILE_TEST
+	help
+	  SPI driver for the legacy QSD SPI controller found on older
+	  Qualcomm SoCs such as the MSM7x30 family. This controller
+	  predates the QUP unified peripheral controller.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called spi-qcom-qsd.
+
 config SPI_QCOM_GENI
 	tristate "Qualcomm GENI based SPI controller"
 	depends on QCOM_GENI_SE

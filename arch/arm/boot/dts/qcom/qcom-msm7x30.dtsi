@@ -252,6 +252,21 @@
 		};
 
 		/*
+		 * SPI Controller (QSD)
+		 */
+		spi0: spi@a8000000 {
+			compatible = "qcom,spi-qsd";
+			reg = <0xa8000000 0x1000>;
+			interrupts = <105>;
+			clocks = <&gcc SPI_CLK>, <&gcc SPI_P_CLK>;
+			clock-names = "core", "iface";
+			spi-max-frequency = <26000000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
 		 * SDCC - Secure Digital Card Controller
 		 * SDC1: eMMC (8-bit)
 		 */

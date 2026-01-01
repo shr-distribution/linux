@@ -113,10 +113,9 @@ Missing/TODO
 +----------------------+------------------+----------------------------------+
 | Component            | Status           | Notes                            |
 +======================+==================+==================================+
-| Touchscreen          | BLOCKED          | Cypress CY8CTMA300 (SPI)         |
-|                      |                  | Needs SPI QSD driver (0xA8000000)|
+| Touchscreen          | BLOCKED          | Cypress CY8CTMA300, no driver    |
 +----------------------+------------------+----------------------------------+
-| SPI Controller       | TODO             | QSD SPI at 0xA8000000, no driver |
+| SPI Controller       | DONE             | spi-qcom-qsd.c @ 0xA8000000      |
 +----------------------+------------------+----------------------------------+
 | Display (MDP4)       | TODO             | DRM driver exists, need panel    |
 +----------------------+------------------+----------------------------------+
