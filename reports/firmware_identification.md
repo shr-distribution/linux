@@ -140,6 +140,83 @@ The postmarketOS wiki reports freedreno segfaults in ringbuffer code on TouchPad
 - Register initialization sequence differences
 - Memory management/cache coherency (Palm's custom cache syscall)
 
+### Freedreno vs KGSL Cache Handling Analysis
+
+**Palm's KGSL Driver (`kgsl_sharedmem.c`):**
+```c
+void kgsl_cache_range_op(unsigned long addr, int size, unsigned int flags)
+{
+    if (flags & KGSL_MEMFLAGS_CACHE_FLUSH)
+        dmac_flush_range((const void *)addr, (const void *)(addr + size));
+    else if (flags & KGSL_MEMFLAGS_CACHE_CLEAN)
+        dmac_clean_range((const void *)addr, (const void *)(addr + size));
+    else if (flags & KGSL_MEMFLAGS_CACHE_INV)
+        dmac_inv_range((const void *)addr, (const void *)(addr + size));
+
+    _outer_cache_range_op(addr, size, flags);  // L2 cache
+}
+
+/* Called from custom cacheflush syscall */
+void kgsl_palm_cache_inv_range(unsigned long addr, int size)
+{
+    kgsl_cache_range_op(addr, size, KGSL_MEMFLAGS_CACHE_INV);
+}
+```
+
+**Freedreno (`msm_gem.c`):**
+```c
+/* Cache sync - relies on DMA API, no explicit CPU cache ops */
+static void sync_for_device(struct msm_gem_object *msm_obj)
+{
+    struct device *dev = msm_obj->base.dev->dev;
+    dma_map_sgtable(dev, msm_obj->sgt, DMA_BIDIRECTIONAL, 0);
+}
+```
+
+**Freedreno A2xx GPU MMU (`a2xx_gpummu.c`):**
+```c
+static int a2xx_gpummu_map(struct msm_mmu *mmu, uint64_t iova, ...)
+{
+    /* Only invalidates GPU TLB, NO CPU cache sync */
+    gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE, ...);
+    return 0;
+}
+```
+
+**Critical Differences:**
+
+| Feature | Palm's KGSL | Freedreno |
+|---------|-------------|-----------|
+| L1 D-cache | `dmac_flush/clean/inv_range()` | DMA API only |
+| L2/Outer cache | `outer_flush/clean/inv_range()` | DMA API only |
+| Userspace cache control | Custom syscall | None |
+| GPU TLB invalidation | Yes | Yes |
+| Page table CPU sync | Explicit | None |
+
+**Root Cause Analysis:**
+
+On ARMv7 platforms with L2 cache (PL310 on MSM8660), the DMA API may not provide
+sufficient cache coherency for GPU operations because:
+
+1. **A2xx GPU MMU** doesn't do CPU cache maintenance when mapping pages
+2. **GPU command submission** only flushes GPU-side cache via `CACHE_FLUSH_TS` event
+3. **Ringbuffer operations** may see stale data if CPU cache isn't flushed
+4. **Page table updates** in `a2xx_gpummu_map()` don't sync to memory
+
+**Potential Fixes for Freedreno:**
+
+1. **Add explicit cache sync in `a2xx_gpummu_map()`:**
+   ```c
+   dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE, DMA_TO_DEVICE);
+   ```
+
+2. **Add outer cache flush for command buffers** before GPU submission
+
+3. **Consider adding L2 cache ops** for ARM platforms without hardware coherency
+
+**Note:** This analysis suggests the ringbuffer segfaults may be cache coherency issues
+rather than firmware incompatibility, though both could be contributing factors.
+
 ---
 
 ### 5. DSP (Qualcomm Hexagon QDSP6v2 - LPASS)
