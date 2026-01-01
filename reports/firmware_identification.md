@@ -66,21 +66,25 @@
 
 ### 4. GPU (Adreno 220)
 **Files:**
-- `yamato_pfp.fw` (1.2 KB) - Packet Front-end Processor firmware
-- `yamato_pm4.fw` (9.1 KB) - PM4 microcode
-- `leia_pfp_470.fw` (1.2 KB) - Alternative PFP firmware (version 470)
-- `leia_pm4_470.fw` (9.1 KB) - Alternative PM4 firmware (version 470)
+- `leia_pfp_470.fw` (1.2 KB) - **Used by Adreno 220** - PFP (Pre-Fetch Parser) firmware
+- `leia_pm4_470.fw` (9.1 KB) - **Used by Adreno 220** - PM4 microcode
+- `yamato_pfp.fw` (1.2 KB) - For Adreno 200/205 only (NOT used by TouchPad)
+- `yamato_pm4.fw` (9.1 KB) - For Adreno 200/205 only (NOT used by TouchPad)
 
-**Purpose:** GPU microcode for Adreno 220 (a2xx family)  
-**Load Method:** Loaded by freedreno/msm driver  
-**Mainline Status:** ✅ Supported - uses standard freedreno firmware  
-**Note:** "Yamato" and "Leia" are codenames for Adreno 2xx generations
+**Purpose:** GPU microcode for Adreno 220 (a2xx family, "Leia" generation)
+**Load Method:** Loaded by freedreno/msm driver
+**Mainline Status:** ✅ Supported - mainline uses same firmware files
+
+**Chip ID Detection:**
+- Legacy kernel: `KGSL_CHIPID_LEIA_REV470` (0x2010000) selects leia_*_470.fw
+- Mainline: `chip_ids = 0x02020000` for A220 selects leia_*_470.fw
 
 **Mainline Firmware Path:**
-- `/lib/firmware/qcom/a200_pfp.fw`
-- `/lib/firmware/qcom/a200_pm4.fw`
+- `/lib/firmware/qcom/leia_pfp_470.fw` ⭐ (required for TouchPad)
+- `/lib/firmware/qcom/leia_pm4_470.fw` ⭐ (required for TouchPad)
 
-**Action Required:** Check if yamato firmware is compatible with mainline or if conversion needed
+**Note:** The "Yamato" firmware is for older Adreno 200/205 GPUs (A200 chip ID 0x02000000).
+The HP TouchPad uses Adreno 220 which requires the "Leia" firmware.
 
 ---
 
@@ -205,8 +209,8 @@ sudo mkdir -p /lib/firmware/ath6k/AR6003/hw2.1.1/
 sudo cp -r /home/herrie/webos/touchpad-kernel/doctor305/nova-cust-image-topaz.rootfs/lib/firmware/ath6k/hw2.1.1/* \
     /lib/firmware/ath6k/AR6003/hw2.1.1/
 
-# GPU firmware
-sudo cp /home/herrie/webos/touchpad-kernel/doctor305/nova-cust-image-topaz.rootfs/lib/firmware/yamato_*.fw \
+# GPU firmware (Adreno 220 uses Leia firmware, NOT Yamato)
+sudo cp /home/herrie/webos/touchpad-kernel/doctor305/nova-cust-image-topaz.rootfs/lib/firmware/leia_*.fw \
     /lib/firmware/qcom/
 
 # Audio DSP (optional)
