@@ -399,20 +399,87 @@
 	};
 };
 
-/* Proximity sensor - needs identification */
 /*
- * TODO: Determine proximity sensor model from hardware
- * Legacy kernel uses GPIOs 68/69 for I2C and GPIO 39 for interrupt
- * Likely on bit-banged I2C or GSBI
+ * Proximity sensor on bit-banged I2C
+ *
+ * Legacy kernel defines GPIOs 68/69 for bit-banged I2C and GPIO 39 for interrupt,
+ * but no driver was enabled in defconfig. Sensor model is unknown.
+ *
+ * Uncomment and update compatible string when sensor model is identified:
+ *
+ * / {
+ *     proximity_i2c: i2c-gpio-prox {
+ *         compatible = "i2c-gpio";
+ *         sda-gpios = <&tlmm 68 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+ *         scl-gpios = <&tlmm 69 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+ *         i2c-gpio,delay-us = <2>;
+ *         #address-cells = <1>;
+ *         #size-cells = <0>;
+ *
+ *         proximity@XX {
+ *             compatible = "unknown,proximity-sensor";
+ *             reg = <0xXX>;
+ *             interrupt-parent = <&tlmm>;
+ *             interrupts = <39 IRQ_TYPE_EDGE_FALLING>;
+ *             pinctrl-names = "default";
+ *             pinctrl-0 = <&proximity_pins>;
+ *         };
+ *     };
+ * };
  */
 
 /*
- * Audio codec WM8958 is already defined in tenderloin-common.dtsi
- * Opal uses the same codec with additional GPIOs for LDO control:
- * - GPIO 57: Headset mic detect (already configured in common)
+ * Audio LDO control GPIOs for WM8958 codec
+ *
+ * Opal has additional audio LDO enable pins compared to Topaz:
  * - GPIO 66: AUD_LDO1_EN
  * - GPIO 108: AUD_LDO2_EN
- * These may need to be configured as regulators if audio issues occur.
+ *
+ * The WM8958 codec is already configured in tenderloin-common.dtsi.
+ * These LDO controls may need to be configured as fixed regulators
+ * if audio issues occur, but they might be optional power sequencing.
+ *
+ * Uncomment if needed:
+ *
+ * / {
+ *     aud_ldo1: regulator-aud-ldo1 {
+ *         compatible = "regulator-fixed";
+ *         regulator-name = "aud-ldo1";
+ *         gpio = <&tlmm 66 GPIO_ACTIVE_HIGH>;
+ *         enable-active-high;
+ *         regulator-always-on;
+ *     };
+ *
+ *     aud_ldo2: regulator-aud-ldo2 {
+ *         compatible = "regulator-fixed";
+ *         regulator-name = "aud-ldo2";
+ *         gpio = <&tlmm 108 GPIO_ACTIVE_HIGH>;
+ *         enable-active-high;
+ *         regulator-always-on;
+ *     };
+ * };
+ */
+
+/*
+ * Camera Flash LED
+ *
+ * GPIO 158 on DVT+ (DVT/PVT), GPIO 69 on EVT1
+ * Pinctrl is already configured in camera_pins above.
+ *
+ * Uncomment to enable as LED device:
+ *
+ * / {
+ *     leds {
+ *         compatible = "gpio-leds";
+ *
+ *         camera-flash {
+ *             label = "opal:camera-flash";
+ *             gpios = <&tlmm 158 GPIO_ACTIVE_HIGH>;
+ *             default-state = "off";
+ *             linux,default-trigger = "flash";
+ *         };
+ *     };
+ * };
  */
 
 &pm8058_gpio {

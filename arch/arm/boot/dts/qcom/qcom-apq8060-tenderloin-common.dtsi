@@ -988,6 +988,14 @@
 		bias-disable;
 	};
 
+	/* GPS UART pins (GSBI5) */
+	gsbi5_uart_pins: uart5-state {
+		pins = "gpio103", "gpio104", "gpio105", "gpio106";
+		function = "gsbi5";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
 	gsbi6_uart_pins: i2c6-state {
 		pins = "gpio53", "gpio54", "gpio55", "gpio56";
 		function = "gsbi6";
@@ -1522,6 +1530,34 @@
 	};
 };
 
+/* GPS - Broadcom BCM4751 on GSBI5 UART */
+&gsbi5 {
+	status = "okay";
+	qcom,mode = <GSBI_PROT_UART_W_FC>;
+};
+
+&gsbi5_serial {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi5_uart_pins>;
+
+	uart-has-rtscts;
+
+	gnss {
+		compatible = "brcm,bcm4751";
+
+		vddio-supply = <&pm8058_s3>;  /* 1.8V I/O */
+		vdd-supply = <&pm8058_l10>;   /* 3.05V core */
+
+		enable-gpios = <&pm8058_gpio 3 GPIO_ACTIVE_HIGH>;  /* GPIO 4 - LNA enable */
+		reset-gpios = <&pm8058_gpio 4 GPIO_ACTIVE_LOW>;    /* GPIO 5 - Reset */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&gps_pins>;
+	};
+};
+
 &gsbi6 {
 	status = "okay";
 	qcom,mode = <GSBI_PROT_UART_W_FC>;
@@ -1814,6 +1850,27 @@
 			function = "normal";
 			bias-disable;
 			power-source = <PM8058_GPIO_VPH>;
+		};
+	};
+
+	/* GPS control pins (Broadcom BCM4751) */
+	gps_pins: gps-state {
+		/* GPIO 4: GPS LNA enable (REGPU) */
+		gpio@3 {
+			pins = "gpio4";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+
+		/* GPIO 5: GPS reset */
+		gpio@4 {
+			pins = "gpio5";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
 		};
 	};
 };
