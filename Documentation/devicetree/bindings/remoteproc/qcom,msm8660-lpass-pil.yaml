@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/remoteproc/qcom,msm8660-lpass-pil.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm MSM8660/APQ8060 LPASS QDSP6v2 Peripheral Image Loader
+
+maintainers:
+  - Bjorn Andersson <andersson@kernel.org>
+
+description:
+  This document defines the binding for the component that loads and boots
+  firmware on the Qualcomm LPASS (Low Power Audio Subsystem) QDSP6v2 core
+  found on MSM8660 and APQ8060 platforms.
+
+properties:
+  compatible:
+    enum:
+      - qcom,msm8660-lpass-pil
+      - qcom,apq8060-lpass-pil
+
+  reg:
+    items:
+      - description: LCC (LPASS Clock Controller) registers
+      - description: QDSP6SS (QDSP6 Subsystem) registers
+
+  reg-names:
+    items:
+      - const: lcc
+      - const: qdsp6ss
+
+  clocks:
+    items:
+      - description: PLL4 (LPASS PLL) clock from LCC
+
+  clock-names:
+    items:
+      - const: pll
+
+  firmware-name:
+    maxItems: 1
+    description:
+      Relative firmware image path for the LPASS QDSP6 core. The firmware
+      uses the split format with a .mdt metadata file and .bXX segment files.
+
+  memory-region:
+    maxItems: 1
+    description:
+      Reserved memory region for the LPASS QDSP6 firmware and data.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - clocks
+  - clock-names
+  - firmware-name
+  - memory-region
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/qcom,lcc-msm8660.h>
+
+    reserved-memory {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+
+        lpass_mem: lpass@8f000000 {
+            reg = <0x8f000000 0x500000>;
+            no-map;
+        };
+    };
+
+    remoteproc@28800000 {
+        compatible = "qcom,apq8060-lpass-pil";
+        reg = <0x28000000 0x1000>,
+              <0x28800000 0x1000>;
+        reg-names = "lcc", "qdsp6ss";
+
+        clocks = <&lcc PLL4>;
+        clock-names = "pll";
+
+        firmware-name = "q6.mdt";
+        memory-region = <&lpass_mem>;
+    };
