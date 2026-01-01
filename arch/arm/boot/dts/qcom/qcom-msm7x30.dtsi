@@ -136,6 +136,7 @@
 		ssbi: ssbi@ad900000 {
 			compatible = "qcom,ssbi";
 			reg = <0xad900000 0x1000>;
+			qcom,controller-type = "ssbi2";
 			#address-cells = <1>;
 			#size-cells = <0>;
 
@@ -148,6 +149,7 @@
 		ssbi7: ssbi@ac800000 {
 			compatible = "qcom,ssbi";
 			reg = <0xac800000 0x1000>;
+			qcom,controller-type = "ssbi2";
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
