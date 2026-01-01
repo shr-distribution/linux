@@ -1,0 +1,619 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * HP TouchPad Go - Opal WiFi-only variant
+ *
+ * Codename: SHORTLOIN
+ * Hardware: Qualcomm MSM8660 WiFi-only (no 3G modem)
+ * Display: 7" 1024x768 IPS LCD (smaller than Topaz 9.7")
+ *
+ * The TouchPad Go (Opal) is an unreleased 7" variant of the HP TouchPad.
+ * Unlike Topaz, the WiFi and 3G variants share the same GPIO configuration
+ * for all common hardware. The only differences are:
+ * - WiFi variant has HDMI output (GPIOs 169-172 available)
+ * - 3G variant has ISP1763/MDM6600 modem (GPIOs 169-172 used)
+ *
+ * GPIO configurations based on legacy kernel (gpiomux-shortloin.h)
+ * Status: Ready for verification with hardware
+ *
+ * Key hardware (same GPIOs as Opal 3G):
+ * =========================================
+ *
+ * WiFi/Bluetooth/Sensors/Power:
+ *   - WiFi: GPIOs 28, 80, 93 (same as Topaz 3G)
+ *   - Bluetooth: GPIOs 50, 110, 122, 131 (same as Topaz 3G)
+ *   - Touchscreen: GPIOs 45, 70 (same as Topaz 3G)
+ *   - Gyro: GPIO 75 (same as Topaz 3G)
+ *   - Accelerometer: GPIO 124 (same as Topaz)
+ *   - LED Controller: GPIOs 77, 121 (same as Topaz 3G)
+ *   - Charger: GPIOs 86, 134 (same as Topaz 3G)
+ *   - A6 Battery: Same GPIOs as Opal 3G (non-EVT1)
+ *
+ * Opal-specific hardware:
+ *   - Front camera: GPIO 107 (power down), PM8058 GPIO 8 (reset)
+ *   - Rear camera: PM8058 GPIO 9 (power down), GPIOs 47/48 (I2C), GPIO 32 (MCLK)
+ *   - Camera flash: GPIO 158 (DVT+), GPIO 69 (EVT1)
+ *   - Proximity sensor: GPIO 39 (interrupt), GPIOs 68/69 (I2C)
+ *   - NFC (PN544): PM8058 GPIOs 15/16/17
+ *   - Cover detect: GPIO 31
+ *
+ * HDMI: Available on WiFi variant
+ *   - GPIO 169: HDMI CEC
+ *   - GPIO 170: HDMI DDC SCL
+ *   - GPIO 171: HDMI DDC SDA
+ *   - GPIO 172: HDMI HPD
+ */
+
+/dts-v1/;
+
+#include "qcom-apq8060-tenderloin-common.dtsi"
+
+/ {
+	model = "HP TouchPad Go (Opal WiFi)";
+	compatible = "hp,opal", "qcom,msm8660";
+};
+
+/*
+ * GPIO overrides - same as Opal 3G (and Topaz 3G)
+ * Unlike Topaz where WiFi and 3G had different GPIOs, Opal uses the same
+ * GPIO assignments for both variants.
+ */
+
+/* Override WiFi reset GPIOs */
+/ {
+	ath6kl_pwrseq: ath6kl-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		/* WL_HOST_WAKE=93, HOST_WAKE_WL=80, WLAN_RST_N=28 */
+		reset-gpios = <&tlmm 93 GPIO_ACTIVE_HIGH
+		               &tlmm 80 GPIO_ACTIVE_HIGH
+		               &tlmm 28 GPIO_ACTIVE_LOW>;
+	};
+};
+
+&tlmm {
+	/* Override WiFi pinctrl */
+	wlan_gpios_reset: wlan-reset-state {
+		irq-pins {
+			pins = "gpio28";  /* WLAN_RST_N instead of 135 */
+			function = "gpio";
+			bias-disable;
+		};
+	};
+
+	wlan_gpios: wlan-state {
+		irq-pins {
+			pins = "gpio93", "gpio80";  /* HOST_WAKE_WL = 80 instead of 137 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/* Override Bluetooth pinctrl */
+	bt_pin: bt-state {
+		hostwake-pins {
+			pins = "gpio50";  /* BT_HOST_WAKE instead of 129 */
+			function = "gpio";
+		};
+
+		devwake-pins {
+			pins = "gpio131";  /* BT_WAKE - same */
+			function = "gpio";
+		};
+	};
+
+	/* Override touchscreen pinctrl */
+	cy8ctma395_default_state: cy8ctma395-default-state {
+		xres-pins {
+			pins = "gpio70";  /* TP_PWR_RST / XRES */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		wake-pins {
+			pins = "gpio45";  /* GPIO_CTP_WAKE instead of 123 */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+	};
+
+	/* Override sensor pinctrl */
+	mpu3050_gpios: mpu-state {
+		irq-pins {
+			pins = "gpio75";  /* GYRO_INT instead of 125 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/* Override LED controller pinctrl */
+	lm8502_pins: lm8502-state {
+		enable-pins {
+			pins = "gpio121";  /* Enable - same */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		irq-pins {
+			pins = "gpio77";  /* LM8502_INT instead of 128 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/* Override charger pinctrl */
+	charger_gpios: max8903b-state {
+		in-pins {
+			pins = "gpio35", "gpio36", "gpio86";  /* DC_OK = gpio86 instead of gpio140 */
+			function = "gpio";
+			drive-strength = <2>;
+			input-enable;
+			bias-pull-up;
+		};
+		out-pins {
+			pins = "gpio30", "gpio33", "gpio34", "gpio41", "gpio42", "gpio134";  /* USB_CHG_MODE = gpio134 instead of gpio133 */
+			function = "gpio";
+			drive-strength = <2>;
+		};
+		/* Safe initial state, charging disabled */
+		dcm-pins {
+			pins = "gpio42";
+			function = "gpio";
+			output-high;
+		};
+		/* 500 mA USB charging. Not controlled by driver. */
+		iusb-pins {
+			pins = "gpio134";  /* USB_CHG_MODE instead of 133 */
+			function = "gpio";
+			output-high;
+		};
+		usus-pins {
+			pins = "gpio33";
+			function = "gpio";
+			output-low;
+		};
+		cen-pins {
+			pins = "gpio41";
+			function = "gpio";
+			output-low;
+		};
+		/*
+		 * Limit DC charging current to 750 mA, the
+		 * minimum value. Appears to control a
+		 * multiplexed set of resistors connected to
+		 * the IDC pin. This functionality is not
+		 * supported by the MAX8903 driver.
+		 */
+		d-iset-pins {
+			pins = "gpio34", "gpio30";
+			function = "gpio";
+			output-low;
+		};
+	};
+};
+
+/* Override Bluetooth GPIOs */
+&gsbi6_serial {
+	bluetooth {
+		reset-gpios = <&tlmm 122 GPIO_ACTIVE_HIGH>;      /* BT_RST_N instead of 138 */
+		host-wakeup-gpios = <&tlmm 50 GPIO_ACTIVE_HIGH>;  /* BT_HOST_WAKE instead of 129 */
+		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>; /* BT_WAKE - same */
+		shutdown-gpios = <&tlmm 110 GPIO_ACTIVE_HIGH>;   /* BT_POWER instead of 130 */
+	};
+};
+
+/* Override sensor GPIOs */
+&mpu3050 {
+	interrupts-extended = <&tlmm 75 IRQ_TYPE_EDGE_FALLING>;  /* GYRO_INT instead of 125 */
+};
+
+/*
+ * Accelerometer (LSM303DLH) is present on Opal at I2C address 0x18.
+ * Interrupt on GPIO 124 - keeping default from common DTS.
+ */
+
+/* Override LED controller GPIO */
+&lm8502 {
+	interrupts = <77 IRQ_TYPE_EDGE_FALLING>;  /* LM8502_INT instead of 128 */
+};
+
+/* Override charger GPIOs */
+&charger {
+	uok-gpios = <&tlmm 86 GPIO_ACTIVE_LOW>;  /* DC_OK instead of 140 */
+};
+
+/* Override A6 battery controller GPIOs */
+&a6_0 {
+	interrupt-parent = <&tlmm>;
+	interrupts = <37 IRQ_TYPE_EDGE_FALLING>;  /* A6_0_IRQ instead of 156 */
+
+	/* SBW programming GPIOs same as Opal 3G for non-EVT1 */
+	tck-gpios = <&tlmm 156 GPIO_ACTIVE_HIGH>;   /* A6_0_TCK */
+	tdio-gpios = <&tlmm 170 GPIO_ACTIVE_HIGH>;  /* A6_0_TDIO */
+	wakeup-gpios = <&tlmm 155 GPIO_ACTIVE_HIGH>; /* A6_0_WAKEUP */
+};
+
+&a6_1 {
+	interrupt-parent = <&tlmm>;
+	interrupts = <94 IRQ_TYPE_EDGE_FALLING>;  /* A6_1_IRQ instead of 132 */
+
+	/* SBW programming GPIOs same as Opal 3G */
+	tck-gpios = <&tlmm 115 GPIO_ACTIVE_HIGH>;    /* A6_1_TCK */
+	tdio-gpios = <&tlmm 116 GPIO_ACTIVE_HIGH>;   /* A6_1_TDIO */
+	wakeup-gpios = <&tlmm 78 GPIO_ACTIVE_HIGH>;  /* A6_1_WAKEUP */
+};
+
+/*
+ * HDMI is available on WiFi variant
+ * GPIOs 169-172 are not used by ISP1763/modem on WiFi model
+ */
+&hdmi {
+	status = "okay";
+};
+
+&tlmm {
+	/*
+	 * Opal-specific hardware (same as 3G variant)
+	 */
+
+	/* Cover detect sensor */
+	cover_detect_pins: cover-detect-state {
+		pins = "gpio31";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+		input-enable;
+	};
+
+	/* Proximity sensor I2C and interrupt */
+	proximity_pins: proximity-state {
+		i2c-pins {
+			pins = "gpio68", "gpio69";  /* PROX_I2C_DATA, PROX_I2C_CLK */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		irq-pins {
+			pins = "gpio39";  /* PROX_INT */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+
+	/* Camera I2C */
+	camera_i2c_pins: camera-i2c-state {
+		pins = "gpio47", "gpio48";  /* CAM_I2C_DATA, CAM_I2C_CLK */
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	/* Camera control GPIOs */
+	camera_pins: camera-state {
+		mclk-pins {
+			pins = "gpio32";  /* CAMIF_MCLK */
+			function = "cam_mclk";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		webcam-pwdn-pins {
+			pins = "gpio107";  /* WEBCAM_PWDN */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-low;
+		};
+
+		/* Camera flash - GPIO differs by revision */
+		flash-pins {
+			pins = "gpio158";  /* WEBCAM_FLASH (DVT+), was gpio69 on EVT1 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-low;
+		};
+	};
+};
+
+/*
+ * Opal-specific hardware device nodes
+ * (Same as Opal 3G variant)
+ */
+
+/* Front camera on GSBI4 I2C */
+&gsbi4_i2c {
+	status = "okay";
+
+	/* Delete Topaz camera node - Opal uses different I2C address and config */
+	/delete-node/ camera@3c;
+
+	/* Front camera - MT9M113 1.3MP */
+	camera@78 {
+		compatible = "aptina,mt9m113";
+		reg = <0x78>;
+
+		reset-gpios = <&pm8058_gpio 7 GPIO_ACTIVE_LOW>;  /* PM8058 GPIO 8 (0-indexed = 7) */
+		powerdown-gpios = <&tlmm 107 GPIO_ACTIVE_HIGH>;
+
+		vdd-supply = <&pm8058_l15>;     /* 2.85V core */
+		vddio-supply = <&pm8058_s3>;    /* 1.8V I/O */
+		vaa-supply = <&pm8058_l15>;     /* 2.85V analog */
+
+		clocks = <&mmcc CAMCLK0_CLK>;
+		clock-names = "extclk";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_pins>;
+
+		port {
+			opal_mt9m113_ep: endpoint {
+				bus-type = <5>; /* MIPI CSI-2 D-PHY */
+				clock-lanes = <0>;
+				data-lanes = <1>;
+				remote-endpoint = <&opal_camss_csi1_in>;
+			};
+		};
+	};
+
+	/*
+	 * Rear camera - STMicroelectronics VX6953 5.1MP EDOF
+	 *
+	 * EDOF = Extended Depth of Field
+	 * Resolution: 2608x1960 (5.1 megapixel)
+	 * Interface: CSI-0 (vs CSI-1 for front camera)
+	 * Flash LED: GPIO 158 (DVT+) / GPIO 69 (EVT1)
+	 *
+	 * Hardware configuration verified from legacy kernel:
+	 * - No dedicated reset pin (uses powerdown only)
+	 * - PM8058 GPIO 9 for powerdown control
+	 * - I2C address 0x20
+	 * - Uses same MCLK as front camera (GPIO 32)
+	 *
+	 * DRIVER STATUS: VX6953 driver ported to modern V4L2 subdev framework.
+	 * See drivers/media/i2c/vx6953.c
+	 */
+	camera@20 {
+		compatible = "st,vx6953";
+		reg = <0x20>;
+		status = "okay";
+
+		/* VX6953 has no reset pin, only powerdown */
+		powerdown-gpios = <&pm8058_gpio 8 GPIO_ACTIVE_HIGH>;  /* PM8058 GPIO 9 (0-indexed = 8) */
+
+		vana-supply = <&pm8058_l15>;    /* 2.85V analog */
+		vdig-supply = <&pm8058_s3>;     /* 1.8V digital */
+		vio-supply = <&pm8058_s3>;      /* 1.8V I/O */
+
+		/* Both cameras share CAMCLK0 via GPIO 32 */
+		clocks = <&mmcc CAMCLK0_CLK>;
+		clock-names = "xclk";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_pins>;
+
+		/*
+		 * TODO: Add flash LED when LED subsystem support is added
+		 * flash-leds = <&camera_flash>;
+		 */
+
+		port {
+			opal_vx6953_ep: endpoint {
+				bus-type = <5>; /* MIPI CSI-2 D-PHY */
+				clock-lanes = <0>;
+				data-lanes = <1 2>;
+				remote-endpoint = <&opal_camss_csi0_in>;
+			};
+		};
+	};
+};
+
+/* NFC chip on GSBI7 I2C */
+&gsbi7_i2c {
+	pn544: nfc@28 {
+		compatible = "nxp,pn544-i2c";
+		reg = <0x28>;
+
+		interrupt-parent = <&pm8058_gpio>;
+		interrupts = <14 IRQ_TYPE_EDGE_RISING>;  /* PM8058 GPIO 15 (0-indexed = 14) */
+
+		enable-gpios = <&pm8058_gpio 15 GPIO_ACTIVE_HIGH>;    /* PM8058 GPIO 16 */
+		firmware-gpios = <&pm8058_gpio 16 GPIO_ACTIVE_HIGH>;  /* PM8058 GPIO 17 */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&nfc_pins>;
+	};
+};
+
+/* Cover detect sensor (Hall effect or similar) */
+/ {
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cover_detect_pins>;
+
+		cover-detect {
+			label = "Cover Detect";
+			gpios = <&tlmm 31 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			wakeup-source;
+			debounce-interval = <15>;
+		};
+	};
+};
+
+/*
+ * Proximity sensor on bit-banged I2C
+ *
+ * Cypress CY8C20236A PSoC CapSense controller used for capacitive
+ * proximity detection. Uses dedicated bit-banged I2C bus.
+ */
+/ {
+	proximity_i2c: i2c-gpio-prox {
+		compatible = "i2c-gpio";
+		sda-gpios = <&tlmm 68 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&tlmm 69 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		proximity@8 {
+			compatible = "cypress,cy8c20236a";
+			reg = <0x08>;  /* Default I2C address, may need verification */
+			interrupt-parent = <&tlmm>;
+			interrupts = <39 IRQ_TYPE_EDGE_FALLING>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&proximity_pins>;
+
+			/*
+			 * CY8C20236A is a PSoC (Programmable System-on-Chip)
+			 * with custom firmware for proximity sensing.
+			 * Requires user-space driver or custom kernel module.
+			 */
+		};
+	};
+};
+
+/*
+ * Audio LDO control GPIOs for WM8958 codec
+ *
+ * Opal has additional audio LDO enable pins compared to Topaz:
+ * - GPIO 66: AUD_LDO1_EN
+ * - GPIO 108: AUD_LDO2_EN
+ *
+ * The WM8958 codec is already configured in tenderloin-common.dtsi.
+ * These LDO controls may need to be configured as fixed regulators
+ * if audio issues occur, but they might be optional power sequencing.
+ *
+ * Uncomment if needed:
+ *
+ * / {
+ *     aud_ldo1: regulator-aud-ldo1 {
+ *         compatible = "regulator-fixed";
+ *         regulator-name = "aud-ldo1";
+ *         gpio = <&tlmm 66 GPIO_ACTIVE_HIGH>;
+ *         enable-active-high;
+ *         regulator-always-on;
+ *     };
+ *
+ *     aud_ldo2: regulator-aud-ldo2 {
+ *         compatible = "regulator-fixed";
+ *         regulator-name = "aud-ldo2";
+ *         gpio = <&tlmm 108 GPIO_ACTIVE_HIGH>;
+ *         enable-active-high;
+ *         regulator-always-on;
+ *     };
+ * };
+ */
+
+/*
+ * Camera Flash LED
+ *
+ * GPIO 158 on DVT+ (DVT/PVT), GPIO 69 on EVT1
+ * Pinctrl is already configured in camera_pins above.
+ *
+ * Uncomment to enable as LED device:
+ *
+ * / {
+ *     leds {
+ *         compatible = "gpio-leds";
+ *
+ *         camera-flash {
+ *             label = "opal:camera-flash";
+ *             gpios = <&tlmm 158 GPIO_ACTIVE_HIGH>;
+ *             default-state = "off";
+ *             linux,default-trigger = "flash";
+ *         };
+ *     };
+ * };
+ */
+
+&pm8058_gpio {
+	/* NFC pin configuration */
+	nfc_pins: nfc-state {
+		/* GPIO 15: NFC IRQ output */
+		gpio@e {
+			pins = "gpio15";
+			function = "normal";
+			input-enable;
+			bias-pull-down;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+
+		/* GPIO 16: NFC enable */
+		gpio@f {
+			pins = "gpio16";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+
+		/* GPIO 17: NFC firmware mode */
+		gpio@10 {
+			pins = "gpio17";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+	};
+
+	/* Camera reset pin */
+	camera_reset_pin: camera-reset-state {
+		/* GPIO 8: Front camera reset */
+		gpio@7 {
+			pins = "gpio8";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+	};
+};
+
+/* Camera Subsystem - Override for MIPI CSI-2 interfaces (Opal-specific) */
+&camss {
+	/delete-node/ ports;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* Port 0: Parallel camera (unused on Opal) */
+		port@0 {
+			reg = <0>;
+		};
+
+		/* Port 1: MIPI CSI-2 interface 0 (CSI0) - Rear camera */
+		port@1 {
+			reg = <1>;
+			opal_camss_csi0_in: endpoint {
+				clock-lanes = <0>;
+				data-lanes = <1 2>;
+				remote-endpoint = <&opal_vx6953_ep>;
+			};
+		};
+
+		/* Port 2: MIPI CSI-2 interface 1 (CSI1) - Front camera */
+		port@2 {
+			reg = <2>;
+			opal_camss_csi1_in: endpoint {
+				clock-lanes = <0>;
+				data-lanes = <1>;
+				remote-endpoint = <&opal_mt9m113_ep>;
+			};
+		};
+	};
+};

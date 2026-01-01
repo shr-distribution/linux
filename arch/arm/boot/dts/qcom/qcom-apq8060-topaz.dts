@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * HP TouchPad - Topaz WiFi-only variant
+ *
+ * Codename: TENDERLOIN
+ * Hardware: Qualcomm APQ8060 (MSM8660), WiFi-only
+ *
+ * This is the most common HP TouchPad variant sold.
+ * For the 3G variant, use qcom-apq8060-topaz-3g.dts
+ * For the Opal variant (different hardware), a separate device tree is needed.
+ */
+
+/dts-v1/;
+
+#include "qcom-apq8060-tenderloin-common.dtsi"
+
+/ {
+	model = "HP TouchPad (Topaz WiFi)";
+	compatible = "hp,topaz", "qcom,apq8060", "qcom,msm8660";
+};

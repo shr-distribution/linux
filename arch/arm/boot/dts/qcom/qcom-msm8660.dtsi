@@ -4,6 +4,9 @@
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/clock/qcom,gcc-msm8660.h>
+#include <dt-bindings/clock/qcom,lcc-msm8660.h>
+#include <dt-bindings/clock/qcom,mmcc-msm8960.h>
+#include <dt-bindings/reset/qcom,mmcc-msm8960.h>
 #include <dt-bindings/soc/qcom,gsbi.h>
 
 / {
@@ -73,6 +76,22 @@
 		};
 	};
 
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * LPASS (Low Power Audio Subsystem) QDSP6 firmware region.
+		 * The actual address and size should be adjusted based on
+		 * the device's memory layout.
+		 */
+		lpass_mem: lpass@8f000000 {
+			reg = <0x8f000000 0x500000>;
+			no-map;
+		};
+	};
+
 	soc: soc {
 		#address-cells = <1>;
 		#size-cells = <1>;
@@ -119,6 +138,62 @@
 			clock-names = "pxo", "cxo";
 		};
 
+		mmcc: clock-controller@4000000 {
+			compatible = "qcom,mmcc-msm8660";
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			reg = <0x04000000 0x1000>;
+			clocks = <&pxo_board>, <&gcc PLL8_VOTE>;
+			clock-names = "pxo", "pll8_vote";
+		};
+
+		lcc: clock-controller@28000000 {
+			compatible = "qcom,lcc-msm8660";
+			reg = <0x28000000 0x1000>;
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			clocks = <&pxo_board>,
+				 <&gcc PLL4_VOTE>,
+				 <0>, <0>, <0>, <0>, <0>, <0>;
+			clock-names = "pxo",
+				      "pll4_vote",
+				      "mi2s_codec_clk",
+				      "codec_i2s_mic_codec_clk",
+				      "spare_i2s_mic_codec_clk",
+				      "codec_i2s_spkr_codec_clk",
+				      "spare_i2s_spkr_codec_clk",
+				      "pcm_codec_clk";
+		};
+
+		lpass: remoteproc@28800000 {
+			compatible = "qcom,msm8660-lpass-pil";
+			reg = <0x28000000 0x1000>,
+			      <0x28800000 0x1000>;
+			reg-names = "lcc", "qdsp6ss";
+
+			clocks = <&lcc PLL4>;
+			clock-names = "pll";
+
+			firmware-name = "q6.mdt";
+			memory-region = <&lpass_mem>;
+
+			status = "disabled";
+		};
+
+		vidc: video-codec@4400000 {
+			compatible = "qcom,msm8660-vidc";
+			reg = <0x04400000 0x100000>;
+			interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc VCODEC_CLK>,
+				 <&mmcc VCODEC_AHB_CLK>,
+				 <&mmcc VCODEC_AXI_CLK>;
+			clock-names = "core", "iface", "axi";
+			resets = <&mmcc VCODEC_RESET>;
+			reset-names = "core";
+
+			status = "disabled";
+		};
+
 		gsbi1: gsbi@16000000 {
 			compatible = "qcom,gsbi-v1.0.0";
 			cell-index = <12>;
@@ -163,6 +238,41 @@
 				reg = <0x16280000 0x1000>;
 				interrupts = <GIC_SPI 151 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&gcc GSBI3_QUP_CLK>, <&gcc GSBI3_H_CLK>;
+				clock-names = "core", "iface";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		gsbi5: gsbi@16400000 {
+			compatible = "qcom,gsbi-v1.0.0";
+			cell-index = <5>;
+			reg = <0x16400000 0x100>;
+			clocks = <&gcc GSBI5_H_CLK>;
+			clock-names = "iface";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+			status = "disabled";
+
+			syscon-tcsr = <&tcsr>;
+
+			gsbi5_serial: serial@16440000 {
+				compatible = "qcom,msm-uartdm-v1.3", "qcom,msm-uartdm";
+				reg = <0x16440000 0x1000>,
+				      <0x16400000 0x1000>;
+				interrupts = <GIC_SPI 154 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI5_UART_CLK>, <&gcc GSBI5_H_CLK>;
+				clock-names = "core", "iface";
+				status = "disabled";
+			};
+
+			gsbi5_i2c: i2c@16480000 {
+				compatible = "qcom,i2c-qup-v1.1.1";
+				reg = <0x16480000 0x1000>;
+				interrupts = <GIC_SPI 155 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI5_QUP_CLK>, <&gcc GSBI5_H_CLK>;
 				clock-names = "core", "iface";
 				#address-cells = <1>;
 				#size-cells = <0>;
@@ -425,9 +535,86 @@
 			};
 		};
 
-		tcsr: syscon@1a400000 {
+		tcsr: syscon@16b00000 {
 			compatible = "qcom,tcsr-msm8660", "syscon";
-			reg = <0x1a400000 0x100>;
+			reg = <0x16b00000 0x80>;
+		};
+
+		/*
+		 * Camera Subsystem - VFE 3.1 with MIPI CSI-2
+		 * MSM8660 supports both parallel camera (CAMIF) and MIPI CSI-2.
+		 * Includes 2 CSIPHY/CSID interfaces integrated at CSI_0 and CSI_1.
+		 */
+		camss: camss@04500000 {
+			compatible = "qcom,msm8660-camss";
+			reg = <0x04500000 0x1000>,
+			      <0x04800000 0x1000>,
+			      <0x04800000 0x1000>,
+			      <0x04900000 0x1000>,
+			      <0x04900000 0x1000>;
+			reg-names = "vfe0",
+				    "csiphy0",
+				    "csid0",
+				    "csiphy1",
+				    "csid1";
+			interrupts = <GIC_SPI 78 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "vfe0",
+					  "csiphy0",
+					  "csid0",
+					  "csiphy1",
+					  "csid1";
+
+			/*
+			 * Clock names based on VFE31 and CSI requirements:
+			 * VFE: vfe, vfe_axi, vfe_ahb
+			 * CSI0: csi0_src, csi0, csi0_phy
+			 * CSI1: csi1_src, csi1, csi1_phy
+			 *
+			 */
+			clocks = <&mmcc VFE_CLK>,
+				 <&mmcc VFE_AXI_CLK>,
+				 <&mmcc VFE_AHB_CLK>,
+				 <&mmcc CSI0_SRC>,
+				 <&mmcc CSI0_CLK>,
+				 <&mmcc CSI0_PHY_CLK>,
+				 <&mmcc CSI1_SRC>,
+				 <&mmcc CSI1_CLK>,
+				 <&mmcc CSI1_PHY_CLK>;
+			clock-names = "vfe",
+				      "vfe_axi",
+				      "vfe_ahb",
+				      "csi0_src",
+				      "csi0",
+				      "csi0_phy",
+				      "csi1_src",
+				      "csi1",
+				      "csi1_phy";
+
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* Parallel camera input port */
+				port@0 {
+					reg = <0>;
+				};
+
+				/* MIPI CSI-2 input port 1 (CSI0) */
+				port@1 {
+					reg = <1>;
+				};
+
+				/* MIPI CSI-2 input port 2 (CSI1) */
+				port@2 {
+					reg = <2>;
+				};
+			};
 		};
 	};
 

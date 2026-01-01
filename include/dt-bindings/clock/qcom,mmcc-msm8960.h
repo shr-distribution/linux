@@ -136,4 +136,9 @@
 #define DSI2_PIXEL_LVDS_SRC				127
 #define LVDS_CLK					128
 
+/* MSM8660-specific clocks for MDP LCDC interface */
+#define MDP_PIXEL_SRC					129
+#define MDP_PIXEL_CLK					130
+#define MDP_LCDC_CLK					131
+
 #endif

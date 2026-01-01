@@ -1,0 +1,405 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * HP TouchPad - Topaz 3G variant
+ *
+ * Codename: TENDERLOIN_3G
+ * Hardware: Qualcomm MSM8660 with MDM6600 3G modem
+ *
+ * The 3G variant has significant GPIO differences from WiFi-only Topaz.
+ * All GPIOs have been verified against production hardware (topaz-3G-pvt).
+ *
+ * Key differences from Topaz WiFi:
+ * ==================================
+ *
+ * WiFi:
+ *   - HOST_WAKE_WL: GPIO 80 (was 137)
+ *   - WLAN_RST_N: GPIO 28 (was 135)
+ *   - WL_HOST_WAKE: GPIO 93 (same)
+ *
+ * Bluetooth:
+ *   - BT_RST_N: GPIO 122 (was 138)
+ *   - BT_POWER: GPIO 110 (was 130)
+ *   - BT_WAKE: GPIO 131 (same)
+ *   - BT_HOST_WAKE: GPIO 50 (was 129)
+ *
+ * Touchscreen:
+ *   - IRQ: GPIO 45 (was 123)
+ *   - RESET: GPIO 70 (same)
+ *
+ * Sensors:
+ *   - Gyro INT: GPIO 75 (was 125)
+ *   - Accel: Present (GPIO 124, same as WiFi)
+ *   - Compass: Present (same as WiFi)
+ *
+ * LEDs:
+ *   - LM8502 INT: GPIO 77 (was 128)
+ *   - LM8502 EN: GPIO 121 (same)
+ *
+ * Charger:
+ *   - DC_OK: GPIO 86 (was 140)
+ *   - USB_CHG_MODE: GPIO 134 (was 133)
+ *
+ * A6 Battery (DVT hardware):
+ *   - A6_0 IRQ: GPIO 37 (was 156)
+ *   - A6_0 TCK: GPIO 156 (was 157)
+ *   - A6_0 TDIO: GPIO 170 (was 158)
+ *   - A6_1 IRQ: GPIO 94 (was 132)
+ *   - A6_1 WAKEUP: GPIO 78 (was 141)
+ *
+ * 3G Modem (NEW - not in WiFi variant):
+ *   - MDM6600 modem with ISP1763 USB host controller
+ *   - 3G_WAKE_N: GPIO 38
+ *   - 3G_UIM_CD_N: GPIO 61 (SIM card detect)
+ *   - 3G_3V3_EN: GPIO 106 (DVT) or GPIO 82 (EVT)
+ *   - 3G_DISABLE_N: GPIO 171
+ *   - ISP1763 INT: GPIO 172
+ *   - ISP1763 RST: GPIO 152
+ *   - ISP1763 DACK: GPIO 169
+ *   - ISP1763 DREQ: GPIO 29
+ *
+ * HDMI: NOT AVAILABLE on 3G variant
+ *   - GPIO 169/171/172 used by ISP1763/modem, conflicts with HDMI DDC/CEC/HPD
+ */
+
+/dts-v1/;
+
+#include "qcom-apq8060-tenderloin-common.dtsi"
+
+/ {
+	model = "HP TouchPad (Topaz 3G)";
+	compatible = "hp,topaz-3g", "qcom,msm8660";
+};
+
+/* 3G-specific GPIO overrides */
+
+/* Override WiFi reset GPIOs for 3G model */
+/ {
+	ath6kl_pwrseq: ath6kl-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		/* 3G model uses different GPIOs: WL_HOST_WAKE=93, HOST_WAKE_WL=80, WLAN_RST_N=28 */
+		reset-gpios = <&tlmm 93 GPIO_ACTIVE_HIGH
+		               &tlmm 80 GPIO_ACTIVE_HIGH
+		               &tlmm 28 GPIO_ACTIVE_LOW>;
+	};
+};
+
+&tlmm {
+	/* Override WiFi pinctrl for 3G model */
+	wlan_gpios_reset: wlan-reset-state {
+		irq-pins {
+			pins = "gpio28";  /* WLAN_RST_N_3G instead of 135 */
+			function = "gpio";
+			bias-disable;
+		};
+	};
+
+	wlan_gpios: wlan-state {
+		irq-pins {
+			pins = "gpio93", "gpio80";  /* HOST_WAKE_WL_3G = 80 instead of 137 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/* Override Bluetooth pinctrl for 3G model */
+	bt_pin: bt-state {
+		hostwake-pins {
+			pins = "gpio50";  /* BT_HOST_WAKE_3G instead of 129 */
+			function = "gpio";
+		};
+
+		devwake-pins {
+			pins = "gpio131";  /* BT_WAKE - same for both */
+			function = "gpio";
+		};
+	};
+
+	/* Override touchscreen pinctrl for 3G model (GPIO 45 vs 123 for wake) */
+	cy8ctma395_default_state: cy8ctma395-default-state {
+		xres-pins {
+			pins = "gpio70";  /* TP_PWR_RST / XRES */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		wake-pins {
+			pins = "gpio45";  /* GPIO_CTP_WAKE_3G instead of 123 */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+	};
+
+	/* Override sensor pinctrl for 3G model */
+	mpu3050_gpios: mpu-state {
+		irq-pins {
+			pins = "gpio75";  /* GYRO_INT_3G instead of 125 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/* Override LED controller pinctrl for 3G model */
+	lm8502_pins: lm8502-state {
+		enable-pins {
+			pins = "gpio121";  /* Enable - same */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		irq-pins {
+			pins = "gpio77";  /* LM8502_INT_3G instead of 128 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/* Override charger pinctrl for 3G model */
+	charger_gpios: max8903b-state {
+		in-pins {
+			pins = "gpio35", "gpio36", "gpio86";  /* gpio86 for DC_OK_3G instead of gpio140 */
+			function = "gpio";
+			drive-strength = <2>;
+			input-enable;
+			bias-pull-up;
+		};
+		out-pins {
+			pins = "gpio30", "gpio33", "gpio34", "gpio41", "gpio42", "gpio134";  /* gpio134 for USB_CHG_MODE_3G instead of gpio133 */
+			function = "gpio";
+			drive-strength = <2>;
+		};
+		/* Safe initial state, charging disabled */
+		dcm-pins {
+			pins = "gpio42";
+			function = "gpio";
+			output-high;
+		};
+		/* 500 mA USB charging. Not controlled by driver. */
+		iusb-pins {
+			pins = "gpio134";  /* USB_CHG_MODE_3G instead of 133 */
+			function = "gpio";
+			output-high;
+		};
+		usus-pins {
+			pins = "gpio33";
+			function = "gpio";
+			output-low;
+		};
+		cen-pins {
+			pins = "gpio41";
+			function = "gpio";
+			output-low;
+		};
+		/*
+		 * Limit DC charging current to 750 mA, the
+		 * minimum value. Appears to control a
+		 * multiplexed set of resistors connected to
+		 * the IDC pin. This functionality is not
+		 * supported by the MAX8903 driver.
+		 */
+		d-iset-pins {
+			pins = "gpio34", "gpio30";
+			function = "gpio";
+			output-low;
+		};
+	};
+};
+
+/* Override Bluetooth GPIOs for 3G model */
+&gsbi6_serial {
+	bluetooth {
+		reset-gpios = <&tlmm 122 GPIO_ACTIVE_HIGH>;      /* BT_RST_N_3G instead of 138 */
+		host-wakeup-gpios = <&tlmm 50 GPIO_ACTIVE_HIGH>;  /* BT_HOST_WAKE_3G instead of 129 */
+		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>; /* BT_WAKE - same */
+		shutdown-gpios = <&tlmm 110 GPIO_ACTIVE_HIGH>;   /* BT_POWER_3G instead of 130 */
+	};
+};
+
+/* Override sensor GPIOs for 3G model */
+&mpu3050 {
+	interrupts-extended = <&tlmm 75 IRQ_TYPE_EDGE_FALLING>;  /* GYRO_INT_3G instead of 125 */
+};
+
+/*
+ * Accelerometer (LSM303DLH) is present on 3G variant at I2C address 0x18.
+ * Interrupt on GPIO 124 - keeping default from common DTS.
+ * Note: Legacy kernel does not define interrupt for 3G variant, but hardware
+ * may support it. Device works in polling mode if interrupt fails.
+ */
+
+/* Override LED controller GPIO for 3G model */
+&lm8502 {
+	interrupts = <77 IRQ_TYPE_EDGE_FALLING>;  /* LM8502_INT_3G instead of 128 */
+};
+
+/* Override charger GPIOs for 3G model */
+&charger {
+	uok-gpios = <&tlmm 86 GPIO_ACTIVE_LOW>;  /* DC_OK_3G instead of 140 */
+};
+
+/* Override A6 battery controller GPIOs for 3G model (DVT hardware) */
+&a6_0 {
+	interrupt-parent = <&tlmm>;
+	interrupts = <37 IRQ_TYPE_EDGE_FALLING>;  /* A6_0_IRQ_3G_DVT instead of 156 */
+
+	/* SBW programming GPIOs differ on 3G variant */
+	tck-gpios = <&tlmm 156 GPIO_ACTIVE_HIGH>;   /* A6_0_TCK_3G_DVT instead of 157 */
+	tdio-gpios = <&tlmm 170 GPIO_ACTIVE_HIGH>;  /* A6_0_TDIO_3G instead of 158 */
+	/* wakeup-gpios stays at 155 (same as WiFi) */
+};
+
+&a6_1 {
+	interrupt-parent = <&tlmm>;
+	interrupts = <94 IRQ_TYPE_EDGE_FALLING>;  /* A6_1_IRQ_3G_DVT instead of 132 */
+
+	/* WAKEUP GPIO differs on 3G variant */
+	wakeup-gpios = <&tlmm 78 GPIO_ACTIVE_HIGH>;  /* A6_1_WAKEUP_3G instead of 141 */
+	/* tck-gpios and tdio-gpios stay at 115/116 (same as WiFi) */
+};
+
+/*
+ * Disable HDMI on 3G variant - GPIO 172 (HDMI HPD) is used for ISP1763 INT
+ * 3G variant does not have HDMI output capability
+ */
+&hdmi {
+	status = "disabled";
+};
+
+/* Enable EBI2 controller for ISP1763 USB host */
+&ebi2 {
+	status = "okay";
+
+	isp1763: usb@3,0 {
+		compatible = "nxp,usb-isp1763";
+		reg = <3 0x0 0x6000>;  /* CS3, offset 0, 24KB */
+
+		interrupts-extended = <&tlmm 172 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "host";
+
+		bus-width = <16>;
+		dr_mode = "host";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&isp1763_pins>;
+
+		/*
+		 * Power control for 3G modem and ISP1763 USB hub.
+		 * GPIO 106 for DVT+ hardware, GPIO 82 for EVT hardware.
+		 */
+		power-gpios = <&tlmm 106 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 152 GPIO_ACTIVE_HIGH>;
+
+		status = "okay";
+	};
+};
+
+&tlmm {
+	isp1763_pins: isp1763-state {
+		int-pins {
+			pins = "gpio172";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+
+		rst-pins {
+			pins = "gpio152";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		dack-pins {
+			pins = "gpio169";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		dreq-pins {
+			pins = "gpio29";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-down;
+		};
+
+		power-pins {
+			pins = "gpio106";  /* DVT: gpio106, EVT: gpio82 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		modem-disable-pins {
+			pins = "gpio171";  /* 3G_DISABLE_N - active low */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+};
+
+/*
+ * MDM6600 3G Modem
+ *
+ * The HP TouchPad uses a simplified MDM6600 integration compared to Motorola devices.
+ * Power control is handled through ISP1763 USB hub GPIOs (106, 171).
+ * The modem appears as a USB device downstream of the ISP1763 hub.
+ *
+ * Legacy kernel power-on sequence (from board-tenderloin.c):
+ * 1. Set GPIO 171 (DISABLE_N) = 0, GPIO 106 (3V3_EN) = 0
+ * 2. Wait 300ms
+ * 3. Set GPIO 106 (3V3_EN) = 1
+ * 4. Set GPIO 171 (DISABLE_N) = 1
+ *
+ * TODO: Implement proper modem driver or regulator control
+ */
+/ {
+	mdm6600-modem {
+		compatible = "motorola,mdm6600-simple";
+		status = "disabled";  /* No mainline driver yet */
+
+		/*
+		 * Power and disable GPIOs are controlled by ISP1763 node above.
+		 * Listed here for documentation:
+		 * - power: GPIO 106 (3G_3V3_EN)
+		 * - enable: GPIO 171 (3G_DISABLE_N, active low)
+		 */
+
+		/* Wake signal to modem */
+		wake-gpios = <&tlmm 38 GPIO_ACTIVE_LOW>;  /* 3G_WAKE_N */
+
+		/* SIM card detection */
+		sim-detect-gpios = <&tlmm 61 GPIO_ACTIVE_LOW>;  /* 3G_UIM_CD_N */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&mdm6600_pins>;
+	};
+};
+
+&tlmm {
+	mdm6600_pins: mdm6600-state {
+		wake-pins {
+			pins = "gpio38";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-low;
+		};
+
+		sim-detect-pins {
+			pins = "gpio61";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+};
