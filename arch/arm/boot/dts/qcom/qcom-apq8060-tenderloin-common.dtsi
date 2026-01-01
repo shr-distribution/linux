@@ -678,22 +678,24 @@
 			reg-names = "kgsl_3d0_reg_memory";
 			interrupts = <GIC_SPI 80 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "kgsl_3d0_irq";
-			clock-names =
-			    "core_clk",
-			    "iface_clk",
-			    "mem_clk";
-			clocks =
-			    <&mmcc GFX3D_CLK>,
-			    <&mmcc GFX3D_AHB_CLK>,
-			    <&mmcc GMEM_AXI_CLK>;
+			clock-names = "core_clk",
+				      "iface_clk",
+				      "mem_clk";
+			clocks = <&mmcc GFX3D_CLK>,
+				 <&mmcc GFX3D_AHB_CLK>,
+				 <&mmcc GMEM_AXI_CLK>;
 
-			qcom,gpu-pwrlevels {
-				compatible = "qcom,gpu-pwrlevels";
-				qcom,gpu-pwrlevel-0 {
-					qcom,gpu-freq = <266667000>;
+			operating-points-v2 = <&gpu_opp_table>;
+
+			gpu_opp_table: opp-table {
+				compatible = "operating-points-v2";
+
+				opp-266667000 {
+					opp-hz = /bits/ 64 <266667000>;
 				};
-				qcom,gpu-pwrlevel-1 {
-					qcom,gpu-freq = <27000000>;
+
+				opp-27000000 {
+					opp-hz = /bits/ 64 <27000000>;
 				};
 			};
 		};
