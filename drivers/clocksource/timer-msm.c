@@ -221,6 +221,3 @@ err_unmap:
 }
 
 TIMER_OF_DECLARE(msm_timer, "qcom,msm-timer", msm_timer_init);
-
-MODULE_DESCRIPTION("Qualcomm MSM7x30 Timer driver");
-MODULE_LICENSE("GPL v2");

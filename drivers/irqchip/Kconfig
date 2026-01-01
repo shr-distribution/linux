@@ -520,7 +520,7 @@ config QCOM_MPM
 
 config QCOM_MSM_VIC
 	bool "Qualcomm MSM VIC interrupt controller"
-	depends on ARCH_QCOM || COMPILE_TEST
+	depends on ARCH_MSM7X30 || ARCH_QCOM || COMPILE_TEST
 	depends on ARM
 	select IRQ_DOMAIN
 	help
