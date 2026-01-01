@@ -84,7 +84,7 @@
 
 ---
 
-### 5. DSP (Qualcomm Hexagon QDSP6)
+### 5. DSP (Qualcomm Hexagon QDSP6v2 - LPASS)
 **Files (PIL - Peripheral Image Loader format):**
 - `q6.mdt` (560 bytes) - Metadata file
 - `q6.b00` (340 bytes) - Boot segment 0
@@ -97,16 +97,23 @@
 - `q6.b07` (48 KB) - Code/data segment 7
 
 **Total Size:** ~4.3 MB
-**Purpose:** Audio/voice processing, modem DSP
-**Load Method:** PIL (Peripheral Image Loader) subsystem
-**Mainline Status:** ❌ No MSM8660 remoteproc/PIL support in mainline
+**Purpose:** LPASS (Low Power Audio Subsystem) audio/voice processing
+**Load Method:** PIL (Peripheral Image Loader) via remoteproc subsystem
+**Mainline Status:** ✅ Driver implemented (`drivers/remoteproc/qcom_q6v2_lpass.c`) ⭐
 **Format:** Qualcomm PIL format (.mdt + .bXX segments)
 
-**Mainline Path:**
-- `/lib/firmware/qcom/msm8660/`
+**Driver Details:**
+- Compatible: `qcom,msm8660-lpass-pil`, `qcom,apq8060-lpass-pil`
+- Boot modes: PAS (TrustZone secure) and direct (untrusted)
+- Uses MDT loader for firmware parsing
+- LCC (LPASS Clock Controller) provides PLL4 clock
+- Reserved memory at 0x8f000000 (5MB)
 
-**Note:** Mainline remoteproc drivers (qcom_q6v5_mss, qcom_q6v5_adsp) only support
-MSM8916 and newer SoCs. MSM8660 QDSP6 would require a new driver implementation.
+**Mainline Path:**
+- `/lib/firmware/qcom/msm8660/q6.mdt` (and .bXX segments)
+
+**Note:** Custom driver created for MSM8660/APQ8060 since the register layout differs
+significantly from newer Hexagon versions (qcom_q6v5_* drivers).
 
 ---
 
@@ -150,7 +157,7 @@ a separate driver implementation. Supported Venus SoCs:
 | Touchscreen | 6 | ~450 KB | ✅ Supported | Low (optional upgrade) |
 | WiFi (ath6k) | 8 | ~85 KB | ✅ Supported | **HIGH** |
 | GPU (Adreno) | 4 | ~20 KB | ✅ Supported | Medium |
-| DSP (QDSP6) | 9 | ~4.3 MB | ❌ Not supported | Low |
+| DSP (QDSP6) | 9 | ~4.3 MB | ✅ Driver ready ⭐ | Medium |
 | Video Codec | 1 | 489 KB | ❌ Not supported | Low |
 | Audio DSP | 3 | ~12 KB | ✅ Supported | Low (optional) |
 
@@ -182,7 +189,9 @@ a separate driver implementation. Supported Venus SoCs:
 
 **Not supported in mainline:**
 1. Video codec: VIDC 1.0 not supported (Venus is for newer SoCs)
-2. Q6 DSP: No MSM8660 remoteproc driver
+
+**Now supported in mainline:** ⭐
+1. Q6 DSP: LPASS PIL driver implemented (`qcom_q6v2_lpass.c`)
 
 ---
 
@@ -246,10 +255,16 @@ The device tree should specify which board data file to use:
 2. **Test GPU firmware** - Check if yamato firmware works with freedreno
 3. **Create firmware package** - For easy installation on target device
 
-## NOT PLANNED (No mainline support)
+## MAINLINE SUPPORT STATUS
 
+### Now Supported ⭐
+1. ✅ **QDSP6 DSP (LPASS)** - Driver implemented: `drivers/remoteproc/qcom_q6v2_lpass.c`
+   - Supports PAS (TrustZone) and direct boot modes
+   - DT binding: `qcom,msm8660-lpass-pil` / `qcom,apq8060-lpass-pil`
+   - Firmware path: `/lib/firmware/qcom/msm8660/q6.mdt`
+
+### Not Planned (No mainline support)
 1. ❌ **Video codec (VIDC 1.0)** - Would require new driver, Venus only supports MSM8916+
-2. ❌ **QDSP6 DSP** - Would require new remoteproc driver, mainline only supports MSM8916+
 
 ---
 

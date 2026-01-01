@@ -56,6 +56,10 @@ The HP TouchPad family mainline device tree implementation represents production
 28. **VX6953 camera driver** added (`drivers/media/i2c/vx6953.c`)
 29. **CAMCLK0 clock references** added to all camera nodes
 30. **Topaz camera bus-type fix** (parallel interface uses bus-type=1, not 5)
+31. **LCC (LPASS Clock Controller)** node added to MSM8660 dtsi
+32. **PLL4_VOTE clock** added to GCC driver for LCC support
+33. **LPASS QDSP6v2 PIL driver** created (`drivers/remoteproc/qcom_q6v2_lpass.c`)
+34. **LPASS remoteproc node** added with reserved memory region
 
 ---
 
@@ -186,23 +190,38 @@ The HP TouchPad family mainline device tree implementation represents production
 
 - **Status**: PRODUCTION READY (100% complete)
 
-#### 12. Storage
+#### 12. LPASS QDSP6v2 (Audio DSP) ⭐ NEW
+- **Processor**: Qualcomm Hexagon V2 DSP
+- **Subsystem**: LPASS (Low Power Audio Subsystem)
+- **Controller Address**: 0x28800000 (QDSP6SS)
+- **Clock Controller**: LCC at 0x28000000
+- **Reserved Memory**: 0x8f000000 (5MB for firmware)
+- **Firmware**: q6.mdt + q6.bXX segments (PIL format)
+- **Boot Modes**:
+  - PAS (Peripheral Authentication Service) - TrustZone secure boot
+  - Direct/Untrusted - For development and testing
+- **Driver**: `drivers/remoteproc/qcom_q6v2_lpass.c` (374 lines)
+- **Clocks**: PLL4 from LCC (with GCC PLL4_VOTE support)
+- **DT Binding**: `qcom,msm8660-lpass-pil` / `qcom,apq8060-lpass-pil`
+- **Status**: DRIVER READY, NEEDS TESTING ⭐
+
+#### 13. Storage
 - **eMMC (SDCC1)**: Fully configured
 - **Status**: PRODUCTION READY
 
-#### 13. Vibrator
+#### 14. Vibrator
 - **Control**: GPIO 79
 - **Power**: pm8058_l5 (2.85V)
 - **Status**: PRODUCTION READY
 
-#### 14. Regulators
+#### 15. Regulators
 - **VPH**: 3.7V main battery power
 - **VDD50_BOOST**: 5V boost for touchscreen (GPIO 102 control)
 - **AUD_LDO1**: 2.85V audio LDO (GPIO 66)
 - **AUD_LDO2**: 1.8V audio LDO (GPIO 108)
 - **Status**: PRODUCTION READY
 
-#### 15. HDMI Output
+#### 16. HDMI Output
 - **Controller**: MSM8660 internal HDMI TX at 0x04A00000
 - **PHY**: HDMI PHY at 0x04A00400 with PLL at 0x04A00500
 - **Compatible**: qcom,hdmi-tx-8660, qcom,hdmi-phy-8660
@@ -560,6 +579,7 @@ c82e20546a64 - ARM: dts: qcom: tenderloin: Document USB PHY tuning parameters
 | ISP1763 USB Host | ✅ Working (3G) | ✅ Configured (3G only) | Ready! |
 | NFC | ❌ Not present (Topaz) | ✅ Configured (Opal only) | Ready! ⭐ |
 | Cover Detect | ❌ Not present (Topaz) | ✅ Configured (Opal only) | Ready! ⭐ |
+| LPASS QDSP6 | ✅ Working | ✅ Driver ready | Ready! ⭐ |
 | 3G Modem | ✅ Working | ⚠️ USB host ready | Modem control pending |
 
 ---
