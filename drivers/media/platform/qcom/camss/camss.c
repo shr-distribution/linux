@@ -34,7 +34,80 @@
 
 static const struct parent_dev_ops vfe_parent_dev_ops;
 
-/* MSM8660/APQ8060 - VFE 3.1 with parallel camera interface (CAMIF) */
+/*
+ * MSM8660/APQ8060 - VFE 3.1 with MIPI CSI-2 support
+ *
+ * MSM8660 has a simpler integrated MIPI CSI implementation compared to
+ * later SoCs. The CSIPHY and protocol control logic are combined in a
+ * single hardware block per CSI interface.
+ */
+
+static const struct camss_subdev_resources csiphy_res_8x60[] = {
+	/* CSIPHY0 - CSI_0 at 0x04800000 */
+	{
+		.regulators = {},
+		.clock = { "csi0_src", "csi0", "csi0_phy" },
+		.clock_rate = { { 0 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csiphy0" },
+		.interrupt = { "csiphy0" },
+		.csiphy = {
+			.hw_ops = &csiphy_ops_2ph_1_0,  /* Simplified 2-phase implementation */
+			.formats = &csiphy_formats_8x16
+		}
+	},
+
+	/* CSIPHY1 - CSI_1 at 0x04900000 */
+	{
+		.regulators = {},
+		.clock = { "csi1_src", "csi1", "csi1_phy" },
+		.clock_rate = { { 0 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csiphy1" },
+		.interrupt = { "csiphy1" },
+		.csiphy = {
+			.hw_ops = &csiphy_ops_2ph_1_0,  /* Simplified 2-phase implementation */
+			.formats = &csiphy_formats_8x16
+		}
+	}
+};
+
+static const struct camss_subdev_resources csid_res_8x60[] = {
+	/* CSID0 - Integrated with CSIPHY0 */
+	{
+		.regulators = {},
+		.clock = { "csi0_src", "csi0", "csi0_phy" },
+		.clock_rate = { { 0 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csid0" },
+		.interrupt = { "csid0" },
+		.csid = {
+			.hw_ops = &csid_ops_4_1,  /* Use 4.1 ops as baseline */
+			.parent_dev_ops = &vfe_parent_dev_ops,
+			.formats = &csid_formats_4_1
+		}
+	},
+
+	/* CSID1 - Integrated with CSIPHY1 */
+	{
+		.regulators = {},
+		.clock = { "csi1_src", "csi1", "csi1_phy" },
+		.clock_rate = { { 0 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csid1" },
+		.interrupt = { "csid1" },
+		.csid = {
+			.hw_ops = &csid_ops_4_1,  /* Use 4.1 ops as baseline */
+			.parent_dev_ops = &vfe_parent_dev_ops,
+			.formats = &csid_formats_4_1
+		}
+	}
+};
+
 static const struct camss_subdev_resources vfe_res_8x60[] = {
 	/* VFE0 */
 	{
@@ -46,9 +119,9 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 		.reg = { "vfe0" },
 		.interrupt = { "vfe0" },
 		.vfe = {
-			.line_num = 1,  /* Only PIX line for parallel camera */
+			.line_num = 3,  /* PIX + 2 RDI lines (CSI0 + CSI1) */
 			.hw_ops = &vfe_ops_3_1,
-			.formats_rdi = NULL,  /* No RDI support in VFE31 */
+			.formats_rdi = &vfe_formats_rdi_8x16,  /* Enable RDI for CSI */
 			.formats_pix = &vfe_formats_pix_8x16
 		}
 	}
@@ -2554,12 +2627,12 @@ static void camss_remove(struct platform_device *pdev)
 
 static const struct camss_resources msm8660_resources = {
 	.version = CAMSS_8x60,
-	.csiphy_res = NULL,  /* No MIPI CSI support yet - parallel camera only */
-	.csid_res = NULL,
-	.ispif_res = NULL,   /* ISPIF not used in VFE31 - direct CAMIF */
+	.csiphy_res = csiphy_res_8x60,
+	.csid_res = csid_res_8x60,
+	.ispif_res = NULL,   /* ISPIF not used in VFE31 with integrated CSI */
 	.vfe_res = vfe_res_8x60,
-	.csiphy_num = 0,
-	.csid_num = 0,
+	.csiphy_num = ARRAY_SIZE(csiphy_res_8x60),
+	.csid_num = ARRAY_SIZE(csid_res_8x60),
 	.vfe_num = ARRAY_SIZE(vfe_res_8x60),
 	.link_entities = camss_link_entities
 };
