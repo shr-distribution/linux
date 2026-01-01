@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+# Copyright (c) 2024 Linux community
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/st,vx6953.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: STMicroelectronics VX6953 5.1MP EDOF Camera Sensor
+
+maintainers:
+  - Linux community
+
+description: |-
+  The STMicroelectronics VX6953 is a 5.1 megapixel EDOF (Extended Depth of
+  Field) camera sensor module. It produces raw Bayer 5 Mpixel images at 15 fps
+  in RAW10 format. The sensor supports CSI-2 data interface with 1 or 2 lanes.
+
+  The VX6953 was used in devices such as the HP TouchPad (Opal) tablet as the
+  rear camera.
+
+properties:
+  compatible:
+    const: st,vx6953
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+    description:
+      Reference to the external clock. Must be 24 MHz.
+
+  vana-supply:
+    description:
+      Analog power supply (2.8V).
+
+  vdig-supply:
+    description:
+      Digital power supply (1.8V).
+
+  vio-supply:
+    description:
+      I/O power supply (1.8V).
+
+  powerdown-gpios:
+    maxItems: 1
+    description:
+      Reference to the GPIO connected to the powerdown pin, if any.
+      This is active high (sensor powered down when high).
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    additionalProperties: false
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          data-lanes:
+            description:
+              CSI lanes to use. The VX6953 supports 1 or 2 lanes.
+            minItems: 1
+            maxItems: 2
+            items:
+              enum: [1, 2]
+
+          remote-endpoint: true
+
+        required:
+          - data-lanes
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        camera@20 {
+            compatible = "st,vx6953";
+            reg = <0x20>;
+            clocks = <&cam_mclk>;
+            vana-supply = <&cam_vana>;
+            vdig-supply = <&cam_vdig>;
+            vio-supply = <&cam_vio>;
+            powerdown-gpios = <&tlmm 157 GPIO_ACTIVE_HIGH>;
+
+            port {
+                vx6953_ep: endpoint {
+                    data-lanes = <1 2>;
+                    remote-endpoint = <&csiphy0_ep>;
+                };
+            };
+        };
+    };
+...
