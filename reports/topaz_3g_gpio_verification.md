@@ -453,6 +453,15 @@ a6_1: battery@32 {
    - Configure GPIO 61 (UIM_CD_N) ✅
    - Document power sequencing ✅
 
+### Recently Completed (2026-01-01):
+
+1. ✅ **GPS support added (all TouchPad variants)**
+   - Broadcom BCM4751 on GSBI5 UART
+   - PM8058 GPIO 4/5 for LNA enable and reset
+   - UART GPIOs 103-106 with flow control
+   - GSBI5 device node added to qcom-msm8660.dtsi
+   - Power supplies: L10 (3.05V core), S3 (1.8V I/O)
+
 ### Future Work:
 
 1. **Implement modem driver or power control**
@@ -462,7 +471,9 @@ a6_1: battery@32 {
 
 ---
 
-**Verification Date:** 2025-12-31
+**Verification Date:** 2025-12-31 (updated 2026-01-01)
 **Device:** topaz-3G-pvt (Production hardware)
 **Legacy Kernel:** 2.6.35-palm-tenderloin
 **Result:** ✅ All 26 GPIOs verified and configured correctly (100%)
+**GPS:** ✅ BCM4751 UART support added (all variants)
+**Status:** Device tree functionally complete

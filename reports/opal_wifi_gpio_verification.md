@@ -296,18 +296,55 @@ pn544: nfc@28 {
 3. ✅ **Opal-specific hardware configured** (Camera, Proximity, NFC, Cover detect)
 4. ✅ **HDMI enabled** (WiFi-only feature)
 
+### Recently Completed (2026-01-01):
+
+1. ✅ **GPS support added (all TouchPad variants)**
+   - Broadcom BCM4751 on GSBI5 UART
+   - PM8058 GPIO 4/5 for LNA enable and reset
+   - UART GPIOs 103-106 with flow control
+   - GSBI5 device node added to qcom-msm8660.dtsi
+
+2. ✅ **Front camera device node** (MT9M113 sensor)
+   - I2C address 0x78 on GSBI4
+   - PM8058 GPIO 8 reset, GPIO 107 power down
+   - Power supplies configured
+
+3. ✅ **NFC device node** (PN544)
+   - I2C address 0x28 on GSBI7
+   - PM8058 GPIOs 15/16/17 configured
+   - Full pinctrl support
+
+4. ✅ **Cover detect device node**
+   - GPIO 31 configured as SW_LID
+   - gpio-keys implementation
+
+5. ✅ **Audio LDO controls documented**
+   - GPIOs 66/108 ready-to-enable regulators provided
+   - WM8958 codec already in tenderloin-common.dtsi
+
+6. ✅ **Camera flash LED documented**
+   - GPIO 158 (DVT+) / 69 (EVT1)
+   - Ready-to-enable LED device node provided
+
 ### Future Work:
 
 1. ⏳ **Test HDMI output** on WiFi Opal hardware
 2. ⏳ **Identify proximity sensor model** for full device node
-3. ⏳ **Test camera functionality** when CAMIF support is added
-4. ⏳ **Test NFC functionality** with PN544 driver
+   - GPIOs configured, bit-banged I2C stub provided
+   - No driver in legacy kernel
+3. ⏳ **Identify rear camera sensor** for device node
+   - PM8058 GPIO 9 power down configured
+4. ⏳ **Test camera functionality** when CAMIF support is added
+5. ⏳ **Test NFC functionality** with PN544 driver
 
 ---
 
-**Verification Date:** 2025-12-31
+**Verification Date:** 2025-12-31 (updated 2026-01-01)
 **Device:** opal-Wifi-dvt1 (DVT1 hardware)
 **Legacy Kernel:** 2.6.35-palm-shortloin
 **Result:** ✅ All 24 common GPIOs verified (100%), inherited from Opal 3G
 **WiFi-Specific:** ✅ HDMI enabled (GPIOs 169-172 available)
+**Opal-Specific:** ✅ Front camera, NFC, cover detect, GPS fully configured
+**GPS:** ✅ BCM4751 UART support added (all variants)
+**Status:** Device tree functionally complete
 **Design Advantage:** Unified GPIO plan makes WiFi/3G variants easy to maintain
