@@ -75,6 +75,22 @@
 		};
 	};
 
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * LPASS (Low Power Audio Subsystem) QDSP6 firmware region.
+		 * The actual address and size should be adjusted based on
+		 * the device's memory layout.
+		 */
+		lpass_mem: lpass@8f000000 {
+			reg = <0x8f000000 0x500000>;
+			no-map;
+		};
+	};
+
 	soc: soc {
 		#address-cells = <1>;
 		#size-cells = <1>;
@@ -146,6 +162,21 @@
 				      "codec_i2s_spkr_codec_clk",
 				      "spare_i2s_spkr_codec_clk",
 				      "pcm_codec_clk";
+		};
+
+		lpass: remoteproc@28800000 {
+			compatible = "qcom,msm8660-lpass-pil";
+			reg = <0x28000000 0x1000>,
+			      <0x28800000 0x1000>;
+			reg-names = "lcc", "qdsp6ss";
+
+			clocks = <&lcc PLL4>;
+			clock-names = "pll";
+
+			firmware-name = "q6.mdt";
+			memory-region = <&lpass_mem>;
+
+			status = "disabled";
 		};
 
 		gsbi1: gsbi@16000000 {
