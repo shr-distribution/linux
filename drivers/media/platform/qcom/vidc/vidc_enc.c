@@ -601,13 +601,66 @@ static const struct vb2_ops vidc_enc_vb2_ops = {
 
 /* M2M operations */
 
+static void vidc_enc_submit_frame(struct vidc_inst *inst,
+				  dma_addr_t src_addr, u32 src_size,
+				  dma_addr_t dst_addr, u32 dst_size)
+{
+	struct vidc_core *core = inst->core;
+	unsigned long flags;
+	u32 y_stride, y_size;
+
+	spin_lock_irqsave(&core->irqlock, flags);
+
+	/* Set current instance for IRQ handler */
+	core->curr_inst = inst;
+
+	/* Clear previous response */
+	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
+
+	/*
+	 * Set encode configuration registers.
+	 * These would normally be set during session open, but we
+	 * ensure they're correct here.
+	 */
+	vidc_write(core, VIDC_REG_ENC_FRAME_WIDTH, inst->out_width);
+	vidc_write(core, VIDC_REG_ENC_FRAME_HEIGHT, inst->out_height);
+	vidc_write(core, VIDC_REG_ENC_TARGET_BITRATE, inst->bitrate);
+	vidc_write(core, VIDC_REG_ENC_FRAME_RATE, inst->framerate);
+
+	/* Calculate Y plane size for NV12 format */
+	y_stride = ALIGN(inst->out_width, 128);
+	y_size = y_stride * ALIGN(inst->out_height, 32);
+
+	/* Write raw input frame address (Y and C planes, shifted) */
+	vidc_write(core, VIDC_REG_CH0_Y_ADDR, src_addr >> VIDC_ADDR_SHIFT);
+	vidc_write(core, VIDC_REG_CH0_C_ADDR,
+		   (src_addr + y_size) >> VIDC_ADDR_SHIFT);
+
+	/* Write output stream buffer address for compressed bitstream */
+	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, dst_addr >> VIDC_ADDR_SHIFT);
+	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, dst_size);
+
+	/* Increment and write command sequence number */
+	core->cmd_seq_num++;
+	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
+
+	/* Write channel instance ID with operation type to start encode */
+	vidc_write(core, VIDC_REG_CH0_INST_ID,
+		   VIDC_OP_FRAME_DATA | inst->inst_id);
+
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	dev_dbg(core->dev, "Encode submit: src=0x%pad (%ux%u) dst=0x%pad\n",
+		&src_addr, inst->out_width, inst->out_height, &dst_addr);
+}
+
 static void vidc_enc_device_run(void *priv)
 {
 	struct vidc_inst *inst = priv;
 	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
 	dma_addr_t src_addr, dst_addr;
-	u32 src_size;
+	u32 src_size, dst_size;
 
 	src_buf = v4l2_m2m_next_src_buf(inst->m2m_ctx);
 	dst_buf = v4l2_m2m_next_dst_buf(inst->m2m_ctx);
@@ -617,16 +670,32 @@ static void vidc_enc_device_run(void *priv)
 		return;
 	}
 
+	/* Save current buffers for completion handler */
+	inst->src_buf = src_buf;
+	inst->dst_buf = dst_buf;
+
 	src_addr = vb2_dma_contig_plane_dma_addr(&src_buf->vb2_buf, 0);
 	dst_addr = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
 	src_size = vb2_get_plane_payload(&src_buf->vb2_buf, 0);
+	dst_size = vb2_plane_size(&dst_buf->vb2_buf, 0);
+
+	/* Initialize completion for this frame */
+	reinit_completion(&inst->done);
+	inst->error = 0;
+
+	/* Submit encode command to hardware */
+	vidc_enc_submit_frame(inst, src_addr, src_size, dst_addr, dst_size);
 
 	/*
-	 * TODO: Send encode command to VIDC hardware
-	 * For now, just complete the job as a placeholder
+	 * Wait for encode completion with timeout.
+	 * In a production driver, this would be fully async with
+	 * the completion handled in a workqueue.
 	 */
-	dev_dbg(core->dev, "Encode: src=0x%pad size=%u dst=0x%pad\n",
-		&src_addr, src_size, &dst_addr);
+	if (!wait_for_completion_timeout(&inst->done,
+					 msecs_to_jiffies(1000))) {
+		dev_err(core->dev, "Encode timeout\n");
+		inst->error = -ETIMEDOUT;
+	}
 
 	/* Remove buffers and mark as done */
 	src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
@@ -635,15 +704,26 @@ static void vidc_enc_device_run(void *priv)
 	src_buf->sequence = inst->sequence_out++;
 	dst_buf->sequence = inst->sequence_cap++;
 
-	/*
-	 * Set output buffer payload.
-	 * For placeholder, set a minimal size. Real encoding would
-	 * set the actual compressed frame size.
-	 */
-	vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 64);
+	if (inst->error) {
+		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
+		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
+	} else {
+		/* Set output buffer payload from hardware result */
+		if (inst->result_size > 0)
+			vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
+					      inst->result_size);
+		else
+			vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
+					      vidc_enc_get_framesize_compressed(
+						      inst->width,
+						      inst->height));
 
-	v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
-	v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+	}
+
+	/* Clear current instance */
+	core->curr_inst = NULL;
 
 	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
 }
@@ -715,6 +795,7 @@ static int vidc_enc_open(struct file *file)
 	inst->decoder = false;
 	mutex_init(&inst->lock);
 	INIT_LIST_HEAD(&inst->list);
+	init_completion(&inst->done);
 
 	/* Set default formats */
 	inst->fmt_out = vidc_enc_find_format(V4L2_PIX_FMT_NV12,

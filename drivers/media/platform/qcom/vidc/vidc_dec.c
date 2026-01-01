@@ -524,12 +524,52 @@ static const struct vb2_ops vidc_dec_vb2_ops = {
 
 /* M2M operations */
 
+static void vidc_dec_submit_frame(struct vidc_inst *inst,
+				  dma_addr_t src_addr, u32 src_size,
+				  dma_addr_t dst_addr)
+{
+	struct vidc_core *core = inst->core;
+	unsigned long flags;
+
+	spin_lock_irqsave(&core->irqlock, flags);
+
+	/* Set current instance for IRQ handler */
+	core->curr_inst = inst;
+
+	/* Clear previous response */
+	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
+
+	/* Write stream buffer address and size (shifted by 11 bits) */
+	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, src_addr >> VIDC_ADDR_SHIFT);
+	vidc_write(core, VIDC_REG_CH0_STREAM_SIZE, src_size);
+	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, src_size);
+
+	/* Write output buffer address for decoded frame */
+	vidc_write(core, VIDC_REG_CH0_Y_ADDR, dst_addr >> VIDC_ADDR_SHIFT);
+	/* Chroma follows luma in NV12 format */
+	vidc_write(core, VIDC_REG_CH0_C_ADDR,
+		   (dst_addr + ALIGN(inst->width, 128) *
+		    ALIGN(inst->height, 32)) >> VIDC_ADDR_SHIFT);
+
+	/* Increment and write command sequence number */
+	core->cmd_seq_num++;
+	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
+
+	/* Write channel instance ID with operation type to start decode */
+	vidc_write(core, VIDC_REG_CH0_INST_ID,
+		   VIDC_OP_FRAME_DATA | inst->inst_id);
+
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	dev_dbg(core->dev, "Decode submit: src=0x%pad size=%u dst=0x%pad\n",
+		&src_addr, src_size, &dst_addr);
+}
+
 static void vidc_dec_device_run(void *priv)
 {
 	struct vidc_inst *inst = priv;
 	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
-	struct vidc_buffer *src_vbuf, *dst_vbuf;
 	dma_addr_t src_addr, dst_addr;
 	u32 src_size;
 
@@ -541,19 +581,31 @@ static void vidc_dec_device_run(void *priv)
 		return;
 	}
 
-	src_vbuf = to_vidc_buffer(&src_buf->vb2_buf);
-	dst_vbuf = to_vidc_buffer(&dst_buf->vb2_buf);
+	/* Save current buffers for completion handler */
+	inst->src_buf = src_buf;
+	inst->dst_buf = dst_buf;
 
 	src_addr = vb2_dma_contig_plane_dma_addr(&src_buf->vb2_buf, 0);
 	dst_addr = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
 	src_size = vb2_get_plane_payload(&src_buf->vb2_buf, 0);
 
+	/* Initialize completion for this frame */
+	reinit_completion(&inst->done);
+	inst->error = 0;
+
+	/* Submit decode command to hardware */
+	vidc_dec_submit_frame(inst, src_addr, src_size, dst_addr);
+
 	/*
-	 * TODO: Send decode command to VIDC hardware
-	 * For now, just complete the job as a placeholder
+	 * Wait for decode completion with timeout.
+	 * In a production driver, this would be fully async with
+	 * the completion handled in a workqueue.
 	 */
-	dev_dbg(core->dev, "Decode: src=0x%pad size=%u dst=0x%pad\n",
-		&src_addr, src_size, &dst_addr);
+	if (!wait_for_completion_timeout(&inst->done,
+					 msecs_to_jiffies(1000))) {
+		dev_err(core->dev, "Decode timeout\n");
+		inst->error = -ETIMEDOUT;
+	}
 
 	/* Remove buffers and mark as done */
 	src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
@@ -562,14 +614,27 @@ static void vidc_dec_device_run(void *priv)
 	src_buf->sequence = inst->sequence_out++;
 	dst_buf->sequence = inst->sequence_cap++;
 
-	/* Set output buffer payload */
-	vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
-			      vidc_dec_get_framesize(inst->fmt_cap->pixfmt,
-						     inst->width,
-						     inst->height));
+	if (inst->error) {
+		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
+		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
+	} else {
+		/* Set output buffer payload from hardware result */
+		if (inst->result_size > 0)
+			vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
+					      inst->result_size);
+		else
+			vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
+					      vidc_dec_get_framesize(
+						      inst->fmt_cap->pixfmt,
+						      inst->width,
+						      inst->height));
 
-	v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
-	v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+	}
+
+	/* Clear current instance */
+	core->curr_inst = NULL;
 
 	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
 }
@@ -641,6 +706,7 @@ static int vidc_dec_open(struct file *file)
 	inst->decoder = true;
 	mutex_init(&inst->lock);
 	INIT_LIST_HEAD(&inst->list);
+	init_completion(&inst->done);
 
 	/* Set default formats */
 	inst->fmt_out = vidc_dec_find_format(V4L2_PIX_FMT_H264,

@@ -10,9 +10,11 @@
 #define __VIDC_CORE_H__
 
 #include <linux/clk.h>
+#include <linux/completion.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
+#include <linux/spinlock.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-mem2mem.h>
 #include <media/v4l2-ctrls.h>
@@ -79,6 +81,85 @@
 #define VIDC_RESP_INIT_BUFFERS		15
 #define VIDC_RESP_ERROR			32
 
+/* Decode/Encode operation types (OR'd with instance ID) */
+#define VIDC_OP_SEQ_HEADER		0x00010000
+#define VIDC_OP_FRAME_DATA		0x00020000
+#define VIDC_OP_LAST_FRAME		0x00030000
+#define VIDC_OP_INIT_BUFFERS		0x00040000
+
+/* Address shift for hardware registers */
+#define VIDC_ADDR_SHIFT			11
+
+/* Channel 0 registers (decode/encode instance 0) */
+#define VIDC_REG_CH0_STREAM_ADDR	0x0100
+#define VIDC_REG_CH0_STREAM_SIZE	0x0104
+#define VIDC_REG_CH0_DESC_ADDR		0x0108
+#define VIDC_REG_CH0_STREAM_BUF_SIZE	0x010c
+#define VIDC_REG_CH0_DESC_BUF_SIZE	0x0110
+#define VIDC_REG_CH0_SHARED_MEM		0x0114
+#define VIDC_REG_CH0_CMD_SEQ_NUM	0x0118
+#define VIDC_REG_CH0_DPB_CONFIG		0x011c
+#define VIDC_REG_CH0_DPB_RELEASE	0x0120
+#define VIDC_REG_CH0_Y_ADDR		0x0124
+#define VIDC_REG_CH0_C_ADDR		0x0128
+#define VIDC_REG_CH0_INTRA_FRAME	0x012c
+
+/* Sequence info registers (after SEQ_DONE) */
+#define VIDC_REG_SEQ_IMG_SIZE_Y		0x0140
+#define VIDC_REG_SEQ_IMG_SIZE_X		0x0144
+#define VIDC_REG_SEQ_MIN_DPB		0x0148
+#define VIDC_REG_SEQ_FRAME_SIZE		0x014c
+#define VIDC_REG_SEQ_DISPLAY_INFO	0x0150
+
+/* Decode result registers (after FRAME_DONE) */
+#define VIDC_REG_DEC_DISPLAY_Y		0x0160
+#define VIDC_REG_DEC_DISPLAY_C		0x0164
+#define VIDC_REG_DEC_DECODE_Y		0x0168
+#define VIDC_REG_DEC_DECODE_C		0x016c
+#define VIDC_REG_DEC_DISPLAY_STATUS	0x0170
+#define VIDC_REG_DEC_DECODE_STATUS	0x0174
+
+/* Encode result registers (after ENC_COMPLETE) */
+#define VIDC_REG_ENC_FRAME_SIZE		0x0140
+#define VIDC_REG_ENC_PICTURE_COUNT	0x0144
+#define VIDC_REG_ENC_WRITE_PTR		0x0148
+#define VIDC_REG_ENC_FRAME_TYPE		0x0160
+#define VIDC_REG_ENC_LUMA_ADDR		0x0164
+#define VIDC_REG_ENC_CHROMA_ADDR	0x014c
+
+/* Encode configuration registers */
+#define VIDC_REG_ENC_FRAME_WIDTH	0x0180
+#define VIDC_REG_ENC_FRAME_HEIGHT	0x0184
+#define VIDC_REG_ENC_PROFILE_LEVEL	0x0188
+#define VIDC_REG_ENC_RC_CONFIG		0x018c
+#define VIDC_REG_ENC_FRAME_RATE		0x0190
+#define VIDC_REG_ENC_TARGET_BITRATE	0x0194
+#define VIDC_REG_ENC_REACTION_COEFF	0x0198
+#define VIDC_REG_ENC_QP_RANGE		0x019c
+
+/* DPB buffer registers (decode) */
+#define VIDC_REG_DPB_LUMA_BASE		0x0300
+#define VIDC_REG_DPB_CHROMA_BASE	0x0380
+#define VIDC_REG_DPB_MV_BASE		0x0400
+#define VIDC_MAX_DPB_BUFFERS		32
+
+/* Recon buffer registers (encode) */
+#define VIDC_REG_RECON_LUMA_0		0x0480
+#define VIDC_REG_RECON_CHROMA_0		0x0484
+#define VIDC_REG_RECON_LUMA_1		0x0488
+#define VIDC_REG_RECON_CHROMA_1		0x048c
+#define VIDC_MAX_RECON_BUFFERS		4
+
+/* Instance state */
+enum vidc_inst_state {
+	VIDC_STATE_IDLE,
+	VIDC_STATE_OPEN,
+	VIDC_STATE_SEQ_PARSED,
+	VIDC_STATE_RUNNING,
+	VIDC_STATE_STOPPED,
+	VIDC_STATE_ERROR,
+};
+
 /* AXI control bits */
 #define VIDC_AXI_HALT_REQ		BIT(0)
 #define VIDC_AXI_RESET			BIT(1)
@@ -100,6 +181,8 @@ enum vidc_codec {
 	VIDC_CODEC_MPEG4_ENC	= 17,
 	VIDC_CODEC_H263_ENC	= 18,
 };
+
+struct vidc_inst;
 
 struct vidc_core {
 	struct device *dev;
@@ -129,12 +212,15 @@ struct vidc_core {
 
 	/* State */
 	struct mutex lock;
+	spinlock_t irqlock;
 	bool fw_loaded;
 	u32 fw_version;
 
 	/* Instance management */
 	struct list_head instances;
 	unsigned int num_instances;
+	struct vidc_inst *curr_inst;	/* Currently processing instance */
+	u32 cmd_seq_num;		/* Command sequence number */
 };
 
 /* Forward declaration */
@@ -151,6 +237,12 @@ struct vidc_inst {
 
 	enum vidc_codec codec;
 	bool decoder;
+	u32 inst_id;
+
+	/* State machine */
+	enum vidc_inst_state state;
+	struct completion done;
+	int error;
 
 	/* Format info */
 	const struct vidc_format *fmt_out;
@@ -166,6 +258,10 @@ struct vidc_inst {
 	u32 sequence_out;
 	u32 sequence_cap;
 
+	/* Current frame being processed */
+	struct vb2_v4l2_buffer *src_buf;
+	struct vb2_v4l2_buffer *dst_buf;
+
 	/* Encoder parameters */
 	u32 framerate;
 	u32 bitrate;
@@ -174,6 +270,9 @@ struct vidc_inst {
 	u32 seq_width;
 	u32 seq_height;
 	u32 min_dpb_count;
+
+	/* Last frame result */
+	u32 result_size;
 };
 
 /* Core functions */

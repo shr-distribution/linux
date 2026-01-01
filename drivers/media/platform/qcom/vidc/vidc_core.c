@@ -168,41 +168,137 @@ static void vidc_clear_interrupt(struct vidc_core *core)
 	vidc_write(core, VIDC_REG_INTERRUPT, 0);
 }
 
+static void vidc_handle_frame_done(struct vidc_core *core,
+				   struct vidc_inst *inst)
+{
+	u32 display_y, display_c;
+
+	/* Read decoded frame addresses */
+	display_y = vidc_read(core, VIDC_REG_DEC_DISPLAY_Y);
+	display_c = vidc_read(core, VIDC_REG_DEC_DISPLAY_C);
+
+	dev_dbg(core->dev, "Frame done: Y=0x%x C=0x%x\n",
+		display_y << VIDC_ADDR_SHIFT,
+		display_c << VIDC_ADDR_SHIFT);
+
+	/* Read the decoded frame size */
+	inst->result_size = vidc_read(core, VIDC_REG_SEQ_FRAME_SIZE);
+}
+
+static void vidc_handle_enc_complete(struct vidc_core *core,
+				     struct vidc_inst *inst)
+{
+	/* Read encoded frame size */
+	inst->result_size = vidc_read(core, VIDC_REG_ENC_FRAME_SIZE);
+
+	dev_dbg(core->dev, "Encode complete: size=%u\n", inst->result_size);
+}
+
+static void vidc_handle_seq_done(struct vidc_core *core,
+				 struct vidc_inst *inst)
+{
+	/* Read sequence header info */
+	inst->seq_height = vidc_read(core, VIDC_REG_SEQ_IMG_SIZE_Y);
+	inst->seq_width = vidc_read(core, VIDC_REG_SEQ_IMG_SIZE_X);
+	inst->min_dpb_count = vidc_read(core, VIDC_REG_SEQ_MIN_DPB);
+
+	dev_dbg(core->dev, "Sequence done: %ux%u, min_dpb=%u\n",
+		inst->seq_width, inst->seq_height, inst->min_dpb_count);
+
+	inst->state = VIDC_STATE_SEQ_PARSED;
+}
+
 static irqreturn_t vidc_isr(int irq, void *data)
 {
 	struct vidc_core *core = data;
+	struct vidc_inst *inst;
 	u32 cmd, arg1, arg2, arg3, arg4;
+	unsigned long flags;
+
+	spin_lock_irqsave(&core->irqlock, flags);
 
 	vidc_clear_interrupt(core);
 	vidc_get_response(core, &cmd, &arg1, &arg2, &arg3, &arg4);
 
-	dev_dbg(core->dev, "VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x\n",
-		cmd, arg1, arg2);
+	inst = core->curr_inst;
+
+	dev_dbg(core->dev, "VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
+		cmd, arg1, arg2, inst);
 
 	switch (cmd) {
 	case VIDC_RESP_SYS_INIT:
 		dev_info(core->dev, "Firmware initialized\n");
 		break;
+
 	case VIDC_RESP_OPEN_CH:
 		dev_dbg(core->dev, "Channel opened\n");
+		if (inst) {
+			inst->state = VIDC_STATE_OPEN;
+			complete(&inst->done);
+		}
 		break;
+
 	case VIDC_RESP_CLOSE_CH:
 		dev_dbg(core->dev, "Channel closed\n");
+		if (inst) {
+			inst->state = VIDC_STATE_IDLE;
+			complete(&inst->done);
+		}
 		break;
+
 	case VIDC_RESP_SEQ_DONE:
-		dev_dbg(core->dev, "Sequence done\n");
+		if (inst) {
+			vidc_handle_seq_done(core, inst);
+			complete(&inst->done);
+		}
 		break;
+
 	case VIDC_RESP_FRAME_DONE:
-		dev_dbg(core->dev, "Frame done\n");
+		if (inst) {
+			vidc_handle_frame_done(core, inst);
+			inst->error = 0;
+			complete(&inst->done);
+		}
 		break;
+
+	case VIDC_RESP_ENC_COMPLETE:
+		if (inst) {
+			vidc_handle_enc_complete(core, inst);
+			inst->error = 0;
+			complete(&inst->done);
+		}
+		break;
+
+	case VIDC_RESP_INIT_BUFFERS:
+		dev_dbg(core->dev, "Buffers initialized\n");
+		if (inst) {
+			inst->state = VIDC_STATE_RUNNING;
+			complete(&inst->done);
+		}
+		break;
+
+	case VIDC_RESP_FLUSH_DONE:
+		dev_dbg(core->dev, "Flush done\n");
+		if (inst)
+			complete(&inst->done);
+		break;
+
 	case VIDC_RESP_ERROR:
 		dev_err(core->dev, "Firmware error: 0x%x\n", arg2);
+		if (inst) {
+			inst->error = -EIO;
+			inst->state = VIDC_STATE_ERROR;
+			complete(&inst->done);
+		}
 		break;
+
 	default:
 		break;
 	}
 
 	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
+
+	spin_unlock_irqrestore(&core->irqlock, flags);
 
 	return IRQ_HANDLED;
 }
@@ -326,6 +422,7 @@ static int vidc_probe(struct platform_device *pdev)
 
 	core->dev = dev;
 	mutex_init(&core->lock);
+	spin_lock_init(&core->irqlock);
 	INIT_LIST_HEAD(&core->instances);
 
 	/* Map registers */
