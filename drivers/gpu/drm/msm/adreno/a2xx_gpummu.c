@@ -52,6 +52,10 @@ static int a2xx_gpummu_map(struct msm_mmu *mmu, uint64_t iova,
 			gpummu->table[idx++] = (addr + i) | prot_bits;
 	}
 
+	/* Sync page table to device for non-coherent platforms (e.g. MSM8660) */
+	dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
+				   DMA_TO_DEVICE);
+
 	/* we can improve by deferring flush for multiple map() */
 	gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE,
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
@@ -66,7 +70,11 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	unsigned i;
 
 	for (i = 0; i < len / GPUMMU_PAGE_SIZE; i++, idx++)
-                gpummu->table[idx] = 0;
+		gpummu->table[idx] = 0;
+
+	/* Sync page table to device for non-coherent platforms (e.g. MSM8660) */
+	dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
+				   DMA_TO_DEVICE);
 
 	gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE,
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
