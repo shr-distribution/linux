@@ -973,6 +973,30 @@ config LEDS_LM3697
 	  Say Y to enable the LM3697 LED driver for TI LMU devices.
 	  This supports the LED device LM3697.
 
+config LEDS_LM8502
+	tristate "LED driver for TI LM8502"
+	depends on LEDS_CLASS && I2C
+	select REGMAP_I2C
+	select INPUT_FF_MEMLESS
+	help
+	  Say Y to enable the LM8502 LED controller driver. The LM8502
+	  has 10 LED channels, 2 programmable engines for animations,
+	  vibrator/haptic support (via force-feedback), and camera
+	  flash/torch functionality.
+
+	  Features:
+	  - 10 individually controllable LED channels
+	  - Hardware grouping with group faders
+	  - Vibrator via input force-feedback subsystem
+	  - Flash LED (up to 600mA) and torch LED (up to 150mA)
+	  - 2 programmable engines for LED patterns
+	  - Interrupt support for engine synchronization
+
+	  This chip was used in devices like the HP Pre3 smartphone.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called leds-lm8502.
+
 config LEDS_LM36274
 	tristate "LED driver for LM36274"
 	depends on LEDS_CLASS && MFD_TI_LMU
