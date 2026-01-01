@@ -1,4 +1,20 @@
 # SPDX-License-Identifier: GPL-2.0-only
+
+config ARCH_MSM7X30
+	bool "Qualcomm MSM7x30 Support"
+	depends on ARCH_MULTI_V7
+	select ARM_AMBA
+	select CLKSRC_QCOM_MSM
+	select QCOM_MSM_VIC
+	select PINCTRL
+	help
+	  Support for Qualcomm MSM7x30/MSM7230 SoC based devices.
+	  This includes devices like the HP Pre3.
+
+	  The MSM7x30 uses a VIC (Vectored Interrupt Controller) instead
+	  of GIC, and does not have the ARM architected timer. SSBI bus
+	  support for PM8058 PMIC is provided via MFD_PM8XXX.
+
 menuconfig ARCH_QCOM
 	bool "Qualcomm Support"
 	depends on ARCH_MULTI_V7
