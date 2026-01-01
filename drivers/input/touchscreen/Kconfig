@@ -210,6 +210,20 @@ config TOUCHSCREEN_CY8CTMA140
 	  To compile this driver as a module, choose M here: the
 	  module will be called cy8ctma140.
 
+config TOUCHSCREEN_CY8CTMA300
+	tristate "Cypress CY8CTMA300 touchscreen"
+	depends on I2C
+	help
+	  Say Y here if you have a Cypress CY8CTMA300 capacitive
+	  touchscreen controller, as used in the HP Pre3 smartphone.
+
+	  This controller supports up to 10 simultaneous touch points.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called cy8ctma300.
+
 config TOUCHSCREEN_CY8CTMG110
 	tristate "cy8ctmg110 touchscreen"
 	depends on I2C

@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/touchscreen/cypress,cy8ctma300.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Cypress CY8CTMA300 Capacitive Touchscreen Controller
+
+maintainers:
+  - webOS Community <webos-ports@webos-ports.org>
+
+description: |
+  The Cypress CY8CTMA300 is a capacitive touchscreen controller
+  that supports up to 10 simultaneous touch points. It was used
+  in devices like the HP Pre3 smartphone.
+
+allOf:
+  - $ref: touchscreen.yaml#
+
+properties:
+  compatible:
+    const: cypress,cy8ctma300
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  reset-gpios:
+    maxItems: 1
+    description: GPIO connected to the reset pin (active low)
+
+  vdd-supply:
+    description: Digital voltage supply
+
+  vcpin-supply:
+    description: Analog voltage supply
+
+  touchscreen-size-x: true
+  touchscreen-size-y: true
+  touchscreen-fuzz-x: true
+  touchscreen-fuzz-y: true
+  touchscreen-inverted-x: true
+  touchscreen-inverted-y: true
+  touchscreen-swapped-x-y: true
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        touchscreen@24 {
+            compatible = "cypress,cy8ctma300";
+            reg = <0x24>;
+
+            interrupt-parent = <&gpio>;
+            interrupts = <85 IRQ_TYPE_EDGE_FALLING>;
+
+            reset-gpios = <&gpio 128 GPIO_ACTIVE_LOW>;
+
+            vdd-supply = <&vdd_touch>;
+            vcpin-supply = <&vcpin_touch>;
+
+            touchscreen-size-x = <480>;
+            touchscreen-size-y = <800>;
+        };
+    };

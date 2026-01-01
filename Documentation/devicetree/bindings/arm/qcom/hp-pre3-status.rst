@@ -113,7 +113,7 @@ Missing/TODO
 +----------------------+------------------+----------------------------------+
 | Component            | Status           | Notes                            |
 +======================+==================+==================================+
-| Touchscreen          | BLOCKED          | Cypress CY8CTMA300, no driver    |
+| Touchscreen          | PARTIAL          | CY8CTMA300, I2C driver, needs HW test |
 +----------------------+------------------+----------------------------------+
 | SPI Controller       | DONE             | spi-qcom-qsd.c @ 0xA8000000      |
 +----------------------+------------------+----------------------------------+
@@ -152,7 +152,8 @@ Known Issues
 ------------
 
 1. Regulators are currently fixed/dummy - need proper PCOM-based driver
-2. SPI controller (QSD) has no mainline driver - blocks touchscreen support
+2. Touchscreen interface uncertain - legacy kernel used HSUART at 3Mbps,
+   I2C driver provided but needs hardware testing to confirm I2C address
 3. Modem/AMSS communication not implemented (PCOM/SMD)
 
 Testing
