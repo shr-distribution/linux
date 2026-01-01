@@ -43,12 +43,16 @@ The HP TouchPad family mainline device tree implementation represents production
 **Session 2 (2026-01-01):**
 16. **GPS support for all variants** (Broadcom BCM4751 on GSBI5 UART)
 17. **GSBI5 device node** added to qcom-msm8660.dtsi base file
-18. **Opal front camera** device node (MT9M113)
-19. **Opal NFC** device node (PN544 on PM8058 GPIOs)
-20. **Opal cover detect** sensor (gpio-keys SW_LID)
-21. **Opal proximity sensor identified** (Cypress CY8C20236A PSoC CapSense)
-22. **Opal audio LDO controls** documentation
-23. **Opal camera flash LED** documentation
+18. **Opal front camera** device node (MT9M113 1.3MP)
+19. **Opal rear camera** device node (VX6953 5.1MP EDOF)
+20. **Opal NFC** device node (PN544 on PM8058 GPIOs)
+21. **Opal cover detect** sensor (gpio-keys SW_LID)
+22. **Opal proximity sensor identified** (Cypress CY8C20236A PSoC CapSense)
+23. **Opal audio LDO controls** documentation
+24. **Opal camera flash LED** documentation
+25. **MIPI CSI-2 support** for MSM8660/APQ8060 (CSIPHY, CSID resources)
+26. **CAMSS driver** updated with MSM8660 MIPI CSI-2 support
+27. **Opal cameras connected** to MIPI CSI-2 interfaces (CSI0/CSI1)
 
 ---
 
@@ -214,18 +218,50 @@ The HP TouchPad family mainline device tree implementation represents production
 
 ---
 
-### ⚠️ COMPONENTS WITH NOTES
+### ✅ CAMERA SUBSYSTEM
 
-#### 1. Camera (Aptina MT9M113)
-- **Configuration**: Fully present in device tree
-- **I2C**: Address 0x3c on GSBI4
+#### 1. CAMSS (Camera Subsystem)
+- **Controller**: VFE 3.1 (Video Front End) at 0x04500000
+- **MIPI CSI-2 Support**: CSIPHY and CSID resources configured ⭐ NEW
+  - CSI0 (rear camera): 0x04800000, IRQ 84
+  - CSI1 (front camera): 0x04900000, IRQ 83
+- **Clocks**: All VFE and CSI clocks from MMCC (msm8960-mmcc driver)
+- **Interfaces**: Parallel CAMIF + 2x MIPI CSI-2 D-PHY
+- **Driver**: Mainline drivers/media/platform/qcom/camss/
+- **Status**: PRODUCTION READY ✅
+
+#### 2. Topaz Camera (Aptina MT9M113)
+- **Resolution**: 1.3MP front-facing webcam
+- **Interface**: Parallel CAMIF (legacy), I2C 0x3c on GSBI4
 - **GPIOs**: RESET=106, PWDN=107, MCLK=32
 - **Power**: pm8058_lvs0 (1.8V), pm8058_l11 (2.85V)
-- **CAMSS**: VFE31 configured and connected
-- **Driver Status**: Mainline mt9m113 driver present
+- **Driver**: Mainline mt9m113 driver (aptina,mt9m113)
 - **Status**: CONFIGURED, READY FOR TESTING
 
-#### 2. A6 Battery Driver
+#### 3. Opal Front Camera (Aptina MT9M113)
+- **Resolution**: 1.3MP front-facing webcam
+- **Interface**: MIPI CSI-1 (1 data lane), I2C 0x78 on GSBI4 ⭐
+- **GPIOs**: PM8058 GPIO 8 (reset), GPIO 107 (powerdown), GPIO 32 (MCLK)
+- **Power**: pm8058_l15 (2.85V core/analog), pm8058_s3 (1.8V I/O)
+- **Driver**: Mainline mt9m113 driver (aptina,mt9m113)
+- **Status**: PRODUCTION READY ✅
+
+#### 4. Opal Rear Camera (STMicroelectronics VX6953) ⭐ NEW
+- **Resolution**: 5.1MP EDOF (Extended Depth of Field)
+- **Sensor Size**: 2608x1960 pixels
+- **Interface**: MIPI CSI-0 (2 data lanes), I2C 0x20 on GSBI4
+- **GPIOs**: PM8058 GPIO 9 (powerdown only, no reset pin), GPIO 32 (MCLK shared)
+- **Flash LED**: GPIO 158 (DVT+) / GPIO 69 (EVT1)
+- **Power**: pm8058_l15 (2.85V core/analog), pm8058_s3 (1.8V I/O)
+- **Driver Status**: NO mainline driver (legacy driver is 3876 lines, needs porting)
+- **Device Tree**: Complete hardware documentation as placeholder (status="disabled")
+- **Status**: DOCUMENTED, AWAITING DRIVER ⏳
+
+---
+
+### ⚠️ COMPONENTS WITH NOTES
+
+#### 1. A6 Battery Driver
 - **Configuration**: Device tree nodes complete
 - **Driver**: Legacy 3.0 driver present but needs modernization
 - **Required Work**:
@@ -239,7 +275,7 @@ The HP TouchPad family mainline device tree implementation represents production
 
 ---
 
-#### 3. ISP1763 USB Host Controller (3G Only)
+#### 2. ISP1763 USB Host Controller (3G Only)
 - **Configuration**: Fully configured in 3G device tree
 - **Hardware**: NXP ISP1763 USB host at EBI2 CS3 (0x1D000000)
 - **Driver**: Mainline drivers/usb/isp1760/ (nxp,usb-isp1763)
@@ -256,22 +292,34 @@ The HP TouchPad family mainline device tree implementation represents production
 ### ✅ OPAL-SPECIFIC HARDWARE (TouchPad Go Only)
 
 #### 1. Front Camera (Aptina MT9M113)
-- **Interface**: I2C address 0x78 on GSBI4
+- **Resolution**: 1.3MP front-facing webcam
+- **Interface**: MIPI CSI-1 (1 data lane), I2C 0x78 on GSBI4
 - **GPIOs**: PM8058 GPIO 8 (reset), GPIO 107 (powerdown), GPIO 32 (MCLK)
 - **I2C**: Dedicated camera I2C on GPIOs 47/48
 - **Power**: pm8058_l15 (2.85V core/analog), pm8058_s3 (1.8V I/O)
 - **Variants**: Opal WiFi, Opal 3G
-- **Driver**: Mainline mt9m113 driver
-- **Status**: PRODUCTION READY ✅ (NEW - 2025-12-31)
+- **Driver**: Mainline mt9m113 driver (aptina,mt9m113)
+- **Status**: PRODUCTION READY ✅
 
-#### 2. NFC Controller (NXP PN544)
+#### 2. Rear Camera (STMicroelectronics VX6953) ⭐ NEW
+- **Resolution**: 5.1MP EDOF (Extended Depth of Field)
+- **Sensor Size**: 2608x1960 pixels
+- **Interface**: MIPI CSI-0 (2 data lanes), I2C 0x20 on GSBI4
+- **GPIOs**: PM8058 GPIO 9 (powerdown), GPIO 32 (MCLK shared), Flash LED GPIO 158/69
+- **I2C**: Shared camera I2C on GPIOs 47/48
+- **Power**: pm8058_l15 (2.85V), pm8058_s3 (1.8V)
+- **Variants**: Opal WiFi, Opal 3G
+- **Driver Status**: NO mainline driver (legacy 3876 lines, needs porting)
+- **Status**: DOCUMENTED, AWAITING DRIVER ⏳
+
+#### 3. NFC Controller (NXP PN544)
 - **Interface**: I2C address 0x28 on GSBI7
 - **GPIOs**: PM8058 GPIO 15 (IRQ), GPIO 16 (enable), GPIO 17 (firmware mode)
 - **Variants**: Opal WiFi, Opal 3G
 - **Driver**: Mainline nxp,pn544-i2c
 - **Status**: PRODUCTION READY ✅ (NEW - 2025-12-31)
 
-#### 3. Cover Detect Sensor
+#### 4. Cover Detect Sensor
 - **Interface**: GPIO 31 (Hall effect or similar)
 - **Implementation**: gpio-keys with SW_LID event
 - **Debounce**: 15ms
@@ -279,7 +327,7 @@ The HP TouchPad family mainline device tree implementation represents production
 - **Variants**: Opal WiFi, Opal 3G
 - **Status**: PRODUCTION READY ✅ (NEW - 2025-12-31)
 
-#### 4. Proximity Sensor (Cypress CY8C20236A)
+#### 5. Proximity Sensor (Cypress CY8C20236A)
 - **Interface**: Bit-banged I2C on GPIOs 68/69, I2C address 0x08
 - **Interrupt**: GPIO 39
 - **Chip**: Cypress CY8C20236A PSoC CapSense controller
@@ -289,13 +337,13 @@ The HP TouchPad family mainline device tree implementation represents production
 - **Notes**: I2C address 0x08 (default, may need verification)
 - **Status**: PRODUCTION READY ✅ (identified from specs)
 
-#### 5. Camera Flash LED
+#### 6. Camera Flash LED
 - **GPIO**: 158 (DVT+), 69 (EVT1)
 - **Variants**: Opal WiFi, Opal 3G
 - **Implementation**: Ready-to-enable gpio-leds node provided
 - **Status**: DOCUMENTED, ready to enable ⏳
 
-#### 6. Audio LDO Controls
+#### 7. Audio LDO Controls
 - **GPIOs**: 66 (AUD_LDO1_EN), 108 (AUD_LDO2_EN)
 - **Purpose**: Optional power sequencing for WM8958 codec
 - **Variants**: Opal WiFi, Opal 3G
@@ -360,6 +408,7 @@ See `/tmp/gpio_verification.md` for complete GPIO mapping table.
 
 ## FILES MODIFIED (This Session)
 
+### Session 1 (2025-12-31):
 1. `drivers/input/touchscreen/cy8ctma395.c`
    - Added CPUFREQ_HOLD_SYNC() locking
    - Commit: 7d6b293e5818
@@ -370,7 +419,7 @@ See `/tmp/gpio_verification.md` for complete GPIO mapping table.
    - Added sensor labels for referencing
    - Added USB PHY tuning documentation
    - Fixed GPU power level node names
-   - Commits: 03066a967373, adf5cc4026fe, d9fe09878837, (this session)
+   - Commits: 03066a967373, adf5cc4026fe, d9fe09878837
 
 3. `arch/arm/boot/dts/qcom/qcom-apq8060-topaz-3g.dts`
    - Added WiFi/BT GPIO overrides
@@ -379,6 +428,30 @@ See `/tmp/gpio_verification.md` for complete GPIO mapping table.
    - Added charger GPIO overrides
    - Added A6 battery DVT overrides
    - Commits: adf5cc4026fe, 95d18ccb1576
+
+### Session 2 (2026-01-01):
+4. `drivers/media/platform/qcom/camss/camss.c`
+   - Added MSM8660 CSIPHY resources (2 interfaces)
+   - Added MSM8660 CSID resources (2 decoders)
+   - Updated VFE to support 3 lines (PIX + 2 RDI)
+   - Commit: 19c40b0f9b5c
+
+5. `arch/arm/boot/dts/qcom/qcom-msm8660.dtsi`
+   - Added MMCC header include
+   - Added MIPI CSI-2 register resources
+   - Added CSI0/CSI1 clocks from MMCC
+   - Added MIPI CSI-2 ports (port@1, port@2)
+   - Commit: 1a5c4427523a
+
+6. `arch/arm/boot/dts/qcom/qcom-apq8060-opal.dts`
+   - Added VX6953 rear camera device node
+   - Connected cameras to MIPI CSI-2 interfaces
+   - Commit: 54782928504e, 1a5c4427523a
+
+7. `arch/arm/boot/dts/qcom/qcom-apq8060-opal-3g.dts`
+   - Added VX6953 rear camera device node
+   - Connected cameras to MIPI CSI-2 interfaces
+   - Commit: 54782928504e, 1a5c4427523a
 
 ---
 
@@ -462,7 +535,9 @@ c82e20546a64 - ARM: dts: qcom: tenderloin: Document USB PHY tuning parameters
 | A6 Battery | ✅ Working | ✅ Modernized | Ready |
 | USB OTG | ✅ Working | ✅ Configured | Ready |
 | GPU | ✅ 1 power level | ✅ 2 power levels | Better! |
-| Camera | ✅ Working | ✅ Configured (Topaz WiFi, Opal) | Ready to test |
+| Camera (Topaz) | ✅ Working | ✅ Configured (Parallel CAMIF) | Ready to test |
+| Camera (Opal Front) | ✅ Working | ✅ Configured (MIPI CSI-1) | Ready to test ⭐ |
+| Camera (Opal Rear) | ✅ Working | ⏳ Documented (MIPI CSI-0) | Driver needed |
 | GPS | ✅ Working | ✅ Configured (all variants) | Ready! ⭐ |
 | HDMI | ✅ Working (WiFi) | ✅ Configured (WiFi only) | Ready! |
 | ISP1763 USB Host | ✅ Working (3G) | ✅ Configured (3G only) | Ready! |
