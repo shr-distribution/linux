@@ -1,6 +1,8 @@
 # HP TouchPad Mainline Kernel Status Report
 **Date:** 2026-01-01 (Updated)
-**Kernel Version:** Linux 6.13-rc (mainline)
+**Kernel Versions:**
+  - Linux 6.13-rc (development branch: `tenderloin/6.13/mainline-for-upstream`)
+  - Linux 6.18 LTS (new branch: `tenderloin/6.18/mainline`) **NEW**
 **Hardware:** HP TouchPad Family
   - HP TouchPad (Topaz) - 9.7" WiFi and 3G variants
   - HP TouchPad Go (Opal) - 7" WiFi and 3G variants
@@ -22,6 +24,25 @@ The HP TouchPad family mainline device tree implementation represents production
 - ✅ **DTBs build without errors** (cosmetic warnings only)
 
 ### Recent Improvements (2025-12-31 to 2026-01-01):
+
+**Session 3 (2026-01-01) - Linux 6.18 LTS Port:**
+44. **Linux 6.18 LTS kernel tree** created at `/home/herrie/webos/touchpad-kernel/linux-6.18-tenderloin/`
+45. **Fresh mainline base** - cloned from kernel.org stable tree (released Nov 30, 2025, supported until Dec 2027)
+46. **Device trees ported** - All 4 variants (Topaz WiFi/3G, Opal WiFi/3G) + tenderloin-common.dtsi
+47. **Base dtsi enhanced** - qcom-msm8660.dtsi with MMCC, LCC, LPASS, VIDC, GSBI5 nodes
+48. **Clock bindings** - Added qcom,lcc-msm8660.h, PLL4_VOTE to gcc-msm8660.h, MDP clocks to mmcc-msm8960.h
+49. **All drivers ported to 6.18** with API compatibility updates:
+    - `qcom_q6v2_lpass.c` - Updated for `qcom_mdt_load_no_init()` API change (removed pas_id)
+    - `a2xx_gpummu.c` - Updated for `msm_mmu_funcs` API changes (map() off param, set_stall)
+    - `cyttsp_core.c/h` - Palm features restored
+    - `cy8ctma395.c` - HP TouchPad touchscreen driver
+    - `vx6953.c` - STMicroelectronics camera sensor
+    - `vidc/` - VIDC 1080p video codec (core, decoder, encoder)
+    - `camss.c` - MIPI CSI-2 support for MSM8660
+    - `lcc-msm8960.c` - MSM8660/APQ8060 LCC support
+    - `gcc-msm8660.c` - PLL4_VOTE clock
+50. **Build verified** - zImage (9.4 MB), 178 modules, all 4 DTBs
+51. **Pushed to GitHub** - Branch `tenderloin/6.18/mainline` on shr-distribution/linux.git
 
 **Session 1 (2025-12-31):**
 1. CPU frequency locking to touchscreen SWD programmer
@@ -589,6 +610,85 @@ See `/tmp/gpio_verification.md` for complete GPIO mapping table.
 
 ---
 
+## LINUX 6.18 LTS PORT
+
+### Overview
+A fresh Linux 6.18 LTS kernel tree was created to provide a clean baseline for HP TouchPad support.
+Linux 6.18 was released November 30, 2025 and will be supported until December 2027.
+
+### Tree Location
+`/home/herrie/webos/touchpad-kernel/linux-6.18-tenderloin/`
+
+### Branch
+`tenderloin/6.18/mainline` (pushed to GitHub: shr-distribution/linux.git)
+
+### Files Added/Modified (23 files, +6208/-2217 lines)
+
+**Device Trees:**
+- `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` (NEW)
+- `arch/arm/boot/dts/qcom/qcom-apq8060-topaz.dts` (NEW)
+- `arch/arm/boot/dts/qcom/qcom-apq8060-topaz-3g.dts` (NEW)
+- `arch/arm/boot/dts/qcom/qcom-apq8060-opal.dts` (NEW)
+- `arch/arm/boot/dts/qcom/qcom-apq8060-opal-3g.dts` (NEW)
+- `arch/arm/boot/dts/qcom/qcom-msm8660.dtsi` (MODIFIED - added MMCC/LCC/LPASS/VIDC/GSBI5)
+- `arch/arm/boot/dts/qcom/Makefile` (MODIFIED - added TouchPad DTBs)
+
+**Clock Bindings:**
+- `include/dt-bindings/clock/qcom,lcc-msm8660.h` (NEW)
+- `include/dt-bindings/clock/qcom,gcc-msm8660.h` (MODIFIED - added PLL4_VOTE)
+- `include/dt-bindings/clock/qcom,mmcc-msm8960.h` (MODIFIED - added MDP_PIXEL_*, MDP_LCDC_CLK)
+
+**Drivers:**
+- `drivers/input/touchscreen/cyttsp_core.c` (MODIFIED - Palm features)
+- `drivers/input/touchscreen/cyttsp_core.h` (MODIFIED - Palm features)
+- `drivers/input/touchscreen/cy8ctma395.c` (NEW - HP TouchPad touchscreen)
+- `drivers/media/i2c/vx6953.c` (NEW - STMicroelectronics camera)
+- `drivers/media/platform/qcom/vidc/*.c/h` (NEW - VIDC 1080p codec, 6 files)
+- `drivers/media/platform/qcom/camss/camss.c` (MODIFIED - MSM8660 CSI-2)
+- `drivers/remoteproc/qcom_q6v2_lpass.c` (NEW - LPASS PIL driver)
+- `drivers/clk/qcom/lcc-msm8960.c` (MODIFIED - MSM8660 support)
+- `drivers/clk/qcom/gcc-msm8660.c` (MODIFIED - PLL4_VOTE)
+- `drivers/gpu/drm/msm/adreno/a2xx_gpummu.c` (MODIFIED - cache sync)
+
+**Config:**
+- `arch/arm/configs/tenderloin_defconfig` (NEW)
+
+### API Updates for 6.18 Compatibility
+
+1. **qcom_mdt_load_no_init()** (drivers/remoteproc/qcom_q6v2_lpass.c)
+   - 6.13: `qcom_mdt_load_no_init(dev, fw, name, pas_id, region, phys, size, &reloc)`
+   - 6.18: `qcom_mdt_load_no_init(dev, fw, name, region, phys, size, &reloc)`
+   - Change: `pas_id` parameter removed
+
+2. **msm_mmu_funcs.map()** (drivers/gpu/drm/msm/adreno/a2xx_gpummu.c)
+   - 6.13: `int (*map)(mmu, iova, sgt, len, prot)`
+   - 6.18: `int (*map)(mmu, iova, sgt, off, len, prot)`
+   - Change: Added `off` (offset) parameter
+
+3. **msm_mmu_funcs callback rename** (drivers/gpu/drm/msm/adreno/a2xx_gpummu.c)
+   - 6.13: `.resume_translation = func(mmu)`
+   - 6.18: `.set_stall = func(mmu, enable)`
+   - Change: Renamed and added `bool enable` parameter
+
+### Build Results
+```
+Kernel:  arch/arm/boot/zImage (9.4 MB)
+Modules: 178 kernel modules
+DTBs:
+  - qcom-apq8060-topaz.dtb      (35 KB)
+  - qcom-apq8060-topaz-3g.dtb   (37 KB)
+  - qcom-apq8060-opal.dtb       (38 KB)
+  - qcom-apq8060-opal-3g.dtb    (39 KB)
+```
+
+### Commits
+```
+0d0537d4d - drivers: Add HP TouchPad driver support for Linux 6.18
+bb79b6735 - ARM: qcom: Add HP TouchPad (Tenderloin) support for Linux 6.18
+```
+
+---
+
 ## TESTING RECOMMENDATIONS
 
 ### Phase 1: Basic Boot
@@ -619,6 +719,14 @@ See `/tmp/gpio_verification.md` for complete GPIO mapping table.
 
 ## COMMIT HISTORY (This Session)
 
+### Linux 6.18 Branch (`tenderloin/6.18/mainline`):
+```
+0d0537d4d - drivers: Add HP TouchPad driver support for Linux 6.18 ⭐ NEW
+bb79b6735 - ARM: qcom: Add HP TouchPad (Tenderloin) support for Linux 6.18 ⭐ NEW
+7d0a66e4b - Linux 6.18 (base)
+```
+
+### Linux 6.13 Branch (`tenderloin/6.13/mainline-for-upstream`):
 ```
 a1c3edb6e07f - Input: cyttsp: Restore Palm/HP-specific features from webOS kernel ⭐ NEW
 7d6b293e5818 - input: cy8ctma395: Add CPU frequency locking for SWD timing
@@ -743,8 +851,11 @@ The HP TouchPad family mainline kernel support is in **EXCELLENT** condition wit
 
 ---
 
-**Report Generated**: 2026-01-01 (Updated from 2025-12-31)
+**Report Generated**: 2026-01-01 (Updated)
 **Maintainer**: Herrie
 **Project**: HP TouchPad Family Mainline Kernel Support
-**Repository**: /home/herrie/webos/touchpad-kernel/shr-linux
-**Devices**: Topaz (9.7") WiFi/3G, Opal (7") WiFi/3G ⭐
+**Repositories**:
+  - 6.13 development: `/home/herrie/webos/touchpad-kernel/shr-linux` (branch: `tenderloin/6.13/mainline-for-upstream`)
+  - 6.18 LTS: `/home/herrie/webos/touchpad-kernel/linux-6.18-tenderloin` (branch: `tenderloin/6.18/mainline`) **NEW**
+  - GitHub: `shr-distribution/linux.git`
+**Devices**: Topaz (9.7") WiFi/3G, Opal (7") WiFi/3G
