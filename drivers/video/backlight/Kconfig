@@ -380,6 +380,18 @@ config BACKLIGHT_LM3509
 	help
 	  This supports TI LM3509 Backlight Driver
 
+config BACKLIGHT_LM3528
+	tristate "Backlight Driver for TI LM3528"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  If you have a TI LM3528 backlight driver, say Y to enable
+	  the backlight driver. This chip was used in devices like
+	  the HP Pre3 smartphone.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called lm3528_bl.
+
 config BACKLIGHT_LM3630A
 	tristate "Backlight Driver for LM3630A"
 	depends on I2C && PWM

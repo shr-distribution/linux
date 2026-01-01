@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/leds/backlight/ti,lm3528.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: TI LM3528 Backlight Controller
+
+maintainers:
+  - webOS Community <webos-ports.org>
+
+description: |
+  The TI LM3528 is a dual-channel white LED driver with I2C interface
+  for LCD backlight applications. It provides up to 30mA per channel.
+
+allOf:
+  - $ref: common.yaml#
+
+properties:
+  compatible:
+    const: ti,lm3528
+
+  reg:
+    maxItems: 1
+    description: I2C address of the device (typically 0x36)
+
+  default-brightness:
+    description: Initial brightness level (0-100)
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 0
+    maximum: 100
+    default: 50
+
+required:
+  - compatible
+  - reg
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        backlight@36 {
+            compatible = "ti,lm3528";
+            reg = <0x36>;
+            default-brightness = <50>;
+        };
+    };
