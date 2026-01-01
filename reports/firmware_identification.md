@@ -10,10 +10,14 @@
 - `a6_firmware.txt.00` (49 KB) - A6_0 firmware (I2C address 0x31)
 - `a6_firmware.txt.01` (31 KB) - A6_1 firmware (I2C address 0x32)
 
-**Format:** TI-TXT hex format for MSP430 microcontroller  
-**Purpose:** Battery monitoring, power management, Touchstone inductive charging  
-**Load Method:** JTAG/SBW programming via GPIO bit-banging  
-**Mainline Status:** ⚠️ Driver needs modernization to load firmware  
+**Format:** TI-TXT hex format for MSP430 microcontroller
+**Purpose:** Battery monitoring, power management, Touchstone inductive charging
+**Load Method:** SBW (Spy-Bi-Wire) programming via GPIO bit-banging
+**Mainline Status:** ✅ Driver supports firmware loading via ioctl interface
+**Driver:** `drivers/misc/a6/` with character device interface
+**Firmware Interface:**
+- `A6_IOCTL_SET_FW_DATA` - Write firmware to A6 controller
+- `A6_IOCTL_VERIFY_FW_DATA` - Verify programmed firmware
 **Notes:** Contains embedded strings like "This device's maker has agreed to Palm's Peripheral Connection License terms & conditions."
 
 ---
@@ -92,32 +96,33 @@
 - `q6.b06` (673 KB) - Code/data segment 6
 - `q6.b07` (48 KB) - Code/data segment 7
 
-**Total Size:** ~4.3 MB  
-**Purpose:** Audio/voice processing, modem DSP  
-**Load Method:** PIL (Peripheral Image Loader) subsystem  
-**Mainline Status:** ⚠️ PIL/remoteproc support needed  
+**Total Size:** ~4.3 MB
+**Purpose:** Audio/voice processing, modem DSP
+**Load Method:** PIL (Peripheral Image Loader) subsystem
+**Mainline Status:** ❌ No MSM8660 remoteproc/PIL support in mainline
 **Format:** Qualcomm PIL format (.mdt + .bXX segments)
 
 **Mainline Path:**
 - `/lib/firmware/qcom/msm8660/`
 
-**Action Required:** Verify PIL/remoteproc support for MSM8660 QDSP6
+**Note:** Mainline remoteproc drivers (qcom_q6v5_mss, qcom_q6v5_adsp) only support
+MSM8916 and newer SoCs. MSM8660 QDSP6 would require a new driver implementation.
 
 ---
 
-### 6. VIDEO CODEC (Venus/Vidc)
+### 6. VIDEO CODEC (VIDC 1.0)
 **Files:**
 - `vidc_1080p.fw` (489 KB)
 
-**Purpose:** Video decoder/encoder firmware (1080p capable)  
-**Load Method:** Loaded by venus/vidc driver  
-**Mainline Status:** ⚠️ Check venus driver support for MSM8660  
+**Purpose:** Video decoder/encoder firmware (1080p capable)
+**Load Method:** Loaded by VIDC driver
+**Mainline Status:** ❌ No MSM8660 VIDC support in mainline
 **Capabilities:** H.264, MPEG-4, VC-1, VP8 encode/decode up to 1080p
 
-**Mainline Path:**
-- `/lib/firmware/qcom/venus-1.8/` (approximate, verify exact version)
-
-**Action Required:** Verify if MSM8660 VIDC is supported by mainline venus driver
+**Note:** The mainline Venus driver only supports MSM8916 and newer SoCs.
+MSM8660 uses VIDC 1.0 which is a different hardware block that would require
+a separate driver implementation. Supported Venus SoCs:
+- msm8916-venus, msm8996-venus, msm8998-venus, sdm660-venus, sdm845-venus, etc.
 
 ---
 
@@ -141,12 +146,12 @@
 
 | Component | Files | Total Size | Mainline Status | Priority |
 |-----------|-------|------------|-----------------|----------|
-| A6 Battery | 2 | 80 KB | ⚠️ Needs driver | Medium |
+| A6 Battery | 2 | 80 KB | ✅ Supported (ioctl) | Low (optional) |
 | Touchscreen | 6 | ~450 KB | ✅ Supported | Low (optional upgrade) |
 | WiFi (ath6k) | 8 | ~85 KB | ✅ Supported | **HIGH** |
 | GPU (Adreno) | 4 | ~20 KB | ✅ Supported | Medium |
-| DSP (QDSP6) | 9 | ~4.3 MB | ⚠️ Check support | Low |
-| Video Codec | 1 | 489 KB | ⚠️ Check support | Low |
+| DSP (QDSP6) | 9 | ~4.3 MB | ❌ Not supported | Low |
+| Video Codec | 1 | 489 KB | ❌ Not supported | Low |
 | Audio DSP | 3 | ~12 KB | ✅ Supported | Low (optional) |
 
 ---
@@ -172,10 +177,12 @@
 3. ⚠️ Touchscreen: Optional - only needed for firmware updates
 
 **Optional (for enhanced functionality):**
-1. Audio DSP: WM8958 enhancement algorithms
-2. Video codec: For hardware video acceleration
-3. Q6 DSP: For audio/voice DSP features
-4. A6 firmware: For battery firmware updates (rarely needed)
+1. Audio DSP: WM8958 enhancement algorithms (✅ supported)
+2. A6 firmware: For battery firmware updates via ioctl (✅ supported)
+
+**Not supported in mainline:**
+1. Video codec: VIDC 1.0 not supported (Venus is for newer SoCs)
+2. Q6 DSP: No MSM8660 remoteproc driver
 
 ---
 
@@ -237,12 +244,15 @@ The device tree should specify which board data file to use:
 
 1. **Verify ath6kl board data selection mechanism** - Critical for WiFi functionality
 2. **Test GPU firmware** - Check if yamato firmware works with freedreno
-3. **Check venus driver support** - For video codec functionality
-4. **Verify QDSP6/PIL support** - For DSP functionality
-5. **Create firmware package** - For easy installation on target device
+3. **Create firmware package** - For easy installation on target device
+
+## NOT PLANNED (No mainline support)
+
+1. ❌ **Video codec (VIDC 1.0)** - Would require new driver, Venus only supports MSM8916+
+2. ❌ **QDSP6 DSP** - Would require new remoteproc driver, mainline only supports MSM8916+
 
 ---
 
-**Report Generated:** 2025-12-31  
-**Source:** Legacy WebOS kernel doctor image  
+**Report Generated:** 2025-12-31 (Updated 2026-01-01)
+**Source:** Legacy WebOS kernel doctor image
 **Target:** Mainline Linux 6.x kernel
