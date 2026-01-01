@@ -39,8 +39,25 @@
 	};
 
 	chosen {
-		/* Bootloader passes console=tty1, which overrides stdout-path */
-		bootargs = "console=ttyMSM0,115200 earlycon clk_ignore_unused log_buf_len=32M loglevel=6";
+		/*
+		 * Kernel command line for HP TouchPad debugging
+		 *
+		 * Note: moboot/uBoot adds "fbcon=disable" to cmdline. To bypass this,
+		 * use CONFIG_CMDLINE_FORCE=y in defconfig which ignores bootloader args
+		 * and uses only the bootargs specified here.
+		 *
+		 * Debug options explained:
+		 * - drm.debug=0x1f: Enable all DRM debug categories (CORE|DRIVER|KMS|PRIME|ATOMIC)
+		 * - dyndbg="module msm +p": Enable dynamic debug for MSM DRM driver
+		 * - initcall_debug: Show initcall timing and results
+		 * - ignore_loglevel: Print all kernel messages regardless of loglevel
+		 * - no_console_suspend: Keep console active during suspend/resume
+		 * - clk_ignore_unused: Don't disable unused clocks (critical for bringup!)
+		 * - pd_ignore_unused: Don't disable unused power domains
+		 * - earlyprintk: Enable early printk for boot debugging
+		 * - keep_bootcon: Keep boot console active after init
+		 */
+		bootargs = "console=ttyMSM0,115200n8 earlycon earlyprintk keep_bootcon clk_ignore_unused pd_ignore_unused no_console_suspend ignore_loglevel loglevel=8 log_buf_len=32M drm.debug=0x1f initcall_debug dyndbg=\"module qcom_camss +p; module msm +p; module panel_lvds +p\"";
 		stdout-path = "serial0:115200n8";
 #if USE_FRAMEBUFFER
 		#address-cells = <1>;
