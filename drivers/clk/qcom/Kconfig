@@ -272,6 +272,15 @@ config IPQ_NSSCC_QCA8K
 	  Say Y or M if you want to use network features of switch or
 	  PHY device. Select this for the root clock of qca8k.
 
+config MSM_GCC_7X30
+	tristate "MSM7x30 Global Clock Controller"
+	depends on ARM || COMPILE_TEST
+	help
+	  Support for the global clock controller on MSM7x30 devices.
+	  MSM7x30 family includes MSM7230, MSM7630, and MSM8x55 SoCs.
+	  Say Y if you want to use peripheral devices such as UART, SPI,
+	  I2C, USB, SD/eMMC, etc.
+
 config MSM_GCC_8660
 	tristate "MSM8660 Global Clock Controller"
 	depends on ARM || COMPILE_TEST

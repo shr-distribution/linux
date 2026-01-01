@@ -90,6 +90,14 @@ config PINCTRL_MSM8226
 	  Qualcomm Technologies Inc TLMM block found on the Qualcomm
 	  Technologies Inc MSM8226 platform.
 
+config PINCTRL_MSM7X30
+	tristate "Qualcomm MSM7x30 pin controller driver"
+	depends on ARM || COMPILE_TEST
+	help
+	  This is the pinctrl, pinmux, pinconf and gpiolib driver for the
+	  Qualcomm TLMM block found in the Qualcomm MSM7x30 platform.
+	  MSM7x30 family includes MSM7230, MSM7630, and MSM8x55 SoCs.
+
 config PINCTRL_MSM8660
 	tristate "Qualcomm 8660 pin controller driver"
 	depends on ARM || COMPILE_TEST
