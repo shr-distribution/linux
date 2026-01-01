@@ -525,6 +525,76 @@
 			compatible = "qcom,tcsr-msm8660", "syscon";
 			reg = <0x1a400000 0x100>;
 		};
+
+		/*
+		 * Camera Subsystem - VFE 3.1 with MIPI CSI-2
+		 * MSM8660 supports both parallel camera (CAMIF) and MIPI CSI-2.
+		 * Includes 2 CSIPHY/CSID interfaces integrated at CSI_0 and CSI_1.
+		 */
+		camss: camss@04500000 {
+			compatible = "qcom,msm8660-camss";
+			reg = <0x04500000 0x1000>,
+			      <0x04800000 0x1000>,
+			      <0x04800000 0x1000>,
+			      <0x04900000 0x1000>,
+			      <0x04900000 0x1000>;
+			reg-names = "vfe0",
+				    "csiphy0",
+				    "csid0",
+				    "csiphy1",
+				    "csid1";
+			interrupts = <GIC_SPI 78 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "vfe0",
+					  "csiphy0",
+					  "csid0",
+					  "csiphy1",
+					  "csid1";
+
+			clocks = <&mmcc VFE_CLK>,
+				 <&mmcc VFE_AXI_CLK>,
+				 <&mmcc VFE_AHB_CLK>,
+				 <&mmcc CSI0_SRC>,
+				 <&mmcc CSI0_CLK>,
+				 <&mmcc CSI0_PHY_CLK>,
+				 <&mmcc CSI1_SRC>,
+				 <&mmcc CSI1_CLK>,
+				 <&mmcc CSI1_PHY_CLK>;
+			clock-names = "vfe",
+				      "vfe_axi",
+				      "vfe_ahb",
+				      "csi0_src",
+				      "csi0",
+				      "csi0_phy",
+				      "csi1_src",
+				      "csi1",
+				      "csi1_phy";
+
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* Parallel camera input port */
+				port@0 {
+					reg = <0>;
+				};
+
+				/* MIPI CSI-2 input port 1 (CSI0) */
+				port@1 {
+					reg = <1>;
+				};
+
+				/* MIPI CSI-2 input port 2 (CSI1) */
+				port@2 {
+					reg = <2>;
+				};
+			};
+		};
 	};
 
 };
