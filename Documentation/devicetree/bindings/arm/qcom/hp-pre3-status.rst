@@ -16,8 +16,8 @@ Hardware Specifications
 - **SoC**: Qualcomm MSM7230 (single-core Scorpion ARMv7 @ 1GHz)
 - **RAM**: 512MB
 - **Storage**: 8GB/16GB eMMC
-- **Display**: 3.58" 480x800 MDDI LCD
-- **Touchscreen**: Cypress CY8CTMA300 (SPI)
+- **Display**: 3.58" 480x800 MDDI LCD (NT35560 panel)
+- **Touchscreen**: Cypress CY8CTMA300 (HSUART @ 3Mbps)
 - **Keyboard**: Physical QWERTY slide-out
 - **PMIC**: PM8058 via SSBI
 - **WiFi/BT**: Broadcom BCM4329
@@ -113,13 +113,13 @@ Missing/TODO
 +----------------------+------------------+----------------------------------+
 | Component            | Status           | Notes                            |
 +======================+==================+==================================+
-| Touchscreen          | PARTIAL          | CY8CTMA300, I2C driver, needs HW test |
+| Touchscreen          | TODO             | CY8CTMA300 via HSUART, need serdev driver |
 +----------------------+------------------+----------------------------------+
 | SPI Controller       | DONE             | spi-qcom-qsd.c @ 0xA8000000      |
 +----------------------+------------------+----------------------------------+
 | Display (MDP4)       | TODO             | DRM driver exists, need panel    |
 +----------------------+------------------+----------------------------------+
-| MDDI Panel           | TODO             | Need panel driver                |
+| MDDI Panel           | TODO             | NT35560, need panel driver       |
 +----------------------+------------------+----------------------------------+
 | Audio (WM8958)       | PARTIAL          | Codec driver exists, need DAI    |
 +----------------------+------------------+----------------------------------+
@@ -152,9 +152,9 @@ Known Issues
 ------------
 
 1. Regulators are currently fixed/dummy - need proper PCOM-based driver
-2. Touchscreen interface uncertain - legacy kernel used HSUART at 3Mbps,
-   I2C driver provided but needs hardware testing to confirm I2C address
+2. Touchscreen uses HSUART at 3Mbps (confirmed) - need serdev-based driver
 3. Modem/AMSS communication not implemented (PCOM/SMD)
+4. Display panel is NT35560 via MDDI - need DRM panel driver
 
 Testing
 -------
