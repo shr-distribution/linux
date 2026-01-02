@@ -48,6 +48,8 @@
 #include <linux/of_device.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
+#include <linux/timer.h>
+#include <linux/property.h>
 #include <linux/kthread.h>
 #include <linux/mod_devicetable.h>
 
@@ -567,8 +569,8 @@ static int32_t format_version(const struct a6_device_state *state, const uint8_t
 			      uint8_t *fmt_buffer, uint32_t size_buffer);
 static int32_t format_v_offset(const struct a6_device_state *state, const uint8_t *val,
 			       uint8_t *fmt_buffer, uint32_t size_buffer);
-static int32_t format_command(const struct a6_device_state *state, const uint8_t *val,
-			      uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t __maybe_unused format_command(const struct a6_device_state *state,
+			      const uint8_t *val, uint8_t *fmt_buffer, uint32_t size_buffer);
 static int32_t format_accessory(const struct a6_device_state *state, const uint8_t *val,
 				uint8_t *fmt_buffer, uint32_t size_buffer);
 static int32_t format_comm_status(const struct a6_device_state *state, const uint8_t *val,
@@ -1538,7 +1540,7 @@ static int32_t __a6_i2c_read_reg(struct i2c_client *client, const uint16_t *ids,
 	start_last_a6_activity = jiffies;
 
 	// prevent timer expiry during force_wake related action...
-	del_timer(&state->a6_force_wake_timer);
+	timer_delete(&state->a6_force_wake_timer);
 
 	mutex_lock(&state->a6_force_wake_mutex);
 	// a6 external wake enabled?
@@ -1662,7 +1664,7 @@ static int32_t __a6_i2c_write_reg(struct i2c_client *client, const uint16_t *ids
 	start_last_a6_activity = jiffies;
 
 	// prevent timer expiry during force_wake related action...
-	del_timer(&state->a6_force_wake_timer);
+	timer_delete(&state->a6_force_wake_timer);
 
 	mutex_lock(&state->a6_force_wake_mutex);
 	if (test_bit(CAP_PERIODIC_WAKE, state->flags)) {
@@ -1897,19 +1899,19 @@ static int32_t a6_init_state(struct i2c_client *client)
 			uint32_t wake_period = 0, wake_enable = 1;
 
 			pr_err("%s: enabling A6 internal wake.\n", __func__);
-			/* default wake_period, if required */
-			if (!wake_ops->internal_wake_period)
-				wake_period;
-			else {
+			/* get wake_period from ops if available */
+			if (wake_ops->internal_wake_period) {
 				wake_period = wake_ops->internal_wake_period(wake_ops->data);
 				if (wake_period > 0x100)
 					wake_period = 0x100;
 			}
+			/* wake_period defaults to 0 if not set */
 
 			reg_desc = &a6_register_desc_arr[34];
 
+			/* disable wake if no period set */
 			if (!wake_period)
-				wake_enable;
+				wake_enable = 0;
 
 			/*
 			 * bit [4]: Enable sleep.
@@ -2165,8 +2167,8 @@ int32_t format_temp(const struct a6_device_state *state, const uint8_t *val,
 	return ret;
 }
 
-int32_t format_command(const struct a6_device_state *state, const uint8_t *val,
-		    uint8_t *fmt_buffer, uint32_t size_buffer)
+static int32_t __maybe_unused format_command(const struct a6_device_state *state,
+		    const uint8_t *val, uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 	int conv_command_debug_code = val[0];
@@ -2931,7 +2933,7 @@ static ssize_t a6_diag_store(struct device *dev, struct device_attribute *attr, 
 	if (action_i == ACTIVATE_EXTRACT) {
 		// reset force-wake state to always force wake on first i2c txn
 		// after pmem extraction
-		del_timer(&state->a6_force_wake_timer);
+		timer_delete(&state->a6_force_wake_timer);
 		mutex_lock(&state->a6_force_wake_mutex);
 		if (test_bit(CAP_PERIODIC_WAKE, state->flags))
 			clear_bit(FORCE_WAKE_ACTIVE_BIT, state->flags);
@@ -3160,7 +3162,7 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 
 			// reset force-wake state to always force wake on first i2c txn
 			// after flashing/verification
-			del_timer(&state->a6_force_wake_timer);
+			timer_delete(&state->a6_force_wake_timer);
 			mutex_lock(&state->a6_force_wake_mutex);
 			if (test_bit(CAP_PERIODIC_WAKE, state->flags))
 				clear_bit(FORCE_WAKE_ACTIVE_BIT, state->flags);
@@ -3292,20 +3294,11 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 
 static int a6_open(struct inode *inode, struct file *file)
 {
+	struct miscdevice *mdev = file->private_data;
 	struct a6_device_state *state;
 
-	/* get device */
-	state = container_of(file->f_op, struct a6_device_state, fops);
-
-	/* Allow only read. */
-	//if ((file->f_mode & (FMODE_READ|FMODE_WRITE)) != FMODE_READ) {
-	//	    return -EINVAL;
-	//}
-
-	///* check if it is in use */
-	//if (test_and_set_bit(IS_OPENED, state->flags)) {
-	//	return -EBUSY;
-	//}
+	/* get device from miscdevice */
+	state = container_of(mdev, struct a6_device_state, mdev);
 
 	/* attach private data */
 	file->private_data = state;
@@ -3349,7 +3342,7 @@ static ssize_t a6_read(struct file *file, char __user *buf, size_t count, loff_t
 		return -EFBIG;
 
 	/* get state */
-	state = container_of(file->f_op, struct a6_device_state, fops);
+	state = file->private_data;
 
 	// acquire critsec
 	rc = mutex_lock_interruptible(&state->dev_mutex);
@@ -3486,7 +3479,7 @@ static ssize_t a6_write(struct file *file, const char __user *buf, size_t count,
 		return -EFBIG;
 
 	/* get state */
-	state = container_of(file->f_op, struct a6_device_state, fops);
+	state = file->private_data;
 
 	// acquire critsec
 	rc = mutex_lock_interruptible(&state->dev_mutex);
@@ -4081,7 +4074,7 @@ static void a6_force_wake_work_handler(struct work_struct *work)
 /* Timer callback used to force sleep after a force wake - Modern API */
 static void a6_force_wake_timer_callback(struct timer_list *t)
 {
-	struct a6_device_state *state = from_timer(state, t, a6_force_wake_timer);
+	struct a6_device_state *state = timer_container_of(state, t, a6_force_wake_timer);
 	int32_t rc;
 
 	rc = queue_work(state->ka6d_fw_workqueue, &state->a6_force_wake_work);
@@ -4093,10 +4086,11 @@ static void a6_force_wake_timer_callback(struct timer_list *t)
 
 static int a6_pmem_open(struct inode *inode, struct file *file)
 {
+	struct miscdevice *mdev = file->private_data;
 	struct a6_device_state *state;
 
-	/* get device */
-	state = container_of(file->f_op, struct a6_device_state, pmem_fops);
+	/* get device from miscdevice */
+	state = container_of(mdev, struct a6_device_state, pmem_mdev);
 
 	/* Allow only read. */
 	if ((file->f_mode & (FMODE_READ|FMODE_WRITE)) != FMODE_READ)
@@ -4132,7 +4126,7 @@ static ssize_t a6_pmem_read(struct file *file, char __user *buf, size_t count, l
 		return -EINVAL;
 
 	/* get state */
-	state = container_of(file->f_op, struct a6_device_state, fops);
+	state = file->private_data;
 	rc = ttf_image_read(buf, count, ppos);
 
 	return rc;
@@ -4406,7 +4400,7 @@ static int a6_probe(struct i2c_client *client)
 
 	/* Register power supply */
 	psy_cfg.drv_data = state;
-	psy_cfg.of_node = client->dev.of_node;
+	psy_cfg.fwnode = dev_fwnode(&client->dev);
 
 	state->battery_desc.name = devm_kasprintf(&client->dev, GFP_KERNEL,
 						  "a6-%d", state->device_index);

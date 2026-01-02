@@ -17,13 +17,13 @@
 
 /* Pin-to-Signal Assignments */
 
-#define TMSH	do { SetSBWTDIO(); nNOPS ClrSBWTCK(); nNOPS SetSBWTCK(); } while (0)
-#define TMSL	do { ClrSBWTDIO(); nNOPS ClrSBWTCK(); nNOPS SetSBWTCK(); } while (0)
-#define TMSLDH	do { ClrSBWTDIO(); nNOPS ClrSBWTCK(); nNOPS SetSBWTDIO(); SetSBWTCK(); } while (0)
-#define TDIH	do { SetSBWTDIO(); nNOPS ClrSBWTCK(); nNOPS SetSBWTCK(); } while (0)
-#define TDIL	do { ClrSBWTDIO(); nNOPS ClrSBWTCK(); nNOPS SetSBWTCK(); } while (0)
-#define TDOsbw	do { SetSBWTDIO(); SetInSBWTDIO(); nNOPS ClrSBWTCK(); nNOPS SetSBWTCK(); SetOutSBWTDIO(); } while (0)
-#define TDO_RD	do { SetSBWTDIO(); SetInSBWTDIO(); nNOPS ClrSBWTCK(); nNOPS tdo_bit = GetSBWTDIO(); SetSBWTCK(); SetOutSBWTDIO(); } while (0)
+#define TMSH	do { SetSBWTDIO(); nNOPS; ClrSBWTCK(); nNOPS; SetSBWTCK(); } while (0)
+#define TMSL	do { ClrSBWTDIO(); nNOPS; ClrSBWTCK(); nNOPS; SetSBWTCK(); } while (0)
+#define TMSLDH	do { ClrSBWTDIO(); nNOPS; ClrSBWTCK(); nNOPS; SetSBWTDIO(); SetSBWTCK(); } while (0)
+#define TDIH	do { SetSBWTDIO(); nNOPS; ClrSBWTCK(); nNOPS; SetSBWTCK(); } while (0)
+#define TDIL	do { ClrSBWTDIO(); nNOPS; ClrSBWTCK(); nNOPS; SetSBWTCK(); } while (0)
+#define TDOsbw	do { SetSBWTDIO(); SetInSBWTDIO(); nNOPS; ClrSBWTCK(); nNOPS; SetSBWTCK(); SetOutSBWTDIO(); } while (0)
+#define TDO_RD	do { SetSBWTDIO(); SetInSBWTDIO(); nNOPS; ClrSBWTCK(); nNOPS; tdo_bit = GetSBWTDIO(); SetSBWTCK(); SetOutSBWTDIO(); } while (0)
 
 void ClrTCLK_sbw(void);
 void SetTCLK_sbw(void);
