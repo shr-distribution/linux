@@ -49,6 +49,17 @@
 			reg = <0x00100000 0x00100000>;
 			no-map;
 		};
+
+		/* Ramoops for persistent crash logs - 256KB at end of RAM */
+		ramoops@1ffc0000 {
+			compatible = "ramoops";
+			reg = <0x1ffc0000 0x40000>;
+			no-map;
+			record-size = <0x10000>;     /* 64KB per record */
+			console-size = <0x10000>;    /* 64KB for console log */
+			ftrace-size = <0x10000>;     /* 64KB for ftrace */
+			pmsg-size = <0x10000>;       /* 64KB for userspace pmsg */
+		};
 	};
 
 	gpio-keys {

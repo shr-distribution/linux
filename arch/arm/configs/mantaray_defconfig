@@ -276,6 +276,17 @@ CONFIG_PANIC_TIMEOUT=5
 CONFIG_DEBUG_LL=y
 CONFIG_EARLY_PRINTK=y
 
+# Persistent storage for crash logs
+CONFIG_PSTORE=y
+CONFIG_PSTORE_CONSOLE=y
+CONFIG_PSTORE_PMSG=y
+CONFIG_PSTORE_RAM=y
+# Ramoops will store last 64KB of kernel log
+CONFIG_PSTORE_DEFAULT_KMSG_BYTES=65536
+
+# USB Serial Gadget (for console during boot)
+CONFIG_USB_G_SERIAL=m
+
 # IIO Sensors
 CONFIG_IIO=y
 CONFIG_IIO_ST_SENSORS_I2C=y
