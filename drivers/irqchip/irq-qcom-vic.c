@@ -61,6 +61,10 @@
 #define VIC_VECTPRIORITY(n)	(0x0200 + (n) * 4)
 #define VIC_VECTADDR(n)		(0x0400 + (n) * 4)
 
+/*
+ * MSM7x30 (Scorpion) has 4 banks of 32 interrupts (128 total).
+ * Older ARM11-based SoCs like MSM7x00 use 2 banks (64 total).
+ */
 #define VIC_NUM_BANKS		4
 #define VIC_IRQS_PER_BANK	32
 #define VIC_NUM_IRQS		(VIC_NUM_BANKS * VIC_IRQS_PER_BANK)
@@ -245,7 +249,7 @@ static void msm_vic_init_hw(struct msm_vic *vic)
 	 * 1. Select level interrupts (TYPE = 0)
 	 * 2. Select high-level/rising-edge polarity (POLARITY = 0)
 	 * 3. Select IRQ not FIQ (SELECT = 0)
-	 * 4. Disable all interrupts (ENCLEAR = all ones)
+	 * 4. Disable all interrupts (EN = 0)
 	 * 5. Don't use vectored mode (CONFIG = 0)
 	 * 6. Enable interrupt controller (MASTEREN = 3)
 	 */
@@ -256,8 +260,8 @@ static void msm_vic_init_hw(struct msm_vic *vic)
 		writel(0, vic->base + VIC_INT_POLARITY(i));
 		/* Select IRQ not FIQ */
 		writel(0, vic->base + VIC_INT_SELECT(i));
-		/* Disable all interrupts */
-		writel(0xFFFFFFFF, vic->base + VIC_INT_ENCLEAR(i));
+		/* Disable all interrupts - write 0 directly to EN register */
+		writel(0, vic->base + VIC_INT_EN(i));
 
 		pr_info("MSM VIC: Bank %d: TYPE=0x%08x POL=0x%08x SEL=0x%08x EN=0x%08x\n",
 			i,

@@ -27,8 +27,7 @@
 			device_type = "cpu";
 			compatible = "qcom,scorpion";
 			reg = <0>;
-			clocks = <&gcc ACPU_CLK>;
-			clock-names = "cpu";
+			/* CPU clock controlled by separate ACPU clock controller */
 		};
 	};
 

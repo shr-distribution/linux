@@ -170,6 +170,33 @@ static struct clk_fixed_rate pll4_clk = {
 };
 
 /*
+ * Base oscillator clocks
+ * TCXO: Temperature Compensated Crystal Oscillator - 19.2 MHz
+ * LPXO: Low Power Crystal Oscillator - 24.576 MHz
+ *
+ * These are always-on hardware clocks that many peripherals depend on.
+ * The timer uses LPXO/4 = 6.144 MHz for DGT clocksource.
+ */
+#define TCXO_FREQ	19200000
+#define LPXO_FREQ	24576000
+
+static struct clk_fixed_rate tcxo_clk = {
+	.fixed_rate = TCXO_FREQ,
+	.hw.init = &(struct clk_init_data){
+		.name = "tcxo",
+		.ops = &clk_fixed_rate_ops,
+	},
+};
+
+static struct clk_fixed_rate lpxo_clk = {
+	.fixed_rate = LPXO_FREQ,
+	.hw.init = &(struct clk_init_data){
+		.name = "lpxo",
+		.ops = &clk_fixed_rate_ops,
+	},
+};
+
+/*
  * Root clock - must be enabled for all peripheral clocks
  */
 static struct clk_branch glbl_root_clk = {
@@ -1533,6 +1560,18 @@ static int gcc_msm7x30_probe(struct platform_device *pdev)
 				       &gcc_msm7x30_regmap_config);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
+
+	/*
+	 * Register base oscillator clocks first - these are always-on
+	 * hardware clocks that PLLs and peripherals depend on
+	 */
+	ret = devm_clk_hw_register(&pdev->dev, &tcxo_clk.hw);
+	if (ret)
+		return ret;
+
+	ret = devm_clk_hw_register(&pdev->dev, &lpxo_clk.hw);
+	if (ret)
+		return ret;
 
 	/* Register fixed-rate PLLs */
 	ret = devm_clk_hw_register(&pdev->dev, &pll1_clk.hw);

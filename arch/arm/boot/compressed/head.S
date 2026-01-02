@@ -372,19 +372,23 @@ restart:	adr	r0, LC1
 #ifdef CONFIG_ARM_BUILTIN_DTB
 		/*
 		 * No appended DTB found. Check for built-in DTB.
-		 * This is used when the bootloader rejects appended DTBs
-		 * (e.g., Palm bootie on HP Pre3).
+		 * Point r8 to the built-in DTB which will be passed
+		 * to the decompressed kernel.
 		 *
-		 * Built-in DTB is part of the compressed kernel image, so we
-		 * must NOT adjust r6/r10/sp like we do for appended DTB.
-		 * Just set r8 to point to the built-in DTB and continue.
+		 * Use position-independent addressing since the kernel
+		 * may be loaded at a different address than linked.
 		 */
-		ldr	r6, =__builtin_dtb_begin
-		ldr	lr, [r6, #0]
-		cmp	lr, r1
-		bne	dtb_check_done		@ no built-in DTB either
-		mov	r8, r6			@ use built-in device tree
+		adr	lr, .L__builtin_dtb_offset
+		ldr	r8, [lr]		@ get offset to DTB
+		add	r8, r8, lr		@ calculate runtime address
+		ldr	lr, [r8, #0]		@ load DTB magic
+		cmp	lr, r1			@ compare with OF_DT_MAGIC
+		bne	dtb_check_done		@ no valid DTB
+		@ r8 = built-in DTB pointer (runtime address)
 		b	dtb_check_done
+
+.L__builtin_dtb_offset:
+		.word	__builtin_dtb_begin - .L__builtin_dtb_offset
 #else
 		b	dtb_check_done		@ not found
 #endif
