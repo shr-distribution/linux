@@ -355,7 +355,6 @@
 
 		vdd-supply = <&vreg_gp2>;
 	};
-	};
 };
 
 /* PM8058 PMIC configuration */
