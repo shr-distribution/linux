@@ -1588,7 +1588,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&bt_pin>;
 
-		reset-gpios = <&tlmm 138 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 138 GPIO_ACTIVE_LOW>;  /* BT_RST_N - active low */
 		host-wakeup-gpios = <&tlmm 129 GPIO_ACTIVE_HIGH>;
 		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>;
 		shutdown-gpios = <&tlmm 130 GPIO_ACTIVE_HIGH>;
