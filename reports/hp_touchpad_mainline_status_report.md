@@ -25,6 +25,16 @@ The HP TouchPad family mainline device tree implementation represents production
 
 ### Recent Improvements (2025-12-31 to 2026-01-02):
 
+**Session 5 (2026-01-02) - A6 Driver Kernel 6.18 API Compatibility:**
+60. **Timer API update** - Replaced `del_timer()` with `timer_delete()` (6.18 API change)
+61. **Timer container macro** - Replaced `from_timer()` with `timer_container_of()` (6.18 API change)
+62. **Power supply API** - Changed `psy_cfg.of_node` to `psy_cfg.fwnode` with `dev_fwnode()`
+63. **Miscdevice fix** - Fixed `container_of()` usage to properly get state from miscdevice struct
+64. **Dead code fix** - Fixed `wake_period`/`wake_enable` logic that had no effect
+65. **Macro syntax fix** - Added semicolons after `nNOPS` macro usage in low_level_funcs.h
+66. **Platform headers** - Added `include/linux/a6.h` and `include/linux/a6_sbw_interface.h`
+67. **Build verified** - A6 driver compiles successfully on kernel 6.18 with CONFIG_A6=y
+
 **Session 4 (2026-01-02) - A6 Battery Driver Modernization:**
 52. **Checkpatch compliance** - Reduced warnings from 49 to 3 (94% reduction) across all 8 A6 driver files
 53. **Type modernization** - Replaced custom `word`/`byte` typedefs with kernel-standard `u16`/`u8`
@@ -394,7 +404,7 @@ The HP TouchPad family mainline device tree implementation represents production
 
 ### ✅ MODERNIZED COMPONENTS
 
-#### 1. A6 Battery Driver ⭐ CODE STYLE MODERNIZED
+#### 1. A6 Battery Driver ⭐ FULLY MODERNIZED FOR 6.18
 - **Configuration**: Device tree nodes complete
 - **Driver**: Modernized from legacy 3.0 driver
 - **Completed Work**:
@@ -403,7 +413,7 @@ The HP TouchPad family mainline device tree implementation represents production
   - ✅ Converted to GPIO descriptors (`devm_gpiod_get()`)
   - ✅ Added device tree support (`of_match_table`)
   - ✅ Compatible: `palm,a6-battery`
-- **Code Style Modernization (2026-01-02)**: ⭐ NEW
+- **Code Style Modernization (2026-01-02)**:
   - ✅ Checkpatch compliance: 49 warnings → 3 (94% reduction)
   - ✅ Replaced custom `word`/`byte` typedefs with kernel `u16`/`u8`
   - ✅ Removed `typedef enum`/`typedef struct` (kernel style violation)
@@ -411,6 +421,13 @@ The HP TouchPad family mainline device tree implementation represents production
   - ✅ Added proper `#include <linux/types.h>` to headers
   - ✅ Made string arrays `static const char * const`
   - ✅ All 8 driver files updated and verified
+- **Kernel 6.18 API Compatibility (2026-01-02)**: ⭐ NEW
+  - ✅ Timer API: `del_timer()` → `timer_delete()`
+  - ✅ Timer macro: `from_timer()` → `timer_container_of()`
+  - ✅ Power supply: `psy_cfg.of_node` → `psy_cfg.fwnode`
+  - ✅ Fixed miscdevice container_of() usage
+  - ✅ Added platform headers to `include/linux/`
+  - ✅ Driver compiles and links successfully
 - **Status**: PRODUCTION READY
 
 ---
