@@ -222,6 +222,21 @@ config TOUCHSCREEN_CY8CTMA140
 	  To compile this driver as a module, choose M here: the
 	  module will be called cy8ctma140.
 
+config TOUCHSCREEN_CY8CTMA395
+	tristate "cy8ctma395 touchscreen"
+	depends on GPIOLIB
+	help
+	  Say Y here if you have a Cypress CY8CTMA395 capacitive
+	  touchscreen as found in the HP TouchPad tablet.
+
+	  This driver uses a proprietary UART-based protocol with
+	  Spy-Bi-Wire (SBW) programming support.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called cy8ctma395.
+
 config TOUCHSCREEN_CY8CTMG110
 	tristate "cy8ctmg110 touchscreen"
 	depends on I2C
