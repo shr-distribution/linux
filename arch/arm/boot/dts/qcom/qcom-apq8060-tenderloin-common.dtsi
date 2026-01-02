@@ -40,7 +40,7 @@
 
 	chosen {
 		/* Bootloader passes console=tty1, which overrides stdout-path */
-		bootargs = "console=ttyMSM0,115200 earlycon clk_ignore_unused";
+		bootargs = "console=ttyMSM0,115200 clk_ignore_unused";
 		stdout-path = "serial0:115200n8";
 #if USE_FRAMEBUFFER
 		#address-cells = <1>;
