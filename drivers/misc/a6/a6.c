@@ -38,7 +38,7 @@
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
 #include <linux/poll.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #include <linux/cdev.h>
 #include <linux/debugfs.h>
 
@@ -48,6 +48,8 @@
 #include <linux/of_device.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
+#include <linux/timer.h>
+#include <linux/property.h>
 #include <linux/kthread.h>
 #include <linux/mod_devicetable.h>
 
@@ -64,7 +66,7 @@
 #define ASSERT(i)  BUG_ON(!(i))
 
 #else
-#define ASSERT(i)  ((void)0)
+#define ASSERT(x)  ((void)(x))
 
 #endif
 
@@ -73,35 +75,35 @@ enum {
 	A6_DEBUG_VERBOSE = 0x01,
 };
 
-static int a6_debug_mask = 0x0;
-static int a6_tp_irq_count = 0;
-static int a6_t2s_dup_correct = 0;
+static int a6_debug_mask;
+static int a6_tp_irq_count;
+static int a6_t2s_dup_correct;
 
 module_param_named(
-		   debug_mask, a6_debug_mask, int, S_IRUGO | S_IWUSR | S_IWGRP
+		   debug_mask, a6_debug_mask, int, 0664
 		  );
 
 module_param_named(
-		   a6_irq_count, a6_tp_irq_count, int, S_IRUGO | S_IWUSR | S_IWGRP
+		   a6_irq_count, a6_tp_irq_count, int, 0664
 		  );
 
 module_param_named(
-		   t2s_dup_correct, a6_t2s_dup_correct, int, S_IRUGO | S_IWUSR | S_IWGRP
+		   t2s_dup_correct, a6_t2s_dup_correct, int, 0664
 		  );
 
 #define A6_DPRINTK(mask, level, message, ...) \
 	do { \
 		if ((mask) & a6_debug_mask) \
-			printk(level message , ##__VA_ARGS__); \
-} while (0)
+			printk(level "%s" message, "", ##__VA_ARGS__); \
+	} while (0)
 
 #define PROFILE_USAGE
 #if defined PROFILE_USAGE
-bool reset_active = false;
+bool reset_active;
 uint32_t start_time;
 int32_t diff_time;
 
-uint32_t start_last_a6_activity = 0;
+uint32_t start_last_a6_activity;
 #endif
 
 /* page 0x00 */
@@ -168,17 +170,17 @@ uint32_t start_last_a6_activity = 0;
 
 #define TS2_I2C_BAT_ROMID_0                            0x0120
 #define TS2_I2C_BAT_ROMID(x) \
-        (TS2_I2C_BAT_ROMID_0 + (x))
+	(TS2_I2C_BAT_ROMID_0 + (x))
 
 #define TS2_I2C_BAT_COMMAND_STATUS                     0x0140
-#define TS2_I2C_BAT_COMMAND_AUTH                 	0x81
-#define TS2_I2C_BAT_COMMAND_REFRESH              	0x82
-#define TS2_I2C_BAT_COMMAND_WAKE                 	0x83
-#define TS2_I2C_BAT_COMMAND_OFF                  	0xe9
-#define TS2_I2C_BAT_STATUS_AUTH_FAIL             	0x08
-#define TS2_I2C_BAT_STATUS_AUTH_PASS             	0x04
-#define TS2_I2C_BAT_STATUS_REGS_VALID            	0x02
-#define TS2_I2C_BAT_STATUS_BUSY                  	0x01
+#define TS2_I2C_BAT_COMMAND_AUTH			0x81
+#define TS2_I2C_BAT_COMMAND_REFRESH		0x82
+#define TS2_I2C_BAT_COMMAND_WAKE			0x83
+#define TS2_I2C_BAT_COMMAND_OFF			0xe9
+#define TS2_I2C_BAT_STATUS_AUTH_FAIL		0x08
+#define TS2_I2C_BAT_STATUS_AUTH_PASS		0x04
+#define TS2_I2C_BAT_STATUS_REGS_VALID		0x02
+#define TS2_I2C_BAT_STATUS_BUSY			0x01
 
 
 /* battery configuration (airboard only) */
@@ -194,11 +196,11 @@ uint32_t start_last_a6_activity = 0;
 
 #define TS2_I2C_BAT_CHALLENGE_0                        0x01e0
 #define TS2_I2C_BAT_CHALLENGE(x) \
-        (TS2_I2C_BAT_CHALLENGE_0 + (x))
+	(TS2_I2C_BAT_CHALLENGE_0 + (x))
 #define TS2_I2C_BAT_RESPONSE_0 \
-        (TS2_I2C_BAT_CHALLENGE_0 + 8)
+	(TS2_I2C_BAT_CHALLENGE_0 + 8)
 #define TS2_I2C_BAT_RESPONSE(x) \
-        (TS2_I2C_BAT_RESPONSE_0 + (x))
+	(TS2_I2C_BAT_RESPONSE_0 + (x))
 
 
 /* page 0x02 */
@@ -390,25 +392,25 @@ uint32_t start_last_a6_activity = 0;
 
 /* misc registers */
 #define TS2_I2C_COMMAND                                0x1000
-#define TS2_I2C_COMMAND_RESET_HOST               	 0x01
-#define TS2_I2C_COMMAND_CLEAR_BTN_SEQ_RESET_FLAG 	 0x02
+#define TS2_I2C_COMMAND_RESET_HOST		 0x01
+#define TS2_I2C_COMMAND_CLEAR_BTN_SEQ_RESET_FLAG	 0x02
 
-#define TS2_I2C_COMMAND_COMM_CONNECT             	 0x10
-#define TS2_I2C_COMMAND_COMM_DISCONNECT          	 0x11
-#define TS2_I2C_COMMAND_REENUMERATE              	 0x12
+#define TS2_I2C_COMMAND_COMM_CONNECT		 0x10
+#define TS2_I2C_COMMAND_COMM_DISCONNECT		 0x11
+#define TS2_I2C_COMMAND_REENUMERATE		 0x12
 
-#define TS2_I2C_COMMAND_FRAM_CHECKSUM_1400_READ  	 0x20
-#define TS2_I2C_COMMAND_FRAM_CHECKSUM_READ_1     	 0x21
-#define TS2_I2C_COMMAND_FRAM_CHECKSUM_READ_2     	 0x22
+#define TS2_I2C_COMMAND_FRAM_CHECKSUM_1400_READ	 0x20
+#define TS2_I2C_COMMAND_FRAM_CHECKSUM_READ_1	 0x21
+#define TS2_I2C_COMMAND_FRAM_CHECKSUM_READ_2	 0x22
 
-#define TS2_I2C_COMMAND_MEM_READ_BYTE            	 0x80
-#define TS2_I2C_COMMAND_MEM_READ_CHAWMP          	 0x81
-#define TS2_I2C_COMMAND_MEM_WRITE_BYTE           	 0x82
-#define TS2_I2C_COMMAND_MEM_WRITE_CHAWMP         	 0x83
-#define TS2_I2C_COMMAND_PMIC_READ                	 0x84
-#define TS2_I2C_COMMAND_PMIC_WRITE               	 0x85
-#define TS2_I2C_COMMAND_SP_READ                  	 0x86
-#define TS2_I2C_COMMAND_SP_INDIRECT_READ         	 0x87
+#define TS2_I2C_COMMAND_MEM_READ_BYTE		 0x80
+#define TS2_I2C_COMMAND_MEM_READ_CHAWMP		 0x81
+#define TS2_I2C_COMMAND_MEM_WRITE_BYTE		 0x82
+#define TS2_I2C_COMMAND_MEM_WRITE_CHAWMP		 0x83
+#define TS2_I2C_COMMAND_PMIC_READ		 0x84
+#define TS2_I2C_COMMAND_PMIC_WRITE		 0x85
+#define TS2_I2C_COMMAND_SP_READ			 0x86
+#define TS2_I2C_COMMAND_SP_INDIRECT_READ		 0x87
 #define TS2_I2C_COMMAND_ADDR_MSB                       0x1001
 #define TS2_I2C_COMMAND_ADDR_LSB                       0x1002
 #define TS2_I2C_COMMAND_DATA_MSB                       0x1003
@@ -419,7 +421,7 @@ uint32_t start_last_a6_activity = 0;
 #define TS2_I2C_DEBUG_TRACE_DATA                       0x1020 /* side-effect */
 
 
-#define RSENSE_DEFAULT	20;
+#define RSENSE_DEFAULT	20
 #define FORCE_WAKE_TIMER_EXPIRY (HZ/20)
 
 #define a6_wait_event_ex(wq, condition)					\
@@ -467,7 +469,6 @@ enum {
 struct a6_device_state {
 	struct i2c_client *i2c_dev;
 	struct a6_platform_data *plat_data;
-	struct file_operations fops;
 	struct miscdevice mdev;
 
 	struct mutex dev_mutex;
@@ -481,10 +482,10 @@ struct a6_device_state {
 	struct work_struct	a6_irq_work;
 
 	int32_t cpufreq_hold_flag;
-	struct workqueue_struct* ka6d_workqueue;
-	struct workqueue_struct* ka6d_fw_workqueue;
+	struct workqueue_struct *ka6d_workqueue;
+	struct workqueue_struct *ka6d_fw_workqueue;
 
-	uint32_t cached_rsense_val: 	16;
+	uint32_t cached_rsense_val:	16;
 	uint32_t busy_count:		 8;
 	DECLARE_BITMAP(flags, SIZE_FLAGS);
 
@@ -493,22 +494,21 @@ struct a6_device_state {
 	struct completion aid_exit_complete;
 	struct mutex aq_mutex;
 	struct list_head aq_head;
-	struct task_struct* ai_dispatch_task;
+	struct task_struct *ai_dispatch_task;
 #ifdef A6_DEBUG
-	uint32_t dbgflg_kill_raid: 	1;
+	uint32_t dbgflg_kill_raid:	1;
 
 	uint8_t debug_restart_aid;
 	uint8_t debug_flush_aiq;
 	uint8_t debug_unused_01;
 	uint8_t debug_unused_02;
-	struct task_struct* restart_aid_task;
+	struct task_struct *restart_aid_task;
 #endif
 #endif
 
 	int cpufreq_hold;
 
-	// pmem extract
-	struct file_operations pmem_fops;
+	/* pmem extract */
 	struct miscdevice pmem_mdev;
 	char pmem_dev_name[16];
 
@@ -527,66 +527,66 @@ struct a6_device_state {
 };
 
 #ifdef A6_PQ
-int32_t a6_start_ai_dispatch_task(struct a6_device_state* state);
-int32_t a6_stop_ai_dispatch_task(struct a6_device_state* state);
-int32_t flush_a6_action_items(struct a6_device_state* state);
+static int32_t a6_start_ai_dispatch_task(struct a6_device_state *state);
+static int32_t a6_stop_ai_dispatch_task(struct a6_device_state *state);
+static int32_t flush_a6_action_items(struct a6_device_state *state);
 #endif
 
 static ssize_t a6_generic_show(struct device *dev, struct device_attribute *dev_attr, char *buf);
 static ssize_t a6_generic_store(struct device *dev, struct device_attribute *dev_attr, const char *buf,
 				size_t count);
 
-typedef int32_t (*format_show_fn)(const struct a6_device_state* state, const uint8_t* val,
-		  uint8_t* fmt_buffer, uint32_t size_buffer);
-typedef int32_t (*format_store_fn)(const struct a6_device_state* state, const uint8_t* fmt_buffer,
-		  uint8_t* val, uint32_t size_buffer);
+typedef int32_t (*format_show_fn)(const struct a6_device_state *state, const uint8_t *val,
+		  uint8_t *fmt_buffer, uint32_t size_buffer);
+typedef int32_t (*format_store_fn)(const struct a6_device_state *state, const uint8_t *fmt_buffer,
+		  uint8_t *val, uint32_t size_buffer);
 
-int32_t format_current(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_voltage(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t r_format_voltage(const struct a6_device_state* state, const uint8_t* fmt_buffer,
-			 uint8_t* val, uint32_t size_buffer);
-int32_t format_rawcoulomb(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_coulomb(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_age(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_fullx(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_temp(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t r_format_temp(const struct a6_device_state* state, const uint8_t* fmt_buffer,
-			 uint8_t* val, uint32_t size_buffer);
-int32_t format_status(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_rsense(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_charge_source_status(const struct a6_device_state* state, const uint8_t* val,
-		      uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_version(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_v_offset(const struct a6_device_state* state, const uint8_t* val,
-			uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_command(const struct a6_device_state* state, const uint8_t* val,
-		    uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_accessory(const struct a6_device_state* state, const uint8_t* val,
-		    uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_comm_status(const struct a6_device_state* state, const uint8_t* val,
-		    uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_raw_unsigned(const struct a6_device_state* state, const uint8_t* val,
-			   uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_max_power_available(const struct a6_device_state* state, const uint8_t* val,
-				   uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_accessory_combo(const struct a6_device_state* state, const uint8_t* val,
-			       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_u16_hex(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_serno_v1(const struct a6_device_state* state, const uint8_t* val,
-			uint8_t* fmt_buffer, uint32_t size_buffer);
-int32_t format_serno_v2(const struct a6_device_state* state, const uint8_t* val,
-			uint8_t* fmt_buffer, uint32_t size_buffer);
+static int32_t format_current(const struct a6_device_state *state, const uint8_t *val,
+			      uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_voltage(const struct a6_device_state *state, const uint8_t *val,
+			      uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t r_format_voltage(const struct a6_device_state *state, const uint8_t *fmt_buffer,
+				uint8_t *val, uint32_t size_buffer);
+static int32_t format_rawcoulomb(const struct a6_device_state *state, const uint8_t *val,
+				 uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_coulomb(const struct a6_device_state *state, const uint8_t *val,
+			      uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_age(const struct a6_device_state *state, const uint8_t *val,
+			  uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_fullx(const struct a6_device_state *state, const uint8_t *val,
+			    uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_temp(const struct a6_device_state *state, const uint8_t *val,
+			   uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t r_format_temp(const struct a6_device_state *state, const uint8_t *fmt_buffer,
+			     uint8_t *val, uint32_t size_buffer);
+static int32_t format_status(const struct a6_device_state *state, const uint8_t *val,
+			     uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_rsense(const struct a6_device_state *state, const uint8_t *val,
+			     uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_charge_source_status(const struct a6_device_state *state, const uint8_t *val,
+					   uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_version(const struct a6_device_state *state, const uint8_t *val,
+			      uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_v_offset(const struct a6_device_state *state, const uint8_t *val,
+			       uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t __maybe_unused format_command(const struct a6_device_state *state,
+			      const uint8_t *val, uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_accessory(const struct a6_device_state *state, const uint8_t *val,
+				uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_comm_status(const struct a6_device_state *state, const uint8_t *val,
+				  uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_raw_unsigned(const struct a6_device_state *state, const uint8_t *val,
+				   uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_max_power_available(const struct a6_device_state *state, const uint8_t *val,
+					  uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_accessory_combo(const struct a6_device_state *state, const uint8_t *val,
+				      uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_u16_hex(const struct a6_device_state *state, const uint8_t *val,
+			      uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_serno_v1(const struct a6_device_state *state, const uint8_t *val,
+			       uint8_t *fmt_buffer, uint32_t size_buffer);
+static int32_t format_serno_v2(const struct a6_device_state *state, const uint8_t *val,
+			       uint8_t *fmt_buffer, uint32_t size_buffer);
 
 static ssize_t a6_diag_show(struct device *dev, struct device_attribute *dev_attr, char *buf);
 static ssize_t a6_diag_store(struct device *dev, struct device_attribute *dev_attr, const char *buf,
@@ -594,17 +594,19 @@ static ssize_t a6_diag_store(struct device *dev, struct device_attribute *dev_at
 static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *attr, char *buf);
 
 static void a6_force_wake_timer_callback(struct timer_list *t);
+
 /*
- Note:  16-bit accesses comprising an LSB, MSB register pair must be specified in LSB:MSB order
-	in the corresponding a6_register_desc struct. This is because an a6-fw constraint
-	restricts 16-bit value accesses to MSB-leading only. The a6_i2c_read_reg and the
-	a6_i2c_write_reg functions take the LSB:MSB definition in the a6_register_desc struct
-	and re-orders the i2c txn to read in MSB:LSB order.
-*/
+ * Note: 16-bit accesses comprising an LSB, MSB register pair must be specified
+ * in LSB:MSB order in the corresponding a6_register_desc struct. This is
+ * because an a6-fw constraint restricts 16-bit value accesses to MSB-leading
+ * only. The a6_i2c_read_reg and the a6_i2c_write_reg functions take the
+ * LSB:MSB definition in the a6_register_desc struct and re-orders the i2c txn
+ * to read in MSB:LSB order.
+ */
 struct a6_register_desc {
 #define id_size 20
 
-	const char* debug_name;
+	const char *debug_name;
 	struct device_attribute dev_attr;
 	format_show_fn format;
 	format_store_fn r_format;
@@ -614,151 +616,151 @@ struct a6_register_desc {
 } a6_register_desc_arr[] = {
 	/* interrupt control registers */
 	[0] = { .debug_name = "TS2_I2C_INT_MASK_0",
-		{{.name = "int_mask0", .mode = S_IRUGO | S_IWUGO},
+		{{.name = "int_mask0", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_INT_MASK_0}, .num_ids = 1, .ro = 0},
 	[1] = { .debug_name = "TS2_I2C_INT_MASK_1",
-		{{.name = "int_mask1", .mode = S_IRUGO | S_IWUGO},
+		{{.name = "int_mask1", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_INT_MASK_1}, .num_ids = 1, .ro = 0},
 	[2] = { .debug_name = "TS2_I2C_INT_MASK_2",
-		{{.name = "int_mask2", .mode = S_IRUGO | S_IWUGO},
+		{{.name = "int_mask2", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_INT_MASK_2}, .num_ids = 1, .ro = 0},
 	[3] = { .debug_name = "TS2_I2C_INT_MASK_3",
-		{{.name = "int_mask3", .mode = S_IRUGO | S_IWUGO},
+		{{.name = "int_mask3", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_INT_MASK_3}, .num_ids = 1, .ro = 0},
 	[4] = { .debug_name = "TS2_I2C_INT_STATUS_0",
-		{{.name = "int_status0", .mode = S_IRUGO | S_IWUGO},
+		{{.name = "int_status0", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_INT_STATUS_0}, .num_ids = 1, .ro = 0},
 	[5] = { .debug_name = "TS2_I2C_INT_STATUS_1",
-		{{.name = "int_status1", .mode = S_IRUGO | S_IWUGO},
+		{{.name = "int_status1", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_INT_STATUS_1}, .num_ids = 1, .ro = 0},
 	[6] = { .debug_name = "TS2_I2C_INT_STATUS_2",
-		{{.name = "int_status2", .mode = S_IRUGO | S_IWUGO},
+		{{.name = "int_status2", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_INT_STATUS_2}, .num_ids = 1, .ro = 0},
 	[7] = { .debug_name = "TS2_I2C_INT_STATUS_3",
-		{{.name = "int_status3", .mode = S_IRUGO | S_IWUGO},
+		{{.name = "int_status3", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_INT_STATUS_3}, .num_ids = 1, .ro = 0},
 
 	/* battery control registers */
 	[8] = { .debug_name = "TS2_I2C_BAT_STATUS",
-		{{.name = "status", .mode = S_IRUGO},
+		{{.name = "status", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.format = format_status,
 		.id = {TS2_I2C_BAT_STATUS}, .num_ids = 1, .ro = 1},
 	[9] = { .debug_name = "TS2_I2C_BAT_RARC",
-		{{.name = "getpercent", .mode = S_IRUGO},
+		{{.name = "getpercent", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.id = {TS2_I2C_BAT_RARC}, .num_ids = 1, .ro = 1},
 	[10] = { .debug_name = "TS2_I2C_BAT_RSRC",
-		{{.name = "rsrc", .mode = S_IRUGO},
+		{{.name = "rsrc", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.id = {TS2_I2C_BAT_RSRC}, .num_ids = 1, .ro = 1},
 	[11] = { .debug_name = "TS2_I2C_BAT_AVG_CUR_LSB_MSB",
-		{{.name = "getavgcurrent", .mode = S_IRUGO},
+		{{.name = "getavgcurrent", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.format = format_current,
 		.id = {TS2_I2C_BAT_AVG_CUR_LSB, TS2_I2C_BAT_AVG_CUR_MSB},
 			.num_ids = 2, .ro = 1},
 	[12] = { .debug_name = "TS2_I2C_BAT_TEMP_LSB_MSB",
-		{{.name = "gettemp", .mode = S_IRUGO},
+		{{.name = "gettemp", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.format = format_temp,
 		.id = {TS2_I2C_BAT_TEMP_LSB, TS2_I2C_BAT_TEMP_MSB},
 			.num_ids = 2, .ro = 1},
 	[13] = { .debug_name = "TS2_I2C_BAT_VOLT_LSB_MSB",
-		{{.name = "getvoltage", .mode = S_IRUGO},
+		{{.name = "getvoltage", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.format = format_voltage,
 		.id = {TS2_I2C_BAT_VOLT_LSB, TS2_I2C_BAT_VOLT_MSB},
 			.num_ids = 2, .ro = 1},
 	[14] = { .debug_name = "TS2_I2C_BAT_CUR_LSB_MSB",
-		{{.name = "getcurrent", .mode = S_IRUGO},
+		{{.name = "getcurrent", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.format = format_current,
 		.id = {TS2_I2C_BAT_CUR_LSB, TS2_I2C_BAT_CUR_MSB},
 			.num_ids = 2, .ro = 1},
 	[15] = { .debug_name = "TS2_I2C_BAT_COULOMB_LSB_MSB",
-		{{.name = "getrawcoulomb", .mode = S_IRUGO},
+		{{.name = "getrawcoulomb", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.format = format_rawcoulomb,
 		.id = {TS2_I2C_BAT_COULOMB_LSB, TS2_I2C_BAT_COULOMB_MSB},
 			.num_ids = 2, .ro = 1},
 	[16] = { .debug_name = "TS2_I2C_BAT_AS",
-		{{.name = "getage", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "getage", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.format = format_age,
 		.id = {TS2_I2C_BAT_AS}, .num_ids = 1, .ro = 0},
 	[17] = { .debug_name = "TS2_I2C_BAT_FULL_LSB_MSB",
-		{{.name = "getfull", .mode = S_IRUGO},
+		{{.name = "getfull", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.format = format_fullx,
 		.id = {TS2_I2C_BAT_FULL_LSB, TS2_I2C_BAT_FULL_MSB},
 			.num_ids = 2, .ro = 1},
 	[18] = {.debug_name = "TS2_I2C_BAT_FULL40_LSB_MSB",
-		{{.name = "getfull40", .mode = S_IRUGO},
+		{{.name = "getfull40", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.format = format_fullx,
 		.id = {TS2_I2C_BAT_FULL40_LSB, TS2_I2C_BAT_FULL40_MSB},
 			.num_ids = 2, .ro = 1},
 	[19] = {.debug_name = "TS2_I2C_BAT_RSNSP",
-		{{.name = "getrsense", .mode = S_IRUGO},
+		{{.name = "getrsense", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_rsense,
 		.id = {TS2_I2C_BAT_RSNSP}, .num_ids = 1, .ro = 1},
 
 	[20] = {.debug_name = "TS2_I2C_BAT_ROMID_0",
-		{{.name = "romid_0", .mode = S_IRUGO},
+		{{.name = "romid_0", .mode = 0444},
 		 .show = a6_generic_show, .store = NULL},
 		.id = {TS2_I2C_BAT_ROMID_0}, .num_ids = 1, .ro = 1},
 
 	[21] = {.debug_name = "TS2_I2C_BAT_COMMAND_STATUS",
-		{{.name = "command_status", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "command_status", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_BAT_COMMAND_STATUS}, .num_ids = 1, .ro = 0},
 
 
 	[22] = {.debug_name = "TS2_I2C_BAT_TEMP_LOW_LSB_MSB",
-		{{.name = "temp_low", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "temp_low", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.format = format_temp,
 		.r_format = r_format_temp,
 		.id = {TS2_I2C_BAT_TEMP_LOW_LSB, TS2_I2C_BAT_TEMP_LOW_MSB},
 			.num_ids = 2, .ro = 0},
 	[23] = {.debug_name = "TS2_I2C_BAT_TEMP_HIGH_LSB_MSB",
-		{{.name = "temp_high", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "temp_high", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.format = format_temp,
 		.r_format = r_format_temp,
 		.id = {TS2_I2C_BAT_TEMP_HIGH_LSB, TS2_I2C_BAT_TEMP_HIGH_MSB},
 			.num_ids = 2, .ro = 0},
 	[24] = {.debug_name = "TS2_I2C_BAT_VOLT_LOW_LSB_MSB",
-		{{.name = "volt_low", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "volt_low", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.format = format_voltage,
 		.r_format = r_format_voltage,
 		.id = {TS2_I2C_BAT_VOLT_LOW_LSB, TS2_I2C_BAT_VOLT_LOW_MSB},
 			.num_ids = 2, .ro = 0},
 	[25] = {.debug_name = "TS2_I2C_BAT_RARC_CRIT",
-		{{.name = "rarc_crit", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "rarc_crit", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_BAT_RARC_CRIT}, .num_ids = 1, .ro = 0},
 	[26] = {.debug_name = "TS2_I2C_BAT_RARC_LOW_2",
-		{{.name = "rarc_low_2", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "rarc_low_2", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_BAT_RARC_LOW_2}, .num_ids = 1, .ro = 0},
 	[27] = {.debug_name = "TS2_I2C_BAT_RARC_LOW_1",
-		{{.name = "rarc_low_1", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "rarc_low_1", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_BAT_RARC_LOW_1}, .num_ids = 1, .ro = 0},
 	[28] = {.debug_name = "TS2_I2C_BAT_RAAC_MSB",
-		{{.name = "getcoulomb", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "getcoulomb", .mode = 0666},
 		 .show = a6_generic_show, .store = a6_generic_store},
 		.format = format_coulomb,
 		.id = {TS2_I2C_BAT_RAAC_LSB, TS2_I2C_BAT_RAAC_MSB},
@@ -766,22 +768,22 @@ struct a6_register_desc {
 
 	/* puck registers */
 	[29] = {.debug_name = "TS2_I2C_ID",
-		{{.name = "id", .mode = S_IRUGO},
+		{{.name = "id", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.id = {TS2_I2C_ID}, .num_ids = 1, .ro = 1},
 	[30] = {.debug_name = "TS2_I2C_FLAGS_0",
-		{{.name = "puck_priority", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "puck_priority", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_FLAGS_0}, .num_ids = 1, .ro = 0},
 	[31] = {.debug_name = "TS2_I2C_FLAGS_2",
-		{{.name = "charger", .mode = S_IRUGO},
+		{{.name = "charger", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_charge_source_status,
 		.id = {TS2_I2C_FLAGS_2}, .num_ids = 1, .ro = 1},
 
 	/* enumeration registers */
 	[32] = {.debug_name = "VERSION",
-		{{.name = "getversion", .mode = S_IRUGO},
+		{{.name = "getversion", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_version,
 		.id = {	TS2_I2C_ENUM_MFGR_ID_LO, TS2_I2C_ENUM_MFGR_ID_HI,
@@ -796,26 +798,26 @@ struct a6_register_desc {
 
 	/* puck registers */
 	[33] = {.debug_name = "TS2_I2C_V_OFFSET",
-		{{.name = "v_offset", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "v_offset", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_v_offset,
 		.id = {TS2_I2C_V_OFFSET}, .num_ids = 1, .ro = 0},
 
 	/* self-wake registers */
 	[34] = {.debug_name = "TS2_I2C_WAKEUP_PERIOD",
-		{{.name = "periodic_wake_bit_params", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "periodic_wake_bit_params", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_WAKEUP_PERIOD}, .num_ids = 1, .ro = 0},
 
 	/* command registers */
 	[35] = {.debug_name = "TS2_I2C_COMMAND",
-		{{.name = "command", .mode = S_IWUGO},
+		{{.name = "command", .mode = 0222},
 		.show = NULL, .store = a6_generic_store},
 		.id = {TS2_I2C_COMMAND}, .num_ids = 1, .ro = 0},
 
 	/* remote enumeration registers */
 	[36] = {.debug_name = "REMOTE_VERSION",
-		{{.name = "getremoteversion", .mode = S_IRUGO},
+		{{.name = "getremoteversion", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_version,
 		.id = {	TS2_I2C_ENUM_REMOTE_MFGR_ID_LO, TS2_I2C_ENUM_REMOTE_MFGR_ID_HI,
@@ -830,202 +832,202 @@ struct a6_register_desc {
 
 	/* accessory data registers */
 	[37] = {.debug_name = "ACCESSORY_DATA_0",
-		{{.name = "acc_data_0", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_0", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_0}, .num_ids = 1, .ro = 0},
 
 	[38] = {.debug_name = "ACCESSORY_DATA_1",
-		{{.name = "acc_data_1", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_1", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_1}, .num_ids = 1, .ro = 0},
 
 	[39] = {.debug_name = "ACCESSORY_DATA_2",
-		{{.name = "acc_data_2", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_2", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_2}, .num_ids = 1, .ro = 0},
 
 	[40] = {.debug_name = "ACCESSORY_DATA_3",
-		{{.name = "acc_data_3", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_3", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_3}, .num_ids = 1, .ro = 0},
 
 	[41] = {.debug_name = "ACCESSORY_DATA_4",
-		{{.name = "acc_data_4", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_4", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_4}, .num_ids = 1, .ro = 0},
 
 	[42] = {.debug_name = "ACCESSORY_DATA_5",
-		{{.name = "acc_data_5", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_5", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_5}, .num_ids = 1, .ro = 0},
 
 	[43] = {.debug_name = "ACCESSORY_DATA_6",
-		{{.name = "acc_data_6", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_6", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_6}, .num_ids = 1, .ro = 0},
 
 	[44] = {.debug_name = "ACCESSORY_DATA_7",
-		{{.name = "acc_data_7", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_7", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_7}, .num_ids = 1, .ro = 0},
 
 	[45] = {.debug_name = "ACCESSORY_DATA_8",
-		{{.name = "acc_data_8", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_8", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_8}, .num_ids = 1, .ro = 0},
 
 	[46] = {.debug_name = "ACCESSORY_DATA_9",
-		{{.name = "acc_data_9", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_9", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_9}, .num_ids = 1, .ro = 0},
 
 	[47] = {.debug_name = "ACCESSORY_DATA_10",
-		{{.name = "acc_data_10", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_10", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_10}, .num_ids = 1, .ro = 0},
 
 	[48] = {.debug_name = "ACCESSORY_DATA_11",
-		{{.name = "acc_data_11", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_11", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_11}, .num_ids = 1, .ro = 0},
 
 	[49] = {.debug_name = "ACCESSORY_DATA_12",
-		{{.name = "acc_data_12", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_12", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_12}, .num_ids = 1, .ro = 0},
 
 	/* remote accessory data registers */
 	[50] = {.debug_name = "REMOTE_ACCESSORY_DATA_0",
-		{{.name = "remote_acc_data_0", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_0", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_0}, .num_ids = 1, .ro = 1},
 
 	[51] = {.debug_name = "REMOTE_ACCESSORY_DATA_1",
-		{{.name = "remote_acc_data_1", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_1", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_1}, .num_ids = 1, .ro = 1},
 
 	[52] = {.debug_name = "REMOTE_ACCESSORY_DATA_2",
-		{{.name = "remote_acc_data_2", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_2", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_2}, .num_ids = 1, .ro = 1},
 
 	[53] = {.debug_name = "REMOTE_ACCESSORY_DATA_3",
-		{{.name = "remote_acc_data_3", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_3", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_3}, .num_ids = 1, .ro = 1},
 
 	[54] = {.debug_name = "REMOTE_ACCESSORY_DATA_4",
-		{{.name = "remote_acc_data_4", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_4", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_4}, .num_ids = 1, .ro = 1},
 
 	[55] = {.debug_name = "REMOTE_ACCESSORY_DATA_5",
-		{{.name = "remote_acc_data_5", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_5", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_5}, .num_ids = 1, .ro = 1},
 
 	[56] = {.debug_name = "REMOTE_ACCESSORY_DATA_6",
-		{{.name = "remote_acc_data_6", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_6", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_6}, .num_ids = 1, .ro = 1},
 
 	[57] = {.debug_name = "REMOTE_ACCESSORY_DATA_7",
-		{{.name = "remote_acc_data_7", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_7", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_7}, .num_ids = 1, .ro = 1},
 
 	[58] = {.debug_name = "REMOTE_ACCESSORY_DATA_8",
-		{{.name = "remote_acc_data_8", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_8", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_8}, .num_ids = 1, .ro = 1},
 
 	[59] = {.debug_name = "REMOTE_ACCESSORY_DATA_9",
-		{{.name = "remote_acc_data_9", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_9", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_9}, .num_ids = 1, .ro = 1},
 
 	[60] = {.debug_name = "REMOTE_ACCESSORY_DATA_10",
-		{{.name = "remote_acc_data_10", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_10", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_10}, .num_ids = 1, .ro = 1},
 
 	[61] = {.debug_name = "REMOTE_ACCESSORY_DATA_11",
-		{{.name = "remote_acc_data_11", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_11", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_11}, .num_ids = 1, .ro = 1},
 
 	[62] = {.debug_name = "REMOTE_ACCESSORY_DATA_12",
-		{{.name = "remote_acc_data_12", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_12", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_12}, .num_ids = 1, .ro = 1},
 
 	[63] = {.debug_name = "TS2_I2C_COMM_STATUS",
-		{{.name = "get_comm_status", .mode = S_IRUGO},
+		{{.name = "get_comm_status", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_comm_status,
 		.id = {TS2_I2C_COMM_STATUS}, .num_ids = 1, .ro = 1},
 
 	[64] = {.debug_name = "TS2_I2C_COMM_TXDATA_RXDATA",
-		{{.name = "comm_txdata_rx_data", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "comm_txdata_rx_data", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_comm_status,
 		.id = {TS2_I2C_COMM_TXDATA_RXDATA}, .num_ids = 1, .ro = 0},
 
 	[65] = { .debug_name = "TS2_I2C_BAT_SACR_LSB_MSB",
-		{{.name = "getsacr", .mode = S_IRUGO},
+		{{.name = "getsacr", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_rawcoulomb,
 		.id = {TS2_I2C_BAT_SACR_LSB, TS2_I2C_BAT_SACR_MSB},
 			.num_ids = 2, .ro = 0},
 
 	[66] = { .debug_name = "TS2_I2C_BAT_ASL",
-		{{.name = "getasl", .mode = S_IRUGO},
+		{{.name = "getasl", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_raw_unsigned,
 		.id = {TS2_I2C_BAT_ASL}, .num_ids = 1, .ro = 0},
 
 	[67] = { .debug_name = "TS2_I2C_BAT_AS",
-		{{.name = "getrawas", .mode = S_IRUGO},
+		{{.name = "getrawas", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_raw_unsigned,
 		.id = {TS2_I2C_BAT_AS}, .num_ids = 1, .ro = 0},
 
 	[68] = { .debug_name = "TS2_I2C_BAT_FAC_LSB_MSB",
-		{{.name = "getfac", .mode = S_IRUGO},
+		{{.name = "getfac", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_rawcoulomb,
 		.id = {TS2_I2C_BAT_FAC_LSB, TS2_I2C_BAT_FAC_MSB},
 			.num_ids = 2, .ro = 0},
 
 	[69] = {.debug_name = "MAX_POWER_AVAILABLE",
-		{{.name = "getmaxpoweravail", .mode = S_IRUGO},
+		{{.name = "getmaxpoweravail", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_max_power_available,
 		.id = { TS2_I2C_ENUM_REMOTE_VNODE_MAX_LO, TS2_I2C_ENUM_REMOTE_VNODE_MAX_HI,
@@ -1034,53 +1036,53 @@ struct a6_register_desc {
 		.num_ids = 5, .ro = 1},
 
 	[70] = {.debug_name = "TS2_I2C_ENUM_REMOTE_STRUCT_VER",
-		{{.name = "remote_struct_ver", .mode = S_IRUGO},
+		{{.name = "remote_struct_ver", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.id = {TS2_I2C_ENUM_REMOTE_STRUCT_VER}, .num_ids = 1, .ro = 1},
 
 	[71] = {.debug_name = "ACCESSORY_DATA_13",
-		{{.name = "acc_data_13", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_13", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_13}, .num_ids = 1, .ro = 0},
 
 	[72] = {.debug_name = "ACCESSORY_DATA_14",
-		{{.name = "acc_data_14", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_14", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_14}, .num_ids = 1, .ro = 0},
 
 	[73] = {.debug_name = "ACCESSORY_DATA_15",
-		{{.name = "acc_data_15", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_15", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_ACCE_15}, .num_ids = 1, .ro = 0},
 
 	[74] = {.debug_name = "REMOTE_ACCESSORY_DATA_13",
-		{{.name = "remote_acc_data_13", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_13", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_13}, .num_ids = 1, .ro = 1},
 
 	[75] = {.debug_name = "REMOTE_ACCESSORY_DATA_14",
-		{{.name = "remote_acc_data_14", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_14", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_14}, .num_ids = 1, .ro = 1},
 
 	[76] = {.debug_name = "REMOTE_ACCESSORY_DATA_15",
-		{{.name = "remote_acc_data_15", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_15", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory,
 		.id = {	TS2_I2C_ENUM_REMOTE_ACCE_15}, .num_ids = 1, .ro = 1},
 
 	[77] = {.debug_name = "TS2_I2C_ENUM_MIN_PWM",
-		{{.name = "min_pwm", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "min_pwm", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.id = {	TS2_I2C_ENUM_MIN_PWM}, .num_ids = 1, .ro = 0},
 
 	[78] = {.debug_name = "ACCESSORY_DATA_COMBO",
-		{{.name = "acc_data_combo", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "acc_data_combo", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.format = format_accessory_combo,
 		.id = { TS2_I2C_ENUM_ACCE_0, TS2_I2C_ENUM_ACCE_1, TS2_I2C_ENUM_ACCE_2,
@@ -1092,7 +1094,7 @@ struct a6_register_desc {
 		.num_ids = 16, .ro = 0},
 
 	[79] = {.debug_name = "REMOTE_ACCESSORY_DATA_COMBO",
-		{{.name = "remote_acc_data_combo", .mode = S_IRUGO},
+		{{.name = "remote_acc_data_combo", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_accessory_combo,
 		.id = { TS2_I2C_ENUM_REMOTE_ACCE_0, TS2_I2C_ENUM_REMOTE_ACCE_1,
@@ -1106,48 +1108,48 @@ struct a6_register_desc {
 		.num_ids = 16, .ro = 1},
 
 	[80] = {.debug_name = "TS2_I2C_COMMAND_ADDR_LSB_MSB",
-		{{.name = "command_addr", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "command_addr", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_COMMAND_ADDR_LSB, TS2_I2C_COMMAND_ADDR_MSB},
 		.format = format_u16_hex,
 		.num_ids = 2, .ro = 0},
 	[81] = {.debug_name = "TS2_I2C_COMMAND_DATA_LSB_MSB",
-		{{.name = "command_data", .mode = S_IRUGO|S_IWUGO},
+		{{.name = "command_data", .mode = 0666},
 		.show = a6_generic_show, .store = a6_generic_store},
 		.id = {TS2_I2C_COMMAND_DATA_LSB, TS2_I2C_COMMAND_DATA_MSB},
 		.format = format_u16_hex,
 		.num_ids = 2, .ro = 0},
 
 	[82] = {.debug_name = "REMOTE_MFGRID_V1",
-		{{.name = "remote_mfgrid_v1", .mode = S_IRUGO},
+		{{.name = "remote_mfgrid_v1", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_u16_hex,
 		.id = { TS2_I2C_ENUM_REMOTE_MFGR_ID_LO_V1,
 			TS2_I2C_ENUM_REMOTE_MFGR_ID_HI_V1},
 		.num_ids = 2, .ro = 1},
 	[83] = {.debug_name = "REMOTE_MFGRID_V2",
-		{{.name = "remote_mfgrid_v2", .mode = S_IRUGO},
+		{{.name = "remote_mfgrid_v2", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_u16_hex,
 		.id = { TS2_I2C_ENUM_REMOTE_MFGR_ID_LO,
 			TS2_I2C_ENUM_REMOTE_MFGR_ID_HI},
 		.num_ids = 2, .ro = 1},
 	[84] = {.debug_name = "REMOTE_PRODUCTID_V1",
-		{{.name = "remote_productid_v1", .mode = S_IRUGO},
+		{{.name = "remote_productid_v1", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_u16_hex,
 		.id = { TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_LO_V1,
 			TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_HI_V1},
 		.num_ids = 2, .ro = 1},
 	[85] = {.debug_name = "REMOTE_PRODUCTID_V2",
-		{{.name = "remote_productid_v2", .mode = S_IRUGO},
+		{{.name = "remote_productid_v2", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_u16_hex,
 		.id = { TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_LO,
 			TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_HI},
 		.num_ids = 2, .ro = 1},
 	[86] = {.debug_name = "REMOTE_SERNO_V1",
-		{{.name = "remote_serno_v1", .mode = S_IRUGO},
+		{{.name = "remote_serno_v1", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_serno_v1,
 		.id = { TS2_I2C_ENUM_REMOTE_SERNO_0, TS2_I2C_ENUM_REMOTE_SERNO_1,
@@ -1155,7 +1157,7 @@ struct a6_register_desc {
 			TS2_I2C_ENUM_REMOTE_SERNO_4, TS2_I2C_ENUM_REMOTE_SERNO_5},
 		.num_ids = 6, .ro = 1},
 	[87] = {.debug_name = "REMOTE_SERNO_V2",
-		{{.name = "remote_serno_v2", .mode = S_IRUGO},
+		{{.name = "remote_serno_v2", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_serno_v2,
 		.id = { TS2_I2C_ENUM_REMOTE_SERNO_0, TS2_I2C_ENUM_REMOTE_SERNO_1,
@@ -1164,19 +1166,19 @@ struct a6_register_desc {
 			TS2_I2C_ENUM_REMOTE_SERNO_6, TS2_I2C_ENUM_REMOTE_SERNO_7},
 		.num_ids = 8, .ro = 1},
 	[88] = {.debug_name = "LOCAL_MFGRID",
-		{{.name = "local_mfgrid", .mode = S_IRUGO},
+		{{.name = "local_mfgrid", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_u16_hex,
 		.id = { TS2_I2C_ENUM_MFGR_ID_LO, TS2_I2C_ENUM_MFGR_ID_HI},
 		.num_ids = 2, .ro = 1},
 	[89] = {.debug_name = "LOCAL_PRODUCTID",
-		{{.name = "local_productid", .mode = S_IRUGO},
+		{{.name = "local_productid", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_u16_hex,
 		.id = { TS2_I2C_ENUM_PRODUCT_TYPE_LO, TS2_I2C_ENUM_PRODUCT_TYPE_HI},
 		.num_ids = 2, .ro = 1},
 	[90] = {.debug_name = "LOCAL_SERNO",
-		{{.name = "local_serno", .mode = S_IRUGO},
+		{{.name = "local_serno", .mode = 0444},
 		.show = a6_generic_show, .store = NULL},
 		.format = format_serno_v2,
 		.id = { TS2_I2C_ENUM_SERNO_0, TS2_I2C_ENUM_SERNO_1,
@@ -1188,10 +1190,10 @@ struct a6_register_desc {
 
 
 struct device_attribute custom_devattr[] = {
-	{{.name = "a6_diag", .mode = S_IRUGO | S_IWUGO},
+	{{.name = "a6_diag", .mode = 0666},
 	 .show = a6_diag_show, .store = a6_diag_store},
- 	{{.name = "validate_cksum", .mode = S_IRUGO},
- 	 .show = a6_val_cksum_show, .store = NULL},
+	{{.name = "validate_cksum", .mode = 0444},
+	 .show = a6_val_cksum_show, .store = NULL},
 };
 
 #ifdef A6_PQ
@@ -1199,23 +1201,23 @@ struct device_attribute custom_devattr[] = {
 #ifdef A6_DEBUG
 
 
-static int32_t a6_restart_aid_thread_fn(void* param)
+static int32_t a6_restart_aid_thread_fn(void *param)
 {
-	struct a6_device_state* state = param;
+	struct a6_device_state *state = param;
 	int32_t rc = 0;
 
 	while (!kthread_should_stop() && !state->dbgflg_kill_raid) {
 		// stop aid task
 		rc = a6_stop_ai_dispatch_task(state);
 		if (rc) {
-			printk(KERN_ERR "%s: failed to stop ai_dispatch_task.\n", __func__);
+			pr_err("%s: failed to stop ai_dispatch_task.\n", __func__);
 			break;
 		}
 
 		// re-start aid task
 		rc = a6_start_ai_dispatch_task(state);
 		if (rc) {
-			printk(KERN_ERR "%s: failed to start ai_dispatch_task.\n", __func__);
+			pr_err("%s: failed to start ai_dispatch_task.\n", __func__);
 			break;
 		}
 
@@ -1225,7 +1227,7 @@ static int32_t a6_restart_aid_thread_fn(void* param)
 
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock_interruptible interrupted\n", __func__);
+		pr_err("%s: mutex_lock_interruptible interrupted\n", __func__);
 		return -ERESTARTSYS;
 	}
 	state->debug_restart_aid = 0;
@@ -1238,13 +1240,13 @@ static int32_t a6_restart_aid_thread_fn(void* param)
 static int a6_test_restart_aid_set(void *data, u64 val)
 {
 	int32_t rc = 0;
-	struct a6_device_state* state = data;
+	struct a6_device_state *state = data;
 	uint8_t in_val, curr_val;
 
 	in_val = val ? 1 : val;
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock_interruptible interrupted\n", __func__);
+		pr_err("%s: mutex_lock_interruptible interrupted\n", __func__);
 		return -ERESTARTSYS;
 	}
 	curr_val = state->debug_restart_aid;
@@ -1254,7 +1256,7 @@ static int a6_test_restart_aid_set(void *data, u64 val)
 		if (in_val) {
 			// prev task still being killed or active: fail
 			if (state->dbgflg_kill_raid || state->debug_restart_aid) {
-				printk(KERN_ERR "%s: prev task still being killed or active: fail\n",
+				pr_err("%s: prev task still being killed or active: fail\n",
 				       __func__);
 				goto err0;
 			}
@@ -1263,11 +1265,10 @@ static int a6_test_restart_aid_set(void *data, u64 val)
 							      "dbg_aidrst_%s", state->plat_data->dev_name);
 			ASSERT(!IS_ERR(state->restart_aid_task));
 			state->debug_restart_aid = in_val;
-		}
-		else {
+		} else {
 			// prev task still being killed or not active: fail
 			if (state->dbgflg_kill_raid || !state->debug_restart_aid) {
-				printk(KERN_ERR "%s: prev task still being killed or not active: fail\n",
+				pr_err("%s: prev task still being killed or not active: fail\n",
 				       __func__);
 				goto err0;
 			}
@@ -1283,7 +1284,7 @@ err0:
 }
 static int a6_test_restart_aid_get(void *data, u64 *val)
 {
-	struct a6_device_state* state = data;
+	struct a6_device_state *state = data;
 
 	*val = state->debug_restart_aid;
 	return 0;
@@ -1291,7 +1292,7 @@ static int a6_test_restart_aid_get(void *data, u64 *val)
 
 DEFINE_SIMPLE_ATTRIBUTE(fops_a6_test_restart_aid, a6_test_restart_aid_get, a6_test_restart_aid_set, "%llu\n");
 
-static int32_t a6_create_debug_interface(struct a6_device_state* state)
+static int32_t a6_create_debug_interface(struct a6_device_state *state)
 {
 	int32_t rc = 0;
 	struct dentry *dentry_parent, *dentry_child;
@@ -1325,29 +1326,25 @@ enum {
 };
 
 struct a6_action_item {
-	void* ai_payload;
+	void *ai_payload;
 	uint32_t ai_type: 4;
 	uint32_t ai_complete:1;
-	int32_t (*ai_do_action)(void* payload_param);
-	int32_t* (*ai_ret_code)(void* payload_param);
+	int32_t (*ai_do_action)(void *payload_param);
+	int32_t* (*ai_ret_code)(void *payload_param);
 	wait_queue_head_t ai_waitq;
 	struct list_head list;
 };
 
-/*
- enq_a6_action_item: q's action item and blocks till action completion...
-*/
-static int32_t enq_a6_action_item(struct a6_device_state* state, struct a6_action_item* ai, bool enq_tail)
+/* enq_a6_action_item: q's action item and blocks till action completion */
+static int32_t enq_a6_action_item(struct a6_device_state *state, struct a6_action_item *ai, bool enq_tail)
 {
 	int32_t rc = 0;
 
 	mutex_lock(&state->aq_mutex);
-	if (true == enq_tail) {
+	if (enq_tail)
 		list_add_tail(&ai->list, &state->aq_head);
-	}
-	else {
+	else
 		list_add(&ai->list, &state->aq_head);
-	}
 	mutex_unlock(&state->aq_mutex);
 
 	// signal the action_item dispatcher thread
@@ -1360,12 +1357,10 @@ static int32_t enq_a6_action_item(struct a6_device_state* state, struct a6_actio
 	return rc;
 }
 
-/*
- dq_a6_action_item: dq's head item from action item list...
-*/
-static struct a6_action_item* dq_a6_action_item(struct a6_device_state* state)
+/* dq_a6_action_item: dq's head item from action item list */
+static struct a6_action_item *dq_a6_action_item(struct a6_device_state *state)
 {
-	struct a6_action_item* ai = NULL;
+	struct a6_action_item *ai = NULL;
 
 	mutex_lock(&state->aq_mutex);
 	if (!list_empty(&state->aq_head)) {
@@ -1378,13 +1373,13 @@ static struct a6_action_item* dq_a6_action_item(struct a6_device_state* state)
 }
 
 /*
- flush_a6_action_items: iterates action item list, dq's each item, marks it cancelled
-			and complete and then wakes up the requestor...
-*/
-int32_t flush_a6_action_items(struct a6_device_state* state)
+ * flush_a6_action_items: iterates action item list, dq's each item, marks it
+ * cancelled and complete and then wakes up the requestor.
+ */
+int32_t flush_a6_action_items(struct a6_device_state *state)
 {
 	int32_t rc = 0;
-	struct a6_action_item* ai = NULL;
+	struct a6_action_item *ai = NULL;
 
 	// lock list until all items removed
 	mutex_lock(&state->aq_mutex);
@@ -1406,23 +1401,21 @@ int32_t flush_a6_action_items(struct a6_device_state* state)
 
 
 struct ai_i2c_payload {
-	struct i2c_client* client;
-	struct i2c_msg* msg;
+	struct i2c_client *client;
+	struct i2c_msg *msg;
 	uint32_t num_msgs;
 	int32_t rc;
 };
 
-/*
- do_i2c_action_item: i2c-specific action implementation...
-*/
-static int32_t do_i2c_action_item(void* payload_param)
+/* do_i2c_action_item: i2c-specific action implementation */
+static int32_t do_i2c_action_item(void *payload_param)
 {
-	struct ai_i2c_payload* trf_data = (struct ai_i2c_payload*)payload_param;
+	struct ai_i2c_payload *trf_data = (struct ai_i2c_payload *)payload_param;
 
 	trf_data->rc = i2c_transfer(trf_data->client->adapter, trf_data->msg, trf_data->num_msgs);
 	udelay(700);
 	if (trf_data->rc < 0) {
-		printk(KERN_ERR "%s: err code: %d\n", __func__, trf_data->rc);
+		pr_err("%s: err code: %d\n", __func__, trf_data->rc);
 		goto err0;
 	}
 
@@ -1431,20 +1424,16 @@ err0:
 	return trf_data->rc;
 }
 
-/*
- i2c_ret_code: i2c-specific ret-code reference retrieval...
-*/
-static int32_t* i2c_ret_code(void* payload_param)
+/* i2c_ret_code: i2c-specific ret-code reference retrieval */
+static int32_t *i2c_ret_code(void *payload_param)
 {
-	struct ai_i2c_payload* trf_data = (struct ai_i2c_payload*)payload_param;
+	struct ai_i2c_payload *trf_data = (struct ai_i2c_payload *)payload_param;
 
-	return (&trf_data->rc);
+	return &trf_data->rc;
 }
 
-/*
- q_a6_i2c_action_item: creates the action item structure and enq's it...
-*/
-static int32_t q_a6_i2c_action_item(struct i2c_client* client, struct i2c_msg* msg, uint32_t num_msgs)
+/* q_a6_i2c_action_item: creates the action item structure and enq's it */
+static int32_t q_a6_i2c_action_item(struct i2c_client *client, struct i2c_msg *msg, uint32_t num_msgs)
 {
 	int32_t ret = 0;
 	struct ai_i2c_payload data = {
@@ -1469,14 +1458,12 @@ static int32_t q_a6_i2c_action_item(struct i2c_client* client, struct i2c_msg* m
 	return ret;
 }
 
-/*
- ai_dispatch_thread_fn: function that handles ai processing in the aid task...
-*/
-static int ai_dispatch_thread_fn(void* param)
+/* ai_dispatch_thread_fn: function that handles ai processing in the aid task */
+static int ai_dispatch_thread_fn(void *param)
 {
 	int32_t rc = 0;
-	struct a6_action_item* ai;
-	struct a6_device_state* state = param;
+	struct a6_action_item *ai;
+	struct a6_device_state *state = param;
 
 	do {
 		A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: about to wait for ai enq complete.\n", __func__);
@@ -1499,47 +1486,45 @@ static int ai_dispatch_thread_fn(void* param)
 				A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: got ai.\n", __func__);
 				// invoke ai-specific action
 				ret_val = ai->ai_do_action(ai->ai_payload);
-				if (ret_val) {
-					printk(KERN_ERR "%s: ai_do_action failed.\n", __func__);
-				}
+				if (ret_val)
+					pr_err("%s: ai_do_action failed.\n", __func__);
 
 				// set completion indicator
 				ai->ai_complete = 1;
 				// signal ai requestor
 				wake_up(&ai->ai_waitq);
-			}
-			else {
+			} else {
 				A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: no ai.\n", __func__);
 			}
 		}
 		// wait interrupted by -ERESTARTSYS: let's exit
 		else {
-			printk(KERN_ERR "%s: wait for action_item enq interrupted.\n",
+			pr_err("%s: wait for action_item enq interrupted.\n",
 			       __func__);
 			// force a panic...
 			BUG_ON(rc < 0);
 		}
-	} while(rc >= 0);
+	} while (rc >= 0);
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "*** %s: exiting ai_dispatch_thread_fn.***\n", __func__);
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "*** %s: exiting.***\n", __func__);
 
 	return rc;
 }
 #endif  // A6_PQ
 
 
-static int32_t __a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, uint8_t* out)
+static int32_t __a6_i2c_read_reg(struct i2c_client *client, const uint16_t *ids, uint32_t num_ids, uint8_t *out)
 {
 	int32_t ret = 0, i;
 	uint16_t swp_addr[num_ids];
 	struct i2c_msg msg[num_ids*2], *msg_itr;
-	struct a6_device_state* state = i2c_get_clientdata(client);
+	struct a6_device_state *state = i2c_get_clientdata(client);
 #ifdef A6_I2C_PROFILE
 	ktime_t start, end;
 #endif
 
 #ifdef A6_PQ
-	if (test_bit(IS_QUIESCED, ((struct a6_device_state*)i2c_get_clientdata(client))->flags)) {
+	if (test_bit(IS_QUIESCED, ((struct a6_device_state *)i2c_get_clientdata(client))->flags)) {
 		ret = -ECANCELED;
 		goto err0;
 	}
@@ -1548,31 +1533,30 @@ static int32_t __a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids,
 	// force A6 wakeup...
 	if (start_last_a6_activity) {
 		long diff_time = (long)jiffies - (long)start_last_a6_activity;
+
 		A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: time since last activity: %ld ms\n",
 		       __func__, diff_time * 1000/HZ);
 	}
 	start_last_a6_activity = jiffies;
 
 	// prevent timer expiry during force_wake related action...
-	del_timer(&state->a6_force_wake_timer);
+	timer_delete(&state->a6_force_wake_timer);
 
 	mutex_lock(&state->a6_force_wake_mutex);
 	// a6 external wake enabled?
 	if (test_bit(CAP_PERIODIC_WAKE, state->flags)) {
 		if (!test_bit(FORCE_WAKE_ACTIVE_BIT, state->flags)) {
-			struct a6_wake_ops* wake_ops = (struct a6_wake_ops*)state->plat_data->wake_ops;
+			struct a6_wake_ops *wake_ops = (struct a6_wake_ops *)state->plat_data->wake_ops;
 
 			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR,
-			   	"%s: disabling periodic_wake and switching to force_wake\n",
-			   	__func__);
+				"%s: disabling periodic_wake and switching to force_wake\n",
+				__func__);
 
-			// periodic wake active: disable it and switch to force wake
-			if (wake_ops->disable_periodic_wake) {
+			/* periodic wake active: disable it and switch to force wake */
+			if (wake_ops->disable_periodic_wake)
 				wake_ops->disable_periodic_wake(wake_ops->data);
-			}
-			if (wake_ops->force_wake) {
+			if (wake_ops->force_wake)
 				wake_ops->force_wake(wake_ops->data);
-			}
 
 			set_bit(FORCE_WAKE_ACTIVE_BIT, state->flags);
 		}
@@ -1588,7 +1572,7 @@ static int32_t __a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids,
 		msg_itr->flags = 0;
 		msg_itr->len = sizeof(uint16_t);
 		swp_addr[i] = ids[i] >> 8 | ids[i] << 8;
-		msg_itr->buf = (uint8_t*)&swp_addr[i];
+		msg_itr->buf = (uint8_t *)&swp_addr[i];
 
 		(msg_itr+1)->addr = client->addr;
 		(msg_itr+1)->flags = I2C_M_RD;
@@ -1616,12 +1600,12 @@ static int32_t __a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids,
 #ifdef A6_I2C_PROFILE
 	{
 		end = ktime_get();
-		printk(KERN_ERR "%s[0x%02x]: elpased time: %lld\n",
+		pr_err("%s[0x%02x]: elpased time: %lld\n",
 		       __func__, client->addr, ktime_to_ns(ktime_sub(end, start)));
 	}
 #endif
 	if (ret < 0) {
-		printk(KERN_ERR "%s[0x%02x]: err code: %d\n", __func__, client->addr, ret);
+		pr_err("%s[0x%02x]: err code: %d\n", __func__, client->addr, ret);
 		// reset the force_wake timer inedependent of i2c failure
 		//goto err0;
 	}
@@ -1636,7 +1620,7 @@ err0:
 	return ret;
 }
 
-static int32_t a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, uint8_t* out)
+static int32_t a6_i2c_read_reg(struct i2c_client *client, const uint16_t *ids, uint32_t num_ids, uint8_t *out)
 {
 	int32_t ret;
 #ifdef A6_I2C_RETRY
@@ -1648,23 +1632,23 @@ static int32_t a6_i2c_read_reg(struct i2c_client* client, const uint16_t* ids, u
 	do {
 		ret = __a6_i2c_read_reg(client, ids, num_ids, out);
 		if (ret < 0) {
-			printk("%s: a6 i2c transaction failed. %s...\n", __func__, retry ? "retry" : " ");
+			pr_err("%s: a6 i2c transaction failed. %s...\n", __func__, retry ? "retry" : " ");
 			msleep(30);
 		}
-	} while (0 != ret && retry-- > 0);
+	} while (ret != 0 && retry-- > 0);
 
 	return ret;
 }
 
-static int32_t __a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, const uint8_t* in)
+static int32_t __a6_i2c_write_reg(struct i2c_client *client, const uint16_t *ids, uint32_t num_ids, const uint8_t *in)
 {
 	int32_t ret = 0, i;
 	uint8_t i2c_buf[(2+1)*num_ids];
 	struct i2c_msg msg[num_ids], *msg_itr;
-	struct a6_device_state* state = i2c_get_clientdata(client);
+	struct a6_device_state *state = i2c_get_clientdata(client);
 
 #ifdef A6_PQ
-	if (test_bit(IS_QUIESCED, ((struct a6_device_state*)i2c_get_clientdata(client))->flags)) {
+	if (test_bit(IS_QUIESCED, ((struct a6_device_state *)i2c_get_clientdata(client))->flags)) {
 		ret = -ECANCELED;
 		goto err0;
 	}
@@ -1673,30 +1657,29 @@ static int32_t __a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids
 	// force A6 wakeup...
 	if (start_last_a6_activity) {
 		long diff_time = (long)jiffies - (long)start_last_a6_activity;
+
 		A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: time since last activity: %ld ms\n",
 		       __func__, diff_time * 1000/HZ);
 	}
 	start_last_a6_activity = jiffies;
 
 	// prevent timer expiry during force_wake related action...
-	del_timer(&state->a6_force_wake_timer);
+	timer_delete(&state->a6_force_wake_timer);
 
 	mutex_lock(&state->a6_force_wake_mutex);
 	if (test_bit(CAP_PERIODIC_WAKE, state->flags)) {
 		if (!test_and_set_bit(FORCE_WAKE_ACTIVE_BIT, state->flags)) {
-			struct a6_wake_ops* wake_ops = (struct a6_wake_ops*)state->plat_data->wake_ops;
+			struct a6_wake_ops *wake_ops = (struct a6_wake_ops *)state->plat_data->wake_ops;
 
 			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR,
 				"%s: disabling periodic_wake and switching to force_wake\n",
 				__func__);
 
-			// periodic wake active: disable it and switch to force wake
-			if (wake_ops->disable_periodic_wake) {
+			/* periodic wake active: disable it and switch to force wake */
+			if (wake_ops->disable_periodic_wake)
 				wake_ops->disable_periodic_wake(wake_ops->data);
-			}
-			if (wake_ops->force_wake) {
+			if (wake_ops->force_wake)
 				wake_ops->force_wake(wake_ops->data);
-			}
 
 			set_bit(FORCE_WAKE_ACTIVE_BIT, state->flags);
 		}
@@ -1720,7 +1703,7 @@ static int32_t __a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids
 		ret = i2c_transfer(client->adapter, msg_itr, 1);
 #endif // A6_PQ
 		udelay(700);
-	      if (ret < 0)
+		if (ret < 0)
 			break;
 #endif
 		msg_itr++;
@@ -1735,7 +1718,7 @@ static int32_t __a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids
 	//msleep(1);
 #endif
 	if (ret < 0) {
-		printk(KERN_ERR "%s[0x%02x]: err code: %d\n", __func__, client->addr, ret);
+		pr_err("%s[0x%02x]: err code: %d\n", __func__, client->addr, ret);
 		// reset the force_wake timer inedependent of i2c failure
 		//goto err0;
 	}
@@ -1749,7 +1732,7 @@ err0:
 	return ret;
 }
 
-static int32_t a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids, uint32_t num_ids, const uint8_t* in)
+static int32_t a6_i2c_write_reg(struct i2c_client *client, const uint16_t *ids, uint32_t num_ids, const uint8_t *in)
 {
 	int32_t ret;
 #ifdef A6_I2C_RETRY
@@ -1761,10 +1744,10 @@ static int32_t a6_i2c_write_reg(struct i2c_client* client, const uint16_t* ids, 
 	do {
 		ret = __a6_i2c_write_reg(client, ids, num_ids, in);
 		if (ret < 0) {
-			printk("%s: a6 i2c transaction failed. %s...\n", __func__, retry ? "retry" : " ");
+			pr_err("%s: a6 i2c transaction failed. %s...\n", __func__, retry ? "retry" : " ");
 			msleep(30);
 		}
-	} while (0 != ret && retry-- > 0);
+	} while (ret != 0 && retry-- > 0);
 
 	return ret;
 }
@@ -1775,18 +1758,17 @@ static uint8_t _convert_hex_char_to_decimal(uint8_t x)
 	x -= '0';
 	if (x > 9) {
 		x = x - ('A' - ('9' + 1));
-		if (x > 15) {
+		if (x > 15)
 			x = x - ('a' - 'A');
-		}
 	}
 
 	return x;
 }
 
-/******************************************************************************
-* GPIO descriptor wrapper functions for SBW interface
-* These replace the board-specific implementations with GPIO descriptors
-******************************************************************************/
+/*
+ * GPIO descriptor wrapper functions for SBW interface
+ * These replace the board-specific implementations with GPIO descriptors
+ */
 static struct a6_device_state *current_sbw_state; /* For SBW operations */
 
 static uint16_t a6_gpio_set_sbwtck(void)
@@ -1883,8 +1865,8 @@ static struct a6_sbw_interface a6_gpio_sbw_ops = {
 static int32_t a6_init_state(struct i2c_client *client)
 {
 	int32_t ret = 0;
-	struct a6_device_state* state = i2c_get_clientdata(client);
-	struct a6_register_desc* reg_desc;
+	struct a6_device_state *state = i2c_get_clientdata(client);
+	struct a6_register_desc *reg_desc;
 	uint8_t vals[id_size];
 
 	// early initialization of cached rsense to prevent un-initialized usage
@@ -1894,14 +1876,14 @@ static int32_t a6_init_state(struct i2c_client *client)
 	/* (1) enable external/internal wake, if required */
 	/* periodic wake capability enabled? */
 	if (test_bit(CAP_PERIODIC_WAKE, state->flags)) {
-		struct a6_wake_ops* wake_ops = (struct a6_wake_ops*)state->plat_data->wake_ops;
+		struct a6_wake_ops *wake_ops = (struct a6_wake_ops *)state->plat_data->wake_ops;
 
 		/* Initialize timer used to force sleep after a force wake */
 		timer_setup(&state->a6_force_wake_timer, a6_force_wake_timer_callback, 0);
 
 		/* enable external periodic wake? */
 		if (wake_ops->enable_periodic_wake) {
-			printk(KERN_ERR "%s: enabling external PMIC-generated A6 wake.\n", __func__);
+			pr_err("%s: enabling external PMIC-generated A6 wake.\n", __func__);
 
 			wake_ops->enable_periodic_wake(wake_ops->data);
 
@@ -1910,54 +1892,49 @@ static int32_t a6_init_state(struct i2c_client *client)
 			/* format wakeup parameters in register format */
 			vals[0] = 0;
 			ret = a6_i2c_write_reg(client, reg_desc->id, reg_desc->num_ids, vals);
-			if (ret < 0) {
+			if (ret < 0)
 				goto err0;
-			}
-		}
-		/* enable internal periodic wake? */
-		else if (wake_ops->internal_wake_enable_state) {
+		} else if (wake_ops->internal_wake_enable_state) {
+			/* enable internal periodic wake? */
 			uint32_t wake_period = 0, wake_enable = 1;
 
-			printk(KERN_ERR "%s: enabling A6 internal wake.\n", __func__);
-			/* default wake_period, if required */
-			if (!wake_ops->internal_wake_period) {
-				wake_period = 0x0;
-			}
-			else {
+			pr_err("%s: enabling A6 internal wake.\n", __func__);
+			/* get wake_period from ops if available */
+			if (wake_ops->internal_wake_period) {
 				wake_period = wake_ops->internal_wake_period(wake_ops->data);
-				if (wake_period > 0x100) {
+				if (wake_period > 0x100)
 					wake_period = 0x100;
-				}
 			}
+			/* wake_period defaults to 0 if not set */
 
 			reg_desc = &a6_register_desc_arr[34];
 
-			if (!wake_period) {
-				wake_enable = 0x0;
-			}
+			/* disable wake if no period set */
+			if (!wake_period)
+				wake_enable = 0;
 
-			// bit [4]: Enable sleep.
-			// bit [3]: Enable automatic wakeup.
-			// bits [2:0]: Sleep period.
+			/*
+			 * bit [4]: Enable sleep.
+			 * bit [3]: Enable automatic wakeup.
+			 * bits [2:0]: Sleep period.
+			 */
 			if (wake_period) {
-				wake_period = find_last_bit((const unsigned long*)&wake_period, 32);
+				wake_period = find_last_bit((const unsigned long *)&wake_period, 32);
 				wake_period--;
 			}
 			vals[0] = 0x10 | wake_enable << 3 | (wake_period & 0x07);
-			printk(KERN_ERR "%s: TS2_I2C_WAKEUP_PERIOD = 0x%02x\n",
+			pr_err("%s: TS2_I2C_WAKEUP_PERIOD = 0x%02x\n",
 			       __func__, vals[0]);
 			ret = a6_i2c_write_reg(client, reg_desc->id, reg_desc->num_ids, vals);
-			if (ret < 0) {
+			if (ret < 0)
 				goto err0;
-			}
-		}
-		else {
+		} else {
 			BUG();
 		}
 	}
 	/* periodic wake capability not defined: force a6 awake using SBW_WAKEUP */
 	else if (state->wakeup_gpio) {
-		printk(KERN_ERR "%s: permanently forcing A6 awake.\n", __func__);
+		pr_err("%s: permanently forcing A6 awake.\n", __func__);
 		gpiod_set_value_cansleep(state->wakeup_gpio, 1);
 	}
 
@@ -1966,17 +1943,16 @@ static int32_t a6_init_state(struct i2c_client *client)
 
 	memset(vals, 0, sizeof(vals));
 	ret = a6_i2c_read_reg(client, reg_desc->id, reg_desc->num_ids, vals);
-	if (ret < 0) {
-		//goto err0;
-	}
+	/* ignore read error for rsense */
 
-	/* rsense == 0: invalid and results in default
-	   (logic compatibile with legacy w1 driver implementation) */
+	/*
+	 * rsense == 0: invalid and results in default
+	 * (logic compatible with legacy w1 driver implementation)
+	 */
 	if (vals[0]) {
-		state->cached_rsense_val = 1000/vals[0];
-		if (!state->cached_rsense_val) {
+		state->cached_rsense_val = 1000 / vals[0];
+		if (!state->cached_rsense_val)
 			state->cached_rsense_val = RSENSE_DEFAULT;
-		}
 	}
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR,
 		   "%s: (cached) rsense value: %u\n", __func__, state->cached_rsense_val);
@@ -1986,35 +1962,34 @@ static int32_t a6_init_state(struct i2c_client *client)
 
 	vals[0] = 0xf3;
 	ret = a6_i2c_write_reg(client, reg_desc->id, reg_desc->num_ids, vals);
-	if (ret < 0) {
+	if (ret < 0)
 		goto err0;
-	}
 
-	/* (4) enable irqs:
-	       MASK_BAT_TEMP_HIGH, MASK_BAT_TEMP_LOW,
-	       MASK_BAT_VOLT_LOW, MASK_BAT_RARC_CRIT,
-	       MASK_BAT_RARC_LOW2, MASK_BAT_RARC_LOW1
-	*/
+	/*
+	 * (4) enable irqs:
+	 * MASK_BAT_TEMP_HIGH, MASK_BAT_TEMP_LOW,
+	 * MASK_BAT_VOLT_LOW, MASK_BAT_RARC_CRIT,
+	 * MASK_BAT_RARC_LOW2, MASK_BAT_RARC_LOW1
+	 */
 	reg_desc = &a6_register_desc_arr[2];
 
 	vals[0] = 0xc0;
 	ret = a6_i2c_write_reg(client, reg_desc->id, reg_desc->num_ids, vals);
-	if (ret < 0) {
+	if (ret < 0)
 		goto err0;
-	}
+
 	/* read version */
 	reg_desc = &a6_register_desc_arr[32];
 
 	memset(vals, 0, sizeof(vals));
 	ret = a6_i2c_read_reg(client, reg_desc->id, reg_desc->num_ids, vals);
-	if (ret < 0) {
-		printk(KERN_ERR "%s: error reading A6 version\n", __func__);
-	}
+	if (ret < 0)
+		pr_err("%s: error reading A6 version\n", __func__);
 	else {
 		uint8_t buf[150];
 
 		reg_desc->format(state, vals, buf, sizeof(buf));
-		printk(KERN_INFO "%s", buf);
+		pr_info("%s", buf);
 	}
 
 	// if first init (device boot): clear all interrupt status regs because we might
@@ -2027,7 +2002,7 @@ static int32_t a6_init_state(struct i2c_client *client)
 		reg_desc = &a6_register_desc_arr[7];
 		ret = a6_i2c_write_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
 		if (ret < 0) {
-			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			pr_err("%s: error writing reg: %s, id: 0x%x\n",
 			__func__, reg_desc->debug_name, reg_desc->id[0]);
 			goto err0;
 		}
@@ -2036,7 +2011,7 @@ static int32_t a6_init_state(struct i2c_client *client)
 		reg_desc = &a6_register_desc_arr[6];
 		ret = a6_i2c_write_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
 		if (ret < 0) {
-			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			pr_err("%s: error writing reg: %s, id: 0x%x\n",
 			__func__, reg_desc->debug_name, reg_desc->id[0]);
 			goto err0;
 		}
@@ -2045,7 +2020,7 @@ static int32_t a6_init_state(struct i2c_client *client)
 		reg_desc = &a6_register_desc_arr[5];
 		ret = a6_i2c_write_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
 		if (ret < 0) {
-			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			pr_err("%s: error writing reg: %s, id: 0x%x\n",
 			__func__, reg_desc->debug_name, reg_desc->id[0]);
 			goto err0;
 		}
@@ -2057,11 +2032,11 @@ err0:
 	return ret;
 }
 
-int32_t format_current(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_current(const struct a6_device_state *state, const uint8_t *val,
+		       uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
-	int32_t conv_val =  *(int16_t*)val; // (val[0]<<8) + val[1];
+	int32_t conv_val =  *(int16_t *)val; // (val[0]<<8) + val[1];
 
 	/* in uA */
 	/* TODO: Bootie source code states:
@@ -2076,11 +2051,11 @@ int32_t format_current(const struct a6_device_state* state, const uint8_t* val,
 	return ret;
 }
 
-int32_t format_voltage(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_voltage(const struct a6_device_state *state, const uint8_t *val,
+		       uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
-	int32_t conv_val =  *(int16_t*)val;  // (val[0]<<8) + val[1];
+	int32_t conv_val =  *(int16_t *)val;  // (val[0]<<8) + val[1];
 
 	/* in uV -- 11-bit signed value, unit = 4880uV */
 	conv_val = (conv_val>>5) * 4880;
@@ -2090,48 +2065,43 @@ int32_t format_voltage(const struct a6_device_state* state, const uint8_t* val,
 	return ret;
 }
 
-int32_t r_format_voltage(const struct a6_device_state* state, const uint8_t* fmt_buffer,
-			 uint8_t* val, uint32_t size_buffer)
+int32_t r_format_voltage(const struct a6_device_state *state, const uint8_t *fmt_buffer,
+			 uint8_t *val, uint32_t size_buffer)
 {
 	int32_t ret;
-	uint32_t conv_val;
-	const char *bufp;
-	char *endp = NULL;
+	unsigned long conv_val;
 
-	bufp = fmt_buffer;
-	// let strtoul perform base determination (handles '0x' and '0' prefixes) ...
-	conv_val = simple_strtoul(bufp, &endp, 0);
+	ret = kstrtoul(fmt_buffer, 0, &conv_val);
+	if (ret)
+		return 0;
+
 	/* in uV -- 11-bit signed value, unit = 4880uV */
 	conv_val = (conv_val / 4880) << 5;
 	// capped at 16 bits...
-	if (conv_val >> 0x10) {
-		ret = 0;
-		goto err0;
-	}
-	ret = (uint32_t)endp - (uint32_t)bufp;
+	if (conv_val >> 0x10)
+		return 0;
 
-	*(uint16_t*)val = conv_val;
+	*(uint16_t *)val = conv_val;
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: ip: %s op: %d\n",
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: ip: %s op: %ld\n",
 		   __func__, fmt_buffer, conv_val);
 
-err0:
-	return ret;
+	return strlen(fmt_buffer);
 }
 /**
  * Take the Accumulated Current Register (ACR), which is expressed in units of 6.25uVh
  * and convert to uAh.
  */
-int32_t format_rawcoulomb(const struct a6_device_state* state, const uint8_t* val,
-			  uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_rawcoulomb(const struct a6_device_state *state, const uint8_t *val,
+			  uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
-	int32_t conv_val =  *(int16_t*)val; // (val[0]<<8) + val[1];
+	int32_t conv_val =  *(int16_t *)val; // (val[0]<<8) + val[1];
 
 	// in uAh
 	conv_val = (conv_val * 6250) / (int32_t)state->cached_rsense_val;
 	ret = scnprintf(fmt_buffer, size_buffer, "%d.%03d\n", conv_val/1000,
-		       ((conv_val >= 0)? conv_val : -conv_val) % 1000);
+		       ((conv_val >= 0) ? conv_val : -conv_val) % 1000);
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "Raw Coulomb value (uAh): %s\n",
 		fmt_buffer);
 	return ret;
@@ -2141,11 +2111,11 @@ int32_t format_rawcoulomb(const struct a6_device_state* state, const uint8_t* va
  * Take the Remaining Active Absolute Capacity (RAAC) register, which is in
  * units of 1.6 mAh and convert to mAh
  */
-int32_t format_coulomb(const struct a6_device_state* state, const uint8_t* val,
-			  uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_coulomb(const struct a6_device_state *state, const uint8_t *val,
+			  uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
-	int32_t conv_val =  *(int16_t*)val;
+	int32_t conv_val =  *(int16_t *)val;
 
 	// in mAh
 	conv_val = (conv_val * 8) / 5;
@@ -2155,8 +2125,8 @@ int32_t format_coulomb(const struct a6_device_state* state, const uint8_t* val,
 	return ret;
 }
 
-int32_t format_age(const struct a6_device_state* state, const uint8_t* val,
-		   uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_age(const struct a6_device_state *state, const uint8_t *val,
+		   uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret, conv_val;
 
@@ -2169,11 +2139,11 @@ int32_t format_age(const struct a6_device_state* state, const uint8_t* val,
 	return ret;
 }
 
-int32_t format_fullx(const struct a6_device_state* state, const uint8_t* val,
-		     uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_fullx(const struct a6_device_state *state, const uint8_t *val,
+		     uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
-	int32_t conv_val =  *(int16_t*)val; // (val[0]<<8) + val[1];
+	int32_t conv_val =  *(int16_t *)val; // (val[0]<<8) + val[1];
 
 	// Convert 6.25uVh to uAh
 	conv_val = (conv_val * 6250) / state->cached_rsense_val;
@@ -2184,8 +2154,8 @@ int32_t format_fullx(const struct a6_device_state* state, const uint8_t* val,
 	return ret;
 }
 
-int32_t format_temp(const struct a6_device_state* state, const uint8_t* val,
-		    uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_temp(const struct a6_device_state *state, const uint8_t *val,
+		    uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 	int conv_val = val[1];	/* Ignoring the fraction part */
@@ -2197,8 +2167,8 @@ int32_t format_temp(const struct a6_device_state* state, const uint8_t* val,
 	return ret;
 }
 
-int32_t format_command(const struct a6_device_state* state, const uint8_t* val,
-		    uint8_t* fmt_buffer, uint32_t size_buffer)
+static int32_t __maybe_unused format_command(const struct a6_device_state *state,
+		    const uint8_t *val, uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 	int conv_command_debug_code = val[0];
@@ -2209,62 +2179,57 @@ int32_t format_command(const struct a6_device_state* state, const uint8_t* val,
 	return ret;
 }
 
-int32_t format_accessory(const struct a6_device_state* state, const uint8_t* val,
-		    uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_accessory(const struct a6_device_state *state, const uint8_t *val,
+		    uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 
-    ret = scnprintf(fmt_buffer, size_buffer, "%02X\n", val[0]);
- 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "%s", fmt_buffer);
+	ret = scnprintf(fmt_buffer, size_buffer, "%02X\n", val[0]);
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "%s", fmt_buffer);
 	return ret;
 }
 
-int32_t format_comm_status(const struct a6_device_state* state, const uint8_t* val,
-		    uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_comm_status(const struct a6_device_state *state, const uint8_t *val,
+		    uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 
-    ret = scnprintf(fmt_buffer, size_buffer, "%02X\n", val[0]);
- 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "%s", fmt_buffer);
+	ret = scnprintf(fmt_buffer, size_buffer, "%02X\n", val[0]);
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "%s", fmt_buffer);
 	return ret;
 }
 
-int32_t r_format_temp(const struct a6_device_state* state, const uint8_t* fmt_buffer,
-		      uint8_t* val, uint32_t size_buffer)
+int32_t r_format_temp(const struct a6_device_state *state, const uint8_t *fmt_buffer,
+		      uint8_t *val, uint32_t size_buffer)
 {
 	int32_t ret;
-	int32_t conv_val;
-	const char *bufp;
-	char *endp = NULL;
+	long conv_val;
 
-	bufp = fmt_buffer;
-	// let strtoul perform base determination (handles '0x' and '0' prefixes) ...
-	conv_val = simple_strtol(bufp, &endp, 0);
-	printk(KERN_ERR "conv_val : %d, hex: %x\n", conv_val, conv_val);
+	ret = kstrtol(fmt_buffer, 0, &conv_val);
+	if (ret)
+		return 0;
+
+	pr_err("conv_val : %ld, hex: %lx\n", conv_val, conv_val);
 	// capped at 8 bits...
-	if (conv_val < -128) {
-		ret = 0;
-		goto err0;
-	}
-	ret = (uint32_t)endp - (uint32_t)bufp;
+	if (conv_val < -128)
+		return 0;
 
 	/* Ignoring the fraction part */
-	*(uint16_t*)val = (uint8_t)conv_val << 8;
+	*(uint16_t *)val = (uint8_t)conv_val << 8;
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: ip: %s op: %d\n",
-		   __func__, fmt_buffer, conv_val<<8);
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: ip: %s op: %ld\n",
+		   __func__, fmt_buffer, conv_val << 8);
 
-err0:
-	return ret;
+	return strlen(fmt_buffer);
 }
 
-int32_t format_status(const struct a6_device_state* state, const uint8_t* val,
-		      uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_status(const struct a6_device_state *state, const uint8_t *val,
+		      uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	uint32_t conv_val = *val;
 	int32_t count, i;
 
-	const char* status_bits[] = {
+	static const char * const status_bits[] = {
 		NULL,
 		"power-on-reset",
 		"undervoltage",
@@ -2274,19 +2239,17 @@ int32_t format_status(const struct a6_device_state* state, const uint8_t* val,
 		"active-empty",
 		"charge-termination"};
 
-	for (i = count = 0; i < sizeof(status_bits)/sizeof(status_bits[0]); i++) {
-		if ((conv_val & (1 << i)) && status_bits[i] != NULL) {
-			count += scnprintf(fmt_buffer + count, size_buffer-count, "%s\n", status_bits[i]);
-		}
-	}
+	for (i = count = 0; i < ARRAY_SIZE(status_bits); i++)
+		if ((conv_val & (1 << i)) && status_bits[i] != NULL)
+			count += scnprintf(fmt_buffer + count, size_buffer - count, "%s\n", status_bits[i]);
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR,
 		   "Battery status: %s\n", fmt_buffer);
 
 	return count;
 }
 
-int32_t format_rsense(const struct a6_device_state* state, const uint8_t* val,
-		      uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_rsense(const struct a6_device_state *state, const uint8_t *val,
+		      uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 	uint32_t conv_val = *val;
@@ -2311,12 +2274,12 @@ int32_t format_rsense(const struct a6_device_state* state, const uint8_t* val,
  *
  * Not all values are currently supported.
  */
-int32_t format_charge_source_status(const struct a6_device_state* state, const uint8_t* val,
-				    uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_charge_source_status(const struct a6_device_state *state, const uint8_t *val,
+				    uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	struct charge_source_status_map {
 		uint32_t cs_mask;
-		const char* cs_name;
+		const char *cs_name;
 	} cs_map[] = {
 		[0] = {0x01, "Puck Detected"},
 		[1] = {0x02, "Puck Connected"},
@@ -2328,11 +2291,9 @@ int32_t format_charge_source_status(const struct a6_device_state* state, const u
 	uint32_t conv_val = *val, count = 0;
 	int32_t i;
 
-	for(i = 0; i < sizeof(cs_map)/sizeof(cs_map[0]); i++) {
-		if (conv_val & cs_map[i].cs_mask) {
+	for (i = 0; i < ARRAY_SIZE(cs_map); i++)
+		if (conv_val & cs_map[i].cs_mask)
 			count += scnprintf(fmt_buffer + count, (size_buffer - 1) - count, "%s\n", cs_map[i].cs_name);
-		}
-	}
 
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR,
 		   "charge source status (formatted): %s\n", fmt_buffer);
@@ -2341,8 +2302,10 @@ int32_t format_charge_source_status(const struct a6_device_state* state, const u
 	conv_val = 0;
 	/* map charge source status to user-space values */
 	/* TODO: differentiate wall charger from USB */
-	if (val[0] & TS2_I2C_FLAGS_2_WIRED_CHARGE) conv_val |= 1;
-	if (val[0] & TS2_I2C_FLAGS_2_PUCK_CHARGE) conv_val |= 4;
+	if (val[0] & TS2_I2C_FLAGS_2_WIRED_CHARGE)
+		conv_val |= 1;
+	if (val[0] & TS2_I2C_FLAGS_2_PUCK_CHARGE)
+		conv_val |= 4;
 #endif
 
 	/* output register contents */
@@ -2352,21 +2315,21 @@ int32_t format_charge_source_status(const struct a6_device_state* state, const u
 	return count;
 }
 
-int32_t format_version(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_version(const struct a6_device_state *state, const uint8_t *val,
+		       uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 
 	ret = scnprintf(fmt_buffer, size_buffer,
 			"A6 Version: HW: %d, FW (M.m.B): %d.%d.%d, ManID: %d, ProdTyp: %d\n",
 			val[12], val[15], val[14], val[13],
-			*(int16_t*)&(val[0]), *(int16_t*)&(val[2]));
+			*(int16_t *)&(val[0]), *(int16_t *)&(val[2]));
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "%s", fmt_buffer);
 	return ret;
 }
 
-int32_t format_v_offset(const struct a6_device_state* state, const uint8_t* val,
-			uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_v_offset(const struct a6_device_state *state, const uint8_t *val,
+			uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 	uint32_t conv_val = *val;
@@ -2376,8 +2339,8 @@ int32_t format_v_offset(const struct a6_device_state* state, const uint8_t* val,
 	return ret;
 }
 
-int32_t format_raw_unsigned(const struct a6_device_state* state, const uint8_t* val,
-			    uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_raw_unsigned(const struct a6_device_state *state, const uint8_t *val,
+			    uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 	uint32_t conv_val = *val;
@@ -2387,23 +2350,23 @@ int32_t format_raw_unsigned(const struct a6_device_state* state, const uint8_t* 
 	return ret;
 }
 
-int32_t format_u16_hex(const struct a6_device_state* state, const uint8_t* val,
-		       uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_u16_hex(const struct a6_device_state *state, const uint8_t *val,
+		       uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
-	uint16_t conv_val = *(uint16_t*)val;
+	uint16_t conv_val = *(uint16_t *)val;
 
 	ret = scnprintf(fmt_buffer, size_buffer, "0x%04hx\n", conv_val);
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "u16_hex: %s\n", fmt_buffer);
 	return ret;
 }
 
-int32_t format_max_power_available(const struct a6_device_state* state, const uint8_t* val,
-				   uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_max_power_available(const struct a6_device_state *state, const uint8_t *val,
+				   uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
-	uint32_t vnode_max_val = *(uint16_t*)val;
-	uint32_t inode_max_val = *(uint16_t*)(val+2);
+	uint32_t vnode_max_val = *(uint16_t *)val;
+	uint32_t inode_max_val = *(uint16_t *)(val+2);
 	uint32_t power_val     = *(val+4);
 	uint32_t conv_val;
 
@@ -2413,22 +2376,21 @@ int32_t format_max_power_available(const struct a6_device_state* state, const ui
 	return ret;
 }
 
-int32_t format_accessory_combo(const struct a6_device_state* state, const uint8_t* val,
-			       uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_accessory_combo(const struct a6_device_state *state, const uint8_t *val,
+			       uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 
 	ret = scnprintf(fmt_buffer, size_buffer,
-			"0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x "
-			"0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x \n",
+			"0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\n",
 			val[0], val[1], val[2], val[3], val[4], val[5], val[6], val[7],
 			val[8], val[9], val[10], val[11], val[12], val[13], val[14], val[15]);
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "%s", fmt_buffer);
 	return ret;
 }
 
-int32_t format_serno_v1(const struct a6_device_state* state, const uint8_t* val,
-			       uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_serno_v1(const struct a6_device_state *state, const uint8_t *val,
+			       uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 
@@ -2438,8 +2400,8 @@ int32_t format_serno_v1(const struct a6_device_state* state, const uint8_t* val,
 	return ret;
 }
 
-int32_t format_serno_v2(const struct a6_device_state* state, const uint8_t* val,
-			uint8_t* fmt_buffer, uint32_t size_buffer)
+int32_t format_serno_v2(const struct a6_device_state *state, const uint8_t *val,
+			uint8_t *fmt_buffer, uint32_t size_buffer)
 {
 	int32_t ret;
 
@@ -2454,13 +2416,13 @@ static ssize_t a6_generic_show(struct device *dev, struct device_attribute *attr
 	struct i2c_client *client = to_i2c_client(dev);
 	int32_t ret = 0, i = 0;
 	uint8_t vals[id_size];
-	struct a6_register_desc* reg_desc;
-	struct a6_device_state* state = i2c_get_clientdata(client);
+	struct a6_register_desc *reg_desc;
+	struct a6_device_state *state = i2c_get_clientdata(client);
 
 	// critsec for manipulating flags
 	ret = mutex_lock_interruptible(&state->dev_mutex);
 	if (ret) {
-		printk(KERN_ERR "%s: mutex_lock_interruptible interrupted(1)\n", __func__);
+		pr_err("%s: mutex_lock_interruptible interrupted(1)\n", __func__);
 		return -ERESTARTSYS;
 	}
 
@@ -2481,7 +2443,7 @@ static ssize_t a6_generic_show(struct device *dev, struct device_attribute *attr
 		ret = wait_event_interruptible_timeout(state->dev_busyq,
 				!test_bit(BOOTLOAD_ACTIVE_BIT, state->flags), 300*HZ);
 		if (!ret) {
-			printk(KERN_ERR "%s: wait on device busy timed-out/interrupted\n", __func__);
+			pr_err("%s: wait on device busy timed-out/interrupted\n", __func__);
 			// reset busy state
 			clear_bit(DEVICE_BUSY_BIT, state->flags);
 			// and continue...
@@ -2490,7 +2452,7 @@ static ssize_t a6_generic_show(struct device *dev, struct device_attribute *attr
 		// we're about to manipulate flags again: acquire critsec
 		ret = mutex_lock_interruptible(&state->dev_mutex);
 		if (ret) {
-			printk(KERN_ERR "%s: mutex_lock_interruptible interrupted(2)\n", __func__);
+			pr_err("%s: mutex_lock_interruptible interrupted(2)\n", __func__);
 			return -ERESTARTSYS;
 		}
 	}
@@ -2504,25 +2466,25 @@ static ssize_t a6_generic_show(struct device *dev, struct device_attribute *attr
 
 	memset(vals, 0, sizeof(vals));
 	ret = a6_i2c_read_reg(client, reg_desc->id, reg_desc->num_ids, vals);
-	if (ret < 0) {
+	if (ret < 0)
 		goto err0;
-	}
 
 	if (reg_desc->format) {
 		ret = reg_desc->format(state, vals, buf, PAGE_SIZE);
-	}
-	else {
-		/* if output restricted to 2 8-bit values, show as int16_t
-		   (common case of msb+lsb retrieval) */
-		if (2 == reg_desc->num_ids) {
-			ret = scnprintf(buf, PAGE_SIZE, "%d\n", *(int16_t*)vals);
-		}
-		/* if output > or < 2 8-bit values, show as
+	} else {
+		/*
+		 * if output restricted to 2 8-bit values, show as int16_t
+		 * (common case of msb+lsb retrieval)
+		 */
+		if (reg_desc->num_ids == 2)
+			ret = scnprintf(buf, PAGE_SIZE, "%d\n", *(int16_t *)vals);
+		/*
+		 * if output > or < 2 8-bit values, show as
 		 * space-delimited list of int8_t values
 		 */
 		else {
 			i = ret = 0;
-			while(i < reg_desc->num_ids) {
+			while (i < reg_desc->num_ids) {
 				ret += scnprintf(buf+ret, PAGE_SIZE-ret, "%d ", (int8_t)vals[i]);
 				i++;
 			}
@@ -2551,15 +2513,13 @@ static ssize_t a6_generic_show(struct device *dev, struct device_attribute *attr
 #endif
 
 err0:
-	// reset busy state
+	/* reset busy state */
 	mutex_lock(&state->dev_mutex);
-	// decrement busy refcount
-	if (state->busy_count) {
+	/* decrement busy refcount */
+	if (state->busy_count)
 		state->busy_count--;
-	}
-	if (!state->busy_count) {
+	if (!state->busy_count)
 		clear_bit(DEVICE_BUSY_BIT, state->flags);
-	}
 	mutex_unlock(&state->dev_mutex);
 	wake_up_interruptible(&state->dev_busyq);
 
@@ -2581,13 +2541,13 @@ static ssize_t a6_generic_store(struct device *dev, struct device_attribute *att
 	char *endp = NULL, *bufp;
 	uint16_t parsed_vals[id_size];
 	uint8_t in_vals[id_size];
-	struct a6_register_desc* reg_desc;
-	struct a6_device_state* state = i2c_get_clientdata(client);
+	struct a6_register_desc *reg_desc;
+	struct a6_device_state *state = i2c_get_clientdata(client);
 
 	// critsec for manipulating flags
 	ret = mutex_lock_interruptible(&state->dev_mutex);
 	if (ret) {
-		printk(KERN_ERR "%s: mutex_lock_interruptible interrupted(1)\n", __func__);
+		pr_err("%s: mutex_lock_interruptible interrupted(1)\n", __func__);
 		return -ERESTARTSYS;
 	}
 
@@ -2608,7 +2568,7 @@ static ssize_t a6_generic_store(struct device *dev, struct device_attribute *att
 		ret = wait_event_interruptible_timeout(state->dev_busyq,
 				!test_bit(BOOTLOAD_ACTIVE_BIT, state->flags), 300*HZ);
 		if (!ret) {
-			printk(KERN_ERR "%s: wait on device busy timed-out/interrupted\n", __func__);
+			pr_err("%s: wait on device busy timed-out/interrupted\n", __func__);
 			// reset busy state
 			clear_bit(DEVICE_BUSY_BIT, state->flags);
 			// and continue...
@@ -2617,7 +2577,7 @@ static ssize_t a6_generic_store(struct device *dev, struct device_attribute *att
 		// we're about to manipulate flags again: acquire critsec
 		ret = mutex_lock_interruptible(&state->dev_mutex);
 		if (ret) {
-			printk(KERN_ERR "%s: mutex_lock_interruptible interrupted(2)\n", __func__);
+			pr_err("%s: mutex_lock_interruptible interrupted(2)\n", __func__);
 			return -ERESTARTSYS;
 		}
 	}
@@ -2630,13 +2590,10 @@ static ssize_t a6_generic_store(struct device *dev, struct device_attribute *att
 	reg_desc = container_of(attr, struct a6_register_desc, dev_attr);
 	num_ids = reg_desc->num_ids;
 
-	if (reg_desc->r_format)
-	{
+	if (reg_desc->r_format) {
 		ret = reg_desc->r_format(state, buf, in_vals, count);
-	}
-	else
-	{
-		bufp = (char*)buf;
+	} else {
+		bufp = (char *)buf;
 		val_cnt = 0;
 		do {
 			// let strtoul perform base determination (handles '0x' and '0' prefixes) ...
@@ -2649,38 +2606,35 @@ static ssize_t a6_generic_store(struct device *dev, struct device_attribute *att
 
 			parsed_vals[val_cnt] = val;
 
-			// skip whitespace
-			while (*endp && isspace(*endp)) {
+			/* skip whitespace */
+			while (*endp && isspace(*endp))
 				endp++;
-			}
-			// reset for next iteration
+			/* reset for next iteration */
 			bufp = endp;
 		} while ((++val_cnt < num_ids) && ((endp - buf) < count));
 
-		// three levels of value count calidation:
-		// * if extra values: fail
-		// * if multiple values and does not match reg count specified: fail
-		// * if single value and reg count > 2: fail
+		/*
+		 * three levels of value count validation:
+		 * - if extra values: fail
+		 * - if multiple values and does not match reg count specified: fail
+		 * - if single value and reg count > 2: fail
+		 */
 		if (*endp) {
 			ret = -EINVAL;
 			goto err0;
-		}
-		else if (val_cnt > 1) {
+		} else if (val_cnt > 1) {
 			if (val_cnt != num_ids) {
 				ret = -EINVAL;
 				goto err0;
 			}
-		}
-		else {
-			if (num_ids > 2) {
-				ret = -EINVAL;
-				goto err0;
-			}
+		} else if (num_ids > 2) {
+			ret = -EINVAL;
+			goto err0;
 		}
 
 		// if multi-valued store or single-valued store to one reg: we constrain each
 		// value to reg size (8 bits)
-		if ((val_cnt > 1) || (1 == num_ids)) {
+		if ((val_cnt > 1) || (num_ids == 1)) {
 			for (i = 0; i < val_cnt; i++) {
 				if (parsed_vals[i] > 0xff) {
 					ret = -EINVAL;
@@ -2691,9 +2645,8 @@ static ssize_t a6_generic_store(struct device *dev, struct device_attribute *att
 			}
 		}
 		// single-valued store can be 8-bit or 16-bit (for msb+lsb)
-		else {
-			((uint16_t*)in_vals)[0] = ((uint16_t*)parsed_vals)[0];
-		}
+		else
+			((uint16_t *)in_vals)[0] = ((uint16_t *)parsed_vals)[0];
 	}
 
 #ifdef A6_DEBUG
@@ -2715,22 +2668,19 @@ static ssize_t a6_generic_store(struct device *dev, struct device_attribute *att
 #endif
 
 	ret = a6_i2c_write_reg(client, reg_desc->id, num_ids, in_vals);
-	if (ret < 0) {
+	if (ret < 0)
 		goto err0;
-	}
 
 	ret = count;
 
 err0:
-	// reset busy state
+	/* reset busy state */
 	mutex_lock(&state->dev_mutex);
-	// decrement busy refcount
-	if (state->busy_count) {
+	/* decrement busy refcount */
+	if (state->busy_count)
 		state->busy_count--;
-	}
-	if (!state->busy_count) {
+	if (!state->busy_count)
 		clear_bit(DEVICE_BUSY_BIT, state->flags);
-	}
 	mutex_unlock(&state->dev_mutex);
 	wake_up_interruptible(&state->dev_busyq);
 
@@ -2746,18 +2696,17 @@ static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *at
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	int32_t rc = 0, reloop = 0, failed = 0;
-	struct a6_device_state* state = i2c_get_clientdata(client);
+	struct a6_device_state *state = i2c_get_clientdata(client);
 	uint16_t cksum1, cksum2, cksum_cycles, cksum_errors;
 	struct a6_register_desc *reg_desc;
 	uint8_t vals[id_size];
 
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: enter\n", __func__);
 
 	// critsec for manipulating flags
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock interrupted\n", __func__);
+		pr_err("%s: mutex_lock interrupted\n", __func__);
 		return -EIO;
 	}
 
@@ -2772,7 +2721,7 @@ static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *at
 		rc = wait_event_interruptible_timeout(state->dev_busyq,
 				!test_bit(DEVICE_BUSY_BIT, state->flags), 300*HZ);
 		if (!rc) {
-			printk(KERN_ERR "%s: wait on device busy timed-out/interrupted\n", __func__);
+			pr_err("%s: wait on device busy timed-out/interrupted\n", __func__);
 			// reset busy state
 			clear_bit(DEVICE_BUSY_BIT, state->flags);
 			// and continue...
@@ -2781,7 +2730,7 @@ static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *at
 		// we're about to manipulate flags again: acquire critsec
 		rc = mutex_lock_interruptible(&state->dev_mutex);
 		if (rc) {
-			printk(KERN_ERR "%s: mutex_lock interrupted(2)\n", __func__);
+			pr_err("%s: mutex_lock interrupted(2)\n", __func__);
 			goto err0;
 		}
 	}
@@ -2798,7 +2747,7 @@ static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *at
 		vals[0] = TS2_I2C_COMMAND_FRAM_CHECKSUM_READ_1;
 		rc = a6_i2c_write_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			pr_err("%s: error writing reg: %s, id: 0x%x\n",
 			__func__, reg_desc->debug_name, reg_desc->id[0]);
 			break;
 		}
@@ -2808,7 +2757,7 @@ static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *at
 		memset(vals, 0, sizeof(vals));
 		rc = a6_i2c_read_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: error reading reg: %s, ids: 0x%x 0x%x\n",
+			pr_err("%s: error reading reg: %s, ids: 0x%x 0x%x\n",
 			__func__, reg_desc->debug_name, reg_desc->id[0], reg_desc->id[1]);
 			break;
 		}
@@ -2819,7 +2768,7 @@ static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *at
 		memset(vals, 0, sizeof(vals));
 		rc = a6_i2c_read_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: error reading reg: %s, ids: 0x%x 0x%x\n",
+			pr_err("%s: error reading reg: %s, ids: 0x%x 0x%x\n",
 			__func__, reg_desc->debug_name, reg_desc->id[0], reg_desc->id[1]);
 			break;
 		}
@@ -2830,7 +2779,7 @@ static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *at
 		vals[0] = TS2_I2C_COMMAND_FRAM_CHECKSUM_READ_2;
 		rc = a6_i2c_write_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			pr_err("%s: error writing reg: %s, id: 0x%x\n",
 			__func__, reg_desc->debug_name, reg_desc->id[0]);
 			break;
 		}
@@ -2840,7 +2789,7 @@ static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *at
 		memset(vals, 0, sizeof(vals));
 		rc = a6_i2c_read_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: error reading reg: %s, ids: 0x%x 0x%x\n",
+			pr_err("%s: error reading reg: %s, ids: 0x%x 0x%x\n",
 			__func__, reg_desc->debug_name, reg_desc->id[0], reg_desc->id[1]);
 			break;
 		}
@@ -2851,7 +2800,7 @@ static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *at
 		memset(vals, 0, sizeof(vals));
 		rc = a6_i2c_read_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: error reading reg: %s, ids: 0x%x 0x%x\n",
+			pr_err("%s: error reading reg: %s, ids: 0x%x 0x%x\n",
 			       __func__, reg_desc->debug_name, reg_desc->id[0], reg_desc->id[1]);
 			break;
 		}
@@ -2859,37 +2808,35 @@ static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *at
 
 		/* validate cksum */
 		if (reloop || !cksum1 || !cksum2 || (cksum1 != cksum2)) {
-			printk(KERN_ERR "A6 checksum (%s) validation failure:\n"
-					"cksum1: 0x%02hx; cksum2: 0x%02hx; cksum_cycles: 0x%02hx;"
-					" cksum_errors: 0x%02hx\n",
+			pr_err("A6 checksum (%s) validation failure:\n"
+					"cksum1: 0x%02x; cksum2: 0x%02x; cksum_cycles: 0x%02x;"
+					" cksum_errors: 0x%02x\n",
 					(!reloop) ? "first-stage" : "second-stage",
 					cksum1, cksum2, cksum_cycles, cksum_errors);
 			if (reloop) {
 				reloop--;
 				failed = 1;
-			}
-			else {
+			} else {
 				reloop++;
 			}
 		}
 	} while (reloop);
 
 	if (rc < 0) {
-		printk(KERN_ERR "%s: checksum retrieval enountered i2c errors: "
-				"fallback to sbw(jtag) access.\n", __func__);
-		get_checksum_data_sbw((struct a6_sbw_interface*)state->plat_data->sbw_ops, &cksum1,
+		pr_err("%s: checksum retrieval enountered i2c errors: fallback to sbw(jtag) access.\n",
+				__func__);
+		get_checksum_data_sbw((struct a6_sbw_interface *)state->plat_data->sbw_ops, &cksum1,
 				       &cksum2, &cksum_cycles, &cksum_errors);
 	}
 
 	/* validate cksum */
 	if (failed || !cksum1 || !cksum2 || (cksum1 != cksum2)) {
-		printk(KERN_ERR "A6 checksum validation failed:\n"
-				"cksum1: 0x%02hx; cksum2: 0x%02hx; cksum_cycles: 0x%02hx;"
-				" cksum_errors: 0x%02hx\n",
+		pr_err("A6 checksum validation failed:\n"
+				"cksum1: 0x%02x; cksum2: 0x%02x; cksum_cycles: 0x%02x;"
+				" cksum_errors: 0x%02x\n",
 				cksum1, cksum2, cksum_cycles, cksum_errors);
 		rc = snprintf(buf, PAGE_SIZE, "%d\n", 0);
-	}
-	else {
+	} else {
 		rc = snprintf(buf, PAGE_SIZE, "%d\n", 1);
 	}
 
@@ -2904,7 +2851,7 @@ err0:
 }
 
 
-static char* activation_strlist[] = {
+static char *activation_strlist[] = {
 	[ACTIVATE_EXTRACT] = "extract",
 	[NONE] = "none"
 };
@@ -2914,22 +2861,19 @@ static ssize_t a6_diag_store(struct device *dev, struct device_attribute *attr, 
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	int32_t rc = 0, ret_val, action_i = 0;
-	struct a6_device_state* state = i2c_get_clientdata(client);
+	struct a6_device_state *state = i2c_get_clientdata(client);
 	bool skip = false;
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: enter\n", __func__);
 
-	action_i = (sizeof(activation_strlist)/sizeof(char*));
+	action_i = (sizeof(activation_strlist)/sizeof(char *));
 	do {
-		if (0 == strncmp(buf, activation_strlist[action_i-1],
-		    strlen(activation_strlist[action_i-1]))) {
+		if (strncmp(buf, activation_strlist[action_i-1],
+		    strlen(activation_strlist[action_i-1])) == 0)
 			break;
-		}
-	} while(action_i--);
+	} while (action_i--);
 
-	if (!action_i) {
+	if (!action_i)
 		return -EINVAL;
-	}
 
 	// store the action index
 	action_i--;
@@ -2937,7 +2881,7 @@ static ssize_t a6_diag_store(struct device *dev, struct device_attribute *attr, 
 	// critsec for manipulating flags
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock interrupted\n", __func__);
+		pr_err("%s: mutex_lock interrupted\n", __func__);
 		return -EIO;
 	}
 
@@ -2952,7 +2896,7 @@ static ssize_t a6_diag_store(struct device *dev, struct device_attribute *attr, 
 		rc = wait_event_interruptible_timeout(state->dev_busyq,
 				!test_bit(DEVICE_BUSY_BIT, state->flags), 300*HZ);
 		if (!rc) {
-			printk(KERN_ERR "%s: wait on device busy timed-out/interrupted\n", __func__);
+			pr_err("%s: wait on device busy timed-out/interrupted\n", __func__);
 			// reset busy state
 			clear_bit(DEVICE_BUSY_BIT, state->flags);
 			// and continue...
@@ -2961,106 +2905,94 @@ static ssize_t a6_diag_store(struct device *dev, struct device_attribute *attr, 
 		// we're about to manipulate flags again: acquire critsec
 		rc = mutex_lock_interruptible(&state->dev_mutex);
 		if (rc) {
-			printk(KERN_ERR "%s: mutex_lock interrupted(2)\n", __func__);
+			pr_err("%s: mutex_lock interrupted(2)\n", __func__);
 			goto err0;
 		}
 	}
 
-	if (ACTIVATE_EXTRACT == action_i) {
-		if (test_bit(EXTRACT_INITIATED, state->flags)) {
+	if (action_i == ACTIVATE_EXTRACT) {
+		if (test_bit(EXTRACT_INITIATED, state->flags))
 			skip = true;
-		}
 		else {
 			ret_val = test_and_set_bit(BOOTLOAD_ACTIVE_BIT, state->flags);
 			ASSERT(!ret_val);
 			ret_val = test_and_set_bit(EXTRACT_INITIATED, state->flags);
 			ASSERT(!ret_val);
 		}
-	}
-	else if (NONE == action_i) {
-		if (!(test_bit(EXTRACT_INITIATED, state->flags))) {
+	} else if (action_i == NONE) {
+		if (!test_bit(EXTRACT_INITIATED, state->flags))
 			skip = true;
-		}
-	}
-	else {
-		// invalid
 	}
 
 	// we're done with flags: exit critsec
 	mutex_unlock(&state->dev_mutex);
 
-	if (true == skip) goto err0;
-	
-	if (ACTIVATE_EXTRACT == action_i) {
+	if (true == skip)
+		goto err0;
+
+	if (action_i == ACTIVATE_EXTRACT) {
 		// reset force-wake state to always force wake on first i2c txn
 		// after pmem extraction
-		del_timer(&state->a6_force_wake_timer);
+		timer_delete(&state->a6_force_wake_timer);
 		mutex_lock(&state->a6_force_wake_mutex);
-		if (test_bit(CAP_PERIODIC_WAKE, state->flags)) {
+		if (test_bit(CAP_PERIODIC_WAKE, state->flags))
 			clear_bit(FORCE_WAKE_ACTIVE_BIT, state->flags);
-		}
 		mutex_unlock(&state->a6_force_wake_mutex);
 
 		// start pmem extract
-		printk(KERN_ERR "%s: starting ttf_extract.\n", __func__);
-		rc = ttf_extract_fw_sbw((struct a6_sbw_interface*)state->plat_data->sbw_ops);
+		pr_err("%s: starting ttf_extract.\n", __func__);
+		rc = ttf_extract_fw_sbw((struct a6_sbw_interface *)state->plat_data->sbw_ops);
 		if (rc) {
-			printk(KERN_ERR "Failed to ttf_extract a6 pmem.\n");
+			pr_err("Failed to ttf_extract a6 pmem.\n");
 			goto err0;
-		}
-		else {	
-			printk(KERN_ERR "A6: Completed ttf_extract a6 pmem.\n");
+		} else {
+			pr_err("A6: Completed ttf_extract a6 pmem.\n");
 			// wait for the A6 to boot...
 			msleep(3000);
 			// - re-init state
 			// - if init fails: ignore
 			a6_init_state(state->i2c_dev);
 		}
-	}
-	else if (NONE == action_i) {
-		printk(KERN_ERR "%s: clearing ttf_extract cache.\n", __func__);
+	} else if (action_i == NONE) {
+		pr_err("%s: clearing ttf_extract cache.\n", __func__);
 		rc = ttf_extract_cache_clear();
-	}
-	else {
+	} else {
 		// invalid
 	}
 
 err0:
 	mutex_lock(&state->dev_mutex);
-	if (false == skip) {
-		if (rc || NONE == action_i) {
-			if (test_bit(EXTRACT_INITIATED, state->flags)) {
+	if (!skip) {
+		if (rc || action_i == NONE) {
+			if (test_bit(EXTRACT_INITIATED, state->flags))
 				clear_bit(EXTRACT_INITIATED, state->flags);
-			}
 		}
-		if (test_bit(BOOTLOAD_ACTIVE_BIT, state->flags)) {
+		if (test_bit(BOOTLOAD_ACTIVE_BIT, state->flags))
 			clear_bit(BOOTLOAD_ACTIVE_BIT, state->flags);
-		}
 	}
 	clear_bit(DEVICE_BUSY_BIT, state->flags);
 	mutex_unlock(&state->dev_mutex);
 	wake_up_interruptible(&state->dev_busyq);
 
-	return (rc ? rc : count);
+	return rc ? rc : count;
 }
 
 static ssize_t a6_diag_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	int32_t rc = 0;
-	struct a6_device_state* state = i2c_get_clientdata(client);
+	struct a6_device_state *state = i2c_get_clientdata(client);
 
-	
+
 	mutex_lock(&state->dev_mutex);
-	if (test_bit(EXTRACT_INITIATED, state->flags)) {
+	if (test_bit(EXTRACT_INITIATED, state->flags))
 		rc = snprintf(buf, PAGE_SIZE, "%s\n", activation_strlist[ACTIVATE_EXTRACT]);
-	}
 	mutex_unlock(&state->dev_mutex);
 
 	return rc;
 }
 
-static int32_t a6_create_dev_files(struct a6_device_state* state, struct device* dev)
+static int32_t a6_create_dev_files(struct a6_device_state *state, struct device *dev)
 {
 	int32_t rc = 0, reg_cnt = sizeof(a6_register_desc_arr)/sizeof(struct a6_register_desc);
 	int32_t idx = 0, cust_idx = 0;
@@ -3068,7 +3000,7 @@ static int32_t a6_create_dev_files(struct a6_device_state* state, struct device*
 	for (idx = 0; idx < reg_cnt; idx++) {
 		rc = device_create_file(dev, &a6_register_desc_arr[idx].dev_attr);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: failed to create dev_attr file for %s.\n",
+			pr_err("%s: failed to create dev_attr file for %s.\n",
 			       __func__, a6_register_desc_arr[idx].dev_attr.attr.name);
 			goto err0;
 		}
@@ -3078,80 +3010,73 @@ static int32_t a6_create_dev_files(struct a6_device_state* state, struct device*
 	for (cust_idx = 0; cust_idx < reg_cnt; cust_idx++) {
 		rc = device_create_file(dev, &custom_devattr[cust_idx]);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: failed to create dev_attr file for %s.\n",
+			pr_err("%s: failed to create dev_attr file for %s.\n",
 			       __func__, custom_devattr[cust_idx].attr.name);
 			goto err0;
 		}
 	}
 
 	rc = sysfs_create_link(&state->mdev.this_device->kobj, &dev->kobj, "regs");
-	if (rc) {
-		printk(KERN_ERR "%s: error in creating symlink.\n", __func__);
-	}
+	if (rc)
+		pr_err("%s: error in creating symlink.\n", __func__);
 
 	return 0;
 
 err0:
-	// error: cleanup files already created.
-	for (idx--; idx >= 0; idx--) {
+	/* error: cleanup files already created. */
+	for (idx--; idx >= 0; idx--)
 		device_remove_file(dev, &a6_register_desc_arr[idx].dev_attr);
-	}
-	for (cust_idx--; cust_idx >= 0; cust_idx--) {
+	for (cust_idx--; cust_idx >= 0; cust_idx--)
 		device_remove_file(dev, &custom_devattr[cust_idx]);
-	}
 	return rc;
-
 }
 
-static void a6_remove_dev_files(struct a6_device_state* state, struct device* dev)
+static void a6_remove_dev_files(struct a6_device_state *state, struct device *dev)
 {
-	int32_t reg_cnt = sizeof(a6_register_desc_arr)/sizeof(struct a6_register_desc);
+	int32_t reg_cnt = sizeof(a6_register_desc_arr) / sizeof(struct a6_register_desc);
 	int32_t idx;
 
-	for (idx = 0; idx < reg_cnt; idx++) {
+	for (idx = 0; idx < reg_cnt; idx++)
 		device_remove_file(dev, &a6_register_desc_arr[idx].dev_attr);
-	}
 
-	reg_cnt = sizeof(custom_devattr)/sizeof(struct device_attribute);
-	for (idx = 0; idx < reg_cnt; idx++) {
+	reg_cnt = sizeof(custom_devattr) / sizeof(struct device_attribute);
+	for (idx = 0; idx < reg_cnt; idx++)
 		device_remove_file(dev, &custom_devattr[idx]);
-	}
 }
 
-typedef enum {
+enum a6_pgm_thread_op {
 	A6_PROGAM_AND_VERIFY_FW = 1,
 	A6_VERIFY_FW
-} a6_pgm_thread_op;
+};
 
 struct a6_pgm_thread_params {
-	struct a6_sbw_interface* sbw_ops;
+	struct a6_sbw_interface *sbw_ops;
 	uint32_t buffer_p;
 	int32_t ret_code;
-	a6_pgm_thread_op op;
+	enum a6_pgm_thread_op op;
 	struct completion a6_flash_thread_nice;
 	struct completion a6_flash_thread_exit;
 };
 
-static int a6_pgm_thread_fn(void* param)
+static int a6_pgm_thread_fn(void *param)
 {
 	int32_t ret_val;
 
-	struct a6_pgm_thread_params* t_p = (struct a6_pgm_thread_params*)param;
+	struct a6_pgm_thread_params *t_p = (struct a6_pgm_thread_params *)param;
 
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: buffer_p val: 0x%x\n", __func__, t_p->buffer_p);
 
 	// wait for parent re-nice completion...
 	ret_val = wait_for_completion_interruptible(&t_p->a6_flash_thread_nice);
 	if (-ERESTARTSYS == ret_val) {
-		printk(KERN_ERR "A6: waiting for parent re-nice completion interrupted.\n");
+		pr_err("A6: waiting for parent re-nice completion interrupted.\n");
 		t_p->ret_code = -EINTR;
 		goto err0;
 	}
 
-	if (A6_PROGAM_AND_VERIFY_FW == t_p->op) {
+	if (t_p->op == A6_PROGAM_AND_VERIFY_FW) {
 		ret_val = program_device_sbw(t_p->sbw_ops, t_p->buffer_p);
-	}
-	else {
+	} else {
 		ret_val = verify_device_sbw(t_p->sbw_ops, t_p->buffer_p);
 		// ignore error returns for the moment as the verification fn
 		// does not differentiate between code and r/w data sections.
@@ -3160,9 +3085,8 @@ static int a6_pgm_thread_fn(void* param)
 		// section map for the verification code.
 		ret_val = 0;
 	}
-	if (ret_val) {
+	if (ret_val)
 		t_p->ret_code = -EINVAL;
-	}
 
 	// signal thread completion
 	complete(&t_p->a6_flash_thread_exit);
@@ -3174,17 +3098,17 @@ err0:
 static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 {
 	int32_t rc = 0;
-	struct a6_device_state* state = file->private_data;
-	void* usr_ptr   = (void*)args;
+	struct a6_device_state *state = file->private_data;
+	void *usr_ptr   = (void *)args;
 	//uint32_t usr_bytes = _IOC_SIZE(cmd);
-	//uint32_t usr_val = 0x0;
+	//uint32_t usr_val ;
 
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: cmd: %d\n", __func__, _IOC_NR(cmd));
 
 	// critsec for manipulating flags
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock interrupted(1)\n", __func__);
+		pr_err("%s: mutex_lock interrupted(1)\n", __func__);
 		return -ERESTARTSYS;
 	}
 
@@ -3197,9 +3121,9 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 
 		// busy bit set? wait to be cleared (at least 3 seconds: in jiffies)
 		rc = wait_event_interruptible_timeout(state->dev_busyq,
-		                                      !test_bit(DEVICE_BUSY_BIT, state->flags), 3*HZ);
+						      !test_bit(DEVICE_BUSY_BIT, state->flags), 3*HZ);
 		if (!rc) {
-			printk(KERN_ERR "%s: wait on device busy timed-out/interrupted\n", __func__);
+			pr_err("%s: wait on device busy timed-out/interrupted\n", __func__);
 			// reset busy state
 			clear_bit(DEVICE_BUSY_BIT, state->flags);
 			// and continue...
@@ -3208,7 +3132,7 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 		// we're about to manipulate flags again: acquire critsec
 		rc = mutex_lock_interruptible(&state->dev_mutex);
 		if (rc) {
-			printk(KERN_ERR "%s: mutex_lock interrupted(2)\n", __func__);
+			pr_err("%s: mutex_lock interrupted(2)\n", __func__);
 			return -ERESTARTSYS;
 		}
 	}
@@ -3216,6 +3140,7 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 	// bootload request: set flag in critsec
 	if (A6_IOCTL_SET_FW_DATA == cmd || A6_IOCTL_VERIFY_FW_DATA == cmd) {
 		int32_t ret_val;
+
 		ret_val = test_and_set_bit(BOOTLOAD_ACTIVE_BIT, state->flags);
 		ASSERT(!ret_val);
 	}
@@ -3224,24 +3149,23 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 	mutex_unlock(&state->dev_mutex);
 
 	switch (cmd) {
-		case A6_IOCTL_SET_FW_DATA:
-		case A6_IOCTL_VERIFY_FW_DATA:
-		{
+	case A6_IOCTL_SET_FW_DATA:
+	case A6_IOCTL_VERIFY_FW_DATA:
+	{
 			uint8_t *buffer_p = NULL;
 			uint32_t payload_size = 0;
-			struct a6_sbw_interface* sbw_ops =
-					(struct a6_sbw_interface*)state->plat_data->sbw_ops;
-			uint8_t* a6_fw_buffer;
-			struct task_struct* pgm_worker_task;
+			struct a6_sbw_interface *sbw_ops =
+					(struct a6_sbw_interface *)state->plat_data->sbw_ops;
+			uint8_t *a6_fw_buffer;
+			struct task_struct *pgm_worker_task;
 			struct a6_pgm_thread_params t_params;
 
 			// reset force-wake state to always force wake on first i2c txn
 			// after flashing/verification
-			del_timer(&state->a6_force_wake_timer);
+			timer_delete(&state->a6_force_wake_timer);
 			mutex_lock(&state->a6_force_wake_mutex);
-			if (test_bit(CAP_PERIODIC_WAKE, state->flags)) {
+			if (test_bit(CAP_PERIODIC_WAKE, state->flags))
 				clear_bit(FORCE_WAKE_ACTIVE_BIT, state->flags);
-			}
 			mutex_unlock(&state->a6_force_wake_mutex);
 
 			// copy payload ptr from ioctl parameter
@@ -3252,7 +3176,7 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "buffer_p val: 0x%p\n", buffer_p);
 
 			// copy payload size from ioctl parameter
-			if (copy_from_user(&payload_size, (uint8_t*)usr_ptr + sizeof(uint32_t), sizeof(payload_size))) {
+			if (copy_from_user(&payload_size, (uint8_t *)usr_ptr + sizeof(uint32_t), sizeof(payload_size))) {
 				rc = -EFAULT;
 				break;
 			}
@@ -3260,9 +3184,8 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "payload_size: %d\n", payload_size);
 
 			// alloc kernel buffer for payload
-			a6_fw_buffer = (uint8_t*)kmalloc(payload_size, GFP_KERNEL);
+			a6_fw_buffer = kmalloc(payload_size, GFP_KERNEL);
 			if (!a6_fw_buffer) {
-				printk(KERN_ERR "A6: failed to allocate fw buffer.\n");
 				rc = -ENOMEM;
 				break;
 			}
@@ -3274,7 +3197,7 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 				break;
 			}
 
-			printk(KERN_ERR "A6: Starting flashing sequence.\n");
+			pr_err("A6: Starting flashing sequence.\n");
 			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "A6: parent task nice value: %d\n",
 				   task_nice(current));
 
@@ -3284,14 +3207,14 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 			t_params.sbw_ops = sbw_ops;
 			t_params.buffer_p = (uint32_t)a6_fw_buffer;
 			t_params.ret_code = 0;
-			t_params.op = (A6_IOCTL_SET_FW_DATA == cmd) ?
+			t_params.op = (cmd == A6_IOCTL_SET_FW_DATA) ?
 					A6_PROGAM_AND_VERIFY_FW : A6_VERIFY_FW;
 
 			// create worker task...
 			pgm_worker_task = kthread_run(a6_pgm_thread_fn, &t_params,
 						      "a6_pgm_%s", state->plat_data->dev_name);
 			if (IS_ERR(pgm_worker_task)) {
-				printk(KERN_ERR "A6: failed to create pgm worker task.\n");
+				pr_err("A6: failed to create pgm worker task.\n");
 				rc = PTR_ERR(pgm_worker_task);
 				pgm_worker_task = NULL;
 				break;
@@ -3317,56 +3240,50 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 			kfree(a6_fw_buffer);
 
 			if (-ERESTARTSYS == rc) {
-				printk(KERN_ERR "A6: waiting for pgm worker start interrupted.\n");
+				pr_err("A6: waiting for pgm worker start interrupted.\n");
 				break;
 			}
 
 			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "A6: pgm worker task exit code: %d\n",
 				   t_params.ret_code);
 			if (t_params.ret_code) {
-				printk(KERN_ERR "A6: Failed to completed flashing sequence. ret: %d\n",
+				pr_err("A6: Failed to completed flashing sequence. ret: %d\n",
 				       t_params.ret_code);
 				// propagate error to caller...
 				rc = t_params.ret_code;
-			}
-			else {
-				printk(KERN_ERR "A6: Completed flashing sequence.\n");
+			} else {
+				pr_err("A6: Completed flashing sequence.\n");
 				// wait for the A6 to boot...
 				msleep(3000);
 				// - flashing fw forces a device power-up sequence: re-init state
 				// - if init fails: treat as fw flash failure by returning rc
 				rc = a6_init_state(state->i2c_dev);
-				if (rc < 0) {
-					printk(KERN_ERR "%s: failed to initialize, err: %d\n", A6_DRIVER, rc);
-				}
+				if (rc < 0)
+					pr_err("%s: failed to initialize, err: %d\n", A6_DRIVER, rc);
 			}
 
 			mutex_lock(&state->dev_mutex);
 			clear_bit(BOOTLOAD_ACTIVE_BIT, state->flags);
 			mutex_unlock(&state->dev_mutex);
-		}
-		break;
+	}
+	break;
 
-		default:
-		{
-			rc = -EINVAL;
-		}
-		break;
+	default:
+	{
+		rc = -EINVAL;
+	}
+	break;
 	}
 
 
 //Done:
 	mutex_lock(&state->dev_mutex);
 	if (rc) {
-		if (test_bit(BOOTLOAD_ACTIVE_BIT, state->flags)) {
+		if (test_bit(BOOTLOAD_ACTIVE_BIT, state->flags))
 			clear_bit(BOOTLOAD_ACTIVE_BIT, state->flags);
-		}
 		clear_bit(DEVICE_BUSY_BIT, state->flags);
-	}
-	else {
-		if (!test_bit(BOOTLOAD_ACTIVE_BIT, state->flags)) {
-			clear_bit(DEVICE_BUSY_BIT, state->flags);
-		}
+	} else if (!test_bit(BOOTLOAD_ACTIVE_BIT, state->flags)) {
+		clear_bit(DEVICE_BUSY_BIT, state->flags);
 	}
 	mutex_unlock(&state->dev_mutex);
 
@@ -3377,20 +3294,11 @@ static long a6_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 
 static int a6_open(struct inode *inode, struct file *file)
 {
-	struct a6_device_state* state;
+	struct miscdevice *mdev = file->private_data;
+	struct a6_device_state *state;
 
-	/* get device */
-	state = container_of(file->f_op, struct a6_device_state, fops);
-
-	/* Allow only read. */
-	//if ((file->f_mode & (FMODE_READ|FMODE_WRITE)) != FMODE_READ) {
-	//	    return -EINVAL;
-	//}
-
-	///* check if it is in use */
-	//if (test_and_set_bit(IS_OPENED, state->flags)) {
-	//	return -EBUSY;
-	//}
+	/* get device from miscdevice */
+	state = container_of(mdev, struct a6_device_state, mdev);
 
 	/* attach private data */
 	file->private_data = state;
@@ -3400,11 +3308,7 @@ static int a6_open(struct inode *inode, struct file *file)
 
 static int a6_close(struct inode *inode, struct file *file)
 {
-	struct a6_device_state* state = (struct  a6_device_state*) file->private_data;
-
-	state = state;
-	///* mark it as unused */
-	//clear_bit(IS_OPENED, state->flags);
+	(void)file;
 
 	return 0;
 }
@@ -3416,12 +3320,12 @@ struct a2a_dgram_hdr {
 	uint16_t cksum;
 };
 
-static ssize_t a6_read(struct file *file, char __user *buf, size_t count, loff_t *ppos )
+static ssize_t a6_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
 # define A2A_RX_MISS_THRESHOLD (300)
 
 	ssize_t rc = 0;
-	struct a6_device_state* state;
+	struct a6_device_state *state;
 	struct a6_register_desc *reg_desc_comm_status, *reg_desc_comm_rxtx;
 	uint8_t vals[id_size];
 	int32_t miss_count, rd_count;
@@ -3429,31 +3333,28 @@ static ssize_t a6_read(struct file *file, char __user *buf, size_t count, loff_t
 	uint32_t start_time;
 	uint8_t elt_val = 0, prev_byte;
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: enter\n", __func__);
 
 	start_time = jiffies;
 	/* input validations */
-	if (!count) {
+	if (!count)
 		return -EINVAL;
-	}
-	else if (count > A2A_RD_BUFF_SIZE) {
+	else if (count > A2A_RD_BUFF_SIZE)
 		return -EFBIG;
-	}
 
 	/* get state */
-	state = container_of(file->f_op, struct a6_device_state, fops);
+	state = file->private_data;
 
 	// acquire critsec
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock interrupted.\n", __func__);
+		pr_err("%s: mutex_lock interrupted.\n", __func__);
 		return -ERESTARTSYS;
 	}
 
 	/* not connected? exit */
 	if (!test_bit(A2A_CONNECTED, state->flags)) {
 		mutex_unlock(&state->dev_mutex);
-		printk(KERN_ERR "%s: no a2a connection detected.\n", __func__);
+		pr_err("%s: no a2a connection detected.\n", __func__);
 		return -EINVAL;
 	}
 
@@ -3461,7 +3362,7 @@ static ssize_t a6_read(struct file *file, char __user *buf, size_t count, loff_t
 	if (test_and_set_bit(READ_ACTIVE_BIT, state->flags)) {
 		// yes: get on a waitq
 		mutex_unlock(&state->dev_mutex);
-		printk(KERN_ERR "%s: re-entrant call disallowed.\n", __func__);
+		pr_err("%s: re-entrant call disallowed.\n", __func__);
 		return -EINVAL;
 	}
 
@@ -3480,19 +3381,17 @@ static ssize_t a6_read(struct file *file, char __user *buf, size_t count, loff_t
 		rc = a6_i2c_read_reg(state->i2c_dev, reg_desc_comm_status->id,
 				     reg_desc_comm_status->num_ids, vals);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: error reading reg: %s, id: 0x%x\n",
+			pr_err("%s: error reading reg: %s, id: 0x%x\n",
 			       __func__, reg_desc_comm_status->debug_name, reg_desc_comm_status->id[0]);
 			goto err0;
 		}
 
 		if (!(vals[0] & TS2_I2C_COMM_STATUS_RX_FULL)) {
 			if (++miss_count > A2A_RX_MISS_THRESHOLD) {
-				if (test_bit(A2A_CONNECTED, state->flags)) {
+				if (test_bit(A2A_CONNECTED, state->flags))
 					continue;
-				}
-				else {
+				else
 					break;
-				}
 			}
 			continue;
 		}
@@ -3503,7 +3402,7 @@ static ssize_t a6_read(struct file *file, char __user *buf, size_t count, loff_t
 		rc = a6_i2c_read_reg(state->i2c_dev, reg_desc_comm_rxtx->id,
 				      reg_desc_comm_rxtx->num_ids, vals);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			pr_err("%s: error writing reg: %s, id: 0x%x\n",
 			       __func__, reg_desc_comm_rxtx->debug_name, reg_desc_comm_rxtx->id[0]);
 			rc = -EIO;
 			goto err0;
@@ -3518,18 +3417,15 @@ static ssize_t a6_read(struct file *file, char __user *buf, size_t count, loff_t
 				if (vals[0] & 0x80) {
 					elt_val = _convert_hex_char_to_decimal(vals[0] & 0x7f) << 4;
 					continue;
-				}
-				else {
+				} else {
 					elt_val |= (_convert_hex_char_to_decimal(vals[0]) & 0x0f);
 				}
-			}
-			else {
-				printk(KERN_ERR "%s: t2s duplicate detected; char: 0x%02x.\n",
+			} else {
+				pr_err("%s: t2s duplicate detected; char: 0x%02x.\n",
 				       __func__, vals[0]);
 				continue;
 			}
-		}
-		else {
+		} else {
 			elt_val = vals[0];
 		}
 
@@ -3539,10 +3435,9 @@ static ssize_t a6_read(struct file *file, char __user *buf, size_t count, loff_t
 	} while (rd_count < count);
 
 	if (!rd_count) {
-		printk(KERN_ERR "%s: rx failed; A2A connection terminated.\n", __func__);
+		pr_err("%s: rx failed; A2A connection terminated.\n", __func__);
 		rc = -EINVAL;
-	}
-	else {
+	} else {
 		long diff_time;
 
 		if (copy_to_user(buf, state->a2a_rd_buf, rd_count)) {
@@ -3551,23 +3446,22 @@ static ssize_t a6_read(struct file *file, char __user *buf, size_t count, loff_t
 		}
 		rc = rd_count;
 		diff_time = (long)jiffies - (long)start_time;
-		printk(KERN_ERR "%s: elapsed time: %ld ms; count: %u\n",
+		pr_err("%s: elapsed time: %ld ms; count: %u\n",
 		       __func__, diff_time * 1000/HZ, rd_count);
 	}
 
 
 err0:
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: exit\n", __func__);
 	clear_bit(READ_ACTIVE_BIT, state->flags);
 	return rc;
 }
 
-static ssize_t a6_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos )
+static ssize_t a6_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
 # define A2A_TX_MISS_THRESHOLD (300)
 
 	ssize_t rc = 0;
-	struct a6_device_state* state;
+	struct a6_device_state *state;
 	struct a6_register_desc *reg_desc_comm_status, *reg_desc_comm_rxtx;
 	uint8_t vals[id_size];
 	int32_t miss_count, wr_count;
@@ -3576,38 +3470,35 @@ static ssize_t a6_write(struct file *file, const char __user *buf, size_t count,
 	uint8_t elt_buf[2], *elt_bufp = NULL;
 	int elt_bufsize;
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: enter\n", __func__);
 
 	start_time = jiffies;
 	/* input validations */
-	if (!count) {
+	if (!count)
 		return -EINVAL;
-	}
-	else if (count > A2A_WR_BUFF_SIZE) {
+	else if (count > A2A_WR_BUFF_SIZE)
 		return -EFBIG;
-	}
 
 	/* get state */
-	state = container_of(file->f_op, struct a6_device_state, fops);
+	state = file->private_data;
 
 	// acquire critsec
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock interrupted.\n", __func__);
+		pr_err("%s: mutex_lock interrupted.\n", __func__);
 		return -ERESTARTSYS;
 	}
 
 	/* not connected? exit */
 	if (!test_bit(A2A_CONNECTED, state->flags)) {
 		mutex_unlock(&state->dev_mutex);
-		printk(KERN_ERR "%s: no a2a connection detected.\n", __func__);
+		pr_err("%s: no a2a connection detected.\n", __func__);
 		return -EINVAL;
 	}
 
 	// busy?
 	if (test_and_set_bit(WRITE_ACTIVE_BIT, state->flags)) {
 		mutex_unlock(&state->dev_mutex);
-		printk(KERN_ERR "%s: re-entrant call disallowed.\n", __func__);
+		pr_err("%s: re-entrant call disallowed.\n", __func__);
 		return -EINVAL;
 	}
 
@@ -3641,19 +3532,17 @@ static ssize_t a6_write(struct file *file, const char __user *buf, size_t count,
 		rc = a6_i2c_read_reg(state->i2c_dev, reg_desc_comm_status->id,
 				      reg_desc_comm_status->num_ids, vals);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: error reading reg: %s, id: 0x%x\n",
+			pr_err("%s: error reading reg: %s, id: 0x%x\n",
 			__func__, reg_desc_comm_status->debug_name, reg_desc_comm_status->id[0]);
 			goto err0;
 		}
 
 		if (!(vals[0] & TS2_I2C_COMM_STATUS_TX_EMPTY)) {
 			if (++miss_count > A2A_TX_MISS_THRESHOLD) {
-				if (test_bit(A2A_CONNECTED, state->flags)) {
+				if (test_bit(A2A_CONNECTED, state->flags))
 					continue;
-				}
-				else {
+				else
 					break;
-				}
 			}
 			continue;
 		}
@@ -3665,8 +3554,7 @@ static ssize_t a6_write(struct file *file, const char __user *buf, size_t count,
 				elt_bufsize = 2;
 				sprintf(elt_buf, "%02x", *state->a2a_wp);
 				elt_buf[0] |= 0x80;
-			}
-			else {
+			} else {
 				elt_bufsize = 1;
 				elt_buf[0] = *state->a2a_wp;
 			}
@@ -3675,7 +3563,7 @@ static ssize_t a6_write(struct file *file, const char __user *buf, size_t count,
 		rc = a6_i2c_write_reg(state->i2c_dev, reg_desc_comm_rxtx->id,
 				       reg_desc_comm_rxtx->num_ids, elt_bufp);
 		if (rc < 0) {
-			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			pr_err("%s: error writing reg: %s, id: 0x%x\n",
 			__func__, reg_desc_comm_rxtx->debug_name, reg_desc_comm_rxtx->id[0]);
 			rc = -EIO;
 			goto err0;
@@ -3692,34 +3580,33 @@ static ssize_t a6_write(struct file *file, const char __user *buf, size_t count,
 	} while (wr_count < count);
 
 	if (!wr_count) {
-		printk(KERN_ERR "%s: tx failed; A2A connection terminated.\n",
+		pr_err("%s: tx failed; A2A connection terminated.\n",
 		       __func__);
 		rc = -EIO;
 		goto err0;
-	}
-	else {
+	} else {
 		long diff_time;
+
 		rc = wr_count;
 		diff_time = (long)jiffies - (long)start_time;
-		printk(KERN_ERR "%s: elapsed time: %ld ms; count: %u\n", __func__,
+		pr_err("%s: elapsed time: %ld ms; count: %u\n", __func__,
 		       diff_time * 1000/HZ, wr_count);
 	}
 
 
 err0:
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: exit\n", __func__);
 	clear_bit(WRITE_ACTIVE_BIT, state->flags);
 	return rc;
 }
 
-static unsigned int a6_poll(struct file* file, struct poll_table_struct* wait)
+static unsigned int a6_poll(struct file *file, struct poll_table_struct *wait)
 {
 	unsigned int  mask = 0;
 
 	return mask;
 }
 
-struct file_operations a6_fops = {
+static const struct file_operations a6_fops = {
 	.owner   = THIS_MODULE,
 	.read    = a6_read,
 	.write    = a6_write,
@@ -3737,34 +3624,33 @@ struct file_operations a6_fops = {
  */
 static irqreturn_t a6_irq(int irq, void *dev_id)
 {
-	struct a6_device_state* state = (struct a6_device_state *)dev_id;
+	struct a6_device_state *state = (struct a6_device_state *)dev_id;
 
 	a6_tp_irq_count++;
 #if defined PROFILE_USAGE
 	/*
-	if (true == reset_active) {
-		diff_time = (long)jiffies - (long)start_time;
-		reset_active = false;
-		A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "A6_IRQ toggle post power-cycle after: %d ms\n",
-				 diff_time*1000/HZ);
-	}
-	*/
+	 * if (reset_active) {
+	 *	diff_time = (long)jiffies - (long)start_time;
+	 *	reset_active = false;
+	 *	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR,
+	 *		   "A6_IRQ toggle post power-cycle after: %d ms\n",
+	 *		   diff_time*1000/HZ);
+	 * }
+	 */
 #endif
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: entry.\n", __func__);
 
-	if (test_bit(IS_SUSPENDED, state->flags)) {
+	if (test_bit(IS_SUSPENDED, state->flags))
 		set_bit(INT_PENDING, state->flags);
-	} else {
+	else
 		queue_work(state->ka6d_workqueue, &state->a6_irq_work);
-	}
 
 	return IRQ_HANDLED;
 }
 
 static void a6_irq_work_handler(struct work_struct *work)
 {
-	struct a6_device_state* state =
+	struct a6_device_state *state =
 			container_of(work, struct a6_device_state, a6_irq_work);
 	struct a6_register_desc *reg_desc_status3, *reg_desc_status2;
 	uint8_t vals[id_size], reg_val_status3 = 0, reg_val_status2 = 0;
@@ -3810,13 +3696,13 @@ static void a6_irq_work_handler(struct work_struct *work)
 
 		// in bootload phase: get on a waitq
 		mutex_unlock(&state->dev_mutex);
-		printk(KERN_ERR "%s: about to wait for device non-busy...\n", __func__);
+		pr_err("%s: about to wait for device non-busy...\n", __func__);
 
 		// bootload bit set? wait to be cleared (at least 5 mins: in jiffies)
 		ret = wait_event_interruptible_timeout(state->dev_busyq,
 				!test_bit(BOOTLOAD_ACTIVE_BIT, state->flags), 300*HZ);
 		if (!ret) {
-			printk(KERN_ERR "%s: wait on device busy timed-out/interrupted\n", __func__);
+			pr_err("%s: wait on device busy timed-out/interrupted\n", __func__);
 			// reset busy state
 			clear_bit(BOOTLOAD_ACTIVE_BIT, state->flags);
 			clear_bit(DEVICE_BUSY_BIT, state->flags);
@@ -3841,7 +3727,7 @@ static void a6_irq_work_handler(struct work_struct *work)
 	memset(vals, 0, sizeof(vals));
 	ret = a6_i2c_read_reg(state->i2c_dev, reg_desc_status3->id, reg_desc_status3->num_ids, vals);
 	if (ret < 0) {
-		printk(KERN_ERR "%s: error reading reg: %s, id: 0x%x\n",
+		pr_err("%s: error reading reg: %s, id: 0x%x\n",
 		       __func__, reg_desc_status3->debug_name, reg_desc_status3->id[0]);
 		goto err0;
 	}
@@ -3851,7 +3737,7 @@ static void a6_irq_work_handler(struct work_struct *work)
 	memset(vals, 0, sizeof(vals));
 	ret = a6_i2c_read_reg(state->i2c_dev, reg_desc_status2->id, reg_desc_status2->num_ids, vals);
 	if (ret < 0) {
-		printk(KERN_ERR "%s: error reading reg: %s, id: 0x%x\n",
+		pr_err("%s: error reading reg: %s, id: 0x%x\n",
 		       __func__, reg_desc_status2->debug_name, reg_desc_status2->id[0]);
 		goto err0;
 	}
@@ -3862,7 +3748,7 @@ static void a6_irq_work_handler(struct work_struct *work)
 		vals[0] = reg_val_status3;
 		ret = a6_i2c_write_reg(state->i2c_dev, reg_desc_status3->id, reg_desc_status3->num_ids, vals);
 		if (ret < 0) {
-			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			pr_err("%s: error writing reg: %s, id: 0x%x\n",
 			       __func__, reg_desc_status3->debug_name, reg_desc_status3->id[0]);
 			goto err0;
 		}
@@ -3871,7 +3757,7 @@ static void a6_irq_work_handler(struct work_struct *work)
 		vals[0] = reg_val_status2;
 		ret = a6_i2c_write_reg(state->i2c_dev, reg_desc_status2->id, reg_desc_status2->num_ids, vals);
 		if (ret < 0) {
-			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			pr_err("%s: error writing reg: %s, id: 0x%x\n",
 			       __func__, reg_desc_status3->debug_name, reg_desc_status3->id[0]);
 			goto err0;
 		}
@@ -3886,8 +3772,10 @@ static void a6_irq_work_handler(struct work_struct *work)
 
 			/* Send uevent */
 			kobject_uevent_env(&state->i2c_dev->dev.kobj, KOBJ_CHANGE, &envp[0]);
-			/* this condition overrides all others and we can probably skip
-			 resetting the status bits */
+			/*
+			 * this condition overrides all others and we can
+			 * probably skip resetting the status bits
+			 */
 			goto err0;
 		}
 
@@ -3898,22 +3786,19 @@ static void a6_irq_work_handler(struct work_struct *work)
 
 			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: a2a connect change detected.\n",
 				   __func__);
-			printk(KERN_ERR "%s: a2a connect change detected.\n", __func__);
+			pr_err("%s: a2a connect change detected.\n", __func__);
 			reg_desc_charger = &a6_register_desc_arr[31];
 			memset(chg_vals, 0, sizeof(chg_vals));
 			if (a6_i2c_read_reg(state->i2c_dev, reg_desc_charger->id,
 					     reg_desc_charger->num_ids, chg_vals) < 0) {
-				printk(KERN_ERR "%s: error reading reg: %s, id: 0x%x\n",
+				pr_err("%s: error reading reg: %s, id: 0x%x\n",
 				       __func__, reg_desc_charger->debug_name,
 				       reg_desc_charger->id[0]);
-			}
-			else {
-				if (chg_vals[0] & TS2_I2C_FLAGS_2_A2A_CONNECT) {
+			} else {
+				if (chg_vals[0] & TS2_I2C_FLAGS_2_A2A_CONNECT)
 					set_bit(A2A_CONNECTED, state->flags);
-				}
-				else {
+				else
 					clear_bit(A2A_CONNECTED, state->flags);
-				}
 				/* Send uevent */
 				kobject_uevent_env(&state->i2c_dev->dev.kobj, KOBJ_CHANGE, &envp[18]);
 			}
@@ -4008,20 +3893,19 @@ err0:
 
 
 #ifdef A6_PQ
-int32_t a6_stop_ai_dispatch_task(struct a6_device_state* state)
+int32_t a6_stop_ai_dispatch_task(struct a6_device_state *state)
 {
 	int32_t rc = 0;
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: entered.\n", __func__);
 	// critsec for manipulating flags
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock interrupted\n", __func__);
+		pr_err("%s: mutex_lock interrupted\n", __func__);
 		return -ERESTARTSYS;
 	}
 	// stopping during a start? fail
 	if (test_bit(STARTING_AID_TASK, state->flags)) {
-		printk(KERN_ERR "%s: aid task not fully started. failing op.\n", __func__);
+		pr_err("%s: aid task not fully started. failing op.\n", __func__);
 		rc = -EBUSY;
 		mutex_unlock(&state->dev_mutex);
 		goto err0;
@@ -4029,7 +3913,7 @@ int32_t a6_stop_ai_dispatch_task(struct a6_device_state* state)
 
 	// stopping during a stop? fail
 	if (test_bit(KILLING_AID_TASK, state->flags)) {
-		printk(KERN_ERR "%s: aid task being stopped. failing op.\n", __func__);
+		pr_err("%s: aid task being stopped. failing op.\n", __func__);
 		rc = -EBUSY;
 		mutex_unlock(&state->dev_mutex);
 		goto err0;
@@ -4037,7 +3921,7 @@ int32_t a6_stop_ai_dispatch_task(struct a6_device_state* state)
 
 	// task never started? fail
 	if (!state->ai_dispatch_task) {
-		printk(KERN_ERR "%s: no aid task. failing op.\n", __func__);
+		pr_err("%s: no aid task. failing op.\n", __func__);
 		rc = -EPERM;
 		mutex_unlock(&state->dev_mutex);
 		goto err0;
@@ -4056,14 +3940,14 @@ int32_t a6_stop_ai_dispatch_task(struct a6_device_state* state)
 	// wait for ai dispatch task exit
 	rc = wait_for_completion_interruptible(&state->aid_exit_complete);
 	if (rc < 0) {
-		printk(KERN_ERR "%s: wait for ai dispatch task exit interrupted.\n",
+		pr_err("%s: wait for ai dispatch task exit interrupted.\n",
 		       __func__);
 	}
 
 	// critsec for manipulating flags
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock interrupted(1)\n", __func__);
+		pr_err("%s: mutex_lock interrupted(1)\n", __func__);
 		return -ERESTARTSYS;
 	}
 	// ai dispatch task exited (assume it did if we get interrupted): reset state
@@ -4077,22 +3961,21 @@ err0:
 	return rc;
 }
 
-int32_t a6_start_ai_dispatch_task(struct a6_device_state* state)
+int32_t a6_start_ai_dispatch_task(struct a6_device_state *state)
 {
 	int32_t rc = 0;
 	pid_t ai_dispatch_pid;
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: entered.\n", __func__);
 
 	// critsec for manipulating flags
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock interrupted\n", __func__);
+		pr_err("%s: mutex_lock interrupted\n", __func__);
 		return -ERESTARTSYS;
 	}
 	// starting during a start? fail
 	if (test_bit(STARTING_AID_TASK, state->flags)) {
-		printk(KERN_ERR "%s: aid task not fully started. failing op.\n", __func__);
+		pr_err("%s: aid task not fully started. failing op.\n", __func__);
 		rc = -EBUSY;
 		mutex_unlock(&state->dev_mutex);
 		goto err0;
@@ -4100,7 +3983,7 @@ int32_t a6_start_ai_dispatch_task(struct a6_device_state* state)
 
 	// starting during a stop? fail
 	if (test_bit(KILLING_AID_TASK, state->flags)) {
-		printk(KERN_ERR "%s: aid task being stopped. failing op.\n", __func__);
+		pr_err("%s: aid task being stopped. failing op.\n", __func__);
 		rc = -EBUSY;
 		mutex_unlock(&state->dev_mutex);
 		goto err0;
@@ -4108,7 +3991,7 @@ int32_t a6_start_ai_dispatch_task(struct a6_device_state* state)
 
 	// task never stopped? fail
 	if (state->ai_dispatch_task) {
-		printk(KERN_ERR "%s: aid task exists. failing op.\n", __func__);
+		pr_err("%s: aid task exists. failing op.\n", __func__);
 		rc = -EPERM;
 		mutex_unlock(&state->dev_mutex);
 		goto err0;
@@ -4124,7 +4007,7 @@ int32_t a6_start_ai_dispatch_task(struct a6_device_state* state)
 	state->ai_dispatch_task = kthread_run(ai_dispatch_thread_fn, state,
 					      "aid_%s", state->plat_data->dev_name);
 	if (IS_ERR(state->ai_dispatch_task)) {
-		printk(KERN_ERR "%s: failed to create ai dispatcher task.\n", __func__);
+		pr_err("%s: failed to create ai dispatcher task.\n", __func__);
 		rc = PTR_ERR(state->ai_dispatch_task);
 		state->ai_dispatch_task = NULL;
 		goto err0;
@@ -4132,7 +4015,7 @@ int32_t a6_start_ai_dispatch_task(struct a6_device_state* state)
 
 	rc = mutex_lock_interruptible(&state->dev_mutex);
 	if (rc) {
-		printk(KERN_ERR "%s: mutex_lock interrupted(1)\n", __func__);
+		pr_err("%s: mutex_lock interrupted(1)\n", __func__);
 		return -ERESTARTSYS;
 	}
 	// retrieve worker task struct
@@ -4153,9 +4036,9 @@ err0:
 
 static void a6_force_wake_work_handler(struct work_struct *work)
 {
-	struct a6_device_state* state =
+	struct a6_device_state *state =
 			container_of(work, struct a6_device_state, a6_force_wake_work);
-	struct a6_wake_ops* wake_ops = (struct a6_wake_ops*)state->plat_data->wake_ops;
+	struct a6_wake_ops *wake_ops = (struct a6_wake_ops *)state->plat_data->wake_ops;
 	long diff_time;
 
 	diff_time = (long)jiffies - (long)start_last_a6_activity;
@@ -4165,7 +4048,7 @@ static void a6_force_wake_work_handler(struct work_struct *work)
 	start_last_a6_activity = 0;
 
 	// force A6 sleep and switch back to periodic wake...
-	// * timer may be scheduled just after we clear FORCE_WAKE_ACTIVE_BIT 
+	// * timer may be scheduled just after we clear FORCE_WAKE_ACTIVE_BIT
 	//   and hence will result in the callback being invoked with
 	//   FORCE_WAKE_ACTIVE_BIT cleared. We just ignore this case...
 	mutex_lock(&state->a6_force_wake_mutex);
@@ -4175,13 +4058,11 @@ static void a6_force_wake_work_handler(struct work_struct *work)
 				"%s: disabling force_wake and enabling periodic_wake\n",
 				__func__);
 			/* force A6 sleep */
-			if (wake_ops->force_sleep) {
+			if (wake_ops->force_sleep)
 				wake_ops->force_sleep(wake_ops->data);
-			}
 			/* enable periodic a6 wake (if defined) */
-			if (wake_ops->enable_periodic_wake) {
+			if (wake_ops->enable_periodic_wake)
 				wake_ops->enable_periodic_wake(wake_ops->data);
-			}
 			/* now we are ready to clear FORCE_WAKE_ACTIVE_BIT */
 			clear_bit(FORCE_WAKE_ACTIVE_BIT, state->flags);
 		}
@@ -4193,7 +4074,7 @@ static void a6_force_wake_work_handler(struct work_struct *work)
 /* Timer callback used to force sleep after a force wake - Modern API */
 static void a6_force_wake_timer_callback(struct timer_list *t)
 {
-	struct a6_device_state *state = from_timer(state, t, a6_force_wake_timer);
+	struct a6_device_state *state = timer_container_of(state, t, a6_force_wake_timer);
 	int32_t rc;
 
 	rc = queue_work(state->ka6d_fw_workqueue, &state->a6_force_wake_work);
@@ -4205,20 +4086,19 @@ static void a6_force_wake_timer_callback(struct timer_list *t)
 
 static int a6_pmem_open(struct inode *inode, struct file *file)
 {
-	struct a6_device_state* state;
+	struct miscdevice *mdev = file->private_data;
+	struct a6_device_state *state;
 
-	/* get device */
-	state = container_of(file->f_op, struct a6_device_state, pmem_fops);
+	/* get device from miscdevice */
+	state = container_of(mdev, struct a6_device_state, pmem_mdev);
 
 	/* Allow only read. */
-	if ((file->f_mode & (FMODE_READ|FMODE_WRITE)) != FMODE_READ) {
-		    return -EINVAL;
-	}
+	if ((file->f_mode & (FMODE_READ|FMODE_WRITE)) != FMODE_READ)
+		return -EINVAL;
 
 	/* check if it is in use */
-	if (test_and_set_bit(IS_OPENED, state->flags)) {
+	if (test_and_set_bit(IS_OPENED, state->flags))
 		return -EBUSY;
-	}
 
 	/* attach private data */
 	file->private_data = state;
@@ -4227,43 +4107,41 @@ static int a6_pmem_open(struct inode *inode, struct file *file)
 
 static int a6_pmem_close(struct inode *inode, struct file *file)
 {
-	struct a6_device_state* state = (struct  a6_device_state*) file->private_data;
+	struct a6_device_state *state = (struct  a6_device_state *) file->private_data;
 
 	/* mark it as unused */
 	clear_bit(IS_OPENED, state->flags);
 	return 0;
 }
 
-static ssize_t a6_pmem_read(struct file *file, char __user *buf, size_t count, loff_t *ppos )
+static ssize_t a6_pmem_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
 
 	ssize_t rc = 0;
-	struct a6_device_state* state;
+	struct a6_device_state *state;
 
-	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: enter\n", __func__);
 
 	/* input validations */
-	if (!count) {
+	if (!count)
 		return -EINVAL;
-	}
 
 	/* get state */
-	state = container_of(file->f_op, struct a6_device_state, fops);
+	state = file->private_data;
 	rc = ttf_image_read(buf, count, ppos);
-	
+
 	return rc;
 }
 
-struct file_operations a6_pmem_fops = {
+static const struct file_operations a6_pmem_fops = {
 	.owner   = THIS_MODULE,
 	.read    = a6_pmem_read,
 	.open    = a6_pmem_open,
 	.release = a6_pmem_close,
 };
 
-/******************************************************************************
-* Modern kernel API support - Regmap configuration
-******************************************************************************/
+/*
+ * Modern kernel API support - Regmap configuration
+ */
 static const struct regmap_range a6_readable_ranges[] = {
 	regmap_reg_range(0x0000, 0x0007),  /* Interrupt registers */
 	regmap_reg_range(0x0100, 0x0111),  /* Battery registers */
@@ -4295,9 +4173,9 @@ static const struct regmap_config a6_regmap_config = {
 	.max_register = 0x0320,
 };
 
-/******************************************************************************
-* Modern kernel API support - Power Supply Integration
-******************************************************************************/
+/*
+ * Modern kernel API support - Power Supply Integration
+ */
 static enum power_supply_property a6_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
@@ -4363,9 +4241,7 @@ static int a6_battery_get_property(struct power_supply *psy,
 	return 0;
 }
 
-/******************************************************************************
-* a6_probe() - Modern probe function
-******************************************************************************/
+/* a6_probe() - Modern probe function */
 static int a6_probe(struct i2c_client *client)
 {
 	struct a6_device_state *state;
@@ -4497,22 +4373,20 @@ static int a6_probe(struct i2c_client *client)
 	/* Register as misc device */
 	dev_name = (state->device_index == 0) ? A6_DEVICE_0 : A6_DEVICE_1;
 
-	memcpy(&state->fops, &a6_fops, sizeof(struct file_operations));
 	state->mdev.minor = MISC_DYNAMIC_MINOR;
 	state->mdev.name = dev_name;
-	state->mdev.fops = &state->fops;
+	state->mdev.fops = &a6_fops;
 	rc = misc_register(&state->mdev);
 	if (rc < 0)
 		return dev_err_probe(&client->dev, rc,
 				     "Failed to register misc device\n");
 
 	/* Register pmem diagnostic device */
-	memcpy(&state->pmem_fops, &a6_pmem_fops, sizeof(struct file_operations));
 	state->pmem_mdev.minor = MISC_DYNAMIC_MINOR;
 	snprintf(state->pmem_dev_name, sizeof(state->pmem_dev_name),
 		 "%s_diag", dev_name);
 	state->pmem_mdev.name = state->pmem_dev_name;
-	state->pmem_mdev.fops = &state->pmem_fops;
+	state->pmem_mdev.fops = &a6_pmem_fops;
 	rc = misc_register(&state->pmem_mdev);
 	if (rc < 0) {
 		dev_err(&client->dev, "Failed to register pmem misc device\n");
@@ -4526,7 +4400,7 @@ static int a6_probe(struct i2c_client *client)
 
 	/* Register power supply */
 	psy_cfg.drv_data = state;
-	psy_cfg.of_node = client->dev.of_node;
+	psy_cfg.fwnode = dev_fwnode(&client->dev);
 
 	state->battery_desc.name = devm_kasprintf(&client->dev, GFP_KERNEL,
 						  "a6-%d", state->device_index);
@@ -4588,28 +4462,22 @@ err_misc:
 	return rc;
 }
 
-/******************************************************************************
-* a6_i2c_remove()
-******************************************************************************/
+/* a6_i2c_remove() */
 static void a6_i2c_remove(struct i2c_client *client)
 {
-	struct a6_device_state* state = (struct a6_device_state*)i2c_get_clientdata(client);
+	struct a6_device_state *state = (struct a6_device_state *)i2c_get_clientdata(client);
 
 	a6_remove_dev_files(state, &client->dev);
 
-	if (state->ka6d_workqueue) {
+	if (state->ka6d_workqueue)
 		destroy_workqueue(state->ka6d_workqueue);
-	}
 
-	if (state->ka6d_fw_workqueue) {
+	if (state->ka6d_fw_workqueue)
 		destroy_workqueue(state->ka6d_fw_workqueue);
-	}
 }
 
 #ifdef CONFIG_PM
-/******************************************************************************
-* Modern PM ops
-******************************************************************************/
+/* Modern PM ops */
 static int a6_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
@@ -4641,18 +4509,14 @@ static int a6_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(a6_pm_ops, a6_suspend, a6_resume);
 #endif /* CONFIG_PM */
 
-/******************************************************************************
-* Device tree match table
-******************************************************************************/
+/* Device tree match table */
 static const struct of_device_id a6_of_match[] = {
 	{ .compatible = "palm,a6-battery" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, a6_of_match);
 
-/******************************************************************************
-* I2C device ID table
-******************************************************************************/
+/* I2C device ID table */
 static const struct i2c_device_id a6_ids[] = {
 	{ "a6-battery", 0 },
 	{ "a6_0", 0 },  /* Legacy compatibility */
@@ -4661,9 +4525,7 @@ static const struct i2c_device_id a6_ids[] = {
 };
 MODULE_DEVICE_TABLE(i2c, a6_ids);
 
-/******************************************************************************
-* I2C driver structure
-******************************************************************************/
+/* I2C driver structure */
 static struct i2c_driver a6_driver = {
 	.driver = {
 		.name = "a6-battery",
