@@ -786,6 +786,25 @@ choice
 		  Say Y here if you want kernel low-level debugging support
 		  on PXA UART1.
 
+	config DEBUG_MSM7X30_UART
+		bool "Kernel low-level debugging messages via MSM7x30 simple UART"
+		depends on ARCH_MSM7X30
+		help
+		  Say Y here if you want the debug print routines to direct
+		  their output to the simple (non-DM) serial port on MSM7x30
+		  devices like the HP Pre3.
+
+		  UART      DEBUG_UART_PHYS   DEBUG_UART_VIRT
+		  UART1     0xaca00000        0xfaca0000
+		  UART2     0xacb00000        0xfacb0000
+		  UART3     0xacc00000        0xfacc0000
+
+		  The default is UART3 (0xacc00000) which is the debug UART
+		  on HP Pre3 and similar devices.
+
+		  Please adjust DEBUG_UART_PHYS and DEBUG_UART_VIRT configuration
+		  options based on your needs.
+
 	config DEBUG_QCOM_UARTDM
 		bool "Kernel low-level debugging messages via QCOM UARTDM"
 		depends on ARCH_QCOM
@@ -1503,6 +1522,7 @@ config DEBUG_LL_INCLUDE
 				 DEBUG_IMX6SX_UART || \
 				 DEBUG_IMX6UL_UART || \
 				 DEBUG_IMX7D_UART
+	default "debug/msm-uart.S" if DEBUG_MSM7X30_UART
 	default "debug/msm.S" if DEBUG_QCOM_UARTDM
 	default "debug/omap2plus.S" if DEBUG_OMAP2PLUS_UART
 	default "debug/renesas-scif.S" if DEBUG_R7S72100_SCIF2
@@ -1637,6 +1657,7 @@ config DEBUG_UART_PHYS
 	default 0xf7fc9000 if DEBUG_BERLIN_UART
 	default 0xf8020000 if DEBUG_AT91_SAMA5D2_UART1
 	default 0xf8b00000 if DEBUG_HIX5HD2_UART
+	default 0xacc00000 if DEBUG_MSM7X30_UART
 	default 0xf991e000 if DEBUG_QCOM_UARTDM
 	default 0xfc00c000 if DEBUG_AT91_SAMA5D4_USART3
 	default 0xfcb00000 if DEBUG_HI3620_UART
@@ -1660,7 +1681,7 @@ config DEBUG_UART_PHYS
 	depends on ARCH_EP93XX || \
 	        DEBUG_LL_UART_8250 || DEBUG_LL_UART_PL01X || \
 		DEBUG_UART_8250 || DEBUG_UART_PL01X || DEBUG_MESON_UARTAO || \
-		DEBUG_QCOM_UARTDM || DEBUG_R7S72100_SCIF2 || \
+		DEBUG_MSM7X30_UART || DEBUG_QCOM_UARTDM || DEBUG_R7S72100_SCIF2 || \
 		DEBUG_R7S9210_SCIF2 || DEBUG_R7S9210_SCIF4 || \
 		DEBUG_RCAR_GEN1_SCIF0 || DEBUG_RCAR_GEN1_SCIF2 || \
 		DEBUG_RCAR_GEN2_SCIF0 || DEBUG_RCAR_GEN2_SCIF1 || \
@@ -1722,6 +1743,7 @@ config DEBUG_UART_VIRT
 	default 0xfa06a000 if DEBUG_OMAP2UART1
 	default 0xfa06c000 if DEBUG_OMAP2UART2
 	default 0xfa06e000 if DEBUG_OMAP2UART3 || DEBUG_OMAP4UART4
+	default 0xfacc0000 if DEBUG_MSM7X30_UART
 	default 0xfa71e000 if DEBUG_QCOM_UARTDM
 	default 0xfb009000 if DEBUG_REALVIEW_STD_PORT
 	default 0xfb00c000 if DEBUG_AT91_SAMA5D4_USART3
@@ -1769,7 +1791,7 @@ config DEBUG_UART_VIRT
 	default DEBUG_UART_PHYS if !MMU
 	depends on DEBUG_LL_UART_8250 || DEBUG_LL_UART_PL01X || \
 		DEBUG_UART_8250 || DEBUG_UART_PL01X || DEBUG_MESON_UARTAO || \
-		DEBUG_QCOM_UARTDM || \
+		DEBUG_MSM7X30_UART || DEBUG_QCOM_UARTDM || \
 		DEBUG_S3C64XX_UART || \
 		DEBUG_BCM63XX_UART || DEBUG_BCMBCA || DEBUG_ASM9260_UART || \
 		DEBUG_DIGICOLOR_UA0 || \

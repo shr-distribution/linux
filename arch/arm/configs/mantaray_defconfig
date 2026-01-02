@@ -274,6 +274,9 @@ CONFIG_PANIC_TIMEOUT=5
 
 # Early printk for debugging boot issues
 CONFIG_DEBUG_LL=y
+CONFIG_DEBUG_MSM7X30_UART=y
+CONFIG_DEBUG_UART_PHYS=0xacc00000
+CONFIG_DEBUG_UART_VIRT=0xfacc0000
 CONFIG_EARLY_PRINTK=y
 
 # Persistent storage for crash logs
