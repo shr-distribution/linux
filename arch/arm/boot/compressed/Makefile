@@ -86,6 +86,11 @@ ifeq ($(CONFIG_USE_OF),y)
 OBJS	+= $(libfdt_objs) fdt_check_mem_start.o
 endif
 
+# Built-in DTB for bootloaders that cannot pass DTB (e.g., Palm bootie)
+ifeq ($(CONFIG_ARM_BUILTIN_DTB),y)
+OBJS	+= builtin-dtb.o
+endif
+
 OBJS	+= lib1funcs.o ashldi3.o bswapsdi2.o
 
 targets       := vmlinux vmlinux.lds piggy_data piggy.o \

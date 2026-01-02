@@ -60,6 +60,13 @@ SECTIONS
     *(.data.rel.ro)
     *(.data.rel.ro.*)
   }
+#ifdef CONFIG_ARM_BUILTIN_DTB
+  .builtin_dtb : {
+    __builtin_dtb_begin = .;
+    *(.builtin_dtb)
+    __builtin_dtb_end = .;
+  }
+#endif
   .piggydata : {
     *(.piggydata)
     __piggy_size_addr = . - 4;

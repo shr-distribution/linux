@@ -1490,6 +1490,18 @@ config ARM_ATAG_DTB_COMPAT_CMDLINE_EXTEND
 
 endchoice
 
+config ARM_BUILTIN_DTB
+	bool "Use built-in DTB compiled into kernel"
+	depends on OF && ARM_APPENDED_DTB
+	help
+	  With this option, a device tree binary (DTB) is compiled directly
+	  into the kernel image. This is used when the bootloader cannot pass
+	  a DTB and also rejects appended DTBs (e.g., Palm bootie on HP Pre3).
+
+	  The DTB file path is specified in arch/arm/boot/compressed/builtin-dtb.S.
+	  The kernel will first check for an appended DTB, and if not found,
+	  will use the built-in DTB.
+
 config CMDLINE
 	string "Default kernel command string"
 	default ""

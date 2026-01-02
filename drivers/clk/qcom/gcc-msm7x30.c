@@ -20,6 +20,7 @@
 
 #include <dt-bindings/clock/qcom,gcc-msm7x30.h>
 
+#include "common.h"
 #include "clk-regmap.h"
 #include "clk-pll.h"
 #include "clk-rcg.h"
@@ -120,7 +121,7 @@ enum {
 	P_LPXO,
 };
 
-static const struct parent_map gcc_pll_map[] = {
+static const struct parent_map __maybe_unused gcc_pll_map[] = {
 	{ P_TCXO, SRC_SEL_TCXO },
 	{ P_PLL0, SRC_SEL_PLL0 },
 	{ P_PLL1, SRC_SEL_PLL1 },
@@ -393,7 +394,7 @@ static const struct freq_tbl ftbl_uart_dm[] = {
 	{ }
 };
 
-static struct clk_rcg uart1dm_src = {
+static struct clk_rcg __maybe_unused uart1dm_src = {
 	.ns_reg = UART1DM_NS_REG,
 	.md_reg = UART1DM_NS_REG - 4,
 	.mn = {
@@ -441,7 +442,7 @@ static struct clk_branch uart1dm_clk = {
 	},
 };
 
-static struct clk_rcg uart2dm_src = {
+static struct clk_rcg __maybe_unused uart2dm_src = {
 	.ns_reg = UART2DM_NS_REG,
 	.md_reg = UART2DM_NS_REG - 4,
 	.mn = {
@@ -533,7 +534,7 @@ static const struct freq_tbl ftbl_sdc[] = {
 	{ }
 };
 
-static struct clk_rcg sdc1_src = {
+static struct clk_rcg __maybe_unused sdc1_src = {
 	.ns_reg = SDC1_NS_REG,
 	.md_reg = SDC1_NS_REG - 4,
 	.mn = {
@@ -596,7 +597,7 @@ static struct clk_branch sdc1_p_clk = {
 	},
 };
 
-static struct clk_rcg sdc2_src = {
+static struct clk_rcg __maybe_unused sdc2_src = {
 	.ns_reg = SDC2_NS_REG,
 	.md_reg = SDC2_NS_REG - 4,
 	.mn = {
@@ -659,7 +660,7 @@ static struct clk_branch sdc2_p_clk = {
 	},
 };
 
-static struct clk_rcg sdc3_src = {
+static struct clk_rcg __maybe_unused sdc3_src = {
 	.ns_reg = SDC3_NS_REG,
 	.md_reg = SDC3_NS_REG - 4,
 	.mn = {
@@ -722,7 +723,7 @@ static struct clk_branch sdc3_p_clk = {
 	},
 };
 
-static struct clk_rcg sdc4_src = {
+static struct clk_rcg __maybe_unused sdc4_src = {
 	.ns_reg = SDC4_NS_REG,
 	.md_reg = SDC4_NS_REG - 4,
 	.mn = {
@@ -793,7 +794,7 @@ static const struct freq_tbl ftbl_usb_hs[] = {
 	{ }
 };
 
-static struct clk_rcg usb_hs_src = {
+static struct clk_rcg __maybe_unused usb_hs_src = {
 	.ns_reg = USBH_NS_REG,
 	.md_reg = USBH_MD_REG,
 	.mn = {
@@ -887,7 +888,7 @@ static const struct freq_tbl ftbl_mdp[] = {
 	{ }
 };
 
-static struct clk_rcg mdp_src = {
+static struct clk_rcg __maybe_unused mdp_src = {
 	.ns_reg = MDP_NS_REG,
 	.p = {
 		.pre_div_shift = 3,
@@ -953,7 +954,7 @@ static const struct freq_tbl ftbl_mdp_lcdc[] = {
 	{ }
 };
 
-static struct clk_rcg mdp_lcdc_pclk_src = {
+static struct clk_rcg __maybe_unused mdp_lcdc_pclk_src = {
 	.ns_reg = MDP_LCDC_NS_REG,
 	.md_reg = MDP_LCDC_NS_REG - 4,
 	.mn = {
@@ -1047,7 +1048,7 @@ static const struct freq_tbl ftbl_mddi[] = {
 	{ }
 };
 
-static struct clk_rcg pmdh_src = {
+static struct clk_rcg __maybe_unused pmdh_src = {
 	.ns_reg = PMDH_NS_REG,
 	.p = {
 		.pre_div_shift = 3,
@@ -1123,7 +1124,7 @@ static const struct freq_tbl ftbl_grp[] = {
 	{ }
 };
 
-static struct clk_rcg grp_2d_src = {
+static struct clk_rcg __maybe_unused grp_2d_src = {
 	.ns_reg = GRP_2D_NS_REG,
 	.p = {
 		.pre_div_shift = 3,
@@ -1177,7 +1178,7 @@ static struct clk_branch grp_2d_p_clk = {
 	},
 };
 
-static struct clk_rcg grp_3d_src = {
+static struct clk_rcg __maybe_unused grp_3d_src = {
 	.ns_reg = GRP_NS_REG,
 	.p = {
 		.pre_div_shift = 3,
@@ -1263,7 +1264,7 @@ static const struct freq_tbl ftbl_cam[] = {
 	{ }
 };
 
-static struct clk_rcg cam_m_src = {
+static struct clk_rcg __maybe_unused cam_m_src = {
 	.ns_reg = CAM_NS_REG,
 	.md_reg = CAM_NS_REG - 4,
 	.mn = {
@@ -1328,7 +1329,7 @@ static const struct freq_tbl ftbl_vfe[] = {
 	{ }
 };
 
-static struct clk_rcg vfe_src = {
+static struct clk_rcg __maybe_unused vfe_src = {
 	.ns_reg = CAM_VFE_NS_REG,
 	.md_reg = CAM_VFE_NS_REG - 4,
 	.mn = {
@@ -1546,7 +1547,7 @@ static int gcc_msm7x30_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	return qcom_cc_really_probe(pdev, &gcc_msm7x30_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, &gcc_msm7x30_desc, regmap);
 }
 
 static const struct of_device_id gcc_msm7x30_match_table[] = {

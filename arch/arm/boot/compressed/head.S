@@ -367,8 +367,29 @@ restart:	adr	r0, LC1
 		ldr	lr, [r6, #0]
 		ldr	r1, =OF_DT_MAGIC
 		cmp	lr, r1
-		bne	dtb_check_done		@ not found
+		beq	1f			@ found appended DTB
 
+#ifdef CONFIG_ARM_BUILTIN_DTB
+		/*
+		 * No appended DTB found. Check for built-in DTB.
+		 * This is used when the bootloader rejects appended DTBs
+		 * (e.g., Palm bootie on HP Pre3).
+		 *
+		 * Built-in DTB is part of the compressed kernel image, so we
+		 * must NOT adjust r6/r10/sp like we do for appended DTB.
+		 * Just set r8 to point to the built-in DTB and continue.
+		 */
+		ldr	r6, =__builtin_dtb_begin
+		ldr	lr, [r6, #0]
+		cmp	lr, r1
+		bne	dtb_check_done		@ no built-in DTB either
+		mov	r8, r6			@ use built-in device tree
+		b	dtb_check_done
+#else
+		b	dtb_check_done		@ not found
+#endif
+
+1:
 #ifdef CONFIG_ARM_ATAG_DTB_COMPAT
 		/*
 		 * OK... Let's do some funky business here.
