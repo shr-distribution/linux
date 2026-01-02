@@ -99,6 +99,9 @@ static void msm_vic_mask_irq(struct irq_data *d)
 	u32 bank = vic_bank(d->hwirq);
 	u32 mask = vic_bit(d->hwirq);
 
+	pr_debug("MSM VIC: mask hwirq %lu (bank %u, mask 0x%x)\n",
+		 d->hwirq, bank, mask);
+
 	vic->int_enable[bank] &= ~mask;
 	writel(mask, vic->base + VIC_INT_ENCLEAR(bank));
 }
@@ -108,6 +111,9 @@ static void msm_vic_unmask_irq(struct irq_data *d)
 	struct msm_vic *vic = irq_data_get_irq_chip_data(d);
 	u32 bank = vic_bank(d->hwirq);
 	u32 mask = vic_bit(d->hwirq);
+
+	pr_debug("MSM VIC: unmask hwirq %lu (bank %u, mask 0x%x)\n",
+		 d->hwirq, bank, mask);
 
 	vic->int_enable[bank] |= mask;
 	writel(mask, vic->base + VIC_INT_ENSET(bank));
@@ -119,12 +125,16 @@ static void msm_vic_ack_irq(struct irq_data *d)
 	u32 bank = vic_bank(d->hwirq);
 	u32 mask = vic_bit(d->hwirq);
 
+	pr_debug("MSM VIC: ack hwirq %lu\n", d->hwirq);
+
 	writel(mask, vic->base + VIC_INT_CLEAR(bank));
 }
 
 static void msm_vic_eoi_irq(struct irq_data *d)
 {
 	struct msm_vic *vic = irq_data_get_irq_chip_data(d);
+
+	pr_debug("MSM VIC: eoi hwirq %lu\n", d->hwirq);
 
 	/* Write any value to acknowledge interrupt processing complete */
 	writel(0, vic->base + VIC_IRQ_VEC_WR);
@@ -136,6 +146,9 @@ static int msm_vic_set_type(struct irq_data *d, unsigned int flow_type)
 	u32 bank = vic_bank(d->hwirq);
 	u32 mask = vic_bit(d->hwirq);
 	u32 type, polarity;
+
+	pr_debug("MSM VIC: set_type hwirq %lu, flow_type 0x%x\n",
+		 d->hwirq, flow_type);
 
 	polarity = vic->int_polarity[bank];
 	type = vic->int_type[bank];
@@ -178,6 +191,8 @@ static int msm_vic_irq_domain_map(struct irq_domain *d, unsigned int irq,
 				  irq_hw_number_t hwirq)
 {
 	struct msm_vic *vic = d->host_data;
+
+	pr_debug("MSM VIC: domain_map irq %u -> hwirq %lu\n", irq, hwirq);
 
 	irq_set_chip_and_handler(irq, &msm_vic_chip, handle_level_irq);
 	irq_set_chip_data(irq, vic);
@@ -223,12 +238,33 @@ static void msm_vic_init_hw(struct msm_vic *vic)
 {
 	int i;
 
-	/* Disable all interrupts */
+	pr_info("MSM VIC: Initializing hardware\n");
+
+	/*
+	 * Follow legacy initialization sequence exactly:
+	 * 1. Select level interrupts (TYPE = 0)
+	 * 2. Select high-level/rising-edge polarity (POLARITY = 0)
+	 * 3. Select IRQ not FIQ (SELECT = 0)
+	 * 4. Disable all interrupts (ENCLEAR = all ones)
+	 * 5. Don't use vectored mode (CONFIG = 0)
+	 * 6. Enable interrupt controller (MASTEREN = 3)
+	 */
 	for (i = 0; i < VIC_NUM_BANKS; i++) {
-		writel(0xFFFFFFFF, vic->base + VIC_INT_ENCLEAR(i));
+		/* Select level interrupts */
 		writel(0, vic->base + VIC_INT_TYPE(i));
+		/* Select high-level polarity */
 		writel(0, vic->base + VIC_INT_POLARITY(i));
+		/* Select IRQ not FIQ */
 		writel(0, vic->base + VIC_INT_SELECT(i));
+		/* Disable all interrupts */
+		writel(0xFFFFFFFF, vic->base + VIC_INT_ENCLEAR(i));
+
+		pr_info("MSM VIC: Bank %d: TYPE=0x%08x POL=0x%08x SEL=0x%08x EN=0x%08x\n",
+			i,
+			readl(vic->base + VIC_INT_TYPE(i)),
+			readl(vic->base + VIC_INT_POLARITY(i)),
+			readl(vic->base + VIC_INT_SELECT(i)),
+			readl(vic->base + VIC_INT_EN(i)));
 	}
 
 	/* Don't use vectored interrupts */
@@ -236,6 +272,10 @@ static void msm_vic_init_hw(struct msm_vic *vic)
 
 	/* Enable both IRQ and FIQ at master level */
 	writel(3, vic->base + VIC_INT_MASTEREN);
+
+	pr_info("MSM VIC: CONFIG=0x%08x MASTEREN=0x%08x\n",
+		readl(vic->base + VIC_CONFIG),
+		readl(vic->base + VIC_INT_MASTEREN));
 }
 
 static int __init msm_vic_of_init(struct device_node *node,
@@ -243,6 +283,8 @@ static int __init msm_vic_of_init(struct device_node *node,
 {
 	struct msm_vic *vic;
 	int ret;
+
+	pr_info("MSM VIC: Starting initialization\n");
 
 	vic = kzalloc(sizeof(*vic), GFP_KERNEL);
 	if (!vic)
@@ -255,10 +297,13 @@ static int __init msm_vic_of_init(struct device_node *node,
 		goto err_free;
 	}
 
+	pr_info("MSM VIC: Mapped base at %p\n", vic->base);
+
 	/* Initialize hardware */
 	msm_vic_init_hw(vic);
 
 	/* Create IRQ domain */
+	pr_info("MSM VIC: Creating IRQ domain\n");
 	vic->domain = irq_domain_add_linear(node, VIC_NUM_IRQS,
 					    &msm_vic_irq_domain_ops, vic);
 	if (!vic->domain) {
@@ -268,9 +313,11 @@ static int __init msm_vic_of_init(struct device_node *node,
 	}
 
 	msm_vic_data = vic;
+
+	pr_info("MSM VIC: Setting IRQ handler\n");
 	set_handle_irq(msm_vic_handle_irq);
 
-	pr_info("MSM VIC: Initialized with %d interrupts\n", VIC_NUM_IRQS);
+	pr_info("MSM VIC: Initialization complete with %d interrupts\n", VIC_NUM_IRQS);
 
 	return 0;
 

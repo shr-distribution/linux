@@ -63,6 +63,8 @@ static irqreturn_t msm_timer_interrupt(int irq, void *dev_id)
 {
 	struct clock_event_device *evt = dev_id;
 
+	pr_debug("MSM Timer: IRQ %d received\n", irq);
+
 	/* Stop the timer if in oneshot mode */
 	if (clockevent_state_oneshot(evt)) {
 		u32 ctrl = readl_relaxed(event_base + TIMER_ENABLE);
@@ -78,6 +80,8 @@ static int msm_timer_set_next_event(unsigned long cycles,
 				    struct clock_event_device *evt)
 {
 	u32 ctrl = readl_relaxed(event_base + TIMER_ENABLE);
+
+	pr_debug("MSM Timer: set_next_event cycles=%lu\n", cycles);
 
 	/* Disable timer */
 	ctrl &= ~TIMER_ENABLE_EN;
@@ -96,6 +100,9 @@ static int msm_timer_set_next_event(unsigned long cycles,
 static int msm_timer_shutdown(struct clock_event_device *evt)
 {
 	u32 ctrl = readl_relaxed(event_base + TIMER_ENABLE);
+
+	pr_debug("MSM Timer: shutdown\n");
+
 	ctrl &= ~(TIMER_ENABLE_EN | TIMER_ENABLE_CLR_ON_MATCH_EN);
 	writel_relaxed(ctrl, event_base + TIMER_ENABLE);
 	return 0;
@@ -138,11 +145,39 @@ static struct delay_timer msm_delay_timer = {
 	.read_current_timer = msm_read_current_timer,
 };
 
+/*
+ * Initialize a timer following the legacy sequence:
+ * 1. Disable the timer
+ * 2. Clear the timer count
+ * 3. Set match value to max (0xFFFFFFFF) to prevent spurious interrupts
+ */
+static void msm_timer_init_one(void __iomem *base, const char *name)
+{
+	pr_info("MSM Timer: Initializing %s at %p\n", name, base);
+
+	/* Disable timer */
+	writel_relaxed(0, base + TIMER_ENABLE);
+
+	/* Clear timer count */
+	writel_relaxed(1, base + TIMER_CLEAR);
+
+	/* Set match value to max to prevent spurious interrupts */
+	writel_relaxed(0xFFFFFFFF, base + TIMER_MATCH_VAL);
+
+	pr_info("MSM Timer: %s initialized (ENABLE=0x%x, COUNT=0x%x, MATCH=0x%x)\n",
+		name,
+		readl_relaxed(base + TIMER_ENABLE),
+		readl_relaxed(base + TIMER_COUNT_VAL),
+		readl_relaxed(base + TIMER_MATCH_VAL));
+}
+
 static int __init msm_timer_init(struct device_node *np)
 {
 	void __iomem *base;
 	int irq, ret;
 	u32 freq;
+
+	pr_info("MSM Timer: Starting initialization\n");
 
 	base = of_iomap(np, 0);
 	if (!base) {
@@ -150,11 +185,15 @@ static int __init msm_timer_init(struct device_node *np)
 		return -ENXIO;
 	}
 
+	pr_info("MSM Timer: Mapped base at %p\n", base);
+
 	/* GPT for clock events */
 	event_base = base + GPT_OFFSET;
 
 	/* DGT for clocksource */
 	source_base = base + DGT_OFFSET;
+
+	pr_info("MSM Timer: GPT at %p, DGT at %p\n", event_base, source_base);
 
 	/* Get GPT interrupt (index 1 in DT: timer 0 is DGT, timer 1 is GPT) */
 	irq = irq_of_parse_and_map(np, 1);
@@ -164,50 +203,66 @@ static int __init msm_timer_init(struct device_node *np)
 		goto err_unmap;
 	}
 
+	pr_info("MSM Timer: GPT IRQ = %d\n", irq);
+
 	/* Read clock frequency from DT or use default */
 	if (of_property_read_u32(np, "clock-frequency", &freq))
 		freq = DGT_HZ * 4;  /* Default: LPXO = 24.576 MHz */
 
-	/* Configure DGT clock divider to /4 */
+	pr_info("MSM Timer: Input clock frequency = %u Hz\n", freq);
+
+	/*
+	 * Initialize both timers following legacy sequence BEFORE
+	 * configuring clock divider or registering clocksource.
+	 */
+	msm_timer_init_one(event_base, "GPT");
+	msm_timer_init_one(source_base, "DGT");
+
+	/* Configure DGT clock divider to /4 for 6.144 MHz */
+	pr_info("MSM Timer: Setting DGT clock divider to /4\n");
 	writel_relaxed(DGT_CLK_CTL_DIV_4, source_base + DGT_CLK_CTL);
 	freq /= 4;
 
-	/* Initialize DGT for clocksource */
+	pr_info("MSM Timer: DGT frequency after divider = %u Hz\n", freq);
+
+	/* Enable DGT for clocksource - it needs to be free-running */
+	pr_info("MSM Timer: Enabling DGT for clocksource\n");
 	writel_relaxed(TIMER_ENABLE_EN, source_base + TIMER_ENABLE);
 
 	/* Register clocksource */
+	pr_info("MSM Timer: Registering clocksource\n");
 	ret = clocksource_register_hz(&msm_clocksource, freq);
 	if (ret) {
-		pr_err("MSM Timer: Failed to register clocksource\n");
+		pr_err("MSM Timer: Failed to register clocksource: %d\n", ret);
 		goto err_unmap;
 	}
 
 	/* Register sched_clock */
+	pr_info("MSM Timer: Registering sched_clock\n");
 	sched_clock_register(msm_sched_clock_read, 32, freq);
 
 	/* Register delay timer */
+	pr_info("MSM Timer: Registering delay timer\n");
 	msm_delay_timer.freq = freq;
 	register_current_timer_delay(&msm_delay_timer);
 
-	/* Initialize GPT for clock events */
-	writel_relaxed(0, event_base + TIMER_ENABLE);
-	writel_relaxed(1, event_base + TIMER_CLEAR);
-	writel_relaxed(0, event_base + TIMER_MATCH_VAL);
-
 	/* Setup clock event IRQ */
+	pr_info("MSM Timer: Requesting IRQ %d for GPT\n", irq);
 	ret = request_irq(irq, msm_timer_interrupt,
 			  IRQF_TIMER | IRQF_NOBALANCING | IRQF_TRIGGER_RISING,
 			  "gp_timer", &msm_clockevent);
 	if (ret) {
-		pr_err("MSM Timer: Failed to request IRQ\n");
+		pr_err("MSM Timer: Failed to request IRQ: %d\n", ret);
 		goto err_clocksource;
 	}
 
 	/* Register clock event device */
+	pr_info("MSM Timer: Registering clock event device\n");
 	msm_clockevent.irq = irq;
 	msm_clockevent.cpumask = cpumask_of(0);
 	clockevents_config_and_register(&msm_clockevent, GPT_HZ, 4, 0xffffffff);
 
+	pr_info("MSM Timer: Initialization complete\n");
 	pr_info("MSM Timer: DGT clocksource @ %u Hz, GPT clockevent @ %u Hz\n",
 		freq, GPT_HZ);
 
