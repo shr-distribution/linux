@@ -1,0 +1,180 @@
+HP Pre3 (mantaray) Mainline Linux Boot Investigation
+====================================================
+
+Date: January 2, 2026
+Status: Kernel crashes very early in boot - exact crash point unknown
+
+Hardware
+--------
+- SoC: Qualcomm MSM7230 (MSM7x30 family)
+- CPU: Scorpion ARMv7 (Qualcomm implementer 0x51, part 0x00f)
+- RAM: 461MB total
+  - Bank 1: 0x00000000 - 0x0CE00000 (206MB)
+  - Bank 2: 0x40000000 - 0x4FF00000 (255MB)
+- Bootloader: Palm "bootie" (proprietary)
+
+Boot Method
+-----------
+The HP Pre3 uses Palm's bootie bootloader which:
+1. Accepts kernels via USB using novacom tools
+2. Loads uImage format kernels to 0x00208000
+3. Passes ATAGs at 0x00200100 (machine type 3076 = RIB)
+4. Jumps to kernel entry point at 0x00208000
+
+The device tree is appended to zImage since bootie doesn't understand DTB.
+
+What Works
+----------
+- DTB appending to zImage (verified: kernel sees DTB magic 0xd00dfeed)
+- uImage creation and transfer via novacom
+- Bootie accepts and attempts to boot our kernel
+- Legacy webOS kernel boots fine for comparison
+
+What We Tried
+-------------
+
+1. RAMOOPS/PSTORE
+   - Added 1MB ramoops region at 0x0CC00000
+   - Result: No crash logs captured
+   - Reason: Crash happens before pstore driver initializes
+
+2. DEBUG_LL / EARLY_PRINTK
+   - Enabled DEBUG_MSM7X30_UART for UART3 at 0xACC00000
+   - Result: No output visible
+   - Reason: Physical UART not accessible (no debug board)
+   - Note: Would need serial cable on debug header to see output
+
+3. MEMORY MARKERS (Physical Memory Writes)
+   - Added str instructions to write 0xDEADxxxx markers to RAM
+   - Tried addresses: 0x00004000, 0x00100000, 0x00200000
+   - Markers placed at:
+     * Decompressor entry (compressed/head.S label 1:)
+     * After safe_svcmode_maskall
+     * After __lookup_processor_type
+     * Before/after __create_page_tables
+     * At __enable_mmu entry
+   - Result: NO markers survive to legacy kernel
+   - Conclusion: Crash happens BEFORE first marker write executes
+
+4. MINIMAL DEVICE TREE
+   - Stripped DTS to bare minimum (just memory, chosen, cpus)
+   - Result: Still crashes
+   - Conclusion: Not a peripheral driver issue
+
+5. PAGE_OFFSET / VMSPLIT
+   - Legacy kernel uses VMSPLIT_2G (PAGE_OFFSET=0x80000000)
+   - Tried matching this in mainline
+   - Result: Still crashes
+   - Note: Mainline ARCH_QCOM uses VMSPLIT_3G by default
+
+6. TEXT_OFFSET
+   - Verified TEXT_OFFSET=0x00208000 matches legacy kernel
+   - This accounts for SMEM reservation at low memory
+
+Key Findings
+------------
+
+1. CRASH IS EXTREMELY EARLY
+   The kernel crashes before:
+   - Any C code runs (setup_arch never reached)
+   - MMU is enabled (__enable_mmu never reached)
+   - Even the first assembly instruction after decompressor jump
+
+2. DECOMPRESSOR LIKELY INVOLVED
+   Since markers in arch/arm/kernel/head.S (stext) don't survive,
+   the crash is either:
+   - In arch/arm/boot/compressed/head.S (decompressor)
+   - Or bootie isn't jumping to our code correctly
+
+3. HP LOGO APPEARS
+   During boot attempts, the HP logo (set up by bootie) remains
+   visible. This just means the framebuffer isn't touched, not
+   that any kernel code ran successfully.
+
+4. MEMORY GETS OVERWRITTEN
+   All low memory addresses we tried (0x4000, 0x100000, 0x200000)
+   get overwritten by the legacy kernel before we can read them.
+   This makes post-crash debugging difficult.
+
+Legacy Kernel Comparison
+------------------------
+From webOS kernel source (2.6.35-based):
+
+- Machine type: 3076 (MACH_TYPE_RIB)
+- TEXT_OFFSET: 0x00208000
+- PAGE_OFFSET: 0x80000000 (VMSPLIT_2G)
+- Uses VIC interrupt controller (not GIC)
+- Uses custom MSM timer driver
+- Has extensive MSM-specific early init code
+
+Theories for Crash Cause
+------------------------
+
+1. DECOMPRESSOR RELOCATION FAILURE
+   The zImage decompressor needs to relocate itself and decompress
+   the kernel. If it calculates wrong addresses, it could crash.
+
+2. CACHE/MMU STATE FROM BOOTIE
+   Bootie may leave caches in a state the mainline decompressor
+   doesn't expect. The decompressor has cache_on/cache_off code
+   that might fail on MSM7x30.
+
+3. SCORPION CPU QUIRKS
+   Scorpion is an early ARMv7 CPU with Qualcomm modifications.
+   It may need specific initialization the generic v7 code lacks.
+
+4. BOOTIE HANDOFF INCOMPATIBILITY
+   Bootie may not set up CPU state exactly as mainline expects.
+   Register values, mode, or other state could be wrong.
+
+5. LITERAL POOL ISSUES
+   Adding ldr r11, =0x... instructions in position-independent
+   code sections could break the decompressor.
+
+Next Steps to Try
+-----------------
+
+1. UNCOMPRESSED KERNEL
+   - Use arch/arm/boot/Image instead of zImage
+   - Bypasses decompressor entirely
+   - Need to figure out how to make bootie accept it
+
+2. JTAG DEBUGGING
+   - Would give definitive crash location
+   - Requires hardware debug access
+
+3. BOOTIE ANALYSIS
+   - Disassemble bootie to understand handoff
+   - Verify register state when jumping to kernel
+
+4. QUALCOMM DOWNSTREAM DECOMPRESSOR
+   - Check if webOS kernel has custom decompressor mods
+   - Located in arch/arm/boot/compressed/ in webOS sources
+
+5. FRAMEBUFFER DEBUGGING
+   - Write to framebuffer memory (0x0190f000) from assembly
+   - Could show visual feedback even if UART unavailable
+   - MDP base at 0xa3f00000, fb at 0x0190f000, 480x800, 32bpp
+
+Files Modified
+--------------
+- arch/arm/boot/dts/qcom/qcom-msm7230-hp-pre3.dts (ramoops region)
+- arch/arm/boot/dts/qcom/Makefile (added Pre3 DTB)
+- arch/arm/configs/qcom_defconfig (DEBUG_LL options)
+
+Tools Created
+-------------
+- /tmp/read_debug_markers.c - Userspace tool to read debug markers
+  from physical memory via /dev/mem (for use on legacy kernel)
+
+References
+----------
+- webOS kernel source: webos-linux-kernel-pre3/
+- Bootie binary: /home/herrie/webos/Pre3/nova-cust-image-mantaray-rootfs/boot/bootie
+- Legacy kernel config: extracted from running device
+- MSM7x30 documentation: Limited public availability
+
+Contact
+-------
+This investigation is part of the webOS community effort to mainline
+support for HP/Palm devices.
