@@ -93,7 +93,7 @@ static int q6v2_lpass_load(struct rproc *rproc, const struct firmware *fw)
 			return ret;
 
 		ret = qcom_mdt_load_no_init(q6v2->dev, fw, rproc->firmware,
-					    PAS_Q6_ID, q6v2->mem_region,
+					    q6v2->mem_region,
 					    q6v2->mem_phys, q6v2->mem_size,
 					    &q6v2->mem_reloc);
 	} else {

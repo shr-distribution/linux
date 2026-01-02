@@ -827,7 +827,7 @@ static int vidc_enc_open(struct file *file)
 	v4l2_fh_init(&inst->fh, core->vfd_enc);
 	inst->fh.ctrl_handler = &inst->ctrl_handler;
 	file->private_data = &inst->fh;
-	v4l2_fh_add(&inst->fh);
+	v4l2_fh_add(&inst->fh, file);
 
 	/* Add to instance list */
 	mutex_lock(&core->lock);
@@ -854,7 +854,7 @@ static int vidc_enc_close(struct file *file)
 	core->num_instances--;
 	mutex_unlock(&core->lock);
 
-	v4l2_fh_del(&inst->fh);
+	v4l2_fh_del(&inst->fh, file);
 	v4l2_fh_exit(&inst->fh);
 
 	v4l2_m2m_ctx_release(inst->m2m_ctx);
