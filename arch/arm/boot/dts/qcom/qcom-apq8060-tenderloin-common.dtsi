@@ -452,6 +452,9 @@
 					regulator-min-microvolt = <2850000>;
 					regulator-max-microvolt = <2850000>;
 					bias-pull-down;
+					/* Audio codec (WM8958) power - must be on at boot */
+					regulator-boot-on;
+					regulator-always-on;
 				};
 				pm8058_l5: l5 {
 					regulator-min-microvolt = <2850000>;
@@ -604,6 +607,8 @@
 					qcom,switch-mode-frequency = <1600000>;
 					bias-pull-down;
 					regulator-allow-set-load;
+					/* Core 1.8V rail for audio, WiFi, sensors - must be on early */
+					regulator-boot-on;
 					regulator-always-on;
 				};
 				pm8058_s4: s4 {
