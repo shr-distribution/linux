@@ -50,6 +50,23 @@
 			reg = <0x00000000 0x00200000>;
 			no-map;
 		};
+
+		/*
+		 * Ramoops persistent storage for crash logs.
+		 * Located at end of bank 1 for easy reading from legacy kernel.
+		 * After crash: boot legacy kernel, then:
+		 *   novaterm -- dd if=/dev/mem bs=4096 skip=52480 count=256 | strings
+		 *   (52480 * 4096 = 0x0cc00000)
+		 */
+		ramoops@cc00000 {
+			compatible = "ramoops";
+			reg = <0x0cc00000 0x00100000>;  /* 1MB at 204MB offset */
+			console-size = <0x40000>;       /* 256KB for console */
+			record-size = <0x10000>;        /* 64KB per oops record */
+			pmsg-size = <0x10000>;          /* 64KB for pmsg */
+			ftrace-size = <0x10000>;        /* 64KB for ftrace */
+			ecc-size = <0>;
+		};
 	};
 
 	gpio-keys {
