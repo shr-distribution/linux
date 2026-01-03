@@ -1587,17 +1587,6 @@
 	};
 };
 
-&gsbi8 {
-	status = "okay";
-	qcom,mode = <GSBI_PROT_I2C>;
-
-	i2c@19880000 {
-		status = "okay";
-		pinctrl-names = "default";
-		pinctrl-0 = <&gsbi8_i2c_pins>;
-	};
-};
-
 &gsbi12 {
 	status = "okay";
 	qcom,mode = <GSBI_PROT_UART_W_FC>;
@@ -1695,7 +1684,7 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		enable-gpio = <&tlmm 121 GPIO_ACTIVE_HIGH>;
+		enable-gpios = <&tlmm 121 GPIO_ACTIVE_HIGH>;
 
 		interrupt-parent = <&tlmm>;
 		interrupts = <128 IRQ_TYPE_EDGE_FALLING>;
@@ -1703,22 +1692,26 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&lm8502_pins>;
 
+		/*
+		 * HP TouchPad has two white LEDs on the navigation bar.
+		 * These are used for soft-key illumination.
+		 */
 		led@0 {
 			reg = <0>;
-			color = <LED_COLOR_ID_RED>;
-			function = LED_FUNCTION_STATUS;
+			label = "lm8502:white:navi_left";
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_INDICATOR;
+			/* Max current: 3mA (register value 0x02) */
+			led-max-microamp = <3000>;
 		};
 
 		led@1 {
 			reg = <1>;
-			color = <LED_COLOR_ID_GREEN>;
-			function = LED_FUNCTION_STATUS;
-		};
-
-		led@2 {
-			reg = <2>;
-			color = <LED_COLOR_ID_BLUE>;
-			function = LED_FUNCTION_STATUS;
+			label = "lm8502:white:navi_right";
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_INDICATOR;
+			/* Max current: 3mA (register value 0x02) */
+			led-max-microamp = <3000>;
 		};
 	};
 

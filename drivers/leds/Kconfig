@@ -284,6 +284,19 @@ config LEDS_LM3692X
 	  This option enables support for the TI LM3692x family
 	  of white LED string drivers used for backlighting.
 
+config LEDS_LM8502
+	tristate "LED support for TI LM8502"
+	depends on LEDS_CLASS && I2C && OF
+	select REGMAP_I2C
+	help
+	  This option enables support for the TI LM8502 LED controller.
+	  The LM8502 is a combo LED controller with 10 LED outputs,
+	  programmable sequencing engines, haptic feedback controller,
+	  and flash/torch modes. It is used in the HP TouchPad tablet.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called leds-lm8502.
+
 config LEDS_LOCOMO
 	tristate "LED Support for Locomo device"
 	depends on LEDS_CLASS
