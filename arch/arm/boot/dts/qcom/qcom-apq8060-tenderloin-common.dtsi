@@ -1600,15 +1600,19 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&gsbi6_uart_pins>;
 
-	uart-has-rtscts;
+	/*
+	 * WebOS 2.6 kernel used HSUART with no flow control:
+	 * HSUART_MODE_FLOW_CTRL_NONE | HSUART_MODE_PARITY_NONE
+	 * Do NOT enable uart-has-rtscts here.
+	 */
 
 	bluetooth {
-		compatible = "brcm,bcm43438-bt";
+		compatible = "brcm,bcm4329-bt";
 
 		vddio-supply = <&pm8058_s3>;  /* 1.8V s3 */
 		vbat-supply = <&pm8058_s3>;  /* 1.8V s3 */
 
-		/* max-speed = <115200>; */
+		max-speed = <115200>;  /* WebOS used HSUART_SPEED_115K */
 		/* brcm,bt-pcm-int-params = [00 02 00 01 01]; TODO: PCM link to audio */
 
 		pinctrl-names = "default";
