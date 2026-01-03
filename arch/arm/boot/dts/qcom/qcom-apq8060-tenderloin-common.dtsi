@@ -4,6 +4,7 @@
  */
 
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/input/atmel-maxtouch.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
@@ -13,8 +14,12 @@
 #include "qcom-msm8660.dtsi"
 #include "pm8058.dtsi"
 
-// there can be only one
-#define USE_I2C_TOUCHSCREEN_DRIVER 0  // Changed to UART mode for ts-srv driver
+/*
+ * Touchscreen interface mode:
+ * 0 = I2C touchscreen + SWD firmware programmer + debug UART
+ * 1 = I2C touchscreen only (no SWD/UART)
+ */
+#define USE_I2C_TOUCHSCREEN_DRIVER 1
 #define USE_ADM_DMA 1
 #if USE_ADM_DMA
 #define ADM_USE_MASTER 0
@@ -1828,29 +1833,32 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&gsbi10_i2c_pins>;
 
-#if USE_I2C_TOUCHSCREEN_DRIVER
-	touchscreen: cy8ctma395@67 {
-		/* try reusing the generic cyttsp_i2c driver */
-		compatible = "cypress,cy8ctma340"; /* ideally cypress,cy8ctma395 */
-		reg = <0x67>;
+/*
+	 * Atmel maXTouch mxt1386 touchscreen controller
+	 * - I2C address: 0x4C (confirmed via webOS kernel)
+	 * - IRQ/Wake GPIO: 123 (WiFi) or 45 (3G) - handled by overlay
+	 * - Reset GPIO: 70
+	 * - Power: PM8058_L10 (3.05V digital) + 5V boost (analog)
+	 */
+	touchscreen: touchscreen@4c {
+		compatible = "atmel,maxtouch";
+		reg = <0x4c>;
 
-		vcpin-supply = <&vdd50_boost>;   // VCPIN is the analog voltage supply
-		vdd-supply = <&pm8058_l10>;    // VDD is the digital voltage supply
+		vdda-supply = <&vdd50_boost>;  /* VCPIN - 5V analog supply */
+		vdd-supply = <&pm8058_l10>;    /* VDD - 3.05V digital supply */
 
 		interrupts-extended = <&tlmm 123 IRQ_TYPE_LEVEL_LOW>; /* 3G: 45 */
 		reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
 
-		touchscreen-size-x = <1024>;
-		touchscreen-size-y = <768>;
-		active-interval-ms = <0>;
-		touch-timeout-ms = <255>;
-		lowpower-interval-ms = <10>;
-		bootloader-key = /bits/ 8 <0x00 0x01 0x02 0x03 0x04 0x05 0x06 0x07>;
+		/*
+		 * Wake GPIO is same as IRQ GPIO on TouchPad.
+		 * Use I2C SCL wakeup method as documented for mXT1386.
+		 */
+		atmel,wakeup-method = <ATMEL_MXT_WAKEUP_I2C_SCL>;
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&touch_pins>;
 	};
-#endif
 };
 
 &pm8058 {
