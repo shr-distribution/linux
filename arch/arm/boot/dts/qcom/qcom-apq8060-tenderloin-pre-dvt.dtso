@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * Device tree overlay for pre-DVT HP TouchPad boards (EVT1-EVT3)
+ *
+ * This overlay changes the A6 battery controller GPIO assignments
+ * from DVT/PVT (production) defaults to pre-DVT values.
+ *
+ * Apply this overlay for boards with bootloader reporting:
+ *   boardtype=topaz-Wifi-evt1
+ *   boardtype=topaz-Wifi-evt2
+ *   boardtype=topaz-Wifi-evt3
+ */
+
+/dts-v1/;
+/plugin/;
+
+&{/soc/gsbi@19800000/i2c@19880000/battery@31} {
+	/* A6_0 IRQ: GPIO 37 (DVT/PVT) -> GPIO 156 (pre-DVT) */
+	interrupts = <156 4>;  /* IRQ_TYPE_EDGE_FALLING = 4 */
+};
+
+&{/soc/gsbi@19800000/i2c@19880000/battery@32} {
+	/* A6_1 IRQ: GPIO 94 (DVT/PVT) -> GPIO 132 (pre-DVT) */
+	interrupts = <132 4>;  /* IRQ_TYPE_EDGE_FALLING = 4 */
+};
+
+/* Override pinctrl for pre-DVT GPIO assignments */
+&tlmm {
+	a6_0_default: a6-0-default-state {
+		irq-pins {
+			pins = "gpio156";  /* Pre-DVT uses GPIO 156 */
+		};
+	};
+
+	a6_1_default: a6-1-default-state {
+		irq-pins {
+			pins = "gpio132";  /* Pre-DVT uses GPIO 132 */
+		};
+	};
+};

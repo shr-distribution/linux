@@ -23,7 +23,16 @@ The HP TouchPad family mainline device tree implementation represents production
 - ✅ **All major hardware components** configured and ready
 - ✅ **DTBs build without errors** (cosmetic warnings only)
 
-### Recent Improvements (2025-12-31 to 2026-01-02):
+### Recent Improvements (2025-12-31 to 2026-01-03):
+
+**Session 7 (2026-01-03) - DVT/PVT Hardware Revision Support:**
+75. **Board revision research** - Documented all hardware revisions (EVT1-3, DVT, PVT) for WiFi and 3G models
+76. **A6 battery GPIO differences identified**:
+    - Pre-DVT (EVT1-EVT3): A6_0 IRQ=156, A6_1 IRQ=132
+    - DVT/PVT (production): A6_0 IRQ=37, A6_1 IRQ=94
+77. **Device tree updated for DVT/PVT** - Default configuration now targets production hardware
+78. **Pre-DVT overlay created** - `qcom-apq8060-tenderloin-pre-dvt.dtso` for EVT1-3 development boards
+79. **Hardware revision documentation** - Created comprehensive `reports/hp-touchpad-hardware-revisions.md`
 
 **Session 6 (2026-01-02) - Kernel Build Verification and Defconfig Update:**
 68. **Full kernel build verified** - zImage (9.4MB), 169 modules, all 4 DTBs
@@ -232,9 +241,13 @@ The HP TouchPad family mainline device tree implementation represents production
   - Status: PRODUCTION READY (both variants)
 
 - **A6 Battery Controllers** (TI MSP430):
-  - A6_0 (I2C 0x31): TCK=157, TDIO=158, WAKEUP=155, IRQ=156 (WiFi) / IRQ=37 (3G DVT)
-  - A6_1 (I2C 0x32): TCK=115, TDIO=116, WAKEUP=141 (WiFi) / IRQ=94 (3G DVT)
-  - **Note**: Mainline targets DVT (production) hardware
+  - A6_0 (I2C 0x31): TCK=157, TDIO=158, WAKEUP=155
+  - A6_1 (I2C 0x32): TCK=115, TDIO=116, WAKEUP=141
+  - **IRQ GPIO differs by hardware revision**: ⭐ UPDATED (2026-01-03)
+    - Pre-DVT (EVT1-EVT3): A6_0 IRQ=156, A6_1 IRQ=132
+    - DVT/PVT (production): A6_0 IRQ=37, A6_1 IRQ=94
+  - **Note**: Default device tree now targets DVT/PVT (production) hardware
+  - **Pre-DVT Support**: Use `qcom-apq8060-tenderloin-pre-dvt.dtso` overlay
   - **Driver Status**: Modernized with device tree, GPIO descriptors, power_supply framework
   - Status: PRODUCTION READY
 
@@ -910,7 +923,7 @@ The HP TouchPad family mainline kernel support is in **EXCELLENT** condition wit
 
 ---
 
-**Report Generated**: 2026-01-02 (Updated)
+**Report Generated**: 2026-01-03 (Updated)
 **Maintainer**: Herrie
 **Project**: HP TouchPad Family Mainline Kernel Support
 **Repositories**:

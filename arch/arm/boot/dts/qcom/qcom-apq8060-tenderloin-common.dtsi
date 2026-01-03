@@ -1063,7 +1063,16 @@
 		bias-disable;
 	};
 
-	/* A6 Battery Controller 0 (0x31) - SBW/JTAG pins */
+	/*
+	 * A6 Battery Controller 0 (0x31) - SBW/JTAG pins
+	 *
+	 * GPIO assignments differ between board revisions:
+	 * - Pre-DVT (EVT1-EVT3): IRQ on GPIO 156
+	 * - DVT/PVT (production): IRQ on GPIO 37
+	 *
+	 * Default configuration is for DVT/PVT (production devices).
+	 * For pre-DVT boards, change irq-pins to "gpio156".
+	 */
 	a6_0_default: a6-0-default-state {
 		sbw-pins {
 			pins = "gpio157", "gpio158";  /* TCK, TDIO */
@@ -1078,14 +1087,23 @@
 			bias-pull-up;
 		};
 		irq-pins {
-			pins = "gpio156";  /* IRQ */
+			pins = "gpio37";  /* IRQ - DVT/PVT (pre-DVT: gpio156) */
 			function = "gpio";
 			drive-strength = <2>;
 			bias-pull-up;
 		};
 	};
 
-	/* A6 Battery Controller 1 (0x32) - SBW/JTAG pins */
+	/*
+	 * A6 Battery Controller 1 (0x32) - SBW/JTAG pins
+	 *
+	 * GPIO assignments differ between board revisions:
+	 * - Pre-DVT (EVT1-EVT3): IRQ on GPIO 132
+	 * - DVT/PVT (production): IRQ on GPIO 94
+	 *
+	 * Default configuration is for DVT/PVT (production devices).
+	 * For pre-DVT boards, change irq-pins to "gpio132".
+	 */
 	a6_1_default: a6-1-default-state {
 		sbw-pins {
 			pins = "gpio115", "gpio116";  /* TCK, TDIO */
@@ -1100,7 +1118,7 @@
 			bias-pull-up;
 		};
 		irq-pins {
-			pins = "gpio132";  /* IRQ */
+			pins = "gpio94";  /* IRQ - DVT/PVT (pre-DVT: gpio132) */
 			function = "gpio";
 			drive-strength = <2>;
 			bias-pull-up;
@@ -1768,7 +1786,13 @@
 	/*
 	 * A6 Battery Controllers - TI MSP430 microcontrollers
 	 * These provide battery monitoring, fuel gauge, power management,
-	 * and Touchstone (inductive charging) support
+	 * and Touchstone (inductive charging) support.
+	 *
+	 * NOTE: Interrupt GPIO differs between board revisions:
+	 * - Pre-DVT (EVT1-EVT3): A6_0 IRQ=156, A6_1 IRQ=132
+	 * - DVT/PVT (production): A6_0 IRQ=37, A6_1 IRQ=94
+	 *
+	 * Default configuration is for DVT/PVT (production devices).
 	 */
 	a6_0: battery@31 {
 		compatible = "palm,a6-battery";
@@ -1781,9 +1805,9 @@
 		tdio-gpios = <&tlmm 158 GPIO_ACTIVE_HIGH>;
 		wakeup-gpios = <&tlmm 155 GPIO_ACTIVE_HIGH>;
 
-		/* Interrupt GPIO */
+		/* Interrupt GPIO - DVT/PVT uses GPIO 37 (pre-DVT: 156) */
 		interrupt-parent = <&tlmm>;
-		interrupts = <156 IRQ_TYPE_EDGE_FALLING>;
+		interrupts = <37 IRQ_TYPE_EDGE_FALLING>;
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&a6_0_default>;
@@ -1800,9 +1824,9 @@
 		tdio-gpios = <&tlmm 116 GPIO_ACTIVE_HIGH>;
 		wakeup-gpios = <&tlmm 141 GPIO_ACTIVE_HIGH>;
 
-		/* Interrupt GPIO */
+		/* Interrupt GPIO - DVT/PVT uses GPIO 94 (pre-DVT: 132) */
 		interrupt-parent = <&tlmm>;
-		interrupts = <132 IRQ_TYPE_EDGE_FALLING>;
+		interrupts = <94 IRQ_TYPE_EDGE_FALLING>;
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&a6_1_default>;
