@@ -14,18 +14,6 @@
 #include "qcom-msm8660.dtsi"
 #include "pm8058.dtsi"
 
-/*
- * Touchscreen interface mode:
- * 0 = I2C touchscreen + SWD firmware programmer + debug UART
- * 1 = I2C touchscreen only (no SWD/UART)
- */
-#define USE_I2C_TOUCHSCREEN_DRIVER 1
-#define USE_ADM_DMA 1
-#if USE_ADM_DMA
-#define ADM_USE_MASTER 0
-#define USE_SDCC_DMA 0
-#endif
-
 // beware, framebuffer conflicts with jack UART debugging
 #define USE_FRAMEBUFFER 0
 
@@ -37,9 +25,6 @@
 		mmc0 = &sdcc1;	/* mmcblk0 for eMMC/SD */
 		serial0 = &gsbi12_serial; /* Console - /dev/ttyMSM0 */
 		serial1 = &gsbi6_serial;  /* Bluetooth - /dev/ttyMSM1 */
-#if !USE_I2C_TOUCHSCREEN_DRIVER
-		serial2 = &gsbi10_serial; /* Touchscreen debug - /dev/ttyMSM2 */
-#endif
 		serial3 = &gsbi5_serial;  /* GPS - /dev/ttyMSM3 */
 		display0 = &lg_panel;
 	};
@@ -163,7 +148,6 @@
 		 *           0x18420000   INT_ADM1_AARM = irq 167
 		 *        or 0x18400000   INT_ADM1_MASTER = irq 166
 		 */
-#if USE_ADM_DMA
 		adm_dma0: dma-controller@18320000 {
 			compatible = "qcom,adm";
 			reg = <0x18320000 0x100000>;
@@ -181,17 +165,10 @@
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			qcom,ee = <1>;
 		};
-#if ADM_USE_MASTER
-		adm_dma1: dma-controller@18400000 {
-			compatible = "qcom,adm";
-			reg = <0x18400000 0x100000>;
-			interrupts = <GIC_SPI 166 IRQ_TYPE_LEVEL_HIGH>;
-#else
 		adm_dma1: dma-controller@18420000 {
 			compatible = "qcom,adm";
 			reg = <0x18420000 0x100000>;
 			interrupts = <GIC_SPI 167 IRQ_TYPE_LEVEL_HIGH>;
-#endif
 			#dma-cells = <1>;
 
 			clocks = <&gcc ADM1_CLK>, <&gcc ADM1_PBUS_CLK>;
@@ -203,13 +180,8 @@
 				 <&gcc ADM1_C1_RESET>,
 				 <&gcc ADM1_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
-#if ADM_USE_MASTER
-			qcom,ee = <0>;
-#else
 			qcom,ee = <1>;
-#endif
 		};
-#endif
 
 		gsbi4: gsbi@16300000 {
 			compatible = "qcom,gsbi-v1.0.0";
@@ -254,7 +226,7 @@
 				interrupts = <GIC_SPI 191 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&gcc GSBI10_UART_CLK>, <&gcc GSBI10_H_CLK>;
 				clock-names = "core", "iface";
-#if USE_ADM_DMA
+
 				dmas = <&adm_dma0 8>;
 				dma-names = "rx";
 				/*
@@ -264,7 +236,7 @@
 				 * qcom,tx-crci = <25>; (not used)
 				 */
 				qcom,rx-crci = <10>;
-#endif
+
 				status = "disabled";
 			};
 
@@ -909,24 +881,6 @@
 		enable-gpios = <&tlmm 79 GPIO_ACTIVE_HIGH>;
 		vcc-supply = <&pm8058_l5>;
 	};
-
-#if !USE_I2C_TOUCHSCREEN_DRIVER
-	/* SWD firmware programmer for CY8CTMA395 touchscreen controller */
-	touchscreen: cy8ctma395 {
-		compatible = "cypress,cy8ctma395";
-
-		/* Power supplies for touchscreen controller */
-		vdd-supply = <&pm8058_l10>;     /* 3.05V digital supply */
-		vcpin-supply = <&vdd50_boost>;  /* 5V analog supply */
-
-		/* GPIOs for SWD programming interface
-		 * Note: wake GPIO differs between WiFi (123) and 3G (45) models
-		 * This is handled by device-specific overlays
-		 */
-		pinctrl-names = "default";
-		pinctrl-0 = <&cy8ctma395_default_state>;
-	};
-#endif
 };
 
 &tlmm {
@@ -1351,21 +1305,6 @@
 			pins = "gpio72", "gpio73";
 			function = "gsbi10";
 			drive-strength = <8>;
-			bias-disable;
-		};
-	};
-
-	gsbi10_serial_pins: gsbi10-serial-state {
-		reset-pins {
-			pins = "gpio70"; // TP_PWR_RST
-			function = "gsbi10";
-			drive-strength = <8>;
-			bias-disable;
-		};
-		tx-pins {
-			pins = "gpio71";
-			function = "gsbi10";
-			drive-strength = <2>;
 			bias-disable;
 		};
 	};
@@ -1836,20 +1775,8 @@
 &gsbi10 {
 	status = "okay";
 
-#if USE_I2C_TOUCHSCREEN_DRIVER
 	qcom,mode = <GSBI_PROT_I2C>;
-#else
-	qcom,mode = <GSBI_PROT_I2C_UART>;
-#endif
 };
-
-#if !USE_I2C_TOUCHSCREEN_DRIVER
-&gsbi10_serial {
-	status = "okay";
-	pinctrl-names = "default";
-	pinctrl-0 = <&gsbi10_serial_pins>;
-};
-#endif
 
 &gsbi10_i2c {
 	status = "okay";
