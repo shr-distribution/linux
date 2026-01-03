@@ -30,11 +30,12 @@
 
 	aliases {
 		mmc0 = &sdcc1;	/* mmcblk0 for eMMC/SD */
-		serial0 = &gsbi12_serial; // becomes /dev/ttyMSM0
-		serial1 = &gsbi6_serial;  // becomes /dev/ttyMSM1
+		serial0 = &gsbi12_serial; /* Console - /dev/ttyMSM0 */
+		serial1 = &gsbi6_serial;  /* Bluetooth - /dev/ttyMSM1 */
 #if !USE_I2C_TOUCHSCREEN_DRIVER
-		serial2 = &gsbi10_serial; // becomes /dev/ttyMSM2
+		serial2 = &gsbi10_serial; /* Touchscreen debug - /dev/ttyMSM2 */
 #endif
+		serial3 = &gsbi5_serial;  /* GPS - /dev/ttyMSM3 */
 		display0 = &lg_panel;
 	};
 
@@ -924,6 +925,26 @@
 };
 
 &tlmm {
+	/*
+	 * WM8958 audio codec internal LDO enable GPIOs.
+	 * These must be enabled early (before the WM8994 MFD driver probes)
+	 * because the chip won't respond on I2C until its internal LDOs
+	 * are powered. Use GPIO hogs to ensure they're enabled at boot.
+	 */
+	aud-ldo1-hog {
+		gpio-hog;
+		gpios = <66 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "AUD_LDO1_EN";
+	};
+
+	aud-ldo2-hog {
+		gpio-hog;
+		gpios = <108 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "AUD_LDO2_EN";
+	};
+
 	/* eMMC pins, all 8 data lines connected */
 	emmc_pins: sdcc1-state {
 		clk-pins {
