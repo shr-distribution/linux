@@ -25,6 +25,36 @@ The HP TouchPad family mainline device tree implementation represents production
 
 ### Recent Improvements (2025-12-31 to 2026-01-03):
 
+**Session 8 (2026-01-03) - First Boot Testing on Real Hardware:** ⭐ NEW
+80. **Kernel successfully boots** - Linux 6.18.0-00039-g5485c7354ad9 boots on HP TouchPad (Topaz WiFi)
+81. **Boot infrastructure created**:
+    - `scripts/pack-uimage.sh` - Packs zImage+DTB+initramfs into uImage.LuneOS format
+    - `scripts/deploy-to-touchpad.sh` - Deploys kernel via novacom with moboot.next/default
+    - `docs/touchpad-connection-guide.md` - Connection and debugging documentation
+82. **Initramfs modified for debugging**:
+    - Telnetd with direct shell access (`-l /bin/sh` bypasses login)
+    - Forced recovery mode for kernel testing
+    - USB network setup with retry logic
+    - moboot.next removal for safe reboot to webOS
+83. **Test script created** - `scripts/run-kernel-tests.sh` for automated hardware verification
+84. **Hardware test results** (first boot):
+    - ✅ Kernel boot: 6.18.0-00039-g5485c7354ad9 on HP TouchPad (Topaz WiFi)
+    - ✅ Dual CPU cores: 2 Scorpion cores detected
+    - ✅ Memory: 837MB RAM
+    - ✅ USB gadget: ci_hdrc.0 working (Ethernet gadget for telnet)
+    - ✅ eMMC: 14 partitions detected
+    - ✅ Regulators: 60 regulators initialized
+    - ✅ Accelerometer: lsm303dlh_accel (IIO device)
+    - ✅ Gyroscope: mpu3050 (IIO device)
+    - ✅ Charger: max8903_charger detected
+    - ✅ Input: PMIC8XXX keypad, pmic8xxx_pwrkey, pm8xxx_vib_ffmemless
+    - ⚠️ DRM/Display: card0 probe incomplete (only version visible)
+    - ❌ LEDs: LM8502 not probed
+    - ❌ Touchscreen: Not detected in input devices
+85. **HDMI errors identified**:
+    - qfprom_physical resource not found (non-critical)
+    - HPD GPIO error (pin-172 EINVAL) - needs investigation
+
 **Session 7 (2026-01-03) - DVT/PVT Hardware Revision Support:**
 75. **Board revision research** - Documented all hardware revisions (EVT1-3, DVT, PVT) for WiFi and 3G models
 76. **A6 battery GPIO differences identified**:
