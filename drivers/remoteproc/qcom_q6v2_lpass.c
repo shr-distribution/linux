@@ -14,11 +14,13 @@
 #include <linux/firmware.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/remoteproc.h>
 #include <linux/soc/qcom/mdt_loader.h>
 #include <linux/firmware/qcom/qcom_scm.h>
@@ -65,7 +67,7 @@ struct q6v2_lpass {
 	struct device *dev;
 	struct rproc *rproc;
 
-	void __iomem *lcc_base;		/* LCC (LPASS Clock Controller) base */
+	struct regmap *lcc_regmap;	/* LCC (LPASS Clock Controller) regmap */
 	void __iomem *qdsp6ss_base;	/* QDSP6 Subsystem base */
 
 	struct clk *pll;		/* PLL4 - LPASS PLL */
@@ -127,12 +129,17 @@ static int q6v2_lpass_start_trusted(struct q6v2_lpass *q6v2)
 static int q6v2_lpass_start_untrusted(struct q6v2_lpass *q6v2)
 {
 	u32 reg;
+	int ret;
+
+	/* Read current Q6_FUNC register value */
+	ret = regmap_read(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, &reg);
+	if (ret)
+		return ret;
 
 	/* Put Q6 into reset */
-	reg = readl(q6v2->lcc_base + LCC_Q6_FUNC_OFFSET);
 	reg |= Q6SS_SS_ARES | Q6SS_ISDB_ARES | Q6SS_ETM_ARES | STOP_CORE | CORE_ARES;
 	reg &= ~CORE_GFM4_CLK_EN;
-	writel(reg, q6v2->lcc_base + LCC_Q6_FUNC_OFFSET);
+	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
 
 	/* Wait 8 AHB cycles for Q6 to be fully reset (AHB = 1.5MHz) */
 	usleep_range(20, 30);
@@ -140,11 +147,11 @@ static int q6v2_lpass_start_untrusted(struct q6v2_lpass *q6v2)
 	/* Turn on Q6 memory */
 	reg |= CORE_GFM4_CLK_EN | CORE_L1_MEM_CORE_EN | CORE_TCM_MEM_CORE_EN |
 	       CORE_TCM_MEM_PERPH_EN;
-	writel(reg, q6v2->lcc_base + LCC_Q6_FUNC_OFFSET);
+	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
 
 	/* Turn on Q6 core clocks and take core out of reset */
 	reg &= ~(CLAMP_IO | Q6SS_SS_ARES | Q6SS_ISDB_ARES | Q6SS_ETM_ARES | CORE_ARES);
-	writel(reg, q6v2->lcc_base + LCC_Q6_FUNC_OFFSET);
+	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
 
 	/* Wait for clocks to be enabled */
 	mb();
@@ -164,7 +171,7 @@ static int q6v2_lpass_start_untrusted(struct q6v2_lpass *q6v2)
 
 	/* Start Q6 instruction execution */
 	reg &= ~STOP_CORE;
-	writel(reg, q6v2->lcc_base + LCC_Q6_FUNC_OFFSET);
+	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
 
 	return 0;
 }
@@ -210,21 +217,24 @@ static int q6v2_lpass_stop_trusted(struct q6v2_lpass *q6v2)
 static int q6v2_lpass_stop_untrusted(struct q6v2_lpass *q6v2)
 {
 	u32 reg;
+	int ret;
 
-	reg = readl(q6v2->lcc_base + LCC_Q6_FUNC_OFFSET);
+	ret = regmap_read(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, &reg);
+	if (ret)
+		return ret;
 
 	/* Stop Q6 execution */
 	reg |= STOP_CORE;
-	writel(reg, q6v2->lcc_base + LCC_Q6_FUNC_OFFSET);
+	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
 
 	/* Halt clocks and turn off memory */
 	reg &= ~(CORE_L1_MEM_CORE_EN | CORE_TCM_MEM_CORE_EN | CORE_TCM_MEM_PERPH_EN);
 	reg |= CLAMP_IO;
-	writel(reg, q6v2->lcc_base + LCC_Q6_FUNC_OFFSET);
+	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
 
 	/* Put Q6 into reset */
 	reg |= Q6SS_SS_ARES | Q6SS_ISDB_ARES | Q6SS_ETM_ARES | CORE_ARES;
-	writel(reg, q6v2->lcc_base + LCC_Q6_FUNC_OFFSET);
+	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
 
 	return 0;
 }
@@ -324,10 +334,11 @@ static int q6v2_lpass_probe(struct platform_device *pdev)
 	dev_info(dev, "Using %s boot mode\n",
 		 q6v2->use_pas ? "PAS (trusted)" : "direct (untrusted)");
 
-	/* Map LCC (LPASS Clock Controller) */
-	q6v2->lcc_base = devm_platform_ioremap_resource_byname(pdev, "lcc");
-	if (IS_ERR(q6v2->lcc_base))
-		return PTR_ERR(q6v2->lcc_base);
+	/* Get LCC regmap via syscon - shared with LCC clock controller */
+	q6v2->lcc_regmap = syscon_regmap_lookup_by_phandle(dev->of_node, "qcom,lcc");
+	if (IS_ERR(q6v2->lcc_regmap))
+		return dev_err_probe(dev, PTR_ERR(q6v2->lcc_regmap),
+				     "Failed to get LCC syscon\n");
 
 	/* Map QDSP6SS (QDSP6 SubSystem) */
 	q6v2->qdsp6ss_base = devm_platform_ioremap_resource_byname(pdev, "qdsp6ss");

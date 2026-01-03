@@ -148,7 +148,7 @@
 		};
 
 		lcc: clock-controller@28000000 {
-			compatible = "qcom,lcc-msm8660";
+			compatible = "qcom,lcc-msm8660", "syscon";
 			reg = <0x28000000 0x1000>;
 			#clock-cells = <1>;
 			#reset-cells = <1>;
@@ -169,6 +169,8 @@
 			compatible = "qcom,msm8660-lpass-pil";
 			reg = <0x28800000 0x1000>;
 			reg-names = "qdsp6ss";
+
+			qcom,lcc = <&lcc>;
 
 			clocks = <&lcc PLL4>;
 			clock-names = "pll";
