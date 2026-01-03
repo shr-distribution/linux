@@ -25,7 +25,25 @@ The HP TouchPad family mainline device tree implementation represents production
 
 ### Recent Improvements (2025-12-31 to 2026-01-03):
 
-**Session 8 (2026-01-03) - First Boot Testing on Real Hardware:** ⭐ NEW
+**Session 9 (2026-01-03) - Driver Configuration Fixes:** ⭐ NEW
+86. **Touchscreen driver fix** - Device tree uses `atmel,maxtouch` compatible but kernel had CYTTSP enabled
+    - Root cause: `CONFIG_TOUCHSCREEN_CYTTSP_CORE=y` instead of `CONFIG_TOUCHSCREEN_ATMEL_MXT=y`
+    - Fix: Enabled `CONFIG_TOUCHSCREEN_ATMEL_MXT=y` for Atmel mXT1386 controller
+87. **Backlight PWM driver fix** - Device tree uses PM8058 LPG PWM but driver was not enabled
+    - Root cause: `CONFIG_PWM_PM8058` was not set
+    - Fix: Enabled `CONFIG_PWM_PM8058=y` for backlight PWM output
+88. **LM8502 LED driver assessment** - Driver needs to be ported from webOS kernel
+    - Source: `/home/herrie/webos/touchpad-kernel/webos-linux-kernel-opal/drivers/leds/leds-lm8502.c`
+    - Status: 2011 driver uses old APIs, needs significant modernization for kernel 6.18
+    - Marked as future task for LED support
+89. **DRM/Display analysis** - Configuration appears complete:
+    - `CONFIG_DRM_MSM=y`, `CONFIG_DRM_MSM_MDP4=y`, `CONFIG_DRM_PANEL_SIMPLE=y`
+    - Device tree has proper LVDS panel configuration
+    - Backlight was missing PWM driver (now fixed)
+90. **Commits pushed**:
+    - `f93c38c28544` - ARM: configs: tenderloin: Fix touchscreen and backlight drivers
+
+**Session 8 (2026-01-03) - First Boot Testing on Real Hardware:**
 80. **Kernel successfully boots** - Linux 6.18.0-00039-g5485c7354ad9 boots on HP TouchPad (Topaz WiFi)
 81. **Boot infrastructure created**:
     - `scripts/pack-uimage.sh` - Packs zImage+DTB+initramfs into uImage.LuneOS format
@@ -49,8 +67,9 @@ The HP TouchPad family mainline device tree implementation represents production
     - ✅ Charger: max8903_charger detected
     - ✅ Input: PMIC8XXX keypad, pmic8xxx_pwrkey, pm8xxx_vib_ffmemless
     - ⚠️ DRM/Display: card0 probe incomplete (only version visible)
-    - ❌ LEDs: LM8502 not probed
-    - ❌ Touchscreen: Not detected in input devices
+    - ❌ LEDs: LM8502 not probed (driver needs porting)
+    - ❌ Touchscreen: Not detected (wrong driver - NOW FIXED)
+    - ❌ Backlight: Not detected (PWM driver missing - NOW FIXED)
 85. **HDMI errors identified**:
     - qfprom_physical resource not found (non-critical)
     - HPD GPIO error (pin-172 EINVAL) - needs investigation
