@@ -524,6 +524,17 @@ config PWM_NTXEC
 	  controller found in certain e-book readers designed by the original
 	  design manufacturer Netronix.
 
+config PWM_PM8058
+	tristate "Qualcomm PM8058 PWM support"
+	depends on MFD_PM8XXX
+	help
+	  Generic PWM framework driver for the Qualcomm PM8058 PMIC's
+	  LPG (Light Pulse Generator) module. This can be used for
+	  controlling backlights and LEDs.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-pm8058.
+
 config PWM_OMAP_DMTIMER
 	tristate "OMAP Dual-Mode Timer PWM support"
 	depends on OF
