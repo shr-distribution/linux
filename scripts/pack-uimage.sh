@@ -128,3 +128,42 @@ ls -lh "$OUTPUT"
 # Also create moboot.next for auto-boot
 echo "LuneOS" > "$BUILD_OUTPUT/moboot.next"
 echo "Created: $BUILD_OUTPUT/moboot.next"
+
+# Archive the build for historical record
+ARCHIVE_DIR="$BUILD_OUTPUT/archive"
+mkdir -p "$ARCHIVE_DIR"
+
+# Get commit info
+if command -v git &> /dev/null && git rev-parse --git-dir > /dev/null 2>&1; then
+    COMMIT_SHORT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    COMMIT_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+    COMMIT_MSG=$(git log -1 --format="%s" 2>/dev/null || echo "unknown")
+    COMMIT_DATE=$(git log -1 --format="%ci" 2>/dev/null || echo "unknown")
+else
+    COMMIT_SHORT="unknown"
+    COMMIT_FULL="unknown"
+    COMMIT_MSG="unknown"
+    COMMIT_DATE="unknown"
+fi
+
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+ARCHIVE_NAME="${TIMESTAMP}_${COMMIT_SHORT}"
+ARCHIVE_PATH="$ARCHIVE_DIR/$ARCHIVE_NAME"
+
+mkdir -p "$ARCHIVE_PATH"
+cp "$OUTPUT" "$ARCHIVE_PATH/"
+
+# Save build info
+cat > "$ARCHIVE_PATH/build-info.txt" << BUILDINFO
+Build Timestamp: $(date '+%Y-%m-%d %H:%M:%S')
+Commit: $COMMIT_FULL
+Commit Date: $COMMIT_DATE
+Subject: $COMMIT_MSG
+Variant: $VARIANT
+Kernel: $ZIMAGE
+DTB: $DTB
+Initramfs: $INITRAMFS_INPUT
+BUILDINFO
+
+echo ""
+echo "Archived to: $ARCHIVE_PATH"

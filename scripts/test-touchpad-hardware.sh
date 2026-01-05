@@ -13,7 +13,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KERNEL_DIR="$(dirname "$SCRIPT_DIR")"
+PARENT_DIR="$(dirname "$KERNEL_DIR")"
 REPORT_DIR="$KERNEL_DIR/reports"
+BUILD_OUTPUT="$PARENT_DIR/build-output"
+ARCHIVE_DIR="$BUILD_OUTPUT/archive"
 REPORT_NAME="${1:-hardware-test-$(date +%Y%m%d-%H%M%S)}"
 REPORT_FILE="$REPORT_DIR/${REPORT_NAME}.md"
 
@@ -961,6 +964,15 @@ main() {
     # Run tests
     status "Starting hardware tests..."
     run_tests
+
+    # Copy report to latest archive if it exists
+    if [ -d "$ARCHIVE_DIR" ]; then
+        LATEST_ARCHIVE=$(ls -td "$ARCHIVE_DIR"/*/ 2>/dev/null | head -1)
+        if [ -n "$LATEST_ARCHIVE" ] && [ -d "$LATEST_ARCHIVE" ]; then
+            cp "$REPORT_FILE" "$LATEST_ARCHIVE/hardware-test.md"
+            status "Report also saved to: $LATEST_ARCHIVE/hardware-test.md"
+        fi
+    fi
 
     echo ""
     status "Done! View report with: cat $REPORT_FILE"
