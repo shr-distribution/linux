@@ -30,6 +30,7 @@
 #include <linux/delay.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
 #include <linux/pm.h>
 
 /* LM8502 Register Map */
@@ -127,6 +128,7 @@ struct lm8502_led {
 struct lm8502_data {
 	struct i2c_client *client;
 	struct regmap *regmap;
+	struct regulator *vcc;
 	struct mutex lock;
 	struct gpio_desc *enable_gpio;
 	struct lm8502_led leds[LM8502_MAX_LEDS];
@@ -276,13 +278,33 @@ static int lm8502_probe(struct i2c_client *client)
 		return ret;
 	}
 
+	/* Get optional power supply */
+	priv->vcc = devm_regulator_get_optional(dev, "vcc");
+	if (IS_ERR(priv->vcc)) {
+		ret = PTR_ERR(priv->vcc);
+		if (ret == -ENODEV) {
+			priv->vcc = NULL;
+		} else {
+			return dev_err_probe(dev, ret, "Failed to get vcc supply\n");
+		}
+	}
+
+	/* Enable power supply if available */
+	if (priv->vcc) {
+		ret = regulator_enable(priv->vcc);
+		if (ret) {
+			dev_err(dev, "Failed to enable vcc supply: %d\n", ret);
+			return ret;
+		}
+	}
+
 	/* Get enable GPIO */
 	priv->enable_gpio = devm_gpiod_get_optional(dev, "enable",
 						    GPIOD_OUT_HIGH);
 	if (IS_ERR(priv->enable_gpio)) {
 		ret = PTR_ERR(priv->enable_gpio);
 		dev_err(dev, "Failed to get enable GPIO: %d\n", ret);
-		return ret;
+		goto err_disable_vcc;
 	}
 
 	/* Enable the chip via GPIO if available */
@@ -294,19 +316,24 @@ static int lm8502_probe(struct i2c_client *client)
 	ret = lm8502_chip_init(priv);
 	if (ret) {
 		dev_err(dev, "Failed to initialize chip: %d\n", ret);
-		return ret;
+		goto err_disable_vcc;
 	}
 
 	ret = lm8502_parse_dt(priv);
 	if (ret) {
 		dev_err(dev, "Failed to parse device tree: %d\n", ret);
-		return ret;
+		goto err_disable_vcc;
 	}
 
 	dev_info(dev, "LM8502 LED controller initialized with %d LEDs\n",
 		 priv->num_leds);
 
 	return 0;
+
+err_disable_vcc:
+	if (priv->vcc)
+		regulator_disable(priv->vcc);
+	return ret;
 }
 
 static void lm8502_remove(struct i2c_client *client)
@@ -316,6 +343,10 @@ static void lm8502_remove(struct i2c_client *client)
 	/* Disable the chip */
 	if (priv->enable_gpio)
 		gpiod_set_value_cansleep(priv->enable_gpio, 0);
+
+	/* Disable power supply */
+	if (priv->vcc)
+		regulator_disable(priv->vcc);
 }
 
 static int lm8502_suspend(struct device *dev)
@@ -339,6 +370,9 @@ static int lm8502_suspend(struct device *dev)
 	if (priv->enable_gpio)
 		gpiod_set_value_cansleep(priv->enable_gpio, 0);
 
+	if (priv->vcc)
+		regulator_disable(priv->vcc);
+
 	priv->suspended = true;
 
 	return 0;
@@ -351,6 +385,14 @@ static int lm8502_resume(struct device *dev)
 
 	if (!priv->suspended)
 		return 0;
+
+	if (priv->vcc) {
+		ret = regulator_enable(priv->vcc);
+		if (ret) {
+			dev_err(dev, "Failed to enable vcc supply: %d\n", ret);
+			return ret;
+		}
+	}
 
 	if (priv->enable_gpio)
 		gpiod_set_value_cansleep(priv->enable_gpio, 1);
