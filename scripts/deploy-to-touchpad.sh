@@ -4,10 +4,13 @@
 # This script:
 # 1. Mounts /boot as read-write
 # 2. Pushes uImage.LuneOS to /boot
-# 3. Creates/updates moboot.default to boot LuneOS by default
+# 3. Creates moboot.next for one-time boot to LuneOS
+#    (moboot.next is deleted by initramfs on successful boot)
+#
+# Usage: ./scripts/deploy-to-touchpad.sh [--reboot]
 #
 # Prerequisites:
-# - Device connected via USB with novacom access
+# - Device connected via USB with novacom access (webOS booted)
 # - uImage.LuneOS built (run scripts/pack-uimage.sh first)
 
 set -e
@@ -15,9 +18,14 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KERNEL_DIR="$(dirname "$SCRIPT_DIR")"
 PARENT_DIR="$(dirname "$KERNEL_DIR")"
+BUILD_OUTPUT="$PARENT_DIR/build-output"
 
-UIMAGE="$PARENT_DIR/uImage.LuneOS"
+UIMAGE="$BUILD_OUTPUT/uImage.LuneOS"
+MOBOOT_NEXT="$BUILD_OUTPUT/moboot.next"
 BOOT_IMAGE_NAME="LuneOS"
+
+DO_REBOOT=false
+[ "$1" = "--reboot" ] && DO_REBOOT=true
 
 # Check for novacom
 if ! command -v novacom &> /dev/null; then
@@ -38,6 +46,13 @@ if [ ! -f "$UIMAGE" ]; then
     exit 1
 fi
 
+# Check for moboot.next
+if [ ! -f "$MOBOOT_NEXT" ]; then
+    echo "Error: moboot.next not found at $MOBOOT_NEXT"
+    echo "Run './scripts/pack-uimage.sh' first to create it"
+    exit 1
+fi
+
 echo "=== Deploying kernel to HP TouchPad ==="
 echo ""
 
@@ -48,44 +63,38 @@ echo "  Done."
 
 # Step 2: Push uImage.LuneOS
 echo ""
-echo "Step 2: Pushing uImage.LuneOS to /boot..."
+echo "Step 2: Pushing uImage.LuneOS to /boot ($(du -h "$UIMAGE" | cut -f1))..."
 novacom put file:///boot/uImage.LuneOS < "$UIMAGE"
 echo "  Done."
 
-# Step 3: Set moboot.default to webOS (safe default)
+# Step 3: Set moboot.next to LuneOS (one-time boot)
+# Note: moboot.next is deleted by the LuneOS initramfs on successful boot
 echo ""
-echo "Step 3: Setting default boot to webOS..."
-echo "webOS" | novacom put file:///boot/moboot.default
+echo "Step 3: Setting next boot to LuneOS (via moboot.next)..."
+novacom put file:///boot/moboot.next < "$MOBOOT_NEXT"
 echo "  Done."
 
-# Step 3b: Set moboot.next to LuneOS (one-time boot)
+# Step 4: Sync
 echo ""
-echo "Step 3b: Setting next boot to LuneOS..."
-echo "$BOOT_IMAGE_NAME" | novacom put file:///boot/moboot.next
-echo "  Done."
-
-# Step 4: Verify
-echo ""
-echo "Step 4: Verifying deployment..."
-echo "  /boot contents:"
-novacom run file:///bin/ls /boot/uImage.LuneOS /boot/moboot.default /boot/moboot.next
-echo ""
-echo "  moboot.default (safe default):"
-novacom run file:///bin/cat /boot/moboot.default
-echo ""
-echo "  moboot.next (one-time boot):"
-novacom run file:///bin/cat /boot/moboot.next
-
-# Step 5: Remount /boot as read-only (optional, for safety)
-echo ""
-echo "Step 5: Remounting /boot as read-only..."
-novacom run "file:///bin/mount" -- -o remount,ro /boot
+echo "Step 4: Syncing filesystem..."
+novacom run file:///bin/sync
 echo "  Done."
 
 echo ""
 echo "=== Deployment complete ==="
 echo ""
 echo "Next reboot: LuneOS (one-time via moboot.next)"
-echo "After that:  webOS (default via moboot.default)"
+echo "After that:  webOS (moboot.next deleted by initramfs on successful boot)"
 echo ""
-echo "To reboot now, run: novacom run file:///sbin/reboot"
+
+if [ "$DO_REBOOT" = true ]; then
+    echo "Rebooting device..."
+    novacom run file:///sbin/tellbootie -- reboot 2>/dev/null || true
+    echo ""
+    echo "Device is rebooting. After boot, run:"
+    echo "  ./scripts/test-touchpad-hardware.sh"
+else
+    echo "To reboot and test:"
+    echo "  novacom run file:///sbin/tellbootie -- reboot"
+    echo "  ./scripts/test-touchpad-hardware.sh"
+fi

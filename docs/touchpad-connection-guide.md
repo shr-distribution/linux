@@ -4,6 +4,19 @@
 - HP TouchPad with moboot bootloader
 - USB cable connected to host
 - Kernel built and packed as uImage.LuneOS
+- initramfs-uImage.bin in parent directory (../initramfs-uImage.bin)
+
+## uImage Format Requirements
+
+**CRITICAL**: moboot has specific requirements for the uImage format:
+
+1. **Multi-file uImage**: Load/entry address must be `0x00000000`
+2. **Kernel uImage (Image 0)**: Load/entry address `0x40208000`
+3. **Initramfs uImage (Image 1)**: Compression header must be `none` (NOT `gzip`)
+   - Even if the data is gzip compressed, the header must say "uncompressed"
+   - moboot checks the header and rejects images marked as gzip
+
+The `pack-uimage.sh` script handles all of this automatically.
 
 ## Building and Deploying the Kernel
 
@@ -16,7 +29,8 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage modules dtbs
 ### 2. Pack the kernel into uImage format
 ```bash
 ./scripts/pack-uimage.sh topaz
-# Output: ../uImage.LuneOS
+# Output: ../build-output/uImage.LuneOS
+# Also creates: ../build-output/moboot.next
 ```
 
 ### 3. Deploy to TouchPad (via novacom - requires webOS booted)
@@ -27,19 +41,15 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage modules dtbs
 Or manually:
 ```bash
 # Remount /boot read-write
-novacom run "file:///bin/mount" -- -o remount,rw /boot
+novacom run file://bin/mount -- -o remount,rw /boot
 
-# Push kernel
-novacom put file:///boot/uImage.LuneOS < ../uImage.LuneOS
+# Push kernel and moboot.next (for auto-boot)
+novacom put file:///boot/uImage.LuneOS < ../build-output/uImage.LuneOS
+novacom put file:///boot/moboot.next < ../build-output/moboot.next
 
-# Set default boot to LuneOS
-echo "LuneOS" | novacom put file:///boot/moboot.default
-
-# Remount /boot read-only
-novacom run "file:///bin/mount" -- -o remount,ro /boot
-
-# Reboot
-novacom run file:///sbin/reboot
+# Sync and reboot
+novacom run file://bin/sync
+novacom run file://sbin/tellbootie -- reboot
 ```
 
 ## Connecting After Boot
@@ -83,7 +93,14 @@ sudo ip link set $IFACE up
 ping -c 3 172.16.42.2
 ```
 
-### 5. SSH into the device
+### 5. Connect to the device
+
+**Debug/initramfs mode** (telnet):
+```bash
+telnet 172.16.42.2
+```
+
+**Full LuneOS boot** (SSH):
 ```bash
 ssh root@172.16.42.2
 # Password: (blank - just press Enter)
@@ -95,22 +112,23 @@ ssh root@172.16.42.2
 - Check USB cable connection
 - Device may still be at moboot menu - select LuneOS
 - Device may be out of battery - charge it
+- Check `lsusb | grep -E "0525|0830"` for device state
 
-### No route to host
-- Check if interface is up: `ip link show $IFACE`
-- Reconfigure IP if needed
+### No route to host / Packet filtered
+- Host IP not configured on USB interface
+- Run the sudo commands to configure the interface IP
+- Check `ip addr show` to verify the interface has 172.16.42.1
 
-### SSH connection reset
-- Device may be in early boot (SSH not ready yet)
-- Wait a few more seconds and retry
-- Check if dropbear/SSH daemon is running on device
+### Connection refused
+- SSH (port 22): Not available in initramfs debug mode, use telnet
+- Telnet (port 23): telnetd may not have started yet, wait a few seconds
 
-### Device boots to recovery/telnet instead of SSH
-The initramfs has two modes:
-- **Normal boot**: Mounts luneos-root and switches to it (SSH via dropbear on rootfs)
-- **Recovery mode**: Stays in initramfs with telnetd (connect via telnet, not SSH)
-
-If telnet works but SSH doesn't, the device may be stuck in recovery mode.
+### moboot shows "compression not supported"
+The initramfs uImage has wrong compression header. The script should auto-fix this,
+but if using a custom initramfs, ensure it's packed with `-C none`:
+```bash
+mkimage -A arm -O linux -T ramdisk -C none -a 0 -e 0 -n "initramfs" -d initramfs.cpio.gz initramfs-uImage.bin
+```
 
 ## Network Configuration Summary
 
@@ -125,17 +143,22 @@ If telnet works but SSH doesn't, the device may be stuck in recovery mode.
 # Build everything
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage modules dtbs
 
-# Pack uImage
+# Pack uImage (creates ../build-output/uImage.LuneOS and moboot.next)
 ./scripts/pack-uimage.sh topaz
 
 # Deploy (webOS must be running)
-./scripts/deploy-to-touchpad.sh
+novacom run file://bin/mount -- -o remount,rw /boot
+novacom put file:///boot/uImage.LuneOS < ../build-output/uImage.LuneOS
+novacom put file:///boot/moboot.next < ../build-output/moboot.next
+novacom run file://bin/sync
+novacom run file://sbin/tellbootie -- reboot
 
 # After reboot, configure host network
 IFACE=$(ip -o link show | grep -oP 'enx[a-f0-9]+')
 sudo ip addr add 172.16.42.1/16 dev $IFACE
 sudo ip link set $IFACE up
 
-# Connect
-ssh root@172.16.42.2
+# Connect (debug mode uses telnet, full boot uses SSH)
+telnet 172.16.42.2      # initramfs debug mode
+ssh root@172.16.42.2    # full LuneOS boot
 ```
