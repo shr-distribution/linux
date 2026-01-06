@@ -740,8 +740,6 @@
 			compatible = "qcom,hdmi-tx-8660";
 			reg = <0x04a00000 0x2f0>;
 			reg-names = "core_physical";
-			/* Disabled: TouchPad uses LVDS panel, HDMI HPD GPIO has issues */
-			status = "disabled";
 
 			interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_HIGH>;
 
@@ -787,7 +785,6 @@
 			compatible = "qcom,hdmi-phy-8660";
 			reg = <0x4a00400 0x60>,
 			      <0x4a00500 0x100>;
-			status = "disabled";
 			reg-names = "hdmi_phy",
 				    "hdmi_pll";
 
