@@ -214,7 +214,7 @@
  * Note: Not supported on all versions of ROM firmware.
  */
 
-#define BMI_COMMUNICATION_TIMEOUT       1000 /* in msec */
+#define BMI_COMMUNICATION_TIMEOUT       5000 /* in msec - increased for AR6003 */
 
 struct ath6kl;
 struct ath6kl_bmi_target_info {
