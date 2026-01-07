@@ -68,20 +68,15 @@ static int pm8058_pwm_bank_sel(struct pm8058_pwm_chip *chip, unsigned int bank)
 	return regmap_write(chip->regmap, chip->base + LPG_BANK_SEL_REG, bank);
 }
 
+/* Called with chip->lock held */
 static int pm8058_pwm_bank_enable(struct pm8058_pwm_chip *chip, unsigned int bank, bool enable)
 {
-	int ret;
-
-	mutex_lock(&chip->lock);
 	if (enable)
 		chip->bank_mask |= BIT(bank);
 	else
 		chip->bank_mask &= ~BIT(bank);
 
-	ret = regmap_write(chip->regmap, chip->base + LPG_BANK_EN_REG, chip->bank_mask);
-	mutex_unlock(&chip->lock);
-
-	return ret;
+	return regmap_write(chip->regmap, chip->base + LPG_BANK_EN_REG, chip->bank_mask);
 }
 
 static int pm8058_pwm_apply(struct pwm_chip *pwm_chip, struct pwm_device *pwm,
