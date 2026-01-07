@@ -108,28 +108,16 @@ static int pm8058_pwm_apply(struct pwm_chip *pwm_chip, struct pwm_device *pwm,
 	}
 
 	/*
-	 * Simple clock selection:
-	 * - Use 19.2MHz clock with pre-div 2 for short periods
-	 * - Use 32kHz for medium periods
-	 * - Use 1kHz for long periods
-	 * Use 9-bit PWM size for better resolution.
+	 * Use 19.2MHz clock for all cases to ensure high PWM frequency
+	 * and avoid visible backlight flicker. With 9-bit PWM and pre-div 2:
+	 * - m=0: 19.2MHz/2/1/512 = ~18.75kHz (no flicker)
+	 * - m=1: 19.2MHz/2/2/512 = ~9.4kHz
+	 * - m=2: 19.2MHz/2/4/512 = ~4.7kHz
+	 * Always use m=0 for highest frequency.
 	 */
-	if (period_ns < 100000) {
-		/* < 100us: use 19.2MHz, pre-div 2 */
-		clk_sel = PWM_CLK_19P2MHZ;
-		pre_div = PWM_PREDIV_2;
-		m = 0;
-	} else if (period_ns < 1000000) {
-		/* < 1ms: use 32kHz, pre-div 2 */
-		clk_sel = PWM_CLK_32KHZ;
-		pre_div = PWM_PREDIV_2;
-		m = 2;
-	} else {
-		/* >= 1ms: use 1kHz, pre-div 2 */
-		clk_sel = PWM_CLK_1KHZ;
-		pre_div = PWM_PREDIV_2;
-		m = 0;
-	}
+	clk_sel = PWM_CLK_19P2MHZ;
+	pre_div = PWM_PREDIV_2;
+	m = 0;
 
 	/* Calculate PWM value (9-bit) */
 	max_value = 511; /* 2^9 - 1 */
