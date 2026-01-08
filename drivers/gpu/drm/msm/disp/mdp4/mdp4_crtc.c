@@ -606,8 +606,11 @@ void mdp4_crtc_wait_for_commit_done(struct drm_crtc *crtc)
 	/* wait_for_flush_done is the only case for now.
 	 * Later we will have command mode CRTC to wait for
 	 * other event.
+	 *
+	 * HACK: Disabled for HP TouchPad - causes hangs.
+	 * See: https://github.com/Tofee/shr-linux tenderloin branch
 	 */
-	mdp4_crtc_wait_for_flush_done(crtc);
+	// mdp4_crtc_wait_for_flush_done(crtc);
 }
 
 static const char *dma_names[] = {
