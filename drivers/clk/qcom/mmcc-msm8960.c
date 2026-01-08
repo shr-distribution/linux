@@ -2057,6 +2057,11 @@ static struct clk_branch mdp_axi_clk = {
 		.enable_mask = BIT(23),
 		.hw.init = &(struct clk_init_data){
 			.name = "mdp_axi_clk",
+			.parent_data = &(const struct clk_parent_data){
+				.fw_name = "mmfab",
+			},
+			.num_parents = 1,
+			.flags = CLK_SET_RATE_PARENT,
 			.ops = &clk_branch_ops,
 		},
 	},
