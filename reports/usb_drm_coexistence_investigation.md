@@ -162,18 +162,19 @@ The interconnect driver provides infrastructure but doesn't fully solve the prob
 
 1. ~~**RPM Fabric Clock Support**~~: **DONE** - MSM8660 fabric clocks are now wired to the interconnect driver via device tree. The rpmcc provides `RPM_APPS_FABRIC_CLK`, `RPM_SYS_FABRIC_CLK`, and `RPM_MM_FABRIC_CLK` to the corresponding interconnect fabric nodes.
 
-2. **MDP4 Interconnect Integration**: Add to MDP4 device tree node:
+2. ~~**MDP4 Interconnect Integration**~~: **DONE** - Added to MDP4 device tree node:
    ```dts
-   interconnects = <&mmss_fabric MMFAB_MAS_MDP_PORT0 &apps_fabric AFAB_SLV_EBI_CH0>;
-   interconnect-names = "mdp";
+   interconnects = <&mmss_fabric MMFAB_MAS_MDP_PORT0 &apps_fabric AFAB_SLV_EBI_CH0>,
+                   <&mmss_fabric MMFAB_MAS_MDP_PORT1 &apps_fabric AFAB_SLV_EBI_CH0>;
+   interconnect-names = "mdp0-mem", "mdp1-mem";
    ```
 
-3. **MDP4 Driver Changes**: Request bandwidth before enabling clocks:
-   ```c
-   icc_set_bw(mdp4_kms->icc_path, avg_bw, peak_bw);
-   ```
+3. ~~**MDP4 Driver Changes**~~: **DONE** - Added `mdp4_setup_interconnect()` function that:
+   - Gets interconnect paths via `msm_icc_get()`
+   - Sets initial bandwidth to 6400 MBps peak
+   - Called at probe time before other initialization
 
-4. **USB Fabric Voting**: Ensure USB maintains its fabric vote during MDP operations
+4. **USB Fabric Voting**: Ensure USB maintains its fabric vote during MDP operations (may be handled automatically by interconnect framework)
 
 ---
 
@@ -242,7 +243,9 @@ CONFIG_DRM_MSM_MDP4=y
 
 ## RELATED COMMITS
 
-- `79f60d052904` - ARM: dts: qcom: tenderloin: Wire RPM fabric clocks to interconnect
+- `189f9c7dd7f0` - ARM: dts: qcom: tenderloin: Add MDP4 interconnect paths
+- `ebe8a636673a` - drm/msm/mdp4: Add interconnect support for bus bandwidth coordination
+- `2e484450a05c` - ARM: dts: qcom: tenderloin: Wire RPM fabric clocks to interconnect
 - `8049c1235494` - interconnect: qcom: Add MSM8660/APQ8060 interconnect driver
 - `d4920537a235` - ARM: configs: tenderloin: Disable module signing, add DRM helpers
 - `a92c2d3d0747` - ARM: configs: tenderloin: Enable IOMMU and disable RNDIS
@@ -261,12 +264,14 @@ The USB/DRM coexistence issue on APQ8060 is caused by **missing bus fabric arbit
 3. Interconnect driver framework created
 4. Device tree nodes added
 5. RPM fabric clocks wired to interconnect driver
+6. MDP4 interconnect paths added to device tree
+7. MDP4 driver interconnect support implemented
 
 ### Next Steps
 1. ~~Implement RPM fabric clock support~~ **DONE**
-2. Add interconnect bindings to MDP4 driver
-3. Implement bandwidth requests in MDP4 initialization
-4. Test with full interconnect integration
+2. ~~Add interconnect bindings to MDP4 driver~~ **DONE**
+3. ~~Implement bandwidth requests in MDP4 initialization~~ **DONE**
+4. Test with full interconnect integration (load msm.ko with USB active)
 
 ### Current Recommendation
 Continue using USB RNDIS without msm.ko for kernel development. Test display functionality by booting directly to LuneOS userspace.

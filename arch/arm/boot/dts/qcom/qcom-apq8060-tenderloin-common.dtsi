@@ -737,6 +737,14 @@
 			// align on LSB instead of MSB
 			qcom,lcdc-align-lsb;
 
+			/*
+			 * Interconnect paths for MDP to memory bandwidth coordination.
+			 * This helps prevent USB RNDIS failure when MDP is active.
+			 */
+			interconnects = <&mmss_fabric MMFAB_MAS_MDP_PORT0 &apps_fabric AFAB_SLV_EBI_CH0>,
+					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "mdp0-mem", "mdp1-mem";
+
 			ports {
 				#address-cells = <1>;
 				#size-cells = <0>;
