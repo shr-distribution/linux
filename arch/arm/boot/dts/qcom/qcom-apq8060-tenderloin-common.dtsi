@@ -12,6 +12,7 @@
 #include <dt-bindings/reset/qcom,gcc-msm8660.h>
 #include <dt-bindings/clock/qcom,mmcc-msm8960.h>
 #include <dt-bindings/interconnect/qcom,msm8660.h>
+#include <dt-bindings/clock/qcom,rpmcc.h>
 #include "qcom-msm8660.dtsi"
 #include "pm8058.dtsi"
 
@@ -152,16 +153,25 @@
 		apps_fabric: interconnect@0 {
 			compatible = "qcom,msm8660-apps-fabric";
 			#interconnect-cells = <1>;
+			clocks = <&rpmcc RPM_APPS_FABRIC_CLK>,
+				 <&rpmcc RPM_APPS_FABRIC_A_CLK>;
+			clock-names = "bus", "bus_a";
 		};
 
 		system_fabric: interconnect@1 {
 			compatible = "qcom,msm8660-system-fabric";
 			#interconnect-cells = <1>;
+			clocks = <&rpmcc RPM_SYS_FABRIC_CLK>,
+				 <&rpmcc RPM_SYS_FABRIC_A_CLK>;
+			clock-names = "bus", "bus_a";
 		};
 
 		mmss_fabric: interconnect@2 {
 			compatible = "qcom,msm8660-mmss-fabric";
 			#interconnect-cells = <1>;
+			clocks = <&rpmcc RPM_MM_FABRIC_CLK>,
+				 <&rpmcc RPM_MM_FABRIC_A_CLK>;
+			clock-names = "bus", "bus_a";
 		};
 
 		/*

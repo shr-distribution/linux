@@ -160,7 +160,7 @@ mmss_fabric: interconnect@2 {
 
 The interconnect driver provides infrastructure but doesn't fully solve the problem yet:
 
-1. **RPM Fabric Clock Support**: MSM8660 fabric clocks (`afab_clk`, `sfab_clk`, `mmfab_clk`) require RPM driver integration not yet in mainline
+1. ~~**RPM Fabric Clock Support**~~: **DONE** - MSM8660 fabric clocks are now wired to the interconnect driver via device tree. The rpmcc provides `RPM_APPS_FABRIC_CLK`, `RPM_SYS_FABRIC_CLK`, and `RPM_MM_FABRIC_CLK` to the corresponding interconnect fabric nodes.
 
 2. **MDP4 Interconnect Integration**: Add to MDP4 device tree node:
    ```dts
@@ -242,6 +242,7 @@ CONFIG_DRM_MSM_MDP4=y
 
 ## RELATED COMMITS
 
+- `79f60d052904` - ARM: dts: qcom: tenderloin: Wire RPM fabric clocks to interconnect
 - `8049c1235494` - interconnect: qcom: Add MSM8660/APQ8060 interconnect driver
 - `d4920537a235` - ARM: configs: tenderloin: Disable module signing, add DRM helpers
 - `a92c2d3d0747` - ARM: configs: tenderloin: Enable IOMMU and disable RNDIS
@@ -259,9 +260,10 @@ The USB/DRM coexistence issue on APQ8060 is caused by **missing bus fabric arbit
 2. webOS implementation analyzed
 3. Interconnect driver framework created
 4. Device tree nodes added
+5. RPM fabric clocks wired to interconnect driver
 
 ### Next Steps
-1. Implement RPM fabric clock support
+1. ~~Implement RPM fabric clock support~~ **DONE**
 2. Add interconnect bindings to MDP4 driver
 3. Implement bandwidth requests in MDP4 initialization
 4. Test with full interconnect integration
