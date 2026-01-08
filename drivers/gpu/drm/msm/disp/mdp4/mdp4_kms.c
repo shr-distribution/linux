@@ -5,6 +5,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/interconnect.h>
 
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
@@ -504,11 +505,51 @@ static const struct dev_pm_ops mdp4_pm_ops = {
 	.complete = msm_kms_pm_complete,
 };
 
+/*
+ * Set up interconnect paths for MDP to memory bandwidth.
+ * This coordinates with the bus fabric to prevent USB RNDIS failures
+ * when MDP is accessing memory on APQ8060/MSM8660.
+ */
+static int mdp4_setup_interconnect(struct platform_device *pdev)
+{
+	struct icc_path *path0 = msm_icc_get(&pdev->dev, "mdp0-mem");
+	struct icc_path *path1 = msm_icc_get(&pdev->dev, "mdp1-mem");
+
+	if (IS_ERR(path0))
+		return PTR_ERR(path0);
+
+	if (!path0) {
+		/*
+		 * No interconnect support is not fatal - the platform may
+		 * not have an interconnect driver yet. But warn about it
+		 * as it may cause USB issues on APQ8060/MSM8660.
+		 */
+		dev_warn(&pdev->dev, "No interconnect support - may cause USB/display conflicts!\n");
+		return 0;
+	}
+
+	/*
+	 * Set initial bandwidth. 6400 MBps peak is typical for display.
+	 * The interconnect framework will coordinate with other consumers.
+	 */
+	icc_set_bw(path0, 0, MBps_to_icc(6400));
+
+	if (!IS_ERR_OR_NULL(path1))
+		icc_set_bw(path1, 0, MBps_to_icc(6400));
+
+	return 0;
+}
+
 static int mdp4_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mdp4_kms *mdp4_kms;
-	int irq;
+	int irq, ret;
+
+	/* Set up interconnect bandwidth before anything else */
+	ret = mdp4_setup_interconnect(pdev);
+	if (ret)
+		return ret;
 
 	mdp4_kms = devm_kzalloc(dev, sizeof(*mdp4_kms), GFP_KERNEL);
 	if (!mdp4_kms)
