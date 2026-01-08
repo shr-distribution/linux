@@ -730,7 +730,7 @@
 				port@3 {
 					reg = <3>;
 					mdp_dtv_out: endpoint {
-						remote-endpoint = <&hdmi_in>;
+						/* HDMI removed - TouchPad has no HDMI output */
 					};
 				};
 			};
@@ -740,6 +740,7 @@
 			compatible = "qcom,hdmi-tx-8660";
 			reg = <0x04a00000 0x2f0>;
 			reg-names = "core_physical";
+			status = "disabled"; /* TouchPad has no HDMI - disable to fix USB */
 
 			interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_HIGH>;
 
@@ -752,8 +753,6 @@
 
 			core-vdda-supply = <&pm8058_l10>;
 			hdmi-mux-supply = <&pm8901_mvs>;
-
-			hpd-gpios = <&tlmm 172 GPIO_ACTIVE_HIGH>;
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&hdmi_pinctrl>;
@@ -787,6 +786,7 @@
 			      <0x4a00500 0x100>;
 			reg-names = "hdmi_phy",
 				    "hdmi_pll";
+			status = "disabled"; /* TouchPad has no HDMI */
 
 			clocks = <&mmcc HDMI_S_AHB_CLK>;
 			clock-names = "slave_iface";
