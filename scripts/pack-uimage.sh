@@ -28,6 +28,13 @@ OUTPUT="$BUILD_OUTPUT/uImage.LuneOS"
 # Create output directory
 mkdir -p "$BUILD_OUTPUT"
 
+# Always rebuild DTB to ensure it matches current source
+echo "Rebuilding DTB to ensure it's up-to-date..."
+touch "$KERNEL_DIR/arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi"
+make -C "$KERNEL_DIR" ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- "qcom/qcom-apq8060-${VARIANT}.dtb" -j4 > /dev/null 2>&1 || {
+    echo "Warning: DTB rebuild failed, using existing DTB"
+}
+
 # Validate inputs
 if [ ! -f "$ZIMAGE" ]; then
     echo "Error: zImage not found at $ZIMAGE"

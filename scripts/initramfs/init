@@ -26,10 +26,16 @@ log "Mounting sys..."
 mount -t sysfs none /sys
 
 log "Mounting devtmpfs..."
-mount -t devtmpfs none /dev || mdev -s
+mount -t devtmpfs none /dev 2>/dev/null
 
 log "Mounting configfs..."
 mount -t configfs none /config
+
+# Setup mdev for hotplug
+log "Setting up mdev..."
+echo /sbin/mdev > /sys/kernel/uevent_helper
+mdev -s
+log "mdev scan complete"
 
 # Create device nodes if needed
 [ -e /dev/null ] || mknod /dev/null c 1 3
@@ -39,19 +45,37 @@ mount -t configfs none /config
 log "Kernel: $(uname -r)"
 log "Cmdline: $(cat /proc/cmdline)"
 
+# Wait for block devices to appear
+log "Waiting for block devices..."
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    if [ -e /dev/mmcblk0p13 ]; then
+        log "Block device /dev/mmcblk0p13 found"
+        break
+    fi
+    # Trigger mdev to scan for devices
+    mdev -s 2>/dev/null
+    sleep 1
+done
+
+# List available block devices for debugging
+log "Available block devices:"
+ls -la /dev/mmcblk* >> "$LOGFILE" 2>&1 || log "No mmcblk devices found"
+
 # Mount boot partition for logging
 log "Mounting boot partition for logging..."
-if mount -t ext3 /dev/mmcblk0p13 /mnt/boot 2>/dev/null; then
+if [ -e /dev/mmcblk0p13 ] && mount -t ext3 /dev/mmcblk0p13 /mnt/boot 2>&1; then
     log "Boot partition mounted at /mnt/boot"
     # Remove moboot.next so next boot goes to webOS
     rm -f /mnt/boot/moboot.next
     sync
-elif mount -t vfat /dev/mmcblk0p1 /mnt/boot 2>/dev/null; then
+    log "moboot.next removed"
+elif [ -e /dev/mmcblk0p1 ] && mount -t vfat /dev/mmcblk0p1 /mnt/boot 2>&1; then
     log "Boot partition (vfat) mounted at /mnt/boot"
     rm -f /mnt/boot/moboot.next
     sync
 else
-    log "WARNING: Could not mount boot partition"
+    log "ERROR: Could not mount boot partition"
+    log "Tried /dev/mmcblk0p13 (ext3) and /dev/mmcblk0p1 (vfat)"
 fi
 
 # Function to setup USB gadget via configfs
