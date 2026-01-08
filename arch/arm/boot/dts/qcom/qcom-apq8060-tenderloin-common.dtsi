@@ -699,6 +699,13 @@
 
 			operating-points-v2 = <&gpu_opp_table>;
 
+			/*
+			 * GPU interconnect path for memory bandwidth coordination.
+			 * webOS kernel used ~2 GB/s peak bandwidth for 3D graphics.
+			 */
+			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_3D &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "gfx-mem";
+
 			gpu_opp_table: opp-table {
 				compatible = "operating-points-v2";
 
