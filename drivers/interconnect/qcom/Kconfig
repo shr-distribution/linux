@@ -62,6 +62,14 @@ config INTERCONNECT_QCOM_MSM8953
 	  This is a driver for the Qualcomm Network-on-Chip on msm8953-based
 	  platforms.
 
+config INTERCONNECT_QCOM_MSM8660
+	tristate "Qualcomm MSM8660/APQ8060 interconnect driver"
+	depends on INTERCONNECT_QCOM
+	help
+	  This is a driver for the Qualcomm fabric-based bus interconnect
+	  on MSM8660/APQ8060-based platforms (e.g., HP TouchPad).
+	  The driver manages APPSS, System, and MMSS fabrics.
+
 config INTERCONNECT_QCOM_MSM8974
 	tristate "Qualcomm MSM8974 interconnect driver"
 	depends on INTERCONNECT_QCOM

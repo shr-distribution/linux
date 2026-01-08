@@ -11,6 +11,7 @@
 #include <dt-bindings/pinctrl/qcom,pmic-mpp.h>
 #include <dt-bindings/reset/qcom,gcc-msm8660.h>
 #include <dt-bindings/clock/qcom,mmcc-msm8960.h>
+#include <dt-bindings/interconnect/qcom,msm8660.h>
 #include "qcom-msm8660.dtsi"
 #include "pm8058.dtsi"
 
@@ -141,6 +142,28 @@
 	};
 
 	soc {
+		/*
+		 * Interconnect Fabrics
+		 * MSM8660/APQ8060 uses a fabric-based bus architecture with:
+		 * - APPSS Fabric: CPU and memory
+		 * - System Fabric: Peripherals and DMA
+		 * - MMSS Fabric: Multimedia subsystem (MDP, camera, video)
+		 */
+		apps_fabric: interconnect@0 {
+			compatible = "qcom,msm8660-apps-fabric";
+			#interconnect-cells = <1>;
+		};
+
+		system_fabric: interconnect@1 {
+			compatible = "qcom,msm8660-system-fabric";
+			#interconnect-cells = <1>;
+		};
+
+		mmss_fabric: interconnect@2 {
+			compatible = "qcom,msm8660-mmss-fabric";
+			#interconnect-cells = <1>;
+		};
+
 		/*
 		 * address could be 0x18320000   INT_ADM0_AARM = irq 171
 		 * but maybe we want 0x18300000  INT_ADM0_MASTER = irq 170, like on ipq8064 ?
