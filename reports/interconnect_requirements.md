@@ -16,16 +16,16 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 | Component | Master Port(s) | Destination | Status in Mainline |
 |-----------|---------------|-------------|-------------------|
 | MDP4 Display | MDP_PORT0, MDP_PORT1 | SMI, EBI_CH0 | **DONE** |
-| GPU 3D (Adreno) | GRAPHICS_3D | SMI | Partial (a3xx has icc) |
-| GPU 2D Core0 | GRAPHICS_2D_CORE0 | SMI | Not implemented |
-| GPU 2D Core1 | GRAPHICS_2D_CORE1 | SMI | Not implemented |
-| Camera (VFE) | VFE | SMI, EBI_CH0 | Not implemented |
-| Video Processor (VPE) | VPE | SMI | Not implemented |
-| JPEG Encoder | JPEG_ENC | SMI | Not implemented |
-| Video Codec Port0 | HD_CODEC_PORT0 | SMI | Not implemented |
-| Video Codec Port1 | HD_CODEC_PORT1 | SMI | Not implemented |
-| Rotator | ROTATOR | SMI | Not implemented |
-| DTV (HDMI output) | MDP_PORT0 | SMI, EBI_CH0 | Not implemented |
+| GPU 3D (Adreno) | GRAPHICS_3D | EBI_CH0 | **DONE** |
+| GPU 2D Core0 | GRAPHICS_2D_CORE0 | SMI | No driver (Z180 not in mainline) |
+| GPU 2D Core1 | GRAPHICS_2D_CORE1 | SMI | No driver (Z180 not in mainline) |
+| Camera (VFE) | VFE | SMI, EBI_CH0 | Driver needs modification |
+| Video Processor (VPE) | VPE | SMI | No driver in mainline |
+| JPEG Encoder | JPEG_ENC | SMI | No driver in mainline |
+| Video Codec Port0 | HD_CODEC_PORT0 | SMI | Driver needs modification |
+| Video Codec Port1 | HD_CODEC_PORT1 | SMI | Driver needs modification |
+| Rotator | ROTATOR | SMI | No driver (MDP4 rotator not in mainline) |
+| DTV (HDMI output) | MDP_PORT0 | SMI, EBI_CH0 | Uses MDP4 paths |
 | CPU (for video) | AMPSS_M0 | EBI_CH0, SMI | Not required |
 
 ---
@@ -55,7 +55,7 @@ static struct msm_bus_vectors mdp_bus_scale_usecases[] = {
 
 ### 2. GPU 3D (Adreno 220 / Yamato)
 
-**Status: Partial - a3xx driver has interconnect, but a2xx (MSM8660) may not**
+**Status: DONE**
 
 **webOS Implementation:**
 ```c
@@ -68,12 +68,12 @@ static struct msm_bus_vectors grp3d_max_vectors[] = {
 };
 ```
 
-**Mainline Paths:**
-- Already has `gfx-mem` path support in newer Adreno drivers
-- MSM8660 uses Adreno 220 (a2xx family)
-- May need addition to a2xx driver if not present
+**Mainline Implementation:**
+- Added interconnect to device tree in `qcom-apq8060-tenderloin-common.dtsi`
+- The Adreno driver uses `dev_pm_opp_of_find_icc_paths()` for OPP-based bandwidth
+- Device tree path: `gfx-mem`
 
-**Recommended DT:**
+**Device Tree:**
 ```dts
 gpu@4300000 {
     interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_3D &apps_fabric AFAB_SLV_EBI_CH0>;
@@ -109,7 +109,13 @@ struct msm_bus_scale_pdata grp2d1_bus_scale_pdata = {
 
 ### 4. Camera Subsystem (VFE, VPE, JPEG)
 
-**Status: Not implemented**
+**Status: Driver needs modification**
+
+The CAMSS driver (`drivers/media/platform/qcom/camss/`) has interconnect support for
+newer SoCs (MSM8953+), but the MSM8660 resources don't include interconnect paths.
+To add support, the driver would need:
+1. Define `icc_res_8x60` array with path names
+2. Add `.icc_path_num` to `msm8660_resources` structure
 
 **webOS Implementation:**
 ```c
@@ -135,7 +141,7 @@ static struct msm_bus_vectors cam_bus_client_config[] = {
 - Video recording
 - Image processing
 
-**Recommended DT (when camera driver is ready):**
+**Recommended DT (when driver is modified):**
 ```dts
 camss@4500000 {
     interconnects = <&mmss_fabric MMFAB_MAS_VFE &apps_fabric AFAB_SLV_EBI_CH0>,
@@ -148,7 +154,13 @@ camss@4500000 {
 
 ### 5. Video Codec (VIDC 1080p)
 
-**Status: Not implemented**
+**Status: Driver needs modification**
+
+The VIDC 1080p driver exists (`drivers/media/platform/qcom/vidc/`) with MSM8660 support,
+but it doesn't have interconnect framework integration. The driver would need:
+1. Add `#include <linux/interconnect.h>`
+2. Get interconnect paths at probe time
+3. Set bandwidth before encode/decode operations
 
 **webOS Implementation:**
 ```c
@@ -177,11 +189,24 @@ static struct msm_bus_vectors vidc_init_vectors[] = {
 - Hardware video encode
 - Critical for media playback
 
+**Recommended DT (when driver is modified):**
+```dts
+vidc@4400000 {
+    interconnects = <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0 &mmss_fabric MMFAB_SLV_SMI>,
+                    <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT1 &mmss_fabric MMFAB_SLV_SMI>;
+    interconnect-names = "video0-smi", "video1-smi";
+};
+```
+
 ---
 
 ### 6. Rotator
 
-**Status: Not implemented**
+**Status: No driver in mainline**
+
+The MDP4 driver in mainline (`drivers/gpu/drm/msm/disp/mdp4/`) does not include
+rotator support. The MDP5 driver has rotator with interconnect, but MDP4 would
+need significant work to add hardware rotation.
 
 **webOS Implementation:**
 ```c
@@ -193,6 +218,7 @@ static struct msm_bus_vectors vidc_init_vectors[] = {
 **Notes:**
 - Used for hardware rotation of display buffers
 - Lower priority than display/video
+- Software rotation via GPU is the current alternative
 
 ---
 
