@@ -136,11 +136,22 @@ struct lm8502_data {
 	bool suspended;
 };
 
+static bool lm8502_volatile_reg(struct device *dev, unsigned int reg)
+{
+	return true; /* All registers are volatile - no caching */
+}
+
 static const struct regmap_config lm8502_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = 0xF0,
+	.volatile_reg = lm8502_volatile_reg,
+	.cache_type = REGCACHE_NONE,
 };
+
+/* LED control register bits */
+#define LM8502_LED_MAPPING_MASK		0x03
+#define LM8502_LED_MAPPING_DIRECT	0x00  /* Direct PWM control */
 
 static int lm8502_brightness_set(struct led_classdev *cdev,
 				 enum led_brightness brightness)
@@ -150,37 +161,94 @@ static int lm8502_brightness_set(struct led_classdev *cdev,
 	int ret;
 
 	mutex_lock(&priv->lock);
-	ret = regmap_write(priv->regmap, led->current_reg, brightness);
-	mutex_unlock(&priv->lock);
 
+	/*
+	 * Just write to the current control register.
+	 * The control register was already configured during init.
+	 * This matches webOS behavior which only writes to D*_CURRENT_CTRL.
+	 */
+	ret = regmap_write(priv->regmap, led->current_reg, brightness);
+
+	mutex_unlock(&priv->lock);
 	return ret;
 }
 
 static int lm8502_chip_init(struct lm8502_data *priv)
 {
+	struct device *dev = &priv->client->dev;
+	unsigned int val;
 	int ret;
 
-	/* Reset the chip */
-	ret = regmap_write(priv->regmap, LM8502_RESET, 0xFF);
-	if (ret)
+	/* First, try to read a register to verify I2C communication */
+	ret = regmap_read(priv->regmap, LM8502_ENGINE_CNTRL1, &val);
+	if (ret) {
+		dev_err(dev, "I2C read test failed: %d\n", ret);
 		return ret;
+	}
+	dev_info(dev, "I2C communication OK, ENGINE_CNTRL1=0x%02x\n", val);
 
-	msleep(50);
+	/*
+	 * Skip software reset - after reset the chip needs the enable GPIO
+	 * to be toggled, but we've already set it high. Just proceed with
+	 * chip enable directly.
+	 */
 
-	/* Enable the chip */
-	ret = regmap_update_bits(priv->regmap, LM8502_ENGINE_CNTRL1,
-				 LM8502_CHIP_EN, LM8502_CHIP_EN);
-	if (ret)
+	/*
+	 * Initialize registers to match webOS configuration exactly:
+	 * - ENGINE_CNTRL1 (0x00) = 0x40 (CHIP_EN)
+	 * - ENGINE_CNTRL2 (0x01) = 0x20
+	 */
+	ret = regmap_write(priv->regmap, LM8502_ENGINE_CNTRL1, 0x40);
+	if (ret) {
+		dev_err(dev, "ENGINE_CNTRL1 write failed: %d\n", ret);
 		return ret;
+	}
 
-	/* Configure power saving, boost enable, and PWM input */
-	ret = regmap_update_bits(priv->regmap, LM8502_MISC,
-				 LM8502_MISC_POWER_SAVE | LM8502_MISC_BOOST_EN |
-				 LM8502_MISC_PWM_INPUT,
-				 LM8502_MISC_POWER_SAVE | LM8502_MISC_BOOST_EN |
-				 LM8502_MISC_PWM_INPUT);
+	ret = regmap_write(priv->regmap, LM8502_ENGINE_CNTRL2, 0x20);
+	if (ret) {
+		dev_err(dev, "ENGINE_CNTRL2 write failed: %d\n", ret);
+		return ret;
+	}
 
-	return ret;
+	/*
+	 * Configure MISC register (0x36) = 0x6a:
+	 * - Bit 6: 0 (reserved)
+	 * - Bit 5: 1 (POWER_SAVE enabled)
+	 * - Bit 3: 1 (BOOST_EN - required for LED current!)
+	 * - Bit 1: 1 (PWM_INPUT)
+	 * This matches the webOS driver configuration.
+	 */
+	ret = regmap_write(priv->regmap, LM8502_MISC, 0x6a);
+	if (ret) {
+		dev_err(dev, "MISC config failed: %d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * Initialize LED control registers to match webOS:
+	 * - Control reg = 0x10: MAX_CURRENT=2 (9mA), DIRECT mode
+	 * - Current reg = 0x00: LED off initially
+	 */
+	for (int i = 0; i < LM8502_MAX_LEDS; i++) {
+		regmap_write(priv->regmap, LM8502_D1_CONTROL + i, 0x10);
+		regmap_write(priv->regmap, LM8502_D1_CURRENT_CTRL + i, 0);
+	}
+
+	/* Verify key registers after init */
+	{
+		unsigned int val;
+		regmap_read(priv->regmap, LM8502_ENGINE_CNTRL1, &val);
+		dev_info(dev, "After init: ENGINE_CNTRL1=0x%02x (expect 0x40)\n", val);
+		regmap_read(priv->regmap, LM8502_ENGINE_CNTRL2, &val);
+		dev_info(dev, "After init: ENGINE_CNTRL2=0x%02x (expect 0x20)\n", val);
+		regmap_read(priv->regmap, LM8502_MISC, &val);
+		dev_info(dev, "After init: MISC=0x%02x (expect 0x6a)\n", val);
+		regmap_read(priv->regmap, LM8502_D1_CONTROL, &val);
+		dev_info(dev, "After init: D1_CONTROL=0x%02x (expect 0x10)\n", val);
+	}
+
+	dev_info(dev, "Chip initialized, boost enabled\n");
+	return 0;
 }
 
 static int lm8502_parse_dt(struct lm8502_data *priv)
@@ -310,6 +378,9 @@ static int lm8502_probe(struct i2c_client *client)
 	/* Enable the chip via GPIO if available */
 	if (priv->enable_gpio)
 		gpiod_set_value_cansleep(priv->enable_gpio, 1);
+
+	/* Allow chip to power up before I2C communication */
+	msleep(50);
 
 	i2c_set_clientdata(client, priv);
 
