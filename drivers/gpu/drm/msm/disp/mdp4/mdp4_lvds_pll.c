@@ -164,20 +164,23 @@ struct clk *mdp4_get_lcdc_clock(struct drm_device *dev)
 	struct clk_hw *hw;
 	struct clk *clk;
 
+	/*
+	 * Try device tree clock first - this is preferred for APQ8060/MSM8660
+	 * as it uses the MMCC clock controller instead of the internal LVDS PLL
+	 */
+	clk = devm_clk_get(dev->dev, "lcdc_clk");
+	if (!IS_ERR(clk)) {
+		drm_info(dev, "using LCDC clock from device tree\n");
+		return clk;
+	}
 
-	/* TODO: do we need different pll in other cases? */
+	/* Fall back to LVDS PLL if no lcdc_clk in device tree */
 	hw = mdp4_lvds_pll_init(dev);
 	if (IS_ERR(hw)) {
 		DRM_DEV_ERROR(dev->dev, "failed to register LVDS PLL\n");
 		return ERR_CAST(hw);
 	}
 
-	clk = devm_clk_get(dev->dev, "lcdc_clk");
-	if (clk == ERR_PTR(-ENOENT)) {
-		drm_warn(dev, "can't get LCDC clock, using PLL directly\n");
-
-		return devm_clk_hw_get_clk(dev->dev, hw, "lcdc_clk");
-	}
-
-	return clk;
+	drm_warn(dev, "using internal LVDS PLL for LCDC clock\n");
+	return devm_clk_hw_get_clk(dev->dev, hw, "lcdc_clk");
 }

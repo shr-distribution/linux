@@ -399,8 +399,8 @@ static int mdp4_kms_init(struct drm_device *dev)
 	u32 major, minor;
 	unsigned long max_clk;
 
-	/* TODO: Chips that aren't apq8064 have a 200 Mhz max_clk */
-	max_clk = 266667000;
+	/* APQ8060/MSM8660 (tenderloin) needs lower clock to avoid USB issues */
+	max_clk = 128000000;
 
 	ret = mdp_kms_init(&mdp4_kms->base, &kms_funcs);
 	if (ret) {
@@ -524,11 +524,12 @@ static int mdp4_probe(struct platform_device *pdev)
 
 	mdp4_kms->base.base.irq = irq;
 
-	/* NOTE: driver for this regulator still missing upstream.. use
-	 * _get_exclusive() and ignore the error if it does not exist
-	 * (and hope that the bootloader left it on for us)
+	/*
+	 * VDD regulator is optional - on some boards (like HP TouchPad)
+	 * the bootloader may leave it on. Use _get_optional() to avoid
+	 * errors when the regulator is not defined in device tree.
 	 */
-	mdp4_kms->vdd = devm_regulator_get_exclusive(&pdev->dev, "vdd");
+	mdp4_kms->vdd = devm_regulator_get_optional(&pdev->dev, "vdd");
 	if (IS_ERR(mdp4_kms->vdd))
 		mdp4_kms->vdd = NULL;
 
