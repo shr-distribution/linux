@@ -394,9 +394,17 @@ static int __qcom_mdt_load(struct device *dev, const struct firmware *fw,
 
 		offset = phdr->p_paddr - mem_reloc;
 		if (offset < 0 || offset + phdr->p_memsz > mem_size) {
-			dev_err(dev, "segment outside memory range\n");
-			ret = -EINVAL;
-			break;
+			/*
+			 * Skip segments outside the allocated memory range.
+			 * This is normal for DSP firmware with TCM (Tightly
+			 * Coupled Memory) or LPM (Low Power Memory) segments
+			 * that are internal to the DSP and not loaded via
+			 * system memory (e.g., LPASS Q6 firmware).
+			 */
+			dev_info(dev, "skipping segment %d at 0x%08x (outside allocated range 0x%08llx-0x%08llx)\n",
+				 i, phdr->p_paddr, (u64)mem_reloc,
+				 (u64)(mem_reloc + mem_size));
+			continue;
 		}
 
 		if (phdr->p_filesz > phdr->p_memsz) {

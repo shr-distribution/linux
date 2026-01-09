@@ -9,6 +9,7 @@
 #include <dt-bindings/clock/qcom,rpmcc.h>
 #include <dt-bindings/reset/qcom,mmcc-msm8960.h>
 #include <dt-bindings/soc/qcom,gsbi.h>
+#include <dt-bindings/soc/qcom,apr.h>
 
 / {
 	#address-cells = <1>;
@@ -83,12 +84,29 @@
 		ranges;
 
 		/*
+		 * Shared Memory (SMEM) region for inter-processor communication.
+		 * This is used for SMD (Shared Memory Driver) channels between
+		 * APPS, modem, LPASS, etc.
+		 */
+		smem_region: smem@40000000 {
+			reg = <0x40000000 0x200000>;
+			no-map;
+		};
+
+		/*
 		 * LPASS (Low Power Audio Subsystem) QDSP6 firmware region.
 		 * The actual address and size should be adjusted based on
 		 * the device's memory layout.
 		 */
-		lpass_mem: lpass@8f000000 {
-			reg = <0x8f000000 0x500000>;
+		/*
+		 * LPASS memory for Q6 firmware.
+		 * The Q6 firmware was compiled to load at 0x46700000.
+		 * This is in the gap between RAM banks but was reserved
+		 * by webOS for Q6 usage. Size: ~6MB to cover all segments.
+		 * (Last segment ends at 0x46cbd8c0, needs ~5.74MB)
+		 */
+		lpass_mem: lpass@46700000 {
+			reg = <0x46700000 0x600000>;
 			no-map;
 		};
 	};
@@ -128,6 +146,12 @@
 			interrupt-controller;
 			#interrupt-cells = <2>;
 
+		};
+
+		sfpb_mutex: hwmutex@1200600 {
+			compatible = "qcom,sfpb-mutex";
+			reg = <0x01200600 0x100>;
+			#hwlock-cells = <1>;
 		};
 
 		gcc: clock-controller@900000 {
@@ -173,13 +197,68 @@
 
 			qcom,lcc = <&lcc>;
 
-			clocks = <&lcc PLL4>;
+			clocks = <&rpmcc RPM_PLL4_CLK>;
 			clock-names = "pll";
 
 			firmware-name = "q6.mdt";
 			memory-region = <&lpass_mem>;
 
 			status = "disabled";
+
+			smd-edge {
+				interrupts = <GIC_SPI 89 IRQ_TYPE_EDGE_RISING>;
+
+				qcom,smd-edge = <1>;
+				label = "lpass";
+
+				apr: apr {
+					compatible = "qcom,apr-v2";
+					qcom,smd-channels = "apr_audio_svc";
+					qcom,domain = <APR_DOMAIN_ADSP>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+					status = "disabled";
+
+					q6core: service@3 {
+						compatible = "qcom,q6core";
+						reg = <APR_SVC_ADSP_CORE>;
+					};
+
+					q6afe: service@4 {
+						compatible = "qcom,q6afe";
+						reg = <APR_SVC_AFE>;
+
+						q6afedai: dais {
+							compatible = "qcom,q6afe-dais";
+							#address-cells = <1>;
+							#size-cells = <0>;
+							#sound-dai-cells = <1>;
+						};
+					};
+
+					q6asm: service@7 {
+						compatible = "qcom,q6asm";
+						reg = <APR_SVC_ASM>;
+
+						q6asmdai: dais {
+							compatible = "qcom,q6asm-dais";
+							#address-cells = <1>;
+							#size-cells = <0>;
+							#sound-dai-cells = <1>;
+						};
+					};
+
+					q6adm: service@8 {
+						compatible = "qcom,q6adm";
+						reg = <APR_SVC_ADM>;
+
+						q6routing: routing {
+							compatible = "qcom,q6adm-routing";
+							#sound-dai-cells = <0>;
+						};
+					};
+				};
+			};
 		};
 
 		gsbi1: gsbi@16000000 {
@@ -596,6 +675,40 @@
 					reg = <2>;
 				};
 			};
+		};
+	};
+
+	smem {
+		compatible = "qcom,smem";
+		memory-region = <&smem_region>;
+		hwlocks = <&sfpb_mutex 3>;
+	};
+
+	smsm {
+		compatible = "qcom,smsm";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		apps_smsm: apps@0 {
+			reg = <0>;
+			#qcom,smem-state-cells = <1>;
+		};
+
+		modem_smsm: modem@1 {
+			reg = <1>;
+			interrupts = <GIC_SPI 38 IRQ_TYPE_EDGE_RISING>;
+
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
+
+		lpass_smsm: lpass@2 {
+			reg = <2>;
+			interrupts = <GIC_SPI 89 IRQ_TYPE_EDGE_RISING>;
+
+			interrupt-controller;
+			#interrupt-cells = <2>;
 		};
 	};
 
