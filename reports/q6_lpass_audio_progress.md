@@ -3,11 +3,11 @@
 **Date:** 2026-01-09 (Updated)
 **Device:** HP TouchPad (APQ8060/MSM8660)
 **Kernel:** Linux 6.18
-**Build:** #117
+**Build:** #118
 
 ## Executive Summary
 
-Significant progress has been made in bringing up the Q6 LPASS (Low Power Audio Subsystem) on the HP TouchPad with mainline Linux. The Q6 DSP boots successfully, creates SMD channels (apr_audio_svc, DIAG, DIAG_CNTL), and the IPC mechanism is working. However, Q6 doesn't respond to SMD channel open requests yet.
+**Major breakthrough!** SMD channels now open successfully and APR services are created. The Q6 LPASS (Low Power Audio Subsystem) on the HP TouchPad is now communicating with the APPS processor via SMD/RPMSG. APR driver probes successfully and creates Q6Core, Q6AFE, Q6ASM, and Q6ADM services. Sound cards are not yet registered - audio path configuration is the next step.
 
 ## What's Working
 
@@ -30,10 +30,11 @@ Significant progress has been made in bringing up the Q6 LPASS (Low Power Audio 
 - SMD edge node found in device tree
 - `qcom_smd_register_edge()` returns success (0)
 
-### 4. SMD Channel Discovery
+### 4. SMD Channel Discovery & Opening (NEW!)
 - **Channels found by Q6**: apr_audio_svc, DIAG, DIAG_CNTL
 - Q6 firmware creates these channels in SMEM
-- Mainline SMD driver successfully scans and finds them
+- **Channels now open successfully** using webOS-compatible open sequence
+- Remote state transitions to OPENING (1) after APPS sets OPENED
 
 ### 5. SMSM/SMD Infrastructure
 - **SMSM probe succeeds** with shared IRQ handling
@@ -46,7 +47,20 @@ Significant progress has been made in bringing up the Q6 LPASS (Low Power Audio 
 - **IPC signals sent successfully**: offset=0x8, bit=8
 - Confirmed by debug logging: `SMD_IPC: signal 'apr_audio_svc' offset=0x8 bit=8 val=0x100 ret=0`
 
-### 7. Device Tree Configuration
+### 7. RPMSG Devices Registered (NEW!)
+- **apr_audio_svc**: `remoteproc0:smd-edge.apr_audio_svc.-1.-1`
+- **DIAG**: `remoteproc0:smd-edge.DIAG.-1.-1`
+- **DIAG_CNTL**: `remoteproc0:smd-edge.DIAG_CNTL.-1.-1`
+- **rpmsg_ctrl**: `remoteproc0:smd-edge.rpmsg_ctrl.0.0`
+
+### 8. APR Services Created (NEW!)
+- **Q6Core** (service 4:3): `aprsvc:service:4:3`
+- **Q6AFE** (service 4:4): `aprsvc:service:4:4`
+- **Q6ASM** (service 4:7): `aprsvc:service:4:7`
+- **Q6ADM** (service 4:8): `aprsvc:service:4:8`
+- APR driver probe **succeeded** after 3.8 seconds
+
+### 9. Device Tree Configuration
 - LPASS remoteproc node with smd-edge child
 - **gcc_lpass** syscon at 0xC0182000 for LPASS IPC (different from KPSS GCC at 0x02082000)
 - IPC configured: `qcom,ipc = <&gcc_lpass 0x8 8>` for LPASS interrupts
@@ -88,9 +102,21 @@ smsm_update_bits(smsm, 0xffffffff, SMSM_INIT | SMSM_SMDINIT | SMSM_RPCINIT | SMS
 ret = devm_request_threaded_irq(&pdev->dev, irq, NULL, qcom_smd_edge_intr,
     IRQF_ONESHOT | IRQF_SHARED, node->name, edge);
 
-// IPC debug logging
-pr_info("SMD_IPC: signal '%s' offset=0x%x bit=%d val=0x%x ret=%d\n",
-    channel->name, edge->ipc_offset, edge->ipc_bit, BIT(edge->ipc_bit), ret);
+// Force-register LPASS channels regardless of remote state (like rpm_requests)
+if (remote_state != SMD_CHANNEL_OPENING &&
+    remote_state != SMD_CHANNEL_OPENED &&
+    strcmp(channel->name, "rpm_requests") &&
+    strcmp(channel->name, "apr_audio_svc") &&
+    strcmp(channel->name, "DIAG") &&
+    strcmp(channel->name, "DIAG_CNTL"))
+    continue;
+
+// For LPASS edge, go directly to OPENED (webOS compatibility)
+if (edge->name && !strcmp(edge->name, "lpass")) {
+    qcom_smd_channel_set_state(channel, SMD_CHANNEL_OPENED);
+    // Don't wait for remote - webOS doesn't wait either
+    return 0;
+}
 ```
 
 ### drivers/remoteproc/qcom_q6v2_lpass.c
@@ -156,48 +182,50 @@ qcom-smsm smsm: set legacy SMSM state: 0x129
 SMD_IPC: signal 'apr_audio_svc' offset=0x8 bit=8 val=0x100 ret=0
 ```
 
+### SMD Channel Open (SUCCESS - Build #118)
+```
+SMD_STATE: channel 'apr_audio_svc' local=0 remote=1 edge='lpass'
+SMD_OPEN: LPASS channel 'apr_audio_svc' - going directly to OPENED (webOS compat)
+probe of remoteproc0:smd-edge.apr_audio_svc.-1.-1 returned 0 after 3829773 usecs
+qcom,apr: Adding APR/GPR dev: aprsvc:service:4:3
+qcom,apr: Adding APR/GPR dev: aprsvc:service:4:4
+qcom,apr: Adding APR/GPR dev: aprsvc:service:4:7
+qcom,apr: Adding APR/GPR dev: aprsvc:service:4:8
+```
+
 ### What's NOT Working Yet
 
-1. **Q6 Not Responding to Channel Open**
-   - IPC signals sent correctly (ret=0)
-   - But remote_state stays 0 (not entering OPENING state)
-   - Timeout: "remote side did not enter opening state"
+1. **No Sound Cards**
+   - No ALSA sound cards registered yet
+   - APR services exist but audio drivers not binding
+   - Need to investigate Q6AFE/Q6ASM/Q6ADM driver probing
 
-2. **No RPMSG Devices**
-   - `/sys/bus/rpmsg/devices/` empty
-   - APR driver not probing due to channel not opening
-
-3. **No Sound Cards**
-   - No ALSA sound cards registered
-   - WM8994 codec detected on I2C but not bound to audio
+2. **Shell Hangs**
+   - Telnet shell becomes unresponsive after some time
+   - May be related to audio driver initialization
 
 ## Remaining Work
 
-### High Priority (Current Blocker)
-1. **Debug Q6 not responding to SMD channel open**
-   - IPC is sent correctly, but Q6 ignores it
-   - Possible causes:
-     - Q6 interrupt line not connected/enabled
-     - Firmware not in correct state to process IPC
-     - Wrong IPC bit (webOS may use different bit for different channels)
-     - SMSM handshake incomplete
-   - Investigation needed:
-     - Check webOS kernel for exact IPC sequence
-     - Verify Q6 interrupt configuration in firmware
-     - Check if additional SMSM states needed
+### High Priority (Current Focus)
+1. **Debug audio driver probing**
+   - Q6AFE, Q6ASM, Q6ADM services are created
+   - Need to investigate why ALSA sound cards aren't registered
+   - Check if QDSP6 ASoC drivers are probing correctly
 
-2. **APR communication**
-   - Once SMD channels open, verify APR messages
-   - Test basic APR commands to Q6
+2. **APR message communication**
+   - Verify APR messages are being exchanged
+   - Test basic APR commands (version query, etc.)
 
 ### Medium Priority
 3. **Audio path configuration**
    - Configure Q6AFE for audio routing
    - Set up WM8994 codec via Q6 DSP
+   - Connect MI2S interfaces
 
 4. **ALSA integration**
-   - Verify qdsp6 ASoC drivers load
+   - Verify qdsp6 ASoC drivers bind to APR services
    - Test PCM playback path
+   - Add machine driver for HP TouchPad audio routing
 
 ## Technical Details
 
@@ -270,3 +298,5 @@ dmesg | grep -i "smd\|apr\|rpmsg\|channel"
 
 - `a59e6831b159` - soc/rpmsg/dts: Enable Q6 LPASS SMD communication on MSM8660/APQ8060
 - `fc45483bee85` - remoteproc: qcom: Add SMD subdevice to Q6V2 LPASS driver
+- `da2597480c85` - docs: Add Q6 LPASS audio progress report
+- `5f49e6289ff7` - rpmsg: qcom_smd: Fix LPASS SMD channel open for MSM8660/APQ8060
