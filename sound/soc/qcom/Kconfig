@@ -156,6 +156,17 @@ config SND_SOC_QDSP6
 	 audio drivers. This includes q6asm, q6adm,
 	 q6afe interfaces to DSP using apr.
 
+config SND_SOC_APQ8060
+	tristate "SoC Machine driver for APQ8060/MSM8660 boards"
+	depends on QCOM_APR
+	depends on COMMON_CLK
+	select SND_SOC_QDSP6
+	select SND_SOC_QCOM_COMMON
+	help
+	  Support for Qualcomm Technologies QDSP6 audio block in
+	  APQ8060/MSM8660 SoC-based systems like HP TouchPad.
+	  Say Y if you want to use audio device on this SoCs.
+
 config SND_SOC_MSM8996
 	tristate "SoC Machine driver for MSM8996 and APQ8096 boards"
 	depends on QCOM_APR

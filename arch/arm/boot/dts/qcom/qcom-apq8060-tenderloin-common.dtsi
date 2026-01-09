@@ -13,6 +13,7 @@
 #include <dt-bindings/clock/qcom,mmcc-msm8960.h>
 #include <dt-bindings/interconnect/qcom,msm8660.h>
 #include <dt-bindings/clock/qcom,rpmcc.h>
+#include <dt-bindings/sound/qcom,q6dsp-lpass-ports.h>
 #include "qcom-msm8660.dtsi"
 #include "pm8058.dtsi"
 
@@ -2004,6 +2005,80 @@
 
 	dai@2 {
 		reg = <MSM_FRONTEND_DAI_MULTIMEDIA3>;
+	};
+};
+
+&q6afedai {
+	dai@16 {
+		reg = <PRIMARY_MI2S_RX>;
+		qcom,sd-lines = <0 1>;
+	};
+
+	dai@17 {
+		reg = <PRIMARY_MI2S_TX>;
+		qcom,sd-lines = <0>;
+	};
+};
+
+/ {
+	sound: sound {
+		compatible = "qcom,apq8060-sndcard";
+		model = "HP-TouchPad";
+
+		/* DAPM audio routing from webOS */
+		audio-routing =
+			"Headphone", "HPOUT1L",
+			"Headphone", "HPOUT1R",
+			"Speaker", "LINEOUT1P",
+			"Speaker", "LINEOUT1N",
+			"Speaker", "LINEOUT2P",
+			"Speaker", "LINEOUT2N",
+			"IN1LN", "MICBIAS1",
+			"MICBIAS1", "Internal Mic",
+			"IN2LN", "MICBIAS2",
+			"MICBIAS2", "Headset Mic";
+
+		/* Frontend - Multimedia playback (DPCM) */
+		mm1-dai-link {
+			link-name = "MultiMedia1";
+			cpu {
+				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
+			};
+		};
+
+		mm2-dai-link {
+			link-name = "MultiMedia2";
+			cpu {
+				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;
+			};
+		};
+
+		/* Backend - Primary MI2S to WM8958 codec */
+		pri-mi2s-rx-dai-link {
+			link-name = "Primary MI2S Playback";
+			cpu {
+				sound-dai = <&q6afedai PRIMARY_MI2S_RX>;
+			};
+			platform {
+				sound-dai = <&q6asmdai>;
+			};
+			codec {
+				sound-dai = <&wm8958>;
+			};
+		};
+
+		pri-mi2s-tx-dai-link {
+			link-name = "Primary MI2S Capture";
+			cpu {
+				sound-dai = <&q6afedai PRIMARY_MI2S_TX>;
+			};
+			platform {
+				sound-dai = <&q6asmdai>;
+			};
+			codec {
+				sound-dai = <&wm8958>;
+			};
+		};
 	};
 };
 
