@@ -1989,3 +1989,7 @@
 	status = "okay";
 };
 
+&apr {
+	status = "okay";
+};
+
