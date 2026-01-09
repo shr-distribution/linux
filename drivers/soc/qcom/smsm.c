@@ -449,7 +449,7 @@ static int smsm_inbound_entry(struct qcom_smsm *smsm,
 
 	ret = devm_request_threaded_irq(smsm->dev, irq,
 					NULL, smsm_intr,
-					IRQF_ONESHOT,
+					IRQF_ONESHOT | IRQF_SHARED,
 					"smsm", (void *)entry);
 	if (ret) {
 		dev_err(smsm->dev, "failed to request interrupt\n");
@@ -487,7 +487,7 @@ static int smsm_get_size_info(struct qcom_smsm *smsm)
 	} *info;
 
 	info = qcom_smem_get(QCOM_SMEM_HOST_ANY, SMEM_SMSM_SIZE_INFO, &size);
-	if (IS_ERR(info) && PTR_ERR(info) != -ENOENT)
+	if (IS_ERR(info) && PTR_ERR(info) != -ENOENT && PTR_ERR(info) != -ENXIO)
 		return dev_err_probe(smsm->dev, PTR_ERR(info),
 				     "unable to retrieve smsm size info\n");
 	else if (IS_ERR(info) || size != sizeof(*info)) {
@@ -641,6 +641,24 @@ static int qcom_smsm_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, smsm);
 	of_node_put(local_node);
+
+	/*
+	 * Set legacy SMSM flags for MSM8660/APQ8060 compatibility.
+	 * Legacy Q6 firmware (e.g., HP TouchPad LPASS) expects these flags
+	 * in the apps processor SMSM state to indicate system is ready:
+	 *   SMSM_INIT     (0x01) - SMSM initialized
+	 *   SMSM_SMDINIT  (0x08) - SMD initialized
+	 *   SMSM_RPCINIT  (0x20) - RPC initialized
+	 *   SMSM_RUN      (0x100) - System running
+	 * Without these flags, Q6 won't respond to SMD channel open requests.
+	 */
+#define SMSM_INIT	0x00000001
+#define SMSM_SMDINIT	0x00000008
+#define SMSM_RPCINIT	0x00000020
+#define SMSM_RUN	0x00000100
+	smsm_update_bits(smsm, 0xffffffff, SMSM_INIT | SMSM_SMDINIT | SMSM_RPCINIT | SMSM_RUN);
+	dev_info(&pdev->dev, "set legacy SMSM state: 0x%x\n",
+		 SMSM_INIT | SMSM_SMDINIT | SMSM_RPCINIT | SMSM_RUN);
 
 	return 0;
 

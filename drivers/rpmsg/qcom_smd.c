@@ -370,6 +370,7 @@ struct qcom_smd_alloc_entry {
 static void qcom_smd_signal_channel(struct qcom_smd_channel *channel)
 {
 	struct qcom_smd_edge *edge = channel->edge;
+	int ret;
 
 	if (edge->mbox_chan) {
 		/*
@@ -379,8 +380,13 @@ static void qcom_smd_signal_channel(struct qcom_smd_channel *channel)
 		 */
 		mbox_send_message(edge->mbox_chan, NULL);
 		mbox_client_txdone(edge->mbox_chan, 0);
+	} else if (edge->ipc_regmap) {
+		ret = regmap_write(edge->ipc_regmap, edge->ipc_offset, BIT(edge->ipc_bit));
+		pr_info("SMD_IPC: signal '%s' offset=0x%x bit=%d val=0x%x ret=%d\n",
+			channel->name, edge->ipc_offset, edge->ipc_bit,
+			BIT(edge->ipc_bit), ret);
 	} else {
-		regmap_write(edge->ipc_regmap, edge->ipc_offset, BIT(edge->ipc_bit));
+		pr_err("SMD_IPC: NO IPC for channel '%s'!\n", channel->name);
 	}
 }
 
@@ -828,7 +834,14 @@ static int qcom_smd_channel_open(struct qcom_smd_channel *channel,
 		return -ENOMEM;
 
 	qcom_smd_channel_set_callback(channel, cb);
+
+	pr_emerg("SMD_OPEN: channel '%s' remote_state=%d before set_state\n",
+		 channel->name, channel->remote_state);
+
 	qcom_smd_channel_set_state(channel, SMD_CHANNEL_OPENING);
+
+	pr_emerg("SMD_OPEN: channel '%s' set to OPENING, waiting for remote...\n",
+		 channel->name);
 
 	/* Wait for remote to enter opening or opened */
 	ret = wait_event_interruptible_timeout(channel->state_change_event,
@@ -836,6 +849,8 @@ static int qcom_smd_channel_open(struct qcom_smd_channel *channel,
 			channel->remote_state == SMD_CHANNEL_OPENED,
 			HZ);
 	if (!ret) {
+		pr_emerg("SMD_OPEN: TIMEOUT! channel '%s' remote_state=%d (expected 1 or 2)\n",
+			 channel->name, channel->remote_state);
 		dev_err(&edge->dev, "remote side did not enter opening state\n");
 		goto out_close_timeout;
 	}
@@ -1214,12 +1229,20 @@ static void qcom_channel_scan_worker(struct work_struct *work)
 	int tbl;
 	int i;
 	u32 eflags, cid;
+	int entries_found = 0;
+
+	pr_emerg("SMD_SCAN: scan_worker called for edge %s (edge_id=%d, remote_pid=%d)\n",
+		 dev_name(&edge->dev), edge->edge_id, edge->remote_pid);
 
 	for (tbl = 0; tbl < SMD_ALLOC_TBL_COUNT; tbl++) {
 		alloc_tbl = qcom_smem_get(edge->remote_pid,
 				    smem_items[tbl].alloc_tbl_id, NULL);
-		if (IS_ERR(alloc_tbl))
+		if (IS_ERR(alloc_tbl)) {
+			pr_emerg("SMD_SCAN: tbl %d: smem_get(%d) failed: %ld\n",
+				 tbl, smem_items[tbl].alloc_tbl_id, PTR_ERR(alloc_tbl));
 			continue;
+		}
+		pr_emerg("SMD_SCAN: tbl %d: got alloc_tbl at %px\n", tbl, alloc_tbl);
 
 		for (i = 0; i < SMD_ALLOC_TBL_SIZE; i++) {
 			entry = &alloc_tbl[i];
@@ -1233,31 +1256,46 @@ static void qcom_channel_scan_worker(struct work_struct *work)
 			if (!entry->name[0])
 				continue;
 
-			if (!(eflags & SMD_CHANNEL_FLAGS_PACKET))
-				continue;
+			entries_found++;
+			pr_emerg("SMD_SCAN: entry[%d]: name='%.20s' flags=0x%x ref=%d cid=%d edge_in_flags=%d\n",
+				 i, entry->name, eflags, entry->ref_count,
+				 le32_to_cpu(entry->cid),
+				 eflags & SMD_CHANNEL_FLAGS_EDGE_MASK);
 
-			if ((eflags & SMD_CHANNEL_FLAGS_EDGE_MASK) != edge->edge_id)
+			if (!(eflags & SMD_CHANNEL_FLAGS_PACKET)) {
+				pr_emerg("SMD_SCAN:   -> skipped (not packet mode)\n");
 				continue;
+			}
+
+			if ((eflags & SMD_CHANNEL_FLAGS_EDGE_MASK) != edge->edge_id) {
+				pr_emerg("SMD_SCAN:   -> skipped (edge %d != %d)\n",
+					 eflags & SMD_CHANNEL_FLAGS_EDGE_MASK, edge->edge_id);
+				continue;
+			}
 
 			cid = le32_to_cpu(entry->cid);
 			info_id = smem_items[tbl].info_base_id + cid;
 			fifo_id = smem_items[tbl].fifo_base_id + cid;
 
+			pr_emerg("SMD_SCAN:   -> creating channel '%s' cid=%d\n", entry->name, cid);
 			channel = qcom_smd_create_channel(edge, info_id, fifo_id, entry->name);
-			if (IS_ERR(channel))
+			if (IS_ERR(channel)) {
+				pr_emerg("SMD_SCAN:   -> create_channel failed: %ld\n", PTR_ERR(channel));
 				continue;
+			}
 
 			spin_lock_irqsave(&edge->channels_lock, flags);
 			list_add(&channel->list, &edge->channels);
 			spin_unlock_irqrestore(&edge->channels_lock, flags);
 
-			dev_dbg(&edge->dev, "new channel found: '%s'\n", channel->name);
+			pr_emerg("SMD_SCAN: new channel found: '%s'\n", channel->name);
 			set_bit(i, edge->allocated[tbl]);
 
 			wake_up_interruptible_all(&edge->new_channel_event);
 		}
 	}
 
+	pr_emerg("SMD_SCAN: scan complete, found %d entries total\n", entries_found);
 	schedule_work(&edge->state_work);
 }
 
@@ -1416,8 +1454,9 @@ static int qcom_smd_parse_edge(struct device *dev,
 		goto put_node;
 	}
 
-	ret = devm_request_irq(dev, irq,
-			       qcom_smd_edge_intr, IRQF_TRIGGER_RISING,
+	ret = devm_request_threaded_irq(dev, irq,
+			       NULL, qcom_smd_edge_intr,
+			       IRQF_TRIGGER_RISING | IRQF_SHARED | IRQF_ONESHOT,
 			       node->name, edge);
 	if (ret) {
 		dev_err(dev, "failed to request smd irq\n");

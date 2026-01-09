@@ -208,6 +208,7 @@
 			smd-edge {
 				interrupts = <GIC_SPI 89 IRQ_TYPE_EDGE_RISING>;
 
+				qcom,ipc = <&gcc_lpass 0x8 8>;
 				qcom,smd-edge = <1>;
 				label = "lpass";
 
@@ -504,6 +505,16 @@
 			reg = <0x02082000 0x1000>;
 		};
 
+		/*
+		 * GCC (Global Clock Controller) for LPASS IPC on MSM8660/APQ8060.
+		 * The Scorpion-based SoC uses 0xC0182000 for DSP signaling,
+		 * different from the KPSS GCC at 0x02082000 used for RPM.
+		 */
+		gcc_lpass: gcc@c0182000 {
+			compatible = "syscon";
+			reg = <0xc0182000 0x1000>;
+		};
+
 		rpm: rpm@104000 {
 			compatible = "qcom,rpm-msm8660";
 			reg = <0x00104000 0x1000>;
@@ -689,6 +700,9 @@
 
 		#address-cells = <1>;
 		#size-cells = <0>;
+
+		qcom,ipc-1 = <&l2cc 0x8 5>;
+		qcom,ipc-2 = <&gcc_lpass 0x8 8>;
 
 		apps_smsm: apps@0 {
 			reg = <0>;
