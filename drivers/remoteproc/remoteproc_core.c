@@ -1380,35 +1380,45 @@ static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 	const char *name = rproc->firmware;
 	int ret;
 
+	pr_emerg("RPROC: rproc_fw_boot ENTER\n");
+
 	ret = rproc_fw_sanity_check(rproc, fw);
 	if (ret)
 		return ret;
 
+	pr_emerg("RPROC: Booting fw image %s, size %zd\n", name, fw->size);
 	dev_info(dev, "Booting fw image %s, size %zd\n", name, fw->size);
 
 	/*
 	 * if enabling an IOMMU isn't relevant for this rproc, this is
 	 * just a nop
 	 */
+	pr_emerg("RPROC: enabling iommu...\n");
 	ret = rproc_enable_iommu(rproc);
 	if (ret) {
 		dev_err(dev, "can't enable iommu: %d\n", ret);
 		return ret;
 	}
+	pr_emerg("RPROC: iommu done (%d)\n", ret);
 
 	/* Prepare rproc for firmware loading if needed */
+	pr_emerg("RPROC: prepare_device...\n");
 	ret = rproc_prepare_device(rproc);
 	if (ret) {
 		dev_err(dev, "can't prepare rproc %s: %d\n", rproc->name, ret);
 		goto disable_iommu;
 	}
+	pr_emerg("RPROC: prepare_device done (%d)\n", ret);
 
 	rproc->bootaddr = rproc_get_boot_addr(rproc, fw);
+	pr_emerg("RPROC: bootaddr=0x%llx\n", (unsigned long long)rproc->bootaddr);
 
 	/* Load resource table, core dump segment list etc from the firmware */
+	pr_emerg("RPROC: parse_fw...\n");
 	ret = rproc_parse_fw(rproc, fw);
 	if (ret)
 		goto unprepare_rproc;
+	pr_emerg("RPROC: parse_fw done (%d)\n", ret);
 
 	/* reset max_notifyid */
 	rproc->max_notifyid = -1;
@@ -1417,21 +1427,27 @@ static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 	rproc->nb_vdev = 0;
 
 	/* handle fw resources which are required to boot rproc */
+	pr_emerg("RPROC: handle_resources...\n");
 	ret = rproc_handle_resources(rproc, rproc_loading_handlers);
 	if (ret) {
 		dev_err(dev, "Failed to process resources: %d\n", ret);
 		goto clean_up_resources;
 	}
+	pr_emerg("RPROC: handle_resources done (%d)\n", ret);
 
 	/* Allocate carveout resources associated to rproc */
+	pr_emerg("RPROC: alloc_registered_carveouts...\n");
 	ret = rproc_alloc_registered_carveouts(rproc);
 	if (ret) {
 		dev_err(dev, "Failed to allocate associated carveouts: %d\n",
 			ret);
 		goto clean_up_resources;
 	}
+	pr_emerg("RPROC: alloc_registered_carveouts done (%d)\n", ret);
 
+	pr_emerg("RPROC: calling rproc_start...\n");
 	ret = rproc_start(rproc, fw);
+	pr_emerg("RPROC: rproc_start returned %d\n", ret);
 	if (ret)
 		goto clean_up_resources;
 
@@ -1912,6 +1928,8 @@ int rproc_boot(struct rproc *rproc)
 	struct device *dev;
 	int ret;
 
+	pr_emerg("RPROC: rproc_boot() ENTER\n");
+
 	if (!rproc) {
 		pr_err("invalid rproc handle\n");
 		return -EINVAL;
@@ -1919,11 +1937,13 @@ int rproc_boot(struct rproc *rproc)
 
 	dev = &rproc->dev;
 
+	pr_emerg("RPROC: acquiring mutex...\n");
 	ret = mutex_lock_interruptible(&rproc->lock);
 	if (ret) {
 		dev_err(dev, "can't lock rproc %s: %d\n", rproc->name, ret);
 		return ret;
 	}
+	pr_emerg("RPROC: mutex acquired\n");
 
 	if (rproc->state == RPROC_DELETED) {
 		ret = -ENODEV;
@@ -1942,16 +1962,21 @@ int rproc_boot(struct rproc *rproc)
 
 		ret = rproc_attach(rproc);
 	} else {
+		pr_emerg("RPROC: powering up %s\n", rproc->name);
 		dev_info(dev, "powering up %s\n", rproc->name);
 
 		/* load firmware */
+		pr_emerg("RPROC: calling request_firmware for %s...\n", rproc->firmware);
 		ret = request_firmware(&firmware_p, rproc->firmware, dev);
+		pr_emerg("RPROC: request_firmware returned %d\n", ret);
 		if (ret < 0) {
 			dev_err(dev, "request_firmware failed: %d\n", ret);
 			goto downref_rproc;
 		}
 
+		pr_emerg("RPROC: calling rproc_fw_boot...\n");
 		ret = rproc_fw_boot(rproc, firmware_p);
+		pr_emerg("RPROC: rproc_fw_boot returned %d\n", ret);
 
 		release_firmware(firmware_p);
 	}

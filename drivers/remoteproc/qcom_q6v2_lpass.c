@@ -87,7 +87,14 @@ static int q6v2_lpass_load(struct rproc *rproc, const struct firmware *fw)
 	struct q6v2_lpass *q6v2 = rproc->priv;
 	int ret;
 
+	pr_emerg("Q6V2: ========== load() called ==========\n");
+	pr_emerg("Q6V2: fw size=%zu\n", fw->size);
+	pr_emerg("Q6V2: mem_phys=0x%pa, mem_size=0x%zx, mem_region=%px\n",
+		 &q6v2->mem_phys, q6v2->mem_size, q6v2->mem_region);
+	msleep(100);
+
 	if (q6v2->use_pas) {
+		pr_emerg("Q6V2: using PAS load\n");
 		ret = qcom_mdt_pas_init(q6v2->dev, fw, rproc->firmware,
 					PAS_Q6_ID, q6v2->mem_phys,
 					&q6v2->pas_metadata);
@@ -99,17 +106,24 @@ static int q6v2_lpass_load(struct rproc *rproc, const struct firmware *fw)
 					    q6v2->mem_phys, q6v2->mem_size,
 					    &q6v2->mem_reloc);
 	} else {
-		ret = qcom_mdt_load(q6v2->dev, fw, rproc->firmware,
-				    PAS_Q6_ID, q6v2->mem_region,
-				    q6v2->mem_phys, q6v2->mem_size,
-				    &q6v2->mem_reloc);
+		pr_emerg("Q6V2: using direct load (untrusted)\n");
+		pr_emerg("Q6V2: calling qcom_mdt_load_no_init (skip PAS/SCM)...\n");
+		ret = qcom_mdt_load_no_init(q6v2->dev, fw, rproc->firmware,
+					    q6v2->mem_region,
+					    q6v2->mem_phys, q6v2->mem_size,
+					    &q6v2->mem_reloc);
+		pr_emerg("Q6V2: qcom_mdt_load_no_init returned %d\n", ret);
 	}
+
+	pr_emerg("Q6V2: mdt_load returned %d, mem_reloc=0x%pa\n",
+		 ret, &q6v2->mem_reloc);
 
 	if (ret)
 		return ret;
 
 	qcom_pil_info_store("lpass", q6v2->mem_phys, q6v2->mem_size);
 
+	pr_emerg("Q6V2: load() complete\n");
 	return 0;
 }
 
@@ -128,51 +142,98 @@ static int q6v2_lpass_start_trusted(struct q6v2_lpass *q6v2)
 
 static int q6v2_lpass_start_untrusted(struct q6v2_lpass *q6v2)
 {
-	u32 reg;
+	u32 reg, test_val;
 	int ret;
 
+	pr_emerg("Q6V2: start_untrusted() begin\n");
+
 	/* Read current Q6_FUNC register value */
+	pr_emerg("Q6V2: reading LCC Q6_FUNC...\n");
 	ret = regmap_read(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, &reg);
-	if (ret)
+	if (ret) {
+		pr_emerg("Q6V2: regmap_read failed: %d\n", ret);
 		return ret;
+	}
+	pr_emerg("Q6V2: Q6_FUNC initial=0x%08x\n", reg);
+
+	/*
+	 * DEBUG: Try to read QDSP6SS registers before modifying Q6_FUNC.
+	 * If QDSP6SS is not accessible (powered off), this will crash.
+	 */
+	pr_emerg("Q6V2: DEBUG - testing QDSP6SS read at %px...\n", q6v2->qdsp6ss_base);
+	test_val = readl(q6v2->qdsp6ss_base + QDSP6SS_RST_EVB);
+	pr_emerg("Q6V2: DEBUG - QDSP6SS_RST_EVB = 0x%08x\n", test_val);
+	test_val = readl(q6v2->qdsp6ss_base + QDSP6SS_STRAP_TCM);
+	pr_emerg("Q6V2: DEBUG - QDSP6SS_STRAP_TCM = 0x%08x\n", test_val);
+	test_val = readl(q6v2->qdsp6ss_base + QDSP6SS_STRAP_AHB);
+	pr_emerg("Q6V2: DEBUG - QDSP6SS_STRAP_AHB = 0x%08x\n", test_val);
 
 	/* Put Q6 into reset */
 	reg |= Q6SS_SS_ARES | Q6SS_ISDB_ARES | Q6SS_ETM_ARES | STOP_CORE | CORE_ARES;
 	reg &= ~CORE_GFM4_CLK_EN;
+	pr_emerg("Q6V2: writing Q6_FUNC=0x%08x (reset)\n", reg);
 	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
+
+	/* Verify the write worked */
+	regmap_read(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, &test_val);
+	pr_emerg("Q6V2: Q6_FUNC after reset write = 0x%08x\n", test_val);
 
 	/* Wait 8 AHB cycles for Q6 to be fully reset (AHB = 1.5MHz) */
 	usleep_range(20, 30);
+	pr_emerg("Q6V2: reset wait done\n");
 
 	/* Turn on Q6 memory */
 	reg |= CORE_GFM4_CLK_EN | CORE_L1_MEM_CORE_EN | CORE_TCM_MEM_CORE_EN |
 	       CORE_TCM_MEM_PERPH_EN;
+	pr_emerg("Q6V2: writing Q6_FUNC=0x%08x (memory on)\n", reg);
 	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
+
+	/* Verify the write worked */
+	regmap_read(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, &test_val);
+	pr_emerg("Q6V2: Q6_FUNC after memory on = 0x%08x\n", test_val);
 
 	/* Turn on Q6 core clocks and take core out of reset */
 	reg &= ~(CLAMP_IO | Q6SS_SS_ARES | Q6SS_ISDB_ARES | Q6SS_ETM_ARES | CORE_ARES);
+	pr_emerg("Q6V2: writing Q6_FUNC=0x%08x (clocks on, reset off)\n", reg);
 	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
 
 	/* Wait for clocks to be enabled */
 	mb();
 
+	/* Verify the write worked */
+	regmap_read(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, &test_val);
+	pr_emerg("Q6V2: Q6_FUNC after clocks on = 0x%08x\n", test_val);
+
 	/* Program boot address */
+	pr_emerg("Q6V2: programming boot addr=0x%08x at QDSP6SS+0x%x\n",
+		 (u32)((q6v2->mem_reloc >> 12) & 0xFFFFF), QDSP6SS_RST_EVB);
 	writel((q6v2->mem_reloc >> 12) & 0xFFFFF,
 	       q6v2->qdsp6ss_base + QDSP6SS_RST_EVB);
+	pr_emerg("Q6V2: RST_EVB written\n");
 
 	/* Program TCM and AHB strap registers */
+	pr_emerg("Q6V2: programming STRAP_TCM=0x%08x\n",
+		 Q6_STRAP_TCM_CONFIG | Q6_STRAP_TCM_BASE);
 	writel(Q6_STRAP_TCM_CONFIG | Q6_STRAP_TCM_BASE,
 	       q6v2->qdsp6ss_base + QDSP6SS_STRAP_TCM);
+	pr_emerg("Q6V2: STRAP_TCM written\n");
+
+	pr_emerg("Q6V2: programming STRAP_AHB=0x%08x\n",
+		 Q6_STRAP_AHB_UPPER | Q6_STRAP_AHB_LOWER);
 	writel(Q6_STRAP_AHB_UPPER | Q6_STRAP_AHB_LOWER,
 	       q6v2->qdsp6ss_base + QDSP6SS_STRAP_AHB);
+	pr_emerg("Q6V2: STRAP_AHB written\n");
 
 	/* Wait for addresses to be programmed before starting Q6 */
 	mb();
+	pr_emerg("Q6V2: straps programmed, about to start Q6 core\n");
 
 	/* Start Q6 instruction execution */
 	reg &= ~STOP_CORE;
+	pr_emerg("Q6V2: writing Q6_FUNC=0x%08x (start Q6)\n", reg);
 	regmap_write(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, reg);
 
+	pr_emerg("Q6V2: start_untrusted() complete - Q6 should be running!\n");
 	return 0;
 }
 
@@ -180,24 +241,59 @@ static int q6v2_lpass_start(struct rproc *rproc)
 {
 	struct q6v2_lpass *q6v2 = rproc->priv;
 	int ret;
+	u32 reg;
 
-	/* Enable PLL4 (LPASS PLL) */
+	pr_emerg("Q6V2: ========== start() begin ==========\n");
+	msleep(100); /* Force log flush */
+
+	/*
+	 * First enable PLL4 via RPM - this powers up the LPASS domain.
+	 * We MUST do this BEFORE accessing any LCC registers.
+	 */
+	pr_emerg("Q6V2: Step 1 - enabling PLL4 via RPM...\n");
+	msleep(100);
 	ret = clk_prepare_enable(q6v2->pll);
 	if (ret) {
-		dev_err(q6v2->dev, "Failed to enable PLL4: %d\n", ret);
+		pr_emerg("Q6V2: Failed to enable PLL4: %d\n", ret);
 		return ret;
 	}
+	pr_emerg("Q6V2: PLL4 enabled OK via RPM!\n");
+	msleep(100);
 
-	if (q6v2->use_pas)
+	/* Give LPASS domain time to power up after RPM enables PLL4 */
+	msleep(50);
+
+	/*
+	 * DEBUG: Now try to read LCC_Q6_FUNC - should work after PLL4 enable
+	 */
+	pr_emerg("Q6V2: Step 2 - testing LCC register read...\n");
+	msleep(100);
+	ret = regmap_read(q6v2->lcc_regmap, LCC_Q6_FUNC_OFFSET, &reg);
+	if (ret) {
+		pr_emerg("Q6V2: LCC read failed: %d\n", ret);
+		clk_disable_unprepare(q6v2->pll);
+		return ret;
+	}
+	pr_emerg("Q6V2: LCC_Q6_FUNC = 0x%08x - LCC accessible!\n", reg);
+	msleep(100);
+
+	pr_emerg("Q6V2: Step 3 - calling start routine...\n");
+	msleep(100);
+
+	if (q6v2->use_pas) {
+		pr_emerg("Q6V2: using start_trusted()\n");
 		ret = q6v2_lpass_start_trusted(q6v2);
-	else
+	} else {
+		pr_emerg("Q6V2: using start_untrusted()\n");
 		ret = q6v2_lpass_start_untrusted(q6v2);
+	}
 
 	if (ret) {
 		clk_disable_unprepare(q6v2->pll);
 		return ret;
 	}
 
+	pr_emerg("Q6V2: start() complete\n");
 	return 0;
 }
 
@@ -310,6 +406,8 @@ static int q6v2_lpass_probe(struct platform_device *pdev)
 	const char *firmware;
 	int ret;
 
+	pr_emerg("Q6V2_LPASS: probe() ENTER - device %s\n", dev_name(dev));
+
 	ret = of_property_read_string(dev->of_node, "firmware-name", &firmware);
 	if (ret) {
 		dev_err(dev, "Missing firmware-name property\n");
@@ -361,6 +459,7 @@ static int q6v2_lpass_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	pr_emerg("Q6V2_LPASS: probe() SUCCESS - remoteproc registered\n");
 	return 0;
 }
 

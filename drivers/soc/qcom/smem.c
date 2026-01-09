@@ -1218,6 +1218,32 @@ static int qcom_smem_probe(struct platform_device *pdev)
 		qcom_smem_map_global(smem, size);
 		smem->item_count = SMEM_ITEM_COUNT;
 		break;
+	case 0:
+		/*
+		 * Legacy/uninitialized SMEM (MSM8660 and similar).
+		 * The bootloader didn't initialize SMEM, so we need to
+		 * initialize it ourselves and use the heap mode.
+		 */
+		dev_info(&pdev->dev, "Legacy SMEM (version 0x0), initializing\n");
+		qcom_smem_map_global(smem, smem->regions[0].size);
+		header = smem->regions[0].virt_base;
+		if (!header) {
+			dev_err(&pdev->dev, "Failed to map SMEM for legacy init\n");
+			return -ENOMEM;
+		}
+		/* Initialize the SMEM header if it's empty */
+		if (!readl_relaxed(&header->initialized)) {
+			dev_info(&pdev->dev, "Initializing SMEM header\n");
+			writel_relaxed(1, &header->initialized);
+			writel_relaxed(sizeof(*header), &header->free_offset);
+			writel_relaxed(smem->regions[0].size - sizeof(*header),
+				       &header->available);
+			/* Set version to legacy heap version */
+			writel_relaxed(SMEM_GLOBAL_HEAP_VERSION << 16,
+				       &header->version[SMEM_MASTER_SBL_VERSION_INDEX]);
+		}
+		smem->item_count = SMEM_ITEM_COUNT;
+		break;
 	default:
 		dev_err(&pdev->dev, "Unsupported SMEM version 0x%x\n", version);
 		return -EINVAL;
