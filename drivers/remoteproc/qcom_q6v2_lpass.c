@@ -80,6 +80,7 @@ struct q6v2_lpass {
 	bool use_pas;			/* Use PAS (trusted) boot */
 
 	struct qcom_scm_pas_metadata pas_metadata;
+	struct qcom_rproc_subdev smd_subdev;
 };
 
 static int q6v2_lpass_load(struct rproc *rproc, const struct firmware *fw)
@@ -454,6 +455,8 @@ static int q6v2_lpass_probe(struct platform_device *pdev)
 		return ret;
 
 	platform_set_drvdata(pdev, q6v2);
+
+	qcom_add_smd_subdev(rproc, &q6v2->smd_subdev);
 
 	ret = devm_rproc_add(dev, rproc);
 	if (ret)

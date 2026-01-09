@@ -310,10 +310,16 @@ EXPORT_SYMBOL_GPL(qcom_register_dump_segments);
 static int smd_subdev_start(struct rproc_subdev *subdev)
 {
 	struct qcom_rproc_subdev *smd = to_smd_subdev(subdev);
+	int ret;
+
+	pr_emerg("SMD_SUBDEV: start() called, dev=%s node=%pOFn\n",
+		 dev_name(smd->dev), smd->node);
 
 	smd->edge = qcom_smd_register_edge(smd->dev, smd->node);
+	ret = PTR_ERR_OR_ZERO(smd->edge);
 
-	return PTR_ERR_OR_ZERO(smd->edge);
+	pr_emerg("SMD_SUBDEV: qcom_smd_register_edge returned %d\n", ret);
+	return ret;
 }
 
 static void smd_subdev_stop(struct rproc_subdev *subdev, bool crashed)
@@ -333,15 +339,26 @@ void qcom_add_smd_subdev(struct rproc *rproc, struct qcom_rproc_subdev *smd)
 {
 	struct device *dev = &rproc->dev;
 
+	pr_emerg("SMD_SUBDEV: qcom_add_smd_subdev called for rproc %s\n",
+		 rproc->name);
+	pr_emerg("SMD_SUBDEV: dev=%s parent=%s parent->of_node=%pOF\n",
+		 dev_name(dev), dev_name(dev->parent),
+		 dev->parent->of_node);
+
 	smd->node = of_get_child_by_name(dev->parent->of_node, "smd-edge");
-	if (!smd->node)
+	if (!smd->node) {
+		pr_emerg("SMD_SUBDEV: smd-edge node NOT FOUND!\n");
 		return;
+	}
+
+	pr_emerg("SMD_SUBDEV: found smd-edge node %pOF\n", smd->node);
 
 	smd->dev = dev;
 	smd->subdev.start = smd_subdev_start;
 	smd->subdev.stop = smd_subdev_stop;
 
 	rproc_add_subdev(rproc, &smd->subdev);
+	pr_emerg("SMD_SUBDEV: subdev added successfully\n");
 }
 EXPORT_SYMBOL_GPL(qcom_add_smd_subdev);
 
