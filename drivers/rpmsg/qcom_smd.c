@@ -838,6 +838,32 @@ static int qcom_smd_channel_open(struct qcom_smd_channel *channel,
 	pr_emerg("SMD_OPEN: channel '%s' remote_state=%d before set_state\n",
 		 channel->name, channel->remote_state);
 
+	/*
+	 * For LPASS channels on MSM8660/APQ8060, the Q6 firmware expects
+	 * APPS to set state directly to OPENED, like webOS kernel does.
+	 * Don't wait for remote to transition first.
+	 */
+	if (edge->name && !strcmp(edge->name, "lpass")) {
+		pr_emerg("SMD_OPEN: LPASS channel '%s' - going directly to OPENED (webOS compat)\n",
+			 channel->name);
+		qcom_smd_channel_set_state(channel, SMD_CHANNEL_OPENED);
+
+		/* Give Q6 time to respond */
+		ret = wait_event_interruptible_timeout(channel->state_change_event,
+				channel->remote_state == SMD_CHANNEL_OPENING ||
+				channel->remote_state == SMD_CHANNEL_OPENED,
+				3 * HZ);
+		if (!ret) {
+			pr_emerg("SMD_OPEN: LPASS '%s' remote_state=%d after 3s (continuing anyway)\n",
+				 channel->name, channel->remote_state);
+			/* Don't fail - webOS doesn't wait, just returns success */
+		} else {
+			pr_emerg("SMD_OPEN: LPASS '%s' remote responded! remote_state=%d\n",
+				 channel->name, channel->remote_state);
+		}
+		return 0;
+	}
+
 	qcom_smd_channel_set_state(channel, SMD_CHANNEL_OPENING);
 
 	pr_emerg("SMD_OPEN: channel '%s' set to OPENING, waiting for remote...\n",
@@ -1329,11 +1355,19 @@ static void qcom_channel_state_worker(struct work_struct *work)
 		/*
 		 * Always open rpm_requests, even when already opened which is
 		 * required on some SoCs like msm8953.
+		 * Also always register LPASS channels on MSM8660/APQ8060 where
+		 * the Q6 firmware expects APPS to initiate the open.
 		 */
 		remote_state = GET_RX_CHANNEL_INFO(channel, state);
+		pr_info("SMD_STATE: channel '%s' local=%d remote=%d edge='%s'\n",
+			channel->name, channel->state, remote_state,
+			edge->name ? edge->name : "unknown");
 		if (remote_state != SMD_CHANNEL_OPENING &&
 		    remote_state != SMD_CHANNEL_OPENED &&
-		    strcmp(channel->name, "rpm_requests"))
+		    strcmp(channel->name, "rpm_requests") &&
+		    strcmp(channel->name, "apr_audio_svc") &&
+		    strcmp(channel->name, "DIAG") &&
+		    strcmp(channel->name, "DIAG_CNTL"))
 			continue;
 
 		if (channel->registered)
