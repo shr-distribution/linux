@@ -1,290 +1,124 @@
 #!/bin/sh
 # HP TouchPad LuneOS initramfs
-# Clean implementation with USB gadget setup, fallbacks, and debug logging
+# Based on working LuneOS init - uses kernel's built-in USB gadget
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-LOGFILE="/tmp/initramfs.log"
-BOOT_LOG="/mnt/boot/initramfs.log"
-USB_IP="172.16.42.2"
-USB_NETMASK="255.255.255.0"
+USB_IP="172.16.42.2/16"
 
-# Logging function - writes to console and logfile
-log() {
-    echo "[$(cat /proc/uptime | cut -d' ' -f1)] $1"
-    echo "[$(cat /proc/uptime | cut -d' ' -f1)] $1" >> "$LOGFILE" 2>/dev/null
-}
-
-log "=== HP TouchPad LuneOS Initramfs ==="
-log "Starting init..."
+echo "=== HP TouchPad LuneOS Initramfs ==="
 
 # Mount essential filesystems
-log "Mounting proc..."
 mount -t proc none /proc
-
-log "Mounting sys..."
 mount -t sysfs none /sys
-
-log "Mounting devtmpfs..."
 mount -t devtmpfs none /dev 2>/dev/null
-
-log "Mounting configfs..."
+mkdir -p /config
 mount -t configfs none /config
 
 # Setup mdev for hotplug
-log "Setting up mdev..."
 echo /sbin/mdev > /sys/kernel/uevent_helper
 mdev -s
-log "mdev scan complete"
-
-# Create device nodes if needed
-[ -e /dev/null ] || mknod /dev/null c 1 3
-[ -e /dev/console ] || mknod /dev/console c 5 1
 
 # Show kernel info
-log "Kernel: $(uname -r)"
-log "Cmdline: $(cat /proc/cmdline)"
+echo "Kernel: $(uname -r)"
+echo "Cmdline: $(cat /proc/cmdline)"
 
-# Wait for block devices to appear
-log "Waiting for block devices..."
-for i in 1 2 3 4 5 6 7 8 9 10; do
-    if [ -e /dev/mmcblk0p13 ]; then
-        log "Block device /dev/mmcblk0p13 found"
+# Wait for USB gadget interface - kernel creates it automatically (CONFIG_USB_ETH=y)
+echo "Waiting for USB network interface..."
+sleep 5
+
+# List available interfaces for debugging
+echo "Available network interfaces:"
+ip link show
+
+# Setup USB IP address - try common interface names
+CONFIGURED=0
+for IFACE in usb0 rndis0 eth0 usb1; do
+    echo "Trying interface: $IFACE"
+    if ip address add "$USB_IP" dev $IFACE 2>/dev/null; then
+        ip link set $IFACE up
+        echo "Configured $IFACE with $USB_IP"
+        CONFIGURED=1
         break
     fi
-    # Trigger mdev to scan for devices
-    mdev -s 2>/dev/null
-    sleep 1
 done
 
-# List available block devices for debugging
-log "Available block devices:"
-ls -la /dev/mmcblk* >> "$LOGFILE" 2>&1 || log "No mmcblk devices found"
-
-# Mount boot partition for logging
-log "Mounting boot partition for logging..."
-if [ -e /dev/mmcblk0p13 ] && mount -t ext3 /dev/mmcblk0p13 /mnt/boot 2>&1; then
-    log "Boot partition mounted at /mnt/boot"
-    # Remove moboot.next so next boot goes to webOS
-    rm -f /mnt/boot/moboot.next
-    sync
-    log "moboot.next removed"
-elif [ -e /dev/mmcblk0p1 ] && mount -t vfat /dev/mmcblk0p1 /mnt/boot 2>&1; then
-    log "Boot partition (vfat) mounted at /mnt/boot"
-    rm -f /mnt/boot/moboot.next
-    sync
-else
-    log "ERROR: Could not mount boot partition"
-    log "Tried /dev/mmcblk0p13 (ext3) and /dev/mmcblk0p1 (vfat)"
-fi
-
-# Function to setup USB gadget via configfs
-setup_usb_configfs() {
-    local func_type="$1"  # ecm or rndis
-
-    log "Setting up USB gadget via configfs ($func_type)..."
-
-    CONFIGFS="/config/usb_gadget"
-
-    if [ ! -d "$CONFIGFS" ]; then
-        log "ERROR: configfs gadget directory not available"
-        return 1
-    fi
-
-    # Check for UDC (USB Device Controller)
-    UDC=$(ls /sys/class/udc 2>/dev/null | head -1)
-    if [ -z "$UDC" ]; then
-        log "ERROR: No USB Device Controller found"
-        ls -la /sys/class/udc/ >> "$LOGFILE" 2>&1
-        return 1
-    fi
-    log "Found UDC: $UDC"
-
-    # Clean up any existing gadget
-    if [ -d "$CONFIGFS/g1" ]; then
-        log "Cleaning up existing gadget..."
-        echo "" > "$CONFIGFS/g1/UDC" 2>/dev/null
-        rm -f "$CONFIGFS/g1/configs/c.1/"* 2>/dev/null
-        rmdir "$CONFIGFS/g1/configs/c.1/strings/0x409" 2>/dev/null
-        rmdir "$CONFIGFS/g1/configs/c.1" 2>/dev/null
-        rmdir "$CONFIGFS/g1/functions/"* 2>/dev/null
-        rmdir "$CONFIGFS/g1/strings/0x409" 2>/dev/null
-        rmdir "$CONFIGFS/g1" 2>/dev/null
-    fi
-
-    # Create gadget
-    log "Creating USB gadget..."
-    mkdir -p "$CONFIGFS/g1" || { log "ERROR: Cannot create gadget"; return 1; }
-
-    # Set IDs - use Linux Foundation vendor ID
-    echo 0x1d6b > "$CONFIGFS/g1/idVendor"   # Linux Foundation
-    echo 0x0104 > "$CONFIGFS/g1/idProduct"  # Multifunction Composite Gadget
-    echo 0x0100 > "$CONFIGFS/g1/bcdDevice"  # v1.0.0
-    echo 0x0200 > "$CONFIGFS/g1/bcdUSB"     # USB 2.0
-
-    # Set strings
-    mkdir -p "$CONFIGFS/g1/strings/0x409"
-    echo "0123456789" > "$CONFIGFS/g1/strings/0x409/serialnumber"
-    echo "LuneOS" > "$CONFIGFS/g1/strings/0x409/manufacturer"
-    echo "HP TouchPad" > "$CONFIGFS/g1/strings/0x409/product"
-
-    # Create function
-    log "Creating $func_type function..."
-    mkdir -p "$CONFIGFS/g1/functions/${func_type}.usb0" || {
-        log "ERROR: Cannot create $func_type function"
-        return 1
-    }
-
-    # Set MAC addresses (host_addr must have even first byte)
-    echo "48:6F:73:74:50:43" > "$CONFIGFS/g1/functions/${func_type}.usb0/host_addr" 2>/dev/null
-    echo "44:65:76:69:63:65" > "$CONFIGFS/g1/functions/${func_type}.usb0/dev_addr" 2>/dev/null
-
-    # Create configuration
-    mkdir -p "$CONFIGFS/g1/configs/c.1/strings/0x409"
-    echo "USB Network" > "$CONFIGFS/g1/configs/c.1/strings/0x409/configuration"
-    echo 500 > "$CONFIGFS/g1/configs/c.1/MaxPower"
-
-    # Link function to configuration
-    ln -s "$CONFIGFS/g1/functions/${func_type}.usb0" "$CONFIGFS/g1/configs/c.1/" || {
-        log "ERROR: Cannot link function to configuration"
-        return 1
-    }
-
-    # Enable gadget
-    log "Enabling USB gadget on $UDC..."
-    echo "$UDC" > "$CONFIGFS/g1/UDC" || {
-        log "ERROR: Cannot enable gadget"
-        cat "$CONFIGFS/g1/UDC" >> "$LOGFILE" 2>&1
-        return 1
-    }
-
-    log "USB gadget ($func_type) enabled successfully"
-    return 0
-}
-
-# Function to configure network interface
-setup_network() {
-    log "Waiting for USB network interface..."
-
-    # Wait for interface to appear (up to 10 seconds)
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        # Try common interface names
-        for iface in usb0 rndis0 eth0; do
-            if [ -e "/sys/class/net/$iface" ]; then
-                log "Found interface: $iface"
-
-                # Configure IP
-                ip addr add ${USB_IP}/24 dev $iface 2>/dev/null
-                ip link set $iface up
-
-                log "Configured $iface with IP $USB_IP"
-
-                # Check link status
-                sleep 1
-                if ip link show $iface | grep -q "LOWER_UP"; then
-                    log "Interface $iface has carrier!"
-                    return 0
-                else
-                    log "Interface $iface configured but no carrier yet"
-                    return 0  # Still success, carrier may come later
-                fi
-            fi
-        done
-        sleep 1
-    done
-
-    log "WARNING: No USB network interface found"
-    log "Available interfaces:"
-    ip link show >> "$LOGFILE" 2>&1
-    return 1
-}
-
-# Function to start telnet daemon
-start_telnetd() {
-    log "Setting up telnet access..."
-
-    # Create minimal passwd/group
-    echo "root::0:0:root:/:/bin/sh" > /etc/passwd
-    echo "root:x:0:" > /etc/group
-
-    # Create pts for telnet
-    mkdir -p /dev/pts
-    mount -t devpts none /dev/pts 2>/dev/null
-
-    # Start telnetd
-    if command -v telnetd >/dev/null 2>&1; then
-        telnetd -l /bin/sh -b ${USB_IP}
-        log "Telnetd started on ${USB_IP}:23"
-    else
-        log "WARNING: telnetd not available"
-    fi
-}
-
-# Main USB gadget setup with fallbacks
-log "=== USB Gadget Setup ==="
-
-USB_OK=0
-
-# Try ECM first (most compatible with Linux hosts)
-if setup_usb_configfs "ecm"; then
-    log "ECM gadget created"
-    if setup_network; then
-        USB_OK=1
-    fi
-fi
-
-# If ECM failed, try RNDIS (Windows compatible)
-if [ "$USB_OK" = "0" ]; then
-    log "ECM failed, trying RNDIS..."
-    if setup_usb_configfs "rndis"; then
-        log "RNDIS gadget created"
-        if setup_network; then
-            USB_OK=1
+# If common names didn't work, try to find any non-lo interface
+if [ "$CONFIGURED" = "0" ]; then
+    echo "Trying to find any available network interface..."
+    for IFACE in $(ip -o link show | awk -F': ' '{print $2}' | grep -v '^lo$'); do
+        echo "Trying interface: $IFACE"
+        if ip address add "$USB_IP" dev $IFACE 2>/dev/null; then
+            ip link set $IFACE up
+            echo "Configured $IFACE with $USB_IP"
+            CONFIGURED=1
+            break
         fi
+    done
+fi
+
+# Setup telnetd
+echo "Starting telnetd..."
+cat > /etc/passwd << "EOF"
+root::0:0:root:/root:/bin/sh
+EOF
+cat > /etc/group << "EOF"
+root:x:0:root
+EOF
+mkdir -p /dev/pts
+mount -t devpts none /dev/pts 2>/dev/null
+telnetd -b 172.16.42.2 -l /bin/sh
+echo "Telnetd started on 172.16.42.2:23"
+
+# Wait for block devices
+echo "Waiting for block devices..."
+sleep 2
+mdev -s
+
+# Try to mount boot partition and remove moboot.next
+mkdir -p /mnt/boot
+if mount /dev/mmcblk0p13 /mnt/boot 2>/dev/null; then
+    echo "Boot partition mounted"
+    rm -f /mnt/boot/moboot.next
+    sync
+    echo "moboot.next removed"
+else
+    echo "Could not mount boot partition"
+fi
+
+# Mount firmware from boot partition if available
+echo "Checking for firmware on boot partition..."
+if [ -d /mnt/boot/firmware ] && [ "$(ls /mnt/boot/firmware 2>/dev/null)" ]; then
+    echo "Mounting firmware from boot partition..."
+    mount --bind /mnt/boot/firmware /lib/firmware 2>/dev/null && \
+        echo "Firmware mounted from /mnt/boot/firmware"
+else
+    echo "No firmware on boot partition, using initramfs firmware"
+fi
+
+# Start Q6 LPASS DSP for audio
+echo "Starting Q6 LPASS audio DSP..."
+if [ -f /sys/class/remoteproc/remoteproc0/state ]; then
+    if [ -f /lib/firmware/q6.mdt ]; then
+        echo start > /sys/class/remoteproc/remoteproc0/state 2>/dev/null
+        sleep 2
+        Q6_STATE=$(cat /sys/class/remoteproc/remoteproc0/state 2>/dev/null)
+        echo "Q6 LPASS state: $Q6_STATE"
+    else
+        echo "Q6 firmware not found, skipping LPASS start"
     fi
+else
+    echo "Q6 remoteproc not available"
 fi
 
-# Start telnetd regardless
-start_telnetd
+# Save dmesg for debugging
+dmesg > /tmp/dmesg.log
+echo "dmesg saved to /tmp/dmesg.log"
 
-# Copy log to boot partition
-log "=== Saving log to boot partition ==="
-if [ -d /mnt/boot ]; then
-    cp "$LOGFILE" "$BOOT_LOG" 2>/dev/null
-    sync
-    log "Log saved to $BOOT_LOG"
-fi
-
-# Dump useful debug info
-log "=== Debug Information ==="
-log "Network interfaces:"
-ip addr >> "$LOGFILE" 2>&1
-
-log "USB gadget status:"
-ls -la /config/usb_gadget/g1/ >> "$LOGFILE" 2>&1
-cat /config/usb_gadget/g1/UDC >> "$LOGFILE" 2>&1
-
-log "Kernel modules:"
-lsmod >> "$LOGFILE" 2>&1
-
-log "dmesg (last 50 lines):"
-dmesg | tail -50 >> "$LOGFILE" 2>&1
-
-# Final log sync
-if [ -d /mnt/boot ]; then
-    cp "$LOGFILE" "$BOOT_LOG" 2>/dev/null
-    sync
-fi
-
-log "=== Init complete, entering shell loop ==="
-log "Connect via: telnet ${USB_IP}"
+echo "=== System ready for telnet debugging ==="
+echo "Connect via: telnet 172.16.42.2"
 
 # Keep system alive
 while true; do
     sleep 60
-    # Update log periodically
-    if [ -d /mnt/boot ]; then
-        cp "$LOGFILE" "$BOOT_LOG" 2>/dev/null
-        sync
-    fi
 done
