@@ -23,6 +23,7 @@
 #include <linux/regmap.h>
 #include <linux/remoteproc.h>
 #include <linux/soc/qcom/mdt_loader.h>
+#include <linux/soc/qcom/smem.h>
 #include <linux/firmware/qcom/qcom_scm.h>
 
 #include "remoteproc_internal.h"
@@ -407,6 +408,14 @@ static int q6v2_lpass_probe(struct platform_device *pdev)
 	const char *firmware;
 	int ret;
 
+	/*
+	 * Defer probe until SMEM is available. SMD subdevices need SMEM
+	 * to register edges, and if SMEM isn't ready when auto_boot
+	 * triggers, the SMD registration fails and remoteproc stays offline.
+	 */
+	if (!qcom_smem_is_available())
+		return -EPROBE_DEFER;
+
 	pr_emerg("Q6V2_LPASS: probe() ENTER - device %s\n", dev_name(dev));
 
 	ret = of_property_read_string(dev->of_node, "firmware-name", &firmware);
@@ -420,7 +429,7 @@ static int q6v2_lpass_probe(struct platform_device *pdev)
 	if (!rproc)
 		return -ENOMEM;
 
-	rproc->auto_boot = false;
+	rproc->auto_boot = true;
 
 	q6v2 = rproc->priv;
 	q6v2->dev = dev;
