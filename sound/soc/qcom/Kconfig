@@ -162,6 +162,7 @@ config SND_SOC_APQ8060
 	depends on COMMON_CLK
 	select SND_SOC_QDSP6
 	select SND_SOC_QCOM_COMMON
+	select SND_SOC_WM8994
 	help
 	  Support for Qualcomm Technologies QDSP6 audio block in
 	  APQ8060/MSM8660 SoC-based systems like HP TouchPad.
