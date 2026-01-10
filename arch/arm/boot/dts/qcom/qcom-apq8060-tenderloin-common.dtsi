@@ -136,11 +136,26 @@
 	};
 
 	ath6kl_pwrseq: ath6kl-pwrseq {
-			compatible = "mmc-pwrseq-simple";
+		compatible = "mmc-pwrseq-simple";
 
-			reset-gpios = <&tlmm 93 GPIO_ACTIVE_HIGH>,
-				<&tlmm 137 GPIO_ACTIVE_HIGH>,
-				<&tlmm 135 GPIO_ACTIVE_LOW>;
+		/*
+		 * WiFi Power Sequence for AR6003:
+		 * GPIO 135 = WLAN_RST_N (active low reset)
+		 * GPIO 93 = WL_HOST_WAKE (WiFi->Host wake, input - NOT a reset)
+		 * GPIO 137 = HOST_WAKE_WL (Host->WiFi wake, output - NOT a reset)
+		 *
+		 * Only GPIO 135 is the actual reset line.
+		 * The pwrseq driver asserts this during pre_power_on (holds reset),
+		 * then deasserts during post_power_on (releases reset).
+		 */
+		reset-gpios = <&tlmm 135 GPIO_ACTIVE_LOW>;
+
+		/* AR6003 needs 32kHz sleep clock for proper operation */
+		clocks = <&sleep_clk>;
+		clock-names = "ext_clock";
+
+		/* AR6003 needs time after reset release before SDIO communication */
+		post-power-on-delay-ms = <500>;
 	};
 
 	soc {
@@ -1302,11 +1317,22 @@
 	};
 
 	wlan_gpios: wlan-state {
-		irq-pins {
-			pins = "gpio93", "gpio137";
+		/* WL_HOST_WAKE (GPIO 93) - WiFi signals host, input */
+		host-wake-pins {
+			pins = "gpio93";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-down;
+			input-enable;
+		};
+
+		/* HOST_WAKE_WL (GPIO 137) - Host signals WiFi, output high to keep awake */
+		device-wake-pins {
+			pins = "gpio137";
 			function = "gpio";
 			drive-strength = <2>;
 			bias-disable;
+			output-high;
 		};
 	};
 
@@ -1400,7 +1426,7 @@
 &sdcc4 {
 	status = "okay";
 	pinctrl-names = "default";
-	pinctrl-0 = <&sdcc4_pins>;
+	pinctrl-0 = <&sdcc4_pins>, <&wlan_gpios>;
 	#address-cells = <1>;
 	#size-cells = <0>;
 	disable-wp;
@@ -1413,6 +1439,16 @@
 	 */
 	vmmc-supply = <&pm8901_l1>;   /* 3.3V main supply */
 	vqmmc-supply = <&pm8058_s3>;  /* 1.8V SDIO I/O supply */
+
+	/*
+	 * SDIO configuration matching legacy webOS kernel:
+	 * - 4-bit data bus (MMC_CAP_4_BIT_DATA)
+	 * - Speeds: 400kHz init, 24MHz mid, 48MHz max
+	 */
+	bus-width = <4>;  /* 4-bit mode as per legacy kernel */
+	no-1-8-v;  /* Stick to 3.3V signaling */
+	broken-cd;  /* Card always present (no detect) */
+	non-removable;  /* Soldered down */
 
 	mmc-pwrseq = <&ath6kl_pwrseq>;
 	// mpm_sdiowakeup_int = MSM_MPM_PIN_SDC4_DAT1 /* 24 */
