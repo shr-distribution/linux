@@ -2025,7 +2025,11 @@
 		compatible = "qcom,apq8060-sndcard";
 		model = "HP-TouchPad";
 
-		/* DAPM audio routing from webOS */
+		/* DAPM audio routing - mics route directly to input pins
+		 * MICBIAS is a SUPPLY widget in modern kernels, so can't be
+		 * in the signal path. The codec driver enables MICBIAS when
+		 * the corresponding input is powered.
+		 */
 		audio-routing =
 			"Headphone", "HPOUT1L",
 			"Headphone", "HPOUT1R",
@@ -2033,10 +2037,8 @@
 			"Speaker", "LINEOUT1N",
 			"Speaker", "LINEOUT2P",
 			"Speaker", "LINEOUT2N",
-			"IN1LN", "MICBIAS1",
-			"MICBIAS1", "Internal Mic",
-			"IN2LN", "MICBIAS2",
-			"MICBIAS2", "Headset Mic";
+			"IN1LN", "Internal Mic",
+			"IN2LN", "Headset Mic";
 
 		/* Frontend - Multimedia playback (DPCM) */
 		mm1-dai-link {
