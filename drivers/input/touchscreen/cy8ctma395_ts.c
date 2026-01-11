@@ -648,6 +648,13 @@ static size_t cy8ctma395_ts_receive_buf(struct serdev_device *serdev,
 					const u8 *data, size_t count)
 {
 	struct cy8ctma395_ts_data *ts = serdev_device_get_drvdata(serdev);
+	static unsigned long last_print;
+	static size_t total_bytes;
+
+	total_bytes += count;
+	if (printk_timed_ratelimit(&last_print, 5000))
+		dev_info(&serdev->dev, "UART RX: %zu bytes total, last %zu bytes\n",
+			 total_bytes, count);
 
 	if (!cy8ctma395_ts_process_data(ts, data, count)) {
 		/* No touches detected - check for liftoff */
@@ -724,6 +731,7 @@ retry:
 
 	/* Send I2C initialization sequence */
 	ret = cy8ctma395_ts_i2c_write(ts, 0x08, 0x00);
+	dev_info(dev, "I2C init write 0x08=0x00: ret=%d\n", ret);
 	if (ret != 1 && retry++ < 3) {
 		regulator_disable(ts->vdd);
 		usleep_range(10000, 15000);
@@ -732,14 +740,20 @@ retry:
 	}
 
 	ret = cy8ctma395_ts_i2c_write_multi(ts, init_seq1, sizeof(init_seq1));
+	dev_info(dev, "I2C init seq1: ret=%d\n", ret);
 	if (ret != 1)
 		dev_err(dev, "Init seq1 failed: %d\n", ret);
 
-	cy8ctma395_ts_i2c_write(ts, 0x30, 0x0F);
-	cy8ctma395_ts_i2c_write(ts, 0x40, 0x02);
-	cy8ctma395_ts_i2c_write(ts, 0x41, 0x10);
-	cy8ctma395_ts_i2c_write(ts, 0x0A, 0x04);
-	cy8ctma395_ts_i2c_write(ts, 0x08, 0x03);
+	ret = cy8ctma395_ts_i2c_write(ts, 0x30, 0x0F);
+	dev_info(dev, "I2C write 0x30=0x0F: ret=%d\n", ret);
+	ret = cy8ctma395_ts_i2c_write(ts, 0x40, 0x02);
+	dev_info(dev, "I2C write 0x40=0x02: ret=%d\n", ret);
+	ret = cy8ctma395_ts_i2c_write(ts, 0x41, 0x10);
+	dev_info(dev, "I2C write 0x41=0x10: ret=%d\n", ret);
+	ret = cy8ctma395_ts_i2c_write(ts, 0x0A, 0x04);
+	dev_info(dev, "I2C write 0x0A=0x04: ret=%d\n", ret);
+	ret = cy8ctma395_ts_i2c_write(ts, 0x08, 0x03);
+	dev_info(dev, "I2C write 0x08=0x03: ret=%d\n", ret);
 
 	/* Assert wake to start streaming */
 	gpiod_set_value_cansleep(ts->gpio_wake, 1);
@@ -865,7 +879,11 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 		goto err_i2c;
 	}
 
-	serdev_device_set_baudrate(serdev, 4000000);
+	{
+		unsigned int actual_baud;
+		actual_baud = serdev_device_set_baudrate(serdev, 4000000);
+		dev_info(dev, "Requested baud 4000000, actual baud %u\n", actual_baud);
+	}
 	serdev_device_set_flow_control(serdev, false);
 	serdev_device_set_client_ops(serdev, &cy8ctma395_ts_serdev_ops);
 
