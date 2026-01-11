@@ -1834,11 +1834,36 @@
 
 &gsbi10_serial {
 	status = "okay";
+
 	/*
-	 * CY8CTMA395 touch data UART interface
-	 * Touch data packets: 0xFF 0x43 (scan data), 0xFF 0x47 (scan complete)
-	 * Baud rate: 4 Mbps (configured by userspace ts-srv or kernel driver)
+	 * Cypress CY8CTMA395 Touchscreen (serdev driver)
+	 *
+	 * Touch data is transmitted over UART at 4 Mbps.
+	 * I2C (via gsbi10_i2c) is used for initialization commands.
+	 * Touch data packets: 0xFF 0x43 (row data), 0xFF 0x47 (scan complete)
+	 *
+	 * The driver processes 30x40 capacitance matrix and reports
+	 * multi-touch events via the input subsystem.
 	 */
+	touchscreen: touchscreen {
+		compatible = "cypress,cy8ctma395-ts";
+
+		/* I2C bus for initialization (address 0x67) */
+		i2c-bus = <&gsbi10_i2c>;
+
+		/* Power supply - 3.05V digital */
+		vdd-supply = <&pm8058_l10>;
+
+		/* Reset GPIO (active low) - TP_PWR_RST / XRES */
+		reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
+
+		/* Wake GPIO (active high) - also serves as IRQ */
+		/* WiFi variant: GPIO 123, 3G variant: GPIO 45 */
+		wake-gpios = <&tlmm 123 GPIO_ACTIVE_HIGH>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&touch_pins>;
+	};
 };
 
 &gsbi10_i2c {
@@ -1848,46 +1873,35 @@
 	pinctrl-0 = <&gsbi10_i2c_pins>;
 
 /*
-	 * Cypress CY8CTMA395 TrueTouch Capacitive Touchscreen Controller
+	 * NOTE: The touchscreen is now handled by the serdev driver
+	 * (cy8ctma395-ts) under gsbi10_serial. The I2C interface at 0x67
+	 * is accessed directly by that driver for initialization.
 	 *
-	 * The HP TouchPad uses a Cypress PSoC-based touchscreen controller:
-	 * - I2C address: 0x67 (for configuration, calibration, firmware)
-	 * - UART: /dev/ttyMSM2 at 4 Mbps (for touch data stream)
-	 * - IRQ/Wake GPIO: 123 (WiFi) or 45 (3G)
-	 * - Reset GPIO: 70 (TP_PWR_RST / XRES)
-	 * - Power: PM8058_L10 (3.05V digital) + 5V boost (analog)
-	 *
-	 * IMPORTANT: Touch data is transmitted over UART, NOT I2C!
-	 * The I2C interface is only used for initialization and configuration.
-	 * A userspace driver (ts-srv) or kernel serdev driver is required.
-	 * See TOUCHSCREEN_MULTI_SLAVE_ANALYSIS.md for complete protocol details.
-	 *
-	 * Architecture: 1x CY8CTMA395 master + 5x CY8CTMA375 slaves (internal)
-	 * The slaves are on a private I2C bus inside the master, not accessible
-	 * from the host. Master firmware aggregates all touch data.
+	 * The old I2C-only node is kept here for reference but disabled.
+	 * See TOUCHSCREEN_MULTI_SLAVE_ANALYSIS.md for protocol details.
 	 */
-	touchscreen: touchscreen@67 {
+
+	/*
+	 * Legacy I2C touchscreen node (disabled - use serdev driver instead)
+	 *
+	touchscreen_i2c: touchscreen@67 {
 		compatible = "cypress,cy8ctma340";
 		reg = <0x67>;
+		status = "disabled";
 
-		vcpin-supply = <&vdd50_boost>;  /* VCPIN - 5V analog supply */
-		vdd-supply = <&pm8058_l10>;     /* VDD - 3.05V digital supply */
-
-		interrupts-extended = <&tlmm 123 IRQ_TYPE_LEVEL_LOW>; /* 3G: 45 */
+		vcpin-supply = <&vdd50_boost>;
+		vdd-supply = <&pm8058_l10>;
+		interrupts-extended = <&tlmm 123 IRQ_TYPE_LEVEL_LOW>;
 		reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
-
-		/* Wake GPIO same as IRQ - controlled via sysfs in webOS */
 		wakeup-source;
-
 		pinctrl-names = "default";
 		pinctrl-0 = <&touch_pins>;
-
-		/* Touchscreen parameters from webOS config */
 		touchscreen-size-x = <768>;
 		touchscreen-size-y = <1024>;
 		touchscreen-fuzz-x = <4>;
 		touchscreen-fuzz-y = <4>;
 	};
+	*/
 };
 
 &pm8058 {
