@@ -4,7 +4,7 @@
  */
 
 #include <dt-bindings/input/input.h>
-#include <dt-bindings/input/atmel-maxtouch.h>
+/* Cypress CY8CTMA395 touchscreen - uses UART for touch data, I2C for config */
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
@@ -28,6 +28,7 @@
 		mmc0 = &sdcc1;	/* mmcblk0 for eMMC/SD */
 		serial0 = &gsbi12_serial; /* Console - /dev/ttyMSM0 */
 		serial1 = &gsbi6_serial;  /* Bluetooth - /dev/ttyMSM1 */
+		serial2 = &gsbi10_serial; /* Touchscreen UART - /dev/ttyMSM2 */
 		serial3 = &gsbi5_serial;  /* GPS - /dev/ttyMSM3 */
 		display0 = &lg_panel;
 	};
@@ -141,21 +142,16 @@
 		/*
 		 * WiFi Power Sequence for AR6003:
 		 * GPIO 135 = WLAN_RST_N (active low reset)
-		 * GPIO 93 = WL_HOST_WAKE (WiFi->Host wake, input - NOT a reset)
-		 * GPIO 137 = HOST_WAKE_WL (Host->WiFi wake, output - NOT a reset)
-		 *
-		 * Only GPIO 135 is the actual reset line.
-		 * The pwrseq driver asserts this during pre_power_on (holds reset),
-		 * then deasserts during post_power_on (releases reset).
+		 * Note: GPIO 93/137 are wake GPIOs handled separately
 		 */
 		reset-gpios = <&tlmm 135 GPIO_ACTIVE_LOW>;
 
-		/* AR6003 needs 32kHz sleep clock for proper operation */
+		/* 32kHz sleep clock for AR6003 */
 		clocks = <&sleep_clk>;
 		clock-names = "ext_clock";
 
-		/* AR6003 needs time after reset release before SDIO communication */
-		post-power-on-delay-ms = <500>;
+		/* AR6003 needs time after reset to enter BMI mode */
+		post-power-on-delay-ms = <200>;
 	};
 
 	soc {
@@ -218,7 +214,7 @@
 			compatible = "qcom,adm";
 			reg = <0x18420000 0x100000>;
 			interrupts = <GIC_SPI 167 IRQ_TYPE_LEVEL_HIGH>;
-			#dma-cells = <1>;
+			#dma-cells = <2>;  /* channel, crci */
 
 			clocks = <&gcc ADM1_CLK>, <&gcc ADM1_PBUS_CLK>;
 			clock-names = "core", "iface";
@@ -1411,16 +1407,7 @@
 	pinctrl-0 = <&emmc_pins>;
 	vmmc-supply = <&pm8901_l5>;
 	vqmmc-supply = <&pm8901_lvs0>;
-#if USE_SDCC_DMA
-  // #define DMOV_SDC1_CHAN         18 ==> adm 1, chan 2
-  // #define DMOV_SDC1_CRCI         1
-
-  // only define the "rx" DMA channel, so that sdio mmc driver uses it bidirectionally
-	dmas = <&adm_dma1 2>;
-	dma-names = "rx";
-	qcom,rx-crci = <1>;
-	qcom,tx-crci = <1>;
-#endif
+	/* DMA disabled - PIO mode works reliably for eMMC */
 };
 
 &sdcc4 {
@@ -1440,34 +1427,19 @@
 	vmmc-supply = <&pm8901_l1>;   /* 3.3V main supply */
 	vqmmc-supply = <&pm8058_s3>;  /* 1.8V SDIO I/O supply */
 
-	/*
-	 * SDIO configuration matching legacy webOS kernel:
-	 * - 4-bit data bus (MMC_CAP_4_BIT_DATA)
-	 * - Speeds: 400kHz init, 24MHz mid, 48MHz max
-	 */
-	bus-width = <4>;  /* 4-bit mode as per legacy kernel */
-	no-1-8-v;  /* Stick to 3.3V signaling */
-	broken-cd;  /* Card always present (no detect) */
-	non-removable;  /* Soldered down */
-
 	mmc-pwrseq = <&ath6kl_pwrseq>;
-	// mpm_sdiowakeup_int = MSM_MPM_PIN_SDC4_DAT1 /* 24 */
 
-#if USE_SDCC_DMA
-	// #define DMOV_SDC4_CHAN         21 ==> adm 1, chan 5
-	// #define DMOV_SDC4_CRCI         5
-
-  // only define the "rx" DMA channel, so that sdio mmc driver uses it bidirectionally
-	dmas = <&adm_dma1 5>;
-	dma-names = "rx";
-	qcom,rx-crci = <5>;
-	qcom,tx-crci = <5>;
-#endif
+	/*
+	 * DMA: Disabled for testing - PIO mode
+	 * ADM DMA causes hang during WiFi init
+	 * TODO: Debug DMA completion issue
+	 */
+	/* dmas = <&adm_dma1 5 5>, <&adm_dma1 5 5>; */
+	/* dma-names = "rx", "tx"; */
 
 	wifi@1 {
 		compatible = "atheros,ath6kl";
 		reg = <1>;
-		status = "okay";
 		atheros,board-id = "SD32";
 	};
 };
@@ -1851,7 +1823,22 @@
 &gsbi10 {
 	status = "okay";
 
-	qcom,mode = <GSBI_PROT_I2C>;
+	/*
+	 * GSBI10 runs in combined I2C+UART mode for the CY8CTMA395 touchscreen:
+	 * - I2C: Configuration, calibration, firmware updates (address 0x67)
+	 * - UART: Touch data stream at 4 Mbps (/dev/ttyMSM2)
+	 * See TOUCHSCREEN_MULTI_SLAVE_ANALYSIS.md for protocol details.
+	 */
+	qcom,mode = <GSBI_PROT_I2C_UART>;
+};
+
+&gsbi10_serial {
+	status = "okay";
+	/*
+	 * CY8CTMA395 touch data UART interface
+	 * Touch data packets: 0xFF 0x43 (scan data), 0xFF 0x47 (scan complete)
+	 * Baud rate: 4 Mbps (configured by userspace ts-srv or kernel driver)
+	 */
 };
 
 &gsbi10_i2c {
@@ -1861,30 +1848,45 @@
 	pinctrl-0 = <&gsbi10_i2c_pins>;
 
 /*
-	 * Atmel maXTouch mxt1386 touchscreen controller
-	 * - I2C address: 0x4C (confirmed via webOS kernel)
-	 * - IRQ/Wake GPIO: 123 (WiFi) or 45 (3G) - handled by overlay
-	 * - Reset GPIO: 70
+	 * Cypress CY8CTMA395 TrueTouch Capacitive Touchscreen Controller
+	 *
+	 * The HP TouchPad uses a Cypress PSoC-based touchscreen controller:
+	 * - I2C address: 0x67 (for configuration, calibration, firmware)
+	 * - UART: /dev/ttyMSM2 at 4 Mbps (for touch data stream)
+	 * - IRQ/Wake GPIO: 123 (WiFi) or 45 (3G)
+	 * - Reset GPIO: 70 (TP_PWR_RST / XRES)
 	 * - Power: PM8058_L10 (3.05V digital) + 5V boost (analog)
+	 *
+	 * IMPORTANT: Touch data is transmitted over UART, NOT I2C!
+	 * The I2C interface is only used for initialization and configuration.
+	 * A userspace driver (ts-srv) or kernel serdev driver is required.
+	 * See TOUCHSCREEN_MULTI_SLAVE_ANALYSIS.md for complete protocol details.
+	 *
+	 * Architecture: 1x CY8CTMA395 master + 5x CY8CTMA375 slaves (internal)
+	 * The slaves are on a private I2C bus inside the master, not accessible
+	 * from the host. Master firmware aggregates all touch data.
 	 */
-	touchscreen: touchscreen@4c {
-		compatible = "atmel,maxtouch";
-		reg = <0x4c>;
+	touchscreen: touchscreen@67 {
+		compatible = "cypress,cy8ctma340";
+		reg = <0x67>;
 
-		vdda-supply = <&vdd50_boost>;  /* VCPIN - 5V analog supply */
-		vdd-supply = <&pm8058_l10>;    /* VDD - 3.05V digital supply */
+		vcpin-supply = <&vdd50_boost>;  /* VCPIN - 5V analog supply */
+		vdd-supply = <&pm8058_l10>;     /* VDD - 3.05V digital supply */
 
 		interrupts-extended = <&tlmm 123 IRQ_TYPE_LEVEL_LOW>; /* 3G: 45 */
 		reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
 
-		/*
-		 * Wake GPIO is same as IRQ GPIO on TouchPad.
-		 * Use I2C SCL wakeup method as documented for mXT1386.
-		 */
-		atmel,wakeup-method = <ATMEL_MXT_WAKEUP_I2C_SCL>;
+		/* Wake GPIO same as IRQ - controlled via sysfs in webOS */
+		wakeup-source;
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&touch_pins>;
+
+		/* Touchscreen parameters from webOS config */
+		touchscreen-size-x = <768>;
+		touchscreen-size-y = <1024>;
+		touchscreen-fuzz-x = <4>;
+		touchscreen-fuzz-y = <4>;
 	};
 };
 

@@ -141,7 +141,7 @@ ath6kl_pwrseq: ath6kl-pwrseq {
 |-----------|--------|---------|
 | **WiFi** | WIP | SDIO detected, OTP works, firmware upload times out |
 | **Display (DRM)** | PARTIAL | msm.ko loads, screen blinks, USB survives! Shell hangs after load |
-| **Touchscreen** | UNTESTED | atmel_mxt_ts probe fails (I2C -6), may need power sequencing |
+| **Touchscreen** | WIP | Cypress CY8CTMA395 - requires UART driver (ts-srv or kernel serdev) |
 
 ---
 
@@ -155,7 +155,11 @@ ath6kl_pwrseq: ath6kl-pwrseq {
 
 ### Other Components
 1. Debug why telnet/shell hangs after msm.ko loads
-2. Fix touchscreen power sequencing (I2C -6 error)
+2. **Touchscreen**: Port PostmarketOS ts-srv or write kernel serdev driver
+   - Device tree updated: GSBI10 now in I2C+UART mode
+   - UART enabled at /dev/ttyMSM2 for touch data stream (4 Mbps)
+   - I2C still available at 0x67 for configuration
+   - See TOUCHSCREEN_MULTI_SLAVE_ANALYSIS.md for protocol
 3. Get display showing content (LVDS panel init)
 4. Test audio playback with actual audio files
 
@@ -169,7 +173,7 @@ Bus 0: 0x18 (lsm303dlh_accel), 0x1e (lsm303dlh_magn), 0x44 (isl29023), 0x68 (mpu
 Bus 1: 0x1a (wm8958 audio)
 Bus 2: 0x31 (a6 battery), 0x32 (a6 battery), 0x33 (lm8502 LEDs)
 Bus 4: 0x3c (camera)
-Bus 5: 0x4c (atmel_mxt_ts touchscreen)
+Bus 10: 0x67 (Cypress CY8CTMA395 touchscreen - config only, touch data via UART)
 ```
 
 ### GPIO Chips
