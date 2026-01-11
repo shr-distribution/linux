@@ -704,29 +704,46 @@ static int cy8ctma395_ts_power_on(struct cy8ctma395_ts_data *ts)
 	int ret, retry = 0;
 
 retry:
-	/* Assert reset */
+	/*
+	 * Power-on sequence based on ts_srv userspace daemon (tssrv3l.c):
+	 * 1. Assert reset (xres=1)
+	 * 2. Enable VDD power (vdd=1)
+	 * 3. Wait 50ms for voltage stabilization
+	 * 4. Assert wake (wake=1) - BEFORE reset deassertion!
+	 * 5. Deassert reset (xres=0)
+	 * 6. Wait 50ms for controller boot
+	 * 7. Deassert wake (wake=0)
+	 * 8. Wait 50ms
+	 * 9. Send I2C init sequence
+	 * 10. Assert wake to start streaming (wake=1)
+	 */
+
+	/* 1. Assert reset */
 	gpiod_set_value_cansleep(ts->gpio_reset, 1);
 
-	/* Power on */
+	/* 2. Power on */
 	ret = regulator_enable(ts->vdd);
 	if (ret) {
 		dev_err(dev, "Failed to enable vdd: %d\n", ret);
 		return ret;
 	}
 
+	/* 3. Wait 50ms for voltage stabilization */
 	usleep_range(50000, 55000);
 
-	/* Assert wake */
+	/* 4. Assert wake BEFORE deasserting reset */
 	gpiod_set_value_cansleep(ts->gpio_wake, 1);
 
-	/* Deassert reset */
+	/* 5. Deassert reset */
 	gpiod_set_value_cansleep(ts->gpio_reset, 0);
 
+	/* 6. Wait 50ms for controller boot */
 	usleep_range(50000, 55000);
 
-	/* Deassert wake */
+	/* 7. Deassert wake */
 	gpiod_set_value_cansleep(ts->gpio_wake, 0);
 
+	/* 8. Wait 50ms */
 	usleep_range(50000, 55000);
 
 	/* Send I2C initialization sequence */
