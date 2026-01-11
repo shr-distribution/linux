@@ -96,6 +96,21 @@ else
     echo "No firmware on boot partition, using initramfs firmware"
 fi
 
+# Load WiFi module after firmware is available
+echo "Loading WiFi driver..."
+if [ -f /lib/modules/$(uname -r)/kernel/drivers/net/wireless/ath/ath6kl/ath6kl_sdio.ko ]; then
+    modprobe ath6kl_sdio 2>/dev/null && echo "ath6kl_sdio loaded" || echo "ath6kl_sdio load failed"
+    sleep 3
+    if [ -d /sys/class/net/wlan0 ]; then
+        echo "WiFi interface wlan0 detected!"
+        ip link set wlan0 up 2>/dev/null
+    else
+        echo "WiFi interface not found"
+    fi
+else
+    echo "WiFi module not found in /lib/modules"
+fi
+
 # Start Q6 LPASS DSP for audio
 echo "Starting Q6 LPASS audio DSP..."
 if [ -f /sys/class/remoteproc/remoteproc0/state ]; then
