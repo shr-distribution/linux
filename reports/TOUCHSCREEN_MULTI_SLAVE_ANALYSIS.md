@@ -2096,3 +2096,321 @@ Linux input event device
   ↓ libinput / Wayland / X11
 Applications
 ```
+
+## UART Hardware Requirements for Mainline Linux
+
+### Summary
+
+The HP TouchPad touchscreen UART operates at 4 Mbps over GSBI10. To achieve this
+bandwidth reliably, the mainline kernel requires:
+
+1. **GSBI10 configured in I2C+UART mode** (`GSBI_PROT_I2C_UART` = 0x6)
+2. **ADM DMA controller** for high-speed UART data transfer
+3. **msm_serial driver** with DMA support enabled
+
+### Legacy webOS Kernel Configuration
+
+From `/home/herrie/webos/touchpad-kernel/doctor305/nova-cust-image-topaz.rootfs/boot/config-2.6.35-palm-tenderloin`:
+
+```
+CONFIG_HSUART=y                # Palm's High-Speed UART driver
+CONFIG_MSM_UARTDM=y           # MSM UART Data Mover (DMA)
+CONFIG_SERIAL_MSM_HS=y        # MSM High-Speed serial
+CONFIG_MSM_ADM3=y             # ADM3 DMA controller
+```
+
+### GSBI10 UART DMA Channel Assignment
+
+Based on analysis of Palm's legacy kernel (`kernel-3.0.5.txt` and `webos-linux-kernel-opal`):
+
+**ADM DMA Channel Definitions for GSBI10 (HSUART2):**
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| DMA Controller | ADM0 | Application DMA controller 0 |
+| TX Channel | 8 | `DMOV_HSUART2_TX_CHAN` |
+| RX Channel | 8 | `DMOV_HSUART2_RX_CHAN` (bidirectional) |
+| TX CRCI (base) | 9 | `ADM3_0_B_GSBI10_OUT_CRCI` |
+| RX CRCI (base) | 10 | `ADM3_0_B_GSBI10_IN_CRCI` |
+| TX CRCI (full) | 25 | `(1 << 4) + 9` = MUX_SEL + base CRCI |
+| RX CRCI (full) | 26 | `(1 << 4) + 10` = MUX_SEL + base CRCI |
+
+**CRCI (Client Request Controller Interface)** values control flow control between
+the UART FIFO and DMA controller.
+
+**Source:** `arch/arm/mach-msm/include/mach/dma.h` from webos-linux-kernel-opal:
+```c
+#define ADM3_0_B_GSBI10_OUT_CRCI    9
+#define ADM3_0_B_GSBI10_IN_CRCI     10
+
+#define DMOV_HSUART2_TX_CHAN   8
+#define DMOV_HSUART2_TX_CRCI   ((1 << 4) + ADM3_0_B_GSBI10_OUT_CRCI)  // = 25
+
+#define DMOV_HSUART2_RX_CHAN   8
+#define DMOV_HSUART2_RX_CRCI   ((1 << 4) + ADM3_0_B_GSBI10_IN_CRCI)   // = 26
+```
+
+### UART Device Resources (Legacy Platform)
+
+From `kernel-3.0.5.txt` line 345897-345945, the legacy `msm_device_uart_dm2` definition:
+
+```c
+static struct resource msm_uart_dm2_resources[] = {
+    {
+        .start = MSM_GSBI10_UART_DM_PHYS,     // 0x19A40000
+        .end   = MSM_GSBI10_UART_DM_PHYS + PAGE_SIZE - 1,
+        .flags = IORESOURCE_MEM,
+    },
+    {
+        .start = GSBI10_UARTDM_IRQ,           // GIC_SPI_START + 191
+        .end   = GSBI10_UARTDM_IRQ,
+        .flags = IORESOURCE_IRQ,
+    },
+    {
+        .start = MSM_GSBI10_PHYS,             // 0x19A00000 (GSBI control)
+        .end   = MSM_GSBI10_PHYS + 4 - 1,
+        .name  = "gsbi_resource",
+        .flags = IORESOURCE_MEM,
+    },
+    {
+        .start = TCSR_BASE_PHYS,              // Top CSR for mux control
+        .end   = TCSR_BASE_PHYS + 0x80 - 1,
+        .name  = "tcsr_resource",
+        .flags = IORESOURCE_MEM,
+    },
+    {
+        .start = DMOV_HSUART2_TX_CHAN,        // 8 (TX DMA channel)
+        .end   = DMOV_HSUART2_RX_CHAN,        // 8 (RX DMA channel)
+        .name  = "uartdm_channels",
+        .flags = IORESOURCE_DMA,
+    },
+    {
+        .start = DMOV_HSUART2_TX_CRCI,        // 25 (TX flow control)
+        .end   = DMOV_HSUART2_RX_CRCI,        // 26 (RX flow control)
+        .name  = "uartdm_crci",
+        .flags = IORESOURCE_DMA,
+    },
+};
+```
+
+### Mainline Kernel Support
+
+The mainline kernel already has the required components:
+
+#### 1. ADM DMA Controller Driver
+
+**File:** `drivers/dma/qcom/qcom_adm.c`
+
+**Status:** ✅ Available and functional
+
+**Features:**
+- DMA channel management
+- CRCI (flow control) support
+- MUX_SEL bit handling for GSBI multiplexing
+
+**DT Binding:** `Documentation/devicetree/bindings/dma/qcom,adm.yaml`
+
+#### 2. MSM Serial Driver with DMA
+
+**File:** `drivers/tty/serial/msm_serial.c`
+
+**Status:** ✅ Available with DMA support
+
+**Key Features:**
+```c
+#include <linux/dma/qcom_adm.h>    // ADM-specific configuration
+
+static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
+{
+    // Read CRCI from device tree
+    of_property_read_u32(dev->of_node, "qcom,rx-crci", &crci);
+
+    // Configure DMA with CRCI for flow control
+    if (crci) {
+        conf.peripheral_config = &periph_conf;
+        conf.peripheral_size = sizeof(periph_conf);
+        periph_conf.crci = crci;
+    }
+}
+```
+
+**DT Properties:**
+- `dmas` - DMA channel phandle and specifier
+- `dma-names` - "rx" and/or "tx"
+- `qcom,rx-crci` - RX flow control identifier
+- `qcom,tx-crci` - TX flow control identifier
+
+### Current Device Tree Configuration
+
+**File:** `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`
+
+The current configuration includes:
+
+```dts
+/* ADM0 DMA Controller */
+adm_dma0: dma-controller@18320000 {
+    compatible = "qcom,adm";
+    reg = <0x18320000 0x100000>;
+    interrupts = <GIC_SPI 171 IRQ_TYPE_LEVEL_HIGH>;
+    #dma-cells = <1>;
+
+    clocks = <&gcc ADM0_CLK>, <&gcc ADM0_PBUS_CLK>;
+    clock-names = "core", "iface";
+
+    resets = <&gcc ADM0_RESET>,
+             <&gcc ADM0_PBUS_RESET>,
+             <&gcc ADM0_C0_RESET>,
+             <&gcc ADM0_C1_RESET>,
+             <&gcc ADM0_C2_RESET>;
+    reset-names = "clk", "pbus", "c0", "c1", "c2";
+    qcom,ee = <1>;
+};
+
+/* GSBI10 Serial Port (Touchscreen UART) */
+gsbi10_serial: serial@19a40000 {
+    compatible = "qcom,msm-uartdm-v1.3", "qcom,msm-uartdm";
+    reg = <0x19a40000 0x1000>,
+          <0x19a00000 0x1000>;
+    interrupts = <GIC_SPI 191 IRQ_TYPE_LEVEL_HIGH>;
+    clocks = <&gcc GSBI10_UART_CLK>, <&gcc GSBI10_H_CLK>;
+    clock-names = "core", "iface";
+
+    /* DMA Configuration */
+    dmas = <&adm_dma0 8>;      /* Channel 8 for RX */
+    dma-names = "rx";
+    qcom,rx-crci = <10>;       /* Base CRCI value */
+
+    status = "disabled";
+};
+```
+
+### Required Changes for Touchscreen UART
+
+#### Option A: Verify Current Configuration Works
+
+The current DT configuration may already work. Test steps:
+
+1. Enable GSBI10 in I2C+UART mode
+2. Enable gsbi10_serial
+3. Test DMA operation at high baud rates
+
+#### Option B: Add TX DMA Support (If Needed)
+
+If bidirectional DMA is required, add TX DMA configuration:
+
+```dts
+gsbi10_serial: serial@19a40000 {
+    /* ... existing config ... */
+
+    /* Full DMA Configuration */
+    dmas = <&adm_dma0 8>, <&adm_dma0 8>;  /* Both RX and TX on channel 8 */
+    dma-names = "rx", "tx";
+    qcom,rx-crci = <10>;   /* or <26> if full value needed */
+    qcom,tx-crci = <9>;    /* or <25> if full value needed */
+};
+```
+
+#### Option C: CRCI MUX_SEL Handling
+
+If the MUX_SEL bit (BIT(4) = 0x10) is required, two approaches:
+
+**Approach 1:** Use full CRCI value (25/26) which includes MUX_SEL:
+```dts
+qcom,rx-crci = <26>;   /* (1 << 4) + 10 */
+qcom,tx-crci = <25>;   /* (1 << 4) + 9 */
+```
+
+**Approach 2:** The driver should extract and handle MUX_SEL automatically.
+
+Looking at `qcom_adm.c`:
+```c
+crci = achan->crci & 0xf;  // Extract base CRCI (0-15)
+// MUX_SEL is encoded in bit 4 of achan->crci
+```
+
+The mainline driver handles this correctly - the base CRCI value (10) is used
+for the actual CRCI selection, and the MUX_SEL is handled separately.
+
+### HSUART vs Standard msm_serial
+
+**Legacy HSUART Driver** (`drivers/misc/hsuart.c`):
+- Palm's proprietary High-Speed UART driver
+- Creates `/dev/ctp_uart` device
+- Custom IOCTLs for mode configuration
+- Tight integration with ADM DMA
+
+**Mainline msm_serial Driver** (`drivers/tty/serial/msm_serial.c`):
+- Standard Linux serial driver
+- Creates `/dev/ttyMSMx` devices
+- Uses dmaengine API (compatible with ADM)
+- Device tree configured
+
+**Migration Path:**
+- Userspace code must use `/dev/ttyMSM2` instead of `/dev/ctp_uart`
+- Standard termios/ioctl for configuration
+- Custom baud rate (4 Mbps) may need `BOTHER` termios flag
+
+### Testing DMA Configuration
+
+**Step 1: Verify ADM DMA Controller:**
+```bash
+# Check ADM is probed
+dmesg | grep adm
+
+# Check DMA channels
+ls /sys/class/dma/
+```
+
+**Step 2: Verify UART DMA:**
+```bash
+# Check UART driver loaded
+dmesg | grep -i "tty.*MSM\|uartdm"
+
+# Look for DMA configuration messages
+dmesg | grep -i "dma.*uart\|uart.*dma"
+```
+
+**Step 3: Test High-Speed UART:**
+```bash
+# Configure serial port (may need custom tool for 4 Mbps)
+stty -F /dev/ttyMSM2 raw
+
+# Read data
+cat /dev/ttyMSM2 | hexdump -C
+```
+
+### Potential Issues
+
+1. **4 Mbps Baud Rate:**
+   - Standard Linux termios may not support exactly 4 Mbps
+   - May need `BOTHER` flag or custom ioctl
+   - Verify UART clock source can achieve this rate
+
+2. **DMA Buffer Sizing:**
+   - 1540 bytes per frame (from ts-srv)
+   - Ensure DMA buffer is sufficiently large
+
+3. **CRCI MUX_SEL:**
+   - If UART doesn't work, try CRCI values 25/26 instead of 9/10
+   - Check driver handles MUX_SEL bit correctly
+
+4. **GSBI Mode Switching:**
+   - I2C and UART share GSBI10 pins
+   - Ensure mode is set to `GSBI_PROT_I2C_UART` (0x6) not just I2C
+
+### Summary
+
+The mainline kernel has all required components for high-speed UART with DMA:
+
+| Component | Mainline Status | Notes |
+|-----------|-----------------|-------|
+| ADM DMA Controller | ✅ Available | `qcom_adm.c` |
+| MSM Serial Driver | ✅ Available | `msm_serial.c` with DMA |
+| DT Bindings | ✅ Configured | DMA and CRCI properties |
+| GSBI10 UART | ✅ Defined | In tenderloin DTS |
+| High-Speed Support | ⚠️ Untested | May need BOTHER for 4 Mbps |
+
+The primary work remaining is:
+1. Test UART operation at 4 Mbps
+2. Verify DMA transfers work correctly
+3. Implement/port touchscreen userspace driver or kernel serdev driver
