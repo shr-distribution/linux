@@ -1309,8 +1309,17 @@ static int q6asm_dai_probe(struct platform_device *pdev)
 	if (rc)
 		return rc;
 
-	return devm_snd_soc_register_component(dev, &q6asm_fe_dai_component,
+	dev_info(dev, "q6asm-dais: registering component with of_node=%pOF num_dais=%d\n",
+		 node, pdata->num_dais);
+
+	rc = devm_snd_soc_register_component(dev, &q6asm_fe_dai_component,
 					       pdata->dais, pdata->num_dais);
+	if (rc)
+		dev_err(dev, "q6asm-dais: failed to register component: %d\n", rc);
+	else
+		dev_info(dev, "q6asm-dais: component registered successfully\n");
+
+	return rc;
 }
 
 #ifdef CONFIG_OF
