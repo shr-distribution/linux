@@ -237,6 +237,24 @@ config TOUCHSCREEN_CY8CTMA395
 	  To compile this driver as a module, choose M here: the
 	  module will be called cy8ctma395.
 
+config TOUCHSCREEN_CY8CTMA395_TS
+	tristate "cy8ctma395 serdev touchscreen input driver"
+	depends on SERIAL_DEV_BUS
+	depends on I2C
+	depends on GPIOLIB
+	help
+	  Say Y here if you have a Cypress CY8CTMA395 capacitive
+	  touchscreen as found in the HP TouchPad tablet and want
+	  to use it as an input device.
+
+	  This driver uses the serdev subsystem to receive touch data
+	  via UART at 4 Mbps and I2C for initialization.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called cy8ctma395_ts.
+
 config TOUCHSCREEN_CY8CTMG110
 	tristate "cy8ctmg110 touchscreen"
 	depends on I2C
