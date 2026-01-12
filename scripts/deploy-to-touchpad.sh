@@ -59,21 +59,24 @@ deploy_via_novacom() {
     echo "Step 1: Remounting /boot as read-write..."
     novacom run "file:///bin/mount" -- -o remount,rw /boot
 
-    echo "Step 2: Pushing uImage.LuneOS to /boot..."
+    echo "Step 2: Cleaning up old logs from /boot..."
+    novacom run file:///bin/rm -- -f /boot/dmesg*.log /boot/debug*.log /boot/q6*.log /boot/rproc*.log 2>/dev/null || true
+
+    echo "Step 3: Pushing uImage.LuneOS to /boot..."
     novacom put file:///boot/uImage.LuneOS < "$UIMAGE"
 
-    echo "Step 3: Setting moboot.next to LuneOS..."
+    echo "Step 4: Setting moboot.next to LuneOS..."
     echo "LuneOS" | novacom put file:///boot/moboot.next
 
-    echo "Step 4: Syncing filesystem..."
+    echo "Step 5: Syncing filesystem..."
     novacom run file:///bin/sync
 
     echo ""
     echo "=== Deployment complete (webOS) ==="
 
     if [ "$DO_REBOOT" = true ]; then
-        echo "Rebooting device..."
-        novacom run file:///sbin/reboot 2>/dev/null || true
+        echo "Rebooting into LuneOS via tellbootie..."
+        novacom run file:///sbin/tellbootie 2>/dev/null || true
     fi
 }
 
