@@ -650,11 +650,19 @@ static size_t cy8ctma395_ts_receive_buf(struct serdev_device *serdev,
 	struct cy8ctma395_ts_data *ts = serdev_device_get_drvdata(serdev);
 	static unsigned long last_print;
 	static size_t total_bytes;
+	static bool first_data = true;
 
 	total_bytes += count;
 	if (printk_timed_ratelimit(&last_print, 5000))
 		dev_info(&serdev->dev, "UART RX: %zu bytes total, last %zu bytes\n",
 			 total_bytes, count);
+
+	/* Print first 16 bytes received for debugging */
+	if (first_data && count > 0) {
+		first_data = false;
+		print_hex_dump(KERN_INFO, "cy8ctma395 first RX: ", DUMP_PREFIX_NONE,
+			       16, 1, data, min_t(size_t, count, 16), true);
+	}
 
 	if (!cy8ctma395_ts_process_data(ts, data, count)) {
 		/* No touches detected - check for liftoff */
@@ -719,6 +727,7 @@ retry:
 	 */
 
 	/* 1. Assert reset */
+	dev_info(dev, "GPIO: assert reset (logical 1)\n");
 	gpiod_set_value_cansleep(ts->gpio_reset, 1);
 
 	/* 2. Power on */
@@ -727,20 +736,24 @@ retry:
 		dev_err(dev, "Failed to enable vdd: %d\n", ret);
 		return ret;
 	}
+	dev_info(dev, "VDD enabled\n");
 
 	/* 3. Wait 50ms for voltage stabilization */
 	usleep_range(50000, 55000);
 
 	/* 4. Assert wake BEFORE deasserting reset */
+	dev_info(dev, "GPIO: assert wake (logical 1)\n");
 	gpiod_set_value_cansleep(ts->gpio_wake, 1);
 
 	/* 5. Deassert reset */
+	dev_info(dev, "GPIO: deassert reset (logical 0)\n");
 	gpiod_set_value_cansleep(ts->gpio_reset, 0);
 
 	/* 6. Wait 50ms for controller boot */
 	usleep_range(50000, 55000);
 
 	/* 7. Deassert wake */
+	dev_info(dev, "GPIO: deassert wake (logical 0)\n");
 	gpiod_set_value_cansleep(ts->gpio_wake, 0);
 
 	/* 8. Wait 50ms */
@@ -773,7 +786,9 @@ retry:
 	dev_info(dev, "I2C write 0x08=0x03: ret=%d\n", ret);
 
 	/* Assert wake to start streaming */
+	dev_info(dev, "GPIO: assert wake to start streaming (logical 1)\n");
 	gpiod_set_value_cansleep(ts->gpio_wake, 1);
+	dev_info(dev, "Touchscreen power-on complete, waiting for UART data...\n");
 
 	ts->powered = true;
 	return 0;
