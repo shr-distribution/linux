@@ -126,9 +126,9 @@ else
     echo "Q6 remoteproc not available"
 fi
 
-# Save dmesg for debugging
-dmesg > /tmp/dmesg.log
-echo "dmesg saved to /tmp/dmesg.log"
+# Save dmesg for debugging (to persistent boot partition)
+dmesg > /mnt/boot/dmesg.log 2>/dev/null && echo "dmesg saved to /mnt/boot/dmesg.log" || echo "Could not save dmesg to boot"
+sync
 
 echo "=== System ready for telnet debugging ==="
 echo "Connect via: telnet 172.16.42.2"
