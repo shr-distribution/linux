@@ -35,7 +35,6 @@ struct qcom_usb_hs_phy {
 	struct regulator *v3p3;
 	struct reset_control *reset;
 	struct ulpi_seq *init_seq;
-	struct ulpi_seq *vendor_init_seq;
 	struct extcon_dev *vbus_edev;
 	struct notifier_block vbus_notify;
 };
@@ -142,15 +141,6 @@ static int qcom_usb_hs_phy_power_on(struct phy *phy)
 	if (ret)
 		goto err_3p3;
 
-	/* Write standard vendor-specific registers (0x30+) */
-	for (seq = uphy->vendor_init_seq; seq && seq->addr; seq++) {
-		ret = ulpi_write(ulpi, ULPI_VENDOR_SPECIFIC + seq->addr,
-				 seq->val);
-		if (ret)
-			goto err_ulpi;
-	}
-
-	/* Write extended vendor-specific registers (0x80+) */
 	for (seq = uphy->init_seq; seq->addr; seq++) {
 		ret = ulpi_write(ulpi, ULPI_EXT_VENDOR_SPECIFIC + seq->addr,
 				 seq->val);
@@ -225,28 +215,6 @@ static int qcom_usb_hs_phy_probe(struct ulpi *ulpi)
 	ulpi_set_drvdata(ulpi, uphy);
 	uphy->ulpi = ulpi;
 
-	/* Parse standard vendor-specific init sequence (0x30+) */
-	size = of_property_count_u8_elems(ulpi->dev.of_node,
-					  "qcom,vendor-init-seq");
-	if (size > 0) {
-		uphy->vendor_init_seq = devm_kmalloc_array(&ulpi->dev,
-						(size / 2) + 1,
-						sizeof(*uphy->vendor_init_seq),
-						GFP_KERNEL);
-		if (!uphy->vendor_init_seq)
-			return -ENOMEM;
-		ret = of_property_read_u8_array(ulpi->dev.of_node,
-						"qcom,vendor-init-seq",
-						(u8 *)uphy->vendor_init_seq,
-						size);
-		if (ret)
-			return ret;
-		/* NUL terminate */
-		uphy->vendor_init_seq[size / 2].addr = 0;
-		uphy->vendor_init_seq[size / 2].val = 0;
-	}
-
-	/* Parse extended vendor-specific init sequence (0x80+) */
 	size = of_property_count_u8_elems(ulpi->dev.of_node, "qcom,init-seq");
 	if (size < 0)
 		size = 0;

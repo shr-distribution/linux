@@ -57,10 +57,10 @@ deploy_via_novacom() {
     echo ""
 
     echo "Step 1: Remounting /boot as read-write..."
-    novacom run "file:///bin/mount" -- -o remount,rw /boot
+    novacom run file:///bin/mount -- -o remount,rw /boot
 
     echo "Step 2: Cleaning up old logs from /boot..."
-    novacom run file:///bin/rm -- -f /boot/dmesg*.log /boot/debug*.log /boot/q6*.log /boot/rproc*.log 2>/dev/null || true
+    novacom run file:///bin/sh -- -c "rm -f /boot/dmesg*.log /boot/debug*.log /boot/q6*.log /boot/rproc*.log" 2>/dev/null || true
 
     echo "Step 3: Pushing uImage.LuneOS to /boot..."
     novacom put file:///boot/uImage.LuneOS < "$UIMAGE"
