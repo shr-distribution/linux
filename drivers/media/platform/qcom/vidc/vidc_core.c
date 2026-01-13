@@ -13,6 +13,7 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
+#include <linux/interconnect.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -34,6 +35,10 @@
 #define VIDC_FW_SIZE_MAX	(512 * 1024)
 
 #define VIDC_INIT_CH_INST_ID	0x0000ffff
+
+/* Interconnect bandwidth for 1080p video (in bytes/sec) */
+#define VIDC_BW_AVG		(245 * 1024 * 1024)	/* 245 MB/s average */
+#define VIDC_BW_PEAK		(500 * 1024 * 1024)	/* 500 MB/s peak */
 
 /* Clock rates in Hz */
 static const unsigned long vidc_clk_rates[] = {
@@ -477,6 +482,16 @@ static int vidc_probe(struct platform_device *pdev)
 		core->gdsc = NULL;
 	}
 
+	/* Get optional interconnect path */
+	core->icc_path = devm_of_icc_get(dev, "video-mem");
+	if (IS_ERR(core->icc_path)) {
+		ret = PTR_ERR(core->icc_path);
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		dev_dbg(dev, "interconnect not available: %d\n", ret);
+		core->icc_path = NULL;
+	}
+
 	/* Register V4L2 device */
 	ret = v4l2_device_register(dev, &core->v4l2_dev);
 	if (ret) {
@@ -530,6 +545,9 @@ static int vidc_runtime_suspend(struct device *dev)
 
 	vidc_clk_disable(core);
 
+	if (core->icc_path)
+		icc_set_bw(core->icc_path, 0, 0);
+
 	if (core->gdsc)
 		regulator_disable(core->gdsc);
 
@@ -547,10 +565,27 @@ static int vidc_runtime_resume(struct device *dev)
 			return ret;
 	}
 
-	ret = vidc_clk_enable(core);
-	if (ret && core->gdsc)
-		regulator_disable(core->gdsc);
+	if (core->icc_path) {
+		ret = icc_set_bw(core->icc_path, VIDC_BW_AVG, VIDC_BW_PEAK);
+		if (ret) {
+			dev_err(dev, "failed to set interconnect bandwidth: %d\n",
+				ret);
+			goto err_gdsc;
+		}
+	}
 
+	ret = vidc_clk_enable(core);
+	if (ret)
+		goto err_icc;
+
+	return 0;
+
+err_icc:
+	if (core->icc_path)
+		icc_set_bw(core->icc_path, 0, 0);
+err_gdsc:
+	if (core->gdsc)
+		regulator_disable(core->gdsc);
 	return ret;
 }
 

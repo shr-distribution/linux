@@ -11,6 +11,7 @@
 
 #include <linux/clk.h>
 #include <linux/completion.h>
+#include <linux/interconnect.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
@@ -196,6 +197,9 @@ struct vidc_core {
 
 	/* Power */
 	struct regulator *gdsc;
+
+	/* Interconnect */
+	struct icc_path *icc_path;
 
 	/* Firmware */
 	const struct firmware *fw;
