@@ -24,7 +24,7 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 | JPEG Encoder | JPEG_ENC | SMI, EBI_CH0 | **ENABLED** (Gemini driver added) |
 | Video Codec Port0 | HD_CODEC_PORT0 | SMI, EBI_CH0 | **ENABLED** (VIDC driver updated) |
 | Video Codec Port1 | HD_CODEC_PORT1 | SMI, EBI_CH0 | **ENABLED** (VIDC driver updated) |
-| Rotator | ROTATOR | SMI | No driver (MDP4 rotator not in mainline) |
+| Rotator | ROTATOR | SMI, EBI_CH0 | **ENABLED** (Rotator driver added) |
 | DTV (HDMI output) | MDP_PORT0 | SMI, EBI_CH0 | Uses MDP4 paths |
 | CPU (for video) | AMPSS_M0 | EBI_CH0, SMI | Not required |
 
@@ -352,25 +352,48 @@ vidc@4400000 {
 
 ---
 
-### 8. Rotator
+### 8. Image Rotator
 
-**Status: No driver in mainline**
+**Status: ENABLED (Rotator driver added)**
 
-The MDP4 driver in mainline (`drivers/gpu/drm/msm/disp/mdp4/`) does not include
-rotator support. The MDP5 driver has rotator with interconnect, but MDP4 would
-need significant work to add hardware rotation.
+The Rotator driver (`drivers/media/platform/qcom/rotator/`) provides
+hardware-accelerated image rotation. Implemented as a V4L2 mem2mem driver,
+separate from MDP4 display controller.
 
-**webOS Implementation:**
-```c
-/* From msm_bus_board_8660.c */
-.src = MSM_BUS_MASTER_ROTATOR,
-.dst = MSM_BUS_SLAVE_SMI,
+**Implementation:**
+- Driver: `drivers/media/platform/qcom/rotator/`
+- Base Address: 0x04E00000
+- IRQ: SPI 73 (edge rising)
+- Clocks: ROT_CLK, ROT_AHB_CLK, ROT_AXI_CLK
+
+**Features:**
+- Hardware rotation: 0°, 90°, 180°, 270°
+- Horizontal and vertical flip
+- RGB formats: RGB565, XRGB32, ARGB32
+- YUV formats: NV12, NV21, NV16, NV61
+- Max resolution: 8191 x 8191 pixels
+
+**Device Tree Configuration:**
+```dts
+rotator: rotator@4e00000 {
+    compatible = "qcom,msm8660-rotator";
+    reg = <0x04e00000 0x100000>;
+    interrupts = <GIC_SPI 73 IRQ_TYPE_EDGE_RISING>;
+    clocks = <&mmcc ROT_CLK>,
+             <&mmcc ROT_AHB_CLK>,
+             <&mmcc ROT_AXI_CLK>;
+    clock-names = "core", "iface", "axi";
+    interconnects = <&mmss_fabric MMFAB_MAS_ROTATOR
+                     &apps_fabric AFAB_SLV_EBI_CH0>;
+    interconnect-names = "rotator-mem";
+    status = "disabled";
+};
 ```
 
-**Notes:**
-- Used for hardware rotation of display buffers
-- Lower priority than display/video
-- Software rotation via GPU is the current alternative
+**Path Resolution:**
+ROTATOR → MMFAB_TO_APPSS → AFAB_TO_MMSS → SLV_EBI_CH0
+
+**Bandwidth:** ~1 GB/s peak (large image rotation)
 
 ---
 
@@ -402,6 +425,7 @@ The USB subsystem didn't use explicit msm_bus_scale calls, but relied on DFAB (D
 3. **VPE (Video Processing)** - New V4L2 mem2mem driver with interconnect
 4. **JPEG Encoder (Gemini)** - New V4L2 mem2mem driver with interconnect
 5. **Video Codec (VIDC)** - Interconnect support added to existing driver
+6. **Rotator** - New V4L2 mem2mem driver with interconnect
 
 ### High Priority (Affects Core Functionality)
 
@@ -409,7 +433,7 @@ The USB subsystem didn't use explicit msm_bus_scale calls, but relied on DFAB (D
 
 ### Medium Priority (Improves Performance)
 
-6. **Rotator** - Hardware rotation support (MDP4 rotator not in mainline)
+(All medium priority items completed!)
 
 ### Low Priority (Nice to Have)
 
