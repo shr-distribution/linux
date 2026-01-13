@@ -122,6 +122,14 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 	}
 };
 
+static const struct resources_icc icc_res_8x60[] = {
+	{
+		.name = "vfe-mem",
+		.icc_bw_tbl.avg = 1521190,	/* ~1.45 GB/s */
+		.icc_bw_tbl.peak = 1521190,
+	},
+};
+
 static const struct camss_subdev_resources csiphy_res_8x16[] = {
 	/* CSIPHY0 */
 	{
@@ -4381,6 +4389,8 @@ static void camss_remove(struct platform_device *pdev)
 
 static const struct camss_resources msm8660_resources = {
 	.version = CAMSS_8x60,
+	.icc_res = icc_res_8x60,
+	.icc_path_num = ARRAY_SIZE(icc_res_8x60),
 	.csiphy_res = csiphy_res_8x60,
 	.csid_res = csid_res_8x60,
 	.vfe_res = vfe_res_8x60,

@@ -19,7 +19,7 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 | GPU 3D (Adreno 220) | GRAPHICS_3D | EBI_CH0 | **NOT NEEDED** (a2xx driver doesn't use ICC) |
 | GPU 2D Core0 | GRAPHICS_2D_CORE0 | SMI | No driver (Z180 not in mainline) |
 | GPU 2D Core1 | GRAPHICS_2D_CORE1 | SMI | No driver (Z180 not in mainline) |
-| Camera (VFE) | VFE | SMI, EBI_CH0 | Driver needs modification |
+| Camera (VFE) | VFE | SMI, EBI_CH0 | **ENABLED** (CAMSS driver updated) |
 | Video Processor (VPE) | VPE | SMI | No driver in mainline |
 | JPEG Encoder | JPEG_ENC | SMI | No driver in mainline |
 | Video Codec Port0 | HD_CODEC_PORT0 | SMI | Driver needs modification |
@@ -135,15 +135,29 @@ struct msm_bus_scale_pdata grp2d1_bus_scale_pdata = {
 
 ### 4. Camera Subsystem (VFE, VPE, JPEG)
 
-**Status: Driver needs modification**
+**Status: ENABLED (CAMSS driver updated)**
 
-The CAMSS driver (`drivers/media/platform/qcom/camss/`) has interconnect support for
-newer SoCs (MSM8953+), but the MSM8660 resources don't include interconnect paths.
-To add support, the driver would need:
-1. Define `icc_res_8x60` array with path names
-2. Add `.icc_path_num` to `msm8660_resources` structure
+The CAMSS driver (`drivers/media/platform/qcom/camss/`) now has interconnect support
+for MSM8660/APQ8060. The `icc_res_8x60` array and `msm8660_resources` have been updated.
 
-**webOS Implementation:**
+**Implementation:**
+- Added `icc_res_8x60[]` with VFE memory bandwidth (~1.45 GB/s)
+- Updated `msm8660_resources` with `.icc_res` and `.icc_path_num`
+- Device tree includes `interconnects` and `interconnect-names` properties
+
+**Device Tree Configuration:**
+```dts
+interconnects = <&mmss_fabric MMFAB_MAS_VFE &apps_fabric AFAB_SLV_EBI_CH0>;
+interconnect-names = "vfe-mem";
+```
+
+**Path Resolution:**
+VFE → MMFAB_TO_APPSS → AFAB_TO_MMSS → SLV_EBI_CH0
+
+**Note:** VPE and JPEG Encoder are separate drivers (not part of CAMSS) and would
+need their own interconnect integration if/when those drivers are added.
+
+**webOS Reference:**
 ```c
 /* From msm_io_8x60.c */
 static struct msm_bus_vectors cam_bus_client_config[] = {
@@ -167,7 +181,7 @@ static struct msm_bus_vectors cam_bus_client_config[] = {
 - Video recording
 - Image processing
 
-**Recommended DT (when driver is modified):**
+**Legacy Recommended DT (obsolete):**
 ```dts
 camss@4500000 {
     interconnects = <&mmss_fabric MMFAB_MAS_VFE &apps_fabric AFAB_SLV_EBI_CH0>,

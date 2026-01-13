@@ -11,6 +11,7 @@
 #include <dt-bindings/soc/qcom,gsbi.h>
 #include <dt-bindings/soc/qcom,apr.h>
 #include <dt-bindings/sound/qcom,q6asm.h>
+#include <dt-bindings/interconnect/qcom,msm8660.h>
 
 / {
 	#address-cells = <1>;
@@ -665,6 +666,10 @@
 				      "csi1_src",
 				      "csi1",
 				      "csi1_phy";
+
+			interconnects = <&mmss_fabric MMFAB_MAS_VFE
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "vfe-mem";
 
 			status = "disabled";
 
