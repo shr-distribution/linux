@@ -25,6 +25,7 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 | Video Codec Port0 | HD_CODEC_PORT0 | SMI, EBI_CH0 | **ENABLED** (VIDC driver updated) |
 | Video Codec Port1 | HD_CODEC_PORT1 | SMI, EBI_CH0 | **ENABLED** (VIDC driver updated) |
 | Rotator | ROTATOR | SMI, EBI_CH0 | **ENABLED** (Rotator driver added) |
+| USB High-Speed | USB_HS | EBI_CH0 | **ENABLED** (ChipIdea driver updated) |
 | DTV (HDMI output) | MDP_PORT0 | SMI, EBI_CH0 | Uses MDP4 paths |
 | CPU (for video) | AMPSS_M0 | EBI_CH0, SMI | Not required |
 
@@ -443,23 +444,51 @@ ROTATOR → MMFAB_TO_APPSS → AFAB_TO_MMSS → SLV_EBI_CH0
 
 ---
 
-### 9. USB
+### 9. USB High-Speed
 
-**Status: Implicit via DFAB clocks**
+**Status: ENABLED (ChipIdea driver updated)**
+
+The ChipIdea MSM USB driver (`drivers/usb/chipidea/ci_hdrc_msm.c`) now has interconnect
+framework support to ensure USB maintains its fabric bandwidth vote during operation.
+This prevents USB starvation when other bus masters (like MDP display) are actively
+using the system fabric.
+
+**Implementation:**
+- Driver: `drivers/usb/chipidea/ci_hdrc_msm.c`
+- Base Address: 0x12500000
+- Master Port: SFAB_MAS_USB_HS (System Fabric)
+- Destination: AFAB_SLV_EBI_CH0 (Apps Fabric memory)
 
 **webOS Implementation:**
-The USB subsystem didn't use explicit msm_bus_scale calls, but relied on DFAB (Data Fabric) clocks:
+The USB subsystem relied on DFAB (Data Fabric) clocks for bandwidth voting:
 ```c
 /* From board-tenderloin.c */
 .pclk_src_name = "dfab_usb_hs_clk",
 .pclk_src_dfab = 1,
 ```
 
-**Notes:**
-- USB uses the System Fabric for memory access
-- The dfab_usb_hs_clk votes on the data fabric clock
-- In mainline, this is handled by the rpmcc fabric clocks
-- USB driver should implicitly benefit from fabric clock coordination
+**Mainline Implementation:**
+```c
+/* From ci_hdrc_msm.c */
+ci->icc_path = devm_of_icc_get(&pdev->dev, "usb-mem");
+icc_set_bw(ci->icc_path, 0, MBps_to_icc(60));
+```
+
+**Device Tree Configuration:**
+```dts
+usb1: usb@12500000 {
+    compatible = "qcom,ci-hdrc";
+    /* ... other properties ... */
+    interconnects = <&system_fabric SFAB_MAS_USB_HS
+                     &apps_fabric AFAB_SLV_EBI_CH0>;
+    interconnect-names = "usb-mem";
+};
+```
+
+**Path Resolution:**
+USB_HS → SFAB_TO_APPSS → AFAB_TO_SYSTEM → SLV_EBI_CH0
+
+**Bandwidth:** 60 MB/s peak (USB 2.0 High-Speed maximum)
 
 ---
 
@@ -473,6 +502,7 @@ The USB subsystem didn't use explicit msm_bus_scale calls, but relied on DFAB (D
 5. **Video Codec (VIDC)** - Interconnect support added to existing driver
 6. **Rotator** - New V4L2 mem2mem driver with interconnect
 7. **GPU 2D (Z180)** - New driver with command stream and interconnect support
+8. **USB High-Speed** - ChipIdea driver updated with interconnect support
 
 ### High Priority (Affects Core Functionality)
 
