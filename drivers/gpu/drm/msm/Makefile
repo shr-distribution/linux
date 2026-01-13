@@ -163,7 +163,7 @@ msm-y += $(adreno-y)
 msm-$(CONFIG_DRM_MSM_KMS) += $(msm-display-y)
 
 obj-$(CONFIG_DRM_MSM)	+= msm.o
-obj-y			+= z180/
+obj-$(CONFIG_DRM_MSM_Z180) += z180/
 
 ifeq (y,$(CONFIG_DRM_MSM_VALIDATE_XML))
 	headergen-opts += --validate

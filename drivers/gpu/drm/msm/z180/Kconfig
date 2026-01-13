@@ -2,7 +2,7 @@
 
 config DRM_MSM_Z180
 	tristate "Qualcomm Z180 2D Graphics Engine"
-	depends on ARM || ARM64 || COMPILE_TEST
+	depends on ARCH_QCOM || COMPILE_TEST
 	depends on OF
 	depends on COMMON_CLK
 	help
