@@ -15,7 +15,7 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 
 | Component | Master Port(s) | Destination | Status in Mainline |
 |-----------|---------------|-------------|-------------------|
-| MDP4 Display | MDP_PORT0, MDP_PORT1 | SMI, EBI_CH0 | **OPTIONAL** (works via clock parent) |
+| MDP4 Display | MDP_PORT0, MDP_PORT1 | SMI, EBI_CH0 | **ENABLED** (cross-fabric paths fixed) |
 | GPU 3D (Adreno 220) | GRAPHICS_3D | EBI_CH0 | **NOT NEEDED** (a2xx driver doesn't use ICC) |
 | GPU 2D Core0 | GRAPHICS_2D_CORE0 | SMI | No driver (Z180 not in mainline) |
 | GPU 2D Core1 | GRAPHICS_2D_CORE1 | SMI | No driver (Z180 not in mainline) |
@@ -34,7 +34,7 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 
 ### 1. MDP4 Display Controller
 
-**Status: OPTIONAL (works without interconnect)**
+**Status: ENABLED (cross-fabric paths fixed)**
 
 **webOS Implementation:**
 ```c
@@ -48,18 +48,26 @@ static struct msm_bus_vectors mdp_bus_scale_usecases[] = {
 
 **Mainline Implementation:**
 The `mdp4_kms.c` driver has `mdp4_setup_interconnect()` which uses `msm_icc_get()`.
-This function gracefully handles missing interconnect paths - it warns but doesn't
-fail, allowing display to work without explicit bandwidth votes.
+Cross-fabric paths from MMSS fabric to APPSS fabric memory (EBI_CH0) are now
+enabled via a fix to the gateway node links in `msm8660.c`.
 
-**USB/Display Coexistence:**
-The USB vs display conflict is solved via clock parent relationships in
-`mmcc-msm8960.c`, which ensures fabric clocks stay coordinated when both
-subsystems are active. This workaround is functional without interconnect.
+**Fix Applied:**
+The gateway nodes (`afab_to_mmss`, `afab_to_system`) were missing links to the
+memory slave (`slv_ebi_ch0`), which prevented `path_find()` BFS from traversing
+from MMSS fabric masters to main memory. Fixed by adding `MSM8660_AFAB_SLV_EBI_CH0`
+to the gateway node link arrays.
 
-**If interconnect were to be added (requires framework work):**
-- Device tree paths: `mdp0-mem`, `mdp1-mem`
-- Bandwidth: 6400 MBps peak
-- Requires cross-fabric path resolution (MMSS -> APPSS)
+**Device Tree Configuration:**
+```dts
+interconnects = <&mmss_fabric MMFAB_MAS_MDP_PORT0 &apps_fabric AFAB_SLV_EBI_CH0>,
+                <&mmss_fabric MMFAB_MAS_MDP_PORT1 &apps_fabric AFAB_SLV_EBI_CH0>;
+interconnect-names = "mdp0-mem", "mdp1-mem";
+```
+
+**Path Resolution:**
+MDP_PORT0/1 → MMFAB_TO_APPSS → AFAB_TO_MMSS → SLV_EBI_CH0
+
+**Bandwidth:** 6400 MBps peak
 
 ---
 

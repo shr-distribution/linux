@@ -767,20 +767,15 @@
 			qcom,lcdc-align-lsb;
 
 			/*
-			 * MDP interconnect: OPTIONAL - works without it.
+			 * MDP interconnect paths for cross-fabric memory access.
+			 * The gateway node fix in msm8660.c enables path_find()
+			 * to traverse from MMSS fabric to APPSS fabric memory.
 			 *
-			 * The mdp4_kms.c driver uses msm_icc_get() which gracefully
-			 * handles missing paths (warns but doesn't fail). The USB
-			 * coexistence issue is solved by the mmfab clock parent
-			 * relationship established in mmcc-msm8960.c, which ensures
-			 * fabric clocks stay coordinated.
-			 *
-			 * Adding cross-fabric interconnect paths would require:
-			 * 1. Interconnect framework support for multi-provider paths
-			 * 2. Paths: MMSS_FABRIC MDP_PORT0/1 -> APPSS_FABRIC EBI_CH0
-			 *
-			 * Current workaround via clock parents is functional.
+			 * Path: MDP_PORT0/1 → MMFAB_TO_APPSS → AFAB_TO_MMSS → EBI_CH0
 			 */
+			interconnects = <&mmss_fabric MMFAB_MAS_MDP_PORT0 &apps_fabric AFAB_SLV_EBI_CH0>,
+					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "mdp0-mem", "mdp1-mem";
 
 			ports {
 				#address-cells = <1>;

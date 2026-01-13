@@ -170,8 +170,15 @@ DEFINE_QNODE(mas_ampss_m1, MSM8660_AFAB_MAS_AMPSS_M1, 8,
 	     MSM8660_AFAB_SLV_EBI_CH0, MSM8660_AFAB_TO_MMSS, MSM8660_AFAB_TO_SYSTEM);
 DEFINE_QNODE(slv_ebi_ch0, MSM8660_AFAB_SLV_EBI_CH0, 8);
 DEFINE_QNODE(slv_ampss_l2, MSM8660_AFAB_SLV_AMPSS_L2, 8);
-DEFINE_QNODE(afab_to_mmss, MSM8660_AFAB_TO_MMSS, 8, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(afab_to_system, MSM8660_AFAB_TO_SYSTEM, 8, MSM8660_SFAB_TO_APPSS);
+/*
+ * Gateway nodes need links to both the cross-fabric gateway AND the memory
+ * slave to enable cross-fabric paths. Without link to EBI_CH0, path_find()
+ * can't route from MMSS/System fabric masters to main memory.
+ */
+DEFINE_QNODE(afab_to_mmss, MSM8660_AFAB_TO_MMSS, 8,
+	     MSM8660_MMFAB_TO_APPSS, MSM8660_AFAB_SLV_EBI_CH0);
+DEFINE_QNODE(afab_to_system, MSM8660_AFAB_TO_SYSTEM, 8,
+	     MSM8660_SFAB_TO_APPSS, MSM8660_AFAB_SLV_EBI_CH0);
 
 static struct msm8660_icc_node * const msm8660_afab_nodes[] = {
 	[AFAB_MAS_AMPSS_M0] = &mas_ampss_m0,
