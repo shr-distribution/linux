@@ -22,8 +22,8 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 | Camera (VFE) | VFE | SMI, EBI_CH0 | **ENABLED** (CAMSS driver updated) |
 | Video Processor (VPE) | VPE | SMI, EBI_CH0 | **ENABLED** (VPE driver added) |
 | JPEG Encoder | JPEG_ENC | SMI, EBI_CH0 | **ENABLED** (Gemini driver added) |
-| Video Codec Port0 | HD_CODEC_PORT0 | SMI | Driver needs modification |
-| Video Codec Port1 | HD_CODEC_PORT1 | SMI | Driver needs modification |
+| Video Codec Port0 | HD_CODEC_PORT0 | SMI, EBI_CH0 | **ENABLED** (VIDC driver updated) |
+| Video Codec Port1 | HD_CODEC_PORT1 | SMI, EBI_CH0 | **ENABLED** (VIDC driver updated) |
 | Rotator | ROTATOR | SMI | No driver (MDP4 rotator not in mainline) |
 | DTV (HDMI output) | MDP_PORT0 | SMI, EBI_CH0 | Uses MDP4 paths |
 | CPU (for video) | AMPSS_M0 | EBI_CH0, SMI | Not required |
@@ -277,13 +277,42 @@ JPEG_ENC → MMFAB_TO_APPSS → AFAB_TO_MMSS → SLV_EBI_CH0
 
 ### 7. Video Codec (VIDC 1080p)
 
-**Status: Driver needs modification**
+**Status: ENABLED (VIDC driver updated)**
 
-The VIDC 1080p driver exists (`drivers/media/platform/qcom/vidc/`) with MSM8660 support,
-but it doesn't have interconnect framework integration. The driver would need:
-1. Add `#include <linux/interconnect.h>`
-2. Get interconnect paths at probe time
-3. Set bandwidth before encode/decode operations
+The VIDC 1080p driver (`drivers/media/platform/qcom/vidc/`) now has interconnect
+framework integration for MSM8660/APQ8060.
+
+**Implementation:**
+- Driver: `drivers/media/platform/qcom/vidc/`
+- Base Address: 0x04400000
+- IRQ: SPI 49 (level high)
+- Clocks: VCODEC_CLK, VCODEC_AHB_CLK, VCODEC_AXI_CLK
+
+**Features:**
+- Hardware video decode (H.264, MPEG4, VC1, MPEG2, H.263, DivX)
+- Hardware video encode (H.264, MPEG4, H.263)
+- 1080p resolution support
+- Interconnect bandwidth management
+
+**Device Tree Configuration:**
+```dts
+vidc: video-codec@4400000 {
+    compatible = "qcom,msm8660-vidc";
+    reg = <0x04400000 0x100000>;
+    interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>;
+    clocks = <&mmcc VCODEC_CLK>,
+             <&mmcc VCODEC_AHB_CLK>,
+             <&mmcc VCODEC_AXI_CLK>;
+    clock-names = "core", "iface", "axi";
+    interconnects = <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0
+                     &apps_fabric AFAB_SLV_EBI_CH0>;
+    interconnect-names = "video-mem";
+    status = "disabled";
+};
+```
+
+**Path Resolution:**
+HD_CODEC_PORT0 → MMFAB_TO_APPSS → AFAB_TO_MMSS → SLV_EBI_CH0
 
 **webOS Implementation:**
 ```c
@@ -372,10 +401,11 @@ The USB subsystem didn't use explicit msm_bus_scale calls, but relied on DFAB (D
 2. **Camera VFE (CAMSS)** - Interconnect support added
 3. **VPE (Video Processing)** - New V4L2 mem2mem driver with interconnect
 4. **JPEG Encoder (Gemini)** - New V4L2 mem2mem driver with interconnect
+5. **Video Codec (VIDC)** - Interconnect support added to existing driver
 
 ### High Priority (Affects Core Functionality)
 
-5. **Video Codec** - Required for any video playback (driver exists, needs ICC modification)
+(All high priority items completed!)
 
 ### Medium Priority (Improves Performance)
 
