@@ -44,15 +44,16 @@
 #define SFAB_MAS_ADM1_CI		12
 #define SFAB_MAS_ADM0_CI		13
 #define SFAB_MAS_MSS_MDM_PORT1		14
-#define SFAB_TO_APPSS			15
-#define SFAB_TO_SYSTEM_FPB		16
-#define SFAB_TO_CPSS_FPB		17
-#define SFAB_SLV_SPS			18
-#define SFAB_SLV_SYSTEM_IMEM		19
-#define SFAB_SLV_AMPSS			20
-#define SFAB_SLV_MSS			21
-#define SFAB_SLV_LPASS			22
-#define SFAB_SLV_MMSS_FPB		23
+#define SFAB_MAS_USB_HS			15
+#define SFAB_TO_APPSS			16
+#define SFAB_TO_SYSTEM_FPB		17
+#define SFAB_TO_CPSS_FPB		18
+#define SFAB_SLV_SPS			19
+#define SFAB_SLV_SYSTEM_IMEM		20
+#define SFAB_SLV_AMPSS			21
+#define SFAB_SLV_MSS			22
+#define SFAB_SLV_LPASS			23
+#define SFAB_SLV_MMSS_FPB		24
 
 /* MMSS Fabric - Multimedia subsystem */
 #define MMFAB_MAS_MDP_PORT0		0

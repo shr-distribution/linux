@@ -68,6 +68,7 @@ enum {
 	MSM8660_SFAB_MAS_ADM1_CI,
 	MSM8660_SFAB_MAS_ADM0_CI,
 	MSM8660_SFAB_MAS_MSS_MDM_PORT1,
+	MSM8660_SFAB_MAS_USB_HS,
 	MSM8660_SFAB_TO_APPSS,
 	MSM8660_SFAB_TO_SYSTEM_FPB,
 	MSM8660_SFAB_TO_CPSS_FPB,
@@ -212,6 +213,7 @@ DEFINE_QNODE(sfab_mas_mmss_fpb, MSM8660_SFAB_MAS_MMSS_FPB, 8);
 DEFINE_QNODE(sfab_mas_adm1_ci, MSM8660_SFAB_MAS_ADM1_CI, 8);
 DEFINE_QNODE(sfab_mas_adm0_ci, MSM8660_SFAB_MAS_ADM0_CI, 8);
 DEFINE_QNODE(sfab_mas_mss_mdm_port1, MSM8660_SFAB_MAS_MSS_MDM_PORT1, 8);
+DEFINE_QNODE(sfab_mas_usb_hs, MSM8660_SFAB_MAS_USB_HS, 8, MSM8660_SFAB_TO_APPSS);
 DEFINE_QNODE(sfab_to_appss, MSM8660_SFAB_TO_APPSS, 8, MSM8660_AFAB_TO_SYSTEM);
 DEFINE_QNODE(sfab_to_system_fpb, MSM8660_SFAB_TO_SYSTEM_FPB, 4);
 DEFINE_QNODE(sfab_to_cpss_fpb, MSM8660_SFAB_TO_CPSS_FPB, 4);
@@ -238,6 +240,7 @@ static struct msm8660_icc_node * const msm8660_sfab_nodes[] = {
 	[SFAB_MAS_ADM1_CI] = &sfab_mas_adm1_ci,
 	[SFAB_MAS_ADM0_CI] = &sfab_mas_adm0_ci,
 	[SFAB_MAS_MSS_MDM_PORT1] = &sfab_mas_mss_mdm_port1,
+	[SFAB_MAS_USB_HS] = &sfab_mas_usb_hs,
 	[SFAB_TO_APPSS] = &sfab_to_appss,
 	[SFAB_TO_SYSTEM_FPB] = &sfab_to_system_fpb,
 	[SFAB_TO_CPSS_FPB] = &sfab_to_cpss_fpb,

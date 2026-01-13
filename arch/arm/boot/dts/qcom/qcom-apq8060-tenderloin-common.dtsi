@@ -673,6 +673,9 @@
 			ahb-burst-config = <0>;
 			phys = <&usb_hs1_phy>;
 			phy-names = "usb-phy";
+			interconnects = <&system_fabric SFAB_MAS_USB_HS
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "usb-mem";
 			status = "disabled";
 			#reset-cells = <1>;
 

@@ -9,6 +9,7 @@
 #include <linux/reset.h>
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
+#include <linux/interconnect.h>
 #include <linux/io.h>
 #include <linux/reset-controller.h>
 #include <linux/extcon.h>
@@ -38,6 +39,7 @@ struct ci_hdrc_msm {
 	struct clk *core_clk;
 	struct clk *iface_clk;
 	struct clk *fs_clk;
+	struct icc_path *icc_path;
 	struct ci_hdrc_platform_data pdata;
 	struct reset_controller_dev rcdev;
 	bool secondary_phy;
@@ -208,6 +210,10 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 	if (IS_ERR(clk))
 		return PTR_ERR(clk);
 
+	ci->icc_path = devm_of_icc_get(&pdev->dev, "usb-mem");
+	if (IS_ERR(ci->icc_path))
+		return PTR_ERR(ci->icc_path);
+
 	ci->base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(ci->base))
 		return PTR_ERR(ci->base);
@@ -237,6 +243,11 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 	ret = clk_prepare_enable(ci->iface_clk);
 	if (ret)
 		goto err_iface;
+
+	/* Set interconnect bandwidth for USB HS (~60 MB/s max) */
+	ret = icc_set_bw(ci->icc_path, 0, MBps_to_icc(60));
+	if (ret)
+		goto err_icc;
 
 	ret = ci_hdrc_msm_mux_phy(ci, pdev);
 	if (ret)
@@ -268,6 +279,8 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 	return 0;
 
 err_mux:
+	icc_set_bw(ci->icc_path, 0, 0);
+err_icc:
 	clk_disable_unprepare(ci->iface_clk);
 err_iface:
 	clk_disable_unprepare(ci->core_clk);
@@ -280,6 +293,7 @@ static void ci_hdrc_msm_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(&pdev->dev);
 	ci_hdrc_remove_device(ci->ci);
+	icc_set_bw(ci->icc_path, 0, 0);
 	clk_disable_unprepare(ci->iface_clk);
 	clk_disable_unprepare(ci->core_clk);
 }
