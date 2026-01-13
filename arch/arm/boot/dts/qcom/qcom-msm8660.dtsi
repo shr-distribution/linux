@@ -759,6 +759,9 @@
 			clocks = <&mmcc GFX2D0_CLK>,
 				 <&mmcc GFX2D0_AHB_CLK>;
 			clock-names = "core", "iface";
+			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_2D_CORE0
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "gfx-mem";
 			status = "disabled";
 		};
 
@@ -773,6 +776,9 @@
 			clocks = <&mmcc GFX2D1_CLK>,
 				 <&mmcc GFX2D1_AHB_CLK>;
 			clock-names = "core", "iface";
+			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_2D_CORE1
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "gfx-mem";
 			status = "disabled";
 		};
 

@@ -15,6 +15,7 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/interconnect.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -55,6 +56,7 @@ struct z180_device {
 	void __iomem *mmio;
 	struct clk *core_clk;
 	struct clk *iface_clk;
+	struct icc_path *icc_path;
 	int irq;
 	int id;				/* Device ID (0 or 1) */
 
@@ -558,6 +560,9 @@ static int z180_runtime_suspend(struct device *dev)
 	clk_disable_unprepare(z180->core_clk);
 	clk_disable_unprepare(z180->iface_clk);
 
+	/* Release interconnect bandwidth */
+	icc_set_bw(z180->icc_path, 0, 0);
+
 	return 0;
 }
 
@@ -566,9 +571,17 @@ static int z180_runtime_resume(struct device *dev)
 	struct z180_device *z180 = dev_get_drvdata(dev);
 	int ret;
 
+	/* Request interconnect bandwidth (128 MB/s average, 256 MB/s peak) */
+	ret = icc_set_bw(z180->icc_path, 128000, 256000);
+	if (ret) {
+		dev_err(dev, "Failed to set interconnect bandwidth: %d\n", ret);
+		return ret;
+	}
+
 	ret = clk_prepare_enable(z180->iface_clk);
 	if (ret) {
 		dev_err(dev, "Failed to enable iface clock: %d\n", ret);
+		icc_set_bw(z180->icc_path, 0, 0);
 		return ret;
 	}
 
@@ -576,6 +589,7 @@ static int z180_runtime_resume(struct device *dev)
 	if (ret) {
 		dev_err(dev, "Failed to enable core clock: %d\n", ret);
 		clk_disable_unprepare(z180->iface_clk);
+		icc_set_bw(z180->icc_path, 0, 0);
 		return ret;
 	}
 
@@ -583,6 +597,7 @@ static int z180_runtime_resume(struct device *dev)
 	if (ret) {
 		clk_disable_unprepare(z180->core_clk);
 		clk_disable_unprepare(z180->iface_clk);
+		icc_set_bw(z180->icc_path, 0, 0);
 		return ret;
 	}
 
@@ -642,6 +657,18 @@ static int z180_probe(struct platform_device *pdev)
 		dev_err(dev, "Failed to get iface clock\n");
 		ret = PTR_ERR(z180->iface_clk);
 		goto err_dev;
+	}
+
+	/* Get interconnect path (optional) */
+	z180->icc_path = devm_of_icc_get(dev, "gfx-mem");
+	if (IS_ERR(z180->icc_path)) {
+		ret = PTR_ERR(z180->icc_path);
+		if (ret != -ENODATA) {
+			dev_err(dev, "Failed to get interconnect path: %d\n", ret);
+			goto err_dev;
+		}
+		/* No interconnect specified, continue without it */
+		z180->icc_path = NULL;
 	}
 
 	/* Get IRQ */
