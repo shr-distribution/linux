@@ -2577,26 +2577,105 @@ gsbi10_uart_pins: uart10-state {
 };
 ```
 
-### Next Steps
+### Final Solution: Touch Calculation Trigger Fix
 
-1. **Debug Frame Parsing:**
-   - Analyze hex dumps of received data to understand actual frame format
-   - Compare with ts-srv source code for expected protocol
-   - Adjust frame parsing if needed
+#### The Problem
 
-2. **Test Touch Events:**
-   - Touch the screen and verify events are generated
-   - Check `/dev/input/event3` for touch data
-   - Verify coordinates and pressure values
+The driver was waiting for `FRAME_SCAN_COMPLETE (0x47)` frames to trigger touch calculation:
 
-3. **Optimize Performance:**
-   - Consider DMA buffer sizing
-   - Profile interrupt latency
-   - Test multi-touch scenarios
+```c
+if (ts->cline[1] == FRAME_SCAN_COMPLETE) {
+    ret = cy8ctma395_ts_calc_point(ts);  // Never called!
+}
+```
+
+However, the CY8CTMA395 touchscreen **never sends 0x47 frames**. It only sends `FRAME_ROW_DATA (0x43)` frames.
+
+#### Frame Format Discovery
+
+Analysis of hex dumps revealed the actual frame format:
+
+```
+ff 43 80 01 01 01 01 01 01 01 01 01 01 01 01 01  .C..............
+01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01  ................
+01 01 01 01 01 01 01 01 01 01 01 ff 43 01 ...   ............C...
+```
+
+- `0xFF` = Frame start marker
+- `0x43` = Frame type (row data)
+- `0x80` = Row index with **bit 7 set** indicating **new scan start**
+- Following 40 bytes = capacitance sensor data for that row
+
+**Key Discovery:** Bit 7 (0x80) of the row index indicates the start of a new scan cycle. This is the trigger point for touch calculation, NOT a separate 0x47 frame.
+
+#### The Fix
+
+Modified `cy8ctma395_ts_consume_frame()` to trigger touch calculation when a new scan starts:
+
+```c
+if (ts->cline[1] == FRAME_ROW_DATA) {
+    int row = ts->cline[2] & 0x1F;
+
+    /* Start of new scan - calculate touches from previous scan, then clear */
+    if (ts->cline[2] & 0x80) {
+        /* Calculate touches from the completed scan before clearing */
+        if (ts->rows_received > 0) {
+            ret = cy8ctma395_ts_calc_point(ts);
+        }
+        memset(ts->matrix, 0, sizeof(ts->matrix));
+        ts->rows_received = 0;
+    }
+
+    /* Copy row data into matrix */
+    if (row < X_AXIS_POINTS) {
+        for (i = 0; i < Y_AXIS_POINTS; i++)
+            ts->matrix[row][i] = ts->cline[i + 3];
+        ts->rows_received++;
+    }
+}
+```
+
+### TOUCHSCREEN NOW WORKING
+
+After applying all fixes, the touchscreen is fully functional:
+
+```
+[  186.216541] cy8ctma395: reporting 1 touch(es)
+[  186.228807] cy8ctma395: touch detected at (551,609) val=77 weight=2899
+[  186.302189] cy8ctma395: calc_point called, rows=30, max_val=77, thresh=26
+```
+
+**Verified functionality:**
+- Touch detection at correct coordinates
+- Touch values (77-78) properly exceed threshold (26)
+- Input events sent to `/dev/input/event3`
+- Multi-row scanning (30 rows per scan cycle)
+
+### Summary of All Fixes
+
+| Issue | Root Cause | Solution |
+|-------|------------|----------|
+| No UART data | GPIO 71 not configured for gsbi10 | Added `gsbi10_uart_pins` pinctrl |
+| DMA issues | `#dma-cells` incorrectly set to 2 | Reverted to `#dma-cells = <1>` |
+| No touch events | Waiting for 0x47 frames that never come | Trigger on new scan (bit 7 of row index) |
+
+### Commits
+
+| Commit | Description |
+|--------|-------------|
+| `e097635debb2` | GPIO 71 pinctrl for UART RX, ADM DMA #dma-cells fix |
+| `b9d0390b53fe` | Touch calculation trigger on new scan start |
 
 ### Files Modified
 
 | File | Changes |
 |------|---------|
 | `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` | Added gsbi10_uart_pins, fixed adm_dma1 #dma-cells |
-| `drivers/input/touchscreen/cy8ctma395_ts.c` | Added debug output for UART data and frame parsing |
+| `drivers/input/touchscreen/cy8ctma395_ts.c` | Fixed touch calculation trigger, added rows_received tracking |
+
+### Future Improvements
+
+1. **Remove debug output** - The pr_info statements can be removed or converted to pr_debug
+2. **Test multi-touch** - Verify multiple simultaneous touches work correctly
+3. **Performance tuning** - Profile and optimize if needed
+4. **Upstream preparation** - Clean up code for potential mainline submission
