@@ -729,6 +729,24 @@
 			interconnect-names = "jpeg-mem";
 			status = "disabled";
 		};
+
+		/*
+		 * Video Codec (VIDC 1080p)
+		 * Hardware video encode/decode (H.264, MPEG4, etc.)
+		 */
+		vidc: video-codec@4400000 {
+			compatible = "qcom,msm8660-vidc";
+			reg = <0x04400000 0x100000>;
+			interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc VCODEC_CLK>,
+				 <&mmcc VCODEC_AHB_CLK>,
+				 <&mmcc VCODEC_AXI_CLK>;
+			clock-names = "core", "iface", "axi";
+			interconnects = <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "video-mem";
+			status = "disabled";
+		};
 	};
 
 	smem {
