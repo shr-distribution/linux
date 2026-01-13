@@ -5,3 +5,4 @@ obj-y += venus/
 obj-y += vidc/
 obj-y += vpe/
 obj-y += gemini/
+obj-y += rotator/

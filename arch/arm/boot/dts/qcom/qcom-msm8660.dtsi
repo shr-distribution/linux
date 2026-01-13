@@ -731,6 +731,24 @@
 		};
 
 		/*
+		 * Image Rotator
+		 * Hardware image rotation and flipping
+		 */
+		rotator: rotator@4e00000 {
+			compatible = "qcom,msm8660-rotator";
+			reg = <0x04e00000 0x100000>;
+			interrupts = <GIC_SPI 73 IRQ_TYPE_EDGE_RISING>;
+			clocks = <&mmcc ROT_CLK>,
+				 <&mmcc ROT_AHB_CLK>,
+				 <&mmcc ROT_AXI_CLK>;
+			clock-names = "core", "iface", "axi";
+			interconnects = <&mmss_fabric MMFAB_MAS_ROTATOR
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "rotator-mem";
+			status = "disabled";
+		};
+
+		/*
 		 * Video Codec (VIDC 1080p)
 		 * Hardware video encode/decode (H.264, MPEG4, etc.)
 		 */
