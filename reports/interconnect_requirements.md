@@ -17,8 +17,8 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 |-----------|---------------|-------------|-------------------|
 | MDP4 Display | MDP_PORT0, MDP_PORT1 | SMI, EBI_CH0 | **ENABLED** (cross-fabric paths fixed) |
 | GPU 3D (Adreno 220) | GRAPHICS_3D | EBI_CH0 | **NOT NEEDED** (a2xx driver doesn't use ICC) |
-| GPU 2D Core0 | GRAPHICS_2D_CORE0 | SMI | No driver (Z180 not in mainline) |
-| GPU 2D Core1 | GRAPHICS_2D_CORE1 | SMI | No driver (Z180 not in mainline) |
+| GPU 2D Core0 | GRAPHICS_2D_CORE0 | SMI, EBI_CH0 | **ENABLED** (Z180 driver added) |
+| GPU 2D Core1 | GRAPHICS_2D_CORE1 | SMI, EBI_CH0 | **ENABLED** (Z180 driver added) |
 | Camera (VFE) | VFE | SMI, EBI_CH0 | **ENABLED** (CAMSS driver updated) |
 | Video Processor (VPE) | VPE | SMI, EBI_CH0 | **ENABLED** (VPE driver added) |
 | JPEG Encoder | JPEG_ENC | SMI, EBI_CH0 | **ENABLED** (Gemini driver added) |
@@ -111,9 +111,60 @@ gpu@4300000 {
 
 ### 3. GPU 2D Cores (Z180)
 
-**Status: Not implemented**
+**Status: ENABLED (Z180 driver added)**
 
-**webOS Implementation:**
+The Z180 2D graphics driver (`drivers/gpu/drm/msm/z180/`) provides hardware-accelerated
+2D vector graphics operations. Two independent cores are available.
+
+**Implementation:**
+- Driver: `drivers/gpu/drm/msm/z180/`
+- Core 0 Base Address: 0x04100000
+- Core 1 Base Address: 0x04200000
+- Core 0 IRQ: SPI 81 (level high)
+- Core 1 IRQ: SPI 212 (level high)
+- Clocks: GFX2D0_CLK/GFX2D1_CLK, GFX2D0_AHB_CLK/GFX2D1_AHB_CLK
+
+**Features:**
+- Command stream submission with ringbuffer
+- Timestamp-based synchronization
+- Miscdevice interface (/dev/z180-0, /dev/z180-1)
+- Runtime PM with interconnect bandwidth voting
+
+**Device Tree Configuration:**
+```dts
+gpu_2d0: gpu@4100000 {
+    compatible = "qcom,msm8660-z180";
+    reg = <0x04100000 0x1000>;
+    interrupts = <GIC_SPI 81 IRQ_TYPE_LEVEL_HIGH>;
+    clocks = <&mmcc GFX2D0_CLK>,
+             <&mmcc GFX2D0_AHB_CLK>;
+    clock-names = "core", "iface";
+    interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_2D_CORE0
+                     &apps_fabric AFAB_SLV_EBI_CH0>;
+    interconnect-names = "gfx-mem";
+    status = "disabled";
+};
+
+gpu_2d1: gpu@4200000 {
+    compatible = "qcom,msm8660-z180";
+    reg = <0x04200000 0x1000>;
+    interrupts = <GIC_SPI 212 IRQ_TYPE_LEVEL_HIGH>;
+    clocks = <&mmcc GFX2D1_CLK>,
+             <&mmcc GFX2D1_AHB_CLK>;
+    clock-names = "core", "iface";
+    interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_2D_CORE1
+                     &apps_fabric AFAB_SLV_EBI_CH0>;
+    interconnect-names = "gfx-mem";
+    status = "disabled";
+};
+```
+
+**Path Resolution:**
+GRAPHICS_2D_CORE0/1 → MMFAB_TO_APPSS → AFAB_TO_MMSS → SLV_EBI_CH0
+
+**Bandwidth:** 128 MB/s average, 256 MB/s peak
+
+**webOS Reference:**
 ```c
 /* From devices-msm8x60.c */
 struct msm_bus_scale_pdata grp2d0_bus_scale_pdata = {
@@ -125,11 +176,6 @@ struct msm_bus_scale_pdata grp2d1_bus_scale_pdata = {
     .dst = MSM_BUS_SLAVE_EBI_CH0,
 };
 ```
-
-**Notes:**
-- Two 2D cores (Z180) for 2D acceleration
-- Lower bandwidth requirements than 3D
-- May not be critical for basic functionality
 
 ---
 
@@ -426,6 +472,7 @@ The USB subsystem didn't use explicit msm_bus_scale calls, but relied on DFAB (D
 4. **JPEG Encoder (Gemini)** - New V4L2 mem2mem driver with interconnect
 5. **Video Codec (VIDC)** - Interconnect support added to existing driver
 6. **Rotator** - New V4L2 mem2mem driver with interconnect
+7. **GPU 2D (Z180)** - New driver with command stream and interconnect support
 
 ### High Priority (Affects Core Functionality)
 
@@ -437,7 +484,6 @@ The USB subsystem didn't use explicit msm_bus_scale calls, but relied on DFAB (D
 
 ### Low Priority (Nice to Have)
 
-7. **GPU 2D** - 2D acceleration (no driver in mainline)
 8. **DTV** - HDMI output (uses MDP4 paths)
 
 ---
