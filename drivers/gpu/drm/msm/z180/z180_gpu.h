@@ -11,6 +11,8 @@
 #ifndef __Z180_GPU_H__
 #define __Z180_GPU_H__
 
+#include <linux/types.h>
+
 /* VGC (Vector Graphics Controller) registers */
 #define Z180_VGC_COMMANDSTREAM		0x0000
 #define Z180_VGC_MMUCOMMANDSTREAM	0x03FC
@@ -62,13 +64,15 @@
 #define Z180_STREAM_PACKET_CALL		0x7C000275
 #define Z180_MARKER_CMD			0x00008000
 #define Z180_CALL_CMD			0x00001000
-#define Z180_STREAM_END_CMD		0x00002000
+#define Z180_STREAM_END_CMD		0x00009000
 
 /* VGV3 control register bits */
 #define Z180_VGV3_NEXTCMD_JUMP		0x01
+#define Z180_VGV3_NEXTCMD_FSHIFT	12
+#define Z180_VGV3_NEXTCMD_FMASK		0x7
 
 #define Z180_VGV3_CONTROL_MARKADD_FSHIFT 0
-#define Z180_VGV3_CONTROL_MARKADD_FMASK  0x03
+#define Z180_VGV3_CONTROL_MARKADD_FMASK  0xfff
 
 /* Command window targets */
 #define Z180_CMDWINDOW_2D		0x00
@@ -112,5 +116,78 @@
 	| (1 << Z180_MH_ARBITER_CONFIG__TC_CLNT_ENABLE__SHIFT)		\
 	| (1 << Z180_MH_ARBITER_CONFIG__RB_CLNT_ENABLE__SHIFT)		\
 	| (1 << Z180_MH_ARBITER_CONFIG__PA_CLNT_ENABLE__SHIFT))
+
+/*
+ * Ringbuffer configuration
+ *
+ * The Z180 uses a simple ringbuffer with fixed-size packets.
+ * Each packet consists of a marker section followed by a command section.
+ */
+#define Z180_PACKET_SIZE	15	/* words per packet */
+#define Z180_MARKER_SIZE	10	/* words for marker */
+#define Z180_PACKET_COUNT	8	/* number of packets in ringbuffer */
+#define Z180_RB_SIZE		(Z180_PACKET_SIZE * Z180_PACKET_COUNT * sizeof(u32))
+
+#define Z180_INVALID_CONTEXT	UINT_MAX
+
+/* Timestamp storage size (for memstore) */
+#define Z180_MEMSTORE_SIZE	PAGE_SIZE
+
+/* Timeouts */
+#define Z180_IDLE_TIMEOUT_MS	2000
+#define Z180_WAIT_TIMEOUT_MS	10000
+
+/*
+ * State stream packet sizes for context switching
+ * These define the size of GPU state that needs to be saved/restored
+ */
+#define Z180_NUMTEXUNITS	4
+#define Z180_TEXUNITREGCOUNT	25
+#define Z180_VG_REGCOUNT	0x39
+
+#define Z180_PACKETSIZE_BEGIN		3
+#define Z180_PACKETSIZE_G2DCOLOR	2
+#define Z180_PACKETSIZE_TEXUNIT		(Z180_TEXUNITREGCOUNT * 2)
+#define Z180_PACKETSIZE_REG		(Z180_VG_REGCOUNT * 2)
+#define Z180_PACKETSIZE_STATE		(Z180_PACKETSIZE_TEXUNIT * Z180_NUMTEXUNITS + \
+					 Z180_PACKETSIZE_REG + Z180_PACKETSIZE_BEGIN + \
+					 Z180_PACKETSIZE_G2DCOLOR)
+#define Z180_PACKETSIZE_STATESTREAM	(ALIGN(Z180_PACKETSIZE_STATE * sizeof(u32), 32) / \
+					 sizeof(u32))
+
+/*
+ * IOCTL definitions for userspace interface
+ */
+#define Z180_IOCTL_BASE		'Z'
+
+/* Submit a command buffer for execution */
+struct z180_submit_cmd {
+	__u32 gpuaddr;		/* GPU address of command buffer */
+	__u32 sizedwords;	/* Size of command buffer in dwords */
+	__u32 timestamp;	/* Returned timestamp for this submission */
+	__u32 flags;		/* Submission flags */
+};
+
+#define Z180_SUBMIT_FLAGS_CTX_SWITCH	BIT(0)
+
+#define Z180_IOCTL_SUBMIT	_IOWR(Z180_IOCTL_BASE, 1, struct z180_submit_cmd)
+
+/* Wait for a timestamp to complete */
+struct z180_wait_timestamp {
+	__u32 timestamp;	/* Timestamp to wait for */
+	__u32 timeout_ms;	/* Timeout in milliseconds */
+};
+
+#define Z180_IOCTL_WAIT		_IOW(Z180_IOCTL_BASE, 2, struct z180_wait_timestamp)
+
+/* Get device info */
+struct z180_device_info {
+	__u32 device_id;	/* Device ID (0 or 1) */
+	__u32 chip_id;		/* Chip revision */
+	__u32 timestamp;	/* Current completed timestamp */
+	__u32 pending;		/* Number of pending submissions */
+};
+
+#define Z180_IOCTL_INFO		_IOR(Z180_IOCTL_BASE, 3, struct z180_device_info)
 
 #endif /* __Z180_GPU_H__ */
