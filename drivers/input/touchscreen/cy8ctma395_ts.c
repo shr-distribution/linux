@@ -100,6 +100,7 @@ struct cy8ctma395_ts_data {
 	/* Protocol parser state */
 	u8 cline[64];
 	unsigned int cidx;
+	unsigned int rows_received;
 
 	/* Capacitance matrix */
 	u8 matrix[X_AXIS_POINTS][Y_AXIS_POINTS];
@@ -374,6 +375,20 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 	int smallest_distance[MAX_TOUCH];
 	int smallest_distance_loc[MAX_TOUCH];
 	int tpoint;
+	int max_val = 0;
+	static unsigned long last_calc_print;
+
+	/* Find max value in matrix for debug */
+	for (i = 0; i < X_AXIS_POINTS; i++) {
+		for (j = 0; j < Y_AXIS_POINTS; j++) {
+			if (ts->matrix[i][j] > max_val)
+				max_val = ts->matrix[i][j];
+		}
+	}
+
+	if (printk_timed_ratelimit(&last_calc_print, 5000))
+		pr_info("cy8ctma395: calc_point called, rows=%u, max_val=%d, thresh=%d\n",
+			ts->rows_received, max_val, ts->touch_continue_thresh);
 
 	if (ts->tp[ts->tpoint][0].x < -20) {
 		/* Total liftoff occurred */
@@ -440,6 +455,8 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 					t->hover_y = t->y;
 					t->hover_delay = HOVER_DEBOUNCE_DELAY;
 
+					pr_info("cy8ctma395: touch detected at (%d,%d) val=%d weight=%d\n",
+						t->x, t->y, highest_val, tweight);
 					tpc++;
 				}
 			}
@@ -568,8 +585,10 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 		}
 	}
 
-	if (tpc > 0)
+	if (tpc > 0) {
 		input_sync(ts->input);
+		pr_info("cy8ctma395: reporting %d touch(es)\n", tpc);
+	}
 
 	ts->previoustpc = tpc;
 	return tpc;
@@ -601,14 +620,21 @@ static int cy8ctma395_ts_consume_frame(struct cy8ctma395_ts_data *ts)
 	if (ts->cline[1] == FRAME_ROW_DATA) {
 		int row = ts->cline[2] & 0x1F;
 
-		/* Start of new scan - clear matrix */
-		if (ts->cline[2] & 0x80)
+		/* Start of new scan - calculate touches from previous scan, then clear */
+		if (ts->cline[2] & 0x80) {
+			/* Calculate touches from the completed scan before clearing */
+			if (ts->rows_received > 0) {
+				ret = cy8ctma395_ts_calc_point(ts);
+			}
 			memset(ts->matrix, 0, sizeof(ts->matrix));
+			ts->rows_received = 0;
+		}
 
 		/* Copy row data into matrix */
 		if (row < X_AXIS_POINTS) {
 			for (i = 0; i < Y_AXIS_POINTS; i++)
 				ts->matrix[row][i] = ts->cline[i + 3];
+			ts->rows_received++;
 		}
 	}
 
@@ -671,12 +697,22 @@ static size_t cy8ctma395_ts_receive_buf(struct serdev_device *serdev,
 			       16, 1, data, min_t(size_t, count, 64), true);
 	}
 
-	/* Periodically print sample data to check format */
+	/* Periodically analyze data format */
 	{
 		static unsigned long last_sample;
+		static size_t ff_count;
+		size_t i;
+
+		/* Count 0xFF bytes (potential frame starts) */
+		for (i = 0; i < count; i++) {
+			if (data[i] == 0xFF)
+				ff_count++;
+		}
+
 		if (printk_timed_ratelimit(&last_sample, 10000) && count >= 16) {
-			print_hex_dump(KERN_INFO, "cy8ctma395 sample: ", DUMP_PREFIX_NONE,
-				       16, 1, data, min_t(size_t, count, 32), true);
+			pr_info("cy8ctma395: data analysis - 0xFF count: %zu, sample:\n", ff_count);
+			print_hex_dump(KERN_INFO, "  ", DUMP_PREFIX_OFFSET,
+				       16, 1, data, min_t(size_t, count, 64), true);
 		}
 	}
 
