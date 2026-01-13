@@ -1445,12 +1445,15 @@
 	mmc-pwrseq = <&ath6kl_pwrseq>;
 
 	/*
-	 * DMA: Disabled for testing - PIO mode
-	 * ADM DMA causes hang during WiFi init
-	 * TODO: Debug DMA completion issue
+	 * DMA configuration for QCOM ADM:
+	 * - Channel 5 on ADM1 for both RX and TX
+	 * - CRCI (Client Request Control Interface) 5 for SDC4
+	 * Note: The second cell in dmas is ignored with #dma-cells=<1>,
+	 * so CRCI is passed via the qcom,sdcc-crci property instead.
 	 */
-	/* dmas = <&adm_dma1 5 5>, <&adm_dma1 5 5>; */
-	/* dma-names = "rx", "tx"; */
+	dmas = <&adm_dma1 5>, <&adm_dma1 5>;
+	dma-names = "rx", "tx";
+	qcom,sdcc-crci = <5>;
 
 	wifi@1 {
 		compatible = "atheros,ath6kl";

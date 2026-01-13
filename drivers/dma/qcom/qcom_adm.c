@@ -373,6 +373,10 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		achan->slave.dst_maxburst :
 		achan->slave.src_maxburst;
 
+	dev_info(adev->dev,
+		 "ADM prep_slave_sg: chan=%d device_fc=%d achan->crci=%d burst=%d dir=%d\n",
+		 achan->id, achan->slave.device_fc, achan->crci, burst, direction);
+
 	/* if using flow control, validate burst and crci values */
 	if (achan->slave.device_fc) {
 		blk_size = adm_get_blksize(burst);
@@ -504,6 +508,10 @@ static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 		achan->crci = config->crci;
 	spin_unlock_irqrestore(&achan->vc.lock, flag);
 
+	dev_dbg(achan->adev->dev,
+		"ADM slave_config: chan=%d device_fc=%d peripheral_size=%zu crci=%d\n",
+		achan->id, cfg->device_fc, cfg->peripheral_size, achan->crci);
+
 	return 0;
 }
 
@@ -547,12 +555,18 @@ static void adm_start_dma(struct adm_chan *achan)
 
 	/* set the crci block size if this transaction requires CRCI */
 	if (async_desc->crci) {
+		dev_info(adev->dev, "ADM start_dma: setting CRCI_CTL(%d) = 0x%x\n",
+			 async_desc->crci, async_desc->mux | async_desc->blk_size);
 		writel(async_desc->mux | async_desc->blk_size,
 		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
 	}
 
 	/* make sure IRQ enable doesn't get reordered */
 	wmb();
+
+	dev_info(adev->dev, "ADM start_dma: chan=%d crci=%d cmd_ptr=0x%llx\n",
+		 achan->id, async_desc->crci,
+		 (unsigned long long)(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3));
 
 	/* write next command list out to the CMD FIFO */
 	writel(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3,
@@ -575,6 +589,8 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 
 	srcs = readl_relaxed(adev->regs +
 			ADM_SEC_DOMAIN_IRQ_STATUS(adev->ee));
+
+	dev_info(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
 
 	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
 		struct adm_chan *achan = &adev->channels[i];
@@ -739,6 +755,9 @@ static struct dma_chan *adm_dma_xlate(struct of_phandle_args *dma_spec,
 		achan->crci = dma_spec->args[1];
 	else
 		achan->crci = 0;
+
+	dev_info(dev->dev, "ADM xlate: chan=%d args_count=%d crci=%d\n",
+		 dma_spec->args[0], dma_spec->args_count, achan->crci);
 
 	return dma_get_slave_channel(candidate);
 }

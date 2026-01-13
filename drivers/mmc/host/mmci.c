@@ -31,6 +31,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
+#include <linux/dma/qcom_adm.h>
 #include <linux/amba/mmci.h>
 #include <linux/pm_runtime.h>
 #include <linux/types.h>
@@ -360,6 +361,7 @@ static struct variant_data variant_qcom = {
 	.explicit_mclk_control	= true,
 	.qcom_fifo		= true,
 	.qcom_dml		= true,
+	.dma_flow_controller	= true,
 	.mmcimask1		= true,
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
 	.start_err		= MCI_STARTBITERR,
@@ -839,6 +841,7 @@ struct mmci_dmae_priv {
 	struct dma_chan	*tx_channel;
 	struct dma_async_tx_descriptor	*desc_current;
 	struct mmci_dmae_next next_data;
+	u32 crci;	/* CRCI value for QCOM ADM DMA */
 };
 
 int mmci_dmae_setup(struct mmci_host *host)
@@ -851,6 +854,10 @@ int mmci_dmae_setup(struct mmci_host *host)
 		return -ENOMEM;
 
 	host->dma_priv = dmae;
+
+	/* Read CRCI value for QCOM ADM DMA flow control */
+	of_property_read_u32(mmc_dev(host->mmc)->of_node, "qcom,sdcc-crci",
+			     &dmae->crci);
 
 	dmae->rx_channel = dma_request_chan(mmc_dev(host->mmc), "rx");
 	if (IS_ERR(dmae->rx_channel)) {
@@ -885,8 +892,8 @@ int mmci_dmae_setup(struct mmci_host *host)
 	else
 		txname = "none";
 
-	dev_info(mmc_dev(host->mmc), "DMA channels RX %s, TX %s\n",
-		 rxname, txname);
+	dev_info(mmc_dev(host->mmc), "DMA channels RX %s, TX %s, CRCI %u\n",
+		 rxname, txname, dmae->crci);
 
 	/*
 	 * Limit the maximum segment size in any SG entry according to
@@ -1013,6 +1020,7 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	struct variant_data *variant = host->variant;
+	struct qcom_adm_peripheral_config periph_conf = {};
 	struct dma_slave_config conf = {
 		.src_addr = host->phybase + MMCIFIFO,
 		.dst_addr = host->phybase + MMCIFIFO,
@@ -1027,6 +1035,13 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	struct dma_async_tx_descriptor *desc;
 	int nr_sg;
 	unsigned long flags = DMA_CTRL_ACK;
+
+	/* Pass CRCI to QCOM ADM DMA controller for flow control */
+	if (dmae->crci) {
+		periph_conf.crci = dmae->crci;
+		conf.peripheral_config = &periph_conf;
+		conf.peripheral_size = sizeof(periph_conf);
+	}
 
 	if (data->flags & MMC_DATA_READ) {
 		conf.direction = DMA_DEV_TO_MEM;
