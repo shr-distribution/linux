@@ -693,6 +693,42 @@
 				};
 			};
 		};
+
+		/*
+		 * Video Processing Engine (VPE)
+		 * Hardware scaling, rotation, and color conversion
+		 */
+		vpe: video-processing@5300000 {
+			compatible = "qcom,msm8660-vpe";
+			reg = <0x05300000 0x100000>;
+			interrupts = <GIC_SPI 47 IRQ_TYPE_EDGE_RISING>;
+			clocks = <&mmcc VPE_CLK>,
+				 <&mmcc VPE_AXI_CLK>,
+				 <&mmcc VPE_AHB_CLK>;
+			clock-names = "core", "axi", "ahb";
+			interconnects = <&mmss_fabric MMFAB_MAS_VPE
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "vpe-mem";
+			status = "disabled";
+		};
+
+		/*
+		 * JPEG Encoder/Decoder (Gemini)
+		 * Hardware JPEG compression/decompression
+		 */
+		gemini: jpeg@4600000 {
+			compatible = "qcom,msm8660-gemini";
+			reg = <0x04600000 0x100000>;
+			interrupts = <GIC_SPI 77 IRQ_TYPE_EDGE_RISING>;
+			clocks = <&mmcc IJPEG_CLK>,
+				 <&mmcc IJPEG_AXI_CLK>,
+				 <&mmcc IJPEG_AHB_CLK>;
+			clock-names = "core", "axi", "ahb";
+			interconnects = <&mmss_fabric MMFAB_MAS_JPEG_ENC
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "jpeg-mem";
+			status = "disabled";
+		};
 	};
 
 	smem {
