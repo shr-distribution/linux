@@ -15,8 +15,8 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 
 | Component | Master Port(s) | Destination | Status in Mainline |
 |-----------|---------------|-------------|-------------------|
-| MDP4 Display | MDP_PORT0, MDP_PORT1 | SMI, EBI_CH0 | **DONE** |
-| GPU 3D (Adreno) | GRAPHICS_3D | EBI_CH0 | **DONE** |
+| MDP4 Display | MDP_PORT0, MDP_PORT1 | SMI, EBI_CH0 | **OPTIONAL** (works via clock parent) |
+| GPU 3D (Adreno 220) | GRAPHICS_3D | EBI_CH0 | **NOT NEEDED** (a2xx driver doesn't use ICC) |
 | GPU 2D Core0 | GRAPHICS_2D_CORE0 | SMI | No driver (Z180 not in mainline) |
 | GPU 2D Core1 | GRAPHICS_2D_CORE1 | SMI | No driver (Z180 not in mainline) |
 | Camera (VFE) | VFE | SMI, EBI_CH0 | Driver needs modification |
@@ -34,7 +34,7 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 
 ### 1. MDP4 Display Controller
 
-**Status: DONE**
+**Status: OPTIONAL (works without interconnect)**
 
 **webOS Implementation:**
 ```c
@@ -47,15 +47,25 @@ static struct msm_bus_vectors mdp_bus_scale_usecases[] = {
 ```
 
 **Mainline Implementation:**
-- Added `mdp4_setup_interconnect()` in `drivers/gpu/drm/msm/disp/mdp4/mdp4_kms.c`
+The `mdp4_kms.c` driver has `mdp4_setup_interconnect()` which uses `msm_icc_get()`.
+This function gracefully handles missing interconnect paths - it warns but doesn't
+fail, allowing display to work without explicit bandwidth votes.
+
+**USB/Display Coexistence:**
+The USB vs display conflict is solved via clock parent relationships in
+`mmcc-msm8960.c`, which ensures fabric clocks stay coordinated when both
+subsystems are active. This workaround is functional without interconnect.
+
+**If interconnect were to be added (requires framework work):**
 - Device tree paths: `mdp0-mem`, `mdp1-mem`
 - Bandwidth: 6400 MBps peak
+- Requires cross-fabric path resolution (MMSS -> APPSS)
 
 ---
 
 ### 2. GPU 3D (Adreno 220 / Yamato)
 
-**Status: DONE**
+**Status: NOT NEEDED**
 
 **webOS Implementation:**
 ```c
@@ -69,11 +79,19 @@ static struct msm_bus_vectors grp3d_max_vectors[] = {
 ```
 
 **Mainline Implementation:**
-- Added interconnect to device tree in `qcom-apq8060-tenderloin-common.dtsi`
-- The Adreno driver uses `dev_pm_opp_of_find_icc_paths()` for OPP-based bandwidth
-- Device tree path: `gfx-mem`
+The Adreno 220 uses the `a2xx_gpu.c` driver which does NOT have any interconnect
+API calls (no `devm_of_icc_get()` unlike a3xx/a4xx drivers).
 
-**Device Tree:**
+The `dev_pm_opp_of_find_icc_paths()` call in `adreno_device.c` gracefully returns
+success (0) when no `interconnects` property exists in device tree.
+
+**Why interconnect is not implemented:**
+1. The a2xx driver doesn't require it - bandwidth is managed via GPU clock scaling
+2. Cross-fabric paths (MMSS_FABRIC -> APPSS_FABRIC) would require interconnect
+   framework enhancements to resolve paths across multiple providers
+3. The GPU works correctly without explicit interconnect bandwidth votes
+
+**If interconnect were to be added (requires framework work):**
 ```dts
 gpu@4300000 {
     interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_3D &apps_fabric AFAB_SLV_EBI_CH0>;

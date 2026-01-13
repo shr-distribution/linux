@@ -712,8 +712,20 @@
 			operating-points-v2 = <&gpu_opp_table>;
 
 			/*
-			 * GPU interconnect - disabled for now.
-			 * Cross-fabric paths need driver rework.
+			 * GPU interconnect: NOT REQUIRED for Adreno 220 (a2xx).
+			 *
+			 * The a2xx_gpu.c driver doesn't use interconnect APIs - it
+			 * has no devm_of_icc_get() calls unlike a3xx/a4xx drivers.
+			 * The dev_pm_opp_of_find_icc_paths() in adreno_device.c
+			 * gracefully returns 0 when no interconnects property exists.
+			 *
+			 * Cross-fabric paths (MMSS_FABRIC -> APPSS_FABRIC) would
+			 * require interconnect framework enhancements to resolve
+			 * paths across multiple providers. The webOS kernel used
+			 * a centralized msm_bus_scale API that handled this.
+			 *
+			 * For bandwidth management, the GPU relies on clock rate
+			 * scaling via OPP rather than explicit interconnect votes.
 			 */
 
 			gpu_opp_table: opp-table {
@@ -755,10 +767,19 @@
 			qcom,lcdc-align-lsb;
 
 			/*
-			 * Interconnect paths for MDP - disabled for now.
-			 * The USB coexistence issue is solved by the mmfab parent
-			 * clock relationship in mmcc-msm8960.c. Cross-fabric
-			 * interconnect paths need driver rework to function.
+			 * MDP interconnect: OPTIONAL - works without it.
+			 *
+			 * The mdp4_kms.c driver uses msm_icc_get() which gracefully
+			 * handles missing paths (warns but doesn't fail). The USB
+			 * coexistence issue is solved by the mmfab clock parent
+			 * relationship established in mmcc-msm8960.c, which ensures
+			 * fabric clocks stay coordinated.
+			 *
+			 * Adding cross-fabric interconnect paths would require:
+			 * 1. Interconnect framework support for multi-provider paths
+			 * 2. Paths: MMSS_FABRIC MDP_PORT0/1 -> APPSS_FABRIC EBI_CH0
+			 *
+			 * Current workaround via clock parents is functional.
 			 */
 
 			ports {
