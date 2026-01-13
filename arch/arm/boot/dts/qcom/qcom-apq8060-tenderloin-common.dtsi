@@ -214,7 +214,7 @@
 			compatible = "qcom,adm";
 			reg = <0x18420000 0x100000>;
 			interrupts = <GIC_SPI 167 IRQ_TYPE_LEVEL_HIGH>;
-			#dma-cells = <2>;  /* channel, crci */
+			#dma-cells = <1>;
 
 			clocks = <&gcc ADM1_CLK>, <&gcc ADM1_PBUS_CLK>;
 			clock-names = "core", "iface";
@@ -1377,6 +1377,21 @@
 		};
 	};
 
+	/*
+	 * GSBI10 UART pins for touchscreen data reception.
+	 * GPIO 70 = UART TX (not needed - touchscreen is RX-only from our side)
+	 * GPIO 71 = UART RX (touchscreen sends data here)
+	 * Note: GPIO 70 is used as touchscreen reset, so only configure GPIO 71
+	 */
+	gsbi10_uart_pins: uart10-state {
+		rx-pins {
+			pins = "gpio71";
+			function = "gsbi10";
+			drive-strength = <2>;
+			bias-pull-up;  /* RX line idle high */
+		};
+	};
+
 	hdmi_pinctrl: hdmi-state {
 		ddc-pins {
 			pins = "gpio170", "gpio171";
@@ -1834,6 +1849,8 @@
 
 &gsbi10_serial {
 	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi10_uart_pins>;
 
 	/*
 	 * Cypress CY8CTMA395 Touchscreen (serdev driver)

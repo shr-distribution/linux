@@ -634,11 +634,18 @@ static int cy8ctma395_ts_process_data(struct cy8ctma395_ts_data *ts,
 {
 	size_t i;
 	int touches = 0;
+	static unsigned long last_frame_print;
+	static int frame_count;
 
 	for (i = 0; i < len; i++) {
 		cy8ctma395_ts_put_byte(ts, data[i]);
-		if (cy8ctma395_ts_frame_valid(ts, 0))
+		if (cy8ctma395_ts_frame_valid(ts, 0)) {
+			frame_count++;
+			if (printk_timed_ratelimit(&last_frame_print, 5000))
+				pr_info("cy8ctma395: valid frame #%d, type=0x%02x, idx=%d\n",
+					frame_count, ts->cline[1], ts->cidx);
 			touches += cy8ctma395_ts_consume_frame(ts);
+		}
 	}
 
 	return touches;
@@ -657,11 +664,20 @@ static size_t cy8ctma395_ts_receive_buf(struct serdev_device *serdev,
 		dev_info(&serdev->dev, "UART RX: %zu bytes total, last %zu bytes\n",
 			 total_bytes, count);
 
-	/* Print first 16 bytes received for debugging */
+	/* Print first 64 bytes received for debugging */
 	if (first_data && count > 0) {
 		first_data = false;
-		print_hex_dump(KERN_INFO, "cy8ctma395 first RX: ", DUMP_PREFIX_NONE,
-			       16, 1, data, min_t(size_t, count, 16), true);
+		print_hex_dump(KERN_INFO, "cy8ctma395 first RX: ", DUMP_PREFIX_OFFSET,
+			       16, 1, data, min_t(size_t, count, 64), true);
+	}
+
+	/* Periodically print sample data to check format */
+	{
+		static unsigned long last_sample;
+		if (printk_timed_ratelimit(&last_sample, 10000) && count >= 16) {
+			print_hex_dump(KERN_INFO, "cy8ctma395 sample: ", DUMP_PREFIX_NONE,
+				       16, 1, data, min_t(size_t, count, 32), true);
+		}
 	}
 
 	if (!cy8ctma395_ts_process_data(ts, data, count)) {

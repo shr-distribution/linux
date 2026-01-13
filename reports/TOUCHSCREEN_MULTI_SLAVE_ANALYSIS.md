@@ -2414,3 +2414,189 @@ The primary work remaining is:
 1. Test UART operation at 4 Mbps
 2. Verify DMA transfers work correctly
 3. Implement/port touchscreen userspace driver or kernel serdev driver
+
+---
+
+## Implementation Progress (January 2026)
+
+### Summary of Fixes Applied
+
+#### 1. GPIO 71 Pinctrl Fix (CRITICAL)
+
+**Problem:** GPIO 71 (UART RX for GSBI10) was UNCLAIMED in the pinmux, preventing UART data reception.
+
+**Root Cause:** The serial device (`19a40000.serial`) had no pinctrl configuration. The msm_serial driver doesn't explicitly request pinctrl - it must be specified in the device tree.
+
+**Solution:** Added explicit pinctrl configuration for GPIO 71:
+
+```dts
+/* In pinctrl@800000 section */
+gsbi10_uart_pins: uart10-state {
+    rx-pins {
+        pins = "gpio71";
+        function = "gsbi10";
+        drive-strength = <2>;
+        bias-pull-up;  /* RX line idle high */
+    };
+};
+
+/* Reference from serial node */
+&gsbi10_serial {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&gsbi10_uart_pins>;
+    /* ... rest of configuration ... */
+};
+```
+
+**Verification:**
+```bash
+# Before fix (GPIO 71 UNCLAIMED):
+cat /sys/kernel/debug/pinctrl/800000.pinctrl/pinmux-pins | grep gpio71
+# (no output)
+
+# After fix:
+cat /sys/kernel/debug/pinctrl/800000.pinctrl/pinmux-pins | grep gpio71
+pin 71 (GPIO_71): device 19a40000.serial function gsbi10 group gpio71
+```
+
+#### 2. ADM DMA #dma-cells Fix
+
+**Problem:** Previous commit incorrectly changed `adm_dma1` from `#dma-cells = <1>` to `#dma-cells = <2>`.
+
+**Solution:** Reverted back to correct value:
+```dts
+adm_dma1: dma-controller@18420000 {
+    #dma-cells = <1>;  /* Correct - ADM uses single cell for channel */
+    /* ... */
+};
+```
+
+#### 3. GPIO Pin Assignment Clarification
+
+**GSBI10 I2C_UART Mode Pin Usage:**
+| GPIO | Function | Usage |
+|------|----------|-------|
+| GPIO 70 | Reset | Touchscreen XRES (active low) |
+| GPIO 71 | UART RX | Touch data from CY8CTMA395 to host |
+| GPIO 72 | I2C SDA | Configuration commands to touchscreen |
+| GPIO 73 | I2C SCL | Configuration commands to touchscreen |
+
+**Important:** GPIO 70 is used as the touchscreen reset GPIO, so it cannot be used for UART TX. The touchscreen only sends data to the host (RX only), so this is acceptable.
+
+### Current Status
+
+#### UART Data Reception: WORKING
+
+After applying the GPIO 71 pinctrl fix, UART data reception is now functional:
+
+```
+[   83.436099] cy8ctma395-ts serial1-0: UART RX: 1 bytes total, last 1 bytes
+[   83.453532] cy8ctma395 first RX: 00
+[  254.904161] cy8ctma395-ts serial1-0: UART RX: 193 bytes total, last 192 bytes
+[  259.909943] cy8ctma395-ts serial1-0: UART RX: 554316 bytes total, last 192 bytes
+[  335.268576] cy8ctma395-ts serial1-0: UART RX: 8251711 bytes total, last 192 bytes
+[  395.568733] cy8ctma395-ts serial1-0: UART RX: 13100174 bytes total, last 408 bytes
+```
+
+**Key Metrics:**
+- Baud rate: 4,000,000 bps (4 Mbps) - ACHIEVED
+- Data throughput: ~500 KB every 5 seconds (~100 KB/s average)
+- Total received: 13+ million bytes
+
+#### Touch Event Parsing: IN PROGRESS
+
+The kernel driver (`cy8ctma395_ts.c`) is receiving UART data but may not be correctly parsing touch frames.
+
+**Frame Format Expected:**
+- Frame start: `0xFF`
+- Row data: `0x43` (followed by row index and sensor data)
+- Scan complete: `0x47` (followed by touch count)
+
+**Current Issue:** First byte received is `0x00` instead of `0xFF`. This could indicate:
+1. Sync issue at startup
+2. Different frame format than expected
+3. Need to wait for valid frame start
+
+**Debug Output Added:** The driver now prints:
+- First 64 bytes received (hex dump)
+- Sample data every 10 seconds
+- Valid frame count and type when parsed
+
+### Device Tree Configuration (Current)
+
+```dts
+&gsbi10 {
+    status = "okay";
+    qcom,mode = <GSBI_PROT_I2C_UART>;  /* Combined I2C + UART */
+};
+
+&gsbi10_i2c {
+    status = "okay";
+    clock-frequency = <100000>;
+    /* I2C used for configuration commands */
+};
+
+&gsbi10_serial {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&gsbi10_uart_pins>;  /* GPIO 71 for UART RX */
+
+    touchscreen {
+        compatible = "cypress,cy8ctma395-ts";
+        i2c-bus = <&gsbi10_i2c>;
+        vdd-supply = <&pm8058_l15>;
+        reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
+        wake-gpios = <&tlmm 123 GPIO_ACTIVE_HIGH>;
+        /* ... */
+    };
+};
+```
+
+### Pinctrl Configuration (Current)
+
+```dts
+/* GSBI10 I2C pins (SDA/SCL) */
+gsbi10_i2c_pins: gsbi10-i2c-state {
+    sda-scl-pins {
+        pins = "gpio72", "gpio73";
+        function = "gsbi10";
+        drive-strength = <16>;
+        bias-disable;
+    };
+};
+
+/* GSBI10 UART RX pin */
+gsbi10_uart_pins: uart10-state {
+    rx-pins {
+        pins = "gpio71";
+        function = "gsbi10";
+        drive-strength = <2>;
+        bias-pull-up;
+    };
+};
+```
+
+### Next Steps
+
+1. **Debug Frame Parsing:**
+   - Analyze hex dumps of received data to understand actual frame format
+   - Compare with ts-srv source code for expected protocol
+   - Adjust frame parsing if needed
+
+2. **Test Touch Events:**
+   - Touch the screen and verify events are generated
+   - Check `/dev/input/event3` for touch data
+   - Verify coordinates and pressure values
+
+3. **Optimize Performance:**
+   - Consider DMA buffer sizing
+   - Profile interrupt latency
+   - Test multi-touch scenarios
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` | Added gsbi10_uart_pins, fixed adm_dma1 #dma-cells |
+| `drivers/input/touchscreen/cy8ctma395_ts.c` | Added debug output for UART data and frame parsing |
