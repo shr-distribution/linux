@@ -201,3 +201,5 @@ config DRM_MSM_HDMI_HDCP
 	default y
 	help
 	  Choose this option to enable HDCP state machine
+
+source "drivers/gpu/drm/msm/z180/Kconfig"

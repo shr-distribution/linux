@@ -749,6 +749,34 @@
 		};
 
 		/*
+		 * Z180 2D Graphics Engine - Core 0
+		 * Hardware 2D vector graphics acceleration
+		 */
+		gpu_2d0: gpu@4100000 {
+			compatible = "qcom,msm8660-z180";
+			reg = <0x04100000 0x1000>;
+			interrupts = <GIC_SPI 81 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc GFX2D0_CLK>,
+				 <&mmcc GFX2D0_AHB_CLK>;
+			clock-names = "core", "iface";
+			status = "disabled";
+		};
+
+		/*
+		 * Z180 2D Graphics Engine - Core 1
+		 * Hardware 2D vector graphics acceleration
+		 */
+		gpu_2d1: gpu@4200000 {
+			compatible = "qcom,msm8660-z180";
+			reg = <0x04200000 0x1000>;
+			interrupts = <GIC_SPI 212 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc GFX2D1_CLK>,
+				 <&mmcc GFX2D1_AHB_CLK>;
+			clock-names = "core", "iface";
+			status = "disabled";
+		};
+
+		/*
 		 * Video Codec (VIDC 1080p)
 		 * Hardware video encode/decode (H.264, MPEG4, etc.)
 		 */

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config DRM_MSM_Z180
+	tristate "Qualcomm Z180 2D Graphics Engine"
+	depends on ARM || ARM64 || COMPILE_TEST
+	depends on OF
+	depends on COMMON_CLK
+	help
+	  This driver provides support for the Qualcomm Z180 2D graphics
+	  accelerator found in MSM8660/APQ8060 SoCs. The Z180 is a vector
+	  graphics processor that supports 2D operations like blitting,
+	  scaling, and compositing.
+
+	  This is a minimal driver that initializes the hardware and handles
+	  interrupts. Full userspace API support requires additional work.
+
+	  If unsure, say N.
