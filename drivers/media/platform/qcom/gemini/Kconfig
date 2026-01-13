@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_QCOM_GEMINI
+	tristate "Qualcomm MSM8660 Gemini JPEG Encoder"
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on PM
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	help
+	  Enable support for the Qualcomm MSM8660/APQ8060 Gemini
+	  hardware JPEG encoder.
+
+	  This driver provides V4L2 mem2mem interface for hardware
+	  accelerated JPEG encoding on MSM8660-based devices.
+
+	  To compile this driver as a module, choose M here. The module
+	  will be called qcom-gemini.
