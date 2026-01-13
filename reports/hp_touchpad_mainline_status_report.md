@@ -1,6 +1,6 @@
 # HP TouchPad Mainline Kernel Status Report
-**Date:** 2026-01-10 (Updated)
-**Kernel Version:** Linux 6.18.0-00089-ge377c510ce85
+**Date:** 2026-01-13 (Updated)
+**Kernel Version:** Linux 6.18.0-00095-ge21ec8209778
 **Branch:** `tenderloin/6.18/upstream-patches`
 **Hardware:** HP TouchPad (Topaz WiFi)
 **SoC:** Qualcomm APQ8060
@@ -9,21 +9,69 @@
 
 ## EXECUTIVE SUMMARY
 
-**Overall Status: EXCELLENT - AUDIO SUBSYSTEM WORKING, WIFI INVESTIGATION IN PROGRESS**
+**Overall Status: EXCELLENT - TOUCHSCREEN NOW WORKING!**
 
-### Latest Work (2026-01-10):
-**WiFi AR6003 Investigation - Partial Progress**
+### Latest Work (2026-01-13):
+**Touchscreen CY8CTMA395 - FULLY WORKING**
 
-Significant progress on WiFi bring-up:
-- SDIO card detected (mmc1:0001, vendor 0x0271, device 0x0301)
-- Power sequencing configured correctly (GPIO 135 reset, regulators enabled)
-- OTP execution works on AR6003 chip
-- **Blocker:** SDIO communication times out after ~1KB data transfer during firmware upload
+Major breakthrough on touchscreen bring-up:
+- Custom kernel serdev driver (`cy8ctma395_ts`) fully functional
+- UART communication at 4 Mbps via GSBI10 working
+- Touch detection verified with correct coordinates
+- Input events properly sent to `/dev/input/event3`
+
+### Key Fixes Applied:
+- GPIO 71 pinctrl configuration for UART RX
+- Touch calculation trigger on new scan start (bit 7 of row index)
+- ADM DMA `#dma-cells` fix
 
 ### Previous Achievements:
 - Q6 LPASS audio DSP and WM8958 codec working
 - USB/DRM coexistence fixed (USB survives msm.ko load)
 - Interconnect framework for bus coordination
+- WiFi SDIO detected (firmware upload still timing out)
+
+---
+
+## TOUCHSCREEN DETAILS (2026-01-13)
+
+### Architecture
+The HP TouchPad uses a unique multi-slave touchscreen architecture:
+- **Master Controller:** Cypress CY8CTMA395 (aggregates touch data)
+- **Slave Controllers:** 5× Cypress CY8CTMA375 (each covers a portion of the 9.7" screen)
+- **Communication:** UART at 4 Mbps via GSBI10 (not I²C for touch data)
+
+### Implementation
+A custom kernel serdev driver (`cy8ctma395_ts`) was developed:
+- Reads proprietary binary touch data packets from UART
+- Processes 30-row capacitive matrix scans
+- Calculates touch coordinates using weighted centroid algorithm
+- Reports single-touch events to Linux input subsystem
+
+### What's Working
+| Component | Status | Details |
+|-----------|--------|---------|
+| UART Communication | ✅ | 4 Mbps via `/dev/ttyMSM2` (GSBI10) |
+| GPIO 70 (Reset) | ✅ | Touchscreen power/reset control |
+| GPIO 71 (UART RX) | ✅ | Touch data reception |
+| Touch Detection | ✅ | Coordinates (X,Y) properly calculated |
+| Input Events | ✅ | `/dev/input/event3` |
+| Single Touch | ✅ | Verified working |
+
+### Commits
+| Commit | Description |
+|--------|-------------|
+| `e21ec8209778` | Update touchscreen analysis with final working solution |
+| `b9d0390b53fe` | Fix touch calculation trigger for HP TouchPad |
+| `e097635debb2` | Fix GPIO 71 pinctrl for touchscreen UART |
+| `d469748d99a0` | Add debug output for GPIO and UART |
+| `dbbc6e3e6161` | Add Cypress CY8CTMA395 serdev driver |
+
+### Future Improvements
+1. Test and verify multi-touch support
+2. Remove debug output (convert to pr_debug)
+3. Performance tuning if needed
+4. Upstream preparation for mainline submission
 
 ---
 
@@ -104,15 +152,15 @@ ath6kl_pwrseq: ath6kl-pwrseq {
 
 ---
 
-## HARDWARE TEST RESULTS (2026-01-10)
+## HARDWARE TEST RESULTS (2026-01-13)
 
 ### Test Environment
 - **Device:** HP TouchPad (Topaz WiFi)
-- **Kernel:** 6.18.0-00089-ge377c510ce85
+- **Kernel:** 6.18.0-00095-ge21ec8209778
 - **Boot Method:** moboot → LuneOS initramfs
 - **Connection:** USB RNDIS (172.16.42.2)
 
-### WORKING COMPONENTS (18 total)
+### WORKING COMPONENTS (19 total)
 
 | Component | Status | Details |
 |-----------|--------|---------|
@@ -134,6 +182,7 @@ ath6kl_pwrseq: ath6kl-pwrseq {
 | **Input Devices** | PASS | PMIC keypad, power key, vibrator |
 | **Q6 LPASS DSP** | PASS | Remoteproc running, SMD channels open |
 | **Audio (ALSA)** | PASS | HP-TouchPad card, pcmC0D0p/c, pcmC0D1p/c, Headphone Jack |
+| **Touchscreen** | PASS | CY8CTMA395 serdev driver, UART 4Mbps, single-touch verified |
 
 ### PARTIAL/IN PROGRESS
 
@@ -141,13 +190,17 @@ ath6kl_pwrseq: ath6kl-pwrseq {
 |-----------|--------|---------|
 | **WiFi** | WIP | SDIO detected, OTP works, firmware upload times out |
 | **Display (DRM)** | PARTIAL | msm.ko loads, screen blinks, USB survives! Shell hangs after load |
-| **Touchscreen** | WIP | Cypress CY8CTMA395 - requires UART driver (ts-srv or kernel serdev) |
 
 ---
 
 ## NEXT STEPS
 
-### WiFi (Priority)
+### Touchscreen (Polish)
+1. Test and verify multi-touch support
+2. Remove debug pr_info statements (convert to pr_debug)
+3. Upstream preparation for mainline submission
+
+### WiFi
 1. Investigate mmci-pl18x vs msmsdcc differences
 2. Try enabling/configuring ADM DMA for SDIO transfers
 3. Check if sleep clock is properly routed to AR6003
@@ -155,13 +208,8 @@ ath6kl_pwrseq: ath6kl-pwrseq {
 
 ### Other Components
 1. Debug why telnet/shell hangs after msm.ko loads
-2. **Touchscreen**: Port PostmarketOS ts-srv or write kernel serdev driver
-   - Device tree updated: GSBI10 now in I2C+UART mode
-   - UART enabled at /dev/ttyMSM2 for touch data stream (4 Mbps)
-   - I2C still available at 0x67 for configuration
-   - See TOUCHSCREEN_MULTI_SLAVE_ANALYSIS.md for protocol
-3. Get display showing content (LVDS panel init)
-4. Test audio playback with actual audio files
+2. Get display showing content (LVDS panel init)
+3. Test audio playback with actual audio files
 
 ---
 
@@ -173,7 +221,7 @@ Bus 0: 0x18 (lsm303dlh_accel), 0x1e (lsm303dlh_magn), 0x44 (isl29023), 0x68 (mpu
 Bus 1: 0x1a (wm8958 audio)
 Bus 2: 0x31 (a6 battery), 0x32 (a6 battery), 0x33 (lm8502 LEDs)
 Bus 4: 0x3c (camera)
-Bus 10: 0x67 (Cypress CY8CTMA395 touchscreen - config only, touch data via UART)
+Bus 10: 0x67 (Cypress CY8CTMA395 touchscreen - config only, touch data via UART/GSBI10)
 ```
 
 ### GPIO Chips
@@ -194,6 +242,15 @@ mmcblk0boot0, mmcblk0boot1 - Boot partitions
 
 ## RECENT COMMITS
 
+### Touchscreen Work (2026-01-13)
+```
+e21ec8209778 - docs: Update touchscreen analysis with final working solution
+b9d0390b53fe - Input: cy8ctma395: Fix touch calculation trigger for HP TouchPad
+e097635debb2 - ARM: dts: qcom: tenderloin: Fix GPIO 71 pinctrl for touchscreen UART
+d469748d99a0 - Input: cy8ctma395: Add debug output for GPIO and UART
+dbbc6e3e6161 - Input: touchscreen: Add Cypress CY8CTMA395 serdev driver
+```
+
 ### WiFi Work (2026-01-10)
 ```
 54093e0e7c46 - ARM: dts: qcom: tenderloin: WIP: Fix WiFi AR6003 power sequencing
@@ -209,20 +266,29 @@ mmcblk0boot0, mmcblk0boot1 - Boot partitions
 
 ## CONCLUSION
 
-**Progress continues!** WiFi hardware is partially working - SDIO detection and initial communication succeed, but sustained data transfers for firmware upload fail with timeout errors.
+**Major milestone achieved!** The touchscreen is now fully working with a custom kernel serdev driver. This was a significant challenge due to the unique UART-based communication protocol used by the CY8CTMA395 controller.
 
 ### Current Status Summary:
-- **18 hardware components working** on mainline kernel
-- **WiFi close to working** - needs SDIO timing/driver investigation
+- **19 hardware components working** on mainline kernel
+- **Touchscreen fully functional** - custom serdev driver with UART communication
 - **Audio fully functional** - Q6 LPASS DSP + WM8958 codec
 - **USB/DRM coexistence solved** - key milestone
+- **WiFi close to working** - needs SDIO timing/driver investigation
 
-### WiFi Next Steps:
-The failure pattern (works for ~1KB then times out) suggests a timing or bus arbitration issue between the mainline mmci-pl18x driver and the AR6003 chip. Further investigation needed into DMA configuration and clock stability.
+### Touchscreen Implementation Notes:
+The touchscreen uses a proprietary binary protocol over UART at 4 Mbps. Key discoveries:
+- Touch data is transmitted as 30-row capacitive matrix scans
+- Bit 7 of row index signals start of new scan cycle
+- Touch coordinates calculated using weighted centroid algorithm
+
+### Next Priorities:
+1. Polish touchscreen driver (multi-touch, remove debug output)
+2. Continue WiFi firmware upload debugging
+3. Display initialization (LVDS panel)
 
 ---
 
-**Report Generated:** 2026-01-10
+**Report Generated:** 2026-01-13
 **Tester:** Claude Code
 **Maintainer:** Herrie
 **Project:** HP TouchPad Mainline Kernel Support
