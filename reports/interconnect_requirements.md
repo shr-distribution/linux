@@ -1,6 +1,6 @@
 # MSM8660/APQ8060 Interconnect Requirements
 
-**Date:** 2026-01-08
+**Date:** 2026-01-13 (updated)
 **Based on:** webOS kernel analysis (webos-linux-kernel-opal)
 
 ---
@@ -20,8 +20,8 @@ This document catalogs all hardware components that used the `msm_bus_scale` API
 | GPU 2D Core0 | GRAPHICS_2D_CORE0 | SMI | No driver (Z180 not in mainline) |
 | GPU 2D Core1 | GRAPHICS_2D_CORE1 | SMI | No driver (Z180 not in mainline) |
 | Camera (VFE) | VFE | SMI, EBI_CH0 | **ENABLED** (CAMSS driver updated) |
-| Video Processor (VPE) | VPE | SMI | No driver in mainline |
-| JPEG Encoder | JPEG_ENC | SMI | No driver in mainline |
+| Video Processor (VPE) | VPE | SMI, EBI_CH0 | **ENABLED** (VPE driver added) |
+| JPEG Encoder | JPEG_ENC | SMI, EBI_CH0 | **ENABLED** (Gemini driver added) |
 | Video Codec Port0 | HD_CODEC_PORT0 | SMI | Driver needs modification |
 | Video Codec Port1 | HD_CODEC_PORT1 | SMI | Driver needs modification |
 | Rotator | ROTATOR | SMI | No driver (MDP4 rotator not in mainline) |
@@ -154,8 +154,8 @@ interconnect-names = "vfe-mem";
 **Path Resolution:**
 VFE → MMFAB_TO_APPSS → AFAB_TO_MMSS → SLV_EBI_CH0
 
-**Note:** VPE and JPEG Encoder are separate drivers (not part of CAMSS) and would
-need their own interconnect integration if/when those drivers are added.
+**Note:** VPE and JPEG Encoder are separate drivers (not part of CAMSS) and now
+have their own mainline V4L2 mem2mem drivers with interconnect support (see below).
 
 **webOS Reference:**
 ```c
@@ -192,7 +192,90 @@ camss@4500000 {
 
 ---
 
-### 5. Video Codec (VIDC 1080p)
+### 5. Video Processing Engine (VPE)
+
+**Status: ENABLED (VPE driver added)**
+
+The VPE driver (`drivers/media/platform/qcom/vpe/`) provides hardware-accelerated
+video scaling and rotation. Implemented as a V4L2 mem2mem driver.
+
+**Implementation:**
+- Driver: `drivers/media/platform/qcom/vpe/`
+- Base Address: 0x05300000
+- IRQ: SPI 47 (edge rising)
+- Clocks: VPE_CLK (160 MHz), VPE_AXI_CLK, VPE_AHB_CLK
+
+**Features:**
+- Hardware scaling (FIR/M-N interpolation)
+- Rotation (0/90/180/270 degrees)
+- Format: NV12 (Y/CbCr planar)
+
+**Device Tree Configuration:**
+```dts
+vpe: video-processing@5300000 {
+    compatible = "qcom,msm8660-vpe";
+    reg = <0x05300000 0x100000>;
+    interrupts = <GIC_SPI 47 IRQ_TYPE_EDGE_RISING>;
+    clocks = <&mmcc VPE_CLK>,
+             <&mmcc VPE_AXI_CLK>,
+             <&mmcc VPE_AHB_CLK>;
+    clock-names = "core", "axi", "ahb";
+    interconnects = <&mmss_fabric MMFAB_MAS_VPE &apps_fabric AFAB_SLV_EBI_CH0>;
+    interconnect-names = "vpe-mem";
+    status = "disabled";
+};
+```
+
+**Path Resolution:**
+VPE → MMFAB_TO_APPSS → AFAB_TO_MMSS → SLV_EBI_CH0
+
+**Bandwidth:** ~1.5 GB/s peak (1080p processing)
+
+---
+
+### 6. JPEG Encoder (Gemini)
+
+**Status: ENABLED (Gemini driver added)**
+
+The Gemini JPEG driver (`drivers/media/platform/qcom/gemini/`) provides
+hardware-accelerated JPEG encoding. Implemented as a V4L2 mem2mem driver.
+
+**Implementation:**
+- Driver: `drivers/media/platform/qcom/gemini/`
+- Base Address: 0x04600000
+- IRQ: SPI 77 (edge rising)
+- Clocks: IJPEG_CLK, IJPEG_AXI_CLK, IJPEG_AHB_CLK
+
+**Features:**
+- Hardware JPEG encoding
+- Input: NV12 raw YUV
+- Output: JPEG compressed data
+- Ping-pong buffer management
+
+**Device Tree Configuration:**
+```dts
+gemini: jpeg@4600000 {
+    compatible = "qcom,msm8660-gemini";
+    reg = <0x04600000 0x100000>;
+    interrupts = <GIC_SPI 77 IRQ_TYPE_EDGE_RISING>;
+    clocks = <&mmcc IJPEG_CLK>,
+             <&mmcc IJPEG_AXI_CLK>,
+             <&mmcc IJPEG_AHB_CLK>;
+    clock-names = "core", "axi", "ahb";
+    interconnects = <&mmss_fabric MMFAB_MAS_JPEG_ENC &apps_fabric AFAB_SLV_EBI_CH0>;
+    interconnect-names = "jpeg-mem";
+    status = "disabled";
+};
+```
+
+**Path Resolution:**
+JPEG_ENC → MMFAB_TO_APPSS → AFAB_TO_MMSS → SLV_EBI_CH0
+
+**Bandwidth:** ~1 GB/s peak (high resolution encoding)
+
+---
+
+### 7. Video Codec (VIDC 1080p)
 
 **Status: Driver needs modification**
 
@@ -240,7 +323,7 @@ vidc@4400000 {
 
 ---
 
-### 6. Rotator
+### 8. Rotator
 
 **Status: No driver in mainline**
 
@@ -262,7 +345,7 @@ need significant work to add hardware rotation.
 
 ---
 
-### 7. USB
+### 9. USB
 
 **Status: Implicit via DFAB clocks**
 
@@ -284,20 +367,24 @@ The USB subsystem didn't use explicit msm_bus_scale calls, but relied on DFAB (D
 
 ## Priority for Implementation
 
+### Completed
+1. **MDP4 Display** - Cross-fabric paths working
+2. **Camera VFE (CAMSS)** - Interconnect support added
+3. **VPE (Video Processing)** - New V4L2 mem2mem driver with interconnect
+4. **JPEG Encoder (Gemini)** - New V4L2 mem2mem driver with interconnect
+
 ### High Priority (Affects Core Functionality)
 
-1. **Video Codec** - Required for any video playback
-2. **Camera VFE** - Required for camera functionality
+5. **Video Codec** - Required for any video playback (driver exists, needs ICC modification)
 
 ### Medium Priority (Improves Performance)
 
-3. **GPU 3D** - Better graphics performance
-4. **Rotator** - Hardware rotation support
+6. **Rotator** - Hardware rotation support (MDP4 rotator not in mainline)
 
 ### Low Priority (Nice to Have)
 
-5. **GPU 2D** - 2D acceleration
-6. **DTV** - HDMI output (if display works via LCDC)
+7. **GPU 2D** - 2D acceleration (no driver in mainline)
+8. **DTV** - HDMI output (uses MDP4 paths)
 
 ---
 
