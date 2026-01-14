@@ -56,19 +56,48 @@ deploy_via_novacom() {
     echo "Detected: webOS (novacom)"
     echo ""
 
+    # Calculate local MD5 first
+    LOCAL_MD5=$(md5sum "$UIMAGE" | cut -d' ' -f1)
+    echo "Local MD5: $LOCAL_MD5"
+    echo ""
+
     echo "Step 1: Remounting /boot as read-write..."
     novacom run file:///bin/mount -- -o remount,rw /boot
 
-    echo "Step 2: Cleaning up old logs from /boot..."
-    novacom run file:///bin/sh -- -c "rm -f /boot/dmesg*.log /boot/debug*.log /boot/q6*.log /boot/rproc*.log" 2>/dev/null || true
+    echo "Step 2: Cleaning up old files from /boot..."
+    novacom run file:///bin/sh -- -c "rm -f /boot/dmesg*.log /boot/debug*.log /boot/q6*.log /boot/rproc*.log /boot/LuneOS*.log /boot/uImage.LuneOS" 2>/dev/null || true
+
+    # Verify cleanup
+    REMAINING_LOGS=$(novacom run file:///bin/sh -- -c "ls /boot/*.log /boot/debug* 2>/dev/null | wc -l")
+    if [ "$REMAINING_LOGS" != "0" ]; then
+        echo "WARNING: Some log files could not be deleted:"
+        novacom run file:///bin/sh -- -c "ls -la /boot/*.log /boot/debug* 2>/dev/null"
+    else
+        echo "  Old logs deleted successfully"
+    fi
 
     echo "Step 3: Pushing uImage.LuneOS to /boot..."
     novacom put file:///boot/uImage.LuneOS < "$UIMAGE"
+    novacom run file:///bin/sync
 
-    echo "Step 4: Setting moboot.next to LuneOS..."
+    echo "Step 4: Verifying upload (size check)..."
+    LOCAL_SIZE=$(stat -c%s "$UIMAGE")
+    REMOTE_SIZE=$(novacom run file:///bin/ls -- -la /boot/uImage.LuneOS | awk '{print $5}')
+    echo "Local size:  $LOCAL_SIZE"
+    echo "Remote size: $REMOTE_SIZE"
+
+    if [ "$LOCAL_SIZE" != "$REMOTE_SIZE" ]; then
+        echo ""
+        echo "ERROR: Size mismatch! Upload failed or corrupted."
+        echo "NOT rebooting - please retry deployment."
+        exit 1
+    fi
+    echo "Size verified OK"
+
+    echo "Step 5: Setting moboot.next to LuneOS..."
     echo "LuneOS" | novacom put file:///boot/moboot.next
 
-    echo "Step 5: Syncing filesystem..."
+    echo "Step 6: Syncing filesystem..."
     novacom run file:///bin/sync
 
     echo ""
@@ -82,6 +111,11 @@ deploy_via_novacom() {
 
 deploy_via_telnet() {
     echo "Detected: LuneOS (telnet at $DEVICE_IP)"
+    echo ""
+
+    # Calculate local MD5 first
+    LOCAL_MD5=$(md5sum "$UIMAGE" | cut -d' ' -f1)
+    echo "Local MD5: $LOCAL_MD5"
     echo ""
 
     # Start HTTP server in background
@@ -110,19 +144,39 @@ deploy_via_telnet() {
 
     # Deploy via netcat/telnet
     # IMPORTANT: Use /mnt/boot, NOT /boot (which is tmpfs in initramfs)
-    timeout 90 nc "$DEVICE_IP" 23 <<EOF || true
+    REMOTE_OUTPUT=$(timeout 90 nc "$DEVICE_IP" 23 <<EOF || true
 rm -f /mnt/boot/uImage.LuneOS
 wget -O /mnt/boot/uImage.LuneOS http://${HOST_IP}:${HTTP_PORT}/uImage.LuneOS
 echo "LuneOS" > /mnt/boot/moboot.next
 sync
-echo "=== Deployment complete ==="
+echo "MD5_START"
+md5sum /mnt/boot/uImage.LuneOS | cut -d' ' -f1
+echo "MD5_END"
 ls -la /mnt/boot/uImage.LuneOS
-cat /mnt/boot/moboot.next
 exit
 EOF
+)
+    echo "$REMOTE_OUTPUT"
 
     # Kill HTTP server
     kill $HTTP_PID 2>/dev/null || true
+
+    # Extract remote MD5 from output
+    REMOTE_MD5=$(echo "$REMOTE_OUTPUT" | sed -n '/MD5_START/,/MD5_END/p' | grep -v MD5 | tr -d '[:space:]')
+    echo ""
+    echo "Step 3: Verifying upload (MD5)..."
+    echo "Remote MD5: $REMOTE_MD5"
+
+    if [ "$LOCAL_MD5" != "$REMOTE_MD5" ]; then
+        echo ""
+        echo "ERROR: MD5 mismatch! Upload failed or corrupted."
+        echo "  Local:  $LOCAL_MD5"
+        echo "  Remote: $REMOTE_MD5"
+        echo ""
+        echo "NOT rebooting - please retry deployment."
+        exit 1
+    fi
+    echo "MD5 verified OK"
 
     echo ""
     echo "=== Deployment complete (LuneOS) ==="

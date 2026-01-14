@@ -20,8 +20,8 @@ PARENT_DIR="$(dirname "$KERNEL_DIR")"
 BUILD_OUTPUT="$PARENT_DIR/build-output"
 
 VARIANT="${1:-topaz}"
-ZIMAGE="$KERNEL_DIR/arch/arm/boot/zImage"
-DTB="$KERNEL_DIR/arch/arm/boot/dts/qcom/qcom-apq8060-${VARIANT}.dtb"
+ZIMAGE="$BUILD_OUTPUT/arch/arm/boot/zImage"
+DTB="$BUILD_OUTPUT/arch/arm/boot/dts/qcom/qcom-apq8060-${VARIANT}.dtb"
 INITRAMFS_INPUT="$PARENT_DIR/initramfs-uImage.bin"
 OUTPUT="$BUILD_OUTPUT/uImage.LuneOS"
 
