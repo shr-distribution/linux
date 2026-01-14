@@ -498,7 +498,23 @@ static struct platform_driver msm8660_noc_driver = {
 		.sync_state = icc_sync_state,
 	},
 };
-module_platform_driver(msm8660_noc_driver);
+/*
+ * Register the interconnect driver early at subsys_initcall_sync so that
+ * fabric providers are available when consumers probe during device_initcall.
+ * This prevents unnecessary deferred probes and speeds up boot.
+ * Note: icc_init runs at subsys_initcall, so this runs after.
+ */
+static int __init msm8660_noc_driver_init(void)
+{
+	return platform_driver_register(&msm8660_noc_driver);
+}
+subsys_initcall_sync(msm8660_noc_driver_init);
+
+static void __exit msm8660_noc_driver_exit(void)
+{
+	platform_driver_unregister(&msm8660_noc_driver);
+}
+module_exit(msm8660_noc_driver_exit);
 
 MODULE_DESCRIPTION("Qualcomm MSM8660/APQ8060 interconnect driver");
 MODULE_LICENSE("GPL v2");
