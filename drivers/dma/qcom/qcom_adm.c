@@ -196,6 +196,13 @@ static int adm_get_blksize(unsigned int burst)
 	int ret;
 
 	switch (burst) {
+	case 8:
+		/*
+		 * MMCI passes burst as number of words (fifohalfsize >> 2).
+		 * 8 words = 32 bytes, which maps to blksize 1.
+		 */
+		ret = 1;
+		break;
 	case 16:
 	case 32:
 	case 64:
