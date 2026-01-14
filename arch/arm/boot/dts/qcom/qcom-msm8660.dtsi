@@ -156,6 +156,18 @@
 			#hwlock-cells = <1>;
 		};
 
+		/*
+		 * smem must be inside soc and after hwmutex to ensure
+		 * proper probe ordering - smem depends on hwmutex but
+		 * device links are created during probe, too late to
+		 * prevent the initial deferred probe.
+		 */
+		smem {
+			compatible = "qcom,smem";
+			memory-region = <&smem_region>;
+			hwlocks = <&sfpb_mutex 3>;
+		};
+
 		gcc: clock-controller@900000 {
 			compatible = "qcom,gcc-msm8660";
 			#clock-cells = <1>;
@@ -823,12 +835,6 @@
 			interconnect-names = "video-mem";
 			status = "disabled";
 		};
-	};
-
-	smem {
-		compatible = "qcom,smem";
-		memory-region = <&smem_region>;
-		hwlocks = <&sfpb_mutex 3>;
 	};
 
 	smsm {

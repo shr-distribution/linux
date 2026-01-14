@@ -375,6 +375,25 @@ static int deferred_probe_initcall(void)
 }
 late_initcall(deferred_probe_initcall);
 
+/**
+ * deferred_probe_enable_early() - Enable deferred probe retry earlier
+ *
+ * By default, deferred probe retry is disabled until late_initcall to avoid
+ * excessive retries during early boot. However, this can cause long delays
+ * for devices with simple dependency chains that could be resolved quickly.
+ *
+ * This early enablement allows the retry mechanism to work during device
+ * initcalls, significantly reducing boot time for platforms with deferred
+ * probe dependencies that resolve early.
+ */
+static int __init deferred_probe_enable_early(void)
+{
+	driver_deferred_probe_enable = true;
+	driver_deferred_probe_trigger();
+	return 0;
+}
+subsys_initcall_sync(deferred_probe_enable_early);
+
 static void __exit deferred_probe_exit(void)
 {
 	debugfs_lookup_and_remove("devices_deferred", NULL);
