@@ -161,8 +161,8 @@ EOF
     # Kill HTTP server
     kill $HTTP_PID 2>/dev/null || true
 
-    # Extract remote MD5 from output
-    REMOTE_MD5=$(echo "$REMOTE_OUTPUT" | sed -n '/MD5_START/,/MD5_END/p' | grep -v MD5 | tr -d '[:space:]')
+    # Extract remote MD5 from output - look for 32-char hex string after MD5_START
+    REMOTE_MD5=$(echo "$REMOTE_OUTPUT" | grep -oE '[0-9a-f]{32}' | tail -1)
     echo ""
     echo "Step 3: Verifying upload (MD5)..."
     echo "Remote MD5: $REMOTE_MD5"
@@ -188,10 +188,8 @@ EOF
         echo ""
         echo "Rebooting device..."
         # Use sysrq trigger for reliable reboot
-        timeout 5 nc "$DEVICE_IP" 23 <<EOF || true
-sync
-echo b > /proc/sysrq-trigger
-EOF
+        # Need delays to allow telnet protocol handshake and shell to process commands
+        (sleep 1; echo "sync"; sleep 1; echo "echo b > /proc/sysrq-trigger"; sleep 1) | timeout 10 telnet "$DEVICE_IP" 2>/dev/null || true
     fi
 }
 
