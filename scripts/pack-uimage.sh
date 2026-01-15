@@ -20,20 +20,34 @@ PARENT_DIR="$(dirname "$KERNEL_DIR")"
 BUILD_OUTPUT="$PARENT_DIR/build-output"
 
 VARIANT="${1:-topaz}"
-ZIMAGE="$BUILD_OUTPUT/arch/arm/boot/zImage"
-DTB="$BUILD_OUTPUT/arch/arm/boot/dts/qcom/qcom-apq8060-${VARIANT}.dtb"
+
+# Use cross-compiler from environment or default to arm-linux-gnueabihf-
+CROSS_COMPILE="${CROSS_COMPILE:-arm-linux-gnueabihf-}"
+
+# Source files from kernel tree (not build-output!)
+ZIMAGE_SRC="$KERNEL_DIR/arch/arm/boot/zImage"
+DTB_SRC="$KERNEL_DIR/arch/arm/boot/dts/qcom/qcom-apq8060-${VARIANT}.dtb"
 INITRAMFS_INPUT="$PARENT_DIR/initramfs-uImage.bin"
 OUTPUT="$BUILD_OUTPUT/uImage.LuneOS"
 
-# Create output directory
-mkdir -p "$BUILD_OUTPUT"
+# Create output directory structure
+mkdir -p "$BUILD_OUTPUT/arch/arm/boot/dts/qcom"
 
-# Always rebuild DTB to ensure it matches current source
-echo "Rebuilding DTB to ensure it's up-to-date..."
+# Always rebuild zImage and DTB to ensure they match current source
+echo "Rebuilding zImage and DTB to ensure they're up-to-date..."
 touch "$KERNEL_DIR/arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi"
-make -C "$KERNEL_DIR" ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- "qcom/qcom-apq8060-${VARIANT}.dtb" -j4 > /dev/null 2>&1 || {
-    echo "Warning: DTB rebuild failed, using existing DTB"
-}
+if ! make -C "$KERNEL_DIR" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" zImage "qcom/qcom-apq8060-${VARIANT}.dtb" -j$(nproc); then
+    echo "Error: Build failed. Please fix errors and retry."
+    exit 1
+fi
+
+# Copy built files to build-output for reference/archival
+cp "$ZIMAGE_SRC" "$BUILD_OUTPUT/arch/arm/boot/"
+cp "$DTB_SRC" "$BUILD_OUTPUT/arch/arm/boot/dts/qcom/"
+
+# Use source files for packing (they're guaranteed fresh after make)
+ZIMAGE="$ZIMAGE_SRC"
+DTB="$DTB_SRC"
 
 # Validate inputs
 if [ ! -f "$ZIMAGE" ]; then
