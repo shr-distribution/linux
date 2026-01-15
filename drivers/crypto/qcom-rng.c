@@ -233,7 +233,7 @@ static void qcom_rng_remove(struct platform_device *pdev)
 
 static struct qcom_rng_match_data qcom_prng_match_data = {
 	.skip_init = false,
-	.hwrng_support = false,
+	.hwrng_support = true,
 };
 
 static struct qcom_rng_match_data qcom_prng_ee_match_data = {
@@ -269,7 +269,18 @@ static struct platform_driver qcom_rng_driver = {
 		.acpi_match_table = ACPI_PTR(qcom_rng_acpi_match),
 	}
 };
-module_platform_driver(qcom_rng_driver);
+
+static int __init qcom_rng_driver_init(void)
+{
+	return platform_driver_register(&qcom_rng_driver);
+}
+subsys_initcall(qcom_rng_driver_init);
+
+static void __exit qcom_rng_driver_exit(void)
+{
+	platform_driver_unregister(&qcom_rng_driver);
+}
+module_exit(qcom_rng_driver_exit);
 
 MODULE_ALIAS("platform:" KBUILD_MODNAME);
 MODULE_DESCRIPTION("Qualcomm random number generator driver");

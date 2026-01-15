@@ -656,6 +656,13 @@
 			reg = <0x1a400000 0x100>;
 		};
 
+		prng: rng@1a500000 {
+			compatible = "qcom,prng";
+			reg = <0x1a500000 0x200>;
+			clocks = <&gcc PRNG_CLK>;
+			clock-names = "core";
+		};
+
 		/*
 		 * Camera Subsystem - VFE 3.1 with MIPI CSI-2
 		 * MSM8660 supports both parallel camera (CAMIF) and MIPI CSI-2.
