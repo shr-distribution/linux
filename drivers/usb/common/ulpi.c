@@ -366,7 +366,7 @@ static int __init ulpi_init(void)
 		debugfs_remove(ulpi_root);
 	return ret;
 }
-subsys_initcall(ulpi_init);
+postcore_initcall(ulpi_init);
 
 static void __exit ulpi_exit(void)
 {
