@@ -35,7 +35,7 @@
 
 	chosen {
 		/* Bootloader passes console=tty1, which overrides stdout-path */
-		bootargs = "console=ttyMSM0,115200 console=ttyGS0,115200 clk_ignore_unused log_buf_len=4M deferred_probe_timeout=20";
+		bootargs = "console=ttyMSM0,115200 console=ttyGS0,115200 clk_ignore_unused log_buf_len=4M deferred_probe_timeout=5";
 		stdout-path = "serial0:115200n8";
 #if USE_FRAMEBUFFER
 		#address-cells = <1>;
@@ -646,7 +646,6 @@
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "usb-mem";
 			status = "disabled";
-			#reset-cells = <1>;
 
 			ulpi {
 				usb_hs1_phy: phy {
@@ -654,7 +653,12 @@
 						     "qcom,usb-hs-phy";
 					clocks = <&sleep_clk>, <&cxo_board>;
 					clock-names = "sleep", "ref";
-					resets = <&usb1 0>;
+					/*
+					 * Use GCC reset directly instead of USB controller's
+					 * reset cell to break circular dependency:
+					 * USB needs PHY, PHY needed USB for reset
+					 */
+					resets = <&gcc USB_HS1_RESET>;
 					reset-names = "por";
 					#phy-cells = <0>;
 				};
