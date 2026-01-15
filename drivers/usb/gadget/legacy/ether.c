@@ -477,7 +477,17 @@ static struct usb_composite_driver eth_driver = {
 	.unbind		= eth_unbind,
 };
 
-module_usb_composite_driver(eth_driver);
+static int __init eth_driver_init(void)
+{
+	return usb_composite_probe(&eth_driver);
+}
+fs_initcall(eth_driver_init);
+
+static void __exit eth_driver_exit(void)
+{
+	usb_composite_unregister(&eth_driver);
+}
+module_exit(eth_driver_exit);
 
 MODULE_DESCRIPTION(PREFIX DRIVER_DESC);
 MODULE_AUTHOR("David Brownell, Benedikt Spanger");

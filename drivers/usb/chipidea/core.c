@@ -1510,7 +1510,7 @@ static int __init ci_hdrc_platform_register(void)
 	ci_hdrc_host_driver_init();
 	return platform_driver_register(&ci_hdrc_driver);
 }
-module_init(ci_hdrc_platform_register);
+subsys_initcall(ci_hdrc_platform_register);
 
 static void __exit ci_hdrc_platform_unregister(void)
 {

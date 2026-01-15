@@ -2100,7 +2100,7 @@ static int __init gadget_cfs_init(void)
 	ret = configfs_register_subsystem(&gadget_subsys);
 	return ret;
 }
-module_init(gadget_cfs_init);
+subsys_initcall(gadget_cfs_init);
 
 static void __exit gadget_cfs_exit(void)
 {
