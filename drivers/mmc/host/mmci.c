@@ -2695,7 +2695,17 @@ static struct amba_driver mmci_driver = {
 	.id_table	= mmci_ids,
 };
 
-module_amba_driver(mmci_driver);
+static int __init mmci_driver_init(void)
+{
+	return amba_driver_register(&mmci_driver);
+}
+subsys_initcall(mmci_driver_init);
+
+static void __exit mmci_driver_exit(void)
+{
+	amba_driver_unregister(&mmci_driver);
+}
+module_exit(mmci_driver_exit);
 
 module_param(fmax, uint, 0444);
 

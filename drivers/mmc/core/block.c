@@ -3443,7 +3443,7 @@ static void __exit mmc_blk_exit(void)
 	bus_unregister(&mmc_rpmb_bus_type);
 }
 
-module_init(mmc_blk_init);
+subsys_initcall_sync(mmc_blk_init);
 module_exit(mmc_blk_exit);
 
 MODULE_LICENSE("GPL");
