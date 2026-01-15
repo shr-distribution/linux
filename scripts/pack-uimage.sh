@@ -24,9 +24,9 @@ VARIANT="${1:-topaz}"
 # Use cross-compiler from environment or default to arm-linux-gnueabihf-
 CROSS_COMPILE="${CROSS_COMPILE:-arm-linux-gnueabihf-}"
 
-# Source files from kernel tree (not build-output!)
-ZIMAGE_SRC="$KERNEL_DIR/arch/arm/boot/zImage"
-DTB_SRC="$KERNEL_DIR/arch/arm/boot/dts/qcom/qcom-apq8060-${VARIANT}.dtb"
+# Source files from build-output (out-of-tree build)
+ZIMAGE_SRC="$BUILD_OUTPUT/arch/arm/boot/zImage"
+DTB_SRC="$BUILD_OUTPUT/arch/arm/boot/dts/qcom/qcom-apq8060-${VARIANT}.dtb"
 INITRAMFS_INPUT="$PARENT_DIR/initramfs-uImage.bin"
 OUTPUT="$BUILD_OUTPUT/uImage.LuneOS"
 
@@ -36,30 +36,26 @@ mkdir -p "$BUILD_OUTPUT/arch/arm/boot/dts/qcom"
 # Always rebuild zImage and DTB to ensure they match current source
 echo "Rebuilding zImage and DTB to ensure they're up-to-date..."
 touch "$KERNEL_DIR/arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi"
-if ! make -C "$KERNEL_DIR" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" zImage "qcom/qcom-apq8060-${VARIANT}.dtb" -j$(nproc); then
+if ! make -C "$KERNEL_DIR" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" O="$BUILD_OUTPUT" zImage "qcom/qcom-apq8060-${VARIANT}.dtb" -j$(nproc); then
     echo "Error: Build failed. Please fix errors and retry."
     exit 1
 fi
 
-# Copy built files to build-output for reference/archival
-cp "$ZIMAGE_SRC" "$BUILD_OUTPUT/arch/arm/boot/"
-cp "$DTB_SRC" "$BUILD_OUTPUT/arch/arm/boot/dts/qcom/"
-
-# Use source files for packing (they're guaranteed fresh after make)
+# Use build-output files for packing
 ZIMAGE="$ZIMAGE_SRC"
 DTB="$DTB_SRC"
 
 # Validate inputs
 if [ ! -f "$ZIMAGE" ]; then
     echo "Error: zImage not found at $ZIMAGE"
-    echo "Run 'make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- zImage' first"
+    echo "Run 'make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- O=$BUILD_OUTPUT zImage' first"
     exit 1
 fi
 
 if [ ! -f "$DTB" ]; then
     echo "Error: DTB not found at $DTB"
     echo "Available DTBs:"
-    ls -1 "$KERNEL_DIR/arch/arm/boot/dts/qcom/qcom-apq8060-"*.dtb 2>/dev/null || echo "  (none)"
+    ls -1 "$BUILD_OUTPUT/arch/arm/boot/dts/qcom/qcom-apq8060-"*.dtb 2>/dev/null || echo "  (none)"
     exit 1
 fi
 
