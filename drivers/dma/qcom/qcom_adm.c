@@ -40,7 +40,7 @@
 #define ADM_CH_RSLT(chan, ee)		(0x40 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_FLUSH_STATE0(chan, ee)	(0x80 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_STATUS_SD(chan, ee)	(0x200 + ADM_CHAN_EE_OFFS(chan, ee))
-#define ADM_CH_CONF(chan)		(0x240 + ADM_CHAN_OFFS(chan))
+#define ADM_CH_CONF(chan, ee)		(0x240 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_RSLT_CONF(chan, ee)	(0x300 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_SEC_DOMAIN_IRQ_STATUS(ee)	(0x380 + ADM_EE_OFFS(ee))
 #define ADM_CI_CONF(ci)			(0x390 + (ci) * ADM_CI_MULTI)
@@ -62,6 +62,7 @@
 #define ADM_CH_CONF_MPU_DISABLE		BIT(11)
 #define ADM_CH_CONF_PERM_MPU_CONF	BIT(9)
 #define ADM_CH_CONF_FORCE_RSLT_EN	BIT(7)
+#define ADM_CH_CONF_IRQ_EN		BIT(6)
 #define ADM_CH_CONF_SEC_DOMAIN(ee)	((((ee) & 0x3) << 4) | (((ee) & 0x4) << 11))
 
 /* channel result conf */
@@ -195,12 +196,16 @@ static int adm_get_blksize(unsigned int burst)
 {
 	int ret;
 
+	/*
+	 * Burst is in bytes. Map to ADM block size encoding:
+	 * 8 bytes -> 1 (MMCI qcom variant uses burst 8 for src_maxburst)
+	 * 16 bytes -> 0, 32 bytes -> 1, 64 bytes -> 2, 128 bytes -> 3
+	 * 192 bytes -> 4, 256 bytes -> 5
+	 */
 	switch (burst) {
 	case 8:
-		/*
-		 * MMCI passes burst as number of words (fifohalfsize >> 2).
-		 * 8 words = 32 bytes, which maps to blksize 1.
-		 */
+		/* MMCI qcom variant uses src_maxburst=8 words * addr_width=4 = 32 bytes
+		 * which results in burst=32, but some paths may send burst=8 bytes */
 		ret = 1;
 		break;
 	case 16:
@@ -374,15 +379,19 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 	}
 
 	/*
-	 * get burst value from slave configuration
+	 * Get burst value from slave configuration and convert to bytes.
+	 * The DMA slave config specifies maxburst in units of addr_width,
+	 * but ADM box descriptors need the burst size in bytes.
 	 */
-	burst = (direction == DMA_MEM_TO_DEV) ?
-		achan->slave.dst_maxburst :
-		achan->slave.src_maxburst;
+	if (direction == DMA_MEM_TO_DEV) {
+		burst = achan->slave.dst_maxburst * achan->slave.dst_addr_width;
+	} else {
+		burst = achan->slave.src_maxburst * achan->slave.src_addr_width;
+	}
 
-	dev_info(adev->dev,
-		 "ADM prep_slave_sg: chan=%d device_fc=%d achan->crci=%d burst=%d dir=%d\n",
-		 achan->id, achan->slave.device_fc, achan->crci, burst, direction);
+	dev_dbg(adev->dev,
+		"ADM prep_slave_sg: chan=%d device_fc=%d achan->crci=%d burst=%d dir=%d\n",
+		achan->id, achan->slave.device_fc, achan->crci, burst, direction);
 
 	/* if using flow control, validate burst and crci values */
 	if (achan->slave.device_fc) {
@@ -516,8 +525,11 @@ static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 	spin_unlock_irqrestore(&achan->vc.lock, flag);
 
 	dev_dbg(achan->adev->dev,
-		"ADM slave_config: chan=%d device_fc=%d peripheral_size=%zu crci=%d\n",
-		achan->id, cfg->device_fc, cfg->peripheral_size, achan->crci);
+		"ADM slave_config: chan=%d device_fc=%d crci=%d "
+		"src_maxburst=%d dst_maxburst=%d src_addr_width=%d dst_addr_width=%d\n",
+		achan->id, cfg->device_fc, achan->crci,
+		cfg->src_maxburst, cfg->dst_maxburst,
+		cfg->src_addr_width, cfg->dst_addr_width);
 
 	return 0;
 }
@@ -547,12 +559,16 @@ static void adm_start_dma(struct adm_chan *achan)
 	achan->error = 0;
 
 	if (!achan->initialized) {
-		/* enable interrupts */
-		writel(ADM_CH_CONF_SHADOW_EN |
-		       ADM_CH_CONF_PERM_MPU_CONF |
-		       ADM_CH_CONF_MPU_DISABLE |
-		       ADM_CH_CONF_SEC_DOMAIN(adev->ee),
-		       adev->regs + ADM_CH_CONF(achan->id));
+		/*
+		 * Channel should already be initialized from probe,
+		 * but handle late initialization just in case.
+		 * Match webOS: only SHADOW_EN + SEC_DOMAIN in CH_CONF
+		 * IRQ enable goes in RSLT_CONF only
+		 */
+		u32 conf = readl_relaxed(adev->regs + ADM_CH_CONF(achan->id, adev->ee));
+		conf &= ~ADM_CH_CONF_SEC_DOMAIN(7);
+		conf |= ADM_CH_CONF_SEC_DOMAIN(adev->ee) | ADM_CH_CONF_SHADOW_EN;
+		writel(conf, adev->regs + ADM_CH_CONF(achan->id, adev->ee));
 
 		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
 		       adev->regs + ADM_CH_RSLT_CONF(achan->id, adev->ee));
@@ -561,19 +577,16 @@ static void adm_start_dma(struct adm_chan *achan)
 	}
 
 	/* set the crci block size if this transaction requires CRCI */
-	if (async_desc->crci) {
-		dev_info(adev->dev, "ADM start_dma: setting CRCI_CTL(%d) = 0x%x\n",
-			 async_desc->crci, async_desc->mux | async_desc->blk_size);
+	if (async_desc->crci)
 		writel(async_desc->mux | async_desc->blk_size,
 		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
-	}
 
 	/* make sure IRQ enable doesn't get reordered */
 	wmb();
 
-	dev_info(adev->dev, "ADM start_dma: chan=%d crci=%d cmd_ptr=0x%llx\n",
-		 achan->id, async_desc->crci,
-		 (unsigned long long)(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3));
+	dev_dbg(adev->dev, "ADM start_dma: chan=%d crci=%d cmd_ptr=0x%llx\n",
+		achan->id, async_desc->crci,
+		(unsigned long long)(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3));
 
 	/* write next command list out to the CMD FIFO */
 	writel(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3,
@@ -597,7 +610,7 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 	srcs = readl_relaxed(adev->regs +
 			ADM_SEC_DOMAIN_IRQ_STATUS(adev->ee));
 
-	dev_info(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
+	dev_dbg(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
 
 	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
 		struct adm_chan *achan = &adev->channels[i];
@@ -763,8 +776,8 @@ static struct dma_chan *adm_dma_xlate(struct of_phandle_args *dma_spec,
 	else
 		achan->crci = 0;
 
-	dev_info(dev->dev, "ADM xlate: chan=%d args_count=%d crci=%d\n",
-		 dma_spec->args[0], dma_spec->args_count, achan->crci);
+	dev_dbg(dev->dev, "ADM xlate: chan=%d args_count=%d crci=%d\n",
+		dma_spec->args[0], dma_spec->args_count, achan->crci);
 
 	return dma_get_slave_channel(candidate);
 }
@@ -839,6 +852,11 @@ static int adm_dma_probe(struct platform_device *pdev)
 		goto err_disable_core_clk;
 	}
 
+	/*
+	 * Skip reset sequence - webOS kernel doesn't reset ADM in probe.
+	 * The ADM may be pre-configured by bootloader/TrustZone.
+	 */
+#if 0
 	reset_control_assert(adev->clk_reset);
 	reset_control_assert(adev->c0_reset);
 	reset_control_assert(adev->c1_reset);
@@ -850,6 +868,7 @@ static int adm_dma_probe(struct platform_device *pdev)
 	reset_control_deassert(adev->c0_reset);
 	reset_control_deassert(adev->c1_reset);
 	reset_control_deassert(adev->c2_reset);
+#endif
 
 	adev->channels = devm_kcalloc(adev->dev, ADM_MAX_CHANNELS,
 				      sizeof(*adev->channels), GFP_KERNEL);
@@ -865,20 +884,38 @@ static int adm_dma_probe(struct platform_device *pdev)
 	for (i = 0; i < ADM_MAX_CHANNELS; i++)
 		adm_channel_init(adev, &adev->channels[i], i);
 
+	/* Debug: print base address and initial CH_CONF value */
+	dev_info(adev->dev, "ADM probe: base=%p EE=%d, initial CH_CONF[0]=0x%08x\n",
+		 adev->regs, adev->ee,
+		 readl_relaxed(adev->regs + ADM_CH_CONF(0, adev->ee)));
+
 	/* reset CRCIs */
 	for (i = 0; i < 16; i++)
 		writel(ADM_CRCI_CTL_RST, adev->regs +
 			ADM_CRCI_CTL(i, adev->ee));
 
-	/* configure client interfaces */
-	writel(ADM_CI_RANGE_START(0x40) | ADM_CI_RANGE_END(0xb0) |
-	       ADM_CI_BURST_8_WORDS, adev->regs + ADM_CI_CONF(0));
-	writel(ADM_CI_RANGE_START(0x2a) | ADM_CI_RANGE_END(0x2c) |
-	       ADM_CI_BURST_8_WORDS, adev->regs + ADM_CI_CONF(1));
-	writel(ADM_CI_RANGE_START(0x12) | ADM_CI_RANGE_END(0x28) |
-	       ADM_CI_BURST_8_WORDS, adev->regs + ADM_CI_CONF(2));
-	writel(ADM_GP_CTL_LP_EN | ADM_GP_CTL_LP_CNT(0xf),
-	       adev->regs + ADM_GP_CTL);
+	/*
+	 * Initialize channels like webOS kernel:
+	 * - Only write SHADOW_EN and SEC_DOMAIN to CH_CONF (not IRQ_EN)
+	 * - Write IRQ_EN and FLUSH_EN to RSLT_CONF
+	 */
+	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
+		u32 conf;
+
+		/* Read current value, modify SD bits, add SHADOW_EN */
+		conf = readl_relaxed(adev->regs + ADM_CH_CONF(i, adev->ee));
+		conf &= ~ADM_CH_CONF_SEC_DOMAIN(7);  /* Clear SD bits */
+		conf |= ADM_CH_CONF_SEC_DOMAIN(adev->ee) | ADM_CH_CONF_SHADOW_EN;
+		writel(conf, adev->regs + ADM_CH_CONF(i, adev->ee));
+
+		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
+		       adev->regs + ADM_CH_RSLT_CONF(i, adev->ee));
+		adev->channels[i].initialized = 1;
+	}
+
+	dev_info(adev->dev, "ADM probe: after init CH_CONF[0]=0x%08x RSLT_CONF[0]=0x%08x\n",
+		 readl_relaxed(adev->regs + ADM_CH_CONF(0, adev->ee)),
+		 readl_relaxed(adev->regs + ADM_CH_RSLT_CONF(0, adev->ee)));
 
 	ret = devm_request_irq(adev->dev, adev->irq, adm_dma_irq,
 			       0, "adm_dma", adev);

@@ -27,7 +27,7 @@ CONFIG_ZBOOT_ROM_BSS=0
 CONFIG_ARM_APPENDED_DTB=y
 CONFIG_ARM_ATAG_DTB_COMPAT=y
 CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_EXTEND=y
-CONFIG_CMDLINE="console=ttyMSM0,115200n8 earlycon clk_ignore_unused pd_ignore_unused no_console_suspend loglevel=8 drm.debug=0x1f initcall_debug deferred_probe_timeout=5"
+CONFIG_CMDLINE="console=ttyMSM0,115200n8 earlycon clk_ignore_unused pd_ignore_unused no_console_suspend loglevel=8 drm.debug=0x1f initcall_debug deferred_probe_timeout=15"
 CONFIG_CMDLINE_FORCE=y
 CONFIG_CPU_IDLE=y
 CONFIG_ARM_CPUIDLE=y
@@ -244,7 +244,7 @@ CONFIG_LEDS_TRIGGER_HEARTBEAT=y
 CONFIG_RTC_CLASS=y
 CONFIG_RTC_DRV_PM8XXX=y
 CONFIG_DMADEVICES=y
-CONFIG_DMADEVICES_DEBUG=y
+# CONFIG_DMADEVICES_DEBUG is not set
 CONFIG_QCOM_ADM=y
 CONFIG_QCOM_BAM_DMA=y
 CONFIG_DMABUF_HEAPS=y

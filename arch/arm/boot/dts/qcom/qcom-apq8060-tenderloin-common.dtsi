@@ -177,6 +177,7 @@
 				 <&gcc ADM0_C1_RESET>,
 				 <&gcc ADM0_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
+			/* EE 1 = offset 0x800, webOS SD 1 for non-secure access */
 			qcom,ee = <1>;
 		};
 		adm_dma1: dma-controller@18420000 {
@@ -194,6 +195,7 @@
 				 <&gcc ADM1_C1_RESET>,
 				 <&gcc ADM1_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
+			/* EE 1 = offset 0x800, webOS SD 1 for non-secure access */
 			qcom,ee = <1>;
 		};
 
@@ -1414,7 +1416,16 @@
 	pinctrl-0 = <&emmc_pins>;
 	vmmc-supply = <&pm8901_l5>;
 	vqmmc-supply = <&pm8901_lvs0>;
-	/* DMA disabled - PIO mode works reliably for eMMC */
+
+	/*
+	 * DMA configuration for QCOM ADM:
+	 * - Channel 2 on ADM1 for both RX and TX (global channel 18)
+	 * - CRCI 1 for SDC1 (passed via qcom,sdcc-crci property)
+	 * From webOS kernel: DMOV_SDC1_CHAN=18, DMOV_SDC1_CRCI=1
+	 */
+	dmas = <&adm_dma1 2>, <&adm_dma1 2>;
+	dma-names = "rx", "tx";
+	qcom,sdcc-crci = <1>;
 };
 
 &sdcc4 {

@@ -45,15 +45,43 @@
 
 #define DML_OFFSET			0x800
 
+/*
+ * Check if the DMA controller is ADM (Application Data Mover).
+ * ADM is used on older Qualcomm SoCs (msm8x60 and earlier) and
+ * does not have the DML (Data Mover Layer) block.
+ */
+static bool qcom_dma_is_adm(struct device_node *np)
+{
+	struct of_phandle_args dma_spec;
+	struct device_node *dma_node;
+	bool is_adm = false;
+
+	if (of_parse_phandle_with_args(np, "dmas", "#dma-cells", 0, &dma_spec))
+		return false;
+
+	dma_node = dma_spec.np;
+	if (dma_node) {
+		is_adm = of_device_is_compatible(dma_node, "qcom,adm");
+		of_node_put(dma_node);
+	}
+
+	return is_adm;
+}
+
 static int qcom_dma_start(struct mmci_host *host, unsigned int *datactrl)
 {
 	u32 config;
 	void __iomem *base = host->base + DML_OFFSET;
 	struct mmc_data *data = host->data;
+	struct device_node *np = host->mmc->parent->of_node;
 	int ret = mmci_dmae_start(host, datactrl);
 
 	if (ret)
 		return ret;
+
+	/* ADM DMA doesn't use DML, just return after starting DMA */
+	if (qcom_dma_is_adm(np))
+		return 0;
 
 	if (data->flags & MMC_DATA_READ) {
 		/* Read operation: configure DML for producer operation */
@@ -120,11 +148,34 @@ static int qcom_dma_setup(struct mmci_host *host)
 {
 	u32 config;
 	void __iomem *base;
-	int consumer_id, producer_id;
+	int consumer_id, producer_id, ret;
 	struct device_node *np = host->mmc->parent->of_node;
+	bool use_adm;
 
-	if (mmci_dmae_setup(host))
-		return -EINVAL;
+	ret = mmci_dmae_setup(host);
+	if (ret) {
+		/*
+		 * Propagate -EPROBE_DEFER to allow deferred probe when
+		 * DMA controller isn't ready yet. Other errors fall back
+		 * to PIO mode.
+		 */
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		/* Fall through to PIO mode for other errors */
+		dev_dbg(host->mmc->parent, "DMA setup failed, using PIO mode\n");
+		return 0;
+	}
+
+	/*
+	 * ADM (Application Data Mover) is used on older Qualcomm SoCs
+	 * like msm8x60. ADM doesn't use DML, so skip DML setup and just
+	 * return success - DMA will work directly via ADM.
+	 */
+	use_adm = qcom_dma_is_adm(np);
+	if (use_adm) {
+		dev_info(host->mmc->parent, "ADM DMA: enabled (no DML)\n");
+		return 0;
+	}
 
 	consumer_id = of_get_dml_pipe_index(np, "tx");
 	producer_id = of_get_dml_pipe_index(np, "rx");

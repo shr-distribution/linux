@@ -342,7 +342,7 @@ static struct variant_data variant_stm32_sdmmcv3 = {
 
 static struct variant_data variant_qcom = {
 	.fifosize		= 16 * 4,
-	.fifohalfsize		= 8 * 4,
+	.fifohalfsize		= 16 * 4,	/* Use full FIFO for ADM DMA like webOS */
 	.clkreg			= MCI_CLK_ENABLE,
 	.clkreg_enable		= MCI_QCOM_CLK_FLOWENA |
 				  MCI_QCOM_CLK_SELECT_IN_FBCLK,
@@ -506,18 +506,22 @@ static void mmci_dma_release(struct mmci_host *host)
 	host->use_dma = false;
 }
 
-static void mmci_dma_setup(struct mmci_host *host)
+static int mmci_dma_setup(struct mmci_host *host)
 {
-	if (!host->ops || !host->ops->dma_setup)
-		return;
+	int ret;
 
-	if (host->ops->dma_setup(host))
-		return;
+	if (!host->ops || !host->ops->dma_setup)
+		return 0;
+
+	ret = host->ops->dma_setup(host);
+	if (ret)
+		return ret;
 
 	/* initialize pre request cookie */
 	host->next_cookie = 1;
 
 	host->use_dma = true;
+	return 0;
 }
 
 /*
@@ -2485,7 +2489,9 @@ static int mmci_probe(struct amba_device *dev,
 		 amba_rev(dev), (unsigned long long)dev->res.start,
 		 dev->irq[0], dev->irq[1]);
 
-	mmci_dma_setup(host);
+	ret = mmci_dma_setup(host);
+	if (ret == -EPROBE_DEFER)
+		goto clk_disable;
 
 	pm_runtime_set_autosuspend_delay(&dev->dev, 50);
 	pm_runtime_use_autosuspend(&dev->dev);
