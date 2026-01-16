@@ -327,6 +327,7 @@ static void msm_request_tx_dma(struct msm_port *msm_port, resource_size_t base)
 	conf.direction = DMA_MEM_TO_DEV;
 	conf.device_fc = true;
 	conf.dst_addr = base + UARTDM_TF;
+	conf.dst_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
 	conf.dst_maxburst = UARTDM_BURST_SIZE;
 	if (crci) {
 		conf.peripheral_config = &periph_conf;
@@ -379,6 +380,7 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 	conf.direction = DMA_DEV_TO_MEM;
 	conf.device_fc = true;
 	conf.src_addr = base + UARTDM_RF;
+	conf.src_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
 	conf.src_maxburst = UARTDM_BURST_SIZE;
 	if (crci) {
 		conf.peripheral_config = &periph_conf;
