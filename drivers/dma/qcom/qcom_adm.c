@@ -101,6 +101,12 @@
 #define ADM_MAX_ROWS			(SZ_64K - 1)
 #define ADM_MAX_CHANNELS		16
 
+/* Descriptor pool configuration for reduced allocation overhead */
+#define ADM_MAX_SG_PER_DESC		64	/* Max SG entries per pooled desc */
+#define ADM_CPL_BUF_SIZE		2048	/* CPL buffer size (64 box descs) */
+#define ADM_DESC_POOL_SIZE		8	/* Descriptors per channel */
+#define ADM_TOTAL_DESC_POOL		(ADM_MAX_CHANNELS * ADM_DESC_POOL_SIZE)
+
 struct adm_desc_hw_box {
 	u32 cmd;
 	u32 src_addr;
@@ -131,6 +137,10 @@ struct adm_async_desc {
 	u32 crci;
 	u32 mux;
 	u32 blk_size;
+
+	/* Pool management */
+	struct list_head pool_node;
+	int pool_index;		/* -1 = dynamic alloc, >=0 = pooled */
 };
 
 struct adm_chan {
@@ -172,6 +182,13 @@ struct adm_device {
 	struct reset_control *c1_reset;
 	struct reset_control *c2_reset;
 	int irq;
+
+	/* Descriptor pool for reduced per-transfer allocation overhead */
+	struct adm_async_desc *desc_pool;	/* Pre-allocated descriptors */
+	void *cpl_pool_virt;			/* Coherent CPL buffer pool */
+	dma_addr_t cpl_pool_dma;		/* DMA address of CPL pool */
+	struct list_head desc_free_list;	/* Free descriptor list */
+	spinlock_t pool_lock;			/* Protects free list */
 };
 
 /**
@@ -185,6 +202,153 @@ static void adm_free_chan(struct dma_chan *chan)
 {
 	/* free all queued descriptors */
 	vchan_free_chan_resources(to_virt_chan(chan));
+}
+
+/**
+ * adm_desc_pool_init - Initialize pre-allocated descriptor pool
+ * @adev: ADM device
+ *
+ * Allocates coherent DMA memory for command lists and descriptor structures
+ * to eliminate per-transfer allocation overhead.
+ */
+static int adm_desc_pool_init(struct adm_device *adev)
+{
+	size_t cpl_pool_size = ADM_TOTAL_DESC_POOL * ADM_CPL_BUF_SIZE;
+	int i;
+
+	/* Allocate coherent memory for all CPL buffers */
+	adev->cpl_pool_virt = dma_alloc_coherent(adev->dev, cpl_pool_size,
+						 &adev->cpl_pool_dma, GFP_KERNEL);
+	if (!adev->cpl_pool_virt)
+		return -ENOMEM;
+
+	/* Allocate descriptor structures */
+	adev->desc_pool = kcalloc(ADM_TOTAL_DESC_POOL,
+				  sizeof(struct adm_async_desc), GFP_KERNEL);
+	if (!adev->desc_pool) {
+		dma_free_coherent(adev->dev, cpl_pool_size,
+				  adev->cpl_pool_virt, adev->cpl_pool_dma);
+		adev->cpl_pool_virt = NULL;
+		return -ENOMEM;
+	}
+
+	/* Initialize free list and spinlock */
+	INIT_LIST_HEAD(&adev->desc_free_list);
+	spin_lock_init(&adev->pool_lock);
+
+	/* Link descriptors to CPL buffers and add to free list */
+	for (i = 0; i < ADM_TOTAL_DESC_POOL; i++) {
+		struct adm_async_desc *desc = &adev->desc_pool[i];
+
+		desc->adev = adev;
+		desc->pool_index = i;
+		desc->cpl = adev->cpl_pool_virt + (i * ADM_CPL_BUF_SIZE);
+		desc->dma_addr = adev->cpl_pool_dma + (i * ADM_CPL_BUF_SIZE);
+		INIT_LIST_HEAD(&desc->pool_node);
+		list_add_tail(&desc->pool_node, &adev->desc_free_list);
+	}
+
+	dev_info(adev->dev, "ADM descriptor pool: %d descs, %zu KB coherent\n",
+		 ADM_TOTAL_DESC_POOL, cpl_pool_size / 1024);
+
+	return 0;
+}
+
+/**
+ * adm_desc_pool_destroy - Free descriptor pool resources
+ * @adev: ADM device
+ */
+static void adm_desc_pool_destroy(struct adm_device *adev)
+{
+	size_t cpl_pool_size = ADM_TOTAL_DESC_POOL * ADM_CPL_BUF_SIZE;
+
+	kfree(adev->desc_pool);
+	adev->desc_pool = NULL;
+
+	if (adev->cpl_pool_virt) {
+		dma_free_coherent(adev->dev, cpl_pool_size,
+				  adev->cpl_pool_virt, adev->cpl_pool_dma);
+		adev->cpl_pool_virt = NULL;
+	}
+}
+
+/**
+ * adm_desc_get - Get a descriptor from the pool
+ * @adev: ADM device
+ *
+ * Returns a pre-allocated descriptor or NULL if pool is exhausted.
+ */
+static struct adm_async_desc *adm_desc_get(struct adm_device *adev)
+{
+	struct adm_async_desc *desc = NULL;
+	unsigned long flags;
+
+	spin_lock_irqsave(&adev->pool_lock, flags);
+	if (!list_empty(&adev->desc_free_list)) {
+		desc = list_first_entry(&adev->desc_free_list,
+					struct adm_async_desc, pool_node);
+		list_del_init(&desc->pool_node);
+	}
+	spin_unlock_irqrestore(&adev->pool_lock, flags);
+
+	if (desc) {
+		/* Reset descriptor state for reuse */
+		memset(&desc->vd, 0, sizeof(desc->vd));
+		desc->length = 0;
+		desc->dma_len = 0;
+		desc->crci = 0;
+		desc->mux = 0;
+		desc->blk_size = 0;
+	}
+
+	return desc;
+}
+
+/**
+ * adm_desc_put - Return a descriptor to the pool
+ * @desc: Descriptor to return
+ */
+static void adm_desc_put(struct adm_async_desc *desc)
+{
+	struct adm_device *adev = desc->adev;
+	unsigned long flags;
+
+	spin_lock_irqsave(&adev->pool_lock, flags);
+	list_add_tail(&desc->pool_node, &adev->desc_free_list);
+	spin_unlock_irqrestore(&adev->pool_lock, flags);
+}
+
+/**
+ * adm_desc_alloc_fallback - Dynamic allocation when pool exhausted or oversized
+ * @adev: ADM device
+ * @cpl_size: Required CPL buffer size
+ *
+ * Falls back to dynamic allocation for transfers that exceed pool capacity.
+ */
+static struct adm_async_desc *adm_desc_alloc_fallback(struct adm_device *adev,
+						      size_t cpl_size)
+{
+	struct adm_async_desc *desc;
+
+	desc = kzalloc(sizeof(*desc), GFP_NOWAIT);
+	if (!desc)
+		return NULL;
+
+	desc->cpl = dma_alloc_coherent(adev->dev, cpl_size,
+				       &desc->dma_addr, GFP_NOWAIT);
+	if (!desc->cpl) {
+		kfree(desc);
+		return NULL;
+	}
+
+	desc->adev = adev;
+	desc->pool_index = -1;	/* Mark as dynamic allocation */
+	desc->dma_len = cpl_size;
+	INIT_LIST_HEAD(&desc->pool_node);
+
+	dev_dbg(adev->dev, "ADM fallback alloc: cpl_size=%zu\n", cpl_size);
+
+	return desc;
 }
 
 /**
@@ -366,7 +530,6 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 	struct adm_device *adev = achan->adev;
 	struct adm_async_desc *async_desc;
 	struct scatterlist *sg;
-	dma_addr_t cple_addr;
 	u32 i, burst;
 	u32 single_count = 0, box_count = 0, crci = 0;
 	void *desc;
@@ -422,26 +585,36 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		}
 	}
 
-	async_desc = kzalloc(sizeof(*async_desc), GFP_NOWAIT);
-	if (!async_desc) {
-		dev_err(adev->dev, "not enough memory for async_desc struct\n");
-		return NULL;
+	/* Calculate required CPL buffer size */
+	{
+		size_t required_cpl_size;
+
+		required_cpl_size = single_count * sizeof(struct adm_desc_hw_single) +
+				    box_count * sizeof(struct adm_desc_hw_box) +
+				    sizeof(*cple) + 2 * ADM_DESC_ALIGN;
+
+		/* Try to get descriptor from pool if it fits */
+		if (required_cpl_size <= ADM_CPL_BUF_SIZE) {
+			async_desc = adm_desc_get(adev);
+			if (async_desc)
+				async_desc->dma_len = required_cpl_size;
+		} else {
+			async_desc = NULL;
+		}
+
+		/* Fallback to dynamic allocation if pool exhausted or oversized */
+		if (!async_desc) {
+			async_desc = adm_desc_alloc_fallback(adev, required_cpl_size);
+			if (!async_desc) {
+				dev_err(adev->dev, "unable to allocate descriptor\n");
+				return NULL;
+			}
+		}
 	}
 
 	async_desc->mux = achan->mux ? ADM_CRCI_CTL_MUX_SEL : 0;
 	async_desc->crci = crci;
 	async_desc->blk_size = blk_size;
-	async_desc->dma_len = single_count * sizeof(struct adm_desc_hw_single) +
-				box_count * sizeof(struct adm_desc_hw_box) +
-				sizeof(*cple) + 2 * ADM_DESC_ALIGN;
-
-	async_desc->cpl = kzalloc(async_desc->dma_len, GFP_NOWAIT);
-	if (!async_desc->cpl) {
-		dev_err(adev->dev, "not enough memory for cpl struct\n");
-		goto free;
-	}
-
-	async_desc->adev = adev;
 
 	/* both command list entry and descriptors must be 8 byte aligned */
 	cple = PTR_ALIGN(async_desc->cpl, ADM_DESC_ALIGN);
@@ -458,29 +631,14 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 							      direction);
 	}
 
-	async_desc->dma_addr = dma_map_single(adev->dev, async_desc->cpl,
-					      async_desc->dma_len,
-					      DMA_TO_DEVICE);
-	if (dma_mapping_error(adev->dev, async_desc->dma_addr)) {
-		dev_err(adev->dev, "dma mapping error for cpl\n");
-		goto free;
-	}
-
-	cple_addr = async_desc->dma_addr + ((void *)cple - async_desc->cpl);
-
-	/* init cmd list */
-	dma_sync_single_for_cpu(adev->dev, cple_addr, sizeof(*cple),
-				DMA_TO_DEVICE);
+	/*
+	 * For pooled descriptors, CPL buffer is already DMA-coherent.
+	 * No dma_map_single or dma_sync needed - just set up the cmdptr.
+	 */
 	*cple = ADM_CPLE_LP;
 	*cple |= (async_desc->dma_addr + ADM_DESC_ALIGN) >> 3;
-	dma_sync_single_for_device(adev->dev, cple_addr, sizeof(*cple),
-				   DMA_TO_DEVICE);
 
 	return vchan_tx_prep(&achan->vc, &async_desc->vd, flags);
-
-free:
-	kfree(async_desc);
-	return NULL;
 }
 
 /**
@@ -718,16 +876,22 @@ static void adm_issue_pending(struct dma_chan *chan)
  * adm_dma_free_desc - free descriptor memory
  * @vd: virtual descriptor
  *
+ * Returns pooled descriptors to the pool, frees dynamically allocated ones.
  */
 static void adm_dma_free_desc(struct virt_dma_desc *vd)
 {
 	struct adm_async_desc *async_desc = container_of(vd,
 			struct adm_async_desc, vd);
 
-	dma_unmap_single(async_desc->adev->dev, async_desc->dma_addr,
-			 async_desc->dma_len, DMA_TO_DEVICE);
-	kfree(async_desc->cpl);
-	kfree(async_desc);
+	if (async_desc->pool_index >= 0) {
+		/* Return pooled descriptor to free list */
+		adm_desc_put(async_desc);
+	} else {
+		/* Dynamic allocation - free coherent memory and struct */
+		dma_free_coherent(async_desc->adev->dev, async_desc->dma_len,
+				  async_desc->cpl, async_desc->dma_addr);
+		kfree(async_desc);
+	}
 }
 
 static void adm_channel_init(struct adm_device *adev, struct adm_chan *achan,
@@ -884,6 +1048,13 @@ static int adm_dma_probe(struct platform_device *pdev)
 	for (i = 0; i < ADM_MAX_CHANNELS; i++)
 		adm_channel_init(adev, &adev->channels[i], i);
 
+	/* Initialize descriptor pool for reduced per-transfer overhead */
+	ret = adm_desc_pool_init(adev);
+	if (ret) {
+		dev_err(adev->dev, "failed to initialize descriptor pool\n");
+		goto err_disable_clks;
+	}
+
 	/* Debug: print base address and initial CH_CONF value */
 	dev_info(adev->dev, "ADM probe: base=%p EE=%d, initial CH_CONF[0]=0x%08x\n",
 		 adev->regs, adev->ee,
@@ -947,7 +1118,7 @@ static int adm_dma_probe(struct platform_device *pdev)
 	ret = dma_async_device_register(&adev->common);
 	if (ret) {
 		dev_err(adev->dev, "failed to register dma async device\n");
-		goto err_disable_clks;
+		goto err_pool_destroy;
 	}
 
 	ret = of_dma_controller_register(pdev->dev.of_node, adm_dma_xlate,
@@ -959,6 +1130,8 @@ static int adm_dma_probe(struct platform_device *pdev)
 
 err_unregister_dma:
 	dma_async_device_unregister(&adev->common);
+err_pool_destroy:
+	adm_desc_pool_destroy(adev);
 err_disable_clks:
 	clk_disable_unprepare(adev->iface_clk);
 err_disable_core_clk:
@@ -987,6 +1160,9 @@ static void adm_dma_remove(struct platform_device *pdev)
 	}
 
 	devm_free_irq(adev->dev, adev->irq, adev);
+
+	/* Free descriptor pool */
+	adm_desc_pool_destroy(adev);
 
 	clk_disable_unprepare(adev->core_clk);
 	clk_disable_unprepare(adev->iface_clk);
