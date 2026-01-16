@@ -231,7 +231,24 @@ static const u16 spm_reg_offset_v1_1[SPM_REG_NR] = {
 	[SPM_REG_SEQ_ENTRY]	= 0x80,
 };
 
+/*
+ * MSM8660/APQ8060 SAW register offsets - different from APQ8064!
+ * Based on webOS kernel arch/arm/mach-msm/spm.c
+ */
+static const u16 spm_reg_offset_8660[SPM_REG_NR] = {
+	[SPM_REG_AVS_CTL]	= 0x04,
+	[SPM_REG_VCTL]		= 0x08,
+	[SPM_REG_STS0]		= 0x0c,	/* SAW_STS */
+	[SPM_REG_STS1]		= 0x0c,	/* Same as STS0 on 8660 */
+	[SPM_REG_CFG]		= 0x10,
+	[SPM_REG_SPM_CTL]	= 0x14,
+	[SPM_REG_PMIC_DLY]	= 0x18,	/* SAW_SPM_SLP_TMR_DLY */
+	[SPM_REG_PMIC_DATA_0]	= 0x20,	/* SAW_SPM_PMIC_CTL */
+	/* No sequence entry on 8660 - different architecture */
+};
+
 static void smp_set_vdd_v1_1(void *data);
+static void smp_set_vdd_8660(void *data);
 
 /* SPM register data for 8064 */
 static struct linear_range spm_v1_1_regulator_range =
@@ -250,6 +267,31 @@ static const struct spm_reg_data spm_reg_8064_cpu = {
 	.set_vdd = smp_set_vdd_v1_1,
 	.range = &spm_v1_1_regulator_range,
 	.init_uV = 1300000,
+	.ramp_delay = 1250,
+};
+
+/*
+ * SPM register data for MSM8660/APQ8060 Scorpion CPUs.
+ * Based on webOS kernel board-tenderloin.c msm_spm_data.
+ * Voltage range: 840mV - 1250mV from webOS saw_s0_init_data.
+ * awake_vlevel = 0xA0 corresponds to ~1.1V
+ *
+ * IMPORTANT: We do NOT initialize SPM registers at probe time.
+ * The bootloader already configured SPM, and writing to these
+ * registers during probe can crash the system. We only provide
+ * voltage regulation functionality.
+ */
+static struct linear_range spm_8660_regulator_range =
+	REGULATOR_LINEAR_RANGE(700000, 0, 56, 12500);
+
+static const struct spm_reg_data spm_reg_8660_cpu = {
+	.reg_offset = spm_reg_offset_8660,
+	/* All init values set to 0 - don't write anything at probe */
+	.spm_cfg = 0,
+	.pmic_dly = 0,
+	.set_vdd = smp_set_vdd_8660,
+	.range = &spm_8660_regulator_range,
+	.init_uV = 1100000,		/* awake_vlevel 0xA0 = ~1.1V */
 	.ramp_delay = 1250,
 };
 
@@ -385,6 +427,53 @@ enable_avs:
 	}
 }
 
+/*
+ * MSM8660/APQ8060 voltage setting function.
+ * Based on webOS kernel msm_spm_set_vdd() in arch/arm/mach-msm/spm.c
+ * and saw-regulator.c voltage band calculations.
+ *
+ * PM8901 SMPS Band 2: 700mV-1400mV with 12.5mV steps
+ * The voltage level sent to SAW must include the band bits (0x80).
+ */
+static void smp_set_vdd_8660(void *data)
+{
+	struct spm_driver_data *drv = data;
+	unsigned int vctl, sts;
+	unsigned int vlevel, volt_sel;
+	int timeout_us = 50;
+
+	volt_sel = drv->volt_sel;
+	/* Add Band 2 marker (0x80) - required for PM8901 SMPS */
+	vlevel = volt_sel | 0x80;
+
+	/* Read current VCTL and update voltage level (bits 7:0) */
+	vctl = spm_register_read(drv, SPM_REG_VCTL);
+	vctl &= ~0xFF;
+	vctl |= vlevel;
+	spm_register_write(drv, SPM_REG_VCTL, vctl);
+
+	/* Wait for PMIC state to return to idle (bits 21:20 == 0) */
+	/* and current voltage (bits 17:10) to match requested */
+	do {
+		sts = spm_register_read(drv, SPM_REG_STS0);
+		if (((sts >> 20) & 0x3) == 0 &&	/* PMIC state idle */
+		    ((sts >> 10) & 0xFF) == vlevel)	/* Voltage matches */
+			return;
+
+		if (timeout_us > 10) {
+			udelay(10);
+			timeout_us -= 10;
+		} else {
+			udelay(timeout_us);
+			timeout_us = 0;
+		}
+	} while (timeout_us > 0);
+
+	dev_err_ratelimited(drv->dev,
+		"timeout setting voltage: sts=0x%x, requested vlevel=0x%x\n",
+		sts, vlevel);
+}
+
 static int spm_get_cpu(struct device *dev)
 {
 	int cpu;
@@ -450,9 +539,8 @@ static int spm_register_regulator(struct device *dev, struct spm_driver_data *dr
 	/*
 	 * Program initial voltage, otherwise registration will also try
 	 * setting the voltage, which might result in undervolting the CPU.
+	 * Use linear_range_get_selector_high() to convert init_uV to selector.
 	 */
-	drv->volt_sel = DIV_ROUND_UP(drv->reg_data->init_uV - rdesc->min_uV,
-				     rdesc->uV_step);
 	ret = linear_range_get_selector_high(drv->reg_data->range,
 					     drv->reg_data->init_uV,
 					     &drv->volt_sel,
@@ -501,6 +589,10 @@ static const struct of_device_id spm_match_table[] = {
 	  .data = &spm_reg_8974_8084_cpu },
 	{ .compatible = "qcom,apq8064-saw2-v1.1-cpu",
 	  .data = &spm_reg_8064_cpu },
+	{ .compatible = "qcom,msm8660-saw2-v1.1-cpu",
+	  .data = &spm_reg_8660_cpu },
+	{ .compatible = "qcom,apq8060-saw2-v1.1-cpu",
+	  .data = &spm_reg_8660_cpu },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, spm_match_table);
@@ -527,30 +619,38 @@ static int spm_dev_probe(struct platform_device *pdev)
 	drv->dev = &pdev->dev;
 	platform_set_drvdata(pdev, drv);
 
-	/* Write the SPM sequences first.. */
-	addr = drv->reg_base + drv->reg_data->reg_offset[SPM_REG_SEQ_ENTRY];
-	__iowrite32_copy(addr, drv->reg_data->seq,
-			ARRAY_SIZE(drv->reg_data->seq) / 4);
+	/* Write the SPM sequences first (if supported by this SoC) */
+	if (drv->reg_data->reg_offset[SPM_REG_SEQ_ENTRY]) {
+		addr = drv->reg_base + drv->reg_data->reg_offset[SPM_REG_SEQ_ENTRY];
+		__iowrite32_copy(addr, drv->reg_data->seq,
+				ARRAY_SIZE(drv->reg_data->seq) / 4);
+	}
 
 	/*
 	 * ..and then the control registers.
 	 * On some SoC if the control registers are written first and if the
 	 * CPU was held in reset, the reset signal could trigger the SPM state
 	 * machine, before the sequences are completely written.
+	 *
+	 * For MSM8660/APQ8060, we skip initialization entirely (spm_cfg == 0)
+	 * because the bootloader already configured SPM and writing to these
+	 * registers can crash the system.
 	 */
-	spm_register_write(drv, SPM_REG_AVS_CTL, drv->reg_data->avs_ctl);
-	spm_register_write(drv, SPM_REG_AVS_LIMIT, drv->reg_data->avs_limit);
-	spm_register_write(drv, SPM_REG_CFG, drv->reg_data->spm_cfg);
-	spm_register_write(drv, SPM_REG_DLY, drv->reg_data->spm_dly);
-	spm_register_write(drv, SPM_REG_PMIC_DLY, drv->reg_data->pmic_dly);
-	spm_register_write(drv, SPM_REG_PMIC_DATA_0,
-				drv->reg_data->pmic_data[0]);
-	spm_register_write(drv, SPM_REG_PMIC_DATA_1,
-				drv->reg_data->pmic_data[1]);
+	if (drv->reg_data->spm_cfg) {
+		spm_register_write(drv, SPM_REG_AVS_CTL, drv->reg_data->avs_ctl);
+		spm_register_write(drv, SPM_REG_AVS_LIMIT, drv->reg_data->avs_limit);
+		spm_register_write(drv, SPM_REG_CFG, drv->reg_data->spm_cfg);
+		spm_register_write(drv, SPM_REG_DLY, drv->reg_data->spm_dly);
+		spm_register_write(drv, SPM_REG_PMIC_DLY, drv->reg_data->pmic_dly);
+		spm_register_write(drv, SPM_REG_PMIC_DATA_0,
+					drv->reg_data->pmic_data[0]);
+		spm_register_write(drv, SPM_REG_PMIC_DATA_1,
+					drv->reg_data->pmic_data[1]);
 
-	/* Set up Standby as the default low power mode */
-	if (drv->reg_data->reg_offset[SPM_REG_SPM_CTL])
-		spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
+		/* Set up Standby as the default low power mode */
+		if (drv->reg_data->reg_offset[SPM_REG_SPM_CTL])
+			spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
+	}
 
 	if (IS_ENABLED(CONFIG_REGULATOR))
 		return spm_register_regulator(&pdev->dev, drv);

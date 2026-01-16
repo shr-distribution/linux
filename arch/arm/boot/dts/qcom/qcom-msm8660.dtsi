@@ -24,26 +24,133 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		cpu@0 {
+		cpu0: cpu@0 {
 			compatible = "qcom,scorpion";
 			enable-method = "qcom,gcc-msm8660";
 			device_type = "cpu";
 			reg = <0>;
 			next-level-cache = <&l2>;
+			clocks = <&apcs0>;
+			clock-names = "cpu";
+			operating-points-v2 = <&cpu_opp_table>;
+			qcom,saw = <&saw0>;
+			cpu-supply = <&saw0_reg>;
 		};
 
-		cpu@1 {
+		cpu1: cpu@1 {
 			compatible = "qcom,scorpion";
 			enable-method = "qcom,gcc-msm8660";
 			device_type = "cpu";
 			reg = <1>;
 			next-level-cache = <&l2>;
+			clocks = <&apcs1>;
+			clock-names = "cpu";
+			operating-points-v2 = <&cpu_opp_table>;
+			qcom,saw = <&saw1>;
+			cpu-supply = <&saw1_reg>;
 		};
 
 		l2: l2-cache {
 			compatible = "cache";
 			cache-level = <2>;
 			cache-unified;
+		};
+	};
+
+	/*
+	 * CPU OPP (Operating Performance Points) table
+	 * Frequencies based on webOS acpuclock-8x60.c
+	 * Voltages are placeholders - actual voltage scaling requires
+	 * regulator support which is not yet implemented.
+	 */
+	cpu_opp_table: opp-table-cpu {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-384000000 {
+			opp-hz = /bits/ 64 <384000000>;
+			opp-microvolt = <875000>;
+			clock-latency-ns = <100000>;
+		};
+
+		opp-432000000 {
+			opp-hz = /bits/ 64 <432000000>;
+			opp-microvolt = <887500>;
+		};
+
+		opp-486000000 {
+			opp-hz = /bits/ 64 <486000000>;
+			opp-microvolt = <912500>;
+		};
+
+		opp-540000000 {
+			opp-hz = /bits/ 64 <540000000>;
+			opp-microvolt = <925000>;
+		};
+
+		opp-594000000 {
+			opp-hz = /bits/ 64 <594000000>;
+			opp-microvolt = <937500>;
+		};
+
+		opp-648000000 {
+			opp-hz = /bits/ 64 <648000000>;
+			opp-microvolt = <950000>;
+		};
+
+		opp-702000000 {
+			opp-hz = /bits/ 64 <702000000>;
+			opp-microvolt = <975000>;
+		};
+
+		opp-756000000 {
+			opp-hz = /bits/ 64 <756000000>;
+			opp-microvolt = <1000000>;
+		};
+
+		opp-810000000 {
+			opp-hz = /bits/ 64 <810000000>;
+			opp-microvolt = <1012500>;
+		};
+
+		opp-864000000 {
+			opp-hz = /bits/ 64 <864000000>;
+			opp-microvolt = <1037500>;
+		};
+
+		opp-918000000 {
+			opp-hz = /bits/ 64 <918000000>;
+			opp-microvolt = <1062500>;
+		};
+
+		opp-972000000 {
+			opp-hz = /bits/ 64 <972000000>;
+			opp-microvolt = <1087500>;
+		};
+
+		opp-1026000000 {
+			opp-hz = /bits/ 64 <1026000000>;
+			opp-microvolt = <1125000>;
+		};
+
+		opp-1080000000 {
+			opp-hz = /bits/ 64 <1080000000>;
+			opp-microvolt = <1137500>;
+		};
+
+		opp-1134000000 {
+			opp-hz = /bits/ 64 <1134000000>;
+			opp-microvolt = <1162500>;
+		};
+
+		opp-1188000000 {
+			opp-hz = /bits/ 64 <1188000000>;
+			opp-microvolt = <1187500>;
+		};
+
+		opp-1512000000 {
+			opp-hz = /bits/ 64 <1512000000>;
+			opp-microvolt = <1250000>;
 		};
 	};
 
@@ -135,6 +242,58 @@
 			reg = <0x02000000 0x100>;
 			clock-frequency = <27000000>;
 			cpu-offset = <0x40000>;
+		};
+
+		/*
+		 * APCS (Application Processor Clock System) nodes
+		 * Provide CPU clocks for frequency scaling via cpufreq-dt
+		 * TEMPORARILY DISABLED for debugging
+		 */
+		apcs0: clock-controller@2041000 {
+			compatible = "qcom,apq8060-apcs", "qcom,msm8660-apcs";
+			reg = <0x02041000 0x1000>,
+			      <0x00903200 0x100>;
+			reg-names = "acc", "scpll";
+			#clock-cells = <0>;
+			clock-output-names = "cpu0_clk";
+		};
+
+		apcs1: clock-controller@2051000 {
+			compatible = "qcom,apq8060-apcs", "qcom,msm8660-apcs";
+			reg = <0x02051000 0x1000>,
+			      <0x00903300 0x100>;
+			reg-names = "acc", "scpll";
+			#clock-cells = <0>;
+			clock-output-names = "cpu1_clk";
+		};
+
+		/*
+		 * SAW (Subsystem/Analog Wrapper) power managers for CPU cores.
+		 * Controls the PM8901 S0/S1 FTSMPS regulators for Scorpion cores
+		 * via PM8901 SMPS Band 2 (700mV-1400mV, 12.5mV steps).
+		 */
+		saw0: power-manager@2042000 {
+			compatible = "qcom,apq8060-saw2-v1.1-cpu",
+				     "qcom,msm8660-saw2-v1.1-cpu";
+			reg = <0x02042000 0x1000>;
+
+			saw0_reg: regulator {
+				regulator-name = "cpu0_vdd";
+				regulator-min-microvolt = <840000>;
+				regulator-max-microvolt = <1250000>;
+			};
+		};
+
+		saw1: power-manager@2052000 {
+			compatible = "qcom,apq8060-saw2-v1.1-cpu",
+				     "qcom,msm8660-saw2-v1.1-cpu";
+			reg = <0x02052000 0x1000>;
+
+			saw1_reg: regulator {
+				regulator-name = "cpu1_vdd";
+				regulator-min-microvolt = <840000>;
+				regulator-max-microvolt = <1250000>;
+			};
 		};
 
 		tlmm: pinctrl@800000 {

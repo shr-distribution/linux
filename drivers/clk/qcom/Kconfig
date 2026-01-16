@@ -1532,6 +1532,22 @@ config QCOM_HFPLL
 	  Say Y if you want to support CPU frequency scaling on devices
 	  such as MSM8974, APQ8084, etc.
 
+config QCOM_SCPLL
+	tristate "Scorpion PLL (SCPLL) Clock Controller"
+	help
+	  Support for the Scorpion PLLs present on Qualcomm MSM8x60/APQ8060
+	  devices. Each CPU core and L2 cache has its own SCPLL instance.
+	  Say Y if you want to support CPU frequency scaling on devices
+	  such as MSM8660, APQ8060 (HP TouchPad).
+
+config QCOM_APCS_MSM8660
+	tristate "APQ8060/MSM8660 APCS Clock Controller"
+	help
+	  Support for the Application Processor Clock System on Qualcomm
+	  APQ8060/MSM8660 devices (e.g., HP TouchPad). This provides CPU
+	  clock control including SCPLL and source mux management.
+	  Say Y if you want to support CPU frequency scaling on these devices.
+
 config KPSS_XCC
 	tristate "KPSS Clock Controller"
 	help
