@@ -196,26 +196,27 @@ static int scpll_change_freq(void __iomem *base, u32 l_val)
 	regval = (l_val << 3) | SCPLL_COMPLEX_SLEW;
 	writel(regval, base + SCPLL_FSM_CTL_EXT);
 	writel(SCPLL_NORMAL, base + SCPLL_CTL);
+	mb();
 
-	/* Wait for frequency switch to start */
-	timeout = 100;
+	/* Wait for frequency switch to start (~50us typical, 1ms timeout) */
+	timeout = 1000;
 	do {
 		ctl_val = readl(base + SCPLL_CTL);
 		if (((ctl_val >> 3) & 0x3f) == l_val)
 			break;
-		cpu_relax();
+		udelay(1);
 	} while (--timeout > 0);
 
 	if (timeout == 0)
 		return -ETIMEDOUT;
 
-	/* Wait for frequency switch to finish */
-	timeout = 100;
+	/* Wait for frequency switch to finish (~50us typical, 1ms timeout) */
+	timeout = 1000;
 	do {
 		status = readl(base + SCPLL_STATUS);
 		if (!(status & 0x1))
 			break;
-		cpu_relax();
+		udelay(1);
 	} while (--timeout > 0);
 
 	return (timeout > 0) ? 0 : -ETIMEDOUT;
