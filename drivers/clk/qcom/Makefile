@@ -14,7 +14,6 @@ clk-qcom-y += clk-regmap-mux-div.o
 clk-qcom-y += clk-regmap-phy-mux.o
 clk-qcom-$(CONFIG_KRAIT_CLOCKS) += clk-krait.o
 clk-qcom-y += clk-hfpll.o
-clk-qcom-y += clk-scpll.o
 clk-qcom-y += reset.o
 clk-qcom-$(CONFIG_QCOM_GDSC) += gdsc.o
 
@@ -189,6 +188,5 @@ obj-$(CONFIG_SM_VIDEOCC_MILOS) += videocc-milos.o
 obj-$(CONFIG_SPMI_PMIC_CLKDIV) += clk-spmi-pmic-div.o
 obj-$(CONFIG_KPSS_XCC) += kpss-xcc.o
 obj-$(CONFIG_QCOM_HFPLL) += hfpll.o
-obj-$(CONFIG_QCOM_SCPLL) += scpll.o
 obj-$(CONFIG_QCOM_APCS_MSM8660) += apcs-msm8660.o
 obj-$(CONFIG_KRAITCC) += krait-cc.o
