@@ -199,6 +199,258 @@ The following clocks from webOS 2.6 do not have direct equivalents in mainline:
 
 **None of these missing clocks should affect TouchPad functionality.**
 
+## Detailed Analysis of Missing Clocks
+
+This section provides a thorough analysis of each clock not found in mainline Linux 6.18, based on examination of the webOS 2.6 kernel source code.
+
+### 1. usb_phy0_clk - USB PHY Clock
+
+**Source Location:** `arch/arm/mach-msm/clock-8x60.c`, `drivers/usb/otg/msm72k_otg.c`
+
+**Function:**
+- NOT a clock for powering the USB PHY
+- Used exclusively for PHY **reset** operations via `clk_reset()` API
+- The driver calls `clk_reset(dev->phy_reset_clk, CLK_RESET_ASSERT/DEASSERT)` to reset the PHY
+
+**webOS Code:**
+```c
+// drivers/usb/otg/msm72k_otg.c
+dev->phy_reset_clk = clk_get(&pdev->dev, "usb_phy_clk");
+...
+rc = clk_reset(dev->phy_reset_clk, CLK_RESET_ASSERT);
+msleep(1);
+rc = clk_reset(dev->phy_reset_clk, !CLK_RESET_ASSERT);
+```
+
+**Mainline Equivalent:**
+- In mainline Linux, USB PHY reset is handled via the **reset controller framework**
+- The `phy-qcom-usb-hs.c` driver uses `devm_reset_control_get()` instead
+- Our device tree provides `resets = <&gcc USB_HS1_RESET>` for this purpose
+
+**Verdict: NOT NEEDED** - Functionality provided by reset controller framework.
+
+---
+
+### 2. pdm_clk - Pulse Density Modulation Clock
+
+**Source Location:** `arch/arm/mach-msm/clock-8x60.c` (register at 0x2CC0)
+
+**Function:**
+- PDM is a digital audio encoding technique used for some DAC implementations
+- Provides clock for PDM audio interface hardware
+- On MSM8660, defined with `NULL` device and `OFF` initial state
+
+**webOS Usage:**
+```c
+// devices-msm8x60.c - defined but not attached to any device
+CLK_8X60("pdm_clk", PDM_CLK, NULL, OFF),
+```
+
+**TouchPad Audio:**
+- The HP TouchPad uses WM8958 codec connected via I2S (codec_i2s_* clocks)
+- No PDM audio interface is used on the TouchPad
+- The pdm_clk is never enabled (enable count = 0 in running system)
+
+**Verdict: NOT NEEDED** - TouchPad uses I2S audio, not PDM.
+
+---
+
+### 3. tssc_clk - Touch Screen Sample Clock
+
+**Source Location:** `arch/arm/mach-msm/clock-8x60.c` (register at 0x2CA0)
+
+**Function:**
+- TSSC = Touch Screen Sample Controller
+- Built-in hardware controller for **resistive** touch panels
+- Provides sampling clock for analog touch digitization
+- Used on older Qualcomm devices (MSM7x27, QSD8x50, etc.)
+
+**webOS Definition:**
+```c
+// devices-msm8x60.c
+CLK_8X60("tssc_clk", TSSC_CLK, NULL, OFF),
+
+// clock-8x60.c - frequency table
+static struct clk_freq_tbl clk_tbl_tssc[] = {
+    F_TSSC(       0, gnd,  1, 0, 0),
+    F_TSSC(27000000, pxo,  1, 0, 0),
+    F_END
+};
+```
+
+**TouchPad Touch Screen:**
+- HP TouchPad uses **Cypress CY8CTMA395 capacitive** touchscreen
+- Communicates via UART at 4 Mbps (GSBI10), not TSSC hardware
+- The TSSC controller is completely unused on TouchPad
+
+**Verdict: NOT NEEDED** - TouchPad uses UART-based capacitive touch, not TSSC.
+
+---
+
+### 4. ppss_p_clk - Peripheral Processor Subsystem AHB Clock
+
+**Source Location:** `arch/arm/mach-msm/clock-8x60.c`, `arch/arm/mach-msm/msm_dsps.c`
+
+**Function:**
+- PPSS = Peripheral Processor Subsystem
+- Part of DSPS (Digital Signal Processor Subsystem)
+- Used for sensor hub functionality (accelerometer, gyroscope processing)
+- Provides low-power sensor data processing independently of main CPU
+
+**webOS Definition:**
+```c
+// devices-msm8x60.c
+CLK_8X60("ppss_pclk", PPSS_P_CLK, NULL, OFF),
+
+// PPSS registers
+#define PPSS_REG_PHYS_BASE  0x12080000
+```
+
+**webOS Board Usage:**
+```c
+// board-tenderloin.c
+&msm_dsps_device,  // DSPS device included
+msm8x60_init_dsps();  // DSPS initialization called
+```
+
+**Mainline Status:**
+- DSPS/sensor hub support is not implemented in mainline for MSM8660
+- CONFIG_MSM_DSPS is not enabled in our defconfig
+- Sensors on TouchPad can work via standard I2C without DSPS
+
+**Verdict: NOT NEEDED** - DSPS not enabled; sensors work via standard I2C.
+
+---
+
+### 5. ce2_p_clk - Crypto Engine 2 AHB Clock
+
+**Source Location:** `arch/arm/mach-msm/clock-8x60.c` (register at 0x2740)
+
+**Function:**
+- CE2 = Hardware cryptographic accelerator
+- Provides AHB clock for crypto engine block
+- Used for hardware-accelerated AES, SHA, etc.
+
+**webOS Definition:**
+```c
+// devices-msm8x60.c
+CLK_8X60("ce_clk", CE2_P_CLK, NULL, OFF),
+
+// clock-8x60.c
+CLK_NORATE(CE2_P, CE2_HCLK_CTL_REG, BIT(4), NULL, 0, ...)
+```
+
+**TouchPad Usage:**
+- No crypto device registered in board-tenderloin.c
+- Crypto operations use software implementation
+- Clock never enabled on running system (enable count = 0)
+
+**Mainline Status:**
+- Hardware crypto could be added via qce (Qualcomm Crypto Engine) driver
+- Not critical for basic functionality
+- Software crypto is sufficient and available
+
+**Verdict: NOT NEEDED** - Software crypto sufficient; can be added later if desired.
+
+---
+
+### 6. dfab_sdc*_clk, dfab_usb_hs_clk - Daytona Fabric Bus Vote Clocks
+
+**Source Location:** `arch/arm/mach-msm/clock-voter.c`, `arch/arm/mach-msm/msm_bus/`
+
+**Function:**
+- "Voter" clocks for Daytona Fabric (DFAB) bandwidth
+- Each peripheral votes for required bus bandwidth
+- Examples: `dfab_sdc1_clk` votes on behalf of SDC1 controller
+
+**webOS Implementation:**
+```c
+// clock-voter.c - These are virtual voting clocks
+// They aggregate votes and set the actual dfab_clk rate
+struct clk_voter dfab_sdc1_clk = {
+    .parent = &dfab_clk,
+    .vote_rate = DFAB_SDC_RATE,
+};
+```
+
+**Mainline Equivalent:**
+- The **interconnect framework** replaces individual bus vote clocks
+- Peripherals specify bandwidth via device tree `interconnects` property
+- The framework aggregates requests and sets fabric clock rates
+
+**Example in mainline device tree:**
+```dts
+sdcc1: mmc@12400000 {
+    /* interconnect handled by fabric drivers */
+    clocks = <&gcc SDC1_CLK>, <&gcc SDC1_H_CLK>;
+};
+```
+
+**Verdict: NOT NEEDED** - Replaced by interconnect framework.
+
+---
+
+### 7. ebi_adm*_clk, ebi_msmbus_clk - EBI Voter Clocks
+
+**Source Location:** `arch/arm/mach-msm/clock-voter.c`
+
+**Function:**
+- Similar to dfab_* voter clocks but for EBI1 (External Bus Interface)
+- DMA controllers and bus masters vote for EBI bandwidth
+- Aggregates votes to set EBI1 clock rate
+
+**webOS Definition:**
+```c
+// devices-msm8x60.c
+CLK_VOTER("ebi1_msmbus_clk", EBI_MSMBUS_CLK, ...),
+CLK_VOTER("ebi1_adm_clk", EBI_ADM0_CLK, ...),
+CLK_VOTER("ebi1_adm_clk", EBI_ADM1_CLK, ...),
+```
+
+**Mainline Equivalent:**
+- EBI voting is handled by RPM clock controller
+- `RPM_EBI1_CLK` in clk-rpm.c provides the actual clock
+- Interconnect framework handles bandwidth requirements
+
+**Verdict: NOT NEEDED** - Handled by RPM clock controller and interconnect.
+
+---
+
+### 8. amp_clk - Audio Multiplexer/Amplifier Clock
+
+**Source Location:** `arch/arm/mach-msm/clock-8x60.c`
+
+**Function:**
+- Related to audio amplifier or multiplexer hardware
+- Part of MMSS (MultiMedia SubSystem)
+- Enable count shows 0xFFFFFFFF (-1), suggesting special handling
+
+**webOS Definition:**
+```c
+CLK_8X60("amp_clk", AMP_CLK, NULL, OFF),
+```
+
+**Mainline Equivalent:**
+- `amp_ahb_clk` exists in mmcc-msm8960.c
+- The unusual enable count on running system suggests hardware quirk
+
+**Verdict: LIKELY NOT NEEDED** - May be handled differently or unused.
+
+---
+
+## Summary Table: Missing Clocks Analysis
+
+| Clock | Category | Function | TouchPad Need | Mainline Alternative |
+|-------|----------|----------|---------------|---------------------|
+| usb_phy0_clk | Reset | USB PHY reset | NO | Reset controller |
+| pdm_clk | Audio | PDM audio interface | NO | Uses I2S instead |
+| tssc_clk | Touch | Resistive touch sampling | NO | Uses UART capacitive |
+| ppss_p_clk | Sensor | DSPS sensor hub | NO | Direct I2C sensors |
+| ce2_p_clk | Crypto | Hardware crypto | NO | Software crypto |
+| dfab_*_clk | Bus | Per-device bus votes | NO | Interconnect framework |
+| ebi_*_clk | Bus | EBI bus votes | NO | RPM + Interconnect |
+| amp_clk | Audio | Audio amplifier | UNLIKELY | amp_ahb_clk in MMCC |
+
 ## Complete Clock List from webOS 2.6
 
 For reference, here is the complete list of 171 clocks enumerated from the running webOS system:
