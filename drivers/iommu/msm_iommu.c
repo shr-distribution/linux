@@ -753,6 +753,10 @@ static int msm_iommu_probe(struct platform_device *pdev)
 	}
 	iommu->ncb = val;
 
+	ret = __enable_clocks(iommu);
+	if (ret)
+		return dev_err_probe(iommu->dev, ret, "could not enable clocks\n");
+
 	msm_iommu_reset(iommu->base, iommu->ncb);
 	SET_M(iommu->base, 0, 1);
 	SET_PAR(iommu->base, 0, 0);
@@ -761,6 +765,8 @@ static int msm_iommu_probe(struct platform_device *pdev)
 	par = GET_PAR(iommu->base, 0);
 	SET_V2PCFG(iommu->base, 0, 0);
 	SET_M(iommu->base, 0, 0);
+
+	__disable_clocks(iommu);
 
 	if (!par) {
 		pr_err("Invalid PAR value detected\n");
@@ -800,6 +806,7 @@ static int msm_iommu_probe(struct platform_device *pdev)
 
 static const struct of_device_id msm_iommu_dt_match[] = {
 	{ .compatible = "qcom,apq8064-iommu" },
+	{ .compatible = "qcom,msm8660-iommu" },
 	{}
 };
 
