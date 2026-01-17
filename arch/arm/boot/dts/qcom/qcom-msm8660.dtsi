@@ -345,6 +345,36 @@
 			clock-names = "pxo", "pll8_vote", "mmfab";
 		};
 
+		/*
+		 * MDP IOMMU instances for display memory virtualization.
+		 * Each MDP port has its own IOMMU for address translation.
+		 */
+		mdp_port0_iommu: iommu@7500000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07500000 0x100000>;
+			interrupts = <GIC_SPI 64 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc MDP_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
+		mdp_port1_iommu: iommu@7600000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07600000 0x100000>;
+			interrupts = <GIC_SPI 62 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 61 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc MDP_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
 		lcc: clock-controller@28000000 {
 			compatible = "qcom,lcc-msm8660", "syscon";
 			reg = <0x28000000 0x1000>;
