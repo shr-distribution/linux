@@ -119,7 +119,8 @@ static void unref_cursor_worker(struct drm_flip_work *work, void *val)
 	struct mdp4_kms *mdp4_kms = get_kms(&mdp4_crtc->base);
 	struct msm_kms *kms = &mdp4_kms->base.base;
 
-	msm_gem_unpin_iova(val, kms->vm);
+	if (kms->vm)
+		msm_gem_unpin_iova(val, kms->vm);
 	drm_gem_object_put(val);
 }
 
@@ -365,7 +366,7 @@ static void update_cursor(struct drm_crtc *crtc)
 		struct drm_gem_object *prev_bo = mdp4_crtc->cursor.scanout_bo;
 		uint64_t iova = mdp4_crtc->cursor.next_iova;
 
-		if (next_bo) {
+		if (next_bo && kms->vm) {
 			/* take a obj ref + iova ref when we start scanning out: */
 			drm_gem_object_get(next_bo);
 			msm_gem_get_and_pin_iova(next_bo, kms->vm, &iova);
@@ -415,6 +416,12 @@ static int mdp4_crtc_cursor_set(struct drm_crtc *crtc,
 	if ((width > CURSOR_WIDTH) || (height > CURSOR_HEIGHT)) {
 		DRM_DEV_ERROR(dev->dev, "bad cursor size: %dx%d\n", width, height);
 		return -EINVAL;
+	}
+
+	/* Cursor requires IOMMU for IOVA mapping */
+	if (!kms->vm) {
+		DRM_DEV_DEBUG(dev->dev, "cursor not supported without IOMMU\n");
+		return -ENODEV;
 	}
 
 	if (handle) {

@@ -195,8 +195,13 @@ struct drm_gpuvm *msm_kms_init_vm(struct drm_device *dev, struct device *mdss_de
 	else if (mdss_dev && device_iommu_mapped(mdss_dev))
 		iommu_dev = mdss_dev;
 	else {
-		drm_info(dev, "no IOMMU, bailing out\n");
-		return ERR_PTR(-ENODEV);
+		/*
+		 * No IOMMU available - return NULL to indicate we're operating
+		 * without IOMMU. Legacy SoCs like MSM8660 can work without IOMMU
+		 * but with reduced functionality (no cursor, limited GEM).
+		 */
+		drm_info(dev, "no IOMMU, continuing without virtual address space\n");
+		return NULL;
 	}
 
 	mmu = msm_iommu_disp_new(iommu_dev, 0);

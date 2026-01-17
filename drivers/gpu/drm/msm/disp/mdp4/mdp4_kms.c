@@ -124,9 +124,11 @@ static void mdp4_destroy(struct msm_kms *kms)
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
 	struct device *dev = mdp4_kms->dev->dev;
 
-	if (mdp4_kms->blank_cursor_iova)
-		msm_gem_unpin_iova(mdp4_kms->blank_cursor_bo, kms->vm);
-	drm_gem_object_put(mdp4_kms->blank_cursor_bo);
+	if (mdp4_kms->blank_cursor_bo) {
+		if (mdp4_kms->blank_cursor_iova && kms->vm)
+			msm_gem_unpin_iova(mdp4_kms->blank_cursor_bo, kms->vm);
+		drm_gem_object_put(mdp4_kms->blank_cursor_bo);
+	}
 
 	if (kms->vm) {
 		struct msm_mmu *mmu = to_msm_vm(kms->vm)->mmu;
@@ -463,6 +465,7 @@ static int mdp4_kms_init(struct drm_device *dev)
 		goto fail;
 	}
 
+	/* vm can be NULL if no IOMMU - that's OK for basic display */
 	kms->vm = vm;
 
 	ret = modeset_init(mdp4_kms);
@@ -471,19 +474,29 @@ static int mdp4_kms_init(struct drm_device *dev)
 		goto fail;
 	}
 
-	mdp4_kms->blank_cursor_bo = msm_gem_new(dev, SZ_16K, MSM_BO_WC | MSM_BO_SCANOUT);
-	if (IS_ERR(mdp4_kms->blank_cursor_bo)) {
-		ret = PTR_ERR(mdp4_kms->blank_cursor_bo);
-		DRM_DEV_ERROR(dev->dev, "could not allocate blank-cursor bo: %d\n", ret);
-		mdp4_kms->blank_cursor_bo = NULL;
-		goto fail;
-	}
+	/*
+	 * Blank cursor requires IOMMU for IOVA mapping.
+	 * Skip cursor support when running without IOMMU.
+	 */
+	if (kms->vm) {
+		mdp4_kms->blank_cursor_bo = msm_gem_new(dev, SZ_16K, MSM_BO_WC | MSM_BO_SCANOUT);
+		if (IS_ERR(mdp4_kms->blank_cursor_bo)) {
+			ret = PTR_ERR(mdp4_kms->blank_cursor_bo);
+			DRM_DEV_ERROR(dev->dev, "could not allocate blank-cursor bo: %d\n", ret);
+			mdp4_kms->blank_cursor_bo = NULL;
+			goto fail;
+		}
 
-	ret = msm_gem_get_and_pin_iova(mdp4_kms->blank_cursor_bo, kms->vm,
-			&mdp4_kms->blank_cursor_iova);
-	if (ret) {
-		DRM_DEV_ERROR(dev->dev, "could not pin blank-cursor bo: %d\n", ret);
-		goto fail;
+		ret = msm_gem_get_and_pin_iova(mdp4_kms->blank_cursor_bo, kms->vm,
+				&mdp4_kms->blank_cursor_iova);
+		if (ret) {
+			DRM_DEV_ERROR(dev->dev, "could not pin blank-cursor bo: %d\n", ret);
+			goto fail;
+		}
+	} else {
+		DRM_DEV_INFO(dev->dev, "no IOMMU, cursor support disabled\n");
+		mdp4_kms->blank_cursor_bo = NULL;
+		mdp4_kms->blank_cursor_iova = 0;
 	}
 
 	dev->mode_config.min_width = 0;
@@ -529,13 +542,14 @@ static int mdp4_setup_interconnect(struct platform_device *pdev)
 	}
 
 	/*
-	 * Set initial bandwidth. 6400 MBps peak is typical for display.
-	 * The interconnect framework will coordinate with other consumers.
+	 * Set initial bandwidth. 400 MBps is enough for 1024x768@60Hz.
+	 * Higher values may starve USB on shared fabric.
+	 * TODO: Calculate dynamically based on display mode.
 	 */
-	icc_set_bw(path0, 0, MBps_to_icc(6400));
+	icc_set_bw(path0, 0, MBps_to_icc(400));
 
 	if (!IS_ERR_OR_NULL(path1))
-		icc_set_bw(path1, 0, MBps_to_icc(6400));
+		icc_set_bw(path1, 0, MBps_to_icc(400));
 
 	return 0;
 }
@@ -546,10 +560,8 @@ static int mdp4_probe(struct platform_device *pdev)
 	struct mdp4_kms *mdp4_kms;
 	int irq, ret;
 
-	/* Set up interconnect bandwidth before anything else */
-	ret = mdp4_setup_interconnect(pdev);
-	if (ret)
-		return ret;
+	/* DEBUG: Test USB step by step */
+	dev_info(&pdev->dev, "MDP4: Step 1 - alloc, ioremap, get_irq\n");
 
 	mdp4_kms = devm_kzalloc(dev, sizeof(*mdp4_kms), GFP_KERNEL);
 	if (!mdp4_kms)
@@ -586,15 +598,17 @@ static int mdp4_probe(struct platform_device *pdev)
 	if (IS_ERR(mdp4_kms->axi_clk))
 		return dev_err_probe(dev, PTR_ERR(mdp4_kms->axi_clk), "failed to get axi_clk\n");
 
-	/*
-	 * This is required for revn >= 2. Handle errors here and let the kms
-	 * init bail out if the clock is not provided.
-	 */
 	mdp4_kms->lut_clk = devm_clk_get_optional(&pdev->dev, "lut_clk");
 	if (IS_ERR(mdp4_kms->lut_clk))
 		return dev_err_probe(dev, PTR_ERR(mdp4_kms->lut_clk), "failed to get lut_clk\n");
 
+	/* DEBUG: Step 3 - calling msm_drv_probe */
+	dev_info(&pdev->dev, "MDP4: Step 3 - calling msm_drv_probe\n");
 	return msm_drv_probe(&pdev->dev, mdp4_kms_init, &mdp4_kms->base.base);
+
+#if 0  /* Disabled for USB debug */
+	return msm_drv_probe(&pdev->dev, mdp4_kms_init, &mdp4_kms->base.base);
+#endif  /* USB debug */
 }
 
 static void mdp4_remove(struct platform_device *pdev)

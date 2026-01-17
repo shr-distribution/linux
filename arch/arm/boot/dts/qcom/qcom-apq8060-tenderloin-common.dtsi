@@ -886,7 +886,7 @@
 	};
 
 	lg_panel: panel {
-		compatible = "lg,xga";
+		compatible = "panel-lvds";
 
 		// reset-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;
 		// shdn??-gpios = <&tlmm 63 GPIO_ACTIVE_HIGH>;
@@ -901,6 +901,9 @@
 
 		width-mm = <272>;
 		height-mm = <181>;
+
+		/* VESA 24-bit RGB data mapping for LG XGA panel */
+		data-mapping = "vesa-24";
 
 		panel-timing {
 			clock-frequency = <96000000>;
@@ -2177,6 +2180,21 @@
 			codec {
 				sound-dai = <&wm8958>;
 			};
+		};
+	};
+};
+
+/* Add ramoops for persistent kernel crash logs */
+/ {
+	reserved-memory {
+		ramoops@7f400000 {
+			compatible = "ramoops";
+			reg = <0x7f400000 0x40000>;  /* 256KB at end of RAM */
+			record-size = <0x8000>;       /* 32KB per oops record */
+			console-size = <0x20000>;     /* 128KB for console log */
+			ftrace-size = <0x8000>;       /* 32KB for ftrace */
+			pmsg-size = <0x8000>;         /* 32KB for pmsg */
+			ecc-size = <0>;               /* No ECC for speed */
 		};
 	};
 };
