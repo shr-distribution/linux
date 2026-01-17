@@ -338,6 +338,8 @@ CLK_8X60("ce_clk", CE2_P_CLK, NULL, OFF),
 
 // clock-8x60.c
 CLK_NORATE(CE2_P, CE2_HCLK_CTL_REG, BIT(4), NULL, 0, ...)
+#define CE2_HCLK_CTL_REG        REG(0x2740)
+// Halt register: CLK_HALT_CFPB_STATEC_REG (0x2fd4), bit 0
 ```
 
 **TouchPad Usage:**
@@ -346,11 +348,14 @@ CLK_NORATE(CE2_P, CE2_HCLK_CTL_REG, BIT(4), NULL, 0, ...)
 - Clock never enabled on running system (enable count = 0)
 
 **Mainline Status:**
-- Hardware crypto could be added via qce (Qualcomm Crypto Engine) driver
-- Not critical for basic functionality
-- Software crypto is sufficient and available
+- **Clock Added:** `ce2_h_clk` added to `drivers/clk/qcom/gcc-msm8660.c` (commit b4d2b1906599)
+- **No Driver Support:** The mainline QCE driver (`drivers/crypto/qce/`) only supports crypto engine v5.1+ (MSM8996, SDM845, etc.)
+- MSM8660's CE2 is an older hardware version not supported by the mainline driver
+- The clock definition is useful for completeness but has no consumer
 
-**Verdict: NOT NEEDED** - Software crypto sufficient; can be added later if desired.
+**Device Tree:** Not needed - no mainline driver supports MSM8660 crypto hardware.
+
+**Verdict: CLOCK ADDED, NO DT NEEDED** - Clock exists for completeness; no driver to consume it.
 
 ---
 
@@ -421,35 +426,59 @@ CLK_VOTER("ebi1_adm_clk", EBI_ADM1_CLK, ...),
 **Source Location:** `arch/arm/mach-msm/clock-8x60.c`
 
 **Function:**
-- Related to audio amplifier or multiplexer hardware
-- Part of MMSS (MultiMedia SubSystem)
-- Enable count shows 0xFFFFFFFF (-1), suggesting special handling
+- AMP = Amplifier block in MMSS (MultiMedia SubSystem)
+- Part of the DSI (Display Serial Interface) subsystem
+- Enable count shows 0xFFFFFFFF (-1), suggesting always-on or special handling
 
 **webOS Definition:**
 ```c
+// devices-msm8x60.c
 CLK_8X60("amp_clk", AMP_CLK, NULL, OFF),
+
+// clock-8x60.c - in AHB_EN_REG (MMSS domain)
+// Bit 24 in REG_MM(0x0008)
 ```
 
-**Mainline Equivalent:**
-- `amp_ahb_clk` exists in mmcc-msm8960.c
-- The unusual enable count on running system suggests hardware quirk
+**Mainline Status:**
+- **Already Present:** `amp_ahb_clk` exists in `drivers/clk/qcom/mmcc-msm8960.c`
+- Clock index: `AMP_AHB_CLK` in `include/dt-bindings/clock/qcom,mmcc-msm8960.h`
+- Used by DSI display interface on APQ8064 and similar SoCs
 
-**Verdict: LIKELY NOT NEEDED** - May be handled differently or unused.
+**APQ8064 DSI Usage Example:**
+```dts
+// arch/arm/boot/dts/qcom/qcom-apq8064.dtsi
+dsi0: dsi@4700000 {
+    clocks = <&mmcc DSI_M_AHB_CLK>,
+             <&mmcc DSI_S_AHB_CLK>,
+             <&mmcc AMP_AHB_CLK>,   // <-- AMP clock for DSI
+             <&mmcc DSI_CLK>,
+             ...
+};
+```
+
+**TouchPad Usage:**
+- HP TouchPad uses **LCDC** (parallel interface), not DSI
+- The MDP node already has all required clocks for LCDC output
+- AMP_AHB_CLK is not needed for LCDC-based displays
+
+**Device Tree:** Not needed - TouchPad uses LCDC, not DSI.
+
+**Verdict: ALREADY IN MAINLINE, NO DT NEEDED** - Clock exists; not used by LCDC displays.
 
 ---
 
 ## Summary Table: Missing Clocks Analysis
 
-| Clock | Category | Function | TouchPad Need | Mainline Alternative |
-|-------|----------|----------|---------------|---------------------|
-| usb_phy0_clk | Reset | USB PHY reset | NO | Reset controller |
-| pdm_clk | Audio | PDM audio interface | NO | Uses I2S instead |
-| tssc_clk | Touch | Resistive touch sampling | NO | Uses UART capacitive |
-| ppss_p_clk | Sensor | DSPS sensor hub | NO | Direct I2C sensors |
-| ce2_p_clk | Crypto | Hardware crypto | NO | Software crypto |
-| dfab_*_clk | Bus | Per-device bus votes | NO | Interconnect framework |
-| ebi_*_clk | Bus | EBI bus votes | NO | RPM + Interconnect |
-| amp_clk | Audio | Audio amplifier | UNLIKELY | amp_ahb_clk in MMCC |
+| Clock | Category | Function | Mainline Status | DT Needed |
+|-------|----------|----------|-----------------|-----------|
+| usb_phy0_clk | Reset | USB PHY reset | Reset controller | NO |
+| pdm_clk | Audio | PDM audio interface | Not needed (I2S used) | NO |
+| tssc_clk | Touch | Resistive touch sampling | Not needed (UART touch) | NO |
+| ppss_p_clk | Sensor | DSPS sensor hub | Not needed (I2C sensors) | NO |
+| ce2_p_clk | Crypto | Hardware crypto | **ADDED** as ce2_h_clk | NO (no driver) |
+| dfab_*_clk | Bus | Per-device bus votes | Interconnect framework | NO |
+| ebi_*_clk | Bus | EBI bus votes | RPM + Interconnect | NO |
+| amp_clk | Audio | DSI amplifier | **EXISTS** as amp_ahb_clk | NO (LCDC used)
 
 ## Complete Clock List from webOS 2.6
 
@@ -501,6 +530,47 @@ vfe_axi_clk           vfe_clk               vfe_p_clk             vpe_axi_clk
 vpe_clk               vpe_p_clk
 ```
 
+## Device Tree Requirements
+
+Investigation of whether the "missing" clocks need device tree entries:
+
+### CE2_H_CLK (Crypto Engine 2)
+
+**Clock Status:** Added to `drivers/clk/qcom/gcc-msm8660.c`
+
+**DT Required:** NO
+
+**Reason:** The mainline QCE driver (`drivers/crypto/qce/`) only supports crypto engine v5.1 and later. Compatible SoCs include:
+- qcom,ipq4019-qce
+- qcom,msm8996-qce
+- qcom,sdm845-qce
+- qcom,sm8150-qce (and newer)
+
+MSM8660's CE2 is an older hardware version (pre-v5) that would require a separate driver to be written. The clock is defined for completeness but has no consumer.
+
+### AMP_AHB_CLK (DSI Amplifier)
+
+**Clock Status:** Already exists in `drivers/clk/qcom/mmcc-msm8960.c`
+
+**DT Required:** NO
+
+**Reason:** This clock is used by the DSI (Display Serial Interface) controller. The HP TouchPad uses LCDC (parallel RGB interface) for its display, not DSI. The MDP node in the device tree already has all required clocks:
+
+```dts
+mdp: mdp@5100000 {
+    clocks = <&mmcc MDP_CLK>,
+             <&mmcc MDP_AHB_CLK>,
+             <&mmcc MDP_AXI_CLK>,
+             <&mmcc HDMI_TV_CLK>,
+             <&mmcc MDP_TV_CLK>,
+             <&mmcc MDP_LCDC_CLK>;  // LCDC output
+    clock-names = "core_clk", "iface_clk", "bus_clk",
+                  "hdmi_clk", "tv_clk", "lcdc_clk";
+};
+```
+
+No additional clocks are needed for LCDC-based display output.
+
 ## Conclusions
 
 1. **Clock infrastructure is complete** - All critical clocks for TouchPad operation exist in mainline Linux 6.18
@@ -514,6 +584,12 @@ vpe_clk               vpe_p_clk
 5. **Display clocks present** - MDP, pixel, and LCDC clocks available via MMCC
 
 6. **No blocking issues** - Missing clocks (pdm, tssc, etc.) are not needed for TouchPad functionality
+
+7. **CE2 clock added** - `ce2_h_clk` added to gcc-msm8660.c for completeness, but no driver support exists for MSM8660's older crypto hardware
+
+8. **AMP clock already present** - `amp_ahb_clk` exists in MMCC but is not needed for LCDC displays (only DSI)
+
+9. **No device tree changes required** - Neither CE2 nor AMP clocks need DT entries for TouchPad
 
 ## Recommendations
 
