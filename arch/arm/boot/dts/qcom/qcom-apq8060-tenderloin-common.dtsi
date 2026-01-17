@@ -1020,10 +1020,10 @@
 		bias-disable;
 	};
 
-	/* GPS UART pins (GSBI5) */
+	/* GPS UART pins - gpio103-106 use gsbi11 function per pinctrl driver */
 	gsbi5_uart_pins: uart5-state {
 		pins = "gpio103", "gpio104", "gpio105", "gpio106";
-		function = "gsbi5";
+		function = "gsbi11";
 		drive-strength = <8>;
 		bias-disable;
 	};
