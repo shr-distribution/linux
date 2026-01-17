@@ -1403,6 +1403,14 @@ static const struct freq_tbl clk_tbl_mdp_pixel[] = {
 	{  65000000, P_PLL8, 1, 13,  76 },
 	{  74250000, P_PLL8, 1, 99, 512 },
 	{  83950000, P_PLL8, 1,  1,   5 },
+	/*
+	 * TODO: HP TouchPad needs 96MHz for its 1024x768 panel.
+	 * SHR kernel used these correct values (PLL8=384MHz):
+	 *   {  76800000, P_PLL8, 1, 1, 5 },  // 384 * 1/5 = 76.8 MHz
+	 *   {  96000000, P_PLL8, 1, 1, 4 },  // 384 * 1/4 = 96 MHz
+	 * But adding 96MHz breaks boot - needs investigation.
+	 * The mainline 83950000 value is incorrect (should be 76800000).
+	 */
 	{ }
 };
 
