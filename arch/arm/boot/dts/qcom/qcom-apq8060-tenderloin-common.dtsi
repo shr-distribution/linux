@@ -656,12 +656,10 @@
 					clocks = <&sleep_clk>, <&cxo_board>;
 					clock-names = "sleep", "ref";
 					/*
-					 * Use GCC reset directly instead of USB controller's
-					 * reset cell to break circular dependency:
-					 * USB needs PHY, PHY needed USB for reset
+					 * Reset is handled by parent USB controller.
+					 * Using separate reset from GCC causes conflict
+					 * since USB controller already owns USB_HS1_RESET.
 					 */
-					resets = <&gcc USB_HS1_RESET>;
-					reset-names = "por";
 					#phy-cells = <0>;
 				};
 			};
