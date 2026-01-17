@@ -245,12 +245,10 @@ static int qcom_usb_hs_phy_probe(struct ulpi *ulpi)
 	if (IS_ERR(reg))
 		return PTR_ERR(reg);
 
-	uphy->reset = reset = devm_reset_control_get(&ulpi->dev, "por");
-	if (IS_ERR(reset)) {
-		if (PTR_ERR(reset) == -EPROBE_DEFER)
-			return PTR_ERR(reset);
-		uphy->reset = NULL;
-	}
+	uphy->reset = reset = devm_reset_control_get_optional_exclusive(&ulpi->dev, "por");
+	if (IS_ERR(reset))
+		return dev_err_probe(&ulpi->dev, PTR_ERR(reset),
+				     "failed to get reset control\n");
 
 	uphy->phy = devm_phy_create(&ulpi->dev, ulpi->dev.of_node,
 				    &qcom_usb_hs_phy_ops);
