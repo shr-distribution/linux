@@ -58,6 +58,11 @@ struct msm_iommu_dev {
 	DECLARE_BITMAP(context_map, IOMMU_MAX_CBS);
 
 	struct iommu_device iommu;
+
+	/* Track if IOMMU has been reset - deferred to first attach to avoid
+	 * disrupting bootloader display output that uses this memory path.
+	 */
+	bool reset_done;
 };
 
 /**

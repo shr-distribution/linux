@@ -412,6 +412,12 @@ static int msm_iommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 			if (ret)
 				goto fail;
 
+			/* Perform deferred IOMMU reset on first attach */
+			if (!iommu->reset_done) {
+				msm_iommu_reset(iommu->base, iommu->ncb);
+				iommu->reset_done = true;
+			}
+
 			list_for_each_entry(master, &iommu->ctx_list, list) {
 				if (master->num) {
 					dev_err(dev, "domain already attached");
@@ -715,7 +721,7 @@ static int msm_iommu_probe(struct platform_device *pdev)
 	struct resource *r;
 	resource_size_t ioaddr;
 	struct msm_iommu_dev *iommu;
-	int ret, par, val;
+	int ret, val;
 
 	iommu = devm_kzalloc(&pdev->dev, sizeof(*iommu), GFP_KERNEL);
 	if (!iommu)
@@ -753,25 +759,13 @@ static int msm_iommu_probe(struct platform_device *pdev)
 	}
 	iommu->ncb = val;
 
-	ret = __enable_clocks(iommu);
-	if (ret)
-		return dev_err_probe(iommu->dev, ret, "could not enable clocks\n");
-
-	msm_iommu_reset(iommu->base, iommu->ncb);
-	SET_M(iommu->base, 0, 1);
-	SET_PAR(iommu->base, 0, 0);
-	SET_V2PCFG(iommu->base, 0, 1);
-	SET_V2PPR(iommu->base, 0, 0);
-	par = GET_PAR(iommu->base, 0);
-	SET_V2PCFG(iommu->base, 0, 0);
-	SET_M(iommu->base, 0, 0);
-
-	__disable_clocks(iommu);
-
-	if (!par) {
-		pr_err("Invalid PAR value detected\n");
-		return -ENODEV;
-	}
+	/*
+	 * Defer IOMMU reset to first device attach. This prevents disruption
+	 * of bootloader display output which may be using memory paths that
+	 * go through this IOMMU. The MDP display controller disables its
+	 * output before attaching to IOMMU, so reset at attach time is safe.
+	 */
+	iommu->reset_done = false;
 
 	ret = devm_request_threaded_irq(iommu->dev, iommu->irq, NULL,
 					msm_iommu_fault_handler,

@@ -777,6 +777,12 @@
 					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "mdp0-mem", "mdp1-mem";
 
+			/* MDP IOMMU for display memory virtualization */
+			iommus = <&mdp_port0_iommu 0>,
+				 <&mdp_port0_iommu 2>,
+				 <&mdp_port1_iommu 0>,
+				 <&mdp_port1_iommu 2>;
+
 			ports {
 				#address-cells = <1>;
 				#size-cells = <0>;
