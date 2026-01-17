@@ -1403,7 +1403,6 @@ static const struct freq_tbl clk_tbl_mdp_pixel[] = {
 	{  65000000, P_PLL8, 1, 13,  76 },
 	{  74250000, P_PLL8, 1, 99, 512 },
 	{  83950000, P_PLL8, 1,  1,   5 },
-	{  96000000, P_PLL8, 1,  1,   4 },  /* HP TouchPad LCDC panel */
 	{ }
 };
 
