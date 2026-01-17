@@ -11,6 +11,7 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/types.h>
 #include <crypto/algapi.h>
@@ -20,11 +21,18 @@
 #include "cipher.h"
 #include "sha.h"
 #include "aead.h"
-
 #define QCE_MAJOR_VERSION5	0x05
 #define QCE_QUEUE_LENGTH	1
 
 #define QCE_DEFAULT_MEM_BANDWIDTH	393600
+
+/* CE2 uses ADM DMA with smaller burst size than BAM */
+#define CE2_ADM_BURST_SIZE	64
+
+/* Driver data for different CE versions */
+struct qce_driver_data {
+	enum qce_version version;
+};
 
 static const struct qce_algo_ops *qce_ops[] = {
 #ifdef CONFIG_CRYPTO_DEV_QCE_SKCIPHER
@@ -155,6 +163,19 @@ static int qce_check_version(struct qce_device *qce)
 {
 	u32 major, minor, step;
 
+	if (qce->version == QCE_VERSION_CE2) {
+		/*
+		 * CE2 doesn't have a version register at offset 0x000.
+		 * Version is read from STATUS register bits 31-28.
+		 * We trust the device tree compatible string for version.
+		 */
+		qce->burst_size = CE2_ADM_BURST_SIZE;
+		qce->pipe_pair_id = 0; /* CE2 uses ADM, not BAM pipe pairs */
+
+		dev_info(qce->dev, "Crypto Engine 2 (CE2) found\n");
+		return 0;
+	}
+
 	qce_get_version(qce, &major, &minor, &step);
 
 	/*
@@ -164,6 +185,7 @@ static int qce_check_version(struct qce_device *qce)
 	if (major != QCE_MAJOR_VERSION5 || minor == 0)
 		return -ENODEV;
 
+	qce->version = QCE_VERSION_5;
 	qce->burst_size = QCE_BAM_BURST_SIZE;
 
 	/*
@@ -190,6 +212,7 @@ static int qce_check_version(struct qce_device *qce)
 static int qce_crypto_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	const struct qce_driver_data *drvdata;
 	struct qce_device *qce;
 	int ret;
 
@@ -199,6 +222,11 @@ static int qce_crypto_probe(struct platform_device *pdev)
 
 	qce->dev = dev;
 	platform_set_drvdata(pdev, qce);
+
+	/* Get version from driver data if available */
+	drvdata = of_device_get_match_data(dev);
+	if (drvdata)
+		qce->version = drvdata->version;
 
 	qce->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(qce->base))
@@ -220,13 +248,20 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	if (IS_ERR(qce->bus))
 		return PTR_ERR(qce->bus);
 
+	/* Interconnect is optional - CE2 uses RPM for bus voting */
 	qce->mem_path = devm_of_icc_get(qce->dev, "memory");
-	if (IS_ERR(qce->mem_path))
-		return PTR_ERR(qce->mem_path);
+	if (IS_ERR(qce->mem_path)) {
+		if (PTR_ERR(qce->mem_path) != -ENODATA)
+			return PTR_ERR(qce->mem_path);
+		qce->mem_path = NULL;
+	}
 
-	ret = icc_set_bw(qce->mem_path, QCE_DEFAULT_MEM_BANDWIDTH, QCE_DEFAULT_MEM_BANDWIDTH);
-	if (ret)
-		return ret;
+	if (qce->mem_path) {
+		ret = icc_set_bw(qce->mem_path, QCE_DEFAULT_MEM_BANDWIDTH,
+				 QCE_DEFAULT_MEM_BANDWIDTH);
+		if (ret)
+			return ret;
+	}
 
 	ret = devm_qce_dma_request(qce->dev, &qce->dma);
 	if (ret)
@@ -249,10 +284,19 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	return devm_qce_register_algs(qce);
 }
 
+static const struct qce_driver_data qce_ce2_data = {
+	.version = QCE_VERSION_CE2,
+};
+
+static const struct qce_driver_data qce_v5_data = {
+	.version = QCE_VERSION_5,
+};
+
 static const struct of_device_id qce_crypto_of_match[] = {
-	{ .compatible = "qcom,crypto-v5.1", },
-	{ .compatible = "qcom,crypto-v5.4", },
-	{ .compatible = "qcom,qce", },
+	{ .compatible = "qcom,msm8660-qce", .data = &qce_ce2_data },
+	{ .compatible = "qcom,crypto-v5.1", .data = &qce_v5_data },
+	{ .compatible = "qcom,crypto-v5.4", .data = &qce_v5_data },
+	{ .compatible = "qcom,qce", .data = &qce_v5_data },
 	{}
 };
 MODULE_DEVICE_TABLE(of, qce_crypto_of_match);

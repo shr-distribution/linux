@@ -12,6 +12,16 @@
 #include "dma.h"
 
 /**
+ * enum qce_version - crypto engine hardware version
+ * @QCE_VERSION_CE2: Crypto Engine 2 (MSM8660/APQ8060)
+ * @QCE_VERSION_5: Crypto Engine v5.x (newer SoCs)
+ */
+enum qce_version {
+	QCE_VERSION_CE2 = 2,
+	QCE_VERSION_5 = 5,
+};
+
+/**
  * struct qce_device - crypto engine device structure
  * @queue: crypto request queue
  * @lock: the lock protects queue and req
@@ -26,6 +36,7 @@
  * @dma: pointer to dma data
  * @burst_size: the crypto burst size
  * @pipe_pair_id: which pipe pair id the device using
+ * @version: hardware version (CE2 or v5)
  * @async_req_enqueue: invoked by every algorithm to enqueue a request
  * @async_req_done: invoked by every algorithm to finish its request
  */
@@ -42,6 +53,7 @@ struct qce_device {
 	struct qce_dma_data dma;
 	int burst_size;
 	unsigned int pipe_pair_id;
+	enum qce_version version;
 	int (*async_req_enqueue)(struct qce_device *qce,
 				 struct crypto_async_request *req);
 	void (*async_req_done)(struct qce_device *qce, int ret);

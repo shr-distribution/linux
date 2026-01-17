@@ -15,8 +15,103 @@
 #include "common.h"
 #include "core.h"
 #include "regs-v5.h"
+#include "regs-ce2.h"
 #include "sha.h"
 #include "aead.h"
+
+/* Helper to check if this is CE2 hardware */
+static inline bool qce_is_ce2(struct qce_device *qce)
+{
+	return qce->version == QCE_VERSION_CE2;
+}
+
+/*
+ * CE2 register offset translation
+ * CE2 has different register layout than v5
+ */
+static inline u32 qce_reg_status(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_STATUS : REG_STATUS;
+}
+
+static inline u32 qce_reg_config(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_CONFIG : REG_CONFIG;
+}
+
+static inline u32 qce_reg_goproc(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_GOPROC : REG_GOPROC;
+}
+
+static inline u32 qce_reg_seg_size(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_SEG_SIZE : REG_SEG_SIZE;
+}
+
+static inline u32 qce_reg_encr_seg_cfg(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_ENCR_SEG_CFG : REG_ENCR_SEG_CFG;
+}
+
+static inline u32 qce_reg_encr_seg_size(struct qce_device *qce)
+{
+	/* CE2 combines size and start in ENCR_SEG_CFG */
+	return qce_is_ce2(qce) ? CE2_REG_ENCR_SEG_CFG : REG_ENCR_SEG_SIZE;
+}
+
+static inline u32 qce_reg_auth_seg_cfg(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_AUTH_SEG_CFG : REG_AUTH_SEG_CFG;
+}
+
+static inline u32 qce_reg_auth_seg_size(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_AUTH_SEG_CFG : REG_AUTH_SEG_SIZE;
+}
+
+static inline u32 qce_reg_cntr0_iv0(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_CNTR0_IV0 : REG_CNTR0_IV0;
+}
+
+static inline u32 qce_reg_cntr_mask(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_CNTR_MASK : REG_CNTR_MASK;
+}
+
+static inline u32 qce_reg_auth_iv0(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_AUTH_IV0 : REG_AUTH_IV0;
+}
+
+static inline u32 qce_reg_auth_bytecnt0(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_AUTH_BYTECNT0 : REG_AUTH_BYTECNT0;
+}
+
+/*
+ * CE2 uses AES round key registers at 0x200 for encryption keys.
+ * The key needs to be expanded before being written.
+ * For simplicity, we use the DES key registers for DES/3DES
+ * and round key registers for AES.
+ */
+static inline u32 qce_reg_encr_key0(struct qce_device *qce)
+{
+	/* For CE2, AES keys go to round key registers */
+	return qce_is_ce2(qce) ? CE2_REG_AES_RNDKEY0 : REG_ENCR_KEY0;
+}
+
+static inline u32 qce_reg_des_key0(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_DES_KEY0 : REG_ENCR_KEY0;
+}
+
+/* CE2 doesn't have separate auth key registers - uses auth IV */
+static inline u32 qce_reg_auth_key0(struct qce_device *qce)
+{
+	return qce_is_ce2(qce) ? CE2_REG_AUTH_IV0 : REG_AUTH_KEY0;
+}
 
 static inline u32 qce_read(struct qce_device *qce, u32 offset)
 {
@@ -48,18 +143,37 @@ qce_clear_array(struct qce_device *qce, u32 offset, unsigned int len)
 
 static u32 qce_config_reg(struct qce_device *qce, int little)
 {
-	u32 beats = (qce->burst_size >> 3) - 1;
-	u32 pipe_pair = qce->pipe_pair_id;
 	u32 config;
 
-	config = (beats << REQ_SIZE_SHIFT) & REQ_SIZE_MASK;
-	config |= BIT(MASK_DOUT_INTR_SHIFT) | BIT(MASK_DIN_INTR_SHIFT) |
-		  BIT(MASK_OP_DONE_INTR_SHIFT) | BIT(MASK_ERR_INTR_SHIFT);
-	config |= (pipe_pair << PIPE_SET_SELECT_SHIFT) & PIPE_SET_SELECT_MASK;
-	config &= ~HIGH_SPD_EN_N_SHIFT;
+	if (qce_is_ce2(qce)) {
+		/*
+		 * CE2 config register has different bit layout:
+		 * - No pipe pair select (uses ADM, not BAM)
+		 * - No request size (ADM handles this)
+		 * - Mask interrupts in config register
+		 */
+		config = BIT(CE2_MASK_DOUT_INTR_SHIFT) |
+			 BIT(CE2_MASK_DIN_INTR_SHIFT) |
+			 BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
+			 BIT(CE2_MASK_ERR_INTR_SHIFT);
+		/* Enable high speed mode */
+		config &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
+			    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
+			    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
+		/* Note: CE2 doesn't have little endian mode bit */
+	} else {
+		u32 beats = (qce->burst_size >> 3) - 1;
+		u32 pipe_pair = qce->pipe_pair_id;
 
-	if (little)
-		config |= BIT(LITTLE_ENDIAN_MODE_SHIFT);
+		config = (beats << REQ_SIZE_SHIFT) & REQ_SIZE_MASK;
+		config |= BIT(MASK_DOUT_INTR_SHIFT) | BIT(MASK_DIN_INTR_SHIFT) |
+			  BIT(MASK_OP_DONE_INTR_SHIFT) | BIT(MASK_ERR_INTR_SHIFT);
+		config |= (pipe_pair << PIPE_SET_SELECT_SHIFT) & PIPE_SET_SELECT_MASK;
+		config &= ~HIGH_SPD_EN_N_SHIFT;
+
+		if (little)
+			config |= BIT(LITTLE_ENDIAN_MODE_SHIFT);
+	}
 
 	return config;
 }
@@ -86,16 +200,24 @@ static void qce_setup_config(struct qce_device *qce)
 	config = qce_config_reg(qce, 0);
 
 	/* clear status */
-	qce_write(qce, REG_STATUS, 0);
-	qce_write(qce, REG_CONFIG, config);
+	qce_write(qce, qce_reg_status(qce), 0);
+	qce_write(qce, qce_reg_config(qce), config);
 }
 
 static inline void qce_crypto_go(struct qce_device *qce, bool result_dump)
 {
-	if (result_dump)
-		qce_write(qce, REG_GOPROC, BIT(GO_SHIFT) | BIT(RESULTS_DUMP_SHIFT));
-	else
-		qce_write(qce, REG_GOPROC, BIT(GO_SHIFT));
+	u32 val;
+
+	if (qce_is_ce2(qce)) {
+		/* CE2 just has a GO bit at position 0 */
+		qce_write(qce, qce_reg_goproc(qce), BIT(CE2_GO_SHIFT));
+	} else {
+		if (result_dump)
+			val = BIT(GO_SHIFT) | BIT(RESULTS_DUMP_SHIFT);
+		else
+			val = BIT(GO_SHIFT);
+		qce_write(qce, qce_reg_goproc(qce), val);
+	}
 }
 
 #if defined(CONFIG_CRYPTO_DEV_QCE_SHA) || defined(CONFIG_CRYPTO_DEV_QCE_AEAD)
@@ -230,7 +352,56 @@ go_proc:
 #endif
 
 #if defined(CONFIG_CRYPTO_DEV_QCE_SKCIPHER) || defined(CONFIG_CRYPTO_DEV_QCE_AEAD)
-static u32 qce_encr_cfg(unsigned long flags, u32 aes_key_size)
+/*
+ * Build encryption configuration for CE2
+ * CE2 uses a combined SEG_CFG register at offset 0x030
+ */
+static u32 qce_encr_cfg_ce2(unsigned long flags, u32 aes_key_size)
+{
+	u32 cfg = 0;
+
+	if (IS_AES(flags)) {
+		cfg |= CE2_ENCR_ALG_AES << CE2_ENCR_ALG_SHIFT;
+		if (aes_key_size == AES_KEYSIZE_128)
+			cfg |= CE2_ENCR_KEY_SZ_AES128 << CE2_ENCR_KEY_SZ_SHIFT;
+		else if (aes_key_size == AES_KEYSIZE_192)
+			cfg |= CE2_ENCR_KEY_SZ_AES192 << CE2_ENCR_KEY_SZ_SHIFT;
+		else if (aes_key_size == AES_KEYSIZE_256)
+			cfg |= CE2_ENCR_KEY_SZ_AES256 << CE2_ENCR_KEY_SZ_SHIFT;
+	} else if (IS_DES(flags)) {
+		cfg |= CE2_ENCR_ALG_DES << CE2_ENCR_ALG_SHIFT;
+		cfg |= CE2_ENCR_KEY_SZ_DES << CE2_ENCR_KEY_SZ_SHIFT;
+	} else if (IS_3DES(flags)) {
+		cfg |= CE2_ENCR_ALG_DES << CE2_ENCR_ALG_SHIFT;
+		cfg |= CE2_ENCR_KEY_SZ_3DES << CE2_ENCR_KEY_SZ_SHIFT;
+	}
+
+	switch (flags & QCE_MODE_MASK) {
+	case QCE_MODE_ECB:
+		cfg |= CE2_ENCR_MODE_ECB << CE2_ENCR_MODE_SHIFT;
+		break;
+	case QCE_MODE_CBC:
+		cfg |= CE2_ENCR_MODE_CBC << CE2_ENCR_MODE_SHIFT;
+		break;
+	case QCE_MODE_CTR:
+		cfg |= CE2_ENCR_MODE_CTR << CE2_ENCR_MODE_SHIFT;
+		cfg |= CE2_CNTR_ALG_NIST << CE2_CNTR_ALG_SHIFT;
+		break;
+	case QCE_MODE_XTS:
+		/* CE2 doesn't support XTS mode */
+		return ~0;
+	case QCE_MODE_CCM:
+		/* CE2 doesn't support CCM mode */
+		return ~0;
+	default:
+		return ~0;
+	}
+
+	return cfg;
+}
+
+/* Build encryption configuration for v5 */
+static u32 qce_encr_cfg_v5(unsigned long flags, u32 aes_key_size)
 {
 	u32 cfg = 0;
 
@@ -274,6 +445,14 @@ static u32 qce_encr_cfg(unsigned long flags, u32 aes_key_size)
 	}
 
 	return cfg;
+}
+
+static u32 qce_encr_cfg(struct qce_device *qce, unsigned long flags, u32 aes_key_size)
+{
+	if (qce_is_ce2(qce))
+		return qce_encr_cfg_ce2(flags, aes_key_size);
+	else
+		return qce_encr_cfg_v5(flags, aes_key_size);
 }
 #endif
 
@@ -336,9 +515,13 @@ static int qce_setup_regs_skcipher(struct crypto_async_request *async_req)
 	qce_cpu_to_be32p_array(enckey, ctx->enc_key, keylen);
 	enckey_words = keylen / sizeof(u32);
 
-	qce_write(qce, REG_AUTH_SEG_CFG, auth_cfg);
+	/* Clear auth config for encryption-only operation */
+	if (qce_is_ce2(qce))
+		qce_write(qce, CE2_REG_AUTH_SEG_CFG, auth_cfg);
+	else
+		qce_write(qce, REG_AUTH_SEG_CFG, auth_cfg);
 
-	encr_cfg = qce_encr_cfg(flags, keylen);
+	encr_cfg = qce_encr_cfg(qce, flags, keylen);
 
 	if (IS_DES(flags)) {
 		enciv_words = 2;
@@ -347,15 +530,28 @@ static int qce_setup_regs_skcipher(struct crypto_async_request *async_req)
 		enciv_words = 2;
 		enckey_words = 6;
 	} else if (IS_AES(flags)) {
-		if (IS_XTS(flags))
+		if (IS_XTS(flags)) {
+			if (qce_is_ce2(qce))
+				return -EINVAL; /* CE2 doesn't support XTS */
 			qce_xtskey(qce, ctx->enc_key, ctx->enc_keylen,
 				   rctx->cryptlen);
+		}
 		enciv_words = 4;
 	} else {
 		return -EINVAL;
 	}
 
-	qce_write_array(qce, REG_ENCR_KEY0, (u32 *)enckey, enckey_words);
+	/* Write encryption key to appropriate register */
+	if (qce_is_ce2(qce)) {
+		if (IS_DES(flags) || IS_3DES(flags))
+			qce_write_array(qce, qce_reg_des_key0(qce),
+					(u32 *)enckey, enckey_words);
+		else
+			qce_write_array(qce, qce_reg_encr_key0(qce),
+					(u32 *)enckey, enckey_words);
+	} else {
+		qce_write_array(qce, REG_ENCR_KEY0, (u32 *)enckey, enckey_words);
+	}
 
 	if (!IS_ECB(flags)) {
 		if (IS_XTS(flags))
@@ -363,28 +559,48 @@ static int qce_setup_regs_skcipher(struct crypto_async_request *async_req)
 		else
 			qce_cpu_to_be32p_array(enciv, rctx->iv, ivsize);
 
-		qce_write_array(qce, REG_CNTR0_IV0, (u32 *)enciv, enciv_words);
+		qce_write_array(qce, qce_reg_cntr0_iv0(qce), (u32 *)enciv, enciv_words);
 	}
 
-	if (IS_ENCRYPT(flags))
-		encr_cfg |= BIT(ENCODE_SHIFT);
+	if (IS_ENCRYPT(flags)) {
+		if (qce_is_ce2(qce))
+			encr_cfg |= BIT(CE2_ENCODE_SHIFT);
+		else
+			encr_cfg |= BIT(ENCODE_SHIFT);
+	}
 
-	qce_write(qce, REG_ENCR_SEG_CFG, encr_cfg);
-	qce_write(qce, REG_ENCR_SEG_SIZE, rctx->cryptlen);
-	qce_write(qce, REG_ENCR_SEG_START, 0);
+	if (qce_is_ce2(qce)) {
+		/*
+		 * CE2 uses combined SEG_CFG register for mode/algorithm
+		 * and separate ENCR_SEG_CFG for size/start.
+		 * Add FIRST and LAST bits for single-shot operation.
+		 */
+		encr_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT);
+		qce_write(qce, CE2_REG_SEG_CFG, encr_cfg);
+		/* ENCR_SEG_CFG has size in upper 16 bits, start in lower 16 */
+		qce_write(qce, CE2_REG_ENCR_SEG_CFG,
+			  (rctx->cryptlen << CE2_ENCR_SEG_SIZE_SHIFT));
+	} else {
+		qce_write(qce, REG_ENCR_SEG_CFG, encr_cfg);
+		qce_write(qce, REG_ENCR_SEG_SIZE, rctx->cryptlen);
+		qce_write(qce, REG_ENCR_SEG_START, 0);
+	}
 
 	if (IS_CTR(flags)) {
-		qce_write(qce, REG_CNTR_MASK, ~0);
-		qce_write(qce, REG_CNTR_MASK0, ~0);
-		qce_write(qce, REG_CNTR_MASK1, ~0);
-		qce_write(qce, REG_CNTR_MASK2, ~0);
+		qce_write(qce, qce_reg_cntr_mask(qce), ~0);
+		if (!qce_is_ce2(qce)) {
+			/* v5 has additional mask registers */
+			qce_write(qce, REG_CNTR_MASK0, ~0);
+			qce_write(qce, REG_CNTR_MASK1, ~0);
+			qce_write(qce, REG_CNTR_MASK2, ~0);
+		}
 	}
 
-	qce_write(qce, REG_SEG_SIZE, rctx->cryptlen);
+	qce_write(qce, qce_reg_seg_size(qce), rctx->cryptlen);
 
 	/* get little endianness */
 	config = qce_config_reg(qce, 1);
-	qce_write(qce, REG_CONFIG, config);
+	qce_write(qce, qce_reg_config(qce), config);
 
 	qce_crypto_go(qce, true);
 
@@ -488,8 +704,11 @@ static int qce_setup_regs_aead(struct crypto_async_request *async_req)
 		qce_write_array(qce, REG_AUTH_INFO_NONCE0, authnonce, authnonce_words);
 	}
 
-	/* Set up ENCR_SEG_CFG */
-	encr_cfg = qce_encr_cfg(flags, enc_keylen);
+	/* Set up ENCR_SEG_CFG - CE2 doesn't support AEAD */
+	if (qce_is_ce2(qce))
+		return -EINVAL;
+
+	encr_cfg = qce_encr_cfg(qce, flags, enc_keylen);
 	if (IS_ENCRYPT(flags))
 		encr_cfg |= BIT(ENCODE_SHIFT);
 	qce_write(qce, REG_ENCR_SEG_CFG, encr_cfg);
@@ -561,25 +780,42 @@ int qce_start(struct crypto_async_request *async_req, u32 type)
 	}
 }
 
-#define STATUS_ERRORS	\
+/* Status error bits for v5 */
+#define STATUS_ERRORS_V5	\
 		(BIT(SW_ERR_SHIFT) | BIT(AXI_ERR_SHIFT) | BIT(HSD_ERR_SHIFT))
+
+/* Status error bits for CE2 */
+#define STATUS_ERRORS_CE2	\
+		(BIT(CE2_SW_ERR_SHIFT) | BIT(CE2_DIN_ERR_SHIFT) | \
+		 BIT(CE2_DOUT_ERR_SHIFT) | BIT(CE2_ACCESS_VIOL_SHIFT))
 
 int qce_check_status(struct qce_device *qce, u32 *status)
 {
 	int ret = 0;
 
-	*status = qce_read(qce, REG_STATUS);
+	*status = qce_read(qce, qce_reg_status(qce));
 
-	/*
-	 * Don't use result dump status. The operation may not be complete.
-	 * Instead, use the status we just read from device. In case, we need to
-	 * use result_status from result dump the result_status needs to be byte
-	 * swapped, since we set the device to little endian.
-	 */
-	if (*status & STATUS_ERRORS || !(*status & BIT(OPERATION_DONE_SHIFT)))
-		ret = -ENXIO;
-	else if (*status & BIT(MAC_FAILED_SHIFT))
-		ret = -EBADMSG;
+	if (qce_is_ce2(qce)) {
+		/*
+		 * CE2 status register has different bit layout.
+		 * Check for errors and auth done status.
+		 */
+		if (*status & STATUS_ERRORS_CE2)
+			ret = -ENXIO;
+		else if (!(*status & BIT(CE2_AUTH_DONE_SHIFT)))
+			ret = -ENXIO;
+	} else {
+		/*
+		 * Don't use result dump status. The operation may not be complete.
+		 * Instead, use the status we just read from device. In case, we need to
+		 * use result_status from result dump the result_status needs to be byte
+		 * swapped, since we set the device to little endian.
+		 */
+		if (*status & STATUS_ERRORS_V5 || !(*status & BIT(OPERATION_DONE_SHIFT)))
+			ret = -ENXIO;
+		else if (*status & BIT(MAC_FAILED_SHIFT))
+			ret = -EBADMSG;
+	}
 
 	return ret;
 }
@@ -588,8 +824,19 @@ void qce_get_version(struct qce_device *qce, u32 *major, u32 *minor, u32 *step)
 {
 	u32 val;
 
-	val = qce_read(qce, REG_VERSION);
-	*major = (val & CORE_MAJOR_REV_MASK) >> CORE_MAJOR_REV_SHIFT;
-	*minor = (val & CORE_MINOR_REV_MASK) >> CORE_MINOR_REV_SHIFT;
-	*step = (val & CORE_STEP_REV_MASK) >> CORE_STEP_REV_SHIFT;
+	if (qce_is_ce2(qce)) {
+		/*
+		 * CE2 doesn't have a version register at offset 0x000.
+		 * Version info is in STATUS register bits 31-28.
+		 */
+		val = qce_read(qce, CE2_REG_STATUS);
+		*major = (val & CE2_CORE_REV_MASK) >> CE2_CORE_REV_SHIFT;
+		*minor = 0;
+		*step = 0;
+	} else {
+		val = qce_read(qce, REG_VERSION);
+		*major = (val & CORE_MAJOR_REV_MASK) >> CORE_MAJOR_REV_SHIFT;
+		*minor = (val & CORE_MINOR_REV_MASK) >> CORE_MINOR_REV_SHIFT;
+		*step = (val & CORE_STEP_REV_MASK) >> CORE_STEP_REV_SHIFT;
+	}
 }

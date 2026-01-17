@@ -199,6 +199,30 @@
 			qcom,ee = <1>;
 		};
 
+		/*
+		 * Crypto Engine 2 (CE2) - Hardware crypto accelerator
+		 *
+		 * NOTE: This node is DISABLED pending verification:
+		 * - Base address 0x18500000 needs confirmation from hardware docs
+		 * - DMA channels (ADM0 channels 5/6) need verification
+		 * - Interrupt number (195) is estimated, needs confirmation
+		 *
+		 * webOS 2.6 kernel used qcrypto driver with ADM DMA for CE2.
+		 * Mainline QCE driver has been extended to support CE2.
+		 */
+		crypto@18500000 {
+			compatible = "qcom,msm8660-qce";
+			reg = <0x18500000 0x20000>;
+			interrupts = <GIC_SPI 195 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&gcc CE2_H_CLK>;
+			clock-names = "iface";
+			/* ADM0 channels for crypto - needs verification */
+			dmas = <&adm_dma0 5>, <&adm_dma0 6>;
+			dma-names = "rx", "tx";
+			/* Disabled until hardware configuration is verified */
+			status = "disabled";
+		};
+
 		gsbi4: gsbi@16300000 {
 			compatible = "qcom,gsbi-v1.0.0";
 			cell-index = <4>;

@@ -25,6 +25,9 @@ properties:
         deprecated: true
         description: Kept only for ABI backward compatibility
 
+      - const: qcom,msm8660-qce
+        description: Crypto Engine 2 found on MSM8660/APQ8060
+
       - items:
           - enum:
               - qcom,ipq4019-qce
@@ -150,6 +153,27 @@ allOf:
         clocks: false
         clock-names: false
 
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - qcom,msm8660-qce
+    then:
+      properties:
+        clocks:
+          maxItems: 1
+        clock-names:
+          items:
+            - const: iface
+        dmas:
+          items:
+            - description: DMA specifiers for rx dma channel (ADM).
+            - description: DMA specifiers for tx dma channel (ADM).
+      required:
+        - clocks
+        - clock-names
+
 required:
   - compatible
   - reg
@@ -174,4 +198,16 @@ examples:
                  <&apps_smmu 0x586 0x0011>,
                  <&apps_smmu 0x594 0x0011>,
                  <&apps_smmu 0x596 0x0011>;
+    };
+
+  - |
+    #include <dt-bindings/clock/qcom,gcc-msm8660.h>
+    // MSM8660/APQ8060 Crypto Engine 2 example
+    crypto-engine@18500000 {
+        compatible = "qcom,msm8660-qce";
+        reg = <0x18500000 0x20000>;
+        clocks = <&gcc CE2_H_CLK>;
+        clock-names = "iface";
+        dmas = <&adm_dma 6 9>, <&adm_dma 5 8>;
+        dma-names = "rx", "tx";
     };
