@@ -963,13 +963,18 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 		goto err_i2c;
 	}
 
+	/*
+	 * Set client ops BEFORE baudrate to avoid race condition.
+	 * Setting baudrate triggers msm_set_termios which starts RX DMA.
+	 * If data arrives before client_ops is set, receive callback is NULL.
+	 */
+	serdev_device_set_client_ops(serdev, &cy8ctma395_ts_serdev_ops);
+	serdev_device_set_flow_control(serdev, false);
 	{
 		unsigned int actual_baud;
 		actual_baud = serdev_device_set_baudrate(serdev, 4000000);
 		dev_info(dev, "Requested baud 4000000, actual baud %u\n", actual_baud);
 	}
-	serdev_device_set_flow_control(serdev, false);
-	serdev_device_set_client_ops(serdev, &cy8ctma395_ts_serdev_ops);
 
 	/* Initialize state */
 	cy8ctma395_ts_clear_arrays(ts);
