@@ -2067,6 +2067,15 @@
 	status = "okay";
 };
 
+/* MDP IOMMU instances for display memory virtualization */
+&mdp_port0_iommu {
+	status = "okay";
+};
+
+&mdp_port1_iommu {
+	status = "okay";
+};
+
 &q6asmdai {
 	dai@0 {
 		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
