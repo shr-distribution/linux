@@ -865,7 +865,7 @@
 
 	lg_panel: panel {
 		compatible = "panel-lvds";
-		status = "disabled";
+		status = "okay";
 
 		// reset-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;
 		// shdn??-gpios = <&tlmm 63 GPIO_ACTIVE_HIGH>;
