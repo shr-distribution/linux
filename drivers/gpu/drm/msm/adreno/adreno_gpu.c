@@ -1090,16 +1090,29 @@ static int adreno_get_pwrlevels(struct device *dev,
 
 	gpu->fast_rate = 0;
 
+	/*
+	 * Check if OPP table already exists (can happen on deferred probe retry).
+	 * If so, skip adding a new one.
+	 */
+	if (dev_pm_opp_get_opp_count(dev) > 0) {
+		/* OPP table already configured, skip setup */
+		goto find_fast_rate;
+	}
+
 	/* devm_pm_opp_of_add_table may error out but will still create an OPP table */
 	ret = devm_pm_opp_of_add_table(dev);
 	if (ret == -ENODEV) {
 		/* Special cases for ancient hw with ancient DT bindings */
 		if (adreno_is_a2xx(adreno_gpu)) {
-			dev_warn(dev, "Unable to find the OPP table. Falling back to 200 MHz.\n");
-			dev_pm_opp_add(dev, 200000000, 0);
+			dev_info(dev, "No OPP table in DT, using 200 MHz fallback.\n");
+			ret = dev_pm_opp_add(dev, 200000000, 0);
+			if (ret && ret != -EEXIST)
+				return ret;
 		} else if (adreno_is_a320(adreno_gpu)) {
-			dev_warn(dev, "Unable to find the OPP table. Falling back to 450 MHz.\n");
-			dev_pm_opp_add(dev, 450000000, 0);
+			dev_info(dev, "No OPP table in DT, using 450 MHz fallback.\n");
+			ret = dev_pm_opp_add(dev, 450000000, 0);
+			if (ret && ret != -EEXIST)
+				return ret;
 		} else {
 			DRM_DEV_ERROR(dev, "Unable to find the OPP table\n");
 			return -ENODEV;
@@ -1108,6 +1121,8 @@ static int adreno_get_pwrlevels(struct device *dev,
 		DRM_DEV_ERROR(dev, "Unable to set the OPP table\n");
 		return ret;
 	}
+
+find_fast_rate:
 
 	/* Find the fastest defined rate */
 	opp = dev_pm_opp_find_freq_floor(dev, &freq);
@@ -1192,17 +1207,20 @@ int adreno_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	    adreno_gpu->info->family < ADRENO_6XX_GEN1) {
 		/*
 		 * This can only be done before devm_pm_opp_of_add_table(), or
-		 * dev_pm_opp_set_config() will WARN_ON()
+		 * dev_pm_opp_set_config() will WARN_ON(). Skip if OPP is
+		 * already configured (can happen on deferred probe retry).
 		 */
-		if (IS_ERR(devm_clk_get(dev, "core"))) {
-			/*
-			 * If "core" is absent, go for the legacy clock name.
-			 * If we got this far in probing, it's a given one of
-			 * them exists.
-			 */
-			devm_pm_opp_set_clkname(dev, "core_clk");
-		} else
-			devm_pm_opp_set_clkname(dev, "core");
+		if (dev_pm_opp_get_opp_count(dev) < 0) {
+			if (IS_ERR(devm_clk_get(dev, "core"))) {
+				/*
+				 * If "core" is absent, go for the legacy clock name.
+				 * If we got this far in probing, it's a given one of
+				 * them exists.
+				 */
+				devm_pm_opp_set_clkname(dev, "core_clk");
+			} else
+				devm_pm_opp_set_clkname(dev, "core");
+		}
 	}
 
 	if (adreno_read_speedbin(dev, &speedbin) || !speedbin)
