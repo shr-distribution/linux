@@ -402,8 +402,8 @@ static int mdp4_kms_init(struct drm_device *dev)
 	u32 major, minor;
 	unsigned long max_clk;
 
-	/* APQ8060/MSM8660 (tenderloin) needs lower clock to avoid USB issues */
-	max_clk = 128000000;
+	/* APQ8060/MSM8660 (tenderloin) - use 200MHz per webOS kernel board-tenderloin.c */
+	max_clk = 200000000;
 
 	ret = mdp_kms_init(&mdp4_kms->base, &kms_funcs);
 	if (ret) {
