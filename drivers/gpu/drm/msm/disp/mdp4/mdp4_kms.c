@@ -32,8 +32,14 @@ static int mdp4_hw_init(struct msm_kms *kms)
 
 	mdp4_write(mdp4_kms, REG_MDP4_PORTMAP_MODE, 0x3);
 
-	/* max read pending cmd config, 3 pending requests: */
-	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x02222);
+	/*
+	 * Max read pending cmd config.
+	 * Per webOS kernel: if MDP clock < AXI clock, use 3 pending requests,
+	 * otherwise use 8 pending requests. On APQ8060 with MDP at 200MHz
+	 * and AXI at ~200MHz, they're roughly equal so use 8 for better
+	 * throughput and to prevent underrun during USB activity.
+	 */
+	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x08888);
 
 	clk = clk_get_rate(mdp4_kms->clk);
 
@@ -542,14 +548,17 @@ static int mdp4_setup_interconnect(struct platform_device *pdev)
 	}
 
 	/*
-	 * Set initial bandwidth. 400 MBps is enough for 1024x768@60Hz.
-	 * Higher values may starve USB on shared fabric.
+	 * Set initial bandwidth based on webOS kernel board-tenderloin.c values.
+	 * For 1024x768@60Hz with two layers:
+	 *   ab (average) = 377487360 (~360 MBps)
+	 *   ib (peak)    = 471859200 (~450 MBps)
+	 * Using slightly higher values for headroom.
 	 * TODO: Calculate dynamically based on display mode.
 	 */
-	icc_set_bw(path0, 0, MBps_to_icc(400));
+	icc_set_bw(path0, MBps_to_icc(360), MBps_to_icc(450));
 
 	if (!IS_ERR_OR_NULL(path1))
-		icc_set_bw(path1, 0, MBps_to_icc(400));
+		icc_set_bw(path1, MBps_to_icc(360), MBps_to_icc(450));
 
 	return 0;
 }
