@@ -477,6 +477,14 @@ static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 	struct mn *mn = &rcg->mn;
 	u32 mask = 0;
 	unsigned int reset_reg;
+	const char *name = clk_hw_get_name(&rcg->clkr.hw);
+
+	pr_info("clk-rcg: %s set_rate freq=%lu pre_div=%d m=%d n=%d\n",
+		name, f->freq, f->pre_div, f->m, f->n);
+	pr_info("clk-rcg: %s ns_reg=0x%x md_reg=0x%x enable_reg=0x%x\n",
+		name, rcg->ns_reg, rcg->md_reg, rcg->clkr.enable_reg);
+	pr_info("clk-rcg: %s mn.width=%d m_val_shift=%d n_val_shift=%d\n",
+		name, mn->width, mn->m_val_shift, mn->n_val_shift);
 
 	if (rcg->mn.reset_in_cc)
 		reset_reg = rcg->clkr.enable_reg;
@@ -485,10 +493,14 @@ static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 
 	if (rcg->mn.width) {
 		mask = BIT(mn->mnctr_reset_bit);
+		pr_info("clk-rcg: %s asserting reset at 0x%x mask=0x%x\n",
+			name, reset_reg, mask);
 		regmap_update_bits(rcg->clkr.regmap, reset_reg, mask, mask);
 
 		regmap_read(rcg->clkr.regmap, rcg->md_reg, &md);
 		md = mn_to_md(mn, f->m, f->n, md);
+		pr_info("clk-rcg: %s writing MD=0x%08x to 0x%x\n",
+			name, md, rcg->md_reg);
 		regmap_write(rcg->clkr.regmap, rcg->md_reg, md);
 
 		regmap_read(rcg->clkr.regmap, rcg->ns_reg, &ns);
@@ -496,6 +508,8 @@ static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 		if (rcg->clkr.enable_reg != rcg->ns_reg) {
 			regmap_read(rcg->clkr.regmap, rcg->clkr.enable_reg, &ctl);
 			ctl = mn_to_reg(mn, f->m, f->n, ctl);
+			pr_info("clk-rcg: %s writing CTL=0x%08x to 0x%x\n",
+				name, ctl, rcg->clkr.enable_reg);
 			regmap_write(rcg->clkr.regmap, rcg->clkr.enable_reg, ctl);
 		} else {
 			ns = mn_to_reg(mn, f->m, f->n, ns);
@@ -506,10 +520,14 @@ static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 	}
 
 	ns = pre_div_to_ns(&rcg->p, f->pre_div - 1, ns);
+	pr_info("clk-rcg: %s writing NS=0x%08x to 0x%x\n",
+		name, ns, rcg->ns_reg);
 	regmap_write(rcg->clkr.regmap, rcg->ns_reg, ns);
 
+	pr_info("clk-rcg: %s deasserting reset\n", name);
 	regmap_update_bits(rcg->clkr.regmap, reset_reg, mask, 0);
 
+	pr_info("clk-rcg: %s set_rate complete\n", name);
 	return 0;
 }
 

@@ -2187,14 +2187,26 @@
 /* Add ramoops for persistent kernel crash logs */
 / {
 	reserved-memory {
-		ramoops@7f400000 {
+		/*
+		 * Place ramoops in the gap between RAM banks, after LPASS region.
+		 * webOS memory map:
+		 *   RAM bank 1: 0x40200000-0x466fffff
+		 *   LPASS gap:  0x46700000-0x47ffffff
+		 *   RAM bank 2: 0x48000000-0x7f5fffff
+		 *   FB:         0x7f600000
+		 *   klog:       0x7ff00000
+		 * Our LPASS: 0x46700000-0x46D00000
+		 * Safe region: 0x47000000-0x47ffffff (after LPASS, before RAM bank 2)
+		 */
+		ramoops@47000000 {
 			compatible = "ramoops";
-			reg = <0x7f400000 0x40000>;  /* 256KB at end of RAM */
-			record-size = <0x8000>;       /* 32KB per oops record */
-			console-size = <0x20000>;     /* 128KB for console log */
-			ftrace-size = <0x8000>;       /* 32KB for ftrace */
-			pmsg-size = <0x8000>;         /* 32KB for pmsg */
+			reg = <0x47000000 0x100000>; /* 1MB in gap between RAM banks */
+			record-size = <0x20000>;      /* 128KB per oops record */
+			console-size = <0x80000>;     /* 512KB for console log */
+			ftrace-size = <0x20000>;      /* 128KB for ftrace */
+			pmsg-size = <0x20000>;        /* 128KB for pmsg */
 			ecc-size = <0>;               /* No ECC for speed */
+			no-map;
 		};
 	};
 };

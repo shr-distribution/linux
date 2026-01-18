@@ -366,6 +366,8 @@ struct drm_encoder *mdp4_lcdc_encoder_init(struct drm_device *dev)
 	struct mdp4_lcdc_encoder *mdp4_lcdc_encoder;
 	int ret;
 
+	dev_info(dev->dev, "LCDC encoder init: step 1 - allocating encoder\n");
+
 	mdp4_lcdc_encoder = drmm_encoder_alloc(dev, struct mdp4_lcdc_encoder, base,
 					       NULL, DRM_MODE_ENCODER_LVDS, NULL);
 	if (IS_ERR(mdp4_lcdc_encoder))
@@ -373,24 +375,32 @@ struct drm_encoder *mdp4_lcdc_encoder_init(struct drm_device *dev)
 
 	encoder = &mdp4_lcdc_encoder->base;
 
+	dev_info(dev->dev, "LCDC encoder init: step 2 - adding helper funcs\n");
 	drm_encoder_helper_add(encoder, &mdp4_lcdc_encoder_helper_funcs);
 
+	dev_info(dev->dev, "LCDC encoder init: step 3 - getting lcdc_clk\n");
 	mdp4_lcdc_encoder->lcdc_clk = mdp4_get_lcdc_clock(dev);
 	if (IS_ERR(mdp4_lcdc_encoder->lcdc_clk)) {
-		DRM_DEV_ERROR(dev->dev, "failed to get lvds_clk\n");
+		DRM_DEV_ERROR(dev->dev, "failed to get lvds_clk: %ld\n",
+			      PTR_ERR(mdp4_lcdc_encoder->lcdc_clk));
 		return ERR_CAST(mdp4_lcdc_encoder->lcdc_clk);
 	}
+	dev_info(dev->dev, "LCDC encoder init: step 4 - got lcdc_clk OK\n");
 
 	/* TODO: different regulators in other cases? */
 	mdp4_lcdc_encoder->regs[0].supply = "lvds-vccs-3p3v";
 	mdp4_lcdc_encoder->regs[1].supply = "lvds-pll-vdda";
 	mdp4_lcdc_encoder->regs[2].supply = "lvds-vdda";
 
+	dev_info(dev->dev, "LCDC encoder init: step 5 - getting regulators\n");
 	ret = devm_regulator_bulk_get(dev->dev,
 				      ARRAY_SIZE(mdp4_lcdc_encoder->regs),
 				      mdp4_lcdc_encoder->regs);
-	if (ret)
+	if (ret) {
+		dev_err(dev->dev, "LCDC encoder init: regulator_bulk_get failed: %d\n", ret);
 		return ERR_PTR(ret);
+	}
 
+	dev_info(dev->dev, "LCDC encoder init: step 6 - done\n");
 	return encoder;
 }

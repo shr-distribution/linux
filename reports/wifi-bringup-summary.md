@@ -183,3 +183,117 @@ Debug print in `drivers/mmc/host/mmci.c`:
    - `ADM start_dma: setting CRCI_CTL(5) = ...`
    - `ADM IRQ: srcs=0x...` (DMA completion)
 3. If DMA works, WiFi initialization should proceed past firmware upload
+
+---
+
+## Firmware Analysis (2025-01-17)
+
+### webOS vs linux-firmware Comparison
+
+The webOS firmware in `/lib/firmware/ath6k/hw2.1.1/` is incompatible with mainline ath6kl for several reasons:
+
+#### Missing API Firmware Files (Critical)
+
+Mainline ath6kl expects fw-2.bin/fw-3.bin which are absent from webOS firmware:
+
+| File | webOS | linux-firmware | Status |
+|------|-------|----------------|--------|
+| fw-3.bin | Missing | 104,562 bytes | **REQUIRED** |
+| fw-2.bin | Missing | 89,844 bytes | **REQUIRED** |
+| athwlan.bin | 70,612 bytes | 68,975 bytes | Different format |
+| otp.bin | 2,822 bytes | 2,783 bytes | Different |
+| data.patch.bin | 172 bytes | 140 bytes | Different |
+
+The mainline driver loads firmware in order: `fw-4.bin` → `fw-3.bin` → `fw-2.bin` → `athwlan.bin`
+
+#### Firmware Format Difference
+
+webOS `athwlan.bin` uses "SGMT" (Segmented) format:
+```
+00000000: 5347 4d54 0100 0000 0050 5400  SGMT.....PT.
+```
+
+linux-firmware uses "QCA-ATH6KL" IE (Information Element) format expected by mainline ath6kl.
+
+#### Directory Structure
+
+| webOS Path | Mainline Expected Path |
+|------------|------------------------|
+| `ath6k/hw2.1.1/` | `ath6k/AR6003/hw2.1.1/` |
+
+### Board Data (bdata.SD32.bin) Analysis
+
+Both files are 1,792 bytes but contain different calibration data:
+
+#### Header Differences
+
+| Offset | webOS | linux-firmware | Meaning |
+|--------|-------|----------------|---------|
+| 0x04-0x07 | `3793 0960` | `1375 0760` | Board revision |
+| 0x0A-0x0B | `440c` | `400e` | Config flags |
+| 0x18-0x1B | `fed5 68a4` | `7f04 028f` | MAC address fragment |
+| 0x20-0x30 | `ff...` | `SD3242D_0655a00` | Board ID string |
+
+#### TX Power Calibration Tables
+
+The bdata contains per-channel TX power calibration. ASCII-encoded power level offsets differ:
+
+**webOS (HP TouchPad factory calibration):**
+```
+IHHJICB, HHHIHBB, GGGHGAA, GFFGF@?, GGFHG@@, GGGGFAA...
+```
+
+**linux-firmware (generic reference board):**
+```
+ILNKPGO, JMNKPIQ, GIKGLEL, HJLHMCJ, GJLHL@G...
+```
+
+#### 2.4GHz Power Backoff Data
+
+webOS bdata contains detailed per-rate power backoff values at offset 0xA0 that linux-firmware lacks:
+```
+Xh..","$)%)-2<I9>56DL
+```
+
+#### Device Identification
+
+Both share factory QA identifier at offset 0x2A0:
+```
+FABE0681257
+```
+
+### Recommended Firmware Configuration
+
+For optimal HP TouchPad WiFi operation with mainline kernel:
+
+```
+/lib/firmware/ath6k/AR6003/hw2.1.1/
+├── fw-3.bin          ← linux-firmware (mainline format)
+├── fw-2.bin          ← linux-firmware (mainline format)
+├── athwlan.bin       ← linux-firmware (mainline format)
+├── otp.bin           ← linux-firmware
+├── data.patch.bin    ← linux-firmware
+├── endpointping.bin  ← linux-firmware
+├── bdata.SD31.bin    ← linux-firmware
+├── bdata.SD32.bin    ← webOS (HP TouchPad RF calibration)
+├── bdata.WB31.bin    ← linux-firmware
+└── bdata.bin         → bdata.SD32.bin (symlink)
+```
+
+**Rationale:** Use mainline-compatible firmware binaries (fw-3.bin, otp.bin) with HP TouchPad-specific RF calibration data (bdata.SD32.bin) for optimal performance.
+
+### Dynamic Board Data Symlink (webOS)
+
+webOS used a runtime-generated board data file:
+```
+token_bdata.SD32.bin -> /tmp/ath6k/token_bdata.SD32.bin
+```
+
+This suggests webOS may have dynamically patched board data at boot. For mainline, we use the static `bdata.SD32.bin` directly.
+
+### Checksums
+
+```
+webOS bdata.SD32.bin:        999762b1922a2dd8635f281365ac73eb
+linux-firmware bdata.SD32.bin: b859aac5ac533aee2ddacd71ddead817
+```

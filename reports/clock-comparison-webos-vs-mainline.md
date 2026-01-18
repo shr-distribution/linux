@@ -38,6 +38,11 @@
    - Live device verification shows PLL0 is not active even on webOS 2.6 in normal state
    - Impact: Mainline GPU limited to 320 MHz max vs potential 300+ MHz turbo modes
 
+7. **GFX3D Reset Bit Mismatch** (FIXED 2026-01-18)
+   - webOS GFX3D: mnctr_reset_bit = 23 (bank0), 22 (bank1)
+   - Original mainline: mnctr_reset_bit = 25 (bank0), 24 (bank1)
+   - Created `gfx3d_src_msm8660` and `gfx3d_clk_msm8660` with correct values ✓
+
 ---
 
 ## 1. Register Address Comparison
@@ -353,18 +358,153 @@ Analysis of webOS `nt_pll_enable()` function in `clock-8x60.c` (lines 2191-2232)
 
 **Resolution:** Removed the incorrect BIT(7) write. PLLs are enabled automatically via `clk_pll_ops` when clocks using them are requested.
 
-### 9.3 Clocks Using MSM8960 Structures
+### 9.3 Clocks Using MSM8960 Structures (Verified 2026-01-18)
 
-The following clocks in the MSM8660 array still use MSM8960 structures and may need MSM8660-specific versions if they have different register layouts:
+Comprehensive comparison of mainline vs webOS `clock-8x60.c`:
 
-| Clock | Uses Structure | Verified Against webOS? |
-|-------|---------------|------------------------|
-| MDP_AHB_CLK | mdp_ahb_clk | Register only, no MN |
-| MDP_AXI_CLK | mdp_axi_clk | Register only, no MN |
-| MDP_SRC | mdp_src | Registers match ✓ |
-| MDP_CLK | mdp_clk | Branch clock |
-| GFX2D0_SRC | gfx2d0_src | Registers match ✓ |
-| GFX3D_SRC | gfx3d_src | Registers match ✓ |
+#### MDP_AHB_CLK (mdp_ahb_clk)
+
+| Parameter | webOS | Mainline | Match? |
+|-----------|-------|----------|--------|
+| enable_reg | 0x0008 (AHB_EN_REG) | 0x0008 | ✓ |
+| enable_bit | 10 | 10 | ✓ |
+| halt_reg | 0x01DC (DBG_BUS_VEC_F_REG) | 0x01dc | ✓ |
+| halt_bit | 11 | 11 | ✓ |
+
+**Status: ✓ VERIFIED MATCH**
+
+#### MDP_AXI_CLK (mdp_axi_clk)
+
+| Parameter | webOS | Mainline | Match? |
+|-----------|-------|----------|--------|
+| Definition | Reset only (CLK_RESET) | Full clock with enable/halt | ⚠ Different |
+| enable_reg | N/A | 0x0018 (MAXI_EN_REG) | - |
+| enable_bit | N/A | 23 | - |
+| halt_reg | N/A | 0x01d8 (DBG_BUS_VEC_E_REG) | - |
+| halt_bit | N/A | 8 | - |
+
+**Status: ⚠ DIFFERENT** - webOS only defines reset, mainline defines full clock. Verify if mainline config is correct for MSM8660.
+
+#### MDP_SRC (mdp_src) - Banked MND
+
+| Parameter | webOS | Mainline | Match? |
+|-----------|-------|----------|--------|
+| ns_reg | 0x00D0 | 0x00d0 | ✓ |
+| md_reg[0] | 0x00C4 | 0x00c4 | ✓ |
+| md_reg[1] | 0x00C8 | 0x00c8 | ✓ |
+| bank_reg | 0x00C0 | 0x00c0 | ✓ |
+| bank_sel_bit | 11 | 11 | ✓ |
+| **Bank 0:** | | | |
+| mnctr_en_bit | 8 | 8 | ✓ |
+| mnctr_reset_bit | 31 | 31 | ✓ |
+| mnctr_mode_shift | 9 | 9 | ✓ |
+| n_val_shift | 22 | 22 | ✓ |
+| m_val_shift | 8 | 8 | ✓ |
+| width | 8 | 8 | ✓ |
+| **Bank 1:** | | | |
+| mnctr_en_bit | 5 | 5 | ✓ |
+| mnctr_reset_bit | 30 | 30 | ✓ |
+| mnctr_mode_shift | 6 | 6 | ✓ |
+| n_val_shift | 14 | 14 | ✓ |
+| m_val_shift | 8 | 8 | ✓ |
+| width | 8 | 8 | ✓ |
+
+**Status: ✓ VERIFIED MATCH**
+
+#### MDP_CLK (mdp_clk) - Branch
+
+| Parameter | webOS | Mainline | Match? |
+|-----------|-------|----------|--------|
+| halt_reg | 0x01D0 (DBG_BUS_VEC_C_REG) | 0x01d0 | ✓ |
+| halt_bit | 10 | 10 | ✓ |
+
+**Status: ✓ VERIFIED MATCH**
+
+#### GFX2D0_SRC (gfx2d0_src) - Banked MND
+
+| Parameter | webOS | Mainline | Match? |
+|-----------|-------|----------|--------|
+| ns_reg | 0x0070 | 0x0070 | ✓ |
+| md_reg[0] | 0x0064 | 0x0064 | ✓ |
+| md_reg[1] | 0x0068 | 0x0068 | ✓ |
+| bank_reg | 0x0060 | 0x0060 | ✓ |
+| bank_sel_bit | 11 | 11 | ✓ |
+| **Bank 0:** | | | |
+| mnctr_en_bit | 8 | 8 | ✓ |
+| mnctr_reset_bit | 25 | 25 | ✓ |
+| mnctr_mode_shift | 9 | 9 | ✓ |
+| n_val_shift | 20 | 20 | ✓ |
+| m_val_shift | 4 | 4 | ✓ |
+| width | 4 | 4 | ✓ |
+| **Bank 1:** | | | |
+| mnctr_en_bit | 5 | 5 | ✓ |
+| mnctr_reset_bit | 24 | 24 | ✓ |
+| mnctr_mode_shift | 6 | 6 | ✓ |
+| n_val_shift | 16 | 16 | ✓ |
+| m_val_shift | 4 | 4 | ✓ |
+| width | 4 | 4 | ✓ |
+
+**Status: ✓ VERIFIED MATCH**
+
+#### GFX2D0_CLK (gfx2d0_clk) - Branch
+
+| Parameter | webOS | Mainline | Match? |
+|-----------|-------|----------|--------|
+| halt_reg | 0x01C8 (DBG_BUS_VEC_A_REG) | 0x01c8 | ✓ |
+| halt_bit | 9 | 9 | ✓ |
+
+**Status: ✓ VERIFIED MATCH**
+
+#### GFX3D_SRC (gfx3d_src_msm8660) - Banked MND (FIXED 2026-01-18)
+
+| Parameter | webOS | Mainline MSM8960 | MSM8660 Fixed | Match? |
+|-----------|-------|------------------|---------------|--------|
+| ns_reg | 0x008C | 0x008c | 0x008c | ✓ |
+| md_reg[0] | 0x0084 | 0x0084 | 0x0084 | ✓ |
+| md_reg[1] | 0x0088 | 0x0088 | 0x0088 | ✓ |
+| bank_reg | 0x0080 | 0x0080 | 0x0080 | ✓ |
+| bank_sel_bit | 11 | 11 | 11 | ✓ |
+| **Bank 0:** | | | | |
+| mnctr_en_bit | 8 | 8 | 8 | ✓ |
+| mnctr_reset_bit | **23** | 25 | **23** | ✓ Fixed |
+| mnctr_mode_shift | 9 | 9 | 9 | ✓ |
+| n_val_shift | 18 | 18 | 18 | ✓ |
+| m_val_shift | 4 | 4 | 4 | ✓ |
+| width | 4 | 4 | 4 | ✓ |
+| **Bank 1:** | | | | |
+| mnctr_en_bit | 5 | 5 | 5 | ✓ |
+| mnctr_reset_bit | **22** | 24 | **22** | ✓ Fixed |
+| mnctr_mode_shift | 6 | 6 | 6 | ✓ |
+| n_val_shift | 14 | 14 | 14 | ✓ |
+| m_val_shift | 4 | 4 | 4 | ✓ |
+| width | 4 | 4 | 4 | ✓ |
+
+**Status: ✓ FIXED** - Created separate `gfx3d_src_msm8660` and `gfx3d_clk_msm8660` structures with correct reset bits for MSM8660/APQ8060.
+- webOS uses BIT(23)/BIT(22) for bank0/bank1 reset
+- MSM8960 uses BIT(25)/BIT(24) - different silicon revision
+- New MSM8660-specific clocks correctly use BIT(23)/BIT(22)
+
+#### GFX3D_CLK (gfx3d_clk) - Branch
+
+| Parameter | webOS | Mainline | Match? |
+|-----------|-------|----------|--------|
+| halt_reg | 0x01C8 (DBG_BUS_VEC_A_REG) | 0x01c8 | ✓ |
+| halt_bit | 4 | 4 | ✓ |
+
+**Status: ✓ VERIFIED MATCH**
+
+#### Summary
+
+| Clock | Status | Notes |
+|-------|--------|-------|
+| MDP_AHB_CLK | ✓ Match | |
+| MDP_AXI_CLK | ⚠ Different | webOS: reset only, mainline: full clock |
+| MDP_SRC | ✓ Match | All parameters verified |
+| MDP_CLK | ✓ Match | |
+| GFX2D0_SRC | ✓ Match | All parameters verified |
+| GFX2D0_CLK | ✓ Match | |
+| GFX3D_SRC | ✓ Fixed | Created gfx3d_src_msm8660 with reset bits 23/22 |
+| GFX3D_CLK | ✓ Fixed | Created gfx3d_clk_msm8660 using MSM8660-specific src |
 
 ---
 
@@ -381,6 +521,8 @@ The following clocks in the MSM8660 array still use MSM8960 structures and may n
 | Pixel halt_bit | Already 23 | 23 | ✓ OK |
 | 96MHz frequency | Missing | Added | ✓ Fixed |
 | PLL2 probe BIT(7) | BIT(7) written | Removed | ✓ Fixed |
+| GFX3D mnctr_reset_bit bank0 | 25 | 23 | ✓ Fixed (gfx3d_src_msm8660) |
+| GFX3D mnctr_reset_bit bank1 | 24 | 22 | ✓ Fixed (gfx3d_src_msm8660) |
 
 ---
 

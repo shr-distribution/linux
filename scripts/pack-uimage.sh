@@ -147,7 +147,8 @@ echo "LuneOS" > "$BUILD_OUTPUT/moboot.next"
 echo "Created: $BUILD_OUTPUT/moboot.next"
 
 # Archive the build for historical record
-ARCHIVE_DIR="$BUILD_OUTPUT/archive"
+# Store archives OUTSIDE build-output to prevent accidental deletion
+ARCHIVE_DIR="$PARENT_DIR/kernel-archives"
 mkdir -p "$ARCHIVE_DIR"
 
 # Get commit info
