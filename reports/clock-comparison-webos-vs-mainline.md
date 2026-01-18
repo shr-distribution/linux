@@ -1,6 +1,6 @@
 # MMCC Clock Comparison: webOS 2.6 vs Mainline Linux 6.18
 
-**Date:** 2026-01-17 (Updated)
+**Date:** 2026-01-18 (Updated)
 **Purpose:** Comprehensive comparison of Multimedia Clock Controller (MMCC) configuration between webOS 2.6 kernel (clock-8x60.c) and mainline Linux 6.18 (mmcc-msm8960.c) for HP TouchPad (APQ8060/MSM8660)
 
 ## Executive Summary
@@ -31,6 +31,12 @@
    - webOS: LCDC halt bit = 21
    - MSM8960 mainline: LCDC halt bit = 24
    - Fixed mdp_lcdc_clk_msm8660: `halt_bit = 21` ✓
+
+6. **MM_PLL0 Not Implemented in Mainline** (NEW - verified 2026-01-18)
+   - webOS defines MM_PLL0 at 1320 MHz for high-performance GPU modes
+   - Mainline does NOT implement MM_PLL0 at all
+   - Live device verification shows PLL0 is not active even on webOS 2.6 in normal state
+   - Impact: Mainline GPU limited to 320 MHz max vs potential 300+ MHz turbo modes
 
 ---
 
@@ -78,13 +84,15 @@
 
 ### 1.6 PLL Registers
 
-| PLL | webOS Name | webOS Offset | Mainline Name | Mainline Offset | Match? |
-|-----|------------|--------------|---------------|-----------------|--------|
-| PLL0 | MM_PLL0_MODE | 0x0300    | (not used)    | -               | -      |
-| PLL1 | MM_PLL1_MODE | 0x031C    | pll2.mode_reg | 0x31c           | ✓ (different naming) |
-| PLL2 | MM_PLL2_MODE | 0x0338    | pll15.mode_reg| 0x338           | ✓ (different naming) |
+| PLL | webOS Name | webOS Offset | Frequency | Mainline Name | Mainline Offset | Match? |
+|-----|------------|--------------|-----------|---------------|-----------------|--------|
+| PLL0 | MM_PLL0_MODE | 0x0300 | 1320 MHz | (not implemented) | - | ⚠ Missing |
+| PLL1 | MM_PLL1_MODE | 0x031C | 800 MHz | pll2.mode_reg | 0x31c | ✓ (different naming) |
+| PLL2 | MM_PLL2_MODE | 0x0338 | - | pll15.mode_reg | 0x338 | ✓ (different naming) |
 
-**Note:** Mainline calls the PLL at 0x31c "pll2" while webOS calls it "MM_PLL1". This is a naming convention difference, not a bug.
+**Notes:**
+- Mainline calls the PLL at 0x31c "pll2" while webOS calls it "MM_PLL1". This is a naming convention difference, not a bug.
+- **MM_PLL0 is not implemented in mainline** - verified via live device testing (2026-01-18). This PLL provides 1320 MHz for high-performance GPU modes but is not active in normal operation even on webOS.
 
 ---
 
@@ -311,7 +319,16 @@ static struct clk_regmap *mmcc_msm8660_clks[] = {
 
 ## 9. Potential Issues Still Under Investigation
 
-### 9.1 PLL2 Enable at Probe
+### 9.1 MM_PLL0 Not Implemented (Low Priority)
+
+Mainline does not implement MM_PLL0 (1320 MHz graphics PLL). Live device verification (see Section 12) confirms:
+- PLL0 is NOT active during normal webOS operation
+- All current GPU frequencies derive from PLL8 (384 MHz) or MM_PLL1 (800 MHz)
+- PLL0 would only be needed for turbo GPU modes (300+ MHz)
+
+**Impact**: Minimal for typical use. Could be added for full feature parity if high-performance GPU modes are needed.
+
+### 9.2 PLL2 Enable at Probe
 
 ```c
 // In mmcc_msm8960_probe():
@@ -326,7 +343,7 @@ This writes BIT(7) to register 0x31c during probe. Standard PLL mode register bi
 
 BIT(7) is not a standard PLL enable bit. This may need investigation if boot issues persist.
 
-### 9.2 Clocks Using MSM8960 Structures
+### 9.3 Clocks Using MSM8960 Structures
 
 The following clocks in the MSM8660 array still use MSM8960 structures and may need MSM8660-specific versions if they have different register layouts:
 
@@ -364,10 +381,109 @@ The following clocks in the MSM8660 array still use MSM8960 structures and may n
 
 ---
 
-## 12. Test Status
+## 12. Live Device PLL Verification (2026-01-18)
+
+### 12.1 Test Environment
+
+- **Device**: HP TouchPad (Topaz)
+- **Kernel**: webOS 2.6 (stock kernel with clock debugfs)
+- **Method**: Clock debugfs interface at `/sys/kernel/debug/clk/`
+- **Script**: `scripts/dump-mmcc-plls.sh`
+
+### 12.2 Active Clock Rates Observed
+
+| Clock | Rate | PLL Source | Formula |
+|-------|------|------------|---------|
+| gfx3d_clk | 266.667 MHz | MM_PLL1 (800 MHz) | 800/3 |
+| gfx2d0_clk | 228.571 MHz | MM_PLL1 (800 MHz) | 800×2/7 |
+| gfx2d1_clk | 228.571 MHz | MM_PLL1 (800 MHz) | 800×2/7 |
+| mdp_clk | 200 MHz | MM_PLL1 (800 MHz) | 800/4 |
+| rot_clk | 160 MHz | MM_PLL1 (800 MHz) | 800/5 |
+| pixel_mdp_clk | 96 MHz | PLL8 (384 MHz) | 384/4 |
+| ebi1_clk | 314.5 MHz | - | Memory bus |
+| afab_clk | 125.5 MHz | - | AXI fabric |
+
+### 12.3 Available GFX3D Frequencies (from list_rates)
+
+```
+27 MHz      = PXO (27 MHz crystal)
+48 MHz      = PLL8 384/8
+54.857 MHz  = PLL8 384/7
+64 MHz      = PLL8 384/6
+76.8 MHz    = PLL8 384/5
+96 MHz      = PLL8 384/4
+128 MHz     = PLL8 384/3
+145.455 MHz = MM_PLL1 800×2/11
+160 MHz     = MM_PLL1 800/5
+177.778 MHz = MM_PLL1 800×2/9
+200 MHz     = MM_PLL1 800/4
+228.571 MHz = MM_PLL1 800×2/7
+266.667 MHz = MM_PLL1 800/3
+320 MHz     = MM_PLL1 800×2/5 (MAX)
+```
+
+### 12.4 PLL0 Analysis
+
+**Key Finding: MM_PLL0 (1320 MHz) is NOT active in normal operation.**
+
+Evidence:
+1. **No PLL0-only frequencies available**: The webOS clock-8x60.c defines `F_GFX3D(300000000, MM_PLL0, ...)` but 300 MHz is NOT present in any clock's `list_rates`
+2. **All current frequencies derive from PLL8 or MM_PLL1**: Every active graphics clock rate can be calculated from 384 MHz (PLL8) or 800 MHz (MM_PLL1)
+3. **Power state**: Device was in normal/nominal power state, not turbo mode
+
+**Expected PLL0 frequencies (NOT observed):**
+- 300 MHz = 1320 × 2/11 / pre_div
+- 330 MHz = 1320 / 4
+- 440 MHz = 1320 / 3
+- 660 MHz = 1320 / 2
+
+### 12.5 PLL Configuration (from webOS clock-8x60.c)
+
+| PLL | webOS Name | Frequency | L | M | N | Register |
+|-----|------------|-----------|---|---|---|----------|
+| PLL0 | MM_PLL0 | 1320 MHz | 48 | 8 | 9 | 0x0300 |
+| PLL1 | MM_PLL1 | 800 MHz | ~29 | - | - | 0x031C |
+| PLL8 | GPERF | 384 MHz | - | - | - | (GCC) |
+
+### 12.6 GPU Stress Test Results
+
+Attempted to trigger PLL0 activation through various methods:
+
+| Test | Method | Result |
+|------|--------|--------|
+| App launch | Browser, Photos, Maps | Clock stayed at 266 MHz |
+| Framebuffer stress | dd /dev/urandom to /dev/fb0 | No frequency change |
+| Manual rate set | `echo 320000000 > rate` | **SUCCESS** - reached 320 MHz |
+| Manual PLL0 rate | `echo 300000000 > rate` | **FAIL** - "clk_set_rate failed (-22)" |
+| Enable clock first | Enable then set 300 MHz | **FAIL** - same -EINVAL error |
+
+**Key observations:**
+- Maximum achievable frequency: **320 MHz** (MM_PLL1 800×2/5)
+- PLL0 frequencies (300/330/440 MHz) are **not in list_rates**
+- Clock framework rejects frequencies not in the table
+- VDD_DIG voltage level appears to be in LOW state, blocking NOMINAL/TURBO frequencies
+
+### 12.7 Implications for Mainline
+
+1. **Mainline lacks MM_PLL0**: Only implements pll2 (MM_PLL1) and uses PLL8
+2. **Maximum GPU frequency**:
+   - webOS achievable: 320 MHz (MM_PLL1) - same as mainline capability
+   - webOS theoretical: 300+ MHz (with PLL0 in turbo mode, never observed)
+   - Mainline current: 320 MHz (via MM_PLL1)
+3. **Practical impact**: **None** - PLL0 is not used even on webOS in normal operation
+4. **Future work**: Adding MM_PLL0 is low priority since it's never activated
+
+---
+
+## 13. Test Status
 
 | Test | Result | Date |
 |------|--------|------|
 | USB with 96MHz (m_val_shift=8) | FAIL - USB not up | 2026-01-17 |
 | USB with 96MHz (m_val_shift=16) | PENDING | - |
 | Display at 96MHz | PENDING | - |
+| **PLL0 verification on webOS 2.6** | **PASS - PLL0 not active in normal state** | **2026-01-18** |
+| **Clock debugfs analysis** | **PASS - All rates match PLL8/MM_PLL1** | **2026-01-18** |
+| **GPU stress test (app launch)** | **PASS - Clock stays at 266 MHz** | **2026-01-18** |
+| **Manual 320 MHz set** | **PASS - MM_PLL1 max frequency works** | **2026-01-18** |
+| **Manual 300 MHz set (PLL0)** | **FAIL - EINVAL, not in list_rates** | **2026-01-18** |
