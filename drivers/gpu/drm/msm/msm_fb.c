@@ -79,7 +79,7 @@ void msm_framebuffer_describe(struct drm_framebuffer *fb, struct seq_file *m)
 int msm_framebuffer_prepare(struct drm_framebuffer *fb, bool needs_dirtyfb)
 {
 	struct msm_drm_private *priv = fb->dev->dev_private;
-	struct drm_gpuvm *vm = priv->kms->vm;
+	struct drm_gpuvm *vm = priv->kms ? priv->kms->vm : NULL;
 	struct msm_framebuffer *msm_fb = to_msm_framebuffer(fb);
 	int ret, i, n = fb->format->num_planes;
 
@@ -90,8 +90,29 @@ int msm_framebuffer_prepare(struct drm_framebuffer *fb, bool needs_dirtyfb)
 		return 0;
 
 	for (i = 0; i < n; i++) {
-		msm_gem_vma_get(fb->obj[i]);
-		ret = msm_gem_get_and_pin_iova(fb->obj[i], vm, &msm_fb->iova[i]);
+		if (vm) {
+			msm_gem_vma_get(fb->obj[i]);
+			ret = msm_gem_get_and_pin_iova(fb->obj[i], vm, &msm_fb->iova[i]);
+		} else {
+			/*
+			 * No IOMMU/VM - use physical DMA address directly.
+			 * Pin pages and get address from scatter-gather table.
+			 */
+			struct msm_gem_object *msm_obj = to_msm_bo(fb->obj[i]);
+			struct page **pages;
+
+			msm_gem_lock(fb->obj[i]);
+			pages = msm_gem_pin_pages_locked(fb->obj[i]);
+			if (IS_ERR(pages)) {
+				ret = PTR_ERR(pages);
+				msm_gem_unlock(fb->obj[i]);
+				return ret;
+			}
+			/* Use physical address from sgt */
+			msm_fb->iova[i] = sg_dma_address(msm_obj->sgt->sgl);
+			msm_gem_unlock(fb->obj[i]);
+			ret = 0;
+		}
 		drm_dbg_state(fb->dev, "FB[%u]: iova[%d]: %08llx (%d)\n",
 			      fb->base.id, i, msm_fb->iova[i], ret);
 		if (ret)
@@ -104,7 +125,7 @@ int msm_framebuffer_prepare(struct drm_framebuffer *fb, bool needs_dirtyfb)
 void msm_framebuffer_cleanup(struct drm_framebuffer *fb, bool needed_dirtyfb)
 {
 	struct msm_drm_private *priv = fb->dev->dev_private;
-	struct drm_gpuvm *vm = priv->kms->vm;
+	struct drm_gpuvm *vm = priv->kms ? priv->kms->vm : NULL;
 	struct msm_framebuffer *msm_fb = to_msm_framebuffer(fb);
 	int i, n = fb->format->num_planes;
 
@@ -117,8 +138,15 @@ void msm_framebuffer_cleanup(struct drm_framebuffer *fb, bool needed_dirtyfb)
 	memset(msm_fb->iova, 0, sizeof(msm_fb->iova));
 
 	for (i = 0; i < n; i++) {
-		msm_gem_unpin_iova(fb->obj[i], vm);
-		msm_gem_vma_put(fb->obj[i]);
+		if (vm) {
+			msm_gem_unpin_iova(fb->obj[i], vm);
+			msm_gem_vma_put(fb->obj[i]);
+		} else {
+			/* No IOMMU - just unpin the pages */
+			msm_gem_lock(fb->obj[i]);
+			msm_gem_unpin_pages_locked(fb->obj[i]);
+			msm_gem_unlock(fb->obj[i]);
+		}
 	}
 }
 

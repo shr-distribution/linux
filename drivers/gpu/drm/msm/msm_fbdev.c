@@ -122,10 +122,26 @@ int msm_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 	 * in panic (ie. lock-safe, etc) we could avoid pinning the
 	 * buffer now:
 	 */
-	ret = msm_gem_get_and_pin_iova(bo, priv->kms->vm, &paddr);
-	if (ret) {
-		DRM_DEV_ERROR(dev->dev, "failed to get buffer obj iova: %d\n", ret);
-		goto fail;
+	if (priv->kms->vm) {
+		ret = msm_gem_get_and_pin_iova(bo, priv->kms->vm, &paddr);
+		if (ret) {
+			DRM_DEV_ERROR(dev->dev, "failed to get buffer obj iova: %d\n", ret);
+			goto fail;
+		}
+	} else {
+		/* No IOMMU - use physical DMA address directly */
+		struct msm_gem_object *msm_obj = to_msm_bo(bo);
+		struct page **pages;
+
+		msm_gem_lock(bo);
+		pages = msm_gem_pin_pages_locked(bo);
+		if (IS_ERR(pages)) {
+			ret = PTR_ERR(pages);
+			msm_gem_unlock(bo);
+			goto fail;
+		}
+		paddr = sg_dma_address(msm_obj->sgt->sgl);
+		msm_gem_unlock(bo);
 	}
 
 	fbi = drm_fb_helper_alloc_info(helper);

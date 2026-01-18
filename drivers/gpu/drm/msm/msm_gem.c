@@ -103,6 +103,10 @@ void msm_gem_vma_put(struct drm_gem_object *obj)
 		return;
 
 #ifdef CONFIG_DRM_MSM_KMS
+	/* Skip IOVA cleanup when running without IOMMU (vm is NULL) */
+	if (!priv->kms->vm)
+		return;
+
 	struct drm_exec exec;
 
 	msm_gem_lock_vm_and_obj(&exec, obj, priv->kms->vm);
