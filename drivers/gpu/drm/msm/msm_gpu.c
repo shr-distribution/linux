@@ -1033,8 +1033,16 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	ret = devm_request_irq(&pdev->dev, gpu->irq, irq_handler,
 			IRQF_TRIGGER_HIGH, "gpu-irq", gpu);
 	if (ret) {
-		DRM_DEV_ERROR(drm->dev, "failed to request IRQ%u: %d\n", gpu->irq, ret);
-		goto fail;
+		/*
+		 * EBUSY can happen on deferred probe retry if the IRQ wasn't
+		 * freed from the previous attempt. Log a warning but continue.
+		 */
+		if (ret == -EBUSY) {
+			DRM_DEV_DEBUG(drm->dev, "IRQ%u already registered, continuing\n", gpu->irq);
+		} else {
+			DRM_DEV_ERROR(drm->dev, "failed to request IRQ%u: %d\n", gpu->irq, ret);
+			goto fail;
+		}
 	}
 
 	ret = get_clocks(pdev, gpu);
