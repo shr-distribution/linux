@@ -418,6 +418,15 @@ config MSM_MMCC_8960
 	  Say Y if you want to support multimedia devices such as display,
 	  graphics, video encode/decode, camera, etc.
 
+config MSM_MMCC_8660
+	tristate "MSM8660/APQ8060 Multimedia Clock Controller"
+	depends on ARM || COMPILE_TEST
+	select MSM_GCC_8660
+	help
+	  Support for the multimedia clock controller on msm8660/apq8060
+	  devices. Say Y if you want to support multimedia devices such as
+	  display, graphics, video encode/decode, camera, etc.
+
 config MSM_GCC_8953
 	tristate "MSM8953 Global Clock Controller"
 	select QCOM_GDSC
