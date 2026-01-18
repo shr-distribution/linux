@@ -1,6 +1,6 @@
 # HP TouchPad Mainline Kernel Status Report
-**Date:** 2026-01-13 (Updated)
-**Kernel Version:** Linux 6.18.0-00095-ge21ec8209778
+**Date:** 2026-01-18 (Updated)
+**Kernel Version:** Linux 6.18.0
 **Branch:** `tenderloin/6.18/upstream-patches`
 **Hardware:** HP TouchPad (Topaz WiFi)
 **SoC:** Qualcomm APQ8060
@@ -9,27 +9,72 @@
 
 ## EXECUTIVE SUMMARY
 
-**Overall Status: EXCELLENT - TOUCHSCREEN NOW WORKING!**
+**Overall Status: EXCELLENT - DISPLAY NOW WORKING!**
 
-### Latest Work (2026-01-13):
+### Latest Work (2026-01-18):
+**Display (MDP4/LVDS) - FULLY WORKING**
+
+Major breakthrough on display bring-up:
+- MDP4 display controller with LCDC output working
+- LVDS panel (1024x768) displaying framebuffer console
+- Pixel clock running at correct 96 MHz
+- Underflow recovery enabled for stability
+
+### Key Fixes Applied (Display):
+- No-IOMMU display path - use physical DMA addresses when `priv->kms->vm` is NULL
+- GPU IRQ EBUSY handling for deferred probe retry
+- Panel enabled in device tree
+- All 3 defconfigs synced with DRM_MSM=y (built-in)
+
+### Previous Work (2026-01-13):
 **Touchscreen CY8CTMA395 - FULLY WORKING**
-
-Major breakthrough on touchscreen bring-up:
-- Custom kernel serdev driver (`cy8ctma395_ts`) fully functional
-- UART communication at 4 Mbps via GSBI10 working
-- Touch detection verified with correct coordinates
-- Input events properly sent to `/dev/input/event3`
-
-### Key Fixes Applied:
-- GPIO 71 pinctrl configuration for UART RX
-- Touch calculation trigger on new scan start (bit 7 of row index)
-- ADM DMA `#dma-cells` fix
+- Custom kernel serdev driver with UART communication at 4 Mbps
 
 ### Previous Achievements:
 - Q6 LPASS audio DSP and WM8958 codec working
-- USB/DRM coexistence fixed (USB survives msm.ko load)
+- USB/DRM coexistence fixed (USB survives display init)
 - Interconnect framework for bus coordination
 - WiFi SDIO detected (firmware upload still timing out)
+
+---
+
+## DISPLAY DETAILS (2026-01-18)
+
+### Architecture
+The HP TouchPad uses a Qualcomm MDP4 display controller:
+- **Display Controller:** MDP4 with LCDC encoder
+- **Panel:** 1024x768 9.7" LVDS (LG LH097DA2-A01)
+- **Pixel Clock:** 96 MHz (from PLL8/4)
+- **Color Depth:** 32bpp (XRGB8888)
+
+### Implementation Challenges
+The mainline MSM DRM driver assumes IOMMU support, but APQ8060 doesn't have one:
+- Modified `msm_fb.c`, `msm_fbdev.c`, and `msm_gem.c` to handle NULL vm case
+- When `priv->kms->vm` is NULL, use physical DMA addresses directly from scatter-gather table
+- This required pinning GEM pages and using `sg_dma_address(sgt->sgl)` instead of IOVA
+
+### What's Working
+| Component | Status | Details |
+|-----------|--------|---------|
+| MDP4 Controller | ✅ | Display DMA engine operational |
+| LCDC Encoder | ✅ | Parallel RGB output working |
+| LVDS Panel | ✅ | 1024x768 @ 60 Hz |
+| Framebuffer Console | ✅ | Text displayed correctly |
+| Backlight | ✅ | PWM control, brightness 0-7 |
+| Interconnect BW | ✅ | 400 MBps per MDP port |
+
+### Known Issues
+| Issue | Status | Details |
+|-------|--------|---------|
+| MDP4 Underrun | Investigating | PRIMARY_INTF_UDERRUN (0x100), underflow recovery active |
+
+### Key Commits
+| Commit | Description |
+|--------|-------------|
+| `25bce4a902b2` | drm/msm: Add no-IOMMU display support for legacy SoCs |
+| `d400ae1017af` | drm/msm: Handle IRQ EBUSY for GPU deferred probe |
+| `b3f8045c5d22` | ARM: dts: qcom: tenderloin: Enable LVDS panel |
+| `ab655b4d1859` | ARM: configs: tenderloin: Sync defconfigs with DRM_MSM=y |
 
 ---
 
@@ -152,23 +197,25 @@ ath6kl_pwrseq: ath6kl-pwrseq {
 
 ---
 
-## HARDWARE TEST RESULTS (2026-01-13)
+## HARDWARE TEST RESULTS (2026-01-18)
 
 ### Test Environment
 - **Device:** HP TouchPad (Topaz WiFi)
-- **Kernel:** 6.18.0-00095-ge21ec8209778
+- **Kernel:** 6.18.0 (tenderloin/6.18/upstream-patches)
 - **Boot Method:** moboot → LuneOS initramfs
 - **Connection:** USB RNDIS (172.16.42.2)
+- **Display:** Framebuffer console active
 
-### WORKING COMPONENTS (19 total)
+### WORKING COMPONENTS (20 total)
 
 | Component | Status | Details |
 |-----------|--------|---------|
 | **Kernel Boot** | PASS | Boots to initramfs shell |
 | **Dual CPU** | PASS | 2x ARMv7 Scorpion cores detected |
 | **Memory** | PASS | 839MB RAM available |
-| **USB RNDIS** | PASS | Network gadget working, **survives msm.ko load!** |
+| **USB RNDIS** | PASS | Network gadget working, survives display init |
 | **eMMC** | PASS | mmcblk0 with 14 partitions |
+| **Display (DRM)** | PASS | MDP4/LCDC, 1024x768 LVDS, 96MHz pixel clock, fbcon working |
 | **Backlight** | PASS | PWM control, brightness 0-7 |
 | **LEDs** | PASS | lm8502:white:navi_left, lm8502:white:navi_right |
 | **Accelerometer** | PASS | lsm303dlh_accel (IIO device) |
@@ -189,11 +236,15 @@ ath6kl_pwrseq: ath6kl-pwrseq {
 | Component | Status | Details |
 |-----------|--------|---------|
 | **WiFi** | WIP | SDIO detected, OTP works, firmware upload times out |
-| **Display (DRM)** | PARTIAL | msm.ko loads, screen blinks, USB survives! Shell hangs after load |
 
 ---
 
 ## NEXT STEPS
+
+### Display (Investigation)
+1. Investigate MDP4 underrun errors (PRIMARY_INTF_UDERRUN)
+2. Possibly increase READ_CNFG from 3 to 8 pending requests
+3. Consider interconnect bandwidth tuning
 
 ### Touchscreen (Polish)
 1. Test and verify multi-touch support
@@ -207,9 +258,8 @@ ath6kl_pwrseq: ath6kl-pwrseq {
 4. Consider adding inter-transaction delays in ath6kl driver
 
 ### Other Components
-1. Debug why telnet/shell hangs after msm.ko loads
-2. Get display showing content (LVDS panel init)
-3. Test audio playback with actual audio files
+1. Test audio playback with actual audio files
+2. GPU 3D acceleration (Z180/Adreno 200)
 
 ---
 
@@ -242,6 +292,14 @@ mmcblk0boot0, mmcblk0boot1 - Boot partitions
 
 ## RECENT COMMITS
 
+### Display Work (2026-01-18)
+```
+ab655b4d1859 - ARM: configs: tenderloin: Sync defconfigs with DRM_MSM=y
+b3f8045c5d22 - ARM: dts: qcom: tenderloin: Enable LVDS panel
+25bce4a902b2 - drm/msm: Add no-IOMMU display support for legacy SoCs
+d400ae1017af - drm/msm: Handle IRQ EBUSY for GPU deferred probe
+```
+
 ### Touchscreen Work (2026-01-13)
 ```
 e21ec8209778 - docs: Update touchscreen analysis with final working solution
@@ -266,14 +324,21 @@ dbbc6e3e6161 - Input: touchscreen: Add Cypress CY8CTMA395 serdev driver
 
 ## CONCLUSION
 
-**Major milestone achieved!** The touchscreen is now fully working with a custom kernel serdev driver. This was a significant challenge due to the unique UART-based communication protocol used by the CY8CTMA395 controller.
+**Major milestone achieved!** The display is now fully working with the mainline MSM DRM driver. This required significant modifications to handle the no-IOMMU case on APQ8060.
 
 ### Current Status Summary:
-- **19 hardware components working** on mainline kernel
+- **20 hardware components working** on mainline kernel
+- **Display fully functional** - MDP4/LCDC with 1024x768 LVDS panel
 - **Touchscreen fully functional** - custom serdev driver with UART communication
 - **Audio fully functional** - Q6 LPASS DSP + WM8958 codec
-- **USB/DRM coexistence solved** - key milestone
+- **USB/DRM coexistence solved** - critical for development workflow
 - **WiFi close to working** - needs SDIO timing/driver investigation
+
+### Display Implementation Notes:
+The APQ8060 lacks IOMMU support, which required modifications to the MSM DRM driver:
+- `msm_fb.c`, `msm_fbdev.c`, `msm_gem.c` modified to check for NULL `priv->kms->vm`
+- When no VM/IOMMU, use physical DMA addresses directly from scatter-gather table
+- GPU IRQ EBUSY handling added for deferred probe scenarios
 
 ### Touchscreen Implementation Notes:
 The touchscreen uses a proprietary binary protocol over UART at 4 Mbps. Key discoveries:
@@ -282,13 +347,13 @@ The touchscreen uses a proprietary binary protocol over UART at 4 Mbps. Key disc
 - Touch coordinates calculated using weighted centroid algorithm
 
 ### Next Priorities:
-1. Polish touchscreen driver (multi-touch, remove debug output)
+1. Investigate MDP4 underrun errors
 2. Continue WiFi firmware upload debugging
-3. Display initialization (LVDS panel)
+3. Polish touchscreen driver for upstream
 
 ---
 
-**Report Generated:** 2026-01-13
+**Report Generated:** 2026-01-18
 **Tester:** Claude Code
 **Maintainer:** Herrie
 **Project:** HP TouchPad Mainline Kernel Support
