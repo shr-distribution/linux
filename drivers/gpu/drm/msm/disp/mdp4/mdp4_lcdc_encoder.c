@@ -319,10 +319,14 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 		DRM_DEV_ERROR(dev->dev, "failed to enable regulators: %d\n", ret);
 
 	DBG("setting lcdc_clk=%lu", pc);
+	dev_info(dev->dev, "LCDC enable: before clk_set_rate(%lu)\n", pc);
 	ret = clk_set_rate(mdp4_lcdc_encoder->lcdc_clk, pc);
+	dev_info(dev->dev, "LCDC enable: after clk_set_rate, ret=%d\n", ret);
 	if (ret)
 		DRM_DEV_ERROR(dev->dev, "failed to configure lcdc_clk: %d\n", ret);
+	dev_info(dev->dev, "LCDC enable: before clk_prepare_enable\n");
 	ret = clk_prepare_enable(mdp4_lcdc_encoder->lcdc_clk);
+	dev_info(dev->dev, "LCDC enable: after clk_prepare_enable, ret=%d\n", ret);
 	if (ret)
 		DRM_DEV_ERROR(dev->dev, "failed to enable lcdc_clk: %d\n", ret);
 
@@ -337,12 +341,18 @@ static enum drm_mode_status
 mdp4_lcdc_encoder_mode_valid(struct drm_encoder *encoder,
 		const struct drm_display_mode *mode)
 {
+	struct drm_device *dev = encoder->dev;
 	struct mdp4_lcdc_encoder *mdp4_lcdc_encoder =
 			to_mdp4_lcdc_encoder(encoder);
 	long actual, requested;
 
 	requested = 1000 * mode->clock;
+
+	dev_info(dev->dev, "LCDC mode_valid: before clk_round_rate, requested=%ld\n", requested);
+
 	actual = clk_round_rate(mdp4_lcdc_encoder->lcdc_clk, requested);
+
+	dev_info(dev->dev, "LCDC mode_valid: after clk_round_rate, actual=%ld\n", actual);
 
 	DBG("requested=%ld, actual=%ld", requested, actual);
 

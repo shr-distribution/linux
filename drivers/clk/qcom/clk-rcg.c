@@ -403,17 +403,33 @@ static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
 	unsigned long clk_flags, rate = req->rate;
 	struct clk_hw *p;
 	int index;
+	const char *name = clk_hw_get_name(hw);
+
+	pr_info("clk-rcg: %s _freq_tbl_determine_rate requested=%lu\n", name, rate);
 
 	f = qcom_find_freq(f, rate);
-	if (!f)
+	if (!f) {
+		pr_err("clk-rcg: %s qcom_find_freq failed for rate %lu\n", name, rate);
 		return -EINVAL;
+	}
+	pr_info("clk-rcg: %s found freq=%lu src=%d pre_div=%d m=%d n=%d\n",
+		 name, f->freq, f->src, f->pre_div, f->m, f->n);
 
 	index = qcom_find_src_index(hw, parent_map, f->src);
-	if (index < 0)
+	if (index < 0) {
+		pr_err("clk-rcg: %s qcom_find_src_index failed for src %d\n", name, f->src);
 		return index;
+	}
+	pr_info("clk-rcg: %s parent index=%d\n", name, index);
 
 	clk_flags = clk_hw_get_flags(hw);
 	p = clk_hw_get_parent_by_index(hw, index);
+	if (!p) {
+		pr_err("clk-rcg: %s clk_hw_get_parent_by_index(%d) returned NULL!\n", name, index);
+		return -ENOENT;
+	}
+	pr_info("clk-rcg: %s parent hw=%s\n", name, clk_hw_get_name(p));
+
 	if (clk_flags & CLK_SET_RATE_PARENT) {
 		rate = rate * f->pre_div;
 		if (f->n) {
@@ -428,6 +444,9 @@ static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
 	req->best_parent_hw = p;
 	req->best_parent_rate = rate;
 	req->rate = f->freq;
+
+	pr_info("clk-rcg: %s determine_rate returning rate=%lu parent_rate=%lu\n",
+		 name, req->rate, req->best_parent_rate);
 
 	return 0;
 }

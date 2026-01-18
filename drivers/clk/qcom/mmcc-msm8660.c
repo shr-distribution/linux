@@ -1134,17 +1134,13 @@ static struct clk_branch mdp_vsync_clk = {
  * NS register offset is 0x00DC (not 0x00E0 as in MSM8960).
  */
 static const struct freq_tbl clk_tbl_mdp_pixel[] = {
-	/* Format: { freq, src, pre_div, m, n } - pre_div must be 1 (not 0) */
-	{  25200000, P_PLL8, 1, 33, 502 },	/* 384 * 33/502 ~= 25.2 MHz */
-	{  27000000, P_PXO,  1,  0,   0 },	/* PXO direct = 27 MHz */
-	{  40000000, P_PLL8, 1,  5,  48 },	/* 384 * 5/48 = 40 MHz */
-	{  46000000, P_PLL8, 1, 23, 192 },	/* 384 * 23/192 ~= 46 MHz */
-	{  50000000, P_PLL8, 1,  1,   8 },	/* 384 * 1/8 = 48 MHz (closest) */
-	{  65000000, P_PLL8, 1, 13,  76 },	/* 384 * 13/76 ~= 65.7 MHz */
-	{  74250000, P_PLL8, 1, 99, 512 },	/* 384 * 99/512 ~= 74.25 MHz */
-	{  76800000, P_PLL8, 1,  1,   5 },	/* 384 * 1/5 = 76.8 MHz */
-	{  96000000, P_PLL8, 1,  1,   4 },	/* 384 * 1/4 = 96 MHz - HP TouchPad */
-	{ 128000000, P_PLL8, 1,  1,   3 },	/* 384 * 1/3 = 128 MHz */
+	/* Format: { freq, src, pre_div, m, n } - use pre_div like clk_tbl_cam */
+	{  27000000, P_PXO,  1, 0, 0 },	/* PXO direct = 27 MHz */
+	{  48000000, P_PLL8, 4, 1, 2 },	/* 384 / 4 * 1/2 = 48 MHz */
+	{  64000000, P_PLL8, 3, 1, 2 },	/* 384 / 3 * 1/2 = 64 MHz */
+	{  76800000, P_PLL8, 1, 1, 5 },	/* 384 * 1/5 = 76.8 MHz */
+	{  96000000, P_PLL8, 4, 0, 0 },	/* 384 / 4 = 96 MHz - HP TouchPad */
+	{ 128000000, P_PLL8, 3, 0, 0 },	/* 384 / 3 = 128 MHz */
 	{ }
 };
 
@@ -1156,8 +1152,8 @@ static struct clk_rcg mdp_pixel_src = {
 		.mnctr_reset_bit = 7,
 		.mnctr_mode_shift = 6,
 		.n_val_shift = 16,
-		.m_val_shift = 16,		/* MSM8660: M at bits [31:16] */
-		.width = 16,			/* MSM8660: 16-bit M/N counters */
+		.m_val_shift = 8,		/* Try standard 8-bit format */
+		.width = 8,			/* Try standard 8-bit width */
 	},
 	.p = {
 		.pre_div_shift = 14,
@@ -1175,7 +1171,7 @@ static struct clk_rcg mdp_pixel_src = {
 			.name = "mdp_pixel_src",
 			.parent_data = mmcc_pxo_pll8_pll2,
 			.num_parents = ARRAY_SIZE(mmcc_pxo_pll8_pll2),
-			.ops = &clk_rcg_bypass2_ops,  /* bypass2 for now - TODO: fix clk_rcg_ops crash */
+			.ops = &clk_rcg_ops,  /* Testing with clk_tbl_cam-style freq_tbl */
 		},
 	},
 };

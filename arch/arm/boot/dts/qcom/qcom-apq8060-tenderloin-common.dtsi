@@ -887,6 +887,7 @@
 
 	lg_panel: panel {
 		compatible = "panel-lvds";
+		status = "okay"; /* Debug: testing clk_rcg_ops with panel enabled */
 
 		// reset-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;
 		// shdn??-gpios = <&tlmm 63 GPIO_ACTIVE_HIGH>;
