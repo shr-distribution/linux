@@ -328,20 +328,30 @@ Mainline does not implement MM_PLL0 (1320 MHz graphics PLL). Live device verific
 
 **Impact**: Minimal for typical use. Could be added for full feature parity if high-performance GPU modes are needed.
 
-### 9.2 PLL2 Enable at Probe
+### 9.2 PLL2 Enable at Probe (RESOLVED - Removed)
 
+**Previous code (now removed):**
 ```c
 // In mmcc_msm8960_probe():
 if (desc == &mmcc_msm8660_desc)
     regmap_update_bits(regmap, 0x31c, BIT(7), BIT(7));
 ```
 
-This writes BIT(7) to register 0x31c during probe. Standard PLL mode register bits are:
-- BIT(0): OUTCTRL (output enable)
-- BIT(1): BYPASSNL
-- BIT(2): RESET_N
+**Investigation (2026-01-18):**
 
-BIT(7) is not a standard PLL enable bit. This may need investigation if boot issues persist.
+Analysis of webOS `nt_pll_enable()` function in `clock-8x60.c` (lines 2191-2232) confirmed:
+
+| Bit | Function | Used by webOS |
+|-----|----------|---------------|
+| BIT(0) | PLL output enable | ✓ Set last in enable sequence |
+| BIT(1) | Bypass mode disable | ✓ Set first in enable sequence |
+| BIT(2) | Active-low reset de-assert | ✓ Set second in enable sequence |
+| BIT(3) | Test mode | ✓ Cleared on disable |
+| BIT(7) | **Not used** | ✗ Never written to PLL mode register |
+
+**Finding:** BIT(7) in webOS is used for **MND reset in NS registers** (`clock-local.c:73,88`), NOT the PLL mode register. The mainline `clk_pll_ops.enable()` already handles PLL enable correctly by setting BIT(0,1,2) in the proper sequence.
+
+**Resolution:** Removed the incorrect BIT(7) write. PLLs are enabled automatically via `clk_pll_ops` when clocks using them are requested.
 
 ### 9.3 Clocks Using MSM8960 Structures
 
@@ -370,6 +380,7 @@ The following clocks in the MSM8660 array still use MSM8960 structures and may n
 | LCDC halt_bit | 24 | 21 | ✓ Fixed |
 | Pixel halt_bit | Already 23 | 23 | ✓ OK |
 | 96MHz frequency | Missing | Added | ✓ Fixed |
+| PLL2 probe BIT(7) | BIT(7) written | Removed | ✓ Fixed |
 
 ---
 
@@ -487,3 +498,4 @@ Attempted to trigger PLL0 activation through various methods:
 | **GPU stress test (app launch)** | **PASS - Clock stays at 266 MHz** | **2026-01-18** |
 | **Manual 320 MHz set** | **PASS - MM_PLL1 max frequency works** | **2026-01-18** |
 | **Manual 300 MHz set (PLL0)** | **FAIL - EINVAL, not in list_rates** | **2026-01-18** |
+| **PLL2 BIT(7) investigation** | **PASS - BIT(7) not used, code removed** | **2026-01-18** |

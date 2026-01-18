@@ -3435,10 +3435,6 @@ static int mmcc_msm8960_probe(struct platform_device *pdev)
 	if (desc == &mmcc_apq8064_desc)
 		clk_pll_configure_sr(&pll15, regmap, &pll15_config, false);
 
-	/* Enable PLL2 for MSM8660/APQ8060 multimedia clocks */
-	if (desc == &mmcc_msm8660_desc)
-		regmap_update_bits(regmap, 0x31c, BIT(7), BIT(7));
-
 	return qcom_cc_really_probe(&pdev->dev, desc, regmap);
 }
 
