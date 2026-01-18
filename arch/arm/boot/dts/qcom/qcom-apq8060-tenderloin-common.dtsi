@@ -710,12 +710,13 @@
 				 <&mmcc GMEM_AXI_CLK>;
 
 			/*
-			 * Disabled to avoid deferred probe conflicts.
-			 * The a2xx GPU causes IRQ/OPP warnings during probe retry
-			 * cycles. MDP4 display works without 3D GPU.
-			 * TODO: Re-enable when a2xx support is fully working.
+			 * OPP table removed - causes deferred probe issues with
+			 * IRQ conflicts when GPU init retries. The a2xx GPU works
+			 * fine without OPP-based power management.
+			 *
+			 * GPU interconnect: NOT REQUIRED for Adreno 220 (a2xx).
+			 * The a2xx_gpu.c driver doesn't use interconnect APIs.
 			 */
-			status = "disabled";
 		};
 
 		mdp: mdp@5100000 {
