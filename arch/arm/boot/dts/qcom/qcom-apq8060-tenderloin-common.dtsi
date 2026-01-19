@@ -710,6 +710,12 @@
 				 <&mmcc GMEM_AXI_CLK>;
 
 			operating-points-v2 = <&gpu_opp_table>;
+
+			/*
+			 * GPU voltage supply (vdd_dig) for DVFS.
+			 * PM8058 S1 provides 500mV-1350mV range.
+			 */
+			gpu-supply = <&pm8058_s1>;
 		};
 
 		gpu_opp_table: gpu-opp-table {
@@ -720,9 +726,8 @@
 			 * Voltage levels from soc_update_sys_vdd():
 			 *   LOW = 1.0V, NOMINAL = 1.1V, HIGH = 1.2V
 			 *
-			 * Note: Voltage scaling requires a regulator attached
-			 * to the GPU. Without a gpu-supply, only frequency
-			 * scaling will be performed.
+			 * Voltage scaling is provided by PM8058 S1 (vdd_dig)
+			 * via the gpu-supply property on the GPU node.
 			 */
 			opp-27000000 {
 				opp-hz = /bits/ 64 <27000000>;
