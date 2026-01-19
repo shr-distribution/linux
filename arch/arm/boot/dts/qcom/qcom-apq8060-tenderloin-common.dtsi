@@ -848,6 +848,35 @@
 					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "mdp0-mem", "mdp1-mem";
 
+			/*
+			 * MDP IOMMU for display memory virtualization.
+			 * Stream IDs from legacy kernel devices-msm8x60-iommu.c:
+			 *   Port 0: VG1 ctx (MIDs 0,2) + RGB1 ctx (MIDs 1,3-10)
+			 *   Port 1: VG2 ctx (MIDs 0,2) + RGB2 ctx (MIDs 1,3-10)
+			 */
+			iommus = <&mdp_port0_iommu 0>,
+				 <&mdp_port0_iommu 1>,
+				 <&mdp_port0_iommu 2>,
+				 <&mdp_port0_iommu 3>,
+				 <&mdp_port0_iommu 4>,
+				 <&mdp_port0_iommu 5>,
+				 <&mdp_port0_iommu 6>,
+				 <&mdp_port0_iommu 7>,
+				 <&mdp_port0_iommu 8>,
+				 <&mdp_port0_iommu 9>,
+				 <&mdp_port0_iommu 10>,
+				 <&mdp_port1_iommu 0>,
+				 <&mdp_port1_iommu 1>,
+				 <&mdp_port1_iommu 2>,
+				 <&mdp_port1_iommu 3>,
+				 <&mdp_port1_iommu 4>,
+				 <&mdp_port1_iommu 5>,
+				 <&mdp_port1_iommu 6>,
+				 <&mdp_port1_iommu 7>,
+				 <&mdp_port1_iommu 8>,
+				 <&mdp_port1_iommu 9>,
+				 <&mdp_port1_iommu 10>;
+
 			ports {
 				#address-cells = <1>;
 				#size-cells = <0>;
@@ -2288,6 +2317,15 @@
 
 /* Enable GPU IOMMU for memory protection */
 &gpu_iommu {
+	status = "okay";
+};
+
+/* Enable MDP IOMMUs for display memory virtualization */
+&mdp_port0_iommu {
+	status = "okay";
+};
+
+&mdp_port1_iommu {
 	status = "okay";
 };
 
