@@ -171,7 +171,7 @@ int msm_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 	fbi->fix.smem_len = bo->size;
 
 	/* Clear framebuffer to avoid artifacts from uninitialized memory */
-	memset(fbi->screen_buffer, 0x80, bo->size);  /* Gray to verify our FB */
+	memset(fbi->screen_buffer, 0, bo->size);
 
 	DBG("par=%p, %dx%d", fbi->par, fbi->var.xres, fbi->var.yres);
 	DBG("allocated %dx%d fb", fb->width, fb->height);

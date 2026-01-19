@@ -101,6 +101,26 @@ static int mdp4_hw_init(struct msm_kms *kms)
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CFG(1), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CFG(2), 0);
 
+	/*
+	 * Initialize blend stages for both overlay processors.
+	 * This clears any bootloader blend configuration that might cause
+	 * stale content to be composited on top of the kernel display.
+	 * Per legacy webOS kernel mdp4_mixer_blend_init():
+	 * - OP = 0x010 (FG_CONST alpha mode)
+	 * - FG_ALPHA = 0xff (foreground fully opaque)
+	 * - BG_ALPHA = 0x00 (background fully transparent)
+	 */
+	{
+		int ovlp, stage;
+		for (ovlp = 0; ovlp < 2; ovlp++) {
+			for (stage = 0; stage < 4; stage++) {
+				mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_OP(ovlp, stage), 0x010);
+				mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_FG_ALPHA(ovlp, stage), 0xff);
+				mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_BG_ALPHA(ovlp, stage), 0x00);
+			}
+		}
+	}
+
 	/* disable CSC matrix / YUV and reset all pipe op modes: */
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(VG1), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(VG2), 0);
