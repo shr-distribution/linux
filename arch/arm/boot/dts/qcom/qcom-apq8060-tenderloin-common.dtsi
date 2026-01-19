@@ -716,32 +716,57 @@
 			compatible = "operating-points-v2";
 
 			/*
-			 * GPU frequencies from MSM8660 clock driver.
-			 * Voltage is not controlled (0 = unspecified).
+			 * Adreno 220 GPU OPP table from MSM8660 clock-8x60.c.
+			 * Voltage levels from soc_update_sys_vdd():
+			 *   LOW = 1.0V, NOMINAL = 1.1V, HIGH = 1.2V
+			 *
+			 * Note: Voltage scaling requires a regulator attached
+			 * to the GPU. Without a gpu-supply, only frequency
+			 * scaling will be performed.
 			 */
 			opp-27000000 {
 				opp-hz = /bits/ 64 <27000000>;
+				opp-microvolt = <1000000>;
 			};
 			opp-48000000 {
 				opp-hz = /bits/ 64 <48000000>;
+				opp-microvolt = <1000000>;
 			};
 			opp-64000000 {
 				opp-hz = /bits/ 64 <64000000>;
+				opp-microvolt = <1000000>;
 			};
 			opp-76800000 {
 				opp-hz = /bits/ 64 <76800000>;
+				opp-microvolt = <1000000>;
 			};
 			opp-96000000 {
 				opp-hz = /bits/ 64 <96000000>;
+				opp-microvolt = <1000000>;
 			};
 			opp-128000000 {
 				opp-hz = /bits/ 64 <128000000>;
+				opp-microvolt = <1100000>;
 			};
 			opp-160000000 {
 				opp-hz = /bits/ 64 <160000000>;
+				opp-microvolt = <1100000>;
 			};
 			opp-200000000 {
 				opp-hz = /bits/ 64 <200000000>;
+				opp-microvolt = <1100000>;
+			};
+			opp-228571000 {
+				opp-hz = /bits/ 64 <228571000>;
+				opp-microvolt = <1100000>;
+			};
+			opp-266667000 {
+				opp-hz = /bits/ 64 <266667000>;
+				opp-microvolt = <1200000>;
+			};
+			opp-320000000 {
+				opp-hz = /bits/ 64 <320000000>;
+				opp-microvolt = <1200000>;
 			};
 		};
 
