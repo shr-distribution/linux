@@ -244,8 +244,14 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_iface;
 
-	/* Set interconnect bandwidth for USB HS (~60 MB/s max) */
-	ret = icc_set_bw(ci->icc_path, 0, MBps_to_icc(60));
+	/*
+	 * Set interconnect bandwidth for USB HS.
+	 * Use sustained average bandwidth (not just peak) to prevent bursty
+	 * traffic from conflicting with display scanout on the shared
+	 * APPSS fabric memory path. This reduces blue screen flickering
+	 * during USB activity on APQ8060.
+	 */
+	ret = icc_set_bw(ci->icc_path, MBps_to_icc(60), MBps_to_icc(120));
 	if (ret)
 		goto err_icc;
 

@@ -35,7 +35,7 @@
 
 	chosen {
 		/* Bootloader passes console=tty1, which overrides stdout-path */
-		bootargs = "console=ttyMSM0,115200 console=ttyGS0,115200 clk_ignore_unused log_buf_len=4M deferred_probe_timeout=5";
+		bootargs = "console=ttyMSM0,115200 console=ttyGS0,115200 clk_ignore_unused log_buf_len=4M deferred_probe_timeout=5 fbcon=font:VGA8x16";
 		stdout-path = "serial0:115200n8";
 #if USE_FRAMEBUFFER
 		#address-cells = <1>;
@@ -909,6 +909,9 @@
 
 		/* VESA 24-bit RGB data mapping for LG XGA panel */
 		data-mapping = "vesa-24";
+
+		/* Panel is physically mounted inverted (upside-down) */
+		rotation = <180>;
 
 		panel-timing {
 			clock-frequency = <96000000>;

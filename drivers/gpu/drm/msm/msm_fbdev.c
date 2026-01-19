@@ -157,6 +157,7 @@ int msm_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 	helper->fb = fb;
 
 	fbi->fbops = &msm_fb_ops;
+	fbi->flags |= FBINFO_VIRTFB; /* screen_buffer is in virtual address space */
 
 	drm_fb_helper_fill_info(fbi, helper, sizes);
 
@@ -168,6 +169,9 @@ int msm_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 	fbi->screen_size = bo->size;
 	fbi->fix.smem_start = paddr;
 	fbi->fix.smem_len = bo->size;
+
+	/* Clear framebuffer to avoid artifacts from uninitialized memory */
+	memset(fbi->screen_buffer, 0x80, bo->size);  /* Gray to verify our FB */
 
 	DBG("par=%p, %dx%d", fbi->par, fbi->var.xres, fbi->var.yres);
 	DBG("allocated %dx%d fb", fb->width, fb->height);

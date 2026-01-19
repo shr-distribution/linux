@@ -25,6 +25,20 @@ static int mdp4_hw_init(struct msm_kms *kms)
 
 	pm_runtime_get_sync(dev->dev);
 
+	/*
+	 * Disable bootloader display output FIRST before touching any
+	 * pipe configuration. This prevents blue screen flickering during
+	 * the handoff from bootloader (moboot) to kernel.
+	 *
+	 * The bootloader leaves LCDC/DTV running, so if we clear pipe
+	 * addresses while it's still scanning out, we get corruption.
+	 */
+	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
+	mdp4_write(mdp4_kms, REG_MDP4_DTV_ENABLE, 0);
+
+	/* Wait for current frame to complete (~17ms for 60Hz) */
+	msleep(20);
+
 	if (mdp4_kms->rev > 1) {
 		mdp4_write(mdp4_kms, REG_MDP4_CS_CONTROLLER0, 0x0707ffff);
 		mdp4_write(mdp4_kms, REG_MDP4_CS_CONTROLLER1, 0x03073f3f);
@@ -36,10 +50,10 @@ static int mdp4_hw_init(struct msm_kms *kms)
 	 * Max read pending cmd config.
 	 * Per webOS kernel: if MDP clock < AXI clock, use 3 pending requests,
 	 * otherwise use 8 pending requests. On APQ8060 with MDP at 200MHz
-	 * and AXI at ~200MHz, they're roughly equal so use 8 for better
-	 * throughput and to prevent underrun during USB activity.
+	 * and AXI at ~200MHz, they're roughly equal so use max (0x0FFFF) for
+	 * better throughput and to prevent underrun artifacts at bottom of screen.
 	 */
-	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x08888);
+	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x0FFFF);
 
 	clk = clk_get_rate(mdp4_kms->clk);
 
@@ -65,13 +79,55 @@ static int mdp4_hw_init(struct msm_kms *kms)
 		mdp4_write(mdp4_kms, REG_MDP4_LAYERMIXER_IN_CFG_UPDATE_METHOD, 1);
 	mdp4_write(mdp4_kms, REG_MDP4_LAYERMIXER_IN_CFG, 0);
 
-	/* disable CSC matrix / YUV by default: */
+	/*
+	 * Clear all pipe source addresses to remove any leftover
+	 * bootloader framebuffer configuration that might be composited
+	 * on top of the kernel's framebuffer.
+	 */
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(VG1), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(VG2), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(RGB1), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(RGB2), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRC_SIZE(VG1), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRC_SIZE(VG2), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRC_SIZE(RGB1), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRC_SIZE(RGB2), 0);
+
+	/*
+	 * Disable all overlay processors to clear any bootloader console
+	 * or logo that might be composited on top of the kernel display.
+	 */
+	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CFG(0), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CFG(1), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CFG(2), 0);
+
+	/* disable CSC matrix / YUV and reset all pipe op modes: */
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(VG1), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(VG2), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(RGB1), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(RGB2), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_DMA_P_OP_MODE, 0);
 	mdp4_write(mdp4_kms, REG_MDP4_DMA_S_OP_MODE, 0);
+	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CSC_CONFIG(0), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CSC_CONFIG(1), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CSC_CONFIG(2), 0);
+
+	/*
+	 * Clear DMA pipe source addresses to remove any bootloader
+	 * framebuffer that might be displayed via DMA pipes.
+	 * Note: Only clear DMA_P and DMA_S, not DMA_E which may not
+	 * be present on all hardware variants.
+	 */
+	mdp4_write(mdp4_kms, REG_MDP4_DMA_SRC_BASE(DMA_P), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_DMA_SRC_BASE(DMA_S), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_DMA_SRC_SIZE(DMA_P), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_DMA_SRC_SIZE(DMA_S), 0);
+
+	/*
+	 * Disable hardware cursors on DMA_P to clear any bootloader cursor.
+	 */
+	mdp4_write(mdp4_kms, REG_MDP4_DMA_CURSOR_SIZE(DMA_P), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_DMA_CURSOR_BLEND_CONFIG(DMA_P), 0);
 
 	if (mdp4_kms->rev > 1)
 		mdp4_write(mdp4_kms, REG_MDP4_RESET_STATUS, 1);
@@ -508,7 +564,14 @@ static int mdp4_kms_init(struct drm_device *dev)
 	dev->mode_config.min_width = 0;
 	dev->mode_config.min_height = 0;
 	dev->mode_config.max_width = 2048;
-	dev->mode_config.max_height = 2048;
+	/*
+	 * Allow height up to 4096 for fbdev triple buffering.
+	 * With CONFIG_DRM_FBDEV_OVERALLOC=300, a 768-line display needs
+	 * surface_height = 768 * 3 = 2304 lines for triple buffering.
+	 * drm_fb_helper clamps surface_height to max_height, so we need
+	 * this to be at least 2304 to avoid buffer underallocation.
+	 */
+	dev->mode_config.max_height = 4096;
 
 	return 0;
 
@@ -552,13 +615,14 @@ static int mdp4_setup_interconnect(struct platform_device *pdev)
 	 * For 1024x768@60Hz with two layers:
 	 *   ab (average) = 377487360 (~360 MBps)
 	 *   ib (peak)    = 471859200 (~450 MBps)
-	 * Using slightly higher values for headroom.
+	 * Using 4x values to prevent underrun artifacts at bottom of screen
+	 * and blue flickering during USB activity (bandwidth contention).
 	 * TODO: Calculate dynamically based on display mode.
 	 */
-	icc_set_bw(path0, MBps_to_icc(360), MBps_to_icc(450));
+	icc_set_bw(path0, MBps_to_icc(2000), MBps_to_icc(2500));
 
 	if (!IS_ERR_OR_NULL(path1))
-		icc_set_bw(path1, MBps_to_icc(360), MBps_to_icc(450));
+		icc_set_bw(path1, MBps_to_icc(2000), MBps_to_icc(2500));
 
 	return 0;
 }
@@ -611,13 +675,12 @@ static int mdp4_probe(struct platform_device *pdev)
 	if (IS_ERR(mdp4_kms->lut_clk))
 		return dev_err_probe(dev, PTR_ERR(mdp4_kms->lut_clk), "failed to get lut_clk\n");
 
-	/* DEBUG: Step 3 - calling msm_drv_probe */
-	dev_info(&pdev->dev, "MDP4: Step 3 - calling msm_drv_probe\n");
-	return msm_drv_probe(&pdev->dev, mdp4_kms_init, &mdp4_kms->base.base);
+	/* Set up interconnect bandwidth to prevent display underrun */
+	ret = mdp4_setup_interconnect(pdev);
+	if (ret)
+		return ret;
 
-#if 0  /* Disabled for USB debug */
 	return msm_drv_probe(&pdev->dev, mdp4_kms_init, &mdp4_kms->base.base);
-#endif  /* USB debug */
 }
 
 static void mdp4_remove(struct platform_device *pdev)
