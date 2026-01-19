@@ -716,6 +716,43 @@
 			 * PM8058 S1 provides 500mV-1350mV range.
 			 */
 			gpu-supply = <&pm8058_s1>;
+
+			/*
+			 * GPU IOMMU for memory virtualization.
+			 * Stream IDs 0-15 for user context, 16-31 for priv context.
+			 */
+			iommus = <&gpu_iommu 0>,
+				 <&gpu_iommu 1>,
+				 <&gpu_iommu 2>,
+				 <&gpu_iommu 3>,
+				 <&gpu_iommu 4>,
+				 <&gpu_iommu 5>,
+				 <&gpu_iommu 6>,
+				 <&gpu_iommu 7>,
+				 <&gpu_iommu 8>,
+				 <&gpu_iommu 9>,
+				 <&gpu_iommu 10>,
+				 <&gpu_iommu 11>,
+				 <&gpu_iommu 12>,
+				 <&gpu_iommu 13>,
+				 <&gpu_iommu 14>,
+				 <&gpu_iommu 15>,
+				 <&gpu_iommu 16>,
+				 <&gpu_iommu 17>,
+				 <&gpu_iommu 18>,
+				 <&gpu_iommu 19>,
+				 <&gpu_iommu 20>,
+				 <&gpu_iommu 21>,
+				 <&gpu_iommu 22>,
+				 <&gpu_iommu 23>,
+				 <&gpu_iommu 24>,
+				 <&gpu_iommu 25>,
+				 <&gpu_iommu 26>,
+				 <&gpu_iommu 27>,
+				 <&gpu_iommu 28>,
+				 <&gpu_iommu 29>,
+				 <&gpu_iommu 30>,
+				 <&gpu_iommu 31>;
 		};
 
 		gpu_opp_table: gpu-opp-table {
@@ -2247,5 +2284,10 @@
 			no-map;
 		};
 	};
+};
+
+/* Enable GPU IOMMU for memory protection */
+&gpu_iommu {
+	status = "okay";
 };
 
