@@ -758,8 +758,10 @@
 			compatible = "qcom,msm8660-mmss-fabric";
 			#interconnect-cells = <1>;
 			clocks = <&rpmcc RPM_MM_FABRIC_CLK>,
-				 <&rpmcc RPM_MM_FABRIC_A_CLK>;
-			clock-names = "bus", "bus_a";
+				 <&rpmcc RPM_MM_FABRIC_A_CLK>,
+				 <&rpmcc RPM_SMI_CLK>,
+				 <&rpmcc RPM_SMI_A_CLK>;
+			clock-names = "bus", "bus_a", "smi", "smi_a";
 		};
 
 		amba {

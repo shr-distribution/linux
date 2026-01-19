@@ -114,6 +114,8 @@ static const struct clk_bulk_data msm8660_sfab_clocks[] = {
 static const struct clk_bulk_data msm8660_mmfab_clocks[] = {
 	{ .id = "bus" },
 	{ .id = "bus_a" },
+	{ .id = "smi" },
+	{ .id = "smi_a" },
 };
 
 /**
