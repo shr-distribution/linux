@@ -3685,9 +3685,16 @@ static int camss_of_parse_endpoint_node(struct device *dev,
 		return ret;
 
 	/*
-	 * Most SoCs support both D-PHY and C-PHY standards, but currently only
-	 * D-PHY is supported in the driver.
+	 * Support both MIPI CSI-2 D-PHY and parallel camera interfaces.
+	 * Parallel interface (CAMIF) is used on older SoCs like MSM8660.
 	 */
+	if (vep.bus_type == V4L2_MBUS_PARALLEL) {
+		/* Parallel camera - no lane configuration needed */
+		csd->interface.csiphy_id = vep.base.port;
+		lncfg->num_data = 0;
+		return 0;
+	}
+
 	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY) {
 		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
 		return -EINVAL;
@@ -4128,16 +4135,22 @@ static int camss_configure_pd(struct camss *camss)
 						      "power-domains",
 						      "#power-domain-cells");
 	if (camss->genpd_num < 0) {
-		dev_err(dev, "Power domains are not defined for camss\n");
-		return camss->genpd_num;
+		/*
+		 * Older platforms like MSM8660 don't have GDSC power domains.
+		 * The VFE is always powered when clocks are enabled.
+		 * Treat missing power-domains as "no power domain management".
+		 */
+		dev_dbg(dev, "No power domains defined for camss, continuing without PM\n");
+		camss->genpd_num = 0;
 	}
 
 	/*
-	 * If a platform device has just one power domain, then it is attached
-	 * at platform_probe() level, thus there shall be no need and even no
-	 * option to attach it again, this is the case for CAMSS on MSM8916.
+	 * If genpd_num == 0, no power domain management is needed (e.g. MSM8660).
+	 * If genpd_num == 1, the platform device is attached at platform_probe()
+	 * level, thus there shall be no need and even no option to attach it
+	 * again, this is the case for CAMSS on MSM8916.
 	 */
-	if (camss->genpd_num == 1)
+	if (camss->genpd_num <= 1)
 		return 0;
 
 	/* count the # of VFEs which have flagged power-domain */
@@ -4222,7 +4235,7 @@ static void camss_genpd_subdevice_cleanup(struct camss *camss)
 
 static void camss_genpd_cleanup(struct camss *camss)
 {
-	if (camss->genpd_num == 1)
+	if (camss->genpd_num <= 1)
 		return;
 
 	camss_genpd_subdevice_cleanup(camss);
@@ -4390,11 +4403,16 @@ static const struct camss_resources msm8660_resources = {
 	.version = CAMSS_8x60,
 	.icc_res = icc_res_8x60,
 	.icc_path_num = ARRAY_SIZE(icc_res_8x60),
-	.csiphy_res = csiphy_res_8x60,
-	.csid_res = csid_res_8x60,
+	/*
+	 * MSM8660/APQ8060 with parallel camera interface (CAMIF) doesn't use
+	 * MIPI CSI-2, so CSIPHY/CSID are not needed. The VFE 3.1 connects
+	 * directly to the parallel sensor.
+	 */
+	.csiphy_res = NULL,
+	.csid_res = NULL,
 	.vfe_res = vfe_res_8x60,
-	.csiphy_num = ARRAY_SIZE(csiphy_res_8x60),
-	.csid_num = ARRAY_SIZE(csid_res_8x60),
+	.csiphy_num = 0,
+	.csid_num = 0,
 	.vfe_num = ARRAY_SIZE(vfe_res_8x60),
 };
 

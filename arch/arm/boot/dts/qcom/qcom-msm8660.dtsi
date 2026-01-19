@@ -861,45 +861,21 @@
 		 */
 		camss: camss@04500000 {
 			compatible = "qcom,msm8660-camss";
-			reg = <0x04500000 0x1000>,
-			      <0x04800000 0x1000>,
-			      <0x04800000 0x1000>,
-			      <0x04900000 0x1000>,
-			      <0x04900000 0x1000>;
-			reg-names = "vfe0",
-				    "csiphy0",
-				    "csid0",
-				    "csiphy1",
-				    "csid1";
-			interrupts = <GIC_SPI 78 IRQ_TYPE_EDGE_RISING>,
-				     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
-				     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
-				     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>,
-				     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>;
-			interrupt-names = "vfe0",
-					  "csiphy0",
-					  "csid0",
-					  "csiphy1",
-					  "csid1";
+			/*
+			 * MSM8660/APQ8060 with parallel camera interface (CAMIF).
+			 * Only VFE is needed - no MIPI CSI-2 (CSIPHY/CSID).
+			 */
+			reg = <0x04500000 0x1000>;
+			reg-names = "vfe0";
+			interrupts = <GIC_SPI 48 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "vfe0";
 
 			clocks = <&mmcc VFE_CLK>,
 				 <&mmcc VFE_AXI_CLK>,
-				 <&mmcc VFE_AHB_CLK>,
-				 <&mmcc CSI0_SRC>,
-				 <&mmcc CSI0_CLK>,
-				 <&mmcc CSI0_PHY_CLK>,
-				 <&mmcc CSI1_SRC>,
-				 <&mmcc CSI1_CLK>,
-				 <&mmcc CSI1_PHY_CLK>;
+				 <&mmcc VFE_AHB_CLK>;
 			clock-names = "vfe",
 				      "vfe_axi",
-				      "vfe_ahb",
-				      "csi0_src",
-				      "csi0",
-				      "csi0_phy",
-				      "csi1_src",
-				      "csi1",
-				      "csi1_phy";
+				      "vfe_ahb";
 
 			interconnects = <&mmss_fabric MMFAB_MAS_VFE
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
@@ -911,19 +887,9 @@
 				#address-cells = <1>;
 				#size-cells = <0>;
 
-				/* Parallel camera input port */
+				/* Parallel camera input port (CAMIF) */
 				port@0 {
 					reg = <0>;
-				};
-
-				/* MIPI CSI-2 input port 1 (CSI0) */
-				port@1 {
-					reg = <1>;
-				};
-
-				/* MIPI CSI-2 input port 2 (CSI1) */
-				port@2 {
-					reg = <2>;
 				};
 			};
 		};

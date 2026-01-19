@@ -1594,7 +1594,7 @@
 		 */
 		port {
 			mt9m113_ep: endpoint {
-				bus-type = <1>; /* V4L2_MBUS_PARALLEL */
+				bus-type = <5>; /* V4L2_FWNODE_BUS_TYPE_PARALLEL */
 				remote-endpoint = <&camss_ep>;
 			};
 		};
@@ -1613,7 +1613,7 @@
 	ports {
 		port@0 {
 			camss_ep: endpoint {
-				bus-type = <1>; /* V4L2_MBUS_PARALLEL */
+				bus-type = <5>; /* V4L2_FWNODE_BUS_TYPE_PARALLEL */
 				remote-endpoint = <&mt9m113_ep>;
 
 				/* Parallel interface timing */
