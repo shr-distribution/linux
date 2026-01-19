@@ -1,5 +1,7 @@
 # HP TouchPad WiFi (AR6003) Bringup Summary
 
+**Last Updated:** 2026-01-19
+
 ## Hardware
 - Atheros AR6003 Rev2 WiFi chip
 - Connected via SDIO to SDCC4 (0x121c0000)
@@ -131,6 +133,69 @@ Without CRCI, the ADM DMA controller has no flow control signal from the SDIO pe
 **Note on #dma-cells:**
 We cannot change `#dma-cells` from 1 to 2 because it breaks the touchscreen UART DMA which shares ADM1. The `qcom,sdcc-crci` property approach follows the same pattern used by `msm_serial.c` with `qcom,tx-crci`/`qcom,rx-crci`.
 
+### 8. Data/Command Ordering Issue - NEW FIX (2026-01-19)
+
+**Problem:** Even with CRCI fix, WiFi firmware upload still times out after 4-5 successful transfers.
+
+**Failure Pattern:**
+```
+1. ath6kl_sdio probes mmc1:0001:1
+2. Chip ID read succeeds
+3. OTP upload starts (3998 bytes)
+4. BMI LZ stream begins
+5. 4 x 256-byte chunks write successfully
+6. 5th credit register read times out (-110)  ← TIMEOUT
+```
+
+**Investigation:** Compared legacy `msm_sdcc.c` driver with mainline `mmci.c`:
+
+**Legacy msm_sdcc.c behavior (DMA mode):**
+```c
+msmsdcc_dma_exec_func() {
+    // Called when DMA is ready
+    writel(host->cmd_timeout, host->base + MMCIDATATIMER);
+    writel(host->curr.xfer_size, host->base + MMCIDATALENGTH);
+    writel(host->cmd_datactrl, host->base + MMCIDATACTRL);
+    msmsdcc_delay(host);  // Wait for data path ready
+
+    msmsdcc_start_command_exec(host, ...);  // THEN send command
+}
+```
+
+**Mainline mmci.c behavior (WITHOUT datactrl_first):**
+```c
+mmci_request() {
+    // For READ: data setup first, then command
+    // For WRITE: command first, data setup after!
+    if (mrq->data &&
+        (host->variant->datactrl_first || mrq->data->flags & MMC_DATA_READ))
+        mmci_start_data(host, mrq->data);
+
+    mmci_start_command(host, mrq->cmd, 0);
+}
+```
+
+**Root Cause:** The `variant_qcom` was missing `datactrl_first = true`, causing WRITE operations (like firmware upload) to send the command BEFORE the data path was ready. The AR6003 expects the data path to be set up before the command completes.
+
+**Fix:** Add `datactrl_first = true` to `variant_qcom` in `drivers/mmc/host/mmci.c`:
+
+```c
+static struct variant_data variant_qcom = {
+    // ... existing fields ...
+    /*
+     * Legacy msm_sdcc driver sets up data registers before sending command
+     * in DMA mode (via msmsdcc_dma_exec_func callback). Match this behavior
+     * by enabling datactrl_first to fix SDIO timeouts during WiFi firmware
+     * upload on devices like HP TouchPad.
+     */
+    .datactrl_first     = true,
+};
+```
+
+**Reference:** Similar fix in upstream commit 66b512ed ("mmc: atmel-mci: fix timeout errors in SDIO mode when using DMA") addressed the same class of timing issue on Atmel hardware.
+
+**Commit:** `1d37e9cbbfc3` - mmc: mmci: qcom: Enable datactrl_first to fix SDIO timeouts
+
 ## Current DT Configuration
 
 ```dts
@@ -168,21 +233,31 @@ Debug print in `drivers/mmc/host/mmci.c`:
 
 - `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` - DT configuration with CRCI
 - `arch/arm/configs/tenderloin_defconfig` - ATH6KL=m
-- `drivers/mmc/host/mmci.c` - CRCI support for QCOM ADM DMA
+- `drivers/mmc/host/mmci.c` - CRCI support for QCOM ADM DMA + datactrl_first fix
 - `drivers/dma/qcom/qcom_adm.c` - Debug output for DMA operations
 - `scripts/initramfs/init` - WiFi module loading
 - Firmware: linux-firmware fw-2.bin/fw-3.bin + webOS bdata.SD32.bin
 
+## Key Commits
+
+| Commit | Description |
+|--------|-------------|
+| `1d37e9cbbfc3` | mmc: mmci: qcom: Enable datactrl_first to fix SDIO timeouts |
+| (earlier) | mmc: mmci: Add CRCI support for Qualcomm ADM DMA |
+
 ## Next Steps
 
-1. Build and test with CRCI fix
+1. **Build and test with datactrl_first fix** - This is the most promising fix
 2. Verify debug output shows:
    - `ADM xlate: chan=5 args_count=1 crci=0` (from DT)
    - `ADM slave_config: device_fc=1 peripheral_size=4 crci=5` (from MMCI)
    - `ADM prep_slave_sg: device_fc=1 crci=5`
    - `ADM start_dma: setting CRCI_CTL(5) = ...`
    - `ADM IRQ: srcs=0x...` (DMA completion)
-3. If DMA works, WiFi initialization should proceed past firmware upload
+3. If WiFi still times out, investigate:
+   - Clock stability during sustained SDIO transfers
+   - Inter-transaction timing requirements
+   - SDIO interrupt handling differences
 
 ---
 
