@@ -367,6 +367,13 @@ static struct variant_data variant_qcom = {
 	.start_err		= MCI_STARTBITERR,
 	.opendrain		= MCI_ROD,
 	.init			= qcom_variant_init,
+	/*
+	 * Legacy msm_sdcc driver sets up data registers before sending command
+	 * in DMA mode (via msmsdcc_dma_exec_func callback). Match this behavior
+	 * by enabling datactrl_first to fix SDIO timeouts during WiFi firmware
+	 * upload on devices like HP TouchPad.
+	 */
+	.datactrl_first		= true,
 };
 
 /* Busy detection for the ST Micro variant */
