@@ -8,12 +8,29 @@
 
 ---
 
+## GPU Identification
+
+**Confirmed GPU:** Adreno 220 (Leia)
+
+Based on firmware file analysis:
+- **Firmware files:** `leia_pm4_470.fw`, `leia_pfp_470.fw`
+- **Chip ID:** `KGSL_CHIPID_LEIA_REV470` (0x02010000)
+- **GMEM Size:** 512KB
+- **Protection Mode:** Supported (firmware version word = 0x00220014, non-zero)
+
+The HP TouchPad uses the **Adreno 220** GPU variant, which is identified by the "Leia" codename. This is confirmed by:
+1. The presence of `leia_*` firmware files in `/lib/firmware/qcom/`
+2. The Palm kernel patches in `kernel-3.0.5.txt` referencing `KGSL_CHIPID_LEIA_REV470`
+3. The APQ8060 SoC specification
+
+---
+
 ## Table of Contents
 
 1. [Executive Summary](#executive-summary)
 2. [Driver Overview](#driver-overview)
 3. [Critical Issues](#critical-issues)
-4. [Detailed Comparison](#detailed-comparison)
+4. [Palm/webOS Kernel Patches](#palmwebos-kernel-patches)
 5. [Hardware Workarounds](#hardware-workarounds)
 6. [Register Configuration Differences](#register-configuration-differences)
 7. [MMU Implementation](#mmu-implementation)
@@ -31,17 +48,19 @@ This report analyzes the Mesa freedreno userspace driver for Adreno A2XX GPUs an
 
 ### Key Findings
 
-| Finding | Severity | Affected Driver |
-|---------|----------|-----------------|
-| VGT DMA alignment workaround missing | **HIGH** | Mainline |
-| MH_CLNT_INTF_CTRL_CONFIG2 not configured | **MEDIUM** | Mainline |
-| PM_OVERRIDE2 register values incorrect | **MEDIUM** | Mainline |
-| Post-draw WFI synchronization undocumented | **LOW** | Both kernel |
-| Vertex count limitation (32K) | **INFO** | Mesa/Userspace |
+| Finding | General Severity | TouchPad (A220) Severity | Affected Driver |
+|---------|------------------|--------------------------|-----------------|
+| VGT DMA alignment workaround missing | **HIGH** | **LOW** (Leia exempt) | Mainline |
+| PM_OVERRIDE2 register values incorrect | **MEDIUM** | **HIGH** (Required for Leia) | Mainline |
+| MH_CLNT_INTF_CTRL_CONFIG2 not configured | **MEDIUM** | **LOW** (Leia doesn't need it) | Mainline |
+| Post-draw WFI synchronization undocumented | **LOW** | **LOW** | Both kernel |
+| Vertex count limitation (32K) | **INFO** | **INFO** | Mesa/Userspace |
 
 ### Recommendation
 
-The mainline DRM/MSM driver is missing critical hardware workarounds present in both the legacy KGSL driver and documented in the Mesa freedreno driver. The most critical is the **VGT DMA alignment workaround** which can cause GPU hangs and MMU page faults on A200/A220 hardware.
+For the **HP TouchPad specifically** (Adreno 220/Leia), the most critical missing item is the **PM_OVERRIDE2 register setting**. The legacy Palm kernel sets this to `0x1a0` for Leia chips, but mainline sets it to `0x0`. This affects clock gating behavior and could cause power management or stability issues.
+
+The VGT DMA workaround, while critical for A200 devices, is explicitly **skipped for Leia (A220/A225)** in the Palm kernel, so it is not needed for the TouchPad.
 
 ---
 
@@ -326,6 +345,121 @@ From `fd2_draw.c`:
 
 ---
 
+## Palm/webOS Kernel Patches
+
+Analysis of the Palm kernel patches from `kernel-3.0.5.txt` reveals additional context for the HP TouchPad's GPU configuration.
+
+### Confirmed Palm-Specific Modifications
+
+#### 1. VGT DMA Workaround (Lines 628341-628380)
+
+The Palm kernel contains the complete VGT DMA workaround, confirming it was needed for production devices:
+
+```c
+if (flags & KGSL_MMUFLAGS_PTUPDATE &&
+    device->chip_id != KGSL_CHIPID_LEIA_REV470) {
+    /* HW workaround: to resolve MMU page fault interrupts
+     * caused by the VGT. It prevents the CP PFP from filling
+     * the VGT DMA request fifo too early, thereby ensuring
+     * that the VGT will not fetch vertex/bin data until
+     * after the page table base register has been updated.
+     *
+     * Two null DRAW_INDX_BIN packets are inserted right
+     * after the page table base update, followed by a
+     * wait for idle. The null packets will fill up the
+     * VGT DMA request fifo and prevent any further
+     * vertex/bin updates from occurring until the wait
+     * has finished. */
+    *cmds++ = pm4_type3_packet(PM4_SET_CONSTANT, 2);
+    *cmds++ = (0x4 << 16) | (REG_PA_SU_SC_MODE_CNTL - 0x2000);
+    *cmds++ = 0;          /* disable faceness generation */
+    *cmds++ = pm4_type3_packet(PM4_SET_BIN_BASE_OFFSET, 1);
+    *cmds++ = device->mmu.dummyspace.gpuaddr;
+    *cmds++ = pm4_type3_packet(PM4_DRAW_INDX_BIN, 6);
+    /* ... two dummy DRAW_INDX_BIN packets ... */
+    *cmds++ = pm4_type3_packet(PM4_WAIT_FOR_IDLE, 1);
+    *cmds++ = 0x00000000;
+    sizedwords += 21;
+}
+```
+
+**Important:** The workaround is **skipped for LEIA_REV470** (A220/A225). This means the HP TouchPad with its Adreno 220 does NOT require this workaround for page table updates.
+
+#### 2. 1K Boundary Check Disable (Lines 628789-628793)
+
+```c
+/* Remove 1k boundary check in z470 to avoid GPU hang.
+   Notice that, this solution won't work if both EBI and SMI are used */
+if (device->chip_id == KGSL_CHIPID_LEIA_REV470) {
+    kgsl_yamato_regwrite(device, REG_MH_CLNT_INTF_CTRL_CONFIG1, 0x00032f07);
+}
+```
+
+This workaround IS required for the TouchPad's A220 GPU and IS present in mainline.
+
+#### 3. PM_OVERRIDE2 for Leia (Lines 628799-628803)
+
+```c
+kgsl_yamato_regwrite(device, REG_RBBM_PM_OVERRIDE1, 0);
+if (device->chip_id != KGSL_CHIPID_LEIA_REV470)
+    kgsl_yamato_regwrite(device, REG_RBBM_PM_OVERRIDE2, 0);
+else
+    kgsl_yamato_regwrite(device, REG_RBBM_PM_OVERRIDE2, 0x1a0);
+```
+
+The A220 (Leia) requires `PM_OVERRIDE2 = 0x1a0`, but mainline sets it to `0x0`.
+
+#### 4. Palm Cache Invalidation Hook (Lines 627653-627658)
+
+```c
+/* PALM; called from cacheflush syscall */
+void kgsl_palm_cache_inv_range(unsigned long addr, int size)
+```
+
+Palm added a custom cache invalidation function called from the cacheflush syscall. This is used for GPU buffer coherency.
+
+#### 5. G12 2D GPU Configuration (Lines 621769-621770)
+
+```c
+kgsl_g12_regwrite(device, ADDR_MH_CLNT_INTF_CTRL_CONFIG1, 0x00030F27);
+kgsl_g12_regwrite(device, ADDR_MH_CLNT_INTF_CTRL_CONFIG2, 0x004B274F);
+```
+
+The G12 2D GPU (Z180) has different CONFIG register values than the 3D GPU.
+
+### Chip ID Definitions (Line 617204-617207)
+
+```c
+#define KGSL_CHIPID_YAMATODX_REV21  0x20100
+#define KGSL_CHIPID_YAMATODX_REV211 0x20101
+#define KGSL_CHIPID_LEIA_REV470_TEMP 0x10001
+#define KGSL_CHIPID_LEIA_REV470 0x2010000
+```
+
+### Impact on TouchPad (A220/Leia)
+
+Based on the Palm patches, for the HP TouchPad specifically:
+
+| Feature | Required | Present in Mainline |
+|---------|----------|---------------------|
+| VGT DMA Workaround | **NO** (Leia exempt) | N/A |
+| 1K Boundary Check Disable | **YES** | ✅ |
+| PM_OVERRIDE2 = 0x1a0 | **YES** | ❌ |
+| CONFIG2 Register | **NO** (Leia only sets CONFIG1) | ✅ |
+| SQ_FLOW_CONTROL | **YES** (A225 only, verify if A220 needs it) | ✅ (A225 only) |
+
+### Revised Critical Issue Assessment for TouchPad
+
+Given the TouchPad uses A220 (Leia), the severity of issues changes:
+
+| Issue | Original Severity | TouchPad Severity | Notes |
+|-------|-------------------|-------------------|-------|
+| VGT DMA Workaround | HIGH | **LOW** | Leia is exempt |
+| PM_OVERRIDE2 | MEDIUM | **HIGH** | Required for Leia |
+| CONFIG2 Register | MEDIUM | **LOW** | Leia doesn't set it |
+
+---
+
 ## Hardware Workarounds
 
 ### A20x-Specific Workarounds
@@ -477,19 +611,40 @@ dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
 
 ## Recommendations
 
-### High Priority
+### For HP TouchPad (Adreno 220/Leia) - High Priority
 
-1. **Implement VGT DMA Workaround**
+1. **Fix PM_OVERRIDE2 for Leia/A220**
 
-   Add to `a2xx_gpu.c` in the `a2xx_submit()` function or create a new page table switch handler:
+   The TouchPad's A220 GPU requires `PM_OVERRIDE2 = 0x1a0` for proper clock gating. Update `a2xx_hw_init()` in `a2xx_gpu.c`:
+
+   ```c
+   /* Current mainline code (INCORRECT for Leia): */
+   gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0); /* 0x80/0x1a0 for a22x? */
+
+   /* Corrected code: */
+   if (adreno_is_a22x(adreno_gpu))  /* A220 or A225 */
+       gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x1a0);
+   else
+       gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
+   ```
+
+   **Note:** You may need to add an `adreno_is_a22x()` helper or use `!adreno_is_a20x()`.
+
+### For General A2XX Support - Medium Priority
+
+2. **Implement VGT DMA Workaround for A200**
+
+   While NOT needed for TouchPad (Leia is exempt), this is critical for A200 devices:
 
    ```c
    static void a2xx_vgt_dma_workaround(struct msm_gpu *gpu)
    {
+       struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
        struct msm_ringbuffer *ring = gpu->rb[0];
 
-       if (adreno_is_a225(to_adreno_gpu(gpu)))
-           return;  /* Not needed for Leia */
+       /* Leia (A220/A225) does not need this workaround */
+       if (!adreno_is_a20x(adreno_gpu))
+           return;
 
        /* Disable faceness generation */
        OUT_PKT3(ring, CP_SET_CONSTANT, 2);
@@ -497,7 +652,7 @@ dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
        OUT_RING(ring, 0);
 
        /* Two dummy DRAW_INDX_BIN packets */
-       /* ... implementation ... */
+       /* ... implementation from Palm kernel ... */
 
        /* Wait for idle */
        OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
@@ -505,33 +660,18 @@ dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
    }
    ```
 
-### Medium Priority
+3. **Fix MH_CLNT_INTF_CTRL_CONFIG Registers for A200**
 
-2. **Fix MH_CLNT_INTF_CTRL_CONFIG Registers**
+   While NOT needed for TouchPad (Leia uses different values), A200 needs CONFIG2:
 
-   Update `a2xx_hw_init()`:
    ```c
    if (adreno_is_a20x(adreno_gpu)) {
        gpu_write(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1, 0x00030f27);
        gpu_write(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG2, 0x00472747);
-   } else if (!adreno_is_a225(adreno_gpu)) {
-       /* A220 */
-       gpu_write(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1, 0x00030f27);
-       gpu_write(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG2, 0x00472747);
    } else {
-       /* A225/Leia - disable 1K boundary check */
+       /* A220/A225/Leia - disable 1K boundary check (already correct) */
        gpu_write(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1, 0x00032f07);
    }
-   ```
-
-3. **Fix PM_OVERRIDE2 for A225**
-
-   Update `a2xx_hw_init()`:
-   ```c
-   if (adreno_is_a225(adreno_gpu))
-       gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x1a0);
-   else
-       gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
    ```
 
 ### Low Priority
@@ -543,6 +683,23 @@ dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
 5. **Add Debug Logging for Hardware Quirks**
 
    Add dev_dbg() calls when applying hardware workarounds to aid debugging.
+
+### Summary of Changes for TouchPad
+
+For the HP TouchPad specifically, the **only required change** is:
+
+```diff
+--- a/drivers/gpu/drm/msm/adreno/a2xx_gpu.c
++++ b/drivers/gpu/drm/msm/adreno/a2xx_gpu.c
+@@ -183,7 +183,10 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
+
+        gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0); /* 0x200 for msm8960? */
+-       gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0); /* 0x80/0x1a0 for a22x? */
++       if (!adreno_is_a20x(adreno_gpu))
++               gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x1a0);
++       else
++               gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
+```
 
 ---
 
