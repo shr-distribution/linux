@@ -1132,14 +1132,12 @@
 	 *   EVT1 boards:  [0,0]=750mA, [0,1]=900mA, [1,0]=1500mA, [1,1]=1400mA
 	 *   Proto boards: [0,0]=900mA, [0,1]=1000mA, [1,0]=1500mA, [1,1]=2000mA
 	 *
-	 * FAST CHARGING LIMITATION:
-	 * The mainline max8903 driver does NOT support the ISET pins for
-	 * DC charging current selection. To enable fast charging at 1400mA:
-	 *   1. Set GPIO 34 (ISET_1) = HIGH
-	 *   2. Set GPIO 30 (ISET_2) = HIGH
-	 *   3. Enable DC mode by setting GPIO 42 (DCM) = HIGH
-	 * This requires either driver modification or userspace control.
-	 * Currently configured for 750mA (ISET pins both LOW).
+	 * FAST CHARGING SUPPORT:
+	 * The max8903 driver supports ISET pin control via the
+	 * dc-current-limit-gpios and dc-current-limit-mapping properties.
+	 * Userspace can control charging current through sysfs:
+	 *   /sys/class/power_supply/max8903_charger/input_current_limit
+	 * Driver starts at lowest safe current (750mA) on boot.
 	 *
 	 * Note: At 500mA USB charging, the device slowly discharges when
 	 * the screen is on due to display power consumption.
@@ -1159,12 +1157,27 @@
 		flt-gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;    /* Fault indicator */
 		usus-gpios = <&tlmm 33 GPIO_ACTIVE_LOW>;   /* USB suspend */
 		dcm-gpios = <&tlmm 42 GPIO_ACTIVE_LOW>;    /* DC/USB mode select */
+		dok-gpios = <&tlmm 140 GPIO_ACTIVE_LOW>;   /* DC power detect */
+
+		/* DC charging current control via ISET resistor mux */
+		dc-current-limit-gpios = <&tlmm 34 GPIO_ACTIVE_HIGH>,  /* ISET_1 */
+					 <&tlmm 30 GPIO_ACTIVE_HIGH>;  /* ISET_2 */
 		/*
-		 * This is actually DOK (DC OK), but using uok-gpios to avoid
-		 * the driver enabling high current DC charging mode, which
-		 * requires proper ISET pin configuration first.
+		 * Current mapping for EVT2+ boards:
+		 * GPIO[1:0]  Current
+		 * 0b00       750mA   (safest, default)
+		 * 0b01       900mA
+		 * 0b10       2000mA  (fast charge)
+		 * 0b11       1400mA
 		 */
-		uok-gpios = <&tlmm 140 GPIO_ACTIVE_LOW>;   /* DC power detect */
+		dc-current-limit-mapping = <750000 0>,
+					   <900000 1>,
+					   <1400000 3>,
+					   <2000000 2>;
+
+		/* USB current control via IUSB pin */
+		usb-current-limit-gpios = <&tlmm 133 GPIO_ACTIVE_HIGH>;
+		usb-current-limit-values = <100000 500000>;  /* 100mA / 500mA */
 	};
 
 	/*
@@ -1608,9 +1621,9 @@
 		 * These control a resistor mux connected to the IDC pin.
 		 * [0,0]=750mA (safest), [1,1]=1400mA (fast charging)
 		 *
-		 * For fast charging, change to output-high on both pins
-		 * and enable DC mode (DCM=HIGH with actual DC power).
-		 * NOT controlled by mainline max8903 driver.
+		 * Initialized to output-low (750mA) for safety.
+		 * Driver controls these via dc-current-limit-gpios property
+		 * and exposes input_current_limit sysfs for userspace control.
 		 */
 		d-iset-pins {
 			pins = "gpio34", "gpio30";
@@ -2255,14 +2268,13 @@
 	 *    - Wall charger: 750mA-1400mA DC mode (via ISET pins)
 	 *    - Touchstone puck: Wireless charging handled by A6
 	 *
-	 * MISSING KERNEL INTEGRATION:
-	 * The mainline max8903 driver lacks:
+	 * KERNEL INTEGRATION STATUS:
+	 * The max8903 driver now supports:
 	 * - ISET pin control for DC charging current selection
 	 * - IUSB pin control for USB 100/500mA mode
-	 * - Integration with A6 charger source detection
-	 * Fast charging requires userspace or driver enhancement to:
-	 * 1. Monitor A6 charger source sysfs/uevents
-	 * 2. Control ISET/IUSB GPIOs based on charger type
+	 * via input_current_limit sysfs property. Userspace (e.g., powerd)
+	 * should monitor A6 charger source sysfs/uevents and adjust
+	 * MAX8903B current via input_current_limit accordingly
 	 *
 	 * NOTE: Interrupt GPIO differs between board revisions:
 	 * - Pre-DVT (EVT1-EVT3): A6_0 IRQ=156, A6_1 IRQ=132

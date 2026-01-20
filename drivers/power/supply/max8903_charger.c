@@ -10,9 +10,15 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/power_supply.h>
 #include <linux/platform_device.h>
+
+struct max8903_current_limit_mapping {
+	u32 limit_ua;		/* Current limit in microamps */
+	u32 gpio_value;		/* GPIO bit pattern */
+};
 
 struct max8903_data {
 	struct device *dev;
@@ -31,6 +37,19 @@ struct max8903_data {
 	struct gpio_desc *flt; /* Fault output */
 	struct gpio_desc *dcm; /* Current-Limit Mode input (1: DC, 2: USB) */
 	struct gpio_desc *usus; /* USB Suspend Input (1: suspended) */
+
+	/* DC current limit control (ISET pins) */
+	struct gpio_descs *dc_current_limit_gpios;
+	struct max8903_current_limit_mapping *dc_current_limit_map;
+	u32 dc_current_limit_map_size;
+	u32 dc_current_limit_ua;	/* Current setting in uA */
+
+	/* USB current limit control (IUSB pin) */
+	struct gpio_desc *usb_current_limit_gpio;
+	u32 usb_current_limit_low_ua;	/* Current when GPIO low */
+	u32 usb_current_limit_high_ua;	/* Current when GPIO high */
+	u32 usb_current_limit_ua;	/* Current setting in uA */
+
 	bool fault;
 	bool usb_in;
 	bool ta_in;
@@ -40,6 +59,7 @@ static enum power_supply_property max8903_charger_props[] = {
 	POWER_SUPPLY_PROP_STATUS, /* Charger status output */
 	POWER_SUPPLY_PROP_ONLINE, /* External power source */
 	POWER_SUPPLY_PROP_HEALTH, /* Fault or OK */
+	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT, /* Input current limit */
 };
 
 static int max8903_get_property(struct power_supply *psy,
@@ -71,11 +91,104 @@ static int max8903_get_property(struct power_supply *psy,
 		if (data->fault)
 			val->intval = POWER_SUPPLY_HEALTH_UNSPEC_FAILURE;
 		break;
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		if (data->ta_in && data->dc_current_limit_gpios)
+			val->intval = data->dc_current_limit_ua;
+		else if (data->usb_in && data->usb_current_limit_gpio)
+			val->intval = data->usb_current_limit_ua;
+		else
+			return -ENODATA;
+		break;
 	default:
 		return -EINVAL;
 	}
 
 	return 0;
+}
+
+static int max8903_set_dc_current_limit(struct max8903_data *data, u32 limit_ua)
+{
+	int i;
+	u32 best_limit = 0;
+	u32 best_gpio_value = 0;
+	DECLARE_BITMAP(values, 8);
+
+	if (!data->dc_current_limit_gpios)
+		return -EOPNOTSUPP;
+
+	/* Find highest supported current <= requested */
+	for (i = 0; i < data->dc_current_limit_map_size; i++) {
+		if (data->dc_current_limit_map[i].limit_ua <= limit_ua &&
+		    data->dc_current_limit_map[i].limit_ua > best_limit) {
+			best_limit = data->dc_current_limit_map[i].limit_ua;
+			best_gpio_value = data->dc_current_limit_map[i].gpio_value;
+		}
+	}
+
+	if (!best_limit)
+		return -EINVAL;
+
+	bitmap_from_arr32(values, &best_gpio_value, 8);
+	gpiod_set_array_value_cansleep(data->dc_current_limit_gpios->ndescs,
+				       data->dc_current_limit_gpios->desc,
+				       data->dc_current_limit_gpios->info,
+				       values);
+
+	data->dc_current_limit_ua = best_limit;
+	dev_dbg(data->dev, "DC current limit set to %u uA\n", best_limit);
+
+	return 0;
+}
+
+static int max8903_set_usb_current_limit(struct max8903_data *data, u32 limit_ua)
+{
+	if (!data->usb_current_limit_gpio)
+		return -EOPNOTSUPP;
+
+	if (limit_ua >= data->usb_current_limit_high_ua) {
+		gpiod_set_value_cansleep(data->usb_current_limit_gpio, 1);
+		data->usb_current_limit_ua = data->usb_current_limit_high_ua;
+	} else {
+		gpiod_set_value_cansleep(data->usb_current_limit_gpio, 0);
+		data->usb_current_limit_ua = data->usb_current_limit_low_ua;
+	}
+
+	dev_dbg(data->dev, "USB current limit set to %u uA\n",
+		data->usb_current_limit_ua);
+
+	return 0;
+}
+
+static int max8903_set_property(struct power_supply *psy,
+		enum power_supply_property psp,
+		const union power_supply_propval *val)
+{
+	struct max8903_data *data = power_supply_get_drvdata(psy);
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		if (data->ta_in && data->dc_current_limit_gpios)
+			return max8903_set_dc_current_limit(data, val->intval);
+		else if (data->usb_in && data->usb_current_limit_gpio)
+			return max8903_set_usb_current_limit(data, val->intval);
+		return -EINVAL;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int max8903_property_is_writeable(struct power_supply *psy,
+		enum power_supply_property psp)
+{
+	struct max8903_data *data = power_supply_get_drvdata(psy);
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		return data->dc_current_limit_gpios ||
+		       data->usb_current_limit_gpio;
+	default:
+		return 0;
+	}
 }
 
 static irqreturn_t max8903_dcin(int irq, void *_data)
@@ -221,6 +334,99 @@ static irqreturn_t max8903_fault(int irq, void *_data)
 	return IRQ_HANDLED;
 }
 
+static int max8903_parse_dc_current_limit(struct platform_device *pdev,
+					  struct max8903_data *data)
+{
+	struct device *dev = &pdev->dev;
+	int ret, i, map_size;
+	u32 *map;
+
+	data->dc_current_limit_gpios = devm_gpiod_get_array_optional(dev,
+					"dc-current-limit", GPIOD_OUT_LOW);
+	if (IS_ERR(data->dc_current_limit_gpios))
+		return dev_err_probe(dev, PTR_ERR(data->dc_current_limit_gpios),
+				     "failed to get DC current limit GPIOs");
+
+	if (!data->dc_current_limit_gpios)
+		return 0;	/* Optional feature not present */
+
+	/* Parse mapping: pairs of (current_ua, gpio_value) */
+	map_size = device_property_count_u32(dev, "dc-current-limit-mapping");
+	if (map_size <= 0 || map_size % 2) {
+		dev_err(dev, "invalid dc-current-limit-mapping\n");
+		return -EINVAL;
+	}
+
+	map = devm_kcalloc(dev, map_size, sizeof(*map), GFP_KERNEL);
+	if (!map)
+		return -ENOMEM;
+
+	ret = device_property_read_u32_array(dev, "dc-current-limit-mapping",
+					     map, map_size);
+	if (ret) {
+		dev_err(dev, "failed to read dc-current-limit-mapping\n");
+		return ret;
+	}
+
+	data->dc_current_limit_map_size = map_size / 2;
+	data->dc_current_limit_map = devm_kcalloc(dev,
+					data->dc_current_limit_map_size,
+					sizeof(*data->dc_current_limit_map),
+					GFP_KERNEL);
+	if (!data->dc_current_limit_map)
+		return -ENOMEM;
+
+	for (i = 0; i < data->dc_current_limit_map_size; i++) {
+		data->dc_current_limit_map[i].limit_ua = map[i * 2];
+		data->dc_current_limit_map[i].gpio_value = map[i * 2 + 1];
+	}
+
+	/* Set initial current to lowest value for safety */
+	data->dc_current_limit_ua = data->dc_current_limit_map[0].limit_ua;
+
+	dev_dbg(dev, "DC current limit control: %d levels available\n",
+		data->dc_current_limit_map_size);
+
+	return 0;
+}
+
+static int max8903_parse_usb_current_limit(struct platform_device *pdev,
+					   struct max8903_data *data)
+{
+	struct device *dev = &pdev->dev;
+	u32 limits[2];
+	int ret;
+
+	data->usb_current_limit_gpio = devm_gpiod_get_optional(dev,
+					"usb-current-limit", GPIOD_OUT_LOW);
+	if (IS_ERR(data->usb_current_limit_gpio))
+		return dev_err_probe(dev, PTR_ERR(data->usb_current_limit_gpio),
+				     "failed to get USB current limit GPIO");
+
+	if (!data->usb_current_limit_gpio)
+		return 0;	/* Optional feature not present */
+
+	/* Parse [low_ua, high_ua] values, default to USB spec values */
+	ret = device_property_read_u32_array(dev, "usb-current-limit-values",
+					     limits, 2);
+	if (ret) {
+		/* Default to USB spec values */
+		data->usb_current_limit_low_ua = 100000;   /* 100mA */
+		data->usb_current_limit_high_ua = 500000;  /* 500mA */
+	} else {
+		data->usb_current_limit_low_ua = limits[0];
+		data->usb_current_limit_high_ua = limits[1];
+	}
+
+	/* Start at low current for safety */
+	data->usb_current_limit_ua = data->usb_current_limit_low_ua;
+
+	dev_dbg(dev, "USB current limit control: %u/%u uA\n",
+		data->usb_current_limit_low_ua, data->usb_current_limit_high_ua);
+
+	return 0;
+}
+
 static int max8903_setup_gpios(struct platform_device *pdev)
 {
 	struct max8903_data *data = platform_get_drvdata(pdev);
@@ -341,11 +547,21 @@ static int max8903_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	ret = max8903_parse_dc_current_limit(pdev, data);
+	if (ret)
+		return ret;
+
+	ret = max8903_parse_usb_current_limit(pdev, data);
+	if (ret)
+		return ret;
+
 	data->psy_desc.name = "max8903_charger";
 	data->psy_desc.type = (data->ta_in) ? POWER_SUPPLY_TYPE_MAINS :
 			((data->usb_in) ? POWER_SUPPLY_TYPE_USB :
 			 POWER_SUPPLY_TYPE_BATTERY);
 	data->psy_desc.get_property = max8903_get_property;
+	data->psy_desc.set_property = max8903_set_property;
+	data->psy_desc.property_is_writeable = max8903_property_is_writeable;
 	data->psy_desc.properties = max8903_charger_props;
 	data->psy_desc.num_properties = ARRAY_SIZE(max8903_charger_props);
 
