@@ -1829,7 +1829,14 @@
 		vcc-supply = <&pm8058_l15>;   // 2.85V
 	};
 
-	// capacitive proximity??
+	/*
+	 * Note: Legacy kernel configured PMIC GPIO36 (reset) and GPIO40 (IRQ)
+	 * for "proximity" but no actual proximity sensor chip was registered.
+	 * The TouchPad uses CY8CTMA395 touchscreen which has no proximity
+	 * sensing capability. This was likely placeholder for unimplemented
+	 * hardware or leftover from alternative design - no proximity sensor
+	 * exists on HP TouchPad.
+	 */
 };
 
 &gsbi4 {
