@@ -32,6 +32,8 @@ struct qce_dma_data {
 	struct dma_chan *rxchan;
 	struct qce_result_dump *result_buf;
 	void *ignore_buf;
+	u32 rx_crci;	/* CRCI for RX channel (ADM flow control) */
+	u32 tx_crci;	/* CRCI for TX channel (ADM flow control) */
 };
 
 int devm_qce_dma_request(struct device *dev, struct qce_dma_data *dma);

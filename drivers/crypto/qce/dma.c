@@ -5,6 +5,8 @@
 
 #include <linux/device.h>
 #include <linux/dmaengine.h>
+#include <linux/dma/qcom_adm.h>
+#include <linux/of.h>
 #include <crypto/scatterwalk.h>
 
 #include "dma.h"
@@ -18,18 +20,53 @@ static void qce_dma_release(void *data)
 	kfree(dma->result_buf);
 }
 
+static int qce_dma_configure_crci(struct dma_chan *chan, u32 crci)
+{
+	struct qcom_adm_peripheral_config periph_conf = {};
+	struct dma_slave_config conf = {
+		.device_fc = true,
+	};
+
+	if (!crci)
+		return 0;
+
+	periph_conf.crci = crci;
+	conf.peripheral_config = &periph_conf;
+	conf.peripheral_size = sizeof(periph_conf);
+
+	return dmaengine_slave_config(chan, &conf);
+}
+
 int devm_qce_dma_request(struct device *dev, struct qce_dma_data *dma)
 {
 	int ret;
+
+	/* Read CRCI values for QCOM ADM DMA flow control */
+	of_property_read_u32(dev->of_node, "qcom,rx-crci", &dma->rx_crci);
+	of_property_read_u32(dev->of_node, "qcom,tx-crci", &dma->tx_crci);
 
 	dma->txchan = dma_request_chan(dev, "tx");
 	if (IS_ERR(dma->txchan))
 		return PTR_ERR(dma->txchan);
 
+	/* Configure TX channel with CRCI for ADM flow control */
+	ret = qce_dma_configure_crci(dma->txchan, dma->tx_crci);
+	if (ret) {
+		dev_err(dev, "Failed to configure TX CRCI: %d\n", ret);
+		goto error_tx_config;
+	}
+
 	dma->rxchan = dma_request_chan(dev, "rx");
 	if (IS_ERR(dma->rxchan)) {
 		ret = PTR_ERR(dma->rxchan);
 		goto error_rx;
+	}
+
+	/* Configure RX channel with CRCI for ADM flow control */
+	ret = qce_dma_configure_crci(dma->rxchan, dma->rx_crci);
+	if (ret) {
+		dev_err(dev, "Failed to configure RX CRCI: %d\n", ret);
+		goto error_rx_config;
 	}
 
 	dma->result_buf = kmalloc(QCE_RESULT_BUF_SZ + QCE_IGNORE_BUF_SZ,
@@ -44,8 +81,10 @@ int devm_qce_dma_request(struct device *dev, struct qce_dma_data *dma)
 	return devm_add_action_or_reset(dev, qce_dma_release, dma);
 
 error_nomem:
+error_rx_config:
 	dma_release_channel(dma->rxchan);
 error_rx:
+error_tx_config:
 	dma_release_channel(dma->txchan);
 	return ret;
 }

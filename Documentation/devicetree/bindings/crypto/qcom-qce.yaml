@@ -98,6 +98,18 @@ properties:
       - const: rx
       - const: tx
 
+  qcom,rx-crci:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      CRCI (Client Request Control Interface) number for RX DMA channel.
+      Required for ADM DMA flow control on MSM8660/APQ8060.
+
+  qcom,tx-crci:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      CRCI (Client Request Control Interface) number for TX DMA channel.
+      Required for ADM DMA flow control on MSM8660/APQ8060.
+
 allOf:
   - if:
       properties:
@@ -203,11 +215,14 @@ examples:
   - |
     #include <dt-bindings/clock/qcom,gcc-msm8660.h>
     // MSM8660/APQ8060 Crypto Engine 2 example
+    // ADM DMA uses 1-cell format (#dma-cells = <1>), CRCI passed via properties
     crypto-engine@18500000 {
         compatible = "qcom,msm8660-qce";
-        reg = <0x18500000 0x20000>;
+        reg = <0x18500000 0x10000>;
         clocks = <&gcc CE2_H_CLK>;
         clock-names = "iface";
-        dmas = <&adm_dma 6 9>, <&adm_dma 5 8>;
+        dmas = <&adm_dma 2>, <&adm_dma 3>;
         dma-names = "rx", "tx";
+        qcom,rx-crci = <4>;
+        qcom,tx-crci = <5>;
     };
