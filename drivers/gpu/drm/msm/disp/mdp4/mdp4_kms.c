@@ -541,6 +541,18 @@ static int mdp4_kms_init(struct drm_device *dev)
 	mdp4_disable(mdp4_kms);
 	mdelay(16);
 
+	ret = modeset_init(mdp4_kms);
+	if (ret) {
+		DRM_DEV_ERROR(dev->dev, "modeset_init failed: %d\n", ret);
+		goto fail;
+	}
+
+	/*
+	 * Initialize VM after modeset_init() succeeds. This avoids creating
+	 * a VM that needs cleanup if modeset_init() returns -EPROBE_DEFER
+	 * (waiting for panel/bridge driver). The VM is only needed for
+	 * GEM IOVA allocation, which doesn't happen until after modeset_init.
+	 */
 	vm = msm_kms_init_vm(mdp4_kms->dev, NULL);
 	if (IS_ERR(vm)) {
 		ret = PTR_ERR(vm);
@@ -549,12 +561,6 @@ static int mdp4_kms_init(struct drm_device *dev)
 
 	/* vm can be NULL if no IOMMU - that's OK for basic display */
 	kms->vm = vm;
-
-	ret = modeset_init(mdp4_kms);
-	if (ret) {
-		DRM_DEV_ERROR(dev->dev, "modeset_init failed: %d\n", ret);
-		goto fail;
-	}
 
 	/*
 	 * Blank cursor requires IOMMU for IOVA mapping.
