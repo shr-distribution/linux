@@ -292,20 +292,43 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 			to_mdp4_lcdc_encoder(encoder);
 	unsigned long pc = mdp4_lcdc_encoder->pixclock;
 	struct mdp4_kms *mdp4_kms = get_kms(encoder);
+	struct drm_connector *connector = get_connector(encoder);
 	uint32_t config;
-	int ret;
+	int bpc, ret;
 
 	if (WARN_ON(mdp4_lcdc_encoder->enabled))
 		return;
 
-	/* TODO: hard-coded for 18bpp: */
-	config =
-		MDP4_DMA_CONFIG_R_BPC(BPC6) |
-		MDP4_DMA_CONFIG_G_BPC(BPC6) |
-		MDP4_DMA_CONFIG_B_BPC(BPC6) |
-		MDP4_DMA_CONFIG_PACK(0x21) |
-		MDP4_DMA_CONFIG_DEFLKR_EN |
-		MDP4_DMA_CONFIG_DITHER_EN;
+	/*
+	 * Configure DMA output format based on panel's bits-per-channel.
+	 * The panel-lvds driver sets display_info.bpc based on data-mapping:
+	 * - "vesa-24" -> bpc=8 (24-bit color, 8 bits per channel)
+	 * - "vesa-18" -> bpc=6 (18-bit color, 6 bits per channel)
+	 */
+	bpc = connector ? connector->display_info.bpc : 0;
+	if (!bpc)
+		bpc = 6; /* Default to 18bpp if not specified */
+
+	if (bpc >= 8) {
+		/* 24bpp: 8 bits per channel, no dithering needed */
+		config =
+			MDP4_DMA_CONFIG_R_BPC(BPC8) |
+			MDP4_DMA_CONFIG_G_BPC(BPC8) |
+			MDP4_DMA_CONFIG_B_BPC(BPC8) |
+			MDP4_DMA_CONFIG_PACK(0x21) |
+			MDP4_DMA_CONFIG_DEFLKR_EN;
+		dev_info(dev->dev, "LCDC: using 24bpp output (8 bpc)\n");
+	} else {
+		/* 18bpp: 6 bits per channel, enable dithering */
+		config =
+			MDP4_DMA_CONFIG_R_BPC(BPC6) |
+			MDP4_DMA_CONFIG_G_BPC(BPC6) |
+			MDP4_DMA_CONFIG_B_BPC(BPC6) |
+			MDP4_DMA_CONFIG_PACK(0x21) |
+			MDP4_DMA_CONFIG_DEFLKR_EN |
+			MDP4_DMA_CONFIG_DITHER_EN;
+		dev_info(dev->dev, "LCDC: using 18bpp output (6 bpc)\n");
+	}
 
 	if (!of_property_read_bool(dev->dev->of_node, "qcom,lcdc-align-lsb"))
 		config |= MDP4_DMA_CONFIG_PACK_ALIGN_MSB;
