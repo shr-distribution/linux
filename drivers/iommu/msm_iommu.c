@@ -37,6 +37,10 @@ static DEFINE_SPINLOCK(msm_iommu_lock);
 static LIST_HEAD(qcom_iommu_devices);
 static struct iommu_ops msm_iommu_ops;
 
+/* Forward declaration for multi-IOMMU support */
+static struct msm_iommu_ctx_dev *find_master_for_dev(struct msm_iommu_dev *iommu,
+						     struct device *dev);
+
 struct msm_priv {
 	struct list_head list_attached;
 	struct iommu_domain domain;
@@ -360,20 +364,14 @@ static int msm_iommu_domain_config(struct msm_priv *priv)
 /* Must be called under msm_iommu_lock */
 static struct msm_iommu_dev *find_iommu_for_dev(struct device *dev)
 {
-	struct msm_iommu_dev *iommu, *ret = NULL;
-	struct msm_iommu_ctx_dev *master;
+	struct msm_iommu_dev *iommu;
 
 	list_for_each_entry(iommu, &qcom_iommu_devices, dev_node) {
-		master = list_first_entry(&iommu->ctx_list,
-					  struct msm_iommu_ctx_dev,
-					  list);
-		if (master->of_node == dev->of_node) {
-			ret = iommu;
-			break;
-		}
+		if (find_master_for_dev(iommu, dev))
+			return iommu;
 	}
 
-	return ret;
+	return NULL;
 }
 
 static struct iommu_device *msm_iommu_probe_device(struct device *dev)
@@ -404,40 +402,47 @@ static int msm_iommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
 	list_for_each_entry(iommu, &qcom_iommu_devices, dev_node) {
-		master = list_first_entry(&iommu->ctx_list,
-					  struct msm_iommu_ctx_dev,
-					  list);
-		if (master->of_node == dev->of_node) {
-			ret = __enable_clocks(iommu);
-			if (ret)
-				goto fail;
+		/*
+		 * Find the master context for this device on this IOMMU.
+		 * A device can reference multiple IOMMU instances, so we
+		 * need to check each IOMMU for a matching master.
+		 */
+		master = find_master_for_dev(iommu, dev);
+		if (!master)
+			continue;
 
-			/* Perform deferred IOMMU reset on first attach */
-			if (!iommu->reset_done) {
-				msm_iommu_reset(iommu->base, iommu->ncb);
-				iommu->reset_done = true;
-			}
+		ret = __enable_clocks(iommu);
+		if (ret)
+			goto fail;
 
-			list_for_each_entry(master, &iommu->ctx_list, list) {
-				if (master->num) {
-					dev_err(dev, "domain already attached");
-					ret = -EEXIST;
-					goto fail;
-				}
-				master->num =
-					msm_iommu_alloc_ctx(iommu->context_map,
-							    0, iommu->ncb);
-				if (IS_ERR_VALUE(master->num)) {
-					ret = -ENODEV;
-					goto fail;
-				}
-				config_mids(iommu, master);
-				__program_context(iommu->base, master->num,
-						  priv);
-			}
-			__disable_clocks(iommu);
-			list_add(&iommu->dom_node, &priv->list_attached);
+		/* Perform deferred IOMMU reset on first attach */
+		if (!iommu->reset_done) {
+			msm_iommu_reset(iommu->base, iommu->ncb);
+			iommu->reset_done = true;
 		}
+
+		/*
+		 * Only process the master context for this specific device.
+		 * Other masters in the ctx_list may belong to different devices.
+		 */
+		if (master->num) {
+			dev_err(dev, "domain already attached\n");
+			ret = -EEXIST;
+			__disable_clocks(iommu);
+			goto fail;
+		}
+		master->num = msm_iommu_alloc_ctx(iommu->context_map,
+						  0, iommu->ncb);
+		if (IS_ERR_VALUE(master->num)) {
+			ret = -ENODEV;
+			__disable_clocks(iommu);
+			goto fail;
+		}
+		config_mids(iommu, master);
+		__program_context(iommu->base, master->num, priv);
+
+		__disable_clocks(iommu);
+		list_add(&iommu->dom_node, &priv->list_attached);
 	}
 
 fail:
@@ -464,14 +469,22 @@ static int msm_iommu_identity_attach(struct iommu_domain *identity_domain,
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
 	list_for_each_entry(iommu, &priv->list_attached, dom_node) {
+		/*
+		 * Only detach the master context for this specific device.
+		 * Other masters in the ctx_list may belong to different devices.
+		 */
+		master = find_master_for_dev(iommu, dev);
+		if (!master)
+			continue;
+
 		ret = __enable_clocks(iommu);
 		if (ret)
 			goto fail;
 
-		list_for_each_entry(master, &iommu->ctx_list, list) {
-			msm_iommu_free_ctx(iommu->context_map, master->num);
-			__reset_context(iommu->base, master->num);
-		}
+		msm_iommu_free_ctx(iommu->context_map, master->num);
+		__reset_context(iommu->base, master->num);
+		master->num = 0;
+
 		__disable_clocks(iommu);
 	}
 fail:
@@ -602,14 +615,38 @@ static void print_ctx_regs(void __iomem *base, int ctx)
 	       GET_SCTLR(base, ctx), GET_ACTLR(base, ctx));
 }
 
+/*
+ * Find or create a master context for a device on a specific IOMMU.
+ * Each IOMMU instance maintains its own ctx_list of masters. When a device
+ * references multiple IOMMU instances (like MDP with mdp_port0 and mdp_port1),
+ * each IOMMU gets its own master context for that device.
+ */
+static struct msm_iommu_ctx_dev *find_master_for_dev(struct msm_iommu_dev *iommu,
+						     struct device *dev)
+{
+	struct msm_iommu_ctx_dev *master;
+
+	list_for_each_entry(master, &iommu->ctx_list, list) {
+		if (master->of_node == dev->of_node)
+			return master;
+	}
+	return NULL;
+}
+
 static int insert_iommu_master(struct device *dev,
 				struct msm_iommu_dev **iommu,
 				const struct of_phandle_args *spec)
 {
-	struct msm_iommu_ctx_dev *master = dev_iommu_priv_get(dev);
+	struct msm_iommu_ctx_dev *master;
 	int sid;
 
-	if (list_empty(&(*iommu)->ctx_list)) {
+	/*
+	 * Look up the master context for this device on this specific IOMMU.
+	 * A device can reference multiple IOMMU instances, so we can't use
+	 * dev_iommu_priv_get() which stores only one pointer per device.
+	 */
+	master = find_master_for_dev(*iommu, dev);
+	if (!master) {
 		master = kzalloc(sizeof(*master), GFP_ATOMIC);
 		if (!master) {
 			dev_err(dev, "Failed to allocate iommu_master\n");
@@ -617,9 +654,9 @@ static int insert_iommu_master(struct device *dev,
 		}
 		master->of_node = dev->of_node;
 		list_add(&master->list, &(*iommu)->ctx_list);
-		dev_iommu_priv_set(dev, master);
 	}
 
+	/* Check for duplicate MIDs */
 	for (sid = 0; sid < master->num_mids; sid++)
 		if (master->mids[sid] == spec->args[0]) {
 			dev_warn(dev, "Stream ID 0x%x repeated; ignoring\n",
