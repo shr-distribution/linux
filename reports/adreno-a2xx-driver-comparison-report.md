@@ -10,18 +10,35 @@
 
 ## GPU Identification
 
-**Confirmed GPU:** Adreno 220 (Leia)
+**Confirmed GPU:** Adreno 220 (Marketing Name), Codename "Leia"
 
-Based on firmware file analysis:
+### Chip ID Disambiguation
+
+There are two different chip ID schemes used by the kernel drivers:
+
+| Scheme | Value | Used By |
+|--------|-------|---------|
+| Hardware Register ID | `0x02010000` | Legacy KGSL (reads RBBM_PERIPHID registers) |
+| Device Tree Compatible | `0x02020000` | Mainline DRM/MSM (from "qcom,adreno-220.0") |
+
+**Both refer to the SAME physical GPU.** The mainline driver uses the marketing version (220) encoded in the device tree, while the legacy driver reads the internal hardware revision ID.
+
+### Identification Evidence:
 - **Firmware files:** `leia_pm4_470.fw`, `leia_pfp_470.fw`
-- **Chip ID:** `KGSL_CHIPID_LEIA_REV470` (0x02010000)
+- **Device Tree:** `compatible = "qcom,adreno-220.0", "qcom,adreno";`
 - **GMEM Size:** 512KB
+- **Family:** ADRENO_2XX_GEN2
 - **Protection Mode:** Supported (firmware version word = 0x00220014, non-zero)
 
-The HP TouchPad uses the **Adreno 220** GPU variant, which is identified by the "Leia" codename. This is confirmed by:
-1. The presence of `leia_*` firmware files in `/lib/firmware/qcom/`
-2. The Palm kernel patches in `kernel-3.0.5.txt` referencing `KGSL_CHIPID_LEIA_REV470`
-3. The APQ8060 SoC specification
+The HP TouchPad uses the **Adreno 220** GPU variant, confirmed by:
+1. Device tree compatible string "qcom,adreno-220.0"
+2. The presence of `leia_*` firmware files in `/lib/firmware/`
+3. The APQ8060 SoC specification (Snapdragon S3 = Adreno 220)
+4. Palm kernel patches referencing `KGSL_CHIPID_LEIA_REV470`
+
+### A225 Note
+
+The mainline driver code references `adreno_is_a225()` which checks for `revn == 225`, but **there is no A225 entry in the mainline catalog**. This is effectively dead code. The TouchPad's GPU is A220, not A225. The "Leia REV470" designation in legacy KGSL refers to a firmware revision (470), not a marketing model number (225).
 
 ---
 
@@ -48,19 +65,19 @@ This report analyzes the Mesa freedreno userspace driver for Adreno A2XX GPUs an
 
 ### Key Findings
 
-| Finding | General Severity | TouchPad (A220) Severity | Affected Driver |
-|---------|------------------|--------------------------|-----------------|
-| VGT DMA alignment workaround missing | **HIGH** | **LOW** (Leia exempt) | Mainline |
-| PM_OVERRIDE2 register values incorrect | **MEDIUM** | **HIGH** (Required for Leia) | Mainline |
-| MH_CLNT_INTF_CTRL_CONFIG2 not configured | **MEDIUM** | **LOW** (Leia doesn't need it) | Mainline |
-| Post-draw WFI synchronization undocumented | **LOW** | **LOW** | Both kernel |
-| Vertex count limitation (32K) | **INFO** | **INFO** | Mesa/Userspace |
+| Finding | General Severity | TouchPad (A220) Severity | Affected Driver | Status |
+|---------|------------------|--------------------------|-----------------|--------|
+| VGT DMA alignment workaround missing | **HIGH** | **LOW** (Leia exempt) | Mainline | N/A for TouchPad |
+| PM_OVERRIDE2 register values incorrect | **MEDIUM** | **HIGH** (Required for Leia) | Mainline | ✅ **FIXED** |
+| MH_CLNT_INTF_CTRL_CONFIG2 not configured | **MEDIUM** | **LOW** (Leia doesn't need it) | Mainline | N/A for TouchPad |
+| Post-draw WFI synchronization undocumented | **LOW** | **LOW** | Both kernel | Info only |
+| Vertex count limitation (32K) | **INFO** | **INFO** | Mesa/Userspace | Info only |
 
-### Recommendation
+### Status
 
-For the **HP TouchPad specifically** (Adreno 220/Leia), the most critical missing item is the **PM_OVERRIDE2 register setting**. The legacy Palm kernel sets this to `0x1a0` for Leia chips, but mainline sets it to `0x0`. This affects clock gating behavior and could cause power management or stability issues.
+The **PM_OVERRIDE2 fix** has been applied to the TouchPad's mainline kernel. The A220 (Leia) now correctly uses `0x1a0` instead of `0x0`.
 
-The VGT DMA workaround, while critical for A200 devices, is explicitly **skipped for Leia (A220/A225)** in the Palm kernel, so it is not needed for the TouchPad.
+The VGT DMA workaround, while critical for A200 devices, is explicitly **skipped for Leia (A220)** in the Palm kernel, so it is not needed for the TouchPad.
 
 ---
 
@@ -198,9 +215,10 @@ if (flags & KGSL_MMUFLAGS_PTUPDATE &&
 
 #### Affected Hardware
 
-- Adreno 200 (A200)
-- Adreno 220 (A220)
-- NOT affected: Adreno 225 (Leia REV470)
+- Adreno 200 (A200) - **AFFECTED**
+- Adreno 220 (A220/Leia) - **NOT AFFECTED** (exempt per Palm kernel)
+
+The VGT DMA workaround is explicitly skipped for `KGSL_CHIPID_LEIA_REV470` in the legacy Palm kernel, meaning the HP TouchPad's Adreno 220 does not require this workaround.
 
 #### Recommendation
 
@@ -299,25 +317,24 @@ gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0); /* 0x80/0x1a0 for a22x? */
 
 | Chip | Init Value (Legacy) | Final Value (Legacy) | Mainline |
 |------|---------------------|----------------------|----------|
-| A200 | 0xffffffff | 0x00000000 | 0x00000000 |
-| A220 | 0xffffffff | 0x00000000 | 0x00000000 |
-| A225 (Leia) | 0xffffffff | 0x000001a0 | 0x00000000 |
+| A200 (Yamato) | 0xffffffff | 0x00000000 | 0x00000000 |
+| A220 (Leia) | 0xffffffff | 0x000001a0 | 0x00000000 ❌ |
 | REV251 | 0x000000ff | 0x00000000 | 0x00000000 |
 
 #### Issues
 
-1. **A225/Leia needs 0x1a0** - Mainline uses 0x0 for all chips
+1. **A220/Leia (including HP TouchPad) needs 0x1a0** - Mainline uses 0x0 for all chips
 2. **The comment admits uncertainty** - `/* 0x80/0x1a0 for a22x? */`
 
 #### Impact
 
-- Clock gating issues on A225
+- Clock gating issues on A220 (Leia)
 - Potential power management problems
 - Possible GPU subsystem instability
 
 #### Recommendation
 
-Set PM_OVERRIDE2 to 0x1a0 for A225 chips (Leia REV470).
+Set PM_OVERRIDE2 to 0x1a0 for A220 chips (Leia). This fix has already been applied to the TouchPad kernel.
 
 ---
 
@@ -444,19 +461,19 @@ Based on the Palm patches, for the HP TouchPad specifically:
 |---------|----------|---------------------|
 | VGT DMA Workaround | **NO** (Leia exempt) | N/A |
 | 1K Boundary Check Disable | **YES** | ✅ |
-| PM_OVERRIDE2 = 0x1a0 | **YES** | ❌ |
+| PM_OVERRIDE2 = 0x1a0 | **YES** | ✅ (fixed) |
 | CONFIG2 Register | **NO** (Leia only sets CONFIG1) | ✅ |
-| SQ_FLOW_CONTROL | **YES** (A225 only, verify if A220 needs it) | ✅ (A225 only) |
+| SQ_FLOW_CONTROL | Conditional (A22x gen2) | ✅ |
 
 ### Revised Critical Issue Assessment for TouchPad
 
 Given the TouchPad uses A220 (Leia), the severity of issues changes:
 
-| Issue | Original Severity | TouchPad Severity | Notes |
-|-------|-------------------|-------------------|-------|
-| VGT DMA Workaround | HIGH | **LOW** | Leia is exempt |
-| PM_OVERRIDE2 | MEDIUM | **HIGH** | Required for Leia |
-| CONFIG2 Register | MEDIUM | **LOW** | Leia doesn't set it |
+| Issue | Original Severity | TouchPad Severity | Status | Notes |
+|-------|-------------------|-------------------|--------|-------|
+| VGT DMA Workaround | HIGH | **LOW** | N/A | Leia is exempt |
+| PM_OVERRIDE2 | MEDIUM | **HIGH** | ✅ FIXED | Required for Leia |
+| CONFIG2 Register | MEDIUM | **LOW** | N/A | Leia doesn't set it |
 
 ---
 
@@ -478,13 +495,15 @@ Given the TouchPad uses A220 (Leia), the severity of issues changes:
 | Post-draw register clear | Unknown register set to 0 | N/A | N/A | ✅ |
 | Hardware binning different | A22x binning like A3xx | N/A | N/A | ✅ |
 
-### A225 (Leia)-Specific Workarounds
+### A220/Leia-Specific Workarounds (HP TouchPad)
 
 | Workaround | Description | Legacy | Mainline | Mesa |
 |------------|-------------|--------|----------|------|
 | SQ_FLOW_CONTROL | Set to 0x18000000 | ❌ | ✅ | N/A |
-| PM_OVERRIDE2 | Set to 0x1a0 | ✅ | ❌ | N/A |
+| PM_OVERRIDE2 | Set to 0x1a0 | ✅ | ✅ (fixed) | N/A |
 | Skip VGT workaround | Not needed for Leia | ✅ | N/A | ✅ |
+
+**Note:** The mainline driver code references `adreno_is_a225()` but there is no A225 entry in the catalog. The A220 entry (chip_id 0x02020000) is used for the TouchPad's Leia GPU.
 
 ---
 
@@ -611,24 +630,21 @@ dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
 
 ## Recommendations
 
-### For HP TouchPad (Adreno 220/Leia) - High Priority
+### For HP TouchPad (Adreno 220/Leia) - ✅ COMPLETED
 
-1. **Fix PM_OVERRIDE2 for Leia/A220**
+1. **Fix PM_OVERRIDE2 for Leia/A220** - ✅ **APPLIED**
 
-   The TouchPad's A220 GPU requires `PM_OVERRIDE2 = 0x1a0` for proper clock gating. Update `a2xx_hw_init()` in `a2xx_gpu.c`:
+   The TouchPad's A220 GPU requires `PM_OVERRIDE2 = 0x1a0` for proper clock gating. This fix has been applied to `a2xx_gpu.c`:
 
    ```c
-   /* Current mainline code (INCORRECT for Leia): */
-   gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0); /* 0x80/0x1a0 for a22x? */
-
-   /* Corrected code: */
-   if (adreno_is_a22x(adreno_gpu))  /* A220 or A225 */
+   /* A22x (Leia) requires 0x1a0 for proper clock gating per Palm kernel */
+   if (!adreno_is_a20x(adreno_gpu))
        gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x1a0);
    else
        gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
    ```
 
-   **Note:** You may need to add an `adreno_is_a22x()` helper or use `!adreno_is_a20x()`.
+   The fix uses `!adreno_is_a20x()` to detect A220/A22x family GPUs.
 
 ### For General A2XX Support - Medium Priority
 
@@ -686,7 +702,7 @@ dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
 
 ### Summary of Changes for TouchPad
 
-For the HP TouchPad specifically, the **only required change** is:
+For the HP TouchPad specifically, the **only required change** was:
 
 ```diff
 --- a/drivers/gpu/drm/msm/adreno/a2xx_gpu.c
@@ -695,11 +711,14 @@ For the HP TouchPad specifically, the **only required change** is:
 
         gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0); /* 0x200 for msm8960? */
 -       gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0); /* 0x80/0x1a0 for a22x? */
++       /* A22x (Leia) requires 0x1a0 for proper clock gating per Palm kernel */
 +       if (!adreno_is_a20x(adreno_gpu))
 +               gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x1a0);
 +       else
 +               gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
 ```
+
+**✅ This fix has been applied to the TouchPad kernel.**
 
 ---
 
@@ -723,12 +742,24 @@ For the HP TouchPad specifically, the **only required change** is:
 
 ### Chip Identification
 
-| Marketing Name | Code Name | Chip ID | GMEM |
-|----------------|-----------|---------|------|
-| Adreno 200 | Yamato | 0x02000000 | 256KB |
-| Adreno 200 (i.MX51) | Yamato | 0x02000001 | 128KB |
-| Adreno 220 | Leia | 0x02020000 | 512KB |
-| Adreno 225 | Leia REV470 | 0x02010000 | 512KB |
+**Mainline Catalog (from a2xx_catalog.c):**
+
+| Marketing Name | Code Name | Chip ID (Device Tree) | GMEM | Family |
+|----------------|-----------|----------------------|------|--------|
+| Adreno 200 | Yamato | 0x02000000 | 256KB | ADRENO_2XX_GEN1 |
+| Adreno 200 (i.MX51) | Yamato | 0x02000001 | 128KB | ADRENO_2XX_GEN1 |
+| Adreno 220 | Leia | 0x02020000 | 512KB | ADRENO_2XX_GEN2 |
+
+**Legacy KGSL Chip IDs (from hardware registers):**
+
+| Marketing Name | Legacy Constant | Hardware Register ID | Notes |
+|----------------|-----------------|---------------------|-------|
+| Adreno 200 | YAMATODX_REV21 | 0x00020100 | Patched to REV211 |
+| Adreno 200 | YAMATODX_REV211 | 0x00020101 | |
+| Adreno 220 | LEIA_REV470_TEMP | 0x00010001 | Patched to REV470 |
+| Adreno 220 | LEIA_REV470 | 0x02010000 | **HP TouchPad** |
+
+**Note:** The mainline driver uses chip IDs derived from device tree compatible strings (e.g., "qcom,adreno-220.0" → 0x02020000), NOT the hardware register values. Both the legacy 0x02010000 and mainline 0x02020000 refer to the same Adreno 220 GPU in the TouchPad.
 
 ### Register References
 
