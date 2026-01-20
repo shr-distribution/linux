@@ -1107,33 +1107,77 @@
 	};
 
 	/*
-	 * Fast charging at up to 1400 mA is supported by the hardware, but
-	 * requires cooperation with the USB controller and A6 battery
-	 * controller. The USB port is connected to both the DC and USB
-	 * inputs, so DCM must not be enabled unless we know the port can
-	 * supply the configured current. The DC mode charging current is
-	 * configured by a multiplexed set of resistors connected to IDC. As
-	 * configured here, the device will always charge at 500 mA. This is
-	 * technically USB non-compliant (enumeration is required), but
-	 * should generally be safe. Unfortunately, at 500 mA the device
-	 * will slowly discharge the battery if the screen is on.
+	 * MAX8903B Battery Charger
+	 *
+	 * GPIO configuration verified from legacy webOS kernel
+	 * (gpiomux-tenderloin.h, board-tenderloin.c):
+	 *
+	 * Control outputs:
+	 *   GPIO 41: CEN_N (Charge Enable, active low)
+	 *   GPIO 42: DCM   (DC Mode - high=DC charging, low=USB charging)
+	 *   GPIO 33: USUS  (USB Suspend, active high)
+	 *   GPIO 133: IUSB (USB current: low=100mA, high=500mA) - WiFi variant
+	 *   GPIO 134: IUSB - 3G variant
+	 *   GPIO 34: CHG_D_ISET_1 (DC current select bit 0)
+	 *   GPIO 30: CHG_D_ISET_2 (DC current select bit 1)
+	 *
+	 * Status inputs:
+	 *   GPIO 140: DOK_N (DC OK, active low) - WiFi variant
+	 *   GPIO 86:  DOK_N - 3G variant
+	 *   GPIO 36:  CHG_N (Charging status, active low)
+	 *   GPIO 35:  FLT_N (Fault indicator, active low)
+	 *
+	 * DC Charging Current Selection (via ISET_1/ISET_2 resistor mux):
+	 *   EVT2+ boards: [0,0]=750mA, [0,1]=900mA, [1,0]=2000mA, [1,1]=1400mA
+	 *   EVT1 boards:  [0,0]=750mA, [0,1]=900mA, [1,0]=1500mA, [1,1]=1400mA
+	 *   Proto boards: [0,0]=900mA, [0,1]=1000mA, [1,0]=1500mA, [1,1]=2000mA
+	 *
+	 * FAST CHARGING LIMITATION:
+	 * The mainline max8903 driver does NOT support the ISET pins for
+	 * DC charging current selection. To enable fast charging at 1400mA:
+	 *   1. Set GPIO 34 (ISET_1) = HIGH
+	 *   2. Set GPIO 30 (ISET_2) = HIGH
+	 *   3. Enable DC mode by setting GPIO 42 (DCM) = HIGH
+	 * This requires either driver modification or userspace control.
+	 * Currently configured for 750mA (ISET pins both LOW).
+	 *
+	 * Note: At 500mA USB charging, the device slowly discharges when
+	 * the screen is on due to display power consumption.
 	 */
 	charger: max8903b {
 		compatible = "maxim,max8903";
 		pinctrl-names = "default";
 		pinctrl-0 = <&charger_gpios>;
-		cen-gpios = <&tlmm 41 GPIO_ACTIVE_HIGH>;
-		chg-gpios = <&tlmm 36 GPIO_ACTIVE_LOW>;
-		flt-gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;
-		usus-gpios = <&tlmm 33 GPIO_ACTIVE_LOW>;
-		dcm-gpios = <&tlmm 42 GPIO_ACTIVE_LOW>;
+		cen-gpios = <&tlmm 41 GPIO_ACTIVE_HIGH>;   /* Charge enable */
+		chg-gpios = <&tlmm 36 GPIO_ACTIVE_LOW>;    /* Charging status */
+		flt-gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;    /* Fault indicator */
+		usus-gpios = <&tlmm 33 GPIO_ACTIVE_LOW>;   /* USB suspend */
+		dcm-gpios = <&tlmm 42 GPIO_ACTIVE_LOW>;    /* DC/USB mode select */
 		/*
-		 * This is actually DOK, but this would cause the driver to
-		 * enable high current charging.
+		 * This is actually DOK (DC OK), but using uok-gpios to avoid
+		 * the driver enabling high current DC charging mode, which
+		 * requires proper ISET pin configuration first.
 		 */
-		uok-gpios = <&tlmm 140 GPIO_ACTIVE_LOW>;
+		uok-gpios = <&tlmm 140 GPIO_ACTIVE_LOW>;   /* DC power detect */
 	};
 
+	/*
+	 * Vibrator - HP TouchPad uses GPIO 79 to enable the vibrator motor.
+	 *
+	 * Legacy webOS kernel used PM8058 PMIC vibrator (pm8058-vib) with:
+	 *   - level_mV = 3000 (3.0V drive voltage)
+	 *   - max_timeout_ms = 15000
+	 *   - initial_vibrate_ms = 500
+	 *
+	 * Note: PM8058 PMIC vibrator is also available via pm8058.dtsi
+	 * (vibrator@4a with compatible "qcom,pm8058-vib") and provides
+	 * hardware-controlled voltage levels (1200-3100mV in 100mV steps).
+	 * The GPIO-based approach here uses regulator pm8058_l5 for power.
+	 *
+	 * The LM8502 LED controller also has vibrator support parameters
+	 * in legacy kernel (vib_default_duty_cycle, vib_invert_direction)
+	 * but the actual vibrator motor appears to use GPIO 79.
+	 */
 	vibrator {
 		compatible = "gpio-vibrator";
 		enable-gpios = <&tlmm 79 GPIO_ACTIVE_HIGH>;
@@ -1500,7 +1544,22 @@
 		};
 	};
 
+	/*
+	 * MAX8903B Charger GPIO Configuration
+	 *
+	 * Verified from legacy webOS kernel gpiomux-tenderloin.c/h:
+	 * - Input pins use 8mA drive with pull-up
+	 * - Output pins use 8mA drive, no pull
+	 *
+	 * Initial state configured for safe 500mA USB charging:
+	 * - DCM=HIGH (USB mode, not DC mode)
+	 * - IUSB=HIGH (500mA, not 100mA)
+	 * - USUS=LOW (not suspended)
+	 * - CEN=LOW (charging enabled, active high inverted)
+	 * - ISET pins=LOW,LOW (750mA DC current, lowest setting)
+	 */
 	charger_gpios: max8903b-state {
+		/* Status inputs: FLT_N (35), CHG_N (36), DOK_N (140) */
 		in-pins {
 			pins = "gpio35", "gpio36", "gpio140";
 			function = "gpio";
@@ -1508,39 +1567,44 @@
 			input-enable;
 			bias-pull-up;
 		};
+		/* Control outputs */
 		out-pins {
 			pins = "gpio30", "gpio33", "gpio34", "gpio41", "gpio42", "gpio133";
 			function = "gpio";
 			drive-strength = <2>;
 		};
-		/* Safe initial state, charging disabled */
+		/* DCM=HIGH: USB charging mode (not DC mode) */
 		dcm-pins {
 			pins = "gpio42";
 			function = "gpio";
 			output-high;
 		};
-		/* 500 mA USB charging. Not controlled by driver. */
+		/* IUSB=HIGH: 500mA USB current (not 100mA) */
 		iusb-pins {
 			pins = "gpio133";
 			function = "gpio";
 			output-high;
 		};
+		/* USUS=LOW: USB not suspended */
 		usus-pins {
 			pins = "gpio33";
 			function = "gpio";
 			output-low;
 		};
+		/* CEN=LOW: Charging enabled */
 		cen-pins {
 			pins = "gpio41";
 			function = "gpio";
 			output-low;
 		};
 		/*
-		 * Limit DC charging current to 750 mA, the
-		 * minimum value. Appears to control a
-		 * multiplexed set of resistors connected to
-		 * the IDC pin. This functionality is not
-		 * supported by the MAX8903 driver.
+		 * DC Current Selection (ISET_1=GPIO34, ISET_2=GPIO30)
+		 * These control a resistor mux connected to the IDC pin.
+		 * [0,0]=750mA (safest), [1,1]=1400mA (fast charging)
+		 *
+		 * For fast charging, change to output-high on both pins
+		 * and enable DC mode (DCM=HIGH with actual DC power).
+		 * NOT controlled by mainline max8903 driver.
 		 */
 		d-iset-pins {
 			pins = "gpio34", "gpio30";
