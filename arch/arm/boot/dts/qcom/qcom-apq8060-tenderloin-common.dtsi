@@ -1892,6 +1892,35 @@
 		/* UART speed from legacy kernel: HSUART_SPEED_115K */
 		max-speed = <115200>;
 
+		/*
+		 * SCO/PCM audio interface configuration for Bluetooth voice calls.
+		 *
+		 * brcm,bt-pcm-int-params = [routing rate frame_sync sync_mode clock_mode]
+		 *   routing:    0=PCM, 1=Transport, 2=Codec, 3=I2S
+		 *   rate:       0=128K, 1=256K, 2=512K, 3=1024K, 4=2048K bps
+		 *   frame_sync: 0=short, 1=long frame
+		 *   sync_mode:  0=slave, 1=master
+		 *   clock_mode: 0=slave, 1=master
+		 *
+		 * Values: 0x00=PCM routing, 0x02=512Kbps (8kHz mono SCO standard),
+		 *         0x00=short frame, 0x01=sync master, 0x01=clock master
+		 *
+		 * STATUS: BT SCO audio is NOT FUNCTIONAL. The mainline Q6AFE driver
+		 * lacks AUX_PCM/PCM DAI support required for BT voice calls.
+		 *
+		 * Legacy kernel used:
+		 *   - AUX PCM interface on GPIO 111-114 (dout/din/syncout/clkin_a)
+		 *   - snddev_bt_sco_earpiece/mic devices with PCM_RX/PCM_TX COPPs
+		 *   - Custom msm_aux_pcm platform driver
+		 *
+		 * To enable SCO, mainline kernel would need:
+		 *   1. AUX_PCM port IDs in include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
+		 *   2. PCM DAI support in sound/soc/qcom/qdsp6/q6afe-dai.c
+		 *   3. PCM port config in sound/soc/qcom/qdsp6/q6afe.c
+		 *   4. Pinctrl for GPIO 111-114 and bt-sco dai-link in this DT
+		 */
+		brcm,bt-pcm-int-params = [00 02 00 01 01];
+
 		pinctrl-names = "default";
 		pinctrl-0 = <&bt_pin>;
 
