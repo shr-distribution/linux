@@ -183,7 +183,11 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_SQ_PS_PROGRAM, 0x00000000);
 
 	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0); /* 0x200 for msm8960? */
-	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0); /* 0x80/0x1a0 for a22x? */
+	/* A22x (Leia) requires 0x1a0 for proper clock gating per Palm kernel */
+	if (!adreno_is_a20x(adreno_gpu))
+		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x1a0);
+	else
+		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
 
 	/* note: gsl doesn't set this */
 	gpu_write(gpu, REG_A2XX_RBBM_DEBUG, 0x00080000);
