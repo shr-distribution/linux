@@ -23,6 +23,7 @@
 /* Additional internal-use only BO flags: */
 #define MSM_BO_STOLEN        0x10000000    /* try to use stolen/splash memory */
 #define MSM_BO_MAP_PRIV      0x20000000    /* use IOMMU_PRIV when mapping */
+#define MSM_BO_CONTIGUOUS    0x40000000    /* DMA-allocated contiguous memory */
 
 /**
  * struct msm_gem_vm_log_entry - An entry in the VM log
@@ -218,6 +219,9 @@ struct msm_gem_object {
 	struct page **pages;
 	struct sg_table *sgt;
 	void *vaddr;
+
+	/* For MSM_BO_CONTIGUOUS: DMA-allocated contiguous memory */
+	dma_addr_t dma_addr;
 
 	char name[32]; /* Identifier to print for the debugfs files */
 

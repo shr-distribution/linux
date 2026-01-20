@@ -5,6 +5,7 @@
  */
 
 #include <linux/dma-map-ops.h>
+#include <linux/dma-mapping.h>
 #include <linux/vmalloc.h>
 #include <linux/spinlock.h>
 #include <linux/shmem_fs.h>
@@ -19,6 +20,24 @@
 #include "msm_gem.h"
 #include "msm_gpu.h"
 #include "msm_kms.h"
+
+/*
+ * Check if contiguous memory is required for this object.
+ * When running without IOMMU, scanout buffers need physically contiguous
+ * memory because the display controller reads linearly from a single
+ * base address and cannot handle scatter-gather.
+ */
+static bool msm_gem_needs_contiguous(struct drm_device *dev, uint32_t flags)
+{
+#ifdef CONFIG_DRM_MSM_KMS
+	struct msm_drm_private *priv = dev->dev_private;
+
+	/* Scanout buffers without IOMMU need contiguous memory */
+	if ((flags & MSM_BO_SCANOUT) && priv->kms && !priv->kms->vm)
+		return true;
+#endif
+	return false;
+}
 
 static void update_device_mem(struct msm_drm_private *priv, ssize_t size)
 {
@@ -197,12 +216,47 @@ static struct page **get_pages(struct drm_gem_object *obj)
 		struct page **p;
 		size_t npages = obj->size >> PAGE_SHIFT;
 
-		p = drm_gem_get_pages(obj);
+		/*
+		 * For contiguous allocations (scanout without IOMMU),
+		 * use DMA API to get physically contiguous memory.
+		 */
+		if (msm_obj->flags & MSM_BO_CONTIGUOUS) {
+			void *vaddr;
+			dma_addr_t dma_addr;
+			int i;
 
-		if (IS_ERR(p)) {
-			DRM_DEV_ERROR(dev->dev, "could not get pages: %ld\n",
-					PTR_ERR(p));
-			return p;
+			vaddr = dma_alloc_wc(dev->dev, obj->size,
+					     &dma_addr, GFP_KERNEL);
+			if (!vaddr) {
+				DRM_DEV_ERROR(dev->dev,
+					      "failed to allocate %zu bytes contiguous\n",
+					      obj->size);
+				return ERR_PTR(-ENOMEM);
+			}
+
+			p = kvmalloc_array(npages, sizeof(*p), GFP_KERNEL);
+			if (!p) {
+				dma_free_wc(dev->dev, obj->size, vaddr, dma_addr);
+				return ERR_PTR(-ENOMEM);
+			}
+
+			/* Build pages array from contiguous allocation */
+			for (i = 0; i < npages; i++)
+				p[i] = virt_to_page(vaddr + i * PAGE_SIZE);
+
+			msm_obj->vaddr = vaddr;
+			msm_obj->dma_addr = dma_addr;
+
+			dev_dbg(dev->dev, "allocated %zu bytes contiguous at %pad\n",
+				obj->size, &dma_addr);
+		} else {
+			p = drm_gem_get_pages(obj);
+
+			if (IS_ERR(p)) {
+				DRM_DEV_ERROR(dev->dev, "could not get pages: %ld\n",
+						PTR_ERR(p));
+				return p;
+			}
 		}
 
 		update_device_mem(dev->dev_private, obj->size);
@@ -257,7 +311,20 @@ static void put_pages(struct drm_gem_object *obj)
 
 		update_device_mem(obj->dev->dev_private, -obj->size);
 
-		drm_gem_put_pages(obj, msm_obj->pages, true, false);
+		/*
+		 * For contiguous allocations, free via DMA API.
+		 * The vaddr was set during allocation and dma_addr tracks
+		 * the DMA address.
+		 */
+		if (msm_obj->flags & MSM_BO_CONTIGUOUS) {
+			dma_free_wc(obj->dev->dev, obj->size,
+				    msm_obj->vaddr, msm_obj->dma_addr);
+			kvfree(msm_obj->pages);
+			msm_obj->vaddr = NULL;
+			msm_obj->dma_addr = 0;
+		} else {
+			drm_gem_put_pages(obj, msm_obj->pages, true, false);
+		}
 
 		msm_obj->pages = NULL;
 		update_lru(obj);
@@ -1262,6 +1329,7 @@ struct drm_gem_object *msm_gem_new(struct drm_device *dev, size_t size, uint32_t
 	struct msm_drm_private *priv = dev->dev_private;
 	struct msm_gem_object *msm_obj;
 	struct drm_gem_object *obj = NULL;
+	bool use_contiguous;
 	int ret;
 
 	size = PAGE_ALIGN(size);
@@ -1272,22 +1340,39 @@ struct drm_gem_object *msm_gem_new(struct drm_device *dev, size_t size, uint32_t
 	if (size == 0)
 		return ERR_PTR(-EINVAL);
 
+	/*
+	 * Check if we need contiguous memory (scanout without IOMMU).
+	 * This must be done before msm_gem_new_impl() so the flag is set.
+	 */
+	use_contiguous = msm_gem_needs_contiguous(dev, flags);
+	if (use_contiguous)
+		flags |= MSM_BO_CONTIGUOUS;
+
 	ret = msm_gem_new_impl(dev, flags, &obj);
 	if (ret)
 		return ERR_PTR(ret);
 
 	msm_obj = to_msm_bo(obj);
 
-	ret = drm_gem_object_init(dev, obj, size);
-	if (ret)
-		goto fail;
 	/*
-	 * Our buffers are kept pinned, so allocating them from the
-	 * MOVABLE zone is a really bad idea, and conflicts with CMA.
-	 * See comments above new_inode() why this is required _and_
-	 * expected if you're going to pin these pages.
+	 * For contiguous allocations, use private init since we don't
+	 * use shmem backing. The pages will be allocated via DMA API
+	 * in get_pages().
 	 */
-	mapping_set_gfp_mask(obj->filp->f_mapping, GFP_HIGHUSER);
+	if (use_contiguous) {
+		drm_gem_private_object_init(dev, obj, size);
+	} else {
+		ret = drm_gem_object_init(dev, obj, size);
+		if (ret)
+			goto fail;
+		/*
+		 * Our buffers are kept pinned, so allocating them from the
+		 * MOVABLE zone is a really bad idea, and conflicts with CMA.
+		 * See comments above new_inode() why this is required _and_
+		 * expected if you're going to pin these pages.
+		 */
+		mapping_set_gfp_mask(obj->filp->f_mapping, GFP_HIGHUSER);
+	}
 
 	drm_gem_lru_move_tail(&priv->lru.unbacked, obj);
 
