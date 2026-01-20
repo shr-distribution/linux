@@ -9,7 +9,6 @@
 
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
-#include <drm/drm_mode_config.h>
 #include <drm/drm_vblank.h>
 
 #include "msm_drv.h"
@@ -597,14 +596,6 @@ static int mdp4_kms_init(struct drm_device *dev)
 	return 0;
 
 fail:
-	/*
-	 * Clean up any mode_config objects (planes, CRTCs, encoders, connectors)
-	 * that may have been created by modeset_init before it failed.
-	 * This prevents "Memory manager not clean during takedown" warnings
-	 * when init fails partway through (e.g., on deferred probe).
-	 */
-	drm_mode_config_cleanup(dev);
-
 	if (kms)
 		mdp4_destroy(kms);
 
