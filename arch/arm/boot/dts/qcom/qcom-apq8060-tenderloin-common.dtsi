@@ -1207,27 +1207,63 @@
 		bias-disable;
 	};
 
-	gsbi6_uart_pins: i2c6-state {
+	/*
+	 * GSBI6 UART pins for Bluetooth (Broadcom BCM4329/4330)
+	 *
+	 * Verified from legacy webOS kernel gpiomux-tenderloin.c:
+	 * - GPIO 53: UARTDM_TX
+	 * - GPIO 54: UARTDM_RX
+	 * - GPIO 55: UARTDM_CTS
+	 * - GPIO 56: UARTDM_RFR (RTS)
+	 */
+	gsbi6_uart_pins: uart6-state {
 		pins = "gpio53", "gpio54", "gpio55", "gpio56";
 		function = "gsbi6";
 		drive-strength = <16>;
 		bias-disable;
 	};
 
+	/*
+	 * Bluetooth control GPIOs (Topaz WiFi variant)
+	 *
+	 * Verified from legacy webOS kernel gpiomux-tenderloin.h:
+	 * - GPIO 129: BT_HOST_WAKE - Bluetooth wakes host
+	 * - GPIO 130: BT_POWER - Bluetooth power enable
+	 * - GPIO 131: BT_WAKE - Host wakes Bluetooth
+	 * - GPIO 138: BT_RST_N - Bluetooth reset (active low)
+	 *
+	 * Note: Topaz 3G uses different GPIOs:
+	 * - GPIO 50: BT_HOST_WAKE_3G
+	 * - GPIO 110: BT_POWER_3G
+	 * - GPIO 122: BT_RST_N_3G
+	 * - GPIO 131: BT_WAKE_3G (same)
+	 */
 	bt_pin: bt-state {
 		hostwake-pins {
 			pins = "gpio129";
 			function = "gpio";
+			bias-pull-down;
+		};
+
+		power-pins {
+			pins = "gpio130";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
 		};
 
 		devwake-pins {
 			pins = "gpio131";
 			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
 		};
 
-		shutdown-pins {
+		reset-pins {
 			pins = "gpio138";
 			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
 		};
 	};
 
@@ -1804,18 +1840,36 @@
 	};
 };
 
+/*
+ * GSBI6 - Bluetooth UART (Broadcom BCM4329/4330)
+ *
+ * Configuration verified from legacy webOS kernel:
+ * - arch/arm/mach-msm/board-tenderloin.c
+ * - arch/arm/mach-msm/gpiomux-tenderloin.h
+ *
+ * UART configuration:
+ * - Speed: 115200 baud (HSUART_SPEED_115K)
+ * - Mode: No flow control (HSUART_MODE_FLOW_CTRL_NONE)
+ * - Parity: None (HSUART_MODE_PARITY_NONE)
+ * - Options: TX_PIO, RX_DMA, DEFERRED_LOAD
+ *
+ * Bluetooth GPIOs (Topaz WiFi):
+ * - GPIO 129: BT_HOST_WAKE - BT wakes host (input, IRQ)
+ * - GPIO 130: BT_POWER - Power enable (output)
+ * - GPIO 131: BT_WAKE - Host wakes BT (output)
+ * - GPIO 138: BT_RST_N - Reset (output, active low)
+ *
+ * Bluetooth GPIOs (Topaz 3G - different pins):
+ * - GPIO 50: BT_HOST_WAKE_3G
+ * - GPIO 110: BT_POWER_3G
+ * - GPIO 122: BT_RST_N_3G
+ * - GPIO 131: BT_WAKE_3G (same)
+ */
 &gsbi6 {
 	status = "okay";
 	qcom,mode = <GSBI_PROT_UART_W_FC>;
 };
 
-/*
- * Bluetooth GPIO reference (Topaz WiFi):
- * BT_RST_N = GPIO 138
- * BT_POWER = GPIO 130
- * BT_WAKE = GPIO 131
- * BT_HOST_WAKE = GPIO 129
- */
 &gsbi6_serial {
 	status = "okay";
 
@@ -1823,7 +1877,7 @@
 	pinctrl-0 = <&gsbi6_uart_pins>;
 
 	/*
-	 * WebOS 2.6 kernel used HSUART with no flow control:
+	 * Legacy webOS kernel used HSUART with no hardware flow control:
 	 * HSUART_MODE_FLOW_CTRL_NONE | HSUART_MODE_PARITY_NONE
 	 * Do NOT enable uart-has-rtscts here.
 	 */
@@ -1831,19 +1885,21 @@
 	bluetooth {
 		compatible = "brcm,bcm4329-bt";
 
-		vddio-supply = <&pm8058_s3>;  /* 1.8V s3 */
-		vbat-supply = <&pm8058_s3>;  /* 1.8V s3 */
+		/* Power supplies - 1.8V I/O from PM8058 S3 */
+		vddio-supply = <&pm8058_s3>;
+		vbat-supply = <&pm8058_s3>;
 
-		max-speed = <115200>;  /* WebOS used HSUART_SPEED_115K */
-		/* brcm,bt-pcm-int-params = [00 02 00 01 01]; TODO: PCM link to audio */
+		/* UART speed from legacy kernel: HSUART_SPEED_115K */
+		max-speed = <115200>;
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&bt_pin>;
 
-		reset-gpios = <&tlmm 138 GPIO_ACTIVE_LOW>;  /* BT_RST_N - active low */
-		host-wakeup-gpios = <&tlmm 129 GPIO_ACTIVE_HIGH>;
-		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>;
-		shutdown-gpios = <&tlmm 130 GPIO_ACTIVE_HIGH>;
+		/* Bluetooth control GPIOs (active levels from legacy kernel) */
+		reset-gpios = <&tlmm 138 GPIO_ACTIVE_LOW>;	/* BT_RST_N */
+		shutdown-gpios = <&tlmm 130 GPIO_ACTIVE_HIGH>;	/* BT_POWER */
+		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>; /* BT_WAKE */
+		host-wakeup-gpios = <&tlmm 129 GPIO_ACTIVE_HIGH>;   /* BT_HOST_WAKE */
 	};
 };
 
