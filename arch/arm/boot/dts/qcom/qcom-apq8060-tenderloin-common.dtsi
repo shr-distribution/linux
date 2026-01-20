@@ -1143,6 +1143,12 @@
 	 *
 	 * Note: At 500mA USB charging, the device slowly discharges when
 	 * the screen is on due to display power consumption.
+	 *
+	 * A6 BATTERY CONTROLLER COORDINATION:
+	 * The A6 controllers (a6_0, a6_1 on GSBI8 I2C) detect charger source
+	 * (wired vs Touchstone wireless) and report via sysfs/uevents.
+	 * In webOS, powerd daemon coordinated A6 charger detection with
+	 * MAX8903B current settings. See A6 node documentation for details.
 	 */
 	charger: max8903b {
 		compatible = "maxim,max8903";
@@ -2226,6 +2232,37 @@
 	 * A6 Battery Controllers - TI MSP430 microcontrollers
 	 * These provide battery monitoring, fuel gauge, power management,
 	 * and Touchstone (inductive charging) support.
+	 *
+	 * The HP TouchPad has a dual-battery system with two A6 controllers:
+	 * - A6_0 (0x31): Primary battery controller
+	 * - A6_1 (0x32): Secondary battery controller
+	 *
+	 * A6 capabilities (from legacy webOS kernel drivers/misc/a6/a6.c):
+	 * - Battery voltage, current, temperature monitoring
+	 * - Fuel gauge (state of charge)
+	 * - Charger source detection via FLAGS_2 register (0x0703):
+	 *     - WIRED_CHARGE (0x10): Wired USB/DC charger detected
+	 *     - PUCK_CHARGE (0x08): Touchstone wireless charger detected
+	 *     - A2A_CONNECT (0x80): Battery-to-battery connection
+	 * - SBW (Spy-Bi-Wire) interface for firmware updates
+	 *
+	 * A6 <-> MAX8903B Charger Coordination:
+	 * In the legacy webOS kernel, coordination was userspace-mediated:
+	 * 1. A6 exposes charger source via sysfs (/sys/devices/.../a6_X/charger)
+	 * 2. A6 sends uevents when charger source changes
+	 * 3. powerd daemon monitors A6 and sets MAX8903B charging current:
+	 *    - USB enumerated: 100mA or 500mA (via IUSB pin)
+	 *    - Wall charger: 750mA-1400mA DC mode (via ISET pins)
+	 *    - Touchstone puck: Wireless charging handled by A6
+	 *
+	 * MISSING KERNEL INTEGRATION:
+	 * The mainline max8903 driver lacks:
+	 * - ISET pin control for DC charging current selection
+	 * - IUSB pin control for USB 100/500mA mode
+	 * - Integration with A6 charger source detection
+	 * Fast charging requires userspace or driver enhancement to:
+	 * 1. Monitor A6 charger source sysfs/uevents
+	 * 2. Control ISET/IUSB GPIOs based on charger type
 	 *
 	 * NOTE: Interrupt GPIO differs between board revisions:
 	 * - Pre-DVT (EVT1-EVT3): A6_0 IRQ=156, A6_1 IRQ=132
