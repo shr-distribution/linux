@@ -156,11 +156,25 @@
 
 	soc {
 		/*
-		 * address could be 0x18320000   INT_ADM0_AARM = irq 171
-		 * but maybe we want 0x18300000  INT_ADM0_MASTER = irq 170, like on ipq8064 ?
-		 * Note: there is also an ADM1 at 0x18420000 !
-		 *           0x18420000   INT_ADM1_AARM = irq 167
-		 *        or 0x18400000   INT_ADM1_MASTER = irq 166
+		 * ADM (Application Data Mover) DMA Controllers
+		 *
+		 * Configuration verified from legacy webOS kernel:
+		 * - arch/arm/mach-msm/include/mach/msm_iomap-8x60.h
+		 * - arch/arm/mach-msm/include/mach/irqs-8x60.h
+		 * - arch/arm/mach-msm/include/mach/dma.h
+		 *
+		 * ADM has 4 Security Domains (SD), each with its own interrupt:
+		 *   ADM0: MASTER=170, AARM=171, SD2=172, SD3=173
+		 *   ADM1: MASTER=166, AARM=167, SD2=168, SD3=169
+		 *
+		 * For ADM3 (MSM8x60), Linux uses SD 1 (AARM = Applications ARM):
+		 *   - DMOV_SD_AARM = 1, DMOV_SD_SIZE = 0x800
+		 *   - Register offset = SD * 0x800 = 0x800 for EE 1
+		 *
+		 * MASTER interrupts (SD 0) are for TrustZone/modem processor.
+		 * SD2/SD3 interrupts are for other security contexts (unused).
+		 *
+		 * Base addresses: ADM0=0x18320000, ADM1=0x18420000
 		 */
 		adm_dma0: dma-controller@18320000 {
 			compatible = "qcom,adm";
@@ -177,9 +191,10 @@
 				 <&gcc ADM0_C1_RESET>,
 				 <&gcc ADM0_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
-			/* EE 1 = offset 0x800, webOS SD 1 for non-secure access */
+			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
 			qcom,ee = <1>;
 		};
+
 		adm_dma1: dma-controller@18420000 {
 			compatible = "qcom,adm";
 			reg = <0x18420000 0x100000>;
@@ -195,7 +210,7 @@
 				 <&gcc ADM1_C1_RESET>,
 				 <&gcc ADM1_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
-			/* EE 1 = offset 0x800, webOS SD 1 for non-secure access */
+			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
 			qcom,ee = <1>;
 		};
 
