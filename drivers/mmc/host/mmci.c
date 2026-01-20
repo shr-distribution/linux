@@ -367,13 +367,6 @@ static struct variant_data variant_qcom = {
 	.start_err		= MCI_STARTBITERR,
 	.opendrain		= MCI_ROD,
 	.init			= qcom_variant_init,
-	/*
-	 * Legacy msm_sdcc driver sets up data registers before sending command
-	 * in DMA mode (via msmsdcc_dma_exec_func callback). Match this behavior
-	 * by enabling datactrl_first to fix SDIO timeouts during WiFi firmware
-	 * upload on devices like HP TouchPad.
-	 */
-	.datactrl_first		= true,
 };
 
 /* Busy detection for the ST Micro variant */
@@ -1561,7 +1554,7 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 
 	} else if (sbc) {
 		mmci_start_command(host, host->mrq->cmd, 0);
-	} else if (!host->variant->datactrl_first &&
+	} else if (!host->datactrl_first &&
 		   !(cmd->data->flags & MMC_DATA_READ)) {
 		mmci_start_data(host, cmd->data);
 	}
@@ -1923,7 +1916,7 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		mmci_get_next_data(host, mrq->data);
 
 	if (mrq->data &&
-	    (host->variant->datactrl_first || mrq->data->flags & MMC_DATA_READ))
+	    (host->datactrl_first || mrq->data->flags & MMC_DATA_READ))
 		mmci_start_data(host, mrq->data);
 
 	if (mrq->sbc)
@@ -2298,6 +2291,14 @@ static int mmci_probe(struct amba_device *dev,
 
 	host->plat = plat;
 	host->variant = variant;
+	/*
+	 * Initialize datactrl_first from variant default, then allow
+	 * device tree to override. This enables per-controller tuning
+	 * for SDIO vs eMMC which may have different timing requirements.
+	 */
+	host->datactrl_first = variant->datactrl_first;
+	if (np && of_property_read_bool(np, "qcom,datactrl-first"))
+		host->datactrl_first = true;
 	host->mclk = clk_get_rate(host->clk);
 	/*
 	 * According to the spec, mclk is max 100 MHz,

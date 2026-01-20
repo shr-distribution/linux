@@ -1566,6 +1566,13 @@
 	status = "okay";
 	pinctrl-names = "default";
 	pinctrl-0 = <&sdcc4_pins>, <&wlan_gpios>;
+
+	/*
+	 * SDIO requires data registers to be set up before command is sent.
+	 * This matches legacy msm_sdcc driver behavior and fixes WiFi firmware
+	 * upload timeouts. Only enable for SDIO (WiFi), not eMMC (SDCC3).
+	 */
+	qcom,datactrl-first;
 	#address-cells = <1>;
 	#size-cells = <0>;
 	disable-wp;
