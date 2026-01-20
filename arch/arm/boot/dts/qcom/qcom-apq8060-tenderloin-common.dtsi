@@ -1000,30 +1000,63 @@
 		power-supply = <&pm8058_l10>;
 	};
 
+	/*
+	 * LG XGA LVDS Panel (LP097X02-SLA1 or similar)
+	 *
+	 * Configuration verified from legacy webOS kernel:
+	 * - drivers/video/msm_pe/lcdc_lg_xga.c
+	 * - arch/arm/mach-msm/board-tenderloin.c
+	 *
+	 * Panel GPIOs:
+	 * - GPIO 62: LCD_PWR_EN - LCD power enable (active high)
+	 * - GPIO 63: LVDS_SHDN_N - LVDS shutdown (active high = enabled)
+	 * - PM8058 GPIO 25: Backlight enable
+	 *
+	 * Power supplies:
+	 * - PM8058 L10 (3.05V): VDD_LVDS_3.3V
+	 * - vdd50_boost (5V): Backlight boost (always-on since EVT1)
+	 *
+	 * Power-on sequence (from legacy kernel):
+	 * 1. Enable L10 regulator (3.05V)
+	 * 2. Set LCD_PWR_EN (GPIO 62) high
+	 * 3. Wait 500us
+	 * 4. Set LVDS_SHDN_N (GPIO 63) high
+	 * 5. Wait 200ms
+	 * 6. Enable backlight
+	 *
+	 * Note: GPIO 102 was used for 5V boost enable on pre-EVT1 boards.
+	 * Since EVT1, the 5V boost (vdd50_boost) is always on.
+	 */
 	lg_panel: panel {
 		compatible = "panel-lvds";
 		status = "okay";
 
-		// reset-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;
-		// shdn??-gpios = <&tlmm 63 GPIO_ACTIVE_HIGH>;
-		// VDD_LVDS_3.3: l10
-		// ?? Due to hardware change, it will not use GPIO102 as 5V boost Enable since EVT1
+		/* Panel power control GPIOs */
+		enable-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;	/* LCD_PWR_EN */
+		reset-gpios = <&tlmm 63 GPIO_ACTIVE_HIGH>;	/* LVDS_SHDN_N */
 
-		power-supply = <&pm8058_l10>;
+		power-supply = <&pm8058_l10>;	/* VDD_LVDS_3.3V */
 		backlight = <&backlight>;
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&panel_pins>;
 
-		width-mm = <272>;
-		height-mm = <181>;
+		/* Physical dimensions of 9.7" XGA display (4:3 aspect ratio) */
+		width-mm = <197>;
+		height-mm = <148>;
 
-		/* VESA 24-bit RGB data mapping for LG XGA panel */
+		/* VESA 24-bit RGB data mapping (legacy used 18bpp but 24 works) */
 		data-mapping = "vesa-24";
 
 		/* Panel is physically mounted inverted (upside-down) */
 		rotation = <180>;
 
+		/*
+		 * Timing verified from legacy kernel lcdc_lg_xga.c:
+		 * - clk_rate = 96000000
+		 * - h_back_porch = 400, h_front_porch = 272, h_pulse_width = 328
+		 * - v_back_porch = 6, v_front_porch = 10, v_pulse_width = 7
+		 */
 		panel-timing {
 			clock-frequency = <96000000>;
 			hactive = <1024>;
