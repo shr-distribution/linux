@@ -555,7 +555,11 @@
 			smd-edge {
 				interrupts = <GIC_SPI 89 IRQ_TYPE_EDGE_RISING>;
 
-				qcom,ipc = <&gcc_lpass 0x8 8>;
+				/*
+				 * IPC to LPASS uses GCC register at 0x02082008, bit 15.
+				 * This matches webOS MSM_TRIG_A2Q6_SMD_INT definition.
+				 */
+				qcom,ipc = <&l2cc 0x8 15>;
 				qcom,smd-edge = <1>;
 				label = "lpass";
 
@@ -847,19 +851,15 @@
 			qcom,controller-type = "pmic-arbiter";
 		};
 
+		/*
+		 * KPSS GCC at 0x02082000 is used for all IPC:
+		 * - RPM IPC: bit 2
+		 * - Modem SMD: bit 3, SMSM: bit 4
+		 * - LPASS SMD: bit 15, SMSM: bit 14
+		 */
 		l2cc: clock-controller@2082000 {
 			compatible = "qcom,kpss-gcc-msm8660", "qcom,kpss-gcc", "syscon";
 			reg = <0x02082000 0x1000>;
-		};
-
-		/*
-		 * GCC (Global Clock Controller) for LPASS IPC on MSM8660/APQ8060.
-		 * The Scorpion-based SoC uses 0xC0182000 for DSP signaling,
-		 * different from the KPSS GCC at 0x02082000 used for RPM.
-		 */
-		gcc_lpass: gcc@c0182000 {
-			compatible = "syscon";
-			reg = <0xc0182000 0x1000>;
 		};
 
 		rpm: rpm@104000 {
@@ -1151,8 +1151,13 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		qcom,ipc-1 = <&l2cc 0x8 5>;
-		qcom,ipc-2 = <&gcc_lpass 0x8 8>;
+		/*
+		 * SMSM IPC uses GCC register at 0x02082008.
+		 * Matches webOS MSM_TRIG_A2M_SMSM_INT (bit 4) and
+		 * MSM_TRIG_A2Q6_SMSM_INT (bit 14).
+		 */
+		qcom,ipc-1 = <&l2cc 0x8 4>;
+		qcom,ipc-2 = <&l2cc 0x8 14>;
 
 		apps_smsm: apps@0 {
 			reg = <0>;
