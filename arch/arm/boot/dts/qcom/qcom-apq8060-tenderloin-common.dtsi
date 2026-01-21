@@ -2567,6 +2567,11 @@
 	};
 };
 
+/* Enable legacy AFE protocol for MSM8660/APQ8060 LPASS firmware */
+&q6afe {
+	qcom,legacy-afe-protocol;
+};
+
 &q6afedai {
 	dai@16 {
 		reg = <PRIMARY_MI2S_RX>;
