@@ -603,6 +603,7 @@
 					q6asm: service@7 {
 						compatible = "qcom,q6asm";
 						reg = <APR_SVC_ASM>;
+						qcom,legacy-asm-protocol;
 
 						q6asmdai: dais {
 							compatible = "qcom,q6asm-dais";
