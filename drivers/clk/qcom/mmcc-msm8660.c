@@ -1769,6 +1769,7 @@ static struct clk_branch vpe_axi_clk = {
 		.hw.init = &(struct clk_init_data){
 			.name = "vpe_axi_clk",
 			.ops = &clk_branch_ops,
+			.flags = CLK_IS_CRITICAL,
 		},
 	},
 };
@@ -1860,6 +1861,7 @@ static struct clk_branch dsi_s_ahb_clk = {
 		.hw.init = &(struct clk_init_data){
 			.name = "dsi_s_ahb_clk",
 			.ops = &clk_branch_ops,
+			.flags = CLK_IS_CRITICAL,
 		},
 	},
 };
@@ -1977,6 +1979,7 @@ static struct clk_branch mmss_imem_ahb_clk = {
 		.hw.init = &(struct clk_init_data){
 			.name = "mmss_imem_ahb_clk",
 			.ops = &clk_branch_ops,
+			.flags = CLK_IS_CRITICAL,
 		},
 	},
 };
