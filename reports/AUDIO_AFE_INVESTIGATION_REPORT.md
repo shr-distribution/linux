@@ -8,7 +8,50 @@
 
 Audio playback on the HP TouchPad with mainline Linux 6.18 fails due to the Q6 LPASS DSP not responding to AFE (Audio Front End) commands. Despite implementing legacy AFE protocol support matching the webOS kernel, the DSP times out (-110 ETIMEDOUT) on all AFE commands.
 
-Root cause analysis reveals that while the Q6 DSP boots and runs (remoteproc state = "running"), it **never initializes its SMD channels**, causing all APR (Audio Packet Router) communication to fail.
+Root cause analysis reveals that while the Q6 DSP boots and runs (remoteproc state = "running"), it **never acknowledges SMD channel opens**, causing all APR (Audio Packet Router) communication to fail.
+
+## Update: SMSM Investigation (2026-01-21)
+
+### Finding: SMSM State Timing Issue
+
+The SMSM (Shared Memory State Machine) driver sets the `SMSM_RUN` flag at **probe time (~8s)**, but Q6 boots much later (~23s). When SMSM sets the state, Q6's subscription mask is 0 (Q6 not running), so no IPC interrupt is sent.
+
+**Timeline:**
+- **8.6s**: SMSM probe sets state 0x129 (INIT|SMDINIT|RPCINIT|RUN)
+- **8.6s**: All host subscriptions are 0, no kicks sent
+- **22.6s**: Q6 boot starts
+- **23.5s**: Q6 starts running, populates SMEM channel table
+- **23.7s**: SMSM kick sent (after we added the fix)
+- **24.0s**: SMD channel created for 'apr_audio_svc'
+- **27.0s**: SMD channel still shows remote_state=0 after 3s
+
+### Implemented Fix: Post-Boot SMSM Kick
+
+Added code to kick SMSM hosts after Q6 boots:
+
+1. **smsm.c**: Added `qcom_smsm_kick_hosts()` function that kicks all hosts regardless of subscription
+2. **qcom_common.c**: Call `qcom_smsm_kick_hosts()` in `smd_subdev_start()` after SMD edge registers
+
+**Log showing kick:**
+```
+[23.762289] SMSM: kicking all hosts after remoteproc boot
+[23.762303] SMSM: kick host 1 (offset=0x8 bit=5)
+[23.762318] SMSM: kick host 2 (offset=0x8 bit=8)
+```
+
+### Result: Still Failing
+
+Despite the SMSM kick after Q6 boots, the Q6 firmware still doesn't acknowledge SMD channel opens. The remote_state remains at 0.
+
+**Possible reasons:**
+1. Q6 SMD code might not be interrupt-driven for SMSM
+2. Q6 might check SMSM state only at boot time (before our kick)
+3. Q6 might require additional handshake not present in mainline
+4. The IPC interrupt might not be reaching Q6's SMD handler
+
+### Key Observation
+
+The SMEM channel table IS populated by Q6, confirming Q6 is running. The channels include 'apr_audio_svc' at cid=13. This means Q6's boot sequence is working, but its SMD channel handling isn't responding to opens from APPS.
 
 ## Hardware Overview
 
