@@ -395,46 +395,321 @@ The Q6 firmware appears to be **waiting for something** before initializing its 
 - `arch/arm/mach-msm/peripheral-reset.c` - PIL Q6 boot sequence
 - `arch/arm/mach-msm/include/mach/qdsp6v2/apr_audio.h` - Command definitions
 
+## Update: Legacy ASM/ADM Protocol Implementation (2026-01-21) - MAJOR PROGRESS
+
+### Summary
+
+Implemented full legacy ASM (Audio Stream Manager) and ADM (Audio Device Manager) protocol support for MSM8660/APQ8060. **Audio data now flows successfully through the entire pipeline to the codec**, but no audible output due to FLL clock not locking.
+
+### Legacy Protocol Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| AFE (q6afe.c) | ✅ Working | Already implemented |
+| ASM open_write | ✅ Working | Opcode 0x10BCA |
+| ASM media format | ✅ Working | Opcode 0x10BDC, legacy struct |
+| ASM RUN | ✅ Working | Opcode 0x10BD2, swapped timestamp fields |
+| ASM write | ✅ Working | Opcode 0x10BD9, 32-bit phys addresses |
+| ASM write_done | ✅ Working | Event 0x10BDF callback |
+| ASM memory map | ⚠️ Bypassed | Not needed for legacy write |
+| ADM COPP open | ✅ Working | Opcode 0x10304 |
+| ADM COPP close | ✅ Working | Opcode 0x10305 |
+| ADM matrix map | ✅ Working | Opcode 0x10301 |
+
+### Audio Data Path - WORKING
+
+Full 176KB notification.wav plays successfully:
+```
+$ ./tinyplay notification.wav -p 16384 -n 8
+playing 'notification.wav': 2 ch, 44100 hz, 16-bit signed PCM
+Played 176400 bytes. Remains 0 bytes.
+```
+
+dmesg shows complete command flow:
+```
+Legacy ASM open_write: session=1 stream_id=1 format=0x10be5
+  hdr: src_port=0x101 dest_port=0x101 token=0x1 opcode=0x10bca
+Legacy ADM COPP open: port=4096 path=1 topology=0x10312 rate=48000
+Legacy PCM format: ch=2 bps=16 rate=44100
+Legacy RUN: session=1 flags=0x0
+Legacy write: phys=0x50b00000 len=65536 buf=0
+Legacy write done: token=0x0
+```
+
+### Critical Bug Fixes Applied
+
+1. **APR Header dest_port**: webOS uses `((session << 8) | 0x01)` for BOTH src_port AND dest_port (not just session for dest_port)
+
+2. **POPP Topology**: Changed from 0x0 to 0x10be4 (DEFAULT_POPP_TOPOLOGY)
+
+3. **Buffer Size**: Default tinyplay buffers (~8KB) cause timeout; use `-p 16384 -n 8` (128KB) for full playback
+
+### Speaker Routing Discovery - CRITICAL
+
+**The device tree audio-routing was WRONG.** Per webOS board-tenderloin.c:
+> "Line outputs are not actually connected on the board."
+
+TouchPad speakers are connected to:
+- **SPKOUT pins** (SPKOUTLP, SPKOUTLN, SPKOUTRP, SPKOUTRN)
+- Via external amplifier controlled by **WM8958 GPIO1**
+
+NOT to LINEOUT pins as originally configured.
+
+**Device Tree Fix:**
+```dts
+audio-routing =
+    "Speaker", "SPKOUTLP",
+    "Speaker", "SPKOUTLN",
+    "Speaker", "SPKOUTRP",
+    "Speaker", "SPKOUTRN",
+    ...
+
+/* Enable amplifier via GPIO1 */
+wlf,gpio-cfg = <
+    0x0041  /* GPIO1: output high to enable amp */
+    ...
+>;
+```
+
+### Remaining Issue: FLL Clock Not Locking
+
+**Symptom:** No audible audio output despite successful data playback
+
+**Root Cause:** WM8994 FLL (Frequency Locked Loop) times out:
+```
+wm8994-codec wm8994-codec: Timed out waiting for FLL lock
+```
+
+Without FLL lock, the codec DAC won't output audio.
+
+**Attempted Solutions:**
+1. Internal oscillator (`WM8994_FLL_SRC_INTERNAL`) - times out
+2. BCLK source in prepare callback - causes hw_params failure (BCLK not available during setup)
+
+**webOS Approach:**
+- Initially clocks from MCLK1
+- Switches to FLL with BCLK source once audio starts playing
+- Uses `WM8994_FLL_SRC_BCLK` with `bclk_rate = rate * 32`
+
+**Needed:** Find a way to either:
+- Make internal oscillator FLL lock work
+- Configure FLL from BCLK after AFE starts but before playback
+- Provide external MCLK to the codec
+
+---
+
+## Update: Audio Playback Test Results (2026-01-21)
+
+### Test Setup
+
+Successfully deployed tinyalsa tools to the device:
+- `/tmp/tinymixer` - Mixer control utility (cross-compiled for ARM)
+- `/tmp/tinyplay` - Audio playback utility
+- `/tmp/notification.wav` - Test audio file (16-bit stereo 44100Hz)
+
+The WM8958 codec is detected with 1294 mixer controls accessible via tinymixer.
+
+### Issue 1: WM8994 FLL Clock Lock Timeout
+
+**Problem:** The WM8994 codec's FLL (Frequency Locked Loop) times out when trying to lock.
+
+**Initial Attempt - BCLK Source:**
+```c
+ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1,
+                          WM8994_FLL_SRC_BCLK,
+                          bclk, rate * 256);
+```
+
+**Result:** FLL timeout because BCLK isn't available during `hw_params` - the AFE port hasn't started yet (that happens in `prepare`).
+
+**Second Attempt - Internal Oscillator:**
+```c
+ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1,
+                          WM8994_FLL_SRC_INTERNAL,
+                          12000000, rate * 256);
+```
+
+**Result:** Still times out. The WM8994 driver waits for FLL lock completion via IRQ even with internal oscillator mode.
+
+**Kernel log:**
+```
+wm8994-codec wm8994-codec: Timed out waiting for FLL lock
+```
+
+**Root Cause Analysis:**
+- The codec driver's `fll_locked_irq` is true (IRQ was registered successfully)
+- The driver waits 10ms for FLL lock completion interrupt
+- Even with internal oscillator (WM8994_FLL_SRC_INTERNAL), the IRQ doesn't fire within timeout
+- The FLL timeout is currently just a warning - playback continues to fail for other reasons
+
+### Issue 2: Q6 ASM Memory Mapping Failure (Critical)
+
+**Problem:** The Q6 ASM (Audio Stream Manager) returns error when trying to map audio buffers.
+
+**Kernel log:**
+```
+qcom-q6asm aprsvc:service:4:7: DSP returned error[8]
+q6asm-dai ...: Memory_map_regions failed
+q6asm-dai ...: Audio Start: Buffer Allocation failed rc = -22
+```
+
+**Error Analysis:**
+- Error 8 = `ADSP_EHANDLE` (Invalid handle)
+- The DSP doesn't recognize the memory map session/handle
+- This indicates the ASM session wasn't properly established
+
+**Root Cause:**
+The q6asm.c driver uses modern ASM command IDs:
+- `ASM_STREAM_CMD_OPEN_WRITE_V3` = 0x00010DB3
+- `ASM_CMD_SHARED_MEM_MAP_REGIONS` = 0x00010D92
+
+The MSM8660/APQ8060 LPASS firmware likely uses different (legacy) command IDs, similar to how the AFE needed legacy protocol support.
+
+**Comparison with AFE:**
+| Component | Mainline Support | MSM8660 Support |
+|-----------|------------------|-----------------|
+| q6afe.c | ✅ Legacy protocol added | ✅ Working |
+| q6asm.c | ❌ No legacy support | ❌ ADSP_EHANDLE |
+
+### Issue 3: Mixer Routing Configuration
+
+For reference, the mixer path configuration attempted:
+```sh
+/tmp/tinymixer set "PRI_MI2S_RX Audio Mixer MultiMedia1" 1  # Route PCM to MI2S
+/tmp/tinymixer set "DAC1L Mixer AIF1.1 Switch" 1            # AIF1 to DAC1L
+/tmp/tinymixer set "DAC1R Mixer AIF1.1 Switch" 1            # AIF1 to DAC1R
+/tmp/tinymixer set "DAC1 Switch" 1 1                         # Enable DAC1
+/tmp/tinymixer set "Left Output Mixer DAC Switch" 1          # DAC to output
+/tmp/tinymixer set "Right Output Mixer DAC Switch" 1         # DAC to output
+/tmp/tinymixer set "SPKL DAC1 Switch" 1                      # DAC to speaker L
+/tmp/tinymixer set "SPKR DAC1 Switch" 1                      # DAC to speaker R
+```
+
+These controls were accepted but playback still failed due to ASM issues.
+
+### Summary of Audio Playback Blockers
+
+| Layer | Status | Issue |
+|-------|--------|-------|
+| Sound card registration | ✅ Working | - |
+| Mixer controls | ✅ Working | 1294 controls accessible |
+| PCM device | ✅ Working | pcmC0D0p available |
+| AFE port config | ✅ Working | Legacy protocol implemented |
+| ASM session | ❌ Failing | ADSP_EHANDLE (needs legacy support) |
+| FLL clock | ⚠️ Warning | Times out but not blocking |
+
+### Required Work: Legacy ASM Protocol Implementation
+
+Analysis of webOS kernel (`arch/arm/mach-msm/qdsp6v2/q6asm.c`) reveals the legacy ASM command IDs and packet formats needed.
+
+#### Command ID Comparison
+
+| Function | Mainline (Modern) | webOS (Legacy) |
+|----------|-------------------|----------------|
+| Open Write | `ASM_STREAM_CMD_OPEN_WRITE_V3` (0x00010DB3) | `ASM_STREAM_CMD_OPEN_WRITE` (0x00010BCA) |
+| Open Read | `ASM_STREAM_CMD_OPEN_READ_V3` (0x00010DB4) | `ASM_STREAM_CMD_OPEN_READ` (0x00010BCB) |
+| Memory Map | `ASM_CMD_SHARED_MEM_MAP_REGIONS` (0x00010D92) | `ASM_SESSION_CMD_MEMORY_MAP_REGIONS` (0x00010C45) |
+| Memory Unmap | `ASM_CMD_SHARED_MEM_UNMAP_REGIONS` (0x00010D94) | `ASM_SESSION_CMD_MEMORY_UNMAP_REGIONS` (0x00010C46) |
+| Run | `ASM_SESSION_CMD_RUN_V2` (0x00010DAA) | `ASM_SESSION_CMD_RUN` (0x00010BD2) |
+| Pause | `ASM_SESSION_CMD_PAUSE` (0x00010BD3) | `ASM_SESSION_CMD_PAUSE` (0x00010BD3) - **same!** |
+| Data Write | `ASM_DATA_CMD_WRITE_V2` (0x00010DAB) | `ASM_DATA_CMD_WRITE` (0x00010BD9) |
+| Data Read | `ASM_DATA_CMD_READ_V2` (0x00010DAC) | `ASM_DATA_CMD_READ` (0x00010BDA) |
+
+#### Legacy Packet Structures (from webOS apr_audio.h)
+
+**Open Write (Legacy):**
+```c
+struct asm_stream_cmd_open_write {
+    struct apr_hdr hdr;
+    u32            uMode;         /* STREAM_PRIORITY_* */
+    u16            sink_endpoint; /* ASM_END_POINT_DEVICE_MATRIX */
+    u16            stream_handle; /* 0 */
+    u32            post_proc_top; /* DEFAULT_POPP_TOPOLOGY */
+    u32            format;        /* LINEAR_PCM = 0x00010BE5 */
+} __packed;
+```
+
+**Memory Map Regions (Legacy):**
+```c
+struct asm_stream_cmd_memory_map_regions {
+    struct apr_hdr hdr;
+    u16            mempool_id;    /* 0 = EBI */
+    u16            nregions;      /* number of regions */
+} __packed;
+
+struct asm_memory_map_regions {
+    u32            phys;          /* 32-bit physical address */
+    u32            buf_size;
+} __packed;
+```
+
+**Key Differences:**
+1. Modern commands use 64-bit addresses (lsw/msw), legacy uses 32-bit
+2. Modern memory map uses `mem_pool_id`, `property_flag`; legacy uses just `mempool_id`
+3. Modern open_write has `bits_per_sample`, legacy has `uMode` for priority
+4. Format IDs: Modern uses `ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2` (0x00010DA5), legacy uses `LINEAR_PCM` (0x00010BE5)
+
+#### Implementation Plan
+
+1. **Add to q6asm.c:**
+   - Add `bool use_legacy_commands` field to `struct q6asm`
+   - Add legacy command ID definitions
+   - Add legacy packet structures
+   - Create `q6asm_open_write_legacy()` function
+   - Create `q6asm_memory_map_regions_legacy()` function
+   - Modify `q6asm_open_write()` to call legacy variant when flag set
+   - Modify `__q6asm_memory_map_regions()` to call legacy variant when flag set
+
+2. **Add DT property:**
+   - Add `qcom,legacy-asm-protocol` property check in probe (same pattern as q6afe.c)
+
+3. **Update Device Tree:**
+   - Add `qcom,legacy-asm-protocol;` to `aprsvc:service:4:7` node
+
+---
+
 ## Next Steps
 
-### Immediate Investigation
+### Immediate Priority: Fix FLL Clock Issue
 
-1. **Q6 Interrupt Handler Configuration**
-   - Q6 populates SMEM but never sends interrupts back
-   - GIC 121 (GIC_SPI 89) shows 0 interrupts from Q6
-   - Need to understand how Q6's interrupt to APPS is configured
-   - May need initialization of Q6's GIC or interrupt controller
+The audio data path is complete - all that remains is getting the codec to output audio.
 
-2. **DAL Channel Investigation**
-   - webOS opens DAL_AQ_AUD (cid=7) and DAL_AQ_VID (cid=6) before apr_audio_svc
-   - These channels have flags=0x1 (not packet mode) and are skipped by mainline
-   - May be required to "prime" Q6 before APR works
-   - Need to investigate if opening these channels triggers Q6 initialization
+1. **Investigate FLL Lock Failure**
+   - Internal oscillator mode should work but IRQ never fires
+   - May need to disable FLL lock wait or increase timeout
+   - Check if WM8958 variant has different behavior
 
-3. **SMSM State Machine Handshake**
-   - webOS smsm_irq_handler() responds to Q6 state changes
-   - When Q6 sets SMSM_INIT, APPS responds with SMSM_INIT | SMSM_SMDINIT
-   - This triggers do_smd_probe() to discover channels
-   - Mainline may be missing this bidirectional handshake
+2. **Try MCLK Source**
+   - webOS initially uses MCLK1 before switching to FLL
+   - Need to determine if MCLK is available on APQ8060
+   - May need to configure clock from MMCC or PMIC
 
-4. **Q6 SMD Module Load Timing**
-   - In webOS, SMD channels go 0→1→2 quickly after Q6 boots
-   - Mainline channels stay at remote_state=0 indefinitely
-   - Q6's SMD module may not be fully initialized when we try to open
+3. **BCLK Timing**
+   - webOS configures FLL from BCLK during playback
+   - Need proper ASoC callback ordering to configure after AFE starts
 
-### Alternative Approaches
+### Completed Work
 
-1. **Port webOS SMD State Machine**
-   - Implement SMSM state response logic from webOS smsm_irq_handler()
-   - May require responding to Q6's SMSM state with APPS state update
+1. **Legacy ASM Protocol** - DONE
+   - All commands working (open_write, media_format, run, write)
+   - Memory map bypassed (legacy write uses physical addresses directly)
+   - Write done event callback implemented
 
-2. **DAL Channel Support**
-   - Add support for stream (non-packet) SMD channels
-   - Open DAL_AQ_AUD before attempting APR communication
+2. **Legacy ADM Protocol** - DONE
+   - COPP open/close working
+   - Matrix routing working
 
-3. **Q6 Firmware Analysis**
-   - Examine firmware for interrupt configuration
-   - Check if firmware expects specific SMEM initialization
+3. **Speaker Routing** - DONE
+   - Fixed device tree to use SPKOUT instead of LINEOUT
+   - Enabled GPIO1 for external amplifier
+
+### Audio Test Script
+
+Created `scripts/test-audio.sh` for automated testing:
+- Transfers firmware and tools to device
+- Configures all mixer controls for SPKOUT path
+- Tests playback with notification.wav and phone.wav
+- Uses large buffers to avoid ALSA timeout
 
 ## Appendix A: Key Register Addresses
 

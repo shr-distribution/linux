@@ -26,6 +26,12 @@
 #define ADM_CMD_DEVICE_CLOSE_V5		0x00010327
 #define ADM_CMD_MATRIX_MAP_ROUTINGS_V5	0x00010325
 
+/* Legacy ADM commands for MSM8660/APQ8060 */
+#define ADM_CMD_COPP_OPEN_LEGACY	0x00010304
+#define ADM_CMDRSP_COPP_OPEN_LEGACY	0x0001030A
+#define ADM_CMD_COPP_CLOSE_LEGACY	0x00010305
+#define ADM_CMD_MATRIX_MAP_ROUTINGS_LEGACY 0x00010301
+
 #define TIMEOUT_MS 1000
 #define RESET_COPP_ID 99
 #define INVALID_COPP_ID 0xFF
@@ -63,6 +69,7 @@ struct q6adm {
 	struct aprv2_ibasic_rsp_result_t result;
 	struct mutex lock;
 	wait_queue_head_t matrix_map_wait;
+	bool use_legacy_commands;
 };
 
 struct q6adm_cmd_device_open_v5 {
@@ -75,6 +82,18 @@ struct q6adm_cmd_device_open_v5 {
 	u16 bit_width;
 	u32 sample_rate;
 	u8 dev_channel_mapping[8];
+} __packed;
+
+/* Legacy ADM COPP open for MSM8660/APQ8060 */
+struct q6adm_cmd_copp_open_legacy {
+	u16 flags;
+	u16 mode;          /* 1-RX, 2-Live TX, 3-Non Live TX */
+	u16 endpoint_id1;
+	u16 endpoint_id2;
+	u32 topology_id;
+	u16 channel_config;
+	u16 reserved;
+	u32 rate;
 } __packed;
 
 struct q6adm_cmd_matrix_map_routings_v5 {
@@ -155,6 +174,8 @@ static int q6adm_callback(struct apr_device *adev, struct apr_resp_pkt *data)
 		switch (result->opcode) {
 		case ADM_CMD_DEVICE_OPEN_V5:
 		case ADM_CMD_DEVICE_CLOSE_V5:
+		case ADM_CMD_COPP_OPEN_LEGACY:
+		case ADM_CMD_COPP_CLOSE_LEGACY:
 			copp = q6adm_find_copp(adm, port_idx, copp_idx);
 			if (!copp)
 				return 0;
@@ -164,6 +185,7 @@ static int q6adm_callback(struct apr_device *adev, struct apr_resp_pkt *data)
 			kref_put(&copp->refcount, q6adm_free_copp);
 			break;
 		case ADM_CMD_MATRIX_MAP_ROUTINGS_V5:
+		case ADM_CMD_MATRIX_MAP_ROUTINGS_LEGACY:
 			adm->result = *result;
 			wake_up(&adm->matrix_map_wait);
 			break;
@@ -175,7 +197,9 @@ static int q6adm_callback(struct apr_device *adev, struct apr_resp_pkt *data)
 		}
 		return 0;
 	}
-	case ADM_CMDRSP_DEVICE_OPEN_V5: {
+	case ADM_CMDRSP_DEVICE_OPEN_V5:
+	case ADM_CMDRSP_COPP_OPEN_LEGACY: {
+		/* Legacy response has same structure: status, copp_id, reserved */
 		struct adm_cmd_rsp_device_open_v5 {
 			u32 status;
 			u16 copp_id;
@@ -288,7 +312,11 @@ static int q6adm_device_close(struct q6adm *adm, struct q6copp *copp,
 	close.hdr.src_port = port_id;
 	close.hdr.dest_port = copp->id;
 	close.hdr.token = port_id << 16 | copp_idx;
-	close.hdr.opcode = ADM_CMD_DEVICE_CLOSE_V5;
+
+	if (adm->use_legacy_commands)
+		close.hdr.opcode = ADM_CMD_COPP_CLOSE_LEGACY;
+	else
+		close.hdr.opcode = ADM_CMD_DEVICE_CLOSE_V5;
 
 	return q6adm_apr_send_copp_pkt(adm, copp, &close, 0);
 }
@@ -364,6 +392,52 @@ err:
 	return ret;
 }
 
+/* Legacy COPP open for MSM8660/APQ8060 */
+static int q6adm_copp_open_legacy(struct q6adm *adm, struct q6copp *copp,
+				  int port_id, int path, int topology,
+				  int channel_mode, int rate)
+{
+	struct q6adm_cmd_copp_open_legacy *open;
+	int afe_port = q6afe_get_port_id(port_id);
+	struct apr_pkt *pkt;
+	void *p;
+	int ret, pkt_size;
+
+	pkt_size = APR_HDR_SIZE + sizeof(*open);
+	p = kzalloc(pkt_size, GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	pkt = p;
+	open = p + APR_HDR_SIZE;
+	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					   APR_HDR_LEN(APR_HDR_SIZE),
+					   APR_PKT_VER);
+	pkt->hdr.pkt_size = pkt_size;
+	pkt->hdr.src_port = afe_port;
+	pkt->hdr.dest_port = afe_port;
+	pkt->hdr.token = port_id << 16 | copp->copp_idx;
+	pkt->hdr.opcode = ADM_CMD_COPP_OPEN_LEGACY;
+
+	open->flags = 0;
+	open->mode = path;
+	open->endpoint_id1 = afe_port & 0x00FF;
+	open->endpoint_id2 = 0xFFFF;
+	open->topology_id = topology;
+	open->channel_config = channel_mode & 0x00FF;
+	open->reserved = 0;
+	open->rate = rate;
+
+	dev_info(adm->dev, "Legacy ADM COPP open: port=%d path=%d topology=0x%x rate=%d\n",
+		 afe_port, path, topology, rate);
+
+	ret = q6adm_apr_send_copp_pkt(adm, copp, pkt,
+				      ADM_CMDRSP_COPP_OPEN_LEGACY);
+
+	kfree(pkt);
+	return ret;
+}
+
 /**
  * q6adm_open() - open adm and grab a free copp
  *
@@ -419,8 +493,12 @@ struct q6copp *q6adm_open(struct device *dev, int port_id, int path, int rate,
 	copp->bit_width = bit_width;
 	copp->app_type = app_type;
 
-	ret = q6adm_device_open(adm, copp, port_id, path, topology,
-				channel_mode, bit_width, rate);
+	if (adm->use_legacy_commands)
+		ret = q6adm_copp_open_legacy(adm, copp, port_id, path,
+					     topology, channel_mode, rate);
+	else
+		ret = q6adm_device_open(adm, copp, port_id, path, topology,
+					channel_mode, bit_width, rate);
 	if (ret < 0) {
 		kref_put(&copp->refcount, q6adm_free_copp);
 		return ERR_PTR(ret);
@@ -486,7 +564,10 @@ int q6adm_matrix_map(struct device *dev, int path,
 					   APR_PKT_VER);
 	pkt->hdr.pkt_size = pkt_size;
 	pkt->hdr.token = 0;
-	pkt->hdr.opcode = ADM_CMD_MATRIX_MAP_ROUTINGS_V5;
+	if (adm->use_legacy_commands)
+		pkt->hdr.opcode = ADM_CMD_MATRIX_MAP_ROUTINGS_LEGACY;
+	else
+		pkt->hdr.opcode = ADM_CMD_MATRIX_MAP_ROUTINGS_V5;
 	route->num_sessions = 1;
 
 	switch (path) {
@@ -600,6 +681,12 @@ static int q6adm_probe(struct apr_device *adev)
 
 	INIT_LIST_HEAD(&adm->copps_list);
 	spin_lock_init(&adm->copps_list_lock);
+
+	/* Check for legacy ADM protocol (MSM8660/APQ8060) */
+	adm->use_legacy_commands = of_property_read_bool(dev->of_node,
+						"qcom,legacy-adm-protocol");
+	if (adm->use_legacy_commands)
+		dev_info(dev, "Using legacy ADM protocol for MSM8660/APQ8060\n");
 
 	return devm_of_platform_populate(dev);
 }

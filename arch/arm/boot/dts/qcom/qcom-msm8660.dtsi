@@ -616,6 +616,7 @@
 					q6adm: service@8 {
 						compatible = "qcom,q6adm";
 						reg = <APR_SVC_ADM>;
+						qcom,legacy-adm-protocol;
 
 						q6routing: routing {
 							compatible = "qcom,q6adm-routing";

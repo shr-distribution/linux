@@ -1,0 +1,380 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * HP TouchPad - Topaz 3G variant
+ *
+ * Codename: TENDERLOIN_3G
+ * Hardware: Qualcomm MSM8660 with MDM6600 3G modem
+ *
+ * The 3G variant has significant GPIO differences from WiFi-only Topaz.
+ * All GPIOs have been verified against production hardware (topaz-3G-pvt).
+ *
+ * Key differences from Topaz WiFi:
+ * ==================================
+ *
+ * WiFi:
+ *   - HOST_WAKE_WL: GPIO 80 (was 137)
+ *   - WLAN_RST_N: GPIO 28 (was 135)
+ *   - WL_HOST_WAKE: GPIO 93 (same)
+ *
+ * Bluetooth:
+ *   - BT_RST_N: GPIO 122 (was 138)
+ *   - BT_POWER: GPIO 110 (was 130)
+ *   - BT_WAKE: GPIO 131 (same)
+ *   - BT_HOST_WAKE: GPIO 50 (was 129)
+ *
+ * Touchscreen:
+ *   - IRQ: GPIO 45 (was 123)
+ *   - RESET: GPIO 70 (same)
+ *
+ * Sensors:
+ *   - Gyro INT: GPIO 75 (was 125)
+ *   - Accel: Present (GPIO 124, same as WiFi)
+ *   - Compass: Present (same as WiFi)
+ *
+ * LEDs:
+ *   - LM8502 INT: GPIO 77 (was 128)
+ *   - LM8502 EN: GPIO 121 (same)
+ *
+ * Charger:
+ *   - DC_OK: GPIO 86 (was 140)
+ *   - USB_CHG_MODE: GPIO 134 (was 133)
+ *
+ * A6 Battery (DVT hardware):
+ *   - A6_0 IRQ: GPIO 37 (was 156)
+ *   - A6_0 TCK: GPIO 156 (was 157)
+ *   - A6_0 TDIO: GPIO 170 (was 158)
+ *   - A6_1 IRQ: GPIO 94 (was 132)
+ *   - A6_1 WAKEUP: GPIO 78 (was 141)
+ *
+ * 3G Modem (NEW - not in WiFi variant):
+ *   - MDM6600 modem with ISP1763 USB host controller
+ *   - 3G_WAKE_N: GPIO 38
+ *   - 3G_UIM_CD_N: GPIO 61 (SIM card detect)
+ *   - 3G_3V3_EN: GPIO 106 (DVT) or GPIO 82 (EVT)
+ *   - 3G_DISABLE_N: GPIO 171
+ *   - ISP1763 INT: GPIO 172
+ *   - ISP1763 RST: GPIO 152
+ *   - ISP1763 DACK: GPIO 169
+ *   - ISP1763 DREQ: GPIO 29
+ *
+ * HDMI: NOT AVAILABLE on 3G variant
+ *   - GPIO 169/171/172 used by ISP1763/modem, conflicts with HDMI DDC/CEC/HPD
+ */
+
+/dts-v1/;
+
+#include "qcom-apq8060-tenderloin-common.dtsi"
+
+/ {
+	model = "HP TouchPad (Topaz 3G)";
+	compatible = "hp,topaz-3g", "qcom,msm8660";
+};
+
+/* 3G-specific GPIO overrides */
+
+/* Override WiFi reset GPIO for 3G model - TEMPORARILY DISABLE WiFi */
+&sdcc4 {
+	status = "disabled";  /* DEBUG: disable WiFi SDIO for boot testing */
+};
+
+&ath6kl_pwrseq {
+	/* WLAN_RST_N_3G = GPIO 28 (instead of 135 on WiFi model) */
+	reset-gpios = <&tlmm 28 GPIO_ACTIVE_LOW>;
+};
+
+&tlmm {
+	/* Override WiFi pinctrl for 3G model */
+	wlan_gpios: wlan-state {
+		host-wake-pins {
+			pins = "gpio93";  /* WL_HOST_WAKE - same for both */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		device-wake-pins {
+			pins = "gpio80";  /* HOST_WAKE_WL_3G instead of 137 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-high;
+		};
+	};
+
+	/* Override Bluetooth pinctrl for 3G model */
+	bt_pin: bt-state {
+		hostwake-pins {
+			pins = "gpio50";  /* BT_HOST_WAKE_3G instead of 129 */
+			function = "gpio";
+		};
+
+		devwake-pins {
+			pins = "gpio131";  /* BT_WAKE - same for both */
+			function = "gpio";
+		};
+	};
+
+	/*
+	 * Override touchscreen pinctrl for 3G model (GPIO 45 vs 123)
+	 * NOTE: This is actually a wake/control pin, not IRQ - should be output
+	 */
+	touch_pins: touch-pins-state {
+		wake-pins {
+			pins = "gpio45";  /* GPIO_CTP_WAKE_3G instead of 123 */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;  /* Wake pin should be output-high */
+		};
+	};
+
+	/*
+	 * Override A6 battery controller pinctrl for 3G model
+	 * SBW (Spy-Bi-Wire) programming GPIOs differ on 3G variant
+	 */
+	a6_0_default: a6-0-default-state {
+		sbw-pins {
+			pins = "gpio156", "gpio170";  /* TCK, TDIO - 3G uses different GPIOs */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		wakeup-pins {
+			pins = "gpio155";  /* WAKEUP - same as WiFi */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		irq-pins {
+			pins = "gpio37";  /* IRQ - same as WiFi DVT */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	a6_1_default: a6-1-default-state {
+		sbw-pins {
+			pins = "gpio115", "gpio116";  /* TCK, TDIO - same as WiFi */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		wakeup-pins {
+			pins = "gpio78";  /* WAKEUP - 3G uses different GPIO */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		irq-pins {
+			pins = "gpio94";  /* IRQ - same as WiFi DVT */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/* Override sensor pinctrl for 3G model */
+	mpu3050_gpios: mpu-state {
+		irq-pins {
+			pins = "gpio75";  /* GYRO_INT_3G instead of 125 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/* Override LED controller pinctrl for 3G model */
+	lm8502_pins: lm8502-state {
+		enable-pins {
+			pins = "gpio121";  /* Enable - same */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		irq-pins {
+			pins = "gpio77";  /* LM8502_INT_3G instead of 128 */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/* Override charger pinctrl for 3G model */
+	charger_gpios: max8903b-state {
+		in-pins {
+			pins = "gpio35", "gpio36", "gpio86";  /* DC_OK_3G */
+			function = "gpio";
+			drive-strength = <2>;
+			input-enable;
+			bias-pull-up;
+		};
+		out-pins {
+			/* gpio134 = USB_CHG_MODE_3G */
+			pins = "gpio30", "gpio33", "gpio34", "gpio41", "gpio42", "gpio134";
+			function = "gpio";
+			drive-strength = <2>;
+		};
+		/* Safe initial state, charging disabled */
+		dcm-pins {
+			pins = "gpio42";
+			function = "gpio";
+			output-high;
+		};
+		/* 500 mA USB charging. Not controlled by driver. */
+		iusb-pins {
+			pins = "gpio134";  /* USB_CHG_MODE_3G instead of 133 */
+			function = "gpio";
+			output-high;
+		};
+		usus-pins {
+			pins = "gpio33";
+			function = "gpio";
+			output-low;
+		};
+		cen-pins {
+			pins = "gpio41";
+			function = "gpio";
+			output-low;
+		};
+		/*
+		 * Limit DC charging current to 750 mA, the
+		 * minimum value. Appears to control a
+		 * multiplexed set of resistors connected to
+		 * the IDC pin. This functionality is not
+		 * supported by the MAX8903 driver.
+		 */
+		d-iset-pins {
+			pins = "gpio34", "gpio30";
+			function = "gpio";
+			output-low;
+		};
+	};
+
+	/*
+	 * Override camera pinctrl for 3G - GPIO 106 is used for 3G_3V3_EN
+	 * Remove camera reset pin from this group since it conflicts with modem
+	 */
+	camera_pins: camera-state {
+		pwdn-pins {
+			pins = "gpio107";  /* WEBCAM_PWDN only */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		mclk-pins {
+			pins = "gpio32";   /* CAMIF_MCLK */
+			function = "cam_mclk";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		/* No reset-pins - GPIO 106 used for 3G modem power */
+	};
+};
+
+/* Override Bluetooth GPIOs for 3G model - TEMPORARILY DISABLED */
+&gsbi6_serial {
+	bluetooth {
+		status = "disabled";  /* DEBUG: disable for boot testing */
+		reset-gpios = <&tlmm 122 GPIO_ACTIVE_HIGH>;	/* BT_RST_N */
+		host-wakeup-gpios = <&tlmm 50 GPIO_ACTIVE_HIGH>;	/* BT_HOST_WAKE */
+		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>;	/* BT_WAKE */
+		shutdown-gpios = <&tlmm 110 GPIO_ACTIVE_HIGH>;	/* BT_POWER */
+	};
+};
+
+/* Override touchscreen wake GPIO for 3G model */
+&touchscreen {
+	status = "disabled";  /* TEMPORARILY DISABLED for boot debugging */
+	wake-gpios = <&tlmm 45 GPIO_ACTIVE_HIGH>;  /* GPIO_CTP_WAKE_3G instead of 123 */
+};
+
+/* Override sensor GPIOs for 3G model - TEMPORARILY DISABLED */
+&mpu3050 {
+	status = "disabled";  /* DEBUG: disable for boot testing */
+	interrupts-extended = <&tlmm 75 IRQ_TYPE_EDGE_FALLING>;  /* GYRO_INT_3G instead of 125 */
+};
+
+/*
+ * Accelerometer (LSM303DLH) is present on 3G variant at I2C address 0x18.
+ * Interrupt on GPIO 124 - keeping default from common DTS.
+ * Note: Legacy kernel does not define interrupt for 3G variant, but hardware
+ * may support it. Device works in polling mode if interrupt fails.
+ */
+
+/* Override LED controller GPIO for 3G model - TEMPORARILY DISABLED */
+&lm8502 {
+	status = "disabled";  /* DEBUG: disable for boot testing */
+	interrupts = <77 IRQ_TYPE_EDGE_FALLING>;  /* LM8502_INT_3G instead of 128 */
+};
+
+/* Override charger GPIOs for 3G model - TEMPORARILY DISABLED */
+&charger {
+	status = "disabled";  /* DEBUG: disable for boot testing */
+	dok-gpios = <&tlmm 86 GPIO_ACTIVE_LOW>;  /* DC_OK_3G instead of 140 */
+};
+
+/*
+ * Override A6 battery controller GPIOs for 3G model (DVT hardware)
+ * TEMPORARILY DISABLED to diagnose boot hang
+ */
+&a6_0 {
+	status = "disabled";
+	/*
+	interrupt-parent = <&tlmm>;
+	interrupts = <37 IRQ_TYPE_EDGE_FALLING>;
+	tck-gpios = <&tlmm 156 GPIO_ACTIVE_HIGH>;
+	tdio-gpios = <&tlmm 170 GPIO_ACTIVE_HIGH>;
+	*/
+};
+
+&a6_1 {
+	status = "disabled";
+	/*
+	interrupt-parent = <&tlmm>;
+	interrupts = <94 IRQ_TYPE_EDGE_FALLING>;
+	wakeup-gpios = <&tlmm 78 GPIO_ACTIVE_HIGH>;
+	*/
+};
+
+/*
+ * Disable HDMI on 3G variant - GPIO 172 (HDMI HPD) is used for ISP1763 INT
+ * 3G variant does not have HDMI output capability
+ */
+&hdmi {
+	status = "disabled";
+};
+
+/*
+ * EBI2/ISP1763 USB host for 3G modem - DISABLED
+ * TODO: Enable when ISP1763 driver is configured
+ */
+&ebi2 {
+	status = "disabled";
+};
+
+/*
+ * ISP1763 pinctrl - DISABLED until driver is configured
+ * &tlmm {
+ *	isp1763_pins: isp1763-state { ... };
+ * };
+ */
+
+/*
+ * MDM6600 3G Modem - DISABLED until ISP1763 driver is configured
+ * The modem appears as a USB device downstream of the ISP1763 hub.
+ */
+
+/*
+ * Disable camera on 3G variant - GPIO 106 is used for 3G_3V3_EN (modem power)
+ * instead of WEBCAM_RST. The camera cannot function on the 3G variant.
+ */
+&camss {
+	status = "disabled";
+};
+
+&gsbi4_i2c {
+	camera@3c {
+		status = "disabled";
+	};
+};
