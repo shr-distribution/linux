@@ -200,6 +200,37 @@ static const struct qcom_smem_state_ops smsm_state_ops = {
 	.update_bits = smsm_update_bits,
 };
 
+/* Global pointer to SMSM instance for kick function */
+static struct qcom_smsm *global_smsm;
+
+/**
+ * qcom_smsm_kick_hosts() - Force IPC kick to all remote processors
+ *
+ * This can be called after a remote processor boots to notify it that
+ * the APPS processor SMSM state is ready. At probe time, remote processors
+ * may not have set their subscription masks, so we need to kick them
+ * unconditionally when they boot.
+ */
+void qcom_smsm_kick_hosts(void)
+{
+	struct qcom_smsm *smsm = global_smsm;
+	int id;
+
+	if (!smsm)
+		return;
+
+	for (id = 0; id < smsm->num_hosts; id++) {
+		struct smsm_host *hostp = &smsm->hosts[id];
+
+		if (hostp->ipc_regmap) {
+			regmap_write(hostp->ipc_regmap,
+				     hostp->ipc_offset,
+				     BIT(hostp->ipc_bit));
+		}
+	}
+}
+EXPORT_SYMBOL_GPL(qcom_smsm_kick_hosts);
+
 /**
  * smsm_intr() - cascading IRQ handler for SMSM
  * @irq:	unused
@@ -519,6 +550,8 @@ static int qcom_smsm_probe(struct platform_device *pdev)
 	u32 id;
 	int ret;
 
+	dev_dbg(&pdev->dev, "SMSM probe started\n");
+
 	smsm = devm_kzalloc(&pdev->dev, sizeof(*smsm), GFP_KERNEL);
 	if (!smsm)
 		return -ENOMEM;
@@ -642,6 +675,9 @@ static int qcom_smsm_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, smsm);
 	of_node_put(local_node);
 
+	/* Store global pointer for kick function */
+	global_smsm = smsm;
+
 	/*
 	 * Set legacy SMSM flags for MSM8660/APQ8060 compatibility.
 	 * Legacy Q6 firmware (e.g., HP TouchPad LPASS) expects these flags
@@ -657,8 +693,21 @@ static int qcom_smsm_probe(struct platform_device *pdev)
 #define SMSM_RPCINIT	0x00000020
 #define SMSM_RUN	0x00000100
 	smsm_update_bits(smsm, 0xffffffff, SMSM_INIT | SMSM_SMDINIT | SMSM_RPCINIT | SMSM_RUN);
-	dev_info(&pdev->dev, "set legacy SMSM state: 0x%x\n",
-		 SMSM_INIT | SMSM_SMDINIT | SMSM_RPCINIT | SMSM_RUN);
+
+	/*
+	 * Force kick all remote processors regardless of subscription.
+	 * At probe time, Q6/modem may not have set their subscriptions yet.
+	 * We need them to know we're ready when they boot.
+	 */
+	for (id = 0; id < smsm->num_hosts; id++) {
+		struct smsm_host *hostp = &smsm->hosts[id];
+
+		if (hostp->ipc_regmap) {
+			regmap_write(hostp->ipc_regmap,
+				     hostp->ipc_offset,
+				     BIT(hostp->ipc_bit));
+		}
+	}
 
 	return 0;
 
