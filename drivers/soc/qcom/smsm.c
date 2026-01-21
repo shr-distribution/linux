@@ -222,11 +222,10 @@ void qcom_smsm_kick_hosts(void)
 	for (id = 0; id < smsm->num_hosts; id++) {
 		struct smsm_host *hostp = &smsm->hosts[id];
 
-		if (hostp->ipc_regmap) {
+		if (hostp->ipc_regmap)
 			regmap_write(hostp->ipc_regmap,
 				     hostp->ipc_offset,
 				     BIT(hostp->ipc_bit));
-		}
 	}
 }
 EXPORT_SYMBOL_GPL(qcom_smsm_kick_hosts);
