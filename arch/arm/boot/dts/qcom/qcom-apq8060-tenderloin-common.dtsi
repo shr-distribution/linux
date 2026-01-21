@@ -2621,7 +2621,7 @@
 				sound-dai = <&q6afedai PRIMARY_MI2S_RX>;
 			};
 			platform {
-				sound-dai = <&q6asmdai>;
+				sound-dai = <&q6routing>;
 			};
 			codec {
 				sound-dai = <&wm8958>;
@@ -2634,7 +2634,7 @@
 				sound-dai = <&q6afedai PRIMARY_MI2S_TX>;
 			};
 			platform {
-				sound-dai = <&q6asmdai>;
+				sound-dai = <&q6routing>;
 			};
 			codec {
 				sound-dai = <&wm8958>;

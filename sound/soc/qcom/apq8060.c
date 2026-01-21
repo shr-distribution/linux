@@ -21,6 +21,7 @@
 #include <dt-bindings/sound/qcom,q6afe.h>
 
 #include "common.h"
+#include "../codecs/wm8994.h"
 
 #define DRIVER_NAME "apq8060"
 
@@ -64,6 +65,8 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	unsigned int rate = params_rate(params);
+	unsigned int bclk;
 	int ret;
 
 	/* Set codec DAI format - I2S, codec is bit/frame clock consumer */
@@ -73,6 +76,29 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 				  SND_SOC_DAIFMT_CBC_CFC);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set codec DAI format: %d\n", ret);
+		return ret;
+	}
+
+	/* Calculate BCLK: sample_rate * channels * bits_per_sample */
+	bclk = rate * 2 * 16;
+
+	/*
+	 * Configure WM8994 FLL1 to derive sysclk from BCLK.
+	 * Use 12.288MHz sysclk for 48kHz family (48000 * 256).
+	 */
+	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1,
+				  WM8994_FLL_SRC_BCLK,
+				  bclk, rate * 256);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(rtd->dev, "Failed to set FLL1: %d\n", ret);
+		return ret;
+	}
+
+	/* Set AIF1CLK to use FLL1 */
+	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_FLL1,
+				     rate * 256, SND_SOC_CLOCK_IN);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(rtd->dev, "Failed to set sysclk: %d\n", ret);
 		return ret;
 	}
 
