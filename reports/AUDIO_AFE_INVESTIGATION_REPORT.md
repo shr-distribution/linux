@@ -10,6 +10,85 @@ Audio playback on the HP TouchPad with mainline Linux 6.18 fails due to the Q6 L
 
 Root cause analysis reveals that while the Q6 DSP boots and runs (remoteproc state = "running"), it **never acknowledges SMD channel opens**, causing all APR (Audio Packet Router) communication to fail.
 
+## Update: IPC Bit Fix (2026-01-21) - CRITICAL BREAKTHROUGH
+
+### Root Cause: Wrong IPC Register and Bits
+
+The device tree was using **incorrect IPC configuration** for LPASS:
+
+**Before (Wrong):**
+```dts
+gcc_lpass: gcc@c0182000 {  /* MSM7x30 address, NOT MSM8660! */
+    compatible = "syscon";
+    reg = <0xc0182000 0x1000>;
+};
+
+smd-edge {
+    qcom,ipc = <&gcc_lpass 0x8 8>;  /* Wrong register, wrong bit */
+};
+
+smsm {
+    qcom,ipc-1 = <&l2cc 0x8 5>;     /* Wrong bit for modem */
+    qcom,ipc-2 = <&gcc_lpass 0x8 8>; /* Wrong everything for LPASS */
+};
+```
+
+**After (Correct - from webOS kernel):**
+```dts
+/* All IPC uses KPSS GCC at 0x02082000 (l2cc node) */
+smd-edge {
+    qcom,ipc = <&l2cc 0x8 15>;  /* MSM_TRIG_A2Q6_SMD_INT = bit 15 */
+};
+
+smsm {
+    qcom,ipc-1 = <&l2cc 0x8 4>;   /* MSM_TRIG_A2M_SMSM_INT = bit 4 */
+    qcom,ipc-2 = <&l2cc 0x8 14>;  /* MSM_TRIG_A2Q6_SMSM_INT = bit 14 */
+};
+```
+
+### IPC Bit Mapping for MSM8660/APQ8060
+
+All IPC uses register at 0x02082008 (l2cc + 0x8):
+
+| Target | SMD bit | SMSM bit | webOS Macro |
+|--------|---------|----------|-------------|
+| RPM    | -       | 2        | MSM_TRIG_A2LPASS_INT |
+| Modem  | 3       | 4        | MSM_TRIG_A2M_SMD/SMSM_INT |
+| LPASS  | 15      | 14       | MSM_TRIG_A2Q6_SMD/SMSM_INT |
+
+### Result: Sound Card Now Registers!
+
+With the IPC fix, SMD channels are discovered and the sound card registers:
+
+```
+/dev/snd/controlC0
+/dev/snd/pcmC0D0p
+/dev/snd/pcmC0D0c
+/dev/snd/pcmC0D1p
+/dev/snd/pcmC0D1c
+/dev/snd/timer
+```
+
+Mixer controls are accessible via tinymix.
+
+### Remaining Issue: Q6 Still Doesn't Respond
+
+Despite correct IPC, Q6 still doesn't acknowledge SMD channel opens:
+
+```
+/proc/interrupts:
+ 42:          0          0 GIC-0 121 Edge      smsm, smd-edge
+```
+
+**Critical observation:** Interrupt count is 0 - Q6 never sends interrupts back to APPS!
+
+- Q6 populates SMEM channel table (channels discovered)
+- Q6 never responds to channel opens (remote_state=0)
+- Q6 never sends interrupts back (GIC 121 count = 0)
+- AFE commands timeout (-110)
+
+---
+
 ## Update: SMSM Investigation (2026-01-21)
 
 ### Finding: SMSM State Timing Issue
@@ -32,22 +111,21 @@ Added code to kick SMSM hosts after Q6 boots:
 1. **smsm.c**: Added `qcom_smsm_kick_hosts()` function that kicks all hosts regardless of subscription
 2. **qcom_common.c**: Call `qcom_smsm_kick_hosts()` in `smd_subdev_start()` after SMD edge registers
 
-**Log showing kick:**
+**Verified correct bits after IPC fix:**
 ```
-[23.762289] SMSM: kicking all hosts after remoteproc boot
-[23.762303] SMSM: kick host 1 (offset=0x8 bit=5)
-[23.762318] SMSM: kick host 2 (offset=0x8 bit=8)
+SMSM_KICK: host 1 offset=0x8 bit=4 val=0x10   (modem - correct)
+SMSM_KICK: host 2 offset=0x8 bit=14 val=0x4000 (LPASS - correct)
 ```
 
-### Result: Still Failing
+### Result: Kick Works But Q6 Still Unresponsive
 
-Despite the SMSM kick after Q6 boots, the Q6 firmware still doesn't acknowledge SMD channel opens. The remote_state remains at 0.
+Despite the correct SMSM kick after Q6 boots, the Q6 firmware still doesn't acknowledge SMD channel opens. The remote_state remains at 0.
 
 **Possible reasons:**
 1. Q6 SMD code might not be interrupt-driven for SMSM
 2. Q6 might check SMSM state only at boot time (before our kick)
 3. Q6 might require additional handshake not present in mainline
-4. The IPC interrupt might not be reaching Q6's SMD handler
+4. Q6's interrupt handler for APPS IPC might not be configured
 
 ### Key Observation
 
@@ -321,33 +399,42 @@ The Q6 firmware appears to be **waiting for something** before initializing its 
 
 ### Immediate Investigation
 
-1. **SMEM Region Analysis**
-   - Compare SMEM region definitions between webOS and mainline DT
-   - Check if specific SMEM items need pre-initialization
-   - Examine `ID_CH_ALLOC_TBL` (channel allocation table) setup
+1. **Q6 Interrupt Handler Configuration**
+   - Q6 populates SMEM but never sends interrupts back
+   - GIC 121 (GIC_SPI 89) shows 0 interrupts from Q6
+   - Need to understand how Q6's interrupt to APPS is configured
+   - May need initialization of Q6's GIC or interrupt controller
 
-2. **SMD Initialization Sequence**
-   - Investigate what triggers Q6 to populate channel table
-   - Check for missing SMSM (Shared Memory State Machine) setup
-   - Look for boot handshake signals
+2. **DAL Channel Investigation**
+   - webOS opens DAL_AQ_AUD (cid=7) and DAL_AQ_VID (cid=6) before apr_audio_svc
+   - These channels have flags=0x1 (not packet mode) and are skipped by mainline
+   - May be required to "prime" Q6 before APR works
+   - Need to investigate if opening these channels triggers Q6 initialization
 
-3. **Interrupt Configuration**
-   - Verify SMD interrupt routing (APPS ↔ LPASS)
-   - Check if Q6 firmware receives/sends expected interrupts
+3. **SMSM State Machine Handshake**
+   - webOS smsm_irq_handler() responds to Q6 state changes
+   - When Q6 sets SMSM_INIT, APPS responds with SMSM_INIT | SMSM_SMDINIT
+   - This triggers do_smd_probe() to discover channels
+   - Mainline may be missing this bidirectional handshake
+
+4. **Q6 SMD Module Load Timing**
+   - In webOS, SMD channels go 0→1→2 quickly after Q6 boots
+   - Mainline channels stay at remote_state=0 indefinitely
+   - Q6's SMD module may not be fully initialized when we try to open
 
 ### Alternative Approaches
 
-1. **Port webOS SMD Driver**
-   - Use webOS smd.c as reference for channel initialization
-   - May require significant kernel changes
+1. **Port webOS SMD State Machine**
+   - Implement SMSM state response logic from webOS smsm_irq_handler()
+   - May require responding to Q6's SMSM state with APPS state update
 
-2. **Q6 Firmware Analysis**
-   - Examine firmware entry point and initialization
-   - Check if firmware expects specific memory/register state
+2. **DAL Channel Support**
+   - Add support for stream (non-packet) SMD channels
+   - Open DAL_AQ_AUD before attempting APR communication
 
-3. **Hybrid Approach**
-   - Keep mainline ALSA/ASoC stack
-   - Port minimal SMD initialization from webOS
+3. **Q6 Firmware Analysis**
+   - Examine firmware for interrupt configuration
+   - Check if firmware expects specific SMEM initialization
 
 ## Appendix A: Key Register Addresses
 
