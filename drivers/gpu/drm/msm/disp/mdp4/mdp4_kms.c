@@ -641,14 +641,13 @@ static int mdp4_setup_interconnect(struct platform_device *pdev)
 	 * For 1024x768@60Hz with two layers:
 	 *   ab (average) = 377487360 (~360 MBps)
 	 *   ib (peak)    = 471859200 (~450 MBps)
-	 * Using 4x values to prevent underrun artifacts at bottom of screen
-	 * and blue flickering during USB activity (bandwidth contention).
+	 * Using webOS values with ~50% headroom for safety margin.
 	 * TODO: Calculate dynamically based on display mode.
 	 */
-	icc_set_bw(path0, MBps_to_icc(2000), MBps_to_icc(2500));
+	icc_set_bw(path0, MBps_to_icc(500), MBps_to_icc(700));
 
 	if (!IS_ERR_OR_NULL(path1))
-		icc_set_bw(path1, MBps_to_icc(2000), MBps_to_icc(2500));
+		icc_set_bw(path1, MBps_to_icc(500), MBps_to_icc(700));
 
 	return 0;
 }
