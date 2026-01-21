@@ -553,7 +553,19 @@
 			status = "disabled";
 
 			smd-edge {
-				interrupts = <GIC_SPI 89 IRQ_TYPE_EDGE_RISING>;
+				/*
+				 * MSM8660/APQ8060 has two LPASS interrupts:
+				 * - GIC_SPI 89: LPASS_SCSS_GP_MEDIUM_IRQ (INT_ADSP_A11_SMSM)
+				 *               Used for SMSM state machine notifications
+				 * - GIC_SPI 90: LPASS_SCSS_GP_HIGH_IRQ (INT_ADSP_A11)
+				 *               Used for SMD channel data (smd_dsp_irq_handler)
+				 *
+				 * For SMD channel communication (apr_audio_svc), we need
+				 * the data interrupt on GIC_SPI 90, not the SMSM interrupt.
+				 * Reference: webOS kernel arch/arm/mach-msm/smd.c and
+				 * arch/arm/mach-msm/include/mach/irqs-8x60.h
+				 */
+				interrupts = <GIC_SPI 90 IRQ_TYPE_EDGE_RISING>;
 
 				/*
 				 * IPC to LPASS uses GCC register at 0x02082008, bit 15.
