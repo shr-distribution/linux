@@ -148,7 +148,9 @@ echo "Created: $BUILD_OUTPUT/moboot.next"
 
 # Archive the build for historical record
 # Store archives OUTSIDE build-output to prevent accidental deletion
-ARCHIVE_DIR="$PARENT_DIR/kernel-archives"
+# Archives are organized by variant: kernel-archives/topaz/, kernel-archives/topaz-3g/, etc.
+ARCHIVE_BASE="$PARENT_DIR/kernel-archives"
+ARCHIVE_DIR="$ARCHIVE_BASE/$VARIANT"
 mkdir -p "$ARCHIVE_DIR"
 
 # Get commit info
