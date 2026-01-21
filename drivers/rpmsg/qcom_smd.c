@@ -370,7 +370,6 @@ struct qcom_smd_alloc_entry {
 static void qcom_smd_signal_channel(struct qcom_smd_channel *channel)
 {
 	struct qcom_smd_edge *edge = channel->edge;
-	int ret;
 
 	if (edge->mbox_chan) {
 		/*
@@ -831,19 +830,41 @@ static int qcom_smd_channel_open(struct qcom_smd_channel *channel,
 	qcom_smd_channel_set_callback(channel, cb);
 
 	/*
-	 * For LPASS channels on MSM8660/APQ8060, the Q6 firmware expects
-	 * APPS to set state directly to OPENED, like webOS kernel does.
-	 * Don't wait for remote to transition first.
+	 * For LPASS channels on MSM8660/APQ8060, follow webOS state sequence:
+	 * 1. APPS sets state to OPENING
+	 * 2. Q6 sees OPENING, sets its state to OPENING
+	 * 3. APPS sees Q6 OPENING, sets state to OPENED
+	 * 4. Q6 sees OPENED, sets its state to OPENED
+	 *
+	 * Note: Q6 may not respond to state changes via SMD. In webOS the
+	 * handshake works via SMSM/SMD irq handler. We set OPENED regardless
+	 * to allow data transfer - Q6 appears to accept data even without
+	 * proper state handshake.
 	 */
 	if (edge->name && !strcmp(edge->name, "lpass")) {
-		qcom_smd_channel_set_state(channel, SMD_CHANNEL_OPENED);
+		/*
+		 * LPASS on MSM8660/APQ8060: Follow webOS state sequence.
+		 * Set OPENING first, wait briefly, then set OPENED regardless
+		 * of Q6 response. The Q6 firmware may not respond to state
+		 * changes, but accepts data in OPENED state.
+		 */
+		qcom_smd_channel_set_state(channel, SMD_CHANNEL_OPENING);
 
-		/* Give Q6 time to respond */
-		ret = wait_event_interruptible_timeout(channel->state_change_event,
+		/* Wait briefly for Q6 to respond - may not happen */
+		wait_event_interruptible_timeout(channel->state_change_event,
 				channel->remote_state == SMD_CHANNEL_OPENING ||
 				channel->remote_state == SMD_CHANNEL_OPENED,
-				3 * HZ);
-		/* Don't fail - webOS doesn't wait, just returns success */
+				HZ);
+
+		/* Set OPENED regardless of Q6 response */
+		qcom_smd_channel_set_state(channel, SMD_CHANNEL_OPENED);
+
+		/* Brief wait for Q6 to enter OPENED */
+		wait_event_interruptible_timeout(channel->state_change_event,
+				channel->remote_state == SMD_CHANNEL_OPENED,
+				HZ / 2);
+
+		/* Return success regardless - let APR handle failures */
 		return 0;
 	}
 
