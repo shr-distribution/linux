@@ -1023,8 +1023,10 @@
 	backlight: backlight {
 		compatible = "pwm-backlight";
 		pwms = <&pm8058_pwm 0 100000>;
+		/* Exponential curve for perceived brightness, interpolated for smooth control */
 		brightness-levels = <0 4 8 16 32 64 128 255>;
-		default-brightness-level = <6>;
+		num-interpolated-steps = <16>;
+		default-brightness-level = <96>;  /* ~6/7 of the way up the curve */
 		pinctrl-names = "default";
 		pinctrl-0 = <&backlight_pwm_gpios &backlight_enable_gpios>;
 		power-supply = <&pm8058_l10>;
