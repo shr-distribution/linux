@@ -2543,6 +2543,8 @@
 
 &lpass {
 	status = "okay";
+	/* Don't auto-boot; userspace will start after firmware is available */
+	qcom,no-auto-boot;
 };
 
 &apr {

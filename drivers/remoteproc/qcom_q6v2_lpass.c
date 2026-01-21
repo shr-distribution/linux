@@ -429,7 +429,8 @@ static int q6v2_lpass_probe(struct platform_device *pdev)
 	if (!rproc)
 		return -ENOMEM;
 
-	rproc->auto_boot = true;
+	rproc->auto_boot = !of_property_read_bool(dev->of_node,
+						    "qcom,no-auto-boot");
 
 	q6v2 = rproc->priv;
 	q6v2->dev = dev;
