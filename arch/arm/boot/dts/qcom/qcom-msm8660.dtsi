@@ -154,6 +154,41 @@
 		};
 	};
 
+	/*
+	 * Z180 2D GPU OPP table
+	 * Frequencies from mmcc-msm8660.c clk_tbl_gfx2d
+	 * Peak bandwidth (2096 MB/s) from webOS devices-msm8x60.c
+	 * Bandwidth scales proportionally with frequency.
+	 */
+	z180_opp_table: opp-table-z180 {
+		compatible = "operating-points-v2";
+
+		opp-27000000 {
+			opp-hz = /bits/ 64 <27000000>;
+			opp-peak-kBps = <248000>;
+		};
+
+		opp-96000000 {
+			opp-hz = /bits/ 64 <96000000>;
+			opp-peak-kBps = <881000>;
+		};
+
+		opp-160000000 {
+			opp-hz = /bits/ 64 <160000000>;
+			opp-peak-kBps = <1468000>;
+		};
+
+		opp-200000000 {
+			opp-hz = /bits/ 64 <200000000>;
+			opp-peak-kBps = <1834000>;
+		};
+
+		opp-228571000 {
+			opp-hz = /bits/ 64 <228571000>;
+			opp-peak-kBps = <2096000>;
+		};
+	};
+
 	memory {
 		device_type = "memory";
 		reg = <0x0 0x0>;
@@ -1128,6 +1163,7 @@
 			clocks = <&mmcc GFX2D0_CLK>,
 				 <&mmcc GFX2D0_AHB_CLK>;
 			clock-names = "core", "iface";
+			operating-points-v2 = <&z180_opp_table>;
 			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_2D_CORE0
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "gfx-mem";
@@ -1145,6 +1181,7 @@
 			clocks = <&mmcc GFX2D1_CLK>,
 				 <&mmcc GFX2D1_AHB_CLK>;
 			clock-names = "core", "iface";
+			operating-points-v2 = <&z180_opp_table>;
 			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_2D_CORE1
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "gfx-mem";
