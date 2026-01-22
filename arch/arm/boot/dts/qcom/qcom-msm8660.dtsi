@@ -948,6 +948,9 @@
 				non-removable;
 				cap-sd-highspeed;
 				cap-mmc-highspeed;
+				interconnects = <&daytona_fabric DFAB_MAS_SDC1
+						&apps_fabric AFAB_SLV_EBI_CH0>;
+				interconnect-names = "sdc";
 			};
 
 			sdcc2: mmc@12140000 {
