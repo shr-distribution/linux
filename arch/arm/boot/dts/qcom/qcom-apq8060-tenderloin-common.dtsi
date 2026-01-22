@@ -2705,6 +2705,18 @@
 			ecc-size = <0>;               /* No ECC for speed */
 			no-map;
 		};
+
+		/*
+		 * CMA region for DRM framebuffer.
+		 * Place at start of RAM bank 2.
+		 * 16MB is enough for triple-buffered 1024x768@32bpp (~9MB).
+		 */
+		linux,cma {
+			compatible = "shared-dma-pool";
+			reg = <0x48000000 0x1000000>; /* 16MB at 0x48000000 */
+			reusable;
+			linux,cma-default;
+		};
 	};
 };
 
