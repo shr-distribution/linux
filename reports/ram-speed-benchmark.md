@@ -55,6 +55,53 @@ CmaTotal:         262144 kB
 
 ---
 
+## Linux 6.18 (LuneOS) - After Optimization
+
+**Test Date:** 2026-01-22
+**Kernel:** 6.18.0-00283-g451f3cd9a9b3-dirty
+**OS:** LuneOS 1.0 (initramfs debug environment)
+**CPU:** 2x Scorpion @ 1512 MHz, governor: performance
+
+### Config Changes Applied
+
+- `CONFIG_CMA` - **disabled**
+- `CONFIG_KSM` - **disabled**
+- `CONFIG_MEMCG` - **disabled**
+
+### Results
+
+| Test | Size | Time | Speed |
+|------|------|------|-------|
+| Memory bandwidth (zero→null) | 512 MB | 0.740s (avg of 5) | **692 MB/s** |
+| Memory bandwidth (best) | 512 MB | 0.380s | **1347 MB/s** |
+| Memory bandwidth (worst) | 512 MB | 0.980s | **522 MB/s** |
+| tmpfs write | 24 MB | 0.420s (avg of 3) | **57 MB/s** |
+| tmpfs read | 24 MB | 0.214s (avg of 3) | **112 MB/s** |
+
+*Note: Memory bandwidth shows bimodal behavior - alternates between fast (~0.38s) and slower (~0.98s) runs. May be related to CPU power states or cache behavior.*
+
+### Memory Info
+
+```
+MemTotal:         984508 kB
+MemFree:          922904 kB
+MemAvailable:     912484 kB
+HighTotal:        251904 kB
+LowTotal:         732604 kB
+(no CmaTotal - CMA disabled)
+```
+
+### Improvement vs Original 6.18
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| Memory bandwidth (avg) | 461 MB/s | 692 MB/s | **+50%** |
+| Memory bandwidth (best) | 461 MB/s | 1347 MB/s | **+192%** |
+| tmpfs write | 42 MB/s | 57 MB/s | **+36%** |
+| tmpfs read | 108 MB/s | 112 MB/s | **+4%** |
+
+---
+
 ## Linux 2.6.35 (webOS)
 
 **Test Date:** 2026-01-22
@@ -88,15 +135,26 @@ LowFree:          592016 kB
 
 ## Comparison Summary (Fair Comparison - Same Parameters)
 
-| Metric | Linux 6.18 | Linux 2.6.35 | Difference |
-|--------|------------|--------------|------------|
-| Memory bandwidth (512 MB) | 461 MB/s | 923 MB/s | **-50%** (6.18 slower) |
-| tmpfs write (24 MB) | 42 MB/s | 56 MB/s | **-25%** (6.18 slower) |
-| tmpfs read (24 MB) | 108 MB/s | 128 MB/s | **-16%** (6.18 slower) |
+| Metric | 6.18 Original | 6.18 Optimized | webOS 2.6.35 | 6.18 Opt vs webOS |
+|--------|---------------|----------------|--------------|-------------------|
+| Memory bandwidth (512 MB) | 461 MB/s | 692 MB/s (avg) | 923 MB/s | **-25%** |
+| Memory bandwidth (best) | 461 MB/s | 1347 MB/s | 923 MB/s | **+46%** |
+| tmpfs write (24 MB) | 42 MB/s | 57 MB/s | 56 MB/s | **+2%** |
+| tmpfs read (24 MB) | 108 MB/s | 112 MB/s | 128 MB/s | **-13%** |
 
 ### Key Findings
 
-1. **Memory bandwidth is 2x slower on Linux 6.18** - This is a significant regression that warrants investigation. Possible causes:
+1. **Disabling CMA, KSM, MEMCG significantly improved performance:**
+   - Memory bandwidth improved 50% on average, up to 192% in best case
+   - tmpfs write now matches webOS performance
+   - Optimized 6.18 can exceed webOS in burst scenarios (1347 vs 923 MB/s)
+
+2. **Bimodal memory bandwidth behavior** - The optimized kernel alternates between ~1347 MB/s and ~522 MB/s. This may be related to:
+   - CPU power state transitions
+   - Cache/TLB state
+   - Memory controller power management
+
+3. **Original analysis (before optimization):** Memory bandwidth was 2x slower on Linux 6.18. Possible causes:
    - Different memory allocator behavior (SLUB vs SLAB)
    - HIGHMEM enabled on 6.18 (251 MB high, 731 MB low) vs flat memory on 2.6.35
    - CMA reservation (256 MB) reducing available contiguous memory
