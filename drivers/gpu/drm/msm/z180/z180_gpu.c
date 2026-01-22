@@ -17,6 +17,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/interconnect.h>
 #include <linux/interrupt.h>
+#include <linux/pm_opp.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/miscdevice.h>
@@ -56,7 +57,8 @@ struct z180_device {
 	void __iomem *mmio;
 	struct clk *core_clk;
 	struct clk *iface_clk;
-	struct icc_path *icc_path;
+	int opp_token;			/* OPP config token (manages ICC paths) */
+	unsigned long max_freq;		/* Maximum core clock frequency */
 	int irq;
 	int id;				/* Device ID (0 or 1) */
 
@@ -560,8 +562,8 @@ static int z180_runtime_suspend(struct device *dev)
 	clk_disable_unprepare(z180->core_clk);
 	clk_disable_unprepare(z180->iface_clk);
 
-	/* Release interconnect bandwidth */
-	icc_set_bw(z180->icc_path, 0, 0);
+	/* Release interconnect bandwidth by setting rate to 0 */
+	dev_pm_opp_set_rate(dev, 0);
 
 	return 0;
 }
@@ -571,17 +573,21 @@ static int z180_runtime_resume(struct device *dev)
 	struct z180_device *z180 = dev_get_drvdata(dev);
 	int ret;
 
-	/* Request interconnect bandwidth (128 MB/s average, 256 MB/s peak) */
-	ret = icc_set_bw(z180->icc_path, 128000, 256000);
-	if (ret) {
-		dev_err(dev, "Failed to set interconnect bandwidth: %d\n", ret);
+	/*
+	 * Set frequency via OPP framework - this also configures
+	 * interconnect bandwidth from opp-peak-kBps in device tree.
+	 * We use max frequency for best 2D graphics performance.
+	 */
+	ret = dev_pm_opp_set_rate(dev, z180->max_freq);
+	if (ret && ret != -ENODEV) {
+		dev_err(dev, "Failed to set OPP rate: %d\n", ret);
 		return ret;
 	}
 
 	ret = clk_prepare_enable(z180->iface_clk);
 	if (ret) {
 		dev_err(dev, "Failed to enable iface clock: %d\n", ret);
-		icc_set_bw(z180->icc_path, 0, 0);
+		dev_pm_opp_set_rate(dev, 0);
 		return ret;
 	}
 
@@ -589,7 +595,7 @@ static int z180_runtime_resume(struct device *dev)
 	if (ret) {
 		dev_err(dev, "Failed to enable core clock: %d\n", ret);
 		clk_disable_unprepare(z180->iface_clk);
-		icc_set_bw(z180->icc_path, 0, 0);
+		dev_pm_opp_set_rate(dev, 0);
 		return ret;
 	}
 
@@ -597,7 +603,7 @@ static int z180_runtime_resume(struct device *dev)
 	if (ret) {
 		clk_disable_unprepare(z180->core_clk);
 		clk_disable_unprepare(z180->iface_clk);
-		icc_set_bw(z180->icc_path, 0, 0);
+		dev_pm_opp_set_rate(dev, 0);
 		return ret;
 	}
 
@@ -659,16 +665,37 @@ static int z180_probe(struct platform_device *pdev)
 		goto err_dev;
 	}
 
-	/* Get interconnect path (optional) */
-	z180->icc_path = devm_of_icc_get(dev, "gfx-mem");
-	if (IS_ERR(z180->icc_path)) {
-		ret = PTR_ERR(z180->icc_path);
-		if (ret != -ENODATA) {
-			dev_err(dev, "Failed to get interconnect path: %d\n", ret);
+	/*
+	 * Set up OPP table and interconnect paths.
+	 * The OPP framework manages interconnect bandwidth via opp-peak-kBps
+	 * values in the device tree OPP table.
+	 */
+	z180->opp_token = dev_pm_opp_set_clkname(dev, "core");
+	if (z180->opp_token < 0) {
+		ret = z180->opp_token;
+		if (ret != -ENODEV) {
+			dev_err(dev, "Failed to set OPP clkname: %d\n", ret);
 			goto err_dev;
 		}
-		/* No interconnect specified, continue without it */
-		z180->icc_path = NULL;
+		z180->opp_token = 0;
+	}
+
+	ret = devm_pm_opp_of_add_table(dev);
+	if (ret && ret != -ENODEV && ret != -ENOENT) {
+		dev_err(dev, "Failed to add OPP table: %d\n", ret);
+		goto err_opp;
+	}
+
+	/* Find max frequency for use in runtime_resume */
+	z180->max_freq = clk_round_rate(z180->core_clk, ULONG_MAX);
+	if (!z180->max_freq)
+		z180->max_freq = 228571000;  /* Fallback: max from clk_tbl_gfx2d */
+
+	/* Set up interconnect paths from OPP table (optional) */
+	ret = dev_pm_opp_of_find_icc_paths(dev, NULL);
+	if (ret && ret != -ENODEV && ret != -ENOENT) {
+		dev_err(dev, "Failed to find ICC paths: %d\n", ret);
+		goto err_opp;
 	}
 
 	/* Get IRQ */
@@ -730,6 +757,9 @@ static int z180_probe(struct platform_device *pdev)
 err_cmdstream:
 	pm_runtime_disable(dev);
 	z180_cmdstream_close(z180);
+err_opp:
+	if (z180->opp_token)
+		dev_pm_opp_put_clkname(z180->opp_token);
 err_dev:
 	mutex_lock(&z180_dev_lock);
 	z180_devices[z180->id] = NULL;
@@ -745,6 +775,9 @@ static void z180_remove(struct platform_device *pdev)
 	misc_deregister(&z180->miscdev);
 	pm_runtime_disable(&pdev->dev);
 	z180_cmdstream_close(z180);
+
+	if (z180->opp_token)
+		dev_pm_opp_put_clkname(z180->opp_token);
 
 	mutex_lock(&z180_dev_lock);
 	z180_devices[z180->id] = NULL;
