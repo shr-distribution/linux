@@ -101,6 +101,19 @@ enum {
 #define to_msm8660_icc_provider(_provider) \
 	container_of(_provider, struct msm8660_icc_provider, provider)
 
+/*
+ * Minimum fabric clock rate to prevent bus starvation.
+ *
+ * When no consumers request bandwidth, the rate calculation yields 0,
+ * causing fabric clocks to drop to minimum. This creates bimodal
+ * performance: fast when other subsystems (like display) happen to
+ * request bandwidth, slow otherwise.
+ *
+ * 200 MHz is conservative - fast enough for reasonable peripheral
+ * performance but below the ~300 MHz typical active rate.
+ */
+#define MSM8660_FABRIC_MIN_RATE		200000000UL	/* 200 MHz */
+
 static const struct clk_bulk_data msm8660_afab_clocks[] = {
 	{ .id = "bus" },
 	{ .id = "bus_a" },
@@ -340,6 +353,8 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 
 	rate = max(sum_bw, max_peak_bw);
 	do_div(rate, src_qn->buswidth);
+	/* Apply minimum floor to prevent bus starvation */
+	rate = max_t(u64, rate, MSM8660_FABRIC_MIN_RATE);
 	rate = min_t(u32, rate, INT_MAX);
 
 	if (src_qn->rate == rate)
