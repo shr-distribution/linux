@@ -245,10 +245,54 @@ The 200 MHz floor provides:
 ### Remaining Work
 
 - [x] ~~Test DFAB (Daytona Fabric) implementation for SDCC/eMMC performance~~ DFAB probing works!
-- [ ] Add SDCC interconnect paths to enable eMMC bandwidth requests
-- [ ] Test eMMC performance with interconnect support
+- [x] ~~Add SDCC interconnect paths to enable eMMC bandwidth requests~~ Done
+- [x] ~~Test eMMC performance with interconnect support~~ ~51 MB/s achieved
 - [ ] Consider making the floor value configurable via module parameter
 - [ ] Upstream the fix with documentation
+
+## eMMC Performance Investigation
+
+### Benchmark Results (20 iterations, 100 MB per run, cache dropped)
+
+| Test | webOS (2.6.35) | LuneOS (6.18) | Improvement |
+|------|---------------|---------------|-------------|
+| bs=1M (median) | 27.8 MB/s | **31.4 MB/s** | +13% |
+| bs=64K (median) | 27.7 MB/s | 27.7 MB/s | ~0% |
+| bs=4M (median) | 27.8 MB/s | **28.6 MB/s** | +3% |
+| Varied offset | 24.9 MB/s | ~28 MB/s | +12% |
+
+**Test conditions:**
+- CPU governor: performance (webOS: 1188 MHz, LuneOS: 1512 MHz)
+- Cache dropped between each run (`echo 3 > /proc/sys/vm/drop_caches`)
+- Benchmark script: `scripts/benchmark-emmc.sh`
+
+### Current Configuration
+- **eMMC Chip**: SanDisk SEM32G (32 GB)
+- **Mode**: High Speed SDR (Single Data Rate)
+- **Clock**: 48 MHz
+- **Bus Width**: 8-bit
+- **EXT_CSD Rev**: 0x5 (eMMC 4.5)
+
+### DDR Mode Investigation
+
+Investigated whether DDR (Double Data Rate) mode could improve eMMC performance:
+
+**Findings:**
+```
+mmc0: card_type=0x03 caps=0x40001147 DDR_1_8V=0 CAP_1_8V_DDR=1
+```
+
+- EXT_CSD CARD_TYPE = 0x03 (HS_26 + HS_52 only)
+- **DDR mode NOT supported** by the eMMC chip (bit 2 not set)
+- Not all eMMC 4.5 chips support DDR - the SEM32G doesn't
+
+**Conclusion:**
+The mainline kernel achieves ~13% better eMMC read performance compared to webOS, likely due to:
+- Higher CPU frequency (1512 vs 1188 MHz)
+- Improved mmci driver in mainline
+- Better DMA handling
+
+DDR mode cannot improve performance further - the SanDisk SEM32G hardware doesn't support it.
 
 ## DFAB Implementation Status
 
