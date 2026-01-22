@@ -102,6 +102,332 @@ LowTotal:         732604 kB
 
 ---
 
+## Linux 6.18 (LuneOS) - Extended 20-Iteration Benchmark
+
+**Test Date:** 2026-01-22
+**Kernel:** 6.18.0-00283-g451f3cd9a9b3-dirty
+**OS:** LuneOS 1.0 (initramfs debug environment)
+**CPU:** 2x Scorpion @ 1512 MHz, governor: performance
+**Script:** `scripts/benchmark-ram.sh 20`
+
+### Results
+
+| Test | Size | Iterations | Min | Max | Average |
+|------|------|------------|-----|-----|---------|
+| Memory bandwidth (zero→null) | 512 MB | 20 | 0.390s (1313 MB/s) | 1.010s (507 MB/s) | **0.726s (705 MB/s)** |
+| tmpfs write | 128 MB | 20 | 0.750s (171 MB/s) | 1.800s (71 MB/s) | **1.372s (93 MB/s)** |
+| tmpfs read | 128 MB | 20 | 0.480s (267 MB/s) | 1.020s (126 MB/s) | **0.751s (170 MB/s)** |
+
+### Raw Data
+
+**Memory Bandwidth (512 MB):**
+```
+Run  1: 0.990s (517 MB/s)    Run 11: 0.390s (1313 MB/s)
+Run  2: 1.000s (512 MB/s)    Run 12: 0.390s (1313 MB/s)
+Run  3: 0.390s (1313 MB/s)   Run 13: 0.390s (1313 MB/s)
+Run  4: 1.000s (512 MB/s)    Run 14: 1.000s (512 MB/s)
+Run  5: 0.390s (1313 MB/s)   Run 15: 1.000s (512 MB/s)
+Run  6: 0.400s (1280 MB/s)   Run 16: 1.000s (512 MB/s)
+Run  7: 0.390s (1313 MB/s)   Run 17: 1.010s (507 MB/s)
+Run  8: 0.400s (1280 MB/s)   Run 18: 0.990s (517 MB/s)
+Run  9: 1.000s (512 MB/s)    Run 19: 1.010s (507 MB/s)
+Run 10: 1.000s (512 MB/s)    Run 20: 0.390s (1313 MB/s)
+
+Fast runs (≤0.4s): 9/20 = 45%
+Slow runs (≥0.99s): 11/20 = 55%
+```
+
+**tmpfs Write (128 MB):**
+```
+Run  1: 1.800s (71 MB/s)     Run 11: 1.780s (72 MB/s)
+Run  2: 0.770s (166 MB/s)    Run 12: 1.780s (72 MB/s)
+Run  3: 0.750s (171 MB/s)    Run 13: 0.750s (171 MB/s)
+Run  4: 0.750s (171 MB/s)    Run 14: 0.760s (168 MB/s)
+Run  5: 0.750s (171 MB/s)    Run 15: 0.750s (171 MB/s)
+Run  6: 0.760s (168 MB/s)    Run 16: 1.770s (72 MB/s)
+Run  7: 1.780s (72 MB/s)     Run 17: 1.780s (72 MB/s)
+Run  8: 1.790s (72 MB/s)     Run 18: 1.780s (72 MB/s)
+Run  9: 1.780s (72 MB/s)     Run 19: 1.780s (72 MB/s)
+Run 10: 1.790s (72 MB/s)     Run 20: 1.790s (72 MB/s)
+
+Fast runs (≤0.8s): 8/20 = 40%
+Slow runs (≥1.7s): 12/20 = 60%
+```
+
+**tmpfs Read (128 MB):**
+```
+Run  1: 0.480s (267 MB/s)    Run 11: 1.010s (127 MB/s)
+Run  2: 0.500s (256 MB/s)    Run 12: 1.000s (128 MB/s)
+Run  3: 0.480s (267 MB/s)    Run 13: 1.010s (127 MB/s)
+Run  4: 0.490s (261 MB/s)    Run 14: 0.500s (256 MB/s)
+Run  5: 0.490s (261 MB/s)    Run 15: 0.490s (261 MB/s)
+Run  6: 0.480s (267 MB/s)    Run 16: 1.020s (126 MB/s)
+Run  7: 0.500s (256 MB/s)    Run 17: 1.020s (126 MB/s)
+Run  8: 0.500s (256 MB/s)    Run 18: 1.010s (127 MB/s)
+Run  9: 1.020s (126 MB/s)    Run 19: 1.010s (127 MB/s)
+Run 10: 1.010s (127 MB/s)    Run 20: 1.010s (127 MB/s)
+
+Fast runs (≤0.5s): 10/20 = 50%
+Slow runs (≥1.0s): 10/20 = 50%
+```
+
+### Analysis
+
+The 20-iteration benchmark confirms the **bimodal performance behavior**:
+
+1. **Memory Bandwidth** clusters into two distinct groups:
+   - Fast: ~0.39s (1280-1313 MB/s) - occurs 45% of the time
+   - Slow: ~1.0s (507-517 MB/s) - occurs 55% of the time
+   - The ~2.6x difference suggests a hardware state change (power, cache, or memory controller)
+
+2. **tmpfs Write** also shows bimodal behavior:
+   - Fast: ~0.75s (166-171 MB/s) - occurs 40% of the time
+   - Slow: ~1.78s (71-72 MB/s) - occurs 60% of the time
+   - The ~2.4x difference correlates with memory bandwidth mode
+
+3. **tmpfs Read** shows the clearest 50/50 split:
+   - Fast: ~0.49s (256-267 MB/s) - occurs 50% of the time
+   - Slow: ~1.01s (126-128 MB/s) - occurs 50% of the time
+   - The ~2.0x difference is consistent with the pattern
+
+### Suspected Cause
+
+The bimodal behavior is likely caused by **L2 cache power state transitions** on the Scorpion CPU. The APQ8060's L2 cache may enter a low-power state between tests, requiring warm-up time. Possible solutions:
+- Disable L2 cache power management via sysfs/debugfs
+- Keep CPU busy between tests to prevent power state transitions
+- Investigate `cpuidle` latency settings
+
+---
+
+## Linux 6.18 (LuneOS) - 32M CMA Enabled
+
+**Test Date:** 2026-01-22
+**Kernel:** 6.18.0-00284-g40d97fbb55dd-dirty
+**OS:** LuneOS 1.0 (initramfs debug environment)
+**CPU:** 2x Scorpion @ 1512 MHz, governor: performance
+**Config:** CMA=32MB, KSM=disabled, MEMCG=disabled
+
+### Results
+
+| Test | Size | Iterations | Min | Max | Average |
+|------|------|------------|-----|-----|---------|
+| Memory bandwidth (zero→null) | 512 MB | 20 | 0.410s (1249 MB/s) | 1.000s (512 MB/s) | **0.620s (826 MB/s)** |
+| tmpfs write | 128 MB | 20 | 0.760s (168 MB/s) | 1.790s (72 MB/s) | **1.279s (100 MB/s)** |
+| tmpfs read | 128 MB | 20 | 0.480s (267 MB/s) | 0.510s (251 MB/s) | **0.496s (258 MB/s)** |
+
+### Raw Data
+
+**Memory Bandwidth (512 MB):**
+```
+Run  1: 0.990s (517 MB/s)    Run 11: 0.990s (517 MB/s)
+Run  2: 0.430s (1191 MB/s)   Run 12: 1.000s (512 MB/s)
+Run  3: 0.420s (1219 MB/s)   Run 13: 0.430s (1191 MB/s)
+Run  4: 0.420s (1219 MB/s)   Run 14: 0.420s (1219 MB/s)
+Run  5: 0.990s (517 MB/s)    Run 15: 0.420s (1219 MB/s)
+Run  6: 0.990s (517 MB/s)    Run 16: 0.410s (1249 MB/s)
+Run  7: 0.410s (1249 MB/s)   Run 17: 0.410s (1249 MB/s)
+Run  8: 0.420s (1219 MB/s)   Run 18: 0.420s (1219 MB/s)
+Run  9: 0.420s (1219 MB/s)   Run 19: 0.990s (517 MB/s)
+Run 10: 0.420s (1219 MB/s)   Run 20: 1.000s (512 MB/s)
+
+Fast runs (≤0.43s): 13/20 = 65%
+Slow runs (≥0.99s): 7/20 = 35%
+```
+
+**tmpfs Write (128 MB):**
+```
+Run  1: 1.790s (72 MB/s)     Run 11: 0.780s (164 MB/s)
+Run  2: 1.780s (72 MB/s)     Run 12: 0.770s (166 MB/s)
+Run  3: 0.790s (162 MB/s)    Run 13: 0.770s (166 MB/s)
+Run  4: 0.770s (166 MB/s)    Run 14: 0.770s (166 MB/s)
+Run  5: 0.760s (168 MB/s)    Run 15: 0.770s (166 MB/s)
+Run  6: 1.780s (72 MB/s)     Run 16: 0.780s (164 MB/s)
+Run  7: 1.780s (72 MB/s)     Run 17: 1.780s (72 MB/s)
+Run  8: 1.790s (72 MB/s)     Run 18: 1.790s (72 MB/s)
+Run  9: 1.780s (72 MB/s)     Run 19: 1.780s (72 MB/s)
+Run 10: 0.780s (164 MB/s)    Run 20: 1.780s (72 MB/s)
+
+Fast runs (≤0.8s): 10/20 = 50%
+Slow runs (≥1.7s): 10/20 = 50%
+```
+
+**tmpfs Read (128 MB) - CONSISTENT!:**
+```
+Run  1: 0.480s (267 MB/s)    Run 11: 0.490s (261 MB/s)
+Run  2: 0.490s (261 MB/s)    Run 12: 0.490s (261 MB/s)
+Run  3: 0.490s (261 MB/s)    Run 13: 0.490s (261 MB/s)
+Run  4: 0.500s (256 MB/s)    Run 14: 0.500s (256 MB/s)
+Run  5: 0.490s (261 MB/s)    Run 15: 0.500s (256 MB/s)
+Run  6: 0.500s (256 MB/s)    Run 16: 0.500s (256 MB/s)
+Run  7: 0.490s (261 MB/s)    Run 17: 0.510s (251 MB/s)
+Run  8: 0.490s (261 MB/s)    Run 18: 0.510s (251 MB/s)
+Run  9: 0.490s (261 MB/s)    Run 19: 0.500s (256 MB/s)
+Run 10: 0.490s (261 MB/s)    Run 20: 0.510s (251 MB/s)
+
+All runs consistent: 0.48-0.51s (251-267 MB/s) - NO BIMODAL BEHAVIOR!
+```
+
+### Comparison: CMA Disabled vs 32M CMA
+
+| Metric | CMA Disabled | 32M CMA | Improvement |
+|--------|--------------|---------|-------------|
+| Memory bandwidth (avg) | 705 MB/s | 826 MB/s | **+17%** |
+| Memory bandwidth (fast %) | 45% | 65% | +20 pts |
+| tmpfs write (avg) | 93 MB/s | 100 MB/s | **+8%** |
+| tmpfs read (avg) | 170 MB/s | 258 MB/s | **+52%** |
+| tmpfs read consistency | Bimodal (50/50) | **Stable** | Fixed! |
+
+### Analysis
+
+Enabling 32M CMA (instead of disabling it completely) has **significantly improved performance**:
+
+1. **tmpfs read is now stable** - The bimodal behavior is completely eliminated. All 20 runs are consistently fast (251-267 MB/s).
+
+2. **Memory bandwidth improved** - Average increased 17%, and fast runs increased from 45% to 65% of tests.
+
+3. **Overall improvement** - The 32M CMA configuration appears optimal, providing memory for DMA/contiguous allocations without the fragmentation issues of larger reservations.
+
+**Recommendation:** Use `CONFIG_CMA_SIZE_MBYTES=32` for best performance while maintaining CMA functionality for drivers that need it (display, camera, etc.).
+
+---
+
+## Linux 6.18 (LuneOS) - 16M CMA Enabled
+
+**Test Date:** 2026-01-22
+**Kernel:** 6.18.0-00285-g82dd3e9ca715-dirty
+**OS:** LuneOS 1.0 (initramfs debug environment)
+**CPU:** 2x Scorpion @ 1512 MHz, governor: performance
+**Config:** CMA=16MB, KSM=disabled, MEMCG=disabled
+
+### Results
+
+| Test | Size | Iterations | Min | Max | Average |
+|------|------|------------|-----|-----|---------|
+| Memory bandwidth (zero→null) | 512 MB | 20 | 0.410s (1249 MB/s) | 1.000s (512 MB/s) | **0.679s (754 MB/s)** |
+| tmpfs write | 128 MB | 20 | 0.760s (168 MB/s) | 1.790s (72 MB/s) | **1.329s (96 MB/s)** |
+| tmpfs read | 128 MB | 20 | 1.000s (128 MB/s) | 1.030s (124 MB/s) | **1.016s (126 MB/s)** |
+
+### Raw Data
+
+**Memory Bandwidth (512 MB):**
+```
+Run  1: 0.990s (517 MB/s)    Run 11: 0.990s (517 MB/s)
+Run  2: 1.000s (512 MB/s)    Run 12: 1.000s (512 MB/s)
+Run  3: 1.000s (512 MB/s)    Run 13: 0.420s (1219 MB/s)
+Run  4: 0.420s (1219 MB/s)   Run 14: 0.420s (1219 MB/s)
+Run  5: 0.420s (1219 MB/s)   Run 15: 0.410s (1249 MB/s)
+Run  6: 0.420s (1219 MB/s)   Run 16: 0.420s (1219 MB/s)
+Run  7: 0.420s (1219 MB/s)   Run 17: 0.990s (517 MB/s)
+Run  8: 0.430s (1191 MB/s)   Run 18: 1.000s (512 MB/s)
+Run  9: 0.420s (1219 MB/s)   Run 19: 1.000s (512 MB/s)
+Run 10: 0.420s (1219 MB/s)   Run 20: 1.000s (512 MB/s)
+
+Fast runs (≤0.43s): 11/20 = 55%
+Slow runs (≥0.99s): 9/20 = 45%
+```
+
+**tmpfs Write (128 MB):**
+```
+Run  1: 1.790s (72 MB/s)     Run 11: 1.790s (72 MB/s)
+Run  2: 0.790s (162 MB/s)    Run 12: 1.780s (72 MB/s)
+Run  3: 1.780s (72 MB/s)     Run 13: 1.780s (72 MB/s)
+Run  4: 1.780s (72 MB/s)     Run 14: 0.770s (166 MB/s)
+Run  5: 1.790s (72 MB/s)     Run 15: 0.770s (166 MB/s)
+Run  6: 1.790s (72 MB/s)     Run 16: 0.770s (166 MB/s)
+Run  7: 1.790s (72 MB/s)     Run 17: 0.760s (168 MB/s)
+Run  8: 1.790s (72 MB/s)     Run 18: 0.770s (166 MB/s)
+Run  9: 1.780s (72 MB/s)     Run 19: 0.770s (166 MB/s)
+Run 10: 0.770s (166 MB/s)    Run 20: 0.770s (166 MB/s)
+
+Fast runs (≤0.8s): 9/20 = 45%
+Slow runs (≥1.7s): 11/20 = 55%
+```
+
+**tmpfs Read (128 MB) - CONSISTENTLY SLOW:**
+```
+Run  1: 1.020s (126 MB/s)    Run 11: 1.020s (126 MB/s)
+Run  2: 1.010s (127 MB/s)    Run 12: 1.000s (128 MB/s)
+Run  3: 1.020s (126 MB/s)    Run 13: 1.020s (126 MB/s)
+Run  4: 1.010s (127 MB/s)    Run 14: 1.020s (126 MB/s)
+Run  5: 1.020s (126 MB/s)    Run 15: 1.010s (127 MB/s)
+Run  6: 1.030s (124 MB/s)    Run 16: 1.020s (126 MB/s)
+Run  7: 1.010s (127 MB/s)    Run 17: 1.010s (127 MB/s)
+Run  8: 1.010s (127 MB/s)    Run 18: 1.020s (126 MB/s)
+Run  9: 1.020s (126 MB/s)    Run 19: 1.020s (126 MB/s)
+Run 10: 1.020s (126 MB/s)    Run 20: 1.020s (126 MB/s)
+
+All runs consistently SLOW: 1.00-1.03s (124-128 MB/s)
+```
+
+### Analysis
+
+16M CMA shows **degraded tmpfs read performance**:
+
+- tmpfs read is locked into slow mode (~126 MB/s) for all 20 runs
+- This is **2x slower** than 32M CMA (258 MB/s)
+- Even worse than CMA disabled, which at least had 50% fast runs
+
+---
+
+## Linux 6.18 (LuneOS) - 48M CMA Enabled
+
+**Test Date:** 2026-01-22
+**Kernel:** 6.18.0-00285-gf985df16b9a7-dirty
+**OS:** LuneOS 1.0 (initramfs debug environment)
+**CPU:** 2x Scorpion @ 1512 MHz, governor: performance
+**Config:** CMA=48MB, KSM=disabled, MEMCG=disabled
+
+### Results
+
+| Test | Size | Iterations | Min | Max | Average |
+|------|------|------------|-----|-----|---------|
+| Memory bandwidth (zero→null) | 512 MB | 20 | 0.410s (1249 MB/s) | 1.000s (512 MB/s) | **0.708s (724 MB/s)** |
+| tmpfs write | 128 MB | 20 | 0.770s (166 MB/s) | 1.800s (71 MB/s) | **1.674s (77 MB/s)** |
+| tmpfs read | 128 MB | 20 | 0.490s (261 MB/s) | 1.020s (126 MB/s) | **0.629s (203 MB/s)** |
+
+### Raw Data
+
+**Memory Bandwidth (512 MB):**
+```
+Fast runs (≤0.43s): 11/20 = 55%
+Slow runs (≥0.99s): 9/20 = 45%
+```
+
+**tmpfs Write (128 MB) - MOSTLY SLOW:**
+```
+Fast runs (≤0.8s): 2/20 = 10%
+Slow runs (≥1.5s): 18/20 = 90%
+```
+
+**tmpfs Read (128 MB) - BIMODAL:**
+```
+Fast runs (≤0.52s): 15/20 = 75%
+Slow runs (≥1.0s): 5/20 = 25%
+```
+
+### Analysis
+
+48M CMA shows **degraded tmpfs write performance**:
+
+- tmpfs write is mostly locked into slow mode (90% slow runs, avg 77 MB/s)
+- This is **23% slower** than 32M CMA (100 MB/s)
+- tmpfs read returns to bimodal behavior instead of stable fast
+
+---
+
+## CMA Size Comparison Summary
+
+| CMA Size | Memory BW | tmpfs Write | tmpfs Read | Recommendation |
+|----------|-----------|-------------|------------|----------------|
+| Disabled | 705 MB/s | 93 MB/s | 170 MB/s (bimodal) | Not recommended |
+| 16 MB | 754 MB/s | 96 MB/s | 126 MB/s (slow) | Avoid |
+| **32 MB** | **826 MB/s** | **100 MB/s** | **258 MB/s (stable)** | **Best choice** |
+| 48 MB | 724 MB/s | 77 MB/s | 203 MB/s (bimodal) | Avoid |
+
+**Conclusion:** 32MB CMA is the optimal setting. Both smaller (16MB) and larger (48MB) CMA sizes result in worse performance. 32MB appears to be a sweet spot for the HP TouchPad's memory layout.
+
+---
+
 ## Linux 2.6.35 (webOS)
 
 **Test Date:** 2026-01-22
