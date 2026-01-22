@@ -922,6 +922,14 @@
 			clock-names = "bus", "bus_a", "smi", "smi_a";
 		};
 
+		daytona_fabric: interconnect@3 {
+			compatible = "qcom,msm8660-daytona-fabric";
+			#interconnect-cells = <1>;
+			clocks = <&rpmcc RPM_DAYTONA_FABRIC_CLK>,
+				 <&rpmcc RPM_DAYTONA_FABRIC_A_CLK>;
+			clock-names = "bus", "bus_a";
+		};
+
 		amba {
 			compatible = "simple-bus";
 			#address-cells = <1>;

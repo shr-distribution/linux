@@ -78,6 +78,22 @@ enum {
 	MSM8660_SFAB_SLV_MSS,
 	MSM8660_SFAB_SLV_LPASS,
 	MSM8660_SFAB_SLV_MMSS_FPB,
+	MSM8660_SFAB_TO_DFAB,
+
+	/* Daytona Fabric nodes (DFAB) - peripheral bus */
+	MSM8660_DFAB_MAS_SDC1,
+	MSM8660_DFAB_MAS_SDC2,
+	MSM8660_DFAB_MAS_SDC3,
+	MSM8660_DFAB_MAS_SDC4,
+	MSM8660_DFAB_MAS_SDC5,
+	MSM8660_DFAB_MAS_ADM0_MASTER,
+	MSM8660_DFAB_MAS_ADM1_MASTER,
+	MSM8660_DFAB_TO_SFAB,
+	MSM8660_DFAB_SLV_SDC1,
+	MSM8660_DFAB_SLV_SDC2,
+	MSM8660_DFAB_SLV_SDC3,
+	MSM8660_DFAB_SLV_SDC4,
+	MSM8660_DFAB_SLV_SDC5,
 
 	/* MMSS Fabric nodes */
 	MSM8660_MMFAB_MAS_MDP_PORT0,
@@ -129,6 +145,11 @@ static const struct clk_bulk_data msm8660_mmfab_clocks[] = {
 	{ .id = "bus_a" },
 	{ .id = "smi" },
 	{ .id = "smi_a" },
+};
+
+static const struct clk_bulk_data msm8660_dfab_clocks[] = {
+	{ .id = "bus" },
+	{ .id = "bus_a" },
 };
 
 /**
@@ -238,6 +259,12 @@ DEFINE_QNODE(sfab_slv_ampss, MSM8660_SFAB_SLV_AMPSS, 8);
 DEFINE_QNODE(sfab_slv_mss, MSM8660_SFAB_SLV_MSS, 8);
 DEFINE_QNODE(sfab_slv_lpass, MSM8660_SFAB_SLV_LPASS, 8);
 DEFINE_QNODE(sfab_slv_mmss_fpb, MSM8660_SFAB_SLV_MMSS_FPB, 8);
+/*
+ * Gateway to DFAB: links to DFAB_TO_SFAB for path traversal.
+ * Also links to SFAB_TO_APPSS to enable DFAB→SFAB→AFAB→memory paths.
+ */
+DEFINE_QNODE(sfab_to_dfab, MSM8660_SFAB_TO_DFAB, 8,
+	     MSM8660_DFAB_TO_SFAB, MSM8660_SFAB_TO_APPSS);
 
 static struct msm8660_icc_node * const msm8660_sfab_nodes[] = {
 	[SFAB_MAS_APPSS] = &sfab_mas_appss,
@@ -265,6 +292,7 @@ static struct msm8660_icc_node * const msm8660_sfab_nodes[] = {
 	[SFAB_SLV_MSS] = &sfab_slv_mss,
 	[SFAB_SLV_LPASS] = &sfab_slv_lpass,
 	[SFAB_SLV_MMSS_FPB] = &sfab_slv_mmss_fpb,
+	[SFAB_TO_DFAB] = &sfab_to_dfab,
 };
 
 static const struct msm8660_icc_desc msm8660_sfab = {
@@ -328,6 +356,49 @@ static const struct msm8660_icc_desc msm8660_mmfab = {
 	.num_nodes = ARRAY_SIZE(msm8660_mmfab_nodes),
 	.bus_clks = msm8660_mmfab_clocks,
 	.num_clks = ARRAY_SIZE(msm8660_mmfab_clocks),
+};
+
+/*
+ * Daytona Fabric (DFAB) nodes - peripheral bus for SDCC and ADM DMA
+ *
+ * DFAB connects slower peripherals to SFAB via the DFAB_TO_SFAB gateway.
+ * SDCC controllers (eMMC, SD card) connect here.
+ */
+DEFINE_QNODE(dfab_mas_sdc1, MSM8660_DFAB_MAS_SDC1, 8, MSM8660_DFAB_TO_SFAB);
+DEFINE_QNODE(dfab_mas_sdc2, MSM8660_DFAB_MAS_SDC2, 8, MSM8660_DFAB_TO_SFAB);
+DEFINE_QNODE(dfab_mas_sdc3, MSM8660_DFAB_MAS_SDC3, 8, MSM8660_DFAB_TO_SFAB);
+DEFINE_QNODE(dfab_mas_sdc4, MSM8660_DFAB_MAS_SDC4, 8, MSM8660_DFAB_TO_SFAB);
+DEFINE_QNODE(dfab_mas_sdc5, MSM8660_DFAB_MAS_SDC5, 8, MSM8660_DFAB_TO_SFAB);
+DEFINE_QNODE(dfab_mas_adm0_master, MSM8660_DFAB_MAS_ADM0_MASTER, 8, MSM8660_DFAB_TO_SFAB);
+DEFINE_QNODE(dfab_mas_adm1_master, MSM8660_DFAB_MAS_ADM1_MASTER, 8, MSM8660_DFAB_TO_SFAB);
+DEFINE_QNODE(dfab_to_sfab, MSM8660_DFAB_TO_SFAB, 8, MSM8660_SFAB_TO_DFAB);
+DEFINE_QNODE(dfab_slv_sdc1, MSM8660_DFAB_SLV_SDC1, 8);
+DEFINE_QNODE(dfab_slv_sdc2, MSM8660_DFAB_SLV_SDC2, 8);
+DEFINE_QNODE(dfab_slv_sdc3, MSM8660_DFAB_SLV_SDC3, 8);
+DEFINE_QNODE(dfab_slv_sdc4, MSM8660_DFAB_SLV_SDC4, 8);
+DEFINE_QNODE(dfab_slv_sdc5, MSM8660_DFAB_SLV_SDC5, 8);
+
+static struct msm8660_icc_node * const msm8660_dfab_nodes[] = {
+	[DFAB_MAS_SDC1] = &dfab_mas_sdc1,
+	[DFAB_MAS_SDC2] = &dfab_mas_sdc2,
+	[DFAB_MAS_SDC3] = &dfab_mas_sdc3,
+	[DFAB_MAS_SDC4] = &dfab_mas_sdc4,
+	[DFAB_MAS_SDC5] = &dfab_mas_sdc5,
+	[DFAB_MAS_ADM0_MASTER] = &dfab_mas_adm0_master,
+	[DFAB_MAS_ADM1_MASTER] = &dfab_mas_adm1_master,
+	[DFAB_TO_SFAB] = &dfab_to_sfab,
+	[DFAB_SLV_SDC1] = &dfab_slv_sdc1,
+	[DFAB_SLV_SDC2] = &dfab_slv_sdc2,
+	[DFAB_SLV_SDC3] = &dfab_slv_sdc3,
+	[DFAB_SLV_SDC4] = &dfab_slv_sdc4,
+	[DFAB_SLV_SDC5] = &dfab_slv_sdc5,
+};
+
+static const struct msm8660_icc_desc msm8660_dfab = {
+	.nodes = msm8660_dfab_nodes,
+	.num_nodes = ARRAY_SIZE(msm8660_dfab_nodes),
+	.bus_clks = msm8660_dfab_clocks,
+	.num_clks = ARRAY_SIZE(msm8660_dfab_clocks),
 };
 
 static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
@@ -502,6 +573,7 @@ static const struct of_device_id msm8660_noc_of_match[] = {
 	{ .compatible = "qcom,msm8660-apps-fabric", .data = &msm8660_afab },
 	{ .compatible = "qcom,msm8660-system-fabric", .data = &msm8660_sfab },
 	{ .compatible = "qcom,msm8660-mmss-fabric", .data = &msm8660_mmfab },
+	{ .compatible = "qcom,msm8660-daytona-fabric", .data = &msm8660_dfab },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, msm8660_noc_of_match);
