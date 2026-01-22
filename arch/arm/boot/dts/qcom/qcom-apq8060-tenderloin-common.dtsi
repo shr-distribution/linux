@@ -798,6 +798,16 @@
 				 <&gpu_iommu 29>,
 				 <&gpu_iommu 30>,
 				 <&gpu_iommu 31>;
+
+			/*
+			 * GPU interconnect path for memory bandwidth.
+			 * Adreno 220 generates up to 2008 MB/s memory traffic.
+			 * Without this, GPU activity can starve USB and other
+			 * peripherals by not voting for fabric bandwidth.
+			 */
+			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_3D
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "gfx-mem";
 		};
 
 		gpu_opp_table: gpu-opp-table {
@@ -810,50 +820,65 @@
 			 *
 			 * Voltage scaling is provided by PM8058 S1 (vdd_dig)
 			 * via the gpu-supply property on the GPU node.
+			 *
+			 * Bandwidth values (opp-peak-kBps) scale with frequency,
+			 * up to 2008 MB/s at max (from webOS msm_bus_scale).
+			 * This ensures fabric bandwidth is voted when GPU is active.
 			 */
 			opp-27000000 {
 				opp-hz = /bits/ 64 <27000000>;
 				opp-microvolt = <1000000>;
+				opp-peak-kBps = <170000>;
 			};
 			opp-48000000 {
 				opp-hz = /bits/ 64 <48000000>;
 				opp-microvolt = <1000000>;
+				opp-peak-kBps = <301000>;
 			};
 			opp-64000000 {
 				opp-hz = /bits/ 64 <64000000>;
 				opp-microvolt = <1000000>;
+				opp-peak-kBps = <401000>;
 			};
 			opp-76800000 {
 				opp-hz = /bits/ 64 <76800000>;
 				opp-microvolt = <1000000>;
+				opp-peak-kBps = <482000>;
 			};
 			opp-96000000 {
 				opp-hz = /bits/ 64 <96000000>;
 				opp-microvolt = <1000000>;
+				opp-peak-kBps = <602000>;
 			};
 			opp-128000000 {
 				opp-hz = /bits/ 64 <128000000>;
 				opp-microvolt = <1100000>;
+				opp-peak-kBps = <803000>;
 			};
 			opp-160000000 {
 				opp-hz = /bits/ 64 <160000000>;
 				opp-microvolt = <1100000>;
+				opp-peak-kBps = <1004000>;
 			};
 			opp-200000000 {
 				opp-hz = /bits/ 64 <200000000>;
 				opp-microvolt = <1100000>;
+				opp-peak-kBps = <1255000>;
 			};
 			opp-228571000 {
 				opp-hz = /bits/ 64 <228571000>;
 				opp-microvolt = <1100000>;
+				opp-peak-kBps = <1434000>;
 			};
 			opp-266667000 {
 				opp-hz = /bits/ 64 <266667000>;
 				opp-microvolt = <1200000>;
+				opp-peak-kBps = <1673000>;
 			};
 			opp-320000000 {
 				opp-hz = /bits/ 64 <320000000>;
 				opp-microvolt = <1200000>;
+				opp-peak-kBps = <2008000>;
 			};
 		};
 
