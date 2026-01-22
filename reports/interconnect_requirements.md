@@ -619,18 +619,27 @@ webOS used "voter clocks" for DFAB peripherals instead of explicit bandwidth val
 
 When a voter clock is enabled, it votes for the DFAB clock to stay active at a minimum rate.
 
-### Mainline Implementation Status
+### Mainline 6.18 vs webOS Bandwidth Comparison
 
-| Component | webOS BW | Mainline Interconnect | Status |
-|-----------|----------|----------------------|--------|
-| GPU 3D | 2008 MB/s peak | ❌ None | **MISSING - causes USB issues** |
-| GPU 2D | 2096 MB/s peak | ✅ Has interconnect | OK |
-| MDP | 705 MB/s peak | ✅ Has interconnect | OK |
-| Camera VFE | 1521 MB/s | ✅ Has interconnect | OK |
-| Video Codec | 1309 MB/s peak | ✅ Has interconnect | OK |
-| USB HS | voter clk | ✅ Has interconnect | OK |
-| SDCC1 (eMMC) | voter clk | ✅ Has interconnect (DFAB) | OK |
-| SDCC4 (WiFi) | voter clk | ❌ None | **MISSING** |
+| Component | webOS Avg | webOS Peak | 6.18 Avg | 6.18 Peak | Status |
+|-----------|-----------|------------|----------|-----------|--------|
+| **GPU 3D (Adreno)** | 2008 MB/s | 2008 MB/s | ❌ None | ❌ None | **MISSING** |
+| GPU 2D Core0/1 | 0 | 2096 MB/s | 128 MB/s | 256 MB/s | ⚠️ Lower |
+| MDP Display | 564 MB/s | 705 MB/s | 500 MB/s | 700 MB/s | ✅ OK |
+| Camera VFE | 1521 MB/s | 1521 MB/s | 1521 MB/s | 1521 MB/s | ✅ Match |
+| VPE | 1521 MB/s | 1521 MB/s | 1521 MB/s | 1521 MB/s | ✅ Match |
+| JPEG (Gemini) | 1521 MB/s | 1521 MB/s | 1521 MB/s | 1521 MB/s | ✅ Match |
+| Rotator | ~500 MB/s | ~1000 MB/s | 500 MB/s | 1000 MB/s | ✅ Match |
+| Video Codec | 164 MB/s | 1309 MB/s | 245 MB/s | 500 MB/s | ⚠️ Lower peak |
+| USB HS | voter | voter | 60 MB/s | 120 MB/s | ✅ OK |
+| SDCC1 (eMMC) | voter | voter | floor | floor | ✅ OK |
+| **SDCC4 (WiFi)** | voter | voter | ❌ None | ❌ None | **MISSING** |
+
+**Notes:**
+- "voter" = webOS used voter clocks for DFAB instead of explicit bandwidth
+- "floor" = mainline uses 200 MHz fabric floor instead of explicit bandwidth
+- GPU 2D in mainline uses lower values but actual usage may be lower than webOS peak
+- Video Codec peak is lower in mainline (500 vs 1309 MB/s) - may need tuning for 1080p
 
 ### Critical Issue: GPU 3D Without Bandwidth Vote
 
