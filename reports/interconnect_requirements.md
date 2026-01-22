@@ -577,6 +577,89 @@ When testing interconnect integration:
 
 ---
 
+## Appendix: Complete Bandwidth Values from webOS Kernel
+
+### Memory Subsystem Maximum Bandwidth
+
+The MSM8660/APQ8060 uses LPDDR2 dual-channel memory:
+- Bus width: 64-bit (8 bytes)
+- LPDDR2-800: 400 MHz × 2 (DDR) = 800 MT/s
+- **Theoretical maximum: 6.4 GB/s (6400 MB/s)**
+
+### Complete Bandwidth Table (from webOS 2.6 kernel)
+
+| Component | Use Case | Average BW | Peak BW | Fabric | Source File |
+|-----------|----------|------------|---------|--------|-------------|
+| **GPU 3D (Adreno)** | Max | 2008 MB/s | 2008 MB/s | MMSS | devices-msm8x60.c |
+| **GPU 2D Core0** | Max | 0 | 2096 MB/s | MMSS | devices-msm8x60.c |
+| **GPU 2D Core1** | Max | 0 | 2096 MB/s | MMSS | devices-msm8x60.c |
+| **MDP Display** | Home | 334 MB/s | 418 MB/s | MMSS | board-tenderloin.c |
+| **MDP Display** | App | 377 MB/s | 472 MB/s | MMSS | board-tenderloin.c |
+| **MDP Display** | LowRes | 415 MB/s | 519 MB/s | MMSS | board-tenderloin.c |
+| **MDP Display** | PIP | 433 MB/s | 541 MB/s | MMSS | board-tenderloin.c |
+| **MDP Display** | 720p | 460 MB/s | 576 MB/s | MMSS | board-tenderloin.c |
+| **MDP Display** | 1080p | 564 MB/s | 705 MB/s | MMSS | board-tenderloin.c |
+| **DTV (HDMI)** | Active | 566 MB/s | 708 MB/s | MMSS | board-tenderloin.c |
+| **Camera VFE** | Preview | 1521 MB/s | 1521 MB/s | MMSS | msm_io_8x60.c |
+| **Camera VFE** | Video | 1521 MB/s | 1521 MB/s | MMSS | msm_io_8x60.c |
+| **Camera VFE** | Snapshot | 1521 MB/s | 1521 MB/s | MMSS | msm_io_8x60.c |
+| **Video Codec** | VGA | 55 MB/s | 436 MB/s | MMSS | vcd_res_tracker.h |
+| **Video Codec** | 720p | 108 MB/s | 877 MB/s | MMSS | vcd_res_tracker.h |
+| **Video Codec** | 1080p | 164 MB/s | 1309 MB/s | MMSS | vcd_res_tracker.h |
+| **USB HS** | Active | voter clk | voter clk | DFAB | board-tenderloin.c |
+| **SDCC1 (eMMC)** | Active | voter clk | voter clk | DFAB | devices-msm8x60.c |
+| **SDCC4 (WiFi)** | Active | voter clk | voter clk | DFAB | devices-msm8x60.c |
+
+### Voter Clocks (DFAB)
+
+webOS used "voter clocks" for DFAB peripherals instead of explicit bandwidth values:
+- `dfab_usb_hs_clk` - USB High-Speed
+- `dfab_sdc1_clk` through `dfab_sdc5_clk` - SDCC controllers
+- `dfab_dsps_clk` - Digital Signal Processing Subsystem
+
+When a voter clock is enabled, it votes for the DFAB clock to stay active at a minimum rate.
+
+### Mainline Implementation Status
+
+| Component | webOS BW | Mainline Interconnect | Status |
+|-----------|----------|----------------------|--------|
+| GPU 3D | 2008 MB/s peak | ❌ None | **MISSING - causes USB issues** |
+| GPU 2D | 2096 MB/s peak | ✅ Has interconnect | OK |
+| MDP | 705 MB/s peak | ✅ Has interconnect | OK |
+| Camera VFE | 1521 MB/s | ✅ Has interconnect | OK |
+| Video Codec | 1309 MB/s peak | ✅ Has interconnect | OK |
+| USB HS | voter clk | ✅ Has interconnect | OK |
+| SDCC1 (eMMC) | voter clk | ✅ Has interconnect (DFAB) | OK |
+| SDCC4 (WiFi) | voter clk | ❌ None | **MISSING** |
+
+### Critical Issue: GPU 3D Without Bandwidth Vote
+
+The GPU 3D (Adreno 220) generates up to **2008 MB/s** of memory traffic but has no
+interconnect path in mainline. This means:
+
+1. GPU doesn't vote for fabric bandwidth
+2. When GPU is active, it competes with other masters (USB, SDCC)
+3. Without bandwidth vote, fabric clocks may not scale up properly
+4. **Result: USB gets starved and disconnects during GPU activity**
+
+### Recommended Fix
+
+Add interconnect path to GPU 3D with OPP-based bandwidth scaling:
+
+```dts
+gpu: adreno@4300000 {
+    /* ... existing properties ... */
+    interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_3D
+                     &apps_fabric AFAB_SLV_EBI_CH0>;
+    interconnect-names = "gfx-mem";
+};
+```
+
+And add `opp-peak-kBps` to OPP table entries, scaling from ~500 MB/s at low
+frequencies to 2008 MB/s at max frequency.
+
+---
+
 ## References
 
 - webOS kernel: `arch/arm/mach-msm/msm_bus_board_8660.c`
