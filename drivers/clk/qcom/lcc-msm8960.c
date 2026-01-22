@@ -74,6 +74,27 @@ static const struct freq_tbl clk_tbl_aif_osr_492[] = {
 	{ }
 };
 
+/*
+ * MSM8660/APQ8060 uses PLL4 at 540.672 MHz (24.576 MHz * 22, L=0x16)
+ * Divisors calculated from webOS kernel clock-8x60.c
+ * Note: AIF_OSR has 8-bit MN counter, so N must be <= 255
+ * 512000 Hz is not achievable with this PLL frequency
+ */
+static const struct freq_tbl clk_tbl_aif_osr_540[] = {
+	{   768000, P_PLL4, 4, 1, 176 },
+	{  1024000, P_PLL4, 4, 1, 132 },
+	{  1536000, P_PLL4, 4, 1,  88 },
+	{  2048000, P_PLL4, 4, 1,  66 },
+	{  3072000, P_PLL4, 4, 1,  44 },
+	{  4096000, P_PLL4, 4, 1,  33 },
+	{  6144000, P_PLL4, 4, 1,  22 },
+	{  8192000, P_PLL4, 2, 1,  33 },
+	{ 12288000, P_PLL4, 4, 1,  11 },
+	{ 24576000, P_PLL4, 2, 1,  11 },
+	{ 27000000, P_PXO,  1, 0,   0 },
+	{ }
+};
+
 static const struct freq_tbl clk_tbl_aif_osr_393[] = {
 	{   512000, P_PLL4, 4, 1, 192 },
 	{   768000, P_PLL4, 4, 1, 128 },
@@ -232,6 +253,24 @@ static const struct freq_tbl clk_tbl_pcm_492[] = {
 	{  8192000, P_PLL4, 4, 1,  15 },
 	{ 12288000, P_PLL4, 4, 1,  10 },
 	{ 24576000, P_PLL4, 4, 1,   5 },
+	{ 27000000, P_PXO,  1, 0,   0 },
+	{ }
+};
+
+/* PCM frequency table for MSM8660/APQ8060 with PLL4 at 540.672 MHz */
+static const struct freq_tbl clk_tbl_pcm_540[] = {
+	{   256000, P_PLL4, 4, 1, 528 },
+	{   512000, P_PLL4, 4, 1, 264 },
+	{   768000, P_PLL4, 4, 1, 176 },
+	{  1024000, P_PLL4, 4, 1, 132 },
+	{  1536000, P_PLL4, 4, 1,  88 },
+	{  2048000, P_PLL4, 4, 1,  66 },
+	{  3072000, P_PLL4, 4, 1,  44 },
+	{  4096000, P_PLL4, 4, 1,  33 },
+	{  6144000, P_PLL4, 4, 1,  22 },
+	{  8192000, P_PLL4, 2, 1,  33 },
+	{ 12288000, P_PLL4, 4, 1,  11 },
+	{ 24576000, P_PLL4, 2, 1,  11 },
 	{ 27000000, P_PXO,  1, 0,   0 },
 	{ }
 };
@@ -473,6 +512,8 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 	/* Use the correct frequency plan depending on speed of PLL4 */
 	regmap_read(regmap, 0x4, &val);
 	if (val == 0x12) {
+		/* L=18: PLL4 at 491.52 MHz (MSM8960) */
+		dev_info(&pdev->dev, "PLL4 L=0x%x, using 492MHz frequency plan\n", val);
 		slimbus_src.freq_tbl = clk_tbl_aif_osr_492;
 		mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_492;
 		codec_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_492;
@@ -480,6 +521,19 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 		codec_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_492;
 		spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_492;
 		pcm_src.freq_tbl = clk_tbl_pcm_492;
+	} else if (val == 0x16) {
+		/* L=22: PLL4 at 540.672 MHz (MSM8660/APQ8060) */
+		dev_info(&pdev->dev, "PLL4 L=0x%x, using 540MHz frequency plan\n", val);
+		slimbus_src.freq_tbl = clk_tbl_aif_osr_540;
+		mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+		codec_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+		spare_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+		codec_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+		spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+		pcm_src.freq_tbl = clk_tbl_pcm_540;
+	} else {
+		/* Default: L value unknown, using 393MHz frequency plan */
+		dev_info(&pdev->dev, "PLL4 L=0x%x, using default 393MHz frequency plan\n", val);
 	}
 	/* Enable PLL4 source on the LPASS Primary PLL Mux */
 	regmap_write(regmap, 0xc4, 0x1);
