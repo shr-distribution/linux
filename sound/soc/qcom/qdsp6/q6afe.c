@@ -1797,7 +1797,7 @@ static int q6afe_port_start_legacy(struct q6afe_port *port)
 		return -EINVAL;
 	}
 
-	dev_dbg(afe->dev, "Legacy AFE: port 0x%x -> %d\n",
+	dev_info(afe->dev, "Legacy AFE port start: port 0x%x -> legacy %d\n",
 		mainline_port_id, legacy_port_id);
 
 	/*
@@ -1831,7 +1831,7 @@ static int q6afe_port_start_legacy(struct q6afe_port *port)
 	cfg->port.mi2s.ws = port->port_cfg.i2s_cfg.ws_src;
 	cfg->port.mi2s.reserved = 0;
 
-	dev_dbg(afe->dev, "Legacy AFE config: port=%d bitwidth=%d line=%d channel=%d ws=%d\n",
+	dev_info(afe->dev, "Legacy AFE config: port=%d bitwidth=%d line=%d channel=%d ws=%d\n",
 		legacy_port_id, cfg->port.mi2s.bitwidth, cfg->port.mi2s.line,
 		cfg->port.mi2s.channel, cfg->port.mi2s.ws);
 
@@ -1867,7 +1867,7 @@ static int q6afe_port_start_legacy(struct q6afe_port *port)
 	start->gain = 0x2000;	/* Q13 unity gain */
 	start->sample_rate = port->port_cfg.i2s_cfg.sample_rate;
 
-	dev_dbg(afe->dev, "Legacy AFE start: port=%d gain=0x%x rate=%d\n",
+	dev_info(afe->dev, "Legacy AFE start: port=%d gain=0x%x rate=%d\n",
 		legacy_port_id, start->gain, start->sample_rate);
 
 	ret = afe_apr_send_pkt(afe, pkt, port, AFE_PORT_CMD_START_LEGACY);

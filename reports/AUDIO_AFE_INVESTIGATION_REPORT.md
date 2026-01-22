@@ -1,14 +1,23 @@
 # HP TouchPad Audio AFE Investigation Report
 
-**Date:** 2026-01-21
-**Status:** Investigation in progress
+**Date:** 2026-01-22 (Updated)
+**Status:** Audio data path working, debugging DSP timing issues
 **Author:** Generated with assistance from Claude Code
 
 ## Executive Summary
 
-Audio playback on the HP TouchPad with mainline Linux 6.18 fails due to the Q6 LPASS DSP not responding to AFE (Audio Front End) commands. Despite implementing legacy AFE protocol support matching the webOS kernel, the DSP times out (-110 ETIMEDOUT) on all AFE commands.
+**MAJOR PROGRESS:** Audio playback on the HP TouchPad with mainline Linux 6.18 is now partially working. Short audio files (176KB) play completely through the DSP pipeline. Longer files fail mid-playback due to a ~9 second delay in the write_done callback causing buffer underruns.
 
-Root cause analysis reveals that while the Q6 DSP boots and runs (remoteproc state = "running"), it **never acknowledges SMD channel opens**, causing all APR (Audio Packet Router) communication to fail.
+### Current Status
+- ✅ Sound card registers (`HP-TouchPad`)
+- ✅ AFE legacy protocol working
+- ✅ ASM legacy protocol working
+- ✅ ADM legacy protocol working
+- ✅ LCC 540MHz frequency tables implemented
+- ✅ Short audio files play completely (176KB notification.wav)
+- ⚠️ Long files fail mid-playback (~524KB of 990KB plays)
+- ⚠️ DSP session times out after playback (ADM COPP close fails)
+- ❓ **No audible sound confirmed yet** - need user verification
 
 ## Update: IPC Bit Fix (2026-01-21) - CRITICAL BREAKTHROUGH
 
@@ -745,3 +754,171 @@ Created `scripts/test-audio.sh` for automated testing:
 | mediaserver | 1889 | Media playback service |
 
 webOS uses `/dev/msm_pcm_out`, `/dev/msm_acdb` instead of standard ALSA.
+
+---
+
+## Update: LCC 540MHz Fix & Audio Playback Test (2026-01-22)
+
+### LCC Clock Controller Fix
+
+**Critical Discovery:** The mainline LCC (LPASS Clock Controller) driver only had frequency tables for PLL4 at 393MHz (default) and 492MHz (MSM8960). The HP TouchPad uses PLL4 at **540.672 MHz** (24.576 MHz × 22, L=0x16).
+
+**Fix Applied to `drivers/clk/qcom/lcc-msm8960.c`:**
+
+```c
+/* MSM8660/APQ8060 uses PLL4 at 540.672 MHz (24.576 MHz * 22, L=0x16) */
+static const struct freq_tbl clk_tbl_aif_osr_540[] = {
+    {   768000, P_PLL4, 4, 1, 176 },
+    {  1024000, P_PLL4, 4, 1, 132 },
+    {  1536000, P_PLL4, 4, 1,  88 },
+    {  2048000, P_PLL4, 4, 1,  66 },
+    {  3072000, P_PLL4, 4, 1,  44 },
+    {  4096000, P_PLL4, 4, 1,  33 },
+    {  6144000, P_PLL4, 4, 1,  22 },
+    {  8192000, P_PLL4, 2, 1,  33 },
+    { 12288000, P_PLL4, 4, 1,  11 },
+    { 24576000, P_PLL4, 2, 1,  11 },
+    { 27000000, P_PXO,  1, 0,   0 },
+    { }
+};
+```
+
+**Important Note:** AIF_OSR clocks have 8-bit MN counters (max N=255), so 512kHz is not achievable at 540MHz (would need N=264). PCM clocks have 16-bit counters and include 512kHz.
+
+The probe function detects PLL4 L value and selects appropriate frequency table:
+```c
+regmap_read(regmap, 0x4, &val);
+if (val == 0x16) {
+    /* L=22: PLL4 at 540.672 MHz (MSM8660/APQ8060) */
+    dev_info(&pdev->dev, "PLL4 L=0x%x, using 540MHz frequency plan\n", val);
+    mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+    pcm_src.freq_tbl = clk_tbl_pcm_540;
+    /* ... apply to all audio clock sources */
+}
+```
+
+### LCC Register Cross-Check
+
+Verified ALL LCC registers match between webOS and mainline:
+
+| Register | webOS | Mainline | Status |
+|----------|-------|----------|--------|
+| PLL4 MODE | 0x0000 | pll4.mode_reg | ✅ |
+| PLL4 L | 0x0004 | pll4.l_reg | ✅ |
+| PLL4 M | 0x0008 | pll4.m_reg | ✅ |
+| PLL4 N | 0x000C | pll4.n_reg | ✅ |
+| PLL4 CONFIG | 0x0014 | pll4.config_reg | ✅ |
+| PLL4 STATUS | 0x0018 | pll4.status_reg | ✅ |
+| LCC_Q6_FUNC | 0x001C | qcom_q6v2_lpass.c | ✅ (remoteproc) |
+| MI2S_NS/MD/STATUS | 0x48/4C/50 | mi2s_osr_src | ✅ |
+| PCM_NS/MD/STATUS | 0x54/58/5C | pcm_src | ✅ |
+| CODEC_I2S_* | 0x60-0x74 | codec_i2s_* | ✅ |
+| SPARE_I2S_* | 0x78-0x8C | spare_i2s_* | ✅ |
+| PRI_PLL_CLK_CTL | 0x00C4 | probe: write 0x1 | ✅ |
+
+### Audio Playback Test Results
+
+**Test 1: Short file (notification.wav, 177KB)**
+```
+$ ./tinyplay notification.wav -p 16384 -n 8
+playing 'notification.wav': 2 ch, 44100 hz, 16-bit signed PCM
+Played 176400 bytes. Remains 0 bytes.
+```
+**Result: SUCCESS** - Full file played through DSP pipeline.
+
+**Test 2: Long file (phone.wav, 990KB)**
+```
+$ ./tinyplay phone.wav -p 16384 -n 8
+playing 'phone.wav': 2 ch, 44100 hz, 16-bit signed PCM
+error playing sample. cannot read/write stream data: Input/output error
+Played 524288 bytes. Remains 466464 bytes.
+```
+**Result: PARTIAL** - About 53% played before I/O error.
+
+### Write_Done Callback Timing Issue
+
+The kernel log reveals a critical timing problem:
+```
+[ 2957.112610] q6asm-dai: Legacy write: phys=0x50b00000 len=65536 buf=0
+[ 2966.020374] q6asm-dai: Legacy write done: token=0x0
+```
+
+**~9 second delay** between write and write_done callback! This should be milliseconds.
+
+Possible causes:
+1. DSP processing stalls or runs at wrong clock rate
+2. IRQ delivery from DSP to APPS delayed
+3. SMD channel state machine issue
+4. Missing interrupt acknowledgment
+
+### DSP Session Timeout After Playback
+
+After first playback, subsequent attempts fail:
+```
+[ 3392.225251] qcom-q6adm: ADM copp cmd timedout
+[ 3392.225305] qcom-q6adm: Failed to close copp -110
+[ 3432.097321] qcom-q6afe: AFE legacy config for port 6 failed -110
+```
+
+The ADM COPP close command times out, leaving DSP in bad state. LPASS restart required but causes device crash.
+
+### WM8994 FLL Lock Fix
+
+**Problem:** FLL lock IRQ never fires, causing 10ms timeout on every playback.
+
+**Root Cause:** TouchPad doesn't have codec IRQ line connected.
+
+**Fix Applied to `sound/soc/codecs/wm8994.c`:**
+```c
+/*
+ * Disable FLL lock IRQ wait - the webOS WM8994 driver from 2012
+ * doesn't wait for FLL lock at all. On HP TouchPad, the FLL lock
+ * IRQ is not delivered (no main codec IRQ line connected).
+ */
+wm8994->fll_locked_irq = false;
+```
+
+Now using internal oscillator at 12MHz → FLL output 12.288MHz (256 × 48kHz).
+
+### MI2S Pin Configuration
+
+**Discovery:** TouchPad uses **SD3 (GPIO 107)** for codec data, not SD0/SD1.
+
+Added to device tree:
+```dts
+pri_mi2s_pins: pri-mi2s-state {
+    clk-pins {
+        pins = "gpio101", "gpio102", "gpio103";  /* WS, SCLK, MCLK */
+        function = "mi2s";
+    };
+    data-pins {
+        pins = "gpio107";  /* SD3 for codec data */
+        function = "mi2s";
+    };
+};
+
+&q6afedai {
+    dai@16 {
+        reg = <PRIMARY_MI2S_RX>;
+        qcom,sd-lines = <3>;  /* Use SD3, not SD0 */
+    };
+};
+```
+
+### Remaining Issues
+
+1. **No audible sound confirmed** - Need user to verify if speakers produce sound
+2. **~9s write_done delay** - Causes buffer underrun on long files
+3. **DSP session stuck after playback** - ADM COPP close times out
+4. **LPASS restart crashes device** - Cannot recover from stuck state
+
+### Files Modified (WIP)
+
+| File | Changes |
+|------|---------|
+| `drivers/clk/qcom/lcc-msm8960.c` | 540MHz frequency tables (committed) |
+| `sound/soc/qcom/apq8060.c` | Internal oscillator FLL, simplified hw_params |
+| `sound/soc/codecs/wm8994.c` | Disable FLL lock IRQ wait |
+| `sound/soc/qcom/qdsp6/q6afe.c` | Change debug to info for visibility |
+| `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` | MI2S pins, SD3 line |
+| `scripts/test-audio.sh` | Test script improvements |

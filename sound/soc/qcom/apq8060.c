@@ -65,9 +65,24 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	unsigned int rate = params_rate(params);
 	int ret;
 
-	/* Set codec DAI format - I2S, codec is bit/frame clock consumer */
+	/*
+	 * Set DAI format - I2S, CPU/DSP provides bit/frame clocks.
+	 * The Q6 DSP via MI2S is the clock master, providing BCLK and LRCLK
+	 * to the WM8958 codec which uses BCLK for its FLL.
+	 */
+	ret = snd_soc_dai_set_fmt(cpu_dai,
+				  SND_SOC_DAIFMT_I2S |
+				  SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_BP_FP);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(rtd->dev, "Failed to set CPU DAI format: %d\n", ret);
+		return ret;
+	}
+
 	ret = snd_soc_dai_set_fmt(codec_dai,
 				  SND_SOC_DAIFMT_I2S |
 				  SND_SOC_DAIFMT_NB_NF |
@@ -77,48 +92,22 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
-	return 0;
-}
-
-static int apq8060_snd_prepare(struct snd_pcm_substream *substream)
-{
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
-	unsigned int rate = substream->runtime->rate;
-	unsigned int bclk_rate;
-	unsigned int fll_rate;
-	int ret;
-
 	/*
-	 * Configure WM8994 FLL1 using BCLK as source.
-	 * This is called in prepare() after the AFE port has been configured
-	 * and BCLK is available. WebOS uses this approach - configure FLL
-	 * from BCLK once it's available, not from internal oscillator.
-	 *
-	 * BCLK = rate * channels * bits = rate * 2 * 16 = rate * 32
-	 * FLL output = BCLK * 8 = rate * 256 (standard SYSCLK)
+	 * Configure WM8994 FLL1 using internal oscillator.
+	 * Internal oscillator is 12MHz (WM8994_FLL_SRC_INTERNAL).
+	 * FLL output = 12,288,000 Hz (256 * 48kHz)
 	 */
-	bclk_rate = rate * 32;  /* 2 channels * 16 bits */
-	fll_rate = rate * 256;  /* Standard SYSCLK = 256 * fs */
-
-	/* Minimum FLL rate is 4.096 MHz */
-	if (fll_rate < 4096000)
-		fll_rate = 4096000;
-
-	dev_info(rtd->dev, "Configuring FLL: BCLK=%u -> FLL=%u\n",
-		 bclk_rate, fll_rate);
-
 	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1,
-				  WM8994_FLL_SRC_BCLK,
-				  bclk_rate, fll_rate);
+				  WM8994_FLL_SRC_INTERNAL,
+				  12000000, 48000 * 256);
 	if (ret && ret != -ENOTSUPP) {
-		dev_err(rtd->dev, "Failed to set FLL1 from BCLK: %d\n", ret);
+		dev_err(rtd->dev, "Failed to set FLL1: %d\n", ret);
 		return ret;
 	}
 
-	/* Set AIF1CLK to use FLL1 */
+	/* Set AIF1CLK to use FLL1 at 12.288MHz (256*48kHz) */
 	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_FLL1,
-				     fll_rate, SND_SOC_CLOCK_IN);
+				     48000 * 256, SND_SOC_CLOCK_IN);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set sysclk: %d\n", ret);
 		return ret;
@@ -131,7 +120,6 @@ static const struct snd_soc_ops apq8060_snd_ops = {
 	.startup = apq8060_snd_startup,
 	.shutdown = apq8060_snd_shutdown,
 	.hw_params = apq8060_snd_hw_params,
-	.prepare = apq8060_snd_prepare,
 };
 
 static int apq8060_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,

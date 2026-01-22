@@ -4332,6 +4332,15 @@ static int wm8994_component_probe(struct snd_soc_component *component)
 		break;
 	}
 
+	/*
+	 * Disable FLL lock IRQ wait - the webOS WM8994 driver from 2012
+	 * doesn't wait for FLL lock at all. On HP TouchPad, the FLL lock
+	 * IRQ is not delivered (no main codec IRQ line connected), causing
+	 * a 10ms timeout on every playback. By setting fll_locked_irq=false,
+	 * the driver will just msleep(5) instead of waiting for completion.
+	 */
+	wm8994->fll_locked_irq = false;
+#if 0
 	wm8994->fll_locked_irq = true;
 	for (i = 0; i < ARRAY_SIZE(wm8994->fll_locked); i++) {
 		ret = wm8994_request_irq(wm8994->wm8994,
@@ -4341,6 +4350,7 @@ static int wm8994_component_probe(struct snd_soc_component *component)
 		if (ret != 0)
 			wm8994->fll_locked_irq = false;
 	}
+#endif
 
 	/* Make sure we can read from the GPIOs if they're inputs */
 	pm_runtime_get_sync(component->dev);

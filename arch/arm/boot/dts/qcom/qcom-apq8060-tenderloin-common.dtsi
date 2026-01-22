@@ -1543,6 +1543,29 @@
 		};
 	};
 
+	/*
+	 * Primary MI2S pins for WM8958 codec
+	 * From webOS gpiomux-tenderloin.c:
+	 * GPIO 101: MI2S WS (word select/LRCLK)
+	 * GPIO 102: MI2S SCLK (bit clock)
+	 * GPIO 103: MI2S MCLK (master clock)
+	 * GPIO 107: MI2S SD3 (data line - codec uses SD3)
+	 */
+	pri_mi2s_pins: pri-mi2s-state {
+		clk-pins {
+			pins = "gpio101", "gpio102", "gpio103";
+			function = "mi2s";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		data-pins {
+			pins = "gpio107";
+			function = "mi2s";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
 	/* Headphone UART pins */
 	headphone_uart_pins: gsbi12-serial-state {
 		rx-pins {
@@ -2575,12 +2598,13 @@
 &q6afedai {
 	dai@16 {
 		reg = <PRIMARY_MI2S_RX>;
-		qcom,sd-lines = <0 1>;
+		/* TouchPad uses SD3 (GPIO 107) for codec data */
+		qcom,sd-lines = <3>;
 	};
 
 	dai@17 {
 		reg = <PRIMARY_MI2S_TX>;
-		qcom,sd-lines = <0>;
+		qcom,sd-lines = <3>;
 	};
 };
 
@@ -2588,6 +2612,10 @@
 	sound: sound {
 		compatible = "qcom,apq8060-sndcard";
 		model = "HP-TouchPad";
+
+		/* MI2S pin configuration for codec connection */
+		pinctrl-names = "default";
+		pinctrl-0 = <&pri_mi2s_pins>;
 
 		/* DAPM audio routing
 		 * IMPORTANT: Speakers use WM8958 SPKOUT pins, NOT LINEOUT!

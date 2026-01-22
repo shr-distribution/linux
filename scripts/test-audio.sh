@@ -227,11 +227,19 @@ configure_mixer() {
     run_on_device "cd /tmp && ./tinymix set 'SPKL DAC1 Switch' 1" 2
     run_on_device "cd /tmp && ./tinymix set 'SPKR DAC1 Switch' 1" 2
 
-    # Set volumes
+    # Enable speaker output switches (critical for audio output!)
+    log_info "Enabling speaker output switches..."
+    run_on_device "cd /tmp && ./tinymix set 'SPKL Output Switch' 1" 2
+    run_on_device "cd /tmp && ./tinymix set 'SPKR Output Switch' 1" 2
+
+    # Set volumes to maximum
     log_info "Setting volumes..."
-    run_on_device "cd /tmp && ./tinymix set 'Speaker Volume' 60 60" 2
-    run_on_device "cd /tmp && ./tinymix set 'Output Volume' 60 60" 2
+    run_on_device "cd /tmp && ./tinymix set 'Speaker Volume' 63 63" 2
+    run_on_device "cd /tmp && ./tinymix set 'Speaker Boost Volume' 7 7" 2
+    run_on_device "cd /tmp && ./tinymix set 'Speaker Mixer Volume' 3 3" 2
+    run_on_device "cd /tmp && ./tinymix set 'Output Volume' 63 63" 2
     run_on_device "cd /tmp && ./tinymix set 'AIF1DAC1 Volume' 96 96" 2
+    run_on_device "cd /tmp && ./tinymix set 'DAC1 Volume' 96 96" 2
 
     log_result "Mixer configured for SPKOUT path"
 }
