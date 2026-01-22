@@ -16,6 +16,7 @@
  * - APPSS Fabric: CPU and memory interface
  * - System Fabric: System peripherals and DMA
  * - MMSS Fabric: Multimedia subsystem (display, camera, video)
+ * - Daytona Fabric: Peripheral bus (SDCC, ADM DMA)
  * - System FPB: System Fast Peripheral Bus
  * - CPSS FPB: CPU Subsystem Fast Peripheral Bus
  */
@@ -54,6 +55,7 @@
 #define SFAB_SLV_MSS			22
 #define SFAB_SLV_LPASS			23
 #define SFAB_SLV_MMSS_FPB		24
+#define SFAB_TO_DFAB			25
 
 /* MMSS Fabric - Multimedia subsystem */
 #define MMFAB_MAS_MDP_PORT0		0
@@ -72,6 +74,27 @@
 #define MMFAB_TO_APPSS			13
 #define MMFAB_SLV_SMI			14
 #define MMFAB_SLV_MM_IMEM		15
+
+/*
+ * Daytona Fabric (DFAB) - Peripheral bus
+ *
+ * DFAB connects slower peripherals (SDCC, ADM DMA) to the system fabric.
+ * The webOS kernel managed DFAB bandwidth via voter clocks (dfab_sdc*_clk).
+ * In mainline, this is handled by the interconnect framework.
+ */
+#define DFAB_MAS_SDC1			0
+#define DFAB_MAS_SDC2			1
+#define DFAB_MAS_SDC3			2
+#define DFAB_MAS_SDC4			3
+#define DFAB_MAS_SDC5			4
+#define DFAB_MAS_ADM0_MASTER		5
+#define DFAB_MAS_ADM1_MASTER		6
+#define DFAB_TO_SFAB			7
+#define DFAB_SLV_SDC1			8
+#define DFAB_SLV_SDC2			9
+#define DFAB_SLV_SDC3			10
+#define DFAB_SLV_SDC4			11
+#define DFAB_SLV_SDC5			12
 
 /* System FPB - Slow peripheral bus for system */
 #define SFPB_MAS_SYSTEM			0
