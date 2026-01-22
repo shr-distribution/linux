@@ -108,10 +108,128 @@ LowFree:          592016 kB
 
 ---
 
+## Kernel Configuration Comparison
+
+Detailed comparison of `reference/webos-2.6.35-kernel-config` vs `arch/arm/configs/tenderloin_debug_defconfig`:
+
+### Timer/Scheduler (HIGH IMPACT)
+
+| Option | webOS 2.6.35 | Linux 6.18 | Impact |
+|--------|--------------|------------|--------|
+| CONFIG_HZ | **100** | **1000** | 10x more timer interrupts on 6.18 |
+| CONFIG_PREEMPT | y | y | Same |
+| CONFIG_NO_HZ | y | y | Same |
+| CONFIG_HIGH_RES_TIMERS | y | y | Same |
+
+**Analysis:** HZ=1000 means 10x more timer interrupts per second. Each interrupt requires context switching overhead which can significantly impact memory-intensive benchmarks like `dd`. This is likely a **major contributor** to the performance difference.
+
+### Memory Management (HIGH IMPACT)
+
+| Option | webOS 2.6.35 | Linux 6.18 | Impact |
+|--------|--------------|------------|--------|
+| CONFIG_VMSPLIT | **2G/2G** | 3G/1G (default) | Different VM layout |
+| CONFIG_CMA | n/a | **256 MB** | Large reservation on 6.18 |
+| CONFIG_MEMCG | n | **y** | Cgroups memory tracking overhead |
+| CONFIG_KSM | n | **y** | Kernel samepage merging overhead |
+| CONFIG_HIGHMEM | y | y | Same (but different amounts) |
+| CONFIG_FLATMEM | y | (default) | Same |
+| CONFIG_SLUB | y | y | Same allocator |
+| CONFIG_BOUNCE | **y** | n | Bounce buffers on webOS |
+| CONFIG_SWAP | **y** | n | Swap enabled on webOS |
+
+**Analysis:**
+- VMSPLIT_2G gives webOS equal kernel/user space, potentially better for memory operations
+- CMA reserves 256MB on 6.18, fragmenting available memory
+- MEMCG adds overhead for every allocation to track cgroup membership
+- KSM background scanning adds CPU overhead
+
+### ARM-Specific (MEDIUM IMPACT)
+
+| Option | webOS 2.6.35 | Linux 6.18 | Impact |
+|--------|--------------|------------|--------|
+| CONFIG_ARM_DMA_MEM_BUFFERABLE | **y** | n | Write-combining for DMA on webOS |
+| CONFIG_OABI_COMPAT | y | n | Old ABI compat on webOS |
+| CONFIG_ARM_THUMB | y | n | Thumb instructions on webOS |
+| VFPv3 | explicit | implicit | Same FPU |
+| NEON | y | y | Same SIMD |
+
+**Analysis:** ARM_DMA_MEM_BUFFERABLE enables write-combining for DMA memory regions, which can significantly improve memory throughput for certain operations.
+
+### Debug/Tracing (MEDIUM IMPACT)
+
+| Option | webOS 2.6.35 | Linux 6.18 | Impact |
+|--------|--------------|------------|--------|
+| CONFIG_FUNCTION_TRACER | n | **y** | Function call tracing overhead |
+| CONFIG_FTRACE_SYSCALLS | n | **y** | Syscall tracing overhead |
+| CONFIG_DYNAMIC_DEBUG | n | **y** | Dynamic debug infrastructure |
+| CONFIG_SLUB_DEBUG | **y** | n | SLUB debugging (disabled on 6.18 - good) |
+| CONFIG_DEBUG_INFO_DWARF4 | n | **y** | Larger kernel image |
+
+**Analysis:** Function tracing adds overhead to every function call. While not enormous, it accumulates in tight loops like memory copies.
+
+### Compiler Optimization
+
+| Option | webOS 2.6.35 | Linux 6.18 | Impact |
+|--------|--------------|------------|--------|
+| CONFIG_CC_OPTIMIZE_FOR_SIZE | **y** | n (speed default) | Smaller but slower code on webOS? |
+
+**Analysis:** Surprisingly, webOS uses -Os (optimize for size) which typically produces slower code than -O2. This should favor 6.18, yet 6.18 is slower. This suggests the other factors outweigh compiler optimization.
+
+---
+
+## Recommendations
+
+Based on the configuration analysis, try these changes to improve 6.18 performance:
+
+### High Priority
+
+1. **Reduce HZ to 100 or 250:**
+   ```
+   CONFIG_HZ_100=y  (or CONFIG_HZ_250=y)
+   # CONFIG_HZ_1000 is not set
+   ```
+
+2. **Reduce CMA reservation:**
+   ```
+   CONFIG_CMA_SIZE_MBYTES=64  (or 128, down from 256)
+   ```
+
+3. **Add VMSPLIT_2G:**
+   ```
+   CONFIG_VMSPLIT_2G=y
+   ```
+
+### Medium Priority
+
+4. **Disable cgroups memory controller (if not needed):**
+   ```
+   # CONFIG_MEMCG is not set
+   ```
+
+5. **Disable KSM (if not needed):**
+   ```
+   # CONFIG_KSM is not set
+   ```
+
+6. **Disable function tracing for production:**
+   ```
+   # CONFIG_FUNCTION_TRACER is not set
+   # CONFIG_FTRACE_SYSCALLS is not set
+   ```
+
+### Experimental
+
+7. **Enable ARM DMA bufferable (needs testing):**
+   ```
+   CONFIG_ARM_DMA_MEM_BUFFERABLE=y
+   ```
+
+---
+
 ## Notes
 
 - The `dd` test measures practical throughput including CPU and kernel overhead, not raw hardware bandwidth
 - tmpfs performance is lower due to filesystem layer overhead
 - Results may vary based on system load and memory pressure
-- The 2x memory bandwidth difference suggests kernel memory management optimizations may be needed
-- Consider investigating: CONFIG_HIGHMEM, CMA size, memory allocator, ARM copy routines
+- The 2x memory bandwidth difference is likely due to cumulative effects of HZ, CMA, MEMCG, and tracing
+- A `tenderloin_fast_defconfig` could be created with these optimizations for performance testing
