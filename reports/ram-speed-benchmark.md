@@ -30,14 +30,17 @@ Tests performed using BusyBox `dd` with `time` for measurement:
 **Kernel:** 6.18.x (mainline port)
 **OS:** LuneOS 1.0 (initramfs debug environment)
 **Commit:** c86605b9dcfa
+**CPU:** 2x Scorpion @ 1512 MHz, governor: performance
 
 ### Results
 
 | Test | Size | Time | Speed |
 |------|------|------|-------|
-| Memory bandwidth (zero→null) | 512 MB | 1.111s | **461 MB/s** |
-| tmpfs write | 128 MB | 0.943s | **136 MB/s** |
-| tmpfs read | 128 MB | 1.429s | **90 MB/s** |
+| Memory bandwidth (zero→null) | 512 MB | 1.110s (avg of 5) | **461 MB/s** |
+| tmpfs write | 24 MB | 0.575s (avg of 3) | **42 MB/s** |
+| tmpfs read | 24 MB | 0.222s (avg of 3) | **108 MB/s** |
+
+*Note: Multiple runs showed consistent ~1.1s for memory bandwidth. tmpfs read varies due to cache effects.*
 
 ### Memory Info
 
@@ -83,13 +86,13 @@ LowFree:          592016 kB
 
 ---
 
-## Comparison Summary
+## Comparison Summary (Fair Comparison - Same Parameters)
 
 | Metric | Linux 6.18 | Linux 2.6.35 | Difference |
 |--------|------------|--------------|------------|
-| Memory bandwidth | 461 MB/s | 923 MB/s | **-50%** (6.18 slower) |
-| tmpfs write | 136 MB/s (128MB) | 56 MB/s (24MB) | *(different test sizes)* |
-| tmpfs read | 90 MB/s (128MB) | 128 MB/s (24MB) | *(different test sizes)* |
+| Memory bandwidth (512 MB) | 461 MB/s | 923 MB/s | **-50%** (6.18 slower) |
+| tmpfs write (24 MB) | 42 MB/s | 56 MB/s | **-25%** (6.18 slower) |
+| tmpfs read (24 MB) | 108 MB/s | 128 MB/s | **-16%** (6.18 slower) |
 
 ### Key Findings
 
