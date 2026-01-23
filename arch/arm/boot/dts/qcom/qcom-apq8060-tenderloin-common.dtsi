@@ -2617,14 +2617,11 @@
 	status = "okay";
 	dr_mode = "otg";
 	/*
-	 * USB HS bandwidth: 400 MB/s average, 800 MB/s peak.
-	 * Much higher than USB 2.0 theoretical max (60 MB/s) to ensure
-	 * USB has strong priority on the shared APPSS fabric when
-	 * MDP display scanout is consuming memory bandwidth.
-	 * Previous values (300/600 MB/s) still caused USB crashes.
+	 * USB bandwidth removed - webOS didn't use explicit bandwidth voting.
+	 * Instead, it used dfab_usb_hs_clk as a fabric clock voter.
+	 * With MDP now using SMI memory (separate MMSS fabric path),
+	 * there's no contention with USB on the EBI path.
 	 */
-	qcom,icc-bw-avg-kbps = <409600>;   /* 400 * 1024 */
-	qcom,icc-bw-peak-kbps = <819200>;  /* 800 * 1024 */
 };
 &usb_hs1_phy {
 	v3p3-supply = <&pm8058_l6>;
