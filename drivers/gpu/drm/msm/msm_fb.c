@@ -96,7 +96,9 @@ int msm_framebuffer_prepare(struct drm_framebuffer *fb, bool needs_dirtyfb)
 		} else {
 			/*
 			 * No IOMMU/VM - use physical DMA address directly.
-			 * Pin pages and get address from scatter-gather table.
+			 * For contiguous allocations, use the dma_addr from
+			 * dma_alloc_wc() since sg_dma_address returns a
+			 * different (remapped) address after dma_map_sgtable.
 			 */
 			struct msm_gem_object *msm_obj = to_msm_bo(fb->obj[i]);
 			struct page **pages;
@@ -108,8 +110,14 @@ int msm_framebuffer_prepare(struct drm_framebuffer *fb, bool needs_dirtyfb)
 				msm_gem_unlock(fb->obj[i]);
 				return ret;
 			}
-			/* Use physical address from sgt */
-			msm_fb->iova[i] = sg_dma_address(msm_obj->sgt->sgl);
+			/*
+			 * Use original dma_addr for contiguous allocations,
+			 * fall back to sgt for non-contiguous.
+			 */
+			if (msm_obj->dma_addr)
+				msm_fb->iova[i] = msm_obj->dma_addr;
+			else
+				msm_fb->iova[i] = sg_dma_address(msm_obj->sgt->sgl);
 			msm_gem_unlock(fb->obj[i]);
 			ret = 0;
 		}
@@ -285,6 +293,7 @@ msm_alloc_stolen_fb(struct drm_device *dev, int w, int h, int p, uint32_t format
 	};
 	struct drm_gem_object *bo;
 	struct drm_framebuffer *fb;
+	void *vaddr;
 	int size;
 
 	/* allocate backing bo */
@@ -302,6 +311,17 @@ msm_alloc_stolen_fb(struct drm_device *dev, int w, int h, int p, uint32_t format
 	}
 
 	msm_gem_object_set_name(bo, "stolenfb");
+
+	/*
+	 * Clear the framebuffer immediately after allocation to prevent
+	 * artifacts from uninitialized memory. This must happen before
+	 * the buffer address is programmed into the display hardware.
+	 */
+	vaddr = msm_gem_get_vaddr(bo);
+	if (!IS_ERR(vaddr)) {
+		memset(vaddr, 0, size);
+		msm_gem_put_vaddr(bo);
+	}
 
 	fb = msm_framebuffer_init(dev,
 				  drm_get_format_info(dev, mode_cmd.pixel_format,
