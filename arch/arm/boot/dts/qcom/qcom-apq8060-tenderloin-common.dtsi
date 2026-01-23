@@ -939,27 +939,26 @@
 			qcom,lcdc-align-lsb;
 
 			/*
-			 * MDP interconnect paths to SMI memory on MMSS fabric.
+			 * MDP interconnect paths - vote on BOTH SMI and EBI.
 			 *
-			 * By routing to MMFAB_SLV_SMI, display traffic stays on
-			 * the MMSS fabric and uses SMI memory at 0x38300000,
-			 * avoiding contention with USB on the EBI bus.
+			 * WebOS voted for bandwidth on both paths simultaneously,
+			 * even when only using SMI for framebuffers. This appears
+			 * necessary for proper fabric clock scaling on MSM8660.
 			 *
-			 * This matches webOS MSM_BUS_SLAVE_SMI configuration.
+			 * SMI paths: MDP -> MMSS fabric -> SMI (dedicated VRAM)
+			 * EBI paths: MDP -> MMSS fabric -> APPSS fabric -> EBI (system RAM)
 			 */
 			interconnects = <&mmss_fabric MMFAB_MAS_MDP_PORT0 &mmss_fabric MMFAB_SLV_SMI>,
-					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &mmss_fabric MMFAB_SLV_SMI>;
-			interconnect-names = "mdp0-smi", "mdp1-smi";
+					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &mmss_fabric MMFAB_SLV_SMI>,
+					<&mmss_fabric MMFAB_MAS_MDP_PORT0 &apps_fabric AFAB_SLV_EBI_CH0>,
+					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "mdp0-smi", "mdp1-smi", "mdp0-ebi", "mdp1-ebi";
 
 			/*
 			 * MDP interconnect bandwidth from webOS board-tenderloin.c
 			 * mdp_app_vectors (two 1024x768 layers):
 			 *   ab = 377,487,360 (377 MB/s average)
 			 *   ib = 471,859,200 (471 MB/s peak/instantaneous)
-			 *
-			 * Using app values (2 layers) since modetest uses overlay plane.
-			 * Home values (334/417 MB/s) caused PRIMARY_INTF_UNDERRUN errors
-			 * when two planes were active.
 			 */
 			qcom,icc-bw-avg-kbps = <368640>;   /* 377487360 / 1024 */
 			qcom,icc-bw-peak-kbps = <460800>;  /* 471859200 / 1024 */
@@ -1084,10 +1083,11 @@
 			#clock-cells = <0>;
 		};
 
-		/* 32MiB for scanouts, drm/msm doesn't use the base address */
+		/* 32MiB for scanouts in EBI memory */
 		scanout_mem: scanout_mem@0 {
+			compatible = "shared-dma-pool";
 			reg = <0x0 0x2000000>;
-			no-map;
+			/* no-map removed to allow kernel to clear framebuffer */
 		};
 	};
 
