@@ -720,6 +720,22 @@ static int mdp4_setup_interconnect(struct platform_device *pdev)
 }
 
 /*
+ * Disable bootloader display output immediately to prevent artifacts.
+ * The bootloader (moboot) leaves LCDC running with its own framebuffer.
+ * We disable LCDC as early as possible to cut off the old display,
+ * making the screen go black until DRM properly initializes.
+ */
+static void mdp4_disable_bootloader_display(void __iomem *mmio)
+{
+	/* REG_MDP4_LCDC_ENABLE = 0xc0000 */
+	writel(0, mmio + 0xc0000);
+	/* REG_MDP4_DTV_ENABLE = 0xd0000 */
+	writel(0, mmio + 0xd0000);
+	/* Small delay for the disable to take effect */
+	mdelay(1);
+}
+
+/*
  * Clear the reserved SMI framebuffer memory to remove artifacts from
  * previous boots (bootloader display, old kernel framebuffer, etc.).
  * This prevents visual garbage on screen during boot before userspace
@@ -801,6 +817,14 @@ static int mdp4_probe(struct platform_device *pdev)
 	mdp4_kms->mmio = msm_ioremap(pdev, NULL);
 	if (IS_ERR(mdp4_kms->mmio))
 		return PTR_ERR(mdp4_kms->mmio);
+
+	/*
+	 * Disable bootloader display IMMEDIATELY after getting MMIO access.
+	 * This cuts off moboot's display output to prevent artifacts from
+	 * the bootloader's framebuffer showing during kernel init.
+	 * Screen will go black until DRM properly initializes.
+	 */
+	mdp4_disable_bootloader_display(mdp4_kms->mmio);
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
