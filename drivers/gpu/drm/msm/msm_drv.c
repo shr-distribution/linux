@@ -153,7 +153,22 @@ static int msm_drm_init(struct device *dev, const struct drm_driver *drv,
 
 	dma_set_max_seg_size(dev, UINT_MAX);
 
-	/* Bind all our sub-components: */
+	/*
+	 * Initialize KMS BEFORE binding GPU components. This ensures that
+	 * if KMS init returns -EPROBE_DEFER (waiting for panel/bridge),
+	 * no GPU GEM objects have been allocated yet. This avoids the
+	 * "Memory manager not clean during takedown" warning that occurred
+	 * when GPU GEM objects were allocated but not cleaned up properly
+	 * on probe deferral.
+	 */
+	if (priv->kms_init) {
+		dev_info(dev, "MSM_DRV: calling msm_drm_kms_init\n");
+		ret = msm_drm_kms_init(dev, drv);
+		if (ret)
+			goto err_put_dev;
+	}
+
+	/* Bind all our sub-components (GPU) after KMS init succeeds: */
 	if (gpu_ops)
 		ret = gpu_ops->bind(dev, dev, NULL);
 	else
@@ -170,13 +185,6 @@ static int msm_drm_init(struct device *dev, const struct drm_driver *drv,
 	if (ret)
 		goto err_msm_uninit;
 #endif
-
-	if (priv->kms_init) {
-		dev_info(dev, "MSM_DRV: calling msm_drm_kms_init\n");
-		ret = msm_drm_kms_init(dev, drv);
-		if (ret)
-			goto err_put_dev;
-	}
 
 	ret = drm_dev_register(ddev, 0);
 	if (ret)
