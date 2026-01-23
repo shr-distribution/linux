@@ -1203,6 +1203,12 @@
 			interconnects = <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "video-mem";
+			/*
+			 * Video codec bandwidth from webOS vcd_res_tracker.h.
+			 * 164 MB/s average, 1309 MB/s peak for 1080p encode/decode.
+			 */
+			qcom,icc-bw-avg-kbps = <167936>;   /* 164 * 1024 */
+			qcom,icc-bw-peak-kbps = <1340416>; /* 1309 * 1024 */
 			status = "disabled";
 		};
 	};

@@ -94,6 +94,7 @@ enum {
 	MSM8660_DFAB_SLV_SDC3,
 	MSM8660_DFAB_SLV_SDC4,
 	MSM8660_DFAB_SLV_SDC5,
+	MSM8660_DFAB_MAS_USB_HS,	/* USB HS DFAB voter */
 
 	/* MMSS Fabric nodes */
 	MSM8660_MMFAB_MAS_MDP_PORT0,
@@ -125,10 +126,12 @@ enum {
  * performance: fast when other subsystems (like display) happen to
  * request bandwidth, slow otherwise.
  *
- * 200 MHz is conservative - fast enough for reasonable peripheral
- * performance but below the ~300 MHz typical active rate.
+ * 384 MHz keeps fabric fast during concurrent MDP display scanout
+ * and USB gadget traffic. webOS docs: "AXI bus frequency needs to be
+ * kept at maximum value while USB data transfers are happening."
+ * 266 MHz was insufficient - USB crashed during display activity.
  */
-#define MSM8660_FABRIC_MIN_RATE		200000000UL	/* 200 MHz */
+#define MSM8660_FABRIC_MIN_RATE		384000000UL	/* 384 MHz */
 
 static const struct clk_bulk_data msm8660_afab_clocks[] = {
 	{ .id = "bus" },
@@ -363,6 +366,13 @@ static const struct msm8660_icc_desc msm8660_mmfab = {
  *
  * DFAB connects slower peripherals to SFAB via the DFAB_TO_SFAB gateway.
  * SDCC controllers (eMMC, SD card) connect here.
+ *
+ * USB HS is included as a DFAB voter for compatibility with the legacy
+ * webOS kernel clock voting mechanism. The legacy kernel used dfab_usb_hs_clk
+ * to vote on DFAB clock, with the comment: "if usb link is in sps there is
+ * no need for usb pclk as daytona fabric clock will be used instead".
+ * This keeps DFAB clock stable when USB is active, preventing USB crashes
+ * during concurrent display (MDP) and USB activity.
  */
 DEFINE_QNODE(dfab_mas_sdc1, MSM8660_DFAB_MAS_SDC1, 8, MSM8660_DFAB_TO_SFAB);
 DEFINE_QNODE(dfab_mas_sdc2, MSM8660_DFAB_MAS_SDC2, 8, MSM8660_DFAB_TO_SFAB);
@@ -377,6 +387,8 @@ DEFINE_QNODE(dfab_slv_sdc2, MSM8660_DFAB_SLV_SDC2, 8);
 DEFINE_QNODE(dfab_slv_sdc3, MSM8660_DFAB_SLV_SDC3, 8);
 DEFINE_QNODE(dfab_slv_sdc4, MSM8660_DFAB_SLV_SDC4, 8);
 DEFINE_QNODE(dfab_slv_sdc5, MSM8660_DFAB_SLV_SDC5, 8);
+/* USB HS DFAB voter - keeps DFAB clock stable during USB activity */
+DEFINE_QNODE(dfab_mas_usb_hs, MSM8660_DFAB_MAS_USB_HS, 8, MSM8660_DFAB_TO_SFAB);
 
 static struct msm8660_icc_node * const msm8660_dfab_nodes[] = {
 	[DFAB_MAS_SDC1] = &dfab_mas_sdc1,
@@ -392,6 +404,7 @@ static struct msm8660_icc_node * const msm8660_dfab_nodes[] = {
 	[DFAB_SLV_SDC3] = &dfab_slv_sdc3,
 	[DFAB_SLV_SDC4] = &dfab_slv_sdc4,
 	[DFAB_SLV_SDC5] = &dfab_slv_sdc5,
+	[DFAB_MAS_USB_HS] = &dfab_mas_usb_hs,
 };
 
 static const struct msm8660_icc_desc msm8660_dfab = {

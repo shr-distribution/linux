@@ -34,12 +34,36 @@
 #define HS_PHY_DIG_CLAMP_N		BIT(16)
 #define HS_PHY_POR_ASSERT		BIT(0)
 
+/*
+ * USB HS bandwidth values for stability with display active.
+ * The TouchPad experiences USB crashes when MDP display is enabled.
+ * Requesting higher bandwidth ensures USB gets priority on the shared
+ * APPSS fabric path to memory, preventing starvation during concurrent
+ * display scanout operations.
+ */
+#define USB_HS_DEFAULT_BW_AVG_KBPS	(300 * 1024)	/* 300 MB/s avg */
+#define USB_HS_DEFAULT_BW_PEAK_KBPS	(600 * 1024)	/* 600 MB/s peak */
+
+/*
+ * DFAB bandwidth for USB HS clock voter.
+ * The webOS kernel used dfab_usb_hs_clk to vote on DFAB, keeping it stable
+ * during USB activity. This prevents USB crashes during concurrent display
+ * (MDP) operations. Higher values ensure stronger fabric priority for USB.
+ * Initial testing at 64 MB/s showed USB crashes, increased to 128 MB/s.
+ */
+#define USB_HS_DFAB_BW_AVG_KBPS		(128 * 1024)	/* 128 MB/s */
+#define USB_HS_DFAB_BW_PEAK_KBPS	(128 * 1024)	/* 128 MB/s */
+
 struct ci_hdrc_msm {
 	struct platform_device *ci;
 	struct clk *core_clk;
 	struct clk *iface_clk;
 	struct clk *fs_clk;
+	struct clk *dfab_clk;	/* DFAB clock voter (webOS dfab_usb_hs_clk) */
 	struct icc_path *icc_path;
+	struct icc_path *icc_path_dfab;	/* DFAB voter path */
+	u32 icc_bw_avg;		/* average bandwidth in kBps */
+	u32 icc_bw_peak;	/* peak bandwidth in kBps */
 	struct ci_hdrc_platform_data pdata;
 	struct reset_controller_dev rcdev;
 	bool secondary_phy;
@@ -86,7 +110,7 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 
 	switch (event) {
 	case CI_HDRC_CONTROLLER_RESET_EVENT:
-		dev_dbg(dev, "CI_HDRC_CONTROLLER_RESET_EVENT received\n");
+		dev_info(dev, "CI_HDRC_CONTROLLER_RESET_EVENT received\n");
 
 		hw_phymode_configure(ci);
 		if (msm_ci->secondary_phy) {
@@ -210,9 +234,42 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 	if (IS_ERR(clk))
 		return PTR_ERR(clk);
 
+	/*
+	 * DFAB clock voter - webOS kernel used dfab_usb_hs_clk to keep DFAB
+	 * running at a stable rate during USB activity. This prevents USB
+	 * crashes when MDP display is active (both share memory fabric).
+	 * Optional since not all platforms need this.
+	 */
+	ci->dfab_clk = devm_clk_get_optional(&pdev->dev, "dfab");
+	if (IS_ERR(ci->dfab_clk))
+		return PTR_ERR(ci->dfab_clk);
+
 	ci->icc_path = devm_of_icc_get(&pdev->dev, "usb-mem");
 	if (IS_ERR(ci->icc_path))
 		return PTR_ERR(ci->icc_path);
+
+	/*
+	 * DFAB interconnect path for USB HS clock voter.
+	 * The webOS kernel used dfab_usb_hs_clk to vote on DFAB, keeping it
+	 * stable during USB activity. This prevents USB crashes during
+	 * concurrent display (MDP) operations. Make it optional since not
+	 * all platforms have this configured.
+	 */
+	ci->icc_path_dfab = devm_of_icc_get(&pdev->dev, "usb-dfab");
+	if (IS_ERR(ci->icc_path_dfab)) {
+		if (PTR_ERR(ci->icc_path_dfab) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		/* DFAB path is optional, continue without it */
+		ci->icc_path_dfab = NULL;
+	}
+
+	/* Read bandwidth from device tree if specified, otherwise use defaults */
+	ci->icc_bw_avg = USB_HS_DEFAULT_BW_AVG_KBPS;
+	ci->icc_bw_peak = USB_HS_DEFAULT_BW_PEAK_KBPS;
+	of_property_read_u32(pdev->dev.of_node, "qcom,icc-bw-avg-kbps",
+			     &ci->icc_bw_avg);
+	of_property_read_u32(pdev->dev.of_node, "qcom,icc-bw-peak-kbps",
+			     &ci->icc_bw_peak);
 
 	ci->base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(ci->base))
@@ -245,15 +302,48 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 		goto err_iface;
 
 	/*
+	 * Enable DFAB clock voter at 64 MHz - matches webOS dfab_usb_hs_clk.
+	 * This keeps Daytona Fabric clock stable during USB activity,
+	 * preventing crashes when MDP display is scanning out memory.
+	 */
+	if (ci->dfab_clk) {
+		ret = clk_set_rate(ci->dfab_clk, 64000000);
+		if (ret)
+			dev_warn(&pdev->dev, "DFAB clock rate set failed: %d\n", ret);
+		ret = clk_prepare_enable(ci->dfab_clk);
+		if (ret) {
+			dev_err(&pdev->dev, "DFAB clock enable failed: %d\n", ret);
+			goto err_dfab_clk;
+		}
+		dev_info(&pdev->dev, "USB HS: DFAB clock enabled at 64 MHz\n");
+	}
+
+	/*
 	 * Set interconnect bandwidth for USB HS.
 	 * Use sustained average bandwidth (not just peak) to prevent bursty
 	 * traffic from conflicting with display scanout on the shared
-	 * APPSS fabric memory path. This reduces blue screen flickering
-	 * during USB activity on APQ8060.
+	 * APPSS fabric memory path. Bandwidth values are read from device
+	 * tree (qcom,icc-bw-avg-kbps and qcom,icc-bw-peak-kbps properties).
 	 */
-	ret = icc_set_bw(ci->icc_path, MBps_to_icc(60), MBps_to_icc(120));
+	dev_info(&pdev->dev, "USB HS: Setting interconnect bandwidth avg=%u peak=%u kBps\n",
+		 ci->icc_bw_avg, ci->icc_bw_peak);
+	ret = icc_set_bw(ci->icc_path, ci->icc_bw_avg, ci->icc_bw_peak);
 	if (ret)
 		goto err_icc;
+
+	/*
+	 * Set DFAB bandwidth to keep Daytona Fabric clock stable.
+	 * This matches the webOS kernel's dfab_usb_hs_clk clock voter which
+	 * kept DFAB running during USB activity, preventing USB crashes
+	 * when display (MDP) is accessing memory concurrently.
+	 */
+	if (ci->icc_path_dfab) {
+		ret = icc_set_bw(ci->icc_path_dfab,
+				 USB_HS_DFAB_BW_AVG_KBPS,
+				 USB_HS_DFAB_BW_PEAK_KBPS);
+		if (ret)
+			goto err_dfab;
+	}
 
 	ret = ci_hdrc_msm_mux_phy(ci, pdev);
 	if (ret)
@@ -285,8 +375,14 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 	return 0;
 
 err_mux:
+	if (ci->icc_path_dfab)
+		icc_set_bw(ci->icc_path_dfab, 0, 0);
+err_dfab:
 	icc_set_bw(ci->icc_path, 0, 0);
 err_icc:
+	if (ci->dfab_clk)
+		clk_disable_unprepare(ci->dfab_clk);
+err_dfab_clk:
 	clk_disable_unprepare(ci->iface_clk);
 err_iface:
 	clk_disable_unprepare(ci->core_clk);
@@ -299,7 +395,11 @@ static void ci_hdrc_msm_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(&pdev->dev);
 	ci_hdrc_remove_device(ci->ci);
+	if (ci->icc_path_dfab)
+		icc_set_bw(ci->icc_path_dfab, 0, 0);
 	icc_set_bw(ci->icc_path, 0, 0);
+	if (ci->dfab_clk)
+		clk_disable_unprepare(ci->dfab_clk);
 	clk_disable_unprepare(ci->iface_clk);
 	clk_disable_unprepare(ci->core_clk);
 }

@@ -6,6 +6,7 @@
 
 #include <linux/delay.h>
 #include <linux/interconnect.h>
+#include <linux/of_reserved_mem.h>
 
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
@@ -613,15 +614,38 @@ static const struct dev_pm_ops mdp4_pm_ops = {
 	.complete = msm_kms_pm_complete,
 };
 
+/* Default bandwidth values (in kBps) - used if not specified in DT */
+#define MDP4_DEFAULT_BW_AVG_KBPS	(500 * 1024)	/* 500 MB/s */
+#define MDP4_DEFAULT_BW_PEAK_KBPS	(700 * 1024)	/* 700 MB/s */
+
 /*
  * Set up interconnect paths for MDP to memory bandwidth.
  * This coordinates with the bus fabric to prevent USB RNDIS failures
  * when MDP is accessing memory on APQ8060/MSM8660.
+ *
+ * Bandwidth can be configured via device tree properties:
+ *   qcom,icc-bw-avg-kbps  - average bandwidth in kBps
+ *   qcom,icc-bw-peak-kbps - peak bandwidth in kBps
  */
 static int mdp4_setup_interconnect(struct platform_device *pdev)
 {
-	struct icc_path *path0 = msm_icc_get(&pdev->dev, "mdp0-mem");
-	struct icc_path *path1 = msm_icc_get(&pdev->dev, "mdp1-mem");
+	struct device_node *np = pdev->dev.of_node;
+	struct icc_path *path0;
+	struct icc_path *path1;
+	u32 avg_bw = MDP4_DEFAULT_BW_AVG_KBPS;
+	u32 peak_bw = MDP4_DEFAULT_BW_PEAK_KBPS;
+
+	/*
+	 * Try SMI memory paths first (APQ8060/MSM8660 with dedicated VRAM),
+	 * fall back to EBI memory paths for other platforms.
+	 */
+	path0 = msm_icc_get(&pdev->dev, "mdp0-smi");
+	if (IS_ERR_OR_NULL(path0))
+		path0 = msm_icc_get(&pdev->dev, "mdp0-mem");
+
+	path1 = msm_icc_get(&pdev->dev, "mdp1-smi");
+	if (IS_ERR_OR_NULL(path1))
+		path1 = msm_icc_get(&pdev->dev, "mdp1-mem");
 
 	if (IS_ERR(path0))
 		return PTR_ERR(path0);
@@ -636,18 +660,17 @@ static int mdp4_setup_interconnect(struct platform_device *pdev)
 		return 0;
 	}
 
-	/*
-	 * Set initial bandwidth based on webOS kernel board-tenderloin.c values.
-	 * For 1024x768@60Hz with two layers:
-	 *   ab (average) = 377487360 (~360 MBps)
-	 *   ib (peak)    = 471859200 (~450 MBps)
-	 * Using webOS values with ~50% headroom for safety margin.
-	 * TODO: Calculate dynamically based on display mode.
-	 */
-	icc_set_bw(path0, MBps_to_icc(500), MBps_to_icc(700));
+	/* Read bandwidth from device tree if specified */
+	of_property_read_u32(np, "qcom,icc-bw-avg-kbps", &avg_bw);
+	of_property_read_u32(np, "qcom,icc-bw-peak-kbps", &peak_bw);
+
+	dev_dbg(&pdev->dev, "MDP interconnect bandwidth: avg=%u kBps, peak=%u kBps\n",
+		avg_bw, peak_bw);
+
+	icc_set_bw(path0, avg_bw, peak_bw);
 
 	if (!IS_ERR_OR_NULL(path1))
-		icc_set_bw(path1, MBps_to_icc(500), MBps_to_icc(700));
+		icc_set_bw(path1, avg_bw, peak_bw);
 
 	return 0;
 }
@@ -660,6 +683,18 @@ static int mdp4_probe(struct platform_device *pdev)
 
 	/* DEBUG: Test USB step by step */
 	dev_info(&pdev->dev, "MDP4: Step 1 - alloc, ioremap, get_irq\n");
+
+	/*
+	 * Initialize reserved memory region for SMI framebuffers.
+	 * On APQ8060/MSM8660, this sets up the device to use the
+	 * drm_smi_mem reserved region at 0x38300000 for DMA allocations,
+	 * matching webOS pmem_smipool behavior.
+	 */
+	ret = of_reserved_mem_device_init(dev);
+	if (ret && ret != -ENODEV)
+		dev_warn(dev, "Failed to init reserved memory: %d\n", ret);
+	else if (ret == 0)
+		dev_info(dev, "MDP4: Using reserved memory region for framebuffers\n");
 
 	mdp4_kms = devm_kzalloc(dev, sizeof(*mdp4_kms), GFP_KERNEL);
 	if (!mdp4_kms)

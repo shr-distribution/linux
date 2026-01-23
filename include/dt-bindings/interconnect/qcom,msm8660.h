@@ -79,8 +79,13 @@
  * Daytona Fabric (DFAB) - Peripheral bus
  *
  * DFAB connects slower peripherals (SDCC, ADM DMA) to the system fabric.
- * The webOS kernel managed DFAB bandwidth via voter clocks (dfab_sdc*_clk).
- * In mainline, this is handled by the interconnect framework.
+ * The webOS kernel managed DFAB bandwidth via voter clocks (dfab_sdc*_clk,
+ * dfab_usb_hs_clk). In mainline, this is handled by the interconnect framework.
+ *
+ * USB HS is included as a DFAB voter for compatibility with the legacy clock
+ * voting mechanism. The webOS kernel comment said: "if usb link is in sps
+ * there is no need for usb pclk as daytona fabric clock will be used instead".
+ * This keeps DFAB clock stable when USB is active.
  */
 #define DFAB_MAS_SDC1			0
 #define DFAB_MAS_SDC2			1
@@ -95,6 +100,7 @@
 #define DFAB_SLV_SDC3			10
 #define DFAB_SLV_SDC4			11
 #define DFAB_SLV_SDC5			12
+#define DFAB_MAS_USB_HS			13
 
 /* System FPB - Slow peripheral bus for system */
 #define SFPB_MAS_SYSTEM			0

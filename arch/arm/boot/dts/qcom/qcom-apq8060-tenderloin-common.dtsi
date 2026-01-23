@@ -24,6 +24,22 @@
 	model = "HP TouchPad";
 	compatible = "qcom,apq8060-tenderloin", "qcom,msm8660";
 
+	/*
+	 * SMI (System Memory Interface) memory region.
+	 *
+	 * The HP TouchPad has 64MB of SMI memory at 0x38000000 on a separate
+	 * MMSS fabric bus from EBI. webOS used pmem_smipool for display to
+	 * avoid bus contention with USB.
+	 *
+	 * SMI is accessible when RPM_SMI_CLK clocks are enabled. The MMSS
+	 * fabric interconnect driver enables these when MDP routes traffic
+	 * to MMFAB_SLV_SMI. DRM uses the drm_smi_mem reserved region.
+	 */
+	memory@38000000 {
+		device_type = "memory";
+		reg = <0x38000000 0x4000000>;  /* 64MB SMI: 0x38000000-0x3bffffff */
+	};
+
 	aliases {
 		mmc0 = &sdcc1;	/* mmcblk0 for eMMC/SD */
 		serial0 = &gsbi12_serial; /* Console - /dev/ttyMSM0 */
@@ -703,8 +719,10 @@
 			reg = <0x12500000 0x200>,
 			      <0x12500200 0x200>;
 			interrupts = <GIC_SPI 100 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&gcc USB_HS1_XCVR_CLK>, <&gcc USB_HS1_H_CLK>;
-			clock-names = "core", "iface";
+			clocks = <&gcc USB_HS1_XCVR_CLK>,
+				 <&gcc USB_HS1_H_CLK>,
+				 <&rpmcc RPM_DAYTONA_FABRIC_CLK>;
+			clock-names = "core", "iface", "dfab";
 			assigned-clocks = <&gcc USB_HS1_XCVR_CLK>;
 			assigned-clock-rates = <60000000>;
 			resets = <&gcc USB_HS1_RESET>;
@@ -713,9 +731,20 @@
 			ahb-burst-config = <0>;
 			phys = <&usb_hs1_phy>;
 			phy-names = "usb-phy";
+			/*
+			 * USB interconnect paths:
+			 * 1. usb-mem: USB data path to memory (SFAB->AFAB->EBI)
+			 * 2. usb-dfab: DFAB clock voter (keeps Daytona Fabric stable)
+			 *
+			 * The DFAB voter matches the webOS kernel's dfab_usb_hs_clk
+			 * clock voter which prevented USB crashes during concurrent
+			 * display (MDP) activity.
+			 */
 			interconnects = <&system_fabric SFAB_MAS_USB_HS
-					 &apps_fabric AFAB_SLV_EBI_CH0>;
-			interconnect-names = "usb-mem";
+					 &apps_fabric AFAB_SLV_EBI_CH0>,
+					<&daytona_fabric DFAB_MAS_USB_HS
+					 &daytona_fabric DFAB_TO_SFAB>;
+			interconnect-names = "usb-mem", "usb-dfab";
 			status = "disabled";
 
 			ulpi {
@@ -902,21 +931,38 @@
 			lvds-vccs-3p3v-supply = <&pm8058_l10>;
 
 			status = "okay";
-			memory-region = <&scanout_mem>;
+
+			/* Use SMI memory for display framebuffers - same as webOS */
+			memory-region = <&drm_smi_mem>;
 
 			// align on LSB instead of MSB
 			qcom,lcdc-align-lsb;
 
 			/*
-			 * MDP interconnect paths for cross-fabric memory access.
-			 * The gateway node fix in msm8660.c enables path_find()
-			 * to traverse from MMSS fabric to APPSS fabric memory.
+			 * MDP interconnect paths to SMI memory on MMSS fabric.
 			 *
-			 * Path: MDP_PORT0/1 → MMFAB_TO_APPSS → AFAB_TO_MMSS → EBI_CH0
+			 * By routing to MMFAB_SLV_SMI, display traffic stays on
+			 * the MMSS fabric and uses SMI memory at 0x38300000,
+			 * avoiding contention with USB on the EBI bus.
+			 *
+			 * This matches webOS MSM_BUS_SLAVE_SMI configuration.
 			 */
-			interconnects = <&mmss_fabric MMFAB_MAS_MDP_PORT0 &apps_fabric AFAB_SLV_EBI_CH0>,
-					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &apps_fabric AFAB_SLV_EBI_CH0>;
-			interconnect-names = "mdp0-mem", "mdp1-mem";
+			interconnects = <&mmss_fabric MMFAB_MAS_MDP_PORT0 &mmss_fabric MMFAB_SLV_SMI>,
+					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &mmss_fabric MMFAB_SLV_SMI>;
+			interconnect-names = "mdp0-smi", "mdp1-smi";
+
+			/*
+			 * MDP interconnect bandwidth from webOS board-tenderloin.c
+			 * mdp_app_vectors (two 1024x768 layers):
+			 *   ab = 377,487,360 (377 MB/s average)
+			 *   ib = 471,859,200 (471 MB/s peak/instantaneous)
+			 *
+			 * Using app values (2 layers) since modetest uses overlay plane.
+			 * Home values (334/417 MB/s) caused PRIMARY_INTF_UNDERRUN errors
+			 * when two planes were active.
+			 */
+			qcom,icc-bw-avg-kbps = <368640>;   /* 377487360 / 1024 */
+			qcom,icc-bw-peak-kbps = <460800>;  /* 471859200 / 1024 */
 
 			/*
 			 * MDP IOMMU for display memory virtualization.
@@ -2020,13 +2066,16 @@
 };
 
 /*
- * Enable camera subsystem and connect to MT9M113 sensor.
+ * Camera subsystem and MT9M113 sensor configuration.
  *
  * MMCC (Multimedia Clock Controller) support has been added with VFE31 driver.
- * Camera subsystem is ready to use.
+ * Note: The qcom-camss driver (CONFIG_VIDEO_QCOM_CAMSS) is not enabled in the
+ * kernel config. Keeping camss enabled in DT without the driver causes the
+ * interconnect framework to wait indefinitely for camss to probe, blocking
+ * sync_state() and affecting bandwidth management. Disable until driver is enabled.
  */
 &camss {
-	status = "okay";
+	status = "disabled";
 
 	ports {
 		port@0 {
@@ -2567,6 +2616,15 @@
 &usb1 {
 	status = "okay";
 	dr_mode = "otg";
+	/*
+	 * USB HS bandwidth: 400 MB/s average, 800 MB/s peak.
+	 * Much higher than USB 2.0 theoretical max (60 MB/s) to ensure
+	 * USB has strong priority on the shared APPSS fabric when
+	 * MDP display scanout is consuming memory bandwidth.
+	 * Previous values (300/600 MB/s) still caused USB crashes.
+	 */
+	qcom,icc-bw-avg-kbps = <409600>;   /* 400 * 1024 */
+	qcom,icc-bw-peak-kbps = <819200>;  /* 800 * 1024 */
 };
 &usb_hs1_phy {
 	v3p3-supply = <&pm8058_l6>;
@@ -2732,15 +2790,20 @@
 		};
 
 		/*
-		 * CMA region for DRM framebuffer.
-		 * Place at start of RAM bank 2.
-		 * 16MB is enough for triple-buffered 1024x768@32bpp (~9MB).
+		 * SMI framebuffer region for DRM display - matches webOS exactly.
+		 *
+		 * webOS MSM_PMEM_SMIPOOL layout:
+		 *   Base: 0x38300000 (MSM_PMEM_SMIPOOL_BASE)
+		 *   Size: 0x3D00000  (MSM_PMEM_SMIPOOL_SIZE = 61MB)
+		 *   End:  0x3C000000
+		 *
+		 * The first 3MB (0x38000000-0x382fffff) is reserved for
+		 * kernel SMI / video firmware (PMEM_KERNEL_SMI).
 		 */
-		linux,cma {
+		drm_smi_mem: framebuffer@38300000 {
 			compatible = "shared-dma-pool";
-			reg = <0x48000000 0x1000000>; /* 16MB at 0x48000000 */
-			reusable;
-			linux,cma-default;
+			reg = <0x38300000 0x3d00000>; /* 61MB - exact webOS size */
+			no-map;
 		};
 	};
 };
