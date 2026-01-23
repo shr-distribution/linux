@@ -37,9 +37,6 @@ LIBDRM_BUILD="$PARENT_DIR/libdrm/build-arm"
 MESA_BUILD="$PARENT_DIR/mesa/build-arm"
 KMSCUBE_BUILD="$PARENT_DIR/kmscube/build-arm"
 
-# GPU firmware location (from webOS doctor)
-FIRMWARE_DIR="$PARENT_DIR/doctor305/untouched-rootfs/lib/firmware"
-
 # Find sysroot (for libc and other system libs)
 find_sysroot() {
     if [ -n "$1" ] && [ -d "$1" ]; then
@@ -185,6 +182,7 @@ set -e
 # Paths
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+export GBM_BACKENDS_PATH="$SCRIPT_DIR/lib/gbm"
 export PATH="$SCRIPT_DIR/bin:$PATH"
 
 # Persistent log directory (survives reboot)
@@ -229,22 +227,35 @@ save_dmesg() {
     fi
 }
 
-# Background dmesg logger - saves every N seconds
+# Background dmesg logger - uses dmesg -w for real-time capture
 start_dmesg_logger() {
-    local interval="${1:-5}"
-    (
-        count=0
-        while true; do
-            sleep $interval
-            count=$((count + 1))
-            echo "" >> "$DMESG_LOG"
-            echo "========== DMESG CHECKPOINT $count [$(date '+%Y-%m-%d %H:%M:%S')] ==========" >> "$DMESG_LOG"
-            dmesg | tail -100 >> "$DMESG_LOG" 2>/dev/null || true
-            sync
-        done
-    ) &
-    LOGGER_PID=$!
-    log "Started background dmesg logger (PID: $LOGGER_PID, interval: ${interval}s)"
+    local interval="${1:-1}"
+    # Try dmesg -w first (real-time follow), fall back to polling
+    if dmesg -w --help >/dev/null 2>&1; then
+        log "Using dmesg -w for real-time kernel log capture"
+        dmesg -w >> "$DMESG_LOG" 2>/dev/null &
+        LOGGER_PID=$!
+    else
+        log "Using polling mode for kernel log capture (every ${interval}s)"
+        (
+            count=0
+            last_lines=0
+            while true; do
+                sleep $interval
+                count=$((count + 1))
+                # Get new dmesg lines since last check
+                current_lines=$(dmesg | wc -l)
+                if [ "$current_lines" -gt "$last_lines" ]; then
+                    echo "=== CHECKPOINT $count [$(date '+%H:%M:%S.%N' | cut -c1-12)] ===" >> "$DMESG_LOG"
+                    dmesg | tail -n $((current_lines - last_lines)) >> "$DMESG_LOG" 2>/dev/null || true
+                    sync
+                    last_lines=$current_lines
+                fi
+            done
+        ) &
+        LOGGER_PID=$!
+    fi
+    log "Started background dmesg logger (PID: $LOGGER_PID)"
 }
 
 stop_dmesg_logger() {
@@ -382,56 +393,6 @@ set_max_performance() {
 
     # Verify the change
     show_frequencies
-}
-
-install_firmware() {
-    log "Installing GPU firmware..."
-
-    # Firmware destination
-    local fw_dest="/lib/firmware"
-
-    # Create directory if needed
-    mkdir -p "$fw_dest" 2>/dev/null || true
-
-    # Check if we have firmware in our package
-    if [ ! -d "$SCRIPT_DIR/firmware" ]; then
-        warn "No firmware directory in package"
-        return 1
-    fi
-
-    # List of required firmware files
-    local fw_files="yamato_pfp.fw yamato_pm4.fw leia_pfp_470.fw leia_pm4_470.fw"
-    local installed=0
-    local skipped=0
-
-    for fw in $fw_files; do
-        if [ -f "$SCRIPT_DIR/firmware/$fw" ]; then
-            if [ -f "$fw_dest/$fw" ]; then
-                # Check if different
-                if cmp -s "$SCRIPT_DIR/firmware/$fw" "$fw_dest/$fw"; then
-                    info "  $fw (already installed)"
-                    skipped=$((skipped + 1))
-                else
-                    cp "$SCRIPT_DIR/firmware/$fw" "$fw_dest/"
-                    log "  $fw (updated)"
-                    installed=$((installed + 1))
-                fi
-            else
-                cp "$SCRIPT_DIR/firmware/$fw" "$fw_dest/"
-                log "  $fw (installed)"
-                installed=$((installed + 1))
-            fi
-        else
-            warn "  $fw (not in package)"
-        fi
-    done
-
-    log "Firmware: $installed installed, $skipped already present"
-
-    # Sync to ensure firmware is on disk
-    sync
-
-    return 0
 }
 
 verify_drm() {
@@ -717,10 +678,6 @@ main() {
     # Start background dmesg logger (saves every second)
     start_dmesg_logger 1
 
-    # Install GPU firmware (required for Adreno/kgsl)
-    install_firmware
-    save_dmesg "POST-FIRMWARE-INSTALL"
-
     # Verify DRM is available
     if ! verify_drm; then
         err "DRM not available. Check that the kernel has DRM support enabled."
@@ -897,31 +854,378 @@ main() {
         status "  libglapi.so"
     fi
 
+    # libgallium (Mesa's gallium driver, required by libEGL)
+    if [ -f "$MESA_BUILD/src/gallium/targets/dri/libgallium-26.0.0-devel.so" ]; then
+        cp "$MESA_BUILD/src/gallium/targets/dri/libgallium-26.0.0-devel.so" "$PACKAGE_DIR/lib/"
+        status "  libgallium-26.0.0-devel.so"
+    fi
+
+    # GBM DRI backend (required for GBM to work)
+    mkdir -p "$PACKAGE_DIR/lib/gbm"
+    if [ -f "$MESA_BUILD/src/gbm/backends/dri/dri_gbm.so" ]; then
+        cp "$MESA_BUILD/src/gbm/backends/dri/dri_gbm.so" "$PACKAGE_DIR/lib/gbm/"
+        status "  gbm/dri_gbm.so (GBM DRI backend)"
+    fi
+
+    # libz (from Mesa's zlib subproject)
+    if [ -d "$MESA_BUILD/subprojects/zlib-1.3.1" ]; then
+        copy_lib "$MESA_BUILD/subprojects/zlib-1.3.1/libz.so" "$PACKAGE_DIR/lib"
+        status "  libz.so (from Mesa subproject)"
+    fi
+
+    # System libraries from ARM toolchain
+    TOOLCHAIN_LIB="/usr/arm-linux-gnueabihf/lib"
+    if [ -d "$TOOLCHAIN_LIB" ]; then
+        # libgcc_s (required by Mesa libs)
+        if [ -f "$TOOLCHAIN_LIB/libgcc_s.so.1" ]; then
+            cp "$TOOLCHAIN_LIB/libgcc_s.so.1" "$PACKAGE_DIR/lib/"
+            status "  libgcc_s.so.1"
+        fi
+
+        # libstdc++ (required by libgallium)
+        if [ -f "$TOOLCHAIN_LIB/libstdc++.so.6" ]; then
+            cp -P "$TOOLCHAIN_LIB/libstdc++.so.6"* "$PACKAGE_DIR/lib/"
+            status "  libstdc++.so.6"
+        fi
+    fi
+
     # List what we packaged
     echo ""
     status "Libraries packaged:"
     ls -la "$PACKAGE_DIR/lib/" | grep -v "^total" | grep -v "^d"
 
-    # Copy GPU firmware files
-    status "Copying GPU firmware..."
-    mkdir -p "$PACKAGE_DIR/firmware"
-
-    local fw_files="yamato_pfp.fw yamato_pm4.fw leia_pfp_470.fw leia_pm4_470.fw"
-    for fw in $fw_files; do
-        if [ -f "$FIRMWARE_DIR/$fw" ]; then
-            cp "$FIRMWARE_DIR/$fw" "$PACKAGE_DIR/firmware/"
-            status "  $fw"
-        else
-            warn "  $fw not found"
-        fi
-    done
-
-    echo ""
-    status "Firmware packaged:"
-    ls -la "$PACKAGE_DIR/firmware/" | grep -v "^total" | grep -v "^d"
-
     # Create the test runner script
     create_test_runner "$PACKAGE_DIR"
+
+    # Create debug script for kmscube with aggressive logging
+    cat > "$PACKAGE_DIR/debug-kmscube.sh" << 'DEBUG_EOF'
+#!/bin/sh
+# Debug script for kmscube with aggressive logging
+# Captures kernel messages in real-time to help diagnose USB crashes
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+export GBM_BACKENDS_PATH="$SCRIPT_DIR/lib/gbm"
+export PATH="$SCRIPT_DIR/bin:$PATH"
+
+# Log files on boot partition (survives crash)
+LOG_DIR="/mnt/boot"
+TS=$(date +%Y%m%d-%H%M%S)
+DMESG_LOG="$LOG_DIR/debug-dmesg-$TS.log"
+TRACE_LOG="$LOG_DIR/debug-trace-$TS.log"
+
+# Timestamp function (BusyBox compatible)
+ts() {
+    date '+%H:%M:%S'
+}
+
+echo "=== Debug kmscube script ===" | tee "$TRACE_LOG"
+echo "Logs will be saved to: $LOG_DIR" | tee -a "$TRACE_LOG"
+sync
+
+# Make boot partition writable
+mount -o remount,rw /mnt/boot 2>/dev/null || true
+
+# Save initial dmesg
+echo ">>> INITIAL DMESG <<<" > "$DMESG_LOG"
+dmesg >> "$DMESG_LOG"
+sync
+echo "[$(ts)] Saved initial dmesg" | tee -a "$TRACE_LOG"
+sync
+
+# Start continuous dmesg logging
+echo "[$(ts)] Starting continuous dmesg capture..." | tee -a "$TRACE_LOG"
+sync
+
+# Capture dmesg changes every 0.2 seconds
+(
+    while true; do
+        dmesg -c 2>/dev/null | while read line; do
+            echo "[$(ts)] $line" >> "$DMESG_LOG"
+            sync
+        done
+        sleep 1
+    done
+) &
+DMESG_PID=$!
+echo "[$(ts)] dmesg logger PID: $DMESG_PID" | tee -a "$TRACE_LOG"
+sync
+
+# Trap to save logs on exit
+cleanup() {
+    echo "[$(ts)] CLEANUP - saving final state..." >> "$TRACE_LOG"
+    kill $DMESG_PID 2>/dev/null
+    echo ">>> FINAL DMESG <<<" >> "$DMESG_LOG"
+    dmesg >> "$DMESG_LOG"
+    sync
+    echo "[$(ts)] Logs saved to $LOG_DIR" | tee -a "$TRACE_LOG"
+}
+trap cleanup EXIT INT TERM
+
+echo "[$(ts)] === PRE-KMSCUBE STATE ===" | tee -a "$TRACE_LOG"
+sync
+
+# Check DRM state
+echo "[$(ts)] DRM devices:" | tee -a "$TRACE_LOG"
+ls -la /dev/dri/ 2>&1 | tee -a "$TRACE_LOG"
+sync
+
+echo "[$(ts)] CMA memory:" | tee -a "$TRACE_LOG"
+grep -i cma /proc/meminfo 2>&1 | tee -a "$TRACE_LOG"
+sync
+
+echo "[$(ts)] USB gadget state:" | tee -a "$TRACE_LOG"
+ls -la /sys/class/udc/ 2>&1 | tee -a "$TRACE_LOG"
+sync
+
+# Run modetest info first (safe, no mode change)
+echo "[$(ts)] === MODETEST INFO ===" | tee -a "$TRACE_LOG"
+sync
+$SCRIPT_DIR/bin/modetest -M msm -c 2>&1 | head -n 20 | tee -a "$TRACE_LOG"
+sync
+
+echo "[$(ts)] === STARTING KMSCUBE ===" | tee -a "$TRACE_LOG"
+echo "[$(ts)] Will run for 5 seconds then exit cleanly" | tee -a "$TRACE_LOG"
+sync
+
+# Run kmscube in background with manual timeout (BusyBox compatible)
+echo "[$(ts)] Launching kmscube..." | tee -a "$TRACE_LOG"
+sync
+
+$SCRIPT_DIR/bin/kmscube 2>&1 &
+KMSCUBE_PID=$!
+echo "[$(ts)] kmscube PID: $KMSCUBE_PID" | tee -a "$TRACE_LOG"
+sync
+
+# Wait 5 seconds then kill kmscube
+sleep 5
+echo "[$(ts)] Sending SIGTERM to kmscube..." | tee -a "$TRACE_LOG"
+sync
+kill $KMSCUBE_PID 2>/dev/null
+sleep 1
+echo "[$(ts)] Sending SIGKILL to kmscube..." | tee -a "$TRACE_LOG"
+sync
+kill -9 $KMSCUBE_PID 2>/dev/null
+wait $KMSCUBE_PID 2>/dev/null
+KMSCUBE_EXIT=$?
+
+echo "[$(ts)] kmscube exited with code: $KMSCUBE_EXIT" | tee -a "$TRACE_LOG"
+sync
+
+echo "[$(ts)] === POST-KMSCUBE STATE ===" | tee -a "$TRACE_LOG"
+sync
+
+echo "[$(ts)] Waiting 2 seconds..." | tee -a "$TRACE_LOG"
+sleep 2
+sync
+
+echo "[$(ts)] CMA memory after:" | tee -a "$TRACE_LOG"
+grep -i cma /proc/meminfo 2>&1 | tee -a "$TRACE_LOG"
+sync
+
+echo "[$(ts)] === TEST COMPLETE ===" | tee -a "$TRACE_LOG"
+echo "[$(ts)] If you see this, USB survived!" | tee -a "$TRACE_LOG"
+sync
+
+echo ""
+echo "Logs saved to:"
+echo "  $TRACE_LOG"
+echo "  $DMESG_LOG"
+DEBUG_EOF
+    chmod +x "$PACKAGE_DIR/debug-kmscube.sh"
+    status "Created debug-kmscube.sh"
+
+    # Create simpler diagnostic script to isolate USB crash cause
+    cat > "$PACKAGE_DIR/diagnose-drm.sh" << 'DIAG_EOF'
+#!/bin/sh
+# Diagnostic script to isolate USB crash cause
+# Tests DRM operations one by one with aggressive logging
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+export GBM_BACKENDS_PATH="$SCRIPT_DIR/lib/gbm"
+export PATH="$SCRIPT_DIR/bin:$PATH"
+
+# Mesa/Gallium debugging - check which driver is actually used
+export MESA_DEBUG=1
+export LIBGL_DEBUG=verbose
+
+# Uncomment to force specific driver:
+# export GALLIUM_DRIVER=freedreno   # Force freedreno HW driver
+# export GALLIUM_DRIVER=llvmpipe    # Force software rendering
+# export LIBGL_ALWAYS_SOFTWARE=1    # Force software rendering
+
+LOG_DIR="/mnt/boot"
+mount -o remount,rw /mnt/boot 2>/dev/null || true
+
+log() {
+    echo "[$(date '+%H:%M:%S')] $*"
+    echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_DIR/diagnose.log"
+    sync
+}
+
+test_passed() {
+    log "TEST PASSED: $1"
+    sleep 2
+}
+
+test_failed() {
+    log "TEST FAILED: $1"
+}
+
+echo "" > "$LOG_DIR/diagnose.log"
+log "=== DRM USB CRASH DIAGNOSTICS ==="
+log "Testing each operation separately to find the crash trigger"
+log ""
+
+case "$1" in
+    1|info)
+        log "TEST 1: modetest -c (info only, no mode changes)"
+        $SCRIPT_DIR/bin/modetest -M msm -c
+        test_passed "modetest info"
+        ;;
+    2|pattern)
+        log "TEST 2: modetest pattern for 3 seconds"
+        log "Running modetest -P..."
+        $SCRIPT_DIR/bin/modetest -M msm -s 44@39:1024x768 -P 40@39:1024x768@XR24 &
+        MTEST_PID=$!
+        log "modetest PID: $MTEST_PID"
+        sleep 3
+        log "Killing modetest..."
+        kill $MTEST_PID 2>/dev/null
+        sleep 1
+        kill -9 $MTEST_PID 2>/dev/null
+        test_passed "modetest pattern"
+        ;;
+    3|open)
+        log "TEST 3: Open/close DRM device multiple times"
+        for i in 1 2 3 4 5; do
+            log "Open/close iteration $i..."
+            $SCRIPT_DIR/bin/modetest -M msm -c > /dev/null 2>&1
+            sync
+        done
+        test_passed "DRM open/close"
+        ;;
+    4|cma)
+        log "TEST 4: CMA memory state"
+        log "Before:"
+        grep -i cma /proc/meminfo
+        log "After modetest pattern:"
+        $SCRIPT_DIR/bin/modetest -M msm -s 44@39:1024x768 &
+        sleep 2
+        grep -i cma /proc/meminfo
+        kill %1 2>/dev/null
+        sleep 1
+        log "After cleanup:"
+        grep -i cma /proc/meminfo
+        test_passed "CMA memory"
+        ;;
+    5|kmscube)
+        log "TEST 5: kmscube for 5 seconds"
+        log "Starting kmscube..."
+        $SCRIPT_DIR/bin/kmscube 2>&1 &
+        KC_PID=$!
+        log "kmscube PID: $KC_PID"
+        sleep 5
+        log "Sending SIGTERM to kmscube..."
+        kill $KC_PID 2>/dev/null
+        sleep 1
+        log "Sending SIGKILL to kmscube..."
+        kill -9 $KC_PID 2>/dev/null
+        wait $KC_PID 2>/dev/null
+        log "kmscube exit code: $?"
+        test_passed "kmscube"
+        ;;
+    7|renderer)
+        log "TEST 7: Check renderer info"
+        log "Running kmscube briefly to check renderer..."
+        # Capture kmscube output which shows renderer info
+        $SCRIPT_DIR/bin/kmscube 2>&1 | head -n 20 &
+        KC_PID=$!
+        sleep 3
+        kill $KC_PID 2>/dev/null
+        log ""
+        log "To force hardware rendering, set:"
+        log "  export GALLIUM_DRIVER=freedreno"
+        log ""
+        log "To force software rendering (for comparison):"
+        log "  export LIBGL_ALWAYS_SOFTWARE=1"
+        test_passed "renderer check"
+        ;;
+    8|hw)
+        log "TEST 8: Force HARDWARE rendering (freedreno)"
+        export GALLIUM_DRIVER=freedreno
+        log "GALLIUM_DRIVER=freedreno"
+        log "Starting kmscube with hardware acceleration..."
+        $SCRIPT_DIR/bin/kmscube 2>&1 &
+        KC_PID=$!
+        log "kmscube PID: $KC_PID"
+        sleep 5
+        log "Killing kmscube..."
+        kill $KC_PID 2>/dev/null
+        sleep 1
+        kill -9 $KC_PID 2>/dev/null
+        test_passed "hardware rendering"
+        ;;
+    9|sw)
+        log "TEST 9: Force SOFTWARE rendering (llvmpipe)"
+        export LIBGL_ALWAYS_SOFTWARE=1
+        log "LIBGL_ALWAYS_SOFTWARE=1"
+        log "Starting kmscube with software rendering..."
+        $SCRIPT_DIR/bin/kmscube 2>&1 &
+        KC_PID=$!
+        log "kmscube PID: $KC_PID"
+        sleep 5
+        log "Killing kmscube..."
+        kill $KC_PID 2>/dev/null
+        sleep 1
+        kill -9 $KC_PID 2>/dev/null
+        test_passed "software rendering"
+        ;;
+    6|modeset)
+        log "TEST 6: Mode setting only (no pattern)"
+        log "Setting mode..."
+        $SCRIPT_DIR/bin/modetest -M msm -s 44@39:1024x768 &
+        MT_PID=$!
+        log "modetest PID: $MT_PID"
+        sleep 3
+        log "Killing modetest..."
+        kill $MT_PID 2>/dev/null
+        sleep 1
+        kill -9 $MT_PID 2>/dev/null
+        test_passed "mode setting"
+        ;;
+    all)
+        log "Running all tests in sequence..."
+        log ""
+        $0 1 && $0 2 && $0 3 && $0 4 && $0 6 && $0 5
+        log "=== ALL TESTS COMPLETE ==="
+        ;;
+    *)
+        echo "Usage: $0 <test>"
+        echo ""
+        echo "Tests (USB crash isolation):"
+        echo "  1|info    - modetest info (no mode changes)"
+        echo "  2|pattern - modetest with pattern (3 sec)"
+        echo "  3|open    - Open/close DRM device 5 times"
+        echo "  4|cma     - Check CMA memory"
+        echo "  5|kmscube - Run kmscube (5 sec)"
+        echo "  6|modeset - Mode setting without pattern"
+        echo ""
+        echo "Tests (renderer):"
+        echo "  7|renderer - Check which renderer kmscube uses"
+        echo "  8|hw       - Force hardware rendering (freedreno)"
+        echo "  9|sw       - Force software rendering (llvmpipe)"
+        echo ""
+        echo "  all       - Run crash isolation tests in order"
+        echo ""
+        echo "Run tests one by one to find which causes USB crash"
+        echo "Logs saved to: $LOG_DIR/diagnose.log"
+        ;;
+esac
+DIAG_EOF
+    chmod +x "$PACKAGE_DIR/diagnose-drm.sh"
+    status "Created diagnose-drm.sh"
 
     # Create a simple README
     cat > "$PACKAGE_DIR/README.txt" << 'EOF'
@@ -935,7 +1239,7 @@ Contents:
 
 Installation:
   1. Extract to /tmp or /home/root on the device
-  2. Run: ./run-drm-tests.sh [--quick|--full|--benchmark]
+  2. Run: ./run-drm-tests.sh [quick|full|benchmark]
 
 Modes:
   quick     - Basic info and short kmscube test (default)
@@ -953,6 +1257,7 @@ Requirements:
   - DRM kernel driver loaded (adreno/msm)
   - /dev/dri/card0 present and accessible
   - Root access (for cpufreq/devfreq control)
+  - GPU firmware in initramfs (included in kernel image)
 EOF
 
     # Create tarball
