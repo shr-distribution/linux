@@ -6,6 +6,8 @@
 
 #include <linux/delay.h>
 #include <linux/interconnect.h>
+#include <linux/io.h>
+#include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
 
 #include <drm/drm_bridge.h>
@@ -385,6 +387,7 @@ static int modeset_init(struct mdp4_kms *mdp4_kms)
 	struct drm_device *dev = mdp4_kms->dev;
 	struct drm_plane *plane;
 	struct drm_crtc *crtc;
+	struct drm_bridge *lvds_bridge;
 	int i, ret;
 	static const enum mdp4_pipe rgb_planes[] = {
 		RGB1, RGB2,
@@ -403,6 +406,19 @@ static int modeset_init(struct mdp4_kms *mdp4_kms)
 		DRM_MODE_ENCODER_DSI,
 		DRM_MODE_ENCODER_TMDS,
 	};
+
+	/*
+	 * Check if LVDS bridge/panel is available BEFORE creating any DRM
+	 * objects. This avoids creating planes/CRTCs that we can't clean up
+	 * properly if we need to defer probe waiting for the panel driver.
+	 */
+	lvds_bridge = devm_drm_of_get_bridge(dev->dev, dev->dev->of_node, 0, 0);
+	if (IS_ERR(lvds_bridge)) {
+		ret = PTR_ERR(lvds_bridge);
+		if (ret == -EPROBE_DEFER)
+			return ret;  /* Defer before creating any objects */
+		/* -ENODEV means no panel configured - that's OK, continue */
+	}
 
 	/* construct non-private planes: */
 	for (i = 0; i < ARRAY_SIZE(vg_planes); i++) {
@@ -623,6 +639,10 @@ static const struct dev_pm_ops mdp4_pm_ops = {
  * This coordinates with the bus fabric to prevent USB RNDIS failures
  * when MDP is accessing memory on APQ8060/MSM8660.
  *
+ * WebOS voted for bandwidth on BOTH SMI and EBI paths simultaneously,
+ * even when only using SMI for framebuffers. This appears necessary
+ * for proper fabric clock scaling on MSM8660.
+ *
  * Bandwidth can be configured via device tree properties:
  *   qcom,icc-bw-avg-kbps  - average bandwidth in kBps
  *   qcom,icc-bw-peak-kbps - peak bandwidth in kBps
@@ -630,27 +650,36 @@ static const struct dev_pm_ops mdp4_pm_ops = {
 static int mdp4_setup_interconnect(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
-	struct icc_path *path0;
-	struct icc_path *path1;
+	struct icc_path *path0_smi, *path1_smi;
+	struct icc_path *path0_ebi, *path1_ebi;
 	u32 avg_bw = MDP4_DEFAULT_BW_AVG_KBPS;
 	u32 peak_bw = MDP4_DEFAULT_BW_PEAK_KBPS;
 
 	/*
-	 * Try SMI memory paths first (APQ8060/MSM8660 with dedicated VRAM),
-	 * fall back to EBI memory paths for other platforms.
+	 * Get SMI memory paths (APQ8060/MSM8660 dedicated VRAM).
+	 * These route MDP -> MMSS fabric -> SMI.
 	 */
-	path0 = msm_icc_get(&pdev->dev, "mdp0-smi");
-	if (IS_ERR_OR_NULL(path0))
-		path0 = msm_icc_get(&pdev->dev, "mdp0-mem");
+	path0_smi = msm_icc_get(&pdev->dev, "mdp0-smi");
+	path1_smi = msm_icc_get(&pdev->dev, "mdp1-smi");
 
-	path1 = msm_icc_get(&pdev->dev, "mdp1-smi");
-	if (IS_ERR_OR_NULL(path1))
-		path1 = msm_icc_get(&pdev->dev, "mdp1-mem");
+	/*
+	 * Get EBI memory paths (main system RAM).
+	 * These route MDP -> MMSS fabric -> APPSS fabric -> EBI.
+	 * WebOS voted on both SMI and EBI paths for proper fabric scaling.
+	 */
+	path0_ebi = msm_icc_get(&pdev->dev, "mdp0-ebi");
+	path1_ebi = msm_icc_get(&pdev->dev, "mdp1-ebi");
 
-	if (IS_ERR(path0))
-		return PTR_ERR(path0);
+	/* Fall back to generic "mem" paths if specific paths not available */
+	if (IS_ERR_OR_NULL(path0_smi) && IS_ERR_OR_NULL(path0_ebi)) {
+		path0_smi = msm_icc_get(&pdev->dev, "mdp0-mem");
+		path1_smi = msm_icc_get(&pdev->dev, "mdp1-mem");
+	}
 
-	if (!path0) {
+	if (IS_ERR(path0_smi))
+		return PTR_ERR(path0_smi);
+
+	if (!path0_smi && !path0_ebi) {
 		/*
 		 * No interconnect support is not fatal - the platform may
 		 * not have an interconnect driver yet. But warn about it
@@ -664,15 +693,78 @@ static int mdp4_setup_interconnect(struct platform_device *pdev)
 	of_property_read_u32(np, "qcom,icc-bw-avg-kbps", &avg_bw);
 	of_property_read_u32(np, "qcom,icc-bw-peak-kbps", &peak_bw);
 
-	dev_dbg(&pdev->dev, "MDP interconnect bandwidth: avg=%u kBps, peak=%u kBps\n",
+	dev_info(&pdev->dev, "MDP interconnect bandwidth: avg=%u kBps, peak=%u kBps\n",
 		avg_bw, peak_bw);
 
-	icc_set_bw(path0, avg_bw, peak_bw);
+	/* Vote on SMI paths */
+	if (!IS_ERR_OR_NULL(path0_smi)) {
+		icc_set_bw(path0_smi, avg_bw, peak_bw);
+		dev_info(&pdev->dev, "MDP: voted %u/%u kBps on SMI path0\n", avg_bw, peak_bw);
+	}
+	if (!IS_ERR_OR_NULL(path1_smi)) {
+		icc_set_bw(path1_smi, avg_bw, peak_bw);
+		dev_info(&pdev->dev, "MDP: voted %u/%u kBps on SMI path1\n", avg_bw, peak_bw);
+	}
 
-	if (!IS_ERR_OR_NULL(path1))
-		icc_set_bw(path1, avg_bw, peak_bw);
+	/* Vote on EBI paths (like webOS did for proper fabric clock scaling) */
+	if (!IS_ERR_OR_NULL(path0_ebi)) {
+		icc_set_bw(path0_ebi, avg_bw, peak_bw);
+		dev_info(&pdev->dev, "MDP: voted %u/%u kBps on EBI path0\n", avg_bw, peak_bw);
+	}
+	if (!IS_ERR_OR_NULL(path1_ebi)) {
+		icc_set_bw(path1_ebi, avg_bw, peak_bw);
+		dev_info(&pdev->dev, "MDP: voted %u/%u kBps on EBI path1\n", avg_bw, peak_bw);
+	}
 
 	return 0;
+}
+
+/*
+ * Clear the reserved SMI framebuffer memory to remove artifacts from
+ * previous boots (bootloader display, old kernel framebuffer, etc.).
+ * This prevents visual garbage on screen during boot before userspace
+ * draws its first frame.
+ */
+static void mdp4_clear_framebuffer_memory(struct device *dev)
+{
+	struct device_node *np, *mem_np;
+	struct resource res;
+	void __iomem *mem;
+	int ret;
+
+	np = dev->of_node;
+	if (!np)
+		return;
+
+	/* Find the memory-region phandle */
+	mem_np = of_parse_phandle(np, "memory-region", 0);
+	if (!mem_np) {
+		dev_dbg(dev, "No memory-region specified, skipping FB clear\n");
+		return;
+	}
+
+	ret = of_address_to_resource(mem_np, 0, &res);
+	of_node_put(mem_np);
+	if (ret) {
+		dev_warn(dev, "Failed to get memory-region resource: %d\n", ret);
+		return;
+	}
+
+	dev_info(dev, "Clearing SMI framebuffer memory %pR\n", &res);
+
+	/* Map the region as write-combining for efficient clearing */
+	mem = ioremap_wc(res.start, resource_size(&res));
+	if (!mem) {
+		dev_warn(dev, "Failed to map SMI memory for clearing\n");
+		return;
+	}
+
+	/* Clear to black (zero) */
+	memset_io(mem, 0, resource_size(&res));
+
+	iounmap(mem);
+	dev_info(dev, "SMI framebuffer memory cleared (%llu bytes)\n",
+		 (unsigned long long)resource_size(&res));
 }
 
 static int mdp4_probe(struct platform_device *pdev)
@@ -693,8 +785,14 @@ static int mdp4_probe(struct platform_device *pdev)
 	ret = of_reserved_mem_device_init(dev);
 	if (ret && ret != -ENODEV)
 		dev_warn(dev, "Failed to init reserved memory: %d\n", ret);
-	else if (ret == 0)
+	else if (ret == 0) {
 		dev_info(dev, "MDP4: Using reserved memory region for framebuffers\n");
+		/*
+		 * Clear the reserved memory to remove artifacts from
+		 * bootloader or previous kernel boot.
+		 */
+		mdp4_clear_framebuffer_memory(dev);
+	}
 
 	mdp4_kms = devm_kzalloc(dev, sizeof(*mdp4_kms), GFP_KERNEL);
 	if (!mdp4_kms)
