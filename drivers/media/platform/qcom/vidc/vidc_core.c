@@ -492,6 +492,21 @@ static int vidc_probe(struct platform_device *pdev)
 		core->icc_path = NULL;
 	}
 
+	/*
+	 * Read bandwidth from device tree, with defaults for 1080p video.
+	 * Properties: qcom,icc-bw-avg-kbps, qcom,icc-bw-peak-kbps
+	 */
+	core->icc_bw_avg = VIDC_BW_AVG;
+	core->icc_bw_peak = VIDC_BW_PEAK;
+	if (dev->of_node) {
+		u32 val;
+
+		if (!of_property_read_u32(dev->of_node, "qcom,icc-bw-avg-kbps", &val))
+			core->icc_bw_avg = val * 1024;  /* kBps to Bps */
+		if (!of_property_read_u32(dev->of_node, "qcom,icc-bw-peak-kbps", &val))
+			core->icc_bw_peak = val * 1024;  /* kBps to Bps */
+	}
+
 	/* Register V4L2 device */
 	ret = v4l2_device_register(dev, &core->v4l2_dev);
 	if (ret) {
@@ -566,7 +581,7 @@ static int vidc_runtime_resume(struct device *dev)
 	}
 
 	if (core->icc_path) {
-		ret = icc_set_bw(core->icc_path, VIDC_BW_AVG, VIDC_BW_PEAK);
+		ret = icc_set_bw(core->icc_path, core->icc_bw_avg, core->icc_bw_peak);
 		if (ret) {
 			dev_err(dev, "failed to set interconnect bandwidth: %d\n",
 				ret);

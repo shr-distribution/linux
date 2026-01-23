@@ -200,6 +200,8 @@ struct vidc_core {
 
 	/* Interconnect */
 	struct icc_path *icc_path;
+	u32 icc_bw_avg;		/* average bandwidth in bytes/sec */
+	u32 icc_bw_peak;	/* peak bandwidth in bytes/sec */
 
 	/* Firmware */
 	const struct firmware *fw;
