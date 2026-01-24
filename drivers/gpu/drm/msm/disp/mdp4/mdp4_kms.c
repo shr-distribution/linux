@@ -5,6 +5,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/interconnect.h>
 #include <linux/of_reserved_mem.h>
 
 #include <drm/drm_bridge.h>
@@ -536,6 +537,67 @@ static const struct dev_pm_ops mdp4_pm_ops = {
 	.complete = msm_kms_pm_complete,
 };
 
+/* Default bandwidth values (in kBps) - used if not specified in DT */
+#define MDP4_DEFAULT_BW_AVG_KBPS	(500 * 1024)	/* 500 MB/s */
+#define MDP4_DEFAULT_BW_PEAK_KBPS	(700 * 1024)	/* 700 MB/s */
+
+/*
+ * Set up interconnect paths for MDP to memory bandwidth.
+ * This coordinates with the bus fabric to prevent USB RNDIS failures
+ * when MDP is accessing memory on APQ8060/MSM8660.
+ *
+ * Bandwidth can be configured via device tree properties:
+ *   qcom,icc-bw-avg-kbps  - average bandwidth in kBps
+ *   qcom,icc-bw-peak-kbps - peak bandwidth in kBps
+ */
+static int mdp4_setup_interconnect(struct platform_device *pdev)
+{
+	struct device_node *np = pdev->dev.of_node;
+	struct icc_path *path0;
+	struct icc_path *path1;
+	u32 avg_bw = MDP4_DEFAULT_BW_AVG_KBPS;
+	u32 peak_bw = MDP4_DEFAULT_BW_PEAK_KBPS;
+
+	/*
+	 * Try SMI memory paths first (APQ8060/MSM8660 with dedicated VRAM),
+	 * fall back to EBI memory paths for other platforms.
+	 */
+	path0 = msm_icc_get(&pdev->dev, "mdp0-smi");
+	if (IS_ERR_OR_NULL(path0))
+		path0 = msm_icc_get(&pdev->dev, "mdp0-mem");
+
+	path1 = msm_icc_get(&pdev->dev, "mdp1-smi");
+	if (IS_ERR_OR_NULL(path1))
+		path1 = msm_icc_get(&pdev->dev, "mdp1-mem");
+
+	if (IS_ERR(path0))
+		return PTR_ERR(path0);
+
+	if (!path0) {
+		/*
+		 * No interconnect support is not fatal - the platform may
+		 * not have an interconnect driver yet. But warn about it
+		 * as it may cause USB issues on APQ8060/MSM8660.
+		 */
+		dev_warn(&pdev->dev, "No interconnect support - may cause USB/display conflicts!\n");
+		return 0;
+	}
+
+	/* Read bandwidth from device tree if specified */
+	of_property_read_u32(np, "qcom,icc-bw-avg-kbps", &avg_bw);
+	of_property_read_u32(np, "qcom,icc-bw-peak-kbps", &peak_bw);
+
+	dev_dbg(&pdev->dev, "MDP interconnect bandwidth: avg=%u kBps, peak=%u kBps\n",
+		avg_bw, peak_bw);
+
+	icc_set_bw(path0, avg_bw, peak_bw);
+
+	if (!IS_ERR_OR_NULL(path1))
+		icc_set_bw(path1, avg_bw, peak_bw);
+
+	return 0;
+}
+
 static int mdp4_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -588,6 +650,11 @@ static int mdp4_probe(struct platform_device *pdev)
 	mdp4_kms->lut_clk = devm_clk_get_optional(&pdev->dev, "lut_clk");
 	if (IS_ERR(mdp4_kms->lut_clk))
 		return dev_err_probe(dev, PTR_ERR(mdp4_kms->lut_clk), "failed to get lut_clk\n");
+
+	/* Set up interconnect bandwidth to prevent display underrun */
+	ret = mdp4_setup_interconnect(pdev);
+	if (ret)
+		return ret;
 
 	return msm_drv_probe(&pdev->dev, mdp4_kms_init, &mdp4_kms->base.base);
 }
