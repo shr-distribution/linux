@@ -139,4 +139,18 @@
 #define MDP_PIXEL_CLK					130
 #define MDP_LCDC_CLK					131
 
+/*
+ * MSM8660/APQ8060 legacy footswitch power domains.
+ * These are used with the MMCC power-domain provider.
+ */
+#define GFX2D0_GDSC					0
+#define GFX2D1_GDSC					1
+#define GFX3D_GDSC					2
+#define IJPEG_GDSC					3
+#define MDP_GDSC					4
+#define ROT_GDSC					5
+#define VED_GDSC					6
+#define VFE_GDSC					7
+#define VPE_GDSC					8
+
 #endif

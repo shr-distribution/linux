@@ -68,6 +68,13 @@ struct gdsc {
 #define RETAIN_FF_ENABLE	BIT(7)
 #define NO_RET_PERIPH	BIT(8)
 #define HW_CTRL_TRIGGER	BIT(9)
+/*
+ * Legacy MSM8x60 footswitch - uses different register layout:
+ * - Bit 5: CLAMP (set to clamp I/O)
+ * - Bit 8: ENABLE (set to enable power)
+ * - No status bit, just wait after toggle
+ */
+#define LEGACY_FOOTSWITCH	BIT(10)
 	struct reset_controller_dev	*rcdev;
 	unsigned int			*resets;
 	unsigned int			reset_count;

@@ -29,6 +29,7 @@
 #include "clk-rcg.h"
 #include "clk-branch.h"
 #include "reset.h"
+#include "gdsc.h"
 
 enum {
 	P_PXO,
@@ -2219,6 +2220,124 @@ static const struct qcom_reset_map mmcc_msm8660_resets[] = {
 	[TV_ENC_RESET] = { 0x0210, 0 },
 };
 
+/*
+ * MSM8660/APQ8060 legacy footswitches.
+ * These use a different register layout than modern GDSCs:
+ * - Bit 8: ENABLE (set to enable power)
+ * - Bit 5: CLAMP (set to clamp I/O)
+ * - No status bit, requires timed delays
+ */
+static struct gdsc gfx2d0_gdsc = {
+	.gdscr = 0x0180,
+	.resets = (unsigned int []){ GFX2D0_AHB_RESET },
+	.reset_count = 1,
+	.pd = {
+		.name = "gfx2d0",
+	},
+	.pwrsts = PWRSTS_OFF_ON,
+	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+};
+
+static struct gdsc gfx2d1_gdsc = {
+	.gdscr = 0x0184,
+	.resets = (unsigned int []){ GFX2D1_AHB_RESET },
+	.reset_count = 1,
+	.pd = {
+		.name = "gfx2d1",
+	},
+	.pwrsts = PWRSTS_OFF_ON,
+	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+};
+
+static struct gdsc gfx3d_gdsc = {
+	.gdscr = 0x0188,
+	.resets = (unsigned int []){ GFX3D_AHB_RESET },
+	.reset_count = 1,
+	.pd = {
+		.name = "gfx3d",
+	},
+	.pwrsts = PWRSTS_OFF_ON,
+	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+};
+
+static struct gdsc ijpeg_gdsc = {
+	.gdscr = 0x01a0,
+	.resets = (unsigned int []){ IJPEG_AHB_RESET },
+	.reset_count = 1,
+	.pd = {
+		.name = "ijpeg",
+	},
+	.pwrsts = PWRSTS_OFF_ON,
+	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+};
+
+static struct gdsc mdp_gdsc = {
+	.gdscr = 0x0190,
+	.resets = (unsigned int []){ MDP_AHB_RESET },
+	.reset_count = 1,
+	.pd = {
+		.name = "mdp",
+	},
+	.pwrsts = PWRSTS_OFF_ON,
+	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+};
+
+static struct gdsc rot_gdsc = {
+	.gdscr = 0x018c,
+	.resets = (unsigned int []){ ROT_AHB_RESET },
+	.reset_count = 1,
+	.pd = {
+		.name = "rot",
+	},
+	.pwrsts = PWRSTS_OFF_ON,
+	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+};
+
+static struct gdsc ved_gdsc = {
+	.gdscr = 0x0194,
+	.resets = (unsigned int []){ VCODEC_AHB_RESET },
+	.reset_count = 1,
+	.pd = {
+		.name = "ved",
+	},
+	.pwrsts = PWRSTS_OFF_ON,
+	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+};
+
+static struct gdsc vfe_gdsc = {
+	.gdscr = 0x0198,
+	.resets = (unsigned int []){ VFE_AHB_RESET },
+	.reset_count = 1,
+	.pd = {
+		.name = "vfe",
+	},
+	.pwrsts = PWRSTS_OFF_ON,
+	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+};
+
+static struct gdsc vpe_gdsc = {
+	.gdscr = 0x019c,
+	.resets = (unsigned int []){ VPE_AHB_RESET },
+	.reset_count = 1,
+	.pd = {
+		.name = "vpe",
+	},
+	.pwrsts = PWRSTS_OFF_ON,
+	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+};
+
+static struct gdsc *mmcc_msm8660_gdscs[] = {
+	[GFX2D0_GDSC] = &gfx2d0_gdsc,
+	[GFX2D1_GDSC] = &gfx2d1_gdsc,
+	[GFX3D_GDSC] = &gfx3d_gdsc,
+	[IJPEG_GDSC] = &ijpeg_gdsc,
+	[MDP_GDSC] = &mdp_gdsc,
+	[ROT_GDSC] = &rot_gdsc,
+	[VED_GDSC] = &ved_gdsc,
+	[VFE_GDSC] = &vfe_gdsc,
+	[VPE_GDSC] = &vpe_gdsc,
+};
+
 static const struct regmap_config mmcc_msm8660_regmap_config = {
 	.reg_bits	= 32,
 	.reg_stride	= 4,
@@ -2233,6 +2352,8 @@ static const struct qcom_cc_desc mmcc_msm8660_desc = {
 	.num_clks = ARRAY_SIZE(mmcc_msm8660_clks),
 	.resets = mmcc_msm8660_resets,
 	.num_resets = ARRAY_SIZE(mmcc_msm8660_resets),
+	.gdscs = mmcc_msm8660_gdscs,
+	.num_gdscs = ARRAY_SIZE(mmcc_msm8660_gdscs),
 };
 
 static const struct of_device_id mmcc_msm8660_match_table[] = {

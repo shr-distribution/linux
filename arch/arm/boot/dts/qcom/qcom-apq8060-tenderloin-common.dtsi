@@ -768,6 +768,7 @@
 			reg = <0x4000000 0x1000>;
 			#clock-cells = <1>;
 			#reset-cells = <1>;
+			#power-domain-cells = <1>;
 		};
 
 		gpu: adreno@4300000 {
@@ -784,6 +785,9 @@
 				 <&mmcc GFX3D_AHB_CLK>,
 				 <&mmcc GMEM_AXI_CLK>,
 				 <&mmcc GFX3D_AXI_CLK>;
+
+			power-domains = <&mmcc GFX3D_GDSC>;
+			power-domain-names = "gfx3d";
 
 			operating-points-v2 = <&gpu_opp_table>;
 
