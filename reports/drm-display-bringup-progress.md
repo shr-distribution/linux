@@ -1,8 +1,8 @@
 # DRM/Display Bring-up Progress Report
 
-**Date:** 2026-01-19 (Updated)
+**Date:** 2026-01-24 (Updated)
 **Target:** HP TouchPad (APQ8060/MSM8660)
-**Status:** COMPLETE - Display fully working with IOMMU enabled
+**Status:** COMPLETE - Display fully working, GPU under investigation
 
 ## Summary
 
@@ -88,6 +88,72 @@ This uses PLL8 (384MHz) with 1/4 divider = 96MHz exact.
 
 ### Remaining Known Issues
 1. **MDP4 Underrun:** PRIMARY_INTF_UDERRUN (0x100) still occasionally occurs, but underflow recovery handles it.
+
+## 2026-01-24 Update: Vblank Fix and GPU Investigation
+
+### 7. LCDC Vblank IRQ Fix (mdp4_crtc.c)
+
+**Problem:** Running modetest pattern caused vblank timeouts and device crash:
+```
+[drm:mdp4_crtc_err_irq] DMA_P:0: error: 00000100
+vblank time out, crtc=DMA_P:0 flush_reg=00000013 mask=00000011
+```
+
+**Root Cause:** The MDP4 driver used `DMA_P_DONE` (bit 4, 0x10) for vblank on LCDC interfaces, but this interrupt doesn't fire reliably for LCDC. The legacy webOS kernel used `PRIMARY_VSYNC` (bit 7, 0x80) instead.
+
+**Solution:** Modified `mdp4_crtc_set_intf()` to use `PRIMARY_VSYNC` for LCDC interfaces on DMA_P:
+```c
+/*
+ * For LCDC/DTV interfaces on DMA_P, use PRIMARY_VSYNC instead of
+ * DMA_P_DONE for vblank. The DMA_P_DONE interrupt doesn't fire
+ * reliably for LCDC, causing vblank timeouts.
+ */
+if (intf == INTF_LCDC_DTV && mdp4_crtc->dma == DMA_P)
+    mdp4_crtc->vblank.irqmask = MDP4_IRQ_PRIMARY_VSYNC;
+else
+    mdp4_crtc->vblank.irqmask = dma2irq(mdp4_crtc->dma);
+```
+
+**Commit:** 5792da5c0992
+
+**Result:** modetest pattern tests now pass without timeouts.
+
+### 8. GPU (Adreno A220) Investigation - IN PROGRESS
+
+**Problem:** Running kmscube (GPU hardware rendering) causes device hang.
+
+**Symptoms:**
+- Mesa/freedreno initializes correctly ("FD220" renderer)
+- OpenGL ES 2.0 context created successfully
+- Device hangs during actual GPU rendering
+- Network stack partially works (ping responds) but shell hangs
+
+**Investigation Findings:**
+
+1. **Missing "bus" clock:** The GPU device tree node lacked the "bus" clock for AXI bus access:
+   - Driver expected "bus" clock for `ebi1_clk`
+   - Only had "core_clk", "iface_clk", "mem_clk"
+   - **Fix:** Added GFX3D_AXI_CLK as "bus" clock
+
+2. **IOMMU disabled in defconfig:** MSM_IOMMU is disabled, so a2xx_gpummu handles all GPU memory translation internally.
+
+3. **Legacy firmware detected:** PM4 ucode version 0 triggers protection_disabled mode.
+
+4. **GPU MMU configuration matches legacy kernel:**
+   - VA_BASE = 16MB (0x01000000)
+   - VA_RANGE = 0xfff * 64KB (~256MB)
+   - Page table allocated with DMA_ATTR_FORCE_CONTIGUOUS
+
+**Device Tree Fix Applied:**
+```dts
+clock-names = "core_clk", "iface_clk", "mem_clk", "bus";
+clocks = <&mmcc GFX3D_CLK>,
+         <&mmcc GFX3D_AHB_CLK>,
+         <&mmcc GMEM_AXI_CLK>,
+         <&mmcc GFX3D_AXI_CLK>;
+```
+
+**Status:** Testing pending after device reboot.
 
 ## Boot Log Analysis (Before 96MHz fix)
 

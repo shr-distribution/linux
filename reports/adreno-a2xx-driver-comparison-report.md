@@ -722,6 +722,59 @@ For the HP TouchPad specifically, the **only required change** was:
 
 ---
 
+## Testing Status (2026-01-24 Update)
+
+### Current State
+
+GPU driver testing is in progress. The following has been verified:
+
+| Test | Status | Notes |
+|------|--------|-------|
+| GPU probe | ✅ PASS | Driver loads, detects Adreno 220 (2.2.0.0) |
+| Firmware load | ✅ PASS | leia_pm4_470.fw, leia_pfp_470.fw loaded |
+| Mesa/freedreno init | ✅ PASS | FD220 renderer detected, GLES 2.0 available |
+| modetest pattern | ✅ PASS | Display output works (after vblank fix) |
+| kmscube (GPU render) | ❌ HANG | Device hangs during actual rendering |
+
+### Issues Found
+
+1. **LCDC Vblank Timeout (FIXED)**
+   - Symptom: Device crash during modetest pattern
+   - Root cause: DMA_P_DONE interrupt not reliable for LCDC
+   - Fix: Use PRIMARY_VSYNC (0x80) for LCDC on DMA_P
+   - Commit: 5792da5c0992
+
+2. **GPU Rendering Hang (INVESTIGATING)**
+   - Symptom: Device hangs during kmscube OpenGL rendering
+   - Mesa initializes correctly, then device becomes unresponsive
+   - Ping still works but telnet/shell hangs
+   - Requires hard reboot to recover
+
+3. **Missing "bus" Clock (FIXED)**
+   - Symptom: `[drm:msm_gpu_init] ebi1_clk: fffffffe` (-2 = not found)
+   - Root cause: Device tree had no "bus" clock for GPU AXI bus
+   - Fix: Added GFX3D_AXI_CLK as "bus" clock in device tree
+   - Testing pending
+
+### Device Tree Fix Applied
+
+```dts
+clock-names = "core_clk", "iface_clk", "mem_clk", "bus";
+clocks = <&mmcc GFX3D_CLK>,
+         <&mmcc GFX3D_AHB_CLK>,
+         <&mmcc GMEM_AXI_CLK>,
+         <&mmcc GFX3D_AXI_CLK>;
+```
+
+### Next Steps
+
+1. Test kernel with bus clock fix
+2. If still hanging, add debug output to GPU command submission
+3. Compare GPU command stream with working Mesa/KGSL combination
+4. Consider adding devcoredump for GPU hang analysis
+
+---
+
 ## Appendix: Source References
 
 ### Mesa Freedreno

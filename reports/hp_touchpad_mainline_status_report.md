@@ -1,5 +1,5 @@
 # HP TouchPad Mainline Kernel Status Report
-**Date:** 2026-01-19 (Updated)
+**Date:** 2026-01-24 (Updated)
 **Kernel Version:** Linux 6.18.0
 **Branch:** `tenderloin/6.18/upstream-patches`
 **Hardware:** HP TouchPad (Topaz WiFi)
@@ -9,9 +9,26 @@
 
 ## EXECUTIVE SUMMARY
 
-**Overall Status: EXCELLENT - DISPLAY, IOMMU, AND GPU DVFS WORKING!**
+**Overall Status: EXCELLENT - DISPLAY WORKING, GPU UNDER INVESTIGATION**
 
-### Latest Work (2026-01-19):
+### Latest Work (2026-01-24):
+**LCDC Vblank Fix - COMMITTED**
+
+Fixed vblank timeout issue causing device crashes during modetest:
+- Root cause: DMA_P_DONE interrupt doesn't fire reliably for LCDC interfaces
+- Solution: Use PRIMARY_VSYNC (0x80) instead of DMA_P_DONE (0x10) for LCDC on DMA_P
+- Commit: 5792da5c0992
+
+**GPU (Adreno A220) Rendering - UNDER INVESTIGATION**
+
+GPU initialization works but rendering causes device hang:
+- Mesa/freedreno correctly detects FD220 renderer
+- OpenGL ES 2.0 context created successfully
+- Device hangs during actual GPU rendering
+- Added missing "bus" clock (GFX3D_AXI_CLK) to device tree
+- Testing pending after device reboot
+
+### Previous Work (2026-01-19):
 **IOMMU Support - NOW ENABLED**
 
 All 12 MSM8660 IOMMU instances added and GPU/MDP IOMMUs enabled:
@@ -76,7 +93,9 @@ MDP IOMMU now enabled with full stream ID configuration from legacy kernel:
 ### Known Issues
 | Issue | Status | Details |
 |-------|--------|---------|
-| MDP4 Underrun | Investigating | PRIMARY_INTF_UDERRUN (0x100), underflow recovery active |
+| MDP4 Underrun | Resolved | Added interconnect bandwidth voting, underflow recovery active |
+| LCDC Vblank Timeout | ✅ FIXED | Use PRIMARY_VSYNC instead of DMA_P_DONE for LCDC (commit 5792da5c0992) |
+| GPU Rendering Hang | Investigating | Device hangs during kmscube GPU rendering, bus clock fix being tested |
 
 ### Key Commits
 | Commit | Description |
