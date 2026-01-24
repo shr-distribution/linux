@@ -213,6 +213,11 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 			break;
 	gpu_write(gpu, REG_A2XX_RB_EDRAM_INFO, i);
 
+	/* Set up performance counter 1 to count busy cycles for devfreq
+	 * RBBM1_RB_BUSY counts when render backend is active (graphics work)
+	 */
+	gpu_write(gpu, REG_A2XX_RBBM_PERFCOUNTER1_SELECT, RBBM1_RB_BUSY);
+
 	ret = adreno_hw_init(gpu);
 	if (ret)
 		return ret;
@@ -470,6 +475,16 @@ static struct msm_gpu_state *a2xx_gpu_state_get(struct msm_gpu *gpu)
 	return state;
 }
 
+static u64 a2xx_gpu_busy(struct msm_gpu *gpu, unsigned long *out_sample_rate)
+{
+	u64 busy_cycles;
+
+	busy_cycles = gpu_read64(gpu, REG_A2XX_RBBM_PERFCOUNTER1_LO);
+	*out_sample_rate = clk_get_rate(gpu->core_clk);
+
+	return busy_cycles;
+}
+
 static struct drm_gpuvm *
 a2xx_create_vm(struct msm_gpu *gpu, struct platform_device *pdev)
 {
@@ -505,6 +520,7 @@ static const struct adreno_gpu_funcs funcs = {
 #if defined(CONFIG_DEBUG_FS) || defined(CONFIG_DEV_COREDUMP)
 		.show = adreno_show,
 #endif
+		.gpu_busy = a2xx_gpu_busy,
 		.gpu_state_get = a2xx_gpu_state_get,
 		.gpu_state_put = adreno_gpu_state_put,
 		.create_vm = a2xx_create_vm,
