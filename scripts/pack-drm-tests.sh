@@ -901,7 +901,8 @@ main() {
     cat > "$PACKAGE_DIR/debug-kmscube.sh" << 'DEBUG_EOF'
 #!/bin/sh
 # Debug script for kmscube with aggressive logging
-# Captures kernel messages in real-time to help diagnose USB crashes
+# Captures kernel messages, interconnect, GPU freq, memory in real-time
+# All logs written continuously to /mnt/boot to survive USB crashes
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
@@ -913,37 +914,40 @@ LOG_DIR="/mnt/boot"
 TS=$(date +%Y%m%d-%H%M%S)
 DMESG_LOG="$LOG_DIR/debug-dmesg-$TS.log"
 TRACE_LOG="$LOG_DIR/debug-trace-$TS.log"
+MONITOR_LOG="$LOG_DIR/debug-monitor-$TS.log"
 
-# Timestamp function (BusyBox compatible)
+# Timestamp function (BusyBox compatible - no %N support)
 ts() {
     date '+%H:%M:%S'
 }
 
-echo "=== Debug kmscube script ===" | tee "$TRACE_LOG"
-echo "Logs will be saved to: $LOG_DIR" | tee -a "$TRACE_LOG"
-sync
-
-# Make boot partition writable
+# Make boot partition writable early
 mount -o remount,rw /mnt/boot 2>/dev/null || true
 
+echo "=== Debug kmscube script ===" | tee "$TRACE_LOG"
+echo "Started at: $(date)" | tee -a "$TRACE_LOG"
+echo "Logs will be saved to: $LOG_DIR" | tee -a "$TRACE_LOG"
+echo "  TRACE:   $TRACE_LOG" | tee -a "$TRACE_LOG"
+echo "  DMESG:   $DMESG_LOG" | tee -a "$TRACE_LOG"
+echo "  MONITOR: $MONITOR_LOG" | tee -a "$TRACE_LOG"
+sync
+
 # Save initial dmesg
-echo ">>> INITIAL DMESG <<<" > "$DMESG_LOG"
+echo ">>> INITIAL DMESG at $(date) <<<" > "$DMESG_LOG"
 dmesg >> "$DMESG_LOG"
 sync
 echo "[$(ts)] Saved initial dmesg" | tee -a "$TRACE_LOG"
 sync
 
-# Start continuous dmesg logging
+# Start continuous dmesg logging (every 0.5s)
 echo "[$(ts)] Starting continuous dmesg capture..." | tee -a "$TRACE_LOG"
 sync
-
-# Capture dmesg changes every 0.2 seconds
 (
     while true; do
-        dmesg -c 2>/dev/null | while read line; do
+        dmesg -c 2>/dev/null | while IFS= read -r line; do
             echo "[$(ts)] $line" >> "$DMESG_LOG"
-            sync
         done
+        sync
         sleep 1
     done
 ) &
@@ -951,41 +955,197 @@ DMESG_PID=$!
 echo "[$(ts)] dmesg logger PID: $DMESG_PID" | tee -a "$TRACE_LOG"
 sync
 
+# Function to capture system state
+capture_state() {
+    local tag="$1"
+    echo ""
+    echo "=== $tag at $(ts) ==="
+
+    # Memory info
+    echo "-- Memory --"
+    grep -E 'MemFree|MemAvailable|Buffers|Cached|Shmem' /proc/meminfo 2>/dev/null
+    # Show memory usage summary
+    free 2>/dev/null || true
+
+    # GPU/Z180 clock frequency (check both debugfs and sysfs)
+    echo "-- GPU Clocks --"
+    # Try debugfs first
+    for clk in /sys/kernel/debug/clk/gfx3d_clk/clk_rate \
+               /sys/kernel/debug/clk/gfx2d0_clk/clk_rate \
+               /sys/kernel/debug/clk/gfx2d1_clk/clk_rate \
+               /sys/kernel/debug/clk/z180_clk/clk_rate; do
+        if [ -f "$clk" ]; then
+            clkname=$(dirname "$clk")
+            clkname=$(basename "$clkname")
+            echo "  $clkname: $(cat "$clk" 2>/dev/null) Hz"
+        fi
+    done
+    # Try OPP framework
+    for opp in /sys/class/devfreq/*/cur_freq; do
+        if [ -f "$opp" ]; then
+            devname=$(dirname "$opp")
+            devname=$(basename "$devname")
+            freq=$(cat "$opp" 2>/dev/null)
+            echo "  $devname: $freq Hz"
+        fi
+    done
+    # If no clocks found
+    if [ ! -d /sys/kernel/debug/clk ] && [ ! -d /sys/class/devfreq ]; then
+        echo "  (no clock debug info available)"
+    fi
+
+    # Devfreq state (GPU frequency scaling)
+    echo "-- Devfreq --"
+    if ls /sys/class/devfreq/* >/dev/null 2>&1; then
+        for df in /sys/class/devfreq/*; do
+            if [ -d "$df" ]; then
+                name=$(basename "$df")
+                cur=$(cat "$df/cur_freq" 2>/dev/null || echo "N/A")
+                gov=$(cat "$df/governor" 2>/dev/null || echo "N/A")
+                min=$(cat "$df/min_freq" 2>/dev/null || echo "?")
+                max=$(cat "$df/max_freq" 2>/dev/null || echo "?")
+                echo "  $name: $cur Hz [$min-$max] (gov: $gov)"
+            fi
+        done
+    else
+        echo "  (no devfreq devices)"
+    fi
+
+    # Interconnect bandwidth summary
+    echo "-- Interconnect --"
+    if [ -f /sys/kernel/debug/interconnect/interconnect_summary ]; then
+        cat /sys/kernel/debug/interconnect/interconnect_summary 2>/dev/null
+    elif [ -d /sys/kernel/debug/interconnect ]; then
+        echo "  Interconnect nodes:"
+        ls /sys/kernel/debug/interconnect/ 2>/dev/null
+    else
+        echo "  (debugfs not available - build with CONFIG_DEBUG_FS=y)"
+    fi
+
+    # USB gadget state - detailed
+    echo "-- USB Gadget --"
+    for udc in /sys/class/udc/*; do
+        if [ -d "$udc" ]; then
+            name=$(basename "$udc")
+            state=$(cat "$udc/state" 2>/dev/null || echo "N/A")
+            speed=$(cat "$udc/current_speed" 2>/dev/null || echo "?")
+            echo "  $name: state=$state speed=$speed"
+        fi
+    done
+    # Check USB host controllers too
+    echo "  USB host controllers:"
+    for hc in /sys/bus/usb/devices/usb*; do
+        if [ -d "$hc" ]; then
+            prod=$(cat "$hc/product" 2>/dev/null || echo "unknown")
+            speed=$(cat "$hc/speed" 2>/dev/null || echo "?")
+            echo "    $(basename $hc): $prod ($speed Mbps)"
+        fi
+    done
+
+    # DRM info from sysfs (works without debugfs)
+    echo "-- DRM Info --"
+    for card in /sys/class/drm/card*; do
+        if [ -d "$card" ] && [ ! -L "$card" ]; then
+            cardname=$(basename "$card")
+            echo "  $cardname:"
+            # Show connectors
+            for conn in "$card"/*-*/status; do
+                if [ -f "$conn" ]; then
+                    conndir=$(dirname "$conn")
+                    connname=$(basename "$conndir")
+                    status=$(cat "$conn" 2>/dev/null)
+                    echo "    $connname: $status"
+                fi
+            done
+        fi
+    done
+
+    # DRM framebuffer info (if debugfs available)
+    if [ -f /sys/kernel/debug/dri/0/framebuffer ]; then
+        echo "-- DRM Framebuffers (debugfs) --"
+        cat /sys/kernel/debug/dri/0/framebuffer 2>/dev/null
+    fi
+
+    # Memory mappings for display hardware
+    echo "-- Display Memory Regions (iomem) --"
+    grep -iE 'mdp|lcdc|display|hdmi|dsi|gpu|kgsl|z180|smi|mmss' /proc/iomem 2>/dev/null || echo "  (none found)"
+
+    # Interrupts related to display/USB
+    echo "-- Relevant IRQs --"
+    grep -iE 'mdp|lcdc|usb|ci_hdrc|dwc|msm_otg' /proc/interrupts 2>/dev/null || echo "  (none found)"
+}
+
+# Start continuous monitoring (captures state every 2 seconds)
+echo "[$(ts)] Starting continuous monitoring..." | tee -a "$TRACE_LOG"
+sync
+echo ">>> CONTINUOUS MONITOR LOG <<<" > "$MONITOR_LOG"
+(
+    count=0
+    while true; do
+        capture_state "SAMPLE $count" >> "$MONITOR_LOG" 2>&1
+        sync
+        count=$((count + 1))
+        sleep 2
+    done
+) &
+MONITOR_PID=$!
+echo "[$(ts)] monitor logger PID: $MONITOR_PID" | tee -a "$TRACE_LOG"
+sync
+
 # Trap to save logs on exit
 cleanup() {
-    echo "[$(ts)] CLEANUP - saving final state..." >> "$TRACE_LOG"
+    echo "[$(ts)] CLEANUP - saving final state..." | tee -a "$TRACE_LOG"
     kill $DMESG_PID 2>/dev/null
+    kill $MONITOR_PID 2>/dev/null
     echo ">>> FINAL DMESG <<<" >> "$DMESG_LOG"
     dmesg >> "$DMESG_LOG"
+    echo ">>> FINAL STATE <<<" >> "$MONITOR_LOG"
+    capture_state "FINAL" >> "$MONITOR_LOG" 2>&1
     sync
     echo "[$(ts)] Logs saved to $LOG_DIR" | tee -a "$TRACE_LOG"
 }
 trap cleanup EXIT INT TERM
 
-echo "[$(ts)] === PRE-KMSCUBE STATE ===" | tee -a "$TRACE_LOG"
+echo "[$(ts)] === INITIAL SYSTEM STATE ===" | tee -a "$TRACE_LOG"
+capture_state "INITIAL" | tee -a "$TRACE_LOG"
 sync
 
 # Check DRM state
-echo "[$(ts)] DRM devices:" | tee -a "$TRACE_LOG"
+echo "[$(ts)] === DRM DEVICES ===" | tee -a "$TRACE_LOG"
 ls -la /dev/dri/ 2>&1 | tee -a "$TRACE_LOG"
 sync
 
-echo "[$(ts)] CMA memory:" | tee -a "$TRACE_LOG"
-grep -i cma /proc/meminfo 2>&1 | tee -a "$TRACE_LOG"
-sync
-
-echo "[$(ts)] USB gadget state:" | tee -a "$TRACE_LOG"
-ls -la /sys/class/udc/ 2>&1 | tee -a "$TRACE_LOG"
+# Check if debugfs is mounted
+echo "[$(ts)] === DEBUGFS CHECK ===" | tee -a "$TRACE_LOG"
+if [ ! -d /sys/kernel/debug ]; then
+    echo "[$(ts)] Creating /sys/kernel/debug..." | tee -a "$TRACE_LOG"
+    mkdir -p /sys/kernel/debug 2>/dev/null || true
+fi
+if [ ! -f /sys/kernel/debug/interconnect/interconnect_summary ]; then
+    echo "[$(ts)] Mounting debugfs..." | tee -a "$TRACE_LOG"
+    mount -t debugfs debugfs /sys/kernel/debug 2>&1 | tee -a "$TRACE_LOG"
+fi
+if [ -d /sys/kernel/debug ]; then
+    echo "[$(ts)] Debugfs contents:" | tee -a "$TRACE_LOG"
+    ls /sys/kernel/debug/ 2>&1 | tee -a "$TRACE_LOG"
+else
+    echo "[$(ts)] Debugfs not available (CONFIG_DEBUG_FS not enabled?)" | tee -a "$TRACE_LOG"
+fi
 sync
 
 # Run modetest info first (safe, no mode change)
 echo "[$(ts)] === MODETEST INFO ===" | tee -a "$TRACE_LOG"
 sync
-$SCRIPT_DIR/bin/modetest -M msm -c 2>&1 | head -n 20 | tee -a "$TRACE_LOG"
+$SCRIPT_DIR/bin/modetest -M msm -c 2>&1 | head -n 30 | tee -a "$TRACE_LOG"
+sync
+
+# Show connector/encoder/crtc IDs
+echo "[$(ts)] === MODETEST PLANES ===" | tee -a "$TRACE_LOG"
+$SCRIPT_DIR/bin/modetest -M msm -p 2>&1 | head -n 50 | tee -a "$TRACE_LOG"
 sync
 
 echo "[$(ts)] === STARTING KMSCUBE ===" | tee -a "$TRACE_LOG"
-echo "[$(ts)] Will run for 5 seconds then exit cleanly" | tee -a "$TRACE_LOG"
+echo "[$(ts)] Will run for 10 seconds then exit cleanly" | tee -a "$TRACE_LOG"
 sync
 
 # Run kmscube in background with manual timeout (BusyBox compatible)
@@ -997,8 +1157,15 @@ KMSCUBE_PID=$!
 echo "[$(ts)] kmscube PID: $KMSCUBE_PID" | tee -a "$TRACE_LOG"
 sync
 
-# Wait 5 seconds then kill kmscube
-sleep 5
+# Monitor during kmscube run
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    memfree=$(awk '/MemFree/ {print $2}' /proc/meminfo 2>/dev/null)
+    usbstate=$(cat /sys/class/udc/ci_hdrc.0/state 2>/dev/null || echo "?")
+    echo "[$(ts)] kmscube ($i/10): MemFree=${memfree}kB USB=$usbstate" | tee -a "$TRACE_LOG"
+    sync
+done
+
 echo "[$(ts)] Sending SIGTERM to kmscube..." | tee -a "$TRACE_LOG"
 sync
 kill $KMSCUBE_PID 2>/dev/null
@@ -1013,14 +1180,15 @@ echo "[$(ts)] kmscube exited with code: $KMSCUBE_EXIT" | tee -a "$TRACE_LOG"
 sync
 
 echo "[$(ts)] === POST-KMSCUBE STATE ===" | tee -a "$TRACE_LOG"
+capture_state "POST-KMSCUBE" | tee -a "$TRACE_LOG"
 sync
 
-echo "[$(ts)] Waiting 2 seconds..." | tee -a "$TRACE_LOG"
-sleep 2
+echo "[$(ts)] Waiting 3 seconds for system to settle..." | tee -a "$TRACE_LOG"
+sleep 3
 sync
 
-echo "[$(ts)] CMA memory after:" | tee -a "$TRACE_LOG"
-grep -i cma /proc/meminfo 2>&1 | tee -a "$TRACE_LOG"
+echo "[$(ts)] === FINAL STATE ===" | tee -a "$TRACE_LOG"
+capture_state "FINAL" | tee -a "$TRACE_LOG"
 sync
 
 echo "[$(ts)] === TEST COMPLETE ===" | tee -a "$TRACE_LOG"
@@ -1028,9 +1196,12 @@ echo "[$(ts)] If you see this, USB survived!" | tee -a "$TRACE_LOG"
 sync
 
 echo ""
+echo "============================================"
 echo "Logs saved to:"
-echo "  $TRACE_LOG"
-echo "  $DMESG_LOG"
+echo "  $TRACE_LOG   (main trace)"
+echo "  $DMESG_LOG   (kernel messages)"
+echo "  $MONITOR_LOG (continuous monitoring)"
+echo "============================================"
 DEBUG_EOF
     chmod +x "$PACKAGE_DIR/debug-kmscube.sh"
     status "Created debug-kmscube.sh"
