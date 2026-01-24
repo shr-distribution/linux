@@ -317,7 +317,6 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 			MDP4_DMA_CONFIG_B_BPC(BPC8) |
 			MDP4_DMA_CONFIG_PACK(0x21) |
 			MDP4_DMA_CONFIG_DEFLKR_EN;
-		dev_info(dev->dev, "LCDC: using 24bpp output (8 bpc)\n");
 	} else {
 		/* 18bpp: 6 bits per channel, enable dithering */
 		config =
@@ -327,7 +326,6 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 			MDP4_DMA_CONFIG_PACK(0x21) |
 			MDP4_DMA_CONFIG_DEFLKR_EN |
 			MDP4_DMA_CONFIG_DITHER_EN;
-		dev_info(dev->dev, "LCDC: using 18bpp output (6 bpc)\n");
 	}
 
 	if (!of_property_read_bool(dev->dev->of_node, "qcom,lcdc-align-lsb"))
@@ -342,14 +340,10 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 		DRM_DEV_ERROR(dev->dev, "failed to enable regulators: %d\n", ret);
 
 	DBG("setting lcdc_clk=%lu", pc);
-	dev_info(dev->dev, "LCDC enable: before clk_set_rate(%lu)\n", pc);
 	ret = clk_set_rate(mdp4_lcdc_encoder->lcdc_clk, pc);
-	dev_info(dev->dev, "LCDC enable: after clk_set_rate, ret=%d\n", ret);
 	if (ret)
 		DRM_DEV_ERROR(dev->dev, "failed to configure lcdc_clk: %d\n", ret);
-	dev_info(dev->dev, "LCDC enable: before clk_prepare_enable\n");
 	ret = clk_prepare_enable(mdp4_lcdc_encoder->lcdc_clk);
-	dev_info(dev->dev, "LCDC enable: after clk_prepare_enable, ret=%d\n", ret);
 	if (ret)
 		DRM_DEV_ERROR(dev->dev, "failed to enable lcdc_clk: %d\n", ret);
 
@@ -370,12 +364,7 @@ mdp4_lcdc_encoder_mode_valid(struct drm_encoder *encoder,
 	long actual, requested;
 
 	requested = 1000 * mode->clock;
-
-	dev_info(dev->dev, "LCDC mode_valid: before clk_round_rate, requested=%ld\n", requested);
-
 	actual = clk_round_rate(mdp4_lcdc_encoder->lcdc_clk, requested);
-
-	dev_info(dev->dev, "LCDC mode_valid: after clk_round_rate, actual=%ld\n", actual);
 
 	DBG("requested=%ld, actual=%ld", requested, actual);
 
@@ -399,8 +388,6 @@ struct drm_encoder *mdp4_lcdc_encoder_init(struct drm_device *dev)
 	struct mdp4_lcdc_encoder *mdp4_lcdc_encoder;
 	int ret;
 
-	dev_info(dev->dev, "LCDC encoder init: step 1 - allocating encoder\n");
-
 	mdp4_lcdc_encoder = drmm_encoder_alloc(dev, struct mdp4_lcdc_encoder, base,
 					       NULL, DRM_MODE_ENCODER_LVDS, NULL);
 	if (IS_ERR(mdp4_lcdc_encoder))
@@ -408,32 +395,27 @@ struct drm_encoder *mdp4_lcdc_encoder_init(struct drm_device *dev)
 
 	encoder = &mdp4_lcdc_encoder->base;
 
-	dev_info(dev->dev, "LCDC encoder init: step 2 - adding helper funcs\n");
 	drm_encoder_helper_add(encoder, &mdp4_lcdc_encoder_helper_funcs);
 
-	dev_info(dev->dev, "LCDC encoder init: step 3 - getting lcdc_clk\n");
 	mdp4_lcdc_encoder->lcdc_clk = mdp4_get_lcdc_clock(dev);
 	if (IS_ERR(mdp4_lcdc_encoder->lcdc_clk)) {
 		DRM_DEV_ERROR(dev->dev, "failed to get lvds_clk: %ld\n",
 			      PTR_ERR(mdp4_lcdc_encoder->lcdc_clk));
 		return ERR_CAST(mdp4_lcdc_encoder->lcdc_clk);
 	}
-	dev_info(dev->dev, "LCDC encoder init: step 4 - got lcdc_clk OK\n");
 
 	/* TODO: different regulators in other cases? */
 	mdp4_lcdc_encoder->regs[0].supply = "lvds-vccs-3p3v";
 	mdp4_lcdc_encoder->regs[1].supply = "lvds-pll-vdda";
 	mdp4_lcdc_encoder->regs[2].supply = "lvds-vdda";
 
-	dev_info(dev->dev, "LCDC encoder init: step 5 - getting regulators\n");
 	ret = devm_regulator_bulk_get(dev->dev,
 				      ARRAY_SIZE(mdp4_lcdc_encoder->regs),
 				      mdp4_lcdc_encoder->regs);
 	if (ret) {
-		dev_err(dev->dev, "LCDC encoder init: regulator_bulk_get failed: %d\n", ret);
+		DRM_DEV_ERROR(dev->dev, "failed to get regulators: %d\n", ret);
 		return ERR_PTR(ret);
 	}
 
-	dev_info(dev->dev, "LCDC encoder init: step 6 - done\n");
 	return encoder;
 }

@@ -5,9 +5,6 @@
  */
 
 #include <linux/delay.h>
-#include <linux/interconnect.h>
-#include <linux/io.h>
-#include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
 
 #include <drm/drm_bridge.h>
@@ -28,20 +25,6 @@ static int mdp4_hw_init(struct msm_kms *kms)
 
 	pm_runtime_get_sync(dev->dev);
 
-	/*
-	 * Disable bootloader display output FIRST before touching any
-	 * pipe configuration. This prevents blue screen flickering during
-	 * the handoff from bootloader (moboot) to kernel.
-	 *
-	 * The bootloader leaves LCDC/DTV running, so if we clear pipe
-	 * addresses while it's still scanning out, we get corruption.
-	 */
-	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
-	mdp4_write(mdp4_kms, REG_MDP4_DTV_ENABLE, 0);
-
-	/* Wait for current frame to complete (~17ms for 60Hz) */
-	msleep(20);
-
 	if (mdp4_kms->rev > 1) {
 		mdp4_write(mdp4_kms, REG_MDP4_CS_CONTROLLER0, 0x0707ffff);
 		mdp4_write(mdp4_kms, REG_MDP4_CS_CONTROLLER1, 0x03073f3f);
@@ -49,14 +32,8 @@ static int mdp4_hw_init(struct msm_kms *kms)
 
 	mdp4_write(mdp4_kms, REG_MDP4_PORTMAP_MODE, 0x3);
 
-	/*
-	 * Max read pending cmd config.
-	 * Per webOS kernel: if MDP clock < AXI clock, use 3 pending requests,
-	 * otherwise use 8 pending requests. On APQ8060 with MDP at 200MHz
-	 * and AXI at ~200MHz, they're roughly equal so use max (0x0FFFF) for
-	 * better throughput and to prevent underrun artifacts at bottom of screen.
-	 */
-	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x0FFFF);
+	/* max read pending cmd config, 3 pending requests: */
+	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x02222);
 
 	clk = clk_get_rate(mdp4_kms->clk);
 
@@ -82,75 +59,13 @@ static int mdp4_hw_init(struct msm_kms *kms)
 		mdp4_write(mdp4_kms, REG_MDP4_LAYERMIXER_IN_CFG_UPDATE_METHOD, 1);
 	mdp4_write(mdp4_kms, REG_MDP4_LAYERMIXER_IN_CFG, 0);
 
-	/*
-	 * Clear all pipe source addresses to remove any leftover
-	 * bootloader framebuffer configuration that might be composited
-	 * on top of the kernel's framebuffer.
-	 */
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(VG1), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(VG2), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(RGB1), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(RGB2), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRC_SIZE(VG1), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRC_SIZE(VG2), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRC_SIZE(RGB1), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRC_SIZE(RGB2), 0);
-
-	/*
-	 * Disable all overlay processors to clear any bootloader console
-	 * or logo that might be composited on top of the kernel display.
-	 */
-	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CFG(0), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CFG(1), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CFG(2), 0);
-
-	/*
-	 * Initialize blend stages for both overlay processors.
-	 * This clears any bootloader blend configuration that might cause
-	 * stale content to be composited on top of the kernel display.
-	 * Per legacy webOS kernel mdp4_mixer_blend_init():
-	 * - OP = 0x010 (FG_CONST alpha mode)
-	 * - FG_ALPHA = 0xff (foreground fully opaque)
-	 * - BG_ALPHA = 0x00 (background fully transparent)
-	 */
-	{
-		int ovlp, stage;
-		for (ovlp = 0; ovlp < 2; ovlp++) {
-			for (stage = 0; stage < 4; stage++) {
-				mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_OP(ovlp, stage), 0x010);
-				mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_FG_ALPHA(ovlp, stage), 0xff);
-				mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_BG_ALPHA(ovlp, stage), 0x00);
-			}
-		}
-	}
-
-	/* disable CSC matrix / YUV and reset all pipe op modes: */
+	/* disable CSC matrix / YUV by default: */
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(VG1), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(VG2), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(RGB1), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(RGB2), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_DMA_P_OP_MODE, 0);
 	mdp4_write(mdp4_kms, REG_MDP4_DMA_S_OP_MODE, 0);
-	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CSC_CONFIG(0), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CSC_CONFIG(1), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CSC_CONFIG(2), 0);
-
-	/*
-	 * Clear DMA pipe source addresses to remove any bootloader
-	 * framebuffer that might be displayed via DMA pipes.
-	 * Note: Only clear DMA_P and DMA_S, not DMA_E which may not
-	 * be present on all hardware variants.
-	 */
-	mdp4_write(mdp4_kms, REG_MDP4_DMA_SRC_BASE(DMA_P), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_DMA_SRC_BASE(DMA_S), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_DMA_SRC_SIZE(DMA_P), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_DMA_SRC_SIZE(DMA_S), 0);
-
-	/*
-	 * Disable hardware cursors on DMA_P to clear any bootloader cursor.
-	 */
-	mdp4_write(mdp4_kms, REG_MDP4_DMA_CURSOR_SIZE(DMA_P), 0);
-	mdp4_write(mdp4_kms, REG_MDP4_DMA_CURSOR_BLEND_CONFIG(DMA_P), 0);
 
 	if (mdp4_kms->rev > 1)
 		mdp4_write(mdp4_kms, REG_MDP4_RESET_STATUS, 1);
@@ -501,7 +416,7 @@ static int mdp4_kms_init(struct drm_device *dev)
 	u32 major, minor;
 	unsigned long max_clk;
 
-	/* APQ8060/MSM8660 (tenderloin) - use 200MHz per webOS kernel board-tenderloin.c */
+	/* APQ8060/MSM8660 - use 200MHz (matching webOS kernel) */
 	max_clk = 200000000;
 
 	ret = mdp_kms_init(&mdp4_kms->base, &kms_funcs);
@@ -567,8 +482,7 @@ static int mdp4_kms_init(struct drm_device *dev)
 	/*
 	 * Initialize VM after modeset_init() succeeds. This avoids creating
 	 * a VM that needs cleanup if modeset_init() returns -EPROBE_DEFER
-	 * (waiting for panel/bridge driver). The VM is only needed for
-	 * GEM IOVA allocation, which doesn't happen until after modeset_init.
+	 * (waiting for panel/bridge driver).
 	 */
 	vm = msm_kms_init_vm(mdp4_kms->dev, NULL);
 	if (IS_ERR(vm)) {
@@ -576,7 +490,6 @@ static int mdp4_kms_init(struct drm_device *dev)
 		goto fail;
 	}
 
-	/* vm can be NULL if no IOMMU - that's OK for basic display */
 	kms->vm = vm;
 
 	/*
@@ -607,14 +520,7 @@ static int mdp4_kms_init(struct drm_device *dev)
 	dev->mode_config.min_width = 0;
 	dev->mode_config.min_height = 0;
 	dev->mode_config.max_width = 2048;
-	/*
-	 * Allow height up to 4096 for fbdev triple buffering.
-	 * With CONFIG_DRM_FBDEV_OVERALLOC=300, a 768-line display needs
-	 * surface_height = 768 * 3 = 2304 lines for triple buffering.
-	 * drm_fb_helper clamps surface_height to max_height, so we need
-	 * this to be at least 2304 to avoid buffer underallocation.
-	 */
-	dev->mode_config.max_height = 4096;
+	dev->mode_config.max_height = 2048;
 
 	return 0;
 
@@ -630,201 +536,28 @@ static const struct dev_pm_ops mdp4_pm_ops = {
 	.complete = msm_kms_pm_complete,
 };
 
-/* Default bandwidth values (in kBps) - used if not specified in DT */
-#define MDP4_DEFAULT_BW_AVG_KBPS	(500 * 1024)	/* 500 MB/s */
-#define MDP4_DEFAULT_BW_PEAK_KBPS	(700 * 1024)	/* 700 MB/s */
-
-/*
- * Set up interconnect paths for MDP to memory bandwidth.
- * This coordinates with the bus fabric to prevent USB RNDIS failures
- * when MDP is accessing memory on APQ8060/MSM8660.
- *
- * WebOS voted for bandwidth on BOTH SMI and EBI paths simultaneously,
- * even when only using SMI for framebuffers. This appears necessary
- * for proper fabric clock scaling on MSM8660.
- *
- * Bandwidth can be configured via device tree properties:
- *   qcom,icc-bw-avg-kbps  - average bandwidth in kBps
- *   qcom,icc-bw-peak-kbps - peak bandwidth in kBps
- */
-static int mdp4_setup_interconnect(struct platform_device *pdev)
-{
-	struct device_node *np = pdev->dev.of_node;
-	struct icc_path *path0_smi, *path1_smi;
-	struct icc_path *path0_ebi, *path1_ebi;
-	u32 avg_bw = MDP4_DEFAULT_BW_AVG_KBPS;
-	u32 peak_bw = MDP4_DEFAULT_BW_PEAK_KBPS;
-
-	/*
-	 * Get SMI memory paths (APQ8060/MSM8660 dedicated VRAM).
-	 * These route MDP -> MMSS fabric -> SMI.
-	 */
-	path0_smi = msm_icc_get(&pdev->dev, "mdp0-smi");
-	path1_smi = msm_icc_get(&pdev->dev, "mdp1-smi");
-
-	/*
-	 * Get EBI memory paths (main system RAM).
-	 * These route MDP -> MMSS fabric -> APPSS fabric -> EBI.
-	 * WebOS voted on both SMI and EBI paths for proper fabric scaling.
-	 */
-	path0_ebi = msm_icc_get(&pdev->dev, "mdp0-ebi");
-	path1_ebi = msm_icc_get(&pdev->dev, "mdp1-ebi");
-
-	/* Fall back to generic "mem" paths if specific paths not available */
-	if (IS_ERR_OR_NULL(path0_smi) && IS_ERR_OR_NULL(path0_ebi)) {
-		path0_smi = msm_icc_get(&pdev->dev, "mdp0-mem");
-		path1_smi = msm_icc_get(&pdev->dev, "mdp1-mem");
-	}
-
-	if (IS_ERR(path0_smi))
-		return PTR_ERR(path0_smi);
-
-	if (!path0_smi && !path0_ebi) {
-		/*
-		 * No interconnect support is not fatal - the platform may
-		 * not have an interconnect driver yet. But warn about it
-		 * as it may cause USB issues on APQ8060/MSM8660.
-		 */
-		dev_warn(&pdev->dev, "No interconnect support - may cause USB/display conflicts!\n");
-		return 0;
-	}
-
-	/* Read bandwidth from device tree if specified */
-	of_property_read_u32(np, "qcom,icc-bw-avg-kbps", &avg_bw);
-	of_property_read_u32(np, "qcom,icc-bw-peak-kbps", &peak_bw);
-
-	dev_info(&pdev->dev, "MDP interconnect bandwidth: avg=%u kBps, peak=%u kBps\n",
-		avg_bw, peak_bw);
-
-	/* Vote on SMI paths */
-	if (!IS_ERR_OR_NULL(path0_smi)) {
-		icc_set_bw(path0_smi, avg_bw, peak_bw);
-		dev_info(&pdev->dev, "MDP: voted %u/%u kBps on SMI path0\n", avg_bw, peak_bw);
-	}
-	if (!IS_ERR_OR_NULL(path1_smi)) {
-		icc_set_bw(path1_smi, avg_bw, peak_bw);
-		dev_info(&pdev->dev, "MDP: voted %u/%u kBps on SMI path1\n", avg_bw, peak_bw);
-	}
-
-	/* Vote on EBI paths (like webOS did for proper fabric clock scaling) */
-	if (!IS_ERR_OR_NULL(path0_ebi)) {
-		icc_set_bw(path0_ebi, avg_bw, peak_bw);
-		dev_info(&pdev->dev, "MDP: voted %u/%u kBps on EBI path0\n", avg_bw, peak_bw);
-	}
-	if (!IS_ERR_OR_NULL(path1_ebi)) {
-		icc_set_bw(path1_ebi, avg_bw, peak_bw);
-		dev_info(&pdev->dev, "MDP: voted %u/%u kBps on EBI path1\n", avg_bw, peak_bw);
-	}
-
-	return 0;
-}
-
-/*
- * Disable bootloader display output immediately to prevent artifacts.
- * The bootloader (moboot) leaves LCDC running with its own framebuffer.
- * We disable LCDC as early as possible to cut off the old display,
- * making the screen go black until DRM properly initializes.
- */
-static void mdp4_disable_bootloader_display(void __iomem *mmio)
-{
-	/* REG_MDP4_LCDC_ENABLE = 0xc0000 */
-	writel(0, mmio + 0xc0000);
-	/* REG_MDP4_DTV_ENABLE = 0xd0000 */
-	writel(0, mmio + 0xd0000);
-	/* Small delay for the disable to take effect */
-	mdelay(1);
-}
-
-/*
- * Clear the reserved SMI framebuffer memory to remove artifacts from
- * previous boots (bootloader display, old kernel framebuffer, etc.).
- * This prevents visual garbage on screen during boot before userspace
- * draws its first frame.
- */
-static void mdp4_clear_framebuffer_memory(struct device *dev)
-{
-	struct device_node *np, *mem_np;
-	struct resource res;
-	void __iomem *mem;
-	int ret;
-
-	np = dev->of_node;
-	if (!np)
-		return;
-
-	/* Find the memory-region phandle */
-	mem_np = of_parse_phandle(np, "memory-region", 0);
-	if (!mem_np) {
-		dev_dbg(dev, "No memory-region specified, skipping FB clear\n");
-		return;
-	}
-
-	ret = of_address_to_resource(mem_np, 0, &res);
-	of_node_put(mem_np);
-	if (ret) {
-		dev_warn(dev, "Failed to get memory-region resource: %d\n", ret);
-		return;
-	}
-
-	dev_info(dev, "Clearing SMI framebuffer memory %pR\n", &res);
-
-	/* Map the region as write-combining for efficient clearing */
-	mem = ioremap_wc(res.start, resource_size(&res));
-	if (!mem) {
-		dev_warn(dev, "Failed to map SMI memory for clearing\n");
-		return;
-	}
-
-	/* Clear to black (zero) */
-	memset_io(mem, 0, resource_size(&res));
-
-	iounmap(mem);
-	dev_info(dev, "SMI framebuffer memory cleared (%llu bytes)\n",
-		 (unsigned long long)resource_size(&res));
-}
-
 static int mdp4_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mdp4_kms *mdp4_kms;
 	int irq, ret;
 
-	/* DEBUG: Test USB step by step */
-	dev_info(&pdev->dev, "MDP4: Step 1 - alloc, ioremap, get_irq\n");
-
-	/*
-	 * Initialize reserved memory region for SMI framebuffers.
-	 * On APQ8060/MSM8660, this sets up the device to use the
-	 * drm_smi_mem reserved region at 0x38300000 for DMA allocations,
-	 * matching webOS pmem_smipool behavior.
-	 */
-	ret = of_reserved_mem_device_init(dev);
-	if (ret && ret != -ENODEV)
-		dev_warn(dev, "Failed to init reserved memory: %d\n", ret);
-	else if (ret == 0) {
-		dev_info(dev, "MDP4: Using reserved memory region for framebuffers\n");
-		/*
-		 * Clear the reserved memory to remove artifacts from
-		 * bootloader or previous kernel boot.
-		 */
-		mdp4_clear_framebuffer_memory(dev);
-	}
-
 	mdp4_kms = devm_kzalloc(dev, sizeof(*mdp4_kms), GFP_KERNEL);
 	if (!mdp4_kms)
 		return -ENOMEM;
 
+	/*
+	 * Initialize reserved memory region (SMI) if specified in device tree.
+	 * This allows DRM to allocate framebuffers from the dedicated SMI
+	 * memory region instead of system RAM.
+	 */
+	ret = of_reserved_mem_device_init(dev);
+	if (ret && ret != -ENODEV)
+		dev_warn(dev, "Could not get reserved memory: %d\n", ret);
+
 	mdp4_kms->mmio = msm_ioremap(pdev, NULL);
 	if (IS_ERR(mdp4_kms->mmio))
 		return PTR_ERR(mdp4_kms->mmio);
-
-	/*
-	 * Disable bootloader display IMMEDIATELY after getting MMIO access.
-	 * This cuts off moboot's display output to prevent artifacts from
-	 * the bootloader's framebuffer showing during kernel init.
-	 * Screen will go black until DRM properly initializes.
-	 */
-	mdp4_disable_bootloader_display(mdp4_kms->mmio);
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -833,9 +566,8 @@ static int mdp4_probe(struct platform_device *pdev)
 	mdp4_kms->base.base.irq = irq;
 
 	/*
-	 * VDD regulator is optional - on some boards (like HP TouchPad)
-	 * the bootloader may leave it on. Use _get_optional() to avoid
-	 * errors when the regulator is not defined in device tree.
+	 * VDD regulator is optional - on some boards the bootloader
+	 * may leave it on.
 	 */
 	mdp4_kms->vdd = devm_regulator_get_optional(&pdev->dev, "vdd");
 	if (IS_ERR(mdp4_kms->vdd))
@@ -856,11 +588,6 @@ static int mdp4_probe(struct platform_device *pdev)
 	mdp4_kms->lut_clk = devm_clk_get_optional(&pdev->dev, "lut_clk");
 	if (IS_ERR(mdp4_kms->lut_clk))
 		return dev_err_probe(dev, PTR_ERR(mdp4_kms->lut_clk), "failed to get lut_clk\n");
-
-	/* Set up interconnect bandwidth to prevent display underrun */
-	ret = mdp4_setup_interconnect(pdev);
-	if (ret)
-		return ret;
 
 	return msm_drv_probe(&pdev->dev, mdp4_kms_init, &mdp4_kms->base.base);
 }

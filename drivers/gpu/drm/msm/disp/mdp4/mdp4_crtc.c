@@ -534,18 +534,36 @@ static void mdp4_crtc_wait_for_flush_done(struct drm_crtc *crtc)
 	struct drm_device *dev = crtc->dev;
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
+	wait_queue_head_t *queue = drm_crtc_vblank_waitqueue(crtc);
+	uint32_t flush_reg;
 	int ret;
 
-	ret = drm_crtc_vblank_get(crtc);
-	if (ret)
-		return;
+	dev_dbg(dev->dev, "wait_for_flush_done: %s flushed_mask=%08x\n",
+		mdp4_crtc->name, mdp4_crtc->flushed_mask);
 
-	ret = wait_event_timeout(dev->vblank[drm_crtc_index(crtc)].queue,
+	ret = drm_crtc_vblank_get(crtc);
+	if (ret) {
+		dev_dbg(dev->dev, "wait_for_flush_done: %s vblank_get failed ret=%d\n",
+			mdp4_crtc->name, ret);
+		return;
+	}
+
+	flush_reg = mdp4_read(mdp4_kms, REG_MDP4_OVERLAY_FLUSH);
+	dev_dbg(dev->dev, "wait_for_flush_done: %s flush_reg=%08x before wait\n",
+		mdp4_crtc->name, flush_reg);
+
+	ret = wait_event_timeout(*queue,
 		!(mdp4_read(mdp4_kms, REG_MDP4_OVERLAY_FLUSH) &
 			mdp4_crtc->flushed_mask),
 		msecs_to_jiffies(50));
+
+	flush_reg = mdp4_read(mdp4_kms, REG_MDP4_OVERLAY_FLUSH);
 	if (ret <= 0)
-		dev_warn(dev->dev, "vblank time out, crtc=%s\n", mdp4_crtc->base.name);
+		dev_warn(dev->dev, "vblank time out, crtc=%s flush_reg=%08x mask=%08x\n",
+			mdp4_crtc->name, flush_reg, mdp4_crtc->flushed_mask);
+	else
+		dev_dbg(dev->dev, "wait_for_flush_done: %s completed in %d jiffies, flush_reg=%08x\n",
+			mdp4_crtc->name, 50 - ret, flush_reg);
 
 	mdp4_crtc->flushed_mask = 0;
 
@@ -610,14 +628,8 @@ void mdp4_crtc_set_intf(struct drm_crtc *crtc, enum mdp4_intf intf, int mixer)
 
 void mdp4_crtc_wait_for_commit_done(struct drm_crtc *crtc)
 {
-	/* wait_for_flush_done is the only case for now.
-	 * Later we will have command mode CRTC to wait for
-	 * other event.
-	 *
-	 * HACK: Disabled for HP TouchPad - causes hangs.
-	 * See: https://github.com/Tofee/shr-linux tenderloin branch
-	 */
-	// mdp4_crtc_wait_for_flush_done(crtc);
+	/* Wait for overlay flush to complete before returning */
+	mdp4_crtc_wait_for_flush_done(crtc);
 }
 
 static const char *dma_names[] = {
