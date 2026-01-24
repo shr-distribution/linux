@@ -617,6 +617,17 @@ void mdp4_crtc_set_intf(struct drm_crtc *crtc, enum mdp4_intf intf, int mixer)
 		intf_sel |= MDP4_DISP_INTF_SEL_DSI_CMD;
 	}
 
+	/*
+	 * For LCDC/DTV interfaces on DMA_P, use PRIMARY_VSYNC instead of
+	 * DMA_P_DONE for vblank. The DMA_P_DONE interrupt doesn't fire
+	 * reliably for LCDC, causing vblank timeouts. This matches the
+	 * behavior of the original Qualcomm driver.
+	 */
+	if (intf == INTF_LCDC_DTV && mdp4_crtc->dma == DMA_P)
+		mdp4_crtc->vblank.irqmask = MDP4_IRQ_PRIMARY_VSYNC;
+	else
+		mdp4_crtc->vblank.irqmask = dma2irq(mdp4_crtc->dma);
+
 	mdp4_crtc->mixer = mixer;
 
 	blend_setup(crtc);
