@@ -19,6 +19,8 @@
 #include <video/of_display_timing.h>
 #include <video/videomode.h>
 
+#include <linux/media-bus-format.h>
+
 #include <drm/drm_crtc.h>
 #include <drm/drm_of.h>
 #include <drm/drm_panel.h>
@@ -31,6 +33,7 @@ struct panel_lvds {
 	struct drm_display_mode dmode;
 	u32 bus_flags;
 	unsigned int bus_format;
+	unsigned int bpc;  /* bits per color channel (6, 8, or 10) */
 
 	struct regulator *supply;
 
@@ -97,6 +100,7 @@ static int panel_lvds_get_modes(struct drm_panel *panel,
 	drm_display_info_set_bus_formats(&connector->display_info,
 					 &lvds->bus_format, 1);
 	connector->display_info.bus_flags = lvds->bus_flags;
+	connector->display_info.bpc = lvds->bpc;
 
 	/*
 	 * TODO: Remove once all drm drivers call
@@ -149,6 +153,30 @@ static int panel_lvds_parse_dt(struct panel_lvds *lvds)
 	}
 
 	lvds->bus_format = ret;
+
+	/*
+	 * Derive bits-per-channel from bus format for use by display controllers.
+	 * LVDS data mappings:
+	 * - 18-bit (6 bpc): RGB666_1X7X3_SPWG (jeida-18)
+	 * - 24-bit (8 bpc): RGB888_1X7X4_SPWG (vesa-24), RGB888_1X7X4_JEIDA (jeida-24)
+	 * - 30-bit (10 bpc): RGB101010_1X7X5_SPWG (vesa-30), RGB101010_1X7X5_JEIDA (jeida-30)
+	 */
+	switch (ret) {
+	case MEDIA_BUS_FMT_RGB666_1X7X3_SPWG:
+		lvds->bpc = 6;
+		break;
+	case MEDIA_BUS_FMT_RGB888_1X7X4_SPWG:
+	case MEDIA_BUS_FMT_RGB888_1X7X4_JEIDA:
+		lvds->bpc = 8;
+		break;
+	case MEDIA_BUS_FMT_RGB101010_1X7X5_SPWG:
+	case MEDIA_BUS_FMT_RGB101010_1X7X5_JEIDA:
+		lvds->bpc = 10;
+		break;
+	default:
+		lvds->bpc = 8; /* Default to 24-bit if unknown */
+		break;
+	}
 
 	lvds->bus_flags |= of_property_read_bool(np, "data-mirror") ?
 			   DRM_BUS_FLAG_DATA_LSB_TO_MSB :

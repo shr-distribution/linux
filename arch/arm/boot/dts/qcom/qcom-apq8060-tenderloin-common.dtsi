@@ -941,7 +941,11 @@
 			/* Use SMI memory for display framebuffers - same as webOS */
 			memory-region = <&drm_smi_mem>;
 
-			// align on LSB instead of MSB
+			/*
+			 * Use LSB pack alignment to match webOS configuration.
+			 * webOS mdp_lcdc.c used DMA_PACK_ALIGN_LSB for the LG panel.
+			 * Without this, display shows blue vertical lines.
+			 */
 			qcom,lcdc-align-lsb;
 
 			/*
@@ -1154,8 +1158,8 @@
 		width-mm = <197>;
 		height-mm = <148>;
 
-		/* VESA 24-bit RGB data mapping (legacy used 18bpp but 24 works) */
-		data-mapping = "vesa-24";
+		/* 18-bit JEIDA mapping to match webOS pinfo->bpp=18 configuration */
+		data-mapping = "jeida-18";
 
 		/* Panel is physically mounted inverted (upside-down) */
 		rotation = <180>;
