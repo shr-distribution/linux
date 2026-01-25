@@ -296,9 +296,31 @@ void msm_devfreq_active(struct msm_gpu *gpu)
 	struct msm_gpu_devfreq *df = &gpu->devfreq;
 	unsigned int idle_time;
 	unsigned long target_freq;
+	unsigned long sample_rate;
 
 	if (!has_devfreq(gpu))
 		return;
+
+	/*
+	 * Ensure devfreq is actually resumed on first GPU activity.
+	 * The devfreq starts suspended during init (df->suspended = true),
+	 * waiting for msm_devfreq_resume() to be called. However, if the
+	 * GPU pm_runtime never gets resumed (e.g., no 3D app runs), the
+	 * devfreq stays suspended and frequency scaling doesn't work.
+	 *
+	 * By checking and resuming here, we ensure devfreq becomes active
+	 * on the first actual GPU usage, regardless of pm_runtime state.
+	 */
+	mutex_lock(&df->lock);
+	if (df->suspended) {
+		df->busy_cycles = gpu->funcs->gpu_busy(gpu, &sample_rate);
+		df->time = ktime_get();
+		df->suspended = false;
+		mutex_unlock(&df->lock);
+		devfreq_resume_device(df->devfreq);
+	} else {
+		mutex_unlock(&df->lock);
+	}
 
 	/*
 	 * Cancel any pending transition to idle frequency:

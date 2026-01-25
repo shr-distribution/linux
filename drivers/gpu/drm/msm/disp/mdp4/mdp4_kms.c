@@ -546,6 +546,11 @@ static const struct dev_pm_ops mdp4_pm_ops = {
  * This coordinates with the bus fabric to prevent USB RNDIS failures
  * when MDP is accessing memory on APQ8060/MSM8660.
  *
+ * On APQ8060/MSM8660, MDP has both SMI (dedicated graphics memory) and
+ * EBI (system memory) paths. The webOS kernel voted on BOTH path types
+ * simultaneously to ensure proper bus fabric clock scaling. We replicate
+ * that behavior here by voting on all available paths.
+ *
  * Bandwidth can be configured via device tree properties:
  *   qcom,icc-bw-avg-kbps  - average bandwidth in kBps
  *   qcom,icc-bw-peak-kbps - peak bandwidth in kBps
@@ -553,27 +558,32 @@ static const struct dev_pm_ops mdp4_pm_ops = {
 static int mdp4_setup_interconnect(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
-	struct icc_path *path0;
-	struct icc_path *path1;
+	struct icc_path *path0_smi, *path1_smi;
+	struct icc_path *path0_ebi, *path1_ebi;
 	u32 avg_bw = MDP4_DEFAULT_BW_AVG_KBPS;
 	u32 peak_bw = MDP4_DEFAULT_BW_PEAK_KBPS;
 
+	/* Get SMI paths (primary for dedicated graphics memory) */
+	path0_smi = msm_icc_get(&pdev->dev, "mdp0-smi");
+	path1_smi = msm_icc_get(&pdev->dev, "mdp1-smi");
+
+	/* Get EBI paths (for proper fabric clock scaling) */
+	path0_ebi = msm_icc_get(&pdev->dev, "mdp0-ebi");
+	path1_ebi = msm_icc_get(&pdev->dev, "mdp1-ebi");
+
 	/*
-	 * Try SMI memory paths first (APQ8060/MSM8660 with dedicated VRAM),
-	 * fall back to EBI memory paths for other platforms.
+	 * Fall back to generic memory paths if SMI not available.
+	 * This supports platforms without dedicated graphics memory.
 	 */
-	path0 = msm_icc_get(&pdev->dev, "mdp0-smi");
-	if (IS_ERR_OR_NULL(path0))
-		path0 = msm_icc_get(&pdev->dev, "mdp0-mem");
+	if (IS_ERR_OR_NULL(path0_smi))
+		path0_smi = msm_icc_get(&pdev->dev, "mdp0-mem");
+	if (IS_ERR_OR_NULL(path1_smi))
+		path1_smi = msm_icc_get(&pdev->dev, "mdp1-mem");
 
-	path1 = msm_icc_get(&pdev->dev, "mdp1-smi");
-	if (IS_ERR_OR_NULL(path1))
-		path1 = msm_icc_get(&pdev->dev, "mdp1-mem");
+	if (IS_ERR(path0_smi))
+		return PTR_ERR(path0_smi);
 
-	if (IS_ERR(path0))
-		return PTR_ERR(path0);
-
-	if (!path0) {
+	if (!path0_smi) {
 		/*
 		 * No interconnect support is not fatal - the platform may
 		 * not have an interconnect driver yet. But warn about it
@@ -590,10 +600,22 @@ static int mdp4_setup_interconnect(struct platform_device *pdev)
 	dev_dbg(&pdev->dev, "MDP interconnect bandwidth: avg=%u kBps, peak=%u kBps\n",
 		avg_bw, peak_bw);
 
-	icc_set_bw(path0, avg_bw, peak_bw);
+	/*
+	 * Vote on all available paths. On APQ8060/MSM8660, this includes
+	 * both SMI and EBI paths. The interconnect framework aggregates
+	 * these votes using max(sum_bw, max_peak_bw) to determine the
+	 * required bus clock rate.
+	 */
+	icc_set_bw(path0_smi, avg_bw, peak_bw);
 
-	if (!IS_ERR_OR_NULL(path1))
-		icc_set_bw(path1, avg_bw, peak_bw);
+	if (!IS_ERR_OR_NULL(path1_smi))
+		icc_set_bw(path1_smi, avg_bw, peak_bw);
+
+	if (!IS_ERR_OR_NULL(path0_ebi))
+		icc_set_bw(path0_ebi, avg_bw, peak_bw);
+
+	if (!IS_ERR_OR_NULL(path1_ebi))
+		icc_set_bw(path1_ebi, avg_bw, peak_bw);
 
 	return 0;
 }
