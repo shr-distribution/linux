@@ -409,13 +409,19 @@ int adreno_get_param(struct msm_gpu *gpu, struct msm_context *ctx,
 		*value = gpu->suspend_count;
 		return 0;
 	case MSM_PARAM_VA_START:
-		if (vm == gpu->vm)
-			return UERR(EINVAL, drm, "requires per-process pgtables");
+		/*
+		 * For GPUs without per-process page tables (a2xx with GPUMMU),
+		 * all contexts share the global VM. Allow the query to succeed
+		 * so userspace can know the VA range bounds for buffer allocation.
+		 * The legacy submit path handles address management internally.
+		 */
+		if (!vm)
+			return UERR(EINVAL, drm, "no VM context");
 		*value = vm->mm_start;
 		return 0;
 	case MSM_PARAM_VA_SIZE:
-		if (vm == gpu->vm)
-			return UERR(EINVAL, drm, "requires per-process pgtables");
+		if (!vm)
+			return UERR(EINVAL, drm, "no VM context");
 		*value = vm->mm_range;
 		return 0;
 	case MSM_PARAM_HIGHEST_BANK_BIT:

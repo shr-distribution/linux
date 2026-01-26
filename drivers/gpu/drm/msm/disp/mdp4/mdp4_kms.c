@@ -33,8 +33,14 @@ static int mdp4_hw_init(struct msm_kms *kms)
 
 	mdp4_write(mdp4_kms, REG_MDP4_PORTMAP_MODE, 0x3);
 
-	/* max read pending cmd config, 3 pending requests: */
-	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x02222);
+	/*
+	 * Max read pending cmd config: Use 8 pending requests on APQ8060/MSM8660.
+	 * webOS kernel: "if MDP clock >= AXI clock, use 8 pending". On APQ8060
+	 * both are ~200 MHz, so 8 pending requests are needed to keep the memory
+	 * bus saturated and prevent display underflow during USB activity.
+	 * 0x08888 = 8 pending requests per client (DMA_P, DMA_E, VG pipes)
+	 */
+	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x08888);
 
 	clk = clk_get_rate(mdp4_kms->clk);
 
