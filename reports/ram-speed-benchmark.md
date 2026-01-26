@@ -845,6 +845,97 @@ Full interconnect support successfully replaces the legacy webOS clock voter sys
 
 ---
 
+## Linux 2.6.35 (webOS) - Updated Results
+
+**Test Date:** 2026-01-26
+**Kernel:** 2.6.35-palm-tenderloin #1 SMP PREEMPT 129.3.13
+**OS:** webOS 3.0.5
+**CPU:** 1x Scorpion @ 1188 MHz (CPU1 offline), governor: performance
+
+### Results
+
+| Test | Size | Time | Speed |
+|------|------|------|-------|
+| Memory bandwidth (zero→null) | 512 MB | 0.25s | **2048 MB/s** |
+| tmpfs write | 128 MB | 0.25s | **512 MB/s** |
+| tmpfs read | 128 MB | 0.07s | **1829 MB/s** |
+
+### Key Configuration Differences from Linux 6.18
+
+| Setting | webOS 2.6.35 | Linux 6.18 (before) |
+|---------|--------------|---------------------|
+| VMSPLIT | **2G/2G** | 3G/1G |
+| HighTotal | **0 KB** | 252 MB |
+| CPUs online | **1** | 2 |
+| CPU freq | 1188 MHz | 1512 MHz |
+| HZ | 100 | 100 |
+
+The critical finding: webOS uses **VMSPLIT_2G** which allows all 1GB RAM to fit in lowmem, eliminating HIGHMEM overhead entirely.
+
+---
+
+## Linux 6.18 (LuneOS) - VMSPLIT_2G Optimization
+
+**Test Date:** 2026-01-26
+**Kernel:** 6.18.0-00333-g9bac759e66e2-dirty
+**OS:** LuneOS 1.0 (initramfs debug environment)
+**CPU:** 2x Scorpion @ 1512 MHz, governor: performance
+**Config:** VMSPLIT_2G, no HIGHMEM, HZ=100, CMA=32MB
+
+### Change Applied
+
+Switched from VMSPLIT_3G (with 252MB HIGHMEM) to VMSPLIT_2G (no HIGHMEM):
+
+```
+CONFIG_VMSPLIT_2G=y
+# CONFIG_HIGHMEM is not set
+```
+
+With VMSPLIT_2G, the kernel has 2GB of virtual address space for kernel mappings. Since physical RAM is only 1GB, ALL memory fits in lowmem without needing HIGHMEM. This eliminates expensive kmap/kunmap operations for every kernel access to memory pages.
+
+### Results
+
+| Test | Size | Time | Speed |
+|------|------|------|-------|
+| Memory bandwidth (zero→null) | 512 MB | 0.42s | **~1220 MB/s** |
+| tmpfs write | 128 MB | 0.83s | **~154 MB/s** |
+| tmpfs read | 128 MB | 0.63s | **~203 MB/s** |
+
+### Comparison: Before and After VMSPLIT_2G
+
+| Test | VMSPLIT_3G + HIGHMEM | VMSPLIT_2G (no HIGHMEM) | Improvement |
+|------|----------------------|-------------------------|-------------|
+| Memory bandwidth | 545 MB/s | **1220 MB/s** | **2.2x** |
+| tmpfs write | 74 MB/s | **154 MB/s** | **2.1x** |
+| tmpfs read | 135 MB/s | **203 MB/s** | **1.5x** |
+
+### Comparison: Linux 6.18 vs webOS 2.6.35
+
+| Test | Linux 6.18 (VMSPLIT_2G) | webOS 2.6.35 | Ratio |
+|------|-------------------------|--------------|-------|
+| Memory bandwidth | 1220 MB/s | 2048 MB/s | **60%** |
+| tmpfs write | 154 MB/s | 512 MB/s | **30%** |
+| tmpfs read | 203 MB/s | 1829 MB/s | **11%** |
+
+### Analysis
+
+The VMSPLIT_2G change **more than doubled memory bandwidth** by eliminating HIGHMEM overhead. However, a significant gap remains compared to webOS:
+
+**Factors that should favor Linux 6.18:**
+- CPU: 1512 MHz (2 cores) vs 1188 MHz (1 core) on webOS
+- Both use performance governor
+- Both use HZ=100
+
+**Potential remaining causes for the gap:**
+1. **Kernel memory allocator differences** - SLUB tuning, object sizes
+2. **Zero-page optimization** - webOS may have optimized ARM zero-page handling
+3. **DMA/cache coherency settings** - Different memory barrier implementations
+4. **Compiler optimizations** - GCC 4.3 (webOS) vs modern GCC may generate different code
+5. **L2 cache configuration** - Different L2 cache policies or prefetch settings
+6. **tmpfs/shmem implementation** - Significant changes between 2.6.35 and 6.18
+
+---
+
 ## Notes
 
 - The `dd` test measures practical throughput including CPU and kernel overhead, not raw hardware bandwidth
