@@ -368,6 +368,7 @@ static struct variant_data variant_qcom = {
 	.explicit_mclk_control	= true,
 	.qcom_fifo		= true,
 	.qcom_dml		= true,
+	.qcom_datactrl_delay	= true,
 	.dma_flow_controller	= true,
 	.mmcimask1		= true,
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
@@ -1339,7 +1340,25 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 		irqmask = MCI_TXFIFOHALFEMPTYMASK;
 	}
 
+	/*
+	 * Qualcomm SDCC requires a delay after writing DATATIMER/DATALENGTH
+	 * before writing DATACTRL. Without this delay, SDIO data transfers
+	 * can fail with CRC or start bit errors.
+	 */
+	if (host->variant->qcom_datactrl_delay) {
+		/* Ensure data parameters are applied before DATACTRL */
+		wmb();
+		udelay(5);
+	}
+
 	mmci_write_datactrlreg(host, datactrl);
+
+	/* Another delay after DATACTRL for Qualcomm */
+	if (host->variant->qcom_datactrl_delay) {
+		wmb();
+		udelay(5);
+	}
+
 	writel(readl(base + MMCIMASK0) & ~MCI_DATAENDMASK, base + MMCIMASK0);
 	mmci_set_mask1(host, irqmask);
 }
@@ -1924,8 +1943,15 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		mmci_get_next_data(host, mrq->data);
 
 	if (mrq->data &&
-	    (host->datactrl_first || mrq->data->flags & MMC_DATA_READ))
+	    (host->datactrl_first || mrq->data->flags & MMC_DATA_READ)) {
 		mmci_start_data(host, mrq->data);
+		/*
+		 * Qualcomm SDCC requires a delay between data setup and
+		 * command start. Without this, SDIO writes can fail.
+		 */
+		if (host->variant->qcom_datactrl_delay)
+			udelay(1);
+	}
 
 	if (mrq->sbc)
 		mmci_start_command(host, mrq->sbc, 0);

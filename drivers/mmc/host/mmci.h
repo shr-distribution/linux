@@ -324,6 +324,7 @@ enum mmci_busy_state {
  * @explicit_mclk_control: enable explicit mclk control in driver.
  * @qcom_fifo: enables qcom specific fifo pio read logic.
  * @qcom_dml: enables qcom specific dma glue for dma transfers.
+ * @qcom_datactrl_delay: add delays before DATACTRL write and command start.
  * @reversed_irq_handling: handle data irq before cmd irq.
  * @mmcimask1: true if variant have a MMCIMASK1 register.
  * @irq_pio_mask: bitmask used to manage interrupt pio transfert in mmcimask
@@ -373,6 +374,7 @@ struct variant_data {
 	u8			explicit_mclk_control:1;
 	u8			qcom_fifo:1;
 	u8			qcom_dml:1;
+	u8			qcom_datactrl_delay:1;
 	u8			reversed_irq_handling:1;
 	u8			mmcimask1:1;
 	unsigned int		irq_pio_mask;
