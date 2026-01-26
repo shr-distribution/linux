@@ -525,3 +525,80 @@ echo performance > /sys/class/devfreq/4300000.adreno/governor
 - Commits:
   - `181b2a06d4c1` ARM: dts: qcom: tenderloin: Use SMI memory for display framebuffers
   - `c33d3be62f7d` ARM: dts: qcom: tenderloin: Remove USB bandwidth voting
+
+---
+
+## UPDATE: Bandwidth Values Comparison (2026-01-26)
+
+### Analysis: Legacy webOS vs Current Mainline Bandwidth Values
+
+#### MDP (Display) Bandwidth - CORRECT ✓
+
+| Use Case | Legacy ab/ib (B/s) | Legacy (kBps) | Current (kBps) | Status |
+|----------|-------------------|---------------|----------------|--------|
+| mdp_home (1 layer) | 334,080,000 / 417,600,000 | 326,250 / 407,812 | - | |
+| **mdp_app (2 layers)** | 377,487,360 / 471,859,200 | **368,640 / 460,800** | **368,640 / 460,800** | ✓ MATCH |
+| mdp_720p | 460,431,360 / 575,539,200 | 449,640 / 562,050 | - | |
+| mdp_1080p | 564,111,360 / 705,139,200 | 550,890 / 688,610 | - | |
+
+**MDP values are correct** - Current kernel matches legacy mdp_app_vectors exactly.
+
+**MDP paths**: Legacy voted on 2 paths (SMI + EBI). Current DT defines 4 paths (mdp0-smi, mdp1-smi, mdp0-ebi, mdp1-ebi) and votes on all 4. The "8 votes" seen in interconnect_summary is due to interconnect framework internal bookkeeping (forward/reverse paths), but bandwidth values are correct.
+
+#### GPU Bandwidth - DEVFREQ ISSUE ⚠️
+
+| Condition | Legacy (B/s) | Legacy (kBps) | Current (kBps) | Status |
+|-----------|-------------|---------------|----------------|--------|
+| Idle | 0 | 0 | 0 | ✓ |
+| Min (27 MHz) | - | - | 170,000 | ← STUCK HERE |
+| Max (320 MHz) | 2,008,000,000 | ~1,960,000 | 2,008,000 | ✓ Correct OPP |
+
+**GPU stuck at 170 kBps** - This indicates devfreq is stuck at 27 MHz (minimum frequency). The OPP table correctly defines 2,008,000 kBps at 320 MHz. Problem: devfreq governor sees 0% utilization because `df->suspended` flag stays true.
+
+**Root cause**: `msm_devfreq_resume()` never called because GPU pm_runtime doesn't wake up unless 3D app explicitly requests it.
+
+#### USB Bandwidth - FIXED ✓
+
+| Component | Legacy | Previous (Excessive) | Current (Fixed) |
+|-----------|--------|---------------------|-----------------|
+| USB->EBI bandwidth | **NO voting** | 307,200 / 614,400 kBps | **61,440 / 61,440 kBps** |
+| DFAB clock voter | dfab_usb_hs_clk | 131,072 kBps | 131,072 kBps |
+
+**FIXED**: Reduced USB->EBI bandwidth from 300/600 MB/s to 60/60 MB/s (USB 2.0 HS max).
+
+Legacy webOS did **NOT** use explicit bandwidth voting for USB->EBI memory path. It only used `dfab_usb_hs_clk` as a clock voter to keep DFAB running. The excessive 300/600 MB/s voting was competing with MDP for fabric priority and causing display underflows.
+
+### Changes Made (2026-01-26)
+
+**drivers/usb/chipidea/ci_hdrc_msm.c**:
+```c
+/* Before: Excessive bandwidth competing with MDP */
+#define USB_HS_DEFAULT_BW_AVG_KBPS  (300 * 1024)  /* 300 MB/s */
+#define USB_HS_DEFAULT_BW_PEAK_KBPS (600 * 1024)  /* 600 MB/s */
+
+/* After: Minimal bandwidth matching USB 2.0 HS max */
+#define USB_HS_DEFAULT_BW_AVG_KBPS  (60 * 1024)   /* 60 MB/s (USB 2.0 max) */
+#define USB_HS_DEFAULT_BW_PEAK_KBPS (60 * 1024)   /* 60 MB/s */
+```
+
+### Summary Table
+
+| Component | Legacy | Current | Status |
+|-----------|--------|---------|--------|
+| MDP bandwidth | 368,640 / 460,800 kBps | 368,640 / 460,800 kBps | ✓ CORRECT |
+| MDP paths | 2 (SMI + EBI) | 4 (mdp0/1-smi + mdp0/1-ebi) | ✓ OK |
+| GPU max bandwidth | ~1,960,000 kBps | 2,008,000 kBps | ✓ CORRECT |
+| GPU current | varies | 170,000 kBps (stuck) | ⚠️ DEVFREQ BUG |
+| USB->EBI | NONE | 61,440 kBps | ✓ FIXED |
+| USB DFAB voter | dfab_usb_hs_clk | 131,072 kBps | ✓ OK |
+
+### Remaining Issue: GPU devfreq
+
+GPU devfreq doesn't scale frequency, causing bandwidth to stay at minimum (170 kBps). This starves GPU 3D rendering and can cause issues.
+
+**Workaround**:
+```bash
+echo performance > /sys/class/devfreq/4300000.adreno/governor
+```
+
+**Proper fix needed**: Modify `msm_devfreq_active()` to ensure devfreq is resumed when GPU activity is detected.

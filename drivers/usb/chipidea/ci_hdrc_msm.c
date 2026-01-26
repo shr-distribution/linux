@@ -35,14 +35,19 @@
 #define HS_PHY_POR_ASSERT		BIT(0)
 
 /*
- * USB HS bandwidth values for stability with display active.
- * The TouchPad experiences USB crashes when MDP display is enabled.
- * Requesting higher bandwidth ensures USB gets priority on the shared
- * APPSS fabric path to memory, preventing starvation during concurrent
- * display scanout operations.
+ * USB HS bandwidth values for memory path.
+ *
+ * The webOS kernel did NOT use explicit bandwidth voting for USB->EBI memory
+ * path. It only used dfab_usb_hs_clk as a clock voter to keep DFAB running.
+ * Excessive bandwidth voting (e.g. 300/600 MB/s) competes with MDP for fabric
+ * priority and can cause display underflows during USB activity.
+ *
+ * Use minimal values here - the actual USB 2.0 high-speed maximum is 480 Mbps
+ * = 60 MB/s. Most RNDIS/CDC traffic is much lower. The DFAB voter is the
+ * key mechanism for USB stability, not memory path bandwidth.
  */
-#define USB_HS_DEFAULT_BW_AVG_KBPS	(300 * 1024)	/* 300 MB/s avg */
-#define USB_HS_DEFAULT_BW_PEAK_KBPS	(600 * 1024)	/* 600 MB/s peak */
+#define USB_HS_DEFAULT_BW_AVG_KBPS	(60 * 1024)	/* 60 MB/s avg (USB 2.0 max) */
+#define USB_HS_DEFAULT_BW_PEAK_KBPS	(60 * 1024)	/* 60 MB/s peak */
 
 /*
  * DFAB bandwidth for USB HS clock voter.

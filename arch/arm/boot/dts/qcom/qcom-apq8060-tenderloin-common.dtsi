@@ -1947,6 +1947,20 @@
 	qcom,sdcc-crci = <5>;
 
 	/*
+	 * DFAB interconnect path for WiFi SDIO.
+	 *
+	 * The legacy webOS kernel used dfab_sdc_clk clock voters to keep
+	 * the Daytona Fabric (DFAB) active during SD card operations.
+	 * This interconnect path provides the equivalent functionality,
+	 * ensuring DFAB clock scaling accounts for WiFi SDIO traffic.
+	 *
+	 * Path: SDC4 -> DFAB -> SFAB -> AFAB -> EBI (system memory)
+	 */
+	interconnects = <&daytona_fabric DFAB_MAS_SDC4
+			 &apps_fabric AFAB_SLV_EBI_CH0>;
+	interconnect-names = "sdc";
+
+	/*
 	 * Atheros AR6003 WiFi (Qualcomm WCN1314)
 	 *
 	 * SDIO function 1 at address 0x1
