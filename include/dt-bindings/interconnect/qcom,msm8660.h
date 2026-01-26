@@ -101,6 +101,7 @@
 #define DFAB_SLV_SDC4			11
 #define DFAB_SLV_SDC5			12
 #define DFAB_MAS_USB_HS			13
+#define DFAB_MAS_DSPS			14
 
 /* System FPB - Slow peripheral bus for system */
 #define SFPB_MAS_SYSTEM			0

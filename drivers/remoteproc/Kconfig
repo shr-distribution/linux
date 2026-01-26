@@ -266,6 +266,20 @@ config QCOM_Q6V2_LPASS
 	  QDSP6v2 (Hexagon V2) DSP on MSM8660 and APQ8060 platforms. This
 	  driver loads and boots the LPASS firmware for audio processing.
 
+config QCOM_DSPS
+	tristate "Qualcomm MSM8660 DSPS (Sensors Processor) Peripheral Image Loader"
+	depends on OF && ARCH_QCOM
+	depends on INTERCONNECT_QCOM || INTERCONNECT_QCOM=n
+	select QCOM_MDT_LOADER
+	select QCOM_PIL_INFO
+	select QCOM_RPROC_COMMON
+	select QCOM_SCM
+	help
+	  Say y here to support the Peripheral Image Loader for the DSPS
+	  (Dedicated Sensors Processor Subsystem) on MSM8660 and APQ8060
+	  platforms. The DSPS handles sensor fusion and low-power sensor
+	  processing for accelerometer, gyroscope, and other sensors.
+
 config QCOM_SYSMON
 	tristate "Qualcomm sysmon driver"
 	depends on RPMSG

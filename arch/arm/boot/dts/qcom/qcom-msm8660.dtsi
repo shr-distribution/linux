@@ -7,6 +7,7 @@
 #include <dt-bindings/clock/qcom,lcc-msm8660.h>
 #include <dt-bindings/clock/qcom,mmcc-msm8960.h>
 #include <dt-bindings/clock/qcom,rpmcc.h>
+#include <dt-bindings/reset/qcom,gcc-msm8660.h>
 #include <dt-bindings/reset/qcom,mmcc-msm8960.h>
 #include <dt-bindings/soc/qcom,gsbi.h>
 #include <dt-bindings/soc/qcom,apr.h>
@@ -251,6 +252,16 @@
 		 */
 		lpass_mem: lpass@46700000 {
 			reg = <0x46700000 0x600000>;
+			no-map;
+		};
+
+		/*
+		 * DSPS firmware memory region.
+		 * Located after LPASS memory at 0x46d00000.
+		 * Size: 1MB should be sufficient for DSPS firmware.
+		 */
+		dsps_mem: dsps@46d00000 {
+			reg = <0x46d00000 0x100000>;
 			no-map;
 		};
 	};
@@ -660,6 +671,25 @@
 					};
 				};
 			};
+		};
+
+		dsps: remoteproc@12080000 {
+			compatible = "qcom,msm8660-dsps-pil";
+			reg = <0x12080000 0x2000>;
+
+			clocks = <&gcc PPSS_H_CLK>, <&gcc PMEM_CLK>;
+			clock-names = "ppss_pclk", "pmem";
+
+			resets = <&gcc PPSS_RESET>;
+
+			interconnects = <&daytona_fabric DFAB_MAS_DSPS
+					 &system_fabric SFAB_TO_DFAB>;
+			interconnect-names = "memory";
+
+			firmware-name = "dsps.mdt";
+			memory-region = <&dsps_mem>;
+
+			status = "disabled";
 		};
 
 		gsbi1: gsbi@16000000 {

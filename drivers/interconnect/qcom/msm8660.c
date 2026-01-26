@@ -95,6 +95,7 @@ enum {
 	MSM8660_DFAB_SLV_SDC4,
 	MSM8660_DFAB_SLV_SDC5,
 	MSM8660_DFAB_MAS_USB_HS,	/* USB HS DFAB voter */
+	MSM8660_DFAB_MAS_DSPS,		/* DSPS DFAB voter */
 
 	/* MMSS Fabric nodes */
 	MSM8660_MMFAB_MAS_MDP_PORT0,
@@ -394,6 +395,8 @@ DEFINE_QNODE(dfab_slv_sdc4, MSM8660_DFAB_SLV_SDC4, 8);
 DEFINE_QNODE(dfab_slv_sdc5, MSM8660_DFAB_SLV_SDC5, 8);
 /* USB HS DFAB voter - keeps DFAB clock stable during USB activity */
 DEFINE_QNODE(dfab_mas_usb_hs, MSM8660_DFAB_MAS_USB_HS, 8, MSM8660_DFAB_TO_SFAB);
+/* DSPS DFAB voter - keeps DFAB clock stable during sensor activity */
+DEFINE_QNODE(dfab_mas_dsps, MSM8660_DFAB_MAS_DSPS, 8, MSM8660_DFAB_TO_SFAB);
 
 static struct msm8660_icc_node * const msm8660_dfab_nodes[] = {
 	[DFAB_MAS_SDC1] = &dfab_mas_sdc1,
@@ -410,6 +413,7 @@ static struct msm8660_icc_node * const msm8660_dfab_nodes[] = {
 	[DFAB_SLV_SDC4] = &dfab_slv_sdc4,
 	[DFAB_SLV_SDC5] = &dfab_slv_sdc5,
 	[DFAB_MAS_USB_HS] = &dfab_mas_usb_hs,
+	[DFAB_MAS_DSPS] = &dfab_mas_dsps,
 };
 
 static const struct msm8660_icc_desc msm8660_dfab = {
