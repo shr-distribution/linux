@@ -262,6 +262,7 @@
 
 struct clk;
 struct dma_chan;
+struct icc_path;
 struct mmci_host;
 
 /**
@@ -415,6 +416,7 @@ struct mmci_host {
 	struct mmc_data		*data;
 	struct mmc_host		*mmc;
 	struct clk		*clk;
+	struct icc_path		*icc_path;
 	u8			singleirq:1;
 
 	struct reset_control	*rst;

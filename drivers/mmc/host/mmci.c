@@ -33,6 +33,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/dma/qcom_adm.h>
 #include <linux/amba/mmci.h>
+#include <linux/interconnect.h>
 #include <linux/pm_runtime.h>
 #include <linux/types.h>
 #include <linux/pinctrl/consumer.h>
@@ -2283,6 +2284,44 @@ static int mmci_probe(struct amba_device *dev,
 	ret = clk_prepare_enable(host->clk);
 	if (ret)
 		return ret;
+
+	/*
+	 * Interconnect path for SD card memory access (optional).
+	 *
+	 * The legacy webOS kernel used dfab_sdc_clk clock voters to keep
+	 * the Daytona Fabric (DFAB) active during SD card operations.
+	 * The interconnect framework provides equivalent functionality.
+	 */
+	host->icc_path = devm_of_icc_get(&dev->dev, "sdc");
+	if (IS_ERR(host->icc_path)) {
+		ret = PTR_ERR(host->icc_path);
+		if (ret != -ENODATA && ret != -ENOENT) {
+			dev_err(&dev->dev, "failed to get interconnect: %d\n", ret);
+			goto clk_disable;
+		}
+		/* No interconnect in DT - optional for backwards compat */
+		host->icc_path = NULL;
+	}
+
+	if (host->icc_path) {
+		/*
+		 * Vote for DFAB bandwidth to keep the fabric active.
+		 *
+		 * The legacy webOS kernel set dfab_sdc_clk to 64 MHz which
+		 * ensures sufficient DFAB bandwidth for SD/eMMC operations.
+		 * For eMMC (8-bit @ 48MHz) peak throughput is ~48 MB/s,
+		 * for SDIO WiFi (4-bit @ 48MHz) peak is ~24 MB/s.
+		 *
+		 * Using 400 MB/s peak to ensure DFAB runs at sufficient
+		 * speed for high-speed transfers with margin for overhead.
+		 */
+		ret = icc_set_bw(host->icc_path, 0, 400000);
+		if (ret) {
+			dev_err(&dev->dev, "failed to set interconnect bw: %d\n", ret);
+			goto clk_disable;
+		}
+		dev_info(&dev->dev, "interconnect bandwidth voting enabled\n");
+	}
 
 	if (variant->qcom_fifo)
 		host->get_rx_fifocnt = mmci_qcom_get_rx_fifocnt;

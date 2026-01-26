@@ -1915,6 +1915,19 @@
 	dmas = <&adm_dma1 2>, <&adm_dma1 2>;
 	dma-names = "rx", "tx";
 	qcom,sdcc-crci = <1>;
+
+	/*
+	 * DFAB interconnect path for eMMC.
+	 *
+	 * The legacy webOS kernel used dfab_sdc_clk clock voter at 64 MHz
+	 * to keep the Daytona Fabric (DFAB) active during eMMC operations.
+	 * eMMC uses 8-bit bus at up to 48 MHz (DDR) for ~48 MB/s peak.
+	 *
+	 * Path: SDC1 -> DFAB -> SFAB -> AFAB -> EBI (system memory)
+	 */
+	interconnects = <&daytona_fabric DFAB_MAS_SDC1
+			 &apps_fabric AFAB_SLV_EBI_CH0>;
+	interconnect-names = "sdc";
 };
 
 /*
