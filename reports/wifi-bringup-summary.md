@@ -1,6 +1,6 @@
 # HP TouchPad WiFi (AR6003) Bringup Summary
 
-**Last Updated:** 2026-01-19
+**Last Updated:** 2026-01-26
 
 ## Hardware
 - Atheros AR6003 Rev2 WiFi chip
@@ -196,6 +196,112 @@ static struct variant_data variant_qcom = {
 
 **Commit:** `1d37e9cbbfc3` - mmc: mmci: qcom: Enable datactrl_first to fix SDIO timeouts
 
+### 9. Block Size Encoding & CRC Errors (2026-01-26)
+
+**Problem:** SDIO data transfers failed with CRC errors (-84 EILSEQ).
+
+**Investigation:** Compared DATACTRL register encoding between legacy msm_sdcc and mainline mmci:
+
+| Driver | Block Size Encoding | For blksz=12 |
+|--------|---------------------|--------------|
+| msm_sdcc (legacy) | `blksz << 4` (raw bytes) | 0xC0 |
+| mmci (standard ARM) | `log2(blksz) << 4` | 0x30 (wrong!) |
+
+The standard ARM PL180 MMCI expects log2(block_size) in bits 4-7 of DATACTRL. But Qualcomm SDCC expects the raw byte count, allowing arbitrary block sizes for SDIO byte mode (CMD53).
+
+**Fix:** The `qcom_get_dctrl_cfg()` in `mmci_qcom_dml.c` already uses raw byte encoding:
+```c
+static u32 qcom_get_dctrl_cfg(struct mmci_host *host)
+{
+    return MCI_DPSM_ENABLE | (host->data->blksz << 4);
+}
+```
+
+This is loaded via `qcom_variant_init()` which sets `host->ops = &qcom_variant_ops`.
+
+### 10. DMA vs PIO Mode Discovery (2026-01-26)
+
+**Key Finding:** PIO mode works, DMA mode fails with CRC errors!
+
+**Testing Results:**
+
+| Mode | Block Sizes | Result |
+|------|-------------|--------|
+| PIO | 4, 12, 24, 128, 256 bytes | ✓ All succeed |
+| DMA | 256+ bytes | ✗ CRC error at end of transfer |
+
+**Debug output with DMA enabled:**
+```
+DMA datactrl=0x1009 blksz=256 size=256
+error during DMA transfer!
+MCI ERROR IRQ, status 0x00000002 at 0x00000100
+DATACRCFAIL: blksz=256 blocks=1 flags=0x100
+```
+
+**Debug output with DMA disabled (PIO only):**
+```
+PIO datactrl=0x1001 blksz=256 size=256
+(no errors - transfer succeeds)
+```
+
+**Root Cause:** The ADM DMA configuration has an issue causing CRC errors on larger transfers. The CRC error occurs at the end of the 256-byte transfer (offset 0x100), suggesting data is transferred but CRC check fails.
+
+**Current Workaround:** DMA disabled for SDCC4 (WiFi) in device tree:
+```dts
+/* TEMPORARILY DISABLED: Testing PIO mode for WiFi SDIO.
+ * DMA transfers fail with CRC errors while PIO works. */
+/* dmas = <&adm_dma1 5>, <&adm_dma1 5>;
+dma-names = "rx", "tx";
+qcom,sdcc-crci = <5>; */
+```
+
+### 11. Additional Qualcomm SDCC Fixes (2026-01-26)
+
+**a) Remove STARTBITERR for Qualcomm:**
+
+The legacy msm_sdcc driver does NOT enable STARTBITERR in the interrupt mask. Enabling it causes spurious -ECOMM errors:
+```c
+static struct variant_data variant_qcom = {
+    /* Do NOT set start_err for Qualcomm SDCC */
+    .opendrain = MCI_ROD,
+    // .start_err = MCI_STARTBITERR,  // REMOVED
+};
+```
+
+**b) Double data timeout:**
+
+Legacy driver uses `clks * 2` for data timeout:
+```c
+if (variant->qcom_data_timeout_2x)
+    clks *= 2;
+```
+
+**c) Delay between ARGUMENT and COMMAND:**
+
+Legacy driver uses `msmsdcc_delay()` between register writes:
+```c
+writel(cmd->arg, base + MMCIARGUMENT);
+if (host->variant->qcom_datactrl_delay)
+    udelay(1);
+writel(c, base + MMCICOMMAND);
+```
+
+### 12. WMI Timeout Issue (2026-01-26) - CURRENT
+
+**Problem:** With PIO mode working, ath6kl gets further but fails at WMI initialization:
+```
+ath6kl: wmi is not ready or wait was interrupted: -512
+ath6kl: Failed to start hardware: -5
+```
+
+**Status:** BMI phase succeeds, firmware uploads without CRC errors, but WMI doesn't respond.
+
+**Possible Causes:**
+1. SDIO IRQ not working (needed for async events from WiFi chip)
+2. Firmware compatibility issue
+3. Clock/power sequencing issue
+4. Missing interrupt configuration
+
 ## Current DT Configuration
 
 ```dts
@@ -203,12 +309,19 @@ static struct variant_data variant_qcom = {
     status = "okay";
     pinctrl-names = "default";
     pinctrl-0 = <&sdcc4_pins>, <&wlan_gpios>;
+    max-frequency = <24000000>;
+    qcom,datactrl-first;
+    cap-sdio-irq;
+    keep-power-in-suspend;
     vmmc-supply = <&pm8901_l1>;
     vqmmc-supply = <&pm8058_s3>;
     mmc-pwrseq = <&ath6kl_pwrseq>;
-    dmas = <&adm_dma1 5>, <&adm_dma1 5>;
+
+    /* DMA temporarily disabled - PIO mode works, DMA has CRC errors */
+    /* dmas = <&adm_dma1 5>, <&adm_dma1 5>;
     dma-names = "rx", "tx";
-    qcom,sdcc-crci = <5>;
+    qcom,sdcc-crci = <5>; */
+
     wifi@1 {
         compatible = "atheros,ath6kl";
         reg = <1>;
@@ -247,17 +360,21 @@ Debug print in `drivers/mmc/host/mmci.c`:
 
 ## Next Steps
 
-1. **Build and test with datactrl_first fix** - This is the most promising fix
-2. Verify debug output shows:
-   - `ADM xlate: chan=5 args_count=1 crci=0` (from DT)
-   - `ADM slave_config: device_fc=1 peripheral_size=4 crci=5` (from MMCI)
-   - `ADM prep_slave_sg: device_fc=1 crci=5`
-   - `ADM start_dma: setting CRCI_CTL(5) = ...`
-   - `ADM IRQ: srcs=0x...` (DMA completion)
-3. If WiFi still times out, investigate:
-   - Clock stability during sustained SDIO transfers
-   - Inter-transaction timing requirements
-   - SDIO interrupt handling differences
+1. **Debug WMI timeout** - Current priority
+   - Verify SDIO IRQ is working (`cap-sdio-irq` in DT)
+   - Check if firmware receives and responds to commands
+   - Add ath6kl debug output (`debug_mask=0xffffffff`)
+   - Compare with legacy kernel SDIO IRQ handling
+
+2. **Fix ADM DMA** - For better performance
+   - Investigate why CRC errors occur only in DMA mode
+   - Check DMA memory alignment requirements
+   - Verify CRCI timing and flow control
+   - Compare ADM configuration with legacy msm_sdcc
+
+3. **Performance optimization**
+   - Once WiFi works in PIO, re-enable DMA with fixes
+   - Tune clock frequency (currently limited to 24MHz)
 
 ---
 

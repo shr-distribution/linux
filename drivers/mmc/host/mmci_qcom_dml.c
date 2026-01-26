@@ -232,7 +232,10 @@ static int qcom_dma_setup(struct mmci_host *host)
 
 static u32 qcom_get_dctrl_cfg(struct mmci_host *host)
 {
-	return MCI_DPSM_ENABLE | (host->data->blksz << 4);
+	u32 val = MCI_DPSM_ENABLE | (host->data->blksz << 4);
+	dev_info(mmc_dev(host->mmc), "qcom_get_dctrl_cfg: blksz=%u datactrl=0x%x\n",
+		host->data->blksz, val);
+	return val;
 }
 
 static struct mmci_host_ops qcom_variant_ops = {
@@ -249,5 +252,6 @@ static struct mmci_host_ops qcom_variant_ops = {
 
 void qcom_variant_init(struct mmci_host *host)
 {
+	dev_info(mmc_dev(host->mmc), "qcom_variant_init: setting qcom_variant_ops\n");
 	host->ops = &qcom_variant_ops;
 }

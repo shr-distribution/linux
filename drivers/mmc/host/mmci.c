@@ -369,10 +369,18 @@ static struct variant_data variant_qcom = {
 	.qcom_fifo		= true,
 	.qcom_dml		= true,
 	.qcom_datactrl_delay	= true,
+	.qcom_data_timeout_2x	= true,
 	.dma_flow_controller	= true,
 	.mmcimask1		= true,
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
-	.start_err		= MCI_STARTBITERR,
+	/*
+	 * Note: Do NOT set start_err for Qualcomm SDCC.
+	 * The legacy msm_sdcc driver does not enable STARTBITERR in the
+	 * interrupt mask (MCI_IRQENABLE). Enabling it causes spurious
+	 * -ECOMM errors on SDIO operations that work fine with the legacy
+	 * driver. The start bit "errors" appear to be false positives on
+	 * this hardware.
+	 */
 	.opendrain		= MCI_ROD,
 	.supports_sdio_irq	= true,
 	.init			= qcom_variant_init,
@@ -612,6 +620,12 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	if (ret)
 		return ret;
 
+	/* Debug: print DMA datactrl value for Qualcomm SDIO */
+	if (host->variant->qcom_datactrl_delay)
+		dev_info(mmc_dev(host->mmc),
+			"DMA datactrl=0x%x blksz=%u size=%u\n",
+			datactrl, data->blksz, host->size);
+
 	/* Trigger the DMA transfer */
 	mmci_write_datactrlreg(host, datactrl);
 
@@ -703,6 +717,16 @@ static u32 mmci_get_dctrl_cfg(struct mmci_host *host)
 static u32 ux500v2_get_dctrl_cfg(struct mmci_host *host)
 {
 	return MCI_DPSM_ENABLE | (host->data->blksz << 16);
+}
+
+/*
+ * Qualcomm SDCC uses raw block size in bytes (bits 4-15), not log2 exponent.
+ * The legacy msm_sdcc driver uses: datactrl = MCI_DPSM_ENABLE | (data->blksz << 4)
+ * This allows arbitrary block sizes for SDIO byte mode transfers.
+ */
+static u32 qcom_get_dctrl_cfg(struct mmci_host *host)
+{
+	return MCI_DPSM_ENABLE | (host->data->blksz << 4);
 }
 
 static void ux500_busy_clear_mask_done(struct mmci_host *host)
@@ -1278,6 +1302,14 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 	clks = (unsigned long long)data->timeout_ns * host->cclk;
 	do_div(clks, NSEC_PER_SEC);
 
+	/*
+	 * Qualcomm SDCC requires doubling the calculated data timeout.
+	 * The legacy msm_sdcc driver uses clks*2 for the data timeout.
+	 * Without this, SDIO operations can timeout prematurely.
+	 */
+	if (variant->qcom_data_timeout_2x)
+		clks *= 2;
+
 	timeout = data->timeout_clks + (unsigned int)clks;
 
 	base = host->base;
@@ -1351,6 +1383,12 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 		udelay(5);
 	}
 
+	/* Debug: print DATACTRL value for Qualcomm SDIO PIO fallback debugging */
+	if (host->variant->qcom_datactrl_delay)
+		dev_info(mmc_dev(host->mmc),
+			"PIO datactrl=0x%x blksz=%u size=%u\n",
+			datactrl, data->blksz, host->size);
+
 	mmci_write_datactrlreg(host, datactrl);
 
 	/* Another delay after DATACTRL for Qualcomm */
@@ -1421,6 +1459,14 @@ mmci_start_command(struct mmci_host *host, struct mmc_command *cmd, u32 c)
 	host->cmd = cmd;
 
 	writel(cmd->arg, base + MMCIARGUMENT);
+
+	/*
+	 * Qualcomm SDCC requires a delay between ARGUMENT and COMMAND writes.
+	 * The legacy msm_sdcc driver uses msmsdcc_delay() here.
+	 */
+	if (host->variant->qcom_datactrl_delay)
+		udelay(1);
+
 	writel(c, base + MMCICOMMAND);
 }
 
@@ -1465,13 +1511,17 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 			success = 0;
 		}
 
-		dev_dbg(mmc_dev(host->mmc), "MCI ERROR IRQ, status 0x%08x at 0x%08x\n",
+		dev_err(mmc_dev(host->mmc), "MCI ERROR IRQ, status 0x%08x at 0x%08x\n",
 			status_err, success);
 		if (status_err & MCI_DATACRCFAIL) {
+			dev_err(mmc_dev(host->mmc), "DATACRCFAIL: blksz=%d blocks=%d flags=0x%x\n",
+				data->blksz, data->blocks, data->flags);
 			/* Last block was not successful */
 			success -= 1;
 			data->error = -EILSEQ;
 		} else if (status_err & MCI_DATATIMEOUT) {
+			dev_err(mmc_dev(host->mmc), "DATATIMEOUT: blksz=%d blocks=%d flags=0x%x\n",
+				data->blksz, data->blocks, data->flags);
 			data->error = -ETIMEDOUT;
 		} else if (status_err & MCI_STARTBITERR) {
 			data->error = -ECOMM;
