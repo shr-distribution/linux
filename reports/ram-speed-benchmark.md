@@ -955,6 +955,13 @@ Even with 27% higher clock speed and optimized kernel config, Linux 6.18 achieve
 
 ## Linux 6.18 (LuneOS) - Scorpion NMRR Optimization
 
+> **⚠️ STATUS: REVERTED / UNSTABLE**
+>
+> The Scorpion processor optimizations documented below caused boot failures
+> (no USB networking) in subsequent testing. All Scorpion-specific code has
+> been reverted in commit ba66d84b2f25. The benchmark results below are kept
+> for historical reference only. This will be revisited in the future.
+
 **Test Date:** 2026-01-26
 **Kernel:** 6.18.0-00341-gf2faab9387d8
 **OS:** LuneOS 1.0 (initramfs debug environment)
@@ -1046,21 +1053,23 @@ This optimization was committed in:
 
 ## Summary: Optimization Journey
 
-| Configuration | Memory BW | vs webOS | Improvement |
-|---------------|-----------|----------|-------------|
-| Original 6.18 (baseline) | 461 MB/s | 23% | - |
-| + Disable CMA/KSM/MEMCG | 705 MB/s | 34% | +53% |
-| + CMA=32MB | 826 MB/s | 40% | +79% |
-| + Interconnect voting | 546 MB/s | 27% | +18% |
-| + VMSPLIT_2G (no HIGHMEM) | 1220 MB/s | 60% | +165% |
-| **+ Scorpion NMRR** | **1484 MB/s** | **72%** | **+222%** |
-| webOS 2.6.35 (target) | 2048 MB/s | 100% | - |
+| Configuration | Memory BW | vs webOS | Improvement | Status |
+|---------------|-----------|----------|-------------|--------|
+| Original 6.18 (baseline) | 461 MB/s | 23% | - | - |
+| + Disable CMA/KSM/MEMCG | 705 MB/s | 34% | +53% | Testing |
+| + CMA=32MB | 826 MB/s | 40% | +79% | Testing |
+| + Interconnect voting | 546 MB/s | 27% | +18% | Testing |
+| **+ VMSPLIT_2G (no HIGHMEM)** | **1220 MB/s** | **60%** | **+165%** | **Active** |
+| ~~+ Scorpion NMRR~~ | ~~1484 MB/s~~ | ~~72%~~ | ~~+222%~~ | **Reverted** |
+| webOS 2.6.35 (target) | 2048 MB/s | 100% | - | - |
 
-**Key optimizations applied:**
+**Key optimizations currently applied:**
 1. **VMSPLIT_2G** - Eliminated HIGHMEM overhead (+2.2x)
-2. **Scorpion NMRR** - CPU-specific memory type remapping (+22%)
-3. **CMA=32MB** - Optimal contiguous memory allocation size
-4. **HZ=100** - Reduced timer interrupt overhead (10x fewer than HZ=1000)
+2. **CMA=32MB** - Optimal contiguous memory allocation size
+3. **HZ=100** - Reduced timer interrupt overhead (10x fewer than HZ=1000)
+
+**Reverted optimizations (caused instability):**
+- **Scorpion NMRR** - CPU-specific memory type remapping (reverted in ba66d84b2f25)
 
 ---
 
@@ -1069,6 +1078,7 @@ This optimization was committed in:
 - The `dd` test measures practical throughput including CPU and kernel overhead, not raw hardware bandwidth
 - tmpfs performance is lower due to filesystem layer overhead
 - Results may vary based on system load and memory pressure
-- The remaining ~28% memory bandwidth gap vs webOS is due to Scorpion-specific optimizations that couldn't be ported (ACTLR, L2 cache settings)
-- VMSPLIT_2G and Scorpion NMRR are now enabled in all tenderloin defconfigs
-- For real-world usage, the current 1484 MB/s performance should be adequate for the HP TouchPad
+- The remaining ~40% memory bandwidth gap vs webOS is due to Scorpion-specific optimizations that couldn't be ported
+- VMSPLIT_2G is enabled in all tenderloin defconfigs
+- Scorpion NMRR optimization was reverted due to boot failures - will revisit in future
+- Current stable performance is ~1220 MB/s (60% of webOS) with VMSPLIT_2G
