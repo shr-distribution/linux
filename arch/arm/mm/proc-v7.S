@@ -411,48 +411,6 @@ __ca12_errata:
 #endif
 	b	__errata_finish
 
-/*
- * Scorpion-specific finish - only NMRR optimization.
- * Uses NMRR value 0x40e080e0 instead of generic 0x40e040e0.
- * This sets Write-Through inner caching for Write-Allocate regions.
- */
-__scorpion_finish:
-	mov	r10, #0
-	mcr	p15, 0, r10, c7, c5, 0		@ I+BTB cache invalidate
-#ifdef CONFIG_MMU
-	mcr	p15, 0, r10, c8, c7, 0		@ invalidate I + D TLBs
-	v7_ttb_setup r10, r4, r5, r8, r3	@ TTBCR, TTBRx setup
-	ldr	r3, =PRRR			@ PRRR
-	ldr	r6, =0x40e080e0			@ NMRR (Scorpion optimized)
-	mcr	p15, 0, r3, c10, c2, 0		@ write PRRR
-	mcr	p15, 0, r6, c10, c2, 1		@ write NMRR
-#endif
-	dsb					@ Complete invalidations
-#ifndef CONFIG_ARM_THUMBEE
-	mrc	p15, 0, r0, c0, c1, 0		@ read ID_PFR0 for ThumbEE
-	and	r0, r0, #(0xf << 12)		@ ThumbEE enabled field
-	teq	r0, #(1 << 12)			@ check if ThumbEE is present
-	bne	1f
-	mov	r3, #0
-	mcr	p14, 6, r3, c1, c0, 0		@ Initialize TEEHBR to 0
-	mrc	p14, 6, r0, c0, c0, 0		@ load TEECR
-	orr	r0, r0, #1			@ set the 1st bit in order to
-	mcr	p14, 6, r0, c0, c0, 0		@ stop userspace TEEHBR access
-1:
-#endif
-	adr	r3, v7_crval
-	ldmia	r3, {r3, r6}
- ARM_BE8(orr	r6, r6, #1 << 25)		@ big-endian page tables
-#ifdef CONFIG_SWP_EMULATE
-	orr     r3, r3, #(1 << 10)              @ set SW bit in "clear"
-	bic     r6, r6, #(1 << 10)              @ clear it in "mmuset"
-#endif
-   	mrc	p15, 0, r0, c1, c0, 0		@ read control register
-	bic	r0, r0, r3			@ clear bits them
-	orr	r0, r0, r6			@ set them
- THUMB(	orr	r0, r0, #1 << 30	)	@ Thumb exceptions
-	ret	lr				@ return to head.S:__ret
-
 __ca17_errata:
 #ifdef CONFIG_ARM_ERRATA_852421
 	cmp	r6, #0x12			@ only present up to r1p2
@@ -526,29 +484,6 @@ __v7_pj4b_setup:
 	mcr	p15, 1,	r0, c15, c1, 0
 
 #endif /* CONFIG_CPU_PJ4B */
-
-/*
- * Qualcomm Scorpion MP (dual-core) processor setup.
- * Found in APQ8060/MSM8x60 SoCs (HP TouchPad, etc.)
- *
- * Optimizations from downstream Qualcomm kernels:
- * - NMRR 0x40e080e0: Write-Through inner caching for Write-Allocate
- *
- * Note: ACTLR bit 24, CP15 c15 bit 21, and L2CR1 settings caused instability
- * and are disabled pending further investigation.
- */
-__scorpion_setup:
-	do_invalidate_l1
-	mov	r10, #0
-#ifdef CONFIG_SMP
-	orr	r10, r10, #(1 << 6)		@ Enable SMP/nAMP mode
-	ALT_SMP(mrc	p15, 0, r0, c1, c0, 1)
-	ALT_UP(mov	r0, r10)		@ fake it for UP
-	orr	r10, r10, r0			@ Set required bits
-	teq	r10, r0				@ Were they already set?
-	mcrne	p15, 0, r10, c1, c0, 1		@ No, update register
-#endif
-	b	__scorpion_finish
 
 __v7_setup:
 	do_invalidate_l1
@@ -682,21 +617,6 @@ ENDPROC(__v7_setup)
 #endif
 	globl_equ	cpu_ca9mp_set_pte_ext,	cpu_v7_set_pte_ext
 	define_processor_functions ca9mp, dabort=v7_early_abort, pabort=v7_pabort, suspend=1, bugs=cpu_v7_bugs_init
-
-	@ Qualcomm Scorpion MP - APQ8060/MSM8x60 SoCs
-	globl_equ	cpu_scorpion_proc_init,		cpu_v7_proc_init
-	globl_equ	cpu_scorpion_proc_fin,		cpu_v7_proc_fin
-	globl_equ	cpu_scorpion_reset,		cpu_v7_reset
-	globl_equ	cpu_scorpion_do_idle,		cpu_v7_do_idle
-	globl_equ	cpu_scorpion_dcache_clean_area,	cpu_v7_dcache_clean_area
-	globl_equ	cpu_scorpion_switch_mm,		cpu_v7_switch_mm
-	globl_equ	cpu_scorpion_set_pte_ext,	cpu_v7_set_pte_ext
-	globl_equ	cpu_scorpion_suspend_size,	cpu_v7_suspend_size
-#ifdef CONFIG_ARM_CPU_SUSPEND
-	globl_equ	cpu_scorpion_do_suspend,	cpu_v7_do_suspend
-	globl_equ	cpu_scorpion_do_resume,		cpu_v7_do_resume
-#endif
-	define_processor_functions scorpion, dabort=v7_early_abort, pabort=v7_pabort, suspend=1, bugs=cpu_v7_bugs_init
 #endif
 
 	@ Cortex-A15 - needs iciallu switch_mm for hardening
@@ -879,17 +799,6 @@ __v7_ca75_proc_info:
 	.long	0xff0ffff0
 	__v7_proc __v7_ca75_proc_info, __v7_setup, proc_fns = HARDENED_BPIALL_PROCESSOR_FUNCTIONS
 	.size	__v7_ca75_proc_info, . - __v7_ca75_proc_info
-
-	/*
-	 * Qualcomm Inc. Scorpion MP processor (APQ8060/MSM8x60).
-	 * Found in HP TouchPad and other devices.
-	 */
-	.type	__scorpion_proc_info, #object
-__scorpion_proc_info:
-	.long	0x510002d0		@ Required ID value (Scorpion MP)
-	.long	0xff00fff0		@ Mask for ID
-	__v7_proc __scorpion_proc_info, __scorpion_setup, proc_fns = scorpion_processor_functions
-	.size	__scorpion_proc_info, . - __scorpion_proc_info
 
 	/*
 	 * Qualcomm Inc. Krait processors.
