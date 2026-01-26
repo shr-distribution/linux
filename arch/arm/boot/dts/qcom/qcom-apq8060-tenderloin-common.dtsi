@@ -235,6 +235,19 @@
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
 			qcom,ee = <1>;
+
+			/*
+			 * EBI interconnect path for DMA memory access.
+			 *
+			 * The legacy webOS kernel used ebi1_adm_clk clock voter
+			 * to ensure minimum EBI bandwidth during DMA operations.
+			 * This interconnect path provides equivalent functionality.
+			 *
+			 * Path: ADM0 -> SFAB -> AFAB -> EBI (system memory)
+			 */
+			interconnects = <&system_fabric SFAB_MAS_ADM0_PORT0
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "memory";
 		};
 
 		adm_dma1: dma-controller@18420000 {
@@ -254,6 +267,19 @@
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
 			qcom,ee = <1>;
+
+			/*
+			 * EBI interconnect path for DMA memory access.
+			 *
+			 * The legacy webOS kernel used ebi1_adm_clk clock voter
+			 * to ensure minimum EBI bandwidth during DMA operations.
+			 * This interconnect path provides equivalent functionality.
+			 *
+			 * Path: ADM1 -> SFAB -> AFAB -> EBI (system memory)
+			 */
+			interconnects = <&system_fabric SFAB_MAS_ADM1_PORT0
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "memory";
 		};
 
 		/*

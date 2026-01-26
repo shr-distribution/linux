@@ -239,10 +239,15 @@ static const struct msm8660_icc_desc msm8660_afab = {
 /* System Fabric nodes */
 DEFINE_QNODE(sfab_mas_appss, MSM8660_SFAB_MAS_APPSS, 8, MSM8660_AFAB_TO_SYSTEM);
 DEFINE_QNODE(sfab_mas_sps, MSM8660_SFAB_MAS_SPS, 8, MSM8660_SFAB_SLV_SPS);
-DEFINE_QNODE(sfab_mas_adm0_port0, MSM8660_SFAB_MAS_ADM0_PORT0, 8);
-DEFINE_QNODE(sfab_mas_adm0_port1, MSM8660_SFAB_MAS_ADM0_PORT1, 8);
-DEFINE_QNODE(sfab_mas_adm1_port0, MSM8660_SFAB_MAS_ADM1_PORT0, 8);
-DEFINE_QNODE(sfab_mas_adm1_port1, MSM8660_SFAB_MAS_ADM1_PORT1, 8);
+/*
+ * ADM DMA masters - route through SFAB_TO_APPSS to reach EBI memory.
+ * Path: ADM -> SFAB_TO_APPSS -> AFAB_TO_SYSTEM -> AFAB_SLV_EBI_CH0
+ * This enables proper EBI bandwidth voting for DMA operations.
+ */
+DEFINE_QNODE(sfab_mas_adm0_port0, MSM8660_SFAB_MAS_ADM0_PORT0, 8, MSM8660_SFAB_TO_APPSS);
+DEFINE_QNODE(sfab_mas_adm0_port1, MSM8660_SFAB_MAS_ADM0_PORT1, 8, MSM8660_SFAB_TO_APPSS);
+DEFINE_QNODE(sfab_mas_adm1_port0, MSM8660_SFAB_MAS_ADM1_PORT0, 8, MSM8660_SFAB_TO_APPSS);
+DEFINE_QNODE(sfab_mas_adm1_port1, MSM8660_SFAB_MAS_ADM1_PORT1, 8, MSM8660_SFAB_TO_APPSS);
 DEFINE_QNODE(sfab_mas_lpass_proc, MSM8660_SFAB_MAS_LPASS_PROC, 8);
 DEFINE_QNODE(sfab_mas_mss_proci, MSM8660_SFAB_MAS_MSS_PROCI, 8);
 DEFINE_QNODE(sfab_mas_mss_procd, MSM8660_SFAB_MAS_MSS_PROCD, 8);

@@ -10,6 +10,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/dma/qcom_adm.h>
 #include <linux/init.h>
+#include <linux/interconnect.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -181,6 +182,7 @@ struct adm_device {
 	struct reset_control *c0_reset;
 	struct reset_control *c1_reset;
 	struct reset_control *c2_reset;
+	struct icc_path *icc_path;
 	int irq;
 
 	/* Descriptor pool for reduced per-transfer allocation overhead */
@@ -1014,6 +1016,39 @@ static int adm_dma_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(adev->dev, "failed to prepare/enable iface clock\n");
 		goto err_disable_core_clk;
+	}
+
+	/*
+	 * EBI interconnect path for DMA memory access.
+	 *
+	 * The legacy webOS kernel used ebi1_adm_clk clock voter to ensure
+	 * minimum EBI bandwidth during DMA operations. The interconnect
+	 * framework provides equivalent functionality.
+	 *
+	 * Path: ADM -> SFAB -> AFAB -> EBI (system memory)
+	 */
+	adev->icc_path = devm_of_icc_get(adev->dev, "memory");
+	if (IS_ERR(adev->icc_path)) {
+		ret = PTR_ERR(adev->icc_path);
+		if (ret != -ENODATA) {
+			dev_err(adev->dev, "failed to get interconnect path: %d\n", ret);
+			goto err_disable_clks;
+		}
+		/* No interconnect defined in DT - optional for backwards compat */
+		adev->icc_path = NULL;
+	}
+
+	if (adev->icc_path) {
+		/*
+		 * Vote for minimum EBI bandwidth to keep the path active.
+		 * Legacy kernel used clk_set_rate(ebiclk, 27) for 27 MHz minimum.
+		 * Using 128 MB/s as a reasonable floor for DMA operations.
+		 */
+		ret = icc_set_bw(adev->icc_path, 0, 128000);
+		if (ret) {
+			dev_err(adev->dev, "failed to set interconnect bandwidth: %d\n", ret);
+			goto err_disable_clks;
+		}
 	}
 
 	/*
