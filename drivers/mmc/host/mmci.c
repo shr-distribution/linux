@@ -349,6 +349,12 @@ static struct variant_data variant_qcom = {
 				  MCI_QCOM_CLK_SELECT_IN_FBCLK,
 	.clkreg_8bit_bus_enable = MCI_QCOM_CLK_WIDEBUS_8,
 	.datactrl_mask_ddrmode	= MCI_QCOM_CLK_SELECT_IN_DDR_MODE,
+	/*
+	 * Note: Do NOT set datactrl_mask_sdio for Qualcomm.
+	 * MCI_DPSM_ST_SDIOEN (bit 11) is ST Micro specific and
+	 * causes CRC errors on Qualcomm SDCC. SDIO mode is handled
+	 * automatically by the Qualcomm controller.
+	 */
 	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
 	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
 	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
@@ -367,6 +373,7 @@ static struct variant_data variant_qcom = {
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
 	.start_err		= MCI_STARTBITERR,
 	.opendrain		= MCI_ROD,
+	.supports_sdio_irq	= true,
 	.init			= qcom_variant_init,
 };
 

@@ -1947,6 +1947,13 @@
 	pinctrl-0 = <&sdcc4_pins>, <&wlan_gpios>;
 
 	/*
+	 * Limit clock to 24MHz for SDIO stability.
+	 * Legacy kernel used msmsdcc_fmid=24000000 for intermediate operations.
+	 * Higher clocks (48MHz) can cause CRC errors with AR6003.
+	 */
+	max-frequency = <24000000>;
+
+	/*
 	 * SDIO requires data registers to be set up before command is sent.
 	 * This matches legacy msm_sdcc driver behavior and fixes WiFi firmware
 	 * upload timeouts. Only enable for SDIO (WiFi), not eMMC.
@@ -1955,6 +1962,16 @@
 	#address-cells = <1>;
 	#size-cells = <0>;
 	disable-wp;
+
+	/*
+	 * Enable SDIO interrupt support for WiFi.
+	 * The AR6003 WiFi chip uses SDIO interrupts for asynchronous events.
+	 * Without this, the ath6kl driver cannot receive WiFi events.
+	 */
+	cap-sdio-irq;
+
+	/* Keep power during suspend for WiFi wake-on-WLAN support */
+	keep-power-in-suspend;
 
 	/*
 	 * WiFi Power Supplies (from legacy kernel tenderloin_wifi_power):
@@ -1976,14 +1993,16 @@
 	mmc-pwrseq = <&ath6kl_pwrseq>;
 
 	/*
-	 * DMA configuration for QCOM ADM:
+	 * DMA disabled - testing PIO mode to isolate DMA write issue.
+	 * DMA configuration for QCOM ADM (for reference):
 	 * From legacy kernel: DMOV_SDC4_CHAN=21, DMOV_SDC4_CRCI=5
 	 * Channel 21 = ADM1 channel 5 (ADM1 starts at global channel 16)
 	 * CRCI 5 provides flow control for SDC4 transfers
-	 */
+	 *
 	dmas = <&adm_dma1 5>, <&adm_dma1 5>;
 	dma-names = "rx", "tx";
 	qcom,sdcc-crci = <5>;
+	*/
 
 	/*
 	 * DFAB interconnect path for WiFi SDIO.
