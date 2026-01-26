@@ -122,6 +122,24 @@ wget -O drm-tests.tar.gz http://${HOST_IP}:${HTTP_PORT}/drm-tests.tar.gz
 tar xzf drm-tests.tar.gz
 rm -f drm-tests.tar.gz
 
+# Create convenience wrapper scripts that set LD_LIBRARY_PATH
+cat > $DEVICE_DIR/modetest << 'WRAPPER'
+#!/bin/sh
+SCRIPT_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+export LD_LIBRARY_PATH="\$SCRIPT_DIR/lib:\$LD_LIBRARY_PATH"
+exec "\$SCRIPT_DIR/bin/modetest" "\$@"
+WRAPPER
+chmod +x $DEVICE_DIR/modetest
+
+cat > $DEVICE_DIR/kmscube << 'WRAPPER'
+#!/bin/sh
+SCRIPT_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+export LD_LIBRARY_PATH="\$SCRIPT_DIR/lib:\$LD_LIBRARY_PATH"
+export GBM_BACKENDS_PATH="\$SCRIPT_DIR/lib/gbm"
+exec "\$SCRIPT_DIR/bin/kmscube" "\$@"
+WRAPPER
+chmod +x $DEVICE_DIR/kmscube
+
 # Verify
 ls -la $DEVICE_DIR/
 echo "DEPLOY_SUCCESS"
