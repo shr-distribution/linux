@@ -602,3 +602,134 @@ echo performance > /sys/class/devfreq/4300000.adreno/governor
 ```
 
 **Proper fix needed**: Modify `msm_devfreq_active()` to ensure devfreq is resumed when GPU activity is detected.
+
+---
+
+## UPDATE: ADM DMA Interconnect Support (2026-01-26)
+
+### Problem: Missing ebi1_adm_clk Equivalent
+
+The legacy webOS kernel used `ebi1_adm_clk` clock voters to ensure minimum EBI bandwidth during DMA operations:
+
+```c
+// From devices-msm8x60.c
+CLK_VOTER("ebi1_adm_clk", EBI_ADM0_CLK, "ebi1_clk", "msm_dmov.0", 0),
+CLK_VOTER("ebi1_adm_clk", EBI_ADM1_CLK, "ebi1_clk", "msm_dmov.1", 0),
+
+// Usage in dma.c
+dmov_conf[adm].ebiclk = clk_get(&pdev->dev, "ebi1_adm_clk");
+clk_set_rate(dmov_conf[adm].ebiclk, 27);  // 27 MHz minimum
+```
+
+This ensured EBI fabric ran at sufficient speed during DMA transfers (eMMC, crypto, SDIO).
+
+### Solution: Interconnect Framework for ADM DMA
+
+Added interconnect support to replicate `ebi1_adm_clk` functionality:
+
+#### 1. Driver Changes (drivers/dma/qcom/qcom_adm.c)
+
+```c
+#include <linux/interconnect.h>
+
+struct adm_device {
+    ...
+    struct icc_path *icc_path;
+};
+
+static int adm_dma_probe(struct platform_device *pdev)
+{
+    ...
+    /* Get optional interconnect path */
+    adev->icc_path = devm_of_icc_get(adev->dev, "memory");
+    if (IS_ERR(adev->icc_path)) {
+        if (PTR_ERR(adev->icc_path) != -ENODATA)
+            return PTR_ERR(adev->icc_path);
+        adev->icc_path = NULL;  /* Optional for backwards compat */
+    }
+
+    if (adev->icc_path) {
+        /* Vote for 128 MB/s peak bandwidth */
+        icc_set_bw(adev->icc_path, 0, 128000);
+    }
+}
+```
+
+#### 2. Interconnect Topology Fix (drivers/interconnect/qcom/msm8660.c)
+
+Added downstream links for ADM master nodes (previously had no connections):
+
+```c
+/* Before: ADM nodes had no downstream links */
+DEFINE_QNODE(sfab_mas_adm0_port0, MSM8660_SFAB_MAS_ADM0_PORT0, 8);
+
+/* After: ADM routes through SFAB to reach EBI */
+DEFINE_QNODE(sfab_mas_adm0_port0, MSM8660_SFAB_MAS_ADM0_PORT0, 8, MSM8660_SFAB_TO_APPSS);
+DEFINE_QNODE(sfab_mas_adm0_port1, MSM8660_SFAB_MAS_ADM0_PORT1, 8, MSM8660_SFAB_TO_APPSS);
+DEFINE_QNODE(sfab_mas_adm1_port0, MSM8660_SFAB_MAS_ADM1_PORT0, 8, MSM8660_SFAB_TO_APPSS);
+DEFINE_QNODE(sfab_mas_adm1_port1, MSM8660_SFAB_MAS_ADM1_PORT1, 8, MSM8660_SFAB_TO_APPSS);
+```
+
+Path: ADM -> SFAB_TO_APPSS -> AFAB_TO_SYSTEM -> AFAB_SLV_EBI_CH0
+
+#### 3. Device Tree Bindings (qcom-apq8060-tenderloin-common.dtsi)
+
+```dts
+adm_dma0: dma-controller@18320000 {
+    ...
+    interconnects = <&system_fabric SFAB_MAS_ADM0_PORT0
+                     &apps_fabric AFAB_SLV_EBI_CH0>;
+    interconnect-names = "memory";
+};
+
+adm_dma1: dma-controller@18420000 {
+    ...
+    interconnects = <&system_fabric SFAB_MAS_ADM1_PORT0
+                     &apps_fabric AFAB_SLV_EBI_CH0>;
+    interconnect-names = "memory";
+};
+```
+
+### Verification
+
+Interconnect summary now shows ADM DMA voting:
+
+```
+slv_ebi_ch0                                     3747840       460800
+  ...
+  18420000.dma-controller                0            0       128000  <-- ADM1
+  18320000.dma-controller                0            0       128000  <-- ADM0
+  12500000.usb                           0        61440        61440
+
+sfab_mas_adm0_port0                                   0       128000
+  18320000.dma-controller                0            0       128000
+sfab_mas_adm1_port0                                   0       128000
+  18420000.dma-controller                0            0       128000
+```
+
+### Commits
+
+- `80b84d5bf1b2` dma/interconnect: Add EBI bandwidth voting for ADM DMA engines
+
+---
+
+## Complete Legacy Voter Clock Status
+
+| Legacy webOS Clock | Purpose | Modern Equivalent | Status |
+|-------------------|---------|-------------------|--------|
+| `dfab_dsps_clk` | DSPS sensor hub | Not needed | ✅ N/A (DSPS unused) |
+| `dfab_usb_hs_clk` | USB DFAB clock | USB interconnect | ✅ Working (61 MB/s) |
+| `dfab_sdc_clk` x5 | SD card DFAB | SDCC4 DT binding | ⚠️ Driver lacks support |
+| `ebi1_msmbus_clk` | MSM bus EBI | MDP interconnect | ✅ Working (460 MB/s) |
+| `ebi1_kgsl_clk` | GPU EBI | GPU devfreq/OPP | ⚠️ Stuck at minimum |
+| `ebi1_lcdc_clk` | Display EBI | MDP interconnect | ✅ Working |
+| `ebi1_mdp_clk` | MDP EBI | MDP interconnect | ✅ Working |
+| `ebi1_adm_clk` x2 | ADM DMA EBI | **ADM interconnect** | ✅ **NEW** (128 MB/s) |
+
+### Summary
+
+All critical voter clocks now have interconnect equivalents:
+- **USB**: Fixed (reduced from 300/600 to 60/60 MB/s)
+- **MDP**: Working (368/460 MB/s on SMI+EBI paths)
+- **ADM DMA**: NEW (128 MB/s peak for DMA operations)
+- **GPU**: OPP table correct, but devfreq stuck (use performance governor as workaround)
