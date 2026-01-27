@@ -1,6 +1,6 @@
 # HP TouchPad WiFi (AR6003) Bringup Summary
 
-**Last Updated:** 2026-01-26
+**Last Updated:** 2026-01-27
 
 ## Hardware
 - Atheros AR6003 Rev2 WiFi chip
@@ -219,18 +219,18 @@ static u32 qcom_get_dctrl_cfg(struct mmci_host *host)
 
 This is loaded via `qcom_variant_init()` which sets `host->ops = &qcom_variant_ops`.
 
-### 10. DMA vs PIO Mode Discovery (2026-01-26)
+### 10. DMA CRC Error Root Cause & Fix (2026-01-26 → 2026-01-27)
 
-**Key Finding:** PIO mode works, DMA mode fails with CRC errors!
+**Key Finding:** PIO mode works, DMA mode initially failed with CRC errors!
 
-**Testing Results:**
+**Testing Results (before fix):**
 
 | Mode | Block Sizes | Result |
 |------|-------------|--------|
 | PIO | 4, 12, 24, 128, 256 bytes | ✓ All succeed |
 | DMA | 256+ bytes | ✗ CRC error at end of transfer |
 
-**Debug output with DMA enabled:**
+**Debug output with DMA (before fix):**
 ```
 DMA datactrl=0x1009 blksz=256 size=256
 error during DMA transfer!
@@ -238,22 +238,53 @@ MCI ERROR IRQ, status 0x00000002 at 0x00000100
 DATACRCFAIL: blksz=256 blocks=1 flags=0x100
 ```
 
-**Debug output with DMA disabled (PIO only):**
-```
-PIO datactrl=0x1001 blksz=256 size=256
-(no errors - transfer succeeds)
+**Root Cause: DMA issues before CMD53 sends**
+
+The `qcom,datactrl-first` property causes DATACTRL to be written before CMD53.
+When DMA `issue_pending` is called immediately after DATACTRL, the ADM fills
+the SDCC FIFO before the card knows data is coming (CMD53 hasn't been sent).
+The card receives data without a preceding command → CRC fail.
+
+The legacy msm_sdcc driver used an atomic `exec_func` callback:
+```c
+msmsdcc_dma_exec_func() {
+    writel(DATACTRL);   // 1. Enable DPSM
+    msmsdcc_delay();    // 2. Wait for DPSM init
+    start_command();    // 3. Send CMD53
+    // DMA is enabled at this point - fills FIFO AFTER cmd
+}
 ```
 
-**Root Cause:** The ADM DMA configuration has an issue causing CRC errors on larger transfers. The CRC error occurs at the end of the 256-byte transfer (offset 0x100), suggesting data is transferred but CRC check fails.
+**Fix: Deferred DMA issue_pending** (`mmci.c`, `mmci_qcom_dml.c`)
 
-**Current Workaround:** DMA disabled for SDCC4 (WiFi) in device tree:
-```dts
-/* TEMPORARILY DISABLED: Testing PIO mode for WiFi SDIO.
- * DMA transfers fail with CRC errors while PIO works. */
-/* dmas = <&adm_dma1 5>, <&adm_dma1 5>;
-dma-names = "rx", "tx";
-qcom,sdcc-crci = <5>; */
+Split `mmci_dmae_start()` into `mmci_dmae_submit()` + `mmci_dmae_issue_pending()`:
+
+1. `mmci_dma_start()`: Submit DMA descriptor, write DATACTRL, but **defer** `issue_pending`
+2. `mmci_start_command()`: Send CMD53
+3. `mmci_cmd_irq()`: After CMD53 response, **issue** the deferred DMA
+
+This gives the correct sequence: **DMA submit → DATACTRL → CMD53 → DMA issue**
+
+```c
+// In mmci_dma_start():
+if (host->datactrl_first && !(data->flags & MMC_DATA_READ) &&
+    host->variant->qcom_dml) {
+    host->dma_issue_deferred = true;  // Don't issue yet
+} else {
+    host->ops->dma_issue_pending(host);  // Issue immediately
+}
+
+// In mmci_cmd_irq():
+if (host->dma_issue_deferred) {
+    host->dma_issue_deferred = false;
+    host->ops->dma_issue_pending(host);  // Issue after CMD response
+}
 ```
+
+**Result: CRC errors ELIMINATED.** 665+ DMA transfers complete with zero errors.
+
+**Also fixed:** Clear `dma_issue_deferred` flag in error paths to prevent stale
+DMA issue after `mmci_dma_error()` terminates the channel.
 
 ### 11. Additional Qualcomm SDCC Fixes (2026-01-26)
 
@@ -286,7 +317,7 @@ if (host->variant->qcom_datactrl_delay)
 writel(c, base + MMCICOMMAND);
 ```
 
-### 12. WMI Timeout Issue (2026-01-26) - CURRENT
+### 12. WMI Timeout Issue (2026-01-26) - RESOLVED via SDIO IRQ
 
 **Problem:** With PIO mode working, ath6kl gets further but fails at WMI initialization:
 ```
@@ -294,13 +325,59 @@ ath6kl: wmi is not ready or wait was interrupted: -512
 ath6kl: Failed to start hardware: -5
 ```
 
-**Status:** BMI phase succeeds, firmware uploads without CRC errors, but WMI doesn't respond.
+**Root Cause:** SDIO IRQ was not working. The Qualcomm SDCC variant needed
+`supports_sdio_irq` added and the SDIO IRQ bit (`MCI_ST_SDIOIT`) properly
+handled in the interrupt handler.
 
-**Possible Causes:**
-1. SDIO IRQ not working (needed for async events from WiFi chip)
-2. Firmware compatibility issue
-3. Clock/power sequencing issue
-4. Missing interrupt configuration
+**Fix:** Added SDIO IRQ support to `variant_qcom` and implemented
+`mmci_signal_sdio_irq()` for the Qualcomm SDCC variant.
+
+### 13. DMA Firmware Upload Failure (2026-01-27) - CURRENT
+
+**Problem:** With DMA CRC errors fixed (deferred issue), all DMA transfers
+complete successfully (665+ writes, zero errors), but the WiFi chip becomes
+unresponsive after firmware upload.
+
+**Failure Pattern:**
+```
+DMA#665 WR datactrl=0x1009 blksz=256 size=256          ← last DMA write
+deferred DMA issue: cmd53 status=0x00c45400 resp=0x00001000  ← CMD53 OK
+ADM cpl#669 chan=5 crci=5 result=0x80000002             ← ADM completion OK
+DATAEND#988 status=0x00000100 err=0 bytes=256           ← SDCC data OK
+PIO datactrl=0x43 blksz=4 size=4                        ← 4-byte PIO read
+ath6kl: Unable to decrement the command credit count register: -110
+ath6kl: Failed to write firmware: -110                  ← CHIP UNRESPONSIVE
+```
+
+**Key Observations:**
+1. **All 665 DMA writes succeed** - zero CRC errors, zero timeouts
+2. **ADM completions match** - 669 ADM completions for ~665 DMA + some reads
+3. **The failure is a PIO read timeout** (-110 ETIMEDOUT), not a DMA hang
+4. **The WiFi chip stops responding** after receiving all firmware data
+5. **Consistent between test runs** - always fails at the same stage
+
+**What each successful DMA write looks like:**
+```
+DMA#N WR datactrl=0x1009 blksz=256 size=256     ← mmci_dma_start
+deferred DMA issue: cmd53 status=0x00c45400      ← mmci_cmd_irq issues DMA
+ADM cpl#K chan=5 crci=5 result=0x80000002        ← ADM DMA completes (TPD=OK)
+DATAEND#M status=0x00000100 err=0 bytes=256      ← SDCC DATAEND fires
+DATAEND#M+1 status=0x00000140 err=0 bytes=4      ← next small PIO transfer
+```
+
+**Analysis:** The CRC passes on the SDIO bus (no DATACRCFAIL), but the chip
+doesn't boot its firmware. This suggests:
+
+1. **Cache coherency issue**: DMA reads stale data from memory (not flushed).
+   `dma_map_sg()` should handle this, but worth verifying.
+2. **Scatter-gather mapping**: DMA could be reading from wrong physical pages
+3. **Byte ordering**: ADM bus access might differ from CPU writel() in PIO mode
+4. **Data content issue**: Bus CRC passes but the firmware data itself is wrong
+
+**Attempted fixes that didn't help:**
+- DMA burst=64 bytes (matching legacy fifosize) - same CRC errors (pre-fix)
+- CMD-first ordering (skip datactrl_first for DMA writes) - CRC fixed but DPSM hang
+- Deferred DMA issue (current) - CRC fixed, chip unresponsive
 
 ## Current DT Configuration
 
@@ -317,10 +394,10 @@ ath6kl: Failed to start hardware: -5
     vqmmc-supply = <&pm8058_s3>;
     mmc-pwrseq = <&ath6kl_pwrseq>;
 
-    /* DMA temporarily disabled - PIO mode works, DMA has CRC errors */
-    /* dmas = <&adm_dma1 5>, <&adm_dma1 5>;
+    /* DMA re-enabled with deferred issue fix */
+    dmas = <&adm_dma1 5>, <&adm_dma1 5>;
     dma-names = "rx", "tx";
-    qcom,sdcc-crci = <5>; */
+    qcom,sdcc-crci = <5>;
 
     wifi@1 {
         compatible = "atheros,ath6kl";
@@ -330,51 +407,59 @@ ath6kl: Failed to start hardware: -5
 };
 ```
 
-## Debug Output Added
+## Debug Instrumentation
 
-Debug prints added to `drivers/dma/qcom/qcom_adm.c`:
-- `adm_dma_xlate`: Shows channel/args_count/CRCI parsing
-- `adm_slave_config`: Shows device_fc and peripheral_size
-- `adm_prep_slave_sg`: Shows device_fc, CRCI, and burst values
-- `adm_start_dma`: Shows CRCI_CTL register configuration
-- `adm_dma_irq`: Shows IRQ status when interrupt fires
+**mmci.c** (DMA transfer tracking):
+- `DMA#N RD/WR datactrl=... blksz=... size=...` - Per-transfer counter with direction
+- `deferred DMA issue: cmdN status=... resp=...` - Deferred issue confirmation with SDCC status
+- `DATAEND#N status=... err=... bytes=...` - Data completion counter
 
-Debug print in `drivers/mmc/host/mmci.c`:
-- `mmci_dmae_setup`: Shows DMA channels and CRCI value read from DT
+**qcom_adm.c** (ADM DMA tracking):
+- `ADM cpl#N chan=... crci=... result=...` - Per-completion counter with result
+- `ADM DMA error: chan=... result=...` - Error detail on failure
+- Box descriptor dump and CRCI_CTL logging (dev_dbg level)
 
 ## Files Modified
 
-- `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` - DT configuration with CRCI
+- `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` - DT config with DMA + CRCI
 - `arch/arm/configs/tenderloin_defconfig` - ATH6KL=m
-- `drivers/mmc/host/mmci.c` - CRCI support for QCOM ADM DMA + datactrl_first fix
-- `drivers/dma/qcom/qcom_adm.c` - Debug output for DMA operations
-- `scripts/initramfs/init` - WiFi module loading
+- `drivers/mmc/host/mmci.c` - Deferred DMA issue, CRCI support, timing fixes
+- `drivers/mmc/host/mmci.h` - `dma_issue_deferred` flag, `dma_issue_pending` callback
+- `drivers/mmc/host/mmci_qcom_dml.c` - ADM submit/issue split, `qcom_dma_issue_pending()`
+- `drivers/dma/qcom/qcom_adm.c` - Debug output, completion tracking
+- `drivers/net/wireless/ath/ath6kl/init.c` - Non-interruptible WMI wait
 - Firmware: linux-firmware fw-2.bin/fw-3.bin + webOS bdata.SD32.bin
 
 ## Key Commits
 
 | Commit | Description |
 |--------|-------------|
-| `1d37e9cbbfc3` | mmc: mmci: qcom: Enable datactrl_first to fix SDIO timeouts |
-| (earlier) | mmc: mmci: Add CRCI support for Qualcomm ADM DMA |
+| `5f891c33491d` | WIP: mmc: mmci: Add deferred DMA issue for Qualcomm ADM writes |
+| `72442e7a8f02` | WIP: mmc: mmci: Fix Qualcomm SDCC block size encoding and timing |
+| `69ccd450c385` | WIP: mmc: mmci: Add Qualcomm SDCC data timing delays |
+| `91e5b97abefa` | WIP: mmc: mmci: Add SDIO IRQ support for Qualcomm and fix SDIO bit |
 
 ## Next Steps
 
-1. **Debug WMI timeout** - Current priority
-   - Verify SDIO IRQ is working (`cap-sdio-irq` in DT)
-   - Check if firmware receives and responds to commands
-   - Add ath6kl debug output (`debug_mask=0xffffffff`)
-   - Compare with legacy kernel SDIO IRQ handling
+1. **Debug DMA firmware upload failure** - Current priority
+   - WiFi chip unresponsive after DMA firmware upload (error -110)
+   - All 665+ DMA transfers CRC-pass, so the bus works correctly
+   - Need to verify data content: compare DMA vs PIO firmware upload bytes
+   - Test with DMA disabled (PIO-only) to confirm PIO still works
+   - Check for cache coherency issues (`dma_map_sg` behavior on Scorpion/ARMv7)
+   - Compare ADM DMA memory reads with CPU memory reads for same buffer
+   - Investigate if scatter-gather page boundaries cause data corruption
 
-2. **Fix ADM DMA** - For better performance
-   - Investigate why CRC errors occur only in DMA mode
-   - Check DMA memory alignment requirements
-   - Verify CRCI timing and flow control
-   - Compare ADM configuration with legacy msm_sdcc
+2. **Alternative DMA approaches to try**
+   - Disable DMA for writes only (keep DMA for reads) using a variant flag
+   - Use single-descriptor DMA instead of scatter-gather
+   - Add explicit cache flush before DMA submit
+   - Try `dma_alloc_coherent` bounce buffer for WiFi SDIO writes
 
-3. **Performance optimization**
-   - Once WiFi works in PIO, re-enable DMA with fixes
+3. **Performance optimization** (after WiFi works)
    - Tune clock frequency (currently limited to 24MHz)
+   - Remove debug prints and rate-limit remaining ones
+   - Clean up WIP commits into proper patch series
 
 ---
 
