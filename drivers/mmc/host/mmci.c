@@ -343,7 +343,7 @@ static struct variant_data variant_stm32_sdmmcv3 = {
 
 static struct variant_data variant_qcom = {
 	.fifosize		= 16 * 4,
-	.fifohalfsize		= 16 * 4,	/* Use full FIFO for ADM DMA like webOS */
+	.fifohalfsize		= 8 * 4,
 	.clkreg			= MCI_CLK_ENABLE,
 	.clkreg_enable		= MCI_QCOM_CLK_FLOWENA |
 				  MCI_QCOM_CLK_SELECT_IN_FBCLK,
@@ -620,14 +620,56 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	if (ret)
 		return ret;
 
-	/* Debug: print DMA datactrl value for Qualcomm SDIO */
-	if (host->variant->qcom_datactrl_delay)
+	/* Debug: track DMA transfer number for Qualcomm SDIO */
+	if (host->variant->qcom_datactrl_delay) {
+		static unsigned int qcom_dma_xfer_nr;
+		unsigned int nr = ++qcom_dma_xfer_nr;
+
 		dev_info(mmc_dev(host->mmc),
-			"DMA datactrl=0x%x blksz=%u size=%u\n",
+			"DMA#%u %s datactrl=0x%x blksz=%u size=%u\n",
+			nr,
+			(data->flags & MMC_DATA_READ) ? "RD" : "WR",
 			datactrl, data->blksz, host->size);
+	}
 
 	/* Trigger the DMA transfer */
 	mmci_write_datactrlreg(host, datactrl);
+
+	/*
+	 * Qualcomm SDCC requires a delay after writing DATACTRL to allow
+	 * the Data Path State Machine (DPSM) to initialize before DMA
+	 * starts pushing data into the FIFO. The legacy msm_sdcc driver
+	 * uses writel_delay() with 1us after DATACTRL, followed by CMD
+	 * register writes which add additional delay before DMA data flow.
+	 */
+	if (host->variant->qcom_datactrl_delay) {
+		wmb();
+		udelay(1);
+	}
+
+	/*
+	 * For Qualcomm ADM DMA with datactrl_first writes:
+	 * Defer DMA issue_pending to after CMD completes. The correct
+	 * sequence matching legacy msm_sdcc exec_func is:
+	 *   DMA submit → DATACTRL → CMD53 → DMA issue
+	 * This ensures:
+	 *   1. DPSM is initialized (DATACTRL written)
+	 *   2. Card knows data is coming (CMD53 sent)
+	 *   3. ADM fills FIFO (DMA issued after CMD)
+	 * Issuing DMA before CMD causes CRC errors (card not ready).
+	 * Writing DATACTRL after CMD causes hangs (DPSM won't start).
+	 *
+	 * For non-datactrl_first writes and all reads, issue immediately.
+	 */
+	if (host->ops && host->ops->dma_issue_pending) {
+		if (host->datactrl_first &&
+		    !(data->flags & MMC_DATA_READ) &&
+		    host->variant->qcom_dml) {
+			host->dma_issue_deferred = true;
+		} else {
+			host->ops->dma_issue_pending(host);
+		}
+	}
 
 	/*
 	 * Let the MMCI say when the data is ended and it's time
@@ -1155,7 +1197,11 @@ int mmci_dmae_prep_data(struct mmci_host *host,
 				    &dmae->desc_current);
 }
 
-int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
+/*
+ * Submit DMA descriptor without issuing pending.
+ * Used by Qualcomm ADM DMA where DATACTRL must be written before DMA starts.
+ */
+int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	int ret;
@@ -1166,9 +1212,28 @@ int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
 		host->dma_in_progress = false;
 		return ret;
 	}
-	dma_async_issue_pending(dmae->cur);
 
 	*datactrl |= MCI_DPSM_DMAENABLE;
+
+	return 0;
+}
+
+void mmci_dmae_issue_pending(struct mmci_host *host)
+{
+	struct mmci_dmae_priv *dmae = host->dma_priv;
+
+	if (dmae && dmae->cur)
+		dma_async_issue_pending(dmae->cur);
+}
+
+int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
+{
+	int ret = mmci_dmae_submit(host, datactrl);
+
+	if (ret)
+		return ret;
+
+	mmci_dmae_issue_pending(host);
 
 	return 0;
 }
@@ -1541,6 +1606,16 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		dev_err(mmc_dev(host->mmc), "stray MCI_DATABLOCKEND interrupt\n");
 
 	if (status & MCI_DATAEND || data->error) {
+		if (host->variant->qcom_datactrl_delay) {
+			static unsigned int qcom_dataend_nr;
+			unsigned int nr = ++qcom_dataend_nr;
+
+			dev_info(mmc_dev(host->mmc),
+				"DATAEND#%u status=0x%08x err=%d bytes=%u\n",
+				nr, status, data->error,
+				data->blksz * data->blocks);
+		}
+
 		mmci_dma_finalize(host, data);
 
 		mmci_stop_data(host);
@@ -1621,10 +1696,18 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 
 			mmci_stop_data(host);
 			if (host->variant->cmdreg_stop && cmd->error) {
+				/*
+				 * Clear deferred DMA flag - the DMA was
+				 * terminated above, don't issue it.
+				 */
+				host->dma_issue_deferred = false;
 				mmci_stop_command(host);
 				return;
 			}
 		}
+
+		/* Clear deferred DMA flag on error/no-data path */
+		host->dma_issue_deferred = false;
 
 		if (host->irq_action != IRQ_WAKE_THREAD)
 			mmci_request_end(host, host->mrq);
@@ -1634,6 +1717,24 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 	} else if (!host->datactrl_first &&
 		   !(cmd->data->flags & MMC_DATA_READ)) {
 		mmci_start_data(host, cmd->data);
+	}
+
+	/*
+	 * Qualcomm ADM DMA with datactrl_first writes: issue deferred
+	 * DMA pending now that CMD has completed. The sequence is:
+	 *   DMA submit → DATACTRL → CMD → DMA issue (here)
+	 * This matches the legacy msm_sdcc exec_func atomic sequence.
+	 */
+	if (host->dma_issue_deferred) {
+		host->dma_issue_deferred = false;
+		if (host->ops && host->ops->dma_issue_pending) {
+			dev_info(mmc_dev(host->mmc),
+				"deferred DMA issue: cmd%d status=0x%08x resp=0x%08x\n",
+				cmd->opcode,
+				readl(host->base + MMCISTATUS),
+				cmd->resp[0]);
+			host->ops->dma_issue_pending(host);
+		}
 	}
 }
 
@@ -1867,15 +1968,21 @@ static void mmci_write_sdio_irq_bit(struct mmci_host *host, int enable)
 	void __iomem *base = host->base;
 	u32 mask = readl_relaxed(base + MMCIMASK0);
 
-	if (enable)
+	if (enable) {
 		writel_relaxed(mask | MCI_ST_SDIOITMASK, base + MMCIMASK0);
-	else
+		dev_info(mmc_dev(host->mmc),
+			"SDIO IRQ enabled, mask0=0x%08x\n",
+			readl_relaxed(base + MMCIMASK0));
+	} else {
 		writel_relaxed(mask & ~MCI_ST_SDIOITMASK, base + MMCIMASK0);
+	}
 }
 
 static void mmci_signal_sdio_irq(struct mmci_host *host, u32 status)
 {
 	if (status & MCI_ST_SDIOIT) {
+		dev_info(mmc_dev(host->mmc),
+			"SDIO IRQ received, status=0x%08x\n", status);
 		mmci_write_sdio_irq_bit(host, 0);
 		sdio_signal_irq(host->mmc);
 	}
@@ -1893,7 +2000,9 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 	host->irq_action = IRQ_HANDLED;
 
 	do {
+		u32 raw_status;
 		status = readl(host->base + MMCISTATUS);
+		raw_status = status;
 		if (!status)
 			break;
 
@@ -1909,6 +2018,19 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 		 * clear the corresponding IRQ.
 		 */
 		status &= readl(host->base + MMCIMASK0);
+
+		/* Debug: check for SDIO IRQ in raw status for Qualcomm (print once) */
+		if (host->variant->qcom_datactrl_delay && (raw_status & MCI_ST_SDIOIT)) {
+			static int sdio_irq_debug_count;
+			if (sdio_irq_debug_count < 3) {
+				dev_info(mmc_dev(host->mmc),
+					"SDIO IRQ in raw=0x%08x masked=0x%08x ops->enable_sdio_irq=%ps mask0=0x%08x\n",
+					raw_status, status,
+					host->mmc->ops->enable_sdio_irq,
+					readl(host->base + MMCIMASK0));
+				sdio_irq_debug_count++;
+			}
+		}
 		if (host->variant->busy_detect)
 			writel(status & ~host->variant->busy_detect_mask,
 			       host->base + MMCICLEAR);
@@ -1995,10 +2117,6 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	if (mrq->data &&
 	    (host->datactrl_first || mrq->data->flags & MMC_DATA_READ)) {
 		mmci_start_data(host, mrq->data);
-		/*
-		 * Qualcomm SDCC requires a delay between data setup and
-		 * command start. Without this, SDIO writes can fail.
-		 */
 		if (host->variant->qcom_datactrl_delay)
 			udelay(1);
 	}
@@ -2175,6 +2293,8 @@ static void mmci_enable_sdio_irq(struct mmc_host *mmc, int enable)
 {
 	struct mmci_host *host = mmc_priv(mmc);
 	unsigned long flags;
+
+	dev_info(mmc_dev(mmc), "mmci_enable_sdio_irq called: enable=%d\n", enable);
 
 	if (enable)
 		/* Keep the SDIO mode bit if SDIO irqs are enabled */
@@ -2514,11 +2634,17 @@ static int mmci_probe(struct amba_device *dev,
 		mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY;
 	}
 
+	dev_info(mmc_dev(mmc), "SDIO IRQ check: variant_support=%d, caps=0x%08x, MMC_CAP_SDIO_IRQ=0x%08x\n",
+		variant->supports_sdio_irq, host->mmc->caps, MMC_CAP_SDIO_IRQ);
+
 	if (variant->supports_sdio_irq && host->mmc->caps & MMC_CAP_SDIO_IRQ) {
 		mmc->caps2 |= MMC_CAP2_SDIO_IRQ_NOTHREAD;
 
 		mmci_ops.enable_sdio_irq = mmci_enable_sdio_irq;
 		mmci_ops.ack_sdio_irq	= mmci_ack_sdio_irq;
+
+		dev_info(mmc_dev(mmc), "SDIO IRQ enabled: ops->enable_sdio_irq=%ps, ops->ack_sdio_irq=%ps\n",
+			mmci_ops.enable_sdio_irq, mmci_ops.ack_sdio_irq);
 
 		mmci_write_datactrlreg(host,
 				       host->variant->datactrl_mask_sdio);

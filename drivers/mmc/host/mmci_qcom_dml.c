@@ -74,14 +74,24 @@ static int qcom_dma_start(struct mmci_host *host, unsigned int *datactrl)
 	void __iomem *base = host->base + DML_OFFSET;
 	struct mmc_data *data = host->data;
 	struct device_node *np = host->mmc->parent->of_node;
-	int ret = mmci_dmae_start(host, datactrl);
+	int ret;
 
+	if (qcom_dma_is_adm(np)) {
+		/*
+		 * For ADM DMA: submit descriptor but don't issue pending.
+		 * The DATACTRL register must be written before the ADM DMA
+		 * starts, matching the legacy msm_sdcc driver's exec_func
+		 * sequence. mmci_dma_start() will call our dma_issue_pending
+		 * callback after writing DATACTRL.
+		 */
+		ret = mmci_dmae_submit(host, datactrl);
+		return ret;
+	}
+
+	/* BAM DMA path: submit + issue, then configure DML */
+	ret = mmci_dmae_start(host, datactrl);
 	if (ret)
 		return ret;
-
-	/* ADM DMA doesn't use DML, just return after starting DMA */
-	if (qcom_dma_is_adm(np))
-		return 0;
 
 	if (data->flags & MMC_DATA_READ) {
 		/* Read operation: configure DML for producer operation */
@@ -232,10 +242,20 @@ static int qcom_dma_setup(struct mmci_host *host)
 
 static u32 qcom_get_dctrl_cfg(struct mmci_host *host)
 {
-	u32 val = MCI_DPSM_ENABLE | (host->data->blksz << 4);
-	dev_info(mmc_dev(host->mmc), "qcom_get_dctrl_cfg: blksz=%u datactrl=0x%x\n",
-		host->data->blksz, val);
-	return val;
+	return MCI_DPSM_ENABLE | (host->data->blksz << 4);
+}
+
+/*
+ * Issue DMA pending for ADM. Called after DATACTRL is written.
+ * For BAM DMA, issue_pending was already called in qcom_dma_start(),
+ * so this is only needed for ADM.
+ */
+static void qcom_dma_issue_pending(struct mmci_host *host)
+{
+	struct device_node *np = host->mmc->parent->of_node;
+
+	if (qcom_dma_is_adm(np))
+		mmci_dmae_issue_pending(host);
 }
 
 static struct mmci_host_ops qcom_variant_ops = {
@@ -246,6 +266,7 @@ static struct mmci_host_ops qcom_variant_ops = {
 	.dma_setup = qcom_dma_setup,
 	.dma_release = mmci_dmae_release,
 	.dma_start = qcom_dma_start,
+	.dma_issue_pending = qcom_dma_issue_pending,
 	.dma_finalize = mmci_dmae_finalize,
 	.dma_error = mmci_dmae_error,
 };

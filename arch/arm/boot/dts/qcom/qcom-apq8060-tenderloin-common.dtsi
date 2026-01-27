@@ -1997,13 +1997,10 @@
 	 * From legacy kernel: DMOV_SDC4_CHAN=21, DMOV_SDC4_CRCI=5
 	 * Channel 21 = ADM1 channel 5 (ADM1 starts at global channel 16)
 	 * CRCI 5 provides flow control for SDC4 transfers
-	 *
-	 * TEMPORARILY DISABLED: Testing PIO mode for WiFi SDIO.
-	 * DMA transfers fail with CRC errors while PIO works for small transfers.
 	 */
-	/* dmas = <&adm_dma1 5>, <&adm_dma1 5>;
+	dmas = <&adm_dma1 5>, <&adm_dma1 5>;
 	dma-names = "rx", "tx";
-	qcom,sdcc-crci = <5>; */
+	qcom,sdcc-crci = <5>;
 
 	/*
 	 * DFAB interconnect path for WiFi SDIO.

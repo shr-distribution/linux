@@ -441,6 +441,12 @@ static void *adm_process_fc_descriptors(struct adm_chan *achan, void *desc,
 		box_desc->num_rows = rows << 16 | rows;
 		box_desc->row_len = burst << 16 | burst;
 
+		dev_dbg(achan->adev->dev,
+			"ADM box: cmd=0x%x src=0x%x dst=0x%x row_len=0x%x num_rows=0x%x row_off=0x%x burst=%u dir=%d crci=%u\n",
+			box_desc->cmd, box_desc->src_addr, box_desc->dst_addr,
+			box_desc->row_len, box_desc->num_rows,
+			box_desc->row_offset, burst, direction, crci);
+
 		*incr_addr += burst * rows;
 		remainder -= burst * rows;
 		desc += sizeof(*box_desc);
@@ -737,16 +743,23 @@ static void adm_start_dma(struct adm_chan *achan)
 	}
 
 	/* set the crci block size if this transaction requires CRCI */
-	if (async_desc->crci)
-		writel(async_desc->mux | async_desc->blk_size,
+	if (async_desc->crci) {
+		u32 crci_val = async_desc->mux | async_desc->blk_size;
+		writel(crci_val,
 		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
+		dev_dbg(adev->dev,
+			"ADM start_dma: CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=%d)\n",
+			async_desc->crci, crci_val,
+			async_desc->mux, async_desc->blk_size);
+	}
 
 	/* make sure IRQ enable doesn't get reordered */
 	wmb();
 
-	dev_dbg(adev->dev, "ADM start_dma: chan=%d crci=%d cmd_ptr=0x%llx\n",
+	dev_dbg(adev->dev, "ADM start_dma: chan=%d crci=%d cmd_ptr=0x%08x len=%zu\n",
 		achan->id, async_desc->crci,
-		(unsigned long long)(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3));
+		(u32)(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3),
+		async_desc->length);
 
 	/* write next command list out to the CMD FIFO */
 	writel(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3,
@@ -792,8 +805,15 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 				continue;
 
 			/* flag error if transaction was flushed or failed */
-			if (result & (ADM_CH_RSLT_ERR | ADM_CH_RSLT_FLUSH))
+			if (result & (ADM_CH_RSLT_ERR | ADM_CH_RSLT_FLUSH)) {
 				achan->error = 1;
+				dev_err(adev->dev,
+					"ADM DMA error: chan=%d result=0x%08x (err=%d flush=%d tpd=%d)\n",
+					i, result,
+					!!(result & ADM_CH_RSLT_ERR),
+					!!(result & ADM_CH_RSLT_FLUSH),
+					!!(result & ADM_CH_RSLT_TPD));
+			}
 
 			spin_lock_irqsave(&achan->vc.lock, flags);
 			async_desc = achan->curr_txd;
@@ -801,6 +821,14 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			achan->curr_txd = NULL;
 
 			if (async_desc) {
+				if (async_desc->crci) {
+					static unsigned int adm_cpl_nr;
+
+					dev_info(adev->dev,
+						"ADM cpl#%u chan=%d crci=%d result=0x%08x\n",
+						++adm_cpl_nr, i,
+						async_desc->crci, result);
+				}
 				vchan_cookie_complete(&async_desc->vd);
 
 				/* kick off next DMA */

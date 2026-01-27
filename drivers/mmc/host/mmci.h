@@ -402,6 +402,7 @@ struct mmci_host_ops {
 	int (*dma_setup)(struct mmci_host *host);
 	void (*dma_release)(struct mmci_host *host);
 	int (*dma_start)(struct mmci_host *host, unsigned int *datactrl);
+	void (*dma_issue_pending)(struct mmci_host *host);
 	void (*dma_finalize)(struct mmci_host *host, struct mmc_data *data);
 	void (*dma_error)(struct mmci_host *host);
 	void (*set_clkreg)(struct mmci_host *host, unsigned int desired);
@@ -463,6 +464,7 @@ struct mmci_host {
 	u8			use_dma:1;
 	u8			dma_in_progress:1;
 	u8			datactrl_first:1;
+	u8			dma_issue_deferred:1;
 	void			*dma_priv;
 
 	s32			next_cookie;
@@ -488,6 +490,8 @@ void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data);
 int mmci_dmae_setup(struct mmci_host *host);
 void mmci_dmae_release(struct mmci_host *host);
 int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl);
+int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl);
+void mmci_dmae_issue_pending(struct mmci_host *host);
 void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data);
 void mmci_dmae_error(struct mmci_host *host);
 #endif

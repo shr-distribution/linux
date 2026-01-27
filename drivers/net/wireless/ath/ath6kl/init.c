@@ -1767,15 +1767,17 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 		goto err_cleanup_scatter;
 	}
 
-	/* Wait for Wmi event to be ready */
-	timeleft = wait_event_interruptible_timeout(ar->event_wq,
-						    test_bit(WMI_READY,
-							     &ar->flag),
-						    WMI_TIMEOUT);
-	if (timeleft <= 0) {
+	/*
+	 * Wait for Wmi event to be ready.
+	 * Use non-interruptible wait to avoid signal interruption during
+	 * module init (e.g., from system watchdogs or init scripts).
+	 */
+	timeleft = wait_event_timeout(ar->event_wq,
+				      test_bit(WMI_READY, &ar->flag),
+				      WMI_TIMEOUT);
+	if (timeleft == 0) {
 		clear_bit(WMI_READY, &ar->flag);
-		ath6kl_err("wmi is not ready or wait was interrupted: %ld\n",
-			   timeleft);
+		ath6kl_err("wmi is not ready (timeout waiting for firmware)\n");
 		ret = -EIO;
 		goto err_htc_stop;
 	}
