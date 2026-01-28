@@ -530,6 +530,18 @@ static int ath6kl_target_config_wlan_params(struct ath6kl *ar, int idx)
 		}
 	}
 
+	/*
+	 * Set maximum performance power mode to prevent firmware from
+	 * entering power save after initialization.  Without this, the
+	 * AR6003 firmware on msm8x60 stops responding to WMI commands
+	 * (scan, etc.) and raises WAKEUP error interrupts.
+	 */
+	ret = ath6kl_wmi_powermode_cmd(ar->wmi, idx, MAX_PERF_POWER);
+	if (ret) {
+		ath6kl_err("unable to set max perf power mode: %d\n", ret);
+		return ret;
+	}
+
 	return ret;
 }
 

@@ -71,8 +71,9 @@ test_wifi() {
     info "Step 1: Uploading ath6kl modules..."
     run_on_device "cd /tmp && rm -f ath6kl*.ko && wget -q http://${HOST_IP}:${HTTP_PORT}/drivers/net/wireless/ath/ath6kl/ath6kl_core.ko && wget -q http://${HOST_IP}:${HTTP_PORT}/drivers/net/wireless/ath/ath6kl/ath6kl_sdio.ko && ls -la ath6kl*.ko" 10
 
-    info "Step 2: Creating firmware symlinks..."
+    info "Step 2: Creating firmware symlinks and deploying regulatory.db..."
     run_on_device "cd /lib/firmware/ath6k/AR6003/hw2.1.1 && ln -sf fw-3.bin fw-4.bin && ln -sf fw-3.bin fw-5.bin && ls -la fw-*.bin" 5
+    run_on_device "wget -q -O /lib/firmware/regulatory.db http://${HOST_IP}:${HTTP_PORT}/regulatory.db 2>/dev/null; wget -q -O /lib/firmware/regulatory.db.p7s http://${HOST_IP}:${HTTP_PORT}/regulatory.db.p7s 2>/dev/null; ls -la /lib/firmware/regulatory.db* 2>/dev/null || echo 'regulatory.db not available on host'" 5
 
     info "Step 3: Unloading any existing modules..."
     run_on_device "rmmod ath6kl_sdio 2>/dev/null; rmmod ath6kl_core 2>/dev/null; echo 'Modules unloaded'" 3
