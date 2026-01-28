@@ -1,6 +1,6 @@
 # HP TouchPad WiFi (AR6003) Bringup Summary
 
-**Last Updated:** 2026-01-27
+**Last Updated:** 2026-01-28
 
 ## Hardware
 - Atheros AR6003 Rev2 WiFi chip
@@ -332,52 +332,91 @@ handled in the interrupt handler.
 **Fix:** Added SDIO IRQ support to `variant_qcom` and implemented
 `mmci_signal_sdio_irq()` for the Qualcomm SDCC variant.
 
-### 13. DMA Firmware Upload Failure (2026-01-27) - CURRENT
+### 13. DMA Firmware Upload Failure (2026-01-27)
 
 **Problem:** With DMA CRC errors fixed (deferred issue), all DMA transfers
 complete successfully (665+ writes, zero errors), but the WiFi chip becomes
 unresponsive after firmware upload.
 
-**Failure Pattern:**
-```
-DMA#665 WR datactrl=0x1009 blksz=256 size=256          ← last DMA write
-deferred DMA issue: cmd53 status=0x00c45400 resp=0x00001000  ← CMD53 OK
-ADM cpl#669 chan=5 crci=5 result=0x80000002             ← ADM completion OK
-DATAEND#988 status=0x00000100 err=0 bytes=256           ← SDCC data OK
-PIO datactrl=0x43 blksz=4 size=4                        ← 4-byte PIO read
-ath6kl: Unable to decrement the command credit count register: -110
-ath6kl: Failed to write firmware: -110                  ← CHIP UNRESPONSIVE
-```
+**Workaround:** Reduced BMI max_data_size to 52 bytes so ALL BMI transfers
+stay at or below 64 bytes, which forces PIO mode (Qualcomm SDCC uses PIO for
+transfers ≤ 64 bytes). Firmware upload now takes ~78 seconds via PIO but
+completes successfully every time.
 
-**Key Observations:**
-1. **All 665 DMA writes succeed** - zero CRC errors, zero timeouts
-2. **ADM completions match** - 669 ADM completions for ~665 DMA + some reads
-3. **The failure is a PIO read timeout** (-110 ETIMEDOUT), not a DMA hang
-4. **The WiFi chip stops responding** after receiving all firmware data
-5. **Consistent between test runs** - always fails at the same stage
-
-**What each successful DMA write looks like:**
-```
-DMA#N WR datactrl=0x1009 blksz=256 size=256     ← mmci_dma_start
-deferred DMA issue: cmd53 status=0x00c45400      ← mmci_cmd_irq issues DMA
-ADM cpl#K chan=5 crci=5 result=0x80000002        ← ADM DMA completes (TPD=OK)
-DATAEND#M status=0x00000100 err=0 bytes=256      ← SDCC DATAEND fires
-DATAEND#M+1 status=0x00000140 err=0 bytes=4      ← next small PIO transfer
+**Code change (sdio.c):**
+```c
+ar->bmi.max_data_size = 52;  // Force PIO by keeping all transfers ≤64 bytes
 ```
 
-**Analysis:** The CRC passes on the SDIO bus (no DATACRCFAIL), but the chip
-doesn't boot its firmware. This suggests:
+### 14. WMI Power Save Issue - Firmware Goes to Sleep (2026-01-27) - FIXED
 
-1. **Cache coherency issue**: DMA reads stale data from memory (not flushed).
-   `dma_map_sg()` should handle this, but worth verifying.
-2. **Scatter-gather mapping**: DMA could be reading from wrong physical pages
-3. **Byte ordering**: ADM bus access might differ from CPU writel() in PIO mode
-4. **Data content issue**: Bus CRC passes but the firmware data itself is wrong
+**Problem:** After firmware upload succeeds, WiFi scan returns -16 (EBUSY).
+Debugfs showed `Error Int status: 0x4` = `ERROR_INT_STATUS_WAKEUP`.
 
-**Attempted fixes that didn't help:**
-- DMA burst=64 bytes (matching legacy fifosize) - same CRC errors (pre-fix)
-- CMD-first ordering (skip datactrl_first for DMA writes) - CRC fixed but DPSM hang
-- Deferred DMA issue (current) - CRC fixed, chip unresponsive
+**Root Cause:** Firmware defaults to REC_POWER (recommended power mode) and
+enters deep sleep after initialization. SDIO WAKEUP interrupts confirm the
+chip is asleep and not processing WMI commands.
+
+**Fix 1 - init.c:** Added `ath6kl_wmi_powermode_cmd(MAX_PERF_POWER)` at the
+end of `ath6kl_target_config_wlan_params()`:
+```c
+ret = ath6kl_wmi_powermode_cmd(ar->wmi, idx, MAX_PERF_POWER);
+```
+
+**Fix 2 - cfg80211.c:** The interface UP path (cfg80211 `set_power_mgmt`
+callback) was OVERRIDING our MAX_PERF_POWER with REC_POWER. Fixed by forcing
+MAX_PERF_POWER for SDIO devices:
+```c
+if (pmgmt && ar->hif_type != ATH6KL_HIF_TYPE_SDIO) {
+    mode.pwr_mode = REC_POWER;
+} else {
+    mode.pwr_mode = MAX_PERF_POWER;  // Force for SDIO
+}
+```
+
+**Result:** Scan no longer returns EBUSY. Firmware stays awake.
+
+### 15. WiFi Scan - BEGIN_SCAN Broken, START_SCAN Works (2026-01-28) - FIXED
+
+**Problem:** User-triggered WiFi scan returned 0 APs despite the firmware's
+autonomous scan finding 12+ APs on 2.4GHz and 5GHz bands.
+
+**Root Cause:** The AR6003 firmware (version 3.2.0.144 api 5) reports
+`sta-p2pdev-duplex` capability, causing ath6kl to use `WMI_BEGIN_SCAN_CMDID`
+(the P2P-enhanced scan). However, this firmware does NOT respond to
+BEGIN_SCAN - no WMI_BSSINFO_EVENTID events, no WMI_SCAN_COMPLETE_EVENTID.
+
+**Fix (wmi.c):** Force legacy `WMI_START_SCAN_CMDID` for SDIO devices:
+```c
+if (!test_bit(ATH6KL_FW_CAPABILITY_STA_P2PDEV_DUPLEX,
+              ar->fw_capabilities) ||
+    ar->hif_type == ATH6KL_HIF_TYPE_SDIO) {
+    return ath6kl_wmi_startscan_cmd(...);
+}
+```
+
+**Result - 10 APs found on first scan:**
+```
+AP 1: cc:28:aa:a1:45:80  2417 MHz  -65 dBm  "HerrieVlada"
+AP 3: 3e:97:f6:01:b9:f8  2437 MHz  -55 dBm  "Herrie-Guest-Free WiFi_24G"
+AP 4: 34:97:f6:01:b9:f8  2437 MHz  -57 dBm  "Herrie_2.4GHz"
+AP 10: 3e:97:f6:01:b9:fc 5180 MHz  -59 dBm  "Herrie-Guest-Free WiFi_5G"
+```
+
+Both 2.4GHz and 5GHz bands are working. Endpoint stats show healthy credit
+flow: tx_issued=28, cred_retnd=28, rx_pkts=54, no starvation.
+
+**CMDTIMEOUT issue (separate, not yet resolved):**
+Occasional `CMDTIMEOUT: cmd53` errors cause WMI credit starvation:
+```
+CMDTIMEOUT: cmd53 arg=0x14080018 status=0x00000004 data=yes
+```
+After a CMDTIMEOUT, EP1 (WMI) credits drop to 0 with qdepth=37+, causing
+all subsequent WMI commands to queue indefinitely.
+
+**rfkill observation:** On some boots, rfkill soft-blocks the interface
+(soft=1). Unblocking via `echo 0 > /sys/class/rfkill/rfkill0/soft` is
+needed before `ip link set wlan0 up` works. Not consistent between boots.
 
 ## Current DT Configuration
 
@@ -423,40 +462,61 @@ doesn't boot its firmware. This suggests:
 
 - `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` - DT config with DMA + CRCI
 - `arch/arm/configs/tenderloin_defconfig` - ATH6KL=m
+- `arch/arm/configs/tenderloin_debug_defconfig` - Regulatory config, CFG80211_DEBUGFS
 - `drivers/mmc/host/mmci.c` - Deferred DMA issue, CRCI support, timing fixes
 - `drivers/mmc/host/mmci.h` - `dma_issue_deferred` flag, `dma_issue_pending` callback
 - `drivers/mmc/host/mmci_qcom_dml.c` - ADM submit/issue split, `qcom_dma_issue_pending()`
 - `drivers/dma/qcom/qcom_adm.c` - Debug output, completion tracking
-- `drivers/net/wireless/ath/ath6kl/init.c` - Non-interruptible WMI wait
+- `drivers/net/wireless/ath/ath6kl/init.c` - MAX_PERF_POWER mode, non-interruptible WMI wait
+- `drivers/net/wireless/ath/ath6kl/sdio.c` - BMI max_data_size=52 for PIO
+- `drivers/net/wireless/ath/ath6kl/cfg80211.c` - Force MAX_PERF_POWER for SDIO on set_power_mgmt
+- `scripts/test-wifi.sh` - WiFi test script with module deployment + regulatory.db
 - Firmware: linux-firmware fw-2.bin/fw-3.bin + webOS bdata.SD32.bin
 
 ## Key Commits
 
 | Commit | Description |
 |--------|-------------|
+| `37d55b9678c0` | WIP: ath6kl/cfg80211: Fix WiFi scan on HP TouchPad (msm8x60) |
 | `5f891c33491d` | WIP: mmc: mmci: Add deferred DMA issue for Qualcomm ADM writes |
 | `72442e7a8f02` | WIP: mmc: mmci: Fix Qualcomm SDCC block size encoding and timing |
 | `69ccd450c385` | WIP: mmc: mmci: Add Qualcomm SDCC data timing delays |
 | `91e5b97abefa` | WIP: mmc: mmci: Add SDIO IRQ support for Qualcomm and fix SDIO bit |
 
+## Current Status Summary
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| SDIO bus (PIO) | **WORKING** | All transfers succeed |
+| SDIO bus (DMA reads) | **WORKING** | No errors |
+| SDIO bus (DMA writes) | **DEFERRED** | Deferred issue workaround; occasional CMDTIMEOUT |
+| Firmware upload | **WORKING** | ~78s via PIO (max_data_size=52) |
+| WMI initialization | **WORKING** | Firmware reports ar6003 hw 2.1.1 fw 3.2.0.144 api 5 |
+| Radio/RF | **WORKING** | Autonomous scan finds 12+ APs on 2.4GHz |
+| User-triggered scan | **WORKING** | Forced START_SCAN; finds 10+ APs on 2.4+5GHz |
+| Power management | **FIXED** | MAX_PERF_POWER forced for SDIO |
+
 ## Next Steps
 
-1. **Debug DMA firmware upload failure** - Current priority
-   - WiFi chip unresponsive after DMA firmware upload (error -110)
-   - All 665+ DMA transfers CRC-pass, so the bus works correctly
-   - Need to verify data content: compare DMA vs PIO firmware upload bytes
-   - Test with DMA disabled (PIO-only) to confirm PIO still works
-   - Check for cache coherency issues (`dma_map_sg` behavior on Scorpion/ARMv7)
-   - Compare ADM DMA memory reads with CPU memory reads for same buffer
-   - Investigate if scatter-gather page boundaries cause data corruption
+1. **Fix user-triggered scan** - Current priority
+   - Try forcing `WMI_START_SCAN_CMDID` (legacy path) instead of `WMI_BEGIN_SCAN_CMDID`
+   - The P2P-enhanced BEGIN_SCAN may not be supported by AR6003 fw 3.2.0.144
+   - Add debug prints to trace channel list and scan parameters being sent
+   - Compare WMI command parameters between autonomous and triggered scan
+   - Check if scan complete event (WMI event id 4106) ever arrives
 
-2. **Alternative DMA approaches to try**
-   - Disable DMA for writes only (keep DMA for reads) using a variant flag
-   - Use single-descriptor DMA instead of scatter-gather
-   - Add explicit cache flush before DMA submit
-   - Try `dma_alloc_coherent` bounce buffer for WiFi SDIO writes
+2. **Fix CMDTIMEOUT and credit starvation**
+   - Occasional CMD53 timeouts cause EP1 credit loss
+   - After timeout: qdepth accumulates, credits=0, all WMI operations fail
+   - May need credit recovery mechanism or SDIO bus reset on timeout
+   - Investigate if deferred DMA write timing is contributing
 
-3. **Performance optimization** (after WiFi works)
+3. **DMA firmware upload investigation** (deferred)
+   - PIO workaround is stable; DMA upload corrupts firmware data
+   - Root cause likely cache coherency or ADM DMA data path issue
+   - Low priority since PIO works reliably
+
+4. **Performance optimization** (after WiFi scan works)
    - Tune clock frequency (currently limited to 24MHz)
    - Remove debug prints and rate-limit remaining ones
    - Clean up WIP commits into proper patch series
