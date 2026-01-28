@@ -207,6 +207,14 @@ static const struct mmc_fixup __maybe_unused sdio_card_init_methods[] = {
 			      MMC_QUIRK_LENIENT_FN0 |
 			      MMC_QUIRK_BLKSZ_FOR_BYTE_MODE),
 
+	/*
+	 * Note: Do NOT add MMC_QUIRK_BLKSZ_FOR_BYTE_MODE for atheros,ath6kl.
+	 * The AR6003 BMI firmware upload uses 256-byte CMD53 writes. Forcing
+	 * block mode (2x128) instead of byte mode (1x256) causes the AR6003
+	 * to crash after receiving ~33KB of firmware data. The legacy msm_sdcc
+	 * driver used byte mode successfully.
+	 */
+
 	END_FIXUP
 };
 

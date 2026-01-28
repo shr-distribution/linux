@@ -1359,7 +1359,20 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	ar->hif_type = ATH6KL_HIF_TYPE_SDIO;
 	ar->hif_priv = ar_sdio;
 	ar->hif_ops = &ath6kl_sdio_ops;
-	ar->bmi.max_data_size = 256;
+	/*
+	 * Limit BMI data size to 32 bytes so that all CMD53 transfers
+	 * during firmware upload stay under the Qualcomm SDCC FIFO
+	 * threshold (64 bytes) and use PIO instead of DMA.
+	 *
+	 * With BMI_WRITE_MEMORY (12-byte header): 12 + 32 = 44 bytes
+	 * With BMI_LZ_DATA (8-byte header): 8 + 32 = 40 bytes
+	 * Both are <= 64, so the mmci driver uses PIO.
+	 *
+	 * The ADM DMA path on msm8x60 causes non-deterministic failures
+	 * where the AR6003 stops responding after ~100-134 DMA writes
+	 * during BMI firmware upload.
+	 */
+	ar->bmi.max_data_size = 32;
 
 	ath6kl_sdio_set_mbox_info(ar);
 

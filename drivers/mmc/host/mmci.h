@@ -469,6 +469,7 @@ struct mmci_host {
 
 	s32			next_cookie;
 	struct delayed_work	ux500_busy_timeout_work;
+	struct delayed_work	qcom_dma_timeout_work;
 };
 
 #define dma_inprogress(host)	((host)->dma_in_progress)

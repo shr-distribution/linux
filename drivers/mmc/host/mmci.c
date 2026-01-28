@@ -1614,6 +1614,7 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 				"DATAEND#%u status=0x%08x err=%d bytes=%u\n",
 				nr, status, data->error,
 				data->blksz * data->blocks);
+			cancel_delayed_work(&host->qcom_dma_timeout_work);
 		}
 
 		mmci_dma_finalize(host, data);
@@ -1672,6 +1673,11 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 
 	if (status & MCI_CMDTIMEOUT) {
 		cmd->error = -ETIMEDOUT;
+		if (host->variant->qcom_datactrl_delay)
+			dev_err(mmc_dev(host->mmc),
+				"CMDTIMEOUT: cmd%d arg=0x%08x status=0x%08x data=%s\n",
+				cmd->opcode, cmd->arg, status,
+				host->data ? "yes" : "no");
 	} else if (status & MCI_CMDCRCFAIL && cmd->flags & MMC_RSP_CRC) {
 		cmd->error = -EILSEQ;
 	} else if (host->variant->busy_timeout && busy_resp &&
@@ -1734,6 +1740,9 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 				readl(host->base + MMCISTATUS),
 				cmd->resp[0]);
 			host->ops->dma_issue_pending(host);
+			schedule_delayed_work(
+				&host->qcom_dma_timeout_work,
+				msecs_to_jiffies(3000));
 		}
 	}
 }
@@ -1782,6 +1791,58 @@ static void ux500_busy_timeout_work(struct work_struct *work)
 
 		mmci_cmd_irq(host, host->cmd, status);
 	}
+
+	spin_unlock_irqrestore(&host->lock, flags);
+}
+
+/*
+ * Qualcomm SDCC DMA data timeout worker.
+ *
+ * On Qualcomm SDCC with ADM DMA using deferred DMA issue, the hardware
+ * occasionally fails to generate DATAEND or DATATIMEOUT after a DMA write
+ * transfer completes. The ADM DMA engine reports success but the SDCC
+ * Data Path State Machine (DPSM) gets stuck, causing the request to hang
+ * indefinitely in mmc_wait_for_req_done().
+ *
+ * This watchdog detects the hang by firing a few seconds after deferred
+ * DMA is issued. If the data transfer is still pending, it dumps the
+ * SDCC register state for debugging and force-terminates the transfer
+ * with -ETIMEDOUT so the SDIO layer can retry.
+ */
+static void qcom_dma_data_timeout_work(struct work_struct *work)
+{
+	struct mmci_host *host = container_of(work, struct mmci_host,
+					qcom_dma_timeout_work.work);
+	unsigned long flags;
+	u32 status;
+
+	spin_lock_irqsave(&host->lock, flags);
+
+	if (!host->data) {
+		/* Transfer already completed normally */
+		spin_unlock_irqrestore(&host->lock, flags);
+		return;
+	}
+
+	status = readl(host->base + MMCISTATUS);
+	dev_err(mmc_dev(host->mmc),
+		"DMA data timeout! status=0x%08x datactrl=0x%08x "
+		"datalength=0x%08x mask0=0x%08x\n",
+		status,
+		readl(host->base + MMCIDATACTRL),
+		readl(host->base + MMCIDATALENGTH),
+		readl(host->base + MMCIMASK0));
+
+	/* Terminate the DMA transfer */
+	mmci_dma_error(host);
+
+	host->data->error = -ETIMEDOUT;
+	host->data->bytes_xfered = 0;
+
+	mmci_stop_data(host);
+
+	if (host->mrq)
+		mmci_request_end(host, host->mrq);
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
@@ -2736,6 +2797,10 @@ static int mmci_probe(struct amba_device *dev,
 		INIT_DELAYED_WORK(&host->ux500_busy_timeout_work,
 				  ux500_busy_timeout_work);
 
+	if (host->variant->qcom_dml)
+		INIT_DELAYED_WORK(&host->qcom_dma_timeout_work,
+				  qcom_dma_data_timeout_work);
+
 	writel(MCI_IRQENABLE | variant->start_err, host->base + MMCIMASK0);
 
 	amba_set_drvdata(dev, mmc);
@@ -2779,6 +2844,9 @@ static void mmci_remove(struct amba_device *dev)
 		pm_runtime_get_sync(&dev->dev);
 
 		mmc_remove_host(mmc);
+
+		if (variant->qcom_dml)
+			cancel_delayed_work_sync(&host->qcom_dma_timeout_work);
 
 		writel(0, host->base + MMCIMASK0);
 
