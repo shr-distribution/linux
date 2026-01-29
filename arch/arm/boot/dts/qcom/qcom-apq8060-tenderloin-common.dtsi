@@ -2885,20 +2885,26 @@
 	};
 };
 
-/* Enable GPU IOMMU for memory protection */
-&gpu_iommu {
-	status = "okay";
-};
-
 /*
- * MDP IOMMUs disabled due to msm_iommu driver issues with multiple
- * IOMMU instances referencing the same device. See comment in MDP node.
+ * IOMMU nodes left disabled for safe boot. The MSM IOMMU driver
+ * (CONFIG_MSM_IOMMU) is compiled in but no IOMMU hardware is activated.
+ *
+ * GPU: Uses its own internal MMU (a2xx_gpummu) independent of system IOMMU.
+ * MDP: Operates without IOMMU via graceful fallback in msm_kms.c.
+ *
+ * Enabling gpu_iommu previously caused initramfs boot failures, likely
+ * due to of_iommu_configure() probe deferral interactions. The GPU's
+ * iommus DT property references gpu_iommu; if that node is enabled
+ * but the IOMMU driver hasn't probed yet (clock dependencies), devices
+ * may be indefinitely deferred.
+ *
+ * To enable IOMMU in the future:
+ * 1. Ensure CONFIG_MSM_IOMMU=y in defconfig
+ * 2. Enable gpu_iommu here (status = "okay")
+ * 3. Verify MMCC clocks (SMMU_AHB_CLK, GFX3D_CLK) probe before IOMMU
+ * 4. Test that initramfs USB gadget and telnet still work
+ *
+ * MDP IOMMUs have a separate issue: msm_iommu driver problems with
+ * multiple IOMMU instances referencing the same device.
  */
-/* &mdp_port0_iommu {
-	status = "okay";
-};
-
-&mdp_port1_iommu {
-	status = "okay";
-}; */
 
