@@ -566,6 +566,14 @@ use_default_name:
 		return NULL;
 	}
 
+	/*
+	 * Initialize rfkill soft-block state to unblocked and mark as
+	 * persistent.  Without this, rfkill_register() schedules async
+	 * sync_work that races with userspace, causing non-deterministic
+	 * soft-block state on boot.
+	 */
+	rfkill_init_sw_state(rdev->wiphy.rfkill, false);
+
 	INIT_WORK(&rdev->rfkill_block, cfg80211_rfkill_block_work);
 	INIT_WORK(&rdev->conn_work, cfg80211_conn_work);
 	INIT_WORK(&rdev->event_work, cfg80211_event_work);

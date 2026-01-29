@@ -1,6 +1,6 @@
 # HP TouchPad WiFi (AR6003) Bringup Summary
 
-**Last Updated:** 2026-01-28
+**Last Updated:** 2026-01-29
 
 ## Hardware
 - Atheros AR6003 Rev2 WiFi chip
@@ -418,6 +418,53 @@ all subsequent WMI commands to queue indefinitely.
 (soft=1). Unblocking via `echo 0 > /sys/class/rfkill/rfkill0/soft` is
 needed before `ip link set wlan0 up` works. Not consistent between boots.
 
+### 16. Firmware Upload Performance - PIO Threshold Optimization (2026-01-29) - FIXED
+
+**Problem:** Firmware upload took ~78 seconds with `max_data_size=52` (64-byte PIO).
+
+**Investigation:** The MMCI DMA/PIO decision is based on `variant->fifosize` (64
+bytes for Qualcomm SDCC). To allow larger PIO transfers without affecting the
+FIFO mechanics, added a separate `dma_threshold` field to `variant_data`.
+
+**PIO size testing results:**
+
+| Transfer Size | PIO Fills | Upload Time | Result |
+|--------------|-----------|-------------|--------|
+| 64 bytes (52+12) | 1x FIFO | ~78s | **OK** |
+| 128 bytes (116+12) | 2x FIFO | ~34s | **OK** |
+| 192 bytes (180+12) | 3x FIFO | - | **FAIL** |
+| 256 bytes (244+12) | 4x FIFO | - | **FAIL** |
+
+PIO transfers > 128 bytes fail because the Qualcomm SDCC DPSM times out
+before the interrupt-driven PIO handler can refill the 64-byte FIFO 3+ times
+with `datactrl_first=true`.
+
+**Fix (mmci.h, mmci.c, sdio.c):**
+1. Added `dma_threshold` to `variant_data` struct (defaults to fifosize)
+2. Set `dma_threshold=256` for `variant_qcom` — transfers ≤256 bytes use PIO
+3. Raised `max_data_size` from 52 to 116 bytes (128-byte total transfers)
+
+**Result:** Firmware upload improved from **78s to 34s** (2.3x speedup).
+
+### 17. rfkill Soft-Block Race Condition (2026-01-29) - FIXED
+
+**Problem:** WiFi interface randomly soft-blocked between boots. `rfkill0/soft`
+showed `1` on some boots, requiring manual unblocking before `ip link set wlan0 up`.
+
+**Root Cause:** cfg80211 allocates an rfkill device but never calls
+`rfkill_init_sw_state()` before `rfkill_register()`. Without explicit init,
+`rfkill_register()` schedules async `sync_work` that races with userspace.
+The initial state is non-deterministic depending on when `sync_work` runs.
+
+**Fix (net/wireless/core.c):**
+```c
+rfkill_init_sw_state(rdev->wiphy.rfkill, false);
+```
+Added before `rfkill_register()` — makes initial state synchronous and
+deterministic (always unblocked).
+
+**Result:** rfkill `soft=0` on every boot tested.
+
 ## Current DT Configuration
 
 ```dts
@@ -468,15 +515,18 @@ needed before `ip link set wlan0 up` works. Not consistent between boots.
 - `drivers/mmc/host/mmci_qcom_dml.c` - ADM submit/issue split, `qcom_dma_issue_pending()`
 - `drivers/dma/qcom/qcom_adm.c` - Debug output, completion tracking
 - `drivers/net/wireless/ath/ath6kl/init.c` - MAX_PERF_POWER mode, non-interruptible WMI wait
-- `drivers/net/wireless/ath/ath6kl/sdio.c` - BMI max_data_size=52 for PIO
+- `drivers/net/wireless/ath/ath6kl/sdio.c` - BMI max_data_size=116 for PIO (128-byte transfers)
 - `drivers/net/wireless/ath/ath6kl/cfg80211.c` - Force MAX_PERF_POWER for SDIO on set_power_mgmt
-- `scripts/test-wifi.sh` - WiFi test script with module deployment + regulatory.db
+- `drivers/net/wireless/ath/ath6kl/wmi.c` - Force START_SCAN for SDIO devices
+- `net/wireless/core.c` - Fix rfkill init state race condition
+- `scripts/test-wifi.sh` - WiFi test script with module deployment, wifi_tool + regulatory.db
 - Firmware: linux-firmware fw-2.bin/fw-3.bin + webOS bdata.SD32.bin
 
 ## Key Commits
 
 | Commit | Description |
 |--------|-------------|
+| `9cc04a36ff1a` | WIP: ath6kl: Fix WiFi scan on AR6003 SDIO (power mgmt + scan command) |
 | `37d55b9678c0` | WIP: ath6kl/cfg80211: Fix WiFi scan on HP TouchPad (msm8x60) |
 | `5f891c33491d` | WIP: mmc: mmci: Add deferred DMA issue for Qualcomm ADM writes |
 | `72442e7a8f02` | WIP: mmc: mmci: Fix Qualcomm SDCC block size encoding and timing |
@@ -490,36 +540,34 @@ needed before `ip link set wlan0 up` works. Not consistent between boots.
 | SDIO bus (PIO) | **WORKING** | All transfers succeed |
 | SDIO bus (DMA reads) | **WORKING** | No errors |
 | SDIO bus (DMA writes) | **DEFERRED** | Deferred issue workaround; occasional CMDTIMEOUT |
-| Firmware upload | **WORKING** | ~78s via PIO (max_data_size=52) |
+| Firmware upload | **WORKING** | ~34s via PIO (max_data_size=116, was 78s at 52) |
 | WMI initialization | **WORKING** | Firmware reports ar6003 hw 2.1.1 fw 3.2.0.144 api 5 |
 | Radio/RF | **WORKING** | Autonomous scan finds 12+ APs on 2.4GHz |
 | User-triggered scan | **WORKING** | Forced START_SCAN; finds 10+ APs on 2.4+5GHz |
 | Power management | **FIXED** | MAX_PERF_POWER forced for SDIO |
+| rfkill init state | **FIXED** | Always unblocked on boot (was random) |
 
 ## Next Steps
 
-1. **Fix user-triggered scan** - Current priority
-   - Try forcing `WMI_START_SCAN_CMDID` (legacy path) instead of `WMI_BEGIN_SCAN_CMDID`
-   - The P2P-enhanced BEGIN_SCAN may not be supported by AR6003 fw 3.2.0.144
-   - Add debug prints to trace channel list and scan parameters being sent
-   - Compare WMI command parameters between autonomous and triggered scan
-   - Check if scan complete event (WMI event id 4106) ever arrives
-
-2. **Fix CMDTIMEOUT and credit starvation**
+1. **Fix CMDTIMEOUT and credit starvation**
    - Occasional CMD53 timeouts cause EP1 credit loss
    - After timeout: qdepth accumulates, credits=0, all WMI operations fail
-   - May need credit recovery mechanism or SDIO bus reset on timeout
-   - Investigate if deferred DMA write timing is contributing
+   - No credit recovery exists in the SDIO error path; `htc_tx_comp_update()` can
+     reclaim credits on send failure but SDIO timeouts don't trigger it
+   - Possible fix: detect `-ETIMEDOUT` in `ath6kl_sdio_scat_rw()` and force
+     credit reclaim for failed transfers
 
-3. **DMA firmware upload investigation** (deferred)
+2. **DMA firmware upload investigation** (deferred)
    - PIO workaround is stable; DMA upload corrupts firmware data
-   - Root cause likely cache coherency or ADM DMA data path issue
-   - Low priority since PIO works reliably
+   - Multiple potential causes: ADM BOX descriptor misalignment for non-burst-aligned
+     byte-mode SDIO transfers, missing `dma_sync_sg_for_cpu()` in finalization,
+     bounce buffer allocated with `kzalloc()` instead of `dma_alloc_coherent()`
+   - Low priority since PIO at 128 bytes works reliably (~34s upload)
 
-4. **Performance optimization** (after WiFi scan works)
-   - Tune clock frequency (currently limited to 24MHz)
+3. **Clean up and upstream preparation**
    - Remove debug prints and rate-limit remaining ones
    - Clean up WIP commits into proper patch series
+   - Consider upstream submission for MMCI Qualcomm fixes
 
 ---
 

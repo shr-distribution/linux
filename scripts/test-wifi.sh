@@ -68,8 +68,8 @@ test_wifi() {
     check_device
     ensure_http_server
 
-    info "Step 1: Uploading ath6kl modules..."
-    run_on_device "cd /tmp && rm -f ath6kl*.ko && wget -q http://${HOST_IP}:${HTTP_PORT}/drivers/net/wireless/ath/ath6kl/ath6kl_core.ko && wget -q http://${HOST_IP}:${HTTP_PORT}/drivers/net/wireless/ath/ath6kl/ath6kl_sdio.ko && ls -la ath6kl*.ko" 10
+    info "Step 1: Uploading ath6kl modules and wifi_tool..."
+    run_on_device "cd /tmp && rm -f ath6kl*.ko wifi_tool && wget -q http://${HOST_IP}:${HTTP_PORT}/drivers/net/wireless/ath/ath6kl/ath6kl_core.ko && wget -q http://${HOST_IP}:${HTTP_PORT}/drivers/net/wireless/ath/ath6kl/ath6kl_sdio.ko && wget -q http://${HOST_IP}:${HTTP_PORT}/wifi_tool && chmod +x wifi_tool && ls -la ath6kl*.ko wifi_tool" 10
 
     info "Step 2: Creating firmware symlinks and deploying regulatory.db..."
     run_on_device "cd /lib/firmware/ath6k/AR6003/hw2.1.1 && ln -sf fw-3.bin fw-4.bin && ln -sf fw-3.bin fw-5.bin && ls -la fw-*.bin" 5
@@ -100,11 +100,17 @@ case "${1:-test}" in
     test)
         test_wifi
         ;;
+    scan)
+        check_device
+        info "Bringing up wlan0 and scanning..."
+        run_on_device "ip link set wlan0 up 2>&1 && echo 'wlan0 is up'" 3
+        run_on_device "/tmp/wifi_tool wlan0 scan" 15
+        ;;
     upload)
         check_device
         ensure_http_server
-        info "Uploading modules..."
-        run_on_device "cd /tmp && rm -f ath6kl*.ko && wget -q http://${HOST_IP}:${HTTP_PORT}/drivers/net/wireless/ath/ath6kl/ath6kl_core.ko && wget -q http://${HOST_IP}:${HTTP_PORT}/drivers/net/wireless/ath/ath6kl/ath6kl_sdio.ko && ls -la ath6kl*.ko" 10
+        info "Uploading modules and wifi_tool..."
+        run_on_device "cd /tmp && rm -f ath6kl*.ko wifi_tool && wget -q http://${HOST_IP}:${HTTP_PORT}/drivers/net/wireless/ath/ath6kl/ath6kl_core.ko && wget -q http://${HOST_IP}:${HTTP_PORT}/drivers/net/wireless/ath/ath6kl/ath6kl_sdio.ko && wget -q http://${HOST_IP}:${HTTP_PORT}/wifi_tool && chmod +x wifi_tool && ls -la ath6kl*.ko wifi_tool" 10
         ;;
     load)
         check_device
@@ -118,9 +124,10 @@ case "${1:-test}" in
         run_on_device "dmesg | grep -i 'ath6kl\|mmc1\|sdio\|mmci' | tail -40" 5
         ;;
     *)
-        echo "Usage: $0 [test|upload|load|dmesg]"
+        echo "Usage: $0 [test|scan|upload|load|dmesg]"
         echo "  test   - Full test (upload, symlinks, load, check)"
-        echo "  upload - Just upload modules"
+        echo "  scan   - Bring up wlan0 and scan for APs"
+        echo "  upload - Just upload modules and wifi_tool"
         echo "  load   - Just load modules (assumes already uploaded)"
         echo "  dmesg  - Show relevant dmesg"
         ;;

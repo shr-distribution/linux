@@ -1360,20 +1360,22 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	ar->hif_priv = ar_sdio;
 	ar->hif_ops = &ath6kl_sdio_ops;
 	/*
-	 * Limit BMI data size to 52 bytes so that all CMD53 transfers
-	 * during firmware upload stay at or under the Qualcomm SDCC FIFO
-	 * threshold (64 bytes) and use PIO instead of DMA.
+	 * Limit BMI data size to 116 bytes so that all CMD53 transfers
+	 * during firmware upload stay at or under 128 bytes and use PIO
+	 * instead of DMA (Qualcomm SDCC dma_threshold is set to 256).
 	 *
-	 * With BMI_WRITE_MEMORY (12-byte header): 12 + 52 = 64 bytes
-	 * With BMI_LZ_DATA (8-byte header): 8 + 52 = 60 bytes
-	 * Both are <= 64 (mmci variant_qcom fifosize), so PIO is used.
+	 * With BMI_WRITE_MEMORY (12-byte header): 12 + 116 = 128 bytes
+	 * With BMI_LZ_DATA (8-byte header): 8 + 116 = 124 bytes
+	 * Both are <= 256 (variant_qcom dma_threshold), so PIO is used.
 	 *
-	 * ADM DMA during the BMI phase causes non-deterministic failures
-	 * on msm8x60 regardless of transfer size (tested at 128 and 256
-	 * bytes). Post-BMI HTC/WMI DMA at 128 bytes works fine; the
-	 * issue is specific to the BMI credit-polling transfer pattern.
+	 * Tested PIO sizes: 64 bytes OK, 128 bytes OK, 192+ bytes FAIL.
+	 * PIO transfers > 128 bytes timeout on Qualcomm SDCC because the
+	 * 64-byte FIFO requires 3+ interrupt-driven refills, and the
+	 * DPSM times out before PIO can complete.
+	 *
+	 * At 116 bytes, firmware upload takes ~34s (vs ~78s at 52 bytes).
 	 */
-	ar->bmi.max_data_size = 52;
+	ar->bmi.max_data_size = 116;
 
 	ath6kl_sdio_set_mbox_info(ar);
 

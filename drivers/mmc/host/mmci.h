@@ -337,6 +337,11 @@ enum mmci_busy_state {
  * @supports_sdio_irq: allow SD I/O card to interrupt the host
  * @stm32_idmabsize_mask: stm32 sdmmc idma buffer size.
  * @dma_flow_controller: use peripheral as flow controller for DMA.
+ * @dma_threshold: minimum transfer size to attempt DMA. If set, transfers
+ *		at or below this size use PIO instead of DMA, overriding
+ *		the default fifosize-based threshold. Useful when DMA has
+ *		issues with certain transfer patterns (e.g. SDIO firmware
+ *		upload) but works fine for larger data transfers.
  */
 struct variant_data {
 	unsigned int		clkreg;
@@ -387,6 +392,7 @@ struct variant_data {
 	u32			stm32_idmabsize_mask;
 	u32			stm32_idmabsize_align;
 	bool			dma_flow_controller;
+	unsigned int		dma_threshold;
 	void (*init)(struct mmci_host *host);
 };
 

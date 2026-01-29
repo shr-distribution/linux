@@ -371,6 +371,15 @@ static struct variant_data variant_qcom = {
 	.qcom_datactrl_delay	= true,
 	.qcom_data_timeout_2x	= true,
 	.dma_flow_controller	= true,
+	/*
+	 * Force PIO for transfers <= 256 bytes.  ADM DMA on msm8x60
+	 * corrupts data during SDIO firmware upload (BMI phase) due to
+	 * the tight credit-polling transfer pattern.  PIO works reliably
+	 * up to 128 bytes (2x FIFO); 192+ byte PIO fails because the
+	 * DPSM times out waiting for 3+ interrupt-driven FIFO refills.
+	 * Post-BMI WiFi data frames (1500+ bytes) use DMA correctly.
+	 */
+	.dma_threshold		= 256,
 	.mmcimask1		= true,
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
 	/*
@@ -1134,8 +1143,14 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	if (!chan)
 		return -EINVAL;
 
-	/* If less than or equal to the fifo size, don't bother with DMA */
-	if (data->blksz * data->blocks <= variant->fifosize)
+	/*
+	 * If less than or equal to the DMA threshold, use PIO instead.
+	 * The threshold defaults to fifosize but can be overridden per
+	 * variant to force PIO for larger transfers when DMA is unreliable
+	 * for certain transfer patterns (e.g. SDIO firmware upload).
+	 */
+	if (data->blksz * data->blocks <=
+	    (variant->dma_threshold ?: variant->fifosize))
 		return -EINVAL;
 
 	/*
