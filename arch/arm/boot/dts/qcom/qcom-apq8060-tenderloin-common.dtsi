@@ -2908,3 +2908,49 @@
  * multiple IOMMU instances referencing the same device.
  */
 
+/*
+ * Enable all IOMMUs that have no device references in this DT.
+ * The driver probes (maps registers, gets clocks, requests IRQ) but
+ * never triggers the deferred hardware reset (only happens on first
+ * device attach). This is safe and exercises the IOMMU infrastructure.
+ *
+ * NOT enabled here (need careful testing):
+ * - gpu_iommu: Referenced by adreno GPU, previously caused boot hangs
+ * - mdp_port0_iommu / mdp_port1_iommu: Referenced by MDP display
+ */
+&jpegd_iommu {
+	status = "okay";
+};
+
+&vpe_iommu {
+	status = "okay";
+};
+
+&rot_iommu {
+	status = "okay";
+};
+
+&ijpeg_iommu {
+	status = "okay";
+};
+
+&vfe_iommu {
+	status = "okay";
+};
+
+&vcodec_a_iommu {
+	status = "okay";
+};
+
+&vcodec_b_iommu {
+	status = "okay";
+};
+
+&gfx2d0_iommu {
+	status = "okay";
+};
+
+&gfx2d1_iommu {
+	status = "okay";
+};
+
