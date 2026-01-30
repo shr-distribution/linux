@@ -204,6 +204,9 @@ NC='\033[0m'
 # Test mode
 MODE="${1:-quick}"
 
+# Sub-second timestamp using /proc/uptime (BusyBox date lacks %N)
+ts() { awk '{printf "%s", $1}' /proc/uptime; }
+
 log() { echo "${GREEN}[*]${NC} $1"; log_to_file "[*] $1"; }
 warn() { echo "${YELLOW}[!]${NC} $1"; log_to_file "[!] $1"; }
 err() { echo "${RED}[X]${NC} $1"; log_to_file "[X] $1"; }
@@ -212,43 +215,43 @@ info() { echo "${BLUE}[i]${NC} $1"; log_to_file "[i] $1"; }
 # Write to persistent log file
 log_to_file() {
     if [ -n "$TEST_LOG" ] && [ -d "$LOG_DIR" ]; then
-        echo "[$(date '+%H:%M:%S')] $1" >> "$TEST_LOG" 2>/dev/null || true
+        echo "[$(date '+%H:%M:%S') uptime=$(ts)] $1" >> "$TEST_LOG" 2>/dev/null || true
     fi
 }
 
-# Save dmesg to persistent storage with a label
+# Insert a labeled marker into the dmesg log
+# With /dev/kmsg streaming, full ring buffer dumps are unnecessary —
+# markers let us correlate test phases with the continuous log.
 save_dmesg() {
     local label="$1"
     if [ -d "$LOG_DIR" ]; then
-        echo "" >> "$DMESG_LOG"
-        echo "========== DMESG $label [$(date '+%Y-%m-%d %H:%M:%S')] ==========" >> "$DMESG_LOG"
-        dmesg >> "$DMESG_LOG" 2>/dev/null || true
-        sync
+        echo "========== MARKER: $label [$(date '+%Y-%m-%d %H:%M:%S') uptime=$(ts)] ==========" >> "$DMESG_LOG"
     fi
 }
 
-# Background dmesg logger - uses dmesg -w for real-time capture
+# Background dmesg logger — streams kernel messages in real-time.
+# Prefers /dev/kmsg (zero-latency blocking read, no BusyBox dependency),
+# falls back to dmesg -w, then 1s polling as last resort.
 start_dmesg_logger() {
-    local interval="${1:-1}"
-    # Try dmesg -w first (real-time follow), fall back to polling
-    if dmesg -w --help >/dev/null 2>&1; then
+    if [ -r /dev/kmsg ]; then
+        log "Using /dev/kmsg for real-time kernel log capture"
+        (while IFS= read -r line; do
+            printf '%s\n' "$line"
+        done < /dev/kmsg) >> "$DMESG_LOG" 2>/dev/null &
+        LOGGER_PID=$!
+    elif dmesg -w --help >/dev/null 2>&1; then
         log "Using dmesg -w for real-time kernel log capture"
         dmesg -w >> "$DMESG_LOG" 2>/dev/null &
         LOGGER_PID=$!
     else
-        log "Using polling mode for kernel log capture (every ${interval}s)"
+        log "Using polling mode for kernel log capture (every 1s)"
         (
-            count=0
             last_lines=0
             while true; do
-                sleep $interval
-                count=$((count + 1))
-                # Get new dmesg lines since last check
+                sleep 1
                 current_lines=$(dmesg | wc -l)
                 if [ "$current_lines" -gt "$last_lines" ]; then
-                    echo "=== CHECKPOINT $count [$(date '+%H:%M:%S.%N' | cut -c1-12)] ===" >> "$DMESG_LOG"
                     dmesg | tail -n $((current_lines - last_lines)) >> "$DMESG_LOG" 2>/dev/null || true
-                    sync
                     last_lines=$current_lines
                 fi
             done
@@ -635,9 +638,9 @@ init_logging() {
         TEST_LOG="$LOG_DIR/${LOG_PREFIX}-${TIMESTAMP}.log"
     fi
 
-    # Try to make boot partition writable if needed
+    # Try to make boot partition writable with sync for crash safety
     if [ "$LOG_DIR" = "/mnt/boot" ]; then
-        mount -o remount,rw /mnt/boot 2>/dev/null || true
+        mount -o remount,rw,sync /mnt/boot 2>/dev/null || true
     fi
 
     # Initialize log files
@@ -675,8 +678,8 @@ main() {
     # Save initial dmesg state
     save_dmesg "PRE-TEST (initial state)"
 
-    # Start background dmesg logger (saves every second)
-    start_dmesg_logger 1
+    # Start background dmesg logger (real-time via /dev/kmsg)
+    start_dmesg_logger
 
     # Verify DRM is available
     if ! verify_drm; then
@@ -916,13 +919,15 @@ DMESG_LOG="$LOG_DIR/debug-dmesg-$TS.log"
 TRACE_LOG="$LOG_DIR/debug-trace-$TS.log"
 MONITOR_LOG="$LOG_DIR/debug-monitor-$TS.log"
 
-# Timestamp function (BusyBox compatible - no %N support)
+# Sub-second timestamp using /proc/uptime (BusyBox date lacks %N)
 ts() {
-    date '+%H:%M:%S'
+    local up
+    up=$(awk '{printf "%s", $1}' /proc/uptime)
+    printf '%s/up=%s' "$(date '+%H:%M:%S')" "$up"
 }
 
-# Make boot partition writable early
-mount -o remount,rw /mnt/boot 2>/dev/null || true
+# Make boot partition writable with sync for crash safety
+mount -o remount,rw,sync /mnt/boot 2>/dev/null || true
 
 echo "=== Debug kmscube script ===" | tee "$TRACE_LOG"
 echo "Started at: $(date)" | tee -a "$TRACE_LOG"
@@ -939,19 +944,27 @@ sync
 echo "[$(ts)] Saved initial dmesg" | tee -a "$TRACE_LOG"
 sync
 
-# Start continuous dmesg logging (every 0.5s)
-echo "[$(ts)] Starting continuous dmesg capture..." | tee -a "$TRACE_LOG"
+# Start real-time dmesg logging via /dev/kmsg (zero latency, no ring buffer clearing)
+echo "[$(ts)] Starting real-time dmesg capture..." | tee -a "$TRACE_LOG"
 sync
-(
-    while true; do
-        dmesg -c 2>/dev/null | while IFS= read -r line; do
-            echo "[$(ts)] $line" >> "$DMESG_LOG"
+if [ -r /dev/kmsg ]; then
+    (while IFS= read -r line; do
+        printf '%s\n' "$line"
+    done < /dev/kmsg) >> "$DMESG_LOG" 2>/dev/null &
+    DMESG_PID=$!
+    echo "[$(ts)] Using /dev/kmsg (real-time)" | tee -a "$TRACE_LOG"
+else
+    (
+        while true; do
+            dmesg -c 2>/dev/null | while IFS= read -r line; do
+                echo "[$(ts)] $line" >> "$DMESG_LOG"
+            done
+            sleep 1
         done
-        sync
-        sleep 1
-    done
-) &
-DMESG_PID=$!
+    ) &
+    DMESG_PID=$!
+    echo "[$(ts)] Using dmesg -c polling (fallback)" | tee -a "$TRACE_LOG"
+fi
 echo "[$(ts)] dmesg logger PID: $DMESG_PID" | tee -a "$TRACE_LOG"
 sync
 
@@ -1072,7 +1085,7 @@ capture_state() {
 
     # Interrupts related to display/USB
     echo "-- Relevant IRQs --"
-    grep -iE 'mdp|lcdc|usb|ci_hdrc|dwc|msm_otg' /proc/interrupts 2>/dev/null || echo "  (none found)"
+    grep -iE 'mdp|lcdc|usb|ci_hdrc|dwc|msm_otg|iommu' /proc/interrupts 2>/dev/null || echo "  (none found)"
 }
 
 # Start continuous monitoring (captures state every 2 seconds)
@@ -1085,7 +1098,7 @@ echo ">>> CONTINUOUS MONITOR LOG <<<" > "$MONITOR_LOG"
         capture_state "SAMPLE $count" >> "$MONITOR_LOG" 2>&1
         sync
         count=$((count + 1))
-        sleep 2
+        sleep 1
     done
 ) &
 MONITOR_PID=$!
@@ -1227,12 +1240,13 @@ export LIBGL_DEBUG=verbose
 # export LIBGL_ALWAYS_SOFTWARE=1    # Force software rendering
 
 LOG_DIR="/mnt/boot"
-mount -o remount,rw /mnt/boot 2>/dev/null || true
+DMESG_LOG="$LOG_DIR/diagnose-dmesg-$(date +%Y%m%d-%H%M%S).log"
+KMSG_PID=""
+mount -o remount,rw,sync /mnt/boot 2>/dev/null || true
 
 log() {
     echo "[$(date '+%H:%M:%S')] $*"
     echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_DIR/diagnose.log"
-    sync
 }
 
 test_passed() {
@@ -1244,7 +1258,31 @@ test_failed() {
     log "TEST FAILED: $1"
 }
 
+# Start background /dev/kmsg logger before any test
+start_kmsg_logger() {
+    if [ -r /dev/kmsg ]; then
+        (while IFS= read -r line; do
+            printf '%s\n' "$line"
+        done < /dev/kmsg) >> "$DMESG_LOG" 2>/dev/null &
+        KMSG_PID=$!
+        log "Started /dev/kmsg logger (PID: $KMSG_PID) -> $DMESG_LOG"
+    else
+        log "Warning: /dev/kmsg not readable, no background dmesg capture"
+    fi
+}
+
+stop_kmsg_logger() {
+    if [ -n "$KMSG_PID" ]; then
+        kill $KMSG_PID 2>/dev/null || true
+        wait $KMSG_PID 2>/dev/null || true
+        KMSG_PID=""
+    fi
+}
+
+trap stop_kmsg_logger EXIT INT TERM
+
 echo "" > "$LOG_DIR/diagnose.log"
+start_kmsg_logger
 log "=== DRM USB CRASH DIAGNOSTICS ==="
 log "Testing each operation separately to find the crash trigger"
 log ""
