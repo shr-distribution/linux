@@ -403,32 +403,19 @@ static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
 	unsigned long clk_flags, rate = req->rate;
 	struct clk_hw *p;
 	int index;
-	const char *name = clk_hw_get_name(hw);
-
-	pr_info("clk-rcg: %s _freq_tbl_determine_rate requested=%lu\n", name, rate);
 
 	f = qcom_find_freq(f, rate);
-	if (!f) {
-		pr_err("clk-rcg: %s qcom_find_freq failed for rate %lu\n", name, rate);
+	if (!f)
 		return -EINVAL;
-	}
-	pr_info("clk-rcg: %s found freq=%lu src=%d pre_div=%d m=%d n=%d\n",
-		 name, f->freq, f->src, f->pre_div, f->m, f->n);
 
 	index = qcom_find_src_index(hw, parent_map, f->src);
-	if (index < 0) {
-		pr_err("clk-rcg: %s qcom_find_src_index failed for src %d\n", name, f->src);
+	if (index < 0)
 		return index;
-	}
-	pr_info("clk-rcg: %s parent index=%d\n", name, index);
 
 	clk_flags = clk_hw_get_flags(hw);
 	p = clk_hw_get_parent_by_index(hw, index);
-	if (!p) {
-		pr_err("clk-rcg: %s clk_hw_get_parent_by_index(%d) returned NULL!\n", name, index);
+	if (!p)
 		return -ENOENT;
-	}
-	pr_info("clk-rcg: %s parent hw=%s\n", name, clk_hw_get_name(p));
 
 	if (clk_flags & CLK_SET_RATE_PARENT) {
 		rate = rate * f->pre_div;
@@ -444,9 +431,6 @@ static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
 	req->best_parent_hw = p;
 	req->best_parent_rate = rate;
 	req->rate = f->freq;
-
-	pr_info("clk-rcg: %s determine_rate returning rate=%lu parent_rate=%lu\n",
-		 name, req->rate, req->best_parent_rate);
 
 	return 0;
 }
@@ -496,14 +480,6 @@ static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 	struct mn *mn = &rcg->mn;
 	u32 mask = 0;
 	unsigned int reset_reg;
-	const char *name = clk_hw_get_name(&rcg->clkr.hw);
-
-	pr_info("clk-rcg: %s set_rate freq=%lu pre_div=%d m=%d n=%d\n",
-		name, f->freq, f->pre_div, f->m, f->n);
-	pr_info("clk-rcg: %s ns_reg=0x%x md_reg=0x%x enable_reg=0x%x\n",
-		name, rcg->ns_reg, rcg->md_reg, rcg->clkr.enable_reg);
-	pr_info("clk-rcg: %s mn.width=%d m_val_shift=%d n_val_shift=%d\n",
-		name, mn->width, mn->m_val_shift, mn->n_val_shift);
 
 	if (rcg->mn.reset_in_cc)
 		reset_reg = rcg->clkr.enable_reg;
@@ -512,14 +488,10 @@ static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 
 	if (rcg->mn.width) {
 		mask = BIT(mn->mnctr_reset_bit);
-		pr_info("clk-rcg: %s asserting reset at 0x%x mask=0x%x\n",
-			name, reset_reg, mask);
 		regmap_update_bits(rcg->clkr.regmap, reset_reg, mask, mask);
 
 		regmap_read(rcg->clkr.regmap, rcg->md_reg, &md);
 		md = mn_to_md(mn, f->m, f->n, md);
-		pr_info("clk-rcg: %s writing MD=0x%08x to 0x%x\n",
-			name, md, rcg->md_reg);
 		regmap_write(rcg->clkr.regmap, rcg->md_reg, md);
 
 		regmap_read(rcg->clkr.regmap, rcg->ns_reg, &ns);
@@ -527,8 +499,6 @@ static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 		if (rcg->clkr.enable_reg != rcg->ns_reg) {
 			regmap_read(rcg->clkr.regmap, rcg->clkr.enable_reg, &ctl);
 			ctl = mn_to_reg(mn, f->m, f->n, ctl);
-			pr_info("clk-rcg: %s writing CTL=0x%08x to 0x%x\n",
-				name, ctl, rcg->clkr.enable_reg);
 			regmap_write(rcg->clkr.regmap, rcg->clkr.enable_reg, ctl);
 		} else {
 			ns = mn_to_reg(mn, f->m, f->n, ns);
@@ -539,14 +509,10 @@ static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 	}
 
 	ns = pre_div_to_ns(&rcg->p, f->pre_div - 1, ns);
-	pr_info("clk-rcg: %s writing NS=0x%08x to 0x%x\n",
-		name, ns, rcg->ns_reg);
 	regmap_write(rcg->clkr.regmap, rcg->ns_reg, ns);
 
-	pr_info("clk-rcg: %s deasserting reset\n", name);
 	regmap_update_bits(rcg->clkr.regmap, reset_reg, mask, 0);
 
-	pr_info("clk-rcg: %s set_rate complete\n", name);
 	return 0;
 }
 
