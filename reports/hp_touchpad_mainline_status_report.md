@@ -1,5 +1,5 @@
 # HP TouchPad Mainline Kernel Status Report
-**Date:** 2026-01-24 (Updated)
+**Date:** 2026-01-30 (Updated)
 **Kernel Version:** Linux 6.18.0
 **Branch:** `tenderloin/6.18/upstream-patches`
 **Hardware:** HP TouchPad (Topaz WiFi)
@@ -9,67 +9,222 @@
 
 ## EXECUTIVE SUMMARY
 
-**Overall Status: EXCELLENT - DISPLAY AND GPU POWER DOMAINS WORKING**
+**Overall Status: EXCELLENT - WiFi SCANNING, GPU 3D RENDERING, FULL DISPLAY STACK**
 
-### Latest Work (2026-01-24):
+### Latest Work (2026-01-25 to 2026-01-30):
+
+**WiFi AR6003 - SCANNING WORKING**
+
+Major WiFi breakthrough: went from firmware upload timeout to fully operational WiFi scanning on both 2.4GHz and 5GHz bands. Required extensive fixes across the MMC, ath6kl, and cfg80211 subsystems:
+- Fixed MMCI Qualcomm SDCC: SDIO IRQ, data timing, deferred DMA issue, CRCI flow control
+- Fixed ath6kl: PIO-mode firmware upload, power management (MAX_PERF_POWER), scan command (START_SCAN)
+- Fixed cfg80211: rfkill init state race condition
+- WiFi scan finds 10+ APs on 2.4GHz and 5GHz bands
+- Firmware upload: ~34s via PIO (optimized from 78s)
+
+**GPU 3D Rendering - kmscube at ~24 FPS**
+
+Adreno 220 GPU now renders 3D content:
+- Root cause of initial 1.75 FPS: debug pr_info in clk-rcg.c causing ~950 printk calls per 8 frames
+- After removing debug prints: 1.75 FPS → ~24 FPS (13x improvement)
+- GPU runtime PM identified as additional bottleneck (66ms autosuspend triggers full GPU power-down between frames)
+
+**IOMMU - UPDATED CONFIGURATION**
+
+Refined IOMMU setup after on-device testing:
+- GPU IOMMU disabled (causes display corruption; Adreno 220 uses internal a2xx_gpummu)
+- 11 IOMMUs enabled with IDENTITY default domain (prevents boot hang)
+- MDP Port 0 & Port 1 IOMMUs active for display
+- IOMMU driver cleaned up for upstream submission quality
+
+**Interconnect Framework - FULL COVERAGE**
+
+Expanded interconnect bandwidth voting to match legacy webOS clock voters:
+- USB interconnect: 61 MB/s EBI bandwidth
+- MMCI/eMMC interconnect: 400 MB/s DFAB bandwidth
+- ADM DMA interconnect: 128 MB/s EBI bandwidth
+- MDP interconnect: 460 MB/s EBI + SMI bandwidth (4 paths)
+- Eliminates bimodal memory performance (fabric clocks stable)
+
+**Memory Performance - OPTIMIZED**
+
+Kernel config optimized for HP TouchPad:
+- VMSPLIT_2G: eliminated HIGHMEM overhead (2.2x bandwidth improvement)
+- HZ=100: reduced timer interrupt overhead (10x fewer than HZ=1000)
+- CMA=32MB: optimal contiguous memory allocation size
+- Achieved 1220 MB/s memory bandwidth (60% of webOS 2.6.35)
+- Scorpion NMRR optimization attempted (+22%) but reverted due to boot instability
+
+### Previous Work (2026-01-24):
 **GPU Power Domain (Footswitch) Support - COMMITTED**
 
-Added legacy footswitch support for MSM8660/APQ8060 power domains:
-- Root cause of GPU hangs: Missing power domain control for GFX3D
-- Solution: Extended GDSC driver with LEGACY_FOOTSWITCH flag
-- Added all 9 footswitch definitions to mmcc-msm8660.c
+- Extended GDSC driver with LEGACY_FOOTSWITCH for MSM8660/APQ8060
+- All 9 footswitches registered (gfx2d0, gfx2d1, gfx3d, ijpeg, mdp, rot, ved, vfe, vpe)
 - Commit: 28649d98f424
 
-**Test Results:**
-- All 9 power domains registered successfully (gfx2d0, gfx2d1, gfx3d, ijpeg, mdp, rot, ved, vfe, vpe)
-- GPU properly attached to gfx3d power domain
-- Runtime PM working (device suspends when idle)
-- No GPU recovery/RBBM errors during DRM tests
-- modetest, vbltest, proptest all pass
-
-**LCDC Vblank Fix - COMMITTED**
-
-Fixed vblank timeout issue causing device crashes during modetest:
-- Root cause: DMA_P_DONE interrupt doesn't fire reliably for LCDC interfaces
-- Solution: Use PRIMARY_VSYNC (0x80) instead of DMA_P_DONE (0x10) for LCDC on DMA_P
-- Commit: 5792da5c0992
-
-### Previous Work (2026-01-19):
-**IOMMU Support - NOW ENABLED**
-
-All 12 MSM8660 IOMMU instances added and GPU/MDP IOMMUs enabled:
-- GPU IOMMU (Adreno 220) - memory protection for 3D graphics
-- MDP IOMMUs (Port 0 & 1) - display memory virtualization, enables cursor support
-- Full stream ID configuration matching legacy webOS kernel
-
-**GPU DVFS - VOLTAGE SCALING READY**
-
-GPU power management infrastructure in place:
-- OPP (Operating Performance Points) table with 11 frequency/voltage pairs
-- GPU voltage supply connected to PM8058 S1 regulator (vdd_dig)
-- Frequencies: 27MHz (1.0V) to 320MHz (1.2V)
-
-### Previous Work (2026-01-18):
-**Display (MDP4/LVDS) - FULLY WORKING**
-
-- MDP4 display controller with LCDC output working
-- LVDS panel (1024x768) displaying framebuffer console
-- Pixel clock running at correct 96 MHz
-- Underflow recovery enabled for stability
-
-### Previous Work (2026-01-13):
-**Touchscreen CY8CTMA395 - FULLY WORKING**
-- Custom kernel serdev driver with UART communication at 4 Mbps
+### Previous Work (2026-01-18-19):
+- **Display (MDP4/LVDS)** - MDP4/LCDC, 1024x768, fbcon, interconnect BW voting
+- **IOMMU** - All 12 MSM8660 instances added to device tree
+- **GPU DVFS** - OPP table with 14 frequency/voltage pairs (27MHz-320MHz)
 
 ### Previous Achievements:
-- Q6 LPASS audio DSP and WM8958 codec working
-- USB/DRM coexistence fixed (USB survives display init)
-- Interconnect framework for bus coordination
-- WiFi SDIO detected (firmware upload still timing out)
+- Touchscreen CY8CTMA395 serdev driver (UART 4Mbps, single-touch)
+- Q6 LPASS audio DSP and WM8958 codec
+- USB/DRM coexistence
+- DSPS remoteproc driver (disabled, no firmware)
 
 ---
 
-## DISPLAY DETAILS (2026-01-19)
+## WIFI DETAILS (2026-01-25 to 2026-01-29)
+
+### Overview
+The HP TouchPad uses an Atheros AR6003 Rev2 WiFi chip connected via SDIO to SDCC4. Bringing WiFi up required fixing multiple issues in the MMCI host driver, ath6kl wireless driver, and cfg80211 subsystem.
+
+### Current Status
+| Component | Status | Notes |
+|-----------|--------|-------|
+| SDIO bus (PIO) | ✅ WORKING | All transfers succeed |
+| SDIO bus (DMA reads) | ✅ WORKING | No errors |
+| SDIO bus (DMA writes) | ⚠️ DEFERRED | Deferred issue workaround; occasional CMDTIMEOUT |
+| Firmware upload | ✅ WORKING | ~34s via PIO (128-byte transfers) |
+| WMI initialization | ✅ WORKING | ar6003 hw 2.1.1 fw 3.2.0.144 api 5 |
+| Radio/RF | ✅ WORKING | Autonomous scan finds 12+ APs on 2.4GHz |
+| User-triggered scan | ✅ WORKING | 10+ APs on 2.4GHz + 5GHz |
+| Power management | ✅ FIXED | MAX_PERF_POWER forced for SDIO |
+| rfkill init state | ✅ FIXED | Always unblocked on boot |
+
+### Scan Results
+```
+AP 1: cc:28:aa:a1:45:80  2417 MHz  -65 dBm  "HerrieVlada"
+AP 3: 3e:97:f6:01:b9:f8  2437 MHz  -55 dBm  "Herrie-Guest-Free WiFi_24G"
+AP 4: 34:97:f6:01:b9:f8  2437 MHz  -57 dBm  "Herrie_2.4GHz"
+AP 10: 3e:97:f6:01:b9:fc 5180 MHz  -59 dBm  "Herrie-Guest-Free WiFi_5G"
+```
+
+### Root Causes Found and Fixed
+
+**1. SDIO IRQ Not Working**
+- Qualcomm SDCC variant was missing `supports_sdio_irq` and SDIO IRQ bit handling
+- Without SDIO IRQ, WMI initialization failed with `-512` (wmi not ready)
+
+**2. CRCI Flow Control Missing**
+- ADM DMA hung because CRCI (Client Request Control Interface) was not passed to the ADM driver
+- `#dma-cells = <1>` silently ignored the second cell; `dma_flow_controller` flag was missing
+- Fix: `qcom,sdcc-crci` DT property + `dma_flow_controller = true` in variant_qcom
+
+**3. Data/Command Ordering (datactrl_first)**
+- Mainline mmci sent CMD53 before data path was ready for writes
+- Legacy msm_sdcc set up DATACTRL before the command
+- Fix: `datactrl_first = true` in variant_qcom
+
+**4. DMA CRC Errors (Deferred DMA Issue)**
+- With datactrl_first, DMA issue_pending fired before CMD53 was sent to the card
+- Card received data without a preceding command, causing CRC fails
+- Fix: Split DMA submit/issue_pending; issue after CMD53 response in mmci_cmd_irq()
+
+**5. Firmware Power Management**
+- AR6003 firmware defaults to REC_POWER and enters deep sleep after init
+- cfg80211 set_power_mgmt callback was overriding MAX_PERF_POWER
+- Fix: Force MAX_PERF_POWER for SDIO devices in both init.c and cfg80211.c
+
+**6. WiFi Scan Command**
+- AR6003 firmware reports `sta-p2pdev-duplex` capability but doesn't respond to WMI_BEGIN_SCAN
+- Fix: Force legacy WMI_START_SCAN_CMDID for SDIO devices
+
+**7. rfkill Race Condition**
+- cfg80211 never called `rfkill_init_sw_state()` before `rfkill_register()`
+- Initial state was non-deterministic between boots
+- Fix: `rfkill_init_sw_state(rdev->wiphy.rfkill, false)` before register
+
+**8. PIO Threshold Optimization**
+- DMA firmware upload corrupts data; PIO workaround at 52 bytes took ~78s
+- Tested PIO at larger sizes: 128 bytes works, 192+ fails (DPSM timeout)
+- Added `dma_threshold` to variant_data, set to 256 for Qualcomm
+- Raised max_data_size to 116 bytes (128-byte total) → 34s upload (2.3x speedup)
+
+### Current DT Configuration
+```dts
+&sdcc4 {
+    status = "okay";
+    max-frequency = <24000000>;
+    qcom,datactrl-first;
+    cap-sdio-irq;
+    keep-power-in-suspend;
+    vmmc-supply = <&pm8901_l1>;
+    vqmmc-supply = <&pm8058_s3>;
+    mmc-pwrseq = <&ath6kl_pwrseq>;
+    dmas = <&adm_dma1 5>, <&adm_dma1 5>;
+    dma-names = "rx", "tx";
+    qcom,sdcc-crci = <5>;
+};
+```
+
+### Known Issues
+| Issue | Details |
+|-------|---------|
+| CMDTIMEOUT | Occasional CMD53 timeouts cause WMI credit starvation (EP1 credits → 0, qdepth accumulates) |
+| DMA firmware upload | PIO workaround stable; DMA upload corrupts firmware data (low priority) |
+| Association | WiFi scan works; association/connection not yet tested |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `drivers/mmc/host/mmci.c` | Deferred DMA issue, CRCI support, timing fixes, SDIO IRQ, dma_threshold |
+| `drivers/mmc/host/mmci.h` | dma_issue_deferred flag, dma_threshold field |
+| `drivers/mmc/host/mmci_qcom_dml.c` | ADM submit/issue split |
+| `drivers/net/wireless/ath/ath6kl/init.c` | MAX_PERF_POWER mode |
+| `drivers/net/wireless/ath/ath6kl/sdio.c` | BMI max_data_size=116 for PIO |
+| `drivers/net/wireless/ath/ath6kl/cfg80211.c` | Force MAX_PERF_POWER for SDIO |
+| `drivers/net/wireless/ath/ath6kl/wmi.c` | Force START_SCAN for SDIO |
+| `net/wireless/core.c` | rfkill init state race fix |
+
+### Key Commits
+| Commit | Description |
+|--------|-------------|
+| `567854a435f7` | WIP: Optimize WiFi firmware upload and fix rfkill init state |
+| `9cc04a36ff1a` | WIP: ath6kl: Fix WiFi scan on AR6003 SDIO (power mgmt + scan command) |
+| `37d55b9678c0` | WIP: ath6kl/cfg80211: Fix WiFi scan on HP TouchPad (msm8x60) |
+| `251e21c91367` | WIP: mmc/ath6kl: Fix WiFi firmware upload with PIO-only BMI on Qualcomm SDCC |
+| `5f891c33491d` | WIP: mmc: mmci: Add deferred DMA issue for Qualcomm ADM writes |
+| `72442e7a8f02` | WIP: mmc: mmci: Fix Qualcomm SDCC block size encoding and timing |
+| `69ccd450c385` | WIP: mmc: mmci: Add Qualcomm SDCC data timing delays |
+| `91e5b97abefa` | WIP: mmc: mmci: Add SDIO IRQ support for Qualcomm and fix SDIO bit |
+
+---
+
+## GPU 3D RENDERING DETAILS (2026-01-29 to 2026-01-30)
+
+### Overview
+The Adreno 220 GPU (a2xx driver) is now rendering 3D content via kmscube at ~24 FPS on the 1024x768 LVDS panel.
+
+### Performance Investigation
+
+**Initial state:** kmscube rendered at ~0.9 FPS.
+
+**Fix 1 - Disable runtime PM:** GPU runtime PM (66ms autosuspend_delay_ms) was triggering full power-down between every frame, requiring a2xx_hw_init() + PM4/PFP microcode reload (~500-700ms per cycle). Disabling runtime PM doubled FPS from 0.9 to 1.75.
+
+**Fix 2 - Remove debug prints (ROOT CAUSE):** 15 pr_info calls in clk-rcg.c fired on every clock rate determination and set_rate call, generating ~950 printk calls per 8 rendered frames. The printk serialization overhead was the dominant bottleneck. After removing these + disabling drm.debug=0x1f: 1.75 FPS → ~24 FPS (13x improvement).
+
+### What's Working
+| Component | Status | Details |
+|-----------|--------|---------|
+| GPU 3D (Adreno 220) | ✅ | kmscube renders at ~24 FPS |
+| GPU Power Domain | ✅ | gfx3d footswitch properly managed |
+| GPU Devfreq | ✅ | Frequency scaling via OPP table |
+| GPU Parameters | ✅ | a2xx parameter queries fixed (chip_id, gmem_size, etc.) |
+| MDP4 Underflow | ✅ | Recovery enabled, non-blocking |
+
+### Key Commits
+| Commit | Description |
+|--------|-------------|
+| `6b919f9aefdd` | clk: qcom: remove debug pr_info from clk-rcg and disable drm.debug |
+| `f794c8564963` | drm/msm: Fix a2xx GPU parameter queries and MDP4 underflow |
+| `97540e04fa5b` | drm/msm: Fix MDP4 interconnect voting and GPU devfreq resume |
+| `e6eac16efd66` | drm/msm: a2xx: Add gpu_busy for devfreq support |
+
+---
+
+## DISPLAY DETAILS (2026-01-19, updated 2026-01-30)
 
 ### Architecture
 The HP TouchPad uses a Qualcomm MDP4 display controller:
@@ -77,13 +232,7 @@ The HP TouchPad uses a Qualcomm MDP4 display controller:
 - **Panel:** 1024x768 9.7" LVDS (LG LH097DA2-A01)
 - **Pixel Clock:** 96 MHz (from PLL8/4)
 - **Color Depth:** 32bpp (XRGB8888)
-- **IOMMU:** MDP Port 0 & Port 1 IOMMUs enabled (as of 2026-01-19)
-
-### IOMMU Configuration
-MDP IOMMU now enabled with full stream ID configuration from legacy kernel:
-- **Port 0:** Stream IDs 0-10 (VG1 + RGB1 contexts)
-- **Port 1:** Stream IDs 0-10 (VG2 + RGB2 contexts)
-- Enables hardware cursor support and 4GB IOVA address space
+- **IOMMU:** MDP Port 0 & Port 1 IOMMUs enabled with IDENTITY domain
 
 ### What's Working
 | Component | Status | Details |
@@ -93,75 +242,159 @@ MDP IOMMU now enabled with full stream ID configuration from legacy kernel:
 | LVDS Panel | ✅ | 1024x768 @ 60 Hz |
 | Framebuffer Console | ✅ | Text displayed correctly |
 | Backlight | ✅ | PWM control, brightness 0-7 |
-| Interconnect BW | ✅ | 400 MBps per MDP port |
-| MDP IOMMU | ✅ | Both ports enabled, cursor support available |
+| Interconnect BW | ✅ | 460 MBps per MDP port (EBI + SMI, 4 paths total) |
+| MDP IOMMU | ✅ | Both ports enabled, IDENTITY domain |
+| Panel bpc | ✅ | Derived from DT data-lanes property |
 
 ### Known Issues
 | Issue | Status | Details |
 |-------|--------|---------|
-| MDP4 Underrun | Resolved | Added interconnect bandwidth voting, underflow recovery active |
-| LCDC Vblank Timeout | ✅ FIXED | Use PRIMARY_VSYNC instead of DMA_P_DONE for LCDC (commit 5792da5c0992) |
-| GPU Power Domain | ✅ FIXED | Added legacy footswitch support, GPU properly powered (commit 28649d98f424) |
-| MDP4 Underrun During modetest | Minor | `error: 00000100` during pattern display, bandwidth-related, non-blocking |
+| MDP4 Underrun | Resolved | Interconnect bandwidth voting + underflow recovery active |
+| LCDC Vblank Timeout | ✅ FIXED | Use PRIMARY_VSYNC instead of DMA_P_DONE (commit 5792da5c0992) |
+| GPU Power Domain | ✅ FIXED | Legacy footswitch support (commit 28649d98f424) |
+| MDP4 Underrun During modetest | Minor | `error: 00000100` during pattern display, non-blocking |
 
 ### Key Commits
 | Commit | Description |
 |--------|-------------|
+| `7a24b0d08188` | drm/panel: lvds: Add bpc derivation and fix TouchPad panel config |
+| `97540e04fa5b` | drm/msm: Fix MDP4 interconnect voting and GPU devfreq resume |
 | `25bce4a902b2` | drm/msm: Add no-IOMMU display support for legacy SoCs |
-| `d400ae1017af` | drm/msm: Handle IRQ EBUSY for GPU deferred probe |
 | `b3f8045c5d22` | ARM: dts: qcom: tenderloin: Enable LVDS panel |
-| `ab655b4d1859` | ARM: configs: tenderloin: Sync defconfigs with DRM_MSM=y |
-| `a2aebb476128` | ARM: dts: qcom: apq8060-tenderloin: Enable MDP IOMMU for display |
 
 ---
 
-## IOMMU DETAILS (2026-01-19)
+## IOMMU DETAILS (2026-01-19, updated 2026-01-30)
 
 ### Overview
-All 12 MSM8660 IOMMU instances have been added to the mainline device tree, with GPU and MDP IOMMUs enabled for the HP TouchPad. This provides memory protection and virtual address translation for multimedia subsystems.
+All 12 MSM8660 IOMMU instances are defined in the device tree. 11 are now enabled; GPU IOMMU is disabled as Adreno 220 uses its own internal MMU. An IDENTITY default domain type prevents boot hangs from DMA paging domain attach while the bootloader display is active.
 
-### IOMMU Instances Added
+### IOMMU Instance Status
 | IOMMU | Address | Purpose | Status |
 |-------|---------|---------|--------|
-| jpegd_iommu | 0x07300000 | JPEG decoder | Available |
-| vpe_iommu | 0x07400000 | Video processing engine | Available |
-| mdp_port0_iommu | 0x07500000 | MDP port 0 | ✅ Enabled |
-| mdp_port1_iommu | 0x07600000 | MDP port 1 | ✅ Enabled |
-| rot_iommu | 0x07700000 | Rotator | Available |
-| ijpeg_iommu | 0x07800000 | JPEG encoder | Available |
-| vfe_iommu | 0x07900000 | Camera VFE | Available |
-| vcodec_a_iommu | 0x07a00000 | Video codec A | Available |
-| vcodec_b_iommu | 0x07b00000 | Video codec B | Available |
-| gpu_iommu | 0x07c00000 | GPU 3D (Adreno 220) | ✅ Enabled |
-| gfx2d0_iommu | 0x07d00000 | GPU 2D0 (Z180) | Available |
-| gfx2d1_iommu | 0x07e00000 | GPU 2D1 (Z180) | Available |
+| jpegd_iommu | 0x07300000 | JPEG decoder | ✅ Enabled |
+| vpe_iommu | 0x07400000 | Video processing engine | ✅ Enabled |
+| mdp_port0_iommu | 0x07500000 | MDP port 0 | ✅ Enabled (active) |
+| mdp_port1_iommu | 0x07600000 | MDP port 1 | ✅ Enabled (active) |
+| rot_iommu | 0x07700000 | Rotator | ✅ Enabled |
+| ijpeg_iommu | 0x07800000 | JPEG encoder | ✅ Enabled |
+| vfe_iommu | 0x07900000 | Camera VFE | ✅ Enabled |
+| vcodec_a_iommu | 0x07a00000 | Video codec A | ✅ Enabled |
+| vcodec_b_iommu | 0x07b00000 | Video codec B | ✅ Enabled |
+| gpu_iommu | 0x07c00000 | GPU 3D (Adreno 220) | ❌ Disabled |
+| gfx2d0_iommu | 0x07d00000 | GPU 2D0 (Z180) | ✅ Enabled |
+| gfx2d1_iommu | 0x07e00000 | GPU 2D1 (Z180) | ✅ Enabled |
 
-### Stream ID Configuration
-Based on legacy kernel `devices-msm8x60-iommu.c`:
+### GPU IOMMU Issue
+GPU IOMMU causes display corruption (blue vertical lines) when enabled. The Adreno 220 (a2xx) uses its own internal Memory Hierarchy MMU (a2xx_gpummu) and ignores the system IOMMU entirely, so gpu_iommu provides no benefit and must remain disabled.
 
-**GPU (Adreno 220):**
-- Stream IDs 0-15: User context
-- Stream IDs 16-31: Privileged context
-
-**MDP (Display):**
-- Port 0: VG1 ctx (MIDs 0,2) + RGB1 ctx (MIDs 1,3-10)
-- Port 1: VG2 ctx (MIDs 0,2) + RGB2 ctx (MIDs 1,3-10)
+### Upstream Quality
+The MSM IOMMU driver (`drivers/iommu/msm_iommu.c`) has been cleaned up for upstream submission:
+- Eliminated forward declarations
+- Fixed IRQ return values (IRQ_HANDLED vs IRQ_NONE)
+- Converted pr_err/pr_info to dev_err/dev_info
+- Fixed void __iomem pointer casts
+- Kernel comment style fixes
 
 ### Key Commits
 | Commit | Description |
 |--------|-------------|
+| `4d066b85b180` | iommu/msm: Clean up msm_iommu.c for upstream submission quality |
+| `496685f96977` | WIP: Enable 11 IOMMUs, disable gpu_iommu to fix display corruption |
+| `300ec13176f3` | WIP: Fix MDP IOMMU boot hang with identity default domain |
 | `3b844d508836` | ARM: dts: qcom: msm8660: Add complete IOMMU instances |
-| `208630c85792` | ARM: dts: qcom: apq8060-tenderloin: Enable GPU IOMMU |
-| `a2aebb476128` | ARM: dts: qcom: apq8060-tenderloin: Enable MDP IOMMU |
+
+---
+
+## INTERCONNECT FRAMEWORK DETAILS (2026-01-26 to 2026-01-30)
+
+### Overview
+Full interconnect bandwidth voting now matches the legacy webOS clock voter system. This keeps fabric clocks stable during active operations and eliminates the bimodal memory performance issue.
+
+### Interconnect Paths
+| Legacy Voter | Modern Equivalent | Bandwidth | Driver |
+|--------------|-------------------|-----------|--------|
+| `dfab_usb_hs_clk` | USB → EBI | 61 MB/s | chipidea/ci_hdrc_msm.c |
+| `dfab_sdc_clk` x5 | MMCI → EBI | 400 MB/s | mmc/host/mmci.c |
+| `ebi1_adm_clk` x2 | ADM → EBI | 128 MB/s | dma/qcom/qcom_adm.c |
+| `ebi1_msmbus_clk` | MDP → EBI+SMI | 460 MB/s | gpu/drm/msm/disp/mdp4 |
+
+### Fabric Clock Stability
+With full interconnect voting active:
+```
+AFAB: 752 MHz (stable)
+SFAB: 384 MHz (stable)
+MMFAB: 737 MHz (stable)
+Clock changes during benchmarks: 0
+```
+
+### Key Commits
+| Commit | Description |
+|--------|-------------|
+| `388b4d07497c` | mmc: mmci: Add DFAB interconnect support for bandwidth voting |
+| `80b84d5bf1b2` | dma/interconnect: Add EBI bandwidth voting for ADM DMA engines |
+| `4abef666bfaa` | usb/interconnect: Fix bandwidth voting to match webOS kernel |
+| `97540e04fa5b` | drm/msm: Fix MDP4 interconnect voting and GPU devfreq resume |
+
+---
+
+## MEMORY PERFORMANCE DETAILS (2026-01-22 to 2026-01-26)
+
+### Optimization Journey
+| Configuration | Memory BW | vs webOS | Status |
+|---------------|-----------|----------|--------|
+| Original 6.18 (baseline) | 461 MB/s | 23% | - |
+| + Disable CMA/KSM/MEMCG | 705 MB/s | 34% | Tested |
+| + CMA=32MB | 826 MB/s | 40% | Tested |
+| **+ VMSPLIT_2G (no HIGHMEM)** | **1220 MB/s** | **60%** | **Active** |
+| ~~+ Scorpion NMRR~~ | ~~1484 MB/s~~ | ~~72%~~ | **Reverted** |
+| webOS 2.6.35 (target) | 2048 MB/s | 100% | Reference |
+
+### Current Config
+- **VMSPLIT_2G**: All RAM in lowmem, no HIGHMEM kmap/kunmap overhead
+- **HZ=100**: 10x fewer timer interrupts than HZ=1000
+- **CMA=32MB**: Optimal for HP TouchPad memory layout (16MB too slow, 48MB degrades writes)
+
+### Scorpion NMRR (Reverted)
+Qualcomm Scorpion-specific NMRR value (`0x40e080e0`) provided +22% bandwidth improvement but caused boot failures (no USB networking) in subsequent testing. Reverted in commit `ba66d84b2f25`. The remaining ~40% gap vs webOS is due to Scorpion-specific assembly optimizations (memcpy/memset) never upstreamed to mainline.
+
+### Key Commits
+| Commit | Description |
+|--------|-------------|
+| `044b6e67c3f6` | ARM: configs: tenderloin: Switch to VMSPLIT_2G |
+| `9bac759e66e2` | ARM: configs: tenderloin: Optimize timer frequency and DMA settings |
+| `ba66d84b2f25` | Revert Scorpion MP processor optimizations |
+
+---
+
+## GPU POWER DOMAIN (FOOTSWITCH) DETAILS (2026-01-24)
+
+### Overview
+MSM8660/APQ8060 SoCs use legacy "footswitch" power domains with a different register layout than modern GDSCs. These footswitches control power to various multimedia subsystems including the GPU.
+
+### Footswitch Definitions
+| Name | Register | Purpose |
+|------|----------|---------|
+| gfx2d0 | 0x0180 | Z180 2D GPU Core 0 |
+| gfx2d1 | 0x0184 | Z180 2D GPU Core 1 |
+| gfx3d | 0x0188 | Adreno 220 3D GPU |
+| rot | 0x018c | Image Rotator |
+| mdp | 0x0190 | Mobile Display Processor |
+| ved | 0x0194 | Video Encoder/Decoder |
+| vfe | 0x0198 | Video Front End (Camera) |
+| vpe | 0x019c | Video Processing Engine |
+| ijpeg | 0x01a0 | JPEG Encoder |
+
+### Key Commit
+| Commit | Description |
+|--------|-------------|
+| `28649d98f424` | clk: qcom: Add legacy footswitch support for MSM8660/APQ8060 |
 
 ---
 
 ## GPU DVFS DETAILS (2026-01-19)
 
-### Overview
-GPU Dynamic Voltage and Frequency Scaling infrastructure has been added for the Adreno 220 GPU, enabling power-efficient operation across different performance levels.
-
-### OPP (Operating Performance Points) Table
+### OPP Table
 | Frequency | Voltage | Level |
 |-----------|---------|-------|
 | 27 MHz | 1.00V | LOW |
@@ -182,116 +415,15 @@ GPU Dynamic Voltage and Frequency Scaling infrastructure has been added for the 
 ### Voltage Supply
 - **Regulator:** PM8058 S1 (vdd_dig)
 - **Range:** 500mV - 1350mV
-- **Connection:** `gpu-supply = <&pm8058_s1>`
-
-### Key Commits
-| Commit | Description |
-|--------|-------------|
-| `7c868e46b0e5` | ARM: dts: qcom: apq8060-tenderloin: Add GPU OPP voltage table |
-| `f6842ee21eb3` | ARM: dts: qcom: apq8060-tenderloin: Add GPU voltage supply |
-
----
-
-## GPU POWER DOMAIN (FOOTSWITCH) DETAILS (2026-01-24)
-
-### Overview
-MSM8660/APQ8060 SoCs use legacy "footswitch" power domains with a different register layout than modern GDSCs. These footswitches control power to various multimedia subsystems including the GPU.
-
-### Problem
-GPU was experiencing hangs with `RBBM_INT: 00000001` (Read Error) due to missing power domain control. The GPU power rail was not being properly managed during power up/down cycles.
-
-### Solution
-Extended the GDSC (Globally Distributed Switch Controller) driver to support legacy footswitches:
-
-**Register Layout (Legacy vs Modern):**
-| Bit | Legacy Footswitch | Modern GDSC |
-|-----|-------------------|-------------|
-| 0 | - | SW_COLLAPSE |
-| 5 | CLAMP | - |
-| 8 | ENABLE | - |
-| 31 | - | PWR_ON (status) |
-
-**Enable Sequence:**
-1. Assert resets
-2. Set ENABLE bit
-3. Wait 2µs for rail to charge
-4. Deassert resets
-5. Clear CLAMP bit
-6. Wait 5µs for signals to settle
-
-**Disable Sequence:**
-1. Assert resets
-2. Set CLAMP bit
-3. Clear ENABLE bit
-
-### Footswitch Definitions Added
-| Name | Register | Purpose |
-|------|----------|---------|
-| gfx2d0 | 0x0180 | Z180 2D GPU Core 0 |
-| gfx2d1 | 0x0184 | Z180 2D GPU Core 1 |
-| gfx3d | 0x0188 | Adreno 220 3D GPU |
-| rot | 0x018c | Image Rotator |
-| mdp | 0x0190 | Mobile Display Processor |
-| ved | 0x0194 | Video Encoder/Decoder |
-| vfe | 0x0198 | Video Front End (Camera) |
-| vpe | 0x019c | Video Processing Engine |
-| ijpeg | 0x01a0 | JPEG Encoder |
-
-### Test Results
-```
-domain                          status          children
-------------------------------------------------------------------------------
-vpe                             on
-vfe                             on
-ved                             on
-rot                             on
-mdp                             on
-ijpeg                           on
-gfx3d                           on
-    4300000.adreno                  suspended       SW
-gfx2d1                          on
-gfx2d0                          on
-```
-
-### DRM Test Results
-| Test | Result | Notes |
-|------|--------|-------|
-| modetest | ✅ PASS | Display working at 1024x768@59.96Hz |
-| vbltest | ✅ PASS | Vblank events working |
-| proptest | ✅ PASS | All properties accessible |
-| GPU Recovery | ✅ NONE | No RBBM/hang errors |
-
-### Files Modified
-| File | Changes |
-|------|---------|
-| `drivers/clk/qcom/gdsc.h` | Added LEGACY_FOOTSWITCH flag |
-| `drivers/clk/qcom/gdsc.c` | Legacy enable/disable sequences, clamp handling |
-| `drivers/clk/qcom/mmcc-msm8660.c` | 9 footswitch definitions |
-| `drivers/clk/qcom/Kconfig` | Select QCOM_GDSC for MSM8660 |
-| `include/dt-bindings/clock/qcom,mmcc-msm8960.h` | Power domain index defines |
-| `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` | GPU power-domains property |
-
-### Key Commit
-| Commit | Description |
-|--------|-------------|
-| `28649d98f424` | clk: qcom: Add legacy footswitch support for MSM8660/APQ8060 |
 
 ---
 
 ## TOUCHSCREEN DETAILS (2026-01-13)
 
 ### Architecture
-The HP TouchPad uses a unique multi-slave touchscreen architecture:
 - **Master Controller:** Cypress CY8CTMA395 (aggregates touch data)
-- **Slave Controllers:** 5× Cypress CY8CTMA375 (each covers a portion of the 9.7" screen)
-- **Communication:** UART at 4 Mbps via GSBI10 (not I²C for touch data)
-
-### Implementation
-A custom kernel serdev driver (`cy8ctma395_ts`) was developed:
-- Reads proprietary binary touch data packets from UART
-- Processes 30-row capacitive matrix scans
-- Calculates touch coordinates using weighted centroid algorithm
-- Reports single-touch events to Linux input subsystem
+- **Slave Controllers:** 5x Cypress CY8CTMA375 (each covers a portion of the 9.7" screen)
+- **Communication:** UART at 4 Mbps via GSBI10
 
 ### What's Working
 | Component | Status | Details |
@@ -303,120 +435,38 @@ A custom kernel serdev driver (`cy8ctma395_ts`) was developed:
 | Input Events | ✅ | `/dev/input/event3` |
 | Single Touch | ✅ | Verified working |
 
-### Commits
-| Commit | Description |
-|--------|-------------|
-| `e21ec8209778` | Update touchscreen analysis with final working solution |
-| `b9d0390b53fe` | Fix touch calculation trigger for HP TouchPad |
-| `e097635debb2` | Fix GPIO 71 pinctrl for touchscreen UART |
-| `d469748d99a0` | Add debug output for GPIO and UART |
-| `dbbc6e3e6161` | Add Cypress CY8CTMA395 serdev driver |
+---
 
-### Future Improvements
-1. Test and verify multi-touch support
-2. Remove debug output (convert to pr_debug)
-3. Performance tuning if needed
-4. Upstream preparation for mainline submission
+## OTHER SUBSYSTEMS
+
+### DSPS Remoteproc (2026-01-26)
+New remoteproc driver for the Dedicated Sensors Processor Subsystem (DSPS) on MSM8660/APQ8060. Supports PAS (trusted) and direct boot modes with clock, reset, and interconnect support. Disabled by default in device tree since no DSPS firmware is currently available. The legacy webOS kernel accessed sensors directly via I2C/IIO.
+
+- Commit: `28b898a0cc2b`
 
 ---
 
-## WIFI INVESTIGATION DETAILS (2026-01-10)
-
-### What's Working
-| Component | Status | Details |
-|-----------|--------|---------|
-| SDIO Card Detection | ✅ | mmc1:0001, vendor 0x0271, device 0x0301 |
-| PWRSeq Driver | ✅ | mmc-pwrseq-simple binds to ath6kl-pwrseq |
-| GPIO 135 (Reset) | ✅ | Controlled by pwrseq, active-low |
-| GPIO 137 (HOST_WAKE_WL) | ✅ | Configured as output-high |
-| GPIO 93 (WL_HOST_WAKE) | ✅ | Configured as input with pull-down |
-| Firmware Files | ✅ | fw-2.bin, fw-3.bin present with correct magic |
-| Regulators | ✅ | pm8901_l1 (3.3V), pm8901_l3 (3.3V PA), pm8058_l19 (1.8V), pm8058_s3 (1.8V I/O) all enabled |
-| OTP Execution | ✅ | AR6003 OTP runs at 0x946120 |
-| Small Data Transfers | ✅ | First 512-1024 bytes transfer successfully |
-
-### What's Failing
-| Issue | Error | Details |
-|-------|-------|---------|
-| Firmware Upload | -110 (ETIMEDOUT) | Fails after ~4 x 256-byte writes |
-| Credit Register Read | -110 | `Unable to decrement the command credit count register` |
-
-### Failure Pattern
-```
-1. ath6kl_sdio probes mmc1:0001:1
-2. Chip ID read succeeds
-3. OTP upload starts (3998 bytes)
-4. BMI LZ stream begins
-5. 4 x 256-byte chunks write successfully
-6. 5th credit register read times out (-110)
-7. Probe fails
-```
-
-### Legacy webOS Kernel Configuration (for reference)
-From `board-tenderloin.c`:
-```c
-static struct mmc_platform_data msm8x60_sdc4_data = {
-    .mmc_bus_width = MMC_CAP_4_BIT_DATA,  // 4-bit mode
-    .msmsdcc_fmin = 400000,                // 400 kHz init
-    .msmsdcc_fmid = 24000000,              // 24 MHz mid
-    .msmsdcc_fmax = 48000000,              // 48 MHz max
-    .nonremovable = 1,
-};
-```
-
-### Current Device Tree Configuration
-```dts
-&sdcc4 {
-    status = "okay";
-    vmmc-supply = <&pm8901_l1>;   /* 3.3V main */
-    vqmmc-supply = <&pm8058_s3>;  /* 1.8V I/O */
-    bus-width = <4>;              /* 4-bit mode */
-    no-1-8-v;                     /* 3.3V signaling */
-    broken-cd;
-    non-removable;
-    mmc-pwrseq = <&ath6kl_pwrseq>;
-};
-
-ath6kl_pwrseq: ath6kl-pwrseq {
-    compatible = "mmc-pwrseq-simple";
-    reset-gpios = <&tlmm 135 GPIO_ACTIVE_LOW>;
-    clocks = <&sleep_clk>;
-    clock-names = "ext_clock";
-    post-power-on-delay-ms = <500>;
-};
-```
-
-### Possible Root Causes
-1. **Clock instability** - SDIO clock may become unstable during sustained transfers
-2. **Driver differences** - Mainline mmci-pl18x vs legacy msmsdcc may have different timing
-3. **DMA configuration** - ADM DMA may need specific setup for SDIO
-4. **Missing sleep clock** - 32kHz clock may not be reaching AR6003
-
-### Commits
-- `54093e0e7c46` - ARM: dts: qcom: tenderloin: WIP: Fix WiFi AR6003 power sequencing
-
----
-
-## HARDWARE TEST RESULTS (2026-01-19)
+## HARDWARE TEST RESULTS (2026-01-30)
 
 ### Test Environment
 - **Device:** HP TouchPad (Topaz WiFi)
 - **Kernel:** 6.18.0 (tenderloin/6.18/upstream-patches)
 - **Boot Method:** moboot → LuneOS initramfs
 - **Connection:** USB RNDIS (172.16.42.2)
-- **Display:** Framebuffer console active
-- **IOMMU:** GPU and MDP IOMMUs enabled
+- **Display:** Framebuffer console + GPU 3D rendering
+- **IOMMU:** 11 of 12 IOMMUs enabled (gpu_iommu disabled)
 
-### WORKING COMPONENTS (22 total)
+### WORKING COMPONENTS (25 total)
 
 | Component | Status | Details |
 |-----------|--------|---------|
 | **Kernel Boot** | PASS | Boots to initramfs shell |
 | **Dual CPU** | PASS | 2x ARMv7 Scorpion cores detected |
-| **Memory** | PASS | 839MB RAM available |
+| **Memory** | PASS | ~960MB RAM available (VMSPLIT_2G, no HIGHMEM) |
 | **USB RNDIS** | PASS | Network gadget working, survives display init |
 | **eMMC** | PASS | mmcblk0 with 14 partitions |
 | **Display (DRM)** | PASS | MDP4/LCDC, 1024x768 LVDS, 96MHz pixel clock, fbcon working |
+| **GPU 3D** | PASS | Adreno 220, kmscube ~24 FPS, devfreq scaling |
 | **Backlight** | PASS | PWM control, brightness 0-7 |
 | **LEDs** | PASS | lm8502:white:navi_left, lm8502:white:navi_right |
 | **Accelerometer** | PASS | lsm303dlh_accel (IIO device) |
@@ -426,43 +476,49 @@ ath6kl_pwrseq: ath6kl-pwrseq {
 | **Regulators** | PASS | 60 regulators initialized |
 | **GPIO** | PASS | Multiple gpiochips (512-741) |
 | **I2C** | PASS | 7 I2C buses, 12+ devices |
-| **Interconnect** | PASS | 3 fabric providers registered |
+| **Interconnect** | PASS | 3 fabric providers, full BW voting (USB/MMCI/ADM/MDP) |
 | **Input Devices** | PASS | PMIC keypad, power key, vibrator |
 | **Q6 LPASS DSP** | PASS | Remoteproc running, SMD channels open |
 | **Audio (ALSA)** | PASS | HP-TouchPad card, pcmC0D0p/c, pcmC0D1p/c, Headphone Jack |
 | **Touchscreen** | PASS | CY8CTMA395 serdev driver, UART 4Mbps, single-touch verified |
-| **GPU IOMMU** | PASS | Memory protection for Adreno 220, 32 stream IDs |
-| **MDP IOMMU** | PASS | Display memory virtualization, cursor support enabled |
+| **MDP IOMMU** | PASS | Both ports enabled, IDENTITY domain |
+| **WiFi Scan** | PASS | AR6003 finds 10+ APs on 2.4GHz + 5GHz |
+| **Power Domains** | PASS | 9 legacy footswitches registered (gfx2d0-gfx3d, mdp, etc.) |
+| **GPU Footswitch** | PASS | gfx3d power domain attached to Adreno 220 |
 
 ### PARTIAL/IN PROGRESS
 
 | Component | Status | Details |
 |-----------|--------|---------|
-| **WiFi** | WIP | SDIO detected, OTP works, firmware upload times out |
+| **WiFi Association** | WIP | Scan works; connection/authentication not yet tested |
+| **WiFi DMA Writes** | WIP | PIO workaround stable; DMA upload corrupts data |
+| **WiFi CMDTIMEOUT** | WIP | Occasional CMD53 timeouts cause WMI credit starvation |
 
 ---
 
 ## NEXT STEPS
 
-### Display (Investigation)
-1. Investigate MDP4 underrun errors (PRIMARY_INTF_UDERRUN)
-2. Possibly increase READ_CNFG from 3 to 8 pending requests
-3. Consider interconnect bandwidth tuning
+### WiFi (High Priority)
+1. Test WiFi association and data transfer
+2. Fix CMDTIMEOUT and WMI credit starvation
+3. Investigate DMA write corruption (low priority, PIO workaround stable)
+4. Clean up WIP commits into proper patch series
 
-### Touchscreen (Polish)
-1. Test and verify multi-touch support
-2. Remove debug pr_info statements (convert to pr_debug)
-3. Upstream preparation for mainline submission
+### GPU (Investigation)
+1. Tune GPU runtime PM autosuspend delay (currently 66ms causes full power-down per frame)
+2. Investigate further FPS improvements
+3. Test more complex 3D applications
 
-### WiFi
-1. Investigate mmci-pl18x vs msmsdcc differences
-2. Try enabling/configuring ADM DMA for SDIO transfers
-3. Check if sleep clock is properly routed to AR6003
-4. Consider adding inter-transaction delays in ath6kl driver
+### Upstream Preparation
+1. Clean up MMCI Qualcomm SDCC fixes for upstream submission
+2. Polish IOMMU driver (already cleaned up in 4d066b85b180)
+3. Prepare touchscreen driver for upstream
+4. Organize 28-patch submission plan (see UPSTREAM_PATCH_PLAN.md)
 
 ### Other Components
 1. Test audio playback with actual audio files
-2. GPU 3D acceleration (Z180/Adreno 200)
+2. Camera bring-up with VFE 3.1 support
+3. WiFi association and data transfer testing
 
 ---
 
@@ -495,18 +551,52 @@ mmcblk0boot0, mmcblk0boot1 - Boot partitions
 
 ## RECENT COMMITS
 
+### WiFi & MMCI Work (2026-01-25 to 2026-01-29)
+```
+567854a435f7 - WIP: Optimize WiFi firmware upload and fix rfkill init state
+9cc04a36ff1a - WIP: ath6kl: Fix WiFi scan on AR6003 SDIO (power mgmt + scan command)
+37d55b9678c0 - WIP: ath6kl/cfg80211: Fix WiFi scan on HP TouchPad (msm8x60)
+251e21c91367 - WIP: mmc/ath6kl: Fix WiFi firmware upload with PIO-only BMI on Qualcomm SDCC
+5f891c33491d - WIP: mmc: mmci: Add deferred DMA issue for Qualcomm ADM writes
+72442e7a8f02 - WIP: mmc: mmci: Fix Qualcomm SDCC block size encoding and timing
+69ccd450c385 - WIP: mmc: mmci: Add Qualcomm SDCC data timing delays
+91e5b97abefa - WIP: mmc: mmci: Add SDIO IRQ support for Qualcomm and fix SDIO bit
+```
+
+### GPU & Display Work (2026-01-29 to 2026-01-30)
+```
+6b919f9aefdd - clk: qcom: remove debug pr_info from clk-rcg and disable drm.debug in cmdline
+f794c8564963 - drm/msm: Fix a2xx GPU parameter queries and MDP4 underflow
+7a24b0d08188 - drm/panel: lvds: Add bpc derivation and fix TouchPad panel config
+97540e04fa5b - drm/msm: Fix MDP4 interconnect voting and GPU devfreq resume
+```
+
+### IOMMU Work (2026-01-29 to 2026-01-30)
+```
+4d066b85b180 - iommu/msm: Clean up msm_iommu.c for upstream submission quality
+496685f96977 - WIP: Enable 11 IOMMUs, disable gpu_iommu to fix display corruption
+300ec13176f3 - WIP: Fix MDP IOMMU boot hang with identity default domain
+4261037d8378 - WIP: Enable MSM_IOMMU driver safely with all IOMMU nodes disabled
+```
+
+### Interconnect & Performance Work (2026-01-22 to 2026-01-26)
+```
+388b4d07497c - mmc: mmci: Add DFAB interconnect support for bandwidth voting
+80b84d5bf1b2 - dma/interconnect: Add EBI bandwidth voting for ADM DMA engines
+4abef666bfaa - usb/interconnect: Fix bandwidth voting to match webOS kernel
+044b6e67c3f6 - ARM: configs: tenderloin: Switch to VMSPLIT_2G for better memory performance
+9bac759e66e2 - ARM: configs: tenderloin: Optimize timer frequency and DMA settings
+```
+
+### DSPS & Other (2026-01-26)
+```
+28b898a0cc2b - remoteproc: Add DSPS (Dedicated Sensors Processor) support for MSM8660
+ba66d84b2f25 - Revert Scorpion MP processor optimizations
+```
+
 ### GPU Power Domain (Footswitch) Work (2026-01-24)
 ```
 28649d98f424 - clk: qcom: Add legacy footswitch support for MSM8660/APQ8060
-```
-
-### IOMMU & GPU DVFS Work (2026-01-19)
-```
-a2aebb476128 - ARM: dts: qcom: apq8060-tenderloin: Enable MDP IOMMU for display
-208630c85792 - ARM: dts: qcom: apq8060-tenderloin: Enable GPU IOMMU for memory protection
-3b844d508836 - ARM: dts: qcom: msm8660: Add complete IOMMU instances for multimedia subsystems
-f6842ee21eb3 - ARM: dts: qcom: apq8060-tenderloin: Add GPU voltage supply for DVFS
-7c868e46b0e5 - ARM: dts: qcom: apq8060-tenderloin: Add GPU OPP voltage table
 ```
 
 ### Camera/Media Work (2026-01-18)
@@ -531,11 +621,6 @@ b9d0390b53fe - Input: cy8ctma395: Fix touch calculation trigger for HP TouchPad
 dbbc6e3e6161 - Input: touchscreen: Add Cypress CY8CTMA395 serdev driver
 ```
 
-### WiFi Work (2026-01-10)
-```
-54093e0e7c46 - ARM: dts: qcom: tenderloin: WIP: Fix WiFi AR6003 power sequencing
-```
-
 ### Audio Work (2026-01-10)
 ```
 7a423026aa40 - ASoC: qcom: APQ8060: Select WM8994 codec driver
@@ -546,47 +631,28 @@ dbbc6e3e6161 - Input: touchscreen: Add Cypress CY8CTMA395 serdev driver
 
 ## CONCLUSION
 
-**Major milestones achieved!** Full IOMMU support, GPU DVFS infrastructure, GPU power domain (footswitch) support, and display all working with the mainline MSM DRM driver.
-
 ### Current Status Summary:
-- **23 hardware components working** on mainline kernel
-- **GPU power domains working** - All 9 legacy footswitches registered, GPU attached to gfx3d
-- **IOMMU fully functional** - GPU and MDP IOMMUs enabled with proper stream IDs
-- **GPU DVFS ready** - OPP table with voltage scaling from 1.0V to 1.2V
+- **25 hardware components working** on mainline kernel (up from 23)
+- **WiFi scanning working** - AR6003 finds 10+ APs on 2.4GHz + 5GHz bands after extensive MMCI/ath6kl fixes
+- **GPU 3D rendering working** - Adreno 220 via kmscube at ~24 FPS after removing debug overhead
+- **11 of 12 IOMMUs enabled** - GPU IOMMU disabled (uses internal MMU), driver cleaned for upstream
+- **Full interconnect voting** - USB, MMCI, ADM DMA, MDP bandwidth paths matching webOS
+- **Memory optimized** - VMSPLIT_2G, HZ=100, CMA=32MB achieving 1220 MB/s (60% of webOS)
+- **GPU power domains working** - All 9 legacy footswitches registered
 - **Display fully functional** - MDP4/LCDC with 1024x768 LVDS panel + IOMMU
 - **Touchscreen fully functional** - custom serdev driver with UART communication
 - **Audio fully functional** - Q6 LPASS DSP + WM8958 codec
 - **USB/DRM coexistence solved** - critical for development workflow
-- **WiFi close to working** - needs SDIO timing/driver investigation
-
-### IOMMU Implementation Notes:
-All 12 MSM8660 IOMMU instances added to mainline device tree:
-- GPU IOMMU enabled with 32 stream IDs (user + priv contexts)
-- MDP IOMMUs (Port 0 & 1) enabled with VG + RGB context stream IDs
-- Stream ID configuration matches legacy webOS kernel exactly
-- Enables hardware cursor support and memory protection
-
-### GPU DVFS Implementation Notes:
-Power management infrastructure for Adreno 220:
-- OPP table with 14 frequency/voltage pairs (27MHz-320MHz)
-- Voltage levels: LOW (1.0V), NOMINAL (1.1V), HIGH (1.2V)
-- PM8058 S1 regulator connected as gpu-supply
-
-### Touchscreen Implementation Notes:
-The touchscreen uses a proprietary binary protocol over UART at 4 Mbps. Key discoveries:
-- Touch data is transmitted as 30-row capacitive matrix scans
-- Bit 7 of row index signals start of new scan cycle
-- Touch coordinates calculated using weighted centroid algorithm
 
 ### Next Priorities:
-1. Test IOMMU functionality on device
-2. Continue WiFi firmware upload debugging
-3. Polish touchscreen driver for upstream
+1. Test WiFi association and data transfer
+2. Tune GPU runtime PM for better 3D performance
+3. Clean up WIP commits for upstream submission
 4. Camera bring-up with VFE 3.1 support
 
 ---
 
-**Report Generated:** 2026-01-24
+**Report Generated:** 2026-01-30
 **Tester:** Claude Code
 **Maintainer:** Herrie
 **Project:** HP TouchPad Mainline Kernel Support
