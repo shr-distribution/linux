@@ -1198,7 +1198,7 @@ int adreno_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	struct msm_gpu_config adreno_gpu_config  = { 0 };
 	struct msm_gpu *gpu = &adreno_gpu->base;
 	const char *gpu_name;
-	u32 speedbin;
+	u32 speedbin, autosuspend_ms;
 	int ret;
 
 	adreno_gpu->funcs = funcs;
@@ -1246,8 +1246,12 @@ int adreno_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	if (ret)
 		return ret;
 
-	pm_runtime_set_autosuspend_delay(dev,
-		adreno_gpu->info->inactive_period);
+	ret = of_property_read_u32(dev->of_node, "qcom,gpu-idle-timeout-ms",
+				  &autosuspend_ms);
+	if (ret)
+		autosuspend_ms = adreno_gpu->info->inactive_period;
+
+	pm_runtime_set_autosuspend_delay(dev, autosuspend_ms);
 	pm_runtime_use_autosuspend(dev);
 
 	return msm_gpu_init(drm, pdev, &adreno_gpu->base, &funcs->base,

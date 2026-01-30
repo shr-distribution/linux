@@ -817,6 +817,9 @@
 
 			operating-points-v2 = <&gpu_opp_table>;
 
+			/* Match legacy webOS KGSL idle_timeout_3d = HZ/5 */
+			qcom,gpu-idle-timeout-ms = <200>;
+
 			/*
 			 * GPU voltage supply (vdd_dig) for DVFS.
 			 * PM8058 S1 provides 500mV-1350mV range.

@@ -133,6 +133,15 @@ properties:
       For GMU attached devices a phandle to the GMU device that will
       control the power for the GPU.
 
+  qcom,gpu-idle-timeout-ms:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      GPU idle timeout in milliseconds before the GPU is powered down
+      via runtime PM autosuspend. Overrides the driver default (66ms).
+      Higher values reduce power cycling overhead at the cost of idle
+      power consumption. The legacy Qualcomm KGSL driver used 200ms
+      (HZ/5) for the 3D GPU on MSM8660/APQ8060.
+
 
 required:
   - compatible
