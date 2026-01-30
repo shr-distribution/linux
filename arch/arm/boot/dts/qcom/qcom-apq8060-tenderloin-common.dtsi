@@ -2904,9 +2904,9 @@
  * 3. Verify MMCC clocks (SMMU_AHB_CLK, GFX3D_CLK) probe before IOMMU
  * 4. Test that initramfs USB gadget and telnet still work
  *
- * MDP IOMMUs: Enabling both port0 and port1 together causes boot hang.
- * The msm_iommu driver handles multi-IOMMU per device correctly, but
- * the IOMMU reset during MDP attach disrupts boot.
+ * MDP IOMMUs: Both port0 and port1 must be enabled together since
+ * the MDP device references both. The msm_iommu driver handles
+ * multiple IOMMU instances per device via per-IOMMU ctx_lists.
  */
 
 /*
@@ -2915,11 +2915,8 @@
  * never triggers the deferred hardware reset (only happens on first
  * device attach). This is safe and exercises the IOMMU infrastructure.
  *
- * NOT enabled here (cause boot hangs):
+ * NOT enabled here (need careful testing):
  * - gpu_iommu: Referenced by adreno GPU, previously caused boot hangs
- * - mdp_port0_iommu / mdp_port1_iommu: MDP IOMMU attach hangs boot
- *   even though MDP4 disables outputs before attach. Likely a clock
- *   or power domain dependency issue during deferred reset.
  */
 &jpegd_iommu {
 	status = "okay";
@@ -2958,11 +2955,18 @@
 };
 
 /*
- * MDP IOMMUs (mdp_port0_iommu / mdp_port1_iommu) - DISABLED.
- * Enabling both caused boot hang: kernel boots (USB enumerates) but
- * initramfs network never comes up, suggesting DRM/MDP init blocks.
- * The MDP4 driver disables outputs before IOMMU attach, but the
- * deferred IOMMU reset may still cause issues with bootloader state
- * or clock/power domain interactions.
+ * MDP IOMMU ports - the MDP device references both port0 and port1.
+ * The def_domain_type=IDENTITY fix in msm_iommu.c ensures the IOMMU
+ * framework uses identity (passthrough) during bus probe, avoiding
+ * the DMA paging domain attach that previously caused boot hangs.
+ * The MDP4 DRM driver creates its own paging domain after safely
+ * disabling display outputs (mdp4_kms.c lines 472-481).
  */
+&mdp_port0_iommu {
+	status = "okay";
+};
+
+&mdp_port1_iommu {
+	status = "okay";
+};
 

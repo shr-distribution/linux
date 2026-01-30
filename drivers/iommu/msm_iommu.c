@@ -730,8 +730,23 @@ fail:
 	return 0;
 }
 
+static int msm_iommu_def_domain_type(struct device *dev)
+{
+	/*
+	 * Default to identity (passthrough) domain so that the IOMMU
+	 * framework does not attach a DMA paging domain during bus probe.
+	 * A paging domain attach triggers the deferred IOMMU hardware
+	 * reset and enables the MMU, which will fault on any in-flight
+	 * DMA from the bootloader (e.g. display framebuffer scanning).
+	 * Drivers that need IOMMU translation (like DRM/MSM) create
+	 * their own paging domain after safely quiescing their hardware.
+	 */
+	return IOMMU_DOMAIN_IDENTITY;
+}
+
 static struct iommu_ops msm_iommu_ops = {
 	.identity_domain = &msm_iommu_identity_domain,
+	.def_domain_type = msm_iommu_def_domain_type,
 	.domain_alloc_paging = msm_iommu_domain_alloc_paging,
 	.probe_device = msm_iommu_probe_device,
 	.device_group = generic_device_group,
