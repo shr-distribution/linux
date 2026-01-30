@@ -2904,8 +2904,9 @@
  * 3. Verify MMCC clocks (SMMU_AHB_CLK, GFX3D_CLK) probe before IOMMU
  * 4. Test that initramfs USB gadget and telnet still work
  *
- * MDP IOMMUs have a separate issue: msm_iommu driver problems with
- * multiple IOMMU instances referencing the same device.
+ * MDP IOMMUs: Enabling both port0 and port1 together causes boot hang.
+ * The msm_iommu driver handles multi-IOMMU per device correctly, but
+ * the IOMMU reset during MDP attach disrupts boot.
  */
 
 /*
@@ -2914,9 +2915,11 @@
  * never triggers the deferred hardware reset (only happens on first
  * device attach). This is safe and exercises the IOMMU infrastructure.
  *
- * NOT enabled here (need careful testing):
+ * NOT enabled here (cause boot hangs):
  * - gpu_iommu: Referenced by adreno GPU, previously caused boot hangs
- * - mdp_port0_iommu / mdp_port1_iommu: Referenced by MDP display
+ * - mdp_port0_iommu / mdp_port1_iommu: MDP IOMMU attach hangs boot
+ *   even though MDP4 disables outputs before attach. Likely a clock
+ *   or power domain dependency issue during deferred reset.
  */
 &jpegd_iommu {
 	status = "okay";
@@ -2953,4 +2956,13 @@
 &gfx2d1_iommu {
 	status = "okay";
 };
+
+/*
+ * MDP IOMMUs (mdp_port0_iommu / mdp_port1_iommu) - DISABLED.
+ * Enabling both caused boot hang: kernel boots (USB enumerates) but
+ * initramfs network never comes up, suggesting DRM/MDP init blocks.
+ * The MDP4 driver disables outputs before IOMMU attach, but the
+ * deferred IOMMU reset may still cause issues with bootloader state
+ * or clock/power domain interactions.
+ */
 
