@@ -2886,37 +2886,19 @@
 };
 
 /*
- * IOMMU nodes left disabled for safe boot. The MSM IOMMU driver
- * (CONFIG_MSM_IOMMU) is compiled in but no IOMMU hardware is activated.
+ * Enable 11 of 12 MSM8660 IOMMU units. The def_domain_type=IDENTITY fix
+ * in msm_iommu.c ensures the IOMMU framework uses identity (passthrough)
+ * during bus probe, preventing DMA paging domain attach that would
+ * trigger IOMMU hardware reset while bootloader DMA is still active.
  *
- * GPU: Uses its own internal MMU (a2xx_gpummu) independent of system IOMMU.
- * MDP: Operates without IOMMU via graceful fallback in msm_kms.c.
- *
- * Enabling gpu_iommu previously caused initramfs boot failures, likely
- * due to of_iommu_configure() probe deferral interactions. The GPU's
- * iommus DT property references gpu_iommu; if that node is enabled
- * but the IOMMU driver hasn't probed yet (clock dependencies), devices
- * may be indefinitely deferred.
- *
- * To enable IOMMU in the future:
- * 1. Ensure CONFIG_MSM_IOMMU=y in defconfig
- * 2. Enable gpu_iommu here (status = "okay")
- * 3. Verify MMCC clocks (SMMU_AHB_CLK, GFX3D_CLK) probe before IOMMU
- * 4. Test that initramfs USB gadget and telnet still work
- *
- * MDP IOMMUs: Both port0 and port1 must be enabled together since
- * the MDP device references both. The msm_iommu driver handles
- * multiple IOMMU instances per device via per-IOMMU ctx_lists.
- */
-
-/*
- * Enable all IOMMUs that have no device references in this DT.
- * The driver probes (maps registers, gets clocks, requests IRQ) but
- * never triggers the deferred hardware reset (only happens on first
- * device attach). This is safe and exercises the IOMMU infrastructure.
- *
- * NOT enabled here (need careful testing):
- * - gpu_iommu: Referenced by adreno GPU, previously caused boot hangs
+ * GPU IOMMU (gpu_iommu): Deliberately left disabled. The A2xx/Adreno 220
+ *      GPU uses its own internal Memory Hierarchy MMU (a2xx_gpummu), not
+ *      the system IOMMU. Enabling gpu_iommu causes display corruption
+ *      (blue vertical lines) due to MMSS hardware interaction, with no
+ *      benefit since the A2xx driver ignores the system IOMMU entirely.
+ * MDP: Both port0 and port1 must be enabled together since the MDP
+ *      device references both. The MDP4 DRM driver creates its own
+ *      paging domain after safely disabling display outputs.
  */
 &jpegd_iommu {
 	status = "okay";
@@ -2954,14 +2936,6 @@
 	status = "okay";
 };
 
-/*
- * MDP IOMMU ports - the MDP device references both port0 and port1.
- * The def_domain_type=IDENTITY fix in msm_iommu.c ensures the IOMMU
- * framework uses identity (passthrough) during bus probe, avoiding
- * the DMA paging domain attach that previously caused boot hangs.
- * The MDP4 DRM driver creates its own paging domain after safely
- * disabling display outputs (mdp4_kms.c lines 472-481).
- */
 &mdp_port0_iommu {
 	status = "okay";
 };
