@@ -37,10 +37,6 @@ static DEFINE_SPINLOCK(msm_iommu_lock);
 static LIST_HEAD(qcom_iommu_devices);
 static struct iommu_ops msm_iommu_ops;
 
-/* Forward declaration for multi-IOMMU support */
-static struct msm_iommu_ctx_dev *find_master_for_dev(struct msm_iommu_dev *iommu,
-						     struct device *dev);
-
 struct msm_priv {
 	struct list_head list_attached;
 	struct iommu_domain domain;
@@ -361,6 +357,24 @@ static int msm_iommu_domain_config(struct msm_priv *priv)
 	return 0;
 }
 
+/*
+ * Find or create a master context for a device on a specific IOMMU.
+ * Each IOMMU instance maintains its own ctx_list of masters. When a device
+ * references multiple IOMMU instances (like MDP with mdp_port0 and mdp_port1),
+ * each IOMMU gets its own master context for that device.
+ */
+static struct msm_iommu_ctx_dev *find_master_for_dev(struct msm_iommu_dev *iommu,
+						     struct device *dev)
+{
+	struct msm_iommu_ctx_dev *master;
+
+	list_for_each_entry(master, &iommu->ctx_list, list) {
+		if (master->of_node == dev->of_node)
+			return master;
+	}
+	return NULL;
+}
+
 /* Must be called under msm_iommu_lock */
 static struct msm_iommu_dev *find_iommu_for_dev(struct device *dev)
 {
@@ -590,47 +604,29 @@ fail:
 	return ret;
 }
 
-static void print_ctx_regs(void __iomem *base, int ctx)
+static void print_ctx_regs(struct device *dev, void __iomem *base, int ctx)
 {
 	unsigned int fsr = GET_FSR(base, ctx);
-	pr_err("FAR    = %08x    PAR    = %08x\n",
-	       GET_FAR(base, ctx), GET_PAR(base, ctx));
-	pr_err("FSR    = %08x [%s%s%s%s%s%s%s%s%s%s]\n", fsr,
-			(fsr & 0x02) ? "TF " : "",
-			(fsr & 0x04) ? "AFF " : "",
-			(fsr & 0x08) ? "APF " : "",
-			(fsr & 0x10) ? "TLBMF " : "",
-			(fsr & 0x20) ? "HTWDEEF " : "",
-			(fsr & 0x40) ? "HTWSEEF " : "",
-			(fsr & 0x80) ? "MHF " : "",
-			(fsr & 0x10000) ? "SL " : "",
-			(fsr & 0x40000000) ? "SS " : "",
-			(fsr & 0x80000000) ? "MULTI " : "");
 
-	pr_err("FSYNR0 = %08x    FSYNR1 = %08x\n",
-	       GET_FSYNR0(base, ctx), GET_FSYNR1(base, ctx));
-	pr_err("TTBR0  = %08x    TTBR1  = %08x\n",
-	       GET_TTBR0(base, ctx), GET_TTBR1(base, ctx));
-	pr_err("SCTLR  = %08x    ACTLR  = %08x\n",
-	       GET_SCTLR(base, ctx), GET_ACTLR(base, ctx));
-}
-
-/*
- * Find or create a master context for a device on a specific IOMMU.
- * Each IOMMU instance maintains its own ctx_list of masters. When a device
- * references multiple IOMMU instances (like MDP with mdp_port0 and mdp_port1),
- * each IOMMU gets its own master context for that device.
- */
-static struct msm_iommu_ctx_dev *find_master_for_dev(struct msm_iommu_dev *iommu,
-						     struct device *dev)
-{
-	struct msm_iommu_ctx_dev *master;
-
-	list_for_each_entry(master, &iommu->ctx_list, list) {
-		if (master->of_node == dev->of_node)
-			return master;
-	}
-	return NULL;
+	dev_err(dev, "FAR    = %08x    PAR    = %08x\n",
+		GET_FAR(base, ctx), GET_PAR(base, ctx));
+	dev_err(dev, "FSR    = %08x [%s%s%s%s%s%s%s%s%s%s]\n", fsr,
+		(fsr & 0x02) ? "TF " : "",
+		(fsr & 0x04) ? "AFF " : "",
+		(fsr & 0x08) ? "APF " : "",
+		(fsr & 0x10) ? "TLBMF " : "",
+		(fsr & 0x20) ? "HTWDEEF " : "",
+		(fsr & 0x40) ? "HTWSEEF " : "",
+		(fsr & 0x80) ? "MHF " : "",
+		(fsr & 0x10000) ? "SL " : "",
+		(fsr & 0x40000000) ? "SS " : "",
+		(fsr & 0x80000000) ? "MULTI " : "");
+	dev_err(dev, "FSYNR0 = %08x    FSYNR1 = %08x\n",
+		GET_FSYNR0(base, ctx), GET_FSYNR1(base, ctx));
+	dev_err(dev, "TTBR0  = %08x    TTBR1  = %08x\n",
+		GET_TTBR0(base, ctx), GET_TTBR1(base, ctx));
+	dev_err(dev, "SCTLR  = %08x    ACTLR  = %08x\n",
+		GET_SCTLR(base, ctx), GET_ACTLR(base, ctx));
 }
 
 static int insert_iommu_master(struct device *dev,
@@ -700,6 +696,7 @@ irqreturn_t msm_iommu_fault_handler(int irq, void *dev_id)
 	struct msm_iommu_dev *iommu = dev_id;
 	unsigned int fsr;
 	int i, ret;
+	irqreturn_t result = IRQ_NONE;
 
 	spin_lock(&msm_iommu_lock);
 
@@ -708,9 +705,6 @@ irqreturn_t msm_iommu_fault_handler(int irq, void *dev_id)
 		goto fail;
 	}
 
-	pr_err("Unexpected IOMMU page fault!\n");
-	pr_err("base = %08x\n", (unsigned int)iommu->base);
-
 	ret = __enable_clocks(iommu);
 	if (ret)
 		goto fail;
@@ -718,16 +712,18 @@ irqreturn_t msm_iommu_fault_handler(int irq, void *dev_id)
 	for (i = 0; i < iommu->ncb; i++) {
 		fsr = GET_FSR(iommu->base, i);
 		if (fsr) {
-			pr_err("Fault occurred in context %d.\n", i);
-			pr_err("Interesting registers:\n");
-			print_ctx_regs(iommu->base, i);
+			dev_err(iommu->dev,
+				"Unexpected IOMMU page fault in context %d\n",
+				i);
+			print_ctx_regs(iommu->dev, iommu->base, i);
 			SET_FSR(iommu->base, i, 0x4000000F);
+			result = IRQ_HANDLED;
 		}
 	}
 	__disable_clocks(iommu);
 fail:
 	spin_unlock(&msm_iommu_lock);
-	return 0;
+	return result;
 }
 
 static int msm_iommu_def_domain_type(struct device *dev)
@@ -825,7 +821,8 @@ static int msm_iommu_probe(struct platform_device *pdev)
 					"msm_iommu_secure_irpt_handler",
 					iommu);
 	if (ret) {
-		pr_err("Request IRQ %d failed with ret=%d\n", iommu->irq, ret);
+		dev_err(iommu->dev, "Request IRQ %d failed with ret=%d\n",
+			iommu->irq, ret);
 		return ret;
 	}
 
@@ -834,18 +831,20 @@ static int msm_iommu_probe(struct platform_device *pdev)
 	ret = iommu_device_sysfs_add(&iommu->iommu, iommu->dev, NULL,
 				     "msm-smmu.%pa", &ioaddr);
 	if (ret) {
-		pr_err("Could not add msm-smmu at %pa to sysfs\n", &ioaddr);
+		dev_err(iommu->dev, "Could not add msm-smmu at %pa to sysfs\n",
+			&ioaddr);
 		return ret;
 	}
 
 	ret = iommu_device_register(&iommu->iommu, &msm_iommu_ops, &pdev->dev);
 	if (ret) {
-		pr_err("Could not register msm-smmu at %pa\n", &ioaddr);
+		dev_err(iommu->dev, "Could not register msm-smmu at %pa\n",
+			&ioaddr);
 		return ret;
 	}
 
-	pr_info("device mapped at %p, irq %d with %d ctx banks\n",
-		iommu->base, iommu->irq, iommu->ncb);
+	dev_info(iommu->dev, "device mapped at %p, irq %d with %d ctx banks\n",
+		 iommu->base, iommu->irq, iommu->ncb);
 
 	return ret;
 }

@@ -59,8 +59,9 @@ struct msm_iommu_dev {
 
 	struct iommu_device iommu;
 
-	/* Track if IOMMU has been reset - deferred to first attach to avoid
-	 * disrupting bootloader display output that uses this memory path.
+	/*
+	 * Track if IOMMU has been reset - deferred to first attach to
+	 * avoid disrupting bootloader display output via this memory path.
 	 */
 	bool reset_done;
 };
