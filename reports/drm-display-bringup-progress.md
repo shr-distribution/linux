@@ -1,8 +1,8 @@
 # DRM/Display Bring-up Progress Report
 
-**Date:** 2026-01-24 (Updated)
+**Date:** 2026-01-30 (Updated)
 **Target:** HP TouchPad (APQ8060/MSM8660)
-**Status:** COMPLETE - Display fully working, GPU under investigation
+**Status:** COMPLETE - Display and GPU working, performance under optimization
 
 ## Summary
 
@@ -86,8 +86,15 @@ This uses PLL8 (384MHz) with 1/4 divider = 96MHz exact.
 
 3. **GPU IRQ Conflict:** ✅ RESOLVED - GPU now probes successfully with IOMMU enabled.
 
+4. **GPU Hang:** ✅ RESOLVED - Adding "bus" clock (GFX3D_AXI_CLK) fixed GPU probe and rendering.
+
+5. **LCDC Vblank Timeout:** ✅ RESOLVED - Using PRIMARY_VSYNC instead of DMA_P_DONE for LCDC interfaces.
+
+6. **GPU Runtime PM Low FPS:** ✅ ROOT CAUSE IDENTIFIED - 66ms autosuspend delay causes full GPU reinit per frame. Workaround: disable runtime PM. Permanent fix needed in DT or driver.
+
 ### Remaining Known Issues
 1. **MDP4 Underrun:** PRIMARY_INTF_UDERRUN (0x100) still occasionally occurs, but underflow recovery handles it.
+2. **GPU Performance:** 1.75 FPS with runtime PM disabled — still below expected Adreno 220 performance. Tile-based rendering overhead and a2xx driver maturity may be factors.
 
 ## 2026-01-24 Update: Vblank Fix and GPU Investigation
 
@@ -118,15 +125,9 @@ else
 
 **Result:** modetest pattern tests now pass without timeouts.
 
-### 8. GPU (Adreno A220) Investigation - IN PROGRESS
+### 8. GPU (Adreno A220) - WORKING
 
-**Problem:** Running kmscube (GPU hardware rendering) causes device hang.
-
-**Symptoms:**
-- Mesa/freedreno initializes correctly ("FD220" renderer)
-- OpenGL ES 2.0 context created successfully
-- Device hangs during actual GPU rendering
-- Network stack partially works (ping responds) but shell hangs
+**Previous Problem:** Running kmscube (GPU hardware rendering) caused device hang.
 
 **Investigation Findings:**
 
@@ -153,7 +154,57 @@ clocks = <&mmcc GFX3D_CLK>,
          <&mmcc GFX3D_AXI_CLK>;
 ```
 
-**Status:** Testing pending after device reboot.
+**Status:** GPU now probes and renders successfully. kmscube runs with freedreno FD220 renderer.
+
+### 9. GPU Runtime PM Causing Low FPS (2026-01-30)
+
+**Problem:** kmscube with hardware-accelerated OpenGL ES 2.0 only achieved ~0.9 FPS on the Adreno 220, far below expected performance.
+
+**Hardware Configuration:**
+- GPU: Adreno 220 (FD220), chip-id 0x0000000002020000, GMEM 512KB
+- Renderer: Mesa 26.0.0-devel, freedreno (a2xx backend)
+- Display: 1024x768 @ 59.96Hz via LVDS-1
+- CPU: Dual Scorpion @ 1512 MHz, GPU core @ 320 MHz (max)
+- Render nodes: `renderD128` and `card0` both backed by MDP4 display controller
+
+**Investigation Steps:**
+
+1. **Ruled out software rendering:** Attempted `GALLIUM_DRIVER=softpipe` — Mesa ignores this and always selects freedreno for the DRM device. `LIBGL_ALWAYS_SOFTWARE=1` also fails silently (Mesa built without software fallback for GBM platform).
+
+2. **Ruled out page flip bottleneck:** Ran kmscube with `-x` (surfaceless, no page flips) — same ~0.93 FPS, confirming rendering itself is the bottleneck.
+
+3. **Confirmed real GPU hardware usage:** GPU IRQ count in `/proc/interrupts` increases with each frame (576→605→629), proving actual hardware command submission.
+
+4. **Found root cause in dmesg:** GPU runtime PM was suspending and resuming **every single frame**:
+   ```
+   msm_gpu_pm_resume → [render 1 frame] → msm_gpu_pm_suspend
+   → a2xx_hw_init (full GPU re-initialization)
+   → PM4 + PFP microcode reload
+   → msm_gpu_pm_resume → [render 1 frame] → ...
+   ```
+   Each suspend/resume cycle takes ~500-700ms, explaining the ~1 second per frame.
+
+5. **Root cause detail:** The GPU's `autosuspend_delay_ms` was only **66ms**. Since each frame takes some time to render and flip, the GPU would hit the 66ms idle timeout between frames and fully power down. On resume, the driver must run `a2xx_hw_init()` which reloads PM4/PFP microcode and reinitializes all GPU state.
+
+**Fix Applied (runtime):**
+```sh
+echo on > /sys/bus/platform/devices/4300000.adreno/power/control
+```
+
+This disables runtime PM, keeping the GPU powered on continuously.
+
+**Result:** FPS doubled from **0.9 → 1.75 FPS** (93% improvement).
+
+**Remaining Performance Gap:**
+1.75 FPS is still below expectations for an Adreno 220. Likely contributing factors:
+- **Tile-based rendering overhead:** At 1024x768 with 512KB GMEM, the freedreno a2xx backend must split each frame into ~12 tiles, with each tile requiring a separate GPU submission
+- **a2xx freedreno driver maturity:** The a2xx backend is the oldest and least optimized path in freedreno
+- **No GPU IOMMU:** GPU uses its own internal MMU (a2xx_gpummu) rather than the system IOMMU, which may have different performance characteristics
+
+**Recommended Next Steps:**
+1. Increase `autosuspend_delay_ms` to 1000+ (or disable runtime PM in DT/driver) to prevent per-frame GPU power cycling
+2. Profile GPU tile submission overhead — check if reducing resolution improves FPS proportionally
+3. Test with simpler shaders to isolate GPU compute vs. submission overhead
 
 ## Boot Log Analysis (Before 96MHz fix)
 
@@ -179,10 +230,11 @@ After the 96MHz clock fix, the mode should be accepted.
 
 ## Next Steps
 
-1. **Test IOMMU on Device:** Verify IOMMU functionality with latest build
-2. **Cursor Testing:** Test hardware cursor with IOMMU enabled
-3. **Clean Up:** Remove debug messages, make changes upstreamable
-4. **Upstream Preparation:** Prepare patches for mainline submission
+1. **Fix GPU Runtime PM:** Increase `autosuspend_delay_ms` to 1000+ or disable runtime PM for Adreno 220 in device tree/driver to prevent per-frame GPU power cycling
+2. **Profile GPU Tile Overhead:** Test if reducing resolution improves FPS proportionally to isolate tile submission vs. compute bottleneck
+3. **Cursor Testing:** Test hardware cursor with IOMMU enabled
+4. **Clean Up:** Remove debug messages, make changes upstreamable
+5. **Upstream Preparation:** Prepare patches for mainline submission
 
 ## Technical Notes
 

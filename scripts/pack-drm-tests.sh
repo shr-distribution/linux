@@ -207,6 +207,19 @@ MODE="${1:-quick}"
 # Sub-second timestamp using /proc/uptime (BusyBox date lacks %N)
 ts() { awk '{printf "%s", $1}' /proc/uptime; }
 
+# BusyBox-compatible timeout: run command for N seconds then kill it
+# Usage: run_with_timeout <seconds> <command> [args...]
+run_with_timeout() {
+    local secs="$1"; shift
+    "$@" &
+    local cmd_pid=$!
+    (sleep "$secs"; kill $cmd_pid 2>/dev/null; sleep 1; kill -9 $cmd_pid 2>/dev/null) &
+    local timer_pid=$!
+    wait $cmd_pid 2>/dev/null || true
+    kill $timer_pid 2>/dev/null || true
+    wait $timer_pid 2>/dev/null || true
+}
+
 log() { echo "${GREEN}[*]${NC} $1"; log_to_file "[*] $1"; }
 warn() { echo "${YELLOW}[!]${NC} $1"; log_to_file "[!] $1"; }
 err() { echo "${RED}[X]${NC} $1"; log_to_file "[X] $1"; }
@@ -450,7 +463,7 @@ run_modetest_patterns() {
     log "=== Running modetest pattern tests ==="
 
     # Find the active connector
-    local connector=$(modetest -c 2>/dev/null | grep -E "connected" | head -1 | awk '{print $1}')
+    local connector=$(modetest -c 2>/dev/null | grep -E "connected" | head -n 1 | awk '{print $1}')
     if [ -z "$connector" ]; then
         warn "No connected display found"
         return 1
@@ -459,7 +472,7 @@ run_modetest_patterns() {
     log "Using connector: $connector"
 
     # Find the preferred mode
-    local mode=$(modetest -c 2>/dev/null | grep -A20 "^$connector" | grep -E "^\s+[0-9]+x[0-9]+" | head -1 | awk '{print $1}')
+    local mode=$(modetest -c 2>/dev/null | grep -A20 "^$connector" | grep -E "^\s+[0-9]+x[0-9]+" | head -n 1 | awk '{print $1}')
     if [ -z "$mode" ]; then
         mode="1024x768"
         warn "Could not detect mode, using default: $mode"
@@ -471,7 +484,7 @@ run_modetest_patterns() {
     local patterns="smpte tiles"
     for pattern in $patterns; do
         log "Testing pattern: $pattern"
-        timeout 3 modetest -s "$connector:$mode@XR24" -P "$pattern" 2>&1 || true
+        run_with_timeout 3 modetest -s "$connector:$mode@XR24" -P "$pattern" 2>&1 || true
         sleep 1
     done
 
@@ -501,7 +514,14 @@ run_kmscube() {
     sync
 
     # Run kmscube and capture FPS output
-    timeout $duration kmscube 2>&1 | tee /tmp/kmscube-output.txt || true
+    kmscube > /tmp/kmscube-output.txt 2>&1 &
+    local kms_pid=$!
+    sleep $duration
+    kill $kms_pid 2>/dev/null || true
+    sleep 1
+    kill -9 $kms_pid 2>/dev/null || true
+    wait $kms_pid 2>/dev/null || true
+    cat /tmp/kmscube-output.txt 2>/dev/null || true
 
     # Mark completion
     log_to_file ">>> KMSCUBE COMPLETED <<<"
@@ -544,7 +564,7 @@ run_kmscube_atomic() {
     log_to_file ">>> STARTING KMSCUBE ATOMIC (duration=${duration}s) <<<"
     sync
 
-    timeout $duration kmscube --atomic 2>&1 || warn "Atomic mode may not be supported"
+    run_with_timeout $duration kmscube --atomic 2>&1 || warn "Atomic mode may not be supported"
 
     log_to_file ">>> KMSCUBE ATOMIC COMPLETED <<<"
     sync
@@ -563,7 +583,14 @@ run_stress_test() {
         log "Stress iteration $i/3..."
         log_to_file ">>> STRESS TEST ITERATION $i/3 <<<"
         sync
-        timeout 10 kmscube 2>&1 | grep -E "fps" | tail -1 || true
+        kmscube > /tmp/kmscube-stress.txt 2>&1 &
+        local stress_pid=$!
+        sleep 10
+        kill $stress_pid 2>/dev/null || true
+        sleep 1
+        kill -9 $stress_pid 2>/dev/null || true
+        wait $stress_pid 2>/dev/null || true
+        grep -E "fps" /tmp/kmscube-stress.txt 2>/dev/null | tail -n 1 || true
         show_frequencies
         sync
     done
