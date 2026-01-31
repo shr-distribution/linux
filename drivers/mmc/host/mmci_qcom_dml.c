@@ -183,7 +183,6 @@ static int qcom_dma_setup(struct mmci_host *host)
 	 */
 	use_adm = qcom_dma_is_adm(np);
 	if (use_adm) {
-		dev_info(host->mmc->parent, "ADM DMA: enabled (no DML)\n");
 		return 0;
 	}
 
@@ -273,6 +272,5 @@ static struct mmci_host_ops qcom_variant_ops = {
 
 void qcom_variant_init(struct mmci_host *host)
 {
-	dev_info(mmc_dev(host->mmc), "qcom_variant_init: setting qcom_variant_ops\n");
 	host->ops = &qcom_variant_ops;
 }

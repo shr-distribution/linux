@@ -111,8 +111,6 @@ static int msm_drm_init(struct device *dev, const struct drm_driver *drv,
 	struct drm_device *ddev;
 	int ret;
 
-	dev_info(dev, "MSM_DRV: msm_drm_init start\n");
-
 	if (drm_firmware_drivers_only())
 		return -ENODEV;
 
@@ -162,7 +160,6 @@ static int msm_drm_init(struct device *dev, const struct drm_driver *drv,
 	 * on probe deferral.
 	 */
 	if (priv->kms_init) {
-		dev_info(dev, "MSM_DRV: calling msm_drm_kms_init\n");
 		ret = msm_drm_kms_init(dev, drv);
 		if (ret)
 			goto err_put_dev;
@@ -178,13 +175,9 @@ static int msm_drm_init(struct device *dev, const struct drm_driver *drv,
 		dev_warn(dev, "MSM_DRV: component_bind_all failed: %d (continuing without GPU)\n", ret);
 	}
 
-	/* DEBUG: Skip msm_gem_shrinker_init - breaks USB on HP TouchPad */
-	dev_info(dev, "MSM_DRV: Skipping msm_gem_shrinker_init (USB workaround)\n");
-#if 0
 	ret = msm_gem_shrinker_init(ddev);
 	if (ret)
 		goto err_msm_uninit;
-#endif
 
 	ret = drm_dev_register(ddev, 0);
 	if (ret)
@@ -1034,7 +1027,6 @@ static int add_gpu_components(struct device *dev,
 
 static int msm_drm_bind(struct device *dev)
 {
-	dev_info(dev, "MSM_DRV: bind - calling msm_drm_init\n");
 	return msm_drm_init(dev,
 			    msm_gpu_no_components() ?
 				    &msm_kms_driver :

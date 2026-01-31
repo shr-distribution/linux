@@ -629,18 +629,6 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	if (ret)
 		return ret;
 
-	/* Debug: track DMA transfer number for Qualcomm SDIO */
-	if (host->variant->qcom_datactrl_delay) {
-		static unsigned int qcom_dma_xfer_nr;
-		unsigned int nr = ++qcom_dma_xfer_nr;
-
-		dev_info(mmc_dev(host->mmc),
-			"DMA#%u %s datactrl=0x%x blksz=%u size=%u\n",
-			nr,
-			(data->flags & MMC_DATA_READ) ? "RD" : "WR",
-			datactrl, data->blksz, host->size);
-	}
-
 	/* Trigger the DMA transfer */
 	mmci_write_datactrlreg(host, datactrl);
 
@@ -1621,16 +1609,8 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		dev_err(mmc_dev(host->mmc), "stray MCI_DATABLOCKEND interrupt\n");
 
 	if (status & MCI_DATAEND || data->error) {
-		if (host->variant->qcom_datactrl_delay) {
-			static unsigned int qcom_dataend_nr;
-			unsigned int nr = ++qcom_dataend_nr;
-
-			dev_info(mmc_dev(host->mmc),
-				"DATAEND#%u status=0x%08x err=%d bytes=%u\n",
-				nr, status, data->error,
-				data->blksz * data->blocks);
+		if (host->variant->qcom_datactrl_delay)
 			cancel_delayed_work(&host->qcom_dma_timeout_work);
-		}
 
 		mmci_dma_finalize(host, data);
 
@@ -2046,9 +2026,6 @@ static void mmci_write_sdio_irq_bit(struct mmci_host *host, int enable)
 
 	if (enable) {
 		writel_relaxed(mask | MCI_ST_SDIOITMASK, base + MMCIMASK0);
-		dev_info(mmc_dev(host->mmc),
-			"SDIO IRQ enabled, mask0=0x%08x\n",
-			readl_relaxed(base + MMCIMASK0));
 	} else {
 		writel_relaxed(mask & ~MCI_ST_SDIOITMASK, base + MMCIMASK0);
 	}
@@ -2095,18 +2072,6 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 		 */
 		status &= readl(host->base + MMCIMASK0);
 
-		/* Debug: check for SDIO IRQ in raw status for Qualcomm (print once) */
-		if (host->variant->qcom_datactrl_delay && (raw_status & MCI_ST_SDIOIT)) {
-			static int sdio_irq_debug_count;
-			if (sdio_irq_debug_count < 3) {
-				dev_info(mmc_dev(host->mmc),
-					"SDIO IRQ in raw=0x%08x masked=0x%08x ops->enable_sdio_irq=%ps mask0=0x%08x\n",
-					raw_status, status,
-					host->mmc->ops->enable_sdio_irq,
-					readl(host->base + MMCIMASK0));
-				sdio_irq_debug_count++;
-			}
-		}
 		if (host->variant->busy_detect)
 			writel(status & ~host->variant->busy_detect_mask,
 			       host->base + MMCICLEAR);
@@ -2370,8 +2335,6 @@ static void mmci_enable_sdio_irq(struct mmc_host *mmc, int enable)
 	struct mmci_host *host = mmc_priv(mmc);
 	unsigned long flags;
 
-	dev_info(mmc_dev(mmc), "mmci_enable_sdio_irq called: enable=%d\n", enable);
-
 	if (enable)
 		/* Keep the SDIO mode bit if SDIO irqs are enabled */
 		pm_runtime_get_sync(mmc_dev(mmc));
@@ -2599,7 +2562,7 @@ static int mmci_probe(struct amba_device *dev,
 			dev_err(&dev->dev, "failed to set interconnect bw: %d\n", ret);
 			goto clk_disable;
 		}
-		dev_info(&dev->dev, "interconnect bandwidth voting enabled\n");
+		dev_dbg(&dev->dev, "interconnect bandwidth voting enabled\n");
 	}
 
 	if (variant->qcom_fifo)
@@ -2710,17 +2673,11 @@ static int mmci_probe(struct amba_device *dev,
 		mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY;
 	}
 
-	dev_info(mmc_dev(mmc), "SDIO IRQ check: variant_support=%d, caps=0x%08x, MMC_CAP_SDIO_IRQ=0x%08x\n",
-		variant->supports_sdio_irq, host->mmc->caps, MMC_CAP_SDIO_IRQ);
-
 	if (variant->supports_sdio_irq && host->mmc->caps & MMC_CAP_SDIO_IRQ) {
 		mmc->caps2 |= MMC_CAP2_SDIO_IRQ_NOTHREAD;
 
 		mmci_ops.enable_sdio_irq = mmci_enable_sdio_irq;
 		mmci_ops.ack_sdio_irq	= mmci_ack_sdio_irq;
-
-		dev_info(mmc_dev(mmc), "SDIO IRQ enabled: ops->enable_sdio_irq=%ps, ops->ack_sdio_irq=%ps\n",
-			mmci_ops.enable_sdio_irq, mmci_ops.ack_sdio_irq);
 
 		mmci_write_datactrlreg(host,
 				       host->variant->datactrl_mask_sdio);

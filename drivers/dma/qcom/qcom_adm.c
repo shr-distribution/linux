@@ -250,8 +250,8 @@ static int adm_desc_pool_init(struct adm_device *adev)
 		list_add_tail(&desc->pool_node, &adev->desc_free_list);
 	}
 
-	dev_info(adev->dev, "ADM descriptor pool: %d descs, %zu KB coherent\n",
-		 ADM_TOTAL_DESC_POOL, cpl_pool_size / 1024);
+	dev_dbg(adev->dev, "ADM descriptor pool: %d descs, %zu KB coherent\n",
+		ADM_TOTAL_DESC_POOL, cpl_pool_size / 1024);
 
 	return 0;
 }
@@ -1118,11 +1118,6 @@ static int adm_dma_probe(struct platform_device *pdev)
 		goto err_disable_clks;
 	}
 
-	/* Debug: print base address and initial CH_CONF value */
-	dev_info(adev->dev, "ADM probe: base=%p EE=%d, initial CH_CONF[0]=0x%08x\n",
-		 adev->regs, adev->ee,
-		 readl_relaxed(adev->regs + ADM_CH_CONF(0, adev->ee)));
-
 	/* reset CRCIs */
 	for (i = 0; i < 16; i++)
 		writel(ADM_CRCI_CTL_RST, adev->regs +
@@ -1146,10 +1141,6 @@ static int adm_dma_probe(struct platform_device *pdev)
 		       adev->regs + ADM_CH_RSLT_CONF(i, adev->ee));
 		adev->channels[i].initialized = 1;
 	}
-
-	dev_info(adev->dev, "ADM probe: after init CH_CONF[0]=0x%08x RSLT_CONF[0]=0x%08x\n",
-		 readl_relaxed(adev->regs + ADM_CH_CONF(0, adev->ee)),
-		 readl_relaxed(adev->regs + ADM_CH_RSLT_CONF(0, adev->ee)));
 
 	ret = devm_request_irq(adev->dev, adev->irq, adm_dma_irq,
 			       0, "adm_dma", adev);
