@@ -1,5 +1,5 @@
 # HP TouchPad Mainline Kernel Status Report
-**Date:** 2026-01-30 (Updated)
+**Date:** 2026-01-31 (Updated)
 **Kernel Version:** Linux 6.18.0
 **Branch:** `tenderloin/6.18/upstream-patches`
 **Hardware:** HP TouchPad (Topaz WiFi)
@@ -11,7 +11,35 @@
 
 **Overall Status: EXCELLENT - WiFi SCANNING, GPU 3D RENDERING, FULL DISPLAY STACK**
 
-### Latest Work (2026-01-25 to 2026-01-30):
+### Latest Work (2026-01-31):
+
+**Display Blue Lines Fix - ROOT CAUSE SOLVED**
+
+Resolved the long-standing blue vertical lines issue that appeared when booting without `initcall_debug`:
+- Root cause: `modeset_init()` was called *after* LCDC disable in `mdp4_kms_init()`. When panel-lvds deferred probe (waiting for backlight/regulator/PWM), LCDC was already disabled, killing pixel data to the panel while the LVDS receiver was still active.
+- Fix: Moved `modeset_init()` before LCDC disable. Now deferred probe returns -EPROBE_DEFER before touching any display hardware, preserving the bootloader's display state across all 5 retry cycles.
+- `initcall_debug` workaround removed from all 3 defconfigs (no longer needed)
+- Confirmed: 5 deferred probe retries before panel-lvds ready, display preserved throughout
+- CONFIG_LOG_BUF_SHIFT increased to 21 (2MB) in debug defconfig for better dmesg capture
+
+**GPU Runtime PM - IDLE TIMEOUT CONFIGURABLE**
+
+Added device tree property `qcom,idle-timeout-ms` for GPU autosuspend delay:
+- Default 66ms was too aggressive, causing full GPU power-down between frames
+- Device tree now sets 200ms for APQ8060, preventing unnecessary power cycling
+- Eliminates the 500-700ms a2xx_hw_init() + microcode reload penalty per suspend/resume
+
+**Debug Logging Cleanup - 5 DRIVERS CLEANED**
+
+Audited all custom commits for excess debug logging; cleaned up 5 files:
+- `mmci.c`: Removed hot-path DMA/DATAEND transfer counters (fired every I/O op), SDIO IRQ debug block
+- `msm_drv.c`: Removed MSM_DRV breadcrumbs, re-enabled `msm_gem_shrinker_init()` (was disabled due to misdiagnosed USB issue — actual cause was missing bus fabric arbitration, since fixed by MSM8660 interconnect driver)
+- `mdp4_lvds_pll.c`: Removed function tracing, downgraded fallback message to dev_dbg
+- `qcom_adm.c`: Removed register dumps, downgraded pool info to dev_dbg
+- `mmci_qcom_dml.c`: Removed probe-path info messages
+- Full audit documented in `reports/debug_logging_audit.md`
+
+### Previous Work (2026-01-25 to 2026-01-30):
 
 **WiFi AR6003 - SCANNING WORKING**
 
@@ -27,7 +55,7 @@ Major WiFi breakthrough: went from firmware upload timeout to fully operational 
 Adreno 220 GPU now renders 3D content:
 - Root cause of initial 1.75 FPS: debug pr_info in clk-rcg.c causing ~950 printk calls per 8 frames
 - After removing debug prints: 1.75 FPS → ~24 FPS (13x improvement)
-- GPU runtime PM identified as additional bottleneck (66ms autosuspend triggers full GPU power-down between frames)
+- GPU runtime PM idle timeout now configurable via device tree (200ms for APQ8060)
 
 **IOMMU - UPDATED CONFIGURATION**
 
@@ -192,7 +220,7 @@ AP 10: 3e:97:f6:01:b9:fc 5180 MHz  -59 dBm  "Herrie-Guest-Free WiFi_5G"
 
 ---
 
-## GPU 3D RENDERING DETAILS (2026-01-29 to 2026-01-30)
+## GPU 3D RENDERING DETAILS (2026-01-29 to 2026-01-31)
 
 ### Overview
 The Adreno 220 GPU (a2xx driver) is now rendering 3D content via kmscube at ~24 FPS on the 1024x768 LVDS panel.
@@ -205,6 +233,8 @@ The Adreno 220 GPU (a2xx driver) is now rendering 3D content via kmscube at ~24 
 
 **Fix 2 - Remove debug prints (ROOT CAUSE):** 15 pr_info calls in clk-rcg.c fired on every clock rate determination and set_rate call, generating ~950 printk calls per 8 rendered frames. The printk serialization overhead was the dominant bottleneck. After removing these + disabling drm.debug=0x1f: 1.75 FPS → ~24 FPS (13x improvement).
 
+**Fix 3 - DT-configurable idle timeout:** Added `qcom,idle-timeout-ms` device tree property to override the hard-coded 66ms autosuspend delay. APQ8060 device tree now uses 200ms, preventing unnecessary GPU power cycling during active rendering while still allowing power savings when idle.
+
 ### What's Working
 | Component | Status | Details |
 |-----------|--------|---------|
@@ -212,11 +242,14 @@ The Adreno 220 GPU (a2xx driver) is now rendering 3D content via kmscube at ~24 
 | GPU Power Domain | ✅ | gfx3d footswitch properly managed |
 | GPU Devfreq | ✅ | Frequency scaling via OPP table |
 | GPU Parameters | ✅ | a2xx parameter queries fixed (chip_id, gmem_size, etc.) |
+| GPU Runtime PM | ✅ | Idle timeout configurable via DT (200ms for APQ8060) |
+| GPU Gem Shrinker | ✅ | msm_gem_shrinker_init() re-enabled after bus fabric fix |
 | MDP4 Underflow | ✅ | Recovery enabled, non-blocking |
 
 ### Key Commits
 | Commit | Description |
 |--------|-------------|
+| `7e0efe9f2eab` | drm/msm: adreno: Add device tree override for GPU idle timeout |
 | `6b919f9aefdd` | clk: qcom: remove debug pr_info from clk-rcg and disable drm.debug |
 | `f794c8564963` | drm/msm: Fix a2xx GPU parameter queries and MDP4 underflow |
 | `97540e04fa5b` | drm/msm: Fix MDP4 interconnect voting and GPU devfreq resume |
@@ -224,7 +257,7 @@ The Adreno 220 GPU (a2xx driver) is now rendering 3D content via kmscube at ~24 
 
 ---
 
-## DISPLAY DETAILS (2026-01-19, updated 2026-01-30)
+## DISPLAY DETAILS (2026-01-19, updated 2026-01-31)
 
 ### Architecture
 The HP TouchPad uses a Qualcomm MDP4 display controller:
@@ -249,14 +282,19 @@ The HP TouchPad uses a Qualcomm MDP4 display controller:
 ### Known Issues
 | Issue | Status | Details |
 |-------|--------|---------|
+| Blue Vertical Lines | ✅ FIXED | modeset_init before LCDC disable preserves bootloader display during deferred probe (commit 0e4ac0f14b90) |
 | MDP4 Underrun | Resolved | Interconnect bandwidth voting + underflow recovery active |
 | LCDC Vblank Timeout | ✅ FIXED | Use PRIMARY_VSYNC instead of DMA_P_DONE (commit 5792da5c0992) |
 | GPU Power Domain | ✅ FIXED | Legacy footswitch support (commit 28649d98f424) |
 | MDP4 Underrun During modetest | Minor | `error: 00000100` during pattern display, non-blocking |
 
+### Deferred Probe Handling
+The panel-lvds driver defers probe 5 times waiting for the backlight → regulator → PWM chain to be ready. With the blue lines fix, `modeset_init()` is called before LCDC disable, so each deferred probe returns `-EPROBE_DEFER` without touching display hardware. The bootloader's display state is preserved across all retries until the 6th attempt succeeds and DRM takes over.
+
 ### Key Commits
 | Commit | Description |
 |--------|-------------|
+| `0e4ac0f14b90` | drm/msm/mdp4: fix blue lines by moving modeset_init before LCDC disable |
 | `7a24b0d08188` | drm/panel: lvds: Add bpc derivation and fix TouchPad panel config |
 | `97540e04fa5b` | drm/msm: Fix MDP4 interconnect voting and GPU devfreq resume |
 | `25bce4a902b2` | drm/msm: Add no-IOMMU display support for legacy SoCs |
@@ -446,7 +484,40 @@ New remoteproc driver for the Dedicated Sensors Processor Subsystem (DSPS) on MS
 
 ---
 
-## HARDWARE TEST RESULTS (2026-01-30)
+## CODE QUALITY CLEANUP (2026-01-31)
+
+### Debug Logging Audit
+Comprehensive audit of all custom commits identified ~71 excess debug logging statements across 13 files. These ranged from hot-path counters firing on every I/O operation to probe-path breadcrumbs and dead code.
+
+### Cleaned Files (5 of 13)
+| File | Removed | Impact |
+|------|---------|--------|
+| `drivers/mmc/host/mmci.c` | DMA/DATAEND transfer counters (hot-path), SDIO IRQ debug block, probe messages | **Critical** - fired on every MMC/WiFi I/O operation |
+| `drivers/gpu/drm/msm/msm_drv.c` | MSM_DRV breadcrumbs; re-enabled msm_gem_shrinker_init() | **High** - shrinker was disabled by `#if 0` due to misdiagnosed USB issue |
+| `drivers/gpu/drm/msm/disp/mdp4/mdp4_lvds_pll.c` | Function tracing, downgraded fallback to dev_dbg | Medium |
+| `drivers/dma/qcom/qcom_adm.c` | Register dumps, downgraded pool info to dev_dbg | Medium |
+| `drivers/mmc/host/mmci_qcom_dml.c` | Probe-path info messages | Low |
+
+### msm_gem_shrinker_init() Re-enablement
+The GEM memory shrinker was disabled with `#if 0` during USB/DRM coexistence debugging. The USB failures were actually caused by missing AXI bus fabric arbitration — the SFAB interconnect wasn't voting for USB bandwidth, causing memory stalls. This was fixed by the MSM8660 interconnect driver and USB bandwidth voting (commit `4abef666bfaa`). With the root cause addressed, the shrinker is safe to re-enable and provides proper GEM buffer memory reclamation under pressure.
+
+### Remaining Cleanup (documented in reports/debug_logging_audit.md)
+| File | Statements | Priority |
+|------|-----------|----------|
+| `drivers/input/touchscreen/cy8ctma395_ts.c` | ~15 | Medium (probe + packet processing) |
+| `sound/soc/qcom/q6asm*.c, q6afe*.c, q6adm*.c` | ~20 | Low (audio probe path) |
+| `drivers/leds/leds-lm8502.c` | ~5 | Low |
+| `drivers/clk/qcom/apcs-msm8660.c` | ~3 | Low |
+| `drivers/gpu/drm/msm/adreno/z180_gpu.c` | ~5 | Low |
+
+### Key Commits
+| Commit | Description |
+|--------|-------------|
+| `e313efdb6057` | cleanup: remove development debug logging from multiple drivers |
+
+---
+
+## HARDWARE TEST RESULTS (2026-01-31)
 
 ### Test Environment
 - **Device:** HP TouchPad (Topaz WiFi)
@@ -505,7 +576,7 @@ New remoteproc driver for the Dedicated Sensors Processor Subsystem (DSPS) on MS
 4. Clean up WIP commits into proper patch series
 
 ### GPU (Investigation)
-1. Tune GPU runtime PM autosuspend delay (currently 66ms causes full power-down per frame)
+1. ~~Tune GPU runtime PM autosuspend delay~~ ✅ Done (200ms via DT property)
 2. Investigate further FPS improvements
 3. Test more complex 3D applications
 
@@ -514,6 +585,10 @@ New remoteproc driver for the Dedicated Sensors Processor Subsystem (DSPS) on MS
 2. Polish IOMMU driver (already cleaned up in 4d066b85b180)
 3. Prepare touchscreen driver for upstream
 4. Organize 28-patch submission plan (see UPSTREAM_PATCH_PLAN.md)
+
+### Code Quality
+1. Clean up remaining debug logging in 8 files (see reports/debug_logging_audit.md)
+2. Squash WIP commits into clean patch series for upstream
 
 ### Other Components
 1. Test audio playback with actual audio files
@@ -550,6 +625,13 @@ mmcblk0boot0, mmcblk0boot1 - Boot partitions
 ---
 
 ## RECENT COMMITS
+
+### Display Fix, GPU & Cleanup Work (2026-01-31)
+```
+e313efdb6057 - cleanup: remove development debug logging from multiple drivers
+0e4ac0f14b90 - drm/msm/mdp4: fix blue lines by moving modeset_init before LCDC disable
+7e0efe9f2eab - drm/msm: adreno: Add device tree override for GPU idle timeout
+```
 
 ### WiFi & MMCI Work (2026-01-25 to 2026-01-29)
 ```
@@ -632,9 +714,12 @@ dbbc6e3e6161 - Input: touchscreen: Add Cypress CY8CTMA395 serdev driver
 ## CONCLUSION
 
 ### Current Status Summary:
-- **25 hardware components working** on mainline kernel (up from 23)
+- **25 hardware components working** on mainline kernel
+- **Blue lines display bug FIXED** - modeset_init before LCDC disable; initcall_debug workaround removed
 - **WiFi scanning working** - AR6003 finds 10+ APs on 2.4GHz + 5GHz bands after extensive MMCI/ath6kl fixes
-- **GPU 3D rendering working** - Adreno 220 via kmscube at ~24 FPS after removing debug overhead
+- **GPU 3D rendering working** - Adreno 220 via kmscube at ~24 FPS; runtime PM idle timeout now DT-configurable
+- **GEM shrinker re-enabled** - was disabled due to misdiagnosed USB issue; safe with interconnect fix
+- **Debug logging cleaned up** - 5 drivers cleaned, full audit documented; hot-path counters removed
 - **11 of 12 IOMMUs enabled** - GPU IOMMU disabled (uses internal MMU), driver cleaned for upstream
 - **Full interconnect voting** - USB, MMCI, ADM DMA, MDP bandwidth paths matching webOS
 - **Memory optimized** - VMSPLIT_2G, HZ=100, CMA=32MB achieving 1220 MB/s (60% of webOS)
@@ -646,13 +731,13 @@ dbbc6e3e6161 - Input: touchscreen: Add Cypress CY8CTMA395 serdev driver
 
 ### Next Priorities:
 1. Test WiFi association and data transfer
-2. Tune GPU runtime PM for better 3D performance
+2. Clean up remaining debug logging (8 more files documented in audit)
 3. Clean up WIP commits for upstream submission
 4. Camera bring-up with VFE 3.1 support
 
 ---
 
-**Report Generated:** 2026-01-30
+**Report Generated:** 2026-01-31
 **Tester:** Claude Code
 **Maintainer:** Herrie
 **Project:** HP TouchPad Mainline Kernel Support
