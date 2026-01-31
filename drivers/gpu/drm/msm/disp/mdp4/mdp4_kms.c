@@ -469,6 +469,23 @@ static int mdp4_kms_init(struct drm_device *dev)
 	pm_runtime_enable(dev->dev);
 	mdp4_kms->rpm_enabled = true;
 
+	/*
+	 * Call modeset_init() before disabling display outputs. modeset_init()
+	 * checks panel/bridge availability first (returning -EPROBE_DEFER if
+	 * the panel driver hasn't probed yet) before creating any DRM objects.
+	 *
+	 * By doing this check before the LCDC disable below, we preserve the
+	 * bootloader's display state when waiting for deferred probe. Without
+	 * this ordering, the LCDC disable would kill pixel data to the panel
+	 * while the LVDS receiver is still active, causing blue vertical lines
+	 * that persist until the deferred probe retry eventually succeeds.
+	 */
+	ret = modeset_init(mdp4_kms);
+	if (ret) {
+		DRM_DEV_ERROR(dev->dev, "modeset_init failed: %d\n", ret);
+		goto fail;
+	}
+
 	/* make sure things are off before attaching iommu (bootloader could
 	 * have left things on, in which case we'll start getting faults if
 	 * we don't disable):
@@ -479,12 +496,6 @@ static int mdp4_kms_init(struct drm_device *dev)
 	mdp4_write(mdp4_kms, REG_MDP4_DSI_ENABLE, 0);
 	mdp4_disable(mdp4_kms);
 	mdelay(16);
-
-	ret = modeset_init(mdp4_kms);
-	if (ret) {
-		DRM_DEV_ERROR(dev->dev, "modeset_init failed: %d\n", ret);
-		goto fail;
-	}
 
 	/*
 	 * Initialize VM after modeset_init() succeeds. This avoids creating
