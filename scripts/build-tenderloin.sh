@@ -3,7 +3,7 @@
 # build-tenderloin.sh - Build kernel for HP TouchPad
 #
 # This script handles the full build process for the TouchPad kernel:
-# - Always uses tenderloin_debug_defconfig (the correct config)
+# - Uses tenderloin_defconfig by default (--defconfig to override)
 # - Uses out-of-tree build to keep source tree clean
 # - Builds kernel, modules, and device trees
 # - Packages for moboot bootloader
@@ -13,12 +13,14 @@
 #   ./scripts/build-tenderloin.sh [options]
 #
 # Options:
-#   -c, --clean      Clean build directory before building
-#   -d, --deploy     Deploy to device after successful build
-#   -r, --reboot     Reboot device after deploy (implies --deploy)
-#   -j, --jobs N     Number of parallel jobs (default: nproc)
-#   -v, --variant V  Device variant: topaz (default) or opal
-#   -h, --help       Show this help message
+#   -c, --clean          Clean build directory before building
+#   -d, --deploy         Deploy to device after successful build
+#   -r, --reboot         Reboot device after deploy (implies --deploy)
+#   -j, --jobs N         Number of parallel jobs (default: nproc)
+#   -v, --variant V      Device variant: topaz (default) or opal
+#   --defconfig NAME     Defconfig to use (default: tenderloin_defconfig)
+#                        Shorthand: debug, fast, or full name
+#   -h, --help           Show this help message
 #
 
 set -e
@@ -34,8 +36,8 @@ REBOOT=0
 JOBS=$(nproc)
 VARIANT="topaz"
 
-# The ONE TRUE defconfig - never use tenderloin_defconfig!
-DEFCONFIG="tenderloin_debug_defconfig"
+# Default defconfig
+DEFCONFIG="tenderloin_defconfig"
 
 # Colors for output
 RED='\033[0;31m'
@@ -85,6 +87,10 @@ while [[ $# -gt 0 ]]; do
             VARIANT="$2"
             shift 2
             ;;
+        --defconfig)
+            DEFCONFIG="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -93,6 +99,18 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Resolve defconfig shorthand names
+case "$DEFCONFIG" in
+    debug)    DEFCONFIG="tenderloin_debug_defconfig" ;;
+    fast)     DEFCONFIG="tenderloin_fast_defconfig" ;;
+    normal)   DEFCONFIG="tenderloin_defconfig" ;;
+esac
+
+# Validate defconfig exists
+if [[ ! -f "${KERNEL_DIR}/arch/arm/configs/${DEFCONFIG}" ]]; then
+    error "Defconfig not found: arch/arm/configs/${DEFCONFIG}"
+fi
 
 # Validate variant
 if [[ "$VARIANT" != "topaz" && "$VARIANT" != "opal" ]]; then
