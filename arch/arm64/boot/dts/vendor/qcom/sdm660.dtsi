@@ -910,7 +910,7 @@
 		clocks = <&clock_gcc GCC_BLSP1_QUP3_SPI_APPS_CLK>,
 			<&clock_gcc GCC_BLSP1_AHB_CLK>;
 		clock-frequency = <15000000>;
-		qcom,ipc-gpio = <&tlmm 72 0>;
+		// qcom,ipc-gpio = <&tlmm 72 0>; // Goodix Fingerprint
 		qcom,finger-detect-gpio = <&pm660_gpios 11 0>;
 	};
 
