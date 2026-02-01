@@ -821,14 +821,6 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			achan->curr_txd = NULL;
 
 			if (async_desc) {
-				if (async_desc->crci) {
-					static unsigned int adm_cpl_nr;
-
-					dev_info(adev->dev,
-						"ADM cpl#%u chan=%d crci=%d result=0x%08x\n",
-						++adm_cpl_nr, i,
-						async_desc->crci, result);
-				}
 				vchan_cookie_complete(&async_desc->vd);
 
 				/* kick off next DMA */
