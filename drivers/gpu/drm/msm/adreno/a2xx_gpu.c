@@ -505,12 +505,25 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 	return ring->memptrs->rptr;
 }
 
+static int a2xx_pm_suspend(struct msm_gpu *gpu)
+{
+	/*
+	 * Idle the GPU before cutting clocks.  Without this the
+	 * gfx3d_axi_clk branch clock cannot halt because the AXI
+	 * bus is still servicing GPU requests, triggering a
+	 * "status stuck at 'on'" WARNING from the clock framework.
+	 */
+	a2xx_idle(gpu);
+
+	return msm_gpu_pm_suspend(gpu);
+}
+
 static const struct adreno_gpu_funcs funcs = {
 	.base = {
 		.get_param = adreno_get_param,
 		.set_param = adreno_set_param,
 		.hw_init = a2xx_hw_init,
-		.pm_suspend = msm_gpu_pm_suspend,
+		.pm_suspend = a2xx_pm_suspend,
 		.pm_resume = msm_gpu_pm_resume,
 		.recover = a2xx_recover,
 		.submit = a2xx_submit,
