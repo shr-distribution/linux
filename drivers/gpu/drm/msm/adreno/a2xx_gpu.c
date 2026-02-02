@@ -352,7 +352,7 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 	if (mstatus & A2XX_MASTER_INT_SIGNAL_RBBM_INT_STAT) {
 		status = gpu_read(gpu, REG_A2XX_RBBM_INT_STATUS);
 
-		dev_warn(gpu->dev->dev, "RBBM_INT: %08X\n", status);
+		dev_dbg(gpu->dev->dev, "RBBM_INT: %08X\n", status);
 
 		gpu_write(gpu, REG_A2XX_RBBM_INT_ACK, status);
 	}
