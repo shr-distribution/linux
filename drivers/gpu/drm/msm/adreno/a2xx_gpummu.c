@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2018 The Linux Foundation. All rights reserved. */
 
+#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 
 #include "msm_drv.h"
@@ -70,10 +71,29 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 {
 	struct a2xx_gpummu *gpummu = to_a2xx_gpummu(mmu);
 	unsigned idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
+	unsigned i;
+	int timeout = 1000; /* 1ms timeout */
 
 	dev_dbg(mmu->dev, "gpummu unmap: iova=%llx len=%zx idx=%u\n",
 		iova, len, idx);
-	unsigned i;
+
+	/*
+	 * Wait for Memory Hub to complete outstanding transactions before
+	 * clearing page table entries. This prevents page faults when the
+	 * GPU is still accessing memory that we're about to unmap.
+	 * Workaround derived from webOS kgsl_yamato driver which waits for
+	 * idle before any page table operations.
+	 */
+	while (timeout > 0) {
+		uint32_t status = gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS);
+		if (!(status & (A2XX_RBBM_STATUS_MH_BUSY |
+				A2XX_RBBM_STATUS_MH_COHERENCY_BUSY)))
+			break;
+		udelay(1);
+		timeout--;
+	}
+	if (timeout == 0)
+		dev_warn_once(mmu->dev, "gpummu unmap: timeout waiting for MH idle\n");
 
 	for (i = 0; i < len / GPUMMU_PAGE_SIZE; i++, idx++)
 		gpummu->table[idx] = 0;
