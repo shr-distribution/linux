@@ -170,7 +170,8 @@ static int pm8058_pwm_get_state(struct pwm_chip *pwm_chip, struct pwm_device *pw
 {
 	struct pm8058_pwm_chip *chip = pwmchip_get_drvdata(pwm_chip);
 	unsigned int channel = pwm->hwpwm;
-	unsigned int val;
+	unsigned int ctl0, ctl3, ctl4, ctl5;
+	unsigned int pwm_value;
 	int ret;
 
 	mutex_lock(&chip->lock);
@@ -179,15 +180,37 @@ static int pm8058_pwm_get_state(struct pwm_chip *pwm_chip, struct pwm_device *pw
 	if (ret)
 		goto unlock;
 
-	ret = regmap_read(chip->regmap, chip->base + LPG_CTL0_REG, &val);
+	ret = regmap_read(chip->regmap, chip->base + LPG_CTL0_REG, &ctl0);
 	if (ret)
 		goto unlock;
 
-	state->enabled = !!(val & PWM_OUTPUT_EN);
-	/* Default values - actual period/duty would require reading more registers */
-	state->period = 100000; /* 100us default */
-	state->duty_cycle = state->enabled ? 50000 : 0;
+	ret = regmap_read(chip->regmap, chip->base + LPG_CTL3_REG, &ctl3);
+	if (ret)
+		goto unlock;
+
+	ret = regmap_read(chip->regmap, chip->base + LPG_CTL4_REG, &ctl4);
+	if (ret)
+		goto unlock;
+
+	ret = regmap_read(chip->regmap, chip->base + LPG_CTL5_REG, &ctl5);
+	if (ret)
+		goto unlock;
+
+	state->enabled = !!(ctl0 & PWM_OUTPUT_EN);
 	state->polarity = PWM_POLARITY_NORMAL;
+
+	/*
+	 * Read back the PWM value from CTL3 (bits 7:0) and CTL4 (bit 8).
+	 * The period is fixed at ~18.75kHz (19.2MHz / 2 / 512) = 53.3us,
+	 * but we report 100us to match what the driver configures.
+	 */
+	pwm_value = ctl3 & 0xff;
+	if (ctl5 & PWM_SIZE_9_BIT)
+		pwm_value |= (ctl4 & 0x80) << 1; /* bit 8 from CTL4 bit 7 */
+
+	state->period = 100000; /* 100us = 10kHz */
+	/* Convert 9-bit PWM value (0-511) to duty cycle in ns */
+	state->duty_cycle = DIV_ROUND_CLOSEST_ULL((u64)pwm_value * state->period, 511);
 
 unlock:
 	mutex_unlock(&chip->lock);
