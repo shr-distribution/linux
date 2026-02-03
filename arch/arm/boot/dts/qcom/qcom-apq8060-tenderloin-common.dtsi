@@ -2129,6 +2129,8 @@
 
 		clocks = <&mmcc CAMCLK0_CLK>;
 		clock-names = "xvclk";
+		assigned-clocks = <&mmcc CAMCLK0_SRC>;
+		assigned-clock-rates = <24000000>;
 
 		vdd-supply = <&pm8058_lvs0>;    // Digital 1.8V
 		vddio-supply = <&pm8058_l11>;   // I/O 2.85V
