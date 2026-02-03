@@ -2146,6 +2146,7 @@
 		port {
 			mt9m113_ep: endpoint {
 				bus-type = <5>; /* V4L2_FWNODE_BUS_TYPE_PARALLEL */
+				link-frequencies = /bits/ 64 <24000000>;
 				remote-endpoint = <&camss_ep>;
 			};
 		};
