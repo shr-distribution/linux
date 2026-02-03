@@ -4,24 +4,28 @@
 $id: http://devicetree.org/schemas/media/i2c/onnn,mt9m114.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: onsemi 1/6-inch 720p CMOS Digital Image Sensor
+title: onsemi/Aptina MT9M113/MT9M114 1/6-inch CMOS Digital Image Sensor
 
 maintainers:
   - Laurent Pinchart <laurent.pinchart@ideasonboard.com>
 
 description: |-
-  The onsemi MT9M114 is a 1/6-inch 720p (1.26 Mp) CMOS digital image sensor
-  with an active pixel-array size of 1296H x 976V. It is programmable through
-  an I2C interface and outputs image data over a 8-bit parallel or 1-lane MIPI
-  CSI-2 connection.
+  The Aptina MT9M113 and onsemi MT9M114 are 1/6-inch CMOS digital image sensors.
+  The MT9M113 is a 1.3 Mp sensor with 1280x1024 active pixels.
+  The MT9M114 is a 1.26 Mp 720p sensor with 1296x976 active pixels.
+  Both are programmable through an I2C interface and output image data over
+  an 8-bit parallel or 1-lane MIPI CSI-2 connection.
 
 properties:
   compatible:
-    const: onnn,mt9m114
+    enum:
+      - aptina,mt9m113
+      - onnn,mt9m114
 
   reg:
     description: I2C device address
     enum:
+      - 0x3c
       - 0x48
       - 0x5d
 
