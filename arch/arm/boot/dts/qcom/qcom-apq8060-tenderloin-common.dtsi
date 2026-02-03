@@ -2156,13 +2156,10 @@
  * Camera subsystem and MT9M113 sensor configuration.
  *
  * MMCC (Multimedia Clock Controller) support has been added with VFE31 driver.
- * Note: The qcom-camss driver (CONFIG_VIDEO_QCOM_CAMSS) is not enabled in the
- * kernel config. Keeping camss enabled in DT without the driver causes the
- * interconnect framework to wait indefinitely for camss to probe, blocking
- * sync_state() and affecting bandwidth management. Disable until driver is enabled.
+ * MT9M113 sensor support added to mt9m114.c driver.
  */
 &camss {
-	status = "disabled";
+	status = "okay";
 
 	ports {
 		port@0 {
