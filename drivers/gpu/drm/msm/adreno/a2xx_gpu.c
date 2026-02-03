@@ -321,14 +321,21 @@ static bool a2xx_idle(struct msm_gpu *gpu)
 	}
 
 	/*
-	 * Also wait for Memory Hub (MH) to be idle. The MH controls the
-	 * AXI bus interface, and the gfx3d_axi_clk cannot be disabled
-	 * while MH is still busy servicing transactions.
+	 * Wait for all components that use the AXI bus to be idle.
+	 * The gfx3d_axi_clk cannot be disabled while any of these
+	 * are still busy servicing memory transactions:
+	 * - MH (Memory Hub) - controls the AXI interface
+	 * - TC (Texture Cache) - fetches textures from memory
+	 * - TPC (Texture Processor Cluster) - processes textures
+	 * - RB (Render Backend) - writes to framebuffer
 	 */
 	if (spin_until(!(gpu_read(gpu, REG_A2XX_RBBM_STATUS) &
 			(A2XX_RBBM_STATUS_MH_BUSY |
-			 A2XX_RBBM_STATUS_MH_COHERENCY_BUSY)))) {
-		DRM_ERROR("%s: timeout waiting for MH to idle!\n", gpu->name);
+			 A2XX_RBBM_STATUS_MH_COHERENCY_BUSY |
+			 A2XX_RBBM_STATUS_TC_BUSY |
+			 A2XX_RBBM_STATUS_TPC_BUSY |
+			 A2XX_RBBM_STATUS_RB_CNTX_BUSY)))) {
+		DRM_ERROR("%s: timeout waiting for MH/TC/RB to idle!\n", gpu->name);
 		return false;
 	}
 
