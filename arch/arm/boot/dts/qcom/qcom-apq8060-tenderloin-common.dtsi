@@ -1132,9 +1132,11 @@
 
 	backlight: backlight {
 		compatible = "pwm-backlight";
+		status = "okay";
 		pwms = <&pm8058_pwm 0 100000>;
 		/* Exponential curve for perceived brightness, interpolated for smooth control */
-		brightness-levels = <0 4 8 16 32 64 128 255>;
+		/* Minimum brightness 4 instead of 0 to prevent backlight from turning off */
+		brightness-levels = <4 8 16 32 64 128 192 255>;
 		num-interpolated-steps = <16>;
 		default-brightness-level = <96>;  /* ~6/7 of the way up the curve */
 		pinctrl-names = "default";
