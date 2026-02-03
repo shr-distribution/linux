@@ -448,6 +448,8 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 	unsigned int i;
 	int ret;
 
+	dev_info(&pdev->dev, "pwm-backlight probe called\n");
+
 	if (!data) {
 		ret = pwm_backlight_parse_dt(&pdev->dev, &defdata);
 		if (ret < 0)
@@ -455,6 +457,8 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 					     "failed to find platform data\n");
 
 		data = &defdata;
+		dev_info(&pdev->dev, "parsed DT: max_brightness=%d\n",
+			 data->max_brightness);
 	}
 
 	if (data->init) {
@@ -484,6 +488,8 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 				    "failed to acquire enable GPIO\n");
 		goto err_alloc;
 	}
+	dev_info(&pdev->dev, "enable_gpio: %s\n",
+		 pb->enable_gpio ? "acquired" : "not specified");
 
 	pb->power_supply = devm_regulator_get_optional(&pdev->dev, "power");
 	if (IS_ERR(pb->power_supply)) {
@@ -496,6 +502,8 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 			goto err_alloc;
 		}
 	}
+	dev_info(&pdev->dev, "power_supply: %s\n",
+		 pb->power_supply ? "acquired" : "not specified");
 
 	pb->pwm = devm_pwm_get(&pdev->dev, NULL);
 	if (IS_ERR(pb->pwm)) {
@@ -504,7 +512,7 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 		goto err_alloc;
 	}
 
-	dev_dbg(&pdev->dev, "got pwm for backlight\n");
+	dev_info(&pdev->dev, "got pwm for backlight\n");
 
 	/* Sync up PWM state. */
 	pwm_init_state(pb->pwm, &state);
@@ -604,6 +612,9 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 	backlight_update_status(bl);
 
 	platform_set_drvdata(pdev, bl);
+
+	dev_info(&pdev->dev, "pwm-backlight probed successfully, brightness=%d\n",
+		 bl->props.brightness);
 	return 0;
 
 err_alloc:
