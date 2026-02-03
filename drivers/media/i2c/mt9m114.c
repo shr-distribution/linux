@@ -40,8 +40,14 @@
 #define MT9M114_COMMAND_REGISTER_REFRESH			BIT(2)
 #define MT9M114_COMMAND_REGISTER_WAIT_FOR_EVENT			BIT(3)
 #define MT9M114_COMMAND_REGISTER_OK				BIT(15)
+#define MT9M114_PLL_DIVIDERS				CCI_REG16(0x0010)
+#define MT9M114_PLL_P_DIVIDERS				CCI_REG16(0x0012)
+#define MT9M114_PLL_CONTROL				CCI_REG16(0x0014)
+#define MT9M114_CLOCKS_CONTROL				CCI_REG16(0x0016)
+#define MT9M114_STANDBY_CONTROL				CCI_REG16(0x0018)
 #define MT9M114_RESET_AND_MISC_CONTROL			CCI_REG16(0x001a)
 #define MT9M114_RESET_SOC					BIT(0)
+#define MT9M114_MCU_BOOT_MODE				CCI_REG16(0x001c)
 #define MT9M114_PAD_SLEW				CCI_REG16(0x001e)
 #define MT9M114_PAD_SLEW_MIN					0
 #define MT9M114_PAD_SLEW_MAX					7
@@ -383,6 +389,7 @@ struct mt9m114 {
 	struct i2c_client *client;
 	struct regmap *regmap;
 	enum mt9m114_model model;
+	enum mt9m114_model expected_model;	/* From DT compatible */
 
 	struct clk *clk;
 	struct gpio_desc *reset;
@@ -2192,6 +2199,42 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	}
 
 	/*
+	 * MT9M113 requires MCU boot and PLL initialization before it can
+	 * respond to commands. This sequence is derived from the webOS kernel.
+	 */
+	if (sensor->expected_model == MT9M113_MODEL) {
+		/* Boot the MCU */
+		cci_write(sensor->regmap, MT9M114_MCU_BOOT_MODE, 0x0001, &ret);
+		if (ret < 0)
+			goto error_clock;
+		usleep_range(1000, 2000);
+		cci_write(sensor->regmap, MT9M114_MCU_BOOT_MODE, 0x0000, &ret);
+		if (ret < 0)
+			goto error_clock;
+		msleep(30);
+
+		/* Configure clocks and PLL */
+		cci_write(sensor->regmap, MT9M114_CLOCKS_CONTROL, 0x00FF, &ret);
+		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x0028, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_DIVIDERS, 0x0114, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_P_DIVIDERS, 0x00F1, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2545, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2547, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3447, &ret);
+		if (ret < 0)
+			goto error_clock;
+		msleep(20); /* Allow PLL to lock */
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3047, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3046, &ret);
+		cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL, 0x0218, &ret);
+		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x002A, &ret);
+		if (ret < 0)
+			goto error_clock;
+		msleep(50); /* Wait for sensor to stabilize */
+	}
+
+	/*
 	 * Wait for the sensor to be ready to accept I2C commands by polling the
 	 * command register to wait for initialization to complete.
 	 */
@@ -2432,6 +2475,7 @@ static int mt9m114_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	sensor->client = client;
+	sensor->expected_model = (uintptr_t)device_get_match_data(dev);
 
 	sensor->regmap = devm_cci_regmap_init_i2c(client, 16);
 	if (IS_ERR(sensor->regmap)) {
@@ -2562,8 +2606,8 @@ static void mt9m114_remove(struct i2c_client *client)
 }
 
 static const struct of_device_id mt9m114_of_ids[] = {
-	{ .compatible = "aptina,mt9m113" },
-	{ .compatible = "onnn,mt9m114" },
+	{ .compatible = "aptina,mt9m113", .data = (void *)MT9M113_MODEL },
+	{ .compatible = "onnn,mt9m114", .data = (void *)MT9M114_MODEL },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, mt9m114_of_ids);

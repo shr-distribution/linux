@@ -2153,12 +2153,6 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&camera_pins>;
 
-		/*
-		 * Port/endpoint configuration for parallel camera interface.
-		 *
-		 * VFE31 driver has been ported to mainline CAMSS with MMCC
-		 * clock controller support. Camera is ready to be enabled.
-		 */
 		port {
 			mt9m113_ep: endpoint {
 				bus-type = <5>; /* V4L2_FWNODE_BUS_TYPE_PARALLEL */
