@@ -4188,53 +4188,125 @@ static enum power_supply_property a6_battery_props[] = {
 	POWER_SUPPLY_PROP_HEALTH,
 };
 
+/*
+ * Helper to read a 16-bit value from two consecutive A6 registers (MSB first)
+ */
+static int a6_read_word(struct a6_device_state *state, unsigned int reg_msb,
+			int16_t *value)
+{
+	unsigned int msb, lsb;
+	int ret;
+
+	ret = regmap_read(state->regmap, reg_msb, &msb);
+	if (ret)
+		return ret;
+
+	ret = regmap_read(state->regmap, reg_msb + 1, &lsb);
+	if (ret)
+		return ret;
+
+	*value = (int16_t)((msb << 8) | lsb);
+	return 0;
+}
+
 static int a6_battery_get_property(struct power_supply *psy,
 				   enum power_supply_property psp,
 				   union power_supply_propval *val)
 {
-	/* For now, return stub values - actual implementation will read from A6 */
-	/* TODO: Use psy to read actual values from A6 registers */
-	(void)psy;  /* Suppress unused parameter warning */
+	struct a6_device_state *state = power_supply_get_drvdata(psy);
+	unsigned int reg_val;
+	int16_t raw_val;
+	int32_t conv_val;
+	int ret;
+
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
-		val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
+		/*
+		 * Determine charging status from current flow:
+		 * Negative current = charging, Positive = discharging
+		 */
+		ret = a6_read_word(state, TS2_I2C_BAT_AVG_CUR_MSB, &raw_val);
+		if (ret)
+			return ret;
+
+		/* Convert to signed current value */
+		conv_val = (raw_val * 3125) / 2 / (int32_t)state->cached_rsense_val;
+
+		if (conv_val < -50000)  /* Charging if current < -50mA */
+			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+		else if (conv_val > 50000)  /* Discharging if current > 50mA */
+			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		else
+			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		break;
+
 	case POWER_SUPPLY_PROP_PRESENT:
-		val->intval = 1;  /* Battery always present on TouchPad */
+		/* Check if battery registers are valid */
+		ret = regmap_read(state->regmap, TS2_I2C_BAT_STATUS, &reg_val);
+		if (ret)
+			return ret;
+		val->intval = (reg_val & TS2_I2C_BAT_STATUS_REGS_VALID) ? 1 : 0;
 		break;
+
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		/* Read from register 0x0107-0x0108, convert to µV */
-		/* TODO: Implement actual register read */
-		val->intval = 3700000;  /* 3.7V stub */
+		/* Read voltage: 11-bit signed value, unit = 4880µV */
+		ret = a6_read_word(state, TS2_I2C_BAT_VOLT_MSB, &raw_val);
+		if (ret)
+			return ret;
+		val->intval = (raw_val >> 5) * 4880;  /* µV */
 		break;
+
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
-		/* Read from register 0x0109-0x010a (instantaneous current) */
-		/* TODO: Implement actual register read */
-		val->intval = 0;  /* µA */
+		/* Read instantaneous current */
+		ret = a6_read_word(state, TS2_I2C_BAT_CUR_MSB, &raw_val);
+		if (ret)
+			return ret;
+		/* Convert using rsense: result in µA */
+		val->intval = (raw_val * 3125) / 2 / (int32_t)state->cached_rsense_val;
 		break;
+
 	case POWER_SUPPLY_PROP_CURRENT_AVG:
-		/* Read from register 0x0103-0x0104 (average current) */
-		/* TODO: Implement actual register read */
-		val->intval = 0;  /* µA */
+		/* Read average current */
+		ret = a6_read_word(state, TS2_I2C_BAT_AVG_CUR_MSB, &raw_val);
+		if (ret)
+			return ret;
+		/* Convert using rsense: result in µA */
+		val->intval = (raw_val * 3125) / 2 / (int32_t)state->cached_rsense_val;
 		break;
+
 	case POWER_SUPPLY_PROP_CAPACITY:
-		/* Read from register 0x0101 (RARC - Remaining Active Relative Capacity) */
-		/* TODO: Implement actual register read */
-		val->intval = 50;  /* 50% stub */
+		/* Read RARC (Remaining Active Relative Capacity) - percentage */
+		ret = regmap_read(state->regmap, TS2_I2C_BAT_RARC, &reg_val);
+		if (ret)
+			return ret;
+		val->intval = reg_val;  /* Already in percent */
 		break;
+
 	case POWER_SUPPLY_PROP_TEMP:
-		/* Read from register 0x0105-0x0106, convert to 0.1°C */
-		/* TODO: Implement actual register read */
-		val->intval = 250;  /* 25.0°C stub */
+		/* Read temperature: MSB is integer °C, LSB is fraction */
+		ret = regmap_read(state->regmap, TS2_I2C_BAT_TEMP_MSB, &reg_val);
+		if (ret)
+			return ret;
+		/* Power supply expects 0.1°C units */
+		val->intval = (int8_t)reg_val * 10;
 		break;
+
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
-		/* Read from register 0x010e-0x010f */
-		/* TODO: Implement actual register read */
-		val->intval = 6000000;  /* 6000mAh stub */
+		/* Read full capacity in mAh, convert to µAh */
+		ret = a6_read_word(state, TS2_I2C_BAT_FULL40_MSB, &raw_val);
+		if (ret)
+			return ret;
+		/*
+		 * Full40 is in 6.25µVh units, convert to µAh:
+		 * µAh = (raw * 6250) / rsense
+		 */
+		val->intval = ((int32_t)raw_val * 6250) / state->cached_rsense_val;
 		break;
+
 	case POWER_SUPPLY_PROP_HEALTH:
 		val->intval = POWER_SUPPLY_HEALTH_GOOD;
 		break;
+
 	default:
 		return -EINVAL;
 	}
