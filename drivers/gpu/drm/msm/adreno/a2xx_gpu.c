@@ -539,7 +539,18 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 	 * bus is still servicing GPU requests, triggering a
 	 * "status stuck at 'on'" WARNING from the clock framework.
 	 */
-	a2xx_idle(gpu);
+	if (!a2xx_idle(gpu)) {
+		/*
+		 * GPU failed to idle - do a soft reset to force it into
+		 * a safe state before disabling clocks. This prevents the
+		 * clock framework from timing out waiting for gfx3d_axi_clk
+		 * to halt.
+		 */
+		dev_warn(gpu->dev->dev, "GPU failed to idle, forcing reset\n");
+		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 1);
+		gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
+		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0);
+	}
 
 	return msm_gpu_pm_suspend(gpu);
 }
