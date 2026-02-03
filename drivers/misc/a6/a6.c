@@ -4362,6 +4362,13 @@ static int a6_probe(struct i2c_client *client)
 	/* Zero-init wait flags */
 	bitmap_zero(state->flags, SIZE_FLAGS);
 
+	/*
+	 * Initialize rsense to default value early to prevent division by zero
+	 * if power_supply queries properties before a6_init_state() runs.
+	 * a6_init_state() will read the actual value from the device later.
+	 */
+	state->cached_rsense_val = RSENSE_DEFAULT;
+
 	/* Create workqueues with managed cleanup */
 	state->ka6d_workqueue = alloc_ordered_workqueue("ka6d", WQ_MEM_RECLAIM);
 	if (!state->ka6d_workqueue)
