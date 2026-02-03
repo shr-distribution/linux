@@ -320,6 +320,18 @@ static bool a2xx_idle(struct msm_gpu *gpu)
 		return false;
 	}
 
+	/*
+	 * Also wait for Memory Hub (MH) to be idle. The MH controls the
+	 * AXI bus interface, and the gfx3d_axi_clk cannot be disabled
+	 * while MH is still busy servicing transactions.
+	 */
+	if (spin_until(!(gpu_read(gpu, REG_A2XX_RBBM_STATUS) &
+			(A2XX_RBBM_STATUS_MH_BUSY |
+			 A2XX_RBBM_STATUS_MH_COHERENCY_BUSY)))) {
+		DRM_ERROR("%s: timeout waiting for MH to idle!\n", gpu->name);
+		return false;
+	}
+
 	return true;
 }
 
@@ -330,11 +342,18 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 	mstatus = gpu_read(gpu, REG_A2XX_MASTER_INT_SIGNAL);
 
 	if (mstatus & A2XX_MASTER_INT_SIGNAL_MH_INT_STAT) {
+		uint32_t fault_addr;
+
 		status = gpu_read(gpu, REG_A2XX_MH_INTERRUPT_STATUS);
+		fault_addr = gpu_read(gpu, REG_A2XX_MH_MMU_PAGE_FAULT);
 
 		dev_warn(gpu->dev->dev, "MH_INT: %08X\n", status);
-		dev_warn(gpu->dev->dev, "MMU_PAGE_FAULT: %08X\n",
-			gpu_read(gpu, REG_A2XX_MH_MMU_PAGE_FAULT));
+		dev_warn(gpu->dev->dev, "MMU_PAGE_FAULT: %08X\n", fault_addr);
+
+		/* Dump page table entry for the faulting address */
+		if (status & A2XX_MH_INTERRUPT_MASK_MMU_PAGE_FAULT) {
+			a2xx_gpummu_debug_fault(to_msm_vm(gpu->vm)->mmu, fault_addr);
+		}
 
 		gpu_write(gpu, REG_A2XX_MH_INTERRUPT_CLEAR, status);
 	}

@@ -39,6 +39,9 @@ static int a2xx_gpummu_map(struct msm_mmu *mmu, uint64_t iova,
 
 	WARN_ON(off != 0);
 
+	dev_dbg(mmu->dev, "gpummu map: iova=%llx len=%zx prot=%x idx=%u\n",
+		iova, len, prot, idx);
+
 	if (prot & IOMMU_WRITE)
 		prot_bits |= 1;
 	if (prot & IOMMU_READ)
@@ -67,6 +70,9 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 {
 	struct a2xx_gpummu *gpummu = to_a2xx_gpummu(mmu);
 	unsigned idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
+
+	dev_dbg(mmu->dev, "gpummu unmap: iova=%llx len=%zx idx=%u\n",
+		iova, len, idx);
 	unsigned i;
 
 	for (i = 0; i < len / GPUMMU_PAGE_SIZE; i++, idx++)
@@ -127,4 +133,36 @@ void a2xx_gpummu_params(struct msm_mmu *mmu, dma_addr_t *pt_base,
 
 	*pt_base = base;
 	*tran_error = base + TABLE_SIZE; /* 32-byte aligned */
+}
+
+void a2xx_gpummu_debug_fault(struct msm_mmu *mmu, uint32_t fault_addr)
+{
+	struct a2xx_gpummu *gpummu = to_a2xx_gpummu(mmu);
+	uint32_t pte;
+	unsigned idx;
+
+	/* Check if address is in valid range */
+	if (fault_addr < GPUMMU_VA_START ||
+	    fault_addr >= GPUMMU_VA_START + GPUMMU_VA_RANGE) {
+		dev_err(mmu->dev, "GPUMMU fault addr 0x%08x outside VA range [0x%x-0x%lx]\n",
+			fault_addr, GPUMMU_VA_START,
+			(unsigned long)(GPUMMU_VA_START + GPUMMU_VA_RANGE));
+		return;
+	}
+
+	idx = (fault_addr - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
+	pte = gpummu->table[idx];
+
+	dev_err(mmu->dev, "GPUMMU fault: addr=0x%08x idx=%u pte=0x%08x (phys=0x%08x prot=%s%s)\n",
+		fault_addr, idx, pte,
+		pte & ~3,
+		(pte & 2) ? "R" : "",
+		(pte & 1) ? "W" : "");
+
+	/* Also dump nearby entries for context */
+	if (idx > 0)
+		dev_err(mmu->dev, "  pte[%u-1]=0x%08x\n", idx, gpummu->table[idx-1]);
+	dev_err(mmu->dev, "  pte[%u]=0x%08x\n", idx, gpummu->table[idx]);
+	if (idx < (GPUMMU_VA_RANGE / GPUMMU_PAGE_SIZE) - 1)
+		dev_err(mmu->dev, "  pte[%u+1]=0x%08x\n", idx, gpummu->table[idx+1]);
 }
