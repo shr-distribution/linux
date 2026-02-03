@@ -1343,6 +1343,18 @@
 		line-name = "AUD_LDO2_EN";
 	};
 
+	/*
+	 * Camera powerdown GPIO must be held low to enable the MT9M113
+	 * sensor. The mainline mt9m114 driver doesn't handle powerdown-gpios,
+	 * so we use a hog to ensure it's always deasserted.
+	 */
+	cam-pwdn-hog {
+		gpio-hog;
+		gpios = <107 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "CAM_PWDN";
+	};
+
 	/* eMMC pins, all 8 data lines connected */
 	emmc_pins: sdcc1-state {
 		clk-pins {
@@ -2126,8 +2138,8 @@
 		compatible = "aptina,mt9m113";
 		reg = <0x3c>;
 
+		/* Reset GPIO; powerdown handled by cam-pwdn-hog in tlmm */
 		reset-gpios = <&tlmm 106 GPIO_ACTIVE_LOW>;
-		powerdown-gpios = <&tlmm 107 GPIO_ACTIVE_LOW>;
 
 		clocks = <&mmcc CAMCLK0_CLK>;
 		clock-names = "xvclk";
