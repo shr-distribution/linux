@@ -118,15 +118,23 @@ static void setup_phy(struct drm_encoder *encoder)
 		break;
 
 	case 18:
+		/*
+		 * 18-bit LVDS (6 bits per channel) with R/B swapped for
+		 * JEIDA-18 panels. The original upstream code used VESA-style
+		 * ordering which puts B on lane 0 and R on lane 2. JEIDA panels
+		 * expect the opposite: R on lane 0, B on lane 2.
+		 */
+		/* Lane 0: Red channel (was Blue in upstream) */
 		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL_3_TO_0(0),
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT0(0x0a) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT1(0x07) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT2(0x06) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT3(0x05));
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT0(0x1a) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT1(0x19) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT2(0x18) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT3(0x17));
 		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL_6_TO_4(0),
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT4(0x04) |
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT5(0x03) |
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT6(0x02));
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT4(0x16) |
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT5(0x15) |
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT6(0x14));
+		/* Lane 1: Green channel (unchanged) */
 		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL_3_TO_0(1),
 				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT0(0x13) |
 				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT1(0x12) |
@@ -136,15 +144,16 @@ static void setup_phy(struct drm_encoder *encoder)
 				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT4(0x0d) |
 				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT5(0x0c) |
 				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT6(0x0b));
+		/* Lane 2: Blue channel (was Red in upstream) */
 		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL_3_TO_0(2),
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT0(0x1a) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT1(0x19) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT2(0x18) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT3(0x17));
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT0(0x0a) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT1(0x07) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT2(0x06) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT3(0x05));
 		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL_6_TO_4(2),
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT4(0x16) |
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT5(0x15) |
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT6(0x14));
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT4(0x04) |
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT5(0x03) |
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT6(0x02));
 		if (nchan == 2) {
 			lvds_intf |= MDP4_LCDC_LVDS_INTF_CTL_CH2_DATA_LANE2_EN |
 					MDP4_LCDC_LVDS_INTF_CTL_CH2_DATA_LANE1_EN |
