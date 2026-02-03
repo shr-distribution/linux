@@ -1178,7 +1178,11 @@
 		reset-gpios = <&tlmm 63 GPIO_ACTIVE_HIGH>;	/* LVDS_SHDN_N */
 
 		power-supply = <&pm8058_l10>;	/* VDD_LVDS_3.3V */
-		backlight = <&backlight>;
+		/* Note: backlight reference removed to allow pwm-backlight
+		 * to initialize as ON at probe time. With the phandle reference,
+		 * pwm-backlight defers to the panel driver which doesn't enable
+		 * it properly at boot.
+		 */
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&panel_pins>;
