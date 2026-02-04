@@ -2239,6 +2239,13 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		if (ret < 0)
 			goto error_clock;
 		msleep(50); /* Wait for sensor to stabilize */
+
+		/*
+		 * MT9M113 is now ready after MCU boot and PLL initialization.
+		 * Skip the SET_STATE poll since no command was issued - the
+		 * sensor entered its operational state automatically.
+		 */
+		goto mt9m113_init_done;
 	}
 
 	/*
@@ -2251,6 +2258,7 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	if (ret < 0)
 		goto error_clock;
 
+mt9m113_init_done:
 	if (sensor->bus_cfg.bus_type == V4L2_MBUS_PARALLEL) {
 		/*
 		 * In parallel mode (OE set to low), the sensor will enter the
