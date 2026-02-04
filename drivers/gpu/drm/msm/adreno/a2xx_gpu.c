@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2018 The Linux Foundation. All rights reserved. */
 
+#include <linux/interconnect.h>
+
 #include "a2xx_gpu.h"
 #include "msm_gem.h"
 #include "msm_mmu.h"
@@ -533,68 +535,48 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 
 static int a2xx_pm_suspend(struct msm_gpu *gpu)
 {
-	uint32_t mh_cfg;
-	int timeout = 1000;
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 
 	/*
 	 * Idle the GPU before cutting clocks.  Without this the
 	 * gfx3d_axi_clk branch clock cannot halt because the AXI
-	 * bus is still servicing GPU requests, triggering a
-	 * "status stuck at 'on'" WARNING from the clock framework.
+	 * bus is still servicing GPU requests.
 	 */
 	a2xx_idle(gpu);
 
 	/*
-	 * Wait for RBBM_STATUS to indicate fully idle (value 0x110).
-	 * This is the approach used by the legacy KGSL driver.
-	 * The value 0x110 indicates CMDFIFO has 1 slot available (normal)
-	 * and HIRQ is pending, with all busy bits cleared.
+	 * Clear interconnect bandwidth vote before disabling clocks.
+	 * This tells the bus fabric we no longer need memory bandwidth,
+	 * allowing the AXI clock to halt properly. The legacy KGSL
+	 * driver did this via msm_bus_scale_client_update_request(BW_INIT).
 	 */
-	while (timeout > 0) {
-		uint32_t status = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
-		if ((status & 0xFFFFFF00) == 0x100)
-			break;
-		udelay(1);
-		timeout--;
-	}
-
-	/*
-	 * Disable all Memory Hub arbiter clients to prevent any new
-	 * AXI transactions from being started.
-	 */
-	mh_cfg = gpu_read(gpu, REG_A2XX_MH_ARBITER_CONFIG);
-	gpu_write(gpu, REG_A2XX_MH_ARBITER_CONFIG, mh_cfg &
-		  ~(A2XX_MH_ARBITER_CONFIG_CP_CLNT_ENABLE |
-		    A2XX_MH_ARBITER_CONFIG_VGT_CLNT_ENABLE |
-		    A2XX_MH_ARBITER_CONFIG_TC_CLNT_ENABLE |
-		    A2XX_MH_ARBITER_CONFIG_RB_CLNT_ENABLE |
-		    A2XX_MH_ARBITER_CONFIG_PA_CLNT_ENABLE));
-
-	/*
-	 * Force all blocks to be clocked using PM overrides, then do
-	 * a full soft reset. This ensures the reset propagates to all
-	 * blocks even if they were power-gated.
-	 */
-	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0xfffffffe);
-	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0xffffffff);
-
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
-	gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
-
-	/*
-	 * The legacy KGSL driver waits 30ms after soft reset for the
-	 * core to reach a known state. This is necessary to allow all
-	 * in-flight AXI transactions to complete before disabling clocks.
-	 */
-	msleep(30);
-
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0);
-
-	/* Clear PM overrides */
-	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0);
-	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
+	if (a2xx_gpu->icc_path)
+		icc_set_bw(a2xx_gpu->icc_path, 0, 0);
 
 	return msm_gpu_pm_suspend(gpu);
+}
+
+static int a2xx_pm_resume(struct msm_gpu *gpu)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+	int ret;
+
+	ret = msm_gpu_pm_resume(gpu);
+	if (ret)
+		return ret;
+
+	/*
+	 * Restore interconnect bandwidth vote after enabling clocks.
+	 * Request max bandwidth based on GPU frequency * bus width.
+	 * The legacy KGSL driver did this via
+	 * msm_bus_scale_client_update_request(BW_MAX).
+	 */
+	if (a2xx_gpu->icc_path)
+		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
+
+	return 0;
 }
 
 static const struct adreno_gpu_funcs funcs = {
@@ -603,7 +585,7 @@ static const struct adreno_gpu_funcs funcs = {
 		.set_param = adreno_set_param,
 		.hw_init = a2xx_hw_init,
 		.pm_suspend = a2xx_pm_suspend,
-		.pm_resume = msm_gpu_pm_resume,
+		.pm_resume = a2xx_pm_resume,
 		.recover = a2xx_recover,
 		.submit = a2xx_submit,
 		.active_ring = adreno_active_ring,
@@ -654,6 +636,25 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	ret = adreno_gpu_init(dev, pdev, adreno_gpu, &funcs, 1);
 	if (ret)
 		goto fail;
+
+	/* Get interconnect path for memory bandwidth voting */
+	a2xx_gpu->icc_path = devm_of_icc_get(&pdev->dev, "gfx-mem");
+	if (IS_ERR(a2xx_gpu->icc_path)) {
+		ret = PTR_ERR(a2xx_gpu->icc_path);
+		/* Allow -ENODATA, interconnect is optional for older DTs */
+		if (ret != -ENODATA) {
+			DRM_DEV_ERROR(dev->dev, "failed to get interconnect path: %d\n", ret);
+			goto fail;
+		}
+		a2xx_gpu->icc_path = NULL;
+	}
+
+	/*
+	 * Set initial interconnect bandwidth to maximum.
+	 * This will be adjusted during runtime PM suspend/resume.
+	 */
+	if (a2xx_gpu->icc_path)
+		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
 
 	if (adreno_is_a20x(adreno_gpu))
 		adreno_gpu->registers = a200_registers;

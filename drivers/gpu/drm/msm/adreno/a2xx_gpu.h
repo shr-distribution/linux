@@ -6,6 +6,8 @@
 
 #include "adreno_gpu.h"
 
+struct icc_path;
+
 /* arrg, somehow fb.h is getting pulled in: */
 #undef ROP_COPY
 #undef ROP_XOR
@@ -16,6 +18,7 @@ struct a2xx_gpu {
 	struct adreno_gpu base;
 	bool pm_enabled;
 	bool protection_disabled;
+	struct icc_path *icc_path;
 };
 #define to_a2xx_gpu(x) container_of(x, struct a2xx_gpu, base)
 
