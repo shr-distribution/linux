@@ -2180,6 +2180,13 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		gpiod_set_value(sensor->reset, 1);
 		fsleep(duration);
 		gpiod_set_value(sensor->reset, 0);
+
+		/*
+		 * After releasing reset, the sensor needs time to boot up
+		 * before it can respond to I2C commands. The datasheet
+		 * specifies a minimum of 44.5ms for internal initialization.
+		 */
+		usleep_range(44500, 50000);
 	} else {
 		/*
 		 * The power may have just been turned on, we need to wait for
