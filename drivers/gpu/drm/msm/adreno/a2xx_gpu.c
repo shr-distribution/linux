@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2018 The Linux Foundation. All rights reserved. */
 
+#include <linux/delay.h>
 #include <linux/interconnect.h>
 
 #include "a2xx_gpu.h"
@@ -539,11 +540,19 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 
 	/*
-	 * Idle the GPU before cutting clocks.  Without this the
-	 * gfx3d_axi_clk branch clock cannot halt because the AXI
-	 * bus is still servicing GPU requests.
+	 * Idle the GPU and wait for all AXI transactions to complete.
+	 * Without this the gfx3d_axi_clk branch clock cannot halt
+	 * because the AXI bus is still servicing GPU requests.
 	 */
-	a2xx_idle(gpu);
+	if (!a2xx_idle(gpu))
+		dev_warn(gpu->dev->dev, "GPU didn't idle before suspend\n");
+
+	/*
+	 * Memory barrier to ensure all AXI transactions have completed
+	 * before we clear the interconnect vote. This is critical on
+	 * non-coherent platforms like MSM8660.
+	 */
+	wmb();
 
 	/*
 	 * Clear interconnect bandwidth vote before disabling clocks.
@@ -553,6 +562,12 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 	 */
 	if (a2xx_gpu->icc_path)
 		icc_set_bw(a2xx_gpu->icc_path, 0, 0);
+
+	/*
+	 * Allow time for the interconnect state change to propagate
+	 * through the bus fabric before disabling clocks.
+	 */
+	udelay(10);
 
 	return msm_gpu_pm_suspend(gpu);
 }

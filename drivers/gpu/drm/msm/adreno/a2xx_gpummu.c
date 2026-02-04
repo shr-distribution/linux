@@ -60,10 +60,17 @@ static int a2xx_gpummu_map(struct msm_mmu *mmu, uint64_t iova,
 	dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
 				   DMA_TO_DEVICE);
 
+	/* Ensure DMA sync completes before invalidating TLB */
+	wmb();
+
 	/* we can improve by deferring flush for multiple map() */
 	gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE,
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_TC);
+
+	/* Wait for Memory Hub to process TLB invalidation */
+	mb();
+
 	return 0;
 }
 
@@ -102,9 +109,16 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
 				   DMA_TO_DEVICE);
 
+	/* Ensure DMA sync completes before invalidating TLB */
+	wmb();
+
 	gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE,
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_TC);
+
+	/* Wait for Memory Hub to process TLB invalidation */
+	mb();
+
 	return 0;
 }
 
