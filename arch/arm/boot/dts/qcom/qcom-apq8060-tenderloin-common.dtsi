@@ -21,7 +21,7 @@
 #define USE_FRAMEBUFFER 0
 
 / {
-	model = "HP TouchPad";
+	model = "APQ8060 HP TouchPad";
 	compatible = "qcom,apq8060-tenderloin", "qcom,msm8660";
 
 	/*
