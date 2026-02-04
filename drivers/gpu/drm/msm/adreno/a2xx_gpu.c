@@ -533,6 +533,9 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 
 static int a2xx_pm_suspend(struct msm_gpu *gpu)
 {
+	uint32_t mh_cfg;
+	int timeout = 1000;
+
 	/*
 	 * Idle the GPU before cutting clocks.  Without this the
 	 * gfx3d_axi_clk branch clock cannot halt because the AXI
@@ -542,14 +545,54 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 	a2xx_idle(gpu);
 
 	/*
-	 * Always do a soft reset before suspend to ensure all AXI
-	 * transactions are completed. Even when a2xx_idle() succeeds,
-	 * there can be residual bus activity that prevents the
-	 * gfx3d_axi_clk from halting.
+	 * Wait for RBBM_STATUS to indicate fully idle (value 0x110).
+	 * This is the approach used by the legacy KGSL driver.
+	 * The value 0x110 indicates CMDFIFO has 1 slot available (normal)
+	 * and HIRQ is pending, with all busy bits cleared.
 	 */
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 1);
+	while (timeout > 0) {
+		uint32_t status = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
+		if ((status & 0xFFFFFF00) == 0x100)
+			break;
+		udelay(1);
+		timeout--;
+	}
+
+	/*
+	 * Disable all Memory Hub arbiter clients to prevent any new
+	 * AXI transactions from being started.
+	 */
+	mh_cfg = gpu_read(gpu, REG_A2XX_MH_ARBITER_CONFIG);
+	gpu_write(gpu, REG_A2XX_MH_ARBITER_CONFIG, mh_cfg &
+		  ~(A2XX_MH_ARBITER_CONFIG_CP_CLNT_ENABLE |
+		    A2XX_MH_ARBITER_CONFIG_VGT_CLNT_ENABLE |
+		    A2XX_MH_ARBITER_CONFIG_TC_CLNT_ENABLE |
+		    A2XX_MH_ARBITER_CONFIG_RB_CLNT_ENABLE |
+		    A2XX_MH_ARBITER_CONFIG_PA_CLNT_ENABLE));
+
+	/*
+	 * Force all blocks to be clocked using PM overrides, then do
+	 * a full soft reset. This ensures the reset propagates to all
+	 * blocks even if they were power-gated.
+	 */
+	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0xfffffffe);
+	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0xffffffff);
+
+	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
 	gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
+
+	/*
+	 * The legacy KGSL driver waits 30ms after soft reset for the
+	 * core to reach a known state. This is necessary to allow all
+	 * in-flight AXI transactions to complete before disabling clocks.
+	 */
+	msleep(30);
+
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0);
+
+	/* Clear PM overrides */
+	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0);
+	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
 
 	return msm_gpu_pm_suspend(gpu);
 }
