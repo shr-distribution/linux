@@ -1804,6 +1804,13 @@ static struct clk_branch rot_axi_clk = {
 static struct clk_branch gfx3d_axi_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 21,
+	/*
+	 * This branch clock shares the MMSS fabric with MDP. When MDP is
+	 * actively scanning out to the display, the fabric never idles,
+	 * preventing this clock from halting. Use BRANCH_HALT_SKIP to avoid
+	 * the "status stuck at 'on'" warning during GPU runtime PM suspend.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0244,
 		.enable_mask = BIT(0),
