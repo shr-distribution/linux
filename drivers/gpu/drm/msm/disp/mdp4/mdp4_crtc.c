@@ -201,26 +201,16 @@ static void blend_setup(struct drm_crtc *crtc)
 			/*
 			 * Both foreground and background have alpha.
 			 * Use background pixel alpha with inverse for foreground.
-			 * FG_MOD_ALPHA: FG is premultiplied, don't multiply by alpha again
-			 * BG_MOD_ALPHA: BG may also be premultiplied from prior blends
-			 * This implements correct Porter-Duff "over" for Qt/OpenGL content.
 			 */
 			op = MDP4_OVLP_STAGE_OP_FG_ALPHA(BG_PIXEL) |
 					MDP4_OVLP_STAGE_OP_FG_INV_ALPHA |
-					MDP4_OVLP_STAGE_OP_FG_MOD_ALPHA |
-					MDP4_OVLP_STAGE_OP_BG_ALPHA(BG_PIXEL) |
-					MDP4_OVLP_STAGE_OP_BG_MOD_ALPHA;
+					MDP4_OVLP_STAGE_OP_BG_ALPHA(BG_PIXEL);
 		} else if (alpha[i]) {
 			/*
 			 * Only foreground has alpha.
-			 * Standard Porter-Duff "over" operation with premultiplied alpha.
-			 * FG_MOD_ALPHA: FG is premultiplied (Qt uses Format_ARGB32_Premultiplied
-			 * and GL_ONE/GL_ONE_MINUS_SRC_ALPHA blend), so don't multiply by
-			 * alpha again. Without this, alpha is applied twice causing dark
-			 * colors and incorrect z-order blending artifacts.
+			 * Standard Porter-Duff "over" operation.
 			 */
 			op = MDP4_OVLP_STAGE_OP_FG_ALPHA(FG_PIXEL) |
-					MDP4_OVLP_STAGE_OP_FG_MOD_ALPHA |
 					MDP4_OVLP_STAGE_OP_BG_ALPHA(FG_PIXEL) |
 					MDP4_OVLP_STAGE_OP_BG_INV_ALPHA;
 		} else if (bg_alpha) {
