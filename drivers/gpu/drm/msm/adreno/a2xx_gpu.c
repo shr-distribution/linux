@@ -544,8 +544,24 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 	 * Without this the gfx3d_axi_clk branch clock cannot halt
 	 * because the AXI bus is still servicing GPU requests.
 	 */
-	if (!a2xx_idle(gpu))
+	if (!a2xx_idle(gpu)) {
 		dev_warn(gpu->dev->dev, "GPU didn't idle before suspend\n");
+
+		/*
+		 * GPU failed to idle normally. Halt the command processor
+		 * and perform a soft reset to force the AXI interface into
+		 * a quiescent state. This ensures the gfx3d_axi_clk branch
+		 * clock can be disabled even if the GPU was stuck.
+		 */
+		gpu_write(gpu, REG_AXXX_CP_ME_CNTL, AXXX_CP_ME_CNTL_HALT);
+
+		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 1);
+		gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
+		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0);
+
+		/* Wait for reset to complete */
+		udelay(100);
+	}
 
 	/*
 	 * Memory barrier to ensure all AXI transactions have completed
