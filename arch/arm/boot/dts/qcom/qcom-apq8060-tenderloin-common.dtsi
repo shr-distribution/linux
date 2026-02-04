@@ -350,14 +350,14 @@
 				clocks = <&gcc GSBI10_UART_CLK>, <&gcc GSBI10_H_CLK>;
 				clock-names = "core", "iface";
 
-				dmas = <&adm_dma0 8>;
-				dma-names = "rx";
 				/*
-				 * GSBI10 DMA CRCI configuration from webOS kernel:
-				 * DMOV_HSUART2_TX_CRCI = (1 << 4) + 9 = 25
-				 * DMOV_HSUART2_RX_CRCI = (1 << 4) + 10 = 26
+				 * DMA disabled for testing - using PIO mode.
+				 * TODO: Re-enable once ADM DMA flush errors are resolved.
+				 * Original config:
+				 * dmas = <&adm_dma0 8>;
+				 * dma-names = "rx";
+				 * qcom,rx-crci = <26>;
 				 */
-				qcom,rx-crci = <26>;
 
 				status = "disabled";
 			};
