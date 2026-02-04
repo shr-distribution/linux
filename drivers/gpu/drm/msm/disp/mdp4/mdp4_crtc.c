@@ -4,6 +4,7 @@
  * Author: Rob Clark <robdclark@gmail.com>
  */
 
+#include <drm/drm_blend.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_flip_work.h>
 #include <drm/drm_managed.h>
@@ -172,6 +173,7 @@ static void blend_setup(struct drm_crtc *crtc)
 	struct drm_plane *plane;
 	int i, ovlp = mdp4_crtc->ovlp;
 	bool alpha[4] = { false, false, false, false };
+	bool premult[4] = { false, false, false, false };
 	bool bg_alpha = false;
 
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_LOW0(ovlp), 0);
@@ -186,6 +188,8 @@ static void blend_setup(struct drm_crtc *crtc)
 			const struct msm_format *format =
 					msm_framebuffer_format(plane->state->fb);
 			alpha[idx-1] = format->alpha_enable;
+			premult[idx-1] = (plane->state->pixel_blend_mode ==
+					  DRM_MODE_BLEND_PREMULTI);
 		}
 	}
 
@@ -193,22 +197,22 @@ static void blend_setup(struct drm_crtc *crtc)
 		uint32_t op;
 
 		/*
-		 * Configure blend operation based on both foreground and
-		 * background alpha. This matches the webOS driver behavior
-		 * which properly handles stacked alpha layers.
+		 * Configure blend operation based on alpha and blend mode.
+		 * Handle premultiplied alpha differently from coverage alpha.
 		 */
-		if (alpha[i] && bg_alpha) {
+		if (alpha[i] && premult[i]) {
 			/*
-			 * Both foreground and background have alpha.
-			 * Use background pixel alpha with inverse for foreground.
+			 * Premultiplied alpha: FG color is already multiplied
+			 * by alpha, so use constant (1.0) for FG contribution.
+			 * BG uses inverted FG pixel alpha.
 			 */
-			op = MDP4_OVLP_STAGE_OP_FG_ALPHA(BG_PIXEL) |
-					MDP4_OVLP_STAGE_OP_FG_INV_ALPHA |
-					MDP4_OVLP_STAGE_OP_BG_ALPHA(BG_PIXEL);
+			op = MDP4_OVLP_STAGE_OP_FG_ALPHA(FG_CONST) |
+					MDP4_OVLP_STAGE_OP_BG_ALPHA(FG_PIXEL) |
+					MDP4_OVLP_STAGE_OP_BG_INV_ALPHA;
 		} else if (alpha[i]) {
 			/*
-			 * Only foreground has alpha.
-			 * Standard Porter-Duff "over" operation.
+			 * Coverage (straight) alpha: multiply FG by its alpha.
+			 * BG uses inverted FG pixel alpha.
 			 */
 			op = MDP4_OVLP_STAGE_OP_FG_ALPHA(FG_PIXEL) |
 					MDP4_OVLP_STAGE_OP_BG_ALPHA(FG_PIXEL) |
@@ -233,7 +237,7 @@ static void blend_setup(struct drm_crtc *crtc)
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_FG_ALPHA(ovlp, i), 0xff);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_BG_ALPHA(ovlp, i), 0x00);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_OP(ovlp, i), op);
-		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_CO3(ovlp, i), 0);
+		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_CO3(ovlp, i), 1);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_TRANSP_LOW0(ovlp, i), 0);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_TRANSP_LOW1(ovlp, i), 0);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_TRANSP_HIGH0(ovlp, i), 0);
