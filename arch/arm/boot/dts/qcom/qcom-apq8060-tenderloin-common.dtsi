@@ -353,12 +353,11 @@
 				dmas = <&adm_dma0 8>;
 				dma-names = "rx";
 				/*
-				 * Palm change for GSBI10 DMA:
-				 * tx-crci = (1 << 4) + 9 = 25
-				 * rx-crci = (1 << 4) + 10 = 26
-				 * qcom,tx-crci = <25>; (not used)
+				 * GSBI10 DMA CRCI configuration from webOS kernel:
+				 * DMOV_HSUART2_TX_CRCI = (1 << 4) + 9 = 25
+				 * DMOV_HSUART2_RX_CRCI = (1 << 4) + 10 = 26
 				 */
-				qcom,rx-crci = <10>;
+				qcom,rx-crci = <26>;
 
 				status = "disabled";
 			};
