@@ -308,8 +308,36 @@ static void a2xx_destroy(struct msm_gpu *gpu)
 	kfree(a2xx_gpu);
 }
 
+/*
+ * Mask of all RBBM_STATUS bits that indicate the GPU is busy.
+ * Derived from the webOS KGSL driver which checks RBBM_STATUS == 0x110
+ * for idle (only CMDFIFO_AVAIL and HIRQ_PENDING are allowed to be set).
+ * All these bits must be clear for the gfx3d_axi_clk to halt properly.
+ */
+#define A2XX_RBBM_BUSY_MASK ( \
+	A2XX_RBBM_STATUS_TC_BUSY | \
+	A2XX_RBBM_STATUS_CPRQ_PENDING | \
+	A2XX_RBBM_STATUS_CFRQ_PENDING | \
+	A2XX_RBBM_STATUS_PFRQ_PENDING | \
+	A2XX_RBBM_STATUS_VGT_BUSY_NO_DMA | \
+	A2XX_RBBM_STATUS_RBBM_WU_BUSY | \
+	A2XX_RBBM_STATUS_CP_NRT_BUSY | \
+	A2XX_RBBM_STATUS_MH_BUSY | \
+	A2XX_RBBM_STATUS_MH_COHERENCY_BUSY | \
+	A2XX_RBBM_STATUS_SX_BUSY | \
+	A2XX_RBBM_STATUS_TPC_BUSY | \
+	A2XX_RBBM_STATUS_SC_CNTX_BUSY | \
+	A2XX_RBBM_STATUS_PA_BUSY | \
+	A2XX_RBBM_STATUS_VGT_BUSY | \
+	A2XX_RBBM_STATUS_SQ_CNTX17_BUSY | \
+	A2XX_RBBM_STATUS_SQ_CNTX0_BUSY | \
+	A2XX_RBBM_STATUS_RB_CNTX_BUSY | \
+	A2XX_RBBM_STATUS_GUI_ACTIVE)
+
 static bool a2xx_idle(struct msm_gpu *gpu)
 {
+	uint32_t status;
+
 	/* wait for ringbuffer to drain: */
 	if (!adreno_idle(gpu, gpu->rb[0]))
 		return false;
@@ -324,21 +352,15 @@ static bool a2xx_idle(struct msm_gpu *gpu)
 	}
 
 	/*
-	 * Wait for all components that use the AXI bus to be idle.
-	 * The gfx3d_axi_clk cannot be disabled while any of these
-	 * are still busy servicing memory transactions:
-	 * - MH (Memory Hub) - controls the AXI interface
-	 * - TC (Texture Cache) - fetches textures from memory
-	 * - TPC (Texture Processor Cluster) - processes textures
-	 * - RB (Render Backend) - writes to framebuffer
+	 * Wait for ALL busy bits to clear, not just the obvious ones.
+	 * The webOS KGSL driver waits for RBBM_STATUS == 0x110 (only
+	 * CMDFIFO_AVAIL and HIRQ_PENDING set). If any busy bit remains
+	 * set, the gfx3d_axi_clk branch clock cannot halt properly.
 	 */
-	if (spin_until(!(gpu_read(gpu, REG_A2XX_RBBM_STATUS) &
-			(A2XX_RBBM_STATUS_MH_BUSY |
-			 A2XX_RBBM_STATUS_MH_COHERENCY_BUSY |
-			 A2XX_RBBM_STATUS_TC_BUSY |
-			 A2XX_RBBM_STATUS_TPC_BUSY |
-			 A2XX_RBBM_STATUS_RB_CNTX_BUSY)))) {
-		DRM_ERROR("%s: timeout waiting for MH/TC/RB to idle!\n", gpu->name);
+	if (spin_until(!((status = gpu_read(gpu, REG_A2XX_RBBM_STATUS)) &
+			 A2XX_RBBM_BUSY_MASK))) {
+		DRM_ERROR("%s: timeout waiting for GPU idle, RBBM_STATUS=%08x\n",
+			  gpu->name, status);
 		return false;
 	}
 
