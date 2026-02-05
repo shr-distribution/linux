@@ -324,8 +324,7 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 			MDP4_DMA_CONFIG_R_BPC(BPC8) |
 			MDP4_DMA_CONFIG_G_BPC(BPC8) |
 			MDP4_DMA_CONFIG_B_BPC(BPC8) |
-			MDP4_DMA_CONFIG_PACK(0x21) |
-			MDP4_DMA_CONFIG_DEFLKR_EN;
+			MDP4_DMA_CONFIG_PACK(0x21);
 	} else {
 		/* 18bpp: 6 bits per channel, enable dithering */
 		config =
@@ -333,7 +332,6 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 			MDP4_DMA_CONFIG_G_BPC(BPC6) |
 			MDP4_DMA_CONFIG_B_BPC(BPC6) |
 			MDP4_DMA_CONFIG_PACK(0x21) |
-			MDP4_DMA_CONFIG_DEFLKR_EN |
 			MDP4_DMA_CONFIG_DITHER_EN;
 	}
 
