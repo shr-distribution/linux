@@ -237,14 +237,233 @@ If a similar device works correctly with Qt6, capture:
 
 ---
 
+---
+
+## KGSL vs Freedreno Shader Differences
+
+**Critical Context:** Qt6 worked previously with the proprietary KGSL driver but has issues with freedreno Mesa.
+
+### Kernel Driver Comparison
+
+| Aspect | KGSL (Proprietary) | Freedreno/MSM (Mainline) |
+|--------|-------------------|--------------------------|
+| Shader compilation | Proprietary compiler, pre-compiled binaries | Mesa NIR/IR2 runtime compilation |
+| Shader state preservation | Explicit 6KB+6KB+6KB shadow memory per context | No shader state shadow, userspace managed |
+| Context switching | Saves/restores shader instruction memory | Relies on userspace to manage state |
+| Precision handling | Built-in mediump/highp per operation | NIR lowering passes |
+| GMEM operations | Hardcoded binary shader programs | Dynamically generated |
+
+### KGSL Shader Memory Layout
+
+```
+18K Shader Instruction Shadow:
+  - 6K vertex  (32-byte aligned)
+  - 6K pixel   (32-byte aligned)
+  - 6K shared  (32-byte aligned)
++ 8K ALU constants shadow
++ 4K Register shadow
++ 768 bytes Texture constants
+```
+
+**Freedreno has NO equivalent shader instruction caching/shadowing.**
+
+### Pre-compiled Shaders in KGSL
+
+KGSL embeds binary GPU shader programs for GMEM operations:
+- `gmem2sys_vtx_pgm` (18 DWORDS) - GMEM to system vertex shader
+- `gmem2sys_frag_pgm` (12 DWORDS) - GMEM to system fragment shader
+- `sys2gmem_vtx_pgm` (24 DWORDS) - System to GMEM vertex shader
+- `sys2gmem_frag_pgm` (15 DWORDS) - System to GMEM fragment shader
+
+These are **binary GPU instructions**, not GLSL. Mesa/freedreno generates these dynamically.
+
+### Adreno 220 (Leia) Specific Workarounds
+
+KGSL has Leia-specific settings:
+- `PM_OVERRIDE2 = 0x1a0` for clock gating
+- `CONFIG1 = 0x00032f07` for 1K boundary check
+- Different handling vs Yamato (A200)
+
+**Freedreno may be missing some of these Leia-specific optimizations.**
+
+---
+
+## Qt5 vs Qt6 Shader Handling
+
+### The Critical Difference
+
+| Aspect | Qt5.15 | Qt6.8 |
+|--------|--------|-------|
+| Shader source | **Native GLSL ES 100 strings** in QML | Vulkan-style GLSL → SPIR-V → translated |
+| Compilation | Runtime by GLES driver | Offline via `qsb` tool |
+| Blend control | **Full glBlendFunc/glBlendEquation** | **Limited - equation always GL_FUNC_ADD** |
+| Uniform handling | Direct uniform setting | **std140 uniform blocks required** |
+| OpenGL access | Direct API calls in updateState() | No direct graphics API access |
+
+### Qt5 Native Shader Example
+
+```qml
+// Qt5 - Direct GLSL ES 100
+ShaderEffect {
+    vertexShader: "
+        uniform highp mat4 qt_Matrix;
+        attribute highp vec4 qt_Vertex;
+        void main() {
+            gl_Position = qt_Matrix * qt_Vertex;
+        }"
+}
+```
+
+### Qt6 Shader Pipeline
+
+```
+Vulkan-style GLSL (v440)
+    ↓ glslang
+SPIR-V bytecode
+    ↓ SPIRV-Cross
+Multiple targets:
+  - GLSL ES 100 (GLES 2.0)
+  - GLSL 120 (OpenGL 2.1)
+  - GLSL 150 (OpenGL 3.2)
+  - HLSL 5.0, Metal 1.2
+    ↓
+Packaged in .qsb file
+```
+
+### SPIRV-Cross Translation Issues
+
+When SPIR-V is translated to GLSL ES 100:
+- Precision qualifiers may be handled differently
+- Uniform block layout may not map cleanly
+- Some constructs may not translate optimally
+- **The generated code is NOT the same as hand-written GLSL ES 100**
+
+### Qt6 Blend Equation Restriction
+
+**Critical:** Qt6 restricts blend equations to `GL_FUNC_ADD` only.
+
+```cpp
+// Qt6 - Only blend factors can be customized
+// Blend equation is ALWAYS ADD
+updateGraphicsPipelineState() {
+    // NO access to glBlendEquation()
+}
+```
+
+If Qt5 code relied on different blend equations, it will break in Qt6.
+
+---
+
+## Freedreno A2XX Shader Limitations
+
+### GLSL Version
+
+**OpenGL ES 2.0 / GLSL ES 100 only**
+
+### Hardware Limits
+
+| Resource | Limit |
+|----------|-------|
+| Registers | 64 total (4 components each = 256 slots) |
+| Instructions | 384 scheduled max |
+| Loop unroll | 32 iterations max |
+| Fetch instructions | 64 max |
+
+### Unsupported Features
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Depth writing | **NOT SUPPORTED** | Shaders writing FRAG_RESULT_DEPTH rejected |
+| Integer operations | **NOT SUPPORTED** | All ints lowered to floats |
+| Boolean operations | **NOT SUPPORTED** | Lowered to floats |
+| Flat shading | **PROBLEMATIC** | ES 2.0 limitation |
+| Texture projection | LOWERED | All txp operations lowered |
+| 1D/3D textures | **NOT SUPPORTED** | Causes compile error |
+| Indirect array access | UNROLLED | Force-unrolled, max 32 iterations |
+
+### NIR Lowering Passes
+
+```c
+// From ir2_nir.c
+.no_integers = true              // NO integer support
+.lower_fpow = true               // pow() lowered
+.lower_flrp32 = true             // lerp() lowered
+.lower_fmod = true               // fmod() lowered
+.lower_fdiv = true               // Division lowered
+.lower_fceil = true              // ceil() lowered
+.lower_bitops = true             // Bitwise ops lowered
+.lower_vector_cmp = true         // Vector comparisons lowered
+.force_indirect_unrolling = all  // ALL indirect access unrolled
+```
+
+### Shader Compilation Failure Modes
+
+If shader exceeds 64 registers:
+```c
+assert(idx != 64); /* TODO ran out of register space.. */
+// HARD FAILURE - no fallback
+```
+
+---
+
+## Root Cause Analysis: Why KGSL Worked But Freedreno Doesn't
+
+### Most Likely Causes
+
+1. **SPIRV-Cross Translation Artifacts**
+   - Qt5 used native GLSL ES 100 compiled directly by KGSL
+   - Qt6 uses SPIRV-Cross to generate GLSL ES 100 from SPIR-V
+   - Generated code may have subtle differences in precision/operations
+
+2. **Shader State Loss on Context Switch**
+   - KGSL explicitly saves/restores 18KB of shader state per context
+   - Freedreno relies on userspace to manage shader state
+   - Qt6 may assume KGSL-style implicit state preservation
+
+3. **Blend Equation Differences**
+   - Qt5 had full control over blend equations
+   - Qt6 is restricted to GL_FUNC_ADD
+   - Combined with freedreno's blend handling, may cause issues
+
+4. **Precision Mode Mismatches**
+   - KGSL had specific precision handling (mediump vs highp per operation)
+   - Mesa uses NIR lowering passes with different semantics
+   - Float precision differences could affect alpha calculations
+
+5. **Missing Leia Workarounds**
+   - KGSL has Adreno 220 specific optimizations
+   - Freedreno may be missing some of these
+
+### The "Translation Stack" Problem
+
+```
+Qt5 + KGSL:
+  GLSL ES 100 (hand-written) → KGSL compiler → GPU
+
+Qt6 + Freedreno:
+  Vulkan GLSL → SPIR-V → SPIRV-Cross → GLSL ES 100 → Mesa NIR → IR2 → GPU
+```
+
+**Each translation step can introduce subtle differences.**
+
+---
+
 ## Conclusion
 
-The display artifacts are confirmed to be a **userspace issue** in the Qt/Mesa rendering stack, not the kernel. The Adreno 220's lack of hardware premultiplied alpha compensation means correct blend state must be configured by Mesa/Qt.
+The display artifacts are confirmed to be a **userspace issue** in the Qt6/Mesa/freedreno rendering stack, not the kernel. The combination of:
 
-**Next steps** should focus on:
-1. Qt Scene Graph debugging to identify batch ordering issues
-2. Mesa freedreno blend state verification
-3. Comparison with known-working Qt6 + GLES 2.0 configurations
+1. Qt6's SPIRV-Cross shader translation (vs Qt5's native GLSL ES 100)
+2. Freedreno's different shader compiler and state management (vs KGSL)
+3. A2XX hardware limitations (no integers, limited registers, forced lowering)
+4. Qt6's restricted blend equation control
+
+...creates a "perfect storm" for rendering artifacts on the Adreno 220.
+
+**Recommended Investigation:**
+1. Compare SPIRV-Cross generated GLSL ES 100 with original Qt5 shaders
+2. Check if blend factors are being set correctly by Qt6 RHI GLES2 backend
+3. Verify shader compilation is succeeding (no silent failures)
+4. Consider Qt5.15 fallback if Qt6 issues cannot be resolved
 
 ---
 
@@ -252,4 +471,12 @@ The display artifacts are confirmed to be a **userspace issue** in the Qt/Mesa r
 
 - [Mesa Freedreno Documentation](https://docs.mesa3d.org/drivers/freedreno.html)
 - [Adreno 220 Specifications](https://en.wikipedia.org/wiki/Adreno)
-- [Mesa GitLab - A508 artifacts issue](https://gitlab.freedesktop.org/mesa/mesa/-/issues/8442) (similar symptoms)
+- [Mesa GitLab - A508 artifacts issue](https://gitlab.freedesktop.org/mesa/mesa/-/issues/8442)
+- [KGSL Kernel Wiki](https://github.com/freedreno/freedreno/wiki/kgsl-kernel)
+- [Journey Through Freedreno](https://fryzekconcepts.com/notes/freedreno_journey.html)
+- [Graphics in Qt 6.0: QRhi, Qt Quick, Qt Quick 3D](https://www.qt.io/blog/graphics-in-qt-6.0-qrhi-qt-quick-qt-quick-3d)
+- [Qt Shader Tools Overview](https://doc.qt.io/qt-6/qtshadertools-overview.html)
+- [QSB Manual](https://doc.qt.io/qt-6/qtshadertools-qsb.html)
+- [Changes to Qt Quick (Qt5 to Qt6)](https://doc.qt.io/qt-6/quick-changes-qt6.html)
+- [Qualcomm Adreno OpenGL ES Developer Guide](https://usermanual.wiki/Document/QualcommC2AE20AdrenoE284A220OpenGL20ES20Developer20Guide20.1618769787/amp)
+- [OpenGL ES Shading Language Potholes](https://bitiotic.com/blog/2013/09/24/opengl-es-shading-language-potholes-and-problems/)
