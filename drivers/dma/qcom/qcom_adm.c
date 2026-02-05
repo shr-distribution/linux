@@ -804,8 +804,12 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			if (!(result & ADM_CH_RSLT_VALID))
 				continue;
 
-			/* flag error if transaction was flushed or failed */
-			if (result & (ADM_CH_RSLT_ERR | ADM_CH_RSLT_FLUSH)) {
+			/*
+			 * Flag error only if ERR bit is set (real hardware error).
+			 * Flush-only results are expected behavior - UART drivers
+			 * use dmaengine_terminate_all() to retrieve partial RX data.
+			 */
+			if (result & ADM_CH_RSLT_ERR) {
 				achan->error = 1;
 				dev_err(adev->dev,
 					"ADM DMA error: chan=%d result=0x%08x (err=%d flush=%d tpd=%d)\n",
