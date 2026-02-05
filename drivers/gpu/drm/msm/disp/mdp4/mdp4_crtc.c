@@ -174,7 +174,6 @@ static void blend_setup(struct drm_crtc *crtc)
 	int i, ovlp = mdp4_crtc->ovlp;
 	bool alpha[4] = { false, false, false, false };
 	bool premult[4] = { false, false, false, false };
-	bool bg_alpha = false;
 
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_LOW0(ovlp), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_LOW1(ovlp), 0);
@@ -196,10 +195,6 @@ static void blend_setup(struct drm_crtc *crtc)
 	for (i = 0; i < 4; i++) {
 		uint32_t op;
 
-		/*
-		 * Configure blend operation based on alpha and blend mode.
-		 * Handle premultiplied alpha differently from coverage alpha.
-		 */
 		if (alpha[i] && premult[i]) {
 			/*
 			 * Premultiplied alpha: FG color is already multiplied
@@ -217,19 +212,7 @@ static void blend_setup(struct drm_crtc *crtc)
 			op = MDP4_OVLP_STAGE_OP_FG_ALPHA(FG_PIXEL) |
 					MDP4_OVLP_STAGE_OP_BG_ALPHA(FG_PIXEL) |
 					MDP4_OVLP_STAGE_OP_BG_INV_ALPHA;
-		} else if (bg_alpha) {
-			/*
-			 * Only background has alpha.
-			 * Use background pixel alpha for compositing.
-			 */
-			op = MDP4_OVLP_STAGE_OP_FG_ALPHA(BG_PIXEL) |
-					MDP4_OVLP_STAGE_OP_FG_INV_ALPHA |
-					MDP4_OVLP_STAGE_OP_BG_ALPHA(BG_PIXEL);
 		} else {
-			/*
-			 * Neither has alpha.
-			 * Use constant alpha values.
-			 */
 			op = MDP4_OVLP_STAGE_OP_FG_ALPHA(FG_CONST) |
 					MDP4_OVLP_STAGE_OP_BG_ALPHA(BG_CONST);
 		}
@@ -242,10 +225,6 @@ static void blend_setup(struct drm_crtc *crtc)
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_TRANSP_LOW1(ovlp, i), 0);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_TRANSP_HIGH0(ovlp, i), 0);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_TRANSP_HIGH1(ovlp, i), 0);
-
-		/* Track cumulative alpha - output has alpha if any layer has alpha */
-		if (alpha[i])
-			bg_alpha = true;
 	}
 
 	setup_mixer(mdp4_kms);
