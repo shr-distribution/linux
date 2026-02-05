@@ -79,28 +79,35 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	struct a2xx_gpummu *gpummu = to_a2xx_gpummu(mmu);
 	unsigned idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
 	unsigned i;
-	int timeout = 1000; /* 1ms timeout */
+	int timeout = 100000; /* 100ms timeout - GPU ops can take time */
 
 	dev_dbg(mmu->dev, "gpummu unmap: iova=%llx len=%zx idx=%u\n",
 		iova, len, idx);
 
 	/*
-	 * Wait for Memory Hub to complete outstanding transactions before
-	 * clearing page table entries. This prevents page faults when the
-	 * GPU is still accessing memory that we're about to unmap.
-	 * Workaround derived from webOS kgsl_yamato driver which waits for
-	 * idle before any page table operations.
+	 * Wait for GPU to be fully idle before clearing page table entries.
+	 * This prevents page faults when the GPU is still accessing memory
+	 * that we're about to unmap.
+	 *
+	 * Use the comprehensive busy mask (same as a2xx_idle) rather than
+	 * just MH bits, as other GPU blocks may still be accessing memory.
+	 * The webOS kgsl_yamato driver calls kgsl_yamato_idle() before any
+	 * page table operations to ensure complete GPU idle.
 	 */
 	while (timeout > 0) {
 		uint32_t status = gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS);
 		if (!(status & (A2XX_RBBM_STATUS_MH_BUSY |
-				A2XX_RBBM_STATUS_MH_COHERENCY_BUSY)))
+				A2XX_RBBM_STATUS_MH_COHERENCY_BUSY |
+				A2XX_RBBM_STATUS_RB_CNTX_BUSY |
+				A2XX_RBBM_STATUS_SQ_CNTX0_BUSY |
+				A2XX_RBBM_STATUS_SQ_CNTX17_BUSY |
+				A2XX_RBBM_STATUS_GUI_ACTIVE)))
 			break;
 		udelay(1);
 		timeout--;
 	}
 	if (timeout == 0)
-		dev_warn_once(mmu->dev, "gpummu unmap: timeout waiting for MH idle\n");
+		dev_warn(mmu->dev, "gpummu unmap: timeout waiting for GPU idle, page faults may occur\n");
 
 	for (i = 0; i < len / GPUMMU_PAGE_SIZE; i++, idx++)
 		gpummu->table[idx] = 0;
