@@ -559,9 +559,7 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 				input_mt_report_slot_state(ts->input,
 							   MT_TOOL_FINGER,
 							   true);
-				input_report_abs(ts->input,
-						 ABS_MT_TRACKING_ID,
-						 t->tracking_id);
+				/* Note: tracking ID is handled by input_mt_report_slot_state() */
 				input_report_abs(ts->input,
 						 ABS_MT_POSITION_X, t->x);
 				input_report_abs(ts->input,
@@ -947,6 +945,12 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 	ts->input->id.product = 0x0395;
 	ts->input->id.version = 0x0100;
 
+	/* Single-touch axes - needed for pointer emulation */
+	input_set_abs_params(ts->input, ABS_X, 0, X_RESOLUTION - 1, 2, 0);
+	input_set_abs_params(ts->input, ABS_Y, 0, Y_RESOLUTION - 1, 1, 0);
+	input_set_abs_params(ts->input, ABS_PRESSURE, 250, 2000, 0, 0);
+
+	/* Multi-touch axes */
 	input_set_abs_params(ts->input, ABS_MT_POSITION_X,
 			     0, X_RESOLUTION - 1, 2, 0);
 	input_set_abs_params(ts->input, ABS_MT_POSITION_Y,
@@ -954,8 +958,6 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 	input_set_abs_params(ts->input, ABS_MT_TOUCH_MAJOR,
 			     PIXELS_PER_POINT, 500, 0, 0);
 	input_set_abs_params(ts->input, ABS_MT_PRESSURE, 250, 2000, 0, 0);
-	input_set_abs_params(ts->input, ABS_MT_TRACKING_ID,
-			     0, TRACKING_ID_MAX, 0, 0);
 
 	ret = input_mt_init_slots(ts->input, MAX_TOUCH,
 				  INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
