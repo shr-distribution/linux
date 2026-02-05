@@ -158,6 +158,31 @@ void msm_framebuffer_cleanup(struct drm_framebuffer *fb, bool needed_dirtyfb)
 	}
 }
 
+/**
+ * msm_framebuffer_sync_for_display() - Sync framebuffer cache for display
+ * @fb: the framebuffer
+ *
+ * On non-coherent platforms like MSM8660, after GPU rendering completes,
+ * the cache may contain stale data. This function syncs all GEM objects
+ * in the framebuffer so the display controller reads fresh data.
+ *
+ * Must be called after waiting for GPU fences and before display scanout.
+ */
+void msm_framebuffer_sync_for_display(struct drm_framebuffer *fb)
+{
+	int i, n = fb->format->num_planes;
+
+	for (i = 0; i < n; i++) {
+		struct drm_gem_object *obj = fb->obj[i];
+
+		if (obj) {
+			msm_gem_lock(obj);
+			msm_gem_sync_for_display(obj);
+			msm_gem_unlock(obj);
+		}
+	}
+}
+
 uint32_t msm_framebuffer_iova(struct drm_framebuffer *fb, int plane)
 {
 	struct msm_framebuffer *msm_fb = to_msm_framebuffer(fb);

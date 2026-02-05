@@ -283,6 +283,7 @@ int msm_gem_get_and_pin_iova_range(struct drm_gem_object *obj,
 int msm_gem_get_and_pin_iova(struct drm_gem_object *obj, struct drm_gpuvm *vm,
 			     uint64_t *iova);
 void msm_gem_unpin_iova(struct drm_gem_object *obj, struct drm_gpuvm *vm);
+void msm_gem_sync_for_display(struct drm_gem_object *obj);
 void msm_gem_pin_obj_locked(struct drm_gem_object *obj);
 struct page **msm_gem_get_pages_locked(struct drm_gem_object *obj, unsigned madv);
 struct page **msm_gem_pin_pages_locked(struct drm_gem_object *obj);

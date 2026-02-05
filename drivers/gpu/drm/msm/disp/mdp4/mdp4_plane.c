@@ -88,6 +88,14 @@ static int mdp4_plane_prepare_fb(struct drm_plane *plane,
 	if (ret)
 		return ret;
 
+	/*
+	 * After waiting for GPU fences, sync the framebuffer cache for
+	 * display. On non-coherent platforms like MSM8660, the GPU may
+	 * have rendered data that's still in CPU/outer cache. The display
+	 * controller needs fresh data from memory.
+	 */
+	msm_framebuffer_sync_for_display(new_state->fb);
+
 	return msm_framebuffer_prepare(new_state->fb, false);
 }
 

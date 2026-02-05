@@ -11,6 +11,11 @@
 #include <linux/shmem_fs.h>
 #include <linux/dma-buf.h>
 
+#ifdef CONFIG_ARM
+#include <asm/cacheflush.h>
+#include <asm/outercache.h>
+#endif
+
 #include <drm/drm_prime.h>
 #include <drm/drm_file.h>
 
@@ -160,6 +165,59 @@ static void sync_for_cpu(struct msm_gem_object *msm_obj)
 	struct device *dev = msm_obj->base.dev->dev;
 
 	dma_unmap_sgtable(dev, msm_obj->sgt, DMA_BIDIRECTIONAL, 0);
+}
+
+/**
+ * msm_gem_sync_for_display() - Sync GEM buffer cache for display scanout
+ * @obj: the GEM object
+ *
+ * On non-coherent platforms like MSM8660, after the GPU finishes rendering
+ * to a buffer, the outer L2 cache may contain stale entries. The display
+ * controller reads from memory directly (or through its own IOMMU path),
+ * potentially bypassing the CPU's cache hierarchy.
+ *
+ * This function flushes both inner (L1) and outer (L2) caches to ensure
+ * the display controller reads the GPU's rendered data from memory.
+ *
+ * Must be called after waiting for GPU fences and before submitting
+ * the buffer for display scanout.
+ */
+void msm_gem_sync_for_display(struct drm_gem_object *obj)
+{
+#ifdef CONFIG_ARM
+	struct msm_gem_object *msm_obj = to_msm_bo(obj);
+	struct sg_table *sgt;
+	struct scatterlist *sg;
+	int i;
+
+	msm_gem_assert_locked(obj);
+
+	sgt = msm_obj->sgt;
+	if (!sgt)
+		return;
+
+	/*
+	 * Flush both inner and outer caches for each page in the buffer.
+	 * This matches what the webOS kgsl driver does with dmac_flush_range
+	 * and outer_flush_range to ensure GPU-rendered data is visible to
+	 * the display controller.
+	 *
+	 * We iterate through the scatterlist and flush each segment's
+	 * virtual address range and physical address range for L2.
+	 */
+	for_each_sgtable_sg(sgt, sg, i) {
+		void *vaddr = sg_virt(sg);
+		phys_addr_t phys = sg_phys(sg);
+		size_t len = sg->length;
+
+		if (vaddr) {
+			/* Flush inner cache (L1) - clean and invalidate */
+			dmac_flush_range(vaddr, vaddr + len);
+		}
+		/* Flush outer cache (L2) */
+		outer_flush_range(phys, phys + len);
+	}
+#endif
 }
 
 static void update_lru_active(struct drm_gem_object *obj)
