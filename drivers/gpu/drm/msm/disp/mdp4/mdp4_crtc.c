@@ -4,7 +4,6 @@
  * Author: Rob Clark <robdclark@gmail.com>
  */
 
-#include <drm/drm_blend.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_flip_work.h>
 #include <drm/drm_managed.h>
@@ -173,7 +172,6 @@ static void blend_setup(struct drm_crtc *crtc)
 	struct drm_plane *plane;
 	int i, ovlp = mdp4_crtc->ovlp;
 	bool alpha[4] = { false, false, false, false };
-	bool premult[4] = { false, false, false, false };
 
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_LOW0(ovlp), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_LOW1(ovlp), 0);
@@ -187,28 +185,13 @@ static void blend_setup(struct drm_crtc *crtc)
 			const struct msm_format *format =
 					msm_framebuffer_format(plane->state->fb);
 			alpha[idx-1] = format->alpha_enable;
-			premult[idx-1] = (plane->state->pixel_blend_mode ==
-					  DRM_MODE_BLEND_PREMULTI);
 		}
 	}
 
 	for (i = 0; i < 4; i++) {
 		uint32_t op;
 
-		if (alpha[i] && premult[i]) {
-			/*
-			 * Premultiplied alpha: FG color is already multiplied
-			 * by alpha, so use constant (1.0) for FG contribution.
-			 * BG uses inverted FG pixel alpha.
-			 */
-			op = MDP4_OVLP_STAGE_OP_FG_ALPHA(FG_CONST) |
-					MDP4_OVLP_STAGE_OP_BG_ALPHA(FG_PIXEL) |
-					MDP4_OVLP_STAGE_OP_BG_INV_ALPHA;
-		} else if (alpha[i]) {
-			/*
-			 * Coverage (straight) alpha: multiply FG by its alpha.
-			 * BG uses inverted FG pixel alpha.
-			 */
+		if (alpha[i]) {
 			op = MDP4_OVLP_STAGE_OP_FG_ALPHA(FG_PIXEL) |
 					MDP4_OVLP_STAGE_OP_BG_ALPHA(FG_PIXEL) |
 					MDP4_OVLP_STAGE_OP_BG_INV_ALPHA;
