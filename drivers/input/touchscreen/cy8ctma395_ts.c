@@ -184,6 +184,7 @@ static void cy8ctma395_ts_liftoff(struct cy8ctma395_ts_data *ts)
 		}
 	}
 
+	input_mt_sync_frame(ts->input);
 	input_sync(ts->input);
 }
 
@@ -584,6 +585,13 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 			ts->slot_in_use[i] = 0;
 		}
 	}
+
+	/*
+	 * Sync the MT state - this generates BTN_TOUCH and single-touch
+	 * ABS_X/ABS_Y events from the MT slot data for input handlers
+	 * that need them.
+	 */
+	input_mt_sync_frame(ts->input);
 
 	if (tpc > 0) {
 		input_sync(ts->input);
