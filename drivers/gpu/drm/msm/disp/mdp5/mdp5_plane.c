@@ -136,11 +136,14 @@ static int mdp5_plane_prepare_fb(struct drm_plane *plane,
 				 struct drm_plane_state *new_state)
 {
 	bool needs_dirtyfb = to_mdp5_plane_state(new_state)->needs_dirtyfb;
+	int ret;
 
 	if (!new_state->fb)
 		return 0;
 
-	drm_gem_plane_helper_prepare_fb(plane, new_state);
+	ret = drm_gem_plane_helper_prepare_fb(plane, new_state);
+	if (ret)
+		return ret;
 
 	return msm_framebuffer_prepare(new_state->fb, needs_dirtyfb);
 }

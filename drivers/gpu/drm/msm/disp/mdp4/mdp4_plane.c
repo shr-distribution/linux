@@ -79,10 +79,14 @@ static const struct drm_plane_funcs mdp4_plane_funcs = {
 static int mdp4_plane_prepare_fb(struct drm_plane *plane,
 				 struct drm_plane_state *new_state)
 {
+	int ret;
+
 	if (!new_state->fb)
 		return 0;
 
-	drm_gem_plane_helper_prepare_fb(plane, new_state);
+	ret = drm_gem_plane_helper_prepare_fb(plane, new_state);
+	if (ret)
+		return ret;
 
 	return msm_framebuffer_prepare(new_state->fb, false);
 }
