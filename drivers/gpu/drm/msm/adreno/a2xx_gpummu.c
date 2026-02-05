@@ -80,31 +80,32 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	unsigned idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
 	unsigned i;
 	int timeout = 100; /* 100ms timeout in 1ms steps */
+	/* Mask for all busy bits except CMDFIFO_AVAIL and HIRQ_PENDING */
+	const uint32_t busy_mask = 0xFFFFFF00 & ~(1 << 8); /* exclude HIRQ_PENDING */
 
 	dev_dbg(mmu->dev, "gpummu unmap: iova=%llx len=%zx idx=%u\n",
 		iova, len, idx);
 
 	/*
-	 * Wait for GPU to be idle before clearing page table entries.
+	 * Wait for GPU to be completely idle before clearing page table entries.
 	 * This prevents page faults when the GPU is still accessing memory
 	 * that we're about to unmap.
 	 *
 	 * The webOS kgsl_yamato driver waits for RBBM_STATUS == 0x110
-	 * (complete idle with CMDFIFO_AVAIL=16 and HIRQ_PENDING possibly set).
-	 * We check that all major busy bits are clear.
+	 * (CMDFIFO_AVAIL=16, HIRQ_PENDING=1, all busy bits clear).
+	 * We wait for all busy bits to be clear (bits 8-31 except HIRQ_PENDING).
 	 */
 	while (timeout > 0) {
 		uint32_t status = gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS);
-		/* Check MH busy and render backend busy bits */
-		if (!(status & (A2XX_RBBM_STATUS_MH_BUSY |
-				A2XX_RBBM_STATUS_MH_COHERENCY_BUSY |
-				A2XX_RBBM_STATUS_RB_CNTX_BUSY)))
+		/* Check that all busy bits are clear */
+		if (!(status & busy_mask))
 			break;
 		usleep_range(1000, 2000); /* sleep 1-2ms */
 		timeout--;
 	}
 	if (timeout == 0)
-		dev_warn_once(mmu->dev, "gpummu unmap: timeout waiting for GPU idle\n");
+		dev_warn_once(mmu->dev, "gpummu unmap: timeout waiting for GPU idle, status=0x%08x\n",
+			      gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS));
 
 	for (i = 0; i < len / GPUMMU_PAGE_SIZE; i++, idx++)
 		gpummu->table[idx] = 0;
