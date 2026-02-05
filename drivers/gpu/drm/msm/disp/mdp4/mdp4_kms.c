@@ -660,6 +660,18 @@ static int mdp4_probe(struct platform_device *pdev)
 	if (IS_ERR(mdp4_kms->mmio))
 		return PTR_ERR(mdp4_kms->mmio);
 
+	/*
+	 * Disable display outputs immediately after mapping registers.
+	 * The bootloader may have left LCDC/DTV running, which causes
+	 * IOMMU page faults when the MDP tries to access the bootloader's
+	 * framebuffer through the now-active IOMMU without proper mappings.
+	 * Writing 0 to the enable registers stops the MDP from fetching
+	 * pixel data, preventing the page faults.
+	 */
+	writel(0, mdp4_kms->mmio + REG_MDP4_LCDC_ENABLE);
+	writel(0, mdp4_kms->mmio + REG_MDP4_DTV_ENABLE);
+	writel(0, mdp4_kms->mmio + REG_MDP4_DSI_ENABLE);
+
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return dev_err_probe(dev, irq, "failed to get irq\n");
