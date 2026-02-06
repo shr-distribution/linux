@@ -467,6 +467,238 @@ The display artifacts are confirmed to be a **userspace issue** in the Qt6/Mesa/
 
 ---
 
+## Detailed Shader Comparison: Qt5 vs Qt6
+
+### Qt5 Native GLSL ES 100 Shaders
+
+**flatcolor.vert:**
+```glsl
+attribute highp vec4 vCoord;
+uniform highp mat4 matrix;
+
+void main()
+{
+    gl_Position = matrix * vCoord;
+}
+```
+
+**flatcolor.frag:**
+```glsl
+uniform lowp vec4 color;
+
+void main()
+{
+    gl_FragColor = color;
+}
+```
+
+**texture.frag:**
+```glsl
+varying highp vec2 qt_TexCoord;
+uniform sampler2D qt_Texture;
+uniform lowp float opacity;
+
+void main()
+{
+    gl_FragColor = texture2D(qt_Texture, qt_TexCoord) * opacity;
+}
+```
+
+**smoothcolor.vert (complex):**
+```glsl
+uniform highp vec2 pixelSize;
+uniform highp mat4 matrix;
+uniform lowp float opacity;
+attribute highp vec4 vertex;
+attribute lowp vec4 vertexColor;
+attribute highp vec2 vertexOffset;
+varying lowp vec4 color;
+
+void main()
+{
+    highp vec4 pos = matrix * vertex;
+    gl_Position = pos;
+    // ... complex anti-aliasing offset calculations ...
+    color = vertexColor * opacity;
+}
+```
+
+### Qt6 Vulkan GLSL 440 Source (Pre-Translation)
+
+**flatcolor.vert:**
+```glsl
+#version 440
+layout(location = 0) in vec4 vertexCoord;
+layout(std140, binding = 0) uniform buf {
+    vec4 matrix[4];  // mat4 stored as 4 vec4s
+    vec4 color;
+};
+
+void main()
+{
+    gl_Position = mat4(matrix[0],matrix[1],matrix[2],matrix[3]) * vertexCoord;
+}
+```
+
+**flatcolor.frag:**
+```glsl
+#version 440
+layout(location = 0) out vec4 fragColor;
+layout(std140, binding = 0) uniform buf {
+    vec4 matrix[4];
+    vec4 color;
+};
+
+void main()
+{
+    fragColor = color;
+}
+```
+
+**texture.frag:**
+```glsl
+#version 440
+layout(location = 0) in vec2 qt_TexCoord;
+layout(location = 0) out vec4 fragColor;
+layout(std140, binding = 0) uniform buf {
+    vec4 qt_Matrix[4];
+    float opacity;
+};
+layout(binding = 1) uniform sampler2D qt_Texture;
+
+void main()
+{
+    fragColor = texture(qt_Texture, qt_TexCoord) * opacity;
+}
+```
+
+### SPIRV-Cross Translation to GLSL ES 100
+
+When SPIRV-Cross translates Qt6 shaders to GLSL ES 100 with `--flatten-ubo`:
+
+```glsl
+// Uniform block becomes vec4 array:
+// uniform buf { vec4 matrix[4]; vec4 color; }
+// becomes:
+uniform vec4 buf[5];  // 4 for matrix + 1 for color
+
+// Access pattern changes:
+// color → buf[4]
+// matrix → mat4(buf[0], buf[1], buf[2], buf[3])
+```
+
+### Critical Differences Summary
+
+| Aspect | Qt5 Native | Qt6 via SPIRV-Cross |
+|--------|-----------|---------------------|
+| **Uniform type** | Individual uniforms | vec4 array (flattened UBO) |
+| **mat4 handling** | Direct `uniform mat4` | `vec4[4]` + reconstruction |
+| **Precision** | Explicit (`highp`, `lowp`) | May be added by SPIRV-Cross |
+| **Attributes** | `attribute vec4` | `attribute vec4` (translated) |
+| **Varyings** | `varying vec4` | `varying vec4` (translated) |
+| **Texture** | `texture2D()` | `texture2D()` (translated) |
+| **Output** | `gl_FragColor` | `gl_FragColor` (translated) |
+
+### Potential Issues Identified
+
+1. **Uniform Array Indexing (Critical)**
+   - GLES 2.0 spec allows limited support for array indexing
+   - `buf[4]` to access color requires constant index support
+   - Some Adreno 220 drivers may have bugs with uniform array access
+
+2. **mat4 Reconstruction Overhead**
+   - Qt6: `mat4(buf[0], buf[1], buf[2], buf[3])` every vertex
+   - Qt5: Direct `matrix * vertex` with native mat4
+   - May have precision or performance differences
+
+3. **std140 Layout Assumptions**
+   - SPIRV-Cross assumes std140 alignment (16-byte)
+   - Flattened to vec4 array maintains this
+   - Driver must handle this correctly
+
+4. **Precision Qualifier Mapping**
+   - Qt5: Explicit precision per variable
+   - Qt6: SPIRV-Cross may add default precision
+   - freedreno A2XX lowers all to float anyway (no integers)
+
+5. **Opacity Multiplication**
+   - Both multiply by opacity in same way
+   - But uniform access path differs
+
+---
+
+## Qt6 Native GLSL ES 100 Bypass Options
+
+### Option 1: Replace Shaders in .qsb Files
+
+The `qsb` tool supports replacing shader variants:
+
+```bash
+# Replace GLSL ES 100 variant with hand-written shader
+qsb -r glsl,100es,custom_flatcolor.frag flatcolor.frag.qsb
+```
+
+This allows injecting native GLSL ES 100 shaders into Qt6's .qsb packages.
+
+### Option 2: Custom QSGMaterial with Native Shaders
+
+Create custom materials that load native GLSL ES 100:
+
+```cpp
+class NativeFlatColorMaterial : public QSGMaterial {
+    QSGMaterialShader *createShader() {
+        // Load native GLSL ES 100 shader
+    }
+};
+```
+
+### Option 3: Qt Build Configuration
+
+Check if Qt6 can be built with native shader paths:
+- `QT_QUICK_BACKEND=software` - bypasses GPU entirely
+- Custom `QSG_RHI_BACKEND` settings
+- Build-time shader generation options
+
+### Option 4: Patch SPIRV-Cross Output
+
+Modify the SPIRV-Cross translation to generate Qt5-compatible shaders:
+- Avoid vec4 array flattening
+- Use individual uniforms
+- Match Qt5 precision qualifiers
+
+---
+
+## Recommended Actions
+
+### Immediate Testing
+
+1. **Compare shader compilation logs:**
+   ```bash
+   export MESA_GLSL=dump
+   # Run Qt app, check for shader compilation errors
+   ```
+
+2. **Check uniform array access:**
+   - Monitor if `buf[N]` array access works on freedreno A2XX
+   - May need Mesa patches for correct handling
+
+3. **Test with replaced shaders:**
+   - Replace Qt6 .qsb shaders with Qt5-style native GLSL ES 100
+   - Use `qsb -r` replacement option
+
+### Build-Time Changes
+
+4. **Rebuild Qt6 with custom shader options:**
+   - Check `qt6_add_shaders()` CMake options
+   - May need to disable SPIRV-Cross translation
+   - Generate native GLSL ES 100 directly
+
+5. **Patch luna-surfacemanager:**
+   - Override default Qt materials with native shaders
+   - Custom compositor materials for Adreno 220
+
+---
+
 ## References
 
 - [Mesa Freedreno Documentation](https://docs.mesa3d.org/drivers/freedreno.html)
@@ -480,3 +712,6 @@ The display artifacts are confirmed to be a **userspace issue** in the Qt6/Mesa/
 - [Changes to Qt Quick (Qt5 to Qt6)](https://doc.qt.io/qt-6/quick-changes-qt6.html)
 - [Qualcomm Adreno OpenGL ES Developer Guide](https://usermanual.wiki/Document/QualcommC2AE20AdrenoE284A220OpenGL20ES20Developer20Guide20.1618769787/amp)
 - [OpenGL ES Shading Language Potholes](https://bitiotic.com/blog/2013/09/24/opengl-es-shading-language-potholes-and-problems/)
+- [SPIRV-Cross GitHub](https://github.com/KhronosGroup/SPIRV-Cross)
+- [SPIRV-Cross flatten-ubo documentation](https://manpages.ubuntu.com/manpages/jammy/man1/spirv-cross.1.html)
+- [Qt5 QSGMaterialShader](https://doc.qt.io/archives/qt-5.15/qsgmaterialshader.html)
