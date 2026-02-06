@@ -201,7 +201,13 @@ static void setup_phy(struct drm_encoder *encoder)
 	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG2, 0x30);
 
 	mb();
-	udelay(1);
+	/*
+	 * LVDS PHY needs time to stabilize before enabling serialization.
+	 * The original 1us delay was insufficient and caused intermittent
+	 * blue vertical lines during boot when moboot hands off to kernel.
+	 * webOS kernel doesn't reprogram PHY, so this issue wasn't seen there.
+	 */
+	udelay(50);
 	lvds_phy_cfg0 |= MDP4_LVDS_PHY_CFG0_SERIALIZATION_ENBLE;
 	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG0, lvds_phy_cfg0);
 }

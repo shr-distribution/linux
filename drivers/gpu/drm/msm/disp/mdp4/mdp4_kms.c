@@ -495,7 +495,14 @@ static int mdp4_kms_init(struct drm_device *dev)
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
 	mdp4_write(mdp4_kms, REG_MDP4_DSI_ENABLE, 0);
 	mdp4_disable(mdp4_kms);
-	mdelay(16);
+	/*
+	 * Wait for display output to fully stop. The original 16ms was one
+	 * frame period but insufficient for LVDS PHY to properly idle.
+	 * webOS kernel waits 100ms after LCDC disable. Using 50ms as a
+	 * compromise to reduce boot delay while ensuring stable handover
+	 * from moboot.
+	 */
+	mdelay(50);
 
 	/*
 	 * Initialize VM after modeset_init() succeeds. This avoids creating
