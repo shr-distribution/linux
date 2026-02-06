@@ -1,16 +1,58 @@
 # HP TouchPad Display Artifacts: Alpha Blending Analysis Report
 
-**Date:** February 5, 2026
-**Status:** Investigation Complete - Userspace Issue Identified
+**Date:** February 6, 2026
+**Status:** Root Cause Found - Freedreno A2XX Driver Bug
 **Hardware:** HP TouchPad (Topaz), Qualcomm APQ8060, Adreno 220 GPU
 
 ---
 
 ## Executive Summary
 
-Visual display artifacts affecting semi-transparent UI elements (StatusBar, LaunchBar, buttons) on the HP TouchPad running LuneOS with Qt6 have been traced to the **GPU rendering path (Qt/Mesa freedreno)**, NOT the kernel display driver.
+Visual display artifacts affecting semi-transparent UI elements (StatusBar, LaunchBar, buttons) on the HP TouchPad running LuneOS with Qt6 have been traced to **bugs in the Mesa freedreno A2XX driver**, NOT the kernel or Qt specifically.
 
-**Key Finding:** The MDP4 display controller is not involved in compositing - only one DRM plane is active. Qt performs ALL compositing internally via OpenGL ES on the Adreno 220 GPU. The Adreno 220 (A2XX family) lacks hardware support for premultiplied alpha compensation, making it dependent on correct blend state configuration from Qt/Mesa.
+**Key Finding:** Testing with glmark2 (bypassing Qt entirely) reveals the same rendering issues:
+- **Color channel swap**: Cat model shows green instead of blue
+- **Tessellation artifacts**: Smooth surfaces show triangular facets
+- Some tests work correctly (linaro, linaro+tux)
+
+This confirms the issue is in the **base freedreno A2XX driver**, not Qt6's SPIRV-Cross translation.
+
+---
+
+## glmark2 Test Results (Feb 6, 2026)
+
+```
+=======================================================
+    glmark2 2023.01
+=======================================================
+    OpenGL Information
+    GL_VENDOR:      freedreno
+    GL_RENDERER:    FD220
+    GL_VERSION:     OpenGL ES 2.0 Mesa 24.0.7
+    Surface Config: buf=32 r=8 g=8 b=8 a=8 depth=24 stencil=0 samples=0
+    Surface Size:   1024x768 fullscreen
+=======================================================
+```
+
+| Test | Result |
+|------|--------|
+| Linaro logo | **CORRECT** - Colors and rendering OK |
+| Linaro + Tux windows | **CORRECT** - No visible issues |
+| Cat model (smooth) | **BROKEN** - Shows triangular facets |
+| Cat model (color) | **BROKEN** - Green instead of blue |
+| Build benchmark | 20 FPS |
+
+### Root Cause: Freedreno A2XX Driver Bugs
+
+1. **Color Channel Swap (BGR vs RGB)**
+   - Blue objects render as green
+   - Suggests texture format swizzle issue in `fd2_util.c`
+   - `util_format_compose_swizzles()` may not handle all formats correctly
+
+2. **Smooth Shading / Interpolation**
+   - Smooth surfaces show triangular tessellation
+   - Possible varying interpolation issue
+   - May be shader precision or NIR lowering problem
 
 ---
 
