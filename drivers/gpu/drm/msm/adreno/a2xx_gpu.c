@@ -3,6 +3,7 @@
 
 #include <linux/delay.h>
 #include <linux/interconnect.h>
+#include <linux/pm_opp.h>
 
 #include "a2xx_gpu.h"
 #include "msm_gem.h"
@@ -632,6 +633,36 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 	return 0;
 }
 
+/*
+ * Set GPU frequency and bandwidth together using the OPP table.
+ *
+ * Unlike the fallback dev_pm_opp_set_rate() which only sets the clock,
+ * dev_pm_opp_set_opp() also sets the interconnect bandwidth from the
+ * opp-peak-kBps property in the device tree. This ensures the memory
+ * bus bandwidth scales properly with GPU frequency changes.
+ *
+ * Without this, devfreq would change the GPU clock without adjusting
+ * bandwidth, potentially starving the GPU of memory bandwidth at high
+ * frequencies or wasting power at low frequencies.
+ */
+static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
+			      bool suspended)
+{
+	/*
+	 * If suspended, just let the clock rate change happen via OPP.
+	 * The bandwidth will be set when we resume.
+	 */
+	if (suspended)
+		return;
+
+	/*
+	 * Use dev_pm_opp_set_opp() to set both frequency AND bandwidth
+	 * from the OPP table. The DT has opp-peak-kBps values that
+	 * correspond to each frequency level.
+	 */
+	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
+}
+
 static const struct adreno_gpu_funcs funcs = {
 	.base = {
 		.get_param = adreno_get_param,
@@ -648,6 +679,7 @@ static const struct adreno_gpu_funcs funcs = {
 		.show = adreno_show,
 #endif
 		.gpu_busy = a2xx_gpu_busy,
+		.gpu_set_freq = a2xx_gpu_set_freq,
 		.gpu_state_get = a2xx_gpu_state_get,
 		.gpu_state_put = adreno_gpu_state_put,
 		.create_vm = a2xx_create_vm,
