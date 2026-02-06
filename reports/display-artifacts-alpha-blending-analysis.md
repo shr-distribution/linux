@@ -19,7 +19,7 @@ This confirms the issue is in the **base freedreno A2XX driver**, not Qt6's SPIR
 
 ---
 
-## glmark2 Test Results (Feb 6, 2026)
+## glmark2 Detailed Test Results (Feb 6, 2026)
 
 ```
 =======================================================
@@ -34,25 +34,74 @@ This confirms the issue is in the **base freedreno A2XX driver**, not Qt6's SPIR
 =======================================================
 ```
 
-| Test | Result |
-|------|--------|
-| Linaro logo | **CORRECT** - Colors and rendering OK |
-| Linaro + Tux windows | **CORRECT** - No visible issues |
-| Cat model (smooth) | **BROKEN** - Shows triangular facets |
-| Cat model (color) | **BROKEN** - Green instead of blue |
-| Build benchmark | 20 FPS |
+### Individual Test Results
 
-### Root Cause: Freedreno A2XX Driver Bugs
+| Test | FPS | Status | Observations |
+|------|-----|--------|--------------|
+| **build** | 20 | ❌ BROKEN | Triangles instead of smooth surface, flickering |
+| **texture** | 48 | ⚠️ PARTIAL | Initial wrong texture, flickering rectangles, improved after few seconds |
+| **shading** | 12 | ❌ BROKEN | Blue/black patchy squares, no smooth shading |
+| **bump** | 48 | ❌ BROKEN | Diamond shape instead of smooth rock, black/white/grey, flickering |
+| **effect2d** | 33 | ✓ OK | Works correctly |
+| **pulsar** | 34 | ✓ OK | Works, possibly slight color variance |
+| **desktop** | - | ❌ BROKEN | Mixed up mess, duplicated Tux fragments, no windows visible |
+| **buffer** | 8 | ✓ OK | Blue rectangle with triangles, smooth, no artifacts |
+| **ideas** | 5 | ⚠️ PARTIAL | Colors too dark, artifacts on left side, mostly working |
+| **jellyfish** | - | ❌ BROKEN | Background blue (correct), jellyfish wrong color |
+| **terrain** | - | 💥 CRASH | Segmentation fault, core dumped |
+| **shadow** | - | ❌ FAILED | `glCheckFramebufferStatus failed (0x8cdd)` - FBO unsupported |
+| **refract** | - | ❌ FAILED | `glCheckFramebufferStatus failed (0x8cdd)` - FBO unsupported |
+| **conditionals** | 22 | ❌ BROKEN | Grey squares with black lines instead of horse model |
+| **function** | 27 | ❌ BROKEN | Same squares/grid pattern instead of horse |
+| **loop** | 19 | ❌ BROKEN | Same squares/grid pattern instead of horse |
 
-1. **Color Channel Swap (BGR vs RGB)**
-   - Blue objects render as green
-   - Suggests texture format swizzle issue in `fd2_util.c`
-   - `util_format_compose_swizzles()` may not handle all formats correctly
+### Summary by Category
 
-2. **Smooth Shading / Interpolation**
-   - Smooth surfaces show triangular tessellation
-   - Possible varying interpolation issue
-   - May be shader precision or NIR lowering problem
+**Working (3 tests):**
+- `effect2d` - 2D post-processing effects
+- `pulsar` - 2D pulsating light
+- `buffer` - Simple VBO triangle mesh
+
+**Broken Rendering (10 tests):**
+- `build`, `shading`, `bump` - Smooth shading broken, shows facets/squares
+- `texture` - Texture initialization issues
+- `desktop` - Render-to-texture/FBO broken
+- `jellyfish` - Wrong colors
+- `conditionals`, `function`, `loop` - Horse model renders as flat grid
+
+**Failed/Crashed (3 tests):**
+- `terrain` - CRASH (segfault)
+- `shadow`, `refract` - Depth FBO not supported
+
+### Root Cause Analysis
+
+1. **Varying Interpolation Broken**
+   - 3D models show as flat squares/grids instead of smooth surfaces
+   - Per-vertex values not interpolating across faces
+   - Affects: shading, bump, conditionals, function, loop
+
+2. **Smooth Shading Broken**
+   - Surfaces show triangular/square facets instead of Gouraud/Phong shading
+   - Lighting calculated per-face instead of per-pixel
+   - Affects: build, shading, bump
+
+3. **Framebuffer Objects (FBO) Issues**
+   - Depth render targets fail with GL_FRAMEBUFFER_UNSUPPORTED (0x8cdd)
+   - Render-to-texture shows scrambled content
+   - Affects: shadow, refract, desktop
+
+4. **Texture State Issues**
+   - Textures initially wrong, improve after time
+   - Suggests initialization or state management bug
+   - Affects: texture
+
+5. **Color/Lighting Issues**
+   - Colors too dark or wrong
+   - Affects: ideas, jellyfish, shading
+
+6. **Crash Bug**
+   - Terrain shader causes segfault
+   - Likely shader compilation or register allocation issue
 
 ---
 
