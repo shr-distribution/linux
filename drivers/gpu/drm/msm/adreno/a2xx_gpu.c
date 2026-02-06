@@ -291,9 +291,27 @@ static void a2xx_recover(struct msm_gpu *gpu)
 	if (hang_debug)
 		a2xx_dump(gpu);
 
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 1);
-	gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
+	/*
+	 * Perform a full GPU reset matching the sequence in a2xx_hw_init()
+	 * and the legacy KGSL driver. A partial reset (0x1 = CP only) is
+	 * insufficient when the GPU is truly hung.
+	 *
+	 * The sequence is:
+	 * 1. Halt the micro engine to stop any in-flight operations
+	 * 2. Power on all blocks via PM_OVERRIDE to ensure they can be reset
+	 * 3. Assert full reset on ALL blocks (0xffffffff), not just CP
+	 * 4. Wait 30ms for the reset to complete (per KGSL driver)
+	 * 5. Deassert reset
+	 */
+	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, AXXX_CP_ME_CNTL_HALT);
+
+	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0xfffffffe);
+	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0xffffffff);
+
+	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
+	msleep(30);
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0);
+
 	adreno_recover(gpu);
 }
 
