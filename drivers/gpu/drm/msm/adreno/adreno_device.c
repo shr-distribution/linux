@@ -242,15 +242,11 @@ static int adreno_bind(struct device *dev, struct device *master, void *data)
 	}
 
 	/*
-	 * Set up OPP interconnect paths for bandwidth scaling.
-	 * Skip for A2XX which handles ICC manually in a2xx_gpu.c
-	 * to avoid duplicate/conflicting ICC paths.
+	 * Note: Interconnect paths for bandwidth scaling are automatically
+	 * created by the OPP framework when dev_pm_opp_of_add_table() is
+	 * called during GPU init. The OPP table's opp-peak-kBps values
+	 * are used to set bandwidth via dev_pm_opp_set_rate().
 	 */
-	if (!adreno_is_a2xx(to_adreno_gpu(gpu))) {
-		ret = dev_pm_opp_of_find_icc_paths(dev, NULL);
-		if (ret)
-			return ret;
-	}
 
 	return 0;
 }
