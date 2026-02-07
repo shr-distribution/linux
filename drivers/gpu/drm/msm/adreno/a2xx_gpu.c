@@ -638,8 +638,6 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 
 static int a2xx_pm_resume(struct msm_gpu *gpu)
 {
-	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
-	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 	struct dev_pm_opp *opp;
 	unsigned long freq, bw;
 	int ret;
@@ -650,32 +648,18 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 
 	/*
 	 * Restore interconnect bandwidth vote after enabling clocks.
-	 * Look up the bandwidth from the OPP table based on current
-	 * clock frequency and set it via the interconnect path.
-	 *
-	 * The OPP framework's dev_pm_opp_set_opp() doesn't always
-	 * correctly propagate bandwidth to the interconnect, so we
-	 * use icc_set_bw() directly with the OPP's peak bandwidth.
-	 *
-	 * The legacy KGSL driver did this via
-	 * msm_bus_scale_client_update_request() with bandwidth levels
-	 * corresponding to each GPU frequency.
+	 * Use dev_pm_opp_set_opp() to set the bandwidth from the OPP table.
+	 * The OPP framework handles the interconnect path via the
+	 * opp-peak-kBps values linked by dev_pm_opp_of_find_icc_paths().
 	 */
-	if (a2xx_gpu->icc_path) {
-		freq = clk_get_rate(gpu->core_clk);
-		opp = dev_pm_opp_find_freq_ceil(&gpu->pdev->dev, &freq);
-		if (!IS_ERR(opp)) {
-			/* Get peak bandwidth in kBps, index 0 for first path */
-			bw = dev_pm_opp_get_bw(opp, true, 0);
-			dev_pm_opp_put(opp);
-			/*
-			 * If OPP doesn't have bandwidth info, estimate based on
-			 * frequency: 8 bytes per GPU cycle (64-bit bus).
-			 */
-			if (!bw)
-				bw = Bps_to_icc(freq) * 8;
-			icc_set_bw(a2xx_gpu->icc_path, 0, bw);
-		}
+	freq = clk_get_rate(gpu->core_clk);
+	opp = dev_pm_opp_find_freq_ceil(&gpu->pdev->dev, &freq);
+	if (!IS_ERR(opp)) {
+		dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
+		bw = dev_pm_opp_get_bw(opp, true, 0);
+		dev_pm_opp_put(opp);
+		dev_info(&gpu->pdev->dev, "pm_resume: freq %lu Hz, bandwidth %lu kBps\n",
+			 freq, bw);
 	}
 
 	return 0;
@@ -691,8 +675,6 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 			      bool suspended)
 {
-	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
-	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 	unsigned long bw;
 
 	/*
@@ -702,30 +684,17 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 	if (suspended)
 		return;
 
-	dev_info(&gpu->pdev->dev, "a2xx_gpu_set_freq called, icc_path=%p\n",
-		 a2xx_gpu->icc_path);
-
-	/* Set clock rate via OPP */
+	/*
+	 * Use dev_pm_opp_set_opp() to set both frequency AND bandwidth.
+	 * The OPP framework handles the interconnect path via the
+	 * opp-peak-kBps values in the device tree, which were linked
+	 * by dev_pm_opp_of_find_icc_paths() during probe.
+	 */
 	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
 
-	/* Set bandwidth directly via interconnect */
-	if (a2xx_gpu->icc_path) {
-		unsigned long freq = dev_pm_opp_get_freq(opp);
-
-		bw = dev_pm_opp_get_bw(opp, true, 0);
-		/*
-		 * If OPP doesn't have bandwidth info, estimate based on
-		 * frequency: 8 bytes per GPU cycle (64-bit bus at 1:1 ratio).
-		 */
-		if (!bw)
-			bw = Bps_to_icc(freq) * 8;
-		{
-			int ret = icc_set_bw(a2xx_gpu->icc_path, 0, bw);
-			dev_info(&gpu->pdev->dev,
-				 "GPU freq %lu Hz, bandwidth %lu kBps, icc_set_bw ret=%d\n",
-				 freq, bw, ret);
-		}
-	}
+	bw = dev_pm_opp_get_bw(opp, true, 0);
+	dev_info(&gpu->pdev->dev, "GPU freq %lu Hz, OPP bandwidth %lu kBps\n",
+		 dev_pm_opp_get_freq(opp), bw);
 }
 
 static const struct adreno_gpu_funcs funcs = {
