@@ -668,7 +668,12 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 			/* Get peak bandwidth in kBps, index 0 for first path */
 			bw = dev_pm_opp_get_bw(opp, true, 0);
 			dev_pm_opp_put(opp);
-			/* icc_set_bw takes avg and peak in kBps */
+			/*
+			 * If OPP doesn't have bandwidth info, estimate based on
+			 * frequency: 8 bytes per GPU cycle (64-bit bus).
+			 */
+			if (!bw)
+				bw = Bps_to_icc(freq) * 8;
 			icc_set_bw(a2xx_gpu->icc_path, 0, bw);
 		}
 	}
@@ -702,7 +707,17 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 
 	/* Set bandwidth directly via interconnect */
 	if (a2xx_gpu->icc_path) {
+		unsigned long freq = dev_pm_opp_get_freq(opp);
+
 		bw = dev_pm_opp_get_bw(opp, true, 0);
+		/*
+		 * If OPP doesn't have bandwidth info, estimate based on
+		 * frequency: 8 bytes per GPU cycle (64-bit bus at 1:1 ratio).
+		 */
+		if (!bw)
+			bw = Bps_to_icc(freq) * 8;
+		dev_dbg(&gpu->pdev->dev, "GPU freq %lu Hz, bandwidth %lu kBps\n",
+			freq, bw);
 		icc_set_bw(a2xx_gpu->icc_path, 0, bw);
 	}
 }
