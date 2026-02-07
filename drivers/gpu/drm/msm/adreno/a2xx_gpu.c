@@ -270,6 +270,13 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 
 	gpu_write(gpu, REG_AXXX_CP_QUEUE_THRESHOLDS, 0x000C0804);
 
+	/*
+	 * Clear any pending CP interrupts before starting the micro engine.
+	 * This matches the KGSL driver sequence and ensures the CP starts
+	 * with a clean interrupt state, which is important for recovery.
+	 */
+	gpu_write(gpu, REG_AXXX_CP_INT_ACK, 0xFFFFFFFF);
+
 	/* clear ME_HALT to start micro engine */
 	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, 0);
 
