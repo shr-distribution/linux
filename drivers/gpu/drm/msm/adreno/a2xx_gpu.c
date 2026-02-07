@@ -2,6 +2,8 @@
 /* Copyright (c) 2018 The Linux Foundation. All rights reserved. */
 
 #include <linux/delay.h>
+#include <linux/interconnect.h>
+#include <linux/pm_opp.h>
 
 #include "a2xx_gpu.h"
 #include "msm_gem.h"
@@ -582,6 +584,9 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 
 static int a2xx_pm_suspend(struct msm_gpu *gpu)
 {
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+
 	/*
 	 * Idle the GPU and wait for all AXI transactions to complete.
 	 * Without this the gfx3d_axi_clk branch clock cannot halt
@@ -608,27 +613,73 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 
 	/*
 	 * Memory barrier to ensure all AXI transactions have completed
-	 * before disabling clocks. This is critical on non-coherent
-	 * platforms like MSM8660.
+	 * before we clear the interconnect vote. This is critical on
+	 * non-coherent platforms like MSM8660.
 	 */
 	wmb();
 
 	/*
-	 * Interconnect bandwidth is automatically managed by the OPP
-	 * framework when dev_pm_opp_set_rate() is called in disable_clk().
-	 * The OPP table's opp-peak-kBps values control bandwidth scaling.
+	 * Clear interconnect bandwidth vote before disabling clocks.
+	 * This tells the bus fabric we no longer need memory bandwidth,
+	 * allowing the AXI clock to halt properly. The legacy KGSL
+	 * driver did this via msm_bus_scale_client_update_request(BW_INIT).
 	 */
+	if (a2xx_gpu->icc_path)
+		icc_set_bw(a2xx_gpu->icc_path, 0, 0);
+
+	/*
+	 * Allow time for the interconnect state change to propagate
+	 * through the bus fabric before disabling clocks.
+	 */
+	udelay(10);
+
 	return msm_gpu_pm_suspend(gpu);
 }
 
 static int a2xx_pm_resume(struct msm_gpu *gpu)
 {
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+	int ret;
+
+	ret = msm_gpu_pm_resume(gpu);
+	if (ret)
+		return ret;
+
+	/* Restore max bandwidth after resume (cleared in suspend) */
+	if (a2xx_gpu->icc_path)
+		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
+
+	return 0;
+}
+
+/*
+ * Set GPU frequency and bandwidth via OPP framework.
+ * This is called by devfreq when scaling frequency.
+ */
+static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
+			      bool suspended)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+	unsigned long freq = dev_pm_opp_get_freq(opp);
+
 	/*
-	 * Interconnect bandwidth is automatically managed by the OPP
-	 * framework when dev_pm_opp_set_rate() is called in enable_clk().
-	 * The OPP table's opp-peak-kBps values control bandwidth scaling.
+	 * Don't change bandwidth when suspended - pm_resume will restore it.
+	 * Only update our manual ICC path bandwidth to match the new frequency.
 	 */
-	return msm_gpu_pm_resume(gpu);
+	if (suspended)
+		return;
+
+	/*
+	 * Set bandwidth proportional to frequency.
+	 * Use the same calculation as init: Bps_to_icc(freq) * 8
+	 * This approximates memory bandwidth needs for the GPU.
+	 */
+	if (a2xx_gpu->icc_path)
+		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(freq) * 8);
+
+	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
 }
 
 static const struct adreno_gpu_funcs funcs = {
@@ -651,6 +702,7 @@ static const struct adreno_gpu_funcs funcs = {
 		.gpu_state_put = adreno_gpu_state_put,
 		.create_vm = a2xx_create_vm,
 		.get_rptr = a2xx_get_rptr,
+		.gpu_set_freq = a2xx_gpu_set_freq,
 	},
 };
 
@@ -689,13 +741,24 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	if (ret)
 		goto fail;
 
+	/* Get interconnect path for memory bandwidth voting */
+	a2xx_gpu->icc_path = devm_of_icc_get(&pdev->dev, "gfx-mem");
+	if (IS_ERR(a2xx_gpu->icc_path)) {
+		ret = PTR_ERR(a2xx_gpu->icc_path);
+		/* Allow -ENODATA, interconnect is optional for older DTs */
+		if (ret != -ENODATA) {
+			DRM_DEV_ERROR(dev->dev, "failed to get interconnect path: %d\n", ret);
+			goto fail;
+		}
+		a2xx_gpu->icc_path = NULL;
+	}
+
 	/*
-	 * Interconnect bandwidth is automatically managed by the OPP framework.
-	 * When dev_pm_opp_of_add_table() is called in adreno_gpu_init(), it
-	 * creates ICC paths via dev_pm_opp_of_find_icc_paths(). Then each
-	 * dev_pm_opp_set_rate() call automatically sets bandwidth from the
-	 * OPP table's opp-peak-kBps values.
+	 * Set initial interconnect bandwidth to maximum.
+	 * This will be adjusted during runtime PM suspend/resume.
 	 */
+	if (a2xx_gpu->icc_path)
+		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
 
 	if (adreno_is_a20x(adreno_gpu))
 		adreno_gpu->registers = a200_registers;
