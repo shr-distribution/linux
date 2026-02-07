@@ -88,14 +88,6 @@ static int mdp4_plane_prepare_fb(struct drm_plane *plane,
 	if (ret)
 		return ret;
 
-	/*
-	 * After waiting for GPU fences, sync the framebuffer cache for
-	 * display. On non-coherent platforms like MSM8660, the GPU may
-	 * have rendered data that's still in CPU/outer cache. The display
-	 * controller needs fresh data from memory.
-	 */
-	msm_framebuffer_sync_for_display(new_state->fb);
-
 	return msm_framebuffer_prepare(new_state->fb, false);
 }
 
@@ -125,6 +117,16 @@ static void mdp4_plane_atomic_update(struct drm_plane *plane,
 	struct drm_plane_state *new_state = drm_atomic_get_new_plane_state(state,
 									   plane);
 	int ret;
+
+	/*
+	 * Sync the framebuffer cache for display. This must happen AFTER
+	 * GPU fences are waited on (which happens before atomic_update is
+	 * called). On non-coherent platforms like MSM8660, the GPU may have
+	 * rendered data still in cache that the display controller needs
+	 * to see.
+	 */
+	if (new_state->fb)
+		msm_framebuffer_sync_for_display(new_state->fb);
 
 	ret = mdp4_plane_mode_set(plane,
 			new_state->crtc, new_state->fb,

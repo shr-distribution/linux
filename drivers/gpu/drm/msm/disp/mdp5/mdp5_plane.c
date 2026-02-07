@@ -145,13 +145,6 @@ static int mdp5_plane_prepare_fb(struct drm_plane *plane,
 	if (ret)
 		return ret;
 
-	/*
-	 * After waiting for GPU fences, sync the framebuffer cache for
-	 * display. On non-coherent platforms, the GPU may have rendered
-	 * data that's still in CPU/outer cache.
-	 */
-	msm_framebuffer_sync_for_display(new_state->fb);
-
 	return msm_framebuffer_prepare(new_state->fb, needs_dirtyfb);
 }
 
@@ -361,6 +354,15 @@ static void mdp5_plane_atomic_update(struct drm_plane *plane,
 									   plane);
 
 	DBG("%s: update", plane->name);
+
+	/*
+	 * Sync the framebuffer cache for display. This must happen AFTER
+	 * GPU fences are waited on (which happens before atomic_update is
+	 * called). On non-coherent platforms, the GPU may have rendered
+	 * data still in cache that the display controller needs to see.
+	 */
+	if (new_state->fb)
+		msm_framebuffer_sync_for_display(new_state->fb);
 
 	if (plane_enabled(new_state)) {
 		int ret;
