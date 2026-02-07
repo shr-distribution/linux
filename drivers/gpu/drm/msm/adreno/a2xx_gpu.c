@@ -646,51 +646,11 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 	if (ret)
 		return ret;
 
-	/*
-	 * Restore interconnect bandwidth vote after enabling clocks.
-	 * Set to maximum bandwidth - devfreq will adjust as needed.
-	 */
-	if (a2xx_gpu->icc_path) {
-		ret = icc_set_bw(a2xx_gpu->icc_path, 0,
-				 Bps_to_icc(gpu->fast_rate) * 8);
-		dev_info(&gpu->pdev->dev, "pm_resume: set bandwidth %lu kBps, ret=%d\n",
-			 Bps_to_icc(gpu->fast_rate) * 8, ret);
-	}
+	/* Restore max bandwidth after resume (cleared in suspend) */
+	if (a2xx_gpu->icc_path)
+		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
 
 	return 0;
-}
-
-/*
- * Set GPU frequency and bandwidth together using the OPP table.
- *
- * This callback is invoked by devfreq when changing GPU frequency.
- * We set both the clock rate via OPP and the interconnect bandwidth
- * directly via icc_set_bw() to ensure proper bandwidth scaling.
- */
-static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
-			      bool suspended)
-{
-	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
-	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
-	unsigned long freq, bw;
-	int ret;
-
-	if (suspended)
-		return;
-
-	/* Set clock rate via OPP */
-	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
-
-	/* Set bandwidth manually via our ICC path */
-	if (a2xx_gpu->icc_path) {
-		freq = dev_pm_opp_get_freq(opp);
-		/* Estimate bandwidth: 8 bytes per GPU cycle (64-bit bus) */
-		bw = Bps_to_icc(freq) * 8;
-		ret = icc_set_bw(a2xx_gpu->icc_path, 0, bw);
-		dev_info(&gpu->pdev->dev,
-			 "GPU freq %lu Hz, bandwidth %lu kBps, ret=%d\n",
-			 freq, bw, ret);
-	}
 }
 
 static const struct adreno_gpu_funcs funcs = {
@@ -709,7 +669,6 @@ static const struct adreno_gpu_funcs funcs = {
 		.show = adreno_show,
 #endif
 		.gpu_busy = a2xx_gpu_busy,
-		.gpu_set_freq = a2xx_gpu_set_freq,
 		.gpu_state_get = a2xx_gpu_state_get,
 		.gpu_state_put = adreno_gpu_state_put,
 		.create_vm = a2xx_create_vm,
