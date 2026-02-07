@@ -638,8 +638,8 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 
 static int a2xx_pm_resume(struct msm_gpu *gpu)
 {
-	struct dev_pm_opp *opp;
-	unsigned long freq, bw;
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 	int ret;
 
 	ret = msm_gpu_pm_resume(gpu);
@@ -648,18 +648,13 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 
 	/*
 	 * Restore interconnect bandwidth vote after enabling clocks.
-	 * Use dev_pm_opp_set_opp() to set the bandwidth from the OPP table.
-	 * The OPP framework handles the interconnect path via the
-	 * opp-peak-kBps values linked by dev_pm_opp_of_find_icc_paths().
+	 * Set to maximum bandwidth - devfreq will adjust as needed.
 	 */
-	freq = clk_get_rate(gpu->core_clk);
-	opp = dev_pm_opp_find_freq_ceil(&gpu->pdev->dev, &freq);
-	if (!IS_ERR(opp)) {
-		dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
-		bw = dev_pm_opp_get_bw(opp, true, 0);
-		dev_pm_opp_put(opp);
-		dev_info(&gpu->pdev->dev, "pm_resume: freq %lu Hz, bandwidth %lu kBps\n",
-			 freq, bw);
+	if (a2xx_gpu->icc_path) {
+		ret = icc_set_bw(a2xx_gpu->icc_path, 0,
+				 Bps_to_icc(gpu->fast_rate) * 8);
+		dev_info(&gpu->pdev->dev, "pm_resume: set bandwidth %lu kBps, ret=%d\n",
+			 Bps_to_icc(gpu->fast_rate) * 8, ret);
 	}
 
 	return 0;
@@ -675,26 +670,27 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 			      bool suspended)
 {
-	unsigned long bw;
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+	unsigned long freq, bw;
+	int ret;
 
-	/*
-	 * If suspended, just let the clock rate change happen via OPP.
-	 * The bandwidth will be set when we resume.
-	 */
 	if (suspended)
 		return;
 
-	/*
-	 * Use dev_pm_opp_set_opp() to set both frequency AND bandwidth.
-	 * The OPP framework handles the interconnect path via the
-	 * opp-peak-kBps values in the device tree, which were linked
-	 * by dev_pm_opp_of_find_icc_paths() during probe.
-	 */
+	/* Set clock rate via OPP */
 	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
 
-	bw = dev_pm_opp_get_bw(opp, true, 0);
-	dev_info(&gpu->pdev->dev, "GPU freq %lu Hz, OPP bandwidth %lu kBps\n",
-		 dev_pm_opp_get_freq(opp), bw);
+	/* Set bandwidth manually via our ICC path */
+	if (a2xx_gpu->icc_path) {
+		freq = dev_pm_opp_get_freq(opp);
+		/* Estimate bandwidth: 8 bytes per GPU cycle (64-bit bus) */
+		bw = Bps_to_icc(freq) * 8;
+		ret = icc_set_bw(a2xx_gpu->icc_path, 0, bw);
+		dev_info(&gpu->pdev->dev,
+			 "GPU freq %lu Hz, bandwidth %lu kBps, ret=%d\n",
+			 freq, bw, ret);
+	}
 }
 
 static const struct adreno_gpu_funcs funcs = {

@@ -241,9 +241,16 @@ static int adreno_bind(struct device *dev, struct device *master, void *data)
 		return PTR_ERR(gpu);
 	}
 
-	ret = dev_pm_opp_of_find_icc_paths(dev, NULL);
-	if (ret)
-		return ret;
+	/*
+	 * Set up OPP interconnect paths for bandwidth scaling.
+	 * Skip for A2XX which handles ICC manually in a2xx_gpu.c
+	 * to avoid duplicate/conflicting ICC paths.
+	 */
+	if (!adreno_is_a2xx(to_adreno_gpu(priv->gpu))) {
+		ret = dev_pm_opp_of_find_icc_paths(dev, NULL);
+		if (ret)
+			return ret;
+	}
 
 	return 0;
 }
