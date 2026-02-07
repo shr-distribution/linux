@@ -3,6 +3,7 @@
 
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <asm/barrier.h>
 
 #include "msm_drv.h"
 #include "msm_mmu.h"
@@ -11,6 +12,7 @@
 #include "a2xx_gpu.h"
 
 #include "a2xx.xml.h"
+#include "adreno_common.xml.h"
 
 struct a2xx_gpummu {
 	struct msm_mmu base;
@@ -89,24 +91,51 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	 * This prevents page faults when the GPU is still accessing memory
 	 * that we're about to unmap.
 	 *
-	 * The webOS kgsl_yamato driver waits for RBBM_STATUS == 0x110:
+	 * Based on webOS KGSL driver kgsl_yamato_idle() and kgsl_mmu_unmap():
+	 *
+	 * Step 1: Wait for ringbuffer to drain (rptr == wptr)
+	 * This ensures all submitted commands have been fetched by the CP.
+	 *
+	 * Step 2: Wait for RBBM_STATUS == 0x110 or 0x010
 	 * - Bits 0-4 = 0x10 (CMDFIFO has 16 entries available = empty)
 	 * - Bit 8 = 0x100 (HIRQ_PENDING may be set, that's OK)
 	 * - All other bits = 0 (no busy flags set)
-	 *
-	 * We accept 0x110 (with HIRQ) or 0x010 (without HIRQ) as idle.
+	 * This ensures all fetched commands have finished execution.
 	 */
+
+	/* Step 1: Wait for ringbuffer drain (rptr == wptr) */
+	while (timeout > 0) {
+		uint32_t rptr = gpu_read(gpummu->gpu, REG_AXXX_CP_RB_RPTR);
+		uint32_t wptr = gpu_read(gpummu->gpu, REG_AXXX_CP_RB_WPTR);
+		if (rptr == wptr)
+			break;
+		usleep_range(500, 1000); /* sleep 0.5-1ms */
+		timeout--;
+	}
+	if (timeout == 0)
+		dev_warn_once(mmu->dev, "gpummu unmap: timeout waiting for ringbuffer drain\n");
+
+	/* Step 2: Wait for GPU execution to complete */
+	timeout = 100;
 	while (timeout > 0) {
 		uint32_t status = gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS);
 		/* Accept 0x110 or 0x010 - HIRQ_PENDING bit 8 may or may not be set */
 		if ((status & ~0x100) == 0x010)
 			break;
-		usleep_range(1000, 2000); /* sleep 1-2ms */
+		usleep_range(500, 1000); /* sleep 0.5-1ms */
 		timeout--;
 	}
 	if (timeout == 0)
 		dev_warn_once(mmu->dev, "gpummu unmap: timeout waiting for GPU idle, status=0x%08x\n",
 			      gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS));
+
+	/*
+	 * Triple barrier synchronization from KGSL kgsl_mmu_unmap().
+	 * This ensures all in-flight memory transactions complete before
+	 * we clear the page table entries.
+	 */
+	mb();	/* memory barrier - orders all memory operations */
+	dsb(sy); /* data synchronization barrier - waits for memory to complete */
 
 	for (i = 0; i < len / GPUMMU_PAGE_SIZE; i++, idx++)
 		gpummu->table[idx] = 0;
@@ -117,6 +146,7 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 
 	/* Ensure DMA sync completes before invalidating TLB */
 	wmb();
+	dsb(sy);
 
 	gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE,
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
@@ -124,6 +154,7 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 
 	/* Wait for Memory Hub to process TLB invalidation */
 	mb();
+	dsb(sy);
 
 	return 0;
 }
