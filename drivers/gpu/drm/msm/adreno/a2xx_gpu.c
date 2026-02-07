@@ -638,8 +638,10 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 
 static int a2xx_pm_resume(struct msm_gpu *gpu)
 {
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 	struct dev_pm_opp *opp;
-	unsigned long freq;
+	unsigned long freq, bw;
 	int ret;
 
 	ret = msm_gpu_pm_resume(gpu);
@@ -648,19 +650,27 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 
 	/*
 	 * Restore interconnect bandwidth vote after enabling clocks.
-	 * Use dev_pm_opp_set_opp() to set bandwidth from the OPP table
-	 * based on the current clock frequency. This ensures proper
-	 * bandwidth scaling that matches the GPU frequency.
+	 * Look up the bandwidth from the OPP table based on current
+	 * clock frequency and set it via the interconnect path.
+	 *
+	 * The OPP framework's dev_pm_opp_set_opp() doesn't always
+	 * correctly propagate bandwidth to the interconnect, so we
+	 * use icc_set_bw() directly with the OPP's peak bandwidth.
 	 *
 	 * The legacy KGSL driver did this via
 	 * msm_bus_scale_client_update_request() with bandwidth levels
 	 * corresponding to each GPU frequency.
 	 */
-	freq = clk_get_rate(gpu->core_clk);
-	opp = dev_pm_opp_find_freq_ceil(&gpu->pdev->dev, &freq);
-	if (!IS_ERR(opp)) {
-		dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
-		dev_pm_opp_put(opp);
+	if (a2xx_gpu->icc_path) {
+		freq = clk_get_rate(gpu->core_clk);
+		opp = dev_pm_opp_find_freq_ceil(&gpu->pdev->dev, &freq);
+		if (!IS_ERR(opp)) {
+			/* Get peak bandwidth in kBps, index 0 for first path */
+			bw = dev_pm_opp_get_bw(opp, true, 0);
+			dev_pm_opp_put(opp);
+			/* icc_set_bw takes avg and peak in kBps */
+			icc_set_bw(a2xx_gpu->icc_path, 0, bw);
+		}
 	}
 
 	return 0;
@@ -669,18 +679,17 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 /*
  * Set GPU frequency and bandwidth together using the OPP table.
  *
- * Unlike the fallback dev_pm_opp_set_rate() which only sets the clock,
- * dev_pm_opp_set_opp() also sets the interconnect bandwidth from the
- * opp-peak-kBps property in the device tree. This ensures the memory
- * bus bandwidth scales properly with GPU frequency changes.
- *
- * Without this, devfreq would change the GPU clock without adjusting
- * bandwidth, potentially starving the GPU of memory bandwidth at high
- * frequencies or wasting power at low frequencies.
+ * This callback is invoked by devfreq when changing GPU frequency.
+ * We set both the clock rate via OPP and the interconnect bandwidth
+ * directly via icc_set_bw() to ensure proper bandwidth scaling.
  */
 static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 			      bool suspended)
 {
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+	unsigned long bw;
+
 	/*
 	 * If suspended, just let the clock rate change happen via OPP.
 	 * The bandwidth will be set when we resume.
@@ -688,12 +697,14 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 	if (suspended)
 		return;
 
-	/*
-	 * Use dev_pm_opp_set_opp() to set both frequency AND bandwidth
-	 * from the OPP table. The DT has opp-peak-kBps values that
-	 * correspond to each frequency level.
-	 */
+	/* Set clock rate via OPP */
 	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
+
+	/* Set bandwidth directly via interconnect */
+	if (a2xx_gpu->icc_path) {
+		bw = dev_pm_opp_get_bw(opp, true, 0);
+		icc_set_bw(a2xx_gpu->icc_path, 0, bw);
+	}
 }
 
 static const struct adreno_gpu_funcs funcs = {
