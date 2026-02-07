@@ -205,11 +205,20 @@ static void setup_phy(struct drm_encoder *encoder)
 	 * LVDS PHY needs time to stabilize before enabling serialization.
 	 * The original 1us delay was insufficient and caused intermittent
 	 * blue vertical lines during boot when moboot hands off to kernel.
-	 * webOS kernel doesn't reprogram PHY, so this issue wasn't seen there.
+	 *
+	 * When using MMCC clock (not internal LVDS PLL), we cannot poll
+	 * LVDS_PHY_PLL_LOCKED, so we rely on delays. Use a conservative
+	 * 200us to ensure the PHY is fully stabilized.
 	 */
-	udelay(50);
+	udelay(200);
 	lvds_phy_cfg0 |= MDP4_LVDS_PHY_CFG0_SERIALIZATION_ENBLE;
 	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG0, lvds_phy_cfg0);
+
+	/*
+	 * Additional delay after enabling serialization to allow the
+	 * LVDS output to stabilize before LCDC starts driving data.
+	 */
+	udelay(100);
 }
 
 static void mdp4_lcdc_encoder_mode_set(struct drm_encoder *encoder,
