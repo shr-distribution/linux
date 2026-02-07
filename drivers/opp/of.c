@@ -418,8 +418,11 @@ static int _bandwidth_supported(struct device *dev, struct opp_table *opp_table)
 	}
 
 	/* Lets not fail in case we are parsing opp-v1 bindings */
-	if (!opp_np)
+	if (!opp_np) {
+		dev_dbg(dev, "%s: opp_np is NULL (opp_table=%p, opp_table->np=%p)\n",
+			__func__, opp_table, opp_table ? opp_table->np : NULL);
 		return 0;
+	}
 
 	/* Checking only first OPP is sufficient */
 	np = of_get_next_available_child(opp_np, NULL);
@@ -429,9 +432,13 @@ static int _bandwidth_supported(struct device *dev, struct opp_table *opp_table)
 	}
 
 	prop = of_find_property(np, "opp-peak-kBps", NULL);
-	if (!prop || !prop->length)
+	if (!prop || !prop->length) {
+		dev_dbg(dev, "%s: opp-peak-kBps not found in %pOF\n",
+			__func__, np);
 		return 0;
+	}
 
+	dev_dbg(dev, "%s: bandwidth supported, opp_np=%pOF\n", __func__, opp_np);
 	return 1;
 }
 
@@ -445,8 +452,11 @@ int dev_pm_opp_of_find_icc_paths(struct device *dev,
 	ret = _bandwidth_supported(dev, opp_table);
 	if (ret == -EINVAL)
 		return 0; /* Empty OPP table is a valid corner-case, let's not fail */
-	else if (ret <= 0)
+	else if (ret <= 0) {
+		dev_dbg(dev, "%s: _bandwidth_supported returned %d, skipping ICC\n",
+			__func__, ret);
 		return ret;
+	}
 
 	if (!np)
 		return 0;
@@ -480,6 +490,8 @@ int dev_pm_opp_of_find_icc_paths(struct device *dev,
 	if (opp_table) {
 		opp_table->paths = paths;
 		opp_table->path_count = num_paths;
+		dev_info(dev, "%s: created %d ICC path(s) for OPP bandwidth scaling\n",
+			 __func__, num_paths);
 		return 0;
 	}
 
