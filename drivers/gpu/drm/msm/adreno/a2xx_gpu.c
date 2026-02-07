@@ -638,8 +638,8 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 
 static int a2xx_pm_resume(struct msm_gpu *gpu)
 {
-	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
-	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+	struct dev_pm_opp *opp;
+	unsigned long freq;
 	int ret;
 
 	ret = msm_gpu_pm_resume(gpu);
@@ -648,12 +648,20 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 
 	/*
 	 * Restore interconnect bandwidth vote after enabling clocks.
-	 * Request max bandwidth based on GPU frequency * bus width.
+	 * Use dev_pm_opp_set_opp() to set bandwidth from the OPP table
+	 * based on the current clock frequency. This ensures proper
+	 * bandwidth scaling that matches the GPU frequency.
+	 *
 	 * The legacy KGSL driver did this via
-	 * msm_bus_scale_client_update_request(BW_MAX).
+	 * msm_bus_scale_client_update_request() with bandwidth levels
+	 * corresponding to each GPU frequency.
 	 */
-	if (a2xx_gpu->icc_path)
-		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
+	freq = clk_get_rate(gpu->core_clk);
+	opp = dev_pm_opp_find_freq_ceil(&gpu->pdev->dev, &freq);
+	if (!IS_ERR(opp)) {
+		dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
+		dev_pm_opp_put(opp);
+	}
 
 	return 0;
 }
