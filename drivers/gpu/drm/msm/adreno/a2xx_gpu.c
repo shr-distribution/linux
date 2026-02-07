@@ -702,6 +702,9 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 	if (suspended)
 		return;
 
+	dev_info(&gpu->pdev->dev, "a2xx_gpu_set_freq called, icc_path=%p\n",
+		 a2xx_gpu->icc_path);
+
 	/* Set clock rate via OPP */
 	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
 
@@ -716,8 +719,8 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 		 */
 		if (!bw)
 			bw = Bps_to_icc(freq) * 8;
-		dev_dbg(&gpu->pdev->dev, "GPU freq %lu Hz, bandwidth %lu kBps\n",
-			freq, bw);
+		dev_info(&gpu->pdev->dev, "GPU freq %lu Hz, bandwidth %lu kBps\n",
+			 freq, bw);
 		icc_set_bw(a2xx_gpu->icc_path, 0, bw);
 	}
 }
