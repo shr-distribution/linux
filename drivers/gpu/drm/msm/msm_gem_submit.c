@@ -13,11 +13,22 @@
 #include <drm/drm_file.h>
 #include <drm/drm_syncobj.h>
 
+#include <linux/dma-mapping.h>
+
 #include "msm_drv.h"
 #include "msm_gpu.h"
 #include "msm_gem.h"
 #include "msm_gpu_trace.h"
 #include "msm_syncobj.h"
+
+/* Test knob: force per-BO dma_map_sgtable() before submit to ensure
+ * CPU write-combined buffers are explicitly synced to the device.
+ * Disabled by default; enable via module parameter for diagnostics.
+ */
+/* Enabled by default for immediate testing; flip to 0 to disable */
+static bool msm_test_force_dma_map = true;
+module_param_named(msm_test_force_dma_map, msm_test_force_dma_map, bool, 0644);
+MODULE_PARM_DESC(msm_test_force_dma_map, "Test: force dma_map_sgtable() per-BO before submit");
 
 /* For userspace errors, use DRM_UT_DRIVER.. so that userspace can enable
  * error msgs for debugging, but we don't spam dmesg by default
@@ -353,6 +364,14 @@ static int submit_pin_objects(struct msm_gem_submit *submit)
 	struct msm_drm_private *priv = submit->dev->dev_private;
 	int i, ret = 0;
 
+	/* Test knob: force per-BO dma_map_sgtable() before submit to ensure
+	 * CPU write-combined buffers are explicitly synced to the device.
+	 * Disabled by default; enable via module parameter for diagnostics.
+	 */
+	static bool msm_test_force_dma_map;
+	module_param_named(msm_test_force_dma_map, msm_test_force_dma_map, bool, 0644);
+	MODULE_PARM_DESC(msm_test_force_dma_map, "Test: force dma_map_sgtable() per-BO before submit");
+
 	for (i = 0; i < submit->nr_bos; i++) {
 		struct drm_gem_object *obj = submit->bos[i].obj;
 		struct drm_gpuva *vma;
@@ -403,6 +422,15 @@ static int submit_pin_objects(struct msm_gem_submit *submit)
 			/* Only sync write-combine buffers that CPU may have written */
 			if (msm_obj->flags & MSM_BO_WC)
 				msm_gem_sync_for_gpu(obj);
+
+			/* Optional stronger test: perform dma_map_sgtable() to force
+			 * device-visible mapping and writeback of WC buffers. This is an
+			 * aggressive diagnostic and should be enabled via the module
+			 * parameter `msm_test_force_dma_map`.
+			 */
+			if (msm_test_force_dma_map && msm_obj->sgt) {
+				dma_map_sgtable(submit->dev->dev, msm_obj->sgt, DMA_BIDIRECTIONAL, 0);
+			}
 		}
 	}
 
