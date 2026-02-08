@@ -36,6 +36,14 @@ static bool adreno_test_outer_sync = true;
 module_param(adreno_test_outer_sync, bool, 0644);
 MODULE_PARM_DESC(adreno_test_outer_sync, "Test: enable outer_sync() before WPTR write in adreno_flush()");
 
+/* Provide a no-op fallback for outer_sync() when outercache support
+ * isn't available in the build environment to avoid implicit-decl errors
+ * in out-of-tree or trimmed build setups.
+ */
+#ifndef CONFIG_OUTER_CACHE
+static inline void outer_sync(void) { }
+#endif
+
 static int zap_shader_load_mdt(struct msm_gpu *gpu, const char *fwname,
 		u32 pasid)
 {
