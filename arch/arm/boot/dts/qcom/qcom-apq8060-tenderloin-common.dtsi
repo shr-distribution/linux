@@ -966,8 +966,14 @@
 
 			status = "okay";
 
-			/* Use SMI memory for display framebuffers - same as webOS */
-			memory-region = <&drm_smi_mem>;
+			/*
+			 * NOTE: webOS actually used EBI (system RAM) for framebuffers,
+			 * not SMI. The pmem_smipool existed but wasn't used for display.
+			 * Using SMI may cause display underruns due to different access
+			 * characteristics. The drm_smi_mem region is available if needed
+			 * but we match webOS behavior by not forcing SMI allocation.
+			 */
+			/* memory-region = <&drm_smi_mem>; */
 
 			/*
 			 * Use LSB pack alignment to match webOS configuration.
