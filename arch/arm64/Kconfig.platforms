@@ -240,17 +240,24 @@ config ARCH_SDM660
 	  This enables support for the SDM660 chipset. If you do not
 	  wish to build a kernel that runs on this chipset, say 'N' here.
 
+config TCT_SDM660_COMMON
+	bool "SDM660 TCT COMMON CONFIG"
+	depends on ARCH_SDM660
+	help
+	  Support for TCT common device configration.
+
 config ARCH_BLACKBERRY_TCL_SDM660
-    bool "BlackBerry Mobile TCL-SDM660 platform"
-    depends on ARCH_SDM660
-    help
+	bool "BlackBerry Mobile TCL-SDM660 platform"
+	depends on ARCH_SDM660
+	depends on TCT_SDM660_COMMON
+	help
       Support for the BlackBerry Mobile SDM660 phones
       manufactured by TCL
 
 config MACH_BLACKBERRY_ATHENA
-    bool "BlackBerry Mobile Athena"
-    depends on ARCH_SONY_GANGES
-    help
+	bool "BlackBerry Mobile Athena"
+	depends on ARCH_BLACKBERRY_TCL_SDM660
+	help
       Support for the BlackBerry Athena based on SDM660
 
 config ARCH_REALTEK

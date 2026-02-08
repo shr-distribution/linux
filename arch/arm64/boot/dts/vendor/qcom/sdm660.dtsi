@@ -301,28 +301,34 @@
 		compatible = "simple-bus";
 	};
 
-	firmware: firmware {
-		android {
-			compatible = "android,firmware";
-
-			vbmeta {
-				 compatible = "android,vbmeta";
-				  parts = "vbmeta,boot,system,vendor,dtbo";
-			};
-
-			fstab {
-				compatible = "android,fstab";
-				vendor {
-					compatible = "android,vendor";
-		dev = "/dev/block/platform/soc/c0c4000.sdhci/by-name/vendor";
-					type = "ext4";
-					mnt_flags = "ro,barrier=1,discard";
-					fsmgr_flags = "wait,slotselect,avb";
-					status = "ok";
-				};
-			};
-		};
-	};
+    firmware: firmware {
+        android {
+            compatible = "android,firmware";
+            fstab {
+                compatible = "android,fstab";
+                /* [FEATURE]-MODIFY-BEGIN by TCTNB.linjian.xiang, 2017-10-19,task-5391882, reverting A/B */
+                /* mount system in erarly stage to avoid loading selinux policy failed */
+                /* delete slotselect tag for vendor */
+                system {
+                    compatible = "android,system";
+                    dev = "/dev/block/platform/soc/c0c4000.sdhci/by-name/system";
+                    type = "ext4";
+                    mnt_flags = "ro,barrier=1,discard";
+                    fsmgr_flags = "wait";
+                    status = "ok";
+                };
+                vendor {
+                    compatible = "android,vendor";
+                    dev = "/dev/block/platform/soc/c0c4000.sdhci/by-name/vendor";
+                    type = "ext4";
+                    mnt_flags = "ro,barrier=1,discard";
+                    fsmgr_flags = "wait";
+                    status = "ok";
+                };
+                /* [FEATURE]-MODIFY-END by TCTNB.linjian.xiang */
+            };
+        };
+    };
 
 	reserved-memory {
 		#address-cells = <2>;
@@ -2337,7 +2343,7 @@
 		qcom,smem-states = <&modem_smp2p_out 0>;
 		qcom,smem-state-names = "qcom,force-stop";
 
-		status = "ok";
+		status = "disabled"; //temp
 		qcom,mba-mem@0 {
 			compatible = "qcom,pil-mba-mem";
 			memory-region = <&pil_mba_mem>;

@@ -117,7 +117,7 @@
 			06 01 00 01 05 00 01 AC
 		];
 		qcom,mdss-dsi-panel-status-command-mode = "dsi_lp_mode";
-		qcom,mdss-dsi-panel-status-check-mode = "reg_read";
+		// qcom,mdss-dsi-panel-status-check-mode = "reg_read";
 		qcom,mdss-dsi-panel-status-read-length = <1 1 1>;
 		qcom,mdss-dsi-panel-status-value = <0x9c 0x00 0x00>;
 		qcom,mdss-dsi-panel-max-error-count = <3>;
