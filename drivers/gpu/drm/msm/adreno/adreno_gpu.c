@@ -16,6 +16,9 @@
 #include <linux/soc/qcom/mdt_loader.h>
 #include <linux/nvmem-consumer.h>
 #include <soc/qcom/ocmem.h>
+#include <linux/module.h>
+#include <asm/cacheflush.h>
+
 #include "adreno_gpu.h"
 #include "a6xx_gpu.h"
 #include "msm_gem.h"
@@ -26,6 +29,11 @@ MODULE_PARM_DESC(address_space_size, "Override for size of processes private GPU
 module_param(address_space_size, ullong, 0600);
 
 static bool zap_available = true;
+
+/* Test knob: enable outer_sync() before WPTR writes, matching legacy KGSL behavior */
+static bool adreno_test_outer_sync = true;
+module_param(adreno_test_outer_sync, bool, 0644);
+MODULE_PARM_DESC(adreno_test_outer_sync, "Test: enable outer_sync() before WPTR write in adreno_flush()");
 
 static int zap_shader_load_mdt(struct msm_gpu *gpu, const char *fwname,
 		u32 pasid)
@@ -728,6 +736,13 @@ void adreno_flush(struct msm_gpu *gpu, struct msm_ringbuffer *ring, u32 reg)
 
 	/* ensure writes to ringbuffer have hit system memory: */
 	mb();
+
+	/* Test option: match legacy KGSL behavior with outer_sync before WPTR */
+	if (adreno_test_outer_sync) {
+#ifdef CONFIG_OUTER_CACHE
+		outer_sync();
+#endif
+	}
 
 	gpu_write(gpu, reg, wptr);
 }
