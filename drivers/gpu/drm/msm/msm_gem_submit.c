@@ -385,6 +385,27 @@ static int submit_pin_objects(struct msm_gem_submit *submit)
 	}
 	mutex_unlock(&priv->lru.lock);
 
+	/*
+	 * On non-coherent platforms (A2XX), sync CPU caches for GPU access.
+	 * This ensures any CPU writes to vertex buffers, textures, etc. are
+	 * visible to the GPU before command execution begins.
+	 *
+	 * The webOS KGSL driver does this with dmac_flush_range() and
+	 * outer_flush_range() before every GPU submission. Without this,
+	 * the GPU may read stale data from memory, causing intermittent
+	 * rendering artifacts (e.g., triangulated surfaces in glmark2).
+	 */
+	if (!priv->has_cached_coherent) {
+		for (i = 0; i < submit->nr_bos; i++) {
+			struct drm_gem_object *obj = submit->bos[i].obj;
+			struct msm_gem_object *msm_obj = to_msm_bo(obj);
+
+			/* Only sync write-combine buffers that CPU may have written */
+			if (msm_obj->flags & MSM_BO_WC)
+				msm_gem_sync_for_gpu(obj);
+		}
+	}
+
 	submit->bos_pinned = true;
 
 	return ret;
