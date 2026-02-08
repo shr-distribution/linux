@@ -364,13 +364,7 @@ static int submit_pin_objects(struct msm_gem_submit *submit)
 	struct msm_drm_private *priv = submit->dev->dev_private;
 	int i, ret = 0;
 
-	/* Test knob: force per-BO dma_map_sgtable() before submit to ensure
-	 * CPU write-combined buffers are explicitly synced to the device.
-	 * Disabled by default; enable via module parameter for diagnostics.
-	 */
-	static bool msm_test_force_dma_map;
-	module_param_named(msm_test_force_dma_map, msm_test_force_dma_map, bool, 0644);
-	MODULE_PARM_DESC(msm_test_force_dma_map, "Test: force dma_map_sgtable() per-BO before submit");
+	/* Test knob: per-BO dma_map_sgtable handled at file scope */
 
 	for (i = 0; i < submit->nr_bos; i++) {
 		struct drm_gem_object *obj = submit->bos[i].obj;
