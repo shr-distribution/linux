@@ -168,18 +168,17 @@ static void sync_for_cpu(struct msm_gem_object *msm_obj)
 }
 
 /**
- * msm_gem_sync_for_gpu() - Sync GEM buffer cache for GPU access
+ * msm_gem_sync_for_gpu() - Sync GEM buffer for GPU access
  * @obj: the GEM object
  *
  * On non-coherent platforms like MSM8660 with Adreno 2XX GPU, after the
- * CPU writes to a buffer, the write-combine buffer or caches may contain
- * data not yet visible to the GPU. The GPU reads from memory directly,
- * potentially seeing stale data.
+ * CPU writes to a write-combine buffer, the writes may still be in the
+ * CPU's write-combine buffer and not yet visible to the GPU.
  *
- * This function flushes both inner (L1) and outer (L2) caches to ensure
- * the GPU reads the CPU's written data from memory. This matches what the
- * webOS KGSL driver does with dmac_flush_range() and outer_flush_range()
- * before submitting commands to the GPU.
+ * For write-combine (WC) memory, we need memory barriers to drain the
+ * write-combine buffer to memory. This matches what the webOS KGSL driver
+ * does in kgsl_ringbuffer_submit() with dsb/wmb/mb barriers before
+ * submitting commands to the GPU.
  *
  * Must be called before submitting commands that reference this buffer
  * to the GPU on non-coherent platforms.
@@ -187,42 +186,18 @@ static void sync_for_cpu(struct msm_gem_object *msm_obj)
 void msm_gem_sync_for_gpu(struct drm_gem_object *obj)
 {
 #ifdef CONFIG_ARM
-	struct msm_gem_object *msm_obj = to_msm_bo(obj);
-	struct sg_table *sgt;
-	struct scatterlist *sg;
-	int i;
-
-	msm_gem_assert_locked(obj);
-
-	sgt = msm_obj->sgt;
-	if (!sgt)
-		return;
-
 	/*
-	 * Flush both inner and outer caches for each page in the buffer.
-	 * This ensures CPU writes in write-combine buffers are drained
-	 * to memory before the GPU tries to read them.
+	 * Memory barriers to ensure CPU writes have drained to memory.
+	 * Based on KGSL's kgsl_ringbuffer_submit():
+	 *   dsb(sy) - Data synchronization barrier, ensures all explicit
+	 *             memory accesses complete before continuing
+	 *   mb()    - Full memory barrier for proper ordering
 	 *
-	 * We use dmb() first to ensure all CPU writes have completed,
-	 * then flush each segment's caches.
+	 * Note: wmb() is implicit in mb(), and outer_sync() is handled
+	 * by dsb() on modern ARM implementations with L2 cache.
 	 */
-	dmb(sy);
-
-	for_each_sgtable_sg(sgt, sg, i) {
-		void *vaddr = sg_virt(sg);
-		phys_addr_t phys = sg_phys(sg);
-		size_t len = sg->length;
-
-		if (vaddr) {
-			/* Flush inner cache (L1) - clean and invalidate */
-			dmac_flush_range(vaddr, vaddr + len);
-		}
-		/* Flush outer cache (L2) */
-		outer_flush_range(phys, phys + len);
-	}
-
-	/* Final memory barrier to ensure flushes complete */
 	dsb(sy);
+	mb();
 #endif
 }
 
