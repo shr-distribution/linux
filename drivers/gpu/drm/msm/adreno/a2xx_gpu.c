@@ -277,6 +277,15 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	 */
 	gpu_write(gpu, REG_AXXX_CP_INT_ACK, 0xFFFFFFFF);
 
+	/*
+	 * Reset ring pointers immediately before starting the ME.
+	 * This matches the KGSL sequence where rb->rptr = rb->wptr = 0
+	 * is set just before clearing ME_HALT. Critical for recovery.
+	 */
+	gpu->rb[0]->cur = gpu->rb[0]->next = gpu->rb[0]->start;
+	gpu->rb[0]->memptrs->rptr = 0;
+	gpu_write(gpu, REG_AXXX_CP_RB_WPTR, 0);
+
 	/* clear ME_HALT to start micro engine */
 	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, 0);
 
