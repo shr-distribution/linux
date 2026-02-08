@@ -18,6 +18,7 @@
 #include <soc/qcom/ocmem.h>
 #include <linux/module.h>
 #include <asm/cacheflush.h>
+#include <asm/outercache.h>
 
 #include "adreno_gpu.h"
 #include "a6xx_gpu.h"
