@@ -863,14 +863,22 @@
 				 <&gpu_iommu 31>;
 
 			/*
-			 * GPU interconnect path for memory bandwidth.
+			 * GPU interconnect paths for memory bandwidth.
 			 * Adreno 220 generates up to 2008 MB/s memory traffic.
-			 * Without this, GPU activity can starve USB and other
-			 * peripherals by not voting for fabric bandwidth.
+			 *
+			 * Two paths are needed:
+			 * 1. gfx-mem: GPU -> MMSS fabric -> APPSS fabric -> EBI (system RAM)
+			 * 2. gfx-smi: GPU -> MMSS fabric -> SMI (dedicated graphics memory)
+			 *
+			 * DRM framebuffers are allocated in SMI (drm_smi_mem), so the
+			 * GPU must vote for SMI bandwidth when rendering. Without this,
+			 * display underruns occur because GPU can't write to SMI fast enough.
 			 */
 			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_3D
-					 &apps_fabric AFAB_SLV_EBI_CH0>;
-			interconnect-names = "gfx-mem";
+					 &apps_fabric AFAB_SLV_EBI_CH0>,
+					<&mmss_fabric MMFAB_MAS_GRAPHICS_3D
+					 &mmss_fabric MMFAB_SLV_SMI>;
+			interconnect-names = "gfx-mem", "gfx-smi";
 		};
 
 		gpu_opp_table: gpu-opp-table {

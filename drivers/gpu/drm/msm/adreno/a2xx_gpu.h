@@ -19,6 +19,7 @@ struct a2xx_gpu {
 	bool pm_enabled;
 	bool protection_disabled;
 	struct icc_path *icc_path;
+	struct icc_path *icc_path_smi;  /* SMI (dedicated graphics memory) path */
 };
 #define to_a2xx_gpu(x) container_of(x, struct a2xx_gpu, base)
 
