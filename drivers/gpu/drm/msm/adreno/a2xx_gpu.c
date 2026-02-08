@@ -635,8 +635,6 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 	 */
 	if (a2xx_gpu->icc_path)
 		icc_set_bw(a2xx_gpu->icc_path, 0, 0);
-	if (a2xx_gpu->icc_path_smi)
-		icc_set_bw(a2xx_gpu->icc_path_smi, 0, 0);
 
 	/*
 	 * Allow time for the interconnect state change to propagate
@@ -660,8 +658,6 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 	/* Restore max bandwidth after resume (cleared in suspend) */
 	if (a2xx_gpu->icc_path)
 		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
-	if (a2xx_gpu->icc_path_smi)
-		icc_set_bw(a2xx_gpu->icc_path_smi, 0, Bps_to_icc(gpu->fast_rate) * 8);
 
 	return 0;
 }
@@ -685,14 +681,12 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 		return;
 
 	/*
-	 * Set bandwidth proportional to frequency on both EBI and SMI paths.
+	 * Set bandwidth proportional to frequency.
 	 * Use the same calculation as init: Bps_to_icc(freq) * 8
 	 * This approximates memory bandwidth needs for the GPU.
 	 */
 	if (a2xx_gpu->icc_path)
 		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(freq) * 8);
-	if (a2xx_gpu->icc_path_smi)
-		icc_set_bw(a2xx_gpu->icc_path_smi, 0, Bps_to_icc(freq) * 8);
 
 	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
 }
@@ -756,7 +750,7 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	if (ret)
 		goto fail;
 
-	/* Get interconnect path for memory bandwidth voting (EBI - system RAM) */
+	/* Get interconnect path for memory bandwidth voting */
 	a2xx_gpu->icc_path = devm_of_icc_get(&pdev->dev, "gfx-mem");
 	if (IS_ERR(a2xx_gpu->icc_path)) {
 		ret = PTR_ERR(a2xx_gpu->icc_path);
@@ -768,23 +762,12 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 		a2xx_gpu->icc_path = NULL;
 	}
 
-	/* Get SMI interconnect path (dedicated graphics memory for framebuffers) */
-	a2xx_gpu->icc_path_smi = devm_of_icc_get(&pdev->dev, "gfx-smi");
-	if (IS_ERR(a2xx_gpu->icc_path_smi)) {
-		/* SMI path is optional - older DTs may not have it */
-		if (PTR_ERR(a2xx_gpu->icc_path_smi) != -ENODATA)
-			DRM_DEV_DEBUG(dev->dev, "SMI interconnect path not available\n");
-		a2xx_gpu->icc_path_smi = NULL;
-	}
-
 	/*
-	 * Set initial interconnect bandwidth to maximum on both paths.
+	 * Set initial interconnect bandwidth to maximum.
 	 * This will be adjusted during runtime PM suspend/resume.
 	 */
 	if (a2xx_gpu->icc_path)
 		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
-	if (a2xx_gpu->icc_path_smi)
-		icc_set_bw(a2xx_gpu->icc_path_smi, 0, Bps_to_icc(gpu->fast_rate) * 8);
 
 	if (adreno_is_a20x(adreno_gpu))
 		adreno_gpu->registers = a200_registers;
