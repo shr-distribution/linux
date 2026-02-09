@@ -117,6 +117,15 @@ struct msm_asoc_mach_data {
 	struct snd_soc_codec *codec;
 	struct sdm660_codec sdm660_codec_fn;
 	struct snd_info_entry *codec_root;
+	/* MODIFIED-BEGIN by hongwei.tian, 2017-08-29,BUG-5232247*/
+#ifdef CONFIG_TCT_SDM660_COMMON
+	struct regulator *switch_vdd;
+	int hph_switch_vdd_gpio;
+	int hph_switch_gpio;
+	struct device_node *hph_switch_vdd_gpio_p;
+	struct device_node *hph_switch_gpio_p;
+#endif
+	/* MODIFIED-END by hongwei.tian,BUG-5232247*/
 	int spk_ext_pa_gpio;
 	int mclk_freq;
 	bool native_clk_set;

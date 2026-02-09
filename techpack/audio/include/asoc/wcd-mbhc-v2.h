@@ -431,6 +431,10 @@ struct wcd_mbhc_config {
 	bool detect_extn_cable;
 	bool mono_stero_detection;
 	bool (*swap_gnd_mic)(struct snd_soc_component *component, bool active);
+#ifdef CONFIG_TCT_SDM660_COMMON
+	bool (*swap_gnd_mic_reset)(struct snd_soc_component *component); // MODIFIED by hongwei.tian, 2017-12-13,BUG-5760547
+	bool (*swap_hph_switch_reset)(struct snd_soc_component *component, bool active);
+#endif
 	bool hs_ext_micbias;
 	bool gnd_det_en;
 	int key_code[WCD_MBHC_KEYCODE_NUM];

@@ -26,6 +26,13 @@
 #include "wcd-mbhc-adc.h"
 #include <asoc/wcd-mbhc-v2-api.h>
 
+/* MODIFIED-BEGIN by hongwei.tian, 2018-01-10,BUG-5867922*/
+#ifdef CONFIG_TCT_SDM660_COMMON
+extern void msm_swap_hph_switch_status(struct snd_soc_codec *codec);
+int hph_in_detecting;
+#endif
+/* MODIFIED-END by hongwei.tian,BUG-5867922*/
+
 void wcd_mbhc_jack_report(struct wcd_mbhc *mbhc,
 			  struct snd_soc_jack *jack, int status, int mask)
 {
@@ -827,6 +834,13 @@ void wcd_mbhc_find_plug_and_report(struct wcd_mbhc *mbhc,
 			mbhc->mbhc_fn->wcd_mbhc_detect_anc_plug_type(mbhc);
 		jack_type = SND_JACK_HEADSET;
 
+#ifdef CONFIG_TCT_SDM660_COMMON
+		if(mbhc->mbhc_cfg->swap_hph_switch_reset)
+			mbhc->mbhc_cfg->swap_hph_switch_reset(mbhc->component, 0);
+		hph_in_detecting = 0;
+		pr_debug("%s: PHP detecting done ! Set to AKM side \n",__func__); // MODIFIED by hongwei.tian, 2018-01-25,BUG-5929027
+#endif
+
 		/*
 		 * If Headphone was reported previously, this will
 		 * only report the mic line
@@ -853,7 +867,20 @@ void wcd_mbhc_find_plug_and_report(struct wcd_mbhc *mbhc,
 						 3);
 			wcd_mbhc_hs_elec_irq(mbhc, WCD_MBHC_ELEC_HS_INS,
 					     true);
+#ifdef CONFIG_TCT_SDM660_COMMON
+			if(mbhc->mbhc_cfg->swap_hph_switch_reset)
+				mbhc->mbhc_cfg->swap_hph_switch_reset(mbhc->component, 0);
+			hph_in_detecting = 0;
+			pr_debug("%s: PHP detecting done ! Set to AKM side \n",__func__); // MODIFIED by hongwei.tian, 2018-01-25,BUG-5929027
+#endif
 		} else {
+#ifdef CONFIG_TCT_SDM660_COMMON
+			if(mbhc->mbhc_cfg->swap_hph_switch_reset)
+				mbhc->mbhc_cfg->swap_hph_switch_reset(mbhc->component, 0);
+			hph_in_detecting = 0;
+			pr_debug("%s: PHP detecting done ! Set to AKM side \n",__func__); // MODIFIED by hongwei.tian, 2018-01-25,BUG-5929027
+#endif
+
 			wcd_mbhc_report_plug(mbhc, 1, SND_JACK_LINEOUT);
 		}
 	} else {
@@ -935,6 +962,15 @@ static void wcd_mbhc_swch_irq_handler(struct wcd_mbhc *mbhc)
 
 	if ((mbhc->current_plug == MBHC_PLUG_TYPE_NONE) &&
 	    detection_type) {
+		/* MODIFIED-BEGIN by hongwei.tian, 2018-01-10,BUG-5867922*/
+#ifdef CONFIG_TCT_SDM660_COMMON
+		if(mbhc->mbhc_cfg->swap_hph_switch_reset)
+		{
+			hph_in_detecting = 1;
+			mbhc->mbhc_cfg->swap_hph_switch_reset(mbhc->component, 1);
+		}
+#endif
+		/* MODIFIED-END by hongwei.tian,BUG-5867922*/
 
 		/* If moisture is present, then enable polling, disable
 		 * moisture detection and wait for interrupt
@@ -2057,6 +2093,11 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_component *component,
 	mbhc->swap_thr = GND_MIC_SWAP_THRESHOLD;
 	mbhc->hphl_cross_conn_thr = HPHL_CROSS_CONN_THRESHOLD;
 	mbhc->hphr_cross_conn_thr = HPHR_CROSS_CONN_THRESHOLD;
+	/* MODIFIED-BEGIN by hongwei.tian, 2018-01-10,BUG-5867922*/
+#ifdef CONFIG_TCT_SDM660_COMMON
+	hph_in_detecting = 0;
+#endif
+	/* MODIFIED-END by hongwei.tian,BUG-5867922*/
 
 	if (mbhc->intr_ids == NULL) {
 		pr_err("%s: Interrupt mapping not provided\n", __func__);

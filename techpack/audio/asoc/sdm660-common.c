@@ -16,6 +16,7 @@
 #include <asoc/sdm660-internal.h>
 #include <asoc/sdm660-external.h>
 #include <asoc/msm-cdc-pinctrl.h>
+#include <linux/regulator/consumer.h> // MODIFIED by hongwei.tian, 2017-08-29,BUG-5232247
 #include "codecs/sdm660_cdc/msm-analog-cdc.h"
 #include "codecs/wsa881x.h"
 
@@ -473,6 +474,10 @@ static struct afe_clk_set mi2s_mclk[MI2S_MAX] = {
 };
 
 static struct mi2s_conf mi2s_intf_conf[MI2S_MAX];
+
+#ifdef CONFIG_TCT_SDM660_COMMON
+static bool msm_swap_gnd_mic_reset(struct snd_soc_component *component); // MODIFIED by hongwei.tian, 2017-12-13,BUG-5760547
+#endif
 
 /* TDM default slot config */
 struct tdm_slot_cfg {
@@ -4974,6 +4979,78 @@ static bool msm_swap_gnd_mic(struct snd_soc_component *component, bool active)
 	return ret;
 }
 
+/* MODIFIED-BEGIN by hongwei.tian, 2017-12-13,BUG-5760547*/
+#ifdef CONFIG_TCT_SDM660_COMMON
+static bool msm_swap_gnd_mic_reset(struct snd_soc_component *component)
+{
+	struct snd_soc_card *card = component->card;
+	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+	int value;
+
+	pr_debug("%s: reset gpios for US_EU\n", __func__);
+
+	if (pdata->us_euro_gpio_p) {
+		value = msm_cdc_pinctrl_get_state(pdata->us_euro_gpio_p);
+		pr_debug("%s: swap us_euro_gpio_p : %d\n", __func__, value);
+		msm_cdc_pinctrl_select_sleep_state(pdata->us_euro_gpio_p);
+
+	} else if (pdata->us_euro_gpio >= 0) {
+		value = gpio_get_value_cansleep(pdata->us_euro_gpio);
+		pr_debug("%s: swap us_euro_gpio : %d\n", __func__, value);
+		gpio_set_value_cansleep(pdata->us_euro_gpio, 0);
+	}
+	return true;
+}
+
+/* MODIFIED-BEGIN by hongwei.tian, 2017-12-21,BUG-5780230*/
+/*
+ r eset hph switch for akm to internal codec *  *
+ */
+extern int g_hph_src_state;
+static bool msm_swap_hph_switch_reset(struct snd_soc_component *component, bool active)
+{
+	int ret = 0;
+	struct snd_soc_card *card = component->card;
+	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+
+	if(!active && g_hph_src_state == 1 )
+	{
+		ret = msm_cdc_pinctrl_select_sleep_state(
+			pdata->hph_switch_gpio_p);
+		if (ret) {
+			pr_err("%s: gpio set cannot be de-activated %s\n",
+				   __func__, "hph_switch");
+		}
+	}
+	else if(active)
+	{
+		ret = msm_cdc_pinctrl_select_active_state(
+			pdata->hph_switch_gpio_p);
+		if (ret) {
+			pr_err("%s: gpio set cannot be activated %s\n",
+				   __func__, "hph_switch");
+		}
+	}
+	return ret;
+}
+/* MODIFIED-END by hongwei.tian,BUG-5780230*/
+
+/* MODIFIED-BEGIN by hongwei.tian, 2018-01-10,BUG-5867922*/
+void msm_swap_hph_switch_status(struct snd_soc_component *component)
+{
+	int gpio_status;
+	struct snd_soc_card *card = component->card;
+	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+
+	printk(KERN_ERR"msm_swap_hph_switch_status: curr = %d  \n", g_hph_src_state);
+	gpio_status = msm_cdc_pinctrl_get_state(pdata->hph_switch_gpio_p);
+	printk(KERN_ERR"msm_swap_hph_switch_status: gpio_status = %d  \n", gpio_status);
+}
+/* MODIFIED-END by hongwei.tian,BUG-5867922*/
+
+#endif
+/* MODIFIED-END by hongwei.tian,BUG-5760547*/
+
 static int msm_populate_dai_link_component_of_node(
 		struct msm_asoc_mach_data *pdata,
 		struct snd_soc_card *card)
@@ -5464,10 +5541,79 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 		dev_dbg(&pdev->dev, "%s detected",
 			"qcom,us-euro-gpios");
 		mbhc_cfg.swap_gnd_mic = msm_swap_gnd_mic;
+#ifdef CONFIG_TCT_SDM660_COMMON
+		mbhc_cfg.swap_gnd_mic_reset = msm_swap_gnd_mic_reset; // MODIFIED by hongwei.tian, 2017-12-13,BUG-5760547
+		mbhc_cfg.swap_hph_switch_reset = msm_swap_hph_switch_reset;
+#endif
 	}
 
 	if (of_find_property(pdev->dev.of_node, usb_c_dt, NULL))
 		mbhc_cfg.swap_gnd_mic = msm_swap_gnd_mic;
+
+	/* MODIFIED-BEGIN by hongwei.tian, 2017-08-29,BUG-5232247*/
+#ifdef CONFIG_TCT_SDM660_COMMON
+	if(of_property_read_bool(pdev->dev.of_node, "switch_vdd-supply"))
+	{
+		pr_err("%s: switch_vdd need!",
+			   __func__);
+		pdata->switch_vdd = devm_regulator_get(&pdev->dev,"switch_vdd");
+		if (!IS_ERR(pdata->switch_vdd))
+		{
+			/* MODIFIED-BEGIN by hongwei.tian, 2018-01-10,BUG-5867922*/
+			if (regulator_count_voltages(pdata->switch_vdd) > 0)
+			{
+				ret = regulator_set_voltage(pdata->switch_vdd, 2950000, 2950000); // MODIFIED by hongwei.tian, 2018-01-25,BUG-5929572
+				if (ret) {
+					pr_err("%s %d set vdd error\n", __func__, __LINE__);
+					return ret;
+				}
+			}
+			/* MODIFIED-END by hongwei.tian,BUG-5867922*/
+			ret = regulator_enable(pdata->switch_vdd);
+			if (ret < 0) {
+				pr_err("%s: switch_vdd enable failed !",
+					   __func__);
+				return ret;
+			}
+		}
+	}
+
+	pdata->hph_switch_vdd_gpio = of_get_named_gpio(pdev->dev.of_node,
+												   "hphlr-switch-vdd-gpios", 0);
+	if (gpio_is_valid(pdata->hph_switch_vdd_gpio)) {
+		ret = gpio_request(pdata->hph_switch_vdd_gpio, "hph_switch_vdd");
+		if (ret) {
+			dev_err(&pdev->dev,
+					"%s: unable to request hph_switch_vdd gpio [%d]\n",
+		   __func__,
+		   pdata->hph_switch_vdd_gpio);
+		}
+		ret = gpio_direction_output(pdata->hph_switch_vdd_gpio, 1);
+		if (ret) {
+			dev_err(&pdev->dev,
+					"%s: unable to set direction for hph_switch_vdd gpio [%d]\n",
+		   __func__,
+		   pdata->hph_switch_vdd_gpio);
+		}
+	} else {
+		dev_err(&pdev->dev,
+				"%s: hph_switch_vdd gpio not provided\n", __func__);
+	}
+
+	/* MODIFIED-BEGIN by hongwei.tian, 2017-09-01,BUG-5247152*/
+	pdata->hph_switch_gpio_p = of_parse_phandle(pdev->dev.of_node,
+												"hphlr-switch-gpios", 0);
+	if (pdata->hph_switch_gpio_p) {
+		ret = msm_cdc_pinctrl_select_active_state(
+			pdata->hph_switch_gpio_p);
+		if (ret) {
+			pr_err("%s: gpio set cannot be de-activated %s\n",
+				   __func__, "hph_switch");
+		}
+	}
+#endif
+	/* MODIFIED-END by hongwei.tian,BUG-5247152*/
+	/* MODIFIED-END by hongwei.tian,BUG-5232247*/
 
 	ret = msm_prepare_us_euro(card);
 	if (ret)
@@ -5542,6 +5688,13 @@ static int msm_asoc_machine_remove(struct platform_device *pdev)
 
 	if (pdata->snd_card_val == INT_SND_CARD)
 		mutex_destroy(&pdata->cdc_int_mclk0_mutex);
+
+	/* MODIFIED-BEGIN by hongwei.tian, 2017-08-29,BUG-5232247*/
+#ifdef CONFIG_TCT_SDM660_COMMON
+	if (!IS_ERR(pdata->switch_vdd))
+		regulator_disable(pdata->switch_vdd);
+#endif
+	/* MODIFIED-END by hongwei.tian,BUG-5232247*/
 
 	if (gpio_is_valid(pdata->us_euro_gpio)) {
 		gpio_free(pdata->us_euro_gpio);

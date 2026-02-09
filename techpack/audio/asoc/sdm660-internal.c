@@ -146,6 +146,12 @@ static SOC_ENUM_SINGLE_EXT_DECL(int5_mi2s_tx_chs, int_mi2s_ch_text);
 static SOC_ENUM_SINGLE_EXT_DECL(loopback_mclk_en, loopback_mclk_text);
 static SOC_ENUM_SINGLE_EXT_DECL(bt_sample_rate, bt_sample_rate_text);
 
+#ifdef CONFIG_TCT_SDM660_COMMON
+static const char *bbry_hph_src_select_texts[] = {"SDM", "AKM"};
+
+static SOC_ENUM_SINGLE_EXT_DECL(bbry_hph_src_select, bbry_hph_src_select_texts);
+#endif
+
 static int msm_dmic_event(struct snd_soc_dapm_widget *w,
 			  struct snd_kcontrol *kcontrol, int event);
 static int msm_int_enable_dig_cdc_clk(struct snd_soc_component *component,
@@ -872,6 +878,64 @@ static int msm_bt_sample_rate_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+#ifdef CONFIG_TCT_SDM660_COMMON
+int g_hph_src_state = 0; // MODIFIED by hongwei.tian, 2017-12-21,BUG-5780230
+
+enum hph_src_enum {
+	HPH_SDM = 0,
+	HPH_AKM,
+};
+
+static int msm_hph_src_get(struct snd_kcontrol *kcontrol,
+						   struct snd_ctl_elem_value *ucontrol)
+{
+	printk("%s state %d\n", __func__, g_hph_src_state);
+	ucontrol->value.integer.value[0] = g_hph_src_state;
+	return 0;
+}
+extern int hph_in_detecting; // MODIFIED by hongwei.tian, 2018-01-10,BUG-5867922
+
+static int msm_hph_src_put(struct snd_kcontrol *kcontrol,
+						   struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component =
+								snd_soc_kcontrol_component(kcontrol);
+	struct msm_asoc_mach_data *pdata = NULL;
+	int ret = 0;
+
+	int state = ucontrol->value.enumerated.item[0];
+
+	pdata = snd_soc_card_get_drvdata(component->card);
+
+	printk("\n>>> %s  set  %d  ,status: %d<<<\n", __func__, state,hph_in_detecting); // MODIFIED by hongwei.tian, 2018-01-10,BUG-5867922
+
+	if (state == HPH_SDM)
+	{
+		ret = msm_cdc_pinctrl_select_active_state(
+			pdata->hph_switch_gpio_p);
+		if (ret) {
+			pr_err("%s: gpio set cannot be de-activated %s\n",
+				   __func__, "hph_switch");
+		}
+
+	}
+	else if(!hph_in_detecting) // MODIFIED by hongwei.tian, 2018-01-10,BUG-5867922
+	{
+		ret = msm_cdc_pinctrl_select_sleep_state(
+			pdata->hph_switch_gpio_p);
+		if (ret) {
+			pr_err("%s: gpio set cannot be de-activated %s\n",
+				   __func__, "hph_switch");
+		}
+	}
+
+	g_hph_src_state = state;
+
+	return 0;
+
+}
+#endif
+
 static const struct snd_kcontrol_new msm_snd_controls[] = {
 	SOC_ENUM_EXT("INT0_MI2S_RX Format", int0_mi2s_rx_format,
 		     int_mi2s_bit_format_get, int_mi2s_bit_format_put),
@@ -899,6 +963,11 @@ static const struct snd_kcontrol_new msm_snd_controls[] = {
 	SOC_ENUM_EXT("BT SampleRate", bt_sample_rate,
 			msm_bt_sample_rate_get,
 			msm_bt_sample_rate_put),
+#ifdef CONFIG_TCT_SDM660_COMMON
+	SOC_ENUM_EXT("HPH SRC", bbry_hph_src_select,
+			msm_hph_src_get,
+			msm_hph_src_put),
+#endif
 };
 
 static const struct snd_kcontrol_new msm_sdw_controls[] = {
