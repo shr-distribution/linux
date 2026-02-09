@@ -2756,8 +2756,15 @@ static struct snd_soc_dai_link msm_mi2s_be_dai_links[] = {
 		.stream_name = "Tertiary MI2S Playback",
 		.cpu_dai_name = "msm-dai-q6-mi2s.2",
 		.platform_name = "msm-pcm-routing",
+/* MODIFIED-BEGIN by hongwei.tian, 2017-08-29,BUG-5232247*/
+#ifdef CONFIG_SND_SOC_TFA9911
+		.codec_dai_name = "tfa98xx-aif-6-34",
+		.codec_name = "tfa98xx.6-0034",
+#else
 		.codec_name = "msm-stub-codec.1",
 		.codec_dai_name = "msm-stub-rx",
+#endif
+/* MODIFIED-END by hongwei.tian,BUG-5232247*/
 		.no_pcm = 1,
 		.dpcm_playback = 1,
 		.id = MSM_BACKEND_DAI_TERTIARY_MI2S_RX,

@@ -1312,4 +1312,20 @@ config SND_SOC_TPA6130A2
 	tristate "Texas Instruments TPA6130A2 headphone amplifier"
 	depends on I2C
 
+config SND_SOC_TFA9911
+	bool "nxp tfa9911 smartPA"
+
+config SND_TCT_SEC_I2S_HAL_CTL
+	bool "smart pa control Quat I2S Clock"
+
+config SND_SOC_TFA98XX_MMI_TEST
+	bool "nxp tfa98xx smartPA MMI test"
+	depends on SND_SOC_TFA9911
+
+config SND_SOC_AK4376
+	bool "akm ak4376 codec"
+
+config SND_SOC_AW87319
+	bool "aw87319 class D PA"
+
 endmenu

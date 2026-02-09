@@ -515,3 +515,12 @@ obj-$(CONFIG_SND_SOC_MAX9877)	+= snd-soc-max9877.o
 obj-$(CONFIG_SND_SOC_MAX98504)	+= snd-soc-max98504.o
 obj-$(CONFIG_SND_SOC_SIMPLE_AMPLIFIER)	+= snd-soc-simple-amplifier.o
 obj-$(CONFIG_SND_SOC_TPA6130A2)	+= snd-soc-tpa6130a2.o
+
+obj-$(CONFIG_SND_SOC_TFA9911)  += snd-soc-tfa9911.o
+snd-soc-tfa9911-objs := tfa9911/tfa98xx.o tfa9911/tfa_container.o tfa9911/tfa_dsp.o tfa9911/tfa9890_init.o tfa9911/tfa9888_init.o tfa9911/tfa9891_init.o tfa9911/tfa9897_init.o tfa9911/tfa9887B_init.o tfa9911/tfa9887_init.o tfa9911/tfa_mmi_test.o
+
+obj-$(CONFIG_SND_SOC_AK4376) += snd-soc-ak4376.o
+snd-soc-ak4376-objs := akm/ak4376.o
+
+obj-$(CONFIG_SND_SOC_AW87319)	+= snd-soc-aw87319.o
+snd-soc-aw87319-objs := aw87319_audio_m.o
