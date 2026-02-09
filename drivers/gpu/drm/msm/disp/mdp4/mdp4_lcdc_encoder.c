@@ -194,30 +194,40 @@ static void setup_phy(struct drm_encoder *encoder)
 	if (swap)
 		lvds_intf |= MDP4_LCDC_LVDS_INTF_CTL_CH_SWAP;
 
-	lvds_intf |= MDP4_LCDC_LVDS_INTF_CTL_ENABLE;
+	/*
+	 * LVDS PHY initialization sequence - must enable serialization
+	 * BEFORE enabling the interface to prevent blue vertical lines.
+	 *
+	 * Sequence:
+	 * 1. Configure PHY channels and interface (without ENABLE)
+	 * 2. Wait for PHY to stabilize
+	 * 3. Enable serialization
+	 * 4. Wait for serializer to lock
+	 * 5. Enable LVDS interface
+	 */
 
+	/* Step 1: Configure PHY and interface WITHOUT enabling yet */
 	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG0, lvds_phy_cfg0);
-	mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_INTF_CTL, lvds_intf);
+	mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_INTF_CTL, lvds_intf);  /* ENABLE not set */
 	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG2, 0x30);
 
 	mb();
-	/*
-	 * LVDS PHY needs time to stabilize before enabling serialization.
-	 * The original 1us delay was insufficient and caused intermittent
-	 * blue vertical lines during boot when moboot hands off to kernel.
-	 *
-	 * When using MMCC clock (not internal LVDS PLL), we cannot poll
-	 * LVDS_PHY_PLL_LOCKED, so we rely on delays. Use a conservative
-	 * 200us to ensure the PHY is fully stabilized.
-	 */
+
+	/* Step 2: Wait for PHY to stabilize */
 	udelay(200);
+
+	/* Step 3: Enable serialization */
 	lvds_phy_cfg0 |= MDP4_LVDS_PHY_CFG0_SERIALIZATION_ENBLE;
 	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG0, lvds_phy_cfg0);
 
-	/*
-	 * Additional delay after enabling serialization to allow the
-	 * LVDS output to stabilize before LCDC starts driving data.
-	 */
+	/* Step 4: Wait for serializer to lock */
+	udelay(200);
+
+	/* Step 5: Now enable the LVDS interface */
+	lvds_intf |= MDP4_LCDC_LVDS_INTF_CTL_ENABLE;
+	mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_INTF_CTL, lvds_intf);
+
+	/* Final stabilization delay before LCDC starts */
 	udelay(100);
 }
 
