@@ -1,31 +1,51 @@
 # Adreno 200/220 GPU Register Comparison
 
 **Generated:** 2026-02-11
-**Purpose:** Compare register initialization between Sony kernel, webOS TouchPad kernel, mainline kernel, and Mesa freedreno
+**Purpose:** Compare register initialization between Sony, HTC, webOS kernels, mainline kernel, and Mesa freedreno
 
 ## Executive Summary
 
-This document compares GPU register initialization across 5 different driver implementations:
+This document compares GPU register initialization across 6 different driver implementations:
 
-| Source | GPU Target | Type |
-|--------|------------|------|
-| **Sony kernel** (msm7x27a) | A200/A203/A205/A220/A225 | Proprietary KGSL |
-| **webOS TouchPad kernel** | A220 (Leia) | Proprietary KGSL |
-| **Mainline kernel** | A200/A220/A225 | Open source DRM/MSM |
-| **Mesa freedreno** | A200/A220/A225 | Open source Mesa |
-| **Mesa freedreno + patches** | A220 (TouchPad) | Patched Mesa |
+| Source | GPU Target | SoC | Type |
+|--------|------------|-----|------|
+| **Sony kernel** (msm7x27a) | A200/A203/A205/A220/A225 | MSM7x27A | Proprietary KGSL |
+| **HTC kernel** (msm8660) | A220/A225 | MSM8660 | Proprietary KGSL |
+| **webOS TouchPad kernel** | A220 (Leia) | APQ8060 | Proprietary KGSL |
+| **Mainline kernel** | A200/A220/A225 | All | Open source DRM/MSM |
+| **Mesa freedreno** | A200/A220/A225 | All | Open source Mesa |
+| **Mesa freedreno + patches** | A220 (TouchPad) | APQ8060 | Patched Mesa |
+
+### SoC Relationship
+- **APQ8060** = Application processor only (TouchPad)
+- **MSM8660** = APQ8060 + Modem (HTC devices like Sensation, EVO 3D)
+- Both use identical Adreno 220 GPU silicon
 
 ### Key Findings
 
-| Register | Sony KGSL | webOS KGSL | Mainline | freedreno | Issue |
-|----------|-----------|------------|----------|-----------|-------|
-| **SQ_GPR_MANAGEMENT (0x0D00)** | **0x00040400** | **0x00040400** | NOT SET | **0x00040400** (patch 0012) | **ROOT CAUSE of faceted shading** |
-| RBBM_PM_OVERRIDE2 (0x039D) | 0x80 (A22X) | 0x1a0 (Leia) | 0x1a0 (A22X) | 0xfff (A22X) | Clock gating |
-| A220_RB_LRZ_VSC_CONTROL (0x2209) | 0x00000000 | Context save | 0x00000000 | 0x00000000 | Matches |
-| A220_GRAS_CONTROL (0x2210) | 0x00000000 | Context save | 0x00000000 | 0x00000000 | Matches |
-| SQ_INTERPOLATOR_CNTL (0x2182) | 0xffffffff | 0xffffffff | NOT SET | 0xffffffff | Mesa correct |
-| TP0_CHICKEN (0x0E1E) | 0x00000000 | 0x00000000 | NOT SET | 0x00000002 | Minor diff |
-| SQ_FLOW_CONTROL (0x0D01) | 0x18000000 (A225) | N/A | 0x18000000 (A225) | N/A | A225 only |
+| Register | Sony KGSL | HTC KGSL | webOS KGSL | Mainline | freedreno | Issue |
+|----------|-----------|----------|------------|----------|-----------|-------|
+| **SQ_GPR_MANAGEMENT (0x0D00)** | **0x00040400** | **0x00040400** | **0x00040400** | NOT SET | **0x00040400** (patch 0012) | **ROOT CAUSE of faceted shading** |
+| RBBM_PM_OVERRIDE2 (0x039D) | 0x80 (A22X) | **0x80** (A22X) | **0x1a0** (Leia) | 0x1a0 (A22X) | 0xfff (A22X) | **TouchPad uses unique value!** |
+| A220_RB_LRZ_VSC_CONTROL (0x2209) | 0x00000000 | 0x00000000 | Context save | 0x00000000 | 0x00000000 | Matches |
+| A220_GRAS_CONTROL (0x2210) | 0x00000000 | 0x00000000 | Context save | 0x00000000 | 0x00000000 | Matches |
+| SQ_INTERPOLATOR_CNTL (0x2182) | 0xffffffff | 0xffffffff | 0xffffffff | NOT SET | 0xffffffff | Mesa correct |
+| TP0_CHICKEN (0x0E1E) | 0x00000000 | 0x00000000 | 0x00000000 | NOT SET | 0x00000002 | Minor diff |
+| SQ_FLOW_CONTROL (0x0D01) | 0x18000000 (A225) | 0x18000000 (A225) | N/A | 0x18000000 (A225) | N/A | A225 only |
+
+### RBBM_PM_OVERRIDE2 Analysis
+
+**Critical Finding**: TouchPad uses a unique value (0x1a0) not found in other A220 implementations:
+
+| Source | Value | Binary | Notes |
+|--------|-------|--------|-------|
+| Sony (MSM7x27A) | 0x80 | 0000 0000 1000 0000 | Generic A22X |
+| HTC (MSM8660) | 0x80 | 0000 0000 1000 0000 | Same as Sony |
+| webOS (APQ8060) | **0x1a0** | 0000 0001 1010 0000 | **Palm-specific tuning** |
+| Mainline | 0x1a0 | 0000 0001 1010 0000 | Copied from webOS |
+| freedreno | 0xfff | 0000 1111 1111 1111 | All clocks enabled |
+
+The 0x1a0 value may be Palm/HP-specific optimization for the APQ8060 or power tuning for tablet use case.
 
 ---
 
@@ -40,12 +60,32 @@ This document compares GPU register initialization across 5 different driver imp
 - **A220**: Enhanced A200 with binning support, larger GMEM
 - **A225**: A220 with extended instruction store (used in MSM8960)
 
+### SoC Comparison: APQ8060 vs MSM8660
+
+| Aspect | APQ8060 (TouchPad) | MSM8660 (HTC) |
+|--------|-------------------|---------------|
+| CPU | Dual Scorpion 1.5GHz | Dual Scorpion 1.2-1.5GHz |
+| GPU | Adreno 220 | Adreno 220 |
+| Modem | **None** | Integrated |
+| Manufacturer | HP/Palm | HTC |
+| Devices | TouchPad | Sensation, EVO 3D, Vivid |
+| RBBM_PM_OVERRIDE2 | **0x1a0** | 0x80 |
+
+Both SoCs share identical GPU silicon, but the TouchPad kernel uses different power management settings.
+
 ### TouchPad Specifics
 - **GPU**: Adreno 220 (code name "Leia")
 - **Chip ID**: KGSL_CHIPID_LEIA_REV470
 - **GMEM**: 256KB (vs 128KB on A200)
 - **Binning**: VSC (Visibility Stream Controller) support
 - **Clock**: 320 MHz core, 200 MHz MDP
+- **Unique**: RBBM_PM_OVERRIDE2 = 0x1a0 (not found in other A220 devices)
+
+### HTC MSM8660 Devices
+- **GPU**: Adreno 220 (same as TouchPad)
+- **GMEM**: 256KB
+- **Clock**: Similar to TouchPad
+- **Standard**: Uses generic A22X value (0x80) for RBBM_PM_OVERRIDE2
 
 ---
 
@@ -416,26 +456,56 @@ Vertex reuse optimization.
 
 ### Registers Unique to webOS TouchPad Kernel
 
-| Register | Value | Purpose |
-|----------|-------|---------|
-| RBBM_PM_OVERRIDE2 | **0x1a0** | APQ8060-specific clock gating |
-| SQ_GPR_MANAGEMENT | 0x00040400 | GPR allocation (also in Sony) |
-| VSC pipes | All zeroed | Explicit initialization |
+| Register | Value | Sony | HTC | Purpose |
+|----------|-------|------|-----|---------|
+| RBBM_PM_OVERRIDE2 | **0x1a0** | 0x80 | 0x80 | **Palm-specific clock gating** |
+| SQ_GPR_MANAGEMENT | 0x00040400 | Same | Same | GPR allocation |
+| VSC pipes | All zeroed | Not explicit | Not explicit | Explicit initialization |
+
+### RBBM_PM_OVERRIDE2 Deep Dive
+
+**This is the only register where TouchPad differs from all other A220 implementations.**
+
+| Bit | 0x80 (Sony/HTC) | 0x1a0 (TouchPad) | Difference |
+|-----|-----------------|------------------|------------|
+| 7 | 1 | 1 | Same |
+| 8 | 0 | **1** | TouchPad enables |
+| 5 | 0 | **1** | TouchPad enables |
+
+Possible explanations for 0x1a0:
+1. **Tablet power optimization** - Different thermal/power profile vs phones
+2. **APQ8060 vs MSM8660** - No modem means different power domains
+3. **Palm engineering** - Custom tuning for webOS graphics stack
+4. **Display timing** - 1024x768 @ 60Hz vs phone resolutions
+
+**Recommendation**: Test with 0x80 on TouchPad to see if behavior changes.
 
 ### Registers with TouchPad-Specific Values
 
 1. **RBBM_PM_OVERRIDE2 = 0x1a0**
    - Sony kernel uses 0x80 for generic A22X
-   - TouchPad uses 0x1a0 for APQ8060
-   - Mainline matches TouchPad value
+   - HTC MSM8660 kernel uses 0x80 (same as Sony)
+   - TouchPad uses 0x1a0 (unique!)
+   - Mainline copied TouchPad value
 
 2. **KGSL_CHIPID_LEIA_REV470**
    - TouchPad-specific chip revision
    - Triggers additional initialization (VSC pipes)
 
+### HTC MSM8660 vs TouchPad APQ8060
+
+| Aspect | HTC MSM8660 | TouchPad APQ8060 |
+|--------|-------------|------------------|
+| SoC | MSM8660 (with modem) | APQ8060 (no modem) |
+| GPU Silicon | Identical A220 | Identical A220 |
+| RBBM_PM_OVERRIDE2 | 0x80 | **0x1a0** |
+| RBBM_PM_OVERRIDE1 | 0xfffffffe → 0x200 (8960) or 0x0 | 0xffffffff → 0x0 |
+| SQ_GPR_MANAGEMENT | 0x00040400 | 0x00040400 |
+| VSC init | Not explicit | All pipes zeroed |
+
 ### Leia-Specific Debug Registers
 
-webOS kernel defines additional Leia debug registers not in Sony kernel:
+webOS kernel defines additional Leia debug registers not in Sony or HTC kernels:
 
 | Register | Address | Purpose |
 |----------|---------|---------|
@@ -447,22 +517,25 @@ webOS kernel defines additional Leia debug registers not in Sony kernel:
 
 ## 10. Implementation Differences Summary
 
-### Sony KGSL vs webOS KGSL
+### Sony KGSL vs HTC KGSL vs webOS KGSL
 
-| Aspect | Sony | webOS |
-|--------|------|-------|
-| A22X PM_OVERRIDE2 | 0x80 | 0x1a0 |
-| VSC pipe init | Not explicit | All zeroed |
-| Chip detection | Generic | LEIA_REV470 |
+| Aspect | Sony (MSM7x27A) | HTC (MSM8660) | webOS (APQ8060) |
+|--------|-----------------|---------------|-----------------|
+| A22X PM_OVERRIDE2 | 0x80 | 0x80 | **0x1a0** |
+| PM_OVERRIDE1 final | 0x0 or 0x200 | 0x0 or 0x200 | 0x0 |
+| VSC pipe init | Not explicit | Not explicit | All zeroed |
+| Chip detection | Generic | Generic | LEIA_REV470 |
+| SQ_GPR_MANAGEMENT | 0x00040400 | 0x00040400 | 0x00040400 |
 
-### KGSL vs Mainline Kernel
+### KGSL (All) vs Mainline Kernel
 
-| Aspect | KGSL | Mainline |
-|--------|------|----------|
+| Aspect | KGSL (Sony/HTC/webOS) | Mainline |
+|--------|----------------------|----------|
 | SQ_GPR_MANAGEMENT | **Set to 0x00040400** | **NOT SET** |
 | SQ_INTERPOLATOR_CNTL | Set to 0xffffffff | Not set (Mesa does) |
 | Context shadowing | 18KB shadow memory | No shadowing |
 | VSC binning | Supported | Supported (A22X) |
+| RBBM_PM_OVERRIDE2 | 0x80 (Sony/HTC) / 0x1a0 (webOS) | 0x1a0 |
 
 ### Mainline vs freedreno (Mesa)
 
@@ -592,9 +665,34 @@ freedreno disables binning on A22X but KGSL supports it:
 
 The primary difference causing issues was **SQ_GPR_MANAGEMENT** not being initialized by the mainline kernel or freedreno (before patches). This has been fixed with patch 0012.
 
-Key differences between TouchPad (webOS) and generic A220 implementations:
-1. **RBBM_PM_OVERRIDE2 = 0x1a0** - APQ8060-specific clock gating
-2. **KGSL_CHIPID_LEIA_REV470** - Specific chip revision detection
-3. **VSC pipe initialization** - All pipes zeroed on TouchPad
+### Key Findings
 
-The freedreno driver is now functionally equivalent to KGSL for the critical registers after applying patches 0011 and 0012.
+1. **SQ_GPR_MANAGEMENT (0x0D00) = 0x00040400**
+   - Set by ALL KGSL implementations (Sony, HTC, webOS)
+   - NOT set by mainline kernel
+   - Now set by freedreno patch 0012
+   - **ROOT CAUSE of intermittent faceted shading**
+
+2. **RBBM_PM_OVERRIDE2 - TouchPad is UNIQUE**
+   - Sony (MSM7x27A): 0x80
+   - HTC (MSM8660): 0x80
+   - **webOS (APQ8060): 0x1a0** ← Only TouchPad uses this!
+   - Mainline: 0x1a0 (copied from webOS)
+   - freedreno: 0xfff (all clocks on)
+
+3. **VSC pipe initialization**
+   - Only webOS explicitly zeros all VSC pipes
+   - Sony and HTC rely on context save/restore
+
+### Implications
+
+The TouchPad's unique RBBM_PM_OVERRIDE2 value (0x1a0) may be:
+- Palm-specific power optimization for tablet use case
+- APQ8060-specific (no modem = different power domains)
+- Tuning for 1024x768 display vs phone displays
+
+Since HTC MSM8660 devices (which share identical GPU silicon) use 0x80, the 0x1a0 value appears to be a deliberate Palm engineering choice rather than a hardware requirement.
+
+### Status
+
+The freedreno driver is now functionally equivalent to KGSL for critical rendering registers after applying patches 0011 and 0012. The RBBM_PM_OVERRIDE2 difference (0xfff vs 0x1a0) keeps all GPU clocks enabled in freedreno, which may affect power consumption but ensures stability.
