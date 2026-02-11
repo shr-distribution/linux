@@ -6,6 +6,8 @@
 #include <linux/interconnect.h>
 #include <linux/pm_opp.h>
 
+#include <drm/drm_file.h>
+
 #include "a2xx_gpu.h"
 #include "msm_gem.h"
 #include "msm_mmu.h"
