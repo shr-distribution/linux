@@ -193,6 +193,17 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	else
 		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
 
+	/* A22X: Initialize GRAS and LRZ/VSC control registers to 0.
+	 * KGSL initializes all registers via 18KB shadow memory, but freedreno
+	 * doesn't have shadowing. Without explicit initialization, these
+	 * registers can have random values causing intermittent rendering
+	 * issues (e.g., faceted vs smooth surfaces in glmark2).
+	 */
+	if (!adreno_is_a20x(adreno_gpu)) {
+		gpu_write(gpu, REG_A2XX_A220_RB_LRZ_VSC_CONTROL, 0);
+		gpu_write(gpu, REG_A2XX_A220_GRAS_CONTROL, 0);
+	}
+
 	/* note: gsl doesn't set this */
 	gpu_write(gpu, REG_A2XX_RBBM_DEBUG, 0x00080000);
 
