@@ -84,8 +84,9 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	int timeout;
 	uint32_t status;
 
-	dev_dbg(mmu->dev, "gpummu unmap: iova=%llx len=%zx idx=%u\n",
-		iova, len, idx);
+	/* Log all unmaps to correlate with page faults */
+	dev_info(mmu->dev, "gpummu unmap: iova=%llx len=%zx idx=%u-%u\n",
+		 iova, len, idx, idx + (unsigned)(len / GPUMMU_PAGE_SIZE) - 1);
 
 	/*
 	 * Wait for GPU to be completely idle before clearing page table entries.
@@ -139,6 +140,10 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 		 */
 		dev_warn(mmu->dev, "gpummu unmap: proceeding with unmap of iova=0x%llx len=%zx despite busy GPU\n",
 			 iova, len);
+	} else {
+		/* Log successful idle wait with final status for debugging */
+		dev_dbg(mmu->dev, "gpummu unmap: GPU idle after %d iterations, status=0x%08x\n",
+			500 - timeout, status);
 	}
 
 	/*
