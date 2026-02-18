@@ -142,8 +142,8 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 			 iova, len);
 	} else {
 		/* Log successful idle wait with final status for debugging */
-		dev_dbg(mmu->dev, "gpummu unmap: GPU idle after %d iterations, status=0x%08x\n",
-			500 - timeout, status);
+		dev_info(mmu->dev, "gpummu unmap: GPU idle after %d iterations, status=0x%08x\n",
+			 500 - timeout, status);
 	}
 
 	/*

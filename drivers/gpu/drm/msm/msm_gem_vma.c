@@ -281,13 +281,19 @@ void msm_gem_vma_unmap(struct drm_gpuva *vma, const char *reason)
 	 * This prevents page faults when the GPU is still accessing memory
 	 * that we're about to unmap. This is a defensive measure for GPUs
 	 * like A2XX that don't have robust IOMMU fault recovery.
+	 *
+	 * We wait for both READ and WRITE usage fences using dma_resv_usage_rw(),
+	 * not BOOKKEEP, because the GPU submit path adds fences with READ/WRITE
+	 * usage based on buffer access flags.
 	 */
 	obj = vma->vm_bo ? vma->vm_bo->obj : NULL;
 	if (obj && obj->resv) {
-		long ret = dma_resv_wait_timeout(obj->resv, DMA_RESV_USAGE_BOOKKEEP,
-						 false, msecs_to_jiffies(1000));
+		long ret = dma_resv_wait_timeout(obj->resv, dma_resv_usage_rw(true),
+						 false, msecs_to_jiffies(2000));
 		if (ret == 0)
-			pr_warn_once("msm_gem_vma_unmap: timeout waiting for GPU fence\n");
+			pr_warn("msm_gem_vma_unmap: timeout waiting for GPU fence on obj %p\n", obj);
+		else if (ret < 0)
+			pr_warn("msm_gem_vma_unmap: error %ld waiting for GPU fence\n", ret);
 	}
 
 	/*
