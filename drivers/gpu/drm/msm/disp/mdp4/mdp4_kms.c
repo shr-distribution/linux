@@ -674,10 +674,17 @@ static int mdp4_probe(struct platform_device *pdev)
 	 * framebuffer through the now-active IOMMU without proper mappings.
 	 * Writing 0 to the enable registers stops the MDP from fetching
 	 * pixel data, preventing the page faults.
+	 *
+	 * Use writel_relaxed for the writes, then a single wmb() to ensure
+	 * all writes reach the hardware. The 50ms delay allows the display
+	 * pipeline to fully drain any in-flight memory read requests before
+	 * proceeding - the MDP prefetches several scanlines ahead.
 	 */
-	writel(0, mdp4_kms->mmio + REG_MDP4_LCDC_ENABLE);
-	writel(0, mdp4_kms->mmio + REG_MDP4_DTV_ENABLE);
-	writel(0, mdp4_kms->mmio + REG_MDP4_DSI_ENABLE);
+	writel_relaxed(0, mdp4_kms->mmio + REG_MDP4_LCDC_ENABLE);
+	writel_relaxed(0, mdp4_kms->mmio + REG_MDP4_DTV_ENABLE);
+	writel_relaxed(0, mdp4_kms->mmio + REG_MDP4_DSI_ENABLE);
+	wmb(); /* Ensure disable writes reach hardware */
+	mdelay(50); /* Wait for display pipeline to drain */
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
