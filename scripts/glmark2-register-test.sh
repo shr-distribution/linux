@@ -16,7 +16,7 @@
 
 ITERATIONS=25
 OUTPUT_DIR="${1:-/tmp/glmark2-regs}"
-DEBUGFS_REGS="/sys/kernel/debug/dri/0/a2xx_regs"
+DEBUGFS_REGS="/sys/kernel/debug/a2xx_regs"
 BENCHMARKS="build texture shading"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
@@ -84,11 +84,9 @@ run_benchmark() {
     # Dump registers BEFORE
     dump_regs "regs" "$iteration" "$benchmark" "before"
 
-    # Run the benchmark
-    # Use --run-forever with timeout to get consistent behavior
+    # Run the benchmark on-screen so user can see artifacts
     timeout 60 glmark2-es2-drm \
         --benchmark "$benchmark" \
-        --off-screen \
         2>&1 | tee "$result_file"
 
     local exit_code=$?
@@ -97,8 +95,8 @@ run_benchmark() {
     dump_regs "regs" "$iteration" "$benchmark" "after"
 
     # Extract FPS and check for success
-    local fps=$(grep -oP 'FPS:\s*\K[0-9]+' "$result_file" | tail -1)
-    local score=$(grep -oP 'Score:\s*\K[0-9]+' "$result_file" | tail -1)
+    local fps=$(grep 'FPS:' | sed 's/.*FPS: *\([0-9]*\).*/\1/' "$result_file" | tail -1)
+    local score=$(grep 'Score:' | sed 's/.*Score: *\([0-9]*\).*/\1/' "$result_file" | tail -1)
 
     if [ -z "$fps" ]; then
         fps="FAIL"

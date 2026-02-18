@@ -6,6 +6,7 @@
 
 #include "drm/drm_file.h"
 #include "drm/msm_drm.h"
+#include "linux/dma-resv.h"
 #include "linux/file.h"
 #include "linux/sync_file.h"
 
@@ -269,10 +270,25 @@ void msm_gem_vma_unmap(struct drm_gpuva *vma, const char *reason)
 {
 	struct msm_gem_vm *vm = to_msm_vm(vma->vm);
 	struct msm_gem_vma *msm_vma = to_msm_vma(vma);
+	struct drm_gem_object *obj;
 
 	/* Don't do anything if the memory isn't mapped */
 	if (!msm_vma->mapped)
 		return;
+
+	/*
+	 * Wait for any pending GPU operations to complete before unmapping.
+	 * This prevents page faults when the GPU is still accessing memory
+	 * that we're about to unmap. This is a defensive measure for GPUs
+	 * like A2XX that don't have robust IOMMU fault recovery.
+	 */
+	obj = vma->vm_bo ? vma->vm_bo->obj : NULL;
+	if (obj && obj->resv) {
+		long ret = dma_resv_wait_timeout(obj->resv, DMA_RESV_USAGE_BOOKKEEP,
+						 false, msecs_to_jiffies(1000));
+		if (ret == 0)
+			pr_warn_once("msm_gem_vma_unmap: timeout waiting for GPU fence\n");
+	}
 
 	/*
 	 * The mmu_lock is only needed when preallocation is used.  But
