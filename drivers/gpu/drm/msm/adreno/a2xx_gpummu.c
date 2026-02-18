@@ -81,7 +81,8 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	struct a2xx_gpummu *gpummu = to_a2xx_gpummu(mmu);
 	unsigned idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
 	unsigned i;
-	int timeout = 1000; /* 1 second timeout in 1ms steps for slow shaders */
+	int timeout;
+	uint32_t status;
 
 	dev_dbg(mmu->dev, "gpummu unmap: iova=%llx len=%zx idx=%u\n",
 		iova, len, idx);
@@ -96,14 +97,18 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	 * Step 1: Wait for ringbuffer to drain (rptr == wptr)
 	 * This ensures all submitted commands have been fetched by the CP.
 	 *
-	 * Step 2: Wait for RBBM_STATUS == 0x110 or 0x010
+	 * Step 2: Wait for RBBM_STATUS to show idle
 	 * - Bits 0-4 = 0x10 (CMDFIFO has 16 entries available = empty)
 	 * - Bit 8 = 0x100 (HIRQ_PENDING may be set, that's OK)
 	 * - All other bits = 0 (no busy flags set)
 	 * This ensures all fetched commands have finished execution.
+	 *
+	 * We use longer timeouts because Qt/Mesa can have long-running
+	 * render operations, and we must wait for them to complete.
 	 */
 
-	/* Step 1: Wait for ringbuffer drain (rptr == wptr) */
+	/* Step 1: Wait for ringbuffer drain (rptr == wptr) - up to 2 seconds */
+	timeout = 2000;
 	while (timeout > 0) {
 		uint32_t rptr = gpu_read(gpummu->gpu, REG_AXXX_CP_RB_RPTR);
 		uint32_t wptr = gpu_read(gpummu->gpu, REG_AXXX_CP_RB_WPTR);
@@ -113,21 +118,28 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 		timeout--;
 	}
 	if (timeout == 0)
-		dev_warn_once(mmu->dev, "gpummu unmap: timeout waiting for ringbuffer drain\n");
+		dev_warn(mmu->dev, "gpummu unmap: timeout waiting for ringbuffer drain\n");
 
-	/* Step 2: Wait for GPU execution to complete */
-	timeout = 100;
+	/* Step 2: Wait for GPU execution to complete - up to 500ms */
+	timeout = 500;
 	while (timeout > 0) {
-		uint32_t status = gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS);
+		status = gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS);
 		/* Accept 0x110 or 0x010 - HIRQ_PENDING bit 8 may or may not be set */
 		if ((status & ~0x100) == 0x010)
 			break;
 		usleep_range(500, 1000); /* sleep 0.5-1ms */
 		timeout--;
 	}
-	if (timeout == 0)
-		dev_warn_once(mmu->dev, "gpummu unmap: timeout waiting for GPU idle, status=0x%08x\n",
-			      gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS));
+	if (timeout == 0) {
+		dev_warn(mmu->dev, "gpummu unmap: timeout waiting for GPU idle, status=0x%08x\n",
+			 status);
+		/*
+		 * GPU is still busy - this will likely cause a page fault.
+		 * Log the address being unmapped to help correlate with the fault.
+		 */
+		dev_warn(mmu->dev, "gpummu unmap: proceeding with unmap of iova=0x%llx len=%zx despite busy GPU\n",
+			 iova, len);
+	}
 
 	/*
 	 * Triple barrier synchronization from KGSL kgsl_mmu_unmap().
