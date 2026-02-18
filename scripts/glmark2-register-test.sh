@@ -1,234 +1,163 @@
 #!/bin/bash
 #
-# glmark2 Register Comparison Test Script
+# glmark2 Register Comparison Test Script (Build-only version)
 #
-# Runs 25 iterations of glmark2 benchmarks (build, texture, shading)
-# and dumps A2XX GPU registers before and after each run.
-# This helps identify register value differences between successful
-# renders and renders with artifacts.
+# Runs 25 iterations of glmark2 build benchmark and dumps A2XX GPU
+# registers before and after each run. Results are saved immediately
+# to persistent storage after each iteration.
 #
 # Usage: ./glmark2-register-test.sh [output_dir]
-#
-# Requirements:
-# - Kernel with debugfs A2XX register dump support
-# - glmark2-es2-drm installed
-# - Root access for debugfs
 
 ITERATIONS=25
-OUTPUT_DIR="${1:-/tmp/glmark2-regs}"
+OUTPUT_DIR="${1:-/media/internal/regs-test}"
 DEBUGFS_REGS="/sys/kernel/debug/a2xx_regs"
-BENCHMARKS="build texture shading"
+BENCHMARK="build"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
 echo "============================================"
-echo "glmark2 A2XX Register Comparison Test"
+echo "glmark2 A2XX Register Test (Build only)"
 echo "============================================"
 echo "Iterations: $ITERATIONS"
-echo "Benchmarks: $BENCHMARKS"
+echo "Benchmark:  $BENCHMARK"
 echo "Output dir: $OUTPUT_DIR"
 echo "Timestamp:  $TIMESTAMP"
 echo "============================================"
 
 # Check requirements
 if [ ! -f "$DEBUGFS_REGS" ]; then
-    echo -e "${RED}Error: Debugfs register file not found: $DEBUGFS_REGS${NC}"
+    echo "Error: Debugfs register file not found: $DEBUGFS_REGS"
     echo "Make sure kernel has A2XX debugfs support and debugfs is mounted"
     exit 1
 fi
 
 if ! command -v glmark2-es2-drm &> /dev/null; then
-    echo -e "${RED}Error: glmark2-es2-drm not found${NC}"
+    echo "Error: glmark2-es2-drm not found"
     exit 1
 fi
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
-LOGFILE="$OUTPUT_DIR/test_${TIMESTAMP}.log"
+
+# Initialize result files with headers
+REGLOG="$OUTPUT_DIR/registers_${TIMESTAMP}.log"
+RESULTS="$OUTPUT_DIR/results_${TIMESTAMP}.csv"
 SUMMARY="$OUTPUT_DIR/summary_${TIMESTAMP}.txt"
 
-# Function to dump registers
+echo "# Register log started at $(date)" > "$REGLOG"
+echo "iteration,benchmark,fps,visual_status,sq_gpr_mgmt,sq_interpolator,rbbm_pm_ovr1,rbbm_pm_ovr2,rbbm_status" > "$RESULTS"
+
+# Function to dump registers and extract values
 dump_regs() {
-    local prefix="$1"
-    local iteration="$2"
-    local benchmark="$3"
-    local phase="$4"
-    local outfile="$OUTPUT_DIR/${prefix}_iter${iteration}_${benchmark}_${phase}.txt"
+    local iteration="$1"
+    local phase="$2"
+    local regfile="$OUTPUT_DIR/regs_iter${iteration}_${phase}.txt"
 
-    echo "Dumping registers to: $outfile"
-    cat "$DEBUGFS_REGS" > "$outfile" 2>&1
+    # Read registers
+    cat "$DEBUGFS_REGS" > "$regfile" 2>&1
 
-    # Also extract key values for quick comparison
-    local sq_gpr=$(grep "SQ_GPR_MANAGEMENT" "$outfile" | awk '{print $NF}')
-    local sq_inst=$(grep "SQ_INST_STORE_MANAGMENT" "$outfile" | awk '{print $NF}')
-    local pm_ovr1=$(grep "RBBM_PM_OVERRIDE1" "$outfile" | awk '{print $NF}')
-    local pm_ovr2=$(grep "RBBM_PM_OVERRIDE2" "$outfile" | awk '{print $NF}')
-    local rbbm_status=$(grep "RBBM_STATUS" "$outfile" | awk '{print $NF}')
+    # Extract key values
+    local sq_gpr=$(grep "SQ_GPR_MANAGEMENT" "$regfile" | awk '{print $NF}')
+    local sq_interp=$(grep "SQ_INTERPOLATOR" "$regfile" 2>/dev/null | awk '{print $NF}')
+    local pm_ovr1=$(grep "RBBM_PM_OVERRIDE1" "$regfile" | awk '{print $NF}')
+    local pm_ovr2=$(grep "RBBM_PM_OVERRIDE2" "$regfile" | awk '{print $NF}')
+    local status=$(grep "RBBM_STATUS" "$regfile" | awk '{print $NF}')
 
-    echo "$iteration,$benchmark,$phase,$sq_gpr,$sq_inst,$pm_ovr1,$pm_ovr2,$rbbm_status" >> "$OUTPUT_DIR/registers_${TIMESTAMP}.csv"
+    # Log to register log
+    echo "=== Iter $iteration $phase $(date) ===" >> "$REGLOG"
+    cat "$regfile" >> "$REGLOG"
+    echo "" >> "$REGLOG"
+
+    # Sync to disk immediately
+    sync
+
+    # Return values for later use
+    echo "$sq_gpr,$sq_interp,$pm_ovr1,$pm_ovr2,$status"
 }
 
-# Function to run a single benchmark
-run_benchmark() {
-    local iteration="$1"
-    local benchmark="$2"
-    local result_file="$OUTPUT_DIR/glmark_iter${iteration}_${benchmark}.txt"
+# Main test loop
+echo ""
+echo "Starting test at $(date)"
+echo ""
 
-    echo -e "${YELLOW}Running benchmark: $benchmark (iteration $iteration)${NC}"
+for i in $(seq 1 $ITERATIONS); do
+    echo "============================================"
+    echo "Iteration $i of $ITERATIONS - $BENCHMARK benchmark"
+    echo "============================================"
 
     # Dump registers BEFORE
-    dump_regs "regs" "$iteration" "$benchmark" "before"
+    echo "Dumping registers before run..."
+    regs_before=$(dump_regs "$i" "before")
 
-    # Run the benchmark on-screen so user can see artifacts
-    timeout 60 glmark2-es2-drm \
-        --benchmark "$benchmark" \
-        2>&1 | tee "$result_file"
+    # Run the benchmark
+    echo "Running glmark2 $BENCHMARK..."
+    result_file="$OUTPUT_DIR/glmark_iter${i}.txt"
 
-    local exit_code=$?
+    timeout 120 glmark2-es2-drm --benchmark "$BENCHMARK" 2>&1 | tee "$result_file"
+    exit_code=$?
 
     # Dump registers AFTER
-    dump_regs "regs" "$iteration" "$benchmark" "after"
+    echo "Dumping registers after run..."
+    regs_after=$(dump_regs "$i" "after")
 
-    # Extract FPS and check for success
-    local fps=$(grep 'FPS:' | sed 's/.*FPS: *\([0-9]*\).*/\1/' "$result_file" | tail -1)
-    local score=$(grep 'Score:' | sed 's/.*Score: *\([0-9]*\).*/\1/' "$result_file" | tail -1)
-
+    # Extract FPS
+    fps=$(grep '\[build\]' "$result_file" | grep 'FPS:' | sed 's/.*FPS: *\([0-9]*\).*/\1/' | tail -1)
     if [ -z "$fps" ]; then
         fps="FAIL"
     fi
 
-    echo "$iteration,$benchmark,$fps,$score,$exit_code" >> "$OUTPUT_DIR/results_${TIMESTAMP}.csv"
+    # Ask user for visual status (or default to unknown)
+    echo ""
+    echo ">>> Iteration $i completed: FPS=$fps"
+    echo ">>> Was the visual output GOOD (no artifacts) or BAD (artifacts)?"
+    echo ">>> Press 'g' for GOOD, 'b' for BAD, or Enter to skip: "
 
-    # Visual indicator
-    if [ "$fps" != "FAIL" ] && [ "$fps" -gt 5 ]; then
-        echo -e "${GREEN}  Result: FPS=$fps Score=$score${NC}"
-        return 0
-    else
-        echo -e "${RED}  Result: FPS=$fps Score=$score (possible artifacts)${NC}"
-        return 1
-    fi
-}
+    # Read with timeout
+    read -t 10 -n 1 visual_input
+    echo ""
 
-# Initialize CSV headers
-echo "iteration,benchmark,phase,sq_gpr_mgmt,sq_inst_store,pm_override1,pm_override2,rbbm_status" > "$OUTPUT_DIR/registers_${TIMESTAMP}.csv"
-echo "iteration,benchmark,fps,score,exit_code" > "$OUTPUT_DIR/results_${TIMESTAMP}.csv"
+    case "$visual_input" in
+        g|G) visual_status="GOOD" ;;
+        b|B) visual_status="BAD" ;;
+        *) visual_status="UNKNOWN" ;;
+    esac
 
-# Main test loop
-success_count=0
-fail_count=0
+    # Log result immediately
+    echo "$i,$BENCHMARK,$fps,$visual_status,$regs_after" >> "$RESULTS"
+    sync
 
-echo "" | tee -a "$LOGFILE"
-echo "Starting test at $(date)" | tee -a "$LOGFILE"
-echo "" | tee -a "$LOGFILE"
+    echo "Result: FPS=$fps Visual=$visual_status"
+    echo "Registers: $regs_after"
+    echo ""
 
-for i in $(seq 1 $ITERATIONS); do
-    echo "============================================" | tee -a "$LOGFILE"
-    echo "Iteration $i of $ITERATIONS" | tee -a "$LOGFILE"
-    echo "============================================" | tee -a "$LOGFILE"
-
-    for bench in $BENCHMARKS; do
-        if run_benchmark "$i" "$bench" 2>&1 | tee -a "$LOGFILE"; then
-            ((success_count++))
-        else
-            ((fail_count++))
-        fi
-
-        # Small delay between benchmarks
-        sleep 2
-    done
-
-    echo "" | tee -a "$LOGFILE"
+    # Small delay between iterations
+    sleep 2
 done
 
 # Generate summary
 echo "============================================" | tee "$SUMMARY"
 echo "Test Summary" | tee -a "$SUMMARY"
 echo "============================================" | tee -a "$SUMMARY"
-echo "Total runs: $((ITERATIONS * 3))" | tee -a "$SUMMARY"
-echo "Successful: $success_count" | tee -a "$SUMMARY"
-echo "Failed/Artifacts: $fail_count" | tee -a "$SUMMARY"
-echo "" | tee -a "$SUMMARY"
-echo "Output files:" | tee -a "$SUMMARY"
-echo "  Register dumps: $OUTPUT_DIR/regs_iter*_*.txt" | tee -a "$SUMMARY"
-echo "  Register CSV:   $OUTPUT_DIR/registers_${TIMESTAMP}.csv" | tee -a "$SUMMARY"
-echo "  Results CSV:    $OUTPUT_DIR/results_${TIMESTAMP}.csv" | tee -a "$SUMMARY"
-echo "  Full log:       $LOGFILE" | tee -a "$SUMMARY"
+echo "Completed: $ITERATIONS iterations" | tee -a "$SUMMARY"
 echo "" | tee -a "$SUMMARY"
 
-# Analyze register differences
-echo "============================================" | tee -a "$SUMMARY"
-echo "Register Value Analysis" | tee -a "$SUMMARY"
-echo "============================================" | tee -a "$SUMMARY"
-
-# Extract unique SQ_GPR_MANAGEMENT values
-echo "Unique SQ_GPR_MANAGEMENT values:" | tee -a "$SUMMARY"
-cut -d',' -f4 "$OUTPUT_DIR/registers_${TIMESTAMP}.csv" | tail -n +2 | sort -u | tee -a "$SUMMARY"
-
+echo "Results by visual status:" | tee -a "$SUMMARY"
+echo "GOOD runs:" | tee -a "$SUMMARY"
+grep ",GOOD," "$RESULTS" | tee -a "$SUMMARY"
 echo "" | tee -a "$SUMMARY"
-echo "Unique SQ_INST_STORE_MANAGMENT values:" | tee -a "$SUMMARY"
-cut -d',' -f5 "$OUTPUT_DIR/registers_${TIMESTAMP}.csv" | tail -n +2 | sort -u | tee -a "$SUMMARY"
-
+echo "BAD runs:" | tee -a "$SUMMARY"
+grep ",BAD," "$RESULTS" | tee -a "$SUMMARY"
 echo "" | tee -a "$SUMMARY"
-echo "Unique RBBM_PM_OVERRIDE1 values:" | tee -a "$SUMMARY"
-cut -d',' -f6 "$OUTPUT_DIR/registers_${TIMESTAMP}.csv" | tail -n +2 | sort -u | tee -a "$SUMMARY"
 
+echo "Register value frequency:" | tee -a "$SUMMARY"
+echo "SQ_GPR_MANAGEMENT values:" | tee -a "$SUMMARY"
+cut -d',' -f5 "$RESULTS" | tail -n +2 | sort | uniq -c | tee -a "$SUMMARY"
 echo "" | tee -a "$SUMMARY"
-echo "Unique RBBM_PM_OVERRIDE2 values:" | tee -a "$SUMMARY"
-cut -d',' -f7 "$OUTPUT_DIR/registers_${TIMESTAMP}.csv" | tail -n +2 | sort -u | tee -a "$SUMMARY"
 
-echo "" | tee -a "$SUMMARY"
 echo "============================================" | tee -a "$SUMMARY"
 echo "Test completed at $(date)" | tee -a "$SUMMARY"
 echo "============================================" | tee -a "$SUMMARY"
 
-# Create analysis helper script
-cat > "$OUTPUT_DIR/analyze.sh" << 'ANALYZE_EOF'
-#!/bin/bash
-# Quick analysis of register dumps
-# Usage: ./analyze.sh
-
-DIR="$(dirname "$0")"
-echo "Comparing register values between successful and failed runs..."
+sync
 echo ""
-
-# Find latest CSV files
-REGS_CSV=$(ls -t "$DIR"/registers_*.csv | head -1)
-RESULTS_CSV=$(ls -t "$DIR"/results_*.csv | head -1)
-
-if [ -z "$REGS_CSV" ] || [ -z "$RESULTS_CSV" ]; then
-    echo "No CSV files found"
-    exit 1
-fi
-
-echo "Register CSV: $REGS_CSV"
-echo "Results CSV: $RESULTS_CSV"
-echo ""
-
-# Join and analyze
-echo "=== Runs with FPS < 5 (potential artifacts) ==="
-awk -F',' 'NR>1 && $3<5 {print "Iteration "$1" benchmark "$2": FPS="$3}' "$RESULTS_CSV"
-
-echo ""
-echo "=== Runs with FPS >= 5 (likely successful) ==="
-awk -F',' 'NR>1 && $3>=5 {print "Iteration "$1" benchmark "$2": FPS="$3}' "$RESULTS_CSV"
-
-echo ""
-echo "=== Register value frequency ==="
-echo "SQ_GPR_MANAGEMENT:"
-cut -d',' -f4 "$REGS_CSV" | tail -n +2 | sort | uniq -c | sort -rn
-
-echo ""
-echo "RBBM_PM_OVERRIDE2:"
-cut -d',' -f7 "$REGS_CSV" | tail -n +2 | sort | uniq -c | sort -rn
-ANALYZE_EOF
-
-chmod +x "$OUTPUT_DIR/analyze.sh"
-
-echo ""
-echo "To analyze results, run: $OUTPUT_DIR/analyze.sh"
-echo "Or copy $OUTPUT_DIR to your host for detailed analysis"
+echo "Results saved to $OUTPUT_DIR"
+echo "To analyze: cat $RESULTS"

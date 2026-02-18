@@ -578,6 +578,8 @@ static void a2xx_dump(struct msm_gpu *gpu)
 			gpu_read(gpu, REG_A2XX_SQ_GPR_MANAGEMENT));
 	printk("  SQ_INST_STORE_MANAGMENT (0x0d02) = %08x\n",
 			gpu_read(gpu, REG_A2XX_SQ_INST_STORE_MANAGMENT));
+	printk("  SQ_INTERPOLATOR_CNTL (0x2182) = %08x\n",
+			gpu_read(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL));
 
 	/* Power management */
 	printk("POWER MANAGEMENT:\n");
@@ -796,6 +798,8 @@ static int a2xx_debugfs_regs_show(struct seq_file *m, void *arg)
 		   gpu_read(gpu, REG_A2XX_SQ_GPR_MANAGEMENT));
 	seq_printf(m, "SQ_INST_STORE_MANAGMENT = 0x%08x\n",
 		   gpu_read(gpu, REG_A2XX_SQ_INST_STORE_MANAGMENT));
+	seq_printf(m, "SQ_INTERPOLATOR_CNTL = 0x%08x\n",
+		   gpu_read(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL));
 	seq_printf(m, "RBBM_PM_OVERRIDE1 = 0x%08x\n",
 		   gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE1));
 	seq_printf(m, "RBBM_PM_OVERRIDE2 = 0x%08x\n",
