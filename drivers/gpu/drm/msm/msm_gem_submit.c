@@ -21,14 +21,18 @@
 #include "msm_gpu_trace.h"
 #include "msm_syncobj.h"
 
-/* Test knob: force per-BO dma_map_sgtable() before submit to ensure
- * CPU write-combined buffers are explicitly synced to the device.
+/* Test knob: force per-BO dma_sync_sgtable_for_device() before submit to
+ * ensure CPU write-combined buffers are explicitly synced to the device.
  * Disabled by default; enable via module parameter for diagnostics.
+ *
+ * Note: We use dma_sync_sgtable_for_device(), NOT dma_map_sgtable().
+ * The buffers are already mapped when created; dma_map_sgtable() on an
+ * already-mapped buffer is undefined behavior. dma_sync_sgtable_for_device()
+ * is the correct API for cache maintenance on already-mapped buffers.
  */
-/* Enabled by default for immediate testing; flip to 0 to disable */
-static bool msm_test_force_dma_map = true;
-module_param_named(msm_test_force_dma_map, msm_test_force_dma_map, bool, 0644);
-MODULE_PARM_DESC(msm_test_force_dma_map, "Test: force dma_map_sgtable() per-BO before submit");
+static bool msm_test_force_dma_sync = false;
+module_param_named(msm_test_force_dma_sync, msm_test_force_dma_sync, bool, 0644);
+MODULE_PARM_DESC(msm_test_force_dma_sync, "Test: force dma_sync_sgtable_for_device() per-BO before submit");
 
 /* For userspace errors, use DRM_UT_DRIVER.. so that userspace can enable
  * error msgs for debugging, but we don't spam dmesg by default
@@ -417,13 +421,16 @@ static int submit_pin_objects(struct msm_gem_submit *submit)
 			if (msm_obj->flags & MSM_BO_WC)
 				msm_gem_sync_for_gpu(obj);
 
-			/* Optional stronger test: perform dma_map_sgtable() to force
-			 * device-visible mapping and writeback of WC buffers. This is an
-			 * aggressive diagnostic and should be enabled via the module
-			 * parameter `msm_test_force_dma_map`.
+			/* Optional stronger test: perform dma_sync_sgtable_for_device()
+			 * to force writeback of WC buffers. This is a diagnostic and
+			 * should be enabled via the module parameter `msm_test_force_dma_sync`.
+			 *
+			 * Note: We use dma_sync_sgtable_for_device(), NOT dma_map_sgtable(),
+			 * because buffers are already mapped. dma_map_sgtable() on an
+			 * already-mapped buffer is undefined behavior.
 			 */
-			if (msm_test_force_dma_map && msm_obj->sgt) {
-				dma_map_sgtable(submit->dev->dev, msm_obj->sgt, DMA_BIDIRECTIONAL, 0);
+			if (msm_test_force_dma_sync && msm_obj->sgt) {
+				dma_sync_sgtable_for_device(submit->dev->dev, msm_obj->sgt, DMA_TO_DEVICE);
 			}
 		}
 	}
