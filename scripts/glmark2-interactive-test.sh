@@ -109,19 +109,17 @@ for i in $(seq 1 $ITERATIONS); do
             f|F)
                 result="FACETED"
                 ((faceted_count++))
-                echo -e "\n${RED}>>> FACETED - killing and moving on${NC}"
-                # Kill immediately, don't wait for cleanup
+                echo -e "\n${RED}>>> FACETED - aborting${NC}"
                 kill -9 $glmark_pid 2>/dev/null
-                # Disown so we don't wait for it
-                disown $glmark_pid 2>/dev/null
+                wait $glmark_pid 2>/dev/null
                 break
                 ;;
             q|Q)
                 result="QUIT"
                 user_quit=1
-                echo -e "\n${YELLOW}>>> QUIT - killing and exiting${NC}"
+                echo -e "\n${YELLOW}>>> QUIT${NC}"
                 kill -9 $glmark_pid 2>/dev/null
-                disown $glmark_pid 2>/dev/null
+                wait $glmark_pid 2>/dev/null
                 break
                 ;;
         esac
