@@ -109,7 +109,10 @@ for i in $(seq 1 $ITERATIONS); do
             f|F)
                 result="FACETED"
                 ((faceted_count++))
-                echo -e "\n${RED}>>> FACETED - aborting iteration!${NC}"
+                echo -e "\n${RED}>>> FACETED - aborting iteration...${NC}"
+                # Try graceful SIGTERM first, then SIGKILL after 1 second
+                kill -TERM $glmark_pid 2>/dev/null
+                sleep 1
                 kill -9 $glmark_pid 2>/dev/null
                 wait $glmark_pid 2>/dev/null
                 break
@@ -117,7 +120,9 @@ for i in $(seq 1 $ITERATIONS); do
             q|Q)
                 result="QUIT"
                 user_quit=1
-                echo -e "\n${YELLOW}>>> QUIT requested${NC}"
+                echo -e "\n${YELLOW}>>> QUIT requested - stopping...${NC}"
+                kill -TERM $glmark_pid 2>/dev/null
+                sleep 1
                 kill -9 $glmark_pid 2>/dev/null
                 wait $glmark_pid 2>/dev/null
                 break
