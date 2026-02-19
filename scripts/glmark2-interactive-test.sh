@@ -2,16 +2,26 @@
 #
 # glmark2 Interactive Test Script
 #
-# Runs glmark2 build benchmark iterations with immediate visual feedback.
+# Runs glmark2 benchmark iterations with immediate visual feedback.
 # You can press keys DURING the benchmark to provide feedback:
 #   s = SMOOTH - mark as success and continue to next
 #   f = FACETED - mark as failure and IMMEDIATELY skip to next
 #   q = quit and show summary
 #
-# Usage: ./glmark2-interactive-test.sh [iterations]
+# Usage: ./glmark2-interactive-test.sh [benchmark] [iterations]
+#
+# Benchmarks: build, texture, shading, bump, effect2d, pulsar, desktop,
+#             buffer, ideas, jellyfish, terrain, shadow, refract, conditionals,
+#             function, loop, clear
+#
+# Examples:
+#   ./glmark2-interactive-test.sh build 10
+#   ./glmark2-interactive-test.sh shading 5
+#   ./glmark2-interactive-test.sh texture
 
-ITERATIONS="${1:-10}"
-RESULTS_FILE="/tmp/glmark2_results_$(date +%Y%m%d_%H%M%S).txt"
+BENCHMARK="${1:-build}"
+ITERATIONS="${2:-10}"
+RESULTS_FILE="/tmp/glmark2_${BENCHMARK}_$(date +%Y%m%d_%H%M%S).txt"
 
 # Counters
 smooth_count=0
@@ -26,8 +36,9 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 echo "============================================"
-echo "glmark2 Interactive Test (Build benchmark)"
+echo "glmark2 Interactive Test"
 echo "============================================"
+echo "Benchmark:  $BENCHMARK"
 echo "Iterations: $ITERATIONS"
 echo "Results:    $RESULTS_FILE"
 echo ""
@@ -40,6 +51,7 @@ echo ""
 
 # Initialize results file
 echo "# glmark2 Interactive Test Results - $(date)" > "$RESULTS_FILE"
+echo "# benchmark: $BENCHMARK" >> "$RESULTS_FILE"
 echo "# iteration,result,fps" >> "$RESULTS_FILE"
 
 # Function to show current stats
@@ -65,14 +77,14 @@ trap cleanup EXIT
 for i in $(seq 1 $ITERATIONS); do
     echo ""
     echo "============================================"
-    echo "Iteration $i of $ITERATIONS"
+    echo "[$BENCHMARK] Iteration $i of $ITERATIONS"
     show_stats
     echo "============================================"
     echo -e "${CYAN}Press s=smooth, f=faceted (abort), q=quit${NC}"
     echo ""
 
     # Run glmark2 in background
-    FD_MESA_DEBUG=msgs glmark2-es2-drm --benchmark build > /tmp/glmark_output_$i.txt 2>&1 &
+    FD_MESA_DEBUG=msgs glmark2-es2-drm --benchmark "$BENCHMARK" > /tmp/glmark_output_$i.txt 2>&1 &
     glmark_pid=$!
 
     result="UNKNOWN"
@@ -124,7 +136,7 @@ for i in $(seq 1 $ITERATIONS); do
 
     # Extract FPS from output
     if [ -f /tmp/glmark_output_$i.txt ]; then
-        fps=$(grep '\[build\]' /tmp/glmark_output_$i.txt | grep 'FPS:' | sed 's/.*FPS: *\([0-9]*\).*/\1/' | tail -1)
+        fps=$(grep "\[$BENCHMARK\]" /tmp/glmark_output_$i.txt | grep 'FPS:' | sed 's/.*FPS: *\([0-9]*\).*/\1/' | tail -1)
         [ -z "$fps" ] && fps="N/A"
     fi
 
