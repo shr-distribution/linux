@@ -1,8 +1,39 @@
 # HP TouchPad Display Artifacts: Alpha Blending Analysis Report
 
-**Date:** February 9, 2026
-**Status:** Root Cause Found - Freedreno A2XX Missing KGSL Patterns
+**Date:** February 19, 2026
+**Status:** Ongoing - Ghidra Analysis of Proprietary Driver Complete
 **Hardware:** HP TouchPad (Topaz), Qualcomm APQ8060, Adreno 220 GPU (Leia)
+
+---
+
+## Ghidra Decompilation Analysis (Feb 19, 2026)
+
+**Critical Finding:** Full decompilation of the proprietary webOS `libGLESv2.so` driver using Ghidra revealed that **patch 0017 caused GPU hangs** by writing to registers that the proprietary driver NEVER writes.
+
+### Registers Causing GPU Hang
+
+| Register | Address | Patch 0017 Value | Proprietary Driver | Result |
+|----------|---------|------------------|-------------------|--------|
+| SQ_RESOURCE_MANAGMENT | 0x0d03 | 0x00000000 | **NOT WRITTEN** | GPU hang |
+| SQ_PIX_IN_CNTL | 0x0d0c | 0xffffffff | **NOT WRITTEN** | GPU hang |
+
+**Resolution:** Removed patch 0017 from Mesa build. GPU hangs are now fixed.
+
+### Registers Confirmed as Correct
+
+| Register | Address | freedreno | Proprietary | Match |
+|----------|---------|-----------|-------------|-------|
+| SQ_INTERPOLATOR_CNTL | 0x2182 | 0xffffffff | 0xffffffff | ✅ |
+| SQ_INST_STORE_MANAGMENT | 0x0d02 | 0x00000180 | 0x180/0x300 | ✅ |
+| SQ_CONTEXT_MISC | 0x2181 | Per-draw | 4 at init | ⚠️ |
+| SQ_GPR_MANAGEMENT | 0x0d00 | 0x00040401 | Dynamic | ⚠️ |
+
+### Current Status (After Ghidra Analysis)
+
+- **Patch 0016** (atomic SQ writes): **KEPT** - Matches proprietary driver behavior
+- **Patch 0017** (Leia SQ register init): **REMOVED** - Caused GPU hang
+- **glmark2**: Now runs without GPU hang
+- **Performance**: Low FPS (1 FPS), display underruns - needs investigation
 
 ---
 
@@ -1108,6 +1139,49 @@ Modify the SPIRV-Cross translation to generate Qt5-compatible shaders:
 5. **Patch luna-surfacemanager:**
    - Override default Qt materials with native shaders
    - Custom compositor materials for Adreno 220
+
+---
+
+## Proprietary Driver Analysis Tools (Feb 19, 2026)
+
+### Ghidra Scripts Created
+
+Location: `/home/herrie/ghidra_scripts/`
+
+| Script | Purpose |
+|--------|---------|
+| `DecompileInitHW.java` | Decompile leia_init_hw and related init functions |
+| `FullRegisterAnalysis.java` | Comprehensive analysis of all leia_* functions |
+
+### Analysis Reports Generated
+
+| Report | Location |
+|--------|----------|
+| Register Map | `reports/proprietary-driver-register-map.md` |
+| freedreno Comparison | `reports/libglesv2-vs-freedreno-analysis.md` |
+
+### Key Decompiled Functions
+
+From `libGLESv2.so` analysis:
+
+| Function | Purpose | Key Registers |
+|----------|---------|---------------|
+| `leia_init_hw` | Hardware initialization | Multiple init registers |
+| `leia_set_hw_sq_interpolator_cntl_reg` | Per-draw interpolation | 0x2182 |
+| `leia_repartition_instruction_store` | Shader partitioning | 0x0d02 |
+| `leia_perform_resolve` | GMEM resolve | 0x0d00 (dynamic) |
+
+### PM4 Packet Format (from Decompilation)
+
+```c
+// Type 0 packet: Write N registers starting at offset
+header = 0xc000 | (count - 1) << 8 | 0x2d00;
+reg_offset = 0x40000 | (register_address - 0x2000);
+
+// Example for SQ_INTERPOLATOR_CNTL (0x2182):
+// header = 0xc0012d00 (Type 0, 1 register)
+// offset = 0x40182 = 0x40000 | (0x2182 - 0x2000)
+```
 
 ---
 
