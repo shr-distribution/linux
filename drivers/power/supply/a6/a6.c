@@ -1576,7 +1576,7 @@ static int32_t __a6_i2c_read_reg(struct i2c_client *client, const uint16_t *ids,
 		(msg_itr+1)->flags = I2C_M_RD;
 		(msg_itr+1)->len = sizeof(uint8_t);
 		(msg_itr+1)->buf = &out[i];
-#ifdef CONFIG_A6_I2C_SINGLE_BYTE
+#ifdef CONFIG_BATTERY_PALM_A6_I2C_SINGLE_BYTE
 #ifdef A6_PQ
 		ret = q_a6_i2c_action_item(client, msg, 2);
 #else
@@ -1587,7 +1587,7 @@ static int32_t __a6_i2c_read_reg(struct i2c_client *client, const uint16_t *ids,
 	}
 
 
-#ifndef CONFIG_A6_I2C_SINGLE_BYTE
+#ifndef CONFIG_BATTERY_PALM_A6_I2C_SINGLE_BYTE
 #ifdef A6_PQ
 	ret = q_a6_i2c_action_item(client, msg, num_ids*2);
 #else
@@ -1694,7 +1694,7 @@ static int32_t __a6_i2c_write_reg(struct i2c_client *client, const uint16_t *ids
 		msg_itr->flags = 0;
 		msg_itr->len = 2+1;
 		msg_itr->buf = &i2c_buf[i*(2+1)];
-#ifdef CONFIG_A6_I2C_SINGLE_BYTE_WRITE
+#ifdef CONFIG_BATTERY_PALM_A6_I2C_SINGLE_BYTE_WRITE
 #ifdef A6_PQ
 		ret = q_a6_i2c_action_item(client, msg_itr, 1);
 #else
@@ -1707,7 +1707,7 @@ static int32_t __a6_i2c_write_reg(struct i2c_client *client, const uint16_t *ids
 		msg_itr++;
 	}
 
-#ifndef CONFIG_A6_I2C_SINGLE_BYTE_WRITE
+#ifndef CONFIG_BATTERY_PALM_A6_I2C_SINGLE_BYTE_WRITE
 #ifdef A6_PQ
 	ret = q_a6_i2c_action_item(client, msg, num_ids);
 #else

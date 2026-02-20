@@ -3,7 +3,7 @@
 # Palm A6 Battery Controller Configuration
 #
 
-config A6
+config BATTERY_PALM_A6
 	tristate "Palm A6 battery controller"
 	depends on I2C && OF
 	select REGMAP_I2C
@@ -18,18 +18,18 @@ config A6
 	  To compile this driver as a module, choose M here: the module
 	  will be called a6.
 
-config A6_I2C_SINGLE_BYTE
+config BATTERY_PALM_A6_I2C_SINGLE_BYTE
 	bool "Enable A6 I2C single byte read"
-	depends on A6
+	depends on BATTERY_PALM_A6
 	help
 	  Enable single byte I2C read operations for A6 driver.
 	  This may be needed for compatibility with certain I2C controllers.
 
 	  If unsure, say N.
 
-config A6_I2C_SINGLE_BYTE_WRITE
+config BATTERY_PALM_A6_I2C_SINGLE_BYTE_WRITE
 	bool "Enable A6 I2C single byte write"
-	depends on A6
+	depends on BATTERY_PALM_A6
 	help
 	  Enable single byte I2C write operations for A6 driver.
 	  This may be needed for compatibility with certain I2C controllers.
