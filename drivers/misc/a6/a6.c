@@ -1514,8 +1514,8 @@ static int ai_dispatch_thread_fn(void *param)
 static int32_t __a6_i2c_read_reg(struct i2c_client *client, const uint16_t *ids, uint32_t num_ids, uint8_t *out)
 {
 	int32_t ret = 0, i;
-	uint16_t swp_addr[num_ids];
-	struct i2c_msg msg[num_ids*2], *msg_itr;
+	uint16_t swp_addr[id_size];
+	struct i2c_msg msg[id_size * 2], *msg_itr;
 	struct a6_device_state *state = i2c_get_clientdata(client);
 #ifdef A6_I2C_PROFILE
 	ktime_t start, end;
@@ -1641,8 +1641,8 @@ static int32_t a6_i2c_read_reg(struct i2c_client *client, const uint16_t *ids, u
 static int32_t __a6_i2c_write_reg(struct i2c_client *client, const uint16_t *ids, uint32_t num_ids, const uint8_t *in)
 {
 	int32_t ret = 0, i;
-	uint8_t i2c_buf[(2+1)*num_ids];
-	struct i2c_msg msg[num_ids], *msg_itr;
+	uint8_t i2c_buf[(2 + 1) * id_size];
+	struct i2c_msg msg[id_size], *msg_itr;
 	struct a6_device_state *state = i2c_get_clientdata(client);
 
 #ifdef A6_PQ
@@ -1876,9 +1876,6 @@ static int32_t a6_init_state(struct i2c_client *client)
 	if (test_bit(CAP_PERIODIC_WAKE, state->flags)) {
 		struct a6_wake_ops *wake_ops = (struct a6_wake_ops *)state->plat_data->wake_ops;
 
-		/* Initialize timer used to force sleep after a force wake */
-		timer_setup(&state->a6_force_wake_timer, a6_force_wake_timer_callback, 0);
-
 		/* enable external periodic wake? */
 		if (wake_ops->enable_periodic_wake) {
 			pr_err("%s: enabling external PMIC-generated A6 wake.\n", __func__);
@@ -1932,7 +1929,6 @@ static int32_t a6_init_state(struct i2c_client *client)
 	}
 	/* periodic wake capability not defined: force a6 awake using SBW_WAKEUP */
 	else if (state->wakeup_gpio) {
-		pr_err("%s: permanently forcing A6 awake.\n", __func__);
 		gpiod_set_value_cansleep(state->wakeup_gpio, 1);
 	}
 
@@ -2494,8 +2490,10 @@ static ssize_t a6_generic_show(struct device *dev, struct device_attribute *attr
 
 #ifdef A6_DEBUG
 	{
-		uint8_t d_ids[reg_desc->num_ids * (4+2+1) + 1];
-		uint8_t d_vals[reg_desc->num_ids * (2+2+1) + 1];
+		/* id_size * 7 + 1 for "0x%04x " format per id */
+		uint8_t d_ids[id_size * (4 + 2 + 1) + 1];
+		/* id_size * 5 + 1 for "0x%02x " format per val */
+		uint8_t d_vals[id_size * (2 + 2 + 1) + 1];
 		int32_t i = 0, ret_ids = 0, ret_vals = 0;
 
 		while (i < reg_desc->num_ids) {
@@ -2649,8 +2647,10 @@ static ssize_t a6_generic_store(struct device *dev, struct device_attribute *att
 
 #ifdef A6_DEBUG
 	{
-		uint8_t d_ids[reg_desc->num_ids * (4+2+1)];
-		uint8_t d_vals[reg_desc->num_ids * (2+2+1)];
+		/* id_size * 7 for "0x%04x " format per id */
+		uint8_t d_ids[id_size * (4 + 2 + 1)];
+		/* id_size * 5 for "0x%02x " format per val */
+		uint8_t d_vals[id_size * (2 + 2 + 1)];
 		int32_t i = 0, ret_ids = 0, ret_vals = 0;
 
 		while (i < reg_desc->num_ids) {
@@ -3962,7 +3962,6 @@ err0:
 int32_t a6_start_ai_dispatch_task(struct a6_device_state *state)
 {
 	int32_t rc = 0;
-	pid_t ai_dispatch_pid;
 
 
 	// critsec for manipulating flags
@@ -4016,8 +4015,7 @@ int32_t a6_start_ai_dispatch_task(struct a6_device_state *state)
 		pr_err("%s: mutex_lock interrupted(1)\n", __func__);
 		return -ERESTARTSYS;
 	}
-	// retrieve worker task struct
-	state->ai_dispatch_task = get_pid_task(find_get_pid(ai_dispatch_pid), PIDTYPE_PID);
+	/* kthread_run() already returned the task_struct pointer, no need to look it up */
 	ASSERT(state->ai_dispatch_task);
 
 	// transition to active state: start accepting new requests
@@ -4156,43 +4154,88 @@ static int a6_battery_get_property(struct power_supply *psy,
 				   enum power_supply_property psp,
 				   union power_supply_propval *val)
 {
-	/*
-	 * Return stub values for now. The A6 I2C protocol requires complex
-	 * force_wake handling and special timing that regmap doesn't provide.
-	 * Real battery data is available via the sysfs attributes which use
-	 * the proper a6_i2c_read_reg() function.
-	 */
+	struct a6_device_state *state = power_supply_get_drvdata(psy);
+	struct i2c_client *client = state->i2c_dev;
+	uint8_t data[2];
+	int ret;
+	int32_t raw_val;
+	/* Register IDs for 2-byte reads (LSB first, then MSB) */
+	static const uint16_t volt_ids[] = {TS2_I2C_BAT_VOLT_LSB, TS2_I2C_BAT_VOLT_MSB};
+	static const uint16_t cur_ids[] = {TS2_I2C_BAT_CUR_LSB, TS2_I2C_BAT_CUR_MSB};
+	static const uint16_t avg_cur_ids[] = {TS2_I2C_BAT_AVG_CUR_LSB, TS2_I2C_BAT_AVG_CUR_MSB};
+	static const uint16_t temp_ids[] = {TS2_I2C_BAT_TEMP_LSB, TS2_I2C_BAT_TEMP_MSB};
+	static const uint16_t full_ids[] = {TS2_I2C_BAT_FULL_LSB, TS2_I2C_BAT_FULL_MSB};
+	static const uint16_t rarc_id[] = {TS2_I2C_BAT_RARC};
+
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
-		val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		/* Use average current direction to determine charge status */
+		ret = a6_i2c_read_reg(client, avg_cur_ids, 2, data);
+		if (ret < 0)
+			return ret;
+		raw_val = *(int16_t *)data;
+		/* Positive current = charging, negative = discharging */
+		if (raw_val > 0)
+			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+		else if (raw_val < 0)
+			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		else
+			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		break;
 
 	case POWER_SUPPLY_PROP_PRESENT:
-		val->intval = 1;  /* Battery is present */
+		val->intval = 1;  /* Battery is always present */
 		break;
 
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		val->intval = 3800000;  /* 3.8V in µV */
+		ret = a6_i2c_read_reg(client, volt_ids, 2, data);
+		if (ret < 0)
+			return ret;
+		raw_val = *(int16_t *)data;
+		/* 11-bit signed value, unit = 4880µV */
+		val->intval = (raw_val >> 5) * 4880;
 		break;
 
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
-		val->intval = 200000;  /* 200mA discharge in µA */
+		ret = a6_i2c_read_reg(client, cur_ids, 2, data);
+		if (ret < 0)
+			return ret;
+		raw_val = *(int16_t *)data;
+		/* Convert using rsense: (raw * 3125) / 2 / rsense */
+		val->intval = (raw_val * 3125) / 2 / (int32_t)state->cached_rsense_val;
 		break;
 
 	case POWER_SUPPLY_PROP_CURRENT_AVG:
-		val->intval = 200000;  /* 200mA discharge in µA */
+		ret = a6_i2c_read_reg(client, avg_cur_ids, 2, data);
+		if (ret < 0)
+			return ret;
+		raw_val = *(int16_t *)data;
+		/* Convert using rsense: (raw * 3125) / 2 / rsense */
+		val->intval = (raw_val * 3125) / 2 / (int32_t)state->cached_rsense_val;
 		break;
 
 	case POWER_SUPPLY_PROP_CAPACITY:
-		val->intval = 50;  /* 50% */
+		ret = a6_i2c_read_reg(client, rarc_id, 1, data);
+		if (ret < 0)
+			return ret;
+		val->intval = data[0];  /* RARC is already percentage 0-100 */
 		break;
 
 	case POWER_SUPPLY_PROP_TEMP:
-		val->intval = 250;  /* 25.0°C in 0.1°C units */
+		ret = a6_i2c_read_reg(client, temp_ids, 2, data);
+		if (ret < 0)
+			return ret;
+		/* MSB is temperature in °C, power_supply expects 0.1°C units */
+		val->intval = (int8_t)data[1] * 10;
 		break;
 
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
-		val->intval = 6300000;  /* 6300mAh in µAh */
+		ret = a6_i2c_read_reg(client, full_ids, 2, data);
+		if (ret < 0)
+			return ret;
+		raw_val = *(int16_t *)data;
+		/* Full capacity in 1.6mAh units, convert to µAh */
+		val->intval = (raw_val * 1600);
 		break;
 
 	case POWER_SUPPLY_PROP_HEALTH:
@@ -4276,6 +4319,14 @@ static int a6_probe(struct i2c_client *client)
 	INIT_WORK(&state->a6_irq_work, a6_irq_work_handler);
 	INIT_WORK(&state->a6_force_wake_work, a6_force_wake_work_handler);
 
+	/*
+	 * Initialize force wake timer unconditionally. This is required because
+	 * timer_delete() is called in I2C read/write paths regardless of whether
+	 * CAP_PERIODIC_WAKE is set. Without initialization, timer_delete() on
+	 * an uninitialized timer causes undefined behavior/crashes.
+	 */
+	timer_setup(&state->a6_force_wake_timer, a6_force_wake_timer_callback, 0);
+
 	state->cpufreq_hold_flag = 0;
 
 	/* Get GPIO descriptors from device tree */
@@ -4355,13 +4406,18 @@ static int a6_probe(struct i2c_client *client)
 	rc = misc_register(&state->pmem_mdev);
 	if (rc < 0) {
 		dev_err(&client->dev, "Failed to register pmem misc device\n");
-		goto err_misc;
+		misc_deregister(&state->mdev);
+		return rc;
 	}
 
 	/* Create device files */
 	rc = a6_create_dev_files(state, &client->dev);
-	if (rc < 0)
-		goto err_pmem;
+	if (rc < 0) {
+		dev_err(&client->dev, "Failed to create sysfs files: %d\n", rc);
+		misc_deregister(&state->pmem_mdev);
+		misc_deregister(&state->mdev);
+		return rc;
+	}
 
 	/* Register power supply */
 	psy_cfg.drv_data = state;
@@ -4371,7 +4427,10 @@ static int a6_probe(struct i2c_client *client)
 						  "a6-%d", state->device_index);
 	if (!state->battery_desc.name) {
 		rc = -ENOMEM;
-		goto err_devfiles;
+		a6_remove_dev_files(state, &client->dev);
+		misc_deregister(&state->pmem_mdev);
+		misc_deregister(&state->mdev);
+		return rc;
 	}
 
 	state->battery_desc.type = POWER_SUPPLY_TYPE_BATTERY;
@@ -4385,13 +4444,18 @@ static int a6_probe(struct i2c_client *client)
 	if (IS_ERR(state->battery)) {
 		rc = PTR_ERR(state->battery);
 		dev_err(&client->dev, "Failed to register power supply: %d\n", rc);
-		goto err_devfiles;
+		a6_remove_dev_files(state, &client->dev);
+		misc_deregister(&state->pmem_mdev);
+		misc_deregister(&state->mdev);
+		return rc;
 	}
 
 #ifdef A6_PQ
 	rc = a6_start_ai_dispatch_task(state);
-	if (rc < 0)
+	if (rc < 0) {
+		dev_err(&client->dev, "Failed to start dispatch task: %d\n", rc);
 		goto err_devfiles;
+	}
 #endif
 
 	/*
@@ -4401,21 +4465,16 @@ static int a6_probe(struct i2c_client *client)
 	 * initializes successfully to handle the request.
 	 */
 	rc = a6_init_state(client);
-	if (rc < 0) {
-		dev_err(&client->dev, "Failed to initialize A6 state: %d\n", rc);
-		/* Continue despite initialization errors */
-	}
+	if (rc < 0)
+		dev_warn(&client->dev, "A6 state init failed: %d (continuing)\n", rc);
 
-#ifdef A6_PQ
-#ifdef A6_DEBUG
+#if defined(A6_PQ) && defined(A6_DEBUG)
 	rc = a6_create_debug_interface(state);
 	if (rc < 0)
 		dev_warn(&client->dev, "Failed to create debug interface\n");
 #endif
-#endif
 
-	dev_info(&client->dev, "A6 battery controller %d initialized successfully\n",
-		 state->device_index);
+	dev_info(&client->dev, "A6 battery controller initialized\n");
 	return 0;
 
 err_devfiles:

@@ -176,7 +176,6 @@ struct sec_info {
 };
 
 static struct sec_info sec_info;
-static int32_t sec_index;
 
 static enum sbw_state_code sbw_parse_image(uint8_t *read_p, uint8_t *write_p,
 				      uint32_t *read_len_p, uint32_t *write_len_p)
