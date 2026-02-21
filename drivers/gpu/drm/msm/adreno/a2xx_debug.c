@@ -46,6 +46,29 @@ MODULE_PARM_DESC(a2xx_debug_wptr_delay, "Microseconds to delay before WPTR write
 /* Count submits for correlation */
 static atomic_t submit_counter = ATOMIC_INIT(0);
 
+/* Capture SQ state on first few submits */
+static bool a2xx_debug_first_submit_sq = true;
+module_param(a2xx_debug_first_submit_sq, bool, 0644);
+MODULE_PARM_DESC(a2xx_debug_first_submit_sq, "Log SQ state on first 3 submits");
+
+/*
+ * Log SQ state - critical for debugging interpolation issues
+ */
+static void log_sq_state(struct msm_gpu *gpu, int submit_num)
+{
+	u32 gpr_mgmt, interp, program, inst_store, context;
+
+	gpr_mgmt = gpu_read(gpu, REG_A2XX_SQ_GPR_MANAGEMENT);
+	interp = gpu_read(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL);
+	program = gpu_read(gpu, REG_A2XX_SQ_PROGRAM_CNTL);
+	inst_store = gpu_read(gpu, REG_A2XX_SQ_INST_STORE_MANAGMENT);
+	context = gpu_read(gpu, REG_A2XX_SQ_CONTEXT_MISC);
+
+	dev_info(gpu->dev->dev,
+		"[A2XX-SQ] submit#%d: GPR_MGMT=%08x INTERP=%08x PROG=%08x INST=%08x CTX=%08x\n",
+		submit_num, gpr_mgmt, interp, program, inst_store, context);
+}
+
 /*
  * Log GPU state at submit time - helps correlate issues with specific submits
  */
@@ -55,10 +78,14 @@ void a2xx_debug_log_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	int seq;
 	ktime_t now;
 
+	seq = atomic_inc_return(&submit_counter);
+
+	/* Log SQ state on first 3 submits to catch initialization differences */
+	if (a2xx_debug_first_submit_sq && seq <= 3)
+		log_sq_state(gpu, seq);
+
 	if (!a2xx_debug_submit)
 		return;
-
-	seq = atomic_inc_return(&submit_counter);
 	now = ktime_get();
 
 	rbbm_status = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
