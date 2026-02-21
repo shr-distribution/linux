@@ -220,6 +220,20 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		gpu_write(gpu, REG_A2XX_A220_GRAS_CONTROL, 0);
 	}
 
+	/* Initialize SQ_INTERPOLATOR_CNTL to 0xffffffff (all smooth interpolation).
+	 * Debug logging revealed that the first submit happens before Mesa sets
+	 * this register, leaving it at 0x00000000 (all flat shading). This causes
+	 * intermittent faceted rendering when the GPU state from the first draw
+	 * affects subsequent draws.
+	 */
+	gpu_write(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL, 0xffffffff);
+
+	/* Initialize SQ_GPR_MANAGEMENT to allocate 64 GPRs each for VS/PS.
+	 * KGSL initializes this to 0x00040400. Without proper initialization,
+	 * random values from GPU power-on could starve one shader type of GPRs.
+	 */
+	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, 0x00040400);
+
 	/* note: gsl doesn't set this */
 	gpu_write(gpu, REG_A2XX_RBBM_DEBUG, 0x00080000);
 
