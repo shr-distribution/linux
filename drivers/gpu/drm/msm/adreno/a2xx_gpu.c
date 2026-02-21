@@ -9,13 +9,11 @@
 #include <drm/drm_file.h>
 
 #include "a2xx_gpu.h"
+#include "a2xx_debug.h"
 #include "msm_gem.h"
 #include "msm_mmu.h"
 
 extern bool hang_debug;
-
-/* Debug: track GPU for debugfs access */
-static struct msm_gpu *a2xx_debug_gpu;
 
 static void a2xx_dump(struct msm_gpu *gpu);
 static bool a2xx_idle(struct msm_gpu *gpu);
@@ -24,6 +22,10 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
 	struct msm_ringbuffer *ring = submit->ring;
 	unsigned int i;
+	int wptr_delay;
+
+	/* Debug: log submit details */
+	a2xx_debug_log_submit(gpu, submit);
 
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
@@ -57,6 +59,14 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	OUT_RING(ring, submit->seqno);
 	OUT_PKT3(ring, CP_INTERRUPT, 1);
 	OUT_RING(ring, 0x80000000);
+
+	/* Debug: force cache flush before notifying GPU */
+	a2xx_debug_cache_flush();
+
+	/* Debug: optional delay before WPTR write */
+	wptr_delay = a2xx_debug_get_wptr_delay();
+	if (wptr_delay > 0)
+		udelay(wptr_delay);
 
 	adreno_flush(gpu, ring, REG_AXXX_CP_RB_WPTR);
 }
@@ -773,83 +783,6 @@ static const struct msm_gpu_perfcntr perfcntrs[] = {
 /* TODO */
 };
 
-#ifdef CONFIG_DEBUG_FS
-/* Debugfs: read this file to dump A2XX GPU registers to dmesg */
-static int a2xx_debugfs_regs_show(struct seq_file *m, void *arg)
-{
-	struct msm_gpu *gpu = a2xx_debug_gpu;
-	struct adreno_gpu *adreno_gpu;
-
-	if (!gpu) {
-		seq_puts(m, "GPU not initialized\n");
-		return 0;
-	}
-
-	adreno_gpu = to_adreno_gpu(gpu);
-
-	seq_printf(m, "======== A2XX GPU Registers ========\n");
-	seq_printf(m, "GPU: %s\n", adreno_is_a20x(adreno_gpu) ? "A20X" : "A22X");
-
-	pm_runtime_get_sync(&gpu->pdev->dev);
-
-	seq_printf(m, "RBBM_STATUS = 0x%08x\n",
-		   gpu_read(gpu, REG_A2XX_RBBM_STATUS));
-	seq_printf(m, "SQ_GPR_MANAGEMENT = 0x%08x\n",
-		   gpu_read(gpu, REG_A2XX_SQ_GPR_MANAGEMENT));
-	seq_printf(m, "SQ_INST_STORE_MANAGMENT = 0x%08x\n",
-		   gpu_read(gpu, REG_A2XX_SQ_INST_STORE_MANAGMENT));
-	seq_printf(m, "SQ_INTERPOLATOR_CNTL = 0x%08x\n",
-		   gpu_read(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL));
-	seq_printf(m, "RBBM_PM_OVERRIDE1 = 0x%08x\n",
-		   gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE1));
-	seq_printf(m, "RBBM_PM_OVERRIDE2 = 0x%08x\n",
-		   gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2));
-
-	if (!adreno_is_a20x(adreno_gpu)) {
-		seq_printf(m, "A220_RB_LRZ_VSC_CONTROL = 0x%08x\n",
-			   gpu_read(gpu, REG_A2XX_A220_RB_LRZ_VSC_CONTROL));
-		seq_printf(m, "A220_GRAS_CONTROL = 0x%08x\n",
-			   gpu_read(gpu, REG_A2XX_A220_GRAS_CONTROL));
-	}
-
-	pm_runtime_put(&gpu->pdev->dev);
-
-	seq_printf(m, "====================================\n");
-
-	/* Also dump to dmesg for easier capture */
-	a2xx_dump(gpu);
-
-	return 0;
-}
-
-static int a2xx_debugfs_regs_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, a2xx_debugfs_regs_show, inode->i_private);
-}
-
-static const struct file_operations a2xx_debugfs_regs_fops = {
-	.owner = THIS_MODULE,
-	.open = a2xx_debugfs_regs_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-static void a2xx_debugfs_init(struct msm_gpu *gpu)
-{
-	struct drm_minor *minor = gpu->dev->primary;
-
-	a2xx_debug_gpu = gpu;
-
-	debugfs_create_file("a2xx_regs", 0444, minor->debugfs_root,
-			    gpu, &a2xx_debugfs_regs_fops);
-
-	dev_info(gpu->dev->dev, "A2XX debugfs: cat /sys/kernel/debug/dri/0/a2xx_regs\n");
-}
-#else
-static void a2xx_debugfs_init(struct msm_gpu *gpu) {}
-#endif
-
 struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 {
 	struct a2xx_gpu *a2xx_gpu = NULL;
@@ -907,8 +840,8 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	else
 		adreno_gpu->registers = a220_registers;
 
-	/* Initialize debugfs interface for register dumping */
-	a2xx_debugfs_init(gpu);
+	/* Initialize debugfs interface for comprehensive GPU debugging */
+	a2xx_debugfs_init(gpu, dev->primary);
 
 	return gpu;
 
