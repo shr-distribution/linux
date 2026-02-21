@@ -1453,7 +1453,7 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 
 	/* Debug: print DATACTRL value for Qualcomm SDIO PIO fallback debugging */
 	if (host->variant->qcom_datactrl_delay)
-		dev_info(mmc_dev(host->mmc),
+		dev_dbg(mmc_dev(host->mmc),
 			"PIO datactrl=0x%x blksz=%u size=%u\n",
 			datactrl, data->blksz, host->size);
 
@@ -2034,7 +2034,7 @@ static void mmci_write_sdio_irq_bit(struct mmci_host *host, int enable)
 static void mmci_signal_sdio_irq(struct mmci_host *host, u32 status)
 {
 	if (status & MCI_ST_SDIOIT) {
-		dev_info(mmc_dev(host->mmc),
+		dev_dbg(mmc_dev(host->mmc),
 			"SDIO IRQ received, status=0x%08x\n", status);
 		mmci_write_sdio_irq_bit(host, 0);
 		sdio_signal_irq(host->mmc);
