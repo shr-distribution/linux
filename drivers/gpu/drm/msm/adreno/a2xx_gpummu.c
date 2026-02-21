@@ -121,8 +121,12 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	if (timeout == 0)
 		dev_warn(mmu->dev, "gpummu unmap: timeout waiting for ringbuffer drain\n");
 
-	/* Step 2: Wait for GPU execution to complete - up to 500ms */
-	timeout = 500;
+	/*
+	 * Step 2: Wait for GPU execution to complete - up to 3 seconds.
+	 * This needs to be long enough for complex render operations to finish.
+	 * The GPU may still be executing commands even after ringbuffer drain.
+	 */
+	timeout = 3000;
 	while (timeout > 0) {
 		status = gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS);
 		/* Accept 0x110 or 0x010 - HIRQ_PENDING bit 8 may or may not be set */
@@ -132,19 +136,19 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 		timeout--;
 	}
 	if (timeout == 0) {
-		dev_warn(mmu->dev, "gpummu unmap: timeout waiting for GPU idle, status=0x%08x\n",
+		dev_err(mmu->dev, "gpummu unmap: CRITICAL - GPU still busy after 3s, status=0x%08x\n",
 			 status);
-		/*
-		 * GPU is still busy - this will likely cause a page fault.
-		 * Log the address being unmapped to help correlate with the fault.
-		 */
-		dev_warn(mmu->dev, "gpummu unmap: proceeding with unmap of iova=0x%llx len=%zx despite busy GPU\n",
+		dev_err(mmu->dev, "gpummu unmap: iova=0x%llx len=%zx - ABORTING unmap to prevent corruption\n",
 			 iova, len);
-	} else {
-		/* Log successful idle wait with final status for debugging */
-		dev_info(mmu->dev, "gpummu unmap: GPU idle after %d iterations, status=0x%08x\n",
-			 500 - timeout, status);
+		/*
+		 * Don't proceed with unmap - this would corrupt GPU state.
+		 * Return 0 anyway since the mapping will be cleaned up eventually.
+		 * The kernel will retry or handle the leak.
+		 */
+		return 0;
 	}
+	dev_dbg(mmu->dev, "gpummu unmap: GPU idle after %d ms, status=0x%08x\n",
+		 (3000 - timeout), status);
 
 	/*
 	 * Triple barrier synchronization from KGSL kgsl_mmu_unmap().
