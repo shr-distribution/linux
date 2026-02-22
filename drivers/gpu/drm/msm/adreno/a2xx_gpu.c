@@ -784,6 +784,9 @@ static const struct adreno_gpu_funcs funcs = {
 #if defined(CONFIG_DEBUG_FS) || defined(CONFIG_DEV_COREDUMP)
 		.show = adreno_show,
 #endif
+#if defined(CONFIG_DEBUG_FS)
+		.debugfs_init = a2xx_debugfs_init,
+#endif
 		.gpu_busy = a2xx_gpu_busy,
 		.gpu_state_get = a2xx_gpu_state_get,
 		.gpu_state_put = adreno_gpu_state_put,
@@ -853,9 +856,6 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 		adreno_gpu->registers = a225_registers;
 	else
 		adreno_gpu->registers = a220_registers;
-
-	/* Initialize debugfs interface for comprehensive GPU debugging */
-	a2xx_debugfs_init(gpu, dev->primary);
 
 	return gpu;
 
