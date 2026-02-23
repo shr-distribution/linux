@@ -182,6 +182,87 @@ For each patch:
 
 ---
 
+## glmark2 Test Analysis
+
+### Build Test (`scene-build.cpp`)
+
+Renders 3D models (horse, buddha, dragon, etc.) using **Gouraud shading**:
+
+**Shaders:** `light-basic.vert` / `light-basic.frag`
+
+```glsl
+// light-basic.vert - Per-vertex lighting
+varying vec4 Color;
+void main() {
+    vec3 N = normalize(NormalMatrix * Normal);
+    vec3 L = normalize(LightSourcePosition.xyz);
+    float diffuse = max(dot(N, L), 0.0);
+    Color = vec4(diffuse, diffuse, diffuse, 1.0) * MaterialDiffuse;
+    gl_Position = ModelViewProjectionMatrix * Position;
+}
+
+// light-basic.frag - Just uses interpolated Color
+varying vec4 Color;
+void main() {
+    gl_FragColor = Color;
+}
+```
+
+**Critical dependency:** The `Color` varying MUST be smoothly interpolated across the triangle. If flat shading is used, all fragments get the same color = faceted appearance.
+
+### Shading Test (`scene-shading.cpp`)
+
+Tests multiple shading methods:
+
+| Method | Shaders | Varying Usage |
+|--------|---------|---------------|
+| **Gouraud** | `light-basic.*` | Color computed per-vertex, interpolated |
+| **Blinn-Phong** | `light-advanced.*` | Normal + position interpolated for per-fragment lighting |
+| **Phong** | `light-phong.*` | Normal + position interpolated, multiple lights |
+| **Cel** | `light-phong.vert` + `light-cel.frag` | Normal interpolated for cartoon shading |
+
+**Phong fragment shader:**
+```glsl
+varying vec3 vertex_normal;
+varying vec4 vertex_position;
+
+void main() {
+    vec3 normalized_normal = normalize(vertex_normal);  // Only works with smooth interpolation!
+    // ... per-pixel lighting calculation
+}
+```
+
+### Why Faceted Rendering Occurs
+
+**Root cause:** Varyings are not being smoothly interpolated.
+
+| Shading Type | What Gets Interpolated | Effect of Flat Interpolation |
+|--------------|------------------------|------------------------------|
+| Gouraud | Color | All fragments same color per-triangle |
+| Phong | Normal vector | All fragments same normal per-triangle |
+| Any | Position | Incorrect lighting gradients |
+
+The `SQ_INTERPOLATOR_CNTL` register controls per-varying interpolation mode:
+- `0xffffffff` = all 32 varyings use smooth (perspective-correct) interpolation
+- `0x00000000` = all varyings use flat (constant) interpolation
+- Intermediate values = per-varying control
+
+**If there's a race condition** where `SQ_INTERPOLATOR_CNTL` is read before it's fully written, or if the shader's varying linkage doesn't match the interpolation setup, fragments will receive incorrect varying values.
+
+### Connection to Our Investigation
+
+This analysis confirms:
+
+1. **SQ_INTERPOLATOR_CNTL is critical** - Patch 0008 moved this after SQ_PROGRAM_CNTL (required for correctness)
+
+2. **The issue is hardware timing, not shader compilation** - Same shaders produce both smooth and faceted results depending on GPU state timing
+
+3. **Cache coherency affects varying data** - If vertex shader output (varyings written to parameter cache) isn't visible to the interpolator before rasterization, flat shading results
+
+4. **The sync cache flush (Patch 0018) addresses this** - Ensuring cache operations complete before next draw prevents stale varying data
+
+---
+
 ## Likelihood Assessment
 
 **Patch 0018 (sync cache flush):** 30-50% chance of significant improvement
