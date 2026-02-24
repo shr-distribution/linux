@@ -8,7 +8,12 @@
 #   f = FACETED - mark as failure and IMMEDIATELY skip to next
 #   q = quit and show summary
 #
-# Usage: ./glmark2-interactive-test.sh [benchmark] [iterations]
+# Usage: ./glmark2-interactive-test.sh [options] [benchmark] [iterations]
+#
+# Options:
+#   -c, --cmdstream    Enable command stream tracing (FD_A22X_CMDSTREAM=1)
+#   -t, --ftrace       Enable kernel ftrace for GPU events
+#   -h, --help         Show this help
 #
 # Benchmarks: build, texture, shading, bump, effect2d, pulsar, desktop,
 #             buffer, ideas, jellyfish, terrain, shadow, refract, conditionals,
@@ -16,8 +21,36 @@
 #
 # Examples:
 #   ./glmark2-interactive-test.sh build 10
-#   ./glmark2-interactive-test.sh shading 5
-#   ./glmark2-interactive-test.sh texture
+#   ./glmark2-interactive-test.sh -c build 5        # with command stream tracing
+#   ./glmark2-interactive-test.sh -c -t shading 3   # with cmdstream + ftrace
+
+# Parse options
+CMDSTREAM_TRACE=0
+FTRACE_ENABLED=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -c|--cmdstream)
+            CMDSTREAM_TRACE=1
+            shift
+            ;;
+        -t|--ftrace)
+            FTRACE_ENABLED=1
+            shift
+            ;;
+        -h|--help)
+            head -25 "$0" | tail -20
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 BENCHMARK="${1:-build}"
 ITERATIONS="${2:-10}"
@@ -30,6 +63,8 @@ mkdir -p "$OUTPUT_BASE"
 RESULTS_FILE="${OUTPUT_BASE}/glmark2_${BENCHMARK}_${TIMESTAMP}.txt"
 GPU_DUMP_DIR="${OUTPUT_BASE}/gpu_dumps_${TIMESTAMP}"
 MESA_LOG="${OUTPUT_BASE}/mesa_debug_${TIMESTAMP}.log"
+CMDSTREAM_LOG="${OUTPUT_BASE}/cmdstream_${TIMESTAMP}.log"
+FTRACE_LOG="${OUTPUT_BASE}/ftrace_${TIMESTAMP}.log"
 
 # Debugfs paths
 DEBUGFS_BASE="/sys/kernel/debug"
@@ -47,6 +82,59 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+# Function to setup ftrace for GPU events
+setup_ftrace() {
+    local trace_dir="/sys/kernel/debug/tracing"
+
+    if [ ! -d "$trace_dir" ]; then
+        echo -e "${RED}Ftrace not available${NC}"
+        return 1
+    fi
+
+    echo -e "${YELLOW}Setting up ftrace for GPU events...${NC}"
+
+    # Clear existing trace
+    echo > "$trace_dir/trace"
+
+    # Enable GPU/DRM related events
+    echo 1 > "$trace_dir/events/drm/enable" 2>/dev/null
+    echo 1 > "$trace_dir/events/gpu/enable" 2>/dev/null
+
+    # Enable MSM-specific events if available
+    if [ -d "$trace_dir/events/msm" ]; then
+        echo 1 > "$trace_dir/events/msm/enable" 2>/dev/null
+    fi
+
+    # Enable tracing
+    echo 1 > "$trace_dir/tracing_on"
+
+    echo -e "${GREEN}Ftrace enabled for DRM/GPU events${NC}"
+    return 0
+}
+
+# Function to capture ftrace output
+capture_ftrace() {
+    local output_file="$1"
+    local trace_dir="/sys/kernel/debug/tracing"
+
+    if [ -f "$trace_dir/trace" ]; then
+        echo "=== Ftrace capture: $(date '+%Y-%m-%d %H:%M:%S') ===" > "$output_file"
+        cat "$trace_dir/trace" >> "$output_file"
+        # Clear trace for next iteration
+        echo > "$trace_dir/trace"
+    fi
+}
+
+# Function to stop ftrace
+stop_ftrace() {
+    local trace_dir="/sys/kernel/debug/tracing"
+    if [ -f "$trace_dir/tracing_on" ]; then
+        echo 0 > "$trace_dir/tracing_on" 2>/dev/null
+        echo 0 > "$trace_dir/events/drm/enable" 2>/dev/null
+        echo 0 > "$trace_dir/events/gpu/enable" 2>/dev/null
+    fi
+}
 
 # Function to mount debugfs if needed
 setup_debugfs() {
@@ -154,12 +242,23 @@ echo "Output dir: $OUTPUT_BASE"
 echo "Results:    $RESULTS_FILE"
 echo "GPU Dumps:  $GPU_DUMP_DIR"
 echo "Mesa Log:   $MESA_LOG"
+if [ $CMDSTREAM_TRACE -eq 1 ]; then
+    echo -e "Cmdstream:  ${GREEN}ENABLED${NC} -> $CMDSTREAM_LOG"
+fi
+if [ $FTRACE_ENABLED -eq 1 ]; then
+    echo -e "Ftrace:     ${GREEN}ENABLED${NC} -> $FTRACE_LOG"
+fi
 echo ""
 
 # Setup debugfs
 echo "Setting up debugfs..."
 setup_debugfs
 DEBUGFS_AVAILABLE=$?
+
+# Setup ftrace if requested
+if [ $FTRACE_ENABLED -eq 1 ]; then
+    setup_ftrace
+fi
 
 echo ""
 echo -e "${CYAN}Controls (press DURING benchmark):${NC}"
@@ -193,6 +292,10 @@ show_stats() {
 cleanup() {
     # Kill any remaining glmark2 processes
     pkill -9 glmark2-es2-drm 2>/dev/null
+    # Stop ftrace if it was enabled
+    if [ $FTRACE_ENABLED -eq 1 ]; then
+        stop_ftrace
+    fi
     # Restore terminal settings
     stty sane 2>/dev/null
 }
@@ -216,8 +319,22 @@ for i in $(seq 1 $ITERATIONS); do
 
     # Run glmark2 in background, capture Mesa debug output
     ITERATION_LOG="${OUTPUT_BASE}/iteration_${i}_${TIMESTAMP}.log"
+    CMDSTREAM_ITER_LOG="${OUTPUT_BASE}/cmdstream_iter_${i}_${TIMESTAMP}.log"
     echo "=== Iteration $i started at $(date) ===" >> "$MESA_LOG"
-    FD_MESA_DEBUG=msgs MESA_DEBUG=1 glmark2-es2-drm --benchmark "$BENCHMARK" > "$ITERATION_LOG" 2>&1 &
+
+    # Build environment variables
+    MESA_ENV="FD_MESA_DEBUG=msgs MESA_DEBUG=1"
+    if [ $CMDSTREAM_TRACE -eq 1 ]; then
+        MESA_ENV="$MESA_ENV FD_A22X_CMDSTREAM=1"
+        echo "=== Iteration $i command stream ===" > "$CMDSTREAM_ITER_LOG"
+    fi
+
+    # Run glmark2 with appropriate environment
+    if [ $CMDSTREAM_TRACE -eq 1 ]; then
+        FD_MESA_DEBUG=msgs MESA_DEBUG=1 FD_A22X_CMDSTREAM=1 glmark2-es2-drm --benchmark "$BENCHMARK" > "$ITERATION_LOG" 2>&1 &
+    else
+        FD_MESA_DEBUG=msgs MESA_DEBUG=1 glmark2-es2-drm --benchmark "$BENCHMARK" > "$ITERATION_LOG" 2>&1 &
+    fi
     glmark_pid=$!
 
     result="UNKNOWN"
@@ -315,6 +432,26 @@ for i in $(seq 1 $ITERATIONS); do
         if [ -f "$pre_state" ]; then
             new_pre_state="${GPU_DUMP_DIR}/debugfs_${i}_pre_${result}.txt"
             mv "$pre_state" "$new_pre_state" 2>/dev/null
+        fi
+    fi
+
+    # Capture command stream log for this iteration
+    if [ $CMDSTREAM_TRACE -eq 1 ] && [ -f "$ITERATION_LOG" ]; then
+        echo "" >> "$CMDSTREAM_LOG"
+        echo "=== Iteration $i ($result) ===" >> "$CMDSTREAM_LOG"
+        # Extract command stream lines (look for CMDSTREAM or ring buffer output)
+        grep -E 'CMDSTREAM|RING\[|PM4|CP_|OUT_RING|dwords' "$ITERATION_LOG" >> "$CMDSTREAM_LOG" 2>/dev/null
+    fi
+
+    # Capture ftrace for this iteration
+    if [ $FTRACE_ENABLED -eq 1 ]; then
+        FTRACE_ITER="${GPU_DUMP_DIR}/ftrace_${i}_${result}.txt"
+        capture_ftrace "$FTRACE_ITER"
+        # Also append to main ftrace log
+        if [ -f "$FTRACE_ITER" ]; then
+            echo "" >> "$FTRACE_LOG"
+            echo "=== Iteration $i ($result) ===" >> "$FTRACE_LOG"
+            cat "$FTRACE_ITER" >> "$FTRACE_LOG"
         fi
     fi
 
@@ -430,3 +567,46 @@ done
 echo ""
 echo "Full debugfs captures available in: $GPU_DUMP_DIR"
 echo "Files: debugfs_<iteration>_<pre|post>_<SMOOTH|FACETED>.txt"
+
+# Command stream summary
+if [ $CMDSTREAM_TRACE -eq 1 ]; then
+    echo ""
+    echo "============================================"
+    echo "       COMMAND STREAM TRACE"
+    echo "============================================"
+    echo ""
+    if [ -f "$CMDSTREAM_LOG" ] && [ -s "$CMDSTREAM_LOG" ]; then
+        line_count=$(wc -l < "$CMDSTREAM_LOG")
+        echo "Command stream log: $CMDSTREAM_LOG ($line_count lines)"
+        echo ""
+        echo "Sample (last 30 lines):"
+        echo "----------------------------------------"
+        tail -30 "$CMDSTREAM_LOG"
+        echo "----------------------------------------"
+    else
+        echo "No command stream data captured."
+        echo "Note: FD_A22X_CMDSTREAM requires Mesa patch 0019 with cmdstream tracing."
+    fi
+fi
+
+# Ftrace summary
+if [ $FTRACE_ENABLED -eq 1 ]; then
+    echo ""
+    echo "============================================"
+    echo "       KERNEL FTRACE LOG"
+    echo "============================================"
+    echo ""
+    if [ -f "$FTRACE_LOG" ] && [ -s "$FTRACE_LOG" ]; then
+        line_count=$(wc -l < "$FTRACE_LOG")
+        echo "Ftrace log: $FTRACE_LOG ($line_count lines)"
+        echo ""
+        echo "Per-iteration ftrace files in: $GPU_DUMP_DIR/ftrace_*"
+    else
+        echo "No ftrace data captured."
+    fi
+fi
+
+echo ""
+echo "============================================"
+echo "All logs saved to: $OUTPUT_BASE"
+echo "============================================"
