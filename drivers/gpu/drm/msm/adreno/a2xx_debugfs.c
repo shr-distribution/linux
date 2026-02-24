@@ -155,6 +155,44 @@ static void sq_print(struct msm_gpu *gpu, struct drm_printer *p)
 }
 
 /*
+ * VGT (Vertex/Geometry/Tessellation) state
+ */
+static void vgt_print(struct msm_gpu *gpu, struct drm_printer *p)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+
+	drm_printf(p, "VGT (Vertex/Geometry) State:\n");
+	drm_printf(p, "  MAX_VTX_INDX:      %08x\n", gpu_read(gpu, REG_A2XX_VGT_MAX_VTX_INDX));
+	drm_printf(p, "  MIN_VTX_INDX:      %08x\n", gpu_read(gpu, REG_A2XX_VGT_MIN_VTX_INDX));
+	drm_printf(p, "  INDX_OFFSET:       %08x\n", gpu_read(gpu, REG_A2XX_VGT_INDX_OFFSET));
+	drm_printf(p, "  VERTEX_REUSE_CNTL: %08x\n", gpu_read(gpu, REG_A2XX_VGT_VERTEX_REUSE_BLOCK_CNTL));
+	drm_printf(p, "  OUT_DEALLOC_CNTL:  %08x\n", gpu_read(gpu, REG_A2XX_VGT_OUT_DEALLOC_CNTL));
+	drm_printf(p, "  ENHANCE:           %08x\n", gpu_read(gpu, REG_A2XX_VGT_ENHANCE));
+	drm_printf(p, "  CURRENT_BIN_MIN:   %08x\n", gpu_read(gpu, REG_A2XX_VGT_CURRENT_BIN_ID_MIN));
+	drm_printf(p, "  CURRENT_BIN_MAX:   %08x\n", gpu_read(gpu, REG_A2XX_VGT_CURRENT_BIN_ID_MAX));
+
+	/* A22X specific */
+	if (!adreno_is_a20x(adreno_gpu)) {
+		drm_printf(p, "\nA22X VSC:\n");
+		drm_printf(p, "  VSC_BIN_SIZE:      %08x\n", gpu_read(gpu, REG_A2XX_A220_VSC_BIN_SIZE));
+	}
+}
+
+/*
+ * TP (Texture Pipe) and TC (Texture Cache) state
+ */
+static void tp_print(struct msm_gpu *gpu, struct drm_printer *p)
+{
+	drm_printf(p, "TP/TC (Texture Pipe/Cache) State:\n");
+	drm_printf(p, "  TP0_CHICKEN:       %08x\n", gpu_read(gpu, REG_A2XX_TP0_CHICKEN));
+	drm_printf(p, "  TC_CNTL_STATUS:    %08x\n", gpu_read(gpu, REG_A2XX_TC_CNTL_STATUS));
+
+	drm_printf(p, "\nSQ Wrapping:\n");
+	drm_printf(p, "  SQ_WRAPPING_0:     %08x\n", gpu_read(gpu, REG_A2XX_SQ_WRAPPING_0));
+	drm_printf(p, "  SQ_WRAPPING_1:     %08x\n", gpu_read(gpu, REG_A2XX_SQ_WRAPPING_1));
+}
+
+/*
  * RB (Render Backend) state
  */
 static void rb_print(struct msm_gpu *gpu, struct drm_printer *p)
@@ -162,6 +200,7 @@ static void rb_print(struct msm_gpu *gpu, struct drm_printer *p)
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
 
 	drm_printf(p, "RB (Render Backend) State:\n");
+	drm_printf(p, "  MODECONTROL:       %08x\n", gpu_read(gpu, REG_A2XX_RB_MODECONTROL));
 	drm_printf(p, "  SURFACE_INFO:      %08x\n", gpu_read(gpu, REG_A2XX_RB_SURFACE_INFO));
 	drm_printf(p, "  COLOR_INFO:        %08x\n", gpu_read(gpu, REG_A2XX_RB_COLOR_INFO));
 	drm_printf(p, "  DEPTH_INFO:        %08x\n", gpu_read(gpu, REG_A2XX_RB_DEPTH_INFO));
@@ -233,6 +272,28 @@ static void summary_print(struct msm_gpu *gpu, struct drm_printer *p)
 	drm_printf(p, "\nMMU:\n");
 	drm_printf(p, "  PAGE_FAULT: %08x\n", gpu_read(gpu, REG_A2XX_MH_MMU_PAGE_FAULT));
 
+	drm_printf(p, "\nShader/Interpolation (critical for faceted debug):\n");
+	drm_printf(p, "  SQ_PROGRAM_CNTL:      %08x\n", gpu_read(gpu, REG_A2XX_SQ_PROGRAM_CNTL));
+	drm_printf(p, "  SQ_INTERPOLATOR_CNTL: %08x\n", gpu_read(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL));
+	drm_printf(p, "  SQ_GPR_MANAGEMENT:    %08x\n", gpu_read(gpu, REG_A2XX_SQ_GPR_MANAGEMENT));
+
+	drm_printf(p, "\nTexture/Cache:\n");
+	drm_printf(p, "  TP0_CHICKEN:          %08x\n", gpu_read(gpu, REG_A2XX_TP0_CHICKEN));
+	drm_printf(p, "  TC_CNTL_STATUS:       %08x\n", gpu_read(gpu, REG_A2XX_TC_CNTL_STATUS));
+
+	drm_printf(p, "\nGMEM/Clipping:\n");
+	drm_printf(p, "  RB_MODECONTROL:       %08x\n", gpu_read(gpu, REG_A2XX_RB_MODECONTROL));
+	drm_printf(p, "  PA_CL_CLIP_CNTL:      %08x\n", gpu_read(gpu, REG_A2XX_PA_CL_CLIP_CNTL));
+	drm_printf(p, "  PA_SU_SC_MODE_CNTL:   %08x\n", gpu_read(gpu, REG_A2XX_PA_SU_SC_MODE_CNTL));
+
+	/* A22X specific */
+	if (!adreno_is_a20x(adreno_gpu)) {
+		drm_printf(p, "\nA22X Specific:\n");
+		drm_printf(p, "  VSC_BIN_SIZE:         %08x\n", gpu_read(gpu, REG_A2XX_A220_VSC_BIN_SIZE));
+		drm_printf(p, "  LRZ_VSC_CONTROL:      %08x\n", gpu_read(gpu, REG_A2XX_A220_RB_LRZ_VSC_CONTROL));
+		drm_printf(p, "  GRAS_CONTROL:         %08x\n", gpu_read(gpu, REG_A2XX_A220_GRAS_CONTROL));
+	}
+
 	drm_printf(p, "\n==================================\n");
 }
 
@@ -264,6 +325,8 @@ static struct drm_info_list a2xx_debugfs_list[] = {
 	ENT(rbbm),
 	ENT(mh),
 	ENT(sq),
+	ENT(vgt),
+	ENT(tp),
 	ENT(rb),
 	ENT(pa),
 };
