@@ -65,7 +65,7 @@ enum rd_sect_type {
 	RD_CHIP_ID,
 };
 
-#define BUF_SZ 512  /* should be power of 2 */
+#define BUF_SZ 65536  /* should be power of 2, increased from 512 for performance */
 
 /* space used: */
 #define circ_count(circ) \
