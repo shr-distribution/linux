@@ -327,17 +327,6 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu->rb[0]->memptrs->rptr = 0;
 	gpu_write(gpu, REG_AXXX_CP_RB_WPTR, 0);
 
-	/*
-	 * Reset cur_ctx_seqno to force context restore on next submit.
-	 * After hw_init, the GPU state is completely reset, but without
-	 * this reset the kernel thinks the previous context is still
-	 * active (cur_ctx_seqno matches) and skips the CTX_RESTORE_BUF.
-	 * This causes Mesa's fd2_emit_restore() commands to be skipped,
-	 * leading to intermittent rendering issues (e.g., faceted shading).
-	 * This matches what a6xx_hw_init() does at line 1453.
-	 */
-	gpu->rb[0]->cur_ctx_seqno = 0;
-
 	/* clear ME_HALT to start micro engine */
 	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, 0);
 
