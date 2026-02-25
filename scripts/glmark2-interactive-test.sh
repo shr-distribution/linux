@@ -398,6 +398,24 @@ for i in $(seq 1 $ITERATIONS); do
     fi
     glmark_pid=$!
 
+    # Start background register sampling during rendering
+    REGSAMPLE_LOG="${GPU_DUMP_DIR}/regsample_${i}.txt"
+    if [ -n "$DRI_DIR" ] && [ -f "${DRI_DIR}summary" ]; then
+        (
+            sample_num=0
+            echo "=== Register sampling started: $(date '+%H:%M:%S.%N') ===" > "$REGSAMPLE_LOG"
+            while kill -0 $glmark_pid 2>/dev/null; do
+                echo "--- Sample $sample_num @ $(date '+%H:%M:%S.%N') ---" >> "$REGSAMPLE_LOG"
+                # Capture critical registers only (fast)
+                grep -E "SQ_PROGRAM|SQ_INTERPOLATOR|SQ_GPR|TP0_CHICKEN|RB_MODE|PA_CL_CLIP|RBBM_STATUS" "${DRI_DIR}summary" >> "$REGSAMPLE_LOG" 2>/dev/null
+                ((sample_num++))
+                sleep 0.05  # Sample every 50ms
+            done
+            echo "=== Sampling ended: $(date '+%H:%M:%S.%N'), $sample_num samples ===" >> "$REGSAMPLE_LOG"
+        ) &
+        sampler_pid=$!
+    fi
+
     result="UNKNOWN"
     fps="N/A"
     user_quit=0
@@ -444,6 +462,12 @@ for i in $(seq 1 $ITERATIONS); do
 
     # Wait for glmark2 to finish if still running
     wait $glmark_pid 2>/dev/null
+
+    # Stop register sampler
+    if [ -n "$sampler_pid" ]; then
+        kill $sampler_pid 2>/dev/null
+        wait $sampler_pid 2>/dev/null
+    fi
 
     # Extract FPS from output
     if [ -f "$ITERATION_LOG" ]; then
@@ -667,6 +691,42 @@ if [ $FTRACE_ENABLED -eq 1 ]; then
         echo "No ftrace data captured."
     fi
 fi
+
+# Register sampling analysis
+echo ""
+echo "============================================"
+echo "       REGISTER SAMPLING ANALYSIS"
+echo "============================================"
+echo ""
+
+# Analyze register samples for each iteration
+for regsample in "$GPU_DUMP_DIR"/regsample_*.txt; do
+    [ -f "$regsample" ] || continue
+    iter_num=$(basename "$regsample" | sed 's/regsample_\([0-9]*\)\.txt/\1/')
+    sample_count=$(grep -c "^--- Sample" "$regsample" 2>/dev/null || echo 0)
+
+    # Get result for this iteration from results file
+    iter_result=$(grep "^$iter_num," "$RESULTS_FILE" | cut -d, -f2)
+
+    echo "Iteration $iter_num ($iter_result): $sample_count samples"
+
+    # Check for any variation in SQ_INTERPOLATOR_CNTL (should always be ffffffff)
+    interp_values=$(grep "SQ_INTERPOLATOR_CNTL" "$regsample" | awk '{print $2}' | sort -u)
+    interp_count=$(echo "$interp_values" | wc -l)
+    if [ "$interp_count" -gt 1 ]; then
+        echo "  WARNING: SQ_INTERPOLATOR_CNTL varied: $interp_values"
+    else
+        echo "  SQ_INTERPOLATOR_CNTL: stable ($interp_values)"
+    fi
+
+    # Check RBBM_STATUS for busy states
+    busy_count=$(grep "RBBM_STATUS" "$regsample" | grep -v "IDLE" | wc -l)
+    idle_count=$(grep "RBBM_STATUS" "$regsample" | grep "IDLE" | wc -l)
+    echo "  RBBM_STATUS: $idle_count idle, $busy_count busy"
+done
+
+echo ""
+echo "Register sample files: $GPU_DUMP_DIR/regsample_*.txt"
 
 echo ""
 echo "============================================"
