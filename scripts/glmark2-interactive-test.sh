@@ -5,7 +5,8 @@
 # Runs glmark2 benchmark iterations with immediate visual feedback.
 # You can press keys DURING the benchmark to provide feedback:
 #   s = SMOOTH - mark as success and continue to next
-#   f = FACETED - mark as failure and IMMEDIATELY skip to next
+#   g = FACETED (log) - mark as failure but let it finish for full logs
+#   f = FACETED (skip) - mark as failure and IMMEDIATELY skip to next
 #   q = quit and show summary
 #
 # Usage: ./glmark2-interactive-test.sh [options] [benchmark] [iterations]
@@ -13,6 +14,7 @@
 # Options:
 #   -c, --cmdstream    Enable command stream tracing (FD_A22X_CMDSTREAM=1)
 #   -t, --ftrace       Enable kernel ftrace for GPU events
+#   -r, --regsample    Enable register sampling during render (can slow down)
 #   -h, --help         Show this help
 #
 # Benchmarks: build, texture, shading, bump, effect2d, pulsar, desktop,
@@ -23,10 +25,12 @@
 #   ./glmark2-interactive-test.sh build 10
 #   ./glmark2-interactive-test.sh -c build 5        # with command stream tracing
 #   ./glmark2-interactive-test.sh -c -t shading 3   # with cmdstream + ftrace
+#   ./glmark2-interactive-test.sh -r build 5        # with register sampling
 
 # Parse options
 CMDSTREAM_TRACE=0
 FTRACE_ENABLED=0
+REGSAMPLE_ENABLED=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -36,6 +40,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -t|--ftrace)
             FTRACE_ENABLED=1
+            shift
+            ;;
+        -r|--regsample)
+            REGSAMPLE_ENABLED=1
             shift
             ;;
         -h|--help)
@@ -309,6 +317,9 @@ fi
 if [ $FTRACE_ENABLED -eq 1 ]; then
     echo -e "Ftrace:     ${GREEN}ENABLED${NC} -> $FTRACE_LOG"
 fi
+if [ $REGSAMPLE_ENABLED -eq 1 ]; then
+    echo -e "RegSample:  ${GREEN}ENABLED${NC} (500ms interval)"
+fi
 echo ""
 
 # Setup debugfs
@@ -324,7 +335,8 @@ fi
 echo ""
 echo -e "${CYAN}Controls (press DURING benchmark):${NC}"
 echo -e "  ${GREEN}s${NC} = SMOOTH (success) - continue to next"
-echo -e "  ${RED}f${NC} = FACETED (failure) - ABORT and skip to next"
+echo -e "  ${RED}g${NC} = FACETED (log) - mark failed, but finish for full logs"
+echo -e "  ${RED}f${NC} = FACETED (skip) - mark failed and ABORT immediately"
 echo -e "  ${YELLOW}q${NC} = quit and show summary"
 echo "============================================"
 echo ""
@@ -369,7 +381,7 @@ for i in $(seq 1 $ITERATIONS); do
     echo "[$BENCHMARK] Iteration $i of $ITERATIONS"
     show_stats
     echo "============================================"
-    echo -e "${CYAN}Press s=smooth, f=faceted (abort), q=quit${NC}"
+    echo -e "${CYAN}Press s=smooth, g=faceted(log), f=faceted(skip), q=quit${NC}"
     echo ""
 
     # Capture PRE-iteration debugfs state
@@ -398,21 +410,22 @@ for i in $(seq 1 $ITERATIONS); do
     fi
     glmark_pid=$!
 
-    # Start background register sampling during rendering
+    # Start background register sampling during rendering (optional, can cause slowdown)
+    sampler_pid=""
     REGSAMPLE_LOG="${GPU_DUMP_DIR}/regsample_${i}.txt"
-    if [ -n "$DRI_DIR" ] && [ -f "${DRI_DIR}summary" ]; then
+    if [ "${REGSAMPLE_ENABLED:-0}" -eq 1 ] && [ -n "$DRI_DIR" ] && [ -f "${DRI_DIR}summary" ]; then
         (
             sample_num=0
             echo "=== Register sampling started: $(date '+%H:%M:%S.%N') ===" > "$REGSAMPLE_LOG"
             while kill -0 $glmark_pid 2>/dev/null; do
                 echo "--- Sample $sample_num @ $(date '+%H:%M:%S.%N') ---" >> "$REGSAMPLE_LOG"
-                # Capture critical registers only (fast)
-                grep -E "SQ_PROGRAM|SQ_INTERPOLATOR|SQ_GPR|TP0_CHICKEN|RB_MODE|PA_CL_CLIP|RBBM_STATUS" "${DRI_DIR}summary" >> "$REGSAMPLE_LOG" 2>/dev/null
+                # Capture critical registers only
+                cat "${DRI_DIR}summary" 2>/dev/null | grep -E "SQ_PROGRAM|SQ_INTERPOLATOR|SQ_GPR|TP0_CHICKEN|RB_MODE|PA_CL_CLIP|RBBM_STATUS" >> "$REGSAMPLE_LOG"
                 ((sample_num++))
-                sleep 0.05  # Sample every 50ms
+                sleep 0.5  # Sample every 500ms (less aggressive)
             done
             echo "=== Sampling ended: $(date '+%H:%M:%S.%N'), $sample_num samples ===" >> "$REGSAMPLE_LOG"
-        ) &
+        ) </dev/null &
         sampler_pid=$!
     fi
 
@@ -434,6 +447,12 @@ for i in $(seq 1 $ITERATIONS); do
                 ((smooth_count++))
                 echo -e "\n${GREEN}>>> SMOOTH - waiting for benchmark to finish...${NC}"
                 # Let it finish naturally
+                ;;
+            g|G)
+                result="FACETED"
+                ((faceted_count++))
+                echo -e "\n${RED}>>> FACETED - waiting for benchmark to finish (capturing logs)...${NC}"
+                # Let it finish naturally to capture full logs
                 ;;
             f|F)
                 result="FACETED"
@@ -490,7 +509,7 @@ for i in $(seq 1 $ITERATIONS); do
                 result="SMOOTH"
                 ((smooth_count++))
                 ;;
-            f|F)
+            f|F|g|G)
                 result="FACETED"
                 ((faceted_count++))
                 ;;
@@ -637,7 +656,7 @@ for pre_file in "$GPU_DUMP_DIR"/debugfs_*_pre_*.txt; do
     post_file="$GPU_DUMP_DIR/debugfs_${iter_num}_post_${result_type}.txt"
 
     if [ -f "$post_file" ]; then
-        echo "Iteration $iter_num ($result_type):"
+        echo "Iteration $iter_num (${result_type}):"
         # Count differences in GPU STATE section only
         pre_gpu=$(sed -n '/=== GPU STATE ===/,/=== /p' "$pre_file" 2>/dev/null | head -100)
         post_gpu=$(sed -n '/=== GPU STATE ===/,/=== /p' "$post_file" 2>/dev/null | head -100)
