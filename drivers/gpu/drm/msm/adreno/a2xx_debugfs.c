@@ -276,6 +276,18 @@ static void summary_print(struct msm_gpu *gpu, struct drm_printer *p)
 	drm_printf(p, "  SQ_PROGRAM_CNTL:      %08x\n", gpu_read(gpu, REG_A2XX_SQ_PROGRAM_CNTL));
 	drm_printf(p, "  SQ_INTERPOLATOR_CNTL: %08x\n", gpu_read(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL));
 	drm_printf(p, "  SQ_GPR_MANAGEMENT:    %08x\n", gpu_read(gpu, REG_A2XX_SQ_GPR_MANAGEMENT));
+	drm_printf(p, "  SQ_FLOW_CONTROL:      %08x\n", gpu_read(gpu, REG_A2XX_SQ_FLOW_CONTROL));
+	drm_printf(p, "  SQ_INST_STORE_MGMT:   %08x\n", gpu_read(gpu, REG_A2XX_SQ_INST_STORE_MANAGMENT));
+	drm_printf(p, "  SQ_VS_PROGRAM:        %08x\n", gpu_read(gpu, REG_A2XX_SQ_VS_PROGRAM));
+	drm_printf(p, "  SQ_PS_PROGRAM:        %08x\n", gpu_read(gpu, REG_A2XX_SQ_PS_PROGRAM));
+	drm_printf(p, "  SQ_PS_CONST:          %08x\n", gpu_read(gpu, REG_A2XX_SQ_PS_CONST));
+	drm_printf(p, "  SQ_WRAPPING_0:        %08x\n", gpu_read(gpu, REG_A2XX_SQ_WRAPPING_0));
+	drm_printf(p, "  SQ_WRAPPING_1:        %08x\n", gpu_read(gpu, REG_A2XX_SQ_WRAPPING_1));
+
+	drm_printf(p, "\nVGT (Vertex Grouper):\n");
+	drm_printf(p, "  VGT_VERTEX_REUSE:     %08x\n", gpu_read(gpu, REG_A2XX_VGT_VERTEX_REUSE_BLOCK_CNTL));
+	drm_printf(p, "  VGT_OUT_DEALLOC_CNTL: %08x\n", gpu_read(gpu, REG_A2XX_VGT_OUT_DEALLOC_CNTL));
+	drm_printf(p, "  VGT_ENHANCE:          %08x\n", gpu_read(gpu, REG_A2XX_VGT_ENHANCE));
 
 	drm_printf(p, "\nTexture/Cache:\n");
 	drm_printf(p, "  TP0_CHICKEN:          %08x\n", gpu_read(gpu, REG_A2XX_TP0_CHICKEN));
@@ -285,6 +297,34 @@ static void summary_print(struct msm_gpu *gpu, struct drm_printer *p)
 	drm_printf(p, "  RB_MODECONTROL:       %08x\n", gpu_read(gpu, REG_A2XX_RB_MODECONTROL));
 	drm_printf(p, "  PA_CL_CLIP_CNTL:      %08x\n", gpu_read(gpu, REG_A2XX_PA_CL_CLIP_CNTL));
 	drm_printf(p, "  PA_SU_SC_MODE_CNTL:   %08x\n", gpu_read(gpu, REG_A2XX_PA_SU_SC_MODE_CNTL));
+
+	drm_printf(p, "\nSQ Debug (shader sequencer internal state):\n");
+	drm_printf(p, "  SQ_DEBUG_MISC:        %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_MISC));
+	drm_printf(p, "  SQ_DEBUG_INPUT_FSM:   %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_INPUT_FSM));
+	drm_printf(p, "  SQ_DEBUG_CONST_MGR:   %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_CONST_MGR_FSM));
+	drm_printf(p, "  SQ_DEBUG_TP_FSM:      %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_TP_FSM));
+	drm_printf(p, "  SQ_DEBUG_FSM_ALU_0:   %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_FSM_ALU_0));
+	drm_printf(p, "  SQ_DEBUG_FSM_ALU_1:   %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_FSM_ALU_1));
+	drm_printf(p, "  SQ_DEBUG_EXP_ALLOC:   %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_EXP_ALLOC));
+	drm_printf(p, "  SQ_DEBUG_PTR_BUFF:    %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_PTR_BUFF));
+	drm_printf(p, "  SQ_DEBUG_GPR_VTX:     %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_GPR_VTX));
+	drm_printf(p, "  SQ_DEBUG_GPR_PIX:     %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_GPR_PIX));
+	drm_printf(p, "  SQ_DEBUG_TB_STATUS:   %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_TB_STATUS_SEL));
+	drm_printf(p, "  SQ_DEBUG_VTX_TB_0:    %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_VTX_TB_0));
+	drm_printf(p, "  SQ_DEBUG_VTX_TB_1:    %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_VTX_TB_1));
+	drm_printf(p, "  SQ_DEBUG_PIX_TB_0:    %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_PIX_TB_0));
+	drm_printf(p, "  SQ_DEBUG_MISC_0:      %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_MISC_0));
+	drm_printf(p, "  SQ_DEBUG_MISC_1:      %08x\n", gpu_read(gpu, REG_A2XX_SQ_DEBUG_MISC_1));
+
+	drm_printf(p, "\nOther Debug:\n");
+	drm_printf(p, "  PA_SU_DEBUG_CNTL:     %08x\n", gpu_read(gpu, REG_A2XX_PA_SU_DEBUG_CNTL));
+	drm_printf(p, "  PA_SU_DEBUG_DATA:     %08x\n", gpu_read(gpu, REG_A2XX_PA_SU_DEBUG_DATA));
+	drm_printf(p, "  PC_DEBUG_CNTL:        %08x\n", gpu_read(gpu, REG_A2XX_PC_DEBUG_CNTL));
+	drm_printf(p, "  PC_DEBUG_DATA:        %08x\n", gpu_read(gpu, REG_A2XX_PC_DEBUG_DATA));
+	drm_printf(p, "  RB_DEBUG_CNTL:        %08x\n", gpu_read(gpu, REG_A2XX_RB_DEBUG_CNTL));
+	drm_printf(p, "  RB_DEBUG_DATA:        %08x\n", gpu_read(gpu, REG_A2XX_RB_DEBUG_DATA));
+	drm_printf(p, "  GRAS_DEBUG_CNTL:      %08x\n", gpu_read(gpu, REG_A2XX_GRAS_DEBUG_CNTL));
+	drm_printf(p, "  GRAS_DEBUG_DATA:      %08x\n", gpu_read(gpu, REG_A2XX_GRAS_DEBUG_DATA));
 
 	/* A22X specific */
 	if (!adreno_is_a20x(adreno_gpu)) {
