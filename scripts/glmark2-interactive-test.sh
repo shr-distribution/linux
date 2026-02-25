@@ -189,6 +189,51 @@ capture_debugfs_state() {
         echo "" >> "$state_file"
     fi
 
+    # Capture A2XX-specific debugfs files (new registers for faceted debugging)
+    if [ -n "$DRI_DIR" ]; then
+        # A2XX Summary (critical registers for faceted debug)
+        if [ -f "${DRI_DIR}summary" ]; then
+            echo "=== A2XX SUMMARY ===" >> "$state_file"
+            cat "${DRI_DIR}summary" >> "$state_file" 2>/dev/null
+            echo "" >> "$state_file"
+        fi
+
+        # VGT (Vertex/Geometry) state
+        if [ -f "${DRI_DIR}vgt" ]; then
+            echo "=== A2XX VGT ===" >> "$state_file"
+            cat "${DRI_DIR}vgt" >> "$state_file" 2>/dev/null
+            echo "" >> "$state_file"
+        fi
+
+        # TP/TC (Texture Pipe/Cache) state
+        if [ -f "${DRI_DIR}tp" ]; then
+            echo "=== A2XX TP/TC ===" >> "$state_file"
+            cat "${DRI_DIR}tp" >> "$state_file" 2>/dev/null
+            echo "" >> "$state_file"
+        fi
+
+        # SQ (Shader Sequencer) state
+        if [ -f "${DRI_DIR}sq" ]; then
+            echo "=== A2XX SQ ===" >> "$state_file"
+            cat "${DRI_DIR}sq" >> "$state_file" 2>/dev/null
+            echo "" >> "$state_file"
+        fi
+
+        # RB (Render Backend) state
+        if [ -f "${DRI_DIR}rb" ]; then
+            echo "=== A2XX RB ===" >> "$state_file"
+            cat "${DRI_DIR}rb" >> "$state_file" 2>/dev/null
+            echo "" >> "$state_file"
+        fi
+
+        # PA (Primitive Assembly) state
+        if [ -f "${DRI_DIR}pa" ]; then
+            echo "=== A2XX PA ===" >> "$state_file"
+            cat "${DRI_DIR}pa" >> "$state_file" 2>/dev/null
+            echo "" >> "$state_file"
+        fi
+    fi
+
     # Capture other DRI debugfs files if available
     if [ -n "$DRI_DIR" ]; then
         # KMS state
