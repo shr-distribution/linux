@@ -106,10 +106,25 @@ Both share identical GPU silicon, but TouchPad uses unique power management sett
 | SQ_INTERPOLATOR_CNTL | Always 0xffffffff | NOT the cause |
 | Shader compilation | Same shaders produce both results | NOT the cause |
 | Mesa state management | No register differences | NOT the cause |
+| Mesa command streams | Identical between SMOOTH/FACETED | NOT the cause |
 | Blend state | Correct values logged | NOT the cause |
 | Vertex buffer content | CRC32 matches between runs | NOT the cause |
 | L2 cache coherency | TC_CNTL_STATUS invalidation added | Addressed |
 | Kernel cur_ctx_seqno | Freedreno doesn't use CTX_RESTORE_BUF | NOT relevant |
+| Rendering path (GMEM vs bypass) | FD_MESA_DEBUG=nobypass still faceted | NOT the cause |
+
+### GMEM Path Test (2026-02-25)
+
+Tested with `FD_MESA_DEBUG=nobypass` to force GMEM (tiled rendering) path instead of bypass (direct rendering):
+
+**Result: Still faceted** - both rendering paths exhibit the same issue.
+
+This rules out:
+- GMEM tile load/store operations
+- Bypass mode state handling
+- Rendering path-specific synchronization
+
+The issue is internal to the GPU's interpolation hardware, independent of how Mesa submits the frame.
 
 ### Key Discovery: Freedreno Context Restore Architecture
 
