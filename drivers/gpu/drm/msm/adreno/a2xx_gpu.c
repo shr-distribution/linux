@@ -330,17 +330,6 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	/* clear ME_HALT to start micro engine */
 	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, 0);
 
-	/*
-	 * Reset cur_ctx_seqno to force context restore on next submit.
-	 * After GPU power cycle (suspend/resume), all hardware state is lost.
-	 * Without resetting cur_ctx_seqno, the kernel thinks the previous
-	 * context is still active and skips the context restore buffer,
-	 * causing Mesa's state (SQ_INTERPOLATOR_CNTL, etc.) to not be restored.
-	 * This was the root cause of intermittent faceted rendering on A22X.
-	 */
-	for (i = 0; i < gpu->nr_rings; i++)
-		gpu->rb[i]->cur_ctx_seqno = 0;
-
 	return a2xx_me_init(gpu) ? 0 : -EINVAL;
 }
 
