@@ -447,7 +447,8 @@ for i in $(seq 1 $ITERATIONS); do
 
     # Extract FPS from output
     if [ -f "$ITERATION_LOG" ]; then
-        fps=$(grep "\[$BENCHMARK\]" "$ITERATION_LOG" | grep 'FPS:' | sed 's/.*FPS: *\([0-9]*\).*/\1/' | tail -1)
+        # FPS is on its own line: " FPS: 45 FrameTime: 22.621 ms"
+        fps=$(grep -E '^\s*FPS:' "$ITERATION_LOG" | sed 's/.*FPS: *\([0-9]*\).*/\1/' | tail -1)
         [ -z "$fps" ] && fps="N/A"
         # Append Mesa debug output to main log
         cat "$ITERATION_LOG" >> "$MESA_LOG" 2>/dev/null
