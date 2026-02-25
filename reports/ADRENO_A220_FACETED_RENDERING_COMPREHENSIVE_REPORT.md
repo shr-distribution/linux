@@ -26,11 +26,15 @@
 
 ## Executive Summary
 
-The HP TouchPad's Adreno 220 (Leia) GPU exhibits **intermittent faceted/flat shading** where smooth surfaces randomly render as faceted polygons. The issue occurs approximately 60% of the time, with only 40% of test iterations producing correct smooth shading.
+The HP TouchPad's Adreno 220 (Leia) GPU exhibits **intermittent faceted/flat shading** where smooth surfaces randomly render as faceted polygons. The issue occurs approximately 80% of the time, with only ~20% of test iterations producing correct smooth shading.
 
-### Critical Finding (2026-02-25)
+### Critical Findings (2026-02-25)
 
-**SQ_INTERPOLATOR_CNTL is stable at 0xffffffff (all smooth interpolation) for ALL iterations - both SMOOTH and FACETED.** There are ZERO observable register differences between working and broken renders. This confirms:
+1. **SQ_INTERPOLATOR_CNTL is stable at 0xffffffff (all smooth interpolation) for ALL iterations - both SMOOTH and FACETED.** There are ZERO observable register differences between working and broken renders.
+
+2. **Texture coordinate interpolation (vec2) works 100% of the time**, but color/normal interpolation (vec4/vec3) fails ~80% of the time. This suggests the issue is specific to certain varying types or sizes, not a general VPC failure.
+
+This confirms:
 
 1. The GPU is **configured correctly** for smooth shading
 2. The GPU is **executing incorrectly** - an internal timing/race condition
@@ -55,9 +59,15 @@ This is likely an internal VPC (Vertex Parameter Cache) race condition where the
 
 ### What Works Correctly
 - Flat-shaded scenes (no interpolation needed)
+- **Texture coordinate interpolation (100% success)** - vec2 texcoord works correctly
 - Texture mapping
 - Alpha blending (fixed separately)
 - Shader compilation (same shaders work sometimes)
+
+### What Fails Intermittently (~80% failure)
+- **Color varying interpolation** (vec4 Color in Gouraud shading)
+- **Normal varying interpolation** (vec3 Normal in Phong shading)
+- **Position varying interpolation** (vec4 vertex_position in Phong)
 
 ---
 
@@ -326,19 +336,43 @@ Value 0x3b = Aggressive (old freedreno value)
 ### Latest Test (2026-02-25)
 
 ```
-SMOOTH: 2 | FACETED: 3 | Success rate: 40%
-
-Iteration Results:
-1: FACETED (10 FPS)
-2: FACETED (N/A)
-3: SMOOTH (10 FPS)
-4: FACETED (10 FPS)
-5: SMOOTH (10 FPS)
+SMOOTH: 2 | FACETED: 8 | Success rate: 20%
 
 Register Sampling:
 - SQ_INTERPOLATOR_CNTL: stable (0xffffffff) for ALL iterations
 - No register differences between SMOOTH and FACETED
 ```
+
+### Diagnostic Tests (2026-02-25)
+
+Ran simple isolated tests as suggested by Gemini to identify which GPU functionality works correctly:
+
+| Test | Command | Result | Notes |
+|------|---------|--------|-------|
+| **Clear** | `glmark2-es2-drm -b clear` | ✅ OK | Too fast to observe, showed Tux logo |
+| **Texture** | `glmark2-es2-drm -b texture` | ✅ OK (100%) | Texture coordinate interpolation works correctly |
+| **Gouraud (shading)** | `glmark2-es2-drm -b shading:shading=gouraud` | ❌ FACETED (~20%) | Color varying interpolation fails intermittently |
+| **Build** | `glmark2-es2-drm -b build` | ❌ FACETED (~20%) | Same as Gouraud - uses color varying |
+
+**Key Finding:** Texture coordinate interpolation works perfectly (100% success), but **color/normal varying interpolation fails intermittently (~80% failure rate)**.
+
+This narrows the issue to:
+- **NOT** generic VPC (Vertex Parameter Cache) failure
+- **NOT** all varying interpolation
+- **SPECIFICALLY** color (vec4 Color) and normal (vec3 Normal) varying interpolation
+
+**Shader Analysis:**
+
+| Shader | Varyings Used | Interpolation Type | Works? |
+|--------|--------------|-------------------|--------|
+| Texture | `texcoord` (vec2) | Smooth/Perspective | ✅ YES |
+| Gouraud/Build | `Color` (vec4) | Smooth/Perspective | ❌ INTERMITTENT |
+| Phong | `vertex_normal` (vec3), `vertex_position` (vec4) | Smooth/Perspective | ❌ INTERMITTENT |
+
+The difference may be:
+1. **Varying count** - Texture uses 1 varying (vec2=2 components), Gouraud uses 1 varying (vec4=4 components)
+2. **Varying size** - vec2 vs vec4 could trigger different VPC paths
+3. **Shader complexity** - Texture shader is simpler than lighting shaders
 
 ### Historical Progress
 
@@ -355,11 +389,18 @@ Register Sampling:
 
 ### Priority: HIGH
 
-1. **VPC Internal State**
+1. **Varying Type/Size Dependency (NEW LEAD)**
+   - Texture coords (vec2, 2 components) work 100%
+   - Color (vec4, 4 components) fails ~80%
+   - Normal (vec3, 3 components) fails ~80%
+   - Investigate if there's a difference in how VPC handles different varying sizes
+   - Check SQ_PROGRAM_CNTL export_mode settings for different varying counts
+
+2. **VPC Internal State**
    - No software-visible mechanism to flush/stall VPC
    - May need to find undocumented workaround
 
-2. **Context Switch Timing**
+3. **Context Switch Timing**
    - Compositor interference strongly correlates with faceted
    - DRM/MSM may not save all Leia-specific internal state
 
