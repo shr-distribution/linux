@@ -99,23 +99,26 @@ setup_ftrace() {
 
     # Enable DRM events if available
     if [ -f "$trace_dir/events/drm/enable" ]; then
-        echo 1 > "$trace_dir/events/drm/enable" 2>/dev/null
+        echo 1 > "$trace_dir/events/drm/enable"
+        echo -e "  ${GREEN}DRM events enabled${NC}"
     fi
 
-    # Enable GPU events if available
-    if [ -f "$trace_dir/events/gpu/enable" ]; then
-        echo 1 > "$trace_dir/events/gpu/enable" 2>/dev/null
+    # Enable MSM GPU events (Adreno-specific: submit, flush, retired, freq)
+    if [ -f "$trace_dir/events/drm_msm_gpu/enable" ]; then
+        echo 1 > "$trace_dir/events/drm_msm_gpu/enable"
+        echo -e "  ${GREEN}MSM GPU events enabled${NC}"
     fi
 
-    # Enable MSM-specific events if available
-    if [ -f "$trace_dir/events/msm/enable" ]; then
-        echo 1 > "$trace_dir/events/msm/enable" 2>/dev/null
+    # Enable DMA fence events (tracks GPU completion)
+    if [ -f "$trace_dir/events/dma_fence/enable" ]; then
+        echo 1 > "$trace_dir/events/dma_fence/enable"
+        echo -e "  ${GREEN}DMA fence events enabled${NC}"
     fi
 
     # Enable tracing
     echo 1 > "$trace_dir/tracing_on"
 
-    echo -e "${GREEN}Ftrace enabled for DRM/GPU events${NC}"
+    echo -e "${GREEN}Ftrace enabled${NC}"
     return 0
 }
 
@@ -141,8 +144,11 @@ stop_ftrace() {
     if [ -f "$trace_dir/events/drm/enable" ]; then
         echo 0 > "$trace_dir/events/drm/enable" 2>/dev/null
     fi
-    if [ -f "$trace_dir/events/gpu/enable" ]; then
-        echo 0 > "$trace_dir/events/gpu/enable" 2>/dev/null
+    if [ -f "$trace_dir/events/drm_msm_gpu/enable" ]; then
+        echo 0 > "$trace_dir/events/drm_msm_gpu/enable" 2>/dev/null
+    fi
+    if [ -f "$trace_dir/events/dma_fence/enable" ]; then
+        echo 0 > "$trace_dir/events/dma_fence/enable" 2>/dev/null
     fi
 }
 
