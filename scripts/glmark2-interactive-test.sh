@@ -97,12 +97,18 @@ setup_ftrace() {
     # Clear existing trace
     echo > "$trace_dir/trace"
 
-    # Enable GPU/DRM related events
-    echo 1 > "$trace_dir/events/drm/enable" 2>/dev/null
-    echo 1 > "$trace_dir/events/gpu/enable" 2>/dev/null
+    # Enable DRM events if available
+    if [ -f "$trace_dir/events/drm/enable" ]; then
+        echo 1 > "$trace_dir/events/drm/enable" 2>/dev/null
+    fi
+
+    # Enable GPU events if available
+    if [ -f "$trace_dir/events/gpu/enable" ]; then
+        echo 1 > "$trace_dir/events/gpu/enable" 2>/dev/null
+    fi
 
     # Enable MSM-specific events if available
-    if [ -d "$trace_dir/events/msm" ]; then
+    if [ -f "$trace_dir/events/msm/enable" ]; then
         echo 1 > "$trace_dir/events/msm/enable" 2>/dev/null
     fi
 
@@ -131,7 +137,11 @@ stop_ftrace() {
     local trace_dir="/sys/kernel/debug/tracing"
     if [ -f "$trace_dir/tracing_on" ]; then
         echo 0 > "$trace_dir/tracing_on" 2>/dev/null
+    fi
+    if [ -f "$trace_dir/events/drm/enable" ]; then
         echo 0 > "$trace_dir/events/drm/enable" 2>/dev/null
+    fi
+    if [ -f "$trace_dir/events/gpu/enable" ]; then
         echo 0 > "$trace_dir/events/gpu/enable" 2>/dev/null
     fi
 }
