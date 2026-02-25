@@ -3,7 +3,7 @@
 
 **Last Updated:** 2026-02-25
 **Status:** Active Investigation
-**Success Rate:** ~40% (2/5 SMOOTH iterations)
+**Success Rate:** ~20% (2/10 SMOOTH iterations)
 
 ---
 
@@ -109,6 +109,26 @@ Both share identical GPU silicon, but TouchPad uses unique power management sett
 | Blend state | Correct values logged | NOT the cause |
 | Vertex buffer content | CRC32 matches between runs | NOT the cause |
 | L2 cache coherency | TC_CNTL_STATUS invalidation added | Addressed |
+| Kernel cur_ctx_seqno | Freedreno doesn't use CTX_RESTORE_BUF | NOT relevant |
+
+### Key Discovery: Freedreno Context Restore Architecture
+
+**Freedreno does NOT use the kernel's `MSM_SUBMIT_CMD_CTX_RESTORE_BUF` mechanism.** It only submits `MSM_SUBMIT_CMD_BUF` and handles all state restore internally via `fd2_emit_restore()` embedded in command buffers.
+
+This means:
+1. The kernel's `cur_ctx_seqno` tracking is irrelevant for freedreno
+2. Mesa handles all GPU state initialization in its command stream
+3. The `fd2_emit_restore()` function is called from `fd2_gmem.c` at frame start
+4. Any "context restore" issues are in Mesa, not the kernel
+
+### Possible Contributing Factor: MDP4 Display Underruns
+
+MDP4 buffer underruns are occurring, indicating memory bandwidth contention between the display controller and GPU:
+- Both share the same memory bus on APQ8060
+- When MDP4 steals bandwidth to fetch framebuffer data, GPU memory access is delayed
+- This could affect VPC timing and contribute to the race condition
+
+Current MDP4 bandwidth: 377 MB/s avg / 471 MB/s peak (from device tree)
 
 ### Likely Cause: Internal VPC Race Condition
 
@@ -201,6 +221,13 @@ GPU status: 0x82400310
 
 These registers exist in KGSL headers but are not safe to write.
 
+### Kernel Patch - cur_ctx_seqno Reset (REVERTED)
+**Status:** ❌ REVERTED (ineffective)
+
+Added `gpu->rb[0]->cur_ctx_seqno = 0` to `a2xx_hw_init()` to force context restore after GPU init/resume. This matches what `a6xx_hw_init()` does.
+
+**Why it didn't help:** Freedreno doesn't use `MSM_SUBMIT_CMD_CTX_RESTORE_BUF` at all. It only submits `MSM_SUBMIT_CMD_BUF` and handles state restore via `fd2_emit_restore()` embedded in command buffers. The kernel's `cur_ctx_seqno` mechanism is never triggered.
+
 ### Other Reverted Attempts
 
 | Attempt | Problem |
@@ -209,6 +236,7 @@ These registers exist in KGSL headers but are not safe to write.
 | PS_REGS \|= 0x80 | Grey textures (corrupted register count) |
 | CP_DRAW_INDX_2 dummy draw | Grey textures |
 | TP0_CHICKEN = 0x00 | GPU hang |
+| Kernel cur_ctx_seqno reset | Ineffective - freedreno uses inline state restore |
 
 ---
 
