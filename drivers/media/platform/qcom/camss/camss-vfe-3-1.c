@@ -231,6 +231,14 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 			 VFE_0_GLOBAL_RESET_CMD_CAMIF |
 			 VFE_0_GLOBAL_RESET_CMD_CORE;
 
+	/*
+	 * Enable RESET_ACK interrupt before triggering reset.
+	 * The vfe_reset() function waits for this interrupt to confirm
+	 * the reset completed. Without enabling it first, we get a timeout.
+	 */
+	writel_relaxed(VFE_0_IRQ_MASK_0_RESET_ACK, vfe->base + VFE_0_IRQ_MASK_0);
+	wmb();
+
 	writel_relaxed(reset_bits, vfe->base + VFE_0_GLOBAL_RESET_CMD);
 }
 
