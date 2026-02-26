@@ -113,7 +113,12 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 		.reg = { "vfe0" },
 		.interrupt = { "vfe0" },
 		.vfe = {
-			.line_num = 3,
+			/*
+			 * line_num = 4 to include VFE_LINE_PIX (3) for CAMIF.
+			 * Parallel cameras use the pixel pipeline (CAMIF),
+			 * not RDI (Raw Data Interface).
+			 */
+			.line_num = 4,
 			.hw_ops = &vfe_ops_3_1,
 			.formats_rdi = &vfe_formats_rdi_8x16,
 			.formats_pix = &vfe_formats_pix_8x16
@@ -4096,10 +4101,6 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 		unsigned int i;
 		int ret;
 
-		if (!csiphy)
-			continue;
-
-		input = &csiphy->subdev.entity;
 		sensor = &sd->entity;
 
 		for (i = 0; i < sensor->num_pads; i++) {
@@ -4112,12 +4113,35 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 			return -EINVAL;
 		}
 
-		ret = media_create_pad_link(sensor, i, input,
-					    MSM_CSIPHY_PAD_SINK,
-					    MEDIA_LNK_FL_IMMUTABLE | MEDIA_LNK_FL_ENABLED);
-		if (ret < 0) {
-			camss_link_err(camss, sensor->name, input->name, ret);
-			return ret;
+		if (csiphy) {
+			/* MIPI CSI-2 camera: link sensor to CSIPHY */
+			input = &csiphy->subdev.entity;
+
+			ret = media_create_pad_link(sensor, i, input,
+						    MSM_CSIPHY_PAD_SINK,
+						    MEDIA_LNK_FL_IMMUTABLE | MEDIA_LNK_FL_ENABLED);
+			if (ret < 0) {
+				camss_link_err(camss, sensor->name, input->name, ret);
+				return ret;
+			}
+		} else if (camss->res->vfe_num > 0) {
+			/*
+			 * Parallel camera interface (no CSIPHY/CSID):
+			 * Link sensor directly to VFE PIX input (CAMIF).
+			 * VFE_LINE_PIX uses the parallel interface (CAMIF),
+			 * not the RDI (Raw Data Interface) lines.
+			 */
+			struct v4l2_subdev *vfe = &camss->vfe[0].line[VFE_LINE_PIX].subdev;
+
+			input = &vfe->entity;
+
+			ret = media_create_pad_link(sensor, i, input,
+						    MSM_VFE_PAD_SINK,
+						    MEDIA_LNK_FL_IMMUTABLE | MEDIA_LNK_FL_ENABLED);
+			if (ret < 0) {
+				camss_link_err(camss, sensor->name, input->name, ret);
+				return ret;
+			}
 		}
 	}
 
