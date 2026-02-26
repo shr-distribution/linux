@@ -164,6 +164,13 @@ static struct clk_rcg camclk0_src = {
 static struct clk_branch camclk0_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 15,
+	/*
+	 * The legacy webOS kernel used halt_reg = NULL for this clock,
+	 * meaning it never checked the halt status. The hardware doesn't
+	 * properly report the clock state via the halt register. Use
+	 * BRANCH_HALT_SKIP to avoid the "status stuck at 'off'" warning.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0140,
 		.enable_mask = BIT(0),
@@ -214,6 +221,8 @@ static struct clk_rcg camclk1_src = {
 static struct clk_branch camclk1_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 16,
+	/* Same issue as camclk0_clk - hardware doesn't report halt status */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0154,
 		.enable_mask = BIT(0),
