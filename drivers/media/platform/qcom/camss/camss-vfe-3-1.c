@@ -377,19 +377,23 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
 		even_cfg = 0xc9;
 		odd_cfg = 0xac;
 		break;
 	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
 		even_cfg = 0xa9;
 		odd_cfg = 0xcc;
 		break;
 	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
 	default:
 		even_cfg = 0x9c;
 		odd_cfg = 0xca;
 		break;
 	case MEDIA_BUS_FMT_VYUY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
 		even_cfg = 0xc9;
 		odd_cfg = 0xac;
 		break;
@@ -441,16 +445,20 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
 		break;
 	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB;
 		break;
 	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
 	default:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
 		break;
 	case MEDIA_BUS_FMT_VYUY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
 		break;
 	}
