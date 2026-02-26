@@ -1115,6 +1115,8 @@
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "vfe-mem";
 
+			power-domains = <&mmcc VFE_GDSC>;
+
 			status = "disabled";
 
 			ports {
