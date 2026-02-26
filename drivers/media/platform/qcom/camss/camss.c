@@ -4088,7 +4088,14 @@ static int camss_subdev_notifier_bound(struct v4l2_async_notifier *async,
 		csiphy->cfg.csi2 = &csd->interface.csi2;
 		subdev->host_priv = csiphy;
 	} else {
-		subdev->host_priv = NULL;
+		/*
+		 * For parallel camera interfaces, use a special marker value
+		 * to distinguish async-bound sensors from internal subdevs
+		 * (like mt9m114 pixel array) that are registered later.
+		 * We use the camss pointer as the marker since it's a valid
+		 * non-NULL pointer that we can check in notifier_complete.
+		 */
+		subdev->host_priv = camss;
 	}
 
 	return 0;
@@ -4101,10 +4108,20 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 	struct v4l2_subdev *sd;
 
 	list_for_each_entry(sd, &v4l2_dev->subdevs, list) {
-		struct csiphy_device *csiphy = sd->host_priv;
+		void *host_priv = sd->host_priv;
 		struct media_entity *input, *sensor;
 		unsigned int i;
 		int ret;
+
+		/*
+		 * Skip subdevs that weren't registered via our async notifier.
+		 * Internal subdevs (like mt9m114 pixel array) have NULL host_priv.
+		 * Our async-bound sensors have either:
+		 * - A csiphy pointer (for MIPI cameras)
+		 * - The camss pointer as marker (for parallel cameras)
+		 */
+		if (!host_priv)
+			continue;
 
 		sensor = &sd->entity;
 
@@ -4118,8 +4135,10 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 			return -EINVAL;
 		}
 
-		if (csiphy) {
+		if (host_priv != camss) {
 			/* MIPI CSI-2 camera: link sensor to CSIPHY */
+			struct csiphy_device *csiphy = host_priv;
+
 			input = &csiphy->subdev.entity;
 
 			ret = media_create_pad_link(sensor, i, input,
