@@ -1760,6 +1760,11 @@ static struct clk_branch vcodec_axi_b_clk = {
 static struct clk_branch vfe_axi_clk = {
 	.halt_reg = 0x01d8,
 	.halt_bit = 0,
+	/*
+	 * VFE clocks don't properly report halt status when the VFE power
+	 * domain is off. Skip halt checking to avoid enable failures.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0018,
 		.enable_mask = BIT(18),
@@ -2056,6 +2061,8 @@ static struct clk_branch vcodec_ahb_clk = {
 static struct clk_branch vfe_ahb_clk = {
 	.halt_reg = 0x01dc,
 	.halt_bit = 14,
+	/* Same as vfe_axi_clk - skip halt check */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0008,
 		.enable_mask = BIT(13),
