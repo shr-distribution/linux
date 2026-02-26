@@ -612,7 +612,18 @@ static void vfe31_wm_line_based(struct vfe_device *vfe, u32 wm,
 
 static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
 {
-	/* VFE31 WM enable is part of other configurations */
+	/*
+	 * VFE31 WM enable - bit 0 of WR_CFG enables the write master.
+	 * Use read-modify-write to preserve other configuration bits.
+	 */
+	u32 val = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+
+	if (enable)
+		val |= BIT(0);
+	else
+		val &= ~BIT(0);
+
+	writel_relaxed(val, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 }
 
 static void vfe31_wm_set_ub_cfg(struct vfe_device *vfe, u8 wm,
