@@ -212,15 +212,32 @@ static int video_check_format(struct camss_video *video)
 
 	sd_pix->pixelformat = pix->pixelformat;
 	ret = video_get_subdev_format(video, &format);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(video->camss->dev,
+			"video_get_subdev_format failed: %d\n", ret);
 		return ret;
+	}
+
+	dev_dbg(video->camss->dev,
+		"video format: %ux%u pixfmt=0x%x planes=%u field=%u\n",
+		pix->width, pix->height, pix->pixelformat,
+		pix->num_planes, pix->field);
+	dev_dbg(video->camss->dev,
+		"subdev format: %ux%u pixfmt=0x%x planes=%u field=%u\n",
+		sd_pix->width, sd_pix->height, sd_pix->pixelformat,
+		sd_pix->num_planes, sd_pix->field);
 
 	if (pix->pixelformat != sd_pix->pixelformat ||
 	    pix->height != sd_pix->height ||
 	    pix->width != sd_pix->width ||
 	    pix->num_planes != sd_pix->num_planes ||
-	    pix->field != format.fmt.pix_mp.field)
+	    pix->field != format.fmt.pix_mp.field) {
+		dev_err(video->camss->dev,
+			"Format mismatch: video %ux%u/0x%x vs subdev %ux%u/0x%x\n",
+			pix->width, pix->height, pix->pixelformat,
+			sd_pix->width, sd_pix->height, sd_pix->pixelformat);
 		return -EPIPE;
+	}
 
 	return 0;
 }
