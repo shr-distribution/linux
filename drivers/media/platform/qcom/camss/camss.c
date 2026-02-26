@@ -106,8 +106,9 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 	/* VFE0 */
 	{
 		.regulators = {},
-		.clock = { "vfe", "vfe_axi", "vfe_ahb" },
+		.clock = { "vfe", "vfe_axi", "vfe_ahb", "csi_ahb" },
 		.clock_rate = { { 122880000, 228570000, 266670000 },
+				{ 0 },
 				{ 0 },
 				{ 0 } },
 		.reg = { "vfe0" },

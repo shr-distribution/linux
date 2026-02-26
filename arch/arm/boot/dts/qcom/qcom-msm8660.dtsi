@@ -1106,10 +1106,12 @@
 
 			clocks = <&mmcc VFE_CLK>,
 				 <&mmcc VFE_AXI_CLK>,
-				 <&mmcc VFE_AHB_CLK>;
+				 <&mmcc VFE_AHB_CLK>,
+				 <&mmcc CSI_AHB_CLK>;
 			clock-names = "vfe",
 				      "vfe_axi",
-				      "vfe_ahb";
+				      "vfe_ahb",
+				      "csi_ahb";
 
 			interconnects = <&mmss_fabric MMFAB_MAS_VFE
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
