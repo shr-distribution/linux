@@ -1111,9 +1111,6 @@
 				      "vfe_axi",
 				      "vfe_ahb";
 
-			power-domains = <&mmcc VFE_GDSC>;
-			power-domain-names = "vfe";
-
 			interconnects = <&mmss_fabric MMFAB_MAS_VFE
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "vfe-mem";
