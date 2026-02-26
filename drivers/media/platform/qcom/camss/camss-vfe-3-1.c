@@ -292,7 +292,8 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 
 	vfe->res->hw_ops->isr_read(vfe, &value0, &value1);
 
-	dev_dbg(vfe->camss->dev, "VFE IRQ status0: 0x%x, status1: 0x%x\n",
+	/* Debug: log all interrupts */
+	dev_info(vfe->camss->dev, "VFE IRQ status0: 0x%x, status1: 0x%x\n",
 		value0, value1);
 
 	/* VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31 */
@@ -499,6 +500,15 @@ static void vfe31_set_camif_cmd(struct vfe_device *vfe, u8 enable)
 		cmd = VFE_0_CAMIF_CMD_DISABLE_FRAME_BOUNDARY;
 
 	writel_relaxed(cmd, vfe->base + VFE_0_CAMIF_CMD);
+
+	/* Debug: dump CAMIF status and config registers */
+	dev_info(vfe->camss->dev,
+		 "VFE31 CAMIF: cmd=%s status=0x%08x cfg=0x%08x core_cfg=0x%08x frame_cfg=0x%08x\n",
+		 enable ? "enable" : "disable",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 }
 
 static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable)
@@ -714,6 +724,12 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 		vfe_reg_clr(vfe, VFE_0_IRQ_MASK_0, val0);
 		vfe_reg_clr(vfe, VFE_0_IRQ_MASK_1, val1);
 	}
+
+	dev_info(vfe->camss->dev,
+		 "VFE31 IRQ pix_line: enable=%d mask0=0x%08x mask1=0x%08x\n",
+		 enable,
+		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0),
+		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_1));
 }
 
 static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
