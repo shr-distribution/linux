@@ -1774,6 +1774,8 @@ static int vfe_set_selection(struct v4l2_subdev *sd,
  */
 static int vfe_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
+	struct vfe_line *line = v4l2_get_subdevdata(sd);
+	struct vfe_device *vfe = to_vfe(line);
 	struct v4l2_subdev_format format = {
 		.pad = MSM_VFE_PAD_SINK,
 		.which = fh ? V4L2_SUBDEV_FORMAT_TRY :
@@ -1784,6 +1786,17 @@ static int vfe_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 			.height = 1080
 		}
 	};
+
+	/*
+	 * VFE 3.1 uses parallel camera interface (CAMIF) which requires
+	 * 2X8 media bus formats instead of 1X16. The resolution matches
+	 * MT9M114 IFP output (sensor array minus 8 pixels for processing).
+	 */
+	if (vfe->res->hw_ops == &vfe_ops_3_1) {
+		format.format.code = MEDIA_BUS_FMT_UYVY8_2X8;
+		format.format.width = 1288;
+		format.format.height = 968;
+	}
 
 	return vfe_set_format(sd, fh ? fh->state : NULL, &format);
 }
