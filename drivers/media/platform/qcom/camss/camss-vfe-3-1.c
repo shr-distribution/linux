@@ -63,6 +63,11 @@
 #define VFE_0_IRQ_MASK_1		0x020
 #define VFE_0_IRQ_MASK_1_CAMIF_ERROR			BIT(0)
 #define VFE_0_IRQ_MASK_1_VIOLATION			BIT(7)
+/*
+ * VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31.
+ * This differs from later VFE versions.
+ */
+#define VFE_0_IRQ_MASK_1_RESET_ACK			BIT(22)
 #define VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK		BIT(23)
 #define VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(n)	BIT((n) + 9)
 
@@ -81,6 +86,11 @@
 
 #define VFE_0_IRQ_STATUS_1		0x030
 #define VFE_0_IRQ_STATUS_1_VIOLATION			BIT(7)
+/*
+ * VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31.
+ * This differs from later VFE versions.
+ */
+#define VFE_0_IRQ_STATUS_1_RESET_ACK			BIT(22)
 #define VFE_0_IRQ_STATUS_1_BUS_BDG_HALT_ACK		BIT(23)
 
 #define VFE_0_IRQ_COMPOSITE_MASK_0	0x034
@@ -235,8 +245,11 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 * Enable RESET_ACK interrupt before triggering reset.
 	 * The vfe_reset() function waits for this interrupt to confirm
 	 * the reset completed. Without enabling it first, we get a timeout.
+	 *
+	 * Note: VFE31 reset acknowledge is in IRQ_STATUS_1 bit 22,
+	 * not IRQ_STATUS_0 bit 31 like later VFE versions.
 	 */
-	writel_relaxed(VFE_0_IRQ_MASK_0_RESET_ACK, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(VFE_0_IRQ_MASK_1_RESET_ACK, vfe->base + VFE_0_IRQ_MASK_1);
 	wmb();
 
 	writel_relaxed(reset_bits, vfe->base + VFE_0_GLOBAL_RESET_CMD);
@@ -282,7 +295,8 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	dev_dbg(vfe->camss->dev, "VFE IRQ status0: 0x%x, status1: 0x%x\n",
 		value0, value1);
 
-	if (value0 & VFE_0_IRQ_STATUS_0_RESET_ACK)
+	/* VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31 */
+	if (value1 & VFE_0_IRQ_STATUS_1_RESET_ACK)
 		vfe->isr_ops.reset_ack(vfe);
 
 	if (value1 & VFE_0_IRQ_STATUS_1_VIOLATION)
@@ -333,12 +347,15 @@ static int vfe31_disable(struct vfe_line *line)
 /* Gen1-specific operations for VFE31 */
 static void vfe31_enable_irq_common(struct vfe_device *vfe)
 {
-	/* Enable common IRQs */
-	u32 val0 = VFE_0_IRQ_MASK_0_RESET_ACK;
-	u32 val1 = VFE_0_IRQ_MASK_1_VIOLATION |
+	/*
+	 * Enable common IRQs. Note: VFE31 reset acknowledge is in
+	 * STATUS_1 bit 22, not STATUS_0 bit 31 like later VFE versions.
+	 */
+	u32 val1 = VFE_0_IRQ_MASK_1_RESET_ACK |
+		   VFE_0_IRQ_MASK_1_VIOLATION |
 		   VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK;
 
-	writel_relaxed(val0, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_0);
 	writel_relaxed(val1, vfe->base + VFE_0_IRQ_MASK_1);
 }
 
