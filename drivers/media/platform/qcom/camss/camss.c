@@ -117,9 +117,13 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 			 * line_num = 4 to include VFE_LINE_PIX (3) for CAMIF.
 			 * Parallel cameras use the pixel pipeline (CAMIF),
 			 * not RDI (Raw Data Interface).
+			 *
+			 * has_pd is NOT set because MSM8660 has a single power
+			 * domain that is attached at platform probe level. The
+			 * runtime PM framework handles power domain management
+			 * automatically through pm_runtime_resume_and_get().
 			 */
 			.line_num = 4,
-			.has_pd = true,
 			.hw_ops = &vfe_ops_3_1,
 			.formats_rdi = &vfe_formats_rdi_8x16,
 			.formats_pix = &vfe_formats_pix_8x16
