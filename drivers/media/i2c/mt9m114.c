@@ -2259,6 +2259,15 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		goto error_clock;
 
 mt9m113_init_done:
+	/*
+	 * MT9M113 uses a different command mechanism (MCU indirect via
+	 * 0x098C/0x0990) and doesn't support the MT9M114's COMMAND_REGISTER.
+	 * Skip the SET_STATE commands for MT9M113 - the sensor is already
+	 * in the proper state after MCU boot and PLL initialization.
+	 */
+	if (sensor->expected_model == MT9M113_MODEL)
+		return 0;
+
 	if (sensor->bus_cfg.bus_type == V4L2_MBUS_PARALLEL) {
 		/*
 		 * In parallel mode (OE set to low), the sensor will enter the
