@@ -801,6 +801,13 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 	if (ret < 0)
 		return ret;
 
+	/*
+	 * MT9M113 doesn't support the COMMAND_REGISTER state machine.
+	 * Skip state transitions - the sensor is already configured.
+	 */
+	if (sensor->model == MT9M113_MODEL)
+		return 0;
+
 	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
 	if (ret < 0)
 		return ret;
