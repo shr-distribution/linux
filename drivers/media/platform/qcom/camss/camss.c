@@ -4066,10 +4066,20 @@ static int camss_subdev_notifier_bound(struct v4l2_async_notifier *async,
 	struct camss_async_subdev *csd =
 		container_of(asd, struct camss_async_subdev, asd);
 	u8 id = csd->interface.csiphy_id;
-	struct csiphy_device *csiphy = &camss->csiphy[id];
 
-	csiphy->cfg.csi2 = &csd->interface.csi2;
-	subdev->host_priv = csiphy;
+	/*
+	 * For parallel camera interfaces (e.g., MSM8660), there is no CSIPHY.
+	 * Skip CSIPHY setup in that case - the VFE connects directly to the
+	 * parallel sensor without going through CSIPHY/CSID.
+	 */
+	if (camss->res->csiphy_num > 0 && id < camss->res->csiphy_num) {
+		struct csiphy_device *csiphy = &camss->csiphy[id];
+
+		csiphy->cfg.csi2 = &csd->interface.csi2;
+		subdev->host_priv = csiphy;
+	} else {
+		subdev->host_priv = NULL;
+	}
 
 	return 0;
 }
