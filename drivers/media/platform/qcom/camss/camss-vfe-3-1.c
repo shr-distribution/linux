@@ -697,13 +697,18 @@ static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 
 static void vfe31_pm_domain_off(struct vfe_device *vfe)
 {
-	/* VFE31 doesn't use power domains */
+	if (!vfe->res->has_pd)
+		return;
+
+	vfe_pm_domain_off(vfe);
 }
 
 static int vfe31_pm_domain_on(struct vfe_device *vfe)
 {
-	/* VFE31 doesn't use power domains */
-	return 0;
+	if (!vfe->res->has_pd)
+		return 0;
+
+	return vfe_pm_domain_on(vfe);
 }
 
 /* Gen1 operations structure for VFE31 */
