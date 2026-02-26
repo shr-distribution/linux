@@ -162,11 +162,8 @@ static struct clk_rcg camclk0_src = {
 };
 
 static struct clk_branch camclk0_clk = {
-	/*
-	 * The legacy webOS kernel used halt_reg = NULL for this clock,
-	 * meaning it never checked the halt status. Use clk_branch_simple_ops
-	 * which only does regmap enable/disable without halt polling.
-	 */
+	.halt_reg = 0x01e8,
+	.halt_bit = 15,
 	.clkr = {
 		.enable_reg = 0x0140,
 		.enable_mask = BIT(0),
@@ -176,7 +173,7 @@ static struct clk_branch camclk0_clk = {
 				&camclk0_src.clkr.hw
 			},
 			.num_parents = 1,
-			.ops = &clk_branch_simple_ops,
+			.ops = &clk_branch_ops,
 		},
 	},
 };
