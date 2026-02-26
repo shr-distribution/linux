@@ -164,6 +164,7 @@ static struct clk_rcg camclk0_src = {
 static struct clk_branch camclk0_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 15,
+	.halt_check = BRANCH_HALT_DELAY,
 	.clkr = {
 		.enable_reg = 0x0140,
 		.enable_mask = BIT(0),
