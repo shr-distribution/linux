@@ -15,6 +15,7 @@
 #   -c, --cmdstream    Enable command stream tracing (FD_A22X_CMDSTREAM=1)
 #   -t, --ftrace       Enable kernel ftrace for GPU events
 #   -r, --regsample    Enable register sampling during render (can slow down)
+#   -d, --rd           Enable kernel ring dump capture (cmdstream via debugfs)
 #   -h, --help         Show this help
 #
 # Benchmarks: build, texture, shading, bump, effect2d, pulsar, desktop,
@@ -26,11 +27,14 @@
 #   ./glmark2-interactive-test.sh -c build 5        # with command stream tracing
 #   ./glmark2-interactive-test.sh -c -t shading 3   # with cmdstream + ftrace
 #   ./glmark2-interactive-test.sh -r build 5        # with register sampling
+#   ./glmark2-interactive-test.sh -d build 5        # with kernel ring dump capture
+#   ./glmark2-interactive-test.sh -r -d -t build 5  # full debug (regsample + rd + ftrace)
 
 # Parse options
 CMDSTREAM_TRACE=0
 FTRACE_ENABLED=0
 REGSAMPLE_ENABLED=0
+RD_ENABLED=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -44,6 +48,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -r|--regsample)
             REGSAMPLE_ENABLED=1
+            shift
+            ;;
+        -d|--rd)
+            RD_ENABLED=1
             shift
             ;;
         -h|--help)
@@ -200,7 +208,7 @@ capture_debugfs_state() {
     local result="$3"
     local dump_dir="$4"
 
-    local state_file="${dump_dir}/debugfs_${iteration}_${prefix}_${result}.txt"
+    local state_file="${dump_dir}/debugfs_${BENCHMARK}_${iteration}_${prefix}_${result}.txt"
 
     echo "=== Debugfs capture: $prefix iteration $iteration ($result) ===" > "$state_file"
     echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S.%N')" >> "$state_file"
@@ -320,6 +328,9 @@ fi
 if [ $REGSAMPLE_ENABLED -eq 1 ]; then
     echo -e "RegSample:  ${GREEN}ENABLED${NC} (500ms interval)"
 fi
+if [ $RD_ENABLED -eq 1 ]; then
+    echo -e "Ring Dump:  ${GREEN}ENABLED${NC} (kernel cmdstream capture)"
+fi
 echo ""
 
 # Setup debugfs
@@ -402,6 +413,12 @@ for i in $(seq 1 $ITERATIONS); do
         echo "=== Iteration $i command stream ===" > "$CMDSTREAM_ITER_LOG"
     fi
 
+    # Start kernel ring dump capture if enabled
+    # Note: rd capture is heavyweight, so we only capture for 2 seconds
+    # after glmark2 starts rendering (not the whole iteration)
+    rd_pid=""
+    RD_TEMP_FILE="${GPU_DUMP_DIR}/rd_${BENCHMARK}_${i}_PENDING.rd"
+
     # Run glmark2 with appropriate environment
     if [ $CMDSTREAM_TRACE -eq 1 ]; then
         FD_MESA_DEBUG=msgs MESA_DEBUG=1 FD_A22X_CMDSTREAM=1 glmark2-es2-drm --benchmark "$BENCHMARK" > "$ITERATION_LOG" 2>&1 &
@@ -410,9 +427,19 @@ for i in $(seq 1 $ITERATIONS); do
     fi
     glmark_pid=$!
 
+    # Start brief rd capture after glmark2 begins rendering (2 second window)
+    # This avoids the severe performance hit of continuous rd capture
+    if [ $RD_ENABLED -eq 1 ] && [ -f "/sys/kernel/debug/dri/0/rd" ]; then
+        (
+            sleep 0.5  # Let glmark2 start rendering
+            timeout 2 cat /sys/kernel/debug/dri/0/rd > "$RD_TEMP_FILE" 2>/dev/null
+        ) &
+        rd_pid=$!
+    fi
+
     # Start background register sampling during rendering (optional, can cause slowdown)
     sampler_pid=""
-    REGSAMPLE_LOG="${GPU_DUMP_DIR}/regsample_${i}.txt"
+    REGSAMPLE_LOG="${GPU_DUMP_DIR}/regsample_${BENCHMARK}_${i}.txt"
     if [ "${REGSAMPLE_ENABLED:-0}" -eq 1 ] && [ -n "$DRI_DIR" ] && [ -f "${DRI_DIR}summary" ]; then
         (
             sample_num=0
@@ -420,7 +447,7 @@ for i in $(seq 1 $ITERATIONS); do
             while kill -0 $glmark_pid 2>/dev/null; do
                 echo "--- Sample $sample_num @ $(date '+%H:%M:%S.%N') ---" >> "$REGSAMPLE_LOG"
                 # Capture critical registers only
-                cat "${DRI_DIR}summary" 2>/dev/null | grep -E "SQ_PROGRAM|SQ_INTERPOLATOR|SQ_GPR|TP0_CHICKEN|RB_MODE|PA_CL_CLIP|RBBM_STATUS" >> "$REGSAMPLE_LOG"
+                cat "${DRI_DIR}summary" 2>/dev/null | grep -E "SQ_|VGT_|TP0_|TC_CNTL|RB_|PA_|PC_DEBUG|GRAS_|RBBM_STATUS|VSC_|LRZ_" >> "$REGSAMPLE_LOG"
                 ((sample_num++))
                 sleep 0.5  # Sample every 500ms (less aggressive)
             done
@@ -488,6 +515,12 @@ for i in $(seq 1 $ITERATIONS); do
         wait $sampler_pid 2>/dev/null
     fi
 
+    # Stop rd capture
+    if [ -n "$rd_pid" ]; then
+        kill $rd_pid 2>/dev/null
+        wait $rd_pid 2>/dev/null
+    fi
+
     # Extract FPS from output
     if [ -f "$ITERATION_LOG" ]; then
         # FPS is on its own line: " FPS: 45 FrameTime: 22.621 ms"
@@ -529,15 +562,23 @@ for i in $(seq 1 $ITERATIONS); do
 
         # Also save simple GPU dump for quick comparison
         if [ -f "$GPU_DEBUGFS" ]; then
-            gpu_dump_file="$GPU_DUMP_DIR/gpu_${i}_${result}.txt"
+            gpu_dump_file="$GPU_DUMP_DIR/gpu_${BENCHMARK}_${i}_${result}.txt"
             cat "$GPU_DEBUGFS" > "$gpu_dump_file" 2>/dev/null
         fi
 
         # Rename pre-state file with actual result
         if [ -f "$pre_state" ]; then
-            new_pre_state="${GPU_DUMP_DIR}/debugfs_${i}_pre_${result}.txt"
+            new_pre_state="${GPU_DUMP_DIR}/debugfs_${BENCHMARK}_${i}_pre_${result}.txt"
             mv "$pre_state" "$new_pre_state" 2>/dev/null
         fi
+    fi
+
+    # Rename rd capture file with actual result
+    if [ $RD_ENABLED -eq 1 ] && [ -f "$RD_TEMP_FILE" ]; then
+        RD_FINAL_FILE="${GPU_DUMP_DIR}/rd_${BENCHMARK}_${i}_${result}.rd"
+        mv "$RD_TEMP_FILE" "$RD_FINAL_FILE" 2>/dev/null
+        rd_size=$(stat -c%s "$RD_FINAL_FILE" 2>/dev/null || echo 0)
+        echo -e "${CYAN}Ring dump saved: $(basename "$RD_FINAL_FILE") (${rd_size} bytes)${NC}"
     fi
 
     # Capture command stream log for this iteration
@@ -550,7 +591,7 @@ for i in $(seq 1 $ITERATIONS); do
 
     # Capture ftrace for this iteration
     if [ $FTRACE_ENABLED -eq 1 ]; then
-        FTRACE_ITER="${GPU_DUMP_DIR}/ftrace_${i}_${result}.txt"
+        FTRACE_ITER="${GPU_DUMP_DIR}/ftrace_${BENCHMARK}_${i}_${result}.txt"
         capture_ftrace "$FTRACE_ITER"
         # Also append to main ftrace log
         if [ -f "$FTRACE_ITER" ]; then
@@ -607,9 +648,9 @@ echo "       GPU DUMP ANALYSIS"
 echo "============================================"
 echo ""
 
-# Find first SMOOTH and first FACETED dump
-smooth_dump=$(ls "$GPU_DUMP_DIR"/gpu_*_SMOOTH.txt 2>/dev/null | head -1)
-faceted_dump=$(ls "$GPU_DUMP_DIR"/gpu_*_FACETED.txt 2>/dev/null | head -1)
+# Find first SMOOTH and first FACETED dump for this benchmark
+smooth_dump=$(ls "$GPU_DUMP_DIR"/gpu_${BENCHMARK}_*_SMOOTH.txt 2>/dev/null | head -1)
+faceted_dump=$(ls "$GPU_DUMP_DIR"/gpu_${BENCHMARK}_*_FACETED.txt 2>/dev/null | head -1)
 
 if [ -n "$smooth_dump" ] && [ -n "$faceted_dump" ]; then
     echo "Comparing first SMOOTH vs first FACETED:"
@@ -647,13 +688,13 @@ echo "       PRE vs POST STATE ANALYSIS"
 echo "============================================"
 echo ""
 
-for pre_file in "$GPU_DUMP_DIR"/debugfs_*_pre_*.txt; do
+for pre_file in "$GPU_DUMP_DIR"/debugfs_${BENCHMARK}_*_pre_*.txt; do
     [ -f "$pre_file" ] || continue
     basename_pre=$(basename "$pre_file")
-    # Extract iteration number and result
-    iter_num=$(echo "$basename_pre" | sed 's/debugfs_\([0-9]*\)_pre_.*/\1/')
-    result_type=$(echo "$basename_pre" | sed 's/debugfs_[0-9]*_pre_\(.*\)\.txt/\1/')
-    post_file="$GPU_DUMP_DIR/debugfs_${iter_num}_post_${result_type}.txt"
+    # Extract iteration number and result (format: debugfs_BENCHMARK_NUM_pre_RESULT.txt)
+    iter_num=$(echo "$basename_pre" | sed "s/debugfs_${BENCHMARK}_\([0-9]*\)_pre_.*/\1/")
+    result_type=$(echo "$basename_pre" | sed "s/debugfs_${BENCHMARK}_[0-9]*_pre_\(.*\)\.txt/\1/")
+    post_file="$GPU_DUMP_DIR/debugfs_${BENCHMARK}_${iter_num}_post_${result_type}.txt"
 
     if [ -f "$post_file" ]; then
         echo "Iteration $iter_num (${result_type}):"
@@ -719,9 +760,9 @@ echo "============================================"
 echo ""
 
 # Analyze register samples for each iteration
-for regsample in "$GPU_DUMP_DIR"/regsample_*.txt; do
+for regsample in "$GPU_DUMP_DIR"/regsample_${BENCHMARK}_*.txt; do
     [ -f "$regsample" ] || continue
-    iter_num=$(basename "$regsample" | sed 's/regsample_\([0-9]*\)\.txt/\1/')
+    iter_num=$(basename "$regsample" | sed "s/regsample_${BENCHMARK}_\([0-9]*\)\.txt/\1/")
     sample_count=$(grep -c "^--- Sample" "$regsample" 2>/dev/null || echo 0)
 
     # Get result for this iteration from results file
@@ -745,7 +786,49 @@ for regsample in "$GPU_DUMP_DIR"/regsample_*.txt; do
 done
 
 echo ""
-echo "Register sample files: $GPU_DUMP_DIR/regsample_*.txt"
+echo "Register sample files: $GPU_DUMP_DIR/regsample_${BENCHMARK}_*.txt"
+
+# Ring dump analysis
+if [ $RD_ENABLED -eq 1 ]; then
+    echo ""
+    echo "============================================"
+    echo "       RING DUMP (CMDSTREAM) CAPTURE"
+    echo "============================================"
+    echo ""
+
+    # Find rd files for this benchmark
+    smooth_rd=$(ls "$GPU_DUMP_DIR"/rd_${BENCHMARK}_*_SMOOTH.rd 2>/dev/null | head -1)
+    faceted_rd=$(ls "$GPU_DUMP_DIR"/rd_${BENCHMARK}_*_FACETED.rd 2>/dev/null | head -1)
+
+    if [ -n "$smooth_rd" ] || [ -n "$faceted_rd" ]; then
+        echo "Ring dump files captured:"
+        for rd_file in "$GPU_DUMP_DIR"/rd_${BENCHMARK}_*.rd; do
+            [ -f "$rd_file" ] || continue
+            rd_size=$(stat -c%s "$rd_file" 2>/dev/null || echo 0)
+            echo "  $(basename "$rd_file"): $rd_size bytes"
+        done
+        echo ""
+
+        if [ -n "$smooth_rd" ] && [ -n "$faceted_rd" ]; then
+            smooth_size=$(stat -c%s "$smooth_rd" 2>/dev/null || echo 0)
+            faceted_size=$(stat -c%s "$faceted_rd" 2>/dev/null || echo 0)
+            echo "SMOOTH vs FACETED comparison:"
+            echo "  SMOOTH:  $(basename "$smooth_rd") ($smooth_size bytes)"
+            echo "  FACETED: $(basename "$faceted_rd") ($faceted_size bytes)"
+            echo ""
+            echo "To analyze with cffdump (on host):"
+            echo "  cffdump $smooth_rd > smooth_cmds.txt"
+            echo "  cffdump $faceted_rd > faceted_cmds.txt"
+            echo "  diff smooth_cmds.txt faceted_cmds.txt"
+        fi
+    else
+        echo "No ring dump files captured."
+        echo "Note: Ring dump requires GPU activity during capture."
+    fi
+
+    echo ""
+    echo "Ring dump files: $GPU_DUMP_DIR/rd_${BENCHMARK}_*.rd"
+fi
 
 echo ""
 echo "============================================"
