@@ -1604,6 +1604,23 @@ static int vfe_set_format(struct v4l2_subdev *sd,
 		struct v4l2_subdev_selection sel = { 0 };
 		int ret;
 
+		if (line->id == VFE_LINE_PIX) {
+			/*
+			 * Reset compose/crop selection BEFORE propagating
+			 * format to source pad. vfe_try_format for source pad
+			 * uses the crop rectangle dimensions, so crop must be
+			 * updated first to avoid using stale values.
+			 */
+			sel.which = fmt->which;
+			sel.pad = MSM_VFE_PAD_SINK;
+			sel.target = V4L2_SEL_TGT_COMPOSE;
+			sel.r.width = fmt->format.width;
+			sel.r.height = fmt->format.height;
+			ret = vfe_set_selection(sd, sd_state, &sel);
+			if (ret < 0)
+				return ret;
+		}
+
 		/* Propagate the format from sink to source */
 		format = __vfe_get_format(line, sd_state, MSM_VFE_PAD_SRC,
 					  fmt->which);
@@ -1611,19 +1628,6 @@ static int vfe_set_format(struct v4l2_subdev *sd,
 		*format = fmt->format;
 		vfe_try_format(line, sd_state, MSM_VFE_PAD_SRC, format,
 			       fmt->which);
-
-		if (line->id != VFE_LINE_PIX)
-			return 0;
-
-		/* Reset sink pad compose selection */
-		sel.which = fmt->which;
-		sel.pad = MSM_VFE_PAD_SINK;
-		sel.target = V4L2_SEL_TGT_COMPOSE;
-		sel.r.width = fmt->format.width;
-		sel.r.height = fmt->format.height;
-		ret = vfe_set_selection(sd, sd_state, &sel);
-		if (ret < 0)
-			return ret;
 	}
 
 	return 0;
