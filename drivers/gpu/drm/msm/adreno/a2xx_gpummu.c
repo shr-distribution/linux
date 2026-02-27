@@ -3,6 +3,8 @@
 
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <asm/barrier.h>
 
 #include "msm_drv.h"
@@ -83,15 +85,39 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	unsigned i;
 	int timeout;
 	uint32_t status;
-
-	/* Log all unmaps to correlate with page faults */
-	dev_info(mmu->dev, "gpummu unmap: iova=%llx len=%zx idx=%u-%u\n",
-		 iova, len, idx, idx + (unsigned)(len / GPUMMU_PAGE_SIZE) - 1);
+	bool gpu_suspended;
 
 	/*
-	 * Wait for GPU to be completely idle before clearing page table entries.
-	 * This prevents page faults when the GPU is still accessing memory
-	 * that we're about to unmap.
+	 * Check if GPU is runtime suspended. If so, it's guaranteed idle
+	 * and we cannot access its registers. The page table is in system
+	 * RAM so we can still modify it. When GPU resumes, a2xx_hw_init()
+	 * will reload the page table base and the TLB will be empty.
+	 */
+	gpu_suspended = pm_runtime_status_suspended(gpummu->gpu->dev);
+
+	dev_dbg(mmu->dev, "gpummu unmap: iova=%llx len=%zx idx=%u-%u suspended=%d\n",
+		iova, len, idx, idx + (unsigned)(len / GPUMMU_PAGE_SIZE) - 1,
+		gpu_suspended);
+
+	if (gpu_suspended) {
+		/*
+		 * GPU is powered off - it's definitely idle.
+		 * Just clear page table entries and return.
+		 * TLB will be fresh when GPU resumes.
+		 */
+		for (i = 0; i < len / GPUMMU_PAGE_SIZE; i++, idx++)
+			gpummu->table[idx] = 0;
+
+		/* Sync page table to device memory */
+		dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
+					   DMA_TO_DEVICE);
+		return 0;
+	}
+
+	/*
+	 * GPU is active - wait for it to be completely idle before clearing
+	 * page table entries. This prevents page faults when the GPU is still
+	 * accessing memory that we're about to unmap.
 	 *
 	 * Based on webOS KGSL driver kgsl_yamato_idle() and kgsl_mmu_unmap():
 	 *
