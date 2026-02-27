@@ -507,6 +507,14 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 	pix_mp->pixelformat = fi->pixelformat;
 	pix_mp->width = clamp_t(u32, width, 1, CAMSS_FRAME_MAX_WIDTH);
 	pix_mp->height = clamp_t(u32, height, 1, CAMSS_FRAME_MAX_HEIGHT_RDI);
+
+	/*
+	 * For line-based video devices (PIX path), the VFE write master
+	 * requires width to be a multiple of 16 pixels. Round down to
+	 * match the VFE crop behavior.
+	 */
+	if (video->line_based)
+		pix_mp->width &= ~0xf;
 	pix_mp->num_planes = fi->planes;
 	for (i = 0; i < pix_mp->num_planes; i++) {
 		bpl = pix_mp->width / fi->hsub[i].numerator *
