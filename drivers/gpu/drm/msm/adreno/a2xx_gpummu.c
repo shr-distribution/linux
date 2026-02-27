@@ -93,7 +93,7 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	 * RAM so we can still modify it. When GPU resumes, a2xx_hw_init()
 	 * will reload the page table base and the TLB will be empty.
 	 */
-	gpu_suspended = pm_runtime_status_suspended(gpummu->gpu->dev);
+	gpu_suspended = pm_runtime_status_suspended(&gpummu->gpu->pdev->dev);
 
 	dev_dbg(mmu->dev, "gpummu unmap: iova=%llx len=%zx idx=%u-%u suspended=%d\n",
 		iova, len, idx, idx + (unsigned)(len / GPUMMU_PAGE_SIZE) - 1,
