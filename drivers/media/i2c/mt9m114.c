@@ -2348,21 +2348,31 @@ mt9m113_init_done:
 error_clock:
 	clk_disable_unprepare(sensor->clk);
 error_regulator:
-	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
+	/* Only disable regulators if not using powerdown GPIO control */
+	if (!sensor->powerdown)
+		regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
+				       sensor->supplies);
 	return ret;
 }
 
 static void mt9m114_power_off(struct mt9m114 *sensor)
 {
 	/*
-	 * Assert powerdown to disable the sensor before turning off clock
-	 * and regulators. This ensures a clean power-down sequence.
+	 * Assert powerdown to disable the sensor. The legacy webOS driver
+	 * only toggles the powerdown GPIO and does NOT disable regulators.
+	 * Keeping regulators enabled ensures proper sensor initialization
+	 * on the next power-on cycle.
 	 */
-	if (sensor->powerdown)
+	if (sensor->powerdown) {
 		gpiod_set_value(sensor->powerdown, 1);
-
-	clk_disable_unprepare(sensor->clk);
-	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
+		clk_disable_unprepare(sensor->clk);
+		/* Keep regulators enabled - only powerdown controls power */
+	} else {
+		/* No powerdown GPIO - use full power cycle */
+		clk_disable_unprepare(sensor->clk);
+		regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
+				       sensor->supplies);
+	}
 }
 
 static int __maybe_unused mt9m114_runtime_resume(struct device *dev)
