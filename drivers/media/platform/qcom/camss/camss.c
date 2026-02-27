@@ -4467,15 +4467,15 @@ static const struct camss_resources msm8660_resources = {
 	.icc_res = icc_res_8x60,
 	.icc_path_num = ARRAY_SIZE(icc_res_8x60),
 	/*
-	 * MSM8660/APQ8060 supports both parallel (CAMIF) and MIPI CSI-2 cameras.
-	 * The TouchPad's MT9M113 front camera uses MIPI CSI-2 on CSI1.
-	 * CSIPHY and CSID share the same register space on this platform.
+	 * MSM8660/APQ8060 with parallel camera interface (CAMIF) doesn't use
+	 * MIPI CSI-2, so CSIPHY/CSID are not needed. The VFE 3.1 connects
+	 * directly to the parallel sensor.
 	 */
-	.csiphy_res = csiphy_res_8x60,
-	.csid_res = csid_res_8x60,
+	.csiphy_res = NULL,
+	.csid_res = NULL,
 	.vfe_res = vfe_res_8x60,
-	.csiphy_num = ARRAY_SIZE(csiphy_res_8x60),
-	.csid_num = ARRAY_SIZE(csid_res_8x60),
+	.csiphy_num = 0,
+	.csid_num = 0,
 	.vfe_num = ARRAY_SIZE(vfe_res_8x60),
 };
 
