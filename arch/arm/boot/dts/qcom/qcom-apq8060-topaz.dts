@@ -19,7 +19,7 @@
 	compatible = "hp,topaz", "qcom,apq8060", "qcom,msm8660";
 };
 
-/* Topaz WiFi has no GPS - disable GSBI5 UART to free GPIO 103 for MI2S MCLK */
+/* Topaz WiFi has no GPS hardware - disable GSBI5 UART */
 &gsbi5 {
 	status = "disabled";
 };

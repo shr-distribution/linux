@@ -471,17 +471,31 @@ struct afe_audioif_config_command_legacy {
 /*
  * Convert mainline port IDs to legacy port IDs for MSM8660/APQ8060.
  * Returns -1 if the port is not supported on legacy platforms.
+ *
+ * Legacy MSM8660/APQ8060 port mapping:
+ *   PRIMARY_I2S (ports 0/1): Main codec interface on GPIO 108/109 (i2s function)
+ *   SECONDARY_I2S (ports 4/5): Secondary codec interface
+ *   MI2S (ports 6/7): Multi-channel I2S on GPIO 101-107 (mi2s function, FM radio)
+ *
+ * For HP TouchPad (Tenderloin), the WM8958 codec is connected via PRIMARY_I2S.
+ * We map SECONDARY_MI2S to LEGACY_PRIMARY_I2S for codec access, and keep
+ * PRIMARY_MI2S mapped to LEGACY_MI2S for potential FM radio use.
  */
 static int q6afe_port_to_legacy(int port_id)
 {
 	switch (port_id) {
+	/* SECONDARY_MI2S -> LEGACY_PRIMARY_I2S (codec on GPIO 108/109) */
+	case AFE_PORT_ID_SECONDARY_MI2S_RX:
+		return AFE_PORT_ID_LEGACY_PRIMARY_I2S_RX;
+	case AFE_PORT_ID_SECONDARY_MI2S_TX:
+		return AFE_PORT_ID_LEGACY_PRIMARY_I2S_TX;
+	/* PRIMARY_MI2S -> LEGACY_MI2S (FM radio on GPIO 101-107) */
 	case AFE_PORT_ID_PRIMARY_MI2S_RX:
 		return AFE_PORT_ID_LEGACY_MI2S_RX;
 	case AFE_PORT_ID_PRIMARY_MI2S_TX:
 		return AFE_PORT_ID_LEGACY_MI2S_TX;
 	case AFE_PORT_ID_MULTICHAN_HDMI_RX:
 		return AFE_PORT_ID_LEGACY_HDMI_RX;
-	/* Add more mappings as needed */
 	default:
 		return -1;
 	}

@@ -1669,26 +1669,24 @@
 	};
 
 	/*
-	 * Primary MI2S pins for WM8958 codec
-	 * From webOS gpiomux-tenderloin.c msm8x60_mi2s_configs[]:
-	 * GPIO 101: MI2S WS (word select/LRCLK)
-	 * GPIO 102: MI2S SCLK (bit clock)
-	 * GPIO 103: MI2S MCLK (master clock)
-	 * GPIO 107: MI2S SD3 (data line for codec)
+	 * Primary I2S pins for WM8958 codec
+	 *
+	 * From webOS gpiomux-tenderloin.c msm8x60_snd_configs[]:
+	 * GPIO 108: I2S TX MCLK (msm_snddev_tx_mclk)
+	 * GPIO 109: I2S RX MCLK (msm_snddev_rx_mclk / I2S_Clock)
+	 *
+	 * The WM8958 codec is connected via the "Primary I2S" interface
+	 * (legacy AFE ports 0/1), NOT the "MI2S" interface (legacy ports 6/7
+	 * which is for FM radio on GPIO 101-107).
+	 *
+	 * Note: We use SECONDARY_MI2S in the q6afe driver which maps to
+	 * LEGACY_PRIMARY_I2S ports 0/1 for codec access.
 	 */
-	pri_mi2s_pins: pri-mi2s-state {
-		clk-pins {
-			pins = "gpio101", "gpio102", "gpio103";
-			function = "mi2s";
-			drive-strength = <2>;
-			bias-disable;
-		};
-		data-pins {
-			pins = "gpio107";
-			function = "mi2s";
-			drive-strength = <2>;
-			bias-disable;
-		};
+	codec_i2s_pins: codec-i2s-state {
+		pins = "gpio108", "gpio109";
+		function = "i2s";
+		drive-strength = <2>;
+		bias-disable;
 	};
 
 	/* Headphone UART pins */
@@ -2782,16 +2780,22 @@
 	qcom,legacy-afe-protocol;
 };
 
+/*
+ * Q6 AFE DAI configuration for WM8958 codec
+ *
+ * We use SECONDARY_MI2S which maps to legacy PRIMARY_I2S ports (0/1)
+ * in q6afe.c via q6afe_port_to_legacy(). This is the correct interface
+ * for the WM8958 codec on GPIO 108/109.
+ *
+ * Note: PRIMARY_MI2S maps to legacy MI2S ports (6/7) which is for FM radio.
+ */
 &q6afedai {
-	dai@16 {
-		reg = <PRIMARY_MI2S_RX>;
-		/* TouchPad uses SD3 (GPIO 107) for codec data */
-		qcom,sd-lines = <3>;
+	dai@18 {
+		reg = <SECONDARY_MI2S_RX>;
 	};
 
-	dai@17 {
-		reg = <PRIMARY_MI2S_TX>;
-		qcom,sd-lines = <3>;
+	dai@19 {
+		reg = <SECONDARY_MI2S_TX>;
 	};
 };
 
@@ -2800,9 +2804,9 @@
 		compatible = "qcom,apq8060-sndcard";
 		model = "HP-TouchPad";
 
-		/* MI2S pin configuration for codec connection */
+		/* I2S pin configuration for WM8958 codec (GPIO 108/109) */
 		pinctrl-names = "default";
-		pinctrl-0 = <&pri_mi2s_pins>;
+		pinctrl-0 = <&codec_i2s_pins>;
 
 		/* DAPM audio routing
 		 * IMPORTANT: Speakers use WM8958 SPKOUT pins, NOT LINEOUT!
@@ -2839,11 +2843,13 @@
 			};
 		};
 
-		/* Backend - Primary MI2S to WM8958 codec */
-		pri-mi2s-rx-dai-link {
-			link-name = "Primary MI2S Playback";
+		/* Backend - Secondary MI2S to WM8958 codec
+		 * (maps to legacy PRIMARY_I2S ports 0/1 via q6afe)
+		 */
+		sec-mi2s-rx-dai-link {
+			link-name = "Secondary MI2S Playback";
 			cpu {
-				sound-dai = <&q6afedai PRIMARY_MI2S_RX>;
+				sound-dai = <&q6afedai SECONDARY_MI2S_RX>;
 			};
 			platform {
 				sound-dai = <&q6routing>;
@@ -2853,10 +2859,10 @@
 			};
 		};
 
-		pri-mi2s-tx-dai-link {
-			link-name = "Primary MI2S Capture";
+		sec-mi2s-tx-dai-link {
+			link-name = "Secondary MI2S Capture";
 			cpu {
-				sound-dai = <&q6afedai PRIMARY_MI2S_TX>;
+				sound-dai = <&q6afedai SECONDARY_MI2S_TX>;
 			};
 			platform {
 				sound-dai = <&q6routing>;

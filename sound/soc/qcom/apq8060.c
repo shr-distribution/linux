@@ -144,8 +144,11 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	int ret;
 
-	/* Only initialize jack on the first backend link */
-	if (cpu_dai->id != PRIMARY_MI2S_RX)
+	/* Only initialize jack on the first backend link
+	 * Note: We use SECONDARY_MI2S which maps to legacy PRIMARY_I2S
+	 * ports (0/1) for the WM8958 codec on GPIO 108/109.
+	 */
+	if (cpu_dai->id != SECONDARY_MI2S_RX)
 		return 0;
 
 	/* Setup headphone jack */
