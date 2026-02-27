@@ -69,6 +69,10 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 	unsigned int rate = params_rate(params);
 	int ret;
 
+	dev_info(rtd->dev, "APQ8060: hw_params called, rate=%u, codec_dai=%s, cpu_dai=%s\n",
+		 rate, codec_dai ? codec_dai->name : "NULL",
+		 cpu_dai ? cpu_dai->name : "NULL");
+
 	/*
 	 * Set DAI format - I2S, CPU/DSP provides bit/frame clocks.
 	 * The Q6 DSP via MI2S is the clock master, providing BCLK and LRCLK
@@ -78,6 +82,7 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 				  SND_SOC_DAIFMT_I2S |
 				  SND_SOC_DAIFMT_NB_NF |
 				  SND_SOC_DAIFMT_BP_FP);
+	dev_info(rtd->dev, "APQ8060: CPU DAI set_fmt result: %d\n", ret);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set CPU DAI format: %d\n", ret);
 		return ret;
@@ -87,6 +92,7 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 				  SND_SOC_DAIFMT_I2S |
 				  SND_SOC_DAIFMT_NB_NF |
 				  SND_SOC_DAIFMT_CBC_CFC);
+	dev_info(rtd->dev, "APQ8060: Codec DAI set_fmt result: %d (CBC_CFC=slave)\n", ret);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set codec DAI format: %d\n", ret);
 		return ret;
@@ -97,6 +103,7 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 	 * Internal oscillator is 12MHz (WM8994_FLL_SRC_INTERNAL).
 	 * FLL output = 12,288,000 Hz (256 * 48kHz)
 	 */
+	dev_info(rtd->dev, "APQ8060: Setting FLL1 from internal osc\n");
 	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1,
 				  WM8994_FLL_SRC_INTERNAL,
 				  12000000, 48000 * 256);
@@ -104,14 +111,17 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 		dev_err(rtd->dev, "Failed to set FLL1: %d\n", ret);
 		return ret;
 	}
+	dev_info(rtd->dev, "APQ8060: FLL1 set result: %d\n", ret);
 
 	/* Set AIF1CLK to use FLL1 at 12.288MHz (256*48kHz) */
+	dev_info(rtd->dev, "APQ8060: Setting AIF1CLK to FLL1\n");
 	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_FLL1,
 				     48000 * 256, SND_SOC_CLOCK_IN);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set sysclk: %d\n", ret);
 		return ret;
 	}
+	dev_info(rtd->dev, "APQ8060: sysclk set result: %d\n", ret);
 
 	return 0;
 }
