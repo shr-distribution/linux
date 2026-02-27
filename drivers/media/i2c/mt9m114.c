@@ -73,6 +73,9 @@
 /* MT9M113 RESET_REGISTER value for parallel output (from webOS kernel) */
 #define MT9M113_RESET_REG_PARALLEL_ENABLE		0x120c
 
+/* MT9M113 OFIFO control (from webOS kernel) */
+#define MT9M114_OFIFO_CONTROL_STATUS			CCI_REG16(0x321c)
+
 /* Sensor Core registers */
 #define MT9M114_COARSE_INTEGRATION_TIME			CCI_REG16(0x3012)
 #define MT9M114_FINE_INTEGRATION_TIME			CCI_REG16(0x3014)
@@ -2373,6 +2376,16 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		}
 		dev_info(dev, "power_on: PLL phase 2 complete, stabilizing\n");
 		msleep(50); /* Wait for sensor to stabilize */
+
+		/*
+		 * Configure output FIFO control.
+		 * From webOS kernel: OFIFO_CONTROL_STATUS = 0x0003.
+		 */
+		cci_write(sensor->regmap, MT9M114_OFIFO_CONTROL_STATUS, 0x0003, &ret);
+		if (ret < 0) {
+			dev_err(dev, "power_on: OFIFO_CONTROL_STATUS failed: %d\n", ret);
+			goto error_clock;
+		}
 
 		/*
 		 * MT9M113 is now ready after MCU boot and PLL initialization.
