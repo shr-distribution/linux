@@ -1350,17 +1350,7 @@
 		line-name = "AUD_LDO2_EN";
 	};
 
-	/*
-	 * Camera powerdown GPIO must be held low to enable the MT9M113
-	 * sensor. The mainline mt9m114 driver doesn't handle powerdown-gpios,
-	 * so we use a hog to ensure it's always deasserted.
-	 */
-	cam-pwdn-hog {
-		gpio-hog;
-		gpios = <107 GPIO_ACTIVE_HIGH>;
-		output-low;
-		line-name = "CAM_PWDN";
-	};
+	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
 
 	/* eMMC pins, all 8 data lines connected */
 	emmc_pins: sdcc1-state {
@@ -2146,11 +2136,10 @@
 		reg = <0x3c>;
 
 		/*
-		 * The legacy webOS driver does NOT use the reset GPIO - it only
-		 * toggles powerdown. Using reset-gpios causes I2C failures during
-		 * runtime resume. The powerdown is held low via cam-pwdn-hog,
-		 * keeping the sensor enabled; the driver uses soft reset via I2C.
+		 * The legacy webOS driver controls power via powerdown GPIO only,
+		 * not reset GPIO. Powerdown HIGH = sensor off, LOW = sensor on.
 		 */
+		powerdown-gpios = <&tlmm 107 GPIO_ACTIVE_HIGH>;
 
 		clocks = <&mmcc CAMCLK0_CLK>;
 		clock-names = "xvclk";

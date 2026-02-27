@@ -393,6 +393,7 @@ struct mt9m114 {
 
 	struct clk *clk;
 	struct gpio_desc *reset;
+	struct gpio_desc *powerdown;
 	struct regulator_bulk_data supplies[3];
 	struct v4l2_fwnode_endpoint bus_cfg;
 	bool bypass_pll;
@@ -2176,10 +2177,19 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	dev_info(dev, "power_on: regulators enabled\n");
 
 	/*
-	 * After enabling regulators, wait for power to stabilize before
-	 * enabling clock. The legacy webOS driver waits 40ms after power-up.
+	 * Deassert powerdown to enable the sensor. The legacy webOS driver
+	 * controls power state entirely through the powerdown GPIO.
 	 */
-	usleep_range(40000, 45000);
+	if (sensor->powerdown) {
+		dev_info(dev, "power_on: deasserting powerdown\n");
+		gpiod_set_value(sensor->powerdown, 0);
+	}
+
+	/*
+	 * After enabling regulators and deasserting powerdown, wait for power
+	 * to stabilize before enabling clock. Legacy driver waits 20ms.
+	 */
+	usleep_range(20000, 25000);
 	dev_info(dev, "power_on: power stabilization wait complete\n");
 
 	ret = clk_prepare_enable(sensor->clk);
@@ -2344,6 +2354,13 @@ error_regulator:
 
 static void mt9m114_power_off(struct mt9m114 *sensor)
 {
+	/*
+	 * Assert powerdown to disable the sensor before turning off clock
+	 * and regulators. This ensures a clean power-down sequence.
+	 */
+	if (sensor->powerdown)
+		gpiod_set_value(sensor->powerdown, 1);
+
 	clk_disable_unprepare(sensor->clk);
 	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
 }
@@ -2574,6 +2591,19 @@ static int mt9m114_probe(struct i2c_client *client)
 	if (IS_ERR(sensor->reset)) {
 		ret = PTR_ERR(sensor->reset);
 		dev_err_probe(dev, ret, "Failed to get reset GPIO\n");
+		goto error_ep_free;
+	}
+
+	/*
+	 * Powerdown GPIO controls the sensor power state. When asserted (high),
+	 * the sensor is powered down. When deasserted (low), the sensor is
+	 * enabled. This matches the legacy webOS driver behavior.
+	 */
+	sensor->powerdown = devm_gpiod_get_optional(dev, "powerdown",
+						    GPIOD_OUT_HIGH);
+	if (IS_ERR(sensor->powerdown)) {
+		ret = PTR_ERR(sensor->powerdown);
+		dev_err_probe(dev, ret, "Failed to get powerdown GPIO\n");
 		goto error_ep_free;
 	}
 
