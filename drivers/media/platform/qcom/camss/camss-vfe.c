@@ -1204,11 +1204,15 @@ int vfe_flush_buffers(struct camss_video *vid,
 
 	vfe_buf_flush_pending(output, state);
 
-	if (output->buf[0])
+	if (output->buf[0]) {
 		vb2_buffer_done(&output->buf[0]->vb.vb2_buf, state);
+		output->buf[0] = NULL;
+	}
 
-	if (output->buf[1])
+	if (output->buf[1]) {
 		vb2_buffer_done(&output->buf[1]->vb.vb2_buf, state);
+		output->buf[1] = NULL;
+	}
 
 	if (output->last_buffer) {
 		vb2_buffer_done(&output->last_buffer->vb.vb2_buf, state);
@@ -1798,12 +1802,16 @@ static int vfe_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	/*
 	 * VFE 3.1 uses parallel camera interface (CAMIF) which requires
 	 * 2X8 media bus formats instead of 1X16. The resolution matches
-	 * MT9M114 IFP output (sensor array minus 8 pixels for processing).
+	 * MT9M114 IFP output: 1288x968 (pixel array 1296x976 minus 8 border).
 	 */
 	if (vfe->res->hw_ops == &vfe_ops_3_1) {
 		format.format.code = MEDIA_BUS_FMT_UYVY8_2X8;
 		format.format.width = 1288;
 		format.format.height = 968;
+		dev_info(vfe->camss->dev,
+			 "VFE 3.1 init format: %ux%u code=0x%04x\n",
+			 format.format.width, format.format.height,
+			 format.format.code);
 	}
 
 	return vfe_set_format(sd, fh ? fh->state : NULL, &format);
@@ -2128,6 +2136,9 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		 */
 		video_out->default_width = vfe->line[i].fmt[MSM_VFE_PAD_SRC].width;
 		video_out->default_height = vfe->line[i].fmt[MSM_VFE_PAD_SRC].height;
+
+		dev_info(dev, "VFE line %d: default video format %ux%u\n",
+			 i, video_out->default_width, video_out->default_height);
 
 		snprintf(name, ARRAY_SIZE(name), "%s%d_%s%d",
 			 MSM_VFE_NAME, vfe->id, "video", i);
