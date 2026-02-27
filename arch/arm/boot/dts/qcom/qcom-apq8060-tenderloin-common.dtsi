@@ -2143,8 +2143,12 @@
 		compatible = "aptina,mt9m113";
 		reg = <0x3c>;
 
-		/* Reset GPIO; powerdown handled by cam-pwdn-hog in tlmm */
-		reset-gpios = <&tlmm 106 GPIO_ACTIVE_LOW>;
+		/*
+		 * The legacy webOS driver does NOT use the reset GPIO - it only
+		 * toggles powerdown. Using reset-gpios causes I2C failures during
+		 * runtime resume. The powerdown is held low via cam-pwdn-hog,
+		 * keeping the sensor enabled; the driver uses soft reset via I2C.
+		 */
 
 		clocks = <&mmcc CAMCLK0_CLK>;
 		clock-names = "xvclk";
