@@ -2175,6 +2175,13 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	}
 	dev_info(dev, "power_on: regulators enabled\n");
 
+	/*
+	 * After enabling regulators, wait for power to stabilize before
+	 * enabling clock. The legacy webOS driver waits 40ms after power-up.
+	 */
+	usleep_range(40000, 45000);
+	dev_info(dev, "power_on: power stabilization wait complete\n");
+
 	ret = clk_prepare_enable(sensor->clk);
 	if (ret < 0) {
 		dev_err(dev, "power_on: clk_prepare_enable failed: %d\n", ret);
@@ -2182,6 +2189,11 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	}
 	dev_info(dev, "power_on: clock enabled, rate=%lu Hz\n",
 		 clk_get_rate(sensor->clk));
+
+	/*
+	 * Wait for clock to stabilize before reset (legacy driver waits 5ms).
+	 */
+	usleep_range(5000, 10000);
 
 	/* Perform a hard reset if available, or a soft reset otherwise. */
 	if (sensor->reset) {
