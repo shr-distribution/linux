@@ -179,12 +179,21 @@ static void event_handler(uint32_t opcode, uint32_t token,
 {
 	struct q6asm_dai_rtd *prtd = priv;
 	struct snd_pcm_substream *substream = prtd->substream;
+	int i;
 
 	switch (opcode) {
 	case ASM_CLIENT_EVENT_CMD_RUN_DONE:
-		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-			q6asm_write_async(prtd->audio_client, prtd->stream_id,
-				   prtd->pcm_count, 0, 0, 0);
+		/*
+		 * Queue multiple buffers on startup to give the Q6 DSP
+		 * enough data to start the I2S clocks. Legacy firmware
+		 * may not start I2S until it has sufficient data queued.
+		 */
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			for (i = 0; i < prtd->periods && i < 2; i++)
+				q6asm_write_async(prtd->audio_client,
+						  prtd->stream_id,
+						  prtd->pcm_count, 0, 0, 0);
+		}
 		break;
 	case ASM_CLIENT_EVENT_CMD_EOS_DONE:
 		prtd->state = Q6ASM_STREAM_STOPPED;
