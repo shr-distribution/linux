@@ -2253,6 +2253,14 @@
 	pinctrl-0 = <&gsbi6_uart_pins>;
 
 	/*
+	 * Set UART clock to 1843200 Hz for exact 115200 baud rate.
+	 * Without this, the clock defaults to 27MHz which doesn't divide
+	 * evenly to 115200 and causes baud rate mismatch with BCM4329.
+	 */
+	assigned-clocks = <&gcc GSBI6_UART_CLK>;
+	assigned-clock-rates = <1843200>;
+
+	/*
 	 * Legacy webOS kernel used HSUART with no hardware flow control:
 	 * HSUART_MODE_FLOW_CTRL_NONE | HSUART_MODE_PARITY_NONE
 	 * Do NOT enable uart-has-rtscts here.
