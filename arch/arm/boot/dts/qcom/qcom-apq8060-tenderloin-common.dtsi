@@ -1674,7 +1674,8 @@
 	 * GPIO 101: MI2S WS (word select/LRCLK)
 	 * GPIO 102: MI2S SCLK (bit clock)
 	 * GPIO 103: MI2S MCLK (master clock)
-	 * GPIO 107: MI2S SD3 (data line - codec uses SD3)
+	 * GPIO 108/109: MI2S SD0/SD1 (data lines for codec)
+	 * Note: GPIO 107 is camera powerdown, NOT MI2S SD3
 	 */
 	pri_mi2s_pins: pri-mi2s-state {
 		clk-pins {
@@ -1684,7 +1685,7 @@
 			bias-disable;
 		};
 		data-pins {
-			pins = "gpio107";
+			pins = "gpio108", "gpio109";
 			function = "mi2s";
 			drive-strength = <2>;
 			bias-disable;
