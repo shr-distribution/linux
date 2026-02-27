@@ -2179,8 +2179,7 @@
  * MT9M113 sensor support added to mt9m114.c driver.
  */
 &camss {
-	/* FIXME: Camera breaks display - disable until root cause found */
-	status = "disabled";
+	status = "okay";
 
 	ports {
 		port@0 {
