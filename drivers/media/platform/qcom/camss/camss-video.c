@@ -329,14 +329,17 @@ static void video_stop_streaming(struct vb2_queue *q)
 
 		ret = v4l2_subdev_call(subdev, video, s_stream, 0);
 
-		if (ret) {
+		if (ret)
 			dev_err(video->camss->dev, "Video pipeline stop failed: %d\n", ret);
-			return;
-		}
 	}
 
 	video_device_pipeline_stop(vdev);
 
+	/*
+	 * Always flush buffers, even if pipeline stop failed. We must return
+	 * all buffers to vb2 to avoid "stop_streaming leaving buffer in active
+	 * state" warnings.
+	 */
 	video->ops->flush_buffers(video, VB2_BUF_STATE_ERROR);
 }
 
