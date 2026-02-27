@@ -2246,13 +2246,12 @@
 	pinctrl-0 = <&gsbi6_uart_pins>;
 
 	/*
-	 * UART clock for Bluetooth. WebOS used 3686400 baud highspeed.
-	 * For 3686400 baud with 16x oversampling, need 58982400 Hz.
-	 * The 27MHz base clock can achieve this via PLL.
-	 * Note: Lower speeds (115200) also work with this clock.
+	 * Set UART clock to 1843200 Hz for exact 115200 baud rate.
+	 * Without this, the clock defaults to 27MHz which doesn't divide
+	 * evenly to 115200 and causes baud rate mismatch with BCM4329.
 	 */
 	assigned-clocks = <&gcc GSBI6_UART_CLK>;
-	assigned-clock-rates = <58982400>;
+	assigned-clock-rates = <1843200>;
 
 	/*
 	 * Legacy webOS kernel used HSUART with no hardware flow control:
@@ -2271,15 +2270,8 @@
 		vddio-supply = <&pm8058_s3>;
 		vbat-supply = <&pm8901_l3>;
 
-		/* 32.768 kHz LPO clock for low-power operation */
-		clocks = <&sleep_clk>;
-		clock-names = "lpo";
-
-		/*
-		 * UART speed: webOS used 3686400 baud with highspeed UART.
-		 * Start at 115200, driver will negotiate to oper_speed.
-		 */
-		max-speed = <3686400>;
+		/* UART speed from legacy kernel: HSUART_SPEED_115K */
+		max-speed = <115200>;
 
 		/*
 		 * SCO/PCM audio interface configuration for Bluetooth voice calls.
@@ -2317,11 +2309,7 @@
 		reset-gpios = <&tlmm 138 GPIO_ACTIVE_LOW>;	/* BT_RST_N */
 		shutdown-gpios = <&tlmm 130 GPIO_ACTIVE_HIGH>;	/* BT_POWER */
 		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>; /* BT_WAKE */
-
-		/* Host wakeup interrupt (replaces deprecated host-wakeup-gpios) */
-		interrupt-parent = <&tlmm>;
-		interrupts = <129 IRQ_TYPE_EDGE_RISING>;
-		interrupt-names = "host-wakeup";
+		host-wakeup-gpios = <&tlmm 129 GPIO_ACTIVE_HIGH>;   /* BT_HOST_WAKE */
 	};
 };
 
