@@ -2197,18 +2197,15 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 
 	/* Perform a hard reset if available, or a soft reset otherwise. */
 	if (sensor->reset) {
-		long freq = clk_get_rate(sensor->clk);
-		unsigned int duration;
-
 		/*
-		 * The minimum duration is 50 clock cycles, thus typically
-		 * around 2µs. Double it to be safe.
+		 * Assert reset for at least 1ms. The datasheet specifies a
+		 * minimum of 50 clock cycles (~2µs at 24MHz), but in practice
+		 * the sensor needs a longer pulse to reliably reset,
+		 * especially after a power cycle during runtime resume.
 		 */
-		duration = DIV_ROUND_UP(2 * 50 * 1000000, freq);
-
-		dev_info(dev, "power_on: asserting reset for %u us\n", duration);
+		dev_info(dev, "power_on: asserting reset for 1ms\n");
 		gpiod_set_value(sensor->reset, 1);
-		fsleep(duration);
+		usleep_range(1000, 2000);
 		gpiod_set_value(sensor->reset, 0);
 		dev_info(dev, "power_on: reset released, waiting 45ms\n");
 
