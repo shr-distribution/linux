@@ -27,3 +27,17 @@
 &gsbi5_serial {
 	status = "disabled";
 };
+
+/*
+ * Topaz WiFi does NOT have accelerometer or magnetometer hardware.
+ * The TENDERLOIN_GSENS_INT GPIO (124) is defined in legacy kernel but
+ * NOT used in the WiFi pin tables (tenderloin_pins_wifi[]).
+ * These sensors may only be present on 3G/Opal variants.
+ */
+&lsm303dlh_accel {
+	status = "disabled";
+};
+
+&lsm303dlh_magn {
+	status = "disabled";
+};
