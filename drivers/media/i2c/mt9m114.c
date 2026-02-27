@@ -65,8 +65,13 @@
 
 /* MT9M113 MCU variable addresses */
 #define MT9M113_SEQ_CMD					0xa103
+#define MT9M113_SEQ_CMD_RUN				0x0001
 #define MT9M113_SEQ_CMD_REFRESH				0x0005
 #define MT9M113_SEQ_CMD_REFRESH_MODE			0x0006
+#define MT9M113_SEQ_CAP_MODE				0xa115
+
+/* MT9M113 RESET_REGISTER value for parallel output (from webOS kernel) */
+#define MT9M113_RESET_REG_PARALLEL_ENABLE		0x120c
 
 /* Sensor Core registers */
 #define MT9M114_COARSE_INTEGRATION_TIME			CCI_REG16(0x3012)
@@ -1020,27 +1025,40 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 		}
 		usleep_range(5000, 10000);
 
-		/* Refresh sequencer to apply settings */
-		cci_write(sensor->regmap, MT9M114_MCU_ADDRESS,
-			  MT9M113_SEQ_CMD, &ret);
-		cci_write(sensor->regmap, MT9M114_MCU_DATA,
-			  MT9M113_SEQ_CMD_REFRESH, &ret);
+		/*
+		 * Configure RESET_REGISTER for parallel output.
+		 * Value 0x120C from webOS kernel enables parallel interface.
+		 */
+		cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+			  MT9M113_RESET_REG_PARALLEL_ENABLE, &ret);
 		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD REFRESH failed: %d\n", ret);
+			dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
 			goto error;
 		}
-		usleep_range(5000, 10000);
 
-		/* Refresh mode to enter streaming */
+		/*
+		 * Set capture mode and start streaming via MCU interface.
+		 * From webOS kernel: SEQ_CAP_MODE=0x0030, SEQ_CMD=0x0001
+		 */
+		cci_write(sensor->regmap, MT9M114_MCU_ADDRESS,
+			  MT9M113_SEQ_CAP_MODE, &ret);
+		cci_write(sensor->regmap, MT9M114_MCU_DATA, 0x0030, &ret);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
+			goto error;
+		}
+		usleep_range(40000, 50000);
+
+		/* Issue SEQ_CMD=1 to start streaming */
 		cci_write(sensor->regmap, MT9M114_MCU_ADDRESS,
 			  MT9M113_SEQ_CMD, &ret);
 		cci_write(sensor->regmap, MT9M114_MCU_DATA,
-			  MT9M113_SEQ_CMD_REFRESH_MODE, &ret);
+			  MT9M113_SEQ_CMD_RUN, &ret);
 		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD REFRESH_MODE failed: %d\n", ret);
+			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD RUN failed: %d\n", ret);
 			goto error;
 		}
-		usleep_range(5000, 10000);
+		usleep_range(20000, 30000);
 
 		dev_info(&sensor->client->dev, "MT9M113: streaming sequence complete\n");
 	} else {
