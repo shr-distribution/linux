@@ -1047,6 +1047,19 @@ mt9m113_streaming:
 		usleep_range(5000, 10000);
 
 		/*
+		 * Configure CAM_PORT_OUTPUT_CONTROL for parallel mode via MCU.
+		 * MCU variable 0xC984: bit 0 = 0 for parallel, bit 15 = 1.
+		 * Value 0x8000 = parallel mode with output enabled.
+		 */
+		cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, 0xC984, &ret);
+		cci_write(sensor->regmap, MT9M114_MCU_DATA, 0x8000, &ret);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: CAM_PORT config failed: %d\n", ret);
+			goto error;
+		}
+		usleep_range(5000, 10000);
+
+		/*
 		 * Configure RESET_REGISTER for parallel output.
 		 * Value 0x120C from webOS kernel enables parallel interface.
 		 */
