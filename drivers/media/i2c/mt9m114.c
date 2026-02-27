@@ -994,10 +994,16 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 	/*
 	 * The Change-Config state is transient and moves to the streaming
 	 * state automatically.
+	 *
+	 * MT9M113 uses a different command mechanism (MCU indirect via
+	 * 0x098C/0x0990) and doesn't support MT9M114's COMMAND_REGISTER.
+	 * The sensor is already streaming after the configuration writes.
 	 */
-	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
-	if (ret)
-		goto error;
+	if (sensor->model != MT9M113_MODEL) {
+		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
+		if (ret)
+			goto error;
+	}
 
 	sensor->streaming = true;
 
@@ -1011,11 +1017,16 @@ error:
 
 static int mt9m114_stop_streaming(struct mt9m114 *sensor)
 {
-	int ret;
+	int ret = 0;
 
 	sensor->streaming = false;
 
-	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_SUSPEND);
+	/*
+	 * MT9M113 doesn't support COMMAND_REGISTER. The sensor will stop
+	 * streaming when powered down via runtime PM.
+	 */
+	if (sensor->model != MT9M113_MODEL)
+		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_SUSPEND);
 
 	pm_runtime_put_autosuspend(&sensor->client->dev);
 
