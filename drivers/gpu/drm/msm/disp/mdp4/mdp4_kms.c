@@ -178,6 +178,7 @@ int mdp4_disable(struct mdp4_kms *mdp4_kms)
 	clk_disable_unprepare(mdp4_kms->pclk);
 	clk_disable_unprepare(mdp4_kms->lut_clk);
 	clk_disable_unprepare(mdp4_kms->axi_clk);
+	clk_disable_unprepare(mdp4_kms->vsync_clk);
 
 	return 0;
 }
@@ -190,6 +191,7 @@ int mdp4_enable(struct mdp4_kms *mdp4_kms)
 	clk_prepare_enable(mdp4_kms->pclk);
 	clk_prepare_enable(mdp4_kms->lut_clk);
 	clk_prepare_enable(mdp4_kms->axi_clk);
+	clk_prepare_enable(mdp4_kms->vsync_clk);
 
 	return 0;
 }
@@ -715,6 +717,10 @@ static int mdp4_probe(struct platform_device *pdev)
 	mdp4_kms->lut_clk = devm_clk_get_optional(&pdev->dev, "lut_clk");
 	if (IS_ERR(mdp4_kms->lut_clk))
 		return dev_err_probe(dev, PTR_ERR(mdp4_kms->lut_clk), "failed to get lut_clk\n");
+
+	mdp4_kms->vsync_clk = devm_clk_get_optional(&pdev->dev, "vsync_clk");
+	if (IS_ERR(mdp4_kms->vsync_clk))
+		return dev_err_probe(dev, PTR_ERR(mdp4_kms->vsync_clk), "failed to get vsync_clk\n");
 
 	/* Set up interconnect bandwidth to prevent display underrun */
 	ret = mdp4_setup_interconnect(pdev);

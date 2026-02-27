@@ -954,13 +954,15 @@
 				 <&mmcc MDP_AXI_CLK>,
 				 <&mmcc HDMI_TV_CLK>,
 				 <&mmcc MDP_TV_CLK>,
-				 <&mmcc MDP_LCDC_CLK>;
+				 <&mmcc MDP_LCDC_CLK>,
+				 <&mmcc MDP_VSYNC_CLK>;
 			clock-names = "core_clk",
 				      "iface_clk",
 				      "bus_clk",
 				      "hdmi_clk",
 				      "tv_clk",
-				      "lcdc_clk";
+				      "lcdc_clk",
+				      "vsync_clk";
 
 			lvds-vccs-3p3v-supply = <&pm8058_l10>;
 
