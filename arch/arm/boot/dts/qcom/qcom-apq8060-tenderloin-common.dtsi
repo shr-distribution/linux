@@ -1669,25 +1669,21 @@
 	};
 
 	/*
-	 * Primary I2S pins for WM8958 codec
+	 * Note on audio I2S interface:
 	 *
-	 * From webOS gpiomux-tenderloin.c msm8x60_snd_configs[]:
-	 * GPIO 108: I2S TX MCLK (msm_snddev_tx_mclk)
-	 * GPIO 109: I2S RX MCLK (msm_snddev_rx_mclk / I2S_Clock)
+	 * The WM8958 codec audio data path is handled internally by the
+	 * Q6 LPASS DSP via the "Primary I2S" AFE ports (legacy ports 0/1).
+	 * No external GPIO pinctrl is needed for the audio data path.
 	 *
-	 * The WM8958 codec is connected via the "Primary I2S" interface
-	 * (legacy AFE ports 0/1), NOT the "MI2S" interface (legacy ports 6/7
-	 * which is for FM radio on GPIO 101-107).
+	 * GPIO 108/109 are NOT I2S data pins - they are:
+	 *   GPIO 108: AUD_LDO2_EN (codec power regulator enable)
+	 *   GPIO 109: Codec MCLK control
+	 * These are already configured via the aud_ldo2 regulator and
+	 * wlf,ldo2ena-gpios in the WM8958 node.
 	 *
-	 * Note: We use SECONDARY_MI2S in the q6afe driver which maps to
+	 * We use SECONDARY_MI2S in the q6afe driver which maps to
 	 * LEGACY_PRIMARY_I2S ports 0/1 for codec access.
 	 */
-	codec_i2s_pins: codec-i2s-state {
-		pins = "gpio108", "gpio109";
-		function = "i2s";
-		drive-strength = <2>;
-		bias-disable;
-	};
 
 	/* Headphone UART pins */
 	headphone_uart_pins: gsbi12-serial-state {
@@ -2804,9 +2800,11 @@
 		compatible = "qcom,apq8060-sndcard";
 		model = "HP-TouchPad";
 
-		/* I2S pin configuration for WM8958 codec (GPIO 108/109) */
-		pinctrl-names = "default";
-		pinctrl-0 = <&codec_i2s_pins>;
+		/*
+		 * No pinctrl needed - audio data path is internal to LPASS.
+		 * GPIO 108/109 are codec power/clock control, handled by
+		 * the aud_ldo2 regulator and WM8958 driver.
+		 */
 
 		/* DAPM audio routing
 		 * IMPORTANT: Speakers use WM8958 SPKOUT pins, NOT LINEOUT!

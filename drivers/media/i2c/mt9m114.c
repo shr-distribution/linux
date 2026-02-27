@@ -1370,9 +1370,14 @@ static int mt9m114_pa_set_selection(struct v4l2_subdev *sd,
 		ret = mt9m114_configure_pa(sensor, state);
 		if (ret)
 			return ret;
-		/* Changing the cropping config requires a CONFIG_CHANGE. */
-		ret = mt9m114_set_state(sensor,
-					MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
+		/*
+		 * Changing the cropping config requires a CONFIG_CHANGE.
+		 * MT9M113 doesn't support COMMAND_REGISTER - changes take
+		 * effect immediately.
+		 */
+		if (sensor->model != MT9M113_MODEL)
+			ret = mt9m114_set_state(sensor,
+						MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
 	}
 	return ret;
 }
@@ -1605,8 +1610,11 @@ static int mt9m114_ifp_s_ctrl(struct v4l2_ctrl *ctrl)
 		 * A Config-Change needs to be issued for the change to take
 		 * effect. If we're not streaming ignore this, the change will
 		 * be applied when the stream is started.
+		 * MT9M113 doesn't support COMMAND_REGISTER - changes take
+		 * effect immediately.
 		 */
-		if (ret || !sensor->streaming)
+		if (ret || !sensor->streaming ||
+		    sensor->model == MT9M113_MODEL)
 			break;
 
 		ret = mt9m114_set_state(sensor,
