@@ -340,6 +340,9 @@ int vfe_gen1_enable(struct vfe_line *line)
 	struct vfe_device *vfe = to_vfe(line);
 	int ret;
 
+	dev_info(vfe->camss->dev, "VFE gen1_enable: line_id=%d stream_count=%d\n",
+		 line->id, vfe->stream_count);
+
 	mutex_lock(&vfe->stream_lock);
 
 	if (!vfe->stream_count) {
@@ -354,13 +357,18 @@ int vfe_gen1_enable(struct vfe_line *line)
 	mutex_unlock(&vfe->stream_lock);
 
 	ret = vfe_get_output(line);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(vfe->camss->dev, "VFE gen1_enable: vfe_get_output failed %d\n", ret);
 		goto error_get_output;
+	}
 
 	ret = vfe_enable_output(line);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(vfe->camss->dev, "VFE gen1_enable: vfe_enable_output failed %d\n", ret);
 		goto error_enable_output;
+	}
 
+	dev_info(vfe->camss->dev, "VFE gen1_enable: success\n");
 	vfe->was_streaming = 1;
 
 	return 0;

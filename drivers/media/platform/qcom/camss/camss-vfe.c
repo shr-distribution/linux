@@ -1259,6 +1259,9 @@ static int vfe_set_stream(struct v4l2_subdev *sd, int enable)
 	struct vfe_device *vfe = to_vfe(line);
 	int ret;
 
+	dev_info(vfe->camss->dev, "VFE set_stream: enable=%d line_id=%d\n",
+		 enable, line->id);
+
 	if (enable) {
 		line->output.state = VFE_OUTPUT_RESERVED;
 		ret = vfe->res->hw_ops->vfe_enable(line);
@@ -1272,6 +1275,7 @@ static int vfe_set_stream(struct v4l2_subdev *sd, int enable)
 				"Failed to disable vfe outputs\n");
 	}
 
+	dev_info(vfe->camss->dev, "VFE set_stream: ret=%d\n", ret);
 	return ret;
 }
 
