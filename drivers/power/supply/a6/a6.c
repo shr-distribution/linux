@@ -3804,8 +3804,48 @@ static void a6_irq_work_handler(struct work_struct *work)
 
 		/* charger-source change? */
 		if (reg_val_status3 & TS2_I2C_INT_3_FLAGS_CHANGE) {
+			struct a6_register_desc *reg_desc_charger;
+			struct a6_register_desc *reg_desc_puck_prio;
+			uint8_t chg_vals[id_size];
+			uint8_t prio_val;
+
 			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: charger-source change detected.\n",
 				   __func__);
+
+			/*
+			 * Read FLAGS_2 to check if Touchstone puck is physically
+			 * detected but A2A communication hasn't started yet.
+			 * If so, toggle puck_priority to initiate A2A handshake.
+			 * This is needed because the A6 firmware requires the
+			 * puck_priority bit to be toggled to start A2A.
+			 */
+			reg_desc_charger = &a6_register_desc_arr[31];
+			memset(chg_vals, 0, sizeof(chg_vals));
+			if (a6_i2c_read_reg(state->i2c_dev, reg_desc_charger->id,
+					    reg_desc_charger->num_ids, chg_vals) >= 0) {
+				/*
+				 * PUCK_DETECT (0x01) = puck physically detected via coils
+				 * PUCK (0x02) = A2A communication established
+				 * If we have detection but no A2A, trigger handshake
+				 */
+				if ((chg_vals[0] & TS2_I2C_FLAGS_2_PUCK_DETECT) &&
+				    !(chg_vals[0] & TS2_I2C_FLAGS_2_PUCK)) {
+					pr_info("%s: Touchstone detected, initiating A2A handshake\n",
+						__func__);
+
+					reg_desc_puck_prio = &a6_register_desc_arr[30];
+					/* Clear puck_priority first */
+					prio_val = 0;
+					a6_i2c_write_reg(state->i2c_dev, reg_desc_puck_prio->id,
+							 reg_desc_puck_prio->num_ids, &prio_val);
+					/* Small delay for firmware to process */
+					usleep_range(10000, 20000);
+					/* Set puck_priority to trigger A2A */
+					prio_val = TS2_I2C_FLAGS_0_PUCK_PRIORITY;
+					a6_i2c_write_reg(state->i2c_dev, reg_desc_puck_prio->id,
+							 reg_desc_puck_prio->num_ids, &prio_val);
+				}
+			}
 
 			/* next, unblock task on charger_source_notify node */
 			//sysfs_notify_dirent(state->notify_nodes[DIRENT_CHG_SRC_NOTIFY]);
