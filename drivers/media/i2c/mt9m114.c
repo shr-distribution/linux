@@ -73,6 +73,14 @@
 /* MT9M113 RESET_REGISTER value for parallel output (from webOS kernel) */
 #define MT9M113_RESET_REG_PARALLEL_ENABLE		0x120c
 
+/*
+ * MT9M113 OUTPUT_CONTROL register (physical register, not MCU variable)
+ * This register controls the output interface mode (parallel vs MIPI).
+ * Value 0x7A08 enables MIPI CSI-2 output.
+ */
+#define MT9M113_OUTPUT_CONTROL				CCI_REG16(0x3400)
+#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08
+
 /* MT9M113 OFIFO control (from webOS kernel) */
 #define MT9M114_OFIFO_CONTROL_STATUS			CCI_REG16(0x321c)
 
@@ -1047,21 +1055,41 @@ mt9m113_streaming:
 		usleep_range(5000, 10000);
 
 		/*
-		 * Configure CAM_PORT_OUTPUT_CONTROL for parallel mode via MCU.
-		 * MCU variable 0xC984: bit 0 = 0 for parallel, bit 15 = 1.
-		 * Value 0x8000 = parallel mode with output enabled.
+		 * Configure output interface based on bus type.
+		 * MIPI CSI-2 uses OUTPUT_CONTROL register at 0x3400.
+		 * Parallel uses CAM_PORT_OUTPUT_CONTROL MCU variable at 0xC984.
 		 */
-		cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, 0xC984, &ret);
-		cci_write(sensor->regmap, MT9M114_MCU_DATA, 0x8000, &ret);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: CAM_PORT config failed: %d\n", ret);
-			goto error;
+		if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
+			/*
+			 * MIPI CSI-2 mode: Write 0x7A08 to OUTPUT_CONTROL.
+			 * This is a physical register (not MCU variable).
+			 * Value from webOS kernel enables MIPI output.
+			 */
+			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI CSI-2 output\n");
+			cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, &ret);
+			if (ret) {
+				dev_err(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
+				goto error;
+			}
+		} else {
+			/*
+			 * Parallel mode: Use MCU variable 0xC984.
+			 * Value 0x8000 = parallel mode with output enabled.
+			 */
+			dev_info(&sensor->client->dev, "MT9M113: configuring parallel output\n");
+			cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, 0xC984, &ret);
+			cci_write(sensor->regmap, MT9M114_MCU_DATA, 0x8000, &ret);
+			if (ret) {
+				dev_err(&sensor->client->dev, "MT9M113: CAM_PORT config failed: %d\n", ret);
+				goto error;
+			}
 		}
 		usleep_range(5000, 10000);
 
 		/*
-		 * Configure RESET_REGISTER for parallel output.
-		 * Value 0x120C from webOS kernel enables parallel interface.
+		 * Configure RESET_REGISTER for streaming.
+		 * Value 0x120C from webOS kernel enables output interface.
 		 */
 		cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
 			  MT9M113_RESET_REG_PARALLEL_ENABLE, &ret);

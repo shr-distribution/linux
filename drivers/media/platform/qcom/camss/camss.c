@@ -36,6 +36,11 @@ static const struct parent_dev_ops vfe_parent_dev_ops;
 
 /*
  * MSM8660/APQ8060 - VFE 3.1 with MIPI CSI-2 support
+ *
+ * The CSI controller on MSM8660 has a unified CSIPHY+CSID architecture
+ * with different registers compared to newer Qualcomm chips. CSIPHY and
+ * CSID share the same register space - CSIPHY handles PHY and protocol
+ * decoding, while CSID provides the V4L2 pipeline interface.
  */
 static const struct camss_subdev_resources csiphy_res_8x60[] = {
 	/* CSIPHY0 */
@@ -49,7 +54,7 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		.interrupt = { "csiphy0" },
 		.csiphy = {
 			.id = 0,
-			.hw_ops = &csiphy_ops_2ph_1_0,
+			.hw_ops = &csiphy_ops_8x60,
 			.formats = &csiphy_formats_8x16
 		}
 	},
@@ -64,41 +69,41 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		.interrupt = { "csiphy1" },
 		.csiphy = {
 			.id = 1,
-			.hw_ops = &csiphy_ops_2ph_1_0,
+			.hw_ops = &csiphy_ops_8x60,
 			.formats = &csiphy_formats_8x16
 		}
 	}
 };
 
 static const struct camss_subdev_resources csid_res_8x60[] = {
-	/* CSID0 */
+	/* CSID0 - shares register space with CSIPHY0 */
 	{
 		.regulators = {},
 		.clock = { "csi0_src", "csi0", "csi0_phy" },
 		.clock_rate = { { 0 },
 				{ 0 },
 				{ 0 } },
-		.reg = { "csid0" },
-		.interrupt = { "csid0" },
+		.reg = { "csiphy0" },  /* Same as CSIPHY - unified block */
+		.interrupt = { "csiphy0" },
 		.csid = {
-			.hw_ops = &csid_ops_4_1,
+			.hw_ops = &csid_ops_8x60,
 			.parent_dev_ops = &vfe_parent_dev_ops,
-			.formats = &csid_formats_4_1
+			.formats = &csid_formats_8x60
 		}
 	},
-	/* CSID1 */
+	/* CSID1 - shares register space with CSIPHY1 */
 	{
 		.regulators = {},
 		.clock = { "csi1_src", "csi1", "csi1_phy" },
 		.clock_rate = { { 0 },
 				{ 0 },
 				{ 0 } },
-		.reg = { "csid1" },
-		.interrupt = { "csid1" },
+		.reg = { "csiphy1" },  /* Same as CSIPHY - unified block */
+		.interrupt = { "csiphy1" },
 		.csid = {
-			.hw_ops = &csid_ops_4_1,
+			.hw_ops = &csid_ops_8x60,
 			.parent_dev_ops = &vfe_parent_dev_ops,
-			.formats = &csid_formats_4_1
+			.formats = &csid_formats_8x60
 		}
 	}
 };
@@ -4462,15 +4467,15 @@ static const struct camss_resources msm8660_resources = {
 	.icc_res = icc_res_8x60,
 	.icc_path_num = ARRAY_SIZE(icc_res_8x60),
 	/*
-	 * MSM8660/APQ8060 with parallel camera interface (CAMIF) doesn't use
-	 * MIPI CSI-2, so CSIPHY/CSID are not needed. The VFE 3.1 connects
-	 * directly to the parallel sensor.
+	 * MSM8660/APQ8060 supports both parallel (CAMIF) and MIPI CSI-2 cameras.
+	 * The TouchPad's MT9M113 front camera uses MIPI CSI-2 on CSI1.
+	 * CSIPHY and CSID share the same register space on this platform.
 	 */
-	.csiphy_res = NULL,
-	.csid_res = NULL,
+	.csiphy_res = csiphy_res_8x60,
+	.csid_res = csid_res_8x60,
 	.vfe_res = vfe_res_8x60,
-	.csiphy_num = 0,
-	.csid_num = 0,
+	.csiphy_num = ARRAY_SIZE(csiphy_res_8x60),
+	.csid_num = ARRAY_SIZE(csid_res_8x60),
 	.vfe_num = ARRAY_SIZE(vfe_res_8x60),
 };
 

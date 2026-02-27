@@ -1091,25 +1091,56 @@
 		/*
 		 * Camera Subsystem - VFE 3.1 with MIPI CSI-2
 		 * MSM8660 supports both parallel camera (CAMIF) and MIPI CSI-2.
-		 * Includes 2 CSIPHY/CSID interfaces integrated at CSI_0 and CSI_1.
+		 * Includes 2 CSIPHY/CSID interfaces at CSI_0 (0x04800000)
+		 * and CSI_1 (0x04900000). CSIPHY and CSID share the same
+		 * register space on this platform.
 		 */
 		camss: camss@04500000 {
 			compatible = "qcom,msm8660-camss";
 			/*
-			 * MSM8660/APQ8060 with parallel camera interface (CAMIF).
-			 * Only VFE is needed - no MIPI CSI-2 (CSIPHY/CSID).
+			 * Register regions:
+			 * - VFE0: Video Front End
+			 * - CSIPHY0: CSI PHY for CSI0 port
+			 * - CSIPHY1: CSI PHY for CSI1 port (used by TouchPad MT9M113)
 			 */
-			reg = <0x04500000 0x1000>;
-			reg-names = "vfe0";
-			interrupts = <GIC_SPI 48 IRQ_TYPE_EDGE_RISING>;
-			interrupt-names = "vfe0";
+			reg = <0x04500000 0x1000>,
+			      <0x04800000 0x400>,
+			      <0x04900000 0x400>;
+			reg-names = "vfe0",
+				    "csiphy0",
+				    "csiphy1";
+
+			/*
+			 * Interrupts:
+			 * - VFE0: SPI 48
+			 * - CSIPHY0: SPI 84 (CSI_0_IRQ)
+			 * - CSIPHY1: SPI 83 (CSI_1_IRQ)
+			 */
+			interrupts = <GIC_SPI 48 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "vfe0",
+					  "csiphy0",
+					  "csiphy1";
 
 			clocks = <&mmcc VFE_CLK>,
 				 <&mmcc VFE_AXI_CLK>,
-				 <&mmcc VFE_AHB_CLK>;
+				 <&mmcc VFE_AHB_CLK>,
+				 <&mmcc CSI0_SRC>,
+				 <&mmcc CSI0_CLK>,
+				 <&mmcc CSI0_PHY_CLK>,
+				 <&mmcc CSI1_SRC>,
+				 <&mmcc CSI1_CLK>,
+				 <&mmcc CSI1_PHY_CLK>;
 			clock-names = "vfe",
 				      "vfe_axi",
-				      "vfe_ahb";
+				      "vfe_ahb",
+				      "csi0_src",
+				      "csi0",
+				      "csi0_phy",
+				      "csi1_src",
+				      "csi1",
+				      "csi1_phy";
 
 			interconnects = <&mmss_fabric MMFAB_MAS_VFE
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
@@ -1126,6 +1157,16 @@
 				/* Parallel camera input port (CAMIF) */
 				port@0 {
 					reg = <0>;
+				};
+
+				/* CSIPHY0 input port */
+				port@1 {
+					reg = <1>;
+				};
+
+				/* CSIPHY1 input port (used by TouchPad MT9M113) */
+				port@2 {
+					reg = <2>;
 				};
 			};
 		};

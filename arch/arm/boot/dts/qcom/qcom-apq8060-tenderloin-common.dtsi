@@ -2149,9 +2149,15 @@
 
 		port {
 			mt9m113_ep: endpoint {
-				bus-type = <5>; /* V4L2_FWNODE_BUS_TYPE_PARALLEL */
-				link-frequencies = /bits/ 64 <24000000>;
-				remote-endpoint = <&camss_ep>;
+				bus-type = <4>; /* V4L2_FWNODE_BUS_TYPE_CSI2_DPHY */
+				/*
+				 * MT9M113 uses single data lane MIPI CSI-2
+				 * Connected to CSI1 (CSIPHY1) on TouchPad
+				 */
+				data-lanes = <1>;
+				clock-lanes = <0>;
+				link-frequencies = /bits/ 64 <96000000>;
+				remote-endpoint = <&csiphy1_ep>;
 			};
 		};
 	};
@@ -2162,20 +2168,22 @@
  *
  * MMCC (Multimedia Clock Controller) support has been added with VFE31 driver.
  * MT9M113 sensor support added to mt9m114.c driver.
+ *
+ * The MT9M113 front camera uses MIPI CSI-2 connected to CSI1 (CSIPHY1).
  */
 &camss {
 	status = "okay";
 
 	ports {
-		port@0 {
-			camss_ep: endpoint {
-				bus-type = <5>; /* V4L2_FWNODE_BUS_TYPE_PARALLEL */
-				remote-endpoint = <&mt9m113_ep>;
+		/* Port@0 is parallel CAMIF - not used on TouchPad */
 
-				/* Parallel interface timing */
-				hsync-active = <1>;
-				vsync-active = <1>;
-				pclk-sample = <1>;
+		/* Port@2 is CSIPHY1 - MT9M113 is connected here */
+		port@2 {
+			csiphy1_ep: endpoint {
+				bus-type = <4>; /* V4L2_FWNODE_BUS_TYPE_CSI2_DPHY */
+				data-lanes = <1>;
+				clock-lanes = <0>;
+				remote-endpoint = <&mt9m113_ep>;
 			};
 		};
 	};
