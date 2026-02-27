@@ -71,10 +71,21 @@ irqreturn_t mdp4_irq(struct msm_kms *kms)
 	struct drm_device *dev = mdp4_kms->dev;
 	struct drm_crtc *crtc;
 	uint32_t status, enable;
+	static int irq_count;
+	static unsigned long last_print;
 
 	enable = mdp4_read(mdp4_kms, REG_MDP4_INTR_ENABLE);
 	status = mdp4_read(mdp4_kms, REG_MDP4_INTR_STATUS) & enable;
 	mdp4_write(mdp4_kms, REG_MDP4_INTR_CLEAR, status);
+
+	irq_count++;
+	/* Print first few and then periodically */
+	if (irq_count <= 5 || (jiffies - last_print > HZ * 10)) {
+		pr_info("mdp4_irq[%d]: enable=0x%08x status=0x%08x raw_status=0x%08x\n",
+			irq_count, enable, status,
+			mdp4_read(mdp4_kms, REG_MDP4_INTR_STATUS));
+		last_print = jiffies;
+	}
 
 	VERB("status=%08x", status);
 
@@ -90,10 +101,13 @@ irqreturn_t mdp4_irq(struct msm_kms *kms)
 int mdp4_enable_vblank(struct msm_kms *kms, struct drm_crtc *crtc)
 {
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
+	uint32_t irqmask = mdp4_crtc_vblank(crtc);
+
+	pr_info("mdp4_enable_vblank: crtc=%s irqmask=0x%08x\n",
+		crtc->name, irqmask);
 
 	mdp4_enable(mdp4_kms);
-	mdp_update_vblank_mask(to_mdp_kms(kms),
-			mdp4_crtc_vblank(crtc), true);
+	mdp_update_vblank_mask(to_mdp_kms(kms), irqmask, true);
 	mdp4_disable(mdp4_kms);
 
 	return 0;

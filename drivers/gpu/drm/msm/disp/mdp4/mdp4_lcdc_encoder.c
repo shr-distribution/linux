@@ -381,9 +381,11 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 
 	setup_phy(encoder);
 
+	pr_info("mdp4_lcdc_encoder: enabling LCDC\n");
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 1);
 
 	mdp4_lcdc_encoder->enabled = true;
+	pr_info("mdp4_lcdc_encoder: LCDC enabled\n");
 }
 
 static enum drm_mode_status
