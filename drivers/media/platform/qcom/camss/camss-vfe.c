@@ -2121,6 +2121,14 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		video_out->nformats = vfe->line[i].nformats;
 		video_out->formats = vfe->line[i].formats;
 
+		/*
+		 * Set the video device's default resolution to match the VFE
+		 * subdev source pad format. This ensures the video device
+		 * initializes with a format compatible with the upstream sensor.
+		 */
+		video_out->default_width = vfe->line[i].fmt[MSM_VFE_PAD_SRC].width;
+		video_out->default_height = vfe->line[i].fmt[MSM_VFE_PAD_SRC].height;
+
 		snprintf(name, ARRAY_SIZE(name), "%s%d_%s%d",
 			 MSM_VFE_NAME, vfe->id, "video", i);
 		ret = msm_video_register(video_out, v4l2_dev, name);

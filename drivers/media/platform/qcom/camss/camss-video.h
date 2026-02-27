@@ -48,6 +48,9 @@ struct camss_video {
 	unsigned int line_based;
 	const struct camss_format_info *formats;
 	unsigned int nformats;
+	/* Default resolution from upstream VFE subdev (0 = use 1920x1080) */
+	unsigned int default_width;
+	unsigned int default_height;
 };
 
 int msm_video_register(struct camss_video *video, struct v4l2_device *v4l2_dev,

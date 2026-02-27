@@ -662,8 +662,12 @@ static int msm_video_init_format(struct camss_video *video)
 	struct v4l2_format format = {
 		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
 		.fmt.pix_mp = {
-			.width = 1920,
-			.height = 1080,
+			/*
+			 * Use default size from VFE subdev if set, otherwise
+			 * fall back to 1920x1080 for backward compatibility.
+			 */
+			.width = video->default_width ? video->default_width : 1920,
+			.height = video->default_height ? video->default_height : 1080,
 			.pixelformat = video->formats[0].pixelformat,
 		},
 	};
