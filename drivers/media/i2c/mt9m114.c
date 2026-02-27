@@ -59,6 +59,15 @@
 #define MT9M114_PHYSICAL_ADDRESS_ACCESS			CCI_REG16(0x098a)
 #define MT9M114_LOGICAL_ADDRESS_ACCESS			CCI_REG16(0x098e)
 
+/* MCU indirect access registers (MT9M113) */
+#define MT9M114_MCU_ADDRESS				CCI_REG16(0x098c)
+#define MT9M114_MCU_DATA				CCI_REG16(0x0990)
+
+/* MT9M113 MCU variable addresses */
+#define MT9M113_SEQ_CMD					0xa103
+#define MT9M113_SEQ_CMD_REFRESH				0x0005
+#define MT9M113_SEQ_CMD_REFRESH_MODE			0x0006
+
 /* Sensor Core registers */
 #define MT9M114_COARSE_INTEGRATION_TIME			CCI_REG16(0x3012)
 #define MT9M114_FINE_INTEGRATION_TIME			CCI_REG16(0x3014)
@@ -997,9 +1006,27 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 	 *
 	 * MT9M113 uses a different command mechanism (MCU indirect via
 	 * 0x098C/0x0990) and doesn't support MT9M114's COMMAND_REGISTER.
-	 * The sensor is already streaming after the configuration writes.
+	 * Instead, we issue sequencer refresh commands to start streaming.
 	 */
-	if (sensor->model != MT9M113_MODEL) {
+	if (sensor->model == MT9M113_MODEL) {
+		/* Refresh sequencer to apply settings and start streaming */
+		cci_write(sensor->regmap, MT9M114_MCU_ADDRESS,
+			  MT9M113_SEQ_CMD, &ret);
+		cci_write(sensor->regmap, MT9M114_MCU_DATA,
+			  MT9M113_SEQ_CMD_REFRESH, &ret);
+		if (ret)
+			goto error;
+		usleep_range(5000, 10000);
+
+		/* Refresh mode to enter streaming */
+		cci_write(sensor->regmap, MT9M114_MCU_ADDRESS,
+			  MT9M113_SEQ_CMD, &ret);
+		cci_write(sensor->regmap, MT9M114_MCU_DATA,
+			  MT9M113_SEQ_CMD_REFRESH_MODE, &ret);
+		if (ret)
+			goto error;
+		usleep_range(5000, 10000);
+	} else {
 		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
 		if (ret)
 			goto error;
