@@ -176,7 +176,10 @@ static int vfe_enable_output(struct vfe_line *line)
 	unsigned int i;
 	u16 ub_size;
 
+	dev_info(vfe->camss->dev, "VFE enable_output: START line_id=%d\n", line->id);
+
 	ub_size = vfe->ops_gen1->get_ub_size(vfe->id);
+	dev_info(vfe->camss->dev, "VFE enable_output: ub_size=%d\n", ub_size);
 	if (!ub_size)
 		return -EINVAL;
 
@@ -291,6 +294,9 @@ static int vfe_get_output(struct vfe_line *line)
 	int i;
 	int wm_idx;
 
+	dev_info(vfe->camss->dev, "VFE get_output: line_id=%d pixfmt=0x%x\n",
+		 line->id, f->fmt.pix_mp.pixelformat);
+
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
 	output = &line->output;
@@ -314,6 +320,8 @@ static int vfe_get_output(struct vfe_line *line)
 		break;
 	}
 
+	dev_info(vfe->camss->dev, "VFE get_output: wm_num=%d\n", output->wm_num);
+
 	for (i = 0; i < output->wm_num; i++) {
 		wm_idx = vfe_reserve_wm(vfe, line->id);
 		if (wm_idx < 0) {
@@ -321,12 +329,14 @@ static int vfe_get_output(struct vfe_line *line)
 			goto error_get_wm;
 		}
 		output->wm_idx[i] = wm_idx;
+		dev_info(vfe->camss->dev, "VFE get_output: wm_idx[%d]=%d\n", i, wm_idx);
 	}
 
 	output->drop_update_idx = 0;
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
+	dev_info(vfe->camss->dev, "VFE get_output: success\n");
 	return 0;
 
 error_get_wm:

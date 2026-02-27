@@ -335,6 +335,10 @@ static int vfe31_halt(struct vfe_device *vfe)
 
 static int vfe31_enable(struct vfe_line *line)
 {
+	struct vfe_device *vfe = to_vfe(line);
+
+	dev_info(vfe->camss->dev, "VFE31 enable: line_id=%d ops_gen1=%px\n",
+		 line->id, vfe->ops_gen1);
 	/* Use gen1 common enable implementation */
 	return vfe_gen1_enable(line);
 }
@@ -355,6 +359,8 @@ static void vfe31_enable_irq_common(struct vfe_device *vfe)
 	u32 val1 = VFE_0_IRQ_MASK_1_RESET_ACK |
 		   VFE_0_IRQ_MASK_1_VIOLATION |
 		   VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK;
+
+	dev_info(vfe->camss->dev, "VFE31 enable_irq_common: mask1=0x%x\n", val1);
 
 	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_0);
 	writel_relaxed(val1, vfe->base + VFE_0_IRQ_MASK_1);
@@ -444,6 +450,8 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 {
 	u32 val;
 
+	dev_info(vfe->camss->dev, "VFE31 set_camif_cfg: ENTRY\n");
+
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -517,6 +525,9 @@ static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable)
 		  VFE_0_MODULE_CFG_CHROMA_UPSAMPLE |
 		  VFE_0_MODULE_CFG_SCALE_ENC |
 		  VFE_0_MODULE_CFG_CROP_ENC;
+
+	dev_info(vfe->camss->dev, "VFE31 set_module_cfg: enable=%d val=0x%x\n",
+		 enable, enable ? val : 0);
 
 	if (enable)
 		writel_relaxed(val, vfe->base + VFE_0_MODULE_CFG);
@@ -803,9 +814,11 @@ static const struct vfe_hw_ops_gen1 vfe_ops_gen1_3_1 = {
 
 static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
 {
+	dev_info(dev, "VFE31 subdev_init: setting up ops_gen1\n");
 	vfe->isr_ops = vfe_isr_ops_gen1;
 	vfe->ops_gen1 = &vfe_ops_gen1_3_1;
 	vfe->video_ops = vfe_video_ops_gen1;
+	dev_info(dev, "VFE31 subdev_init: ops_gen1=%px\n", vfe->ops_gen1);
 }
 
 const struct vfe_hw_ops vfe_ops_3_1 = {
