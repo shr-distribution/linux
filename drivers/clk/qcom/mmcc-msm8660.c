@@ -2335,7 +2335,14 @@ static struct gdsc vfe_gdsc = {
 		.name = "vfe",
 	},
 	.pwrsts = PWRSTS_OFF_ON,
-	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+	/*
+	 * Skip SW_RESET during power domain enable. Asserting VFE_AHB_RESET
+	 * during GDSC enable appears to cause a glitch that affects other
+	 * MMSS peripherals (specifically MDP display). The VFE driver performs
+	 * its own software reset via vfe_reset() after enabling clocks, so
+	 * the GDSC-level reset is not strictly required.
+	 */
+	.flags = LEGACY_FOOTSWITCH,
 };
 
 static struct gdsc vpe_gdsc = {
