@@ -2161,17 +2161,27 @@ static void mt9m114_ifp_cleanup(struct mt9m114 *sensor)
 
 static int mt9m114_power_on(struct mt9m114 *sensor)
 {
+	struct device *dev = &sensor->client->dev;
 	int ret;
+
+	dev_info(dev, "power_on: starting\n");
 
 	/* Enable power and clocks. */
 	ret = regulator_bulk_enable(ARRAY_SIZE(sensor->supplies),
 				    sensor->supplies);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(dev, "power_on: regulator_bulk_enable failed: %d\n", ret);
 		return ret;
+	}
+	dev_info(dev, "power_on: regulators enabled\n");
 
 	ret = clk_prepare_enable(sensor->clk);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(dev, "power_on: clk_prepare_enable failed: %d\n", ret);
 		goto error_regulator;
+	}
+	dev_info(dev, "power_on: clock enabled, rate=%lu Hz\n",
+		 clk_get_rate(sensor->clk));
 
 	/* Perform a hard reset if available, or a soft reset otherwise. */
 	if (sensor->reset) {
@@ -2184,9 +2194,11 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		 */
 		duration = DIV_ROUND_UP(2 * 50 * 1000000, freq);
 
+		dev_info(dev, "power_on: asserting reset for %u us\n", duration);
 		gpiod_set_value(sensor->reset, 1);
 		fsleep(duration);
 		gpiod_set_value(sensor->reset, 0);
+		dev_info(dev, "power_on: reset released, waiting 45ms\n");
 
 		/*
 		 * After releasing reset, the sensor needs time to boot up
@@ -2199,6 +2211,7 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		 * The power may have just been turned on, we need to wait for
 		 * the sensor to be ready to accept I2C commands.
 		 */
+		dev_info(dev, "power_on: no reset GPIO, waiting 45ms then soft reset\n");
 		usleep_range(44500, 50000);
 
 		cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
@@ -2207,9 +2220,10 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 			  &ret);
 
 		if (ret < 0) {
-			dev_err(&sensor->client->dev, "Soft reset failed\n");
+			dev_err(dev, "power_on: Soft reset failed: %d\n", ret);
 			goto error_clock;
 		}
+		dev_info(dev, "power_on: soft reset complete\n");
 	}
 
 	/*
@@ -2217,14 +2231,21 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	 * respond to commands. This sequence is derived from the webOS kernel.
 	 */
 	if (sensor->expected_model == MT9M113_MODEL) {
+		dev_info(dev, "power_on: MT9M113 MCU boot sequence starting\n");
+
 		/* Boot the MCU */
 		cci_write(sensor->regmap, MT9M114_MCU_BOOT_MODE, 0x0001, &ret);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(dev, "power_on: MCU_BOOT_MODE write 1 failed: %d\n", ret);
 			goto error_clock;
+		}
 		usleep_range(1000, 2000);
 		cci_write(sensor->regmap, MT9M114_MCU_BOOT_MODE, 0x0000, &ret);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(dev, "power_on: MCU_BOOT_MODE write 0 failed: %d\n", ret);
 			goto error_clock;
+		}
+		dev_info(dev, "power_on: MCU boot complete, configuring PLL\n");
 		msleep(30);
 
 		/* Configure clocks and PLL */
@@ -2236,15 +2257,21 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2545, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2547, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3447, &ret);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(dev, "power_on: PLL config phase 1 failed: %d\n", ret);
 			goto error_clock;
+		}
+		dev_info(dev, "power_on: PLL phase 1 complete, waiting for lock\n");
 		msleep(20); /* Allow PLL to lock */
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3047, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3046, &ret);
 		cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL, 0x0218, &ret);
 		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x002A, &ret);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(dev, "power_on: PLL config phase 2 failed: %d\n", ret);
 			goto error_clock;
+		}
+		dev_info(dev, "power_on: PLL phase 2 complete, stabilizing\n");
 		msleep(50); /* Wait for sensor to stabilize */
 
 		/*
@@ -2252,6 +2279,7 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		 * Skip the SET_STATE poll since no command was issued - the
 		 * sensor entered its operational state automatically.
 		 */
+		dev_info(dev, "power_on: MT9M113 init complete\n");
 		goto mt9m113_init_done;
 	}
 
@@ -2317,16 +2345,22 @@ static int __maybe_unused mt9m114_runtime_resume(struct device *dev)
 	struct mt9m114 *sensor = ifp_to_mt9m114(sd);
 	int ret;
 
+	dev_info(dev, "runtime_resume: starting\n");
+
 	ret = mt9m114_power_on(sensor);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "runtime_resume: power_on failed: %d\n", ret);
 		return ret;
+	}
 
 	ret = mt9m114_initialize(sensor);
 	if (ret) {
+		dev_err(dev, "runtime_resume: initialize failed: %d\n", ret);
 		mt9m114_power_off(sensor);
 		return ret;
 	}
 
+	dev_info(dev, "runtime_resume: complete\n");
 	return 0;
 }
 
@@ -2335,6 +2369,7 @@ static int __maybe_unused mt9m114_runtime_suspend(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct mt9m114 *sensor = ifp_to_mt9m114(sd);
 
+	dev_info(dev, "runtime_suspend: powering off\n");
 	mt9m114_power_off(sensor);
 
 	return 0;
