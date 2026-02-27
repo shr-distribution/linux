@@ -2261,9 +2261,13 @@
 	bluetooth {
 		compatible = "brcm,bcm4329-bt";
 
-		/* Power supplies - 1.8V I/O from PM8058 S3 */
+		/*
+		 * Power supplies for BCM4329 combo WiFi+BT chip:
+		 * - vddio: 1.8V I/O voltage (PM8058 S3, always-on)
+		 * - vbat: 3.3V core voltage (PM8901 L3, shared with WiFi PA, always-on)
+		 */
 		vddio-supply = <&pm8058_s3>;
-		vbat-supply = <&pm8058_s3>;
+		vbat-supply = <&pm8901_l3>;
 
 		/* UART speed from legacy kernel: HSUART_SPEED_115K */
 		max-speed = <115200>;
