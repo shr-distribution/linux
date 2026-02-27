@@ -988,6 +988,15 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 	if (ret)
 		return ret;
 
+	/*
+	 * MT9M113 uses indirect MCU variable access (0x098C/0x0990) instead
+	 * of direct writes to 0xC000+ addresses. Skip the configure functions
+	 * which write to wrong addresses for MT9M113 - the sensor uses its
+	 * default configuration set during power_on.
+	 */
+	if (sensor->model == MT9M113_MODEL)
+		goto mt9m113_streaming;
+
 	ret = mt9m114_configure_ifp(sensor, ifp_state);
 	if (ret)
 		goto error;
@@ -1011,12 +1020,21 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 	/*
 	 * The Change-Config state is transient and moves to the streaming
 	 * state automatically.
-	 *
+	 */
+	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
+	if (ret)
+		goto error;
+
+	sensor->streaming = true;
+	return 0;
+
+mt9m113_streaming:
+	/*
 	 * MT9M113 uses a different command mechanism (MCU indirect via
 	 * 0x098C/0x0990) and doesn't support MT9M114's COMMAND_REGISTER.
-	 * Instead, we issue sequencer refresh commands to start streaming.
+	 * Issue sequencer commands to start streaming.
 	 */
-	if (sensor->model == MT9M113_MODEL) {
+	{
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
 		/* Take PLL out of standby - clear bit 0 of STANDBY_CONTROL */
@@ -1064,10 +1082,6 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 		usleep_range(20000, 30000);
 
 		dev_info(&sensor->client->dev, "MT9M113: streaming sequence complete\n");
-	} else {
-		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
-		if (ret)
-			goto error;
 	}
 
 	sensor->streaming = true;
