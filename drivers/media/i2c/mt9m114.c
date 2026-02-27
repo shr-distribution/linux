@@ -1009,13 +1009,26 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 	 * Instead, we issue sequencer refresh commands to start streaming.
 	 */
 	if (sensor->model == MT9M113_MODEL) {
-		/* Refresh sequencer to apply settings and start streaming */
+		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
+
+		/* Take PLL out of standby - clear bit 0 of STANDBY_CONTROL */
+		ret = cci_update_bits(sensor->regmap, MT9M114_STANDBY_CONTROL,
+				      BIT(0), 0, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: failed to clear standby: %d\n", ret);
+			goto error;
+		}
+		usleep_range(5000, 10000);
+
+		/* Refresh sequencer to apply settings */
 		cci_write(sensor->regmap, MT9M114_MCU_ADDRESS,
 			  MT9M113_SEQ_CMD, &ret);
 		cci_write(sensor->regmap, MT9M114_MCU_DATA,
 			  MT9M113_SEQ_CMD_REFRESH, &ret);
-		if (ret)
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD REFRESH failed: %d\n", ret);
 			goto error;
+		}
 		usleep_range(5000, 10000);
 
 		/* Refresh mode to enter streaming */
@@ -1023,9 +1036,13 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 			  MT9M113_SEQ_CMD, &ret);
 		cci_write(sensor->regmap, MT9M114_MCU_DATA,
 			  MT9M113_SEQ_CMD_REFRESH_MODE, &ret);
-		if (ret)
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD REFRESH_MODE failed: %d\n", ret);
 			goto error;
+		}
 		usleep_range(5000, 10000);
+
+		dev_info(&sensor->client->dev, "MT9M113: streaming sequence complete\n");
 	} else {
 		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
 		if (ret)
