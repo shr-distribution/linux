@@ -60,15 +60,19 @@ static int apq8060_spk_pwr_amp(struct snd_soc_dapm_widget *w,
 	struct snd_soc_card *card = snd_soc_dapm_to_card(w->dapm);
 	struct snd_soc_component *component;
 
-	/* Find the WM8994 codec component */
+	/* Find the WM8994 codec component - use strstr for partial match
+	 * since component name may be "wm8994-codec.0" or similar
+	 */
 	for_each_card_components(card, component) {
-		if (!strcmp(component->name, "wm8994-codec"))
+		if (component->name && strstr(component->name, "wm8994"))
 			goto found;
 	}
 	dev_err(card->dev, "Failed to find WM8994 codec component\n");
 	return -ENODEV;
 
 found:
+	dev_info(card->dev, "Found WM8994 component: %s\n", component->name);
+
 	if (SND_SOC_DAPM_EVENT_ON(event)) {
 		dev_info(component->dev, "Enabling speaker amplifier\n");
 		snd_soc_component_write(component, WM8994_GPIO_1, 0x41);
