@@ -79,12 +79,12 @@ static const struct snd_soc_dapm_route apq8060_dapm_routes[] = {
 	{ "Speaker", NULL, "LINEOUT2N" },
 
 	/* Internal Mic via MICBIAS1 */
-	{ "IN1LN", NULL, "MICBIAS1" },
-	{ "MICBIAS1", NULL, "Internal Mic" },
+	{ "Internal Mic", NULL, "MICBIAS1" },
+	{ "IN1LN", NULL, "Internal Mic" },
 
 	/* Headset Mic via MICBIAS2 */
-	{ "IN2LN", NULL, "MICBIAS2" },
-	{ "MICBIAS2", NULL, "Headset Mic" },
+	{ "Headset Mic", NULL, "MICBIAS2" },
+	{ "IN2LN", NULL, "Headset Mic" },
 };
 
 /* Headphone jack pins */
