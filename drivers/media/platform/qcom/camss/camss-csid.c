@@ -1122,6 +1122,13 @@ int msm_csid_subdev_init(struct camss *camss, struct csid_device *csid,
 		else
 			csid->base = csid->res->parent_dev_ops->get_base_address(camss, id)
 				 + VFE_480_CSID_OFFSET;
+	} else if (camss->res->version == CAMSS_8x60) {
+		/*
+		 * On MSM8660/APQ8060, CSID shares register space with CSIPHY.
+		 * The unified CSI controller was already mapped by CSIPHY init,
+		 * so reuse that base address instead of mapping again.
+		 */
+		csid->base = camss->csiphy[id].base;
 	} else {
 		csid->base = devm_platform_ioremap_resource_byname(pdev, res->reg[0]);
 		if (IS_ERR(csid->base))
