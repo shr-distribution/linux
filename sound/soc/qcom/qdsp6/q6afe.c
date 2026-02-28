@@ -1075,10 +1075,16 @@ static int q6afe_callback(struct apr_device *adev, struct apr_resp_pkt *data)
 	struct apr_hdr *hdr = &data->hdr;
 	struct q6afe_port *port;
 
-	if (!data->payload_size)
+	pr_emerg("AFE_CB: >>> callback opcode=0x%x payload_size=%d token=0x%x\n",
+		 hdr->opcode, data->payload_size, hdr->token);
+
+	if (!data->payload_size) {
+		pr_emerg("AFE_CB: WARNING - zero payload_size, returning early!\n");
 		return 0;
+	}
 
 	res = data->payload;
+	pr_emerg("AFE_CB: res->opcode=0x%x res->status=0x%x\n", res->opcode, res->status);
 	switch (hdr->opcode) {
 	case APR_BASIC_RSP_RESULT: {
 		if (res->status) {
@@ -1145,6 +1151,9 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
 	struct aprv2_ibasic_rsp_result_t *result;
 	int ret;
 
+	pr_emerg("AFE_APR: >>> apr_send_pkt opcode=0x%x rsp_opcode=0x%x\n",
+		 pkt->hdr.opcode, rsp_opcode);
+
 	mutex_lock(&afe->lock);
 	if (port) {
 		wait = &port->wait;
@@ -1157,15 +1166,20 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
 	result->opcode = 0;
 	result->status = 0;
 
+	pr_emerg("AFE_APR: calling apr_send_pkt...\n");
 	ret = apr_send_pkt(afe->apr, pkt);
+	pr_emerg("AFE_APR: apr_send_pkt returned %d\n", ret);
 	if (ret < 0) {
 		dev_err(afe->dev, "packet not transmitted (%d)\n", ret);
 		ret = -EINVAL;
 		goto err;
 	}
 
+	pr_emerg("AFE_APR: waiting for response (timeout=%dms)...\n", TIMEOUT_MS);
 	ret = wait_event_timeout(*wait, (result->opcode == rsp_opcode),
 				 msecs_to_jiffies(TIMEOUT_MS));
+	pr_emerg("AFE_APR: wait returned %d, result->opcode=0x%x result->status=0x%x\n",
+		 ret, result->opcode, result->status);
 	if (!ret) {
 		ret = -ETIMEDOUT;
 	} else if (result->status > 0) {
@@ -1178,6 +1192,7 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
 
 err:
 	mutex_unlock(&afe->lock);
+	pr_emerg("AFE_APR: <<< apr_send_pkt exit ret=%d\n", ret);
 
 	return ret;
 }
@@ -1803,6 +1818,8 @@ static int q6afe_port_start_legacy(struct q6afe_port *port)
 	void *p;
 	int ret;
 
+	pr_emerg("AFE_LEGACY: >>> ENTER port_start_legacy port=0x%x\n", port->id);
+
 	/* Convert mainline port ID to legacy port ID */
 	legacy_port_id = q6afe_port_to_legacy(mainline_port_id);
 	if (legacy_port_id < 0) {
@@ -1811,6 +1828,7 @@ static int q6afe_port_start_legacy(struct q6afe_port *port)
 		return -EINVAL;
 	}
 
+	pr_emerg("AFE_LEGACY: port 0x%x -> legacy %d\n", mainline_port_id, legacy_port_id);
 	dev_info(afe->dev, "Legacy AFE port start: port 0x%x -> legacy %d\n",
 		mainline_port_id, legacy_port_id);
 
@@ -1849,7 +1867,9 @@ static int q6afe_port_start_legacy(struct q6afe_port *port)
 		legacy_port_id, cfg->port.mi2s.bitwidth, cfg->port.mi2s.line,
 		cfg->port.mi2s.channel, cfg->port.mi2s.ws);
 
+	pr_emerg("AFE_LEGACY: >>> sending AFE_PORT_AUDIO_IF_CONFIG...\n");
 	ret = afe_apr_send_pkt(afe, pkt, port, AFE_PORT_AUDIO_IF_CONFIG);
+	pr_emerg("AFE_LEGACY: <<< AFE_PORT_AUDIO_IF_CONFIG returned %d\n", ret);
 	kfree(pkt);
 	if (ret) {
 		dev_err(afe->dev, "AFE legacy config for port %d failed %d\n",
@@ -1884,12 +1904,15 @@ static int q6afe_port_start_legacy(struct q6afe_port *port)
 	dev_info(afe->dev, "Legacy AFE start: port=%d gain=0x%x rate=%d\n",
 		legacy_port_id, start->gain, start->sample_rate);
 
+	pr_emerg("AFE_LEGACY: >>> sending AFE_PORT_CMD_START_LEGACY...\n");
 	ret = afe_apr_send_pkt(afe, pkt, port, AFE_PORT_CMD_START_LEGACY);
+	pr_emerg("AFE_LEGACY: <<< AFE_PORT_CMD_START_LEGACY returned %d\n", ret);
 	if (ret)
 		dev_err(afe->dev, "AFE legacy start for port %d failed %d\n",
 			legacy_port_id, ret);
 
 	kfree(pkt);
+	pr_emerg("AFE_LEGACY: <<< EXIT port_start_legacy ret=%d\n", ret);
 	return ret;
 }
 
