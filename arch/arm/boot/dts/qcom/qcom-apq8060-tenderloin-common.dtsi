@@ -2276,11 +2276,10 @@
 		clock-names = "lpo";
 
 		/*
-		 * UART speed: webOS used 3686400 baud with highspeed UART.
-		 * The BCM4329 may remember the last configured baud rate,
-		 * so start at 3686400 instead of the default 115200.
+		 * UART speed: webOS kernel uses 115200 baud initially
+		 * (HSUART_SPEED_115K in board-tenderloin.c), which matches
+		 * the hci_bcm driver default. max-speed for negotiation.
 		 */
-		init-speed = <3686400>;
 		max-speed = <3686400>;
 
 		/*
