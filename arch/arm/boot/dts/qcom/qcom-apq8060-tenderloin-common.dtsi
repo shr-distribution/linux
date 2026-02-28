@@ -2825,11 +2825,13 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&primary_i2s_pins>;
 
-		/* DAPM audio routing
-		 * IMPORTANT: Speakers use WM8958 SPKOUT pins, NOT LINEOUT!
-		 * Per webOS board-tenderloin.c: "Line outputs are not actually
-		 * connected on the board." Speakers are connected to SPKOUT
-		 * pins via external amplifier controlled by WM8958 GPIO1.
+		/*
+		 * DAPM audio routing.
+		 * Speakers use internal WM8994 Class-D driver (SPKOUT pins).
+		 * External amplifier controlled by WM8958 GPIO1.
+		 *
+		 * Note: webOS kernel DAPM used LINEOUT but runtime mixer
+		 * analysis showed SPKOUT controls are actually active.
 		 *
 		 * MICBIAS is a SUPPLY widget in modern kernels, so can't be
 		 * in the signal path. The codec driver enables MICBIAS when

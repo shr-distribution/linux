@@ -91,22 +91,31 @@ static const struct snd_soc_dapm_widget apq8060_dapm_widgets[] = {
 	SND_SOC_DAPM_SPK("Speaker", apq8060_spk_pwr_amp),
 };
 
-/* DAPM routes for HP TouchPad - speakers use LINEOUT */
+/*
+ * DAPM routes for HP TouchPad.
+ *
+ * Note: The webOS kernel DAPM routes use LINEOUT for speakers, but runtime
+ * mixer state analysis shows SPKOUT controls are actually active during
+ * playback. The external Class-D amplifier is controlled via WM8958 GPIO1.
+ * Testing shows SPKOUT path is what actually produces audio.
+ *
+ * MICBIAS is a SUPPLY widget in modern kernels - the codec driver enables
+ * it automatically when the corresponding input is powered.
+ */
 static const struct snd_soc_dapm_route apq8060_dapm_routes[] = {
 	{ "Headphone", NULL, "HPOUT1L" },
 	{ "Headphone", NULL, "HPOUT1R" },
 
-	{ "Speaker", NULL, "LINEOUT1P" },
-	{ "Speaker", NULL, "LINEOUT1N" },
-	{ "Speaker", NULL, "LINEOUT2P" },
-	{ "Speaker", NULL, "LINEOUT2N" },
+	/* Speakers via internal Class-D driver */
+	{ "Speaker", NULL, "SPKOUTLP" },
+	{ "Speaker", NULL, "SPKOUTLN" },
+	{ "Speaker", NULL, "SPKOUTRP" },
+	{ "Speaker", NULL, "SPKOUTRN" },
 
-	/* Internal Mic via MICBIAS1 */
-	{ "Internal Mic", NULL, "MICBIAS1" },
+	/* Internal Mic connected to IN1LN */
 	{ "IN1LN", NULL, "Internal Mic" },
 
-	/* Headset Mic via MICBIAS2 */
-	{ "Headset Mic", NULL, "MICBIAS2" },
+	/* Headset Mic connected to IN2LN */
 	{ "IN2LN", NULL, "Headset Mic" },
 };
 
@@ -253,11 +262,14 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	if (cpu_dai->id != SECONDARY_MI2S_RX)
 		return 0;
 
-	/* Disable unused codec pins - TouchPad doesn't use internal speaker outputs */
-	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTRN");
-	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTRP");
-	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTLN");
-	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTLP");
+	/*
+	 * Disable unused codec pins.
+	 * LINEOUT pins are not connected - speakers use internal Class-D driver.
+	 */
+	snd_soc_dapm_nc_pin(&card->dapm, "LINEOUT1P");
+	snd_soc_dapm_nc_pin(&card->dapm, "LINEOUT1N");
+	snd_soc_dapm_nc_pin(&card->dapm, "LINEOUT2P");
+	snd_soc_dapm_nc_pin(&card->dapm, "LINEOUT2N");
 	snd_soc_dapm_nc_pin(&card->dapm, "HPOUT2P");
 	snd_soc_dapm_nc_pin(&card->dapm, "HPOUT2N");
 	snd_soc_dapm_nc_pin(&card->dapm, "IN2RP:VXRP");
