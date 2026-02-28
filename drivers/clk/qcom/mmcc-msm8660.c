@@ -279,6 +279,12 @@ static struct clk_rcg csi0_src = {
 static struct clk_branch csi0_clk = {
 	.halt_reg = 0x01cc,
 	.halt_bit = 13,
+	/*
+	 * The CSI clock halt status is unreliable when the CSI block is not
+	 * actively receiving data. Use BRANCH_HALT_SKIP to avoid timeouts.
+	 * This matches the behavior of camclk and vfe_ahb_clk on MSM8660.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0040,
 		.enable_mask = BIT(0),
@@ -297,6 +303,7 @@ static struct clk_branch csi0_clk = {
 static struct clk_branch csi0_phy_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 9,
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0040,
 		.enable_mask = BIT(8),
@@ -347,6 +354,7 @@ static struct clk_rcg csi1_src = {
 static struct clk_branch csi1_clk = {
 	.halt_reg = 0x01cc,
 	.halt_bit = 14,
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0024,
 		.enable_mask = BIT(0),
@@ -365,6 +373,7 @@ static struct clk_branch csi1_clk = {
 static struct clk_branch csi1_phy_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 10,
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0024,
 		.enable_mask = BIT(8),
