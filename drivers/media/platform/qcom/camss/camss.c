@@ -4201,10 +4201,18 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 					&camss->vfe[0].line[0].subdev.entity;
 				struct media_link *link;
 
+				dev_info(camss->dev,
+					 "Looking for CSID%d->VFE link: %s pad %d -> %s pad %d\n",
+					 csiphy_id, csid_entity->name, MSM_CSID_PAD_FIRST_SRC,
+					 vfe_entity->name, MSM_VFE_PAD_SINK);
+
 				link = media_entity_find_link(
 					&csid_entity->pads[MSM_CSID_PAD_FIRST_SRC],
 					&vfe_entity->pads[MSM_VFE_PAD_SINK]);
 				if (link) {
+					dev_info(camss->dev,
+						 "Found link, enabling (flags=0x%x)\n",
+						 link->flags);
 					ret = media_entity_setup_link(link,
 						MEDIA_LNK_FL_ENABLED);
 					if (ret < 0) {
@@ -4213,9 +4221,13 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 							csiphy_id, ret);
 						return ret;
 					}
-					dev_dbg(camss->dev,
-						"Enabled CSID%d->VFE link for sensor %s\n",
-						csiphy_id, sensor->name);
+					dev_info(camss->dev,
+						 "Enabled CSID%d->VFE link for sensor %s\n",
+						 csiphy_id, sensor->name);
+				} else {
+					dev_err(camss->dev,
+						"CSID%d->VFE link not found!\n",
+						csiphy_id);
 				}
 			}
 		} else if (camss->res->vfe_num > 0) {
