@@ -510,6 +510,10 @@ out:
 		if (bcm->dev->drive_rts_on_open && !bcm->dev->no_flow_control)
 			hci_uart_set_flow_control(hu, false);
 
+		/* Explicitly disable HW flow control for chips that require it */
+		if (bcm->dev->no_flow_control)
+			hci_uart_set_flow_control(hu, true);
+
 		if (err)
 			goto err_unset_hu;
 	}
