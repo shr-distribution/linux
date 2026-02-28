@@ -283,6 +283,13 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	snd_jack_set_key(data->hp_jack.jack, SND_JACK_BTN_2, KEY_VOLUMEUP);
 	snd_jack_set_key(data->hp_jack.jack, SND_JACK_BTN_3, KEY_VOLUMEDOWN);
 
+	/* Force-enable Headphone and Speaker pins for testing
+	 * TODO: Implement proper jack detection via WM8994 or GPIO
+	 */
+	snd_soc_dapm_force_enable_pin(&card->dapm, "Headphone");
+	snd_soc_dapm_force_enable_pin(&card->dapm, "Speaker");
+	snd_soc_dapm_sync(&card->dapm);
+
 	dev_info(card->dev, "APQ8060 audio initialized\n");
 	return 0;
 }

@@ -138,18 +138,11 @@
 			pinctrl-0 = <&aud_ldo1_pins>;
 		};
 
-		aud_ldo2: regulator-fixed-aud-ldo2 {
-			compatible = "regulator-fixed";
-			regulator-name = "aud_ldo2";
-			regulator-min-microvolt = <1800000>;
-			regulator-max-microvolt = <1800000>;
-
-			gpio = <&tlmm 108 GPIO_ACTIVE_HIGH>;
-			enable-active-high;
-
-			pinctrl-names = "default";
-			pinctrl-0 = <&aud_ldo2_pins>;
-		};
+		/*
+		 * Note: aud_ldo2 regulator removed - GPIO 108 is now used for
+		 * Primary I2S clock signal. DCVDD is supplied directly by
+		 * pm8058_s3, so the WM8958's internal LDO2 is not needed.
+		 */
 	};
 
 	/*
@@ -1343,12 +1336,10 @@
 		line-name = "AUD_LDO1_EN";
 	};
 
-	aud-ldo2-hog {
-		gpio-hog;
-		gpios = <108 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "AUD_LDO2_EN";
-	};
+	/*
+	 * Note: aud-ldo2-hog removed - GPIO 108 now used for Primary I2S WS.
+	 * LDO2 is not needed since DCVDD is supplied directly by pm8058_s3.
+	 */
 
 	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
 
@@ -1635,15 +1626,6 @@
 		};
 	};
 
-	aud_ldo2_pins: aud-ldo2-state {
-		ldo2-pins {
-			pins = "gpio108";  /* AUD_LDO2_EN */
-			function = "gpio";
-			drive-strength = <2>;
-			bias-disable;
-		};
-	};
-
 	wm8958_pins: wm8958-state {
 		micdet-pins {
 			pins = "gpio57";  /* HEAD_MIC_DET_IRQ */
@@ -1659,10 +1641,27 @@
 			drive-strength = <2>;
 			bias-disable;
 		};
+	};
 
-		ldo2-pins {
-			pins = "gpio108";  /* AUD_LDO2_EN */
-			function = "gpio";
+	/*
+	 * Primary I2S pins for WM8958 codec.
+	 *
+	 * The Q6 LPASS DSP uses PRIMARY_I2S ports (legacy ports 0/1) which
+	 * output I2S signals to the WM8958 codec. The webOS kernel
+	 * configures only GPIO 108/109 in i2s function mode (FUNC_1) via
+	 * MSM_SNDDEV_ACTIVE_CONFIG in gpiomux-tenderloin.c.
+	 *
+	 * GPIO 108: I2S_WS (Word Select / LRCLK)
+	 * GPIO 109: I2S_SCK (Serial Clock / BCLK)
+	 *
+	 * Note: GPIO 108 was previously used for AUD_LDO2_EN, but since
+	 * DCVDD is already supplied directly via pm8058_s3, LDO2 is not
+	 * needed. This frees GPIO 108 for I2S use.
+	 */
+	primary_i2s_pins: primary-i2s-state {
+		i2s-pins {
+			pins = "gpio108", "gpio109";
+			function = "i2s";
 			drive-strength = <2>;
 			bias-disable;
 		};
@@ -1671,18 +1670,16 @@
 	/*
 	 * Note on audio I2S interface:
 	 *
-	 * The WM8958 codec audio data path is handled internally by the
-	 * Q6 LPASS DSP via the "Primary I2S" AFE ports (legacy ports 0/1).
-	 * No external GPIO pinctrl is needed for the audio data path.
+	 * The WM8958 codec connects to Q6 LPASS DSP via "Primary I2S" ports
+	 * (legacy ports 0/1 in q6afe). We use SECONDARY_MI2S in the DT which
+	 * maps to LEGACY_PRIMARY_I2S via q6afe_port_to_legacy().
 	 *
-	 * GPIO 108/109 are NOT I2S data pins - they are:
-	 *   GPIO 108: AUD_LDO2_EN (codec power regulator enable)
-	 *   GPIO 109: Codec MCLK control
-	 * These are already configured via the aud_ldo2 regulator and
-	 * wlf,ldo2ena-gpios in the WM8958 node.
+	 * The Primary I2S clock signals use GPIO 108 (WS) and GPIO 109 (SCK).
+	 * These are configured in i2s function mode via primary_i2s_pins.
+	 * The webOS kernel uses MSM_SNDDEV_ACTIVE_CONFIG = FUNC_1 for these.
 	 *
-	 * We use SECONDARY_MI2S in the q6afe driver which maps to
-	 * LEGACY_PRIMARY_I2S ports 0/1 for codec access.
+	 * Note: GPIO 115-118 are available for I2S data but not used on
+	 * TouchPad. GPIO 117/118 are used for headphone UART instead.
 	 */
 
 	/* Headphone UART pins */
@@ -2375,9 +2372,12 @@
 		LDO1VDD-supply = <&pm8058_l4>;    // 2.85V supply for internal LDO1
 		LDO2VDD-supply = <&pm8058_s3>;    // 1.8V supply for internal LDO2
 
-		/* LDO enable GPIO control */
+		/* LDO enable GPIO control
+		 * Note: Only LDO1 uses GPIO control. LDO2 is not needed since
+		 * DCVDD is supplied directly by pm8058_s3. This allows GPIO 108
+		 * to be used for Primary I2S clock signal.
+		 */
 		wlf,ldo1ena-gpios = <&tlmm 66 GPIO_ACTIVE_HIGH>;
-		wlf,ldo2ena-gpios = <&tlmm 108 GPIO_ACTIVE_HIGH>;
 
 		/* GPIO configuration for WM8958 internal GPIOs */
 		wlf,gpio-cfg = <
@@ -2793,10 +2793,11 @@
  * Q6 AFE DAI configuration for WM8958 codec
  *
  * We use SECONDARY_MI2S which maps to legacy PRIMARY_I2S ports (0/1)
- * in q6afe.c via q6afe_port_to_legacy(). This is the correct interface
- * for the WM8958 codec on GPIO 108/109.
+ * in q6afe.c via q6afe_port_to_legacy(). This routes audio through
+ * GPIO 108 (WS) and GPIO 109 (SCK) for I2S clocks.
  *
- * Note: PRIMARY_MI2S maps to legacy MI2S ports (6/7) which is for FM radio.
+ * Note: PRIMARY_MI2S maps to legacy MI2S ports (6/7) for FM radio on
+ * GPIO 101-107.
  */
 &q6afedai {
 	dai@18 {
@@ -2816,10 +2817,13 @@
 		model = "HP-TouchPad";
 
 		/*
-		 * No pinctrl needed - audio data path is internal to LPASS.
-		 * GPIO 108/109 are codec power/clock control, handled by
-		 * the aud_ldo2 regulator and WM8958 driver.
+		 * Primary I2S pinctrl for audio data path.
+		 * GPIO 108 (WS) and GPIO 109 (SCK) are configured in i2s
+		 * function mode for Q6 LPASS to communicate with the
+		 * WM8958 codec via the Primary I2S interface.
 		 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&primary_i2s_pins>;
 
 		/* DAPM audio routing
 		 * IMPORTANT: Speakers use WM8958 SPKOUT pins, NOT LINEOUT!
