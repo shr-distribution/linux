@@ -3961,11 +3961,16 @@ static int camss_link_entities(struct camss *camss)
 					struct v4l2_subdev *vfe = &camss->vfe[k].line[j].subdev;
 
 					/*
-					 * Enable links by default when CSID index
-					 * matches VFE line index. This creates a
-					 * default path without userspace config.
+					 * Don't enable CSID->VFE links by default.
+					 * For single-line VFE (e.g., MSM8660), the
+					 * correct CSID->VFE link will be enabled in
+					 * camss_subdev_notifier_complete() after we
+					 * know which port has a sensor connected.
+					 *
+					 * For multi-line VFE, userspace must configure
+					 * links explicitly.
 					 */
-					flags = (i == j) ? MEDIA_LNK_FL_ENABLED : 0;
+					flags = 0;
 					ret = media_create_pad_link(&csid->entity,
 								    MSM_CSID_PAD_FIRST_SRC + j,
 								    &vfe->entity,
@@ -4170,6 +4175,7 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 		if (host_priv != camss) {
 			/* MIPI CSI-2 camera: link sensor to CSIPHY */
 			struct csiphy_device *csiphy = host_priv;
+			u8 csiphy_id = csiphy->id;
 
 			input = &csiphy->subdev.entity;
 
@@ -4179,6 +4185,38 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 			if (ret < 0) {
 				camss_link_err(camss, sensor->name, input->name, ret);
 				return ret;
+			}
+
+			/*
+			 * For single-line VFE without ISPIF (e.g., MSM8660),
+			 * enable the CSID->VFE link for this sensor's port.
+			 * The CSIPHY ID matches the CSID ID on these platforms.
+			 */
+			if (!camss->ispif && camss->res->vfe_num == 1 &&
+			    camss->vfe[0].res->line_num == 1 &&
+			    csiphy_id < camss->res->csid_num) {
+				struct media_entity *csid_entity =
+					&camss->csid[csiphy_id].subdev.entity;
+				struct media_entity *vfe_entity =
+					&camss->vfe[0].line[0].subdev.entity;
+				struct media_link *link;
+
+				link = media_entity_find_link(
+					&csid_entity->pads[MSM_CSID_PAD_FIRST_SRC],
+					&vfe_entity->pads[MSM_VFE_PAD_SINK]);
+				if (link) {
+					ret = media_entity_setup_link(link,
+						MEDIA_LNK_FL_ENABLED);
+					if (ret < 0) {
+						dev_err(camss->dev,
+							"Failed to enable CSID%d->VFE link: %d\n",
+							csiphy_id, ret);
+						return ret;
+					}
+					dev_dbg(camss->dev,
+						"Enabled CSID%d->VFE link for sensor %s\n",
+						csiphy_id, sensor->name);
+				}
 			}
 		} else if (camss->res->vfe_num > 0) {
 			/*
