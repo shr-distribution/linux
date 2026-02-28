@@ -3642,24 +3642,31 @@ void camss_pm_domain_off(struct camss *camss, int id)
 
 static int vfe_parent_dev_ops_get(struct camss *camss, int id)
 {
-	int ret = -EINVAL;
+	struct vfe_device *vfe;
 
-	if (id < camss->res->vfe_num) {
-		struct vfe_device *vfe = &camss->vfe[id];
+	/*
+	 * On SoCs with fewer VFEs than CSIDs (e.g., MSM8660 has 2 CSIDs
+	 * but only 1 VFE), clamp the VFE index to the last available VFE.
+	 * This allows CSID1 to use VFE0 on single-VFE configurations.
+	 */
+	if (id >= camss->res->vfe_num)
+		id = camss->res->vfe_num - 1;
 
-		ret = vfe_get(vfe);
-	}
+	vfe = &camss->vfe[id];
 
-	return ret;
+	return vfe_get(vfe);
 }
 
 static int vfe_parent_dev_ops_put(struct camss *camss, int id)
 {
-	if (id < camss->res->vfe_num) {
-		struct vfe_device *vfe = &camss->vfe[id];
+	struct vfe_device *vfe;
 
-		vfe_put(vfe);
-	}
+	/* Clamp VFE index for single-VFE configurations (see vfe_parent_dev_ops_get) */
+	if (id >= camss->res->vfe_num)
+		id = camss->res->vfe_num - 1;
+
+	vfe = &camss->vfe[id];
+	vfe_put(vfe);
 
 	return 0;
 }
@@ -3667,13 +3674,15 @@ static int vfe_parent_dev_ops_put(struct camss *camss, int id)
 static void __iomem
 *vfe_parent_dev_ops_get_base_address(struct camss *camss, int id)
 {
-	if (id < camss->res->vfe_num) {
-		struct vfe_device *vfe = &camss->vfe[id];
+	struct vfe_device *vfe;
 
-		return vfe->base;
-	}
+	/* Clamp VFE index for single-VFE configurations (see vfe_parent_dev_ops_get) */
+	if (id >= camss->res->vfe_num)
+		id = camss->res->vfe_num - 1;
 
-	return NULL;
+	vfe = &camss->vfe[id];
+
+	return vfe->base;
 }
 
 static const struct parent_dev_ops vfe_parent_dev_ops = {
