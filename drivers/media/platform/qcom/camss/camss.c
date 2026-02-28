@@ -3878,14 +3878,21 @@ static int camss_link_entities(struct camss *camss)
 {
 	int i, j, k;
 	int ret;
+	u32 flags;
 
 	for (i = 0; i < camss->res->csiphy_num; i++) {
 		for (j = 0; j < camss->res->csid_num; j++) {
+			/*
+			 * Enable links by default when CSIPHY index matches
+			 * CSID index. This creates a default path for each
+			 * camera port without requiring userspace configuration.
+			 */
+			flags = (i == j) ? MEDIA_LNK_FL_ENABLED : 0;
 			ret = media_create_pad_link(&camss->csiphy[i].subdev.entity,
 						    MSM_CSIPHY_PAD_SRC,
 						    &camss->csid[j].subdev.entity,
 						    MSM_CSID_PAD_SINK,
-						    0);
+						    flags);
 			if (ret < 0) {
 				camss_link_err(camss,
 					       camss->csiphy[i].subdev.entity.name,
@@ -3939,11 +3946,17 @@ static int camss_link_entities(struct camss *camss)
 					struct v4l2_subdev *csid = &camss->csid[i].subdev;
 					struct v4l2_subdev *vfe = &camss->vfe[k].line[j].subdev;
 
+					/*
+					 * Enable links by default when CSID index
+					 * matches VFE line index. This creates a
+					 * default path without userspace config.
+					 */
+					flags = (i == j) ? MEDIA_LNK_FL_ENABLED : 0;
 					ret = media_create_pad_link(&csid->entity,
 								    MSM_CSID_PAD_FIRST_SRC + j,
 								    &vfe->entity,
 								    MSM_VFE_PAD_SINK,
-								    0);
+								    flags);
 					if (ret < 0) {
 						camss_link_err(camss, csid->entity.name,
 							       vfe->entity.name,
