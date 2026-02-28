@@ -334,11 +334,23 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	if (value1 & VFE_0_IRQ_STATUS_1_BUS_BDG_HALT_ACK)
 		vfe->isr_ops.halt_ack(vfe);
 
-	if (value0 & VFE_0_IRQ_STATUS_0_line_n_REG_UPDATE(VFE_LINE_PIX))
-		vfe->isr_ops.reg_update(vfe, VFE_LINE_PIX);
+	/*
+	 * VFE31: REG_UPDATE applies to all lines since we only have one
+	 * CAMIF. Notify all active lines.
+	 */
+	if (value0 & VFE_0_IRQ_STATUS_0_REG_UPDATE) {
+		for (i = 0; i < vfe->res->line_num; i++)
+			vfe->isr_ops.reg_update(vfe, i);
+	}
 
-	if (value0 & VFE_0_IRQ_STATUS_0_CAMIF_SOF)
-		vfe->isr_ops.sof(vfe, VFE_LINE_PIX);
+	/*
+	 * VFE31: CAMIF SOF needs to be delivered to all lines because
+	 * we emulate RDI through CAMIF. Any line could be waiting for SOF.
+	 */
+	if (value0 & VFE_0_IRQ_STATUS_0_CAMIF_SOF) {
+		for (i = 0; i < vfe->res->line_num; i++)
+			vfe->isr_ops.sof(vfe, i);
+	}
 
 	for (i = 0; i < MSM_VFE_COMPOSITE_IRQ_NUM; i++)
 		if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(i)) {
@@ -632,36 +644,92 @@ static u16 vfe31_get_ub_size(u8 vfe_id)
 static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 					enum vfe_line_id id)
 {
+	struct vfe_line *line = &vfe->line[id];
 	u32 val;
 
 	/*
 	 * VFE31 doesn't have separate RDI paths like later VFEs.
-	 * Instead, enable raw passthrough mode: CAMIF -> AXI bus directly.
-	 * This bypasses VFE processing and outputs raw sensor data.
+	 * All data must go through CAMIF. For RDI-style output (frame-based
+	 * raw passthrough), we configure:
+	 * 1. CAMIF with frame dimensions (required - no separate RDI input!)
+	 * 2. CAMIF to bus enable for raw passthrough
+	 * 3. Raw write path selection
 	 *
-	 * Configuration:
-	 * 1. Enable camif2busEnable in VFE_CFG
-	 * 2. Set rawWritePathSelect to route raw data to enc_cbcr path
-	 * 3. Enable encCbcrWrPathEn in BUS_CFG
+	 * This is the critical difference from VFE4x where RDI has separate
+	 * hardware paths that don't need CAMIF.
 	 */
-	dev_dbg(vfe->camss->dev, "VFE31: connect WM%d to RDI%d (raw passthrough)\n",
-		wm, id);
+	dev_info(vfe->camss->dev,
+		 "VFE31: connect WM%d to RDI%d - configuring CAMIF for raw passthrough\n",
+		 wm, id);
 
-	/* Enable CAMIF to bus (raw passthrough) */
+	/* Step 1: Configure CAMIF (normally only done for PIX path) */
+	/* Set pixel pattern based on format */
+	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
+	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
+		break;
+	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB;
+		break;
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
+	default:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
+		break;
+	case MEDIA_BUS_FMT_VYUY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
+		break;
+	}
+	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
+
+	/* Set frame dimensions - width in bytes (YUV422 = 2 bytes/pixel) */
+	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
+	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+
+	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+
+	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
+
+	/* Enable VFE output in CAMIF */
+	writel_relaxed(VFE_0_CAMIF_CFG_VFE_OUTPUT_EN,
+		       vfe->base + VFE_0_CAMIF_CFG);
+
+	/* Step 2: Enable CAMIF to bus (raw passthrough) in VFE_CFG */
 	val = readl_relaxed(vfe->base + VFE_0_VFE_CFG);
 	val |= VFE_0_VFE_CFG_CAMIF_TO_BUS_EN;
 	writel_relaxed(val, vfe->base + VFE_0_VFE_CFG);
 
-	/* Configure BUS_CFG for raw passthrough via encoder CbCr path */
+	/* Step 3: Configure BUS_CFG for raw passthrough via encoder CbCr path */
 	val = readl_relaxed(vfe->base + VFE_0_BUS_CFG);
-	/* Clear and set raw write path select to encoder CbCr path */
 	val &= ~(0x3 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
 	val |= (VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
-	/* Enable encoder CbCr write path for raw data */
 	val |= VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN;
 	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
 
 	wmb();
+
+	/* Step 4: Enable CAMIF - start capturing frames */
+	val = VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS | VFE_0_CAMIF_CMD_NO_CHANGE;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CMD);
+	wmb();
+
+	writel_relaxed(VFE_0_CAMIF_CMD_ENABLE_FRAME_BOUNDARY,
+		       vfe->base + VFE_0_CAMIF_CMD);
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: CAMIF configured - status=0x%08x cfg=0x%08x frame=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 }
 
 static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
@@ -669,18 +737,25 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 {
 	u32 val;
 
-	dev_dbg(vfe->camss->dev, "VFE31: disconnect WM%d from RDI%d\n", wm, id);
+	dev_info(vfe->camss->dev, "VFE31: disconnect WM%d from RDI%d\n", wm, id);
 
-	/* Disable raw passthrough in BUS_CFG */
+	/* Step 1: Disable CAMIF - stop frame boundary capture */
+	writel_relaxed(VFE_0_CAMIF_CMD_DISABLE_FRAME_BOUNDARY,
+		       vfe->base + VFE_0_CAMIF_CMD);
+
+	/* Step 2: Disable raw passthrough in BUS_CFG */
 	val = readl_relaxed(vfe->base + VFE_0_BUS_CFG);
 	val &= ~(0x3 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
 	val |= (VFE_0_BUS_CFG_RAW_WR_PATH_DISABLED << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
 	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
 
-	/* Disable CAMIF to bus */
+	/* Step 3: Disable CAMIF to bus */
 	val = readl_relaxed(vfe->base + VFE_0_VFE_CFG);
 	val &= ~VFE_0_VFE_CFG_CAMIF_TO_BUS_EN;
 	writel_relaxed(val, vfe->base + VFE_0_VFE_CFG);
+
+	/* Step 4: Disable CAMIF output */
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CFG);
 
 	wmb();
 }
@@ -858,8 +933,16 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 				     enum vfe_line_id line_id, u8 enable)
 {
-	u32 val0 = VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm);
-	u32 val1 = VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(wm);
+	/*
+	 * VFE31: For RDI-style operation, we still need SOF interrupt
+	 * because the gen1 disable code waits for SOF completion.
+	 * Also enable REG_UPDATE since it's used for buffer management.
+	 */
+	u32 val0 = VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm) |
+		   VFE_0_IRQ_MASK_0_CAMIF_SOF |
+		   VFE_0_IRQ_MASK_0_REG_UPDATE;
+	u32 val1 = VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(wm) |
+		   VFE_0_IRQ_MASK_1_CAMIF_ERROR;
 
 	if (enable) {
 		vfe_reg_set(vfe, VFE_0_IRQ_MASK_0, val0);
@@ -869,10 +952,11 @@ static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 		vfe_reg_clr(vfe, VFE_0_IRQ_MASK_1, val1);
 	}
 
-	dev_dbg(vfe->camss->dev,
-		"VFE31 IRQ wm_line: wm=%d line=%d enable=%d mask0=0x%08x\n",
-		wm, line_id, enable,
-		readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0));
+	dev_info(vfe->camss->dev,
+		 "VFE31 IRQ wm_line: wm=%d line=%d enable=%d mask0=0x%08x mask1=0x%08x\n",
+		 wm, line_id, enable,
+		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0),
+		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_1));
 }
 
 static void vfe31_pm_domain_off(struct vfe_device *vfe)
