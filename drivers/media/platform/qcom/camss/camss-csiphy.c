@@ -140,10 +140,24 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
 	s64 link_freq;
 	int i, j;
 	int ret;
+	u8 bpp;
+	u8 num_lanes;
 
-	u8 bpp = csiphy_get_bpp(csiphy->res->formats->formats, csiphy->res->formats->nformats,
-				csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
-	u8 num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
+	/*
+	 * csi2 config may not be set yet if sensor hasn't been bound.
+	 * In that case, use default values for clock rate calculation.
+	 */
+	if (!csiphy->cfg.csi2) {
+		dev_dbg(dev, "CSIPHY%d: csi2 config not set, using defaults\n",
+			csiphy->id);
+		bpp = 8;
+		num_lanes = 1;
+	} else {
+		bpp = csiphy_get_bpp(csiphy->res->formats->formats,
+				     csiphy->res->formats->nformats,
+				     csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
+		num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
+	}
 
 	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
 	if (link_freq < 0)
