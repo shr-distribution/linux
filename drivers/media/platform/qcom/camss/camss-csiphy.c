@@ -280,11 +280,22 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 {
 	struct csiphy_config *cfg = &csiphy->cfg;
 	s64 link_freq;
-	u8 lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
-	u8 bpp = csiphy_get_bpp(csiphy->res->formats->formats, csiphy->res->formats->nformats,
-				csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
-	u8 num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
+	u8 lane_mask;
+	u8 bpp;
+	u8 num_lanes;
 	u8 val;
+
+	if (!cfg->csi2) {
+		dev_err(csiphy->camss->dev,
+			"CSIPHY%d: CSI2 config not set, cannot stream\n",
+			csiphy->id);
+		return -EINVAL;
+	}
+
+	lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
+	bpp = csiphy_get_bpp(csiphy->res->formats->formats, csiphy->res->formats->nformats,
+			     csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
+	num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
 
 	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
 
