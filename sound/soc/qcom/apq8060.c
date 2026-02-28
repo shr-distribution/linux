@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/clk.h>
 #include <linux/gpio/consumer.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -19,6 +20,7 @@
 #include <sound/jack.h>
 #include <uapi/linux/input-event-codes.h>
 #include <dt-bindings/sound/qcom,q6afe.h>
+#include <dt-bindings/clock/qcom,lcc-msm8660.h>
 #include <linux/mfd/wm8994/registers.h>
 
 #include "common.h"
@@ -43,6 +45,11 @@ struct apq8060_snd_data {
 	unsigned int bclk_rate;
 	int fll_id;
 	int fll_sysclk;
+	/* LPASS I2S clocks - must be enabled for I2S output */
+	struct clk *codec_i2s_spkr_osr_clk;
+	struct clk *codec_i2s_spkr_bit_clk;
+	struct clk *codec_i2s_mic_osr_clk;
+	struct clk *codec_i2s_mic_bit_clk;
 };
 
 /*
@@ -133,11 +140,80 @@ static struct snd_soc_jack_pin apq8060_hp_jack_pins[] = {
 
 static int apq8060_snd_startup(struct snd_pcm_substream *substream)
 {
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_card *card = rtd->card;
+	struct apq8060_snd_data *data = snd_soc_card_get_drvdata(card);
+	int ret;
+
+	/*
+	 * Enable LPASS I2S clocks. On APQ8060/MSM8660, the Q6 DSP
+	 * handles audio routing but the I2S output clocks must be
+	 * enabled by Linux for I2S signals to appear on the GPIOs.
+	 *
+	 * OSR clock = 12.288MHz (256 * 48kHz) - oversampling clock
+	 * BIT clock = 1.536MHz (48kHz * 2ch * 16bit) - I2S bit clock
+	 */
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		if (data->codec_i2s_spkr_osr_clk) {
+			ret = clk_set_rate(data->codec_i2s_spkr_osr_clk, 12288000);
+			if (ret)
+				dev_warn(card->dev, "Failed to set spkr_osr rate: %d\n", ret);
+			ret = clk_prepare_enable(data->codec_i2s_spkr_osr_clk);
+			if (ret)
+				dev_warn(card->dev, "Failed to enable spkr_osr: %d\n", ret);
+			else
+				dev_info(card->dev, "Enabled codec_i2s_spkr_osr_clk\n");
+		}
+		if (data->codec_i2s_spkr_bit_clk) {
+			ret = clk_set_rate(data->codec_i2s_spkr_bit_clk, 1536000);
+			if (ret)
+				dev_warn(card->dev, "Failed to set spkr_bit rate: %d\n", ret);
+			ret = clk_prepare_enable(data->codec_i2s_spkr_bit_clk);
+			if (ret)
+				dev_warn(card->dev, "Failed to enable spkr_bit: %d\n", ret);
+			else
+				dev_info(card->dev, "Enabled codec_i2s_spkr_bit_clk @ 1.536MHz\n");
+		}
+	} else {
+		if (data->codec_i2s_mic_osr_clk) {
+			ret = clk_set_rate(data->codec_i2s_mic_osr_clk, 12288000);
+			if (ret)
+				dev_warn(card->dev, "Failed to set mic_osr rate: %d\n", ret);
+			ret = clk_prepare_enable(data->codec_i2s_mic_osr_clk);
+			if (ret)
+				dev_warn(card->dev, "Failed to enable mic_osr: %d\n", ret);
+		}
+		if (data->codec_i2s_mic_bit_clk) {
+			ret = clk_set_rate(data->codec_i2s_mic_bit_clk, 1536000);
+			if (ret)
+				dev_warn(card->dev, "Failed to set mic_bit rate: %d\n", ret);
+			ret = clk_prepare_enable(data->codec_i2s_mic_bit_clk);
+			if (ret)
+				dev_warn(card->dev, "Failed to enable mic_bit: %d\n", ret);
+		}
+	}
+
 	return 0;
 }
 
 static void apq8060_snd_shutdown(struct snd_pcm_substream *substream)
 {
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_card *card = rtd->card;
+	struct apq8060_snd_data *data = snd_soc_card_get_drvdata(card);
+
+	/* Disable LPASS I2S clocks */
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		if (data->codec_i2s_spkr_bit_clk)
+			clk_disable_unprepare(data->codec_i2s_spkr_bit_clk);
+		if (data->codec_i2s_spkr_osr_clk)
+			clk_disable_unprepare(data->codec_i2s_spkr_osr_clk);
+	} else {
+		if (data->codec_i2s_mic_bit_clk)
+			clk_disable_unprepare(data->codec_i2s_mic_bit_clk);
+		if (data->codec_i2s_mic_osr_clk)
+			clk_disable_unprepare(data->codec_i2s_mic_osr_clk);
+	}
 }
 
 static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
@@ -326,6 +402,7 @@ static int apq8060_snd_platform_probe(struct platform_device *pdev)
 	struct snd_soc_card *card;
 	struct apq8060_snd_data *data;
 	struct device *dev = &pdev->dev;
+	struct device_node *lcc_node;
 	int ret;
 
 	card = devm_kzalloc(dev, sizeof(*card), GFP_KERNEL);
@@ -335,6 +412,56 @@ static int apq8060_snd_platform_probe(struct platform_device *pdev)
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
+
+	/*
+	 * Get LPASS I2S clocks from LCC (LPASS Clock Controller).
+	 * On APQ8060/MSM8660, these clocks must be enabled by Linux
+	 * for I2S output to work. The Q6 DSP doesn't control them.
+	 * Clocks are accessed by index defined in qcom,lcc-msm8660.h.
+	 */
+	lcc_node = of_find_compatible_node(NULL, NULL, "qcom,lcc-msm8660");
+	if (lcc_node) {
+		data->codec_i2s_spkr_osr_clk = of_clk_get(lcc_node,
+							  CODEC_I2S_SPKR_OSR_CLK);
+		if (IS_ERR(data->codec_i2s_spkr_osr_clk)) {
+			dev_warn(dev, "Failed to get codec_i2s_spkr_osr_clk: %ld\n",
+				 PTR_ERR(data->codec_i2s_spkr_osr_clk));
+			data->codec_i2s_spkr_osr_clk = NULL;
+		}
+
+		data->codec_i2s_spkr_bit_clk = of_clk_get(lcc_node,
+							  CODEC_I2S_SPKR_BIT_CLK);
+		if (IS_ERR(data->codec_i2s_spkr_bit_clk)) {
+			dev_warn(dev, "Failed to get codec_i2s_spkr_bit_clk: %ld\n",
+				 PTR_ERR(data->codec_i2s_spkr_bit_clk));
+			data->codec_i2s_spkr_bit_clk = NULL;
+		}
+
+		data->codec_i2s_mic_osr_clk = of_clk_get(lcc_node,
+							 CODEC_I2S_MIC_OSR_CLK);
+		if (IS_ERR(data->codec_i2s_mic_osr_clk)) {
+			dev_warn(dev, "Failed to get codec_i2s_mic_osr_clk: %ld\n",
+				 PTR_ERR(data->codec_i2s_mic_osr_clk));
+			data->codec_i2s_mic_osr_clk = NULL;
+		}
+
+		data->codec_i2s_mic_bit_clk = of_clk_get(lcc_node,
+							 CODEC_I2S_MIC_BIT_CLK);
+		if (IS_ERR(data->codec_i2s_mic_bit_clk)) {
+			dev_warn(dev, "Failed to get codec_i2s_mic_bit_clk: %ld\n",
+				 PTR_ERR(data->codec_i2s_mic_bit_clk));
+			data->codec_i2s_mic_bit_clk = NULL;
+		}
+
+		of_node_put(lcc_node);
+
+		if (data->codec_i2s_spkr_osr_clk && data->codec_i2s_spkr_bit_clk)
+			dev_info(dev, "Got LPASS I2S speaker clocks\n");
+		if (data->codec_i2s_mic_osr_clk && data->codec_i2s_mic_bit_clk)
+			dev_info(dev, "Got LPASS I2S mic clocks\n");
+	} else {
+		dev_warn(dev, "LCC node not found, I2S clocks not available\n");
+	}
 
 	card->driver_name = DRIVER_NAME;
 	card->dapm_widgets = apq8060_dapm_widgets;
