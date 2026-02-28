@@ -282,6 +282,12 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
+static int csiphy_8x60_init(struct csiphy_device *csiphy)
+{
+	/* No special initialization needed for MSM8660 CSIPHY */
+	return 0;
+}
+
 const struct csiphy_hw_ops csiphy_ops_8x60 = {
 	.get_lane_mask = csiphy_8x60_get_lane_mask,
 	.hw_version_read = csiphy_8x60_hw_version_read,
@@ -289,4 +295,5 @@ const struct csiphy_hw_ops csiphy_ops_8x60 = {
 	.lanes_enable = csiphy_8x60_lanes_enable,
 	.lanes_disable = csiphy_8x60_lanes_disable,
 	.isr = csiphy_8x60_isr,
+	.init = csiphy_8x60_init,
 };
