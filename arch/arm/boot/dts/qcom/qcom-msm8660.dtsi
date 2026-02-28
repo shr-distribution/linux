@@ -1140,19 +1140,20 @@
 				#address-cells = <1>;
 				#size-cells = <0>;
 
-				/* Parallel camera input port (CAMIF) */
+				/*
+				 * Port indices match CSIPHY indices directly.
+				 * Parallel camera (CAMIF) is not used on MSM8660
+				 * since MIPI CSI-2 is the primary interface.
+				 */
+
+				/* CSIPHY0 (CSI_0) input port */
 				port@0 {
 					reg = <0>;
 				};
 
-				/* CSIPHY0 (CSI_0) input port */
+				/* CSIPHY1 (CSI_1) input port */
 				port@1 {
 					reg = <1>;
-				};
-
-				/* CSIPHY1 (CSI_1) input port */
-				port@2 {
-					reg = <2>;
 				};
 			};
 		};

@@ -2170,7 +2170,7 @@
 
 	ports {
 		/* CSIPHY1 (CSI_1) input - MT9M113 front camera */
-		port@2 {
+		port@1 {
 			camss_csi1_ep: endpoint {
 				bus-type = <4>; /* V4L2_FWNODE_BUS_TYPE_CSI2_DPHY */
 				data-lanes = <1>;

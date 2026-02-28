@@ -38,12 +38,11 @@ struct apq8060_snd_data {
 	struct snd_soc_card card;
 	struct snd_soc_jack hp_jack;
 	struct gpio_desc *hp_jack_gpio;
-	/* FLL configuration - deferred until trigger to ensure BCLK is present */
+	/* FLL configuration tracking */
 	unsigned int fll_rate;
 	unsigned int bclk_rate;
 	int fll_id;
 	int fll_sysclk;
-	bool fll_pending;
 };
 
 /*
@@ -153,10 +152,14 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	/*
-	 * Store FLL parameters for deferred configuration.
-	 * The FLL needs BCLK to be present to lock, but BCLK isn't provided
-	 * by the Q6 DSP until the AFE port starts in prepare().
-	 * We'll configure the FLL in the prepare callback when BCLK is ready.
+	 * Configure WM8994 FLL using BCLK from Q6 DSP.
+	 * The DSP provides BCLK = rate * channels * bits = rate * 2 * 16.
+	 * FLL output must be >= 256 * fs and between 4.096MHz - 12.5MHz.
+	 *
+	 * Note: BCLK may not be present yet during hw_params (it starts in
+	 * prepare when the Q6 AFE port starts). However, we must configure
+	 * FLL and SYSCLK here because the codec's hw_params requires aifclk
+	 * to be set. The FLL will lock when BCLK becomes available.
 	 *
 	 * Use FLL1 for playback (AIF1), FLL2 for capture (AIF2).
 	 */
@@ -176,55 +179,24 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 	if (data->fll_rate < 4096000)
 		data->fll_rate = 4096000;
 
-	data->fll_pending = true;
-
-	dev_info(rtd->dev, "APQ8060: FLL%d config stored (BCLK=%u, FLL=%u Hz), will apply on prepare\n",
+	dev_info(rtd->dev, "APQ8060: Setting FLL%d from BCLK=%u to %u Hz\n",
 		 data->fll_id == WM8994_FLL1 ? 1 : 2, data->bclk_rate, data->fll_rate);
 
-	return 0;
-}
-
-static int apq8060_snd_prepare(struct snd_pcm_substream *substream)
-{
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_card *card = rtd->card;
-	struct apq8060_snd_data *data = snd_soc_card_get_drvdata(card);
-	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
-	int ret;
-
-	/*
-	 * Configure FLL now that Q6 AFE port should be ready.
-	 * The WM8994 FLL needs a valid BCLK reference clock to lock.
-	 * We defer FLL configuration from hw_params to prepare because
-	 * the Q6 AFE port may not be providing BCLK during hw_params.
-	 *
-	 * Note: prepare is called in non-atomic context, allowing I2C access.
-	 */
-	if (data->fll_pending) {
-		dev_info(rtd->dev, "APQ8060: Prepare - configuring FLL%d from BCLK=%u to %u Hz\n",
-			 data->fll_id == WM8994_FLL1 ? 1 : 2,
-			 data->bclk_rate, data->fll_rate);
-
-		ret = snd_soc_dai_set_pll(codec_dai, data->fll_id,
-					  WM8994_FLL_SRC_BCLK,
-					  data->bclk_rate, data->fll_rate);
-		if (ret && ret != -ENOTSUPP) {
-			dev_err(rtd->dev, "Failed to set FLL%d: %d\n",
-				data->fll_id == WM8994_FLL1 ? 1 : 2, ret);
-			return ret;
-		}
-
-		ret = snd_soc_dai_set_sysclk(codec_dai, data->fll_sysclk,
-					     data->fll_rate, 0);
-		if (ret && ret != -ENOTSUPP) {
-			dev_err(rtd->dev, "Failed to set sysclk: %d\n", ret);
-			return ret;
-		}
-
-		data->fll_pending = false;
-		dev_info(rtd->dev, "APQ8060: FLL configured successfully\n");
+	ret = snd_soc_dai_set_pll(codec_dai, data->fll_id, WM8994_FLL_SRC_BCLK,
+				  data->bclk_rate, data->fll_rate);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(rtd->dev, "Failed to set FLL%d: %d\n",
+			data->fll_id == WM8994_FLL1 ? 1 : 2, ret);
+		return ret;
 	}
 
+	ret = snd_soc_dai_set_sysclk(codec_dai, data->fll_sysclk, data->fll_rate, 0);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(rtd->dev, "Failed to set sysclk: %d\n", ret);
+		return ret;
+	}
+
+	dev_info(rtd->dev, "APQ8060: Codec clock configured (FLL will lock when BCLK available)\n");
 	return 0;
 }
 
@@ -232,7 +204,6 @@ static const struct snd_soc_ops apq8060_snd_ops = {
 	.startup = apq8060_snd_startup,
 	.shutdown = apq8060_snd_shutdown,
 	.hw_params = apq8060_snd_hw_params,
-	.prepare = apq8060_snd_prepare,
 };
 
 static int apq8060_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
