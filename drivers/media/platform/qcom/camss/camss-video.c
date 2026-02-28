@@ -277,19 +277,33 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		goto error;
 
 	entity = &vdev->entity;
+	dev_info(video->camss->dev, "Pipeline walk: starting at %s\n", entity->name);
 	while (1) {
 		pad = &entity->pads[0];
-		if (!(pad->flags & MEDIA_PAD_FL_SINK))
+		dev_info(video->camss->dev, "Pipeline walk: %s pad[0] flags=0x%x\n",
+			 entity->name, pad->flags);
+		if (!(pad->flags & MEDIA_PAD_FL_SINK)) {
+			dev_info(video->camss->dev, "Pipeline walk: pad is not sink, stopping\n");
 			break;
+		}
 
 		pad = media_pad_remote_pad_first(pad);
-		if (!pad || !is_media_entity_v4l2_subdev(pad->entity))
+		if (!pad) {
+			dev_info(video->camss->dev, "Pipeline walk: no remote pad, stopping\n");
 			break;
+		}
+		if (!is_media_entity_v4l2_subdev(pad->entity)) {
+			dev_info(video->camss->dev, "Pipeline walk: remote is not subdev, stopping\n");
+			break;
+		}
 
 		entity = pad->entity;
 		subdev = media_entity_to_v4l2_subdev(entity);
 
+		dev_info(video->camss->dev, "Pipeline walk: calling s_stream(1) on %s\n",
+			 entity->name);
 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
+		dev_info(video->camss->dev, "Pipeline walk: s_stream returned %d\n", ret);
 		if (ret < 0 && ret != -ENOIOCTLCMD)
 			goto error;
 	}
