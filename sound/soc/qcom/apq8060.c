@@ -49,17 +49,31 @@ struct apq8060_snd_data {
  * Speaker amplifier enable via WM8994 GPIO_1.
  * The TouchPad uses an external Class-D amplifier controlled by this GPIO.
  * GPIO_1 = 0x41 enables the amp, 0x01 disables it.
+ *
+ * Note: This is a card-level widget, so we must find the codec component
+ * from the card rather than using snd_soc_dapm_to_component() which only
+ * works for codec-level widgets.
  */
 static int apq8060_spk_pwr_amp(struct snd_soc_dapm_widget *w,
 			       struct snd_kcontrol *k, int event)
 {
-	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+	struct snd_soc_card *card = snd_soc_dapm_to_card(w->dapm);
+	struct snd_soc_component *component;
 
+	/* Find the WM8994 codec component */
+	for_each_card_components(card, component) {
+		if (!strcmp(component->name, "wm8994-codec"))
+			goto found;
+	}
+	dev_err(card->dev, "Failed to find WM8994 codec component\n");
+	return -ENODEV;
+
+found:
 	if (SND_SOC_DAPM_EVENT_ON(event)) {
-		dev_dbg(component->dev, "Enabling speaker amplifier\n");
+		dev_info(component->dev, "Enabling speaker amplifier\n");
 		snd_soc_component_write(component, WM8994_GPIO_1, 0x41);
 	} else {
-		dev_dbg(component->dev, "Disabling speaker amplifier\n");
+		dev_info(component->dev, "Disabling speaker amplifier\n");
 		snd_soc_component_write(component, WM8994_GPIO_1, 0x01);
 	}
 	return 0;
