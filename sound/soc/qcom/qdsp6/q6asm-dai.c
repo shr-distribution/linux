@@ -24,12 +24,18 @@
 
 #define DRV_NAME	"q6asm-fe-dai"
 
+/*
+ * Buffer size constants.
+ * Legacy MSM8x60 kernels used much smaller buffers (~10KB total).
+ * Reduce from upstream defaults (512KB) to allow allocation without CMA.
+ * These values provide 32KB playback buffer (8KB x 4 periods).
+ */
 #define PLAYBACK_MIN_NUM_PERIODS    2
-#define PLAYBACK_MAX_NUM_PERIODS   8
-#define PLAYBACK_MAX_PERIOD_SIZE    65536
+#define PLAYBACK_MAX_NUM_PERIODS    4
+#define PLAYBACK_MAX_PERIOD_SIZE    8192
 #define PLAYBACK_MIN_PERIOD_SIZE    128
 #define CAPTURE_MIN_NUM_PERIODS     2
-#define CAPTURE_MAX_NUM_PERIODS     8
+#define CAPTURE_MAX_NUM_PERIODS     4
 #define CAPTURE_MAX_PERIOD_SIZE     4096
 #define CAPTURE_MIN_PERIOD_SIZE     320
 #define SID_MASK_DEFAULT	0xF
