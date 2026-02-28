@@ -266,15 +266,23 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct v4l2_subdev *subdev;
 	int ret;
 
+	dev_info(video->camss->dev, "video_start_streaming: ENTER count=%d\n", count);
+
 	ret = video_device_pipeline_alloc_start(vdev);
 	if (ret < 0) {
 		dev_err(video->camss->dev, "Failed to start media pipeline: %d\n", ret);
 		goto flush_buffers;
 	}
 
+	dev_info(video->camss->dev, "video_start_streaming: pipeline started, checking format\n");
+
 	ret = video_check_format(video);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(video->camss->dev, "video_start_streaming: format check failed: %d\n", ret);
 		goto error;
+	}
+
+	dev_info(video->camss->dev, "video_start_streaming: format OK, starting pipeline walk\n");
 
 	entity = &vdev->entity;
 	dev_info(video->camss->dev, "Pipeline walk: starting at %s\n", entity->name);

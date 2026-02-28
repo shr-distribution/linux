@@ -13,6 +13,7 @@
 #include <dt-bindings/clock/qcom,mmcc-msm8960.h>
 #include <dt-bindings/interconnect/qcom,msm8660.h>
 #include <dt-bindings/clock/qcom,rpmcc.h>
+#include <dt-bindings/clock/qcom,lcc-msm8660.h>
 #include <dt-bindings/sound/qcom,q6dsp-lpass-ports.h>
 #include "qcom-msm8660.dtsi"
 #include "pm8058.dtsi"
@@ -2833,6 +2834,21 @@
 		 */
 		pinctrl-names = "default";
 		pinctrl-0 = <&primary_i2s_pins>;
+
+		/*
+		 * LPASS I2S clocks from LCC (LPASS Clock Controller).
+		 * These must be enabled for I2S output to work.
+		 * The Q6 DSP handles audio routing but doesn't control
+		 * the physical I2S output clocks on APQ8060/MSM8660.
+		 */
+		clocks = <&lcc CODEC_I2S_SPKR_OSR_CLK>,
+			 <&lcc CODEC_I2S_SPKR_BIT_CLK>,
+			 <&lcc CODEC_I2S_MIC_OSR_CLK>,
+			 <&lcc CODEC_I2S_MIC_BIT_CLK>;
+		clock-names = "codec_i2s_spkr_osr_clk",
+			      "codec_i2s_spkr_bit_clk",
+			      "codec_i2s_mic_osr_clk",
+			      "codec_i2s_mic_bit_clk";
 
 		/*
 		 * DAPM audio routing.

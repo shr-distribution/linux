@@ -20,7 +20,6 @@
 #include <sound/jack.h>
 #include <uapi/linux/input-event-codes.h>
 #include <dt-bindings/sound/qcom,q6afe.h>
-#include <dt-bindings/clock/qcom,lcc-msm8660.h>
 #include <linux/mfd/wm8994/registers.h>
 
 #include "common.h"
@@ -402,7 +401,6 @@ static int apq8060_snd_platform_probe(struct platform_device *pdev)
 	struct snd_soc_card *card;
 	struct apq8060_snd_data *data;
 	struct device *dev = &pdev->dev;
-	struct device_node *lcc_node;
 	int ret;
 
 	card = devm_kzalloc(dev, sizeof(*card), GFP_KERNEL);
@@ -414,54 +412,46 @@ static int apq8060_snd_platform_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	/*
-	 * Get LPASS I2S clocks from LCC (LPASS Clock Controller).
+	 * Get LPASS I2S clocks from DT (referenced from LCC clock controller).
 	 * On APQ8060/MSM8660, these clocks must be enabled by Linux
 	 * for I2S output to work. The Q6 DSP doesn't control them.
-	 * Clocks are accessed by index defined in qcom,lcc-msm8660.h.
 	 */
-	lcc_node = of_find_compatible_node(NULL, NULL, "qcom,lcc-msm8660");
-	if (lcc_node) {
-		data->codec_i2s_spkr_osr_clk = of_clk_get(lcc_node,
-							  CODEC_I2S_SPKR_OSR_CLK);
-		if (IS_ERR(data->codec_i2s_spkr_osr_clk)) {
-			dev_warn(dev, "Failed to get codec_i2s_spkr_osr_clk: %ld\n",
-				 PTR_ERR(data->codec_i2s_spkr_osr_clk));
-			data->codec_i2s_spkr_osr_clk = NULL;
-		}
-
-		data->codec_i2s_spkr_bit_clk = of_clk_get(lcc_node,
-							  CODEC_I2S_SPKR_BIT_CLK);
-		if (IS_ERR(data->codec_i2s_spkr_bit_clk)) {
-			dev_warn(dev, "Failed to get codec_i2s_spkr_bit_clk: %ld\n",
-				 PTR_ERR(data->codec_i2s_spkr_bit_clk));
-			data->codec_i2s_spkr_bit_clk = NULL;
-		}
-
-		data->codec_i2s_mic_osr_clk = of_clk_get(lcc_node,
-							 CODEC_I2S_MIC_OSR_CLK);
-		if (IS_ERR(data->codec_i2s_mic_osr_clk)) {
-			dev_warn(dev, "Failed to get codec_i2s_mic_osr_clk: %ld\n",
-				 PTR_ERR(data->codec_i2s_mic_osr_clk));
-			data->codec_i2s_mic_osr_clk = NULL;
-		}
-
-		data->codec_i2s_mic_bit_clk = of_clk_get(lcc_node,
-							 CODEC_I2S_MIC_BIT_CLK);
-		if (IS_ERR(data->codec_i2s_mic_bit_clk)) {
-			dev_warn(dev, "Failed to get codec_i2s_mic_bit_clk: %ld\n",
-				 PTR_ERR(data->codec_i2s_mic_bit_clk));
-			data->codec_i2s_mic_bit_clk = NULL;
-		}
-
-		of_node_put(lcc_node);
-
-		if (data->codec_i2s_spkr_osr_clk && data->codec_i2s_spkr_bit_clk)
-			dev_info(dev, "Got LPASS I2S speaker clocks\n");
-		if (data->codec_i2s_mic_osr_clk && data->codec_i2s_mic_bit_clk)
-			dev_info(dev, "Got LPASS I2S mic clocks\n");
-	} else {
-		dev_warn(dev, "LCC node not found, I2S clocks not available\n");
+	data->codec_i2s_spkr_osr_clk = devm_clk_get_optional(dev,
+						"codec_i2s_spkr_osr_clk");
+	if (IS_ERR(data->codec_i2s_spkr_osr_clk)) {
+		ret = PTR_ERR(data->codec_i2s_spkr_osr_clk);
+		dev_err(dev, "Failed to get codec_i2s_spkr_osr_clk: %d\n", ret);
+		return ret;
 	}
+
+	data->codec_i2s_spkr_bit_clk = devm_clk_get_optional(dev,
+						"codec_i2s_spkr_bit_clk");
+	if (IS_ERR(data->codec_i2s_spkr_bit_clk)) {
+		ret = PTR_ERR(data->codec_i2s_spkr_bit_clk);
+		dev_err(dev, "Failed to get codec_i2s_spkr_bit_clk: %d\n", ret);
+		return ret;
+	}
+
+	data->codec_i2s_mic_osr_clk = devm_clk_get_optional(dev,
+						"codec_i2s_mic_osr_clk");
+	if (IS_ERR(data->codec_i2s_mic_osr_clk)) {
+		ret = PTR_ERR(data->codec_i2s_mic_osr_clk);
+		dev_err(dev, "Failed to get codec_i2s_mic_osr_clk: %d\n", ret);
+		return ret;
+	}
+
+	data->codec_i2s_mic_bit_clk = devm_clk_get_optional(dev,
+						"codec_i2s_mic_bit_clk");
+	if (IS_ERR(data->codec_i2s_mic_bit_clk)) {
+		ret = PTR_ERR(data->codec_i2s_mic_bit_clk);
+		dev_err(dev, "Failed to get codec_i2s_mic_bit_clk: %d\n", ret);
+		return ret;
+	}
+
+	if (data->codec_i2s_spkr_osr_clk && data->codec_i2s_spkr_bit_clk)
+		dev_info(dev, "Got LPASS I2S speaker clocks\n");
+	if (data->codec_i2s_mic_osr_clk && data->codec_i2s_mic_bit_clk)
+		dev_info(dev, "Got LPASS I2S mic clocks\n");
 
 	card->driver_name = DRIVER_NAME;
 	card->dapm_widgets = apq8060_dapm_widgets;
