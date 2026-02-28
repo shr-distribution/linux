@@ -111,8 +111,13 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 	/* VFE0 */
 	{
 		.regulators = {},
-		.clock = { "vfe", "vfe_axi", "vfe_ahb" },
+		/*
+		 * vfe_csi clock must be enabled before CSI clocks can work.
+		 * This matches the legacy webOS kernel sequence.
+		 */
+		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi" },
 		.clock_rate = { { 122880000, 228570000, 266670000 },
+				{ 0 },
 				{ 0 },
 				{ 0 } },
 		.reg = { "vfe0" },
