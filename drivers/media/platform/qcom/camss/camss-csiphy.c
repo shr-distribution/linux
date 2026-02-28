@@ -320,7 +320,14 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 		wmb();
 	}
 
+	dev_info(csiphy->camss->dev,
+		 "CSIPHY%d: stream_on calling lanes_enable lane_mask=0x%x link_freq=%lld\n",
+		 csiphy->id, lane_mask, link_freq);
+
 	csiphy->res->hw_ops->lanes_enable(csiphy, cfg, link_freq, lane_mask);
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n",
+		 csiphy->id);
 
 	return 0;
 }
@@ -349,10 +356,16 @@ static int csiphy_set_stream(struct v4l2_subdev *sd, int enable)
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
 	int ret = 0;
 
+	dev_info(csiphy->camss->dev, "CSIPHY%d: set_stream enable=%d\n",
+		 csiphy->id, enable);
+
 	if (enable)
 		ret = csiphy_stream_on(csiphy);
 	else
 		csiphy_stream_off(csiphy);
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: set_stream ret=%d\n",
+		 csiphy->id, ret);
 
 	return ret;
 }

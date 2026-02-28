@@ -768,6 +768,9 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 	struct csid_device *csid = v4l2_get_subdevdata(sd);
 	int ret;
 
+	dev_info(csid->camss->dev, "CSID%d: set_stream enable=%d need_vc_update=%d\n",
+		 csid->id, enable, csid->phy.need_vc_update);
+
 	if (enable) {
 		if (csid->testgen.nmodes != CSID_PAYLOAD_MODE_DISABLED) {
 			ret = v4l2_ctrl_handler_setup(&csid->ctrls);
@@ -784,9 +787,13 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	if (csid->phy.need_vc_update) {
+		dev_info(csid->camss->dev, "CSID%d: calling configure_stream\n",
+			 csid->id);
 		csid->res->hw_ops->configure_stream(csid, enable);
 		csid->phy.need_vc_update = false;
 	}
+
+	dev_info(csid->camss->dev, "CSID%d: set_stream complete\n", csid->id);
 
 	return 0;
 }
