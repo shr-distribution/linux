@@ -100,6 +100,34 @@
 #define VFE_0_BUS_CMD_Mx_RLD_CMD(x)	BIT(x)
 
 #define VFE_0_BUS_CFG			0x03C
+/*
+ * VFE31 BUS_CFG register bit definitions:
+ * Bit 0: stripeRdPathEn
+ * Bits 1-3: reserved
+ * Bit 4: encYWrPathEn - Enable encoder Y write path
+ * Bit 5: encCbcrWrPathEn - Enable encoder CbCr write path
+ * Bit 6: viewYWrPathEn - Enable view Y write path
+ * Bit 7: viewCbcrWrPathEn - Enable view CbCr write path
+ * Bits 8-9: rawPixelDataSize (0=8bit, 1=10bit, 2=12bit)
+ * Bits 10-11: rawWritePathSelect (0=disabled, 1=enc_cbcr, 2=view_cbcr)
+ */
+#define VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN		BIT(4)
+#define VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN	BIT(5)
+#define VFE_0_BUS_CFG_VIEW_Y_WR_PATH_EN		BIT(6)
+#define VFE_0_BUS_CFG_VIEW_CBCR_WR_PATH_EN	BIT(7)
+#define VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT	8
+#define VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT	10
+#define VFE_0_BUS_CFG_RAW_WR_PATH_DISABLED	0
+#define VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR	1
+#define VFE_0_BUS_CFG_RAW_WR_PATH_VIEW_CBCR	2
+
+/*
+ * VFE31 VFE_CFG register at 0x01C contains camif2vfeEnable and camif2busEnable
+ * This enables raw passthrough mode (CAMIF -> AXI bus directly)
+ */
+#define VFE_0_VFE_CFG			0x01C
+#define VFE_0_VFE_CFG_CAMIF_TO_VFE_EN	BIT(5)
+#define VFE_0_VFE_CFG_CAMIF_TO_BUS_EN	BIT(7)
 
 /* CAMIF configuration - VFE31 specific */
 #define VFE_0_CAMIF_CMD			0x1EC
@@ -572,7 +600,17 @@ static void vfe31_set_realign_cfg(struct vfe_device *vfe, struct vfe_line *line,
 static void vfe31_set_rdi_cid(struct vfe_device *vfe, enum vfe_line_id id,
 			      u8 cid)
 {
-	/* VFE31 doesn't use RDI in the same way */
+	/*
+	 * VFE31 uses CAMIF for all input, including CSI data.
+	 * The CID (Channel ID) is handled at the CSI/CSID level, not VFE.
+	 * The CAMIF receives data from whatever source CSI is configured for.
+	 *
+	 * For raw passthrough mode, ensure CAMIF is configured to pass
+	 * data without modification. The actual channel selection happens
+	 * in the CSI receiver hardware.
+	 */
+	dev_dbg(vfe->camss->dev, "VFE31: set RDI%d CID=%d (handled by CSID)\n",
+		id, cid);
 }
 
 static void vfe31_set_qos(struct vfe_device *vfe)
@@ -594,13 +632,57 @@ static u16 vfe31_get_ub_size(u8 vfe_id)
 static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 					enum vfe_line_id id)
 {
-	/* VFE31 WM to RDI connection */
+	u32 val;
+
+	/*
+	 * VFE31 doesn't have separate RDI paths like later VFEs.
+	 * Instead, enable raw passthrough mode: CAMIF -> AXI bus directly.
+	 * This bypasses VFE processing and outputs raw sensor data.
+	 *
+	 * Configuration:
+	 * 1. Enable camif2busEnable in VFE_CFG
+	 * 2. Set rawWritePathSelect to route raw data to enc_cbcr path
+	 * 3. Enable encCbcrWrPathEn in BUS_CFG
+	 */
+	dev_dbg(vfe->camss->dev, "VFE31: connect WM%d to RDI%d (raw passthrough)\n",
+		wm, id);
+
+	/* Enable CAMIF to bus (raw passthrough) */
+	val = readl_relaxed(vfe->base + VFE_0_VFE_CFG);
+	val |= VFE_0_VFE_CFG_CAMIF_TO_BUS_EN;
+	writel_relaxed(val, vfe->base + VFE_0_VFE_CFG);
+
+	/* Configure BUS_CFG for raw passthrough via encoder CbCr path */
+	val = readl_relaxed(vfe->base + VFE_0_BUS_CFG);
+	/* Clear and set raw write path select to encoder CbCr path */
+	val &= ~(0x3 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
+	val |= (VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
+	/* Enable encoder CbCr write path for raw data */
+	val |= VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN;
+	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
+
+	wmb();
 }
 
 static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 					     enum vfe_line_id id)
 {
-	/* VFE31 WM disconnect */
+	u32 val;
+
+	dev_dbg(vfe->camss->dev, "VFE31: disconnect WM%d from RDI%d\n", wm, id);
+
+	/* Disable raw passthrough in BUS_CFG */
+	val = readl_relaxed(vfe->base + VFE_0_BUS_CFG);
+	val &= ~(0x3 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
+	val |= (VFE_0_BUS_CFG_RAW_WR_PATH_DISABLED << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
+	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
+
+	/* Disable CAMIF to bus */
+	val = readl_relaxed(vfe->base + VFE_0_VFE_CFG);
+	val &= ~VFE_0_VFE_CFG_CAMIF_TO_BUS_EN;
+	writel_relaxed(val, vfe->base + VFE_0_VFE_CFG);
+
+	wmb();
 }
 
 static void vfe31_wm_set_subsample(struct vfe_device *vfe, u8 wm)
@@ -613,11 +695,29 @@ static void vfe31_wm_set_subsample(struct vfe_device *vfe, u8 wm)
 
 static void vfe31_bus_enable_wr_if(struct vfe_device *vfe, u8 enable)
 {
-	/* VFE31 bus write interface enable */
-	if (enable)
-		writel_relaxed(0x10000000, vfe->base + VFE_0_BUS_CFG);
-	else
+	/*
+	 * VFE31 bus write interface enable.
+	 * BUS_CFG register controls which write paths are enabled:
+	 * - Bit 4: encYWrPathEn
+	 * - Bit 5: encCbcrWrPathEn
+	 * - Bit 6: viewYWrPathEn
+	 * - Bit 7: viewCbcrWrPathEn
+	 *
+	 * For initial enable, we set a base configuration.
+	 * The specific paths are enabled/configured by connect_wm_to_rdi
+	 * or set_camif_cfg depending on PIX vs RDI mode.
+	 */
+	if (enable) {
+		/* Enable all write paths initially - specific paths configured later */
+		writel_relaxed(VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN |
+			       VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN |
+			       VFE_0_BUS_CFG_VIEW_Y_WR_PATH_EN |
+			       VFE_0_BUS_CFG_VIEW_CBCR_WR_PATH_EN,
+			       vfe->base + VFE_0_BUS_CFG);
+		dev_dbg(vfe->camss->dev, "VFE31: bus write interface enabled\n");
+	} else {
 		writel_relaxed(0x0, vfe->base + VFE_0_BUS_CFG);
+	}
 }
 
 static void vfe31_bus_reload_wm(struct vfe_device *vfe, u8 wm)
@@ -630,13 +730,25 @@ static void vfe31_bus_reload_wm(struct vfe_device *vfe, u8 wm)
 
 static void vfe31_wm_frame_based(struct vfe_device *vfe, u8 wm, u8 enable)
 {
-	/* VFE31 WM frame-based mode */
-	u32 val = 0x2;
+	u32 val;
 
-	if (enable)
-		writel_relaxed(val,
-			       vfe->base +
-			       VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+	/*
+	 * VFE31 WM_WR_CFG register configuration for frame-based mode:
+	 * Bit 0: enable - master enable
+	 * Bit 1: frame_based - 1 for frame-based, 0 for line-based
+	 * Other bits control burst length, etc.
+	 *
+	 * For raw passthrough (RDI emulation), use frame-based mode.
+	 */
+	if (enable) {
+		/* Frame-based mode: bit 1 set, burst length default */
+		val = 0x2 | BIT(0);  /* frame_based | enable */
+		dev_dbg(vfe->camss->dev, "VFE31: WM%d frame-based enable\n", wm);
+	} else {
+		val = 0;
+	}
+
+	writel_relaxed(val, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 }
 
 static void vfe31_wm_line_based(struct vfe_device *vfe, u32 wm,
@@ -756,6 +868,11 @@ static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 		vfe_reg_clr(vfe, VFE_0_IRQ_MASK_0, val0);
 		vfe_reg_clr(vfe, VFE_0_IRQ_MASK_1, val1);
 	}
+
+	dev_dbg(vfe->camss->dev,
+		"VFE31 IRQ wm_line: wm=%d line=%d enable=%d mask0=0x%08x\n",
+		wm, line_id, enable,
+		readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0));
 }
 
 static void vfe31_pm_domain_off(struct vfe_device *vfe)

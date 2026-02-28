@@ -1660,6 +1660,12 @@ static struct clk_branch vfe_clk = {
 static struct clk_branch vfe_csi_clk = {
 	.halt_reg = 0x01cc,
 	.halt_bit = 8,
+	/*
+	 * The VFE CSI clock halt status is unreliable when the CSI block
+	 * is not actively receiving data. Use BRANCH_HALT_SKIP to avoid
+	 * timeouts during clock enable.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0104,
 		.enable_mask = BIT(12),
