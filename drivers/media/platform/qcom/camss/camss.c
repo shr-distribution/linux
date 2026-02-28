@@ -76,7 +76,7 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 };
 
 static const struct camss_subdev_resources csid_res_8x60[] = {
-	/* CSID0 - shares register space with CSIPHY0 */
+	/* CSID0 - shares register space and interrupt with CSIPHY0 */
 	{
 		.regulators = {},
 		.clock = { "csi0_src", "csi0", "csi0_phy" },
@@ -84,14 +84,14 @@ static const struct camss_subdev_resources csid_res_8x60[] = {
 				{ 0 },
 				{ 0 } },
 		.reg = { "csiphy0" },  /* Same as CSIPHY - unified block */
-		.interrupt = { "csiphy0" },
+		.interrupt = {},       /* No IRQ - CSIPHY handles interrupts */
 		.csid = {
 			.hw_ops = &csid_ops_8x60,
 			.parent_dev_ops = &vfe_parent_dev_ops,
 			.formats = &csid_formats_8x60
 		}
 	},
-	/* CSID1 - shares register space with CSIPHY1 */
+	/* CSID1 - shares register space and interrupt with CSIPHY1 */
 	{
 		.regulators = {},
 		.clock = { "csi1_src", "csi1", "csi1_phy" },
@@ -99,7 +99,7 @@ static const struct camss_subdev_resources csid_res_8x60[] = {
 				{ 0 },
 				{ 0 } },
 		.reg = { "csiphy1" },  /* Same as CSIPHY - unified block */
-		.interrupt = { "csiphy1" },
+		.interrupt = {},       /* No IRQ - CSIPHY handles interrupts */
 		.csid = {
 			.hw_ops = &csid_ops_8x60,
 			.parent_dev_ops = &vfe_parent_dev_ops,
@@ -4467,15 +4467,16 @@ static const struct camss_resources msm8660_resources = {
 	.icc_res = icc_res_8x60,
 	.icc_path_num = ARRAY_SIZE(icc_res_8x60),
 	/*
-	 * MSM8660/APQ8060 with parallel camera interface (CAMIF) doesn't use
-	 * MIPI CSI-2, so CSIPHY/CSID are not needed. The VFE 3.1 connects
-	 * directly to the parallel sensor.
+	 * MSM8660/APQ8060 has a unified CSI controller architecture where
+	 * CSIPHY and CSID share the same hardware block. CSIPHY handles
+	 * all interrupts; CSID provides the V4L2 media pipeline interface.
+	 * HP TouchPad uses MIPI CSI-2 for the MT9M113 front camera on CSI1.
 	 */
-	.csiphy_res = NULL,
-	.csid_res = NULL,
+	.csiphy_res = csiphy_res_8x60,
+	.csid_res = csid_res_8x60,
 	.vfe_res = vfe_res_8x60,
-	.csiphy_num = 0,
-	.csid_num = 0,
+	.csiphy_num = ARRAY_SIZE(csiphy_res_8x60),
+	.csid_num = ARRAY_SIZE(csid_res_8x60),
 	.vfe_num = ARRAY_SIZE(vfe_res_8x60),
 };
 

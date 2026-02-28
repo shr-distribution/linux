@@ -1130,19 +1130,27 @@ int msm_csid_subdev_init(struct camss *camss, struct csid_device *csid,
 
 	/* Interrupt */
 
-	ret = platform_get_irq_byname(pdev, res->interrupt[0]);
-	if (ret < 0)
-		return ret;
+	/*
+	 * On MSM8660/APQ8060, CSID shares the interrupt with CSIPHY (unified
+	 * CSI controller). Skip IRQ registration here - CSIPHY handles it.
+	 */
+	if (res->interrupt[0]) {
+		ret = platform_get_irq_byname(pdev, res->interrupt[0]);
+		if (ret < 0)
+			return ret;
 
-	csid->irq = ret;
-	snprintf(csid->irq_name, sizeof(csid->irq_name), "%s_%s%d",
-		 dev_name(dev), MSM_CSID_NAME, csid->id);
-	ret = devm_request_irq(dev, csid->irq, csid->res->hw_ops->isr,
-			       IRQF_TRIGGER_RISING | IRQF_NO_AUTOEN,
-			       csid->irq_name, csid);
-	if (ret < 0) {
-		dev_err(dev, "request_irq failed: %d\n", ret);
-		return ret;
+		csid->irq = ret;
+		snprintf(csid->irq_name, sizeof(csid->irq_name), "%s_%s%d",
+			 dev_name(dev), MSM_CSID_NAME, csid->id);
+		ret = devm_request_irq(dev, csid->irq, csid->res->hw_ops->isr,
+				       IRQF_TRIGGER_RISING | IRQF_NO_AUTOEN,
+				       csid->irq_name, csid);
+		if (ret < 0) {
+			dev_err(dev, "request_irq failed: %d\n", ret);
+			return ret;
+		}
+	} else {
+		csid->irq = -1;
 	}
 
 	/* Clocks */
