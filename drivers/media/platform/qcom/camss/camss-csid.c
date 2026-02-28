@@ -559,6 +559,14 @@ static int csid_set_clock_rates(struct csid_device *csid)
 			u64 min_rate = link_freq / 4;
 			long rate;
 
+			/*
+			 * Some platforms (e.g., MSM8660) have fixed-rate CSI
+			 * clocks that don't need rate setting. Skip if no
+			 * frequencies are defined.
+			 */
+			if (!clock->nfreqs)
+				continue;
+
 			camss_add_clock_margin(&min_rate);
 
 			for (j = 0; j < clock->nfreqs; j++)
