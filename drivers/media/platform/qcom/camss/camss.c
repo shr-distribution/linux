@@ -4199,12 +4199,13 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 			}
 
 			/*
-			 * For single-line VFE without ISPIF (e.g., MSM8660),
+			 * For VFE without ISPIF (e.g., MSM8660),
 			 * enable the CSID->VFE link for this sensor's port.
 			 * The CSIPHY ID matches the CSID ID on these platforms.
+			 * We enable the link to VFE line 0 (RDI0) which is used
+			 * for raw camera data passthrough.
 			 */
 			if (!camss->ispif && camss->res->vfe_num == 1 &&
-			    camss->vfe[0].res->line_num == 1 &&
 			    csiphy_id < camss->res->csid_num) {
 				struct media_entity *csid_entity =
 					&camss->csid[csiphy_id].subdev.entity;
