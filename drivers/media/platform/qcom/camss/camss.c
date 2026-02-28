@@ -4144,11 +4144,16 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 	struct v4l2_device *v4l2_dev = &camss->v4l2_dev;
 	struct v4l2_subdev *sd;
 
+	dev_info(camss->dev, "notifier_complete: processing subdevs\n");
+
 	list_for_each_entry(sd, &v4l2_dev->subdevs, list) {
 		void *host_priv = sd->host_priv;
 		struct media_entity *input, *sensor;
 		unsigned int i;
 		int ret;
+
+		dev_info(camss->dev, "notifier_complete: subdev %s host_priv=%p camss=%p\n",
+			 sd->name, host_priv, camss);
 
 		/*
 		 * Skip subdevs that weren't registered via our async notifier.
@@ -4176,6 +4181,12 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 			/* MIPI CSI-2 camera: link sensor to CSIPHY */
 			struct csiphy_device *csiphy = host_priv;
 			u8 csiphy_id = csiphy->id;
+
+			dev_info(camss->dev,
+				 "notifier_complete: MIPI sensor %s on CSIPHY%d, ispif=%p vfe_num=%d line_num=%d\n",
+				 sd->name, csiphy_id, camss->ispif,
+				 camss->res->vfe_num,
+				 camss->vfe[0].res->line_num);
 
 			input = &csiphy->subdev.entity;
 
