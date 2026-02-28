@@ -558,6 +558,7 @@ static int csiphy_set_format(struct v4l2_subdev *sd,
 static int csiphy_init_formats(struct v4l2_subdev *sd,
 			       struct v4l2_subdev_fh *fh)
 {
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
 	struct v4l2_subdev_format format = {
 		.pad = MSM_CSIPHY_PAD_SINK,
 		.which = fh ? V4L2_SUBDEV_FORMAT_TRY :
@@ -568,6 +569,17 @@ static int csiphy_init_formats(struct v4l2_subdev *sd,
 			.height = 1080
 		}
 	};
+
+	/*
+	 * MSM8660 uses parallel camera interface (CAMIF) which requires
+	 * 2X8 media bus formats instead of 1X16. The resolution matches
+	 * MT9M114/MT9M113 IFP output: 1288x968.
+	 */
+	if (csiphy->camss->res->version == CAMSS_8x60) {
+		format.format.code = MEDIA_BUS_FMT_UYVY8_2X8;
+		format.format.width = 1288;
+		format.format.height = 968;
+	}
 
 	return csiphy_set_format(sd, fh ? fh->state : NULL, &format);
 }
