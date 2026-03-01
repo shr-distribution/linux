@@ -46,8 +46,13 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 	/* CSIPHY0 */
 	{
 		.regulators = {},
-		.clock = { "csi0_src", "csi0", "csi0_phy" },
+		/*
+		 * vfe_csi must be enabled before CSI clocks can work.
+		 * This matches the legacy webOS kernel clock sequence.
+		 */
+		.clock = { "vfe_csi", "csi0_src", "csi0", "csi0_phy" },
 		.clock_rate = { { 0 },
+				{ 0 },
 				{ 0 },
 				{ 0 } },
 		.reg = { "csiphy0" },
@@ -61,8 +66,13 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 	/* CSIPHY1 */
 	{
 		.regulators = {},
-		.clock = { "csi1_src", "csi1", "csi1_phy" },
+		/*
+		 * vfe_csi must be enabled before CSI clocks can work.
+		 * This matches the legacy webOS kernel clock sequence.
+		 */
+		.clock = { "vfe_csi", "csi1_src", "csi1", "csi1_phy" },
 		.clock_rate = { { 0 },
+				{ 0 },
 				{ 0 },
 				{ 0 } },
 		.reg = { "csiphy1" },
