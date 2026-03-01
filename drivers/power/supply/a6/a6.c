@@ -4459,7 +4459,31 @@ static int a6_probe(struct i2c_client *client)
 		return rc;
 	}
 
-	/* Register power supply */
+#ifdef A6_PQ
+	rc = a6_start_ai_dispatch_task(state);
+	if (rc < 0) {
+		dev_err(&client->dev, "Failed to start dispatch task: %d\n", rc);
+		goto err_devfiles;
+	}
+#endif
+
+	/*
+	 * Try to initialize device state. If this fails, the device is not
+	 * present or has corrupt firmware. We still register the misc device
+	 * to allow firmware flashing via ioctl, but skip power_supply
+	 * registration to avoid continuous polling errors.
+	 */
+	rc = a6_init_state(client);
+	if (rc < 0) {
+		dev_warn(&client->dev,
+			 "A6 device not responding (%d), skipping power_supply registration\n",
+			 rc);
+		dev_info(&client->dev,
+			 "A6 misc device registered for firmware updates\n");
+		return 0;
+	}
+
+	/* Register power supply only if device is present and responding */
 	psy_cfg.drv_data = state;
 	psy_cfg.fwnode = dev_fwnode(&client->dev);
 
@@ -4489,24 +4513,6 @@ static int a6_probe(struct i2c_client *client)
 		misc_deregister(&state->mdev);
 		return rc;
 	}
-
-#ifdef A6_PQ
-	rc = a6_start_ai_dispatch_task(state);
-	if (rc < 0) {
-		dev_err(&client->dev, "Failed to start dispatch task: %d\n", rc);
-		goto err_devfiles;
-	}
-#endif
-
-	/*
-	 * Ignore errors during initialization: these may be symptomatic of
-	 * missing/corrupt A6 firmware which will need to be remedied via the
-	 * A6_IOCTL_SET_FW_DATA ioctl to re-flash fw. It's important the driver
-	 * initializes successfully to handle the request.
-	 */
-	rc = a6_init_state(client);
-	if (rc < 0)
-		dev_warn(&client->dev, "A6 state init failed: %d (continuing)\n", rc);
 
 #if defined(A6_PQ) && defined(A6_DEBUG)
 	rc = a6_create_debug_interface(state);
