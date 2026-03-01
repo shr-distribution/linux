@@ -3680,6 +3680,18 @@ static void a6_irq_work_handler(struct work_struct *work)
 	// will fail anyway and we dont' want to fiddle with SBW_WKUP while flashing is
 	// in progress...
 
+	/*
+	 * Skip IRQ processing if device was not initialized successfully.
+	 * This can happen when the device (e.g., Touchstone) wasn't connected
+	 * during probe. We still register the IRQ to support hot-plug, but
+	 * if initialization never completed, we can't process interrupts.
+	 */
+	if (!test_bit(IS_INITIALIZED_BIT, state->flags)) {
+		pr_debug_ratelimited("%s: device not initialized, skipping IRQ\n",
+				     __func__);
+		return;
+	}
+
 	// critsec for manipulating flags
 	mutex_lock(&state->dev_mutex);
 
@@ -3921,11 +3933,15 @@ static void a6_irq_work_handler(struct work_struct *work)
 	}
 
 err0:
+	/* reset busy state with proper locking */
+	mutex_lock(&state->dev_mutex);
 	/* decrement busy refcount */
 	if (state->busy_count)
 		state->busy_count--;
 	if (!state->busy_count)
 		clear_bit(DEVICE_BUSY_BIT, state->flags);
+	mutex_unlock(&state->dev_mutex);
+	wake_up_interruptible(&state->dev_busyq);
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: Visited\n", __func__);
 }
 
