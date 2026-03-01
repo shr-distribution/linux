@@ -146,19 +146,26 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 				     s64 link_freq, u8 lane_mask)
 {
 	int num_lanes;
-	int ret;
+	u8 settle_cnt = MSM8660_DEFAULT_SETTLE_CNT;
+	u32 val;
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
-	/* Debug: Check if we need to re-acquire pm_runtime */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: re-acquiring pm_runtime\n", csiphy->id);
-	ret = pm_runtime_resume_and_get(csiphy->camss->dev);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: pm_runtime_resume_and_get returned %d\n",
-		 csiphy->id, ret);
+	/*
+	 * MSM8660 workaround: Cycle the clocks before accessing CSI registers.
+	 *
+	 * After VFE GLOBAL_RESET, the CSI register path may need clock cycling
+	 * to restore proper access. This matches the legacy webOS kernel behavior
+	 * where all clocks were enabled together after VFE initialization.
+	 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: cycling clocks\n", csiphy->id);
+	camss_disable_clocks(csiphy->nclocks, csiphy->clock);
+	usleep_range(1000, 2000);
+	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
+	usleep_range(1000, 2000);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: clocks cycled\n", csiphy->id);
 
 	num_lanes = cfg->csi2->lane_cfg.num_data;
-	u8 settle_cnt = MSM8660_DEFAULT_SETTLE_CNT;
-	u32 val;
 
 	/*
 	 * Calculate settle count if link frequency is available.
@@ -180,11 +187,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev,
 		 "CSIPHY%d: lanes_enable: lanes=%d settle_cnt=0x%02x link_freq=%lld base=%px\n",
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
-
-	/* Test: try writing to 0x04 first (this worked in reset) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: test - writing to PROTOCOL_CONTROL (0x04)\n", csiphy->id);
-	writel_relaxed(0, csiphy->base + MIPI_PROTOCOL_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: test - PROTOCOL_CONTROL write OK\n", csiphy->id);
 
 	/* Step 1: SOT_ECC_EN - enable error correction for SYNC (data-lane) */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL (0x00)\n", csiphy->id);
