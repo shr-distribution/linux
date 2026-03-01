@@ -191,33 +191,29 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
 	/*
-	 * MSM8660 workaround: Cycle clocks before accessing PHY_CONTROL.
-	 * After GDSC power transitions, clock state needs to be re-established.
+	 * MSM8660: Configure PROTOCOL_CONTROL first - we know this register
+	 * is accessible. PHY_CONTROL at offset 0x00 may require PROTOCOL_CONTROL
+	 * to be configured first.
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: cycling clocks before PHY_CONTROL\n", csiphy->id);
-	camss_disable_clocks(csiphy->nclocks, csiphy->clock);
-	usleep_range(1000, 2000);
-	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
-	usleep_range(1000, 2000);
 
-	/* Step 1: SOT_ECC_EN - enable error correction for SYNC (data-lane) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL (0x00)\n", csiphy->id);
-	writel_relaxed(0x4, csiphy->base + MIPI_PHY_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL write OK\n", csiphy->id);
-
-	/* Step 2: SW_RST to the CSI core */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - SW_RST\n", csiphy->id);
+	/* Step 1: SW_RST to the CSI core */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - SW_RST\n", csiphy->id);
 	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
 		       csiphy->base + MIPI_PROTOCOL_CONTROL);
 	usleep_range(1000, 2000);
 
-	/* Step 3: Configure PROTOCOL_CONTROL */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - PROTOCOL_CONTROL\n", csiphy->id);
+	/* Step 2: Configure PROTOCOL_CONTROL */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - PROTOCOL_CONTROL\n", csiphy->id);
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
 	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
 	/* Data format: 0 = YUV422, other values for RAW data */
 	writel_relaxed(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
+
+	/* Step 3: PHY_CONTROL - now try after PROTOCOL_CONTROL is configured */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - PHY_CONTROL (0x00)\n", csiphy->id);
+	writel_relaxed(0x4, csiphy->base + MIPI_PHY_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - PHY_CONTROL write OK\n", csiphy->id);
 
 	/* Step 4: SW CAL EN - software calibration */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 4 - CALIBRATION_CONTROL\n", csiphy->id);
