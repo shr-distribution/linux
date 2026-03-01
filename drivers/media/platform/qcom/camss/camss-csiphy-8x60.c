@@ -108,11 +108,26 @@ static void csiphy_8x60_hw_version_read(struct csiphy_device *csiphy,
 /*
  * csiphy_8x60_reset - Perform software reset on CSIPHY module
  * @csiphy: CSIPHY device
+ *
+ * MSM8660 workaround: Cycle clocks before register access to ensure
+ * the CSI hardware is in a known good state. This is required after
+ * power domain transitions (GDSC enable/disable cycles).
  */
 static void csiphy_8x60_reset(struct csiphy_device *csiphy)
 {
 	dev_info(csiphy->camss->dev,
 		 "CSIPHY%d: reset ENTER (base=%px)\n", csiphy->id, csiphy->base);
+
+	/*
+	 * Cycle clocks to ensure CSI registers are accessible.
+	 * After GDSC power cycles, the clock/bus state may need
+	 * to be re-established before register access works.
+	 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: cycling clocks\n", csiphy->id);
+	camss_disable_clocks(csiphy->nclocks, csiphy->clock);
+	usleep_range(1000, 2000);
+	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
+	usleep_range(1000, 2000);
 
 	/* SW_RST to the CSI core */
 	dev_info(csiphy->camss->dev,
@@ -120,12 +135,8 @@ static void csiphy_8x60_reset(struct csiphy_device *csiphy)
 		 csiphy->id);
 	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
 		       csiphy->base + MIPI_PROTOCOL_CONTROL);
-	dev_info(csiphy->camss->dev,
-		 "CSIPHY%d: reset - SW_RST written, waiting\n", csiphy->id);
 	usleep_range(1000, 2000);
 
-	dev_info(csiphy->camss->dev,
-		 "CSIPHY%d: reset - clearing SW_RST\n", csiphy->id);
 	writel_relaxed(0, csiphy->base + MIPI_PROTOCOL_CONTROL);
 	usleep_range(1000, 2000);
 
