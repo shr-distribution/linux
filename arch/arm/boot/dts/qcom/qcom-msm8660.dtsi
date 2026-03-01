@@ -570,8 +570,14 @@
 			reg = <0x28000000 0x1000>;
 			#clock-cells = <1>;
 			#reset-cells = <1>;
+			/*
+			 * PLL4 on MSM8660/APQ8060 can only be controlled via
+			 * RPM, not through direct register access. Use the
+			 * RPM clock (RPM_PLL4_CLK) instead of GCC's PLL4_VOTE
+			 * which tries to go through the LCC's pll4 registers.
+			 */
 			clocks = <&pxo_board>,
-				 <&gcc PLL4_VOTE>,
+				 <&rpmcc RPM_PLL4_CLK>,
 				 <0>, <0>, <0>, <0>, <0>, <0>;
 			clock-names = "pxo",
 				      "pll4_vote",

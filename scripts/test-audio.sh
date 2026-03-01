@@ -205,9 +205,10 @@ check_sound_card() {
 configure_mixer() {
     log_step "Configuring audio mixer routing..."
 
-    # Enable LPASS to codec routing (Q6 DSP -> Primary MI2S -> Codec)
-    log_info "Enabling PRI_MI2S_RX Audio Mixer..."
-    run_on_device "cd /tmp && ./tinymix set 'PRI_MI2S_RX Audio Mixer MultiMedia1' 1" 3
+    # Enable LPASS to codec routing (Q6 DSP -> Secondary MI2S -> Codec)
+    # Note: DT uses SECONDARY_MI2S for the codec link, so we need SEC_MI2S_RX
+    log_info "Enabling SEC_MI2S_RX Audio Mixer..."
+    run_on_device "cd /tmp && ./tinymix set 'SEC_MI2S_RX Audio Mixer MultiMedia1' 1" 3
 
     # Enable DAC paths (AIF1 -> DAC1)
     log_info "Enabling DAC mixer paths..."
