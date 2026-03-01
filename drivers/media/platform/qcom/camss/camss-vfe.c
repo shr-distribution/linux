@@ -1168,6 +1168,9 @@ int vfe_get(struct vfe_device *vfe)
 		if (ret < 0)
 			goto error_reset;
 
+		/* Ensure clean CAMIF state for MSM8660 deferred enable */
+		vfe->camif_pending = false;
+
 		vfe_reset_output_maps(vfe);
 
 		vfe_init_outputs(vfe);
@@ -1214,6 +1217,15 @@ void vfe_put(struct vfe_device *vfe)
 			vfe->was_streaming = 0;
 			vfe->res->hw_ops->vfe_halt(vfe);
 		}
+		/*
+		 * MSM8660 workaround: Disable CAMIF to ensure clean state.
+		 * Stale CAMIF state can block CSIPHY register access on
+		 * subsequent camera sessions.
+		 */
+		writel_relaxed(0, vfe->base + VFE31_CAMIF_CMD);
+		writel_relaxed(0, vfe->base + VFE31_CAMIF_CFG);
+		vfe->camif_pending = false;
+
 		camss_disable_clocks(vfe->nclocks, vfe->clock);
 		pm_runtime_put_sync(vfe->camss->dev);
 		vfe->res->hw_ops->pm_domain_off(vfe);
