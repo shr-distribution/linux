@@ -163,18 +163,21 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
 	/*
-	 * MSM8660 workaround: Cycle the clocks before accessing CSI registers.
+	 * MSM8660 workaround: Full power domain cycle before CSI configuration.
 	 *
-	 * After VFE GLOBAL_RESET, the CSI register path may need clock cycling
-	 * to restore proper access. This matches the legacy webOS kernel behavior
-	 * where all clocks were enabled together after VFE initialization.
+	 * After VFE s_stream configures CAMIF, the CSI register path becomes
+	 * inaccessible. Cycling just clocks is not enough - we need to cycle
+	 * the entire power domain to restore register access.
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: cycling clocks\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: cycling power domain\n", csiphy->id);
 	camss_disable_clocks(csiphy->nclocks, csiphy->clock);
-	usleep_range(1000, 2000);
+	pm_runtime_put_sync(csiphy->camss->dev);
+	usleep_range(5000, 10000);
+	pm_runtime_resume_and_get(csiphy->camss->dev);
+	usleep_range(10000, 15000);
 	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
 	usleep_range(1000, 2000);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: clocks cycled\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: power domain cycled\n", csiphy->id);
 
 	num_lanes = cfg->csi2->lane_cfg.num_data;
 
