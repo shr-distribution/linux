@@ -1669,24 +1669,26 @@
 	 */
 	primary_i2s_pins: primary-i2s-state {
 		/*
-		 * I2S clock pins - WM8958 codec is master, generating BCLK
-		 * and LRCLK using its internal FLL. These pins are inputs
-		 * to Q6 LPASS (codec drives, Q6 receives).
+		 * I2S clock pins - Q6 LPASS is master, generating BCLK and
+		 * LRCLK via LCC clocks. WM8958 codec is slave, receiving clocks.
+		 * These pins are outputs from Q6 LPASS to the codec.
 		 *
-		 * GPIO 108 (I2S WS/LRCLK) needs bias-pull-up to keep LDO2
-		 * enabled when codec isn't driving.
+		 * GPIO 108 = I2S WS (LRCLK)
+		 * GPIO 109 = I2S SCK (BCLK)
 		 */
 		i2s-ws-pins {
 			pins = "gpio108";
 			function = "i2s";
-			drive-strength = <2>;
-			bias-pull-up;
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
 		};
 		i2s-sck-pins {
 			pins = "gpio109";
 			function = "i2s";
-			drive-strength = <2>;
+			drive-strength = <8>;
 			bias-disable;
+			output-high;
 		};
 	};
 
