@@ -2855,15 +2855,23 @@
 		 * These must be enabled for I2S output to work.
 		 * The Q6 DSP handles audio routing but doesn't control
 		 * the physical I2S output clocks on APQ8060/MSM8660.
+		 *
+		 * The bit_clk is a mux that selects between internal bit_div_clk
+		 * (LPASS drives GPIO output) or external codec_clk (GPIO input).
+		 * We need bit_div_clk as parent to drive I2S BCLK to the codec.
 		 */
 		clocks = <&lcc CODEC_I2S_SPKR_OSR_CLK>,
 			 <&lcc CODEC_I2S_SPKR_BIT_CLK>,
+			 <&lcc CODEC_I2S_SPKR_BIT_DIV_CLK>,
 			 <&lcc CODEC_I2S_MIC_OSR_CLK>,
-			 <&lcc CODEC_I2S_MIC_BIT_CLK>;
+			 <&lcc CODEC_I2S_MIC_BIT_CLK>,
+			 <&lcc CODEC_I2S_MIC_BIT_DIV_CLK>;
 		clock-names = "codec_i2s_spkr_osr_clk",
 			      "codec_i2s_spkr_bit_clk",
+			      "codec_i2s_spkr_bit_div_clk",
 			      "codec_i2s_mic_osr_clk",
-			      "codec_i2s_mic_bit_clk";
+			      "codec_i2s_mic_bit_clk",
+			      "codec_i2s_mic_bit_div_clk";
 
 		/*
 		 * DAPM audio routing.

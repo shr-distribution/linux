@@ -47,8 +47,10 @@ struct apq8060_snd_data {
 	/* LPASS I2S clocks - must be enabled for I2S output */
 	struct clk *codec_i2s_spkr_osr_clk;
 	struct clk *codec_i2s_spkr_bit_clk;
+	struct clk *codec_i2s_spkr_bit_div_clk;  /* parent for bit_clk mux */
 	struct clk *codec_i2s_mic_osr_clk;
 	struct clk *codec_i2s_mic_bit_clk;
+	struct clk *codec_i2s_mic_bit_div_clk;   /* parent for bit_clk mux */
 };
 
 /*
@@ -432,6 +434,30 @@ static int apq8060_snd_platform_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	/*
+	 * Get bit_div_clk (internal LCC clock) to set as parent of bit_clk mux.
+	 * The bit_clk is a mux that can select between internal LCC clock
+	 * (bit_div_clk, GPIO as output) or external codec clock (GPIO as input).
+	 * We need the internal clock to drive the I2S SCK/BCLK to the codec.
+	 */
+	data->codec_i2s_spkr_bit_div_clk = devm_clk_get_optional(dev,
+						"codec_i2s_spkr_bit_div_clk");
+	if (IS_ERR(data->codec_i2s_spkr_bit_div_clk)) {
+		ret = PTR_ERR(data->codec_i2s_spkr_bit_div_clk);
+		dev_err(dev, "Failed to get codec_i2s_spkr_bit_div_clk: %d\n", ret);
+		return ret;
+	}
+
+	/* Set internal clock as parent of bit_clk mux (selects GPIO as output) */
+	if (data->codec_i2s_spkr_bit_clk && data->codec_i2s_spkr_bit_div_clk) {
+		ret = clk_set_parent(data->codec_i2s_spkr_bit_clk,
+				     data->codec_i2s_spkr_bit_div_clk);
+		if (ret)
+			dev_warn(dev, "Failed to set spkr bit_clk parent: %d\n", ret);
+		else
+			dev_info(dev, "Set spkr bit_clk parent to internal bit_div_clk\n");
+	}
+
 	data->codec_i2s_mic_osr_clk = devm_clk_get_optional(dev,
 						"codec_i2s_mic_osr_clk");
 	if (IS_ERR(data->codec_i2s_mic_osr_clk)) {
@@ -446,6 +472,24 @@ static int apq8060_snd_platform_probe(struct platform_device *pdev)
 		ret = PTR_ERR(data->codec_i2s_mic_bit_clk);
 		dev_err(dev, "Failed to get codec_i2s_mic_bit_clk: %d\n", ret);
 		return ret;
+	}
+
+	/* Get mic bit_div_clk and set as parent */
+	data->codec_i2s_mic_bit_div_clk = devm_clk_get_optional(dev,
+						"codec_i2s_mic_bit_div_clk");
+	if (IS_ERR(data->codec_i2s_mic_bit_div_clk)) {
+		ret = PTR_ERR(data->codec_i2s_mic_bit_div_clk);
+		dev_err(dev, "Failed to get codec_i2s_mic_bit_div_clk: %d\n", ret);
+		return ret;
+	}
+
+	if (data->codec_i2s_mic_bit_clk && data->codec_i2s_mic_bit_div_clk) {
+		ret = clk_set_parent(data->codec_i2s_mic_bit_clk,
+				     data->codec_i2s_mic_bit_div_clk);
+		if (ret)
+			dev_warn(dev, "Failed to set mic bit_clk parent: %d\n", ret);
+		else
+			dev_info(dev, "Set mic bit_clk parent to internal bit_div_clk\n");
 	}
 
 	if (data->codec_i2s_spkr_osr_clk && data->codec_i2s_spkr_bit_clk)
