@@ -2280,10 +2280,12 @@
 		clock-names = "lpo";
 
 		/*
-		 * UART speed: webOS kernel uses 115200 baud initially
-		 * (HSUART_SPEED_115K in board-tenderloin.c), which matches
-		 * the hci_bcm driver default. max-speed for negotiation.
+		 * UART speed configuration:
+		 * WebOS kernel used 3686400 baud from the start (HSUART_SPEED_3686K).
+		 * The init-speed property tells hci_bcm to use this speed immediately
+		 * instead of the default 115200 baud.
 		 */
+		init-speed = <3686400>;
 		max-speed = <3686400>;
 
 		/*
