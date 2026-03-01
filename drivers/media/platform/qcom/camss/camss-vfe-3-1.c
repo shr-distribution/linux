@@ -717,16 +717,21 @@ static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 
 	wmb();
 
-	/* Step 4: Enable CAMIF - start capturing frames */
-	val = VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS | VFE_0_CAMIF_CMD_NO_CHANGE;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CMD);
-	wmb();
-
-	writel_relaxed(VFE_0_CAMIF_CMD_ENABLE_FRAME_BOUNDARY,
-		       vfe->base + VFE_0_CAMIF_CMD);
+	/*
+	 * MSM8660 workaround: Do NOT enable CAMIF here.
+	 *
+	 * If we enable CAMIF (CAMIF_CMD_ENABLE_FRAME_BOUNDARY) before CSIPHY
+	 * is configured, the CSI register access path becomes blocked. This
+	 * causes CSIPHY lanes_enable to hang when writing to CSIPHY registers.
+	 *
+	 * The workaround is to defer CAMIF enable until after CSIPHY
+	 * lanes_enable completes. Set camif_pending flag and let CSIPHY
+	 * call vfe_enable_pending_camif() after configuring its lanes.
+	 */
+	vfe->camif_pending = true;
 
 	dev_info(vfe->camss->dev,
-		 "VFE31: CAMIF configured - status=0x%08x cfg=0x%08x frame=0x%08x\n",
+		 "VFE31: CAMIF configured (DEFERRED) - status=0x%08x cfg=0x%08x frame=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS),
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
@@ -756,6 +761,8 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 
 	/* Step 4: Disable CAMIF output */
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CFG);
+
+	vfe->camif_pending = false;
 
 	wmb();
 }

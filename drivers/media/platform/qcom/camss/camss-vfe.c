@@ -718,6 +718,51 @@ int vfe_reset(struct vfe_device *vfe)
 	return 0;
 }
 
+/*
+ * VFE31 CAMIF register definitions for deferred enable.
+ * These are duplicated here for the MSM8660 workaround.
+ */
+#define VFE31_CAMIF_CMD			0x1EC
+#define VFE31_CAMIF_CMD_CLEAR_STATUS	BIT(2)
+#define VFE31_CAMIF_CMD_ENABLE_FRAME	0x1
+#define VFE31_CAMIF_STATUS		0x1E0
+#define VFE31_CAMIF_CFG			0x1E4
+
+/*
+ * vfe_enable_pending_camif - Enable CAMIF that was deferred during VFE s_stream
+ * @vfe: VFE device
+ *
+ * MSM8660 workaround: CAMIF enable must be deferred until after CSIPHY
+ * is configured. This function enables CAMIF if it was marked pending.
+ */
+void vfe_enable_pending_camif(struct vfe_device *vfe)
+{
+	u32 val;
+
+	if (!vfe->camif_pending) {
+		dev_dbg(vfe->camss->dev, "VFE: no pending CAMIF enable\n");
+		return;
+	}
+
+	dev_info(vfe->camss->dev, "VFE: enabling deferred CAMIF\n");
+
+	/* Clear CAMIF status and enable frame boundary capture */
+	val = VFE31_CAMIF_CMD_CLEAR_STATUS;
+	writel_relaxed(val, vfe->base + VFE31_CAMIF_CMD);
+	wmb();
+
+	writel_relaxed(VFE31_CAMIF_CMD_ENABLE_FRAME,
+		       vfe->base + VFE31_CAMIF_CMD);
+	wmb();
+
+	vfe->camif_pending = false;
+
+	dev_info(vfe->camss->dev,
+		 "VFE: CAMIF enabled - status=0x%08x cfg=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
+		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG));
+}
+
 static void vfe_init_outputs(struct vfe_device *vfe)
 {
 	int i;

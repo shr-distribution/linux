@@ -166,6 +166,8 @@ struct vfe_device {
 	struct camss_video_ops video_ops;
 	struct device *genpd;
 	struct device_link *genpd_link;
+	/* MSM8660: CAMIF enable deferred until CSIPHY is configured */
+	bool camif_pending;
 };
 
 struct camss_subdev_resources;
@@ -210,6 +212,15 @@ int vfe_reserve_wm(struct vfe_device *vfe, enum vfe_line_id line_id);
  * Return 0 on success or a negative error code otherwise
  */
 int vfe_reset(struct vfe_device *vfe);
+
+/*
+ * vfe_enable_pending_camif - Enable CAMIF that was deferred during VFE s_stream
+ * @vfe: VFE device
+ *
+ * MSM8660 workaround: CAMIF enable must be deferred until after CSIPHY
+ * is configured. This function enables CAMIF if it was marked pending.
+ */
+void vfe_enable_pending_camif(struct vfe_device *vfe);
 
 /*
  * vfe_disable - Disable streaming on VFE line

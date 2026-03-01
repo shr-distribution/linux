@@ -15,6 +15,7 @@
  */
 
 #include "camss-csiphy.h"
+#include "camss-vfe.h"
 #include "camss.h"
 
 #include <linux/delay.h>
@@ -151,6 +152,11 @@ static void csiphy_8x60_reset(struct csiphy_device *csiphy)
  * @lane_mask: Lane mask
  *
  * This implements the CSI initialization sequence from the webOS kernel.
+ *
+ * MSM8660 workaround: VFE defers CAMIF enable until this function completes.
+ * This allows CSIPHY register access to work (CAMIF must not be enabled
+ * while configuring CSIPHY). After configuring lanes, we call
+ * vfe_enable_pending_camif() to enable the deferred CAMIF.
  */
 static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 				     struct csiphy_config *cfg,
@@ -159,25 +165,9 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	int num_lanes;
 	u8 settle_cnt = MSM8660_DEFAULT_SETTLE_CNT;
 	u32 val;
+	int i;
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
-
-	/*
-	 * MSM8660 workaround: Full power domain cycle before CSI configuration.
-	 *
-	 * After VFE s_stream configures CAMIF, the CSI register path becomes
-	 * inaccessible. Cycling just clocks is not enough - we need to cycle
-	 * the entire power domain to restore register access.
-	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: cycling power domain\n", csiphy->id);
-	camss_disable_clocks(csiphy->nclocks, csiphy->clock);
-	pm_runtime_put_sync(csiphy->camss->dev);
-	usleep_range(5000, 10000);
-	pm_runtime_resume_and_get(csiphy->camss->dev);
-	usleep_range(10000, 15000);
-	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
-	usleep_range(1000, 2000);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: power domain cycled\n", csiphy->id);
 
 	num_lanes = cfg->csi2->lane_cfg.num_data;
 
@@ -294,7 +284,19 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	/* Ensure all writes are committed */
 	wmb();
 
-	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable done\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable done, enabling deferred CAMIF\n",
+		 csiphy->id);
+
+	/*
+	 * MSM8660 workaround: Now that CSIPHY is configured, enable any
+	 * VFEs that deferred their CAMIF enable. VFE deferred CAMIF enable
+	 * during s_stream because CSIPHY registers become inaccessible
+	 * when CAMIF is enabled before CSIPHY is configured.
+	 */
+	for (i = 0; i < csiphy->camss->res->vfe_num; i++)
+		vfe_enable_pending_camif(&csiphy->camss->vfe[i]);
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n", csiphy->id);
 }
 
 /*
