@@ -152,19 +152,22 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 			settle_cnt--;
 	}
 
-	dev_dbg(csiphy->camss->dev,
-		"CSIPHY%d: lanes=%d settle_cnt=0x%02x link_freq=%lld\n",
-		csiphy->id, num_lanes, settle_cnt, link_freq);
+	dev_info(csiphy->camss->dev,
+		 "CSIPHY%d: lanes_enable: lanes=%d settle_cnt=0x%02x link_freq=%lld base=%px\n",
+		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
 	/* Step 1: SOT_ECC_EN - enable error correction for SYNC (data-lane) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL\n", csiphy->id);
 	writel_relaxed(0x4, csiphy->base + MIPI_PHY_CONTROL);
 
 	/* Step 2: SW_RST to the CSI core */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - SW_RST\n", csiphy->id);
 	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
 		       csiphy->base + MIPI_PROTOCOL_CONTROL);
 	usleep_range(1000, 2000);
 
 	/* Step 3: Configure PROTOCOL_CONTROL */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - PROTOCOL_CONTROL\n", csiphy->id);
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
 	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
@@ -172,6 +175,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel_relaxed(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
 	/* Step 4: SW CAL EN - software calibration */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 4 - CALIBRATION_CONTROL\n", csiphy->id);
 	val = (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_CAL_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_STRENGTH_OVERRIDE_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_CAL_SW_HW_MODE_SHFT) |
@@ -179,6 +183,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel_relaxed(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
 
 	/* Step 5: Configure data lane timing (D0-D3) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 5 - D0-D3_CONTROL2\n", csiphy->id);
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
@@ -189,24 +194,29 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel_relaxed(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
 
 	/* Step 6: Configure clock lane */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 6 - CL_CONTROL\n", csiphy->id);
 	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
 	      (0x1 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
 	writel_relaxed(val, csiphy->base + MIPI_PHY_CL_CONTROL);
 
 	/* Step 7: D0 HS receiver equalization */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 7 - D0_CONTROL\n", csiphy->id);
 	val = 0 << MIPI_PHY_D0_CONTROL_HS_REC_EQ_SHFT;
 	writel_relaxed(val, csiphy->base + MIPI_PHY_D0_CONTROL);
 
 	/* Step 8: Enable PHY - release shutdown */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 8 - D1_CONTROL (PHY enable)\n", csiphy->id);
 	val = (0x1 << MIPI_PHY_D1_CONTROL_MIPI_CLK_PHY_SHUTDOWNB_SHFT) |
 	      (0x1 << MIPI_PHY_D1_CONTROL_MIPI_DATA_PHY_SHUTDOWNB_SHFT);
 	writel_relaxed(val, csiphy->base + MIPI_PHY_D1_CONTROL);
 
 	/* Step 9: Configure unused D2/D3 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 9 - D2/D3_CONTROL\n", csiphy->id);
 	writel_relaxed(0x00000000, csiphy->base + MIPI_PHY_D2_CONTROL);
 	writel_relaxed(0x00000000, csiphy->base + MIPI_PHY_D3_CONTROL);
 
 	/* Step 10: Configure lane count in CAMERA_CNTL */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 10 - CAMERA_CNTL\n", csiphy->id);
 	switch (num_lanes) {
 	case 1:
 		val = 0x4; /* 1 lane */
@@ -228,6 +238,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel_relaxed(val, csiphy->base + MIPI_CAMERA_CNTL);
 
 	/* Step 11: Configure interrupts */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 11 - INTERRUPT config\n", csiphy->id);
 	/* Mask out ID_ERROR[19], DATA_CMM_ERR[11], CLK_CMM_ERR[10] */
 	writel_relaxed(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_MASK);
 	/* Clear any pending IRQ bits */
@@ -235,6 +246,8 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 
 	/* Ensure all writes are committed */
 	wmb();
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable done\n", csiphy->id);
 }
 
 /*
