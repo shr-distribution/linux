@@ -47,11 +47,14 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 	{
 		.regulators = {},
 		/*
-		 * vfe_csi must be enabled before CSI clocks can work.
-		 * This matches the legacy webOS kernel clock sequence.
+		 * Clock enable order from legacy webOS kernel:
+		 * 1. vfe (enables vfe_src which is parent of vfe_csi)
+		 * 2. vfe_csi (CSI-VFE bridge)
+		 * 3. csi_src, csi, csi_phy
 		 */
-		.clock = { "vfe_csi", "csi0_src", "csi0", "csi0_phy" },
+		.clock = { "vfe", "vfe_csi", "csi0_src", "csi0", "csi0_phy" },
 		.clock_rate = { { 0 },
+				{ 0 },
 				{ 0 },
 				{ 0 },
 				{ 0 } },
@@ -67,11 +70,14 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 	{
 		.regulators = {},
 		/*
-		 * vfe_csi must be enabled before CSI clocks can work.
-		 * This matches the legacy webOS kernel clock sequence.
+		 * Clock enable order from legacy webOS kernel:
+		 * 1. vfe (enables vfe_src which is parent of vfe_csi)
+		 * 2. vfe_csi (CSI-VFE bridge)
+		 * 3. csi_src, csi, csi_phy
 		 */
-		.clock = { "vfe_csi", "csi1_src", "csi1", "csi1_phy" },
+		.clock = { "vfe", "vfe_csi", "csi1_src", "csi1", "csi1_phy" },
 		.clock_rate = { { 0 },
+				{ 0 },
 				{ 0 },
 				{ 0 },
 				{ 0 } },
