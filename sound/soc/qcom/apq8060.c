@@ -233,14 +233,16 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 		 "playback" : "capture");
 
 	/*
-	 * Set DAI format - I2S, CPU/DSP provides bit/frame clocks.
-	 * The Q6 DSP via MI2S is the clock master, providing BCLK and LRCLK
-	 * to the WM8958 codec which uses BCLK for its FLL.
+	 * Set DAI format - I2S, codec provides bit/frame clocks.
+	 * The WM8958 codec is the clock master, generating BCLK and LRCLK
+	 * using its internal FLL. Q6 DSP is clock slave, receiving clocks
+	 * from the codec. This is needed because the LCC I2S clocks aren't
+	 * properly routed to GPIO 108/109 on APQ8060.
 	 */
 	ret = snd_soc_dai_set_fmt(cpu_dai,
 				  SND_SOC_DAIFMT_I2S |
 				  SND_SOC_DAIFMT_NB_NF |
-				  SND_SOC_DAIFMT_BP_FP);
+				  SND_SOC_DAIFMT_BC_FC);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set CPU DAI format: %d\n", ret);
 		return ret;
@@ -249,7 +251,7 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 	ret = snd_soc_dai_set_fmt(codec_dai,
 				  SND_SOC_DAIFMT_I2S |
 				  SND_SOC_DAIFMT_NB_NF |
-				  SND_SOC_DAIFMT_CBC_CFC);
+				  SND_SOC_DAIFMT_CBP_CFP);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set codec DAI format: %d\n", ret);
 		return ret;
