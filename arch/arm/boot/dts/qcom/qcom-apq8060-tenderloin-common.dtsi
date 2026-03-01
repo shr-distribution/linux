@@ -1678,12 +1678,14 @@
 			function = "i2s";
 			drive-strength = <2>;
 			bias-pull-up;
+			output-enable;
 		};
 		i2s-sck-pins {
 			pins = "gpio109";
 			function = "i2s";
 			drive-strength = <2>;
 			bias-disable;
+			output-enable;
 		};
 	};
 
