@@ -1657,9 +1657,9 @@ static struct clk_branch vfe_clk = {
 	},
 };
 
-static struct clk_branch vfe_csi_clk = {
+static struct clk_branch vfe_csi0_clk = {
 	.halt_reg = 0x01cc,
-	.halt_bit = 8,
+	.halt_bit = 7,
 	/*
 	 * The VFE CSI clock halt status is unreliable when the CSI block
 	 * is not actively receiving data. Use BRANCH_HALT_SKIP to avoid
@@ -1674,7 +1674,30 @@ static struct clk_branch vfe_csi_clk = {
 				&vfe_src.clkr.hw
 			},
 			.num_parents = 1,
-			.name = "vfe_csi_clk",
+			.name = "vfe_csi0_clk",
+			.ops = &clk_branch_ops,
+			.flags = CLK_SET_RATE_PARENT,
+		},
+	},
+};
+
+/*
+ * VFE CSI1 clock - enables CSI1 to VFE data path.
+ * Legacy kernel had separate CSI0_VFE (BIT 12) and CSI1_VFE (BIT 10).
+ */
+static struct clk_branch vfe_csi1_clk = {
+	.halt_reg = 0x01cc,
+	.halt_bit = 8,
+	.halt_check = BRANCH_HALT_SKIP,
+	.clkr = {
+		.enable_reg = 0x0104,
+		.enable_mask = BIT(10),
+		.hw.init = &(struct clk_init_data){
+			.parent_hws = (const struct clk_hw*[]){
+				&vfe_src.clkr.hw
+			},
+			.num_parents = 1,
+			.name = "vfe_csi1_clk",
 			.ops = &clk_branch_ops,
 			.flags = CLK_SET_RATE_PARENT,
 		},
@@ -2176,7 +2199,8 @@ static struct clk_regmap *mmcc_msm8660_clks[] = {
 	[VCODEC_CLK] = &vcodec_clk.clkr,
 	[VFE_SRC] = &vfe_src.clkr,
 	[VFE_CLK] = &vfe_clk.clkr,
-	[VFE_CSI_CLK] = &vfe_csi_clk.clkr,
+	[VFE_CSI0_CLK] = &vfe_csi0_clk.clkr,
+	[VFE_CSI1_CLK] = &vfe_csi1_clk.clkr,
 	[VPE_SRC] = &vpe_src.clkr,
 	[VPE_CLK] = &vpe_clk.clkr,
 	[DSI_PIXEL_SRC] = &dsi1_pixel_src.clkr,

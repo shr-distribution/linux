@@ -108,7 +108,7 @@
 #define VCODEC_CLK					99
 #define VFE_SRC						100
 #define VFE_CLK						101
-#define VFE_CSI_CLK					102
+#define VFE_CSI0_CLK					102
 #define VPE_SRC						103
 #define VPE_CLK						104
 #define DSI_PIXEL_SRC					105
@@ -138,6 +138,7 @@
 #define MDP_PIXEL_SRC					129
 #define MDP_PIXEL_CLK					130
 #define MDP_LCDC_CLK					131
+#define VFE_CSI1_CLK					132
 
 /*
  * MSM8660/APQ8060 legacy footswitch power domains.
