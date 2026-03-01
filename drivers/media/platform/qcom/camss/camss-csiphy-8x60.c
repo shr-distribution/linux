@@ -131,7 +131,11 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 				     struct csiphy_config *cfg,
 				     s64 link_freq, u8 lane_mask)
 {
-	int num_lanes = cfg->csi2->lane_cfg.num_data;
+	int num_lanes;
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
+
+	num_lanes = cfg->csi2->lane_cfg.num_data;
 	u8 settle_cnt = MSM8660_DEFAULT_SETTLE_CNT;
 	u32 val;
 
