@@ -256,14 +256,13 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	/*
-	 * Configure WM8994 FLL using BCLK from Q6 DSP.
-	 * The DSP provides BCLK = rate * channels * bits = rate * 2 * 16.
-	 * FLL output must be >= 256 * fs and between 4.096MHz - 12.5MHz.
+	 * Configure WM8958 FLL using internal oscillator.
+	 * The WM8958 has a 12MHz internal oscillator that can be used as
+	 * the FLL reference instead of external BCLK. This avoids the need
+	 * for the I2S BCLK to be present during FLL configuration.
 	 *
-	 * Note: BCLK may not be present yet during hw_params (it starts in
-	 * prepare when the Q6 AFE port starts). However, we must configure
-	 * FLL and SYSCLK here because the codec's hw_params requires aifclk
-	 * to be set. The FLL will lock when BCLK becomes available.
+	 * FLL output must be >= 256 * fs and between 4.096MHz - 12.5MHz.
+	 * For 48kHz: 256 * 48000 = 12.288MHz (within range)
 	 *
 	 * Use FLL1 for playback (AIF1), FLL2 for capture (AIF2).
 	 */
@@ -275,19 +274,19 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 		data->fll_sysclk = WM8994_SYSCLK_FLL2;
 	}
 
-	/* Calculate BCLK rate - always use stereo for proper clock ratio */
-	data->bclk_rate = rate * WM_CHANNELS * WM_BITS;
-	data->fll_rate = data->bclk_rate * WM_FLL_MULT;
+	/* FLL output rate: 256 * sample rate for proper SYSCLK */
+	data->fll_rate = 256 * rate;
 
 	/* Ensure FLL rate is at least 4.096MHz */
 	if (data->fll_rate < 4096000)
 		data->fll_rate = 4096000;
 
-	dev_info(rtd->dev, "APQ8060: Setting FLL%d from BCLK=%u to %u Hz\n",
-		 data->fll_id == WM8994_FLL1 ? 1 : 2, data->bclk_rate, data->fll_rate);
+	dev_info(rtd->dev, "APQ8060: Setting FLL%d from internal 12MHz to %u Hz\n",
+		 data->fll_id == WM8994_FLL1 ? 1 : 2, data->fll_rate);
 
-	ret = snd_soc_dai_set_pll(codec_dai, data->fll_id, WM8994_FLL_SRC_BCLK,
-				  data->bclk_rate, data->fll_rate);
+	/* Use internal 12MHz oscillator as FLL source (WM8958 only) */
+	ret = snd_soc_dai_set_pll(codec_dai, data->fll_id, WM8994_FLL_SRC_INTERNAL,
+				  12000000, data->fll_rate);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set FLL%d: %d\n",
 			data->fll_id == WM8994_FLL1 ? 1 : 2, ret);
@@ -300,7 +299,7 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
-	dev_info(rtd->dev, "APQ8060: Codec clock configured (FLL will lock when BCLK available)\n");
+	dev_info(rtd->dev, "APQ8060: Codec clock configured using internal oscillator\n");
 	return 0;
 }
 
