@@ -530,6 +530,10 @@ static int32_t a6_stop_ai_dispatch_task(struct a6_device_state *state);
 static int32_t flush_a6_action_items(struct a6_device_state *state);
 #endif
 
+/* Forward declarations for hot-plug support */
+static int32_t a6_init_state(struct i2c_client *client);
+static int a6_register_power_supply(struct a6_device_state *state);
+
 static ssize_t a6_generic_show(struct device *dev, struct device_attribute *dev_attr, char *buf);
 static ssize_t a6_generic_store(struct device *dev, struct device_attribute *dev_attr, const char *buf,
 				size_t count);
@@ -3681,15 +3685,32 @@ static void a6_irq_work_handler(struct work_struct *work)
 	// in progress...
 
 	/*
-	 * Skip IRQ processing if device was not initialized successfully.
-	 * This can happen when the device (e.g., Touchstone) wasn't connected
-	 * during probe. We still register the IRQ to support hot-plug, but
-	 * if initialization never completed, we can't process interrupts.
+	 * Hot-plug support: If device was not initialized during probe
+	 * (e.g., Touchstone wasn't connected), try to initialize now.
+	 * This enables connecting Touchstone after boot.
 	 */
 	if (!test_bit(IS_INITIALIZED_BIT, state->flags)) {
-		pr_debug_ratelimited("%s: device not initialized, skipping IRQ\n",
-				     __func__);
-		return;
+		int init_rc;
+
+		pr_info("%s: device not initialized, attempting hot-plug init\n",
+			__func__);
+
+		init_rc = a6_init_state(state->i2c_dev);
+		if (init_rc < 0) {
+			pr_debug_ratelimited("%s: hot-plug init failed (%d), device not ready\n",
+					     __func__, init_rc);
+			return;
+		}
+
+		/* Device initialized successfully, register power supply */
+		pr_info("%s: hot-plug init succeeded, registering power supply\n",
+			__func__);
+		init_rc = a6_register_power_supply(state);
+		if (init_rc < 0) {
+			pr_err("%s: failed to register power supply on hot-plug: %d\n",
+			       __func__, init_rc);
+			/* Continue anyway - device is initialized */
+		}
 	}
 
 	// critsec for manipulating flags
@@ -4304,11 +4325,59 @@ static int a6_battery_get_property(struct power_supply *psy,
 	return 0;
 }
 
+/**
+ * a6_register_power_supply() - Register power supply for A6 device
+ * @state: Device state structure
+ *
+ * Registers the power supply interface for the A6 device. This can be called
+ * either during probe (if device responds) or later during hot-plug when
+ * a Touchstone charger is connected.
+ *
+ * Returns 0 on success, negative error code on failure.
+ */
+static int a6_register_power_supply(struct a6_device_state *state)
+{
+	struct i2c_client *client = state->i2c_dev;
+	struct power_supply_config psy_cfg = {};
+
+	/* Already registered? */
+	if (state->battery)
+		return 0;
+
+	psy_cfg.drv_data = state;
+	psy_cfg.fwnode = dev_fwnode(&client->dev);
+
+	/* Allocate name if not already done */
+	if (!state->battery_desc.name) {
+		state->battery_desc.name = devm_kasprintf(&client->dev, GFP_KERNEL,
+							  "a6-%d", state->device_index);
+		if (!state->battery_desc.name)
+			return -ENOMEM;
+	}
+
+	state->battery_desc.type = POWER_SUPPLY_TYPE_BATTERY;
+	state->battery_desc.properties = a6_battery_props;
+	state->battery_desc.num_properties = ARRAY_SIZE(a6_battery_props);
+	state->battery_desc.get_property = a6_battery_get_property;
+
+	state->battery = devm_power_supply_register(&client->dev,
+						    &state->battery_desc,
+						    &psy_cfg);
+	if (IS_ERR(state->battery)) {
+		int rc = PTR_ERR(state->battery);
+		state->battery = NULL;
+		dev_err(&client->dev, "Failed to register power supply: %d\n", rc);
+		return rc;
+	}
+
+	dev_info(&client->dev, "A6 power supply registered\n");
+	return 0;
+}
+
 /* a6_probe() - Modern probe function */
 static int a6_probe(struct i2c_client *client)
 {
 	struct a6_device_state *state;
-	struct power_supply_config psy_cfg = {};
 	const char *dev_name;
 	int rc, irq;
 
@@ -4492,38 +4561,16 @@ static int a6_probe(struct i2c_client *client)
 	rc = a6_init_state(client);
 	if (rc < 0) {
 		dev_warn(&client->dev,
-			 "A6 device not responding (%d), skipping power_supply registration\n",
+			 "A6 device not responding (%d), hot-plug supported\n",
 			 rc);
 		dev_info(&client->dev,
-			 "A6 misc device registered for firmware updates\n");
+			 "A6 misc device registered, power_supply will register on connect\n");
 		return 0;
 	}
 
-	/* Register power supply only if device is present and responding */
-	psy_cfg.drv_data = state;
-	psy_cfg.fwnode = dev_fwnode(&client->dev);
-
-	state->battery_desc.name = devm_kasprintf(&client->dev, GFP_KERNEL,
-						  "a6-%d", state->device_index);
-	if (!state->battery_desc.name) {
-		rc = -ENOMEM;
-		a6_remove_dev_files(state, &client->dev);
-		misc_deregister(&state->pmem_mdev);
-		misc_deregister(&state->mdev);
-		return rc;
-	}
-
-	state->battery_desc.type = POWER_SUPPLY_TYPE_BATTERY;
-	state->battery_desc.properties = a6_battery_props;
-	state->battery_desc.num_properties = ARRAY_SIZE(a6_battery_props);
-	state->battery_desc.get_property = a6_battery_get_property;
-
-	state->battery = devm_power_supply_register(&client->dev,
-						    &state->battery_desc,
-						    &psy_cfg);
-	if (IS_ERR(state->battery)) {
-		rc = PTR_ERR(state->battery);
-		dev_err(&client->dev, "Failed to register power supply: %d\n", rc);
+	/* Register power supply - device is present and responding */
+	rc = a6_register_power_supply(state);
+	if (rc < 0) {
 		a6_remove_dev_files(state, &client->dev);
 		misc_deregister(&state->pmem_mdev);
 		misc_deregister(&state->mdev);
