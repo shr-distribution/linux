@@ -20,6 +20,7 @@
 #include <linux/spinlock.h>
 #include <media/media-entity.h>
 #include <media/v4l2-device.h>
+#include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
 #include "camss-vfe.h"
@@ -719,34 +720,115 @@ int vfe_reset(struct vfe_device *vfe)
 }
 
 /*
- * VFE31 CAMIF register definitions for deferred enable.
+ * VFE31 register definitions for deferred CAMIF configuration.
  * These are duplicated here for the MSM8660 workaround.
  */
+#define VFE31_CORE_CFG			0x014
+#define VFE31_CORE_CFG_PIXEL_YCBYCR	0x4
+#define VFE31_CORE_CFG_PIXEL_YCRYCB	0x5
+#define VFE31_CORE_CFG_PIXEL_CBYCRY	0x6
+#define VFE31_CORE_CFG_PIXEL_CRYCBY	0x7
+
+#define VFE31_VFE_CFG			0x01C
+#define VFE31_VFE_CFG_CAMIF_TO_BUS_EN	BIT(7)
+
+#define VFE31_BUS_CFG			0x03C
+#define VFE31_BUS_CFG_ENC_CBCR_WR_EN	BIT(5)
+#define VFE31_BUS_CFG_RAW_WR_PATH_SHFT	10
+#define VFE31_BUS_CFG_RAW_WR_ENC_CBCR	1
+
+#define VFE31_CAMIF_CFG			0x1E4
+#define VFE31_CAMIF_CFG_VFE_OUTPUT_EN	BIT(6)
+#define VFE31_CAMIF_FRAME_CFG		0x1E8
+#define VFE31_CAMIF_WINDOW_WIDTH_CFG	0x1F0
+#define VFE31_CAMIF_WINDOW_HEIGHT_CFG	0x1F4
+#define VFE31_CAMIF_SUBSAMPLE_CFG_0	0x1F8
+#define VFE31_CAMIF_IRQ_SUBSAMPLE_PAT	0x1FC
+#define VFE31_CAMIF_STATUS		0x1E0
 #define VFE31_CAMIF_CMD			0x1EC
 #define VFE31_CAMIF_CMD_CLEAR_STATUS	BIT(2)
 #define VFE31_CAMIF_CMD_ENABLE_FRAME	0x1
-#define VFE31_CAMIF_STATUS		0x1E0
-#define VFE31_CAMIF_CFG			0x1E4
 
 /*
- * vfe_enable_pending_camif - Enable CAMIF that was deferred during VFE s_stream
+ * vfe_enable_pending_camif - Configure and enable deferred CAMIF
  * @vfe: VFE device
  *
- * MSM8660 workaround: CAMIF enable must be deferred until after CSIPHY
- * is configured. This function enables CAMIF if it was marked pending.
+ * MSM8660 workaround: ALL CAMIF configuration must be deferred until after
+ * CSIPHY is configured. Writing to VFE CAMIF registers before CSIPHY is
+ * ready blocks CSI register access. This matches the legacy webOS kernel
+ * behavior where CSI is initialized before VFE CAMIF.
  */
 void vfe_enable_pending_camif(struct vfe_device *vfe)
 {
+	struct vfe_line *line;
 	u32 val;
 
 	if (!vfe->camif_pending) {
-		dev_dbg(vfe->camss->dev, "VFE: no pending CAMIF enable\n");
+		dev_dbg(vfe->camss->dev, "VFE: no pending CAMIF config\n");
 		return;
 	}
 
-	dev_info(vfe->camss->dev, "VFE: enabling deferred CAMIF\n");
+	line = &vfe->line[vfe->camif_pending_line_id];
 
-	/* Clear CAMIF status and enable frame boundary capture */
+	dev_info(vfe->camss->dev,
+		 "VFE: configuring deferred CAMIF for WM%d RDI%d\n",
+		 vfe->camif_pending_wm, vfe->camif_pending_line_id);
+
+	/* Step 1: Configure CORE_CFG pixel pattern */
+	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
+	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
+		val = VFE31_CORE_CFG_PIXEL_YCBYCR;
+		break;
+	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
+		val = VFE31_CORE_CFG_PIXEL_YCRYCB;
+		break;
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
+	default:
+		val = VFE31_CORE_CFG_PIXEL_CBYCRY;
+		break;
+	case MEDIA_BUS_FMT_VYUY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
+		val = VFE31_CORE_CFG_PIXEL_CRYCBY;
+		break;
+	}
+	writel_relaxed(val, vfe->base + VFE31_CORE_CFG);
+
+	/* Step 2: Configure CAMIF frame dimensions */
+	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
+	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
+	writel_relaxed(val, vfe->base + VFE31_CAMIF_FRAME_CFG);
+
+	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
+	writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_WIDTH_CFG);
+
+	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+	writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_HEIGHT_CFG);
+
+	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_0);
+	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_IRQ_SUBSAMPLE_PAT);
+
+	/* Step 3: Enable VFE output in CAMIF */
+	writel_relaxed(VFE31_CAMIF_CFG_VFE_OUTPUT_EN,
+		       vfe->base + VFE31_CAMIF_CFG);
+
+	/* Step 4: Enable CAMIF to bus (raw passthrough) */
+	val = readl_relaxed(vfe->base + VFE31_VFE_CFG);
+	val |= VFE31_VFE_CFG_CAMIF_TO_BUS_EN;
+	writel_relaxed(val, vfe->base + VFE31_VFE_CFG);
+
+	/* Step 5: Configure BUS_CFG for raw passthrough */
+	val = readl_relaxed(vfe->base + VFE31_BUS_CFG);
+	val &= ~(0x3 << VFE31_BUS_CFG_RAW_WR_PATH_SHFT);
+	val |= (VFE31_BUS_CFG_RAW_WR_ENC_CBCR << VFE31_BUS_CFG_RAW_WR_PATH_SHFT);
+	val |= VFE31_BUS_CFG_ENC_CBCR_WR_EN;
+	writel_relaxed(val, vfe->base + VFE31_BUS_CFG);
+
+	wmb();
+
+	/* Step 6: Clear status and enable CAMIF frame capture */
 	val = VFE31_CAMIF_CMD_CLEAR_STATUS;
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CMD);
 	wmb();
@@ -758,9 +840,10 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	vfe->camif_pending = false;
 
 	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF enabled - status=0x%08x cfg=0x%08x\n",
+		 "VFE: CAMIF configured and enabled - status=0x%08x cfg=0x%08x frame=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
-		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG));
+		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG),
+		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG));
 }
 
 static void vfe_init_outputs(struct vfe_device *vfe)

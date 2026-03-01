@@ -644,97 +644,28 @@ static u16 vfe31_get_ub_size(u8 vfe_id)
 static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 					enum vfe_line_id id)
 {
-	struct vfe_line *line = &vfe->line[id];
-	u32 val;
-
 	/*
-	 * VFE31 doesn't have separate RDI paths like later VFEs.
-	 * All data must go through CAMIF. For RDI-style output (frame-based
-	 * raw passthrough), we configure:
-	 * 1. CAMIF with frame dimensions (required - no separate RDI input!)
-	 * 2. CAMIF to bus enable for raw passthrough
-	 * 3. Raw write path selection
+	 * MSM8660 workaround: Do NOT configure ANY CAMIF registers here.
 	 *
-	 * This is the critical difference from VFE4x where RDI has separate
-	 * hardware paths that don't need CAMIF.
+	 * On MSM8660, writing to VFE CAMIF registers before CSIPHY is
+	 * configured blocks CSI register access. The legacy webOS kernel
+	 * initializes CSI/CSIPHY FIRST, then configures VFE CAMIF.
+	 *
+	 * In the mainline V4L2 pipeline, VFE s_stream runs BEFORE CSIPHY
+	 * s_stream due to the sink-to-source walk order. So we must defer
+	 * ALL CAMIF configuration until after CSIPHY lanes_enable completes.
+	 *
+	 * Set camif_pending flag and store the line info. The actual CAMIF
+	 * configuration happens in vfe_enable_pending_camif() called by
+	 * CSIPHY after its lanes are configured.
 	 */
 	dev_info(vfe->camss->dev,
-		 "VFE31: connect WM%d to RDI%d - configuring CAMIF for raw passthrough\n",
+		 "VFE31: connect WM%d to RDI%d - deferring ALL CAMIF config until CSIPHY ready\n",
 		 wm, id);
 
-	/* Step 1: Configure CAMIF (normally only done for PIX path) */
-	/* Set pixel pattern based on format */
-	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
-	case MEDIA_BUS_FMT_YUYV8_1X16:
-	case MEDIA_BUS_FMT_YUYV8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
-		break;
-	case MEDIA_BUS_FMT_YVYU8_1X16:
-	case MEDIA_BUS_FMT_YVYU8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB;
-		break;
-	case MEDIA_BUS_FMT_UYVY8_1X16:
-	case MEDIA_BUS_FMT_UYVY8_2X8:
-	default:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
-		break;
-	case MEDIA_BUS_FMT_VYUY8_1X16:
-	case MEDIA_BUS_FMT_VYUY8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
-		break;
-	}
-	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
-
-	/* Set frame dimensions - width in bytes (YUV422 = 2 bytes/pixel) */
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
-	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
-
-	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
-
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
-
-	/* Enable VFE output in CAMIF */
-	writel_relaxed(VFE_0_CAMIF_CFG_VFE_OUTPUT_EN,
-		       vfe->base + VFE_0_CAMIF_CFG);
-
-	/* Step 2: Enable CAMIF to bus (raw passthrough) in VFE_CFG */
-	val = readl_relaxed(vfe->base + VFE_0_VFE_CFG);
-	val |= VFE_0_VFE_CFG_CAMIF_TO_BUS_EN;
-	writel_relaxed(val, vfe->base + VFE_0_VFE_CFG);
-
-	/* Step 3: Configure BUS_CFG for raw passthrough via encoder CbCr path */
-	val = readl_relaxed(vfe->base + VFE_0_BUS_CFG);
-	val &= ~(0x3 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
-	val |= (VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
-	val |= VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN;
-	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
-
-	wmb();
-
-	/*
-	 * MSM8660 workaround: Do NOT enable CAMIF here.
-	 *
-	 * If we enable CAMIF (CAMIF_CMD_ENABLE_FRAME_BOUNDARY) before CSIPHY
-	 * is configured, the CSI register access path becomes blocked. This
-	 * causes CSIPHY lanes_enable to hang when writing to CSIPHY registers.
-	 *
-	 * The workaround is to defer CAMIF enable until after CSIPHY
-	 * lanes_enable completes. Set camif_pending flag and let CSIPHY
-	 * call vfe_enable_pending_camif() after configuring its lanes.
-	 */
 	vfe->camif_pending = true;
-
-	dev_info(vfe->camss->dev,
-		 "VFE31: CAMIF configured (DEFERRED) - status=0x%08x cfg=0x%08x frame=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS),
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
+	vfe->camif_pending_wm = wm;
+	vfe->camif_pending_line_id = id;
 }
 
 static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,

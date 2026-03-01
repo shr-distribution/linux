@@ -166,8 +166,10 @@ struct vfe_device {
 	struct camss_video_ops video_ops;
 	struct device *genpd;
 	struct device_link *genpd_link;
-	/* MSM8660: CAMIF enable deferred until CSIPHY is configured */
+	/* MSM8660: CAMIF config deferred until CSIPHY is configured */
 	bool camif_pending;
+	u8 camif_pending_wm;
+	enum vfe_line_id camif_pending_line_id;
 };
 
 struct camss_subdev_resources;
