@@ -20,6 +20,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/pm_runtime.h>
 
 /* MSM8660 MIPI CSI Controller Register Offsets */
 #define MIPI_PHY_CONTROL		0x00
@@ -145,8 +146,15 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 				     s64 link_freq, u8 lane_mask)
 {
 	int num_lanes;
+	int ret;
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
+
+	/* Debug: Check if we need to re-acquire pm_runtime */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: re-acquiring pm_runtime\n", csiphy->id);
+	ret = pm_runtime_resume_and_get(csiphy->camss->dev);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: pm_runtime_resume_and_get returned %d\n",
+		 csiphy->id, ret);
 
 	num_lanes = cfg->csi2->lane_cfg.num_data;
 	u8 settle_cnt = MSM8660_DEFAULT_SETTLE_CNT;
