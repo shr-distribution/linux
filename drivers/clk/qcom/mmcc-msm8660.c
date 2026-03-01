@@ -1886,14 +1886,31 @@ static struct clk_branch amp_ahb_clk = {
 	},
 };
 
-static struct clk_branch csi_ahb_clk = {
+static struct clk_branch csi0_ahb_clk = {
 	.halt_reg = 0x01dc,
 	.halt_bit = 16,
 	.clkr = {
 		.enable_reg = 0x0008,
 		.enable_mask = BIT(7),
 		.hw.init = &(struct clk_init_data){
-			.name = "csi_ahb_clk",
+			.name = "csi0_ahb_clk",
+			.ops = &clk_branch_ops,
+		},
+	},
+};
+
+/*
+ * CSI1 AHB clock - separate from CSI0.
+ * Legacy kernel had CSI0_PCLK (BIT 7) and CSI1_PCLK (BIT 20).
+ */
+static struct clk_branch csi1_ahb_clk = {
+	.halt_reg = 0x01dc,
+	.halt_bit = 17,
+	.clkr = {
+		.enable_reg = 0x0008,
+		.enable_mask = BIT(20),
+		.hw.init = &(struct clk_init_data){
+			.name = "csi1_ahb_clk",
 			.ops = &clk_branch_ops,
 		},
 	},
@@ -2138,7 +2155,8 @@ static struct clk_regmap *mmcc_msm8660_clks[] = {
 	[VCODEC_AHB_CLK] = &vcodec_ahb_clk.clkr,
 	[MDP_AHB_CLK] = &mdp_ahb_clk.clkr,
 	[DSI_M_AHB_CLK] = &dsi_m_ahb_clk.clkr,
-	[CSI_AHB_CLK] = &csi_ahb_clk.clkr,
+	[CSI0_AHB_CLK] = &csi0_ahb_clk.clkr,
+	[CSI1_AHB_CLK] = &csi1_ahb_clk.clkr,
 	[MMSS_IMEM_AHB_CLK] = &mmss_imem_ahb_clk.clkr,
 	[IJPEG_AHB_CLK] = &ijpeg_ahb_clk.clkr,
 	[HDMI_S_AHB_CLK] = &hdmi_s_ahb_clk.clkr,

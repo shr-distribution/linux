@@ -24,7 +24,7 @@
 #define VCODEC_AHB_CLK					15
 #define MDP_AHB_CLK					16
 #define DSI_M_AHB_CLK					17
-#define CSI_AHB_CLK					18
+#define CSI0_AHB_CLK					18
 #define MMSS_IMEM_AHB_CLK				19
 #define IJPEG_AHB_CLK					20
 #define HDMI_S_AHB_CLK					21
@@ -139,6 +139,7 @@
 #define MDP_PIXEL_CLK					130
 #define MDP_LCDC_CLK					131
 #define VFE_CSI1_CLK					132
+#define CSI1_AHB_CLK					133
 
 /*
  * MSM8660/APQ8060 legacy footswitch power domains.
