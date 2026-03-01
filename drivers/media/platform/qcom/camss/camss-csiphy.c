@@ -219,35 +219,48 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
 	struct device *dev = csiphy->camss->dev;
 
+	dev_info(dev, "CSIPHY%d: set_power on=%d\n", csiphy->id, on);
+
 	if (on) {
 		int ret;
 
 		ret = pm_runtime_resume_and_get(dev);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(dev, "CSIPHY%d: pm_runtime_resume failed: %d\n",
+				csiphy->id, ret);
 			return ret;
+		}
 
 		ret = regulator_bulk_enable(csiphy->num_supplies,
 					    csiphy->supplies);
 		if (ret < 0) {
+			dev_err(dev, "CSIPHY%d: regulator_bulk_enable failed: %d\n",
+				csiphy->id, ret);
 			pm_runtime_put_sync(dev);
 			return ret;
 		}
 
 		ret = csiphy_set_clock_rates(csiphy);
 		if (ret < 0) {
+			dev_err(dev, "CSIPHY%d: set_clock_rates failed: %d\n",
+				csiphy->id, ret);
 			regulator_bulk_disable(csiphy->num_supplies,
 					       csiphy->supplies);
 			pm_runtime_put_sync(dev);
 			return ret;
 		}
 
+		dev_info(dev, "CSIPHY%d: enabling %d clocks\n", csiphy->id, csiphy->nclocks);
 		ret = camss_enable_clocks(csiphy->nclocks, csiphy->clock, dev);
 		if (ret < 0) {
+			dev_err(dev, "CSIPHY%d: enable_clocks failed: %d\n",
+				csiphy->id, ret);
 			regulator_bulk_disable(csiphy->num_supplies,
 					       csiphy->supplies);
 			pm_runtime_put_sync(dev);
 			return ret;
 		}
+		dev_info(dev, "CSIPHY%d: clocks enabled successfully\n", csiphy->id);
 
 		enable_irq(csiphy->irq);
 
