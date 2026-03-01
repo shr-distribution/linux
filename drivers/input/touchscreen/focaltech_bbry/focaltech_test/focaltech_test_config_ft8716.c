@@ -219,7 +219,7 @@ void OnInit_FT8716_BasicThreshold(char *strIniFile)
 	g_stCfg_FT8716_BasicThreshold.Differ2UniformityTest_Differ_Max = fts_atoi(str);
 
 }
-void SetTestItem_FT8716()
+void SetTestItem_FT8716(void)
 {
 	g_TestItemNum = 0;
 

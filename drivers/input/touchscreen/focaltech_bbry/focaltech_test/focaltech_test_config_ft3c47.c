@@ -458,7 +458,7 @@ void OnInit_FT3C47_BasicThreshold(char *strIniFile)
 
 }
 
-void SetTestItem_FT3C47()
+void SetTestItem_FT3C47(void)
 {
 	//int value = 0;
 	g_TestItemNum = 0;

@@ -404,7 +404,7 @@ void OnInit_FT6X36_BasicThreshold(char *strIniFile)
 	g_stCfg_FT6X36_BasicThreshold.K1DifferTest_Deviation4 = fts_atoi(str);
 }
 
-void SetTestItem_FT6X36()
+void SetTestItem_FT6X36(void)
 {
 	//int value = 0;
 	g_TestItemNum = 0;

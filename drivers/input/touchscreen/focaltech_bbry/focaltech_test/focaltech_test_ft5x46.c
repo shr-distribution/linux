@@ -140,7 +140,7 @@ static int FT5X46_GetTestResult(void);
 * Output: none
 * Return: Test Result, PASS or FAIL
 ***********************************************************************/
-boolean FT5X46_StartTest()
+boolean FT5X46_StartTest(void)
 {
 	bool bTestResult = true;
 	bool bTempResult = 1;

@@ -16,3 +16,6 @@
 	obj-$(CONFIG_TOUCHSCREEN_FOCALTECH_ALL) += focaltech_flash/
 	obj-$(CONFIG_TOUCHSCREEN_FOCALTECH_ALL) += focaltech_global/
 	obj-$(CONFIG_TOUCHSCREEN_FOCALTECH_ALL) += focaltech_test/
+
+ccflags-y += -Wno-error
+subdir-ccflags-y += -Wno-error

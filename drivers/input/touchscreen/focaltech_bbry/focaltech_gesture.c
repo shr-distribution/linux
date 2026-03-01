@@ -100,7 +100,7 @@ static void fts_gesture_report_key(struct input_dev *input_dev, unsigned int cod
 static void fts_gesture_report(struct input_dev *input_dev,int gesture_id);
 static int fts_gesture_read_data(void);
 
-static struct wake_lock fts_wakelock; // MODIFIED by Haojun Chen, 2016-12-26,BUG-3841357
+static struct wakeup_source *fts_wakelock;
 
 /*******************************************************************************
 *   Name: fts_gesture_init
@@ -116,7 +116,7 @@ int fts_gesture_init(struct input_dev *input_dev)
 
 	FTS_COMMON_DBG("[focal] %s ",  FTS_GESTURE_INFO);	//show version
 
-	wake_lock_init(&fts_wakelock,WAKE_LOCK_SUSPEND, "ft8707"); // MODIFIED by Haojun Chen, 2016-12-26,BUG-3841357
+	fts_wakelock = wakeup_source_register(NULL, "ft8707");
         //init_para(480,854,60,0,0);
 	input_set_capability(input_dev, EV_KEY, KEY_POWER);
 	input_set_capability(input_dev, EV_KEY, KEY_GESTURE_U);
@@ -160,7 +160,7 @@ int fts_gesture_exit(void)
 {
 	if(0 == FTS_GESTRUE_EN)
 		return 0;
-	wake_lock_destroy(&fts_wakelock); // MODIFIED by Haojun Chen, 2016-12-26,BUG-3841357
+	wakeup_source_unregister(fts_wakelock);
 	return 0;
 }
 /*******************************************************************************
@@ -223,7 +223,7 @@ static void fts_gesture_report(struct input_dev *input_dev,int gesture_id)
 			fts_gesture_report_key(input_dev, KEY_GESTURE_DOWN);
 			break;
 		case GESTURE_DOUBLECLICK:
-			wake_lock_timeout(&fts_wakelock, 1000); // MODIFIED by Haojun Chen, 2016-12-26,BUG-3841357
+			__pm_wakeup_event(fts_wakelock, jiffies_to_msecs(1000));
 			fts_gesture_report_key(input_dev, KEY_GESTURE_U);
 			break;
 		case GESTURE_O:

@@ -142,7 +142,7 @@ static void ShowRawData(void);
 * Output: none
 * Return: Test Result, PASS or FAIL
 ***********************************************************************/
-boolean FT6X36_StartTest()
+boolean FT6X36_StartTest(void)
 {
 	bool bTestResult = true;
 	bool bTempResult = 1;

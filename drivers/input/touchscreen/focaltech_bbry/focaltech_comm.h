@@ -56,7 +56,8 @@
 #include <linux/proc_fs.h>
 #include <asm/uaccess.h>
 
-#include <linux/wakelock.h> // MODIFIED by Haojun Chen, 2016-12-26,BUG-3841357
+#include <linux/device.h>
+#include <linux/pm_wakeup.h>
 
 #include <linux/version.h>
 #include <linux/cdev.h>

@@ -100,7 +100,7 @@
 
 &soc {
 	i2c_4: i2c@c178000 { /* BLSP I2C4 */
-		//qcom,disable-dma = <1>;
+		qcom,disable-dma = <1>;
 		status = "okay";
 
 		focaltech_touchscreen@38 {

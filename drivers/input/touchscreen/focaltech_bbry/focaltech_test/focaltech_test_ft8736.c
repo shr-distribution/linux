@@ -152,7 +152,7 @@ static unsigned int SqrtNew(unsigned int n) ;
 * Output: none
 * Return: Test Result, PASS or FAIL
 ***********************************************************************/
-boolean FT8736_StartTest()
+boolean FT8736_StartTest(void)
 {
 	bool bTestResult = true, bTempResult = 1;
 	unsigned char ReCode;

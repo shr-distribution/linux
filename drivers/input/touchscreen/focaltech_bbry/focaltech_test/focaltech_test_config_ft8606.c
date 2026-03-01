@@ -181,7 +181,7 @@ void OnInit_FT8606_TestItem(char *strIniFile)
 	
 }
 
-void SetTestItem_FT8606()
+void SetTestItem_FT8606(void)
 {
 	g_TestItemNum = 0;
 

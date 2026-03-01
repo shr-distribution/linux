@@ -131,7 +131,7 @@ static unsigned char SwitchToNoMapping(void);
 * Output: none
 * Return: Test Result, PASS or FAIL
 ***********************************************************************/
-boolean FT5822_StartTest()
+boolean FT5822_StartTest(void)
 {
 	bool bTestResult = true;
 	bool bTempResult = 1;

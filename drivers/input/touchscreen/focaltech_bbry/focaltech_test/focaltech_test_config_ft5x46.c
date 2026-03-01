@@ -419,7 +419,7 @@ void OnInit_FT5X22_BasicThreshold(char *strIniFile)
 	////////add frank. 20160414	}}
 }
 
-void SetTestItem_FT5X22()
+void SetTestItem_FT5X22(void)
 {
 	//int value = 0;
 	g_TestItemNum = 0;
