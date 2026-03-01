@@ -190,6 +190,16 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 "CSIPHY%d: lanes_enable: lanes=%d settle_cnt=0x%02x link_freq=%lld base=%px\n",
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
+	/*
+	 * MSM8660 workaround: Cycle clocks before accessing PHY_CONTROL.
+	 * After GDSC power transitions, clock state needs to be re-established.
+	 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: cycling clocks before PHY_CONTROL\n", csiphy->id);
+	camss_disable_clocks(csiphy->nclocks, csiphy->clock);
+	usleep_range(1000, 2000);
+	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
+	usleep_range(1000, 2000);
+
 	/* Step 1: SOT_ECC_EN - enable error correction for SYNC (data-lane) */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL (0x00)\n", csiphy->id);
 	writel_relaxed(0x4, csiphy->base + MIPI_PHY_CONTROL);
