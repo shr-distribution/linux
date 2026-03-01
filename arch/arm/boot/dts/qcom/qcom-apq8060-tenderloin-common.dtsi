@@ -1330,9 +1330,9 @@
 	 * because the chip won't respond on I2C until its internal LDOs
 	 * are powered. Use GPIO hogs to ensure they're enabled at boot.
 	 *
-	 * GPIO 108 serves dual purpose: LDO2 enable at boot (gpio-hog here),
-	 * then switches to I2S WS function when audio plays. I2S WS is high
-	 * when idle, keeping LDO2 enabled.
+	 * GPIO 66 is used to enable LDO1 for the codec.
+	 * Note: GPIO 108 is no longer used as a gpio-hog - it is now
+	 * used exclusively for I2S_WS via primary_i2s_pins pinctrl.
 	 */
 	aud-ldo1-hog {
 		gpio-hog;
@@ -1341,12 +1341,11 @@
 		line-name = "AUD_LDO1_EN";
 	};
 
-	aud-ldo2-hog {
-		gpio-hog;
-		gpios = <108 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "AUD_LDO2_EN";
-	};
+	/*
+	 * Note: GPIO 108 gpio-hog removed to allow I2S WS function.
+	 * DCVDD is externally supplied via pm8058_s3, so LDO2 is not needed.
+	 * GPIO 108 is now used exclusively for I2S_WS via primary_i2s_pins.
+	 */
 
 	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
 
@@ -2382,14 +2381,14 @@
 		LDO2VDD-supply = <&pm8058_s3>;    // 1.8V supply for internal LDO2
 
 		/*
-		 * LDO enable GPIO control.
-		 * Both LDO1 and LDO2 need to be enabled for the codec to respond
-		 * on I2C. GPIO 108 serves dual purpose: LDO2 enable at boot, then
-		 * I2S WS during audio playback (I2S WS is high when idle, keeping
-		 * LDO2 enabled).
+		 * LDO1 enable GPIO control.
+		 * LDO1 needs to be enabled for the codec to respond on I2C.
+		 *
+		 * Note: LDO2 enable (GPIO 108) removed because DCVDD is
+		 * externally supplied via pm8058_s3, making LDO2 unnecessary.
+		 * GPIO 108 is now used for I2S_WS (LRCLK) instead.
 		 */
 		wlf,ldo1ena-gpios = <&tlmm 66 GPIO_ACTIVE_HIGH>;
-		wlf,ldo2ena-gpios = <&tlmm 108 GPIO_ACTIVE_HIGH>;
 
 		/* GPIO configuration for WM8958 internal GPIOs */
 		wlf,gpio-cfg = <
