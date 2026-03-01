@@ -15,7 +15,6 @@
  */
 
 #include "camss-csiphy.h"
-#include "camss-vfe.h"
 #include "camss.h"
 
 #include <linux/delay.h>
@@ -165,7 +164,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	int num_lanes;
 	u8 settle_cnt = MSM8660_DEFAULT_SETTLE_CNT;
 	u32 val;
-	int i;
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
@@ -283,18 +281,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 
 	/* Ensure all writes are committed */
 	wmb();
-
-	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable done, enabling deferred CAMIF\n",
-		 csiphy->id);
-
-	/*
-	 * MSM8660 workaround: Now that CSIPHY is configured, enable any
-	 * VFEs that deferred their CAMIF enable. VFE deferred CAMIF enable
-	 * during s_stream because CSIPHY registers become inaccessible
-	 * when CAMIF is enabled before CSIPHY is configured.
-	 */
-	for (i = 0; i < csiphy->camss->res->vfe_num; i++)
-		vfe_enable_pending_camif(&csiphy->camss->vfe[i]);
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n", csiphy->id);
 }

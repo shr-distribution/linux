@@ -20,6 +20,7 @@
 #include <media/v4l2-subdev.h>
 
 #include "camss-csiphy.h"
+#include "camss-vfe.h"
 #include "camss.h"
 
 #define MSM_CSIPHY_NAME "msm_csiphy"
@@ -277,7 +278,41 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 		csiphy->res->hw_ops->reset(csiphy);
 
 		csiphy->res->hw_ops->hw_version_read(csiphy, dev);
+
+		/*
+		 * MSM8660 workaround: Configure lanes immediately in set_power,
+		 * BEFORE VFE s_stream runs. V4L2 pipeline walk calls s_stream
+		 * in sink-to-source order (VFE → CSID → CSIPHY), so VFE s_stream
+		 * runs before CSIPHY s_stream. VFE register writes block CSIPHY
+		 * register access. By configuring lanes here in set_power
+		 * (which runs before any s_stream), we avoid this issue.
+		 */
+		if (csiphy->camss->res->version == CAMSS_8x60 &&
+		    csiphy->cfg.csi2) {
+			struct csiphy_config *cfg = &csiphy->cfg;
+			u8 lane_mask;
+			u8 bpp;
+			u8 num_lanes;
+			s64 link_freq;
+
+			lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
+			bpp = 8; /* Default for MSM8660 */
+			num_lanes = cfg->csi2->lane_cfg.num_data;
+
+			link_freq = camss_get_link_freq(&csiphy->subdev.entity,
+							bpp, num_lanes);
+			if (link_freq < 0)
+				link_freq = 0;
+
+			dev_info(dev,
+				 "CSIPHY%d: set_power - configuring lanes early (MSM8660 workaround)\n",
+				 csiphy->id);
+			csiphy->res->hw_ops->lanes_enable(csiphy, cfg,
+							  link_freq, lane_mask);
+			csiphy->lanes_enabled = true;
+		}
 	} else {
+		csiphy->lanes_enabled = false;
 		disable_irq(csiphy->irq);
 
 		camss_disable_clocks(csiphy->nclocks, csiphy->clock);
@@ -343,14 +378,38 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 		wmb();
 	}
 
-	dev_info(csiphy->camss->dev,
-		 "CSIPHY%d: stream_on calling lanes_enable lane_mask=0x%x link_freq=%lld\n",
-		 csiphy->id, lane_mask, link_freq);
+	/*
+	 * MSM8660 workaround: lanes may already be enabled in set_power
+	 * to avoid VFE s_stream blocking CSIPHY register access.
+	 */
+	if (csiphy->lanes_enabled) {
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: stream_on - lanes already enabled in set_power\n",
+			 csiphy->id);
+	} else {
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: stream_on calling lanes_enable lane_mask=0x%x link_freq=%lld\n",
+			 csiphy->id, lane_mask, link_freq);
 
-	csiphy->res->hw_ops->lanes_enable(csiphy, cfg, link_freq, lane_mask);
+		csiphy->res->hw_ops->lanes_enable(csiphy, cfg, link_freq, lane_mask);
 
-	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n",
-		 csiphy->id);
+		dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n",
+			 csiphy->id);
+	}
+
+	/*
+	 * MSM8660 workaround: Enable any VFEs that deferred CAMIF during
+	 * their s_stream. This must be done from stream_on (not set_power
+	 * or lanes_enable) because VFE s_stream runs before CSIPHY s_stream.
+	 */
+	if (csiphy->camss->res->version == CAMSS_8x60) {
+		int i;
+
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: enabling deferred VFE CAMIF\n", csiphy->id);
+		for (i = 0; i < csiphy->camss->res->vfe_num; i++)
+			vfe_enable_pending_camif(&csiphy->camss->vfe[i]);
+	}
 
 	return 0;
 }

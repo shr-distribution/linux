@@ -111,6 +111,8 @@ struct csiphy_device {
 	struct v4l2_mbus_framefmt fmt[MSM_CSIPHY_PADS_NUM];
 	const struct csiphy_subdev_resources *res;
 	struct csiphy_device_regs *regs;
+	/* MSM8660: lanes configured during set_power to run before VFE s_stream */
+	bool lanes_enabled;
 };
 
 struct camss_subdev_resources;
