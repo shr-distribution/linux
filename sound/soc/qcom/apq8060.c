@@ -380,6 +380,24 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	snd_soc_dapm_force_enable_pin(&card->dapm, "Speaker");
 	snd_soc_dapm_sync(&card->dapm);
 
+	/*
+	 * Enable the external speaker amplifier via WM8994 GPIO1.
+	 * Since we're force-enabling the Speaker pin (not using normal DAPM
+	 * power transitions), the SPK widget's event callback won't be called.
+	 * We must manually enable GPIO1 here.
+	 */
+	{
+		struct snd_soc_component *component;
+
+		for_each_card_components(card, component) {
+			if (component->name && strstr(component->name, "wm8994")) {
+				dev_info(card->dev, "Enabling speaker amplifier (GPIO1)\n");
+				snd_soc_component_write(component, WM8994_GPIO_1, 0x41);
+				break;
+			}
+		}
+	}
+
 	dev_info(card->dev, "APQ8060 audio initialized\n");
 	return 0;
 }
