@@ -1413,7 +1413,7 @@ static int32_t do_i2c_action_item(void *payload_param)
 	trf_data->rc = i2c_transfer(trf_data->client->adapter, trf_data->msg, trf_data->num_msgs);
 	udelay(700);
 	if (trf_data->rc < 0) {
-		pr_err("%s: err code: %d\n", __func__, trf_data->rc);
+		pr_err_ratelimited("%s: err code: %d\n", __func__, trf_data->rc);
 		goto err0;
 	}
 
@@ -1603,7 +1603,7 @@ static int32_t __a6_i2c_read_reg(struct i2c_client *client, const uint16_t *ids,
 	}
 #endif
 	if (ret < 0) {
-		pr_err("%s[0x%02x]: err code: %d\n", __func__, client->addr, ret);
+		pr_err_ratelimited("%s[0x%02x]: err code: %d\n", __func__, client->addr, ret);
 		// reset the force_wake timer inedependent of i2c failure
 		//goto err0;
 	}
@@ -1630,7 +1630,7 @@ static int32_t a6_i2c_read_reg(struct i2c_client *client, const uint16_t *ids, u
 	do {
 		ret = __a6_i2c_read_reg(client, ids, num_ids, out);
 		if (ret < 0) {
-			pr_err("%s: a6 i2c transaction failed. %s...\n", __func__, retry ? "retry" : " ");
+			pr_err_ratelimited("%s: a6 i2c transaction failed. %s...\n", __func__, retry ? "retry" : " ");
 			msleep(30);
 		}
 	} while (ret != 0 && retry-- > 0);
@@ -1716,7 +1716,7 @@ static int32_t __a6_i2c_write_reg(struct i2c_client *client, const uint16_t *ids
 	//msleep(1);
 #endif
 	if (ret < 0) {
-		pr_err("%s[0x%02x]: err code: %d\n", __func__, client->addr, ret);
+		pr_err_ratelimited("%s[0x%02x]: err code: %d\n", __func__, client->addr, ret);
 		// reset the force_wake timer inedependent of i2c failure
 		//goto err0;
 	}
@@ -1742,7 +1742,7 @@ static int32_t a6_i2c_write_reg(struct i2c_client *client, const uint16_t *ids, 
 	do {
 		ret = __a6_i2c_write_reg(client, ids, num_ids, in);
 		if (ret < 0) {
-			pr_err("%s: a6 i2c transaction failed. %s...\n", __func__, retry ? "retry" : " ");
+			pr_err_ratelimited("%s: a6 i2c transaction failed. %s...\n", __func__, retry ? "retry" : " ");
 			msleep(30);
 		}
 	} while (ret != 0 && retry-- > 0);

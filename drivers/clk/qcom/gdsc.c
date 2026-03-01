@@ -308,6 +308,9 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 	struct gdsc *sc = domain_to_gdsc(domain);
 	int ret;
 
+	pr_info("gdsc_enable: %s (flags=0x%x gdscr=0x%x)\n",
+		sc->pd.name, sc->flags, sc->gdscr);
+
 	if (sc->pwrsts == PWRSTS_ON)
 		return gdsc_deassert_reset(sc);
 
@@ -321,6 +324,9 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 	 * 6. Wait 5us for signals to settle
 	 */
 	if (sc->flags & LEGACY_FOOTSWITCH) {
+		pr_info("gdsc_enable: %s using legacy footswitch sequence\n",
+			sc->pd.name);
+
 		if (sc->flags & SW_RESET)
 			gdsc_assert_reset(sc);
 
@@ -339,6 +345,9 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 
 		/* Wait for clamps to clear and signals to settle */
 		udelay(5);
+
+		pr_info("gdsc_enable: %s legacy footswitch enabled\n",
+			sc->pd.name);
 
 		return 0;
 	}

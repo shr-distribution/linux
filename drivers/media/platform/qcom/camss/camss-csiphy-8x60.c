@@ -110,12 +110,25 @@ static void csiphy_8x60_hw_version_read(struct csiphy_device *csiphy,
  */
 static void csiphy_8x60_reset(struct csiphy_device *csiphy)
 {
+	dev_info(csiphy->camss->dev,
+		 "CSIPHY%d: reset ENTER (base=%px)\n", csiphy->id, csiphy->base);
+
 	/* SW_RST to the CSI core */
+	dev_info(csiphy->camss->dev,
+		 "CSIPHY%d: reset - writing SW_RST to PROTOCOL_CONTROL\n",
+		 csiphy->id);
 	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
 		       csiphy->base + MIPI_PROTOCOL_CONTROL);
+	dev_info(csiphy->camss->dev,
+		 "CSIPHY%d: reset - SW_RST written, waiting\n", csiphy->id);
 	usleep_range(1000, 2000);
+
+	dev_info(csiphy->camss->dev,
+		 "CSIPHY%d: reset - clearing SW_RST\n", csiphy->id);
 	writel_relaxed(0, csiphy->base + MIPI_PROTOCOL_CONTROL);
 	usleep_range(1000, 2000);
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: reset DONE\n", csiphy->id);
 }
 
 /*

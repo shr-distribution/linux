@@ -224,7 +224,11 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 	if (on) {
 		int ret;
 
+		dev_info(dev, "CSIPHY%d: calling pm_runtime_resume_and_get\n",
+			 csiphy->id);
 		ret = pm_runtime_resume_and_get(dev);
+		dev_info(dev, "CSIPHY%d: pm_runtime_resume_and_get returned %d\n",
+			 csiphy->id, ret);
 		if (ret < 0) {
 			dev_err(dev, "CSIPHY%d: pm_runtime_resume failed: %d\n",
 				csiphy->id, ret);
