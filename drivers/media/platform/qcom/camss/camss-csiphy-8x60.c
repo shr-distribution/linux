@@ -173,9 +173,15 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 "CSIPHY%d: lanes_enable: lanes=%d settle_cnt=0x%02x link_freq=%lld base=%px\n",
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
+	/* Test: try writing to 0x04 first (this worked in reset) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: test - writing to PROTOCOL_CONTROL (0x04)\n", csiphy->id);
+	writel_relaxed(0, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: test - PROTOCOL_CONTROL write OK\n", csiphy->id);
+
 	/* Step 1: SOT_ECC_EN - enable error correction for SYNC (data-lane) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL (0x00)\n", csiphy->id);
 	writel_relaxed(0x4, csiphy->base + MIPI_PHY_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL write OK\n", csiphy->id);
 
 	/* Step 2: SW_RST to the CSI core */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - SW_RST\n", csiphy->id);
