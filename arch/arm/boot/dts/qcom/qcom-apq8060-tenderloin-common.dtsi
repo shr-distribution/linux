@@ -1330,9 +1330,9 @@
 	 * because the chip won't respond on I2C until its internal LDOs
 	 * are powered. Use GPIO hogs to ensure they're enabled at boot.
 	 *
-	 * GPIO 66 enables LDO1, GPIO 108 enables LDO2.
-	 * GPIO 108 is later switched to I2S_WS function by the sound card's
-	 * pinctrl (primary_i2s_pins). I2S WS idles HIGH, keeping LDO2 on.
+	 * GPIO 66 enables LDO1 via gpio-hog.
+	 * GPIO 108 (LDO2 enable) uses I2S mode with bias-pull-up instead of
+	 * gpio-hog to allow I2S WS function while keeping LDO2 enabled.
 	 */
 	aud-ldo1-hog {
 		gpio-hog;
@@ -1342,21 +1342,11 @@
 	};
 
 	/*
-	 * LDO2 enable via GPIO 108.
-	 * This gpio-hog sets GPIO 108 HIGH at boot to enable LDO2, which is
-	 * required for the WM8994 codec to respond on I2C. After the codec
-	 * probes, the sound card's pinctrl switches GPIO 108 to I2S WS function.
-	 * I2S WS idles HIGH, so LDO2 remains enabled during audio operation.
-	 *
-	 * Note: wlf,ldo2ena-gpios is NOT specified in the WM8994 node to avoid
-	 * the driver claiming this GPIO, which would conflict with pinctrl.
+	 * Note: GPIO 108 gpio-hog removed - it was preventing pinctrl from
+	 * switching to I2S mode. LDO2 enable is now handled via bias-pull-up
+	 * on GPIO 108 in primary_i2s_pins. The pull-up keeps LDO2 enabled
+	 * when I2S WS isn't being driven.
 	 */
-	aud-ldo2-hog {
-		gpio-hog;
-		gpios = <108 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "AUD_LDO2_EN";
-	};
 
 	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
 
@@ -1676,8 +1666,19 @@
 	 * needed. This frees GPIO 108 for I2S use.
 	 */
 	primary_i2s_pins: primary-i2s-state {
-		i2s-pins {
-			pins = "gpio108", "gpio109";
+		/*
+		 * GPIO 108 (I2S WS) needs bias-pull-up to keep LDO2 enabled
+		 * when I2S isn't actively driving. GPIO 109 (I2S SCK) can
+		 * have bias disabled.
+		 */
+		i2s-ws-pins {
+			pins = "gpio108";
+			function = "i2s";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		i2s-sck-pins {
+			pins = "gpio109";
 			function = "i2s";
 			drive-strength = <2>;
 			bias-disable;
