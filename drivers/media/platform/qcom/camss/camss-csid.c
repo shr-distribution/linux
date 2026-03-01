@@ -729,11 +729,13 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
 
 		csid->phy.need_vc_update = true;
 
-		enable_irq(csid->irq);
+		if (csid->irq >= 0)
+			enable_irq(csid->irq);
 
 		ret = csid->res->hw_ops->reset(csid);
 		if (ret < 0) {
-			disable_irq(csid->irq);
+			if (csid->irq >= 0)
+				disable_irq(csid->irq);
 			camss_disable_clocks(csid->nclocks, csid->clock);
 			regulator_bulk_disable(csid->num_supplies,
 					       csid->supplies);
@@ -743,7 +745,8 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
 
 		csid->res->hw_ops->hw_version(csid);
 	} else {
-		disable_irq(csid->irq);
+		if (csid->irq >= 0)
+			disable_irq(csid->irq);
 		camss_disable_clocks(csid->nclocks, csid->clock);
 		regulator_bulk_disable(csid->num_supplies,
 				       csid->supplies);

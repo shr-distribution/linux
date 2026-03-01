@@ -52,14 +52,17 @@ static void csid_8x60_configure_stream(struct csid_device *csid, u8 enable)
 
 	/*
 	 * On MSM8660, the CSI decoder is integrated with CSIPHY.
-	 * The CSIPHY driver has already configured the protocol
-	 * control registers. Here we just need to ensure interrupts
-	 * are properly configured.
+	 * All register configuration is handled by the CSIPHY driver.
+	 *
+	 * Important: We cannot access CSIPHY registers here because
+	 * the pipeline walk order is VFE -> CSID -> CSIPHY, meaning
+	 * CSIPHY's set_stream (which enables clocks) hasn't been called
+	 * yet when CSID's set_stream runs. Accessing unpowered registers
+	 * would hang the system.
+	 *
+	 * The CSIPHY driver configures interrupt masks in its own
+	 * set_stream handler after enabling clocks.
 	 */
-	if (enable && csid->base) {
-		/* Ensure interrupts are masked (CSIPHY handles them) */
-		writel_relaxed(0, csid->base + MIPI_INTERRUPT_MASK);
-	}
 }
 
 /*
