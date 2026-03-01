@@ -13,6 +13,7 @@
 #include <linux/i2c.h>
 #include <linux/err.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/mfd/core.h>
 #include <linux/of.h>
 #include <linux/pm_runtime.h>
@@ -308,6 +309,8 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 	const char *devname;
 	int ret, i, patch_regs = 0;
 	int pulls = 0;
+	struct gpio_desc *ldo1_gpiod = NULL;
+	struct gpio_desc *ldo2_gpiod = NULL;
 
 	if (dev_get_platdata(wm8994->dev)) {
 		pdata = dev_get_platdata(wm8994->dev);
@@ -318,6 +321,40 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 	ret = wm8994_set_pdata_from_of(wm8994);
 	if (ret != 0)
 		return ret;
+
+	/*
+	 * Temporarily enable LDO GPIOs before chip ID read.
+	 * The WM8994 won't respond on I2C until its internal LDOs are
+	 * powered. The LDO regulator driver handles this normally, but
+	 * it probes asynchronously via mfd_add_devices below. We need
+	 * the GPIOs HIGH now, so get them temporarily, enable them,
+	 * then release so the regulator driver can take over.
+	 */
+	ldo1_gpiod = gpiod_get_optional(wm8994->dev, "wlf,ldo1ena",
+					GPIOD_OUT_HIGH);
+	if (IS_ERR(ldo1_gpiod)) {
+		dev_warn(wm8994->dev, "Failed to get LDO1 GPIO: %ld\n",
+			 PTR_ERR(ldo1_gpiod));
+		ldo1_gpiod = NULL;
+	}
+
+	ldo2_gpiod = gpiod_get_optional(wm8994->dev, "wlf,ldo2ena",
+					GPIOD_OUT_HIGH);
+	if (IS_ERR(ldo2_gpiod)) {
+		dev_warn(wm8994->dev, "Failed to get LDO2 GPIO: %ld\n",
+			 PTR_ERR(ldo2_gpiod));
+		ldo2_gpiod = NULL;
+	}
+
+	/* Brief delay to let LDOs stabilize */
+	if (ldo1_gpiod || ldo2_gpiod)
+		usleep_range(5000, 10000);
+
+	/* Release GPIOs so regulator driver can claim them */
+	if (ldo1_gpiod)
+		gpiod_put(ldo1_gpiod);
+	if (ldo2_gpiod)
+		gpiod_put(ldo2_gpiod);
 
 	/* Add the on-chip regulators first for bootstrapping */
 	ret = mfd_add_devices(wm8994->dev, 0,

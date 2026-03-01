@@ -1343,9 +1343,11 @@
 
 	/*
 	 * Note: GPIO 108 gpio-hog removed - it was preventing pinctrl from
-	 * switching to I2S mode. LDO2 enable is now handled via bias-pull-up
-	 * on GPIO 108 in primary_i2s_pins. The pull-up keeps LDO2 enabled
-	 * when I2S WS isn't being driven.
+	 * switching to I2S mode. LDO2 enable is now handled via:
+	 * 1. wlf,ldo2ena-gpios in the codec node - wm8994-core.c asserts
+	 *    it HIGH early during probe so codec responds on I2C
+	 * 2. primary_i2s_pins pinctrl switches it to I2S function mode
+	 *    for audio playback (bias-pull-up keeps LDO2 enabled)
 	 */
 
 	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
@@ -2393,14 +2395,14 @@
 		LDO2VDD-supply = <&pm8058_s3>;    // 1.8V supply for internal LDO2
 
 		/*
-		 * LDO1 enable GPIO control.
-		 * LDO1 needs to be enabled for the codec to respond on I2C.
-		 *
-		 * Note: LDO2 enable (GPIO 108) removed because DCVDD is
-		 * externally supplied via pm8058_s3, making LDO2 unnecessary.
-		 * GPIO 108 is now used for I2S_WS (LRCLK) instead.
+		 * LDO enable GPIO control.
+		 * Both LDO enables need to be HIGH for codec to respond on I2C.
+		 * The wm8994-core driver asserts these early during probe,
+		 * then releases them. GPIO 108 (LDO2) is then switched to I2S
+		 * function mode via primary_i2s_pins pinctrl on the sound card.
 		 */
 		wlf,ldo1ena-gpios = <&tlmm 66 GPIO_ACTIVE_HIGH>;
+		wlf,ldo2ena-gpios = <&tlmm 108 GPIO_ACTIVE_HIGH>;
 
 		/* GPIO configuration for WM8958 internal GPIOs */
 		wlf,gpio-cfg = <
