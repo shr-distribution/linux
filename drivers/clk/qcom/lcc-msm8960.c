@@ -228,11 +228,19 @@ CLK_AIF_OSR_DIV_CLK(mi2s, 0x48, 4)
 CLK_AIF_OSR_BIT_DIV_CLK(mi2s, 0x48, 0x50, 15)
 CLK_AIF_OSR_BIT_CLK(mi2s, 0x48, 14)
 
+/*
+ * CLK_AIF_OSR_DIV - Audio Interface with divider clocks
+ *
+ * Enable bits per legacy MSM8660 kernel:
+ * - OSR branch enable: BIT(17)
+ * - BIT_DIV branch enable: BIT(15)
+ * Note: mi2s uses these same bits (see CLK_AIF_OSR_CLK call above)
+ */
 #define CLK_AIF_OSR_DIV(prefix, _ns, _md, hr)			\
 	CLK_AIF_OSR_SRC(prefix, _ns, _md)			\
-	CLK_AIF_OSR_CLK(prefix, _ns, hr, 21)			\
+	CLK_AIF_OSR_CLK(prefix, _ns, hr, 17)			\
 	CLK_AIF_OSR_DIV_CLK(prefix, _ns, 8)			\
-	CLK_AIF_OSR_BIT_DIV_CLK(prefix, _ns, hr, 19)		\
+	CLK_AIF_OSR_BIT_DIV_CLK(prefix, _ns, hr, 15)		\
 	CLK_AIF_OSR_BIT_CLK(prefix, _ns, 18)
 
 CLK_AIF_OSR_DIV(codec_i2s_mic, 0x60, 0x64, 0x68);
