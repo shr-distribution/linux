@@ -235,6 +235,12 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 			return ret;
 		}
 
+		/*
+		 * MSM8660 workaround: Allow GDSC (power domain) to stabilize
+		 * after enable before proceeding with clock and register access.
+		 */
+		usleep_range(10000, 15000);
+
 		ret = regulator_bulk_enable(csiphy->num_supplies,
 					    csiphy->supplies);
 		if (ret < 0) {
