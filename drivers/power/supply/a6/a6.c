@@ -3841,6 +3841,7 @@ static void a6_irq_work_handler(struct work_struct *work)
 			struct a6_register_desc *reg_desc_puck_prio;
 			uint8_t chg_vals[id_size];
 			uint8_t prio_val;
+			static unsigned long last_handshake_jiffies;
 
 			A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: charger-source change detected.\n",
 				   __func__);
@@ -3863,20 +3864,28 @@ static void a6_irq_work_handler(struct work_struct *work)
 				 */
 				if ((chg_vals[0] & TS2_I2C_FLAGS_2_PUCK_DETECT) &&
 				    !(chg_vals[0] & TS2_I2C_FLAGS_2_PUCK)) {
-					pr_info("%s: Touchstone detected, initiating A2A handshake\n",
-						__func__);
+					/*
+					 * Rate-limit handshake attempts to once per second.
+					 * Rapid Touchstone connect/disconnect can flood IRQs,
+					 * causing excessive I2C traffic and system instability.
+					 */
+					if (time_after(jiffies, last_handshake_jiffies + HZ)) {
+						last_handshake_jiffies = jiffies;
+						pr_info("%s: Touchstone detected, initiating A2A handshake\n",
+							__func__);
 
-					reg_desc_puck_prio = &a6_register_desc_arr[30];
-					/* Clear puck_priority first */
-					prio_val = 0;
-					a6_i2c_write_reg(state->i2c_dev, reg_desc_puck_prio->id,
-							 reg_desc_puck_prio->num_ids, &prio_val);
-					/* Small delay for firmware to process */
-					usleep_range(10000, 20000);
-					/* Set puck_priority to trigger A2A */
-					prio_val = TS2_I2C_FLAGS_0_PUCK_PRIORITY;
-					a6_i2c_write_reg(state->i2c_dev, reg_desc_puck_prio->id,
-							 reg_desc_puck_prio->num_ids, &prio_val);
+						reg_desc_puck_prio = &a6_register_desc_arr[30];
+						/* Clear puck_priority first */
+						prio_val = 0;
+						a6_i2c_write_reg(state->i2c_dev, reg_desc_puck_prio->id,
+								 reg_desc_puck_prio->num_ids, &prio_val);
+						/* Small delay for firmware to process */
+						usleep_range(10000, 20000);
+						/* Set puck_priority to trigger A2A */
+						prio_val = TS2_I2C_FLAGS_0_PUCK_PRIORITY;
+						a6_i2c_write_reg(state->i2c_dev, reg_desc_puck_prio->id,
+								 reg_desc_puck_prio->num_ids, &prio_val);
+					}
 				}
 			}
 
