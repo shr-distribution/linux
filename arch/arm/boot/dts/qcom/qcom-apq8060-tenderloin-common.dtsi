@@ -1330,9 +1330,9 @@
 	 * because the chip won't respond on I2C until its internal LDOs
 	 * are powered. Use GPIO hogs to ensure they're enabled at boot.
 	 *
-	 * GPIO 66 is used to enable LDO1 for the codec.
-	 * Note: GPIO 108 is no longer used as a gpio-hog - it is now
-	 * used exclusively for I2S_WS via primary_i2s_pins pinctrl.
+	 * GPIO 66 enables LDO1, GPIO 108 enables LDO2.
+	 * GPIO 108 is later switched to I2S_WS function by the sound card's
+	 * pinctrl (primary_i2s_pins). I2S WS idles HIGH, keeping LDO2 on.
 	 */
 	aud-ldo1-hog {
 		gpio-hog;
@@ -1342,10 +1342,21 @@
 	};
 
 	/*
-	 * Note: GPIO 108 gpio-hog removed to allow I2S WS function.
-	 * DCVDD is externally supplied via pm8058_s3, so LDO2 is not needed.
-	 * GPIO 108 is now used exclusively for I2S_WS via primary_i2s_pins.
+	 * LDO2 enable via GPIO 108.
+	 * This gpio-hog sets GPIO 108 HIGH at boot to enable LDO2, which is
+	 * required for the WM8994 codec to respond on I2C. After the codec
+	 * probes, the sound card's pinctrl switches GPIO 108 to I2S WS function.
+	 * I2S WS idles HIGH, so LDO2 remains enabled during audio operation.
+	 *
+	 * Note: wlf,ldo2ena-gpios is NOT specified in the WM8994 node to avoid
+	 * the driver claiming this GPIO, which would conflict with pinctrl.
 	 */
+	aud-ldo2-hog {
+		gpio-hog;
+		gpios = <108 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "AUD_LDO2_EN";
+	};
 
 	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
 
