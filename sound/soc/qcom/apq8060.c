@@ -285,12 +285,16 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 	if (data->fll_rate < 4096000)
 		data->fll_rate = 4096000;
 
-	dev_info(rtd->dev, "APQ8060: Setting FLL%d from BCLK %u Hz to %u Hz\n",
-		 data->fll_id == WM8994_FLL1 ? 1 : 2, data->bclk_rate, data->fll_rate);
+	dev_info(rtd->dev, "APQ8060: Setting FLL%d from internal 12MHz to %u Hz\n",
+		 data->fll_id == WM8994_FLL1 ? 1 : 2, data->fll_rate);
 
-	/* Use BCLK as FLL source - Q6 provides the bit clock */
-	ret = snd_soc_dai_set_pll(codec_dai, data->fll_id, WM8994_FLL_SRC_BCLK,
-				  data->bclk_rate, data->fll_rate);
+	/*
+	 * Use internal oscillator as FLL source (12MHz free-running).
+	 * This is available immediately, unlike BCLK which only appears
+	 * when the Q6 DSP starts streaming audio.
+	 */
+	ret = snd_soc_dai_set_pll(codec_dai, data->fll_id, WM8994_FLL_SRC_INTERNAL,
+				  12000000, data->fll_rate);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set FLL%d: %d\n",
 			data->fll_id == WM8994_FLL1 ? 1 : 2, ret);
