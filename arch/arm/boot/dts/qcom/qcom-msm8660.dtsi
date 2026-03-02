@@ -1142,6 +1142,14 @@
 				      "csi1",
 				      "csi1_phy";
 
+			/* Clock rates from webOS kernel msm_io_8x60.c */
+			assigned-clocks = <&mmcc VFE_CLK>,
+					  <&mmcc CSI0_SRC>,
+					  <&mmcc CSI1_SRC>;
+			assigned-clock-rates = <228570000>,
+					       <384000000>,
+					       <384000000>;
+
 			interconnects = <&mmss_fabric MMFAB_MAS_VFE
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "vfe-mem";
