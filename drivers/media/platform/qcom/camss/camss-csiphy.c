@@ -277,8 +277,21 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 		 * MSM8660: Wait for clocks to stabilize before register access.
 		 * webOS does msleep(10) after enabling clocks.
 		 */
-		if (csiphy->camss->res->version == CAMSS_8x60)
+		if (csiphy->camss->res->version == CAMSS_8x60) {
 			msleep(10);
+
+			/*
+			 * WebOS msm_camio_enable() does initial register writes
+			 * RIGHT after msleep(10), before anything else.
+			 * D1/D2/D3_CONTROL = 0 to initialize the bus.
+			 */
+			dev_info(dev, "CSIPHY%d: initial D1/D2/D3_CONTROL writes\n",
+				 csiphy->id);
+			writel(0, csiphy->base + 0x20);  /* D1_CONTROL */
+			writel(0, csiphy->base + 0x2C);  /* D2_CONTROL */
+			writel(0, csiphy->base + 0x30);  /* D3_CONTROL */
+			dev_info(dev, "CSIPHY%d: initial writes done\n", csiphy->id);
+		}
 
 		enable_irq(csiphy->irq);
 
