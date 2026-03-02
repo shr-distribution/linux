@@ -273,6 +273,13 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 		}
 		dev_info(dev, "CSIPHY%d: clocks enabled successfully\n", csiphy->id);
 
+		/*
+		 * MSM8660: Wait for clocks to stabilize before register access.
+		 * webOS does msleep(10) after enabling clocks.
+		 */
+		if (csiphy->camss->res->version == CAMSS_8x60)
+			msleep(10);
+
 		enable_irq(csiphy->irq);
 
 		csiphy->res->hw_ops->reset(csiphy);
