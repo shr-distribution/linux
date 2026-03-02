@@ -206,8 +206,11 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - SW_RST\n", csiphy->id);
 	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
 		       csiphy->base + MIPI_PROTOCOL_CONTROL);
+	/* Ensure SW_RST is committed and allow reset to complete */
+	wmb();
+	usleep_range(100, 200);
 
-	/* Step 3: PROTOCOL_CONTROL config - immediately overwrites SW_RST (no clearing!) */
+	/* Step 3: PROTOCOL_CONTROL config - overwrites SW_RST */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - PROTOCOL_CONTROL\n", csiphy->id);
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
