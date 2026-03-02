@@ -285,16 +285,22 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 	if (data->fll_rate < 4096000)
 		data->fll_rate = 4096000;
 
-	dev_info(rtd->dev, "APQ8060: Setting FLL%d from internal 12MHz to %u Hz\n",
-		 data->fll_id == WM8994_FLL1 ? 1 : 2, data->fll_rate);
+	dev_info(rtd->dev, "APQ8060: Setting FLL%d from LRCLK %u Hz to %u Hz\n",
+		 data->fll_id == WM8994_FLL1 ? 1 : 2, rate, data->fll_rate);
 
 	/*
-	 * Use internal oscillator as FLL source (12MHz free-running).
-	 * This is available immediately, unlike BCLK which only appears
-	 * when the Q6 DSP starts streaming audio.
+	 * Use LRCLK (frame clock) as FLL source. LRCLK runs at the sample rate
+	 * (e.g., 48kHz) and the FLL multiplies it to 12.288MHz (256 * 48kHz).
+	 *
+	 * Note: LRCLK is provided by Q6 LPASS and only appears when streaming
+	 * starts. The FLL will lock once the clock is present.
+	 *
+	 * We cannot use the internal oscillator because the WM8994 driver
+	 * forces it to output 12MHz, which doesn't align with audio rates
+	 * (need 12.288MHz for 48kHz = 256 * Fs).
 	 */
-	ret = snd_soc_dai_set_pll(codec_dai, data->fll_id, WM8994_FLL_SRC_INTERNAL,
-				  12000000, data->fll_rate);
+	ret = snd_soc_dai_set_pll(codec_dai, data->fll_id, WM8994_FLL_SRC_LRCLK,
+				  rate, data->fll_rate);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set FLL%d: %d\n",
 			data->fll_id == WM8994_FLL1 ? 1 : 2, ret);
@@ -365,7 +371,7 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 			WM8994_SPEAKER_VOLUME_RIGHT, 0x017F);
 	}
 
-	dev_info(rtd->dev, "APQ8060: Codec clock configured using internal oscillator\n");
+	dev_info(rtd->dev, "APQ8060: Codec clock configured using LRCLK as FLL source\n");
 	return 0;
 }
 
