@@ -393,18 +393,10 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	 */
 	snd_soc_dapm_force_enable_pin(&card->dapm, "AIF1 Playback");
 
-	/*
-	 * Force-enable clock supply widgets.
-	 * DAPM isn't automatically enabling these because it doesn't recognize
-	 * the full path as active. Force them on to ensure the codec clocks run.
-	 */
-	snd_soc_dapm_force_enable_pin(&card->dapm, "AIF1CLK");
-	snd_soc_dapm_force_enable_pin(&card->dapm, "CLK_SYS");
-
 	snd_soc_dapm_sync(&card->dapm);
 
 	/*
-	 * Configure WM8994 internal mixer routing for playback.
+	 * Configure WM8994 internal mixer routing and clocks for playback.
 	 * The codec has multiple internal mixers that must be enabled
 	 * for audio to flow from AIF1 to the outputs.
 	 *
@@ -417,6 +409,23 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 		for_each_card_components(card, component) {
 			if (component->name && strstr(component->name, "wm8994")) {
 				dev_info(card->dev, "Configuring WM8994 mixer routing\n");
+
+				/*
+				 * Force-enable clock supply widgets on the codec's DAPM.
+				 * These must be enabled on the component's DAPM context,
+				 * not the card's, since they're codec-internal widgets.
+				 */
+				snd_soc_dapm_force_enable_pin(&component->dapm, "AIF1CLK");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "CLK_SYS");
+				snd_soc_dapm_sync(&component->dapm);
+
+				/*
+				 * Also directly enable AIF1CLK in case DAPM doesn't
+				 * handle supply widgets correctly.
+				 * AIF1_CLOCKING_1 (0x200): bit 0 = AIF1CLK_ENA
+				 */
+				snd_soc_component_update_bits(component,
+					WM8994_AIF1_CLOCKING_1, 0x01, 0x01);
 
 				/*
 				 * Enable AIF1.1 → DAC1 path:
@@ -452,6 +461,24 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				 */
 				dev_info(card->dev, "Enabling speaker amplifier (GPIO1)\n");
 				snd_soc_component_write(component, WM8994_GPIO_1, 0x41);
+
+				/*
+				 * Enable power management registers directly.
+				 * DAPM should handle this but isn't working correctly.
+				 *
+				 * PM1 (0x01): SPKOUTL_ENA=0x1000, SPKOUTR_ENA=0x0800,
+				 *             HPOUT1L_ENA=0x0200, HPOUT1R_ENA=0x0100
+				 * PM3 (0x03): SPKLVOL_ENA=0x0100, SPKRVOL_ENA=0x0080,
+				 *             MIXOUTLVOL_ENA=0x0020, MIXOUTRVOL_ENA=0x0010
+				 * PM5 (0x05): DAC1L_ENA=0x0002, DAC1R_ENA=0x0001
+				 */
+				dev_info(card->dev, "Enabling power management registers\n");
+				snd_soc_component_update_bits(component,
+					WM8994_POWER_MANAGEMENT_1, 0x1B00, 0x1B00);
+				snd_soc_component_update_bits(component,
+					WM8994_POWER_MANAGEMENT_3, 0x01B0, 0x01B0);
+				snd_soc_component_update_bits(component,
+					WM8994_POWER_MANAGEMENT_5, 0x0003, 0x0003);
 				break;
 			}
 		}
