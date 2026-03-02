@@ -167,6 +167,20 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
+	/*
+	 * MSM8660 workaround: Cycle clocks before register access.
+	 * After GDSC power domain transitions, the AHB bus interconnect
+	 * needs re-synchronization. Clock cycling forces this synchronization.
+	 * Without this, register writes may timeout/hang on the bus.
+	 * This is the same pattern used in reset() which works reliably.
+	 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable - cycling clocks\n",
+		 csiphy->id);
+	camss_disable_clocks(csiphy->nclocks, csiphy->clock);
+	usleep_range(1000, 2000);
+	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
+	usleep_range(1000, 2000);
+
 	num_lanes = cfg->csi2->lane_cfg.num_data;
 
 	/*
