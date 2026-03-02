@@ -2364,12 +2364,21 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		 * specifies a minimum of 44.5ms for internal initialization.
 		 */
 		usleep_range(44500, 50000);
+	} else if (sensor->powerdown) {
+		/*
+		 * When using powerdown GPIO, the sensor is in a fresh state
+		 * after powerdown deassert. Skip soft reset - the MT9M113
+		 * MCU boot sequence below will initialize it properly.
+		 * Just wait for the sensor to be ready for I2C commands.
+		 */
+		dev_info(dev, "power_on: powerdown GPIO used, skipping soft reset\n");
+		usleep_range(44500, 50000);
 	} else {
 		/*
-		 * The power may have just been turned on, we need to wait for
-		 * the sensor to be ready to accept I2C commands.
+		 * No reset GPIO and no powerdown GPIO - the sensor may have
+		 * been left in an unknown state. Perform soft reset.
 		 */
-		dev_info(dev, "power_on: no reset GPIO, waiting 45ms then soft reset\n");
+		dev_info(dev, "power_on: no reset/powerdown GPIO, waiting 45ms then soft reset\n");
 		usleep_range(44500, 50000);
 
 		cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
