@@ -387,16 +387,52 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	snd_soc_dapm_sync(&card->dapm);
 
 	/*
-	 * Enable the external speaker amplifier via WM8994 GPIO1.
-	 * Since we're force-enabling the Speaker pin (not using normal DAPM
-	 * power transitions), the SPK widget's event callback won't be called.
-	 * We must manually enable GPIO1 here.
+	 * Configure WM8994 internal mixer routing for playback.
+	 * The codec has multiple internal mixers that must be enabled
+	 * for audio to flow from AIF1 to the outputs.
+	 *
+	 * Path: AIF1 → DAC1 Mixer → DAC1 → Output Mixer → Headphones
+	 *                               → Speaker Mixer → Speakers
 	 */
 	{
 		struct snd_soc_component *component;
 
 		for_each_card_components(card, component) {
 			if (component->name && strstr(component->name, "wm8994")) {
+				dev_info(card->dev, "Configuring WM8994 mixer routing\n");
+
+				/*
+				 * Enable AIF1.1 → DAC1 path:
+				 * DAC1L Mixer: AIF1.1 Switch = bit 0
+				 * DAC1R Mixer: AIF1.1 Switch = bit 0
+				 */
+				snd_soc_component_update_bits(component,
+					WM8994_DAC1_LEFT_MIXER_ROUTING, 0x01, 0x01);
+				snd_soc_component_update_bits(component,
+					WM8994_DAC1_RIGHT_MIXER_ROUTING, 0x01, 0x01);
+
+				/*
+				 * Enable DAC1 → Output Mixer for headphones:
+				 * Left Output Mixer: DAC Switch = bit 0
+				 * Right Output Mixer: DAC Switch = bit 0
+				 */
+				snd_soc_component_update_bits(component,
+					WM8994_OUTPUT_MIXER_1, 0x01, 0x01);
+				snd_soc_component_update_bits(component,
+					WM8994_OUTPUT_MIXER_2, 0x01, 0x01);
+
+				/*
+				 * Enable DAC1 → Speaker Mixer for speakers:
+				 * SPKL: DAC1 Switch = bit 1
+				 * SPKR: DAC1 Switch = bit 0
+				 */
+				snd_soc_component_update_bits(component,
+					WM8994_SPEAKER_MIXER, 0x03, 0x03);
+
+				/*
+				 * Enable external speaker amplifier via GPIO1.
+				 * GPIO1 = 0x41 enables the external Class-D amp.
+				 */
 				dev_info(card->dev, "Enabling speaker amplifier (GPIO1)\n");
 				snd_soc_component_write(component, WM8994_GPIO_1, 0x41);
 				break;
