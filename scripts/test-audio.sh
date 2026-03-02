@@ -245,11 +245,10 @@ configure_mixer() {
 test_playback() {
     log_step "Testing audio playback..."
 
-    # Use large buffers to avoid ALSA timeout (-p 16384 -n 8 = 128KB buffer)
-    # Default buffers (~8KB) cause timeout before DSP processes data
+    # Use default buffer parameters - large buffers (-p 16384) fail hw_params constraints
 
     log_info "Playing notification_48k.wav (short, 48kHz)..."
-    local result=$(run_on_device "cd /tmp && ./tinyplay notification_48k.wav -p 16384 -n 8 2>&1")
+    local result=$(run_on_device "cd /tmp && ./tinyplay notification_48k.wav 2>&1")
     echo "$result"
 
     if echo "$result" | grep -q "Played.*bytes"; then
@@ -259,7 +258,7 @@ test_playback() {
     sleep 2
 
     log_info "Playing phone_48k.wav (long, 48kHz)..."
-    result=$(run_on_device "cd /tmp && ./tinyplay phone_48k.wav -p 16384 -n 8 2>&1")
+    result=$(run_on_device "cd /tmp && ./tinyplay phone_48k.wav 2>&1")
     echo "$result"
 
     if echo "$result" | grep -q "error\|Error\|cannot"; then
