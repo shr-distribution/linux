@@ -250,7 +250,7 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 
 	ret = snd_soc_dai_set_fmt(codec_dai,
 				  SND_SOC_DAIFMT_I2S |
-				  SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_IB_NF |
 				  SND_SOC_DAIFMT_BC_FC);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "Failed to set codec DAI format: %d\n", ret);
