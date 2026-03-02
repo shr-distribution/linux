@@ -181,6 +181,20 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
 	usleep_range(1000, 2000);
 
+	/*
+	 * MSM8660: Perform SW_RST after clock cycling to put CSI controller
+	 * in a known state. This is the same sequence that works in reset().
+	 * Clock cycling + SW_RST together seem to be required for register
+	 * access to work reliably.
+	 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable - SW_RST\n", csiphy->id);
+	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
+		       csiphy->base + MIPI_PROTOCOL_CONTROL);
+	usleep_range(1000, 2000);
+	writel_relaxed(0, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	usleep_range(1000, 2000);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable - SW_RST done\n", csiphy->id);
+
 	num_lanes = cfg->csi2->lane_cfg.num_data;
 
 	/*
@@ -204,13 +218,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 "CSIPHY%d: lanes_enable: lanes=%d settle_cnt=0x%02x link_freq=%lld base=%px\n",
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
-	/*
-	 * MSM8660: Skip SW_RST here - reset() already did it just before
-	 * lanes_enable was called. Doing another SW_RST seems to cause hangs.
-	 * Start directly with PROTOCOL_CONTROL configuration.
-	 */
-
-	/* Step 1: Configure PROTOCOL_CONTROL (SW_RST already done in reset) */
+	/* Step 1: Configure PROTOCOL_CONTROL */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PROTOCOL_CONTROL\n", csiphy->id);
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
