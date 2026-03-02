@@ -384,6 +384,15 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	 */
 	snd_soc_dapm_force_enable_pin(&card->dapm, "Headphone");
 	snd_soc_dapm_force_enable_pin(&card->dapm, "Speaker");
+
+	/*
+	 * Force-enable the AIF1 Playback stream widget.
+	 * In DPCM, the backend should automatically power this stream endpoint
+	 * when playback starts, but it's not working correctly. Force-enable
+	 * it as a workaround to complete the DAPM path to the outputs.
+	 */
+	snd_soc_dapm_force_enable_pin(&card->dapm, "AIF1 Playback");
+
 	snd_soc_dapm_sync(&card->dapm);
 
 	/*
