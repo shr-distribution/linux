@@ -280,37 +280,11 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 		csiphy->res->hw_ops->hw_version_read(csiphy, dev);
 
 		/*
-		 * MSM8660 workaround: Configure lanes immediately in set_power,
-		 * BEFORE VFE s_stream runs. V4L2 pipeline walk calls s_stream
-		 * in sink-to-source order (VFE → CSID → CSIPHY), so VFE s_stream
-		 * runs before CSIPHY s_stream. VFE register writes block CSIPHY
-		 * register access. By configuring lanes here in set_power
-		 * (which runs before any s_stream), we avoid this issue.
+		 * MSM8660: Don't configure lanes here in set_power.
+		 * Let s_stream handle it - by then the sensor is initialized
+		 * and maybe outputting data which the CSI controller may need.
 		 */
-		if (csiphy->camss->res->version == CAMSS_8x60 &&
-		    csiphy->cfg.csi2) {
-			struct csiphy_config *cfg = &csiphy->cfg;
-			u8 lane_mask;
-			u8 bpp;
-			u8 num_lanes;
-			s64 link_freq;
-
-			lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
-			bpp = 8; /* Default for MSM8660 */
-			num_lanes = cfg->csi2->lane_cfg.num_data;
-
-			link_freq = camss_get_link_freq(&csiphy->subdev.entity,
-							bpp, num_lanes);
-			if (link_freq < 0)
-				link_freq = 0;
-
-			dev_info(dev,
-				 "CSIPHY%d: set_power - configuring lanes early (MSM8660 workaround)\n",
-				 csiphy->id);
-			csiphy->res->hw_ops->lanes_enable(csiphy, cfg,
-							  link_freq, lane_mask);
-			csiphy->lanes_enabled = true;
-		}
+		csiphy->lanes_enabled = false;
 	} else {
 		csiphy->lanes_enabled = false;
 		disable_irq(csiphy->irq);
