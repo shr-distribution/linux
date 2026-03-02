@@ -155,21 +155,8 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
 	/*
-	 * MSM8660 workaround: Force AHB bus synchronization before register access.
-	 * After GDSC power domain transitions, the bus interconnect may need
-	 * re-synchronization. Write to PHY_CONTROL first (known to work), then
-	 * read it back to force the bus to complete any pending transactions.
-	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: bus sync via PHY_CONTROL\n", csiphy->id);
-	writel(0x0, csiphy->base + MIPI_PHY_CONTROL);
-	wmb();
-	readl(csiphy->base + MIPI_PHY_CONTROL);
-	usleep_range(100, 200);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: bus sync complete\n", csiphy->id);
-
-	/*
-	 * Full CSI init sequence following webOS msm_camio_csi_config() exactly:
-	 * PHY_CONTROL -> SW_RST -> config (overwrite SW_RST, don't clear to 0)
+	 * Full CSI init sequence following webOS msm_camio_csi_config():
+	 * PHY_CONTROL -> config registers
 	 */
 
 	num_lanes = cfg->csi2->lane_cfg.num_data;
