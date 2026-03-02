@@ -661,19 +661,36 @@ static int adm_terminate_all(struct dma_chan *chan)
 {
 	struct adm_chan *achan = to_adm_chan(chan);
 	struct adm_device *adev = achan->adev;
+	struct virt_dma_desc *vd, *_vd;
 	unsigned long flags;
 	LIST_HEAD(head);
 
 	spin_lock_irqsave(&achan->vc.lock, flags);
 	vchan_get_all_descriptors(&achan->vc, &head);
 
+	/* Clear current transaction pointer */
+	achan->curr_txd = NULL;
+
 	/* send flush command to terminate current transaction */
 	writel_relaxed(0x0,
 		       adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
 
-	spin_unlock_irqrestore(&achan->vc.lock, flags);
+	/*
+	 * Free descriptors while holding the lock to prevent race conditions.
+	 * Without this, a descriptor could be submitted between lock release
+	 * and vchan_dma_desc_free_list, causing list corruption (LIST_POISON
+	 * values in node pointers) and kernel crashes.
+	 *
+	 * We inline vchan_dma_desc_free_list logic here and clear REUSE flag
+	 * to ensure desc_free is called directly without re-taking the lock.
+	 */
+	list_for_each_entry_safe(vd, _vd, &head, node) {
+		list_del(&vd->node);
+		dmaengine_desc_clear_reuse(&vd->tx);
+		achan->vc.desc_free(vd);
+	}
 
-	vchan_dma_desc_free_list(&achan->vc, &head);
+	spin_unlock_irqrestore(&achan->vc.lock, flags);
 
 	return 0;
 }
