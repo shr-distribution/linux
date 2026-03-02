@@ -327,6 +327,21 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 			WM8994_POWER_MANAGEMENT_3, 0x0330, 0x0330);
 		snd_soc_component_update_bits(component,
 			WM8994_POWER_MANAGEMENT_1, 0x3300, 0x3300);
+
+		/*
+		 * Unmute DAC and set volume to 0dB.
+		 * Bit 9 = VU (volume update), Bit 8 = MUTE, Bits 7:0 = volume
+		 * 0x02C0 = VU=1, MUTE=0, VOL=0xC0 (0dB)
+		 */
+		dev_info(rtd->dev, "APQ8060: Unmuting DAC\n");
+		snd_soc_component_write(component,
+			WM8994_AIF1_DAC1_LEFT_VOLUME, 0x02C0);
+		snd_soc_component_write(component,
+			WM8994_AIF1_DAC1_RIGHT_VOLUME, 0x02C0);
+		snd_soc_component_write(component,
+			WM8994_DAC1_LEFT_VOLUME, 0x02C0);
+		snd_soc_component_write(component,
+			WM8994_DAC1_RIGHT_VOLUME, 0x02C0);
 	}
 
 	dev_info(rtd->dev, "APQ8060: Codec clock configured using internal oscillator\n");
