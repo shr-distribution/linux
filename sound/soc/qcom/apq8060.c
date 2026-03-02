@@ -393,6 +393,14 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	 */
 	snd_soc_dapm_force_enable_pin(&card->dapm, "AIF1 Playback");
 
+	/*
+	 * Force-enable clock supply widgets.
+	 * DAPM isn't automatically enabling these because it doesn't recognize
+	 * the full path as active. Force them on to ensure the codec clocks run.
+	 */
+	snd_soc_dapm_force_enable_pin(&card->dapm, "AIF1CLK");
+	snd_soc_dapm_force_enable_pin(&card->dapm, "CLK_SYS");
+
 	snd_soc_dapm_sync(&card->dapm);
 
 	/*
