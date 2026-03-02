@@ -13,8 +13,7 @@
 set -e
 
 DEVICE_IP="172.16.42.2"
-HOST_IP="172.16.42.1"
-HTTP_PORT="8888"
+SSH_PORT="22"
 TIMEOUT=10
 
 # Colors for output
@@ -39,21 +38,27 @@ log_result() {
     echo -e "${GREEN}[RESULT]${NC} $1"
 }
 
-# Run command on device via telnet
+# Run command on device via SSH
 run_on_device() {
     local cmd="$1"
-    local wait="${2:-3}"
-    (sleep 1; echo "$cmd"; sleep "$wait") | timeout $TIMEOUT telnet $DEVICE_IP 2>&1 | grep -v "^Trying\|^Connected\|^Escape\|^Connection closed\|^LuneOS\|^$\|^sh-"
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=$TIMEOUT -p $SSH_PORT root@$DEVICE_IP "$cmd" 2>/dev/null
+}
+
+# Transfer file to device via SCP
+scp_to_device() {
+    local src="$1"
+    local dst="$2"
+    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $SSH_PORT "$src" root@$DEVICE_IP:"$dst" 2>/dev/null
 }
 
 # Check device connectivity
 check_device() {
     log_step "Checking device connectivity..."
-    if timeout 3 bash -c "echo > /dev/tcp/$DEVICE_IP/23" 2>/dev/null; then
-        log_info "Device is reachable at $DEVICE_IP"
+    if timeout 3 bash -c "echo > /dev/tcp/$DEVICE_IP/$SSH_PORT" 2>/dev/null; then
+        log_info "Device is reachable at $DEVICE_IP (SSH port $SSH_PORT)"
         return 0
     else
-        log_error "Cannot connect to device at $DEVICE_IP"
+        log_error "Cannot connect to device at $DEVICE_IP port $SSH_PORT"
         return 1
     fi
 }
@@ -86,98 +91,89 @@ prepare_host_files() {
         cp "$TINYALSA_DIR/tinyplay" "$TINYALSA_DIR/tinymix" "$TINYALSA_DIR/tinycap" "$TINYALSA_DIR/tinypcminfo" /tmp/ 2>/dev/null || true
     fi
 
-    # Test audio files - notification.wav (short) and phone.wav (long)
+    # Test audio files - use 48kHz versions (Q6 LPASS requires 48kHz)
+    # Convert original files if 48kHz versions don't exist
     SOUNDS_DIR="/home/herrie/webos/touchpad-kernel/doctor305/untouched-rootfs/usr/palm/sounds"
-    if [ -f "$SOUNDS_DIR/notification.wav" ]; then
-        cp "$SOUNDS_DIR/notification.wav" /tmp/
+    if [ ! -f /tmp/notification_48k.wav ] && [ -f "$SOUNDS_DIR/notification.wav" ]; then
+        log_info "Converting notification.wav to 48kHz..."
+        ffmpeg -y -i "$SOUNDS_DIR/notification.wav" -ar 48000 /tmp/notification_48k.wav 2>/dev/null || \
+            sox "$SOUNDS_DIR/notification.wav" -r 48000 /tmp/notification_48k.wav 2>/dev/null || true
     fi
-    if [ -f "$SOUNDS_DIR/phone.wav" ]; then
-        cp "$SOUNDS_DIR/phone.wav" /tmp/
+    if [ ! -f /tmp/phone_48k.wav ] && [ -f "$SOUNDS_DIR/phone.wav" ]; then
+        log_info "Converting phone.wav to 48kHz..."
+        ffmpeg -y -i "$SOUNDS_DIR/phone.wav" -ar 48000 /tmp/phone_48k.wav 2>/dev/null || \
+            sox "$SOUNDS_DIR/phone.wav" -r 48000 /tmp/phone_48k.wav 2>/dev/null || true
     fi
 
     # List prepared files
     log_info "Files prepared:"
-    ls -la /tmp/q6-firmware.tar.gz /tmp/tinyplay /tmp/tinymix /tmp/notification.wav /tmp/phone.wav 2>/dev/null || true
+    ls -la /tmp/q6-firmware.tar.gz /tmp/tinyplay /tmp/tinymix /tmp/notification_48k.wav /tmp/phone_48k.wav 2>/dev/null || true
 }
 
-# Start HTTP server
-start_http_server() {
-    log_step "Starting HTTP server on port $HTTP_PORT..."
-    pkill -f "python3 -m http.server $HTTP_PORT" 2>/dev/null || true
-    sleep 1
-    python3 -m http.server $HTTP_PORT --directory /tmp >/dev/null 2>&1 &
-    sleep 2
-
-    if curl -s "http://localhost:$HTTP_PORT/" | grep -q "tinyplay"; then
-        log_info "HTTP server running"
-    else
-        log_error "HTTP server failed to start"
-        return 1
-    fi
-}
-
-# Transfer files to device
+# Transfer files to device via SCP
 transfer_files() {
-    log_step "Transferring files to device..."
+    log_step "Transferring files to device via SCP..."
 
     # Transfer Q6 firmware
     log_info "Transferring Q6 firmware..."
-    run_on_device "cd /tmp && wget -q http://$HOST_IP:$HTTP_PORT/q6-firmware.tar.gz && tar xzf q6-firmware.tar.gz && ls q6.mdt" 8
+    scp_to_device /tmp/q6-firmware.tar.gz /tmp/
+    run_on_device "cd /tmp && tar xzf q6-firmware.tar.gz && ls q6.mdt"
 
     # Transfer WM8958 firmware (optional)
     if [ -f /tmp/wm8958-firmware.tar.gz ]; then
         log_info "Transferring WM8958 firmware..."
-        run_on_device "cd /tmp && wget -q http://$HOST_IP:$HTTP_PORT/wm8958-firmware.tar.gz && tar xzf wm8958-firmware.tar.gz 2>/dev/null" 5
+        scp_to_device /tmp/wm8958-firmware.tar.gz /tmp/
+        run_on_device "cd /tmp && tar xzf wm8958-firmware.tar.gz 2>/dev/null" || true
     fi
 
     # Transfer TinyALSA tools
     log_info "Transferring tinyplay..."
-    run_on_device "cd /tmp && wget -q http://$HOST_IP:$HTTP_PORT/tinyplay" 5
+    scp_to_device /tmp/tinyplay /tmp/
 
     log_info "Transferring tinymix..."
-    run_on_device "cd /tmp && wget -q http://$HOST_IP:$HTTP_PORT/tinymix" 5
+    scp_to_device /tmp/tinymix /tmp/
 
-    log_info "Transferring notification.wav..."
-    run_on_device "cd /tmp && wget -q http://$HOST_IP:$HTTP_PORT/notification.wav" 5
+    log_info "Transferring notification_48k.wav..."
+    scp_to_device /tmp/notification_48k.wav /tmp/
 
-    log_info "Transferring phone.wav (longer test file)..."
-    run_on_device "cd /tmp && wget -q http://$HOST_IP:$HTTP_PORT/phone.wav" 8
+    log_info "Transferring phone_48k.wav (longer test file)..."
+    scp_to_device /tmp/phone_48k.wav /tmp/
 
     # Make executables
-    run_on_device "chmod +x /tmp/tinyplay /tmp/tinymix" 2
+    run_on_device "chmod +x /tmp/tinyplay /tmp/tinymix"
 
     # Verify
     log_info "Verifying transfers..."
-    run_on_device "ls -la /tmp/tinyplay /tmp/tinymix /tmp/notification.wav /tmp/phone.wav /tmp/q6.mdt" 3
+    run_on_device "ls -la /tmp/tinyplay /tmp/tinymix /tmp/notification_48k.wav /tmp/phone_48k.wav /tmp/q6.mdt"
 }
 
 # Deploy firmware to /lib/firmware
 deploy_firmware() {
     log_step "Deploying firmware to /lib/firmware..."
 
-    run_on_device "mkdir -p /lib/firmware && cp /tmp/q6.* /lib/firmware/" 3
+    run_on_device "mkdir -p /lib/firmware && cp /tmp/q6.* /lib/firmware/"
 
     # WM8958 firmware (optional)
-    run_on_device "cp /tmp/wm8958*.wfw /lib/firmware/ 2>/dev/null || true" 2
+    run_on_device "cp /tmp/wm8958*.wfw /lib/firmware/ 2>/dev/null || true"
 
     log_info "Firmware deployed:"
-    run_on_device "ls /lib/firmware/" 2
+    run_on_device "ls /lib/firmware/"
 }
 
 # Start LPASS
 start_lpass() {
     log_step "Starting LPASS (Q6 DSP)..."
 
-    local state=$(run_on_device "cat /sys/class/remoteproc/remoteproc0/state" 2)
+    local state=$(run_on_device "cat /sys/class/remoteproc/remoteproc0/state")
     if echo "$state" | grep -q "running"; then
         log_info "LPASS already running"
         return 0
     fi
 
-    run_on_device "echo start > /sys/class/remoteproc/remoteproc0/state" 3
+    run_on_device "echo start > /sys/class/remoteproc/remoteproc0/state"
     sleep 2
 
-    state=$(run_on_device "cat /sys/class/remoteproc/remoteproc0/state" 2)
+    state=$(run_on_device "cat /sys/class/remoteproc/remoteproc0/state")
     if echo "$state" | grep -q "running"; then
         log_result "LPASS started successfully"
     else
@@ -190,7 +186,7 @@ start_lpass() {
 check_sound_card() {
     log_step "Checking sound card..."
 
-    local cards=$(run_on_device "cat /proc/asound/cards" 3)
+    local cards=$(run_on_device "cat /proc/asound/cards")
     echo "$cards"
 
     if echo "$cards" | grep -q "HPTouchPad"; then
@@ -208,39 +204,39 @@ configure_mixer() {
     # Enable LPASS to codec routing (Q6 DSP -> Secondary MI2S -> Codec)
     # Note: DT uses SECONDARY_MI2S for the codec link, so we need SEC_MI2S_RX
     log_info "Enabling SEC_MI2S_RX Audio Mixer..."
-    run_on_device "cd /tmp && ./tinymix set 'SEC_MI2S_RX Audio Mixer MultiMedia1' 1" 3
+    run_on_device "cd /tmp && ./tinymix set 'SEC_MI2S_RX Audio Mixer MultiMedia1' 1"
 
     # Enable DAC paths (AIF1 -> DAC1)
     log_info "Enabling DAC mixer paths..."
-    run_on_device "cd /tmp && ./tinymix set 'DAC1L Mixer AIF1.1 Switch' 1" 2
-    run_on_device "cd /tmp && ./tinymix set 'DAC1R Mixer AIF1.1 Switch' 1" 2
-    run_on_device "cd /tmp && ./tinymix set 'DAC1 Switch' 1 1" 2  # Both channels!
+    run_on_device "cd /tmp && ./tinymix set 'DAC1L Mixer AIF1.1 Switch' 1"
+    run_on_device "cd /tmp && ./tinymix set 'DAC1R Mixer AIF1.1 Switch' 1"
+    run_on_device "cd /tmp && ./tinymix set 'DAC1 Switch' 1 1"  # Both channels!
 
     # Enable output mixers (DAC -> Output Mixer)
     log_info "Enabling output mixers..."
-    run_on_device "cd /tmp && ./tinymix set 'Left Output Mixer DAC Switch' 1" 2
-    run_on_device "cd /tmp && ./tinymix set 'Right Output Mixer DAC Switch' 1" 2
+    run_on_device "cd /tmp && ./tinymix set 'Left Output Mixer DAC Switch' 1"
+    run_on_device "cd /tmp && ./tinymix set 'Right Output Mixer DAC Switch' 1"
 
     # Enable SPKOUT paths (Output Mixer -> Speaker Mixer -> Speaker Driver -> SPKOUT)
     # NOTE: TouchPad speakers are connected to SPKOUT pins, NOT LINEOUT!
     # LINEOUT is not connected on this board per webOS board-tenderloin.c
     log_info "Enabling speaker mixer paths (SPKOUT)..."
-    run_on_device "cd /tmp && ./tinymix set 'SPKL DAC1 Switch' 1" 2
-    run_on_device "cd /tmp && ./tinymix set 'SPKR DAC1 Switch' 1" 2
+    run_on_device "cd /tmp && ./tinymix set 'SPKL DAC1 Switch' 1"
+    run_on_device "cd /tmp && ./tinymix set 'SPKR DAC1 Switch' 1"
 
     # Enable speaker output switches (critical for audio output!)
     log_info "Enabling speaker output switches..."
-    run_on_device "cd /tmp && ./tinymix set 'SPKL Output Switch' 1" 2
-    run_on_device "cd /tmp && ./tinymix set 'SPKR Output Switch' 1" 2
+    run_on_device "cd /tmp && ./tinymix set 'SPKL Output Switch' 1"
+    run_on_device "cd /tmp && ./tinymix set 'SPKR Output Switch' 1"
 
     # Set volumes to maximum
     log_info "Setting volumes..."
-    run_on_device "cd /tmp && ./tinymix set 'Speaker Volume' 63 63" 2
-    run_on_device "cd /tmp && ./tinymix set 'Speaker Boost Volume' 7 7" 2
-    run_on_device "cd /tmp && ./tinymix set 'Speaker Mixer Volume' 3 3" 2
-    run_on_device "cd /tmp && ./tinymix set 'Output Volume' 63 63" 2
-    run_on_device "cd /tmp && ./tinymix set 'AIF1DAC1 Volume' 96 96" 2
-    run_on_device "cd /tmp && ./tinymix set 'DAC1 Volume' 96 96" 2
+    run_on_device "cd /tmp && ./tinymix set 'Speaker Volume' 63 63"
+    run_on_device "cd /tmp && ./tinymix set 'Speaker Boost Volume' 7 7"
+    run_on_device "cd /tmp && ./tinymix set 'Speaker Mixer Volume' 3 3"
+    run_on_device "cd /tmp && ./tinymix set 'Output Volume' 63 63"
+    run_on_device "cd /tmp && ./tinymix set 'AIF1DAC1 Volume' 96 96"
+    run_on_device "cd /tmp && ./tinymix set 'DAC1 Volume' 96 96"
 
     log_result "Mixer configured for SPKOUT path"
 }
@@ -252,8 +248,8 @@ test_playback() {
     # Use large buffers to avoid ALSA timeout (-p 16384 -n 8 = 128KB buffer)
     # Default buffers (~8KB) cause timeout before DSP processes data
 
-    log_info "Playing notification.wav (short, 177KB)..."
-    local result=$(run_on_device "cd /tmp && ./tinyplay notification.wav -p 16384 -n 8 2>&1" 10)
+    log_info "Playing notification_48k.wav (short, 48kHz)..."
+    local result=$(run_on_device "cd /tmp && ./tinyplay notification_48k.wav -p 16384 -n 8 2>&1")
     echo "$result"
 
     if echo "$result" | grep -q "Played.*bytes"; then
@@ -262,8 +258,8 @@ test_playback() {
 
     sleep 2
 
-    log_info "Playing phone.wav (long, 990KB)..."
-    result=$(run_on_device "cd /tmp && ./tinyplay phone.wav -p 16384 -n 8 2>&1" 20)
+    log_info "Playing phone_48k.wav (long, 48kHz)..."
+    result=$(run_on_device "cd /tmp && ./tinyplay phone_48k.wav -p 16384 -n 8 2>&1")
     echo "$result"
 
     if echo "$result" | grep -q "error\|Error\|cannot"; then
@@ -271,7 +267,7 @@ test_playback() {
 
         # Get dmesg errors
         log_info "Checking kernel log for errors..."
-        run_on_device "dmesg | grep -i 'error\|asm\|afe' | tail -10" 5
+        run_on_device "dmesg | grep -i 'error\|asm\|afe' | tail -10"
         return 1
     else
         log_result "Phone playback completed"
@@ -283,13 +279,13 @@ check_dmesg() {
     log_step "Checking kernel messages..."
 
     log_info "Legacy protocol status:"
-    run_on_device "dmesg | grep -i 'legacy' | tail -5" 3
+    run_on_device "dmesg | grep -i 'legacy' | tail -5"
 
     log_info "Recent audio errors:"
-    run_on_device "dmesg | grep -iE 'error.*0x|returned error|asm|afe' | tail -10" 5
+    run_on_device "dmesg | grep -iE 'error.*0x|returned error|asm|afe' | tail -10"
 
     log_info "APR header debug (if available):"
-    run_on_device "dmesg | grep -i 'src_port\|dest_port\|open_write' | tail -5" 3
+    run_on_device "dmesg | grep -i 'src_port\|dest_port\|open_write' | tail -5"
 }
 
 # Main
@@ -309,7 +305,6 @@ main() {
 
     if [ $SKIP_TRANSFER -eq 0 ]; then
         prepare_host_files
-        start_http_server
         transfer_files
     fi
 
