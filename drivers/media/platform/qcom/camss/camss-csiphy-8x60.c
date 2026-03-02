@@ -122,22 +122,17 @@ static void csiphy_8x60_reset(struct csiphy_device *csiphy)
 	 * Cycle clocks to ensure CSI registers are accessible.
 	 * After GDSC power cycles, the clock/bus state may need
 	 * to be re-established before register access works.
+	 *
+	 * Note: Do NOT write SW_RST here - the full CSI init sequence
+	 * (PHY_CONTROL, SW_RST, config) must be done together in
+	 * lanes_enable() following the webOS msm_camio_csi_config() pattern.
+	 * Doing SW_RST separately and clearing to 0 puts the core in a
+	 * state where subsequent register writes hang.
 	 */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: cycling clocks\n", csiphy->id);
 	camss_disable_clocks(csiphy->nclocks, csiphy->clock);
 	usleep_range(1000, 2000);
 	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
-	usleep_range(1000, 2000);
-
-	/* SW_RST to the CSI core */
-	dev_info(csiphy->camss->dev,
-		 "CSIPHY%d: reset - writing SW_RST to PROTOCOL_CONTROL\n",
-		 csiphy->id);
-	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
-		       csiphy->base + MIPI_PROTOCOL_CONTROL);
-	usleep_range(1000, 2000);
-
-	writel_relaxed(0, csiphy->base + MIPI_PROTOCOL_CONTROL);
 	usleep_range(1000, 2000);
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: reset DONE\n", csiphy->id);
@@ -168,11 +163,10 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
 	/*
-	 * Note: Clock cycling and SW_RST were already done in reset() which
-	 * runs before this function. No need to cycle again - just proceed
-	 * with register writes. Add a small delay for bus stabilization.
+	 * Clock cycling was done in reset(). Now do the full CSI init sequence
+	 * following webOS msm_camio_csi_config() exactly:
+	 * PHY_CONTROL -> SW_RST -> config (overwrite SW_RST, don't clear to 0)
 	 */
-	usleep_range(1000, 2000);
 
 	num_lanes = cfg->csi2->lane_cfg.num_data;
 
