@@ -171,8 +171,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 * MSM8660 workaround: Cycle clocks before register access.
 	 * After GDSC power domain transitions, the AHB bus interconnect
 	 * needs re-synchronization. Clock cycling forces this synchronization.
-	 * Without this, register writes may timeout/hang on the bus.
-	 * This is the same pattern used in reset() which works reliably.
 	 */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable - cycling clocks\n",
 		 csiphy->id);
@@ -180,20 +178,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	usleep_range(1000, 2000);
 	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
 	usleep_range(1000, 2000);
-
-	/*
-	 * MSM8660: Perform SW_RST after clock cycling to put CSI controller
-	 * in a known state. This is the same sequence that works in reset().
-	 * Clock cycling + SW_RST together seem to be required for register
-	 * access to work reliably.
-	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable - SW_RST\n", csiphy->id);
-	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
-		       csiphy->base + MIPI_PROTOCOL_CONTROL);
-	usleep_range(1000, 2000);
-	writel_relaxed(0, csiphy->base + MIPI_PROTOCOL_CONTROL);
-	usleep_range(1000, 2000);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable - SW_RST done\n", csiphy->id);
 
 	num_lanes = cfg->csi2->lane_cfg.num_data;
 
@@ -218,28 +202,38 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 "CSIPHY%d: lanes_enable: lanes=%d settle_cnt=0x%02x link_freq=%lld base=%px\n",
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
-	/* Step 1: Configure PROTOCOL_CONTROL */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PROTOCOL_CONTROL\n", csiphy->id);
+	/*
+	 * Follow exact webOS msm_camio_csi_config() sequence:
+	 * 1. PHY_CONTROL first (SOT_ECC_EN)
+	 * 2. SW_RST to PROTOCOL_CONTROL
+	 * 3. Config to PROTOCOL_CONTROL (immediately overwrites SW_RST)
+	 */
+
+	/* Step 1: PHY_CONTROL first - SOT_ECC_EN for sync data-lane */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL\n", csiphy->id);
+	writel_relaxed(0x4, csiphy->base + MIPI_PHY_CONTROL);
+
+	/* Step 2: SW_RST to CSI core */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - SW_RST\n", csiphy->id);
+	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
+		       csiphy->base + MIPI_PROTOCOL_CONTROL);
+
+	/* Step 3: PROTOCOL_CONTROL config - immediately overwrites SW_RST (no clearing!) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - PROTOCOL_CONTROL\n", csiphy->id);
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
 	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
-	/* Data format: 0 = YUV422, other values for RAW data */
 	writel_relaxed(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
-	/* Step 2: PHY_CONTROL - after PROTOCOL_CONTROL is configured */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - PHY_CONTROL (0x00)\n", csiphy->id);
-	writel_relaxed(0x4, csiphy->base + MIPI_PHY_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - PHY_CONTROL write OK\n", csiphy->id);
-
-	/* Step 3: SW CAL EN - software calibration */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - CALIBRATION_CONTROL\n", csiphy->id);
+	/* Step 4: SW CAL EN - software calibration */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 4 - CALIBRATION_CONTROL\n", csiphy->id);
 	val = (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_CAL_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_STRENGTH_OVERRIDE_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_CAL_SW_HW_MODE_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_MANUAL_OVERRIDE_EN_SHFT);
 	writel_relaxed(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
 
-	/* Step 5: Configure data lane timing (D0-D3) */
+	/* Step 5: Configure data lane timing (D0-D3) - settle count is speed-sensitive */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 5 - D0-D3_CONTROL2\n", csiphy->id);
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
@@ -261,13 +255,13 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	val = 0 << MIPI_PHY_D0_CONTROL_HS_REC_EQ_SHFT;
 	writel_relaxed(val, csiphy->base + MIPI_PHY_D0_CONTROL);
 
-	/* Step 8: Enable PHY - release shutdown */
+	/* Step 8: Enable PHY - release shutdown (CLK and DATA PHY) */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 8 - D1_CONTROL (PHY enable)\n", csiphy->id);
 	val = (0x1 << MIPI_PHY_D1_CONTROL_MIPI_CLK_PHY_SHUTDOWNB_SHFT) |
 	      (0x1 << MIPI_PHY_D1_CONTROL_MIPI_DATA_PHY_SHUTDOWNB_SHFT);
 	writel_relaxed(val, csiphy->base + MIPI_PHY_D1_CONTROL);
 
-	/* Step 9: Configure unused D2/D3 */
+	/* Step 9: Disable unused D2/D3 lanes */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 9 - D2/D3_CONTROL\n", csiphy->id);
 	writel_relaxed(0x00000000, csiphy->base + MIPI_PHY_D2_CONTROL);
 	writel_relaxed(0x00000000, csiphy->base + MIPI_PHY_D3_CONTROL);
