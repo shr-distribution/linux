@@ -483,12 +483,22 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				snd_soc_dapm_force_enable_pin(&component->dapm, "CLK_SYS");
 
 				/*
-				 * Force-enable the entire speaker output path.
+				 * Force-enable the entire audio path from AIF1 to speakers.
 				 * DAPM isn't recognizing the DPCM path as active, so
 				 * force all widgets ON to enable audio output.
+				 *
+				 * Signal path: AIF1DAC1 → DAC1 Mixer → DAC1 → SPKL/R → Driver
 				 */
+				/* AIF1 DAC input widgets */
+				snd_soc_dapm_force_enable_pin(&component->dapm, "AIF1DAC1L");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "AIF1DAC1R");
+				/* DAC mixer widgets */
+				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1L Mixer");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1R Mixer");
+				/* DAC widgets */
 				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1L");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1R");
+				/* Speaker mixer and driver widgets */
 				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKL");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKR");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKL Boost");
