@@ -155,16 +155,17 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
 	/*
-	 * MSM8660 workaround: Cycle clocks before register access.
-	 * After GDSC power domain transitions, the AHB bus interconnect
-	 * needs re-synchronization. Clock cycling forces this.
+	 * MSM8660 workaround: Force AHB bus synchronization before register access.
+	 * After GDSC power domain transitions, the bus interconnect may need
+	 * re-synchronization. Write to PHY_CONTROL first (known to work), then
+	 * read it back to force the bus to complete any pending transactions.
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: cycling clocks for bus sync\n", csiphy->id);
-	camss_disable_clocks(csiphy->nclocks, csiphy->clock);
-	usleep_range(1000, 2000);
-	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
-	usleep_range(1000, 2000);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: clock cycling complete\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: bus sync via PHY_CONTROL\n", csiphy->id);
+	writel(0x0, csiphy->base + MIPI_PHY_CONTROL);
+	wmb();
+	readl(csiphy->base + MIPI_PHY_CONTROL);
+	usleep_range(100, 200);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: bus sync complete\n", csiphy->id);
 
 	/*
 	 * Full CSI init sequence following webOS msm_camio_csi_config() exactly:
