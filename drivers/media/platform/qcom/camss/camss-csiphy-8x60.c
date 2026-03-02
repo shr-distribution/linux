@@ -184,45 +184,25 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
 	/*
-	 * WebOS msm_camio_enable() does initial register writes BEFORE
-	 * the main CSI config. These "warm up" the bus and may be required
-	 * for later writes to work.
+	 * MSM8660 register access sequence: writes to PHY_CONTROL (0x00) and
+	 * PROTOCOL_CONTROL (0x04) work, but writes to higher addresses hang
+	 * unless low addresses are written first. Do PHY_CONTROL first to
+	 * "open" the register space.
 	 */
 
-	/* Initial D1/D2/D3_CONTROL = 0 (from webOS msm_camio_enable) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 0 - initial D1/D2/D3_CONTROL\n", csiphy->id);
-	writel(0x00000000, csiphy->base + MIPI_PHY_D1_CONTROL);
-	writel(0x00000000, csiphy->base + MIPI_PHY_D2_CONTROL);
-	writel(0x00000000, csiphy->base + MIPI_PHY_D3_CONTROL);
-
-	/* Initial D0-D3_CONTROL2 with settle count (from webOS msm_camio_enable) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 0b - initial D0-D3_CONTROL2\n", csiphy->id);
-	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
-	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
-	      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
-	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
-	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
-
-	/* Initial CL_CONTROL (from webOS msm_camio_enable) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 0c - initial CL_CONTROL\n", csiphy->id);
-	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
-	      (0x1 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
-	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
-
-	/*
-	 * Now do the full CSI init sequence from msm_camio_csi_config():
-	 * PHY_CONTROL -> SW_RST -> config
-	 */
-
-	/* Step 1: PHY_CONTROL - SOT_ECC_EN for sync data-lane */
+	/* Step 1: PHY_CONTROL - must be first to enable register access */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL\n", csiphy->id);
 	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
 
-	/* Step 2: PROTOCOL_CONTROL config (no SW_RST) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - PROTOCOL_CONTROL\n", csiphy->id);
+	/* Step 2a: PROTOCOL_CONTROL SW_RST - may be needed to unlock higher registers */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2a - SW_RST\n", csiphy->id);
+	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
+
+	/* Small delay for reset to complete */
+	udelay(10);
+
+	/* Step 2b: PROTOCOL_CONTROL config (overwrites SW_RST like webOS) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2b - PROTOCOL_CONTROL config\n", csiphy->id);
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
 	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
