@@ -307,6 +307,28 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
+	/*
+	 * Enable power management registers for the output path.
+	 * DAPM isn't powering the widgets because it doesn't recognize
+	 * the DPCM path as active. Force-enable them here during hw_params
+	 * so they're ready when playback starts.
+	 *
+	 * PM1 (0x01): SPKOUTL_ENA, SPKOUTR_ENA, HPOUT1L_ENA, HPOUT1R_ENA
+	 * PM3 (0x03): SPKLVOL_ENA, SPKRVOL_ENA, MIXOUTLVOL_ENA, MIXOUTRVOL_ENA
+	 * PM5 (0x05): DAC1L_ENA, DAC1R_ENA
+	 */
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		struct snd_soc_component *component = codec_dai->component;
+
+		dev_info(rtd->dev, "APQ8060: Enabling output power registers\n");
+		snd_soc_component_update_bits(component,
+			WM8994_POWER_MANAGEMENT_5, 0x0003, 0x0003);
+		snd_soc_component_update_bits(component,
+			WM8994_POWER_MANAGEMENT_3, 0x0330, 0x0330);
+		snd_soc_component_update_bits(component,
+			WM8994_POWER_MANAGEMENT_1, 0x3300, 0x3300);
+	}
+
 	dev_info(rtd->dev, "APQ8060: Codec clock configured using internal oscillator\n");
 	return 0;
 }
