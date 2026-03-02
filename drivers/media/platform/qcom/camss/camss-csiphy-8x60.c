@@ -155,8 +155,19 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
 	/*
-	 * Clock cycling was done in reset(). Now do the full CSI init sequence
-	 * following webOS msm_camio_csi_config() exactly:
+	 * MSM8660 workaround: Cycle clocks before register access.
+	 * After GDSC power domain transitions, the AHB bus interconnect
+	 * needs re-synchronization. Clock cycling forces this.
+	 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: cycling clocks for bus sync\n", csiphy->id);
+	camss_disable_clocks(csiphy->nclocks, csiphy->clock);
+	usleep_range(1000, 2000);
+	camss_enable_clocks(csiphy->nclocks, csiphy->clock, csiphy->camss->dev);
+	usleep_range(1000, 2000);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: clock cycling complete\n", csiphy->id);
+
+	/*
+	 * Full CSI init sequence following webOS msm_camio_csi_config() exactly:
 	 * PHY_CONTROL -> SW_RST -> config (overwrite SW_RST, don't clear to 0)
 	 */
 
