@@ -198,9 +198,9 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - SW_RST\n", csiphy->id);
 	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
 		       csiphy->base + MIPI_PROTOCOL_CONTROL);
-	/* Ensure SW_RST is committed and allow reset to complete */
-	wmb();
-	usleep_range(100, 200);
+	/* Allow reset to complete - use longer delay */
+	usleep_range(10000, 15000);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - SW_RST delay done\n", csiphy->id);
 
 	/* Step 3: PROTOCOL_CONTROL config - overwrites SW_RST */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - PROTOCOL_CONTROL\n", csiphy->id);
