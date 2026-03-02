@@ -194,19 +194,18 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PHY_CONTROL\n", csiphy->id);
 	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
 
-	/* Step 2a: PROTOCOL_CONTROL SW_RST - may be needed to unlock higher registers */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2a - SW_RST\n", csiphy->id);
+	/*
+	 * Step 2: PROTOCOL_CONTROL with SW_RST then immediate config overwrite.
+	 * WebOS does: writel(SW_RST); writel(config); with NO delay between.
+	 * The config write immediately clears SW_RST and sets the config bits.
+	 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - SW_RST + immediate config\n", csiphy->id);
 	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
-
-	/* Small delay for reset to complete */
-	udelay(10);
-
-	/* Step 2b: PROTOCOL_CONTROL config (overwrites SW_RST like webOS) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2b - PROTOCOL_CONTROL config\n", csiphy->id);
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
 	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
 	writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - PROTOCOL_CONTROL done\n", csiphy->id);
 
 	/* Step 3: SW CAL EN - software calibration */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - CALIBRATION_CONTROL\n", csiphy->id);
