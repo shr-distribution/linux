@@ -184,10 +184,37 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
 	/*
-	 * Configure CSI registers directly without SW_RST.
-	 * The CSI controller is in a clean state after power-on.
-	 * Skip SW_RST to avoid the hang that occurs when writing
-	 * config after SW_RST.
+	 * WebOS msm_camio_enable() does initial register writes BEFORE
+	 * the main CSI config. These "warm up" the bus and may be required
+	 * for later writes to work.
+	 */
+
+	/* Initial D1/D2/D3_CONTROL = 0 (from webOS msm_camio_enable) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 0 - initial D1/D2/D3_CONTROL\n", csiphy->id);
+	writel(0x00000000, csiphy->base + MIPI_PHY_D1_CONTROL);
+	writel(0x00000000, csiphy->base + MIPI_PHY_D2_CONTROL);
+	writel(0x00000000, csiphy->base + MIPI_PHY_D3_CONTROL);
+
+	/* Initial D0-D3_CONTROL2 with settle count (from webOS msm_camio_enable) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 0b - initial D0-D3_CONTROL2\n", csiphy->id);
+	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
+	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
+	      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
+	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
+	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
+	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
+	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
+
+	/* Initial CL_CONTROL (from webOS msm_camio_enable) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 0c - initial CL_CONTROL\n", csiphy->id);
+	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
+	      (0x1 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
+	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
+
+	/*
+	 * Now do the full CSI init sequence from msm_camio_csi_config():
+	 * PHY_CONTROL -> SW_RST -> config
 	 */
 
 	/* Step 1: PHY_CONTROL - SOT_ECC_EN for sync data-lane */
