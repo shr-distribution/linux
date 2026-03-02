@@ -191,32 +191,26 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
 	/*
-	 * MSM8660: Configure PROTOCOL_CONTROL first - we know this register
-	 * is accessible. PHY_CONTROL at offset 0x00 may require PROTOCOL_CONTROL
-	 * to be configured first.
+	 * MSM8660: Skip SW_RST here - reset() already did it just before
+	 * lanes_enable was called. Doing another SW_RST seems to cause hangs.
+	 * Start directly with PROTOCOL_CONTROL configuration.
 	 */
 
-	/* Step 1: SW_RST to the CSI core */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - SW_RST\n", csiphy->id);
-	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK,
-		       csiphy->base + MIPI_PROTOCOL_CONTROL);
-	usleep_range(1000, 2000);
-
-	/* Step 2: Configure PROTOCOL_CONTROL */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - PROTOCOL_CONTROL\n", csiphy->id);
+	/* Step 1: Configure PROTOCOL_CONTROL (SW_RST already done in reset) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - PROTOCOL_CONTROL\n", csiphy->id);
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
 	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
 	/* Data format: 0 = YUV422, other values for RAW data */
 	writel_relaxed(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
-	/* Step 3: PHY_CONTROL - now try after PROTOCOL_CONTROL is configured */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - PHY_CONTROL (0x00)\n", csiphy->id);
+	/* Step 2: PHY_CONTROL - after PROTOCOL_CONTROL is configured */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - PHY_CONTROL (0x00)\n", csiphy->id);
 	writel_relaxed(0x4, csiphy->base + MIPI_PHY_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - PHY_CONTROL write OK\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - PHY_CONTROL write OK\n", csiphy->id);
 
-	/* Step 4: SW CAL EN - software calibration */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 4 - CALIBRATION_CONTROL\n", csiphy->id);
+	/* Step 3: SW CAL EN - software calibration */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - CALIBRATION_CONTROL\n", csiphy->id);
 	val = (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_CAL_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_STRENGTH_OVERRIDE_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_CAL_SW_HW_MODE_SHFT) |
