@@ -342,6 +342,27 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 			WM8994_DAC1_LEFT_VOLUME, 0x02C0);
 		snd_soc_component_write(component,
 			WM8994_DAC1_RIGHT_VOLUME, 0x02C0);
+
+		/*
+		 * Enable speaker output and bias.
+		 * VMID is needed for the analog outputs to function.
+		 * Also ensure speaker mixer paths are active.
+		 */
+		dev_info(rtd->dev, "APQ8060: Enabling speaker output path\n");
+
+		/* Ensure VMID and bias are enabled (PM1 bits 1:0) */
+		snd_soc_component_update_bits(component,
+			WM8994_POWER_MANAGEMENT_1, 0x0003, 0x0003);
+
+		/* Enable speaker mixer to output (0x24): SPKMIXL→SPKOUTL, SPKMIXR→SPKOUTR */
+		snd_soc_component_update_bits(component,
+			WM8994_SPKOUT_MIXERS, 0x0011, 0x0011);
+
+		/* Ensure speaker volume is unmuted and at max (0x26, 0x27) */
+		snd_soc_component_write(component,
+			WM8994_SPEAKER_VOLUME_LEFT, 0x017F);
+		snd_soc_component_write(component,
+			WM8994_SPEAKER_VOLUME_RIGHT, 0x017F);
 	}
 
 	dev_info(rtd->dev, "APQ8060: Codec clock configured using internal oscillator\n");
