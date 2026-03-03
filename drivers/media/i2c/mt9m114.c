@@ -2413,7 +2413,7 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 			goto error_clock;
 		}
 		dev_info(dev, "power_on: MCU boot complete, configuring PLL\n");
-		msleep(30);
+		msleep(100); /* Increased from 30ms - sensor needs time after MCU boot */
 
 		/*
 		 * Configure clocks and PLL - sequence from webOS kernel.
