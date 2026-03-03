@@ -3,7 +3,7 @@
 # Audio Test Script for HP TouchPad
 # Deploys firmware, tools, configures mixer, and tests playback
 #
-# Usage: ./scripts/test-audio.sh [--skip-transfer]
+# Usage: ./scripts/test-audio.sh [--skip-transfer] [--dump-regs] [--dapm]
 #
 # Requirements:
 # - Device accessible at 172.16.42.2 via USB network
@@ -247,6 +247,12 @@ test_playback() {
 
     # Use default buffer parameters - large buffers (-p 16384) fail hw_params constraints
 
+    # Dump registers before playback
+    dump_codec_registers "Codec registers BEFORE playback"
+
+    # Check DAPM widget states before playback
+    check_dapm_widgets
+
     log_info "Playing notification_48k.wav (short, 48kHz)..."
     local result=$(run_on_device "cd /tmp && ./tinyplay notification_48k.wav 2>&1")
     echo "$result"
@@ -255,11 +261,19 @@ test_playback() {
         log_result "Notification playback completed"
     fi
 
-    sleep 2
+    sleep 1
+
+    # Start register monitor before longer playback
+    start_register_monitor
+
+    sleep 1
 
     log_info "Playing phone_48k.wav (long, 48kHz)..."
     result=$(run_on_device "cd /tmp && ./tinyplay phone_48k.wav 2>&1")
     echo "$result"
+
+    # Wait for monitor to finish collecting data
+    sleep 2
 
     if echo "$result" | grep -q "error\|Error\|cannot"; then
         log_error "Playback encountered errors"
@@ -267,10 +281,169 @@ test_playback() {
         # Get dmesg errors
         log_info "Checking kernel log for errors..."
         run_on_device "dmesg | grep -i 'error\|asm\|afe' | tail -10"
-        return 1
     else
         log_result "Phone playback completed"
     fi
+
+    # Show register monitoring results
+    show_register_monitor_results
+
+    # Dump registers after playback
+    dump_codec_registers "Codec registers AFTER playback"
+
+    # Check DAPM widget states after playback
+    check_dapm_widgets
+}
+
+# Dump key WM8958 codec registers
+dump_codec_registers() {
+    local label="${1:-Codec Register Dump}"
+    log_step "$label"
+
+    # Path to regmap debugfs
+    local REGMAP="/sys/kernel/debug/regmap/wm8994/registers"
+
+    run_on_device "cat <<'SCRIPT' > /tmp/dump_regs.sh
+#!/bin/sh
+REGMAP='/sys/kernel/debug/regmap/wm8994/registers'
+if [ ! -f \"\$REGMAP\" ]; then
+    echo 'Regmap not available'
+    exit 1
+fi
+
+# Read all registers once
+REGS=\$(cat \$REGMAP)
+
+# Function to get register value
+get_reg() {
+    echo \"\$REGS\" | grep -i \"^\$1:\" | awk '{print \$2}'
+}
+
+echo '=== Power Management ==='
+printf 'PM1 (0x01):     0x%s  (VMID, bias, outputs)\\n' \"\$(get_reg 1)\"
+printf 'PM3 (0x03):     0x%s  (mixers, spk drivers)\\n' \"\$(get_reg 3)\"
+printf 'PM5 (0x05):     0x%s  (DAC enables)\\n' \"\$(get_reg 5)\"
+
+echo ''
+echo '=== Output Path ==='
+printf 'SPKOUT Mux (0x24):    0x%s  (speaker output select)\\n' \"\$(get_reg 24)\"
+printf 'Out Mixer1 (0x2d):    0x%s  (left output mixer)\\n' \"\$(get_reg 2d)\"
+printf 'Out Mixer2 (0x2e):    0x%s  (right output mixer)\\n' \"\$(get_reg 2e)\"
+printf 'Spk Mixer (0x36):     0x%s  (DAC->speaker mixer)\\n' \"\$(get_reg 36)\"
+
+echo ''
+echo '=== DAC/AIF Path ==='
+printf 'DAC1L Mixer (0x601):  0x%s  (AIF->DAC1L select)\\n' \"\$(get_reg 601)\"
+printf 'DAC1R Mixer (0x602):  0x%s  (AIF->DAC1R select)\\n' \"\$(get_reg 602)\"
+
+echo ''
+echo '=== Clocking ==='
+printf 'AIF1CLK (0x200):      0x%s  (AIF1 clock source)\\n' \"\$(get_reg 200)\"
+printf 'AIF1 Rate (0x210):    0x%s  (sample rate)\\n' \"\$(get_reg 210)\"
+printf 'FLL1 Ctrl1 (0x220):   0x%s  (FLL enable)\\n' \"\$(get_reg 220)\"
+printf 'FLL1 Ctrl5 (0x224):   0x%s  (FLL source)\\n' \"\$(get_reg 224)\"
+
+echo ''
+echo '=== Status ==='
+printf 'Int Status2 (0x731):  0x%s  (FLL lock: bit5=1 is locked)\\n' \"\$(get_reg 731)\"
+printf 'GPIO1 (0x700):        0x%s  (ext amp ctrl: 0x41=enabled)\\n' \"\$(get_reg 700)\"
+
+echo ''
+echo '=== Volume (check unmuted) ==='
+printf 'DAC1L Vol (0x610):    0x%s  (bit9=0 unmuted)\\n' \"\$(get_reg 610)\"
+printf 'DAC1R Vol (0x611):    0x%s  (bit9=0 unmuted)\\n' \"\$(get_reg 611)\"
+printf 'Speaker L (0x26):     0x%s  (bit6=mute)\\n' \"\$(get_reg 26)\"
+printf 'Speaker R (0x27):     0x%s  (bit6=mute)\\n' \"\$(get_reg 27)\"
+SCRIPT
+chmod +x /tmp/dump_regs.sh
+/tmp/dump_regs.sh"
+}
+
+# Monitor registers during playback (runs in background on device)
+start_register_monitor() {
+    log_info "Starting register monitor in background..."
+
+    run_on_device "cat <<'SCRIPT' > /tmp/monitor_regs.sh
+#!/bin/sh
+REGMAP='/sys/kernel/debug/regmap/wm8994/registers'
+OUTFILE='/tmp/reg_monitor.log'
+echo 'Register Monitor Started' > \$OUTFILE
+echo '========================' >> \$OUTFILE
+
+# Monitor key registers every 0.5 seconds for 10 seconds
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    REGS=\$(cat \$REGMAP 2>/dev/null)
+    if [ -z \"\$REGS\" ]; then
+        echo 'Regmap read failed' >> \$OUTFILE
+        break
+    fi
+
+    # Extract key registers
+    PM1=\$(echo \"\$REGS\" | grep -i '^1:' | awk '{print \$2}')
+    PM3=\$(echo \"\$REGS\" | grep -i '^3:' | awk '{print \$2}')
+    PM5=\$(echo \"\$REGS\" | grep -i '^5:' | awk '{print \$2}')
+    FLL=\$(echo \"\$REGS\" | grep -i '^731:' | awk '{print \$2}')
+    DAC1L=\$(echo \"\$REGS\" | grep -i '^601:' | awk '{print \$2}')
+    GPIO=\$(echo \"\$REGS\" | grep -i '^700:' | awk '{print \$2}')
+    SPKMIX=\$(echo \"\$REGS\" | grep -i '^36:' | awk '{print \$2}')
+
+    echo \"[\$(date +%H:%M:%S.\$((i*50)))] PM1=\$PM1 PM3=\$PM3 PM5=\$PM5 FLL731=\$FLL DAC601=\$DAC1L SPKMIX=\$SPKMIX GPIO=\$GPIO\" >> \$OUTFILE
+    sleep 0.5
+done
+echo 'Monitor Complete' >> \$OUTFILE
+SCRIPT
+chmod +x /tmp/monitor_regs.sh
+nohup /tmp/monitor_regs.sh > /dev/null 2>&1 &
+echo \$!"
+}
+
+# Show register monitor results
+show_register_monitor_results() {
+    log_step "Register monitor results:"
+    run_on_device "cat /tmp/reg_monitor.log 2>/dev/null || echo 'No monitor log found'"
+}
+
+# Check DAPM widget states
+check_dapm_widgets() {
+    log_step "DAPM widget states..."
+
+    run_on_device "cat <<'SCRIPT' > /tmp/check_dapm.sh
+#!/bin/sh
+DAPM_PATH='/sys/kernel/debug/asoc/HP-TouchPad/wm8994-codec/dapm'
+if [ ! -d \"\$DAPM_PATH\" ]; then
+    echo 'DAPM debugfs not available'
+    exit 1
+fi
+
+echo '=== Clock Widgets ==='
+for w in AIF1CLK CLK_SYS; do
+    state=\$(cat \"\$DAPM_PATH/\$w\" 2>/dev/null | head -1)
+    printf '%-20s: %s\\n' \"\$w\" \"\$state\"
+done
+
+echo ''
+echo '=== AIF/DAC Path Widgets ==='
+for w in 'AIF1DAC1L' 'AIF1DAC1R' 'DAC1L Mixer' 'DAC1R Mixer' 'DAC1L' 'DAC1R'; do
+    state=\$(cat \"\$DAPM_PATH/\$w\" 2>/dev/null | head -1)
+    printf '%-20s: %s\\n' \"\$w\" \"\$state\"
+done
+
+echo ''
+echo '=== Output Mixer/PGA Widgets ==='
+for w in 'Left Output Mixer' 'Right Output Mixer' 'Left Output PGA' 'Right Output PGA'; do
+    state=\$(cat \"\$DAPM_PATH/\$w\" 2>/dev/null | head -1)
+    printf '%-20s: %s\\n' \"\$w\" \"\$state\"
+done
+
+echo ''
+echo '=== Speaker Widgets ==='
+for w in 'SPKL' 'SPKR' 'SPKL Boost' 'SPKR Boost' 'SPKL Driver' 'SPKR Driver'; do
+    state=\$(cat \"\$DAPM_PATH/\$w\" 2>/dev/null | head -1)
+    printf '%-20s: %s\\n' \"\$w\" \"\$state\"
+done
+SCRIPT
+chmod +x /tmp/check_dapm.sh
+/tmp/check_dapm.sh"
 }
 
 # Check dmesg for ASM/AFE status
@@ -295,13 +468,41 @@ main() {
     echo ""
 
     SKIP_TRANSFER=0
-    if [ "$1" = "--skip-transfer" ]; then
-        SKIP_TRANSFER=1
-        log_info "Skipping file transfer (using existing files)"
-    fi
+    DUMP_REGS_ONLY=0
+    DAPM_ONLY=0
+
+    # Parse arguments
+    for arg in "$@"; do
+        case $arg in
+            --skip-transfer)
+                SKIP_TRANSFER=1
+                log_info "Skipping file transfer (using existing files)"
+                ;;
+            --dump-regs)
+                DUMP_REGS_ONLY=1
+                log_info "Dump registers mode"
+                ;;
+            --dapm)
+                DAPM_ONLY=1
+                log_info "DAPM widgets mode"
+                ;;
+        esac
+    done
 
     check_device || exit 1
 
+    # Quick modes for debugging
+    if [ $DUMP_REGS_ONLY -eq 1 ]; then
+        dump_codec_registers "Current codec register state"
+        exit 0
+    fi
+
+    if [ $DAPM_ONLY -eq 1 ]; then
+        check_dapm_widgets
+        exit 0
+    fi
+
+    # Full test flow
     if [ $SKIP_TRANSFER -eq 0 ]; then
         prepare_host_files
         transfer_files
