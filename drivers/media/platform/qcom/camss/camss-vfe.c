@@ -1329,6 +1329,15 @@ void vfe_put(struct vfe_device *vfe)
 		writel_relaxed(0, vfe->base + VFE31_CAMIF_CFG);
 		vfe->camif_pending = false;
 
+		/*
+		 * Always perform a global reset before disabling clocks.
+		 * This ensures the VFE hardware is in a clean state even if
+		 * halt timed out or the pipeline failed during startup.
+		 * Without this reset, the vfe_clk may refuse to turn off
+		 * because the hardware is still active.
+		 */
+		vfe_reset(vfe);
+
 		camss_disable_clocks(vfe->nclocks, vfe->clock);
 		pm_runtime_put_sync(vfe->camss->dev);
 		vfe->res->hw_ops->pm_domain_off(vfe);
