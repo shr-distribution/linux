@@ -400,10 +400,44 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
+static int apq8060_snd_trigger(struct snd_pcm_substream *substream, int cmd)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	int ret = 0;
+
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		/*
+		 * Explicitly unmute the codec DAI when playback starts.
+		 * DPCM may not call mute_stream automatically because DAPM
+		 * doesn't recognize our force-enabled path as active.
+		 * This calls wm8994_aif_mute(mute=0) to clear AIF1DAC1_MUTE.
+		 */
+		dev_info(rtd->dev, "APQ8060: Trigger START - unmuting codec\n");
+		ret = snd_soc_dai_digital_mute(codec_dai, 0, substream->stream);
+		if (ret)
+			dev_warn(rtd->dev, "Failed to unmute codec: %d\n", ret);
+		break;
+	case SNDRV_PCM_TRIGGER_STOP:
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		/* Mute on stop */
+		dev_info(rtd->dev, "APQ8060: Trigger STOP - muting codec\n");
+		snd_soc_dai_digital_mute(codec_dai, 1, substream->stream);
+		break;
+	}
+
+	return ret;
+}
+
 static const struct snd_soc_ops apq8060_snd_ops = {
 	.startup = apq8060_snd_startup,
 	.shutdown = apq8060_snd_shutdown,
 	.hw_params = apq8060_snd_hw_params,
+	.trigger = apq8060_snd_trigger,
 };
 
 static int apq8060_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
