@@ -1670,12 +1670,16 @@
 	 */
 	primary_i2s_pins: primary-i2s-state {
 		/*
-		 * I2S clock pins - Q6 LPASS is master, generating BCLK and
-		 * LRCLK via LCC clocks. WM8958 codec is slave, receiving clocks.
-		 * These pins are outputs from Q6 LPASS to the codec.
+		 * I2S pins for WM8958 codec connection.
+		 * Q6 LPASS is master, generating BCLK, LRCLK and audio data.
+		 * WM8958 codec is slave, receiving clocks and data.
 		 *
-		 * GPIO 108 = I2S WS (LRCLK)
-		 * GPIO 109 = I2S SCK (BCLK)
+		 * GPIO 108 = I2S WS (LRCLK / Word Select)
+		 * GPIO 109 = I2S SCK (BCLK / Bit Clock)
+		 * GPIO 110 = I2S SD0 (Serial Data - playback to codec)
+		 *
+		 * Note: GPIO 110 is free on WiFi variants. On 3G variants it's
+		 * used for BT_POWER, so 3G audio may need different routing.
 		 */
 		i2s-ws-pins {
 			pins = "gpio108";
@@ -1691,6 +1695,12 @@
 			bias-disable;
 			output-high;
 		};
+		i2s-data-pins {
+			pins = "gpio110";
+			function = "i2s";
+			drive-strength = <8>;
+			bias-disable;
+		};
 	};
 
 	/*
@@ -1700,12 +1710,12 @@
 	 * (legacy ports 0/1 in q6afe). We use SECONDARY_MI2S in the DT which
 	 * maps to LEGACY_PRIMARY_I2S via q6afe_port_to_legacy().
 	 *
-	 * The Primary I2S clock signals use GPIO 108 (WS) and GPIO 109 (SCK).
-	 * These are configured in i2s function mode via primary_i2s_pins.
-	 * The webOS kernel uses MSM_SNDDEV_ACTIVE_CONFIG = FUNC_1 for these.
+	 * Primary I2S signals on WiFi variants:
+	 * - GPIO 108 = WS (Word Select / LRCLK)
+	 * - GPIO 109 = SCK (Bit Clock / BCLK)
+	 * - GPIO 110 = SD0 (Serial Data for playback)
 	 *
-	 * Note: GPIO 115-118 are available for I2S data but not used on
-	 * TouchPad. GPIO 117/118 are used for headphone UART instead.
+	 * On 3G variants, GPIO 110 is used for BT_POWER instead.
 	 */
 
 	/* Headphone UART pins */
