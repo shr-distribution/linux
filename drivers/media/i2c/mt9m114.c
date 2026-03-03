@@ -2415,9 +2415,16 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		dev_info(dev, "power_on: MCU boot complete, configuring PLL\n");
 		msleep(30);
 
-		/* Configure clocks and PLL */
+		/*
+		 * Configure clocks and PLL - sequence from webOS kernel.
+		 * Note: PLL_CONTROL is written 3 times before PLL_DIVIDERS
+		 * as per the webOS init sequence. This appears to be required
+		 * for the sensor to accept the PLL_DIVIDERS write.
+		 */
 		cci_write(sensor->regmap, MT9M114_CLOCKS_CONTROL, 0x00FF, &ret);
 		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x0028, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_DIVIDERS, 0x0114, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_P_DIVIDERS, 0x00F1, &ret);
