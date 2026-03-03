@@ -237,27 +237,29 @@ static struct clk_branch camclk1_clk = {
 	},
 };
 
+/*
+ * CSI clock frequency table for MSM8660.
+ * Uses simple pre-divider from PLL8 (384 MHz), NOT MND divider.
+ * Reference: webOS clock-8x60.c clk_tbl_csi[]
+ */
 static const struct freq_tbl clk_tbl_csi[] = {
-	{  27000000, P_PXO,  1, 0, 0 },
-	{  85330000, P_PLL8, 1, 2, 9 },
-	{ 177780000, P_PLL2, 1, 2, 9 },
+	{ 192000000, P_PLL8, 2, 0, 0 },
+	{ 384000000, P_PLL8, 1, 0, 0 },
 	{ }
 };
 
+/*
+ * CSI clock for MSM8660 uses simple pre-divider, NOT MND divider.
+ * CC_REG = 0x0040, NS_REG = 0x0048, no MD register.
+ * Pre-divider is in NS_REG bits [15:12], source select in bits [2:0].
+ * Reference: webOS clock-8x60.c CLK_CSI macro
+ */
 static struct clk_rcg csi0_src = {
 	.ns_reg = 0x0048,
-	.md_reg = 0x0044,
-	.mn = {
-		.mnctr_en_bit = 5,
-		.mnctr_reset_bit = 7,
-		.mnctr_mode_shift = 6,
-		.n_val_shift = 24,
-		.m_val_shift = 8,
-		.width = 8,
-	},
+	/* No md_reg - CSI uses pre-divider only, not MND */
 	.p = {
-		.pre_div_shift = 14,
-		.pre_div_width = 2,
+		.pre_div_shift = 12,
+		.pre_div_width = 4,
 	},
 	.s = {
 		.src_sel_shift = 0,
@@ -319,20 +321,18 @@ static struct clk_branch csi0_phy_clk = {
 	},
 };
 
+/*
+ * CSI1 on MSM8660 shares the same source clock as CSI0.
+ * In webOS, both CSI0 and CSI1 are branches from a single CSI_SRC.
+ * Use same registers as csi0_src (CC=0x0040, NS=0x0048).
+ * The enable bit for csi1_src root is also BIT(2) in CC_REG.
+ */
 static struct clk_rcg csi1_src = {
-	.ns_reg = 0x0010,
-	.md_reg = 0x0028,
-	.mn = {
-		.mnctr_en_bit = 5,
-		.mnctr_reset_bit = 7,
-		.mnctr_mode_shift = 6,
-		.n_val_shift = 24,
-		.m_val_shift = 8,
-		.width = 8,
-	},
+	.ns_reg = 0x0048,
+	/* No md_reg - CSI uses pre-divider only, not MND */
 	.p = {
-		.pre_div_shift = 14,
-		.pre_div_width = 2,
+		.pre_div_shift = 12,
+		.pre_div_width = 4,
 	},
 	.s = {
 		.src_sel_shift = 0,
@@ -340,7 +340,7 @@ static struct clk_rcg csi1_src = {
 	},
 	.freq_tbl = clk_tbl_csi,
 	.clkr = {
-		.enable_reg = 0x0024,
+		.enable_reg = 0x0040,
 		.enable_mask = BIT(2),
 		.hw.init = &(struct clk_init_data){
 			.name = "csi1_src",
@@ -356,8 +356,9 @@ static struct clk_branch csi1_clk = {
 	.halt_bit = 14,
 	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
-		.enable_reg = 0x0024,
-		.enable_mask = BIT(0),
+		/* CSI1 enable is in CSI_CC_REG (0x0040) BIT(7) per webOS */
+		.enable_reg = 0x0040,
+		.enable_mask = BIT(7),
 		.hw.init = &(struct clk_init_data){
 			.parent_hws = (const struct clk_hw*[]){
 				&csi1_src.clkr.hw
@@ -375,8 +376,9 @@ static struct clk_branch csi1_phy_clk = {
 	.halt_bit = 10,
 	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
-		.enable_reg = 0x0024,
-		.enable_mask = BIT(8),
+		/* Use CSI_CC_REG (0x0040) like csi0_phy_clk, with BIT(9) for CSI1 */
+		.enable_reg = 0x0040,
+		.enable_mask = BIT(9),
 		.hw.init = &(struct clk_init_data){
 			.parent_hws = (const struct clk_hw*[]){
 				&csi1_src.clkr.hw
