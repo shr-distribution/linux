@@ -25,9 +25,9 @@
 #include "../core.h"
 #include "../pinctrl-utils.h"
 
-/* MPP registers */
-#define SSBI_REG_ADDR_MPP_BASE		0x50
-#define SSBI_REG_ADDR_MPP(n)		(SSBI_REG_ADDR_MPP_BASE + n)
+/* MPP registers - base address varies by PMIC */
+#define PM8058_REG_ADDR_MPP_BASE	0x50
+#define PM8901_REG_ADDR_MPP_BASE	0x27
 
 /* MPP Type: type */
 #define PM8XXX_MPP_TYPE_D_INPUT         0
@@ -122,6 +122,24 @@ struct pm8xxx_pin_data {
 	unsigned pullup;
 };
 
+struct pm8xxx_mpp;
+
+/**
+ * struct pm8xxx_mpp_data - per-PMIC MPP configuration
+ * @npins:	number of MPP pins
+ * @reg_base:	base register address for MPP control
+ * @child_to_parent_hwirq: function to translate child IRQ to parent
+ */
+struct pm8xxx_mpp_data {
+	unsigned int npins;
+	u16 reg_base;
+	int (*child_to_parent_hwirq)(struct gpio_chip *chip,
+				     unsigned int child_hwirq,
+				     unsigned int child_type,
+				     unsigned int *parent_hwirq,
+				     unsigned int *parent_type);
+};
+
 struct pm8xxx_mpp {
 	struct device *dev;
 	struct regmap *regmap;
@@ -130,6 +148,8 @@ struct pm8xxx_mpp {
 
 	struct pinctrl_desc desc;
 	unsigned npins;
+	u16 reg_base;
+	const struct pm8xxx_mpp_data *data;
 };
 
 static const struct pinconf_generic_params pm8xxx_mpp_bindings[] = {
@@ -764,6 +784,19 @@ static int pm8821_mpp_child_to_parent_hwirq(struct gpio_chip *chip,
 	return 0;
 }
 
+static int pm8901_mpp_child_to_parent_hwirq(struct gpio_chip *chip,
+					    unsigned int child_hwirq,
+					    unsigned int child_type,
+					    unsigned int *parent_hwirq,
+					    unsigned int *parent_type)
+{
+	/* PM8901 MPP IRQs are in block 6 (48 + mpp) */
+	*parent_hwirq = child_hwirq + 48;
+	*parent_type = child_type;
+
+	return 0;
+}
+
 static int pm8xxx_mpp_child_to_parent_hwirq(struct gpio_chip *chip,
 					    unsigned int child_hwirq,
 					    unsigned int child_type,
@@ -802,19 +835,63 @@ static const struct irq_chip pm8xxx_mpp_irq_chip = {
 	GPIOCHIP_IRQ_RESOURCE_HELPERS,
 };
 
+static const struct pm8xxx_mpp_data pm8018_mpp_data = {
+	.npins = 6,
+	.reg_base = PM8058_REG_ADDR_MPP_BASE,
+	.child_to_parent_hwirq = pm8xxx_mpp_child_to_parent_hwirq,
+};
+
+static const struct pm8xxx_mpp_data pm8038_mpp_data = {
+	.npins = 6,
+	.reg_base = PM8058_REG_ADDR_MPP_BASE,
+	.child_to_parent_hwirq = pm8xxx_mpp_child_to_parent_hwirq,
+};
+
+static const struct pm8xxx_mpp_data pm8058_mpp_data = {
+	.npins = 12,
+	.reg_base = PM8058_REG_ADDR_MPP_BASE,
+	.child_to_parent_hwirq = pm8xxx_mpp_child_to_parent_hwirq,
+};
+
+static const struct pm8xxx_mpp_data pm8821_mpp_data = {
+	.npins = 4,
+	.reg_base = PM8058_REG_ADDR_MPP_BASE,
+	.child_to_parent_hwirq = pm8821_mpp_child_to_parent_hwirq,
+};
+
+static const struct pm8xxx_mpp_data pm8901_mpp_data = {
+	.npins = 4,
+	.reg_base = PM8901_REG_ADDR_MPP_BASE,
+	.child_to_parent_hwirq = pm8901_mpp_child_to_parent_hwirq,
+};
+
+static const struct pm8xxx_mpp_data pm8917_mpp_data = {
+	.npins = 10,
+	.reg_base = PM8058_REG_ADDR_MPP_BASE,
+	.child_to_parent_hwirq = pm8xxx_mpp_child_to_parent_hwirq,
+};
+
+static const struct pm8xxx_mpp_data pm8921_mpp_data = {
+	.npins = 12,
+	.reg_base = PM8058_REG_ADDR_MPP_BASE,
+	.child_to_parent_hwirq = pm8xxx_mpp_child_to_parent_hwirq,
+};
+
 static const struct of_device_id pm8xxx_mpp_of_match[] = {
-	{ .compatible = "qcom,pm8018-mpp", .data = (void *) 6 },
-	{ .compatible = "qcom,pm8038-mpp", .data = (void *) 6 },
-	{ .compatible = "qcom,pm8058-mpp", .data = (void *) 12 },
-	{ .compatible = "qcom,pm8821-mpp", .data = (void *) 4 },
-	{ .compatible = "qcom,pm8917-mpp", .data = (void *) 10 },
-	{ .compatible = "qcom,pm8921-mpp", .data = (void *) 12 },
+	{ .compatible = "qcom,pm8018-mpp", .data = &pm8018_mpp_data },
+	{ .compatible = "qcom,pm8038-mpp", .data = &pm8038_mpp_data },
+	{ .compatible = "qcom,pm8058-mpp", .data = &pm8058_mpp_data },
+	{ .compatible = "qcom,pm8821-mpp", .data = &pm8821_mpp_data },
+	{ .compatible = "qcom,pm8901-mpp", .data = &pm8901_mpp_data },
+	{ .compatible = "qcom,pm8917-mpp", .data = &pm8917_mpp_data },
+	{ .compatible = "qcom,pm8921-mpp", .data = &pm8921_mpp_data },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, pm8xxx_mpp_of_match);
 
 static int pm8xxx_mpp_probe(struct platform_device *pdev)
 {
+	const struct pm8xxx_mpp_data *data;
 	struct pm8xxx_pin_data *pin_data;
 	struct irq_domain *parent_domain;
 	struct device_node *parent_node;
@@ -824,12 +901,18 @@ static int pm8xxx_mpp_probe(struct platform_device *pdev)
 	int ret;
 	int i;
 
+	data = device_get_match_data(&pdev->dev);
+	if (!data)
+		return -ENODEV;
+
 	pctrl = devm_kzalloc(&pdev->dev, sizeof(*pctrl), GFP_KERNEL);
 	if (!pctrl)
 		return -ENOMEM;
 
 	pctrl->dev = &pdev->dev;
-	pctrl->npins = (uintptr_t) device_get_match_data(&pdev->dev);
+	pctrl->data = data;
+	pctrl->npins = data->npins;
+	pctrl->reg_base = data->reg_base;
 
 	pctrl->regmap = dev_get_regmap(pdev->dev.parent, NULL);
 	if (!pctrl->regmap) {
@@ -855,7 +938,7 @@ static int pm8xxx_mpp_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	for (i = 0; i < pctrl->desc.npins; i++) {
-		pin_data[i].reg = SSBI_REG_ADDR_MPP(i);
+		pin_data[i].reg = pctrl->reg_base + i;
 
 		ret = pm8xxx_pin_populate(pctrl, &pin_data[i]);
 		if (ret)
@@ -901,10 +984,7 @@ static int pm8xxx_mpp_probe(struct platform_device *pdev)
 	girq->handler = handle_level_irq;
 	girq->fwnode = dev_fwnode(pctrl->dev);
 	girq->parent_domain = parent_domain;
-	if (of_device_is_compatible(pdev->dev.of_node, "qcom,pm8821-mpp"))
-		girq->child_to_parent_hwirq = pm8821_mpp_child_to_parent_hwirq;
-	else
-		girq->child_to_parent_hwirq = pm8xxx_mpp_child_to_parent_hwirq;
+	girq->child_to_parent_hwirq = pctrl->data->child_to_parent_hwirq;
 	girq->populate_parent_alloc_arg = gpiochip_populate_parent_fwspec_twocell;
 	girq->child_offset_to_irq = pm8xxx_mpp_child_offset_to_irq;
 	girq->child_irq_domain_ops.translate = pm8xxx_mpp_domain_translate;
