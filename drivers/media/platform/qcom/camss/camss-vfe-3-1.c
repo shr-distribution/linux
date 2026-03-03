@@ -160,17 +160,36 @@
 
 #define VFE_0_BUS_PING_PONG_STATUS	0x180
 
-/* Bus image masters - VFE31 uses different offsets */
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(n)		(0x06C + 0x24 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(n)	(0x070 + 0x24 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(n)	(0x074 + 0x24 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(n)		(0x078 + 0x24 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(n)		(0x07C + 0x24 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(n)	(0x080 + 0x24 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_BUFFER_CFG(n)	(0x084 + 0x24 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_FRAMEDROP_PATTERN(n) (0x088 + 0x24 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_FRAMEDROP_PERIOD(n)	(0x08C + 0x24 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_IRQ_SUBSAMPLE_PATTERN(n) (0x090 + 0x24 * (n))
+/*
+ * Bus image masters - VFE31 layout (different from VFE41!)
+ *
+ * VFE31 AXI output block starts at 0x38, with write masters at 0x4C.
+ * Each WM block is 0x18 (24) bytes with 6 registers.
+ *
+ * From webOS kernel msm_vfe31.c:
+ *   #define VFE31_AXI_OFFSET 0x0050
+ *   vfe31_get_ch_ping_addr(chn) = 0x0050 + 0x18 * (chn)
+ *   vfe31_get_ch_pong_addr(chn) = 0x0050 + 0x18 * (chn) + 4
+ *   WM enable at V31_AXI_OUT_OFF + 20 + 24*wm = 0x38 + 0x14 + 0x18*wm = 0x4C + 0x18*wm
+ */
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(n)		(0x04C + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(n)	(0x050 + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(n)	(0x054 + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(n)		(0x058 + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(n)		(0x05C + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(n)	(0x060 + 0x18 * (n))
+/* VFE31 doesn't have per-WM framedrop - it's at global offsets 0x504+ */
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_IRQ_SUBSAMPLE_PATTERN(n) (0x060 + 0x18 * (n))
+
+/* VFE31 global framedrop registers (not per-WM like VFE41) */
+#define VFE31_FRAMEDROP_ENC_Y_CFG		0x504
+#define VFE31_FRAMEDROP_ENC_CBCR_CFG		0x508
+#define VFE31_FRAMEDROP_ENC_Y_PATTERN		0x50C
+#define VFE31_FRAMEDROP_ENC_CBCR_PATTERN	0x510
+#define VFE31_FRAMEDROP_VIEW_Y_CFG		0x514
+#define VFE31_FRAMEDROP_VIEW_CBCR_CFG		0x518
+#define VFE31_FRAMEDROP_VIEW_Y_PATTERN		0x51C
+#define VFE31_FRAMEDROP_VIEW_CBCR_PATTERN	0x520
 
 /* Demux configuration */
 #define VFE_0_DEMUX_CFG			0x284
@@ -832,17 +851,34 @@ static int vfe31_wm_get_ping_pong_status(struct vfe_device *vfe, u8 wm)
 static void vfe31_wm_set_framedrop_period(struct vfe_device *vfe, u8 wm,
 					  u8 per)
 {
-	writel_relaxed(per,
-		       vfe->base +
-		       VFE_0_BUS_IMAGE_MASTER_n_WR_FRAMEDROP_PERIOD(wm));
+	/*
+	 * VFE31 uses global framedrop registers (0x504-0x520) for enc/view
+	 * paths, not per-WM registers like VFE41. For raw passthrough mode
+	 * (CAMIF_TO_BUS), framedrop is configured via the global registers.
+	 *
+	 * For WM0 (Y channel), use ENC_Y_CFG at 0x504.
+	 * The period value in bits [3:0].
+	 */
+	if (wm == 0) {
+		writel_relaxed(per, vfe->base + VFE31_FRAMEDROP_ENC_Y_CFG);
+	} else if (wm == 1) {
+		writel_relaxed(per, vfe->base + VFE31_FRAMEDROP_ENC_CBCR_CFG);
+	}
+	/* Other WMs use view path framedrop registers if needed */
 }
 
 static void vfe31_wm_set_framedrop_pattern(struct vfe_device *vfe, u8 wm,
 					   u32 pattern)
 {
-	writel_relaxed(pattern,
-		       vfe->base +
-		       VFE_0_BUS_IMAGE_MASTER_n_WR_FRAMEDROP_PATTERN(wm));
+	/*
+	 * VFE31 uses global framedrop pattern registers.
+	 * For WM0, use ENC_Y_PATTERN at 0x50C.
+	 */
+	if (wm == 0) {
+		writel_relaxed(pattern, vfe->base + VFE31_FRAMEDROP_ENC_Y_PATTERN);
+	} else if (wm == 1) {
+		writel_relaxed(pattern, vfe->base + VFE31_FRAMEDROP_ENC_CBCR_PATTERN);
+	}
 }
 
 static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
