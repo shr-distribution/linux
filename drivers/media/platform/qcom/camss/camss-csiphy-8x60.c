@@ -200,19 +200,72 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
 	writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
-	/*
-	 * MSM8660 register access issue: Writes to offsets >= 0x08 hang!
-	 * Only PHY_CONTROL (0x00) and PROTOCOL_CONTROL (0x04) are accessible.
-	 * INTERRUPT_STATUS (0x08), INTERRUPT_MASK (0x0C) and all other
-	 * registers cause AHB bus hangs.
-	 *
-	 * This is a fundamental hardware access issue - possibly wrong
-	 * register base address in device tree, or missing clock/power
-	 * domain configuration.
-	 */
-	dev_info(csiphy->camss->dev,
-		 "CSIPHY%d: SKIPPING all registers >= 0x08 (hang issue)\n",
-		 csiphy->id);
+	/* Step 3: SW CAL EN - software calibration */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - CALIBRATION_CONTROL\n", csiphy->id);
+	val = (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_CAL_EN_SHFT) |
+	      (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_STRENGTH_OVERRIDE_EN_SHFT) |
+	      (0x1 << MIPI_CALIBRATION_CONTROL_CAL_SW_HW_MODE_SHFT) |
+	      (0x1 << MIPI_CALIBRATION_CONTROL_MANUAL_OVERRIDE_EN_SHFT);
+	writel(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
+
+	/* Step 4: Configure data lane timing (D0-D3) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 4 - D0-D3_CONTROL2\n", csiphy->id);
+	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
+	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
+	      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
+	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
+	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
+	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
+	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
+
+	/* Step 5: Configure clock lane */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 5 - CL_CONTROL\n", csiphy->id);
+	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
+	      (0x1 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
+	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
+
+	/* Step 6: D0 HS receiver equalization */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 6 - D0_CONTROL\n", csiphy->id);
+	val = 0 << MIPI_PHY_D0_CONTROL_HS_REC_EQ_SHFT;
+	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL);
+
+	/* Step 7: Enable PHY - release shutdown (CLK and DATA PHY) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 7 - D1_CONTROL (PHY enable)\n", csiphy->id);
+	val = (0x1 << MIPI_PHY_D1_CONTROL_MIPI_CLK_PHY_SHUTDOWNB_SHFT) |
+	      (0x1 << MIPI_PHY_D1_CONTROL_MIPI_DATA_PHY_SHUTDOWNB_SHFT);
+	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL);
+
+	/* Step 8: Disable unused D2/D3 lanes */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 8 - D2/D3_CONTROL\n", csiphy->id);
+	writel(0x00000000, csiphy->base + MIPI_PHY_D2_CONTROL);
+	writel(0x00000000, csiphy->base + MIPI_PHY_D3_CONTROL);
+
+	/* Step 9: Configure lane count in CAMERA_CNTL */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 9 - CAMERA_CNTL\n", csiphy->id);
+	switch (num_lanes) {
+	case 1:
+		val = 0x4; /* 1 lane */
+		break;
+	case 2:
+		val = 0x5; /* 2 lanes */
+		break;
+	case 3:
+		val = 0x6; /* 3 lanes */
+		break;
+	case 4:
+		val = 0x7; /* 4 lanes */
+		break;
+	default:
+		val = 0x4; /* Default to 1 lane */
+		break;
+	}
+	writel(val, csiphy->base + MIPI_CAMERA_CNTL);
+
+	/* Step 10: Configure interrupts */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: step 10 - INTERRUPT config\n", csiphy->id);
+	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_MASK);
+	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_STATUS);
 
 	/* Ensure all writes are committed */
 	wmb();
