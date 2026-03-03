@@ -737,6 +737,15 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_BUS_CFG_RAW_WR_PATH_SHFT	10
 #define VFE31_BUS_CFG_RAW_WR_ENC_CBCR	1
 
+/*
+ * VFE31 AXI output mode configuration at 0x40.
+ * This register controls which output paths are enabled.
+ * Value 0x60 enables raw snapshot mode with WM0 (CAMIF_TO_AXI_VIA_OUTPUT_2).
+ * Value 0x200 enables preview mode with WM0 & WM1 (OUTPUT_2).
+ */
+#define VFE31_AXI_OUT_MODE_CFG		0x040
+#define VFE31_AXI_OUT_MODE_RAW_SNAPSHOT	0x60
+
 #define VFE31_CAMIF_CFG			0x1E4
 #define VFE31_CAMIF_CFG_VFE_OUTPUT_EN	BIT(6)
 #define VFE31_CAMIF_FRAME_CFG		0x1E8
@@ -826,6 +835,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	val |= VFE31_BUS_CFG_ENC_CBCR_WR_EN;
 	writel_relaxed(val, vfe->base + VFE31_BUS_CFG);
 
+	/*
+	 * Step 5b: Configure AXI output mode for raw snapshot.
+	 * This register at 0x40 controls which output paths are enabled.
+	 * Value 0x60 enables CAMIF_TO_AXI_VIA_OUTPUT_2 mode (raw snapshot
+	 * with WM0 only) - matches the webOS kernel configuration.
+	 */
+	writel_relaxed(VFE31_AXI_OUT_MODE_RAW_SNAPSHOT,
+		       vfe->base + VFE31_AXI_OUT_MODE_CFG);
+
 	wmb();
 
 	/* Step 6: Clear status and enable CAMIF frame capture */
@@ -840,10 +858,12 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	vfe->camif_pending = false;
 
 	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF configured and enabled - status=0x%08x cfg=0x%08x frame=0x%08x\n",
+		 "VFE: CAMIF configured - status=0x%08x cfg=0x%08x frame=0x%08x axi_mode=0x%08x bus_cfg=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG),
-		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG));
+		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG),
+		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
+		 readl_relaxed(vfe->base + VFE31_BUS_CFG));
 }
 
 static void vfe_init_outputs(struct vfe_device *vfe)

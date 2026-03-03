@@ -687,6 +687,9 @@ static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 	vfe->camif_pending_line_id = id;
 }
 
+/* VFE31 AXI output mode register - controls output path selection */
+#define VFE31_AXI_OUT_MODE_CFG		0x040
+
 static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 					     enum vfe_line_id id)
 {
@@ -703,6 +706,9 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 	val &= ~(0x3 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
 	val |= (VFE_0_BUS_CFG_RAW_WR_PATH_DISABLED << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
 	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
+
+	/* Step 2b: Clear AXI output mode */
+	writel_relaxed(0, vfe->base + VFE31_AXI_OUT_MODE_CFG);
 
 	/* Step 3: Disable CAMIF to bus */
 	val = readl_relaxed(vfe->base + VFE_0_VFE_CFG);
