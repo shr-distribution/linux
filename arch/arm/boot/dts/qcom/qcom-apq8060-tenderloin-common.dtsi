@@ -2286,13 +2286,24 @@
 	 */
 
 	/*
-	 * TEST: Bluetooth node commented out to allow /dev/ttyMSM1 to appear
-	 * for manual testing with hciattach at different baud rates.
-	 * The in-kernel hci_bcm driver gets "Frame reassembly failed" errors
-	 * suggesting baud rate mismatch. Manual testing needed to determine
-	 * the actual baud rate the BCM4329 chip is using.
+	 * BCM4329 Bluetooth - REQUIRES BCSP PROTOCOL
 	 *
-	 * To re-enable: uncomment the bluetooth { } block below.
+	 * The BCM4329 on HP TouchPad uses BCSP (BlueCore Serial Protocol)
+	 * with SLIP framing, as confirmed by webOS library analysis
+	 * (uartConfigBcsp in libPmBtBsaif.so) and runtime testing.
+	 *
+	 * The mainline hci_bcm driver uses H4 protocol, which causes
+	 * "Frame reassembly failed (-84)" errors with this chip.
+	 *
+	 * Since there is no serdev driver for BCSP in Linux, Bluetooth
+	 * must be initialized manually using hciattach:
+	 *
+	 *   hciattach /dev/ttyMSM1 bcsp 115200
+	 *   rfkill unblock bluetooth
+	 *   hciconfig hci0 up
+	 *
+	 * The node below is kept for documentation of the hardware
+	 * configuration. See reports/bcm4329-bluetooth-analysis.md
 	 *
 	bluetooth {
 		compatible = "brcm,bcm4329-bt";
