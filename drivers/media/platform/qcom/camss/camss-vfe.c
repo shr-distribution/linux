@@ -729,8 +729,13 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_CORE_CFG_PIXEL_CBYCRY	0x6
 #define VFE31_CORE_CFG_PIXEL_CRYCBY	0x7
 
-#define VFE31_VFE_CFG			0x01C
-#define VFE31_VFE_CFG_CAMIF_TO_BUS_EN	BIT(7)
+/*
+ * Note: VFE31 does NOT have a separate VFE_CFG register for CAMIF_TO_BUS.
+ * The 0x01C offset is actually VFE_IRQ_MASK_0 in VFE31!
+ * CAMIF to bus routing is controlled by the AXI output mode at 0x40.
+ * Setting AXI output mode to 0x60 (CAMIF_TO_AXI_VIA_OUTPUT_2) automatically
+ * configures the internal routing for raw passthrough mode.
+ */
 
 #define VFE31_BUS_CFG			0x03C
 #define VFE31_BUS_CFG_ENC_CBCR_WR_EN	BIT(5)
@@ -823,12 +828,13 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(VFE31_CAMIF_CFG_VFE_OUTPUT_EN,
 		       vfe->base + VFE31_CAMIF_CFG);
 
-	/* Step 4: Enable CAMIF to bus (raw passthrough) */
-	val = readl_relaxed(vfe->base + VFE31_VFE_CFG);
-	val |= VFE31_VFE_CFG_CAMIF_TO_BUS_EN;
-	writel_relaxed(val, vfe->base + VFE31_VFE_CFG);
+	/*
+	 * Note: VFE31 CAMIF to bus routing is controlled by AXI output mode
+	 * at 0x40, NOT by a separate VFE_CFG register. The 0x01C offset is
+	 * actually VFE_IRQ_MASK_0! Do NOT write to 0x01C here.
+	 */
 
-	/* Step 5: Configure BUS_CFG for raw passthrough */
+	/* Step 4: Configure BUS_CFG for raw passthrough */
 	val = readl_relaxed(vfe->base + VFE31_BUS_CFG);
 	val &= ~(0x3 << VFE31_BUS_CFG_RAW_WR_PATH_SHFT);
 	val |= (VFE31_BUS_CFG_RAW_WR_ENC_CBCR << VFE31_BUS_CFG_RAW_WR_PATH_SHFT);

@@ -122,12 +122,14 @@
 #define VFE_0_BUS_CFG_RAW_WR_PATH_VIEW_CBCR	2
 
 /*
- * VFE31 VFE_CFG register at 0x01C contains camif2vfeEnable and camif2busEnable
- * This enables raw passthrough mode (CAMIF -> AXI bus directly)
+ * NOTE: VFE31 does NOT have a VFE_CFG register at 0x01C!
+ * The 0x01C offset is VFE_IRQ_MASK_0 in VFE31.
+ *
+ * Unlike VFE8x which has camif2vfeEnable/camif2busEnable bits in a config
+ * register, VFE31 controls CAMIF routing via the AXI output mode at 0x40.
+ * Setting AXI output mode to 0x60 (CAMIF_TO_AXI_VIA_OUTPUT_2) automatically
+ * enables raw passthrough from CAMIF to memory via WM0.
  */
-#define VFE_0_VFE_CFG			0x01C
-#define VFE_0_VFE_CFG_CAMIF_TO_VFE_EN	BIT(5)
-#define VFE_0_VFE_CFG_CAMIF_TO_BUS_EN	BIT(7)
 
 /*
  * CAMIF configuration - VFE31 specific
@@ -716,15 +718,15 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 	val |= (VFE_0_BUS_CFG_RAW_WR_PATH_DISABLED << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
 	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
 
-	/* Step 2b: Clear AXI output mode */
+	/* Step 2b: Clear AXI output mode - this disables CAMIF to bus routing */
 	writel_relaxed(0, vfe->base + VFE31_AXI_OUT_MODE_CFG);
 
-	/* Step 3: Disable CAMIF to bus */
-	val = readl_relaxed(vfe->base + VFE_0_VFE_CFG);
-	val &= ~VFE_0_VFE_CFG_CAMIF_TO_BUS_EN;
-	writel_relaxed(val, vfe->base + VFE_0_VFE_CFG);
+	/*
+	 * Note: VFE31 does NOT have a VFE_CFG register at 0x01C.
+	 * CAMIF to bus routing is disabled by clearing AXI output mode above.
+	 */
 
-	/* Step 4: Disable CAMIF output */
+	/* Step 3: Disable CAMIF output */
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CFG);
 
 	vfe->camif_pending = false;
