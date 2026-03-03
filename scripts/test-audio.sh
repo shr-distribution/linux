@@ -217,28 +217,23 @@ configure_mixer() {
     run_on_device "cd /tmp && ./tinymix set 'Left Output Mixer DAC Switch' 1"
     run_on_device "cd /tmp && ./tinymix set 'Right Output Mixer DAC Switch' 1"
 
-    # Enable SPKOUT paths (Output Mixer -> Speaker Mixer -> Speaker Driver -> SPKOUT)
-    # NOTE: TouchPad speakers are connected to SPKOUT pins, NOT LINEOUT!
-    # LINEOUT is not connected on this board per webOS board-tenderloin.c
-    log_info "Enabling speaker mixer paths (SPKOUT)..."
-    run_on_device "cd /tmp && ./tinymix set 'SPKL DAC1 Switch' 1"
-    run_on_device "cd /tmp && ./tinymix set 'SPKR DAC1 Switch' 1"
-
-    # Enable speaker output switches (critical for audio output!)
-    log_info "Enabling speaker output switches..."
-    run_on_device "cd /tmp && ./tinymix set 'SPKL Output Switch' 1"
-    run_on_device "cd /tmp && ./tinymix set 'SPKR Output Switch' 1"
+    # Enable LINEOUT paths (Output Mixer -> Line Mixer -> LINEOUT -> External Amp)
+    # NOTE: TouchPad speakers use LINEOUT connected to external Class-D amplifier
+    # SPKOUT (internal Class-D) is NOT connected on this board.
+    # Evidence: webOS msm8x60.c DAPM routes use LINEOUT, marks SPKOUT as NC.
+    log_info "Enabling LINEOUT mixer paths..."
+    run_on_device "cd /tmp && ./tinymix set 'MIXOUTL MIXINL Volume' 1" 2>/dev/null || true
+    run_on_device "cd /tmp && ./tinymix set 'MIXOUTR MIXINR Volume' 1" 2>/dev/null || true
 
     # Set volumes to maximum
     log_info "Setting volumes..."
-    run_on_device "cd /tmp && ./tinymix set 'Speaker Volume' 63 63"
-    run_on_device "cd /tmp && ./tinymix set 'Speaker Boost Volume' 7 7"
-    run_on_device "cd /tmp && ./tinymix set 'Speaker Mixer Volume' 3 3"
-    run_on_device "cd /tmp && ./tinymix set 'Output Volume' 63 63"
+    run_on_device "cd /tmp && ./tinymix set 'LINEOUT1 Volume' 1" 2>/dev/null || true
+    run_on_device "cd /tmp && ./tinymix set 'LINEOUT2 Volume' 1" 2>/dev/null || true
+    run_on_device "cd /tmp && ./tinymix set 'Output Volume' 63 63" 2>/dev/null || true
     run_on_device "cd /tmp && ./tinymix set 'AIF1DAC1 Volume' 96 96"
     run_on_device "cd /tmp && ./tinymix set 'DAC1 Volume' 96 96"
 
-    log_result "Mixer configured for SPKOUT path"
+    log_result "Mixer configured for LINEOUT path"
 }
 
 # Test audio playback
@@ -325,11 +320,13 @@ printf 'PM3 (0x03):     0x%s  (mixers, spk drivers)\\n' \"\$(get_reg 3)\"
 printf 'PM5 (0x05):     0x%s  (DAC enables)\\n' \"\$(get_reg 5)\"
 
 echo ''
-echo '=== Output Path ==='
-printf 'SPKOUT Mux (0x24):    0x%s  (speaker output select)\\n' \"\$(get_reg 24)\"
-printf 'Out Mixer1 (0x2d):    0x%s  (left output mixer)\\n' \"\$(get_reg 2d)\"
-printf 'Out Mixer2 (0x2e):    0x%s  (right output mixer)\\n' \"\$(get_reg 2e)\"
-printf 'Spk Mixer (0x36):     0x%s  (DAC->speaker mixer)\\n' \"\$(get_reg 36)\"
+echo '=== Output Path (LINEOUT) ==='
+printf 'Out Mixer1 (0x2d):    0x%s  (left output mixer, bit0=DAC)\\n' \"\$(get_reg 2d)\"
+printf 'Out Mixer2 (0x2e):    0x%s  (right output mixer, bit0=DAC)\\n' \"\$(get_reg 2e)\"
+printf 'Line Mixer1 (0x34):   0x%s  (MIXOUT->LINEOUT1, bit6=ena)\\n' \"\$(get_reg 34)\"
+printf 'Line Mixer2 (0x35):   0x%s  (MIXOUT->LINEOUT2, bit6=ena)\\n' \"\$(get_reg 35)\"
+printf 'LINEOUT1 Vol (0x1e):  0x%s  (volume/enable)\\n' \"\$(get_reg 1e)\"
+printf 'LINEOUT2 Vol (0x1f):  0x%s  (volume/enable)\\n' \"\$(get_reg 1f)\"
 
 echo ''
 echo '=== DAC/AIF Path ==='
@@ -349,11 +346,12 @@ printf 'Int Status2 (0x731):  0x%s  (FLL lock: bit5=1 is locked)\\n' \"\$(get_re
 printf 'GPIO1 (0x700):        0x%s  (ext amp ctrl: 0x41=enabled)\\n' \"\$(get_reg 700)\"
 
 echo ''
-echo '=== Volume (check unmuted) ==='
-printf 'DAC1L Vol (0x610):    0x%s  (bit9=0 unmuted)\\n' \"\$(get_reg 610)\"
-printf 'DAC1R Vol (0x611):    0x%s  (bit9=0 unmuted)\\n' \"\$(get_reg 611)\"
-printf 'Speaker L (0x26):     0x%s  (bit6=mute)\\n' \"\$(get_reg 26)\"
-printf 'Speaker R (0x27):     0x%s  (bit6=mute)\\n' \"\$(get_reg 27)\"
+echo '=== Volume/Mute (check unmuted) ==='
+printf 'AIF1DAC1 Filt (0x420): 0x%s  (bit9=mute, 0=unmuted)\\n' \"\$(get_reg 420)\"
+printf 'AIF1DAC1L Vol (0x402): 0x%s  (bit9=0 unmuted)\\n' \"\$(get_reg 402)\"
+printf 'AIF1DAC1R Vol (0x403): 0x%s  (bit9=0 unmuted)\\n' \"\$(get_reg 403)\"
+printf 'DAC1L Vol (0x610):     0x%s  (bit9=0 unmuted)\\n' \"\$(get_reg 610)\"
+printf 'DAC1R Vol (0x611):     0x%s  (bit9=0 unmuted)\\n' \"\$(get_reg 611)\"
 SCRIPT
 chmod +x /tmp/dump_regs.sh
 /tmp/dump_regs.sh"
@@ -378,16 +376,17 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         break
     fi
 
-    # Extract key registers
+    # Extract key registers for LINEOUT path
     PM1=\$(echo \"\$REGS\" | grep -i '^1:' | awk '{print \$2}')
     PM3=\$(echo \"\$REGS\" | grep -i '^3:' | awk '{print \$2}')
     PM5=\$(echo \"\$REGS\" | grep -i '^5:' | awk '{print \$2}')
     FLL=\$(echo \"\$REGS\" | grep -i '^731:' | awk '{print \$2}')
     DAC1L=\$(echo \"\$REGS\" | grep -i '^601:' | awk '{print \$2}')
     GPIO=\$(echo \"\$REGS\" | grep -i '^700:' | awk '{print \$2}')
-    SPKMIX=\$(echo \"\$REGS\" | grep -i '^36:' | awk '{print \$2}')
+    LINEMIX1=\$(echo \"\$REGS\" | grep -i '^34:' | awk '{print \$2}')
+    AIF1FILT=\$(echo \"\$REGS\" | grep -i '^420:' | awk '{print \$2}')
 
-    echo \"[\$(date +%H:%M:%S.\$((i*50)))] PM1=\$PM1 PM3=\$PM3 PM5=\$PM5 FLL731=\$FLL DAC601=\$DAC1L SPKMIX=\$SPKMIX GPIO=\$GPIO\" >> \$OUTFILE
+    echo \"[\$(date +%H:%M:%S.\$((i*50)))] PM1=\$PM1 PM3=\$PM3 PM5=\$PM5 FLL=\$FLL DAC601=\$DAC1L LINEMIX=\$LINEMIX1 AIF420=\$AIF1FILT GPIO=\$GPIO\" >> \$OUTFILE
     sleep 0.5
 done
 echo 'Monitor Complete' >> \$OUTFILE
@@ -436,8 +435,8 @@ for w in 'Left Output Mixer' 'Right Output Mixer' 'Left Output PGA' 'Right Outpu
 done
 
 echo ''
-echo '=== Speaker Widgets ==='
-for w in 'SPKL' 'SPKR' 'SPKL Boost' 'SPKR Boost' 'SPKL Driver' 'SPKR Driver'; do
+echo '=== LINEOUT Widgets (speakers via external amp) ==='
+for w in 'LINEOUT1P' 'LINEOUT1N' 'LINEOUT2P' 'LINEOUT2N' 'LINEOUT1P Driver' 'LINEOUT1N Driver' 'LINEOUT2P Driver' 'LINEOUT2N Driver'; do
     state=\$(cat \"\$DAPM_PATH/\$w\" 2>/dev/null | head -1)
     printf '%-20s: %s\\n' \"\$w\" \"\$state\"
 done
