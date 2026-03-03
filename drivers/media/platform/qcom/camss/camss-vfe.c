@@ -752,7 +752,14 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_AXI_OUT_MODE_RAW_SNAPSHOT	0x60
 
 #define VFE31_CAMIF_CFG			0x1E4
-#define VFE31_CAMIF_CFG_VFE_OUTPUT_EN	BIT(6)
+/*
+ * CAMIF_CFG bits (from webOS VFE_CAMIFConfigType):
+ * - Bit 8: camif2vfeEnable - CAMIF to VFE data path enable
+ * - Bit 10: camif2busEnable - CAMIF to bus (memory) enable
+ * Note: BIT(6) is reserved and should NOT be used!
+ */
+#define VFE31_CAMIF_CFG_CAMIF2VFE_EN	BIT(8)
+#define VFE31_CAMIF_CFG_SYNC_MODE_APS	(0 << 3)
 #define VFE31_CAMIF_FRAME_CFG		0x1E8
 #define VFE31_CAMIF_WINDOW_WIDTH_CFG	0x1F0
 #define VFE31_CAMIF_WINDOW_HEIGHT_CFG	0x1F4
@@ -840,8 +847,8 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_0);
 	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_IRQ_SUBSAMPLE_PAT);
 
-	/* Step 3: Enable VFE output in CAMIF */
-	writel_relaxed(VFE31_CAMIF_CFG_VFE_OUTPUT_EN,
+	/* Step 3: Enable CAMIF to VFE data path */
+	writel_relaxed(VFE31_CAMIF_CFG_CAMIF2VFE_EN | VFE31_CAMIF_CFG_SYNC_MODE_APS,
 		       vfe->base + VFE31_CAMIF_CFG);
 
 	/*

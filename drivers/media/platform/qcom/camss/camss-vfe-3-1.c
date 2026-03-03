@@ -145,7 +145,28 @@
 #define VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS	BIT(2)
 
 #define VFE_0_CAMIF_CFG			0x1E4
-#define VFE_0_CAMIF_CFG_VFE_OUTPUT_EN	BIT(6)
+/*
+ * CAMIF_CFG register bit layout (from webOS VFE_CAMIFConfigType):
+ *   [0]     reserved
+ *   [1]     VSyncEdge
+ *   [2]     HSyncEdge
+ *   [4:3]   syncMode (0=APS, 1=EFS, 2=ELS)
+ *   [5]     vfeSubsampleEnable
+ *   [6]     reserved (NOT VFE output enable!)
+ *   [7]     busSubsampleEnable
+ *   [8]     camif2vfeEnable - CAMIF to VFE data path enable
+ *   [9]     reserved
+ *   [10]    camif2busEnable - CAMIF to bus (memory) enable
+ *   [11]    irqSubsampleEnable
+ *   [12]    binningEnable
+ *   [30:13] reserved
+ *   [31]    misrEnable
+ */
+#define VFE_0_CAMIF_CFG_CAMIF2VFE_EN	BIT(8)	/* CAMIF to VFE data path */
+#define VFE_0_CAMIF_CFG_CAMIF2BUS_EN	BIT(10)	/* CAMIF to bus (memory) */
+#define VFE_0_CAMIF_CFG_SYNC_MODE_APS	(0 << 3)
+#define VFE_0_CAMIF_CFG_SYNC_MODE_EFS	(1 << 3)
+#define VFE_0_CAMIF_CFG_SYNC_MODE_ELS	(2 << 3)
 
 #define VFE_0_CAMIF_FRAME_CFG		0x1E8
 #define VFE_0_CAMIF_WINDOW_WIDTH_CFG	0x1F0
@@ -557,8 +578,24 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	val = 0xffffffff;
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
 
-	val = VFE_0_CAMIF_CFG_VFE_OUTPUT_EN;
+	/*
+	 * CAMIF_CFG: Enable CAMIF to VFE data path
+	 * - camif2vfeEnable (bit 8): Enable CAMIF to VFE processing path
+	 * - syncMode = APS (bits 3-4 = 0): Active Pixel Sensor mode for CSI
+	 *
+	 * Note: For raw CAMIF bypass to memory, use camif2busEnable (bit 10)
+	 * instead. Here we use the VFE processing path.
+	 */
+	val = VFE_0_CAMIF_CFG_CAMIF2VFE_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS;
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
+
+	dev_dbg(vfe->camss->dev,
+		"VFE31 set_camif_cfg: cfg=0x%08x frame=0x%08x width=%u height=%u\n",
+		val,
+		(line->fmt[MSM_VFE_PAD_SINK].height << 16) |
+		(line->fmt[MSM_VFE_PAD_SINK].width * 2),
+		line->fmt[MSM_VFE_PAD_SINK].width,
+		line->fmt[MSM_VFE_PAD_SINK].height);
 }
 
 static void vfe31_set_camif_cmd(struct vfe_device *vfe, u8 enable)
