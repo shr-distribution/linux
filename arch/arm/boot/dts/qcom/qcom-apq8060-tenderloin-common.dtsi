@@ -2302,10 +2302,10 @@
 
 		/*
 		 * UART speed configuration:
-		 * BCM4329 starts at 115200 baud by default. After initial
-		 * communication, the driver can switch to max-speed.
-		 * Note: WebOS kernel may have had bootloader pre-init at 3686400,
-		 * but mainline driver needs to start at chip's default 115200.
+		 * BCM4329 starts at 115200 baud (verified from webOS kernel:
+		 * HSUART_SPEED_115K in board-tenderloin.c). The driver uses
+		 * 115200 as default when init-speed is not specified.
+		 * max-speed is for high-speed operation after firmware load.
 		 */
 		max-speed = <3686400>;
 
