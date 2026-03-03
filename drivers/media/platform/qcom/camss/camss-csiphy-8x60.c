@@ -198,6 +198,13 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
 	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
+	/*
+	 * Set DATA_FORMAT field for CSI decoder.
+	 * Values: 0=8-bit, 1=10-bit, 2=12-bit
+	 * For YUV422 8-bit (UYVY), use format 0.
+	 * TODO: derive from actual sensor format if needed for other sensors.
+	 */
+	val |= (0x0 << MIPI_PROTOCOL_CONTROL_DATA_FORMAT_SHFT);
 	writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
 	/* Step 3: SW CAL EN - software calibration */
@@ -311,9 +318,10 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 	/* Clear the interrupt */
 	writel(status, csiphy->base + MIPI_INTERRUPT_STATUS);
 
+	/* Log all IRQs to help debug CSI-2 data reception issues */
 	if (status)
-		dev_dbg(csiphy->camss->dev,
-			"CSIPHY%d: IRQ status=0x%08x\n", csiphy->id, status);
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: IRQ status=0x%08x\n", csiphy->id, status);
 
 	return IRQ_HANDLED;
 }
