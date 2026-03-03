@@ -2412,8 +2412,27 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 			dev_err(dev, "power_on: MCU_BOOT_MODE write 0 failed: %d\n", ret);
 			goto error_clock;
 		}
-		dev_info(dev, "power_on: MCU boot complete, configuring PLL\n");
-		msleep(100); /* Increased from 30ms - sensor needs time after MCU boot */
+		dev_info(dev, "power_on: MCU boot complete, waiting 200ms\n");
+		msleep(200); /* Extended delay for sensor stabilization */
+
+		/*
+		 * Verify sensor is responding after MCU boot by reading
+		 * CLOCKS_CONTROL register before attempting PLL config.
+		 */
+		{
+			u64 verify_val = 0;
+			int verify_ret;
+
+			verify_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL,
+					      &verify_val, NULL);
+			dev_info(dev, "power_on: verify read CLOCKS_CONTROL=0x%llx ret=%d\n",
+				 verify_val, verify_ret);
+			if (verify_ret < 0) {
+				dev_err(dev, "power_on: sensor not responding after MCU boot\n");
+				ret = verify_ret;
+				goto error_clock;
+			}
+		}
 
 		/*
 		 * Configure clocks and PLL - sequence from webOS kernel.
@@ -2421,6 +2440,7 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		 * as per the webOS init sequence. This appears to be required
 		 * for the sensor to accept the PLL_DIVIDERS write.
 		 */
+		dev_info(dev, "power_on: configuring PLL\n");
 		cci_write(sensor->regmap, MT9M114_CLOCKS_CONTROL, 0x00FF, &ret);
 		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x0028, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
