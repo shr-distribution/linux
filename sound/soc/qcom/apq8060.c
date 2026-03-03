@@ -487,7 +487,8 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				 * DAPM isn't recognizing the DPCM path as active, so
 				 * force all widgets ON to enable audio output.
 				 *
-				 * Signal path: AIF1DAC1 → DAC1 Mixer → DAC1 → SPKL/R → Driver
+				 * Signal path: AIF1DAC1 → DAC1 Mixer → DAC1 → Output Mixer →
+				 *              Output PGA → SPKL/R → SPKL/R Driver
 				 */
 				/* AIF1 DAC input widgets */
 				snd_soc_dapm_force_enable_pin(&component->dapm, "AIF1DAC1L");
@@ -498,6 +499,11 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				/* DAC widgets */
 				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1L");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1R");
+				/* Output mixer and PGA widgets (needed for DAC→speaker path) */
+				snd_soc_dapm_force_enable_pin(&component->dapm, "Left Output Mixer");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "Right Output Mixer");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "Left Output PGA");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "Right Output PGA");
 				/* Speaker mixer and driver widgets */
 				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKL");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKR");
