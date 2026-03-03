@@ -1608,8 +1608,8 @@ static const struct freq_tbl clk_tbl_vfe[] = {
 };
 
 static struct clk_rcg vfe_src = {
-	.ns_reg = 0x0108,
-	.md_reg = 0x0104,
+	.ns_reg = 0x010c,
+	.md_reg = 0x0108,
 	.mn = {
 		.mnctr_en_bit = 5,
 		.mnctr_reset_bit = 7,
