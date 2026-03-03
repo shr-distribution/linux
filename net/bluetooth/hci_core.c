@@ -2974,6 +2974,12 @@ EXPORT_SYMBOL(hci_recv_frame);
 /* Receive diagnostic message from HCI drivers */
 int hci_recv_diag(struct hci_dev *hdev, struct sk_buff *skb)
 {
+	if (!hdev || (!test_bit(HCI_UP, &hdev->flags)
+		      && !test_bit(HCI_INIT, &hdev->flags))) {
+		kfree_skb(skb);
+		return -ENXIO;
+	}
+
 	/* Mark as diagnostic packet */
 	hci_skb_pkt_type(skb) = HCI_DIAG_PKT;
 
