@@ -201,27 +201,17 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
 	/*
-	 * MSM8660 register access issue: Writes to offsets >= 0x18 hang.
-	 * Only PHY_CONTROL (0x00), PROTOCOL_CONTROL (0x04), INTERRUPT_STATUS
-	 * (0x08) and INTERRUPT_MASK (0x0C) are accessible.
+	 * MSM8660 register access issue: Writes to offsets >= 0x08 hang!
+	 * Only PHY_CONTROL (0x00) and PROTOCOL_CONTROL (0x04) are accessible.
+	 * INTERRUPT_STATUS (0x08), INTERRUPT_MASK (0x0C) and all other
+	 * registers cause AHB bus hangs.
 	 *
-	 * Try configuring interrupts (0x08, 0x0C) to test if they work.
-	 */
-
-	/* Step 3: Configure interrupts (offset 0x08, 0x0C - should work) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - INTERRUPT config\n", csiphy->id);
-	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_MASK);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: INTERRUPT_MASK written\n", csiphy->id);
-	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_STATUS);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: INTERRUPT_STATUS written\n", csiphy->id);
-
-	/*
-	 * All other registers (CALIBRATION_CONTROL 0x18, Dx_CONTROL 0x20+,
-	 * etc.) are skipped due to hang issue. Camera won't work without
-	 * them, but this helps diagnose where exactly the hang boundary is.
+	 * This is a fundamental hardware access issue - possibly wrong
+	 * register base address in device tree, or missing clock/power
+	 * domain configuration.
 	 */
 	dev_info(csiphy->camss->dev,
-		 "CSIPHY%d: SKIPPING registers at offset >= 0x18 (hang issue)\n",
+		 "CSIPHY%d: SKIPPING all registers >= 0x08 (hang issue)\n",
 		 csiphy->id);
 
 	/* Ensure all writes are committed */
