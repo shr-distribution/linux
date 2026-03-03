@@ -2398,6 +2398,29 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	 * respond to commands. This sequence is derived from the webOS kernel.
 	 */
 	if (sensor->expected_model == MT9M113_MODEL) {
+		u64 clocks_val = 0;
+
+		/*
+		 * Check if sensor is already initialized by reading CLOCKS_CONTROL.
+		 * At fresh power-on, this reads 0x0. After initialization, it
+		 * reads non-zero (e.g., 0x2df). During runtime resume, the sensor
+		 * retains its configuration from boot, so we can skip MCU boot
+		 * and PLL init to avoid I2C errors on already-configured registers.
+		 */
+		ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL, &clocks_val, NULL);
+		dev_info(dev, "power_on: MT9M113 CLOCKS_CONTROL=0x%llx ret=%d\n",
+			 clocks_val, ret);
+
+		if (ret == 0 && clocks_val != 0) {
+			/*
+			 * Sensor is already initialized (runtime resume case).
+			 * Skip MCU boot and PLL config - just wait for stabilization.
+			 */
+			dev_info(dev, "power_on: MT9M113 already initialized, skipping MCU boot\n");
+			msleep(50);
+			goto mt9m113_init_done;
+		}
+
 		dev_info(dev, "power_on: MT9M113 MCU boot sequence starting\n");
 
 		/* Boot the MCU */
@@ -2414,25 +2437,6 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		}
 		dev_info(dev, "power_on: MCU boot complete, waiting 200ms\n");
 		msleep(200); /* Extended delay for sensor stabilization */
-
-		/*
-		 * Verify sensor is responding after MCU boot by reading
-		 * CLOCKS_CONTROL register before attempting PLL config.
-		 */
-		{
-			u64 verify_val = 0;
-			int verify_ret;
-
-			verify_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL,
-					      &verify_val, NULL);
-			dev_info(dev, "power_on: verify read CLOCKS_CONTROL=0x%llx ret=%d\n",
-				 verify_val, verify_ret);
-			if (verify_ret < 0) {
-				dev_err(dev, "power_on: sensor not responding after MCU boot\n");
-				ret = verify_ret;
-				goto error_clock;
-			}
-		}
 
 		/*
 		 * Configure clocks and PLL - sequence from webOS kernel.
