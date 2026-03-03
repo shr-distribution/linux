@@ -453,32 +453,93 @@ Legacy write done: token=0x0
 
 3. **Buffer Size**: Default tinyplay buffers (~8KB) cause timeout; use `-p 16384 -n 8` (128KB) for full playback
 
-### Speaker Routing Discovery - CRITICAL
+### Speaker Routing - LINEOUT to External Amplifier
 
-**The device tree audio-routing was WRONG.** Per webOS board-tenderloin.c:
-> "Line outputs are not actually connected on the board."
+**TouchPad speakers use LINEOUT pins connected to an external Class-D amplifier.**
 
-TouchPad speakers are connected to:
-- **SPKOUT pins** (SPKOUTLP, SPKOUTLN, SPKOUTRP, SPKOUTRN)
-- Via external amplifier controlled by **WM8958 GPIO1**
+#### Why LINEOUT instead of SPKOUT?
 
-NOT to LINEOUT pins as originally configured.
+The WM8958 codec has two speaker output options:
 
-**Device Tree Fix:**
-```dts
-audio-routing =
-    "Speaker", "SPKOUTLP",
-    "Speaker", "SPKOUTLN",
-    "Speaker", "SPKOUTRP",
-    "Speaker", "SPKOUTRN",
-    ...
+1. **SPKOUT** (SPKOUTLP/LN/RP/RN) - Internal Class-D amplifier outputs
+   - Built-in amplifier inside the codec
+   - Limited power output
+   - Simpler design (fewer external components)
 
-/* Enable amplifier via GPIO1 */
-wlf,gpio-cfg = <
-    0x0041  /* GPIO1: output high to enable amp */
-    ...
->;
+2. **LINEOUT** (LINEOUT1P/1N/2P/2N) - Line-level outputs
+   - Requires external amplifier
+   - Higher power output possible with proper external amp
+   - Better audio quality potential
+   - More design flexibility
+
+**HP chose LINEOUT + external Class-D amplifier** for the TouchPad, likely for:
+- Higher speaker power output (tablet speakers need more power)
+- Better thermal management (external amp can be placed away from codec)
+- Audio quality optimization
+
+#### How the Audio Path Works
+
 ```
+Signal Flow:
+  Q6 DSP → I2S → WM8958 AIF1 → DAC1 → Output Mixer → LINEOUT → External Amp → Speakers
+                                                         ↑
+                                               GPIO1 enables amp (0x41)
+```
+
+Internal WM8958 routing:
+1. **AIF1DAC1L/R** - Digital audio from I2S interface
+2. **DAC1L/R Mixer** - Routes AIF1.1 to DAC (register 0x601/0x602, bit 0)
+3. **DAC1L/R** - Digital-to-analog conversion
+4. **Output Mixer L/R** - Routes DAC to outputs (register 0x2D/0x2E, bit 0)
+5. **Line Mixer 1/2** - Routes MIXOUT to LINEOUT (register 0x34/0x35, bit 6)
+6. **LINEOUT1P/1N/2P/2N** - Differential line outputs to external amp
+
+#### webOS Kernel Evidence
+
+Per webOS msm8x60.c DAPM routes:
+```c
+static struct snd_soc_dapm_route tenderloin_dapm_routes[] = {
+    { "Speaker", NULL, "LINEOUT1P" },
+    { "Speaker", NULL, "LINEOUT1N" },
+    { "Speaker", NULL, "LINEOUT2P" },
+    { "Speaker", NULL, "LINEOUT2N" },
+    ...
+};
+```
+
+SPKOUT pins are explicitly marked as not connected:
+```c
+snd_soc_dapm_nc_pin(codec, "SPKOUTRN");
+snd_soc_dapm_nc_pin(codec, "SPKOUTRP");
+snd_soc_dapm_nc_pin(codec, "SPKOUTLN");
+snd_soc_dapm_nc_pin(codec, "SPKOUTLP");
+```
+
+#### Clarification on Confusing Comment
+
+The board-tenderloin.c contains this potentially confusing comment:
+```c
+/* Put the line outputs into differential mode so that the driver
+ * knows it can power the chip down to cold without pop/click issues.
+ * Line outputs are not actually connected on the board.
+ */
+.lineout1_diff = 1,
+```
+
+**This comment is MISLEADING.** The `.lineout1_diff = 1` setting enables differential
+output mode (using both P and N pins). The "not actually connected" comment appears to
+be about ensuring clean power transitions, NOT about audio routing. The DAPM routes
+clearly show LINEOUT is used for speakers.
+
+#### Correct Configuration Summary
+
+| Output | Connected To | Status |
+|--------|--------------|--------|
+| LINEOUT1P/1N | External amp (left speaker) | ✅ Used |
+| LINEOUT2P/2N | External amp (right speaker) | ✅ Used |
+| SPKOUTLP/LN | Not connected | NC pin |
+| SPKOUTRP/RN | Not connected | NC pin |
+| WM8958 GPIO1 | External amp enable | 0x41 = ON |
 
 ### Remaining Issue: FLL Clock Not Locking
 
