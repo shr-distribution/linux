@@ -571,6 +571,11 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1N");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2P");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2N");
+				/* LINEOUT driver widgets - required for actual output */
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1P Driver");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1N Driver");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2P Driver");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2N Driver");
 				snd_soc_dapm_sync(&component->dapm);
 
 				/*
