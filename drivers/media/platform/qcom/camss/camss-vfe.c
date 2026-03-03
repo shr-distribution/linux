@@ -1200,6 +1200,9 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 			if (min_rate == 0)
 				j = clock->nfreqs - 1;
 
+			dev_info(dev, "VFE clock %s: min_rate=%llu j=%d freq[j]=%lu nfreqs=%d\n",
+				 clock->name, min_rate, j, clock->freq[j], clock->nfreqs);
+
 			rate = clk_round_rate(clock->clk, clock->freq[j]);
 			if (rate < 0) {
 				dev_err(dev, "clk round rate failed: %ld\n",
@@ -1207,11 +1210,17 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 				return -EINVAL;
 			}
 
+			dev_info(dev, "VFE clock %s: requested=%lu rounded=%ld\n",
+				 clock->name, clock->freq[j], rate);
+
 			ret = clk_set_rate(clock->clk, rate);
 			if (ret < 0) {
 				dev_err(dev, "clk set rate failed: %d\n", ret);
 				return ret;
 			}
+
+			dev_info(dev, "VFE clock %s: set to %ld Hz\n",
+				 clock->name, clk_get_rate(clock->clk));
 		}
 	}
 
