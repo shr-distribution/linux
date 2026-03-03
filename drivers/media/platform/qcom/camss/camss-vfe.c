@@ -2299,6 +2299,8 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 				ret);
 			goto error_link;
 		}
+		dev_info(dev, "Created link: %s pad %d -> %s pad 0 (IMMUTABLE|ENABLED)\n",
+			 sd->entity.name, MSM_VFE_PAD_SRC, video_out->vdev.entity.name);
 	}
 
 	return 0;

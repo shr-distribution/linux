@@ -68,11 +68,30 @@ static struct v4l2_subdev *video_remote_subdev(struct camss_video *video,
 					       u32 *pad)
 {
 	struct media_pad *remote;
+	struct media_entity *entity = &video->vdev.entity;
+
+	dev_info(video->camss->dev,
+		 "video_remote_subdev: entity=%s num_pads=%d pad_flags=0x%lx\n",
+		 entity->name, entity->num_pads,
+		 entity->num_pads > 0 ? entity->pads[0].flags : 0);
 
 	remote = media_pad_remote_pad_first(&video->pad);
-
-	if (!remote || !is_media_entity_v4l2_subdev(remote->entity))
+	if (!remote) {
+		dev_info(video->camss->dev,
+			 "video_remote_subdev: no remote pad found for %s\n",
+			 entity->name);
 		return NULL;
+	}
+
+	dev_info(video->camss->dev,
+		 "video_remote_subdev: remote pad %d on entity %s\n",
+		 remote->index, remote->entity->name);
+
+	if (!is_media_entity_v4l2_subdev(remote->entity)) {
+		dev_info(video->camss->dev,
+			 "video_remote_subdev: remote entity is not a v4l2_subdev\n");
+		return NULL;
+	}
 
 	if (pad)
 		*pad = remote->index;
