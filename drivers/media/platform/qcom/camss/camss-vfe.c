@@ -1305,14 +1305,17 @@ int vfe_get(struct vfe_device *vfe)
 		if (ret < 0)
 			goto error_domain_off;
 
-		ret = vfe_set_clock_rates(vfe);
-		if (ret < 0)
-			goto error_pm_runtime_get;
-
+		/* Enable clocks before setting rates - QCOM clock framework
+		 * requires clocks to be enabled for rate changes to take effect
+		 */
 		ret = camss_enable_clocks(vfe->nclocks, vfe->clock,
 					  vfe->camss->dev);
 		if (ret < 0)
 			goto error_pm_runtime_get;
+
+		ret = vfe_set_clock_rates(vfe);
+		if (ret < 0)
+			goto error_reset;
 
 		ret = vfe_reset(vfe);
 		if (ret < 0)
