@@ -511,6 +511,11 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKR Boost");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKL Driver");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKR Driver");
+				/* Speaker output pins - final stage before physical outputs */
+				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKOUTLP");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKOUTLN");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKOUTRP");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKOUTRN");
 				snd_soc_dapm_sync(&component->dapm);
 
 				/*
