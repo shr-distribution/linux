@@ -2850,7 +2850,7 @@
 		 * WM8958 codec via the Primary I2S interface.
 		 */
 		pinctrl-names = "default";
-		pinctrl-0 = <&primary_i2s_pins>;
+		pinctrl-0 = <&primary_i2s_pins>, <&class_d0_mpp>, <&class_d1_mpp>;
 
 		/*
 		 * LPASS I2S clocks from LCC (LPASS Clock Controller).
