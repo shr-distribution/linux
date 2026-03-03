@@ -39,6 +39,9 @@ struct apq8060_snd_data {
 	struct snd_soc_card card;
 	struct snd_soc_jack hp_jack;
 	struct gpio_desc *hp_jack_gpio;
+	/* External Class-D amplifier enable GPIOs */
+	struct gpio_desc *class_d0_gpio;	/* GPIO 227 */
+	struct gpio_desc *class_d1_gpio;	/* GPIO 229 */
 	/* FLL configuration tracking */
 	unsigned int fll_rate;
 	unsigned int bclk_rate;
@@ -54,9 +57,14 @@ struct apq8060_snd_data {
 };
 
 /*
- * Speaker amplifier enable via WM8994 GPIO_1.
- * The TouchPad uses an external Class-D amplifier controlled by this GPIO.
- * GPIO_1 = 0x41 enables the amp, 0x01 disables it.
+ * Speaker amplifier enable.
+ *
+ * The TouchPad uses external Class-D amplifiers controlled by:
+ * 1. WM8994 GPIO_1 (0x41 = enabled)
+ * 2. SoC GPIO 227 (CLASS_D0_EN)
+ * 3. SoC GPIO 229 (CLASS_D1_EN)
+ *
+ * All three must be enabled for speaker output.
  *
  * Note: This is a card-level widget, so we must find the codec component
  * from the card rather than using snd_soc_dapm_to_component() which only
@@ -66,6 +74,7 @@ static int apq8060_spk_pwr_amp(struct snd_soc_dapm_widget *w,
 			       struct snd_kcontrol *k, int event)
 {
 	struct snd_soc_card *card = snd_soc_dapm_to_card(w->dapm);
+	struct apq8060_snd_data *data = snd_soc_card_get_drvdata(card);
 	struct snd_soc_component *component;
 
 	/* Find the WM8994 codec component - use strstr for partial match
@@ -79,13 +88,23 @@ static int apq8060_spk_pwr_amp(struct snd_soc_dapm_widget *w,
 	return -ENODEV;
 
 found:
-	dev_info(card->dev, "Found WM8994 component: %s\n", component->name);
-
 	if (SND_SOC_DAPM_EVENT_ON(event)) {
-		dev_info(component->dev, "Enabling speaker amplifier\n");
+		dev_info(card->dev, "Enabling speaker amplifiers\n");
+		/* Enable WM8994 GPIO1 */
 		snd_soc_component_write(component, WM8994_GPIO_1, 0x41);
+		/* Enable external Class-D amplifiers */
+		if (data->class_d0_gpio)
+			gpiod_set_value_cansleep(data->class_d0_gpio, 1);
+		if (data->class_d1_gpio)
+			gpiod_set_value_cansleep(data->class_d1_gpio, 1);
 	} else {
-		dev_info(component->dev, "Disabling speaker amplifier\n");
+		dev_info(card->dev, "Disabling speaker amplifiers\n");
+		/* Disable external Class-D amplifiers */
+		if (data->class_d0_gpio)
+			gpiod_set_value_cansleep(data->class_d0_gpio, 0);
+		if (data->class_d1_gpio)
+			gpiod_set_value_cansleep(data->class_d1_gpio, 0);
+		/* Disable WM8994 GPIO1 */
 		snd_soc_component_write(component, WM8994_GPIO_1, 0x01);
 	}
 	return 0;
@@ -778,6 +797,30 @@ static int apq8060_snd_platform_probe(struct platform_device *pdev)
 		dev_info(dev, "Got LPASS I2S speaker clocks\n");
 	if (data->codec_i2s_mic_osr_clk && data->codec_i2s_mic_bit_clk)
 		dev_info(dev, "Got LPASS I2S mic clocks\n");
+
+	/*
+	 * Get external Class-D amplifier enable GPIOs.
+	 * The TouchPad has two external amps controlled by GPIO 227 and 229.
+	 * These must be enabled along with WM8994 GPIO1 for speaker output.
+	 */
+	data->class_d0_gpio = devm_gpiod_get_optional(dev, "class-d0",
+						      GPIOD_OUT_LOW);
+	if (IS_ERR(data->class_d0_gpio)) {
+		ret = PTR_ERR(data->class_d0_gpio);
+		dev_err(dev, "Failed to get class-d0 GPIO: %d\n", ret);
+		return ret;
+	}
+
+	data->class_d1_gpio = devm_gpiod_get_optional(dev, "class-d1",
+						      GPIOD_OUT_LOW);
+	if (IS_ERR(data->class_d1_gpio)) {
+		ret = PTR_ERR(data->class_d1_gpio);
+		dev_err(dev, "Failed to get class-d1 GPIO: %d\n", ret);
+		return ret;
+	}
+
+	if (data->class_d0_gpio || data->class_d1_gpio)
+		dev_info(dev, "Got Class-D amplifier enable GPIOs\n");
 
 	card->driver_name = DRIVER_NAME;
 	card->dapm_widgets = apq8060_dapm_widgets;
