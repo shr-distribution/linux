@@ -248,26 +248,37 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(0x00000000, csiphy->base + MIPI_PHY_D2_CONTROL);
 	writel(0x00000000, csiphy->base + MIPI_PHY_D3_CONTROL);
 
-	/* Step 9: Configure lane count in CAMERA_CNTL */
+	/*
+	 * Step 9: Configure lane assignment and count in CAMERA_CNTL
+	 *
+	 * MIPI_CAMERA_CNTL register format:
+	 *   [15:8] lane_assign - Physical to logical lane mapping
+	 *          0xe4 = identity mapping (L0->P0, L1->P1, L2->P2, L3->P3)
+	 *   [2:0]  lane_cnt - Number of active lanes (4=1lane, 5=2lanes, etc)
+	 *
+	 * From webOS kernel: all sensors use lane_assign = 0xe4
+	 */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 9 - CAMERA_CNTL\n", csiphy->id);
 	switch (num_lanes) {
 	case 1:
-		val = 0x4; /* 1 lane */
+		val = 0xe4 << 8 | 0x4; /* 1 lane with identity mapping */
 		break;
 	case 2:
-		val = 0x5; /* 2 lanes */
+		val = 0xe4 << 8 | 0x5; /* 2 lanes with identity mapping */
 		break;
 	case 3:
-		val = 0x6; /* 3 lanes */
+		val = 0xe4 << 8 | 0x6; /* 3 lanes with identity mapping */
 		break;
 	case 4:
-		val = 0x7; /* 4 lanes */
+		val = 0xe4 << 8 | 0x7; /* 4 lanes with identity mapping */
 		break;
 	default:
-		val = 0x4; /* Default to 1 lane */
+		val = 0xe4 << 8 | 0x4; /* Default to 1 lane */
 		break;
 	}
 	writel(val, csiphy->base + MIPI_CAMERA_CNTL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: CAMERA_CNTL=0x%08x\n",
+		 csiphy->id, val);
 
 	/* Step 10: Configure interrupts */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: step 10 - INTERRUPT config\n", csiphy->id);
