@@ -305,7 +305,7 @@ dump_codec_registers() {
 
     run_on_device "cat <<'SCRIPT' > /tmp/dump_regs.sh
 #!/bin/sh
-REGMAP='/sys/kernel/debug/regmap/wm8994/registers'
+REGMAP='/sys/kernel/debug/regmap/1-001a/registers'
 if [ ! -f \"\$REGMAP\" ]; then
     echo 'Regmap not available'
     exit 1
@@ -365,7 +365,7 @@ start_register_monitor() {
 
     run_on_device "cat <<'SCRIPT' > /tmp/monitor_regs.sh
 #!/bin/sh
-REGMAP='/sys/kernel/debug/regmap/wm8994/registers'
+REGMAP='/sys/kernel/debug/regmap/1-001a/registers'
 OUTFILE='/tmp/reg_monitor.log'
 echo 'Register Monitor Started' > \$OUTFILE
 echo '========================' >> \$OUTFILE

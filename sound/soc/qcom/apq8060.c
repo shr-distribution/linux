@@ -547,6 +547,22 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				 */
 				dev_info(card->dev, "Enabling speaker amplifier (GPIO1)\n");
 				snd_soc_component_write(component, WM8994_GPIO_1, 0x41);
+
+				/*
+				 * Unmute DAC1 and AIF1DAC1 volume registers.
+				 * Bit 9 = MUTE (set to 0 to unmute)
+				 * Bit 8 = VU (set to 1 to update volume)
+				 * Bits 7:0 = VOL (0xC0 = 0dB)
+				 */
+				dev_info(card->dev, "Unmuting DAC1 and AIF1DAC1\n");
+				snd_soc_component_write(component,
+					WM8994_AIF1_DAC1_LEFT_VOLUME, 0x01C0);
+				snd_soc_component_write(component,
+					WM8994_AIF1_DAC1_RIGHT_VOLUME, 0x01C0);
+				snd_soc_component_write(component,
+					WM8994_DAC1_LEFT_VOLUME, 0x01C0);
+				snd_soc_component_write(component,
+					WM8994_DAC1_RIGHT_VOLUME, 0x01C0);
 				break;
 			}
 		}
