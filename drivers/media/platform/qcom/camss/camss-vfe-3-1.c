@@ -807,13 +807,17 @@ static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
 	 * Use read-modify-write to preserve other configuration bits.
 	 */
 	u32 val = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+	u32 new_val;
 
 	if (enable)
-		val |= BIT(0);
+		new_val = val | BIT(0);
 	else
-		val &= ~BIT(0);
+		new_val = val & ~BIT(0);
 
-	writel_relaxed(val, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+	dev_info(vfe->camss->dev, "VFE31: WM%d enable=%d reg=0x%03x val=0x%x->0x%x\n",
+		 wm, enable, VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm), val, new_val);
+
+	writel_relaxed(new_val, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 }
 
 static void vfe31_wm_set_ub_cfg(struct vfe_device *vfe, u8 wm,
@@ -829,6 +833,8 @@ static void vfe31_wm_set_ub_cfg(struct vfe_device *vfe, u8 wm,
 
 static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 {
+	dev_info(vfe->camss->dev, "VFE31: WM%d ping_addr=0x%08x reg=0x%03x\n",
+		 wm, addr, VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
 	writel_relaxed(addr,
 		       vfe->base +
 		       VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
@@ -836,6 +842,8 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 
 static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 {
+	dev_info(vfe->camss->dev, "VFE31: WM%d pong_addr=0x%08x reg=0x%03x\n",
+		 wm, addr, VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 	writel_relaxed(addr,
 		       vfe->base +
 		       VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
