@@ -129,12 +129,18 @@
 #define VFE_0_VFE_CFG_CAMIF_TO_VFE_EN	BIT(5)
 #define VFE_0_VFE_CFG_CAMIF_TO_BUS_EN	BIT(7)
 
-/* CAMIF configuration - VFE31 specific */
-#define VFE_0_CAMIF_CMD			0x1EC
-#define VFE_0_CAMIF_CMD_DISABLE_FRAME_BOUNDARY	0x0
-#define VFE_0_CAMIF_CMD_ENABLE_FRAME_BOUNDARY	0x1
+/*
+ * CAMIF configuration - VFE31 specific
+ * Register layout from webOS msm_vfe31.h:
+ * - VFE_CAMIF_COMMAND at 0x1E0 (write commands)
+ * - CAMIF config block at 0x1E4-0x203 (32 bytes)
+ * - VFE_CAMIF_STATUS at 0x204 (read status)
+ */
+#define VFE_0_CAMIF_CMD			0x1E0
+#define VFE_0_CAMIF_CMD_START			0x5	/* Enable CAMIF */
+#define VFE_0_CAMIF_CMD_STOP_IMMEDIATELY	0x2
+#define VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY	0x0
 #define VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS	BIT(2)
-#define VFE_0_CAMIF_CMD_NO_CHANGE		0x0
 
 #define VFE_0_CAMIF_CFG			0x1E4
 #define VFE_0_CAMIF_CFG_VFE_OUTPUT_EN	BIT(6)
@@ -145,7 +151,7 @@
 #define VFE_0_CAMIF_SUBSAMPLE_CFG_0	0x1F8
 #define VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN 0x1FC
 
-#define VFE_0_CAMIF_STATUS		0x1E0
+#define VFE_0_CAMIF_STATUS		0x204
 
 /* RDI configuration */
 #define VFE_0_RDI_CFG_x(x)		(0x1E4 + (x) * 4)
@@ -557,16 +563,19 @@ static void vfe31_set_camif_cmd(struct vfe_device *vfe, u8 enable)
 {
 	u32 cmd;
 
-	cmd = VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS | VFE_0_CAMIF_CMD_NO_CHANGE;
+	/*
+	 * CAMIF command values from webOS msm_vfe31.h:
+	 * - START = 0x5 (bits 0 and 2: enable + clear status)
+	 * - STOP_AT_FRAME_BOUNDARY = 0x0
+	 * - STOP_IMMEDIATELY = 0x2
+	 */
+	if (enable)
+		cmd = VFE_0_CAMIF_CMD_START;
+	else
+		cmd = VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY;
+
 	writel_relaxed(cmd, vfe->base + VFE_0_CAMIF_CMD);
 	wmb();
-
-	if (enable)
-		cmd = VFE_0_CAMIF_CMD_ENABLE_FRAME_BOUNDARY;
-	else
-		cmd = VFE_0_CAMIF_CMD_DISABLE_FRAME_BOUNDARY;
-
-	writel_relaxed(cmd, vfe->base + VFE_0_CAMIF_CMD);
 
 	/* Debug: dump CAMIF status and config registers */
 	dev_info(vfe->camss->dev,
@@ -697,8 +706,8 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 
 	dev_info(vfe->camss->dev, "VFE31: disconnect WM%d from RDI%d\n", wm, id);
 
-	/* Step 1: Disable CAMIF - stop frame boundary capture */
-	writel_relaxed(VFE_0_CAMIF_CMD_DISABLE_FRAME_BOUNDARY,
+	/* Step 1: Stop CAMIF at frame boundary */
+	writel_relaxed(VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY,
 		       vfe->base + VFE_0_CAMIF_CMD);
 
 	/* Step 2: Disable raw passthrough in BUS_CFG */

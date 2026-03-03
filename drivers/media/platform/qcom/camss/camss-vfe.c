@@ -753,10 +753,10 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_CAMIF_WINDOW_HEIGHT_CFG	0x1F4
 #define VFE31_CAMIF_SUBSAMPLE_CFG_0	0x1F8
 #define VFE31_CAMIF_IRQ_SUBSAMPLE_PAT	0x1FC
-#define VFE31_CAMIF_STATUS		0x1E0
-#define VFE31_CAMIF_CMD			0x1EC
+#define VFE31_CAMIF_STATUS		0x204	/* Read status */
+#define VFE31_CAMIF_CMD			0x1E0	/* Write commands */
 #define VFE31_CAMIF_CMD_CLEAR_STATUS	BIT(2)
-#define VFE31_CAMIF_CMD_ENABLE_FRAME	0x1
+#define VFE31_CAMIF_CMD_START		0x5	/* Enable CAMIF */
 
 /*
  * vfe_enable_pending_camif - Configure and enable deferred CAMIF
@@ -851,7 +851,7 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CMD);
 	wmb();
 
-	writel_relaxed(VFE31_CAMIF_CMD_ENABLE_FRAME,
+	writel_relaxed(VFE31_CAMIF_CMD_START,
 		       vfe->base + VFE31_CAMIF_CMD);
 	wmb();
 
