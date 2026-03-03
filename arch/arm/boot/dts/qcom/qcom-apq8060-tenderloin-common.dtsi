@@ -2285,72 +2285,40 @@
 	 * Do NOT enable uart-has-rtscts here.
 	 */
 
+	/*
+	 * TEST: Bluetooth node commented out to allow /dev/ttyMSM1 to appear
+	 * for manual testing with hciattach at different baud rates.
+	 * The in-kernel hci_bcm driver gets "Frame reassembly failed" errors
+	 * suggesting baud rate mismatch. Manual testing needed to determine
+	 * the actual baud rate the BCM4329 chip is using.
+	 *
+	 * To re-enable: uncomment the bluetooth { } block below.
+	 *
 	bluetooth {
 		compatible = "brcm,bcm4329-bt";
 
-		/*
-		 * Power supplies for BCM4329 combo WiFi+BT chip:
-		 * - vddio: 1.8V I/O voltage (PM8058 S3, always-on)
-		 * - vbat: 3.3V core voltage (PM8901 L3, shared with WiFi PA, always-on)
-		 */
 		vddio-supply = <&pm8058_s3>;
 		vbat-supply = <&pm8901_l3>;
 
-		/* 32.768 kHz LPO clock for low-power operation */
 		clocks = <&sleep_clk>;
 		clock-names = "lpo";
 
-		/*
-		 * UART speed configuration:
-		 * BCM4329 starts at 115200 baud (verified from webOS kernel:
-		 * HSUART_SPEED_115K in board-tenderloin.c). The driver uses
-		 * 115200 as default when init-speed is not specified.
-		 * max-speed is for high-speed operation after firmware load.
-		 */
 		max-speed = <3686400>;
 
-		/*
-		 * SCO/PCM audio interface configuration for Bluetooth voice calls.
-		 *
-		 * brcm,bt-pcm-int-params = [routing rate frame_sync sync_mode clock_mode]
-		 *   routing:    0=PCM, 1=Transport, 2=Codec, 3=I2S
-		 *   rate:       0=128K, 1=256K, 2=512K, 3=1024K, 4=2048K bps
-		 *   frame_sync: 0=short, 1=long frame
-		 *   sync_mode:  0=slave, 1=master
-		 *   clock_mode: 0=slave, 1=master
-		 *
-		 * Values: 0x00=PCM routing, 0x02=512Kbps (8kHz mono SCO standard),
-		 *         0x00=short frame, 0x01=sync master, 0x01=clock master
-		 *
-		 * STATUS: BT SCO audio is NOT FUNCTIONAL. The mainline Q6AFE driver
-		 * lacks AUX_PCM/PCM DAI support required for BT voice calls.
-		 *
-		 * Legacy kernel used:
-		 *   - AUX PCM interface on GPIO 111-114 (dout/din/syncout/clkin_a)
-		 *   - snddev_bt_sco_earpiece/mic devices with PCM_RX/PCM_TX COPPs
-		 *   - Custom msm_aux_pcm platform driver
-		 *
-		 * To enable SCO, mainline kernel would need:
-		 *   1. AUX_PCM port IDs in include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
-		 *   2. PCM DAI support in sound/soc/qcom/qdsp6/q6afe-dai.c
-		 *   3. PCM port config in sound/soc/qcom/qdsp6/q6afe.c
-		 *   4. Pinctrl for GPIO 111-114 and bt-sco dai-link in this DT
-		 */
 		brcm,bt-pcm-int-params = [00 02 00 01 01];
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&bt_pin>;
 
-		/* Bluetooth control GPIOs (active levels from legacy kernel) */
-		reset-gpios = <&tlmm 138 GPIO_ACTIVE_LOW>;	/* BT_RST_N */
-		shutdown-gpios = <&tlmm 130 GPIO_ACTIVE_HIGH>;	/* BT_POWER */
-		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>; /* BT_WAKE */
+		reset-gpios = <&tlmm 138 GPIO_ACTIVE_LOW>;
+		shutdown-gpios = <&tlmm 130 GPIO_ACTIVE_HIGH>;
+		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>;
 
-		/* Host wakeup interrupt (replaces deprecated host-wakeup-gpios) */
 		interrupt-parent = <&tlmm>;
 		interrupts = <129 IRQ_TYPE_EDGE_RISING>;
 		interrupt-names = "host-wakeup";
 	};
+	*/
 };
 
 &gsbi12 {
