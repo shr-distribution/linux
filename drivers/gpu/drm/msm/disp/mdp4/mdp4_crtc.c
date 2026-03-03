@@ -567,6 +567,22 @@ static void mdp4_crtc_wait_for_flush_done(struct drm_crtc *crtc)
 
 	mdp4_crtc->flushed_mask = 0;
 
+	/*
+	 * Also wait for the pending vblank event to be delivered. The vblank
+	 * IRQ fires after the flush completes and calls complete_flip() which
+	 * clears the event. Without this wait, a subsequent atomic commit
+	 * could start before the event is delivered, causing a WARN_ON in
+	 * mdp4_crtc_atomic_flush().
+	 */
+	if (READ_ONCE(mdp4_crtc->event)) {
+		ret = wait_event_timeout(*queue,
+			!READ_ONCE(mdp4_crtc->event),
+			msecs_to_jiffies(50));
+		if (ret <= 0)
+			dev_warn(dev->dev, "event delivery timeout, crtc=%s\n",
+				mdp4_crtc->name);
+	}
+
 	drm_crtc_vblank_put(crtc);
 }
 
