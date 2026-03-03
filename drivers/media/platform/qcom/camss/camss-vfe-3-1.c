@@ -318,6 +318,15 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 			 VFE_0_GLOBAL_RESET_CMD_CORE;
 
 	/*
+	 * VFE31 requires CGC_OVERRIDE to enable internal clocks BEFORE
+	 * any reset or other operations. Without this, the VFE hardware
+	 * won't respond to register writes including the reset command.
+	 * This matches the webOS kernel vfe31_set_default_reg_values().
+	 */
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
+	wmb();
+
+	/*
 	 * Enable RESET_ACK interrupt before triggering reset.
 	 * The vfe_reset() function waits for this interrupt to confirm
 	 * the reset completed. Without enabling it first, we get a timeout.
