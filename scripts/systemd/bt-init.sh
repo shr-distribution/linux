@@ -23,9 +23,27 @@ PROTOCOL="bcsp"
 # PID file for hciattach
 PID_FILE="/run/hciattach.pid"
 
+# Token partition for BD address
+TOKEN_PARTITION="/dev/mmcblk0p12"
+
 log() {
     logger -t "bt-init" "$@"
     echo "bt-init: $@"
+}
+
+read_bdaddr_from_tokens() {
+    # Read BToADDR from device tokens partition
+    if [ -b "$TOKEN_PARTITION" ]; then
+        local addr=$(dd if="$TOKEN_PARTITION" bs=4096 count=256 2>/dev/null | \
+                     strings -n 6 | grep -A1 '^BToADDR$' | tail -1)
+        if echo "$addr" | grep -qE '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'; then
+            echo "$addr"
+            return 0
+        fi
+    fi
+    # Return empty if not found
+    echo ""
+    return 1
 }
 
 export_gpio() {
@@ -115,9 +133,21 @@ start() {
     # Power on the chip
     power_on
 
+    # Read BD address from device tokens
+    local bdaddr=$(read_bdaddr_from_tokens)
+    if [ -n "$bdaddr" ]; then
+        log "Found BD address in tokens: $bdaddr"
+    else
+        log "Warning: BD address not found in tokens, using chip default"
+    fi
+
     # Attach UART with BCSP protocol
     log "Attaching $UART_DEV with $PROTOCOL at $BAUD_RATE baud..."
-    hciattach "$UART_DEV" "$PROTOCOL" "$BAUD_RATE" &
+    if [ -n "$bdaddr" ]; then
+        hciattach "$UART_DEV" "$PROTOCOL" "$BAUD_RATE" flow nosleep "$bdaddr" &
+    else
+        hciattach "$UART_DEV" "$PROTOCOL" "$BAUD_RATE" &
+    fi
     local pid=$!
     echo "$pid" > "$PID_FILE"
 

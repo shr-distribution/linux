@@ -122,6 +122,77 @@ hci0:   Type: Primary  Bus: UART
         Manufacturer: Cambridge Silicon Radio (10)
 ```
 
+**Note:** The address `00:02:5B:00:A5:A5` shown above is a default/uninitialized
+address. The real BD address must be read from the device tokens (see below).
+
+## BD Address from Device Tokens
+
+The BCM4329 chip does not have its BD address programmed in firmware. Instead,
+the address is stored in the device's **token partition** and must be set by
+userspace during initialization.
+
+### Token Partition Location
+
+On HP TouchPad, tokens are stored in **partition 12** (`/dev/mmcblk0p12`).
+
+### Reading Tokens
+
+```bash
+# Read BToADDR token
+dd if=/dev/mmcblk0p12 bs=4096 2>/dev/null | strings -n 6 | grep -A1 'BToADDR'
+```
+
+Example output:
+```
+BToADDR
+00:1D:FE:85:64:A9
+```
+
+### Token Format
+
+| Token | Description | Example |
+|-------|-------------|---------|
+| BToADDR | Bluetooth MAC address | 00:1D:FE:xx:xx:xx |
+| WIFIoADDR | WiFi MAC address | 00:1D:FE:xx:xx:xx |
+| ProdSN | Product serial number | 5CL1251ANS |
+
+The OUI `00:1D:FE` is registered to **Palm, Inc.**
+
+### Setting the BD Address
+
+The BD address must be set after hciattach but before bringing up the interface.
+This requires either:
+
+1. **bdaddr tool** (from bluez-tools):
+   ```bash
+   bdaddr -i hci0 00:1D:FE:xx:xx:xx
+   ```
+
+2. **Vendor-specific HCI command** (CSR/Broadcom):
+   ```bash
+   # CSR BCCMD to write BD address - format TBD
+   hcitool cmd 0x3F ...
+   ```
+
+3. **hciattach with address parameter**:
+   ```bash
+   hciattach /dev/ttyMSM1 bcsp 115200 flow nosleep 00:1D:FE:xx:xx:xx
+   ```
+
+### Updated Initialization Sequence
+
+```bash
+# 1. Read BD address from tokens
+BDADDR=$(dd if=/dev/mmcblk0p12 bs=4096 2>/dev/null | strings -n 6 | grep -A1 'BToADDR' | tail -1)
+
+# 2. Power on and attach with address
+hciattach /dev/ttyMSM1 bcsp 115200 flow nosleep $BDADDR
+
+# 3. Unblock and bring up
+rfkill unblock bluetooth
+hciconfig hci0 up
+```
+
 ## Device Tree Status
 
 The Bluetooth node in the device tree is currently **commented out** because:
