@@ -789,21 +789,81 @@ static void vfe31_wm_frame_based(struct vfe_device *vfe, u8 wm, u8 enable)
 	writel_relaxed(val, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 }
 
+/*
+ * Helper to get WM sizes from pixel format
+ */
+static void vfe31_get_wm_sizes(struct v4l2_pix_format_mplane *pix, u8 plane,
+			       u16 *width, u16 *height, u16 *bytesperline)
+{
+	*width = pix->width;
+	*height = pix->height;
+	*bytesperline = pix->plane_fmt[0].bytesperline;
+
+	/* For NV12/NV21, chroma plane is half height */
+	if (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
+	    pix->pixelformat == V4L2_PIX_FMT_NV21)
+		if (plane == 1)
+			*height /= 2;
+}
+
 static void vfe31_wm_line_based(struct vfe_device *vfe, u32 wm,
 				struct v4l2_pix_format_mplane *pix,
 				u8 plane, u32 enable)
 {
-	/* VFE31 WM line-based mode */
-	u32 val = 0x0;
+	u32 reg;
 
 	if (enable) {
-		val = pix->plane_fmt[0].bytesperline *
-			pix->height / 4;
-	}
+		u16 width = 0, height = 0, bytesperline = 0, wpl;
 
-	writel_relaxed(val,
-		       vfe->base +
-		       VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+		vfe31_get_wm_sizes(pix, plane, &width, &height, &bytesperline);
+
+		/* Calculate words per line (64-bit words) */
+		wpl = vfe_word_per_line(pix->pixelformat, width);
+
+		/*
+		 * VFE31 WR_IMAGE_SIZE register:
+		 * Bits 0-11: Image height - 1
+		 * Bits 16-25: Image width in 64-bit words (wpl / 2)
+		 *
+		 * This follows the webOS kernel structure for VFE31.
+		 */
+		reg = (height - 1) & 0xFFF;
+		reg |= (((wpl + 1) / 2 - 1) & 0x3FF) << 16;
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: WM%d IMAGE_SIZE height=%d width=%d wpl=%d reg=0x%x\n",
+			 wm, height, width, wpl, reg);
+
+		writel_relaxed(reg,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
+
+		/*
+		 * VFE31 WR_ADDR_CFG register:
+		 * Bits 0-1: Burst length (0=4, 1=8, 2=16 beats)
+		 * Bits 4-15: Number of rows - 1
+		 * Bits 16-27: Row increment in 64-bit words
+		 *
+		 * Use bytesperline to calculate row increment for proper stride.
+		 */
+		wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
+
+		reg = 0x2;  /* Burst length = 16 beats */
+		reg |= ((height - 1) & 0xFFF) << 4;
+		reg |= (wpl & 0xFFF) << 16;
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: WM%d ADDR_CFG stride=%d rows=%d reg=0x%x\n",
+			 wm, bytesperline, height, reg);
+
+		writel_relaxed(reg,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
+	} else {
+		/* Disable: clear image size and address config */
+		writel_relaxed(0,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
+		writel_relaxed(0,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
+	}
 }
 
 static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
