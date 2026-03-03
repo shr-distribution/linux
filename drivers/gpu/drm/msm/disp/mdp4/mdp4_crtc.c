@@ -332,9 +332,17 @@ static void mdp4_crtc_atomic_flush(struct drm_crtc *crtc,
 
 	DBG("%s: event: %p", mdp4_crtc->name, crtc->state->event);
 
-	WARN_ON(mdp4_crtc->event);
-
 	spin_lock_irqsave(&dev->event_lock, flags);
+	/*
+	 * Complete any pending event from a previous commit that wasn't
+	 * delivered due to vblank timeout. This prevents event leaks and
+	 * allows the new commit to proceed.
+	 */
+	if (mdp4_crtc->event) {
+		dev_warn_once(dev->dev, "%s: completing stale event %p\n",
+			      mdp4_crtc->name, mdp4_crtc->event);
+		drm_crtc_send_vblank_event(crtc, mdp4_crtc->event);
+	}
 	mdp4_crtc->event = crtc->state->event;
 	crtc->state->event = NULL;
 	spin_unlock_irqrestore(&dev->event_lock, flags);
