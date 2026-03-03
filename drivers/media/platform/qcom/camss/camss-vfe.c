@@ -788,6 +788,22 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 "VFE: configuring deferred CAMIF for WM%d RDI%d\n",
 		 vfe->camif_pending_wm, vfe->camif_pending_line_id);
 
+	/*
+	 * Step 0: Set VFE default register values (from webOS vfe31_set_default_reg_values)
+	 * These must be set before any other VFE configuration.
+	 */
+	/* Enable all internal clocks via CGC override */
+	writel_relaxed(0xFFFFF, vfe->base + 0x00C);  /* VFE_CGC_OVERRIDE */
+
+	/* Set DEMUX gains to passthrough (required for YUV input) */
+	writel_relaxed(0x800080, vfe->base + 0x424); /* VFE_DEMUX_GAIN_0 */
+	writel_relaxed(0x800080, vfe->base + 0x428); /* VFE_DEMUX_GAIN_1 */
+
+	/* Set clamp values for output */
+	writel_relaxed(0x0, vfe->base + 0x524);      /* VFE_CLAMP_MIN */
+	writel_relaxed(0xFFFFFF, vfe->base + 0x528); /* VFE_CLAMP_MAX */
+	wmb();
+
 	/* Step 1: Configure CORE_CFG pixel pattern */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
@@ -859,6 +875,14 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	writel_relaxed(VFE31_CAMIF_CMD_START,
 		       vfe->base + VFE31_CAMIF_CMD);
+	wmb();
+
+	/*
+	 * Step 7: Reload write master 0
+	 * VFE_BUS_CMD bit 0 reloads WM0. This is done after config is complete
+	 * to apply the new settings. From webOS kernel behavior.
+	 */
+	writel_relaxed(BIT(0), vfe->base + 0x038);  /* VFE_BUS_CMD, reload WM0 */
 	wmb();
 
 	vfe->camif_pending = false;
