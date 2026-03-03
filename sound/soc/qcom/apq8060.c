@@ -102,10 +102,11 @@ static const struct snd_soc_dapm_widget apq8060_dapm_widgets[] = {
 /*
  * DAPM routes for HP TouchPad.
  *
- * Note: The webOS kernel DAPM routes use LINEOUT for speakers, but runtime
- * mixer state analysis shows SPKOUT controls are actually active during
- * playback. The external Class-D amplifier is controlled via WM8958 GPIO1.
- * Testing shows SPKOUT path is what actually produces audio.
+ * The TouchPad uses LINEOUT pins connected to an external Class-D amplifier,
+ * NOT the internal SPKOUT Class-D driver. The external amp is controlled
+ * via WM8958 GPIO1 (0x41 = enabled).
+ *
+ * This matches the webOS legacy kernel configuration.
  *
  * MICBIAS is a SUPPLY widget in modern kernels - the codec driver enables
  * it automatically when the corresponding input is powered.
@@ -114,11 +115,11 @@ static const struct snd_soc_dapm_route apq8060_dapm_routes[] = {
 	{ "Headphone", NULL, "HPOUT1L" },
 	{ "Headphone", NULL, "HPOUT1R" },
 
-	/* Speakers via internal Class-D driver */
-	{ "Speaker", NULL, "SPKOUTLP" },
-	{ "Speaker", NULL, "SPKOUTLN" },
-	{ "Speaker", NULL, "SPKOUTRP" },
-	{ "Speaker", NULL, "SPKOUTRN" },
+	/* Speakers via LINEOUT to external Class-D amplifier */
+	{ "Speaker", NULL, "LINEOUT1P" },
+	{ "Speaker", NULL, "LINEOUT1N" },
+	{ "Speaker", NULL, "LINEOUT2P" },
+	{ "Speaker", NULL, "LINEOUT2N" },
 
 	/* Internal Mic connected to IN1LN */
 	{ "IN1LN", NULL, "Internal Mic" },
@@ -319,20 +320,30 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 	 * the DPCM path as active. Force-enable them here during hw_params
 	 * so they're ready when playback starts.
 	 *
-	 * PM1 (0x01): SPKOUTL_ENA, SPKOUTR_ENA, HPOUT1L_ENA, HPOUT1R_ENA
-	 * PM3 (0x03): SPKLVOL_ENA, SPKRVOL_ENA, MIXOUTLVOL_ENA, MIXOUTRVOL_ENA
+	 * PM1 (0x01): HPOUT1L_ENA, HPOUT1R_ENA, VMID, bias
+	 * PM3 (0x03): LINEOUT1P/N_ENA, LINEOUT2P/N_ENA, MIXOUTLVOL_ENA, MIXOUTRVOL_ENA
 	 * PM5 (0x05): DAC1L_ENA, DAC1R_ENA
+	 *
+	 * TouchPad uses LINEOUT (not SPKOUT) connected to external amp.
 	 */
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		struct snd_soc_component *component = codec_dai->component;
 
 		dev_info(rtd->dev, "APQ8060: Enabling output power registers\n");
+		/* PM5: Enable DAC1 left and right */
 		snd_soc_component_update_bits(component,
 			WM8994_POWER_MANAGEMENT_5, 0x0003, 0x0003);
+		/*
+		 * PM3: Enable LINEOUT and output mixers
+		 * LINEOUT1P_ENA | LINEOUT1N_ENA = 0x3000
+		 * LINEOUT2P_ENA | LINEOUT2N_ENA = 0x0C00
+		 * MIXOUTLVOL_ENA | MIXOUTRVOL_ENA = 0x0030
+		 */
 		snd_soc_component_update_bits(component,
-			WM8994_POWER_MANAGEMENT_3, 0x0330, 0x0330);
+			WM8994_POWER_MANAGEMENT_3, 0x3C30, 0x3C30);
+		/* PM1: Enable headphones and bias for analog outputs */
 		snd_soc_component_update_bits(component,
-			WM8994_POWER_MANAGEMENT_1, 0x3300, 0x3300);
+			WM8994_POWER_MANAGEMENT_1, 0x0300, 0x0300);
 
 		/*
 		 * Unmute DAC and set volume to 0dB.
@@ -350,25 +361,39 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 			WM8994_DAC1_RIGHT_VOLUME, 0x01C0);
 
 		/*
-		 * Enable speaker output and bias.
+		 * Enable LINEOUT output and bias.
 		 * VMID is needed for the analog outputs to function.
-		 * Also ensure speaker mixer paths are active.
+		 * TouchPad uses LINEOUT to external amplifier for speakers.
 		 */
-		dev_info(rtd->dev, "APQ8060: Enabling speaker output path\n");
+		dev_info(rtd->dev, "APQ8060: Enabling LINEOUT output path\n");
 
 		/* Ensure VMID and bias are enabled (PM1 bits 1:0) */
 		snd_soc_component_update_bits(component,
 			WM8994_POWER_MANAGEMENT_1, 0x0003, 0x0003);
 
-		/* Enable speaker mixer to output (0x24): SPKMIXL→SPKOUTL, SPKMIXR→SPKOUTR */
+		/* Enable LINEOUT mixer routing */
 		snd_soc_component_update_bits(component,
-			WM8994_SPKOUT_MIXERS, 0x0011, 0x0011);
+			WM8994_LINE_MIXER_1, 0x40, 0x40);
+		snd_soc_component_update_bits(component,
+			WM8994_LINE_MIXER_2, 0x40, 0x40);
 
-		/* Ensure speaker volume is unmuted and at max (0x26, 0x27) */
+		/* Enable LINEOUT outputs with full volume */
 		snd_soc_component_write(component,
-			WM8994_SPEAKER_VOLUME_LEFT, 0x017F);
+			WM8994_LINE_OUTPUTS_VOLUME, 0x003F);
 		snd_soc_component_write(component,
-			WM8994_SPEAKER_VOLUME_RIGHT, 0x017F);
+			WM8994_LINE_OUTPUTS_VOLUME + 1, 0x003F);
+
+		/*
+		 * Unmute AIF1DAC1 digital filter (register 0x420).
+		 * This is the digital mute that was preventing audio from
+		 * flowing through the codec.
+		 */
+		snd_soc_component_update_bits(component,
+			WM8994_AIF1_DAC1_FILTERS_1,
+			WM8994_AIF1DAC1_MUTE, 0);
+
+		/* Enable external amplifier via GPIO1 */
+		snd_soc_component_write(component, WM8994_GPIO_1, 0x41);
 	}
 
 	dev_info(rtd->dev, "APQ8060: Codec clock configured using LRCLK as FLL source\n");
@@ -412,12 +437,13 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 
 	/*
 	 * Disable unused codec pins.
-	 * LINEOUT pins are not connected - speakers use internal Class-D driver.
+	 * SPKOUT pins are not connected - speakers use LINEOUT with external amp.
+	 * This matches the webOS legacy kernel configuration.
 	 */
-	snd_soc_dapm_nc_pin(&card->dapm, "LINEOUT1P");
-	snd_soc_dapm_nc_pin(&card->dapm, "LINEOUT1N");
-	snd_soc_dapm_nc_pin(&card->dapm, "LINEOUT2P");
-	snd_soc_dapm_nc_pin(&card->dapm, "LINEOUT2N");
+	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTRN");
+	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTRP");
+	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTLN");
+	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTLP");
 	snd_soc_dapm_nc_pin(&card->dapm, "HPOUT2P");
 	snd_soc_dapm_nc_pin(&card->dapm, "HPOUT2N");
 	snd_soc_dapm_nc_pin(&card->dapm, "IN2RP:VXRP");
@@ -488,7 +514,7 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				 * force all widgets ON to enable audio output.
 				 *
 				 * Signal path: AIF1DAC1 → DAC1 Mixer → DAC1 → Output Mixer →
-				 *              Output PGA → SPKL/R → SPKL/R Driver
+				 *              Output PGA → Line Mixer → LINEOUT → Ext Amp
 				 */
 				/* AIF1 DAC input widgets */
 				snd_soc_dapm_force_enable_pin(&component->dapm, "AIF1DAC1L");
@@ -499,23 +525,16 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				/* DAC widgets */
 				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1L");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1R");
-				/* Output mixer and PGA widgets (needed for DAC→speaker path) */
+				/* Output mixer and PGA widgets (needed for DAC→LINEOUT path) */
 				snd_soc_dapm_force_enable_pin(&component->dapm, "Left Output Mixer");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "Right Output Mixer");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "Left Output PGA");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "Right Output PGA");
-				/* Speaker mixer and driver widgets */
-				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKL");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKR");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKL Boost");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKR Boost");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKL Driver");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKR Driver");
-				/* Speaker output pins - final stage before physical outputs */
-				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKOUTLP");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKOUTLN");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKOUTRP");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "SPKOUTRN");
+				/* LINEOUT output pins - connected to external amplifier */
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1P");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1N");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2P");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2N");
 				snd_soc_dapm_sync(&component->dapm);
 
 				/*
@@ -529,7 +548,7 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 					WM8994_DAC1_RIGHT_MIXER_ROUTING, 0x01, 0x01);
 
 				/*
-				 * Enable DAC1 → Output Mixer for headphones:
+				 * Enable DAC1 → Output Mixer for headphones and LINEOUT:
 				 * Left Output Mixer: DAC Switch = bit 0
 				 * Right Output Mixer: DAC Switch = bit 0
 				 */
@@ -539,12 +558,30 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 					WM8994_OUTPUT_MIXER_2, 0x01, 0x01);
 
 				/*
-				 * Enable DAC1 → Speaker Mixer for speakers:
-				 * SPKL: DAC1 Switch = bit 1
-				 * SPKR: DAC1 Switch = bit 0
+				 * Enable Output Mixer → LINEOUT path for speakers:
+				 * Line Mixer 1 (0x34): MIXOUTL_TO_LINEOUT1P = bit 6
+				 * Line Mixer 2 (0x35): MIXOUTR_TO_LINEOUT2P = bit 6
+				 * The negative outputs (LINEOUT1N, LINEOUT2N) are
+				 * automatically handled for differential output.
 				 */
+				dev_info(card->dev, "Enabling LINEOUT mixer routing\n");
 				snd_soc_component_update_bits(component,
-					WM8994_SPEAKER_MIXER, 0x03, 0x03);
+					WM8994_LINE_MIXER_1, 0x40, 0x40);
+				snd_soc_component_update_bits(component,
+					WM8994_LINE_MIXER_2, 0x40, 0x40);
+
+				/*
+				 * Enable LINEOUT outputs and set volume.
+				 * Line Outputs Volume (0x1E): LINEOUT1 enable and volume
+				 * Line Outputs Volume (0x1F): LINEOUT2 enable and volume
+				 * Bit 6 = LINEOUT1P_ENA/LINEOUT1N_ENA (differential mode)
+				 * Bit 5 = VU, Bits 4:0 = VOL
+				 */
+				dev_info(card->dev, "Enabling LINEOUT outputs\n");
+				snd_soc_component_write(component,
+					WM8994_LINE_OUTPUTS_VOLUME, 0x003F);
+				snd_soc_component_write(component,
+					WM8994_LINE_OUTPUTS_VOLUME + 1, 0x003F);
 
 				/*
 				 * Enable external speaker amplifier via GPIO1.
@@ -552,6 +589,16 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				 */
 				dev_info(card->dev, "Enabling speaker amplifier (GPIO1)\n");
 				snd_soc_component_write(component, WM8994_GPIO_1, 0x41);
+
+				/*
+				 * Unmute AIF1DAC1 digital filter (register 0x420).
+				 * Bit 9 = AIF1DAC1_MUTE (0 = unmute, 1 = mute)
+				 * Default is 0x0200 (muted), we need 0x0000 (unmuted).
+				 */
+				dev_info(card->dev, "Unmuting AIF1DAC1 digital filter\n");
+				snd_soc_component_update_bits(component,
+					WM8994_AIF1_DAC1_FILTERS_1,
+					WM8994_AIF1DAC1_MUTE, 0);
 
 				/*
 				 * Unmute DAC1 and AIF1DAC1 volume registers.
