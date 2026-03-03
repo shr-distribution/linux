@@ -249,6 +249,13 @@ static int vfe_enable_output(struct vfe_line *line)
 		vfe->ops_gen1->wm_set_ub_cfg(vfe, output->wm_idx[0],
 					    (ub_size + 1) * output->wm_idx[0], ub_size);
 		vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 1);
+		/*
+		 * Configure WM image size and stride for RDI path.
+		 * VFE31 requires this configuration even for frame-based mode,
+		 * as the DMA engine needs to know image dimensions and stride.
+		 */
+		vfe->ops_gen1->wm_line_based(vfe, output->wm_idx[0],
+					     &line->video_out.active_fmt.fmt.pix_mp, 0, 1);
 		vfe->ops_gen1->wm_enable(vfe, output->wm_idx[0], 1);
 		vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[0]);
 	} else {
