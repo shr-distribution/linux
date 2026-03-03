@@ -2900,8 +2900,8 @@
 			"IN2LN", "Headset Mic";
 
 		/* External Class-D amplifier enable GPIOs */
-		class-d0-gpios = <&pm8058_mpps 10 GPIO_ACTIVE_HIGH>;  /* MPP11 = webOS GPIO 227 */
-		class-d1-gpios = <&pm8901_mpps 0 GPIO_ACTIVE_HIGH>;   /* MPP1 = webOS GPIO 229 */
+		class-d0-gpios = <&pm8058_mpps 11 GPIO_ACTIVE_HIGH>;  /* MPP11 = webOS GPIO 227 */
+		class-d1-gpios = <&pm8901_mpps 1 GPIO_ACTIVE_HIGH>;   /* MPP1 = webOS GPIO 229 */
 
 		/* Frontend - Multimedia playback (DPCM) */
 		mm1-dai-link {
