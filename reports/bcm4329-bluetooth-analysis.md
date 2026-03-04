@@ -593,6 +593,50 @@ Only PSKEY_BDADDR (0x0001) is common. This suggests:
 **Long term:** Consider if bcattach can be simplified or if chip behavior can be
 better understood to reduce the required PSKEY set.
 
+## webOS 2.6 Kernel Analysis
+
+The webOS 2.6 kernel (`webos-linux-kernel-touchpad`) provides **no PSKEY/BCCMD initialization**.
+
+### Kernel Role (Minimal)
+
+The kernel only handles GPIO power control:
+
+```c
+// arch/arm/mach-msm/gpiomux-tenderloin.h
+#define BT_RST_N      138  // Reset (active low)
+#define BT_POWER      130  // Power enable
+#define BT_WAKE       131  // Wake chip
+#define BT_HOST_WAKE  129  // Chip signals host
+
+// drivers/misc/bluetooth-power-pe.c
+// Just exports sysfs interface for power on/off
+```
+
+### Key Finding: No BCSP in Kernel
+
+```
+# arch/arm/configs/tenderloin_defconfig
+CONFIG_BLUETOOTH_POWER_STATE=y
+# CONFIG_BT_HCIUART_BCSP is NOT set!
+```
+
+The webOS kernel has **BCSP disabled**. All Bluetooth initialization is done entirely
+in userspace by **PmBtStack**, which:
+
+1. Opens `/dev/ttyS2` (or `/dev/bt_uart` at 3.68MHz) directly
+2. Sends BCSP link establishment packets
+3. Sends all PSKEYs via raw BCCMD
+4. Reads BD address from `-X` option (passed from `/dev/tokens/BToADDR`)
+5. Continues running as the complete Bluetooth stack (replaces BlueZ!)
+
+### Implication for Mainline Linux
+
+Since mainline uses BlueZ + hciattach (not PmBtStack), we need to add PSKEY
+initialization either:
+
+1. **In kernel** - Add to `hci_bcsp.c` (our current approach, needs more PSKEYs)
+2. **In userspace** - Port bcattach to run before hciattach
+
 ## References
 
 - WebOS kernel: `drivers/serial/bcm_bt_lpm.c` (GPIO handling only)
