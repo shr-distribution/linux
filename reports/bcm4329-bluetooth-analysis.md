@@ -541,13 +541,54 @@ To properly set the BD address, we must either:
    - Find which PSKEYs are truly required before BDADDR
    - May reduce to a smaller subset
 
+### Critical PSKEYs Before BDADDR
+
+Analysis shows bcattach sends **12 PSKEYs before BDADDR**:
+
+| # | PSKEY | Value | Description |
+|---|-------|-------|-------------|
+| 1 | 0x01FE HOST_INTERFACE | 0x6590 | BCSP mode configuration |
+| 2 | 0x01BE PCM_MIN_CPU_CLOCK | 0x3AFC | PCM clock setting |
+| 3 | 0x01AB H_HC_FC_MAX_ACL | 0x0001 | ACL packet length |
+| 4 | 0x01B0 H_HC_FC_MAX_SCO | 0x0001 | SCO packet length |
+| 5 | 0x01B9 PCM_SAMPLE_SIZE | 0x0008 | PCM sample size |
+| 6 | **0x01F6 ANA_FREQ** | **0x0019** | **26MHz crystal (critical!)** |
+| 7 | 0x0011 LC_MAX_TX_POWER | 0x0154 | Max TX power |
+| 8 | 0x0013 LC_DEFAULT_TX_POWER | 0x000B | Default TX power |
+| 9 | 0x024D LC_MAX_TX_POWER_NO_RSSI | 0x0000 | Max TX power (no RSSI) |
+| 10 | 0x000E ENC_KEY_LMIN | 0x0001 | Encryption key length |
+| 11 | 0x01F9 XTAL_FTRIM | 0x0001 | Crystal fine trim |
+| 12 | 0x025D LC_DEFAULT_TX_POWER_NO_RSSI | 0x0001 | Default TX (no RSSI) |
+
+**Most Critical:** PSKEY_ANA_FREQ (0x01F6) = 25 (0x19) sets the 26MHz external crystal.
+Without this, the chip clock may not be properly configured.
+
+### bcattach vs PmBtStack Comparison
+
+Surprisingly, bcattach and PmBtStack use **almost completely different PSKEY sets**:
+
+- **bcattach focus:** TX power, host interface, crystal/clock settings
+- **PmBtStack focus:** PCM/audio config, UART config, SCO audio
+
+Only PSKEY_BDADDR (0x0001) is common. This suggests:
+1. bcattach is a minimal initialization tool for basic BT operation
+2. PmBtStack adds audio/SCO configuration for headset support
+3. Both approaches are valid but serve different purposes
+
 ### Recommendations
 
 **Short term:** Use modified bcattach tool that:
 1. Reads BD address from `/dev/mmcblk0p12` token partition
-2. Sends full PSKEY initialization sequence
-3. Sets correct BD address at line 284 position
-4. Then run standard hciattach
+2. Sends the 12 critical PSKEYs before BDADDR
+3. Sends BDADDR with correct address
+4. Sends WARM_RESET (0x4002) to apply changes
+5. Then run standard hciattach
+
+**Minimal kernel approach:** Could add just the critical PSKEYs to hci_bcsp.c:
+1. PSKEY_ANA_FREQ = 25 (26MHz crystal)
+2. PSKEY_HOST_INTERFACE = BCSP mode
+3. PSKEY_BDADDR
+4. WARM_RESET
 
 **Long term:** Consider if bcattach can be simplified or if chip behavior can be
 better understood to reduce the required PSKEY set.
