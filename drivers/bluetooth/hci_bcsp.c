@@ -34,11 +34,13 @@
 
 static bool txcrc = true;
 static bool hciextn = true;
+static char *bdaddr;
 
 #define BCSP_TXWINSIZE	4
 
 #define BCSP_ACK_PKT	0x05
 #define BCSP_LE_PKT	0x06
+#define BCSP_BCCMD_PKT	0x07
 
 struct bcsp_struct {
 	struct sk_buff_head unack;	/* Unack'ed packets queue */
@@ -187,6 +189,10 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 		break;
 	case BCSP_ACK_PKT:
 		chan = 0;	/* BCSP internal channel */
+		rel = 0;	/* unreliable channel */
+		break;
+	case BCSP_BCCMD_PKT:
+		chan = 2;	/* BCCMD channel */
 		rel = 0;	/* unreliable channel */
 		break;
 	default:
@@ -688,6 +694,124 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 	return count;
 }
 
+/* ---- BCCMD for BD Address ---- */
+
+/*
+ * Parse BD address string "XX:XX:XX:XX:XX:XX" into bdaddr_t
+ * Returns 0 on success, -1 on error
+ */
+static int bcsp_parse_bdaddr(const char *str, bdaddr_t *addr)
+{
+	unsigned int b[6];
+	int i;
+
+	if (!str || strlen(str) != 17)
+		return -1;
+
+	if (sscanf(str, "%02x:%02x:%02x:%02x:%02x:%02x",
+		   &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6)
+		return -1;
+
+	for (i = 0; i < 6; i++)
+		addr->b[5 - i] = b[i];  /* bdaddr_t is in reverse order */
+
+	return 0;
+}
+
+/*
+ * Send BCCMD to set PSKEY_BDADDR via BCSP channel 2
+ *
+ * BCCMD packet structure:
+ *   Type (2) | Length (2) | SeqNo (2) | VarID (2) | Status (2) | Payload
+ *
+ * For PSKEY_BDADDR:
+ *   Type   = 0x0002 (SETREQ)
+ *   Length = 0x000C (12 words)
+ *   VarID  = 0x7003 (CSR_VARID_PS)
+ *   Payload: PSKey (2) | Stores (2) | Length (2) | Data (8)
+ */
+static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	struct sk_buff *skb;
+	u8 bccmd[24];
+
+	/* BCCMD header */
+	bccmd[0] = 0x02;	/* Type: SETREQ (low byte) */
+	bccmd[1] = 0x00;	/* Type: SETREQ (high byte) */
+	bccmd[2] = 0x0c;	/* Length: 12 words (low byte) */
+	bccmd[3] = 0x00;	/* Length: 12 words (high byte) */
+	bccmd[4] = 0x00;	/* SeqNo (low byte) */
+	bccmd[5] = 0x00;	/* SeqNo (high byte) */
+	bccmd[6] = 0x03;	/* VarID: 0x7003 PS (low byte) */
+	bccmd[7] = 0x70;	/* VarID: 0x7003 PS (high byte) */
+	bccmd[8] = 0x00;	/* Status (low byte) */
+	bccmd[9] = 0x00;	/* Status (high byte) */
+
+	/* PS payload */
+	bccmd[10] = 0x01;	/* PSKey: 0x0001 BDADDR (low byte) */
+	bccmd[11] = 0x00;	/* PSKey: 0x0001 BDADDR (high byte) */
+	bccmd[12] = 0x04;	/* Stores: 4 words (low byte) */
+	bccmd[13] = 0x00;	/* Stores: 4 words (high byte) */
+	bccmd[14] = 0x08;	/* Length: 8 bytes (low byte) */
+	bccmd[15] = 0x00;	/* Length: 8 bytes (high byte) */
+
+	/*
+	 * BD Address in CSR PSKEY format:
+	 *   Word 0: LAP[23:16] (high byte of 24-bit LAP)
+	 *   Word 1: LAP[15:0]  (low 16 bits of LAP)
+	 *   Word 2: UAP
+	 *   Word 3: NAP
+	 *
+	 * bdaddr_t.b[] = { LAP[0], LAP[1], LAP[2], UAP, NAP[0], NAP[1] }
+	 *              = { b[0],   b[1],   b[2],   b[3], b[4],   b[5]  }
+	 */
+	bccmd[16] = addr->b[2];	/* LAP[23:16] (low byte of word) */
+	bccmd[17] = 0x00;	/* LAP[23:16] (high byte of word) */
+	bccmd[18] = addr->b[0];	/* LAP[7:0] (low byte of word) */
+	bccmd[19] = addr->b[1];	/* LAP[15:8] (high byte of word) */
+	bccmd[20] = addr->b[3];	/* UAP (low byte of word) */
+	bccmd[21] = 0x00;	/* UAP (high byte of word) */
+	bccmd[22] = addr->b[4];	/* NAP[7:0] (low byte of word) */
+	bccmd[23] = addr->b[5];	/* NAP[15:8] (high byte of word) */
+
+	skb = alloc_skb(sizeof(bccmd), GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+
+	skb_put_data(skb, bccmd, sizeof(bccmd));
+	hci_skb_pkt_type(skb) = BCSP_BCCMD_PKT;
+
+	skb_queue_tail(&bcsp->unrel, skb);
+	hci_uart_tx_wakeup(hu);
+
+	BT_INFO("BCSP: Sent BCCMD to set BD address %pMR", addr);
+
+	return 0;
+}
+
+static int bcsp_setup(struct hci_uart *hu)
+{
+	bdaddr_t addr;
+
+	if (!bdaddr || !bdaddr[0])
+		return 0;
+
+	if (bcsp_parse_bdaddr(bdaddr, &addr) < 0) {
+		BT_ERR("BCSP: Invalid bdaddr module parameter: %s", bdaddr);
+		return 0;  /* Don't fail, just skip BD address setting */
+	}
+
+	BT_INFO("BCSP: Setting BD address to %s via BCCMD", bdaddr);
+
+	bcsp_send_bdaddr_bccmd(hu, &addr);
+
+	/* Give the chip time to process the BCCMD */
+	msleep(50);
+
+	return 0;
+}
+
 	/* Arrange to retransmit all messages in the relq. */
 static void bcsp_timed_event(struct timer_list *t)
 {
@@ -764,6 +888,7 @@ static const struct hci_uart_proto bcsp = {
 	.name		= "BCSP",
 	.open		= bcsp_open,
 	.close		= bcsp_close,
+	.setup		= bcsp_setup,
 	.enqueue	= bcsp_enqueue,
 	.dequeue	= bcsp_dequeue,
 	.recv		= bcsp_recv,
@@ -785,3 +910,6 @@ MODULE_PARM_DESC(txcrc, "Transmit CRC with every BCSP packet");
 
 module_param(hciextn, bool, 0644);
 MODULE_PARM_DESC(hciextn, "Convert HCI Extensions into BCSP packets");
+
+module_param(bdaddr, charp, 0444);
+MODULE_PARM_DESC(bdaddr, "Bluetooth device address (XX:XX:XX:XX:XX:XX)");

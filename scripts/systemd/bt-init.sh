@@ -5,10 +5,10 @@
 # BCM4329 Bluetooth chip requires BCSP protocol.
 # This script handles GPIO power control and hciattach.
 #
-# NOTE: BD Address Limitation
-# The chip uses a hardcoded default address (00:02:5B:00:A5:A5) that cannot
-# be changed. Neither CSR PSKEY commands nor Broadcom vendor commands work.
-# The Palm-assigned address from device tokens is read but cannot be applied.
+# BD Address: The chip defaults to 00:02:5B:00:A5:A5. The Palm-assigned
+# address from device tokens can be set via the hci_uart bdaddr module
+# parameter, which sends a BCCMD during BCSP initialization.
+#
 # See reports/bcm4329-bluetooth-analysis.md for details.
 #
 
@@ -132,22 +132,28 @@ start() {
         return 1
     fi
 
-    # Load modules if needed
+    # Read BD address from device tokens
+    local bdaddr=$(read_bdaddr_from_tokens)
+
+    # Load bluetooth module
     modprobe -q bluetooth || true
-    modprobe -q hci_uart || true
+
+    # Load hci_uart with bdaddr parameter if we have one
+    # This sends BCCMD to set BD address during BCSP initialization
+    if [ -n "$bdaddr" ]; then
+        log "Setting BD address via BCCMD: $bdaddr"
+        # Unload first in case it's already loaded without the parameter
+        rmmod hci_uart 2>/dev/null || true
+        modprobe hci_uart bdaddr="$bdaddr"
+    else
+        log "No BD address in tokens, using default: 00:02:5B:00:A5:A5"
+        modprobe -q hci_uart || true
+    fi
 
     # Power on the chip
     power_on
 
-    # Read BD address from device tokens (for logging only - cannot be applied)
-    local bdaddr=$(read_bdaddr_from_tokens)
-    if [ -n "$bdaddr" ]; then
-        log "Device BD address from tokens: $bdaddr (cannot be applied - chip limitation)"
-    fi
-    log "Chip will use default address: 00:02:5B:00:A5:A5"
-
     # Attach UART with BCSP protocol
-    # Note: BD address parameter doesn't work with BCSP, using simple attach
     log "Attaching $UART_DEV with $PROTOCOL at $BAUD_RATE baud..."
     hciattach "$UART_DEV" "$PROTOCOL" "$BAUD_RATE" &
     local pid=$!
@@ -161,6 +167,12 @@ start() {
         # Unblock rfkill and bring up
         rfkill unblock bluetooth 2>/dev/null || true
         hciconfig hci0 up
+
+        # Show final BD address
+        local final_addr=$(hciconfig hci0 2>/dev/null | grep "BD Address" | awk '{print $3}')
+        if [ -n "$final_addr" ]; then
+            log "BD Address: $final_addr"
+        fi
 
         if hciconfig hci0 | grep -q "UP RUNNING"; then
             log "Bluetooth is UP and RUNNING"
