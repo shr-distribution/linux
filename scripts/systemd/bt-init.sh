@@ -5,6 +5,12 @@
 # BCM4329 Bluetooth chip requires BCSP protocol.
 # This script handles GPIO power control and hciattach.
 #
+# NOTE: BD Address Limitation
+# The chip uses a hardcoded default address (00:02:5B:00:A5:A5) that cannot
+# be changed. Neither CSR PSKEY commands nor Broadcom vendor commands work.
+# The Palm-assigned address from device tokens is read but cannot be applied.
+# See reports/bcm4329-bluetooth-analysis.md for details.
+#
 
 set -e
 
@@ -133,21 +139,17 @@ start() {
     # Power on the chip
     power_on
 
-    # Read BD address from device tokens
+    # Read BD address from device tokens (for logging only - cannot be applied)
     local bdaddr=$(read_bdaddr_from_tokens)
     if [ -n "$bdaddr" ]; then
-        log "Found BD address in tokens: $bdaddr"
-    else
-        log "Warning: BD address not found in tokens, using chip default"
+        log "Device BD address from tokens: $bdaddr (cannot be applied - chip limitation)"
     fi
+    log "Chip will use default address: 00:02:5B:00:A5:A5"
 
     # Attach UART with BCSP protocol
+    # Note: BD address parameter doesn't work with BCSP, using simple attach
     log "Attaching $UART_DEV with $PROTOCOL at $BAUD_RATE baud..."
-    if [ -n "$bdaddr" ]; then
-        hciattach "$UART_DEV" "$PROTOCOL" "$BAUD_RATE" flow nosleep "$bdaddr" &
-    else
-        hciattach "$UART_DEV" "$PROTOCOL" "$BAUD_RATE" &
-    fi
+    hciattach "$UART_DEV" "$PROTOCOL" "$BAUD_RATE" &
     local pid=$!
     echo "$pid" > "$PID_FILE"
 
