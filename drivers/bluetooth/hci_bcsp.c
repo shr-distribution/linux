@@ -73,6 +73,15 @@ struct bcsp_struct {
 
 	/* Reliable packet sequence number - used to assign seq to each rel pkt. */
 	u8	msgq_txseq;
+
+	/* BD address configuration state machine */
+	enum {
+		BCSP_BDADDR_NONE,	/* No BD address to configure */
+		BCSP_BDADDR_PENDING,	/* Waiting for first link establishment */
+		BCSP_BDADDR_SENT,	/* BCCMD sent, waiting for chip reset */
+		BCSP_BDADDR_DONE	/* Configuration complete */
+	} bdaddr_state;
+	bdaddr_t bdaddr;		/* BD address to set */
 };
 
 /* ---- BCSP CRC calculation ---- */
@@ -396,6 +405,11 @@ static void bcsp_pkt_cull(struct bcsp_struct *bcsp)
 		BT_ERR("Removed only %u out of %u pkts", i, pkts_to_be_removed);
 }
 
+/* Forward declarations for BCCMD functions used in link establishment */
+static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr);
+static int bcsp_send_warm_reset(struct hci_uart *hu);
+static void bcsp_reset_link_state(struct bcsp_struct *bcsp);
+
 /* Handle BCSP link-establishment packets.
  * This implements the full BCSP link establishment state machine:
  * - sync: device is asking to establish link, we reply with sync_rsp
@@ -419,7 +433,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	if (!memcmp(&bcsp->rx_skb->data[4], sync_pkt, 4)) {
 		struct sk_buff *nskb = alloc_skb(4, GFP_ATOMIC);
 
-		BT_DBG("Found a LE sync pkt, responding with sync_rsp");
+		BT_INFO("BCSP: sync received, responding with sync_rsp");
 		if (!nskb)
 			return;
 		skb_put_data(nskb, sync_rsp_pkt, 4);
@@ -432,7 +446,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	else if (!memcmp(&bcsp->rx_skb->data[4], sync_rsp_pkt, 4)) {
 		struct sk_buff *nskb = alloc_skb(4, GFP_ATOMIC);
 
-		BT_DBG("Found a LE sync_rsp pkt, sending conf");
+		BT_INFO("BCSP: sync_rsp received, sending conf");
 		if (!nskb)
 			return;
 		skb_put_data(nskb, conf_pkt, 4);
@@ -445,7 +459,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	else if (!memcmp(&bcsp->rx_skb->data[4], conf_pkt, 4)) {
 		struct sk_buff *nskb = alloc_skb(4, GFP_ATOMIC);
 
-		BT_DBG("Found a LE conf pkt, responding with conf_rsp");
+		BT_INFO("BCSP: conf received, responding with conf_rsp");
 		if (!nskb)
 			return;
 		skb_put_data(nskb, conf_rsp_pkt, 4);
@@ -456,7 +470,22 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	}
 	/* Handle conf_rsp packet - link establishment complete */
 	else if (!memcmp(&bcsp->rx_skb->data[4], conf_rsp_pkt, 4)) {
-		BT_DBG("Found a LE conf_rsp pkt, link established");
+		BT_INFO("BCSP: conf_rsp received, link established (bdaddr_state=%d)",
+			bcsp->bdaddr_state);
+
+		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
+			BT_INFO("BCSP: First link up, sending BD address config");
+			bcsp_send_bdaddr_bccmd(hu, &bcsp->bdaddr);
+			bcsp_send_warm_reset(hu);
+			bcsp->bdaddr_state = BCSP_BDADDR_SENT;
+
+			/* Reset state for re-establishment after chip resets */
+			bcsp_reset_link_state(bcsp);
+			BT_INFO("BCSP: Waiting for chip to reset and re-sync");
+		} else if (bcsp->bdaddr_state == BCSP_BDADDR_SENT) {
+			BT_INFO("BCSP: Second link up, BD address config complete");
+			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		}
 	}
 }
 
@@ -878,48 +907,20 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 }
 
 /*
- * Send BCSP sync packet to initiate link establishment
- */
-static void bcsp_send_sync(struct hci_uart *hu)
-{
-	struct bcsp_struct *bcsp = hu->priv;
-	struct sk_buff *skb;
-	u8 sync_pkt[4] = { 0xda, 0xdc, 0xed, 0xed };
-
-	skb = alloc_skb(4, GFP_KERNEL);
-	if (!skb)
-		return;
-
-	skb_put_data(skb, sync_pkt, 4);
-	hci_skb_pkt_type(skb) = BCSP_LE_PKT;
-
-	skb_queue_tail(&bcsp->unrel, skb);
-	hci_uart_tx_wakeup(hu);
-}
-
-/*
  * Reset BCSP link state to prepare for re-establishment
+ * Note: Does NOT purge unrel queue as it may contain outgoing BCCMDs
  */
 static void bcsp_reset_link_state(struct bcsp_struct *bcsp)
 {
-	/* Clear all queues */
+	/* Clear reliable packet queues (no ACKs will come after reset) */
 	skb_queue_purge(&bcsp->unack);
 	skb_queue_purge(&bcsp->rel);
-	skb_queue_purge(&bcsp->unrel);
+	/* Do NOT purge unrel - it may contain pending BCCMDs we need to send */
 
 	/* Reset sequence numbers */
 	bcsp->rxseq_txack = 0;
 	bcsp->rxack = 0;
 	bcsp->msgq_txseq = 0;
-
-	/* Reset RX state machine */
-	bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
-	bcsp->rx_esc_state = BCSP_ESCSTATE_NOESC;
-	bcsp->rx_count = 0;
-	if (bcsp->rx_skb) {
-		kfree_skb(bcsp->rx_skb);
-		bcsp->rx_skb = NULL;
-	}
 
 	/* Reset other state */
 	bcsp->txack_req = 0;
@@ -928,74 +929,34 @@ static void bcsp_reset_link_state(struct bcsp_struct *bcsp)
 static int bcsp_setup(struct hci_uart *hu)
 {
 	struct bcsp_struct *bcsp = hu->priv;
-	bdaddr_t addr;
 	int i;
-	bool has_bdaddr = false;
 
-	/* Check if we have a BD address to set */
-	if (bdaddr && bdaddr[0]) {
-		if (bcsp_parse_bdaddr(bdaddr, &addr) < 0) {
-			BT_ERR("BCSP: Invalid bdaddr module parameter: %s",
-			       bdaddr);
+	/*
+	 * BD address configuration is handled by the state machine in
+	 * bcsp_handle_le_pkt(). When conf_rsp is received:
+	 * - If bdaddr_state == PENDING: send BCCMD and WARM_RESET, wait for re-sync
+	 * - If bdaddr_state == SENT: mark as DONE
+	 *
+	 * We just need to wait for the state machine to complete.
+	 */
+	if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING ||
+	    bcsp->bdaddr_state == BCSP_BDADDR_SENT) {
+		BT_INFO("BCSP: Waiting for BD address configuration...");
+
+		/* Wait up to 5 seconds for configuration to complete */
+		for (i = 0; i < 50; i++) {
+			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE)
+				break;
+			msleep(100);
+		}
+
+		if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
+			BT_INFO("BCSP: BD address configuration successful");
 		} else {
-			has_bdaddr = true;
+			BT_WARN("BCSP: BD address configuration may not have completed (state=%d)",
+				bcsp->bdaddr_state);
 		}
 	}
-
-	/* If no BD address specified, nothing to do */
-	if (!has_bdaddr)
-		return 0;
-
-	BT_INFO("BCSP: Initializing CSR chip with BD address %s", bdaddr);
-
-	/*
-	 * Wait for initial BCSP link establishment to complete.
-	 * The link establishment (sync/conf/conf_rsp) happens asynchronously
-	 * via the recv callback. We need to wait before sending BCCMDs.
-	 */
-	for (i = 0; i < 10; i++) {
-		msleep(100);
-	}
-
-	/*
-	 * CSR BD Address Configuration Sequence (from bcattach analysis):
-	 * 1. Send BDADDR PSKEY to implementation store
-	 * 2. Send WARM_RESET to apply the PSKEY
-	 * 3. Wait for chip to reset
-	 * 4. Re-establish BCSP link
-	 * 5. Continue with HCI initialization
-	 */
-
-	/* Step 1: Set BD address via BCCMD PSKEY */
-	BT_INFO("BCSP: Setting BD address to %pMR", &addr);
-	bcsp_send_bdaddr_bccmd(hu, &addr);
-	msleep(100);
-
-	/* Step 2: Send WARM_RESET to apply the PSKEY */
-	BT_INFO("BCSP: Sending WARM_RESET to apply BD address");
-	bcsp_send_warm_reset(hu);
-	msleep(50);
-
-	/* Step 3: Wait for chip to reset and clear our BCSP state */
-	BT_INFO("BCSP: Waiting for chip reset...");
-	msleep(300);
-
-	/* Step 4: Reset BCSP link state for re-establishment */
-	bcsp_reset_link_state(bcsp);
-
-	/* Step 5: Initiate new link establishment by sending sync packets */
-	BT_INFO("BCSP: Re-establishing BCSP link...");
-	for (i = 0; i < 20; i++) {
-		bcsp_send_sync(hu);
-		msleep(100);
-		/*
-		 * The chip should respond with sync_rsp, then we exchange
-		 * conf/conf_rsp via bcsp_handle_le_pkt() in the recv path.
-		 * After that, the link is re-established.
-		 */
-	}
-
-	BT_INFO("BCSP: BD address configuration complete");
 
 	return 0;
 }
@@ -1044,6 +1005,17 @@ static int bcsp_open(struct hci_uart *hu)
 
 	if (txcrc)
 		bcsp->use_crc = 1;
+
+	/* Initialize BD address configuration state */
+	bcsp->bdaddr_state = BCSP_BDADDR_NONE;
+	if (bdaddr && bdaddr[0]) {
+		if (bcsp_parse_bdaddr(bdaddr, &bcsp->bdaddr) == 0) {
+			bcsp->bdaddr_state = BCSP_BDADDR_PENDING;
+			BT_INFO("BCSP: Will configure BD address %s on link up", bdaddr);
+		} else {
+			BT_ERR("BCSP: Invalid bdaddr parameter: %s", bdaddr);
+		}
+	}
 
 	return 0;
 }
