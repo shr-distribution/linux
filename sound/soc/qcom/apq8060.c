@@ -377,11 +377,11 @@ static int apq8060_snd_hw_params(struct snd_pcm_substream *substream,
 		snd_soc_component_update_bits(component,
 			WM8994_POWER_MANAGEMENT_1, 0x0003, 0x0003);
 
-		/* Enable LINEOUT mixer routing */
+		/* Enable LINEOUT mixer routing (differential output) */
 		snd_soc_component_update_bits(component,
-			WM8994_LINE_MIXER_1, 0x40, 0x40);
+			WM8994_LINE_MIXER_1, 0x41, 0x41);
 		snd_soc_component_update_bits(component,
-			WM8994_LINE_MIXER_2, 0x40, 0x40);
+			WM8994_LINE_MIXER_2, 0x42, 0x42);
 
 		/* Enable LINEOUT outputs with full volume */
 		snd_soc_component_write(component,
@@ -582,6 +582,11 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1N Driver");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2P Driver");
 				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2N Driver");
+				/* LINEOUT mixer widgets - required to route signal to drivers */
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1P Mixer");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1N Mixer");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2P Mixer");
+				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2N Mixer");
 				snd_soc_dapm_sync(&component->dapm);
 
 				/*
@@ -605,17 +610,21 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 					WM8994_OUTPUT_MIXER_2, 0x01, 0x01);
 
 				/*
-				 * Enable Output Mixer → LINEOUT path for speakers:
-				 * Line Mixer 1 (0x34): MIXOUTL_TO_LINEOUT1P = bit 6
-				 * Line Mixer 2 (0x35): MIXOUTR_TO_LINEOUT2P = bit 6
-				 * The negative outputs (LINEOUT1N, LINEOUT2N) are
-				 * automatically handled for differential output.
+				 * Enable Output Mixer → LINEOUT path for speakers.
+				 * For differential output, both P and N must be driven.
+				 *
+				 * Line Mixer 1 (0x34):
+				 *   bit 6: MIXOUTL_TO_LINEOUT1P (Left to positive)
+				 *   bit 0: MIXOUTL_TO_LINEOUT1N (Left to negative)
+				 * Line Mixer 2 (0x35):
+				 *   bit 6: MIXOUTR_TO_LINEOUT2P (Right to positive)
+				 *   bit 1: MIXOUTR_TO_LINEOUT2N (Right to negative)
 				 */
-				dev_info(card->dev, "Enabling LINEOUT mixer routing\n");
+				dev_info(card->dev, "Enabling LINEOUT mixer routing (differential)\n");
 				snd_soc_component_update_bits(component,
-					WM8994_LINE_MIXER_1, 0x40, 0x40);
+					WM8994_LINE_MIXER_1, 0x41, 0x41);
 				snd_soc_component_update_bits(component,
-					WM8994_LINE_MIXER_2, 0x40, 0x40);
+					WM8994_LINE_MIXER_2, 0x42, 0x42);
 
 				/*
 				 * Enable LINEOUT outputs and set volume.
