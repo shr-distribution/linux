@@ -694,7 +694,56 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 	return count;
 }
 
-/* ---- BCCMD for BD Address ---- */
+/* ---- BCCMD support for CSR chip initialization ---- */
+
+/*
+ * CSR BCCMD constants
+ */
+#define BCCMD_SETREQ		0x0002
+#define BCCMD_VARID_PS		0x7003
+#define BCCMD_VARID_WARM_RESET	0x4002
+
+#define PSKEY_BDADDR		0x0001
+
+/*
+ * Send WARM_RESET BCCMD to apply PSKEY changes
+ * Format matches bcattach: 9 words (18 bytes) with 8 bytes padding
+ */
+static int bcsp_send_warm_reset(struct hci_uart *hu)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	struct sk_buff *skb;
+	u8 bccmd[18];
+
+	memset(bccmd, 0, sizeof(bccmd));
+
+	/* BCCMD header */
+	bccmd[0] = BCCMD_SETREQ & 0xff;
+	bccmd[1] = (BCCMD_SETREQ >> 8) & 0xff;
+	bccmd[2] = 0x09;	/* Length: 9 words (matches bcattach) */
+	bccmd[3] = 0x00;
+	bccmd[4] = 0x00;	/* SeqNo */
+	bccmd[5] = 0x00;
+	bccmd[6] = BCCMD_VARID_WARM_RESET & 0xff;
+	bccmd[7] = (BCCMD_VARID_WARM_RESET >> 8) & 0xff;
+	bccmd[8] = 0x00;	/* Status */
+	bccmd[9] = 0x00;
+	/* bytes 10-17 are zero padding (already cleared by memset) */
+
+	skb = alloc_skb(sizeof(bccmd), GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+
+	skb_put_data(skb, bccmd, sizeof(bccmd));
+	hci_skb_pkt_type(skb) = BCSP_BCCMD_PKT;
+
+	skb_queue_tail(&bcsp->unrel, skb);
+	hci_uart_tx_wakeup(hu);
+
+	BT_INFO("BCSP: Sent WARM_RESET to apply PSKEY changes");
+
+	return 0;
+}
 
 /*
  * Parse BD address string "XX:XX:XX:XX:XX:XX" into bdaddr_t
@@ -757,18 +806,18 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 	bccmd[15] = 0x00;	/* Length: 8 bytes (high byte) */
 
 	/*
-	 * BD Address in CSR PSKEY format:
-	 *   Word 0: LAP[23:16] (high byte of 24-bit LAP)
-	 *   Word 1: LAP[15:0]  (low 16 bits of LAP)
-	 *   Word 2: UAP
+	 * BD Address in CSR PSKEY format (from bcattach analysis):
+	 *   Word 0: LAP[7:0] with padding
+	 *   Word 1: LAP[23:16] | (LAP[15:8] << 8)
+	 *   Word 2: UAP with padding
 	 *   Word 3: NAP
 	 *
 	 * bdaddr_t.b[] = { LAP[0], LAP[1], LAP[2], UAP, NAP[0], NAP[1] }
 	 *              = { b[0],   b[1],   b[2],   b[3], b[4],   b[5]  }
 	 */
-	bccmd[16] = addr->b[2];	/* LAP[23:16] (low byte of word) */
-	bccmd[17] = 0x00;	/* LAP[23:16] (high byte of word) */
-	bccmd[18] = addr->b[0];	/* LAP[7:0] (low byte of word) */
+	bccmd[16] = addr->b[0];	/* LAP[7:0] (low byte of word) */
+	bccmd[17] = 0x00;	/* padding (high byte of word) */
+	bccmd[18] = addr->b[2];	/* LAP[23:16] (low byte of word) */
 	bccmd[19] = addr->b[1];	/* LAP[15:8] (high byte of word) */
 	bccmd[20] = addr->b[3];	/* UAP (low byte of word) */
 	bccmd[21] = 0x00;	/* UAP (high byte of word) */
@@ -794,31 +843,48 @@ static int bcsp_setup(struct hci_uart *hu)
 {
 	bdaddr_t addr;
 	int i;
+	bool has_bdaddr = false;
 
-	if (!bdaddr || !bdaddr[0])
+	/* Check if we have a BD address to set */
+	if (bdaddr && bdaddr[0]) {
+		if (bcsp_parse_bdaddr(bdaddr, &addr) < 0) {
+			BT_ERR("BCSP: Invalid bdaddr module parameter: %s",
+			       bdaddr);
+		} else {
+			has_bdaddr = true;
+		}
+	}
+
+	/* If no BD address specified, nothing to do */
+	if (!has_bdaddr)
 		return 0;
 
-	if (bcsp_parse_bdaddr(bdaddr, &addr) < 0) {
-		BT_ERR("BCSP: Invalid bdaddr module parameter: %s", bdaddr);
-		return 0;  /* Don't fail, just skip BD address setting */
-	}
+	BT_INFO("BCSP: Initializing CSR chip with BD address %s", bdaddr);
 
 	/*
 	 * Wait for BCSP link establishment to complete.
 	 * The link establishment (sync/conf/conf_rsp) happens asynchronously
-	 * via the recv callback. We need to wait before sending BCCMD.
+	 * via the recv callback. We need to wait before sending BCCMDs.
 	 */
 	for (i = 0; i < 10; i++) {
 		msleep(100);
-		/* Check if we can proceed - link should be stable after ~1 sec */
 	}
 
-	BT_INFO("BCSP: Setting BD address to %s via BCCMD", bdaddr);
+	/*
+	 * Send BDADDR PSKEY to persistent store (PS).
+	 * Note: We intentionally do NOT send WARM_RESET here because:
+	 * 1. WARM_RESET causes the chip to restart, breaking the BCSP link
+	 * 2. bcattach sends WARM_RESET then closes - we can't do that mid-session
+	 * 3. PSKEY written to PS store (0x0004) persists and may take effect
+	 *    on next power cycle or HCI reset
+	 */
 
+	/* Set BD address via BCCMD PSKEY */
+	BT_INFO("BCSP: Setting BD address to %pMR", &addr);
 	bcsp_send_bdaddr_bccmd(hu, &addr);
-
-	/* Give the chip time to process the BCCMD */
 	msleep(100);
+
+	BT_INFO("BCSP: BD address PSKEY sent to persistent store");
 
 	return 0;
 }
