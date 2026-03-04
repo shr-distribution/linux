@@ -319,6 +319,12 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 			 VFE_0_GLOBAL_RESET_CMD_BUS |
 			 VFE_0_GLOBAL_RESET_CMD_CAMIF |
 			 VFE_0_GLOBAL_RESET_CMD_CORE;
+	u32 hw_version, irq_status0, irq_status1;
+
+	/* Debug: Read HW version to verify VFE is accessible */
+	hw_version = readl_relaxed(vfe->base + VFE_0_HW_VERSION);
+	dev_info(vfe->camss->dev, "VFE reset: HW version=0x%08x base=%pK\n",
+		 hw_version, vfe->base);
 
 	/*
 	 * VFE31 reset sequence from webOS kernel:
@@ -349,7 +355,14 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	writel_relaxed(VFE_0_IRQ_MASK_1_RESET_ACK, vfe->base + VFE_0_IRQ_MASK_1);
 	wmb();
 
+	/* Debug: Check IRQ mask was written */
+	irq_status0 = readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0);
+	irq_status1 = readl_relaxed(vfe->base + VFE_0_IRQ_MASK_1);
+	dev_info(vfe->camss->dev, "VFE reset: IRQ masks after setup: 0=0x%08x 1=0x%08x\n",
+		 irq_status0, irq_status1);
+
 	/* Step 5: Issue reset command */
+	dev_info(vfe->camss->dev, "VFE reset: issuing reset cmd 0x%03x\n", reset_bits);
 	writel_relaxed(reset_bits, vfe->base + VFE_0_GLOBAL_RESET_CMD);
 }
 
