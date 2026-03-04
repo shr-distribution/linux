@@ -9,6 +9,7 @@
  * Copyright (C) 2015-2018 Linaro Ltd.
  */
 
+#include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -319,7 +320,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 			 VFE_0_GLOBAL_RESET_CMD_BUS |
 			 VFE_0_GLOBAL_RESET_CMD_CAMIF |
 			 VFE_0_GLOBAL_RESET_CMD_CORE;
-	u32 hw_version, irq_status0, irq_status1;
+	u32 hw_version;
 
 	/* Debug: Read HW version to verify VFE is accessible */
 	hw_version = readl_relaxed(vfe->base + VFE_0_HW_VERSION);
@@ -339,37 +340,58 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	/* Step 0: Enable all internal clock gates - required before accessing IRQ registers */
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
 	wmb();
-	dev_info(vfe->camss->dev, "VFE reset: CGC_OVERRIDE set to 0xFFFFFFFF\n");
+	/* Read back to verify and ensure write completes */
+	hw_version = readl_relaxed(vfe->base + VFE_0_CGC_OVERRIDE);
+	dev_info(vfe->camss->dev, "VFE reset: CGC_OVERRIDE set, readback=0x%08x\n", hw_version);
+
+	/* Small delay to let clock gates stabilize */
+	udelay(10);
 
 	/* Step 1: Disable all interrupts */
+	dev_info(vfe->camss->dev, "VFE reset: writing IRQ_MASK_0 at 0x%03x\n", VFE_0_IRQ_MASK_0);
 	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_0);
+	dev_info(vfe->camss->dev, "VFE reset: IRQ_MASK_0 done, writing IRQ_MASK_1\n");
 	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_1);
+	dev_info(vfe->camss->dev, "VFE reset: IRQ_MASK_1 done\n");
 
 	/* Step 2: Clear all pending interrupts */
+	dev_info(vfe->camss->dev, "VFE reset: clearing IRQ_CLEAR_0\n");
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_0);
+	dev_info(vfe->camss->dev, "VFE reset: clearing IRQ_CLEAR_1\n");
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_1);
 
 	/* Step 3: Trigger the clear */
+	dev_info(vfe->camss->dev, "VFE reset: writing IRQ_CMD\n");
 	writel_relaxed(VFE_0_IRQ_CMD_GLOBAL_CLEAR, vfe->base + VFE_0_IRQ_CMD);
 	wmb();
+	dev_info(vfe->camss->dev, "VFE reset: IRQ_CMD done\n");
 
 	/*
 	 * Step 4: Enable RESET_ACK interrupt.
 	 * Note: VFE31 reset acknowledge is in IRQ_STATUS_1 bit 22,
 	 * not IRQ_STATUS_0 bit 31 like later VFE versions.
 	 */
-	writel_relaxed(VFE_0_IRQ_MASK_1_RESET_ACK, vfe->base + VFE_0_IRQ_MASK_1);
-	wmb();
+	dev_info(vfe->camss->dev, "VFE reset: enabling RESET_ACK in IRQ_MASK_1\n");
+	/* Use writel with barrier to ensure IRQ mask is set before reset */
+	writel(VFE_0_IRQ_MASK_1_RESET_ACK, vfe->base + VFE_0_IRQ_MASK_1);
+	dev_info(vfe->camss->dev, "VFE reset: RESET_ACK enabled\n");
 
-	/* Debug: Check IRQ mask was written */
-	irq_status0 = readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0);
-	irq_status1 = readl_relaxed(vfe->base + VFE_0_IRQ_MASK_1);
-	dev_info(vfe->camss->dev, "VFE reset: IRQ masks after setup: 0=0x%08x 1=0x%08x\n",
-		 irq_status0, irq_status1);
-
-	/* Step 5: Issue reset command */
+	/* Step 5: Issue reset command - use writel with barrier as webOS does */
 	dev_info(vfe->camss->dev, "VFE reset: issuing reset cmd 0x%03x\n", reset_bits);
-	writel_relaxed(reset_bits, vfe->base + VFE_0_GLOBAL_RESET_CMD);
+	writel(reset_bits, vfe->base + VFE_0_GLOBAL_RESET_CMD);
+
+	/*
+	 * VFE31 on MSM8660: The reset IRQ doesn't fire and reading IRQ_STATUS
+	 * registers hangs the bus. Use a fixed delay - the reset takes about
+	 * 500us according to hardware docs. Don't call complete() here as
+	 * that causes context issues; instead we set a flag that vfe_reset()
+	 * checks to skip waiting.
+	 */
+	udelay(1000);
+	dev_info(vfe->camss->dev, "VFE reset: completed (no IRQ wait for VFE31)\n");
+
+	/* Set flag to indicate reset done - vfe_reset() will check this */
+	vfe->vfe31_reset_done = true;
 }
 
 static void vfe31_halt_request(struct vfe_device *vfe)

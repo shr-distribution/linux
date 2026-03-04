@@ -170,6 +170,8 @@ struct vfe_device {
 	bool camif_pending;
 	u8 camif_pending_wm;
 	enum vfe_line_id camif_pending_line_id;
+	/* VFE31: Reset done flag - IRQ doesn't work, use polling */
+	bool vfe31_reset_done;
 };
 
 struct camss_subdev_resources;

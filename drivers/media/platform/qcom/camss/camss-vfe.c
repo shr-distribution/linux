@@ -706,8 +706,16 @@ int vfe_reset(struct vfe_device *vfe)
 	unsigned long time;
 
 	reinit_completion(&vfe->reset_complete);
+	vfe->vfe31_reset_done = false;
 
 	vfe->res->hw_ops->global_reset(vfe);
+
+	/*
+	 * VFE31 on MSM8660: The reset IRQ doesn't fire. The global_reset
+	 * function uses a delay and sets vfe31_reset_done directly.
+	 */
+	if (vfe->vfe31_reset_done)
+		return 0;
 
 	time = wait_for_completion_timeout(&vfe->reset_complete,
 		msecs_to_jiffies(VFE_RESET_TIMEOUT_MS));
