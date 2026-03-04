@@ -160,35 +160,72 @@ The OUI `00:1D:FE` is registered to **Palm, Inc.**
 
 ### Setting the BD Address
 
-The BD address must be set after hciattach but before bringing up the interface.
-This requires either:
+The default address `00:02:5B:00:A5:A5` is the **CSR chip default** corresponding to
+PSKEY_BDADDR default value `{ 0x00A5A5, 0x5b, 0x0002 }`. This must be changed to
+the device's real address from tokens.
 
-1. **bdaddr tool** (from bluez-tools):
-   ```bash
-   bdaddr -i hci0 00:1D:FE:xx:xx:xx
-   ```
+**Method 1: Using bccmd (Recommended)**
 
-2. **Vendor-specific HCI command** (CSR/Broadcom):
-   ```bash
-   # CSR BCCMD to write BD address - format TBD
-   hcitool cmd 0x3F ...
-   ```
+The `bccmd` utility from BlueZ can set the BD address via BCSP:
 
-3. **hciattach with address parameter**:
-   ```bash
-   hciattach /dev/ttyMSM1 bcsp 115200 flow nosleep 00:1D:FE:xx:xx:xx
-   ```
+```bash
+# Format: bccmd -t bcsp -d <device> psset bdaddr <8 bytes in CSR format>
+# For address 00:1D:FE:85:64:A9, the bytes are reordered:
+bccmd -t bcsp -d /dev/ttyMSM1 psset bdaddr 85 00 A9 64 FE 00 1D 00
+bccmd -t bcsp -d /dev/ttyMSM1 warmreset
+```
+
+The CSR PSKEY_BDADDR format (8 bytes, little-endian uint16[4]):
+- Bytes 0-1: LAP upper 8 bits (high byte = 0)
+- Bytes 2-3: LAP lower 16 bits
+- Bytes 4-5: UAP (high byte = 0)
+- Bytes 6-7: NAP
+
+**Method 2: Using bdaddr tool**
+
+```bash
+bdaddr -i hci0 00:1D:FE:85:64:A9
+```
+
+**Method 3: Raw HCI vendor command**
+
+The BCCMD protocol uses HCI vendor command 0x3F with PSKEY 0x0001:
+```bash
+# This needs proper BCCMD framing - use bccmd tool instead
+```
+
+### BD Address Conversion
+
+To convert BD address to CSR PSKEY format:
+
+| Address | NAP | UAP | LAP | PSKEY bytes |
+|---------|-----|-----|-----|-------------|
+| 00:1D:FE:85:64:A9 | 00:1D | FE | 85:64:A9 | 85 00 A9 64 FE 00 1D 00 |
+| 00:02:5B:00:A5:A5 | 00:02 | 5B | 00:A5:A5 | 00 00 A5 A5 5B 00 02 00 |
 
 ### Updated Initialization Sequence
 
 ```bash
 # 1. Read BD address from tokens
-BDADDR=$(dd if=/dev/mmcblk0p12 bs=4096 2>/dev/null | strings -n 6 | grep -A1 'BToADDR' | tail -1)
+BDADDR=$(dd if=/dev/mmcblk0p12 bs=4096 count=256 2>/dev/null | \
+         strings -n 6 | grep -A1 '^BToADDR$' | tail -1)
+echo "BD Address from tokens: $BDADDR"
 
-# 2. Power on and attach with address
-hciattach /dev/ttyMSM1 bcsp 115200 flow nosleep $BDADDR
+# 2. Attach UART with BCSP (address set separately)
+hciattach /dev/ttyMSM1 bcsp 115200
 
-# 3. Unblock and bring up
+# 3. Convert and set BD address via bccmd
+# For 00:1D:FE:85:64:A9 -> 85 00 A9 64 FE 00 1D 00
+IFS=':' read -ra ADDR <<< "$BDADDR"
+PSKEY_BDADDR="${ADDR[3]} 00 ${ADDR[5]} ${ADDR[4]} ${ADDR[2]} 00 ${ADDR[1]} ${ADDR[0]}"
+bccmd -t bcsp -d /dev/ttyMSM1 psset bdaddr $PSKEY_BDADDR
+bccmd -t bcsp -d /dev/ttyMSM1 warmreset
+
+# 4. Re-attach after warmreset
+sleep 1
+hciattach /dev/ttyMSM1 bcsp 115200
+
+# 5. Unblock and bring up
 rfkill unblock bluetooth
 hciconfig hci0 up
 ```
