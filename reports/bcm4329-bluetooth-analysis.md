@@ -1,7 +1,7 @@
 # BCM4329 Bluetooth Analysis for HP TouchPad
 
 **Date:** March 2026
-**Status:** Working with manual hciattach using BCSP protocol (BD address settable via module parameter)
+**Status:** Working with manual hciattach using BCSP protocol (BD address requires full PSKEY init sequence)
 
 ## Summary
 
@@ -163,34 +163,34 @@ The OUI `00:1D:FE` is registered to **Palm, Inc.**
 The default address `00:02:5B:00:A5:A5` is the **CSR chip default** corresponding to
 PSKEY_BDADDR default value `{ 0x00A5A5, 0x5b, 0x0002 }`.
 
-**✓ SOLVED: BD Address via Kernel Module Parameter**
+**✗ ATTEMPTED: BD Address via Kernel Module Parameter**
 
-The BD address can now be set using the `hci_uart` module's `bdaddr` parameter.
-This sends a BCCMD packet on BCSP channel 2 during protocol initialization,
-**before** the HCI layer starts.
+We implemented a `bdaddr` module parameter in `hci_bcsp.c` that sends a BCCMD
+packet on BCSP channel 2 during `bcsp_setup()`. However, **this approach did not
+work** - the BD address remains at the default value.
 
 ```bash
-# Set BD address when loading the module
+# Attempted but did not work:
 modprobe hci_uart bdaddr=00:1D:FE:85:64:A9
 hciattach /dev/ttyMSM1 bcsp 115200
-
-# Or via kernel command line
-hci_uart.bdaddr=00:1D:FE:85:64:A9
+# BD address remains 00:02:5B:00:A5:A5
 ```
 
-The `bt-init.sh` script automatically reads the address from the device token
-partition and passes it to the module.
+**Root Cause:** Analysis of the Android bcattach tool revealed that the chip
+requires a **full PSKEY initialization sequence** (~50 BCCMD commands) before
+the BDADDR PSKEY will be accepted. Sending only PSKEY_BDADDR is not sufficient.
+
+See the "Android bcattach Tool Analysis" section below for details.
 
 **Why Standard Methods Don't Work:**
 
-Standard post-HCI methods fail because they send commands after HCI Reset:
+1. **Kernel module param (our attempt)** - Only sends BDADDR, chip needs full init
+2. **bdaddr tool (CSR method)** - Sends PSKEY after HCI is up; chip ignores it
+3. **Broadcom vendor command (0x3F 0x0001)** - Chip uses CSR firmware, not Broadcom
+4. **bccmd tool** - Not in BlueZ 5.x; would have same timing issue
 
-1. **bdaddr tool (CSR method)** - Sends PSKEY after HCI is up; chip ignores it
-2. **Broadcom vendor command (0x3F 0x0001)** - Chip uses CSR firmware, not Broadcom
-3. **bccmd tool** - Not in BlueZ 5.x; would have same timing issue
-
-**Solution:** Send BCCMD during BCSP link establishment, before HCI Reset.
-This is implemented in `drivers/bluetooth/hci_bcsp.c` via the `bcsp_setup()` callback.
+**Solution Required:** Use the bcattach userspace tool to send the full PSKEY
+initialization sequence before running hciattach. See recommendations below.
 
 ### Token Information (Reference Only)
 
@@ -400,15 +400,17 @@ ExecStartPost=/usr/bin/rfkill unblock bluetooth
 WantedBy=bluetooth.target
 ```
 
-### Option 2: Kernel Module Parameter (IMPLEMENTED)
+### Option 2: Kernel Module Parameter (IMPLEMENTED BUT INSUFFICIENT)
 
-BD address setting is now implemented directly in `hci_bcsp.c`:
+BD address setting is implemented in `hci_bcsp.c` but **does not work** because
+the chip requires the full PSKEY init sequence:
 
 - Module parameter: `hci_uart.bdaddr=XX:XX:XX:XX:XX:XX`
 - BCCMD sent during `bcsp_setup()` callback
-- No userspace tool needed
+- Code sends only PSKEY_BDADDR, which the chip ignores without full init
 
-See commit `d21cfc162a4a` for implementation details.
+The implementation remains in the kernel for potential future use if a minimal
+PSKEY subset can be identified.
 
 ### Option 3: Kernel Driver Enhancement
 
@@ -436,6 +438,120 @@ Investigate whether the BCM4329 can be configured to use H4 protocol
 through firmware patchram. The webOS ROM did not contain any .hcd firmware
 files, suggesting the chip may not require or support firmware patching.
 
+## Android bcattach Tool Analysis
+
+### Source Location
+
+- Repository: https://github.com/webOS-ports/utilities
+- Path: `tenderloin-halium/bcattach/main.c` (667 lines)
+
+### Key Finding: No External Firmware File
+
+**The bcattach tool does NOT load any external firmware file.** All BCCMD commands are
+hardcoded as raw byte arrays directly in the source code. This means the "firmware"
+for the BCM4329 Bluetooth chip is actually a sequence of **PSKEY configuration commands**.
+
+### Initialization Sequence Overview
+
+The bcattach tool performs the following sequence:
+
+| Phase | Lines | Description |
+|-------|-------|-------------|
+| 1. GPIO Setup | 108-170 | Reset chip via `/sys/user_hw/pins/bt/reset/level` |
+| 2. UART Config | 174-206 | Configure UART at 115200 baud with HSUART ioctls |
+| 3. BCSP Link | 216-238 | Link establishment (sync/conf packets, up to 100 retries) |
+| 4. PSKEY Writes | 239-436 | ~50 BCCMD PSKEY configuration commands |
+| 5. WARM_RESET | 436 | Apply all PSKEY changes (VarID 0x4002) |
+| 6. Close UART | 442 | Done with initialization |
+
+### PSKEY Commands Sent (Partial List)
+
+The tool sends configuration for many persistent store keys:
+
+| Line | PSKEY | Description |
+|------|-------|-------------|
+| 241 | 0x2819 | Unknown (first command after link) |
+| 246-282 | various | RF parameters, power levels |
+| **284** | **0x0001** | **PSKEY_BDADDR** (the BD address) |
+| 287-436 | various | More RF, audio, features |
+| **436** | **0x4002** | **WARM_RESET** (applies all changes) |
+
+### PSKEY_BDADDR Location
+
+The BD address setting is at **line 284**:
+
+```c
+write_fd(uart_fd,"\xc0\xf5\x82\x01\x87\x02\x00\x0c\x00\x00\x00\x03\x70\x00\x00\x01\x00\x04\x00\x08\x00\x86\x00\xad\x13\xfe\x00\x1d\x00\xc8\x07\xc0",32);
+```
+
+Decoded:
+- BD Address set: `00:1D:FE:86:13:AD` (hardcoded in the tool!)
+- This is NOT read from device tokens - it's a fixed value
+
+### WARM_RESET Command (Line 436)
+
+After all PSKEYs are written, a warm reset is required:
+
+```c
+write_fd(uart_fd,"\xc0\xc7\x22\x01\x15\x02\x00\x09\x00\x00\x00\x02\x40\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf5\xd2\xc0",26);
+```
+
+Decoded:
+- VarID: `0x4002` (WARM_RESET)
+- This tells the chip to apply all PSKEY changes
+
+### Dead Code / Planned Features (Lines 447-666)
+
+After `return 0;` at line 445, there is unreachable code that shows **planned but unused features**:
+
+1. **Baud rate switching to 3.68MHz** (line 454: `uart_mode.speed = 0x384000`)
+2. **Re-establishing BCSP link at high speed**
+3. **Device name setting** (line 575: "CSR - bc6")
+4. **N_HCI line discipline attachment** (lines 632-641)
+
+This dead code suggests the tool was meant to:
+1. Initialize at 115200
+2. Switch to 3.68MHz for faster operation
+3. Set device name
+4. Attach to kernel HCI via ioctl
+
+### Why Our Kernel-Only BDADDR Didn't Work
+
+Our implementation in `hci_bcsp.c` sends **only** the PSKEY_BDADDR command. Testing showed
+the BD address doesn't change because:
+
+1. **The chip requires the full PSKEY initialization sequence** - not just BDADDR
+2. **Many PSKEYs must be set before BDADDR** to properly configure the RF subsystem
+3. **A WARM_RESET is required after all PSKEYs** to apply the changes
+4. Sending BDADDR alone (even with timing delays) is not sufficient
+
+### Required Solution
+
+To properly set the BD address, we must either:
+
+1. **Use the bcattach userspace tool** (recommended)
+   - Modify it to read BD address from device tokens instead of hardcoded value
+   - Run it before hciattach
+
+2. **Port full PSKEY sequence to kernel** (not recommended)
+   - Would require ~200 lines of hardcoded BCCMD packets
+   - Not maintainable or suitable for upstream
+
+3. **Investigate minimal PSKEY set** (future research)
+   - Find which PSKEYs are truly required before BDADDR
+   - May reduce to a smaller subset
+
+### Recommendations
+
+**Short term:** Use modified bcattach tool that:
+1. Reads BD address from `/dev/mmcblk0p12` token partition
+2. Sends full PSKEY initialization sequence
+3. Sets correct BD address at line 284 position
+4. Then run standard hciattach
+
+**Long term:** Consider if bcattach can be simplified or if chip behavior can be
+better understood to reduce the required PSKEY set.
+
 ## References
 
 - WebOS kernel: `drivers/serial/bcm_bt_lpm.c` (GPIO handling only)
@@ -443,7 +559,7 @@ files, suggesting the chip may not require or support firmware patching.
 - Linux BCSP driver: `drivers/bluetooth/hci_bcsp.c`
 - Linux BCM driver: `drivers/bluetooth/hci_bcm.c`
 - Android bcattach tool: https://github.com/webOS-ports/utilities (`tenderloin-halium/bcattach/`)
-  - `main.c` - Raw BCCMD sequences including PSKEY_BDADDR
+  - `main.c` - Raw BCCMD sequences including PSKEY_BDADDR (line 284)
   - `hciattach.c` - BCSP link establishment and protocol handling
 
 ## Test Scripts
