@@ -2452,100 +2452,6 @@ static const struct of_device_id mmcc_msm8660_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, mmcc_msm8660_match_table);
 
-/* MSM8660 MMCC register offsets for initialization */
-#define SW_RESET_ALL_REG	0x0204
-#define SW_RESET_AHB_REG	0x020c
-#define SW_RESET_AXI_REG	0x0208
-#define SW_RESET_CORE_REG	0x0210
-#define AHB_EN_REG		0x0008
-#define AHB_EN2_REG		0x0038
-#define MAXI_EN_REG		0x0018
-#define MAXI_EN3_REG		0x002c
-#define SAXI_EN_REG		0x0030
-#define CSI_CC_REG		0x0040
-#define MISC_CC_REG		0x0058
-#define MISC_CC2_REG		0x005c
-#define GFX2D0_CC_REG		0x0060
-#define GFX2D1_CC_REG		0x0074
-#define GFX3D_CC_REG		0x0080
-#define IJPEG_CC_REG		0x0098
-#define JPEGD_CC_REG		0x00a4
-#define MDP_CC_REG		0x00c0
-#define PIXEL_CC_REG		0x00d4
-#define PIXEL_CC2_REG		0x0120
-#define ROT_CC_REG		0x00e0
-#define TV_CC_REG		0x00ec
-#define TV_CC2_REG		0x0124
-#define VCODEC_CC_REG		0x00f8
-#define VFE_CC_REG		0x0104
-#define VPE_CC_REG		0x0110
-
-static void mmcc_msm8660_init_hw(struct regmap *regmap)
-{
-	/*
-	 * MSM8660 MMCC hardware initialization based on webOS kernel.
-	 * This sets up FORCE_CORE_ON bits to prevent memory from being
-	 * collapsed when clocks are halted, which is critical for VFE
-	 * and other multimedia hardware to function properly.
-	 */
-
-	/* Deassert MM SW_RESET_ALL signal */
-	regmap_write(regmap, SW_RESET_ALL_REG, 0);
-
-	/*
-	 * Initialize MM AHB registers: Enable the FPB clock and disable HW
-	 * gating for all clocks. Also set VFE_AHB's FORCE_CORE_ON bit to
-	 * prevent its memory from being collapsed when the clock is halted.
-	 */
-	regmap_update_bits(regmap, AHB_EN_REG, 0x0f7fffff, 0x00000003);
-	regmap_update_bits(regmap, AHB_EN2_REG, 0x7fffbfff, 0x000007f9);
-
-	/* Deassert all locally-owned MM AHB resets */
-	regmap_update_bits(regmap, SW_RESET_AHB_REG, 0xfff7dfff, 0);
-
-	/*
-	 * Initialize MM AXI registers: Enable HW gating for all clocks that
-	 * support it. Also set FORCE_CORE_ON bits, and any sleep and wake-up
-	 * delays to safe values.
-	 */
-	regmap_update_bits(regmap, MAXI_EN_REG, 0x0fffffff, 0x000307f9);
-	regmap_write(regmap, MAXI_EN3_REG, 0x3fe7fcff);
-	regmap_write(regmap, SAXI_EN_REG, 0x000001d8);
-
-	/*
-	 * Initialize MM CC registers: Set MM FORCE_CORE_ON bits so that core
-	 * memories retain state even when not clocked. Also, set sleep and
-	 * wake-up delays to safe values.
-	 */
-	regmap_write(regmap, CSI_CC_REG, 0x00000000);
-	regmap_update_bits(regmap, MISC_CC_REG, 0xfefff3ff, 0x00000000);
-	regmap_update_bits(regmap, MISC_CC2_REG, 0xffff7fff, 0x000007fd);
-	regmap_write(regmap, GFX2D0_CC_REG, 0x80ff0000);
-	regmap_write(regmap, GFX2D1_CC_REG, 0x80ff0000);
-	regmap_write(regmap, GFX3D_CC_REG, 0x80ff0000);
-	regmap_write(regmap, IJPEG_CC_REG, 0x80ff0000);
-	regmap_write(regmap, JPEGD_CC_REG, 0x80ff0000);
-	/* MDP and PIXEL clocks may be running at boot, don't turn them off */
-	regmap_update_bits(regmap, MDP_CC_REG, 0xe0ff0000, 0x80ff0000);
-	regmap_update_bits(regmap, PIXEL_CC_REG, 0xe0ff0000, 0x80ff0000);
-	regmap_write(regmap, PIXEL_CC2_REG, 0x000004ff);
-	regmap_write(regmap, ROT_CC_REG, 0x80ff0000);
-	regmap_write(regmap, TV_CC_REG, 0x80ff0000);
-	regmap_write(regmap, TV_CC2_REG, 0x000004ff);
-	regmap_write(regmap, VCODEC_CC_REG, 0xc0ff0000);
-	regmap_write(regmap, VFE_CC_REG, 0x80ff0000);
-	regmap_write(regmap, VPE_CC_REG, 0x80ff0000);
-
-	/* De-assert MM AXI resets to all hardware blocks */
-	regmap_write(regmap, SW_RESET_AXI_REG, 0);
-
-	/* Deassert all MM core resets */
-	regmap_write(regmap, SW_RESET_CORE_REG, 0);
-
-	/* Set dsi_esc_clk to PXO/2, and the hdmi_app_clk src to PXO */
-	regmap_update_bits(regmap, MISC_CC2_REG, 0x424003, 0x400001);
-}
-
 static int mmcc_msm8660_probe(struct platform_device *pdev)
 {
 	struct regmap *regmap;
@@ -2553,9 +2459,6 @@ static int mmcc_msm8660_probe(struct platform_device *pdev)
 	regmap = qcom_cc_map(pdev, &mmcc_msm8660_desc);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
-
-	/* Initialize MMCC hardware before registering clocks */
-	mmcc_msm8660_init_hw(regmap);
 
 	return qcom_cc_really_probe(&pdev->dev, &mmcc_msm8660_desc, regmap);
 }
