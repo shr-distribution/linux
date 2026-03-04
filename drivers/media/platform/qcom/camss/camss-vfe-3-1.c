@@ -30,6 +30,7 @@
 #define VFE_0_GLOBAL_RESET_CMD_PM	BIT(6)
 #define VFE_0_GLOBAL_RESET_CMD_BUS_MISR	BIT(7)
 #define VFE_0_GLOBAL_RESET_CMD_TESTGEN	BIT(8)
+#define VFE_0_GLOBAL_RESET_CMD_AXI	BIT(9)
 
 #define VFE_0_CGC_OVERRIDE		0x00C
 #define VFE_0_CGC_OVERRIDE_1		0x00C
@@ -307,7 +308,9 @@ static inline void vfe31_reg_update_clear(struct vfe_device *vfe,
 
 static void vfe31_global_reset(struct vfe_device *vfe)
 {
-	u32 reset_bits = VFE_0_GLOBAL_RESET_CMD_TESTGEN |
+	/* webOS: bits 0-9 = 1 for full module reset (0x3FF) */
+	u32 reset_bits = VFE_0_GLOBAL_RESET_CMD_AXI |
+			 VFE_0_GLOBAL_RESET_CMD_TESTGEN |
 			 VFE_0_GLOBAL_RESET_CMD_BUS_MISR |
 			 VFE_0_GLOBAL_RESET_CMD_PM |
 			 VFE_0_GLOBAL_RESET_CMD_TIMER |
@@ -318,25 +321,35 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 			 VFE_0_GLOBAL_RESET_CMD_CORE;
 
 	/*
-	 * VFE31 requires CGC_OVERRIDE to enable internal clocks BEFORE
-	 * any reset or other operations. Without this, the VFE hardware
-	 * won't respond to register writes including the reset command.
-	 * This matches the webOS kernel vfe31_set_default_reg_values().
+	 * VFE31 reset sequence from webOS kernel:
+	 * 1. Disable all interrupts
+	 * 2. Clear all pending interrupts
+	 * 3. Trigger interrupt clear via IRQ_CMD
+	 * 4. Enable RESET_ACK interrupt
+	 * 5. Issue reset command
 	 */
-	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
+
+	/* Step 1: Disable all interrupts */
+	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_1);
+
+	/* Step 2: Clear all pending interrupts */
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_0);
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_1);
+
+	/* Step 3: Trigger the clear */
+	writel_relaxed(VFE_0_IRQ_CMD_GLOBAL_CLEAR, vfe->base + VFE_0_IRQ_CMD);
 	wmb();
 
 	/*
-	 * Enable RESET_ACK interrupt before triggering reset.
-	 * The vfe_reset() function waits for this interrupt to confirm
-	 * the reset completed. Without enabling it first, we get a timeout.
-	 *
+	 * Step 4: Enable RESET_ACK interrupt.
 	 * Note: VFE31 reset acknowledge is in IRQ_STATUS_1 bit 22,
 	 * not IRQ_STATUS_0 bit 31 like later VFE versions.
 	 */
 	writel_relaxed(VFE_0_IRQ_MASK_1_RESET_ACK, vfe->base + VFE_0_IRQ_MASK_1);
 	wmb();
 
+	/* Step 5: Issue reset command */
 	writel_relaxed(reset_bits, vfe->base + VFE_0_GLOBAL_RESET_CMD);
 }
 
