@@ -506,15 +506,21 @@ static void vfe31_enable_irq_common(struct vfe_device *vfe)
 	/*
 	 * Enable common IRQs. Note: VFE31 reset acknowledge is in
 	 * STATUS_1 bit 22, not STATUS_0 bit 31 like later VFE versions.
+	 *
+	 * IMPORTANT: VFE31 IRQ_MASK_0/1 registers are WRITE-ONLY!
+	 * Reading them hangs the bus. We use shadow registers to track
+	 * the current mask values.
 	 */
-	u32 val1 = VFE_0_IRQ_MASK_1_RESET_ACK |
-		   VFE_0_IRQ_MASK_1_VIOLATION |
-		   VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK;
+	vfe->irq_mask0_shadow = 0;
+	vfe->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK |
+				VFE_0_IRQ_MASK_1_VIOLATION |
+				VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK;
 
-	dev_info(vfe->camss->dev, "VFE31 enable_irq_common: mask1=0x%x\n", val1);
+	dev_info(vfe->camss->dev, "VFE31 enable_irq_common: mask0=0x%x mask1=0x%x\n",
+		 vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
 
-	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_0);
-	writel_relaxed(val1, vfe->base + VFE_0_IRQ_MASK_1);
+	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 }
 
 static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
@@ -1069,24 +1075,29 @@ static void vfe31_wm_set_framedrop_pattern(struct vfe_device *vfe, u8 wm,
 static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 				      enum vfe_line_id line_id, u8 enable)
 {
+	/*
+	 * IMPORTANT: VFE31 IRQ_MASK_0/1 registers are WRITE-ONLY!
+	 * Use shadow registers instead of read-modify-write.
+	 */
 	u32 val0 = VFE_0_IRQ_MASK_0_CAMIF_SOF |
 		   VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(comp) |
 		   VFE_0_IRQ_MASK_0_line_n_REG_UPDATE(VFE_LINE_PIX);
 	u32 val1 = VFE_0_IRQ_MASK_1_CAMIF_ERROR;
 
 	if (enable) {
-		vfe_reg_set(vfe, VFE_0_IRQ_MASK_0, val0);
-		vfe_reg_set(vfe, VFE_0_IRQ_MASK_1, val1);
+		vfe->irq_mask0_shadow |= val0;
+		vfe->irq_mask1_shadow |= val1;
 	} else {
-		vfe_reg_clr(vfe, VFE_0_IRQ_MASK_0, val0);
-		vfe_reg_clr(vfe, VFE_0_IRQ_MASK_1, val1);
+		vfe->irq_mask0_shadow &= ~val0;
+		vfe->irq_mask1_shadow &= ~val1;
 	}
+
+	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 
 	dev_info(vfe->camss->dev,
 		 "VFE31 IRQ pix_line: enable=%d mask0=0x%08x mask1=0x%08x\n",
-		 enable,
-		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0),
-		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_1));
+		 enable, vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
 }
 
 static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
@@ -1096,6 +1107,9 @@ static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 	 * VFE31: For RDI-style operation, we still need SOF interrupt
 	 * because the gen1 disable code waits for SOF completion.
 	 * Also enable REG_UPDATE since it's used for buffer management.
+	 *
+	 * IMPORTANT: VFE31 IRQ_MASK_0/1 registers are WRITE-ONLY!
+	 * Use shadow registers instead of read-modify-write.
 	 */
 	u32 val0 = VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm) |
 		   VFE_0_IRQ_MASK_0_CAMIF_SOF |
@@ -1104,18 +1118,19 @@ static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 		   VFE_0_IRQ_MASK_1_CAMIF_ERROR;
 
 	if (enable) {
-		vfe_reg_set(vfe, VFE_0_IRQ_MASK_0, val0);
-		vfe_reg_set(vfe, VFE_0_IRQ_MASK_1, val1);
+		vfe->irq_mask0_shadow |= val0;
+		vfe->irq_mask1_shadow |= val1;
 	} else {
-		vfe_reg_clr(vfe, VFE_0_IRQ_MASK_0, val0);
-		vfe_reg_clr(vfe, VFE_0_IRQ_MASK_1, val1);
+		vfe->irq_mask0_shadow &= ~val0;
+		vfe->irq_mask1_shadow &= ~val1;
 	}
+
+	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 
 	dev_info(vfe->camss->dev,
 		 "VFE31 IRQ wm_line: wm=%d line=%d enable=%d mask0=0x%08x mask1=0x%08x\n",
-		 wm, line_id, enable,
-		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0),
-		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_1));
+		 wm, line_id, enable, vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
 }
 
 static void vfe31_pm_domain_off(struct vfe_device *vfe)

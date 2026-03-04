@@ -172,6 +172,9 @@ struct vfe_device {
 	enum vfe_line_id camif_pending_line_id;
 	/* VFE31: Reset done flag - IRQ doesn't work, use polling */
 	bool vfe31_reset_done;
+	/* VFE31: Shadow registers for write-only IRQ_MASK registers */
+	u32 irq_mask0_shadow;
+	u32 irq_mask1_shadow;
 };
 
 struct camss_subdev_resources;
