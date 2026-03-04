@@ -327,13 +327,19 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 		 hw_version, vfe->base);
 
 	/*
-	 * VFE31 reset sequence from webOS kernel:
+	 * VFE31 reset sequence:
+	 * 0. Enable all internal clocks via CGC_OVERRIDE (required for register access)
 	 * 1. Disable all interrupts
 	 * 2. Clear all pending interrupts
 	 * 3. Trigger interrupt clear via IRQ_CMD
 	 * 4. Enable RESET_ACK interrupt
 	 * 5. Issue reset command
 	 */
+
+	/* Step 0: Enable all internal clock gates - required before accessing IRQ registers */
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
+	wmb();
+	dev_info(vfe->camss->dev, "VFE reset: CGC_OVERRIDE set to 0xFFFFFFFF\n");
 
 	/* Step 1: Disable all interrupts */
 	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_0);
