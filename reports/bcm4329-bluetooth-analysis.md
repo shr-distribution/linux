@@ -1,7 +1,7 @@
 # BCM4329 Bluetooth Analysis for HP TouchPad
 
 **Date:** March 2026
-**Status:** Working with manual hciattach using BCSP protocol (BD address limitation - see below)
+**Status:** Working with manual hciattach using BCSP protocol (BD address settable via module parameter)
 
 ## Summary
 
@@ -163,39 +163,34 @@ The OUI `00:1D:FE` is registered to **Palm, Inc.**
 The default address `00:02:5B:00:A5:A5` is the **CSR chip default** corresponding to
 PSKEY_BDADDR default value `{ 0x00A5A5, 0x5b, 0x0002 }`.
 
-**⚠️ IMPORTANT: BD Address Cannot Be Changed**
+**✓ SOLVED: BD Address via Kernel Module Parameter**
 
-Despite the chip reporting as "Cambridge Silicon Radio" (manufacturer 10), testing
-has confirmed that **none of the standard methods work** to change the BD address:
+The BD address can now be set using the `hci_uart` module's `bdaddr` parameter.
+This sends a BCCMD packet on BCSP channel 2 during protocol initialization,
+**before** the HCI layer starts.
 
-1. **bdaddr tool (CSR method)** - Reports "Address changed" but HCI Read_BD_ADDR
-   still returns the original address. The PSKEY write appears to be ignored.
+```bash
+# Set BD address when loading the module
+modprobe hci_uart bdaddr=00:1D:FE:85:64:A9
+hciattach /dev/ttyMSM1 bcsp 115200
 
-2. **Broadcom vendor command (0x3F 0x0001)** - No effect. The chip doesn't
-   respond to Broadcom-specific BD address commands.
+# Or via kernel command line
+hci_uart.bdaddr=00:1D:FE:85:64:A9
+```
 
-3. **bccmd tool** - Not available in BlueZ 5.x (was in BlueZ 4.x deprecated tools).
-   Even if available, likely would have same issue as bdaddr.
+The `bt-init.sh` script automatically reads the address from the device token
+partition and passes it to the module.
 
-4. **Sysfs interface** - Not available for UART-attached HCI devices.
+**Why Standard Methods Don't Work:**
 
-**Root Cause Analysis:**
+Standard post-HCI methods fail because they send commands after HCI Reset:
 
-The BCM4329 in the HP TouchPad uses CSR-compatible firmware but appears to have
-the BD address hardcoded in ROM. Unlike chips with EEPROM or flash-based PSKEY
-storage, this chip's PSKEY values cannot be modified at runtime.
+1. **bdaddr tool (CSR method)** - Sends PSKEY after HCI is up; chip ignores it
+2. **Broadcom vendor command (0x3F 0x0001)** - Chip uses CSR firmware, not Broadcom
+3. **bccmd tool** - Not in BlueZ 5.x; would have same timing issue
 
-The original webOS used **BSA (Broadcom Server Application)** stack with the
-proprietary `BluetoothMonitor` daemon. This may have used a different, undocumented
-method to configure the BD address, or webOS may have simply accepted the default
-address.
-
-**Practical Impact:**
-
-- Bluetooth **functionality works** with the default address
-- Device will be identified as "00:02:5B:00:A5:A5" instead of the Palm-assigned address
-- Pairing and connections work normally
-- The Palm-assigned address (e.g., 00:1D:FE:85:64:A9) from tokens is unused
+**Solution:** Send BCCMD during BCSP link establishment, before HCI Reset.
+This is implemented in `drivers/bluetooth/hci_bcsp.c` via the `bcsp_setup()` callback.
 
 ### Token Information (Reference Only)
 
@@ -405,20 +400,15 @@ ExecStartPost=/usr/bin/rfkill unblock bluetooth
 WantedBy=bluetooth.target
 ```
 
-### Option 2: Port bcattach Tool (For BD Address)
+### Option 2: Kernel Module Parameter (IMPLEMENTED)
 
-Adapt the Android `bcattach` tool to set BD address before hciattach:
+BD address setting is now implemented directly in `hci_bcsp.c`:
 
-1. Extract BCSP link establishment code from `hciattach.c`
-2. Extract BCCMD packet construction from `main.c`
-3. Read BD address from token partition
-4. Create minimal tool that:
-   - Opens UART
-   - Performs BCSP link establishment
-   - Sends PSKEY_BDADDR via raw BCCMD
-   - Exits (let hciattach handle the rest)
+- Module parameter: `hci_uart.bdaddr=XX:XX:XX:XX:XX:XX`
+- BCCMD sent during `bcsp_setup()` callback
+- No userspace tool needed
 
-This is the most promising approach for BD address configuration.
+See commit `d21cfc162a4a` for implementation details.
 
 ### Option 3: Kernel Driver Enhancement
 

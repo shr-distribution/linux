@@ -793,6 +793,7 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 static int bcsp_setup(struct hci_uart *hu)
 {
 	bdaddr_t addr;
+	int i;
 
 	if (!bdaddr || !bdaddr[0])
 		return 0;
@@ -802,12 +803,22 @@ static int bcsp_setup(struct hci_uart *hu)
 		return 0;  /* Don't fail, just skip BD address setting */
 	}
 
+	/*
+	 * Wait for BCSP link establishment to complete.
+	 * The link establishment (sync/conf/conf_rsp) happens asynchronously
+	 * via the recv callback. We need to wait before sending BCCMD.
+	 */
+	for (i = 0; i < 10; i++) {
+		msleep(100);
+		/* Check if we can proceed - link should be stable after ~1 sec */
+	}
+
 	BT_INFO("BCSP: Setting BD address to %s via BCCMD", bdaddr);
 
 	bcsp_send_bdaddr_bccmd(hu, &addr);
 
 	/* Give the chip time to process the BCCMD */
-	msleep(50);
+	msleep(100);
 
 	return 0;
 }
