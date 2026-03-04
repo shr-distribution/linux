@@ -1670,16 +1670,17 @@
 	 */
 	primary_i2s_pins: primary-i2s-state {
 		/*
-		 * I2S pins for WM8958 codec connection.
-		 * Q6 LPASS is master, generating BCLK, LRCLK and audio data.
-		 * WM8958 codec is slave, receiving clocks and data.
+		 * I2S clock pins for WM8958 codec connection.
+		 * Q6 LPASS is master, generating BCLK and LRCLK.
+		 * WM8958 codec is slave, receiving clocks.
 		 *
 		 * GPIO 108 = I2S WS (LRCLK / Word Select)
 		 * GPIO 109 = I2S SCK (BCLK / Bit Clock)
-		 * GPIO 110 = I2S SD0 (Serial Data - playback to codec)
 		 *
-		 * Note: GPIO 110 is free on WiFi variants. On 3G variants it's
-		 * used for BT_POWER, so 3G audio may need different routing.
+		 * Note: Audio data is routed internally through LPASS, NOT
+		 * via external GPIO. The webOS kernel only configures GPIO
+		 * 108/109 for audio - GPIO 110 is NOT used for I2S.
+		 * On 3G variants, GPIO 110 is used for BT_POWER.
 		 */
 		i2s-ws-pins {
 			pins = "gpio108";
@@ -1695,12 +1696,6 @@
 			bias-disable;
 			output-high;
 		};
-		i2s-data-pins {
-			pins = "gpio110";
-			function = "i2s";
-			drive-strength = <8>;
-			bias-disable;
-		};
 	};
 
 	/*
@@ -1710,12 +1705,13 @@
 	 * (legacy ports 0/1 in q6afe). We use SECONDARY_MI2S in the DT which
 	 * maps to LEGACY_PRIMARY_I2S via q6afe_port_to_legacy().
 	 *
-	 * Primary I2S signals on WiFi variants:
+	 * Primary I2S signals (same for WiFi and 3G variants):
 	 * - GPIO 108 = WS (Word Select / LRCLK)
 	 * - GPIO 109 = SCK (Bit Clock / BCLK)
-	 * - GPIO 110 = SD0 (Serial Data for playback)
 	 *
-	 * On 3G variants, GPIO 110 is used for BT_POWER instead.
+	 * Audio data is routed internally through LPASS, NOT via external
+	 * GPIO pins. The webOS kernel only configures GPIO 108/109 for
+	 * audio clocks - no GPIO data line is needed.
 	 */
 
 	/* Headphone UART pins */
@@ -2860,7 +2856,7 @@
 		 * WM8958 codec via the Primary I2S interface.
 		 */
 		pinctrl-names = "default";
-		pinctrl-0 = <&primary_i2s_pins>, <&class_d0_mpp>, <&class_d1_mpp>;
+		pinctrl-0 = <&primary_i2s_pins>;
 
 		/*
 		 * LPASS I2S clocks from LCC (LPASS Clock Controller).
@@ -2890,10 +2886,10 @@
 		 * Speakers use LINEOUT pins connected to external Class-D amplifiers.
 		 * The WM8958's internal SPKOUT Class-D driver is NOT connected.
 		 *
-		 * The external Class-D amplifiers are controlled by:
-		 * - WM8994 GPIO1 (internal to codec)
-		 * - PM8058 MPP10 (class-d0-gpios)
-		 * - PM8901 MPP0 (class-d1-gpios)
+		 * The external Class-D amplifiers are controlled ONLY by WM8994
+		 * GPIO1 (register 0x700 = 0x0041, output HIGH). Analysis of webOS
+		 * working audio shows all external SoC GPIOs (PM8901 MPPs) remain
+		 * LOW during active playback - WM8994 GPIO1 is the sole amp enable.
 		 *
 		 * MICBIAS is a SUPPLY widget in modern kernels, so can't be
 		 * in the signal path. The codec driver enables MICBIAS when
@@ -2908,10 +2904,6 @@
 			"Speaker", "LINEOUT2N",
 			"IN1LN", "Internal Mic",
 			"IN2LN", "Headset Mic";
-
-		/* External Class-D amplifier enable GPIOs */
-		class-d0-gpios = <&pm8058_mpps 11 GPIO_ACTIVE_HIGH>;  /* MPP11 = webOS GPIO 227 */
-		class-d1-gpios = <&pm8901_mpps 1 GPIO_ACTIVE_HIGH>;   /* MPP1 = webOS GPIO 229 */
 
 		/* Frontend - Multimedia playback (DPCM) */
 		mm1-dai-link {

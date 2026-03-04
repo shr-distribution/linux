@@ -39,9 +39,6 @@ struct apq8060_snd_data {
 	struct snd_soc_card card;
 	struct snd_soc_jack hp_jack;
 	struct gpio_desc *hp_jack_gpio;
-	/* External Class-D amplifier enable GPIOs */
-	struct gpio_desc *class_d0_gpio;	/* GPIO 227 */
-	struct gpio_desc *class_d1_gpio;	/* GPIO 229 */
 	/* FLL configuration tracking */
 	unsigned int fll_rate;
 	unsigned int bclk_rate;
@@ -59,12 +56,13 @@ struct apq8060_snd_data {
 /*
  * Speaker amplifier enable.
  *
- * The TouchPad uses external Class-D amplifiers controlled by:
- * 1. WM8994 GPIO_1 (0x41 = enabled)
- * 2. SoC GPIO 227 (CLASS_D0_EN)
- * 3. SoC GPIO 229 (CLASS_D1_EN)
+ * The TouchPad uses external Class-D amplifiers controlled ONLY by
+ * WM8994 GPIO1 (register 0x700). Analysis of webOS working audio shows
+ * that all external SoC GPIOs (PM8901 MPPs) remain LOW during active
+ * playback - WM8994 GPIO1 is the sole amplifier enable signal.
  *
- * All three must be enabled for speaker output.
+ * GPIO1 = 0x41 enables the external amplifier (output HIGH)
+ * GPIO1 = 0x01 disables the external amplifier (output LOW)
  *
  * Note: This is a card-level widget, so we must find the codec component
  * from the card rather than using snd_soc_dapm_to_component() which only
@@ -74,7 +72,6 @@ static int apq8060_spk_pwr_amp(struct snd_soc_dapm_widget *w,
 			       struct snd_kcontrol *k, int event)
 {
 	struct snd_soc_card *card = snd_soc_dapm_to_card(w->dapm);
-	struct apq8060_snd_data *data = snd_soc_card_get_drvdata(card);
 	struct snd_soc_component *component;
 
 	/* Find the WM8994 codec component - use strstr for partial match
@@ -89,21 +86,11 @@ static int apq8060_spk_pwr_amp(struct snd_soc_dapm_widget *w,
 
 found:
 	if (SND_SOC_DAPM_EVENT_ON(event)) {
-		dev_info(card->dev, "Enabling speaker amplifiers\n");
-		/* Enable WM8994 GPIO1 */
+		dev_info(card->dev, "Enabling speaker amplifier (WM8994 GPIO1)\n");
+		/* Enable WM8994 GPIO1 - sole amplifier control */
 		snd_soc_component_write(component, WM8994_GPIO_1, 0x41);
-		/* Enable external Class-D amplifiers */
-		if (data->class_d0_gpio)
-			gpiod_set_value_cansleep(data->class_d0_gpio, 1);
-		if (data->class_d1_gpio)
-			gpiod_set_value_cansleep(data->class_d1_gpio, 1);
 	} else {
-		dev_info(card->dev, "Disabling speaker amplifiers\n");
-		/* Disable external Class-D amplifiers */
-		if (data->class_d0_gpio)
-			gpiod_set_value_cansleep(data->class_d0_gpio, 0);
-		if (data->class_d1_gpio)
-			gpiod_set_value_cansleep(data->class_d1_gpio, 0);
+		dev_info(card->dev, "Disabling speaker amplifier (WM8994 GPIO1)\n");
 		/* Disable WM8994 GPIO1 */
 		snd_soc_component_write(component, WM8994_GPIO_1, 0x01);
 	}
@@ -799,28 +786,11 @@ static int apq8060_snd_platform_probe(struct platform_device *pdev)
 		dev_info(dev, "Got LPASS I2S mic clocks\n");
 
 	/*
-	 * Get external Class-D amplifier enable GPIOs.
-	 * The TouchPad has two external amps controlled by GPIO 227 and 229.
-	 * These must be enabled along with WM8994 GPIO1 for speaker output.
+	 * Note: External Class-D amplifier GPIOs are NOT needed.
+	 * Analysis of webOS working audio shows all external SoC GPIOs
+	 * (PM8901 MPPs) remain LOW during playback. WM8994 GPIO1 is the
+	 * sole amplifier enable, controlled via the codec's GPIO register.
 	 */
-	data->class_d0_gpio = devm_gpiod_get_optional(dev, "class-d0",
-						      GPIOD_OUT_LOW);
-	if (IS_ERR(data->class_d0_gpio)) {
-		ret = PTR_ERR(data->class_d0_gpio);
-		dev_err(dev, "Failed to get class-d0 GPIO: %d\n", ret);
-		return ret;
-	}
-
-	data->class_d1_gpio = devm_gpiod_get_optional(dev, "class-d1",
-						      GPIOD_OUT_LOW);
-	if (IS_ERR(data->class_d1_gpio)) {
-		ret = PTR_ERR(data->class_d1_gpio);
-		dev_err(dev, "Failed to get class-d1 GPIO: %d\n", ret);
-		return ret;
-	}
-
-	if (data->class_d0_gpio || data->class_d1_gpio)
-		dev_info(dev, "Got Class-D amplifier enable GPIOs\n");
 
 	card->driver_name = DRIVER_NAME;
 	card->dapm_widgets = apq8060_dapm_widgets;
