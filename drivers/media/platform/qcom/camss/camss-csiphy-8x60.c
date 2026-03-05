@@ -198,6 +198,11 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	val = readl(csiphy->base + MIPI_PHY_D0_CONTROL2);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D0_CONTROL2 read=0x%08x\n", csiphy->id, val);
 
+	/* Debug: Try writing to INTERRUPT_MASK (0x0C) first - simpler register */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing 0 to INTERRUPT_MASK (0x0C)\n", csiphy->id);
+	writel(0, csiphy->base + MIPI_INTERRUPT_MASK);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - INTERRUPT_MASK write succeeded\n", csiphy->id);
+
 	/*
 	 * MSM8660 register access sequence from webOS msm_camio_enable():
 	 * After clock enable, the FIRST register access must be to
