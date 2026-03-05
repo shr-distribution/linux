@@ -946,30 +946,62 @@ static int bcsp_setup(struct hci_uart *hu)
 	int i;
 
 	/*
-	 * BD address configuration is handled by the state machine in
-	 * bcsp_handle_le_pkt(). When conf_rsp is received:
-	 * - If bdaddr_state == PENDING: send BCCMD and WARM_RESET, wait for re-sync
-	 * - If bdaddr_state == SENT: mark as DONE
+	 * BD address configuration for CSR chips.
 	 *
-	 * We just need to wait for the state machine to complete.
+	 * Note: hciattach performs BCSP link establishment in userspace before
+	 * setting the line discipline. By the time bcsp_setup() is called, the
+	 * link is already established. We cannot intercept conf_rsp packets.
+	 *
+	 * Instead, we send BCCMD commands here after link establishment:
+	 * 1. Send PSKEY_BDADDR to set the BD address
+	 * 2. Send WARM_RESET to apply the change
+	 * 3. Wait for chip to reset and re-establish link
+	 * 4. Continue with HCI initialization
 	 */
-	if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING ||
-	    bcsp->bdaddr_state == BCSP_BDADDR_SENT) {
-		BT_INFO("BCSP: Waiting for BD address configuration...");
+	if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
+		BT_INFO("BCSP: Configuring BD address %pMR", &bcsp->bdaddr);
 
-		/* Wait up to 5 seconds for configuration to complete */
-		for (i = 0; i < 50; i++) {
-			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE)
+		/* Send BCCMD to set BD address */
+		bcsp_send_bdaddr_bccmd(hu, &bcsp->bdaddr);
+		msleep(50);
+
+		/* Send WARM_RESET to apply the PSKEY */
+		bcsp_send_warm_reset(hu);
+		msleep(50);
+
+		/* Give TX time to send the packets */
+		for (i = 0; i < 10; i++) {
+			if (skb_queue_empty(&bcsp->unrel))
 				break;
-			msleep(100);
+			msleep(50);
+			hci_uart_tx_wakeup(hu);
 		}
 
-		if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
-			BT_INFO("BCSP: BD address configuration successful");
-		} else {
-			BT_WARN("BCSP: BD address configuration may not have completed (state=%d)",
-				bcsp->bdaddr_state);
+		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
+
+		/* Wait for chip to reset */
+		msleep(500);
+
+		/* Reset our link state for re-establishment */
+		bcsp_reset_link_state(bcsp);
+
+		/*
+		 * Wait for chip to re-establish BCSP link.
+		 * The chip will send sync packets after reset, which
+		 * bcsp_handle_le_pkt() will respond to automatically.
+		 */
+		BT_INFO("BCSP: Waiting for link re-establishment...");
+		for (i = 0; i < 30; i++) {
+			msleep(100);
+			/* Check if we're receiving packets (link is up) */
+			if (bcsp->rxseq_txack > 0 || bcsp->rxack > 0) {
+				BT_INFO("BCSP: Link re-established");
+				break;
+			}
 		}
+
+		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		BT_INFO("BCSP: BD address configuration complete");
 	}
 
 	return 0;
