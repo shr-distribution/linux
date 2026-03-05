@@ -382,25 +382,24 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 
 	/*
 	 * VFE31 on MSM8660: The reset IRQ doesn't fire and reading IRQ_STATUS
-	 * registers hangs the bus. Use a fixed delay - the reset takes about
-	 * 500us according to hardware docs. Don't call complete() here as
-	 * that causes context issues; instead we set a flag that vfe_reset()
-	 * checks to skip waiting.
+	 * registers hangs the bus. Use a longer delay to ensure reset completes.
+	 * WebOS waits for RESET_ACK interrupt which we can't use.
 	 */
-	udelay(1000);
+	dev_info(vfe->camss->dev, "VFE reset: waiting for reset to complete\n");
+	mdelay(10);  /* 10ms delay to ensure reset completes */
 
 	/*
-	 * VFE reset clears CGC_OVERRIDE register. We must restore it before
-	 * any subsequent register access, otherwise reads will hang the bus.
+	 * VFE reset clears CGC_OVERRIDE register. Restore it using the same
+	 * value webOS uses (0xFFFFF - only lower 20 bits are implemented).
+	 * Do NOT try to read any registers immediately after reset - the VFE
+	 * may need additional settling time.
 	 */
-	dev_info(vfe->camss->dev, "VFE reset: restoring CGC_OVERRIDE\n");
-	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
+	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
 	wmb();
-	udelay(100);  /* Let clock gates stabilize */
 
-	/* Verify CGC_OVERRIDE was restored - this read tests if VFE is accessible */
-	hw_version = readl_relaxed(vfe->base + VFE_0_CGC_OVERRIDE);
-	dev_info(vfe->camss->dev, "VFE reset: CGC_OVERRIDE readback=0x%08x\n", hw_version);
+	/* Set default register values like webOS does after reset */
+	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_0);
+	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_1);
 
 	dev_info(vfe->camss->dev, "VFE reset: completed (no IRQ wait for VFE31)\n");
 
