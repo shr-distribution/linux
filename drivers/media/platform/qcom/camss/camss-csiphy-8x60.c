@@ -198,10 +198,26 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	val = readl(csiphy->base + MIPI_PHY_D0_CONTROL2);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D0_CONTROL2 read=0x%08x\n", csiphy->id, val);
 
-	/* Debug: Try writing to INTERRUPT_MASK (0x0C) first - simpler register */
+	/* Debug: Try writing to various registers to find which work */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing 0 to INTERRUPT_MASK (0x0C)\n", csiphy->id);
 	writel(0, csiphy->base + MIPI_INTERRUPT_MASK);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - INTERRUPT_MASK write succeeded\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - INTERRUPT_MASK (0x0C) write OK\n", csiphy->id);
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing 0x4 to PHY_CONTROL (0x00)\n", csiphy->id);
+	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - PHY_CONTROL (0x00) write OK\n", csiphy->id);
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to CALIBRATION_CONTROL (0x18)\n", csiphy->id);
+	writel(0, csiphy->base + MIPI_CALIBRATION_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - CALIBRATION_CONTROL (0x18) write OK\n", csiphy->id);
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to D1_CONTROL (0x20)\n", csiphy->id);
+	writel(0, csiphy->base + MIPI_PHY_D1_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D1_CONTROL (0x20) write OK\n", csiphy->id);
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to D0_CONTROL (0x34)\n", csiphy->id);
+	writel(0, csiphy->base + MIPI_PHY_D0_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D0_CONTROL (0x34) write OK\n", csiphy->id);
 
 	/*
 	 * MSM8660 register access sequence from webOS msm_camio_enable():
