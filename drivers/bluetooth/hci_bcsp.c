@@ -833,7 +833,7 @@ static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value)
 	bccmd[11] = (pskey >> 8) & 0xff;	/* PSKey (high) */
 	bccmd[12] = 0x01;		/* Length: 1 word (2 bytes) */
 	bccmd[13] = 0x00;
-	bccmd[14] = 0x08;		/* Stores: PSRAM */
+	bccmd[14] = 0x01;		/* Stores: PSI (persistent) */
 	bccmd[15] = 0x00;
 	bccmd[16] = value & 0xff;	/* Value (low) */
 	bccmd[17] = (value >> 8) & 0xff;	/* Value (high) */
@@ -956,8 +956,8 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 	bccmd[11] = 0x00;	/* PSKey: 0x0001 BDADDR (high byte) */
 	bccmd[12] = 0x04;	/* Length: 4 words = 8 bytes (low byte) */
 	bccmd[13] = 0x00;	/* Length: 4 words (high byte) */
-	bccmd[14] = 0x08;	/* Stores: 0x0008 PSRAM (low byte) */
-	bccmd[15] = 0x00;	/* Stores: 0x0008 PSRAM (high byte) */
+	bccmd[14] = 0x01;	/* Stores: 0x0001 PSI persistent (low byte) */
+	bccmd[15] = 0x00;	/* Stores: 0x0001 PSI persistent (high byte) */
 
 	/*
 	 * BD Address in CSR PSKEY format:
