@@ -469,7 +469,8 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	else if (!memcmp(&bcsp->rx_skb->data[4], conf_pkt, 4)) {
 		struct sk_buff *nskb = alloc_skb(4, GFP_ATOMIC);
 
-		BT_INFO("BCSP: conf received, responding with conf_rsp");
+		BT_INFO("BCSP: conf received, responding with conf_rsp (bdaddr_state=%d)",
+			bcsp->bdaddr_state);
 		if (!nskb)
 			return;
 		skb_put_data(nskb, conf_rsp_pkt, 4);
@@ -477,6 +478,16 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 
 		skb_queue_head(&bcsp->unrel, nskb);
 		hci_uart_tx_wakeup(hu);
+
+		/*
+		 * After sending conf_rsp, the link is established.
+		 * If we were waiting for re-establishment after BD address
+		 * config, mark it as complete now.
+		 */
+		if (bcsp->bdaddr_state == BCSP_BDADDR_SENT) {
+			BT_INFO("BCSP: Link re-established after BD address config");
+			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		}
 	}
 	/* Handle conf_rsp packet - link establishment complete */
 	else if (!memcmp(&bcsp->rx_skb->data[4], conf_rsp_pkt, 4)) {
@@ -979,8 +990,8 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
 
-		/* Wait for chip to reset */
-		msleep(500);
+		/* Wait for chip to reset - CSR needs time to process WARM_RESET */
+		msleep(1000);
 
 		/* Reset our link state for re-establishment */
 		bcsp_reset_link_state(bcsp);
@@ -989,18 +1000,25 @@ static int bcsp_setup(struct hci_uart *hu)
 		 * Wait for chip to re-establish BCSP link.
 		 * The chip will send sync packets after reset, which
 		 * bcsp_handle_le_pkt() will respond to automatically.
+		 * We detect link establishment by watching bdaddr_state
+		 * which is set to DONE when conf_rsp is received.
 		 */
 		BT_INFO("BCSP: Waiting for link re-establishment...");
-		for (i = 0; i < 30; i++) {
+		bcsp->bdaddr_state = BCSP_BDADDR_SENT;
+
+		for (i = 0; i < 50; i++) {
 			msleep(100);
-			/* Check if we're receiving packets (link is up) */
-			if (bcsp->rxseq_txack > 0 || bcsp->rxack > 0) {
-				BT_INFO("BCSP: Link re-established");
+			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
+				BT_INFO("BCSP: Link re-established with new BD address");
 				break;
 			}
 		}
 
-		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		if (bcsp->bdaddr_state != BCSP_BDADDR_DONE) {
+			BT_WARN("BCSP: Link re-establishment timeout, continuing anyway");
+			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		}
+
 		BT_INFO("BCSP: BD address configuration complete");
 	}
 
