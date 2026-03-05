@@ -393,8 +393,14 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 * VFE reset clears CGC_OVERRIDE register. We must restore it before
 	 * any subsequent register access, otherwise reads will hang the bus.
 	 */
+	dev_info(vfe->camss->dev, "VFE reset: restoring CGC_OVERRIDE\n");
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
 	wmb();
+	udelay(100);  /* Let clock gates stabilize */
+
+	/* Verify CGC_OVERRIDE was restored - this read tests if VFE is accessible */
+	hw_version = readl_relaxed(vfe->base + VFE_0_CGC_OVERRIDE);
+	dev_info(vfe->camss->dev, "VFE reset: CGC_OVERRIDE readback=0x%08x\n", hw_version);
 
 	dev_info(vfe->camss->dev, "VFE reset: completed (no IRQ wait for VFE31)\n");
 
