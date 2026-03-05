@@ -212,9 +212,15 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 * Try: PHY_CONTROL first, then D0_CONTROL2.
 	 */
 
+	/*
+	 * Use writel_relaxed with explicit wmb() barriers between writes.
+	 * The AXI bus may need explicit synchronization for CSI PHY registers.
+	 */
+
 	/* Step 1: PHY_CONTROL first (worked in earlier tests) */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Step 1 - PHY_CONTROL (0x00)\n", csiphy->id);
-	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
+	writel_relaxed(0x4, csiphy->base + MIPI_PHY_CONTROL);
+	wmb(); /* Ensure write completes before next access */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: PHY_CONTROL OK\n", csiphy->id);
 
 	/* Step 2: D0_CONTROL2 */
@@ -223,19 +229,22 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	      (0x0 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Step 2 - D0_CONTROL2 0x%08x\n", csiphy->id, val);
-	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
+	writel_relaxed(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
+	wmb(); /* Ensure write completes before next access */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 OK\n", csiphy->id);
 
 	/* Step 3: CL_CONTROL */
 	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Step 3 - CL_CONTROL (0x48)\n", csiphy->id);
-	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
+	writel_relaxed(val, csiphy->base + MIPI_PHY_CL_CONTROL);
+	wmb(); /* Ensure write completes before next access */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: CL_CONTROL OK\n", csiphy->id);
 
 	/* Step 4: SW_RST to PROTOCOL_CONTROL */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Step 4 - SW_RST to PROTOCOL_CONTROL (0x04)\n", csiphy->id);
-	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	wmb(); /* Ensure write completes before next access */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: SW_RST OK\n", csiphy->id);
 
 	/* PROTOCOL_CONTROL with config */
