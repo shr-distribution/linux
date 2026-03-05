@@ -190,127 +190,109 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
 	/*
-	 * Debug: Try reading a register first to see if read hangs too.
-	 * If read hangs, clocks are not properly enabled.
-	 * If read works but write hangs, something else is wrong.
-	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - attempting register read\n", csiphy->id);
-	val = readl(csiphy->base + MIPI_PHY_D0_CONTROL2);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D0_CONTROL2 read=0x%08x\n", csiphy->id, val);
-
-	/* Debug: Try writing to various registers to find which work */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing 0 to INTERRUPT_MASK (0x0C)\n", csiphy->id);
-	writel(0, csiphy->base + MIPI_INTERRUPT_MASK);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - INTERRUPT_MASK (0x0C) write OK\n", csiphy->id);
-
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing 0x4 to PHY_CONTROL (0x00)\n", csiphy->id);
-	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - PHY_CONTROL (0x00) write OK\n", csiphy->id);
-
-	/* Skip PROTOCOL_CONTROL SW_RST - it hangs. Try other registers */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to D1_CONTROL (0x20)\n", csiphy->id);
-	writel(0, csiphy->base + MIPI_PHY_D1_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D1_CONTROL (0x20) write OK\n", csiphy->id);
-
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to CAMERA_CNTL (0x24)\n", csiphy->id);
-	writel(0, csiphy->base + MIPI_CAMERA_CNTL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - CAMERA_CNTL (0x24) write OK\n", csiphy->id);
-
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to D0_CONTROL (0x34)\n", csiphy->id);
-	writel(0, csiphy->base + MIPI_PHY_D0_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D0_CONTROL (0x34) write OK\n", csiphy->id);
-
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to D0_CONTROL2 (0x38)\n", csiphy->id);
-	writel(0x140f0008, csiphy->base + MIPI_PHY_D0_CONTROL2);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D0_CONTROL2 (0x38) write OK\n", csiphy->id);
-
-	/*
-	 * MSM8660 register access sequence from webOS msm_camio_enable():
-	 * After clock enable, the FIRST register access must be to
-	 * D0_CONTROL2 (offset 0x38), NOT PHY_CONTROL (offset 0x00).
-	 * Writing to D0_CONTROL2/CL_CONTROL first "opens up" the register
-	 * space and allows subsequent access to lower addresses.
+	 * EXACT webOS sequence from msm_io_8x60.c:
 	 *
-	 * Sequence:
-	 * 1. D0-D3_CONTROL2, CL_CONTROL (from msm_camio_enable)
-	 * 2. PHY_CONTROL, PROTOCOL_CONTROL, CALIBRATION_CONTROL (from msm_camio_csi_config)
-	 * 3. D0-D3_CONTROL2, CL_CONTROL again with final values
-	 * 4. D0/D1/D2/D3_CONTROL, CAMERA_CNTL, INTERRUPT regs
+	 * msm_camio_enable() does ONLY:
+	 *   1. msleep(10)
+	 *   2. D0_CONTROL2, D1_CONTROL2, D2_CONTROL2, D3_CONTROL2 (LP_REC_EN=0)
+	 *   3. CL_CONTROL (LP_REC_EN=0)
+	 *
+	 * msm_camio_csi_config() does:
+	 *   1. PHY_CONTROL = 0x4
+	 *   2. SW_RST to PROTOCOL_CONTROL (0x8000000)
+	 *   3. PROTOCOL_CONTROL with config
+	 *   4. CALIBRATION_CONTROL
+	 *   5. D0-D3_CONTROL2 (LP_REC_EN=1)
+	 *   6. CL_CONTROL (LP_REC_EN=1)
+	 *   7. D0_CONTROL, D1_CONTROL, D2_CONTROL, D3_CONTROL
+	 *   8. CAMERA_CNTL
+	 *   9. Interrupts
+	 *
+	 * CRITICAL: D0_CONTROL2 must be written FIRST after msleep(10)!
 	 */
 
-	/* Step 1: D0-D3_CONTROL2 - MUST be first to enable register access */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 1 - D0-D3_CONTROL2 (initial)\n", csiphy->id);
+	/* Phase 1: msm_camio_enable() equivalent - D0_CONTROL2 FIRST */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - D0_CONTROL2 FIRST (webOS enable)\n", csiphy->id);
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - about to write 0x%08x to D0_CONTROL2\n", csiphy->id, val);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: writing 0x%08x to D0_CONTROL2 (0x38)\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 OK, writing D1/D2/D3_CONTROL2\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
 
-	/* Step 2: CL_CONTROL - initial config */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 2 - CL_CONTROL (initial)\n", csiphy->id);
 	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: writing CL_CONTROL (0x48)\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 complete\n", csiphy->id);
 
-	/* Step 3: PHY_CONTROL - now safe to access after D0_CONTROL2 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 3 - PHY_CONTROL\n", csiphy->id);
+	/* Phase 2: msm_camio_csi_config() equivalent */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 2 - PHY_CONTROL (webOS csi_config)\n", csiphy->id);
 	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: PHY_CONTROL OK\n", csiphy->id);
 
-	/* Step 4: PROTOCOL_CONTROL config (skip SW_RST - it causes hangs) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 4 - PROTOCOL_CONTROL\n", csiphy->id);
+	/* SW_RST - webOS does this, let's try it now that D0_CONTROL2 was written first */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: writing SW_RST to PROTOCOL_CONTROL (0x04)\n", csiphy->id);
+	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: SW_RST OK\n", csiphy->id);
+
+	/* PROTOCOL_CONTROL with config */
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
 	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
 	val |= (0x0 << MIPI_PROTOCOL_CONTROL_DATA_FORMAT_SHFT);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: PROTOCOL_CONTROL config 0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: PROTOCOL_CONTROL OK\n", csiphy->id);
 
-	/* Step 5: CALIBRATION_CONTROL - software calibration */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 5 - CALIBRATION_CONTROL\n", csiphy->id);
+	/* CALIBRATION_CONTROL */
 	val = (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_CAL_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_STRENGTH_OVERRIDE_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_CAL_SW_HW_MODE_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_MANUAL_OVERRIDE_EN_SHFT);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: CALIBRATION_CONTROL 0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: CALIBRATION_CONTROL OK\n", csiphy->id);
 
-	/* Step 6: D0-D3_CONTROL2 - final values with LP_REC_EN */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 6 - D0-D3_CONTROL2 (final)\n", csiphy->id);
+	/* D0-D3_CONTROL2 with LP_REC_EN=1 */
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: D0-D3_CONTROL2 (LP_REC_EN=1) 0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
 
-	/* Step 7: CL_CONTROL - final values with LP_REC_EN */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 7 - CL_CONTROL (final)\n", csiphy->id);
+	/* CL_CONTROL with LP_REC_EN=1 */
 	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
 	      (0x1 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: CL_CONTROL (LP_REC_EN=1)\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
 
-	/* Step 8: D0 HS receiver equalization */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 8 - D0_CONTROL\n", csiphy->id);
+	/* D0_CONTROL - HS receiver equalization */
 	val = 0 << MIPI_PHY_D0_CONTROL_HS_REC_EQ_SHFT;
+	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL);
 
-	/* Step 9: Enable PHY - release shutdown (CLK and DATA PHY) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 9 - D1_CONTROL (PHY enable)\n", csiphy->id);
+	/* D1_CONTROL - enable PHY (release shutdown) */
 	val = (0x1 << MIPI_PHY_D1_CONTROL_MIPI_CLK_PHY_SHUTDOWNB_SHFT) |
 	      (0x1 << MIPI_PHY_D1_CONTROL_MIPI_DATA_PHY_SHUTDOWNB_SHFT);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: D1_CONTROL (PHY enable)\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL);
 
-	/* Step 10: Disable unused D2/D3 lanes */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 10 - D2/D3_CONTROL\n", csiphy->id);
+	/* D2/D3_CONTROL - disable unused lanes */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: D2/D3_CONTROL (disable)\n", csiphy->id);
 	writel(0x00000000, csiphy->base + MIPI_PHY_D2_CONTROL);
 	writel(0x00000000, csiphy->base + MIPI_PHY_D3_CONTROL);
 
 	/*
-	 * Step 9: Configure lane assignment and count in CAMERA_CNTL
+	 * CAMERA_CNTL: Configure lane assignment and count
 	 *
 	 * MIPI_CAMERA_CNTL register format:
 	 *   [15:8] lane_assign - Physical to logical lane mapping
@@ -319,7 +301,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 *
 	 * From webOS kernel: all sensors use lane_assign = 0xe4
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 9 - CAMERA_CNTL\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: CAMERA_CNTL\n", csiphy->id);
 	switch (num_lanes) {
 	case 1:
 		val = 0xe4 << 8 | 0x4; /* 1 lane with identity mapping */
@@ -341,8 +323,8 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: CAMERA_CNTL=0x%08x\n",
 		 csiphy->id, val);
 
-	/* Step 10: Configure interrupts */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: step 10 - INTERRUPT config\n", csiphy->id);
+	/* Configure interrupts */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: INTERRUPT config\n", csiphy->id);
 	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_MASK);
 	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_STATUS);
 
