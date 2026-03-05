@@ -207,6 +207,11 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - PHY_CONTROL (0x00) write OK\n", csiphy->id);
 
+	/* webOS writes PROTOCOL_CONTROL before CALIBRATION_CONTROL */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to PROTOCOL_CONTROL (0x04)\n", csiphy->id);
+	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - PROTOCOL_CONTROL (0x04) write OK\n", csiphy->id);
+
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to CALIBRATION_CONTROL (0x18)\n", csiphy->id);
 	writel(0, csiphy->base + MIPI_CALIBRATION_CONTROL);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - CALIBRATION_CONTROL (0x18) write OK\n", csiphy->id);
