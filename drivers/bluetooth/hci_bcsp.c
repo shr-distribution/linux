@@ -990,8 +990,8 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
 
-		/* Wait for chip to reset - CSR needs time to process WARM_RESET */
-		msleep(1000);
+		/* Wait for chip to reset - CSR needs significant time */
+		msleep(2000);
 
 		/* Reset our link state for re-establishment */
 		bcsp_reset_link_state(bcsp);
@@ -1001,12 +1001,14 @@ static int bcsp_setup(struct hci_uart *hu)
 		 * The chip will send sync packets after reset, which
 		 * bcsp_handle_le_pkt() will respond to automatically.
 		 * We detect link establishment by watching bdaddr_state
-		 * which is set to DONE when conf_rsp is received.
+		 * which is set to DONE when conf is received.
+		 *
+		 * CSR chip can take 5+ seconds to fully reset and re-sync.
 		 */
 		BT_INFO("BCSP: Waiting for link re-establishment...");
 		bcsp->bdaddr_state = BCSP_BDADDR_SENT;
 
-		for (i = 0; i < 50; i++) {
+		for (i = 0; i < 80; i++) {
 			msleep(100);
 			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
 				BT_INFO("BCSP: Link re-established with new BD address");

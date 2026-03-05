@@ -22,6 +22,10 @@ DEVICE_PORT="22"
 DEVICE_USER="root"
 SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 
+# BD Address for the Bluetooth chip (set via hci_uart module parameter)
+# This is the HP TouchPad's Bluetooth MAC address
+BDADDR="00:1D:FE:85:64:A9"
+
 # Build directory for modules
 BUILD_BASE="/media/herrie/LuneOS/scarthgap/webos-ports/tmp-glibc/work/tenderloin-webos-linux-gnueabi/linux-hp-tenderloin/6.18+git/linux-tenderloin-standard-build"
 
@@ -112,6 +116,27 @@ deploy_modules() {
     success "Modules deployed to /tmp/"
 }
 
+power_on_bt() {
+    info "Powering on Bluetooth chip..."
+
+    # GPIO numbers (TLMM base 512 + pin number):
+    # GPIO 642 = BT_POWER (pin 130) - active high
+    # GPIO 650 = BT_RST_N (pin 138) - active low, set high to release
+    # GPIO 643 = BT_WAKE (pin 131) - active high
+    ssh_cmd "
+        for gpio in 642 650 643; do
+            echo \$gpio > /sys/class/gpio/export 2>/dev/null || true
+            echo out > /sys/class/gpio/gpio\$gpio/direction 2>/dev/null
+            echo 1 > /sys/class/gpio/gpio\$gpio/value 2>/dev/null
+        done
+    " || {
+        warn "Could not configure GPIOs (may already be set)"
+    }
+
+    sleep 1
+    success "Bluetooth chip powered on"
+}
+
 load_modules() {
     info "Loading Bluetooth modules..."
 
@@ -135,7 +160,14 @@ load_modules() {
         fi
     }
 
-    ssh_cmd "insmod /tmp/hci_uart.ko" || {
+    # Load hci_uart with BD address parameter
+    local bdaddr_param=""
+    if [[ -n "$BDADDR" ]]; then
+        bdaddr_param="bdaddr=$BDADDR"
+        info "Using BD address: $BDADDR"
+    fi
+
+    ssh_cmd "insmod /tmp/hci_uart.ko $bdaddr_param" || {
         if ssh_cmd "lsmod | grep -q '^hci_uart'"; then
             warn "hci_uart.ko already loaded"
         else
@@ -148,6 +180,22 @@ load_modules() {
 
     # Give driver time to initialize
     sleep 2
+}
+
+run_hciattach() {
+    info "Running hciattach for BCSP protocol..."
+
+    # Kill any existing hciattach
+    ssh_cmd "killall hciattach 2>/dev/null || true"
+    sleep 1
+
+    # Run hciattach with BCSP protocol
+    # The BD address configuration happens inside the driver during setup
+    ssh_cmd "timeout 30 hciattach -n /dev/ttyMSM1 bcsp 115200 &"
+
+    # Wait for HCI device to appear (with BD address config, this can take 10+ seconds)
+    info "Waiting for HCI device (BD address config may take up to 15 seconds)..."
+    sleep 15
 }
 
 check_hci_device() {
@@ -322,7 +370,9 @@ main() {
     if [[ $deploy -eq 1 ]]; then
         check_modules_exist
         deploy_modules
+        power_on_bt
         load_modules
+        run_hciattach
     fi
 
     if [[ $test -eq 1 ]]; then
