@@ -367,10 +367,14 @@ int vfe_gen1_enable(struct vfe_line *line)
 	mutex_lock(&vfe->stream_lock);
 
 	if (!vfe->stream_count) {
+		dev_info(vfe->camss->dev, "VFE gen1_enable: calling enable_irq_common\n");
 		vfe->ops_gen1->enable_irq_common(vfe);
+		dev_info(vfe->camss->dev, "VFE gen1_enable: calling bus_enable_wr_if\n");
 		vfe->ops_gen1->bus_enable_wr_if(vfe, 1);
+		dev_info(vfe->camss->dev, "VFE gen1_enable: calling set_qos/set_ds\n");
 		vfe->ops_gen1->set_qos(vfe);
 		vfe->ops_gen1->set_ds(vfe);
+		dev_info(vfe->camss->dev, "VFE gen1_enable: stream init done\n");
 	}
 
 	vfe->stream_count++;

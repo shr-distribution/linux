@@ -1329,14 +1329,21 @@ int vfe_get(struct vfe_device *vfe)
 		if (ret < 0)
 			goto error_reset;
 
+		dev_info(vfe->camss->dev, "VFE get: reset done, setting camif_pending=false\n");
+
 		/* Ensure clean CAMIF state for MSM8660 deferred enable */
 		vfe->camif_pending = false;
 
+		dev_info(vfe->camss->dev, "VFE get: calling vfe_reset_output_maps\n");
 		vfe_reset_output_maps(vfe);
 
+		dev_info(vfe->camss->dev, "VFE get: calling vfe_init_outputs\n");
 		vfe_init_outputs(vfe);
 
+		dev_info(vfe->camss->dev, "VFE get: calling hw_version\n");
 		vfe->res->hw_ops->hw_version(vfe);
+
+		dev_info(vfe->camss->dev, "VFE get: all init complete\n");
 	} else {
 		ret = vfe_check_clock_rates(vfe);
 		if (ret < 0)
