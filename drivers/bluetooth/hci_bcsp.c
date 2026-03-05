@@ -899,19 +899,19 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 
 	/*
 	 * BD Address in CSR PSKEY format:
-	 *   Word 0: LAP[7:0] in bits 7:0
-	 *   Word 1: LAP[15:8] in bits 7:0, LAP[23:16] in bits 15:8
-	 *   Word 2: UAP in bits 7:0
+	 *   Word 0: LAP[15:8] | (LAP[23:16] << 8)
+	 *   Word 1: LAP[7:0] with padding
+	 *   Word 2: UAP with padding
 	 *   Word 3: NAP (little endian)
 	 *
 	 * bdaddr_t.b[] stores address in little endian:
 	 *   b[0]=LAP[7:0], b[1]=LAP[15:8], b[2]=LAP[23:16],
 	 *   b[3]=UAP, b[4]=NAP[7:0], b[5]=NAP[15:8]
 	 */
-	bccmd[16] = addr->b[0];	/* Word 0 low: LAP[7:0] */
-	bccmd[17] = 0x00;	/* Word 0 high: padding */
-	bccmd[18] = addr->b[1];	/* Word 1 low: LAP[15:8] */
-	bccmd[19] = addr->b[2];	/* Word 1 high: LAP[23:16] */
+	bccmd[16] = addr->b[1];	/* Word 0 low: LAP[15:8] */
+	bccmd[17] = addr->b[2];	/* Word 0 high: LAP[23:16] */
+	bccmd[18] = addr->b[0];	/* Word 1 low: LAP[7:0] */
+	bccmd[19] = 0x00;	/* Word 1 high: padding */
 	bccmd[20] = addr->b[3];	/* Word 2 low: UAP */
 	bccmd[21] = 0x00;	/* Word 2 high: padding */
 	bccmd[22] = addr->b[4];	/* Word 3 low: NAP[7:0] */
