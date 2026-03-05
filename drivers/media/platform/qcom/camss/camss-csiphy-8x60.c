@@ -155,6 +155,13 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
 	/*
+	 * MSM8660 workaround: webOS msm_camio_enable() has msleep(10) after
+	 * enabling all CSI clocks and before any register access. This delay
+	 * is required for the hardware to stabilize after clock enable.
+	 */
+	msleep(10);
+
+	/*
 	 * Full CSI init sequence following webOS msm_camio_csi_config():
 	 * PHY_CONTROL -> config registers
 	 */
