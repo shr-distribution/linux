@@ -1670,17 +1670,16 @@
 	 */
 	primary_i2s_pins: primary-i2s-state {
 		/*
-		 * I2S clock pins for WM8958 codec connection.
-		 * Q6 LPASS is master, generating BCLK and LRCLK.
-		 * WM8958 codec is slave, receiving clocks.
+		 * I2S pins for WM8958 codec connection.
+		 * Q6 LPASS is master, generating BCLK, LRCLK, and driving data.
+		 * WM8958 codec is slave, receiving clocks and data.
 		 *
 		 * GPIO 108 = I2S WS (LRCLK / Word Select)
 		 * GPIO 109 = I2S SCK (BCLK / Bit Clock)
+		 * GPIO 110 = I2S SD0 (Data Out to codec)
 		 *
-		 * Note: Audio data is routed internally through LPASS, NOT
-		 * via external GPIO. The webOS kernel only configures GPIO
-		 * 108/109 for audio - GPIO 110 is NOT used for I2S.
-		 * On 3G variants, GPIO 110 is used for BT_POWER.
+		 * Note: On 3G variants, GPIO 110 is used for BT_POWER instead.
+		 * The 3G device tree should override this pinctrl.
 		 */
 		i2s-ws-pins {
 			pins = "gpio108";
@@ -1695,6 +1694,13 @@
 			drive-strength = <8>;
 			bias-disable;
 			output-high;
+		};
+		i2s-data-pins {
+			pins = "gpio110";
+			function = "i2s";
+			drive-strength = <8>;
+			bias-disable;
+			output-low;
 		};
 	};
 
