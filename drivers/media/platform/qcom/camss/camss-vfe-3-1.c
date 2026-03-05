@@ -376,32 +376,24 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	writel(VFE_0_IRQ_MASK_1_RESET_ACK, vfe->base + VFE_0_IRQ_MASK_1);
 	dev_info(vfe->camss->dev, "VFE reset: RESET_ACK enabled\n");
 
-	/* Step 5: Issue reset command - use writel with barrier as webOS does */
-	dev_info(vfe->camss->dev, "VFE reset: issuing reset cmd 0x%03x\n", reset_bits);
-	writel(reset_bits, vfe->base + VFE_0_GLOBAL_RESET_CMD);
-
 	/*
-	 * VFE31 on MSM8660: The reset IRQ doesn't fire and reading IRQ_STATUS
-	 * registers hangs the bus. Use a longer delay to ensure reset completes.
-	 * WebOS waits for RESET_ACK interrupt which we can't use.
+	 * VFE31 on MSM8660: Skip issuing the reset command entirely.
+	 * The reset command (0x3ff) causes the system to hang, possibly
+	 * because it affects system buses or clocks. Instead, just set
+	 * up the default register values and continue.
+	 *
+	 * TODO: Investigate if a partial reset (0x3ef like STOP_CMD) works,
+	 * or if we need to handle reset differently.
 	 */
-	dev_info(vfe->camss->dev, "VFE reset: waiting for reset to complete\n");
-	mdelay(10);  /* 10ms delay to ensure reset completes */
-
-	/*
-	 * VFE reset clears CGC_OVERRIDE register. Restore it using the same
-	 * value webOS uses (0xFFFFF - only lower 20 bits are implemented).
-	 * Do NOT try to read any registers immediately after reset - the VFE
-	 * may need additional settling time.
-	 */
-	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
-	wmb();
+	dev_info(vfe->camss->dev, "VFE reset: SKIPPING reset cmd (causes hang on MSM8660)\n");
 
 	/* Set default register values like webOS does after reset */
+	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
 	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_0);
 	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_1);
+	wmb();
 
-	dev_info(vfe->camss->dev, "VFE reset: completed (no IRQ wait for VFE31)\n");
+	dev_info(vfe->camss->dev, "VFE reset: completed (no actual reset for VFE31)\n");
 
 	/* Set flag to indicate reset done - vfe_reset() will check this */
 	vfe->vfe31_reset_done = true;
