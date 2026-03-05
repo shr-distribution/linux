@@ -42,6 +42,20 @@ static char *bdaddr;
 #define BCSP_LE_PKT	0x06
 #define BCSP_BCCMD_PKT	0x07
 
+/* BCCMD constants */
+#define BCCMD_SETREQ		0x0002
+#define BCCMD_VARID_PS		0x7003
+#define BCCMD_VARID_WARM_RESET	0x4002
+
+/* PSKEY definitions for CSR chip configuration */
+#define PSKEY_BDADDR			0x0001
+#define PSKEY_ANA_FREQ			0x01F6	/* External crystal frequency */
+#define PSKEY_LC_MAX_TX_POWER		0x0017	/* Maximum TX power level */
+#define PSKEY_LC_DEFAULT_TX_POWER	0x0021	/* Default TX power level */
+
+/* Crystal frequency value for 26MHz external crystal */
+#define ANA_FREQ_26MHZ			0x0019
+
 struct bcsp_struct {
 	struct sk_buff_head unack;	/* Unack'ed packets queue */
 	struct sk_buff_head rel;	/* Reliable packets queue */
@@ -408,6 +422,7 @@ static void bcsp_pkt_cull(struct bcsp_struct *bcsp)
 /* Forward declarations for BCCMD functions used in link establishment */
 static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr);
 static int bcsp_send_warm_reset(struct hci_uart *hu);
+static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value);
 static void bcsp_reset_link_state(struct bcsp_struct *bcsp);
 
 /* Handle BCSP link-establishment packets.
@@ -495,7 +510,14 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 			bcsp->bdaddr_state);
 
 		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
-			BT_INFO("BCSP: First link up, sending BD address config");
+			BT_INFO("BCSP: First link up, sending critical PSKEYs + BD address");
+
+			/* Send critical RF configuration PSKEYs first */
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0004);
+			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x0004);
+
+			/* Send BD address and WARM_RESET */
 			bcsp_send_bdaddr_bccmd(hu, &bcsp->bdaddr);
 			bcsp_send_warm_reset(hu);
 			bcsp->bdaddr_state = BCSP_BDADDR_SENT;
@@ -783,13 +805,53 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 /* ---- BCCMD support for CSR chip initialization ---- */
 
 /*
- * CSR BCCMD constants
+ * Send a single-word PSKEY via BCCMD
+ * Used for simple configuration values like ANA_FREQ, TX power, etc.
  */
-#define BCCMD_SETREQ		0x0002
-#define BCCMD_VARID_PS		0x7003
-#define BCCMD_VARID_WARM_RESET	0x4002
+static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	struct sk_buff *skb;
+	u8 bccmd[18];
 
-#define PSKEY_BDADDR		0x0001
+	memset(bccmd, 0, sizeof(bccmd));
+
+	/* BCCMD header */
+	bccmd[0] = BCCMD_SETREQ & 0xff;
+	bccmd[1] = (BCCMD_SETREQ >> 8) & 0xff;
+	bccmd[2] = 0x09;	/* Length: 9 words (18 bytes) */
+	bccmd[3] = 0x00;
+	bccmd[4] = 0x00;	/* SeqNo */
+	bccmd[5] = 0x00;
+	bccmd[6] = BCCMD_VARID_PS & 0xff;
+	bccmd[7] = (BCCMD_VARID_PS >> 8) & 0xff;
+	bccmd[8] = 0x00;	/* Status */
+	bccmd[9] = 0x00;
+
+	/* PS payload */
+	bccmd[10] = pskey & 0xff;	/* PSKey (low) */
+	bccmd[11] = (pskey >> 8) & 0xff;	/* PSKey (high) */
+	bccmd[12] = 0x01;		/* Length: 1 word (2 bytes) */
+	bccmd[13] = 0x00;
+	bccmd[14] = 0x08;		/* Stores: PSRAM */
+	bccmd[15] = 0x00;
+	bccmd[16] = value & 0xff;	/* Value (low) */
+	bccmd[17] = (value >> 8) & 0xff;	/* Value (high) */
+
+	skb = alloc_skb(sizeof(bccmd), GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+
+	skb_put_data(skb, bccmd, sizeof(bccmd));
+	hci_skb_pkt_type(skb) = BCSP_BCCMD_PKT;
+
+	skb_queue_tail(&bcsp->unrel, skb);
+	hci_uart_tx_wakeup(hu);
+
+	BT_INFO("BCSP: Set PSKEY 0x%04x = 0x%04x", pskey, value);
+
+	return 0;
+}
 
 /*
  * Send WARM_RESET BCCMD to apply PSKEY changes
@@ -971,7 +1033,26 @@ static int bcsp_setup(struct hci_uart *hu)
 	 * 4. Continue with HCI initialization
 	 */
 	if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
-		BT_INFO("BCSP: Configuring BD address %pMR", &bcsp->bdaddr);
+		BT_INFO("BCSP: Configuring chip with critical PSKEYs");
+
+		/*
+		 * Send critical PSKEYs required before BDADDR.
+		 * Analysis of bcattach shows these are needed for RF to work:
+		 * - PSKEY_ANA_FREQ: 26MHz external crystal configuration
+		 * - TX power settings for proper radio operation
+		 */
+
+		/* PSKEY_ANA_FREQ = 25 (0x19) for 26MHz crystal - CRITICAL! */
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
+		msleep(20);
+
+		/* TX power configuration */
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0004);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x0004);
+		msleep(20);
+
+		BT_INFO("BCSP: Setting BD address %pMR", &bcsp->bdaddr);
 
 		/* Send BCCMD to set BD address */
 		bcsp_send_bdaddr_bccmd(hu, &bcsp->bdaddr);
