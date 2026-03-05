@@ -459,6 +459,52 @@ check_dmesg() {
     run_on_device "dmesg | grep -i 'src_port\|dest_port\|open_write' | tail -5"
 }
 
+# Enable Class-D amplifier via PM8901 MPP3 GPIO
+# The external Class-D amplifier (TPA2016) is controlled by PM8901 MPP3
+# This GPIO must be set HIGH to enable speaker output
+enable_class_d_amplifier() {
+    log_step "Enabling Class-D amplifier (PM8901 MPP3)..."
+
+    # Find the PM8901 MPP GPIO chip base
+    # gpiochip with label containing "pmic8901:mpps" is what we need
+    local gpio_base=$(run_on_device "for chip in /sys/class/gpio/gpiochip*; do
+        label=\$(cat \$chip/label 2>/dev/null)
+        if echo \"\$label\" | grep -q 'pmic8901.*mpps'; then
+            cat \$chip/base
+            break
+        fi
+    done")
+
+    if [ -z "$gpio_base" ]; then
+        log_error "Could not find PM8901 MPP GPIO chip"
+        return 1
+    fi
+
+    # MPP3 is at base + 2 (MPP1=base+0, MPP2=base+1, MPP3=base+2)
+    local gpio_num=$((gpio_base + 2))
+    log_info "PM8901 MPP3 is GPIO $gpio_num (base=$gpio_base)"
+
+    # Export GPIO if not already exported
+    run_on_device "echo $gpio_num > /sys/class/gpio/export 2>/dev/null || true"
+
+    # Set direction to output and value to HIGH
+    run_on_device "echo out > /sys/class/gpio/gpio${gpio_num}/direction 2>/dev/null"
+    run_on_device "echo 1 > /sys/class/gpio/gpio${gpio_num}/value"
+
+    # Verify
+    local value=$(run_on_device "cat /sys/class/gpio/gpio${gpio_num}/value 2>/dev/null")
+    if [ "$value" = "1" ]; then
+        log_result "Class-D amplifier GPIO $gpio_num set HIGH"
+    else
+        log_error "Failed to set Class-D amplifier GPIO"
+        return 1
+    fi
+
+    # Also show the GPIO debug state for confirmation
+    log_info "PM8901 MPP GPIO states:"
+    run_on_device "cat /sys/kernel/debug/gpio 2>/dev/null | grep -A5 'pmic8901:mpps'"
+}
+
 # Main
 main() {
     echo "=============================================="
@@ -511,6 +557,7 @@ main() {
     start_lpass
     sleep 2
     check_sound_card || exit 1
+    enable_class_d_amplifier
     configure_mixer
     test_playback
     check_dmesg
