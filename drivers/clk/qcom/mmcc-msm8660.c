@@ -1644,6 +1644,12 @@ static struct clk_rcg vfe_src = {
 static struct clk_branch vfe_clk = {
 	.halt_reg = 0x01cc,
 	.halt_bit = 6,
+	/*
+	 * VFE clock halt status is unreliable when VFE is not actively
+	 * processing data. Use BRANCH_HALT_SKIP to avoid timeouts during
+	 * clock enable before camera streaming starts.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0104,
 		.enable_mask = BIT(0),
