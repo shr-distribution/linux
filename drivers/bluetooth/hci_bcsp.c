@@ -424,10 +424,20 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	u8 sync_rsp_pkt[4] = { 0xac, 0xaf, 0xef, 0xee };
 	u8 conf_pkt[4]     = { 0xad, 0xef, 0xac, 0xed };
 	u8 conf_rsp_pkt[4] = { 0xde, 0xad, 0xd0, 0xd0 };
+	u8 len_nibble, len_high;
 
-	/* Check packet has payload */
-	if (bcsp->rx_skb->data[1] >> 4 != 4 || bcsp->rx_skb->data[2] != 0)
+	/* Debug: log LE packet reception */
+	len_nibble = bcsp->rx_skb->data[1] >> 4;
+	len_high = bcsp->rx_skb->data[2];
+	BT_DBG("BCSP LE pkt: hdr[0]=%02x hdr[1]=%02x hdr[2]=%02x len=%d",
+	       bcsp->rx_skb->data[0], bcsp->rx_skb->data[1],
+	       bcsp->rx_skb->data[2], (len_high << 4) | len_nibble);
+
+	/* Check packet has 4-byte payload (link establishment packets) */
+	if (len_nibble != 4 || len_high != 0) {
+		BT_DBG("BCSP LE pkt: not a 4-byte LE pkt, ignoring");
 		return;
+	}
 
 	/* Handle sync packet - device is starting link establishment */
 	if (!memcmp(&bcsp->rx_skb->data[4], sync_pkt, 4)) {
@@ -590,9 +600,13 @@ static void bcsp_complete_rx_pkt(struct hci_uart *hu)
 			pass_up = 1;
 		} else if ((bcsp->rx_skb->data[1] & 0x0f) == 1 &&
 			   !(bcsp->rx_skb->data[0] & 0x80)) {
+			BT_INFO("BCSP: LE packet on channel 1, calling handler");
 			bcsp_handle_le_pkt(hu);
 			pass_up = 0;
 		} else {
+			BT_DBG("BCSP: unknown pkt chan=%d rel=%d",
+			       bcsp->rx_skb->data[1] & 0x0f,
+			       (bcsp->rx_skb->data[0] & 0x80) ? 1 : 0);
 			pass_up = 0;
 		}
 	}
