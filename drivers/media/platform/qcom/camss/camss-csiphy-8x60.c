@@ -219,10 +219,26 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: writing 0x%08x to D0_CONTROL2 (0x38)\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 OK, writing D1/D2/D3_CONTROL2\n", csiphy->id);
-	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 OK\n", csiphy->id);
+
+	/*
+	 * Only configure lanes that are actually used. MSM8660 CSI1 may have
+	 * limited lanes (mt9m114 uses 1 lane). Writing to non-existent lane
+	 * registers can cause hangs.
+	 */
+	if (num_lanes >= 2) {
+		dev_info(csiphy->camss->dev, "CSIPHY%d: writing D1_CONTROL2 (0x3C)\n", csiphy->id);
+		writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
+	}
+	if (num_lanes >= 3) {
+		dev_info(csiphy->camss->dev, "CSIPHY%d: writing D2_CONTROL2 (0x40)\n", csiphy->id);
+		writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
+	}
+	if (num_lanes >= 4) {
+		dev_info(csiphy->camss->dev, "CSIPHY%d: writing D3_CONTROL2 (0x44)\n", csiphy->id);
+		writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
+	}
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Dx_CONTROL2 done for %d lanes\n", csiphy->id, num_lanes);
 
 	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
@@ -258,16 +274,20 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: CALIBRATION_CONTROL OK\n", csiphy->id);
 
-	/* D0-D3_CONTROL2 with LP_REC_EN=1 */
+	/* D0-D3_CONTROL2 with LP_REC_EN=1 - only for used lanes */
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: D0-D3_CONTROL2 (LP_REC_EN=1) 0x%08x\n", csiphy->id, val);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Dx_CONTROL2 (LP_REC_EN=1) 0x%08x for %d lanes\n",
+		 csiphy->id, val, num_lanes);
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
+	if (num_lanes >= 2)
+		writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
+	if (num_lanes >= 3)
+		writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
+	if (num_lanes >= 4)
+		writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
 
 	/* CL_CONTROL with LP_REC_EN=1 */
 	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
@@ -285,11 +305,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	      (0x1 << MIPI_PHY_D1_CONTROL_MIPI_DATA_PHY_SHUTDOWNB_SHFT);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: D1_CONTROL (PHY enable)\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL);
-
-	/* D2/D3_CONTROL - disable unused lanes */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: D2/D3_CONTROL (disable)\n", csiphy->id);
-	writel(0x00000000, csiphy->base + MIPI_PHY_D2_CONTROL);
-	writel(0x00000000, csiphy->base + MIPI_PHY_D3_CONTROL);
 
 	/*
 	 * CAMERA_CNTL: Configure lane assignment and count
