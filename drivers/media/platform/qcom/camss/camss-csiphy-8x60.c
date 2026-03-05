@@ -207,22 +207,22 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - PHY_CONTROL (0x00) write OK\n", csiphy->id);
 
-	/* webOS writes PROTOCOL_CONTROL before CALIBRATION_CONTROL */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to PROTOCOL_CONTROL (0x04)\n", csiphy->id);
-	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - PROTOCOL_CONTROL (0x04) write OK\n", csiphy->id);
-
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to CALIBRATION_CONTROL (0x18)\n", csiphy->id);
-	writel(0, csiphy->base + MIPI_CALIBRATION_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - CALIBRATION_CONTROL (0x18) write OK\n", csiphy->id);
-
+	/* Skip PROTOCOL_CONTROL SW_RST - it hangs. Try other registers */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to D1_CONTROL (0x20)\n", csiphy->id);
 	writel(0, csiphy->base + MIPI_PHY_D1_CONTROL);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D1_CONTROL (0x20) write OK\n", csiphy->id);
 
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to CAMERA_CNTL (0x24)\n", csiphy->id);
+	writel(0, csiphy->base + MIPI_CAMERA_CNTL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - CAMERA_CNTL (0x24) write OK\n", csiphy->id);
+
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to D0_CONTROL (0x34)\n", csiphy->id);
 	writel(0, csiphy->base + MIPI_PHY_D0_CONTROL);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D0_CONTROL (0x34) write OK\n", csiphy->id);
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - writing to D0_CONTROL2 (0x38)\n", csiphy->id);
+	writel(0x140f0008, csiphy->base + MIPI_PHY_D0_CONTROL2);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D0_CONTROL2 (0x38) write OK\n", csiphy->id);
 
 	/*
 	 * MSM8660 register access sequence from webOS msm_camio_enable():
