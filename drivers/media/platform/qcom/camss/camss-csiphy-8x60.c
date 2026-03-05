@@ -208,58 +208,33 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 *   8. CAMERA_CNTL
 	 *   9. Interrupts
 	 *
-	 * CRITICAL: D0_CONTROL2 must be written FIRST after msleep(10)!
+	 * Testing: PHY_CONTROL worked when written early, hangs after D0_CONTROL2.
+	 * Try: PHY_CONTROL first, then D0_CONTROL2.
 	 */
 
-	/* Phase 1: msm_camio_enable() equivalent - D0_CONTROL2 FIRST */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - D0_CONTROL2 FIRST (webOS enable)\n", csiphy->id);
+	/* Step 1: PHY_CONTROL first (worked in earlier tests) */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Step 1 - PHY_CONTROL (0x00)\n", csiphy->id);
+	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: PHY_CONTROL OK\n", csiphy->id);
+
+	/* Step 2: D0_CONTROL2 */
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: writing 0x%08x to D0_CONTROL2 (0x38)\n", csiphy->id, val);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Step 2 - D0_CONTROL2 0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 OK\n", csiphy->id);
 
-	/*
-	 * Only configure lanes that are actually used. MSM8660 CSI1 may have
-	 * limited lanes (mt9m114 uses 1 lane). Writing to non-existent lane
-	 * registers can cause hangs.
-	 */
-	if (num_lanes >= 2) {
-		dev_info(csiphy->camss->dev, "CSIPHY%d: writing D1_CONTROL2 (0x3C)\n", csiphy->id);
-		writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
-	}
-	if (num_lanes >= 3) {
-		dev_info(csiphy->camss->dev, "CSIPHY%d: writing D2_CONTROL2 (0x40)\n", csiphy->id);
-		writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
-	}
-	if (num_lanes >= 4) {
-		dev_info(csiphy->camss->dev, "CSIPHY%d: writing D3_CONTROL2 (0x44)\n", csiphy->id);
-		writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
-	}
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Dx_CONTROL2 done for %d lanes\n", csiphy->id, num_lanes);
-
+	/* Step 3: CL_CONTROL */
 	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: writing CL_CONTROL (0x48)\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Step 3 - CL_CONTROL (0x48)\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 complete\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: CL_CONTROL OK\n", csiphy->id);
 
-	/*
-	 * In webOS, msm_camio_enable() and msm_camio_csi_config() are separate
-	 * function calls with sensor init happening between them. Add delay
-	 * to simulate this timing gap.
-	 */
-	msleep(10);
-
-	/* Phase 2: msm_camio_csi_config() equivalent */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 2 - about to write PHY_CONTROL (0x00)\n", csiphy->id);
-	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: PHY_CONTROL OK\n", csiphy->id);
-
-	/* SW_RST - webOS does this, let's try it now that D0_CONTROL2 was written first */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: writing SW_RST to PROTOCOL_CONTROL (0x04)\n", csiphy->id);
+	/* Step 4: SW_RST to PROTOCOL_CONTROL */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Step 4 - SW_RST to PROTOCOL_CONTROL (0x04)\n", csiphy->id);
 	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: SW_RST OK\n", csiphy->id);
 
