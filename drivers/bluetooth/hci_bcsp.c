@@ -50,8 +50,8 @@ static char *bdaddr;
 /* PSKEY definitions for CSR chip configuration */
 #define PSKEY_BDADDR			0x0001
 #define PSKEY_ANA_FREQ			0x01F6	/* External crystal frequency */
-#define PSKEY_LC_MAX_TX_POWER		0x0017	/* Maximum TX power level */
-#define PSKEY_LC_DEFAULT_TX_POWER	0x0021	/* Default TX power level */
+#define PSKEY_LC_MAX_TX_POWER		0x0011	/* Maximum TX power level */
+#define PSKEY_LC_DEFAULT_TX_POWER	0x0013	/* Default TX power level */
 
 /* Crystal frequency value for 26MHz external crystal */
 #define ANA_FREQ_26MHZ			0x0019
@@ -514,8 +514,8 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 
 			/* Send critical RF configuration PSKEYs first */
 			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
-			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0004);
-			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x0004);
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
+			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
 
 			/* Send BD address and WARM_RESET */
 			bcsp_send_bdaddr_bccmd(hu, &bcsp->bdaddr);
@@ -1047,9 +1047,9 @@ static int bcsp_setup(struct hci_uart *hu)
 		msleep(20);
 
 		/* TX power configuration */
-		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0004);
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
 		msleep(20);
-		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x0004);
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
 		msleep(20);
 
 		BT_INFO("BCSP: Setting BD address %pMR", &bcsp->bdaddr);
