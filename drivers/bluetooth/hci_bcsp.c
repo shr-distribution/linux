@@ -510,24 +510,16 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 			bcsp->bdaddr_state);
 
 		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
-			BT_INFO("BCSP: First link up, sending critical PSKEYs + BD address");
+			BT_INFO("BCSP: First link up, sending RF PSKEYs (no reset)");
 
-			/* Send critical RF configuration PSKEYs first */
+			/* Send critical RF configuration PSKEYs */
 			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
 			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
 			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
 
-			/* Send BD address and WARM_RESET */
-			bcsp_send_bdaddr_bccmd(hu, &bcsp->bdaddr);
-			bcsp_send_warm_reset(hu);
-			bcsp->bdaddr_state = BCSP_BDADDR_SENT;
-
-			/* Reset state for re-establishment after chip resets */
-			bcsp_reset_link_state(bcsp);
-			BT_INFO("BCSP: Waiting for chip to reset and re-sync");
-		} else if (bcsp->bdaddr_state == BCSP_BDADDR_SENT) {
-			BT_INFO("BCSP: Second link up, BD address config complete");
+			/* Skip BD address and WARM_RESET - test if RF works without */
 			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+			BT_INFO("BCSP: RF PSKEYs sent (no BD addr, no reset)");
 		}
 	}
 }
@@ -1033,34 +1025,23 @@ static int bcsp_setup(struct hci_uart *hu)
 	 * 4. Continue with HCI initialization
 	 */
 	if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
-		BT_INFO("BCSP: Configuring chip with critical PSKEYs");
+		BT_INFO("BCSP: Sending RF PSKEYs (no WARM_RESET)");
 
 		/*
-		 * Send critical PSKEYs required before BDADDR.
-		 * Analysis of bcattach shows these are needed for RF to work:
-		 * - PSKEY_ANA_FREQ: 26MHz external crystal configuration
-		 * - TX power settings for proper radio operation
+		 * Send critical RF PSKEYs to PSRAM.
+		 * Skip BD address and WARM_RESET to test if RF PSKEYs
+		 * take effect immediately without a reset.
 		 */
 
 		/* PSKEY_ANA_FREQ = 25 (0x19) for 26MHz crystal - CRITICAL! */
 		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
-		msleep(20);
+		msleep(100);
 
 		/* TX power configuration */
 		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
-		msleep(20);
+		msleep(100);
 		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
-		msleep(20);
-
-		BT_INFO("BCSP: Setting BD address %pMR", &bcsp->bdaddr);
-
-		/* Send BCCMD to set BD address */
-		bcsp_send_bdaddr_bccmd(hu, &bcsp->bdaddr);
-		msleep(50);
-
-		/* Send WARM_RESET to apply the PSKEY */
-		bcsp_send_warm_reset(hu);
-		msleep(50);
+		msleep(100);
 
 		/* Give TX time to send the packets */
 		for (i = 0; i < 10; i++) {
@@ -1070,50 +1051,13 @@ static int bcsp_setup(struct hci_uart *hu)
 			hci_uart_tx_wakeup(hu);
 		}
 
-		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
+		BT_INFO("BCSP: RF PSKEYs sent, skipping BD address and WARM_RESET");
+		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
 
-		/*
-		 * Wait for chip to reset - CSR needs significant time.
-		 * Testing shows the chip takes ~14 seconds from WARM_RESET
-		 * until it starts sending sync packets again.
-		 */
-		msleep(12000);
+		/* Small delay to let PSKEYs take effect in PSRAM */
+		msleep(500);
 
-		/* Reset our link state for re-establishment */
-		bcsp_reset_link_state(bcsp);
-
-		/*
-		 * Wait for chip to re-establish BCSP link.
-		 * The chip will send sync packets after reset, which
-		 * bcsp_handle_le_pkt() will respond to automatically.
-		 * We detect link establishment by watching bdaddr_state
-		 * which is set to DONE when conf is received.
-		 */
-		BT_INFO("BCSP: Waiting for link re-establishment...");
-		bcsp->bdaddr_state = BCSP_BDADDR_SENT;
-
-		for (i = 0; i < 50; i++) {
-			msleep(100);
-			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
-				BT_INFO("BCSP: Link re-established with new BD address");
-				break;
-			}
-		}
-
-		if (bcsp->bdaddr_state != BCSP_BDADDR_DONE) {
-			BT_WARN("BCSP: Link re-establishment timeout, continuing anyway");
-			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
-		}
-
-		/*
-		 * Add extra delay after link re-establishment.
-		 * The chip needs time to fully initialize after WARM_RESET
-		 * before it can respond to HCI commands.
-		 */
-		BT_INFO("BCSP: Waiting for chip to stabilize...");
-		msleep(3000);
-
-		BT_INFO("BCSP: BD address configuration complete");
+		BT_INFO("BCSP: RF configuration complete (no reset)");
 	}
 
 	return 0;
