@@ -246,8 +246,15 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 complete\n", csiphy->id);
 
+	/*
+	 * In webOS, msm_camio_enable() and msm_camio_csi_config() are separate
+	 * function calls with sensor init happening between them. Add delay
+	 * to simulate this timing gap.
+	 */
+	msleep(10);
+
 	/* Phase 2: msm_camio_csi_config() equivalent */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 2 - PHY_CONTROL (webOS csi_config)\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 2 - about to write PHY_CONTROL (0x00)\n", csiphy->id);
 	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: PHY_CONTROL OK\n", csiphy->id);
 
