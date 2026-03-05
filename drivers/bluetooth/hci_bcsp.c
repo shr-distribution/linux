@@ -1074,10 +1074,10 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/*
 		 * Wait for chip to reset - CSR needs significant time.
-		 * Testing shows the chip takes ~9 seconds from WARM_RESET
+		 * Testing shows the chip takes ~14 seconds from WARM_RESET
 		 * until it starts sending sync packets again.
 		 */
-		msleep(8000);
+		msleep(12000);
 
 		/* Reset our link state for re-establishment */
 		bcsp_reset_link_state(bcsp);
@@ -1104,6 +1104,14 @@ static int bcsp_setup(struct hci_uart *hu)
 			BT_WARN("BCSP: Link re-establishment timeout, continuing anyway");
 			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
 		}
+
+		/*
+		 * Add extra delay after link re-establishment.
+		 * The chip needs time to fully initialize after WARM_RESET
+		 * before it can respond to HCI commands.
+		 */
+		BT_INFO("BCSP: Waiting for chip to stabilize...");
+		msleep(3000);
 
 		BT_INFO("BCSP: BD address configuration complete");
 	}
