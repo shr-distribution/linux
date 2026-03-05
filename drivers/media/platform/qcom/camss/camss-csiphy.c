@@ -202,6 +202,23 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
 				dev_err(dev, "clk set rate failed: %d\n", ret);
 				return ret;
 			}
+		} else if (clock->nfreqs > 0 && clock->freq[0] != 0) {
+			/*
+			 * MSM8660 workaround: For clocks with explicit rates
+			 * in the resource definition (like VFE), set the rate
+			 * BEFORE enabling. MSM8660 hangs if you try to change
+			 * clock rate while the clock is enabled. webOS sets
+			 * rates before enable in msm_camio_clk_enable().
+			 */
+			ret = clk_set_rate(clock->clk, clock->freq[0]);
+			if (ret < 0) {
+				dev_err(dev,
+					"clk %s set rate %lu failed: %d\n",
+					clock->name, clock->freq[0], ret);
+				return ret;
+			}
+			dev_dbg(dev, "CSIPHY%d: set %s rate to %lu\n",
+				csiphy->id, clock->name, clock->freq[0]);
 		}
 	}
 

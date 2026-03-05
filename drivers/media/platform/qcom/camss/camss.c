@@ -48,15 +48,19 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		.regulators = {},
 		/*
 		 * Clock enable order from legacy webOS kernel:
-		 * 1. vfe (VFE core clock)
+		 * 1. vfe (VFE core clock) - MUST set rate before enabling!
 		 * 2. vfe_axi (VFE AXI clock - may be needed for bus access)
 		 * 3. vfe_ahb (VFE AHB/peripheral clock - needed for register access)
 		 * 4. vfe_csi0 (CSI0-VFE bridge)
 		 * 5. csi0_ahb (CSI0 AHB/peripheral clock)
 		 * 6. csi_src, csi, csi_phy
+		 *
+		 * Important: VFE clock rate must be set here (122880000 Hz).
+		 * MSM8660 hangs if you try to change clock rate while enabled.
+		 * WebOS sets rate BEFORE enable in msm_camio_clk_enable().
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "csi0_ahb", "csi0_src", "csi0", "csi0_phy" },
-		.clock_rate = { { 0 },
+		.clock_rate = { { 122880000 },
 				{ 0 },
 				{ 0 },
 				{ 0 },
@@ -79,11 +83,14 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		 * WebOS enables ALL CSI clocks (both CSI0 and CSI1) before
 		 * accessing any CSI registers. This appears to be a hardware
 		 * requirement - CSI0 and CSI1 may share common infrastructure.
+		 *
+		 * Important: VFE clock rate must be set here (122880000 Hz).
+		 * MSM8660 hangs if you try to change clock rate while enabled.
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
 			   "csi0_ahb", "csi1_ahb", "csi0_src", "csi1_src",
 			   "csi0", "csi1", "csi0_phy", "csi1_phy" },
-		.clock_rate = { { 0 }, { 0 }, { 0 }, { 0 }, { 0 },
+		.clock_rate = { { 122880000 }, { 0 }, { 0 }, { 0 }, { 0 },
 				{ 0 }, { 0 }, { 0 }, { 0 },
 				{ 0 }, { 0 }, { 0 }, { 0 } },
 		.reg = { "csiphy1" },

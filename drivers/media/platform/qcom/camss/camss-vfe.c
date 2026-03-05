@@ -1221,14 +1221,26 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 			dev_info(dev, "VFE clock %s: requested=%lu rounded=%ld\n",
 				 clock->name, clock->freq[j], rate);
 
-			ret = clk_set_rate(clock->clk, rate);
-			if (ret < 0) {
-				dev_err(dev, "clk set rate failed: %d\n", ret);
-				return ret;
+			/*
+			 * MSM8660 workaround: Skip clk_set_rate if current
+			 * rate already matches. MSM8660 hangs if you write
+			 * to MMCC registers while the clock is enabled.
+			 * CSIPHY may have already set the rate before enabling.
+			 */
+			if (clk_get_rate(clock->clk) == rate) {
+				dev_info(dev,
+					 "VFE clock %s: already at %ld Hz, skipping set_rate\n",
+					 clock->name, rate);
+			} else {
+				ret = clk_set_rate(clock->clk, rate);
+				if (ret < 0) {
+					dev_err(dev, "clk set rate failed: %d\n",
+						ret);
+					return ret;
+				}
+				dev_info(dev, "VFE clock %s: set to %ld Hz\n",
+					 clock->name, clk_get_rate(clock->clk));
 			}
-
-			dev_info(dev, "VFE clock %s: set to %ld Hz\n",
-				 clock->name, clk_get_rate(clock->clk));
 		}
 	}
 
