@@ -1025,23 +1025,31 @@ static int bcsp_setup(struct hci_uart *hu)
 	 * 4. Continue with HCI initialization
 	 */
 	if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
-		BT_INFO("BCSP: Sending RF PSKEYs (no WARM_RESET)");
+		BT_INFO("BCSP: Configuring chip with PSKEYs + WARM_RESET");
 
 		/*
-		 * Send critical RF PSKEYs to PSRAM.
-		 * Skip BD address and WARM_RESET to test if RF PSKEYs
-		 * take effect immediately without a reset.
+		 * Send critical PSKEYs and BD address, then WARM_RESET.
+		 * The chip will reset and come back with new settings.
 		 */
 
-		/* PSKEY_ANA_FREQ = 25 (0x19) for 26MHz crystal - CRITICAL! */
+		/* PSKEY_ANA_FREQ = 25 (0x19) for 26MHz crystal */
 		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
-		msleep(100);
+		msleep(50);
 
 		/* TX power configuration */
 		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
-		msleep(100);
+		msleep(50);
 		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
-		msleep(100);
+		msleep(50);
+
+		/* BD address */
+		BT_INFO("BCSP: Setting BD address %pMR", &bcsp->bdaddr);
+		bcsp_send_bdaddr_bccmd(hu, &bcsp->bdaddr);
+		msleep(50);
+
+		/* WARM_RESET to apply all PSKEYs */
+		bcsp_send_warm_reset(hu);
+		msleep(50);
 
 		/* Give TX time to send the packets */
 		for (i = 0; i < 10; i++) {
@@ -1051,13 +1059,33 @@ static int bcsp_setup(struct hci_uart *hu)
 			hci_uart_tx_wakeup(hu);
 		}
 
-		BT_INFO("BCSP: RF PSKEYs sent, skipping BD address and WARM_RESET");
-		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
 
-		/* Small delay to let PSKEYs take effect in PSRAM */
-		msleep(500);
+		/* Wait for chip to reset - takes ~14 seconds */
+		msleep(12000);
 
-		BT_INFO("BCSP: RF configuration complete (no reset)");
+		/* Reset our link state for re-establishment */
+		bcsp_reset_link_state(bcsp);
+
+		BT_INFO("BCSP: Waiting for link re-establishment...");
+		bcsp->bdaddr_state = BCSP_BDADDR_SENT;
+
+		for (i = 0; i < 60; i++) {
+			msleep(100);
+			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
+				BT_INFO("BCSP: Link re-established");
+				break;
+			}
+		}
+
+		if (bcsp->bdaddr_state != BCSP_BDADDR_DONE) {
+			BT_WARN("BCSP: Link timeout, continuing anyway");
+			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		}
+
+		/* Extra stabilization delay */
+		msleep(2000);
+		BT_INFO("BCSP: PSKEY configuration complete");
 	}
 
 	return 0;
