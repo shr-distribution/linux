@@ -898,23 +898,24 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 	bccmd[15] = 0x00;	/* Stores: 0x0008 PSRAM (high byte) */
 
 	/*
-	 * BD Address in CSR PSKEY format (from bcattach analysis):
-	 *   Word 0: LAP[7:0] with padding
-	 *   Word 1: LAP[23:16] | (LAP[15:8] << 8)
-	 *   Word 2: UAP with padding
-	 *   Word 3: NAP
+	 * BD Address in CSR PSKEY format:
+	 *   Word 0: LAP[7:0] in bits 7:0
+	 *   Word 1: LAP[15:8] in bits 7:0, LAP[23:16] in bits 15:8
+	 *   Word 2: UAP in bits 7:0
+	 *   Word 3: NAP (little endian)
 	 *
-	 * bdaddr_t.b[] = { LAP[0], LAP[1], LAP[2], UAP, NAP[0], NAP[1] }
-	 *              = { b[0],   b[1],   b[2],   b[3], b[4],   b[5]  }
+	 * bdaddr_t.b[] stores address in little endian:
+	 *   b[0]=LAP[7:0], b[1]=LAP[15:8], b[2]=LAP[23:16],
+	 *   b[3]=UAP, b[4]=NAP[7:0], b[5]=NAP[15:8]
 	 */
-	bccmd[16] = addr->b[0];	/* LAP[7:0] (low byte of word) */
-	bccmd[17] = 0x00;	/* padding (high byte of word) */
-	bccmd[18] = addr->b[2];	/* LAP[23:16] (low byte of word) */
-	bccmd[19] = addr->b[1];	/* LAP[15:8] (high byte of word) */
-	bccmd[20] = addr->b[3];	/* UAP (low byte of word) */
-	bccmd[21] = 0x00;	/* UAP (high byte of word) */
-	bccmd[22] = addr->b[4];	/* NAP[7:0] (low byte of word) */
-	bccmd[23] = addr->b[5];	/* NAP[15:8] (high byte of word) */
+	bccmd[16] = addr->b[0];	/* Word 0 low: LAP[7:0] */
+	bccmd[17] = 0x00;	/* Word 0 high: padding */
+	bccmd[18] = addr->b[1];	/* Word 1 low: LAP[15:8] */
+	bccmd[19] = addr->b[2];	/* Word 1 high: LAP[23:16] */
+	bccmd[20] = addr->b[3];	/* Word 2 low: UAP */
+	bccmd[21] = 0x00;	/* Word 2 high: padding */
+	bccmd[22] = addr->b[4];	/* Word 3 low: NAP[7:0] */
+	bccmd[23] = addr->b[5];	/* Word 3 high: NAP[15:8] */
 
 	skb = alloc_skb(sizeof(bccmd), GFP_KERNEL);
 	if (!skb)
