@@ -190,6 +190,15 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
 	/*
+	 * Debug: Try reading a register first to see if read hangs too.
+	 * If read hangs, clocks are not properly enabled.
+	 * If read works but write hangs, something else is wrong.
+	 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - attempting register read\n", csiphy->id);
+	val = readl(csiphy->base + MIPI_PHY_D0_CONTROL2);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - D0_CONTROL2 read=0x%08x\n", csiphy->id, val);
+
+	/*
 	 * MSM8660 register access sequence from webOS msm_camio_enable():
 	 * After clock enable, the FIRST register access must be to
 	 * D0_CONTROL2 (offset 0x38), NOT PHY_CONTROL (offset 0x00).
@@ -209,6 +218,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: DEBUG - about to write 0x%08x to D0_CONTROL2\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
