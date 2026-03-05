@@ -894,8 +894,8 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 	bccmd[11] = 0x00;	/* PSKey: 0x0001 BDADDR (high byte) */
 	bccmd[12] = 0x04;	/* Length: 4 words = 8 bytes (low byte) */
 	bccmd[13] = 0x00;	/* Length: 4 words (high byte) */
-	bccmd[14] = 0x01;	/* Stores: 0x0001 PSI/RAM (low byte) */
-	bccmd[15] = 0x00;	/* Stores: 0x0001 PSI/RAM (high byte) */
+	bccmd[14] = 0x08;	/* Stores: 0x0008 PSRAM (low byte) */
+	bccmd[15] = 0x00;	/* Stores: 0x0008 PSRAM (high byte) */
 
 	/*
 	 * BD Address in CSR PSKEY format (from bcattach analysis):
