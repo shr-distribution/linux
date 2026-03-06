@@ -403,7 +403,21 @@ static void read_mdp_hw_revision(struct mdp4_kms *mdp4_kms,
 				 u32 *major, u32 *minor)
 {
 	struct drm_device *dev = mdp4_kms->dev;
+	static int cached_major = -1, cached_minor = -1;
 	u32 version;
+
+	/*
+	 * Cache the HW revision to avoid repeated clock enable/disable cycles
+	 * on deferred probe retries. Each cycle triggers a "mdp_axi_clk status
+	 * stuck at 'on'" warning because the clock branch hardware can't
+	 * transition fast enough. Static variables persist across probe retries
+	 * unlike the devm-allocated mdp4_kms struct which is freed each time.
+	 */
+	if (cached_major >= 0) {
+		*major = cached_major;
+		*minor = cached_minor;
+		return;
+	}
 
 	mdp4_enable(mdp4_kms);
 	version = mdp4_read(mdp4_kms, REG_MDP4_VERSION);
@@ -411,6 +425,9 @@ static void read_mdp_hw_revision(struct mdp4_kms *mdp4_kms,
 
 	*major = FIELD(version, MDP4_VERSION_MAJOR);
 	*minor = FIELD(version, MDP4_VERSION_MINOR);
+
+	cached_major = *major;
+	cached_minor = *minor;
 
 	DRM_DEV_INFO(dev->dev, "MDP4 version v%d.%d", *major, *minor);
 }
@@ -448,24 +465,16 @@ static int mdp4_kms_init(struct drm_device *dev)
 
 	clk_set_rate(mdp4_kms->clk, max_clk);
 
-	/*
-	 * Only read HW revision once. On deferred probe retries, mdp4_kms->rev
-	 * is already set from the first probe attempt. This avoids repeated
-	 * clock enable/disable cycles that cause "mdp_axi_clk status stuck"
-	 * warnings from the clock branch driver.
-	 */
-	if (mdp4_kms->rev < 0) {
-		read_mdp_hw_revision(mdp4_kms, &major, &minor);
+	read_mdp_hw_revision(mdp4_kms, &major, &minor);
 
-		if (major != 4) {
-			DRM_DEV_ERROR(dev->dev, "unexpected MDP version: v%d.%d\n",
-				      major, minor);
-			ret = -ENXIO;
-			goto fail;
-		}
-
-		mdp4_kms->rev = minor;
+	if (major != 4) {
+		DRM_DEV_ERROR(dev->dev, "unexpected MDP version: v%d.%d\n",
+			      major, minor);
+		ret = -ENXIO;
+		goto fail;
 	}
+
+	mdp4_kms->rev = minor;
 
 	if (mdp4_kms->rev >= 2) {
 		if (!mdp4_kms->lut_clk) {
@@ -669,9 +678,6 @@ static int mdp4_probe(struct platform_device *pdev)
 	mdp4_kms->mmio = msm_ioremap(pdev, NULL);
 	if (IS_ERR(mdp4_kms->mmio))
 		return PTR_ERR(mdp4_kms->mmio);
-
-	/* Mark HW revision as not yet read (-1 sentinel) */
-	mdp4_kms->rev = -1;
 
 	/*
 	 * Disable display outputs immediately after mapping registers.
