@@ -1061,8 +1061,12 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
 
-		/* Wait for chip to reset - takes ~14 seconds */
-		msleep(12000);
+		/*
+		 * Wait for chip to reset. Testing shows the BCM4329 takes
+		 * approximately 21 seconds from WARM_RESET to sending sync.
+		 * Use 15s initial wait + 10s polling loop = 25s total.
+		 */
+		msleep(15000);
 
 		/* Reset our link state for re-establishment */
 		bcsp_reset_link_state(bcsp);
@@ -1070,7 +1074,7 @@ static int bcsp_setup(struct hci_uart *hu)
 		BT_INFO("BCSP: Waiting for link re-establishment...");
 		bcsp->bdaddr_state = BCSP_BDADDR_SENT;
 
-		for (i = 0; i < 60; i++) {
+		for (i = 0; i < 100; i++) {
 			msleep(100);
 			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
 				BT_INFO("BCSP: Link re-established");
