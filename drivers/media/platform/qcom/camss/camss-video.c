@@ -612,14 +612,30 @@ static int video_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
 	struct camss_video *video = video_drvdata(file);
 	int ret;
 
-	if (vb2_is_busy(&video->vb2_q))
+	dev_info(video->camss->dev,
+		 "video_s_fmt: ENTER %ux%u pixfmt=0x%08x\n",
+		 f->fmt.pix_mp.width, f->fmt.pix_mp.height,
+		 f->fmt.pix_mp.pixelformat);
+
+	if (vb2_is_busy(&video->vb2_q)) {
+		dev_err(video->camss->dev, "video_s_fmt: vb2 queue busy\n");
 		return -EBUSY;
+	}
 
 	ret = __video_try_fmt(video, f);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(video->camss->dev,
+			"video_s_fmt: __video_try_fmt failed: %d\n", ret);
 		return ret;
+	}
 
 	video->active_fmt = *f;
+
+	dev_info(video->camss->dev,
+		 "video_s_fmt: SUCCESS active_fmt now %ux%u pixfmt=0x%08x\n",
+		 video->active_fmt.fmt.pix_mp.width,
+		 video->active_fmt.fmt.pix_mp.height,
+		 video->active_fmt.fmt.pix_mp.pixelformat);
 
 	return 0;
 }
