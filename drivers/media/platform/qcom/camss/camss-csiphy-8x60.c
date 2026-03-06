@@ -216,25 +216,27 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	/*
 	 * Phase 1: msm_camio_enable() equivalent
 	 * WebOS has msleep(10) after clock enable before register writes.
-	 * This allows clocks to stabilize before accessing PHY registers.
+	 * However, MSM8660 CSI PHY registers can hang intermittently even
+	 * with 10ms delay. Use 20ms for more reliable operation.
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - Enable sequence (after 10ms delay)\n", csiphy->id);
-	msleep(10);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - Enable sequence (after 20ms delay)\n", csiphy->id);
+	msleep(20);
 
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 (LP_REC_EN=0) 0x%08x\n", csiphy->id, val);
-	writel_relaxed(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
-	writel_relaxed(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
-	writel_relaxed(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
-	writel_relaxed(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
+	/* Use writel() with memory barriers - MSM8660 CSI PHY is sensitive */
+	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
+	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
+	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
+	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
 
 	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: CL_CONTROL (LP_REC_EN=0) 0x%08x\n", csiphy->id, val);
-	writel_relaxed(val, csiphy->base + MIPI_PHY_CL_CONTROL);
+	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
 
 	/* Ensure all Phase 1 writes are committed before Phase 2 */
 	wmb();
