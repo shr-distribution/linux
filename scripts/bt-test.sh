@@ -3,14 +3,16 @@
 # bt-test.sh - Bluetooth testing script for HP TouchPad
 #
 # Deploys Bluetooth modules, loads them, and performs automated testing.
+# Uses two-phase initialization for BCM4329 with BCSP protocol:
+#   Phase 1: Send PSKEYs + WARM_RESET (chip resets, connection breaks)
+#   Phase 2: Power cycle + fresh connection with skip_pskeys=1
 #
 # Usage: ./scripts/bt-test.sh [options]
 #
 # Options:
 #   --deploy-only    Only deploy modules, don't test
 #   --test-only      Only test (modules already deployed)
-#   --no-bdaddr      Skip BD address configuration (fast init, default)
-#   --with-bdaddr    Configure BD address from device tokens (slow, ~25s)
+#   --phase2-only    Skip Phase 1, only do Phase 2 (chip already configured)
 #   --monitor        Continuous monitoring mode
 #   --scan           Perform device scan after init
 #   --help           Show this help
@@ -23,11 +25,6 @@ DEVICE_IP="172.16.42.2"
 DEVICE_PORT="22"
 DEVICE_USER="root"
 SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no"
-
-# BD Address for the Bluetooth chip (set via hci_uart module parameter)
-# This should match the device's actual BD address from /dev/tokens/BToADDR
-# Set to empty to skip BD address configuration (fast init)
-BDADDR=""
 
 # Build directory for modules
 BUILD_BASE="/media/herrie/LuneOS/scarthgap/webos-ports/tmp-glibc/work/tenderloin-webos-linux-gnueabi/linux-hp-tenderloin/6.18+git/linux-tenderloin-standard-build"
@@ -149,25 +146,19 @@ power_on_bt() {
     success "Bluetooth chip powered on"
 }
 
-read_device_bdaddr() {
-    # Read BD address from device's token partition (mmcblk0p12)
-    # The tokens partition contains factory-programmed values
-    # In LuneOS initramfs, /dev/tokens doesn't exist, so read directly
-    local token_addr=$(ssh_cmd "dd if=/dev/mmcblk0p12 bs=4096 count=10 2>/dev/null | strings -n 6 | grep -A1 BToADDR | tail -1")
-    if [[ -n "$token_addr" && "$token_addr" =~ ^[0-9A-Fa-f]{2}: ]]; then
-        echo "$token_addr"
-    else
-        # Fallback: not available
-        echo ""
-    fi
+unload_modules() {
+    info "Unloading Bluetooth modules..."
+    ssh_cmd "killall hciattach 2>/dev/null; sleep 2; rmmod hci_uart 2>/dev/null; rmmod btbcm 2>/dev/null; rmmod bluetooth 2>/dev/null; true"
+    sleep 1
 }
 
 load_modules() {
-    info "Loading Bluetooth modules..."
+    local skip_pskeys=${1:-0}
+
+    info "Loading Bluetooth modules (skip_pskeys=$skip_pskeys)..."
 
     # Load in dependency order
     ssh_cmd "insmod /tmp/bluetooth.ko" || {
-        # Module might already be loaded
         if ssh_cmd "lsmod | grep -q '^bluetooth'"; then
             warn "bluetooth.ko already loaded"
         else
@@ -185,28 +176,12 @@ load_modules() {
         fi
     }
 
-    # Handle BD address
-    local bdaddr_param=""
-    if [[ "$BDADDR" == "FROM_DEVICE" ]]; then
-        info "Reading BD address from device tokens..."
-        BDADDR=$(read_device_bdaddr)
-        if [[ -n "$BDADDR" ]]; then
-            info "Found BD address: $BDADDR"
-        else
-            warn "Could not read BD address from device, skipping"
-            BDADDR=""
-        fi
+    local hci_params=""
+    if [[ $skip_pskeys -eq 1 ]]; then
+        hci_params="skip_pskeys=1"
     fi
 
-    if [[ -n "$BDADDR" ]]; then
-        bdaddr_param="bdaddr=$BDADDR"
-        info "Using BD address: $BDADDR (will configure PSKEYs + WARM_RESET)"
-        warn "This will take ~25 seconds for chip configuration..."
-    else
-        info "No BD address specified - fast init mode (2-3 seconds)"
-    fi
-
-    ssh_cmd "insmod /tmp/hci_uart.ko $bdaddr_param" || {
+    ssh_cmd "insmod /tmp/hci_uart.ko $hci_params" || {
         if ssh_cmd "lsmod | grep -q '^hci_uart'"; then
             warn "hci_uart.ko already loaded"
         else
@@ -216,9 +191,7 @@ load_modules() {
     }
 
     success "Modules loaded"
-
-    # Give driver time to initialize
-    sleep 2
+    sleep 1
 }
 
 run_hciattach() {
@@ -228,26 +201,51 @@ run_hciattach() {
     ssh_cmd "killall hciattach 2>/dev/null || true"
     sleep 1
 
-    # Run hciattach in background (not with timeout - let it run)
-    # The -n flag keeps it in foreground, so we run without it for background
-    if [[ -n "$BDADDR" ]]; then
-        info "PSKEY+WARM_RESET mode (will take ~25 seconds)..."
-    else
-        info "Fast init mode..."
-    fi
-
     ssh_cmd "hciattach /dev/ttyMSM1 bcsp 115200 &"
 
-    # Wait for HCI device to appear
-    # Fast mode: 3 seconds should be enough
-    # PSKEY mode: need 25+ seconds
-    local wait_sec=3
-    if [[ -n "$BDADDR" ]]; then
-        wait_sec=25
+    info "Waiting for HCI device..."
+    sleep 3
+}
+
+# Two-phase Bluetooth initialization for BCM4329 with BCSP
+# Phase 1: Send PSKEYs + WARM_RESET (chip configuration)
+# Phase 2: Power cycle + fresh connection (operational)
+run_two_phase_init() {
+    local phase2_only=${1:-0}
+
+    if [[ $phase2_only -eq 0 ]]; then
+        echo ""
+        info "=== Phase 1: Configure chip with PSKEYs + WARM_RESET ==="
+
+        unload_modules
+        power_on_bt
+        load_modules 0  # skip_pskeys=0
+        run_hciattach
+
+        # Wait for WARM_RESET to complete
+        info "Waiting for WARM_RESET to complete..."
+        sleep 3
+
+        # Check if PSKEYs were sent
+        local pskey_sent=$(ssh_cmd "dmesg | grep -c 'BCSP: Set PSKEY' 2>/dev/null" || echo "0")
+        if [[ "$pskey_sent" -gt 0 ]]; then
+            success "Phase 1 complete: $pskey_sent PSKEYs sent + WARM_RESET"
+        else
+            warn "No PSKEYs detected in dmesg (may already be configured)"
+        fi
+    else
+        info "Skipping Phase 1 (--phase2-only specified)"
     fi
 
-    info "Waiting ${wait_sec}s for HCI device..."
-    sleep $wait_sec
+    echo ""
+    info "=== Phase 2: Power cycle + fresh connection ==="
+
+    unload_modules
+    power_on_bt
+    load_modules 1  # skip_pskeys=1
+    run_hciattach
+
+    success "Phase 2 complete: Fresh connection established"
 }
 
 check_hci_device() {
@@ -384,6 +382,7 @@ main() {
     local test=1
     local monitor=0
     local scan=0
+    local phase2_only=0
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -394,19 +393,14 @@ main() {
             --test-only)
                 deploy=0
                 ;;
+            --phase2-only)
+                phase2_only=1
+                ;;
             --monitor)
                 monitor=1
                 ;;
             --scan)
                 scan=1
-                ;;
-            --no-bdaddr)
-                # Already default, just explicitly skip
-                BDADDR=""
-                ;;
-            --with-bdaddr)
-                # Read BD address from device token partition
-                BDADDR="FROM_DEVICE"
                 ;;
             --help|-h)
                 show_help
@@ -433,9 +427,7 @@ main() {
     if [[ $deploy -eq 1 ]]; then
         check_modules_exist
         deploy_modules
-        power_on_bt
-        load_modules
-        run_hciattach
+        run_two_phase_init $phase2_only
     fi
 
     if [[ $test -eq 1 ]]; then
