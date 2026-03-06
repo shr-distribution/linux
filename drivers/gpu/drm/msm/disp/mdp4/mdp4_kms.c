@@ -488,23 +488,16 @@ static int mdp4_kms_init(struct drm_device *dev)
 		goto fail;
 	}
 
-	/* make sure things are off before attaching iommu (bootloader could
-	 * have left things on, in which case we'll start getting faults if
-	 * we don't disable):
-	 */
-	mdp4_enable(mdp4_kms);
-	mdp4_write(mdp4_kms, REG_MDP4_DTV_ENABLE, 0);
-	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
-	mdp4_write(mdp4_kms, REG_MDP4_DSI_ENABLE, 0);
-	mdp4_disable(mdp4_kms);
 	/*
-	 * Wait for display output to fully stop. The original 16ms was one
-	 * frame period but insufficient for LVDS PHY to properly idle.
-	 * webOS kernel waits 100ms after LCDC disable. Match this to ensure
-	 * stable handover from moboot - the extra boot delay is acceptable
-	 * to prevent random blue vertical lines on display.
+	 * Note: Display outputs (LCDC/DTV/DSI) are already disabled in
+	 * mdp4_probe() before we get here. That early disable uses raw
+	 * register writes without enabling clocks, which avoids the
+	 * "mdp_axi_clk status stuck" warnings that occurred when toggling
+	 * clocks just to write zeros to already-zero registers.
+	 *
+	 * The 50ms delay in mdp4_probe() ensures the display pipeline has
+	 * fully drained before IOMMU setup proceeds.
 	 */
-	mdelay(100);
 
 	/*
 	 * Initialize VM after modeset_init() succeeds. This avoids creating
