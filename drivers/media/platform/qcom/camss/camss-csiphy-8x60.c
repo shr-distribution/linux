@@ -222,11 +222,15 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - Enable sequence (after 20ms delay)\n", csiphy->id);
 	msleep(20);
 
+	/* Debug: Read D0_CONTROL2 before writing to see if reads work */
+	val = readl(csiphy->base + MIPI_PHY_D0_CONTROL2);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 read before write = 0x%08x\n", csiphy->id, val);
+
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 (LP_REC_EN=0) 0x%08x\n", csiphy->id, val);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 writing 0x%08x\n", csiphy->id, val);
 	/* Use writel() with memory barriers - MSM8660 CSI PHY is sensitive */
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
