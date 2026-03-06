@@ -2473,6 +2473,16 @@ MODULE_DEVICE_TABLE(of, mmcc_msm8660_match_table);
 #define AHB_EN_REG		0x0008
 #define AHB_EN2_REG		0x0038
 
+/* AXI enable registers - control AXI bus paths for memory access */
+#define MAXI_EN_REG		0x0018
+#define MAXI_EN3_REG		0x002c
+#define SAXI_EN_REG		0x01d8
+
+/* Misc CC registers */
+#define CSI_CC_REG		0x0040
+#define MISC_CC_REG		0x0058
+#define MISC_CC2_REG		0x005c
+
 /* CC registers - FORCE_CORE_ON in upper bits, enable in lower bits */
 #define GFX2D0_CC_REG		0x0060
 #define GFX2D1_CC_REG		0x0074
@@ -2520,11 +2530,43 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 	 */
 	regmap_update_bits(regmap, AHB_EN_REG, 0x3, 0x3);
 
+	/*
+	 * AHB_EN2_REG contains additional control bits including
+	 * VFE_AHB FORCE_CORE_ON to prevent memory collapse.
+	 * WebOS: rmwreg(0x000007F9, AHB_EN2_REG, 0x7FFFBFFF);
+	 */
+	regmap_update_bits(regmap, AHB_EN2_REG, 0x7fffbfff, 0x000007f9);
+
+	/*
+	 * Initialize AXI bus registers for memory access paths.
+	 * These enable HW gating and set FORCE_CORE_ON bits for AXI clocks.
+	 * WebOS: rmwreg(0x000307F9, MAXI_EN_REG, 0x0FFFFFFF);
+	 *        writel(0x3FE7FCFF, MAXI_EN3_REG);
+	 *        writel(0x000001D8, SAXI_EN_REG);
+	 * Note: MAXI_EN2_REG is owned by RPM, don't touch it.
+	 */
+	regmap_update_bits(regmap, MAXI_EN_REG, 0x0fffffff, 0x000307f9);
+	regmap_write(regmap, MAXI_EN3_REG, 0x3fe7fcff);
+	regmap_write(regmap, SAXI_EN_REG, 0x000001d8);
+
 	/* Deassert all MM resets */
 	regmap_write(regmap, SW_RESET_ALL_REG, 0);
 	regmap_write(regmap, SW_RESET_AHB_REG, 0);
 	regmap_write(regmap, SW_RESET_AXI_REG, 0);
 	regmap_write(regmap, SW_RESET_CORE_REG, 0);
+
+	/*
+	 * Initialize CSI and MISC CC registers.
+	 * WebOS: writel(0x00000000, CSI_CC_REG);
+	 *        rmwreg(0x00000000, MISC_CC_REG, 0xFEFFF3FF);
+	 *        rmwreg(0x000007FD, MISC_CC2_REG, 0xFFFF7FFF);
+	 * MISC_CC2 also sets DSI byte clock src and HDMI app clock src later.
+	 */
+	regmap_write(regmap, CSI_CC_REG, 0x00000000);
+	regmap_update_bits(regmap, MISC_CC_REG, 0xfefff3ff, 0x00000000);
+	regmap_update_bits(regmap, MISC_CC2_REG, 0xffff7fff, 0x000007fd);
+	/* Set dsi_byte_clk src to DSI PHY PLL, hdmi_app_clk src to PXO */
+	regmap_update_bits(regmap, MISC_CC2_REG, 0x00424003, 0x00400001);
 
 	/*
 	 * Set FORCE_CORE_ON bits in all multimedia CC registers to prevent
