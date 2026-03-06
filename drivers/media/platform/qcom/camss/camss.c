@@ -47,25 +47,27 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 	{
 		.regulators = {},
 		/*
-		 * Clock enable order from legacy webOS kernel:
-		 * 1. vfe (VFE core clock) - MUST set rate before enabling!
-		 * 2. vfe_axi (VFE AXI clock - may be needed for bus access)
-		 * 3. vfe_ahb (VFE AHB/peripheral clock - needed for register access)
+		 * Clock enable order from legacy webOS kernel msm_camio_enable():
+		 * 1. vfe (VFE core clock) - rate 122880000 Hz
+		 * 2. vfe_axi (VFE AXI clock)
+		 * 3. vfe_ahb (VFE AHB/peripheral clock)
 		 * 4. vfe_csi0 (CSI0-VFE bridge)
 		 * 5. csi0_ahb (CSI0 AHB/peripheral clock)
-		 * 6. csi_src, csi, csi_phy
+		 * 6. csi0_src (CSI source clock) - CRITICAL: rate 384000000 Hz!
+		 * 7. csi0 (CSI clock)
+		 * 8. csi0_phy (CSI PHY clock)
 		 *
-		 * Important: VFE clock rate must be set here (122880000 Hz).
-		 * MSM8660 hangs if you try to change clock rate while enabled.
-		 * WebOS sets rate BEFORE enable in msm_camio_clk_enable().
+		 * CRITICAL: CSI source clock must be set to 384 MHz before
+		 * any CSI register access. Without this, register writes hang.
 		 */
-		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "csi0_ahb", "csi0_src", "csi0", "csi0_phy" },
+		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "csi0_ahb",
+			   "csi0_src", "csi0", "csi0_phy" },
 		.clock_rate = { { 122880000 },
 				{ 0 },
 				{ 0 },
 				{ 0 },
 				{ 0 },
-				{ 0 },
+				{ 384000000 },
 				{ 0 },
 				{ 0 } },
 		.reg = { "csiphy0" },
@@ -84,14 +86,15 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		 * accessing any CSI registers. This appears to be a hardware
 		 * requirement - CSI0 and CSI1 may share common infrastructure.
 		 *
-		 * Important: VFE clock rate must be set here (122880000 Hz).
-		 * MSM8660 hangs if you try to change clock rate while enabled.
+		 * CRITICAL: CSI source clocks must be set to 384 MHz before
+		 * any CSI register access. WebOS sets this in msm_camio_clk_enable():
+		 *   msm_camio_clk_rate_set_2(clk, 384000000);
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
 			   "csi0_ahb", "csi1_ahb", "csi0_src", "csi1_src",
 			   "csi0", "csi1", "csi0_phy", "csi1_phy" },
 		.clock_rate = { { 122880000 }, { 0 }, { 0 }, { 0 }, { 0 },
-				{ 0 }, { 0 }, { 0 }, { 0 },
+				{ 0 }, { 0 }, { 384000000 }, { 384000000 },
 				{ 0 }, { 0 }, { 0 }, { 0 } },
 		.reg = { "csiphy1" },
 		.interrupt = { "csiphy1" },

@@ -295,46 +295,22 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 		 * CSI register access. The CGC (Clock Gate Control) Override
 		 * register enables internal clocks for various VFE sub-blocks.
 		 * Without this, CSI register writes hang.
-		 *
-		 * This is normally set in vfe31_reset() but CSIPHY runs before
-		 * VFE s_stream, so we must set it here first.
 		 */
 		if (csiphy->camss->res->version == CAMSS_8x60 &&
 		    csiphy->camss->vfe) {
 			void __iomem *vfe_base = csiphy->camss->vfe[0].base;
 			if (vfe_base) {
-				u32 hw_ver, cgc_readback, csi_test;
-
-				/* Read VFE HW version to verify VFE access works */
-				hw_ver = readl_relaxed(vfe_base + 0x000);
-				dev_info(dev, "CSIPHY%d: VFE HW version = 0x%08x (base=%px)\n",
-					 csiphy->id, hw_ver, vfe_base);
-
 				dev_info(dev, "CSIPHY%d: Setting VFE CGC_OVERRIDE=0xFFFFF\n",
 					 csiphy->id);
-				writel_relaxed(0xFFFFF, vfe_base + 0x00C);
-				wmb();
-
-				/* Read back CGC_OVERRIDE to verify write completed */
-				cgc_readback = readl_relaxed(vfe_base + 0x00C);
-				dev_info(dev, "CSIPHY%d: VFE CGC_OVERRIDE readback = 0x%08x\n",
-					 csiphy->id, cgc_readback);
-
-				/* Try reading CSI register before write to test access */
-				dev_info(dev, "CSIPHY%d: Testing CSI read (base=%px)...\n",
-					 csiphy->id, csiphy->base);
-				csi_test = readl_relaxed(csiphy->base + 0x00);
-				dev_info(dev, "CSIPHY%d: CSI PHY_CONTROL read = 0x%08x\n",
-					 csiphy->id, csi_test);
+				writel(0xFFFFF, vfe_base + 0x00C);
 			}
 		}
 
 		/*
-		 * MSM8660: Wait for clocks to stabilize before register access.
-		 * webOS does msleep(10) after enabling clocks.
+		 * NOTE: webOS does msleep(10) after clock enable, before
+		 * register access. This is done in lanes_enable() to match
+		 * the exact webOS sequence from msm_camio_enable().
 		 */
-		if (csiphy->camss->res->version == CAMSS_8x60)
-			msleep(10);
 
 		enable_irq(csiphy->irq);
 

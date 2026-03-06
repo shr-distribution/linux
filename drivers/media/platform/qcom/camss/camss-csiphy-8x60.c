@@ -154,18 +154,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
-	/*
-	 * MSM8660 workaround: webOS msm_camio_enable() has msleep(10) after
-	 * enabling all CSI clocks and before any register access. This delay
-	 * is required for the hardware to stabilize after clock enable.
-	 */
-	msleep(10);
-
-	/*
-	 * Full CSI init sequence following webOS msm_camio_csi_config():
-	 * PHY_CONTROL -> config registers
-	 */
-
 	num_lanes = cfg->csi2->lane_cfg.num_data;
 
 	/*
@@ -190,48 +178,31 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
 	/*
-	 * EXACT webOS sequence from msm_io_8x60.c:
+	 * EXACT webOS sequence from msm_io_8x60.c msm_camio_enable():
 	 *
-	 * msm_camio_enable() does (BEFORE csi_config):
-	 *   1. msleep(10)
-	 *   2. D0_CONTROL2, D1_CONTROL2, D2_CONTROL2, D3_CONTROL2 (LP_REC_EN=0)
-	 *   3. CL_CONTROL (LP_REC_EN=0)
+	 * 1. Enable all clocks (done in set_power)
+	 * 2. msleep(10) - SINGLE delay after clock enable
+	 * 3. Write D0-D3_CONTROL2 with LP_REC_EN=0
+	 * 4. Write CL_CONTROL with LP_REC_EN=0
 	 *
-	 * msm_camio_csi_config() does (AFTER enable):
-	 *   1. PHY_CONTROL = 0x4
-	 *   2. SW_RST to PROTOCOL_CONTROL
-	 *   3. PROTOCOL_CONTROL with config
-	 *   4. CALIBRATION_CONTROL
-	 *   5. D0-D3_CONTROL2 (LP_REC_EN=1) - overwrites earlier values
-	 *   6. CL_CONTROL (LP_REC_EN=1)
-	 *   7. D0_CONTROL, D1_CONTROL, D2_CONTROL=0, D3_CONTROL=0
-	 *   8. CAMERA_CNTL
-	 *   9. Interrupts
-	 *
-	 * CRITICAL: D0-D3_CONTROL2 and CL_CONTROL must be written BEFORE
-	 * PHY_CONTROL! Our previous attempts failed because we wrote
-	 * PHY_CONTROL first, and the 3rd register write hung.
+	 * webOS uses plain writel() without barriers between writes.
+	 * The 10ms delay after clock enable is the ONLY required delay.
 	 */
 
 	/*
 	 * Phase 1: msm_camio_enable() equivalent
-	 * WebOS has msleep(10) after clock enable before register writes.
-	 * However, MSM8660 CSI PHY registers can hang intermittently even
-	 * with 10ms delay. Use 20ms for more reliable operation.
+	 * Single 10ms delay matching webOS exactly. Extra delays may cause
+	 * the hardware to enter an unexpected state.
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - Enable sequence (after 20ms delay)\n", csiphy->id);
-	msleep(20);
-
-	/* Debug: Read D0_CONTROL2 before writing to see if reads work */
-	val = readl(csiphy->base + MIPI_PHY_D0_CONTROL2);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 read before write = 0x%08x\n", csiphy->id, val);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - msleep(10) then write D0-D3_CONTROL2\n", csiphy->id);
+	msleep(10);
 
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL2 writing 0x%08x\n", csiphy->id, val);
-	/* Use writel() with memory barriers - MSM8660 CSI PHY is sensitive */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0-D3_CONTROL2 = 0x%08x\n", csiphy->id, val);
+	/* webOS uses plain writel() - sequential writes, no barriers between */
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
@@ -239,95 +210,77 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 
 	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
 	      (0x0 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: CL_CONTROL (LP_REC_EN=0) 0x%08x\n", csiphy->id, val);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL = 0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
 
-	/* Ensure all Phase 1 writes are committed before Phase 2 */
-	wmb();
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 complete\n", csiphy->id);
 
 	/*
 	 * Phase 2: msm_camio_csi_config() equivalent
-	 * NOW we can write PHY_CONTROL safely
+	 * webOS calls this later, during sensor streaming setup.
+	 * All writes use plain writel() with no barriers between.
 	 */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 2 - Config sequence\n", csiphy->id);
 
 	/* PHY_CONTROL - SOT_ECC_EN */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: PHY_CONTROL = 0x4\n", csiphy->id);
-	writel_relaxed(0x4, csiphy->base + MIPI_PHY_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing PHY_CONTROL=0x4\n", csiphy->id);
+	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
 
 	/* SW_RST to PROTOCOL_CONTROL */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: SW_RST to PROTOCOL_CONTROL\n", csiphy->id);
-	writel_relaxed(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing PROTOCOL_CONTROL SW_RST\n", csiphy->id);
+	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
 	/* PROTOCOL_CONTROL with config */
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
 	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
 	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
 	val |= (0x0 << MIPI_PROTOCOL_CONTROL_DATA_FORMAT_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: PROTOCOL_CONTROL config 0x%08x\n", csiphy->id, val);
-	writel_relaxed(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing PROTOCOL_CONTROL=0x%08x\n", csiphy->id, val);
+	writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
 	/* CALIBRATION_CONTROL */
 	val = (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_CAL_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_STRENGTH_OVERRIDE_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_CAL_SW_HW_MODE_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_MANUAL_OVERRIDE_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: CALIBRATION_CONTROL 0x%08x\n", csiphy->id, val);
-	writel_relaxed(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CALIBRATION_CONTROL=0x%08x\n", csiphy->id, val);
+	writel(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
 
-	/*
-	 * D0-D3_CONTROL2 with LP_REC_EN=1 - overwrites Phase 1 values
-	 * webOS writes all 4 lanes regardless of actual lane count
-	 *
-	 * CRITICAL: Use writel() with memory barriers for each write.
-	 * MSM8660 CSI PHY is very sensitive to timing. Without barriers
-	 * between writes, the hardware can hang.
-	 */
+	/* D0-D3_CONTROL2 with LP_REC_EN=1 - overwrites Phase 1 values */
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Dx_CONTROL2 (LP_REC_EN=1) 0x%08x\n",
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0-D3_CONTROL2 (LP_REC_EN=1) = 0x%08x\n",
 		 csiphy->id, val);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0_CONTROL2...\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D1_CONTROL2...\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D2_CONTROL2...\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D3_CONTROL2...\n", csiphy->id);
 	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Dx_CONTROL2 writes complete\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: D0-D3_CONTROL2 writes done\n", csiphy->id);
 
 	/* CL_CONTROL with LP_REC_EN=1 */
 	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
 	      (0x1 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: CL_CONTROL (LP_REC_EN=1) 0x%08x\n",
-		 csiphy->id, val);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL=0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
 
 	/* D0_CONTROL - HS receiver equalization */
-	val = 0 << MIPI_PHY_D0_CONTROL_HS_REC_EQ_SHFT;
-	dev_info(csiphy->camss->dev, "CSIPHY%d: D0_CONTROL = 0x%08x\n", csiphy->id, val);
-	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0_CONTROL=0\n", csiphy->id);
+	writel(0, csiphy->base + MIPI_PHY_D0_CONTROL);
 
 	/* D1_CONTROL - enable PHY (release shutdown) */
 	val = (0x1 << MIPI_PHY_D1_CONTROL_MIPI_CLK_PHY_SHUTDOWNB_SHFT) |
 	      (0x1 << MIPI_PHY_D1_CONTROL_MIPI_DATA_PHY_SHUTDOWNB_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: D1_CONTROL (PHY enable) = 0x%08x\n",
-		 csiphy->id, val);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D1_CONTROL=0x%08x (PHY enable)\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL);
 
-	/* D2_CONTROL and D3_CONTROL = 0 (webOS does this explicitly) */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D2_CONTROL=0, D3_CONTROL=0\n", csiphy->id);
+	/* D2_CONTROL and D3_CONTROL = 0 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D2/D3_CONTROL=0\n", csiphy->id);
 	writel(0, csiphy->base + MIPI_PHY_D2_CONTROL);
 	writel(0, csiphy->base + MIPI_PHY_D3_CONTROL);
 
-	/*
-	 * CAMERA_CNTL: Configure lane assignment and count
-	 * webOS uses lane_assign = 0xe4 for all sensors
-	 */
+	/* CAMERA_CNTL: Configure lane assignment and count */
 	switch (num_lanes) {
 	case 1:
 		val = 0xe4 << 8 | 0x4;
@@ -345,15 +298,13 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		val = 0xe4 << 8 | 0x4;
 		break;
 	}
-	dev_info(csiphy->camss->dev, "CSIPHY%d: CAMERA_CNTL = 0x%08x\n", csiphy->id, val);
-	writel_relaxed(val, csiphy->base + MIPI_CAMERA_CNTL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CAMERA_CNTL=0x%08x\n", csiphy->id, val);
+	writel(val, csiphy->base + MIPI_CAMERA_CNTL);
 
-	/* Configure interrupts - mask out ID_ERROR[19], DATA_CMM_ERR[11], CLK_CMM_ERR[10] */
-	writel_relaxed(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_MASK);
-	writel_relaxed(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_STATUS);
-
-	/* Ensure all writes are committed */
-	wmb();
+	/* Configure interrupts - mask out de-featured errors */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Configuring interrupts\n", csiphy->id);
+	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_MASK);
+	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_STATUS);
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n", csiphy->id);
 }
