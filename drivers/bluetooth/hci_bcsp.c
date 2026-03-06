@@ -49,9 +49,18 @@ static char *bdaddr;
 
 /* PSKEY definitions for CSR chip configuration */
 #define PSKEY_BDADDR			0x0001
-#define PSKEY_ANA_FREQ			0x01F6	/* External crystal frequency */
+#define PSKEY_ENC_KEY_LMIN		0x000E	/* Min encryption key length */
 #define PSKEY_LC_MAX_TX_POWER		0x0011	/* Maximum TX power level */
 #define PSKEY_LC_DEFAULT_TX_POWER	0x0013	/* Default TX power level */
+#define PSKEY_HOST_INTERFACE		0x01FE	/* Host interface config */
+#define PSKEY_PCM_MIN_CPU_CLOCK		0x01BE	/* PCM minimum CPU clock */
+#define PSKEY_H_HC_FC_MAX_ACL		0x01AB	/* HCI FC max ACL packets */
+#define PSKEY_H_HC_FC_MAX_SCO		0x01B0	/* HCI FC max SCO packets */
+#define PSKEY_PCM_SAMPLE_SIZE		0x01B9	/* PCM sample size */
+#define PSKEY_ANA_FREQ			0x01F6	/* External crystal frequency */
+#define PSKEY_XTAL_FTRIM		0x01F9	/* Crystal fine trim */
+#define PSKEY_LC_MAX_TX_POWER_NO_RSSI	0x024D	/* Max TX power without RSSI */
+#define PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI 0x025D /* Default TX power without RSSI */
 
 /* Crystal frequency value for 26MHz external crystal */
 #define ANA_FREQ_26MHZ			0x0019
@@ -1028,18 +1037,57 @@ static int bcsp_setup(struct hci_uart *hu)
 		BT_INFO("BCSP: Configuring chip with PSKEYs + WARM_RESET");
 
 		/*
-		 * Send critical PSKEYs and BD address, then WARM_RESET.
+		 * Send all 12 critical PSKEYs and BD address, then WARM_RESET.
 		 * The chip will reset and come back with new settings.
+		 * Based on bcattach analysis from webOS-ports/utilities.
 		 */
 
-		/* PSKEY_ANA_FREQ = 25 (0x19) for 26MHz crystal */
+		/* 1. Host interface - BCSP mode configuration */
+		bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE, 0x6590);
+		msleep(50);
+
+		/* 2. PCM minimum CPU clock */
+		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK, 0x3AFC);
+		msleep(50);
+
+		/* 3. HCI flow control - max ACL packets */
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL, 0x0001);
+		msleep(50);
+
+		/* 4. HCI flow control - max SCO packets */
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO, 0x0001);
+		msleep(50);
+
+		/* 5. PCM sample size */
+		bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE, 0x0008);
+		msleep(50);
+
+		/* 6. PSKEY_ANA_FREQ = 25 (0x19) for 26MHz crystal - CRITICAL */
 		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
 		msleep(50);
 
-		/* TX power configuration */
+		/* 7. Max TX power level */
 		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
 		msleep(50);
+
+		/* 8. Default TX power level */
 		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
+		msleep(50);
+
+		/* 9. Max TX power without RSSI */
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI, 0x0000);
+		msleep(50);
+
+		/* 10. Minimum encryption key length */
+		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN, 0x0001);
+		msleep(50);
+
+		/* 11. Crystal fine trim - important for frequency accuracy */
+		bcsp_send_pskey_word(hu, PSKEY_XTAL_FTRIM, 0x0001);
+		msleep(50);
+
+		/* 12. Default TX power without RSSI */
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI, 0x0001);
 		msleep(50);
 
 		/* BD address */

@@ -9,6 +9,8 @@
 # Options:
 #   --deploy-only    Only deploy modules, don't test
 #   --test-only      Only test (modules already deployed)
+#   --no-bdaddr      Skip BD address configuration (fast init, default)
+#   --with-bdaddr    Configure BD address from device tokens (slow, ~25s)
 #   --monitor        Continuous monitoring mode
 #   --scan           Perform device scan after init
 #   --help           Show this help
@@ -23,8 +25,9 @@ DEVICE_USER="root"
 SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 
 # BD Address for the Bluetooth chip (set via hci_uart module parameter)
-# This is the HP TouchPad's Bluetooth MAC address
-BDADDR="00:1D:FE:85:64:A9"
+# This should match the device's actual BD address from /dev/tokens/BToADDR
+# Set to empty to skip BD address configuration (fast init)
+BDADDR=""
 
 # Build directory for modules
 BUILD_BASE="/media/herrie/LuneOS/scarthgap/webos-ports/tmp-glibc/work/tenderloin-webos-linux-gnueabi/linux-hp-tenderloin/6.18+git/linux-tenderloin-standard-build"
@@ -103,7 +106,7 @@ deploy_modules() {
 
     # Unload existing modules first
     info "Unloading existing Bluetooth modules..."
-    ssh_cmd "rmmod hci_uart btbcm bluetooth 2>/dev/null || true"
+    ssh_cmd "killall hciattach 2>/dev/null; sleep 1; rmmod hci_uart btbcm bluetooth 2>/dev/null || true"
 
     # Copy modules
     for mod in "${MODULES[@]}"; do
@@ -117,24 +120,46 @@ deploy_modules() {
 }
 
 power_on_bt() {
-    info "Powering on Bluetooth chip..."
+    info "Power cycling Bluetooth chip..."
 
     # GPIO numbers (TLMM base 512 + pin number):
     # GPIO 642 = BT_POWER (pin 130) - active high
     # GPIO 650 = BT_RST_N (pin 138) - active low, set high to release
     # GPIO 643 = BT_WAKE (pin 131) - active high
     ssh_cmd "
+        # Export GPIOs
         for gpio in 642 650 643; do
             echo \$gpio > /sys/class/gpio/export 2>/dev/null || true
             echo out > /sys/class/gpio/gpio\$gpio/direction 2>/dev/null
-            echo 1 > /sys/class/gpio/gpio\$gpio/value 2>/dev/null
         done
+
+        # Power off first (clean state)
+        echo 0 > /sys/class/gpio/gpio642/value 2>/dev/null
+        sleep 1
+
+        # Power on
+        echo 1 > /sys/class/gpio/gpio642/value 2>/dev/null
+        echo 1 > /sys/class/gpio/gpio650/value 2>/dev/null
+        echo 1 > /sys/class/gpio/gpio643/value 2>/dev/null
     " || {
         warn "Could not configure GPIOs (may already be set)"
     }
 
-    sleep 1
+    sleep 2
     success "Bluetooth chip powered on"
+}
+
+read_device_bdaddr() {
+    # Read BD address from device's token partition (mmcblk0p12)
+    # The tokens partition contains factory-programmed values
+    # In LuneOS initramfs, /dev/tokens doesn't exist, so read directly
+    local token_addr=$(ssh_cmd "dd if=/dev/mmcblk0p12 bs=4096 count=10 2>/dev/null | strings -n 6 | grep -A1 BToADDR | tail -1")
+    if [[ -n "$token_addr" && "$token_addr" =~ ^[0-9A-Fa-f]{2}: ]]; then
+        echo "$token_addr"
+    else
+        # Fallback: not available
+        echo ""
+    fi
 }
 
 load_modules() {
@@ -160,11 +185,25 @@ load_modules() {
         fi
     }
 
-    # Load hci_uart with BD address parameter
+    # Handle BD address
     local bdaddr_param=""
+    if [[ "$BDADDR" == "FROM_DEVICE" ]]; then
+        info "Reading BD address from device tokens..."
+        BDADDR=$(read_device_bdaddr)
+        if [[ -n "$BDADDR" ]]; then
+            info "Found BD address: $BDADDR"
+        else
+            warn "Could not read BD address from device, skipping"
+            BDADDR=""
+        fi
+    fi
+
     if [[ -n "$BDADDR" ]]; then
         bdaddr_param="bdaddr=$BDADDR"
-        info "Using BD address: $BDADDR"
+        info "Using BD address: $BDADDR (will configure PSKEYs + WARM_RESET)"
+        warn "This will take ~25 seconds for chip configuration..."
+    else
+        info "No BD address specified - fast init mode (2-3 seconds)"
     fi
 
     ssh_cmd "insmod /tmp/hci_uart.ko $bdaddr_param" || {
@@ -189,13 +228,26 @@ run_hciattach() {
     ssh_cmd "killall hciattach 2>/dev/null || true"
     sleep 1
 
-    # Run hciattach with BCSP protocol
-    # The BD address configuration happens inside the driver during setup
-    ssh_cmd "timeout 30 hciattach -n /dev/ttyMSM1 bcsp 115200 &"
+    # Run hciattach in background (not with timeout - let it run)
+    # The -n flag keeps it in foreground, so we run without it for background
+    if [[ -n "$BDADDR" ]]; then
+        info "PSKEY+WARM_RESET mode (will take ~25 seconds)..."
+    else
+        info "Fast init mode..."
+    fi
 
-    # Wait for HCI device to appear (with BD address config, this can take 10+ seconds)
-    info "Waiting for HCI device (BD address config may take up to 15 seconds)..."
-    sleep 15
+    ssh_cmd "hciattach /dev/ttyMSM1 bcsp 115200 &"
+
+    # Wait for HCI device to appear
+    # Fast mode: 3 seconds should be enough
+    # PSKEY mode: need 25+ seconds
+    local wait_sec=3
+    if [[ -n "$BDADDR" ]]; then
+        wait_sec=25
+    fi
+
+    info "Waiting ${wait_sec}s for HCI device..."
+    sleep $wait_sec
 }
 
 check_hci_device() {
@@ -216,6 +268,9 @@ check_hci_device() {
 
 bring_up_hci() {
     info "Bringing up HCI device..."
+
+    # First unblock rfkill if blocked
+    ssh_cmd "rfkill unblock bluetooth 2>/dev/null" || true
 
     local result=$(ssh_cmd "hciconfig hci0 up 2>&1")
     local rc=$?
@@ -344,6 +399,14 @@ main() {
                 ;;
             --scan)
                 scan=1
+                ;;
+            --no-bdaddr)
+                # Already default, just explicitly skip
+                BDADDR=""
+                ;;
+            --with-bdaddr)
+                # Read BD address from device token partition
+                BDADDR="FROM_DEVICE"
                 ;;
             --help|-h)
                 show_help
