@@ -811,12 +811,12 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0xFFFFF, vfe->base + 0x00C);  /* VFE_CGC_OVERRIDE */
 
 	/* Set DEMUX gains to passthrough (required for YUV input) */
-	writel_relaxed(0x800080, vfe->base + 0x424); /* VFE_DEMUX_GAIN_0 */
-	writel_relaxed(0x800080, vfe->base + 0x428); /* VFE_DEMUX_GAIN_1 */
+	writel_relaxed(0x800080, vfe->base + 0x288); /* VFE_DEMUX_GAIN_0 */
+	writel_relaxed(0x800080, vfe->base + 0x28C); /* VFE_DEMUX_GAIN_1 */
 
 	/* Set clamp values for output */
-	writel_relaxed(0x0, vfe->base + 0x524);      /* VFE_CLAMP_MIN */
-	writel_relaxed(0xFFFFFF, vfe->base + 0x528); /* VFE_CLAMP_MAX */
+	writel_relaxed(0x00ffffff, vfe->base + 0x524); /* VFE_CLAMP_ENC_MAX_CFG */
+	writel_relaxed(0x0, vfe->base + 0x528);        /* VFE_CLAMP_ENC_MIN_CFG */
 	wmb();
 
 	/* Step 1: Configure CORE_CFG pixel pattern */
