@@ -37,6 +37,9 @@ struct mdp4_kms {
 
 	bool rpm_enabled;
 
+	/* Reference count for clock enable/disable */
+	int enable_count;
+
 	/* empty/blank cursor bo to use when cursor is "disabled" */
 	struct drm_gem_object *blank_cursor_bo;
 	uint64_t blank_cursor_iova;

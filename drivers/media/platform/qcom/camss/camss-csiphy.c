@@ -245,11 +245,9 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 	if (on) {
 		int ret;
 
-		dev_info(dev, "CSIPHY%d: calling pm_runtime_resume_and_get\n",
-			 csiphy->id);
+		pr_emerg("CSIPHY%d: calling pm_runtime_resume_and_get\n", csiphy->id);
 		ret = pm_runtime_resume_and_get(dev);
-		dev_info(dev, "CSIPHY%d: pm_runtime_resume_and_get returned %d\n",
-			 csiphy->id, ret);
+		pr_emerg("CSIPHY%d: pm_runtime_resume_and_get returned %d\n", csiphy->id, ret);
 		if (ret < 0) {
 			dev_err(dev, "CSIPHY%d: pm_runtime_resume failed: %d\n",
 				csiphy->id, ret);
@@ -260,7 +258,9 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 		 * MSM8660 workaround: Allow GDSC (power domain) to stabilize
 		 * after enable before proceeding with clock and register access.
 		 */
+		pr_emerg("CSIPHY%d: usleep 10-15ms for GDSC stabilize\n", csiphy->id);
 		usleep_range(10000, 15000);
+		pr_emerg("CSIPHY%d: usleep done, calling regulator_bulk_enable\n", csiphy->id);
 
 		ret = regulator_bulk_enable(csiphy->num_supplies,
 					    csiphy->supplies);

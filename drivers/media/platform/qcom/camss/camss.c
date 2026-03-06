@@ -4828,6 +4828,7 @@ static int __maybe_unused camss_runtime_resume(struct device *dev)
 	}
 
 	dev_info(dev, "camss_runtime_resume: interconnect configured\n");
+	pr_emerg("camss_runtime_resume: returning 0\n");
 	return 0;
 }
 
