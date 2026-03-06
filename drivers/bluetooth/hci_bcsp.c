@@ -61,9 +61,31 @@ static char *bdaddr;
 #define PSKEY_XTAL_FTRIM		0x01F9	/* Crystal fine trim */
 #define PSKEY_LC_MAX_TX_POWER_NO_RSSI	0x024D	/* Max TX power without RSSI */
 #define PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI 0x025D /* Default TX power without RSSI */
+#define PSKEY_TX_POWER_LEVEL		0x0031	/* TX power level table (RF calibration) */
 
 /* Crystal frequency value for 26MHz external crystal */
 #define ANA_FREQ_26MHZ			0x0019
+
+/*
+ * TX Power Level Table for HP TouchPad BCM4329
+ * Extracted from webOS libPmBtBsaif.so via Ghidra decompilation
+ * This table is critical for RF operation - without it the radio won't work.
+ *
+ * Format: 60 uint16 words defining power levels for different channels/rates
+ * Table is stored at palmPlatformSpecificPskeys[5] in webOS
+ */
+static const u16 tx_power_level_table[] = {
+	/* From Ghidra extraction at 0x000f4286 (palmPlatformSpecificPskeys) */
+	0x2200, 0x0050, 0x2600, 0x0050, 0xf000, 0x2800, 0x0050, 0x2d00,
+	0x0050, 0xf400, 0x2500, 0x0040, 0x2a00, 0x0040, 0xf800, 0x2200,
+	0x0020, 0x2700, 0x0020, 0xfc00, 0x2600, 0x0010, 0x2c00, 0x0010,
+	0x0000, 0x2c00, 0x0000, 0x3a00, 0x0000, 0x0400,
+	/* Remaining 30 words - padded to 60 words total */
+	0x2410, 0x08a0, 0x0016, 0x0060, 0x082e, 0x01b3, 0x0000, 0x42c4,
+	0x000f, 0x0004, 0x0000, 0x01b6, 0x0000, 0x42c8, 0x000f, 0x0002,
+	0x0000, 0x01bf, 0x0000, 0x42ca, 0x000f, 0x0002, 0x0000, 0x01f7,
+	0x0000, 0xdc54, 0x000f, 0x0004, 0x0000, 0x01f8
+};
 
 struct bcsp_struct {
 	struct sk_buff_head unack;	/* Unack'ed packets queue */
@@ -432,6 +454,8 @@ static void bcsp_pkt_cull(struct bcsp_struct *bcsp)
 static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr);
 static int bcsp_send_warm_reset(struct hci_uart *hu);
 static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value);
+static int bcsp_send_pskey_data(struct hci_uart *hu, u16 pskey,
+				const u16 *data, u16 len_words);
 static void bcsp_reset_link_state(struct bcsp_struct *bcsp);
 
 /* Handle BCSP link-establishment packets.
@@ -526,9 +550,17 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
 			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
 
+			/*
+			 * TX Power Level Table - CRITICAL FOR RF
+			 * Without this, the radio won't transmit properly.
+			 */
+			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+					     tx_power_level_table,
+					     ARRAY_SIZE(tx_power_level_table));
+
 			/* Skip BD address and WARM_RESET - test if RF works without */
 			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
-			BT_INFO("BCSP: RF PSKEYs sent (no BD addr, no reset)");
+			BT_INFO("BCSP: RF PSKEYs + TX_POWER_LEVEL sent (no BD addr, no reset)");
 		}
 	}
 }
@@ -855,6 +887,82 @@ static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value)
 }
 
 /*
+ * Send a multi-word PSKEY via BCCMD
+ * Used for power tables and other large configuration data.
+ */
+static int bcsp_send_pskey_data(struct hci_uart *hu, u16 pskey,
+				const u16 *data, u16 len_words)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	struct sk_buff *skb;
+	u8 *bccmd;
+	int bccmd_len;
+	int payload_len;
+	int i;
+
+	/*
+	 * BCCMD format:
+	 * - Header: 10 bytes (Type, Length, SeqNo, VarID, Status)
+	 * - PS header: 6 bytes (PSKey, Length, Stores)
+	 * - Data: len_words * 2 bytes
+	 *
+	 * Total length in words must be set in header
+	 */
+	payload_len = 6 + (len_words * 2);  /* PS header + data */
+	bccmd_len = 10 + payload_len;       /* BCCMD header + payload */
+
+	bccmd = kmalloc(bccmd_len, GFP_KERNEL);
+	if (!bccmd)
+		return -ENOMEM;
+
+	memset(bccmd, 0, bccmd_len);
+
+	/* BCCMD header */
+	bccmd[0] = BCCMD_SETREQ & 0xff;
+	bccmd[1] = (BCCMD_SETREQ >> 8) & 0xff;
+	/* Length in words (including header, excluding type) */
+	bccmd[2] = ((bccmd_len / 2) - 1) & 0xff;
+	bccmd[3] = (((bccmd_len / 2) - 1) >> 8) & 0xff;
+	bccmd[4] = 0x00;	/* SeqNo */
+	bccmd[5] = 0x00;
+	bccmd[6] = BCCMD_VARID_PS & 0xff;
+	bccmd[7] = (BCCMD_VARID_PS >> 8) & 0xff;
+	bccmd[8] = 0x00;	/* Status */
+	bccmd[9] = 0x00;
+
+	/* PS payload header */
+	bccmd[10] = pskey & 0xff;
+	bccmd[11] = (pskey >> 8) & 0xff;
+	bccmd[12] = len_words & 0xff;
+	bccmd[13] = (len_words >> 8) & 0xff;
+	bccmd[14] = 0x08;		/* Stores: PSRAM */
+	bccmd[15] = 0x00;
+
+	/* Copy data (little-endian u16 values) */
+	for (i = 0; i < len_words; i++) {
+		bccmd[16 + i * 2] = data[i] & 0xff;
+		bccmd[16 + i * 2 + 1] = (data[i] >> 8) & 0xff;
+	}
+
+	skb = alloc_skb(bccmd_len, GFP_KERNEL);
+	if (!skb) {
+		kfree(bccmd);
+		return -ENOMEM;
+	}
+
+	skb_put_data(skb, bccmd, bccmd_len);
+	hci_skb_pkt_type(skb) = BCSP_BCCMD_PKT;
+
+	skb_queue_tail(&bcsp->unrel, skb);
+	hci_uart_tx_wakeup(hu);
+
+	BT_INFO("BCSP: Set PSKEY 0x%04x with %d words", pskey, len_words);
+
+	kfree(bccmd);
+	return 0;
+}
+
+/*
  * Send WARM_RESET BCCMD to apply PSKEY changes
  * Format matches bcattach: 9 words (18 bytes) with 8 bytes padding
  */
@@ -1089,6 +1197,17 @@ static int bcsp_setup(struct hci_uart *hu)
 		/* 12. Default TX power without RSSI */
 		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI, 0x0001);
 		msleep(50);
+
+		/*
+		 * 13. TX Power Level Table - CRITICAL FOR RF OPERATION
+		 * This 60-word table configures RF power levels for different
+		 * channels/rates. Without it, the radio will not transmit.
+		 * Extracted from webOS palmPlatformSpecificPskeys via Ghidra.
+		 */
+		bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+				     tx_power_level_table,
+				     ARRAY_SIZE(tx_power_level_table));
+		msleep(100);
 
 		/* BD address */
 		BT_INFO("BCSP: Setting BD address %pMR", &bcsp->bdaddr);

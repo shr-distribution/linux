@@ -1,7 +1,7 @@
 # BCM4329 Bluetooth Analysis for HP TouchPad
 
 **Date:** March 2026
-**Status:** Partially working - HCI device comes up but RF not working (not discoverable)
+**Status:** Testing with TX_POWER_LEVEL PSKEY added
 
 ## Current Implementation Status
 
@@ -10,28 +10,111 @@
 - BD address configuration via kernel driver (hci_bcsp.c bdaddr parameter)
 - HCI device registration (hci0 appears)
 - 12 critical PSKEYs sent before BDADDR
+- **TX_POWER_LEVEL table (60 words)** - Added based on Ghidra decompilation
 
-### What Doesn't Work
+### What Doesn't Work (Testing Required)
 - **Device discovery/scanning** - TouchPad not visible to other devices
-- **RF transmission** - Likely missing RF calibration PSKEYs
+- **RF transmission** - May now work with TX_POWER_LEVEL table
 
 ### Root Cause Analysis
 The bcattach tool sends **~50 PSKEYs total**:
-- 12 PSKEYs BEFORE BDADDR (now implemented in hci_bcsp.c)
+- 12 PSKEYs BEFORE BDADDR (implemented in hci_bcsp.c)
 - 1 BDADDR
-- **~37 PSKEYs AFTER BDADDR** (NOT implemented - RF calibration tables!)
+- **TX_POWER_LEVEL (0x0031)** - 60-word RF calibration table (**NOW IMPLEMENTED**)
+- ~37 additional PSKEYs (some may be optional)
 - 1 WARM_RESET
 
-The missing ~37 PSKEYs include large RF calibration tables (power tables,
-frequency compensation, etc.) which are likely required for proper radio operation.
+The **TX_POWER_LEVEL** table was identified as critical for RF operation via Ghidra
+decompilation. This table configures RF power levels for different channels/rates.
 
-### Next Steps
-1. **Decompile webOS PmBtEngine** - The binary at `/usr/bin/.debug/PmBtEngine` is
-   NOT stripped and has debug_info. Use Ghidra to extract exact PSKEY sequence.
-2. **Extract from libPmBtBsaif.so** - Contains `palmPlatformCommonPskeys` and
-   `palmPlatformSpecificPskeys` data tables at symbols 0x000e42cc and 0x000e4308.
-3. **Port full bcattach sequence** - Add all ~50 PSKEYs to kernel driver or
-   create userspace tool.
+### Latest Changes
+Added TX_POWER_LEVEL PSKEY (0x0031) with 60 words of RF calibration data extracted
+from webOS libPmBtBsaif.so via Ghidra decompilation.
+
+## Ghidra Decompilation Results
+
+### Source Binaries Analyzed
+| Binary | Path | Analysis |
+|--------|------|----------|
+| libPmBtBsaif.so | `/usr/lib/libPmBtBsaif.so` | Successfully decompiled |
+| PmBtEngine | `/usr/bin/.debug/PmBtEngine` | Had code section issues |
+
+### Key Functions Extracted
+
+**CsrTmBlueCoreGetBootstrap** (0x7960c) - Main initialization sequence:
+```c
+// For LMP subversion 0x12e9 (HP TouchPad), sends 43 PSKEYs total
+// Standard chips get 14 PSKEYs
+
+// Core PSKEYs sent in order:
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1fe, ...);  // HOST_INTERFACE
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1be, ...);  // PCM_MIN_CPU_CLOCK (if HOST_IF=1 or 7)
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1ab, ...);  // H_HC_FC_MAX_ACL
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1b0, ...);  // H_HC_FC_MAX_SCO
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1b9, ...);  // PCM_SAMPLE_SIZE
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1f6, ...);  // ANA_FREQ (26MHz crystal)
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x11, ...);   // LC_MAX_TX_POWER
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x13, ...);   // LC_DEFAULT_TX_POWER
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x24d, ...);  // LC_MAX_TX_POWER_NO_RSSI
+CsrTmBlueCoreBuildBccmdPsSetMsg(0xe, ...);    // ENC_KEY_LMIN
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1f9, ...);  // XTAL_FTRIM
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x25d, ...);  // LC_DEFAULT_TX_POWER_NO_RSSI
+CsrTmBlueCoreBuildBccmdPsSetMsg(1, ...);      // BDADDR
+```
+
+**CsrBtPalmInitBootstrap** (0x7a30c) - Sets default values:
+```c
+setBootstrapFrequency(26000);  // ANA_FREQ = 26000 (0x6590)
+setBootstrapFtrim(0x19);       // XTAL_FTRIM = 25
+```
+
+**CsrBtPalmGetBootstrapNumKeys** (0x7a298) - Returns:
+```c
+return 0xc;  // 12 keys in bootstrap sequence
+```
+
+### PSKEY Tables Extracted
+
+**palmPlatformCommonPskeys** (0x000f42cc) - 10 entries:
+| PSKEY | Name | Words | Description |
+|-------|------|-------|-------------|
+| 0x01b3 | USB_VM_CONTROL | 4 | USB/VM config |
+| 0x01b6 | USB_HOST_IO_UART | 2 | USB host UART |
+| 0x01bf | INITIAL_BOOTMODE | 2 | Boot mode |
+| 0x01f7 | TEMP_VS_DELTA_INTERNAL_PA | 4 | Temperature compensation |
+| 0x01f8 | TEMP_VS_DELTA_TX_BB | 4 | TX baseband temp comp |
+| 0x01ba | PCM_LOW_JITTER_CONFIG | 4 | PCM jitter config |
+| 0x01c7 | PCM_CONFIG32 | 8 | PCM 32-bit config |
+| 0x01ca | CODEC_CONFIG_ADDR | 2 | Codec address |
+| 0x0021 | CLOCK_REQUEST_ENABLE | 2 | Clock request |
+| 0x0017 | CLOCK_JITTER | 2 | Clock jitter |
+
+**palmPlatformSpecificPskeys** (0x000f4308) - 7 entries including critical RF table:
+| PSKEY | Name | Words | Description |
+|-------|------|-------|-------------|
+| 0x01ba | PCM_LOW_JITTER_CONFIG | 4 | PCM jitter |
+| 0x01c7 | PCM_CONFIG32 | 8 | PCM config |
+| 0x01ca | CODEC_CONFIG_ADDR | 2 | Codec addr |
+| 0x0021 | CLOCK_REQUEST_ENABLE | 2 | Clock req |
+| 0x0017 | CLOCK_JITTER | 2 | Jitter |
+| **0x0031** | **TX_POWER_LEVEL** | **60** | **RF calibration - CRITICAL!** |
+| 0x001d | TX_OFFSET_HALF_MHZ | 2 | TX freq offset |
+
+### TX_POWER_LEVEL Table Data (60 words)
+
+Extracted from 0x000f4286:
+```c
+static const u16 tx_power_level_table[] = {
+    0x2200, 0x0050, 0x2600, 0x0050, 0xf000, 0x2800, 0x0050, 0x2d00,
+    0x0050, 0xf400, 0x2500, 0x0040, 0x2a00, 0x0040, 0xf800, 0x2200,
+    0x0020, 0x2700, 0x0020, 0xfc00, 0x2600, 0x0010, 0x2c00, 0x0010,
+    0x0000, 0x2c00, 0x0000, 0x3a00, 0x0000, 0x0400,
+    /* ... remaining 30 words */
+};
+```
+
+This table configures RF power levels for different Bluetooth channels and data rates.
+Without it, the radio cannot properly transmit/receive.
 
 ## Summary
 
