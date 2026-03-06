@@ -26,6 +26,7 @@
 #include <linux/skbuff.h>
 #include <linux/bitrev.h>
 #include <linux/unaligned.h>
+#include <linux/of.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -66,26 +67,8 @@ static char *bdaddr;
 /* Crystal frequency value for 26MHz external crystal */
 #define ANA_FREQ_26MHZ			0x0019
 
-/*
- * TX Power Level Table for HP TouchPad BCM4329
- * Extracted from webOS libPmBtBsaif.so via Ghidra decompilation
- * This table is critical for RF operation - without it the radio won't work.
- *
- * Format: 60 uint16 words defining power levels for different channels/rates
- * Table is stored at palmPlatformSpecificPskeys[5] in webOS
- */
-static const u16 tx_power_level_table[] = {
-	/* From Ghidra extraction at 0x000f4286 (palmPlatformSpecificPskeys) */
-	0x2200, 0x0050, 0x2600, 0x0050, 0xf000, 0x2800, 0x0050, 0x2d00,
-	0x0050, 0xf400, 0x2500, 0x0040, 0x2a00, 0x0040, 0xf800, 0x2200,
-	0x0020, 0x2700, 0x0020, 0xfc00, 0x2600, 0x0010, 0x2c00, 0x0010,
-	0x0000, 0x2c00, 0x0000, 0x3a00, 0x0000, 0x0400,
-	/* Remaining 30 words - padded to 60 words total */
-	0x2410, 0x08a0, 0x0016, 0x0060, 0x082e, 0x01b3, 0x0000, 0x42c4,
-	0x000f, 0x0004, 0x0000, 0x01b6, 0x0000, 0x42c8, 0x000f, 0x0002,
-	0x0000, 0x01bf, 0x0000, 0x42ca, 0x000f, 0x0002, 0x0000, 0x01f7,
-	0x0000, 0xdc54, 0x000f, 0x0004, 0x0000, 0x01f8
-};
+/* Maximum size of TX power table from device tree (in u16 words) */
+#define BCSP_TX_POWER_TABLE_MAX		128
 
 struct bcsp_struct {
 	struct sk_buff_head unack;	/* Unack'ed packets queue */
@@ -127,6 +110,10 @@ struct bcsp_struct {
 		BCSP_BDADDR_DONE	/* Configuration complete */
 	} bdaddr_state;
 	bdaddr_t bdaddr;		/* BD address to set */
+
+	/* TX power table from device tree (for RF calibration) */
+	u16	*tx_power_table;	/* Dynamically allocated from DT */
+	int	tx_power_table_len;	/* Length in u16 words, 0 if not available */
 };
 
 /* ---- BCSP CRC calculation ---- */
@@ -554,13 +541,17 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 			 * TX Power Level Table - CRITICAL FOR RF
 			 * Without this, the radio won't transmit properly.
 			 */
-			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
-					     tx_power_level_table,
-					     ARRAY_SIZE(tx_power_level_table));
+			if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
+				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+						     bcsp->tx_power_table,
+						     bcsp->tx_power_table_len);
+			} else {
+				BT_WARN("BCSP: No TX power table - RF may not work");
+			}
 
 			/* Skip BD address and WARM_RESET - test if RF works without */
 			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
-			BT_INFO("BCSP: RF PSKEYs + TX_POWER_LEVEL sent (no BD addr, no reset)");
+			BT_INFO("BCSP: RF PSKEYs sent (no BD addr, no reset)");
 		}
 	}
 }
@@ -1200,14 +1191,18 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/*
 		 * 13. TX Power Level Table - CRITICAL FOR RF OPERATION
-		 * This 60-word table configures RF power levels for different
+		 * This table configures RF power levels for different
 		 * channels/rates. Without it, the radio will not transmit.
-		 * Extracted from webOS palmPlatformSpecificPskeys via Ghidra.
+		 * Read from device tree brcm,tx-power-table property.
 		 */
-		bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
-				     tx_power_level_table,
-				     ARRAY_SIZE(tx_power_level_table));
-		msleep(100);
+		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
+			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+					     bcsp->tx_power_table,
+					     bcsp->tx_power_table_len);
+			msleep(100);
+		} else {
+			BT_WARN("BCSP: No TX power table available - RF may not work");
+		}
 
 		/* BD address */
 		BT_INFO("BCSP: Setting BD address %pMR", &bcsp->bdaddr);
@@ -1284,6 +1279,62 @@ static void bcsp_timed_event(struct timer_list *t)
 	hci_uart_tx_wakeup(hu);
 }
 
+/*
+ * Read TX power table from device tree.
+ * The table is stored in the brcm,tx-power-table property of a
+ * compatible = "brcm,bcm4329-bt" node.
+ */
+static void bcsp_read_tx_power_table(struct bcsp_struct *bcsp)
+{
+	struct device_node *np;
+	int len, ret;
+
+	bcsp->tx_power_table = NULL;
+	bcsp->tx_power_table_len = 0;
+
+	np = of_find_compatible_node(NULL, NULL, "brcm,bcm4329-bt");
+	if (!np) {
+		BT_DBG("BCSP: No brcm,bcm4329-bt node found in device tree");
+		return;
+	}
+
+	/* Check if property exists and get its length */
+	if (!of_find_property(np, "brcm,tx-power-table", &len)) {
+		BT_DBG("BCSP: No brcm,tx-power-table property found");
+		of_node_put(np);
+		return;
+	}
+
+	/* Length is in bytes, convert to u16 words */
+	len = len / sizeof(u16);
+	if (len <= 0 || len > BCSP_TX_POWER_TABLE_MAX) {
+		BT_ERR("BCSP: Invalid tx-power-table length: %d words", len);
+		of_node_put(np);
+		return;
+	}
+
+	bcsp->tx_power_table = kmalloc_array(len, sizeof(u16), GFP_KERNEL);
+	if (!bcsp->tx_power_table) {
+		of_node_put(np);
+		return;
+	}
+
+	ret = of_property_read_u16_array(np, "brcm,tx-power-table",
+					 bcsp->tx_power_table, len);
+	if (ret) {
+		BT_ERR("BCSP: Failed to read tx-power-table: %d", ret);
+		kfree(bcsp->tx_power_table);
+		bcsp->tx_power_table = NULL;
+		of_node_put(np);
+		return;
+	}
+
+	bcsp->tx_power_table_len = len;
+	BT_INFO("BCSP: Loaded %d-word TX power table from device tree", len);
+
+	of_node_put(np);
+}
+
 static int bcsp_open(struct hci_uart *hu)
 {
 	struct bcsp_struct *bcsp;
@@ -1306,6 +1357,9 @@ static int bcsp_open(struct hci_uart *hu)
 
 	if (txcrc)
 		bcsp->use_crc = 1;
+
+	/* Load TX power table from device tree */
+	bcsp_read_tx_power_table(bcsp);
 
 	/* Initialize BD address configuration state */
 	bcsp->bdaddr_state = BCSP_BDADDR_NONE;
@@ -1340,6 +1394,7 @@ static int bcsp_close(struct hci_uart *hu)
 		bcsp->rx_skb = NULL;
 	}
 
+	kfree(bcsp->tx_power_table);
 	kfree(bcsp);
 	return 0;
 }
