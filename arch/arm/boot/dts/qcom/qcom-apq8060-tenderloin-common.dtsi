@@ -2349,6 +2349,91 @@
 			0x0000 0xdc54 0x000f 0x0004 0x0000 0x01f8
 		>;
 
+		/*
+		 * CSR/BCM chip configuration PSKEYs (Persistent Store Keys)
+		 *
+		 * These values configure the Bluetooth chip's internal settings
+		 * and are sent via BCCMD (BlueCore Command) protocol during
+		 * initialization. Values extracted from webOS bcattach utility
+		 * and libPmBtBsaif.so via Ghidra decompilation.
+		 *
+		 * The hci_bcsp driver reads these properties and sends them
+		 * to the chip before enabling HCI communication.
+		 */
+
+		/*
+		 * brcm,host-interface: Host interface protocol (PSKEY 0x01fe)
+		 * 0x6590 = BCSP with SLIP framing, required for BCM4329
+		 */
+		brcm,host-interface = /bits/ 16 <0x6590>;
+
+		/*
+		 * brcm,pcm-min-cpu-clock: Minimum CPU clock for PCM (PSKEY 0x01be)
+		 * Controls power management during audio operations
+		 */
+		brcm,pcm-min-cpu-clock = /bits/ 16 <0x3afc>;
+
+		/*
+		 * brcm,hci-max-acl: Max ACL packets in HCI buffer (PSKEY 0x01ab)
+		 * Flow control setting for ACL data packets
+		 */
+		brcm,hci-max-acl = /bits/ 16 <0x0001>;
+
+		/*
+		 * brcm,hci-max-sco: Max SCO packets in HCI buffer (PSKEY 0x01b0)
+		 * Flow control setting for SCO (voice) packets
+		 */
+		brcm,hci-max-sco = /bits/ 16 <0x0001>;
+
+		/*
+		 * brcm,pcm-sample-size: PCM audio sample size (PSKEY 0x01b9)
+		 * 0x0008 = 8-bit samples for SCO audio
+		 */
+		brcm,pcm-sample-size = /bits/ 16 <0x0008>;
+
+		/*
+		 * brcm,ana-freq: External crystal frequency (PSKEY 0x01f6)
+		 * 0x0019 (25 decimal) = 26 MHz crystal - CRITICAL for RF
+		 * Incorrect value causes frequency drift and connection issues
+		 */
+		brcm,ana-freq = /bits/ 16 <0x0019>;
+
+		/*
+		 * brcm,max-tx-power: Maximum TX power level (PSKEY 0x0011)
+		 * Controls maximum Bluetooth transmission power
+		 */
+		brcm,max-tx-power = /bits/ 16 <0x0154>;
+
+		/*
+		 * brcm,default-tx-power: Default TX power level (PSKEY 0x0013)
+		 * Initial transmission power before power control adjusts it
+		 */
+		brcm,default-tx-power = /bits/ 16 <0x000b>;
+
+		/*
+		 * brcm,max-tx-power-no-rssi: Max TX power w/o RSSI (PSKEY 0x024d)
+		 * TX power limit when RSSI feedback is unavailable
+		 */
+		brcm,max-tx-power-no-rssi = /bits/ 16 <0x0000>;
+
+		/*
+		 * brcm,enc-key-min-len: Min encryption key length (PSKEY 0x000e)
+		 * Minimum key size for encrypted connections (bytes)
+		 */
+		brcm,enc-key-min-len = /bits/ 16 <0x0001>;
+
+		/*
+		 * brcm,xtal-ftrim: Crystal frequency trim (PSKEY 0x01f9)
+		 * Fine-tunes the crystal oscillator frequency
+		 */
+		brcm,xtal-ftrim = /bits/ 16 <0x0001>;
+
+		/*
+		 * brcm,default-tx-power-no-rssi: Default TX w/o RSSI (PSKEY 0x025d)
+		 * Default TX power when RSSI feedback is unavailable
+		 */
+		brcm,default-tx-power-no-rssi = /bits/ 16 <0x0001>;
+
 		vddio-supply = <&pm8058_s3>;
 		vbat-supply = <&pm8901_l3>;
 

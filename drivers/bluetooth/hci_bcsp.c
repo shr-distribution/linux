@@ -64,9 +64,6 @@ static char *bdaddr;
 #define PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI 0x025D /* Default TX power without RSSI */
 #define PSKEY_TX_POWER_LEVEL		0x0031	/* TX power level table (RF calibration) */
 
-/* Crystal frequency value for 26MHz external crystal */
-#define ANA_FREQ_26MHZ			0x0019
-
 /* Maximum size of TX power table from device tree (in u16 words) */
 #define BCSP_TX_POWER_TABLE_MAX		128
 
@@ -114,6 +111,21 @@ struct bcsp_struct {
 	/* TX power table from device tree (for RF calibration) */
 	u16	*tx_power_table;	/* Dynamically allocated from DT */
 	int	tx_power_table_len;	/* Length in u16 words, 0 if not available */
+
+	/* PSKEYs from device tree */
+	bool	pskeys_from_dt;		/* True if PSKEYs loaded from DT */
+	u16	pskey_host_interface;
+	u16	pskey_pcm_min_cpu_clock;
+	u16	pskey_hci_max_acl;
+	u16	pskey_hci_max_sco;
+	u16	pskey_pcm_sample_size;
+	u16	pskey_ana_freq;
+	u16	pskey_max_tx_power;
+	u16	pskey_default_tx_power;
+	u16	pskey_max_tx_power_no_rssi;
+	u16	pskey_enc_key_min_len;
+	u16	pskey_xtal_ftrim;
+	u16	pskey_default_tx_power_no_rssi;
 };
 
 /* ---- BCSP CRC calculation ---- */
@@ -529,13 +541,17 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		BT_INFO("BCSP: conf_rsp received, link established (bdaddr_state=%d)",
 			bcsp->bdaddr_state);
 
-		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
+		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING &&
+		    bcsp->pskeys_from_dt) {
 			BT_INFO("BCSP: First link up, sending RF PSKEYs (no reset)");
 
-			/* Send critical RF configuration PSKEYs */
-			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
-			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
-			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
+			/* Send critical RF configuration PSKEYs from DT */
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
+					     bcsp->pskey_ana_freq);
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+					     bcsp->pskey_max_tx_power);
+			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+					     bcsp->pskey_default_tx_power);
 
 			/*
 			 * TX Power Level Table - CRITICAL FOR RF
@@ -1135,58 +1151,75 @@ static int bcsp_setup(struct hci_uart *hu)
 	if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
 		BT_INFO("BCSP: Configuring chip with PSKEYs + WARM_RESET");
 
+		if (!bcsp->pskeys_from_dt) {
+			BT_ERR("BCSP: No PSKEYs in device tree, cannot configure");
+			return -ENOENT;
+		}
+
 		/*
-		 * Send all 12 critical PSKEYs and BD address, then WARM_RESET.
-		 * The chip will reset and come back with new settings.
-		 * Based on bcattach analysis from webOS-ports/utilities.
+		 * Send all 12 PSKEYs from device tree, then BD address and
+		 * WARM_RESET. The chip will reset and come back with new
+		 * settings. PSKEY values from device tree brcm,* properties.
 		 */
 
 		/* 1. Host interface - BCSP mode configuration */
-		bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE, 0x6590);
+		bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
+				     bcsp->pskey_host_interface);
 		msleep(50);
 
 		/* 2. PCM minimum CPU clock */
-		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK, 0x3AFC);
+		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
+				     bcsp->pskey_pcm_min_cpu_clock);
 		msleep(50);
 
 		/* 3. HCI flow control - max ACL packets */
-		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL, 0x0001);
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
+				     bcsp->pskey_hci_max_acl);
 		msleep(50);
 
 		/* 4. HCI flow control - max SCO packets */
-		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO, 0x0001);
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
+				     bcsp->pskey_hci_max_sco);
 		msleep(50);
 
 		/* 5. PCM sample size */
-		bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE, 0x0008);
+		bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
+				     bcsp->pskey_pcm_sample_size);
 		msleep(50);
 
-		/* 6. PSKEY_ANA_FREQ = 25 (0x19) for 26MHz crystal - CRITICAL */
-		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
+		/* 6. Crystal frequency - CRITICAL for RF */
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
+				     bcsp->pskey_ana_freq);
 		msleep(50);
 
 		/* 7. Max TX power level */
-		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+				     bcsp->pskey_max_tx_power);
 		msleep(50);
 
 		/* 8. Default TX power level */
-		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+				     bcsp->pskey_default_tx_power);
 		msleep(50);
 
 		/* 9. Max TX power without RSSI */
-		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI, 0x0000);
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
+				     bcsp->pskey_max_tx_power_no_rssi);
 		msleep(50);
 
 		/* 10. Minimum encryption key length */
-		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN, 0x0001);
+		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
+				     bcsp->pskey_enc_key_min_len);
 		msleep(50);
 
 		/* 11. Crystal fine trim - important for frequency accuracy */
-		bcsp_send_pskey_word(hu, PSKEY_XTAL_FTRIM, 0x0001);
+		bcsp_send_pskey_word(hu, PSKEY_XTAL_FTRIM,
+				     bcsp->pskey_xtal_ftrim);
 		msleep(50);
 
 		/* 12. Default TX power without RSSI */
-		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI, 0x0001);
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
+				     bcsp->pskey_default_tx_power_no_rssi);
 		msleep(50);
 
 		/*
@@ -1258,17 +1291,24 @@ static int bcsp_setup(struct hci_uart *hu)
 		 * need to send RF calibration PSKEYs for the radio to work.
 		 * No WARM_RESET needed since we're not changing BD address.
 		 */
-		BT_INFO("BCSP: Fast init - sending RF PSKEYs only");
+		if (!bcsp->pskeys_from_dt) {
+			BT_WARN("BCSP: No PSKEYs in device tree, RF may not work");
+		} else {
+			BT_INFO("BCSP: Fast init - sending RF PSKEYs from DT");
 
-		/* Crystal frequency - CRITICAL for RF */
-		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
-		msleep(50);
+			/* Crystal frequency - CRITICAL for RF */
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
+					     bcsp->pskey_ana_freq);
+			msleep(50);
 
-		/* TX power settings */
-		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
-		msleep(50);
-		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
-		msleep(50);
+			/* TX power settings */
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+					     bcsp->pskey_max_tx_power);
+			msleep(50);
+			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+					     bcsp->pskey_default_tx_power);
+			msleep(50);
+		}
 
 		/* TX Power Level Table - CRITICAL FOR RF */
 		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
@@ -1320,17 +1360,18 @@ static void bcsp_timed_event(struct timer_list *t)
 }
 
 /*
- * Read TX power table from device tree.
- * The table is stored in the brcm,tx-power-table property of a
- * compatible = "brcm,bcm4329-bt" node.
+ * Read PSKEY configuration from device tree.
+ * PSKEYs are stored in properties of a compatible = "brcm,bcm4329-bt" node.
  */
-static void bcsp_read_tx_power_table(struct bcsp_struct *bcsp)
+static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 {
 	struct device_node *np;
 	int len, ret;
+	int pskeys_read = 0;
 
 	bcsp->tx_power_table = NULL;
 	bcsp->tx_power_table_len = 0;
+	bcsp->pskeys_from_dt = false;
 
 	np = of_find_compatible_node(NULL, NULL, "brcm,bcm4329-bt");
 	if (!np) {
@@ -1338,39 +1379,70 @@ static void bcsp_read_tx_power_table(struct bcsp_struct *bcsp)
 		return;
 	}
 
-	/* Check if property exists and get its length */
-	if (!of_find_property(np, "brcm,tx-power-table", &len)) {
-		BT_DBG("BCSP: No brcm,tx-power-table property found");
-		of_node_put(np);
-		return;
+	/* Read TX power table */
+	if (of_find_property(np, "brcm,tx-power-table", &len)) {
+		len = len / sizeof(u16);
+		if (len > 0 && len <= BCSP_TX_POWER_TABLE_MAX) {
+			bcsp->tx_power_table = kmalloc_array(len, sizeof(u16),
+							     GFP_KERNEL);
+			if (bcsp->tx_power_table) {
+				ret = of_property_read_u16_array(np,
+					"brcm,tx-power-table",
+					bcsp->tx_power_table, len);
+				if (ret) {
+					kfree(bcsp->tx_power_table);
+					bcsp->tx_power_table = NULL;
+				} else {
+					bcsp->tx_power_table_len = len;
+					BT_INFO("BCSP: Loaded %d-word TX power table from DT",
+						len);
+				}
+			}
+		}
 	}
 
-	/* Length is in bytes, convert to u16 words */
-	len = len / sizeof(u16);
-	if (len <= 0 || len > BCSP_TX_POWER_TABLE_MAX) {
-		BT_ERR("BCSP: Invalid tx-power-table length: %d words", len);
-		of_node_put(np);
-		return;
-	}
+	/* Read individual PSKEYs - use of_property_read_u16 for single values */
+	if (!of_property_read_u16(np, "brcm,host-interface",
+				  &bcsp->pskey_host_interface))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,pcm-min-cpu-clock",
+				  &bcsp->pskey_pcm_min_cpu_clock))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,hci-max-acl",
+				  &bcsp->pskey_hci_max_acl))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,hci-max-sco",
+				  &bcsp->pskey_hci_max_sco))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,pcm-sample-size",
+				  &bcsp->pskey_pcm_sample_size))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,ana-freq",
+				  &bcsp->pskey_ana_freq))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,max-tx-power",
+				  &bcsp->pskey_max_tx_power))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,default-tx-power",
+				  &bcsp->pskey_default_tx_power))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,max-tx-power-no-rssi",
+				  &bcsp->pskey_max_tx_power_no_rssi))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,enc-key-min-len",
+				  &bcsp->pskey_enc_key_min_len))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,xtal-ftrim",
+				  &bcsp->pskey_xtal_ftrim))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,default-tx-power-no-rssi",
+				  &bcsp->pskey_default_tx_power_no_rssi))
+		pskeys_read++;
 
-	bcsp->tx_power_table = kmalloc_array(len, sizeof(u16), GFP_KERNEL);
-	if (!bcsp->tx_power_table) {
-		of_node_put(np);
-		return;
+	if (pskeys_read > 0) {
+		bcsp->pskeys_from_dt = true;
+		BT_INFO("BCSP: Loaded %d PSKEYs from device tree", pskeys_read);
 	}
-
-	ret = of_property_read_u16_array(np, "brcm,tx-power-table",
-					 bcsp->tx_power_table, len);
-	if (ret) {
-		BT_ERR("BCSP: Failed to read tx-power-table: %d", ret);
-		kfree(bcsp->tx_power_table);
-		bcsp->tx_power_table = NULL;
-		of_node_put(np);
-		return;
-	}
-
-	bcsp->tx_power_table_len = len;
-	BT_INFO("BCSP: Loaded %d-word TX power table from device tree", len);
 
 	of_node_put(np);
 }
@@ -1399,7 +1471,7 @@ static int bcsp_open(struct hci_uart *hu)
 		bcsp->use_crc = 1;
 
 	/* Load TX power table from device tree */
-	bcsp_read_tx_power_table(bcsp);
+	bcsp_read_pskeys_from_dt(bcsp);
 
 	/* Initialize BD address configuration state */
 	bcsp->bdaddr_state = BCSP_BDADDR_NONE;
