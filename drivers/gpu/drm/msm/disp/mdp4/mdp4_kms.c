@@ -448,16 +448,24 @@ static int mdp4_kms_init(struct drm_device *dev)
 
 	clk_set_rate(mdp4_kms->clk, max_clk);
 
-	read_mdp_hw_revision(mdp4_kms, &major, &minor);
+	/*
+	 * Only read HW revision once. On deferred probe retries, mdp4_kms->rev
+	 * is already set from the first probe attempt. This avoids repeated
+	 * clock enable/disable cycles that cause "mdp_axi_clk status stuck"
+	 * warnings from the clock branch driver.
+	 */
+	if (mdp4_kms->rev < 0) {
+		read_mdp_hw_revision(mdp4_kms, &major, &minor);
 
-	if (major != 4) {
-		DRM_DEV_ERROR(dev->dev, "unexpected MDP version: v%d.%d\n",
-			      major, minor);
-		ret = -ENXIO;
-		goto fail;
+		if (major != 4) {
+			DRM_DEV_ERROR(dev->dev, "unexpected MDP version: v%d.%d\n",
+				      major, minor);
+			ret = -ENXIO;
+			goto fail;
+		}
+
+		mdp4_kms->rev = minor;
 	}
-
-	mdp4_kms->rev = minor;
 
 	if (mdp4_kms->rev >= 2) {
 		if (!mdp4_kms->lut_clk) {
@@ -661,6 +669,9 @@ static int mdp4_probe(struct platform_device *pdev)
 	mdp4_kms->mmio = msm_ioremap(pdev, NULL);
 	if (IS_ERR(mdp4_kms->mmio))
 		return PTR_ERR(mdp4_kms->mmio);
+
+	/* Mark HW revision as not yet read (-1 sentinel) */
+	mdp4_kms->rev = -1;
 
 	/*
 	 * Disable display outputs immediately after mapping registers.
