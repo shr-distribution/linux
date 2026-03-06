@@ -1155,14 +1155,11 @@
 			interconnect-names = "vfe-mem";
 
 			/*
-			 * NOTE: power-domains removed for MSM8660.
-			 * WebOS kernel has HP_DISABLE which skips VFE footswitch
-			 * (GDSC) enable on HP TouchPad. The footswitch appears
-			 * to be always-on or hardware-controlled.
-			 * Enabling GDSC via software causes CSI PHY register
-			 * writes to hang.
+			 * VFE GDSC (footswitch) must be enabled for VFE register
+			 * access. Without this, VFE reads return 0x00000000.
+			 * Earlier hangs were caused by missing clock config, not GDSC.
 			 */
-			/* power-domains = <&mmcc VFE_GDSC>; */
+			power-domains = <&mmcc VFE_GDSC>;
 
 			status = "disabled";
 
