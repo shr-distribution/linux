@@ -2469,6 +2469,10 @@ MODULE_DEVICE_TABLE(of, mmcc_msm8660_match_table);
 #define SW_RESET_AXI_REG	0x0208
 #define SW_RESET_CORE_REG	0x0210
 
+/* AHB enable registers - contain both control bits and clock enables */
+#define AHB_EN_REG		0x0008
+#define AHB_EN2_REG		0x0038
+
 /* CC registers - FORCE_CORE_ON in upper bits, enable in lower bits */
 #define GFX2D0_CC_REG		0x0060
 #define GFX2D1_CC_REG		0x0074
@@ -2499,12 +2503,22 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 	/*
 	 * MSM8660 MMCC hardware initialization based on webOS kernel.
 	 *
-	 * We initialize everything EXCEPT registers that conflict with
-	 * clock enable bits managed by the clock framework:
-	 *   - AHB_EN_REG, AHB_EN2_REG (clock enables, CLK_IS_CRITICAL)
-	 *   - MAXI_EN_REG, MAXI_EN3_REG, SAXI_EN_REG (clock enables)
-	 *   - CSI_CC_REG, MISC_CC_REG, MISC_CC2_REG (used as enable_reg)
+	 * WebOS sets specific control bits in AHB_EN_REG:
+	 *   rmwreg(0x00000003, AHB_EN_REG, 0x0F7FFFFF);
+	 * BIT(0) and BIT(1) are control bits (FPB enable, HW gating disable),
+	 * NOT clock enables. Clock enables start at BIT(2) and above.
+	 *
+	 * We initialize these control bits but leave clock enable bits
+	 * for the clock framework to manage.
 	 */
+
+	/*
+	 * Set FPB enable and disable HW gating in AHB_EN_REG.
+	 * BIT(0) = FPB clock enable
+	 * BIT(1) = Disable HW gating for all AHB clocks
+	 * These are required for CSI register writes to work.
+	 */
+	regmap_update_bits(regmap, AHB_EN_REG, 0x3, 0x3);
 
 	/* Deassert all MM resets */
 	regmap_write(regmap, SW_RESET_ALL_REG, 0);
