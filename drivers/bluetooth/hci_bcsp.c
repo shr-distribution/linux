@@ -1252,6 +1252,46 @@ static int bcsp_setup(struct hci_uart *hu)
 		/* Extra stabilization delay */
 		msleep(2000);
 		BT_INFO("BCSP: PSKEY configuration complete");
+	} else if (bcsp->bdaddr_state == BCSP_BDADDR_NONE) {
+		/*
+		 * Fast init mode - no BD address to configure, but we still
+		 * need to send RF calibration PSKEYs for the radio to work.
+		 * No WARM_RESET needed since we're not changing BD address.
+		 */
+		BT_INFO("BCSP: Fast init - sending RF PSKEYs only");
+
+		/* Crystal frequency - CRITICAL for RF */
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, ANA_FREQ_26MHZ);
+		msleep(50);
+
+		/* TX power settings */
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER, 0x0154);
+		msleep(50);
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER, 0x000B);
+		msleep(50);
+
+		/* TX Power Level Table - CRITICAL FOR RF */
+		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
+			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+					     bcsp->tx_power_table,
+					     bcsp->tx_power_table_len);
+			BT_INFO("BCSP: TX power table (%d words) sent",
+				bcsp->tx_power_table_len);
+			msleep(100);
+		} else {
+			BT_WARN("BCSP: No TX power table - RF may not work");
+		}
+
+		/* Wait for packets to be sent */
+		for (i = 0; i < 10; i++) {
+			if (skb_queue_empty(&bcsp->unrel))
+				break;
+			msleep(50);
+			hci_uart_tx_wakeup(hu);
+		}
+
+		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		BT_INFO("BCSP: RF PSKEYs sent");
 	}
 
 	return 0;
