@@ -291,6 +291,27 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 		dev_info(dev, "CSIPHY%d: clocks enabled successfully\n", csiphy->id);
 
 		/*
+		 * MSM8660 workaround: VFE CGC_OVERRIDE must be set BEFORE any
+		 * CSI register access. The CGC (Clock Gate Control) Override
+		 * register enables internal clocks for various VFE sub-blocks.
+		 * Without this, CSI register writes hang.
+		 *
+		 * This is normally set in vfe31_reset() but CSIPHY runs before
+		 * VFE s_stream, so we must set it here first.
+		 */
+		if (csiphy->camss->res->version == CAMSS_8x60 &&
+		    csiphy->camss->vfe) {
+			void __iomem *vfe_base = csiphy->camss->vfe[0].base;
+			if (vfe_base) {
+				dev_info(dev, "CSIPHY%d: Setting VFE CGC_OVERRIDE=0xFFFFF\n",
+					 csiphy->id);
+				writel_relaxed(0xFFFFF, vfe_base + 0x00C);
+				/* Ensure write completes */
+				wmb();
+			}
+		}
+
+		/*
 		 * MSM8660: Wait for clocks to stabilize before register access.
 		 * webOS does msleep(10) after enabling clocks.
 		 */
