@@ -1288,27 +1288,29 @@ static int bcsp_setup(struct hci_uart *hu)
 	} else if (bcsp->bdaddr_state == BCSP_BDADDR_NONE) {
 		/*
 		 * Fast init mode - no BD address to configure, but we still
-		 * need to send RF calibration PSKEYs for the radio to work.
-		 * No WARM_RESET needed since we're not changing BD address.
+		 * need to send RF calibration PSKEYs and WARM_RESET for the
+		 * radio to work. The crystal frequency (ANA_FREQ) in particular
+		 * requires a reset to take effect.
 		 */
 		if (!bcsp->pskeys_from_dt) {
 			BT_WARN("BCSP: No PSKEYs in device tree, RF may not work");
-		} else {
-			BT_INFO("BCSP: Fast init - sending RF PSKEYs from DT");
-
-			/* Crystal frequency - CRITICAL for RF */
-			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
-					     bcsp->pskey_ana_freq);
-			msleep(50);
-
-			/* TX power settings */
-			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
-					     bcsp->pskey_max_tx_power);
-			msleep(50);
-			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
-					     bcsp->pskey_default_tx_power);
-			msleep(50);
+			return 0;
 		}
+
+		BT_INFO("BCSP: Sending RF PSKEYs + WARM_RESET");
+
+		/* Crystal frequency - CRITICAL for RF */
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
+				     bcsp->pskey_ana_freq);
+		msleep(50);
+
+		/* TX power settings */
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+				     bcsp->pskey_max_tx_power);
+		msleep(50);
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+				     bcsp->pskey_default_tx_power);
+		msleep(50);
 
 		/* TX Power Level Table - CRITICAL FOR RF */
 		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
@@ -1322,6 +1324,10 @@ static int bcsp_setup(struct hci_uart *hu)
 			BT_WARN("BCSP: No TX power table - RF may not work");
 		}
 
+		/* WARM_RESET to apply PSKEYs */
+		bcsp_send_warm_reset(hu);
+		msleep(50);
+
 		/* Wait for packets to be sent */
 		for (i = 0; i < 10; i++) {
 			if (skb_queue_empty(&bcsp->unrel))
@@ -1330,8 +1336,36 @@ static int bcsp_setup(struct hci_uart *hu)
 			hci_uart_tx_wakeup(hu);
 		}
 
-		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
-		BT_INFO("BCSP: RF PSKEYs sent");
+		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
+
+		/*
+		 * Wait for chip to reset. The BCM4329 takes approximately
+		 * 21 seconds from WARM_RESET to being ready again.
+		 */
+		msleep(15000);
+
+		/* Reset our link state for re-establishment */
+		bcsp_reset_link_state(bcsp);
+
+		BT_INFO("BCSP: Waiting for link re-establishment...");
+		bcsp->bdaddr_state = BCSP_BDADDR_SENT;
+
+		for (i = 0; i < 100; i++) {
+			msleep(100);
+			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
+				BT_INFO("BCSP: Link re-established");
+				break;
+			}
+		}
+
+		if (bcsp->bdaddr_state != BCSP_BDADDR_DONE) {
+			BT_WARN("BCSP: Link timeout, continuing anyway");
+			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		}
+
+		/* Extra stabilization delay */
+		msleep(2000);
+		BT_INFO("BCSP: RF PSKEY configuration complete");
 	}
 
 	return 0;
