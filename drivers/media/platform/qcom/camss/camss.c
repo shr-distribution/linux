@@ -4817,14 +4817,23 @@ static int __maybe_unused camss_runtime_resume(struct device *dev)
 	int i;
 	int ret;
 
+	dev_info(dev, "camss_runtime_resume: setting interconnect bandwidth\n");
+
 	for (i = 0; i < camss->res->icc_path_num; i++) {
+		dev_info(dev, "camss_runtime_resume: icc[%d] %s avg=%u peak=%u\n",
+			 i, icc_res[i].name,
+			 icc_res[i].icc_bw_tbl.avg,
+			 icc_res[i].icc_bw_tbl.peak);
 		ret = icc_set_bw(camss->icc_path[i],
 				 icc_res[i].icc_bw_tbl.avg,
 				 icc_res[i].icc_bw_tbl.peak);
-		if (ret)
+		if (ret) {
+			dev_err(dev, "camss_runtime_resume: icc_set_bw failed: %d\n", ret);
 			return ret;
+		}
 	}
 
+	dev_info(dev, "camss_runtime_resume: interconnect configured\n");
 	return 0;
 }
 
