@@ -47,22 +47,16 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 	{
 		.regulators = {},
 		/*
-		 * Clock enable order from legacy webOS kernel msm_camio_enable():
-		 * 1. vfe (VFE core clock) - rate 122880000 Hz
-		 * 2. vfe_axi (VFE AXI clock)
-		 * 3. vfe_ahb (VFE AHB/peripheral clock)
-		 * 4. vfe_csi0 (CSI0-VFE bridge)
-		 * 5. csi0_ahb (CSI0 AHB/peripheral clock)
-		 * 6. csi0_src (CSI source clock) - CRITICAL: rate 384000000 Hz!
-		 * 7. csi0 (CSI clock)
-		 * 8. csi0_phy (CSI PHY clock)
+		 * Clock rates from webOS kernel board-tenderloin.c:
+		 * - VFE: 228570000 Hz (board-tenderloin.c:1780)
+		 * - CSI source: 384000000 Hz (msm_io_8x60.c:452)
 		 *
-		 * CRITICAL: CSI source clock must be set to 384 MHz before
-		 * any CSI register access. Without this, register writes hang.
+		 * These match the assigned-clock-rates in the device tree.
+		 * Using wrong rates causes CSI register access to hang.
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "csi0_ahb",
 			   "csi0_src", "csi0", "csi0_phy" },
-		.clock_rate = { { 122880000 },
+		.clock_rate = { { 228570000 },
 				{ 0 },
 				{ 0 },
 				{ 0 },
@@ -83,17 +77,14 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		.regulators = {},
 		/*
 		 * WebOS enables ALL CSI clocks (both CSI0 and CSI1) before
-		 * accessing any CSI registers. This appears to be a hardware
-		 * requirement - CSI0 and CSI1 may share common infrastructure.
-		 *
-		 * CRITICAL: CSI source clocks must be set to 384 MHz before
-		 * any CSI register access. WebOS sets this in msm_camio_clk_enable():
-		 *   msm_camio_clk_rate_set_2(clk, 384000000);
+		 * accessing any CSI registers. Clock rates from webOS kernel:
+		 * - VFE: 228570000 Hz (board-tenderloin.c:1780)
+		 * - CSI source: 384000000 Hz (msm_io_8x60.c:452)
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
 			   "csi0_ahb", "csi1_ahb", "csi0_src", "csi1_src",
 			   "csi0", "csi1", "csi0_phy", "csi1_phy" },
-		.clock_rate = { { 122880000 }, { 0 }, { 0 }, { 0 }, { 0 },
+		.clock_rate = { { 228570000 }, { 0 }, { 0 }, { 0 }, { 0 },
 				{ 0 }, { 0 }, { 384000000 }, { 384000000 },
 				{ 0 }, { 0 }, { 0 }, { 0 } },
 		.reg = { "csiphy1" },
