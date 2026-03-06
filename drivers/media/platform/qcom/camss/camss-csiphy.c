@@ -303,11 +303,29 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 		    csiphy->camss->vfe) {
 			void __iomem *vfe_base = csiphy->camss->vfe[0].base;
 			if (vfe_base) {
+				u32 hw_ver, cgc_readback, csi_test;
+
+				/* Read VFE HW version to verify VFE access works */
+				hw_ver = readl_relaxed(vfe_base + 0x000);
+				dev_info(dev, "CSIPHY%d: VFE HW version = 0x%08x (base=%px)\n",
+					 csiphy->id, hw_ver, vfe_base);
+
 				dev_info(dev, "CSIPHY%d: Setting VFE CGC_OVERRIDE=0xFFFFF\n",
 					 csiphy->id);
 				writel_relaxed(0xFFFFF, vfe_base + 0x00C);
-				/* Ensure write completes */
 				wmb();
+
+				/* Read back CGC_OVERRIDE to verify write completed */
+				cgc_readback = readl_relaxed(vfe_base + 0x00C);
+				dev_info(dev, "CSIPHY%d: VFE CGC_OVERRIDE readback = 0x%08x\n",
+					 csiphy->id, cgc_readback);
+
+				/* Try reading CSI register before write to test access */
+				dev_info(dev, "CSIPHY%d: Testing CSI read (base=%px)...\n",
+					 csiphy->id, csiphy->base);
+				csi_test = readl_relaxed(csiphy->base + 0x00);
+				dev_info(dev, "CSIPHY%d: CSI PHY_CONTROL read = 0x%08x\n",
+					 csiphy->id, csi_test);
 			}
 		}
 
