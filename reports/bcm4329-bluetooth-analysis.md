@@ -788,3 +788,88 @@ initialization either:
 
 - `be1a0c7f1b2e` - Enable H4 and H5/3WIRE protocols in defconfigs
 - `afcddbff22a8` - Enable BCSP protocol in defconfigs
+
+## Ghidra Decompilation Analysis (March 2026)
+
+### Decompiled Files
+
+- `/home/herrie/webos/touchpad-kernel/doctor305/bt_decompiled.c` - 1531 lines of decompiled C code from libPmBtBsaif.so
+
+### Key Function: CsrTmBlueCoreGetBootstrap (0x7960c)
+
+This is the main bootstrap initialization function. Key findings:
+
+**LMP Subversion Check:**
+```c
+if (param_1 == 0x12e9) {
+    iVar10 = 0x2b;  // 43 PSKEYs for TouchPad
+} else {
+    iVar10 = 0xe;   // 14 PSKEYs for standard chips
+}
+```
+
+**Standard PSKEYs (12 core + BDADDR):**
+1. 0x1fe (HOST_INTERFACE) - Host interface mode
+2. 0x1be (PCM_MIN_CPU_CLOCK) - Only if HOST_IF is 1 or 7
+3. 0x1ab (H_HC_FC_MAX_ACL) - HCI flow control max ACL
+4. 0x1b0 (H_HC_FC_MAX_SCO) - HCI flow control max SCO
+5. 0x1b9 (PCM_SAMPLE_SIZE) - PCM sample size
+6. 0x1f6 (ANA_FREQ) - Crystal frequency (26000 = 26MHz)
+7. 0x11 (LC_MAX_TX_POWER) - Maximum TX power
+8. 0x13 (LC_DEFAULT_TX_POWER) - Default TX power
+9. 0x24d (LC_MAX_TX_POWER_NO_RSSI) - Max TX power without RSSI
+10. 0xe (ENC_KEY_LMIN) - Minimum encryption key length
+11. 0x1f9 (XTAL_FTRIM) - Crystal fine trim (0x19 = 25)
+12. 0x25d (LC_DEFAULT_TX_POWER_NO_RSSI) - Default TX power without RSSI
+13. 0x1 (BDADDR) - Bluetooth device address (4 words)
+
+**Extended PSKEYs for LMP 0x12e9 (TouchPad):**
+- 0xf6, 0x203, 0x394, 0x3aa, 0x3ab, 0x3d4
+- 0x212c through 0x222b (many RF calibration tables)
+- Total: ~30 additional PSKEYs
+
+**WARM_RESET:**
+```c
+uVar5 = CsrTmBlueCoreBuildBccmdSetMsg(0x4002, 0, 0);
+puVar3[local_94] = uVar5;  // Added as LAST command
+```
+
+### Key Finding: Post-WARM_RESET Handling
+
+**webOS BSA Architecture:**
+- webOS uses CSR's BSA (Broadcom Server Application) stack
+- Commands sent via `CsrPutMessage(*ptr, 0x601, cmd)` asynchronously
+- BSA layer handles BCSP transport and link management internally
+- After WARM_RESET, BSA manages reconnection automatically
+
+**bcattach Approach:**
+- Sends all PSKEYs + WARM_RESET
+- Does read attempts tolerating timeouts
+- **Closes UART** via `close(uart_fd)`
+- Exits - then hciattach runs separately with fresh connection
+
+**Linux Kernel Driver Issue:**
+- Our driver sends PSKEYs + WARM_RESET
+- Tries to re-establish BCSP link on SAME connection
+- Chip's BCSP state machine has reset - connection broken
+- Link re-establishment fails (15s timeout)
+
+### Solution
+
+After WARM_RESET, the chip needs a **fresh UART connection**, not a reconnection:
+
+1. Send PSKEYs + WARM_RESET
+2. Don't attempt link re-establishment
+3. Let current hciattach session timeout/fail
+4. User runs hciattach again → fresh BCSP link to configured chip
+
+### CsrBtPalmInitBootstrap
+
+Simple initialization:
+```c
+void CsrBtPalmInitBootstrap(void) {
+    setBootstrapFrequency(26000);  // ANA_FREQ = 26MHz
+    setBootstrapFtrim(0x19);       // XTAL_FTRIM = 25
+    return;
+}
+```

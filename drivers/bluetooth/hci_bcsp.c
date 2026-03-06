@@ -36,6 +36,7 @@
 static bool txcrc = true;
 static bool hciextn = true;
 static char *bdaddr;
+static bool skip_pskeys;  /* Skip PSKEY/WARM_RESET for debugging */
 
 #define BCSP_TXWINSIZE	4
 
@@ -455,7 +456,6 @@ static int bcsp_send_warm_reset(struct hci_uart *hu);
 static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value);
 static int bcsp_send_pskey_data(struct hci_uart *hu, u16 pskey,
 				const u16 *data, u16 len_words);
-static void bcsp_reset_link_state(struct bcsp_struct *bcsp);
 
 /* Handle BCSP link-establishment packets.
  * This implements the full BCSP link establishment state machine:
@@ -1110,48 +1110,6 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 	return 0;
 }
 
-/*
- * Reset BCSP link state to prepare for re-establishment
- * Note: Does NOT purge unrel queue as it may contain outgoing BCCMDs
- */
-static void bcsp_reset_link_state(struct bcsp_struct *bcsp)
-{
-	/* Clear reliable packet queues (no ACKs will come after reset) */
-	skb_queue_purge(&bcsp->unack);
-	skb_queue_purge(&bcsp->rel);
-	/* Do NOT purge unrel - it may contain pending BCCMDs we need to send */
-
-	/* Reset sequence numbers */
-	bcsp->rxseq_txack = 0;
-	bcsp->rxack = 0;
-	bcsp->msgq_txseq = 0;
-
-	/* Reset other state */
-	bcsp->txack_req = 0;
-}
-
-/*
- * Send BCSP SYNC packet to initiate link establishment
- * In BCSP, either side can initiate by sending SYNC.
- * After WARM_RESET, we must actively send SYNC to re-establish the link.
- */
-static void bcsp_send_sync(struct hci_uart *hu)
-{
-	struct bcsp_struct *bcsp = hu->priv;
-	u8 sync_pkt[4] = { 0xda, 0xdc, 0xed, 0xed };
-	struct sk_buff *skb;
-
-	skb = alloc_skb(4, GFP_KERNEL);
-	if (!skb)
-		return;
-
-	skb_put_data(skb, sync_pkt, 4);
-	hci_skb_pkt_type(skb) = BCSP_LE_PKT;
-
-	skb_queue_tail(&bcsp->unrel, skb);
-	hci_uart_tx_wakeup(hu);
-}
-
 static int bcsp_setup(struct hci_uart *hu)
 {
 	struct bcsp_struct *bcsp = hu->priv;
@@ -1171,6 +1129,12 @@ static int bcsp_setup(struct hci_uart *hu)
 	 * 4. Continue with HCI initialization
 	 */
 	if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
+		if (skip_pskeys) {
+			BT_INFO("BCSP: Skipping PSKEY configuration (skip_pskeys=1)");
+			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+			return 0;
+		}
+
 		BT_INFO("BCSP: Configuring chip with PSKEYs + WARM_RESET");
 
 		if (!bcsp->pskeys_from_dt) {
@@ -1276,48 +1240,18 @@ static int bcsp_setup(struct hci_uart *hu)
 			hci_uart_tx_wakeup(hu);
 		}
 
-		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
+		BT_INFO("BCSP: WARM_RESET sent, chip will reset...");
 
 		/*
-		 * Brief wait for chip to reset. Legacy webOS achieved ~2.3s
-		 * reset times. With active SYNC sending, the chip will respond
-		 * when ready - no need to wait excessively.
+		 * After WARM_RESET, the chip resets and the BCSP link breaks.
+		 * Following the bcattach approach: we don't try to re-establish
+		 * the link. Instead, we let hciattach restart with a fresh
+		 * connection to the now-configured chip.
 		 */
-		msleep(2000);
+		msleep(500);
 
-		/* Reset our link state for re-establishment */
-		bcsp_reset_link_state(bcsp);
-
-		BT_INFO("BCSP: Initiating link re-establishment...");
-		bcsp->bdaddr_state = BCSP_BDADDR_SENT;
-
-		/*
-		 * Actively send SYNC packets to initiate link re-establishment.
-		 * In BCSP, either side can initiate by sending SYNC.
-		 * After WARM_RESET, the chip's BCSP state machine resets and
-		 * may be waiting for the host to start the handshake.
-		 */
-		for (i = 0; i < 100; i++) {
-			/* Send SYNC every 500ms */
-			if (i % 5 == 0) {
-				BT_DBG("BCSP: Sending SYNC (attempt %d)", i / 5 + 1);
-				bcsp_send_sync(hu);
-			}
-			msleep(100);
-			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
-				BT_INFO("BCSP: Link re-established");
-				break;
-			}
-		}
-
-		if (bcsp->bdaddr_state != BCSP_BDADDR_DONE) {
-			BT_WARN("BCSP: Link timeout, continuing anyway");
-			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
-		}
-
-		/* Extra stabilization delay */
-		msleep(2000);
-		BT_INFO("BCSP: PSKEY configuration complete");
+		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		BT_INFO("BCSP: PSKEYs + BDADDR applied. Restart hciattach for fresh connection.");
 	} else if (bcsp->bdaddr_state == BCSP_BDADDR_NONE) {
 		/*
 		 * Fast init mode - no BD address to configure, but we still
@@ -1325,6 +1259,11 @@ static int bcsp_setup(struct hci_uart *hu)
 		 * radio to work. The crystal frequency (ANA_FREQ) in particular
 		 * requires a reset to take effect.
 		 */
+		if (skip_pskeys) {
+			BT_INFO("BCSP: Skipping PSKEY configuration (skip_pskeys=1)");
+			return 0;
+		}
+
 		if (!bcsp->pskeys_from_dt) {
 			BT_WARN("BCSP: No PSKEYs in device tree, RF may not work");
 			return 0;
@@ -1418,48 +1357,25 @@ static int bcsp_setup(struct hci_uart *hu)
 			hci_uart_tx_wakeup(hu);
 		}
 
-		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
+		BT_INFO("BCSP: WARM_RESET sent, chip will reset...");
 
 		/*
-		 * Brief wait for chip to reset. Legacy webOS achieved ~2.3s
-		 * reset times. With active SYNC sending, the chip will respond
-		 * when ready - no need to wait excessively.
+		 * After WARM_RESET, the chip resets and the BCSP link breaks.
+		 * Following the bcattach approach: we don't try to re-establish
+		 * the link. Instead, we drain buffers and let hciattach restart
+		 * with a fresh connection to the now-configured chip.
+		 *
+		 * Brief delay to let the WARM_RESET command complete transmission.
 		 */
-		msleep(2000);
-
-		/* Reset our link state for re-establishment */
-		bcsp_reset_link_state(bcsp);
-
-		BT_INFO("BCSP: Initiating link re-establishment...");
-		bcsp->bdaddr_state = BCSP_BDADDR_SENT;
+		msleep(500);
 
 		/*
-		 * Actively send SYNC packets to initiate link re-establishment.
-		 * In BCSP, either side can initiate by sending SYNC.
-		 * After WARM_RESET, the chip's BCSP state machine resets and
-		 * may be waiting for the host to start the handshake.
+		 * Mark configuration as done. The current hciattach session
+		 * will likely timeout/fail, but on restart the chip will be
+		 * properly configured and BCSP link will establish normally.
 		 */
-		for (i = 0; i < 150; i++) {
-			/* Send SYNC every 500ms */
-			if (i % 5 == 0) {
-				BT_DBG("BCSP: Sending SYNC (attempt %d)", i / 5 + 1);
-				bcsp_send_sync(hu);
-			}
-			msleep(100);
-			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
-				BT_INFO("BCSP: Link re-established");
-				break;
-			}
-		}
-
-		if (bcsp->bdaddr_state != BCSP_BDADDR_DONE) {
-			BT_WARN("BCSP: Link timeout, continuing anyway");
-			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
-		}
-
-		/* Extra stabilization delay */
-		msleep(2000);
-		BT_INFO("BCSP: RF PSKEY configuration complete");
+		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		BT_INFO("BCSP: PSKEYs applied. Restart hciattach for fresh connection.");
 	}
 
 	return 0;
@@ -1669,3 +1585,6 @@ MODULE_PARM_DESC(hciextn, "Convert HCI Extensions into BCSP packets");
 
 module_param(bdaddr, charp, 0444);
 MODULE_PARM_DESC(bdaddr, "Bluetooth device address (XX:XX:XX:XX:XX:XX)");
+
+module_param(skip_pskeys, bool, 0644);
+MODULE_PARM_DESC(skip_pskeys, "Skip PSKEY configuration (for debugging)");
