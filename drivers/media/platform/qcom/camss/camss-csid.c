@@ -784,9 +784,20 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 			}
 		}
 
-		if (!csid->testgen.enabled &&
-		    !media_pad_remote_pad_first(&csid->pads[MSM_CSID_PAD_SINK]))
-			return -ENOLINK;
+		if (!csid->testgen.enabled) {
+			struct media_pad *remote;
+
+			remote = media_pad_remote_pad_first(&csid->pads[MSM_CSID_PAD_SINK]);
+			dev_info(csid->camss->dev,
+				 "CSID%d: testgen disabled, remote_pad=%px sink_pad flags=0x%x\n",
+				 csid->id, remote, csid->pads[MSM_CSID_PAD_SINK].flags);
+			if (!remote) {
+				dev_err(csid->camss->dev,
+					"CSID%d: No remote pad - link not enabled?\n",
+					csid->id);
+				return -ENOLINK;
+			}
+		}
 	}
 
 	if (csid->phy.need_vc_update) {
