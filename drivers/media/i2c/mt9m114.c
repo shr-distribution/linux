@@ -2340,9 +2340,14 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		 clk_get_rate(sensor->clk));
 
 	/*
-	 * Wait for clock to stabilize before reset (legacy driver waits 5ms).
+	 * Wait for clock to stabilize before reset.
+	 * Extended to 20ms at cold boot to ensure MMCC is fully initialized
+	 * and the clock is actually outputting. Legacy driver waits 5ms,
+	 * but we observed I2C failures at cold boot with short delays.
 	 */
-	usleep_range(5000, 10000);
+	msleep(20);
+	dev_info(dev, "power_on: clock stabilization complete, rate=%lu Hz\n",
+		 clk_get_rate(sensor->clk));
 
 	/* Perform a hard reset if available, or a soft reset otherwise. */
 	if (sensor->reset) {
@@ -2399,6 +2404,7 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	 */
 	if (sensor->expected_model == MT9M113_MODEL) {
 		u64 clocks_val = 0;
+		int read_ret;
 
 		/*
 		 * Check if sensor is already initialized by reading CLOCKS_CONTROL.
@@ -2407,11 +2413,29 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		 * retains its configuration from boot, so we can skip MCU boot
 		 * and PLL init to avoid I2C errors on already-configured registers.
 		 */
-		ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL, &clocks_val, NULL);
+		read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL, &clocks_val, NULL);
 		dev_info(dev, "power_on: MT9M113 CLOCKS_CONTROL=0x%llx ret=%d\n",
-			 clocks_val, ret);
+			 clocks_val, read_ret);
 
-		if (ret == 0 && clocks_val != 0) {
+		if (read_ret < 0) {
+			/*
+			 * I2C read failed - sensor not responding. This can happen
+			 * at cold boot if the clock isn't stable yet. Retry once
+			 * after additional delay.
+			 */
+			dev_warn(dev, "power_on: CLOCKS_CONTROL read failed, retrying after 50ms\n");
+			msleep(50);
+			read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL, &clocks_val, NULL);
+			dev_info(dev, "power_on: MT9M113 CLOCKS_CONTROL retry=0x%llx ret=%d\n",
+				 clocks_val, read_ret);
+			if (read_ret < 0) {
+				dev_err(dev, "power_on: sensor not responding to I2C\n");
+				ret = read_ret;
+				goto error_clock;
+			}
+		}
+
+		if (clocks_val != 0) {
 			/*
 			 * Sensor is already initialized (runtime resume case).
 			 * Skip MCU boot and PLL config - just wait for stabilization.
