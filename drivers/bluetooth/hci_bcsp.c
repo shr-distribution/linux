@@ -1130,6 +1130,28 @@ static void bcsp_reset_link_state(struct bcsp_struct *bcsp)
 	bcsp->txack_req = 0;
 }
 
+/*
+ * Send BCSP SYNC packet to initiate link establishment
+ * In BCSP, either side can initiate by sending SYNC.
+ * After WARM_RESET, we must actively send SYNC to re-establish the link.
+ */
+static void bcsp_send_sync(struct hci_uart *hu)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	u8 sync_pkt[4] = { 0xda, 0xdc, 0xed, 0xed };
+	struct sk_buff *skb;
+
+	skb = alloc_skb(4, GFP_KERNEL);
+	if (!skb)
+		return;
+
+	skb_put_data(skb, sync_pkt, 4);
+	hci_skb_pkt_type(skb) = BCSP_LE_PKT;
+
+	skb_queue_tail(&bcsp->unrel, skb);
+	hci_uart_tx_wakeup(hu);
+}
+
 static int bcsp_setup(struct hci_uart *hu)
 {
 	struct bcsp_struct *bcsp = hu->priv;
@@ -1257,19 +1279,30 @@ static int bcsp_setup(struct hci_uart *hu)
 		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
 
 		/*
-		 * Wait for chip to reset. Testing shows the BCM4329 takes
-		 * approximately 21 seconds from WARM_RESET to sending sync.
-		 * Use 15s initial wait + 10s polling loop = 25s total.
+		 * Brief wait for chip to reset. Legacy webOS achieved ~2.3s
+		 * reset times. With active SYNC sending, the chip will respond
+		 * when ready - no need to wait excessively.
 		 */
-		msleep(15000);
+		msleep(2000);
 
 		/* Reset our link state for re-establishment */
 		bcsp_reset_link_state(bcsp);
 
-		BT_INFO("BCSP: Waiting for link re-establishment...");
+		BT_INFO("BCSP: Initiating link re-establishment...");
 		bcsp->bdaddr_state = BCSP_BDADDR_SENT;
 
+		/*
+		 * Actively send SYNC packets to initiate link re-establishment.
+		 * In BCSP, either side can initiate by sending SYNC.
+		 * After WARM_RESET, the chip's BCSP state machine resets and
+		 * may be waiting for the host to start the handshake.
+		 */
 		for (i = 0; i < 100; i++) {
+			/* Send SYNC every 500ms */
+			if (i % 5 == 0) {
+				BT_DBG("BCSP: Sending SYNC (attempt %d)", i / 5 + 1);
+				bcsp_send_sync(hu);
+			}
 			msleep(100);
 			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
 				BT_INFO("BCSP: Link re-established");
@@ -1297,22 +1330,71 @@ static int bcsp_setup(struct hci_uart *hu)
 			return 0;
 		}
 
-		BT_INFO("BCSP: Sending RF PSKEYs + WARM_RESET");
+		BT_INFO("BCSP: Sending all PSKEYs + WARM_RESET");
 
-		/* Crystal frequency - CRITICAL for RF */
+		/* Send all 12 PSKEYs - same as full init mode */
+
+		/* 1. Host interface */
+		bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
+				     bcsp->pskey_host_interface);
+		msleep(50);
+
+		/* 2. PCM minimum CPU clock */
+		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
+				     bcsp->pskey_pcm_min_cpu_clock);
+		msleep(50);
+
+		/* 3. HCI max ACL */
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
+				     bcsp->pskey_hci_max_acl);
+		msleep(50);
+
+		/* 4. HCI max SCO */
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
+				     bcsp->pskey_hci_max_sco);
+		msleep(50);
+
+		/* 5. PCM sample size */
+		bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
+				     bcsp->pskey_pcm_sample_size);
+		msleep(50);
+
+		/* 6. Crystal frequency - CRITICAL for RF */
 		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
 				     bcsp->pskey_ana_freq);
 		msleep(50);
 
-		/* TX power settings */
+		/* 7. Max TX power */
 		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
 				     bcsp->pskey_max_tx_power);
 		msleep(50);
+
+		/* 8. Default TX power */
 		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
 				     bcsp->pskey_default_tx_power);
 		msleep(50);
 
-		/* TX Power Level Table - CRITICAL FOR RF */
+		/* 9. Max TX power without RSSI */
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
+				     bcsp->pskey_max_tx_power_no_rssi);
+		msleep(50);
+
+		/* 10. Min encryption key length */
+		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
+				     bcsp->pskey_enc_key_min_len);
+		msleep(50);
+
+		/* 11. Crystal fine trim */
+		bcsp_send_pskey_word(hu, PSKEY_XTAL_FTRIM,
+				     bcsp->pskey_xtal_ftrim);
+		msleep(50);
+
+		/* 12. Default TX power without RSSI */
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
+				     bcsp->pskey_default_tx_power_no_rssi);
+		msleep(50);
+
+		/* 13. TX Power Level Table - CRITICAL FOR RF */
 		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
 			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
 					     bcsp->tx_power_table,
@@ -1339,18 +1421,30 @@ static int bcsp_setup(struct hci_uart *hu)
 		BT_INFO("BCSP: WARM_RESET sent, waiting for chip to reset...");
 
 		/*
-		 * Wait for chip to reset. The BCM4329 takes approximately
-		 * 21 seconds from WARM_RESET to being ready again.
+		 * Brief wait for chip to reset. Legacy webOS achieved ~2.3s
+		 * reset times. With active SYNC sending, the chip will respond
+		 * when ready - no need to wait excessively.
 		 */
-		msleep(15000);
+		msleep(2000);
 
 		/* Reset our link state for re-establishment */
 		bcsp_reset_link_state(bcsp);
 
-		BT_INFO("BCSP: Waiting for link re-establishment...");
+		BT_INFO("BCSP: Initiating link re-establishment...");
 		bcsp->bdaddr_state = BCSP_BDADDR_SENT;
 
-		for (i = 0; i < 100; i++) {
+		/*
+		 * Actively send SYNC packets to initiate link re-establishment.
+		 * In BCSP, either side can initiate by sending SYNC.
+		 * After WARM_RESET, the chip's BCSP state machine resets and
+		 * may be waiting for the host to start the handshake.
+		 */
+		for (i = 0; i < 150; i++) {
+			/* Send SYNC every 500ms */
+			if (i % 5 == 0) {
+				BT_DBG("BCSP: Sending SYNC (attempt %d)", i / 5 + 1);
+				bcsp_send_sync(hu);
+			}
 			msleep(100);
 			if (bcsp->bdaddr_state == BCSP_BDADDR_DONE) {
 				BT_INFO("BCSP: Link re-established");
