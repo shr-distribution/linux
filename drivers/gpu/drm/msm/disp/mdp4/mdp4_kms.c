@@ -174,6 +174,17 @@ int mdp4_disable(struct mdp4_kms *mdp4_kms)
 {
 	DBG("");
 
+	/*
+	 * Reference counted clock disable. Only actually disable clocks when
+	 * the last user releases them. This prevents repeated clock toggle
+	 * cycles during init that cause "mdp_axi_clk status stuck" warnings.
+	 */
+	if (WARN_ON(mdp4_kms->enable_count <= 0))
+		return -EINVAL;
+
+	if (--mdp4_kms->enable_count > 0)
+		return 0;
+
 	clk_disable_unprepare(mdp4_kms->clk);
 	clk_disable_unprepare(mdp4_kms->pclk);
 	clk_disable_unprepare(mdp4_kms->lut_clk);
@@ -186,6 +197,14 @@ int mdp4_disable(struct mdp4_kms *mdp4_kms)
 int mdp4_enable(struct mdp4_kms *mdp4_kms)
 {
 	DBG("");
+
+	/*
+	 * Reference counted clock enable. Only actually enable clocks on
+	 * first user. This allows nested enable/disable calls during init
+	 * without repeatedly toggling clocks.
+	 */
+	if (mdp4_kms->enable_count++ > 0)
+		return 0;
 
 	clk_prepare_enable(mdp4_kms->clk);
 	clk_prepare_enable(mdp4_kms->pclk);
