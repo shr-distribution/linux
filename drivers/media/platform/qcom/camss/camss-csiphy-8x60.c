@@ -215,9 +215,11 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 
 	/*
 	 * Phase 1: msm_camio_enable() equivalent
-	 * Write D0-D3_CONTROL2 and CL_CONTROL with LP_REC_EN=0
+	 * WebOS has msleep(10) after clock enable before register writes.
+	 * This allows clocks to stabilize before accessing PHY registers.
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - Enable sequence\n", csiphy->id);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - Enable sequence (after 10ms delay)\n", csiphy->id);
+	msleep(10);
 
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
