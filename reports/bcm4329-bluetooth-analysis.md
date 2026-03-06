@@ -1,7 +1,37 @@
 # BCM4329 Bluetooth Analysis for HP TouchPad
 
 **Date:** March 2026
-**Status:** Working with manual hciattach using BCSP protocol (BD address requires full PSKEY init sequence)
+**Status:** Partially working - HCI device comes up but RF not working (not discoverable)
+
+## Current Implementation Status
+
+### What Works
+- BCSP link establishment via hciattach
+- BD address configuration via kernel driver (hci_bcsp.c bdaddr parameter)
+- HCI device registration (hci0 appears)
+- 12 critical PSKEYs sent before BDADDR
+
+### What Doesn't Work
+- **Device discovery/scanning** - TouchPad not visible to other devices
+- **RF transmission** - Likely missing RF calibration PSKEYs
+
+### Root Cause Analysis
+The bcattach tool sends **~50 PSKEYs total**:
+- 12 PSKEYs BEFORE BDADDR (now implemented in hci_bcsp.c)
+- 1 BDADDR
+- **~37 PSKEYs AFTER BDADDR** (NOT implemented - RF calibration tables!)
+- 1 WARM_RESET
+
+The missing ~37 PSKEYs include large RF calibration tables (power tables,
+frequency compensation, etc.) which are likely required for proper radio operation.
+
+### Next Steps
+1. **Decompile webOS PmBtEngine** - The binary at `/usr/bin/.debug/PmBtEngine` is
+   NOT stripped and has debug_info. Use Ghidra to extract exact PSKEY sequence.
+2. **Extract from libPmBtBsaif.so** - Contains `palmPlatformCommonPskeys` and
+   `palmPlatformSpecificPskeys` data tables at symbols 0x000e42cc and 0x000e4308.
+3. **Port full bcattach sequence** - Add all ~50 PSKEYs to kernel driver or
+   create userspace tool.
 
 ## Summary
 
@@ -628,6 +658,25 @@ in userspace by **PmBtStack**, which:
 3. Sends all PSKEYs via raw BCCMD
 4. Reads BD address from `-X` option (passed from `/dev/tokens/BToADDR`)
 5. Continues running as the complete Bluetooth stack (replaces BlueZ!)
+
+### webOS Binaries for Ghidra Analysis
+
+The following binaries from webOS 3.0.5 (doctor305) are available for decompilation:
+
+| Binary | Path | Status | Size |
+|--------|------|--------|------|
+| PmBtEngine | `/usr/bin/.debug/PmBtEngine` | NOT stripped, has debug_info | 772KB |
+| libPmBtBsaif.so | `/usr/lib/libPmBtBsaif.so` | Has symbols | 96KB |
+| libPmBtOs.so | `/usr/lib/libPmBtOs.so` | Has symbols | 40KB |
+
+**Key symbols in libPmBtBsaif.so:**
+- `palmPlatformCommonPskeys` (0x000e42cc) - Common PSKEY table
+- `palmPlatformSpecificPskeys` (0x000e4308) - Device-specific PSKEYs
+- `CsrBuildPsKeyCommand` - Function to build PSKEY BCCMD
+- `CsrBccmdWritePsValueReqSend` - Function to send PSKEY value
+- `PmBtBsaifBccmdGetNumPskeys` - Returns number of PSKEYs to configure
+
+**Ghidra location:** `/opt/Ghidra`
 
 ### Implication for Mainline Linux
 
