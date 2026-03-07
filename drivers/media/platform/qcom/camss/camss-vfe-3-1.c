@@ -1001,15 +1001,18 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(VFE31_AXI_OUT_MODE_RAW, vfe->base + VFE31_AXI_OUT_MODE_CFG);
 	wmb();
 
-	/* Step 2: Configure BUS_CFG for raw passthrough */
-	val = VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN |
-	      VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN |
-	      (VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
-	pr_emerg("VFE31: Step 2 - BUS_CFG ABOUT to write 0x%x to 0x%03x\n",
-		 val, VFE_0_BUS_CFG);
-	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
-	wmb();
-	pr_emerg("VFE31: Step 2 - BUS_CFG write DONE\n");
+	/*
+	 * Step 2: Skip BUS_CFG for raw mode.
+	 *
+	 * VFE31 raw passthrough mode uses AXI_OUT_MODE_CFG (0x040) set to 0x60
+	 * (CAMIF_TO_AXI_VIA_OUTPUT_2) which routes CAMIF data directly to memory.
+	 * The BUS_CFG register (0x03C) configures encoder/view write paths which
+	 * are used for ISP-processed output, not raw passthrough.
+	 *
+	 * Writing to BUS_CFG before the bus subsystem is fully configured causes
+	 * hangs. For raw mode, AXI_OUT_MODE is sufficient.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 2 - BUS_CFG skipped for raw mode\n");
 
 	/* Step 3: Configure CAMIF frame dimensions */
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF frame dimensions\n");
