@@ -341,37 +341,56 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev, "VFE reset: HW version=0x%08x base=%pK\n",
 		 hw_version, vfe->base);
 
-	/* Step 1: Enable all internal clock gates (matches webOS) */
-	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
+	/*
+	 * Follow exact webOS vfe31_reset() sequence:
+	 * 1. Enable all module clocks (MODULE_CFG = 0x3FF)
+	 * 2. Disable all IRQs (write 0 to IRQ_MASK_0/1)
+	 * 3. Clear all pending IRQs (write 0xFFFFFFFF to IRQ_CLEAR_0/1)
+	 * 4. Enable CGC override
+	 */
+
+	/* Step 1: Enable all module clocks */
+	dev_info(vfe->camss->dev, "VFE reset: enabling module clocks (MODULE_CFG=0x3FF)\n");
+	writel_relaxed(0x3FF, vfe->base + VFE_0_MODULE_CFG);
 	wmb();
 
-	/* Step 2: Wait for VFE to stabilize after GDSC power-on */
-	udelay(100);
+	/* Step 2: Disable all IRQs before clearing */
+	dev_info(vfe->camss->dev, "VFE reset: disabling IRQs (MASK=0)\n");
+	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_1);
+	wmb();
 
-	/*
-	 * Step 2b: Clear all pending interrupts (critical!)
-	 * WebOS does this in vfe31_reset() before enabling any IRQ masks.
-	 * Without clearing, stale interrupts can cause hangs when we later
-	 * try to enable IRQ masks.
-	 */
-	dev_info(vfe->camss->dev, "VFE reset: clearing all pending IRQs\n");
+	/* Step 3: Clear all pending interrupts */
+	dev_info(vfe->camss->dev, "VFE reset: clearing pending IRQs\n");
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_0);
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_1);
-	writel_relaxed(VFE_0_IRQ_CMD_GLOBAL_CLEAR, vfe->base + VFE_0_IRQ_CMD);
 	wmb();
 	dev_info(vfe->camss->dev, "VFE reset: IRQs cleared\n");
 
+	/* Step 4: Enable all internal clock gates */
+	dev_info(vfe->camss->dev, "VFE reset: enabling CGC override\n");
+	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
+	wmb();
+
+	/* Wait for VFE to stabilize */
+	udelay(100);
+	dev_info(vfe->camss->dev, "VFE reset: CGC enabled, stabilized\n");
+
 	/*
-	 * Step 3: Set default register values that webOS sets in
+	 * Step 5: Set default register values that webOS sets in
 	 * vfe31_set_default_reg_values() after reset IRQ.
 	 * This includes DEMUX gains and frame drop configuration.
 	 */
 
 	/* DEMUX gains - webOS default values */
+	dev_info(vfe->camss->dev, "VFE reset: writing DEMUX gains\n");
 	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_0);
 	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_1);
+	wmb();
+	dev_info(vfe->camss->dev, "VFE reset: DEMUX gains done\n");
 
 	/* Frame drop configuration - accept all frames */
+	dev_info(vfe->camss->dev, "VFE reset: writing framedrop config\n");
 	writel_relaxed(0x1f, vfe->base + VFE31_FRAMEDROP_ENC_Y_CFG);
 	writel_relaxed(0x1f, vfe->base + VFE31_FRAMEDROP_ENC_CBCR_CFG);
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_FRAMEDROP_ENC_Y_PATTERN);
@@ -380,11 +399,13 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	writel_relaxed(0x1f, vfe->base + VFE31_FRAMEDROP_VIEW_CBCR_CFG);
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_FRAMEDROP_VIEW_Y_PATTERN);
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_FRAMEDROP_VIEW_CBCR_PATTERN);
+	wmb();
+	dev_info(vfe->camss->dev, "VFE reset: framedrop config done\n");
 
 	/* Clamp configuration - 0x524=MAX, 0x528=MIN per webOS vfe31.h */
+	dev_info(vfe->camss->dev, "VFE reset: writing clamp config\n");
 	writel_relaxed(0xFFFFFF, vfe->base + VFE_0_CLAMP_ENC_MAX_CFG);
 	writel_relaxed(0, vfe->base + VFE_0_CLAMP_ENC_MIN_CFG);
-
 	wmb();
 
 	dev_info(vfe->camss->dev,
