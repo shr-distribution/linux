@@ -61,6 +61,66 @@ check_device() {
     fi
 }
 
+# Check and ensure mt9m114 sensor is powered and bound
+ensure_camera_ready() {
+    log_step "Checking camera sensor status..."
+
+    run_on_device "cat <<'SCRIPT' > /tmp/ensure_camera.sh
+#!/bin/sh
+
+echo '=== Checking mt9m114 sensor ==='
+
+# Check if sensor is bound
+SENSOR_PATH='/sys/bus/i2c/devices/4-003c'
+DRIVER_PATH='/sys/bus/i2c/drivers/mt9m114'
+
+if [ ! -d \"\$SENSOR_PATH\" ]; then
+    echo 'ERROR: Sensor device not found at 4-003c'
+    exit 1
+fi
+
+# Check if driver is bound
+if [ -L \"\$SENSOR_PATH/driver\" ]; then
+    BOUND_DRIVER=\$(basename \$(readlink \$SENSOR_PATH/driver))
+    echo \"Sensor bound to driver: \$BOUND_DRIVER\"
+else
+    echo 'WARNING: Sensor not bound to any driver'
+    echo 'Attempting to bind mt9m114 driver...'
+    echo '4-003c' > \$DRIVER_PATH/bind 2>/dev/null
+    sleep 2
+    if [ -L \"\$SENSOR_PATH/driver\" ]; then
+        echo 'SUCCESS: Sensor bound to mt9m114 driver'
+    else
+        echo 'ERROR: Failed to bind sensor'
+        exit 1
+    fi
+fi
+
+# Check runtime PM status
+if [ -f \"\$SENSOR_PATH/power/runtime_status\" ]; then
+    STATUS=\$(cat \$SENSOR_PATH/power/runtime_status)
+    echo \"Runtime PM status: \$STATUS\"
+    if [ \"\$STATUS\" = \"suspended\" ]; then
+        echo 'Sensor is suspended, will wake on use'
+    fi
+fi
+
+# Verify sensor appears in media topology
+if command -v media-ctl >/dev/null 2>&1; then
+    if media-ctl -p 2>/dev/null | grep -q 'mt9m114'; then
+        echo 'Sensor found in media topology'
+    else
+        echo 'WARNING: Sensor not in media topology - may need reboot'
+    fi
+fi
+
+echo ''
+echo '=== Sensor check complete ==='
+SCRIPT
+chmod +x /tmp/ensure_camera.sh
+/tmp/ensure_camera.sh"
+}
+
 # Show camera module info
 show_camera_info() {
     log_step "Camera driver information..."
@@ -204,26 +264,26 @@ if [ -z \"\$SENSOR\" ] || [ -z \"\$CSIPHY\" ]; then
 fi
 
 # Set format on sensor (source pad 0)
-# MT9M114 native formats: 1280x960 UYVY or 1288x968 with blanking
+# MT9M114 native resolution is 1288x968 UYVY (with blanking pixels)
 echo ''
-echo 'Setting sensor format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_2X8/1280x960]\" 2>&1 || \
-media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_1X16/1280x960]\" 2>&1 || \
+echo 'Setting sensor format (1288x968 UYVY8_1X16)...'
+media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || \
+media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || \
 echo 'Sensor format set may have failed'
 
 # Set CSIPHY format
 echo 'Setting CSIPHY format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':0[fmt:UYVY8_2X8/1280x960]\" 2>&1 || true
-media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':1[fmt:UYVY8_2X8/1280x960]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':1[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
 
 # Set CSID format
 echo 'Setting CSID format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$CSID':0[fmt:UYVY8_2X8/1280x960]\" 2>&1 || true
-media-ctl -d \$MEDIA_DEV -V \"'\$CSID':1[fmt:UYVY8_2X8/1280x960]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSID':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSID':1[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
 
 # Set VFE format
 echo 'Setting VFE format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$VFE':0[fmt:UYVY8_2X8/1280x960]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$VFE':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
 
 # Enable links: sensor -> csiphy -> csid -> vfe
 echo ''
@@ -273,9 +333,9 @@ if command -v v4l2-ctl >/dev/null 2>&1; then
     echo ''
     echo '=== Testing with v4l2-ctl ==='
 
-    # Set format to match sensor output
-    echo 'Setting video format to 1280x960 UYVY...'
-    v4l2-ctl -d \$VIDEO_DEV --set-fmt-video=width=1280,height=960,pixelformat=UYVY 2>&1
+    # Set format to match mt9m114 sensor output (1288x968 UYVY)
+    echo 'Setting video format to 1288x968 UYVY (mt9m114 native)...'
+    v4l2-ctl -d \$VIDEO_DEV --set-fmt-video=width=1288,height=968,pixelformat=UYVY 2>&1
 
     echo 'Current format:'
     v4l2-ctl -d \$VIDEO_DEV --get-fmt-video 2>&1
@@ -289,8 +349,8 @@ if command -v v4l2-ctl >/dev/null 2>&1; then
         echo \"Captured file size: \$SIZE bytes\"
         if [ \"\$SIZE\" -gt 0 ]; then
             echo 'SUCCESS: Captured frame data!'
-            # Expected size: 1280 * 960 * 2 bytes/pixel * 5 frames = 12288000 bytes
-            EXPECTED=\$((1280 * 960 * 2 * FRAMES))
+            # Expected size: 1288 * 968 * 2 bytes/pixel * 5 frames = 12468160 bytes
+            EXPECTED=\$((1288 * 968 * 2 * FRAMES))
             echo \"Expected size: \$EXPECTED bytes\"
         else
             echo 'WARNING: Captured file is empty'
@@ -306,20 +366,22 @@ if command -v gst-launch-1.0 >/dev/null 2>&1; then
     echo '=== Testing with GStreamer ==='
 
     # Test with fakesink first (no actual output, just test pipeline)
-    echo 'Testing pipeline with fakesink...'
-    timeout 5 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=5 ! \
-        'video/x-raw,format=UYVY,width=1280,height=960' ! \
+    # IMPORTANT: Use 1288x968 UYVY - the exact mt9m114 sensor resolution
+    echo 'Testing pipeline with fakesink (1288x968 UYVY)...'
+    timeout 10 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=5 ! \
+        'video/x-raw,format=UYVY,width=1288,height=968' ! \
         fakesink 2>&1
 
     # If that works, try saving a frame
     if [ \$? -eq 0 ]; then
         echo ''
         echo 'Saving single frame as PPM...'
-        gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=1 ! \
-            'video/x-raw,format=UYVY,width=1280,height=960' ! \
+        timeout 10 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=1 ! \
+            'video/x-raw,format=UYVY,width=1288,height=968' ! \
             videoconvert ! \
             pnmenc ! \
             filesink location=/tmp/frame.ppm 2>&1
+        ls -la /tmp/frame.ppm 2>/dev/null && echo 'Frame saved!'
     fi
 fi
 
@@ -351,40 +413,46 @@ check_dmesg() {
 quick_capture_test() {
     log_step "Quick capture test..."
 
-    log_info "Testing v4l2src with explicit format..."
+    log_info "Testing capture with correct mt9m114 format (1288x968 UYVY)..."
     run_on_device "
         if command -v gst-launch-1.0 >/dev/null 2>&1; then
-            # Try different format combinations
-            echo 'Test 1: 1280x960 UYVY'
-            timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
-                'video/x-raw,format=UYVY,width=1280,height=960' ! \\
-                fakesink 2>&1 || echo 'Test 1 failed'
+            # MT9M114 native resolution is 1288x968 UYVY
+            # IMPORTANT: Must specify exact format to avoid wrong negotiation
+            echo '=== Test: 1288x968 UYVY (native mt9m114 resolution) ==='
+            timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
+                'video/x-raw,format=UYVY,width=1288,height=968' ! \\
+                fakesink 2>&1
 
-            echo ''
-            echo 'Test 2: 1280x720 UYVY (720p)'
-            timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
-                'video/x-raw,format=UYVY,width=1280,height=720' ! \\
-                fakesink 2>&1 || echo 'Test 2 failed'
+            if [ \$? -eq 0 ]; then
+                echo ''
+                echo 'SUCCESS: Capture completed!'
+                echo ''
+                echo '=== Saving test frame to /tmp/camera_frame.raw ==='
+                timeout 10 gst-launch-1.0 v4l2src device=/dev/video0 num-buffers=1 ! \\
+                    'video/x-raw,format=UYVY,width=1288,height=968' ! \\
+                    filesink location=/tmp/camera_frame.raw 2>&1
+                ls -la /tmp/camera_frame.raw 2>/dev/null && echo 'Frame saved!'
+            else
+                echo ''
+                echo 'Native resolution failed, trying alternatives...'
 
-            echo ''
-            echo 'Test 3: 640x480 UYVY (VGA)'
-            timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
-                'video/x-raw,format=UYVY,width=640,height=480' ! \\
-                fakesink 2>&1 || echo 'Test 3 failed'
+                echo ''
+                echo '=== Test: 1280x960 UYVY ==='
+                timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
+                    'video/x-raw,format=UYVY,width=1280,height=960' ! \\
+                    fakesink 2>&1 || echo 'Test failed'
 
-            echo ''
-            echo 'Test 4: Auto-negotiate (let v4l2src choose)'
-            timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
-                videoconvert ! \\
-                fakesink 2>&1 || echo 'Test 4 failed'
-        else
-            echo 'GStreamer not available'
-            # Try v4l2-ctl if available
-            if command -v v4l2-ctl >/dev/null 2>&1; then
-                v4l2-ctl -d /dev/video0 --set-fmt-video=width=1280,height=960,pixelformat=UYVY
-                v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=3 --stream-to=/tmp/test.raw
-                ls -la /tmp/test.raw
+                echo ''
+                echo '=== Test: 640x480 UYVY (VGA) ==='
+                timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
+                    'video/x-raw,format=UYVY,width=640,height=480' ! \\
+                    fakesink 2>&1 || echo 'Test failed'
             fi
+        else
+            echo 'GStreamer not available, using dd test'
+            # Raw device read test
+            timeout 5 dd if=/dev/video0 of=/tmp/raw_test.bin bs=1024 count=100 2>&1 || \\
+                echo 'Raw read failed (expected if streaming not started)'
         fi
     "
 }
@@ -439,16 +507,19 @@ main() {
             setup_media_pipeline
             ;;
         capture)
+            ensure_camera_ready
             test_capture
             check_dmesg
             ;;
         quick)
             show_camera_info
+            ensure_camera_ready
             quick_capture_test
             check_dmesg
             ;;
         full)
             show_camera_info
+            ensure_camera_ready
             show_v4l2_info
             show_media_topology
             setup_media_pipeline
