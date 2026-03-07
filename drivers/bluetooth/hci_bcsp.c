@@ -85,6 +85,43 @@ static bool skip_pskeys;  /* Skip PSKEY/WARM_RESET for debugging */
 #define PSKEY_PALM_01CA			0x01CA	/* Palm config (2 words) */
 #define PSKEY_PALM_001D			0x001D	/* Palm config (2 words) */
 
+/*
+ * TouchPad-Specific PSKEYs (LMP subversion 0x12E9)
+ * These contain RF calibration data extracted from webOS libPmBtBsaif.so
+ */
+#define PSKEY_TOUCHPAD_00F6		0x00F6	/* Configuration (1 word) */
+#define PSKEY_TOUCHPAD_0203		0x0203	/* Configuration (32 words) */
+#define PSKEY_TOUCHPAD_0394		0x0394	/* Configuration (1 word) */
+#define PSKEY_TOUCHPAD_03AA		0x03AA	/* Configuration (12 words) */
+#define PSKEY_TOUCHPAD_03AB		0x03AB	/* Configuration (12 words) */
+#define PSKEY_TOUCHPAD_03D4		0x03D4	/* Configuration (1 word) */
+#define PSKEY_TOUCHPAD_212C		0x212C	/* RF calibration (20 words) */
+#define PSKEY_TOUCHPAD_212D		0x212D	/* RF calibration (16 words) */
+#define PSKEY_TOUCHPAD_212E		0x212E	/* RF calibration (34 words) */
+#define PSKEY_TOUCHPAD_212F		0x212F	/* RF calibration (46 words) */
+#define PSKEY_TOUCHPAD_2130		0x2130	/* RF calibration (15 words) */
+#define PSKEY_TOUCHPAD_2131		0x2131	/* RF calibration (21 words) */
+#define PSKEY_TOUCHPAD_2132		0x2132	/* RF calibration (28 words) */
+#define PSKEY_TOUCHPAD_2133		0x2133	/* RF calibration (39 words) */
+#define PSKEY_TOUCHPAD_2134		0x2134	/* RF calibration (40 words) */
+#define PSKEY_TOUCHPAD_2135		0x2135	/* RF calibration (24 words) */
+#define PSKEY_TOUCHPAD_2136		0x2136	/* RF calibration (31 words) */
+#define PSKEY_TOUCHPAD_2137		0x2137	/* RF calibration (29 words) */
+#define PSKEY_TOUCHPAD_2138		0x2138	/* RF calibration (13 words) */
+#define PSKEY_TOUCHPAD_2139		0x2139	/* RF calibration (43 words) */
+#define PSKEY_TOUCHPAD_213A		0x213A	/* RF calibration (4 words) */
+#define PSKEY_TOUCHPAD_21E1		0x21E1	/* RF calibration (16 words) */
+#define PSKEY_TOUCHPAD_2215		0x2215	/* RF calibration (18 words) */
+#define PSKEY_TOUCHPAD_2216		0x2216	/* RF calibration (28 words) */
+#define PSKEY_TOUCHPAD_2227		0x2227	/* RF calibration (63 words) */
+#define PSKEY_TOUCHPAD_2228		0x2228	/* RF calibration (62 words) */
+#define PSKEY_TOUCHPAD_2229		0x2229	/* RF calibration (29 words) */
+#define PSKEY_TOUCHPAD_222A		0x222A	/* RF calibration (58 words) */
+#define PSKEY_TOUCHPAD_222B		0x222B	/* RF calibration (26 words) */
+
+/* Number of TouchPad-specific PSKEYs */
+#define TOUCHPAD_PSKEY_COUNT		29
+
 /* PSKEY storage types */
 #define PSKEY_STORES_DEFAULT		0x00	/* Default store */
 #define PSKEY_STORES_PSI		0x04	/* Persistent Store Implementation */
@@ -201,6 +238,71 @@ struct bcsp_struct {
 	int	pskey_palm_01ca_len;
 	const u16 *pskey_palm_001d;	/* 2 words */
 	int	pskey_palm_001d_len;
+
+	/*
+	 * TouchPad-Specific PSKEYs (LMP subversion 0x12E9)
+	 * Loaded from device tree, NULL if not present.
+	 * Contains RF calibration data for optimal Bluetooth performance.
+	 */
+	bool	touchpad_pskeys_present;  /* True if TouchPad PSKEYs loaded */
+	u16	*touchpad_pskey_00f6;
+	int	touchpad_pskey_00f6_len;
+	u16	*touchpad_pskey_0203;
+	int	touchpad_pskey_0203_len;
+	u16	*touchpad_pskey_0394;
+	int	touchpad_pskey_0394_len;
+	u16	*touchpad_pskey_03aa;
+	int	touchpad_pskey_03aa_len;
+	u16	*touchpad_pskey_03ab;
+	int	touchpad_pskey_03ab_len;
+	u16	*touchpad_pskey_03d4;
+	int	touchpad_pskey_03d4_len;
+	u16	*touchpad_pskey_212c;
+	int	touchpad_pskey_212c_len;
+	u16	*touchpad_pskey_212d;
+	int	touchpad_pskey_212d_len;
+	u16	*touchpad_pskey_212e;
+	int	touchpad_pskey_212e_len;
+	u16	*touchpad_pskey_212f;
+	int	touchpad_pskey_212f_len;
+	u16	*touchpad_pskey_2130;
+	int	touchpad_pskey_2130_len;
+	u16	*touchpad_pskey_2131;
+	int	touchpad_pskey_2131_len;
+	u16	*touchpad_pskey_2132;
+	int	touchpad_pskey_2132_len;
+	u16	*touchpad_pskey_2133;
+	int	touchpad_pskey_2133_len;
+	u16	*touchpad_pskey_2134;
+	int	touchpad_pskey_2134_len;
+	u16	*touchpad_pskey_2135;
+	int	touchpad_pskey_2135_len;
+	u16	*touchpad_pskey_2136;
+	int	touchpad_pskey_2136_len;
+	u16	*touchpad_pskey_2137;
+	int	touchpad_pskey_2137_len;
+	u16	*touchpad_pskey_2138;
+	int	touchpad_pskey_2138_len;
+	u16	*touchpad_pskey_2139;
+	int	touchpad_pskey_2139_len;
+	u16	*touchpad_pskey_213a;
+	int	touchpad_pskey_213a_len;
+	u16	*touchpad_pskey_21e1;
+	int	touchpad_pskey_21e1_len;
+	u16	*touchpad_pskey_2215;
+	int	touchpad_pskey_2215_len;
+	u16	*touchpad_pskey_2216;
+	int	touchpad_pskey_2216_len;
+	u16	*touchpad_pskey_2227;
+	int	touchpad_pskey_2227_len;
+	u16	*touchpad_pskey_2228;
+	int	touchpad_pskey_2228_len;
+	u16	*touchpad_pskey_2229;
+	int	touchpad_pskey_2229_len;
+	u16	*touchpad_pskey_222a;
+	int	touchpad_pskey_222a_len;
+	u16	*touchpad_pskey_222b;
+	int	touchpad_pskey_222b_len;
 };
 
 /* ---- BCSP CRC calculation ---- */
@@ -1090,6 +1192,68 @@ static int bcsp_send_warm_reset(struct hci_uart *hu)
 }
 
 /*
+ * Send TouchPad-specific PSKEYs (RF calibration data)
+ * These are sent only when touchpad_pskeys_present is true (loaded from DT)
+ */
+static void bcsp_send_touchpad_pskeys(struct hci_uart *hu)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+
+	if (!bcsp->touchpad_pskeys_present)
+		return;
+
+	BT_INFO("BCSP: Sending TouchPad RF calibration PSKEYs...");
+
+#define SEND_TOUCHPAD_PSKEY(pskey_id, field) \
+	do { \
+		if (bcsp->touchpad_pskey_##field && \
+		    bcsp->touchpad_pskey_##field##_len > 0) { \
+			bcsp_send_pskey_data(hu, pskey_id, \
+				bcsp->touchpad_pskey_##field, \
+				bcsp->touchpad_pskey_##field##_len); \
+			msleep(20); \
+		} \
+	} while (0)
+
+	/* Configuration PSKEYs */
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_00F6, 00f6);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_0203, 0203);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_0394, 0394);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_03AA, 03aa);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_03AB, 03ab);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_03D4, 03d4);
+
+	/* RF Calibration PSKEYs */
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_212C, 212c);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_212D, 212d);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_212E, 212e);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_212F, 212f);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2130, 2130);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2131, 2131);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2132, 2132);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2133, 2133);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2134, 2134);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2135, 2135);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2136, 2136);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2137, 2137);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2138, 2138);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2139, 2139);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_213A, 213a);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_21E1, 21e1);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2215, 2215);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2216, 2216);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2227, 2227);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2228, 2228);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2229, 2229);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_222A, 222a);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_222B, 222b);
+
+#undef SEND_TOUCHPAD_PSKEY
+
+	BT_INFO("BCSP: TouchPad RF calibration PSKEYs sent");
+}
+
+/*
  * Parse BD address string "XX:XX:XX:XX:XX:XX" into bdaddr_t
  * Returns 0 on success, -1 on error
  */
@@ -1333,6 +1497,9 @@ static int bcsp_setup(struct hci_uart *hu)
 				     bcsp->pskey_palm_001d_len);
 		msleep(20);
 
+		/* TouchPad-specific RF calibration PSKEYs (if present) */
+		bcsp_send_touchpad_pskeys(hu);
+
 		/*
 		 * TX Power Level Table (PSKEY 0x0031) - CRITICAL FOR RF
 		 * Use DT-provided table if available, otherwise use Palm defaults.
@@ -1467,6 +1634,9 @@ static int bcsp_setup(struct hci_uart *hu)
 				     bcsp->pskey_palm_001d,
 				     bcsp->pskey_palm_001d_len);
 		msleep(20);
+
+		/* TouchPad-specific RF calibration PSKEYs (if present) */
+		bcsp_send_touchpad_pskeys(hu);
 
 		/* TX Power Table - use DT if available, else Palm defaults */
 		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
@@ -1667,6 +1837,73 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 		BT_INFO("BCSP: Using Palm defaults (no DT overrides)");
 	}
 
+	/*
+	 * Read TouchPad-specific PSKEYs (RF calibration data)
+	 * These are only present on HP TouchPad (LMP subversion 0x12E9)
+	 */
+	bcsp->touchpad_pskeys_present = false;
+
+#define READ_TOUCHPAD_PSKEY(name, field) \
+	do { \
+		if (of_find_property(np, "brcm,pskey-" name, &len)) { \
+			len = len / sizeof(u16); \
+			if (len > 0) { \
+				bcsp->touchpad_pskey_##field = \
+					kmalloc_array(len, sizeof(u16), GFP_KERNEL); \
+				if (bcsp->touchpad_pskey_##field) { \
+					ret = of_property_read_u16_array(np, \
+						"brcm,pskey-" name, \
+						bcsp->touchpad_pskey_##field, len); \
+					if (ret) { \
+						kfree(bcsp->touchpad_pskey_##field); \
+						bcsp->touchpad_pskey_##field = NULL; \
+					} else { \
+						bcsp->touchpad_pskey_##field##_len = len; \
+						bcsp->touchpad_pskeys_present = true; \
+					} \
+				} \
+			} \
+		} \
+	} while (0)
+
+	/* Configuration PSKEYs */
+	READ_TOUCHPAD_PSKEY("00f6", 00f6);
+	READ_TOUCHPAD_PSKEY("0203", 0203);
+	READ_TOUCHPAD_PSKEY("0394", 0394);
+	READ_TOUCHPAD_PSKEY("03aa", 03aa);
+	READ_TOUCHPAD_PSKEY("03ab", 03ab);
+	READ_TOUCHPAD_PSKEY("03d4", 03d4);
+
+	/* RF Calibration PSKEYs */
+	READ_TOUCHPAD_PSKEY("212c", 212c);
+	READ_TOUCHPAD_PSKEY("212d", 212d);
+	READ_TOUCHPAD_PSKEY("212e", 212e);
+	READ_TOUCHPAD_PSKEY("212f", 212f);
+	READ_TOUCHPAD_PSKEY("2130", 2130);
+	READ_TOUCHPAD_PSKEY("2131", 2131);
+	READ_TOUCHPAD_PSKEY("2132", 2132);
+	READ_TOUCHPAD_PSKEY("2133", 2133);
+	READ_TOUCHPAD_PSKEY("2134", 2134);
+	READ_TOUCHPAD_PSKEY("2135", 2135);
+	READ_TOUCHPAD_PSKEY("2136", 2136);
+	READ_TOUCHPAD_PSKEY("2137", 2137);
+	READ_TOUCHPAD_PSKEY("2138", 2138);
+	READ_TOUCHPAD_PSKEY("2139", 2139);
+	READ_TOUCHPAD_PSKEY("213a", 213a);
+	READ_TOUCHPAD_PSKEY("21e1", 21e1);
+	READ_TOUCHPAD_PSKEY("2215", 2215);
+	READ_TOUCHPAD_PSKEY("2216", 2216);
+	READ_TOUCHPAD_PSKEY("2227", 2227);
+	READ_TOUCHPAD_PSKEY("2228", 2228);
+	READ_TOUCHPAD_PSKEY("2229", 2229);
+	READ_TOUCHPAD_PSKEY("222a", 222a);
+	READ_TOUCHPAD_PSKEY("222b", 222b);
+
+#undef READ_TOUCHPAD_PSKEY
+
+	if (bcsp->touchpad_pskeys_present)
+		BT_INFO("BCSP: TouchPad RF calibration PSKEYs loaded from DT");
+
 	of_node_put(np);
 }
 
@@ -1730,6 +1967,38 @@ static int bcsp_close(struct hci_uart *hu)
 	}
 
 	kfree(bcsp->tx_power_table);
+
+	/* Free TouchPad PSKEYs */
+	kfree(bcsp->touchpad_pskey_00f6);
+	kfree(bcsp->touchpad_pskey_0203);
+	kfree(bcsp->touchpad_pskey_0394);
+	kfree(bcsp->touchpad_pskey_03aa);
+	kfree(bcsp->touchpad_pskey_03ab);
+	kfree(bcsp->touchpad_pskey_03d4);
+	kfree(bcsp->touchpad_pskey_212c);
+	kfree(bcsp->touchpad_pskey_212d);
+	kfree(bcsp->touchpad_pskey_212e);
+	kfree(bcsp->touchpad_pskey_212f);
+	kfree(bcsp->touchpad_pskey_2130);
+	kfree(bcsp->touchpad_pskey_2131);
+	kfree(bcsp->touchpad_pskey_2132);
+	kfree(bcsp->touchpad_pskey_2133);
+	kfree(bcsp->touchpad_pskey_2134);
+	kfree(bcsp->touchpad_pskey_2135);
+	kfree(bcsp->touchpad_pskey_2136);
+	kfree(bcsp->touchpad_pskey_2137);
+	kfree(bcsp->touchpad_pskey_2138);
+	kfree(bcsp->touchpad_pskey_2139);
+	kfree(bcsp->touchpad_pskey_213a);
+	kfree(bcsp->touchpad_pskey_21e1);
+	kfree(bcsp->touchpad_pskey_2215);
+	kfree(bcsp->touchpad_pskey_2216);
+	kfree(bcsp->touchpad_pskey_2227);
+	kfree(bcsp->touchpad_pskey_2228);
+	kfree(bcsp->touchpad_pskey_2229);
+	kfree(bcsp->touchpad_pskey_222a);
+	kfree(bcsp->touchpad_pskey_222b);
+
 	kfree(bcsp);
 	return 0;
 }

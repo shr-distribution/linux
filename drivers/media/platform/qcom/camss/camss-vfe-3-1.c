@@ -815,101 +815,21 @@ static u16 vfe31_get_ub_size(u8 vfe_id)
 static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 					enum vfe_line_id id)
 {
-	struct vfe_line *line = &vfe->line[id];
-	u32 val;
-
 	/*
-	 * Configure CAMIF and AXI output for RDI path.
+	 * VFE31 RDI mode: Defer CAMIF configuration until WM is fully set up.
 	 *
-	 * Note: CSIPHY lanes_enable completes BEFORE this function is called
-	 * (verified via netconsole logs), so we can safely configure CAMIF here.
-	 * The old deferred approach didn't work because camif_pending wasn't
-	 * set yet when vfe_enable_pending_camif() was called from CSIPHY.
+	 * The gen1 code calls bus_connect_wm_to_rdi BEFORE configuring the WM
+	 * (ub_cfg, frame_based, line_based, wm_enable). In VFE31, writing to
+	 * CAMIF/CORE registers before WM is configured causes hangs.
+	 *
+	 * Set camif_pending flag here. The actual CAMIF configuration and
+	 * start will happen in wm_enable() after all WM setup is complete.
 	 */
 	dev_info(vfe->camss->dev,
-		 "VFE31: connect WM%d to RDI%d - configuring CAMIF and AXI (fmt %ux%u code=0x%x)\n",
-		 wm, id, line->fmt[MSM_VFE_PAD_SINK].width,
-		 line->fmt[MSM_VFE_PAD_SINK].height,
-		 line->fmt[MSM_VFE_PAD_SINK].code);
+		 "VFE31: connect WM%d to RDI%d - deferring CAMIF config until WM ready\n",
+		 wm, id);
 
-	/* Step 1: Configure CORE_CFG pixel pattern */
-	dev_info(vfe->camss->dev, "VFE31: Step 1 - CORE_CFG pixel pattern\n");
-	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
-	case MEDIA_BUS_FMT_YUYV8_1X16:
-	case MEDIA_BUS_FMT_YUYV8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
-		break;
-	case MEDIA_BUS_FMT_YVYU8_1X16:
-	case MEDIA_BUS_FMT_YVYU8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB;
-		break;
-	case MEDIA_BUS_FMT_UYVY8_1X16:
-	case MEDIA_BUS_FMT_UYVY8_2X8:
-	default:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
-		break;
-	case MEDIA_BUS_FMT_VYUY8_1X16:
-	case MEDIA_BUS_FMT_VYUY8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
-		break;
-	}
-	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
-	dev_info(vfe->camss->dev, "VFE31: Step 1 done - CORE_CFG=0x%x\n", val);
-
-	/* Step 2: Configure CAMIF frame dimensions */
-	dev_info(vfe->camss->dev, "VFE31: Step 2 - CAMIF frame dimensions\n");
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
-	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
-
-	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
-
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
-	dev_info(vfe->camss->dev, "VFE31: Step 2 done\n");
-
-	/* Step 3: Enable CAMIF to VFE data path */
-	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF_CFG\n");
-	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS,
-		       vfe->base + VFE_0_CAMIF_CFG);
-	dev_info(vfe->camss->dev, "VFE31: Step 3 done\n");
-
-	/* Step 4: Configure BUS_CFG for raw passthrough */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - BUS_CFG\n");
-	val = VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN |
-	      VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN |
-	      (VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
-	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
-	dev_info(vfe->camss->dev, "VFE31: Step 4 done - BUS_CFG=0x%x\n", val);
-
-	/* Step 5: Set AXI output mode for raw snapshot (0x60) */
-	dev_info(vfe->camss->dev, "VFE31: Step 5 - AXI output mode\n");
-	writel_relaxed(VFE31_AXI_OUT_MODE_RAW, vfe->base + VFE31_AXI_OUT_MODE_CFG);
-	dev_info(vfe->camss->dev, "VFE31: Step 5 done - AXI_MODE=0x%x\n", VFE31_AXI_OUT_MODE_RAW);
-
-	wmb();
-
-	/* Step 6: Start CAMIF */
-	dev_info(vfe->camss->dev, "VFE31: Step 6 - Start CAMIF\n");
-	writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS, vfe->base + VFE_0_CAMIF_CMD);
-	wmb();
-	dev_info(vfe->camss->dev, "VFE31: Step 6a - cleared status\n");
-	writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
-	wmb();
-	dev_info(vfe->camss->dev, "VFE31: Step 6b - started CAMIF\n");
-
-	dev_info(vfe->camss->dev,
-		 "VFE31: CAMIF configured - cfg=0x%08x frame=0x%08x axi=0x%08x bus=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG),
-		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
-		 readl_relaxed(vfe->base + VFE_0_BUS_CFG));
-
-	vfe->camif_pending = false;
+	vfe->camif_pending = true;
 }
 
 static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
@@ -1094,6 +1014,84 @@ static void vfe31_wm_line_based(struct vfe_device *vfe, u32 wm,
 	}
 }
 
+/*
+ * vfe31_start_camif_for_rdi - Configure and start CAMIF after WM is ready
+ *
+ * This is called from wm_enable() when camif_pending is set. All WM
+ * configuration must be complete before calling this.
+ */
+static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
+{
+	enum vfe_line_id line_id = vfe->wm_output_map[wm];
+	struct vfe_line *line;
+	u32 val;
+
+	if (line_id == VFE_LINE_NONE || line_id >= vfe->res->line_num) {
+		dev_err(vfe->camss->dev, "VFE31: Invalid line_id %d for WM%d\n",
+			line_id, wm);
+		return;
+	}
+
+	line = &vfe->line[line_id];
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: Starting CAMIF for WM%d RDI%d (fmt %ux%u code=0x%x)\n",
+		 wm, line_id, line->fmt[MSM_VFE_PAD_SINK].width,
+		 line->fmt[MSM_VFE_PAD_SINK].height,
+		 line->fmt[MSM_VFE_PAD_SINK].code);
+
+	/* Step 1: Set AXI output mode for raw snapshot FIRST */
+	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode\n");
+	writel_relaxed(VFE31_AXI_OUT_MODE_RAW, vfe->base + VFE31_AXI_OUT_MODE_CFG);
+	wmb();
+
+	/* Step 2: Configure BUS_CFG for raw passthrough */
+	dev_info(vfe->camss->dev, "VFE31: Step 2 - BUS_CFG\n");
+	val = VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN |
+	      VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN |
+	      (VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
+	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
+	wmb();
+
+	/* Step 3: Configure CAMIF frame dimensions */
+	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF frame dimensions\n");
+	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
+	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+
+	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+
+	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
+	wmb();
+
+	/* Step 4: Enable CAMIF to VFE data path */
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG\n");
+	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS,
+		       vfe->base + VFE_0_CAMIF_CFG);
+	wmb();
+
+	/* Step 5: Start CAMIF */
+	dev_info(vfe->camss->dev, "VFE31: Step 5 - Start CAMIF\n");
+	writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS, vfe->base + VFE_0_CAMIF_CMD);
+	wmb();
+	writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+	wmb();
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: CAMIF started - cfg=0x%08x frame=0x%08x axi=0x%08x bus=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG),
+		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
+		 readl_relaxed(vfe->base + VFE_0_BUS_CFG));
+
+	vfe->camif_pending = false;
+}
+
 static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
 {
 	/*
@@ -1112,6 +1110,14 @@ static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
 		 wm, enable, VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm), val, new_val);
 
 	writel_relaxed(new_val, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+
+	/*
+	 * VFE31: If CAMIF configuration was deferred (RDI mode), now that
+	 * the WM is enabled and fully configured, start CAMIF.
+	 */
+	if (enable && vfe->camif_pending) {
+		vfe31_start_camif_for_rdi(vfe, wm);
+	}
 }
 
 static void vfe31_wm_set_ub_cfg(struct vfe_device *vfe, u8 wm,
