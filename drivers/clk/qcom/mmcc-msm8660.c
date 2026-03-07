@@ -1838,6 +1838,7 @@ static struct clk_branch vpe_axi_clk = {
 static struct clk_branch mdp_axi_clk = {
 	.halt_reg = 0x01d8,
 	.halt_bit = 8,
+	.halt_check = BRANCH_HALT_DELAY,
 	.clkr = {
 		.enable_reg = 0x0018,
 		.enable_mask = BIT(23),
