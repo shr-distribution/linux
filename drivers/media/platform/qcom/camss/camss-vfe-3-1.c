@@ -954,60 +954,18 @@ static void vfe31_wm_line_based(struct vfe_device *vfe, u32 wm,
 				struct v4l2_pix_format_mplane *pix,
 				u8 plane, u32 enable)
 {
-	u32 reg;
-
-	if (enable) {
-		u16 width = 0, height = 0, bytesperline = 0, wpl;
-
-		vfe31_get_wm_sizes(pix, plane, &width, &height, &bytesperline);
-
-		/* Calculate words per line (64-bit words) */
-		wpl = vfe_word_per_line(pix->pixelformat, width);
-
-		/*
-		 * VFE31 WR_IMAGE_SIZE register:
-		 * Bits 0-11: Image height - 1
-		 * Bits 16-25: Image width in 64-bit words (wpl / 2)
-		 *
-		 * This follows the webOS kernel structure for VFE31.
-		 */
-		reg = (height - 1) & 0xFFF;
-		reg |= (((wpl + 1) / 2 - 1) & 0x3FF) << 16;
-
-		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d IMAGE_SIZE height=%d width=%d wpl=%d reg=0x%x\n",
-			 wm, height, width, wpl, reg);
-
-		writel_relaxed(reg,
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
-
-		/*
-		 * VFE31 WR_ADDR_CFG register:
-		 * Bits 0-1: Burst length (0=4, 1=8, 2=16 beats)
-		 * Bits 4-15: Number of rows - 1
-		 * Bits 16-27: Row increment in 64-bit words
-		 *
-		 * Use bytesperline to calculate row increment for proper stride.
-		 */
-		wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
-
-		reg = 0x2;  /* Burst length = 16 beats */
-		reg |= ((height - 1) & 0xFFF) << 4;
-		reg |= (wpl & 0xFFF) << 16;
-
-		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d ADDR_CFG stride=%d rows=%d reg=0x%x\n",
-			 wm, bytesperline, height, reg);
-
-		writel_relaxed(reg,
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
-	} else {
-		/* Disable: clear image size and address config */
-		writel_relaxed(0,
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
-		writel_relaxed(0,
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
-	}
+	/*
+	 * VFE31: Skip IMAGE_SIZE and ADDR_CFG writes here - they cause hangs.
+	 *
+	 * Writing to WR_IMAGE_SIZE (0x060) and WR_ADDR_CFG (0x058) before
+	 * CAMIF is configured causes system hangs.
+	 *
+	 * These registers are configured in vfe31_start_camif_for_rdi()
+	 * which runs after CAMIF setup.
+	 */
+	dev_info(vfe->camss->dev,
+		 "VFE31: wm_line_based wm=%d enable=%d (deferred to CAMIF start)\n",
+		 wm, enable);
 }
 
 /*
@@ -1084,6 +1042,43 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG),
 		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_BUS_CFG));
+
+	/*
+	 * Step 6: Configure WM IMAGE_SIZE and ADDR_CFG
+	 * These must be written AFTER CAMIF is started.
+	 */
+	{
+		struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
+		u16 width = pix->width;
+		u16 height = pix->height;
+		u16 bytesperline = pix->plane_fmt[0].bytesperline;
+		u16 wpl;
+		u32 reg;
+
+		dev_info(vfe->camss->dev, "VFE31: Step 6 - WM IMAGE_SIZE and ADDR_CFG\n");
+
+		/* WR_IMAGE_SIZE register */
+		wpl = vfe_word_per_line(pix->pixelformat, width);
+		reg = (height - 1) & 0xFFF;
+		reg |= (((wpl + 1) / 2 - 1) & 0x3FF) << 16;
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: WM%d IMAGE_SIZE height=%d width=%d wpl=%d reg=0x%x\n",
+			 wm, height, width, wpl, reg);
+		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
+
+		/* WR_ADDR_CFG register */
+		wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
+		reg = 0x2;  /* Burst length = 16 beats */
+		reg |= ((height - 1) & 0xFFF) << 4;
+		reg |= (wpl & 0xFFF) << 16;
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: WM%d ADDR_CFG stride=%d rows=%d reg=0x%x\n",
+			 wm, bytesperline, height, reg);
+		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
+		wmb();
+	}
 
 	vfe->camif_pending = false;
 }
