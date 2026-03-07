@@ -424,6 +424,11 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	writel_relaxed(0, vfe->base + VFE_0_CLAMP_ENC_MIN_CFG);
 	wmb();
 
+	/* Reload all write masters (webOS does this after reset) */
+	dev_info(vfe->camss->dev, "VFE reset: reloading write masters (BUS_CMD=0x7FFF)\n");
+	writel_relaxed(0x7FFF, vfe->base + VFE_0_BUS_CMD);
+	wmb();
+
 	dev_info(vfe->camss->dev,
 		 "VFE reset: initialized default registers (skipping reset cmd)\n");
 
@@ -521,14 +526,196 @@ static int vfe31_halt(struct vfe_device *vfe)
 	return vfe_gen1_halt(vfe);
 }
 
+/*
+ * vfe31_enable - Enable VFE31 streaming (direct implementation, bypassing gen1)
+ *
+ * VFE31 predates the gen1 framework and has different register timing
+ * requirements. This function implements the webOS driver's sequence directly:
+ * 1. Configure AXI output mode (0x60 for raw WM0)
+ * 2. Configure WM registers (ping/pong, image_size, addr_cfg, ub_cfg)
+ * 3. Configure CAMIF
+ * 4. Enable IRQs
+ * 5. Start CAMIF
+ */
 static int vfe31_enable(struct vfe_line *line)
 {
 	struct vfe_device *vfe = to_vfe(line);
+	struct vfe_output *output = &line->output;
+	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
+	u32 ping_addr, pong_addr;
+	u16 width, height, bytesperline, wpl;
+	u32 val, reg;
+	unsigned long flags;
+	int wm_idx;
+	u8 wm;
 
-	dev_info(vfe->camss->dev, "VFE31 enable: line_id=%d ops_gen1=%px\n",
-		 line->id, vfe->ops_gen1);
-	/* Use gen1 common enable implementation */
-	return vfe_gen1_enable(line);
+	dev_info(vfe->camss->dev, "VFE31 enable: line_id=%d (direct, not gen1)\n",
+		 line->id);
+
+	/* Setup output (inline from gen1's vfe_get_output) */
+	spin_lock_irqsave(&vfe->output_lock, flags);
+
+	if (output->state > VFE_OUTPUT_RESERVED) {
+		dev_err(vfe->camss->dev, "VFE31: Output already running\n");
+		spin_unlock_irqrestore(&vfe->output_lock, flags);
+		return -EBUSY;
+	}
+	output->state = VFE_OUTPUT_RESERVED;
+	output->gen1.active_buf = 0;
+	output->wm_num = 1;  /* Raw mode uses single WM */
+	output->drop_update_idx = 0;
+
+	wm_idx = vfe_reserve_wm(vfe, line->id);
+	if (wm_idx < 0) {
+		dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM\n");
+		output->state = VFE_OUTPUT_OFF;
+		spin_unlock_irqrestore(&vfe->output_lock, flags);
+		return wm_idx;
+	}
+	output->wm_idx[0] = wm_idx;
+
+	/* Get buffers from pending queue (inline from gen1's vfe_enable_output) */
+	output->buf[0] = vfe_buf_get_pending(output);
+	output->buf[1] = vfe_buf_get_pending(output);
+
+	if (!output->buf[0] && output->buf[1]) {
+		output->buf[0] = output->buf[1];
+		output->buf[1] = NULL;
+	}
+
+	if (output->buf[0])
+		output->state = VFE_OUTPUT_SINGLE;
+
+	if (output->buf[1])
+		output->state = VFE_OUTPUT_CONTINUOUS;
+
+	spin_unlock_irqrestore(&vfe->output_lock, flags);
+
+	wm = output->wm_idx[0];
+	width = pix->width;
+	height = pix->height;
+	bytesperline = pix->plane_fmt[0].bytesperline;
+
+	/* Get buffer addresses */
+	if (output->buf[0])
+		ping_addr = output->buf[0]->addr[0];
+	else
+		ping_addr = 0;
+
+	if (output->buf[1])
+		pong_addr = output->buf[1]->addr[0];
+	else
+		pong_addr = ping_addr;
+
+	if (!ping_addr) {
+		dev_err(vfe->camss->dev, "VFE31: No buffers available!\n");
+		return -EINVAL;
+	}
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: WM%d %ux%u stride=%u ping=0x%08x pong=0x%08x\n",
+		 wm, width, height, bytesperline, ping_addr, pong_addr);
+
+	/*
+	 * Step 1: Configure AXI output mode for raw snapshot (WM0)
+	 * Value 0x60 from legacy webOS driver for CAMIF_TO_AXI_VIA_OUTPUT_2
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x60\n");
+	writel_relaxed(VFE_0_BUS_AXI_OUT_MODE_RAW_WM0,
+		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+
+	/*
+	 * Step 2: Configure WM registers
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 2 - WM%d registers\n", wm);
+
+	/* WR_PING_ADDR */
+	writel_relaxed(ping_addr,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+
+	/* WR_PONG_ADDR */
+	writel_relaxed(pong_addr,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+
+	/* WR_IMAGE_SIZE */
+	wpl = vfe_word_per_line(pix->pixelformat, width);
+	reg = (height - 1) & 0xFFF;
+	reg |= (((wpl + 1) / 2 - 1) & 0x3FF) << 16;
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
+
+	/* WR_ADDR_CFG */
+	wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
+	reg = 0x2;  /* Burst length = 16 beats */
+	reg |= ((height - 1) & 0xFFF) << 4;
+	reg |= (wpl & 0xFFF) << 16;
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
+
+	/* WR_UB_CFG - use full UB for single WM */
+	reg = (0 << 16) | 1023;  /* offset=0, depth=1023 */
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
+
+	/* WR_CFG - enable + frame_based */
+	writel_relaxed(BIT(0) | BIT(1),
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+	wmb();
+
+	/*
+	 * Step 3: Configure CAMIF frame dimensions
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF frame config\n");
+	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
+	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+
+	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+
+	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
+
+	/*
+	 * Step 4: Configure CAMIF_CFG - enable CAMIF to BUS path
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (CAMIF2BUS_EN)\n");
+	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS,
+		       vfe->base + VFE_0_CAMIF_CFG);
+	wmb();
+
+	/*
+	 * Step 5: Enable IRQs (matching webOS: 0x00EFE021 for MASK_0)
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 5 - Enable IRQs\n");
+	vfe->irq_mask0_shadow = 0x00EFE021;
+	vfe->irq_mask1_shadow = VFE_0_IRQ_STATUS_1_RESET_ACK |
+				VFE_0_IRQ_STATUS_1_BUS_BDG_HALT_ACK;
+	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+
+	/*
+	 * Step 6: Start CAMIF (matching webOS vfe31_start_common sequence)
+	 * webOS writes: REG_UPDATE_CMD=1, then CAMIF_COMMAND=1
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 6 - Start CAMIF\n");
+	writel_relaxed(VFE_0_REG_UPDATE_CMD_UPDATE, vfe->base + VFE_0_REG_UPDATE_CMD);
+	wmb();
+	writel_relaxed(1, vfe->base + VFE_0_CAMIF_CMD);  /* Just enable bit, like webOS */
+	wmb();
+
+	/* Set output state */
+	output->state = VFE_OUTPUT_ON;
+	output->sequence = 0;
+	output->gen1.active_buf = 0;
+	vfe->stream_count++;
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: Streaming started - CAMIF_CFG=0x%08x FRAME=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
+
+	return 0;
 }
 
 static int vfe31_disable(struct vfe_line *line)
