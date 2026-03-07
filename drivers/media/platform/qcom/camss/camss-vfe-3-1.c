@@ -867,12 +867,16 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 
 static void vfe31_wm_set_subsample(struct vfe_device *vfe, u8 wm)
 {
-	dev_info(vfe->camss->dev, "VFE31: wm_set_subsample wm=%d\n", wm);
-	/* VFE31 WM subsample configuration */
-	writel_relaxed(0x0,
-		       vfe->base +
-		       VFE_0_BUS_IMAGE_MASTER_n_WR_IRQ_SUBSAMPLE_PATTERN(wm));
-	dev_info(vfe->camss->dev, "VFE31: wm_set_subsample done\n");
+	/*
+	 * VFE31: Skip subsample pattern write.
+	 *
+	 * The IRQ_SUBSAMPLE_PATTERN register at 0x060 + 0x18*wm overlaps with
+	 * IMAGE_SIZE in our register map. Writing to it before WM is fully
+	 * configured may cause hangs. Since we don't use subsampling,
+	 * skip this entirely.
+	 */
+	dev_info(vfe->camss->dev,
+		 "VFE31: wm_set_subsample wm=%d (NO-OP, not needed)\n", wm);
 }
 
 static void vfe31_bus_enable_wr_if(struct vfe_device *vfe, u8 enable)
