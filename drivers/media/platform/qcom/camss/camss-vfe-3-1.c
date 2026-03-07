@@ -1218,22 +1218,20 @@ static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 				     enum vfe_line_id line_id, u8 enable)
 {
 	/*
-	 * VFE31: For RDI-style operation, we still need SOF interrupt
-	 * because the gen1 disable code waits for SOF completion.
-	 * Also enable REG_UPDATE since it's used for buffer management.
+	 * VFE31 RDI mode: Only enable PING_PONG interrupt for buffer
+	 * management. Skip CAMIF_SOF and REG_UPDATE since RDI bypasses
+	 * the CAMIF block entirely - enabling those causes hangs.
 	 *
 	 * IMPORTANT: VFE31 IRQ_MASK_0/1 registers are WRITE-ONLY!
 	 * Use shadow registers instead of read-modify-write.
 	 */
-	u32 val0 = VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm) |
-		   VFE_0_IRQ_MASK_0_CAMIF_SOF |
-		   VFE_0_IRQ_MASK_0_REG_UPDATE;
-	u32 val1 = VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(wm) |
-		   VFE_0_IRQ_MASK_1_CAMIF_ERROR;
+	u32 val0 = VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm);
+	u32 val1 = VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(wm);
 
 	dev_info(vfe->camss->dev,
-		 "VFE31 enable_irq_wm_line: ENTER wm=%d line=%d enable=%d\n",
-		 wm, line_id, enable);
+		 "VFE31 enable_irq_wm_line: ENTER wm=%d line=%d enable=%d val0=0x%x\n",
+		 wm, line_id, enable, val0);
+	wmb(); /* ensure log is flushed before potential hang */
 
 	if (enable) {
 		vfe->irq_mask0_shadow |= val0;
