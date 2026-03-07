@@ -808,10 +808,6 @@ static u16 vfe31_get_ub_size(u8 vfe_id)
 	return MSM_VFE_VFE0_UB_SIZE;
 }
 
-/* VFE31 AXI output mode register - controls output path selection */
-#define VFE31_AXI_OUT_MODE_CFG		0x040
-#define VFE31_AXI_OUT_MODE_RAW		0x60	/* CAMIF_TO_AXI_VIA_OUTPUT_2 */
-
 static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 					enum vfe_line_id id)
 {
@@ -837,29 +833,13 @@ static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 					     enum vfe_line_id id)
 {
-	u32 val;
-
 	dev_info(vfe->camss->dev, "VFE31: disconnect WM%d from RDI%d\n", wm, id);
 
 	/* Step 1: Stop CAMIF at frame boundary */
 	writel_relaxed(VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY,
 		       vfe->base + VFE_0_CAMIF_CMD);
 
-	/* Step 2: Disable raw passthrough in BUS_CFG */
-	val = readl_relaxed(vfe->base + VFE_0_BUS_CFG);
-	val &= ~(0x3 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
-	val |= (VFE_0_BUS_CFG_RAW_WR_PATH_DISABLED << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
-	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
-
-	/* Step 2b: Clear AXI output mode - this disables CAMIF to bus routing */
-	writel_relaxed(0, vfe->base + VFE31_AXI_OUT_MODE_CFG);
-
-	/*
-	 * Note: VFE31 does NOT have a VFE_CFG register at 0x01C.
-	 * CAMIF to bus routing is disabled by clearing AXI output mode above.
-	 */
-
-	/* Step 3: Disable CAMIF output */
+	/* Step 2: Disable CAMIF to bus routing by clearing CAMIF_CFG */
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CFG);
 
 	vfe->camif_pending = false;
@@ -996,23 +976,17 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 line->fmt[MSM_VFE_PAD_SINK].height,
 		 line->fmt[MSM_VFE_PAD_SINK].code);
 
-	/* Step 1: Set AXI output mode for raw snapshot FIRST */
-	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode\n");
-	writel_relaxed(VFE31_AXI_OUT_MODE_RAW, vfe->base + VFE31_AXI_OUT_MODE_CFG);
-	wmb();
-
 	/*
-	 * Step 2: Skip BUS_CFG for raw mode.
+	 * VFE31 raw passthrough: CAMIF2BUS_EN in CAMIF_CFG handles routing.
 	 *
-	 * VFE31 raw passthrough mode uses AXI_OUT_MODE_CFG (0x040) set to 0x60
-	 * (CAMIF_TO_AXI_VIA_OUTPUT_2) which routes CAMIF data directly to memory.
-	 * The BUS_CFG register (0x03C) configures encoder/view write paths which
-	 * are used for ISP-processed output, not raw passthrough.
+	 * Unlike later VFEs, VFE31 doesn't have a dedicated AXI output mode
+	 * register at 0x040. The output path is controlled by:
+	 * - CAMIF_CFG bit 10 (CAMIF2BUS_EN): Routes CAMIF data to memory
+	 * - BUS_CFG: Encoder/view write paths (not needed for raw)
 	 *
-	 * Writing to BUS_CFG before the bus subsystem is fully configured causes
-	 * hangs. For raw mode, AXI_OUT_MODE is sufficient.
+	 * Skip both AXI_OUT_MODE and BUS_CFG writes for raw passthrough.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 2 - BUS_CFG skipped for raw mode\n");
+	dev_info(vfe->camss->dev, "VFE31: Raw mode - using CAMIF2BUS routing\n");
 
 	/* Step 3: Configure CAMIF frame dimensions */
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF frame dimensions\n");
@@ -1050,11 +1024,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	wmb();
 
 	dev_info(vfe->camss->dev,
-		 "VFE31: CAMIF started - cfg=0x%08x frame=0x%08x axi=0x%08x bus=0x%08x\n",
+		 "VFE31: CAMIF started - cfg=0x%08x frame=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG),
-		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
-		 readl_relaxed(vfe->base + VFE_0_BUS_CFG));
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 
 	/*
 	 * Step 6: Configure WM IMAGE_SIZE and ADDR_CFG
