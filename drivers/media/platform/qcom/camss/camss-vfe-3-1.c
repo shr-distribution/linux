@@ -1002,12 +1002,14 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	wmb();
 
 	/* Step 2: Configure BUS_CFG for raw passthrough */
-	dev_info(vfe->camss->dev, "VFE31: Step 2 - BUS_CFG\n");
 	val = VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN |
 	      VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN |
 	      (VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT);
+	pr_emerg("VFE31: Step 2 - BUS_CFG ABOUT to write 0x%x to 0x%03x\n",
+		 val, VFE_0_BUS_CFG);
 	writel_relaxed(val, vfe->base + VFE_0_BUS_CFG);
 	wmb();
+	pr_emerg("VFE31: Step 2 - BUS_CFG write DONE\n");
 
 	/* Step 3: Configure CAMIF frame dimensions */
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF frame dimensions\n");
