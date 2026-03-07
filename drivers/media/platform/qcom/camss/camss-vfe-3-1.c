@@ -316,14 +316,24 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	u32 hw_version;
 
 	/*
-	 * VFE31 on MSM8660: We cannot issue the actual reset command as it
-	 * hangs the system. We also cannot do the full IRQ setup sequence
-	 * (disable IRQs, clear IRQs, IRQ_CMD) without the reset, as this
-	 * leaves the VFE in an inconsistent state where subsequent register
-	 * reads hang.
+	 * VFE31 on MSM8660 reset sequence based on webOS msm_vfe31.c:
 	 *
-	 * Minimal approach: Just enable clock gates and return. The VFE
-	 * should already be in a usable state from power-on.
+	 * In webOS, the VFE footswitch (fs_vfe) is never explicitly toggled
+	 * (HP_DISABLE is defined), so the VFE stays in a "warm" state from
+	 * boot. In mainline, we enable VFE_GDSC via power-domains, giving
+	 * the VFE a fresh power cycle. This requires a warm-up period
+	 * before the reset command can be processed.
+	 *
+	 * Sequence:
+	 * 1. Read HW version (verify accessibility)
+	 * 2. Enable internal clock gates (CGC_OVERRIDE)
+	 * 3. Wait for VFE to stabilize after GDSC power-on
+	 * 4. Set up default register values (like webOS does post-reset)
+	 * 5. Skip actual reset command to avoid hang
+	 *
+	 * The actual VFE_GLOBAL_RESET_CMD write hangs, likely because the
+	 * VFE state machine expects certain AXI/bus configuration that
+	 * webOS sets up earlier in its initialization flow.
 	 */
 
 	/* Debug: Read HW version to verify VFE is accessible */
@@ -331,14 +341,41 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev, "VFE reset: HW version=0x%08x base=%pK\n",
 		 hw_version, vfe->base);
 
-	/* Enable all internal clock gates */
-	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
+	/* Step 1: Enable all internal clock gates (matches webOS) */
+	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
 	wmb();
 
-	/* Verify write completed */
-	hw_version = readl_relaxed(vfe->base + VFE_0_CGC_OVERRIDE);
-	dev_info(vfe->camss->dev, "VFE reset: CGC_OVERRIDE=0x%08x (minimal reset for VFE31)\n",
-		 hw_version);
+	/* Step 2: Wait for VFE to stabilize after GDSC power-on */
+	udelay(100);
+
+	/*
+	 * Step 3: Set default register values that webOS sets in
+	 * vfe31_set_default_reg_values() after reset IRQ.
+	 * This includes DEMUX gains and frame drop configuration.
+	 */
+
+	/* DEMUX gains - webOS default values */
+	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_0);
+	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_1);
+
+	/* Frame drop configuration - accept all frames */
+	writel_relaxed(0x1f, vfe->base + VFE31_FRAMEDROP_ENC_Y_CFG);
+	writel_relaxed(0x1f, vfe->base + VFE31_FRAMEDROP_ENC_CBCR_CFG);
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_FRAMEDROP_ENC_Y_PATTERN);
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_FRAMEDROP_ENC_CBCR_PATTERN);
+	writel_relaxed(0x1f, vfe->base + VFE31_FRAMEDROP_VIEW_Y_CFG);
+	writel_relaxed(0x1f, vfe->base + VFE31_FRAMEDROP_VIEW_CBCR_CFG);
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_FRAMEDROP_VIEW_Y_PATTERN);
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_FRAMEDROP_VIEW_CBCR_PATTERN);
+
+	/* Clamp configuration - 0x524=MAX, 0x528=MIN per webOS vfe31.h */
+	writel_relaxed(0xFFFFFF, vfe->base + VFE_0_CLAMP_ENC_MAX_CFG);
+	writel_relaxed(0, vfe->base + VFE_0_CLAMP_ENC_MIN_CFG);
+
+	wmb();
+
+	dev_info(vfe->camss->dev,
+		 "VFE reset: initialized default registers (skipping reset cmd)\n");
 
 	/* Set flag to indicate reset done - vfe_reset() will check this */
 	vfe->vfe31_reset_done = true;
