@@ -2328,109 +2328,99 @@
 		/*
 		 * TX Power Level Table for RF calibration (PSKEY 0x0031)
 		 *
-		 * This 60-word table configures RF power levels for different
-		 * Bluetooth channels and data rates. Without it, the radio
-		 * cannot transmit properly.
+		 * This 30-word table configures RF power levels for different
+		 * Bluetooth channels. Without it, the radio cannot transmit.
 		 *
-		 * Extracted from webOS libPmBtBsaif.so via Ghidra decompilation
-		 * from palmPlatformSpecificPskeys at address 0x000f4286.
-		 *
-		 * The hci_bcsp driver reads this property and sends it to the
-		 * chip via BCCMD during initialization.
+		 * Extracted from webOS PmBtStack palmPlatformSpecificPskeys.
+		 * Format: 6 entries x 5 words each.
 		 */
 		brcm,tx-power-table = /bits/ 16 <
-			0x2200 0x0050 0x2600 0x0050 0xf000 0x2800 0x0050 0x2d00
-			0x0050 0xf400 0x2500 0x0040 0x2a00 0x0040 0xf800 0x2200
-			0x0020 0x2700 0x0020 0xfc00 0x2600 0x0010 0x2c00 0x0010
-			0x0000 0x2c00 0x0000 0x3a00 0x0000 0x0400
-			0x2410 0x08a0 0x0016 0x0060 0x082e 0x01b3 0x0000 0x42c4
-			0x000f 0x0004 0x0000 0x01b6 0x0000 0x42c8 0x000f 0x0002
-			0x0000 0x01bf 0x0000 0x42ca 0x000f 0x0002 0x0000 0x01f7
-			0x0000 0xdc54 0x000f 0x0004 0x0000 0x01f8
+			0x2200 0x0050 0x2600 0x0050 0xf000  /* Entry 0 */
+			0x2800 0x0050 0x2d00 0x0050 0xf400  /* Entry 1 */
+			0x2500 0x0040 0x2a00 0x0040 0xf800  /* Entry 2 */
+			0x2200 0x0020 0x2700 0x0020 0xfc00  /* Entry 3 */
+			0x2600 0x0010 0x2c00 0x0010 0x0000  /* Entry 4 */
+			0x2c00 0x0000 0x3a00 0x0000 0x0400  /* Entry 5 */
 		>;
 
 		/*
 		 * CSR/BCM chip configuration PSKEYs (Persistent Store Keys)
 		 *
-		 * These values configure the Bluetooth chip's internal settings
-		 * and are sent via BCCMD (BlueCore Command) protocol during
-		 * initialization. Values extracted from webOS bcattach utility
-		 * and libPmBtBsaif.so via Ghidra decompilation.
+		 * Values extracted from webOS PmBtStack binary analysis.
+		 * All PSKEYs use stores=8 (PSRAM/volatile) per webOS.
 		 *
-		 * The hci_bcsp driver reads these properties and sends them
-		 * to the chip before enabling HCI communication.
+		 * See docs/webos-bluetooth-pskeys.md for full documentation.
 		 */
+
+		/*
+		 * brcm,ana-freq: Crystal frequency (PSKEY 0x0011)
+		 * 26000 = 26 MHz crystal - CRITICAL for RF operation
+		 */
+		brcm,ana-freq = /bits/ 16 <26000>;
+
+		/*
+		 * brcm,ana-ftrim: Crystal fine trim (PSKEY 0x0013)
+		 * 0x19 = Fine tune for 26 MHz crystal
+		 */
+		brcm,ana-ftrim = /bits/ 16 <0x0019>;
 
 		/*
 		 * brcm,host-interface: Host interface protocol (PSKEY 0x01fe)
-		 * 0x6590 = BCSP with SLIP framing, required for BCM4329
+		 * 0x0001 = BCSP mode
 		 */
-		brcm,host-interface = /bits/ 16 <0x6590>;
+		brcm,host-interface = /bits/ 16 <0x0001>;
 
 		/*
-		 * brcm,pcm-min-cpu-clock: Minimum CPU clock for PCM (PSKEY 0x01be)
-		 * Controls power management during audio operations
+		 * brcm,deep-sleep: Deep sleep config (PSKEY 0x01be)
+		 * 0x0000 = Disabled
 		 */
-		brcm,pcm-min-cpu-clock = /bits/ 16 <0x3afc>;
+		brcm,deep-sleep = /bits/ 16 <0x0000>;
 
 		/*
 		 * brcm,hci-max-acl: Max ACL packets in HCI buffer (PSKEY 0x01ab)
-		 * Flow control setting for ACL data packets
+		 * 0x03ec (1004) = Flow control for ACL data
 		 */
-		brcm,hci-max-acl = /bits/ 16 <0x0001>;
+		brcm,hci-max-acl = /bits/ 16 <0x03ec>;
 
 		/*
 		 * brcm,hci-max-sco: Max SCO packets in HCI buffer (PSKEY 0x01b0)
-		 * Flow control setting for SCO (voice) packets
+		 * 0x0000 = No SCO buffering
 		 */
-		brcm,hci-max-sco = /bits/ 16 <0x0001>;
+		brcm,hci-max-sco = /bits/ 16 <0x0000>;
 
 		/*
-		 * brcm,pcm-sample-size: PCM audio sample size (PSKEY 0x01b9)
-		 * 0x0008 = 8-bit samples for SCO audio
+		 * brcm,uart-baudrate: UART baudrate divisor (PSKEY 0x01b9)
+		 * 0x01d8 (472) = 115200 baud
 		 */
-		brcm,pcm-sample-size = /bits/ 16 <0x0008>;
+		brcm,uart-baudrate = /bits/ 16 <0x01d8>;
 
 		/*
-		 * brcm,ana-freq: External crystal frequency (PSKEY 0x01f6)
-		 * 0x0019 (25 decimal) = 26 MHz crystal - CRITICAL for RF
-		 * Incorrect value causes frequency drift and connection issues
+		 * brcm,enc-key-min: Min encryption key length (PSKEY 0x000e)
+		 * 0x0001 = Minimum key size
 		 */
-		brcm,ana-freq = /bits/ 16 <0x0019>;
+		brcm,enc-key-min = /bits/ 16 <0x0001>;
 
 		/*
-		 * brcm,max-tx-power: Maximum TX power level (PSKEY 0x0011)
-		 * Controls maximum Bluetooth transmission power
+		 * brcm,max-tx-power: Maximum TX power (PSKEY 0x0017)
+		 * 0x0004 = Power level
 		 */
-		brcm,max-tx-power = /bits/ 16 <0x0154>;
+		brcm,max-tx-power = /bits/ 16 <0x0004>;
 
 		/*
-		 * brcm,default-tx-power: Default TX power level (PSKEY 0x0013)
-		 * Initial transmission power before power control adjusts it
+		 * brcm,default-tx-power: Default TX power (PSKEY 0x0021)
+		 * 0x0004 = Power level
 		 */
-		brcm,default-tx-power = /bits/ 16 <0x000b>;
+		brcm,default-tx-power = /bits/ 16 <0x0004>;
 
 		/*
-		 * brcm,max-tx-power-no-rssi: Max TX power w/o RSSI (PSKEY 0x024d)
-		 * TX power limit when RSSI feedback is unavailable
+		 * brcm,max-tx-power-no-rssi: Max TX w/o RSSI (PSKEY 0x024d)
+		 * 0x0004 = Power level when RSSI unavailable
 		 */
-		brcm,max-tx-power-no-rssi = /bits/ 16 <0x0000>;
-
-		/*
-		 * brcm,enc-key-min-len: Min encryption key length (PSKEY 0x000e)
-		 * Minimum key size for encrypted connections (bytes)
-		 */
-		brcm,enc-key-min-len = /bits/ 16 <0x0001>;
-
-		/*
-		 * brcm,xtal-ftrim: Crystal frequency trim (PSKEY 0x01f9)
-		 * Fine-tunes the crystal oscillator frequency
-		 */
-		brcm,xtal-ftrim = /bits/ 16 <0x0001>;
+		brcm,max-tx-power-no-rssi = /bits/ 16 <0x0004>;
 
 		/*
 		 * brcm,default-tx-power-no-rssi: Default TX w/o RSSI (PSKEY 0x025d)
-		 * Default TX power when RSSI feedback is unavailable
+		 * 0x0001 = Default power when RSSI unavailable
 		 */
 		brcm,default-tx-power-no-rssi = /bits/ 16 <0x0001>;
 

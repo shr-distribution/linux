@@ -49,24 +49,76 @@ static bool skip_pskeys;  /* Skip PSKEY/WARM_RESET for debugging */
 #define BCCMD_VARID_PS		0x7003
 #define BCCMD_VARID_WARM_RESET	0x4002
 
-/* PSKEY definitions for CSR chip configuration */
-#define PSKEY_BDADDR			0x0001
+/*
+ * PSKEY definitions for CSR/BCM chip configuration
+ *
+ * Based on webOS libPmBtBsaif.so analysis:
+ * - All PSKEYs use stores=8 (PSRAM/volatile), not stores=4 (PSI/persistent)
+ * - PSKEYs are applied via BCCMD SETREQ (0x0002) with VARID_PS (0x7003)
+ * - WARM_RESET (0x4002) must be sent after PSKEYs to apply config
+ */
+
+/* Common PSKEYs (sent for all BlueCore devices) */
+#define PSKEY_BDADDR			0x0001	/* Bluetooth device address */
 #define PSKEY_ENC_KEY_LMIN		0x000E	/* Min encryption key length */
-#define PSKEY_LC_MAX_TX_POWER		0x0011	/* Maximum TX power level */
-#define PSKEY_LC_DEFAULT_TX_POWER	0x0013	/* Default TX power level */
-#define PSKEY_HOST_INTERFACE		0x01FE	/* Host interface config */
-#define PSKEY_PCM_MIN_CPU_CLOCK		0x01BE	/* PCM minimum CPU clock */
+#define PSKEY_ANA_FREQ			0x0011	/* Crystal frequency (26 MHz = 26000) */
+#define PSKEY_ANA_FTRIM			0x0013	/* Crystal fine trim (0x19) */
+#define PSKEY_LC_MAX_TX_POWER		0x0017	/* Maximum TX power level */
+#define PSKEY_LC_DEFAULT_TX_POWER	0x0021	/* Default TX power level */
+#define PSKEY_TX_POWER_LEVEL		0x0031	/* TX power level table */
 #define PSKEY_H_HC_FC_MAX_ACL		0x01AB	/* HCI FC max ACL packets */
 #define PSKEY_H_HC_FC_MAX_SCO		0x01B0	/* HCI FC max SCO packets */
-#define PSKEY_PCM_SAMPLE_SIZE		0x01B9	/* PCM sample size */
-#define PSKEY_ANA_FREQ			0x01F6	/* External crystal frequency */
-#define PSKEY_XTAL_FTRIM		0x01F9	/* Crystal fine trim */
+#define PSKEY_PCM_SAMPLE_SIZE		0x01B9	/* PCM sample size / UART config */
+#define PSKEY_PCM_MIN_CPU_CLOCK		0x01BE	/* Deep sleep config */
+#define PSKEY_BAUDRATE_CONFIG		0x01F6	/* UART baudrate */
+#define PSKEY_UNKNOWN_01F9		0x01F9	/* Unknown (0x0001) */
+#define PSKEY_HOST_INTERFACE		0x01FE	/* Host interface config */
 #define PSKEY_LC_MAX_TX_POWER_NO_RSSI	0x024D	/* Max TX power without RSSI */
 #define PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI 0x025D /* Default TX power without RSSI */
-#define PSKEY_TX_POWER_LEVEL		0x0031	/* TX power level table (RF calibration) */
+
+/* Palm Platform PSKEYs (12 entries from webOS) */
+#define PSKEY_PALM_01B3			0x01B3	/* Palm config (4 words) */
+#define PSKEY_PALM_01B6			0x01B6	/* Palm config (2 words) */
+#define PSKEY_PALM_01BF			0x01BF	/* Palm config (2 words) */
+#define PSKEY_PALM_01BA			0x01BA	/* Palm config (4 words) */
+#define PSKEY_PALM_01C7			0x01C7	/* Palm config (8 words) */
+#define PSKEY_PALM_01CA			0x01CA	/* Palm config (2 words) */
+#define PSKEY_PALM_001D			0x001D	/* Palm config (2 words) */
+
+/* PSKEY storage types */
+#define PSKEY_STORES_DEFAULT		0x00	/* Default store */
+#define PSKEY_STORES_PSI		0x04	/* Persistent Store Implementation */
+#define PSKEY_STORES_PSRAM		0x08	/* RAM (volatile) - webOS uses this */
 
 /* Maximum size of TX power table from device tree (in u16 words) */
 #define BCSP_TX_POWER_TABLE_MAX		128
+
+/*
+ * Palm Platform PSKEY Data (extracted from webOS PmBtStack)
+ * These are the exact values sent by webOS for BCM4329 on HP TouchPad.
+ */
+
+/* palmPlatformCommonPskeys */
+static const u16 palm_pskey_01b3[] = { 0x08a0, 0x0016, 0x0060, 0x082e };
+static const u16 palm_pskey_01b6[] = { 0x0060, 0x082e };
+static const u16 palm_pskey_01bf[] = { 0x082e, 0x0000 };
+
+/* palmPlatformSpecificPskeys */
+static const u16 palm_pskey_01ba[] = { 0x1002, 0x0177, 0x0001, 0x03e8 };
+static const u16 palm_pskey_01c7[] = { 0x0001, 0x03e8, 0x000a, 0x0064,
+				       0x0031, 0x0004, 0x0004, 0x2200 };
+static const u16 palm_pskey_01ca[] = { 0x0031, 0x0004 };
+static const u16 palm_pskey_001d[] = { 0x2410, 0x08a0 };
+
+/* TX Power Table (PSKEY 0x0031) - 30 entries for RF calibration */
+static const u16 palm_tx_power_table[] = {
+	0x2200, 0x0050, 0x2600, 0x0050, 0xf000,  /* Entry 0 */
+	0x2800, 0x0050, 0x2d00, 0x0050, 0xf400,  /* Entry 1 */
+	0x2500, 0x0040, 0x2a00, 0x0040, 0xf800,  /* Entry 2 */
+	0x2200, 0x0020, 0x2700, 0x0020, 0xfc00,  /* Entry 3 */
+	0x2600, 0x0010, 0x2c00, 0x0010, 0x0000,  /* Entry 4 */
+	0x2c00, 0x0000, 0x3a00, 0x0000, 0x0400   /* Entry 5 */
+};
 
 struct bcsp_struct {
 	struct sk_buff_head unack;	/* Unack'ed packets queue */
@@ -113,20 +165,42 @@ struct bcsp_struct {
 	u16	*tx_power_table;	/* Dynamically allocated from DT */
 	int	tx_power_table_len;	/* Length in u16 words, 0 if not available */
 
-	/* PSKEYs from device tree */
+	/*
+	 * PSKEYs from device tree (with Palm defaults as fallback)
+	 * All values match webOS PmBtStack for HP TouchPad BCM4329
+	 */
 	bool	pskeys_from_dt;		/* True if PSKEYs loaded from DT */
-	u16	pskey_host_interface;
-	u16	pskey_pcm_min_cpu_clock;
-	u16	pskey_hci_max_acl;
-	u16	pskey_hci_max_sco;
-	u16	pskey_pcm_sample_size;
-	u16	pskey_ana_freq;
-	u16	pskey_max_tx_power;
-	u16	pskey_default_tx_power;
-	u16	pskey_max_tx_power_no_rssi;
-	u16	pskey_enc_key_min_len;
-	u16	pskey_xtal_ftrim;
-	u16	pskey_default_tx_power_no_rssi;
+
+	/* Common PSKEYs */
+	u16	pskey_ana_freq;		/* 0x0011: Crystal frequency (default: 26000) */
+	u16	pskey_ana_ftrim;	/* 0x0013: Crystal fine trim (default: 0x19) */
+	u16	pskey_host_interface;	/* 0x01FE: Host interface (default: 0x0001) */
+	u16	pskey_deep_sleep;	/* 0x01BE: Deep sleep config (default: 0x0000) */
+	u16	pskey_hci_max_acl;	/* 0x01AB: HCI FC max ACL (default: 0x03ec) */
+	u16	pskey_hci_max_sco;	/* 0x01B0: HCI FC max SCO (default: 0x0000) */
+	u16	pskey_uart_baudrate;	/* 0x01B9: UART baudrate (default: 0x01d8) */
+	u16	pskey_enc_key_min;	/* 0x000E: Enc key min len (default: 0x0001) */
+	u16	pskey_unknown_01f9;	/* 0x01F9: Unknown (default: 0x0001) */
+	u16	pskey_max_tx_power_no_rssi;	/* 0x024D (default: 0x0004) */
+	u16	pskey_default_tx_power_no_rssi;	/* 0x025D (default: 0x0001) */
+	u16	pskey_max_tx_power;	/* 0x0017: Max TX power (default: 0x0004) */
+	u16	pskey_default_tx_power;	/* 0x0021: Default TX power (default: 0x0004) */
+
+	/* Palm Platform PSKEYs (multi-word, stored as pointers) */
+	const u16 *pskey_palm_01b3;	/* 4 words */
+	int	pskey_palm_01b3_len;
+	const u16 *pskey_palm_01b6;	/* 2 words */
+	int	pskey_palm_01b6_len;
+	const u16 *pskey_palm_01bf;	/* 2 words */
+	int	pskey_palm_01bf_len;
+	const u16 *pskey_palm_01ba;	/* 4 words */
+	int	pskey_palm_01ba_len;
+	const u16 *pskey_palm_01c7;	/* 8 words */
+	int	pskey_palm_01c7_len;
+	const u16 *pskey_palm_01ca;	/* 2 words */
+	int	pskey_palm_01ca_len;
+	const u16 *pskey_palm_001d;	/* 2 words */
+	int	pskey_palm_001d_len;
 };
 
 /* ---- BCSP CRC calculation ---- */
@@ -541,13 +615,17 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		BT_INFO("BCSP: conf_rsp received, link established (bdaddr_state=%d)",
 			bcsp->bdaddr_state);
 
-		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING &&
-		    bcsp->pskeys_from_dt) {
+		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
 			BT_INFO("BCSP: First link up, sending RF PSKEYs (no reset)");
 
-			/* Send critical RF configuration PSKEYs from DT */
+			/*
+			 * Send critical RF configuration PSKEYs from
+			 * DT or Palm defaults.
+			 */
 			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
 					     bcsp->pskey_ana_freq);
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
+					     bcsp->pskey_ana_ftrim);
 			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
 					     bcsp->pskey_max_tx_power);
 			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
@@ -555,14 +633,16 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 
 			/*
 			 * TX Power Level Table - CRITICAL FOR RF
-			 * Without this, the radio won't transmit properly.
+			 * Use DT-provided table or Palm default.
 			 */
 			if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
 				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
 						     bcsp->tx_power_table,
 						     bcsp->tx_power_table_len);
 			} else {
-				BT_WARN("BCSP: No TX power table - RF may not work");
+				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+						     palm_tx_power_table,
+						     ARRAY_SIZE(palm_tx_power_table));
 			}
 
 			/* Skip BD address and WARM_RESET - test if RF works without */
@@ -873,7 +953,7 @@ static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value)
 	bccmd[11] = (pskey >> 8) & 0xff;	/* PSKey (high) */
 	bccmd[12] = 0x01;		/* Length: 1 word (2 bytes) */
 	bccmd[13] = 0x00;
-	bccmd[14] = 0x04;		/* Stores: PSI (persistent) */
+	bccmd[14] = PSKEY_STORES_PSRAM;	/* Stores: PSRAM (volatile) - matches webOS */
 	bccmd[15] = 0x00;
 	bccmd[16] = value & 0xff;	/* Value (low) */
 	bccmd[17] = (value >> 8) & 0xff;	/* Value (high) */
@@ -942,7 +1022,7 @@ static int bcsp_send_pskey_data(struct hci_uart *hu, u16 pskey,
 	bccmd[11] = (pskey >> 8) & 0xff;
 	bccmd[12] = len_words & 0xff;
 	bccmd[13] = (len_words >> 8) & 0xff;
-	bccmd[14] = 0x04;		/* Stores: PSI (persistent) */
+	bccmd[14] = PSKEY_STORES_PSRAM;	/* Stores: PSRAM (volatile) - matches webOS */
 	bccmd[15] = 0x00;
 
 	/* Copy data (little-endian u16 values) */
@@ -1072,8 +1152,8 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 	bccmd[11] = 0x00;	/* PSKey: 0x0001 BDADDR (high byte) */
 	bccmd[12] = 0x04;	/* Length: 4 words = 8 bytes (low byte) */
 	bccmd[13] = 0x00;	/* Length: 4 words (high byte) */
-	bccmd[14] = 0x04;	/* Stores: 0x0004 PSI persistent (low byte) */
-	bccmd[15] = 0x00;	/* Stores: 0x0008 PSRAM (high byte) */
+	bccmd[14] = PSKEY_STORES_PSRAM;	/* Stores: PSRAM (volatile) - matches webOS */
+	bccmd[15] = 0x00;
 
 	/*
 	 * BD Address in CSR PSKEY format:
@@ -1135,93 +1215,138 @@ static int bcsp_setup(struct hci_uart *hu)
 			return 0;
 		}
 
-		BT_INFO("BCSP: Configuring chip with PSKEYs + WARM_RESET");
-
-		if (!bcsp->pskeys_from_dt) {
-			BT_ERR("BCSP: No PSKEYs in device tree, cannot configure");
-			return -ENOENT;
-		}
+		BT_INFO("BCSP: Configuring chip with webOS PSKEYs + WARM_RESET");
 
 		/*
-		 * Send all 12 PSKEYs from device tree, then BD address and
-		 * WARM_RESET. The chip will reset and come back with new
-		 * settings. PSKEY values from device tree brcm,* properties.
+		 * Send PSKEYs in webOS sequence (extracted from PmBtStack):
+		 * 1. Common PSKEYs (crystal freq, ftrim, etc.)
+		 * 2. Palm Platform Common PSKEYs (5 entries)
+		 * 3. Palm Platform Specific PSKEYs (7 entries incl power table)
+		 * 4. BD address
+		 * 5. WARM_RESET to apply all PSKEYs
+		 *
+		 * All PSKEYs use stores=8 (PSRAM/volatile).
 		 */
 
-		/* 1. Host interface - BCSP mode configuration */
+		/* === Common PSKEYs (from DT or Palm defaults) === */
+
+		/* Crystal frequency - CRITICAL for RF */
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, bcsp->pskey_ana_freq);
+		msleep(20);
+
+		/* Crystal fine trim */
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM, bcsp->pskey_ana_ftrim);
+		msleep(20);
+
+		/* Host interface - BCSP mode */
 		bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
 				     bcsp->pskey_host_interface);
-		msleep(50);
+		msleep(20);
 
-		/* 2. PCM minimum CPU clock */
+		/* Deep sleep config */
 		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
-				     bcsp->pskey_pcm_min_cpu_clock);
-		msleep(50);
+				     bcsp->pskey_deep_sleep);
+		msleep(20);
 
-		/* 3. HCI flow control - max ACL packets */
+		/* HCI FC max ACL packets */
 		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
 				     bcsp->pskey_hci_max_acl);
-		msleep(50);
+		msleep(20);
 
-		/* 4. HCI flow control - max SCO packets */
+		/* HCI FC max SCO packets */
 		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
 				     bcsp->pskey_hci_max_sco);
-		msleep(50);
+		msleep(20);
 
-		/* 5. PCM sample size */
+		/* UART baudrate divisor */
 		bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
-				     bcsp->pskey_pcm_sample_size);
-		msleep(50);
+				     bcsp->pskey_uart_baudrate);
+		msleep(20);
 
-		/* 6. Crystal frequency - CRITICAL for RF */
-		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
-				     bcsp->pskey_ana_freq);
-		msleep(50);
+		/* Encryption key min length */
+		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
+				     bcsp->pskey_enc_key_min);
+		msleep(20);
 
-		/* 7. Max TX power level */
-		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
-				     bcsp->pskey_max_tx_power);
-		msleep(50);
+		/* Unknown 0x01F9 */
+		bcsp_send_pskey_word(hu, PSKEY_UNKNOWN_01F9,
+				     bcsp->pskey_unknown_01f9);
+		msleep(20);
 
-		/* 8. Default TX power level */
-		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
-				     bcsp->pskey_default_tx_power);
-		msleep(50);
-
-		/* 9. Max TX power without RSSI */
+		/* Max TX power without RSSI */
 		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
 				     bcsp->pskey_max_tx_power_no_rssi);
-		msleep(50);
+		msleep(20);
 
-		/* 10. Minimum encryption key length */
-		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
-				     bcsp->pskey_enc_key_min_len);
-		msleep(50);
-
-		/* 11. Crystal fine trim - important for frequency accuracy */
-		bcsp_send_pskey_word(hu, PSKEY_XTAL_FTRIM,
-				     bcsp->pskey_xtal_ftrim);
-		msleep(50);
-
-		/* 12. Default TX power without RSSI */
+		/* Default TX power without RSSI */
 		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
 				     bcsp->pskey_default_tx_power_no_rssi);
-		msleep(50);
+		msleep(20);
+
+		/* === Palm Platform Common PSKEYs === */
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01B3,
+				     bcsp->pskey_palm_01b3,
+				     bcsp->pskey_palm_01b3_len);
+		msleep(20);
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01B6,
+				     bcsp->pskey_palm_01b6,
+				     bcsp->pskey_palm_01b6_len);
+		msleep(20);
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01BF,
+				     bcsp->pskey_palm_01bf,
+				     bcsp->pskey_palm_01bf_len);
+		msleep(20);
+
+		/* === Palm Platform Specific PSKEYs === */
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01BA,
+				     bcsp->pskey_palm_01ba,
+				     bcsp->pskey_palm_01ba_len);
+		msleep(20);
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01C7,
+				     bcsp->pskey_palm_01c7,
+				     bcsp->pskey_palm_01c7_len);
+		msleep(20);
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01CA,
+				     bcsp->pskey_palm_01ca,
+				     bcsp->pskey_palm_01ca_len);
+		msleep(20);
+
+		/* Default TX Power (PSKEY 0x0021) */
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+				     bcsp->pskey_default_tx_power);
+		msleep(20);
+
+		/* Max TX Power (PSKEY 0x0017) */
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+				     bcsp->pskey_max_tx_power);
+		msleep(20);
+
+		/* Palm config 0x001D */
+		bcsp_send_pskey_data(hu, PSKEY_PALM_001D,
+				     bcsp->pskey_palm_001d,
+				     bcsp->pskey_palm_001d_len);
+		msleep(20);
 
 		/*
-		 * 13. TX Power Level Table - CRITICAL FOR RF OPERATION
-		 * This table configures RF power levels for different
-		 * channels/rates. Without it, the radio will not transmit.
-		 * Read from device tree brcm,tx-power-table property.
+		 * TX Power Level Table (PSKEY 0x0031) - CRITICAL FOR RF
+		 * Use DT-provided table if available, otherwise use Palm defaults.
 		 */
 		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
 			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
 					     bcsp->tx_power_table,
 					     bcsp->tx_power_table_len);
-			msleep(100);
 		} else {
-			BT_WARN("BCSP: No TX power table available - RF may not work");
+			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+					     palm_tx_power_table,
+					     ARRAY_SIZE(palm_tx_power_table));
 		}
+		msleep(50);
 
 		/* BD address */
 		BT_INFO("BCSP: Setting BD address %pMR", &bcsp->bdaddr);
@@ -1264,86 +1389,96 @@ static int bcsp_setup(struct hci_uart *hu)
 			return 0;
 		}
 
-		if (!bcsp->pskeys_from_dt) {
-			BT_WARN("BCSP: No PSKEYs in device tree, RF may not work");
-			return 0;
-		}
+		BT_INFO("BCSP: Sending PSKEYs + WARM_RESET (no BD addr)");
 
-		BT_INFO("BCSP: Sending all PSKEYs + WARM_RESET");
+		/*
+		 * Send PSKEYs in webOS sequence - same as BCSP_BDADDR_PENDING
+		 * but without BD address configuration.
+		 * Uses values from DT or Palm defaults.
+		 */
 
-		/* Send all 12 PSKEYs - same as full init mode */
-
-		/* 1. Host interface */
+		/* === Common PSKEYs === */
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, bcsp->pskey_ana_freq);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM, bcsp->pskey_ana_ftrim);
+		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
 				     bcsp->pskey_host_interface);
-		msleep(50);
-
-		/* 2. PCM minimum CPU clock */
+		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
-				     bcsp->pskey_pcm_min_cpu_clock);
-		msleep(50);
-
-		/* 3. HCI max ACL */
+				     bcsp->pskey_deep_sleep);
+		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
 				     bcsp->pskey_hci_max_acl);
-		msleep(50);
-
-		/* 4. HCI max SCO */
+		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
 				     bcsp->pskey_hci_max_sco);
-		msleep(50);
-
-		/* 5. PCM sample size */
+		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
-				     bcsp->pskey_pcm_sample_size);
-		msleep(50);
-
-		/* 6. Crystal frequency - CRITICAL for RF */
-		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
-				     bcsp->pskey_ana_freq);
-		msleep(50);
-
-		/* 7. Max TX power */
-		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
-				     bcsp->pskey_max_tx_power);
-		msleep(50);
-
-		/* 8. Default TX power */
-		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
-				     bcsp->pskey_default_tx_power);
-		msleep(50);
-
-		/* 9. Max TX power without RSSI */
+				     bcsp->pskey_uart_baudrate);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
+				     bcsp->pskey_enc_key_min);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_UNKNOWN_01F9,
+				     bcsp->pskey_unknown_01f9);
+		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
 				     bcsp->pskey_max_tx_power_no_rssi);
-		msleep(50);
-
-		/* 10. Min encryption key length */
-		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
-				     bcsp->pskey_enc_key_min_len);
-		msleep(50);
-
-		/* 11. Crystal fine trim */
-		bcsp_send_pskey_word(hu, PSKEY_XTAL_FTRIM,
-				     bcsp->pskey_xtal_ftrim);
-		msleep(50);
-
-		/* 12. Default TX power without RSSI */
+		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
 				     bcsp->pskey_default_tx_power_no_rssi);
-		msleep(50);
+		msleep(20);
 
-		/* 13. TX Power Level Table - CRITICAL FOR RF */
+		/* === Palm Platform Common PSKEYs === */
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01B3,
+				     bcsp->pskey_palm_01b3,
+				     bcsp->pskey_palm_01b3_len);
+		msleep(20);
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01B6,
+				     bcsp->pskey_palm_01b6,
+				     bcsp->pskey_palm_01b6_len);
+		msleep(20);
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01BF,
+				     bcsp->pskey_palm_01bf,
+				     bcsp->pskey_palm_01bf_len);
+		msleep(20);
+
+		/* === Palm Platform Specific PSKEYs === */
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01BA,
+				     bcsp->pskey_palm_01ba,
+				     bcsp->pskey_palm_01ba_len);
+		msleep(20);
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01C7,
+				     bcsp->pskey_palm_01c7,
+				     bcsp->pskey_palm_01c7_len);
+		msleep(20);
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01CA,
+				     bcsp->pskey_palm_01ca,
+				     bcsp->pskey_palm_01ca_len);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+				     bcsp->pskey_default_tx_power);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+				     bcsp->pskey_max_tx_power);
+		msleep(20);
+		bcsp_send_pskey_data(hu, PSKEY_PALM_001D,
+				     bcsp->pskey_palm_001d,
+				     bcsp->pskey_palm_001d_len);
+		msleep(20);
+
+		/* TX Power Table - use DT if available, else Palm defaults */
 		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
 			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
 					     bcsp->tx_power_table,
 					     bcsp->tx_power_table_len);
-			BT_INFO("BCSP: TX power table (%d words) sent",
-				bcsp->tx_power_table_len);
-			msleep(100);
 		} else {
-			BT_WARN("BCSP: No TX power table - RF may not work");
+			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+					     palm_tx_power_table,
+					     ARRAY_SIZE(palm_tx_power_table));
 		}
+		msleep(50);
 
 		/* WARM_RESET to apply PSKEYs */
 		bcsp_send_warm_reset(hu);
@@ -1404,8 +1539,51 @@ static void bcsp_timed_event(struct timer_list *t)
 }
 
 /*
+ * Initialize PSKEY values with Palm/webOS defaults for HP TouchPad BCM4329.
+ * These can be overridden by device tree properties.
+ */
+static void bcsp_init_pskey_defaults(struct bcsp_struct *bcsp)
+{
+	/* Common PSKEYs - webOS defaults */
+	bcsp->pskey_ana_freq = 26000;		/* 26 MHz crystal */
+	bcsp->pskey_ana_ftrim = 0x19;		/* Crystal fine trim */
+	bcsp->pskey_host_interface = 0x0001;	/* BCSP mode */
+	bcsp->pskey_deep_sleep = 0x0000;	/* Deep sleep config */
+	bcsp->pskey_hci_max_acl = 0x03ec;	/* HCI FC max ACL */
+	bcsp->pskey_hci_max_sco = 0x0000;	/* HCI FC max SCO */
+	bcsp->pskey_uart_baudrate = 0x01d8;	/* 115200 baud */
+	bcsp->pskey_enc_key_min = 0x0001;	/* Encryption key min */
+	bcsp->pskey_unknown_01f9 = 0x0001;	/* Unknown */
+	bcsp->pskey_max_tx_power_no_rssi = 0x0004;
+	bcsp->pskey_default_tx_power_no_rssi = 0x0001;
+	bcsp->pskey_max_tx_power = 0x0004;	/* Max TX power */
+	bcsp->pskey_default_tx_power = 0x0004;	/* Default TX power */
+
+	/* Palm Platform PSKEYs - use static defaults */
+	bcsp->pskey_palm_01b3 = palm_pskey_01b3;
+	bcsp->pskey_palm_01b3_len = ARRAY_SIZE(palm_pskey_01b3);
+	bcsp->pskey_palm_01b6 = palm_pskey_01b6;
+	bcsp->pskey_palm_01b6_len = ARRAY_SIZE(palm_pskey_01b6);
+	bcsp->pskey_palm_01bf = palm_pskey_01bf;
+	bcsp->pskey_palm_01bf_len = ARRAY_SIZE(palm_pskey_01bf);
+	bcsp->pskey_palm_01ba = palm_pskey_01ba;
+	bcsp->pskey_palm_01ba_len = ARRAY_SIZE(palm_pskey_01ba);
+	bcsp->pskey_palm_01c7 = palm_pskey_01c7;
+	bcsp->pskey_palm_01c7_len = ARRAY_SIZE(palm_pskey_01c7);
+	bcsp->pskey_palm_01ca = palm_pskey_01ca;
+	bcsp->pskey_palm_01ca_len = ARRAY_SIZE(palm_pskey_01ca);
+	bcsp->pskey_palm_001d = palm_pskey_001d;
+	bcsp->pskey_palm_001d_len = ARRAY_SIZE(palm_pskey_001d);
+
+	/* TX power table - use Palm default */
+	bcsp->tx_power_table = NULL;  /* Will use palm_tx_power_table */
+	bcsp->tx_power_table_len = 0;
+}
+
+/*
  * Read PSKEY configuration from device tree.
  * PSKEYs are stored in properties of a compatible = "brcm,bcm4329-bt" node.
+ * Values from DT override the Palm defaults.
  */
 static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 {
@@ -1413,17 +1591,17 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 	int len, ret;
 	int pskeys_read = 0;
 
-	bcsp->tx_power_table = NULL;
-	bcsp->tx_power_table_len = 0;
+	/* Initialize with Palm/webOS defaults first */
+	bcsp_init_pskey_defaults(bcsp);
 	bcsp->pskeys_from_dt = false;
 
 	np = of_find_compatible_node(NULL, NULL, "brcm,bcm4329-bt");
 	if (!np) {
-		BT_DBG("BCSP: No brcm,bcm4329-bt node found in device tree");
+		BT_INFO("BCSP: No DT node found, using Palm defaults");
 		return;
 	}
 
-	/* Read TX power table */
+	/* Read TX power table from DT (overrides Palm default) */
 	if (of_find_property(np, "brcm,tx-power-table", &len)) {
 		len = len / sizeof(u16);
 		if (len > 0 && len <= BCSP_TX_POWER_TABLE_MAX) {
@@ -1438,19 +1616,24 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 					bcsp->tx_power_table = NULL;
 				} else {
 					bcsp->tx_power_table_len = len;
-					BT_INFO("BCSP: Loaded %d-word TX power table from DT",
-						len);
+					pskeys_read++;
 				}
 			}
 		}
 	}
 
-	/* Read individual PSKEYs - use of_property_read_u16 for single values */
+	/* Read individual PSKEYs from DT (override defaults) */
+	if (!of_property_read_u16(np, "brcm,ana-freq",
+				  &bcsp->pskey_ana_freq))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,ana-ftrim",
+				  &bcsp->pskey_ana_ftrim))
+		pskeys_read++;
 	if (!of_property_read_u16(np, "brcm,host-interface",
 				  &bcsp->pskey_host_interface))
 		pskeys_read++;
-	if (!of_property_read_u16(np, "brcm,pcm-min-cpu-clock",
-				  &bcsp->pskey_pcm_min_cpu_clock))
+	if (!of_property_read_u16(np, "brcm,deep-sleep",
+				  &bcsp->pskey_deep_sleep))
 		pskeys_read++;
 	if (!of_property_read_u16(np, "brcm,hci-max-acl",
 				  &bcsp->pskey_hci_max_acl))
@@ -1458,11 +1641,11 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 	if (!of_property_read_u16(np, "brcm,hci-max-sco",
 				  &bcsp->pskey_hci_max_sco))
 		pskeys_read++;
-	if (!of_property_read_u16(np, "brcm,pcm-sample-size",
-				  &bcsp->pskey_pcm_sample_size))
+	if (!of_property_read_u16(np, "brcm,uart-baudrate",
+				  &bcsp->pskey_uart_baudrate))
 		pskeys_read++;
-	if (!of_property_read_u16(np, "brcm,ana-freq",
-				  &bcsp->pskey_ana_freq))
+	if (!of_property_read_u16(np, "brcm,enc-key-min",
+				  &bcsp->pskey_enc_key_min))
 		pskeys_read++;
 	if (!of_property_read_u16(np, "brcm,max-tx-power",
 				  &bcsp->pskey_max_tx_power))
@@ -1473,19 +1656,15 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 	if (!of_property_read_u16(np, "brcm,max-tx-power-no-rssi",
 				  &bcsp->pskey_max_tx_power_no_rssi))
 		pskeys_read++;
-	if (!of_property_read_u16(np, "brcm,enc-key-min-len",
-				  &bcsp->pskey_enc_key_min_len))
-		pskeys_read++;
-	if (!of_property_read_u16(np, "brcm,xtal-ftrim",
-				  &bcsp->pskey_xtal_ftrim))
-		pskeys_read++;
 	if (!of_property_read_u16(np, "brcm,default-tx-power-no-rssi",
 				  &bcsp->pskey_default_tx_power_no_rssi))
 		pskeys_read++;
 
 	if (pskeys_read > 0) {
 		bcsp->pskeys_from_dt = true;
-		BT_INFO("BCSP: Loaded %d PSKEYs from device tree", pskeys_read);
+		BT_INFO("BCSP: %d PSKEYs overridden from DT", pskeys_read);
+	} else {
+		BT_INFO("BCSP: Using Palm defaults (no DT overrides)");
 	}
 
 	of_node_put(np);
