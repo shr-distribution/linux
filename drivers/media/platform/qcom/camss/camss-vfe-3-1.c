@@ -918,27 +918,19 @@ static void vfe31_bus_reload_wm(struct vfe_device *vfe, u8 wm)
 
 static void vfe31_wm_frame_based(struct vfe_device *vfe, u8 wm, u8 enable)
 {
-	u32 val;
-
-	dev_info(vfe->camss->dev, "VFE31: wm_frame_based wm=%d enable=%d\n", wm, enable);
-
 	/*
-	 * VFE31 WM_WR_CFG register configuration for frame-based mode:
-	 * Bit 0: enable - master enable
-	 * Bit 1: frame_based - 1 for frame-based, 0 for line-based
-	 * Other bits control burst length, etc.
+	 * VFE31: Skip WR_CFG write here - it causes hangs.
 	 *
-	 * For raw passthrough (RDI emulation), use frame-based mode.
+	 * The WR_CFG register at 0x04C controls both frame_based mode (bit 1)
+	 * and WM enable (bit 0). Writing to it before CAMIF is configured
+	 * causes system hangs.
+	 *
+	 * The wm_enable() function handles the actual WR_CFG configuration
+	 * and is called after CAMIF setup (via camif_pending flag).
 	 */
-	if (enable) {
-		/* Frame-based mode: bit 1 set, burst length default */
-		val = 0x2 | BIT(0);  /* frame_based | enable */
-	} else {
-		val = 0;
-	}
-
-	writel_relaxed(val, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
-	dev_info(vfe->camss->dev, "VFE31: wm_frame_based done WR_CFG=0x%x\n", val);
+	dev_info(vfe->camss->dev,
+		 "VFE31: wm_frame_based wm=%d enable=%d (deferred to wm_enable)\n",
+		 wm, enable);
 }
 
 /*
@@ -1098,30 +1090,32 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 
 static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
 {
-	/*
-	 * VFE31 WM enable - bit 0 of WR_CFG enables the write master.
-	 * Use read-modify-write to preserve other configuration bits.
-	 */
-	u32 val = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
-	u32 new_val;
-
-	if (enable)
-		new_val = val | BIT(0);
-	else
-		new_val = val & ~BIT(0);
-
-	dev_info(vfe->camss->dev, "VFE31: WM%d enable=%d reg=0x%03x val=0x%x->0x%x\n",
-		 wm, enable, VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm), val, new_val);
-
-	writel_relaxed(new_val, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+	u32 val;
 
 	/*
-	 * VFE31: If CAMIF configuration was deferred (RDI mode), now that
-	 * the WM is enabled and fully configured, start CAMIF.
+	 * VFE31: Configure CAMIF FIRST if pending, before touching WR_CFG.
+	 * Writing to WR_CFG before CAMIF is configured causes hangs.
 	 */
 	if (enable && vfe->camif_pending) {
 		vfe31_start_camif_for_rdi(vfe, wm);
 	}
+
+	/*
+	 * VFE31 WM enable - write complete WR_CFG value.
+	 * Bit 0: enable
+	 * Bit 1: frame_based mode (for RDI/raw)
+	 *
+	 * Don't use read-modify-write as reading WR_CFG may also hang.
+	 */
+	if (enable)
+		val = BIT(0) | BIT(1);  /* enable + frame_based */
+	else
+		val = 0;
+
+	dev_info(vfe->camss->dev, "VFE31: WM%d enable=%d reg=0x%03x val=0x%x\n",
+		 wm, enable, VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm), val);
+
+	writel_relaxed(val, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 }
 
 static void vfe31_wm_set_ub_cfg(struct vfe_device *vfe, u8 wm,
