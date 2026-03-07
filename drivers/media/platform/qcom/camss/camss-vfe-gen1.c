@@ -241,9 +241,13 @@ static int vfe_enable_output(struct vfe_line *line)
 
 	if (line->id != VFE_LINE_PIX) {
 		dev_info(vfe->camss->dev, "VFE enable_output: RDI path line_id=%d\n", line->id);
+		dev_info(vfe->camss->dev, "VFE enable_output: calling set_cgc_override\n");
 		vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[0], 1);
+		dev_info(vfe->camss->dev, "VFE enable_output: calling enable_irq_wm_line\n");
 		vfe->ops_gen1->enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 1);
+		dev_info(vfe->camss->dev, "VFE enable_output: calling bus_connect_wm_to_rdi\n");
 		vfe->ops_gen1->bus_connect_wm_to_rdi(vfe, output->wm_idx[0], line->id);
+		dev_info(vfe->camss->dev, "VFE enable_output: calling wm_set_subsample\n");
 		vfe->ops_gen1->wm_set_subsample(vfe, output->wm_idx[0]);
 		vfe->ops_gen1->set_rdi_cid(vfe, line->id, 0);
 		vfe->ops_gen1->wm_set_ub_cfg(vfe, output->wm_idx[0],

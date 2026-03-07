@@ -238,14 +238,14 @@ run_two_phase_init() {
     fi
 
     echo ""
-    info "=== Phase 2: Power cycle + fresh connection ==="
+    info "=== Phase 2: Reconnect (chip retains PSRAM config) ==="
 
-    unload_modules
-    power_on_bt
-    load_modules 1  # skip_pskeys=1
+    # Don't power cycle or unload modules - chip retains PSRAM config from Phase 1
+    # Just restart hciattach to establish fresh BCSP link
+    ssh_cmd "killall hciattach 2>/dev/null; sleep 2"
     run_hciattach
 
-    success "Phase 2 complete: Fresh connection established"
+    success "Phase 2 complete: Fresh connection established (chip configured)"
 }
 
 check_hci_device() {
