@@ -1030,9 +1030,15 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
 	wmb();
 
-	/* Step 4: Enable CAMIF to VFE data path */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG\n");
-	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS,
+	/*
+	 * Step 4: Enable CAMIF to BUS data path (raw passthrough)
+	 *
+	 * For raw mode, use CAMIF2BUS_EN (bit 10) to route data directly
+	 * to memory, bypassing VFE/ISP processing. CAMIF2VFE_EN (bit 8)
+	 * would route through the ISP which we don't want for raw capture.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (raw: CAMIF2BUS)\n");
+	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS,
 		       vfe->base + VFE_0_CAMIF_CFG);
 	wmb();
 
