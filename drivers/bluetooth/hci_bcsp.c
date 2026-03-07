@@ -668,6 +668,17 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		struct sk_buff *nskb = alloc_skb(4, GFP_ATOMIC);
 
 		BT_INFO("BCSP: sync received, responding with sync_rsp");
+
+		/*
+		 * Reset sequence numbers - the chip has reset (e.g., after
+		 * WARM_RESET) and is starting fresh. We must reset our
+		 * sequence state to match.
+		 */
+		bcsp->rxseq_txack = 0;
+		bcsp->msgq_txseq = 0;
+
+		/* Purge any unacknowledged packets - chip won't ack them */
+		skb_queue_purge(&bcsp->unack);
 		if (!nskb)
 			return;
 		skb_put_data(nskb, sync_rsp_pkt, 4);
