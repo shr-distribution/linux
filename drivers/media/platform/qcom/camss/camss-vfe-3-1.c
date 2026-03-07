@@ -286,9 +286,13 @@ static inline void vfe_reg_set(struct vfe_device *vfe, u32 reg, u32 set_bits)
 
 static u32 vfe31_hw_version(struct vfe_device *vfe)
 {
-	u32 hw_version = readl_relaxed(vfe->base + VFE_0_HW_VERSION);
+	u32 hw_version;
 
-	dev_dbg(vfe->camss->dev, "VFE HW Version = 0x%08x\n", hw_version);
+	dev_info(vfe->camss->dev, "VFE hw_version: ENTER base=%px\n", vfe->base);
+
+	hw_version = readl_relaxed(vfe->base + VFE_0_HW_VERSION);
+
+	dev_info(vfe->camss->dev, "VFE hw_version: read complete = 0x%08x\n", hw_version);
 
 	return hw_version;
 }
@@ -395,6 +399,12 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev, "VFE reset: writing CGC_OVERRIDE\n");
 	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
 	wmb();
+
+	/* Test read after CGC write to verify VFE is still accessible */
+	{
+		u32 test = readl_relaxed(vfe->base + VFE_0_HW_VERSION);
+		dev_info(vfe->camss->dev, "VFE reset: post-CGC HW_VERSION read = 0x%08x\n", test);
+	}
 
 	dev_info(vfe->camss->dev, "VFE reset: completed (no actual reset for VFE31)\n");
 
