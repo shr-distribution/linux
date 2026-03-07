@@ -170,19 +170,23 @@ static const struct mdp_kms_funcs kms_funcs = {
 	.set_irqmask         = mdp4_set_irqmask,
 };
 
+/*
+ * Static reference count for clock enable/disable. Persists across deferred
+ * probe retries since the mdp4_kms struct is reallocated on each retry
+ * (devm_kzalloc). Only actually toggle clocks on first enable (0->1) and
+ * last disable (1->0), preventing repeated clock toggles that cause
+ * "mdp_axi_clk status stuck" warnings.
+ */
+static int mdp4_enable_count;
+
 int mdp4_disable(struct mdp4_kms *mdp4_kms)
 {
 	DBG("");
 
-	/*
-	 * Reference counted clock disable. Only actually disable clocks when
-	 * the last user releases them. This prevents repeated clock toggle
-	 * cycles during init that cause "mdp_axi_clk status stuck" warnings.
-	 */
-	if (WARN_ON(mdp4_kms->enable_count <= 0))
+	if (WARN_ON(mdp4_enable_count <= 0))
 		return -EINVAL;
 
-	if (--mdp4_kms->enable_count > 0)
+	if (--mdp4_enable_count > 0)
 		return 0;
 
 	clk_disable_unprepare(mdp4_kms->clk);
@@ -198,12 +202,7 @@ int mdp4_enable(struct mdp4_kms *mdp4_kms)
 {
 	DBG("");
 
-	/*
-	 * Reference counted clock enable. Only actually enable clocks on
-	 * first user. This allows nested enable/disable calls during init
-	 * without repeatedly toggling clocks.
-	 */
-	if (mdp4_kms->enable_count++ > 0)
+	if (mdp4_enable_count++ > 0)
 		return 0;
 
 	clk_prepare_enable(mdp4_kms->clk);
