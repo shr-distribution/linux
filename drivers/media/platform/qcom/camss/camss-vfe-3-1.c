@@ -387,14 +387,13 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 */
 	dev_info(vfe->camss->dev, "VFE reset: SKIPPING reset cmd (causes hang on MSM8660)\n");
 
-	/* Set default register values like webOS does after reset */
+	/*
+	 * Only set CGC_OVERRIDE during reset - DEMUX registers must NOT be
+	 * written here as it causes a hang. DEMUX gains are configured later
+	 * in vfe_enable_pending_camif() during actual streaming.
+	 */
 	dev_info(vfe->camss->dev, "VFE reset: writing CGC_OVERRIDE\n");
 	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
-	dev_info(vfe->camss->dev, "VFE reset: writing DEMUX_GAIN_0 at 0x%03x\n", VFE_0_DEMUX_GAIN_0);
-	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_0);
-	dev_info(vfe->camss->dev, "VFE reset: writing DEMUX_GAIN_1 at 0x%03x\n", VFE_0_DEMUX_GAIN_1);
-	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_1);
-	dev_info(vfe->camss->dev, "VFE reset: wmb\n");
 	wmb();
 
 	dev_info(vfe->camss->dev, "VFE reset: completed (no actual reset for VFE31)\n");
