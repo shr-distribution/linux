@@ -102,11 +102,45 @@ These PSKEYs contain RF calibration data critical for radio operation:
 
 These 12 additional PSKEYs are returned by `CsrBtPalmGetBootstrapKey()`:
 
-The function returns PSKEYs from two arrays:
-- `palmPlatformCommonPskeys` (60 bytes, 5 entries × 12 bytes each)
-- `palmPlatformSpecificPskeys` (84 bytes, 7 entries × 12 bytes each)
+### palmPlatformCommonPskeys (5 entries)
 
-Each entry has: PSKEY ID (2 bytes), data pointer (4 bytes), data length (2 bytes), reserved (4 bytes)
+| PSKEY ID | Length (uint16) | Purpose |
+|----------|-----------------|---------|
+| 0x01B3   | 4               | Unknown config |
+| 0x01B6   | 2               | Unknown config |
+| 0x01BF   | 2               | Unknown config |
+| 0x01F7   | 4               | Unknown config |
+| 0x01F8   | 4               | Unknown config |
+
+### palmPlatformSpecificPskeys (7 entries)
+
+| PSKEY ID | Length (uint16) | Purpose |
+|----------|-----------------|---------|
+| 0x01BA   | 4               | Unknown config |
+| 0x01C7   | 8               | Unknown config |
+| 0x01CA   | 2               | Unknown config |
+| 0x0021   | 2               | Default TX Power |
+| 0x0017   | 2               | Max TX Power |
+| 0x0031   | 60 (0x3C)       | Power Table |
+| 0x001D   | 2               | Unknown config |
+
+### Extracted Data Values from PmBtStack Binary
+
+Data at 0x1f29ae-0x1f2a08 (hex dump):
+```
+0210 7701 0100 e803 0a00 6400 3100 0400
+0400 0022 5000 0026 5000 00f0 0028 5000
+002d 5000 00f4 0025 4000 002a 4000 00f8
+0022 2000 0027 2000 00fc 0026 1000 002c
+1000 0000 002c 0000 003a 0000 0004 1024
+a008 1600 6000 2e08 0000
+```
+
+Decoded values:
+- PSKEY 0x01BA data: `0210 7701 0100 e803` (4 uint16)
+- PSKEY 0x01C7 data: `0a00 6400 3100 0400 0400 0022 5000 0026` (8 uint16)
+- PSKEY 0x01CA data: `5000` (1 uint16)
+- Power table (0x0031): 60 uint16 values starting at offset 0x1f29c0
 
 ## BCCMD Commands
 
@@ -179,6 +213,28 @@ The calibration data is stored at a data offset referenced in `CsrTmBlueCoreGetB
 at `iVar12 = iVar8 + DAT_0007a148`. The exact values need to be extracted from the binary
 or captured during webOS Bluetooth initialization.
 
+### Extracting RF Calibration at Runtime
+
+To capture the actual PSKEY values sent by webOS:
+
+1. Boot into webOS on the TouchPad
+2. Before Bluetooth starts, enable UART logging:
+   ```
+   echo 7 > /sys/module/bluetooth/parameters/debug_level
+   ```
+3. Or intercept BCCMD packets on /dev/ttyMSM1 before they reach the chip
+4. Capture the full bootstrap sequence including all PSKEYs
+
+Alternatively, write a custom userspace tool to call `CsrTmBlueCoreGetBootstrap(0x12e9, &num_keys)`
+and dump all returned PSKEY commands.
+
+### webOS Export Feature
+
+WebOS has built-in bootstrap export functionality:
+- Check for `./csr.bt.bootstrap.export` file after BT initialization
+- Format: `# PSKEY ID`, `# PSKEY LEN`, `# PSKEY contents (variable length)`
+- File path is relative to current directory when PmBtStack runs
+
 ## Driver Implementation Notes
 
 To match webOS behavior, the Linux driver should:
@@ -215,9 +271,40 @@ To match webOS behavior, the Linux driver should:
 | 3686400  | 0x3AFC |
 | 3750000  | 0x3C00 |
 
+## Summary: What the Linux Driver Needs
+
+### Critical Changes
+
+1. **Use PSRAM storage (stores=8)** - WebOS uses volatile PSRAM, not persistent PSI
+2. **Include ALL common PSKEYs** - Not just BD_ADDR and a few settings
+3. **Send TouchPad-specific PSKEYs** - When LMP subversion is 0x12E9
+4. **Include RF calibration data** - PSKEYs 0x212c-0x222b (critical for RF operation)
+5. **Include Palm platform PSKEYs** - 12 additional keys from palm arrays
+6. **End with WARM_RESET** - Apply all PSRAM settings
+
+### Minimum Working Set (without RF calibration)
+
+For basic operation without scanning:
+```c
+// Common PSKEYs (stores=8)
+PSKEY 0x0011 = 26000 (0x6590)  // ANA_FREQ - 26MHz crystal
+PSKEY 0x0013 = 0x0019          // ANA_FTRIM
+PSKEY 0x01FE = (host interface)
+PSKEY 0x0001 = BD_ADDR         // 4 uint16 values
+// ... plus UART config keys
+BCCMD 0x4002                   // WARM_RESET
+```
+
+### Full Working Set (with RF)
+
+Requires extracting RF calibration data from webOS binary or runtime capture.
+Total: ~54 PSKEYs before WARM_RESET.
+
 ## References
 
 - webOS 3.0.5 rootfs: `/usr/lib/libPmBtBsaif.so`
+- webOS Bluetooth binary: `/usr/bin/PmBtStack` (2.9MB, contains Palm PSKEY tables)
 - webOS Bluetooth startup: `/usr/bin/PmBtStart`
 - Token database: partition 12, offset 0x50b0
 - BToADDR token: "00:1D:FE:85:64:A9" (Palm-assigned)
+- LMP Subversion for TouchPad: 0x12E9

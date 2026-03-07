@@ -622,20 +622,16 @@ static void vfe31_set_clamp_cfg(struct vfe_device *vfe)
 static void vfe31_set_cgc_override(struct vfe_device *vfe, u8 wm, u8 enable)
 {
 	/*
-	 * VFE31 doesn't have per-WM CGC override like VFE41.
-	 * Use 0xFFFFF (20 bits) as per webOS - do NOT set reserved bits 20-31
-	 * as this can cause hardware hangs.
+	 * VFE31 CGC_OVERRIDE is already configured during global_reset().
+	 * Writing to it again after other registers are configured causes hangs.
+	 *
+	 * Unlike VFE41 which has per-WM CGC control, VFE31 has a single global
+	 * CGC_OVERRIDE that enables all internal clocks. We set it to 0xFFFFF
+	 * during reset and leave it alone thereafter.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: set_cgc_override wm=%d enable=%d\n",
+	dev_info(vfe->camss->dev,
+		 "VFE31: set_cgc_override wm=%d enable=%d (NO-OP, already set in reset)\n",
 		 wm, enable);
-
-	if (enable)
-		writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
-	else
-		writel_relaxed(0x0, vfe->base + VFE_0_CGC_OVERRIDE);
-
-	wmb();
-	dev_info(vfe->camss->dev, "VFE31: set_cgc_override done\n");
 }
 
 static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
