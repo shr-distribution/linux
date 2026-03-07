@@ -1078,6 +1078,14 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 wm, bytesperline, height, reg);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 		wmb();
+
+		/* WR_UB_CFG register - deferred from wm_set_ub_cfg */
+		reg = (vfe->pending_ub_offset << 16) | vfe->pending_ub_depth;
+		dev_info(vfe->camss->dev,
+			 "VFE31: WM%d UB_CFG offset=%d depth=%d reg=0x%x\n",
+			 wm, vfe->pending_ub_offset, vfe->pending_ub_depth, reg);
+		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
+		wmb();
 	}
 
 	vfe->camif_pending = false;
@@ -1116,17 +1124,17 @@ static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
 static void vfe31_wm_set_ub_cfg(struct vfe_device *vfe, u8 wm,
 				u16 offset, u16 depth)
 {
-	u32 val;
-
-	dev_info(vfe->camss->dev, "VFE31: wm_set_ub_cfg wm=%d offset=%d depth=%d\n",
+	/*
+	 * VFE31: Defer UB_CFG write until after CAMIF is started.
+	 * Writing to WM registers before CAMIF is configured causes bus hangs.
+	 * Store the values and write them in vfe31_start_camif_for_rdi.
+	 */
+	dev_info(vfe->camss->dev,
+		 "VFE31: wm_set_ub_cfg wm=%d offset=%d depth=%d (deferred to CAMIF start)\n",
 		 wm, offset, depth);
 
-	val = (offset << 16) | depth;
-	writel_relaxed(val,
-		       vfe->base +
-		       VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
-
-	dev_info(vfe->camss->dev, "VFE31: wm_set_ub_cfg done UB_CFG=0x%x\n", val);
+	vfe->pending_ub_offset = offset;
+	vfe->pending_ub_depth = depth;
 }
 
 static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)

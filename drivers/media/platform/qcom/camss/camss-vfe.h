@@ -170,6 +170,9 @@ struct vfe_device {
 	bool camif_pending;
 	u8 camif_pending_wm;
 	enum vfe_line_id camif_pending_line_id;
+	/* VFE31: Deferred UB config (must be written after CAMIF start) */
+	u16 pending_ub_offset;
+	u16 pending_ub_depth;
 	/* VFE31: Reset done flag - IRQ doesn't work, use polling */
 	bool vfe31_reset_done;
 	/* VFE31: Shadow registers for write-only IRQ_MASK registers */

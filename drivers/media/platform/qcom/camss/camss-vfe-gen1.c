@@ -249,9 +249,12 @@ static int vfe_enable_output(struct vfe_line *line)
 		vfe->ops_gen1->bus_connect_wm_to_rdi(vfe, output->wm_idx[0], line->id);
 		dev_info(vfe->camss->dev, "VFE enable_output: calling wm_set_subsample\n");
 		vfe->ops_gen1->wm_set_subsample(vfe, output->wm_idx[0]);
+		dev_info(vfe->camss->dev, "VFE enable_output: calling set_rdi_cid\n");
 		vfe->ops_gen1->set_rdi_cid(vfe, line->id, 0);
+		dev_info(vfe->camss->dev, "VFE enable_output: calling wm_set_ub_cfg\n");
 		vfe->ops_gen1->wm_set_ub_cfg(vfe, output->wm_idx[0],
 					    (ub_size + 1) * output->wm_idx[0], ub_size);
+		dev_info(vfe->camss->dev, "VFE enable_output: calling wm_frame_based\n");
 		vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 1);
 		/*
 		 * Configure WM image size and stride for RDI path.
