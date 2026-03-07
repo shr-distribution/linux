@@ -457,6 +457,58 @@ quick_capture_test() {
     "
 }
 
+# Test RAW passthrough mode (CAMIF -> memory, no ISP)
+# Uses /dev/video0 (msm_vfe0_rdi0)
+test_raw_mode() {
+    log_step "Testing RAW passthrough mode..."
+    log_info "Path: Sensor -> CSIPHY -> CSID -> VFE RDI0 -> /dev/video0"
+    log_info "Data goes directly to memory, bypassing ISP"
+
+    run_on_device "
+        echo '=== RAW Mode Test (video0 via RDI0) ==='
+        echo ''
+        echo 'Testing capture with 1288x968 UYVY...'
+        timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=10 ! \\
+            'video/x-raw,format=UYVY,width=1288,height=968,framerate=30/1' ! \\
+            fakesink 2>&1
+
+        if [ \$? -eq 0 ]; then
+            echo ''
+            echo 'SUCCESS: RAW capture completed!'
+        else
+            echo ''
+            echo 'FAILED: RAW capture did not complete'
+            echo 'Check dmesg for errors'
+        fi
+    "
+}
+
+# Test PIX/CAMIF mode (through ISP processing)
+# Uses /dev/video3 (msm_vfe0_pix)
+test_pix_mode() {
+    log_step "Testing PIX/CAMIF mode (ISP processing)..."
+    log_info "Path: Sensor -> CSIPHY -> CSID -> VFE PIX -> /dev/video3"
+    log_info "Data goes through VFE ISP for processing"
+
+    run_on_device "
+        echo '=== PIX Mode Test (video3 via VFE PIX) ==='
+        echo ''
+        echo 'Testing capture with 1280x968 UYVY...'
+        timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
+            'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
+            fakesink 2>&1
+
+        if [ \$? -eq 0 ]; then
+            echo ''
+            echo 'SUCCESS: PIX capture completed!'
+        else
+            echo ''
+            echo 'FAILED: PIX capture did not complete'
+            echo 'Check dmesg for errors'
+        fi
+    "
+}
+
 # Main
 main() {
     echo "=============================================="
@@ -481,10 +533,18 @@ main() {
             --quick)
                 MODE="quick"
                 ;;
+            raw)
+                MODE="raw"
+                ;;
+            pix)
+                MODE="pix"
+                ;;
             --help|-h)
-                echo "Usage: $0 [--info] [--setup] [--capture] [--quick]"
+                echo "Usage: $0 [MODE]"
                 echo ""
-                echo "Options:"
+                echo "Modes:"
+                echo "  raw        Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
+                echo "  pix        Test PIX mode (through VFE ISP processing)"
                 echo "  --info     Show camera device information only"
                 echo "  --setup    Set up media pipeline only"
                 echo "  --capture  Test capture only (assumes pipeline is set up)"
@@ -515,6 +575,18 @@ main() {
             show_camera_info
             ensure_camera_ready
             quick_capture_test
+            check_dmesg
+            ;;
+        raw)
+            show_camera_info
+            ensure_camera_ready
+            test_raw_mode
+            check_dmesg
+            ;;
+        pix)
+            show_camera_info
+            ensure_camera_ready
+            test_pix_mode
             check_dmesg
             ;;
         full)
