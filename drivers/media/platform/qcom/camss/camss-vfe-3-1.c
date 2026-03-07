@@ -371,40 +371,14 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev, "VFE reset: IRQ_CMD done\n");
 
 	/*
-	 * Step 4: Enable RESET_ACK interrupt.
-	 * Note: VFE31 reset acknowledge is in IRQ_STATUS_1 bit 22,
-	 * not IRQ_STATUS_0 bit 31 like later VFE versions.
+	 * VFE31 on MSM8660: Skip the reset command and RESET_ACK interrupt setup.
+	 * The reset command (0x3ff) causes the system to hang. Enabling RESET_ACK
+	 * without issuing the reset also causes issues. Just skip the whole thing
+	 * and rely on CGC_OVERRIDE being already set from Step 0.
 	 */
-	dev_info(vfe->camss->dev, "VFE reset: enabling RESET_ACK in IRQ_MASK_1\n");
-	/* Use writel with barrier to ensure IRQ mask is set before reset */
-	writel(VFE_0_IRQ_MASK_1_RESET_ACK, vfe->base + VFE_0_IRQ_MASK_1);
-	dev_info(vfe->camss->dev, "VFE reset: RESET_ACK enabled\n");
+	dev_info(vfe->camss->dev, "VFE reset: SKIPPING reset cmd and RESET_ACK (causes hang on MSM8660)\n");
 
-	/*
-	 * VFE31 on MSM8660: Skip issuing the reset command entirely.
-	 * The reset command (0x3ff) causes the system to hang, possibly
-	 * because it affects system buses or clocks. Instead, just set
-	 * up the default register values and continue.
-	 *
-	 * TODO: Investigate if a partial reset (0x3ef like STOP_CMD) works,
-	 * or if we need to handle reset differently.
-	 */
-	dev_info(vfe->camss->dev, "VFE reset: SKIPPING reset cmd (causes hang on MSM8660)\n");
-
-	/*
-	 * Only set CGC_OVERRIDE during reset - DEMUX registers must NOT be
-	 * written here as it causes a hang. DEMUX gains are configured later
-	 * in vfe_enable_pending_camif() during actual streaming.
-	 */
-	dev_info(vfe->camss->dev, "VFE reset: writing CGC_OVERRIDE\n");
-	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
-	wmb();
-
-	/* Test read after CGC write to verify VFE is still accessible */
-	{
-		u32 test = readl_relaxed(vfe->base + VFE_0_HW_VERSION);
-		dev_info(vfe->camss->dev, "VFE reset: post-CGC HW_VERSION read = 0x%08x\n", test);
-	}
+	/* CGC_OVERRIDE was already set in Step 0 - no need to write again */
 
 	dev_info(vfe->camss->dev, "VFE reset: completed (no actual reset for VFE31)\n");
 
