@@ -64,14 +64,20 @@
 
 #define VFE_0_IRQ_MASK_1		0x020
 #define VFE_0_IRQ_MASK_1_CAMIF_ERROR			BIT(0)
-#define VFE_0_IRQ_MASK_1_VIOLATION			BIT(7)
+#define VFE_0_IRQ_MASK_1_VIOLATION			BIT(6)
 /*
  * VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31.
  * This differs from later VFE versions.
  */
 #define VFE_0_IRQ_MASK_1_RESET_ACK			BIT(22)
 #define VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK		BIT(23)
-#define VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(n)	BIT((n) + 9)
+/*
+ * VFE31 IRQ_MASK_1 bit layout per webOS vfe31.h:
+ * Bit 6: VIOLATION
+ * Bit 7-13: IMAGE_MASTER_0-6_BUS_OVERFLOW
+ * Our VIOLATION define is at BIT(7) which conflicts - needs review
+ */
+#define VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(n)	BIT((n) + 7)
 
 #define VFE_0_IRQ_CLEAR_0		0x024
 #define VFE_0_IRQ_CLEAR_1		0x028
@@ -87,7 +93,7 @@
 	((n) == VFE_LINE_PIX ? BIT(5) : 0)
 
 #define VFE_0_IRQ_STATUS_1		0x030
-#define VFE_0_IRQ_STATUS_1_VIOLATION			BIT(7)
+#define VFE_0_IRQ_STATUS_1_VIOLATION			BIT(6)
 /*
  * VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31.
  * This differs from later VFE versions.
@@ -1218,42 +1224,20 @@ static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 				     enum vfe_line_id line_id, u8 enable)
 {
 	/*
-	 * VFE31 RDI mode: Only enable PING_PONG interrupt for buffer
-	 * management. Skip CAMIF_SOF and REG_UPDATE since RDI bypasses
-	 * the CAMIF block entirely - enabling those causes hangs.
+	 * VFE31 RDI mode: Skip ALL IRQ mask writes here!
 	 *
-	 * IMPORTANT: VFE31 IRQ_MASK_0/1 registers are WRITE-ONLY!
-	 * Use shadow registers instead of read-modify-write.
+	 * Writing to IRQ_MASK_0 hangs because RDI bypasses CAMIF.
+	 * Writing to IRQ_MASK_1 to enable BUS_OVERFLOW also hangs,
+	 * likely because the WM isn't connected to RDI yet at this point
+	 * (bus_connect_wm_to_rdi is called AFTER this function).
+	 *
+	 * The common IRQs (RESET_ACK, VIOLATION, HALT_ACK) are already
+	 * enabled by enable_irq_common and should be sufficient for
+	 * basic RDI operation.
 	 */
-	u32 val0 = VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm);
-	u32 val1 = VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(wm);
-
 	dev_info(vfe->camss->dev,
-		 "VFE31 enable_irq_wm_line: ENTER wm=%d line=%d enable=%d val0=0x%x\n",
-		 wm, line_id, enable, val0);
-	wmb(); /* ensure log is flushed before potential hang */
-
-	if (enable) {
-		vfe->irq_mask0_shadow |= val0;
-		vfe->irq_mask1_shadow |= val1;
-	} else {
-		vfe->irq_mask0_shadow &= ~val0;
-		vfe->irq_mask1_shadow &= ~val1;
-	}
-
-	dev_info(vfe->camss->dev,
-		 "VFE31 enable_irq_wm_line: writing MASK0=0x%08x to 0x%03x\n",
-		 vfe->irq_mask0_shadow, VFE_0_IRQ_MASK_0);
-	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
-
-	dev_info(vfe->camss->dev,
-		 "VFE31 enable_irq_wm_line: writing MASK1=0x%08x to 0x%03x\n",
-		 vfe->irq_mask1_shadow, VFE_0_IRQ_MASK_1);
-	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
-	wmb();
-
-	dev_info(vfe->camss->dev,
-		 "VFE31 enable_irq_wm_line: DONE\n");
+		 "VFE31 enable_irq_wm_line: wm=%d line=%d enable=%d (NO-OP for RDI)\n",
+		 wm, line_id, enable);
 }
 
 static void vfe31_pm_domain_off(struct vfe_device *vfe)
