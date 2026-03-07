@@ -127,6 +127,16 @@
 #define VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT	10
 #define VFE_0_BUS_CFG_RAW_WR_PATH_DISABLED	0
 #define VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR	1
+
+/*
+ * VFE31 AXI output mode register at 0x40
+ * This configures which write masters are used and how data is routed.
+ * Values from legacy webOS driver:
+ *   0x60  = Raw snapshot with WM0 (CAMIF_TO_AXI_VIA_OUTPUT_2)
+ *   0x200 = Preview with WM0 & WM1 (OUTPUT_2 mode)
+ */
+#define VFE_0_BUS_AXI_OUT_MODE_CFG		0x040
+#define VFE_0_BUS_AXI_OUT_MODE_RAW_WM0		0x60
 #define VFE_0_BUS_CFG_RAW_WR_PATH_VIEW_CBCR	2
 
 /*
@@ -977,61 +987,23 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 line->fmt[MSM_VFE_PAD_SINK].code);
 
 	/*
-	 * VFE31 raw passthrough: CAMIF2BUS_EN in CAMIF_CFG handles routing.
+	 * VFE31 raw capture initialization - matching legacy webOS sequence:
+	 * 1. Configure AXI output mode (0x60 for raw WM0)
+	 * 2. Configure WM registers (ping/pong, image_size, etc.)
+	 * 3. Configure CAMIF frame dimensions
+	 * 4. Configure CAMIF_CFG (CAMIF2BUS_EN for raw)
+	 * 5. Start CAMIF
 	 *
-	 * Unlike later VFEs, VFE31 doesn't have a dedicated AXI output mode
-	 * register at 0x040. The output path is controlled by:
-	 * - CAMIF_CFG bit 10 (CAMIF2BUS_EN): Routes CAMIF data to memory
-	 * - BUS_CFG: Encoder/view write paths (not needed for raw)
-	 *
-	 * Skip both AXI_OUT_MODE and BUS_CFG writes for raw passthrough.
+	 * Critical: AXI mode and WM addresses must be set BEFORE CAMIF starts.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Raw mode - using CAMIF2BUS routing\n");
 
-	/* Step 3: Configure CAMIF frame dimensions */
-	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF frame dimensions\n");
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
-	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
-
-	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
-
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
+	/* Step 1: Configure AXI output mode for raw snapshot (WM0) */
+	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x60 (raw WM0)\n");
+	writel_relaxed(VFE_0_BUS_AXI_OUT_MODE_RAW_WM0,
+		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 	wmb();
 
-	/*
-	 * Step 4: Enable CAMIF to BUS data path (raw passthrough)
-	 *
-	 * For raw mode, use CAMIF2BUS_EN (bit 10) to route data directly
-	 * to memory, bypassing VFE/ISP processing. CAMIF2VFE_EN (bit 8)
-	 * would route through the ISP which we don't want for raw capture.
-	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (raw: CAMIF2BUS)\n");
-	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS,
-		       vfe->base + VFE_0_CAMIF_CFG);
-	wmb();
-
-	/* Step 5: Start CAMIF */
-	dev_info(vfe->camss->dev, "VFE31: Step 5 - Start CAMIF\n");
-	writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS, vfe->base + VFE_0_CAMIF_CMD);
-	wmb();
-	writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
-	wmb();
-
-	dev_info(vfe->camss->dev,
-		 "VFE31: CAMIF started - cfg=0x%08x frame=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
-
-	/*
-	 * Step 6: Configure WM IMAGE_SIZE and ADDR_CFG
-	 * These must be written AFTER CAMIF is started.
-	 */
+	/* Step 2: Configure WM registers (must be BEFORE CAMIF start) */
 	{
 		struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
 		u16 width = pix->width;
@@ -1040,7 +1012,19 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		u16 wpl;
 		u32 reg;
 
-		dev_info(vfe->camss->dev, "VFE31: Step 6 - WM IMAGE_SIZE and ADDR_CFG\n");
+		dev_info(vfe->camss->dev, "VFE31: Step 2 - WM registers\n");
+
+		/* WR_PING_ADDR */
+		dev_info(vfe->camss->dev,
+			 "VFE31: WM%d PING_ADDR=0x%08x\n", wm, vfe->pending_ping_addr);
+		writel_relaxed(vfe->pending_ping_addr,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+
+		/* WR_PONG_ADDR */
+		dev_info(vfe->camss->dev,
+			 "VFE31: WM%d PONG_ADDR=0x%08x\n", wm, vfe->pending_pong_addr);
+		writel_relaxed(vfe->pending_pong_addr,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 
 		/* WR_IMAGE_SIZE register */
 		wpl = vfe_word_per_line(pix->pixelformat, width);
@@ -1062,9 +1046,8 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 "VFE31: WM%d ADDR_CFG stride=%d rows=%d reg=0x%x\n",
 			 wm, bytesperline, height, reg);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
-		wmb();
 
-		/* WR_UB_CFG register - deferred from wm_set_ub_cfg */
+		/* WR_UB_CFG register */
 		reg = (vfe->pending_ub_offset << 16) | vfe->pending_ub_depth;
 		dev_info(vfe->camss->dev,
 			 "VFE31: WM%d UB_CFG offset=%d depth=%d reg=0x%x\n",
@@ -1072,6 +1055,40 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
 		wmb();
 	}
+
+	/* Step 3: Configure CAMIF frame dimensions */
+	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF frame dimensions\n");
+	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
+	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+
+	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+
+	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
+	wmb();
+
+	/* Step 4: Enable CAMIF to BUS data path (raw passthrough) */
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (CAMIF2BUS_EN)\n");
+	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS,
+		       vfe->base + VFE_0_CAMIF_CFG);
+	wmb();
+
+	/* Step 5: Start CAMIF */
+	dev_info(vfe->camss->dev, "VFE31: Step 5 - Start CAMIF\n");
+	writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS, vfe->base + VFE_0_CAMIF_CMD);
+	wmb();
+	writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+	wmb();
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: CAMIF started - cfg=0x%08x frame=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 
 	vfe->camif_pending = false;
 }
@@ -1124,20 +1141,24 @@ static void vfe31_wm_set_ub_cfg(struct vfe_device *vfe, u8 wm,
 
 static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 {
-	dev_info(vfe->camss->dev, "VFE31: WM%d ping_addr=0x%08x reg=0x%03x\n",
-		 wm, addr, VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
-	writel_relaxed(addr,
-		       vfe->base +
-		       VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+	/*
+	 * VFE31: Defer ping address write until CAMIF is started.
+	 * Writing to WM registers before CAMIF setup causes hangs.
+	 */
+	dev_info(vfe->camss->dev,
+		 "VFE31: WM%d ping_addr=0x%08x (deferred)\n", wm, addr);
+	vfe->pending_ping_addr = addr;
 }
 
 static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 {
-	dev_info(vfe->camss->dev, "VFE31: WM%d pong_addr=0x%08x reg=0x%03x\n",
-		 wm, addr, VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
-	writel_relaxed(addr,
-		       vfe->base +
-		       VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+	/*
+	 * VFE31: Defer pong address write until CAMIF is started.
+	 * Writing to WM registers before CAMIF setup causes hangs.
+	 */
+	dev_info(vfe->camss->dev,
+		 "VFE31: WM%d pong_addr=0x%08x (deferred)\n", wm, addr);
+	vfe->pending_pong_addr = addr;
 }
 
 static int vfe31_wm_get_ping_pong_status(struct vfe_device *vfe, u8 wm)
