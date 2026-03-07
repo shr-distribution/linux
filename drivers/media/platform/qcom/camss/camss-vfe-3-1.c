@@ -313,74 +313,32 @@ static inline void vfe31_reg_update_clear(struct vfe_device *vfe,
 
 static void vfe31_global_reset(struct vfe_device *vfe)
 {
-	/* webOS: bits 0-9 = 1 for full module reset (0x3FF) */
-	u32 reset_bits = VFE_0_GLOBAL_RESET_CMD_AXI |
-			 VFE_0_GLOBAL_RESET_CMD_TESTGEN |
-			 VFE_0_GLOBAL_RESET_CMD_BUS_MISR |
-			 VFE_0_GLOBAL_RESET_CMD_PM |
-			 VFE_0_GLOBAL_RESET_CMD_TIMER |
-			 VFE_0_GLOBAL_RESET_CMD_REGISTER |
-			 VFE_0_GLOBAL_RESET_CMD_BUS_BDG |
-			 VFE_0_GLOBAL_RESET_CMD_BUS |
-			 VFE_0_GLOBAL_RESET_CMD_CAMIF |
-			 VFE_0_GLOBAL_RESET_CMD_CORE;
 	u32 hw_version;
+
+	/*
+	 * VFE31 on MSM8660: We cannot issue the actual reset command as it
+	 * hangs the system. We also cannot do the full IRQ setup sequence
+	 * (disable IRQs, clear IRQs, IRQ_CMD) without the reset, as this
+	 * leaves the VFE in an inconsistent state where subsequent register
+	 * reads hang.
+	 *
+	 * Minimal approach: Just enable clock gates and return. The VFE
+	 * should already be in a usable state from power-on.
+	 */
 
 	/* Debug: Read HW version to verify VFE is accessible */
 	hw_version = readl_relaxed(vfe->base + VFE_0_HW_VERSION);
 	dev_info(vfe->camss->dev, "VFE reset: HW version=0x%08x base=%pK\n",
 		 hw_version, vfe->base);
 
-	/*
-	 * VFE31 reset sequence:
-	 * 0. Enable all internal clocks via CGC_OVERRIDE (required for register access)
-	 * 1. Disable all interrupts
-	 * 2. Clear all pending interrupts
-	 * 3. Trigger interrupt clear via IRQ_CMD
-	 * 4. Enable RESET_ACK interrupt
-	 * 5. Issue reset command
-	 */
-
-	/* Step 0: Enable all internal clock gates - required before accessing IRQ registers */
+	/* Enable all internal clock gates */
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
 	wmb();
-	/* Read back to verify and ensure write completes */
+
+	/* Verify write completed */
 	hw_version = readl_relaxed(vfe->base + VFE_0_CGC_OVERRIDE);
-	dev_info(vfe->camss->dev, "VFE reset: CGC_OVERRIDE set, readback=0x%08x\n", hw_version);
-
-	/* Small delay to let clock gates stabilize */
-	udelay(10);
-
-	/* Step 1: Disable all interrupts */
-	dev_info(vfe->camss->dev, "VFE reset: writing IRQ_MASK_0 at 0x%03x\n", VFE_0_IRQ_MASK_0);
-	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_0);
-	dev_info(vfe->camss->dev, "VFE reset: IRQ_MASK_0 done, writing IRQ_MASK_1\n");
-	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_1);
-	dev_info(vfe->camss->dev, "VFE reset: IRQ_MASK_1 done\n");
-
-	/* Step 2: Clear all pending interrupts */
-	dev_info(vfe->camss->dev, "VFE reset: clearing IRQ_CLEAR_0\n");
-	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_0);
-	dev_info(vfe->camss->dev, "VFE reset: clearing IRQ_CLEAR_1\n");
-	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_1);
-
-	/* Step 3: Trigger the clear */
-	dev_info(vfe->camss->dev, "VFE reset: writing IRQ_CMD\n");
-	writel_relaxed(VFE_0_IRQ_CMD_GLOBAL_CLEAR, vfe->base + VFE_0_IRQ_CMD);
-	wmb();
-	dev_info(vfe->camss->dev, "VFE reset: IRQ_CMD done\n");
-
-	/*
-	 * VFE31 on MSM8660: Skip the reset command and RESET_ACK interrupt setup.
-	 * The reset command (0x3ff) causes the system to hang. Enabling RESET_ACK
-	 * without issuing the reset also causes issues. Just skip the whole thing
-	 * and rely on CGC_OVERRIDE being already set from Step 0.
-	 */
-	dev_info(vfe->camss->dev, "VFE reset: SKIPPING reset cmd and RESET_ACK (causes hang on MSM8660)\n");
-
-	/* CGC_OVERRIDE was already set in Step 0 - no need to write again */
-
-	dev_info(vfe->camss->dev, "VFE reset: completed (no actual reset for VFE31)\n");
+	dev_info(vfe->camss->dev, "VFE reset: CGC_OVERRIDE=0x%08x (minimal reset for VFE31)\n",
+		 hw_version);
 
 	/* Set flag to indicate reset done - vfe_reset() will check this */
 	vfe->vfe31_reset_done = true;
