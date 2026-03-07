@@ -245,8 +245,9 @@ static int vfe_enable_output(struct vfe_line *line)
 		vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[0], 1);
 		dev_info(vfe->camss->dev, "VFE enable_output: calling enable_irq_wm_line\n");
 		vfe->ops_gen1->enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 1);
-		dev_info(vfe->camss->dev, "VFE enable_output: calling bus_connect_wm_to_rdi\n");
+		pr_emerg("VFE enable_output: ABOUT to call bus_connect_wm_to_rdi\n");
 		vfe->ops_gen1->bus_connect_wm_to_rdi(vfe, output->wm_idx[0], line->id);
+		pr_emerg("VFE enable_output: RETURNED from bus_connect_wm_to_rdi\n");
 		dev_info(vfe->camss->dev, "VFE enable_output: calling wm_set_subsample\n");
 		vfe->ops_gen1->wm_set_subsample(vfe, output->wm_idx[0]);
 		dev_info(vfe->camss->dev, "VFE enable_output: calling set_rdi_cid\n");

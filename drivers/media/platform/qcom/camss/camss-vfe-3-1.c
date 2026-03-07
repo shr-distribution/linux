@@ -825,11 +825,13 @@ static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 	 * Set camif_pending flag here. The actual CAMIF configuration and
 	 * start will happen in wm_enable() after all WM setup is complete.
 	 */
+	pr_emerg("VFE31: ENTERED bus_connect_wm_to_rdi wm=%d id=%d\n", wm, id);
 	dev_info(vfe->camss->dev,
 		 "VFE31: connect WM%d to RDI%d - deferring CAMIF config until WM ready\n",
 		 wm, id);
 
 	vfe->camif_pending = true;
+	pr_emerg("VFE31: LEAVING bus_connect_wm_to_rdi\n");
 }
 
 static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
