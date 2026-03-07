@@ -2326,6 +2326,13 @@
 		status = "disabled";  /* Use hciattach, not serdev */
 
 		/*
+		 * Bluetooth Device Address (BD_ADDR)
+		 * Read from webOS /dev/tokens/BToADDR: 00:1D:FE:85:64:A9
+		 * DT format is little-endian: [A9 64 85 FE 1D 00]
+		 */
+		local-bd-address = [A9 64 85 FE 1D 00];
+
+		/*
 		 * TX Power Level Table for RF calibration (PSKEY 0x0031)
 		 *
 		 * This 30-word table configures RF power levels for different

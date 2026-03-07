@@ -197,6 +197,7 @@ struct bcsp_struct {
 		BCSP_BDADDR_DONE	/* Configuration complete */
 	} bdaddr_state;
 	bdaddr_t bdaddr;		/* BD address to set */
+	bool	bdaddr_from_dt;		/* BD address was read from device tree */
 
 	/* TX power table from device tree (for RF calibration) */
 	u16	*tx_power_table;	/* Dynamically allocated from DT */
@@ -1904,6 +1905,29 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 	if (bcsp->touchpad_pskeys_present)
 		BT_INFO("BCSP: TouchPad RF calibration PSKEYs loaded from DT");
 
+	/*
+	 * Read local-bd-address from device tree.
+	 * Standard Bluetooth DT binding uses little-endian format:
+	 * For address 00:1D:FE:85:64:A9, the DT value is [A9 64 85 FE 1D 00]
+	 */
+	{
+		u8 bd_addr_le[6];
+
+		if (!of_property_read_u8_array(np, "local-bd-address",
+					       bd_addr_le, 6)) {
+			/* Convert from DT little-endian to bdaddr_t format */
+			bcsp->bdaddr.b[0] = bd_addr_le[0];
+			bcsp->bdaddr.b[1] = bd_addr_le[1];
+			bcsp->bdaddr.b[2] = bd_addr_le[2];
+			bcsp->bdaddr.b[3] = bd_addr_le[3];
+			bcsp->bdaddr.b[4] = bd_addr_le[4];
+			bcsp->bdaddr.b[5] = bd_addr_le[5];
+			bcsp->bdaddr_from_dt = true;
+			BT_INFO("BCSP: BD address from DT: %pMR", &bcsp->bdaddr);
+			pskeys_read++;
+		}
+	}
+
 	of_node_put(np);
 }
 
@@ -1933,9 +1957,16 @@ static int bcsp_open(struct hci_uart *hu)
 	/* Load TX power table from device tree */
 	bcsp_read_pskeys_from_dt(bcsp);
 
-	/* Initialize BD address configuration state */
+	/*
+	 * Initialize BD address configuration state.
+	 * Priority: 1) Device tree, 2) Module parameter
+	 */
 	bcsp->bdaddr_state = BCSP_BDADDR_NONE;
-	if (bdaddr && bdaddr[0]) {
+	if (bcsp->bdaddr_from_dt) {
+		/* BD address already loaded from device tree */
+		bcsp->bdaddr_state = BCSP_BDADDR_PENDING;
+		BT_INFO("BCSP: Will configure BD address from DT on link up");
+	} else if (bdaddr && bdaddr[0]) {
 		if (bcsp_parse_bdaddr(bdaddr, &bcsp->bdaddr) == 0) {
 			bcsp->bdaddr_state = BCSP_BDADDR_PENDING;
 			BT_INFO("BCSP: Will configure BD address %s on link up", bdaddr);
