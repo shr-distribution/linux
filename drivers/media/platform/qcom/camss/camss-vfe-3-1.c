@@ -349,6 +349,19 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	udelay(100);
 
 	/*
+	 * Step 2b: Clear all pending interrupts (critical!)
+	 * WebOS does this in vfe31_reset() before enabling any IRQ masks.
+	 * Without clearing, stale interrupts can cause hangs when we later
+	 * try to enable IRQ masks.
+	 */
+	dev_info(vfe->camss->dev, "VFE reset: clearing all pending IRQs\n");
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_0);
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_1);
+	writel_relaxed(VFE_0_IRQ_CMD_GLOBAL_CLEAR, vfe->base + VFE_0_IRQ_CMD);
+	wmb();
+	dev_info(vfe->camss->dev, "VFE reset: IRQs cleared\n");
+
+	/*
 	 * Step 3: Set default register values that webOS sets in
 	 * vfe31_set_default_reg_values() after reset IRQ.
 	 * This includes DEMUX gains and frame drop configuration.
@@ -1197,6 +1210,10 @@ static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 	u32 val1 = VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(wm) |
 		   VFE_0_IRQ_MASK_1_CAMIF_ERROR;
 
+	dev_info(vfe->camss->dev,
+		 "VFE31 enable_irq_wm_line: ENTER wm=%d line=%d enable=%d\n",
+		 wm, line_id, enable);
+
 	if (enable) {
 		vfe->irq_mask0_shadow |= val0;
 		vfe->irq_mask1_shadow |= val1;
@@ -1205,12 +1222,19 @@ static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 		vfe->irq_mask1_shadow &= ~val1;
 	}
 
+	dev_info(vfe->camss->dev,
+		 "VFE31 enable_irq_wm_line: writing MASK0=0x%08x to 0x%03x\n",
+		 vfe->irq_mask0_shadow, VFE_0_IRQ_MASK_0);
 	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
-	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 
 	dev_info(vfe->camss->dev,
-		 "VFE31 IRQ wm_line: wm=%d line=%d enable=%d mask0=0x%08x mask1=0x%08x\n",
-		 wm, line_id, enable, vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
+		 "VFE31 enable_irq_wm_line: writing MASK1=0x%08x to 0x%03x\n",
+		 vfe->irq_mask1_shadow, VFE_0_IRQ_MASK_1);
+	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+	wmb();
+
+	dev_info(vfe->camss->dev,
+		 "VFE31 enable_irq_wm_line: DONE\n");
 }
 
 static void vfe31_pm_domain_off(struct vfe_device *vfe)
