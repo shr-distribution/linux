@@ -619,17 +619,6 @@ static int vfe31_enable(struct vfe_line *line)
 		 wm, width, height, bytesperline, ping_addr, pong_addr);
 
 	/*
-	 * Step 0: Configure RDI interface for MIPI CSI input
-	 * RDI_CFG_x enables MIPI data routing from CSID to VFE RDI path.
-	 * Without this, CSI data doesn't reach VFE at all.
-	 * MIPI_EN_BITS (0x3) enables both data lanes for RDI.
-	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 0 - Enable RDI%d MIPI interface\n", line->id);
-	writel_relaxed(VFE_0_RDI_CFG_x_MIPI_EN_BITS,
-		       vfe->base + VFE_0_RDI_CFG_x(line->id));
-	wmb();
-
-	/*
 	 * Step 1: Configure AXI output mode for raw snapshot (WM0)
 	 * Value 0x60 from legacy webOS driver for CAMIF_TO_AXI_VIA_OUTPUT_2
 	 */
