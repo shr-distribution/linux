@@ -135,10 +135,13 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 		.regulators = {},
 		/*
 		 * VFE needs both CSI-VFE bridge clocks since VFE is shared.
+		 * Also needs csi_rdi clock for CSI->VFE raw data routing.
 		 * This matches the legacy webOS kernel sequence.
 		 */
-		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1" },
+		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
+			   "csi_rdi" },
 		.clock_rate = { { 122880000, 228570000, 266670000 },
+				{ 0 },
 				{ 0 },
 				{ 0 },
 				{ 0 },
