@@ -684,22 +684,23 @@ static int vfe31_enable(struct vfe_line *line)
 	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
 
 	/*
-	 * Step 4: Configure VFE for CSI raw passthrough
+	 * Step 4: Configure CAMIF_CFG for raw capture
 	 *
-	 * NOTE: CAMIF_CFG at 0x1E4 is for PARALLEL camera interface, not CSI!
-	 * For CSI/MIPI input:
-	 * - Data path: CSIPHY -> CSI controller -> VFE (internal CSI interface)
-	 * - Routing is controlled by AXI output mode at 0x40 (set to 0x60 above)
-	 * - CAMIF_CFG is NOT used and writes to it don't take effect
+	 * For raw capture (CAMIF_TO_AXI_VIA_OUTPUT_2), we need:
+	 * - camif2busEnable (bit 10) = 1: Enable CAMIF->AXI direct path
+	 * - camif2vfeEnable (bit 8) = 0: Don't need VFE processing for raw
+	 * - syncMode = 0 (APS mode) for CSI input
 	 *
-	 * The legacy webOS code only configures CAMIF_CFG for parallel sensors
-	 * (when sinfo->csi_if is false). For CSI sensors, CAMIF_CFG is not touched.
-	 *
-	 * We configure CORE_CFG (0x14) for pixel pattern which IS needed for CSI.
+	 * webOS VFE8x sets camif2BusEnable=TRUE for raw snapshot modes.
+	 * VFE31 should behave similarly even for CSI input.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CORE_CFG for CSI (skip CAMIF_CFG)\n");
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2bus=1)\n");
+	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
+	wmb();
 
-	/* Configure pixel pattern in CORE_CFG based on input format */
+	/* Step 4b: Configure pixel pattern in CORE_CFG based on input format */
+	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -1308,13 +1309,23 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	wmb();
 
 	/*
-	 * Step 4: Configure CORE_CFG for CSI input
+	 * Step 4: Configure CAMIF_CFG for raw capture
 	 *
-	 * NOTE: For CSI/MIPI input, CAMIF_CFG at 0x1E4 is NOT used.
-	 * The AXI output mode at 0x40 (set to 0x60 for raw) controls routing.
-	 * Configure pixel pattern in CORE_CFG for proper data handling.
+	 * For raw capture (CAMIF_TO_AXI_VIA_OUTPUT_2), we need:
+	 * - camif2busEnable (bit 10) = 1: Enable CAMIF->AXI direct path
+	 * - camif2vfeEnable (bit 8) = 0: Don't need VFE processing for raw
+	 * - syncMode = 0 (APS mode) for CSI input
+	 *
+	 * webOS VFE8x sets camif2BusEnable=TRUE for raw snapshot modes.
+	 * VFE31 should behave similarly even for CSI input.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CORE_CFG for CSI\n");
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2bus=1)\n");
+	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
+	wmb();
+
+	/* Configure pixel pattern in CORE_CFG */
+	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -1385,8 +1396,11 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG));
 	dev_info(vfe->camss->dev,
-		 "  CAMIF_FRAME(0x1E8)=0x%08x  CAMIF_STATUS(0x204)=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG),
+		 "  CAMIF_CFG(0x1E4)=0x%08x  CAMIF_FRAME(0x1E8)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
+	dev_info(vfe->camss->dev,
+		 "  CAMIF_STATUS(0x204)=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
 	dev_info(vfe->camss->dev,
 		 "  IRQ_MASK_0(0x01C)=0x%08x  IRQ_MASK_1(0x020)=0x%08x\n",
