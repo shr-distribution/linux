@@ -2314,7 +2314,12 @@ static void bcsp_serdev_remove(struct serdev_device *serdev)
 
 #ifdef CONFIG_OF
 static const struct of_device_id bcsp_bluetooth_of_match[] = {
-	{ .compatible = "brcm,bcm4329-bt" },
+	/*
+	 * Use palm-specific compatible to avoid conflict with hci_bcm
+	 * which also matches "brcm,bcm4329-bt" but uses H4 protocol.
+	 * The BCM4329 on HP TouchPad requires BCSP protocol.
+	 */
+	{ .compatible = "palm,bcm4329-bcsp" },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, bcsp_bluetooth_of_match);

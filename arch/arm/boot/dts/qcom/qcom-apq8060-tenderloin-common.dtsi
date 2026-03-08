@@ -2318,7 +2318,12 @@
 	 * See reports/bcm4329-bluetooth-analysis.md
 	 */
 	bluetooth {
-		compatible = "brcm,bcm4329-bt";
+		/*
+		 * Use palm-specific compatible to select BCSP driver.
+		 * The generic "brcm,bcm4329-bt" would match hci_bcm which
+		 * uses H4 protocol, but this chip requires BCSP.
+		 */
+		compatible = "palm,bcm4329-bcsp";
 		status = "okay";
 
 		/*
