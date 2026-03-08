@@ -685,11 +685,23 @@ static int vfe31_enable(struct vfe_line *line)
 
 	/*
 	 * Step 4: Configure CAMIF_CFG - enable CAMIF to BUS path
+	 * Use writel() with barrier and verify the write took effect.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (CAMIF2BUS_EN)\n");
-	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS,
-		       vfe->base + VFE_0_CAMIF_CFG);
-	wmb();
+	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS;
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG writing 0x%08x to 0x%03x\n",
+		 val, VFE_0_CAMIF_CFG);
+	writel(val, vfe->base + VFE_0_CAMIF_CFG);
+
+	/* Verify the write */
+	reg = readl(vfe->base + VFE_0_CAMIF_CFG);
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG readback = 0x%08x\n", reg);
+	if (reg != val)
+		dev_warn(vfe->camss->dev, "VFE31: CAMIF_CFG write FAILED! Expected 0x%x got 0x%x\n",
+			 val, reg);
+
+	/* Issue REG_UPDATE to latch the CAMIF config before continuing */
+	writel(VFE_0_REG_UPDATE_CMD_UPDATE, vfe->base + VFE_0_REG_UPDATE_CMD);
+	udelay(10);
 
 	/*
 	 * Step 5: Enable IRQs
@@ -711,13 +723,10 @@ static int vfe31_enable(struct vfe_line *line)
 
 	/*
 	 * Step 6: Start CAMIF (matching webOS vfe31_start_common sequence)
-	 * webOS writes: REG_UPDATE_CMD=1, then CAMIF_COMMAND=1
+	 * REG_UPDATE was already issued in Step 4. Now just start CAMIF.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 6 - Start CAMIF\n");
-	writel_relaxed(VFE_0_REG_UPDATE_CMD_UPDATE, vfe->base + VFE_0_REG_UPDATE_CMD);
-	wmb();
-	writel_relaxed(1, vfe->base + VFE_0_CAMIF_CMD);  /* Just enable bit, like webOS */
-	wmb();
+	dev_info(vfe->camss->dev, "VFE31: Step 6 - Start CAMIF (CAMIF_CMD=1)\n");
+	writel(1, vfe->base + VFE_0_CAMIF_CMD);
 
 	/* Set output state */
 	output->state = VFE_OUTPUT_ON;
