@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
- *  Bluetooth HCI UART driver
+ *  Bluetooth HCI UART driver for BCSP protocol
  *
  *  Copyright (C) 2002-2003  Fabrizio Gennari <fabrizio.gennari@philips.com>
  *  Copyright (C) 2004-2005  Marcel Holtmann <marcel@holtmann.org>
+ *  Copyright (C) 2024       HP TouchPad serdev support
+ *
+ *  This driver supports both line discipline and serdev modes:
+ *  - Line discipline: Used with hciattach for legacy compatibility
+ *  - Serdev: Direct device tree integration with GPIO power control
+ *
+ *  For HP TouchPad (BCM4329), serdev mode enables proper two-phase
+ *  initialization: PSKEYs + WARM_RESET, then reconnect with configured chip.
  */
 
 #include <linux/module.h>
@@ -27,6 +35,9 @@
 #include <linux/bitrev.h>
 #include <linux/unaligned.h>
 #include <linux/of.h>
+#include <linux/serdev.h>
+#include <linux/gpio/consumer.h>
+#include <linux/delay.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -155,6 +166,41 @@ static const u16 palm_tx_power_table[] = {
 	0x2200, 0x0020, 0x2700, 0x0020, 0xfc00,  /* Entry 3 */
 	0x2600, 0x0010, 0x2c00, 0x0010, 0x0000,  /* Entry 4 */
 	0x2c00, 0x0000, 0x3a00, 0x0000, 0x0400   /* Entry 5 */
+};
+
+/*
+ * Serdev device structure for BCM4329 with BCSP protocol
+ *
+ * This structure is used when the driver is instantiated via device tree
+ * (serdev path) rather than via hciattach (line discipline path).
+ *
+ * Serdev mode provides:
+ * - Direct GPIO control for power management
+ * - Proper two-phase initialization (PSKEYs + WARM_RESET + reconnect)
+ * - No dependency on hciattach
+ */
+struct bcsp_serdev {
+	/* Must be first member - hci_serdev.c expects this */
+	struct hci_uart		serdev_hu;
+
+	struct device		*dev;
+
+	/* GPIO descriptors for power control */
+	struct gpio_desc	*shutdown_gpio;	/* BT_REG_ON / BT_POWER */
+	struct gpio_desc	*device_wakeup;	/* BT_WAKE */
+	struct gpio_desc	*reset_gpio;	/* BT_RST_N (active low) */
+
+	/* Initialization state */
+	enum {
+		BCSP_SERDEV_INIT_POWER_OFF,	/* Chip powered off */
+		BCSP_SERDEV_INIT_PHASE1,	/* Sending PSKEYs + WARM_RESET */
+		BCSP_SERDEV_INIT_RECONNECTING,	/* Reconnecting after reset */
+		BCSP_SERDEV_INIT_DONE		/* Initialization complete */
+	} init_state;
+
+	/* UART settings */
+	u32			init_speed;
+	u32			oper_speed;
 };
 
 struct bcsp_struct {
@@ -304,7 +350,23 @@ struct bcsp_struct {
 	int	touchpad_pskey_222a_len;
 	u16	*touchpad_pskey_222b;
 	int	touchpad_pskey_222b_len;
+
+	/*
+	 * Serdev mode state tracking
+	 * When operating in serdev mode (device tree instantiated), we have
+	 * access to GPIO power control and can properly handle WARM_RESET
+	 * by power cycling the chip for a clean restart.
+	 */
+	bool	is_serdev;		/* True if operating in serdev mode */
+	bool	warm_reset_sent;	/* WARM_RESET sent, expecting chip restart */
+	void	*serdev_bdev;		/* Pointer to bcsp_serdev for GPIO access */
 };
+
+/* Forward declaration for serdev power cycle */
+#ifdef CONFIG_SERIAL_DEV_BUS
+struct bcsp_serdev;
+static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev);
+#endif
 
 /* ---- BCSP CRC calculation ---- */
 
@@ -665,9 +727,44 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 
 	/* Handle sync packet - device is starting link establishment */
 	if (!memcmp(&bcsp->rx_skb->data[4], sync_pkt, 4)) {
-		struct sk_buff *nskb = alloc_skb(4, GFP_ATOMIC);
+		struct sk_buff *nskb;
 
-		BT_INFO("BCSP: sync received, responding with sync_rsp");
+		BT_INFO("BCSP: sync received%s",
+			bcsp->warm_reset_sent ? " (after WARM_RESET)" : "");
+
+		/*
+		 * In serdev mode after WARM_RESET: The chip has restarted
+		 * and is sending sync to re-establish the link. We can power
+		 * cycle for a completely clean state, since we have GPIO control.
+		 */
+#ifdef CONFIG_SERIAL_DEV_BUS
+		if (bcsp->is_serdev && bcsp->warm_reset_sent && bcsp->serdev_bdev) {
+			struct bcsp_serdev *bdev = bcsp->serdev_bdev;
+
+			BT_INFO("BCSP: Serdev mode - power cycling for clean restart");
+
+			/*
+			 * Power cycle the chip. This gives us a completely
+			 * fresh start with the newly configured PSKEYs.
+			 */
+			bcsp_serdev_power_cycle(bdev);
+
+			/* Clear the warm reset flag */
+			bcsp->warm_reset_sent = false;
+
+			/*
+			 * Purge ALL queues - we're starting fresh.
+			 * The HCI layer will retry any lost commands.
+			 */
+			skb_queue_purge(&bcsp->unack);
+			skb_queue_purge(&bcsp->rel);
+			skb_queue_purge(&bcsp->unrel);
+
+			/* The chip will send a new sync after power cycle */
+			BT_INFO("BCSP: Waiting for chip to send sync after power cycle...");
+			return;
+		}
+#endif
 
 		/*
 		 * Reset sequence numbers - the chip has reset (e.g., after
@@ -677,8 +774,15 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		bcsp->rxseq_txack = 0;
 		bcsp->msgq_txseq = 0;
 
-		/* Purge any unacknowledged packets - chip won't ack them */
+		/* Purge all queues for clean state */
 		skb_queue_purge(&bcsp->unack);
+		skb_queue_purge(&bcsp->rel);
+		skb_queue_purge(&bcsp->unrel);
+
+		/* Clear warm reset flag */
+		bcsp->warm_reset_sent = false;
+
+		nskb = alloc_skb(4, GFP_ATOMIC);
 		if (!nskb)
 			return;
 		skb_put_data(nskb, sync_rsp_pkt, 4);
@@ -1534,6 +1638,7 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/* WARM_RESET to apply all PSKEYs */
 		bcsp_send_warm_reset(hu);
+		bcsp->warm_reset_sent = true;
 		msleep(50);
 
 		/* Give TX time to send the packets */
@@ -1548,14 +1653,24 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/*
 		 * After WARM_RESET, the chip resets and the BCSP link breaks.
-		 * Following the bcattach approach: we don't try to re-establish
-		 * the link. Instead, we let hciattach restart with a fresh
+		 *
+		 * In serdev mode: We have GPIO control and can power cycle the chip.
+		 * The sync packet handler will detect the chip restart and trigger
+		 * a power cycle for clean re-initialization.
+		 *
+		 * In line discipline mode: Let hciattach restart with a fresh
 		 * connection to the now-configured chip.
 		 */
-		msleep(500);
+		if (bcsp->is_serdev) {
+			BT_INFO("BCSP: Serdev mode - waiting for chip restart...");
+			/* Wait longer in serdev mode to allow sync detection */
+			msleep(1000);
+		} else {
+			msleep(500);
+			BT_INFO("BCSP: PSKEYs + BDADDR applied. Restart hciattach for fresh connection.");
+		}
 
 		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
-		BT_INFO("BCSP: PSKEYs + BDADDR applied. Restart hciattach for fresh connection.");
 	} else if (bcsp->bdaddr_state == BCSP_BDADDR_NONE) {
 		/*
 		 * Fast init mode - no BD address to configure, but we still
@@ -1664,6 +1779,7 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/* WARM_RESET to apply PSKEYs */
 		bcsp_send_warm_reset(hu);
+		bcsp->warm_reset_sent = true;
 		msleep(50);
 
 		/* Wait for packets to be sent */
@@ -1678,21 +1794,23 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/*
 		 * After WARM_RESET, the chip resets and the BCSP link breaks.
-		 * Following the bcattach approach: we don't try to re-establish
-		 * the link. Instead, we drain buffers and let hciattach restart
-		 * with a fresh connection to the now-configured chip.
 		 *
-		 * Brief delay to let the WARM_RESET command complete transmission.
+		 * In serdev mode: We have GPIO control and can power cycle the chip.
+		 * The sync packet handler will detect the chip restart and trigger
+		 * a power cycle for clean re-initialization.
+		 *
+		 * In line discipline mode: Let hciattach restart with a fresh
+		 * connection to the now-configured chip.
 		 */
-		msleep(500);
+		if (bcsp->is_serdev) {
+			BT_INFO("BCSP: Serdev mode - waiting for chip restart...");
+			msleep(1000);
+		} else {
+			msleep(500);
+			BT_INFO("BCSP: PSKEYs applied. Restart hciattach for fresh connection.");
+		}
 
-		/*
-		 * Mark configuration as done. The current hciattach session
-		 * will likely timeout/fail, but on restart the chip will be
-		 * properly configured and BCSP link will establish normally.
-		 */
 		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
-		BT_INFO("BCSP: PSKEYs applied. Restart hciattach for fresh connection.");
 	}
 
 	return 0;
@@ -2057,13 +2175,183 @@ static const struct hci_uart_proto bcsp = {
 	.flush		= bcsp_flush
 };
 
+/* ---- Serdev support for BCM4329 with BCSP protocol ---- */
+
+#ifdef CONFIG_SERIAL_DEV_BUS
+
+/*
+ * Power control for BCM4329 Bluetooth chip
+ *
+ * GPIO signals (active high unless noted):
+ * - shutdown_gpio: BT_REG_ON / BT_POWER - main power enable
+ * - device_wakeup: BT_WAKE - wake signal to chip
+ * - reset_gpio: BT_RST_N - active low reset
+ */
+static int bcsp_serdev_set_power(struct bcsp_serdev *bdev, bool powered)
+{
+	if (powered) {
+		/* Power on sequence */
+		if (bdev->shutdown_gpio)
+			gpiod_set_value_cansleep(bdev->shutdown_gpio, 1);
+
+		if (bdev->reset_gpio)
+			gpiod_set_value_cansleep(bdev->reset_gpio, 0); /* Deassert reset */
+
+		if (bdev->device_wakeup)
+			gpiod_set_value_cansleep(bdev->device_wakeup, 1);
+
+		/* Wait for chip to stabilize */
+		msleep(100);
+	} else {
+		/* Power off sequence */
+		if (bdev->device_wakeup)
+			gpiod_set_value_cansleep(bdev->device_wakeup, 0);
+
+		if (bdev->reset_gpio)
+			gpiod_set_value_cansleep(bdev->reset_gpio, 1); /* Assert reset */
+
+		if (bdev->shutdown_gpio)
+			gpiod_set_value_cansleep(bdev->shutdown_gpio, 0);
+
+		msleep(10);
+	}
+
+	return 0;
+}
+
+/*
+ * Power cycle the chip - used after WARM_RESET to cleanly restart
+ */
+static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
+{
+	dev_info(bdev->dev, "Power cycling Bluetooth chip...\n");
+
+	bcsp_serdev_set_power(bdev, false);
+	msleep(100);
+	bcsp_serdev_set_power(bdev, true);
+	msleep(200);
+
+	return 0;
+}
+
+static int bcsp_serdev_probe(struct serdev_device *serdev)
+{
+	struct bcsp_serdev *bdev;
+	struct device *dev = &serdev->dev;
+	int err;
+
+	bdev = devm_kzalloc(dev, sizeof(*bdev), GFP_KERNEL);
+	if (!bdev)
+		return -ENOMEM;
+
+	bdev->dev = dev;
+	bdev->serdev_hu.serdev = serdev;
+	bdev->init_state = BCSP_SERDEV_INIT_POWER_OFF;
+	serdev_device_set_drvdata(serdev, bdev);
+
+	/* Get GPIO descriptors */
+	bdev->shutdown_gpio = devm_gpiod_get_optional(dev, "shutdown",
+						       GPIOD_OUT_LOW);
+	if (IS_ERR(bdev->shutdown_gpio))
+		return PTR_ERR(bdev->shutdown_gpio);
+
+	bdev->device_wakeup = devm_gpiod_get_optional(dev, "device-wakeup",
+						       GPIOD_OUT_LOW);
+	if (IS_ERR(bdev->device_wakeup))
+		return PTR_ERR(bdev->device_wakeup);
+
+	bdev->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(bdev->reset_gpio))
+		return PTR_ERR(bdev->reset_gpio);
+
+	/* Get UART speeds from DT */
+	device_property_read_u32(dev, "init-speed", &bdev->init_speed);
+	device_property_read_u32(dev, "max-speed", &bdev->oper_speed);
+
+	if (!bdev->init_speed)
+		bdev->init_speed = 115200;
+
+	dev_info(dev, "BCM4329 BCSP Bluetooth, init-speed=%u\n", bdev->init_speed);
+
+	/* Power on the chip */
+	err = bcsp_serdev_set_power(bdev, true);
+	if (err) {
+		dev_err(dev, "Failed to power on\n");
+		return err;
+	}
+
+	/* Register with HCI UART core */
+	err = hci_uart_register_device(&bdev->serdev_hu, &bcsp);
+	if (err) {
+		dev_err(dev, "Failed to register HCI UART device\n");
+		bcsp_serdev_set_power(bdev, false);
+		return err;
+	}
+
+	/*
+	 * Set up serdev tracking in bcsp_struct.
+	 * This enables WARM_RESET handling with GPIO power cycling.
+	 */
+	if (bdev->serdev_hu.priv) {
+		struct bcsp_struct *bcsp_priv = bdev->serdev_hu.priv;
+		bcsp_priv->is_serdev = true;
+		bcsp_priv->serdev_bdev = bdev;
+		dev_info(dev, "BCSP serdev tracking initialized\n");
+	}
+
+	bdev->init_state = BCSP_SERDEV_INIT_PHASE1;
+
+	return 0;
+}
+
+static void bcsp_serdev_remove(struct serdev_device *serdev)
+{
+	struct bcsp_serdev *bdev = serdev_device_get_drvdata(serdev);
+
+	hci_uart_unregister_device(&bdev->serdev_hu);
+	bcsp_serdev_set_power(bdev, false);
+}
+
+#ifdef CONFIG_OF
+static const struct of_device_id bcsp_bluetooth_of_match[] = {
+	{ .compatible = "brcm,bcm4329-bt" },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, bcsp_bluetooth_of_match);
+#endif
+
+static struct serdev_device_driver bcsp_serdev_driver = {
+	.probe = bcsp_serdev_probe,
+	.remove = bcsp_serdev_remove,
+	.driver = {
+		.name = "hci_uart_bcsp",
+		.of_match_table = of_match_ptr(bcsp_bluetooth_of_match),
+	},
+};
+
+#endif /* CONFIG_SERIAL_DEV_BUS */
+
 int __init bcsp_init(void)
 {
-	return hci_uart_register_proto(&bcsp);
+	int err;
+
+	err = hci_uart_register_proto(&bcsp);
+	if (err)
+		return err;
+
+#ifdef CONFIG_SERIAL_DEV_BUS
+	serdev_device_driver_register(&bcsp_serdev_driver);
+#endif
+
+	return 0;
 }
 
 int __exit bcsp_deinit(void)
 {
+#ifdef CONFIG_SERIAL_DEV_BUS
+	serdev_device_driver_unregister(&bcsp_serdev_driver);
+#endif
+
 	return hci_uart_unregister_proto(&bcsp);
 }
 

@@ -2299,31 +2299,27 @@
 	 */
 
 	/*
-	 * BCM4329 Bluetooth - REQUIRES BCSP PROTOCOL
+	 * BCM4329 Bluetooth - BCSP Protocol via Serdev
 	 *
 	 * The BCM4329 on HP TouchPad uses BCSP (BlueCore Serial Protocol)
 	 * with SLIP framing, as confirmed by webOS library analysis
 	 * (uartConfigBcsp in libPmBtBsaif.so) and runtime testing.
 	 *
-	 * The mainline hci_bcm driver uses H4 protocol, which causes
-	 * "Frame reassembly failed (-84)" errors with this chip.
+	 * This node is probed by the hci_bcsp serdev driver which:
+	 * - Controls power via GPIOs (BT_POWER, BT_WAKE, BT_RST_N)
+	 * - Sends PSKEYs for RF calibration
+	 * - Handles WARM_RESET and reconnection
 	 *
-	 * Since there is no serdev driver for BCSP in Linux, Bluetooth
-	 * must be initialized manually using hciattach:
-	 *
-	 *   hciattach /dev/ttyMSM1 bcsp 115200
-	 *   rfkill unblock bluetooth
-	 *   hciconfig hci0 up
-	 *
-	 * This node is set to status="disabled" so the hci_bcm serdev driver
-	 * doesn't try to probe it. The hci_bcsp line discipline driver reads
-	 * the brcm,tx-power-table property from here for RF calibration.
+	 * GPIO signals (active high unless noted):
+	 * - shutdown-gpios: BT_POWER (GPIO 130) - main power enable
+	 * - device-wakeup-gpios: BT_WAKE (GPIO 131) - wake signal
+	 * - reset-gpios: BT_RST_N (GPIO 138) - active low reset
 	 *
 	 * See reports/bcm4329-bluetooth-analysis.md
 	 */
 	bluetooth {
 		compatible = "brcm,bcm4329-bt";
-		status = "disabled";  /* Use hciattach, not serdev */
+		status = "okay";
 
 		/*
 		 * Bluetooth Device Address (BD_ADDR)
@@ -2667,6 +2663,7 @@
 		clocks = <&sleep_clk>;
 		clock-names = "lpo";
 
+		init-speed = <115200>;
 		max-speed = <3686400>;
 
 		brcm,bt-pcm-int-params = [00 02 00 01 01];
