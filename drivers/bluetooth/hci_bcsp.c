@@ -532,7 +532,14 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 		bcsp->msgq_txseq = (bcsp->msgq_txseq + 1) & 0x07;
 	}
 
-	if (bcsp->use_crc)
+	/*
+	 * CRC is NOT used on channel 1 (Link Establishment) packets.
+	 * CRC usage is negotiated during conf/conf_rsp exchange, so
+	 * sync/sync_rsp/conf/conf_rsp must be sent without CRC.
+	 */
+	bool pkt_crc = bcsp->use_crc && chan != 1;
+
+	if (pkt_crc)
 		hdr[0] |= 0x40;
 
 	hdr[1] = ((len << 4) & 0xff) | chan;
@@ -543,7 +550,7 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	for (i = 0; i < 4; i++) {
 		bcsp_slip_one_byte(nskb, hdr[i]);
 
-		if (bcsp->use_crc)
+		if (pkt_crc)
 			bcsp_crc_update(&bcsp_txmsg_crc, hdr[i]);
 	}
 
@@ -551,12 +558,12 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	for (i = 0; i < len; i++) {
 		bcsp_slip_one_byte(nskb, data[i]);
 
-		if (bcsp->use_crc)
+		if (pkt_crc)
 			bcsp_crc_update(&bcsp_txmsg_crc, data[i]);
 	}
 
 	/* Put CRC */
-	if (bcsp->use_crc) {
+	if (pkt_crc) {
 		bcsp_txmsg_crc = bitrev16(bcsp_txmsg_crc);
 		bcsp_slip_one_byte(nskb, (u8)((bcsp_txmsg_crc >> 8) & 0x00ff));
 		bcsp_slip_one_byte(nskb, (u8)(bcsp_txmsg_crc & 0x00ff));
