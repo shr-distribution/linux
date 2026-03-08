@@ -762,12 +762,27 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 			bcsp->warm_reset_sent = false;
 
 			/*
-			 * Purge ALL queues - we're starting fresh.
-			 * The HCI layer will retry any lost commands.
+			 * Reset ALL state for clean link establishment.
+			 * After power cycle, we're starting completely fresh.
 			 */
+
+			/* Reset sequence numbers */
+			bcsp->rxseq_txack = 0;
+			bcsp->msgq_txseq = 0;
+
+			/* Purge all queues */
 			skb_queue_purge(&bcsp->unack);
 			skb_queue_purge(&bcsp->rel);
 			skb_queue_purge(&bcsp->unrel);
+
+			/* Reset RX state machine - chip may send garbage on boot */
+			if (bcsp->rx_skb) {
+				kfree_skb(bcsp->rx_skb);
+				bcsp->rx_skb = NULL;
+			}
+			bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
+			bcsp->rx_count = 0;
+			bcsp->rx_esc_state = BCSP_ESCSTATE_NOESC;
 
 			/* The chip will send a new sync after power cycle */
 			BT_INFO("BCSP: Waiting for chip to send sync after power cycle...");
@@ -2244,11 +2259,11 @@ static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
 	msleep(100);
 
 	/*
-	 * Reset UART to init_speed before powering on.
+	 * Flush any pending TX data and reset UART to init_speed.
 	 * The chip will boot at its default baud (usually 115200).
-	 * Use serdev_device_set_baudrate() since we're in serdev mode
-	 * (hci_uart_set_baudrate uses hu->tty which is NULL for serdev).
+	 * Use serdev APIs since we're in serdev mode (hu->tty is NULL).
 	 */
+	serdev_device_write_flush(bdev->serdev_hu.serdev);
 	serdev_device_set_baudrate(bdev->serdev_hu.serdev, bdev->init_speed);
 	dev_info(bdev->dev, "Reset UART to %u baud\n", bdev->init_speed);
 
