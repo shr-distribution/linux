@@ -2262,13 +2262,20 @@ static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
 	msleep(100);
 
 	/*
-	 * Flush any pending TX data and reset UART to init_speed.
-	 * The chip will boot at its default baud (usually 115200).
-	 * Use serdev APIs since we're in serdev mode (hu->tty is NULL).
+	 * Close and reopen serdev for a fresh UART state.
+	 * WebOS closes UART after WARM_RESET, then hciattach reopens it.
+	 * This ensures no stale TX/RX state or buffers.
 	 */
-	serdev_device_write_flush(bdev->serdev_hu.serdev);
+	serdev_device_close(bdev->serdev_hu.serdev);
+	msleep(50);
+
+	if (serdev_device_open(bdev->serdev_hu.serdev)) {
+		dev_err(bdev->dev, "Failed to reopen serdev after power cycle\n");
+		return -EIO;
+	}
+
 	serdev_device_set_baudrate(bdev->serdev_hu.serdev, bdev->init_speed);
-	dev_info(bdev->dev, "Reset UART to %u baud\n", bdev->init_speed);
+	dev_info(bdev->dev, "Reopened UART at %u baud\n", bdev->init_speed);
 
 	bcsp_serdev_set_power(bdev, true);
 	msleep(200);
