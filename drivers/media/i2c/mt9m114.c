@@ -68,6 +68,7 @@
 #define MT9M113_SEQ_CMD_RUN				0x0001
 #define MT9M113_SEQ_CMD_REFRESH				0x0005
 #define MT9M113_SEQ_CMD_REFRESH_MODE			0x0006
+#define MT9M113_SEQ_STATE				0xa104
 #define MT9M113_SEQ_CAP_MODE				0xa115
 
 /* MT9M113 RESET_REGISTER value for parallel output (from webOS kernel) */
@@ -1060,6 +1061,7 @@ mt9m113_streaming:
 		 * Parallel uses CAM_PORT_OUTPUT_CONTROL MCU variable at 0xC984.
 		 */
 		if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
+			u64 readback;
 			/*
 			 * MIPI CSI-2 mode: Write 0x7A08 to OUTPUT_CONTROL.
 			 * This is a physical register (not MCU variable).
@@ -1072,6 +1074,10 @@ mt9m113_streaming:
 				dev_err(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
 				goto error;
 			}
+			/* Verify write took effect */
+			ret = cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL readback=0x%llx (expected 0x7A08) ret=%d\n",
+				 readback, ret);
 		} else {
 			/*
 			 * Parallel mode: Use MCU variable 0xC984.
@@ -1091,11 +1097,17 @@ mt9m113_streaming:
 		 * Configure RESET_REGISTER for streaming.
 		 * Value 0x120C from webOS kernel enables output interface.
 		 */
-		cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-			  MT9M113_RESET_REG_PARALLEL_ENABLE, &ret);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
-			goto error;
+		{
+			u64 readback;
+			cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+				  MT9M113_RESET_REG_PARALLEL_ENABLE, &ret);
+			if (ret) {
+				dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
+				goto error;
+			}
+			ret = cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: RESET_REGISTER readback=0x%llx (expected 0x120C) ret=%d\n",
+				 readback, ret);
 		}
 
 		/*
@@ -1121,6 +1133,15 @@ mt9m113_streaming:
 			goto error;
 		}
 		usleep_range(20000, 30000);
+
+		/* Verify sensor state after streaming command */
+		{
+			u64 seq_state;
+			cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, MT9M113_SEQ_STATE, NULL);
+			cci_read(sensor->regmap, MT9M114_MCU_DATA, &seq_state, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: SEQ_STATE=0x%llx (expected 0x03=streaming)\n",
+				 seq_state);
+		}
 
 		dev_info(&sensor->client->dev, "MT9M113: streaming sequence complete\n");
 	}
