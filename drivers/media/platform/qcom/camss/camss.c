@@ -55,7 +55,7 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		 * Using wrong rates causes CSI register access to hang.
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "csi0_ahb",
-			   "csi0_src", "csi0", "csi0_phy", "csiphy0_timer" },
+			   "csi0_src", "csi0", "csi0_phy" },
 		.clock_rate = { { 228570000 },
 				{ 0 },
 				{ 0 },
@@ -63,8 +63,7 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 				{ 0 },
 				{ 384000000 },
 				{ 0 },
-				{ 0 },
-				{ 177780000 } },
+				{ 0 } },
 		.reg = { "csiphy0" },
 		.interrupt = { "csiphy0" },
 		.csiphy = {
@@ -84,12 +83,10 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
 			   "csi0_ahb", "csi1_ahb", "csi0_src", "csi1_src",
-			   "csi0", "csi1", "csi0_phy", "csi1_phy",
-			   "csiphy1_timer" },
+			   "csi0", "csi1", "csi0_phy", "csi1_phy" },
 		.clock_rate = { { 228570000 }, { 0 }, { 0 }, { 0 }, { 0 },
 				{ 0 }, { 0 }, { 384000000 }, { 384000000 },
-				{ 0 }, { 0 }, { 0 }, { 0 },
-				{ 177780000 } },
+				{ 0 }, { 0 }, { 0 }, { 0 } },
 		.reg = { "csiphy1" },
 		.interrupt = { "csiphy1" },
 		.csiphy = {

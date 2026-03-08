@@ -1127,11 +1127,9 @@
 				 <&mmcc CSI0_SRC>,
 				 <&mmcc CSI0_CLK>,
 				 <&mmcc CSI0_PHY_CLK>,
-				 <&mmcc CSIPHY0_TIMER_CLK>,
 				 <&mmcc CSI1_SRC>,
 				 <&mmcc CSI1_CLK>,
-				 <&mmcc CSI1_PHY_CLK>,
-				 <&mmcc CSIPHY1_TIMER_CLK>;
+				 <&mmcc CSI1_PHY_CLK>;
 			clock-names = "vfe",
 				      "vfe_axi",
 				      "vfe_ahb",
@@ -1144,11 +1142,9 @@
 				      "csi0_src",
 				      "csi0",
 				      "csi0_phy",
-				      "csiphy0_timer",
 				      "csi1_src",
 				      "csi1",
-				      "csi1_phy",
-				      "csiphy1_timer";
+				      "csi1_phy";
 
 			/* Clock rates from webOS kernel msm_io_8x60.c */
 			assigned-clocks = <&mmcc VFE_CLK>,
