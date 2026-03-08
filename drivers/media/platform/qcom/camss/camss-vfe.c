@@ -902,8 +902,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	vfe->camif_pending = false;
 
+	/* Complete streaming setup - set output state and increment stream count */
+	line->output.state = VFE_OUTPUT_ON;
+	vfe->stream_count++;
+
 	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF configured - status=0x%08x cfg=0x%08x frame=0x%08x axi_mode=0x%08x bus_cfg=0x%08x\n",
+		 "VFE: CAMIF configured and streaming started (stream_count=%d)\n",
+		 vfe->stream_count);
+	dev_info(vfe->camss->dev,
+		 "VFE: status=0x%08x cfg=0x%08x frame=0x%08x axi_mode=0x%08x bus_cfg=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG),

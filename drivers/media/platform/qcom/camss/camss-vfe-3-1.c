@@ -667,119 +667,31 @@ static int vfe31_enable(struct vfe_line *line)
 	wmb();
 
 	/*
-	 * Step 3: Configure CAMIF frame dimensions
-	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF frame config\n");
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
-	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
-
-	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
-
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
-
-	/*
-	 * Step 4: Configure CAMIF_CFG for raw capture
+	 * MSM8660 WORKAROUND: Defer CAMIF configuration until CSIPHY is ready.
 	 *
-	 * VFE31 CAMIF_CFG bits:
-	 * - bits 0-1: MIPI enable (VFE_0_RDI_CFG_x_MIPI_EN_BITS = 0x3)
-	 * - bit 8: camif2vfeEnable (routes to VFE processing)
-	 * - bit 10: camif2busEnable (direct to AXI - doesn't stick on write)
+	 * On MSM8660, VFE CAMIF registers must NOT be written until after
+	 * CSIPHY is configured and lanes are enabled. Writing to CAMIF
+	 * registers before CSIPHY is ready causes data path issues.
 	 *
-	 * Try enabling MIPI (bits 0-1) + camif2vfe (bit 8) for CSI input.
+	 * Set camif_pending flag here. The actual CAMIF configuration
+	 * (steps 3-6) will be done by vfe_enable_pending_camif() which
+	 * is called from CSIPHY set_stream after lanes are enabled.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (mipi_en=3, camif2vfe=1)\n");
-	val = VFE_0_RDI_CFG_x_MIPI_EN_BITS |  /* bits 0-1: MIPI enable */
-	      VFE_0_CAMIF_CFG_CAMIF2VFE_EN |  /* bit 8: camif2vfe */
-	      VFE_0_CAMIF_CFG_SYNC_MODE_APS;  /* bits 3-4: sync mode */
-	dev_info(vfe->camss->dev, "VFE31: Writing CAMIF_CFG=0x%08x to offset 0x%03x\n",
-		 val, VFE_0_CAMIF_CFG);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
-	wmb();
-	/* Read back immediately */
-	dev_info(vfe->camss->dev, "VFE31: CAMIF_CFG readback=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG));
+	dev_info(vfe->camss->dev,
+		 "VFE31: Deferring CAMIF config until CSIPHY ready (WM%d, line %d)\n",
+		 wm, line->id);
 
-	/* Step 4b: Configure pixel pattern in CORE_CFG based on input format */
-	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
-	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
-	case MEDIA_BUS_FMT_YUYV8_1X16:
-	case MEDIA_BUS_FMT_YUYV8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
-		break;
-	case MEDIA_BUS_FMT_YVYU8_1X16:
-	case MEDIA_BUS_FMT_YVYU8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB;
-		break;
-	case MEDIA_BUS_FMT_UYVY8_1X16:
-	case MEDIA_BUS_FMT_UYVY8_2X8:
-	default:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
-		break;
-	case MEDIA_BUS_FMT_VYUY8_1X16:
-	case MEDIA_BUS_FMT_VYUY8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
-		break;
-	}
-	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
+	vfe->camif_pending = true;
+	vfe->camif_pending_wm = wm;
+	vfe->camif_pending_line_id = line->id;
 
-	/* Issue REG_UPDATE to latch configuration */
-	writel(VFE_0_REG_UPDATE_CMD_UPDATE, vfe->base + VFE_0_REG_UPDATE_CMD);
-	udelay(10);
-
-	/*
-	 * Step 5: Enable IRQs
-	 * Key bits:
-	 *   BIT(0)  = CAMIF_SOF
-	 *   BIT(5)  = REG_UPDATE
-	 *   BIT(8)  = IMAGE_MASTER_0_PING_PONG (WM0 frame done)
-	 *   BIT(21-23) = IMAGE_COMPOSITE_DONE
-	 *
-	 * Original webOS value 0x00EFE021 was MISSING BIT(8) for WM0!
-	 * Fixed to 0x00EFE121 to include WM0 ping-pong interrupt.
-	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 5 - Enable IRQs (mask0=0x00EFE121)\n");
-	vfe->irq_mask0_shadow = 0x00EFE121;  /* Fixed: added BIT(8) for WM0 */
-	vfe->irq_mask1_shadow = VFE_0_IRQ_STATUS_1_RESET_ACK |
-				VFE_0_IRQ_STATUS_1_BUS_BDG_HALT_ACK;
-	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
-	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
-
-	/*
-	 * Step 6: Start CAMIF (matching webOS vfe31_start_common sequence)
-	 * REG_UPDATE was already issued in Step 4. Now just start CAMIF.
-	 *
-	 * CAMIF_CMD_START = 0x5 (bit 0: enable, bit 2: clear status)
-	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 6 - Start CAMIF (CAMIF_CMD=0x%x)\n",
-		 VFE_0_CAMIF_CMD_START);
-	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
-
-	/* Set output state */
-	output->state = VFE_OUTPUT_ON;
+	/* Set output state - actual streaming starts after CAMIF config */
+	output->state = VFE_OUTPUT_IDLE;
 	output->sequence = 0;
 	output->gen1.active_buf = 0;
-	vfe->stream_count++;
 
 	dev_info(vfe->camss->dev,
-		 "VFE31: Streaming started - CORE_CFG=0x%08x FRAME=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
-
-	/* Debug: dump additional VFE status registers */
-	dev_info(vfe->camss->dev,
-		 "VFE31: CAMIF_CFG=0x%08x CAMIF_STATUS=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
-	dev_info(vfe->camss->dev,
-		 "VFE31: IRQ_STATUS0=0x%08x IRQ_STATUS1=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_0),
-		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_1));
+		 "VFE31: WM configured, waiting for CSIPHY before CAMIF start\n");
 	dev_info(vfe->camss->dev,
 		 "VFE31: AXI_OUT_MODE=0x%08x WM0_CFG=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG),
