@@ -2,19 +2,23 @@
 #
 # bt-test.sh - Bluetooth testing script for HP TouchPad
 #
-# Deploys Bluetooth modules, loads them, and performs automated testing.
-# Uses two-phase initialization for BCM4329 with BCSP protocol:
-#   Phase 1: Send PSKEYs + WARM_RESET (chip resets, connection breaks)
-#   Phase 2: Power cycle + fresh connection with skip_pskeys=1
+# Deploys Bluetooth modules and tests serdev-based BCSP driver.
+# The BCM4329 chip uses BCSP protocol via serdev (device tree binding).
+#
+# With serdev, the driver automatically:
+#   - Probes when hci_uart module is loaded
+#   - Controls GPIOs for power management
+#   - Sends PSKEYs and handles WARM_RESET
+#   - Creates hci0 device when ready
 #
 # Usage: ./scripts/bt-test.sh [options]
 #
 # Options:
 #   --deploy-only    Only deploy modules, don't test
 #   --test-only      Only test (modules already deployed)
-#   --phase2-only    Skip Phase 1, only do Phase 2 (chip already configured)
-#   --monitor        Continuous monitoring mode
 #   --scan           Perform device scan after init
+#   --monitor        Continuous monitoring mode
+#   --diag           Run diagnostics
 #   --help           Show this help
 #
 
@@ -103,7 +107,8 @@ deploy_modules() {
 
     # Unload existing modules first
     info "Unloading existing Bluetooth modules..."
-    ssh_cmd "killall hciattach 2>/dev/null; sleep 1; rmmod hci_uart btbcm bluetooth 2>/dev/null || true"
+    ssh_cmd "rmmod hci_uart btbcm bluetooth 2>/dev/null || true"
+    sleep 1
 
     # Copy modules
     for mod in "${MODULES[@]}"; do
@@ -116,46 +121,14 @@ deploy_modules() {
     success "Modules deployed to /tmp/"
 }
 
-power_on_bt() {
-    info "Power cycling Bluetooth chip..."
-
-    # GPIO numbers (TLMM base 512 + pin number):
-    # GPIO 642 = BT_POWER (pin 130) - active high
-    # GPIO 650 = BT_RST_N (pin 138) - active low, set high to release
-    # GPIO 643 = BT_WAKE (pin 131) - active high
-    ssh_cmd "
-        # Export GPIOs
-        for gpio in 642 650 643; do
-            echo \$gpio > /sys/class/gpio/export 2>/dev/null || true
-            echo out > /sys/class/gpio/gpio\$gpio/direction 2>/dev/null
-        done
-
-        # Power off first (clean state)
-        echo 0 > /sys/class/gpio/gpio642/value 2>/dev/null
-        sleep 1
-
-        # Power on
-        echo 1 > /sys/class/gpio/gpio642/value 2>/dev/null
-        echo 1 > /sys/class/gpio/gpio650/value 2>/dev/null
-        echo 1 > /sys/class/gpio/gpio643/value 2>/dev/null
-    " || {
-        warn "Could not configure GPIOs (may already be set)"
-    }
-
-    sleep 2
-    success "Bluetooth chip powered on"
-}
-
 unload_modules() {
     info "Unloading Bluetooth modules..."
-    ssh_cmd "killall hciattach 2>/dev/null; sleep 2; rmmod hci_uart 2>/dev/null; rmmod btbcm 2>/dev/null; rmmod bluetooth 2>/dev/null; true"
+    ssh_cmd "rmmod hci_uart 2>/dev/null; rmmod btbcm 2>/dev/null; rmmod bluetooth 2>/dev/null; true"
     sleep 1
 }
 
 load_modules() {
-    local skip_pskeys=${1:-0}
-
-    info "Loading Bluetooth modules (skip_pskeys=$skip_pskeys)..."
+    info "Loading Bluetooth modules..."
 
     # Load in dependency order
     ssh_cmd "insmod /tmp/bluetooth.ko" || {
@@ -176,12 +149,7 @@ load_modules() {
         fi
     }
 
-    local hci_params=""
-    if [[ $skip_pskeys -eq 1 ]]; then
-        hci_params="skip_pskeys=1"
-    fi
-
-    ssh_cmd "insmod /tmp/hci_uart.ko $hci_params" || {
+    ssh_cmd "insmod /tmp/hci_uart.ko" || {
         if ssh_cmd "lsmod | grep -q '^hci_uart'"; then
             warn "hci_uart.ko already loaded"
         else
@@ -191,61 +159,68 @@ load_modules() {
     }
 
     success "Modules loaded"
-    sleep 1
 }
 
-run_hciattach() {
-    info "Running hciattach for BCSP protocol..."
+check_serdev_probe() {
+    info "Checking serdev probe status..."
 
-    # Kill any existing hciattach
-    ssh_cmd "killall hciattach 2>/dev/null || true"
-    sleep 1
+    # Check if driver is bound to device
+    local driver_link=$(ssh_cmd "ls -la /sys/bus/serial/devices/serial0-0/driver 2>/dev/null" || echo "")
 
-    ssh_cmd "hciattach /dev/ttyMSM1 bcsp 115200 &"
-
-    info "Waiting for HCI device..."
-    sleep 3
-}
-
-# Two-phase Bluetooth initialization for BCM4329 with BCSP
-# Phase 1: Send PSKEYs + WARM_RESET (chip configuration)
-# Phase 2: Power cycle + fresh connection (operational)
-run_two_phase_init() {
-    local phase2_only=${1:-0}
-
-    if [[ $phase2_only -eq 0 ]]; then
-        echo ""
-        info "=== Phase 1: Configure chip with PSKEYs + WARM_RESET ==="
-
-        unload_modules
-        power_on_bt
-        load_modules 0  # skip_pskeys=0
-        run_hciattach
-
-        # Wait for WARM_RESET to complete
-        info "Waiting for WARM_RESET to complete..."
-        sleep 3
-
-        # Check if PSKEYs were sent
-        local pskey_sent=$(ssh_cmd "dmesg | grep -c 'BCSP: Set PSKEY' 2>/dev/null" || echo "0")
-        if [[ "$pskey_sent" -gt 0 ]]; then
-            success "Phase 1 complete: $pskey_sent PSKEYs sent + WARM_RESET"
-        else
-            warn "No PSKEYs detected in dmesg (may already be configured)"
-        fi
+    if echo "$driver_link" | grep -q "hci_uart_bcsp"; then
+        success "Serdev driver bound: hci_uart_bcsp"
+        return 0
     else
-        info "Skipping Phase 1 (--phase2-only specified)"
+        # Check dmesg for probe result
+        local probe_result=$(ssh_cmd "dmesg | grep 'hci_uart_bcsp serial0-0' | tail -1")
+        if echo "$probe_result" | grep -q "failed"; then
+            local err_code=$(echo "$probe_result" | grep -oE '\-[0-9]+' | tail -1)
+            error "Serdev probe failed with error $err_code"
+
+            case "$err_code" in
+                -16)
+                    echo "  Error -16 (EBUSY): Resource busy"
+                    echo "  Possible causes:"
+                    echo "    - GPIO already claimed by another driver"
+                    echo "    - Serial port already in use"
+                    echo "    - Check 'dmesg | grep GPIO' for conflicts"
+                    ;;
+                -19)
+                    echo "  Error -19 (ENODEV): No such device"
+                    echo "  Check device tree and compatible string"
+                    ;;
+                -22)
+                    echo "  Error -22 (EINVAL): Invalid argument"
+                    echo "  Check device tree properties"
+                    ;;
+            esac
+            return 1
+        else
+            warn "Driver not bound (may not have probed yet)"
+            return 1
+        fi
     fi
+}
+
+wait_for_hci_device() {
+    info "Waiting for HCI device (serdev auto-creates it)..."
+
+    local attempts=0
+    local max_attempts=10
+
+    while [[ $attempts -lt $max_attempts ]]; do
+        if ssh_cmd "hciconfig hci0 2>/dev/null" | grep -q "hci0"; then
+            success "HCI device hci0 appeared"
+            return 0
+        fi
+        attempts=$((attempts + 1))
+        echo -n "."
+        sleep 1
+    done
 
     echo ""
-    info "=== Phase 2: Reconnect (chip retains PSRAM config) ==="
-
-    # Don't power cycle or unload modules - chip retains PSRAM config from Phase 1
-    # Just restart hciattach to establish fresh BCSP link
-    ssh_cmd "killall hciattach 2>/dev/null; sleep 2"
-    run_hciattach
-
-    success "Phase 2 complete: Fresh connection established (chip configured)"
+    warn "HCI device did not appear after ${max_attempts}s"
+    return 1
 }
 
 check_hci_device() {
@@ -259,7 +234,6 @@ check_hci_device() {
         return 0
     else
         error "No HCI device found"
-        echo "$hci_info"
         return 1
     fi
 }
@@ -289,7 +263,7 @@ check_bluetooth_status() {
 
     # HCI config
     echo -e "${BLUE}HCI Configuration:${NC}"
-    ssh_cmd "hciconfig -a"
+    ssh_cmd "hciconfig -a 2>/dev/null" || echo "No HCI device"
     echo ""
 
     # Loaded modules
@@ -298,18 +272,15 @@ check_bluetooth_status() {
     echo ""
 
     # Serial device status
-    echo -e "${BLUE}Serial device (serdev):${NC}"
-    ssh_cmd "cat /sys/bus/serial/devices/serial0-0/uevent 2>/dev/null || echo 'Not found'"
-    echo ""
-
-    # GPIO states
-    echo -e "${BLUE}Bluetooth GPIOs (129=HOST_WAKE, 130=POWER, 131=WAKE, 138=RESET):${NC}"
-    ssh_cmd "cat /sys/kernel/debug/gpio 2>/dev/null | grep -E 'gpio12[89]|gpio13[0-8]'" || echo "GPIO debug not available"
+    echo -e "${BLUE}Serdev device:${NC}"
+    ssh_cmd "cat /sys/bus/serial/devices/serial0-0/modalias 2>/dev/null" || echo "Not found"
+    local driver=$(ssh_cmd "basename \$(readlink /sys/bus/serial/devices/serial0-0/driver 2>/dev/null) 2>/dev/null" || echo "none")
+    echo "Driver: $driver"
     echo ""
 
     # Recent kernel messages
     echo -e "${BLUE}Recent Bluetooth kernel messages:${NC}"
-    ssh_cmd "dmesg | grep -i -E 'bluetooth|hci|bcm|brcm' | tail -15"
+    ssh_cmd "dmesg | grep -i -E 'bcsp|hci_uart|bluetooth' | tail -15"
     echo "----------------------------------------"
 }
 
@@ -333,15 +304,13 @@ scan_devices() {
 
 monitor_mode() {
     info "Entering monitor mode (Ctrl+C to exit)..."
-    echo "Watching kernel messages and HCI events..."
+    echo "Watching kernel messages..."
     echo ""
 
-    # Use tail -f on dmesg with filtering
-    ssh_cmd "dmesg -w 2>/dev/null | grep --line-buffered -i -E 'bluetooth|hci|bcm|brcm'" || {
-        # Fallback if dmesg -w not available
+    ssh_cmd "dmesg -w 2>/dev/null | grep --line-buffered -i -E 'bcsp|hci|bluetooth'" || {
         warn "Live dmesg not available, polling every 2 seconds..."
         while true; do
-            ssh_cmd "dmesg | grep -i -E 'bluetooth|hci|bcm|brcm' | tail -5"
+            ssh_cmd "dmesg | grep -i -E 'bcsp|hci|bluetooth' | tail -5"
             sleep 2
         done
     }
@@ -351,28 +320,45 @@ run_diagnostics() {
     info "Running Bluetooth diagnostics..."
     echo ""
 
-    # Check firmware
-    echo -e "${BLUE}Firmware files:${NC}"
-    ssh_cmd "ls -la /lib/firmware/brcm/ 2>/dev/null" || echo "No firmware directory"
-    echo ""
-
-    # Check UART status
-    echo -e "${BLUE}UART status:${NC}"
-    ssh_cmd "cat /proc/tty/driver/msm_serial 2>/dev/null | grep '16540000'" || echo "UART info not available"
-    echo ""
-
-    # Check regulator status
-    echo -e "${BLUE}Regulator status:${NC}"
-    ssh_cmd "cat /sys/class/regulator/*/name 2>/dev/null | grep -E 's3|l3'" || echo "Regulator info not available"
-    echo ""
-
     # Device tree info
     echo -e "${BLUE}Device tree Bluetooth node:${NC}"
     ssh_cmd "ls /sys/firmware/devicetree/base/soc/gsbi@16500000/serial@16540000/bluetooth/ 2>/dev/null" || echo "DT node not found"
+    echo ""
+
+    echo -e "${BLUE}Compatible string:${NC}"
+    ssh_cmd "cat /sys/firmware/devicetree/base/soc/gsbi@16500000/serial@16540000/bluetooth/compatible 2>/dev/null" || echo "Not found"
+    echo ""
+
+    echo -e "${BLUE}Status:${NC}"
+    ssh_cmd "cat /sys/firmware/devicetree/base/soc/gsbi@16500000/serial@16540000/bluetooth/status 2>/dev/null" || echo "Not found"
+    echo ""
+
+    # Serdev info
+    echo -e "${BLUE}Serdev device modalias:${NC}"
+    ssh_cmd "cat /sys/bus/serial/devices/serial0-0/modalias 2>/dev/null" || echo "Not found"
+    echo ""
+
+    echo -e "${BLUE}Available serdev drivers:${NC}"
+    ssh_cmd "ls /sys/bus/serial/drivers/ 2>/dev/null" || echo "None"
+    echo ""
+
+    # GPIO states for BT pins (130=POWER, 131=WAKE, 138=RST)
+    echo -e "${BLUE}Bluetooth GPIOs (130=POWER, 131=WAKE, 138=RST):${NC}"
+    ssh_cmd "cat /sys/kernel/debug/gpio 2>/dev/null | grep -E 'gpio13[018]'" || echo "GPIO debug not available"
+    echo ""
+
+    # Probe messages
+    echo -e "${BLUE}Probe messages:${NC}"
+    ssh_cmd "dmesg | grep -E 'hci_uart_bcsp|serial0-0|BCSP serdev' | tail -10"
+    echo ""
+
+    # UART status
+    echo -e "${BLUE}UART status:${NC}"
+    ssh_cmd "cat /proc/tty/driver/msm_serial 2>/dev/null | head -5" || echo "UART info not available"
 }
 
 show_help() {
-    head -20 "$0" | tail -18
+    head -24 "$0" | tail -22
     exit 0
 }
 
@@ -382,7 +368,7 @@ main() {
     local test=1
     local monitor=0
     local scan=0
-    local phase2_only=0
+    local diag=0
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -393,14 +379,14 @@ main() {
             --test-only)
                 deploy=0
                 ;;
-            --phase2-only)
-                phase2_only=1
-                ;;
             --monitor)
                 monitor=1
                 ;;
             --scan)
                 scan=1
+                ;;
+            --diag)
+                diag=1
                 ;;
             --help|-h)
                 show_help
@@ -415,6 +401,7 @@ main() {
 
     echo "========================================"
     echo "  HP TouchPad Bluetooth Test Script"
+    echo "        (Serdev BCSP Driver)"
     echo "========================================"
     echo ""
 
@@ -424,33 +411,54 @@ main() {
     info "Device kernel: $kver"
     echo ""
 
+    if [[ $diag -eq 1 ]]; then
+        run_diagnostics
+        exit 0
+    fi
+
     if [[ $deploy -eq 1 ]]; then
         check_modules_exist
         deploy_modules
-        run_two_phase_init $phase2_only
+        echo ""
+
+        unload_modules
+        load_modules
+        echo ""
+
+        # Check serdev probe status
+        check_serdev_probe
+        echo ""
     fi
 
     if [[ $test -eq 1 ]]; then
-        echo ""
-        check_hci_device
-        echo ""
-
-        if bring_up_hci; then
-            success "Bluetooth initialization successful!"
+        # With serdev, HCI device appears automatically after successful probe
+        if wait_for_hci_device; then
             echo ""
-            check_bluetooth_status
+            check_hci_device
+            echo ""
 
-            if [[ $scan -eq 1 ]]; then
+            if bring_up_hci; then
+                success "Bluetooth initialization successful!"
                 echo ""
-                scan_devices
+                check_bluetooth_status
+
+                if [[ $scan -eq 1 ]]; then
+                    echo ""
+                    scan_devices
+                fi
+            else
+                error "Failed to bring up HCI device"
+                echo ""
+                run_diagnostics
+                exit 1
             fi
         else
-            error "Bluetooth initialization failed"
+            error "HCI device did not appear - serdev probe likely failed"
             echo ""
             run_diagnostics
             echo ""
             info "Check kernel messages for details:"
-            ssh_cmd "dmesg | grep -i -E 'bluetooth|hci|bcm|brcm' | tail -30"
+            ssh_cmd "dmesg | grep -i -E 'bcsp|hci_uart|serial0' | tail -20"
             exit 1
         fi
     fi
