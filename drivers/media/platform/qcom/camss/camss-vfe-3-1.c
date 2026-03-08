@@ -686,17 +686,15 @@ static int vfe31_enable(struct vfe_line *line)
 	/*
 	 * Step 4: Configure CAMIF_CFG for raw capture
 	 *
-	 * For CAMIF_TO_AXI modes (raw capture), webOS VFE8x sets BOTH:
+	 * For CAMIF_TO_AXI modes (raw capture to memory):
 	 * - camif2busEnable (bit 10) = 1: Enable CAMIF->AXI direct path
-	 * - camif2vfeEnable (bit 8) = 1: Enable CAMIF->VFE data path
 	 * - syncMode = 0 (APS mode) for CSI input
 	 *
-	 * Both bits must be set for data to flow from CAMIF to memory.
-	 * Reference: webOS msm_vfe8x_proc.c VFE_AXI_OUTPUT_MODE_*CAMIFToAXI*
+	 * Note: camif2vfeEnable (bit 8) routes to VFE processing pipeline,
+	 * which we don't need for raw capture. Only set camif2busEnable.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2bus=1, camif2vfe=1)\n");
-	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_CAMIF2VFE_EN |
-	      VFE_0_CAMIF_CFG_SYNC_MODE_APS;
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2bus=1)\n");
+	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS;
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
 	wmb();
 
@@ -1326,17 +1324,15 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	/*
 	 * Step 4: Configure CAMIF_CFG for raw capture
 	 *
-	 * For CAMIF_TO_AXI modes (raw capture), webOS VFE8x sets BOTH:
+	 * For CAMIF_TO_AXI modes (raw capture to memory):
 	 * - camif2busEnable (bit 10) = 1: Enable CAMIF->AXI direct path
-	 * - camif2vfeEnable (bit 8) = 1: Enable CAMIF->VFE data path
 	 * - syncMode = 0 (APS mode) for CSI input
 	 *
-	 * Both bits must be set for data to flow from CAMIF to memory.
-	 * Reference: webOS msm_vfe8x_proc.c VFE_AXI_OUTPUT_MODE_*CAMIFToAXI*
+	 * Note: camif2vfeEnable (bit 8) routes to VFE processing pipeline,
+	 * which we don't need for raw capture. Only set camif2busEnable.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2bus=1, camif2vfe=1)\n");
-	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_CAMIF2VFE_EN |
-	      VFE_0_CAMIF_CFG_SYNC_MODE_APS;
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2bus=1)\n");
+	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS;
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
 	wmb();
 
