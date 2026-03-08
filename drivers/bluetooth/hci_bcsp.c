@@ -593,6 +593,9 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 		nskb = bcsp_prepare_pkt(bcsp, skb->data, skb->len,
 					hci_skb_pkt_type(skb));
 		if (nskb) {
+			/* Debug: show first bytes of prepared packet */
+			if (hci_skb_pkt_type(skb) == BCSP_LE_PKT && nskb->len <= 16)
+				BT_INFO("BCSP: TX LE pkt: %*ph", nskb->len, nskb->data);
 			kfree_skb(skb);
 			return nskb;
 		} else {
