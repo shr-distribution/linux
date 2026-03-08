@@ -424,10 +424,12 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	writel_relaxed(0, vfe->base + VFE_0_CLAMP_ENC_MIN_CFG);
 	wmb();
 
-	/* Reload all write masters (webOS does this after reset) */
-	dev_info(vfe->camss->dev, "VFE reset: reloading write masters (BUS_CMD=0x7FFF)\n");
-	writel_relaxed(0x7FFF, vfe->base + VFE_0_BUS_CMD);
-	wmb();
+	/*
+	 * NOTE: Do NOT write BUS_CMD=0x7FFF here!
+	 * Reloading all write masters during reset causes subsequent
+	 * register reads to hang. WM reload should happen in vfe31_enable()
+	 * after WM registers are configured.
+	 */
 
 	dev_info(vfe->camss->dev,
 		 "VFE reset: initialized default registers (skipping reset cmd)\n");
@@ -657,6 +659,11 @@ static int vfe31_enable(struct vfe_line *line)
 	/* WR_CFG - enable + frame_based */
 	writel_relaxed(BIT(0) | BIT(1),
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+	wmb();
+
+	/* Reload WM0 to apply new configuration */
+	dev_info(vfe->camss->dev, "VFE31: Reloading WM%d (BUS_CMD)\n", wm);
+	writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(wm), vfe->base + VFE_0_BUS_CMD);
 	wmb();
 
 	/*

@@ -1203,9 +1203,15 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 				return -EINVAL;
 			}
 
-			/* if sensor pixel clock is not available */
-			/* set highest possible VFE clock rate */
-			if (min_rate == 0)
+			/*
+			 * If sensor pixel clock is not available, or for VFE31
+			 * (MSM8660) which requires high clock for raw passthrough,
+			 * use the highest possible VFE clock rate.
+			 *
+			 * VFE31 on MSM8660 always uses 228.57 MHz per webOS kernel.
+			 * The dynamic calculation doesn't work well for raw mode.
+			 */
+			if (min_rate == 0 || vfe->res->hw_ops == &vfe_ops_3_1)
 				j = clock->nfreqs - 1;
 
 			dev_info(dev, "VFE clock %s: min_rate=%llu j=%d freq[j]=%lu nfreqs=%d\n",
