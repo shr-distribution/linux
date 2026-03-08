@@ -2280,8 +2280,13 @@
 &gsbi6_serial {
 	status = "okay";
 
+	/*
+	 * Include both UART pins and BT control GPIOs in pinctrl.
+	 * The BT GPIOs must be configured as GPIO function before the
+	 * bluetooth serdev driver probes, otherwise GPIO acquisition fails.
+	 */
 	pinctrl-names = "default";
-	pinctrl-0 = <&gsbi6_uart_pins>;
+	pinctrl-0 = <&gsbi6_uart_pins>, <&bt_pin>;
 
 	/*
 	 * UART clock for Bluetooth. WebOS used 3686400 baud highspeed.
@@ -2673,8 +2678,7 @@
 
 		brcm,bt-pcm-int-params = [00 02 00 01 01];
 
-		pinctrl-names = "default";
-		pinctrl-0 = <&bt_pin>;
+		/* pinctrl is applied by parent gsbi6_serial node */
 
 		reset-gpios = <&tlmm 138 GPIO_ACTIVE_LOW>;
 		shutdown-gpios = <&tlmm 130 GPIO_ACTIVE_HIGH>;
