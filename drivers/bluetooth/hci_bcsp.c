@@ -2240,6 +2240,8 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 	struct device *dev = &serdev->dev;
 	int err;
 
+	dev_info(dev, "BCSP serdev probe starting\n");
+
 	bdev = devm_kzalloc(dev, sizeof(*bdev), GFP_KERNEL);
 	if (!bdev)
 		return -ENOMEM;
@@ -2252,17 +2254,26 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 	/* Get GPIO descriptors */
 	bdev->shutdown_gpio = devm_gpiod_get_optional(dev, "shutdown",
 						       GPIOD_OUT_LOW);
-	if (IS_ERR(bdev->shutdown_gpio))
+	if (IS_ERR(bdev->shutdown_gpio)) {
+		dev_err(dev, "Failed to get shutdown GPIO: %ld\n",
+			PTR_ERR(bdev->shutdown_gpio));
 		return PTR_ERR(bdev->shutdown_gpio);
+	}
 
 	bdev->device_wakeup = devm_gpiod_get_optional(dev, "device-wakeup",
 						       GPIOD_OUT_LOW);
-	if (IS_ERR(bdev->device_wakeup))
+	if (IS_ERR(bdev->device_wakeup)) {
+		dev_err(dev, "Failed to get device-wakeup GPIO: %ld\n",
+			PTR_ERR(bdev->device_wakeup));
 		return PTR_ERR(bdev->device_wakeup);
+	}
 
 	bdev->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(bdev->reset_gpio))
+	if (IS_ERR(bdev->reset_gpio)) {
+		dev_err(dev, "Failed to get reset GPIO: %ld\n",
+			PTR_ERR(bdev->reset_gpio));
 		return PTR_ERR(bdev->reset_gpio);
+	}
 
 	/* Get UART speeds from DT */
 	device_property_read_u32(dev, "init-speed", &bdev->init_speed);
@@ -2280,13 +2291,17 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 		return err;
 	}
 
+	dev_info(dev, "Registering HCI UART device\n");
+
 	/* Register with HCI UART core */
 	err = hci_uart_register_device(&bdev->serdev_hu, &bcsp);
 	if (err) {
-		dev_err(dev, "Failed to register HCI UART device\n");
+		dev_err(dev, "Failed to register HCI UART device: %d\n", err);
 		bcsp_serdev_set_power(bdev, false);
 		return err;
 	}
+
+	dev_info(dev, "HCI UART device registered successfully\n");
 
 	/*
 	 * Set up serdev tracking in bcsp_struct.
