@@ -1337,6 +1337,39 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 	wmb();
 
+	/*
+	 * Step 4.5: Enable IRQs BEFORE starting CAMIF
+	 *
+	 * webOS uses IRQ_MASK_0 = 0x00EFE021 which includes:
+	 * - Bit 0: SOF
+	 * - Bit 5: REG_UPDATE
+	 * - Bits 8-14: PING_PONG for WM0-6
+	 * - etc.
+	 *
+	 * For RDI/raw mode we need at minimum: SOF + REG_UPDATE + PING_PONG for WM0
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 4.5 - Enable IRQs\n");
+	vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
+				VFE_0_IRQ_MASK_0_CAMIF_EOF |
+				VFE_0_IRQ_MASK_0_REG_UPDATE |
+				VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm);
+	vfe->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK |
+				VFE_0_IRQ_MASK_1_VIOLATION |
+				VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK |
+				VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(wm);
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: Setting IRQ_MASK_0=0x%08x IRQ_MASK_1=0x%08x\n",
+		 vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
+
+	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+	wmb();
+
+	/* REG_UPDATE command to latch the IRQ mask */
+	writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+	wmb();
+
 	/* Step 5: Start CAMIF */
 	dev_info(vfe->camss->dev, "VFE31: Step 5 - Start CAMIF\n");
 	writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS, vfe->base + VFE_0_CAMIF_CMD);
