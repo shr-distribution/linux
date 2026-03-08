@@ -2511,6 +2511,54 @@ MODULE_DEVICE_TABLE(of, mmcc_msm8660_match_table);
 
 static void mmcc_msm8660_init_hw(struct regmap *regmap)
 {
+	u32 val;
+
+	/*
+	 * Configure PLL2 (MM_PLL1) to 800 MHz for VFE and other MM clocks.
+	 *
+	 * PLL rate = PXO * (L + M/N) = 27 MHz * (29 + 17/27) = 800 MHz
+	 *
+	 * The bootloader (moboot) enables PLL2 but does not configure L/M/N,
+	 * leaving it at whatever values are in the hardware. We must set it
+	 * properly for VFE to reach 228 MHz. Without this, VFE gets ~66 MHz.
+	 */
+	regmap_read(regmap, 0x320, &val);  /* PLL2 L value */
+	if (val != 29) {
+		u32 m_val, n_val;
+		/* PLL2 is not configured for 800 MHz, configure it */
+		regmap_read(regmap, 0x324, &m_val);
+		regmap_read(regmap, 0x328, &n_val);
+		pr_info("mmcc-msm8660: Configuring PLL2 for 800 MHz (was L=%u M=%u N=%u)\n",
+			val, m_val, n_val);
+
+		/* Disable PLL output first */
+		regmap_update_bits(regmap, 0x31c, BIT(0), 0);
+		udelay(10);
+
+		/* Set L=29, M=17, N=27 for 800 MHz from 27 MHz PXO */
+		regmap_write(regmap, 0x320, 29);   /* L value */
+		regmap_write(regmap, 0x324, 17);   /* M value */
+		regmap_write(regmap, 0x328, 27);   /* N value */
+
+		/* Configure PLL: enable main output, set VCO */
+		regmap_write(regmap, 0x32c, 0x00800000);
+
+		/* Enable PLL: bypass off, reset deassert, output enable */
+		regmap_update_bits(regmap, 0x31c, BIT(1), BIT(1));  /* Bypass off */
+		udelay(10);
+		regmap_update_bits(regmap, 0x31c, BIT(2), BIT(2));  /* Reset deassert */
+		udelay(50);
+		regmap_update_bits(regmap, 0x31c, BIT(0), BIT(0));  /* Output enable */
+		udelay(50);
+
+		/* Verify PLL locked (status register at 0x334, bit 16) */
+		regmap_read(regmap, 0x334, &val);
+		if (val & BIT(16))
+			pr_info("mmcc-msm8660: PLL2 locked at 800 MHz\n");
+		else
+			pr_warn("mmcc-msm8660: PLL2 may not be locked (status=0x%x)\n", val);
+	}
+
 	/*
 	 * MSM8660 MMCC hardware initialization based on webOS kernel.
 	 *
