@@ -82,6 +82,8 @@ static void hci_uart_write_work(struct work_struct *work)
 
 			len = serdev_device_write_buf(serdev,
 						      skb->data, skb->len);
+			if (len != skb->len)
+				BT_ERR("serdev partial write: %d/%d bytes", len, skb->len);
 			/* hdev may be NULL during protocol init */
 			hdev = hu->hdev;
 			if (hdev)
