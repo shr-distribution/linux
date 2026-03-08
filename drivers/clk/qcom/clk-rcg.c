@@ -120,12 +120,15 @@ static u32 ns_to_pre_div(struct pre_div *p, u32 ns)
 static u32 pre_div_to_ns(struct pre_div *p, u8 pre_div, u32 ns)
 {
 	u32 mask;
+	u32 orig_ns = ns;
 
 	mask = BIT(p->pre_div_width) - 1;
 	mask <<= p->pre_div_shift;
 	ns &= ~mask;
 
 	ns |= pre_div << p->pre_div_shift;
+	pr_info("pre_div_to_ns: width=%u shift=%u pre_div=%u mask=0x%x orig=0x%08x result=0x%08x\n",
+		p->pre_div_width, p->pre_div_shift, pre_div, mask, orig_ns, ns);
 	return ns;
 }
 
