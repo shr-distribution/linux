@@ -55,7 +55,7 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		 * Using wrong rates causes CSI register access to hang.
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "csi0_ahb",
-			   "csi0_src", "csi0", "csi0_phy" },
+			   "csi0_src", "csi0", "csi0_phy", "csiphy0_timer" },
 		.clock_rate = { { 228570000 },
 				{ 0 },
 				{ 0 },
@@ -63,7 +63,8 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 				{ 0 },
 				{ 384000000 },
 				{ 0 },
-				{ 0 } },
+				{ 0 },
+				{ 177780000 } },
 		.reg = { "csiphy0" },
 		.interrupt = { "csiphy0" },
 		.csiphy = {
@@ -83,10 +84,12 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
 			   "csi0_ahb", "csi1_ahb", "csi0_src", "csi1_src",
-			   "csi0", "csi1", "csi0_phy", "csi1_phy" },
+			   "csi0", "csi1", "csi0_phy", "csi1_phy",
+			   "csiphy1_timer" },
 		.clock_rate = { { 228570000 }, { 0 }, { 0 }, { 0 }, { 0 },
 				{ 0 }, { 0 }, { 384000000 }, { 384000000 },
-				{ 0 }, { 0 }, { 0 }, { 0 } },
+				{ 0 }, { 0 }, { 0 }, { 0 },
+				{ 177780000 } },
 		.reg = { "csiphy1" },
 		.interrupt = { "csiphy1" },
 		.csiphy = {
@@ -135,12 +138,15 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 		.regulators = {},
 		/*
 		 * VFE needs both CSI-VFE bridge clocks since VFE is shared.
-		 * Also needs csi_rdi clock for CSI->VFE raw data routing.
+		 * Also needs csi_rdi/csi_pix clocks for CSI->VFE data routing:
+		 * - csi_rdi: Raw Data Interface path (for raw capture)
+		 * - csi_pix: Pixel path (for processed capture)
 		 * This matches the legacy webOS kernel sequence.
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
-			   "csi_rdi" },
+			   "csi_rdi", "csi_pix" },
 		.clock_rate = { { 122880000, 228570000, 266670000 },
+				{ 0 },
 				{ 0 },
 				{ 0 },
 				{ 0 },
