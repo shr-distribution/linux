@@ -2221,6 +2221,10 @@ static int bcsp_serdev_set_power(struct bcsp_serdev *bdev, bool powered)
 
 /*
  * Power cycle the chip - used after WARM_RESET to cleanly restart
+ *
+ * After power cycle, the chip boots at its default baud rate (115200).
+ * We must reset our UART to init_speed to match, otherwise we get
+ * baud mismatch and communication fails.
  */
 static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
 {
@@ -2228,6 +2232,14 @@ static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
 
 	bcsp_serdev_set_power(bdev, false);
 	msleep(100);
+
+	/*
+	 * Reset UART to init_speed before powering on.
+	 * The chip will boot at its default baud (usually 115200).
+	 */
+	hci_uart_set_baudrate(&bdev->serdev_hu, bdev->init_speed);
+	dev_dbg(bdev->dev, "Reset UART to %u baud\n", bdev->init_speed);
+
 	bcsp_serdev_set_power(bdev, true);
 	msleep(200);
 
