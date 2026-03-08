@@ -685,10 +685,18 @@ static int vfe31_enable(struct vfe_line *line)
 	wmb();
 
 	/*
-	 * Step 5: Enable IRQs (matching webOS: 0x00EFE021 for MASK_0)
+	 * Step 5: Enable IRQs
+	 * Key bits:
+	 *   BIT(0)  = CAMIF_SOF
+	 *   BIT(5)  = REG_UPDATE
+	 *   BIT(8)  = IMAGE_MASTER_0_PING_PONG (WM0 frame done)
+	 *   BIT(21-23) = IMAGE_COMPOSITE_DONE
+	 *
+	 * Original webOS value 0x00EFE021 was MISSING BIT(8) for WM0!
+	 * Fixed to 0x00EFE121 to include WM0 ping-pong interrupt.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 5 - Enable IRQs\n");
-	vfe->irq_mask0_shadow = 0x00EFE021;
+	dev_info(vfe->camss->dev, "VFE31: Step 5 - Enable IRQs (mask0=0x00EFE121)\n");
+	vfe->irq_mask0_shadow = 0x00EFE121;  /* Fixed: added BIT(8) for WM0 */
 	vfe->irq_mask1_shadow = VFE_0_IRQ_STATUS_1_RESET_ACK |
 				VFE_0_IRQ_STATUS_1_BUS_BDG_HALT_ACK;
 	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
