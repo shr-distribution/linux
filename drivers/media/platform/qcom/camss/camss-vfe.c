@@ -777,6 +777,18 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_CAMIF_CMD			0x1E0	/* Write commands */
 #define VFE31_CAMIF_CMD_CLEAR_STATUS	BIT(2)
 #define VFE31_CAMIF_CMD_START		0x5	/* Enable CAMIF */
+#define VFE31_REG_UPDATE_CMD		0x260
+/* IRQ registers - must be enabled to receive interrupts! */
+#define VFE31_IRQ_MASK_0		0x01C
+#define VFE31_IRQ_MASK_1		0x020
+#define VFE31_IRQ_MASK_0_CAMIF_SOF	BIT(0)
+#define VFE31_IRQ_MASK_0_CAMIF_EOF	BIT(1)
+#define VFE31_IRQ_MASK_0_REG_UPDATE	BIT(5)
+#define VFE31_IRQ_MASK_0_PING_PONG_WM(n) BIT((n) + 8)
+#define VFE31_IRQ_MASK_1_RESET_ACK	BIT(0)
+#define VFE31_IRQ_MASK_1_VIOLATION	BIT(7)
+#define VFE31_IRQ_MASK_1_BUS_BDG_HALT_ACK BIT(8)
+#define VFE31_IRQ_MASK_1_BUS_OVERFLOW_WM(n) BIT((n) + 9)
 
 /*
  * vfe_enable_pending_camif - Configure and enable deferred CAMIF
@@ -883,6 +895,33 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	wmb();
 
+	/*
+	 * Step 5c: Enable IRQs - CRITICAL!
+	 * Without enabling IRQs, VFE will never generate SOF interrupt.
+	 * IRQ_MASK_0: SOF + EOF + REG_UPDATE + PING_PONG for WM0
+	 * IRQ_MASK_1: RESET_ACK + VIOLATION + HALT_ACK + BUS_OVERFLOW for WM0
+	 */
+	vfe->irq_mask0_shadow = VFE31_IRQ_MASK_0_CAMIF_SOF |
+				VFE31_IRQ_MASK_0_CAMIF_EOF |
+				VFE31_IRQ_MASK_0_REG_UPDATE |
+				VFE31_IRQ_MASK_0_PING_PONG_WM(vfe->camif_pending_wm);
+	vfe->irq_mask1_shadow = VFE31_IRQ_MASK_1_RESET_ACK |
+				VFE31_IRQ_MASK_1_VIOLATION |
+				VFE31_IRQ_MASK_1_BUS_BDG_HALT_ACK |
+				VFE31_IRQ_MASK_1_BUS_OVERFLOW_WM(vfe->camif_pending_wm);
+
+	dev_info(vfe->camss->dev,
+		 "VFE: Enabling IRQs: MASK_0=0x%08x MASK_1=0x%08x\n",
+		 vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
+
+	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE31_IRQ_MASK_0);
+	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE31_IRQ_MASK_1);
+	wmb();
+
+	/* REG_UPDATE command to latch the IRQ mask and other settings */
+	writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
+	wmb();
+
 	/* Step 6: Clear status and enable CAMIF frame capture */
 	val = VFE31_CAMIF_CMD_CLEAR_STATUS;
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CMD);
@@ -916,6 +955,10 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG),
 		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
 		 readl_relaxed(vfe->base + VFE31_BUS_CFG));
+	dev_info(vfe->camss->dev,
+		 "VFE: IRQ_MASK_0=0x%08x IRQ_MASK_1=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE31_IRQ_MASK_0),
+		 readl_relaxed(vfe->base + VFE31_IRQ_MASK_1));
 }
 
 static void vfe_init_outputs(struct vfe_device *vfe)
