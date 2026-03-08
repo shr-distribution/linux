@@ -753,9 +753,12 @@ static int vfe31_enable(struct vfe_line *line)
 	/*
 	 * Step 6: Start CAMIF (matching webOS vfe31_start_common sequence)
 	 * REG_UPDATE was already issued in Step 4. Now just start CAMIF.
+	 *
+	 * CAMIF_CMD_START = 0x5 (bit 0: enable, bit 2: clear status)
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 6 - Start CAMIF (CAMIF_CMD=1)\n");
-	writel(1, vfe->base + VFE_0_CAMIF_CMD);
+	dev_info(vfe->camss->dev, "VFE31: Step 6 - Start CAMIF (CAMIF_CMD=0x%x)\n",
+		 VFE_0_CAMIF_CMD_START);
+	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
 
 	/* Set output state */
 	output->state = VFE_OUTPUT_ON;
