@@ -2236,9 +2236,11 @@ static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
 	/*
 	 * Reset UART to init_speed before powering on.
 	 * The chip will boot at its default baud (usually 115200).
+	 * Use serdev_device_set_baudrate() since we're in serdev mode
+	 * (hci_uart_set_baudrate uses hu->tty which is NULL for serdev).
 	 */
-	hci_uart_set_baudrate(&bdev->serdev_hu, bdev->init_speed);
-	dev_dbg(bdev->dev, "Reset UART to %u baud\n", bdev->init_speed);
+	serdev_device_set_baudrate(bdev->serdev_hu.serdev, bdev->init_speed);
+	dev_info(bdev->dev, "Reset UART to %u baud\n", bdev->init_speed);
 
 	bcsp_serdev_set_power(bdev, true);
 	msleep(200);
