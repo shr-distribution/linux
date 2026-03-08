@@ -1344,10 +1344,29 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
 	wmb();
 
+	/* Debug dump of all relevant registers after CAMIF start */
 	dev_info(vfe->camss->dev,
-		 "VFE31: CAMIF started - core_cfg=0x%08x frame=0x%08x\n",
+		 "VFE31: CAMIF started - comprehensive register dump:\n");
+	dev_info(vfe->camss->dev,
+		 "  CORE_CFG(0x014)=0x%08x  AXI_OUT_MODE(0x040)=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
+		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG));
+	dev_info(vfe->camss->dev,
+		 "  CAMIF_FRAME(0x1E8)=0x%08x  CAMIF_STATUS(0x204)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
+	dev_info(vfe->camss->dev,
+		 "  IRQ_MASK_0(0x01C)=0x%08x  IRQ_MASK_1(0x020)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0),
+		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_1));
+	dev_info(vfe->camss->dev,
+		 "  IRQ_STATUS_0(0x02C)=0x%08x  IRQ_STATUS_1(0x030)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_0),
+		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_1));
+	dev_info(vfe->camss->dev,
+		 "  MODULE_CFG(0x010)=0x%08x  BUS_CFG(0x03C)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_MODULE_CFG),
+		 readl_relaxed(vfe->base + VFE_0_BUS_CFG));
 
 	vfe->camif_pending = false;
 }

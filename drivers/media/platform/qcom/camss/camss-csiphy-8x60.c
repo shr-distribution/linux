@@ -331,6 +331,23 @@ static void csiphy_8x60_lanes_disable(struct csiphy_device *csiphy,
 }
 
 /*
+ * MSM8660 MIPI CSI IRQ status bit definitions
+ * Based on webOS kernel msm_io_8x60.c and hardware observations.
+ *
+ * The MIPI_INTERRUPT_STATUS register reports various CSI-2 events:
+ * - BIT(4): SOT_SYNC - Start of Transmission sync
+ * - BIT(5): ECC_ERROR - ECC error detected (correctable)
+ * - BIT(11): Unknown - possibly related to data reception
+ * - BIT(16): FS (Frame Start) - Short packet frame start
+ * - BIT(17): FE (Frame End) - Short packet frame end
+ * - BIT(20-23): Line count errors per lane
+ */
+#define MIPI_IRQ_SOT_SYNC	BIT(4)
+#define MIPI_IRQ_ECC_ERROR	BIT(5)
+#define MIPI_IRQ_FRAME_START	BIT(16)
+#define MIPI_IRQ_FRAME_END	BIT(17)
+
+/*
  * csiphy_8x60_isr - CSIPHY interrupt service routine
  * @irq: Interrupt line
  * @dev: CSIPHY device
@@ -341,16 +358,28 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 {
 	struct csiphy_device *csiphy = dev;
 	u32 status;
+	static int irq_count;
+	static u32 last_status;
 
 	status = readl_relaxed(csiphy->base + MIPI_INTERRUPT_STATUS);
 
 	/* Clear the interrupt */
 	writel(status, csiphy->base + MIPI_INTERRUPT_STATUS);
 
-	/* Log all IRQs to help debug CSI-2 data reception issues */
-	if (status)
+	/* Count IRQs and log periodically to avoid flooding */
+	irq_count++;
+
+	/* Log status changes or every 100th IRQ for monitoring */
+	if (status != last_status || (irq_count % 100) == 0) {
 		dev_info(csiphy->camss->dev,
-			 "CSIPHY%d: IRQ status=0x%08x\n", csiphy->id, status);
+			 "CSIPHY%d: IRQ #%d status=0x%08x [%s%s%s%s]\n",
+			 csiphy->id, irq_count, status,
+			 (status & MIPI_IRQ_SOT_SYNC) ? "SOT " : "",
+			 (status & MIPI_IRQ_ECC_ERROR) ? "ECC " : "",
+			 (status & MIPI_IRQ_FRAME_START) ? "FS " : "",
+			 (status & MIPI_IRQ_FRAME_END) ? "FE " : "");
+		last_status = status;
+	}
 
 	return IRQ_HANDLED;
 }
