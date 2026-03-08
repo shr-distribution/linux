@@ -684,22 +684,44 @@ static int vfe31_enable(struct vfe_line *line)
 	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
 
 	/*
-	 * Step 4: Configure CAMIF_CFG - enable CAMIF to BUS path
-	 * Use writel() with barrier and verify the write took effect.
+	 * Step 4: Configure VFE for CSI raw passthrough
+	 *
+	 * NOTE: CAMIF_CFG at 0x1E4 is for PARALLEL camera interface, not CSI!
+	 * For CSI/MIPI input:
+	 * - Data path: CSIPHY -> CSI controller -> VFE (internal CSI interface)
+	 * - Routing is controlled by AXI output mode at 0x40 (set to 0x60 above)
+	 * - CAMIF_CFG is NOT used and writes to it don't take effect
+	 *
+	 * The legacy webOS code only configures CAMIF_CFG for parallel sensors
+	 * (when sinfo->csi_if is false). For CSI sensors, CAMIF_CFG is not touched.
+	 *
+	 * We configure CORE_CFG (0x14) for pixel pattern which IS needed for CSI.
 	 */
-	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS;
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG writing 0x%08x to 0x%03x\n",
-		 val, VFE_0_CAMIF_CFG);
-	writel(val, vfe->base + VFE_0_CAMIF_CFG);
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CORE_CFG for CSI (skip CAMIF_CFG)\n");
 
-	/* Verify the write */
-	reg = readl(vfe->base + VFE_0_CAMIF_CFG);
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG readback = 0x%08x\n", reg);
-	if (reg != val)
-		dev_warn(vfe->camss->dev, "VFE31: CAMIF_CFG write FAILED! Expected 0x%x got 0x%x\n",
-			 val, reg);
+	/* Configure pixel pattern in CORE_CFG based on input format */
+	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
+	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
+		break;
+	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB;
+		break;
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
+	default:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
+		break;
+	case MEDIA_BUS_FMT_VYUY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
+		break;
+	}
+	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 
-	/* Issue REG_UPDATE to latch the CAMIF config before continuing */
+	/* Issue REG_UPDATE to latch configuration */
 	writel(VFE_0_REG_UPDATE_CMD_UPDATE, vfe->base + VFE_0_REG_UPDATE_CMD);
 	udelay(10);
 
@@ -735,8 +757,8 @@ static int vfe31_enable(struct vfe_line *line)
 	vfe->stream_count++;
 
 	dev_info(vfe->camss->dev,
-		 "VFE31: Streaming started - CAMIF_CFG=0x%08x FRAME=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 "VFE31: Streaming started - CORE_CFG=0x%08x FRAME=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 
 	return 0;
@@ -900,19 +922,19 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
 
 	/*
-	 * CAMIF_CFG: Enable CAMIF to VFE data path
-	 * - camif2vfeEnable (bit 8): Enable CAMIF to VFE processing path
-	 * - syncMode = APS (bits 3-4 = 0): Active Pixel Sensor mode for CSI
+	 * CAMIF_CFG: Skipped for CSI input!
 	 *
-	 * Note: For raw CAMIF bypass to memory, use camif2busEnable (bit 10)
-	 * instead. Here we use the VFE processing path.
+	 * CAMIF_CFG at 0x1E4 is for PARALLEL camera interface, not CSI/MIPI.
+	 * For CSI input:
+	 * - PIX mode: Data path is CSI->VFE, controlled by VFE internal config
+	 * - RDI mode: Data path is CSI->AXI, controlled by AXI output mode
+	 *
+	 * Writing to CAMIF_CFG has no effect for CSI input.
+	 * The frame dimensions in CAMIF_FRAME_CFG ARE used for both modes.
 	 */
-	val = VFE_0_CAMIF_CFG_CAMIF2VFE_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
-
 	dev_dbg(vfe->camss->dev,
-		"VFE31 set_camif_cfg: cfg=0x%08x frame=0x%08x width=%u height=%u\n",
-		val,
+		"VFE31 set_camif_cfg: core_cfg=0x%08x frame=0x%08x width=%u height=%u\n",
+		readl_relaxed(vfe->base + VFE_0_CORE_CFG),
 		(line->fmt[MSM_VFE_PAD_SINK].height << 16) |
 		(line->fmt[MSM_VFE_PAD_SINK].width * 2),
 		line->fmt[MSM_VFE_PAD_SINK].width,
@@ -937,12 +959,11 @@ static void vfe31_set_camif_cmd(struct vfe_device *vfe, u8 enable)
 	writel_relaxed(cmd, vfe->base + VFE_0_CAMIF_CMD);
 	wmb();
 
-	/* Debug: dump CAMIF status and config registers */
+	/* Debug: dump CAMIF status registers (skip CAMIF_CFG - not used for CSI) */
 	dev_info(vfe->camss->dev,
-		 "VFE31 CAMIF: cmd=%s status=0x%08x cfg=0x%08x core_cfg=0x%08x frame_cfg=0x%08x\n",
+		 "VFE31 CAMIF: cmd=%s status=0x%08x core_cfg=0x%08x frame_cfg=0x%08x\n",
 		 enable ? "enable" : "disable",
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS),
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
 		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 }
@@ -1060,8 +1081,11 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 	writel_relaxed(VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY,
 		       vfe->base + VFE_0_CAMIF_CMD);
 
-	/* Step 2: Disable CAMIF to bus routing by clearing CAMIF_CFG */
-	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CFG);
+	/*
+	 * Step 2: Clear AXI output mode to disable data path
+	 * For CSI input, we don't use CAMIF_CFG - routing is via AXI mode.
+	 */
+	writel_relaxed(0, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
 	vfe->camif_pending = false;
 
@@ -1283,10 +1307,34 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
 	wmb();
 
-	/* Step 4: Enable CAMIF to BUS data path (raw passthrough) */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (CAMIF2BUS_EN)\n");
-	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS,
-		       vfe->base + VFE_0_CAMIF_CFG);
+	/*
+	 * Step 4: Configure CORE_CFG for CSI input
+	 *
+	 * NOTE: For CSI/MIPI input, CAMIF_CFG at 0x1E4 is NOT used.
+	 * The AXI output mode at 0x40 (set to 0x60 for raw) controls routing.
+	 * Configure pixel pattern in CORE_CFG for proper data handling.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CORE_CFG for CSI\n");
+	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
+	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
+		break;
+	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB;
+		break;
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
+	default:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
+		break;
+	case MEDIA_BUS_FMT_VYUY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
+		break;
+	}
+	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 	wmb();
 
 	/* Step 5: Start CAMIF */
@@ -1297,8 +1345,8 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	wmb();
 
 	dev_info(vfe->camss->dev,
-		 "VFE31: CAMIF started - cfg=0x%08x frame=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 "VFE31: CAMIF started - core_cfg=0x%08x frame=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 
 	vfe->camif_pending = false;
