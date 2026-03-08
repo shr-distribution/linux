@@ -43,7 +43,7 @@ enum {
 	P_DSI2_PLL_BYTECLK,
 };
 
-#define F_MN(f, s, _m, _n) { .freq = f, .src = s, .m = _m, .n = _n }
+#define F_MN(f, s, _m, _n) { .freq = f, .src = s, .pre_div = 1, .m = _m, .n = _n }
 
 static struct clk_pll pll2 = {
 	.l_reg = 0x320,
@@ -919,10 +919,10 @@ static struct clk_branch gfx3d_clk = {
 
 static const struct freq_tbl clk_tbl_ijpeg[] = {
 	F_MN( 27000000, P_PXO,  1, 0),
-	F_MN( 36570000, P_PLL8, 1, 21),
+	F_MN( 36570000, P_PLL8, 2, 21),
 	F_MN( 54860000, P_PLL8, 1, 7),
 	F_MN( 96000000, P_PLL8, 1, 4),
-	F_MN(109710000, P_PLL8, 1, 7),
+	F_MN(109710000, P_PLL8, 2, 7),
 	F_MN(128000000, P_PLL8, 1, 3),
 	F_MN(153600000, P_PLL8, 2, 5),
 	F_MN(200000000, P_PLL2, 1, 4),
@@ -1035,7 +1035,7 @@ static const struct freq_tbl clk_tbl_mdp[] = {
 	F_MN( 13710000, P_PLL8, 1, 28),
 	F_MN( 27000000, P_PXO,  1,  0),
 	F_MN( 29540000, P_PLL8, 1, 13),
-	F_MN( 34290000, P_PLL8, 1, 22),
+	F_MN( 34910000, P_PLL8, 1, 11),
 	F_MN( 38400000, P_PLL8, 1, 10),
 	F_MN( 59080000, P_PLL8, 2, 13),
 	F_MN( 76800000, P_PLL8, 1,  5),
@@ -1593,7 +1593,7 @@ static struct clk_branch vpe_clk = {
 static const struct freq_tbl clk_tbl_vfe[] = {
 	F_MN( 13960000, P_PLL8, 2, 55),
 	F_MN( 27000000, P_PXO,  1,  0),
-	F_MN( 36570000, P_PLL8, 1, 21),
+	F_MN( 36570000, P_PLL8, 2, 21),
 	F_MN( 38400000, P_PLL8, 2, 20),
 	F_MN( 45180000, P_PLL8, 2, 17),
 	F_MN( 48000000, P_PLL8, 2, 16),
@@ -1601,7 +1601,7 @@ static const struct freq_tbl clk_tbl_vfe[] = {
 	F_MN( 64000000, P_PLL8, 2, 12),
 	F_MN( 76800000, P_PLL8, 1,  5),
 	F_MN( 96000000, P_PLL8, 2,  8),
-	F_MN(109710000, P_PLL8, 1,  7),
+	F_MN(109710000, P_PLL8, 2,  7),
 	F_MN(128000000, P_PLL8, 1,  3),
 	F_MN(153600000, P_PLL8, 2,  5),
 	F_MN(200000000, P_PLL2, 2,  8),
