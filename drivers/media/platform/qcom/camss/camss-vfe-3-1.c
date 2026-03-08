@@ -686,17 +686,24 @@ static int vfe31_enable(struct vfe_line *line)
 	/*
 	 * Step 4: Configure CAMIF_CFG for raw capture
 	 *
-	 * For CAMIF_TO_AXI modes (raw capture to memory):
-	 * - camif2busEnable (bit 10) = 1: Enable CAMIF->AXI direct path
-	 * - syncMode = 0 (APS mode) for CSI input
+	 * VFE31 CAMIF_CFG bits:
+	 * - bits 0-1: MIPI enable (VFE_0_RDI_CFG_x_MIPI_EN_BITS = 0x3)
+	 * - bit 8: camif2vfeEnable (routes to VFE processing)
+	 * - bit 10: camif2busEnable (direct to AXI - doesn't stick on write)
 	 *
-	 * Note: camif2vfeEnable (bit 8) routes to VFE processing pipeline,
-	 * which we don't need for raw capture. Only set camif2busEnable.
+	 * Try enabling MIPI (bits 0-1) + camif2vfe (bit 8) for CSI input.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2bus=1)\n");
-	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS;
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (mipi_en=3, camif2vfe=1)\n");
+	val = VFE_0_RDI_CFG_x_MIPI_EN_BITS |  /* bits 0-1: MIPI enable */
+	      VFE_0_CAMIF_CFG_CAMIF2VFE_EN |  /* bit 8: camif2vfe */
+	      VFE_0_CAMIF_CFG_SYNC_MODE_APS;  /* bits 3-4: sync mode */
+	dev_info(vfe->camss->dev, "VFE31: Writing CAMIF_CFG=0x%08x to offset 0x%03x\n",
+		 val, VFE_0_CAMIF_CFG);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
 	wmb();
+	/* Read back immediately */
+	dev_info(vfe->camss->dev, "VFE31: CAMIF_CFG readback=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG));
 
 	/* Step 4b: Configure pixel pattern in CORE_CFG based on input format */
 	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
@@ -1324,17 +1331,24 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	/*
 	 * Step 4: Configure CAMIF_CFG for raw capture
 	 *
-	 * For CAMIF_TO_AXI modes (raw capture to memory):
-	 * - camif2busEnable (bit 10) = 1: Enable CAMIF->AXI direct path
-	 * - syncMode = 0 (APS mode) for CSI input
+	 * VFE31 CAMIF_CFG bits:
+	 * - bits 0-1: MIPI enable (VFE_0_RDI_CFG_x_MIPI_EN_BITS = 0x3)
+	 * - bit 8: camif2vfeEnable (routes to VFE processing)
+	 * - bit 10: camif2busEnable (direct to AXI - doesn't stick on write)
 	 *
-	 * Note: camif2vfeEnable (bit 8) routes to VFE processing pipeline,
-	 * which we don't need for raw capture. Only set camif2busEnable.
+	 * Try enabling MIPI (bits 0-1) + camif2vfe (bit 8) for CSI input.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2bus=1)\n");
-	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN | VFE_0_CAMIF_CFG_SYNC_MODE_APS;
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (mipi_en=3, camif2vfe=1)\n");
+	val = VFE_0_RDI_CFG_x_MIPI_EN_BITS |  /* bits 0-1: MIPI enable */
+	      VFE_0_CAMIF_CFG_CAMIF2VFE_EN |  /* bit 8: camif2vfe */
+	      VFE_0_CAMIF_CFG_SYNC_MODE_APS;  /* bits 3-4: sync mode */
+	dev_info(vfe->camss->dev, "VFE31: Writing CAMIF_CFG=0x%08x to offset 0x%03x\n",
+		 val, VFE_0_CAMIF_CFG);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
 	wmb();
+	/* Read back immediately */
+	dev_info(vfe->camss->dev, "VFE31: CAMIF_CFG readback=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG));
 
 	/* Configure pixel pattern in CORE_CFG */
 	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
