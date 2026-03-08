@@ -588,6 +588,8 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 	if (skb != NULL) {
 		struct sk_buff *nskb;
 
+		BT_INFO("BCSP: dequeuing unrel pkt type %d len %d",
+			hci_skb_pkt_type(skb), skb->len);
 		nskb = bcsp_prepare_pkt(bcsp, skb->data, skb->len,
 					hci_skb_pkt_type(skb));
 		if (nskb) {
@@ -795,6 +797,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		skb_put_data(nskb, sync_rsp_pkt, 4);
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
+		BT_INFO("BCSP: sending sync_rsp");
 		skb_queue_head(&bcsp->unrel, nskb);
 		hci_uart_tx_wakeup(hu);
 	}
