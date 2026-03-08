@@ -763,6 +763,20 @@ static int vfe31_enable(struct vfe_line *line)
 		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 
+	/* Debug: dump additional VFE status registers */
+	dev_info(vfe->camss->dev,
+		 "VFE31: CAMIF_CFG=0x%08x CAMIF_STATUS=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
+	dev_info(vfe->camss->dev,
+		 "VFE31: IRQ_STATUS0=0x%08x IRQ_STATUS1=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_0),
+		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_1));
+	dev_info(vfe->camss->dev,
+		 "VFE31: AXI_OUT_MODE=0x%08x WM0_CFG=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG),
+		 readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(0)));
+
 	return 0;
 }
 
