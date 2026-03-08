@@ -135,15 +135,13 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 		.regulators = {},
 		/*
 		 * VFE needs both CSI-VFE bridge clocks since VFE is shared.
-		 * Also needs csi_rdi/csi_pix clocks for CSI->VFE data routing:
-		 * - csi_rdi: Raw Data Interface path (for raw capture)
-		 * - csi_pix: Pixel path (for processed capture)
-		 * This matches the legacy webOS kernel sequence.
+		 * csi_rdi clock enables the Raw Data Interface path for raw capture.
+		 * Note: csi_pix clock causes EBUSY on MSM8660 and is not needed
+		 * for RDI capture mode.
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
-			   "csi_rdi", "csi_pix" },
+			   "csi_rdi" },
 		.clock_rate = { { 122880000, 228570000, 266670000 },
-				{ 0 },
 				{ 0 },
 				{ 0 },
 				{ 0 },
