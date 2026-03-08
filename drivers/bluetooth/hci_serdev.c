@@ -25,6 +25,10 @@ static inline void hci_uart_tx_complete(struct hci_uart *hu, int pkt_type)
 {
 	struct hci_dev *hdev = hu->hdev;
 
+	/* hdev may be NULL during protocol init (e.g., BCSP link establishment) */
+	if (!hdev)
+		return;
+
 	/* Update HCI stat counters */
 	switch (pkt_type) {
 	case HCI_COMMAND_PKT:
@@ -46,7 +50,13 @@ static inline struct sk_buff *hci_uart_dequeue(struct hci_uart *hu)
 	struct sk_buff *skb = hu->tx_skb;
 
 	if (!skb) {
-		if (test_bit(HCI_UART_PROTO_READY, &hu->flags))
+		/*
+		 * Check both PROTO_READY and PROTO_INIT flags to allow
+		 * TX during driver initialization (e.g., BCSP link
+		 * establishment during open()).
+		 */
+		if (test_bit(HCI_UART_PROTO_READY, &hu->flags) ||
+		    test_bit(HCI_UART_PROTO_INIT, &hu->flags))
 			skb = hu->proto->dequeue(hu);
 	} else
 		hu->tx_skb = NULL;
@@ -58,7 +68,7 @@ static void hci_uart_write_work(struct work_struct *work)
 {
 	struct hci_uart *hu = container_of(work, struct hci_uart, write_work);
 	struct serdev_device *serdev = hu->serdev;
-	struct hci_dev *hdev = hu->hdev;
+	struct hci_dev *hdev;
 	struct sk_buff *skb;
 
 	/* REVISIT:
@@ -72,7 +82,10 @@ static void hci_uart_write_work(struct work_struct *work)
 
 			len = serdev_device_write_buf(serdev,
 						      skb->data, skb->len);
-			hdev->stat.byte_tx += len;
+			/* hdev may be NULL during protocol init */
+			hdev = hu->hdev;
+			if (hdev)
+				hdev->stat.byte_tx += len;
 
 			skb_pull(skb, len);
 			if (skb->len) {
@@ -318,11 +331,21 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 	if (err)
 		goto err_rwsem;
 
+	/*
+	 * Initialize write_work and set proto before calling open(),
+	 * as some protocols (e.g., BCSP) need to transmit during their
+	 * open() for link establishment. PROTO_INIT flag allows TX
+	 * during this phase.
+	 */
+	INIT_WORK(&hu->write_work, hci_uart_write_work);
+	hu->proto = p;
+	set_bit(HCI_UART_PROTO_INIT, &hu->flags);
+
 	err = p->open(hu);
 	if (err)
 		goto err_open;
 
-	hu->proto = p;
+	clear_bit(HCI_UART_PROTO_INIT, &hu->flags);
 	set_bit(HCI_UART_PROTO_READY, &hu->flags);
 
 	/* Initialize and register HCI device */
@@ -339,7 +362,6 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 	hci_set_drvdata(hdev, hu);
 
 	INIT_WORK(&hu->init_ready, hci_uart_init_work);
-	INIT_WORK(&hu->write_work, hci_uart_write_work);
 
 	/* Only when vendor specific setup callback is provided, consider
 	 * the manufacturer information valid. This avoids filling in the
@@ -385,6 +407,7 @@ err_alloc:
 	clear_bit(HCI_UART_PROTO_READY, &hu->flags);
 	p->close(hu);
 err_open:
+	clear_bit(HCI_UART_PROTO_INIT, &hu->flags);
 	serdev_device_close(hu->serdev);
 err_rwsem:
 	percpu_free_rwsem(&hu->proto_lock);
