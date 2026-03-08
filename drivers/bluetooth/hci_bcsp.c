@@ -2258,6 +2258,14 @@ static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
 {
 	dev_info(bdev->dev, "Power cycling Bluetooth chip...\n");
 
+	/*
+	 * Cancel any pending TX work and wait for completion.
+	 * Clear TX state bits to ensure clean restart.
+	 */
+	cancel_work_sync(&bdev->serdev_hu.write_work);
+	clear_bit(HCI_UART_SENDING, &bdev->serdev_hu.tx_state);
+	clear_bit(HCI_UART_TX_WAKEUP, &bdev->serdev_hu.tx_state);
+
 	bcsp_serdev_set_power(bdev, false);
 	msleep(100);
 
