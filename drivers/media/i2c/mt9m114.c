@@ -2851,6 +2851,33 @@ static int __maybe_unused mt9m114_runtime_resume(struct device *dev)
 
 	dev_info(dev, "runtime_resume: starting\n");
 
+	/*
+	 * MT9M113 with powerdown GPIO: Use soft standby instead of full
+	 * power cycle. The sensor was put into soft standby during suspend,
+	 * so we just need to wake it up. This keeps I2C alive and avoids
+	 * the long re-initialization sequence.
+	 */
+	if (sensor->powerdown && sensor->expected_model == MT9M113_MODEL) {
+		dev_info(dev, "runtime_resume: leaving soft standby\n");
+		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_LEAVE_STANDBY);
+		if (ret < 0) {
+			dev_err(dev, "runtime_resume: leave standby failed: %d\n", ret);
+			return ret;
+		}
+		/*
+		 * After leaving standby, sensor returns to SUSPENDED state
+		 * (the normal idle state between streaming sessions).
+		 */
+		ret = mt9m114_poll_state(sensor, MT9M114_SYS_STATE_SUSPENDED);
+		if (ret < 0) {
+			dev_err(dev, "runtime_resume: poll state failed: %d\n", ret);
+			return ret;
+		}
+		dev_info(dev, "runtime_resume: soft standby exit complete\n");
+		return 0;
+	}
+
+	/* Standard power-on for other configurations */
 	ret = mt9m114_power_on(sensor);
 	if (ret) {
 		dev_err(dev, "runtime_resume: power_on failed: %d\n", ret);
@@ -2872,7 +2899,32 @@ static int __maybe_unused mt9m114_runtime_suspend(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct mt9m114 *sensor = ifp_to_mt9m114(sd);
+	int ret;
 
+	dev_info(dev, "runtime_suspend: starting\n");
+
+	/*
+	 * MT9M113 with powerdown GPIO: Use soft standby instead of asserting
+	 * powerdown GPIO. This keeps I2C alive and allows faster resume.
+	 * The webOS driver never toggles powerdown GPIO for suspend/resume.
+	 */
+	if (sensor->powerdown && sensor->expected_model == MT9M113_MODEL) {
+		dev_info(dev, "runtime_suspend: entering soft standby\n");
+		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_STANDBY);
+		if (ret < 0) {
+			dev_err(dev, "runtime_suspend: enter standby failed: %d\n", ret);
+			return ret;
+		}
+		ret = mt9m114_poll_state(sensor, MT9M114_SYS_STATE_STANDBY);
+		if (ret < 0) {
+			dev_err(dev, "runtime_suspend: poll standby failed: %d\n", ret);
+			return ret;
+		}
+		dev_info(dev, "runtime_suspend: soft standby complete\n");
+		return 0;
+	}
+
+	/* Standard power-off for other configurations */
 	dev_info(dev, "runtime_suspend: powering off\n");
 	mt9m114_power_off(sensor);
 
