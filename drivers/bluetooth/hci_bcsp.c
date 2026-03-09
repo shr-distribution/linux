@@ -2057,8 +2057,11 @@ static void bcsp_timed_event(struct timer_list *t)
 	}
 
 	/* Re-arm timer if link not yet active */
-	if (bcsp->link_state != BCSP_LINK_ACTIVE)
+	if (bcsp->link_state != BCSP_LINK_ACTIVE) {
 		mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
+		BT_INFO("BCSP: timer re-armed for +%dms (link_state=%d)",
+			1000 / 4, bcsp->link_state);
+	}
 
 	/* Handle retransmission of reliable packets */
 	spin_lock_irqsave_nested(&bcsp->unack.lock, flags, SINGLE_DEPTH_NESTING);
