@@ -2046,13 +2046,13 @@ static void bcsp_timed_event(struct timer_list *t)
 
 	/* Send sync packets in UNINIT state to establish link */
 	if (bcsp->link_state == BCSP_LINK_UNINIT) {
-		BT_DBG("BCSP: sending sync");
+		BT_INFO("BCSP: timer sending sync (link_state=%d)", bcsp->link_state);
 		bcsp_send_link_pkt(bcsp, sync_pkt, sizeof(sync_pkt));
 	}
 
 	/* Send conf packets in INIT state */
 	if (bcsp->link_state == BCSP_LINK_INIT) {
-		BT_DBG("BCSP: sending conf");
+		BT_INFO("BCSP: timer sending conf (link_state=%d)", bcsp->link_state);
 		bcsp_send_link_pkt(bcsp, conf_pkt, sizeof(conf_pkt));
 	}
 
