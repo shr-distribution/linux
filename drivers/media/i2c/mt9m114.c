@@ -71,9 +71,13 @@
 #define MT9M113_SEQ_STATE				0xa104
 #define MT9M113_SEQ_CAP_MODE				0xa115
 
-/* MT9M113 RESET_REGISTER values from webOS kernel */
-#define MT9M113_RESET_REG_PARALLEL_ENABLE		0x120c
-#define MT9M113_RESET_REG_MIPI_ENABLE			0x8234
+/*
+ * MT9M113 RESET_REGISTER (0x301A) values from webOS/Samsung legacy drivers.
+ * Both drivers use 0x120C for streaming in MIPI mode.
+ * 0x12CE is used for snapshot mode.
+ */
+#define MT9M113_RESET_REG_STREAMING			0x120C
+#define MT9M113_RESET_REG_SNAPSHOT			0x12CE
 
 /*
  * MT9M113 OUTPUT_CONTROL register (physical register, not MCU variable)
@@ -593,15 +597,10 @@ static const struct cci_reg_sequence mt9m114_init[] = {
 	 * which is written during start_streaming. The 0x3C40 register does NOT
 	 * exist on MT9M113 (it's MT9M114-specific), so we don't write it here.
 	 *
-	 * RESET_REGISTER: Use webOS value 0x8234 for MIPI mode
-	 * Bit 15: LOCK_REG (will be cleared after Change Config)
-	 * Bit 13: DRIVE_PINS
-	 * Bit 9: MASK_BAD
-	 * Bit 5: MIPI TX enable
-	 * Bit 4: streaming related
-	 * Bit 2: RESTART_BAD
+	 * RESET_REGISTER: Use 0x120C for streaming (from webOS/Samsung drivers).
+	 * Both MIPI and parallel modes use this value for streaming enable.
 	 */
-	{ MT9M114_RESET_REGISTER, MT9M113_RESET_REG_MIPI_ENABLE },
+	{ MT9M114_RESET_REGISTER, MT9M113_RESET_REG_STREAMING },
 
 	/* Sensor optimization */
 	{ CCI_REG16(0x316a), 0x8270 },
@@ -1225,29 +1224,20 @@ mt9m113_streaming:
 
 		/*
 		 * Configure RESET_REGISTER for streaming.
-		 * MIPI mode: 0x8234 from webOS kernel
-		 * Parallel mode: 0x120C from webOS kernel
+		 * Both MIPI and parallel modes use 0x120C per webOS/Samsung drivers.
 		 */
 		{
 			u64 readback;
-			u16 reset_val;
 
-			if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
-				reset_val = MT9M113_RESET_REG_MIPI_ENABLE;
-				dev_info(&sensor->client->dev, "MT9M113: Setting RESET_REGISTER for MIPI mode\n");
-			} else {
-				reset_val = MT9M113_RESET_REG_PARALLEL_ENABLE;
-				dev_info(&sensor->client->dev, "MT9M113: Setting RESET_REGISTER for parallel mode\n");
-			}
-
-			cci_write(sensor->regmap, MT9M114_RESET_REGISTER, reset_val, &ret);
+			cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+				  MT9M113_RESET_REG_STREAMING, &ret);
 			if (ret) {
 				dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
 				goto error;
 			}
 			ret = cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
 			dev_info(&sensor->client->dev, "MT9M113: RESET_REGISTER=0x%llx (expected 0x%04x)\n",
-				 readback, reset_val);
+				 readback, MT9M113_RESET_REG_STREAMING);
 		}
 
 		/*
@@ -2669,15 +2659,15 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
 				dev_info(dev, "power_on: OUTPUT_CONTROL=0x%llx (expected 0x7A08)\n", readback);
 
-				/* RESET_REGISTER for MIPI mode */
+				/* RESET_REGISTER for streaming (0x120C per webOS/Samsung) */
 				cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-					  MT9M113_RESET_REG_MIPI_ENABLE, &ret);
+					  MT9M113_RESET_REG_STREAMING, &ret);
 				if (ret < 0) {
 					dev_err(dev, "power_on: RESET_REGISTER failed: %d\n", ret);
 					goto error_clock;
 				}
 				cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
-				dev_info(dev, "power_on: RESET_REGISTER=0x%llx (expected 0x8234)\n", readback);
+				dev_info(dev, "power_on: RESET_REGISTER=0x%llx (expected 0x120C)\n", readback);
 			}
 		}
 	} else {
