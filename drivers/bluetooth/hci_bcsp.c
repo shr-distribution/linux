@@ -756,15 +756,17 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	/* Debug: log LE packet reception */
 	len_nibble = bcsp->rx_skb->data[1] >> 4;
 	len_high = bcsp->rx_skb->data[2];
-	BT_DBG("BCSP LE pkt: hdr[0]=%02x hdr[1]=%02x hdr[2]=%02x len=%d",
-	       bcsp->rx_skb->data[0], bcsp->rx_skb->data[1],
-	       bcsp->rx_skb->data[2], (len_high << 4) | len_nibble);
 
 	/* Check packet has 4-byte payload (link establishment packets) */
 	if (len_nibble != 4 || len_high != 0) {
 		BT_DBG("BCSP LE pkt: not a 4-byte LE pkt, ignoring");
 		return;
 	}
+
+	/* Log raw bytes of LE packet for debugging */
+	BT_INFO("BCSP: RX LE payload: %02x %02x %02x %02x",
+		bcsp->rx_skb->data[4], bcsp->rx_skb->data[5],
+		bcsp->rx_skb->data[6], bcsp->rx_skb->data[7]);
 
 	/* Handle sync packet - device is starting link establishment */
 	if (!memcmp(&bcsp->rx_skb->data[4], sync_pkt, 4)) {
