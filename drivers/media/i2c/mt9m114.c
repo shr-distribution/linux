@@ -870,15 +870,27 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 		return ret;
 
 	/*
-	 * MT9M113 doesn't support the COMMAND_REGISTER state machine.
-	 * Skip state transitions - the sensor is already configured.
+	 * Issue Change Config command to apply all register settings including
+	 * MIPI_CONTROL. The webOS kernel does this for MT9M113 as well.
+	 */
+	dev_info(&sensor->client->dev, "mt9m114_initialize: issuing Change Config\n");
+	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
+	if (ret < 0) {
+		dev_err(&sensor->client->dev, "mt9m114_initialize: Change Config failed: %d\n", ret);
+		return ret;
+	}
+
+	/* Verify MIPI_CONTROL after Change Config */
+	cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
+	dev_info(&sensor->client->dev, "mt9m114_initialize: MIPI_CONTROL after config=0x%llx\n",
+		 readback);
+
+	/*
+	 * MT9M113: Skip suspend state transition. The sensor will be left
+	 * in streaming-ready state. For MT9M114, enter suspend.
 	 */
 	if (sensor->model == MT9M113_MODEL)
 		return 0;
-
-	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
-	if (ret < 0)
-		return ret;
 
 	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_SUSPEND);
 	if (ret < 0)
