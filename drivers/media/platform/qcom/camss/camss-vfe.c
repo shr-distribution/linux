@@ -966,10 +966,13 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG),
 		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
 		 readl_relaxed(vfe->base + VFE31_BUS_CFG));
+	/*
+	 * Note: VFE31 IRQ_MASK_0/1 are write-only registers - do NOT read them!
+	 * Use shadow values instead.
+	 */
 	dev_info(vfe->camss->dev,
-		 "VFE: IRQ_MASK_0=0x%08x IRQ_MASK_1=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE31_IRQ_MASK_0),
-		 readl_relaxed(vfe->base + VFE31_IRQ_MASK_1));
+		 "VFE: IRQ_MASK_0=0x%08x (shadow) IRQ_MASK_1=0x%08x (shadow)\n",
+		 vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
 }
 
 static void vfe_init_outputs(struct vfe_device *vfe)
