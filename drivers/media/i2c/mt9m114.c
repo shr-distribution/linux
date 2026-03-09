@@ -2909,7 +2909,18 @@ static int __maybe_unused mt9m114_runtime_suspend(struct device *dev)
 	 * The webOS driver never toggles powerdown GPIO for suspend/resume.
 	 */
 	if (sensor->powerdown && sensor->expected_model == MT9M113_MODEL) {
-		dev_info(dev, "runtime_suspend: entering soft standby\n");
+		u64 current_state = 0;
+
+		/* Check if already in standby (e.g., after init) */
+		ret = cci_read(sensor->regmap, MT9M114_SYSMGR_CURRENT_STATE,
+			       &current_state, NULL);
+		if (ret == 0 && current_state == MT9M114_SYS_STATE_STANDBY) {
+			dev_info(dev, "runtime_suspend: already in standby\n");
+			return 0;
+		}
+
+		dev_info(dev, "runtime_suspend: entering soft standby (current=0x%llx)\n",
+			 current_state);
 		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_STANDBY);
 		if (ret < 0) {
 			dev_err(dev, "runtime_suspend: enter standby failed: %d\n", ret);
