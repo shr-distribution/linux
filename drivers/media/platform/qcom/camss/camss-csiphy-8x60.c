@@ -441,15 +441,19 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 		}
 	}
 
-	/* Log status changes or every 100th IRQ for monitoring */
-	if (status != last_status || (irq_count % 100) == 0) {
-		dev_dbg(csiphy->camss->dev,
-			"CSIPHY%d: IRQ #%d status=0x%08x [%s%s%s%s]\n",
-			csiphy->id, irq_count, status,
-			(status & MIPI_IRQ_SOT_SYNC) ? "SOT " : "",
-			(status & MIPI_IRQ_ECC_ERROR) ? "ECC " : "",
-			(status & MIPI_IRQ_FRAME_START) ? "FS " : "",
-			(status & MIPI_IRQ_FRAME_END) ? "FE " : "");
+	/*
+	 * Log interrupt status - use dev_info for first 10 IRQs to diagnose
+	 * what bits the hardware actually sets, then switch to dev_dbg.
+	 */
+	if (irq_count <= 10 || status != last_status || (irq_count % 100) == 0) {
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: IRQ #%d status=0x%08x [%s%s%s%s] sof_count=%d\n",
+			 csiphy->id, irq_count, status,
+			 (status & MIPI_IRQ_SOT_SYNC) ? "SOT " : "",
+			 (status & MIPI_IRQ_ECC_ERROR) ? "ECC " : "",
+			 (status & MIPI_IRQ_FRAME_START) ? "FS " : "",
+			 (status & MIPI_IRQ_FRAME_END) ? "FE " : "",
+			 sof_count);
 		last_status = status;
 	}
 
