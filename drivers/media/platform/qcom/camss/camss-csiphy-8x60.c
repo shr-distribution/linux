@@ -418,10 +418,19 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 		last_sot_time = now;
 	}
 
-	/* Trigger software SOF if frame start detected */
+	/*
+	 * Trigger software SOF if frame start detected.
+	 * VFE31 delivers CAMIF_SOF to ALL lines (RDI0-2 + PIX) because raw
+	 * capture uses RDI lines, not the pixel pipeline. We must do the same
+	 * here, sending SOF to every VFE line that might be waiting.
+	 */
 	if (frame_start_detected && csiphy->camss && csiphy->camss->vfe) {
+		int line;
+
 		vfe = &csiphy->camss->vfe[0];  /* Use first VFE */
-		vfe_trigger_software_sof(vfe, VFE_LINE_PIX);
+		/* Send SOF to all VFE lines, just like VFE31 IRQ handler does */
+		for (line = 0; line < vfe->res->line_num; line++)
+			vfe_trigger_software_sof(vfe, line);
 		sof_count++;
 
 		/* Log SOF generation periodically */
