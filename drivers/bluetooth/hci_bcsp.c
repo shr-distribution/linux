@@ -229,6 +229,13 @@ struct bcsp_struct {
 		BCSP_ESCSTATE_ESC
 	} rx_esc_state;
 
+	/* Link establishment state machine */
+	enum {
+		BCSP_LINK_UNINIT,	/* Initial: sending sync, waiting for sync_rsp */
+		BCSP_LINK_INIT,		/* Got sync_rsp: sending conf, waiting for conf_rsp */
+		BCSP_LINK_ACTIVE	/* Got conf_rsp: link established */
+	} link_state;
+
 	u8	use_crc;
 	u16	message_crc;
 	u8	txack_req;		/* Do we need to send ack's to the peer? */
@@ -839,7 +846,11 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	else if (!memcmp(&bcsp->rx_skb->data[4], sync_rsp_pkt, 4)) {
 		struct sk_buff *nskb = alloc_skb(4, GFP_ATOMIC);
 
-		BT_INFO("BCSP: sync_rsp received, sending conf");
+		BT_INFO("BCSP: sync_rsp received, moving to INIT state");
+
+		/* Transition to INIT state - will send conf via timer */
+		bcsp->link_state = BCSP_LINK_INIT;
+
 		if (!nskb)
 			return;
 		skb_put_data(nskb, conf_pkt, 4);
@@ -854,6 +865,10 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 
 		BT_INFO("BCSP: conf received, responding with conf_rsp (bdaddr_state=%d)",
 			bcsp->bdaddr_state);
+
+		/* Transition to ACTIVE state */
+		bcsp->link_state = BCSP_LINK_ACTIVE;
+
 		if (!nskb)
 			return;
 		skb_put_data(nskb, conf_rsp_pkt, 4);
@@ -885,6 +900,16 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	else if (!memcmp(&bcsp->rx_skb->data[4], conf_rsp_pkt, 4)) {
 		BT_INFO("BCSP: conf_rsp received, link established (bdaddr_state=%d, is_serdev=%d)",
 			bcsp->bdaddr_state, bcsp->is_serdev);
+
+		/* Transition to ACTIVE state */
+		bcsp->link_state = BCSP_LINK_ACTIVE;
+
+		/* Signal link establishment completion */
+		if (!bcsp->link_established) {
+			BT_INFO("BCSP: Link established via conf_rsp");
+			bcsp->link_established = true;
+			complete(&bcsp->link_up);
+		}
 
 		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING && bcsp->is_serdev) {
 			/*
@@ -1986,16 +2011,56 @@ static int bcsp_setup(struct hci_uart *hu)
 	return 0;
 }
 
-	/* Arrange to retransmit all messages in the relq. */
+/*
+ * Send a link establishment packet (sync or conf).
+ */
+static void bcsp_send_link_pkt(struct bcsp_struct *bcsp, const u8 *data, size_t len)
+{
+	struct sk_buff *skb;
+
+	skb = alloc_skb(len, GFP_ATOMIC);
+	if (!skb)
+		return;
+
+	skb_put_data(skb, data, len);
+	hci_skb_pkt_type(skb) = BCSP_LE_PKT;
+	skb_queue_tail(&bcsp->unrel, skb);
+}
+
+/*
+ * Timer callback for link establishment and retransmission.
+ * - In UNINIT state: send sync packets to initiate link
+ * - In INIT state: send conf packets to complete handshake
+ * - In ACTIVE state: handle reliable packet retransmission
+ */
 static void bcsp_timed_event(struct timer_list *t)
 {
+	static const u8 sync_pkt[4] = { 0xda, 0xdc, 0xed, 0xed };
+	static const u8 conf_pkt[4] = { 0xad, 0xef, 0xac, 0xed };
 	struct bcsp_struct *bcsp = timer_container_of(bcsp, t, tbcsp);
 	struct hci_uart *hu = bcsp->hu;
 	struct sk_buff *skb;
 	unsigned long flags;
 
-	BT_DBG("hu %p retransmitting %u pkts", hu, bcsp->unack.qlen);
+	BT_DBG("hu %p link_state %d unack %u", hu, bcsp->link_state, bcsp->unack.qlen);
 
+	/* Send sync packets in UNINIT state to establish link */
+	if (bcsp->link_state == BCSP_LINK_UNINIT) {
+		BT_DBG("BCSP: sending sync");
+		bcsp_send_link_pkt(bcsp, sync_pkt, sizeof(sync_pkt));
+	}
+
+	/* Send conf packets in INIT state */
+	if (bcsp->link_state == BCSP_LINK_INIT) {
+		BT_DBG("BCSP: sending conf");
+		bcsp_send_link_pkt(bcsp, conf_pkt, sizeof(conf_pkt));
+	}
+
+	/* Re-arm timer if link not yet active */
+	if (bcsp->link_state != BCSP_LINK_ACTIVE)
+		mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
+
+	/* Handle retransmission of reliable packets */
 	spin_lock_irqsave_nested(&bcsp->unack.lock, flags, SINGLE_DEPTH_NESTING);
 
 	while ((skb = __skb_dequeue_tail(&bcsp->unack)) != NULL) {
@@ -2250,9 +2315,13 @@ static int bcsp_open(struct hci_uart *hu)
 
 	bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
 
-	/* Initialize link establishment completion for serdev mode */
+	/* Initialize link establishment state machine */
+	bcsp->link_state = BCSP_LINK_UNINIT;
 	init_completion(&bcsp->link_up);
 	bcsp->link_established = false;
+
+	/* Start timer to begin link establishment (sends sync packets) */
+	mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
 
 	if (txcrc)
 		bcsp->use_crc = 1;
