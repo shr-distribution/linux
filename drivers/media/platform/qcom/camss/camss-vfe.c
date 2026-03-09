@@ -949,8 +949,8 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev,
 		 "VFE: CAMIF_STATUS after START+100us: 0x%08x IRQ_STATUS0=0x%08x IRQ_STATUS1=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
-		 readl_relaxed(vfe->base + 0x024),  /* VFE_IRQ_STATUS_0 */
-		 readl_relaxed(vfe->base + 0x028)); /* VFE_IRQ_STATUS_1 */
+		 readl_relaxed(vfe->base + 0x02C),  /* VFE_IRQ_STATUS_0 */
+		 readl_relaxed(vfe->base + 0x030)); /* VFE_IRQ_STATUS_1 */
 
 	/*
 	 * Step 7: Reload write master 0
