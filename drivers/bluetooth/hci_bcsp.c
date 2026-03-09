@@ -2331,7 +2331,22 @@ static int bcsp_open(struct hci_uart *hu)
 	init_completion(&bcsp->link_up);
 	bcsp->link_established = false;
 
-	/* Start timer to begin link establishment (sends sync packets) */
+	/*
+	 * Send one initial sync packet to wake the chip.
+	 * The chip will respond with sync, and we'll respond with sync_rsp.
+	 */
+	{
+		static const u8 sync_pkt[4] = { 0xda, 0xdc, 0xed, 0xed };
+		struct sk_buff *skb = alloc_skb(4, GFP_KERNEL);
+		if (skb) {
+			skb_put_data(skb, sync_pkt, 4);
+			hci_skb_pkt_type(skb) = BCSP_LE_PKT;
+			skb_queue_tail(&bcsp->unrel, skb);
+			BT_INFO("BCSP: Sent initial sync to wake chip");
+		}
+	}
+
+	/* Start timer for retransmissions and conf sending */
 	mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
 
 	if (txcrc)
