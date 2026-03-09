@@ -272,7 +272,9 @@ static void hci_uart_write_wakeup(struct serdev_device *serdev)
 		return;
 	}
 
-	if (test_bit(HCI_UART_PROTO_READY, &hu->flags))
+	/* Allow TX wakeup during both init and normal operation */
+	if (test_bit(HCI_UART_PROTO_READY, &hu->flags) ||
+	    test_bit(HCI_UART_PROTO_INIT, &hu->flags))
 		hci_uart_tx_wakeup(hu);
 }
 
@@ -296,7 +298,13 @@ static size_t hci_uart_receive_buf(struct serdev_device *serdev,
 		return 0;
 	}
 
-	if (!test_bit(HCI_UART_PROTO_READY, &hu->flags))
+	/*
+	 * Allow RX during both PROTO_INIT (link establishment) and
+	 * PROTO_READY (normal operation). Protocols like BCSP need to
+	 * receive SYNC packets from the chip during their open() phase.
+	 */
+	if (!test_bit(HCI_UART_PROTO_READY, &hu->flags) &&
+	    !test_bit(HCI_UART_PROTO_INIT, &hu->flags))
 		return 0;
 
 	/* It does not need a lock here as it is already protected by a mutex in
