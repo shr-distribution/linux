@@ -431,8 +431,21 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 * after WM registers are configured.
 	 */
 
+	/*
+	 * Try sending the actual hardware reset command.
+	 * webOS writes VFE_RESET_UPON_RESET_CMD (0x3FF) to VFE_GLOBAL_RESET (0x04).
+	 * This resets all VFE modules and should clear the CAMIF halt state.
+	 */
+	dev_info(vfe->camss->dev, "VFE reset: sending hardware reset cmd (0x3FF to 0x04)\n");
+	writel_relaxed(0x3FF, vfe->base + 0x04);  /* VFE_GLOBAL_RESET */
+	wmb();
+
+	/* Wait for reset to complete - webOS waits for RESET_ACK IRQ, we use delay */
+	usleep_range(1000, 2000);
+
 	dev_info(vfe->camss->dev,
-		 "VFE reset: initialized default registers (skipping reset cmd)\n");
+		 "VFE reset: hardware reset complete, IRQ_STATUS1=0x%08x\n",
+		 readl_relaxed(vfe->base + 0x30));  /* VFE_IRQ_STATUS_1 */
 
 	/* Set flag to indicate reset done - vfe_reset() will check this */
 	vfe->vfe31_reset_done = true;
