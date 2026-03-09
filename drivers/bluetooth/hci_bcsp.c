@@ -439,9 +439,10 @@ static int bcsp_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 	/*
 	 * Reject HCI packets while chip is resetting after WARM_RESET.
 	 * The chip needs to re-establish the BCSP link first.
+	 * Also block during the re-establishment phase (BDADDR_SENT state).
 	 */
-	if (bcsp->warm_reset_sent) {
-		BT_DBG("BCSP: Dropping packet during chip reset");
+	if (bcsp->warm_reset_sent || bcsp->bdaddr_state == BCSP_BDADDR_SENT) {
+		BT_DBG("BCSP: Dropping packet during chip reset/re-establishment");
 		kfree_skb(skb);
 		return 0;
 	}
