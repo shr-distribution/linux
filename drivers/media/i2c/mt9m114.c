@@ -88,6 +88,16 @@
 #define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08
 
 /*
+ * MT9M113 CUSTOM_SHORT_PKT register (0x3404)
+ * Controls MIPI CSI-2 short packet transmission including Frame Start/End.
+ * Default value 0x0000 means FS/FE packets are NOT sent!
+ * Bit 7 (frame_cnt_en): Insert frame counter in FS/FE word count field
+ * Setting this bit enables Frame Start/End short packet transmission.
+ */
+#define MT9M113_CUSTOM_SHORT_PKT			CCI_REG16(0x3404)
+#define MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN		0x0080
+
+/*
  * MT9M114 MIPI_CONTROL register (0x3C40) - MT9M114 ONLY, NOT on MT9M113!
  * This register does NOT exist on MT9M113 - always reads 0x0.
  * MT9M113 uses OUTPUT_CONTROL (0x3400) instead for MIPI configuration.
@@ -1206,6 +1216,22 @@ mt9m113_streaming:
 			}
 			ret = cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
 			dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx (expected 0x7A08)\n",
+				 readback);
+
+			/*
+			 * CUSTOM_SHORT_PKT (0x3404) enables MIPI Frame Start/End
+			 * short packets. Default is 0x0000 which means FS/FE are
+			 * NOT transmitted! Bit 7 (frame_cnt_en) enables them.
+			 * Without this, VFE never receives CAMIF_SOF interrupts.
+			 */
+			cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+				  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
+			if (ret) {
+				dev_err(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
+				goto error;
+			}
+			ret = cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx (expected 0x0080)\n",
 				 readback);
 		} else {
 			/*
@@ -2658,6 +2684,19 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 				}
 				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
 				dev_info(dev, "power_on: OUTPUT_CONTROL=0x%llx (expected 0x7A08)\n", readback);
+
+				/*
+				 * CUSTOM_SHORT_PKT (0x3404) enables Frame Start/End packets.
+				 * Without bit 7 set, VFE never receives CAMIF_SOF.
+				 */
+				cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+					  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
+				if (ret < 0) {
+					dev_err(dev, "power_on: CUSTOM_SHORT_PKT failed: %d\n", ret);
+					goto error_clock;
+				}
+				cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
+				dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (expected 0x0080)\n", readback);
 
 				/* RESET_REGISTER for streaming (0x120C per webOS/Samsung) */
 				cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
