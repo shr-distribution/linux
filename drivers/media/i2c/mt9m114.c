@@ -1154,64 +1154,10 @@ mt9m113_streaming:
 			/*
 			 * MIPI CSI-2 mode setup from webOS kernel sequence.
 			 * MT9M113 uses OUTPUT_CONTROL (0x3400) for MIPI enable.
-			 * Note: 0x3C40 register does NOT exist on MT9M113.
+			 * Note: 0xC984/0xC988+ timing registers are MT9M114-only!
+			 * MT9M113 uses default timing and doesn't need them.
 			 */
 			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI CSI-2 output\n");
-
-			/* Unlock register access for MIPI configuration */
-			cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, &ret);
-			if (ret)
-				dev_warn(&sensor->client->dev, "MT9M113: ACCESS_CTL_STAT failed: %d\n", ret);
-
-			/*
-			 * CAM_PORT_OUTPUT_CONTROL (0xC984) must be set for MIPI.
-			 * webOS uses 0x8041: bit 15=output enable, bit 6=MIPI,
-			 * bit 0=clock always on.
-			 */
-			cci_write(sensor->regmap, MT9M114_CAM_PORT_OUTPUT_CONTROL, 0x8041, &ret);
-			if (ret)
-				dev_warn(&sensor->client->dev, "MT9M113: CAM_PORT_OUTPUT_CONTROL failed: %d\n", ret);
-			cci_read(sensor->regmap, MT9M114_CAM_PORT_OUTPUT_CONTROL, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: CAM_PORT_OUTPUT_CONTROL=0x%llx (expected 0x8041)\n",
-				 readback);
-
-			/*
-			 * Configure MIPI D-PHY timing parameters from webOS.
-			 * These are MCU variables (0xCxxx addresses) that can be
-			 * written directly via I2C without setting LOGICAL_ADDRESS_ACCESS.
-			 * webOS writes to these addresses directly in its init table.
-			 */
-			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI timing registers\n");
-			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO,
-				  MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO_VAL, &ret);
-			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_HS_EXIT_TRAIL,
-				  MT9M113_CAM_PORT_MIPI_TIMING_T_HS_EXIT_TRAIL_VAL, &ret);
-			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_POST_PRE,
-				  MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_POST_PRE_VAL, &ret);
-			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_ZERO,
-				  MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_ZERO_VAL, &ret);
-			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_LPX,
-				  MT9M113_CAM_PORT_MIPI_TIMING_T_LPX_VAL, &ret);
-			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_INIT,
-				  MT9M113_CAM_PORT_MIPI_TIMING_INIT_VAL, &ret);
-			if (ret) {
-				dev_err(&sensor->client->dev, "MT9M113: MIPI timing config failed: %d\n", ret);
-				goto error;
-			}
-
-			/* Log timing register values for debugging */
-			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: T_HS_ZERO=0x%llx (expected 0x0F00)\n", readback);
-			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_HS_EXIT_TRAIL, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: T_HS_EXIT_TRAIL=0x%llx (expected 0x0B07)\n", readback);
-			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_POST_PRE, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: T_CLK_POST_PRE=0x%llx (expected 0x0D01)\n", readback);
-			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_ZERO, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: T_CLK_TRAIL_ZERO=0x%llx (expected 0x071D)\n", readback);
-			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_LPX, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: T_LPX=0x%llx (expected 0x0006)\n", readback);
-			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_INIT, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: TIMING_INIT=0x%llx (expected 0x0A0C)\n", readback);
 
 			/* OUTPUT_CONTROL enables MIPI output interface */
 			cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
@@ -1239,22 +1185,6 @@ mt9m113_streaming:
 			ret = cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
 			dev_info(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx (expected 0x0080)\n",
 				 readback);
-
-			/*
-			 * Issue Change-Config command to apply MIPI timing settings.
-			 * webOS sequence: LOGICAL_ADDRESS_ACCESS=0xDC00,
-			 * SYSMGR_NEXT_STATE=0x28, COMMAND_REGISTER=0x8002
-			 */
-			dev_info(&sensor->client->dev, "MT9M113: issuing Change-Config for MIPI settings\n");
-			cci_write(sensor->regmap, MT9M114_LOGICAL_ADDRESS_ACCESS, 0xDC00, &ret);
-			cci_write(sensor->regmap, CCI_REG8(0xDC00), MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE, &ret);
-			cci_write(sensor->regmap, MT9M114_COMMAND_REGISTER,
-				  MT9M114_COMMAND_REGISTER_OK | MT9M114_COMMAND_REGISTER_SET_STATE, &ret);
-			if (ret) {
-				dev_err(&sensor->client->dev, "MT9M113: Change-Config failed: %d\n", ret);
-				goto error;
-			}
-			msleep(100);  /* webOS uses 100ms delay */
 		} else {
 			/*
 			 * Parallel mode: Use MCU variable 0xC984.
