@@ -871,26 +871,34 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 
 	/*
 	 * Issue Change Config command to apply all register settings including
-	 * MIPI_CONTROL. The webOS kernel does this for MT9M113 as well.
+	 * MIPI_CONTROL. For MT9M113, use the exact webOS sequence with direct
+	 * register writes and delay instead of polling (which fails on MT9M113).
 	 */
-	dev_info(&sensor->client->dev, "mt9m114_initialize: issuing Change Config\n");
-	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
-	if (ret < 0) {
-		dev_err(&sensor->client->dev, "mt9m114_initialize: Change Config failed: %d\n", ret);
-		return ret;
+	if (sensor->model == MT9M113_MODEL) {
+		dev_info(&sensor->client->dev, "mt9m114_initialize: MT9M113 Change Config (webOS style)\n");
+
+		/* webOS sequence: 0x098E=0xDC00, 0xDC00=0x28, 0x0080=0x8002, delay 100ms */
+		cci_write(sensor->regmap, MT9M114_LOGICAL_ADDRESS_ACCESS, 0xDC00, &ret);
+		cci_write(sensor->regmap, CCI_REG8(0xDC00), MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE, &ret);
+		cci_write(sensor->regmap, MT9M114_COMMAND_REGISTER,
+			  MT9M114_COMMAND_REGISTER_OK | MT9M114_COMMAND_REGISTER_SET_STATE, &ret);
+		if (ret < 0) {
+			dev_err(&sensor->client->dev, "mt9m114_initialize: Change Config write failed: %d\n", ret);
+			return ret;
+		}
+		msleep(100); /* webOS uses 100ms delay instead of polling */
+
+		/* Verify MIPI_CONTROL after Change Config */
+		cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
+		dev_info(&sensor->client->dev, "mt9m114_initialize: MIPI_CONTROL after config=0x%llx\n",
+			 readback);
+		return 0;
 	}
 
-	/* Verify MIPI_CONTROL after Change Config */
-	cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
-	dev_info(&sensor->client->dev, "mt9m114_initialize: MIPI_CONTROL after config=0x%llx\n",
-		 readback);
-
-	/*
-	 * MT9M113: Skip suspend state transition. The sensor will be left
-	 * in streaming-ready state. For MT9M114, enter suspend.
-	 */
-	if (sensor->model == MT9M113_MODEL)
-		return 0;
+	dev_info(&sensor->client->dev, "mt9m114_initialize: issuing Change Config\n");
+	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
+	if (ret < 0)
+		return ret;
 
 	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_SUSPEND);
 	if (ret < 0)
