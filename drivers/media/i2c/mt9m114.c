@@ -587,6 +587,12 @@ mt9m114_format_info(struct mt9m114 *sensor, unsigned int pad, u32 code)
  */
 
 static const struct cci_reg_sequence mt9m114_init[] = {
+	/*
+	 * MIPI_CONTROL (0x3C40) - enables CSI-2 framing with FS/FE short packets.
+	 * Must be written early in init sequence per webOS kernel.
+	 */
+	{ MT9M113_MIPI_CONTROL, MT9M113_MIPI_CONTROL_VALUE },
+
 	{ MT9M114_RESET_REGISTER, MT9M114_RESET_REGISTER_MASK_BAD |
 				  MT9M114_RESET_REGISTER_LOCK_REG |
 				  0x0010 },
@@ -803,6 +809,10 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 {
 	u32 value;
 	int ret;
+	u64 readback;
+
+	dev_info(&sensor->client->dev, "mt9m114_initialize: writing init table (%zu entries)\n",
+		 ARRAY_SIZE(mt9m114_init));
 
 	ret = cci_multi_reg_write(sensor->regmap, mt9m114_init,
 				  ARRAY_SIZE(mt9m114_init), NULL);
@@ -811,6 +821,11 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 			"Failed to initialize the sensor\n");
 		return ret;
 	}
+
+	/* Verify MIPI_CONTROL was written */
+	cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
+	dev_info(&sensor->client->dev, "mt9m114_initialize: MIPI_CONTROL=0x%llx (expected 0x783C)\n",
+		 readback);
 
 	/* Configure the PLL. */
 	if (sensor->bypass_pll) {
