@@ -868,29 +868,69 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	}
 	/* Handle conf_rsp packet - link establishment complete */
 	else if (!memcmp(&bcsp->rx_skb->data[4], conf_rsp_pkt, 4)) {
-		BT_INFO("BCSP: conf_rsp received, link established (bdaddr_state=%d)",
-			bcsp->bdaddr_state);
+		BT_INFO("BCSP: conf_rsp received, link established (bdaddr_state=%d, is_serdev=%d)",
+			bcsp->bdaddr_state, bcsp->is_serdev);
 
-		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
-			BT_INFO("BCSP: First link up, sending RF PSKEYs (no reset)");
-
+		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING && bcsp->is_serdev) {
 			/*
-			 * Send critical RF configuration PSKEYs from
-			 * DT or Palm defaults.
+			 * Serdev mode: Link is now established, send full
+			 * PSKEY sequence + WARM_RESET. The chip will reset
+			 * and we'll power cycle it via GPIO for clean restart.
 			 */
+			BT_INFO("BCSP: Serdev link up, sending full PSKEYs + WARM_RESET");
+
+			/* === Common PSKEYs === */
 			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
 					     bcsp->pskey_ana_freq);
 			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
 					     bcsp->pskey_ana_ftrim);
-			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
-					     bcsp->pskey_max_tx_power);
+			bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
+					     bcsp->pskey_host_interface);
+			bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
+					     bcsp->pskey_deep_sleep);
+			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
+					     bcsp->pskey_hci_max_acl);
+			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
+					     bcsp->pskey_hci_max_sco);
+			bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
+					     bcsp->pskey_uart_baudrate);
+			bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
+					     bcsp->pskey_enc_key_min);
+			bcsp_send_pskey_word(hu, PSKEY_UNKNOWN_01F9,
+					     bcsp->pskey_unknown_01f9);
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
+					     bcsp->pskey_max_tx_power_no_rssi);
+			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
+					     bcsp->pskey_default_tx_power_no_rssi);
+
+			/* === Palm Platform PSKEYs === */
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01B3,
+					     bcsp->pskey_palm_01b3,
+					     bcsp->pskey_palm_01b3_len);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01B6,
+					     bcsp->pskey_palm_01b6,
+					     bcsp->pskey_palm_01b6_len);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01BF,
+					     bcsp->pskey_palm_01bf,
+					     bcsp->pskey_palm_01bf_len);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01BA,
+					     bcsp->pskey_palm_01ba,
+					     bcsp->pskey_palm_01ba_len);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01C7,
+					     bcsp->pskey_palm_01c7,
+					     bcsp->pskey_palm_01c7_len);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01CA,
+					     bcsp->pskey_palm_01ca,
+					     bcsp->pskey_palm_01ca_len);
 			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
 					     bcsp->pskey_default_tx_power);
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+					     bcsp->pskey_max_tx_power);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_001D,
+					     bcsp->pskey_palm_001d,
+					     bcsp->pskey_palm_001d_len);
 
-			/*
-			 * TX Power Level Table - CRITICAL FOR RF
-			 * Use DT-provided table or Palm default.
-			 */
+			/* TX Power Table */
 			if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
 				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
 						     bcsp->tx_power_table,
@@ -901,7 +941,37 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 						     ARRAY_SIZE(palm_tx_power_table));
 			}
 
-			/* Skip BD address and WARM_RESET - test if RF works without */
+			/* WARM_RESET to apply PSKEYs */
+			bcsp_send_warm_reset(hu);
+			bcsp->warm_reset_sent = true;
+
+			BT_INFO("BCSP: PSKEYs + WARM_RESET sent, chip will reset");
+			bcsp->bdaddr_state = BCSP_BDADDR_SENT;
+		} else if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
+			BT_INFO("BCSP: First link up, sending RF PSKEYs (no reset)");
+
+			/*
+			 * Line discipline mode: Send critical RF PSKEYs only.
+			 */
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
+					     bcsp->pskey_ana_freq);
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
+					     bcsp->pskey_ana_ftrim);
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+					     bcsp->pskey_max_tx_power);
+			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+					     bcsp->pskey_default_tx_power);
+
+			if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
+				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+						     bcsp->tx_power_table,
+						     bcsp->tx_power_table_len);
+			} else {
+				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+						     palm_tx_power_table,
+						     ARRAY_SIZE(palm_tx_power_table));
+			}
+
 			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
 			BT_INFO("BCSP: RF PSKEYs sent (no BD addr, no reset)");
 		}
@@ -1724,6 +1794,19 @@ static int bcsp_setup(struct hci_uart *hu)
 		 */
 		if (skip_pskeys) {
 			BT_INFO("BCSP: Skipping PSKEY configuration (skip_pskeys=1)");
+			return 0;
+		}
+
+		/*
+		 * In serdev mode, bcsp_setup() is called before the BCSP link
+		 * is established. We cannot send PSKEYs yet because the chip
+		 * won't process them without a link. Instead, mark the state
+		 * as PENDING and let the conf_rsp handler send PSKEYs after
+		 * the link is up.
+		 */
+		if (bcsp->is_serdev) {
+			BT_INFO("BCSP: Serdev mode - deferring PSKEYs until link up");
+			bcsp->bdaddr_state = BCSP_BDADDR_PENDING;
 			return 0;
 		}
 
