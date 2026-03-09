@@ -1090,24 +1090,28 @@ mt9m113_streaming:
 			u64 readback;
 			/*
 			 * MIPI CSI-2 mode setup from webOS kernel sequence:
-			 * 1. Write MIPI_CONTROL (0x3C40) = 0x783C for CSI-2 framing
-			 * 2. Write MIPI timing registers (0xC988-0xC992)
-			 * 3. Write OUTPUT_CONTROL (0x3400) = 0x7A08 to enable MIPI
+			 * MIPI_CONTROL (0x3C40) was configured in power_on.
+			 * Here we configure timing registers and OUTPUT_CONTROL.
 			 */
 			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI CSI-2 output\n");
 
-			/* MIPI_CONTROL enables proper CSI-2 framing with FS/FE short packets */
-			cci_write(sensor->regmap, MT9M113_MIPI_CONTROL,
-				  MT9M113_MIPI_CONTROL_VALUE, &ret);
-			if (ret) {
-				dev_err(&sensor->client->dev, "MT9M113: MIPI_CONTROL failed: %d\n", ret);
-				goto error;
-			}
+			/* Verify MIPI_CONTROL was set in power_on */
 			ret = cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
 			dev_info(&sensor->client->dev, "MT9M113: MIPI_CONTROL=0x%llx (expected 0x783C)\n",
 				 readback);
 
-			/* Configure MIPI D-PHY timing parameters from webOS */
+			/*
+			 * Configure MIPI D-PHY timing parameters from webOS.
+			 * These are MCU variables (0xCxxx addresses) that require
+			 * setting LOGICAL_ADDRESS_ACCESS (0x098E) = 0x0000 first.
+			 */
+			dev_info(&sensor->client->dev, "MT9M113: setting logical address mode for MCU vars\n");
+			cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, 0x0000, &ret);
+			if (ret) {
+				dev_err(&sensor->client->dev, "MT9M113: LOGICAL_ADDRESS_ACCESS failed: %d\n", ret);
+				goto error;
+			}
+
 			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI timing registers\n");
 			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO,
 				  MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO_VAL, &ret);
@@ -2602,6 +2606,24 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		}
 		dev_info(dev, "power_on: MCU boot complete, waiting 200ms\n");
 		msleep(200); /* Extended delay for sensor stabilization */
+
+		/*
+		 * Configure MIPI_CONTROL early - must be done before PLL setup.
+		 * Value 0x783C from webOS kernel enables proper CSI-2 framing
+		 * including frame start/end short packets.
+		 */
+		if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
+			u64 readback;
+			dev_info(dev, "power_on: configuring MIPI_CONTROL (0x3C40)\n");
+			cci_write(sensor->regmap, MT9M113_MIPI_CONTROL,
+				  MT9M113_MIPI_CONTROL_VALUE, &ret);
+			if (ret < 0) {
+				dev_err(dev, "power_on: MIPI_CONTROL write failed: %d\n", ret);
+				goto error_clock;
+			}
+			cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
+			dev_info(dev, "power_on: MIPI_CONTROL=0x%llx (expected 0x783C)\n", readback);
+		}
 
 		/*
 		 * Configure clocks and PLL - sequence from webOS kernel.
