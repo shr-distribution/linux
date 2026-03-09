@@ -796,6 +796,27 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_IRQ_MASK_1_BUS_OVERFLOW_WM(n) BIT((n) + 9)
 
 /*
+ * VFE31 configuration registers
+ * VFE_CFG_OFF (0x14): Pixel pattern and input source selection
+ * VFE_MODULE_CFG (0x10): Module enable bits
+ */
+#define VFE31_CFG_OFF			0x014
+#define VFE31_MODULE_CFG		0x010
+/* VFE_CFG_OFF pixel pattern values (bits 0-2) */
+#define VFE31_PIXEL_PATTERN_BAYER_RGRGRG	0
+#define VFE31_PIXEL_PATTERN_BAYER_GRGRGR	1
+#define VFE31_PIXEL_PATTERN_BAYER_BGBGBG	2
+#define VFE31_PIXEL_PATTERN_BAYER_GBGBGB	3
+#define VFE31_PIXEL_PATTERN_YUV_YCbYCr		4
+#define VFE31_PIXEL_PATTERN_YUV_YCrYCb		5
+#define VFE31_PIXEL_PATTERN_YUV_CbYCrY		6  /* UYVY format */
+#define VFE31_PIXEL_PATTERN_YUV_CrYCbY		7
+/* VFE_CFG_OFF input source (bits 16-17) */
+#define VFE31_INPUT_SOURCE_CAMIF	(0 << 16)
+#define VFE31_INPUT_SOURCE_TESTGEN	(1 << 16)
+#define VFE31_INPUT_SOURCE_AXI		(2 << 16)
+
+/*
  * vfe_enable_pending_camif - Configure and enable deferred CAMIF
  * @vfe: VFE device
  *
@@ -834,6 +855,44 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	/* Set clamp values for output */
 	writel_relaxed(0x00ffffff, vfe->base + 0x524); /* VFE_CLAMP_ENC_MAX_CFG */
 	writel_relaxed(0x0, vfe->base + 0x528);        /* VFE_CLAMP_ENC_MIN_CFG */
+
+	/*
+	 * Step 0b: Configure VFE_CFG_OFF - pixel pattern and input source
+	 * This register MUST be set for VFE31 to know where data comes from.
+	 * From webOS vfe31_operation_config(): writes to VFE_CFG_OFF before start.
+	 */
+	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
+	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
+		val = VFE31_PIXEL_PATTERN_YUV_YCbYCr;
+		break;
+	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
+		val = VFE31_PIXEL_PATTERN_YUV_YCrYCb;
+		break;
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
+	default:
+		val = VFE31_PIXEL_PATTERN_YUV_CbYCrY;
+		break;
+	case MEDIA_BUS_FMT_VYUY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
+		val = VFE31_PIXEL_PATTERN_YUV_CrYCbY;
+		break;
+	}
+	val |= VFE31_INPUT_SOURCE_CAMIF;  /* Input from CAMIF (CSI/parallel) */
+	dev_info(vfe->camss->dev, "VFE: VFE_CFG_OFF=0x%08x (pixel=%d, input=CAMIF)\n",
+		 val, val & 0x7);
+	writel_relaxed(val, vfe->base + VFE31_CFG_OFF);
+
+	/*
+	 * Step 0c: Configure VFE_MODULE_CFG - enable modules
+	 * For raw passthrough, we don't need most modules enabled.
+	 * Set to 0 initially (no processing modules enabled).
+	 */
+	writel_relaxed(0, vfe->base + VFE31_MODULE_CFG);
+	dev_info(vfe->camss->dev, "VFE: VFE_MODULE_CFG=0x0 (no processing)\n");
+
 	wmb();
 
 	/* Step 1: Configure CORE_CFG pixel pattern */
@@ -953,11 +1012,11 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + 0x030)); /* VFE_IRQ_STATUS_1 */
 
 	/*
-	 * Step 7: Reload write master 0
-	 * VFE_BUS_CMD bit 0 reloads WM0. This is done after config is complete
-	 * to apply the new settings. From webOS kernel behavior.
+	 * Step 7: Reload all write masters
+	 * VFE_BUS_CMD at 0x38 controls WM reload. webOS uses 0x7FFF after reset
+	 * to reload all write masters (frame & line).
 	 */
-	writel_relaxed(BIT(0), vfe->base + 0x038);  /* VFE_BUS_CMD, reload WM0 */
+	writel_relaxed(0x7FFF, vfe->base + 0x038);  /* VFE_BUS_CMD, reload all WMs */
 	wmb();
 
 	vfe->camif_pending = false;
@@ -970,11 +1029,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 "VFE: CAMIF configured and streaming started (stream_count=%d)\n",
 		 vfe->stream_count);
 	dev_info(vfe->camss->dev,
-		 "VFE: status=0x%08x cfg=0x%08x frame=0x%08x axi_mode=0x%08x bus_cfg=0x%08x\n",
+		 "VFE: status=0x%08x camif_cfg=0x%08x frame=0x%08x axi_mode=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG),
-		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
+		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG));
+	dev_info(vfe->camss->dev,
+		 "VFE: vfe_cfg=0x%08x module_cfg=0x%08x bus_cfg=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE31_CFG_OFF),
+		 readl_relaxed(vfe->base + VFE31_MODULE_CFG),
 		 readl_relaxed(vfe->base + VFE31_BUS_CFG));
 	/*
 	 * Note: VFE31 IRQ_MASK_0/1 are write-only registers - do NOT read them!
