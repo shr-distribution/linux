@@ -2538,48 +2538,75 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		usleep_range(44500, 50000);
 
 		/*
-		 * MT9M113 MIPI mode: Perform soft reset and write MIPI_CONTROL
-		 * early, matching webOS sequence exactly:
-		 * 1. Soft reset (0x001A = 1, then 0)
-		 * 2. MIPI_CONTROL (0x3C40 = 0x783C)
-		 * 3. RESET_REGISTER (0x301A = 0x8234)
+		 * MT9M113 MIPI mode: Check if sensor is already initialized
+		 * (runtime resume case) or needs full initialization (cold boot).
+		 * During runtime resume from powerdown standby, the sensor
+		 * retains its configuration and doesn't need soft reset.
 		 */
 		if (sensor->expected_model == MT9M113_MODEL &&
 		    sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
-			u64 readback;
+			u64 readback = 0;
+			int read_ret;
 
-			dev_info(dev, "power_on: MT9M113 MIPI early init sequence\n");
+			/*
+			 * Try reading CLOCKS_CONTROL to check if sensor is
+			 * already initialized. If it reads non-zero, skip
+			 * soft reset (runtime resume). If it reads 0 or fails,
+			 * do full MIPI init (cold boot).
+			 */
+			read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL,
+					    &readback, NULL);
+			dev_info(dev, "power_on: CLOCKS_CONTROL=0x%llx ret=%d\n",
+				 readback, read_ret);
 
-			/* Soft reset */
-			cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
-				  MT9M114_RESET_SOC, &ret);
-			cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
-				  0, &ret);
-			if (ret < 0) {
-				dev_err(dev, "power_on: soft reset failed: %d\n", ret);
-				goto error_clock;
+			if (read_ret == 0 && readback != 0) {
+				/*
+				 * Sensor already initialized (runtime resume).
+				 * Skip soft reset, just ensure MIPI settings.
+				 */
+				dev_info(dev, "power_on: sensor already init, skipping soft reset\n");
+				msleep(50); /* Brief stabilization */
+			} else {
+				/*
+				 * Cold boot or sensor not responding.
+				 * Perform full MIPI init sequence per webOS:
+				 * 1. Soft reset (0x001A = 1, then 0)
+				 * 2. MIPI_CONTROL (0x3C40 = 0x783C)
+				 * 3. RESET_REGISTER (0x301A = 0x8234)
+				 */
+				dev_info(dev, "power_on: MT9M113 MIPI early init sequence\n");
+
+				/* Soft reset */
+				cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
+					  MT9M114_RESET_SOC, &ret);
+				cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
+					  0, &ret);
+				if (ret < 0) {
+					dev_err(dev, "power_on: soft reset failed: %d\n", ret);
+					goto error_clock;
+				}
+				msleep(200); /* webOS uses 200ms delay after reset */
+
+				/* MIPI_CONTROL - must be written right after reset */
+				cci_write(sensor->regmap, MT9M113_MIPI_CONTROL,
+					  MT9M113_MIPI_CONTROL_VALUE, &ret);
+				if (ret < 0) {
+					dev_err(dev, "power_on: MIPI_CONTROL failed: %d\n", ret);
+					goto error_clock;
+				}
+				cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
+				dev_info(dev, "power_on: MIPI_CONTROL=0x%llx (expected 0x783C)\n", readback);
+
+				/* RESET_REGISTER for MIPI mode */
+				cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+					  MT9M113_RESET_REG_MIPI_ENABLE, &ret);
+				if (ret < 0) {
+					dev_err(dev, "power_on: RESET_REGISTER failed: %d\n", ret);
+					goto error_clock;
+				}
+				cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
+				dev_info(dev, "power_on: RESET_REGISTER=0x%llx (expected 0x8234)\n", readback);
 			}
-			msleep(200); /* webOS uses 200ms delay after reset */
-
-			/* MIPI_CONTROL - must be written right after reset */
-			cci_write(sensor->regmap, MT9M113_MIPI_CONTROL,
-				  MT9M113_MIPI_CONTROL_VALUE, &ret);
-			if (ret < 0) {
-				dev_err(dev, "power_on: MIPI_CONTROL failed: %d\n", ret);
-				goto error_clock;
-			}
-			cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
-			dev_info(dev, "power_on: MIPI_CONTROL=0x%llx (expected 0x783C)\n", readback);
-
-			/* RESET_REGISTER for MIPI mode */
-			cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-				  MT9M113_RESET_REG_MIPI_ENABLE, &ret);
-			if (ret < 0) {
-				dev_err(dev, "power_on: RESET_REGISTER failed: %d\n", ret);
-				goto error_clock;
-			}
-			cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
-			dev_info(dev, "power_on: RESET_REGISTER=0x%llx (expected 0x8234)\n", readback);
 		}
 	} else {
 		/*
