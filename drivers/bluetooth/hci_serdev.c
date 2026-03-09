@@ -352,6 +352,13 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 		serdev_device_set_baudrate(hu->serdev, p->init_speed);
 
 	/*
+	 * Disable hardware flow control initially. Some protocols need
+	 * to communicate before flow control is properly established,
+	 * and CTS/RTS pins may not be configured correctly yet.
+	 */
+	serdev_device_set_flow_control(hu->serdev, false);
+
+	/*
 	 * Initialize write_work and set proto before calling open(),
 	 * as some protocols (e.g., BCSP) need to transmit during their
 	 * open() for link establishment. PROTO_INIT flag allows TX
