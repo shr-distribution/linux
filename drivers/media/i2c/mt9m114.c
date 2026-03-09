@@ -2517,12 +2517,55 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	} else if (sensor->powerdown) {
 		/*
 		 * When using powerdown GPIO, the sensor is in a fresh state
-		 * after powerdown deassert. Skip soft reset - the MT9M113
-		 * MCU boot sequence below will initialize it properly.
-		 * Just wait for the sensor to be ready for I2C commands.
+		 * after powerdown deassert. Wait for sensor to be ready.
 		 */
-		dev_info(dev, "power_on: powerdown GPIO used, skipping soft reset\n");
+		dev_info(dev, "power_on: powerdown GPIO used, waiting 45ms\n");
 		usleep_range(44500, 50000);
+
+		/*
+		 * MT9M113 MIPI mode: Perform soft reset and write MIPI_CONTROL
+		 * early, matching webOS sequence exactly:
+		 * 1. Soft reset (0x001A = 1, then 0)
+		 * 2. MIPI_CONTROL (0x3C40 = 0x783C)
+		 * 3. RESET_REGISTER (0x301A = 0x8234)
+		 */
+		if (sensor->expected_model == MT9M113_MODEL &&
+		    sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
+			u64 readback;
+
+			dev_info(dev, "power_on: MT9M113 MIPI early init sequence\n");
+
+			/* Soft reset */
+			cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
+				  MT9M114_RESET_SOC, &ret);
+			cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
+				  0, &ret);
+			if (ret < 0) {
+				dev_err(dev, "power_on: soft reset failed: %d\n", ret);
+				goto error_clock;
+			}
+			msleep(200); /* webOS uses 200ms delay after reset */
+
+			/* MIPI_CONTROL - must be written right after reset */
+			cci_write(sensor->regmap, MT9M113_MIPI_CONTROL,
+				  MT9M113_MIPI_CONTROL_VALUE, &ret);
+			if (ret < 0) {
+				dev_err(dev, "power_on: MIPI_CONTROL failed: %d\n", ret);
+				goto error_clock;
+			}
+			cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
+			dev_info(dev, "power_on: MIPI_CONTROL=0x%llx (expected 0x783C)\n", readback);
+
+			/* RESET_REGISTER for MIPI mode */
+			cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+				  MT9M113_RESET_REG_MIPI_ENABLE, &ret);
+			if (ret < 0) {
+				dev_err(dev, "power_on: RESET_REGISTER failed: %d\n", ret);
+				goto error_clock;
+			}
+			cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
+			dev_info(dev, "power_on: RESET_REGISTER=0x%llx (expected 0x8234)\n", readback);
+		}
 	} else {
 		/*
 		 * No reset GPIO and no powerdown GPIO - the sensor may have
@@ -2608,22 +2651,10 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		msleep(200); /* Extended delay for sensor stabilization */
 
 		/*
-		 * Configure MIPI_CONTROL early - must be done before PLL setup.
-		 * Value 0x783C from webOS kernel enables proper CSI-2 framing
-		 * including frame start/end short packets.
+		 * Note: MIPI_CONTROL and RESET_REGISTER were already configured
+		 * earlier in the power_on sequence (right after soft reset),
+		 * matching the webOS kernel initialization order.
 		 */
-		if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
-			u64 readback;
-			dev_info(dev, "power_on: configuring MIPI_CONTROL (0x3C40)\n");
-			cci_write(sensor->regmap, MT9M113_MIPI_CONTROL,
-				  MT9M113_MIPI_CONTROL_VALUE, &ret);
-			if (ret < 0) {
-				dev_err(dev, "power_on: MIPI_CONTROL write failed: %d\n", ret);
-				goto error_clock;
-			}
-			cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
-			dev_info(dev, "power_on: MIPI_CONTROL=0x%llx (expected 0x783C)\n", readback);
-		}
 
 		/*
 		 * Configure clocks and PLL - sequence from webOS kernel.
