@@ -1165,16 +1165,10 @@ mt9m113_streaming:
 
 			/*
 			 * Configure MIPI D-PHY timing parameters from webOS.
-			 * These are MCU variables (0xCxxx addresses) that require
-			 * setting LOGICAL_ADDRESS_ACCESS (0x098E) = 0x0000 first.
+			 * These are MCU variables (0xCxxx addresses) that can be
+			 * written directly via I2C without setting LOGICAL_ADDRESS_ACCESS.
+			 * webOS writes to these addresses directly in its init table.
 			 */
-			dev_info(&sensor->client->dev, "MT9M113: setting logical address mode for MCU vars\n");
-			cci_write(sensor->regmap, MT9M114_LOGICAL_ADDRESS_ACCESS, 0x0000, &ret);
-			if (ret) {
-				dev_err(&sensor->client->dev, "MT9M113: LOGICAL_ADDRESS_ACCESS failed: %d\n", ret);
-				goto error;
-			}
-
 			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI timing registers\n");
 			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO,
 				  MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO_VAL, &ret);
