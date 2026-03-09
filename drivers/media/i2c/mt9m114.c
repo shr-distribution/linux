@@ -84,12 +84,13 @@
 #define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08
 
 /*
- * MIPI_CONTROL register (0x3C40) - controls MIPI CSI-2 framing
- * Value 0x783C from webOS kernel enables proper CSI-2 output including
- * frame start/end short packets required for CSIPHY frame detection.
+ * MT9M114 MIPI_CONTROL register (0x3C40) - MT9M114 ONLY, NOT on MT9M113!
+ * This register does NOT exist on MT9M113 - always reads 0x0.
+ * MT9M113 uses OUTPUT_CONTROL (0x3400) instead for MIPI configuration.
+ * Keeping these defines for MT9M114 compatibility only.
  */
-#define MT9M113_MIPI_CONTROL				CCI_REG16(0x3C40)
-#define MT9M113_MIPI_CONTROL_VALUE			0x783C
+#define MT9M114_MIPI_CONTROL				CCI_REG16(0x3C40)
+#define MT9M114_MIPI_CONTROL_VALUE			0x783C
 
 /*
  * MIPI timing registers (MCU variables) from webOS kernel.
@@ -588,12 +589,10 @@ mt9m114_format_info(struct mt9m114 *sensor, unsigned int pad, u32 code)
 
 static const struct cci_reg_sequence mt9m114_init[] = {
 	/*
-	 * MIPI_CONTROL (0x3C40) - enables CSI-2 framing with FS/FE short packets.
-	 * Must be written early in init sequence per webOS kernel.
-	 */
-	{ MT9M113_MIPI_CONTROL, MT9M113_MIPI_CONTROL_VALUE },
-
-	/*
+	 * Note: MT9M113 MIPI is configured via OUTPUT_CONTROL (0x3400) = 0x7A08,
+	 * which is written during start_streaming. The 0x3C40 register does NOT
+	 * exist on MT9M113 (it's MT9M114-specific), so we don't write it here.
+	 *
 	 * RESET_REGISTER: Use webOS value 0x8234 for MIPI mode
 	 * Bit 15: LOCK_REG (will be cleared after Change Config)
 	 * Bit 13: DRIVE_PINS
@@ -829,10 +828,10 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 		return ret;
 	}
 
-	/* Verify MIPI_CONTROL was written */
-	cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
-	dev_info(&sensor->client->dev, "mt9m114_initialize: MIPI_CONTROL=0x%llx (expected 0x783C)\n",
-		 readback);
+	/*
+	 * Note: MT9M113 MIPI is configured via OUTPUT_CONTROL (0x3400) in
+	 * start_streaming. The 0x3C40 register doesn't exist on MT9M113.
+	 */
 
 	/* Configure the PLL. */
 	if (sensor->bypass_pll) {
@@ -908,11 +907,7 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 		if (ret < 0)
 			dev_warn(&sensor->client->dev, "mt9m114_initialize: ACCESS_CTL_STAT failed: %d\n", ret);
 
-		/* Verify MIPI_CONTROL after Change Config */
-		cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
-		dev_info(&sensor->client->dev, "mt9m114_initialize: MIPI_CONTROL after config=0x%llx\n",
-			 readback);
-
+		/* Verify RESET_REGISTER after Change Config */
 		cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
 		dev_info(&sensor->client->dev, "mt9m114_initialize: RESET_REGISTER after config=0x%llx\n",
 			 readback);
@@ -1148,9 +1143,9 @@ mt9m113_streaming:
 		if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
 			u64 readback;
 			/*
-			 * MIPI CSI-2 mode setup from webOS kernel sequence:
-			 * MIPI_CONTROL (0x3C40) was configured in power_on.
-			 * Here we configure timing registers and OUTPUT_CONTROL.
+			 * MIPI CSI-2 mode setup from webOS kernel sequence.
+			 * MT9M113 uses OUTPUT_CONTROL (0x3400) for MIPI enable.
+			 * Note: 0x3C40 register does NOT exist on MT9M113.
 			 */
 			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI CSI-2 output\n");
 
@@ -1158,11 +1153,6 @@ mt9m113_streaming:
 			cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, &ret);
 			if (ret)
 				dev_warn(&sensor->client->dev, "MT9M113: ACCESS_CTL_STAT failed: %d\n", ret);
-
-			/* Verify MIPI_CONTROL was set in power_on */
-			ret = cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: MIPI_CONTROL=0x%llx (expected 0x783C)\n",
-				 readback);
 
 			/*
 			 * Configure MIPI D-PHY timing parameters from webOS.
@@ -2639,8 +2629,9 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 				 * Cold boot or sensor not responding.
 				 * Perform full MIPI init sequence per webOS:
 				 * 1. Soft reset (0x001A = 1, then 0)
-				 * 2. MIPI_CONTROL (0x3C40 = 0x783C)
-				 * 3. RESET_REGISTER (0x301A = 0x8234)
+				 * 2. OUTPUT_CONTROL (0x3400 = 0x7A08) enables MIPI
+				 * 3. RESET_REGISTER (0x301A = 0x120C) for streaming
+				 * Note: MT9M113 uses 0x3400 for MIPI, NOT 0x3C40.
 				 */
 				dev_info(dev, "power_on: MT9M113 MIPI early init sequence\n");
 
@@ -2664,15 +2655,19 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 				if (ret < 0)
 					dev_warn(dev, "power_on: ACCESS_CTL_STAT write failed: %d\n", ret);
 
-				/* MIPI_CONTROL - must be written right after reset */
-				cci_write(sensor->regmap, MT9M113_MIPI_CONTROL,
-					  MT9M113_MIPI_CONTROL_VALUE, &ret);
+				/*
+				 * OUTPUT_CONTROL (0x3400) enables MIPI output.
+				 * This is the correct register for MT9M113 - the 0x3C40
+				 * register used by MT9M114 does NOT exist on MT9M113.
+				 */
+				cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+					  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, &ret);
 				if (ret < 0) {
-					dev_err(dev, "power_on: MIPI_CONTROL failed: %d\n", ret);
+					dev_err(dev, "power_on: OUTPUT_CONTROL failed: %d\n", ret);
 					goto error_clock;
 				}
-				cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
-				dev_info(dev, "power_on: MIPI_CONTROL=0x%llx (expected 0x783C)\n", readback);
+				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+				dev_info(dev, "power_on: OUTPUT_CONTROL=0x%llx (expected 0x7A08)\n", readback);
 
 				/* RESET_REGISTER for MIPI mode */
 				cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
