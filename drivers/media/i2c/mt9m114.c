@@ -71,8 +71,9 @@
 #define MT9M113_SEQ_STATE				0xa104
 #define MT9M113_SEQ_CAP_MODE				0xa115
 
-/* MT9M113 RESET_REGISTER value for parallel output (from webOS kernel) */
+/* MT9M113 RESET_REGISTER values from webOS kernel */
 #define MT9M113_RESET_REG_PARALLEL_ENABLE		0x120c
+#define MT9M113_RESET_REG_MIPI_ENABLE			0x8234
 
 /*
  * MT9M113 OUTPUT_CONTROL register (physical register, not MCU variable)
@@ -81,6 +82,31 @@
  */
 #define MT9M113_OUTPUT_CONTROL				CCI_REG16(0x3400)
 #define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08
+
+/*
+ * MIPI_CONTROL register (0x3C40) - controls MIPI CSI-2 framing
+ * Value 0x783C from webOS kernel enables proper CSI-2 output including
+ * frame start/end short packets required for CSIPHY frame detection.
+ */
+#define MT9M113_MIPI_CONTROL				CCI_REG16(0x3C40)
+#define MT9M113_MIPI_CONTROL_VALUE			0x783C
+
+/*
+ * MIPI timing registers (MCU variables) from webOS kernel.
+ * These configure CSI-2 D-PHY timing parameters for proper signaling.
+ */
+#define MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO		CCI_REG16(0xC988)
+#define MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO_VAL	0x0F00
+#define MT9M113_CAM_PORT_MIPI_TIMING_T_HS_EXIT_TRAIL	CCI_REG16(0xC98A)
+#define MT9M113_CAM_PORT_MIPI_TIMING_T_HS_EXIT_TRAIL_VAL 0x0B07
+#define MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_POST_PRE	CCI_REG16(0xC98C)
+#define MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_POST_PRE_VAL	0x0D01
+#define MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_ZERO	CCI_REG16(0xC98E)
+#define MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_ZERO_VAL 0x071D
+#define MT9M113_CAM_PORT_MIPI_TIMING_T_LPX		CCI_REG16(0xC990)
+#define MT9M113_CAM_PORT_MIPI_TIMING_T_LPX_VAL		0x0006
+#define MT9M113_CAM_PORT_MIPI_TIMING_INIT		CCI_REG16(0xC992)
+#define MT9M113_CAM_PORT_MIPI_TIMING_INIT_VAL		0x0A0C
 
 /* MT9M113 OFIFO control (from webOS kernel) */
 #define MT9M114_OFIFO_CONTROL_STATUS			CCI_REG16(0x321c)
@@ -1063,21 +1089,67 @@ mt9m113_streaming:
 		if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
 			u64 readback;
 			/*
-			 * MIPI CSI-2 mode: Write 0x7A08 to OUTPUT_CONTROL.
-			 * This is a physical register (not MCU variable).
-			 * Value from webOS kernel enables MIPI output.
+			 * MIPI CSI-2 mode setup from webOS kernel sequence:
+			 * 1. Write MIPI_CONTROL (0x3C40) = 0x783C for CSI-2 framing
+			 * 2. Write MIPI timing registers (0xC988-0xC992)
+			 * 3. Write OUTPUT_CONTROL (0x3400) = 0x7A08 to enable MIPI
 			 */
 			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI CSI-2 output\n");
+
+			/* MIPI_CONTROL enables proper CSI-2 framing with FS/FE short packets */
+			cci_write(sensor->regmap, MT9M113_MIPI_CONTROL,
+				  MT9M113_MIPI_CONTROL_VALUE, &ret);
+			if (ret) {
+				dev_err(&sensor->client->dev, "MT9M113: MIPI_CONTROL failed: %d\n", ret);
+				goto error;
+			}
+			ret = cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: MIPI_CONTROL=0x%llx (expected 0x783C)\n",
+				 readback);
+
+			/* Configure MIPI D-PHY timing parameters from webOS */
+			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI timing registers\n");
+			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO,
+				  MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO_VAL, &ret);
+			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_HS_EXIT_TRAIL,
+				  MT9M113_CAM_PORT_MIPI_TIMING_T_HS_EXIT_TRAIL_VAL, &ret);
+			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_POST_PRE,
+				  MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_POST_PRE_VAL, &ret);
+			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_ZERO,
+				  MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_ZERO_VAL, &ret);
+			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_LPX,
+				  MT9M113_CAM_PORT_MIPI_TIMING_T_LPX_VAL, &ret);
+			cci_write(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_INIT,
+				  MT9M113_CAM_PORT_MIPI_TIMING_INIT_VAL, &ret);
+			if (ret) {
+				dev_err(&sensor->client->dev, "MT9M113: MIPI timing config failed: %d\n", ret);
+				goto error;
+			}
+
+			/* Log timing register values for debugging */
+			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO, &readback, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: T_HS_ZERO=0x%llx (expected 0x0F00)\n", readback);
+			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_HS_EXIT_TRAIL, &readback, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: T_HS_EXIT_TRAIL=0x%llx (expected 0x0B07)\n", readback);
+			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_POST_PRE, &readback, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: T_CLK_POST_PRE=0x%llx (expected 0x0D01)\n", readback);
+			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_ZERO, &readback, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: T_CLK_TRAIL_ZERO=0x%llx (expected 0x071D)\n", readback);
+			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_T_LPX, &readback, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: T_LPX=0x%llx (expected 0x0006)\n", readback);
+			cci_read(sensor->regmap, MT9M113_CAM_PORT_MIPI_TIMING_INIT, &readback, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: TIMING_INIT=0x%llx (expected 0x0A0C)\n", readback);
+
+			/* OUTPUT_CONTROL enables MIPI output interface */
 			cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 				  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, &ret);
 			if (ret) {
 				dev_err(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
 				goto error;
 			}
-			/* Verify write took effect */
 			ret = cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL readback=0x%llx (expected 0x7A08) ret=%d\n",
-				 readback, ret);
+			dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx (expected 0x7A08)\n",
+				 readback);
 		} else {
 			/*
 			 * Parallel mode: Use MCU variable 0xC984.
@@ -1095,19 +1167,29 @@ mt9m113_streaming:
 
 		/*
 		 * Configure RESET_REGISTER for streaming.
-		 * Value 0x120C from webOS kernel enables output interface.
+		 * MIPI mode: 0x8234 from webOS kernel
+		 * Parallel mode: 0x120C from webOS kernel
 		 */
 		{
 			u64 readback;
-			cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-				  MT9M113_RESET_REG_PARALLEL_ENABLE, &ret);
+			u16 reset_val;
+
+			if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
+				reset_val = MT9M113_RESET_REG_MIPI_ENABLE;
+				dev_info(&sensor->client->dev, "MT9M113: Setting RESET_REGISTER for MIPI mode\n");
+			} else {
+				reset_val = MT9M113_RESET_REG_PARALLEL_ENABLE;
+				dev_info(&sensor->client->dev, "MT9M113: Setting RESET_REGISTER for parallel mode\n");
+			}
+
+			cci_write(sensor->regmap, MT9M114_RESET_REGISTER, reset_val, &ret);
 			if (ret) {
 				dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
 				goto error;
 			}
 			ret = cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: RESET_REGISTER readback=0x%llx (expected 0x120C) ret=%d\n",
-				 readback, ret);
+			dev_info(&sensor->client->dev, "MT9M113: RESET_REGISTER=0x%llx (expected 0x%04x)\n",
+				 readback, reset_val);
 		}
 
 		/*
