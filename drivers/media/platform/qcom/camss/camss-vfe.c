@@ -779,7 +779,8 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_CAMIF_STATUS		0x204	/* Read status */
 #define VFE31_CAMIF_CMD			0x1E0	/* Write commands */
 #define VFE31_CAMIF_CMD_CLEAR_STATUS	BIT(2)
-#define VFE31_CAMIF_CMD_START		0x5	/* Enable CAMIF */
+#define VFE31_CAMIF_CMD_STOP_IMMEDIATELY BIT(1)
+#define VFE31_CAMIF_CMD_START		BIT(0)	/* Enable CAMIF - webOS uses 0x1 */
 #define VFE31_REG_UPDATE_CMD		0x260
 /* IRQ registers - must be enabled to receive interrupts! */
 #define VFE31_IRQ_MASK_0		0x01C
@@ -929,17 +930,13 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE31_IRQ_MASK_1);
 	wmb();
 
-	/* REG_UPDATE command to latch the IRQ mask and other settings */
-	writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
-	wmb();
-
-	/* Step 6: Clear status and enable CAMIF frame capture */
-	val = VFE31_CAMIF_CMD_CLEAR_STATUS;
-	writel_relaxed(val, vfe->base + VFE31_CAMIF_CMD);
-	wmb();
-
-	writel_relaxed(VFE31_CAMIF_CMD_START,
-		       vfe->base + VFE31_CAMIF_CMD);
+	/*
+	 * Step 6: REG_UPDATE then START CAMIF
+	 * From webOS vfe31_start_common(): write 1 to REG_UPDATE_CMD with barrier,
+	 * then write 1 to CAMIF_COMMAND. No separate CLEAR step.
+	 */
+	writel(1, vfe->base + VFE31_REG_UPDATE_CMD);
+	writel(VFE31_CAMIF_CMD_START, vfe->base + VFE31_CAMIF_CMD);
 	wmb();
 
 	/*
