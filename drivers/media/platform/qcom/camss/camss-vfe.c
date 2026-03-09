@@ -1141,6 +1141,30 @@ void vfe_isr_reset_ack(struct vfe_device *vfe)
 }
 
 /*
+ * vfe_trigger_software_sof - Trigger software-generated SOF for VFE
+ * @vfe: VFE device
+ * @line_id: VFE line to send SOF to (usually VFE_LINE_PIX for raw)
+ *
+ * MSM8660 workaround: Some sensors (like MT9M113) don't send MIPI Frame
+ * Start/End short packets, so VFE never receives CAMIF_SOF interrupts.
+ * This function allows CSIPHY to trigger software SOF when it detects
+ * frame boundaries through other means (e.g., SOT after idle gap).
+ */
+void vfe_trigger_software_sof(struct vfe_device *vfe, enum vfe_line_id line_id)
+{
+	if (!vfe || line_id >= VFE_LINE_NUM_MAX)
+		return;
+
+	/*
+	 * Call the VFE's SOF handler directly. This will update frame
+	 * counters and notify any waiting clients of the frame start.
+	 */
+	if (vfe->isr_ops.sof)
+		vfe->isr_ops.sof(vfe, line_id);
+}
+EXPORT_SYMBOL_GPL(vfe_trigger_software_sof);
+
+/*
  * vfe_pm_domain_off - Disable power domains specific to this VFE.
  * @vfe: VFE Device
  */

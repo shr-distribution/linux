@@ -20,6 +20,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/ktime.h>
 #include <linux/pm_runtime.h>
 
 /* MSM8660 MIPI CSI Controller Register Offsets */
@@ -348,6 +349,22 @@ static void csiphy_8x60_lanes_disable(struct csiphy_device *csiphy,
 #define MIPI_IRQ_FRAME_END	BIT(17)
 
 /*
+ * MSM8660 SOF generation state - used for software SOF when sensor
+ * doesn't send MIPI Frame Start/End short packets.
+ *
+ * Frame boundary detection heuristic:
+ * - If we see MIPI_IRQ_FRAME_START, use it directly
+ * - Otherwise, detect frame start by gap in SOT interrupts
+ *   (vertical blanking period creates a larger gap than inter-line gaps)
+ *
+ * Typical timing at 30fps, 768 lines:
+ * - Line time: ~43us (1/30/768)
+ * - Frame gap (vertical blanking): ~500us to several ms
+ * - Threshold: 200us gap indicates frame start
+ */
+#define CSIPHY_FRAME_GAP_THRESHOLD_NS	200000	/* 200us in nanoseconds */
+
+/*
  * csiphy_8x60_isr - CSIPHY interrupt service routine
  * @irq: Interrupt line
  * @dev: CSIPHY device
@@ -357,27 +374,73 @@ static void csiphy_8x60_lanes_disable(struct csiphy_device *csiphy,
 static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 {
 	struct csiphy_device *csiphy = dev;
+	struct vfe_device *vfe;
 	u32 status;
+	ktime_t now;
+	s64 gap_ns;
+	bool frame_start_detected = false;
+	static ktime_t last_sot_time;
 	static int irq_count;
+	static int sof_count;
 	static u32 last_status;
+	static bool first_sot = true;
 
 	status = readl_relaxed(csiphy->base + MIPI_INTERRUPT_STATUS);
 
 	/* Clear the interrupt */
 	writel(status, csiphy->base + MIPI_INTERRUPT_STATUS);
 
-	/* Count IRQs and log periodically to avoid flooding */
+	/* Count IRQs */
 	irq_count++;
+
+	/*
+	 * Frame start detection:
+	 * 1. If MIPI_IRQ_FRAME_START bit is set, use it (preferred)
+	 * 2. Otherwise, use timing-based detection from SOT gaps
+	 */
+	if (status & MIPI_IRQ_FRAME_START) {
+		frame_start_detected = true;
+	} else if (status & MIPI_IRQ_SOT_SYNC) {
+		now = ktime_get();
+
+		if (first_sot) {
+			/* First SOT after reset - treat as frame start */
+			frame_start_detected = true;
+			first_sot = false;
+		} else {
+			/* Check gap since last SOT */
+			gap_ns = ktime_to_ns(ktime_sub(now, last_sot_time));
+			if (gap_ns > CSIPHY_FRAME_GAP_THRESHOLD_NS) {
+				/* Large gap - this is a new frame */
+				frame_start_detected = true;
+			}
+		}
+		last_sot_time = now;
+	}
+
+	/* Trigger software SOF if frame start detected */
+	if (frame_start_detected && csiphy->camss && csiphy->camss->vfe) {
+		vfe = &csiphy->camss->vfe[0];  /* Use first VFE */
+		vfe_trigger_software_sof(vfe, VFE_LINE_PIX);
+		sof_count++;
+
+		/* Log SOF generation periodically */
+		if ((sof_count % 30) == 1) {
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: Software SOF #%d triggered (IRQ #%d)\n",
+				 csiphy->id, sof_count, irq_count);
+		}
+	}
 
 	/* Log status changes or every 100th IRQ for monitoring */
 	if (status != last_status || (irq_count % 100) == 0) {
-		dev_info(csiphy->camss->dev,
-			 "CSIPHY%d: IRQ #%d status=0x%08x [%s%s%s%s]\n",
-			 csiphy->id, irq_count, status,
-			 (status & MIPI_IRQ_SOT_SYNC) ? "SOT " : "",
-			 (status & MIPI_IRQ_ECC_ERROR) ? "ECC " : "",
-			 (status & MIPI_IRQ_FRAME_START) ? "FS " : "",
-			 (status & MIPI_IRQ_FRAME_END) ? "FE " : "");
+		dev_dbg(csiphy->camss->dev,
+			"CSIPHY%d: IRQ #%d status=0x%08x [%s%s%s%s]\n",
+			csiphy->id, irq_count, status,
+			(status & MIPI_IRQ_SOT_SYNC) ? "SOT " : "",
+			(status & MIPI_IRQ_ECC_ERROR) ? "ECC " : "",
+			(status & MIPI_IRQ_FRAME_START) ? "FS " : "",
+			(status & MIPI_IRQ_FRAME_END) ? "FE " : "");
 		last_status = status;
 	}
 

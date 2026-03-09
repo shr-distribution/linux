@@ -235,6 +235,18 @@ int vfe_reset(struct vfe_device *vfe);
 void vfe_enable_pending_camif(struct vfe_device *vfe);
 
 /*
+ * vfe_trigger_software_sof - Trigger software-generated SOF for VFE
+ * @vfe: VFE device
+ * @line_id: VFE line to send SOF to (usually VFE_LINE_PIX for raw)
+ *
+ * MSM8660 workaround: Some sensors (like MT9M113) don't send MIPI Frame
+ * Start/End short packets, so VFE never receives CAMIF_SOF interrupts.
+ * This function allows CSIPHY to trigger software SOF when it detects
+ * frame boundaries through other means (e.g., SOT after idle gap).
+ */
+void vfe_trigger_software_sof(struct vfe_device *vfe, enum vfe_line_id line_id);
+
+/*
  * vfe_disable - Disable streaming on VFE line
  * @line: VFE line
  *
