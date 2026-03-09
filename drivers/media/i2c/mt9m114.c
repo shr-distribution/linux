@@ -2852,28 +2852,12 @@ static int __maybe_unused mt9m114_runtime_resume(struct device *dev)
 	dev_info(dev, "runtime_resume: starting\n");
 
 	/*
-	 * MT9M113 with powerdown GPIO: Use soft standby instead of full
-	 * power cycle. The sensor was put into soft standby during suspend,
-	 * so we just need to wake it up. This keeps I2C alive and avoids
-	 * the long re-initialization sequence.
+	 * MT9M113 with powerdown GPIO: Sensor was never actually suspended
+	 * (suspend is a no-op), so resume is also a no-op. The sensor stays
+	 * powered and initialized like webOS does.
 	 */
 	if (sensor->powerdown && sensor->expected_model == MT9M113_MODEL) {
-		dev_info(dev, "runtime_resume: leaving soft standby\n");
-		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_LEAVE_STANDBY);
-		if (ret < 0) {
-			dev_err(dev, "runtime_resume: leave standby failed: %d\n", ret);
-			return ret;
-		}
-		/*
-		 * After leaving standby, sensor returns to SUSPENDED state
-		 * (the normal idle state between streaming sessions).
-		 */
-		ret = mt9m114_poll_state(sensor, MT9M114_SYS_STATE_SUSPENDED);
-		if (ret < 0) {
-			dev_err(dev, "runtime_resume: poll state failed: %d\n", ret);
-			return ret;
-		}
-		dev_info(dev, "runtime_resume: soft standby exit complete\n");
+		dev_info(dev, "runtime_resume: MT9M113 already powered (no-op)\n");
 		return 0;
 	}
 
@@ -2899,39 +2883,22 @@ static int __maybe_unused mt9m114_runtime_suspend(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct mt9m114 *sensor = ifp_to_mt9m114(sd);
-	int ret;
 
 	dev_info(dev, "runtime_suspend: starting\n");
 
 	/*
-	 * MT9M113 with powerdown GPIO: Use soft standby instead of asserting
-	 * powerdown GPIO. This keeps I2C alive and allows faster resume.
-	 * The webOS driver never toggles powerdown GPIO for suspend/resume.
+	 * MT9M113 with powerdown GPIO: Keep sensor powered like webOS does.
+	 * The legacy webOS driver never suspends the camera between streaming
+	 * sessions - it keeps it initialized and ready. Runtime PM suspend
+	 * causes issues because:
+	 * - Powerdown GPIO toggling makes I2C unresponsive on resume
+	 * - Soft standby via SYS_STATE doesn't work reliably on MT9M113
+	 * - SYSMGR_CURRENT_STATE reads 0x0 instead of expected values
+	 *
+	 * Just return success without actually suspending the sensor.
 	 */
 	if (sensor->powerdown && sensor->expected_model == MT9M113_MODEL) {
-		u64 current_state = 0;
-
-		/* Check if already in standby (e.g., after init) */
-		ret = cci_read(sensor->regmap, MT9M114_SYSMGR_CURRENT_STATE,
-			       &current_state, NULL);
-		if (ret == 0 && current_state == MT9M114_SYS_STATE_STANDBY) {
-			dev_info(dev, "runtime_suspend: already in standby\n");
-			return 0;
-		}
-
-		dev_info(dev, "runtime_suspend: entering soft standby (current=0x%llx)\n",
-			 current_state);
-		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_STANDBY);
-		if (ret < 0) {
-			dev_err(dev, "runtime_suspend: enter standby failed: %d\n", ret);
-			return ret;
-		}
-		ret = mt9m114_poll_state(sensor, MT9M114_SYS_STATE_STANDBY);
-		if (ret < 0) {
-			dev_err(dev, "runtime_suspend: poll standby failed: %d\n", ret);
-			return ret;
-		}
-		dev_info(dev, "runtime_suspend: soft standby complete\n");
+		dev_info(dev, "runtime_suspend: MT9M113 stays powered (no-op)\n");
 		return 0;
 	}
 
