@@ -2541,25 +2541,44 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		 * MT9M113 MIPI mode: Check if sensor is already initialized
 		 * (runtime resume case) or needs full initialization (cold boot).
 		 * During runtime resume from powerdown standby, the sensor
-		 * retains its configuration and doesn't need soft reset.
+		 * may need extra time to restore I2C functionality.
 		 */
 		if (sensor->expected_model == MT9M113_MODEL &&
 		    sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
 			u64 readback = 0;
 			int read_ret;
+			int retry;
 
 			/*
-			 * Try reading CLOCKS_CONTROL to check if sensor is
-			 * already initialized. If it reads non-zero, skip
-			 * soft reset (runtime resume). If it reads 0 or fails,
-			 * do full MIPI init (cold boot).
+			 * Try reading CLOCKS_CONTROL with retries to check if
+			 * sensor is responding and already initialized.
+			 * After powerdown resume, the sensor may need extra time
+			 * to restore I2C functionality.
 			 */
-			read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL,
-					    &readback, NULL);
-			dev_info(dev, "power_on: CLOCKS_CONTROL=0x%llx ret=%d\n",
-				 readback, read_ret);
+			for (retry = 0; retry < 5; retry++) {
+				read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL,
+						    &readback, NULL);
+				dev_info(dev, "power_on: CLOCKS_CONTROL=0x%llx ret=%d (try %d)\n",
+					 readback, read_ret, retry + 1);
+				if (read_ret == 0)
+					break;
+				/* I2C failed, wait and retry */
+				msleep(100);
+			}
 
-			if (read_ret == 0 && readback != 0) {
+			if (read_ret < 0) {
+				/*
+				 * I2C still failing after retries. The sensor
+				 * is not responding, which can happen if powerdown
+				 * GPIO isn't working or the sensor is damaged.
+				 */
+				dev_err(dev, "power_on: sensor not responding after %d retries\n",
+					retry);
+				ret = read_ret;
+				goto error_clock;
+			}
+
+			if (readback != 0) {
 				/*
 				 * Sensor already initialized (runtime resume).
 				 * Skip soft reset, just ensure MIPI settings.
