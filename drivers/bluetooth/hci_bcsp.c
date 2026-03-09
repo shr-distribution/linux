@@ -839,7 +839,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
 		BT_INFO("BCSP: sending sync_rsp");
-		skb_queue_head(&bcsp->unrel, nskb);
+		skb_queue_tail(&bcsp->unrel, nskb);
 		hci_uart_tx_wakeup(hu);
 	}
 	/* Handle sync_rsp packet - device acknowledged our sync, send conf */
@@ -856,7 +856,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		skb_put_data(nskb, conf_pkt, 4);
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
-		skb_queue_head(&bcsp->unrel, nskb);
+		skb_queue_tail(&bcsp->unrel, nskb);
 		hci_uart_tx_wakeup(hu);
 	}
 	/* Handle conf packet - device sent config, reply with conf_rsp */
@@ -874,7 +874,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		skb_put_data(nskb, conf_rsp_pkt, 4);
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
-		skb_queue_head(&bcsp->unrel, nskb);
+		skb_queue_tail(&bcsp->unrel, nskb);
 		hci_uart_tx_wakeup(hu);
 
 		/*
