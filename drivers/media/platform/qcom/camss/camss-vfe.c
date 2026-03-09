@@ -935,9 +935,21 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * From webOS vfe31_start_common(): write 1 to REG_UPDATE_CMD with barrier,
 	 * then write 1 to CAMIF_COMMAND. No separate CLEAR step.
 	 */
+	dev_info(vfe->camss->dev,
+		 "VFE: CAMIF_STATUS before START: 0x%08x\n",
+		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS));
+
 	writel(1, vfe->base + VFE31_REG_UPDATE_CMD);
 	writel(VFE31_CAMIF_CMD_START, vfe->base + VFE31_CAMIF_CMD);
 	wmb();
+
+	/* Small delay then check if START took effect */
+	udelay(100);
+	dev_info(vfe->camss->dev,
+		 "VFE: CAMIF_STATUS after START+100us: 0x%08x IRQ_STATUS0=0x%08x IRQ_STATUS1=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
+		 readl_relaxed(vfe->base + 0x024),  /* VFE_IRQ_STATUS_0 */
+		 readl_relaxed(vfe->base + 0x028)); /* VFE_IRQ_STATUS_1 */
 
 	/*
 	 * Step 7: Reload write master 0
