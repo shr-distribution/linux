@@ -342,6 +342,16 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 		goto err_rwsem;
 
 	/*
+	 * Set initial baud rate if specified. Some protocols like BCSP
+	 * need to communicate during open() for link establishment,
+	 * so the baud rate must be configured before p->open() is called.
+	 */
+	if (hu->init_speed)
+		serdev_device_set_baudrate(hu->serdev, hu->init_speed);
+	else if (p->init_speed)
+		serdev_device_set_baudrate(hu->serdev, p->init_speed);
+
+	/*
 	 * Initialize write_work and set proto before calling open(),
 	 * as some protocols (e.g., BCSP) need to transmit during their
 	 * open() for link establishment. PROTO_INIT flag allows TX

@@ -2494,6 +2494,9 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 
 	dev_info(dev, "Registering HCI UART device\n");
 
+	/* Set init_speed so hci_uart_register_device_priv() can configure baud rate */
+	bdev->serdev_hu.init_speed = bdev->init_speed;
+
 	/* Register with HCI UART core */
 	err = hci_uart_register_device(&bdev->serdev_hu, &bcsp);
 	if (err) {
