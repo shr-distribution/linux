@@ -38,6 +38,7 @@
 #include <linux/serdev.h>
 #include <linux/gpio/consumer.h>
 #include <linux/delay.h>
+#include <linux/completion.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -360,6 +361,10 @@ struct bcsp_struct {
 	bool	is_serdev;		/* True if operating in serdev mode */
 	bool	warm_reset_sent;	/* WARM_RESET sent, expecting chip restart */
 	void	*serdev_bdev;		/* Pointer to bcsp_serdev for GPIO access */
+
+	/* Link establishment completion for serdev mode */
+	struct completion link_up;	/* Signaled when BCSP link is established */
+	bool	link_established;	/* True after first successful handshake */
 };
 
 /* Forward declaration for serdev power cycle */
@@ -859,6 +864,15 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 
 		/*
 		 * After sending conf_rsp, the link is established.
+		 * Signal any waiters (e.g., bcsp_setup waiting for link).
+		 */
+		if (!bcsp->link_established) {
+			BT_INFO("BCSP: Link established (first time)");
+			bcsp->link_established = true;
+			complete(&bcsp->link_up);
+		}
+
+		/*
 		 * If we were waiting for re-establishment after BD address
 		 * config, mark it as complete now.
 		 */
@@ -1610,6 +1624,25 @@ static int bcsp_setup(struct hci_uart *hu)
 			return 0;
 		}
 
+		/*
+		 * In serdev mode, wait for link establishment before
+		 * sending PSKEYs.
+		 */
+		if (bcsp->is_serdev && !bcsp->link_established) {
+			unsigned long timeout;
+
+			BT_INFO("BCSP: Serdev mode - waiting for link establishment");
+
+			timeout = wait_for_completion_timeout(&bcsp->link_up,
+							      msecs_to_jiffies(5000));
+			if (!timeout) {
+				BT_ERR("BCSP: Timeout waiting for link establishment");
+				return -ETIMEDOUT;
+			}
+
+			BT_INFO("BCSP: Link established, proceeding with PSKEY config");
+		}
+
 		BT_INFO("BCSP: Configuring chip with webOS PSKEYs + WARM_RESET");
 
 		/*
@@ -1800,15 +1833,24 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/*
 		 * In serdev mode, bcsp_setup() is called before the BCSP link
-		 * is established. We cannot send PSKEYs yet because the chip
-		 * won't process them without a link. Instead, mark the state
-		 * as PENDING and let the conf_rsp handler send PSKEYs after
-		 * the link is up.
+		 * is established. We must wait for link establishment before
+		 * sending PSKEYs. The conf handler will signal link_up when
+		 * the handshake completes.
 		 */
 		if (bcsp->is_serdev) {
-			BT_INFO("BCSP: Serdev mode - deferring PSKEYs until link up");
-			bcsp->bdaddr_state = BCSP_BDADDR_PENDING;
-			return 0;
+			unsigned long timeout;
+
+			BT_INFO("BCSP: Serdev mode - waiting for link establishment");
+
+			/* Wait up to 5 seconds for link to be established */
+			timeout = wait_for_completion_timeout(&bcsp->link_up,
+							      msecs_to_jiffies(5000));
+			if (!timeout) {
+				BT_ERR("BCSP: Timeout waiting for link establishment");
+				return -ETIMEDOUT;
+			}
+
+			BT_INFO("BCSP: Link established, proceeding with PSKEY config");
 		}
 
 		BT_INFO("BCSP: Sending PSKEYs + WARM_RESET (no BD addr)");
@@ -2207,6 +2249,10 @@ static int bcsp_open(struct hci_uart *hu)
 	timer_setup(&bcsp->tbcsp, bcsp_timed_event, 0);
 
 	bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
+
+	/* Initialize link establishment completion for serdev mode */
+	init_completion(&bcsp->link_up);
+	bcsp->link_established = false;
 
 	if (txcrc)
 		bcsp->use_crc = 1;
