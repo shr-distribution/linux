@@ -715,7 +715,13 @@ static void bcsp_pkt_cull(struct bcsp_struct *bcsp)
 		dev_kfree_skb_irq(skb);
 	}
 
-	if (skb_queue_empty(&bcsp->unack))
+	/*
+	 * Only delete timer if link is active and no retransmissions pending.
+	 * During link establishment (UNINIT/INIT states), the timer is used
+	 * to send sync/conf packets, so we must keep it running.
+	 */
+	if (skb_queue_empty(&bcsp->unack) &&
+	    bcsp->link_state == BCSP_LINK_ACTIVE)
 		timer_delete(&bcsp->tbcsp);
 
 	spin_unlock_irqrestore(&bcsp->unack.lock, flags);
