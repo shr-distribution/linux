@@ -436,6 +436,16 @@ static int bcsp_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 		return 0;
 	}
 
+	/*
+	 * Reject HCI packets while chip is resetting after WARM_RESET.
+	 * The chip needs to re-establish the BCSP link first.
+	 */
+	if (bcsp->warm_reset_sent) {
+		BT_DBG("BCSP: Dropping packet during chip reset");
+		kfree_skb(skb);
+		return 0;
+	}
+
 	switch (hci_skb_pkt_type(skb)) {
 	case HCI_ACLDATA_PKT:
 	case HCI_COMMAND_PKT:
@@ -1001,6 +1011,12 @@ static void bcsp_complete_rx_pkt(struct hci_uart *hu)
 			   !(bcsp->rx_skb->data[0] & 0x80)) {
 			BT_INFO("BCSP: LE packet on channel 1, calling handler");
 			bcsp_handle_le_pkt(hu);
+			/*
+			 * bcsp_handle_le_pkt may free rx_skb (e.g., during
+			 * power cycle). Check before continuing.
+			 */
+			if (!bcsp->rx_skb)
+				return;
 			pass_up = 0;
 		} else {
 			BT_DBG("BCSP: unknown pkt chan=%d rel=%d",
@@ -2279,7 +2295,12 @@ static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
 	dev_info(bdev->dev, "Reset UART to %u baud\n", bdev->init_speed);
 
 	bcsp_serdev_set_power(bdev, true);
-	msleep(200);
+
+	/*
+	 * Wait for chip to fully initialize after power on.
+	 * WebOS waits ~2-3 seconds here before expecting SYNC.
+	 */
+	msleep(2000);
 
 	return 0;
 }
