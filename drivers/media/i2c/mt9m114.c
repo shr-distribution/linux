@@ -593,9 +593,16 @@ static const struct cci_reg_sequence mt9m114_init[] = {
 	 */
 	{ MT9M113_MIPI_CONTROL, MT9M113_MIPI_CONTROL_VALUE },
 
-	{ MT9M114_RESET_REGISTER, MT9M114_RESET_REGISTER_MASK_BAD |
-				  MT9M114_RESET_REGISTER_LOCK_REG |
-				  0x0010 },
+	/*
+	 * RESET_REGISTER: Use webOS value 0x8234 for MIPI mode
+	 * Bit 15: LOCK_REG (will be cleared after Change Config)
+	 * Bit 13: DRIVE_PINS
+	 * Bit 9: MASK_BAD
+	 * Bit 5: MIPI TX enable
+	 * Bit 4: streaming related
+	 * Bit 2: RESTART_BAD
+	 */
+	{ MT9M114_RESET_REGISTER, MT9M113_RESET_REG_MIPI_ENABLE },
 
 	/* Sensor optimization */
 	{ CCI_REG16(0x316a), 0x8270 },
@@ -888,9 +895,26 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 		}
 		msleep(100); /* webOS uses 100ms delay instead of polling */
 
+		/*
+		 * webOS post-Change Config sequence:
+		 * 1. Write RESET_REGISTER = 0x0234 (clear lock bit 15)
+		 * 2. Write ACCESS_CTL_STAT = 0x0001 (unlock register access)
+		 */
+		cci_write(sensor->regmap, MT9M114_RESET_REGISTER, 0x0234, &ret);
+		if (ret < 0)
+			dev_warn(&sensor->client->dev, "mt9m114_initialize: RESET_REGISTER unlock failed: %d\n", ret);
+
+		cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, &ret);
+		if (ret < 0)
+			dev_warn(&sensor->client->dev, "mt9m114_initialize: ACCESS_CTL_STAT failed: %d\n", ret);
+
 		/* Verify MIPI_CONTROL after Change Config */
 		cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
 		dev_info(&sensor->client->dev, "mt9m114_initialize: MIPI_CONTROL after config=0x%llx\n",
+			 readback);
+
+		cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
+		dev_info(&sensor->client->dev, "mt9m114_initialize: RESET_REGISTER after config=0x%llx\n",
 			 readback);
 		return 0;
 	}
@@ -1130,6 +1154,11 @@ mt9m113_streaming:
 			 */
 			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI CSI-2 output\n");
 
+			/* Unlock register access for MIPI configuration */
+			cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, &ret);
+			if (ret)
+				dev_warn(&sensor->client->dev, "MT9M113: ACCESS_CTL_STAT failed: %d\n", ret);
+
 			/* Verify MIPI_CONTROL was set in power_on */
 			ret = cci_read(sensor->regmap, MT9M113_MIPI_CONTROL, &readback, NULL);
 			dev_info(&sensor->client->dev, "MT9M113: MIPI_CONTROL=0x%llx (expected 0x783C)\n",
@@ -1141,7 +1170,7 @@ mt9m113_streaming:
 			 * setting LOGICAL_ADDRESS_ACCESS (0x098E) = 0x0000 first.
 			 */
 			dev_info(&sensor->client->dev, "MT9M113: setting logical address mode for MCU vars\n");
-			cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, 0x0000, &ret);
+			cci_write(sensor->regmap, MT9M114_LOGICAL_ADDRESS_ACCESS, 0x0000, &ret);
 			if (ret) {
 				dev_err(&sensor->client->dev, "MT9M113: LOGICAL_ADDRESS_ACCESS failed: %d\n", ret);
 				goto error;
@@ -2625,6 +2654,15 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 					goto error_clock;
 				}
 				msleep(200); /* webOS uses 200ms delay after reset */
+
+				/*
+				 * Unlock register access via ACCESS_CTL_STAT.
+				 * webOS kernel writes 0x0982 = 0x0001 which may be
+				 * required to unlock access to MIPI registers.
+				 */
+				cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, &ret);
+				if (ret < 0)
+					dev_warn(dev, "power_on: ACCESS_CTL_STAT write failed: %d\n", ret);
 
 				/* MIPI_CONTROL - must be written right after reset */
 				cci_write(sensor->regmap, MT9M113_MIPI_CONTROL,
