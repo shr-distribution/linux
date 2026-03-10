@@ -740,6 +740,732 @@ static const struct cci_reg_sequence mt9m114_init[] = {
 };
 
 /* -----------------------------------------------------------------------------
+ * MT9M113 MCU Variable Access Helpers
+ *
+ * MT9M113 uses indirect MCU variable access via XDMA registers:
+ * - Write MCU variable address to 0x098C (MCU_ADDRESS)
+ * - Read/write data via 0x0990 (MCU_DATA)
+ *
+ * This is different from MT9M114 which uses direct access to 0xC000+ addresses.
+ */
+
+static int mt9m113_write_mcu_var(struct mt9m114 *sensor, u16 addr, u16 value)
+{
+	int ret = 0;
+
+	cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, addr, &ret);
+	cci_write(sensor->regmap, MT9M114_MCU_DATA, value, &ret);
+	return ret;
+}
+
+static int mt9m113_read_mcu_var(struct mt9m114 *sensor, u16 addr, u64 *value)
+{
+	int ret;
+
+	ret = cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, addr, NULL);
+	if (ret)
+		return ret;
+	return cci_read(sensor->regmap, MT9M114_MCU_DATA, value, NULL);
+}
+
+static int mt9m113_poll_mcu_var(struct mt9m114 *sensor, u16 addr,
+				u16 expected, unsigned int timeout_ms)
+{
+	unsigned int i;
+	u64 value;
+	int ret;
+
+	for (i = 0; i < timeout_ms / 10; i++) {
+		ret = mt9m113_read_mcu_var(sensor, addr, &value);
+		if (ret < 0)
+			return ret;
+		if (value == expected)
+			return 0;
+		msleep(10);
+	}
+
+	dev_err(&sensor->client->dev, "MCU var 0x%04x timeout (got 0x%llx, expected 0x%04x)\n",
+		addr, value, expected);
+	return -ETIMEDOUT;
+}
+
+/* -----------------------------------------------------------------------------
+ * MT9M113 Initialization Table
+ *
+ * Ported from webOS mt9m113_reg.c. This table configures:
+ * - PLL and clock settings for 24MHz input, MIPI output
+ * - Resolution: Context A = 640x480 (preview), Context B = 1280x1024 (capture)
+ * - Auto-exposure, auto-white-balance, flicker detection
+ * - Lens shading correction, gamma curves, color correction matrices
+ *
+ * Register types:
+ * - Direct registers (0x0xxx, 0x3xxx): written directly via CCI
+ * - MCU variables (0x2xxx, 0xAxxx, etc.): written via XDMA (0x098C/0x0990)
+ *
+ * The webOS format is {reg, mask, value, word_len, delay}. For MCU variables,
+ * pairs of 0x098C (address) and 0x0990 (data) are used.
+ */
+
+struct mt9m113_reg_entry {
+	u16 reg;
+	u16 value;
+	u16 delay_ms;
+};
+
+/*
+ * MT9M113 initialization sequence from webOS kernel.
+ * Each entry is either:
+ * - A direct register write (reg < 0x8000)
+ * - An MCU variable write encoded as reg=0x098C (address) followed by
+ *   reg=0x0990 (data), which is handled specially.
+ */
+static const struct mt9m113_reg_entry mt9m113_init_table[] = {
+	/* MCU boot sequence */
+	{ 0x001C, 0x0001, 0 },		/* MCU_BOOT_MODE */
+	{ 0x001C, 0x0000, 30 },		/* MCU_BOOT_MODE, delay 30ms */
+
+	/* PLL configuration for 24MHz XCLK input */
+	{ 0x0016, 0x00FF, 0 },		/* CLOCKS_CONTROL */
+	{ 0x0018, 0x0028, 0 },		/* STANDBY_CONTROL */
+	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL */
+	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL */
+	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL */
+	{ 0x0010, 0x0114, 0 },		/* PLL_DIVIDERS */
+	{ 0x0012, 0x00F1, 0 },		/* PLL_P_DIVIDERS */
+	{ 0x0014, 0x2545, 0 },		/* PLL_CONTROL */
+	{ 0x0014, 0x2547, 0 },		/* PLL_CONTROL */
+	{ 0x0014, 0x3447, 20 },		/* PLL_CONTROL, delay 20ms for PLL lock */
+	{ 0x0014, 0x3047, 0 },		/* PLL_CONTROL */
+	{ 0x0014, 0x3046, 0 },		/* PLL_CONTROL */
+	{ 0x001A, 0x0218, 0 },		/* RESET_AND_MISC_CONTROL */
+	{ 0x0018, 0x002A, 0 },		/* STANDBY_CONTROL */
+	{ 0x321C, 0x0003, 0 },		/* OFIFO_CONTROL_STATUS */
+
+	/* Context A output (640x480 preview) - via MCU variables */
+	{ 0x098C, 0x2703, 0 },		/* MCU_ADDRESS = MODE_OUTPUT_WIDTH_A */
+	{ 0x0990, 0x0280, 0 },		/* MCU_DATA = 640 */
+	{ 0x098C, 0x2705, 0 },		/* MCU_ADDRESS = MODE_OUTPUT_HEIGHT_A */
+	{ 0x0990, 0x01E0, 0 },		/* MCU_DATA = 480 */
+
+	/* Context B output (1280x1024 capture) */
+	{ 0x098C, 0x2707, 0 },		/* MCU_ADDRESS = MODE_OUTPUT_WIDTH_B */
+	{ 0x0990, 0x0500, 0 },		/* MCU_DATA = 1280 */
+	{ 0x098C, 0x2709, 0 },		/* MCU_ADDRESS = MODE_OUTPUT_HEIGHT_B */
+	{ 0x0990, 0x0400, 0 },		/* MCU_DATA = 1024 */
+
+	/* Context A sensor configuration */
+	{ 0x098C, 0x270D, 0 },		/* MODE_SENSOR_ROW_START_A */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0x270F, 0 },		/* MODE_SENSOR_COL_START_A */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0x2711, 0 },		/* MODE_SENSOR_ROW_END_A */
+	{ 0x0990, 0x03CD, 0 },		/* 973 */
+	{ 0x098C, 0x2713, 0 },		/* MODE_SENSOR_COL_END_A */
+	{ 0x0990, 0x050D, 0 },		/* 1293 */
+	{ 0x098C, 0x2715, 0 },		/* MODE_SENSOR_ROW_SPEED_A */
+	{ 0x0990, 0x2111, 0 },
+	{ 0x098C, 0x2717, 0 },		/* MODE_SENSOR_READ_MODE_A */
+	{ 0x0990, 0x046C, 0 },
+	{ 0x098C, 0x2719, 0 },		/* MODE_SENSOR_FINE_CORRECTION_A */
+	{ 0x0990, 0x00AC, 0 },
+	{ 0x098C, 0x271B, 0 },		/* MODE_SENSOR_FINE_IT_MIN_A */
+	{ 0x0990, 0x01F1, 0 },
+	{ 0x098C, 0x271D, 0 },		/* MODE_SENSOR_FINE_IT_MAX_MARGIN_A */
+	{ 0x0990, 0x013F, 0 },
+	{ 0x098C, 0x271F, 0 },		/* MODE_SENSOR_FRAME_LENGTH_A */
+	{ 0x0990, 0x032E, 0 },		/* 814 */
+	{ 0x098C, 0x2721, 0 },		/* MODE_SENSOR_LINE_LENGTH_PCK_A */
+	{ 0x0990, 0x04CC, 0 },		/* 1228 */
+
+	/* Context B sensor configuration */
+	{ 0x098C, 0x2723, 0 },		/* MODE_SENSOR_ROW_START_B */
+	{ 0x0990, 0x0004, 0 },
+	{ 0x098C, 0x2725, 0 },		/* MODE_SENSOR_COL_START_B */
+	{ 0x0990, 0x0004, 0 },
+	{ 0x098C, 0x2727, 0 },		/* MODE_SENSOR_ROW_END_B */
+	{ 0x0990, 0x040B, 0 },
+	{ 0x098C, 0x2729, 0 },		/* MODE_SENSOR_COL_END_B */
+	{ 0x0990, 0x050B, 0 },
+	{ 0x098C, 0x272B, 0 },		/* MODE_SENSOR_ROW_SPEED_B */
+	{ 0x0990, 0x2111, 0 },
+	{ 0x098C, 0x272D, 0 },		/* MODE_SENSOR_READ_MODE_B */
+	{ 0x0990, 0x0024, 0 },
+	{ 0x098C, 0x272F, 0 },		/* MODE_SENSOR_FINE_CORRECTION_B */
+	{ 0x0990, 0x004C, 0 },
+	{ 0x098C, 0x2731, 0 },		/* MODE_SENSOR_FINE_IT_MIN_B */
+	{ 0x0990, 0x00F9, 0 },
+	{ 0x098C, 0x2733, 0 },		/* MODE_SENSOR_FINE_IT_MAX_MARGIN_B */
+	{ 0x0990, 0x00A7, 0 },
+	{ 0x098C, 0x2735, 0 },		/* MODE_SENSOR_FRAME_LENGTH_B */
+	{ 0x0990, 0x0559, 0 },
+	{ 0x098C, 0x2737, 0 },		/* MODE_SENSOR_LINE_LENGTH_PCK_B */
+	{ 0x0990, 0x0722, 0 },
+
+	/* Crop configuration - Context A */
+	{ 0x098C, 0x2739, 0 },		/* MODE_CROP_X0_A */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0x273B, 0 },		/* MODE_CROP_X1_A */
+	{ 0x0990, 0x027F, 0 },
+	{ 0x098C, 0x273D, 0 },		/* MODE_CROP_Y0_A */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0x273F, 0 },		/* MODE_CROP_Y1_A */
+	{ 0x0990, 0x01DF, 0 },
+
+	/* Crop configuration - Context B */
+	{ 0x098C, 0x2747, 0 },		/* MODE_CROP_X0_B */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0x2749, 0 },		/* MODE_CROP_X1_B */
+	{ 0x0990, 0x04FF, 0 },
+	{ 0x098C, 0x274B, 0 },		/* MODE_CROP_Y0_B */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0x274D, 0 },		/* MODE_CROP_Y1_B */
+	{ 0x0990, 0x03FF, 0 },
+
+	/* Flicker detection */
+	{ 0x098C, 0x222D, 0 },		/* AE_R9_STEP */
+	{ 0x0990, 0x00CC, 0 },
+	{ 0x098C, 0xA404, 0 },		/* FD_MODE */
+	{ 0x0990, 0x0010, 0 },
+	{ 0x098C, 0xA408, 0 },		/* FD_SEARCH_F1_50 */
+	{ 0x0990, 0x0032, 0 },
+	{ 0x098C, 0xA409, 0 },		/* FD_SEARCH_F2_50 */
+	{ 0x0990, 0x0034, 0 },
+	{ 0x098C, 0xA40A, 0 },		/* FD_SEARCH_F1_60 */
+	{ 0x0990, 0x003C, 0 },
+	{ 0x098C, 0xA40B, 0 },		/* FD_SEARCH_F2_60 */
+	{ 0x0990, 0x003E, 0 },
+	{ 0x098C, 0x2411, 0 },		/* FD_R9_STEP_F60_A */
+	{ 0x0990, 0x00CC, 0 },
+	{ 0x098C, 0x2413, 0 },		/* FD_R9_STEP_F50_A */
+	{ 0x0990, 0x00F4, 0 },
+	{ 0x098C, 0x2415, 0 },		/* FD_R9_STEP_F60_B */
+	{ 0x0990, 0x0089, 0 },
+	{ 0x098C, 0x2417, 0 },		/* FD_R9_STEP_F50_B */
+	{ 0x0990, 0x00A4, 0 },
+	{ 0x098C, 0xA40D, 0 },		/* FD_STAT_MIN */
+	{ 0x0990, 0x0002, 0 },
+	{ 0x098C, 0xA40E, 0 },		/* FD_STAT_MAX */
+	{ 0x0990, 0x0003, 0 },
+	{ 0x098C, 0xA410, 0 },		/* FD_MIN_AMPLITUDE */
+	{ 0x0990, 0x000A, 0 },
+
+	/* Sensor core reserved registers */
+	{ 0x3044, 0x0504, 0 },
+	{ 0x3086, 0x24F7, 0 },
+	{ 0x3088, 0xF059, 0 },
+	{ 0x3090, 0x0716, 0 },
+	{ 0x3092, 0xAB1F, 0 },
+	{ 0x30D4, 0x9020, 0 },
+	{ 0x30E2, 0x6645, 0 },
+	{ 0x30E4, 0x7A66, 0 },
+	{ 0x30E6, 0x6652, 0 },
+	{ 0x30E8, 0x7766, 0 },
+	{ 0x30EA, 0x2E03, 0 },
+	{ 0x30EC, 0x452E, 0 },
+	{ 0x30EE, 0x2E17, 0 },
+	{ 0x30F0, 0x452E, 0 },
+	{ 0x30F6, 0x0501, 0 },
+	{ 0x30F8, 0x0501, 0 },
+	{ 0x30FA, 0x0401, 0 },
+	{ 0x30FC, 0x0401, 0 },
+	{ 0x30FE, 0x5145, 0 },
+	{ 0x3100, 0x4F45, 0 },
+	{ 0x3102, 0x652E, 0 },
+	{ 0x3104, 0x7552, 0 },
+	{ 0x3106, 0x2D05, 0 },
+	{ 0x3108, 0x4405, 0 },
+	{ 0x311A, 0x5045, 0 },
+	{ 0x311E, 0x0601, 0 },
+	{ 0x3122, 0x0601, 0 },
+	{ 0x316C, 0x8406, 0 },
+
+	/* Noise reduction */
+	{ 0x098C, 0xAB2D, 0 },		/* HG_NR_START_G */
+	{ 0x0990, 0x002A, 0 },
+	{ 0x098C, 0xAB31, 0 },		/* HG_NR_STOP_G */
+	{ 0x0990, 0x002E, 0 },
+
+	/* Low-light enhancement */
+	{ 0x098C, 0x2B28, 0 },		/* HG_LL_BRIGHTNESSSTART */
+	{ 0x0990, 0x1F40, 0 },
+	{ 0x098C, 0x2B2A, 0 },		/* HG_LL_BRIGHTNESSSTOP */
+	{ 0x0990, 0x3A98, 0 },
+	{ 0x098C, 0x2B38, 0 },		/* HG_GAMMASTARTMORPH */
+	{ 0x0990, 0x1F40, 0 },
+	{ 0x098C, 0x2B3A, 0 },		/* HG_GAMMASTOPMORPH */
+	{ 0x0990, 0x3A98, 0 },
+
+	/* AE settings */
+	{ 0x098C, 0x2257, 0 },		/* RESERVED_AE_57 */
+	{ 0x0990, 0x2710, 0 },
+	{ 0x098C, 0x2250, 0 },		/* RESERVED_AE_50 */
+	{ 0x0990, 0x1B58, 0 },
+	{ 0x098C, 0x2252, 0 },		/* RESERVED_AE_52 */
+	{ 0x0990, 0x32C8, 0 },
+	{ 0x098C, 0xA24B, 0 },		/* AE_TARGETMAX */
+	{ 0x0990, 0x0082, 0 },
+
+	/* Aperture */
+	{ 0x326C, 0x0C00, 0 },		/* APERTURE_PARAMETERS */
+
+	/* More Context A settings */
+	{ 0x098C, 0x2717, 0 },		/* MODE_SENSOR_READ_MODE_A */
+	{ 0x0990, 0x046C, 0 },
+	{ 0x098C, 0x2719, 0 },		/* MODE_SENSOR_FINE_CORRECTION_A */
+	{ 0x0990, 0x00AC, 0 },
+	{ 0x098C, 0x271B, 0 },		/* MODE_SENSOR_FINE_IT_MIN_A */
+	{ 0x0990, 0x01F1, 0 },
+	{ 0x098C, 0x271D, 0 },		/* MODE_SENSOR_FINE_IT_MAX_MARGIN_A */
+	{ 0x0990, 0x013F, 0 },
+	{ 0x098C, 0x271F, 0 },		/* MODE_SENSOR_FRAME_LENGTH_A */
+	{ 0x0990, 0x032E, 0 },
+	{ 0x098C, 0x2721, 0 },		/* MODE_SENSOR_LINE_LENGTH_PCK_A */
+	{ 0x0990, 0x04CC, 0 },
+	{ 0x098C, 0x275F, 0 },		/* RESERVED_MODE_5F */
+	{ 0x0990, 0x0596, 0 },
+	{ 0x098C, 0x2761, 0 },		/* RESERVED_MODE_61 */
+	{ 0x0990, 0x0094, 0 },
+
+	/* Lens shading correction - P0Q0 through P4Q4 for GR, RD, BL, GB */
+	{ 0x364E, 0x07B0, 0 },		/* P_GR_P0Q0 */
+	{ 0x3650, 0x7E0E, 0 },
+	{ 0x3652, 0x3D31, 0 },
+	{ 0x3654, 0x80AE, 0 },
+	{ 0x3656, 0xE131, 0 },
+	{ 0x3658, 0x01B0, 0 },		/* P_RD_P0Q0 */
+	{ 0x365A, 0x878D, 0 },
+	{ 0x365C, 0x2671, 0 },
+	{ 0x365E, 0x7D2D, 0 },
+	{ 0x3660, 0xA5D1, 0 },
+	{ 0x3662, 0x03B0, 0 },		/* P_BL_P0Q0 */
+	{ 0x3664, 0x5A0E, 0 },
+	{ 0x3666, 0x0E71, 0 },
+	{ 0x3668, 0x99EE, 0 },
+	{ 0x366A, 0xA671, 0 },
+	{ 0x366C, 0x0170, 0 },		/* P_GB_P0Q0 */
+	{ 0x366E, 0xF44D, 0 },
+	{ 0x3670, 0x2971, 0 },
+	{ 0x3672, 0x2D4A, 0 },
+	{ 0x3674, 0xD671, 0 },
+
+	/* P1Q0-P1Q4 */
+	{ 0x3676, 0x674C, 0 },
+	{ 0x3678, 0x748D, 0 },
+	{ 0x367A, 0x3FEE, 0 },
+	{ 0x367C, 0x89AE, 0 },
+	{ 0x367E, 0xB410, 0 },
+	{ 0x3680, 0x168C, 0 },
+	{ 0x3682, 0xC56D, 0 },
+	{ 0x3684, 0x7CAC, 0 },
+	{ 0x3686, 0x038F, 0 },
+	{ 0x3688, 0xA86F, 0 },
+	{ 0x368A, 0xDB6B, 0 },
+	{ 0x368C, 0xA2AE, 0 },
+	{ 0x368E, 0xFA8D, 0 },
+	{ 0x3690, 0x5C8E, 0 },
+	{ 0x3692, 0x740C, 0 },
+	{ 0x3694, 0x9F4B, 0 },
+	{ 0x3696, 0x1C4D, 0 },
+	{ 0x3698, 0x978D, 0 },
+	{ 0x369A, 0x21EC, 0 },
+	{ 0x369C, 0xF5AD, 0 },
+
+	/* P2Q0-P2Q4 */
+	{ 0x369E, 0x7D10, 0 },
+	{ 0x36A0, 0x3E2E, 0 },
+	{ 0x36A2, 0x8953, 0 },
+	{ 0x36A4, 0xD910, 0 },
+	{ 0x36A6, 0x3033, 0 },
+	{ 0x36A8, 0x06D1, 0 },
+	{ 0x36AA, 0xAD4E, 0 },
+	{ 0x36AC, 0xD2D2, 0 },
+	{ 0x36AE, 0x5CCE, 0 },
+	{ 0x36B0, 0x3B93, 0 },
+	{ 0x36B2, 0x50D0, 0 },
+	{ 0x36B4, 0x79AD, 0 },
+	{ 0x36B6, 0xDFF2, 0 },
+	{ 0x36B8, 0x88AF, 0 },
+	{ 0x36BA, 0x2453, 0 },
+	{ 0x36BC, 0x0051, 0 },
+	{ 0x36BE, 0x81CF, 0 },
+	{ 0x36C0, 0x8313, 0 },
+	{ 0x36C2, 0x2250, 0 },
+	{ 0x36C4, 0x4A53, 0 },
+
+	/* P3Q0-P3Q4 */
+	{ 0x36C6, 0x0C8D, 0 },
+	{ 0x36C8, 0x362B, 0 },
+	{ 0x36CA, 0xAD51, 0 },
+	{ 0x36CC, 0xA470, 0 },
+	{ 0x36CE, 0x3DD2, 0 },
+	{ 0x36D0, 0x174C, 0 },
+	{ 0x36D2, 0x152F, 0 },
+	{ 0x36D4, 0x82F1, 0 },
+	{ 0x36D6, 0xDED0, 0 },
+	{ 0x36D8, 0x6F12, 0 },
+	{ 0x36DA, 0xD36C, 0 },
+	{ 0x36DC, 0x51AE, 0 },
+	{ 0x36DE, 0xD0AE, 0 },
+	{ 0x36E0, 0x274E, 0 },
+	{ 0x36E2, 0x25F2, 0 },
+	{ 0x36E4, 0xDCCA, 0 },
+	{ 0x36E6, 0x438E, 0 },
+	{ 0x36E8, 0xD64E, 0 },
+	{ 0x36EA, 0x8A71, 0 },
+	{ 0x36EC, 0x1492, 0 },
+
+	/* P4Q0-P4Q4 */
+	{ 0x36EE, 0xD5B1, 0 },
+	{ 0x36F0, 0xEBF0, 0 },
+	{ 0x36F2, 0x53F3, 0 },
+	{ 0x36F4, 0x3492, 0 },
+	{ 0x36F6, 0x9AF4, 0 },
+	{ 0x36F8, 0x8BF1, 0 },
+	{ 0x36FA, 0x204F, 0 },
+	{ 0x36FC, 0x3A93, 0 },
+	{ 0x36FE, 0xB551, 0 },
+	{ 0x3700, 0xE214, 0 },
+	{ 0x3702, 0xF2B0, 0 },
+	{ 0x3704, 0x8C30, 0 },
+	{ 0x3706, 0x3053, 0 },
+	{ 0x3708, 0x64F0, 0 },
+	{ 0x370A, 0xFC73, 0 },
+	{ 0x370C, 0xD311, 0 },
+	{ 0x370E, 0x336F, 0 },
+	{ 0x3710, 0x5AF3, 0 },
+	{ 0x3712, 0x4EAF, 0 },
+	{ 0x3714, 0xDBD4, 0 },
+
+	/* Lens shading origin */
+	{ 0x3644, 0x02A0, 0 },		/* POLY_ORIGIN_C */
+	{ 0x3642, 0x01FC, 0 },		/* POLY_ORIGIN_R */
+	{ 0x3210, 0x01B8, 0 },		/* COLOR_PIPELINE_CONTROL */
+
+	/* Color correction matrix - Low light */
+	{ 0x098C, 0x2306, 0 },		/* AWB_CCM_L_0 */
+	{ 0x0990, 0x0233, 0 },
+	{ 0x098C, 0x2308, 0 },
+	{ 0x0990, 0xFF0B, 0 },
+	{ 0x098C, 0x230A, 0 },
+	{ 0x0990, 0x0024, 0 },
+	{ 0x098C, 0x230C, 0 },
+	{ 0x0990, 0xFFC8, 0 },
+	{ 0x098C, 0x230E, 0 },
+	{ 0x0990, 0x01DE, 0 },
+	{ 0x098C, 0x2310, 0 },
+	{ 0x0990, 0xFFBD, 0 },
+	{ 0x098C, 0x2312, 0 },
+	{ 0x0990, 0x0019, 0 },
+	{ 0x098C, 0x2314, 0 },
+	{ 0x0990, 0xFF2B, 0 },
+	{ 0x098C, 0x2316, 0 },
+	{ 0x0990, 0x01E8, 0 },
+	{ 0x098C, 0x2318, 0 },
+	{ 0x0990, 0x0024, 0 },
+	{ 0x098C, 0x231A, 0 },
+	{ 0x0990, 0x0030, 0 },
+
+	/* Color correction matrix - RL (delta) */
+	{ 0x098C, 0x231C, 0 },		/* AWB_CCM_RL_0 */
+	{ 0x0990, 0xFF7D, 0 },
+	{ 0x098C, 0x231E, 0 },
+	{ 0x0990, 0x002C, 0 },
+	{ 0x098C, 0x2320, 0 },
+	{ 0x0990, 0x002C, 0 },
+	{ 0x098C, 0x2322, 0 },
+	{ 0x0990, 0x0006, 0 },
+	{ 0x098C, 0x2324, 0 },
+	{ 0x0990, 0x00A3, 0 },
+	{ 0x098C, 0x2326, 0 },
+	{ 0x0990, 0xFF75, 0 },
+	{ 0x098C, 0x2328, 0 },
+	{ 0x0990, 0xFFF4, 0 },
+	{ 0x098C, 0x232A, 0 },
+	{ 0x0990, 0x00AC, 0 },
+	{ 0x098C, 0x232C, 0 },
+	{ 0x0990, 0xFF75, 0 },
+	{ 0x098C, 0x232E, 0 },
+	{ 0x0990, 0x0010, 0 },
+	{ 0x098C, 0x2330, 0 },
+	{ 0x0990, 0xFFF4, 0 },
+
+	/* AWB settings */
+	{ 0x098C, 0xA348, 0 },		/* AWB_GAIN_BUFFER_SPEED */
+	{ 0x0990, 0x0008, 0 },
+	{ 0x098C, 0xA349, 0 },		/* AWB_JUMP_DIVISOR */
+	{ 0x0990, 0x0002, 0 },
+	{ 0x098C, 0xA34A, 0 },		/* AWB_GAIN_MIN */
+	{ 0x0990, 0x0059, 0 },
+	{ 0x098C, 0xA34B, 0 },		/* AWB_GAIN_MAX */
+	{ 0x0990, 0x00A6, 0 },
+	{ 0x098C, 0xA351, 0 },		/* AWB_CCM_POSITION_MIN */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0xA352, 0 },		/* AWB_CCM_POSITION_MAX */
+	{ 0x0990, 0x007F, 0 },
+	{ 0x098C, 0xA35D, 0 },		/* AWB_STEADY_BGAIN_OUT_MIN */
+	{ 0x0990, 0x0078, 0 },
+	{ 0x098C, 0xA35E, 0 },		/* AWB_STEADY_BGAIN_OUT_MAX */
+	{ 0x0990, 0x0086, 0 },
+	{ 0x098C, 0xA35F, 0 },		/* AWB_STEADY_BGAIN_IN_MIN */
+	{ 0x0990, 0x007E, 0 },
+	{ 0x098C, 0xA360, 0 },		/* AWB_STEADY_BGAIN_IN_MAX */
+	{ 0x0990, 0x0082, 0 },
+
+	/* Cold color adjustment */
+	{ 0x098C, 0xA369, 0 },		/* AWB_KR_R */
+	{ 0x0990, 0x0097, 0 },
+	{ 0x098C, 0xA36A, 0 },		/* AWB_KG_R */
+	{ 0x0990, 0x008C, 0 },
+	{ 0x098C, 0xA36B, 0 },		/* AWB_KB_R */
+	{ 0x0990, 0x0080, 0 },
+
+	/* AWB window */
+	{ 0x098C, 0xA302, 0 },		/* AWB_WINDOW_POS */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0xA303, 0 },		/* AWB_WINDOW_SIZE */
+	{ 0x0990, 0x00FF, 0 },
+
+	/* AE preview settings */
+	{ 0x098C, 0xA11D, 0 },		/* SEQ_PREVIEW_1_AE */
+	{ 0x0990, 0x0002, 0 },
+	{ 0x098C, 0x271F, 0 },		/* MODE_SENSOR_FRAME_LENGTH_A */
+	{ 0x0990, 0x032E, 0 },
+	{ 0x098C, 0x2721, 0 },		/* MODE_SENSOR_LINE_LENGTH_PCK_A */
+	{ 0x0990, 0x04CC, 0 },
+
+	/* AE gain settings */
+	{ 0x098C, 0xA216, 0 },		/* AE_MAXGAIN23 */
+	{ 0x0990, 0x0060, 0 },
+	{ 0x098C, 0xA215, 0 },		/* AE_INDEX_TH23 */
+	{ 0x0990, 0x000A, 0 },
+	{ 0x098C, 0xA20C, 0 },		/* AE_MAX_INDEX */
+	{ 0x0990, 0x0028, 0 },
+	{ 0x098C, 0xA24F, 0 },		/* AE_BASETARGET */
+	{ 0x0990, 0x0042, 0 },
+	{ 0x098C, 0xA20E, 0 },		/* AE_MAX_VIRTGAIN */
+	{ 0x0990, 0x0060, 0 },
+
+	/* AE window */
+	{ 0x098C, 0xA202, 0 },		/* AE_WINDOW_POS */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0xA203, 0 },		/* AE_WINDOW_SIZE */
+	{ 0x0990, 0x00FF, 0 },
+	{ 0x098C, 0xA207, 0 },		/* AE_GATE */
+	{ 0x0990, 0x0004, 0 },
+
+	/* Gamma morph control */
+	{ 0x098C, 0xAB37, 0 },		/* HG_GAMMA_MORPH_CTRL */
+	{ 0x0990, 0x0003, 0 },
+	{ 0x098C, 0x2B38, 0 },		/* HG_GAMMASTARTMORPH */
+	{ 0x0990, 0x3A98, 0 },
+	{ 0x098C, 0x2B3A, 0 },		/* HG_GAMMASTOPMORPH */
+	{ 0x0990, 0x5000, 0 },
+
+	/* Saturation */
+	{ 0x098C, 0xAB20, 0 },		/* HG_LL_SAT1 */
+	{ 0x0990, 0x0023, 0 },
+	{ 0x098C, 0xAB24, 0 },		/* HG_LL_SAT2 */
+	{ 0x0990, 0x0010, 0 },
+
+	/* AE speed */
+	{ 0x098C, 0xA109, 0 },		/* SEQ_AE_FASTBUFF */
+	{ 0x0990, 0x0020, 0 },
+	{ 0x098C, 0xA10A, 0 },		/* SEQ_AE_FASTSTEP */
+	{ 0x0990, 0x0002, 0 },
+
+	/* Gamma table A */
+	{ 0x098C, 0xAB3C, 0 },		/* HG_GAMMA_TABLE_A_0 */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0xAB3D, 0 },
+	{ 0x0990, 0x0006, 0 },
+	{ 0x098C, 0xAB3E, 0 },
+	{ 0x0990, 0x0014, 0 },
+	{ 0x098C, 0xAB3F, 0 },
+	{ 0x0990, 0x0038, 0 },
+	{ 0x098C, 0xAB40, 0 },
+	{ 0x0990, 0x005F, 0 },
+	{ 0x098C, 0xAB41, 0 },
+	{ 0x0990, 0x0079, 0 },
+	{ 0x098C, 0xAB42, 0 },
+	{ 0x0990, 0x008D, 0 },
+	{ 0x098C, 0xAB43, 0 },
+	{ 0x0990, 0x009E, 0 },
+	{ 0x098C, 0xAB44, 0 },
+	{ 0x0990, 0x00AC, 0 },
+	{ 0x098C, 0xAB45, 0 },
+	{ 0x0990, 0x00B8, 0 },
+	{ 0x098C, 0xAB46, 0 },
+	{ 0x0990, 0x00C3, 0 },
+	{ 0x098C, 0xAB47, 0 },
+	{ 0x0990, 0x00CD, 0 },
+	{ 0x098C, 0xAB48, 0 },
+	{ 0x0990, 0x00D5, 0 },
+	{ 0x098C, 0xAB49, 0 },
+	{ 0x0990, 0x00DE, 0 },
+	{ 0x098C, 0xAB4A, 0 },
+	{ 0x0990, 0x00E5, 0 },
+	{ 0x098C, 0xAB4B, 0 },
+	{ 0x0990, 0x00EC, 0 },
+	{ 0x098C, 0xAB4C, 0 },
+	{ 0x0990, 0x00F3, 0 },
+	{ 0x098C, 0xAB4D, 0 },
+	{ 0x0990, 0x00F9, 0 },
+	{ 0x098C, 0xAB4E, 0 },
+	{ 0x0990, 0x00FF, 0 },
+
+	/* Noise reduction RGB */
+	{ 0x098C, 0xAB2C, 0 },		/* HG_NR_START_R */
+	{ 0x0990, 0x0010, 0 },
+	{ 0x098C, 0xAB2D, 0 },		/* HG_NR_START_G */
+	{ 0x0990, 0x002A, 0 },
+	{ 0x098C, 0xAB2E, 0 },		/* HG_NR_START_B */
+	{ 0x0990, 0x0010, 0 },
+	{ 0x098C, 0xAB2F, 0 },		/* HG_NR_START_OL */
+	{ 0x0990, 0x0010, 0 },
+
+	/* Gamma table B */
+	{ 0x098C, 0xAB4F, 0 },		/* HG_GAMMA_TABLE_B_0 */
+	{ 0x0990, 0x0000, 0 },
+	{ 0x098C, 0xAB50, 0 },
+	{ 0x0990, 0x0004, 0 },
+	{ 0x098C, 0xAB51, 0 },
+	{ 0x0990, 0x000D, 0 },
+	{ 0x098C, 0xAB52, 0 },
+	{ 0x0990, 0x0028, 0 },
+	{ 0x098C, 0xAB53, 0 },
+	{ 0x0990, 0x0053, 0 },
+	{ 0x098C, 0xAB54, 0 },
+	{ 0x0990, 0x0075, 0 },
+	{ 0x098C, 0xAB55, 0 },
+	{ 0x0990, 0x0092, 0 },
+	{ 0x098C, 0xAB56, 0 },
+	{ 0x0990, 0x00A7, 0 },
+	{ 0x098C, 0xAB57, 0 },
+	{ 0x0990, 0x00B7, 0 },
+	{ 0x098C, 0xAB58, 0 },
+	{ 0x0990, 0x00C4, 0 },
+	{ 0x098C, 0xAB59, 0 },
+	{ 0x0990, 0x00CF, 0 },
+	{ 0x098C, 0xAB5A, 0 },
+	{ 0x0990, 0x00D8, 0 },
+	{ 0x098C, 0xAB5B, 0 },
+	{ 0x0990, 0x00DF, 0 },
+	{ 0x098C, 0xAB5C, 0 },
+	{ 0x0990, 0x00E6, 0 },
+	{ 0x098C, 0xAB5D, 0 },
+	{ 0x0990, 0x00EC, 0 },
+	{ 0x098C, 0xAB5E, 0 },
+	{ 0x0990, 0x00F2, 0 },
+	{ 0x098C, 0xAB5F, 0 },
+	{ 0x0990, 0x00F6, 0 },
+	{ 0x098C, 0xAB60, 0 },
+	{ 0x0990, 0x00FB, 0 },
+	{ 0x098C, 0xAB61, 0 },
+	{ 0x0990, 0x00FF, 0 },
+
+	/* Read mode - no mirror/flip */
+	{ 0x098C, 0x2717, 0 },		/* MODE_SENSOR_READ_MODE_A */
+	{ 0x0990, 0x046C, 0 },
+	{ 0x098C, 0x272D, 0 },		/* MODE_SENSOR_READ_MODE_B */
+	{ 0x0990, 0x0024, 0 },
+
+	/* Reset command before sequencer */
+	{ 0x001A, 0x021C, 0 },		/* RESET_AND_MISC_CONTROL */
+
+	/* Issue refresh command - MCU will be polled for completion */
+	{ 0x098C, 0xA103, 0 },		/* SEQ_CMD */
+	{ 0x0990, 0x0006, 0 },		/* REFRESH_MODE */
+};
+
+/*
+ * Apply the MT9M113 initialization table.
+ * Returns 0 on success, negative error code on failure.
+ */
+static int mt9m113_sensor_init(struct mt9m114 *sensor)
+{
+	struct device *dev = &sensor->client->dev;
+	int ret = 0;
+	unsigned int i;
+
+	dev_info(dev, "MT9M113: applying initialization table (%zu entries)\n",
+		 ARRAY_SIZE(mt9m113_init_table));
+
+	for (i = 0; i < ARRAY_SIZE(mt9m113_init_table); i++) {
+		const struct mt9m113_reg_entry *entry = &mt9m113_init_table[i];
+
+		ret = cci_write(sensor->regmap, CCI_REG16(entry->reg),
+				entry->value, NULL);
+		if (ret < 0) {
+			dev_err(dev, "MT9M113: failed to write reg 0x%04x: %d\n",
+				entry->reg, ret);
+			return ret;
+		}
+
+		if (entry->delay_ms > 0)
+			msleep(entry->delay_ms);
+	}
+
+	/*
+	 * Wait for MCU to complete refresh (SEQ_CMD returns to 0).
+	 * The last entry issued SEQ_CMD=0x0006 (REFRESH_MODE).
+	 */
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 1000);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: MCU refresh timeout after init table\n");
+		return ret;
+	}
+	dev_info(dev, "MT9M113: MCU refresh completed\n");
+
+	/*
+	 * Issue sequencer refresh (SEQ_CMD=0x0005) per webOS driver.
+	 * This fully initializes the sequencer after loading settings.
+	 */
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+				    MT9M113_SEQ_CMD_REFRESH);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: failed to issue SEQ_CMD refresh: %d\n", ret);
+		return ret;
+	}
+
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 1000);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: MCU SEQ refresh timeout\n");
+		return ret;
+	}
+	dev_info(dev, "MT9M113: sequencer refresh completed\n");
+
+	/*
+	 * Configure MIPI output interface.
+	 * 0x3400 = 0x7A08 enables MIPI CSI-2 output on MT9M113.
+	 * Note: MT9M114 uses 0x3C40 instead, but that register doesn't exist on MT9M113.
+	 */
+	if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+		if (ret < 0) {
+			dev_err(dev, "MT9M113: failed to enable MIPI output: %d\n", ret);
+			return ret;
+		}
+		dev_info(dev, "MT9M113: MIPI output enabled (0x3400=0x7A08)\n");
+
+		/*
+		 * Enable Frame Start/End short packets via CUSTOM_SHORT_PKT.
+		 * Bit 7 must be set or VFE never receives CAMIF_SOF interrupts.
+		 */
+		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+		if (ret < 0) {
+			dev_err(dev, "MT9M113: failed to enable FS/FE packets: %d\n", ret);
+			return ret;
+		}
+		dev_info(dev, "MT9M113: Frame Start/End packets enabled (0x3404=0x0080)\n");
+	}
+
+	dev_info(dev, "MT9M113: initialization complete\n");
+	return 0;
+}
+
+/* -----------------------------------------------------------------------------
  * Hardware Configuration
  */
 
@@ -824,8 +1550,19 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 {
 	u32 value;
 	int ret;
-	u64 readback;
 
+	/*
+	 * MT9M113 uses a completely different initialization sequence.
+	 * It requires the full webOS register table applied via MCU indirect
+	 * access (0x098C/0x0990) rather than direct writes to 0xC000+ addresses.
+	 * Use mt9m113_sensor_init() which applies the complete 500+ entry table.
+	 */
+	if (sensor->model == MT9M113_MODEL) {
+		dev_info(&sensor->client->dev, "mt9m114_initialize: using MT9M113 initialization\n");
+		return mt9m113_sensor_init(sensor);
+	}
+
+	/* MT9M114 initialization path */
 	dev_info(&sensor->client->dev, "mt9m114_initialize: writing init table (%zu entries)\n",
 		 ARRAY_SIZE(mt9m114_init));
 
@@ -836,11 +1573,6 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 			"Failed to initialize the sensor\n");
 		return ret;
 	}
-
-	/*
-	 * Note: MT9M113 MIPI is configured via OUTPUT_CONTROL (0x3400) in
-	 * start_streaming. The 0x3C40 register doesn't exist on MT9M113.
-	 */
 
 	/* Configure the PLL. */
 	if (sensor->bypass_pll) {
@@ -883,45 +1615,6 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 	cci_write(sensor->regmap, MT9M114_PAD_SLEW, value, &ret);
 	if (ret < 0)
 		return ret;
-
-	/*
-	 * Issue Change Config command to apply all register settings including
-	 * MIPI_CONTROL. For MT9M113, use the exact webOS sequence with direct
-	 * register writes and delay instead of polling (which fails on MT9M113).
-	 */
-	if (sensor->model == MT9M113_MODEL) {
-		dev_info(&sensor->client->dev, "mt9m114_initialize: MT9M113 Change Config (webOS style)\n");
-
-		/* webOS sequence: 0x098E=0xDC00, 0xDC00=0x28, 0x0080=0x8002, delay 100ms */
-		cci_write(sensor->regmap, MT9M114_LOGICAL_ADDRESS_ACCESS, 0xDC00, &ret);
-		cci_write(sensor->regmap, CCI_REG8(0xDC00), MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE, &ret);
-		cci_write(sensor->regmap, MT9M114_COMMAND_REGISTER,
-			  MT9M114_COMMAND_REGISTER_OK | MT9M114_COMMAND_REGISTER_SET_STATE, &ret);
-		if (ret < 0) {
-			dev_err(&sensor->client->dev, "mt9m114_initialize: Change Config write failed: %d\n", ret);
-			return ret;
-		}
-		msleep(100); /* webOS uses 100ms delay instead of polling */
-
-		/*
-		 * webOS post-Change Config sequence:
-		 * 1. Write RESET_REGISTER = 0x0234 (clear lock bit 15)
-		 * 2. Write ACCESS_CTL_STAT = 0x0001 (unlock register access)
-		 */
-		cci_write(sensor->regmap, MT9M114_RESET_REGISTER, 0x0234, &ret);
-		if (ret < 0)
-			dev_warn(&sensor->client->dev, "mt9m114_initialize: RESET_REGISTER unlock failed: %d\n", ret);
-
-		cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, &ret);
-		if (ret < 0)
-			dev_warn(&sensor->client->dev, "mt9m114_initialize: ACCESS_CTL_STAT failed: %d\n", ret);
-
-		/* Verify RESET_REGISTER after Change Config */
-		cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
-		dev_info(&sensor->client->dev, "mt9m114_initialize: RESET_REGISTER after config=0x%llx\n",
-			 readback);
-		return 0;
-	}
 
 	dev_info(&sensor->client->dev, "mt9m114_initialize: issuing Change Config\n");
 	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
