@@ -933,14 +933,14 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	/*
 	 * Step 3: Enable CAMIF to VFE data path with MIPI input
-	 * Use ELS (Embedded Line Sync) mode - MT9M113 sensor doesn't send
-	 * MIPI frame sync short packets, so try line-based sync instead.
+	 * Use EFS (Embedded Frame Sync) mode - MIPI CSI-2 uses embedded
+	 * frame start/end packets for synchronization.
 	 */
 	val = VFE31_CAMIF_CFG_MIPI_EN |		/* bits 0-1: enable MIPI input */
 	      VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: CAMIF to VFE path */
-	      VFE31_CAMIF_CFG_SYNC_MODE_ELS;	/* bits 3-4: ELS sync mode */
+	      VFE31_CAMIF_CFG_SYNC_MODE_EFS;	/* bits 3-4: EFS sync mode */
 	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF_CFG=0x%03x (MIPI_EN + CAMIF2VFE + ELS)\n", val);
+		 "VFE: CAMIF_CFG=0x%03x (MIPI_EN + CAMIF2VFE + EFS)\n", val);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CFG);
 
 	/*
