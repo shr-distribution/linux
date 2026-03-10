@@ -555,12 +555,8 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 		bcsp->msgq_txseq = (bcsp->msgq_txseq + 1) & 0x07;
 	}
 
-	/*
-	 * CRC is NOT used on channel 1 (Link Establishment) packets.
-	 * CRC usage is negotiated during conf/conf_rsp exchange, so
-	 * sync/sync_rsp/conf/conf_rsp must be sent without CRC.
-	 */
-	bool pkt_crc = bcsp->use_crc && chan != 1;
+	/* Use CRC if enabled (default is true via txcrc module param) */
+	bool pkt_crc = bcsp->use_crc;
 
 	if (pkt_crc)
 		hdr[0] |= 0x40;
