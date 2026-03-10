@@ -1662,9 +1662,10 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/*
 		 * In serdev mode, wait for link establishment before
-		 * sending PSKEYs.
+		 * sending PSKEYs. Check hu->serdev directly since
+		 * bcsp->is_serdev isn't set until after hci_uart_register_device().
 		 */
-		if (bcsp->is_serdev && !bcsp->link_established) {
+		if (hu->serdev && !bcsp->link_established) {
 			unsigned long timeout;
 
 			BT_INFO("BCSP: Serdev mode - waiting for link establishment");
