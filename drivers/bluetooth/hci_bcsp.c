@@ -555,8 +555,14 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 		bcsp->msgq_txseq = (bcsp->msgq_txseq + 1) & 0x07;
 	}
 
-	/* Use CRC if enabled (default is true via txcrc module param) */
-	bool pkt_crc = bcsp->use_crc;
+	/*
+	 * CRC handling for BCSP packets:
+	 * - Link Establishment (channel 1): NO CRC - hciattach sends LE packets
+	 *   with header byte 0 = 0x00 (no CRC). The chip may send LE packets
+	 *   WITH CRC, but expects to receive them WITHOUT CRC.
+	 * - All other channels: Use CRC if enabled (default true via txcrc)
+	 */
+	bool pkt_crc = bcsp->use_crc && chan != 1;
 
 	if (pkt_crc)
 		hdr[0] |= 0x40;
