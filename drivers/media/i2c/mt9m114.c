@@ -1808,14 +1808,53 @@ mt9m113_streaming:
 	/*
 	 * MT9M113 uses a different command mechanism (MCU indirect via
 	 * 0x098C/0x0990) and doesn't support MT9M114's COMMAND_REGISTER.
-	 * Issue sequencer commands to start streaming.
 	 *
-	 * MIPI output (0x3400) and RESET_REGISTER (0x301A) are already
-	 * configured during sensor init - don't re-write them here.
-	 * Per webOS driver: just set SEQ_CAP_MODE and issue SEQ_CMD=RUN.
+	 * WebOS driver order (after CSI controller is configured):
+	 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI output
+	 * 2. RESET_REGISTER (0x301A) = 0x120C - streaming mode
+	 * 3. SEQ_CAP_MODE = 0x0030 - preview mode
+	 * 4. SEQ_CMD = 0x0001 - start streaming
 	 */
 	{
+		u64 readback;
+
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
+
+		/*
+		 * Enable MIPI output interface.
+		 * This must be done AFTER CSI controller is ready to receive.
+		 */
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
+			goto error;
+		}
+
+		/*
+		 * Enable Frame Start/End short packets.
+		 * Without this, VFE never receives CAMIF_SOF interrupts.
+		 */
+		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
+			goto error;
+		}
+
+		/* Configure RESET_REGISTER for streaming mode */
+		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+				MT9M113_RESET_REG_STREAMING, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
+			goto error;
+		}
+
+		/* Read back to verify */
+		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx\n", readback);
+		cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
+		dev_info(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx\n", readback);
 
 		/*
 		 * Set capture mode via MCU interface.
