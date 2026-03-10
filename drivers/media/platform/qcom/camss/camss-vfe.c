@@ -784,11 +784,24 @@ int vfe_reset(struct vfe_device *vfe)
  * - Bit 10: camif2busEnable - CAMIF to bus (memory) enable
  * Note: BIT(6) is reserved and should NOT be used!
  */
-#define VFE31_CAMIF_CFG_MIPI_EN		0x3	/* bits 0-1: MIPI enable */
-#define VFE31_CAMIF_CFG_CAMIF2VFE_EN	BIT(8)
+/*
+ * VFE31 CAMIF_CFG bit definitions (from VFE_CAMIFConfigType structure):
+ *   Bit 0: reserved
+ *   Bit 1: VSyncEdge
+ *   Bit 2: HSyncEdge
+ *   Bits 4:3: syncMode (0=APS, 1=EFS, 2=ELS)
+ *   Bit 5: vfeSubsampleEnable
+ *   Bit 7: busSubsampleEnable
+ *   Bit 8: camif2vfeEnable - route data to VFE processing pipeline
+ *   Bit 10: camif2busEnable - route data directly to AXI bus (for raw output)
+ */
+#define VFE31_CAMIF_CFG_VSYNC_EDGE	BIT(1)
+#define VFE31_CAMIF_CFG_HSYNC_EDGE	BIT(2)
 #define VFE31_CAMIF_CFG_SYNC_MODE_APS	(0 << 3)	/* Active Pixel Sync */
 #define VFE31_CAMIF_CFG_SYNC_MODE_EFS	(1 << 3)	/* Embedded Frame Sync */
 #define VFE31_CAMIF_CFG_SYNC_MODE_ELS	(2 << 3)	/* Embedded Line Sync */
+#define VFE31_CAMIF_CFG_CAMIF2VFE_EN	BIT(8)	/* CAMIF -> VFE pipeline */
+#define VFE31_CAMIF_CFG_CAMIF2BUS_EN	BIT(10)	/* CAMIF -> AXI bus (raw) */
 /*
  * CAMIF register block (0x1E4-0x203):
  * 0x1E4: CAMIF_CFG, 0x1E8: EFS_CFG, 0x1EC: FRAME_CFG, etc.
@@ -1042,15 +1055,18 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_1);
 
 	/*
-	 * Step 3: Enable CAMIF to VFE data path with MIPI input
-	 * Use EFS (Embedded Frame Sync) mode - MIPI CSI-2 uses embedded
-	 * frame start/end packets for synchronization.
+	 * Step 3: Configure CAMIF for raw passthrough mode
+	 * For raw output (CAMIF -> AXI bus), webOS sets:
+	 *   - camif2BusEnable = TRUE (bit 10) - route data directly to AXI
+	 *   - syncMode = EFS (bits 4:3 = 1) - use embedded frame sync for MIPI
+	 *
+	 * Note: camif2vfeEnable (bit 8) routes to VFE processing pipeline,
+	 * but for raw passthrough we only need camif2busEnable.
 	 */
-	val = VFE31_CAMIF_CFG_MIPI_EN |		/* bits 0-1: enable MIPI input */
-	      VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: CAMIF to VFE path */
-	      VFE31_CAMIF_CFG_SYNC_MODE_EFS;	/* bits 3-4: EFS sync mode */
+	val = VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus (raw) */
+	      VFE31_CAMIF_CFG_SYNC_MODE_EFS;	/* bits 4:3: EFS sync mode */
 	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF_CFG=0x%03x (MIPI_EN + CAMIF2VFE + EFS)\n", val);
+		 "VFE: CAMIF_CFG=0x%03x (CAMIF2BUS + EFS)\n", val);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CFG);
 
 	/*
