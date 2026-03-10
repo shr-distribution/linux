@@ -1,0 +1,1341 @@
+// SPDX-License-Identifier: GPL-2.0
+/dts-v1/;
+
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/clock/qcom,gcc-msm8660.h>
+#include <dt-bindings/clock/qcom,lcc-msm8660.h>
+#include <dt-bindings/clock/qcom,mmcc-msm8960.h>
+#include <dt-bindings/clock/qcom,rpmcc.h>
+#include <dt-bindings/reset/qcom,gcc-msm8660.h>
+#include <dt-bindings/reset/qcom,mmcc-msm8960.h>
+#include <dt-bindings/soc/qcom,gsbi.h>
+#include <dt-bindings/soc/qcom,apr.h>
+#include <dt-bindings/sound/qcom,q6asm.h>
+#include <dt-bindings/interconnect/qcom,msm8660.h>
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	model = "Qualcomm MSM8660";
+	compatible = "qcom,msm8660";
+	interrupt-parent = <&intc>;
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			compatible = "qcom,scorpion";
+			enable-method = "qcom,gcc-msm8660";
+			device_type = "cpu";
+			reg = <0>;
+			next-level-cache = <&l2>;
+			clocks = <&apcs0>;
+			clock-names = "cpu";
+			operating-points-v2 = <&cpu_opp_table>;
+			qcom,saw = <&saw0>;
+			cpu-supply = <&saw0_reg>;
+		};
+
+		cpu1: cpu@1 {
+			compatible = "qcom,scorpion";
+			enable-method = "qcom,gcc-msm8660";
+			device_type = "cpu";
+			reg = <1>;
+			next-level-cache = <&l2>;
+			clocks = <&apcs1>;
+			clock-names = "cpu";
+			operating-points-v2 = <&cpu_opp_table>;
+			qcom,saw = <&saw1>;
+			cpu-supply = <&saw1_reg>;
+		};
+
+		l2: l2-cache {
+			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
+		};
+	};
+
+	/*
+	 * CPU OPP (Operating Performance Points) table
+	 * Frequencies based on webOS acpuclock-8x60.c
+	 * Voltages are placeholders - actual voltage scaling requires
+	 * regulator support which is not yet implemented.
+	 */
+	cpu_opp_table: opp-table-cpu {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-384000000 {
+			opp-hz = /bits/ 64 <384000000>;
+			opp-microvolt = <875000>;
+			clock-latency-ns = <100000>;
+		};
+
+		opp-432000000 {
+			opp-hz = /bits/ 64 <432000000>;
+			opp-microvolt = <887500>;
+		};
+
+		opp-486000000 {
+			opp-hz = /bits/ 64 <486000000>;
+			opp-microvolt = <912500>;
+		};
+
+		opp-540000000 {
+			opp-hz = /bits/ 64 <540000000>;
+			opp-microvolt = <925000>;
+		};
+
+		opp-594000000 {
+			opp-hz = /bits/ 64 <594000000>;
+			opp-microvolt = <937500>;
+		};
+
+		opp-648000000 {
+			opp-hz = /bits/ 64 <648000000>;
+			opp-microvolt = <950000>;
+		};
+
+		opp-702000000 {
+			opp-hz = /bits/ 64 <702000000>;
+			opp-microvolt = <975000>;
+		};
+
+		opp-756000000 {
+			opp-hz = /bits/ 64 <756000000>;
+			opp-microvolt = <1000000>;
+		};
+
+		opp-810000000 {
+			opp-hz = /bits/ 64 <810000000>;
+			opp-microvolt = <1012500>;
+		};
+
+		opp-864000000 {
+			opp-hz = /bits/ 64 <864000000>;
+			opp-microvolt = <1037500>;
+		};
+
+		opp-918000000 {
+			opp-hz = /bits/ 64 <918000000>;
+			opp-microvolt = <1062500>;
+		};
+
+		opp-972000000 {
+			opp-hz = /bits/ 64 <972000000>;
+			opp-microvolt = <1087500>;
+		};
+
+		opp-1026000000 {
+			opp-hz = /bits/ 64 <1026000000>;
+			opp-microvolt = <1125000>;
+		};
+
+		opp-1080000000 {
+			opp-hz = /bits/ 64 <1080000000>;
+			opp-microvolt = <1137500>;
+		};
+
+		opp-1134000000 {
+			opp-hz = /bits/ 64 <1134000000>;
+			opp-microvolt = <1162500>;
+		};
+
+		opp-1188000000 {
+			opp-hz = /bits/ 64 <1188000000>;
+			opp-microvolt = <1187500>;
+		};
+
+		opp-1512000000 {
+			opp-hz = /bits/ 64 <1512000000>;
+			opp-microvolt = <1250000>;
+		};
+	};
+
+	/*
+	 * Z180 2D GPU OPP table
+	 * Frequencies from mmcc-msm8660.c clk_tbl_gfx2d
+	 * Peak bandwidth (2096 MB/s) from webOS devices-msm8x60.c
+	 * Bandwidth scales proportionally with frequency.
+	 */
+	z180_opp_table: opp-table-z180 {
+		compatible = "operating-points-v2";
+
+		opp-27000000 {
+			opp-hz = /bits/ 64 <27000000>;
+			opp-peak-kBps = <248000>;
+		};
+
+		opp-96000000 {
+			opp-hz = /bits/ 64 <96000000>;
+			opp-peak-kBps = <881000>;
+		};
+
+		opp-160000000 {
+			opp-hz = /bits/ 64 <160000000>;
+			opp-peak-kBps = <1468000>;
+		};
+
+		opp-200000000 {
+			opp-hz = /bits/ 64 <200000000>;
+			opp-peak-kBps = <1834000>;
+		};
+
+		opp-228571000 {
+			opp-hz = /bits/ 64 <228571000>;
+			opp-peak-kBps = <2096000>;
+		};
+	};
+
+	memory {
+		device_type = "memory";
+		reg = <0x0 0x0>;
+	};
+
+	cpu-pmu {
+		compatible = "qcom,scorpion-mp-pmu";
+		interrupts = <GIC_PPI 9 (GIC_CPU_MASK_SIMPLE(2) | IRQ_TYPE_LEVEL_HIGH)>;
+	};
+
+	clocks {
+		cxo_board: cxo-board-clk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <19200000>;
+			clock-output-names = "cxo_board";
+		};
+
+		pxo_board: pxo-board-clk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <27000000>;
+			clock-output-names = "pxo_board";
+		};
+
+		sleep-clk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <32768>;
+			clock-output-names = "sleep_clk";
+		};
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * Shared Memory (SMEM) region for inter-processor communication.
+		 * This is used for SMD (Shared Memory Driver) channels between
+		 * APPS, modem, LPASS, etc.
+		 */
+		smem_region: smem@40000000 {
+			reg = <0x40000000 0x200000>;
+			no-map;
+		};
+
+		/*
+		 * LPASS (Low Power Audio Subsystem) QDSP6 firmware region.
+		 * The actual address and size should be adjusted based on
+		 * the device's memory layout.
+		 */
+		/*
+		 * LPASS memory for Q6 firmware.
+		 * The Q6 firmware was compiled to load at 0x46700000.
+		 * This is in the gap between RAM banks but was reserved
+		 * by webOS for Q6 usage. Size: ~6MB to cover all segments.
+		 * (Last segment ends at 0x46cbd8c0, needs ~5.74MB)
+		 */
+		lpass_mem: lpass@46700000 {
+			reg = <0x46700000 0x600000>;
+			no-map;
+		};
+
+		/*
+		 * DSPS firmware memory region.
+		 * Located after LPASS memory at 0x46d00000.
+		 * Size: 1MB should be sufficient for DSPS firmware.
+		 */
+		dsps_mem: dsps@46d00000 {
+			reg = <0x46d00000 0x100000>;
+			no-map;
+		};
+	};
+
+	soc: soc {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+		compatible = "simple-bus";
+
+		intc: interrupt-controller@2080000 {
+			compatible = "qcom,msm-8660-qgic";
+			interrupt-controller;
+			#interrupt-cells = <3>;
+			reg = < 0x02080000 0x1000 >,
+			      < 0x02081000 0x1000 >;
+		};
+
+		timer@2000000 {
+			compatible = "qcom,scss-timer", "qcom,msm-timer";
+			interrupts = <GIC_PPI 0 (GIC_CPU_MASK_SIMPLE(2) | IRQ_TYPE_EDGE_RISING)>,
+				     <GIC_PPI 1 (GIC_CPU_MASK_SIMPLE(2) | IRQ_TYPE_EDGE_RISING)>,
+				     <GIC_PPI 2 (GIC_CPU_MASK_SIMPLE(2) | IRQ_TYPE_EDGE_RISING)>;
+			reg = <0x02000000 0x100>;
+			clock-frequency = <27000000>;
+			cpu-offset = <0x40000>;
+		};
+
+		/*
+		 * APCS (Application Processor Clock System) nodes
+		 * Provide CPU clocks for frequency scaling via cpufreq-dt
+		 * TEMPORARILY DISABLED for debugging
+		 */
+		apcs0: clock-controller@2041000 {
+			compatible = "qcom,apq8060-apcs", "qcom,msm8660-apcs";
+			reg = <0x02041000 0x1000>,
+			      <0x00903200 0x100>;
+			reg-names = "acc", "scpll";
+			#clock-cells = <0>;
+			clock-output-names = "cpu0_clk";
+		};
+
+		apcs1: clock-controller@2051000 {
+			compatible = "qcom,apq8060-apcs", "qcom,msm8660-apcs";
+			reg = <0x02051000 0x1000>,
+			      <0x00903300 0x100>;
+			reg-names = "acc", "scpll";
+			#clock-cells = <0>;
+			clock-output-names = "cpu1_clk";
+		};
+
+		/*
+		 * SAW (Subsystem/Analog Wrapper) power managers for CPU cores.
+		 * Controls the PM8901 S0/S1 FTSMPS regulators for Scorpion cores
+		 * via PM8901 SMPS Band 2 (700mV-1400mV, 12.5mV steps).
+		 */
+		saw0: power-manager@2042000 {
+			compatible = "qcom,apq8060-saw2-v1.1-cpu",
+				     "qcom,msm8660-saw2-v1.1-cpu";
+			reg = <0x02042000 0x1000>;
+
+			saw0_reg: regulator {
+				regulator-name = "cpu0_vdd";
+				regulator-min-microvolt = <840000>;
+				regulator-max-microvolt = <1250000>;
+			};
+		};
+
+		saw1: power-manager@2052000 {
+			compatible = "qcom,apq8060-saw2-v1.1-cpu",
+				     "qcom,msm8660-saw2-v1.1-cpu";
+			reg = <0x02052000 0x1000>;
+
+			saw1_reg: regulator {
+				regulator-name = "cpu1_vdd";
+				regulator-min-microvolt = <840000>;
+				regulator-max-microvolt = <1250000>;
+			};
+		};
+
+		tlmm: pinctrl@800000 {
+			compatible = "qcom,msm8660-pinctrl";
+			reg = <0x800000 0x4000>;
+
+			gpio-controller;
+			gpio-ranges = <&tlmm 0 0 173>;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+
+		};
+
+		sfpb_mutex: hwmutex@1200600 {
+			compatible = "qcom,sfpb-mutex";
+			reg = <0x01200600 0x100>;
+			#hwlock-cells = <1>;
+		};
+
+		/*
+		 * smem must be inside soc and after hwmutex to ensure
+		 * proper probe ordering - smem depends on hwmutex but
+		 * device links are created during probe, too late to
+		 * prevent the initial deferred probe.
+		 */
+		smem {
+			compatible = "qcom,smem";
+			memory-region = <&smem_region>;
+			hwlocks = <&sfpb_mutex 3>;
+		};
+
+		gcc: clock-controller@900000 {
+			compatible = "qcom,gcc-msm8660";
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			reg = <0x900000 0x4000>;
+			clocks = <&pxo_board>, <&cxo_board>;
+			clock-names = "pxo", "cxo";
+		};
+
+		mmcc: clock-controller@4000000 {
+			compatible = "qcom,mmcc-msm8660";
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			reg = <0x04000000 0x1000>;
+			clocks = <&pxo_board>, <&gcc PLL8_VOTE>, <&rpmcc RPM_MM_FABRIC_CLK>;
+			clock-names = "pxo", "pll8_vote", "mmfab";
+		};
+
+		/*
+		 * IOMMU instances for MSM8660/APQ8060.
+		 * Each multimedia subsystem has its own IOMMU for DMA address translation.
+		 * IRQ numbers and addresses from legacy kernel devices-msm8x60-iommu.c
+		 */
+
+		/* JPEG Decoder IOMMU */
+		jpegd_iommu: iommu@7300000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07300000 0x100000>;
+			interrupts = <GIC_SPI 66 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 65 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc JPEGD_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
+		/* Video Processing Engine IOMMU */
+		vpe_iommu: iommu@7400000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07400000 0x100000>;
+			interrupts = <GIC_SPI 52 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 51 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc VPE_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
+		/* MDP Port 0 IOMMU */
+		mdp_port0_iommu: iommu@7500000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07500000 0x100000>;
+			interrupts = <GIC_SPI 64 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc MDP_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
+		/* MDP Port 1 IOMMU */
+		mdp_port1_iommu: iommu@7600000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07600000 0x100000>;
+			interrupts = <GIC_SPI 62 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 61 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc MDP_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
+		/* Rotator IOMMU */
+		rot_iommu: iommu@7700000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07700000 0x100000>;
+			interrupts = <GIC_SPI 60 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 59 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc ROT_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
+		/* JPEG Encoder IOMMU */
+		ijpeg_iommu: iommu@7800000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07800000 0x100000>;
+			interrupts = <GIC_SPI 68 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 67 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc IJPEG_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
+		/* Video Front End (Camera) IOMMU */
+		vfe_iommu: iommu@7900000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07900000 0x100000>;
+			interrupts = <GIC_SPI 54 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 53 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc VFE_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
+		/* Video Codec Port A IOMMU */
+		vcodec_a_iommu: iommu@7a00000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07a00000 0x100000>;
+			interrupts = <GIC_SPI 58 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 57 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc VCODEC_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
+		/* Video Codec Port B IOMMU */
+		vcodec_b_iommu: iommu@7b00000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07b00000 0x100000>;
+			interrupts = <GIC_SPI 56 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 55 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc VCODEC_AXI_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <1>;
+			status = "disabled";
+		};
+
+		/* GPU 3D (Adreno 220) IOMMU */
+		gpu_iommu: iommu@7c00000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07c00000 0x100000>;
+			interrupts = <GIC_SPI 70 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 69 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc GFX3D_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <2>;
+			status = "disabled";
+		};
+
+		/* GPU 2D0 (Z180) IOMMU */
+		gfx2d0_iommu: iommu@7d00000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07d00000 0x100000>;
+			interrupts = <GIC_SPI 72 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 71 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc GFX2D0_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <1>;
+			status = "disabled";
+		};
+
+		/* GPU 2D1 (Z180) IOMMU */
+		gfx2d1_iommu: iommu@7e00000 {
+			compatible = "qcom,msm8660-iommu";
+			reg = <0x07e00000 0x100000>;
+			interrupts = <GIC_SPI 211 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 210 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc SMMU_AHB_CLK>,
+				 <&mmcc GFX2D1_CLK>;
+			clock-names = "smmu_pclk", "iommu_clk";
+			#iommu-cells = <1>;
+			qcom,ncb = <1>;
+			status = "disabled";
+		};
+
+		lcc: clock-controller@28000000 {
+			compatible = "qcom,lcc-msm8660", "syscon";
+			reg = <0x28000000 0x1000>;
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			/*
+			 * PLL4 on MSM8660/APQ8060 can only be controlled via
+			 * RPM, not through direct register access. Use the
+			 * RPM clock (RPM_PLL4_CLK) instead of GCC's PLL4_VOTE
+			 * which tries to go through the LCC's pll4 registers.
+			 */
+			clocks = <&pxo_board>,
+				 <&rpmcc RPM_PLL4_CLK>,
+				 <0>, <0>, <0>, <0>, <0>, <0>;
+			clock-names = "pxo",
+				      "pll4_vote",
+				      "mi2s_codec_clk",
+				      "codec_i2s_mic_codec_clk",
+				      "spare_i2s_mic_codec_clk",
+				      "codec_i2s_spkr_codec_clk",
+				      "spare_i2s_spkr_codec_clk",
+				      "pcm_codec_clk";
+		};
+
+		lpass: remoteproc@28800000 {
+			compatible = "qcom,msm8660-lpass-pil";
+			reg = <0x28800000 0x1000>;
+			reg-names = "qdsp6ss";
+
+			qcom,lcc = <&lcc>;
+
+			clocks = <&rpmcc RPM_PLL4_CLK>;
+			clock-names = "pll";
+
+			firmware-name = "q6.mdt";
+			memory-region = <&lpass_mem>;
+
+			status = "disabled";
+
+			smd-edge {
+				/*
+				 * MSM8660/APQ8060 has two LPASS interrupts:
+				 * - GIC_SPI 89: LPASS_SCSS_GP_MEDIUM_IRQ (INT_ADSP_A11_SMSM)
+				 *               Used for SMSM state machine notifications
+				 * - GIC_SPI 90: LPASS_SCSS_GP_HIGH_IRQ (INT_ADSP_A11)
+				 *               Used for SMD channel data (smd_dsp_irq_handler)
+				 *
+				 * For SMD channel communication (apr_audio_svc), we need
+				 * the data interrupt on GIC_SPI 90, not the SMSM interrupt.
+				 * Reference: webOS kernel arch/arm/mach-msm/smd.c and
+				 * arch/arm/mach-msm/include/mach/irqs-8x60.h
+				 */
+				interrupts = <GIC_SPI 90 IRQ_TYPE_EDGE_RISING>;
+
+				/*
+				 * IPC to LPASS uses GCC register at 0x02082008, bit 15.
+				 * This matches webOS MSM_TRIG_A2Q6_SMD_INT definition.
+				 */
+				qcom,ipc = <&l2cc 0x8 15>;
+				qcom,smd-edge = <1>;
+				label = "lpass";
+
+				apr: apr {
+					compatible = "qcom,apr-v2";
+					qcom,smd-channels = "apr_audio_svc";
+					qcom,domain = <APR_DOMAIN_ADSP>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+					status = "disabled";
+
+					q6core: service@3 {
+						compatible = "qcom,q6core";
+						reg = <APR_SVC_ADSP_CORE>;
+					};
+
+					q6afe: service@4 {
+						compatible = "qcom,q6afe";
+						reg = <APR_SVC_AFE>;
+
+						q6afedai: dais {
+							compatible = "qcom,q6afe-dais";
+							#address-cells = <1>;
+							#size-cells = <0>;
+							#sound-dai-cells = <1>;
+						};
+					};
+
+					q6asm: service@7 {
+						compatible = "qcom,q6asm";
+						reg = <APR_SVC_ASM>;
+						qcom,legacy-asm-protocol;
+
+						q6asmdai: dais {
+							compatible = "qcom,q6asm-dais";
+							#address-cells = <1>;
+							#size-cells = <0>;
+							#sound-dai-cells = <1>;
+						};
+					};
+
+					q6adm: service@8 {
+						compatible = "qcom,q6adm";
+						reg = <APR_SVC_ADM>;
+						qcom,legacy-adm-protocol;
+
+						q6routing: routing {
+							compatible = "qcom,q6adm-routing";
+							#sound-dai-cells = <0>;
+						};
+					};
+				};
+			};
+		};
+
+		dsps: remoteproc@12080000 {
+			compatible = "qcom,msm8660-dsps-pil";
+			reg = <0x12080000 0x2000>;
+
+			clocks = <&gcc PPSS_H_CLK>, <&gcc PMEM_CLK>;
+			clock-names = "ppss_pclk", "pmem";
+
+			resets = <&gcc PPSS_RESET>;
+
+			interconnects = <&daytona_fabric DFAB_MAS_DSPS
+					 &system_fabric SFAB_TO_DFAB>;
+			interconnect-names = "memory";
+
+			firmware-name = "dsps.mdt";
+			memory-region = <&dsps_mem>;
+
+			status = "disabled";
+		};
+
+		gsbi1: gsbi@16000000 {
+			compatible = "qcom,gsbi-v1.0.0";
+			cell-index = <12>;
+			reg = <0x16000000 0x100>;
+			clocks = <&gcc GSBI1_H_CLK>;
+			clock-names = "iface";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+
+			syscon-tcsr = <&tcsr>;
+
+			status = "disabled";
+
+			gsbi1_spi: spi@16080000 {
+				compatible = "qcom,spi-qup-v1.1.1";
+				reg = <0x16080000 0x1000>;
+				interrupts = <GIC_SPI 147 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI1_QUP_CLK>, <&gcc GSBI1_H_CLK>;
+				clock-names = "core", "iface";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		gsbi3: gsbi@16200000 {
+			compatible = "qcom,gsbi-v1.0.0";
+			cell-index = <12>;
+			reg = <0x16200000 0x100>;
+			clocks = <&gcc GSBI3_H_CLK>;
+			clock-names = "iface";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+
+			syscon-tcsr = <&tcsr>;
+			status = "disabled";
+
+			gsbi3_i2c: i2c@16280000 {
+				compatible = "qcom,i2c-qup-v1.1.1";
+				reg = <0x16280000 0x1000>;
+				interrupts = <GIC_SPI 151 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI3_QUP_CLK>, <&gcc GSBI3_H_CLK>;
+				clock-names = "core", "iface";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		gsbi5: gsbi@16400000 {
+			compatible = "qcom,gsbi-v1.0.0";
+			cell-index = <5>;
+			reg = <0x16400000 0x100>;
+			clocks = <&gcc GSBI5_H_CLK>;
+			clock-names = "iface";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+			status = "disabled";
+
+			syscon-tcsr = <&tcsr>;
+
+			gsbi5_serial: serial@16440000 {
+				compatible = "qcom,msm-uartdm-v1.3", "qcom,msm-uartdm";
+				reg = <0x16440000 0x1000>,
+				      <0x16400000 0x1000>;
+				interrupts = <GIC_SPI 154 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI5_UART_CLK>, <&gcc GSBI5_H_CLK>;
+				clock-names = "core", "iface";
+				status = "disabled";
+			};
+
+			gsbi5_i2c: i2c@16480000 {
+				compatible = "qcom,i2c-qup-v1.1.1";
+				reg = <0x16480000 0x1000>;
+				interrupts = <GIC_SPI 155 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI5_QUP_CLK>, <&gcc GSBI5_H_CLK>;
+				clock-names = "core", "iface";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		gsbi6: gsbi@16500000 {
+			compatible = "qcom,gsbi-v1.0.0";
+			cell-index = <12>;
+			reg = <0x16500000 0x100>;
+			clocks = <&gcc GSBI6_H_CLK>;
+			clock-names = "iface";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+			status = "disabled";
+
+			syscon-tcsr = <&tcsr>;
+
+			gsbi6_serial: serial@16540000 {
+				compatible = "qcom,msm-uartdm-v1.3", "qcom,msm-uartdm";
+				reg = <0x16540000 0x1000>,
+				      <0x16500000 0x1000>;
+				interrupts = <GIC_SPI 156 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI6_UART_CLK>, <&gcc GSBI6_H_CLK>;
+				clock-names = "core", "iface";
+				status = "disabled";
+			};
+
+			gsbi6_i2c: i2c@16580000 {
+				compatible = "qcom,i2c-qup-v1.1.1";
+				reg = <0x16580000 0x1000>;
+				interrupts = <GIC_SPI 157 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI6_QUP_CLK>, <&gcc GSBI6_H_CLK>;
+				clock-names = "core", "iface";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		gsbi7: gsbi@16600000 {
+			compatible = "qcom,gsbi-v1.0.0";
+			cell-index = <12>;
+			reg = <0x16600000 0x100>;
+			clocks = <&gcc GSBI7_H_CLK>;
+			clock-names = "iface";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+			status = "disabled";
+
+			syscon-tcsr = <&tcsr>;
+
+			gsbi7_serial: serial@16640000 {
+				compatible = "qcom,msm-uartdm-v1.3", "qcom,msm-uartdm";
+				reg = <0x16640000 0x1000>,
+				      <0x16600000 0x1000>;
+				interrupts = <GIC_SPI 158 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI7_UART_CLK>, <&gcc GSBI7_H_CLK>;
+				clock-names = "core", "iface";
+				status = "disabled";
+			};
+
+			gsbi7_i2c: i2c@16680000 {
+				compatible = "qcom,i2c-qup-v1.1.1";
+				reg = <0x16680000 0x1000>;
+				interrupts = <GIC_SPI 159 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI7_QUP_CLK>, <&gcc GSBI7_H_CLK>;
+				clock-names = "core", "iface";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		gsbi8: gsbi@19800000 {
+			compatible = "qcom,gsbi-v1.0.0";
+			cell-index = <12>;
+			reg = <0x19800000 0x100>;
+			clocks = <&gcc GSBI8_H_CLK>;
+			clock-names = "iface";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+
+			syscon-tcsr = <&tcsr>;
+			status = "disabled";
+
+			gsbi8_i2c: i2c@19880000 {
+				compatible = "qcom,i2c-qup-v1.1.1";
+				reg = <0x19880000 0x1000>;
+				interrupts = <GIC_SPI 161 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI8_QUP_CLK>, <&gcc GSBI8_H_CLK>;
+				clock-names = "core", "iface";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		gsbi12: gsbi@19c00000 {
+			compatible = "qcom,gsbi-v1.0.0";
+			cell-index = <12>;
+			reg = <0x19c00000 0x100>;
+			clocks = <&gcc GSBI12_H_CLK>;
+			clock-names = "iface";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+
+			syscon-tcsr = <&tcsr>;
+
+			gsbi12_serial: serial@19c40000 {
+				compatible = "qcom,msm-uartdm-v1.3", "qcom,msm-uartdm";
+				reg = <0x19c40000 0x1000>,
+				      <0x19c00000 0x1000>;
+				interrupts = <GIC_SPI 195 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI12_UART_CLK>, <&gcc GSBI12_H_CLK>;
+				clock-names = "core", "iface";
+				status = "disabled";
+			};
+
+			gsbi12_i2c: i2c@19c80000 {
+				compatible = "qcom,i2c-qup-v1.1.1";
+				reg = <0x19c80000 0x1000>;
+				interrupts = <GIC_SPI 196 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI12_QUP_CLK>, <&gcc GSBI12_H_CLK>;
+				clock-names = "core", "iface";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		ebi2: external-bus@1a100000 {
+			compatible = "qcom,msm8660-ebi2";
+			#address-cells = <2>;
+			#size-cells = <1>;
+			ranges = <0 0x0 0x1a800000 0x00800000>,
+				 <1 0x0 0x1b000000 0x00800000>,
+				 <2 0x0 0x1b800000 0x00800000>,
+				 <3 0x0 0x1d000000 0x08000000>,
+				 <4 0x0 0x1c800000 0x00800000>,
+				 <5 0x0 0x1c000000 0x00800000>;
+			reg = <0x1a100000 0x1000>, <0x1a110000 0x1000>;
+			reg-names = "ebi2", "xmem";
+			clocks = <&gcc EBI2_2X_CLK>, <&gcc EBI2_CLK>;
+			clock-names = "ebi2x", "ebi2";
+			status = "disabled";
+		};
+
+		ssbi: ssbi@500000 {
+			compatible = "qcom,ssbi";
+			reg = <0x500000 0x1000>;
+			qcom,controller-type = "pmic-arbiter";
+		};
+
+		/*
+		 * KPSS GCC at 0x02082000 is used for all IPC:
+		 * - RPM IPC: bit 2
+		 * - Modem SMD: bit 3, SMSM: bit 4
+		 * - LPASS SMD: bit 15, SMSM: bit 14
+		 */
+		l2cc: clock-controller@2082000 {
+			compatible = "qcom,kpss-gcc-msm8660", "qcom,kpss-gcc", "syscon";
+			reg = <0x02082000 0x1000>;
+		};
+
+		rpm: rpm@104000 {
+			compatible = "qcom,rpm-msm8660";
+			reg = <0x00104000 0x1000>;
+			qcom,ipc = <&l2cc 0x8 2>;
+
+			interrupts = <GIC_SPI 19 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 21 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 22 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "ack", "err", "wakeup";
+			clocks = <&gcc RPM_MSG_RAM_H_CLK>;
+			clock-names = "ram";
+
+			rpmcc: clock-controller {
+				compatible = "qcom,rpmcc-msm8660", "qcom,rpmcc";
+				#clock-cells = <1>;
+				clocks = <&pxo_board>;
+				clock-names = "pxo";
+			};
+		};
+
+		apps_fabric: interconnect@0 {
+			compatible = "qcom,msm8660-apps-fabric";
+			#interconnect-cells = <1>;
+			clocks = <&rpmcc RPM_APPS_FABRIC_CLK>,
+				 <&rpmcc RPM_APPS_FABRIC_A_CLK>;
+			clock-names = "bus", "bus_a";
+		};
+
+		system_fabric: interconnect@1 {
+			compatible = "qcom,msm8660-system-fabric";
+			#interconnect-cells = <1>;
+			clocks = <&rpmcc RPM_SYS_FABRIC_CLK>,
+				 <&rpmcc RPM_SYS_FABRIC_A_CLK>;
+			clock-names = "bus", "bus_a";
+		};
+
+		mmss_fabric: interconnect@2 {
+			compatible = "qcom,msm8660-mmss-fabric";
+			#interconnect-cells = <1>;
+			clocks = <&rpmcc RPM_MM_FABRIC_CLK>,
+				 <&rpmcc RPM_MM_FABRIC_A_CLK>,
+				 <&rpmcc RPM_SMI_CLK>,
+				 <&rpmcc RPM_SMI_A_CLK>;
+			clock-names = "bus", "bus_a", "smi", "smi_a";
+		};
+
+		daytona_fabric: interconnect@3 {
+			compatible = "qcom,msm8660-daytona-fabric";
+			#interconnect-cells = <1>;
+			clocks = <&rpmcc RPM_DAYTONA_FABRIC_CLK>,
+				 <&rpmcc RPM_DAYTONA_FABRIC_A_CLK>;
+			clock-names = "bus", "bus_a";
+		};
+
+		amba {
+			compatible = "simple-bus";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+			sdcc1: mmc@12400000 {
+				status = "disabled";
+				compatible = "arm,pl18x", "arm,primecell";
+				arm,primecell-periphid = <0x00051180>;
+				reg = <0x12400000 0x8000>;
+				interrupts = <GIC_SPI 104 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc SDC1_CLK>, <&gcc SDC1_H_CLK>;
+				clock-names = "mclk", "apb_pclk";
+				bus-width = <8>;
+				max-frequency = <48000000>;
+				non-removable;
+				cap-sd-highspeed;
+				cap-mmc-highspeed;
+				interconnects = <&daytona_fabric DFAB_MAS_SDC1
+						&apps_fabric AFAB_SLV_EBI_CH0>;
+				interconnect-names = "sdc";
+			};
+
+			sdcc2: mmc@12140000 {
+				status = "disabled";
+				compatible = "arm,pl18x", "arm,primecell";
+				arm,primecell-periphid = <0x00051180>;
+				reg = <0x12140000 0x8000>;
+				interrupts = <GIC_SPI 103 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc SDC2_CLK>, <&gcc SDC2_H_CLK>;
+				clock-names = "mclk", "apb_pclk";
+				bus-width = <8>;
+				max-frequency = <48000000>;
+				cap-sd-highspeed;
+				cap-mmc-highspeed;
+			};
+
+			sdcc3: mmc@12180000 {
+				compatible = "arm,pl18x", "arm,primecell";
+				arm,primecell-periphid = <0x00051180>;
+				status = "disabled";
+				reg = <0x12180000 0x8000>;
+				interrupts = <GIC_SPI 102 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc SDC3_CLK>, <&gcc SDC3_H_CLK>;
+				clock-names = "mclk", "apb_pclk";
+				bus-width = <4>;
+				cap-sd-highspeed;
+				cap-mmc-highspeed;
+				max-frequency = <48000000>;
+				no-1-8-v;
+			};
+
+			sdcc4: mmc@121c0000 {
+				compatible = "arm,pl18x", "arm,primecell";
+				arm,primecell-periphid = <0x00051180>;
+				status = "disabled";
+				reg = <0x121c0000 0x8000>;
+				interrupts = <GIC_SPI 101 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc SDC4_CLK>, <&gcc SDC4_H_CLK>;
+				clock-names = "mclk", "apb_pclk";
+				bus-width = <4>;
+				max-frequency = <48000000>;
+				cap-sd-highspeed;
+				cap-mmc-highspeed;
+			};
+
+			sdcc5: mmc@12200000 {
+				compatible = "arm,pl18x", "arm,primecell";
+				arm,primecell-periphid = <0x00051180>;
+				status = "disabled";
+				reg = <0x12200000 0x8000>;
+				interrupts = <GIC_SPI 188 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc SDC5_CLK>, <&gcc SDC5_H_CLK>;
+				clock-names = "mclk", "apb_pclk";
+				bus-width = <4>;
+				cap-sd-highspeed;
+				cap-mmc-highspeed;
+				max-frequency = <48000000>;
+			};
+		};
+
+		tcsr: syscon@16b00000 {
+			compatible = "qcom,tcsr-msm8660", "syscon";
+			reg = <0x16b00000 0x100>;
+		};
+
+		prng: rng@16c00000 {
+			compatible = "qcom,prng";
+			reg = <0x16c00000 0x200>;
+			clocks = <&gcc PRNG_CLK>;
+			clock-names = "core";
+		};
+
+		/*
+		 * Camera Subsystem - VFE 3.1 with MIPI CSI-2
+		 * MSM8660 supports both parallel camera (CAMIF) and MIPI CSI-2.
+		 * The CSI controller has a unified CSIPHY+CSID architecture at
+		 * CSI_0 (0x04800000) and CSI_1 (0x04900000).
+		 */
+		camss: camss@04500000 {
+			compatible = "qcom,msm8660-camss";
+			reg = <0x04500000 0x1000>,
+			      <0x04800000 0x0400>,
+			      <0x04900000 0x0400>;
+			reg-names = "vfe0",
+				    "csiphy0",
+				    "csiphy1";
+			interrupts = <GIC_SPI 48 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "vfe0",
+					  "csiphy0",
+					  "csiphy1";
+
+			clocks = <&mmcc VFE_CLK>,
+				 <&mmcc VFE_AXI_CLK>,
+				 <&mmcc VFE_AHB_CLK>,
+				 <&mmcc VFE_CSI0_CLK>,
+				 <&mmcc VFE_CSI1_CLK>,
+				 <&mmcc CSI_RDI_CLK>,
+				 <&mmcc CSI0_AHB_CLK>,
+				 <&mmcc CSI1_AHB_CLK>,
+				 <&mmcc CSI0_SRC>,
+				 <&mmcc CSI0_CLK>,
+				 <&mmcc CSI0_PHY_CLK>,
+				 <&mmcc CSI1_SRC>,
+				 <&mmcc CSI1_CLK>,
+				 <&mmcc CSI1_PHY_CLK>;
+			clock-names = "vfe",
+				      "vfe_axi",
+				      "vfe_ahb",
+				      "vfe_csi0",
+				      "vfe_csi1",
+				      "csi_rdi",
+				      "csi0_ahb",
+				      "csi1_ahb",
+				      "csi0_src",
+				      "csi0",
+				      "csi0_phy",
+				      "csi1_src",
+				      "csi1",
+				      "csi1_phy";
+
+			/* Clock rates from webOS kernel msm_io_8x60.c */
+			assigned-clocks = <&mmcc VFE_CLK>,
+					  <&mmcc CSI0_SRC>,
+					  <&mmcc CSI1_SRC>;
+			assigned-clock-rates = <228570000>,
+					       <384000000>,
+					       <384000000>;
+
+			interconnects = <&mmss_fabric MMFAB_MAS_VFE
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "vfe-mem";
+
+			/*
+			 * VFE GDSC (footswitch) must be enabled for VFE register
+			 * access. Without this, VFE reads return 0x00000000.
+			 * Earlier hangs were caused by missing clock config, not GDSC.
+			 */
+			power-domains = <&mmcc VFE_GDSC>;
+
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/*
+				 * Port indices match CSIPHY indices directly.
+				 * Parallel camera (CAMIF) is not used on MSM8660
+				 * since MIPI CSI-2 is the primary interface.
+				 */
+
+				/* CSIPHY0 (CSI_0) input port */
+				port@0 {
+					reg = <0>;
+				};
+
+				/* CSIPHY1 (CSI_1) input port */
+				port@1 {
+					reg = <1>;
+				};
+			};
+		};
+
+		/*
+		 * Video Processing Engine (VPE)
+		 * Hardware scaling, rotation, and color conversion
+		 */
+		vpe: video-processing@5300000 {
+			compatible = "qcom,msm8660-vpe";
+			reg = <0x05300000 0x100000>;
+			interrupts = <GIC_SPI 47 IRQ_TYPE_EDGE_RISING>;
+			clocks = <&mmcc VPE_CLK>,
+				 <&mmcc VPE_AXI_CLK>,
+				 <&mmcc VPE_AHB_CLK>;
+			clock-names = "core", "axi", "ahb";
+			interconnects = <&mmss_fabric MMFAB_MAS_VPE
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "vpe-mem";
+			status = "disabled";
+		};
+
+		/*
+		 * JPEG Encoder/Decoder (Gemini)
+		 * Hardware JPEG compression/decompression
+		 */
+		gemini: jpeg@4600000 {
+			compatible = "qcom,msm8660-gemini";
+			reg = <0x04600000 0x100000>;
+			interrupts = <GIC_SPI 77 IRQ_TYPE_EDGE_RISING>;
+			clocks = <&mmcc IJPEG_CLK>,
+				 <&mmcc IJPEG_AXI_CLK>,
+				 <&mmcc IJPEG_AHB_CLK>;
+			clock-names = "core", "axi", "ahb";
+			interconnects = <&mmss_fabric MMFAB_MAS_JPEG_ENC
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "jpeg-mem";
+			status = "disabled";
+		};
+
+		/*
+		 * Image Rotator
+		 * Hardware image rotation and flipping
+		 */
+		rotator: rotator@4e00000 {
+			compatible = "qcom,msm8660-rotator";
+			reg = <0x04e00000 0x100000>;
+			interrupts = <GIC_SPI 73 IRQ_TYPE_EDGE_RISING>;
+			clocks = <&mmcc ROT_CLK>,
+				 <&mmcc ROT_AHB_CLK>,
+				 <&mmcc ROT_AXI_CLK>;
+			clock-names = "core", "iface", "axi";
+			interconnects = <&mmss_fabric MMFAB_MAS_ROTATOR
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "rotator-mem";
+			status = "disabled";
+		};
+
+		/*
+		 * Z180 2D Graphics Engine - Core 0
+		 * Hardware 2D vector graphics acceleration
+		 */
+		gpu_2d0: gpu@4100000 {
+			compatible = "qcom,msm8660-z180";
+			reg = <0x04100000 0x1000>;
+			interrupts = <GIC_SPI 81 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc GFX2D0_CLK>,
+				 <&mmcc GFX2D0_AHB_CLK>;
+			clock-names = "core", "iface";
+			operating-points-v2 = <&z180_opp_table>;
+			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_2D_CORE0
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "gfx-mem";
+			status = "disabled";
+		};
+
+		/*
+		 * Z180 2D Graphics Engine - Core 1
+		 * Hardware 2D vector graphics acceleration
+		 */
+		gpu_2d1: gpu@4200000 {
+			compatible = "qcom,msm8660-z180";
+			reg = <0x04200000 0x1000>;
+			interrupts = <GIC_SPI 212 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc GFX2D1_CLK>,
+				 <&mmcc GFX2D1_AHB_CLK>;
+			clock-names = "core", "iface";
+			operating-points-v2 = <&z180_opp_table>;
+			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_2D_CORE1
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "gfx-mem";
+			status = "disabled";
+		};
+
+		/*
+		 * Video Codec (VIDC 1080p)
+		 * Hardware video encode/decode (H.264, MPEG4, etc.)
+		 */
+		vidc: video-codec@4400000 {
+			compatible = "qcom,msm8660-vidc";
+			reg = <0x04400000 0x100000>;
+			interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc VCODEC_CLK>,
+				 <&mmcc VCODEC_AHB_CLK>,
+				 <&mmcc VCODEC_AXI_CLK>;
+			clock-names = "core", "iface", "axi";
+			interconnects = <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "video-mem";
+			/*
+			 * Video codec bandwidth from webOS vcd_res_tracker.h.
+			 * 164 MB/s average, 1309 MB/s peak for 1080p encode/decode.
+			 */
+			qcom,icc-bw-avg-kbps = <167936>;   /* 164 * 1024 */
+			qcom,icc-bw-peak-kbps = <1340416>; /* 1309 * 1024 */
+			status = "disabled";
+		};
+	};
+
+	smsm {
+		compatible = "qcom,smsm";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/*
+		 * SMSM IPC uses GCC register at 0x02082008.
+		 * Matches webOS MSM_TRIG_A2M_SMSM_INT (bit 4) and
+		 * MSM_TRIG_A2Q6_SMSM_INT (bit 14).
+		 */
+		qcom,ipc-1 = <&l2cc 0x8 4>;
+		qcom,ipc-2 = <&l2cc 0x8 14>;
+
+		apps_smsm: apps@0 {
+			reg = <0>;
+			#qcom,smem-state-cells = <1>;
+		};
+
+		modem_smsm: modem@1 {
+			reg = <1>;
+			interrupts = <GIC_SPI 38 IRQ_TYPE_EDGE_RISING>;
+
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
+
+		lpass_smsm: lpass@2 {
+			reg = <2>;
+			interrupts = <GIC_SPI 89 IRQ_TYPE_EDGE_RISING>;
+
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
+	};
+
+};

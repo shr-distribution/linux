@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_QCOM_VIDC
+	tristate "Qualcomm VIDC 1080p Video Codec driver"
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on COMMON_CLK
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	help
+	  This is a V4L2 driver for the Qualcomm VIDC 1080p video
+	  encoder/decoder found in MSM8660 and APQ8060 SoCs.
+
+	  This hardware is a predecessor to the Venus video codec
+	  found in later Qualcomm SoCs and uses a different
+	  register-based command interface.
+
+	  To compile this driver as a module choose M here.

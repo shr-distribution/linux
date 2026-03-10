@@ -1,0 +1,3396 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * Common base for HP TouchPad variants (Topaz 3G and Opal WiFi)
+ */
+
+#include <dt-bindings/input/input.h>
+/* Cypress CY8CTMA395 touchscreen - uses UART for touch data, I2C for config */
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/pinctrl/qcom,pmic-mpp.h>
+#include <dt-bindings/reset/qcom,gcc-msm8660.h>
+#include <dt-bindings/clock/qcom,mmcc-msm8960.h>
+#include <dt-bindings/interconnect/qcom,msm8660.h>
+#include <dt-bindings/clock/qcom,rpmcc.h>
+#include <dt-bindings/clock/qcom,lcc-msm8660.h>
+#include <dt-bindings/sound/qcom,q6dsp-lpass-ports.h>
+#include "qcom-msm8660.dtsi"
+#include "pm8058.dtsi"
+
+// beware, framebuffer conflicts with jack UART debugging
+#define USE_FRAMEBUFFER 0
+
+/ {
+	model = "APQ8060 HP TouchPad";
+	compatible = "qcom,apq8060-tenderloin", "qcom,msm8660";
+
+	/*
+	 * SMI (System Memory Interface) memory region.
+	 *
+	 * The HP TouchPad has 64MB of SMI memory at 0x38000000 on a separate
+	 * MMSS fabric bus from EBI. webOS used pmem_smipool for display to
+	 * avoid bus contention with USB.
+	 *
+	 * SMI is accessible when RPM_SMI_CLK clocks are enabled. The MMSS
+	 * fabric interconnect driver enables these when MDP routes traffic
+	 * to MMFAB_SLV_SMI. DRM uses the drm_smi_mem reserved region.
+	 */
+	memory@38000000 {
+		device_type = "memory";
+		reg = <0x38000000 0x4000000>;  /* 64MB SMI: 0x38000000-0x3bffffff */
+	};
+
+	aliases {
+		mmc0 = &sdcc1;	/* mmcblk0 for eMMC/SD */
+		serial0 = &gsbi12_serial; /* Console - /dev/ttyMSM0 */
+		serial1 = &gsbi6_serial;  /* Bluetooth - /dev/ttyMSM1 */
+		serial2 = &gsbi10_serial; /* Touchscreen UART - /dev/ttyMSM2 */
+		serial3 = &gsbi5_serial;  /* GPS - /dev/ttyMSM3 */
+		display0 = &lg_panel;
+	};
+
+	chosen {
+		/* Bootloader passes console=tty1, which overrides stdout-path */
+		bootargs = "console=ttyMSM0,115200 console=ttyGS0,115200 clk_ignore_unused log_buf_len=4M deferred_probe_timeout=5";
+		stdout-path = "serial0:115200n8";
+#if USE_FRAMEBUFFER
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+		fb0: framebuffer@7f600000 {
+			compatible = "simple-framebuffer";
+			status = "okay";
+			reg = <0x7f600000 (1024 * 768 * 4 * 3)>;
+			width = <1024>;
+			height = <768>;
+			stride = <(1024 * 4)>;
+			format = "a8r8g8b8";
+			display = <&lg_panel>;
+		};
+#endif
+	};
+
+	clocks {
+		sleep_clk: sleep-clk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <32768>;
+			clock-output-names = "sleep_clk";
+		};
+	};
+
+	regulators {
+		compatible = "simple-bus";
+
+		/* Main power of the board: 3.7V */
+		vph: regulator-fixed {
+			compatible = "regulator-fixed";
+			regulator-min-microvolt = <3700000>;
+			regulator-max-microvolt = <3700000>;
+			regulator-name = "VPH";
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		/* 5v bias */
+		vdd50_boost: vdd50 {
+			compatible = "regulator-fixed";
+
+			regulator-name = "vdd50_boost";
+			regulator-min-microvolt = <5000000>;
+			regulator-max-microvolt = <5000000>;
+
+			gpio = <&tlmm 102 GPIO_ACTIVE_HIGH>;
+			enable-active-high;
+
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		dummy0: regulator-fixed0 {
+			compatible = "regulator-fixed";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-name = "dummy0";
+		};
+
+		dummy1: regulator-fixed1 {
+			compatible = "regulator-fixed";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-name = "dummy1";
+		};
+
+		/*
+		 * Audio LDO regulators for WM8958 codec
+		 * Optional - codec may work with PMIC regulators alone
+		 */
+		aud_ldo1: regulator-fixed-aud-ldo1 {
+			compatible = "regulator-fixed";
+			regulator-name = "aud_ldo1";
+			regulator-min-microvolt = <2850000>;
+			regulator-max-microvolt = <2850000>;
+
+			gpio = <&tlmm 66 GPIO_ACTIVE_HIGH>;
+			enable-active-high;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&aud_ldo1_pins>;
+		};
+
+		/*
+		 * Note: aud_ldo2 regulator removed - GPIO 108 is now used for
+		 * Primary I2S clock signal. DCVDD is supplied directly by
+		 * pm8058_s3, so the WM8958's internal LDO2 is not needed.
+		 */
+	};
+
+	/*
+	 * WiFi Power Sequence for Atheros AR6003 (WCN1314)
+	 *
+	 * The HP TouchPad uses Atheros AR6003 WiFi (Qualcomm WCN1314) connected
+	 * via SDIO on SDCC4. Power sequence from legacy kernel tenderloin_wifi_power():
+	 *
+	 * Power-on sequence:
+	 *   1. Enable 3.3V supplies (pm8901_l1, pm8901_l3)
+	 *   2. Enable 1.8V supplies (pm8058_l19, pm8058_s3)
+	 *   3. Wait 5ms (Tb delay)
+	 *   4. Assert WLAN_RST_N high (chip out of reset)
+	 *
+	 * Power-off sequence:
+	 *   1. Assert WLAN_RST_N low (chip in reset)
+	 *   2. Wait 5ms (Tc delay)
+	 *   3. Disable regulators in reverse order
+	 *
+	 * Reset GPIO (Topaz WiFi/3G variants):
+	 *   - WiFi: GPIO 135 (WLAN_RST_N)
+	 *   - 3G:   GPIO 28  (WLAN_RST_N_3G)
+	 *
+	 * Wake GPIOs are handled separately via wlan_gpios pinctrl:
+	 *   - GPIO 93:  WL_HOST_WAKE (WiFi signals host, input)
+	 *   - GPIO 137: HOST_WAKE_WL (Host signals WiFi, output) [WiFi variant]
+	 *   - GPIO 80:  HOST_WAKE_WL_3G [3G variant]
+	 */
+	ath6kl_pwrseq: ath6kl-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+
+		/* WLAN_RST_N - active low reset for AR6003 */
+		reset-gpios = <&tlmm 135 GPIO_ACTIVE_LOW>;
+
+		/* 32kHz sleep clock for AR6003 low-power mode */
+		clocks = <&sleep_clk>;
+		clock-names = "ext_clock";
+
+		/*
+		 * AR6003 needs time after reset deassert to enter BMI
+		 * (Boot Mode Interface) for firmware download.
+		 * Legacy kernel uses 5ms, but 200ms provides margin.
+		 */
+		post-power-on-delay-ms = <200>;
+	};
+
+	soc {
+		/*
+		 * ADM (Application Data Mover) DMA Controllers
+		 *
+		 * Configuration verified from legacy webOS kernel:
+		 * - arch/arm/mach-msm/include/mach/msm_iomap-8x60.h
+		 * - arch/arm/mach-msm/include/mach/irqs-8x60.h
+		 * - arch/arm/mach-msm/include/mach/dma.h
+		 *
+		 * ADM has 4 Security Domains (SD), each with its own interrupt:
+		 *   ADM0: MASTER=170, AARM=171, SD2=172, SD3=173
+		 *   ADM1: MASTER=166, AARM=167, SD2=168, SD3=169
+		 *
+		 * For ADM3 (MSM8x60), Linux uses SD 1 (AARM = Applications ARM):
+		 *   - DMOV_SD_AARM = 1, DMOV_SD_SIZE = 0x800
+		 *   - Register offset = SD * 0x800 = 0x800 for EE 1
+		 *
+		 * MASTER interrupts (SD 0) are for TrustZone/modem processor.
+		 * SD2/SD3 interrupts are for other security contexts (unused).
+		 *
+		 * Base addresses: ADM0=0x18320000, ADM1=0x18420000
+		 */
+		adm_dma0: dma-controller@18320000 {
+			compatible = "qcom,adm";
+			reg = <0x18320000 0x100000>;
+			interrupts = <GIC_SPI 171 IRQ_TYPE_LEVEL_HIGH>;
+			#dma-cells = <1>;
+
+			clocks = <&gcc ADM0_CLK>, <&gcc ADM0_PBUS_CLK>;
+			clock-names = "core", "iface";
+
+			resets = <&gcc ADM0_RESET>,
+				 <&gcc ADM0_PBUS_RESET>,
+				 <&gcc ADM0_C0_RESET>,
+				 <&gcc ADM0_C1_RESET>,
+				 <&gcc ADM0_C2_RESET>;
+			reset-names = "clk", "pbus", "c0", "c1", "c2";
+			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
+			qcom,ee = <1>;
+
+			/*
+			 * EBI interconnect path for DMA memory access.
+			 *
+			 * The legacy webOS kernel used ebi1_adm_clk clock voter
+			 * to ensure minimum EBI bandwidth during DMA operations.
+			 * This interconnect path provides equivalent functionality.
+			 *
+			 * Path: ADM0 -> SFAB -> AFAB -> EBI (system memory)
+			 */
+			interconnects = <&system_fabric SFAB_MAS_ADM0_PORT0
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "memory";
+		};
+
+		adm_dma1: dma-controller@18420000 {
+			compatible = "qcom,adm";
+			reg = <0x18420000 0x100000>;
+			interrupts = <GIC_SPI 167 IRQ_TYPE_LEVEL_HIGH>;
+			#dma-cells = <1>;
+
+			clocks = <&gcc ADM1_CLK>, <&gcc ADM1_PBUS_CLK>;
+			clock-names = "core", "iface";
+
+			resets = <&gcc ADM1_RESET>,
+				 <&gcc ADM1_PBUS_RESET>,
+				 <&gcc ADM1_C0_RESET>,
+				 <&gcc ADM1_C1_RESET>,
+				 <&gcc ADM1_C2_RESET>;
+			reset-names = "clk", "pbus", "c0", "c1", "c2";
+			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
+			qcom,ee = <1>;
+
+			/*
+			 * EBI interconnect path for DMA memory access.
+			 *
+			 * The legacy webOS kernel used ebi1_adm_clk clock voter
+			 * to ensure minimum EBI bandwidth during DMA operations.
+			 * This interconnect path provides equivalent functionality.
+			 *
+			 * Path: ADM1 -> SFAB -> AFAB -> EBI (system memory)
+			 */
+			interconnects = <&system_fabric SFAB_MAS_ADM1_PORT0
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "memory";
+		};
+
+		/*
+		 * Crypto Engine 2 (CE2) - Hardware crypto accelerator
+		 *
+		 * Configuration verified from legacy webOS kernel:
+		 * - arch/arm/mach-msm/board-msm8x60.c: qcrypto resources
+		 * - arch/arm/mach-msm/include/mach/dma.h: DMOV_CE_* defines
+		 *
+		 * ADM DMA channels and CRCI for CE2:
+		 * - RX: Channel 2, CRCI 4 (DMOV_CE_IN_CHAN, DMOV_CE_IN_CRCI)
+		 * - TX: Channel 3, CRCI 5 (DMOV_CE_OUT_CHAN, DMOV_CE_OUT_CRCI)
+		 */
+		crypto@18500000 {
+			compatible = "qcom,msm8660-qce";
+			reg = <0x18500000 0x10000>;
+			interrupts = <GIC_SPI 195 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&gcc CE2_H_CLK>;
+			clock-names = "iface";
+			dmas = <&adm_dma0 2>, <&adm_dma0 3>;
+			dma-names = "rx", "tx";
+			qcom,rx-crci = <4>;
+			qcom,tx-crci = <5>;
+			status = "disabled";
+		};
+
+		gsbi4: gsbi@16300000 {
+			compatible = "qcom,gsbi-v1.0.0";
+			cell-index = <4>;
+			reg = <0x16300000 0x03>;
+			clocks = <&gcc GSBI4_H_CLK>;
+			clock-names = "iface";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+			status = "disabled";
+
+			gsbi4_i2c: i2c@16380000 {
+				compatible = "qcom,i2c-qup-v1.1.1";
+				reg = <0x16380000 0x1000>;
+				interrupts = <GIC_SPI 153 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI4_QUP_CLK>, <&gcc GSBI4_H_CLK>;
+				clock-names = "core", "iface";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		gsbi10: gsbi@19a00000 {
+			compatible = "qcom,gsbi-v1.0.0";
+			cell-index = <10>;
+			reg = <0x19a00000 0x100>;
+			clocks = <&gcc GSBI10_H_CLK>;
+			clock-names = "iface";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+			status = "disabled";
+
+			syscon-tcsr = <&tcsr>;
+
+			gsbi10_serial: serial@19a40000 {
+				compatible = "qcom,msm-uartdm-v1.3", "qcom,msm-uartdm";
+				reg = <0x19a40000 0x1000>,
+				      <0x19a00000 0x1000>;
+				interrupts = <GIC_SPI 191 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI10_UART_CLK>, <&gcc GSBI10_H_CLK>;
+				clock-names = "core", "iface";
+
+				dmas = <&adm_dma0 8>;
+				dma-names = "rx";
+				/*
+				 * GSBI10 DMA CRCI configuration from webOS kernel:
+				 * DMOV_HSUART2_TX_CRCI = (1 << 4) + 9 = 25
+				 * DMOV_HSUART2_RX_CRCI = (1 << 4) + 10 = 26
+				 */
+				qcom,rx-crci = <26>;
+
+				status = "disabled";
+			};
+
+			gsbi10_i2c: i2c@19a80000 {
+				compatible = "qcom,i2c-qup-v1.1.1";
+				reg = <0x19a80000 0x1000>;
+				interrupts = <GIC_SPI 192 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GSBI10_QUP_CLK>, <&gcc GSBI10_H_CLK>;
+				clock-names = "core", "iface";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		qcom,ssbi@C00000 {
+			compatible = "qcom,ssbi";
+			reg = <0xC00000 0x1000>;
+			qcom,controller-type = "pmic-arbiter";
+
+			pm8901: pmic8901 {
+				compatible = "qcom,pm8901";
+				interrupts-extended = <&tlmm 91 IRQ_TYPE_LEVEL_LOW>;
+				#interrupt-cells = <2>;
+				interrupt-controller;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				pm8901_mpps: mpps@27 {
+					compatible = "qcom,pm8901-mpp",
+						     "qcom,ssbi-mpp";
+					reg = <0x27>;
+					gpio-controller;
+					#gpio-cells = <2>;
+					gpio-ranges = <&pm8901_mpps 0 0 4>;
+					interrupt-controller;
+					#interrupt-cells = <2>;
+				};
+			};
+		};
+
+		rpm@104000 {
+			/*
+			 * Set up of the PMIC RPM regulators for this board
+			 * PM8901 supplies "preliminary regulators" whatever
+			 * that means
+			 */
+			pm8901-regulators {
+				compatible = "qcom,rpm-pm8901-regulators";
+
+				vdd_l0-supply = <&pm8901_s4>;
+				vdd_l1-supply = <&vph>;
+				vdd_l2-supply = <&vph>;
+				vdd_l3-supply = <&vph>;
+				vdd_l4-supply = <&vph>;
+				vdd_l5-supply = <&vph>;
+				vdd_l6-supply = <&vph>;
+				/* vdd_s0-supply, vdd_s1-supply: SAW regulators */
+				vdd_s2-supply = <&vph>;
+				vdd_s3-supply = <&vph>;
+				vdd_s4-supply = <&vph>;
+				lvs0_in-supply = <&pm8058_s3>;
+				lvs1_in-supply = <&pm8901_s4>;
+				lvs2_in-supply = <&pm8058_l0>;
+				lvs3_in-supply = <&pm8058_s2>;
+				mvs_in-supply = <&pm8058_s3>;
+
+				pm8901_l0: l0 {
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1200000>;
+					bias-pull-down;
+				};
+				/* WiFi main 3.3V supply (VDD_WLAN_3V3) */
+				pm8901_l1: l1 {
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+					bias-pull-down;
+					regulator-always-on;
+				};
+				pm8901_l2: l2 {
+					regulator-min-microvolt = <2850000>;
+					regulator-max-microvolt = <3300000>;
+					bias-pull-down;
+				};
+				/* WiFi power amplifier 3.3V supply (WLAN_PA_3V3) */
+				pm8901_l3: l3 {
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+					bias-pull-down;
+					regulator-always-on;
+				};
+				pm8901_l4: l4 {
+					regulator-min-microvolt = <2600000>;
+					regulator-max-microvolt = <2600000>;
+					bias-pull-down;
+				};
+				pm8901_l5: l5 {
+					regulator-min-microvolt = <2850000>;
+					regulator-max-microvolt = <2850000>;
+					bias-pull-down;
+				};
+				pm8901_l6: l6 {
+					regulator-min-microvolt = <2200000>;
+					regulator-max-microvolt = <2200000>;
+					bias-pull-down;
+				};
+
+				/* s0 and s1 are SAW regulators controlled over SPM */
+				pm8901_s2: s2 {
+					regulator-min-microvolt = <1300000>;
+					regulator-max-microvolt = <1300000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+				};
+				pm8901_s3: s3 {
+					regulator-min-microvolt = <1100000>;
+					regulator-max-microvolt = <1100000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+				};
+				pm8901_s4: s4 {
+					regulator-min-microvolt = <1225000>;
+					regulator-max-microvolt = <1225000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+				};
+
+				/* LVS0 thru 3 and mvs0 are just switches */
+				pm8901_lvs0: lvs0 {
+					regulator-always-on;
+					bias-pull-down;
+				};
+				pm8901_lvs1: lvs1 {
+					bias-pull-down;
+				};
+				pm8901_lvs2: lvs2 {
+					bias-pull-down;
+				};
+				pm8901_lvs3: lvs3 {
+					bias-pull-down;
+				};
+
+				pm8901_mvs: mvs {
+					bias-pull-down;
+				};
+			};
+
+			pm8058-regulators {
+				compatible = "qcom,rpm-pm8058-regulators";
+
+				vdd_l0_l1_lvs-supply = <&pm8058_s3>;
+				vdd_l2_l11_l12-supply = <&vph>;
+				vdd_l3_l4_l5-supply = <&vph>;
+				vdd_l6_l7-supply = <&vph>;
+				vdd_l8-supply = <&vph>;
+				vdd_l9-supply = <&vph>;
+				vdd_l10-supply = <&vph>;
+				vdd_l13_l16-supply = <&pm8058_s4>;
+				vdd_l14_l15-supply = <&vph>;
+				vdd_l17_l18-supply = <&vph>;
+				vdd_l19_l20-supply = <&vph>;
+				vdd_l21-supply = <&pm8058_s3>;
+				vdd_l22-supply = <&pm8058_s3>;
+				vdd_l23_l24_l25-supply = <&pm8058_s3>;
+				vdd_s0-supply = <&vph>;
+				vdd_s1-supply = <&vph>;
+				vdd_s2-supply = <&vph>;
+				vdd_s3-supply = <&vph>;
+				vdd_s4-supply = <&vph>;
+				vdd_ncp-supply = <&vph>;
+
+				pm8058_l0: l0 {
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1200000>;
+					bias-pull-down;
+				};
+				pm8058_l1: l1 {
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1200000>;
+					bias-pull-down;
+				};
+				pm8058_l2: l2 {
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <2600000>;
+					bias-pull-down;
+				};
+				pm8058_l3: l3 {
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					bias-pull-down;
+				};
+				pm8058_l4: l4 {
+					regulator-min-microvolt = <2850000>;
+					regulator-max-microvolt = <2850000>;
+					bias-pull-down;
+					/* Audio codec (WM8958) power - must be on at boot */
+					regulator-boot-on;
+					regulator-always-on;
+				};
+				pm8058_l5: l5 {
+					regulator-min-microvolt = <2850000>;
+					regulator-max-microvolt = <2850000>;
+					bias-pull-down;
+				};
+				pm8058_l6: l6 {
+					regulator-min-microvolt = <3000000>;
+					regulator-max-microvolt = <3600000>;
+					bias-pull-down;
+				};
+				pm8058_l7: l7 {
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					bias-pull-down;
+				};
+				pm8058_l8: l8 {
+					regulator-min-microvolt = <2900000>;
+					regulator-max-microvolt = <3050000>;
+					bias-pull-down;
+				};
+				pm8058_l9: l9 {
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					bias-pull-down;
+				};
+				/* WiFi/touchscreen 3.05V supply */
+				pm8058_l10: l10 {
+					regulator-min-microvolt = <3050000>;
+					regulator-max-microvolt = <3050000>;
+					bias-pull-down;
+					regulator-always-on;
+				};
+				pm8058_l11: l11 {
+					regulator-min-microvolt = <2850000>;
+					regulator-max-microvolt = <2850000>;
+					bias-pull-down;
+				};
+				pm8058_l12: l12 {
+					/* USB OTG power */
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					bias-pull-down;
+				};
+				pm8058_l13: l13 {
+					regulator-min-microvolt = <2050000>;
+					regulator-max-microvolt = <2050000>;
+					bias-pull-down;
+				};
+				pm8058_l14: l14 {
+					regulator-min-microvolt = <2850000>;
+					regulator-max-microvolt = <2850000>;
+				};
+				pm8058_l15: l15 {
+					regulator-min-microvolt = <2850000>;
+					regulator-max-microvolt = <2850000>;
+					bias-pull-down;
+				};
+				pm8058_l16: l16 {
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					bias-pull-down;
+					/*
+					 * RPM driver can't handle always-on regulators that are
+					 * supplied by regulators initialized after them.
+					 */
+					regulator-always-on;
+				};
+				pm8058_l17: l17 {
+					// 1.5V according to schematic
+					regulator-min-microvolt = <2600000>;
+					regulator-max-microvolt = <2600000>;
+					bias-pull-down;
+				};
+				pm8058_l18: l18 {
+					regulator-min-microvolt = <2200000>;
+					regulator-max-microvolt = <2200000>;
+					bias-pull-down;
+				};
+				/* WiFi 1.8V I/O supply (VDD_1.8) */
+				pm8058_l19: l19 {
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					bias-pull-down;
+					regulator-always-on;
+				};
+				pm8058_l20: l20 {
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					bias-pull-down;
+				};
+				pm8058_l21: l21 {
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1200000>;
+					bias-pull-down;
+					/*
+					 * RPM driver can't handle always-on regulators that are
+					 * supplied by regulators initialized after them.
+					 */
+					regulator-always-on;
+				};
+				pm8058_l22: l22 {
+					/* Safe shutdown rail */
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1200000>;
+					bias-pull-down;
+				};
+				pm8058_l23: l23 {
+					// Unused
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1200000>;
+					bias-pull-down;
+				};
+				pm8058_l24: l24 {
+					// Unused
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1200000>;
+					bias-pull-down;
+				};
+				pm8058_l25: l25 {
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1200000>;
+					bias-pull-down;
+				};
+
+				pm8058_s0: s0 {
+					// regulator-min-microvolt = <800000>;
+					// regulator-max-microvolt = <1325000>;
+					regulator-min-microvolt = <500000>;
+					regulator-max-microvolt = <1350000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+				};
+				pm8058_s1: s1 {
+					// regulator-min-microvolt = <800000>;
+					// regulator-max-microvolt = <1325000>;
+					regulator-min-microvolt = <500000>;
+					regulator-max-microvolt = <1350000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+					//regulator-always-on;
+				};
+				pm8058_s2: s2 {
+					// 1.3 V according to schematic
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1400000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+				};
+				pm8058_s3: s3 {
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+					regulator-allow-set-load;
+					/* Core 1.8V rail for audio, WiFi, sensors - must be on early */
+					regulator-boot-on;
+					regulator-always-on;
+				};
+				pm8058_s4: s4 {
+					regulator-min-microvolt = <2200000>;
+					regulator-max-microvolt = <2200000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+					regulator-always-on;
+				};
+
+				/* LVS0 and LVS1 are just switches */
+				pm8058_lvs0: lvs0 {
+					bias-pull-down;
+				};
+				pm8058_lvs1: lvs1 {
+					bias-pull-down;
+				};
+
+				pm8058_ncp: ncp {
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					qcom,switch-mode-frequency = <1600000>;
+				};
+			};
+		};
+
+		usb1: usb@12500000 {
+			compatible = "qcom,ci-hdrc";
+			reg = <0x12500000 0x200>,
+			      <0x12500200 0x200>;
+			interrupts = <GIC_SPI 100 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&gcc USB_HS1_XCVR_CLK>,
+				 <&gcc USB_HS1_H_CLK>,
+				 <&rpmcc RPM_DAYTONA_FABRIC_CLK>;
+			clock-names = "core", "iface", "dfab";
+			assigned-clocks = <&gcc USB_HS1_XCVR_CLK>;
+			assigned-clock-rates = <60000000>;
+			resets = <&gcc USB_HS1_RESET>;
+			reset-names = "core";
+			phy_type = "ulpi";
+			ahb-burst-config = <0>;
+			phys = <&usb_hs1_phy>;
+			phy-names = "usb-phy";
+			/*
+			 * USB interconnect paths:
+			 * 1. usb-mem: USB data path to memory (SFAB->AFAB->EBI)
+			 * 2. usb-dfab: DFAB clock voter (keeps Daytona Fabric stable)
+			 *
+			 * The DFAB voter matches the webOS kernel's dfab_usb_hs_clk
+			 * clock voter which prevented USB crashes during concurrent
+			 * display (MDP) activity.
+			 */
+			interconnects = <&system_fabric SFAB_MAS_USB_HS
+					 &apps_fabric AFAB_SLV_EBI_CH0>,
+					<&daytona_fabric DFAB_MAS_USB_HS
+					 &daytona_fabric DFAB_TO_SFAB>;
+			interconnect-names = "usb-mem", "usb-dfab";
+			status = "disabled";
+
+			ulpi {
+				usb_hs1_phy: phy {
+					compatible = "qcom,usb-hs-phy-apq8064",
+						     "qcom,usb-hs-phy";
+					clocks = <&sleep_clk>, <&cxo_board>;
+					clock-names = "sleep", "ref";
+					/*
+					 * Reset is handled by parent USB controller.
+					 * Using separate reset from GCC causes conflict
+					 * since USB controller already owns USB_HS1_RESET.
+					 */
+					#phy-cells = <0>;
+				};
+			};
+		};
+
+		mmcc: clock-controller@4000000 {
+			compatible = "qcom,mmcc-msm8660";
+			reg = <0x4000000 0x1000>;
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			#power-domain-cells = <1>;
+		};
+
+		gpu: adreno@4300000 {
+			compatible = "qcom,adreno-220.0", "qcom,adreno";
+			reg = <0x04300000 0x20000>;
+			reg-names = "kgsl_3d0_reg_memory";
+			interrupts = <GIC_SPI 80 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "kgsl_3d0_irq";
+			clock-names = "core_clk",
+				      "iface_clk",
+				      "mem_clk",
+				      "bus";
+			clocks = <&mmcc GFX3D_CLK>,
+				 <&mmcc GFX3D_AHB_CLK>,
+				 <&mmcc GMEM_AXI_CLK>,
+				 <&mmcc GFX3D_AXI_CLK>;
+
+			power-domains = <&mmcc GFX3D_GDSC>;
+			power-domain-names = "gfx3d";
+
+			operating-points-v2 = <&gpu_opp_table>;
+
+			/* Match legacy webOS KGSL idle_timeout_3d = HZ/5 */
+			qcom,gpu-idle-timeout-ms = <200>;
+
+			/*
+			 * GPU voltage supply (vdd_dig) for DVFS.
+			 * PM8058 S1 provides 500mV-1350mV range.
+			 */
+			gpu-supply = <&pm8058_s1>;
+
+			/*
+			 * GPU IOMMU for memory virtualization.
+			 * Stream IDs 0-15 for user context, 16-31 for priv context.
+			 */
+			iommus = <&gpu_iommu 0>,
+				 <&gpu_iommu 1>,
+				 <&gpu_iommu 2>,
+				 <&gpu_iommu 3>,
+				 <&gpu_iommu 4>,
+				 <&gpu_iommu 5>,
+				 <&gpu_iommu 6>,
+				 <&gpu_iommu 7>,
+				 <&gpu_iommu 8>,
+				 <&gpu_iommu 9>,
+				 <&gpu_iommu 10>,
+				 <&gpu_iommu 11>,
+				 <&gpu_iommu 12>,
+				 <&gpu_iommu 13>,
+				 <&gpu_iommu 14>,
+				 <&gpu_iommu 15>,
+				 <&gpu_iommu 16>,
+				 <&gpu_iommu 17>,
+				 <&gpu_iommu 18>,
+				 <&gpu_iommu 19>,
+				 <&gpu_iommu 20>,
+				 <&gpu_iommu 21>,
+				 <&gpu_iommu 22>,
+				 <&gpu_iommu 23>,
+				 <&gpu_iommu 24>,
+				 <&gpu_iommu 25>,
+				 <&gpu_iommu 26>,
+				 <&gpu_iommu 27>,
+				 <&gpu_iommu 28>,
+				 <&gpu_iommu 29>,
+				 <&gpu_iommu 30>,
+				 <&gpu_iommu 31>;
+
+			/*
+			 * GPU interconnect path for memory bandwidth.
+			 * Adreno 220 generates up to 2008 MB/s memory traffic.
+			 * Without this, GPU activity can starve USB and other
+			 * peripherals by not voting for fabric bandwidth.
+			 */
+			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_3D
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "gfx-mem";
+		};
+
+		gpu_opp_table: gpu-opp-table {
+			compatible = "operating-points-v2";
+
+			/*
+			 * Adreno 220 GPU OPP table from MSM8660 clock-8x60.c.
+			 * Voltage levels from soc_update_sys_vdd():
+			 *   LOW = 1.0V, NOMINAL = 1.1V, HIGH = 1.2V
+			 *
+			 * Voltage scaling is provided by PM8058 S1 (vdd_dig)
+			 * via the gpu-supply property on the GPU node.
+			 *
+			 * Bandwidth values (opp-peak-kBps) scale with frequency,
+			 * up to 2008 MB/s at max (from webOS msm_bus_scale).
+			 * This ensures fabric bandwidth is voted when GPU is active.
+			 */
+			opp-27000000 {
+				opp-hz = /bits/ 64 <27000000>;
+				opp-microvolt = <1000000>;
+				opp-peak-kBps = <170000>;
+			};
+			opp-48000000 {
+				opp-hz = /bits/ 64 <48000000>;
+				opp-microvolt = <1000000>;
+				opp-peak-kBps = <301000>;
+			};
+			opp-64000000 {
+				opp-hz = /bits/ 64 <64000000>;
+				opp-microvolt = <1000000>;
+				opp-peak-kBps = <401000>;
+			};
+			opp-76800000 {
+				opp-hz = /bits/ 64 <76800000>;
+				opp-microvolt = <1000000>;
+				opp-peak-kBps = <482000>;
+			};
+			opp-96000000 {
+				opp-hz = /bits/ 64 <96000000>;
+				opp-microvolt = <1000000>;
+				opp-peak-kBps = <602000>;
+			};
+			opp-128000000 {
+				opp-hz = /bits/ 64 <128000000>;
+				opp-microvolt = <1100000>;
+				opp-peak-kBps = <803000>;
+			};
+			opp-160000000 {
+				opp-hz = /bits/ 64 <160000000>;
+				opp-microvolt = <1100000>;
+				opp-peak-kBps = <1004000>;
+			};
+			opp-200000000 {
+				opp-hz = /bits/ 64 <200000000>;
+				opp-microvolt = <1100000>;
+				opp-peak-kBps = <1255000>;
+			};
+			opp-228571000 {
+				opp-hz = /bits/ 64 <228571000>;
+				opp-microvolt = <1100000>;
+				opp-peak-kBps = <1434000>;
+			};
+			opp-266667000 {
+				opp-hz = /bits/ 64 <266667000>;
+				opp-microvolt = <1200000>;
+				opp-peak-kBps = <1673000>;
+			};
+			opp-320000000 {
+				opp-hz = /bits/ 64 <320000000>;
+				opp-microvolt = <1200000>;
+				opp-peak-kBps = <2008000>;
+			};
+		};
+
+		mdp: mdp@5100000 {
+			compatible = "qcom,mdp4";
+			reg = <0x05100000 0xf0000>;
+			interrupts = <GIC_SPI 75 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mmcc MDP_CLK>,
+				 <&mmcc MDP_AHB_CLK>,
+				 <&mmcc MDP_AXI_CLK>,
+				 <&mmcc HDMI_TV_CLK>,
+				 <&mmcc MDP_TV_CLK>,
+				 <&mmcc MDP_LCDC_CLK>,
+				 <&mmcc MDP_VSYNC_CLK>;
+			clock-names = "core_clk",
+				      "iface_clk",
+				      "bus_clk",
+				      "hdmi_clk",
+				      "tv_clk",
+				      "lcdc_clk",
+				      "vsync_clk";
+
+			lvds-vccs-3p3v-supply = <&pm8058_l10>;
+
+			status = "okay";
+
+			/*
+			 * NOTE: webOS actually used EBI (system RAM) for framebuffers,
+			 * not SMI. The pmem_smipool existed but wasn't used for display.
+			 * Using SMI may cause display underruns due to different access
+			 * characteristics. The drm_smi_mem region is available if needed
+			 * but we match webOS behavior by not forcing SMI allocation.
+			 */
+			/* memory-region = <&drm_smi_mem>; */
+
+			/*
+			 * Use LSB pack alignment to match webOS configuration.
+			 * webOS mdp_lcdc.c used DMA_PACK_ALIGN_LSB for the LG panel.
+			 * Without this, display shows blue vertical lines.
+			 */
+			qcom,lcdc-align-lsb;
+
+			/*
+			 * MDP interconnect paths - vote on BOTH SMI and EBI.
+			 *
+			 * WebOS voted for bandwidth on both paths simultaneously,
+			 * even when only using SMI for framebuffers. This appears
+			 * necessary for proper fabric clock scaling on MSM8660.
+			 *
+			 * SMI paths: MDP -> MMSS fabric -> SMI (dedicated VRAM)
+			 * EBI paths: MDP -> MMSS fabric -> APPSS fabric -> EBI (system RAM)
+			 */
+			interconnects = <&mmss_fabric MMFAB_MAS_MDP_PORT0 &mmss_fabric MMFAB_SLV_SMI>,
+					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &mmss_fabric MMFAB_SLV_SMI>,
+					<&mmss_fabric MMFAB_MAS_MDP_PORT0 &apps_fabric AFAB_SLV_EBI_CH0>,
+					<&mmss_fabric MMFAB_MAS_MDP_PORT1 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "mdp0-smi", "mdp1-smi", "mdp0-ebi", "mdp1-ebi";
+
+			/*
+			 * MDP interconnect bandwidth from webOS board-tenderloin.c
+			 * mdp_app_vectors (two 1024x768 layers):
+			 *   ab = 377,487,360 (377 MB/s average)
+			 *   ib = 471,859,200 (471 MB/s peak/instantaneous)
+			 */
+			qcom,icc-bw-avg-kbps = <368640>;   /* 377487360 / 1024 */
+			qcom,icc-bw-peak-kbps = <460800>;  /* 471859200 / 1024 */
+
+			/*
+			 * MDP IOMMU for display memory virtualization.
+			 * Stream IDs from legacy kernel devices-msm8x60-iommu.c:
+			 *   Port 0: VG1 ctx (MIDs 0,2) + RGB1 ctx (MIDs 1,3-10)
+			 *   Port 1: VG2 ctx (MIDs 0,2) + RGB2 ctx (MIDs 1,3-10)
+			 */
+			iommus = <&mdp_port0_iommu 0>,
+				 <&mdp_port0_iommu 1>,
+				 <&mdp_port0_iommu 2>,
+				 <&mdp_port0_iommu 3>,
+				 <&mdp_port0_iommu 4>,
+				 <&mdp_port0_iommu 5>,
+				 <&mdp_port0_iommu 6>,
+				 <&mdp_port0_iommu 7>,
+				 <&mdp_port0_iommu 8>,
+				 <&mdp_port0_iommu 9>,
+				 <&mdp_port0_iommu 10>,
+				 <&mdp_port1_iommu 0>,
+				 <&mdp_port1_iommu 1>,
+				 <&mdp_port1_iommu 2>,
+				 <&mdp_port1_iommu 3>,
+				 <&mdp_port1_iommu 4>,
+				 <&mdp_port1_iommu 5>,
+				 <&mdp_port1_iommu 6>,
+				 <&mdp_port1_iommu 7>,
+				 <&mdp_port1_iommu 8>,
+				 <&mdp_port1_iommu 9>,
+				 <&mdp_port1_iommu 10>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					mdp_lvds_out: endpoint {
+						remote-endpoint = <&panel_in>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					mdp_dsi1_out: endpoint {
+					};
+				};
+
+				port@2 {
+					reg = <2>;
+					mdp_dsi2_out: endpoint {
+					};
+				};
+
+				port@3 {
+					reg = <3>;
+					mdp_dtv_out: endpoint {
+						/* HDMI removed - TouchPad has no HDMI output */
+					};
+				};
+			};
+		};
+
+		hdmi: hdmi-tx@4a00000 {
+			compatible = "qcom,hdmi-tx-8660";
+			reg = <0x04a00000 0x2f0>;
+			reg-names = "core_physical";
+			status = "disabled"; /* TouchPad has no HDMI - disable to fix USB */
+
+			interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_HIGH>;
+
+			clocks = <&mmcc HDMI_APP_CLK>,
+				 <&mmcc HDMI_M_AHB_CLK>,
+				 <&mmcc HDMI_S_AHB_CLK>;
+			clock-names = "core",
+				      "master_iface",
+				      "slave_iface";
+
+			core-vdda-supply = <&pm8058_l10>;
+			hdmi-mux-supply = <&pm8901_mvs>;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&hdmi_pinctrl>;
+
+			phys = <&hdmi_phy>;
+			phy-names = "hdmi-phy";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					hdmi_in: endpoint {
+						remote-endpoint = <&mdp_dtv_out>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					hdmi_out: endpoint {
+						/* External HDMI connector */
+					};
+				};
+			};
+		};
+
+		hdmi_phy: hdmi-phy@4a00400 {
+			compatible = "qcom,hdmi-phy-8660";
+			reg = <0x4a00400 0x60>,
+			      <0x4a00500 0x100>;
+			reg-names = "hdmi_phy",
+				    "hdmi_pll";
+			status = "disabled"; /* TouchPad has no HDMI */
+
+			clocks = <&mmcc HDMI_S_AHB_CLK>;
+			clock-names = "slave_iface";
+
+			#phy-cells = <0>;
+			#clock-cells = <0>;
+		};
+
+		/* 32MiB for scanouts in EBI memory */
+		scanout_mem: scanout_mem@0 {
+			compatible = "shared-dma-pool";
+			reg = <0x0 0x2000000>;
+			/* no-map removed to allow kernel to clear framebuffer */
+		};
+	};
+
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		status = "okay";
+		pwms = <&pm8058_pwm 0 100000>;
+		/* Exponential curve for perceived brightness, interpolated for smooth control */
+		/* Minimum brightness 4 instead of 0 to prevent backlight from turning off */
+		brightness-levels = <4 8 16 32 64 128 192 255>;
+		num-interpolated-steps = <16>;
+		default-brightness-level = <96>;  /* ~6/7 of the way up the curve */
+		pinctrl-names = "default";
+		pinctrl-0 = <&backlight_pwm_gpios &backlight_enable_gpios>;
+		power-supply = <&pm8058_l10>;
+	};
+
+	/*
+	 * LG XGA LVDS Panel (LP097X02-SLA1 or similar)
+	 *
+	 * Configuration verified from legacy webOS kernel:
+	 * - drivers/video/msm_pe/lcdc_lg_xga.c
+	 * - arch/arm/mach-msm/board-tenderloin.c
+	 *
+	 * Panel GPIOs:
+	 * - GPIO 62: LCD_PWR_EN - LCD power enable (active high)
+	 * - GPIO 63: LVDS_SHDN_N - LVDS shutdown (active high = enabled)
+	 * - PM8058 GPIO 25: Backlight enable
+	 *
+	 * Power supplies:
+	 * - PM8058 L10 (3.05V): VDD_LVDS_3.3V
+	 * - vdd50_boost (5V): Backlight boost (always-on since EVT1)
+	 *
+	 * Power-on sequence (from legacy kernel):
+	 * 1. Enable L10 regulator (3.05V)
+	 * 2. Set LCD_PWR_EN (GPIO 62) high
+	 * 3. Wait 500us
+	 * 4. Set LVDS_SHDN_N (GPIO 63) high
+	 * 5. Wait 200ms
+	 * 6. Enable backlight
+	 *
+	 * Note: GPIO 102 was used for 5V boost enable on pre-EVT1 boards.
+	 * Since EVT1, the 5V boost (vdd50_boost) is always on.
+	 */
+	lg_panel: panel {
+		compatible = "panel-lvds";
+		status = "okay";
+
+		/* Panel power control GPIOs */
+		enable-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;	/* LCD_PWR_EN */
+		reset-gpios = <&tlmm 63 GPIO_ACTIVE_HIGH>;	/* LVDS_SHDN_N */
+
+		power-supply = <&pm8058_l10>;	/* VDD_LVDS_3.3V */
+		/* Note: backlight reference removed to allow pwm-backlight
+		 * to initialize as ON at probe time. With the phandle reference,
+		 * pwm-backlight defers to the panel driver which doesn't enable
+		 * it properly at boot.
+		 */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&panel_pins>;
+
+		/* Physical dimensions of 9.7" XGA display (4:3 aspect ratio) */
+		width-mm = <197>;
+		height-mm = <148>;
+
+		/* 18-bit JEIDA mapping to match webOS pinfo->bpp=18 configuration */
+		data-mapping = "jeida-18";
+
+		/* Panel is physically mounted inverted (upside-down) */
+		rotation = <180>;
+
+		/*
+		 * Timing verified from legacy kernel lcdc_lg_xga.c:
+		 * - clk_rate = 96000000
+		 * - h_back_porch = 400, h_front_porch = 272, h_pulse_width = 328
+		 * - v_back_porch = 6, v_front_porch = 10, v_pulse_width = 7
+		 */
+		panel-timing {
+			clock-frequency = <96000000>;
+			hactive = <1024>;
+			vactive = <768>;
+			hfront-porch = <272>;
+			hsync-len = <328>;
+			hback-porch = <400>;
+			vfront-porch = <10>;
+			vsync-len = <7>;
+			vback-porch = <6>;
+		};
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&mdp_lvds_out>;
+			};
+		};
+	};
+
+	/*
+	 * MAX8903B Battery Charger
+	 *
+	 * GPIO configuration verified from legacy webOS kernel
+	 * (gpiomux-tenderloin.h, board-tenderloin.c):
+	 *
+	 * Control outputs:
+	 *   GPIO 41: CEN_N (Charge Enable, active low)
+	 *   GPIO 42: DCM   (DC Mode - high=DC charging, low=USB charging)
+	 *   GPIO 33: USUS  (USB Suspend, active high)
+	 *   GPIO 133: IUSB (USB current: low=100mA, high=500mA) - WiFi variant
+	 *   GPIO 134: IUSB - 3G variant
+	 *   GPIO 34: CHG_D_ISET_1 (DC current select bit 0)
+	 *   GPIO 30: CHG_D_ISET_2 (DC current select bit 1)
+	 *
+	 * Status inputs:
+	 *   GPIO 140: DOK_N (DC OK, active low) - WiFi variant
+	 *   GPIO 86:  DOK_N - 3G variant
+	 *   GPIO 36:  CHG_N (Charging status, active low)
+	 *   GPIO 35:  FLT_N (Fault indicator, active low)
+	 *
+	 * DC Charging Current Selection (via ISET_1/ISET_2 resistor mux):
+	 *   EVT2+ boards: [0,0]=750mA, [0,1]=900mA, [1,0]=2000mA, [1,1]=1400mA
+	 *   EVT1 boards:  [0,0]=750mA, [0,1]=900mA, [1,0]=1500mA, [1,1]=1400mA
+	 *   Proto boards: [0,0]=900mA, [0,1]=1000mA, [1,0]=1500mA, [1,1]=2000mA
+	 *
+	 * FAST CHARGING SUPPORT:
+	 * The max8903 driver supports ISET pin control via the
+	 * dc-current-limit-gpios and dc-current-limit-mapping properties.
+	 * Userspace can control charging current through sysfs:
+	 *   /sys/class/power_supply/max8903_charger/input_current_limit
+	 * Driver starts at lowest safe current (750mA) on boot.
+	 *
+	 * Note: At 500mA USB charging, the device slowly discharges when
+	 * the screen is on due to display power consumption.
+	 *
+	 * A6 BATTERY CONTROLLER COORDINATION:
+	 * The A6 controllers (a6_0, a6_1 on GSBI8 I2C) detect charger source
+	 * (wired vs Touchstone wireless) and report via sysfs/uevents.
+	 * In webOS, powerd daemon coordinated A6 charger detection with
+	 * MAX8903B current settings. See A6 node documentation for details.
+	 */
+	charger: max8903b {
+		compatible = "maxim,max8903";
+		pinctrl-names = "default";
+		pinctrl-0 = <&charger_gpios>;
+		cen-gpios = <&tlmm 41 GPIO_ACTIVE_HIGH>;   /* Charge enable */
+		chg-gpios = <&tlmm 36 GPIO_ACTIVE_LOW>;    /* Charging status */
+		flt-gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;    /* Fault indicator */
+		usus-gpios = <&tlmm 33 GPIO_ACTIVE_LOW>;   /* USB suspend */
+		dcm-gpios = <&tlmm 42 GPIO_ACTIVE_LOW>;    /* DC/USB mode select */
+		dok-gpios = <&tlmm 140 GPIO_ACTIVE_LOW>;   /* DC power detect */
+
+		/* DC charging current control via ISET resistor mux */
+		dc-current-limit-gpios = <&tlmm 34 GPIO_ACTIVE_HIGH>,  /* ISET_1 */
+					 <&tlmm 30 GPIO_ACTIVE_HIGH>;  /* ISET_2 */
+		/*
+		 * Current mapping for EVT2+ boards:
+		 * GPIO[1:0]  Current
+		 * 0b00       750mA   (safest, default)
+		 * 0b01       900mA
+		 * 0b10       2000mA  (fast charge)
+		 * 0b11       1400mA
+		 */
+		dc-current-limit-mapping = <750000 0>,
+					   <900000 1>,
+					   <1400000 3>,
+					   <2000000 2>;
+
+		/* USB current control via IUSB pin */
+		usb-current-limit-gpios = <&tlmm 133 GPIO_ACTIVE_HIGH>;
+		usb-current-limit-values = <100000 500000>;  /* 100mA / 500mA */
+	};
+
+	/*
+	 * Vibrator - HP TouchPad uses GPIO 79 to enable the vibrator motor.
+	 *
+	 * Legacy webOS kernel used PM8058 PMIC vibrator (pm8058-vib) with:
+	 *   - level_mV = 3000 (3.0V drive voltage)
+	 *   - max_timeout_ms = 15000
+	 *   - initial_vibrate_ms = 500
+	 *
+	 * Note: PM8058 PMIC vibrator is also available via pm8058.dtsi
+	 * (vibrator@4a with compatible "qcom,pm8058-vib") and provides
+	 * hardware-controlled voltage levels (1200-3100mV in 100mV steps).
+	 * The GPIO-based approach here uses regulator pm8058_l5 for power.
+	 *
+	 * The LM8502 LED controller also has vibrator support parameters
+	 * in legacy kernel (vib_default_duty_cycle, vib_invert_direction)
+	 * but the actual vibrator motor appears to use GPIO 79.
+	 */
+	vibrator {
+		compatible = "gpio-vibrator";
+		enable-gpios = <&tlmm 79 GPIO_ACTIVE_HIGH>;
+		vcc-supply = <&pm8058_l5>;
+	};
+};
+
+&tlmm {
+	/*
+	 * WM8958 audio codec internal LDO enable GPIOs.
+	 * These must be enabled early (before the WM8994 MFD driver probes)
+	 * because the chip won't respond on I2C until its internal LDOs
+	 * are powered. Use GPIO hogs to ensure they're enabled at boot.
+	 *
+	 * GPIO 66 enables LDO1 via gpio-hog.
+	 * GPIO 108 (LDO2 enable) uses I2S mode with bias-pull-up instead of
+	 * gpio-hog to allow I2S WS function while keeping LDO2 enabled.
+	 */
+	aud-ldo1-hog {
+		gpio-hog;
+		gpios = <66 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "AUD_LDO1_EN";
+	};
+
+	/*
+	 * Note: GPIO 108 gpio-hog removed - it was preventing pinctrl from
+	 * switching to I2S mode. LDO2 enable is now handled via:
+	 * 1. wlf,ldo2ena-gpios in the codec node - wm8994-core.c asserts
+	 *    it HIGH early during probe so codec responds on I2C
+	 * 2. primary_i2s_pins pinctrl switches it to I2S function mode
+	 *    for audio playback (bias-pull-up keeps LDO2 enabled)
+	 */
+
+	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
+
+	/* eMMC pins, all 8 data lines connected */
+	emmc_pins: sdcc1-state {
+		clk-pins {
+			pins = "gpio167"; /* SDC1 CLK */
+			function = "sdc1";
+			drive-strength = <16>;
+			bias-disable;
+		};
+		cmd-pins {
+			pins = "gpio168"; /* SDC1 CMD */
+			function = "sdc1";
+			drive-strength = <10>;
+			bias-pull-up;
+		};
+		data-pins {
+			/* SDC1 D0 to D7 */
+			pins = "gpio159", "gpio160", "gpio161", "gpio162",
+				 "gpio163", "gpio164", "gpio165", "gpio166";
+			function = "sdc1";
+			drive-strength = <10>;
+			bias-pull-up;
+		};
+	};
+
+	/*
+	 * SDCC4 Pin Configuration for WiFi (AR6003/WCN1314)
+	 *
+	 * Verified from legacy webOS kernel board-tenderloin.c:
+	 * - Drive strength: 8mA for CLK, CMD, DATA (sdc4_pad_on_drv_cfg)
+	 * - Pull config: Pull-up for CMD and DATA (sdc4_pad_on_pull_cfg)
+	 * - Uses dedicated SDC4 pad pins (not GPIOs)
+	 */
+	sdcc4_pins: sdcc4-state {
+		clk-pins {
+			pins = "sdc4_clk";
+			drive-strength = <8>;
+			bias-disable;
+		};
+		cmd-pins {
+			pins = "sdc4_cmd";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+		data-pins {
+			pins = "sdc4_data";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+	};
+
+	panel_pins: lcdc-state {
+		mux-pins {
+			pins =
+			"gpio0",  "gpio1",  "gpio2",  "gpio3",  "gpio4",  "gpio5",  "gpio6",
+			"gpio7",  "gpio8",  "gpio9",  "gpio10", "gpio11", "gpio12", "gpio13",
+			"gpio14", "gpio15", "gpio16", "gpio17", "gpio18", "gpio19", "gpio20",
+			"gpio21", "gpio22", "gpio23", "gpio24", "gpio25", "gpio26", "gpio27";
+			function = "lcdc";
+		};
+	};
+
+	gsbi3_i2c_pins: i2c3-state {
+		pins = "gpio43", "gpio44";
+		function = "gsbi3";
+		drive-strength = <16>;
+		bias-disable;
+	};
+
+	gsbi4_i2c_pins: i2c4-state {
+		pins = "gpio47", "gpio48";
+		function = "gsbi4";
+		drive-strength = <16>;
+		bias-disable;
+	};
+
+	/* GPS UART pins - gpio103-106 use gsbi11 function per pinctrl driver */
+	gsbi5_uart_pins: uart5-state {
+		pins = "gpio103", "gpio104", "gpio105", "gpio106";
+		function = "gsbi11";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
+	/*
+	 * GSBI6 UART pins for Bluetooth (Broadcom BCM4329/4330)
+	 *
+	 * Verified from legacy webOS kernel gpiomux-tenderloin.c:
+	 * - GPIO 53: UARTDM_TX
+	 * - GPIO 54: UARTDM_RX
+	 * - GPIO 55: UARTDM_CTS
+	 * - GPIO 56: UARTDM_RFR (RTS)
+	 */
+	gsbi6_uart_pins: uart6-state {
+		pins = "gpio53", "gpio54", "gpio55", "gpio56";
+		function = "gsbi6";
+		drive-strength = <16>;
+		bias-disable;
+	};
+
+	/*
+	 * Bluetooth control GPIOs (Topaz WiFi variant)
+	 *
+	 * Verified from legacy webOS kernel gpiomux-tenderloin.h:
+	 * - GPIO 129: BT_HOST_WAKE - Bluetooth wakes host
+	 * - GPIO 130: BT_POWER - Bluetooth power enable
+	 * - GPIO 131: BT_WAKE - Host wakes Bluetooth
+	 * - GPIO 138: BT_RST_N - Bluetooth reset (active low)
+	 *
+	 * Note: Topaz 3G uses different GPIOs:
+	 * - GPIO 50: BT_HOST_WAKE_3G
+	 * - GPIO 110: BT_POWER_3G
+	 * - GPIO 122: BT_RST_N_3G
+	 * - GPIO 131: BT_WAKE_3G (same)
+	 */
+	bt_pin: bt-state {
+		hostwake-pins {
+			pins = "gpio129";
+			function = "gpio";
+			bias-pull-down;
+		};
+
+		power-pins {
+			pins = "gpio130";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		devwake-pins {
+			pins = "gpio131";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		reset-pins {
+			pins = "gpio138";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	gsbi7_i2c_pins: i2c7-state {
+		pins = "gpio59", "gpio60";
+		function = "gsbi7";
+		drive-strength = <16>;
+		bias-disable;
+	};
+	gsbi8_i2c_pins: gsbi8_i2c-state {
+		pins = "gpio64", "gpio65";
+		function = "gsbi8";
+		drive-strength = <16>;
+		/* These have external pull-up 2.2kOhm to 1.8V */
+		bias-disable;
+	};
+
+	/*
+	 * A6 Battery Controller 0 (0x31) - SBW/JTAG pins
+	 *
+	 * GPIO assignments differ between board revisions:
+	 * - Pre-DVT (EVT1-EVT3): IRQ on GPIO 156
+	 * - DVT/PVT (production): IRQ on GPIO 37
+	 *
+	 * Default configuration is for DVT/PVT (production devices).
+	 * For pre-DVT boards, change irq-pins to "gpio156".
+	 */
+	a6_0_default: a6-0-default-state {
+		sbw-pins {
+			pins = "gpio157", "gpio158";  /* TCK, TDIO */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		wakeup-pins {
+			pins = "gpio155";  /* WAKEUP */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		irq-pins {
+			pins = "gpio37";  /* IRQ - DVT/PVT (pre-DVT: gpio156) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/*
+	 * A6 Battery Controller 1 (0x32) - SBW/JTAG pins
+	 *
+	 * GPIO assignments differ between board revisions:
+	 * - Pre-DVT (EVT1-EVT3): IRQ on GPIO 132
+	 * - DVT/PVT (production): IRQ on GPIO 94
+	 *
+	 * Default configuration is for DVT/PVT (production devices).
+	 * For pre-DVT boards, change irq-pins to "gpio132".
+	 */
+	a6_1_default: a6-1-default-state {
+		sbw-pins {
+			pins = "gpio115", "gpio116";  /* TCK, TDIO */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		wakeup-pins {
+			pins = "gpio141";  /* WAKEUP */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		irq-pins {
+			pins = "gpio94";  /* IRQ - DVT/PVT (pre-DVT: gpio132) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/* LM8502 LED Controller */
+	lm8502_pins: lm8502-state {
+		enable-pins {
+			pins = "gpio121";  /* Enable */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		irq-pins {
+			pins = "gpio128";  /* Interrupt */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	mpu3050_gpios: mpu-state {
+		irq-pins {
+			pins = "gpio125";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	accel_pins: accel-state {
+		irq-pins {
+			pins = "gpio124";  /* G-Sensor INT */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	camera_pins: camera-state {
+		reset-pins {
+			pins = "gpio106";  /* WEBCAM_RST */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		pwdn-pins {
+			pins = "gpio107";  /* WEBCAM_PWDN */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		mclk-pins {
+			pins = "gpio32";   /* CAMIF_MCLK */
+			function = "cam_mclk";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	aud_ldo1_pins: aud-ldo1-state {
+		ldo1-pins {
+			pins = "gpio66";  /* AUD_LDO1_EN */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	wm8958_pins: wm8958-state {
+		micdet-pins {
+			pins = "gpio57";  /* HEAD_MIC_DET_IRQ */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+
+		ldo1-pins {
+			pins = "gpio66";  /* AUD_LDO1_EN */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/*
+	 * Primary I2S pins for WM8958 codec.
+	 *
+	 * The Q6 LPASS DSP uses PRIMARY_I2S ports (legacy ports 0/1) which
+	 * output I2S signals to the WM8958 codec. The webOS kernel
+	 * configures only GPIO 108/109 in i2s function mode (FUNC_1) via
+	 * MSM_SNDDEV_ACTIVE_CONFIG in gpiomux-tenderloin.c.
+	 *
+	 * GPIO 108: I2S_WS (Word Select / LRCLK)
+	 * GPIO 109: I2S_SCK (Serial Clock / BCLK)
+	 *
+	 * Note: GPIO 108 was previously used for AUD_LDO2_EN, but since
+	 * DCVDD is already supplied directly via pm8058_s3, LDO2 is not
+	 * needed. This frees GPIO 108 for I2S use.
+	 */
+	primary_i2s_pins: primary-i2s-state {
+		/*
+		 * I2S pins for WM8958 codec connection.
+		 * Q6 LPASS is master, generating BCLK, LRCLK, and driving data.
+		 * WM8958 codec is slave, receiving clocks and data.
+		 *
+		 * GPIO 108 = I2S WS (LRCLK / Word Select)
+		 * GPIO 109 = I2S SCK (BCLK / Bit Clock)
+		 * GPIO 110 = I2S SD0 (Data Out to codec)
+		 *
+		 * Note: On 3G variants, GPIO 110 is used for BT_POWER instead.
+		 * The 3G device tree should override this pinctrl.
+		 */
+		i2s-ws-pins {
+			pins = "gpio108";
+			function = "i2s";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+		i2s-sck-pins {
+			pins = "gpio109";
+			function = "i2s";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+		i2s-data-pins {
+			pins = "gpio110";
+			function = "i2s";
+			drive-strength = <8>;
+			bias-disable;
+			output-low;
+		};
+	};
+
+	/*
+	 * Note on audio I2S interface:
+	 *
+	 * The WM8958 codec connects to Q6 LPASS DSP via "Primary I2S" ports
+	 * (legacy ports 0/1 in q6afe). We use SECONDARY_MI2S in the DT which
+	 * maps to LEGACY_PRIMARY_I2S via q6afe_port_to_legacy().
+	 *
+	 * Primary I2S signals (same for WiFi and 3G variants):
+	 * - GPIO 108 = WS (Word Select / LRCLK)
+	 * - GPIO 109 = SCK (Bit Clock / BCLK)
+	 *
+	 * Audio data is routed internally through LPASS, NOT via external
+	 * GPIO pins. The webOS kernel only configures GPIO 108/109 for
+	 * audio clocks - no GPIO data line is needed.
+	 */
+
+	/* Headphone UART pins */
+	headphone_uart_pins: gsbi12-serial-state {
+		rx-pins {
+			pins = "gpio117";
+			function = "gsbi12";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		tx-pins {
+			pins = "gpio118";
+			function = "gsbi12";
+			drive-strength = <8>;
+			bias-disable;
+		};
+		/* GPIO58 controls headphone jack routing:
+		 * LOW = audio path (normal operation)
+		 * HIGH = UART path (debug mode)
+		 */
+		jack-audio-pins {
+			pins = "gpio58";
+			function = "gpio";
+			output-low;
+		};
+	};
+
+	/*
+	 * MAX8903B Charger GPIO Configuration
+	 *
+	 * Verified from legacy webOS kernel gpiomux-tenderloin.c/h:
+	 * - Input pins use 8mA drive with pull-up
+	 * - Output pins use 8mA drive, no pull
+	 *
+	 * Initial state configured for safe 500mA USB charging:
+	 * - DCM=HIGH (USB mode, not DC mode)
+	 * - IUSB=HIGH (500mA, not 100mA)
+	 * - USUS=LOW (not suspended)
+	 * - CEN=LOW (charging enabled, active high inverted)
+	 * - ISET pins=LOW,LOW (750mA DC current, lowest setting)
+	 */
+	charger_gpios: max8903b-state {
+		/* Status inputs: FLT_N (35), CHG_N (36), DOK_N (140) */
+		in-pins {
+			pins = "gpio35", "gpio36", "gpio140";
+			function = "gpio";
+			drive-strength = <2>;
+			input-enable;
+			bias-pull-up;
+		};
+		/* Control outputs */
+		out-pins {
+			pins = "gpio30", "gpio33", "gpio34", "gpio41", "gpio42", "gpio133";
+			function = "gpio";
+			drive-strength = <2>;
+		};
+		/* DCM=HIGH: USB charging mode (not DC mode) */
+		dcm-pins {
+			pins = "gpio42";
+			function = "gpio";
+			output-high;
+		};
+		/* IUSB=HIGH: 500mA USB current (not 100mA) */
+		iusb-pins {
+			pins = "gpio133";
+			function = "gpio";
+			output-high;
+		};
+		/* USUS=LOW: USB not suspended */
+		usus-pins {
+			pins = "gpio33";
+			function = "gpio";
+			output-low;
+		};
+		/* CEN=LOW: Charging enabled */
+		cen-pins {
+			pins = "gpio41";
+			function = "gpio";
+			output-low;
+		};
+		/*
+		 * DC Current Selection (ISET_1=GPIO34, ISET_2=GPIO30)
+		 * These control a resistor mux connected to the IDC pin.
+		 * [0,0]=750mA (safest), [1,1]=1400mA (fast charging)
+		 *
+		 * Initialized to output-low (750mA) for safety.
+		 * Driver controls these via dc-current-limit-gpios property
+		 * and exposes input_current_limit sysfs for userspace control.
+		 */
+		d-iset-pins {
+			pins = "gpio34", "gpio30";
+			function = "gpio";
+			output-low;
+		};
+	};
+
+	/*
+	 * WiFi GPIO Configuration for Atheros AR6003 (WCN1314)
+	 *
+	 * Verified from legacy webOS kernel gpiomux-tenderloin.c:
+	 *
+	 * Topaz WiFi variant:
+	 *   GPIO 93:  WL_HOST_WAKE  - WiFi wakes host (input, 8mA, pull-down)
+	 *   GPIO 137: HOST_WAKE_WL  - Host wakes WiFi (output high, 8mA active / 2mA suspend)
+	 *   GPIO 135: WLAN_RST_N    - Reset (output low initially, 8mA active)
+	 *
+	 * Topaz 3G variant (different pins):
+	 *   GPIO 93:  WL_HOST_WAKE  - Same
+	 *   GPIO 80:  HOST_WAKE_WL_3G
+	 *   GPIO 28:  WLAN_RST_N_3G
+	 */
+	wlan_gpios_reset: wlan-reset-state {
+		/* WLAN_RST_N - handled by mmc-pwrseq, configure as GPIO */
+		reset-pins {
+			pins = "gpio135";
+			function = "gpio";
+			bias-disable;
+		};
+	};
+
+	wlan_gpios: wlan-state {
+		/*
+		 * WL_HOST_WAKE (GPIO 93) - WiFi signals host for wake events
+		 * Input with pull-down, WiFi drives high to wake host
+		 */
+		host-wake-pins {
+			pins = "gpio93";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-down;
+			input-enable;
+		};
+
+		/*
+		 * HOST_WAKE_WL (GPIO 137) - Host signals WiFi to stay awake
+		 * Output high keeps WiFi awake, low allows sleep
+		 * Active: 8mA drive, Suspend: 2mA drive (from legacy kernel)
+		 */
+		device-wake-pins {
+			pins = "gpio137";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-high;
+		};
+	};
+
+	touch_pins: touch-pins-state {
+		irq-pins {
+			pins = "gpio123";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/* CY8CTMA395 SWD programming interface
+	 * Note: GPIOs 72/73 are normally I2C but get reconfigured for SWD programming
+	 * The driver handles GPIO muxing via swdck_request/swdio_request callbacks
+	 */
+	cy8ctma395_default_state: cy8ctma395-default-state {
+		xres-pins {
+			pins = "gpio70";  /* TP_PWR_RST / XRES */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		wake-pins {
+			pins = "gpio123";  /* GPIO_CTP_WAKE (WiFi), GPIO 45 on 3G */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		/* Note: GPIO 72 (SDA/SWDIO) and 73 (SCL/SWDCK) are configured
+		 * by gsbi10_i2c_pins when in normal I2C mode, and dynamically
+		 * reconfigured by the driver during SWD firmware programming
+		 */
+	};
+
+	gsbi10_i2c_pins: i2c10-state {
+		sda-scl-pins {
+			pins = "gpio72", "gpio73";
+			function = "gsbi10";
+			drive-strength = <8>;
+			bias-disable;
+		};
+	};
+
+	/*
+	 * GSBI10 UART pins for touchscreen data reception.
+	 * GPIO 70 = UART TX (not needed - touchscreen is RX-only from our side)
+	 * GPIO 71 = UART RX (touchscreen sends data here)
+	 * Note: GPIO 70 is used as touchscreen reset, so only configure GPIO 71
+	 */
+	gsbi10_uart_pins: uart10-state {
+		rx-pins {
+			pins = "gpio71";
+			function = "gsbi10";
+			drive-strength = <2>;
+			bias-pull-up;  /* RX line idle high */
+		};
+	};
+
+	hdmi_pinctrl: hdmi-state {
+		ddc-pins {
+			pins = "gpio170", "gpio171";
+			function = "hdmi";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+
+		hpd-pins {
+			pins = "gpio172";
+			function = "hdmi";
+			drive-strength = <16>;
+			bias-disable;
+		};
+
+		cec-pins {
+			pins = "gpio169";
+			function = "hdmi";
+			drive-strength = <16>;
+			bias-pull-down;
+		};
+	};
+};
+
+&sdcc1 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&emmc_pins>;
+	vmmc-supply = <&pm8901_l5>;
+	vqmmc-supply = <&pm8901_lvs0>;
+
+	/*
+	 * DMA configuration for QCOM ADM:
+	 * - Channel 2 on ADM1 for both RX and TX (global channel 18)
+	 * - CRCI 1 for SDC1 (passed via qcom,sdcc-crci property)
+	 * From webOS kernel: DMOV_SDC1_CHAN=18, DMOV_SDC1_CRCI=1
+	 */
+	dmas = <&adm_dma1 2>, <&adm_dma1 2>;
+	dma-names = "rx", "tx";
+	qcom,sdcc-crci = <1>;
+
+	/*
+	 * DFAB interconnect path for eMMC.
+	 *
+	 * The legacy webOS kernel used dfab_sdc_clk clock voter at 64 MHz
+	 * to keep the Daytona Fabric (DFAB) active during eMMC operations.
+	 * eMMC uses 8-bit bus at up to 48 MHz (DDR) for ~48 MB/s peak.
+	 *
+	 * Path: SDC1 -> DFAB -> SFAB -> AFAB -> EBI (system memory)
+	 */
+	interconnects = <&daytona_fabric DFAB_MAS_SDC1
+			 &apps_fabric AFAB_SLV_EBI_CH0>;
+	interconnect-names = "sdc";
+};
+
+/*
+ * SDCC4 - WiFi SDIO Interface (Atheros AR6003 / Qualcomm WCN1314)
+ *
+ * Configuration verified from legacy webOS kernel:
+ * - arch/arm/mach-msm/board-tenderloin.c: msm8x60_sdc4_data, tenderloin_wifi_power()
+ * - arch/arm/mach-msm/include/mach/dma.h: DMOV_SDC4_CHAN=21, DMOV_SDC4_CRCI=5
+ *
+ * SDIO 4-bit mode at 3.3V signaling, 1.8V I/O levels
+ * Bus width: MMC_CAP_4_BIT_DATA
+ * OCR mask: MMC_VDD_27_28 | MMC_VDD_28_29 (2.7-3.0V range)
+ */
+&sdcc4 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdcc4_pins>, <&wlan_gpios>;
+
+	/*
+	 * Limit clock to 24MHz for SDIO stability.
+	 * Legacy kernel used msmsdcc_fmid=24000000 for intermediate operations.
+	 * Higher clocks (48MHz) can cause CRC errors with AR6003.
+	 */
+	max-frequency = <24000000>;
+
+	/*
+	 * SDIO requires data registers to be set up before command is sent.
+	 * This matches legacy msm_sdcc driver behavior and fixes WiFi firmware
+	 * upload timeouts. Only enable for SDIO (WiFi), not eMMC.
+	 */
+	qcom,datactrl-first;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	disable-wp;
+
+	/*
+	 * Enable SDIO interrupt support for WiFi.
+	 * The AR6003 WiFi chip uses SDIO interrupts for asynchronous events.
+	 * Without this, the ath6kl driver cannot receive WiFi events.
+	 */
+	cap-sdio-irq;
+
+	/* Keep power during suspend for WiFi wake-on-WLAN support */
+	keep-power-in-suspend;
+
+	/*
+	 * WiFi Power Supplies (from legacy kernel tenderloin_wifi_power):
+	 *
+	 * vmmc (main 3.3V supply):
+	 *   - pm8901_l1: 3.3V VDD_WLAN_3V3 - Main WiFi supply (switchable)
+	 *
+	 * vqmmc (I/O supply):
+	 *   - pm8058_s3: 1.8V DVDD_SDIO_1V8 - SDIO I/O levels (always-on)
+	 *
+	 * Additional always-on supplies (configured as regulator-always-on):
+	 *   - pm8901_l3: 3.3V WLAN_PA_3V3 - Power amplifier supply
+	 *   - pm8058_l19: 1.8V VDD_1.8 - WiFi I/O supply
+	 *   - pm8058_l10: 3.05V - Also used by WiFi (marked always-on)
+	 */
+	vmmc-supply = <&pm8901_l1>;   /* 3.3V VDD_WLAN_3V3 */
+	vqmmc-supply = <&pm8058_s3>;  /* 1.8V DVDD_SDIO_1V8 */
+
+	mmc-pwrseq = <&ath6kl_pwrseq>;
+
+	/*
+	 * DMA configuration for QCOM ADM.
+	 * From legacy kernel: DMOV_SDC4_CHAN=21, DMOV_SDC4_CRCI=5
+	 * Channel 21 = ADM1 channel 5 (ADM1 starts at global channel 16)
+	 * CRCI 5 provides flow control for SDC4 transfers
+	 */
+	dmas = <&adm_dma1 5>, <&adm_dma1 5>;
+	dma-names = "rx", "tx";
+	qcom,sdcc-crci = <5>;
+
+	/*
+	 * DFAB interconnect path for WiFi SDIO.
+	 *
+	 * The legacy webOS kernel used dfab_sdc_clk clock voters to keep
+	 * the Daytona Fabric (DFAB) active during SD card operations.
+	 * This interconnect path provides the equivalent functionality,
+	 * ensuring DFAB clock scaling accounts for WiFi SDIO traffic.
+	 *
+	 * Path: SDC4 -> DFAB -> SFAB -> AFAB -> EBI (system memory)
+	 */
+	interconnects = <&daytona_fabric DFAB_MAS_SDC4
+			 &apps_fabric AFAB_SLV_EBI_CH0>;
+	interconnect-names = "sdc";
+
+	/*
+	 * Atheros AR6003 WiFi (Qualcomm WCN1314)
+	 *
+	 * SDIO function 1 at address 0x1
+	 * Board ID "SD32" selects correct firmware/board data files:
+	 *   - ath6k/AR6003/hw2.1.1/bdata.SD32.bin
+	 *
+	 * Firmware files required in /lib/firmware/ath6k/AR6003/hw2.1.1/:
+	 *   - athwlan.bin (or fw-4.bin)
+	 *   - bdata.SD32.bin (board-specific calibration data)
+	 *   - otp.bin (optional, one-time programmable data)
+	 */
+	wifi@1 {
+		compatible = "atheros,ath6kl";
+		reg = <1>;
+		atheros,board-id = "SD32";
+	};
+};
+
+&gsbi3 {
+	status = "okay";
+	qcom,mode = <GSBI_PROT_I2C>;
+};
+
+&gsbi3_i2c {
+	status = "okay";
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi3_i2c_pins>;
+
+	mpu3050: mpu3050@68 {
+		/* Gyrometer */
+		compatible = "invensense,mpu3050";
+		reg = <0x68>;
+
+		interrupts-extended = <&tlmm 125 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&mpu3050_gpios>;
+		vlogic-supply = <&pm8901_lvs3>; // 1.8V pm8058_l15 type > TOPAZ_DVT
+		vdd-supply = <&pm8058_l15>; // 2.85V
+	};
+
+	lsm303dlh_accel: lsm303dlh@18 {
+		/* Accelerometer */
+		compatible = "st,lsm303dlh-accel";
+		st,drdy-int-pin = <1>;
+		reg = <0x18>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <124 IRQ_TYPE_EDGE_RISING>;
+
+		vdd-supply = <&pm8058_l15>;   // 2.85V
+		vddio-supply = <&pm8058_s3>;  // 1.8V s3
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&accel_pins>;
+	};
+	lsm303dlh_magn: lsm303dlh@1e {
+		/* Magnetometer */
+		compatible = "st,lsm303dlh-magn";
+		reg = <0x1e>;
+		vdd-supply = <&pm8058_l15>;   // 2.85V
+		vddio-supply = <&pm8058_s3>;  // 1.8V
+	};
+
+	isl29023@44 {
+		/* Ambient Light Sensor */
+		compatible = "isil,isl29023";
+		reg = <0x44>;
+		vcc-supply = <&pm8058_l15>;   // 2.85V
+	};
+
+	/*
+	 * Note: Legacy kernel configured PMIC GPIO36 (reset) and GPIO40 (IRQ)
+	 * for "proximity" but no actual proximity sensor chip was registered.
+	 * The TouchPad uses CY8CTMA395 touchscreen which has no proximity
+	 * sensing capability. This was likely placeholder for unimplemented
+	 * hardware or leftover from alternative design - no proximity sensor
+	 * exists on HP TouchPad.
+	 */
+};
+
+&gsbi4 {
+	status = "okay";
+	qcom,mode = <GSBI_PROT_I2C>;
+};
+
+&gsbi4_i2c {
+	status = "okay";
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi4_i2c_pins>;
+
+	/*
+	 * MT9M113 1.3MP Front-facing Webcam
+	 * Note: Topaz uses regular GPIOs, Opal uses PMIC GPIO for reset
+	 */
+	camera@3c {
+		compatible = "aptina,mt9m113";
+		reg = <0x3c>;
+
+		/*
+		 * The legacy webOS driver controls power via powerdown GPIO only,
+		 * not reset GPIO. Powerdown HIGH = sensor off, LOW = sensor on.
+		 */
+		powerdown-gpios = <&tlmm 107 GPIO_ACTIVE_HIGH>;
+
+		clocks = <&mmcc CAMCLK0_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&mmcc CAMCLK0_SRC>;
+		assigned-clock-rates = <24000000>;
+
+		vdd-supply = <&pm8058_lvs0>;    // Digital 1.8V
+		vddio-supply = <&pm8058_l11>;   // I/O 2.85V
+		vaa-supply = <&pm8058_l11>;     // Analog 2.85V
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_pins>;
+
+		port {
+			mt9m113_ep: endpoint {
+				bus-type = <4>; /* V4L2_FWNODE_BUS_TYPE_CSI2_DPHY */
+				data-lanes = <1>;
+				clock-lanes = <0>;
+				link-frequencies = /bits/ 64 <96000000>;
+				remote-endpoint = <&camss_csi1_ep>;
+			};
+		};
+	};
+};
+
+/*
+ * Camera subsystem and MT9M113 sensor configuration.
+ *
+ * MMCC (Multimedia Clock Controller) support has been added with VFE31 driver.
+ * MT9M113 sensor support added to mt9m114.c driver.
+ */
+&camss {
+	status = "okay";
+
+	ports {
+		/* CSIPHY1 (CSI_1) input - MT9M113 front camera */
+		port@1 {
+			camss_csi1_ep: endpoint {
+				bus-type = <4>; /* V4L2_FWNODE_BUS_TYPE_CSI2_DPHY */
+				data-lanes = <1>;
+				clock-lanes = <0>;
+				remote-endpoint = <&mt9m113_ep>;
+			};
+		};
+	};
+};
+
+/* GPS - Broadcom BCM4751 on GSBI5 UART */
+&gsbi5 {
+	status = "okay";
+	qcom,mode = <GSBI_PROT_UART_W_FC>;
+};
+
+&gsbi5_serial {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi5_uart_pins>;
+
+	uart-has-rtscts;
+
+	gnss {
+		compatible = "brcm,bcm4751";
+
+		vddio-supply = <&pm8058_s3>;  /* 1.8V I/O */
+		vdd-supply = <&pm8058_l10>;   /* 3.05V core */
+
+		enable-gpios = <&pm8058_gpio 3 GPIO_ACTIVE_HIGH>;  /* GPIO 4 - LNA enable */
+		reset-gpios = <&pm8058_gpio 4 GPIO_ACTIVE_LOW>;    /* GPIO 5 - Reset */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&gps_pins>;
+	};
+};
+
+/*
+ * GSBI6 - Bluetooth UART (Broadcom BCM4329/4330)
+ *
+ * Configuration verified from legacy webOS kernel:
+ * - arch/arm/mach-msm/board-tenderloin.c
+ * - arch/arm/mach-msm/gpiomux-tenderloin.h
+ *
+ * UART configuration:
+ * - Speed: 115200 baud (HSUART_SPEED_115K)
+ * - Mode: No flow control (HSUART_MODE_FLOW_CTRL_NONE)
+ * - Parity: None (HSUART_MODE_PARITY_NONE)
+ * - Options: TX_PIO, RX_DMA, DEFERRED_LOAD
+ *
+ * Bluetooth GPIOs (Topaz WiFi):
+ * - GPIO 129: BT_HOST_WAKE - BT wakes host (input, IRQ)
+ * - GPIO 130: BT_POWER - Power enable (output)
+ * - GPIO 131: BT_WAKE - Host wakes BT (output)
+ * - GPIO 138: BT_RST_N - Reset (output, active low)
+ *
+ * Bluetooth GPIOs (Topaz 3G - different pins):
+ * - GPIO 50: BT_HOST_WAKE_3G
+ * - GPIO 110: BT_POWER_3G
+ * - GPIO 122: BT_RST_N_3G
+ * - GPIO 131: BT_WAKE_3G (same)
+ */
+&gsbi6 {
+	status = "okay";
+	qcom,mode = <GSBI_PROT_UART_W_FC>;
+};
+
+&gsbi6_serial {
+	status = "okay";
+
+	/*
+	 * Include both UART pins and BT control GPIOs in pinctrl.
+	 * The BT GPIOs must be configured as GPIO function before the
+	 * bluetooth serdev driver probes, otherwise GPIO acquisition fails.
+	 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi6_uart_pins>, <&bt_pin>;
+
+	/*
+	 * UART clock for Bluetooth. WebOS used 3686400 baud highspeed.
+	 * For 3686400 baud with 16x oversampling, need 58982400 Hz.
+	 * The 27MHz base clock can achieve this via PLL.
+	 * Note: Lower speeds (115200) also work with this clock.
+	 */
+	assigned-clocks = <&gcc GSBI6_UART_CLK>;
+	assigned-clock-rates = <58982400>;
+
+	/*
+	 * Legacy webOS kernel used HSUART with no hardware flow control:
+	 * HSUART_MODE_FLOW_CTRL_NONE | HSUART_MODE_PARITY_NONE
+	 * Do NOT enable uart-has-rtscts here.
+	 */
+
+	/*
+	 * BCM4329 Bluetooth - BCSP Protocol via Serdev
+	 *
+	 * The BCM4329 on HP TouchPad uses BCSP (BlueCore Serial Protocol)
+	 * with SLIP framing, as confirmed by webOS library analysis
+	 * (uartConfigBcsp in libPmBtBsaif.so) and runtime testing.
+	 *
+	 * This node is probed by the hci_bcsp serdev driver which:
+	 * - Controls power via GPIOs (BT_POWER, BT_WAKE, BT_RST_N)
+	 * - Sends PSKEYs for RF calibration
+	 * - Handles WARM_RESET and reconnection
+	 *
+	 * GPIO signals (active high unless noted):
+	 * - shutdown-gpios: BT_POWER (GPIO 130) - main power enable
+	 * - device-wakeup-gpios: BT_WAKE (GPIO 131) - wake signal
+	 * - reset-gpios: BT_RST_N (GPIO 138) - active low reset
+	 *
+	 * See reports/bcm4329-bluetooth-analysis.md
+	 */
+	bluetooth {
+		/*
+		 * Use palm-specific compatible to select BCSP driver.
+		 * The generic "brcm,bcm4329-bt" would match hci_bcm which
+		 * uses H4 protocol, but this chip requires BCSP.
+		 */
+		compatible = "palm,bcm4329-bcsp";
+		status = "okay";
+
+		/*
+		 * Bluetooth Device Address (BD_ADDR)
+		 * Read from webOS /dev/tokens/BToADDR: 00:1D:FE:85:64:A9
+		 * DT format is little-endian: [A9 64 85 FE 1D 00]
+		 */
+		local-bd-address = [A9 64 85 FE 1D 00];
+
+		/*
+		 * TX Power Level Table for RF calibration (PSKEY 0x0031)
+		 *
+		 * This 30-word table configures RF power levels for different
+		 * Bluetooth channels. Without it, the radio cannot transmit.
+		 *
+		 * Extracted from webOS PmBtStack palmPlatformSpecificPskeys.
+		 * Format: 6 entries x 5 words each.
+		 */
+		brcm,tx-power-table = /bits/ 16 <
+			0x2200 0x0050 0x2600 0x0050 0xf000  /* Entry 0 */
+			0x2800 0x0050 0x2d00 0x0050 0xf400  /* Entry 1 */
+			0x2500 0x0040 0x2a00 0x0040 0xf800  /* Entry 2 */
+			0x2200 0x0020 0x2700 0x0020 0xfc00  /* Entry 3 */
+			0x2600 0x0010 0x2c00 0x0010 0x0000  /* Entry 4 */
+			0x2c00 0x0000 0x3a00 0x0000 0x0400  /* Entry 5 */
+		>;
+
+		/*
+		 * CSR/BCM chip configuration PSKEYs (Persistent Store Keys)
+		 *
+		 * Values extracted from webOS PmBtStack binary analysis.
+		 * All PSKEYs use stores=8 (PSRAM/volatile) per webOS.
+		 *
+		 * See docs/webos-bluetooth-pskeys.md for full documentation.
+		 */
+
+		/*
+		 * brcm,ana-freq: Crystal frequency (PSKEY 0x0011)
+		 * 26000 = 26 MHz crystal - CRITICAL for RF operation
+		 */
+		brcm,ana-freq = /bits/ 16 <26000>;
+
+		/*
+		 * brcm,ana-ftrim: Crystal fine trim (PSKEY 0x0013)
+		 * 0x19 = Fine tune for 26 MHz crystal
+		 */
+		brcm,ana-ftrim = /bits/ 16 <0x0019>;
+
+		/*
+		 * brcm,host-interface: Host interface protocol (PSKEY 0x01fe)
+		 * 0x0001 = BCSP mode
+		 */
+		brcm,host-interface = /bits/ 16 <0x0001>;
+
+		/*
+		 * brcm,deep-sleep: Deep sleep config (PSKEY 0x01be)
+		 * 0x0000 = Disabled
+		 */
+		brcm,deep-sleep = /bits/ 16 <0x0000>;
+
+		/*
+		 * brcm,hci-max-acl: Max ACL packets in HCI buffer (PSKEY 0x01ab)
+		 * 0x03ec (1004) = Flow control for ACL data
+		 */
+		brcm,hci-max-acl = /bits/ 16 <0x03ec>;
+
+		/*
+		 * brcm,hci-max-sco: Max SCO packets in HCI buffer (PSKEY 0x01b0)
+		 * 0x0000 = No SCO buffering
+		 */
+		brcm,hci-max-sco = /bits/ 16 <0x0000>;
+
+		/*
+		 * brcm,uart-baudrate: UART baudrate divisor (PSKEY 0x01b9)
+		 * 0x01d8 (472) = 115200 baud
+		 */
+		brcm,uart-baudrate = /bits/ 16 <0x01d8>;
+
+		/*
+		 * brcm,enc-key-min: Min encryption key length (PSKEY 0x000e)
+		 * 0x0001 = Minimum key size
+		 */
+		brcm,enc-key-min = /bits/ 16 <0x0001>;
+
+		/*
+		 * brcm,max-tx-power: Maximum TX power (PSKEY 0x0017)
+		 * 0x0004 = Power level
+		 */
+		brcm,max-tx-power = /bits/ 16 <0x0004>;
+
+		/*
+		 * brcm,default-tx-power: Default TX power (PSKEY 0x0021)
+		 * 0x0004 = Power level
+		 */
+		brcm,default-tx-power = /bits/ 16 <0x0004>;
+
+		/*
+		 * brcm,max-tx-power-no-rssi: Max TX w/o RSSI (PSKEY 0x024d)
+		 * 0x0004 = Power level when RSSI unavailable
+		 */
+		brcm,max-tx-power-no-rssi = /bits/ 16 <0x0004>;
+
+		/*
+		 * brcm,default-tx-power-no-rssi: Default TX w/o RSSI (PSKEY 0x025d)
+		 * 0x0001 = Default power when RSSI unavailable
+		 */
+		brcm,default-tx-power-no-rssi = /bits/ 16 <0x0001>;
+
+		/*
+		 * TouchPad-Specific PSKEYs (LMP subversion 0x12E9)
+		 *
+		 * These PSKEYs are only sent when the Bluetooth chip reports
+		 * LMP subversion 0x12E9 (HP TouchPad). Extracted from webOS
+		 * 3.0.5 libPmBtBsaif.so via PIC analysis.
+		 *
+		 * See docs/touchpad-rf-calibration.md for extraction details.
+		 */
+
+		/* PSKEY 0x00F6 - Configuration (1 word) */
+		brcm,pskey-00f6 = /bits/ 16 <0x0001>;
+
+		/* PSKEY 0x0203 - Configuration (32 words) */
+		brcm,pskey-0203 = /bits/ 16 <
+			0x0002 0x0036 0x0004 0x0082 0x0006 0x0043 0x0008 0x004b
+			0x000a 0x002c 0x0010 0x000f 0x0014 0x0029 0x0020 0x0026
+			0x0024 0x000d 0x0028 0x000a 0x0034 0x0003 0x0046 0x000c
+			0x0064 0x000a 0x0074 0x000a 0x0082 0x0004 0x0000 0x0000
+		>;
+
+		/* PSKEY 0x0394 - Configuration (1 word) */
+		brcm,pskey-0394 = /bits/ 16 <0xffec>;
+
+		/* PSKEY 0x03AA - Configuration (12 words) */
+		brcm,pskey-03aa = /bits/ 16 <
+			0xffd8 0x0003 0xffeb 0x0001 0xffec 0x0005
+			0xfff6 0x0005 0x0014 0x0000 0x0028 0xfffe
+		>;
+
+		/* PSKEY 0x03AB - Configuration (12 words) */
+		brcm,pskey-03ab = /bits/ 16 <
+			0xffd8 0x0003 0xffeb 0x0001 0xffec 0x0005
+			0xfff6 0x0005 0x0014 0x0000 0x0028 0xfffe
+		>;
+
+		/* PSKEY 0x03D4 - Configuration (1 word) */
+		brcm,pskey-03d4 = /bits/ 16 <0x0007>;
+
+		/*
+		 * RF Calibration PSKEYs (0x212C - 0x222B)
+		 * Total: ~1500 bytes of calibration data
+		 */
+
+		/* PSKEY 0x212C - RF calibration (20 words) */
+		brcm,pskey-212c = /bits/ 16 <
+			0x0001 0xbb38 0x3d14 0xe335 0x03e8 0x0014 0x06e0 0x0100
+			0x1d84 0x03fc 0x0100 0x1c14 0xfa25 0x0018 0xff2b 0xff0e
+			0xbb00 0x3b18 0x00e2 0xfdb9
+		>;
+
+		/* PSKEY 0x212D - RF calibration (16 words) */
+		brcm,pskey-212d = /bits/ 16 <
+			0x0001 0xe982 0xe000 0xa915 0xe900 0x3825 0xe000 0xab15
+			0x0127 0x0018 0xff2b 0xff0e 0xea00 0x8518 0x00e2 0x84d8
+		>;
+
+		/* PSKEY 0x212E - RF calibration (34 words) */
+		brcm,pskey-212e = /bits/ 16 <
+			0x0001 0xa276 0xff00 0x7e25 0xff00 0xc815 0x8fc4 0x40b4
+			0xff00 0xc825 0x8915 0x9000 0xffc4 0x3000 0x00b4 0x8925
+			0xe400 0x6c15 0x9000 0xffc4 0x3000 0x00b4 0xe400 0x6c25
+			0xe400 0x6d15 0x9000 0xffc4 0x3000 0x00b4 0xe400 0x6d25
+			0xffe3 0xfed6
+		>;
+
+		/* PSKEY 0x212F - RF calibration (46 words) */
+		brcm,pskey-212f = /bits/ 16 <
+			0x0001 0xa32d 0xff00 0x7e25 0x0216 0xe400 0x6c18 0xff00
+			0xc811 0x8fc0 0x1e84 0x15f4 0x3e84 0x13f4 0x40b0 0xff00
+			0xc821 0x9000 0xff14 0x8911 0xe1c1 0x3000 0x00b0 0x8921
+			0x0012 0xe1c1 0x3000 0x00b0 0x01c6 0x3000 0x00b4 0x0be0
+			0x7000 0x0014 0xff00 0xc821 0x8911 0xe1b1 0x8921 0x0012
+			0xe1b1 0x01b6 0x0022 0x0126 0xffe3 0xa6bb
+		>;
+
+		/* PSKEY 0x2130 - RF calibration (15 words) */
+		brcm,pskey-2130 = /bits/ 16 <
+			0x0001 0xf897 0x0014 0x001b 0x0226 0x001b 0x0712 0x0816
+			0x0018 0xff2b 0xff0e 0xf900 0x9a18 0x00e2 0x76a4
+		>;
+
+		/* PSKEY 0x2131 - RF calibration (21 words) */
+		brcm,pskey-2131 = /bits/ 16 <
+			0x0001 0xe897 0xe000 0xb515 0x0284 0x09f4 0x0384 0x07f4
+			0x0018 0xff2b 0xff0e 0xe900 0x9b18 0x00e2 0x0018 0xff2b
+			0xff0e 0xe900 0xd618 0x00e2 0x3bed
+		>;
+
+		/* PSKEY 0x2132 - RF calibration (28 words) */
+		brcm,pskey-2132 = /bits/ 16 <
+			0x0001 0xe9aa 0x0117 0xe900 0x3885 0x0df0 0xe000 0xd215
+			0x0af4 0x0018 0xff2b 0xff0e 0x3b00 0x9118 0x009e 0x0014
+			0xe000 0xd225 0xe000 0xbe15 0x0134 0x0018 0xff2b 0xff0e
+			0xea00 0xad18 0x00e2 0x890d
+		>;
+
+		/* PSKEY 0x2133 - RF calibration (39 words) */
+		brcm,pskey-2133 = /bits/ 16 <
+			0x0001 0xc904 0x0018 0x132b 0x130e 0x3d00 0x219e 0xe900
+			0x3518 0x0026 0xe400 0x6d15 0xff26 0x6014 0x0126 0xe415
+			0x130e 0xdd00 0xc09e 0x019c 0xe200 0x2819 0xff00 0x7000
+			0x009e 0x8915 0xe400 0x6d25 0xff00 0xc515 0xe500 0xe725
+			0xe415 0x130e 0xc700 0xc518 0x009e 0xd80f 0x1f0b
+		>;
+
+		/* PSKEY 0x2134 - RF calibration (40 words) */
+		brcm,pskey-2134 = /bits/ 16 <
+			0x0001 0xc9cb 0x2600 0xce88 0x06f0 0xb511 0x0473 0x0200
+			0xf380 0x05e6 0xe30b 0xdf00 0xf315 0x8000 0x0184 0x17f4
+			0xe900 0x3518 0x0012 0x8000 0x0180 0x03f0 0x0026 0x0fe0
+			0x0056 0x1627 0x0192 0xe111 0x07a4 0xe800 0x8031 0x1523
+			0x019c 0xe200 0x2619 0xff00 0x7000 0x00e2 0xe30f 0xbbff
+		>;
+
+		/* PSKEY 0x2135 - RF calibration (24 words) */
+		brcm,pskey-2135 = /bits/ 16 <
+			0x0001 0xc8bf 0xfd84 0x0ef8 0x0387 0x06f8 0x0327 0x8915
+			0x1000 0xffc4 0x0227 0x0018 0xff2b 0xff0e 0xc900 0xc718
+			0x00e2 0x0018 0xff2b 0xff0e 0xc900 0xe518 0x00e2 0x58ac
+		>;
+
+		/* PSKEY 0x2136 - RF calibration (31 words) */
+		brcm,pskey-2136 = /bits/ 16 <
+			0x0002 0x2552 0xf921 0x0084 0x13f4 0xe119 0x0316 0x0012
+			0x3280 0x05f4 0x1680 0x0df0 0x0400 0xe890 0x0027 0x0116
+			0x0212 0x0018 0xff2b 0xff0e 0xe400 0x8b18 0x009e 0xf70f
+			0x0118 0xff2b 0xff0e 0x2500 0x5618 0x00e2 0xced3
+		>;
+
+		/* PSKEY 0x2137 - RF calibration (29 words) */
+		brcm,pskey-2137 = /bits/ 16 <
+			0x0001 0xe06e 0xe100 0xa988 0x0df4 0xe800 0x9f19 0x071a
+			0x0416 0x0009 0x0400 0xe890 0x0023 0x0127 0xe800 0x9f19
+			0x021a 0x0013 0x0117 0x0a36 0x0942 0x0922 0x0a26 0xf955
+			0xf861 0x0080 0xf7ec 0xfc0f 0x82c1
+		>;
+
+		/* PSKEY 0x2138 - RF calibration (13 words) */
+		brcm,pskey-2138 = /bits/ 16 <
+			0x0001 0xe303 0x0416 0x0009 0x0400 0xe890 0x0018 0xff2b
+			0xff0e 0xe300 0x1418 0x00e2 0x4929
+		>;
+
+		/* PSKEY 0x2139 - RF calibration (43 words) */
+		brcm,pskey-2139 = /bits/ 16 <
+			0x0001 0xcb38 0xf90b 0xe000 0x8015 0x0009 0x0400 0xe890
+			0x0118 0x002b 0x1f18 0x012b 0x0018 0xff2b 0xff0e 0x0700
+			0xf818 0x009e 0x17f0 0x0010 0xcb00 0x5514 0x0023 0x0127
+			0x0018 0x022b 0x0114 0x0327 0x1f18 0x042b 0xe000 0x8015
+			0x0009 0x0400 0xe890 0x0018 0xff2b 0xff0e 0x0700 0x0518
+			0x009e 0xf90f 0x2ec6
+		>;
+
+		/* PSKEY 0x213A - RF calibration (4 words) */
+		brcm,pskey-213a = /bits/ 16 <0x0003 0xba37 0x00e2 0x580d>;
+
+		/* PSKEY 0x21E1 - RF calibration (16 words) */
+		brcm,pskey-21e1 = /bits/ 16 <
+			0xffd8 0x0002 0xffeb 0x0001 0xffec 0xffff 0xfff6 0x0000
+			0x0032 0x0000 0x003c 0x0001 0x0050 0x0002 0x0064 0x0003
+		>;
+
+		/* PSKEY 0x2215 - RF calibration (18 words) */
+		brcm,pskey-2215 = /bits/ 16 <
+			0xfe0b 0x0217 0x031b 0x2d00 0xff84 0x0bf0 0x0016 0x0e84
+			0x08f0 0x0617 0x0100 0x0f84 0x04f0 0x0100 0xdc14 0x0627
+			0xfe0f 0xc35e
+		>;
+
+		/* PSKEY 0x2216 - RF calibration (28 words) */
+		brcm,pskey-2216 = /bits/ 16 <
+			0xfe0b 0x021b 0x0317 0x0484 0x16f0 0x049b 0x14f0 0x0116
+			0x0184 0x11f0 0x021a 0x0016 0x0784 0x0df0 0x0212 0xe015
+			0xfec4 0x0800 0x0e84 0x07f0 0xe015 0x0100 0xffc4 0x1300
+			0x00b4 0x0226 0xfe0f 0xbae4
+		>;
+
+		/* PSKEY 0x2227 - RF calibration (63 words) */
+		brcm,pskey-2227 = /bits/ 16 <
+			0x299c 0x0013 0x279c 0x0427 0x0f00 0x3314 0x289c 0x0527
+			0x0314 0x249c 0x0627 0x2000 0x6914 0x219c 0x0587 0x0224
+			0x0527 0x0514 0x1b9c 0x0487 0x0224 0x0417 0x0677 0x0200
+			0x9084 0x0828 0x0517 0x0677 0x0287 0x0424 0x0227 0x0013
+			0x0323 0x0013 0x0a33 0x0183 0xde2c 0x0313 0xff00 0xc521
+			0xf60f 0x0023 0xff00 0xc521 0x0114 0x0ba0 0xfc0b 0x0325
+			0x0014 0x0f13 0x0127 0x0023 0x0b0e 0xc700 0x5f18 0x009e
+			0x0137 0x0013 0xff30 0xf7f0 0x0f97 0xfc0f 0xc70e
+		>;
+
+		/* PSKEY 0x2228 - RF calibration (62 words) */
+		brcm,pskey-2228 = /bits/ 16 <
+			0x1613 0x1030 0x2080 0x362c 0x0010 0x1a23 0xe415 0x0234
+			0x1a0e 0xc600 0xf518 0x009e 0x1513 0xe230 0xe900 0x3715
+			0x1e34 0x0027 0xe035 0x0118 0x012b 0x019c 0xe200 0x2719
+			0xff00 0x7000 0x009e 0xf814 0x1583 0x022c 0x0814 0x169b
+			0x02e8 0x0074 0xe900 0x3635 0x7f84 0x0328 0x0100 0x8014
+			0x3f84 0x0220 0x4014 0xe900 0x3625 0x1693 0xe111 0x07a4
+			0xe800 0x8031 0x1523 0xe415 0x0234 0x1a0e 0xc700 0xc518
+			0x009e 0x1517 0xe500 0xe725 0xe30f 0x6a40
+		>;
+
+		/* PSKEY 0x2229 - RF calibration (29 words) */
+		brcm,pskey-2229 = /bits/ 16 <
+			0xf60b 0x0127 0x8000 0xff14 0x0227 0x0014 0x0327 0x0727
+			0x5000 0x0714 0xff00 0x7b25 0xff00 0xcf15 0xc000 0x0fc4
+			0xe400 0x76b5 0xff00 0xcf25 0xe900 0x3415 0x8925 0xe200
+			0x2519 0xff00 0x7000 0x00e2 0xdb92
+		>;
+
+		/* PSKEY 0x222A - RF calibration (58 words) */
+		brcm,pskey-222a = /bits/ 16 <
+			0xf10b 0x0100 0x6d10 0x0200 0x3514 0x2a9c 0xe800 0x8021
+			0x0a23 0xe230 0x249c 0x0b27 0x0a13 0x219c 0x0a13 0x0b87
+			0x0620 0x0230 0x0a23 0x0200 0x5780 0xf72c 0xe800 0x8051
+			0xe900 0x3721 0xe415 0x0010 0x0c23 0x220e 0xc900 0x8618
+			0x009e 0xfd14 0xf825 0x019c 0xe200 0x2919 0xe500 0xdb11
+			0x1000 0x00c0 0xff00 0x7000 0x00f6 0xf10f 0xe015 0xf60b
+			0x0218 0x0a2b 0x0818 0x0b2b 0xe200 0x2719 0xff00 0x7000
+			0x01e2 0x9c36
+		>;
+
+		/* PSKEY 0x222B - RF calibration (26 words) */
+		brcm,pskey-222b = /bits/ 16 <
+			0xe419 0xe415 0x0a34 0xfa25 0x0116 0x0012 0x04e8 0xf881
+			0x06fc 0x0ce0 0xf899 0x03ec 0x0c87 0x082c 0x0c27 0x8915
+			0xf000 0x00c4 0x0cb7 0x8925 0xf821 0x0238 0xfa89 0xedfc
+			0xf10f 0x338f
+		>;
+
+		vddio-supply = <&pm8058_s3>;
+		vbat-supply = <&pm8901_l3>;
+
+		clocks = <&sleep_clk>;
+		clock-names = "lpo";
+
+		init-speed = <115200>;
+		max-speed = <3686400>;
+
+		brcm,bt-pcm-int-params = [00 02 00 01 01];
+
+		/* pinctrl is applied by parent gsbi6_serial node */
+
+		reset-gpios = <&tlmm 138 GPIO_ACTIVE_LOW>;
+		shutdown-gpios = <&tlmm 130 GPIO_ACTIVE_HIGH>;
+		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <129 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "host-wakeup";
+	};
+};
+
+&gsbi12 {
+	status = "okay";
+	qcom,mode = <GSBI_PROT_UART_W_FC>;
+};
+
+&gsbi12_serial {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&headphone_uart_pins>;
+};
+
+&gsbi12_i2c {
+	status = "okay";
+};
+
+&gsbi7 {
+	status = "okay";
+	qcom,mode = <GSBI_PROT_I2C>;
+};
+
+&gsbi7_i2c {
+	status = "okay";
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi7_i2c_pins>;
+
+	wm8958: audio-codec@1a {
+		compatible = "wlf,wm8958";
+		reg = <0x1a>;
+
+		#sound-dai-cells = <0>;
+
+		/* Headphone microphone detection interrupt */
+		interrupt-parent = <&tlmm>;
+		interrupts = <57 IRQ_TYPE_EDGE_FALLING>;
+
+		/* Power supplies */
+		AVDD2-supply = <&pm8058_l4>;      // 2.85V
+		CPVDD-supply = <&pm8058_l4>;      // 2.85V
+		DBVDD1-supply = <&pm8058_s3>;     // 1.8V
+		DBVDD2-supply = <&pm8058_s3>;     // 1.8V
+		DBVDD3-supply = <&pm8058_s3>;     // 1.8V
+		DCVDD-supply = <&pm8058_s3>;      // 1.8V
+		AVDD1-supply = <&pm8058_l4>;      // 2.85V
+		SPKVDD1-supply = <&pm8058_l4>;    // 2.85V
+		SPKVDD2-supply = <&pm8058_l4>;    // 2.85V
+		LDO1VDD-supply = <&pm8058_l4>;    // 2.85V supply for internal LDO1
+		LDO2VDD-supply = <&pm8058_s3>;    // 1.8V supply for internal LDO2
+
+		/*
+		 * LDO enable GPIO control.
+		 * Both LDO enables need to be HIGH for codec to respond on I2C.
+		 * The wm8994-core driver asserts these early during probe,
+		 * then releases them. GPIO 108 (LDO2) is then switched to I2S
+		 * function mode via primary_i2s_pins pinctrl on the sound card.
+		 */
+		wlf,ldo1ena-gpios = <&tlmm 66 GPIO_ACTIVE_HIGH>;
+		wlf,ldo2ena-gpios = <&tlmm 108 GPIO_ACTIVE_HIGH>;
+
+		/* GPIO configuration for WM8958 internal GPIOs */
+		wlf,gpio-cfg = <
+			0x0041  /* GPIO1: AUDIO_AMP_EN - output high to enable amp */
+			0x8001  /* GPIO2: MCLK2 Pull Control */
+			0x8001  /* GPIO3: BCLK2 Pull Control */
+			0x8001  /* GPIO4: DACLRCLK2 Pull Control */
+			0x8001  /* GPIO5: DACDAT2 Pull Control */
+			0x2005  /* GPIO6: HEAD_MIC_DET routed to GPIO57 */
+			0xa101  /* GPIO7: N/A on WM8958 */
+			0xa101  /* GPIO8: Not used */
+			0xa101  /* GPIO9: Not used */
+			0xa101  /* GPIO10: Not used */
+			0xa101  /* GPIO11: Not used */
+		>;
+
+		/* MICBIAS configuration */
+		wlf,micbias-cfg = <0x0029 0x002d>;
+
+		/* Line outputs in differential mode */
+		wlf,lineout1-diff;
+		wlf,lineout2-diff;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&wm8958_pins>;
+	};
+};
+
+&gsbi8 {
+	status = "okay";
+	qcom,mode = <GSBI_PROT_I2C>;
+};
+
+&gsbi8_i2c {
+	status = "okay";
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi8_i2c_pins>;
+
+	lm8502: led-controller@33 {
+		compatible = "ti,lm8502";
+		reg = <0x33>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		vcc-supply = <&pm8058_l16>;
+		enable-gpios = <&tlmm 121 GPIO_ACTIVE_HIGH>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <128 IRQ_TYPE_EDGE_FALLING>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&lm8502_pins>;
+
+		/*
+		 * HP TouchPad navigation bar LEDs.
+		 * Uses D1 (reg 0) and D2 (reg 1) outputs on LM8502.
+		 * Confirmed via webOS debugfs register dump.
+		 */
+		led@0 {
+			reg = <0>;
+			label = "lm8502:white:navi_left";
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_INDICATOR;
+			led-max-microamp = <9000>;
+		};
+		led@1 {
+			reg = <1>;
+			label = "lm8502:white:navi_right";
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_INDICATOR;
+			led-max-microamp = <9000>;
+		};
+	};
+
+	/*
+	 * A6 Battery Controllers - TI MSP430 microcontrollers
+	 * These provide battery monitoring, fuel gauge, power management,
+	 * and Touchstone (inductive charging) support.
+	 *
+	 * The HP TouchPad has a dual-battery system with two A6 controllers:
+	 * - A6_0 (0x31): Primary battery controller
+	 * - A6_1 (0x32): Secondary battery controller
+	 *
+	 * A6 capabilities (from legacy webOS kernel drivers/misc/a6/a6.c):
+	 * - Battery voltage, current, temperature monitoring
+	 * - Fuel gauge (state of charge)
+	 * - Charger source detection via FLAGS_2 register (0x0703):
+	 *     - WIRED_CHARGE (0x10): Wired USB/DC charger detected
+	 *     - PUCK_CHARGE (0x08): Touchstone wireless charger detected
+	 *     - A2A_CONNECT (0x80): Battery-to-battery connection
+	 * - SBW (Spy-Bi-Wire) interface for firmware updates
+	 *
+	 * A6 <-> MAX8903B Charger Coordination:
+	 * In the legacy webOS kernel, coordination was userspace-mediated:
+	 * 1. A6 exposes charger source via sysfs (/sys/devices/.../a6_X/charger)
+	 * 2. A6 sends uevents when charger source changes
+	 * 3. powerd daemon monitors A6 and sets MAX8903B charging current:
+	 *    - USB enumerated: 100mA or 500mA (via IUSB pin)
+	 *    - Wall charger: 750mA-1400mA DC mode (via ISET pins)
+	 *    - Touchstone puck: Wireless charging handled by A6
+	 *
+	 * KERNEL INTEGRATION STATUS:
+	 * The max8903 driver now supports:
+	 * - ISET pin control for DC charging current selection
+	 * - IUSB pin control for USB 100/500mA mode
+	 * via input_current_limit sysfs property. Userspace (e.g., powerd)
+	 * should monitor A6 charger source sysfs/uevents and adjust
+	 * MAX8903B current via input_current_limit accordingly
+	 *
+	 * NOTE: Interrupt GPIO differs between board revisions:
+	 * - Pre-DVT (EVT1-EVT3): A6_0 IRQ=156, A6_1 IRQ=132
+	 * - DVT/PVT (production): A6_0 IRQ=37, A6_1 IRQ=94
+	 *
+	 * Default configuration is for DVT/PVT (production devices).
+	 */
+	a6_0: battery@31 {
+		compatible = "palm,a6-battery";
+		reg = <0x31>;
+
+		palm,device-index = <0>;
+
+		/* GPIO pins for SBW (Spy-Bi-Wire) firmware programming */
+		tck-gpios = <&tlmm 157 GPIO_ACTIVE_HIGH>;
+		tdio-gpios = <&tlmm 158 GPIO_ACTIVE_HIGH>;
+		wakeup-gpios = <&tlmm 155 GPIO_ACTIVE_HIGH>;
+
+		/* Interrupt GPIO - DVT/PVT uses GPIO 37 (pre-DVT: 156) */
+		interrupt-parent = <&tlmm>;
+		interrupts = <37 IRQ_TYPE_EDGE_FALLING>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&a6_0_default>;
+	};
+
+	a6_1: battery@32 {
+		compatible = "palm,a6-battery";
+		reg = <0x32>;
+
+		palm,device-index = <1>;
+
+		/* GPIO pins for SBW (Spy-Bi-Wire) firmware programming */
+		tck-gpios = <&tlmm 115 GPIO_ACTIVE_HIGH>;
+		tdio-gpios = <&tlmm 116 GPIO_ACTIVE_HIGH>;
+		wakeup-gpios = <&tlmm 141 GPIO_ACTIVE_HIGH>;
+
+		/* Interrupt GPIO - DVT/PVT uses GPIO 94 (pre-DVT: 132) */
+		interrupt-parent = <&tlmm>;
+		interrupts = <94 IRQ_TYPE_EDGE_FALLING>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&a6_1_default>;
+	};
+};
+
+&gsbi10 {
+	status = "okay";
+
+	/*
+	 * GSBI10 runs in combined I2C+UART mode for the CY8CTMA395 touchscreen:
+	 * - I2C: Configuration, calibration, firmware updates (address 0x67)
+	 * - UART: Touch data stream at 4 Mbps (/dev/ttyMSM2)
+	 * See TOUCHSCREEN_MULTI_SLAVE_ANALYSIS.md for protocol details.
+	 */
+	qcom,mode = <GSBI_PROT_I2C_UART>;
+};
+
+&gsbi10_serial {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi10_uart_pins>;
+
+	/*
+	 * Cypress CY8CTMA395 Touchscreen (serdev driver)
+	 *
+	 * Touch data is transmitted over UART at 4 Mbps.
+	 * I2C (via gsbi10_i2c) is used for initialization commands.
+	 * Touch data packets: 0xFF 0x43 (row data), 0xFF 0x47 (scan complete)
+	 *
+	 * The driver processes 30x40 capacitance matrix and reports
+	 * multi-touch events via the input subsystem.
+	 */
+	touchscreen: touchscreen {
+		compatible = "cypress,cy8ctma395-ts";
+
+		/* I2C bus for initialization (address 0x67) */
+		i2c-bus = <&gsbi10_i2c>;
+
+		/* Power supply - 3.05V digital */
+		vdd-supply = <&pm8058_l10>;
+
+		/* Reset GPIO (active low) - TP_PWR_RST / XRES */
+		reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
+
+		/* Wake GPIO (active high) - also serves as IRQ */
+		/* WiFi variant: GPIO 123, 3G variant: GPIO 45 */
+		wake-gpios = <&tlmm 123 GPIO_ACTIVE_HIGH>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&touch_pins>;
+	};
+};
+
+&gsbi10_i2c {
+	status = "okay";
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi10_i2c_pins>;
+
+/*
+	 * NOTE: The touchscreen is now handled by the serdev driver
+	 * (cy8ctma395-ts) under gsbi10_serial. The I2C interface at 0x67
+	 * is accessed directly by that driver for initialization.
+	 *
+	 * The old I2C-only node is kept here for reference but disabled.
+	 * See TOUCHSCREEN_MULTI_SLAVE_ANALYSIS.md for protocol details.
+	 */
+
+	/*
+	 * Legacy I2C touchscreen node (disabled - use serdev driver instead)
+	 *
+	touchscreen_i2c: touchscreen@67 {
+		compatible = "cypress,cy8ctma340";
+		reg = <0x67>;
+		status = "disabled";
+
+		vcpin-supply = <&vdd50_boost>;
+		vdd-supply = <&pm8058_l10>;
+		interrupts-extended = <&tlmm 123 IRQ_TYPE_LEVEL_LOW>;
+		reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
+		wakeup-source;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touch_pins>;
+		touchscreen-size-x = <768>;
+		touchscreen-size-y = <1024>;
+		touchscreen-fuzz-x = <4>;
+		touchscreen-fuzz-y = <4>;
+	};
+	*/
+};
+
+&pm8058 {
+	interrupts-extended = <&tlmm 88 IRQ_TYPE_LEVEL_LOW>;
+
+	pm8058_pwm: pwm@13c {
+		compatible = "qcom,pm8058-lpg";
+		reg = <0x13c>;
+		#pwm-cells = <2>;
+		status = "okay";
+	};
+};
+
+&pm8058_gpio {
+	backlight_pwm_gpios: backlight-pwm-state {
+		pinconf {
+			pins = "gpio24";
+			function = "func2";
+			bias-disable;
+			power-source = <PM8058_GPIO_VPH>;
+		};
+	};
+	backlight_enable_gpios: backlight-enable-state {
+		pinconf {
+			pins = "gpio25";
+			function = "normal";
+			bias-disable;
+			power-source = <PM8058_GPIO_VPH>;
+		};
+	};
+
+	/* GPS control pins (Broadcom BCM4751) */
+	gps_pins: gps-state {
+		/* GPIO 4: GPS LNA enable (REGPU) */
+		gpio@3 {
+			pins = "gpio4";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+
+		/* GPIO 5: GPS reset */
+		gpio@4 {
+			pins = "gpio5";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+	};
+};
+
+/*
+ * PM8058 MPP configuration for Class-D amplifier enable.
+ * Hardware MPP10 (CLASS_D0_EN) controls external Class-D amplifier #0.
+ * Pin naming is 1-based, so hardware index 10 = "mpp11".
+ */
+&pm8058_mpps {
+	class_d0_mpp: class-d0-state {
+		pins = "mpp11";
+		function = "digital";
+		output-low;
+		power-source = <PM8058_GPIO_S3>;
+	};
+};
+
+&pm8058_keypad {
+	linux,keymap = <
+	MATRIX_KEY(0, 0, KEY_MENU)
+	MATRIX_KEY(0, 2, KEY_1)
+	MATRIX_KEY(0, 3, KEY_4)
+	MATRIX_KEY(0, 4, KEY_7)
+	MATRIX_KEY(1, 0, KEY_UP)
+	MATRIX_KEY(1, 1, KEY_LEFT)
+	MATRIX_KEY(1, 2, KEY_DOWN)
+	MATRIX_KEY(1, 3, KEY_5)
+	MATRIX_KEY(1, 3, KEY_8)
+	MATRIX_KEY(2, 0, KEY_HOME)
+	MATRIX_KEY(2, 1, KEY_REPLY)
+	MATRIX_KEY(2, 2, KEY_2)
+	MATRIX_KEY(2, 3, KEY_6)
+	MATRIX_KEY(3, 0, KEY_VOLUMEUP)
+	MATRIX_KEY(3, 1, KEY_RIGHT)
+	MATRIX_KEY(3, 2, KEY_3)
+	MATRIX_KEY(3, 3, KEY_9)
+	MATRIX_KEY(3, 4, KEY_SWITCHVIDEOMODE)
+	MATRIX_KEY(4, 0, KEY_VOLUMEDOWN)
+	MATRIX_KEY(4, 1, KEY_BACK)
+	MATRIX_KEY(4, 2, KEY_CAMERA)
+	MATRIX_KEY(4, 3, KEY_KBDILLUMTOGGLE)
+	>;
+	keypad,num-rows = <6>;
+	keypad,num-columns = <5>;
+};
+
+&pm8058_xoadc {
+	/* Reference voltage 2.2 V */
+	xoadc-ref-supply = <&pm8058_l18>;
+
+	/* Board-specific channels */
+	adc-channel@5 {
+		/* Connected to AOUT of ALS sensor */
+		reg = <0x00 0x05>;
+	};
+	adc-channel@6 {
+		/* Connected to test point TP43 */
+		reg = <0x00 0x06>;
+	};
+	adc-channel@7 {
+		/* Connected to battery thermistor */
+		reg = <0x00 0x07>;
+	};
+	adc-channel@8 {
+		/* Connected to battery ID detector */
+		reg = <0x00 0x08>;
+	};
+	adc-channel@9 {
+		/* Connected to XO thermistor */
+		reg = <0x00 0x09>;
+	};
+};
+
+&usb1 {
+	status = "okay";
+	dr_mode = "otg";
+	/*
+	 * USB bandwidth removed - webOS didn't use explicit bandwidth voting.
+	 * Instead, it used dfab_usb_hs_clk as a fabric clock voter.
+	 * With MDP now using SMI memory (separate MMSS fabric path),
+	 * there's no contention with USB on the EBI path.
+	 */
+};
+&usb_hs1_phy {
+	v3p3-supply = <&pm8058_l6>;
+	v1p8-supply = <&pm8058_l7>;
+
+	/*
+	 * HP TouchPad USB PHY tuning parameters from legacy kernel:
+	 * - Pre-emphasis: 20% (PRE_EMPHASIS_WITH_20_PERCENT = 0x30)
+	 * - HS driver slope: 0x05
+	 * - CDR auto reset: DISABLE (bit 1 = 0x02)
+	 * - SE1 gating: DISABLE (bit 2 = 0x04)
+	 *
+	 * These are written to ULPI vendor-specific registers, but the
+	 * mainline qcom-usb-hs-phy driver only supports extended vendor
+	 * registers (0x80+) via qcom,init-seq. The legacy parameters
+	 * targeted registers 0x32 and 0x36 which are in the standard
+	 * vendor range (0x30-0x3F).
+	 *
+	 * For now, we rely on driver defaults which should be safe.
+	 * TODO: Investigate if these legacy tuning values need to be
+	 * ported to improve signal quality or compatibility.
+	 */
+};
+
+&lpass {
+	status = "okay";
+	/* Don't auto-boot; userspace will start after firmware is available */
+	qcom,no-auto-boot;
+};
+
+&apr {
+	status = "okay";
+};
+
+&q6asmdai {
+	dai@0 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+	};
+
+	dai@1 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
+	};
+
+	dai@2 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA3>;
+	};
+};
+
+/* Enable legacy AFE protocol for MSM8660/APQ8060 LPASS firmware */
+&q6afe {
+	qcom,legacy-afe-protocol;
+};
+
+/*
+ * Q6 AFE DAI configuration for WM8958 codec
+ *
+ * We use SECONDARY_MI2S which maps to legacy PRIMARY_I2S ports (0/1)
+ * in q6afe.c via q6afe_port_to_legacy(). This routes audio through
+ * GPIO 108 (WS) and GPIO 109 (SCK) for I2S clocks.
+ *
+ * Note: PRIMARY_MI2S maps to legacy MI2S ports (6/7) for FM radio on
+ * GPIO 101-107.
+ */
+&q6afedai {
+	dai@18 {
+		reg = <SECONDARY_MI2S_RX>;
+		qcom,sd-lines = <0>;
+	};
+
+	dai@19 {
+		reg = <SECONDARY_MI2S_TX>;
+		qcom,sd-lines = <0>;
+	};
+};
+
+/ {
+	sound: sound {
+		compatible = "qcom,apq8060-sndcard";
+		model = "HP-TouchPad";
+
+		/*
+		 * Primary I2S pinctrl for audio data path.
+		 * GPIO 108 (WS) and GPIO 109 (SCK) are configured in i2s
+		 * function mode for Q6 LPASS to communicate with the
+		 * WM8958 codec via the Primary I2S interface.
+		 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&primary_i2s_pins>;
+
+		/*
+		 * LPASS I2S clocks from LCC (LPASS Clock Controller).
+		 * These must be enabled for I2S output to work.
+		 * The Q6 DSP handles audio routing but doesn't control
+		 * the physical I2S output clocks on APQ8060/MSM8660.
+		 *
+		 * The bit_clk is a mux that selects between internal bit_div_clk
+		 * (LPASS drives GPIO output) or external codec_clk (GPIO input).
+		 * We need bit_div_clk as parent to drive I2S BCLK to the codec.
+		 */
+		clocks = <&lcc CODEC_I2S_SPKR_OSR_CLK>,
+			 <&lcc CODEC_I2S_SPKR_BIT_CLK>,
+			 <&lcc CODEC_I2S_SPKR_BIT_DIV_CLK>,
+			 <&lcc CODEC_I2S_MIC_OSR_CLK>,
+			 <&lcc CODEC_I2S_MIC_BIT_CLK>,
+			 <&lcc CODEC_I2S_MIC_BIT_DIV_CLK>;
+		clock-names = "codec_i2s_spkr_osr_clk",
+			      "codec_i2s_spkr_bit_clk",
+			      "codec_i2s_spkr_bit_div_clk",
+			      "codec_i2s_mic_osr_clk",
+			      "codec_i2s_mic_bit_clk",
+			      "codec_i2s_mic_bit_div_clk";
+
+		/*
+		 * DAPM audio routing.
+		 * Speakers use LINEOUT pins connected to external Class-D amplifiers.
+		 * The WM8958's internal SPKOUT Class-D driver is NOT connected.
+		 *
+		 * The external Class-D amplifiers are controlled ONLY by WM8994
+		 * GPIO1 (register 0x700 = 0x0041, output HIGH). Analysis of webOS
+		 * working audio shows all external SoC GPIOs (PM8901 MPPs) remain
+		 * LOW during active playback - WM8994 GPIO1 is the sole amp enable.
+		 *
+		 * MICBIAS is a SUPPLY widget in modern kernels, so can't be
+		 * in the signal path. The codec driver enables MICBIAS when
+		 * the corresponding input is powered.
+		 */
+		audio-routing =
+			"Headphone", "HPOUT1L",
+			"Headphone", "HPOUT1R",
+			"Speaker", "LINEOUT1P",
+			"Speaker", "LINEOUT1N",
+			"Speaker", "LINEOUT2P",
+			"Speaker", "LINEOUT2N",
+			"IN1LN", "Internal Mic",
+			"IN2LN", "Headset Mic";
+
+		/* Frontend - Multimedia playback (DPCM) */
+		mm1-dai-link {
+			link-name = "MultiMedia1";
+			cpu {
+				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
+			};
+		};
+
+		mm2-dai-link {
+			link-name = "MultiMedia2";
+			cpu {
+				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;
+			};
+		};
+
+		/* Backend - Secondary MI2S to WM8958 codec
+		 * (maps to legacy PRIMARY_I2S ports 0/1 via q6afe)
+		 */
+		sec-mi2s-rx-dai-link {
+			link-name = "Secondary MI2S Playback";
+			cpu {
+				sound-dai = <&q6afedai SECONDARY_MI2S_RX>;
+			};
+			platform {
+				sound-dai = <&q6routing>;
+			};
+			codec {
+				sound-dai = <&wm8958>;
+			};
+		};
+
+		sec-mi2s-tx-dai-link {
+			link-name = "Secondary MI2S Capture";
+			cpu {
+				sound-dai = <&q6afedai SECONDARY_MI2S_TX>;
+			};
+			platform {
+				sound-dai = <&q6routing>;
+			};
+			codec {
+				sound-dai = <&wm8958>;
+			};
+		};
+	};
+};
+
+/ {
+	reserved-memory {
+		/*
+		 * SMI framebuffer region for DRM display - matches webOS exactly.
+		 *
+		 * webOS MSM_PMEM_SMIPOOL layout:
+		 *   Base: 0x38300000 (MSM_PMEM_SMIPOOL_BASE)
+		 *   Size: 0x3D00000  (MSM_PMEM_SMIPOOL_SIZE = 61MB)
+		 *   End:  0x3C000000
+		 *
+		 * The first 3MB (0x38000000-0x382fffff) is reserved for
+		 * kernel SMI / video firmware (PMEM_KERNEL_SMI).
+		 */
+		drm_smi_mem: framebuffer@38300000 {
+			compatible = "shared-dma-pool";
+			reg = <0x38300000 0x3d00000>; /* 61MB - exact webOS size */
+			no-map;
+		};
+	};
+};
+
+/*
+ * Enable 11 of 12 MSM8660 IOMMU units. The def_domain_type=IDENTITY fix
+ * in msm_iommu.c ensures the IOMMU framework uses identity (passthrough)
+ * during bus probe, preventing DMA paging domain attach that would
+ * trigger IOMMU hardware reset while bootloader DMA is still active.
+ *
+ * GPU IOMMU (gpu_iommu): Deliberately left disabled. The A2xx/Adreno 220
+ *      GPU uses its own internal Memory Hierarchy MMU (a2xx_gpummu), not
+ *      the system IOMMU. Enabling gpu_iommu causes display corruption
+ *      (blue vertical lines) due to MMSS hardware interaction, with no
+ *      benefit since the A2xx driver ignores the system IOMMU entirely.
+ * MDP: Both port0 and port1 must be enabled together since the MDP
+ *      device references both. The MDP4 DRM driver creates its own
+ *      paging domain after safely disabling display outputs.
+ */
+&jpegd_iommu {
+	status = "okay";
+};
+
+&vpe_iommu {
+	status = "okay";
+};
+
+&rot_iommu {
+	status = "okay";
+};
+
+&ijpeg_iommu {
+	status = "okay";
+};
+
+&vfe_iommu {
+	status = "okay";
+};
+
+&vcodec_a_iommu {
+	status = "okay";
+};
+
+&vcodec_b_iommu {
+	status = "okay";
+};
+
+&gfx2d0_iommu {
+	status = "okay";
+};
+
+&gfx2d1_iommu {
+	status = "okay";
+};
+
+&mdp_port0_iommu {
+	status = "okay";
+};
+
+&mdp_port1_iommu {
+	status = "okay";
+};
+
+/*
+ * PM8901 MPP configuration for Class-D amplifier enable.
+ * MPP0 (CLASS_D1_EN) controls external Class-D amplifier #1.
+ */
+&pm8901_mpps {
+	class_d1_mpp: class-d1-state {
+		pins = "mpp1";
+		function = "digital";
+		output-low;
+		power-source = <PM8901_MPP_VPH>;
+	};
+};

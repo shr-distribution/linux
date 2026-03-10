@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_QCOM_ROTATOR
+	tristate "Qualcomm MSM8660 Rotator"
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on PM
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	help
+	  Enable support for the Qualcomm MSM8660/APQ8060 hardware
+	  image rotator.
+
+	  This driver provides V4L2 mem2mem interface for hardware
+	  accelerated image rotation (0/90/180/270 degrees) and
+	  horizontal/vertical flipping.
+
+	  To compile this driver as a module, choose M here. The module
+	  will be called qcom-rotator.

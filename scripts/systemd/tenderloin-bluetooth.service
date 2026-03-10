@@ -1,0 +1,25 @@
+[Unit]
+Description=HP TouchPad BCM4329 Bluetooth
+Documentation=file:///usr/share/doc/tenderloin/bcm4329-bluetooth-analysis.md
+After=local-fs.target
+Before=bluetooth.target
+Wants=bluetooth.target
+
+# Wait for the UART device to appear
+After=dev-ttyMSM1.device
+Requires=dev-ttyMSM1.device
+
+[Service]
+Type=forking
+RemainAfterExit=yes
+
+# Power on Bluetooth chip and attach UART with BCSP protocol
+ExecStart=/usr/lib/tenderloin/bt-init.sh start
+ExecStop=/usr/lib/tenderloin/bt-init.sh stop
+
+# Restart on failure
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

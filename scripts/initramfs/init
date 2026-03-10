@@ -1,0 +1,139 @@
+#!/bin/sh
+# HP TouchPad LuneOS initramfs
+# Based on working LuneOS init - uses kernel's built-in USB gadget
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+USB_IP="172.16.42.2/16"
+
+echo "=== HP TouchPad LuneOS Initramfs ==="
+
+# Mount essential filesystems
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t devtmpfs none /dev 2>/dev/null
+mkdir -p /config
+mount -t configfs none /config
+
+# Setup mdev for hotplug
+echo /sbin/mdev > /sys/kernel/uevent_helper
+mdev -s
+
+# Show kernel info
+echo "Kernel: $(uname -r)"
+echo "Cmdline: $(cat /proc/cmdline)"
+
+# Wait for USB gadget interface - kernel creates it automatically (CONFIG_USB_ETH=y)
+echo "Waiting for USB network interface..."
+sleep 5
+
+# List available interfaces for debugging
+echo "Available network interfaces:"
+ip link show
+
+# Setup USB IP address - try common interface names
+CONFIGURED=0
+for IFACE in usb0 rndis0 eth0 usb1; do
+    echo "Trying interface: $IFACE"
+    if ip address add "$USB_IP" dev $IFACE 2>/dev/null; then
+        ip link set $IFACE up
+        echo "Configured $IFACE with $USB_IP"
+        CONFIGURED=1
+        break
+    fi
+done
+
+# If common names didn't work, try to find any non-lo interface
+if [ "$CONFIGURED" = "0" ]; then
+    echo "Trying to find any available network interface..."
+    for IFACE in $(ip -o link show | awk -F': ' '{print $2}' | grep -v '^lo$'); do
+        echo "Trying interface: $IFACE"
+        if ip address add "$USB_IP" dev $IFACE 2>/dev/null; then
+            ip link set $IFACE up
+            echo "Configured $IFACE with $USB_IP"
+            CONFIGURED=1
+            break
+        fi
+    done
+fi
+
+# Setup telnetd
+echo "Starting telnetd..."
+cat > /etc/passwd << "EOF"
+root::0:0:root:/root:/bin/sh
+EOF
+cat > /etc/group << "EOF"
+root:x:0:root
+EOF
+mkdir -p /dev/pts
+mount -t devpts none /dev/pts 2>/dev/null
+telnetd -b 172.16.42.2 -l /bin/sh
+echo "Telnetd started on 172.16.42.2:23"
+
+# Wait for block devices
+echo "Waiting for block devices..."
+sleep 2
+mdev -s
+
+# Try to mount boot partition and remove moboot.next
+mkdir -p /mnt/boot
+if mount /dev/mmcblk0p13 /mnt/boot 2>/dev/null; then
+    echo "Boot partition mounted"
+    rm -f /mnt/boot/moboot.next
+    sync
+    echo "moboot.next removed"
+else
+    echo "Could not mount boot partition"
+fi
+
+# Mount firmware from boot partition if available
+echo "Checking for firmware on boot partition..."
+if [ -d /mnt/boot/firmware ] && [ "$(ls /mnt/boot/firmware 2>/dev/null)" ]; then
+    echo "Mounting firmware from boot partition..."
+    mount --bind /mnt/boot/firmware /lib/firmware 2>/dev/null && \
+        echo "Firmware mounted from /mnt/boot/firmware"
+else
+    echo "No firmware on boot partition, using initramfs firmware"
+fi
+
+# Load WiFi module after firmware is available
+echo "Loading WiFi driver..."
+if [ -f /lib/modules/$(uname -r)/kernel/drivers/net/wireless/ath/ath6kl/ath6kl_sdio.ko ]; then
+    modprobe ath6kl_sdio 2>/dev/null && echo "ath6kl_sdio loaded" || echo "ath6kl_sdio load failed"
+    sleep 3
+    if [ -d /sys/class/net/wlan0 ]; then
+        echo "WiFi interface wlan0 detected!"
+        ip link set wlan0 up 2>/dev/null
+    else
+        echo "WiFi interface not found"
+    fi
+else
+    echo "WiFi module not found in /lib/modules"
+fi
+
+# Start Q6 LPASS DSP for audio
+echo "Starting Q6 LPASS audio DSP..."
+if [ -f /sys/class/remoteproc/remoteproc0/state ]; then
+    if [ -f /lib/firmware/q6.mdt ]; then
+        echo start > /sys/class/remoteproc/remoteproc0/state 2>/dev/null
+        sleep 2
+        Q6_STATE=$(cat /sys/class/remoteproc/remoteproc0/state 2>/dev/null)
+        echo "Q6 LPASS state: $Q6_STATE"
+    else
+        echo "Q6 firmware not found, skipping LPASS start"
+    fi
+else
+    echo "Q6 remoteproc not available"
+fi
+
+# Save dmesg for debugging (to persistent boot partition)
+dmesg > /mnt/boot/dmesg.log 2>/dev/null && echo "dmesg saved to /mnt/boot/dmesg.log" || echo "Could not save dmesg to boot"
+sync
+
+echo "=== System ready for telnet debugging ==="
+echo "Connect via: telnet 172.16.42.2"
+
+# Keep system alive
+while true; do
+    sleep 60
+done

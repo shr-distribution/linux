@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_QCOM_VPE
+	tristate "Qualcomm MSM8660 Video Processing Engine driver"
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	depends on ARCH_QCOM || COMPILE_TEST
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	help
+	  This is a V4L2 mem2mem driver for the Qualcomm Video Processing
+	  Engine (VPE) found in MSM8660 and APQ8060 SoCs.
+
+	  The VPE provides hardware-accelerated video scaling, rotation,
+	  and color space conversion.
+
+	  To compile this driver as a module, choose M here. The module
+	  will be called qcom-vpe.
