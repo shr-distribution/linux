@@ -493,6 +493,15 @@ test_pix_mode() {
     run_on_device "
         echo '=== PIX Mode Test (video3 via VFE PIX) ==='
         echo ''
+
+        # Setup media pipeline: CSID1 -> VFE PIX link
+        echo 'Setting up media pipeline...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1288x968]' 2>/dev/null
+        echo 'Pipeline configured'
+
+        echo ''
         echo 'Testing capture with 1280x968 UYVY...'
         timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
             'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
