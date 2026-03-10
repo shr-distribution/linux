@@ -1873,8 +1873,11 @@ static int bcsp_setup(struct hci_uart *hu)
 		 * is established. We must wait for link establishment before
 		 * sending PSKEYs. The conf handler will signal link_up when
 		 * the handshake completes.
+		 *
+		 * Note: Check hu->serdev directly since bcsp->is_serdev isn't
+		 * set until after hci_uart_register_device() returns.
 		 */
-		if (bcsp->is_serdev) {
+		if (hu->serdev) {
 			unsigned long timeout;
 
 			BT_INFO("BCSP: Serdev mode - waiting for link establishment");
