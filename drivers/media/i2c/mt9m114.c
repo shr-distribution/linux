@@ -1809,100 +1809,19 @@ mt9m113_streaming:
 	 * MT9M113 uses a different command mechanism (MCU indirect via
 	 * 0x098C/0x0990) and doesn't support MT9M114's COMMAND_REGISTER.
 	 * Issue sequencer commands to start streaming.
+	 *
+	 * MIPI output (0x3400) and RESET_REGISTER (0x301A) are already
+	 * configured during sensor init - don't re-write them here.
+	 * Per webOS driver: just set SEQ_CAP_MODE and issue SEQ_CMD=RUN.
 	 */
 	{
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
-		/* Take PLL out of standby - clear bit 0 of STANDBY_CONTROL */
-		ret = cci_update_bits(sensor->regmap, MT9M114_STANDBY_CONTROL,
-				      BIT(0), 0, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: failed to clear standby: %d\n", ret);
-			goto error;
-		}
-		usleep_range(5000, 10000);
-
 		/*
-		 * Configure output interface based on bus type.
-		 * MIPI CSI-2 uses OUTPUT_CONTROL register at 0x3400.
-		 * Parallel uses CAM_PORT_OUTPUT_CONTROL MCU variable at 0xC984.
+		 * Set capture mode via MCU interface.
+		 * From webOS kernel: SEQ_CAP_MODE=0x0030 for preview mode.
 		 */
-		if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
-			u64 readback;
-			/*
-			 * MIPI CSI-2 mode setup from webOS kernel sequence.
-			 * MT9M113 uses OUTPUT_CONTROL (0x3400) for MIPI enable.
-			 * Note: 0xC984/0xC988+ timing registers are MT9M114-only!
-			 * MT9M113 uses default timing and doesn't need them.
-			 */
-			dev_info(&sensor->client->dev, "MT9M113: configuring MIPI CSI-2 output\n");
-
-			/* OUTPUT_CONTROL enables MIPI output interface */
-			cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-				  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, &ret);
-			if (ret) {
-				dev_err(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
-				goto error;
-			}
-			ret = cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx (expected 0x7A08)\n",
-				 readback);
-
-			/*
-			 * CUSTOM_SHORT_PKT (0x3404) enables MIPI Frame Start/End
-			 * short packets. Default is 0x0000 which means FS/FE are
-			 * NOT transmitted! Bit 7 (frame_cnt_en) enables them.
-			 * Without this, VFE never receives CAMIF_SOF interrupts.
-			 */
-			cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-				  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
-			if (ret) {
-				dev_err(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
-				goto error;
-			}
-			ret = cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx (expected 0x0080)\n",
-				 readback);
-		} else {
-			/*
-			 * Parallel mode: Use MCU variable 0xC984.
-			 * Value 0x8000 = parallel mode with output enabled.
-			 */
-			dev_info(&sensor->client->dev, "MT9M113: configuring parallel output\n");
-			cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, 0xC984, &ret);
-			cci_write(sensor->regmap, MT9M114_MCU_DATA, 0x8000, &ret);
-			if (ret) {
-				dev_err(&sensor->client->dev, "MT9M113: CAM_PORT config failed: %d\n", ret);
-				goto error;
-			}
-		}
-		usleep_range(5000, 10000);
-
-		/*
-		 * Configure RESET_REGISTER for streaming.
-		 * Both MIPI and parallel modes use 0x120C per webOS/Samsung drivers.
-		 */
-		{
-			u64 readback;
-
-			cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-				  MT9M113_RESET_REG_STREAMING, &ret);
-			if (ret) {
-				dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
-				goto error;
-			}
-			ret = cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: RESET_REGISTER=0x%llx (expected 0x%04x)\n",
-				 readback, MT9M113_RESET_REG_STREAMING);
-		}
-
-		/*
-		 * Set capture mode and start streaming via MCU interface.
-		 * From webOS kernel: SEQ_CAP_MODE=0x0030, SEQ_CMD=0x0001
-		 */
-		cci_write(sensor->regmap, MT9M114_MCU_ADDRESS,
-			  MT9M113_SEQ_CAP_MODE, &ret);
-		cci_write(sensor->regmap, MT9M114_MCU_DATA, 0x0030, &ret);
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 		if (ret) {
 			dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
 			goto error;
@@ -1910,21 +1829,27 @@ mt9m113_streaming:
 		usleep_range(40000, 50000);
 
 		/* Issue SEQ_CMD=1 to start streaming */
-		cci_write(sensor->regmap, MT9M114_MCU_ADDRESS,
-			  MT9M113_SEQ_CMD, &ret);
-		cci_write(sensor->regmap, MT9M114_MCU_DATA,
-			  MT9M113_SEQ_CMD_RUN, &ret);
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					    MT9M113_SEQ_CMD_RUN);
 		if (ret) {
 			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD RUN failed: %d\n", ret);
 			goto error;
 		}
-		usleep_range(20000, 30000);
+
+		/*
+		 * Poll until SEQ_CMD returns to 0 (command complete).
+		 * WebOS driver does this with up to 500ms timeout.
+		 */
+		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+		if (ret < 0) {
+			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD timeout waiting for streaming\n");
+			goto error;
+		}
 
 		/* Verify sensor state after streaming command */
 		{
 			u64 seq_state;
-			cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, MT9M113_SEQ_STATE, NULL);
-			cci_read(sensor->regmap, MT9M114_MCU_DATA, &seq_state, NULL);
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
 			dev_info(&sensor->client->dev, "MT9M113: SEQ_STATE=0x%llx (expected 0x03=streaming)\n",
 				 seq_state);
 		}
