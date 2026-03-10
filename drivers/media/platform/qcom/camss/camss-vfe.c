@@ -1056,17 +1056,23 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	/*
 	 * Step 3: Configure CAMIF for raw passthrough mode
-	 * For raw output (CAMIF -> AXI bus), webOS sets:
+	 * For raw output (CAMIF -> AXI bus), we set:
 	 *   - camif2BusEnable = TRUE (bit 10) - route data directly to AXI
-	 *   - syncMode = EFS (bits 4:3 = 1) - use embedded frame sync for MIPI
+	 *   - syncMode = APS (bits 4:3 = 0) - Active Pixel Sync
+	 *
+	 * APS mode is required for MIPI CSI-2 input because:
+	 *   - EFS mode expects embedded sync codes in pixel data stream
+	 *   - MIPI CSI-2 uses protocol-level short packets (FS/FE/LS/LE)
+	 *   - CSID strips MIPI protocol layer, leaving just pixel data
+	 *   - APS mode detects frames from pixel timing (line gaps)
 	 *
 	 * Note: camif2vfeEnable (bit 8) routes to VFE processing pipeline,
 	 * but for raw passthrough we only need camif2busEnable.
 	 */
 	val = VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus (raw) */
-	      VFE31_CAMIF_CFG_SYNC_MODE_EFS;	/* bits 4:3: EFS sync mode */
+	      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
 	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF_CFG=0x%03x (CAMIF2BUS + EFS)\n", val);
+		 "VFE: CAMIF_CFG=0x%03x (CAMIF2BUS + APS)\n", val);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CFG);
 
 	/*
