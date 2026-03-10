@@ -198,11 +198,38 @@
 #define VFE_0_CAMIF_CFG_SYNC_MODE_EFS	(1 << 3)
 #define VFE_0_CAMIF_CFG_SYNC_MODE_ELS	(2 << 3)
 
-#define VFE_0_CAMIF_FRAME_CFG		0x1E8
+/*
+ * VFE31 CAMIF register block layout (32 bytes at 0x1E4-0x203):
+ *
+ * The VFE31 driver (V31_CAMIF_CFG command) copies 32 bytes from userspace
+ * to V31_CAMIF_OFF (0x1E4). The userspace HAL uses the vfe_camifcfg structure
+ * which is shared between VFE versions. This structure layout determines
+ * the register offsets within the CAMIF block.
+ *
+ * Register map (derived from HAL structure layout):
+ * 0x1E4: CAMIF_CFG - sync mode, data path enables
+ * 0x1E8: EFS_CFG - Embedded Frame Sync codes for MIPI CSI-2
+ *        [7:0]   efsEndOfLine
+ *        [15:8]  efsStartOfLine
+ *        [23:16] efsEndOfFrame
+ *        [31:24] efsStartOfFrame
+ * 0x1EC: FRAME_CFG - frame dimensions
+ *        [13:0]  pixelsPerLine
+ *        [29:16] linesPerFrame
+ * 0x1F0: WINDOW_WIDTH_CFG
+ * 0x1F4: WINDOW_HEIGHT_CFG
+ * 0x1F8: SUBSAMPLE_CFG_0
+ * 0x1FC: SUBSAMPLE_CFG_1
+ * 0x200: EPOCH_CFG
+ */
+#define VFE_0_CAMIF_EFS_CFG		0x1E8
+#define VFE_0_CAMIF_FRAME_CFG		0x1EC  /* NOT 0x1E8! */
 #define VFE_0_CAMIF_WINDOW_WIDTH_CFG	0x1F0
 #define VFE_0_CAMIF_WINDOW_HEIGHT_CFG	0x1F4
 #define VFE_0_CAMIF_SUBSAMPLE_CFG_0	0x1F8
-#define VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN 0x1FC
+#define VFE_0_CAMIF_SUBSAMPLE_CFG_1	0x1FC
+#define VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN 0x1FC  /* Alias for SUBSAMPLE_CFG_1 */
+#define VFE_0_CAMIF_EPOCH_CFG		0x200
 
 #define VFE_0_CAMIF_STATUS		0x204
 

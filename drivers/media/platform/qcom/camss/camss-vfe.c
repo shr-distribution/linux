@@ -789,11 +789,17 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_CAMIF_CFG_SYNC_MODE_APS	(0 << 3)	/* Active Pixel Sync */
 #define VFE31_CAMIF_CFG_SYNC_MODE_EFS	(1 << 3)	/* Embedded Frame Sync */
 #define VFE31_CAMIF_CFG_SYNC_MODE_ELS	(2 << 3)	/* Embedded Line Sync */
-#define VFE31_CAMIF_FRAME_CFG		0x1E8
+/*
+ * CAMIF register block (0x1E4-0x203):
+ * 0x1E4: CAMIF_CFG, 0x1E8: EFS_CFG, 0x1EC: FRAME_CFG, etc.
+ */
+#define VFE31_CAMIF_EFS_CFG		0x1E8
+#define VFE31_CAMIF_FRAME_CFG		0x1EC	/* NOT 0x1E8! */
 #define VFE31_CAMIF_WINDOW_WIDTH_CFG	0x1F0
 #define VFE31_CAMIF_WINDOW_HEIGHT_CFG	0x1F4
 #define VFE31_CAMIF_SUBSAMPLE_CFG_0	0x1F8
-#define VFE31_CAMIF_IRQ_SUBSAMPLE_PAT	0x1FC
+#define VFE31_CAMIF_SUBSAMPLE_CFG_1	0x1FC
+#define VFE31_CAMIF_EPOCH_CFG		0x200
 #define VFE31_CAMIF_STATUS		0x204	/* Read status */
 #define VFE31_CAMIF_CMD			0x1E0	/* Write commands */
 #define VFE31_CAMIF_CMD_CLEAR_STATUS	BIT(2)
@@ -946,9 +952,29 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	}
 	writel_relaxed(val, vfe->base + VFE31_CORE_CFG);
 
-	/* Step 2: Configure CAMIF frame dimensions */
+	/*
+	 * Step 2: Configure EFS_CFG for MIPI CSI-2 embedded sync codes
+	 * MIPI CSI-2 short packet data types:
+	 *   0x00 = Frame Start (FS)
+	 *   0x01 = Frame End (FE)
+	 *   0x02 = Line Start (LS)
+	 *   0x03 = Line End (LE)
+	 *
+	 * EFS_CFG register layout:
+	 *   [7:0]   efsEndOfLine = 0x03
+	 *   [15:8]  efsStartOfLine = 0x02
+	 *   [23:16] efsEndOfFrame = 0x01
+	 *   [31:24] efsStartOfFrame = 0x00
+	 */
+	val = (0x00 << 24) | (0x01 << 16) | (0x02 << 8) | (0x03 << 0);
+	dev_info(vfe->camss->dev, "VFE: EFS_CFG=0x%08x (MIPI CSI-2 sync codes)\n", val);
+	writel_relaxed(val, vfe->base + VFE31_CAMIF_EFS_CFG);
+
+	/* Step 3: Configure CAMIF frame dimensions at 0x1EC (NOT 0x1E8!) */
 	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
 	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
+	dev_info(vfe->camss->dev, "VFE: FRAME_CFG=0x%08x at 0x%03x\n",
+		 val, VFE31_CAMIF_FRAME_CFG);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_FRAME_CFG);
 
 	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
@@ -958,7 +984,7 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_HEIGHT_CFG);
 
 	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_0);
-	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_IRQ_SUBSAMPLE_PAT);
+	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_1);
 
 	/*
 	 * Step 3: Enable CAMIF to VFE data path with MIPI input
