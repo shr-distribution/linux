@@ -1127,7 +1127,9 @@ static void bcsp_complete_rx_pkt(struct hci_uart *hu)
 			pass_up = 1;
 		} else if ((bcsp->rx_skb->data[1] & 0x0f) == 1 &&
 			   !(bcsp->rx_skb->data[0] & 0x80)) {
-			BT_INFO("BCSP: LE packet on channel 1, calling handler");
+			BT_INFO("BCSP: RX LE hdr: %02x %02x %02x %02x",
+				bcsp->rx_skb->data[0], bcsp->rx_skb->data[1],
+				bcsp->rx_skb->data[2], bcsp->rx_skb->data[3]);
 			bcsp_handle_le_pkt(hu);
 			/*
 			 * bcsp_handle_le_pkt may free rx_skb (e.g., during
