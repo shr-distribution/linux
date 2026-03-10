@@ -4229,24 +4229,25 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 			 * For VFE without ISPIF (e.g., MSM8660),
 			 * enable the CSID->VFE link for this sensor's port.
 			 * The CSIPHY ID matches the CSID ID on these platforms.
-			 * We enable the link to VFE line 0 (RDI0) which is used
-			 * for raw camera data passthrough.
+			 * We enable the link to VFE PIX line which uses CAMIF
+			 * for raw camera data passthrough via the pixel path.
 			 */
 			if (!camss->ispif && camss->res->vfe_num == 1 &&
 			    csiphy_id < camss->res->csid_num) {
 				struct media_entity *csid_entity =
 					&camss->csid[csiphy_id].subdev.entity;
 				struct media_entity *vfe_entity =
-					&camss->vfe[0].line[0].subdev.entity;
+					&camss->vfe[0].line[VFE_LINE_PIX].subdev.entity;
 				struct media_link *link;
+				unsigned int csid_src_pad = MSM_CSID_PAD_FIRST_SRC + VFE_LINE_PIX;
 
 				dev_info(camss->dev,
-					 "Looking for CSID%d->VFE link: %s pad %d -> %s pad %d\n",
-					 csiphy_id, csid_entity->name, MSM_CSID_PAD_FIRST_SRC,
+					 "Looking for CSID%d->VFE PIX link: %s pad %d -> %s pad %d\n",
+					 csiphy_id, csid_entity->name, csid_src_pad,
 					 vfe_entity->name, MSM_VFE_PAD_SINK);
 
 				link = media_entity_find_link(
-					&csid_entity->pads[MSM_CSID_PAD_FIRST_SRC],
+					&csid_entity->pads[csid_src_pad],
 					&vfe_entity->pads[MSM_VFE_PAD_SINK]);
 				if (link) {
 					dev_info(camss->dev,
@@ -4256,16 +4257,16 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 						MEDIA_LNK_FL_ENABLED);
 					if (ret < 0) {
 						dev_err(camss->dev,
-							"Failed to enable CSID%d->VFE link: %d\n",
+							"Failed to enable CSID%d->VFE PIX link: %d\n",
 							csiphy_id, ret);
 						return ret;
 					}
 					dev_info(camss->dev,
-						 "Enabled CSID%d->VFE link for sensor %s\n",
+						 "Enabled CSID%d->VFE PIX link for sensor %s\n",
 						 csiphy_id, sensor->name);
 				} else {
 					dev_err(camss->dev,
-						"CSID%d->VFE link not found!\n",
+						"CSID%d->VFE PIX link not found!\n",
 						csiphy_id);
 				}
 			}
