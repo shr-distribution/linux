@@ -557,11 +557,12 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 
 	/*
 	 * CRC handling for BCSP packets:
-	 * The BCM4329 sends LE packets with CRC (header 0x40). Unlike standard
-	 * hciattach which sends LE without CRC, we enable CRC for all packets
-	 * to match what the chip expects.
+	 * - Link Establishment (channel 1): NO CRC - hciattach sends LE packets
+	 *   without CRC. The chip may send LE packets with CRC, but expects
+	 *   to receive them without CRC (asymmetric behavior).
+	 * - All other channels: Use CRC if enabled (default true via txcrc)
 	 */
-	bool pkt_crc = bcsp->use_crc;
+	bool pkt_crc = bcsp->use_crc && chan != 1;
 
 	if (pkt_crc)
 		hdr[0] |= 0x40;
