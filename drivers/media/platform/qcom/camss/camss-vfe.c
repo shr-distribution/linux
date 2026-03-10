@@ -798,7 +798,19 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_CAMIF_CMD			0x1E0	/* Write commands */
 #define VFE31_CAMIF_CMD_CLEAR_STATUS	BIT(2)
 #define VFE31_CAMIF_CMD_STOP_IMMEDIATELY BIT(1)
-#define VFE31_CAMIF_CMD_START		BIT(0)	/* Enable CAMIF - webOS uses 0x1 */
+/*
+ * VFE31 CAMIF START command = 1 (BIT(0) only)
+ *
+ * NOTE: The webOS msm_vfe31.h header defines CAMIF_COMMAND_START = 0x5,
+ * but the actual VFE31 code in vfe31_start_common() writes 1, NOT 0x5:
+ *   msm_io_w(1, vfe31_ctrl->vfebase + VFE_CAMIF_COMMAND);
+ *
+ * The 0x5 macro is defined but NEVER USED in VFE31. It appears to be
+ * legacy from VFE8x where it IS used. For VFE31, only BIT(0) is needed.
+ *
+ * Reference: webOS msm_vfe31.c line 1002
+ */
+#define VFE31_CAMIF_CMD_START		BIT(0)
 #define VFE31_REG_UPDATE_CMD		0x260
 /* IRQ registers - must be enabled to receive interrupts! */
 #define VFE31_IRQ_MASK_0		0x01C

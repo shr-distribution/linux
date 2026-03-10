@@ -157,7 +157,19 @@
  * - VFE_CAMIF_STATUS at 0x204 (read status)
  */
 #define VFE_0_CAMIF_CMD			0x1E0
-#define VFE_0_CAMIF_CMD_START			0x5	/* Enable CAMIF */
+/*
+ * VFE31 CAMIF START command = 1 (BIT(0) only)
+ *
+ * NOTE: The webOS msm_vfe31.h header defines CAMIF_COMMAND_START = 0x5,
+ * but the actual VFE31 code in vfe31_start_common() writes 1, NOT 0x5:
+ *   msm_io_w(1, vfe31_ctrl->vfebase + VFE_CAMIF_COMMAND);
+ *
+ * The 0x5 macro is defined but NEVER USED in VFE31. It appears to be
+ * legacy from VFE8x where it IS used. For VFE31, only BIT(0) is needed.
+ *
+ * Reference: webOS msm_vfe31.c line 1002
+ */
+#define VFE_0_CAMIF_CMD_START			0x1
 #define VFE_0_CAMIF_CMD_STOP_IMMEDIATELY	0x2
 #define VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY	0x0
 #define VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS	BIT(2)
