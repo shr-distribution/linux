@@ -2053,9 +2053,15 @@ static void bcsp_timed_event(struct timer_list *t)
 	BT_DBG("hu %p link_state %d unack %u", hu, bcsp->link_state, bcsp->unack.qlen);
 
 	/*
-	 * Don't actively send sync - BCM4329 expects passive host.
-	 * We only respond to chip's sync with sync_rsp.
+	 * BCSP Link Establishment requires both sides to send sync.
+	 * When the chip receives our sync, it responds with sync_rsp.
+	 * When we receive sync_rsp, we move to INIT state.
+	 * Meanwhile, we also respond to chip's sync with our sync_rsp.
 	 */
+	if (bcsp->link_state == BCSP_LINK_UNINIT) {
+		BT_INFO("BCSP: timer sending sync (link_state=%d)", bcsp->link_state);
+		bcsp_send_link_pkt(bcsp, sync_pkt, sizeof(sync_pkt));
+	}
 
 	/* Send conf packets in INIT state */
 	if (bcsp->link_state == BCSP_LINK_INIT) {
