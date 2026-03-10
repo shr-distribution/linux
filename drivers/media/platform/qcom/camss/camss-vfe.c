@@ -818,17 +818,72 @@ int vfe_reset(struct vfe_device *vfe)
  */
 #define VFE31_CAMIF_CMD_START		BIT(0)
 #define VFE31_REG_UPDATE_CMD		0x260
-/* IRQ registers - must be enabled to receive interrupts! */
+
+/*
+ * VFE31 IRQ registers and bit definitions
+ *
+ * IRQ_MASK_0 bit map (from webOS msm_vfe31.h):
+ *   Bit 0:  CAMIF_SOF              - Start of Frame from CAMIF
+ *   Bit 1:  CAMIF_EOF              - End of Frame (webOS does NOT enable this)
+ *   Bit 5:  REG_UPDATE             - Register update acknowledged
+ *   Bit 8-12: WM0-WM4 ping/pong    - Individual write master IRQs (not used by webOS)
+ *   Bit 13: STATS_AEC              - Auto exposure stats ready
+ *   Bit 14: STATS_AF               - Auto focus stats ready
+ *   Bit 15: STATS_AWB              - Auto white balance stats ready
+ *   Bit 16: STATS_RS               - Row sum stats ready
+ *   Bit 17: STATS_CS               - Column sum stats ready
+ *   Bit 18: STATS_IHIST            - Image histogram stats ready
+ *   Bit 19: STATS_SKIN             - Skin detection stats ready
+ *   Bit 21: IMAGE_COMPOSIT_DONE0   - Output path 0 frame complete
+ *   Bit 22: IMAGE_COMPOSIT_DONE1   - Output path 1 frame complete
+ *   Bit 23: IMAGE_COMPOSIT_DONE2   - Output path 2 frame complete
+ *   Bit 24: STATS_COMPOSIT         - Stats composite done
+ *   Bit 25-27: SYNC_TIMER0-2       - Sync timer IRQs
+ *   Bit 28-31: ASYNC_TIMER0-3      - Async timer IRQs
+ *
+ * webOS vfe31_start_common() uses: 0x00EFE021
+ *   = CAMIF_SOF | REG_UPDATE | all STATS | IMAGE_COMPOSIT_DONE0/1/2
+ *
+ * IRQ_MASK_1 bit map:
+ *   Bit 0-21: Error IRQs (CAMIF_ERROR, overflow, violation, etc.)
+ *   Bit 22: RESET_ACK              - Hardware reset complete
+ *   Bit 23: AXI_HALT_ACK           - AXI bus halt complete
+ *
+ * webOS uses VFE_IMASK_WHILE_STOPPING_1 = 0x00400000 (bit 22 only)
+ */
 #define VFE31_IRQ_MASK_0		0x01C
 #define VFE31_IRQ_MASK_1		0x020
-#define VFE31_IRQ_MASK_0_CAMIF_SOF	BIT(0)
-#define VFE31_IRQ_MASK_0_CAMIF_EOF	BIT(1)
-#define VFE31_IRQ_MASK_0_REG_UPDATE	BIT(5)
-#define VFE31_IRQ_MASK_0_PING_PONG_WM(n) BIT((n) + 8)
-#define VFE31_IRQ_MASK_1_RESET_ACK	BIT(0)
-#define VFE31_IRQ_MASK_1_VIOLATION	BIT(7)
-#define VFE31_IRQ_MASK_1_BUS_BDG_HALT_ACK BIT(8)
-#define VFE31_IRQ_MASK_1_BUS_OVERFLOW_WM(n) BIT((n) + 9)
+
+/* IRQ_MASK_0 individual bits */
+#define VFE31_IRQ_MASK_0_CAMIF_SOF		BIT(0)
+#define VFE31_IRQ_MASK_0_CAMIF_EOF		BIT(1)
+#define VFE31_IRQ_MASK_0_REG_UPDATE		BIT(5)
+#define VFE31_IRQ_MASK_0_PING_PONG_WM(n)	BIT((n) + 8)
+#define VFE31_IRQ_MASK_0_STATS_AEC		BIT(13)
+#define VFE31_IRQ_MASK_0_STATS_AF		BIT(14)
+#define VFE31_IRQ_MASK_0_STATS_AWB		BIT(15)
+#define VFE31_IRQ_MASK_0_STATS_RS		BIT(16)
+#define VFE31_IRQ_MASK_0_STATS_CS		BIT(17)
+#define VFE31_IRQ_MASK_0_STATS_IHIST		BIT(18)
+#define VFE31_IRQ_MASK_0_STATS_SKIN		BIT(19)
+#define VFE31_IRQ_MASK_0_IMAGE_COMPOSIT_DONE0	BIT(21)
+#define VFE31_IRQ_MASK_0_IMAGE_COMPOSIT_DONE1	BIT(22)
+#define VFE31_IRQ_MASK_0_IMAGE_COMPOSIT_DONE2	BIT(23)
+#define VFE31_IRQ_MASK_0_STATS_COMPOSIT		BIT(24)
+
+/* IRQ_MASK_1 individual bits */
+#define VFE31_IRQ_MASK_1_RESET_ACK		BIT(22)
+#define VFE31_IRQ_MASK_1_AXI_HALT_ACK		BIT(23)
+/* Error bits are 0-21, used for VFE31_IMASK_ERROR_ONLY_1 */
+
+/*
+ * webOS IRQ mask values - use these exact values for compatibility!
+ * From vfe31_start_common() in msm_vfe31.c:
+ *   msm_io_w(0x00EFE021, vfe31_ctrl->vfebase + VFE_IRQ_MASK_0);
+ *   msm_io_w(VFE_IMASK_WHILE_STOPPING_1, ...) = 0x00400000
+ */
+#define VFE31_IRQ_MASK_0_WEBOS			0x00EFE021
+#define VFE31_IRQ_MASK_1_WEBOS			0x00400000
 
 /*
  * VFE31 configuration registers
@@ -1024,18 +1079,24 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	/*
 	 * Step 5c: Enable IRQs - CRITICAL!
-	 * Without enabling IRQs, VFE will never generate SOF interrupt.
-	 * IRQ_MASK_0: SOF + EOF + REG_UPDATE + PING_PONG for WM0
-	 * IRQ_MASK_1: RESET_ACK + VIOLATION + HALT_ACK + BUS_OVERFLOW for WM0
+	 * Without proper IRQ mask, VFE cannot signal frame completion.
+	 *
+	 * Use EXACT webOS IRQ mask values from vfe31_start_common():
+	 *
+	 * IRQ_MASK_0 = 0x00EFE021:
+	 *   Bit 0:  CAMIF_SOF              - Start of frame
+	 *   Bit 5:  REG_UPDATE             - Register update done
+	 *   Bit 13-19: STATS_*             - Statistics IRQs (AEC,AF,AWB,RS,CS,IHIST,SKIN)
+	 *   Bit 21-23: IMAGE_COMPOSIT_DONE - Frame complete for output paths 0/1/2
+	 *
+	 * IRQ_MASK_1 = 0x00400000:
+	 *   Bit 22: RESET_ACK              - Hardware reset complete
+	 *
+	 * NOTE: webOS does NOT enable CAMIF_EOF (bit 1) or individual WM ping/pong
+	 * IRQs (bits 8-12). It uses IMAGE_COMPOSIT_DONE for frame completion instead.
 	 */
-	vfe->irq_mask0_shadow = VFE31_IRQ_MASK_0_CAMIF_SOF |
-				VFE31_IRQ_MASK_0_CAMIF_EOF |
-				VFE31_IRQ_MASK_0_REG_UPDATE |
-				VFE31_IRQ_MASK_0_PING_PONG_WM(vfe->camif_pending_wm);
-	vfe->irq_mask1_shadow = VFE31_IRQ_MASK_1_RESET_ACK |
-				VFE31_IRQ_MASK_1_VIOLATION |
-				VFE31_IRQ_MASK_1_BUS_BDG_HALT_ACK |
-				VFE31_IRQ_MASK_1_BUS_OVERFLOW_WM(vfe->camif_pending_wm);
+	vfe->irq_mask0_shadow = VFE31_IRQ_MASK_0_WEBOS;
+	vfe->irq_mask1_shadow = VFE31_IRQ_MASK_1_WEBOS;
 
 	dev_info(vfe->camss->dev,
 		 "VFE: Enabling IRQs: MASK_0=0x%08x MASK_1=0x%08x\n",
