@@ -818,27 +818,12 @@ struct mt9m113_reg_entry {
  * - A direct register write (reg < 0x8000)
  * - An MCU variable write encoded as reg=0x098C (address) followed by
  *   reg=0x0990 (data), which is handled specially.
+ *
+ * NOTE: MCU boot and PLL configuration are handled by mt9m114_power_on(),
+ * so this table starts AFTER PLL is configured and stable.
  */
 static const struct mt9m113_reg_entry mt9m113_init_table[] = {
-	/* MCU boot sequence */
-	{ 0x001C, 0x0001, 0 },		/* MCU_BOOT_MODE */
-	{ 0x001C, 0x0000, 30 },		/* MCU_BOOT_MODE, delay 30ms */
-
-	/* PLL configuration for 24MHz XCLK input */
-	{ 0x0016, 0x00FF, 0 },		/* CLOCKS_CONTROL */
-	{ 0x0018, 0x0028, 0 },		/* STANDBY_CONTROL */
-	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL */
-	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL */
-	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL */
-	{ 0x0010, 0x0114, 0 },		/* PLL_DIVIDERS */
-	{ 0x0012, 0x00F1, 0 },		/* PLL_P_DIVIDERS */
-	{ 0x0014, 0x2545, 0 },		/* PLL_CONTROL */
-	{ 0x0014, 0x2547, 0 },		/* PLL_CONTROL */
-	{ 0x0014, 0x3447, 20 },		/* PLL_CONTROL, delay 20ms for PLL lock */
-	{ 0x0014, 0x3047, 0 },		/* PLL_CONTROL */
-	{ 0x0014, 0x3046, 0 },		/* PLL_CONTROL */
-	{ 0x001A, 0x0218, 0 },		/* RESET_AND_MISC_CONTROL */
-	{ 0x0018, 0x002A, 0 },		/* STANDBY_CONTROL */
+	/* OFIFO control - first entry after PLL is configured */
 	{ 0x321C, 0x0003, 0 },		/* OFIFO_CONTROL_STATUS */
 
 	/* Context A output (640x480 preview) - via MCU variables */
