@@ -2153,7 +2153,10 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 	bcsp_init_pskey_defaults(bcsp);
 	bcsp->pskeys_from_dt = false;
 
-	np = of_find_compatible_node(NULL, NULL, "brcm,bcm4329-bt");
+	/* Try palm-specific compatible first, then generic */
+	np = of_find_compatible_node(NULL, NULL, "palm,bcm4329-bcsp");
+	if (!np)
+		np = of_find_compatible_node(NULL, NULL, "brcm,bcm4329-bt");
 	if (!np) {
 		BT_INFO("BCSP: No DT node found, using Palm defaults");
 		return;
