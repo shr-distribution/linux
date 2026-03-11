@@ -495,10 +495,11 @@ test_pix_mode() {
         echo ''
 
         # Setup media pipeline: CSID1 -> VFE PIX link
+        # CSID outputs UYVY8_1X16 format (16-bit UYVY on single interface)
         echo 'Setting up media pipeline...'
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
         echo 'Pipeline configured'
 
         echo ''
