@@ -1064,31 +1064,44 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_1);
 
 	/*
-	 * Step 3: Configure CAMIF for raw passthrough mode
-	 * For raw output (CAMIF -> AXI bus), we set:
-	 *   - camif2BusEnable = TRUE (bit 10) - route data directly to AXI
-	 *   - syncMode = APS (bits 4:3 = 0) - Active Pixel Sync
-	 *
-	 * APS mode is required for MIPI CSI-2 input because:
-	 *   - EFS mode expects embedded sync codes in pixel data stream
-	 *   - MIPI CSI-2 uses protocol-level short packets (FS/FE/LS/LE)
-	 *   - CSID strips MIPI protocol layer, leaving just pixel data
-	 *   - APS mode detects frames from pixel timing (line gaps)
-	 *
-	 * Note: camif2vfeEnable (bit 8) routes to VFE processing pipeline,
-	 * but for raw passthrough we only need camif2busEnable.
+	 * Step 2b: Enable write masters via VFE_BUS_CMD (0x38)
+	 * webOS writes 0x7FFF here to "reload all write masters (frame & line)"
+	 * This must be done BEFORE camif2busEnable will work in CAMIF_CFG.
 	 */
+#define VFE31_BUS_CMD			0x038
+#define VFE31_BUS_CMD_RELOAD_WM		0x7FFF
+	dev_info(vfe->camss->dev,
+		 "VFE: BUS_CMD writing 0x%04x (reload write masters)\n",
+		 VFE31_BUS_CMD_RELOAD_WM);
+	writel_relaxed(VFE31_BUS_CMD_RELOAD_WM, vfe->base + VFE31_BUS_CMD);
+	wmb();
+
 	/*
-	 * Enable both CAMIF data paths:
-	 * - camif2vfeEnable (bit 8): Required even for raw output to enable
-	 *   the data path from CSI decoder to VFE CAMIF block
-	 * - camif2busEnable (bit 10): Routes data to AXI bus for raw output
-	 *
-	 * Note: webOS userspace may set both bits. Testing with just bit 10
-	 * failed (CAMIF_CFG reads back as 0), so try enabling bit 8 as well.
+	 * Step 3: Configure BUS_CFG for raw passthrough (before CAMIF_CFG!)
+	 * webOS writes the AXI config block at 0x38-0xC4 BEFORE CAMIF config.
+	 */
+	val = readl_relaxed(vfe->base + VFE31_BUS_CFG);
+	val &= ~(0x3 << VFE31_BUS_CFG_RAW_WR_PATH_SHFT);
+	val |= (VFE31_BUS_CFG_RAW_WR_ENC_CBCR << VFE31_BUS_CFG_RAW_WR_PATH_SHFT);
+	val |= VFE31_BUS_CFG_ENC_CBCR_WR_EN;
+	writel_relaxed(val, vfe->base + VFE31_BUS_CFG);
+
+	/*
+	 * Step 3b: Configure AXI output mode for raw snapshot.
+	 * Value 0x60 enables CAMIF_TO_AXI_VIA_OUTPUT_2 mode (raw snapshot).
+	 */
+	writel_relaxed(VFE31_AXI_OUT_MODE_RAW_SNAPSHOT,
+		       vfe->base + VFE31_AXI_OUT_MODE_CFG);
+	wmb();
+
+	/*
+	 * Step 4: Configure CAMIF for raw passthrough via AXI bus
+	 * - camif2vfeEnable (bit 8): Required to enable CAMIF data path
+	 * - camif2busEnable (bit 10): Routes CAMIF data directly to AXI bus
+	 * - syncMode = APS (bits 4:3 = 0): Active Pixel Sync for MIPI CSI-2
 	 */
 	val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: enable CAMIF data path */
-	      VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus (raw) */
+	      VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus */
 	      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
 	dev_info(vfe->camss->dev,
 		 "VFE: CAMIF_CFG writing 0x%03x (CAMIF2VFE + CAMIF2BUS + APS)\n", val);
@@ -1097,30 +1110,6 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev,
 		 "VFE: CAMIF_CFG readback = 0x%08x (expected 0x%03x)\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG), val);
-
-	/*
-	 * Note: VFE31 CAMIF to bus routing is controlled by AXI output mode
-	 * at 0x40, NOT by a separate VFE_CFG register. The 0x01C offset is
-	 * actually VFE_IRQ_MASK_0! Do NOT write to 0x01C here.
-	 */
-
-	/* Step 4: Configure BUS_CFG for raw passthrough */
-	val = readl_relaxed(vfe->base + VFE31_BUS_CFG);
-	val &= ~(0x3 << VFE31_BUS_CFG_RAW_WR_PATH_SHFT);
-	val |= (VFE31_BUS_CFG_RAW_WR_ENC_CBCR << VFE31_BUS_CFG_RAW_WR_PATH_SHFT);
-	val |= VFE31_BUS_CFG_ENC_CBCR_WR_EN;
-	writel_relaxed(val, vfe->base + VFE31_BUS_CFG);
-
-	/*
-	 * Step 5b: Configure AXI output mode for raw snapshot.
-	 * This register at 0x40 controls which output paths are enabled.
-	 * Value 0x60 enables CAMIF_TO_AXI_VIA_OUTPUT_2 mode (raw snapshot
-	 * with WM0 only) - matches the webOS kernel configuration.
-	 */
-	writel_relaxed(VFE31_AXI_OUT_MODE_RAW_SNAPSHOT,
-		       vfe->base + VFE31_AXI_OUT_MODE_CFG);
-
-	wmb();
 
 	/*
 	 * Step 5c: Enable IRQs - CRITICAL!
