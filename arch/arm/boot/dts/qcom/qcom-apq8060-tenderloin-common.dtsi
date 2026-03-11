@@ -2329,7 +2329,7 @@
 		 * uses H4 protocol, but this chip requires BCSP.
 		 */
 		compatible = "palm,bcm4329-bcsp";
-		status = "okay";
+		status = "disabled";  /* Disable serdev - use hciattach instead */
 
 		/*
 		 * Bluetooth Device Address (BD_ADDR)
