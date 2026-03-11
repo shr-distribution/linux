@@ -175,7 +175,11 @@
  * - Bit 2: Clear CAMIF_STATUS register
  * Writing both together ensures clean start.
  */
-#define VFE_0_CAMIF_CMD_START			0x5
+/*
+ * CAMIF_CMD_START: webOS header defines 0x5 but actual code writes 1.
+ * Use 1 to match webOS runtime behavior (BIT(0) = enable).
+ */
+#define VFE_0_CAMIF_CMD_START			0x1
 #define VFE_0_CAMIF_CMD_STOP_IMMEDIATELY	0x2
 #define VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY	0x0
 #define VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS	BIT(2)
