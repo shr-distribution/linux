@@ -1876,24 +1876,25 @@ mt9m113_streaming:
 		}
 
 		/*
-		 * Poll until SEQ_CMD returns to 0 (command complete).
-		 * WebOS driver does this with up to 500ms timeout.
+		 * NOTE: webOS does NOT poll for SEQ_CMD completion after RUN!
+		 * It just fires the command and moves on. The MCU processes
+		 * the streaming command in the background while data starts
+		 * flowing. Polling here causes timeout because the MCU may
+		 * need actual pixel data before completing.
+		 *
+		 * Just add a small delay like webOS does, then check state.
 		 */
-		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-		if (ret < 0) {
-			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD timeout waiting for streaming\n");
-			goto error;
-		}
+		msleep(20);
 
-		/* Verify sensor state after streaming command */
+		/* Check sensor state (informational, don't fail on mismatch) */
 		{
 			u64 seq_state;
 			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			dev_info(&sensor->client->dev, "MT9M113: SEQ_STATE=0x%llx (expected 0x03=streaming)\n",
+			dev_info(&sensor->client->dev, "MT9M113: SEQ_STATE=0x%llx (streaming if 0x03)\n",
 				 seq_state);
 		}
 
-		dev_info(&sensor->client->dev, "MT9M113: streaming sequence complete\n");
+		dev_info(&sensor->client->dev, "MT9M113: streaming command issued\n");
 	}
 
 	sensor->streaming = true;
