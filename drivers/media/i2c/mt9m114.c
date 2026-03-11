@@ -3537,11 +3537,60 @@ mt9m113_init_done:
 	/*
 	 * MT9M113 uses a different command mechanism (MCU indirect via
 	 * 0x098C/0x0990) and doesn't support the MT9M114's COMMAND_REGISTER.
-	 * Skip the SET_STATE commands for MT9M113 - the sensor is already
-	 * in the proper state after MCU boot and PLL initialization.
+	 *
+	 * Ensure the sensor is in STANDBY state before returning, so that
+	 * s_stream can properly start streaming from a known state.
 	 */
-	if (sensor->expected_model == MT9M113_MODEL)
+	if (sensor->expected_model == MT9M113_MODEL) {
+		u64 seq_state = 0;
+
+		/* Check current state */
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+		dev_info(dev, "power_on: MT9M113 SEQ_STATE=0x%llx\n", seq_state);
+
+		if (seq_state == 0x3) {
+			/*
+			 * Sensor entered streaming state during init.
+			 * Issue STANDBY command via MCU interface.
+			 */
+			dev_info(dev, "power_on: MT9M113 in streaming, issuing STANDBY\n");
+
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+						    MT9M113_SEQ_CMD_STANDBY);
+			if (ret) {
+				dev_err(dev, "power_on: SEQ_CMD=STANDBY failed: %d\n", ret);
+				goto error_clock;
+			}
+
+			/* Wait for STANDBY to take effect */
+			msleep(50);
+
+			/* Verify state changed */
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+			dev_info(dev, "power_on: MT9M113 after STANDBY, SEQ_STATE=0x%llx\n",
+				 seq_state);
+
+			if (seq_state == 0x3) {
+				/*
+				 * STANDBY didn't work - try hardware standby.
+				 * Per MT9M113 datasheet, 0x0018[0] = standby_i2c
+				 */
+				dev_warn(dev, "power_on: STANDBY failed, trying hardware standby\n");
+				cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL,
+					  0x0029, NULL);  /* Set standby_i2c bit */
+				msleep(50);
+				cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL,
+					  0x0028, NULL);  /* Clear standby_i2c bit */
+				msleep(50);
+
+				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+				dev_info(dev, "power_on: after HW standby, SEQ_STATE=0x%llx\n",
+					 seq_state);
+			}
+		}
+
 		return 0;
+	}
 
 	if (sensor->bus_cfg.bus_type == V4L2_MBUS_PARALLEL) {
 		/*
