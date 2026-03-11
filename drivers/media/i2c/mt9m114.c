@@ -608,10 +608,11 @@ static const struct cci_reg_sequence mt9m114_init[] = {
 	 * which is written during start_streaming. The 0x3C40 register does NOT
 	 * exist on MT9M113 (it's MT9M114-specific), so we don't write it here.
 	 *
-	 * RESET_REGISTER: Use 0x120C for streaming (from webOS/Samsung drivers).
-	 * Both MIPI and parallel modes use this value for streaming enable.
+	 * IMPORTANT: RESET_REGISTER (0x301A) = 0x120C is NOT written here!
+	 * Writing it during init causes the sensor to enter streaming state
+	 * before s_stream is called. Per webOS driver, RESET_REGISTER is only
+	 * written in mt9m113_set_sensor_mode() during actual streaming start.
 	 */
-	{ MT9M114_RESET_REGISTER, MT9M113_RESET_REG_STREAMING },
 
 	/* Sensor optimization */
 	{ CCI_REG16(0x316a), 0x8270 },
@@ -1823,12 +1824,58 @@ mt9m113_streaming:
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
 		/*
-		 * Check current sequencer state. If we're coming from standby,
-		 * wait for the sequencer to be ready before starting.
+		 * Check current sequencer state. If already streaming (0x3),
+		 * we need to issue STANDBY first and wait for it to take effect.
+		 * Otherwise SEQ_CMD=RUN will be ignored and no data will flow.
 		 */
 		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
 		dev_info(&sensor->client->dev, "MT9M113: pre-stream SEQ_STATE=0x%llx\n",
 			 seq_state);
+
+		/*
+		 * If sensor is already in streaming state (0x3), it means the
+		 * previous stop_streaming didn't work properly or the sensor
+		 * got stuck. We need to force it to standby before restarting.
+		 */
+		if (seq_state == 0x3) {
+			int standby_attempts = 0;
+			const int max_attempts = 3;
+
+			dev_warn(&sensor->client->dev,
+				 "MT9M113: sensor stuck in streaming state, forcing STANDBY\n");
+
+			while (seq_state == 0x3 && standby_attempts < max_attempts) {
+				standby_attempts++;
+
+				/* Issue STANDBY command */
+				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+							   MT9M113_SEQ_CMD_STANDBY);
+				if (ret) {
+					dev_err(&sensor->client->dev,
+						"MT9M113: STANDBY failed: %d\n", ret);
+					goto error;
+				}
+
+				/* Wait for state transition */
+				msleep(50);
+
+				/* Check if we left streaming state */
+				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+				dev_info(&sensor->client->dev,
+					 "MT9M113: after STANDBY attempt %d, SEQ_STATE=0x%llx\n",
+					 standby_attempts, seq_state);
+			}
+
+			if (seq_state == 0x3) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: failed to exit streaming state after %d attempts\n",
+					max_attempts);
+				/* Continue anyway - maybe the sensor just needs re-init */
+			}
+
+			/* Give extra time after state transition */
+			msleep(20);
+		}
 
 		/*
 		 * Enable MIPI output interface.
@@ -3324,15 +3371,14 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 				cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
 				dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (expected 0x0080)\n", readback);
 
-				/* RESET_REGISTER for streaming (0x120C per webOS/Samsung) */
-				cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-					  MT9M113_RESET_REG_STREAMING, &ret);
-				if (ret < 0) {
-					dev_err(dev, "power_on: RESET_REGISTER failed: %d\n", ret);
-					goto error_clock;
-				}
-				cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
-				dev_info(dev, "power_on: RESET_REGISTER=0x%llx (expected 0x120C)\n", readback);
+				/*
+				 * NOTE: RESET_REGISTER (0x301A) is NOT written here!
+				 * Per webOS driver analysis, RESET_REGISTER=0x120C is only
+				 * written in mt9m113_set_sensor_mode() during streaming start.
+				 * Writing it here causes the sensor to enter streaming state
+				 * (SEQ_STATE=0x3) before s_stream is called, which breaks
+				 * subsequent streaming attempts.
+				 */
 			}
 		}
 	} else {
