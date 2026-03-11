@@ -945,6 +945,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 vfe->camif_pending_wm, vfe->camif_pending_line_id);
 
 	/*
+	 * Debug: Dump pre-CAMIF VFE state
+	 * These register reads help verify VFE power/clock state.
+	 */
+	dev_info(vfe->camss->dev,
+		 "VFE: PRE-CONFIG state: HW_VERSION=0x%08x CGC=0x%08x\n",
+		 readl_relaxed(vfe->base + 0x000),  /* VFE_HW_VERSION */
+		 readl_relaxed(vfe->base + 0x00C)); /* VFE_CGC_OVERRIDE */
+
+	/*
 	 * Step 0: Set VFE default register values (from webOS vfe31_set_default_reg_values)
 	 * These must be set before any other VFE configuration.
 	 */
@@ -1069,11 +1078,25 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * Note: camif2vfeEnable (bit 8) routes to VFE processing pipeline,
 	 * but for raw passthrough we only need camif2busEnable.
 	 */
-	val = VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus (raw) */
+	/*
+	 * Enable both CAMIF data paths:
+	 * - camif2vfeEnable (bit 8): Required even for raw output to enable
+	 *   the data path from CSI decoder to VFE CAMIF block
+	 * - camif2busEnable (bit 10): Routes data to AXI bus for raw output
+	 *
+	 * Note: webOS userspace may set both bits. Testing with just bit 10
+	 * failed (CAMIF_CFG reads back as 0), so try enabling bit 8 as well.
+	 */
+	val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: enable CAMIF data path */
+	      VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus (raw) */
 	      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
 	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF_CFG=0x%03x (CAMIF2BUS + APS)\n", val);
+		 "VFE: CAMIF_CFG writing 0x%03x (CAMIF2VFE + CAMIF2BUS + APS)\n", val);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CFG);
+	wmb();
+	dev_info(vfe->camss->dev,
+		 "VFE: CAMIF_CFG readback = 0x%08x (expected 0x%03x)\n",
+		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG), val);
 
 	/*
 	 * Note: VFE31 CAMIF to bus routing is controlled by AXI output mode
