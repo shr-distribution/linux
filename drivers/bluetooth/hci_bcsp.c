@@ -557,12 +557,14 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 
 	/*
 	 * CRC handling for BCSP packets:
-	 * - Link Establishment (channel 1): NO CRC - hciattach sends LE packets
-	 *   without CRC. The chip may send LE packets with CRC, but expects
-	 *   to receive them without CRC (asymmetric behavior).
-	 * - All other channels: Use CRC if enabled (default true via txcrc)
+	 * The BCM4329 chip sends Link Establishment packets WITH CRC (header
+	 * byte 0x40), so we must also send LE packets with CRC.
+	 *
+	 * Force CRC for LE channel (1) regardless of use_crc state, since
+	 * the chip expects CRC on LE packets. For other channels, use the
+	 * configured use_crc setting.
 	 */
-	bool pkt_crc = bcsp->use_crc && chan != 1;
+	bool pkt_crc = (chan == 1) ? true : bcsp->use_crc;
 
 	if (pkt_crc)
 		hdr[0] |= 0x40;
@@ -1200,7 +1202,16 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 	struct bcsp_struct *bcsp = hu->priv;
 	const unsigned char *ptr;
 
-	if (!test_bit(HCI_UART_REGISTERED, &hu->flags))
+	/*
+	 * Guard against race condition during serdev initialization:
+	 * After PROTO_INIT is set but before bcsp_open() completes,
+	 * packets may arrive but hu->priv hasn't been set yet.
+	 */
+	if (!bcsp)
+		return 0;
+
+	if (!test_bit(HCI_UART_REGISTERED, &hu->flags) &&
+	    !test_bit(HCI_UART_PROTO_INIT, &hu->flags))
 		return -EUNATCH;
 
 	BT_DBG("hu %p count %d rx_state %d rx_count %ld",
