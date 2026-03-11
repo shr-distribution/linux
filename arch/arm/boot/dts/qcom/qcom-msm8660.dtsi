@@ -490,6 +490,14 @@
 			clocks = <&mmcc SMMU_AHB_CLK>,
 				 <&mmcc VFE_AXI_CLK>;
 			clock-names = "smmu_pclk", "iommu_clk";
+			/*
+			 * VFE_AXI_CLK requires VFE_GDSC to be enabled for the
+			 * VFE hardware block to properly respond to AXI
+			 * transactions. Without this, enabling VFE_AXI_CLK
+			 * while VFE is powered off causes MMSS fabric issues
+			 * that affect MDP display output.
+			 */
+			power-domains = <&mmcc VFE_GDSC>;
 			#iommu-cells = <1>;
 			qcom,ncb = <2>;
 			status = "disabled";

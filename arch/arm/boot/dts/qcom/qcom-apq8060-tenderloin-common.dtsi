@@ -3324,7 +3324,7 @@
 };
 
 /*
- * Enable 11 of 12 MSM8660 IOMMU units. The def_domain_type=IDENTITY fix
+ * Enable 10 of 12 MSM8660 IOMMU units. The def_domain_type=IDENTITY fix
  * in msm_iommu.c ensures the IOMMU framework uses identity (passthrough)
  * during bus probe, preventing DMA paging domain attach that would
  * trigger IOMMU hardware reset while bootloader DMA is still active.
@@ -3334,6 +3334,10 @@
  *      the system IOMMU. Enabling gpu_iommu causes display corruption
  *      (blue vertical lines) due to MMSS hardware interaction, with no
  *      benefit since the A2xx driver ignores the system IOMMU entirely.
+ * VFE IOMMU (vfe_iommu): Deliberately left disabled. Similar to gpu_iommu,
+ *      enabling vfe_iommu causes display corruption (Tux shows briefly then
+ *      screen goes blank with backlight on) due to MMSS hardware interaction.
+ *      The camss driver doesn't use the system IOMMU on MSM8660.
  * MDP: Both port0 and port1 must be enabled together since the MDP
  *      device references both. The MDP4 DRM driver creates its own
  *      paging domain after safely disabling display outputs.
@@ -3354,9 +3358,7 @@
 	status = "okay";
 };
 
-&vfe_iommu {
-	status = "okay";
-};
+/* vfe_iommu deliberately left disabled - see comment above */
 
 &vcodec_a_iommu {
 	status = "okay";
