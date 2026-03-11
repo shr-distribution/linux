@@ -3540,12 +3540,17 @@ int camss_enable_clocks(int nclocks, struct camss_clock *clock,
 	int ret;
 	int i;
 
+	dev_info(dev, "camss_enable_clocks: enabling %d clocks\n", nclocks);
 	for (i = 0; i < nclocks; i++) {
+		dev_info(dev, "  enabling clock[%d] '%s'\n", i, clock[i].name);
 		ret = clk_prepare_enable(clock[i].clk);
 		if (ret) {
-			dev_err(dev, "clock enable failed: %d\n", ret);
+			dev_err(dev, "clock enable failed for '%s': %d\n",
+				clock[i].name, ret);
 			goto error;
 		}
+		dev_info(dev, "  clock '%s' enabled, rate=%lu\n",
+			 clock[i].name, clk_get_rate(clock[i].clk));
 	}
 
 	return 0;
@@ -3566,8 +3571,11 @@ void camss_disable_clocks(int nclocks, struct camss_clock *clock)
 {
 	int i;
 
-	for (i = nclocks - 1; i >= 0; i--)
+	pr_info("camss_disable_clocks: disabling %d clocks\n", nclocks);
+	for (i = nclocks - 1; i >= 0; i--) {
+		pr_info("  disabling clock[%d] '%s'\n", i, clock[i].name);
 		clk_disable_unprepare(clock[i].clk);
+	}
 }
 
 /*
