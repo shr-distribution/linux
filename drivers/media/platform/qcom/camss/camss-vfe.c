@@ -802,7 +802,7 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_CAMIF_CFG_SYNC_MODE_ELS	(2 << 3)	/* Embedded Line Sync */
 #define VFE31_CAMIF_CFG_CAMIF2VFE_EN	BIT(8)	/* CAMIF -> VFE pipeline */
 #define VFE31_CAMIF_CFG_CAMIF2BUS_EN	BIT(10)	/* CAMIF -> AXI bus (raw) */
-#define VFE31_CAMIF_CFG_MIPI_EN		0x3	/* bits 0-1: MIPI enable */
+/* Note: Bits 0-1 are NOT MIPI enable. Bit 0 is reserved, bit 1 is VSyncEdge. */
 /*
  * CAMIF register block (0x1E4-0x203):
  * 0x1E4: CAMIF_CFG, 0x1E8: EFS_CFG, 0x1EC: FRAME_CFG, etc.
@@ -1124,12 +1124,22 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * Note: CAMIF2BUS_EN (bit 10) doesn't work for MIPI CSI input on VFE31.
 	 */
 	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
-		/* PIX mode: Route through VFE ISP */
+		/*
+		 * PIX mode: Route through VFE ISP
+		 *
+		 * Use APS (Active Pixel Sync) mode, NOT EFS (Embedded Frame Sync).
+		 * EFS mode expects 0x00/0x01 sync codes embedded in pixel data,
+		 * but MIPI CSI-2 uses protocol-level short packets (FS/FE) for
+		 * frame boundaries. These are handled by the CSI decoder (CSIPHY)
+		 * and stripped before pixel data reaches VFE.
+		 *
+		 * In APS mode, CAMIF uses the data-valid signal from CSI decoder
+		 * output rather than looking for embedded sync codes.
+		 */
 		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: enable CAMIF to VFE */
-		      VFE31_CAMIF_CFG_MIPI_EN |		/* bits 0-1: MIPI enable */
-		      VFE31_CAMIF_CFG_SYNC_MODE_EFS;	/* bits 4:3: EFS sync mode */
+		      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
 		dev_info(vfe->camss->dev,
-			 "VFE: CAMIF_CFG (PIX mode) writing 0x%03x (CAMIF2VFE + MIPI + EFS)\n", val);
+			 "VFE: CAMIF_CFG (PIX mode) writing 0x%03x (CAMIF2VFE + APS)\n", val);
 	} else {
 		/* RDI mode: Raw passthrough to memory */
 		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: still need this path */
