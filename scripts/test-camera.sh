@@ -249,12 +249,20 @@ if [ -z \"\$CSIPHY\" ]; then
 fi
 echo \"CSIPHY: \$CSIPHY\"
 
-CSID=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'msm_csid[0-9]' | head -1)
+# Try to find CSID1 (matching CSIPHY1 for front camera)
+CSID=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'msm_csid[0-9]' | grep '1' | head -1)
+if [ -z \"\$CSID\" ]; then
+    CSID=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'msm_csid[0-9]' | head -1)
+fi
 echo \"CSID: \$CSID\"
 
 # VFE has multiple pads - we need the RDI or PIX output
 VFE=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'msm_vfe[0-9]' | head -1)
 echo \"VFE: \$VFE\"
+
+# VFE PIX is a separate entity for pixel (CAMIF) path
+VFE_PIX=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'msm_vfe[0-9]_pix' | head -1)
+echo \"VFE_PIX: \$VFE_PIX\"
 
 if [ -z \"\$SENSOR\" ] || [ -z \"\$CSIPHY\" ]; then
     echo 'ERROR: Could not find required entities'
@@ -264,26 +272,31 @@ if [ -z \"\$SENSOR\" ] || [ -z \"\$CSIPHY\" ]; then
 fi
 
 # Set format on sensor (source pad 0)
-# MT9M114 native resolution is 1288x968 UYVY (with blanking pixels)
+# MT9M114 native resolution is 1288x968 UYVY
+# For MSM8660 CAMIF PIX mode, use 2X8 format (8-bit data on 16-bit bus)
 echo ''
-echo 'Setting sensor format (1288x968 UYVY8_1X16)...'
-media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || \
+echo 'Setting sensor format (1288x968 UYVY8_2X8)...'
 media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || \
+media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || \
 echo 'Sensor format set may have failed'
 
-# Set CSIPHY format
+# Set CSIPHY format (sink and source)
 echo 'Setting CSIPHY format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
-media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':1[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':1[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
 
-# Set CSID format
+# Set CSID format (sink=0, PIX source=4)
 echo 'Setting CSID format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$CSID':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
-media-ctl -d \$MEDIA_DEV -V \"'\$CSID':1[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSID':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSID':4[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
 
-# Set VFE format
+# Set VFE PIX format (without blanking pixels)
 echo 'Setting VFE format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$VFE':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
+if [ -n \"\$VFE_PIX\" ]; then
+    media-ctl -d \$MEDIA_DEV -V \"'\$VFE_PIX':0[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
+else
+    media-ctl -d \$MEDIA_DEV -V \"'\$VFE':0[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
+fi
 
 # Enable links: sensor -> csiphy -> csid -> vfe
 echo ''
@@ -291,10 +304,16 @@ echo 'Enabling links...'
 media-ctl -d \$MEDIA_DEV -l \"'\$SENSOR':0->'\$CSIPHY':0[1]\" 2>&1 || echo 'sensor->csiphy link failed'
 media-ctl -d \$MEDIA_DEV -l \"'\$CSIPHY':1->'\$CSID':0[1]\" 2>&1 || echo 'csiphy->csid link failed'
 
-# For VFE, need to find the right pads
-# RDI path: csid -> vfe_rdi
-# PIX path: csid -> vfe_pix
-media-ctl -d \$MEDIA_DEV -l \"'\$CSID':1->'\$VFE':0[1]\" 2>&1 || echo 'csid->vfe link failed'
+# For VFE, enable CSID->VFE PIX link
+# MSM8660 has no ISPIF, CSID connects directly to VFE
+# CSID pad 4 = PIX line (MSM_CSID_PAD_FIRST_SRC + VFE_LINE_PIX = 1 + 3 = 4)
+# VFE_PIX sink pad = 0
+if [ -n \"\$VFE_PIX\" ]; then
+    media-ctl -d \$MEDIA_DEV -l \"'\$CSID':4->'\$VFE_PIX':0[1]\" 2>&1 || echo 'csid->vfe_pix link failed'
+else
+    # Fallback: try generic VFE entity with pad 4->0
+    media-ctl -d \$MEDIA_DEV -l \"'\$CSID':4->'\$VFE':0[1]\" 2>&1 || echo 'csid->vfe link failed'
+fi
 
 echo ''
 echo '=== Final Pipeline Configuration ==='
