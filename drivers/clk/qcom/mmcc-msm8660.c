@@ -394,6 +394,8 @@ static struct clk_branch csi1_phy_clk = {
 static struct clk_branch csi_pix_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 3,
+	/* Like csi_phy clocks, hardware doesn't report halt status properly */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0058,
 		.enable_mask = BIT(26),
@@ -412,6 +414,8 @@ static struct clk_branch csi_pix_clk = {
 static struct clk_branch csi_rdi_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 2,
+	/* Like csi_phy clocks, hardware doesn't report halt status properly */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0058,
 		.enable_mask = BIT(13),
