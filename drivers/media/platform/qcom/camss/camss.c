@@ -4824,13 +4824,20 @@ static int __maybe_unused camss_runtime_resume(struct device *dev)
 	int i;
 	int ret;
 
-	dev_info(dev, "camss_runtime_resume: setting interconnect bandwidth\n");
+	/*
+	 * Only vote for interconnect bandwidth when actively streaming.
+	 * Voting during probe (when ref_count is 0) can disrupt other
+	 * devices sharing the same fabric, particularly MDP display output
+	 * on MSM8660 where VFE and MDP share the MMSS fabric.
+	 */
+	if (atomic_read(&camss->ref_count) == 0) {
+		dev_dbg(dev, "camss_runtime_resume: skipping ICC vote (not streaming)\n");
+		return 0;
+	}
+
+	dev_dbg(dev, "camss_runtime_resume: setting interconnect bandwidth\n");
 
 	for (i = 0; i < camss->res->icc_path_num; i++) {
-		dev_info(dev, "camss_runtime_resume: icc[%d] %s avg=%u peak=%u\n",
-			 i, icc_res[i].name,
-			 icc_res[i].icc_bw_tbl.avg,
-			 icc_res[i].icc_bw_tbl.peak);
 		ret = icc_set_bw(camss->icc_path[i],
 				 icc_res[i].icc_bw_tbl.avg,
 				 icc_res[i].icc_bw_tbl.peak);
@@ -4840,8 +4847,6 @@ static int __maybe_unused camss_runtime_resume(struct device *dev)
 		}
 	}
 
-	dev_info(dev, "camss_runtime_resume: interconnect configured\n");
-	pr_emerg("camss_runtime_resume: returning 0\n");
 	return 0;
 }
 
