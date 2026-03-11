@@ -771,11 +771,17 @@ int vfe_reset(struct vfe_device *vfe)
 /*
  * VFE31 AXI output mode configuration at 0x40.
  * This register controls which output paths are enabled.
- * Value 0x60 enables raw snapshot mode with WM0 (CAMIF_TO_AXI_VIA_OUTPUT_2).
- * Value 0x200 enables preview mode with WM0 & WM1 (OUTPUT_2).
+ *
+ * From webOS msm_vfe31.c vfe31_config_axi():
+ *   OUTPUT_2 (preview mode):         0x200 - data flows through VFE ISP pipeline
+ *   CAMIF_TO_AXI_VIA_OUTPUT_2 (raw): 0x60  - data bypasses VFE, goes direct to memory
+ *
+ * For PIX mode (with VFE processing), use 0x200.
+ * For RDI mode (raw capture), use 0x60.
  */
 #define VFE31_AXI_OUT_MODE_CFG		0x040
-#define VFE31_AXI_OUT_MODE_RAW_SNAPSHOT	0x60
+#define VFE31_AXI_OUT_MODE_PREVIEW	0x200	/* OUTPUT_2: preview w/ VFE ISP */
+#define VFE31_AXI_OUT_MODE_RAW_SNAPSHOT	0x60	/* CAMIF_TO_AXI: raw bypass */
 
 #define VFE31_CAMIF_CFG			0x1E4
 /*
@@ -1094,11 +1100,27 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(val, vfe->base + VFE31_BUS_CFG);
 
 	/*
-	 * Step 3b: Configure AXI output mode for raw snapshot.
-	 * Value 0x60 enables CAMIF_TO_AXI_VIA_OUTPUT_2 mode (raw snapshot).
+	 * Step 3b: Configure AXI output mode based on PIX vs RDI mode.
+	 *
+	 * CRITICAL: This is where webOS sets the data path:
+	 *   PIX mode (preview):   0x200 (OUTPUT_2) - data flows through VFE ISP
+	 *   RDI mode (raw):       0x60  (CAMIF_TO_AXI) - data bypasses VFE ISP
+	 *
+	 * Using wrong mode here is why CAMIF doesn't receive frames!
 	 */
-	writel_relaxed(VFE31_AXI_OUT_MODE_RAW_SNAPSHOT,
-		       vfe->base + VFE31_AXI_OUT_MODE_CFG);
+	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
+		dev_info(vfe->camss->dev,
+			 "VFE: AXI_OUT_MODE (PIX) = 0x%03x (OUTPUT_2/preview)\n",
+			 VFE31_AXI_OUT_MODE_PREVIEW);
+		writel_relaxed(VFE31_AXI_OUT_MODE_PREVIEW,
+			       vfe->base + VFE31_AXI_OUT_MODE_CFG);
+	} else {
+		dev_info(vfe->camss->dev,
+			 "VFE: AXI_OUT_MODE (RDI) = 0x%03x (CAMIF_TO_AXI/raw)\n",
+			 VFE31_AXI_OUT_MODE_RAW_SNAPSHOT);
+		writel_relaxed(VFE31_AXI_OUT_MODE_RAW_SNAPSHOT,
+			       vfe->base + VFE31_AXI_OUT_MODE_CFG);
+	}
 	wmb();
 
 	/*
@@ -1114,34 +1136,30 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *
 	 * For PIX mode (ISP processing):
 	 *   - camif2vfeEnable (bit 8): Route to VFE ISP pipeline
-	 *   - MIPI enable bits (0-1): Enable MIPI data input
-	 *   - syncMode = EFS (bits 4:3 = 1): Embedded Frame Sync for MIPI CSI-2
+	 *   - syncMode = APS (bits 4:3 = 0): Active Pixel Sync for MIPI CSI-2
 	 *
 	 * For RDI mode (raw capture):
 	 *   - camif2busEnable (bit 10): Route raw data directly to AXI bus
 	 *   - syncMode = APS (bits 4:3 = 0): Active Pixel Sync
 	 *
-	 * Note: CAMIF2BUS_EN (bit 10) doesn't work for MIPI CSI input on VFE31.
+	 * Note: APS mode is correct for MIPI CSI-2 input. EFS mode expects
+	 * embedded sync codes in pixel data, but MIPI uses protocol-level
+	 * short packets (FS/FE) which are stripped by CSIPHY.
 	 */
 	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
 		/*
-		 * PIX mode: Route through VFE ISP
-		 *
-		 * Use APS (Active Pixel Sync) mode, NOT EFS (Embedded Frame Sync).
-		 * EFS mode expects 0x00/0x01 sync codes embedded in pixel data,
-		 * but MIPI CSI-2 uses protocol-level short packets (FS/FE) for
-		 * frame boundaries. These are handled by the CSI decoder (CSIPHY)
-		 * and stripped before pixel data reaches VFE.
-		 *
-		 * In APS mode, CAMIF uses the data-valid signal from CSI decoder
-		 * output rather than looking for embedded sync codes.
+		 * PIX mode: Route through VFE ISP pipeline.
+		 * Data path: CSIPHY -> VFE CAMIF -> VFE ISP -> WM -> memory
 		 */
 		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: enable CAMIF to VFE */
 		      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
 		dev_info(vfe->camss->dev,
 			 "VFE: CAMIF_CFG (PIX mode) writing 0x%03x (CAMIF2VFE + APS)\n", val);
 	} else {
-		/* RDI mode: Raw passthrough to memory */
+		/*
+		 * RDI mode: Raw bypass to memory.
+		 * Data path: CSIPHY -> VFE CAMIF -> AXI bus -> memory (bypass ISP)
+		 */
 		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: still need this path */
 		      VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus */
 		      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
