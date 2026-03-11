@@ -830,7 +830,13 @@ int vfe_reset(struct vfe_device *vfe)
  *
  * Reference: webOS msm_vfe31.c line 1002
  */
-#define VFE31_CAMIF_CMD_START		BIT(0)
+/*
+ * CAMIF_CMD_START = 0x5 per webOS (bits 0 + 2):
+ * - Bit 0: Enable image data capture at frame boundary
+ * - Bit 2: Clear CAMIF_STATUS register
+ * Writing both together ensures clean start. Just BIT(0) doesn't work!
+ */
+#define VFE31_CAMIF_CMD_START		0x5
 #define VFE31_REG_UPDATE_CMD		0x260
 
 /*
