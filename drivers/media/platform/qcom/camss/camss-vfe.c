@@ -1095,7 +1095,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * Step 4: Configure CAMIF for raw passthrough via AXI bus
+	 * Step 4a: Clear CAMIF status before configuring
+	 * This ensures CAMIF is in a clean state to accept new configuration.
+	 */
+	writel_relaxed(VFE31_CAMIF_CMD_CLEAR_STATUS, vfe->base + VFE31_CAMIF_CMD);
+	wmb();
+	udelay(10);
+
+	/*
+	 * Step 4b: Configure CAMIF for raw passthrough via AXI bus
 	 * - camif2vfeEnable (bit 8): Required to enable CAMIF data path
 	 * - camif2busEnable (bit 10): Routes CAMIF data directly to AXI bus
 	 * - syncMode = APS (bits 4:3 = 0): Active Pixel Sync for MIPI CSI-2
