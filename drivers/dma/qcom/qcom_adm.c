@@ -662,8 +662,10 @@ static int adm_terminate_all(struct dma_chan *chan)
 	struct adm_chan *achan = to_adm_chan(chan);
 	struct adm_device *adev = achan->adev;
 	struct virt_dma_desc *vd, *_vd;
+	struct adm_async_desc *async_desc;
 	unsigned long flags;
 	LIST_HEAD(head);
+	LIST_HEAD(dynamic_head);
 
 	spin_lock_irqsave(&achan->vc.lock, flags);
 	vchan_get_all_descriptors(&achan->vc, &head);
@@ -676,21 +678,39 @@ static int adm_terminate_all(struct dma_chan *chan)
 		       adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
 
 	/*
-	 * Free descriptors while holding the lock to prevent race conditions.
-	 * Without this, a descriptor could be submitted between lock release
-	 * and vchan_dma_desc_free_list, causing list corruption (LIST_POISON
+	 * Free pooled descriptors while holding the lock to prevent race
+	 * conditions. Without this, a descriptor could be submitted between
+	 * lock release and freeing, causing list corruption (LIST_POISON
 	 * values in node pointers) and kernel crashes.
 	 *
-	 * We inline vchan_dma_desc_free_list logic here and clear REUSE flag
-	 * to ensure desc_free is called directly without re-taking the lock.
+	 * Dynamically allocated descriptors must be freed outside the lock
+	 * because dma_free_coherent() can sleep (it may call vunmap() on
+	 * non-coherent platforms). The DMA API explicitly warns against
+	 * calling it with IRQs disabled.
 	 */
 	list_for_each_entry_safe(vd, _vd, &head, node) {
 		list_del(&vd->node);
 		dmaengine_desc_clear_reuse(&vd->tx);
-		achan->vc.desc_free(vd);
+		async_desc = container_of(vd, struct adm_async_desc, vd);
+		if (async_desc->pool_index >= 0) {
+			/* Pooled descriptor - safe to free under spinlock */
+			adm_desc_put(async_desc);
+		} else {
+			/* Dynamic descriptor - defer until lock is released */
+			list_add_tail(&vd->node, &dynamic_head);
+		}
 	}
 
 	spin_unlock_irqrestore(&achan->vc.lock, flags);
+
+	/* Free dynamically allocated descriptors outside the lock */
+	list_for_each_entry_safe(vd, _vd, &dynamic_head, node) {
+		list_del(&vd->node);
+		async_desc = container_of(vd, struct adm_async_desc, vd);
+		dma_free_coherent(async_desc->adev->dev, async_desc->dma_len,
+				  async_desc->cpl, async_desc->dma_addr);
+		kfree(async_desc);
+	}
 
 	return 0;
 }
