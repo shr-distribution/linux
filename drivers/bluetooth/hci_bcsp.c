@@ -558,13 +558,12 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	/*
 	 * CRC handling for BCSP packets:
 	 * The BCM4329 chip sends Link Establishment packets WITH CRC (header
-	 * byte 0x40), so we must also send LE packets with CRC.
+	 * byte 0x40), but per BCSP spec, LE packets should be sent WITHOUT CRC.
+	 * This asymmetric behavior is documented in the BCSP specification.
 	 *
-	 * Force CRC for LE channel (1) regardless of use_crc state, since
-	 * the chip expects CRC on LE packets. For other channels, use the
-	 * configured use_crc setting.
+	 * Disable CRC for LE channel (1), enable for all other channels.
 	 */
-	bool pkt_crc = (chan == 1) ? true : bcsp->use_crc;
+	bool pkt_crc = (chan != 1) && bcsp->use_crc;
 
 	if (pkt_crc)
 		hdr[0] |= 0x40;
@@ -2351,14 +2350,13 @@ static int bcsp_open(struct hci_uart *hu)
 	skb_queue_head_init(&bcsp->unrel);
 
 	/*
-	 * Disable hardware flow control for initial link establishment.
-	 * The BCM4329 may not have RTS/CTS properly configured until
-	 * after BCSP link is established. WebOS PmBtStack may have
-	 * configured flow control only after link was up.
+	 * Enable hardware flow control. The BCM4329 chip may expect
+	 * RTS/CTS to be active for proper communication. WebOS used
+	 * UART_WITH_FLOW_CONTROL for GSBI6.
 	 */
 	if (hu->serdev) {
-		serdev_device_set_flow_control(hu->serdev, false);
-		BT_INFO("BCSP: Disabled hardware flow control for link establishment");
+		serdev_device_set_flow_control(hu->serdev, true);
+		BT_INFO("BCSP: Enabled hardware flow control");
 	}
 
 	timer_setup(&bcsp->tbcsp, bcsp_timed_event, 0);
