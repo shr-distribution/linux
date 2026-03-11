@@ -169,7 +169,13 @@
  *
  * Reference: webOS msm_vfe31.c line 1002
  */
-#define VFE_0_CAMIF_CMD_START			0x1
+/*
+ * CAMIF_CMD_START = 0x5 per webOS (bits 0 + 2):
+ * - Bit 0: Enable image data capture at frame boundary
+ * - Bit 2: Clear CAMIF_STATUS register
+ * Writing both together ensures clean start.
+ */
+#define VFE_0_CAMIF_CMD_START			0x5
 #define VFE_0_CAMIF_CMD_STOP_IMMEDIATELY	0x2
 #define VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY	0x0
 #define VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS	BIT(2)
@@ -1324,6 +1330,32 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	/* Read back immediately */
 	dev_info(vfe->camss->dev, "VFE31: CAMIF_CFG readback=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG));
+
+	/*
+	 * Configure EFS_CFG register with MIPI CSI-2 short packet codes.
+	 * When using EFS (Embedded Frame Sync) mode, CAMIF needs to know
+	 * which embedded codes mark frame/line start and end.
+	 *
+	 * MIPI CSI-2 Data Type codes for short packets:
+	 * - Frame Start (FS): 0x00
+	 * - Frame End (FE): 0x01
+	 * - Line Start (LS): 0x02
+	 * - Line End (LE): 0x03
+	 *
+	 * EFS_CFG register format (per vfe_camifcfg structure):
+	 * - bits 0-7: efsEndOfLine = 0x03
+	 * - bits 8-15: efsStartOfLine = 0x02
+	 * - bits 16-23: efsEndOfFrame = 0x01
+	 * - bits 24-31: efsStartOfFrame = 0x00
+	 */
+	val = (0x00 << 24) |  /* efsStartOfFrame: FS = 0x00 */
+	      (0x01 << 16) |  /* efsEndOfFrame: FE = 0x01 */
+	      (0x02 << 8) |   /* efsStartOfLine: LS = 0x02 */
+	      (0x03 << 0);    /* efsEndOfLine: LE = 0x03 */
+	dev_info(vfe->camss->dev, "VFE31: Writing EFS_CFG=0x%08x to offset 0x%03x\n",
+		 val, VFE_0_CAMIF_EFS_CFG);
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	wmb();
 
 	/* Configure pixel pattern in CORE_CFG */
 	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
