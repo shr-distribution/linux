@@ -1306,14 +1306,17 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * Try enabling MIPI (bits 0-1) + camif2vfe (bit 8) for CSI input.
 	 */
 	/*
-	 * Try ELS (Embedded Line Sync) mode instead of APS.
-	 * ELS may work without MIPI frame sync short packets by using
-	 * embedded line markers for frame boundary detection.
+	 * Use EFS (Embedded Frame Sync) mode for MIPI CSI-2.
+	 * EFS uses Frame Start/End short packets (0x00/0x01) for frame sync.
+	 * We enable these via MT9M113 CUSTOM_SHORT_PKT register.
+	 *
+	 * Also try setting camif2bus (bit 10) in addition to camif2vfe (bit 8).
+	 * webOS uses camif2bus for raw capture mode.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (mipi_en=3, camif2vfe=1, ELS sync)\n");
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (mipi_en=3, camif2vfe=1, EFS sync)\n");
 	val = VFE_0_RDI_CFG_x_MIPI_EN_BITS |  /* bits 0-1: MIPI enable */
 	      VFE_0_CAMIF_CFG_CAMIF2VFE_EN |  /* bit 8: camif2vfe */
-	      VFE_0_CAMIF_CFG_SYNC_MODE_ELS;  /* bits 3-4: ELS sync mode */
+	      VFE_0_CAMIF_CFG_SYNC_MODE_EFS;  /* bits 3-4: EFS sync mode */
 	dev_info(vfe->camss->dev, "VFE31: Writing CAMIF_CFG=0x%08x to offset 0x%03x\n",
 		 val, VFE_0_CAMIF_CFG);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
