@@ -802,6 +802,7 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_CAMIF_CFG_SYNC_MODE_ELS	(2 << 3)	/* Embedded Line Sync */
 #define VFE31_CAMIF_CFG_CAMIF2VFE_EN	BIT(8)	/* CAMIF -> VFE pipeline */
 #define VFE31_CAMIF_CFG_CAMIF2BUS_EN	BIT(10)	/* CAMIF -> AXI bus (raw) */
+#define VFE31_CAMIF_CFG_MIPI_EN		0x3	/* bits 0-1: MIPI enable */
 /*
  * CAMIF register block (0x1E4-0x203):
  * 0x1E4: CAMIF_CFG, 0x1E8: EFS_CFG, 0x1EC: FRAME_CFG, etc.
@@ -1103,16 +1104,34 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	udelay(10);
 
 	/*
-	 * Step 4b: Configure CAMIF for raw passthrough via AXI bus
-	 * - camif2vfeEnable (bit 8): Required to enable CAMIF data path
-	 * - camif2busEnable (bit 10): Routes CAMIF data directly to AXI bus
-	 * - syncMode = APS (bits 4:3 = 0): Active Pixel Sync for MIPI CSI-2
+	 * Step 4b: Configure CAMIF based on mode (PIX vs RDI)
+	 *
+	 * For PIX mode (ISP processing):
+	 *   - camif2vfeEnable (bit 8): Route to VFE ISP pipeline
+	 *   - MIPI enable bits (0-1): Enable MIPI data input
+	 *   - syncMode = EFS (bits 4:3 = 1): Embedded Frame Sync for MIPI CSI-2
+	 *
+	 * For RDI mode (raw capture):
+	 *   - camif2busEnable (bit 10): Route raw data directly to AXI bus
+	 *   - syncMode = APS (bits 4:3 = 0): Active Pixel Sync
+	 *
+	 * Note: CAMIF2BUS_EN (bit 10) doesn't work for MIPI CSI input on VFE31.
 	 */
-	val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: enable CAMIF data path */
-	      VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus */
-	      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
-	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF_CFG writing 0x%03x (CAMIF2VFE + CAMIF2BUS + APS)\n", val);
+	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
+		/* PIX mode: Route through VFE ISP */
+		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: enable CAMIF to VFE */
+		      VFE31_CAMIF_CFG_MIPI_EN |		/* bits 0-1: MIPI enable */
+		      VFE31_CAMIF_CFG_SYNC_MODE_EFS;	/* bits 4:3: EFS sync mode */
+		dev_info(vfe->camss->dev,
+			 "VFE: CAMIF_CFG (PIX mode) writing 0x%03x (CAMIF2VFE + MIPI + EFS)\n", val);
+	} else {
+		/* RDI mode: Raw passthrough to memory */
+		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: still need this path */
+		      VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus */
+		      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
+		dev_info(vfe->camss->dev,
+			 "VFE: CAMIF_CFG (RDI mode) writing 0x%03x (CAMIF2VFE + CAMIF2BUS + APS)\n", val);
+	}
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CFG);
 	wmb();
 	dev_info(vfe->camss->dev,
