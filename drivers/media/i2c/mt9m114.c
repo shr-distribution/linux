@@ -1835,46 +1835,45 @@ mt9m113_streaming:
 		/*
 		 * If sensor is already in streaming state (0x3), it means the
 		 * previous stop_streaming didn't work properly or the sensor
-		 * got stuck. We need to force it to standby before restarting.
+		 * got stuck. We need to force a soft reset to recover.
+		 *
+		 * SEQ_CMD=STANDBY doesn't reliably work on MT9M113 when stuck.
+		 * Instead, do a soft reset via RESET_AND_MISC_CONTROL.
 		 */
 		if (seq_state == 0x3) {
-			int standby_attempts = 0;
-			const int max_attempts = 3;
-
 			dev_warn(&sensor->client->dev,
-				 "MT9M113: sensor stuck in streaming state, forcing STANDBY\n");
+				 "MT9M113: sensor stuck in streaming (0x3), doing soft reset\n");
 
-			while (seq_state == 0x3 && standby_attempts < max_attempts) {
-				standby_attempts++;
-
-				/* Issue STANDBY command */
-				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-							   MT9M113_SEQ_CMD_STANDBY);
-				if (ret) {
-					dev_err(&sensor->client->dev,
-						"MT9M113: STANDBY failed: %d\n", ret);
-					goto error;
-				}
-
-				/* Wait for state transition */
-				msleep(50);
-
-				/* Check if we left streaming state */
-				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-				dev_info(&sensor->client->dev,
-					 "MT9M113: after STANDBY attempt %d, SEQ_STATE=0x%llx\n",
-					 standby_attempts, seq_state);
-			}
-
-			if (seq_state == 0x3) {
+			/* Soft reset: write 1 then 0 to RESET_AND_MISC_CONTROL */
+			ret = cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
+					MT9M114_RESET_SOC, NULL);
+			if (ret) {
 				dev_err(&sensor->client->dev,
-					"MT9M113: failed to exit streaming state after %d attempts\n",
-					max_attempts);
-				/* Continue anyway - maybe the sensor just needs re-init */
+					"MT9M113: soft reset (set) failed: %d\n", ret);
+				goto error;
+			}
+			msleep(10);
+
+			ret = cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
+					0, NULL);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: soft reset (clear) failed: %d\n", ret);
+				goto error;
+			}
+			msleep(50);
+
+			/* Wait for MCU to boot */
+			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+			if (ret < 0) {
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: MCU boot poll timeout after reset (continuing)\n");
 			}
 
-			/* Give extra time after state transition */
-			msleep(20);
+			/* Check state after reset */
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+			dev_info(&sensor->client->dev,
+				 "MT9M113: after soft reset, SEQ_STATE=0x%llx\n", seq_state);
 		}
 
 		/*
