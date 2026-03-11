@@ -1305,24 +1305,18 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * Step 4: Configure CAMIF_CFG for raw capture
 	 *
 	 * VFE31 CAMIF_CFG bits:
-	 * - bits 0-1: MIPI enable (VFE_0_RDI_CFG_x_MIPI_EN_BITS = 0x3)
 	 * - bit 8: camif2vfeEnable (routes to VFE processing)
-	 * - bit 10: camif2busEnable (direct to AXI - doesn't stick on write)
+	 * - bits 4:3: syncMode (0=APS, 1=EFS, 2=ELS)
 	 *
-	 * Try enabling MIPI (bits 0-1) + camif2vfe (bit 8) for CSI input.
+	 * Use APS (Active Pixel Sync) mode, NOT EFS (Embedded Frame Sync).
+	 * EFS expects 0x00/0x01 sync codes embedded in pixel data, but
+	 * MIPI CSI-2 uses protocol-level short packets for frame sync.
+	 * These are handled by the CSI decoder and stripped before data
+	 * reaches VFE. In APS mode, CAMIF uses data-valid signal instead.
 	 */
-	/*
-	 * Use EFS (Embedded Frame Sync) mode for MIPI CSI-2.
-	 * EFS uses Frame Start/End short packets (0x00/0x01) for frame sync.
-	 * We enable these via MT9M113 CUSTOM_SHORT_PKT register.
-	 *
-	 * Also try setting camif2bus (bit 10) in addition to camif2vfe (bit 8).
-	 * webOS uses camif2bus for raw capture mode.
-	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (mipi_en=3, camif2vfe=1, EFS sync)\n");
-	val = VFE_0_RDI_CFG_x_MIPI_EN_BITS |  /* bits 0-1: MIPI enable */
-	      VFE_0_CAMIF_CFG_CAMIF2VFE_EN |  /* bit 8: camif2vfe */
-	      VFE_0_CAMIF_CFG_SYNC_MODE_EFS;  /* bits 3-4: EFS sync mode */
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2vfe=1, APS sync)\n");
+	val = VFE_0_CAMIF_CFG_CAMIF2VFE_EN |  /* bit 8: camif2vfe */
+	      VFE_0_CAMIF_CFG_SYNC_MODE_APS;  /* bits 3-4: APS sync mode */
 	dev_info(vfe->camss->dev, "VFE31: Writing CAMIF_CFG=0x%08x to offset 0x%03x\n",
 		 val, VFE_0_CAMIF_CFG);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
@@ -1330,32 +1324,6 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	/* Read back immediately */
 	dev_info(vfe->camss->dev, "VFE31: CAMIF_CFG readback=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG));
-
-	/*
-	 * Configure EFS_CFG register with MIPI CSI-2 short packet codes.
-	 * When using EFS (Embedded Frame Sync) mode, CAMIF needs to know
-	 * which embedded codes mark frame/line start and end.
-	 *
-	 * MIPI CSI-2 Data Type codes for short packets:
-	 * - Frame Start (FS): 0x00
-	 * - Frame End (FE): 0x01
-	 * - Line Start (LS): 0x02
-	 * - Line End (LE): 0x03
-	 *
-	 * EFS_CFG register format (per vfe_camifcfg structure):
-	 * - bits 0-7: efsEndOfLine = 0x03
-	 * - bits 8-15: efsStartOfLine = 0x02
-	 * - bits 16-23: efsEndOfFrame = 0x01
-	 * - bits 24-31: efsStartOfFrame = 0x00
-	 */
-	val = (0x00 << 24) |  /* efsStartOfFrame: FS = 0x00 */
-	      (0x01 << 16) |  /* efsEndOfFrame: FE = 0x01 */
-	      (0x02 << 8) |   /* efsStartOfLine: LS = 0x02 */
-	      (0x03 << 0);    /* efsEndOfLine: LE = 0x03 */
-	dev_info(vfe->camss->dev, "VFE31: Writing EFS_CFG=0x%08x to offset 0x%03x\n",
-		 val, VFE_0_CAMIF_EFS_CFG);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_EFS_CFG);
-	wmb();
 
 	/* Configure pixel pattern in CORE_CFG */
 	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
