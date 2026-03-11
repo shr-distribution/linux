@@ -2340,14 +2340,14 @@ static int bcsp_open(struct hci_uart *hu)
 	skb_queue_head_init(&bcsp->unrel);
 
 	/*
-	 * Enable hardware flow control for serdev devices.
-	 * hci_serdev.c disables flow control before calling open(),
-	 * but BCSP needs it for proper link establishment with BCM4329.
-	 * WebOS used UART_WITH_FLOW_CONTROL for GSBI6 (BT UART).
+	 * Disable hardware flow control for initial link establishment.
+	 * The BCM4329 may not have RTS/CTS properly configured until
+	 * after BCSP link is established. WebOS PmBtStack may have
+	 * configured flow control only after link was up.
 	 */
 	if (hu->serdev) {
-		serdev_device_set_flow_control(hu->serdev, true);
-		BT_INFO("BCSP: Enabled hardware flow control for serdev");
+		serdev_device_set_flow_control(hu->serdev, false);
+		BT_INFO("BCSP: Disabled hardware flow control for link establishment");
 	}
 
 	timer_setup(&bcsp->tbcsp, bcsp_timed_event, 0);
