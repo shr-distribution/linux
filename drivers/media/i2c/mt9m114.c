@@ -66,6 +66,7 @@
 /* MT9M113 MCU variable addresses */
 #define MT9M113_SEQ_CMD					0xa103
 #define MT9M113_SEQ_CMD_RUN				0x0001
+#define MT9M113_SEQ_CMD_STANDBY				0x0003
 #define MT9M113_SEQ_CMD_REFRESH				0x0005
 #define MT9M113_SEQ_CMD_REFRESH_MODE			0x0006
 #define MT9M113_SEQ_STATE				0xa104
@@ -1817,8 +1818,17 @@ mt9m113_streaming:
 	 */
 	{
 		u64 readback;
+		u64 seq_state;
 
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
+
+		/*
+		 * Check current sequencer state. If we're coming from standby,
+		 * wait for the sequencer to be ready before starting.
+		 */
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+		dev_info(&sensor->client->dev, "MT9M113: pre-stream SEQ_STATE=0x%llx\n",
+			 seq_state);
 
 		/*
 		 * Enable MIPI output interface.
@@ -1913,12 +1923,33 @@ static int mt9m114_stop_streaming(struct mt9m114 *sensor)
 
 	sensor->streaming = false;
 
-	/*
-	 * MT9M113 doesn't support COMMAND_REGISTER. The sensor will stop
-	 * streaming when powered down via runtime PM.
-	 */
-	if (sensor->model != MT9M113_MODEL)
+	if (sensor->model == MT9M113_MODEL) {
+		/*
+		 * MT9M113: Issue SEQ_CMD=0x0003 (STANDBY) to properly stop streaming.
+		 * Without this, the sensor remains in streaming state and subsequent
+		 * streaming attempts fail because SEQ_CMD=0x0001 (RUN) is ignored
+		 * when already running.
+		 *
+		 * The webOS driver doesn't explicitly stop streaming, it just powers
+		 * down the sensor via GPIO. But since we keep the sensor powered
+		 * between streaming sessions for faster startup, we need to properly
+		 * transition to standby state.
+		 */
+		dev_info(&sensor->client->dev, "MT9M113: stopping streaming (SEQ_CMD=STANDBY)\n");
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					    MT9M113_SEQ_CMD_STANDBY);
+		if (ret < 0) {
+			dev_err(&sensor->client->dev,
+				"MT9M113: failed to stop streaming: %d\n", ret);
+		}
+		/*
+		 * Wait for the sequencer to enter standby.
+		 * Don't poll SEQ_CMD - just wait a fixed time like webOS does.
+		 */
+		msleep(20);
+	} else {
 		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_SUSPEND);
+	}
 
 	pm_runtime_put_autosuspend(&sensor->client->dev);
 

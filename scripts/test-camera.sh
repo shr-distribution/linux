@@ -539,6 +539,260 @@ test_pix_mode() {
     "
 }
 
+# Test with sensor test pattern enabled
+# This helps diagnose if data path works by using known pattern
+test_sensor_pattern() {
+    log_step "Testing with sensor test pattern..."
+    log_info "This enables MT9M114's built-in color bar generator"
+    log_info "If capture works with test pattern -> data path is OK"
+    log_info "If capture fails even with test pattern -> VFE path broken"
+
+    run_on_device "
+        echo '=== Sensor Test Pattern Mode ==='
+        echo ''
+
+        # Find the MT9M114 IFP subdev (where test pattern control lives)
+        echo 'Looking for MT9M114 IFP subdev...'
+        IFP_DEV=''
+        for dev in /dev/v4l-subdev*; do
+            if v4l2-ctl -d \$dev --list-ctrls 2>/dev/null | grep -q 'test_pattern'; then
+                IFP_DEV=\$dev
+                echo \"Found test pattern control on: \$dev\"
+                break
+            fi
+        done
+
+        if [ -z \"\$IFP_DEV\" ]; then
+            echo 'ERROR: No subdev with test_pattern control found'
+            echo ''
+            echo 'Available subdevs and their controls:'
+            for dev in /dev/v4l-subdev*; do
+                echo \"--- \$dev ---\"
+                v4l2-ctl -d \$dev --list-ctrls 2>/dev/null | head -10
+            done
+            exit 1
+        fi
+
+        # Show available test patterns
+        echo ''
+        echo 'Available test patterns:'
+        v4l2-ctl -d \$IFP_DEV --list-ctrls 2>/dev/null | grep -A10 test_pattern
+
+        # Enable color bars test pattern (pattern 2 = 100% Color Bars)
+        echo ''
+        echo 'Enabling 100% Color Bars test pattern (pattern=2)...'
+        v4l2-ctl -d \$IFP_DEV --set-ctrl=test_pattern=2 2>&1
+
+        # Verify it's set
+        echo ''
+        echo 'Verifying test pattern is enabled:'
+        v4l2-ctl -d \$IFP_DEV --get-ctrl=test_pattern 2>&1
+
+        # Setup media pipeline for PIX mode
+        echo ''
+        echo 'Setting up media pipeline...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+
+        # Try to capture with test pattern
+        echo ''
+        echo 'Attempting capture with test pattern enabled...'
+        timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=5 ! \\
+            'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
+            fakesink 2>&1
+        RESULT=\$?
+
+        # If capture worked, save a frame
+        if [ \$RESULT -eq 0 ]; then
+            echo ''
+            echo 'SUCCESS: Capture with test pattern worked!'
+            echo 'Saving test frame to /tmp/testpattern.raw...'
+            gst-launch-1.0 v4l2src device=/dev/video3 num-buffers=1 ! \\
+                'video/x-raw,format=UYVY,width=1280,height=968' ! \\
+                filesink location=/tmp/testpattern.raw 2>&1
+            ls -la /tmp/testpattern.raw 2>/dev/null
+
+            # Check if file contains valid data (should be 2.4MB for 1280x968 UYVY)
+            SIZE=\$(stat -c %s /tmp/testpattern.raw 2>/dev/null || echo 0)
+            EXPECTED=\$((1280 * 968 * 2))
+            echo \"File size: \$SIZE bytes (expected: \$EXPECTED)\"
+
+            # Quick pattern analysis
+            if [ \$SIZE -gt 0 ]; then
+                echo ''
+                echo 'First 64 bytes (hex):'
+                xxd /tmp/testpattern.raw | head -4
+                echo ''
+                echo 'Unique byte patterns in first 1KB:'
+                head -c 1024 /tmp/testpattern.raw | xxd -p | fold -w2 | sort | uniq -c | sort -rn | head -10
+            fi
+        else
+            echo ''
+            echo 'FAILED: Capture did not work even with test pattern'
+            echo 'This indicates a VFE/CAMIF data path issue'
+        fi
+
+        # Disable test pattern
+        echo ''
+        echo 'Disabling test pattern...'
+        v4l2-ctl -d \$IFP_DEV --set-ctrl=test_pattern=0 2>&1
+    "
+}
+
+# Analyze captured frame data
+analyze_frame() {
+    log_step "Analyzing captured frame..."
+
+    run_on_device "
+        echo '=== Frame Analysis ==='
+        echo ''
+
+        # Check for captured files
+        for file in /tmp/testpattern.raw /tmp/camera_frame.raw /tmp/camera_test.raw; do
+            if [ -f \"\$file\" ]; then
+                echo \"Found: \$file\"
+                SIZE=\$(stat -c %s \$file)
+                echo \"  Size: \$SIZE bytes\"
+
+                # Check if file is all zeros
+                ZEROS=\$(head -c 1024 \$file | xxd -p | tr -d '0' | wc -c)
+                if [ \$ZEROS -eq 0 ]; then
+                    echo '  WARNING: First 1KB is all zeros - no valid data captured!'
+                else
+                    echo '  Data appears valid (non-zero)'
+
+                    # Show byte distribution
+                    echo ''
+                    echo '  Byte value distribution (first 4KB):'
+                    head -c 4096 \$file | xxd -p | fold -w2 | sort | uniq -c | sort -rn | head -5
+
+                    # For UYVY, we expect Y (luma) values spread across range
+                    # and U/V (chroma) centered around 128 for gray/neutral
+                    echo ''
+                    echo '  First 32 bytes (UYVY interleaved):'
+                    echo '  Format: U0 Y0 V0 Y1 U2 Y2 V2 Y3 ...'
+                    head -c 32 \$file | xxd
+                fi
+                echo ''
+            fi
+        done
+
+        if [ ! -f /tmp/testpattern.raw ] && [ ! -f /tmp/camera_frame.raw ]; then
+            echo 'No captured frame files found'
+            echo 'Run \"testpattern\" or \"pix\" mode first to capture data'
+        fi
+    "
+}
+
+# Full debug capture mode with clock and register dumps
+test_debug_capture() {
+    log_step "DEBUG MODE: Full diagnostic capture with clock/register dumps..."
+    log_info "This mode captures comprehensive debug info for VFE troubleshooting"
+
+    run_on_device "
+        echo '=============================================='
+        echo '  CAMSS DEBUG CAPTURE MODE'
+        echo '=============================================='
+        echo ''
+
+        # Clear dmesg to start fresh
+        echo 'Clearing dmesg...'
+        dmesg -C
+
+        # Step 1: Show initial state
+        echo ''
+        echo '=== Step 1: Initial System State ==='
+        echo 'Clock debugfs (if available):'
+        if [ -d /sys/kernel/debug/clk ]; then
+            echo '  VFE clocks:'
+            for clk in vfe vfe_axi vfe_ahb vfe_csi0 vfe_csi1 csi_rdi csi_pix csi1 csi1_phy; do
+                if [ -f /sys/kernel/debug/clk/\$clk/clk_enable_count ]; then
+                    echo \"    \$clk: enable_count=\$(cat /sys/kernel/debug/clk/\$clk/clk_enable_count)\"
+                fi
+            done
+        else
+            echo '  debugfs/clk not available - check dmesg for clock enables'
+        fi
+
+        # Step 2: Power on sensor
+        echo ''
+        echo '=== Step 2: Powering on Sensor ==='
+        # Touch the subdev to trigger runtime PM
+        v4l2-ctl -d /dev/v4l-subdev3 --get-ctrl=test_pattern 2>/dev/null || true
+        sleep 1
+
+        # Step 3: Show clock state after sensor power on
+        echo ''
+        echo '=== Step 3: Clock State After Sensor Power On ==='
+        if [ -d /sys/kernel/debug/clk ]; then
+            echo '  VFE clocks:'
+            for clk in vfe vfe_axi vfe_ahb vfe_csi0 vfe_csi1 csi_rdi csi_pix csi1 csi1_phy; do
+                if [ -f /sys/kernel/debug/clk/\$clk/clk_enable_count ]; then
+                    echo \"    \$clk: enable_count=\$(cat /sys/kernel/debug/clk/\$clk/clk_enable_count)\"
+                fi
+            done
+        fi
+
+        # Step 4: Setup media pipeline
+        echo ''
+        echo '=== Step 4: Setting Up Media Pipeline ==='
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>&1 || true
+
+        # Step 5: Show clock state after pipeline setup
+        echo ''
+        echo '=== Step 5: Clock State After Pipeline Setup ==='
+        if [ -d /sys/kernel/debug/clk ]; then
+            for clk in vfe vfe_axi vfe_ahb vfe_csi0 vfe_csi1 csi_rdi csi_pix csi1 csi1_phy; do
+                if [ -f /sys/kernel/debug/clk/\$clk/clk_enable_count ]; then
+                    echo \"    \$clk: enable_count=\$(cat /sys/kernel/debug/clk/\$clk/clk_enable_count)\"
+                fi
+            done
+        fi
+
+        # Step 6: Attempt capture (will likely fail but generate debug output)
+        echo ''
+        echo '=== Step 6: Attempting Capture ==='
+        echo 'Starting gst-launch (expect VFE SOF timeout)...'
+        timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=5 ! \\
+            'video/x-raw,format=UYVY,width=1280,height=968' ! \\
+            fakesink 2>&1 || echo 'Capture failed as expected'
+
+        # Step 7: Dump full dmesg for analysis
+        echo ''
+        echo '=== Step 7: Full DMESG Output ==='
+        echo '(Focus on clock enables, VFE registers, CSIPHY status)'
+        echo ''
+        dmesg | grep -iE 'camss|csiphy|csid|vfe|clock|enable' | tail -100
+
+        # Step 8: Show CSIPHY interrupt status
+        echo ''
+        echo '=== Step 8: CSIPHY Interrupt Summary ==='
+        dmesg | grep -i 'csiphy.*sof_count\\|csiphy.*irq\\|csiphy.*status' | tail -20
+
+        # Step 9: Show VFE register state
+        echo ''
+        echo '=== Step 9: VFE Register Dumps ==='
+        dmesg | grep -iE 'vfe31:|core_cfg|camif_cfg|axi_out|irq_status' | tail -30
+
+        # Step 10: Final summary
+        echo ''
+        echo '=== Step 10: Debug Summary ==='
+        echo 'Key things to check:'
+        echo '  1. Are vfe_csi0 and vfe_csi1 clocks enabled? (look for enable_clocks output)'
+        echo '  2. Does CSIPHY1 show sof_count > 0? (CSIPHY receiving frames)'
+        echo '  3. Does VFE IRQ_STATUS0 show any interrupts? (VFE receiving data)'
+        echo '  4. What are CAMIF_CFG and CORE_CFG values?'
+        echo ''
+        echo 'If CSIPHY gets frames but VFE does not:'
+        echo '  -> Check vfe_csi1 clock enable (CSI1 to VFE data path)'
+        echo '  -> Check VFE CAMIF configuration'
+        echo ''
+    "
+}
+
 # Main
 main() {
     echo "=============================================="
@@ -569,17 +823,29 @@ main() {
             pix)
                 MODE="pix"
                 ;;
+            testpattern)
+                MODE="testpattern"
+                ;;
+            analyze)
+                MODE="analyze"
+                ;;
+            debug)
+                MODE="debug"
+                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
                 echo "Modes:"
-                echo "  raw        Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
-                echo "  pix        Test PIX mode (through VFE ISP processing)"
-                echo "  --info     Show camera device information only"
-                echo "  --setup    Set up media pipeline only"
-                echo "  --capture  Test capture only (assumes pipeline is set up)"
-                echo "  --quick    Quick capture test without media-ctl setup"
-                echo "  (no args)  Run full test sequence"
+                echo "  raw         Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
+                echo "  pix         Test PIX mode (through VFE ISP processing)"
+                echo "  testpattern Enable sensor test pattern and capture (debug data path)"
+                echo "  analyze     Analyze previously captured frame data"
+                echo "  debug       Full debug capture with clock and register dumps"
+                echo "  --info      Show camera device information only"
+                echo "  --setup     Set up media pipeline only"
+                echo "  --capture   Test capture only (assumes pipeline is set up)"
+                echo "  --quick     Quick capture test without media-ctl setup"
+                echo "  (no args)   Run full test sequence"
                 exit 0
                 ;;
         esac
@@ -618,6 +884,18 @@ main() {
             ensure_camera_ready
             test_pix_mode
             check_dmesg
+            ;;
+        testpattern)
+            show_camera_info
+            ensure_camera_ready
+            test_sensor_pattern
+            check_dmesg
+            ;;
+        analyze)
+            analyze_frame
+            ;;
+        debug)
+            test_debug_capture
             ;;
         full)
             show_camera_info
