@@ -753,11 +753,21 @@ static const struct cci_reg_sequence mt9m114_init[] = {
 
 static int mt9m113_write_mcu_var(struct mt9m114 *sensor, u16 addr, u16 value)
 {
-	int ret = 0;
+	int ret1, ret2;
+	u64 readback = 0;
 
-	cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, addr, &ret);
-	cci_write(sensor->regmap, MT9M114_MCU_DATA, value, &ret);
-	return ret;
+	ret1 = cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, addr, NULL);
+	ret2 = cci_write(sensor->regmap, MT9M114_MCU_DATA, value, NULL);
+
+	/* Debug: read back to verify */
+	cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, addr, NULL);
+	cci_read(sensor->regmap, MT9M114_MCU_DATA, &readback, NULL);
+
+	dev_info(&sensor->client->dev,
+		 "MCU write 0x%04x=0x%04x ret=%d/%d readback=0x%llx\n",
+		 addr, value, ret1, ret2, readback);
+
+	return ret1 ? ret1 : ret2;
 }
 
 static int mt9m113_read_mcu_var(struct mt9m114 *sensor, u16 addr, u64 *value)
