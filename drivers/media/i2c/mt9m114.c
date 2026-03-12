@@ -1422,31 +1422,11 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	dev_info(dev, "MT9M113: sequencer refresh completed\n");
 
 	/*
-	 * Configure MIPI output interface.
-	 * 0x3400 = 0x7A08 enables MIPI CSI-2 output on MT9M113.
-	 * Note: MT9M114 uses 0x3C40 instead, but that register doesn't exist on MT9M113.
+	 * NOTE: MIPI output configuration is done in s_stream, not here.
+	 * Configuring MIPI output during init causes the sensor to enter
+	 * streaming state (SEQ_STATE=0x3) which breaks subsequent s_stream
+	 * calls. The webOS driver also only configures MIPI at streaming start.
 	 */
-	if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
-		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-		if (ret < 0) {
-			dev_err(dev, "MT9M113: failed to enable MIPI output: %d\n", ret);
-			return ret;
-		}
-		dev_info(dev, "MT9M113: MIPI output enabled (0x3400=0x7A08)\n");
-
-		/*
-		 * Enable Frame Start/End short packets via CUSTOM_SHORT_PKT.
-		 * Bit 7 must be set or VFE never receives CAMIF_SOF interrupts.
-		 */
-		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-		if (ret < 0) {
-			dev_err(dev, "MT9M113: failed to enable FS/FE packets: %d\n", ret);
-			return ret;
-		}
-		dev_info(dev, "MT9M113: Frame Start/End packets enabled (0x3404=0x0080)\n");
-	}
 
 	dev_info(dev, "MT9M113: initialization complete\n");
 	return 0;
@@ -3344,31 +3324,13 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 					dev_warn(dev, "power_on: ACCESS_CTL_STAT write failed: %d\n", ret);
 
 				/*
-				 * OUTPUT_CONTROL (0x3400) enables MIPI output.
-				 * This is the correct register for MT9M113 - the 0x3C40
-				 * register used by MT9M114 does NOT exist on MT9M113.
+				 * NOTE: MIPI output (OUTPUT_CONTROL, CUSTOM_SHORT_PKT) is
+				 * NOT configured here. Enabling MIPI during power_on causes
+				 * the sensor to enter streaming state (SEQ_STATE=0x3) before
+				 * s_stream is called, breaking subsequent streaming attempts.
+				 *
+				 * MIPI is configured only in s_stream, matching webOS behavior.
 				 */
-				cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-					  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, &ret);
-				if (ret < 0) {
-					dev_err(dev, "power_on: OUTPUT_CONTROL failed: %d\n", ret);
-					goto error_clock;
-				}
-				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-				dev_info(dev, "power_on: OUTPUT_CONTROL=0x%llx (expected 0x7A08)\n", readback);
-
-				/*
-				 * CUSTOM_SHORT_PKT (0x3404) enables Frame Start/End packets.
-				 * Without bit 7 set, VFE never receives CAMIF_SOF.
-				 */
-				cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-					  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
-				if (ret < 0) {
-					dev_err(dev, "power_on: CUSTOM_SHORT_PKT failed: %d\n", ret);
-					goto error_clock;
-				}
-				cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-				dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (expected 0x0080)\n", readback);
 
 				/*
 				 * NOTE: RESET_REGISTER (0x301A) is NOT written here!
@@ -3538,53 +3500,35 @@ mt9m113_init_done:
 	 * MT9M113 uses a different command mechanism (MCU indirect via
 	 * 0x098C/0x0990) and doesn't support the MT9M114's COMMAND_REGISTER.
 	 *
-	 * Ensure the sensor is in STANDBY state before returning, so that
-	 * s_stream can properly start streaming from a known state.
+	 * Check the sensor state at end of init. Since we no longer enable
+	 * MIPI output during init (it's done in s_stream), the sensor should
+	 * not be in streaming state (0x3).
 	 */
 	if (sensor->expected_model == MT9M113_MODEL) {
 		u64 seq_state = 0;
 
 		/* Check current state */
 		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-		dev_info(dev, "power_on: MT9M113 SEQ_STATE=0x%llx\n", seq_state);
+		dev_info(dev, "power_on: MT9M113 SEQ_STATE=0x%llx (expect 0x0, not streaming)\n",
+			 seq_state);
 
 		if (seq_state == 0x3) {
 			/*
-			 * Sensor entered streaming state during init.
-			 * Issue STANDBY command via MCU interface.
+			 * Unexpected: sensor in streaming state after init.
+			 * Try MCU STANDBY command. Do NOT use hardware standby
+			 * as it corrupts MCU state and breaks s_stream.
 			 */
-			dev_info(dev, "power_on: MT9M113 in streaming, issuing STANDBY\n");
+			dev_warn(dev, "power_on: MT9M113 unexpectedly streaming, trying STANDBY\n");
 
 			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 						    MT9M113_SEQ_CMD_STANDBY);
 			if (ret) {
 				dev_err(dev, "power_on: SEQ_CMD=STANDBY failed: %d\n", ret);
-				goto error_clock;
-			}
-
-			/* Wait for STANDBY to take effect */
-			msleep(50);
-
-			/* Verify state changed */
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			dev_info(dev, "power_on: MT9M113 after STANDBY, SEQ_STATE=0x%llx\n",
-				 seq_state);
-
-			if (seq_state == 0x3) {
-				/*
-				 * STANDBY didn't work - try hardware standby.
-				 * Per MT9M113 datasheet, 0x0018[0] = standby_i2c
-				 */
-				dev_warn(dev, "power_on: STANDBY failed, trying hardware standby\n");
-				cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL,
-					  0x0029, NULL);  /* Set standby_i2c bit */
+				/* Continue anyway - s_stream may still work */
+			} else {
 				msleep(50);
-				cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL,
-					  0x0028, NULL);  /* Clear standby_i2c bit */
-				msleep(50);
-
 				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-				dev_info(dev, "power_on: after HW standby, SEQ_STATE=0x%llx\n",
+				dev_info(dev, "power_on: after STANDBY, SEQ_STATE=0x%llx\n",
 					 seq_state);
 			}
 		}
