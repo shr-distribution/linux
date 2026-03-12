@@ -753,21 +753,11 @@ static const struct cci_reg_sequence mt9m114_init[] = {
 
 static int mt9m113_write_mcu_var(struct mt9m114 *sensor, u16 addr, u16 value)
 {
-	int ret1, ret2;
-	u64 readback = 0;
+	int ret = 0;
 
-	ret1 = cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, addr, NULL);
-	ret2 = cci_write(sensor->regmap, MT9M114_MCU_DATA, value, NULL);
-
-	/* Debug: read back to verify */
-	cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, addr, NULL);
-	cci_read(sensor->regmap, MT9M114_MCU_DATA, &readback, NULL);
-
-	dev_info(&sensor->client->dev,
-		 "MCU write 0x%04x=0x%04x ret=%d/%d readback=0x%llx\n",
-		 addr, value, ret1, ret2, readback);
-
-	return ret1 ? ret1 : ret2;
+	cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, addr, &ret);
+	cci_write(sensor->regmap, MT9M114_MCU_DATA, value, &ret);
+	return ret;
 }
 
 static int mt9m113_read_mcu_var(struct mt9m114 *sensor, u16 addr, u64 *value)
@@ -2039,14 +2029,6 @@ mt9m113_streaming:
 			goto error;
 		}
 
-		/* Debug: verify SEQ_CAP_MODE was written */
-		{
-			u64 cap_mode = 0;
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, &cap_mode);
-			dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE readback=0x%llx (expect 0x0030)\n",
-				 cap_mode);
-		}
-
 		usleep_range(40000, 50000);
 
 		/* Issue SEQ_CMD=1 to start streaming */
@@ -2057,22 +2039,10 @@ mt9m113_streaming:
 			goto error;
 		}
 
-		/* Debug: check SEQ_CMD immediately after write */
-		{
-			u64 seq_cmd = 0;
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
-			dev_info(&sensor->client->dev, "MT9M113: SEQ_CMD readback=0x%llx (0=processed, 1=pending)\n",
-				 seq_cmd);
-		}
-
 		/*
-		 * NOTE: webOS does NOT poll for SEQ_CMD completion after RUN!
-		 * It just fires the command and moves on. The MCU processes
-		 * the streaming command in the background while data starts
-		 * flowing. Polling here causes timeout because the MCU may
-		 * need actual pixel data before completing.
-		 *
-		 * Just add a small delay like webOS does, then check state.
+		 * webOS does NOT poll for SEQ_CMD completion after RUN.
+		 * The MCU processes the streaming command in the background.
+		 * Just add a small delay, then check state.
 		 */
 		msleep(20);
 
