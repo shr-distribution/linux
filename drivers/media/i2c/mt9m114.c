@@ -3522,19 +3522,25 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		 */
 
 		/*
-		 * Configure clocks and PLL - sequence from webOS kernel.
-		 * Note: PLL_CONTROL is written 3 times before PLL_DIVIDERS
-		 * as per the webOS init sequence. This appears to be required
-		 * for the sensor to accept the PLL_DIVIDERS write.
+		 * PLL configuration from webOS pll_setup_tbl.
+		 * This sequence is critical for correct MIPI clock output.
+		 * PLL_DIVIDERS=0x0A6E configures the MIPI data rate.
+		 * Using wrong values causes CSIPHY to fail detecting data.
 		 */
-		dev_info(dev, "power_on: configuring PLL\n");
-		cci_write(sensor->regmap, MT9M114_CLOCKS_CONTROL, 0x00FF, &ret);
-		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x0028, &ret);
+		dev_info(dev, "power_on: configuring PLL (webOS sequence)\n");
+
+		/* Bypass PLL, clear power-down bit */
+		cci_update_bits(sensor->regmap, MT9M114_PLL_CONTROL,
+				0x0001, 0x0001, &ret);  /* Set bit 0 (bypass) */
+		cci_update_bits(sensor->regmap, MT9M114_PLL_CONTROL,
+				0x0002, 0x0000, &ret);  /* Clear bit 1 (power-down off) */
+
+		/* Configure PLL dividers */
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_DIVIDERS, 0x0114, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_DIVIDERS, 0x0A6E, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_P_DIVIDERS, 0x00F1, &ret);
+
+		/* Enable PLL */
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2545, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2547, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3447, &ret);
@@ -3542,28 +3548,24 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 			dev_err(dev, "power_on: PLL config phase 1 failed: %d\n", ret);
 			goto error_clock;
 		}
-		dev_info(dev, "power_on: PLL phase 1 complete, waiting for lock\n");
-		msleep(20); /* Allow PLL to lock */
+
+		/* Wait 1ms for PLL lock (webOS delay) then complete sequence */
+		usleep_range(1000, 2000);
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3047, &ret);
 		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3046, &ret);
-		cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL, 0x0218, &ret);
-		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x002A, &ret);
+
+		/* Set bit 3 of RESET_AND_MISC_CONTROL (output control) */
+		cci_update_bits(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
+				0x0008, 0x0008, &ret);
+		/* Clear bit 0 of STANDBY (out of standby) */
+		cci_update_bits(sensor->regmap, MT9M114_STANDBY_CONTROL,
+				0x0001, 0x0000, &ret);
 		if (ret < 0) {
 			dev_err(dev, "power_on: PLL config phase 2 failed: %d\n", ret);
 			goto error_clock;
 		}
-		dev_info(dev, "power_on: PLL phase 2 complete, stabilizing\n");
+		dev_info(dev, "power_on: PLL config complete\n");
 		msleep(50); /* Wait for sensor to stabilize */
-
-		/*
-		 * Configure output FIFO control.
-		 * From webOS kernel: OFIFO_CONTROL_STATUS = 0x0003.
-		 */
-		cci_write(sensor->regmap, MT9M114_OFIFO_CONTROL_STATUS, 0x0003, &ret);
-		if (ret < 0) {
-			dev_err(dev, "power_on: OFIFO_CONTROL_STATUS failed: %d\n", ret);
-			goto error_clock;
-		}
 
 		/*
 		 * NOTE: Do NOT do a soft reset here! The soft reset clears
