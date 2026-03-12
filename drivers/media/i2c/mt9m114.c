@@ -1952,28 +1952,7 @@ mt9m113_streaming:
 			}
 		}
 
-		/*
-		 * Verify MIPI output is still configured (was set during init).
-		 * If power domains were cycled, these might need to be re-written.
-		 *
-		 * webOS always writes these during streaming start:
-		 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08
-		 * 2. RESET_REGISTER (0x301A) = 0x120C
-		 */
-		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-		dev_info(&sensor->client->dev,
-			 "MT9M113: OUTPUT_CONTROL=0x%llx (expect 0x7A08)\n", readback);
-		if (readback != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
-			dev_warn(&sensor->client->dev,
-				 "MT9M113: OUTPUT_CONTROL lost, re-configuring MIPI\n");
-			cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-				  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-			cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-				  0x120C, NULL);
-			cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-				  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-			msleep(10);
-		}
+		/* Note: MIPI output will be configured right before SEQ_CMD=RUN */
 
 		/*
 		 * Check current sequencer state. If already streaming (0x3),
@@ -2028,13 +2007,17 @@ mt9m113_streaming:
 				 "MT9M113: after soft reset, SEQ_STATE=0x%llx\n", seq_state);
 		}
 
-		/* Configure RESET_REGISTER for streaming mode */
-		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-				MT9M113_RESET_REG_STREAMING, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
-			goto error;
-		}
+		/*
+		 * Always write MIPI config before streaming (don't rely on readback).
+		 * webOS always writes these during streaming start.
+		 */
+		dev_info(&sensor->client->dev, "MT9M113: Writing MIPI config before streaming\n");
+		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+			  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+		cci_write(sensor->regmap, MT9M114_RESET_REGISTER, 0x120C, NULL);
+		cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+			  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+		msleep(10);
 
 		/*
 		 * Set capture mode via MCU interface.
@@ -2045,6 +2028,15 @@ mt9m113_streaming:
 			dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
 			goto error;
 		}
+
+		/* Debug: verify SEQ_CAP_MODE was written */
+		{
+			u64 cap_mode = 0;
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, &cap_mode);
+			dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE readback=0x%llx (expect 0x0030)\n",
+				 cap_mode);
+		}
+
 		usleep_range(40000, 50000);
 
 		/* Issue SEQ_CMD=1 to start streaming */
@@ -2053,6 +2045,14 @@ mt9m113_streaming:
 		if (ret) {
 			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD RUN failed: %d\n", ret);
 			goto error;
+		}
+
+		/* Debug: check SEQ_CMD immediately after write */
+		{
+			u64 seq_cmd = 0;
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
+			dev_info(&sensor->client->dev, "MT9M113: SEQ_CMD readback=0x%llx (0=processed, 1=pending)\n",
+				 seq_cmd);
 		}
 
 		/*
