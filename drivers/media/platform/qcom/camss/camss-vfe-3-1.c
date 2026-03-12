@@ -109,13 +109,23 @@
 
 #define VFE_0_BUS_CFG			0x03C
 /*
- * VFE31 BUS_CFG register bit definitions:
+ * NOTE: These BUS_CFG bit definitions are from VFE8x and are NOT used by VFE31!
+ *
+ * In VFE31, offset 0x03C is part of the 188-byte AXI output config block
+ * (starting at 0x038) and should be left at 0. The webOS VFE31 driver does
+ * not write to this offset.
+ *
+ * VFE31 controls data routing through AXI output mode at 0x040:
+ *   0x60  = Raw snapshot (CAMIF_TO_AXI_VIA_OUTPUT_2)
+ *   0x200 = Preview (OUTPUT_2)
+ *
+ * These defines are kept for reference only (from VFE8x):
  * Bit 0: stripeRdPathEn
  * Bits 1-3: reserved
- * Bit 4: encYWrPathEn - Enable encoder Y write path
- * Bit 5: encCbcrWrPathEn - Enable encoder CbCr write path
- * Bit 6: viewYWrPathEn - Enable view Y write path
- * Bit 7: viewCbcrWrPathEn - Enable view CbCr write path
+ * Bit 4: encYWrPathEn
+ * Bit 5: encCbcrWrPathEn
+ * Bit 6: viewYWrPathEn
+ * Bit 7: viewCbcrWrPathEn
  * Bits 8-9: rawPixelDataSize (0=8bit, 1=10bit, 2=12bit)
  * Bits 10-11: rawWritePathSelect (0=disabled, 1=enc_cbcr, 2=view_cbcr)
  */
@@ -124,9 +134,12 @@
 #define VFE_0_BUS_CFG_VIEW_Y_WR_PATH_EN		BIT(6)
 #define VFE_0_BUS_CFG_VIEW_CBCR_WR_PATH_EN	BIT(7)
 #define VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT	8
+#define VFE_0_BUS_CFG_RAW_PIXEL_8BIT		(0 << VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT)
+#define VFE_0_BUS_CFG_RAW_PIXEL_10BIT		(1 << VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT)
+#define VFE_0_BUS_CFG_RAW_PIXEL_12BIT		(2 << VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT)
 #define VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT	10
-#define VFE_0_BUS_CFG_RAW_WR_PATH_DISABLED	0
-#define VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR	1
+#define VFE_0_BUS_CFG_RAW_WR_PATH_DISABLED	(0 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
+#define VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR	(1 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
 
 /*
  * VFE31 AXI output mode register at 0x40
@@ -137,7 +150,7 @@
  */
 #define VFE_0_BUS_AXI_OUT_MODE_CFG		0x040
 #define VFE_0_BUS_AXI_OUT_MODE_RAW_WM0		0x60
-#define VFE_0_BUS_CFG_RAW_WR_PATH_VIEW_CBCR	2
+#define VFE_0_BUS_CFG_RAW_WR_PATH_VIEW_CBCR	(2 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
 
 /*
  * NOTE: VFE31 does NOT have a VFE_CFG register at 0x01C!
@@ -243,9 +256,11 @@
 
 #define VFE_0_CAMIF_STATUS		0x204
 
-/* RDI configuration */
-#define VFE_0_RDI_CFG_x(x)		(0x1E4 + (x) * 4)
-#define VFE_0_RDI_CFG_x_MIPI_EN_BITS	0x3
+/*
+ * NOTE: VFE31 does NOT have separate RDI_CFG registers like VFE41+.
+ * The data path is controlled entirely through CAMIF_CFG and AXI output mode.
+ * Do NOT use VFE_0_RDI_CFG_x - it was incorrectly defined at the CAMIF_CFG offset.
+ */
 
 /* AXI bus configuration */
 #define VFE_0_AXI_CMD			0x1D8
@@ -920,15 +935,18 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
 
 	/*
-	 * CAMIF_CFG: Skipped for CSI input!
+	 * CAMIF_CFG is configured later in vfe31_wm_enable().
 	 *
-	 * CAMIF_CFG at 0x1E4 is for PARALLEL camera interface, not CSI/MIPI.
-	 * For CSI input:
-	 * - PIX mode: Data path is CSI->VFE, controlled by VFE internal config
-	 * - RDI mode: Data path is CSI->AXI, controlled by AXI output mode
+	 * For VFE31, CAMIF is used for both parallel and CSI input. The data
+	 * path is controlled by:
+	 * 1. AXI output mode at 0x040 (0x60 for raw snapshot)
+	 * 2. CAMIF_CFG at 0x1E4 (camif2busEnable for raw capture)
 	 *
-	 * Writing to CAMIF_CFG has no effect for CSI input.
-	 * The frame dimensions in CAMIF_FRAME_CFG ARE used for both modes.
+	 * Some CAMIF_CFG bits (like sync edge detection) may be ignored for CSI
+	 * input, but camif2busEnable is required to route data to the AXI bus.
+	 *
+	 * The frame dimensions in CAMIF_FRAME_CFG/WINDOW_CFG ARE used for both
+	 * parallel and CSI input modes.
 	 */
 	dev_dbg(vfe->camss->dev,
 		"VFE31 set_camif_cfg: core_cfg=0x%08x frame=0x%08x width=%u height=%u\n",
@@ -1020,15 +1038,24 @@ static void vfe31_set_rdi_cid(struct vfe_device *vfe, enum vfe_line_id id,
 			      u8 cid)
 {
 	/*
-	 * VFE31 uses CAMIF for all input, including CSI data.
-	 * The CID (Channel ID) is handled at the CSI/CSID level, not VFE.
-	 * The CAMIF receives data from whatever source CSI is configured for.
+	 * VFE31 RDI/CID configuration - architecture note:
 	 *
-	 * For raw passthrough mode, ensure CAMIF is configured to pass
-	 * data without modification. The actual channel selection happens
-	 * in the CSI receiver hardware.
+	 * Unlike VFE41+ which has dedicated RDI_CFG registers (at 0x2E8+)
+	 * for selecting CSI streams and configuring per-RDI data types,
+	 * VFE31 does NOT have separate RDI configuration registers.
+	 *
+	 * On MSM8660/APQ8060:
+	 * - CSIPHY includes the CSI decoder (no separate CSID hardware)
+	 * - CAMIF is the single input interface for all data
+	 * - Data routing is controlled via:
+	 *   1. CAMIF_CFG (bit 10: camif2busEnable for raw capture)
+	 *   2. AXI output mode (0x60 for raw snapshot via WM0)
+	 *
+	 * The CID/data type configuration happens in CSIPHY at the protocol
+	 * level, not in VFE. VFE simply receives whatever CSIPHY sends.
 	 */
-	dev_dbg(vfe->camss->dev, "VFE31: set RDI%d CID=%d (handled by CSID)\n",
+	dev_dbg(vfe->camss->dev,
+		"VFE31: set_rdi_cid RDI%d CID=%d (no-op, handled by CSIPHY on 8x60)\n",
 		id, cid);
 }
 
@@ -1052,22 +1079,35 @@ static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 					enum vfe_line_id id)
 {
 	/*
-	 * VFE31 RDI mode: Defer CAMIF configuration until WM is fully set up.
+	 * VFE31 RDI/raw capture setup - architecture note:
 	 *
-	 * The gen1 code calls bus_connect_wm_to_rdi BEFORE configuring the WM
-	 * (ub_cfg, frame_based, line_based, wm_enable). In VFE31, writing to
-	 * CAMIF/CORE registers before WM is configured causes hangs.
+	 * On VFE41+, this function configures RDI_CFG registers (at 0x2E8+)
+	 * with RDI_STREAM_SEL, RDI_EN, MIPI_EN bits to connect a write master
+	 * to a specific RDI line.
 	 *
-	 * Set camif_pending flag here. The actual CAMIF configuration and
-	 * start will happen in wm_enable() after all WM setup is complete.
+	 * VFE31 does NOT have these registers. Instead, VFE31 uses:
+	 * - CAMIF_CFG bit 10 (camif2busEnable) to route data to AXI
+	 * - AXI output mode 0x60 for raw snapshot capture via WM0
+	 * - BUS_CFG register for raw write path configuration
+	 *
+	 * The gen1 framework calls this function BEFORE configuring WM
+	 * registers (ub_cfg, ping/pong addresses). VFE31 has strict
+	 * ordering requirements - writing to CAMIF before WM is ready
+	 * causes bus hangs.
+	 *
+	 * Solution: Set camif_pending flag here. The actual CAMIF
+	 * configuration happens in vfe31_start_camif_for_rdi() which
+	 * is called from vfe31_wm_enable() after all WM setup is done.
 	 */
-	pr_emerg("VFE31: ENTERED bus_connect_wm_to_rdi wm=%d id=%d\n", wm, id);
 	dev_info(vfe->camss->dev,
-		 "VFE31: connect WM%d to RDI%d - deferring CAMIF config until WM ready\n",
+		 "VFE31: bus_connect_wm_to_rdi WM%d to RDI%d - deferring to wm_enable\n",
 		 wm, id);
 
+	/* Store the RDI line mapping for later use */
+	vfe->wm_output_map[wm] = id;
+
+	/* Set flag to trigger CAMIF config when wm_enable is called */
 	vfe->camif_pending = true;
-	pr_emerg("VFE31: LEAVING bus_connect_wm_to_rdi\n");
 }
 
 static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
@@ -1080,8 +1120,8 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 		       vfe->base + VFE_0_CAMIF_CMD);
 
 	/*
-	 * Step 2: Clear AXI output mode to disable data path
-	 * For CSI input, we don't use CAMIF_CFG - routing is via AXI mode.
+	 * Step 2: Clear AXI output mode to disable data path.
+	 * Setting to 0 stops data flow to memory.
 	 */
 	writel_relaxed(0, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
@@ -1107,28 +1147,24 @@ static void vfe31_wm_set_subsample(struct vfe_device *vfe, u8 wm)
 static void vfe31_bus_enable_wr_if(struct vfe_device *vfe, u8 enable)
 {
 	/*
-	 * VFE31 bus write interface enable.
-	 * BUS_CFG register controls which write paths are enabled:
-	 * - Bit 4: encYWrPathEn
-	 * - Bit 5: encCbcrWrPathEn
-	 * - Bit 6: viewYWrPathEn
-	 * - Bit 7: viewCbcrWrPathEn
+	 * VFE31 bus write interface enable - NO-OP for VFE31!
 	 *
-	 * For initial enable, we set a base configuration.
-	 * The specific paths are enabled/configured by connect_wm_to_rdi
-	 * or set_camif_cfg depending on PIX vs RDI mode.
+	 * IMPORTANT: VFE31 does NOT have the same BUS_CFG register as VFE8x.
+	 * The 0x03C offset is part of the 188-byte AXI output config block
+	 * (starting at 0x038), and the webOS driver leaves it at 0.
+	 *
+	 * In VFE31, data routing is controlled ONLY by:
+	 * 1. AXI output mode at 0x040 (0x60 for raw snapshot, 0x200 for preview)
+	 * 2. CAMIF_CFG at 0x1E4 (camif2busEnable for raw capture)
+	 *
+	 * Writing VFE8x-style BUS_CFG values to 0x03C corrupts the AXI config
+	 * and can cause bus errors or no data output.
+	 *
+	 * The AXI output mode is set in vfe31_wm_enable() when streaming starts.
 	 */
-	if (enable) {
-		/* Enable all write paths initially - specific paths configured later */
-		writel_relaxed(VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN |
-			       VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN |
-			       VFE_0_BUS_CFG_VIEW_Y_WR_PATH_EN |
-			       VFE_0_BUS_CFG_VIEW_CBCR_WR_PATH_EN,
-			       vfe->base + VFE_0_BUS_CFG);
-		dev_dbg(vfe->camss->dev, "VFE31: bus write interface enabled\n");
-	} else {
-		writel_relaxed(0x0, vfe->base + VFE_0_BUS_CFG);
-	}
+	dev_dbg(vfe->camss->dev,
+		"VFE31: bus_enable_wr_if(%d) - no-op (uses AXI output mode)\n",
+		enable);
 }
 
 static void vfe31_bus_reload_wm(struct vfe_device *vfe, u8 wm)
@@ -1308,18 +1344,22 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	/*
 	 * Step 4: Configure CAMIF_CFG for raw capture
 	 *
-	 * VFE31 CAMIF_CFG bits:
-	 * - bit 8: camif2vfeEnable (routes to VFE processing)
+	 * VFE31 CAMIF_CFG bits (from webOS msm_vfe8x_proc.h):
+	 * - bit 8: camif2vfeEnable (routes to VFE processing pipeline)
+	 * - bit 10: camif2busEnable (routes directly to AXI bus/memory)
 	 * - bits 4:3: syncMode (0=APS, 1=EFS, 2=ELS)
 	 *
-	 * Use APS (Active Pixel Sync) mode, NOT EFS (Embedded Frame Sync).
-	 * EFS expects 0x00/0x01 sync codes embedded in pixel data, but
-	 * MIPI CSI-2 uses protocol-level short packets for frame sync.
-	 * These are handled by the CSI decoder and stripped before data
-	 * reaches VFE. In APS mode, CAMIF uses data-valid signal instead.
+	 * For RAW capture mode, webOS sets camif2busEnable=TRUE to bypass
+	 * VFE processing and send data directly to memory via AXI.
+	 * See webOS msm_vfe8x_proc.c line 3496:
+	 *   ctrl->vfeCamifConfigLocal.camif2BusEnable = TRUE;
+	 *
+	 * Use APS (Active Pixel Sync) mode for MIPI CSI-2 input.
+	 * EFS mode expects embedded sync codes in pixel data, but MIPI
+	 * uses protocol-level short packets that CSIPHY strips.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2vfe=1, APS sync)\n");
-	val = VFE_0_CAMIF_CFG_CAMIF2VFE_EN |  /* bit 8: camif2vfe */
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2bus=1, APS sync)\n");
+	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN |  /* bit 10: route to bus for raw capture */
 	      VFE_0_CAMIF_CFG_SYNC_MODE_APS;  /* bits 3-4: APS sync mode */
 	dev_info(vfe->camss->dev, "VFE31: Writing CAMIF_CFG=0x%08x to offset 0x%03x\n",
 		 val, VFE_0_CAMIF_CFG);
