@@ -1950,7 +1950,7 @@ mt9m113_streaming:
 		 * timing issues.
 		 *
 		 * webOS sequence in sensor_set_mode() after msm_camio_csi_config():
-		 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI LP mode
+		 * 1. OUTPUT_CONTROL (0x3400) = 0x7A0C - enable MIPI continuous clock
 		 * 2. RESET_REGISTER (0x301A) = 0x120C - enable MIPI streaming
 		 */
 		dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI output\n");
@@ -1966,7 +1966,7 @@ mt9m113_streaming:
 			u64 readback;
 			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
 			dev_info(&sensor->client->dev,
-				 "MT9M113: OUTPUT_CONTROL=0x%llx (expect 0x7A08)\n", readback);
+				 "MT9M113: OUTPUT_CONTROL=0x%llx (expect 0x7A0C)\n", readback);
 			cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
 			dev_info(&sensor->client->dev,
 				 "MT9M113: RESET_REGISTER=0x%llx (expect 0x120C)\n", readback);
