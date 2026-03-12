@@ -821,11 +821,21 @@ struct mt9m113_reg_entry {
  * - An MCU variable write encoded as reg=0x098C (address) followed by
  *   reg=0x0990 (data), which is handled specially.
  *
- * NOTE: MCU boot and PLL configuration are handled by mt9m114_power_on(),
- * so this table starts AFTER PLL is configured and stable.
+ * NOTE: PLL configuration is handled by mt9m114_power_on().
+ * This table starts with MCU boot toggle to reset MCU state
+ * and clear any auto-streaming that occurred after PLL config.
  */
 static const struct mt9m113_reg_entry mt9m113_init_table[] = {
-	/* OFIFO control - first entry after PLL is configured */
+	/*
+	 * MCU boot toggle - resets MCU state after PLL config.
+	 * webOS has this at the very start of their init table.
+	 * This clears any auto-streaming state and prepares the
+	 * MCU to accept new configuration.
+	 */
+	{ 0x001C, 0x0001, 0 },		/* MCU_BOOT_MODE = 1 */
+	{ 0x001C, 0x0000, 30 },		/* MCU_BOOT_MODE = 0, delay 30ms */
+
+	/* OFIFO control */
 	{ 0x321C, 0x0003, 0 },		/* OFIFO_CONTROL_STATUS */
 
 	/* Context A output (640x480 preview) - via MCU variables */
