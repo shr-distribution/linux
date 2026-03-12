@@ -1542,62 +1542,26 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	dev_info(dev, "MT9M113: sequencer refresh completed\n");
 
 	/*
-	 * Issue DO_PREVIEW command per webOS driver.
-	 * webOS issues SEQ_CMD=0x0002 (DO_PREVIEW) twice with 200ms delay
-	 * after init. This ensures the sensor is in preview mode, NOT
-	 * streaming mode (SEQ_STATE=0x3). This is critical because:
-	 * - If sensor is already streaming, MCU commands may be ignored
-	 * - MIPI output must be configured BEFORE starting streaming
-	 * - s_stream will configure MIPI and issue SEQ_CMD=RUN
+	 * Write OUTPUT_CONTROL to enable MIPI output, matching webOS reg_init.
+	 * WebOS writes 0x3400 = 0x7A08 at the end of reg_init().
+	 * Note: Actual MIPI data transmission starts in s_stream after
+	 * CSIPHY is configured and RESET_REGISTER is set.
 	 */
-	dev_info(dev, "MT9M113: issuing DO_PREVIEW to enter preview mode\n");
-	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-				    MT9M113_SEQ_CMD_DO_PREVIEW);
-	if (ret < 0) {
-		dev_err(dev, "MT9M113: DO_PREVIEW failed: %d\n", ret);
-		return ret;
-	}
-	msleep(200);
-
-	/* Issue DO_PREVIEW again per webOS */
-	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-				    MT9M113_SEQ_CMD_DO_PREVIEW);
-	if (ret < 0) {
-		dev_err(dev, "MT9M113: DO_PREVIEW (2nd) failed: %d\n", ret);
-		return ret;
-	}
-
-	/* Poll for command completion */
-	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 1000);
+	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+			MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
 	if (ret < 0)
-		dev_warn(dev, "MT9M113: DO_PREVIEW poll timeout (continuing)\n");
+		dev_warn(dev, "MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
+	else
+		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x7A08 (MIPI enabled)\n");
 
-	/*
-	 * Verify sensor is NOT in streaming state.
-	 * SEQ_STATE should be something other than 0x3 (streaming).
-	 */
+	/* Check final SEQ_STATE after init */
 	{
 		u64 seq_state;
 		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-		dev_info(dev, "MT9M113: after DO_PREVIEW, SEQ_STATE=0x%llx (should NOT be 0x3)\n",
-			 seq_state);
+		dev_info(dev, "MT9M113: after init, SEQ_STATE=0x%llx\n", seq_state);
 	}
 
-	/*
-	 * NOTE: MIPI output configuration (OUTPUT_CONTROL, RESET_REGISTER,
-	 * CUSTOM_SHORT_PKT) is intentionally NOT done here. Per webOS driver,
-	 * these must be written AFTER CSIPHY is configured, which happens
-	 * in s_stream. Writing them here (before CSIPHY is ready) causes
-	 * timing issues where the sensor starts outputting MIPI data before
-	 * the receiver is ready, resulting in sof_count=0.
-	 *
-	 * The webOS driver writes OUTPUT_CONTROL in reg_init(), but then
-	 * writes OUTPUT_CONTROL + RESET_REGISTER again in sensor_set_mode()
-	 * after msm_camio_csi_config() is called. Only the second write
-	 * (after CSI is configured) matters for actual MIPI data flow.
-	 */
-
-	dev_info(dev, "MT9M113: initialization complete (MIPI config deferred to s_stream)\n");
+	dev_info(dev, "MT9M113: initialization complete\n");
 	return 0;
 }
 
@@ -1967,121 +1931,26 @@ mt9m113_streaming:
 	 * 4. SEQ_CMD = 0x0001 - start streaming
 	 */
 	{
-		u64 readback;
-		u64 seq_state;
-
+		/*
+		 * MT9M113 streaming sequence - matches webOS exactly.
+		 * WebOS does NOT issue STANDBY or REFRESH_MODE before streaming.
+		 * It simply configures MIPI output, sets mode, and issues RUN.
+		 */
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
 		/*
-		 * Verify I2C communication and sensor state by reading chip ID.
-		 */
-		{
-			u64 chip_id = 0;
-			cci_read(sensor->regmap, MT9M114_CHIP_ID, &chip_id, NULL);
-			dev_info(&sensor->client->dev, "MT9M113: s_stream CHIP_ID=0x%llx (expect 0x2480)\n",
-				 chip_id);
-			if (chip_id != MT9M113_MODEL) {
-				dev_err(&sensor->client->dev, "MT9M113: sensor not responding!\n");
-				ret = -EIO;
-				goto error;
-			}
-		}
-
-		/* Note: MIPI output will be configured right before SEQ_CMD=RUN */
-
-		/*
-		 * Check current sequencer state. If already streaming (0x3),
-		 * we MUST issue STANDBY first before reconfiguring MIPI output.
-		 * If we configure MIPI while streaming, the new config won't
-		 * take effect properly.
-		 */
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-		dev_info(&sensor->client->dev, "MT9M113: pre-stream SEQ_STATE=0x%llx\n",
-			 seq_state);
-
-		/*
-		 * If sensor is already in streaming state (0x3), issue STANDBY
-		 * to stop it cleanly. This ensures MIPI output configuration
-		 * will take effect when we restart with RUN.
-		 */
-		if (seq_state == 0x3) {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: sensor streaming, issuing STANDBY first\n");
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						    MT9M113_SEQ_CMD_STANDBY);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: SEQ_CMD STANDBY failed: %d\n", ret);
-				goto error;
-			}
-
-			/* Wait for sensor to enter standby (SEQ_STATE != 0x3) */
-			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-			if (ret < 0)
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: STANDBY cmd timeout (continuing)\n");
-
-			msleep(50);
-
-			/* Verify we're no longer streaming */
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: after STANDBY, SEQ_STATE=0x%llx\n", seq_state);
-		}
-
-		/*
-		 * Configure MIPI output - this is the critical sequence from webOS.
-		 * This must happen AFTER CSIPHY is configured (which is done before
-		 * s_stream is called). Writing these before CSIPHY is ready causes
-		 * timing issues.
-		 *
-		 * webOS sequence in sensor_set_mode() after msm_camio_csi_config():
-		 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI output (LP clock)
+		 * Configure MIPI output - webOS sequence after msm_camio_csi_config():
+		 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI output
 		 * 2. RESET_REGISTER (0x301A) = 0x120C - enable MIPI streaming
 		 */
 		dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI output\n");
 		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 			  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
 		cci_write(sensor->regmap, MT9M114_RESET_REGISTER, 0x120C, NULL);
-		cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-			  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-		msleep(10);
-
-		/* Verify MIPI config writes */
-		{
-			u64 readback;
-			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: OUTPUT_CONTROL=0x%llx (expect 0x7A08)\n", readback);
-			cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: RESET_REGISTER=0x%llx (expect 0x120C)\n", readback);
-		}
-
-		/*
-		 * Issue REFRESH_MODE (0x0006) to apply the MIPI output settings.
-		 * webOS driver issues this after changing any sensor settings.
-		 * This tells the MCU to update its internal state with the new
-		 * output configuration.
-		 */
-		dev_info(&sensor->client->dev, "MT9M113: issuing REFRESH_MODE\n");
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					    MT9M113_SEQ_CMD_REFRESH_MODE);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD REFRESH_MODE failed: %d\n", ret);
-			goto error;
-		}
-
-		/* Wait for REFRESH_MODE to complete */
-		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-		if (ret < 0) {
-			dev_warn(&sensor->client->dev,
-				 "MT9M113: REFRESH_MODE timeout (continuing anyway)\n");
-		}
 
 		/*
 		 * Set capture mode via MCU interface.
-		 * From webOS kernel: SEQ_CAP_MODE=0x0030 for preview mode.
+		 * From webOS kernel: SEQ_CAP_MODE (0xA115) = 0x0030 for preview mode.
 		 */
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 		if (ret) {
@@ -2089,9 +1958,10 @@ mt9m113_streaming:
 			goto error;
 		}
 
+		/* webOS delays 40ms between SEQ_CAP_MODE and SEQ_CMD */
 		usleep_range(40000, 50000);
 
-		/* Issue SEQ_CMD=1 to start streaming */
+		/* Issue SEQ_CMD=1 (RUN) to start streaming */
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					    MT9M113_SEQ_CMD_RUN);
 		if (ret) {
@@ -2099,14 +1969,10 @@ mt9m113_streaming:
 			goto error;
 		}
 
-		/*
-		 * webOS does NOT poll for SEQ_CMD completion after RUN.
-		 * The MCU processes the streaming command in the background.
-		 * Just add a small delay, then check state.
-		 */
+		/* Small delay for streaming to start */
 		msleep(20);
 
-		/* Check sensor state (informational, don't fail on mismatch) */
+		/* Check sensor state */
 		{
 			u64 seq_state;
 			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
