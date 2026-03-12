@@ -13,9 +13,18 @@
 void mdp4_set_irqmask(struct mdp_kms *mdp_kms, uint32_t irqmask,
 		uint32_t old_irqmask)
 {
-	mdp4_write(to_mdp4_kms(mdp_kms), REG_MDP4_INTR_CLEAR,
+	struct mdp4_kms *mdp4_kms = to_mdp4_kms(mdp_kms);
+	uint32_t readback;
+
+	mdp4_write(mdp4_kms, REG_MDP4_INTR_CLEAR,
 		irqmask ^ (irqmask & old_irqmask));
-	mdp4_write(to_mdp4_kms(mdp_kms), REG_MDP4_INTR_ENABLE, irqmask);
+	mdp4_write(mdp4_kms, REG_MDP4_INTR_ENABLE, irqmask);
+
+	/* Read back to verify write took effect */
+	readback = mdp4_read(mdp4_kms, REG_MDP4_INTR_ENABLE);
+	if (readback != irqmask)
+		pr_warn("mdp4_set_irqmask: wrote 0x%08x but read back 0x%08x!\n",
+			irqmask, readback);
 }
 
 static void mdp4_irq_error_handler(struct mdp_irq *irq, uint32_t irqstatus)
@@ -102,11 +111,18 @@ int mdp4_enable_vblank(struct msm_kms *kms, struct drm_crtc *crtc)
 {
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
 	uint32_t irqmask = mdp4_crtc_vblank(crtc);
-
-	pr_info("mdp4_enable_vblank: crtc=%s irqmask=0x%08x\n",
-		crtc->name, irqmask);
+	uint32_t lcdc_en, intr_en, intr_status;
 
 	mdp4_enable(mdp4_kms);
+
+	/* Check LCDC and interrupt state before enabling vblank */
+	lcdc_en = mdp4_read(mdp4_kms, REG_MDP4_LCDC_ENABLE);
+	intr_en = mdp4_read(mdp4_kms, REG_MDP4_INTR_ENABLE);
+	intr_status = mdp4_read(mdp4_kms, REG_MDP4_INTR_STATUS);
+
+	pr_info("mdp4_enable_vblank: crtc=%s irqmask=0x%08x LCDC_EN=%d INTR_EN=0x%08x INTR_STATUS=0x%08x\n",
+		crtc->name, irqmask, lcdc_en, intr_en, intr_status);
+
 	mdp_update_vblank_mask(to_mdp_kms(kms), irqmask, true);
 	mdp4_disable(mdp4_kms);
 
