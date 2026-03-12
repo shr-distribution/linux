@@ -3477,10 +3477,21 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		}
 
 		/*
-		 * MT9M113 is now ready after MCU boot and PLL initialization.
-		 * Skip the SET_STATE poll since no command was issued - the
-		 * sensor entered its operational state automatically.
+		 * After MCU boot and PLL config, the sensor auto-enters streaming
+		 * state (SEQ_STATE=0x3). Issue STANDBY command immediately to
+		 * prevent this from breaking subsequent s_stream calls.
 		 */
+		dev_info(dev, "power_on: issuing STANDBY after MCU boot\n");
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					    MT9M113_SEQ_CMD_STANDBY);
+		if (ret) {
+			dev_warn(dev, "power_on: SEQ_CMD=STANDBY failed: %d\n", ret);
+			/* Continue anyway */
+		} else {
+			/* Wait for STANDBY to take effect */
+			msleep(100);
+		}
+
 		dev_info(dev, "power_on: MT9M113 init complete\n");
 		goto mt9m113_init_done;
 	}
