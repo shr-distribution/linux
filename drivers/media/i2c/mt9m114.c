@@ -1970,6 +1970,27 @@ mt9m113_streaming:
 		}
 
 		/*
+		 * Issue REFRESH_MODE (0x0006) to apply the MIPI output settings.
+		 * webOS driver issues this after changing any sensor settings.
+		 * This tells the MCU to update its internal state with the new
+		 * output configuration.
+		 */
+		dev_info(&sensor->client->dev, "MT9M113: issuing REFRESH_MODE\n");
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					    MT9M113_SEQ_CMD_REFRESH_MODE);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD REFRESH_MODE failed: %d\n", ret);
+			goto error;
+		}
+
+		/* Wait for REFRESH_MODE to complete */
+		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+		if (ret < 0) {
+			dev_warn(&sensor->client->dev,
+				 "MT9M113: REFRESH_MODE timeout (continuing anyway)\n");
+		}
+
+		/*
 		 * Set capture mode via MCU interface.
 		 * From webOS kernel: SEQ_CAP_MODE=0x0030 for preview mode.
 		 */
