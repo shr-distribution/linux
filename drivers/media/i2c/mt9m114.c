@@ -1974,47 +1974,18 @@ mt9m113_streaming:
 			 seq_state);
 
 		/*
-		 * If sensor is already in streaming state (0x3), it means the
-		 * previous stop_streaming didn't work properly or the sensor
-		 * got stuck. We need to force a soft reset to recover.
+		 * If sensor is already in streaming state (0x3), it's already
+		 * outputting data. webOS doesn't do a soft reset here - it just
+		 * proceeds with the streaming sequence. The sensor configuration
+		 * from init table is still valid.
 		 *
-		 * SEQ_CMD=STANDBY doesn't reliably work on MT9M113 when stuck.
-		 * Instead, do a soft reset via RESET_AND_MISC_CONTROL.
+		 * NOTE: We do NOT do a soft reset here! That would clear all MCU
+		 * configuration (resolution, AE, AWB, etc.) and leave the sensor
+		 * in an unconfigured state.
 		 */
 		if (seq_state == 0x3) {
-			dev_warn(&sensor->client->dev,
-				 "MT9M113: sensor stuck in streaming (0x3), doing soft reset\n");
-
-			/* Soft reset: write 1 then 0 to RESET_AND_MISC_CONTROL */
-			ret = cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
-					MT9M114_RESET_SOC, NULL);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: soft reset (set) failed: %d\n", ret);
-				goto error;
-			}
-			msleep(10);
-
-			ret = cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
-					0, NULL);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: soft reset (clear) failed: %d\n", ret);
-				goto error;
-			}
-			msleep(50);
-
-			/* Wait for MCU to boot */
-			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-			if (ret < 0) {
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: MCU boot poll timeout after reset (continuing)\n");
-			}
-
-			/* Check state after reset */
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
 			dev_info(&sensor->client->dev,
-				 "MT9M113: after soft reset, SEQ_STATE=0x%llx\n", seq_state);
+				 "MT9M113: sensor already streaming (0x3), continuing\n");
 		}
 
 		/*
