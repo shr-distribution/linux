@@ -959,6 +959,15 @@
 				      "lcdc_clk",
 				      "vsync_clk";
 
+			/*
+			 * MDP power domain must be claimed to prevent genpd from
+			 * disabling MDP_GDSC as "unused". Without this, the late
+			 * initcall genpd_power_off_unused_sync() disables the MDP
+			 * power rail, causing LCDC to stop and register writes to
+			 * fail. This was causing intermittent display blanking.
+			 */
+			power-domains = <&mmcc MDP_GDSC>;
+
 			lvds-vccs-3p3v-supply = <&pm8058_l10>;
 
 			status = "okay";
