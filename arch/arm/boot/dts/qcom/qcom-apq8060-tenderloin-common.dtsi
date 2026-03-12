@@ -2198,10 +2198,10 @@
 			mt9m113_ep: endpoint {
 				bus-type = <4>; /* V4L2_FWNODE_BUS_TYPE_CSI2_DPHY */
 				/*
-				 * Use data lane 0 (D0) per webOS lane_assign=0xe4
-				 * which is a 1:1 mapping with first lane on D0.
+				 * Single data lane using standard 1-indexed DT binding.
+				 * <1> = first physical data lane (D0 in hardware).
 				 */
-				data-lanes = <0>;
+				data-lanes = <1>;
 				clock-lanes = <0>;
 				link-frequencies = /bits/ 64 <96000000>;
 				remote-endpoint = <&camss_csi1_ep>;
@@ -2224,7 +2224,7 @@
 		port@1 {
 			camss_csi1_ep: endpoint {
 				bus-type = <4>; /* V4L2_FWNODE_BUS_TYPE_CSI2_DPHY */
-				data-lanes = <0>;
+				data-lanes = <1>;
 				clock-lanes = <0>;
 				remote-endpoint = <&mt9m113_ep>;
 			};
