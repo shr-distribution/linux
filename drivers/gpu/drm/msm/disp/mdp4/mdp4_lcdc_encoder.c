@@ -296,6 +296,9 @@ static void mdp4_lcdc_encoder_disable(struct drm_encoder *encoder)
 			to_mdp4_lcdc_encoder(encoder);
 	struct mdp4_kms *mdp4_kms = get_kms(encoder);
 
+	pr_info("mdp4_lcdc_encoder: disabling LCDC\n");
+	dump_stack();
+
 	if (WARN_ON(!mdp4_lcdc_encoder->enabled))
 		return;
 
