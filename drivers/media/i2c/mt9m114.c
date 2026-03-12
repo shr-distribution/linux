@@ -1921,26 +1921,42 @@ mt9m113_streaming:
 
 		/*
 		 * Check current sequencer state. If already streaming (0x3),
-		 * we need to issue STANDBY first and wait for it to take effect.
-		 * Otherwise SEQ_CMD=RUN will be ignored and no data will flow.
+		 * we MUST issue STANDBY first before reconfiguring MIPI output.
+		 * If we configure MIPI while streaming, the new config won't
+		 * take effect properly.
 		 */
 		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
 		dev_info(&sensor->client->dev, "MT9M113: pre-stream SEQ_STATE=0x%llx\n",
 			 seq_state);
 
 		/*
-		 * If sensor is already in streaming state (0x3), it's already
-		 * outputting data. webOS doesn't do a soft reset here - it just
-		 * proceeds with the streaming sequence. The sensor configuration
-		 * from init table is still valid.
-		 *
-		 * NOTE: We do NOT do a soft reset here! That would clear all MCU
-		 * configuration (resolution, AE, AWB, etc.) and leave the sensor
-		 * in an unconfigured state.
+		 * If sensor is already in streaming state (0x3), issue STANDBY
+		 * to stop it cleanly. This ensures MIPI output configuration
+		 * will take effect when we restart with RUN.
 		 */
 		if (seq_state == 0x3) {
 			dev_info(&sensor->client->dev,
-				 "MT9M113: sensor already streaming (0x3), continuing\n");
+				 "MT9M113: sensor streaming, issuing STANDBY first\n");
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+						    MT9M113_SEQ_CMD_STANDBY);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: SEQ_CMD STANDBY failed: %d\n", ret);
+				goto error;
+			}
+
+			/* Wait for sensor to enter standby (SEQ_STATE != 0x3) */
+			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+			if (ret < 0)
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: STANDBY cmd timeout (continuing)\n");
+
+			msleep(50);
+
+			/* Verify we're no longer streaming */
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+			dev_info(&sensor->client->dev,
+				 "MT9M113: after STANDBY, SEQ_STATE=0x%llx\n", seq_state);
 		}
 
 		/*
