@@ -490,14 +490,6 @@
 			clocks = <&mmcc SMMU_AHB_CLK>,
 				 <&mmcc VFE_AXI_CLK>;
 			clock-names = "smmu_pclk", "iommu_clk";
-			/*
-			 * VFE_AXI_CLK requires VFE_GDSC to be enabled for the
-			 * VFE hardware block to properly respond to AXI
-			 * transactions. Without this, enabling VFE_AXI_CLK
-			 * while VFE is powered off causes MMSS fabric issues
-			 * that affect MDP display output.
-			 */
-			power-domains = <&mmcc VFE_GDSC>;
 			#iommu-cells = <1>;
 			qcom,ncb = <2>;
 			status = "disabled";
@@ -1154,12 +1146,13 @@
 				      "csi1",
 				      "csi1_phy";
 
-			/*
-			 * Clock rates deferred to driver - setting rates at probe
-			 * via assigned-clocks causes MMSS fabric issues that affect
-			 * MDP display output on APQ8060/MSM8660. The camss driver
-			 * sets clock rates when streaming starts.
-			 */
+			/* Clock rates from webOS kernel msm_io_8x60.c */
+			assigned-clocks = <&mmcc VFE_CLK>,
+					  <&mmcc CSI0_SRC>,
+					  <&mmcc CSI1_SRC>;
+			assigned-clock-rates = <228570000>,
+					       <384000000>,
+					       <384000000>;
 
 			interconnects = <&mmss_fabric MMFAB_MAS_VFE
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
