@@ -851,7 +851,7 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL: bypass PLL */
 	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL (repeat for stability) */
 	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL (repeat for stability) */
-	{ 0x0010, 0x0114, 0 },		/* PLL_DIVIDERS */
+	{ 0x0010, 0x0A6E, 0 },		/* PLL_DIVIDERS (0x0A6E for MIPI output) */
 	{ 0x0012, 0x00F1, 0 },		/* PLL_P_DIVIDERS */
 	{ 0x0014, 0x2545, 0 },		/* PLL_CONTROL: TEST_BYPASS on */
 	{ 0x0014, 0x2547, 0 },		/* PLL_CONTROL: PLL_ENABLE on */
