@@ -66,6 +66,7 @@
 /* MT9M113 MCU variable addresses */
 #define MT9M113_SEQ_CMD					0xa103
 #define MT9M113_SEQ_CMD_RUN				0x0001
+#define MT9M113_SEQ_CMD_DO_PREVIEW			0x0002
 #define MT9M113_SEQ_CMD_STANDBY				0x0003
 #define MT9M113_SEQ_CMD_REFRESH				0x0005
 #define MT9M113_SEQ_CMD_REFRESH_MODE			0x0006
@@ -1512,6 +1513,48 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 		return ret;
 	}
 	dev_info(dev, "MT9M113: sequencer refresh completed\n");
+
+	/*
+	 * Issue DO_PREVIEW command per webOS driver.
+	 * webOS issues SEQ_CMD=0x0002 (DO_PREVIEW) twice with 200ms delay
+	 * after init. This ensures the sensor is in preview mode, NOT
+	 * streaming mode (SEQ_STATE=0x3). This is critical because:
+	 * - If sensor is already streaming, MCU commands may be ignored
+	 * - MIPI output must be configured BEFORE starting streaming
+	 * - s_stream will configure MIPI and issue SEQ_CMD=RUN
+	 */
+	dev_info(dev, "MT9M113: issuing DO_PREVIEW to enter preview mode\n");
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+				    MT9M113_SEQ_CMD_DO_PREVIEW);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: DO_PREVIEW failed: %d\n", ret);
+		return ret;
+	}
+	msleep(200);
+
+	/* Issue DO_PREVIEW again per webOS */
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+				    MT9M113_SEQ_CMD_DO_PREVIEW);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: DO_PREVIEW (2nd) failed: %d\n", ret);
+		return ret;
+	}
+
+	/* Poll for command completion */
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 1000);
+	if (ret < 0)
+		dev_warn(dev, "MT9M113: DO_PREVIEW poll timeout (continuing)\n");
+
+	/*
+	 * Verify sensor is NOT in streaming state.
+	 * SEQ_STATE should be something other than 0x3 (streaming).
+	 */
+	{
+		u64 seq_state;
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+		dev_info(dev, "MT9M113: after DO_PREVIEW, SEQ_STATE=0x%llx (should NOT be 0x3)\n",
+			 seq_state);
+	}
 
 	/*
 	 * NOTE: MIPI output configuration (OUTPUT_CONTROL, RESET_REGISTER,
