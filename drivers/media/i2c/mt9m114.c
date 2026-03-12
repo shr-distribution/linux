@@ -838,6 +838,13 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	{ 0x001C, 0x0000, 30 },		/* MCU_BOOT_MODE = 0, delay 30ms */
 
 	/*
+	 * Clock and standby control - must be set before PLL config.
+	 * webOS prev_snap_reg_tbl lines 32-33.
+	 */
+	{ 0x0016, 0x00FF, 0 },		/* CLOCKS_CONTROL */
+	{ 0x0018, 0x0028, 0 },		/* STANDBY_CONTROL */
+
+	/*
 	 * PLL configuration from webOS prev_snap_reg_tbl lines 34-43.
 	 * This must be done early, before any MCU variable access.
 	 */
@@ -851,6 +858,13 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	{ 0x0014, 0x3447, 20 },		/* PLL_CONTROL: SEL_LOCK_DET, delay 20ms */
 	{ 0x0014, 0x3047, 0 },		/* PLL_CONTROL: TEST_BYPASS off */
 	{ 0x0014, 0x3046, 0 },		/* PLL_CONTROL: PLL_BYPASS off */
+
+	/*
+	 * Reset and standby control after PLL - webOS lines 44-45.
+	 * This takes the sensor out of reset state.
+	 */
+	{ 0x001A, 0x0218, 0 },		/* RESET_AND_MISC_CONTROL */
+	{ 0x0018, 0x002A, 0 },		/* STANDBY_CONTROL */
 
 	/* OFIFO control */
 	{ 0x321C, 0x0003, 0 },		/* OFIFO_CONTROL_STATUS */
