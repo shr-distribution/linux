@@ -831,13 +831,26 @@ struct mt9m113_reg_entry {
  */
 static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	/*
-	 * MCU boot toggle - resets MCU state after PLL config.
+	 * MCU boot toggle - resets MCU state.
 	 * webOS has this at the very start of their init table.
-	 * This clears any auto-streaming state and prepares the
-	 * MCU to accept new configuration.
 	 */
 	{ 0x001C, 0x0001, 0 },		/* MCU_BOOT_MODE = 1 */
 	{ 0x001C, 0x0000, 30 },		/* MCU_BOOT_MODE = 0, delay 30ms */
+
+	/*
+	 * PLL configuration from webOS prev_snap_reg_tbl lines 34-43.
+	 * This must be done early, before any MCU variable access.
+	 */
+	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL: bypass PLL */
+	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL (repeat for stability) */
+	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL (repeat for stability) */
+	{ 0x0010, 0x0114, 0 },		/* PLL_DIVIDERS */
+	{ 0x0012, 0x00F1, 0 },		/* PLL_P_DIVIDERS */
+	{ 0x0014, 0x2545, 0 },		/* PLL_CONTROL: TEST_BYPASS on */
+	{ 0x0014, 0x2547, 0 },		/* PLL_CONTROL: PLL_ENABLE on */
+	{ 0x0014, 0x3447, 20 },		/* PLL_CONTROL: SEL_LOCK_DET, delay 20ms */
+	{ 0x0014, 0x3047, 0 },		/* PLL_CONTROL: TEST_BYPASS off */
+	{ 0x0014, 0x3046, 0 },		/* PLL_CONTROL: PLL_BYPASS off */
 
 	/* OFIFO control */
 	{ 0x321C, 0x0003, 0 },		/* OFIFO_CONTROL_STATUS */
@@ -3511,129 +3524,42 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	}
 
 	/*
-	 * MT9M113 requires MCU boot and PLL initialization before it can
-	 * respond to commands. This sequence is derived from the webOS kernel.
+	 * MT9M113: Skip MCU boot and PLL config here - let the init table
+	 * handle everything.
+	 *
+	 * The webOS driver does NOT do MCU boot or PLL config before the
+	 * init table. It just powers on the sensor and immediately applies
+	 * the init table (mt9m113_reg_init). Doing MCU boot and PLL config
+	 * here leaves the sensor in streaming state (SEQ_STATE=0x3) and
+	 * makes the MCU unresponsive to commands.
+	 *
+	 * The init table includes:
+	 * - MCU_BOOT_MODE toggle (0x001C = 1, then 0)
+	 * - PLL configuration
+	 * - All MCU variable settings
+	 * - REFRESH command to apply settings
 	 */
 	if (sensor->expected_model == MT9M113_MODEL) {
-		u64 clocks_val = 0;
+		u64 chip_id = 0;
 		int read_ret;
 
 		/*
-		 * Check if sensor is already initialized by reading CLOCKS_CONTROL.
-		 * At fresh power-on, this reads 0x0. After initialization, it
-		 * reads non-zero (e.g., 0x2df). During runtime resume, the sensor
-		 * retains its configuration from boot, so we can skip MCU boot
-		 * and PLL init to avoid I2C errors on already-configured registers.
+		 * Just verify sensor is responding to I2C by reading chip ID.
+		 * Don't do any configuration - let init table handle it.
 		 */
-		read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL, &clocks_val, NULL);
-		dev_info(dev, "power_on: MT9M113 CLOCKS_CONTROL=0x%llx ret=%d\n",
-			 clocks_val, read_ret);
-
+		read_ret = cci_read(sensor->regmap, MT9M114_CHIP_ID, &chip_id, NULL);
 		if (read_ret < 0) {
-			/*
-			 * I2C read failed - sensor not responding. This can happen
-			 * at cold boot if the clock isn't stable yet. Retry once
-			 * after additional delay.
-			 */
-			dev_warn(dev, "power_on: CLOCKS_CONTROL read failed, retrying after 50ms\n");
+			dev_warn(dev, "power_on: MT9M113 I2C read failed, retrying after 50ms\n");
 			msleep(50);
-			read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL, &clocks_val, NULL);
-			dev_info(dev, "power_on: MT9M113 CLOCKS_CONTROL retry=0x%llx ret=%d\n",
-				 clocks_val, read_ret);
+			read_ret = cci_read(sensor->regmap, MT9M114_CHIP_ID, &chip_id, NULL);
 			if (read_ret < 0) {
-				dev_err(dev, "power_on: sensor not responding to I2C\n");
+				dev_err(dev, "power_on: MT9M113 not responding to I2C\n");
 				ret = read_ret;
 				goto error_clock;
 			}
 		}
-
-		if (clocks_val != 0) {
-			/*
-			 * Sensor is already initialized (runtime resume case).
-			 * Skip MCU boot and PLL config - just wait for stabilization.
-			 */
-			dev_info(dev, "power_on: MT9M113 already initialized, skipping MCU boot\n");
-			msleep(50);
-			goto mt9m113_init_done;
-		}
-
-		dev_info(dev, "power_on: MT9M113 MCU boot sequence starting\n");
-
-		/* Boot the MCU */
-		cci_write(sensor->regmap, MT9M114_MCU_BOOT_MODE, 0x0001, &ret);
-		if (ret < 0) {
-			dev_err(dev, "power_on: MCU_BOOT_MODE write 1 failed: %d\n", ret);
-			goto error_clock;
-		}
-		usleep_range(1000, 2000);
-		cci_write(sensor->regmap, MT9M114_MCU_BOOT_MODE, 0x0000, &ret);
-		if (ret < 0) {
-			dev_err(dev, "power_on: MCU_BOOT_MODE write 0 failed: %d\n", ret);
-			goto error_clock;
-		}
-		dev_info(dev, "power_on: MCU boot complete, waiting 200ms\n");
-		msleep(200); /* Extended delay for sensor stabilization */
-
-		/*
-		 * Note: MIPI_CONTROL and RESET_REGISTER were already configured
-		 * earlier in the power_on sequence (right after soft reset),
-		 * matching the webOS kernel initialization order.
-		 */
-
-		/*
-		 * PLL configuration from webOS pll_setup_tbl.
-		 * This sequence is critical for correct MIPI clock output.
-		 * PLL_DIVIDERS=0x0A6E configures the MIPI data rate.
-		 * Using wrong values causes CSIPHY to fail detecting data.
-		 */
-		dev_info(dev, "power_on: configuring PLL (webOS sequence)\n");
-
-		/* Bypass PLL, clear power-down bit */
-		cci_update_bits(sensor->regmap, MT9M114_PLL_CONTROL,
-				0x0001, 0x0001, &ret);  /* Set bit 0 (bypass) */
-		cci_update_bits(sensor->regmap, MT9M114_PLL_CONTROL,
-				0x0002, 0x0000, &ret);  /* Clear bit 1 (power-down off) */
-
-		/* Configure PLL dividers */
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_DIVIDERS, 0x0A6E, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_P_DIVIDERS, 0x00F1, &ret);
-
-		/* Enable PLL */
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2545, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2547, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3447, &ret);
-		if (ret < 0) {
-			dev_err(dev, "power_on: PLL config phase 1 failed: %d\n", ret);
-			goto error_clock;
-		}
-
-		/* Wait 1ms for PLL lock (webOS delay) then complete sequence */
-		usleep_range(1000, 2000);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3047, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3046, &ret);
-
-		/* Set bit 3 of RESET_AND_MISC_CONTROL (output control) */
-		cci_update_bits(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
-				0x0008, 0x0008, &ret);
-		/* Clear bit 0 of STANDBY (out of standby) */
-		cci_update_bits(sensor->regmap, MT9M114_STANDBY_CONTROL,
-				0x0001, 0x0000, &ret);
-		if (ret < 0) {
-			dev_err(dev, "power_on: PLL config phase 2 failed: %d\n", ret);
-			goto error_clock;
-		}
-		dev_info(dev, "power_on: PLL config complete\n");
-		msleep(50); /* Wait for sensor to stabilize */
-
-		/*
-		 * NOTE: Do NOT do a soft reset here! The soft reset clears
-		 * the PLL and MCU configuration we just applied.
-		 * webOS does NOT do a soft reset in its init sequence.
-		 * The init table will be applied next and will configure
-		 * the sensor properly.
-		 */
-		dev_info(dev, "power_on: MT9M113 PLL config complete\n");
+		dev_info(dev, "power_on: MT9M113 chip_id=0x%llx, skipping MCU/PLL (handled by init table)\n",
+			 chip_id);
 		goto mt9m113_init_done;
 	}
 
@@ -3652,39 +3578,12 @@ mt9m113_init_done:
 	 * MT9M113 uses a different command mechanism (MCU indirect via
 	 * 0x098C/0x0990) and doesn't support the MT9M114's COMMAND_REGISTER.
 	 *
-	 * Check the sensor state at end of init. Since we no longer enable
-	 * MIPI output during init (it's done in s_stream), the sensor should
-	 * not be in streaming state (0x3).
+	 * We don't check SEQ_STATE here - the sensor hasn't been initialized
+	 * yet. The init table will be applied by mt9m113_sensor_init() which
+	 * is called from mt9m114_initialize() later.
 	 */
 	if (sensor->expected_model == MT9M113_MODEL) {
-		u64 seq_state = 0;
-
-		/* Check current state */
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-		dev_info(dev, "power_on: MT9M113 SEQ_STATE=0x%llx (expect 0x0, not streaming)\n",
-			 seq_state);
-
-		if (seq_state == 0x3) {
-			/*
-			 * Unexpected: sensor in streaming state after init.
-			 * Try MCU STANDBY command. Do NOT use hardware standby
-			 * as it corrupts MCU state and breaks s_stream.
-			 */
-			dev_warn(dev, "power_on: MT9M113 unexpectedly streaming, trying STANDBY\n");
-
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						    MT9M113_SEQ_CMD_STANDBY);
-			if (ret) {
-				dev_err(dev, "power_on: SEQ_CMD=STANDBY failed: %d\n", ret);
-				/* Continue anyway - s_stream may still work */
-			} else {
-				msleep(50);
-				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-				dev_info(dev, "power_on: after STANDBY, SEQ_STATE=0x%llx\n",
-					 seq_state);
-			}
-		}
-
+		dev_info(dev, "power_on: MT9M113 ready for init table\n");
 		return 0;
 	}
 
