@@ -87,10 +87,10 @@
  * Value 0x7A08 enables MIPI CSI-2 output with LP (low power) clock mode.
  * Value 0x7A0C enables MIPI CSI-2 output with continuous clock mode.
  * Per webOS: "0x7a08 will enable LP mode, while 0x7A0C will let MIPI clock continuous"
- * Try continuous clock as CSIPHY may require it.
+ * Using 0x7A08 to match webOS driver exactly.
  */
 #define MT9M113_OUTPUT_CONTROL				CCI_REG16(0x3400)
-#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A0C
+#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08
 
 /*
  * MT9M113 CUSTOM_SHORT_PKT register (0x3404)
@@ -851,7 +851,7 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL: bypass PLL */
 	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL (repeat for stability) */
 	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL (repeat for stability) */
-	{ 0x0010, 0x0A6E, 0 },		/* PLL_DIVIDERS (0x0A6E for MIPI output) */
+	{ 0x0010, 0x0114, 0 },		/* PLL_DIVIDERS (matches webOS init table) */
 	{ 0x0012, 0x00F1, 0 },		/* PLL_P_DIVIDERS */
 	{ 0x0014, 0x2545, 0 },		/* PLL_CONTROL: TEST_BYPASS on */
 	{ 0x0014, 0x2547, 0 },		/* PLL_CONTROL: PLL_ENABLE on */
@@ -2036,7 +2036,7 @@ mt9m113_streaming:
 		 * timing issues.
 		 *
 		 * webOS sequence in sensor_set_mode() after msm_camio_csi_config():
-		 * 1. OUTPUT_CONTROL (0x3400) = 0x7A0C - enable MIPI continuous clock
+		 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI output (LP clock)
 		 * 2. RESET_REGISTER (0x301A) = 0x120C - enable MIPI streaming
 		 */
 		dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI output\n");
@@ -2052,7 +2052,7 @@ mt9m113_streaming:
 			u64 readback;
 			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
 			dev_info(&sensor->client->dev,
-				 "MT9M113: OUTPUT_CONTROL=0x%llx (expect 0x7A0C)\n", readback);
+				 "MT9M113: OUTPUT_CONTROL=0x%llx (expect 0x7A08)\n", readback);
 			cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
 			dev_info(&sensor->client->dev,
 				 "MT9M113: RESET_REGISTER=0x%llx (expect 0x120C)\n", readback);
