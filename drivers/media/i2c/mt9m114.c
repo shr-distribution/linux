@@ -3592,27 +3592,13 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 		}
 
 		/*
-		 * After MCU boot and PLL config, the sensor auto-enters streaming
-		 * state (SEQ_STATE=0x3). MCU STANDBY command doesn't work when
-		 * the sensor is already streaming. Use soft reset instead to
-		 * completely reset the MCU state.
+		 * NOTE: Do NOT do a soft reset here! The soft reset clears
+		 * the PLL and MCU configuration we just applied.
+		 * webOS does NOT do a soft reset in its init sequence.
+		 * The init table will be applied next and will configure
+		 * the sensor properly.
 		 */
-		dev_info(dev, "power_on: soft reset to clear streaming state\n");
-		cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
-			  MT9M114_RESET_SOC, NULL);
-		msleep(10);
-		cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
-			  0, NULL);
-		msleep(50);
-
-		/* Wait for MCU to boot after reset */
-		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-		if (ret < 0) {
-			dev_warn(dev, "power_on: MCU boot timeout after reset\n");
-			/* Continue anyway */
-		}
-
-		dev_info(dev, "power_on: MT9M113 init complete\n");
+		dev_info(dev, "power_on: MT9M113 PLL config complete\n");
 		goto mt9m113_init_done;
 	}
 
