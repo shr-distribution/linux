@@ -1804,6 +1804,32 @@ mt9m113_streaming:
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
 		/*
+		 * Verify I2C communication and sensor state by reading chip ID.
+		 */
+		{
+			u64 chip_id = 0;
+			cci_read(sensor->regmap, MT9M114_CHIP_ID, &chip_id, NULL);
+			dev_info(&sensor->client->dev, "MT9M113: s_stream CHIP_ID=0x%llx (expect 0x2480)\n",
+				 chip_id);
+			if (chip_id != MT9M113_MODEL) {
+				dev_err(&sensor->client->dev, "MT9M113: sensor not responding!\n");
+				ret = -EIO;
+				goto error;
+			}
+		}
+
+		/*
+		 * Unlock access to MIPI and other protected registers.
+		 * This is required after any reset and must be done before
+		 * writing to OUTPUT_CONTROL (0x3400).
+		 */
+		ret = cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: ACCESS_CTL_STAT unlock failed: %d\n", ret);
+			goto error;
+		}
+
+		/*
 		 * Check current sequencer state. If already streaming (0x3),
 		 * we need to issue STANDBY first and wait for it to take effect.
 		 * Otherwise SEQ_CMD=RUN will be ignored and no data will flow.
@@ -3496,6 +3522,14 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 			dev_warn(dev, "power_on: MCU boot timeout after reset\n");
 			/* Continue anyway */
 		}
+
+		/*
+		 * Unlock access to MIPI and other protected registers.
+		 * The soft reset clears the ACCESS_CTL_STAT register, so we
+		 * must re-unlock it. This is required for OUTPUT_CONTROL (0x3400)
+		 * writes to work in s_stream.
+		 */
+		cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, NULL);
 
 		dev_info(dev, "power_on: MT9M113 init complete\n");
 		goto mt9m113_init_done;
