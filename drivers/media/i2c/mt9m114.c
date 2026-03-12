@@ -1429,27 +1429,54 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	 * Note: This does NOT start streaming. Streaming is started in
 	 * s_stream by issuing SEQ_CMD=RUN.
 	 */
-	dev_info(dev, "MT9M113: configuring MIPI output (OUTPUT_CONTROL=0x7A08)\n");
+	/*
+	 * Configure MIPI output - webOS writes these registers together:
+	 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 to enable MIPI output
+	 * 2. RESET_REGISTER (0x301A) = 0x120C to configure MIPI mode
+	 * 3. CUSTOM_SHORT_PKT (0x3404) = 0x0080 to enable frame markers
+	 */
+	dev_info(dev, "MT9M113: configuring MIPI output\n");
+
+	/* Write OUTPUT_CONTROL - enable MIPI LP mode */
 	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 			MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+	dev_info(dev, "MT9M113: OUTPUT_CONTROL write ret=%d\n", ret);
 	if (ret < 0) {
 		dev_err(dev, "MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * Write RESET_REGISTER - per webOS driver this is written right
+	 * after OUTPUT_CONTROL. 0x120C enables MIPI interface mode.
+	 */
+	ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER, 0x120C, NULL);
+	dev_info(dev, "MT9M113: RESET_REGISTER write (0x301A=0x120C) ret=%d\n", ret);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: RESET_REGISTER write failed: %d\n", ret);
 		return ret;
 	}
 
 	/* Enable Frame Start/End short packets */
 	ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
 			MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+	dev_info(dev, "MT9M113: CUSTOM_SHORT_PKT write ret=%d\n", ret);
 	if (ret < 0) {
 		dev_err(dev, "MT9M113: CUSTOM_SHORT_PKT write failed: %d\n", ret);
 		return ret;
 	}
+
+	/* Small delay to let registers settle */
+	msleep(10);
 
 	/* Verify the writes */
 	{
 		u64 readback = 0;
 		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
 		dev_info(dev, "MT9M113: OUTPUT_CONTROL readback=0x%llx (expect 0x7A08)\n",
+			 readback);
+		cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
+		dev_info(dev, "MT9M113: RESET_REGISTER readback=0x%llx (expect 0x120C)\n",
 			 readback);
 		cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
 		dev_info(dev, "MT9M113: CUSTOM_SHORT_PKT readback=0x%llx (expect 0x80)\n",
@@ -1849,17 +1876,24 @@ mt9m113_streaming:
 		/*
 		 * Verify MIPI output is still configured (was set during init).
 		 * If power domains were cycled, these might need to be re-written.
+		 *
+		 * webOS always writes these during streaming start:
+		 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08
+		 * 2. RESET_REGISTER (0x301A) = 0x120C
 		 */
 		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
 		dev_info(&sensor->client->dev,
 			 "MT9M113: OUTPUT_CONTROL=0x%llx (expect 0x7A08)\n", readback);
 		if (readback != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
 			dev_warn(&sensor->client->dev,
-				 "MT9M113: OUTPUT_CONTROL lost, re-configuring\n");
+				 "MT9M113: OUTPUT_CONTROL lost, re-configuring MIPI\n");
 			cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 				  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+			cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+				  0x120C, NULL);
 			cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
 				  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+			msleep(10);
 		}
 
 		/*
