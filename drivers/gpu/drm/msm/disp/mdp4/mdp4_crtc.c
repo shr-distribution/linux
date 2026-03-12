@@ -262,6 +262,9 @@ static void mdp4_crtc_atomic_disable(struct drm_crtc *crtc,
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
 	unsigned long flags;
 
+	pr_info("mdp4_crtc_atomic_disable: %s\n", mdp4_crtc->name);
+	dump_stack();
+
 	DBG("%s", mdp4_crtc->name);
 
 	if (WARN_ON(!mdp4_crtc->enabled))
