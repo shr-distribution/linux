@@ -2166,6 +2166,8 @@
 	camera@3c {
 		compatible = "aptina,mt9m113";
 		reg = <0x3c>;
+		/* FIXME: Camera causes display blank - disable for testing */
+		status = "disabled";
 
 		/*
 		 * The legacy webOS driver controls power via powerdown GPIO only,
@@ -2204,7 +2206,8 @@
  * MT9M113 sensor support added to mt9m114.c driver.
  */
 &camss {
-	status = "okay";
+	/* FIXME: Camera causes display blank - disable for testing */
+	status = "disabled";
 
 	ports {
 		/* CSIPHY1 (CSI_1) input - MT9M113 front camera */
