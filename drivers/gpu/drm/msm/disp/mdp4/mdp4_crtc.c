@@ -4,6 +4,8 @@
  * Author: Rob Clark <robdclark@gmail.com>
  */
 
+#include <linux/pm_runtime.h>
+
 #include <drm/drm_crtc.h>
 #include <drm/drm_flip_work.h>
 #include <drm/drm_managed.h>
@@ -260,6 +262,7 @@ static void mdp4_crtc_atomic_disable(struct drm_crtc *crtc,
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
+	struct drm_device *dev = crtc->dev;
 	unsigned long flags;
 
 	pr_info("mdp4_crtc_atomic_disable: %s\n", mdp4_crtc->name);
@@ -284,6 +287,12 @@ static void mdp4_crtc_atomic_disable(struct drm_crtc *crtc,
 		spin_unlock_irqrestore(&mdp4_kms->dev->event_lock, flags);
 	}
 
+	/*
+	 * Release pm_runtime reference to allow MDP_GDSC to be disabled
+	 * when display is off. This balances the get in atomic_enable.
+	 */
+	pm_runtime_put_sync(dev->dev);
+
 	mdp4_crtc->enabled = false;
 }
 
@@ -292,11 +301,20 @@ static void mdp4_crtc_atomic_enable(struct drm_crtc *crtc,
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
+	struct drm_device *dev = crtc->dev;
 
 	DBG("%s", mdp4_crtc->name);
 
 	if (WARN_ON(mdp4_crtc->enabled))
 		return;
+
+	/*
+	 * Acquire pm_runtime reference to keep MDP_GDSC power domain active
+	 * while display is on. Without this, genpd_power_off_unused_sync()
+	 * may disable the MDP power domain as "unused", causing LCDC to stop
+	 * and register writes to fail. This is balanced by put in atomic_disable.
+	 */
+	pm_runtime_get_sync(dev->dev);
 
 	mdp4_enable(mdp4_kms);
 
