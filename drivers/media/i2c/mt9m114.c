@@ -1422,11 +1422,39 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	dev_info(dev, "MT9M113: sequencer refresh completed\n");
 
 	/*
-	 * NOTE: MIPI output configuration is done in s_stream, not here.
-	 * Configuring MIPI output during init causes the sensor to enter
-	 * streaming state (SEQ_STATE=0x3) which breaks subsequent s_stream
-	 * calls. The webOS driver also only configures MIPI at streaming start.
+	 * Configure MIPI output - must be done right after MCU refresh
+	 * while the sensor is still fully powered and all registers are
+	 * accessible. webOS does this here, not in s_stream.
+	 *
+	 * Note: This does NOT start streaming. Streaming is started in
+	 * s_stream by issuing SEQ_CMD=RUN.
 	 */
+	dev_info(dev, "MT9M113: configuring MIPI output (OUTPUT_CONTROL=0x7A08)\n");
+	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+			MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
+		return ret;
+	}
+
+	/* Enable Frame Start/End short packets */
+	ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+			MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: CUSTOM_SHORT_PKT write failed: %d\n", ret);
+		return ret;
+	}
+
+	/* Verify the writes */
+	{
+		u64 readback = 0;
+		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+		dev_info(dev, "MT9M113: OUTPUT_CONTROL readback=0x%llx (expect 0x7A08)\n",
+			 readback);
+		cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
+		dev_info(dev, "MT9M113: CUSTOM_SHORT_PKT readback=0x%llx (expect 0x80)\n",
+			 readback);
+	}
 
 	dev_info(dev, "MT9M113: initialization complete\n");
 	return 0;
@@ -1819,14 +1847,19 @@ mt9m113_streaming:
 		}
 
 		/*
-		 * Unlock access to MIPI and other protected registers.
-		 * This is required after any reset and must be done before
-		 * writing to OUTPUT_CONTROL (0x3400).
+		 * Verify MIPI output is still configured (was set during init).
+		 * If power domains were cycled, these might need to be re-written.
 		 */
-		ret = cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: ACCESS_CTL_STAT unlock failed: %d\n", ret);
-			goto error;
+		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+		dev_info(&sensor->client->dev,
+			 "MT9M113: OUTPUT_CONTROL=0x%llx (expect 0x7A08)\n", readback);
+		if (readback != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+			dev_warn(&sensor->client->dev,
+				 "MT9M113: OUTPUT_CONTROL lost, re-configuring\n");
+			cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+			cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+				  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
 		}
 
 		/*
@@ -1882,28 +1915,6 @@ mt9m113_streaming:
 				 "MT9M113: after soft reset, SEQ_STATE=0x%llx\n", seq_state);
 		}
 
-		/*
-		 * Enable MIPI output interface.
-		 * This must be done AFTER CSI controller is ready to receive.
-		 */
-		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
-			goto error;
-		}
-
-		/*
-		 * Enable Frame Start/End short packets.
-		 * Without this, VFE never receives CAMIF_SOF interrupts.
-		 */
-		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
-			goto error;
-		}
-
 		/* Configure RESET_REGISTER for streaming mode */
 		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
@@ -1911,12 +1922,6 @@ mt9m113_streaming:
 			dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
 			goto error;
 		}
-
-		/* Read back to verify */
-		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx\n", readback);
-		cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx\n", readback);
 
 		/*
 		 * Set capture mode via MCU interface.
@@ -3341,15 +3346,6 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 				msleep(200); /* webOS uses 200ms delay after reset */
 
 				/*
-				 * Unlock register access via ACCESS_CTL_STAT.
-				 * webOS kernel writes 0x0982 = 0x0001 which may be
-				 * required to unlock access to MIPI registers.
-				 */
-				cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, &ret);
-				if (ret < 0)
-					dev_warn(dev, "power_on: ACCESS_CTL_STAT write failed: %d\n", ret);
-
-				/*
 				 * NOTE: MIPI output (OUTPUT_CONTROL, CUSTOM_SHORT_PKT) is
 				 * NOT configured here. Enabling MIPI during power_on causes
 				 * the sensor to enter streaming state (SEQ_STATE=0x3) before
@@ -3522,14 +3518,6 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 			dev_warn(dev, "power_on: MCU boot timeout after reset\n");
 			/* Continue anyway */
 		}
-
-		/*
-		 * Unlock access to MIPI and other protected registers.
-		 * The soft reset clears the ACCESS_CTL_STAT register, so we
-		 * must re-unlock it. This is required for OUTPUT_CONTROL (0x3400)
-		 * writes to work in s_stream.
-		 */
-		cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, NULL);
 
 		dev_info(dev, "power_on: MT9M113 init complete\n");
 		goto mt9m113_init_done;
