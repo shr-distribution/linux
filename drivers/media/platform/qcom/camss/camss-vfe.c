@@ -1134,18 +1134,17 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 4b: Configure CAMIF based on mode (PIX vs RDI)
 	 *
-	 * For MIPI CSI-2 input, use EFS (Embedded Frame Sync) mode.
-	 * The CSIPHY decodes MIPI short packets (FS/FE/LS/LE) and passes
-	 * sync codes through the pixel stream. EFS_CFG register defines
-	 * which byte patterns mark frame/line boundaries.
-	 *
 	 * For PIX mode (ISP processing):
 	 *   - camif2vfeEnable (bit 8): Route to VFE ISP pipeline
-	 *   - syncMode = EFS (bits 4:3 = 1): Embedded Frame Sync for MIPI
+	 *   - syncMode = APS (bits 4:3 = 0): Active Pixel Sync for MIPI CSI-2
 	 *
 	 * For RDI mode (raw capture):
 	 *   - camif2busEnable (bit 10): Route raw data directly to AXI bus
-	 *   - syncMode = EFS (bits 4:3 = 1): Embedded Frame Sync for MIPI
+	 *   - syncMode = APS (bits 4:3 = 0): Active Pixel Sync
+	 *
+	 * Note: APS mode is correct for MIPI CSI-2 input. EFS mode expects
+	 * embedded sync codes in pixel data, but MIPI uses protocol-level
+	 * short packets (FS/FE) which are stripped by CSIPHY.
 	 */
 	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
 		/*
@@ -1153,9 +1152,9 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 * Data path: CSIPHY -> VFE CAMIF -> VFE ISP -> WM -> memory
 		 */
 		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: enable CAMIF to VFE */
-		      VFE31_CAMIF_CFG_SYNC_MODE_EFS;	/* bits 4:3: EFS sync mode */
+		      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
 		dev_info(vfe->camss->dev,
-			 "VFE: CAMIF_CFG (PIX mode) writing 0x%03x (CAMIF2VFE + EFS)\n", val);
+			 "VFE: CAMIF_CFG (PIX mode) writing 0x%03x (CAMIF2VFE + APS)\n", val);
 	} else {
 		/*
 		 * RDI mode: Raw bypass to memory.
@@ -1163,9 +1162,9 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 */
 		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: still need this path */
 		      VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus */
-		      VFE31_CAMIF_CFG_SYNC_MODE_EFS;	/* bits 4:3: EFS sync mode */
+		      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
 		dev_info(vfe->camss->dev,
-			 "VFE: CAMIF_CFG (RDI mode) writing 0x%03x (CAMIF2VFE + CAMIF2BUS + EFS)\n", val);
+			 "VFE: CAMIF_CFG (RDI mode) writing 0x%03x (CAMIF2VFE + CAMIF2BUS + APS)\n", val);
 	}
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CFG);
 	wmb();
