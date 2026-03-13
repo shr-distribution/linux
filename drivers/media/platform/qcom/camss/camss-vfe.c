@@ -882,43 +882,41 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 #define VFE31_AXI_OUT_MODE_PREVIEW	0x200	/* OUTPUT_2: preview w/ VFE ISP */
 #define VFE31_AXI_OUT_MODE_RAW_SNAPSHOT	0x60	/* CAMIF_TO_AXI: raw bypass */
 
-#define VFE31_CAMIF_CFG			0x1E4
 /*
- * CAMIF_CFG bits (from webOS VFE_CAMIFConfigType):
- * - Bit 8: camif2vfeEnable - CAMIF to VFE data path enable
- * - Bit 10: camif2busEnable - CAMIF to bus (memory) enable
- * Note: BIT(6) is reserved and should NOT be used!
+ * VFE31 CAMIF register block layout (32 bytes at 0x1E4-0x203):
+ *
+ * IMPORTANT: VFE31 does NOT have a separate CAMIF_CFG register with
+ * camif2vfeEnable/camif2busEnable bits like VFE8x! Those bits exist only
+ * on VFE8x at offset 0x118. On VFE31, data routing is controlled entirely
+ * through the AXI output mode register at 0x040.
+ *
+ * Correct VFE31 CAMIF register map (from webOS vfe_camifcfg structure):
+ * 0x1E4: EFS_CFG - Embedded Frame Sync codes for MIPI CSI-2
+ *        [7:0]   efsEndOfLine
+ *        [15:8]  efsStartOfLine
+ *        [23:16] efsEndOfFrame
+ *        [31:24] efsStartOfFrame
+ *        For APS mode (no embedded sync), set to 0
+ * 0x1E8: FRAME_CFG - frame dimensions
+ *        [13:0]  pixelsPerLine (total bytes per line for YUV)
+ *        [29:16] linesPerFrame
+ * 0x1EC: WINDOW_WIDTH_CFG - horizontal capture window
+ *        [13:0]  lastPixel (0-indexed)
+ *        [29:16] firstPixel (usually 0)
+ * 0x1F0: WINDOW_HEIGHT_CFG - vertical capture window
+ *        [13:0]  lastLine (0-indexed)
+ *        [29:16] firstLine (usually 0)
+ * 0x1F4: SUBSAMPLE_CFG_0 - pixel/line subsampling
+ * 0x1F8: SUBSAMPLE_CFG_1 - frame subsampling
+ * 0x1FC: EPOCH_CFG - epoch interrupt lines
  */
-/*
- * VFE31 CAMIF_CFG bit definitions (from VFE_CAMIFConfigType structure):
- *   Bit 0: reserved
- *   Bit 1: VSyncEdge
- *   Bit 2: HSyncEdge
- *   Bits 4:3: syncMode (0=APS, 1=EFS, 2=ELS)
- *   Bit 5: vfeSubsampleEnable
- *   Bit 7: busSubsampleEnable
- *   Bit 8: camif2vfeEnable - route data to VFE processing pipeline
- *   Bit 10: camif2busEnable - route data directly to AXI bus (for raw output)
- */
-#define VFE31_CAMIF_CFG_VSYNC_EDGE	BIT(1)
-#define VFE31_CAMIF_CFG_HSYNC_EDGE	BIT(2)
-#define VFE31_CAMIF_CFG_SYNC_MODE_APS	(0 << 3)	/* Active Pixel Sync */
-#define VFE31_CAMIF_CFG_SYNC_MODE_EFS	(1 << 3)	/* Embedded Frame Sync */
-#define VFE31_CAMIF_CFG_SYNC_MODE_ELS	(2 << 3)	/* Embedded Line Sync */
-#define VFE31_CAMIF_CFG_CAMIF2VFE_EN	BIT(8)	/* CAMIF -> VFE pipeline */
-#define VFE31_CAMIF_CFG_CAMIF2BUS_EN	BIT(10)	/* CAMIF -> AXI bus (raw) */
-/* Note: Bits 0-1 are NOT MIPI enable. Bit 0 is reserved, bit 1 is VSyncEdge. */
-/*
- * CAMIF register block (0x1E4-0x203):
- * 0x1E4: CAMIF_CFG, 0x1E8: EFS_CFG, 0x1EC: FRAME_CFG, etc.
- */
-#define VFE31_CAMIF_EFS_CFG		0x1E8
-#define VFE31_CAMIF_FRAME_CFG		0x1EC	/* NOT 0x1E8! */
-#define VFE31_CAMIF_WINDOW_WIDTH_CFG	0x1F0
-#define VFE31_CAMIF_WINDOW_HEIGHT_CFG	0x1F4
-#define VFE31_CAMIF_SUBSAMPLE_CFG_0	0x1F8
-#define VFE31_CAMIF_SUBSAMPLE_CFG_1	0x1FC
-#define VFE31_CAMIF_EPOCH_CFG		0x200
+#define VFE31_CAMIF_EFS_CFG		0x1E4	/* EFS codes (0 for APS mode) */
+#define VFE31_CAMIF_FRAME_CFG		0x1E8	/* Frame dimensions */
+#define VFE31_CAMIF_WINDOW_WIDTH_CFG	0x1EC	/* Horizontal window */
+#define VFE31_CAMIF_WINDOW_HEIGHT_CFG	0x1F0	/* Vertical window */
+#define VFE31_CAMIF_SUBSAMPLE_CFG_0	0x1F4	/* Subsample config */
+#define VFE31_CAMIF_SUBSAMPLE_CFG_1	0x1F8	/* Frame subsample */
+#define VFE31_CAMIF_EPOCH_CFG		0x1FC	/* Epoch interrupt */
 #define VFE31_CAMIF_STATUS		0x204	/* Read status */
 #define VFE31_CAMIF_CMD			0x1E0	/* Write commands */
 #define VFE31_CAMIF_CMD_CLEAR_STATUS	BIT(2)
@@ -1157,17 +1155,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *   0x02 = Line Start (LS)
 	 *   0x03 = Line End (LE)
 	 *
-	 * EFS_CFG register layout:
-	 *   [7:0]   efsEndOfLine = 0x03
-	 *   [15:8]  efsStartOfLine = 0x02
-	 *   [23:16] efsEndOfFrame = 0x01
-	 *   [31:24] efsStartOfFrame = 0x00
+	 * For APS mode (Active Pixel Sync) with MIPI CSI-2 where CSIPHY
+	 * extracts sync from short packets, set EFS_CFG to 0.
+	 * EFS codes are only used in EFS mode with embedded sync in pixel data.
 	 */
-	val = (0x00 << 24) | (0x01 << 16) | (0x02 << 8) | (0x03 << 0);
-	dev_info(vfe->camss->dev, "VFE: EFS_CFG=0x%08x (MIPI CSI-2 sync codes)\n", val);
+	val = 0;  /* APS mode - no embedded sync codes */
+	dev_info(vfe->camss->dev, "VFE: EFS_CFG=0x%08x (APS mode - no embedded sync)\n", val);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_EFS_CFG);
 
-	/* Step 3: Configure CAMIF frame dimensions at 0x1EC (NOT 0x1E8!) */
+	/* Step 3: Configure CAMIF frame dimensions at 0x1E8 */
 	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
 	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
 	dev_info(vfe->camss->dev, "VFE: FRAME_CFG=0x%08x at 0x%03x\n",
@@ -1253,54 +1249,19 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *   - camif2vfeEnable (bit 8): Route to VFE ISP pipeline
 	 *   - syncMode = APS (bits 4:3 = 0): Active Pixel Sync for MIPI CSI-2
 	 *
-	 * For RDI mode (raw capture):
-	 *   - camif2busEnable (bit 10): Route raw data directly to AXI bus
-	 *   - syncMode = APS (bits 4:3 = 0): Active Pixel Sync
+	 * IMPORTANT: VFE31 does NOT have a CAMIF_CFG register with
+	 * camif2vfeEnable/camif2busEnable bits! Those bits exist only on VFE8x.
+	 * On VFE31, data routing is controlled entirely through:
+	 *   - AXI output mode at 0x040 (already configured above)
+	 *     - 0x200 for PIX/preview mode (through VFE ISP)
+	 *     - 0x60 for RDI/raw mode (CAMIF to AXI bypass)
 	 *
-	 * Note: APS mode is correct for MIPI CSI-2 input. EFS mode expects
-	 * embedded sync codes in pixel data, but MIPI uses protocol-level
-	 * short packets (FS/FE) which are stripped by CSIPHY.
+	 * The 0x1E4 offset on VFE31 is EFS_CFG (embedded frame sync codes),
+	 * which is already set to 0 for APS mode above.
 	 */
-	/*
-	 * Choose sync mode: APS (default) or EFS (if module param is set)
-	 * APS = Active Pixel Sync - uses external sync signals from CSIPHY
-	 * EFS = Embedded Frame Sync - uses embedded sync codes in pixel data
-	 *
-	 * Gemini suggested EFS may be required for MIPI CSI-2 if the CSIPHY
-	 * embeds sync codes in the data stream rather than using short packets.
-	 */
-	u32 sync_mode = vfe31_use_efs_sync ? VFE31_CAMIF_CFG_SYNC_MODE_EFS
-					   : VFE31_CAMIF_CFG_SYNC_MODE_APS;
-	const char *sync_name = vfe31_use_efs_sync ? "EFS" : "APS";
-
-	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
-		/*
-		 * PIX mode: Route through VFE ISP pipeline.
-		 * Data path: CSIPHY -> VFE CAMIF -> VFE ISP -> WM -> memory
-		 */
-		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN | sync_mode;
-		dev_info(vfe->camss->dev,
-			 "VFE: CAMIF_CFG (PIX mode) writing 0x%03x (CAMIF2VFE + %s)\n",
-			 val, sync_name);
-	} else {
-		/*
-		 * RDI mode: Raw bypass to memory.
-		 * Data path: CSIPHY -> VFE CAMIF -> AXI bus -> memory (bypass ISP)
-		 *
-		 * webOS uses ONLY CAMIF2BUS for raw capture (snapshot_camif_cfg = 0x400).
-		 * The CAMIF2VFE path is NOT enabled - data goes directly from CAMIF
-		 * to AXI bus without passing through the VFE ISP pipeline.
-		 */
-		val = VFE31_CAMIF_CFG_CAMIF2BUS_EN | sync_mode;
-		dev_info(vfe->camss->dev,
-			 "VFE: CAMIF_CFG (RDI mode) writing 0x%03x (CAMIF2BUS + %s)\n",
-			 val, sync_name);
-	}
-	writel_relaxed(val, vfe->base + VFE31_CAMIF_CFG);
-	wmb();
 	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF_CFG readback = 0x%08x (expected 0x%03x)\n",
-		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG), val);
+		 "VFE: Data routing via AXI_OUT_MODE=0x%08x (no CAMIF_CFG on VFE31)\n",
+		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG));
 
 	/*
 	 * Step 5c: Enable IRQs - CRITICAL!
@@ -1415,9 +1376,9 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 "VFE: CAMIF configured and streaming started (stream_count=%d)\n",
 		 vfe->stream_count);
 	dev_info(vfe->camss->dev,
-		 "VFE: status=0x%08x camif_cfg=0x%08x frame=0x%08x epoch=0x%08x\n",
+		 "VFE: status=0x%08x efs_cfg=0x%08x frame=0x%08x epoch=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
-		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG),
+		 readl_relaxed(vfe->base + VFE31_CAMIF_EFS_CFG),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_EPOCH_CFG));
 	dev_info(vfe->camss->dev,
@@ -1963,9 +1924,12 @@ void vfe_put(struct vfe_device *vfe)
 		 * MSM8660 workaround: Disable CAMIF to ensure clean state.
 		 * Stale CAMIF state can block CSIPHY register access on
 		 * subsequent camera sessions.
+		 *
+		 * Note: VFE31 does not have CAMIF_CFG, so we clear EFS_CFG
+		 * and stop CAMIF via the command register.
 		 */
 		writel_relaxed(0, vfe->base + VFE31_CAMIF_CMD);
-		writel_relaxed(0, vfe->base + VFE31_CAMIF_CFG);
+		writel_relaxed(0, vfe->base + VFE31_CAMIF_EFS_CFG);
 		vfe->camif_pending = false;
 
 		/*
