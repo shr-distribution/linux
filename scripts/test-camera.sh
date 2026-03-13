@@ -714,6 +714,82 @@ analyze_frame() {
     "
 }
 
+# Test with EFS sync mode (instead of APS)
+# EFS = Embedded Frame Sync - uses embedded sync codes in data stream
+# APS = Active Pixel Sync - uses external sync signals from CSIPHY (default)
+test_efs_mode() {
+    log_step "Testing with EFS sync mode enabled..."
+    log_info "This changes CAMIF sync mode from APS (default) to EFS"
+    log_info "Some MIPI sensors may require EFS mode for proper framing"
+
+    run_on_device "
+        echo '=== EFS Sync Mode Test ==='
+        echo ''
+
+        # Check current setting
+        echo 'Current vfe31_use_efs_sync setting:'
+        cat /sys/module/qcom_camss/parameters/vfe31_use_efs_sync 2>/dev/null || echo 'Parameter not found (module not loaded?)'
+
+        # Enable EFS mode
+        echo ''
+        echo 'Enabling EFS sync mode (vfe31_use_efs_sync=1)...'
+        echo 1 > /sys/module/qcom_camss/parameters/vfe31_use_efs_sync 2>/dev/null
+        if [ \$? -eq 0 ]; then
+            echo 'EFS mode enabled'
+        else
+            echo 'ERROR: Failed to set EFS mode - is qcom_camss module loaded?'
+            exit 1
+        fi
+
+        # Verify setting
+        echo 'Verifying: vfe31_use_efs_sync='
+        cat /sys/module/qcom_camss/parameters/vfe31_use_efs_sync
+
+        # Clear dmesg to see fresh output
+        dmesg -C
+
+        # Setup media pipeline (same as pix mode)
+        echo ''
+        echo 'Setting up PIX media pipeline...'
+        media-ctl -r 2>/dev/null || true
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        echo 'Pipeline configured'
+
+        # Attempt capture
+        echo ''
+        echo 'Testing capture with EFS sync mode...'
+        timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
+            'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
+            fakesink 2>&1
+        RESULT=\$?
+
+        # Show relevant dmesg
+        echo ''
+        echo '=== Relevant dmesg output ==='
+        dmesg | grep -iE 'vfe.*efs|vfe.*aps|camif_cfg|sync.*mode' | tail -20
+
+        # Disable EFS mode (back to APS default)
+        echo ''
+        echo 'Disabling EFS mode (back to APS default)...'
+        echo 0 > /sys/module/qcom_camss/parameters/vfe31_use_efs_sync
+
+        if [ \$RESULT -eq 0 ]; then
+            echo ''
+            echo 'SUCCESS: Capture with EFS mode completed!'
+            echo 'EFS mode may be the correct setting for this sensor.'
+        else
+            echo ''
+            echo 'FAILED: Capture with EFS mode did not work'
+            echo 'Try APS mode (default) or check other VFE configuration.'
+        fi
+    "
+}
+
 # Full debug capture mode with clock and register dumps
 test_debug_capture() {
     log_step "DEBUG MODE: Full diagnostic capture with clock/register dumps..."
@@ -861,12 +937,16 @@ main() {
             debug)
                 MODE="debug"
                 ;;
+            efs)
+                MODE="efs"
+                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
                 echo "Modes:"
                 echo "  raw         Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
                 echo "  pix         Test PIX mode (through VFE ISP processing)"
+                echo "  efs         Test PIX mode with EFS sync (instead of default APS)"
                 echo "  testpattern Enable sensor test pattern and capture (debug data path)"
                 echo "  analyze     Analyze previously captured frame data"
                 echo "  debug       Full debug capture with clock and register dumps"
@@ -918,6 +998,12 @@ main() {
             show_camera_info
             ensure_camera_ready
             test_sensor_pattern
+            check_dmesg
+            ;;
+        efs)
+            show_camera_info
+            ensure_camera_ready
+            test_efs_mode
             check_dmesg
             ;;
         analyze)
