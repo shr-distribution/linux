@@ -775,6 +775,14 @@ static int vfe31_enable(struct vfe_line *line)
 		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(0)));
 
+	/*
+	 * Increment stream_count here to balance vfe_gen1_disable() decrement.
+	 * This must be done in vfe31_enable(), not in the deferred CAMIF callback.
+	 */
+	mutex_lock(&vfe->stream_lock);
+	vfe->stream_count++;
+	mutex_unlock(&vfe->stream_lock);
+
 	return 0;
 }
 
