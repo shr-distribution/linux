@@ -12,6 +12,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -475,18 +476,30 @@ static void csiphy_stream_off(struct csiphy_device *csiphy)
 static int csiphy_set_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	ktime_t start_time;
 	int ret = 0;
 
-	dev_info(csiphy->camss->dev, "CSIPHY%d: set_stream enable=%d\n",
-		 csiphy->id, enable);
+	start_time = ktime_get();
+	dev_info(csiphy->camss->dev,
+		 "[TIMING] CSIPHY%d: set_stream enable=%d START at %lld ns\n",
+		 csiphy->id, enable, ktime_to_ns(start_time));
 
-	if (enable)
+	if (enable) {
+		/*
+		 * This is where CSIPHY will be enabled and start receiving
+		 * MIPI data from the sensor. VFE must be ready BEFORE this point!
+		 */
+		dev_info(csiphy->camss->dev,
+			 "[TIMING] CSIPHY%d: About to enable - VFE MUST be ready now!\n",
+			 csiphy->id);
 		ret = csiphy_stream_on(csiphy);
-	else
+	} else {
 		csiphy_stream_off(csiphy);
+	}
 
-	dev_info(csiphy->camss->dev, "CSIPHY%d: set_stream ret=%d\n",
-		 csiphy->id, ret);
+	dev_info(csiphy->camss->dev,
+		 "[TIMING] CSIPHY%d: set_stream DONE ret=%d elapsed=%lld ns\n",
+		 csiphy->id, ret, ktime_to_ns(ktime_get()) - ktime_to_ns(start_time));
 
 	return ret;
 }

@@ -12,6 +12,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/iommu.h>
+#include <linux/ktime.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -1042,6 +1043,7 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 void vfe_enable_pending_camif(struct vfe_device *vfe)
 {
 	struct vfe_line *line;
+	ktime_t start_time;
 	u32 val;
 
 	if (!vfe->camif_pending) {
@@ -1049,11 +1051,12 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		return;
 	}
 
+	start_time = ktime_get();
 	line = &vfe->line[vfe->camif_pending_line_id];
 
 	dev_info(vfe->camss->dev,
-		 "VFE: configuring deferred CAMIF for WM%d RDI%d\n",
-		 vfe->camif_pending_wm, vfe->camif_pending_line_id);
+		 "[TIMING] VFE CAMIF CONFIG START at %lld ns - WM%d RDI%d\n",
+		 ktime_to_ns(start_time), vfe->camif_pending_wm, vfe->camif_pending_line_id);
 
 	/*
 	 * Debug: Dump external registers (MMCC VFE_CC_REG, TCSR)
@@ -1434,6 +1437,10 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev,
 		 "VFE: IRQ_MASK_0=0x%08x (shadow) IRQ_MASK_1=0x%08x (shadow)\n",
 		 vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
+
+	dev_info(vfe->camss->dev,
+		 "[TIMING] VFE CAMIF CONFIG DONE elapsed=%lld ns - VFE is now ready for data!\n",
+		 ktime_to_ns(ktime_get()) - ktime_to_ns(start_time));
 }
 
 static void vfe_init_outputs(struct vfe_device *vfe)
@@ -2062,10 +2069,13 @@ static int vfe_set_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct vfe_line *line = v4l2_get_subdevdata(sd);
 	struct vfe_device *vfe = to_vfe(line);
+	ktime_t start_time;
 	int ret;
 
-	dev_info(vfe->camss->dev, "VFE set_stream: enable=%d line_id=%d\n",
-		 enable, line->id);
+	start_time = ktime_get();
+	dev_info(vfe->camss->dev,
+		 "[TIMING] VFE set_stream: enable=%d line_id=%d START at %lld ns\n",
+		 enable, line->id, ktime_to_ns(start_time));
 
 	if (enable) {
 		line->output.state = VFE_OUTPUT_RESERVED;
@@ -2073,6 +2083,19 @@ static int vfe_set_stream(struct v4l2_subdev *sd, int enable)
 		if (ret < 0)
 			dev_err(vfe->camss->dev,
 				"Failed to enable vfe outputs\n");
+
+		/*
+		 * After VFE enable completes, dump critical status registers
+		 * to verify VFE is ready to receive data from CSIPHY.
+		 */
+		dev_info(vfe->camss->dev,
+			 "[TIMING] VFE READY CHECK after enable: IRQ_STATUS_0=0x%08x IRQ_STATUS_1=0x%08x\n",
+			 readl_relaxed(vfe->base + 0x02C),  /* VFE_IRQ_STATUS_0 */
+			 readl_relaxed(vfe->base + 0x030)); /* VFE_IRQ_STATUS_1 */
+		dev_info(vfe->camss->dev,
+			 "[TIMING] VFE READY CHECK: CAMIF_STATUS=0x%08x CAMIF_CFG=0x%08x\n",
+			 readl_relaxed(vfe->base + 0x204),  /* VFE_CAMIF_STATUS */
+			 readl_relaxed(vfe->base + 0x1E4)); /* VFE_CAMIF_CFG */
 	} else {
 		ret = vfe->res->hw_ops->vfe_disable(line);
 		if (ret < 0)
@@ -2080,7 +2103,9 @@ static int vfe_set_stream(struct v4l2_subdev *sd, int enable)
 				"Failed to disable vfe outputs\n");
 	}
 
-	dev_info(vfe->camss->dev, "VFE set_stream: ret=%d\n", ret);
+	dev_info(vfe->camss->dev,
+		 "[TIMING] VFE set_stream DONE ret=%d elapsed=%lld ns\n",
+		 ret, ktime_to_ns(ktime_get()) - ktime_to_ns(start_time));
 	return ret;
 }
 
