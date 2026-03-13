@@ -1367,8 +1367,13 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * EFS mode expects embedded sync codes in pixel data, but MIPI
 	 * uses protocol-level short packets that CSIPHY strips.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (camif2bus=1, APS sync)\n");
-	val = VFE_0_CAMIF_CFG_CAMIF2BUS_EN |  /* bit 10: route to bus for raw capture */
+	/*
+	 * EXPERIMENT: Try PIX mode (CAMIF2VFE_EN) instead of RDI mode (CAMIF2BUS_EN)
+	 * The CAMIF2BUS_EN bit (10) doesn't stick when written, but CAMIF2VFE_EN (bit 8)
+	 * does read back correctly. Let's see if routing through VFE generates any IRQs.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (PIX mode: camif2vfe=1, APS sync)\n");
+	val = VFE_0_CAMIF_CFG_CAMIF2VFE_EN |  /* bit 8: route to VFE pipeline */
 	      VFE_0_CAMIF_CFG_SYNC_MODE_APS;  /* bits 3-4: APS sync mode */
 	dev_info(vfe->camss->dev, "VFE31: Writing CAMIF_CFG=0x%08x to offset 0x%03x\n",
 		 val, VFE_0_CAMIF_CFG);
