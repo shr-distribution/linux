@@ -1870,11 +1870,23 @@ mt9m113_streaming:
 		/*
 		 * Configure MIPI output - webOS sequence after msm_camio_csi_config():
 		 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI output
-		 * 2. RESET_REGISTER (0x301A) = 0x120C - enable MIPI streaming
+		 * 2. CUSTOM_SHORT_PKT (0x3404) = 0x0080 - enable Frame Start/End packets
+		 * 3. RESET_REGISTER (0x301A) = 0x120C - enable MIPI streaming
+		 *
+		 * CRITICAL: The CUSTOM_SHORT_PKT register MUST be set to enable
+		 * MIPI Frame Start/End short packet transmission. Without this,
+		 * the VFE CAMIF never receives CAMIF_SOF interrupts and times out.
+		 * See MT9M113_DATASHEET_ANALYSIS.md for details on R0x3404.
 		 */
 		dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI output\n");
 		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 			  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+
+		/* Enable Frame Start/End short packet transmission */
+		cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+			  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+		dev_info(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT=0x0080 (FS/FE enabled)\n");
+
 		cci_write(sensor->regmap, MT9M114_RESET_REGISTER, 0x120C, NULL);
 
 		/*
