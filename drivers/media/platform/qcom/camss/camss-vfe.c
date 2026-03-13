@@ -1079,6 +1079,19 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_1);
 
 	/*
+	 * EPOCH_CFG at 0x200 - epoch interrupt timing.
+	 * webOS vfe_camifcfg structure shows epoch1Line and epoch2Line fields.
+	 * Set to reasonable defaults (line counts for timing interrupts).
+	 * Use height/2 for epoch1 and height-1 for epoch2.
+	 */
+	val = ((line->fmt[MSM_VFE_PAD_SINK].height / 2) & 0x3FFF) |       /* epoch1Line */
+	      (((line->fmt[MSM_VFE_PAD_SINK].height - 1) & 0x3FFF) << 16); /* epoch2Line */
+	dev_info(vfe->camss->dev, "VFE: EPOCH_CFG=0x%08x (epoch1=%d epoch2=%d)\n",
+		 val, line->fmt[MSM_VFE_PAD_SINK].height / 2,
+		 line->fmt[MSM_VFE_PAD_SINK].height - 1);
+	writel_relaxed(val, vfe->base + VFE31_CAMIF_EPOCH_CFG);
+
+	/*
 	 * Step 2b: Enable write masters via VFE_BUS_CMD (0x38)
 	 * webOS writes 0x7FFF here to "reload all write masters (frame & line)"
 	 * This must be done BEFORE camif2busEnable will work in CAMIF_CFG.
@@ -1240,11 +1253,16 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 "VFE: CAMIF configured and streaming started (stream_count=%d)\n",
 		 vfe->stream_count);
 	dev_info(vfe->camss->dev,
-		 "VFE: status=0x%08x camif_cfg=0x%08x frame=0x%08x axi_mode=0x%08x\n",
+		 "VFE: status=0x%08x camif_cfg=0x%08x frame=0x%08x epoch=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_CFG),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG),
-		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG));
+		 readl_relaxed(vfe->base + VFE31_CAMIF_EPOCH_CFG));
+	dev_info(vfe->camss->dev,
+		 "VFE: axi_mode=0x%08x subsamp0=0x%08x subsamp1=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
+		 readl_relaxed(vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_0),
+		 readl_relaxed(vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_1));
 	dev_info(vfe->camss->dev,
 		 "VFE: vfe_cfg=0x%08x module_cfg=0x%08x axi_cfg_1=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CFG_OFF),
