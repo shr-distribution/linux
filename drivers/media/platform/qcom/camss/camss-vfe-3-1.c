@@ -198,62 +198,49 @@
 #define VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY	0x0
 #define VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS	BIT(2)
 
-#define VFE_0_CAMIF_CFG			0x1E4
-/*
- * CAMIF_CFG register bit layout (from webOS VFE_CAMIFConfigType):
- *   [0]     reserved
- *   [1]     VSyncEdge
- *   [2]     HSyncEdge
- *   [4:3]   syncMode (0=APS, 1=EFS, 2=ELS)
- *   [5]     vfeSubsampleEnable
- *   [6]     reserved (NOT VFE output enable!)
- *   [7]     busSubsampleEnable
- *   [8]     camif2vfeEnable - CAMIF to VFE data path enable
- *   [9]     reserved
- *   [10]    camif2busEnable - CAMIF to bus (memory) enable
- *   [11]    irqSubsampleEnable
- *   [12]    binningEnable
- *   [30:13] reserved
- *   [31]    misrEnable
- */
-#define VFE_0_CAMIF_CFG_CAMIF2VFE_EN	BIT(8)	/* CAMIF to VFE data path */
-#define VFE_0_CAMIF_CFG_CAMIF2BUS_EN	BIT(10)	/* CAMIF to bus (memory) */
-#define VFE_0_CAMIF_CFG_SYNC_MODE_APS	(0 << 3)
-#define VFE_0_CAMIF_CFG_SYNC_MODE_EFS	(1 << 3)
-#define VFE_0_CAMIF_CFG_SYNC_MODE_ELS	(2 << 3)
-
 /*
  * VFE31 CAMIF register block layout (32 bytes at 0x1E4-0x203):
  *
  * The VFE31 driver (V31_CAMIF_CFG command) copies 32 bytes from userspace
- * to V31_CAMIF_OFF (0x1E4). The userspace HAL uses the vfe_camifcfg structure
- * which is shared between VFE versions. This structure layout determines
- * the register offsets within the CAMIF block.
+ * to V31_CAMIF_OFF (0x1E4). The layout is defined by the vfe_camifcfg structure
+ * in webOS msm_vfe8x_proc.h.
  *
- * Register map (derived from HAL structure layout):
- * 0x1E4: CAMIF_CFG - sync mode, data path enables
- * 0x1E8: EFS_CFG - Embedded Frame Sync codes for MIPI CSI-2
+ * IMPORTANT: VFE31 does NOT have a separate CAMIF_CFG register with
+ * camif2vfeEnable/camif2busEnable bits like VFE8x! Those bits exist only
+ * on VFE8x at offset 0x118. On VFE31, data routing is controlled entirely
+ * through the AXI output mode register at 0x040.
+ *
+ * Correct VFE31 CAMIF register map (from vfe_camifcfg structure):
+ * 0x1E4: EFS_CFG - Embedded Frame Sync codes for MIPI CSI-2
  *        [7:0]   efsEndOfLine
  *        [15:8]  efsStartOfLine
  *        [23:16] efsEndOfFrame
  *        [31:24] efsStartOfFrame
- * 0x1EC: FRAME_CFG - frame dimensions
- *        [13:0]  pixelsPerLine
+ *        For APS mode, set to 0 (EFS codes ignored)
+ * 0x1E8: FRAME_CFG - frame dimensions
+ *        [13:0]  pixelsPerLine (including all bytes for YUV)
  *        [29:16] linesPerFrame
- * 0x1F0: WINDOW_WIDTH_CFG
- * 0x1F4: WINDOW_HEIGHT_CFG
- * 0x1F8: SUBSAMPLE_CFG_0
- * 0x1FC: SUBSAMPLE_CFG_1
- * 0x200: EPOCH_CFG
+ * 0x1EC: WINDOW_WIDTH_CFG - horizontal capture window
+ *        [13:0]  lastPixel (0-indexed)
+ *        [29:16] firstPixel (usually 0)
+ * 0x1F0: WINDOW_HEIGHT_CFG - vertical capture window
+ *        [13:0]  lastLine (0-indexed)
+ *        [29:16] firstLine (usually 0)
+ * 0x1F4: SUBSAMPLE_CFG_0 - pixel/line subsampling
+ *        [15:0]  pixelSkip (0xFFFF = no skip)
+ *        [31:16] lineSkip (0xFFFF = no skip)
+ * 0x1F8: SUBSAMPLE_CFG_1 - frame subsampling
+ * 0x1FC: EPOCH_CFG - epoch interrupt lines
+ * 0x200: (padding to 32 bytes)
  */
-#define VFE_0_CAMIF_EFS_CFG		0x1E8
-#define VFE_0_CAMIF_FRAME_CFG		0x1EC  /* NOT 0x1E8! */
-#define VFE_0_CAMIF_WINDOW_WIDTH_CFG	0x1F0
-#define VFE_0_CAMIF_WINDOW_HEIGHT_CFG	0x1F4
-#define VFE_0_CAMIF_SUBSAMPLE_CFG_0	0x1F8
-#define VFE_0_CAMIF_SUBSAMPLE_CFG_1	0x1FC
-#define VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN 0x1FC  /* Alias for SUBSAMPLE_CFG_1 */
-#define VFE_0_CAMIF_EPOCH_CFG		0x200
+#define VFE_0_CAMIF_EFS_CFG		0x1E4	/* EFS codes (0 for APS mode) */
+#define VFE_0_CAMIF_FRAME_CFG		0x1E8	/* Frame dimensions */
+#define VFE_0_CAMIF_WINDOW_WIDTH_CFG	0x1EC	/* Horizontal window */
+#define VFE_0_CAMIF_WINDOW_HEIGHT_CFG	0x1F0	/* Vertical window */
+#define VFE_0_CAMIF_SUBSAMPLE_CFG_0	0x1F4	/* Subsample config */
+#define VFE_0_CAMIF_SUBSAMPLE_CFG_1	0x1F8	/* Frame subsample */
+#define VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN 0x1F8	/* Alias for SUBSAMPLE_CFG_1 */
+#define VFE_0_CAMIF_EPOCH_CFG		0x1FC	/* Epoch interrupt */
 
 #define VFE_0_CAMIF_STATUS		0x204
 
@@ -914,9 +901,15 @@ static void vfe31_set_cgc_override(struct vfe_device *vfe, u8 wm, u8 enable)
 static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 {
 	u32 val;
+	u32 width = line->fmt[MSM_VFE_PAD_SINK].width;
+	u32 height = line->fmt[MSM_VFE_PAD_SINK].height;
+	u32 bytes_per_line = width * 2;	/* YUV422: 2 bytes/pixel */
 
-	dev_info(vfe->camss->dev, "VFE31 set_camif_cfg: ENTRY\n");
+	dev_info(vfe->camss->dev,
+		 "VFE31 set_camif_cfg: ENTRY width=%d height=%d bytes_per_line=%d\n",
+		 width, height, bytes_per_line);
 
+	/* Configure pixel pattern in CORE_CFG */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -936,46 +929,44 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
 		break;
 	}
-
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
-	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
+	/*
+	 * Configure CAMIF registers using correct VFE31 layout:
+	 * 0x1E4: EFS_CFG - 0 for APS mode
+	 * 0x1E8: FRAME_CFG - pixelsPerLine | linesPerFrame<<16
+	 * 0x1EC: WINDOW_WIDTH - lastPixel | firstPixel<<16
+	 * 0x1F0: WINDOW_HEIGHT - lastLine | firstLine<<16
+	 */
+
+	/* EFS_CFG: Set to 0 for APS mode (no embedded sync) */
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
+
+	/* FRAME_CFG: bytes per line | lines per frame */
+	val = bytes_per_line | (height << 16);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
 
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
+	/* WINDOW_WIDTH: lastPixel | firstPixel<<16 (first=0) */
+	val = (bytes_per_line - 1) | (0 << 16);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
 
-	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+	/* WINDOW_HEIGHT: lastLine | firstLine<<16 (first=0) */
+	val = (height - 1) | (0 << 16);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 
-	val = 0xffffffff;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-
-	val = 0xffffffff;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
+	/* SUBSAMPLE_CFG: 0xFFFFFFFF = no subsampling */
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
 
 	/*
-	 * CAMIF_CFG is configured later in vfe31_wm_enable().
-	 *
-	 * For VFE31, CAMIF is used for both parallel and CSI input. The data
-	 * path is controlled by:
-	 * 1. AXI output mode at 0x040 (0x60 for raw snapshot)
-	 * 2. CAMIF_CFG at 0x1E4 (camif2busEnable for raw capture)
-	 *
-	 * Some CAMIF_CFG bits (like sync edge detection) may be ignored for CSI
-	 * input, but camif2busEnable is required to route data to the AXI bus.
-	 *
-	 * The frame dimensions in CAMIF_FRAME_CFG/WINDOW_CFG ARE used for both
-	 * parallel and CSI input modes.
+	 * VFE31 does NOT have camif2vfeEnable/camif2busEnable bits!
+	 * Data routing is controlled entirely via AXI_OUT_MODE (0x040).
+	 * The AXI output mode is configured in vfe31_wm_enable().
 	 */
 	dev_dbg(vfe->camss->dev,
-		"VFE31 set_camif_cfg: core_cfg=0x%08x frame=0x%08x width=%u height=%u\n",
+		"VFE31 set_camif_cfg: core_cfg=0x%08x frame=0x%08x\n",
 		readl_relaxed(vfe->base + VFE_0_CORE_CFG),
-		(line->fmt[MSM_VFE_PAD_SINK].height << 16) |
-		(line->fmt[MSM_VFE_PAD_SINK].width * 2),
-		line->fmt[MSM_VFE_PAD_SINK].width,
-		line->fmt[MSM_VFE_PAD_SINK].height);
+		readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 }
 
 static void vfe31_set_camif_cmd(struct vfe_device *vfe, u8 enable)
@@ -1068,9 +1059,9 @@ static void vfe31_set_rdi_cid(struct vfe_device *vfe, enum vfe_line_id id,
 	 * On MSM8660/APQ8060:
 	 * - CSIPHY includes the CSI decoder (no separate CSID hardware)
 	 * - CAMIF is the single input interface for all data
-	 * - Data routing is controlled via:
-	 *   1. CAMIF_CFG (bit 10: camif2busEnable for raw capture)
-	 *   2. AXI output mode (0x60 for raw snapshot via WM0)
+	 * - Data routing is controlled via AXI output mode only
+	 *   (0x60 for raw snapshot via WM0)
+	 * - VFE31 does NOT have camif2vfeEnable/camif2busEnable bits
 	 *
 	 * The CID/data type configuration happens in CSIPHY at the protocol
 	 * level, not in VFE. VFE simply receives whatever CSIPHY sends.
@@ -1107,9 +1098,10 @@ static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 	 * to a specific RDI line.
 	 *
 	 * VFE31 does NOT have these registers. Instead, VFE31 uses:
-	 * - CAMIF_CFG bit 10 (camif2busEnable) to route data to AXI
 	 * - AXI output mode 0x60 for raw snapshot capture via WM0
 	 * - BUS_CFG register for raw write path configuration
+	 * - CAMIF frame/window registers for dimensions
+	 * Note: VFE31 has NO camif2vfeEnable/camif2busEnable bits
 	 *
 	 * The gen1 framework calls this function BEFORE configuring WM
 	 * registers (ub_cfg, ping/pong addresses). VFE31 has strict
@@ -1277,12 +1269,15 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 line->fmt[MSM_VFE_PAD_SINK].code);
 
 	/*
-	 * VFE31 raw capture initialization - matching legacy webOS sequence:
+	 * VFE31 raw capture initialization - matching webOS sequence:
 	 * 1. Configure AXI output mode (0x60 for raw WM0)
 	 * 2. Configure WM registers (ping/pong, image_size, etc.)
-	 * 3. Configure CAMIF frame dimensions
-	 * 4. Configure CAMIF_CFG (CAMIF2BUS_EN for raw)
-	 * 5. Start CAMIF
+	 * 3. Configure CAMIF frame/window dimensions
+	 * 4. Configure pixel pattern in CORE_CFG
+	 * 5. Enable IRQs and start CAMIF
+	 *
+	 * NOTE: VFE31 does NOT have camif2vfeEnable/camif2busEnable bits!
+	 * Data routing is controlled by AXI output mode only.
 	 *
 	 * Critical: AXI mode and WM addresses must be set BEFORE CAMIF starts.
 	 */
@@ -1346,54 +1341,53 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		wmb();
 	}
 
-	/* Step 3: Configure CAMIF frame dimensions */
-	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF frame dimensions\n");
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
-	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
+	/*
+	 * Step 3: Configure CAMIF registers
+	 *
+	 * VFE31 CAMIF register layout (from webOS vfe_camifcfg structure):
+	 * 0x1E4: EFS_CFG - Embedded Frame Sync codes (0 for APS mode)
+	 * 0x1E8: FRAME_CFG - pixelsPerLine[13:0] | linesPerFrame[29:16]
+	 * 0x1EC: WINDOW_WIDTH_CFG - lastPixel[13:0] | firstPixel[29:16]
+	 * 0x1F0: WINDOW_HEIGHT_CFG - lastLine[13:0] | firstLine[29:16]
+	 * 0x1F4: SUBSAMPLE_CFG_0 - pixelSkip[15:0] | lineSkip[31:16]
+	 * 0x1F8: SUBSAMPLE_CFG_1 - frame subsample config
+	 *
+	 * NOTE: VFE31 does NOT have camif2vfeEnable/camif2busEnable bits like VFE8x!
+	 * Data routing is controlled via AXI_OUT_MODE (0x040) only.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF configuration\n");
+
+	/* EFS_CFG at 0x1E4: Set to 0 for APS mode (no embedded sync codes) */
+	dev_info(vfe->camss->dev, "VFE31: EFS_CFG (0x1E4) = 0 (APS mode, no EFS codes)\n");
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
+
+	/* FRAME_CFG at 0x1E8: pixels per line | lines per frame */
+	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2) |
+	      (line->fmt[MSM_VFE_PAD_SINK].height << 16);
+	dev_info(vfe->camss->dev, "VFE31: FRAME_CFG (0x1E8) = 0x%08x (pixels=%d, lines=%d)\n",
+		 val, line->fmt[MSM_VFE_PAD_SINK].width * 2,
+		 line->fmt[MSM_VFE_PAD_SINK].height);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
 
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
+	/* WINDOW_WIDTH_CFG at 0x1EC: lastPixel | firstPixel<<16 */
+	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1) | (0 << 16);
+	dev_info(vfe->camss->dev, "VFE31: WINDOW_WIDTH_CFG (0x1EC) = 0x%08x (last=%d, first=0)\n",
+		 val, line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
 
-	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+	/* WINDOW_HEIGHT_CFG at 0x1F0: lastLine | firstLine<<16 */
+	val = (line->fmt[MSM_VFE_PAD_SINK].height - 1) | (0 << 16);
+	dev_info(vfe->camss->dev, "VFE31: WINDOW_HEIGHT_CFG (0x1F0) = 0x%08x (last=%d, first=0)\n",
+		 val, line->fmt[MSM_VFE_PAD_SINK].height - 1);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 
+	/* SUBSAMPLE_CFG_0 at 0x1F4: 0xFFFFFFFF = no subsampling */
 	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_IRQ_SUBSAMPLE_PATTERN);
+	/* SUBSAMPLE_CFG_1 at 0x1F8: 0xFFFFFFFF = no frame skip */
+	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
 	wmb();
 
-	/*
-	 * Step 4: Configure CAMIF_CFG for raw capture
-	 *
-	 * VFE31 CAMIF_CFG bits (from webOS msm_vfe8x_proc.h):
-	 * - bit 8: camif2vfeEnable (routes to VFE processing pipeline)
-	 * - bit 10: camif2busEnable (routes directly to AXI bus/memory)
-	 * - bits 4:3: syncMode (0=APS, 1=EFS, 2=ELS)
-	 *
-	 * For RAW capture mode, webOS sets camif2busEnable=TRUE to bypass
-	 * VFE processing and send data directly to memory via AXI.
-	 * See webOS msm_vfe8x_proc.c line 3496:
-	 *   ctrl->vfeCamifConfigLocal.camif2BusEnable = TRUE;
-	 *
-	 * Use APS (Active Pixel Sync) mode for MIPI CSI-2 input.
-	 * EFS mode expects embedded sync codes in pixel data, but MIPI
-	 * uses protocol-level short packets that CSIPHY strips.
-	 */
-	/*
-	 * EXPERIMENT: Try PIX mode (CAMIF2VFE_EN) instead of RDI mode (CAMIF2BUS_EN)
-	 * The CAMIF2BUS_EN bit (10) doesn't stick when written, but CAMIF2VFE_EN (bit 8)
-	 * does read back correctly. Let's see if routing through VFE generates any IRQs.
-	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 4 - CAMIF_CFG (PIX mode: camif2vfe=1, APS sync)\n");
-	val = VFE_0_CAMIF_CFG_CAMIF2VFE_EN |  /* bit 8: route to VFE pipeline */
-	      VFE_0_CAMIF_CFG_SYNC_MODE_APS;  /* bits 3-4: APS sync mode */
-	dev_info(vfe->camss->dev, "VFE31: Writing CAMIF_CFG=0x%08x to offset 0x%03x\n",
-		 val, VFE_0_CAMIF_CFG);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_CFG);
-	wmb();
-	/* Read back immediately */
-	dev_info(vfe->camss->dev, "VFE31: CAMIF_CFG readback=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG));
+	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF registers configured\n");
 
 	/* Configure pixel pattern in CORE_CFG */
 	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
@@ -1467,8 +1461,8 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG));
 	dev_info(vfe->camss->dev,
-		 "  CAMIF_CFG(0x1E4)=0x%08x  CAMIF_FRAME(0x1E8)=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 "  EFS_CFG(0x1E4)=0x%08x  FRAME_CFG(0x1E8)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_EFS_CFG),
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 	dev_info(vfe->camss->dev,
 		 "  CAMIF_STATUS(0x204)=0x%08x\n",
