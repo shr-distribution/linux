@@ -1316,65 +1316,35 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 "VFE: CAMIF_STATUS before REG_UPDATE: 0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS));
 
-	/* Clear any pending IRQs first */
-	writel_relaxed(0xFFFFFFFF, vfe->base + 0x024);  /* VFE_IRQ_CLEAR_0 */
-	writel_relaxed(0xFFFFFFFF, vfe->base + 0x028);  /* VFE_IRQ_CLEAR_1 */
-	writel_relaxed(1, vfe->base + 0x018);           /* VFE_IRQ_CMD: global clear */
-	wmb();
+	/*
+	 * Step 6: REG_UPDATE + CAMIF_START (webOS style)
+	 *
+	 * From webOS vfe31_start_common(): issues REG_UPDATE_CMD immediately
+	 * followed by CAMIF_COMMAND=START, with no polling in between.
+	 * The REG_UPDATE IRQ will fire later once CAMIF is running and
+	 * processing data.
+	 *
+	 * Previous code polled for REG_UPDATE completion before starting
+	 * CAMIF, but this doesn't match webOS behavior and may cause timeouts
+	 * since the VFE might need active data flow to complete REG_UPDATE.
+	 */
+	dev_info(vfe->camss->dev, "VFE: Issuing REG_UPDATE + CAMIF_START (webOS style)\n");
 
-	/* Write REG_UPDATE_CMD to latch shadow registers */
-	dev_info(vfe->camss->dev, "VFE: Writing REG_UPDATE_CMD=1 to latch shadow regs\n");
+	/* REG_UPDATE to latch shadow registers */
 	writel(1, vfe->base + VFE31_REG_UPDATE_CMD);
 	wmb();
 
-	/* Poll for REG_UPDATE completion (bit 5 in IRQ_STATUS_0) */
-	{
-		int timeout = 100;  /* 100 iterations, ~1ms total */
-		u32 status0;
-		while (timeout > 0) {
-			status0 = readl_relaxed(vfe->base + 0x02C);  /* VFE_IRQ_STATUS_0 */
-			if (status0 & VFE31_IRQ_MASK_0_REG_UPDATE) {
-				dev_info(vfe->camss->dev,
-					 "VFE: REG_UPDATE acknowledged! IRQ_STATUS_0=0x%08x\n",
-					 status0);
-				/* Clear the bit */
-				writel_relaxed(VFE31_IRQ_MASK_0_REG_UPDATE,
-					       vfe->base + 0x024);  /* VFE_IRQ_CLEAR_0 */
-				writel_relaxed(1, vfe->base + 0x018);  /* VFE_IRQ_CMD */
-				break;
-			}
-			udelay(10);
-			timeout--;
-		}
-		if (timeout == 0) {
-			dev_warn(vfe->camss->dev,
-				 "VFE: REG_UPDATE timeout! IRQ_STATUS_0=0x%08x (expected bit 5 set)\n",
-				 status0);
-			dev_warn(vfe->camss->dev,
-				 "VFE: This may indicate shadow register latch failed!\n");
-		}
-	}
-
-	/* Now start CAMIF */
-	dev_info(vfe->camss->dev, "VFE: Writing CAMIF_CMD_START=1\n");
+	/* Immediately start CAMIF (no waiting for REG_UPDATE IRQ) */
 	writel(VFE31_CAMIF_CMD_START, vfe->base + VFE31_CAMIF_CMD);
 	wmb();
 
-	/* Small delay then check if START took effect */
+	/* Small delay then check status */
 	udelay(100);
 	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF_STATUS after START+100us: 0x%08x IRQ_STATUS0=0x%08x IRQ_STATUS1=0x%08x\n",
+		 "VFE: After START: CAMIF_STATUS=0x%08x IRQ_STATUS0=0x%08x IRQ_STATUS1=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
 		 readl_relaxed(vfe->base + 0x02C),  /* VFE_IRQ_STATUS_0 */
 		 readl_relaxed(vfe->base + 0x030)); /* VFE_IRQ_STATUS_1 */
-
-	/*
-	 * Step 7: Reload all write masters
-	 * VFE_BUS_CMD at 0x38 controls WM reload. webOS uses 0x7FFF after reset
-	 * to reload all write masters (frame & line).
-	 */
-	writel_relaxed(0x7FFF, vfe->base + 0x038);  /* VFE_BUS_CMD, reload all WMs */
-	wmb();
 
 	vfe->camif_pending = false;
 
