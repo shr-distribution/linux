@@ -7,6 +7,7 @@
  * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2015-2018 Linaro Ltd.
  */
+#include <linux/ktime.h>
 #include <linux/slab.h>
 #include <media/media-entity.h>
 #include <media/v4l2-dev.h>
@@ -283,9 +284,14 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct media_entity *entity;
 	struct media_pad *pad;
 	struct v4l2_subdev *subdev;
+	ktime_t pipeline_start, entity_start;
+	int entity_num = 0;
 	int ret;
 
-	dev_info(video->camss->dev, "video_start_streaming: ENTER count=%d\n", count);
+	pipeline_start = ktime_get();
+	dev_info(video->camss->dev,
+		 "[TIMING] video_start_streaming: ENTER count=%d START at %lld ns\n",
+		 count, ktime_to_ns(pipeline_start));
 
 	ret = video_device_pipeline_alloc_start(vdev);
 	if (ret < 0) {
@@ -293,7 +299,8 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		goto flush_buffers;
 	}
 
-	dev_info(video->camss->dev, "video_start_streaming: pipeline started, checking format\n");
+	dev_info(video->camss->dev,
+		 "[TIMING] video_start_streaming: pipeline alloc done, checking format\n");
 
 	ret = video_check_format(video);
 	if (ret < 0) {
@@ -301,40 +308,49 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		goto error;
 	}
 
-	dev_info(video->camss->dev, "video_start_streaming: format OK, starting pipeline walk\n");
+	dev_info(video->camss->dev,
+		 "[TIMING] video_start_streaming: format OK, starting pipeline walk at %lld ns\n",
+		 ktime_to_ns(ktime_get()));
 
 	entity = &vdev->entity;
-	dev_info(video->camss->dev, "Pipeline walk: starting at %s\n", entity->name);
+	dev_info(video->camss->dev, "[TIMING] Pipeline walk: starting at %s\n", entity->name);
 	while (1) {
 		pad = &entity->pads[0];
-		dev_info(video->camss->dev, "Pipeline walk: %s pad[0] flags=0x%x\n",
-			 entity->name, pad->flags);
 		if (!(pad->flags & MEDIA_PAD_FL_SINK)) {
-			dev_info(video->camss->dev, "Pipeline walk: pad is not sink, stopping\n");
+			dev_info(video->camss->dev, "[TIMING] Pipeline walk: pad is not sink, stopping\n");
 			break;
 		}
 
 		pad = media_pad_remote_pad_first(pad);
 		if (!pad) {
-			dev_info(video->camss->dev, "Pipeline walk: no remote pad, stopping\n");
+			dev_info(video->camss->dev, "[TIMING] Pipeline walk: no remote pad, stopping\n");
 			break;
 		}
 		if (!is_media_entity_v4l2_subdev(pad->entity)) {
-			dev_info(video->camss->dev, "Pipeline walk: remote is not subdev, stopping\n");
+			dev_info(video->camss->dev, "[TIMING] Pipeline walk: remote is not subdev, stopping\n");
 			break;
 		}
 
 		entity = pad->entity;
 		subdev = media_entity_to_v4l2_subdev(entity);
+		entity_num++;
 
-		dev_info(video->camss->dev, "Pipeline walk: calling s_stream(1) on %s\n",
-			 entity->name);
+		entity_start = ktime_get();
+		dev_info(video->camss->dev,
+			 "[TIMING] Pipeline[%d]: calling s_stream(1) on '%s' at %lld ns\n",
+			 entity_num, entity->name, ktime_to_ns(entity_start));
 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
-		dev_info(video->camss->dev, "Pipeline walk: s_stream returned %d\n", ret);
+		dev_info(video->camss->dev,
+			 "[TIMING] Pipeline[%d]: '%s' s_stream returned %d (elapsed %lld ns)\n",
+			 entity_num, entity->name, ret,
+			 ktime_to_ns(ktime_get()) - ktime_to_ns(entity_start));
 		if (ret < 0 && ret != -ENOIOCTLCMD)
 			goto error;
 	}
 
+	dev_info(video->camss->dev,
+		 "[TIMING] video_start_streaming: COMPLETE total elapsed=%lld ns\n",
+		 ktime_to_ns(ktime_get()) - ktime_to_ns(pipeline_start));
 	return 0;
 
 error:
