@@ -304,7 +304,9 @@ The key technical challenge - MT9M113's lack of MIPI frame sync packets - has be
 
 ## References
 
+- `reports/VFE31_QCAMERALIB_REVERSE_ENGINEERING.md` - **Ghidra reverse engineering of qcameralib**
 - `reports/MT9M113_DATASHEET_ANALYSIS.md` - Detailed sensor register analysis
+- `reports/MT9M113_vs_MT9M114_Comparison.md` - MT9M113 vs MT9M114 differences
 - `scripts/test-camera.sh` - Automated camera testing script
 - `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` - Device tree configuration
 - `drivers/media/platform/qcom/camss/` - CAMSS driver source
