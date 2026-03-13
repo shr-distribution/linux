@@ -1861,11 +1861,24 @@ mt9m113_streaming:
 	 */
 	{
 		/*
-		 * MT9M113 streaming sequence - matches webOS exactly.
-		 * WebOS does NOT issue STANDBY or REFRESH_MODE before streaming.
-		 * It simply configures MIPI output, sets mode, and issues RUN.
+		 * MT9M113 streaming sequence.
+		 *
+		 * First issue STANDBY to ensure clean state. The sensor may have
+		 * been streaming from boot init (SEQ_STATE=0x3 after init table),
+		 * and issuing RUN to an already-running sequencer doesn't restart
+		 * it properly.
 		 */
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
+
+		/* Issue STANDBY first to ensure clean restart */
+		dev_info(&sensor->client->dev, "MT9M113: issuing STANDBY before streaming\n");
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					    MT9M113_SEQ_CMD_STANDBY);
+		if (ret < 0) {
+			dev_warn(&sensor->client->dev,
+				 "MT9M113: STANDBY failed (may be OK): %d\n", ret);
+		}
+		msleep(50);  /* Wait for sequencer to enter standby */
 
 		/*
 		 * Configure MIPI output - webOS sequence after msm_camio_csi_config():
