@@ -1243,24 +1243,31 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 4a: Clear CAMIF status before configuring
 	 * This ensures CAMIF is in a clean state to accept new configuration.
+	 * NOTE: This may reset CAMIF_CFG, so routing bits must be written AFTER.
 	 */
 	writel_relaxed(VFE31_CAMIF_CMD_CLEAR_STATUS, vfe->base + VFE31_CAMIF_CMD);
 	wmb();
 	udelay(10);
 
 	/*
-	 * Step 4b: VFE31 Data Routing
+	 * Step 4b: Re-apply CAMIF_CFG routing bits AFTER clear status
 	 *
-	 * Data routing on VFE31 requires TWO mechanisms:
-	 * 1. AXI_OUT_MODE at 0x040: Configures output path type
-	 *    - 0x200 for PIX/preview mode (through VFE ISP)
-	 *    - 0x60 for RDI/raw mode (CAMIF to AXI bypass)
-	 * 2. CAMIF_CFG at 0x1E4: Enables data flow to the selected path
-	 *    - Bit 8 (0x100): camif2vfeEnable - for PIX mode
-	 *    - Bit 10 (0x400): camif2busEnable - for RDI mode
-	 *
-	 * CAMIF_CFG routing bits are already set in vfe31_pix_configure().
+	 * CRITICAL: The CLEAR_STATUS command above resets CAMIF_CFG to 0.
+	 * We must re-apply the routing bits here for data to flow correctly:
+	 *   - Bit 8 (0x100): camif2vfeEnable - for PIX mode (VFE ISP path)
+	 *   - Bit 10 (0x400): camif2busEnable - for RDI mode (direct to memory)
 	 */
+	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
+		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN;
+	} else {
+		val = VFE31_CAMIF_CFG_CAMIF2BUS_EN;
+	}
+	dev_info(vfe->camss->dev,
+		 "VFE: Re-applying CAMIF_CFG=0x%08x after clear (%s mode)\n",
+		 val, (vfe->camif_pending_line_id == VFE_LINE_PIX) ? "PIX" : "RDI");
+	writel_relaxed(val, vfe->base + VFE31_CAMIF_EFS_CFG);
+	wmb();
+
 	dev_info(vfe->camss->dev,
 		 "VFE: AXI_OUT_MODE=0x%08x, CAMIF_CFG=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
