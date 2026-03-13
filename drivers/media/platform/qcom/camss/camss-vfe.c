@@ -763,10 +763,12 @@ int vfe_reset(struct vfe_device *vfe)
  * configures the internal routing for raw passthrough mode.
  */
 
-#define VFE31_BUS_CFG			0x03C
-#define VFE31_BUS_CFG_ENC_CBCR_WR_EN	BIT(5)
-#define VFE31_BUS_CFG_RAW_WR_PATH_SHFT	10
-#define VFE31_BUS_CFG_RAW_WR_ENC_CBCR	1
+/*
+ * Note: 0x03C is NOT a BUS_CFG register on VFE31!
+ * It's part of the 188-byte AXI output config block (ao[1]).
+ * webOS leaves this at 0. We only read it for debug purposes.
+ */
+#define VFE31_AXI_CFG_1			0x03C  /* ao[1] - must be 0 */
 
 /*
  * VFE31 AXI output mode configuration at 0x40.
@@ -1090,23 +1092,18 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * Step 3: Configure BUS_CFG for raw passthrough (before CAMIF_CFG!)
-	 * webOS writes the AXI config block at 0x38-0xC4 BEFORE CAMIF config.
-	 */
-	val = readl_relaxed(vfe->base + VFE31_BUS_CFG);
-	val &= ~(0x3 << VFE31_BUS_CFG_RAW_WR_PATH_SHFT);
-	val |= (VFE31_BUS_CFG_RAW_WR_ENC_CBCR << VFE31_BUS_CFG_RAW_WR_PATH_SHFT);
-	val |= VFE31_BUS_CFG_ENC_CBCR_WR_EN;
-	writel_relaxed(val, vfe->base + VFE31_BUS_CFG);
-
-	/*
-	 * Step 3b: Configure AXI output mode based on PIX vs RDI mode.
+	 * Step 3: Configure AXI output mode based on PIX vs RDI mode.
 	 *
-	 * CRITICAL: This is where webOS sets the data path:
+	 * NOTE: Do NOT write to 0x03C! On VFE31, the 188-byte AXI config block
+	 * starts at 0x038, and 0x03C (ao[1]) must be left at 0.
+	 * The Ghidra analysis of webOS libqcameralib.so confirmed this:
+	 * - ao[0] at 0x038: AXI output base config
+	 * - ao[1] at 0x03C: Must be 0 (webOS never writes here)
+	 * - ao[2] at 0x040: AXI output mode (0x200 for preview, 0x60 for raw)
+	 *
+	 * AXI output mode values:
 	 *   PIX mode (preview):   0x200 (OUTPUT_2) - data flows through VFE ISP
 	 *   RDI mode (raw):       0x60  (CAMIF_TO_AXI) - data bypasses VFE ISP
-	 *
-	 * Using wrong mode here is why CAMIF doesn't receive frames!
 	 */
 	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
 		dev_info(vfe->camss->dev,
@@ -1246,10 +1243,10 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG),
 		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG));
 	dev_info(vfe->camss->dev,
-		 "VFE: vfe_cfg=0x%08x module_cfg=0x%08x bus_cfg=0x%08x\n",
+		 "VFE: vfe_cfg=0x%08x module_cfg=0x%08x axi_cfg_1=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CFG_OFF),
 		 readl_relaxed(vfe->base + VFE31_MODULE_CFG),
-		 readl_relaxed(vfe->base + VFE31_BUS_CFG));
+		 readl_relaxed(vfe->base + VFE31_AXI_CFG_1));
 	/*
 	 * Note: VFE31 IRQ_MASK_0/1 are write-only registers - do NOT read them!
 	 * Use shadow values instead.
