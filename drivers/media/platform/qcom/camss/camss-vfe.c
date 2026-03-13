@@ -771,6 +771,102 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_AXI_CFG_1			0x03C  /* ao[1] - must be 0 */
 
 /*
+ * MSM8660 External Register Addresses for Debug
+ *
+ * MMCC (Multimedia Clock Controller) base: 0x04000000
+ *   VFE_CC_REG at offset 0x0104 controls CSI-to-VFE bridge clocks:
+ *   - Bit 10: vfe_csi1_clk enable (CSI1 -> VFE bridge)
+ *   - Bit 12: vfe_csi0_clk enable (CSI0 -> VFE bridge)
+ *
+ * TCSR (Top-Level CSR) base: 0x16B00000
+ *   May contain CSI mux registers that route CSIPHY to VFE.
+ *   Exact layout unknown - dumping first 32 bytes for analysis.
+ */
+#define MSM8660_MMCC_BASE		0x04000000
+#define MSM8660_MMCC_SIZE		0x1000
+#define MSM8660_VFE_CC_REG_OFFSET	0x0104
+#define MSM8660_VFE_CC_REG_CSI1_VFE_EN	BIT(10)
+#define MSM8660_VFE_CC_REG_CSI0_VFE_EN	BIT(12)
+
+#define MSM8660_TCSR_BASE		0x16B00000
+#define MSM8660_TCSR_SIZE		0x1000
+
+/*
+ * Debug option: Use EFS sync mode instead of APS for MIPI CSI-2.
+ * Set to 1 to enable EFS mode (Gemini's suggestion).
+ * APS (Active Pixel Sync) = 0: Uses external sync signals
+ * EFS (Embedded Frame Sync) = 1: Uses embedded sync codes in data stream
+ *
+ * MIPI CSI-2 sends Frame Start/End as short packets. Some sensors may
+ * require EFS mode if the CSIPHY strips the short packets and embeds
+ * the sync info in the pixel stream.
+ */
+static int vfe31_use_efs_sync = 0;
+module_param(vfe31_use_efs_sync, int, 0644);
+MODULE_PARM_DESC(vfe31_use_efs_sync, "VFE31: Use EFS sync mode instead of APS (0=APS, 1=EFS)");
+
+/*
+ * vfe31_debug_dump_external_regs - Dump MMCC and TCSR registers for debug
+ * @dev: Device for logging
+ *
+ * This function temporarily maps external registers (clock controller, TCSR)
+ * to read their values during VFE initialization. This helps debug CSI-to-VFE
+ * data path issues by verifying clock enables and potential CSI mux settings.
+ */
+static void vfe31_debug_dump_external_regs(struct device *dev)
+{
+	void __iomem *mmcc_base, *tcsr_base;
+	u32 vfe_cc_reg;
+	int i;
+
+	/* Map and read MMCC VFE_CC_REG */
+	mmcc_base = ioremap(MSM8660_MMCC_BASE, MSM8660_MMCC_SIZE);
+	if (mmcc_base) {
+		vfe_cc_reg = readl_relaxed(mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+		dev_info(dev, "VFE DEBUG: MMCC VFE_CC_REG (0x%08x) = 0x%08x\n",
+			 MSM8660_MMCC_BASE + MSM8660_VFE_CC_REG_OFFSET, vfe_cc_reg);
+		dev_info(dev, "VFE DEBUG:   CSI0_VFE_CLK (bit 12): %s\n",
+			 (vfe_cc_reg & MSM8660_VFE_CC_REG_CSI0_VFE_EN) ? "ENABLED" : "disabled");
+		dev_info(dev, "VFE DEBUG:   CSI1_VFE_CLK (bit 10): %s\n",
+			 (vfe_cc_reg & MSM8660_VFE_CC_REG_CSI1_VFE_EN) ? "ENABLED" : "disabled");
+
+		/* If CSI1-VFE clock is not enabled, try enabling it manually */
+		if (!(vfe_cc_reg & MSM8660_VFE_CC_REG_CSI1_VFE_EN)) {
+			dev_warn(dev, "VFE DEBUG: CSI1_VFE_CLK not enabled! Attempting manual enable...\n");
+			writel_relaxed(vfe_cc_reg | MSM8660_VFE_CC_REG_CSI1_VFE_EN,
+				       mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+			wmb();
+			vfe_cc_reg = readl_relaxed(mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+			dev_info(dev, "VFE DEBUG: After manual enable: VFE_CC_REG = 0x%08x\n", vfe_cc_reg);
+		}
+
+		iounmap(mmcc_base);
+	} else {
+		dev_err(dev, "VFE DEBUG: Failed to map MMCC base 0x%08x\n", MSM8660_MMCC_BASE);
+	}
+
+	/* Map and dump TCSR registers */
+	tcsr_base = ioremap(MSM8660_TCSR_BASE, MSM8660_TCSR_SIZE);
+	if (tcsr_base) {
+		dev_info(dev, "VFE DEBUG: TCSR register dump (base 0x%08x):\n", MSM8660_TCSR_BASE);
+		for (i = 0; i < 32; i += 4) {
+			u32 val = readl_relaxed(tcsr_base + i);
+			if (val != 0)  /* Only print non-zero registers */
+				dev_info(dev, "VFE DEBUG:   TCSR[0x%03x] = 0x%08x\n", i, val);
+		}
+		/* Also check offsets 0x100-0x120 where CSI mux might be */
+		dev_info(dev, "VFE DEBUG: TCSR potential CSI mux area (0x100-0x120):\n");
+		for (i = 0x100; i < 0x120; i += 4) {
+			u32 val = readl_relaxed(tcsr_base + i);
+			dev_info(dev, "VFE DEBUG:   TCSR[0x%03x] = 0x%08x\n", i, val);
+		}
+		iounmap(tcsr_base);
+	} else {
+		dev_err(dev, "VFE DEBUG: Failed to map TCSR base 0x%08x\n", MSM8660_TCSR_BASE);
+	}
+}
+
+/*
  * VFE31 AXI output mode configuration at 0x40.
  * This register controls which output paths are enabled.
  *
@@ -958,6 +1054,12 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev,
 		 "VFE: configuring deferred CAMIF for WM%d RDI%d\n",
 		 vfe->camif_pending_wm, vfe->camif_pending_line_id);
+
+	/*
+	 * Debug: Dump external registers (MMCC VFE_CC_REG, TCSR)
+	 * This helps verify CSI-to-VFE clock enables and potential CSI mux settings.
+	 */
+	vfe31_debug_dump_external_regs(vfe->camss->dev);
 
 	/*
 	 * Debug: Dump pre-CAMIF VFE state
@@ -1156,15 +1258,27 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * embedded sync codes in pixel data, but MIPI uses protocol-level
 	 * short packets (FS/FE) which are stripped by CSIPHY.
 	 */
+	/*
+	 * Choose sync mode: APS (default) or EFS (if module param is set)
+	 * APS = Active Pixel Sync - uses external sync signals from CSIPHY
+	 * EFS = Embedded Frame Sync - uses embedded sync codes in pixel data
+	 *
+	 * Gemini suggested EFS may be required for MIPI CSI-2 if the CSIPHY
+	 * embeds sync codes in the data stream rather than using short packets.
+	 */
+	u32 sync_mode = vfe31_use_efs_sync ? VFE31_CAMIF_CFG_SYNC_MODE_EFS
+					   : VFE31_CAMIF_CFG_SYNC_MODE_APS;
+	const char *sync_name = vfe31_use_efs_sync ? "EFS" : "APS";
+
 	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
 		/*
 		 * PIX mode: Route through VFE ISP pipeline.
 		 * Data path: CSIPHY -> VFE CAMIF -> VFE ISP -> WM -> memory
 		 */
-		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: enable CAMIF to VFE */
-		      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
+		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN | sync_mode;
 		dev_info(vfe->camss->dev,
-			 "VFE: CAMIF_CFG (PIX mode) writing 0x%03x (CAMIF2VFE + APS)\n", val);
+			 "VFE: CAMIF_CFG (PIX mode) writing 0x%03x (CAMIF2VFE + %s)\n",
+			 val, sync_name);
 	} else {
 		/*
 		 * RDI mode: Raw bypass to memory.
@@ -1174,10 +1288,10 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 * The CAMIF2VFE path is NOT enabled - data goes directly from CAMIF
 		 * to AXI bus without passing through the VFE ISP pipeline.
 		 */
-		val = VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus only */
-		      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
+		val = VFE31_CAMIF_CFG_CAMIF2BUS_EN | sync_mode;
 		dev_info(vfe->camss->dev,
-			 "VFE: CAMIF_CFG (RDI mode) writing 0x%03x (CAMIF2BUS + APS)\n", val);
+			 "VFE: CAMIF_CFG (RDI mode) writing 0x%03x (CAMIF2BUS + %s)\n",
+			 val, sync_name);
 	}
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CFG);
 	wmb();
@@ -1218,12 +1332,57 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * Step 6: REG_UPDATE then START CAMIF
 	 * From webOS vfe31_start_common(): write 1 to REG_UPDATE_CMD with barrier,
 	 * then write 1 to CAMIF_COMMAND. No separate CLEAR step.
+	 *
+	 * IMPORTANT: VFE31 uses shadow registers. All configuration writes go to
+	 * shadow registers first. Writing to REG_UPDATE_CMD latches the shadow
+	 * register values into the active configuration. The VFE will set
+	 * IRQ_STATUS_0 bit 5 (REG_UPDATE) when the latch is complete.
 	 */
 	dev_info(vfe->camss->dev,
-		 "VFE: CAMIF_STATUS before START: 0x%08x\n",
+		 "VFE: CAMIF_STATUS before REG_UPDATE: 0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS));
 
+	/* Clear any pending IRQs first */
+	writel_relaxed(0xFFFFFFFF, vfe->base + 0x024);  /* VFE_IRQ_CLEAR_0 */
+	writel_relaxed(0xFFFFFFFF, vfe->base + 0x028);  /* VFE_IRQ_CLEAR_1 */
+	writel_relaxed(1, vfe->base + 0x018);           /* VFE_IRQ_CMD: global clear */
+	wmb();
+
+	/* Write REG_UPDATE_CMD to latch shadow registers */
+	dev_info(vfe->camss->dev, "VFE: Writing REG_UPDATE_CMD=1 to latch shadow regs\n");
 	writel(1, vfe->base + VFE31_REG_UPDATE_CMD);
+	wmb();
+
+	/* Poll for REG_UPDATE completion (bit 5 in IRQ_STATUS_0) */
+	{
+		int timeout = 100;  /* 100 iterations, ~1ms total */
+		u32 status0;
+		while (timeout > 0) {
+			status0 = readl_relaxed(vfe->base + 0x02C);  /* VFE_IRQ_STATUS_0 */
+			if (status0 & VFE31_IRQ_MASK_0_REG_UPDATE) {
+				dev_info(vfe->camss->dev,
+					 "VFE: REG_UPDATE acknowledged! IRQ_STATUS_0=0x%08x\n",
+					 status0);
+				/* Clear the bit */
+				writel_relaxed(VFE31_IRQ_MASK_0_REG_UPDATE,
+					       vfe->base + 0x024);  /* VFE_IRQ_CLEAR_0 */
+				writel_relaxed(1, vfe->base + 0x018);  /* VFE_IRQ_CMD */
+				break;
+			}
+			udelay(10);
+			timeout--;
+		}
+		if (timeout == 0) {
+			dev_warn(vfe->camss->dev,
+				 "VFE: REG_UPDATE timeout! IRQ_STATUS_0=0x%08x (expected bit 5 set)\n",
+				 status0);
+			dev_warn(vfe->camss->dev,
+				 "VFE: This may indicate shadow register latch failed!\n");
+		}
+	}
+
+	/* Now start CAMIF */
+	dev_info(vfe->camss->dev, "VFE: Writing CAMIF_CMD_START=1\n");
 	writel(VFE31_CAMIF_CMD_START, vfe->base + VFE31_CAMIF_CMD);
 	wmb();
 
