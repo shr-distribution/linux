@@ -429,45 +429,60 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 * 4. Enable CGC override
 	 */
 
-	/* Step 1: Enable all module clocks */
-	dev_info(vfe->camss->dev, "VFE reset: enabling module clocks (MODULE_CFG=0x3FF)\n");
-	writel_relaxed(0x3FF, vfe->base + VFE_0_MODULE_CFG);
-	wmb();
+	/*
+	 * VFE31 Reset Sequence (matching webOS exactly):
+	 *
+	 * 1. Disable all IRQs
+	 * 2. Clear all pending IRQs
+	 * 3. Issue reset command (0x3FF to VFE_GLOBAL_RESET)
+	 * 4. Wait for reset to complete
+	 * 5. THEN set default register values (CGC, DEMUX, FRAMEDROP, CLAMP)
+	 * 6. Reload all write masters (BUS_CMD = 0x7FFF)
+	 *
+	 * CRITICAL: The reset command clears all VFE registers, so default
+	 * values MUST be set AFTER reset completes, not before!
+	 */
 
-	/* Step 2: Disable all IRQs before clearing */
+	/* Step 1: Disable all IRQs before reset */
 	dev_info(vfe->camss->dev, "VFE reset: disabling IRQs (MASK=0)\n");
 	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_0);
 	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_1);
 	wmb();
 
-	/* Step 3: Clear all pending interrupts */
+	/* Step 2: Clear all pending interrupts */
 	dev_info(vfe->camss->dev, "VFE reset: clearing pending IRQs\n");
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_0);
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_1);
+	writel_relaxed(1, vfe->base + VFE_0_IRQ_CMD);  /* Acknowledge IRQ clear */
 	wmb();
-	dev_info(vfe->camss->dev, "VFE reset: IRQs cleared\n");
 
-	/* Step 4: Enable all internal clock gates */
-	dev_info(vfe->camss->dev, "VFE reset: enabling CGC override\n");
+	/* Step 3: Issue hardware reset command */
+	dev_info(vfe->camss->dev, "VFE reset: sending hardware reset cmd (0x3FF to 0x04)\n");
+	writel_relaxed(0x3FF, vfe->base + 0x04);  /* VFE_GLOBAL_RESET */
+	wmb();
+
+	/* Step 4: Wait for reset to complete - webOS waits for RESET_ACK IRQ, we use delay */
+	usleep_range(2000, 3000);
+
+	dev_info(vfe->camss->dev,
+		 "VFE reset: hardware reset complete, IRQ_STATUS1=0x%08x\n",
+		 readl_relaxed(vfe->base + 0x30));  /* VFE_IRQ_STATUS_1 */
+
+	/*
+	 * Step 5: Set default register values AFTER reset completes.
+	 * This is exactly what webOS does in vfe31_process_reset_irq() ->
+	 * vfe31_set_default_reg_values().
+	 */
+
+	/* Enable all internal clock gates (CGC_OVERRIDE) */
+	dev_info(vfe->camss->dev, "VFE reset: enabling CGC override (0xFFFFF)\n");
 	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
 	wmb();
 
-	/* Wait for VFE to stabilize */
-	udelay(100);
-	dev_info(vfe->camss->dev, "VFE reset: CGC enabled, stabilized\n");
-
-	/*
-	 * Step 5: Set default register values that webOS sets in
-	 * vfe31_set_default_reg_values() after reset IRQ.
-	 * This includes DEMUX gains and frame drop configuration.
-	 */
-
 	/* DEMUX gains - webOS default values */
-	dev_info(vfe->camss->dev, "VFE reset: writing DEMUX gains\n");
+	dev_info(vfe->camss->dev, "VFE reset: writing DEMUX gains (0x800080)\n");
 	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_0);
 	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_1);
-	wmb();
-	dev_info(vfe->camss->dev, "VFE reset: DEMUX gains done\n");
 
 	/* Frame drop configuration - accept all frames */
 	dev_info(vfe->camss->dev, "VFE reset: writing framedrop config\n");
@@ -479,8 +494,6 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	writel_relaxed(0x1f, vfe->base + VFE31_FRAMEDROP_VIEW_CBCR_CFG);
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_FRAMEDROP_VIEW_Y_PATTERN);
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_FRAMEDROP_VIEW_CBCR_PATTERN);
-	wmb();
-	dev_info(vfe->camss->dev, "VFE reset: framedrop config done\n");
 
 	/* Clamp configuration - 0x524=MAX, 0x528=MIN per webOS vfe31.h */
 	dev_info(vfe->camss->dev, "VFE reset: writing clamp config\n");
@@ -489,27 +502,15 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * NOTE: Do NOT write BUS_CMD=0x7FFF here!
-	 * Reloading all write masters during reset causes subsequent
-	 * register reads to hang. WM reload should happen in vfe31_enable()
-	 * after WM registers are configured.
+	 * Step 6: Reload all write masters.
+	 * webOS writes BUS_CMD=0x7FFF after reset to reload all WMs.
+	 * This is critical for proper WM operation.
 	 */
-
-	/*
-	 * Try sending the actual hardware reset command.
-	 * webOS writes VFE_RESET_UPON_RESET_CMD (0x3FF) to VFE_GLOBAL_RESET (0x04).
-	 * This resets all VFE modules and should clear the CAMIF halt state.
-	 */
-	dev_info(vfe->camss->dev, "VFE reset: sending hardware reset cmd (0x3FF to 0x04)\n");
-	writel_relaxed(0x3FF, vfe->base + 0x04);  /* VFE_GLOBAL_RESET */
+	dev_info(vfe->camss->dev, "VFE reset: reloading all write masters (BUS_CMD=0x7FFF)\n");
+	writel_relaxed(0x7FFF, vfe->base + VFE_0_BUS_CMD);
 	wmb();
 
-	/* Wait for reset to complete - webOS waits for RESET_ACK IRQ, we use delay */
-	usleep_range(1000, 2000);
-
-	dev_info(vfe->camss->dev,
-		 "VFE reset: hardware reset complete, IRQ_STATUS1=0x%08x\n",
-		 readl_relaxed(vfe->base + 0x30));  /* VFE_IRQ_STATUS_1 */
+	dev_info(vfe->camss->dev, "VFE reset: complete, all defaults applied\n");
 
 	/* Set flag to indicate reset done - vfe_reset() will check this */
 	vfe->vfe31_reset_done = true;
