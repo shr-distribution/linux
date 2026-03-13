@@ -1471,17 +1471,17 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	dev_info(dev, "MT9M113: sequencer refresh completed\n");
 
 	/*
-	 * Write OUTPUT_CONTROL to enable MIPI output, matching webOS reg_init.
-	 * WebOS writes 0x3400 = 0x7A08 at the end of reg_init().
-	 * Note: Actual MIPI data transmission starts in s_stream after
-	 * CSIPHY is configured and RESET_REGISTER is set.
+	 * NOTE: Do NOT write OUTPUT_CONTROL here!
+	 * Writing OUTPUT_CONTROL=0x7A08 enables MIPI output immediately,
+	 * causing the sensor to auto-stream. This makes it impossible to
+	 * cleanly restart streaming later because STANDBY doesn't fully stop
+	 * MIPI output in this state.
+	 *
+	 * Instead, OUTPUT_CONTROL is written only in start_streaming(),
+	 * after VFE and CSIPHY are configured and ready to receive data.
+	 * This ensures proper synchronization between sensor and receiver.
 	 */
-	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-			MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-	if (ret < 0)
-		dev_warn(dev, "MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
-	else
-		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x7A08 (MIPI enabled)\n");
+	dev_info(dev, "MT9M113: OUTPUT_CONTROL NOT set in init (deferred to streaming)\n");
 
 	/* Check final SEQ_STATE after init */
 	{
@@ -1870,15 +1870,16 @@ mt9m113_streaming:
 		 */
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
-		/* Issue STANDBY first to ensure clean restart */
-		dev_info(&sensor->client->dev, "MT9M113: issuing STANDBY before streaming\n");
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					    MT9M113_SEQ_CMD_STANDBY);
-		if (ret < 0) {
-			dev_warn(&sensor->client->dev,
-				 "MT9M113: STANDBY failed (may be OK): %d\n", ret);
+		/*
+		 * Check current SEQ_STATE. Since OUTPUT_CONTROL is NOT set during init,
+		 * the sensor should be in standby/idle state (not 0x03 streaming).
+		 */
+		{
+			u64 seq_state;
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+			dev_info(&sensor->client->dev,
+				 "MT9M113: SEQ_STATE before streaming=0x%llx\n", seq_state);
 		}
-		msleep(50);  /* Wait for sequencer to enter standby */
 
 		/*
 		 * Configure MIPI output - webOS sequence after msm_camio_csi_config():
