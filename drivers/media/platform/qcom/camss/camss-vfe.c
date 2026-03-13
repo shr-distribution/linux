@@ -1232,9 +1232,9 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	vfe->camif_pending = false;
 
-	/* Complete streaming setup - set output state and increment stream count */
+	/* Complete streaming setup - set output state */
 	line->output.state = VFE_OUTPUT_ON;
-	vfe->stream_count++;
+	/* Note: stream_count is already incremented in vfe31_enable() */
 
 	dev_info(vfe->camss->dev,
 		 "VFE: CAMIF configured and streaming started (stream_count=%d)\n",
