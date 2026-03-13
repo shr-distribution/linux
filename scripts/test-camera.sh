@@ -486,6 +486,26 @@ test_raw_mode() {
     run_on_device "
         echo '=== RAW Mode Test (video0 via RDI0) ==='
         echo ''
+
+        # Reset media links first to avoid conflicts from previous tests
+        echo 'Resetting media links...'
+        media-ctl -r 2>/dev/null || true
+
+        # Setup full RDI path: CSIPHY1 -> CSID1 -> VFE RDI0
+        # The sensor->CSIPHY link is IMMUTABLE and always enabled
+        echo 'Setting up RDI0 media pipeline...'
+        # Enable CSIPHY1 -> CSID1 link
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1
+        # Enable CSID1 -> VFE RDI0 link (pad 1 = RDI0 source)
+        media-ctl -l '\"msm_csid1\":1->\"msm_vfe0_rdi0\":0[1]' 2>&1
+        # Set formats along the path
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_rdi0\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        echo 'RDI0 pipeline configured'
+
+        echo ''
         echo 'Testing capture with 1288x968 UYVY...'
         timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=10 ! \\
             'video/x-raw,format=UYVY,width=1288,height=968,framerate=30/1' ! \\
@@ -513,14 +533,23 @@ test_pix_mode() {
         echo '=== PIX Mode Test (video3 via VFE PIX) ==='
         echo ''
 
-        # Setup media pipeline: CSID1 -> VFE PIX link
-        # VFE PIX mode expects UYVY8_2X8 format at 1280x968 (without blanking)
-        # The VFE extracts 8-bit data from the 16-bit MIPI bus
-        echo 'Setting up media pipeline...'
-        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
+        # Reset media links first to avoid conflicts from previous tests
+        echo 'Resetting media links...'
+        media-ctl -r 2>/dev/null || true
+
+        # Setup full PIX path: CSIPHY1 -> CSID1 -> VFE PIX
+        # The sensor->CSIPHY link is IMMUTABLE and always enabled
+        echo 'Setting up PIX media pipeline...'
+        # Enable CSIPHY1 -> CSID1 link
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1
+        # Enable CSID1 -> VFE PIX link (pad 4 = PIX source)
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1
+        # Set formats along the path (PIX uses 1280x968 without blanking pixels)
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
         media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
         media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-        echo 'Pipeline configured'
+        echo 'PIX pipeline configured'
 
         echo ''
         echo 'Testing capture with 1280x968 UYVY...'

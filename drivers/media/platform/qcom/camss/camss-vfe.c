@@ -1156,12 +1156,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		/*
 		 * RDI mode: Raw bypass to memory.
 		 * Data path: CSIPHY -> VFE CAMIF -> AXI bus -> memory (bypass ISP)
+		 *
+		 * webOS uses ONLY CAMIF2BUS for raw capture (snapshot_camif_cfg = 0x400).
+		 * The CAMIF2VFE path is NOT enabled - data goes directly from CAMIF
+		 * to AXI bus without passing through the VFE ISP pipeline.
 		 */
-		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN |	/* bit 8: still need this path */
-		      VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus */
+		val = VFE31_CAMIF_CFG_CAMIF2BUS_EN |	/* bit 10: CAMIF -> AXI bus only */
 		      VFE31_CAMIF_CFG_SYNC_MODE_APS;	/* bits 4:3: APS sync mode */
 		dev_info(vfe->camss->dev,
-			 "VFE: CAMIF_CFG (RDI mode) writing 0x%03x (CAMIF2VFE + CAMIF2BUS + APS)\n", val);
+			 "VFE: CAMIF_CFG (RDI mode) writing 0x%03x (CAMIF2BUS + APS)\n", val);
 	}
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_CFG);
 	wmb();
