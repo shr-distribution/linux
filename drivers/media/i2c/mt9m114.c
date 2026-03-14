@@ -1863,22 +1863,59 @@ mt9m113_streaming:
 		/*
 		 * MT9M113 streaming sequence.
 		 *
-		 * First issue STANDBY to ensure clean state. The sensor may have
-		 * been streaming from boot init (SEQ_STATE=0x3 after init table),
-		 * and issuing RUN to an already-running sequencer doesn't restart
-		 * it properly.
+		 * CRITICAL: The sensor may already be streaming from init table
+		 * (SEQ_STATE=0x3). We MUST stop it first before configuring
+		 * MIPI short packet registers, otherwise the CUSTOM_SHORT_PKT
+		 * setting won't take effect and FS/FE packets won't be sent.
+		 *
+		 * Sequence:
+		 * 1. Issue STANDBY to stop sensor
+		 * 2. Wait for SEQ_STATE = 0 (idle)
+		 * 3. Configure MIPI registers (OUTPUT_CONTROL, CUSTOM_SHORT_PKT)
+		 * 4. Issue RUN to start streaming
 		 */
+		u64 seq_state;
+		int timeout;
+
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
+		/* Check current SEQ_STATE */
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+		dev_info(&sensor->client->dev,
+			 "MT9M113: SEQ_STATE before config=0x%llx\n", seq_state);
+
 		/*
-		 * Check current SEQ_STATE. Since OUTPUT_CONTROL is NOT set during init,
-		 * the sensor should be in standby/idle state (not 0x03 streaming).
+		 * If sensor is streaming (SEQ_STATE=0x03), stop it first.
+		 * MIPI short packet config must be done while sensor is stopped.
 		 */
-		{
-			u64 seq_state;
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+		if (seq_state == 0x03) {
 			dev_info(&sensor->client->dev,
-				 "MT9M113: SEQ_STATE before streaming=0x%llx\n", seq_state);
+				 "MT9M113: Sensor streaming - issuing STANDBY first\n");
+
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+						    MT9M113_SEQ_CMD_STANDBY);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: SEQ_CMD STANDBY failed: %d\n", ret);
+				goto error;
+			}
+
+			/* Wait for sensor to enter standby (SEQ_STATE = 0) */
+			timeout = 50; /* 500ms max */
+			do {
+				msleep(10);
+				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+			} while (seq_state != 0 && --timeout > 0);
+
+			if (timeout == 0) {
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: STANDBY timeout, SEQ_STATE=0x%llx\n",
+					 seq_state);
+			} else {
+				dev_info(&sensor->client->dev,
+					 "MT9M113: Sensor in standby (SEQ_STATE=0x%llx)\n",
+					 seq_state);
+			}
 		}
 
 		/*
@@ -1890,7 +1927,6 @@ mt9m113_streaming:
 		 * CRITICAL: The CUSTOM_SHORT_PKT register MUST be set to enable
 		 * MIPI Frame Start/End short packet transmission. Without this,
 		 * the VFE CAMIF never receives CAMIF_SOF interrupts and times out.
-		 * See MT9M113_DATASHEET_ANALYSIS.md for details on R0x3404.
 		 */
 		dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI output\n");
 		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
@@ -1924,15 +1960,19 @@ mt9m113_streaming:
 			goto error;
 		}
 
-		/* Small delay for streaming to start */
-		msleep(20);
-
-		/* Check sensor state */
-		{
-			u64 seq_state;
+		/* Wait for streaming to start (SEQ_STATE = 0x03) */
+		timeout = 50; /* 500ms max */
+		do {
+			msleep(10);
 			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			dev_info(&sensor->client->dev, "MT9M113: SEQ_STATE=0x%llx (streaming if 0x03)\n",
-				 seq_state);
+		} while (seq_state != 0x03 && --timeout > 0);
+
+		if (timeout == 0) {
+			dev_warn(&sensor->client->dev,
+				 "MT9M113: RUN timeout, SEQ_STATE=0x%llx\n", seq_state);
+		} else {
+			dev_info(&sensor->client->dev,
+				 "MT9M113: Streaming active (SEQ_STATE=0x%llx)\n", seq_state);
 		}
 
 		dev_info(&sensor->client->dev, "MT9M113: streaming command issued\n");
