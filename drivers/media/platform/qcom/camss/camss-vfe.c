@@ -1042,6 +1042,31 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 #define VFE31_INPUT_SOURCE_AXI		(2 << 16)
 
 /*
+ * VFE31 VFE_CFG_OFF (0x14) register bit layout from webOS libqcameralib analysis.
+ *
+ * WebOS uses values like 0x2aaa771 (Bayer 8-bit) or 0x2aaa775 (YUV 10-bit).
+ * The register controls more than just pixel pattern and input source.
+ *
+ * Bit breakdown of 0x2aaa770 (base value without pixel pattern):
+ *   bits  0-2:  000 = pixel pattern placeholder (OR'd with format)
+ *   bits  4-6:  111 = internal pipeline enables (all set)
+ *   bits  8-10: 111 = data path enables (all set)
+ *   bits 12,14: set (alternating pattern 0xA)
+ *   bits 16-17: 10 = inputSource AXI (MIPI CSI input)
+ *   bits 18-19: 10 = additional config
+ *   bits 20,22: set (alternating pattern 0xA)
+ *   bit    25:  set
+ *
+ * The alternating 0xAA pattern in some nibbles may be VFE31 defaults for
+ * internal multiplexer settings. Without Qualcomm documentation, we use
+ * the webOS-proven value which enables proper MIPI CSI data flow.
+ *
+ * Key insight: inputSource must be AXI (2), not CAMIF (0), for MIPI input.
+ * The AXI path routes CSI decoder output through the AXI fabric to VFE.
+ */
+#define VFE31_CFG_WEBOS_BASE		0x2aaa770
+
+/*
  * vfe_enable_pending_camif - Configure and enable deferred CAMIF
  * @vfe: VFE device
  *
@@ -1099,9 +1124,17 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0x0, vfe->base + 0x528);        /* VFE_CLAMP_ENC_MIN_CFG */
 
 	/*
-	 * Step 0b: Configure VFE_CFG_OFF - pixel pattern and input source
+	 * Step 0b: Configure VFE_CFG_OFF - pixel pattern, input source, and config
 	 * This register MUST be set for VFE31 to know where data comes from.
 	 * From webOS vfe31_operation_config(): writes to VFE_CFG_OFF before start.
+	 *
+	 * CRITICAL: WebOS uses inputSource=AXI (bits 16-17 = 2) for MIPI CSI input,
+	 * NOT inputSource=CAMIF (bits 16-17 = 0). The AXI input path connects the
+	 * CSI decoder output to VFE. CAMIF input is for parallel camera interfaces.
+	 *
+	 * WebOS also sets additional configuration bits 3-15 and 18-31 which appear
+	 * to configure internal VFE data paths. Using VFE31_CFG_WEBOS_BASE which
+	 * includes all these bits.
 	 */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
@@ -1122,8 +1155,10 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		val = VFE31_PIXEL_PATTERN_YUV_CrYCbY;
 		break;
 	}
-	val |= VFE31_INPUT_SOURCE_CAMIF;  /* Input from CAMIF (CSI/parallel) */
-	dev_info(vfe->camss->dev, "VFE: VFE_CFG_OFF=0x%08x (pixel=%d, input=CAMIF)\n",
+	/* Use webOS-style configuration with AXI input source for MIPI CSI */
+	val |= VFE31_CFG_WEBOS_BASE;
+	dev_info(vfe->camss->dev,
+		 "VFE: VFE_CFG_OFF=0x%08x (pixel=%d, input=AXI, webOS config)\n",
 		 val, val & 0x7);
 	writel_relaxed(val, vfe->base + VFE31_CFG_OFF);
 
