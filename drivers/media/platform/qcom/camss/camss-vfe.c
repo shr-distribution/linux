@@ -1027,6 +1027,40 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
  */
 #define VFE31_CFG_OFF			0x014
 #define VFE31_MODULE_CFG		0x010
+
+/*
+ * VFE_CFG register bit layout - Official Qualcomm documentation
+ *
+ * From Android kernel msm_vfe32.h and webOS msm_vfe8x_proc.h:
+ *
+ *   struct vfe_cfg {
+ *       uint32_t pixelPattern:3;      // bits 0-2
+ *       uint32_t reserved:13;         // bits 3-15 (see note below)
+ *       uint32_t inputSource:2;       // bits 16-17
+ *       uint32_t reserved:14;         // bits 18-31 (see note below)
+ *   };
+ *
+ * pixelPattern values (bits 0-2) - enum VFE_START_PIXEL_PATTERN:
+ *   0 = VFE_BAYER_RGRGRG
+ *   1 = VFE_BAYER_GRGRGR
+ *   2 = VFE_BAYER_BGBGBG
+ *   3 = VFE_BAYER_GBGBGB
+ *   4 = VFE_YUV_YCbYCr
+ *   5 = VFE_YUV_YCrYCb
+ *   6 = VFE_YUV_CbYCrY (UYVY format)
+ *   7 = VFE_YUV_CrYCbY
+ *
+ * inputSource values (bits 16-17):
+ *   0 = CAMIF (parallel camera interface)
+ *   1 = TESTGEN (internal test pattern generator)
+ *   2 = AXI (for MIPI CSI input via AXI bus)
+ *
+ * NOTE: The "reserved" bits (3-15, 18-31) are documented as reserved in
+ * VFE8x/VFE32 headers, but webOS libqcameralib sets them for VFE31.
+ * These appear to control internal VFE31 pipeline/mux configuration.
+ * See VFE31_CFG_WEBOS_BASE below for the webOS-proven values.
+ */
+
 /* VFE_CFG_OFF pixel pattern values (bits 0-2) */
 #define VFE31_PIXEL_PATTERN_BAYER_RGRGRG	0
 #define VFE31_PIXEL_PATTERN_BAYER_GRGRGR	1
@@ -1036,30 +1070,35 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 #define VFE31_PIXEL_PATTERN_YUV_YCrYCb		5
 #define VFE31_PIXEL_PATTERN_YUV_CbYCrY		6  /* UYVY format */
 #define VFE31_PIXEL_PATTERN_YUV_CrYCbY		7
+
 /* VFE_CFG_OFF input source (bits 16-17) */
 #define VFE31_INPUT_SOURCE_CAMIF	(0 << 16)
 #define VFE31_INPUT_SOURCE_TESTGEN	(1 << 16)
 #define VFE31_INPUT_SOURCE_AXI		(2 << 16)
 
 /*
- * VFE31 VFE_CFG_OFF (0x14) register bit layout from webOS libqcameralib analysis.
+ * VFE31 VFE_CFG_OFF webOS base value - from libqcameralib reverse engineering
  *
- * WebOS uses values like 0x2aaa771 (Bayer 8-bit) or 0x2aaa775 (YUV 10-bit).
- * The register controls more than just pixel pattern and input source.
+ * WebOS uses values like 0x2aaa771 (Bayer GRGRGR) or 0x2aaa775 (YUV YCrYCb).
+ * The base value 0x2aaa770 configures bits beyond the documented fields:
  *
- * Bit breakdown of 0x2aaa770 (base value without pixel pattern):
+ * Bit breakdown of 0x2aaa770:
  *   bits  0-2:  000 = pixel pattern placeholder (OR'd with format)
+ *   bit     3:  0
  *   bits  4-6:  111 = internal pipeline enables (all set)
+ *   bit     7:  0
  *   bits  8-10: 111 = data path enables (all set)
- *   bits 12,14: set (alternating pattern 0xA)
+ *   bit    11:  0
+ *   bits 12-15: 1010 = alternating pattern
  *   bits 16-17: 10 = inputSource AXI (MIPI CSI input)
  *   bits 18-19: 10 = additional config
- *   bits 20,22: set (alternating pattern 0xA)
- *   bit    25:  set
+ *   bits 20-23: 1010 = alternating pattern
+ *   bit    24:  0
+ *   bit    25:  1 = unknown enable
+ *   bits 26-31: 0
  *
- * The alternating 0xAA pattern in some nibbles may be VFE31 defaults for
- * internal multiplexer settings. Without Qualcomm documentation, we use
- * the webOS-proven value which enables proper MIPI CSI data flow.
+ * The alternating 0xA patterns may be VFE31-specific internal mux settings.
+ * These bits are marked "reserved" in VFE8x/VFE32 docs but required on VFE31.
  *
  * Key insight: inputSource must be AXI (2), not CAMIF (0), for MIPI input.
  * The AXI path routes CSI decoder output through the AXI fabric to VFE.
