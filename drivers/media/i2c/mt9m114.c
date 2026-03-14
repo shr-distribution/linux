@@ -1881,15 +1881,22 @@ mt9m113_streaming:
 			 "MT9M113: OUTPUT_CONTROL=0x%llx (0x7A08=MIPI enabled)\n", output_ctrl);
 
 		/*
-		 * Only configure MIPI if not already enabled.
+		 * Always configure short packets - this is critical for VFE to
+		 * receive Frame Start/End markers even if MIPI is already enabled.
+		 * Without this, VFE never receives CAMIF_SOF interrupts.
+		 */
+		dev_info(&sensor->client->dev,
+			 "MT9M113: Enabling MIPI short packets (CUSTOM_SHORT_PKT=0x%x)\n",
+			 MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN);
+		cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+			  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+
+		/*
+		 * Only configure MIPI output if not already enabled.
 		 * WebOS writes OUTPUT_CONTROL/RESET_REGISTER only once.
 		 */
 		if (output_ctrl != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
 			dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI (first time)\n");
-
-			/* Configure short packets BEFORE enabling MIPI */
-			cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-				  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
 
 			/* Enable MIPI output */
 			cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
