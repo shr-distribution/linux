@@ -298,7 +298,17 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(0, csiphy->base + MIPI_PHY_D2_CONTROL);
 	writel(0, csiphy->base + MIPI_PHY_D3_CONTROL);
 
-	/* CAMERA_CNTL: Configure lane assignment and count */
+	/*
+	 * CAMERA_CNTL: Configure lane assignment and count
+	 *
+	 * From webOS msm_io_8x60.c msm_camio_csi_config():
+	 * - lane_assign is passed from sensor driver (0xe4 for all sensors)
+	 * - Bits 0-2: lane count (0x4=1 lane, 0x5=2 lanes, etc.)
+	 * - Bits 8-15: lane assignment value
+	 *
+	 * All webOS sensors (mt9m113, mt9m114, ov7692, vx6953) use lane_assign=0xe4.
+	 * Result: (0xe4 << 8) | count = 0xe404 for 1 lane
+	 */
 	switch (num_lanes) {
 	case 1:
 		val = 0xe4 << 8 | 0x4;
