@@ -1176,6 +1176,30 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * to configure internal VFE data paths. Using VFE31_CFG_WEBOS_BASE which
 	 * includes all these bits.
 	 */
+	/*
+	 * CRITICAL FIX: Enable modules BEFORE writing VFE_CFG_OFF
+	 *
+	 * Based on Gemini analysis, the AXI input path in VFE_CFG_OFF may
+	 * physically refuse inputSource=AXI if processing modules are not
+	 * enabled. Enable DEMUX first, issue REG_UPDATE to latch it,
+	 * THEN write VFE_CFG_OFF with inputSource=AXI.
+	 *
+	 * VFE_MODULE_CFG bits:
+	 *   Bit 2: demuxEnable - required for YUV data demuxing
+	 *   Bit 3: chromaUpsampleEnable - needed for YUV422 to YUV444
+	 */
+	dev_info(vfe->camss->dev, "VFE: Step 0a - Enable modules BEFORE VFE_CFG_OFF\n");
+	writel_relaxed(0x0C, vfe->base + VFE31_MODULE_CFG);  /* DEMUX + CHROMA_UPSAMPLE */
+	wmb();
+	dev_info(vfe->camss->dev, "VFE: VFE_MODULE_CFG=0x0C (DEMUX+CHROMA enabled)\n");
+
+	/* Issue REG_UPDATE to latch module enables */
+	writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
+	wmb();
+	udelay(100);  /* Small delay for REG_UPDATE to process */
+	dev_info(vfe->camss->dev, "VFE: REG_UPDATE #1 after MODULE_CFG\n");
+
+	/* NOW write VFE_CFG_OFF with inputSource=AXI */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -1199,25 +1223,27 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	val |= VFE31_CFG_WEBOS_BASE;
 	vfe_cfg_val = val;  /* Save for re-application after CAMIF start */
 	dev_info(vfe->camss->dev,
-		 "VFE: VFE_CFG_OFF=0x%08x (pixel=%d, input=AXI, webOS config)\n",
+		 "VFE: Step 0b - VFE_CFG_OFF=0x%08x (pixel=%d, input=AXI)\n",
 		 val, val & 0x7);
 	writel(val, vfe->base + VFE31_CFG_OFF);
-	/* Force write to complete and verify */
 	wmb();
+
+	/* Issue second REG_UPDATE to latch VFE_CFG_OFF */
+	writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
+	wmb();
+	udelay(100);
+	dev_info(vfe->camss->dev, "VFE: REG_UPDATE #2 after VFE_CFG_OFF\n");
+
+	/* Check if inputSource bits stuck this time */
 	{
 		u32 readback = readl(vfe->base + VFE31_CFG_OFF);
 		dev_info(vfe->camss->dev,
 			 "VFE: VFE_CFG_OFF readback=0x%08x (wrote 0x%08x, diff=0x%08x)\n",
 			 readback, val, val ^ readback);
+		if ((readback & 0x30000) != (val & 0x30000))
+			dev_warn(vfe->camss->dev,
+				 "VFE: WARNING - inputSource bits still not sticking!\n");
 	}
-
-	/*
-	 * Step 0c: Configure VFE_MODULE_CFG - enable modules
-	 * For raw passthrough, we don't need most modules enabled.
-	 * Set to 0 initially (no processing modules enabled).
-	 */
-	writel_relaxed(0, vfe->base + VFE31_MODULE_CFG);
-	dev_info(vfe->camss->dev, "VFE: VFE_MODULE_CFG=0x0 (no processing)\n");
 
 	wmb();
 
