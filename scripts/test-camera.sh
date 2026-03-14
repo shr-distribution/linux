@@ -842,9 +842,17 @@ test_debug_capture() {
         # Step 4: Setup media pipeline
         echo ''
         echo '=== Step 4: Setting Up Media Pipeline ==='
-        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>&1 || true
+        # Reset media links first
+        media-ctl -r 2>/dev/null || true
+        # Enable full PIX path: CSIPHY1 -> CSID1 -> VFE PIX
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1
+        # Set formats along the path
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        echo 'PIX pipeline configured: CSIPHY1 -> CSID1 -> VFE_PIX'
 
         # Step 5: Show clock state after pipeline setup
         echo ''
