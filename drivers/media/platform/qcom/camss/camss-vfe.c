@@ -866,6 +866,38 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 	} else {
 		dev_err(dev, "VFE DEBUG: Failed to map TCSR base 0x%08x\n", MSM8660_TCSR_BASE);
 	}
+
+	/*
+	 * Dump CSIPHY register space to verify which PHY is active.
+	 * CSIPHY0 at 0x04800000, CSIPHY1 at 0x04900000.
+	 * MT9M113 uses CSIPHY1 (0x04900000).
+	 */
+	{
+		void __iomem *csi0_base, *csi1_base;
+
+		csi0_base = ioremap(0x04800000, 0x100);
+		csi1_base = ioremap(0x04900000, 0x100);
+
+		if (csi0_base && csi1_base) {
+			u32 csi0_protocol = readl_relaxed(csi0_base + 0x04);
+			u32 csi0_d1_ctrl = readl_relaxed(csi0_base + 0x20);
+			u32 csi0_camera = readl_relaxed(csi0_base + 0x24);
+			u32 csi1_protocol = readl_relaxed(csi1_base + 0x04);
+			u32 csi1_d1_ctrl = readl_relaxed(csi1_base + 0x20);
+			u32 csi1_camera = readl_relaxed(csi1_base + 0x24);
+
+			dev_info(dev, "VFE DEBUG: CSIPHY0 (0x04800000): PROTOCOL=0x%08x D1_CTRL=0x%08x CAMERA_CNTL=0x%08x\n",
+				 csi0_protocol, csi0_d1_ctrl, csi0_camera);
+			dev_info(dev, "VFE DEBUG: CSIPHY1 (0x04900000): PROTOCOL=0x%08x D1_CTRL=0x%08x CAMERA_CNTL=0x%08x\n",
+				 csi1_protocol, csi1_d1_ctrl, csi1_camera);
+			dev_info(dev, "VFE DEBUG:   MT9M113 should use CSIPHY1 with D1_CTRL=0x300 (PHY enabled)\n");
+		}
+
+		if (csi0_base)
+			iounmap(csi0_base);
+		if (csi1_base)
+			iounmap(csi1_base);
+	}
 }
 
 /*

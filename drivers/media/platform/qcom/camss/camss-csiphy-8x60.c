@@ -347,6 +347,56 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 */
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n", csiphy->id);
+
+	/*
+	 * Debug: Read back all configured registers to verify writes took effect.
+	 * This helps diagnose issues where the hardware state doesn't match
+	 * what we expect after configuration.
+	 */
+	{
+		u32 rb_phy_control, rb_protocol, rb_camera_cntl;
+		u32 rb_d0_ctrl2, rb_d1_ctrl, rb_cl_ctrl, rb_cal_ctrl;
+		u32 rb_irq_mask;
+
+		rb_phy_control = readl(csiphy->base + MIPI_PHY_CONTROL);
+		rb_protocol = readl(csiphy->base + MIPI_PROTOCOL_CONTROL);
+		rb_camera_cntl = readl(csiphy->base + MIPI_CAMERA_CNTL);
+		rb_d0_ctrl2 = readl(csiphy->base + MIPI_PHY_D0_CONTROL2);
+		rb_d1_ctrl = readl(csiphy->base + MIPI_PHY_D1_CONTROL);
+		rb_cl_ctrl = readl(csiphy->base + MIPI_PHY_CL_CONTROL);
+		rb_cal_ctrl = readl(csiphy->base + MIPI_CALIBRATION_CONTROL);
+		rb_irq_mask = readl(csiphy->base + MIPI_INTERRUPT_MASK);
+
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d READBACK: base=%px id=%d\n",
+			 csiphy->id, csiphy->base, csiphy->id);
+		dev_info(csiphy->camss->dev,
+			 "  PHY_CONTROL(0x00)=0x%08x PROTOCOL(0x04)=0x%08x\n",
+			 rb_phy_control, rb_protocol);
+		dev_info(csiphy->camss->dev,
+			 "  CAMERA_CNTL(0x24)=0x%08x (expect 0xe404 for 1 lane, 0xe405 for 2 lanes)\n",
+			 rb_camera_cntl);
+		dev_info(csiphy->camss->dev,
+			 "  D0_CTRL2(0x38)=0x%08x D1_CTRL(0x20)=0x%08x\n",
+			 rb_d0_ctrl2, rb_d1_ctrl);
+		dev_info(csiphy->camss->dev,
+			 "  CL_CTRL(0x48)=0x%08x CAL_CTRL(0x18)=0x%08x IRQ_MASK(0x0C)=0x%08x\n",
+			 rb_cl_ctrl, rb_cal_ctrl, rb_irq_mask);
+
+		/* Verify D1_CONTROL has PHY enabled (bits 8,9 set) */
+		if (!(rb_d1_ctrl & 0x300)) {
+			dev_err(csiphy->camss->dev,
+				"CSIPHY%d ERROR: D1_CONTROL PHY not enabled! (0x%08x)\n",
+				csiphy->id, rb_d1_ctrl);
+		}
+
+		/* Verify CAMERA_CNTL has correct lane count */
+		if ((rb_camera_cntl & 0x7) != (num_lanes + 3)) {
+			dev_warn(csiphy->camss->dev,
+				 "CSIPHY%d WARNING: CAMERA_CNTL lane count mismatch: got 0x%x, expect 0x%x\n",
+				 csiphy->id, rb_camera_cntl & 0x7, num_lanes + 3);
+		}
+	}
 }
 
 /*
