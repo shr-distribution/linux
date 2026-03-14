@@ -21,7 +21,24 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/ktime.h>
+#include <linux/module.h>
 #include <linux/pm_runtime.h>
+
+/*
+ * Software SOF generation - disabled by default.
+ *
+ * When enabled, CSIPHY generates software SOF interrupts to VFE based on
+ * MIPI SOT timing gaps. This is a workaround for sensors that don't send
+ * MIPI Frame Start/End short packets.
+ *
+ * The hardware path (CSIPHY -> CSID -> VFE CAMIF) should generate proper
+ * CAMIF_SOF interrupts without this. Enable only for debugging or if the
+ * hardware path doesn't work.
+ */
+static bool software_sof_enable;
+module_param(software_sof_enable, bool, 0644);
+MODULE_PARM_DESC(software_sof_enable,
+		 "Enable software SOF generation from CSIPHY (default: false)");
 
 /* MSM8660 MIPI CSI Controller Register Offsets */
 #define MIPI_PHY_CONTROL		0x00
@@ -419,12 +436,14 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 	}
 
 	/*
-	 * Trigger software SOF if frame start detected.
-	 * VFE31 delivers CAMIF_SOF to ALL lines (RDI0-2 + PIX) because raw
-	 * capture uses RDI lines, not the pixel pipeline. We must do the same
-	 * here, sending SOF to every VFE line that might be waiting.
+	 * Trigger software SOF if frame start detected AND software SOF is enabled.
+	 *
+	 * This is disabled by default because the hardware path (CSIPHY -> CSID ->
+	 * VFE CAMIF) should generate proper CAMIF_SOF interrupts. Enable via:
+	 *   echo 1 > /sys/module/qcom_camss/parameters/software_sof_enable
 	 */
-	if (frame_start_detected && csiphy->camss && csiphy->camss->vfe) {
+	if (software_sof_enable && frame_start_detected &&
+	    csiphy->camss && csiphy->camss->vfe) {
 		int line;
 
 		vfe = &csiphy->camss->vfe[0];  /* Use first VFE */
