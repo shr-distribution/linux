@@ -334,6 +334,49 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_MASK);
 	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_STATUS);
 
+	/*
+	 * CSID Context ID (CID) Configuration
+	 *
+	 * On MSM8660, the CSID is integrated with CSIPHY and shares this
+	 * register space. Configure CID_0 to route YUV422 8-bit packets
+	 * (Data Type 0x1E) from Virtual Channel 0 to the VFE PIX interface.
+	 *
+	 * Without this routing, the CSID drops all MIPI packets and VFE
+	 * receives no data even though CSIPHY is receiving valid frames.
+	 *
+	 * Register layout: [31:24]=DT, [23:22]=VC, [3:0]=DecodeFormat
+	 */
+#define CSID_CID_0_CFG_OFFSET		0x0020
+#define CSID_CID_0_CFG_ALT_OFFSET	0x0200
+	{
+		u32 cid_cfg_val = (0x1E << 24) |  /* DT = YUV422 8-bit */
+				  (0x00 << 22) |  /* VC = 0 */
+				  0x01;           /* Decode = YUV422 */
+		u32 readback;
+
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: Configuring CSID CID_0_CFG=0x%08x for YUV422\n",
+			 csiphy->id, cid_cfg_val);
+
+		/* Try primary offset */
+		writel_relaxed(cid_cfg_val, csiphy->base + CSID_CID_0_CFG_OFFSET);
+		wmb();
+		readback = readl_relaxed(csiphy->base + CSID_CID_0_CFG_OFFSET);
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: CID_0_CFG@0x%03x readback=0x%08x\n",
+			 csiphy->id, CSID_CID_0_CFG_OFFSET, readback);
+
+		/* If primary didn't work, try alternate offset */
+		if (readback != cid_cfg_val) {
+			writel_relaxed(cid_cfg_val, csiphy->base + CSID_CID_0_CFG_ALT_OFFSET);
+			wmb();
+			readback = readl_relaxed(csiphy->base + CSID_CID_0_CFG_ALT_OFFSET);
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: CID_0_CFG@0x%03x (alt) readback=0x%08x\n",
+				 csiphy->id, CSID_CID_0_CFG_ALT_OFFSET, readback);
+		}
+	}
+
 	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n", csiphy->id);
 }
 

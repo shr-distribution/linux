@@ -1082,7 +1082,7 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
  * WebOS uses values like 0x2aaa771 (Bayer GRGRGR) or 0x2aaa775 (YUV YCrYCb).
  * The base value 0x2aaa770 configures bits beyond the documented fields:
  *
- * Bit breakdown of 0x2aaa770:
+ * Bit breakdown of 0x02a9a770:
  *   bits  0-2:  000 = pixel pattern placeholder (OR'd with format)
  *   bit     3:  0
  *   bits  4-6:  111 = internal pipeline enables (all set)
@@ -1090,7 +1090,7 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
  *   bits  8-10: 111 = data path enables (all set)
  *   bit    11:  0
  *   bits 12-15: 1010 = alternating pattern
- *   bits 16-17: 10 = inputSource AXI (MIPI CSI input)
+ *   bits 16-17: 01 = inputSource CSI (live MIPI data)
  *   bits 18-19: 10 = additional config
  *   bits 20-23: 1010 = alternating pattern
  *   bit    24:  0
@@ -1100,10 +1100,16 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
  * The alternating 0xA patterns may be VFE31-specific internal mux settings.
  * These bits are marked "reserved" in VFE8x/VFE32 docs but required on VFE31.
  *
- * Key insight: inputSource must be AXI (2), not CAMIF (0), for MIPI input.
- * The AXI path routes CSI decoder output through the AXI fabric to VFE.
+ * CRITICAL: inputSource values on VFE31/MSM8660:
+ *   0 = CAMIF (parallel camera interface)
+ *   1 = CSI (live MIPI CSI data from CSIPHY/CSID)
+ *   2 = AXI (offline memory fetch for reprocessing)
+ *   3 = TestGen (internal test pattern generator)
+ *
+ * For live camera, inputSource MUST be 1 (CSI), NOT 2 (AXI).
+ * AXI mode makes VFE fetch from RAM, ignoring live sensor data!
  */
-#define VFE31_CFG_WEBOS_BASE		0x2aaa770
+#define VFE31_CFG_WEBOS_BASE		0x02a9a770
 
 /*
  * vfe_enable_pending_camif - Configure and enable deferred CAMIF
@@ -1153,13 +1159,13 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *
 	 * Based on Gemini analysis: The VFE31 has an internal sub-module called
 	 * VBIF (VFE Bus Interface) which is the AXI master/slave logic. If VBIF
-	 * is halted or its clock gate isn't open, inputSource=AXI will never stick.
+	 * is halted or its clock gate isn't open, VFE_CFG_OFF writes may fail.
 	 *
 	 * Sequence:
 	 * 1. Force ALL VFE clocks via CGC_OVERRIDE (including VBIF)
 	 * 2. Wake up VBIF via 0x400 (VBIF_CLK_ON) and 0x404 (VBIF_AXI_CFG)
 	 * 3. Clear any pending resets
-	 * 4. Then configure VFE_CFG_OFF with inputSource=AXI
+	 * 4. Then configure VFE_CFG_OFF with inputSource=CSI for live camera
 	 */
 
 	/* Debug: Read VBIF state before configuration */
@@ -1223,7 +1229,7 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	udelay(100);  /* Small delay for REG_UPDATE to process */
 	dev_info(vfe->camss->dev, "VFE: REG_UPDATE #1 after MODULE_CFG\n");
 
-	/* NOW write VFE_CFG_OFF with inputSource=AXI */
+	/* NOW write VFE_CFG_OFF with inputSource=CSI for live MIPI data */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -1247,7 +1253,7 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	val |= VFE31_CFG_WEBOS_BASE;
 	vfe_cfg_val = val;  /* Save for re-application after CAMIF start */
 	dev_info(vfe->camss->dev,
-		 "VFE: Step 0b - VFE_CFG_OFF=0x%08x (pixel=%d, input=AXI)\n",
+		 "VFE: Step 0b - VFE_CFG_OFF=0x%08x (pixel=%d, input=CSI)\n",
 		 val, val & 0x7);
 	writel(val, vfe->base + VFE31_CFG_OFF);
 	wmb();
@@ -1272,12 +1278,11 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 				 "VFE: WARNING - inputSource bits still not sticking!\n");
 
 			/*
-			 * Diagnostic: Test if inputSource=1 (TestGen) sticks
-			 * while inputSource=2 (AXI) doesn't.
-			 * This helps determine if hardware rejects all non-zero
-			 * inputSource values or specifically AXI mode.
+			 * Diagnostic: Test if inputSource=3 (TestGen) sticks.
+			 * inputSource values: 0=CAMIF, 1=CSI, 2=AXI, 3=TestGen
+			 * This helps determine if hardware rejects specific modes.
 			 */
-			test_val = (val & ~0x30000) | 0x10000;  /* inputSource=1 (TestGen) */
+			test_val = (val & ~0x30000) | 0x30000;  /* inputSource=3 (TestGen) */
 			writel(test_val, vfe->base + VFE31_CFG_OFF);
 			wmb();
 			writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
@@ -1287,14 +1292,14 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 			dev_info(vfe->camss->dev,
 				 "VFE: DIAGNOSTIC - TestGen test: wrote 0x%08x, readback 0x%08x\n",
 				 test_val, test_rb);
-			if ((test_rb & 0x30000) == 0x10000)
+			if ((test_rb & 0x30000) == 0x30000)
 				dev_info(vfe->camss->dev,
-					 "VFE: TestGen (inputSource=1) STICKS! AXI path specifically blocked.\n");
+					 "VFE: TestGen (inputSource=3) STICKS!\n");
 			else
 				dev_info(vfe->camss->dev,
-					 "VFE: TestGen also rejected. All non-CAMIF inputSource blocked.\n");
+					 "VFE: TestGen also rejected.\n");
 
-			/* Restore AXI setting for actual operation */
+			/* Restore CSI setting for actual operation */
 			writel(val, vfe->base + VFE31_CFG_OFF);
 			wmb();
 			writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
@@ -1524,8 +1529,8 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	/*
 	 * VFE31 workaround: Re-apply VFE_CFG_OFF after CAMIF start.
-	 * Observation: VFE_CFG_OFF changes from 0x00a20076 to 0x6 after
-	 * REG_UPDATE + CAMIF_START, losing the inputSource=AXI bits.
+	 * Observation: VFE_CFG_OFF changes after REG_UPDATE + CAMIF_START,
+	 * potentially losing the inputSource=CSI bits.
 	 * Re-writing the register may help restore proper data routing.
 	 */
 	{
