@@ -1119,6 +1119,7 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	struct vfe_line *line;
 	ktime_t start_time;
 	u32 val;
+	u32 vfe_cfg_val;  /* Save VFE_CFG value for re-application after CAMIF start */
 
 	if (!vfe->camif_pending) {
 		dev_dbg(vfe->camss->dev, "VFE: no pending CAMIF config\n");
@@ -1196,6 +1197,7 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	}
 	/* Use webOS-style configuration with AXI input source for MIPI CSI */
 	val |= VFE31_CFG_WEBOS_BASE;
+	vfe_cfg_val = val;  /* Save for re-application after CAMIF start */
 	dev_info(vfe->camss->dev,
 		 "VFE: VFE_CFG_OFF=0x%08x (pixel=%d, input=AXI, webOS config)\n",
 		 val, val & 0x7);
@@ -1436,6 +1438,21 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
 		 readl_relaxed(vfe->base + 0x02C),  /* VFE_IRQ_STATUS_0 */
 		 readl_relaxed(vfe->base + 0x030)); /* VFE_IRQ_STATUS_1 */
+
+	/*
+	 * VFE31 workaround: Re-apply VFE_CFG_OFF after CAMIF start.
+	 * Observation: VFE_CFG_OFF changes from 0x00a20076 to 0x6 after
+	 * REG_UPDATE + CAMIF_START, losing the inputSource=AXI bits.
+	 * Re-writing the register may help restore proper data routing.
+	 */
+	{
+		u32 cfg_before = readl(vfe->base + VFE31_CFG_OFF);
+		writel(vfe_cfg_val, vfe->base + VFE31_CFG_OFF);
+		wmb();
+		dev_info(vfe->camss->dev,
+			 "VFE: Re-applied VFE_CFG_OFF: before=0x%08x after=0x%08x (wanted 0x%08x)\n",
+			 cfg_before, readl(vfe->base + VFE31_CFG_OFF), vfe_cfg_val);
+	}
 
 	vfe->camif_pending = false;
 
