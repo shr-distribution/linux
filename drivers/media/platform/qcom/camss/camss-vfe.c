@@ -12,6 +12,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/iommu.h>
+#include <linux/iopoll.h>
 #include <linux/ktime.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -1111,6 +1112,90 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
  */
 #define VFE31_CFG_WEBOS_BASE		0x02a9a770
 
+/* VFE31 global reset and IRQ clear registers */
+#define VFE31_GLOBAL_RESET_CMD		0x004
+#define VFE31_IRQ_CMD			0x018
+#define VFE31_IRQ_CLEAR_0		0x024
+#define VFE31_IRQ_CLEAR_1		0x028
+
+/*
+ * vfe31_reg_update_poll - Issue REG_UPDATE and poll until bit 0 clears
+ * @vfe: VFE device
+ * @timeout_us: Timeout in microseconds
+ *
+ * VFE31 shadow registers require REG_UPDATE to latch new values. This function
+ * writes 1 to VFE_REG_UPDATE_CMD and polls until bit 0 auto-clears, indicating
+ * the update completed. Without proper REG_UPDATE completion, configuration
+ * writes to VFE_CFG_OFF and other shadow registers won't take effect.
+ *
+ * Returns 0 on success, -ETIMEDOUT if polling times out.
+ */
+static int vfe31_reg_update_poll(struct vfe_device *vfe, unsigned int timeout_us)
+{
+	u32 val;
+	int ret;
+
+	/* Write 1 to trigger register update */
+	writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
+	wmb();
+
+	/* Poll until bit 0 clears (update complete) */
+	ret = readl_relaxed_poll_timeout(vfe->base + VFE31_REG_UPDATE_CMD,
+					 val, !(val & 1), 10, timeout_us);
+	if (ret) {
+		dev_warn(vfe->camss->dev,
+			 "VFE31: REG_UPDATE timeout (val=0x%08x after %u us)\n",
+			 val, timeout_us);
+	} else {
+		dev_dbg(vfe->camss->dev, "VFE31: REG_UPDATE completed\n");
+	}
+
+	return ret;
+}
+
+/*
+ * vfe31_cold_reset - Perform a cold reset of VFE31 to unstick registers
+ * @vfe: VFE device
+ *
+ * If VFE shadow registers are stuck (writes don't take effect), a full reset
+ * can clear the internal state machine. This follows the webOS reset sequence:
+ * 1. Disable all IRQs
+ * 2. Clear all pending IRQs
+ * 3. Issue global reset (0x3FF to reset all modules)
+ * 4. Wait for reset completion
+ * 5. Re-enable clock gates
+ *
+ * Note: This is a heavyweight operation - use only if REG_UPDATE polling fails.
+ */
+static void vfe31_cold_reset(struct vfe_device *vfe)
+{
+	dev_info(vfe->camss->dev, "VFE31: Performing cold reset to unstick registers\n");
+
+	/* Step 1: Disable all IRQs */
+	writel_relaxed(0x0, vfe->base + VFE31_IRQ_MASK_0);
+	writel_relaxed(0x0, vfe->base + VFE31_IRQ_MASK_1);
+	wmb();
+
+	/* Step 2: Clear all pending IRQs */
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_IRQ_CLEAR_0);
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_IRQ_CLEAR_1);
+	writel_relaxed(1, vfe->base + VFE31_IRQ_CMD);  /* Acknowledge clear */
+	wmb();
+
+	/* Step 3: Issue global reset - 0x3FF resets all VFE modules */
+	writel_relaxed(0x3FF, vfe->base + VFE31_GLOBAL_RESET_CMD);
+	wmb();
+
+	/* Step 4: Wait for reset to complete */
+	usleep_range(2000, 3000);
+
+	/* Step 5: Re-enable all clock gates */
+	writel_relaxed(0xFFFFFFFF, vfe->base + 0x00C);  /* CGC_OVERRIDE */
+	wmb();
+
+	dev_info(vfe->camss->dev, "VFE31: Cold reset complete\n");
+}
+
 /*
  * vfe_enable_pending_camif - Configure and enable deferred CAMIF
  * @vfe: VFE device
@@ -1223,11 +1308,18 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 	dev_info(vfe->camss->dev, "VFE: VFE_MODULE_CFG=0x0C (DEMUX+CHROMA enabled)\n");
 
-	/* Issue REG_UPDATE to latch module enables */
-	writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
-	wmb();
-	udelay(100);  /* Small delay for REG_UPDATE to process */
-	dev_info(vfe->camss->dev, "VFE: REG_UPDATE #1 after MODULE_CFG\n");
+	/* Issue REG_UPDATE to latch module enables - poll until complete */
+	if (vfe31_reg_update_poll(vfe, 5000)) {
+		dev_warn(vfe->camss->dev,
+			 "VFE: REG_UPDATE #1 timeout - attempting cold reset\n");
+		vfe31_cold_reset(vfe);
+		/* Re-apply CGC and MODULE_CFG after reset */
+		writel_relaxed(0xFFFFFFFF, vfe->base + 0x00C);
+		writel_relaxed(0x0C, vfe->base + VFE31_MODULE_CFG);
+		wmb();
+		vfe31_reg_update_poll(vfe, 5000);  /* Try again after reset */
+	}
+	dev_info(vfe->camss->dev, "VFE: REG_UPDATE #1 after MODULE_CFG completed\n");
 
 	/* NOW write VFE_CFG_OFF with inputSource=CSI for live MIPI data */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
@@ -1258,11 +1350,12 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel(val, vfe->base + VFE31_CFG_OFF);
 	wmb();
 
-	/* Issue second REG_UPDATE to latch VFE_CFG_OFF */
-	writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
-	wmb();
-	udelay(100);
-	dev_info(vfe->camss->dev, "VFE: REG_UPDATE #2 after VFE_CFG_OFF\n");
+	/* Issue second REG_UPDATE to latch VFE_CFG_OFF - poll until complete */
+	if (vfe31_reg_update_poll(vfe, 5000)) {
+		dev_warn(vfe->camss->dev,
+			 "VFE: REG_UPDATE #2 timeout after VFE_CFG_OFF\n");
+	}
+	dev_info(vfe->camss->dev, "VFE: REG_UPDATE #2 after VFE_CFG_OFF completed\n");
 
 	/* Check if inputSource bits stuck this time */
 	{
@@ -1275,35 +1368,50 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 		if ((readback & 0x30000) != (val & 0x30000)) {
 			dev_warn(vfe->camss->dev,
-				 "VFE: WARNING - inputSource bits still not sticking!\n");
+				 "VFE: WARNING - inputSource bits not sticking! Trying cold reset\n");
 
 			/*
-			 * Diagnostic: Test if inputSource=3 (TestGen) sticks.
-			 * inputSource values: 0=CAMIF, 1=CSI, 2=AXI, 3=TestGen
-			 * This helps determine if hardware rejects specific modes.
+			 * VFE appears stuck - perform cold reset and retry.
+			 * This is the Catch-22 situation Gemini described: VFE needs
+			 * SOF to latch config, but needs config to see SOF.
+			 * Cold reset breaks the cycle.
 			 */
-			test_val = (val & ~0x30000) | 0x30000;  /* inputSource=3 (TestGen) */
-			writel(test_val, vfe->base + VFE31_CFG_OFF);
-			wmb();
-			writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
-			wmb();
-			udelay(100);
-			test_rb = readl(vfe->base + VFE31_CFG_OFF);
-			dev_info(vfe->camss->dev,
-				 "VFE: DIAGNOSTIC - TestGen test: wrote 0x%08x, readback 0x%08x\n",
-				 test_val, test_rb);
-			if ((test_rb & 0x30000) == 0x30000)
-				dev_info(vfe->camss->dev,
-					 "VFE: TestGen (inputSource=3) STICKS!\n");
-			else
-				dev_info(vfe->camss->dev,
-					 "VFE: TestGen also rejected.\n");
+			vfe31_cold_reset(vfe);
 
-			/* Restore CSI setting for actual operation */
+			/* Re-apply all configuration after cold reset */
+			writel_relaxed(0xFFFFFFFF, vfe->base + 0x00C);  /* CGC_OVERRIDE */
+			writel_relaxed(0x0C, vfe->base + VFE31_MODULE_CFG);
+			wmb();
+
+			/* DEMUX gains */
+			writel_relaxed(0x800080, vfe->base + 0x288);
+			writel_relaxed(0x800080, vfe->base + 0x28C);
+
+			/* Clamp config */
+			writel_relaxed(0x00ffffff, vfe->base + 0x524);
+			writel_relaxed(0x0, vfe->base + 0x528);
+			wmb();
+
+			/* Now write VFE_CFG_OFF again */
 			writel(val, vfe->base + VFE31_CFG_OFF);
 			wmb();
-			writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
-			wmb();
+
+			/* Poll REG_UPDATE after reset */
+			vfe31_reg_update_poll(vfe, 10000);
+
+			/* Check if it worked this time */
+			test_rb = readl(vfe->base + VFE31_CFG_OFF);
+			dev_info(vfe->camss->dev,
+				 "VFE: AFTER COLD RESET: wrote 0x%08x, readback 0x%08x\n",
+				 val, test_rb);
+
+			if ((test_rb & 0x30000) != (val & 0x30000)) {
+				dev_err(vfe->camss->dev,
+					"VFE: CRITICAL - inputSource still not sticking after cold reset!\n");
+			} else {
+				dev_info(vfe->camss->dev,
+					 "VFE: Cold reset fixed inputSource bits!\n");
+			}
 		}
 	}
 
@@ -1532,11 +1640,22 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * Observation: VFE_CFG_OFF changes after REG_UPDATE + CAMIF_START,
 	 * potentially losing the inputSource=CSI bits.
 	 * Re-writing the register may help restore proper data routing.
+	 *
+	 * Now that CAMIF is running, REG_UPDATE should complete since we
+	 * have data flow. Poll for completion to ensure the re-applied
+	 * configuration actually takes effect.
 	 */
 	{
 		u32 cfg_before = readl(vfe->base + VFE31_CFG_OFF);
 		writel(vfe_cfg_val, vfe->base + VFE31_CFG_OFF);
 		wmb();
+
+		/* With CAMIF running, REG_UPDATE should now complete */
+		if (vfe31_reg_update_poll(vfe, 10000) == 0) {
+			dev_info(vfe->camss->dev,
+				 "VFE: REG_UPDATE succeeded with CAMIF running!\n");
+		}
+
 		dev_info(vfe->camss->dev,
 			 "VFE: Re-applied VFE_CFG_OFF: before=0x%08x after=0x%08x (wanted 0x%08x)\n",
 			 cfg_before, readl(vfe->base + VFE31_CFG_OFF), vfe_cfg_val);
