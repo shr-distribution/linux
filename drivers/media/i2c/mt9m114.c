@@ -63,10 +63,14 @@
 #define MT9M114_MCU_ADDRESS				CCI_REG16(0x098c)
 #define MT9M114_MCU_DATA				CCI_REG16(0x0990)
 
-/* MT9M113 MCU variable addresses */
+/*
+ * MT9M113 MCU variable addresses (accessed via XDMA 0x098C/0x0990).
+ * From datasheet: seq_cmd (R0x0003) values: 0x01=preview, 0x02=capture
+ * SEQ_STATE values: 0x03=preview mode, 0x07=capture mode
+ */
 #define MT9M113_SEQ_CMD					0xa103
-#define MT9M113_SEQ_CMD_RUN				0x0001
-#define MT9M113_SEQ_CMD_STANDBY				0x0002
+#define MT9M113_SEQ_CMD_RUN				0x0001  /* preview/streaming */
+#define MT9M113_SEQ_CMD_CAPTURE				0x0002  /* capture mode */
 #define MT9M113_SEQ_CMD_REFRESH				0x0005
 #define MT9M113_SEQ_CMD_REFRESH_MODE			0x0006
 #define MT9M113_SEQ_STATE				0xa104
@@ -1862,16 +1866,18 @@ mt9m113_streaming:
 		/*
 		 * MT9M113 streaming sequence.
 		 *
-		 * CRITICAL: The sensor may already be streaming from init table
-		 * (SEQ_STATE=0x3). We MUST stop it first before configuring
-		 * MIPI short packet registers, otherwise the CUSTOM_SHORT_PKT
-		 * setting won't take effect and FS/FE packets won't be sent.
+		 * The sensor may already be in preview mode (SEQ_STATE=0x3) from
+		 * the init table, but MIPI output is disabled by default
+		 * (OUTPUT_CONTROL[9]=0). We configure MIPI registers while
+		 * the physical output is still off, then enable MIPI.
 		 *
-		 * Sequence:
-		 * 1. Issue STANDBY to stop sensor
-		 * 2. Wait for SEQ_STATE = 0 (idle)
-		 * 3. Configure MIPI registers (OUTPUT_CONTROL, CUSTOM_SHORT_PKT)
-		 * 4. Issue RUN to start streaming
+		 * CRITICAL ORDER:
+		 * 1. CUSTOM_SHORT_PKT (0x3404) = 0x0080 - MUST be set BEFORE MIPI enabled
+		 * 2. OUTPUT_CONTROL (0x3400) = 0x7A08 - enables MIPI output
+		 * 3. RESET_REGISTER (0x301A) = 0x120C - streaming mode
+		 *
+		 * If CUSTOM_SHORT_PKT is written after OUTPUT_CONTROL, the sensor
+		 * won't send Frame Start/End packets and VFE CAMIF times out.
 		 */
 		u64 seq_state;
 		int timeout;
@@ -1881,61 +1887,23 @@ mt9m113_streaming:
 		/* Check current SEQ_STATE */
 		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
 		dev_info(&sensor->client->dev,
-			 "MT9M113: SEQ_STATE before config=0x%llx\n", seq_state);
+			 "MT9M113: SEQ_STATE=0x%llx (0x03=preview mode)\n", seq_state);
 
 		/*
-		 * If sensor is streaming (SEQ_STATE=0x03), stop it first.
-		 * MIPI short packet config must be done while sensor is stopped.
+		 * Configure MIPI short packets BEFORE enabling MIPI output.
+		 * This ensures Frame Start/End packets are sent from the first frame.
 		 */
-		if (seq_state == 0x03) {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Sensor streaming - issuing STANDBY first\n");
-
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						    MT9M113_SEQ_CMD_STANDBY);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: SEQ_CMD STANDBY failed: %d\n", ret);
-				goto error;
-			}
-
-			/* Wait for sensor to enter standby (SEQ_STATE = 0) */
-			timeout = 50; /* 500ms max */
-			do {
-				msleep(10);
-				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			} while (seq_state != 0 && --timeout > 0);
-
-			if (timeout == 0) {
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: STANDBY timeout, SEQ_STATE=0x%llx\n",
-					 seq_state);
-			} else {
-				dev_info(&sensor->client->dev,
-					 "MT9M113: Sensor in standby (SEQ_STATE=0x%llx)\n",
-					 seq_state);
-			}
-		}
-
-		/*
-		 * Configure MIPI output - webOS sequence after msm_camio_csi_config():
-		 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI output
-		 * 2. CUSTOM_SHORT_PKT (0x3404) = 0x0080 - enable Frame Start/End packets
-		 * 3. RESET_REGISTER (0x301A) = 0x120C - enable MIPI streaming
-		 *
-		 * CRITICAL: The CUSTOM_SHORT_PKT register MUST be set to enable
-		 * MIPI Frame Start/End short packet transmission. Without this,
-		 * the VFE CAMIF never receives CAMIF_SOF interrupts and times out.
-		 */
-		dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI output\n");
-		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-			  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-
-		/* Enable Frame Start/End short packet transmission */
+		dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI short packets\n");
 		cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
 			  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
 		dev_info(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT=0x0080 (FS/FE enabled)\n");
 
+		/* Now enable MIPI output */
+		dev_info(&sensor->client->dev, "MT9M113: Enabling MIPI output\n");
+		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+			  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+
+		/* Set streaming mode in RESET_REGISTER */
 		cci_write(sensor->regmap, MT9M114_RESET_REGISTER, 0x120C, NULL);
 
 		/*
@@ -2005,9 +1973,14 @@ static int mt9m114_stop_streaming(struct mt9m114 *sensor)
 		 * between streaming sessions for faster startup, we need to properly
 		 * transition to standby state.
 		 */
-		dev_info(&sensor->client->dev, "MT9M113: stopping streaming (SEQ_CMD=STANDBY)\n");
+		/*
+		 * Switch to capture mode to stop continuous preview streaming.
+		 * Note: MT9M113 doesn't have a true standby command - webOS just
+		 * powers down via GPIO. We use capture mode (0x02) to change state.
+		 */
+		dev_info(&sensor->client->dev, "MT9M113: stopping streaming (SEQ_CMD=CAPTURE)\n");
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					    MT9M113_SEQ_CMD_STANDBY);
+					    MT9M113_SEQ_CMD_CAPTURE);
 		if (ret < 0) {
 			dev_err(&sensor->client->dev,
 				"MT9M113: failed to stop streaming: %d\n", ret);
