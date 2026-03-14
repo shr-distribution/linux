@@ -245,16 +245,33 @@ Offset  Size  Field                Description
 | 4:1 | 0xC0, 0xC0 | 0xC0, 0xC0 |
 | 6:1 | 0x00, 0xC0 | 0x00, 0xC0 |
 
-### 5.4 CAMIF_CFG Register (0x1E4)
+### 5.4 EFS_CFG Register (0x1E4) - CORRECTED
 
-| Bit | Name | Function |
-|-----|------|----------|
-| 3-4 | syncMode | 0=APS, 1=EFS, 2=ELS |
-| 8 | camif2vfeEnable | Route data to VFE ISP |
-| 10 | camif2busEnable | Route data directly to AXI bus |
+**⚠️ IMPORTANT CORRECTION:** Previous versions of this report incorrectly stated that
+0x1E4 contains `camif2vfeEnable` (bit 8) and `camif2busEnable` (bit 10) routing bits.
+This was a misinterpretation of the libqcameralib decompilation.
 
-**For preview (PIX path):** CAMIF_CFG = 0x100 (CAMIF2VFE)
-**For raw capture:** CAMIF_CFG = 0x400 (CAMIF2BUS)
+**The actual webOS kernel source (msm_vfe8x_proc.h) reveals:**
+
+| VFE Version | Register | Offset | Contains Routing Bits? |
+|-------------|----------|--------|------------------------|
+| VFE8x | VFE_CAMIFConfigType | 0x114 | YES (camif2vfeEnable bit 8, camif2busEnable bit 10) |
+| VFE31 | vfe_camifcfg (EFS_CFG) | 0x1E4 | NO (EFS sync codes only) |
+
+**VFE31 0x1E4 (EFS_CFG) actual layout:**
+
+| Bits | Name | Function |
+|------|------|----------|
+| 7:0 | efsEndOfLine | EFS sync code (0 for APS mode) |
+| 15:8 | efsStartOfLine | EFS sync code (0 for APS mode) |
+| 23:16 | efsEndOfFrame | EFS sync code (0 for APS mode) |
+| 31:24 | efsStartOfFrame | EFS sync code (0 for APS mode) |
+
+**VFE31 Data Routing:** Controlled SOLELY via AXI output mode at 0x040:
+- **For preview (PIX path):** AXI_OUT_MODE = 0x200 (OUTPUT_2, VFE ISP processing)
+- **For raw capture:** AXI_OUT_MODE = 0x60 (CAMIF_TO_AXI, bypass VFE)
+
+For MIPI CSI-2 (APS mode), write 0 to EFS_CFG.
 
 ---
 
@@ -346,8 +363,8 @@ Preview/video mode configuration (details not fully decompiled).
 ```
 MT9M113 → CSIPHY1 → VFE CAMIF → VFE ISP Pipeline → Scaler → OUTPUT_2 → Memory
                          ↓
-                   CAMIF_CFG = 0x100 (CAMIF2VFE)
-                   AXI_OUT_MODE = 0x200
+                   EFS_CFG = 0x0 (APS mode)
+                   AXI_OUT_MODE = 0x200 (routing controlled here!)
 ```
 
 ### 8.2 Raw Snapshot Mode
@@ -355,9 +372,12 @@ MT9M113 → CSIPHY1 → VFE CAMIF → VFE ISP Pipeline → Scaler → OUTPUT_2 �
 ```
 MT9M113 → CSIPHY1 → VFE CAMIF → WM0 → Memory (bypasses ISP)
                          ↓
-                   CAMIF_CFG = 0x400 (CAMIF2BUS)
-                   AXI_OUT_MODE = 0x60
+                   EFS_CFG = 0x0 (APS mode)
+                   AXI_OUT_MODE = 0x60 (routing controlled here!)
 ```
+
+**Note:** Data routing on VFE31 is controlled ONLY via AXI_OUT_MODE at 0x040.
+The EFS_CFG at 0x1E4 does NOT have routing bits (see section 5.4 correction).
 
 ### 8.3 Timing
 
@@ -382,17 +402,66 @@ vfe_util_do_aec(param_1);
 ### 9.2 Critical Configuration Points
 
 1. **Never write to 0x03C** - it's ao[1] and must be 0
-2. **AXI output mode at 0x040** determines the data path
-3. **CAMIF_CFG bits 8 and 10** control VFE vs bus routing
+2. **AXI output mode at 0x040** determines the data path (0x200=preview, 0x60=raw)
+3. **EFS_CFG at 0x1E4** should be 0 for APS mode (MIPI CSI-2) - no routing bits exist here!
 4. **Command type 6** triggers AXI config via separate ioctl
+
+**⚠️ Correction:** Previous versions claimed CAMIF_CFG at 0x1E4 has routing bits.
+This is WRONG for VFE31. Those bits exist in VFE8x at 0x114, not VFE31.
+VFE31 data routing is controlled solely via AXI_OUT_MODE at 0x040.
 
 ### 9.3 Debugging Implications
 
 When VFE SOF timeout occurs:
-1. Check AXI_OUT_MODE at 0x040 (should be 0x200 for preview)
-2. Check CAMIF_CFG at 0x1E4 (should be 0x100 for preview)
+1. Check AXI_OUT_MODE at 0x040 (should be 0x200 for preview, 0x60 for raw)
+2. Verify EFS_CFG at 0x1E4 is 0 (APS mode for MIPI, no routing bits to check!)
 3. Verify 0x03C is 0 (not corrupted by erroneous writes)
 4. Confirm CSIPHY is receiving data (sof_count increasing)
+
+---
+
+## 9.4 BIT 16/17 Clarification - DEFINITIVE REFERENCE
+
+There has been confusion about what BIT(16) and BIT(17) mean in different contexts.
+This section provides the definitive answer.
+
+### CSIPHY MIPI IRQ Status Register
+
+| Bit | Name | Function |
+|-----|------|----------|
+| 16 | MIPI_IRQ_FRAME_START | MIPI CSI-2 Frame Start short packet received |
+| 17 | MIPI_IRQ_FRAME_END | MIPI CSI-2 Frame End short packet received |
+
+**Location:** CSIPHY interrupt status register (in `camss-csiphy-8x60.c`)
+
+**Note:** Not all sensors send Frame Start/End short packets. The MT9M113 may not
+send these, which is why the code implements software SOF detection via SOT timing.
+
+### VFE31 IRQ_MASK_0 Register (0x01C)
+
+| Bit | Name | Function |
+|-----|------|----------|
+| 16 | STATS_RS | Row sum statistics ready |
+| 17 | STATS_CS | Column sum statistics ready |
+
+**Location:** VFE31 interrupt mask 0 register (in `camss-vfe.c`)
+
+**webOS IRQ mask value:** 0x00EFE021
+- Bit 0: CAMIF_SOF
+- Bit 5: REG_UPDATE
+- Bits 13-19: Various STATS interrupts (AEC, AF, AWB, RS, CS, IHIST, SKIN)
+- Bits 21-23: IMAGE_COMPOSIT_DONE for output paths
+
+### Summary
+
+**These are DIFFERENT registers!**
+
+| Register | BIT(16) | BIT(17) |
+|----------|---------|---------|
+| CSIPHY MIPI IRQ | Frame Start | Frame End |
+| VFE31 IRQ_MASK_0 | STATS_RS | STATS_CS |
+
+Do NOT confuse CSIPHY MIPI frame interrupts with VFE statistics interrupts.
 
 ---
 

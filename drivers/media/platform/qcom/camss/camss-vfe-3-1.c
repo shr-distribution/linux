@@ -933,22 +933,24 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 
 	/*
 	 * Configure CAMIF registers using correct VFE31 layout:
-	 * 0x1E4: CAMIF_CFG - routing control + sync mode
-	 *        - Bits 3-4: syncMode (0=APS, 1=EFS, 2=ELS)
-	 *        - Bit 8: camif2vfeEnable - route to VFE ISP pipeline
-	 *        - Bit 10: camif2busEnable - route directly to AXI bus
+	 *
+	 * IMPORTANT: VFE31 does NOT have camif2vfeEnable/camif2busEnable bits!
+	 * Those exist in VFE8x at offset 0x114, not in VFE31.
+	 *
+	 * VFE31 register layout:
+	 * 0x1E4: EFS_CFG - Embedded Frame Sync codes (0 for APS mode with MIPI)
 	 * 0x1E8: FRAME_CFG - pixelsPerLine | linesPerFrame<<16
 	 * 0x1EC: WINDOW_WIDTH - lastPixel | firstPixel<<16
 	 * 0x1F0: WINDOW_HEIGHT - lastLine | firstLine<<16
 	 *
-	 * For RDI mode (raw capture), we need camif2busEnable (bit 10 = 0x400)
-	 * to route data directly to AXI bus, bypassing VFE ISP pipeline.
-	 * syncMode = APS (bits 3-4 = 0) for MIPI CSI-2.
+	 * Data routing on VFE31 is controlled solely via AXI output mode at 0x040:
+	 *   - 0x200: OUTPUT_2 (PIX mode, VFE ISP processing)
+	 *   - 0x60:  CAMIF_TO_AXI_VIA_OUTPUT_2 (RDI mode, raw bypass)
+	 *
+	 * For MIPI CSI-2 (APS mode), EFS_CFG should be 0.
 	 */
-#define VFE31_CAMIF_CFG_CAMIF2BUS_EN	BIT(10)
-	writel_relaxed(VFE31_CAMIF_CFG_CAMIF2BUS_EN, vfe->base + VFE_0_CAMIF_EFS_CFG);
-	dev_info(vfe->camss->dev, "VFE31 RDI: CAMIF_CFG=0x%08x (camif2busEnable)\n",
-		 VFE31_CAMIF_CFG_CAMIF2BUS_EN);
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	dev_info(vfe->camss->dev, "VFE31 RDI: EFS_CFG=0x0 (APS mode, routing via AXI_OUT_MODE)\n");
 
 	/* FRAME_CFG: bytes per line | lines per frame */
 	val = bytes_per_line | (height << 16);

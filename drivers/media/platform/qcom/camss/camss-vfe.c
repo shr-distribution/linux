@@ -885,14 +885,30 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 /*
  * VFE31 CAMIF register block layout (32 bytes at 0x1E4-0x203):
  *
- * From webOS libqcameralib reverse engineering:
- * 0x1E4: CAMIF_CFG - Configuration and routing control
- *        [3:4]   syncMode (0=APS, 1=EFS, 2=ELS) - APS for MIPI CSI-2
- *        [8]     camif2vfeEnable - Route data to VFE ISP pipeline
- *        [10]    camif2busEnable - Route data directly to AXI bus
- *        For APS mode: set sync bits to 0
- *        For PIX mode: set bit 8 (0x100)
- *        For RDI mode: set bit 10 (0x400)
+ * IMPORTANT: VFE31 is DIFFERENT from VFE8x!
+ *
+ * The VFE8x VFE_CAMIFConfigType structure (at 0x114) has camif2vfeEnable (bit 8)
+ * and camif2busEnable (bit 10) for data routing. VFE31 does NOT have these bits!
+ *
+ * The webOS libqcameralib reverse engineering report incorrectly claimed these
+ * routing bits exist at 0x1E4. This was a misinterpretation - the actual webOS
+ * kernel source (msm_vfe8x_proc.h) shows:
+ *
+ *   - VFE8x uses struct VFE_CAMIFConfigType at 0x114 with camif2vfeEnable/camif2busEnable
+ *   - VFE31 uses struct vfe_camifcfg at 0x1E4 with EFS codes (NO routing bits)
+ *
+ * VFE31 0x1E4 (EFS_CFG) layout from vfe_camifcfg struct:
+ *   [7:0]   efsEndOfLine   - EFS sync code (0 for APS mode)
+ *   [15:8]  efsStartOfLine - EFS sync code (0 for APS mode)
+ *   [23:16] efsEndOfFrame  - EFS sync code (0 for APS mode)
+ *   [31:24] efsStartOfFrame- EFS sync code (0 for APS mode)
+ *
+ * For MIPI CSI-2 (APS mode), write 0 to EFS_CFG.
+ *
+ * Data routing on VFE31 is controlled ONLY via AXI output mode at 0x040:
+ *   - 0x200: OUTPUT_2 (preview with VFE ISP processing)
+ *   - 0x60:  CAMIF_TO_AXI_VIA_OUTPUT_2 (raw bypass to memory)
+ *
  * 0x1E8: FRAME_CFG - frame dimensions
  *        [13:0]  pixelsPerLine (total bytes per line for YUV)
  *        [29:16] linesPerFrame
@@ -1144,30 +1160,39 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(val, vfe->base + VFE31_CORE_CFG);
 
 	/*
-	 * Step 2: Configure CAMIF_CFG at 0x1E4
+	 * Step 2: Configure EFS_CFG at 0x1E4
 	 *
-	 * This register serves dual purpose on VFE31 (discovered via webOS RE):
-	 *   - Bits 3-4: syncMode (0=APS, 1=EFS, 2=ELS)
-	 *   - Bit 8: camif2vfeEnable - routes data to VFE ISP pipeline
-	 *   - Bit 10: camif2busEnable - routes data directly to AXI bus
+	 * VFE31 CAMIF Register Layout Analysis (based on webOS msm_vfe31.h/vfe8x_proc.h):
 	 *
-	 * For APS mode (MIPI CSI-2), syncMode = 0 (bits 3-4 = 0).
-	 * For PIX path: set bit 8 (0x100) to route through VFE ISP
-	 * For RDI path: set bit 10 (0x400) to route directly to memory
+	 * IMPORTANT: VFE31 is DIFFERENT from VFE8x!
 	 *
-	 * NOTE: Previous code assumed VFE31 didn't have these routing bits,
-	 * but webOS libqcameralib reverse engineering confirmed they exist.
+	 * VFE8x has: CAMIF_CONFIG at 0x114 with camif2vfeEnable (bit 8) and
+	 *            camif2busEnable (bit 10) for data routing.
+	 *
+	 * VFE31 does NOT have those routing bits. Instead:
+	 * - 0x1E0: CAMIF_COMMAND (start=1, stop=2, clear=4)
+	 * - 0x1E4: EFS_CFG (32-byte config block starts here)
+	 *          Bits 7:0   = efsEndOfLine (for EFS sync mode)
+	 *          Bits 15:8  = efsStartOfLine
+	 *          Bits 23:16 = efsEndOfFrame
+	 *          Bits 31:24 = efsStartOfFrame
+	 * - 0x1E8: FRAME_CFG
+	 * - 0x1EC: WINDOW_WIDTH_CFG
+	 * - 0x1F0: WINDOW_HEIGHT_CFG
+	 * - 0x1F4: SUBSAMPLE_CFG_0
+	 * - 0x1F8: SUBSAMPLE_CFG_1
+	 * - 0x1FC: EPOCH_CFG
+	 * - 0x204: CAMIF_STATUS
+	 *
+	 * For VFE31, data routing is controlled via:
+	 * - AXI output mode at 0x040 (0x60 for raw, 0x200 for preview)
+	 * - Write master configuration
+	 *
+	 * For APS mode (Active Pixel Sync, used with MIPI CSI-2), EFS_CFG should
+	 * be 0 since we don't use embedded sync codes.
 	 */
-#define VFE31_CAMIF_CFG_CAMIF2VFE_EN	BIT(8)   /* Route to VFE ISP */
-#define VFE31_CAMIF_CFG_CAMIF2BUS_EN	BIT(10)  /* Route to AXI bus */
-	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
-		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN;  /* PIX: route through ISP */
-	} else {
-		val = VFE31_CAMIF_CFG_CAMIF2BUS_EN;  /* RDI: direct to memory */
-	}
-	dev_info(vfe->camss->dev, "VFE: CAMIF_CFG=0x%08x at 0x1E4 (%s mode)\n",
-		 val, (vfe->camif_pending_line_id == VFE_LINE_PIX) ? "PIX/ISP" : "RDI/raw");
-	writel_relaxed(val, vfe->base + VFE31_CAMIF_EFS_CFG);
+	dev_info(vfe->camss->dev, "VFE: EFS_CFG=0x0 at 0x1E4 (APS mode, no embedded sync)\n");
+	writel_relaxed(0, vfe->base + VFE31_CAMIF_EFS_CFG);
 
 	/* Step 3: Configure CAMIF frame dimensions at 0x1E8 */
 	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
@@ -1201,7 +1226,7 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 2b: Enable write masters via VFE_BUS_CMD (0x38)
 	 * webOS writes 0x7FFF here to "reload all write masters (frame & line)"
-	 * This must be done BEFORE camif2busEnable will work in CAMIF_CFG.
+	 * This prepares write masters for receiving data from CAMIF.
 	 */
 #define VFE31_BUS_CMD			0x038
 #define VFE31_BUS_CMD_RELOAD_WM		0x7FFF
@@ -1241,35 +1266,19 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * Step 4a: Clear CAMIF status before configuring
+	 * Step 4: Clear CAMIF status before configuring
 	 * This ensures CAMIF is in a clean state to accept new configuration.
-	 * NOTE: This may reset CAMIF_CFG, so routing bits must be written AFTER.
+	 *
+	 * NOTE: VFE31 does NOT have camif2vfeEnable/camif2busEnable routing bits
+	 * at 0x1E4. Those bits exist in VFE8x at 0x114, not in VFE31.
+	 * Data routing on VFE31 is controlled solely via AXI_OUT_MODE at 0x040.
 	 */
 	writel_relaxed(VFE31_CAMIF_CMD_CLEAR_STATUS, vfe->base + VFE31_CAMIF_CMD);
 	wmb();
 	udelay(10);
 
-	/*
-	 * Step 4b: Re-apply CAMIF_CFG routing bits AFTER clear status
-	 *
-	 * CRITICAL: The CLEAR_STATUS command above resets CAMIF_CFG to 0.
-	 * We must re-apply the routing bits here for data to flow correctly:
-	 *   - Bit 8 (0x100): camif2vfeEnable - for PIX mode (VFE ISP path)
-	 *   - Bit 10 (0x400): camif2busEnable - for RDI mode (direct to memory)
-	 */
-	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
-		val = VFE31_CAMIF_CFG_CAMIF2VFE_EN;
-	} else {
-		val = VFE31_CAMIF_CFG_CAMIF2BUS_EN;
-	}
 	dev_info(vfe->camss->dev,
-		 "VFE: Re-applying CAMIF_CFG=0x%08x after clear (%s mode)\n",
-		 val, (vfe->camif_pending_line_id == VFE_LINE_PIX) ? "PIX" : "RDI");
-	writel_relaxed(val, vfe->base + VFE31_CAMIF_EFS_CFG);
-	wmb();
-
-	dev_info(vfe->camss->dev,
-		 "VFE: AXI_OUT_MODE=0x%08x, CAMIF_CFG=0x%08x\n",
+		 "VFE: AXI_OUT_MODE=0x%08x, EFS_CFG=0x%08x (routing via AXI mode only)\n",
 		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_EFS_CFG));
 
@@ -1711,7 +1720,7 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 			if (min_rate == 0 || vfe->res->hw_ops == &vfe_ops_3_1)
 				j = clock->nfreqs - 1;
 
-			dev_info(dev, "VFE clock %s: min_rate=%llu j=%d freq[j]=%lu nfreqs=%d\n",
+			dev_info(dev, "VFE clock %s: min_rate=%llu j=%d freq[j]=%u nfreqs=%d\n",
 				 clock->name, min_rate, j, clock->freq[j], clock->nfreqs);
 
 			rate = clk_round_rate(clock->clk, clock->freq[j]);
@@ -1721,7 +1730,7 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 				return -EINVAL;
 			}
 
-			dev_info(dev, "VFE clock %s: requested=%lu rounded=%ld\n",
+			dev_info(dev, "VFE clock %s: requested=%u rounded=%ld\n",
 				 clock->name, clock->freq[j], rate);
 
 			/*
