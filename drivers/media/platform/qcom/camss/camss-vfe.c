@@ -1149,11 +1149,53 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + 0x00C)); /* VFE_CGC_OVERRIDE */
 
 	/*
-	 * Step 0: Set VFE default register values (from webOS vfe31_set_default_reg_values)
-	 * These must be set before any other VFE configuration.
+	 * Step 0: VBIF + Clock "Brute Force" Initialization
+	 *
+	 * Based on Gemini analysis: The VFE31 has an internal sub-module called
+	 * VBIF (VFE Bus Interface) which is the AXI master/slave logic. If VBIF
+	 * is halted or its clock gate isn't open, inputSource=AXI will never stick.
+	 *
+	 * Sequence:
+	 * 1. Force ALL VFE clocks via CGC_OVERRIDE (including VBIF)
+	 * 2. Wake up VBIF via 0x400 (VBIF_CLK_ON) and 0x404 (VBIF_AXI_CFG)
+	 * 3. Clear any pending resets
+	 * 4. Then configure VFE_CFG_OFF with inputSource=AXI
 	 */
-	/* Enable all internal clocks via CGC override */
-	writel_relaxed(0xFFFFF, vfe->base + 0x00C);  /* VFE_CGC_OVERRIDE */
+
+	/* Debug: Read VBIF state before configuration */
+	dev_info(vfe->camss->dev,
+		 "VFE: VBIF PRE-CONFIG: 0x400=0x%08x 0x404=0x%08x 0x408=0x%08x\n",
+		 readl_relaxed(vfe->base + 0x400),
+		 readl_relaxed(vfe->base + 0x404),
+		 readl_relaxed(vfe->base + 0x408));
+
+	/* Step 0a: Force ALL VFE clocks on (full 32-bit mask) */
+	writel_relaxed(0xFFFFFFFF, vfe->base + 0x00C);  /* VFE_CGC_OVERRIDE */
+	wmb();
+	dev_info(vfe->camss->dev, "VFE: CGC_OVERRIDE=0xFFFFFFFF (all clocks forced on)\n");
+
+	/* Step 0b: Wake up VBIF (VFE Bus Interface) */
+	writel_relaxed(0x00000001, vfe->base + 0x400);  /* VBIF_CLK_ON */
+	wmb();
+	writel_relaxed(0x00000110, vfe->base + 0x404);  /* VBIF_AXI_CFG (standard priority) */
+	wmb();
+	dev_info(vfe->camss->dev,
+		 "VFE: VBIF configured: 0x400=0x1, 0x404=0x110\n");
+
+	/* Step 0c: Clear any pending resets */
+	writel_relaxed(0, vfe->base + 0x00C);
+	wmb();
+	udelay(10);
+	/* Re-enable CGC after reset clear */
+	writel_relaxed(0xFFFFFFFF, vfe->base + 0x00C);
+	wmb();
+
+	/* Debug: Read VBIF state after configuration */
+	dev_info(vfe->camss->dev,
+		 "VFE: VBIF POST-CONFIG: 0x400=0x%08x 0x404=0x%08x 0x408=0x%08x\n",
+		 readl_relaxed(vfe->base + 0x400),
+		 readl_relaxed(vfe->base + 0x404),
+		 readl_relaxed(vfe->base + 0x408));
 
 	/* Set DEMUX gains to passthrough (required for YUV input) */
 	writel_relaxed(0x800080, vfe->base + 0x288); /* VFE_DEMUX_GAIN_0 */
@@ -1164,31 +1206,13 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0x0, vfe->base + 0x528);        /* VFE_CLAMP_ENC_MIN_CFG */
 
 	/*
-	 * Step 0b: Configure VFE_CFG_OFF - pixel pattern, input source, and config
-	 * This register MUST be set for VFE31 to know where data comes from.
-	 * From webOS vfe31_operation_config(): writes to VFE_CFG_OFF before start.
-	 *
-	 * CRITICAL: WebOS uses inputSource=AXI (bits 16-17 = 2) for MIPI CSI input,
-	 * NOT inputSource=CAMIF (bits 16-17 = 0). The AXI input path connects the
-	 * CSI decoder output to VFE. CAMIF input is for parallel camera interfaces.
-	 *
-	 * WebOS also sets additional configuration bits 3-15 and 18-31 which appear
-	 * to configure internal VFE data paths. Using VFE31_CFG_WEBOS_BASE which
-	 * includes all these bits.
-	 */
-	/*
-	 * CRITICAL FIX: Enable modules BEFORE writing VFE_CFG_OFF
-	 *
-	 * Based on Gemini analysis, the AXI input path in VFE_CFG_OFF may
-	 * physically refuse inputSource=AXI if processing modules are not
-	 * enabled. Enable DEMUX first, issue REG_UPDATE to latch it,
-	 * THEN write VFE_CFG_OFF with inputSource=AXI.
+	 * Step 0d: Enable modules BEFORE writing VFE_CFG_OFF
 	 *
 	 * VFE_MODULE_CFG bits:
 	 *   Bit 2: demuxEnable - required for YUV data demuxing
 	 *   Bit 3: chromaUpsampleEnable - needed for YUV422 to YUV444
 	 */
-	dev_info(vfe->camss->dev, "VFE: Step 0a - Enable modules BEFORE VFE_CFG_OFF\n");
+	dev_info(vfe->camss->dev, "VFE: Step 0d - Enable modules BEFORE VFE_CFG_OFF\n");
 	writel_relaxed(0x0C, vfe->base + VFE31_MODULE_CFG);  /* DEMUX + CHROMA_UPSAMPLE */
 	wmb();
 	dev_info(vfe->camss->dev, "VFE: VFE_MODULE_CFG=0x0C (DEMUX+CHROMA enabled)\n");
@@ -1237,12 +1261,45 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	/* Check if inputSource bits stuck this time */
 	{
 		u32 readback = readl(vfe->base + VFE31_CFG_OFF);
+		u32 test_val, test_rb;
+
 		dev_info(vfe->camss->dev,
 			 "VFE: VFE_CFG_OFF readback=0x%08x (wrote 0x%08x, diff=0x%08x)\n",
 			 readback, val, val ^ readback);
-		if ((readback & 0x30000) != (val & 0x30000))
+
+		if ((readback & 0x30000) != (val & 0x30000)) {
 			dev_warn(vfe->camss->dev,
 				 "VFE: WARNING - inputSource bits still not sticking!\n");
+
+			/*
+			 * Diagnostic: Test if inputSource=1 (TestGen) sticks
+			 * while inputSource=2 (AXI) doesn't.
+			 * This helps determine if hardware rejects all non-zero
+			 * inputSource values or specifically AXI mode.
+			 */
+			test_val = (val & ~0x30000) | 0x10000;  /* inputSource=1 (TestGen) */
+			writel(test_val, vfe->base + VFE31_CFG_OFF);
+			wmb();
+			writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
+			wmb();
+			udelay(100);
+			test_rb = readl(vfe->base + VFE31_CFG_OFF);
+			dev_info(vfe->camss->dev,
+				 "VFE: DIAGNOSTIC - TestGen test: wrote 0x%08x, readback 0x%08x\n",
+				 test_val, test_rb);
+			if ((test_rb & 0x30000) == 0x10000)
+				dev_info(vfe->camss->dev,
+					 "VFE: TestGen (inputSource=1) STICKS! AXI path specifically blocked.\n");
+			else
+				dev_info(vfe->camss->dev,
+					 "VFE: TestGen also rejected. All non-CAMIF inputSource blocked.\n");
+
+			/* Restore AXI setting for actual operation */
+			writel(val, vfe->base + VFE31_CFG_OFF);
+			wmb();
+			writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
+			wmb();
+		}
 	}
 
 	wmb();
