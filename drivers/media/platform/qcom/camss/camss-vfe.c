@@ -1078,39 +1078,27 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 #define VFE31_INPUT_SOURCE_AXI		(2 << 16)
 
 /*
- * VFE31 VFE_CFG_OFF webOS base value - from libqcameralib reverse engineering
+ * VFE31 VFE_CFG_OFF (0x014) - CRITICAL FINDING
  *
- * WebOS uses values like 0x2aaa771 (Bayer GRGRGR) or 0x2aaa775 (YUV YCrYCb).
- * The base value 0x2aaa770 configures bits beyond the documented fields:
+ * IMPORTANT: VFE31 on MSM8660 does NOT have inputSource bits at 16-17!
  *
- * Bit breakdown of 0x02a9a770:
- *   bits  0-2:  000 = pixel pattern placeholder (OR'd with format)
- *   bit     3:  0
- *   bits  4-6:  111 = internal pipeline enables (all set)
- *   bit     7:  0
- *   bits  8-10: 111 = data path enables (all set)
- *   bit    11:  0
- *   bits 12-15: 1010 = alternating pattern
- *   bits 16-17: 01 = inputSource CSI (live MIPI data)
- *   bits 18-19: 10 = additional config
- *   bits 20-23: 1010 = alternating pattern
- *   bit    24:  0
- *   bit    25:  1 = unknown enable
- *   bits 26-31: 0
+ * Testing shows that only bits 0-7 and bit 21 persist when writing to this
+ * register. Bits 8-20 and 22-31 are read-only/reserved on VFE31.
  *
- * The alternating 0xA patterns may be VFE31-specific internal mux settings.
- * These bits are marked "reserved" in VFE8x/VFE32 docs but required on VFE31.
+ * - Wrote: 0x02a9a776
+ * - Read back: 0x00a10076
+ * - Only bits 0-7 (0x76) and bit 21 persisted
  *
- * CRITICAL: inputSource values on VFE31/MSM8660:
- *   0 = CAMIF (parallel camera interface)
- *   1 = CSI (live MIPI CSI data from CSIPHY/CSID)
- *   2 = AXI (offline memory fetch for reprocessing)
- *   3 = TestGen (internal test pattern generator)
+ * The webOS libqcameralib value 0x2aaa771 was for userspace config that gets
+ * filtered by the kernel driver - the kernel itself only writes pixel pattern.
  *
- * For live camera, inputSource MUST be 1 (CSI), NOT 2 (AXI).
- * AXI mode makes VFE fetch from RAM, ignoring live sensor data!
+ * For VFE31, we should ONLY set the pixel pattern bits (0-2). Data routing
+ * from CSIPHY to VFE is automatic once the CSI-VFE bridge clocks are enabled
+ * and CAMIF is started. There is no inputSource selection register.
+ *
+ * The VFE8x "inputSource" concept (CAMIF vs CSI vs AXI) does not apply to
+ * VFE31 - the hardware architecture is fundamentally different.
  */
-#define VFE31_CFG_WEBOS_BASE		0x02a9a770
 
 /* VFE31 global reset and IRQ clear registers */
 #define VFE31_GLOBAL_RESET_CMD		0x004
@@ -1302,26 +1290,25 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * VFE_MODULE_CFG bits:
 	 *   Bit 2: demuxEnable - required for YUV data demuxing
 	 *   Bit 3: chromaUpsampleEnable - needed for YUV422 to YUV444
+	 *
+	 * Note: We don't poll REG_UPDATE here because it requires VSYNC to
+	 * complete, and VSYNC requires active data flow which we don't have
+	 * yet. The config will latch on the first SOF after CAMIF starts.
 	 */
-	dev_info(vfe->camss->dev, "VFE: Step 0d - Enable modules BEFORE VFE_CFG_OFF\n");
+	dev_info(vfe->camss->dev, "VFE: Step 0d - Enable modules\n");
 	writel_relaxed(0x0C, vfe->base + VFE31_MODULE_CFG);  /* DEMUX + CHROMA_UPSAMPLE */
 	wmb();
 	dev_info(vfe->camss->dev, "VFE: VFE_MODULE_CFG=0x0C (DEMUX+CHROMA enabled)\n");
 
-	/* Issue REG_UPDATE to latch module enables - poll until complete */
-	if (vfe31_reg_update_poll(vfe, 5000)) {
-		dev_warn(vfe->camss->dev,
-			 "VFE: REG_UPDATE #1 timeout - attempting cold reset\n");
-		vfe31_cold_reset(vfe);
-		/* Re-apply CGC and MODULE_CFG after reset */
-		writel_relaxed(0xFFFFFFFF, vfe->base + 0x00C);
-		writel_relaxed(0x0C, vfe->base + VFE31_MODULE_CFG);
-		wmb();
-		vfe31_reg_update_poll(vfe, 5000);  /* Try again after reset */
-	}
-	dev_info(vfe->camss->dev, "VFE: REG_UPDATE #1 after MODULE_CFG completed\n");
-
-	/* NOW write VFE_CFG_OFF with inputSource=CSI for live MIPI data */
+	/*
+	 * Step 0b: Write VFE_CFG_OFF with pixel pattern ONLY
+	 *
+	 * CRITICAL: VFE31 does NOT have inputSource bits (16-17)!
+	 * Only the pixel pattern (bits 0-2) is writable. Data routing from
+	 * CSIPHY to VFE is automatic once clocks are enabled and CAMIF starts.
+	 *
+	 * Do NOT use VFE31_CFG_WEBOS_BASE - those bits don't persist on VFE31.
+	 */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -1341,79 +1328,22 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		val = VFE31_PIXEL_PATTERN_YUV_CrYCbY;
 		break;
 	}
-	/* Use webOS-style configuration with AXI input source for MIPI CSI */
-	val |= VFE31_CFG_WEBOS_BASE;
-	vfe_cfg_val = val;  /* Save for re-application after CAMIF start */
+	vfe_cfg_val = val;
 	dev_info(vfe->camss->dev,
-		 "VFE: Step 0b - VFE_CFG_OFF=0x%08x (pixel=%d, input=CSI)\n",
-		 val, val & 0x7);
+		 "VFE: Step 0b - VFE_CFG_OFF=0x%08x (pixel pattern only)\n", val);
 	writel(val, vfe->base + VFE31_CFG_OFF);
 	wmb();
 
-	/* Issue second REG_UPDATE to latch VFE_CFG_OFF - poll until complete */
-	if (vfe31_reg_update_poll(vfe, 5000)) {
-		dev_warn(vfe->camss->dev,
-			 "VFE: REG_UPDATE #2 timeout after VFE_CFG_OFF\n");
-	}
-	dev_info(vfe->camss->dev, "VFE: REG_UPDATE #2 after VFE_CFG_OFF completed\n");
-
-	/* Check if inputSource bits stuck this time */
-	{
-		u32 readback = readl(vfe->base + VFE31_CFG_OFF);
-		u32 test_val, test_rb;
-
-		dev_info(vfe->camss->dev,
-			 "VFE: VFE_CFG_OFF readback=0x%08x (wrote 0x%08x, diff=0x%08x)\n",
-			 readback, val, val ^ readback);
-
-		if ((readback & 0x30000) != (val & 0x30000)) {
-			dev_warn(vfe->camss->dev,
-				 "VFE: WARNING - inputSource bits not sticking! Trying cold reset\n");
-
-			/*
-			 * VFE appears stuck - perform cold reset and retry.
-			 * This is the Catch-22 situation Gemini described: VFE needs
-			 * SOF to latch config, but needs config to see SOF.
-			 * Cold reset breaks the cycle.
-			 */
-			vfe31_cold_reset(vfe);
-
-			/* Re-apply all configuration after cold reset */
-			writel_relaxed(0xFFFFFFFF, vfe->base + 0x00C);  /* CGC_OVERRIDE */
-			writel_relaxed(0x0C, vfe->base + VFE31_MODULE_CFG);
-			wmb();
-
-			/* DEMUX gains */
-			writel_relaxed(0x800080, vfe->base + 0x288);
-			writel_relaxed(0x800080, vfe->base + 0x28C);
-
-			/* Clamp config */
-			writel_relaxed(0x00ffffff, vfe->base + 0x524);
-			writel_relaxed(0x0, vfe->base + 0x528);
-			wmb();
-
-			/* Now write VFE_CFG_OFF again */
-			writel(val, vfe->base + VFE31_CFG_OFF);
-			wmb();
-
-			/* Poll REG_UPDATE after reset */
-			vfe31_reg_update_poll(vfe, 10000);
-
-			/* Check if it worked this time */
-			test_rb = readl(vfe->base + VFE31_CFG_OFF);
-			dev_info(vfe->camss->dev,
-				 "VFE: AFTER COLD RESET: wrote 0x%08x, readback 0x%08x\n",
-				 val, test_rb);
-
-			if ((test_rb & 0x30000) != (val & 0x30000)) {
-				dev_err(vfe->camss->dev,
-					"VFE: CRITICAL - inputSource still not sticking after cold reset!\n");
-			} else {
-				dev_info(vfe->camss->dev,
-					 "VFE: Cold reset fixed inputSource bits!\n");
-			}
-		}
-	}
+	/*
+	 * Skip REG_UPDATE polling for initial config.
+	 *
+	 * VFE31 REG_UPDATE requires VSYNC to latch, but CAMIF hasn't started
+	 * yet so there's no VSYNC. The config will latch on the first SOF
+	 * after CAMIF_START. This matches webOS behavior - it doesn't poll
+	 * REG_UPDATE during initial config.
+	 */
+	dev_info(vfe->camss->dev,
+		 "VFE: VFE_CFG_OFF set (will latch on first SOF after CAMIF start)\n");
 
 	wmb();
 
@@ -1636,29 +1566,21 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + 0x030)); /* VFE_IRQ_STATUS_1 */
 
 	/*
-	 * VFE31 workaround: Re-apply VFE_CFG_OFF after CAMIF start.
-	 * Observation: VFE_CFG_OFF changes after REG_UPDATE + CAMIF_START,
-	 * potentially losing the inputSource=CSI bits.
-	 * Re-writing the register may help restore proper data routing.
+	 * VFE31: Re-apply pixel pattern after CAMIF start.
+	 * This ensures the shadow register latches with the first SOF.
 	 *
-	 * Now that CAMIF is running, REG_UPDATE should complete since we
-	 * have data flow. Poll for completion to ensure the re-applied
-	 * configuration actually takes effect.
+	 * Note: VFE31 does NOT have inputSource bits - data routing is
+	 * automatic via the CSI-VFE bridge clocks. We only need to ensure
+	 * the pixel pattern is set correctly.
 	 */
 	{
 		u32 cfg_before = readl(vfe->base + VFE31_CFG_OFF);
 		writel(vfe_cfg_val, vfe->base + VFE31_CFG_OFF);
 		wmb();
 
-		/* With CAMIF running, REG_UPDATE should now complete */
-		if (vfe31_reg_update_poll(vfe, 10000) == 0) {
-			dev_info(vfe->camss->dev,
-				 "VFE: REG_UPDATE succeeded with CAMIF running!\n");
-		}
-
 		dev_info(vfe->camss->dev,
-			 "VFE: Re-applied VFE_CFG_OFF: before=0x%08x after=0x%08x (wanted 0x%08x)\n",
-			 cfg_before, readl(vfe->base + VFE31_CFG_OFF), vfe_cfg_val);
+			 "VFE: Re-applied VFE_CFG_OFF: before=0x%08x after=0x%08x (pixel=%d)\n",
+			 cfg_before, readl(vfe->base + VFE31_CFG_OFF), vfe_cfg_val & 0x7);
 	}
 
 	vfe->camif_pending = false;
