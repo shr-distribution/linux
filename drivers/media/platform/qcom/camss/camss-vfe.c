@@ -1199,7 +1199,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev,
 		 "VFE: VFE_CFG_OFF=0x%08x (pixel=%d, input=AXI, webOS config)\n",
 		 val, val & 0x7);
-	writel_relaxed(val, vfe->base + VFE31_CFG_OFF);
+	writel(val, vfe->base + VFE31_CFG_OFF);
+	/* Force write to complete and verify */
+	wmb();
+	{
+		u32 readback = readl(vfe->base + VFE31_CFG_OFF);
+		dev_info(vfe->camss->dev,
+			 "VFE: VFE_CFG_OFF readback=0x%08x (wrote 0x%08x, diff=0x%08x)\n",
+			 readback, val, val ^ readback);
+	}
 
 	/*
 	 * Step 0c: Configure VFE_MODULE_CFG - enable modules
