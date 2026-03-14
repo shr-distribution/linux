@@ -28,109 +28,47 @@
 #include "camss.h"
 
 /*
- * MSM8660 CSID is integrated with CSIPHY. These registers are shared
- * with the CSIPHY block and are provided here for reference.
+ * MSM8660 CSID is integrated with CSIPHY. The CSID shares register space
+ * with CSIPHY and does NOT have separate CID (Context ID) configuration.
+ *
+ * Unlike later Qualcomm chips (MSM8974+), MSM8660's unified CSIPHY+CSID
+ * architecture routes MIPI data to VFE automatically without needing
+ * explicit data type or virtual channel configuration.
+ *
+ * WebOS kernel does not configure any CID registers for this SoC.
+ *
+ * IMPORTANT: Offset 0x0020 in CSIPHY register space is MIPI_PHY_D1_CONTROL,
+ * NOT a CID register! Do not write CID config values there.
  */
 #define MIPI_INTERRUPT_STATUS		0x08
 #define MIPI_INTERRUPT_MASK		0x0C
-
-/*
- * CSID Context ID (CID) Configuration Registers
- * These configure how the CSID routes MIPI packets based on Data Type and
- * Virtual Channel to the VFE PIX or RDI interfaces.
- *
- * On MSM8660, these may be at 0x0200 or 0x0020 depending on HW revision.
- * We try both - write to the more common 0x0020 offset first.
- */
-#define CSID_CID_0_CFG			0x0020
-#define CSID_CID_1_CFG			0x0024
-#define CSID_CID_2_CFG			0x0028
-#define CSID_CID_3_CFG			0x002C
-
-/* Alternate offsets (some HW revisions) */
-#define CSID_CID_0_CFG_ALT		0x0200
-
-/* CID configuration bit shifts */
-#define CSID_CID_DT_SHIFT		24
-#define CSID_CID_VC_SHIFT		22
-#define CSID_CID_DECODE_FORMAT_SHIFT	0
-
-/* MIPI CSI-2 Data Types */
-#define MIPI_DT_YUV422_8BIT		0x1E
-#define MIPI_DT_RAW8			0x2A
-#define MIPI_DT_RAW10			0x2B
-
-/* CSID Decode Format values */
-#define CSID_DECODE_FORMAT_YUV422	0x01
-#define CSID_DECODE_FORMAT_RAW8		0x02
-#define CSID_DECODE_FORMAT_RAW10	0x03
 
 /*
  * csid_8x60_configure_stream - Configure CSID stream routing
  * @csid: CSID device
  * @enable: Enable or disable stream
  *
- * On MSM8660, the CSID must map incoming MIPI packets (by Data Type and
- * Virtual Channel) to the VFE PIX interface. Without this mapping, the
- * CSID drops packets and VFE receives no data.
+ * On MSM8660, the CSID is integrated with CSIPHY and does NOT have
+ * separate CID (Context ID) configuration registers. Data type routing
+ * is handled automatically by the hardware.
+ *
+ * WebOS kernel does not configure any CID registers for MSM8660.
+ *
+ * IMPORTANT: Do NOT write to offset 0x0020 - that's MIPI_PHY_D1_CONTROL
+ * in the CSIPHY register space, not a CID register!
  */
 static void csid_8x60_configure_stream(struct csid_device *csid, u8 enable)
 {
 	struct csid_phy_config *phy = &csid->phy;
-	u32 cid_cfg_val;
 
 	dev_info(csid->camss->dev,
 		 "CSID%d: configure_stream enable=%d phy=%d lanes=%d\n",
 		 csid->id, enable, phy->csiphy_id, phy->lane_cnt);
 
-	if (!enable)
-		return;
-
 	/*
-	 * Configure CID_0 to route YUV422 8-bit data from VC0 to VFE PIX.
-	 * The MT9M113 outputs YUV422 8-bit (MIPI DT = 0x1E) on VC 0.
-	 *
-	 * Note: We access these registers even though CSIPHY clocks may not
-	 * be fully enabled yet. The CSID shares register space with CSIPHY,
-	 * and the base AHB clock should be sufficient for register access.
-	 * If this causes issues, this configuration may need to move to
-	 * the CSIPHY driver's set_stream handler.
+	 * MSM8660 CSID is a pass-through - no CID configuration needed.
+	 * Data flows: CSIPHY -> CSID -> VFE CAMIF automatically.
 	 */
-	cid_cfg_val = (MIPI_DT_YUV422_8BIT << CSID_CID_DT_SHIFT) |
-		      (0x00 << CSID_CID_VC_SHIFT) |  /* VC 0 */
-		      (CSID_DECODE_FORMAT_YUV422 << CSID_CID_DECODE_FORMAT_SHIFT);
-
-	dev_info(csid->camss->dev,
-		 "CSID%d: Writing CID_0_CFG=0x%08x (DT=0x%x VC=0 decode=YUV422)\n",
-		 csid->id, cid_cfg_val, MIPI_DT_YUV422_8BIT);
-
-	/* Try primary offset first */
-	if (csid->base) {
-		writel_relaxed(cid_cfg_val, csid->base + CSID_CID_0_CFG);
-		wmb();
-
-		/* Verify the write */
-		{
-			u32 readback = readl_relaxed(csid->base + CSID_CID_0_CFG);
-			dev_info(csid->camss->dev,
-				 "CSID%d: CID_0_CFG@0x%03x readback=0x%08x\n",
-				 csid->id, CSID_CID_0_CFG, readback);
-
-			/* If primary offset didn't work, try alternate */
-			if (readback != cid_cfg_val) {
-				writel_relaxed(cid_cfg_val, csid->base + CSID_CID_0_CFG_ALT);
-				wmb();
-				readback = readl_relaxed(csid->base + CSID_CID_0_CFG_ALT);
-				dev_info(csid->camss->dev,
-					 "CSID%d: CID_0_CFG@0x%03x (alt) readback=0x%08x\n",
-					 csid->id, CSID_CID_0_CFG_ALT, readback);
-			}
-		}
-	} else {
-		dev_warn(csid->camss->dev,
-			 "CSID%d: No base address, cannot configure CID!\n",
-			 csid->id);
-	}
 }
 
 /*
