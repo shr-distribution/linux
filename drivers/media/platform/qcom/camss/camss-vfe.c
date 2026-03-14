@@ -1845,6 +1845,22 @@ int vfe_get(struct vfe_device *vfe)
 		if (ret < 0)
 			goto error_pm_runtime_get;
 
+		/* Debug: Check MMCC state immediately after clock enable */
+		if (vfe->camss->res->version == CAMSS_8x60) {
+			void __iomem *mmcc_base;
+			mmcc_base = ioremap(0x04000000, 0x1000);
+			if (mmcc_base) {
+				u32 vfe_cc = readl_relaxed(mmcc_base + 0x0104);
+				dev_info(vfe->camss->dev,
+					 "VFE: MMCC VFE_CC_REG after clk enable: 0x%08x "
+					 "(CSI0_VFE=%s, CSI1_VFE=%s)\n",
+					 vfe_cc,
+					 (vfe_cc & BIT(12)) ? "ON" : "off",
+					 (vfe_cc & BIT(10)) ? "ON" : "off");
+				iounmap(mmcc_base);
+			}
+		}
+
 		ret = vfe_set_clock_rates(vfe);
 		if (ret < 0)
 			goto error_reset;
