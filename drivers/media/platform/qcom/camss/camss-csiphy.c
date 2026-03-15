@@ -336,7 +336,9 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 			s64 link_freq;
 
 			lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
-			bpp = 8; /* Default for MSM8660 */
+			bpp = csiphy_get_bpp(csiphy->res->formats->formats,
+					     csiphy->res->formats->nformats,
+					     csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
 			num_lanes = cfg->csi2->lane_cfg.num_data;
 
 			link_freq = camss_get_link_freq(&csiphy->subdev.entity,
