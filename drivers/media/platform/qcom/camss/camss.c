@@ -58,7 +58,7 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		 * Timer clock runs at 85.33 MHz (from csiphytimer_src PLL8).
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "csi0_ahb",
-			   "csi0_src", "csi0", "csi0_phy", "csiphy0_timer" },
+			   "csi0_src", "csi0", "csi0_phy", "csiphy0_timer_clk" },
 		.clock_rate = { { 228570000 },
 				{ 0 },
 				{ 0 },
@@ -91,7 +91,7 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
 			   "csi0_ahb", "csi1_ahb", "csi0_src", "csi1_src",
 			   "csi0", "csi1", "csi0_phy", "csi1_phy",
-			   "csiphy1_timer" },
+			   "csiphy1_timer_clk" },
 		.clock_rate = { { 228570000 }, { 0 }, { 0 }, { 0 }, { 0 },
 				{ 0 }, { 0 }, { 384000000 }, { 384000000 },
 				{ 0 }, { 0 }, { 0 }, { 0 },
