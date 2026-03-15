@@ -333,49 +333,69 @@ test_capture() {
     run_on_device "cat <<'SCRIPT' > /tmp/test_capture.sh
 #!/bin/sh
 
-VIDEO_DEV='/dev/video0'
+# HP TouchPad camera paths:
+# /dev/video0-2 = RDI paths (raw data, requires manual link setup)
+# /dev/video3 = PIX path (ISP processed, has IMMUTABLE links)
+#
+# PIX mode (/dev/video3) is preferred because:
+# - Links are pre-configured (IMMUTABLE)
+# - Uses VFE ISP for color processing
+# - Output is 1280x968 UYVY (sensor 1288 cropped to 1280)
+
+VIDEO_DEV='/dev/video3'  # PIX mode - ISP processed output
 FRAMES=5
 OUTPUT='/tmp/camera_test.raw'
 
-# Find first available video device
-for dev in /dev/video*; do
-    if [ -e \"\$dev\" ]; then
-        VIDEO_DEV=\$dev
-        break
-    fi
-done
+# Allow override via argument
+if [ -n \"\$1\" ]; then
+    VIDEO_DEV=\"\$1\"
+fi
 
 echo \"Using video device: \$VIDEO_DEV\"
+
+# For PIX mode (video3), use 1280x968 (cropped from sensor's 1288x968)
+# For RDI mode (video0-2), use 1288x968 (raw sensor output)
+case \$VIDEO_DEV in
+    *video3*)
+        WIDTH=1280
+        HEIGHT=968
+        echo 'PIX mode: Using 1280x968 (VFE ISP cropped)'
+        ;;
+    *)
+        WIDTH=1288
+        HEIGHT=968
+        echo 'RDI mode: Using 1288x968 (raw sensor output)'
+        ;;
+esac
 
 # Method 1: Try v4l2-ctl capture
 if command -v v4l2-ctl >/dev/null 2>&1; then
     echo ''
     echo '=== Testing with v4l2-ctl ==='
 
-    # Set format to match mt9m114 sensor output (1288x968 UYVY)
-    echo 'Setting video format to 1288x968 UYVY (mt9m114 native)...'
-    v4l2-ctl -d \$VIDEO_DEV --set-fmt-video=width=1288,height=968,pixelformat=UYVY 2>&1
+    # Set format
+    echo \"Setting video format to \${WIDTH}x\${HEIGHT} UYVY...\"
+    v4l2-ctl -d \$VIDEO_DEV --set-fmt-video=width=\$WIDTH,height=\$HEIGHT,pixelformat=UYVY 2>&1
 
     echo 'Current format:'
     v4l2-ctl -d \$VIDEO_DEV --get-fmt-video 2>&1
 
     echo ''
     echo \"Capturing \$FRAMES frames to \$OUTPUT...\"
-    v4l2-ctl -d \$VIDEO_DEV --stream-mmap --stream-count=\$FRAMES --stream-to=\$OUTPUT 2>&1
+    timeout 30 v4l2-ctl -d \$VIDEO_DEV --stream-mmap --stream-count=\$FRAMES --stream-to=\$OUTPUT 2>&1
 
     if [ -f \$OUTPUT ]; then
         SIZE=\$(stat -c %s \$OUTPUT 2>/dev/null || echo 0)
         echo \"Captured file size: \$SIZE bytes\"
         if [ \"\$SIZE\" -gt 0 ]; then
             echo 'SUCCESS: Captured frame data!'
-            # Expected size: 1288 * 968 * 2 bytes/pixel * 5 frames = 12468160 bytes
-            EXPECTED=\$((1288 * 968 * 2 * FRAMES))
+            EXPECTED=\$((\$WIDTH * \$HEIGHT * 2 * FRAMES))
             echo \"Expected size: \$EXPECTED bytes\"
         else
             echo 'WARNING: Captured file is empty'
         fi
     else
-        echo 'ERROR: No output file created'
+        echo 'ERROR: No output file created (capture timed out)'
     fi
 fi
 
@@ -385,18 +405,17 @@ if command -v gst-launch-1.0 >/dev/null 2>&1; then
     echo '=== Testing with GStreamer ==='
 
     # Test with fakesink first (no actual output, just test pipeline)
-    # IMPORTANT: Use 1288x968 UYVY - the exact mt9m114 sensor resolution
-    echo 'Testing pipeline with fakesink (1288x968 UYVY)...'
-    timeout 10 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=5 ! \
-        'video/x-raw,format=UYVY,width=1288,height=968' ! \
+    echo \"Testing pipeline with fakesink (\${WIDTH}x\${HEIGHT} UYVY)...\"
+    timeout 15 gst-launch-1.0 -v v4l2src device=\$VIDEO_DEV num-buffers=5 ! \
+        \"video/x-raw,format=UYVY,width=\$WIDTH,height=\$HEIGHT\" ! \
         fakesink 2>&1
 
     # If that works, try saving a frame
     if [ \$? -eq 0 ]; then
         echo ''
         echo 'Saving single frame as PPM...'
-        timeout 10 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=1 ! \
-            'video/x-raw,format=UYVY,width=1288,height=968' ! \
+        timeout 15 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=1 ! \
+            \"video/x-raw,format=UYVY,width=\$WIDTH,height=\$HEIGHT\" ! \
             videoconvert ! \
             pnmenc ! \
             filesink location=/tmp/frame.ppm 2>&1
@@ -428,50 +447,49 @@ check_dmesg() {
     run_on_device "dmesg | grep -iE 'error|fail|timeout' | grep -iE 'camss|csiphy|csid|vfe|video' | tail -10"
 }
 
-# Quick capture test (no media-ctl setup)
+# Quick capture test - uses PIX mode by default (proper IMMUTABLE links)
 quick_capture_test() {
-    log_step "Quick capture test..."
+    log_step "Quick capture test (PIX mode)..."
 
-    log_info "Testing capture with correct mt9m114 format (1288x968 UYVY)..."
+    log_info "Testing PIX mode capture: 1280x968 UYVY via /dev/video3..."
+    log_info "This path has IMMUTABLE links and uses VFE ISP"
+
     run_on_device "
         if command -v gst-launch-1.0 >/dev/null 2>&1; then
-            # MT9M114 native resolution is 1288x968 UYVY
-            # IMPORTANT: Must specify exact format to avoid wrong negotiation
-            echo '=== Test: 1288x968 UYVY (native mt9m114 resolution) ==='
-            timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
-                'video/x-raw,format=UYVY,width=1288,height=968' ! \\
+            # PIX mode uses /dev/video3 with 1280x968 (cropped from sensor's 1288x968)
+            # This path has IMMUTABLE links: sensor -> csiphy1 -> csid1:4 -> vfe_pix -> video3
+            echo '=== PIX Mode Test: 1280x968 UYVY via /dev/video3 ==='
+            timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=5 ! \\
+                'video/x-raw,format=UYVY,width=1280,height=968' ! \\
                 fakesink 2>&1
 
             if [ \$? -eq 0 ]; then
                 echo ''
-                echo 'SUCCESS: Capture completed!'
+                echo 'SUCCESS: PIX capture completed!'
                 echo ''
                 echo '=== Saving test frame to /tmp/camera_frame.raw ==='
-                timeout 10 gst-launch-1.0 v4l2src device=/dev/video0 num-buffers=1 ! \\
-                    'video/x-raw,format=UYVY,width=1288,height=968' ! \\
+                timeout 15 gst-launch-1.0 v4l2src device=/dev/video3 num-buffers=1 ! \\
+                    'video/x-raw,format=UYVY,width=1280,height=968' ! \\
                     filesink location=/tmp/camera_frame.raw 2>&1
                 ls -la /tmp/camera_frame.raw 2>/dev/null && echo 'Frame saved!'
             else
                 echo ''
-                echo 'Native resolution failed, trying alternatives...'
+                echo 'PIX mode failed. Trying RDI mode fallback...'
 
                 echo ''
-                echo '=== Test: 1280x960 UYVY ==='
-                timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
-                    'video/x-raw,format=UYVY,width=1280,height=960' ! \\
-                    fakesink 2>&1 || echo 'Test failed'
-
-                echo ''
-                echo '=== Test: 640x480 UYVY (VGA) ==='
-                timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
-                    'video/x-raw,format=UYVY,width=640,height=480' ! \\
-                    fakesink 2>&1 || echo 'Test failed'
+                echo '=== RDI Mode Test: 1288x968 UYVY via /dev/video0 ==='
+                # First enable the RDI path links
+                media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>/dev/null
+                media-ctl -l '\"msm_csid1\":1->\"msm_vfe0_rdi0\":0[1]' 2>/dev/null
+                timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=5 ! \\
+                    'video/x-raw,format=UYVY,width=1288,height=968' ! \\
+                    fakesink 2>&1 || echo 'RDI mode also failed'
             fi
         else
-            echo 'GStreamer not available, using dd test'
-            # Raw device read test
-            timeout 5 dd if=/dev/video0 of=/tmp/raw_test.bin bs=1024 count=100 2>&1 || \\
-                echo 'Raw read failed (expected if streaming not started)'
+            echo 'GStreamer not available, using v4l2-ctl'
+            timeout 30 v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=968,pixelformat=UYVY \\
+                --stream-mmap --stream-count=3 --stream-to=/tmp/camera_test.raw 2>&1
+            ls -la /tmp/camera_test.raw 2>/dev/null
         fi
     "
 }
