@@ -2014,14 +2014,28 @@ mt9m113_streaming:
 		 * Configure MIPI output if not already enabled.
 		 */
 		if (output_ctrl != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+			u64 readback = 0;
+
 			dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI (first time)\n");
 
-			/* Enable MIPI output */
-			cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-				  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+			/* Enable MIPI output with error checking */
+			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+					MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
+			}
 
+			/* Verify the write took effect */
+			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
 			dev_info(&sensor->client->dev,
-				 "MT9M113: MIPI configured (OUTPUT_CONTROL=0x7A08)\n");
+				 "MT9M113: OUTPUT_CONTROL after write: 0x%llx (expected 0x7A08)\n",
+				 readback);
+
+			if (readback != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: OUTPUT_CONTROL write verification FAILED!\n");
+			}
 		} else {
 			dev_info(&sensor->client->dev,
 				 "MT9M113: MIPI already enabled, skipping OUTPUT_CONTROL write\n");
