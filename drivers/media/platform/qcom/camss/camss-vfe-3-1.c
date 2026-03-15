@@ -538,23 +538,35 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	struct vfe_device *vfe = dev;
 	static ktime_t first_irq_time;
 	static int irq_count;
+	static u32 last_ping_pong;
 	ktime_t now;
-	u32 value0, value1;
+	u32 value0, value1, ping_pong;
 	int i, j;
 
 	vfe->res->hw_ops->isr_read(vfe, &value0, &value1);
+
+	/* Read ping-pong status to see if data is reaching AXI bus */
+	ping_pong = readl_relaxed(vfe->base + VFE_0_BUS_PING_PONG_STATUS);
 
 	irq_count++;
 	now = ktime_get();
 	if (irq_count == 1)
 		first_irq_time = now;
 
-	/* Debug: log all interrupts with timing */
+	/* Debug: log all interrupts with timing and ping-pong status */
 	dev_info(vfe->camss->dev,
-		 "[TIMING] VFE IRQ #%d: status0=0x%08x status1=0x%08x at %lld ns (delta=%lld ns)\n",
-		 irq_count, value0, value1,
+		 "[TIMING] VFE IRQ #%d: status0=0x%08x status1=0x%08x ping_pong=0x%08x at %lld ns (delta=%lld ns)\n",
+		 irq_count, value0, value1, ping_pong,
 		 ktime_to_ns(now),
 		 ktime_to_ns(now) - ktime_to_ns(first_irq_time));
+
+	/* Log if ping-pong status changes (indicates data flow) */
+	if (ping_pong != last_ping_pong) {
+		dev_info(vfe->camss->dev,
+			 "VFE: PING_PONG changed: 0x%08x -> 0x%08x (data flowing!)\n",
+			 last_ping_pong, ping_pong);
+		last_ping_pong = ping_pong;
+	}
 
 	/* VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31 */
 	if (value1 & VFE_0_IRQ_STATUS_1_RESET_ACK)

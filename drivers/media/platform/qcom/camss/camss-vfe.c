@@ -1042,6 +1042,9 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 /* IRQ_MASK_1 individual bits */
 #define VFE31_IRQ_MASK_1_RESET_ACK		BIT(22)
 #define VFE31_IRQ_MASK_1_AXI_HALT_ACK		BIT(23)
+
+/* VFE31 bus ping-pong status (to verify AXI data flow) */
+#define VFE31_BUS_PING_PONG_STATUS	0x180
 /* Error bits are 0-21, used for VFE31_IMASK_ERROR_ONLY_1 */
 
 /*
@@ -1625,11 +1628,12 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 "VFE: CAMIF configured and streaming started (stream_count=%d)\n",
 		 vfe->stream_count);
 	dev_info(vfe->camss->dev,
-		 "VFE: status=0x%08x efs_cfg=0x%08x frame=0x%08x epoch=0x%08x\n",
+		 "VFE: status=0x%08x efs_cfg=0x%08x frame=0x%08x epoch=0x%08x ping_pong=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_CAMIF_STATUS),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_EFS_CFG),
 		 readl_relaxed(vfe->base + VFE31_CAMIF_FRAME_CFG),
-		 readl_relaxed(vfe->base + VFE31_CAMIF_EPOCH_CFG));
+		 readl_relaxed(vfe->base + VFE31_CAMIF_EPOCH_CFG),
+		 readl_relaxed(vfe->base + VFE31_BUS_PING_PONG_STATUS));
 	dev_info(vfe->camss->dev,
 		 "VFE: axi_mode=0x%08x subsamp0=0x%08x subsamp1=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE31_AXI_OUT_MODE_CFG),

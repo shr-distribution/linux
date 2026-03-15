@@ -1881,15 +1881,18 @@ mt9m113_streaming:
 			 "MT9M113: OUTPUT_CONTROL=0x%llx (0x7A08=MIPI enabled)\n", output_ctrl);
 
 		/*
-		 * Always configure short packets - this is critical for VFE to
-		 * receive Frame Start/End markers even if MIPI is already enabled.
-		 * Without this, VFE never receives CAMIF_SOF interrupts.
+		 * CUSTOM_SHORT_PKT (0x3404) - DISABLED
+		 *
+		 * WebOS MT9M113 driver does NOT configure this register.
+		 * Writing 0x80 (FRAME_CNT_EN) may confuse the MSM8660 CSID
+		 * if it doesn't recognize the proprietary short packet format.
+		 * This could cause FIFO overflow or state machine stalls.
+		 *
+		 * The MT9M113 should send standard MIPI Frame Start/End short
+		 * packets by default. Let the hardware work as webOS intended.
 		 */
 		dev_info(&sensor->client->dev,
-			 "MT9M113: Enabling MIPI short packets (CUSTOM_SHORT_PKT=0x%x)\n",
-			 MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN);
-		cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-			  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+			 "MT9M113: Skipping CUSTOM_SHORT_PKT (webOS doesn't use it)\n");
 
 		/*
 		 * Only configure MIPI output if not already enabled.
