@@ -1030,6 +1030,7 @@ static void mmci_dma_unmap(struct mmci_host *host, struct mmc_data *data)
 void mmci_dmae_error(struct mmci_host *host)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
+	struct mmci_dmae_next *next = &dmae->next_data;
 
 	if (!dma_inprogress(host))
 		return;
@@ -1040,6 +1041,15 @@ void mmci_dmae_error(struct mmci_host *host)
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
 	host->data->host_cookie = 0;
+
+	/*
+	 * Also clear any prepared "next" descriptor to prevent stale pointers.
+	 * Without this, mmci_dmae_get_next_data() can assign a freed descriptor
+	 * to desc_current during MMC error recovery, causing a crash when
+	 * the descriptor is later submitted.
+	 */
+	next->desc = NULL;
+	next->chan = NULL;
 
 	mmci_dma_unmap(host, host->data);
 }
