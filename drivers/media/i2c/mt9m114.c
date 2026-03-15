@@ -71,10 +71,26 @@
 #define MT9M113_SEQ_CMD					0xa103
 #define MT9M113_SEQ_CMD_RUN				0x0001  /* preview/streaming */
 #define MT9M113_SEQ_CMD_CAPTURE				0x0002  /* capture mode */
+#define MT9M113_SEQ_CMD_STANDBY				0x0003  /* enter standby */
 #define MT9M113_SEQ_CMD_REFRESH				0x0005
 #define MT9M113_SEQ_CMD_REFRESH_MODE			0x0006
 #define MT9M113_SEQ_STATE				0xa104
+#define MT9M113_SEQ_STATE_PREVIEW			0x0003  /* preview mode active */
+#define MT9M113_SEQ_STATE_CAPTURE			0x0007  /* capture mode active */
 #define MT9M113_SEQ_CAP_MODE				0xa115
+#define MT9M113_SEQ_CAP_MODE_PREVIEW			0x0030  /* preview mode */
+#define MT9M113_SEQ_CAP_MODE_SNAPSHOT			0x0000  /* snapshot mode */
+#define MT9M113_SEQ_CAP_NUM_FRAMES			0xa116  /* capture frame count */
+
+/*
+ * MT9M113 Auto-Exposure MCU variables from webOS kernel.
+ * These are adjusted dynamically for preview vs snapshot mode.
+ */
+#define MT9M113_AE_MAX_DGAIN_AE1			0x2212  /* max digital gain */
+#define MT9M113_AE_SKIP_FRAMES				0xa208  /* frames to skip */
+#define MT9M113_AE_JUMP_DIVISOR				0xa209  /* AE step divisor */
+#define MT9M113_AE_MAX_INDEX				0xa20c  /* max exposure index */
+#define MT9M113_AE_MAX_VIRTGAIN				0xa20e  /* max virtual gain */
 
 /*
  * MT9M113 RESET_REGISTER (0x301A) values from webOS/Samsung legacy drivers.
@@ -1409,6 +1425,71 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 };
 
 /*
+ * MT9M113 Preview Mode AE Table
+ *
+ * From webOS kernel mod_preview_mode_reg_tbl.
+ * These settings optimize auto-exposure for preview/viewfinder mode:
+ * - Lower max exposure index (8 vs 40) for faster response
+ * - Higher max virtual gain (0xA0 vs 0x60) to compensate
+ * - Higher max digital gain (0x150 vs 0xC8)
+ * - Faster AE response (skip=1, divisor=1 vs skip=2, divisor=2)
+ */
+struct mt9m113_ae_entry {
+	u16 var_addr;
+	u16 value;
+};
+
+static const struct mt9m113_ae_entry mt9m113_preview_ae_table[] = {
+	{ MT9M113_AE_MAX_INDEX,      0x0008 },  /* max exposure index = 8 */
+	{ MT9M113_AE_MAX_VIRTGAIN,   0x00A0 },  /* max virtual gain = 160 */
+	{ MT9M113_AE_MAX_DGAIN_AE1,  0x0150 },  /* max digital gain = 336 */
+	{ MT9M113_AE_JUMP_DIVISOR,   0x0001 },  /* AE step divisor = 1 */
+	{ MT9M113_AE_SKIP_FRAMES,    0x0001 },  /* skip 1 frame between AE */
+};
+
+/*
+ * MT9M113 Snapshot Mode AE Table
+ *
+ * From webOS kernel mod_snapshot_mode_reg_tbl.
+ * These settings optimize auto-exposure for still image capture:
+ * - Higher max exposure index (40) for longer exposures
+ * - Lower max virtual gain (0x60) for less noise
+ * - Lower max digital gain (0xC8)
+ * - Slower AE response (skip=2, divisor=2) for stability
+ */
+static const struct mt9m113_ae_entry mt9m113_snapshot_ae_table[] = {
+	{ MT9M113_AE_MAX_INDEX,      0x0028 },  /* max exposure index = 40 */
+	{ MT9M113_AE_MAX_VIRTGAIN,   0x0060 },  /* max virtual gain = 96 */
+	{ MT9M113_AE_MAX_DGAIN_AE1,  0x00C8 },  /* max digital gain = 200 */
+	{ MT9M113_AE_JUMP_DIVISOR,   0x0002 },  /* AE step divisor = 2 */
+	{ MT9M113_AE_SKIP_FRAMES,    0x0002 },  /* skip 2 frames between AE */
+};
+
+/*
+ * Apply an MT9M113 AE table via MCU variable writes.
+ */
+static int mt9m113_apply_ae_table(struct mt9m114 *sensor,
+				  const struct mt9m113_ae_entry *table,
+				  size_t count)
+{
+	struct device *dev = &sensor->client->dev;
+	int ret;
+	size_t i;
+
+	for (i = 0; i < count; i++) {
+		ret = mt9m113_write_mcu_var(sensor, table[i].var_addr,
+					    table[i].value);
+		if (ret) {
+			dev_err(dev, "MT9M113: AE table write 0x%04x failed: %d\n",
+				table[i].var_addr, ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+/*
  * Apply the MT9M113 initialization table.
  * Returns 0 on success, negative error code on failure.
  */
@@ -1967,7 +2048,8 @@ mt9m113_streaming:
 		 * Set capture mode via MCU interface.
 		 * From webOS kernel: SEQ_CAP_MODE (0xA115) = 0x0030 for preview mode.
 		 */
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE,
+					    MT9M113_SEQ_CAP_MODE_PREVIEW);
 		if (ret) {
 			dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
 			goto error;
@@ -1999,6 +2081,22 @@ mt9m113_streaming:
 				 "MT9M113: Streaming active (SEQ_STATE=0x%llx)\n", seq_state);
 		}
 
+		/*
+		 * Apply preview mode AE table from webOS mod_preview_mode_reg_tbl.
+		 * This optimizes auto-exposure for viewfinder: faster response,
+		 * higher gain limits, shorter max exposure.
+		 */
+		ret = mt9m113_apply_ae_table(sensor, mt9m113_preview_ae_table,
+					     ARRAY_SIZE(mt9m113_preview_ae_table));
+		if (ret) {
+			dev_warn(&sensor->client->dev,
+				 "MT9M113: preview AE table failed: %d (continuing)\n", ret);
+			/* Non-fatal - camera will work with init table defaults */
+		} else {
+			dev_info(&sensor->client->dev,
+				 "MT9M113: preview AE table applied\n");
+		}
+
 		dev_info(&sensor->client->dev, "MT9M113: streaming command issued\n");
 	}
 
@@ -2020,7 +2118,7 @@ static int mt9m114_stop_streaming(struct mt9m114 *sensor)
 
 	if (sensor->model == MT9M113_MODEL) {
 		/*
-		 * MT9M113: Issue SEQ_CMD=0x0003 (STANDBY) to properly stop streaming.
+		 * MT9M113: Issue SEQ_CMD=0x0003 (STANDBY) to stop streaming.
 		 * Without this, the sensor remains in streaming state and subsequent
 		 * streaming attempts fail because SEQ_CMD=0x0001 (RUN) is ignored
 		 * when already running.
@@ -2030,14 +2128,9 @@ static int mt9m114_stop_streaming(struct mt9m114 *sensor)
 		 * between streaming sessions for faster startup, we need to properly
 		 * transition to standby state.
 		 */
-		/*
-		 * Switch to capture mode to stop continuous preview streaming.
-		 * Note: MT9M113 doesn't have a true standby command - webOS just
-		 * powers down via GPIO. We use capture mode (0x02) to change state.
-		 */
-		dev_info(&sensor->client->dev, "MT9M113: stopping streaming (SEQ_CMD=CAPTURE)\n");
+		dev_info(&sensor->client->dev, "MT9M113: stopping streaming (SEQ_CMD=STANDBY)\n");
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					    MT9M113_SEQ_CMD_CAPTURE);
+					    MT9M113_SEQ_CMD_STANDBY);
 		if (ret < 0) {
 			dev_err(&sensor->client->dev,
 				"MT9M113: failed to stop streaming: %d\n", ret);
@@ -2054,6 +2147,140 @@ static int mt9m114_stop_streaming(struct mt9m114 *sensor)
 	pm_runtime_put_autosuspend(&sensor->client->dev);
 
 	return ret;
+}
+
+/*
+ * MT9M113 Snapshot Mode
+ *
+ * Switch the sensor from preview mode to snapshot mode for still image capture.
+ * This uses Context B (1280x1024) instead of Context A (640x480).
+ *
+ * From webOS kernel mt9m113.c SENSOR_SNAPSHOT_MODE sequence:
+ * 1. Read coarse/fine integration times from Context A
+ * 2. Set SEQ_CAP_MODE = 0x0000 (snapshot)
+ * 3. Delay 40ms
+ * 4. Set SEQ_CAP_NUM_FRAMES = 0x0008
+ * 5. Issue SEQ_CMD = 0x0002 (CAPTURE)
+ * 6. Calculate integration time for Context B
+ * 7. Write RESET_REGISTER = 0x12CE
+ * 8. Apply snapshot AE table
+ * 9. Poll SEQ_CMD until 0
+ *
+ * Returns 0 on success, negative error code on failure.
+ */
+static int mt9m113_set_snapshot_mode(struct mt9m114 *sensor)
+{
+	struct device *dev = &sensor->client->dev;
+	u64 coarse_a, fine_a, fine_b, seq_cmd;
+	u32 coarse_b;
+	int ret;
+	int timeout;
+
+	dev_info(dev, "MT9M113: entering snapshot mode\n");
+
+	/* Read integration times from Context A */
+	ret = cci_read(sensor->regmap, MT9M114_COARSE_INTEGRATION_TIME,
+		       &coarse_a, NULL);
+	if (ret)
+		return ret;
+
+	ret = cci_read(sensor->regmap, MT9M114_FINE_INTEGRATION_TIME,
+		       &fine_a, NULL);
+	if (ret)
+		return ret;
+
+	dev_dbg(dev, "MT9M113: Context A integration: coarse=%llu fine=%llu\n",
+		coarse_a, fine_a);
+
+	/* Set capture mode: SEQ_CAP_MODE = 0x0000 (snapshot) */
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE,
+				    MT9M113_SEQ_CAP_MODE_SNAPSHOT);
+	if (ret) {
+		dev_err(dev, "MT9M113: SEQ_CAP_MODE snapshot failed: %d\n", ret);
+		return ret;
+	}
+
+	/* webOS delays 40ms after SEQ_CAP_MODE */
+	usleep_range(40000, 50000);
+
+	/* Set capture frame count: SEQ_CAP_NUM_FRAMES = 8 */
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_NUM_FRAMES, 0x0008);
+	if (ret) {
+		dev_err(dev, "MT9M113: SEQ_CAP_NUM_FRAMES failed: %d\n", ret);
+		return ret;
+	}
+
+	/* Issue capture command: SEQ_CMD = 0x0002 */
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+				    MT9M113_SEQ_CMD_CAPTURE);
+	if (ret) {
+		dev_err(dev, "MT9M113: SEQ_CMD CAPTURE failed: %d\n", ret);
+		return ret;
+	}
+
+	/* Read fine integration time for Context B */
+	ret = cci_read(sensor->regmap, MT9M114_FINE_INTEGRATION_TIME,
+		       &fine_b, NULL);
+	if (ret)
+		return ret;
+
+	/*
+	 * Clear SEQ_MODE (0xA102) = 0x0000 per webOS.
+	 * This resets the sequencer mode for clean capture.
+	 */
+	ret = mt9m113_write_mcu_var(sensor, 0xa102, 0x0000);
+	if (ret) {
+		dev_err(dev, "MT9M113: SEQ_MODE clear failed: %d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * Calculate coarse integration time for Context B.
+	 * Formula from webOS: coarse_B = (coarse_A * 1228 + fine_A - fine_B) / 1826
+	 * Where: 1228 = Context A line length, 1826 = Context B line length
+	 */
+	coarse_b = ((u32)coarse_a * 1228 + (u32)fine_a - (u32)fine_b) / 1826;
+
+	dev_dbg(dev, "MT9M113: Context B coarse integration: %u\n", coarse_b);
+
+	ret = cci_write(sensor->regmap, MT9M114_COARSE_INTEGRATION_TIME,
+			coarse_b, NULL);
+	if (ret)
+		return ret;
+
+	/* Write RESET_REGISTER = 0x12CE for snapshot mode */
+	ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+			MT9M113_RESET_REG_SNAPSHOT, NULL);
+	if (ret)
+		return ret;
+
+	dev_info(dev, "MT9M113: RESET_REGISTER = 0x12CE (snapshot mode)\n");
+
+	/* Apply snapshot mode AE table */
+	ret = mt9m113_apply_ae_table(sensor, mt9m113_snapshot_ae_table,
+				     ARRAY_SIZE(mt9m113_snapshot_ae_table));
+	if (ret) {
+		dev_warn(dev, "MT9M113: snapshot AE table failed: %d\n", ret);
+		/* Non-fatal - continue */
+	} else {
+		dev_info(dev, "MT9M113: snapshot AE table applied\n");
+	}
+
+	/* Poll SEQ_CMD until command completes (returns to 0) */
+	timeout = 100;
+	do {
+		msleep(10);
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
+	} while (seq_cmd != 0 && --timeout > 0);
+
+	if (timeout == 0) {
+		dev_warn(dev, "MT9M113: snapshot SEQ_CMD timeout, value=0x%llx\n",
+			 seq_cmd);
+	} else {
+		dev_info(dev, "MT9M113: snapshot mode active\n");
+	}
+
+	return 0;
 }
 
 /* -----------------------------------------------------------------------------
