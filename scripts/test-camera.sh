@@ -732,6 +732,68 @@ analyze_frame() {
     "
 }
 
+# Test PREVIEW mode (640x480) - matches MT9M113 Context A output
+# The sensor defaults to Context A (preview) mode which outputs 640x480
+# This is the correct resolution to match what the sensor actually streams
+test_preview_mode() {
+    log_step "Testing PREVIEW mode (640x480)..."
+    log_info "Path: Sensor -> CSIPHY -> CSID -> VFE PIX -> /dev/video3"
+    log_info "Resolution: 640x480 (MT9M113 Context A / Preview mode)"
+    log_info "Link frequency: 96 MHz (correct for this resolution)"
+
+    run_on_device "
+        echo '=== PREVIEW Mode Test (640x480 via VFE PIX) ==='
+        echo ''
+        echo 'NOTE: MT9M113 streams Context A (640x480) by default.'
+        echo 'SEQ_CAP_MODE=0x0030 selects preview mode.'
+        echo 'Link frequency 96 MHz is correct for 640x480 output.'
+        echo ''
+
+        # Reset media links first to avoid conflicts from previous tests
+        echo 'Resetting media links...'
+        media-ctl -r 2>/dev/null || true
+
+        # Setup full PIX path: CSIPHY1 -> CSID1 -> VFE PIX
+        echo 'Setting up PIX media pipeline for 640x480...'
+        # Enable CSIPHY1 -> CSID1 link
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1
+        # Enable CSID1 -> VFE PIX link (pad 4 = PIX source)
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1
+
+        # Set formats along the path for 640x480
+        # Sensor outputs 640x480 in Context A (preview mode)
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>/dev/null
+        echo 'PIX pipeline configured for 640x480'
+
+        echo ''
+        echo 'Testing capture with 640x480 UYVY...'
+        timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
+            'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
+            fakesink 2>&1
+
+        if [ \$? -eq 0 ]; then
+            echo ''
+            echo 'SUCCESS: PREVIEW capture completed!'
+            echo ''
+            echo 'Saving frame to /tmp/preview_frame.raw...'
+            timeout 10 gst-launch-1.0 v4l2src device=/dev/video3 num-buffers=1 ! \\
+                'video/x-raw,format=UYVY,width=640,height=480' ! \\
+                filesink location=/tmp/preview_frame.raw 2>&1
+            ls -la /tmp/preview_frame.raw 2>/dev/null
+            SIZE=\$(stat -c %s /tmp/preview_frame.raw 2>/dev/null || echo 0)
+            EXPECTED=\$((640 * 480 * 2))
+            echo \"File size: \$SIZE bytes (expected: \$EXPECTED)\"
+        else
+            echo ''
+            echo 'FAILED: PREVIEW capture did not complete'
+            echo 'Check dmesg for errors'
+        fi
+    "
+}
+
 # Test with EFS sync mode (instead of APS)
 # EFS = Embedded Frame Sync - uses embedded sync codes in data stream
 # APS = Active Pixel Sync - uses external sync signals from CSIPHY (default)
@@ -966,12 +1028,16 @@ main() {
             efs)
                 MODE="efs"
                 ;;
+            preview|vga|640)
+                MODE="preview"
+                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
                 echo "Modes:"
+                echo "  preview     Test PREVIEW mode (640x480) - matches MT9M113 Context A"
                 echo "  raw         Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
-                echo "  pix         Test PIX mode (through VFE ISP processing)"
+                echo "  pix         Test PIX mode (1280x968, through VFE ISP processing)"
                 echo "  efs         Test PIX mode with EFS sync (instead of default APS)"
                 echo "  testpattern Enable sensor test pattern and capture (debug data path)"
                 echo "  analyze     Analyze previously captured frame data"
@@ -1018,6 +1084,12 @@ main() {
             show_camera_info
             ensure_camera_ready
             test_pix_mode
+            check_dmesg
+            ;;
+        preview)
+            show_camera_info
+            ensure_camera_ready
+            test_preview_mode
             check_dmesg
             ;;
         testpattern)
