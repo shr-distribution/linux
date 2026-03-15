@@ -2126,15 +2126,64 @@ int vfe_get(struct vfe_device *vfe)
 		/* Debug: Check MMCC state immediately after clock enable */
 		if (vfe->camss->res->version == CAMSS_8x60) {
 			void __iomem *mmcc_base;
+			struct clk *csi1_clk;
+
+			/*
+			 * MSM8660: Set csi_pix and csi_rdi clock parents to CSI1.
+			 *
+			 * The MT9M113 front camera is connected to CSIPHY1/CSI1.
+			 * By default, csi_pix and csi_rdi clock muxes select CSI0
+			 * as their parent. We need to switch them to CSI1.
+			 *
+			 * Clock indices in MSM8660 VFE config:
+			 *   5 = csi_rdi (Raw Data Interface path)
+			 *   6 = csi_pix (Pixel Interface path)
+			 */
+			csi1_clk = devm_clk_get(vfe->camss->dev, "csi1");
+			if (!IS_ERR(csi1_clk)) {
+				/* Set csi_rdi parent to CSI1 (index 5) */
+				if (vfe->nclocks > 5 && vfe->clock[5].clk) {
+					ret = clk_set_parent(vfe->clock[5].clk, csi1_clk);
+					if (ret)
+						dev_warn(vfe->camss->dev,
+							 "VFE: Failed to set csi_rdi parent to CSI1: %d\n",
+							 ret);
+					else
+						dev_info(vfe->camss->dev,
+							 "VFE: csi_rdi parent set to CSI1\n");
+				}
+				/* Set csi_pix parent to CSI1 (index 6) */
+				if (vfe->nclocks > 6 && vfe->clock[6].clk) {
+					ret = clk_set_parent(vfe->clock[6].clk, csi1_clk);
+					if (ret)
+						dev_warn(vfe->camss->dev,
+							 "VFE: Failed to set csi_pix parent to CSI1: %d\n",
+							 ret);
+					else
+						dev_info(vfe->camss->dev,
+							 "VFE: csi_pix parent set to CSI1\n");
+				}
+			} else {
+				dev_warn(vfe->camss->dev,
+					 "VFE: Could not get csi1 clock for parent setting\n");
+			}
+
 			mmcc_base = ioremap(0x04000000, 0x1000);
 			if (mmcc_base) {
 				u32 vfe_cc = readl_relaxed(mmcc_base + 0x0104);
+				u32 misc_cc = readl_relaxed(mmcc_base + 0x0058);
 				dev_info(vfe->camss->dev,
 					 "VFE: MMCC VFE_CC_REG after clk enable: 0x%08x "
 					 "(CSI0_VFE=%s, CSI1_VFE=%s)\n",
 					 vfe_cc,
 					 (vfe_cc & BIT(12)) ? "ON" : "off",
 					 (vfe_cc & BIT(10)) ? "ON" : "off");
+				dev_info(vfe->camss->dev,
+					 "VFE: MMCC MISC_CC_REG: 0x%08x "
+					 "(csi_pix_sel=%s, csi_rdi_sel=%s)\n",
+					 misc_cc,
+					 (misc_cc & BIT(25)) ? "CSI1" : "CSI0",
+					 (misc_cc & BIT(12)) ? "CSI1" : "CSI0");
 				iounmap(mmcc_base);
 			}
 		}
