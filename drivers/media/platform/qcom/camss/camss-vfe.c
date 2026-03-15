@@ -786,6 +786,11 @@ int vfe_reset(struct vfe_device *vfe)
  */
 #define MSM8660_MMCC_BASE		0x04000000
 #define MSM8660_MMCC_SIZE		0x1000
+#define MSM8660_CSI_CC_REG_OFFSET	0x0040
+#define MSM8660_CSI_CC_REG_CSI0_EN	BIT(0)
+#define MSM8660_CSI_CC_REG_CSI1_EN	BIT(7)
+#define MSM8660_CSI_CC_REG_CSI0_PHY_EN	BIT(8)
+#define MSM8660_CSI_CC_REG_CSI1_PHY_EN	BIT(9)
 #define MSM8660_VFE_CC_REG_OFFSET	0x0104
 #define MSM8660_VFE_CC_REG_CSI1_VFE_EN	BIT(10)
 #define MSM8660_VFE_CC_REG_CSI0_VFE_EN	BIT(12)
@@ -821,9 +826,25 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 	u32 vfe_cc_reg;
 	int i;
 
-	/* Map and read MMCC VFE_CC_REG */
+	/* Map and read MMCC registers */
 	mmcc_base = ioremap(MSM8660_MMCC_BASE, MSM8660_MMCC_SIZE);
 	if (mmcc_base) {
+		u32 csi_cc_reg;
+
+		/* CSI_CC_REG at 0x0040 - controls CSI core clocks */
+		csi_cc_reg = readl_relaxed(mmcc_base + MSM8660_CSI_CC_REG_OFFSET);
+		dev_info(dev, "VFE DEBUG: MMCC CSI_CC_REG (0x%08x) = 0x%08x\n",
+			 MSM8660_MMCC_BASE + MSM8660_CSI_CC_REG_OFFSET, csi_cc_reg);
+		dev_info(dev, "VFE DEBUG:   CSI0_CLK (bit 0): %s\n",
+			 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI0_EN) ? "ENABLED" : "disabled");
+		dev_info(dev, "VFE DEBUG:   CSI1_CLK (bit 7): %s\n",
+			 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_EN) ? "ENABLED" : "disabled");
+		dev_info(dev, "VFE DEBUG:   CSI0_PHY_CLK (bit 8): %s\n",
+			 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI0_PHY_EN) ? "ENABLED" : "disabled");
+		dev_info(dev, "VFE DEBUG:   CSI1_PHY_CLK (bit 9): %s\n",
+			 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_PHY_EN) ? "ENABLED" : "disabled");
+
+		/* VFE_CC_REG at 0x0104 - controls CSI-to-VFE bridge clocks */
 		vfe_cc_reg = readl_relaxed(mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
 		dev_info(dev, "VFE DEBUG: MMCC VFE_CC_REG (0x%08x) = 0x%08x\n",
 			 MSM8660_MMCC_BASE + MSM8660_VFE_CC_REG_OFFSET, vfe_cc_reg);
@@ -832,7 +853,13 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 		dev_info(dev, "VFE DEBUG:   CSI1_VFE_CLK (bit 10): %s\n",
 			 (vfe_cc_reg & MSM8660_VFE_CC_REG_CSI1_VFE_EN) ? "ENABLED" : "disabled");
 
-		/* If CSI1-VFE clock is not enabled, try enabling it manually */
+		/* If any CSI1 clocks are not enabled, warn */
+		if (!(csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_EN)) {
+			dev_warn(dev, "VFE DEBUG: CSI1_CLK (bit 7) not enabled!\n");
+		}
+		if (!(csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_PHY_EN)) {
+			dev_warn(dev, "VFE DEBUG: CSI1_PHY_CLK (bit 9) not enabled!\n");
+		}
 		if (!(vfe_cc_reg & MSM8660_VFE_CC_REG_CSI1_VFE_EN)) {
 			dev_warn(dev, "VFE DEBUG: CSI1_VFE_CLK not enabled! Attempting manual enable...\n");
 			writel_relaxed(vfe_cc_reg | MSM8660_VFE_CC_REG_CSI1_VFE_EN,
