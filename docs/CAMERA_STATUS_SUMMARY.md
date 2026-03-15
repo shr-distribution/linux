@@ -99,37 +99,58 @@ CSID1 (unified with CSIPHY on MSM8660 - no separate ISPIF)
 
 ## Known Issues / Areas Needing Investigation
 
-### 1. VFE31 Not Receiving Data from CSIPHY
+### 1. CRITICAL: OUTPUT_CONTROL Register Write Not Persisting
 
-**Symptom:** Camera streaming times out waiting for VFE SOF (Start of Frame) interrupt.
+**Symptom:** Camera streaming times out waiting for VFE SOF (Start of Frame) interrupt. CSIPHY shows `sof_count=0` - no MIPI frames received.
 
-**Analysis:**
-- CSIPHY1 appears to be configured correctly
-- MT9M113 sensor initialization completes successfully
-- SEQ_STATE reaches 0x03 (preview mode active)
-- But VFE31 CAMIF never receives frame data
+**Root Cause Investigation (March 15, 2026):**
 
-**Suspected Cause:** CSI-to-VFE clock bridge
+Testing revealed that the OUTPUT_CONTROL register (0x3400) write is NOT persisting:
+```
+First run:  OUTPUT_CONTROL=0x0, then writes 0x7A08
+Second run: OUTPUT_CONTROL=0x0 again (should be 0x7A08 from previous!)
+```
 
-The pixel data path from CSIPHY to VFE requires specific bridge clocks:
+Compare with RESET_REGISTER which DOES persist:
+```
+First run:  RESET_REGISTER was 0x12cc, writes 0x120C
+Second run: RESET_REGISTER was 0x120c (correctly persisted)
+```
 
-| Clock | Register | Bit | Purpose |
-|-------|----------|-----|---------|
-| vfe_csi0_clk | VFE_CC_REG (0x04000104) | BIT(12) | CSI0 → VFE data path |
-| vfe_csi1_clk | VFE_CC_REG (0x04000104) | BIT(10) | CSI1 → VFE data path |
-| csi_pix_clk | 0x04000058 | BIT(26) | Pixel interface |
+**Possible Causes:**
+1. CCI regmap write to 0x3400 is silently failing
+2. The register requires a specific access sequence
+3. Hardware issue with this particular register
 
-**MT9M113 uses CSI1**, so `vfe_csi1_clk` (BIT 10) must be enabled.
+**Debug Commit Added:** `26cbbd91a90e` adds write verification and readback logging.
 
-**Debug function added:** `vfe31_debug_dump_external_regs()` checks and logs CSI1_VFE_CLK status.
+### 2. CSIPHY Receiving Zero Frames
 
-### 2. Potential MIPI Timing Issues
+**Evidence from dmesg:**
+```
+CSIPHY1: IRQ status=0x00000000 [] sof_count=0
+```
+
+The CSIPHY is correctly configured:
+- `D1_CONTROL=0x00000300` (PHY enabled)
+- `PROTOCOL=0x00260000`
+- `CAMERA_CNTL=0x0000e404` (1 lane mode)
+
+But no MIPI data is being received, confirming the sensor is not outputting data.
+
+### 3. VFE31 Configuration Verified Correct
+
+The VFE31 side appears correct:
+- `AXI_OUT_MODE=0x200` (OUTPUT_2/preview mode)
+- `EFS_CFG=0x0` (APS mode)
+- `CAMIF_STATUS` transitions from 0x80000000 (halted) to 0x0 (active)
+- IRQ masks properly configured
+
+The VFE is waiting for data that never arrives from the sensor/CSIPHY.
+
+### 4. Potential MIPI Timing Issues
 
 The MT9M113 MIPI timing registers (0xC988-0xC992) are defined in the driver but NOT written during init. The webOS MT9M113 driver also doesn't write them (they're commented out), so this may be intentional - but worth investigating if MIPI errors occur.
-
-### 3. Software SOF Workaround
-
-The VFE31 driver has a software SOF trigger mechanism as a workaround for sensors that don't generate proper hardware frame sync. This may be needed for MT9M113 but hasn't been fully tested.
 
 ---
 
@@ -208,6 +229,8 @@ The test script (`scripts/test-camera.sh`) supports these modes:
 ## Recent Commits
 
 ```
+26cbbd91a90e media: i2c: mt9m114: Add OUTPUT_CONTROL write verification for MT9M113
+afbe509fff76 mmc: mmci: Fix use-after-free in DMA error recovery path
 1f45115b7ffe media: i2c: mt9m114: Add MT9M113 preview/snapshot AE tables and mode support
 38545b2fab58 media: qcom: camss: Fix hardcoded bpp in MSM8660 set_power path
 d341a03f989a media: i2c: mt9m114: Add sequencer refresh when MT9M113 not in preview mode
@@ -218,14 +241,27 @@ ffbc7313adb6 media: i2c: mt9m114: Fix MT9M113 streaming by always writing RESET_
 
 ## Summary
 
-The MT9M113 sensor driver is **complete and verified** against the webOS legacy kernel. The streaming sequence, register values, and AE table configuration all match exactly.
+**Current Status: BLOCKED - Sensor not outputting MIPI data**
 
-The issue appears to be in the **CAMSS/VFE31 data path**, specifically:
-- The CSI1→VFE clock bridge may not be enabled
-- Or there's a timing/sequencing issue between CSIPHY and VFE CAMIF
+The MT9M113 sensor driver implementation matches the webOS legacy kernel, but the sensor is not transmitting MIPI data. Key findings:
 
-Next steps should focus on:
-1. Running `debug` mode to capture clock enable status
-2. Verifying CSIPHY1 is receiving MIPI data (SOF count > 0)
-3. Checking VFE_CC_REG for CSI1_VFE_CLK enable bit
-4. Testing with sensor test pattern to isolate data path issues
+1. **CSIPHY receives zero frames** (`sof_count=0`)
+2. **OUTPUT_CONTROL (0x3400) write appears to fail** - reads 0x0 even after writing 0x7A08
+3. **RESET_REGISTER (0x301A) writes work correctly** - value persists between runs
+4. **VFE31 configuration is correct** - waiting for data that never arrives
+
+**Immediate Next Steps:**
+1. Deploy kernel with OUTPUT_CONTROL verification logging
+2. Check if CCI write to 0x3400 returns an error
+3. Verify I2C transactions are reaching the sensor
+4. Try raw I2C write (bypass CCI) to test if hardware issue
+
+**If CCI Write Fails:**
+- Check if MT9M113 requires specific access sequence for 0x3400
+- Compare CCI regmap configuration with working registers
+- Try different I2C timing or repeated writes
+
+**If CCI Write Succeeds but Value Doesn't Stick:**
+- Register may require sensor to be in specific state
+- May need to write after PLL lock or other sequencing
+- Check webOS timing between CSI config and OUTPUT_CONTROL write
