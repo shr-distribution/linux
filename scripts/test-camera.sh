@@ -517,6 +517,13 @@ test_raw_mode() {
         # Enable CSID1 -> VFE RDI0 link (pad 1 = RDI0 source)
         media-ctl -l '\"msm_csid1\":1->\"msm_vfe0_rdi0\":0[1]' 2>&1
         # Set formats along the path
+        # CRITICAL: Must configure sensor FIRST, then propagate downstream
+        echo 'Configuring sensor for 1288x968...'
+        media-ctl -V '\"mt9m114 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1296x976 crop:(0,0)/1296x976]' 2>/dev/null
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[fmt:SGRBG10_1X10/1296x976 crop:(4,4)/1288x968]' 2>/dev/null
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        echo 'Configuring downstream pipeline...'
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
         media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
@@ -563,6 +570,14 @@ test_pix_mode() {
         # Enable CSID1 -> VFE PIX link (pad 4 = PIX source)
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1
         # Set formats along the path (PIX uses 1280x968 without blanking pixels)
+        # CRITICAL: Must configure sensor FIRST, then propagate downstream
+        # MT9M113 Context B (full res) = 1296x976 -> crop to 1288x968
+        echo 'Configuring sensor for 1288x968...'
+        media-ctl -V '\"mt9m114 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1296x976 crop:(0,0)/1296x976]' 2>/dev/null
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[fmt:SGRBG10_1X10/1296x976 crop:(4,4)/1288x968]' 2>/dev/null
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        echo 'Configuring downstream pipeline...'
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
         media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
@@ -761,7 +776,14 @@ test_preview_mode() {
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1
 
         # Set formats along the path for 640x480
-        # Sensor outputs 640x480 in Context A (preview mode)
+        # CRITICAL: Must configure sensor FIRST, then propagate downstream
+        # MT9M113 Context A (preview) = 640x480 output
+        echo 'Configuring sensor for 640x480...'
+        media-ctl -V '\"mt9m114 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488 crop:(0,0)/648x488]' 2>/dev/null
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[fmt:SGRBG10_1X10/648x488 crop:(4,4)/640x480]' 2>/dev/null
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>/dev/null
+        echo 'Configuring downstream pipeline...'
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>/dev/null
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>/dev/null
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>/dev/null
         media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>/dev/null

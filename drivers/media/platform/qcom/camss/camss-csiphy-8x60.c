@@ -428,9 +428,13 @@ static void csiphy_8x60_lanes_disable(struct csiphy_device *csiphy,
  * - BIT(4): SOT_SYNC - Start of Transmission sync
  * - BIT(5): ECC_ERROR - ECC error detected (correctable)
  * - BIT(11): Unknown - possibly related to data reception
- * - BIT(16): FS (Frame Start) - Short packet frame start
+ * - BIT(16): FS (Frame Start) - Short packet frame start (if sensor sends it)
  * - BIT(17): FE (Frame End) - Short packet frame end
+ * - BIT(22): Observed at ~6fps intervals on MSM8660/MT9M113 - purpose unclear
  * - BIT(20-23): Line count errors per lane
+ *
+ * Note: webOS driver doesn't use CSIPHY frame start detection.
+ * Frame sync comes from VFE CAMIF internal sync, not CSIPHY IRQ bits.
  */
 #define MIPI_IRQ_SOT_SYNC	BIT(4)
 #define MIPI_IRQ_ECC_ERROR	BIT(5)
