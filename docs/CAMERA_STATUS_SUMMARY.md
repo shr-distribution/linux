@@ -99,46 +99,41 @@ CSID1 (unified with CSIPHY on MSM8660 - no separate ISPIF)
 
 ## Known Issues / Areas Needing Investigation
 
-### 1. CRITICAL: OUTPUT_CONTROL Register Write Not Persisting
+### 1. ~~OUTPUT_CONTROL Register Write~~ ✅ RESOLVED
 
-**Symptom:** Camera streaming times out waiting for VFE SOF (Start of Frame) interrupt. CSIPHY shows `sof_count=0` - no MIPI frames received.
+**Previous Concern:** OUTPUT_CONTROL (0x3400) write not persisting.
 
-**Root Cause Investigation (March 15, 2026):**
-
-Testing revealed that the OUTPUT_CONTROL register (0x3400) write is NOT persisting:
+**Resolution (Session 2):** Write IS working correctly:
 ```
-First run:  OUTPUT_CONTROL=0x0, then writes 0x7A08
-Second run: OUTPUT_CONTROL=0x0 again (should be 0x7A08 from previous!)
+MT9M113: OUTPUT_CONTROL=0x7a2c (before write)
+MT9M113: OUTPUT_CONTROL after write: 0x7a08 (expected 0x7A08) ✓
 ```
+The CCI write to 0x3400 succeeds. Register resets to 0 between boots (expected behavior).
 
-Compare with RESET_REGISTER which DOES persist:
+### 2. CRITICAL: CSIPHY→VFE Data Path Gap
+
+**Symptom:** CSIPHY receives MIPI line data but VFE CAMIF never receives pixels.
+
+**Evidence from dmesg (Session 3):**
 ```
-First run:  RESET_REGISTER was 0x12cc, writes 0x120C
-Second run: RESET_REGISTER was 0x120c (correctly persisted)
-```
-
-**Possible Causes:**
-1. CCI regmap write to 0x3400 is silently failing
-2. The register requires a specific access sequence
-3. Hardware issue with this particular register
-
-**Debug Commit Added:** `26cbbd91a90e` adds write verification and readback logging.
-
-### 2. CSIPHY Receiving Zero Frames
-
-**Evidence from dmesg:**
-```
-CSIPHY1: IRQ status=0x00000000 [] sof_count=0
+CSIPHY1: IRQ status=0x00000030 [SOT ECC ] sof_count=0
+CSIPHY1: IRQ status=0x00000830 [SOT ECC ] sof_count=0
 ```
 
-The CSIPHY is correctly configured:
+- **SOT (Start of Transmission)**: MIPI lane-level data arriving ✓
+- **ECC**: Error correction processing ✓
+- **BIT(16) Frame Start**: Never fires ❌
+- **sof_count=0**: No frame sync detected
+
+**CSIPHY Configuration (verified correct):**
 - `D1_CONTROL=0x00000300` (PHY enabled)
 - `PROTOCOL=0x00260000`
 - `CAMERA_CNTL=0x0000e404` (1 lane mode)
 
-But no MIPI data is being received, confirming the sensor is not outputting data.
+**Root Cause Hypothesis:**
+Something between CSIPHY and VFE CAMIF is not routing data correctly. The csi_pix_clk/csi_rdi_clk clocks may be irrelevant on MSM8660 (webOS doesn't use them).
 
-### 3. VFE31 Configuration Verified Correct
+### 3. VFE31 Configuration Verified Correct ✅
 
 The VFE31 side appears correct:
 - `AXI_OUT_MODE=0x200` (OUTPUT_2/preview mode)
@@ -146,11 +141,34 @@ The VFE31 side appears correct:
 - `CAMIF_STATUS` transitions from 0x80000000 (halted) to 0x0 (active)
 - IRQ masks properly configured
 
-The VFE is waiting for data that never arrives from the sensor/CSIPHY.
+At shutdown, CAMIF_STATUS returns to 0x80000000 (halted) - indicating no data was ever received and processed.
 
-### 4. Potential MIPI Timing Issues
+### 4. MIPI Frame Start Packets Missing
 
-The MT9M113 MIPI timing registers (0xC988-0xC992) are defined in the driver but NOT written during init. The webOS MT9M113 driver also doesn't write them (they're commented out), so this may be intentional - but worth investigating if MIPI errors occur.
+**Key Finding:** CSIPHY sees SOT (line-level) but not Frame Start (frame-level).
+
+**Possible Causes:**
+1. MT9M113 not sending Short Packet Frame Start (expected for SOF interrupt)
+2. MT9M113 using Embedded Data for frame sync instead
+3. OUTPUT_CONTROL (0x3400) value needs different bits for frame packets
+
+**Note:** The MT9M113 MIPI timing registers (0xC988-0xC992) are defined but not written. webOS also doesn't write them.
+
+### 5. Clock Architecture Difference from webOS
+
+**webOS does NOT use csi_pix_clk or csi_rdi_clk:**
+```c
+// webOS MISC_CC_REG = 0x00000000 (no mux bits)
+// Yet camera works - implies different data path
+```
+
+**Mainline adds csi_pix/csi_rdi for MSM8960+ style routing:**
+```c
+// Mainline MISC_CC_REG = 0x06003440 (mux bits set)
+// May not be correct for MSM8660 architecture
+```
+
+**Hypothesis:** MSM8660 may have simpler CSI→VFE routing that doesn't require these clocks.
 
 ---
 
@@ -214,144 +232,223 @@ The test script (`scripts/test-camera.sh`) supports these modes:
 
 ## Questions for Investigation
 
-1. **Clock Enable Path:** Is `vfe_csi1_clk` being enabled by the clock framework when VFE starts? The debug dump should show this.
+### Answered ✅
 
-2. **CSIPHY→VFE Timing:** Does CSIPHY need to be receiving valid MIPI data before VFE CAMIF is started? Or can they be enabled in any order?
+1. **Clock Enable Path:** Is `vfe_csi1_clk` being enabled?
+   - **Answer:** Yes, all clocks enabled correctly. MISC_CC_REG shows proper mux selection.
 
-3. **MIPI D-PHY Settle Count:** The driver calculates settle count dynamically with 0x14 fallback. Is this correct for MT9M113's link frequency?
+2. **Software SOF:** Should we try triggering software SOF?
+   - **Answer:** Yes, tested with `software_sof_enable=1`. SOF triggers work but REG_UPDATE still times out because no pixel data.
 
-4. **Software SOF:** Should we try triggering software SOF to kickstart the VFE state machine?
+### Open Questions
 
-5. **Test Pattern Mode:** If the sensor's test pattern works but real data doesn't, what does that tell us about the data path?
+3. **Why no Frame Start (BIT 16) in CSIPHY?**
+   - CSIPHY sees SOT (line level) but never Frame Start (frame level)
+   - Does MT9M113 send MIPI Short Packets for frame start?
+   - Or does it use embedded data sync?
+
+4. **Are csi_pix_clk/csi_rdi_clk relevant to MSM8660?**
+   - webOS doesn't use these clocks
+   - webOS MISC_CC_REG = 0x00000000
+   - May be MSM8960+ only additions
+
+5. **What is the actual CSIPHY→VFE data path on MSM8660?**
+   - webOS uses CSI0_VFE_CLK / CSI1_VFE_CLK directly
+   - No intermediate csi_pix/csi_rdi layer
+   - May need to trace webOS msm_io_8x60.c more carefully
+
+6. **VFE31 Input Source Configuration:**
+   - Does VFE31 have an OPERATION_CFG or input source register?
+   - How does VFE know to read from CSI1 vs CSI0?
+   - webOS may configure this somewhere we haven't found
+
+7. **MIPI Data Format:**
+   - Is MT9M113 outputting data in the format VFE expects?
+   - Check DATA_TYPE setting in CSIPHY matches sensor output
 
 ---
 
 ## Recent Commits
 
 ```
+0164a187d91f mmc: mmci: Fix race between mmci_pre_request and mmci_dmae_error
+6db84f96d35a media: qcom: camss: Set csi_pix/csi_rdi clock parents to CSI1 for MSM8660
+f36b6df90003 clk: qcom: mmcc-msm8660: Add CSI PIX/RDI clock parent mux support
 26cbbd91a90e media: i2c: mt9m114: Add OUTPUT_CONTROL write verification for MT9M113
 afbe509fff76 mmc: mmci: Fix use-after-free in DMA error recovery path
 1f45115b7ffe media: i2c: mt9m114: Add MT9M113 preview/snapshot AE tables and mode support
 38545b2fab58 media: qcom: camss: Fix hardcoded bpp in MSM8660 set_power path
 d341a03f989a media: i2c: mt9m114: Add sequencer refresh when MT9M113 not in preview mode
-ffbc7313adb6 media: i2c: mt9m114: Fix MT9M113 streaming by always writing RESET_REGISTER
 ```
 
 ---
 
 ## Summary
 
-**Current Status: BLOCKED - Clock architecture issue with CSI1 pixel path**
+**Current Status: BLOCKED - Pixel data not reaching VFE CAMIF despite correct clock configuration**
 
-### Major Findings (March 15, 2026 - Session 2)
+### Major Findings (March 15, 2026 - Session 3)
 
-#### 1. OUTPUT_CONTROL Register Write IS Working ✅
+#### 1. Clock Mux Fix Applied ✅
+```c
+// mmcc-msm8660.c - Now has proper mux support
+static struct clk_pix_rdi csi_pix_clk = {
+    .s_reg = 0x0058,
+    .s_mask = BIT(25),  // Mux select: 0=CSI0, 1=CSI1
+    .clkr = {
+        .enable_reg = 0x0058,
+        .enable_mask = BIT(26),
+        // parents = csi0_clk, csi1_clk
+    },
+};
 ```
-MT9M113: OUTPUT_CONTROL=0x7a2c (before write)
-MT9M113: OUTPUT_CONTROL after write: 0x7a08 (expected 0x7A08) ✓
-```
-The CCI write to 0x3400 is succeeding! Previous session's concern was unfounded.
+CAMSS driver now calls `clk_set_parent()` to select CSI1 for MT9M113.
 
-#### 2. CSIPHY IS Receiving MIPI Data ✅
+#### 2. All Clocks Verified Enabled ✅
+```
+clock 'csi_pix' enabled, rate=384000000
+clock 'csi_rdi' enabled, rate=384000000
+MISC_CC_REG = 0x06003440
+  csi_pix_sel: CSI1 (bit 25 set)
+  csi_rdi_sel: CSI1 (bit 12 set)
+```
+Both clock enables and mux selections are correct.
+
+#### 3. CSIPHY Receiving Line-Level MIPI Data ✅
 ```
 CSIPHY1: IRQ #3 status=0x00000030 [SOT ECC ] sof_count=0
 CSIPHY1: IRQ #4 status=0x00000830 [SOT ECC ] sof_count=0
 ```
-SOT (Start of Transmission) interrupts prove MIPI PHY is receiving data from sensor!
+- **SOT (Start of Transmission)** interrupts: MIPI PHY receiving lane data ✓
+- **ECC** interrupts: Error correction active ✓
+- **BIT(16) Frame Start**: Never fires ❌
+- **sof_count=0**: No frame-level sync packets detected
 
-#### 3. Software SOF Working ✅
+#### 4. Software SOF Workaround Tested ✅
 With `software_sof_enable=1`:
 ```
 CSIPHY1: sof_count=410, 411, 412... (incrementing)
 ```
 Software SOF triggers VFE interrupt handler, advancing past "SOF timeout" to "REG_UPDATE timeout".
 
-#### 4. CRITICAL: Clock Architecture Issue ❌
+#### 5. VFE CAMIF Never Receives Pixel Data ❌
+```
+Before start: CAMIF_STATUS = 0x80000000 (HALTED)
+After start:  CAMIF_STATUS = 0x00000000 (ACTIVE)
+At shutdown:  CAMIF_STATUS = 0x80000000 (still HALTED - no data received!)
+```
+VFE CAMIF is enabled and waiting but never receives any pixel data.
 
-**Root Cause Identified:** `csi_pix_clk` in mainline clock driver only has `csi0_src` as parent!
+#### 6. Both PIX and RDI Modes Fail ❌
+- **PIX mode (line_id=3)**: VFE SOF timeout → REG_UPDATE timeout
+- **RDI mode (line_id=0)**: Same failure pattern
+
+This confirms the issue is not specific to the VFE processing path.
+
+### Critical Discovery: webOS Clock Architecture Difference
+
+**webOS does NOT use csi_pix_clk or csi_rdi_clk!**
 
 ```c
-// mmcc-msm8660.c - WRONG for CSI1
-static struct clk_branch csi_pix_clk = {
-    .parent_hws = (const struct clk_hw*[]){
-        &csi0_src.clkr.hw  // <- Only CSI0, no CSI1!
-    },
-    .num_parents = 1,
-    ...
+// webOS msm_io_8x60.c - No csi_pix or csi_rdi clocks
+static struct clk_info msm_8x60_clk_info[] = {
+    {"csi_phy_clk", CSI0_PHY_CLK, NULL, 0},  // Only CSI clocks
+    {"csi_clk",     CSI0_CLK,     NULL, 0},
+    {"csi_vfe_clk", CSI0_VFE_CLK, NULL, 0},  // CSI0_VFE_CLK
+    // MT9M113 uses CSI1 variants via WEBCAM_DEV lookup
 };
 ```
 
-Compare with MSM8960 which has proper mux:
-```c
-// mmcc-msm8960.c - CORRECT
-static const struct clk_hw *pix_rdi_parents[] = {
-    &csi0_clk.clkr.hw,
-    &csi1_clk.clkr.hw,  // CSI1 supported!
-    &csi2_clk.clkr.hw,
-};
-```
-
-**Impact:** The pixel interface clock (`csi_pix_clk`) used by VFE's PIX/CAMIF path can only receive data from CSI0 source clock, not CSI1. Since MT9M113 is on CSI1, pixel data cannot flow through to VFE.
+The webOS MISC_CC_REG value is **0x00000000** (no mux selection bits set), yet camera works. This suggests:
+1. csi_pix_clk/csi_rdi_clk may be mainline-only additions
+2. The actual data path doesn't require these clocks on MSM8660
+3. Data routing may use a different hardware mechanism
 
 ---
 
 ## Next Steps
 
-### Immediate: Fix Clock Architecture
+### Immediate Investigation
 
-**Option A: Add clock mux to mmcc-msm8660.c**
-- Change `csi_pix_clk` from `clk_branch` to `clk_pix_rdi` type
-- Add both `csi0_src` and `csi1_src` as parents
-- Add mux selection registers (need to find correct bits)
+1. **Compare CSI-to-VFE data path with webOS**
+   - webOS uses CSI0_VFE_CLK and CSI1_VFE_CLK directly
+   - No intermediate csi_pix/csi_rdi layer
+   - May need to bypass these clocks entirely
 
-**Option B: Use RDI path instead of PIX path**
-- RDI (Raw Data Interface) might have different routing
-- Would require changes to VFE31 configuration
+2. **Check VFE Input Selection**
+   - VFE31 may have an input source register not yet configured
+   - Look for OPERATION_CFG or similar in VFE31 register set
+   - webOS VFE may configure this in a different path
 
-**Option C: Hardware mux register**
-- Check if there's a TCSR or other register that selects CSI input
-- webOS might configure this in board code we haven't checked
+3. **MIPI Frame Sync Packets**
+   - Sensor sends SOT (line level) but no Frame Start (BIT 16)
+   - Check if MT9M113 needs explicit configuration for frame sync
+   - Verify OUTPUT_CONTROL value enables frame packets
 
-### Investigation Needed
+### Hardware Data Path Investigation
 
-1. **Find CSI mux register:** Search webOS board-tenderloin.c or msm_io_8x60.c for any mux configuration
-2. **Check RDI clock path:** Does `csi_rdi_clk` have same limitation?
-3. **TCSR configuration:** The TCSR debug dump shows all zeros - is there a mux that needs to be set?
+Current understanding:
+```
+MT9M113 Sensor (MIPI CSI-2, 1 lane)
+     │
+     ▼ (SOT/ECC interrupts confirm line data arriving)
+CSIPHY1 (0x04900000) ✓
+     │
+     ├──► csi1_phy_clk (enabled ✓)
+     ├──► vfe_csi1_clk (enabled ✓)
+     │
+     ▼
+??? Unknown routing point ???
+     │
+     ├──► csi_pix_clk (enabled, parent=CSI1) - may be unused on MSM8660
+     │
+     ▼
+VFE31 CAMIF ❌ (no pixel data arrives)
+```
+
+**Key Question:** What connects vfe_csi1_clk output to VFE CAMIF input on MSM8660?
+
+### Possible Root Causes
+
+1. **Missing hardware mux register** - The data path has a mux not yet configured
+2. **Clock domain crossing issue** - csi_pix/csi_rdi clocks don't exist on MSM8660
+3. **VFE input source config** - VFE31 needs explicit CSI1 selection
+4. **MIPI frame format** - Sensor outputting data but not in expected format
 
 ---
 
 ## Data Path Analysis
 
-### Current Understanding (VFE PIX mode for MT9M113)
+### Current Understanding (After Session 3)
 
 ```
 MT9M113 Sensor (MIPI CSI-2, 1 lane)
      │
-     ▼
-CSIPHY1 (0x04900000) ─────── SOT interrupts ✓
+     ▼ (SOT/ECC interrupts confirm line data)
+CSIPHY1 (0x04900000) ✓
      │
-     ├──► csi1_src ──► csi1_clk ──► csi1_phy_clk (all enabled ✓)
+     ├──► csi1_clk, csi1_phy_clk (enabled ✓)
      │
      ├──► vfe_csi1_clk (enabled ✓, connects CSI1 to VFE)
      │
-     ▼
-csi_pix_clk ──► parent=csi0_src ONLY ❌
-     │                   │
-     │              (Cannot receive CSI1 data!)
-     ▼
-VFE31 CAMIF ─────── Waiting for pixel data that never arrives
+     ├──► csi_pix_clk (enabled ✓, mux=CSI1) - may be MSM8960+ only?
+     │
+     │    ??? DATA PATH GAP ???
      │
      ▼
-REG_UPDATE timeout
+VFE31 CAMIF (0x04500000 + 0x1E0)
+     │
+     └──► Waiting for pixel data that never arrives
+          REG_UPDATE timeout
 ```
 
-### webOS Clock Binding (for reference)
+### webOS Clock Architecture (for comparison)
 
-webOS uses device-specific clock lookup:
+webOS uses direct clock mapping without csi_pix/csi_rdi:
 ```c
-// devices-msm8x60.c
-CLK_8X60("csi_pclk", CSI0_P_CLK, NULL, OFF),        // Default
-CLK_8X60("csi_pclk", CSI1_P_CLK, WEBCAM_DEV, OFF),  // MT9M113
+// devices-msm8x60.c - Direct CSI-to-VFE clocks
+CLK_8X60("csi_vfe_clk", CSI0_VFE_CLK, NULL, OFF),      // Default (back camera)
+CLK_8X60("csi_vfe_clk", CSI1_VFE_CLK, WEBCAM_DEV, OFF), // MT9M113 (front camera)
 ```
 
-Where `WEBCAM_DEV = "msm_camera_mt9m113.0"` gets CSI1 clocks.
+MISC_CC_REG = 0x00000000 in webOS (no mux bits set).
