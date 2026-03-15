@@ -2730,7 +2730,23 @@ static int mt9m114_pa_init(struct mt9m114 *sensor)
 		return ret;
 
 	/* Initialize the control handler. */
-	v4l2_ctrl_handler_init(hdl, 7);
+	v4l2_ctrl_handler_init(hdl, 8);
+
+	/*
+	 * Add LINK_FREQ control to the PA subdev (which has MEDIA_ENT_F_CAM_SENSOR).
+	 * This is needed because camss_find_sensor_pad() finds the PA subdev,
+	 * and v4l2_get_link_freq() looks for LINK_FREQ in that subdev's handler.
+	 */
+	if (sensor->bus_cfg.nr_of_link_frequencies > 0) {
+		struct v4l2_ctrl *link_freq;
+
+		link_freq = v4l2_ctrl_new_int_menu(hdl, &mt9m114_pa_ctrl_ops,
+						   V4L2_CID_LINK_FREQ,
+						   sensor->bus_cfg.nr_of_link_frequencies - 1,
+						   0, sensor->bus_cfg.link_frequencies);
+		if (link_freq)
+			link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	}
 
 	/* The range of the HBLANK and VBLANK controls will be updated below. */
 	sensor->pa.hblank = v4l2_ctrl_new_std(hdl, &mt9m114_pa_ctrl_ops,
