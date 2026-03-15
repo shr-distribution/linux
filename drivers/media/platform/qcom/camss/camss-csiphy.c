@@ -862,7 +862,7 @@ int msm_csiphy_subdev_init(struct camss *camss,
 			clock->freq[j] = res->clock_rate[i][j];
 
 		csiphy->rate_set[i] = csiphy_match_clock_name(clock->name,
-							      "csiphy%d_timer",
+							      "csiphy%d_timer_clk",
 							      csiphy->id);
 		if (csiphy->rate_set[i])
 			continue;
