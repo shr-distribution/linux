@@ -1895,8 +1895,7 @@ mt9m113_streaming:
 			 "MT9M113: Skipping CUSTOM_SHORT_PKT (webOS doesn't use it)\n");
 
 		/*
-		 * Only configure MIPI output if not already enabled.
-		 * WebOS writes OUTPUT_CONTROL/RESET_REGISTER only once.
+		 * Configure MIPI output if not already enabled.
 		 */
 		if (output_ctrl != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
 			dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI (first time)\n");
@@ -1905,14 +1904,28 @@ mt9m113_streaming:
 			cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 				  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
 
-			/* Set streaming mode in RESET_REGISTER */
-			cci_write(sensor->regmap, MT9M114_RESET_REGISTER, 0x120C, NULL);
-
 			dev_info(&sensor->client->dev,
 				 "MT9M113: MIPI configured (OUTPUT_CONTROL=0x7A08)\n");
 		} else {
 			dev_info(&sensor->client->dev,
 				 "MT9M113: MIPI already enabled, skipping OUTPUT_CONTROL write\n");
+		}
+
+		/*
+		 * RESET_REGISTER (0x301A) = 0x120C is REQUIRED to start streaming.
+		 * Unlike OUTPUT_CONTROL which can persist, RESET_REGISTER must be
+		 * written every time streaming starts. This puts the sensor into
+		 * "streaming mode" - without it, the sensor sits idle despite
+		 * SEQ_STATE=0x3 indicating "preview mode active".
+		 *
+		 * From webOS/Samsung drivers: 0x120C = streaming, 0x12CE = snapshot.
+		 */
+		{
+			u64 reset_reg = 0;
+			cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &reset_reg, NULL);
+			dev_info(&sensor->client->dev,
+				 "MT9M113: RESET_REGISTER was 0x%llx, writing 0x120C\n", reset_reg);
+			cci_write(sensor->regmap, MT9M114_RESET_REGISTER, 0x120C, NULL);
 		}
 
 		/*
