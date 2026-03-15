@@ -1339,6 +1339,7 @@ static void mmci_pre_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct mmci_host *host = mmc_priv(mmc);
 	struct mmc_data *data = mrq->data;
+	unsigned long flags;
 
 	if (!data)
 		return;
@@ -1348,7 +1349,17 @@ static void mmci_pre_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	if (mmci_validate_data(host, data))
 		return;
 
+	/*
+	 * Take host->lock to serialize access to next_data with
+	 * mmci_dmae_error() which is called from IRQ context.
+	 * Without this lock, a race can occur where:
+	 * 1. mmci_dmae_error() clears next->desc and next->chan
+	 * 2. mmci_prep_data() sets them again for a new request
+	 * 3. mmci_get_next_data() sees stale data with mismatched host_cookie
+	 */
+	spin_lock_irqsave(&host->lock, flags);
 	mmci_prep_data(host, data, true);
+	spin_unlock_irqrestore(&host->lock, flags);
 }
 
 static void mmci_post_request(struct mmc_host *mmc, struct mmc_request *mrq,
