@@ -867,7 +867,8 @@ int msm_csiphy_subdev_init(struct camss *camss,
 		if (csiphy->rate_set[i])
 			continue;
 
-		if (camss->res->version == CAMSS_660) {
+		if (camss->res->version == CAMSS_660 ||
+		    camss->res->version == CAMSS_8x60) {
 			csiphy->rate_set[i] = csiphy_match_clock_name(clock->name,
 								      "csi%d_phy",
 								       csiphy->id);

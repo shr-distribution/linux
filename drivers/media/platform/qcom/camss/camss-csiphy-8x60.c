@@ -85,8 +85,21 @@ MODULE_PARM_DESC(software_sof_enable,
 #define MIPI_PHY_D1_CONTROL_MIPI_CLK_PHY_SHUTDOWNB_SHFT	9
 #define MIPI_PHY_D1_CONTROL_MIPI_DATA_PHY_SHUTDOWNB_SHFT 8
 
-/* Default settle count for MSM8660 (from webOS kernel) */
-#define MSM8660_DEFAULT_SETTLE_CNT	0x14
+/*
+ * Default settle count for MSM8660.
+ *
+ * T_HS_SETTLE must be between 85ns + 6*UI and 145ns + 10*UI per MIPI spec.
+ * For a typical 96 MHz link frequency with 27 MHz timer clock:
+ * - UI = 5.2 ns (at 192 Mbps lane rate)
+ * - T_HS_SETTLE range: 116 ns to 197 ns
+ * - Timer period = 37 ns (at 27 MHz)
+ * - Ideal settle_cnt = (150 ns / 37 ns) - 1 = 3
+ *
+ * The old webOS default of 0x14 (20) gave 777 ns which is WAY too long
+ * and caused frame drops. Use 0x04 as a safer default that works within
+ * the MIPI spec range for most sensor configurations.
+ */
+#define MSM8660_DEFAULT_SETTLE_CNT	0x04
 
 /*
  * csiphy_8x60_get_lane_mask - Calculate CSI2 lane mask
@@ -178,17 +191,33 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 * Calculate settle count if link frequency is available.
 	 * The settle count formula is derived from CSI2 timing requirements.
 	 */
+	dev_info(csiphy->camss->dev,
+		 "CSIPHY%d: settle calc inputs: link_freq=%lld timer_clk_rate=%u\n",
+		 csiphy->id, link_freq, csiphy->timer_clk_rate);
+
 	if (link_freq > 0 && csiphy->timer_clk_rate > 0) {
 		u32 ui_ps = div_u64(1000000000000ULL, link_freq) / 2;
 		u32 timer_period_ps = div_u64(1000000000000ULL,
 					      csiphy->timer_clk_rate);
 		u32 t_hs_settle_ps;
+		u32 t_hs_settle_ns;
 
 		/* T_HS_SETTLE calculation based on MIPI D-PHY spec */
 		t_hs_settle_ps = (85000 + 6 * ui_ps + 145000 + 10 * ui_ps) / 2;
 		settle_cnt = t_hs_settle_ps / timer_period_ps;
 		if (settle_cnt > 0)
 			settle_cnt--;
+
+		t_hs_settle_ns = (settle_cnt + 1) * timer_period_ps / 1000;
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: settle calc: UI=%u ps, timer_period=%u ps, "
+			 "t_hs_settle=%u ps, settle_cnt=0x%02x (%u ns actual)\n",
+			 csiphy->id, ui_ps, timer_period_ps, t_hs_settle_ps,
+			 settle_cnt, t_hs_settle_ns);
+	} else {
+		dev_warn(csiphy->camss->dev,
+			 "CSIPHY%d: Using default settle_cnt=0x%02x (link_freq=%lld, timer_clk=%u)\n",
+			 csiphy->id, settle_cnt, link_freq, csiphy->timer_clk_rate);
 	}
 
 	dev_info(csiphy->camss->dev,
