@@ -1141,6 +1141,13 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 #define VFE31_IRQ_CLEAR_0		0x024
 #define VFE31_IRQ_CLEAR_1		0x028
 
+/* VFE31 Write Master registers - used for DMA buffer addresses */
+#define VFE31_WM_WR_PING_ADDR(n)	(0x050 + 0x18 * (n))
+#define VFE31_WM_WR_PONG_ADDR(n)	(0x054 + 0x18 * (n))
+#define VFE31_WM_WR_ADDR_CFG(n)		(0x058 + 0x18 * (n))
+#define VFE31_WM_WR_UB_CFG(n)		(0x05C + 0x18 * (n))
+#define VFE31_WM_WR_IMAGE_SIZE(n)	(0x060 + 0x18 * (n))
+
 /*
  * vfe31_reg_update_poll - Issue REG_UPDATE and poll until bit 0 clears
  * @vfe: VFE device
@@ -1509,6 +1516,13 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 			       vfe->base + VFE31_AXI_OUT_MODE_CFG);
 	}
 	wmb();
+
+	/*
+	 * NOTE: WM buffer addresses (ping/pong, image_size, addr_cfg, ub_cfg)
+	 * are already configured by vfe31_enable() BEFORE this function runs.
+	 * Do NOT overwrite them here - vfe31_enable() gets addresses from
+	 * output->buf[0/1]->addr[0] which are the correct DMA buffer addresses.
+	 */
 
 	/*
 	 * Step 4: Clear CAMIF status before configuring
