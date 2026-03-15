@@ -391,42 +391,110 @@ static struct clk_branch csi1_phy_clk = {
 	},
 };
 
-static struct clk_branch csi_pix_clk = {
-	.halt_reg = 0x01e8,
-	.halt_bit = 3,
-	/* Like csi_phy clocks, hardware doesn't report halt status properly */
-	.halt_check = BRANCH_HALT_SKIP,
+/*
+ * CSI PIX/RDI clock mux support
+ *
+ * On MSM8660, the csi_pix_clk and csi_rdi_clk can source from either
+ * CSI0 or CSI1. The selection is controlled by bits in CSC_CC_REG (0x0058):
+ *   - BIT(25): csi_pix_clk source (0=CSI0, 1=CSI1)
+ *   - BIT(12): csi_rdi_clk source (0=CSI0, 1=CSI1)
+ *
+ * This mux is critical for HP TouchPad which uses CSI1 for the front camera.
+ */
+struct clk_pix_rdi {
+	u32 s_reg;
+	u32 s_mask;
+	struct clk_regmap clkr;
+};
+
+#define to_clk_pix_rdi(_hw) \
+	container_of(to_clk_regmap(_hw), struct clk_pix_rdi, clkr)
+
+static int pix_rdi_set_parent(struct clk_hw *hw, u8 index)
+{
+	struct clk_pix_rdi *rdi = to_clk_pix_rdi(hw);
+	u32 val;
+	int i, ret = 0;
+	int num_parents = clk_hw_get_num_parents(hw);
+
+	/*
+	 * Turn on all parent sources during mux switch to ensure
+	 * glitch-free transition.
+	 */
+	for (i = 0; i < num_parents; i++) {
+		struct clk_hw *p = clk_hw_get_parent_by_index(hw, i);
+		ret = clk_prepare_enable(p->clk);
+		if (ret)
+			goto err;
+	}
+
+	/* Select parent: 0=CSI0, 1=CSI1 */
+	val = (index == 1) ? rdi->s_mask : 0;
+	regmap_update_bits(rdi->clkr.regmap, rdi->s_reg, rdi->s_mask, val);
+
+	/*
+	 * Wait at least 6 cycles of slowest clock for the
+	 * glitch-free MUX to fully switch sources.
+	 */
+	udelay(1);
+
+err:
+	for (i--; i >= 0; i--) {
+		struct clk_hw *p = clk_hw_get_parent_by_index(hw, i);
+		clk_disable_unprepare(p->clk);
+	}
+
+	return ret;
+}
+
+static u8 pix_rdi_get_parent(struct clk_hw *hw)
+{
+	struct clk_pix_rdi *rdi = to_clk_pix_rdi(hw);
+	u32 val;
+
+	regmap_read(rdi->clkr.regmap, rdi->s_reg, &val);
+	return (val & rdi->s_mask) ? 1 : 0;
+}
+
+static const struct clk_ops clk_ops_pix_rdi = {
+	.enable = clk_enable_regmap,
+	.disable = clk_disable_regmap,
+	.set_parent = pix_rdi_set_parent,
+	.get_parent = pix_rdi_get_parent,
+	.determine_rate = __clk_mux_determine_rate,
+};
+
+static const struct clk_hw *pix_rdi_parents[] = {
+	&csi0_clk.clkr.hw,
+	&csi1_clk.clkr.hw,
+};
+
+static struct clk_pix_rdi csi_pix_clk = {
+	.s_reg = 0x0058,
+	.s_mask = BIT(25),
 	.clkr = {
 		.enable_reg = 0x0058,
 		.enable_mask = BIT(26),
 		.hw.init = &(struct clk_init_data){
-			.parent_hws = (const struct clk_hw*[]){
-				&csi0_src.clkr.hw
-			},
-			.num_parents = 1,
 			.name = "csi_pix_clk",
-			.ops = &clk_branch_ops,
-			.flags = CLK_SET_RATE_PARENT,
+			.parent_hws = pix_rdi_parents,
+			.num_parents = ARRAY_SIZE(pix_rdi_parents),
+			.ops = &clk_ops_pix_rdi,
 		},
 	},
 };
 
-static struct clk_branch csi_rdi_clk = {
-	.halt_reg = 0x01e8,
-	.halt_bit = 2,
-	/* Like csi_phy clocks, hardware doesn't report halt status properly */
-	.halt_check = BRANCH_HALT_SKIP,
+static struct clk_pix_rdi csi_rdi_clk = {
+	.s_reg = 0x0058,
+	.s_mask = BIT(12),
 	.clkr = {
 		.enable_reg = 0x0058,
 		.enable_mask = BIT(13),
 		.hw.init = &(struct clk_init_data){
-			.parent_hws = (const struct clk_hw*[]){
-				&csi0_src.clkr.hw
-			},
-			.num_parents = 1,
 			.name = "csi_rdi_clk",
-			.ops = &clk_branch_ops,
-			.flags = CLK_SET_RATE_PARENT,
+			.parent_hws = pix_rdi_parents,
+			.num_parents = ARRAY_SIZE(pix_rdi_parents),
+			.ops = &clk_ops_pix_rdi,
 		},
 	},
 };
