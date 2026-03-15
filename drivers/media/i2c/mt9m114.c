@@ -1875,6 +1875,41 @@ mt9m113_streaming:
 		dev_info(&sensor->client->dev,
 			 "MT9M113: SEQ_STATE=0x%llx (0x03=preview mode)\n", seq_state);
 
+		/*
+		 * If sequencer is not in preview mode (0x03), we need to refresh it.
+		 * This can happen if the sensor has been idle for a while and the
+		 * sequencer entered standby or an error state.
+		 */
+		if (seq_state != 0x03) {
+			dev_info(&sensor->client->dev,
+				 "MT9M113: Sequencer not in preview mode, issuing REFRESH\n");
+
+			/* Issue SEQ_CMD=REFRESH (0x0005) to restart sequencer */
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0005);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: SEQ_CMD REFRESH failed: %d\n", ret);
+				goto error;
+			}
+
+			/* Wait for refresh to complete (SEQ_CMD returns to 0) */
+			timeout = 100; /* 1 second max */
+			do {
+				msleep(10);
+				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_state);
+			} while (seq_state != 0 && --timeout > 0);
+
+			if (timeout == 0) {
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: REFRESH timeout, SEQ_CMD=0x%llx\n", seq_state);
+			}
+
+			/* Read SEQ_STATE again after refresh */
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+			dev_info(&sensor->client->dev,
+				 "MT9M113: After REFRESH, SEQ_STATE=0x%llx\n", seq_state);
+		}
+
 		/* Read current OUTPUT_CONTROL */
 		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
 		dev_info(&sensor->client->dev,
