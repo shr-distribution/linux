@@ -90,13 +90,14 @@ MODULE_PARM_DESC(software_sof_enable,
  *
  * Testing results:
  *   0x10: Combined SOT+ECC errors
- *   0x14: Alternating individual SOT/ECC errors (webOS value, best so far)
+ *   0x12: Combined SOT+ECC errors
+ *   0x14: Alternating individual SOT/ECC errors (best, webOS value)
  *   0x16: Combined SOT+ECC errors (regression)
  *
- * Try 0x12 as intermediate value between 0x10 and 0x14.
+ * 0x14 is the optimal value matching webOS mt9m113_csi_params.settle_cnt.
  * MT9M113 at 96 MHz link freq: UI = 5.2ns, T-HS-SETTLE = 116-197ns
  */
-#define MSM8660_DEFAULT_SETTLE_CNT	0x12
+#define MSM8660_DEFAULT_SETTLE_CNT	0x14
 
 /*
  * csiphy_8x60_get_lane_mask - Calculate CSI2 lane mask
