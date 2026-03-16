@@ -95,11 +95,16 @@ MODULE_PARM_DESC(software_sof_enable,
  * - Timer period = 37 ns (at 27 MHz)
  * - Ideal settle_cnt = (150 ns / 37 ns) - 1 = 3
  *
- * The old webOS default of 0x14 (20) gave 777 ns which is WAY too long
- * and caused frame drops. Use 0x04 as a safer default that works within
- * the MIPI spec range for most sensor configurations.
+ * Without timer clocks reporting their rate, we must use an empirical value.
+ *
+ * For MT9M113 at 96 MHz link freq (192 Mbps data rate):
+ * - UI = 5.2ns, T_HS_SETTLE range: 116-197ns, target ~150ns
+ * - Timer clock appears to run at ~85 MHz (11.72ns period)
+ * - settle_cnt = 0x04 (58ns) → ECC errors (too short)
+ * - settle_cnt = 0x14 (246ns) → frame drops (too long, missed SOT)
+ * - settle_cnt = 0x0C (152ns) → within MIPI spec sweet spot
  */
-#define MSM8660_DEFAULT_SETTLE_CNT	0x04
+#define MSM8660_DEFAULT_SETTLE_CNT	0x0E
 
 /*
  * csiphy_8x60_get_lane_mask - Calculate CSI2 lane mask
