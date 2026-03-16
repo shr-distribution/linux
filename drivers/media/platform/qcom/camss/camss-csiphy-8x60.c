@@ -101,10 +101,10 @@ MODULE_PARM_DESC(software_sof_enable,
  * - UI = 5.2ns, T_HS_SETTLE range: 116-197ns, target ~150ns
  * - Timer clock appears to run at ~85 MHz (11.72ns period)
  * - settle_cnt = 0x04 (58ns) → ECC errors (too short)
+ * - settle_cnt = 0x0E (175ns) → SOT+ECC errors (boundary)
  * - settle_cnt = 0x14 (246ns) → frame drops (too long, missed SOT)
- * - settle_cnt = 0x0C (152ns) → within MIPI spec sweet spot
  */
-#define MSM8660_DEFAULT_SETTLE_CNT	0x0E
+#define MSM8660_DEFAULT_SETTLE_CNT	0x10
 
 /*
  * csiphy_8x60_get_lane_mask - Calculate CSI2 lane mask
