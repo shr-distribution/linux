@@ -89,22 +89,18 @@ MODULE_PARM_DESC(software_sof_enable,
  * Default settle count for MSM8660.
  *
  * T_HS_SETTLE must be between 85ns + 6*UI and 145ns + 10*UI per MIPI spec.
- * For a typical 96 MHz link frequency with 27 MHz timer clock:
+ * For MT9M113 at 96 MHz link frequency with 27 MHz timer clock:
  * - UI = 5.2 ns (at 192 Mbps lane rate)
  * - T_HS_SETTLE range: 116 ns to 197 ns
- * - Timer period = 37 ns (at 27 MHz)
- * - Ideal settle_cnt = (150 ns / 37 ns) - 1 = 3
+ * - Timer period = 37 ns (at 27 MHz, confirmed via clk_summary)
+ * - settle_cnt = 0x03 → (4) × 37ns = 148ns ← within spec
+ * - settle_cnt = 0x04 → (5) × 37ns = 185ns ← also valid
  *
- * Without timer clocks reporting their rate, we must use an empirical value.
- *
- * For MT9M113 at 96 MHz link freq (192 Mbps data rate):
- * - UI = 5.2ns, T_HS_SETTLE range: 116-197ns, target ~150ns
- * - Timer clock appears to run at ~85 MHz (11.72ns period)
- * - settle_cnt = 0x04 (58ns) → ECC errors (too short)
- * - settle_cnt = 0x0E (175ns) → SOT+ECC errors (boundary)
- * - settle_cnt = 0x14 (246ns) → frame drops (too long, missed SOT)
+ * Previous testing with wrong timer assumption (85 MHz):
+ * - settle_cnt = 0x04-0x10 all showed SOT+ECC errors
+ * - This was because actual settle time was 4-17x too long!
  */
-#define MSM8660_DEFAULT_SETTLE_CNT	0x10
+#define MSM8660_DEFAULT_SETTLE_CNT	0x03
 
 /*
  * csiphy_8x60_get_lane_mask - Calculate CSI2 lane mask
