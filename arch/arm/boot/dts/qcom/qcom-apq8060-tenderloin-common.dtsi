@@ -2179,10 +2179,10 @@
 		/*
 		 * Camera control GPIOs:
 		 * - powerdown: GPIO 107 - HIGH = sensor off, LOW = sensor on
-		 * - reset: GPIO 106 - active high hard reset for reliable init
+		 * - reset: GPIO 106 - active LOW reset (LOW=reset, HIGH=normal)
 		 */
 		powerdown-gpios = <&tlmm 107 GPIO_ACTIVE_HIGH>;
-		reset-gpios = <&tlmm 106 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 106 GPIO_ACTIVE_LOW>;
 
 		clocks = <&mmcc CAMCLK0_CLK>;
 		clock-names = "xvclk";
