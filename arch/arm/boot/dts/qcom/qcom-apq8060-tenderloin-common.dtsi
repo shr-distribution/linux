@@ -2177,10 +2177,12 @@
 		reg = <0x3c>;
 
 		/*
-		 * The legacy webOS driver controls power via powerdown GPIO only,
-		 * not reset GPIO. Powerdown HIGH = sensor off, LOW = sensor on.
+		 * Camera control GPIOs:
+		 * - powerdown: GPIO 107 - HIGH = sensor off, LOW = sensor on
+		 * - reset: GPIO 106 - active high hard reset for reliable init
 		 */
 		powerdown-gpios = <&tlmm 107 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 106 GPIO_ACTIVE_HIGH>;
 
 		clocks = <&mmcc CAMCLK0_CLK>;
 		clock-names = "xvclk";
