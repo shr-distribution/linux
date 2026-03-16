@@ -747,7 +747,7 @@ static int csiphy_init_formats(struct v4l2_subdev *sd,
 static bool csiphy_match_clock_name(const char *clock_name, const char *format,
 				    int index)
 {
-	char name[16]; /* csiphyXXX_timer\0 */
+	char name[32]; /* csiphy%d_timer_clk needs 18 chars max */
 
 	snprintf(name, sizeof(name), format, index);
 	return !strcmp(clock_name, name);
