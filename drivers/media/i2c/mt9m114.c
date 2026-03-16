@@ -106,10 +106,11 @@
  * Value 0x7A08 enables MIPI CSI-2 output with LP (low power) clock mode.
  * Value 0x7A0C enables MIPI CSI-2 output with continuous clock mode.
  * Per webOS: "0x7a08 will enable LP mode, while 0x7A0C will let MIPI clock continuous"
- * Using 0x7A08 to match webOS driver exactly.
+ * TESTING: Using 0x7A0C (continuous clock) - LP mode (0x7A08) causes ECC errors
+ * on MSM8660 CSIPHY which expects continuous clock mode.
  */
 #define MT9M113_OUTPUT_CONTROL				CCI_REG16(0x3400)
-#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08
+#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A0C
 
 /*
  * MT9M113 CUSTOM_SHORT_PKT register (0x3404)
