@@ -951,11 +951,11 @@ static struct clk_dyn_rcg gfx3d_src = {
 	},
 	.s[0] = {
 		.src_sel_shift = 3,
-		.parent_map = mmcc_pxo_pll8_pll2_pll3_map,
+		.parent_map = mmcc_pxo_pll8_pll2_map,
 	},
 	.s[1] = {
 		.src_sel_shift = 0,
-		.parent_map = mmcc_pxo_pll8_pll2_pll3_map,
+		.parent_map = mmcc_pxo_pll8_pll2_map,
 	},
 	.mux_sel_bit = 11,
 	.freq_tbl = clk_tbl_gfx3d,
@@ -964,8 +964,8 @@ static struct clk_dyn_rcg gfx3d_src = {
 		.enable_mask = BIT(2),
 		.hw.init = &(struct clk_init_data){
 			.name = "gfx3d_src",
-			.parent_data = mmcc_pxo_pll8_pll2_pll3,
-			.num_parents = ARRAY_SIZE(mmcc_pxo_pll8_pll2_pll3),
+			.parent_data = mmcc_pxo_pll8_pll2,
+			.num_parents = ARRAY_SIZE(mmcc_pxo_pll8_pll2),
 			.ops = &clk_dyn_rcg_ops,
 		},
 	},
