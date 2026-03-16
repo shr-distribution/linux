@@ -1678,6 +1678,7 @@ static const struct freq_tbl clk_tbl_vfe[] = {
 	F_MN(153600000, P_PLL8, 2,  5),
 	F_MN(200000000, P_PLL2, 2,  8),
 	F_MN(228570000, P_PLL2, 2,  7),
+	F_MN(266667000, P_PLL2, 1,  3),
 	{ }
 };
 
