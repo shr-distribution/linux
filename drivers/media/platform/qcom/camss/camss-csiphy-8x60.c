@@ -40,6 +40,18 @@ module_param(software_sof_enable, bool, 0644);
 MODULE_PARM_DESC(software_sof_enable,
 		 "Enable software SOF generation from CSIPHY (default: false)");
 
+/*
+ * Runtime-adjustable settle count for MIPI timing debug.
+ * Valid range: 0x00-0xFF, default 0x14 (matches webOS MT9M113).
+ * If ECC errors are high, try adjusting +/- 5 units.
+ * - Too low: PHY samples while voltage unstable -> ECC errors
+ * - Too high: PHY misses sync byte -> no valid packets
+ */
+static int settle_cnt_override = -1;
+module_param(settle_cnt_override, int, 0644);
+MODULE_PARM_DESC(settle_cnt_override,
+		 "Override settle count (0x00-0xFF, -1=use calculated/default 0x14)");
+
 /* MSM8660 MIPI CSI Controller Register Offsets */
 #define MIPI_PHY_CONTROL		0x00
 #define MIPI_PROTOCOL_CONTROL		0x04
@@ -216,6 +228,17 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		dev_warn(csiphy->camss->dev,
 			 "CSIPHY%d: Using default settle_cnt=0x%02x (link_freq=%lld, timer_clk=%u)\n",
 			 csiphy->id, settle_cnt, link_freq, csiphy->timer_clk_rate);
+	}
+
+	/*
+	 * Allow runtime override for debugging settle count issues.
+	 * If ECC error rate is high, try: settle_cnt_override=0x10/0x18/0x1C
+	 */
+	if (settle_cnt_override >= 0 && settle_cnt_override <= 0xFF) {
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: settle_cnt OVERRIDE: 0x%02x -> 0x%02x\n",
+			 csiphy->id, settle_cnt, settle_cnt_override);
+		settle_cnt = settle_cnt_override;
 	}
 
 	dev_info(csiphy->camss->dev,
