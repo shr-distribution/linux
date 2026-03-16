@@ -1152,7 +1152,7 @@
 		default-brightness-level = <96>;  /* ~6/7 of the way up the curve */
 		pinctrl-names = "default";
 		pinctrl-0 = <&backlight_pwm_gpios &backlight_enable_gpios>;
-		power-supply = <&pm8058_l10>;
+		/* power-supply omitted - pm8058_l10 is regulator-always-on */
 	};
 
 	/*
@@ -1190,11 +1190,15 @@
 		enable-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;	/* LCD_PWR_EN */
 		reset-gpios = <&tlmm 63 GPIO_ACTIVE_HIGH>;	/* LVDS_SHDN_N */
 
-		power-supply = <&pm8058_l10>;	/* VDD_LVDS_3.3V */
-		/* Note: backlight reference removed to allow pwm-backlight
-		 * to initialize as ON at probe time. With the phandle reference,
-		 * pwm-backlight defers to the panel driver which doesn't enable
-		 * it properly at boot.
+		/*
+		 * Note: power-supply intentionally omitted to avoid EPROBE_DEFER
+		 * chain: MDP4 -> panel-lvds -> pm8058_l10 regulator -> RPM.
+		 * This caused 90+ second boot delays waiting for the regulator
+		 * driver to probe. Since pm8058_l10 has regulator-always-on,
+		 * the panel doesn't need to explicitly control it.
+		 *
+		 * Similarly, backlight reference removed to allow pwm-backlight
+		 * to initialize as ON at probe time.
 		 */
 
 		pinctrl-names = "default";
