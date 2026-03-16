@@ -88,19 +88,14 @@ MODULE_PARM_DESC(software_sof_enable,
 /*
  * Default settle count for MSM8660.
  *
- * T_HS_SETTLE must be between 85ns + 6*UI and 145ns + 10*UI per MIPI spec.
- * For MT9M113 at 96 MHz link frequency with 27 MHz timer clock:
- * - UI = 5.2 ns (at 192 Mbps lane rate)
- * - T_HS_SETTLE range: 116 ns to 197 ns
- * - Timer period = 37 ns (at 27 MHz, confirmed via clk_summary)
- * - settle_cnt = 0x03 → (4) × 37ns = 148ns ← within spec
- * - settle_cnt = 0x04 → (5) × 37ns = 185ns ← also valid
+ * The webOS kernel uses settle_cnt = 0x14 for MT9M113:
+ *   mt9m113_csi_params.settle_cnt = 0x14;
+ *   (from webos-linux-kernel-touchpad/drivers/media/video/msm/mt9m113.c)
  *
- * Previous testing with wrong timer assumption (85 MHz):
- * - settle_cnt = 0x04-0x10 all showed SOT+ECC errors
- * - This was because actual settle time was 4-17x too long!
+ * The timer clock source on MSM8660 is unclear (timer_clk_rate=0 in our
+ * driver), but webOS definitely uses 0x14 successfully.
  */
-#define MSM8660_DEFAULT_SETTLE_CNT	0x03
+#define MSM8660_DEFAULT_SETTLE_CNT	0x14
 
 /*
  * csiphy_8x60_get_lane_mask - Calculate CSI2 lane mask
