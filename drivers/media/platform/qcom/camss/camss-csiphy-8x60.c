@@ -88,14 +88,14 @@ MODULE_PARM_DESC(software_sof_enable,
 /*
  * Default settle count for MSM8660.
  *
- * The webOS kernel uses settle_cnt = 0x14 for MT9M113:
- *   mt9m113_csi_params.settle_cnt = 0x14;
- *   (from webos-linux-kernel-touchpad/drivers/media/video/msm/mt9m113.c)
+ * webOS uses 0x14, but testing shows alternating SOT/ECC errors at that
+ * value, suggesting we're at a timing boundary. Try 0x16 to give more
+ * settle time, as ECC errors trailing SOT suggest the settle period
+ * ended too early (sampling noise during voltage transition).
  *
- * The timer clock source on MSM8660 is unclear (timer_clk_rate=0 in our
- * driver), but webOS definitely uses 0x14 successfully.
+ * MT9M113 at 96 MHz link freq: UI = 5.2ns, T-HS-SETTLE = 116-197ns
  */
-#define MSM8660_DEFAULT_SETTLE_CNT	0x14
+#define MSM8660_DEFAULT_SETTLE_CNT	0x16
 
 /*
  * csiphy_8x60_get_lane_mask - Calculate CSI2 lane mask
