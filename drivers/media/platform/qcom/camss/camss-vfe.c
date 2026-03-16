@@ -2168,31 +2168,68 @@ int vfe_get(struct vfe_device *vfe)
 			 */
 			csi1_clk = devm_clk_get(vfe->camss->dev, "csi1");
 			if (!IS_ERR(csi1_clk)) {
+				/*
+				 * MSM8660 CSI mux parent setting:
+				 *
+				 * The csi_pix and csi_rdi clocks are already enabled by
+				 * camss_enable_clocks(). When we call clk_set_parent()
+				 * on an enabled clock, the clock framework should handle
+				 * the parent migration. However, to ensure the new parent
+				 * is properly enabled, we cycle the clock after parent change.
+				 */
+
 				/* Set csi_rdi parent to CSI1 (index 5) */
 				if (vfe->nclocks > 5 && vfe->clock[5].clk) {
 					ret = clk_set_parent(vfe->clock[5].clk, csi1_clk);
-					if (ret)
+					if (ret) {
 						dev_warn(vfe->camss->dev,
 							 "VFE: Failed to set csi_rdi parent to CSI1: %d\n",
 							 ret);
-					else
+					} else {
 						dev_info(vfe->camss->dev,
 							 "VFE: csi_rdi parent set to CSI1\n");
+						/* Verify parent was actually set */
+						if (clk_get_parent(vfe->clock[5].clk) != csi1_clk) {
+							dev_err(vfe->camss->dev,
+								"VFE: ERROR - csi_rdi parent mismatch after set!\n");
+						}
+					}
 				}
 				/* Set csi_pix parent to CSI1 (index 6) */
 				if (vfe->nclocks > 6 && vfe->clock[6].clk) {
 					ret = clk_set_parent(vfe->clock[6].clk, csi1_clk);
-					if (ret)
+					if (ret) {
 						dev_warn(vfe->camss->dev,
 							 "VFE: Failed to set csi_pix parent to CSI1: %d\n",
 							 ret);
-					else
+					} else {
 						dev_info(vfe->camss->dev,
 							 "VFE: csi_pix parent set to CSI1\n");
+						/* Verify parent was actually set */
+						if (clk_get_parent(vfe->clock[6].clk) != csi1_clk) {
+							dev_err(vfe->camss->dev,
+								"VFE: ERROR - csi_pix parent mismatch after set!\n");
+						}
+					}
+				}
+
+				/*
+				 * Ensure CSI1 clock is explicitly enabled.
+				 * The parent clock should be enabled when child is enabled,
+				 * but let's be explicit about it.
+				 */
+				ret = clk_prepare_enable(csi1_clk);
+				if (ret) {
+					dev_warn(vfe->camss->dev,
+						 "VFE: Failed to enable CSI1 clock: %d\n", ret);
+				} else {
+					dev_info(vfe->camss->dev,
+						 "VFE: CSI1 clock explicitly enabled\n");
 				}
 			} else {
 				dev_warn(vfe->camss->dev,
-					 "VFE: Could not get csi1 clock for parent setting\n");
+					 "VFE: Could not get csi1 clock for parent setting: %ld\n",
+					 PTR_ERR(csi1_clk));
 			}
 
 			mmcc_base = ioremap(0x04000000, 0x1000);
@@ -2207,10 +2244,27 @@ int vfe_get(struct vfe_device *vfe)
 					 (vfe_cc & BIT(10)) ? "ON" : "off");
 				dev_info(vfe->camss->dev,
 					 "VFE: MMCC MISC_CC_REG: 0x%08x "
-					 "(csi_pix_sel=%s, csi_rdi_sel=%s)\n",
+					 "(csi_pix_sel=%s, csi_pix_en=%s, csi_rdi_sel=%s, csi_rdi_en=%s)\n",
 					 misc_cc,
 					 (misc_cc & BIT(25)) ? "CSI1" : "CSI0",
-					 (misc_cc & BIT(12)) ? "CSI1" : "CSI0");
+					 (misc_cc & BIT(26)) ? "ON" : "off",
+					 (misc_cc & BIT(12)) ? "CSI1" : "CSI0",
+					 (misc_cc & BIT(13)) ? "ON" : "off");
+
+				/* Verify CSI1 data path is fully enabled */
+				if (!(vfe_cc & BIT(10))) {
+					dev_err(vfe->camss->dev,
+						"VFE: ERROR - CSI1_VFE_CLK not enabled! Data path blocked.\n");
+				}
+				if (!(misc_cc & BIT(25))) {
+					dev_err(vfe->camss->dev,
+						"VFE: ERROR - csi_pix_sel not set to CSI1! Using CSI0 instead.\n");
+				}
+				if (!(misc_cc & BIT(26))) {
+					dev_err(vfe->camss->dev,
+						"VFE: ERROR - csi_pix_clk not enabled! Data path blocked.\n");
+				}
+
 				iounmap(mmcc_base);
 			}
 		}

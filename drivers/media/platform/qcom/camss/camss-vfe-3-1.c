@@ -1498,6 +1498,52 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 readl_relaxed(vfe->base + VFE_0_BUS_CFG));
 
 	vfe->camif_pending = false;
+
+	/*
+	 * Schedule a delayed diagnostic check to verify CSI-to-VFE clock
+	 * configuration after the sensor has had time to start streaming.
+	 * This helps diagnose issues where data isn't reaching VFE.
+	 */
+	{
+		void __iomem *mmcc_base;
+
+		mmcc_base = ioremap(0x04000000, 0x200);
+		if (mmcc_base) {
+			u32 vfe_cc, misc_cc;
+
+			vfe_cc = readl_relaxed(mmcc_base + 0x0104);
+			misc_cc = readl_relaxed(mmcc_base + 0x0058);
+
+			dev_info(vfe->camss->dev,
+				 "VFE31: CSI-to-VFE clock state at CAMIF start:\n");
+			dev_info(vfe->camss->dev,
+				 "  VFE_CC_REG(0x0104)=0x%08x CSI0_VFE=%s CSI1_VFE=%s\n",
+				 vfe_cc,
+				 (vfe_cc & BIT(12)) ? "ON" : "off",
+				 (vfe_cc & BIT(10)) ? "ON" : "off");
+			dev_info(vfe->camss->dev,
+				 "  MISC_CC_REG(0x0058)=0x%08x csi_pix_sel=%s csi_pix_en=%s csi_rdi_sel=%s csi_rdi_en=%s\n",
+				 misc_cc,
+				 (misc_cc & BIT(25)) ? "CSI1" : "CSI0",
+				 (misc_cc & BIT(26)) ? "ON" : "off",
+				 (misc_cc & BIT(12)) ? "CSI1" : "CSI0",
+				 (misc_cc & BIT(13)) ? "ON" : "off");
+
+			/* CRITICAL: Verify CSI1 is selected and enabled for MT9M113 */
+			if (!(vfe_cc & BIT(10))) {
+				dev_err(vfe->camss->dev,
+					"VFE31 ERROR: CSI1_VFE_CLK not enabled in VFE_CC_REG!\n");
+			}
+			if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(26))) {
+				dev_err(vfe->camss->dev,
+					"VFE31 ERROR: csi_pix not configured for CSI1! sel=%s en=%s\n",
+					(misc_cc & BIT(25)) ? "CSI1" : "CSI0",
+					(misc_cc & BIT(26)) ? "ON" : "off");
+			}
+
+			iounmap(mmcc_base);
+		}
+	}
 }
 
 static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
