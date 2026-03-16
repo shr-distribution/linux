@@ -88,14 +88,15 @@ MODULE_PARM_DESC(software_sof_enable,
 /*
  * Default settle count for MSM8660.
  *
- * webOS uses 0x14, but testing shows alternating SOT/ECC errors at that
- * value, suggesting we're at a timing boundary. Try 0x16 to give more
- * settle time, as ECC errors trailing SOT suggest the settle period
- * ended too early (sampling noise during voltage transition).
+ * Testing results:
+ *   0x10: Combined SOT+ECC errors
+ *   0x14: Alternating individual SOT/ECC errors (webOS value, best so far)
+ *   0x16: Combined SOT+ECC errors (regression)
  *
+ * Try 0x12 as intermediate value between 0x10 and 0x14.
  * MT9M113 at 96 MHz link freq: UI = 5.2ns, T-HS-SETTLE = 116-197ns
  */
-#define MSM8660_DEFAULT_SETTLE_CNT	0x16
+#define MSM8660_DEFAULT_SETTLE_CNT	0x12
 
 /*
  * csiphy_8x60_get_lane_mask - Calculate CSI2 lane mask
