@@ -108,7 +108,12 @@ static const struct camss_subdev_resources csid_res_8x60[] = {
 	{
 		.regulators = {},
 		.clock = { "csi0_src", "csi0", "csi0_phy" },
-		.clock_rate = { { 0 },
+		/*
+		 * CSI source clock must be 384MHz to match webOS.
+		 * This matches CSIPHY clock rates. Without proper rate,
+		 * decoded MIPI data cannot be clocked out to VFE.
+		 */
+		.clock_rate = { { 384000000 },
 				{ 0 },
 				{ 0 } },
 		.reg = { "csiphy0" },  /* Same as CSIPHY - unified block */
@@ -123,7 +128,12 @@ static const struct camss_subdev_resources csid_res_8x60[] = {
 	{
 		.regulators = {},
 		.clock = { "csi1_src", "csi1", "csi1_phy" },
-		.clock_rate = { { 0 },
+		/*
+		 * CSI source clock must be 384MHz to match webOS.
+		 * This matches CSIPHY clock rates. Without proper rate,
+		 * decoded MIPI data cannot be clocked out to VFE.
+		 */
+		.clock_rate = { { 384000000 },
 				{ 0 },
 				{ 0 } },
 		.reg = { "csiphy1" },  /* Same as CSIPHY - unified block */
