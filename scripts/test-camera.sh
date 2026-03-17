@@ -280,22 +280,23 @@ media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || \
 media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || \
 echo 'Sensor format set may have failed'
 
-# Set CSIPHY format (sink and source)
+# Set CSIPHY format (UYVY8_1X16 to match sensor output)
 echo 'Setting CSIPHY format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
-media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':1[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':1[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
 
-# Set CSID format (sink=0, PIX source=4)
+# Set CSID format (sink uses 1X16 to match CSIPHY, pad 4 uses 2X8 to match VFE)
 echo 'Setting CSID format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$CSID':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
-media-ctl -d \$MEDIA_DEV -V \"'\$CSID':4[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSID':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSID':4[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
 
-# Set VFE PIX format (without blanking pixels)
+# Set VFE PIX format (UYVY8_2X8 is VFE internal format, use 1288x968 to match CSID)
 echo 'Setting VFE format...'
 if [ -n \"\$VFE_PIX\" ]; then
-    media-ctl -d \$MEDIA_DEV -V \"'\$VFE_PIX':0[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
+    media-ctl -d \$MEDIA_DEV -V \"'\$VFE_PIX':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
+    media-ctl -d \$MEDIA_DEV -V \"'\$VFE_PIX':1[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
 else
-    media-ctl -d \$MEDIA_DEV -V \"'\$VFE':0[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
+    media-ctl -d \$MEDIA_DEV -V \"'\$VFE':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
 fi
 
 # Enable links: sensor -> csiphy -> csid -> vfe
