@@ -34,6 +34,11 @@ config SND_SOC_LPASS_APQ8016
 	select SND_SOC_LPASS_CPU
 	select SND_SOC_LPASS_PLATFORM
 
+config SND_SOC_LPASS_MSM8660
+	tristate
+	select SND_SOC_LPASS_CPU
+	select SND_SOC_LPASS_PLATFORM
+
 config SND_SOC_LPASS_SC7180
 	tristate
 	select SND_SOC_LPASS_CPU
@@ -157,7 +162,7 @@ config SND_SOC_QDSP6
 	 q6afe interfaces to DSP using apr.
 
 config SND_SOC_APQ8060
-	tristate "SoC Machine driver for APQ8060/MSM8660 boards"
+	tristate "SoC Machine driver for APQ8060/MSM8660 boards (QDSP6)"
 	depends on QCOM_APR
 	depends on COMMON_CLK
 	select SND_SOC_QDSP6
@@ -166,6 +171,20 @@ config SND_SOC_APQ8060
 	help
 	  Support for Qualcomm Technologies QDSP6 audio block in
 	  APQ8060/MSM8660 SoC-based systems like HP TouchPad.
+	  This uses the Q6 DSP for audio processing.
+	  Say Y if you want to use audio device on this SoCs.
+
+config SND_SOC_APQ8060_LPAIF
+	tristate "SoC Machine driver for APQ8060/MSM8660 boards (direct LPAIF)"
+	depends on COMMON_CLK
+	select SND_SOC_LPASS_MSM8660
+	select SND_SOC_QCOM_COMMON
+	select SND_SOC_WM8994
+	help
+	  Support for Qualcomm Technologies LPASS audio block in
+	  APQ8060/MSM8660 SoC-based systems like HP TouchPad.
+	  This uses direct LPAIF hardware access (no DSP), similar
+	  to how the original webOS kernel handled audio.
 	  Say Y if you want to use audio device on this SoCs.
 
 config SND_SOC_MSM8996

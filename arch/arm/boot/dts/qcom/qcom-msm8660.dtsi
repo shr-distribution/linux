@@ -589,6 +589,46 @@
 				      "pcm_codec_clk";
 		};
 
+		/*
+		 * LPAIF - Low Power Audio Interface
+		 *
+		 * This provides direct hardware access to audio I2S ports,
+		 * bypassing the Q6 DSP. This is similar to how webOS handled
+		 * audio on the HP TouchPad.
+		 *
+		 * Alternative to the Q6/APR-based audio path via remoteproc.
+		 */
+		lpaif: audio-controller@28100000 {
+			compatible = "qcom,apq8060-lpass-cpu",
+				     "qcom,msm8660-lpass-cpu";
+			reg = <0x28100000 0xe000>;
+			reg-names = "lpass-lpaif";
+
+			interrupts = <GIC_SPI 85 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "lpass-irq-lpaif";
+
+			clocks = <&lcc CODEC_I2S_SPKR_OSR_CLK>,
+				 <&lcc CODEC_I2S_SPKR_BIT_CLK>,
+				 <&lcc CODEC_I2S_MIC_OSR_CLK>,
+				 <&lcc CODEC_I2S_MIC_BIT_CLK>,
+				 <&lcc SPARE_I2S_SPKR_OSR_CLK>,
+				 <&lcc SPARE_I2S_SPKR_BIT_CLK>,
+				 <&lcc SPARE_I2S_MIC_OSR_CLK>,
+				 <&lcc SPARE_I2S_MIC_BIT_CLK>;
+			clock-names = "codec-i2s-spkr-osr-clk",
+				      "codec-i2s-spkr-bit-clk",
+				      "codec-i2s-mic-osr-clk",
+				      "codec-i2s-mic-bit-clk",
+				      "spare-i2s-spkr-osr-clk",
+				      "spare-i2s-spkr-bit-clk",
+				      "spare-i2s-mic-osr-clk",
+				      "spare-i2s-mic-bit-clk";
+
+			#sound-dai-cells = <1>;
+
+			status = "disabled";
+		};
+
 		lpass: remoteproc@28800000 {
 			compatible = "qcom,msm8660-lpass-pil";
 			reg = <0x28800000 0x1000>;

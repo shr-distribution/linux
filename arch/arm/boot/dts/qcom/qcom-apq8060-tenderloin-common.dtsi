@@ -3413,3 +3413,10 @@
 		power-source = <PM8901_MPP_VPH>;
 	};
 };
+
+/*
+ * Use direct LPAIF hardware path for audio instead of Q6 DSP.
+ * This is similar to how webOS handled audio on the TouchPad.
+ * To switch back to Q6/APR path, remove this include.
+ */
+#include "qcom-apq8060-tenderloin-lpaif.dtsi"
