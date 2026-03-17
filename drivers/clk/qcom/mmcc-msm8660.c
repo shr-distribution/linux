@@ -438,7 +438,20 @@ static int pix_rdi_set_parent(struct clk_hw *hw, u8 index)
 	 */
 	udelay(1);
 
+	/*
+	 * Now disable all parents that were temporarily enabled.
+	 * The clock framework will keep the selected parent enabled
+	 * as long as the child (csi_pix_clk/csi_rdi_clk) is enabled.
+	 */
+	for (i = num_parents - 1; i >= 0; i--) {
+		struct clk_hw *p = clk_hw_get_parent_by_index(hw, i);
+		clk_disable_unprepare(p->clk);
+	}
+
+	return 0;
+
 err:
+	/* On error, disable only the parents we successfully enabled */
 	for (i--; i >= 0; i--) {
 		struct clk_hw *p = clk_hw_get_parent_by_index(hw, i);
 		clk_disable_unprepare(p->clk);

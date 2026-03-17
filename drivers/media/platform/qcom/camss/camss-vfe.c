@@ -2188,11 +2188,6 @@ int vfe_get(struct vfe_device *vfe)
 					} else {
 						dev_info(vfe->camss->dev,
 							 "VFE: csi_rdi parent set to CSI1\n");
-						/* Verify parent was actually set */
-						if (clk_get_parent(vfe->clock[5].clk) != csi1_clk) {
-							dev_err(vfe->camss->dev,
-								"VFE: ERROR - csi_rdi parent mismatch after set!\n");
-						}
 					}
 				}
 				/* Set csi_pix parent to CSI1 (index 6) */
@@ -2205,11 +2200,6 @@ int vfe_get(struct vfe_device *vfe)
 					} else {
 						dev_info(vfe->camss->dev,
 							 "VFE: csi_pix parent set to CSI1\n");
-						/* Verify parent was actually set */
-						if (clk_get_parent(vfe->clock[6].clk) != csi1_clk) {
-							dev_err(vfe->camss->dev,
-								"VFE: ERROR - csi_pix parent mismatch after set!\n");
-						}
 					}
 				}
 
