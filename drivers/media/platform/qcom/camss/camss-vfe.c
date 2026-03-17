@@ -1530,10 +1530,16 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *   RDI mode (raw):       0x60  (CAMIF_TO_AXI) - data bypasses VFE ISP
 	 */
 	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
+		/*
+		 * Use raw mode (0x60) instead of preview mode (0x200).
+		 * Raw mode bypasses VFE ISP and sends CAMIF data directly
+		 * to memory via WM0. This is simpler and helps debug
+		 * whether data is reaching CAMIF at all.
+		 */
 		dev_info(vfe->camss->dev,
-			 "VFE: AXI_OUT_MODE (PIX) = 0x%03x (OUTPUT_2/preview)\n",
-			 VFE31_AXI_OUT_MODE_PREVIEW);
-		writel_relaxed(VFE31_AXI_OUT_MODE_PREVIEW,
+			 "VFE: AXI_OUT_MODE (PIX) = 0x%03x (CAMIF_TO_AXI/raw)\n",
+			 VFE31_AXI_OUT_MODE_RAW_SNAPSHOT);
+		writel_relaxed(VFE31_AXI_OUT_MODE_RAW_SNAPSHOT,
 			       vfe->base + VFE31_AXI_OUT_MODE_CFG);
 	} else {
 		dev_info(vfe->camss->dev,
