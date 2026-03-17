@@ -87,7 +87,7 @@ static int apq8060_lpaif_spkr_event(struct snd_soc_dapm_widget *w,
 }
 
 static const struct snd_soc_dapm_widget apq8060_lpaif_dapm_widgets[] = {
-	SND_SOC_DAPM_HP("Headphone Jack", NULL),
+	SND_SOC_DAPM_HP("Headphone", NULL),
 	SND_SOC_DAPM_MIC("Headset Mic", NULL),
 	SND_SOC_DAPM_MIC("Internal Mic", NULL),
 	SND_SOC_DAPM_SPK("Speaker", apq8060_lpaif_spkr_event),
@@ -109,7 +109,7 @@ static int apq8060_lpaif_dai_init(struct snd_soc_pcm_runtime *rtd)
 
 	/* Set up headphone jack detection if not already done */
 	if (!data->jack_setup) {
-		ret = snd_soc_card_jack_new(card, "Headset Jack",
+		ret = snd_soc_card_jack_new(card, "Headphone",
 					    SND_JACK_HEADSET |
 					    SND_JACK_BTN_0 | SND_JACK_BTN_1 |
 					    SND_JACK_BTN_2,
