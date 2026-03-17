@@ -2256,10 +2256,51 @@ int vfe_get(struct vfe_device *vfe)
 					dev_err(vfe->camss->dev,
 						"VFE: ERROR - CSI1_VFE_CLK not enabled! Data path blocked.\n");
 				}
-				if (!(misc_cc & BIT(25))) {
-					dev_err(vfe->camss->dev,
-						"VFE: ERROR - csi_pix_sel not set to CSI1! Using CSI0 instead.\n");
+
+				/*
+				 * Force CSI mux to CSI1 via direct register write.
+				 * The clk_set_parent() calls above may fail due to
+				 * clock framework parent matching issues. Directly
+				 * setting the mux bits ensures correct routing.
+				 *
+				 * MISC_CC_REG (0x0058) bits:
+				 *   BIT(25): csi_pix_sel (0=CSI0, 1=CSI1)
+				 *   BIT(26): csi_pix_clk enable
+				 *   BIT(12): csi_rdi_sel (0=CSI0, 1=CSI1)
+				 *   BIT(13): csi_rdi_clk enable
+				 */
+				if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(12))) {
+					u32 new_misc_cc = misc_cc;
+
+					dev_warn(vfe->camss->dev,
+						 "VFE: CSI mux not set to CSI1, forcing via direct write\n");
+
+					/* Set both mux selects to CSI1 */
+					new_misc_cc |= BIT(25);  /* csi_pix_sel = CSI1 */
+					new_misc_cc |= BIT(12);  /* csi_rdi_sel = CSI1 */
+
+					/* Ensure enables are set */
+					new_misc_cc |= BIT(26);  /* csi_pix_clk enable */
+					new_misc_cc |= BIT(13);  /* csi_rdi_clk enable */
+
+					writel_relaxed(new_misc_cc, mmcc_base + 0x0058);
+					wmb();
+
+					/* Verify the write took effect */
+					misc_cc = readl_relaxed(mmcc_base + 0x0058);
+					dev_info(vfe->camss->dev,
+						 "VFE: MISC_CC after force: 0x%08x "
+						 "(csi_pix_sel=%s, csi_rdi_sel=%s)\n",
+						 misc_cc,
+						 (misc_cc & BIT(25)) ? "CSI1" : "CSI0",
+						 (misc_cc & BIT(12)) ? "CSI1" : "CSI0");
+
+					if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(12))) {
+						dev_err(vfe->camss->dev,
+							"VFE: CRITICAL - CSI mux force write FAILED!\n");
+					}
 				}
+
 				if (!(misc_cc & BIT(26))) {
 					dev_err(vfe->camss->dev,
 						"VFE: ERROR - csi_pix_clk not enabled! Data path blocked.\n");
