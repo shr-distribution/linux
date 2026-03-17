@@ -1259,10 +1259,24 @@ void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data)
 	if (!host->use_dma)
 		return;
 
-	WARN_ON(!data->host_cookie && (next->desc || next->chan));
-
-	dmae->desc_current = next->desc;
-	dmae->cur = next->chan;
+	/*
+	 * Only use the pre-prepared "next" descriptor if this request
+	 * was actually pre-prepared (has a host_cookie). If host_cookie
+	 * is 0, this request wasn't pre-prepared, so any descriptor in
+	 * next->desc belongs to a different request and must not be used.
+	 *
+	 * This can happen during MMC hardware reset recovery, where new
+	 * requests come through mmci_request() without going through
+	 * mmci_pre_request() first.
+	 */
+	if (data->host_cookie) {
+		dmae->desc_current = next->desc;
+		dmae->cur = next->chan;
+	} else {
+		/* Don't use stale descriptor from different request */
+		dmae->desc_current = NULL;
+		dmae->cur = NULL;
+	}
 	next->desc = NULL;
 	next->chan = NULL;
 }
