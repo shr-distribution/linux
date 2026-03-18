@@ -210,9 +210,10 @@ static int wm8994_resume(struct device *dev)
 	/*
 	 * Give the codec time to boot after regulators are enabled.
 	 * Without this delay, I2C access fails with -ENXIO on some
-	 * platforms (e.g., HP TouchPad).
+	 * platforms (e.g., HP TouchPad). The codec needs substantial
+	 * time to initialize its internal state after power-on.
 	 */
-	msleep(5);
+	msleep(20);
 
 	regcache_cache_only(wm8994->regmap, false);
 	ret = regcache_sync(wm8994->regmap);
