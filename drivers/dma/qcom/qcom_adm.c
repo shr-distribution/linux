@@ -670,12 +670,8 @@ static int adm_terminate_all(struct dma_chan *chan)
 	spin_lock_irqsave(&achan->vc.lock, flags);
 	vchan_get_all_descriptors(&achan->vc, &head);
 
-	/*
-	 * Note: Do NOT clear curr_txd here. The flush command will generate
-	 * an IRQ, and the IRQ handler needs curr_txd to call the completion
-	 * callback. The UART driver relies on this callback to restart RX DMA.
-	 * The IRQ handler will clear curr_txd after completing the descriptor.
-	 */
+	/* Clear current transaction pointer */
+	achan->curr_txd = NULL;
 
 	/* send flush command to terminate current transaction */
 	writel_relaxed(0x0,
