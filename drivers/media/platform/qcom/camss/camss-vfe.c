@@ -2247,10 +2247,40 @@ int vfe_get(struct vfe_device *vfe)
 					 (misc_cc & BIT(12)) ? "CSI1" : "CSI0",
 					 (misc_cc & BIT(13)) ? "ON" : "off");
 
-				/* Verify CSI1 data path is fully enabled */
-				if (!(vfe_cc & BIT(10))) {
-					dev_err(vfe->camss->dev,
-						"VFE: ERROR - CSI1_VFE_CLK not enabled! Data path blocked.\n");
+				/*
+				 * Verify CSI VFE clocks are enabled.
+				 * WebOS enables BOTH CSI0_VFE_CLK and CSI1_VFE_CLK.
+				 * We need at least CSI1_VFE_CLK for MT9M113 front camera.
+				 *
+				 * VFE_CC_REG (0x0104) bits:
+				 *   BIT(12): VFE_CSI0_CLK enable
+				 *   BIT(10): VFE_CSI1_CLK enable
+				 */
+				if (!(vfe_cc & BIT(10)) || !(vfe_cc & BIT(12))) {
+					u32 orig_vfe_cc = vfe_cc;
+
+					dev_warn(vfe->camss->dev,
+						"VFE: CSI_VFE clocks not fully enabled (0x%08x), forcing\n",
+						vfe_cc);
+
+					/* Enable both CSI0 and CSI1 VFE clocks to match webOS */
+					vfe_cc |= BIT(10) | BIT(12);
+					writel_relaxed(vfe_cc, mmcc_base + 0x0104);
+					wmb();
+
+					/* Verify the write took effect */
+					vfe_cc = readl_relaxed(mmcc_base + 0x0104);
+					dev_info(vfe->camss->dev,
+						 "VFE: VFE_CC force-enable: 0x%08x -> 0x%08x "
+						 "(CSI0=%s, CSI1=%s)\n",
+						 orig_vfe_cc, vfe_cc,
+						 (vfe_cc & BIT(12)) ? "ON" : "off",
+						 (vfe_cc & BIT(10)) ? "ON" : "off");
+
+					if (!(vfe_cc & BIT(10))) {
+						dev_err(vfe->camss->dev,
+							"VFE: CRITICAL - CSI1_VFE_CLK force-enable FAILED!\n");
+					}
 				}
 
 				/*
