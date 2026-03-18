@@ -1882,6 +1882,40 @@ mt9m113_streaming:
 		}
 
 		/*
+		 * Check current sensor state and restart streaming if needed.
+		 * If sensor is already in streaming state (SEQ_STATE=0x3) from
+		 * initialization, issuing SEQ_CMD=1 may not restart MIPI output.
+		 * We need to stop first, then start.
+		 */
+		{
+			u64 seq_state;
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+			dev_info(&sensor->client->dev,
+				 "MT9M113: SEQ_STATE before start=0x%llx\n", seq_state);
+
+			if (seq_state == 0x03) {
+				/*
+				 * Already streaming - need to stop first to restart
+				 * MIPI output. Issue SEQ_CMD=0 (standby).
+				 */
+				dev_info(&sensor->client->dev,
+					 "MT9M113: Already streaming, stopping first\n");
+				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD, 0);
+				if (ret) {
+					dev_err(&sensor->client->dev,
+						"MT9M113: SEQ_CMD STOP failed: %d\n", ret);
+					goto error;
+				}
+				/* Wait for standby state */
+				msleep(50);
+
+				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+				dev_info(&sensor->client->dev,
+					 "MT9M113: SEQ_STATE after stop=0x%llx\n", seq_state);
+			}
+		}
+
+		/*
 		 * Set capture mode via MCU interface.
 		 * From webOS kernel: SEQ_CAP_MODE=0x0030 for preview mode.
 		 */
@@ -1890,9 +1924,11 @@ mt9m113_streaming:
 			dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
 			goto error;
 		}
+		dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x0030 (preview)\n");
 		usleep_range(40000, 50000);
 
 		/* Issue SEQ_CMD=1 to start streaming */
+		dev_info(&sensor->client->dev, "MT9M113: Issuing SEQ_CMD=1 (RUN)\n");
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					    MT9M113_SEQ_CMD_RUN);
 		if (ret) {
@@ -1901,25 +1937,20 @@ mt9m113_streaming:
 		}
 
 		/*
-		 * NOTE: webOS does NOT poll for SEQ_CMD completion after RUN!
-		 * It just fires the command and moves on. The MCU processes
-		 * the streaming command in the background while data starts
-		 * flowing. Polling here causes timeout because the MCU may
-		 * need actual pixel data before completing.
-		 *
-		 * Just add a small delay like webOS does, then check state.
+		 * Wait for streaming to start. The MCU processes the command
+		 * and should transition to SEQ_STATE=0x03.
 		 */
-		msleep(20);
+		msleep(50);
 
-		/* Check sensor state (informational, don't fail on mismatch) */
+		/* Check sensor state */
 		{
 			u64 seq_state;
 			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			dev_info(&sensor->client->dev, "MT9M113: SEQ_STATE=0x%llx (streaming if 0x03)\n",
+			dev_info(&sensor->client->dev, "MT9M113: SEQ_STATE after start=0x%llx (streaming if 0x03)\n",
 				 seq_state);
 		}
 
-		dev_info(&sensor->client->dev, "MT9M113: streaming command issued\n");
+		dev_info(&sensor->client->dev, "MT9M113: streaming command sequence complete\n");
 	}
 
 	sensor->streaming = true;
