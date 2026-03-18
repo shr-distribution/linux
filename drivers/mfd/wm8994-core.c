@@ -652,17 +652,9 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 	 * active to avoid runtime PM suspend/resume cycles. The codec stays
 	 * powered anyway, so there's no benefit to runtime suspend, and it
 	 * avoids issues with the codec not being ready after resume.
-	 *
-	 * Also disable IRQ support in this case. On some platforms (e.g.,
-	 * HP TouchPad), the codec becomes unresponsive to I2C after some
-	 * time, causing the IRQ handler to fail when reading status registers.
-	 * This results in continuous IRQ spam. The codec works fine for audio
-	 * playback without interrupt support.
 	 */
-	if (wm8994->ldo_ena_always_driven) {
+	if (wm8994->ldo_ena_always_driven)
 		pm_runtime_get_noresume(wm8994->dev);
-		wm8994->irq = 0;
-	}
 
 	wm8994_irq_init(wm8994);
 
