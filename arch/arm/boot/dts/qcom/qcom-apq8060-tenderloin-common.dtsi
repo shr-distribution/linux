@@ -2768,7 +2768,12 @@
 		 * as it would conflict with the hog.
 		 * LDO2 (GPIO 108) is controlled by the wm8994-core driver during
 		 * probe, then switched to I2S function mode via primary_i2s_pins.
+		 *
+		 * Since LDO1 is always driven by the gpio-hog, tell the driver
+		 * to skip the software reset during suspend (which would cause
+		 * I2C failures as the codec becomes unresponsive after reset).
 		 */
+		wlf,ldo-ena-always-driven;
 		wlf,ldo2ena-gpios = <&tlmm 108 GPIO_ACTIVE_HIGH>;
 
 		/* GPIO configuration for WM8958 internal GPIOs */
