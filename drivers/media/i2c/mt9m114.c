@@ -1816,45 +1816,70 @@ mt9m113_streaming:
 	 * 4. SEQ_CMD = 0x0001 - start streaming
 	 */
 	{
-		u64 readback;
+		u64 output_ctrl;
 
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
 		/*
-		 * Enable MIPI output interface.
-		 * This must be done AFTER CSI controller is ready to receive.
+		 * CRITICAL: Check if MIPI output is already enabled.
+		 *
+		 * The sensor may already be outputting MIPI data after init.
+		 * Re-writing OUTPUT_CONTROL when MIPI is already active causes
+		 * a PHY reset that stops data output (CSIPHY IRQs stop).
+		 *
+		 * WebOS writes OUTPUT_CONTROL/RESET_REGISTER only ONCE during
+		 * initial sensor configuration. For subsequent s_stream calls,
+		 * it only issues SEQ_CMD to start/stop.
 		 */
-		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
-			goto error;
-		}
+		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
+		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx (need 0x7a08)\n",
+			 output_ctrl);
 
-		/*
-		 * Enable Frame Start/End short packets.
-		 * Without this, VFE never receives CAMIF_SOF interrupts.
-		 */
-		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
-			goto error;
-		}
+		if (output_ctrl != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+			dev_info(&sensor->client->dev,
+				 "MT9M113: MIPI not enabled, configuring now\n");
 
-		/* Configure RESET_REGISTER for streaming mode */
-		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-				MT9M113_RESET_REG_STREAMING, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
-			goto error;
-		}
+			/*
+			 * Enable Frame Start/End short packets FIRST.
+			 * Without this, VFE never receives CAMIF_SOF interrupts.
+			 * Must be done BEFORE enabling MIPI output.
+			 */
+			ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+					MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
+				goto error;
+			}
+			dev_info(&sensor->client->dev,
+				 "MT9M113: CUSTOM_SHORT_PKT=0x80 (FS/FE enabled)\n");
 
-		/* Read back to verify */
-		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx\n", readback);
-		cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx\n", readback);
+			/* Now enable MIPI output interface */
+			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+					MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
+				goto error;
+			}
+
+			/* Configure RESET_REGISTER for streaming mode */
+			ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+					MT9M113_RESET_REG_STREAMING, NULL);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: RESET_REGISTER failed: %d\n", ret);
+				goto error;
+			}
+
+			/* Verify OUTPUT_CONTROL was set correctly */
+			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
+			dev_info(&sensor->client->dev,
+				 "MT9M113: OUTPUT_CONTROL after write=0x%llx\n", output_ctrl);
+		} else {
+			dev_info(&sensor->client->dev,
+				 "MT9M113: MIPI already enabled, skipping reconfiguration\n");
+		}
 
 		/*
 		 * Set capture mode via MCU interface.
