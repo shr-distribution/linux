@@ -145,6 +145,12 @@ static int wm8994_suspend(struct device *dev)
 	wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET,
 			 wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET));
 
+	/* Wait for codec to recover from reset before syncing registers.
+	 * The WM8994/WM8958 needs time after software reset to become
+	 * responsive to I2C commands again.
+	 */
+	msleep(5);
+
 	regcache_mark_dirty(wm8994->regmap);
 
 	/* Restore GPIO registers to prevent problems with mismatched
