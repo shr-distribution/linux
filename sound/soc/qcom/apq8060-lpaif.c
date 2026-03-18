@@ -22,9 +22,13 @@
 #include <sound/soc.h>
 #include <uapi/linux/input-event-codes.h>
 
+#include "../codecs/wm8994.h"
 #include "common.h"
 
 #define DRIVER_NAME "apq8060-lpaif"
+
+/* WM8958/WM8994 MCLK rate from GP_CLK3 (TCXO-based) */
+#define WM8994_MCLK_RATE	19200000
 
 struct apq8060_lpaif_data {
 	struct snd_soc_card card;
@@ -45,7 +49,8 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 
 	/*
 	 * Set sysclk rate based on sample rate.
-	 * Standard oversampling ratio is 256x.
+	 * For 48kHz family: 12288000 Hz (256 * 48000)
+	 * For 44.1kHz family: 11289600 Hz (256 * 44100)
 	 */
 	sysclk_rate = rate * 256;
 
@@ -58,8 +63,21 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
-	/* Set codec sysclk if codec supports it */
-	ret = snd_soc_dai_set_sysclk(codec_dai, 0, sysclk_rate, SND_SOC_CLOCK_IN);
+	/*
+	 * Configure WM8994/WM8958 FLL1 to generate sysclk from MCLK1.
+	 * MCLK1 is 19.2MHz from GP_CLK3 (TCXO-based).
+	 * FLL will generate the required sysclk rate.
+	 */
+	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_MCLK1,
+				  WM8994_MCLK_RATE, sysclk_rate);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(rtd->dev, "failed to set codec FLL: %d\n", ret);
+		return ret;
+	}
+
+	/* Set codec sysclk to use FLL1 output */
+	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_FLL1,
+				     sysclk_rate, SND_SOC_CLOCK_IN);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set codec sysclk: %d\n", ret);
 		return ret;
