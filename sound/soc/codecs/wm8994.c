@@ -214,18 +214,19 @@ static int configure_aif_clock(struct snd_soc_component *component, int aif)
 
 static int configure_clock(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 	struct wm8994_priv *wm8994 = snd_soc_component_get_drvdata(component);
-	int change, new;
+	int new;
 
 	/* Bring up the AIF clocks first */
 	configure_aif_clock(component, 0);
 	configure_aif_clock(component, 1);
 
-	/* Then switch CLK_SYS over to the higher of them; a change
-	 * can only happen as a result of a clocking change which can
-	 * only be made outside of DAPM so we can safely redo the
-	 * clocking.
+	/*
+	 * Then switch CLK_SYS over to the higher of them. Note: this
+	 * function may be called from clk_sys_event() DAPM callback,
+	 * which means the DAPM mutex is already held. We must NOT call
+	 * snd_soc_dapm_sync() here as it would deadlock. The DAPM core
+	 * will sync automatically after all widget events complete.
 	 */
 
 	/* If they're equal it doesn't matter which is used */
@@ -239,10 +240,8 @@ static int configure_clock(struct snd_soc_component *component)
 	else
 		new = 0;
 
-	change = snd_soc_component_update_bits(component, WM8994_CLOCKING_1,
-				     WM8994_SYSCLK_SRC, new);
-	if (change)
-		snd_soc_dapm_sync(dapm);
+	snd_soc_component_update_bits(component, WM8994_CLOCKING_1,
+				      WM8994_SYSCLK_SRC, new);
 
 	wm8958_micd_set_rate(component);
 
