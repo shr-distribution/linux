@@ -1335,16 +1335,35 @@ static int csid_link_setup(struct media_entity *entity,
 		sd = media_entity_to_v4l2_subdev(remote->entity);
 		csiphy = v4l2_get_subdevdata(sd);
 
-		/* If a sensor is not linked to CSIPHY */
-		/* do no allow a link from CSIPHY to CSID */
-		if (!csiphy->cfg.csi2)
-			return -EPERM;
-
+		/*
+		 * Always set the CSIPHY ID from the link partner.
+		 * This is needed for MSM8660 where the CSID is a pass-through
+		 * and the link may be established before a sensor is bound.
+		 */
 		csid->phy.csiphy_id = csiphy->id;
 
-		lane_cfg = &csiphy->cfg.csi2->lane_cfg;
-		csid->phy.lane_cnt = lane_cfg->num_data;
-		csid->phy.lane_assign = csid_get_lane_assign(lane_cfg);
+		/*
+		 * If a sensor is linked to CSIPHY, get lane config.
+		 * On platforms like MSM8660 where CSID is pass-through,
+		 * lane config is not strictly required - set defaults.
+		 */
+		if (csiphy->cfg.csi2) {
+			lane_cfg = &csiphy->cfg.csi2->lane_cfg;
+			csid->phy.lane_cnt = lane_cfg->num_data;
+			csid->phy.lane_assign = csid_get_lane_assign(lane_cfg);
+		} else {
+			/*
+			 * No sensor bound yet - use defaults.
+			 * This allows link setup to succeed during probe.
+			 * The actual lane config will be set when streaming
+			 * starts (via the CSIPHY which has the config).
+			 */
+			csid->phy.lane_cnt = 1;  /* Most common: 1 data lane */
+			csid->phy.lane_assign = 0;
+			dev_dbg(csid->camss->dev,
+				"CSID%d: No sensor bound yet, using default phy config (csiphy=%d)\n",
+				csid->id, csiphy->id);
+		}
 	}
 	/* Decide which virtual channels to enable based on which source pads are enabled */
 	if (local->flags & MEDIA_PAD_FL_SOURCE) {
