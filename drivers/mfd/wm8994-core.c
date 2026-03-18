@@ -212,8 +212,9 @@ static int wm8994_resume(struct device *dev)
 	 * Without this delay, I2C access fails with -ENXIO on some
 	 * platforms (e.g., HP TouchPad). The codec needs substantial
 	 * time to initialize its internal state after power-on.
+	 * 50ms is required based on hardware testing.
 	 */
-	msleep(20);
+	msleep(50);
 
 	regcache_cache_only(wm8994->regmap, false);
 	ret = regcache_sync(wm8994->regmap);
@@ -565,15 +566,27 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 		goto err_enable;
 	}
 
-	/* Explicitly put the device into reset in case regulators
+	/*
+	 * Explicitly put the device into reset in case regulators
 	 * don't get disabled in order to ensure we know the device
-	 * state.
+	 * state. Skip the reset if LDOs are always driven externally,
+	 * as the codec stays powered and doesn't need re-initialization.
+	 * The reset can cause I2C communication issues on some platforms.
 	 */
-	ret = wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET,
-			       wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET));
-	if (ret != 0) {
-		dev_err(wm8994->dev, "Failed to reset device: %d\n", ret);
-		goto err_enable;
+	if (!pdata->ldo_ena_always_driven) {
+		ret = wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET,
+				       wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET));
+		if (ret != 0) {
+			dev_err(wm8994->dev, "Failed to reset device: %d\n", ret);
+			goto err_enable;
+		}
+
+		/*
+		 * Wait for the codec to boot after software reset. Without this
+		 * delay, subsequent I2C operations may fail and IRQ handling will
+		 * get -ENXIO errors when trying to read interrupt status registers.
+		 */
+		msleep(50);
 	}
 
 	if (regmap_patch) {
@@ -634,6 +647,23 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 	pm_runtime_set_active(wm8994->dev);
 	pm_runtime_enable(wm8994->dev);
 
+	/*
+	 * If LDOs are always driven externally, keep the device permanently
+	 * active to avoid runtime PM suspend/resume cycles. The codec stays
+	 * powered anyway, so there's no benefit to runtime suspend, and it
+	 * avoids issues with the codec not being ready after resume.
+	 *
+	 * Also disable IRQ support in this case. On some platforms (e.g.,
+	 * HP TouchPad), the codec becomes unresponsive to I2C after some
+	 * time, causing the IRQ handler to fail when reading status registers.
+	 * This results in continuous IRQ spam. The codec works fine for audio
+	 * playback without interrupt support.
+	 */
+	if (wm8994->ldo_ena_always_driven) {
+		pm_runtime_get_noresume(wm8994->dev);
+		wm8994->irq = 0;
+	}
+
 	wm8994_irq_init(wm8994);
 
 	ret = mfd_add_devices(wm8994->dev, -1,
@@ -644,7 +674,8 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 		goto err_irq;
 	}
 
-	pm_runtime_idle(wm8994->dev);
+	if (!wm8994->ldo_ena_always_driven)
+		pm_runtime_idle(wm8994->dev);
 
 	return 0;
 
