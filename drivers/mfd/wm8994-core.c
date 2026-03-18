@@ -139,34 +139,44 @@ static int wm8994_suspend(struct device *dev)
 				WM8994_LDO1ENA_PD | WM8994_LDO2ENA_PD,
 				WM8994_LDO1ENA_PD | WM8994_LDO2ENA_PD);
 
-	/* Explicitly put the device into reset in case regulators
-	 * don't get disabled in order to ensure consistent restart.
+	/*
+	 * If LDOs are externally driven (always on), skip the software reset
+	 * and GPIO/interrupt sync. The reset causes I2C failures on platforms
+	 * where the codec becomes unresponsive after reset. When LDOs stay
+	 * powered, the codec state is preserved and resume will restore it.
 	 */
-	wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET,
-			 wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET));
+	if (!wm8994->ldo_ena_always_driven) {
+		/* Explicitly put the device into reset in case regulators
+		 * don't get disabled in order to ensure consistent restart.
+		 */
+		wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET,
+				 wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET));
 
-	/* Wait for codec to recover from reset before syncing registers.
-	 * The WM8994/WM8958 needs time after software reset to become
-	 * responsive to I2C commands again.
-	 */
-	msleep(5);
+		/* Wait for codec to recover from reset before syncing registers.
+		 * The WM8994/WM8958 needs time after software reset to become
+		 * responsive to I2C commands again.
+		 */
+		msleep(5);
 
-	regcache_mark_dirty(wm8994->regmap);
+		regcache_mark_dirty(wm8994->regmap);
 
-	/* Restore GPIO registers to prevent problems with mismatched
-	 * pin configurations.
-	 */
-	ret = regcache_sync_region(wm8994->regmap, WM8994_GPIO_1,
-				   WM8994_GPIO_11);
-	if (ret != 0)
-		dev_err(dev, "Failed to restore GPIO registers: %d\n", ret);
+		/* Restore GPIO registers to prevent problems with mismatched
+		 * pin configurations.
+		 */
+		ret = regcache_sync_region(wm8994->regmap, WM8994_GPIO_1,
+					   WM8994_GPIO_11);
+		if (ret != 0)
+			dev_err(dev, "Failed to restore GPIO registers: %d\n", ret);
 
-	/* In case one of the GPIOs is used as a wake input. */
-	ret = regcache_sync_region(wm8994->regmap,
-				   WM8994_INTERRUPT_STATUS_1_MASK,
-				   WM8994_INTERRUPT_STATUS_1_MASK);
-	if (ret != 0)
-		dev_err(dev, "Failed to restore interrupt mask: %d\n", ret);
+		/* In case one of the GPIOs is used as a wake input. */
+		ret = regcache_sync_region(wm8994->regmap,
+					   WM8994_INTERRUPT_STATUS_1_MASK,
+					   WM8994_INTERRUPT_STATUS_1_MASK);
+		if (ret != 0)
+			dev_err(dev, "Failed to restore interrupt mask: %d\n", ret);
+	} else {
+		regcache_mark_dirty(wm8994->regmap);
+	}
 
 	regcache_cache_only(wm8994->regmap, true);
 	wm8994->suspended = true;
@@ -196,6 +206,13 @@ static int wm8994_resume(struct device *dev)
 		dev_err(dev, "Failed to enable supplies: %d\n", ret);
 		return ret;
 	}
+
+	/*
+	 * Give the codec time to boot after regulators are enabled.
+	 * Without this delay, I2C access fails with -ENXIO on some
+	 * platforms (e.g., HP TouchPad).
+	 */
+	msleep(5);
 
 	regcache_cache_only(wm8994->regmap, false);
 	ret = regcache_sync(wm8994->regmap);
@@ -288,8 +305,10 @@ static int wm8994_set_pdata_from_of(struct wm8994 *wm8994)
 	pdata->lineout1_diff = !of_property_read_bool(np, "wlf,lineout1-se");
 	pdata->lineout2_diff = !of_property_read_bool(np, "wlf,lineout2-se");
 	pdata->lineout1fb = of_property_read_bool(np, "wlf,lineout1-feedback");
-	pdata->lineout2fb = of_property_read_bool(np, "wlf,lineout2-feedback") ||
-		of_property_read_bool(np, "wlf,ldoena-always-driven");
+	pdata->lineout2fb = of_property_read_bool(np, "wlf,lineout2-feedback");
+
+	pdata->ldo_ena_always_driven =
+		of_property_read_bool(np, "wlf,ldo-ena-always-driven");
 
 	pdata->spkmode_pu = of_property_read_bool(np, "wlf,spkmode-pu");
 
