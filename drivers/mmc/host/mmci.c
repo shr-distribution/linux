@@ -1030,7 +1030,6 @@ static void mmci_dma_unmap(struct mmci_host *host, struct mmc_data *data)
 void mmci_dmae_error(struct mmci_host *host)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
-	struct mmci_dmae_next *next = &dmae->next_data;
 
 	if (!dma_inprogress(host))
 		return;
@@ -1041,15 +1040,6 @@ void mmci_dmae_error(struct mmci_host *host)
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
 	host->data->host_cookie = 0;
-
-	/*
-	 * Also clear any prepared "next" descriptor to prevent stale pointers.
-	 * Without this, mmci_dmae_get_next_data() can assign a freed descriptor
-	 * to desc_current during MMC error recovery, causing a crash when
-	 * the descriptor is later submitted.
-	 */
-	next->desc = NULL;
-	next->chan = NULL;
 
 	mmci_dma_unmap(host, host->data);
 }
@@ -1259,24 +1249,10 @@ void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data)
 	if (!host->use_dma)
 		return;
 
-	/*
-	 * Only use the pre-prepared "next" descriptor if this request
-	 * was actually pre-prepared (has a host_cookie). If host_cookie
-	 * is 0, this request wasn't pre-prepared, so any descriptor in
-	 * next->desc belongs to a different request and must not be used.
-	 *
-	 * This can happen during MMC hardware reset recovery, where new
-	 * requests come through mmci_request() without going through
-	 * mmci_pre_request() first.
-	 */
-	if (data->host_cookie) {
-		dmae->desc_current = next->desc;
-		dmae->cur = next->chan;
-	} else {
-		/* Don't use stale descriptor from different request */
-		dmae->desc_current = NULL;
-		dmae->cur = NULL;
-	}
+	WARN_ON(!data->host_cookie && (next->desc || next->chan));
+
+	dmae->desc_current = next->desc;
+	dmae->cur = next->chan;
 	next->desc = NULL;
 	next->chan = NULL;
 }
@@ -1353,7 +1329,6 @@ static void mmci_pre_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct mmci_host *host = mmc_priv(mmc);
 	struct mmc_data *data = mrq->data;
-	unsigned long flags;
 
 	if (!data)
 		return;
@@ -1363,17 +1338,7 @@ static void mmci_pre_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	if (mmci_validate_data(host, data))
 		return;
 
-	/*
-	 * Take host->lock to serialize access to next_data with
-	 * mmci_dmae_error() which is called from IRQ context.
-	 * Without this lock, a race can occur where:
-	 * 1. mmci_dmae_error() clears next->desc and next->chan
-	 * 2. mmci_prep_data() sets them again for a new request
-	 * 3. mmci_get_next_data() sees stale data with mismatched host_cookie
-	 */
-	spin_lock_irqsave(&host->lock, flags);
 	mmci_prep_data(host, data, true);
-	spin_unlock_irqrestore(&host->lock, flags);
 }
 
 static void mmci_post_request(struct mmc_host *mmc, struct mmc_request *mrq,
