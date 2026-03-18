@@ -124,13 +124,16 @@
 
 		/*
 		 * Audio LDO regulators for WM8958 codec
-		 * Optional - codec may work with PMIC regulators alone
+		 * NOTE: Disabled - WM8994 driver controls LDO1 GPIO directly
+		 * via wlf,ldo1ena-gpios property. Having both causes a GPIO
+		 * conflict (-EBUSY) that breaks runtime PM suspend/resume.
 		 */
 		aud_ldo1: regulator-fixed-aud-ldo1 {
 			compatible = "regulator-fixed";
 			regulator-name = "aud_ldo1";
 			regulator-min-microvolt = <2850000>;
 			regulator-max-microvolt = <2850000>;
+			status = "disabled";
 
 			gpio = <&tlmm 66 GPIO_ACTIVE_HIGH>;
 			enable-active-high;
