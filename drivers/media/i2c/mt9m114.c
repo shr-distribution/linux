@@ -63,34 +63,13 @@
 #define MT9M114_MCU_ADDRESS				CCI_REG16(0x098c)
 #define MT9M114_MCU_DATA				CCI_REG16(0x0990)
 
-/*
- * MT9M113 MCU variable addresses (accessed via XDMA 0x098C/0x0990).
- * From datasheet: seq_cmd (R0x0003) values: 0x01=preview, 0x02=capture
- * SEQ_STATE values: 0x03=preview mode, 0x07=capture mode
- */
+/* MT9M113 MCU variable addresses */
 #define MT9M113_SEQ_CMD					0xa103
-#define MT9M113_SEQ_CMD_RUN				0x0001  /* preview/streaming */
-#define MT9M113_SEQ_CMD_CAPTURE				0x0002  /* capture mode */
-#define MT9M113_SEQ_CMD_STANDBY				0x0003  /* enter standby */
+#define MT9M113_SEQ_CMD_RUN				0x0001
 #define MT9M113_SEQ_CMD_REFRESH				0x0005
 #define MT9M113_SEQ_CMD_REFRESH_MODE			0x0006
 #define MT9M113_SEQ_STATE				0xa104
-#define MT9M113_SEQ_STATE_PREVIEW			0x0003  /* preview mode active */
-#define MT9M113_SEQ_STATE_CAPTURE			0x0007  /* capture mode active */
 #define MT9M113_SEQ_CAP_MODE				0xa115
-#define MT9M113_SEQ_CAP_MODE_PREVIEW			0x0030  /* preview mode */
-#define MT9M113_SEQ_CAP_MODE_SNAPSHOT			0x0000  /* snapshot mode */
-#define MT9M113_SEQ_CAP_NUM_FRAMES			0xa116  /* capture frame count */
-
-/*
- * MT9M113 Auto-Exposure MCU variables from webOS kernel.
- * These are adjusted dynamically for preview vs snapshot mode.
- */
-#define MT9M113_AE_MAX_DGAIN_AE1			0x2212  /* max digital gain */
-#define MT9M113_AE_SKIP_FRAMES				0xa208  /* frames to skip */
-#define MT9M113_AE_JUMP_DIVISOR				0xa209  /* AE step divisor */
-#define MT9M113_AE_MAX_INDEX				0xa20c  /* max exposure index */
-#define MT9M113_AE_MAX_VIRTGAIN				0xa20e  /* max virtual gain */
 
 /*
  * MT9M113 RESET_REGISTER (0x301A) values from webOS/Samsung legacy drivers.
@@ -103,10 +82,7 @@
 /*
  * MT9M113 OUTPUT_CONTROL register (physical register, not MCU variable)
  * This register controls the output interface mode (parallel vs MIPI).
- * Value 0x7A08 enables MIPI CSI-2 output with LP (low power) clock mode.
- * Value 0x7A0C enables MIPI CSI-2 output with continuous clock mode.
- * Per webOS: "0x7a08 will enable LP mode, while 0x7A0C will let MIPI clock continuous"
- * webOS uses LP clock mode (0x7A08) - matching that configuration.
+ * Value 0x7A08 enables MIPI CSI-2 output.
  */
 #define MT9M113_OUTPUT_CONTROL				CCI_REG16(0x3400)
 #define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08
@@ -631,11 +607,10 @@ static const struct cci_reg_sequence mt9m114_init[] = {
 	 * which is written during start_streaming. The 0x3C40 register does NOT
 	 * exist on MT9M113 (it's MT9M114-specific), so we don't write it here.
 	 *
-	 * IMPORTANT: RESET_REGISTER (0x301A) = 0x120C is NOT written here!
-	 * Writing it during init causes the sensor to enter streaming state
-	 * before s_stream is called. Per webOS driver, RESET_REGISTER is only
-	 * written in mt9m113_set_sensor_mode() during actual streaming start.
+	 * RESET_REGISTER: Use 0x120C for streaming (from webOS/Samsung drivers).
+	 * Both MIPI and parallel modes use this value for streaming enable.
 	 */
+	{ MT9M114_RESET_REGISTER, MT9M113_RESET_REG_STREAMING },
 
 	/* Sensor optimization */
 	{ CCI_REG16(0x316a), 0x8270 },
@@ -844,48 +819,11 @@ struct mt9m113_reg_entry {
  * - An MCU variable write encoded as reg=0x098C (address) followed by
  *   reg=0x0990 (data), which is handled specially.
  *
- * NOTE: PLL configuration is handled by mt9m114_power_on().
- * This table starts with MCU boot toggle to reset MCU state
- * and clear any auto-streaming that occurred after PLL config.
+ * NOTE: MCU boot and PLL configuration are handled by mt9m114_power_on(),
+ * so this table starts AFTER PLL is configured and stable.
  */
 static const struct mt9m113_reg_entry mt9m113_init_table[] = {
-	/*
-	 * MCU boot toggle - resets MCU state.
-	 * webOS has this at the very start of their init table.
-	 */
-	{ 0x001C, 0x0001, 0 },		/* MCU_BOOT_MODE = 1 */
-	{ 0x001C, 0x0000, 30 },		/* MCU_BOOT_MODE = 0, delay 30ms */
-
-	/*
-	 * Clock and standby control - must be set before PLL config.
-	 * webOS prev_snap_reg_tbl lines 32-33.
-	 */
-	{ 0x0016, 0x00FF, 0 },		/* CLOCKS_CONTROL */
-	{ 0x0018, 0x0028, 0 },		/* STANDBY_CONTROL */
-
-	/*
-	 * PLL configuration from webOS prev_snap_reg_tbl lines 34-43.
-	 * This must be done early, before any MCU variable access.
-	 */
-	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL: bypass PLL */
-	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL (repeat for stability) */
-	{ 0x0014, 0x2145, 0 },		/* PLL_CONTROL (repeat for stability) */
-	{ 0x0010, 0x0114, 0 },		/* PLL_DIVIDERS (matches webOS init table) */
-	{ 0x0012, 0x00F1, 0 },		/* PLL_P_DIVIDERS */
-	{ 0x0014, 0x2545, 0 },		/* PLL_CONTROL: TEST_BYPASS on */
-	{ 0x0014, 0x2547, 0 },		/* PLL_CONTROL: PLL_ENABLE on */
-	{ 0x0014, 0x3447, 20 },		/* PLL_CONTROL: SEL_LOCK_DET, delay 20ms */
-	{ 0x0014, 0x3047, 0 },		/* PLL_CONTROL: TEST_BYPASS off */
-	{ 0x0014, 0x3046, 0 },		/* PLL_CONTROL: PLL_BYPASS off */
-
-	/*
-	 * Reset and standby control after PLL - webOS lines 44-45.
-	 * This takes the sensor out of reset state.
-	 */
-	{ 0x001A, 0x0218, 0 },		/* RESET_AND_MISC_CONTROL */
-	{ 0x0018, 0x002A, 0 },		/* STANDBY_CONTROL */
-
-	/* OFIFO control */
+	/* OFIFO control - first entry after PLL is configured */
 	{ 0x321C, 0x0003, 0 },		/* OFIFO_CONTROL_STATUS */
 
 	/* Context A output (640x480 preview) - via MCU variables */
@@ -1425,71 +1363,6 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 };
 
 /*
- * MT9M113 Preview Mode AE Table
- *
- * From webOS kernel mod_preview_mode_reg_tbl.
- * These settings optimize auto-exposure for preview/viewfinder mode:
- * - Lower max exposure index (8 vs 40) for faster response
- * - Higher max virtual gain (0xA0 vs 0x60) to compensate
- * - Higher max digital gain (0x150 vs 0xC8)
- * - Faster AE response (skip=1, divisor=1 vs skip=2, divisor=2)
- */
-struct mt9m113_ae_entry {
-	u16 var_addr;
-	u16 value;
-};
-
-static const struct mt9m113_ae_entry mt9m113_preview_ae_table[] = {
-	{ MT9M113_AE_MAX_INDEX,      0x0008 },  /* max exposure index = 8 */
-	{ MT9M113_AE_MAX_VIRTGAIN,   0x00A0 },  /* max virtual gain = 160 */
-	{ MT9M113_AE_MAX_DGAIN_AE1,  0x0150 },  /* max digital gain = 336 */
-	{ MT9M113_AE_JUMP_DIVISOR,   0x0001 },  /* AE step divisor = 1 */
-	{ MT9M113_AE_SKIP_FRAMES,    0x0001 },  /* skip 1 frame between AE */
-};
-
-/*
- * MT9M113 Snapshot Mode AE Table
- *
- * From webOS kernel mod_snapshot_mode_reg_tbl.
- * These settings optimize auto-exposure for still image capture:
- * - Higher max exposure index (40) for longer exposures
- * - Lower max virtual gain (0x60) for less noise
- * - Lower max digital gain (0xC8)
- * - Slower AE response (skip=2, divisor=2) for stability
- */
-static const struct mt9m113_ae_entry mt9m113_snapshot_ae_table[] = {
-	{ MT9M113_AE_MAX_INDEX,      0x0028 },  /* max exposure index = 40 */
-	{ MT9M113_AE_MAX_VIRTGAIN,   0x0060 },  /* max virtual gain = 96 */
-	{ MT9M113_AE_MAX_DGAIN_AE1,  0x00C8 },  /* max digital gain = 200 */
-	{ MT9M113_AE_JUMP_DIVISOR,   0x0002 },  /* AE step divisor = 2 */
-	{ MT9M113_AE_SKIP_FRAMES,    0x0002 },  /* skip 2 frames between AE */
-};
-
-/*
- * Apply an MT9M113 AE table via MCU variable writes.
- */
-static int mt9m113_apply_ae_table(struct mt9m114 *sensor,
-				  const struct mt9m113_ae_entry *table,
-				  size_t count)
-{
-	struct device *dev = &sensor->client->dev;
-	int ret;
-	size_t i;
-
-	for (i = 0; i < count; i++) {
-		ret = mt9m113_write_mcu_var(sensor, table[i].var_addr,
-					    table[i].value);
-		if (ret) {
-			dev_err(dev, "MT9M113: AE table write 0x%04x failed: %d\n",
-				table[i].var_addr, ret);
-			return ret;
-		}
-	}
-
-	return 0;
-}
-
-/*
  * Apply the MT9M113 initialization table.
  * Returns 0 on success, negative error code on failure.
  */
@@ -1501,14 +1374,6 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 
 	dev_info(dev, "MT9M113: applying initialization table (%zu entries)\n",
 		 ARRAY_SIZE(mt9m113_init_table));
-
-	/* Debug: Read 0x301A default value before any writes */
-	{
-		u64 readback = 0;
-		cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
-		dev_info(dev, "MT9M113: RESET_REGISTER default=0x%llx (before init table)\n",
-			 readback);
-	}
 
 	for (i = 0; i < ARRAY_SIZE(mt9m113_init_table); i++) {
 		const struct mt9m113_reg_entry *entry = &mt9m113_init_table[i];
@@ -1555,23 +1420,30 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	dev_info(dev, "MT9M113: sequencer refresh completed\n");
 
 	/*
-	 * NOTE: Do NOT write OUTPUT_CONTROL here!
-	 * Writing OUTPUT_CONTROL=0x7A08 enables MIPI output immediately,
-	 * causing the sensor to auto-stream. This makes it impossible to
-	 * cleanly restart streaming later because STANDBY doesn't fully stop
-	 * MIPI output in this state.
-	 *
-	 * Instead, OUTPUT_CONTROL is written only in start_streaming(),
-	 * after VFE and CSIPHY are configured and ready to receive data.
-	 * This ensures proper synchronization between sensor and receiver.
+	 * Configure MIPI output interface.
+	 * 0x3400 = 0x7A08 enables MIPI CSI-2 output on MT9M113.
+	 * Note: MT9M114 uses 0x3C40 instead, but that register doesn't exist on MT9M113.
 	 */
-	dev_info(dev, "MT9M113: OUTPUT_CONTROL NOT set in init (deferred to streaming)\n");
+	if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+		if (ret < 0) {
+			dev_err(dev, "MT9M113: failed to enable MIPI output: %d\n", ret);
+			return ret;
+		}
+		dev_info(dev, "MT9M113: MIPI output enabled (0x3400=0x7A08)\n");
 
-	/* Check final SEQ_STATE after init */
-	{
-		u64 seq_state;
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-		dev_info(dev, "MT9M113: after init, SEQ_STATE=0x%llx\n", seq_state);
+		/*
+		 * Enable Frame Start/End short packets via CUSTOM_SHORT_PKT.
+		 * Bit 7 must be set or VFE never receives CAMIF_SOF interrupts.
+		 */
+		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+		if (ret < 0) {
+			dev_err(dev, "MT9M113: failed to enable FS/FE packets: %d\n", ret);
+			return ret;
+		}
+		dev_info(dev, "MT9M113: Frame Start/End packets enabled (0x3404=0x0080)\n");
 	}
 
 	dev_info(dev, "MT9M113: initialization complete\n");
@@ -1937,142 +1809,65 @@ mt9m113_streaming:
 	 * MT9M113 uses a different command mechanism (MCU indirect via
 	 * 0x098C/0x0990) and doesn't support MT9M114's COMMAND_REGISTER.
 	 *
-	 * WebOS driver behavior:
-	 * - OUTPUT_CONTROL and RESET_REGISTER written ONCE during first CSI config
-	 * - For mode changes: only SEQ_CAP_MODE and SEQ_CMD are written
-	 *
-	 * CRITICAL: If sensor is already streaming (SEQ_STATE=0x3), do NOT
-	 * re-write OUTPUT_CONTROL or RESET_REGISTER as this disrupts MIPI.
+	 * WebOS driver order (after CSI controller is configured):
+	 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI output
+	 * 2. RESET_REGISTER (0x301A) = 0x120C - streaming mode
+	 * 3. SEQ_CAP_MODE = 0x0030 - preview mode
+	 * 4. SEQ_CMD = 0x0001 - start streaming
 	 */
 	{
-		u64 seq_state;
-		u64 output_ctrl;
-		int timeout;
+		u64 readback;
 
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
-		/* Check current SEQ_STATE */
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-		dev_info(&sensor->client->dev,
-			 "MT9M113: SEQ_STATE=0x%llx (0x03=preview mode)\n", seq_state);
-
 		/*
-		 * If sequencer is not in preview mode (0x03), we need to refresh it.
-		 * This can happen if the sensor has been idle for a while and the
-		 * sequencer entered standby or an error state.
+		 * Enable MIPI output interface.
+		 * This must be done AFTER CSI controller is ready to receive.
 		 */
-		if (seq_state != 0x03) {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Sequencer not in preview mode, issuing REFRESH\n");
-
-			/* Issue SEQ_CMD=REFRESH (0x0005) to restart sequencer */
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0005);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: SEQ_CMD REFRESH failed: %d\n", ret);
-				goto error;
-			}
-
-			/* Wait for refresh to complete (SEQ_CMD returns to 0) */
-			timeout = 100; /* 1 second max */
-			do {
-				msleep(10);
-				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_state);
-			} while (seq_state != 0 && --timeout > 0);
-
-			if (timeout == 0) {
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: REFRESH timeout, SEQ_CMD=0x%llx\n", seq_state);
-			}
-
-			/* Read SEQ_STATE again after refresh */
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: After REFRESH, SEQ_STATE=0x%llx\n", seq_state);
-		}
-
-		/* Read current OUTPUT_CONTROL */
-		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
-		dev_info(&sensor->client->dev,
-			 "MT9M113: OUTPUT_CONTROL=0x%llx (0x7A08=MIPI enabled)\n", output_ctrl);
-
-		/*
-		 * CUSTOM_SHORT_PKT (0x3404) - DISABLED
-		 *
-		 * WebOS MT9M113 driver does NOT configure this register.
-		 * Writing 0x80 (FRAME_CNT_EN) may confuse the MSM8660 CSID
-		 * if it doesn't recognize the proprietary short packet format.
-		 * This could cause FIFO overflow or state machine stalls.
-		 *
-		 * The MT9M113 should send standard MIPI Frame Start/End short
-		 * packets by default. Let the hardware work as webOS intended.
-		 */
-		dev_info(&sensor->client->dev,
-			 "MT9M113: Skipping CUSTOM_SHORT_PKT (webOS doesn't use it)\n");
-
-		/*
-		 * Configure MIPI output if not already enabled.
-		 */
-		if (output_ctrl != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
-			u64 readback = 0;
-
-			dev_info(&sensor->client->dev, "MT9M113: Configuring MIPI (first time)\n");
-
-			/* Enable MIPI output with error checking */
-			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-					MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
-			}
-
-			/* Verify the write took effect */
-			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: OUTPUT_CONTROL after write: 0x%llx (expected 0x7A08)\n",
-				 readback);
-
-			if (readback != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: OUTPUT_CONTROL write verification FAILED!\n");
-			}
-		} else {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: MIPI already enabled, skipping OUTPUT_CONTROL write\n");
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
+			goto error;
 		}
 
 		/*
-		 * RESET_REGISTER (0x301A) = 0x120C is REQUIRED to start streaming.
-		 * Unlike OUTPUT_CONTROL which can persist, RESET_REGISTER must be
-		 * written every time streaming starts. This puts the sensor into
-		 * "streaming mode" - without it, the sensor sits idle despite
-		 * SEQ_STATE=0x3 indicating "preview mode active".
-		 *
-		 * From webOS/Samsung drivers: 0x120C = streaming, 0x12CE = snapshot.
+		 * Enable Frame Start/End short packets.
+		 * Without this, VFE never receives CAMIF_SOF interrupts.
 		 */
-		{
-			u64 reset_reg = 0;
-			cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &reset_reg, NULL);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: RESET_REGISTER was 0x%llx, writing 0x120C\n", reset_reg);
-			cci_write(sensor->regmap, MT9M114_RESET_REGISTER, 0x120C, NULL);
+		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
+			goto error;
 		}
+
+		/* Configure RESET_REGISTER for streaming mode */
+		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+				MT9M113_RESET_REG_STREAMING, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: RESET_REGISTER failed: %d\n", ret);
+			goto error;
+		}
+
+		/* Read back to verify */
+		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx\n", readback);
+		cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
+		dev_info(&sensor->client->dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx\n", readback);
 
 		/*
 		 * Set capture mode via MCU interface.
-		 * From webOS kernel: SEQ_CAP_MODE (0xA115) = 0x0030 for preview mode.
+		 * From webOS kernel: SEQ_CAP_MODE=0x0030 for preview mode.
 		 */
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE,
-					    MT9M113_SEQ_CAP_MODE_PREVIEW);
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 		if (ret) {
 			dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
 			goto error;
 		}
-
-		/* webOS delays 40ms between SEQ_CAP_MODE and SEQ_CMD */
 		usleep_range(40000, 50000);
 
-		/* Issue SEQ_CMD=1 (RUN) to start streaming */
+		/* Issue SEQ_CMD=1 to start streaming */
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					    MT9M113_SEQ_CMD_RUN);
 		if (ret) {
@@ -2080,35 +1875,23 @@ mt9m113_streaming:
 			goto error;
 		}
 
-		/* Wait for streaming to start (SEQ_STATE = 0x03) */
-		timeout = 50; /* 500ms max */
-		do {
-			msleep(10);
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-		} while (seq_state != 0x03 && --timeout > 0);
-
-		if (timeout == 0) {
-			dev_warn(&sensor->client->dev,
-				 "MT9M113: RUN timeout, SEQ_STATE=0x%llx\n", seq_state);
-		} else {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Streaming active (SEQ_STATE=0x%llx)\n", seq_state);
-		}
-
 		/*
-		 * Apply preview mode AE table from webOS mod_preview_mode_reg_tbl.
-		 * This optimizes auto-exposure for viewfinder: faster response,
-		 * higher gain limits, shorter max exposure.
+		 * NOTE: webOS does NOT poll for SEQ_CMD completion after RUN!
+		 * It just fires the command and moves on. The MCU processes
+		 * the streaming command in the background while data starts
+		 * flowing. Polling here causes timeout because the MCU may
+		 * need actual pixel data before completing.
+		 *
+		 * Just add a small delay like webOS does, then check state.
 		 */
-		ret = mt9m113_apply_ae_table(sensor, mt9m113_preview_ae_table,
-					     ARRAY_SIZE(mt9m113_preview_ae_table));
-		if (ret) {
-			dev_warn(&sensor->client->dev,
-				 "MT9M113: preview AE table failed: %d (continuing)\n", ret);
-			/* Non-fatal - camera will work with init table defaults */
-		} else {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: preview AE table applied\n");
+		msleep(20);
+
+		/* Check sensor state (informational, don't fail on mismatch) */
+		{
+			u64 seq_state;
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+			dev_info(&sensor->client->dev, "MT9M113: SEQ_STATE=0x%llx (streaming if 0x03)\n",
+				 seq_state);
 		}
 
 		dev_info(&sensor->client->dev, "MT9M113: streaming command issued\n");
@@ -2130,171 +1913,16 @@ static int mt9m114_stop_streaming(struct mt9m114 *sensor)
 
 	sensor->streaming = false;
 
-	if (sensor->model == MT9M113_MODEL) {
-		/*
-		 * MT9M113: Issue SEQ_CMD=0x0003 (STANDBY) to stop streaming.
-		 * Without this, the sensor remains in streaming state and subsequent
-		 * streaming attempts fail because SEQ_CMD=0x0001 (RUN) is ignored
-		 * when already running.
-		 *
-		 * The webOS driver doesn't explicitly stop streaming, it just powers
-		 * down the sensor via GPIO. But since we keep the sensor powered
-		 * between streaming sessions for faster startup, we need to properly
-		 * transition to standby state.
-		 */
-		dev_info(&sensor->client->dev, "MT9M113: stopping streaming (SEQ_CMD=STANDBY)\n");
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					    MT9M113_SEQ_CMD_STANDBY);
-		if (ret < 0) {
-			dev_err(&sensor->client->dev,
-				"MT9M113: failed to stop streaming: %d\n", ret);
-		}
-		/*
-		 * Wait for the sequencer to enter standby.
-		 * Don't poll SEQ_CMD - just wait a fixed time like webOS does.
-		 */
-		msleep(20);
-	} else {
+	/*
+	 * MT9M113 doesn't support COMMAND_REGISTER. The sensor will stop
+	 * streaming when powered down via runtime PM.
+	 */
+	if (sensor->model != MT9M113_MODEL)
 		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_SUSPEND);
-	}
 
 	pm_runtime_put_autosuspend(&sensor->client->dev);
 
 	return ret;
-}
-
-/*
- * MT9M113 Snapshot Mode
- *
- * Switch the sensor from preview mode to snapshot mode for still image capture.
- * This uses Context B (1280x1024) instead of Context A (640x480).
- *
- * From webOS kernel mt9m113.c SENSOR_SNAPSHOT_MODE sequence:
- * 1. Read coarse/fine integration times from Context A
- * 2. Set SEQ_CAP_MODE = 0x0000 (snapshot)
- * 3. Delay 40ms
- * 4. Set SEQ_CAP_NUM_FRAMES = 0x0008
- * 5. Issue SEQ_CMD = 0x0002 (CAPTURE)
- * 6. Calculate integration time for Context B
- * 7. Write RESET_REGISTER = 0x12CE
- * 8. Apply snapshot AE table
- * 9. Poll SEQ_CMD until 0
- *
- * Returns 0 on success, negative error code on failure.
- */
-static int mt9m113_set_snapshot_mode(struct mt9m114 *sensor)
-{
-	struct device *dev = &sensor->client->dev;
-	u64 coarse_a, fine_a, fine_b, seq_cmd;
-	u32 coarse_b;
-	int ret;
-	int timeout;
-
-	dev_info(dev, "MT9M113: entering snapshot mode\n");
-
-	/* Read integration times from Context A */
-	ret = cci_read(sensor->regmap, MT9M114_COARSE_INTEGRATION_TIME,
-		       &coarse_a, NULL);
-	if (ret)
-		return ret;
-
-	ret = cci_read(sensor->regmap, MT9M114_FINE_INTEGRATION_TIME,
-		       &fine_a, NULL);
-	if (ret)
-		return ret;
-
-	dev_dbg(dev, "MT9M113: Context A integration: coarse=%llu fine=%llu\n",
-		coarse_a, fine_a);
-
-	/* Set capture mode: SEQ_CAP_MODE = 0x0000 (snapshot) */
-	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE,
-				    MT9M113_SEQ_CAP_MODE_SNAPSHOT);
-	if (ret) {
-		dev_err(dev, "MT9M113: SEQ_CAP_MODE snapshot failed: %d\n", ret);
-		return ret;
-	}
-
-	/* webOS delays 40ms after SEQ_CAP_MODE */
-	usleep_range(40000, 50000);
-
-	/* Set capture frame count: SEQ_CAP_NUM_FRAMES = 8 */
-	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_NUM_FRAMES, 0x0008);
-	if (ret) {
-		dev_err(dev, "MT9M113: SEQ_CAP_NUM_FRAMES failed: %d\n", ret);
-		return ret;
-	}
-
-	/* Issue capture command: SEQ_CMD = 0x0002 */
-	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-				    MT9M113_SEQ_CMD_CAPTURE);
-	if (ret) {
-		dev_err(dev, "MT9M113: SEQ_CMD CAPTURE failed: %d\n", ret);
-		return ret;
-	}
-
-	/* Read fine integration time for Context B */
-	ret = cci_read(sensor->regmap, MT9M114_FINE_INTEGRATION_TIME,
-		       &fine_b, NULL);
-	if (ret)
-		return ret;
-
-	/*
-	 * Clear SEQ_MODE (0xA102) = 0x0000 per webOS.
-	 * This resets the sequencer mode for clean capture.
-	 */
-	ret = mt9m113_write_mcu_var(sensor, 0xa102, 0x0000);
-	if (ret) {
-		dev_err(dev, "MT9M113: SEQ_MODE clear failed: %d\n", ret);
-		return ret;
-	}
-
-	/*
-	 * Calculate coarse integration time for Context B.
-	 * Formula from webOS: coarse_B = (coarse_A * 1228 + fine_A - fine_B) / 1826
-	 * Where: 1228 = Context A line length, 1826 = Context B line length
-	 */
-	coarse_b = ((u32)coarse_a * 1228 + (u32)fine_a - (u32)fine_b) / 1826;
-
-	dev_dbg(dev, "MT9M113: Context B coarse integration: %u\n", coarse_b);
-
-	ret = cci_write(sensor->regmap, MT9M114_COARSE_INTEGRATION_TIME,
-			coarse_b, NULL);
-	if (ret)
-		return ret;
-
-	/* Write RESET_REGISTER = 0x12CE for snapshot mode */
-	ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-			MT9M113_RESET_REG_SNAPSHOT, NULL);
-	if (ret)
-		return ret;
-
-	dev_info(dev, "MT9M113: RESET_REGISTER = 0x12CE (snapshot mode)\n");
-
-	/* Apply snapshot mode AE table */
-	ret = mt9m113_apply_ae_table(sensor, mt9m113_snapshot_ae_table,
-				     ARRAY_SIZE(mt9m113_snapshot_ae_table));
-	if (ret) {
-		dev_warn(dev, "MT9M113: snapshot AE table failed: %d\n", ret);
-		/* Non-fatal - continue */
-	} else {
-		dev_info(dev, "MT9M113: snapshot AE table applied\n");
-	}
-
-	/* Poll SEQ_CMD until command completes (returns to 0) */
-	timeout = 100;
-	do {
-		msleep(10);
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
-	} while (seq_cmd != 0 && --timeout > 0);
-
-	if (timeout == 0) {
-		dev_warn(dev, "MT9M113: snapshot SEQ_CMD timeout, value=0x%llx\n",
-			 seq_cmd);
-	} else {
-		dev_info(dev, "MT9M113: snapshot mode active\n");
-	}
-
-	return 0;
 }
 
 /* -----------------------------------------------------------------------------
@@ -2730,23 +2358,7 @@ static int mt9m114_pa_init(struct mt9m114 *sensor)
 		return ret;
 
 	/* Initialize the control handler. */
-	v4l2_ctrl_handler_init(hdl, 8);
-
-	/*
-	 * Add LINK_FREQ control to the PA subdev (which has MEDIA_ENT_F_CAM_SENSOR).
-	 * This is needed because camss_find_sensor_pad() finds the PA subdev,
-	 * and v4l2_get_link_freq() looks for LINK_FREQ in that subdev's handler.
-	 */
-	if (sensor->bus_cfg.nr_of_link_frequencies > 0) {
-		struct v4l2_ctrl *link_freq;
-
-		link_freq = v4l2_ctrl_new_int_menu(hdl, &mt9m114_pa_ctrl_ops,
-						   V4L2_CID_LINK_FREQ,
-						   sensor->bus_cfg.nr_of_link_frequencies - 1,
-						   0, sensor->bus_cfg.link_frequencies);
-		if (link_freq)
-			link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
-	}
+	v4l2_ctrl_handler_init(hdl, 7);
 
 	/* The range of the HBLANK and VBLANK controls will be updated below. */
 	sensor->pa.hblank = v4l2_ctrl_new_std(hdl, &mt9m114_pa_ctrl_ops,
@@ -3646,22 +3258,50 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 				msleep(200); /* webOS uses 200ms delay after reset */
 
 				/*
-				 * NOTE: MIPI output (OUTPUT_CONTROL, CUSTOM_SHORT_PKT) is
-				 * NOT configured here. Enabling MIPI during power_on causes
-				 * the sensor to enter streaming state (SEQ_STATE=0x3) before
-				 * s_stream is called, breaking subsequent streaming attempts.
-				 *
-				 * MIPI is configured only in s_stream, matching webOS behavior.
+				 * Unlock register access via ACCESS_CTL_STAT.
+				 * webOS kernel writes 0x0982 = 0x0001 which may be
+				 * required to unlock access to MIPI registers.
 				 */
+				cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, &ret);
+				if (ret < 0)
+					dev_warn(dev, "power_on: ACCESS_CTL_STAT write failed: %d\n", ret);
 
 				/*
-				 * NOTE: RESET_REGISTER (0x301A) is NOT written here!
-				 * Per webOS driver analysis, RESET_REGISTER=0x120C is only
-				 * written in mt9m113_set_sensor_mode() during streaming start.
-				 * Writing it here causes the sensor to enter streaming state
-				 * (SEQ_STATE=0x3) before s_stream is called, which breaks
-				 * subsequent streaming attempts.
+				 * OUTPUT_CONTROL (0x3400) enables MIPI output.
+				 * This is the correct register for MT9M113 - the 0x3C40
+				 * register used by MT9M114 does NOT exist on MT9M113.
 				 */
+				cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+					  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, &ret);
+				if (ret < 0) {
+					dev_err(dev, "power_on: OUTPUT_CONTROL failed: %d\n", ret);
+					goto error_clock;
+				}
+				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+				dev_info(dev, "power_on: OUTPUT_CONTROL=0x%llx (expected 0x7A08)\n", readback);
+
+				/*
+				 * CUSTOM_SHORT_PKT (0x3404) enables Frame Start/End packets.
+				 * Without bit 7 set, VFE never receives CAMIF_SOF.
+				 */
+				cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+					  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
+				if (ret < 0) {
+					dev_err(dev, "power_on: CUSTOM_SHORT_PKT failed: %d\n", ret);
+					goto error_clock;
+				}
+				cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
+				dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (expected 0x0080)\n", readback);
+
+				/* RESET_REGISTER for streaming (0x120C per webOS/Samsung) */
+				cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+					  MT9M113_RESET_REG_STREAMING, &ret);
+				if (ret < 0) {
+					dev_err(dev, "power_on: RESET_REGISTER failed: %d\n", ret);
+					goto error_clock;
+				}
+				cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
+				dev_info(dev, "power_on: RESET_REGISTER=0x%llx (expected 0x120C)\n", readback);
 			}
 		}
 	} else {
@@ -3685,42 +3325,125 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	}
 
 	/*
-	 * MT9M113: Skip MCU boot and PLL config here - let the init table
-	 * handle everything.
-	 *
-	 * The webOS driver does NOT do MCU boot or PLL config before the
-	 * init table. It just powers on the sensor and immediately applies
-	 * the init table (mt9m113_reg_init). Doing MCU boot and PLL config
-	 * here leaves the sensor in streaming state (SEQ_STATE=0x3) and
-	 * makes the MCU unresponsive to commands.
-	 *
-	 * The init table includes:
-	 * - MCU_BOOT_MODE toggle (0x001C = 1, then 0)
-	 * - PLL configuration
-	 * - All MCU variable settings
-	 * - REFRESH command to apply settings
+	 * MT9M113 requires MCU boot and PLL initialization before it can
+	 * respond to commands. This sequence is derived from the webOS kernel.
 	 */
 	if (sensor->expected_model == MT9M113_MODEL) {
-		u64 chip_id = 0;
+		u64 clocks_val = 0;
 		int read_ret;
 
 		/*
-		 * Just verify sensor is responding to I2C by reading chip ID.
-		 * Don't do any configuration - let init table handle it.
+		 * Check if sensor is already initialized by reading CLOCKS_CONTROL.
+		 * At fresh power-on, this reads 0x0. After initialization, it
+		 * reads non-zero (e.g., 0x2df). During runtime resume, the sensor
+		 * retains its configuration from boot, so we can skip MCU boot
+		 * and PLL init to avoid I2C errors on already-configured registers.
 		 */
-		read_ret = cci_read(sensor->regmap, MT9M114_CHIP_ID, &chip_id, NULL);
+		read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL, &clocks_val, NULL);
+		dev_info(dev, "power_on: MT9M113 CLOCKS_CONTROL=0x%llx ret=%d\n",
+			 clocks_val, read_ret);
+
 		if (read_ret < 0) {
-			dev_warn(dev, "power_on: MT9M113 I2C read failed, retrying after 50ms\n");
+			/*
+			 * I2C read failed - sensor not responding. This can happen
+			 * at cold boot if the clock isn't stable yet. Retry once
+			 * after additional delay.
+			 */
+			dev_warn(dev, "power_on: CLOCKS_CONTROL read failed, retrying after 50ms\n");
 			msleep(50);
-			read_ret = cci_read(sensor->regmap, MT9M114_CHIP_ID, &chip_id, NULL);
+			read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL, &clocks_val, NULL);
+			dev_info(dev, "power_on: MT9M113 CLOCKS_CONTROL retry=0x%llx ret=%d\n",
+				 clocks_val, read_ret);
 			if (read_ret < 0) {
-				dev_err(dev, "power_on: MT9M113 not responding to I2C\n");
+				dev_err(dev, "power_on: sensor not responding to I2C\n");
 				ret = read_ret;
 				goto error_clock;
 			}
 		}
-		dev_info(dev, "power_on: MT9M113 chip_id=0x%llx, skipping MCU/PLL (handled by init table)\n",
-			 chip_id);
+
+		if (clocks_val != 0) {
+			/*
+			 * Sensor is already initialized (runtime resume case).
+			 * Skip MCU boot and PLL config - just wait for stabilization.
+			 */
+			dev_info(dev, "power_on: MT9M113 already initialized, skipping MCU boot\n");
+			msleep(50);
+			goto mt9m113_init_done;
+		}
+
+		dev_info(dev, "power_on: MT9M113 MCU boot sequence starting\n");
+
+		/* Boot the MCU */
+		cci_write(sensor->regmap, MT9M114_MCU_BOOT_MODE, 0x0001, &ret);
+		if (ret < 0) {
+			dev_err(dev, "power_on: MCU_BOOT_MODE write 1 failed: %d\n", ret);
+			goto error_clock;
+		}
+		usleep_range(1000, 2000);
+		cci_write(sensor->regmap, MT9M114_MCU_BOOT_MODE, 0x0000, &ret);
+		if (ret < 0) {
+			dev_err(dev, "power_on: MCU_BOOT_MODE write 0 failed: %d\n", ret);
+			goto error_clock;
+		}
+		dev_info(dev, "power_on: MCU boot complete, waiting 200ms\n");
+		msleep(200); /* Extended delay for sensor stabilization */
+
+		/*
+		 * Note: MIPI_CONTROL and RESET_REGISTER were already configured
+		 * earlier in the power_on sequence (right after soft reset),
+		 * matching the webOS kernel initialization order.
+		 */
+
+		/*
+		 * Configure clocks and PLL - sequence from webOS kernel.
+		 * Note: PLL_CONTROL is written 3 times before PLL_DIVIDERS
+		 * as per the webOS init sequence. This appears to be required
+		 * for the sensor to accept the PLL_DIVIDERS write.
+		 */
+		dev_info(dev, "power_on: configuring PLL\n");
+		cci_write(sensor->regmap, MT9M114_CLOCKS_CONTROL, 0x00FF, &ret);
+		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x0028, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_DIVIDERS, 0x0114, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_P_DIVIDERS, 0x00F1, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2545, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2547, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3447, &ret);
+		if (ret < 0) {
+			dev_err(dev, "power_on: PLL config phase 1 failed: %d\n", ret);
+			goto error_clock;
+		}
+		dev_info(dev, "power_on: PLL phase 1 complete, waiting for lock\n");
+		msleep(20); /* Allow PLL to lock */
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3047, &ret);
+		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3046, &ret);
+		cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL, 0x0218, &ret);
+		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x002A, &ret);
+		if (ret < 0) {
+			dev_err(dev, "power_on: PLL config phase 2 failed: %d\n", ret);
+			goto error_clock;
+		}
+		dev_info(dev, "power_on: PLL phase 2 complete, stabilizing\n");
+		msleep(50); /* Wait for sensor to stabilize */
+
+		/*
+		 * Configure output FIFO control.
+		 * From webOS kernel: OFIFO_CONTROL_STATUS = 0x0003.
+		 */
+		cci_write(sensor->regmap, MT9M114_OFIFO_CONTROL_STATUS, 0x0003, &ret);
+		if (ret < 0) {
+			dev_err(dev, "power_on: OFIFO_CONTROL_STATUS failed: %d\n", ret);
+			goto error_clock;
+		}
+
+		/*
+		 * MT9M113 is now ready after MCU boot and PLL initialization.
+		 * Skip the SET_STATE poll since no command was issued - the
+		 * sensor entered its operational state automatically.
+		 */
+		dev_info(dev, "power_on: MT9M113 init complete\n");
 		goto mt9m113_init_done;
 	}
 
@@ -3738,15 +3461,11 @@ mt9m113_init_done:
 	/*
 	 * MT9M113 uses a different command mechanism (MCU indirect via
 	 * 0x098C/0x0990) and doesn't support the MT9M114's COMMAND_REGISTER.
-	 *
-	 * We don't check SEQ_STATE here - the sensor hasn't been initialized
-	 * yet. The init table will be applied by mt9m113_sensor_init() which
-	 * is called from mt9m114_initialize() later.
+	 * Skip the SET_STATE commands for MT9M113 - the sensor is already
+	 * in the proper state after MCU boot and PLL initialization.
 	 */
-	if (sensor->expected_model == MT9M113_MODEL) {
-		dev_info(dev, "power_on: MT9M113 ready for init table\n");
+	if (sensor->expected_model == MT9M113_MODEL)
 		return 0;
-	}
 
 	if (sensor->bus_cfg.bus_type == V4L2_MBUS_PARALLEL) {
 		/*

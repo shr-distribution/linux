@@ -280,23 +280,22 @@ media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || \
 media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || \
 echo 'Sensor format set may have failed'
 
-# Set CSIPHY format (UYVY8_1X16 to match sensor output)
+# Set CSIPHY format (sink and source)
 echo 'Setting CSIPHY format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
-media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':1[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':1[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
 
-# Set CSID format (sink uses 1X16 to match CSIPHY, pad 4 uses 2X8 to match VFE)
+# Set CSID format (sink=0, PIX source=4)
 echo 'Setting CSID format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$CSID':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || true
-media-ctl -d \$MEDIA_DEV -V \"'\$CSID':4[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSID':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSID':4[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
 
-# Set VFE PIX format (UYVY8_2X8 is VFE internal format, use 1288x968 to match CSID)
+# Set VFE PIX format (without blanking pixels)
 echo 'Setting VFE format...'
 if [ -n \"\$VFE_PIX\" ]; then
-    media-ctl -d \$MEDIA_DEV -V \"'\$VFE_PIX':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
-    media-ctl -d \$MEDIA_DEV -V \"'\$VFE_PIX':1[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
+    media-ctl -d \$MEDIA_DEV -V \"'\$VFE_PIX':0[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
 else
-    media-ctl -d \$MEDIA_DEV -V \"'\$VFE':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
+    media-ctl -d \$MEDIA_DEV -V \"'\$VFE':0[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
 fi
 
 # Enable links: sensor -> csiphy -> csid -> vfe
@@ -334,69 +333,49 @@ test_capture() {
     run_on_device "cat <<'SCRIPT' > /tmp/test_capture.sh
 #!/bin/sh
 
-# HP TouchPad camera paths:
-# /dev/video0-2 = RDI paths (raw data, requires manual link setup)
-# /dev/video3 = PIX path (ISP processed, has IMMUTABLE links)
-#
-# PIX mode (/dev/video3) is preferred because:
-# - Links are pre-configured (IMMUTABLE)
-# - Uses VFE ISP for color processing
-# - Output is 1280x968 UYVY (sensor 1288 cropped to 1280)
-
-VIDEO_DEV='/dev/video3'  # PIX mode - ISP processed output
+VIDEO_DEV='/dev/video0'
 FRAMES=5
 OUTPUT='/tmp/camera_test.raw'
 
-# Allow override via argument
-if [ -n \"\$1\" ]; then
-    VIDEO_DEV=\"\$1\"
-fi
+# Find first available video device
+for dev in /dev/video*; do
+    if [ -e \"\$dev\" ]; then
+        VIDEO_DEV=\$dev
+        break
+    fi
+done
 
 echo \"Using video device: \$VIDEO_DEV\"
-
-# For PIX mode (video3), use 1280x968 (cropped from sensor's 1288x968)
-# For RDI mode (video0-2), use 1288x968 (raw sensor output)
-case \$VIDEO_DEV in
-    *video3*)
-        WIDTH=1280
-        HEIGHT=968
-        echo 'PIX mode: Using 1280x968 (VFE ISP cropped)'
-        ;;
-    *)
-        WIDTH=1288
-        HEIGHT=968
-        echo 'RDI mode: Using 1288x968 (raw sensor output)'
-        ;;
-esac
 
 # Method 1: Try v4l2-ctl capture
 if command -v v4l2-ctl >/dev/null 2>&1; then
     echo ''
     echo '=== Testing with v4l2-ctl ==='
 
-    # Set format
-    echo \"Setting video format to \${WIDTH}x\${HEIGHT} UYVY...\"
-    v4l2-ctl -d \$VIDEO_DEV --set-fmt-video=width=\$WIDTH,height=\$HEIGHT,pixelformat=UYVY 2>&1
+    # Set format to match mt9m114 sensor output (1288x968 UYVY)
+    echo 'Setting video format to 1288x968 UYVY (mt9m114 native)...'
+    v4l2-ctl -d \$VIDEO_DEV --set-fmt-video=width=1288,height=968,pixelformat=UYVY 2>&1
 
     echo 'Current format:'
     v4l2-ctl -d \$VIDEO_DEV --get-fmt-video 2>&1
 
     echo ''
     echo \"Capturing \$FRAMES frames to \$OUTPUT...\"
-    timeout 30 v4l2-ctl -d \$VIDEO_DEV --stream-mmap --stream-count=\$FRAMES --stream-to=\$OUTPUT 2>&1
+    v4l2-ctl -d \$VIDEO_DEV --stream-mmap --stream-count=\$FRAMES --stream-to=\$OUTPUT 2>&1
 
     if [ -f \$OUTPUT ]; then
         SIZE=\$(stat -c %s \$OUTPUT 2>/dev/null || echo 0)
         echo \"Captured file size: \$SIZE bytes\"
         if [ \"\$SIZE\" -gt 0 ]; then
             echo 'SUCCESS: Captured frame data!'
-            EXPECTED=\$((\$WIDTH * \$HEIGHT * 2 * FRAMES))
+            # Expected size: 1288 * 968 * 2 bytes/pixel * 5 frames = 12468160 bytes
+            EXPECTED=\$((1288 * 968 * 2 * FRAMES))
             echo \"Expected size: \$EXPECTED bytes\"
         else
             echo 'WARNING: Captured file is empty'
         fi
     else
-        echo 'ERROR: No output file created (capture timed out)'
+        echo 'ERROR: No output file created'
     fi
 fi
 
@@ -406,17 +385,18 @@ if command -v gst-launch-1.0 >/dev/null 2>&1; then
     echo '=== Testing with GStreamer ==='
 
     # Test with fakesink first (no actual output, just test pipeline)
-    echo \"Testing pipeline with fakesink (\${WIDTH}x\${HEIGHT} UYVY)...\"
-    timeout 15 gst-launch-1.0 -v v4l2src device=\$VIDEO_DEV num-buffers=5 ! \
-        \"video/x-raw,format=UYVY,width=\$WIDTH,height=\$HEIGHT\" ! \
+    # IMPORTANT: Use 1288x968 UYVY - the exact mt9m114 sensor resolution
+    echo 'Testing pipeline with fakesink (1288x968 UYVY)...'
+    timeout 10 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=5 ! \
+        'video/x-raw,format=UYVY,width=1288,height=968' ! \
         fakesink 2>&1
 
     # If that works, try saving a frame
     if [ \$? -eq 0 ]; then
         echo ''
         echo 'Saving single frame as PPM...'
-        timeout 15 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=1 ! \
-            \"video/x-raw,format=UYVY,width=\$WIDTH,height=\$HEIGHT\" ! \
+        timeout 10 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=1 ! \
+            'video/x-raw,format=UYVY,width=1288,height=968' ! \
             videoconvert ! \
             pnmenc ! \
             filesink location=/tmp/frame.ppm 2>&1
@@ -448,49 +428,50 @@ check_dmesg() {
     run_on_device "dmesg | grep -iE 'error|fail|timeout' | grep -iE 'camss|csiphy|csid|vfe|video' | tail -10"
 }
 
-# Quick capture test - uses PIX mode by default (proper IMMUTABLE links)
+# Quick capture test (no media-ctl setup)
 quick_capture_test() {
-    log_step "Quick capture test (PIX mode)..."
+    log_step "Quick capture test..."
 
-    log_info "Testing PIX mode capture: 1280x968 UYVY via /dev/video3..."
-    log_info "This path has IMMUTABLE links and uses VFE ISP"
-
+    log_info "Testing capture with correct mt9m114 format (1288x968 UYVY)..."
     run_on_device "
         if command -v gst-launch-1.0 >/dev/null 2>&1; then
-            # PIX mode uses /dev/video3 with 1280x968 (cropped from sensor's 1288x968)
-            # This path has IMMUTABLE links: sensor -> csiphy1 -> csid1:4 -> vfe_pix -> video3
-            echo '=== PIX Mode Test: 1280x968 UYVY via /dev/video3 ==='
-            timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=5 ! \\
-                'video/x-raw,format=UYVY,width=1280,height=968' ! \\
+            # MT9M114 native resolution is 1288x968 UYVY
+            # IMPORTANT: Must specify exact format to avoid wrong negotiation
+            echo '=== Test: 1288x968 UYVY (native mt9m114 resolution) ==='
+            timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
+                'video/x-raw,format=UYVY,width=1288,height=968' ! \\
                 fakesink 2>&1
 
             if [ \$? -eq 0 ]; then
                 echo ''
-                echo 'SUCCESS: PIX capture completed!'
+                echo 'SUCCESS: Capture completed!'
                 echo ''
                 echo '=== Saving test frame to /tmp/camera_frame.raw ==='
-                timeout 15 gst-launch-1.0 v4l2src device=/dev/video3 num-buffers=1 ! \\
-                    'video/x-raw,format=UYVY,width=1280,height=968' ! \\
+                timeout 10 gst-launch-1.0 v4l2src device=/dev/video0 num-buffers=1 ! \\
+                    'video/x-raw,format=UYVY,width=1288,height=968' ! \\
                     filesink location=/tmp/camera_frame.raw 2>&1
                 ls -la /tmp/camera_frame.raw 2>/dev/null && echo 'Frame saved!'
             else
                 echo ''
-                echo 'PIX mode failed. Trying RDI mode fallback...'
+                echo 'Native resolution failed, trying alternatives...'
 
                 echo ''
-                echo '=== RDI Mode Test: 1288x968 UYVY via /dev/video0 ==='
-                # First enable the RDI path links
-                media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>/dev/null
-                media-ctl -l '\"msm_csid1\":1->\"msm_vfe0_rdi0\":0[1]' 2>/dev/null
-                timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=5 ! \\
-                    'video/x-raw,format=UYVY,width=1288,height=968' ! \\
-                    fakesink 2>&1 || echo 'RDI mode also failed'
+                echo '=== Test: 1280x960 UYVY ==='
+                timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
+                    'video/x-raw,format=UYVY,width=1280,height=960' ! \\
+                    fakesink 2>&1 || echo 'Test failed'
+
+                echo ''
+                echo '=== Test: 640x480 UYVY (VGA) ==='
+                timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
+                    'video/x-raw,format=UYVY,width=640,height=480' ! \\
+                    fakesink 2>&1 || echo 'Test failed'
             fi
         else
-            echo 'GStreamer not available, using v4l2-ctl'
-            timeout 30 v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=968,pixelformat=UYVY \\
-                --stream-mmap --stream-count=3 --stream-to=/tmp/camera_test.raw 2>&1
-            ls -la /tmp/camera_test.raw 2>/dev/null
+            echo 'GStreamer not available, using dd test'
+            # Raw device read test
+            timeout 5 dd if=/dev/video0 of=/tmp/raw_test.bin bs=1024 count=100 2>&1 || \\
+                echo 'Raw read failed (expected if streaming not started)'
         fi
     "
 }
@@ -504,33 +485,6 @@ test_raw_mode() {
 
     run_on_device "
         echo '=== RAW Mode Test (video0 via RDI0) ==='
-        echo ''
-
-        # Reset media links first to avoid conflicts from previous tests
-        echo 'Resetting media links...'
-        media-ctl -r 2>/dev/null || true
-
-        # Setup full RDI path: CSIPHY1 -> CSID1 -> VFE RDI0
-        # The sensor->CSIPHY link is IMMUTABLE and always enabled
-        echo 'Setting up RDI0 media pipeline...'
-        # Enable CSIPHY1 -> CSID1 link
-        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1
-        # Enable CSID1 -> VFE RDI0 link (pad 1 = RDI0 source)
-        media-ctl -l '\"msm_csid1\":1->\"msm_vfe0_rdi0\":0[1]' 2>&1
-        # Set formats along the path
-        # CRITICAL: Must configure sensor FIRST, then propagate downstream
-        echo 'Configuring sensor for 1288x968...'
-        media-ctl -V '\"mt9m114 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1296x976 crop:(0,0)/1296x976]' 2>/dev/null
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[fmt:SGRBG10_1X10/1296x976 crop:(4,4)/1288x968]' 2>/dev/null
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        echo 'Configuring downstream pipeline...'
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_rdi0\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        echo 'RDI0 pipeline configured'
-
         echo ''
         echo 'Testing capture with 1288x968 UYVY...'
         timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=10 ! \\
@@ -559,31 +513,14 @@ test_pix_mode() {
         echo '=== PIX Mode Test (video3 via VFE PIX) ==='
         echo ''
 
-        # Reset media links first to avoid conflicts from previous tests
-        echo 'Resetting media links...'
-        media-ctl -r 2>/dev/null || true
-
-        # Setup full PIX path: CSIPHY1 -> CSID1 -> VFE PIX
-        # The sensor->CSIPHY link is IMMUTABLE and always enabled
-        echo 'Setting up PIX media pipeline...'
-        # Enable CSIPHY1 -> CSID1 link
-        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1
-        # Enable CSID1 -> VFE PIX link (pad 4 = PIX source)
-        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1
-        # Set formats along the path (PIX uses 1280x968 without blanking pixels)
-        # CRITICAL: Must configure sensor FIRST, then propagate downstream
-        # MT9M113 Context B (full res) = 1296x976 -> crop to 1288x968
-        echo 'Configuring sensor for 1288x968...'
-        media-ctl -V '\"mt9m114 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1296x976 crop:(0,0)/1296x976]' 2>/dev/null
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[fmt:SGRBG10_1X10/1296x976 crop:(4,4)/1288x968]' 2>/dev/null
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        echo 'Configuring downstream pipeline...'
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
+        # Setup media pipeline: CSID1 -> VFE PIX link
+        # VFE PIX mode expects UYVY8_2X8 format at 1280x968 (without blanking)
+        # The VFE extracts 8-bit data from the 16-bit MIPI bus
+        echo 'Setting up media pipeline...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
         media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
         media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-        echo 'PIX pipeline configured'
+        echo 'Pipeline configured'
 
         echo ''
         echo 'Testing capture with 1280x968 UYVY...'
@@ -599,413 +536,6 @@ test_pix_mode() {
             echo 'FAILED: PIX capture did not complete'
             echo 'Check dmesg for errors'
         fi
-    "
-}
-
-# Test with sensor test pattern enabled
-# This helps diagnose if data path works by using known pattern
-test_sensor_pattern() {
-    log_step "Testing with sensor test pattern..."
-    log_info "This enables MT9M114's built-in color bar generator"
-    log_info "If capture works with test pattern -> data path is OK"
-    log_info "If capture fails even with test pattern -> VFE path broken"
-
-    run_on_device "
-        echo '=== Sensor Test Pattern Mode ==='
-        echo ''
-
-        # Find the MT9M114 IFP subdev (where test pattern control lives)
-        echo 'Looking for MT9M114 IFP subdev...'
-        IFP_DEV=''
-        for dev in /dev/v4l-subdev*; do
-            if v4l2-ctl -d \$dev --list-ctrls 2>/dev/null | grep -q 'test_pattern'; then
-                IFP_DEV=\$dev
-                echo \"Found test pattern control on: \$dev\"
-                break
-            fi
-        done
-
-        if [ -z \"\$IFP_DEV\" ]; then
-            echo 'ERROR: No subdev with test_pattern control found'
-            echo ''
-            echo 'Available subdevs and their controls:'
-            for dev in /dev/v4l-subdev*; do
-                echo \"--- \$dev ---\"
-                v4l2-ctl -d \$dev --list-ctrls 2>/dev/null | head -10
-            done
-            exit 1
-        fi
-
-        # Show available test patterns
-        echo ''
-        echo 'Available test patterns:'
-        v4l2-ctl -d \$IFP_DEV --list-ctrls 2>/dev/null | grep -A10 test_pattern
-
-        # Enable color bars test pattern (pattern 2 = 100% Color Bars)
-        echo ''
-        echo 'Enabling 100% Color Bars test pattern (pattern=2)...'
-        v4l2-ctl -d \$IFP_DEV --set-ctrl=test_pattern=2 2>&1
-
-        # Verify it's set
-        echo ''
-        echo 'Verifying test pattern is enabled:'
-        v4l2-ctl -d \$IFP_DEV --get-ctrl=test_pattern 2>&1
-
-        # Setup media pipeline for PIX mode
-        echo ''
-        echo 'Setting up media pipeline...'
-        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-
-        # Try to capture with test pattern
-        echo ''
-        echo 'Attempting capture with test pattern enabled...'
-        timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=5 ! \\
-            'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
-            fakesink 2>&1
-        RESULT=\$?
-
-        # If capture worked, save a frame
-        if [ \$RESULT -eq 0 ]; then
-            echo ''
-            echo 'SUCCESS: Capture with test pattern worked!'
-            echo 'Saving test frame to /tmp/testpattern.raw...'
-            gst-launch-1.0 v4l2src device=/dev/video3 num-buffers=1 ! \\
-                'video/x-raw,format=UYVY,width=1280,height=968' ! \\
-                filesink location=/tmp/testpattern.raw 2>&1
-            ls -la /tmp/testpattern.raw 2>/dev/null
-
-            # Check if file contains valid data (should be 2.4MB for 1280x968 UYVY)
-            SIZE=\$(stat -c %s /tmp/testpattern.raw 2>/dev/null || echo 0)
-            EXPECTED=\$((1280 * 968 * 2))
-            echo \"File size: \$SIZE bytes (expected: \$EXPECTED)\"
-
-            # Quick pattern analysis
-            if [ \$SIZE -gt 0 ]; then
-                echo ''
-                echo 'First 64 bytes (hex):'
-                xxd /tmp/testpattern.raw | head -4
-                echo ''
-                echo 'Unique byte patterns in first 1KB:'
-                head -c 1024 /tmp/testpattern.raw | xxd -p | fold -w2 | sort | uniq -c | sort -rn | head -10
-            fi
-        else
-            echo ''
-            echo 'FAILED: Capture did not work even with test pattern'
-            echo 'This indicates a VFE/CAMIF data path issue'
-        fi
-
-        # Disable test pattern
-        echo ''
-        echo 'Disabling test pattern...'
-        v4l2-ctl -d \$IFP_DEV --set-ctrl=test_pattern=0 2>&1
-    "
-}
-
-# Analyze captured frame data
-analyze_frame() {
-    log_step "Analyzing captured frame..."
-
-    run_on_device "
-        echo '=== Frame Analysis ==='
-        echo ''
-
-        # Check for captured files
-        for file in /tmp/testpattern.raw /tmp/camera_frame.raw /tmp/camera_test.raw; do
-            if [ -f \"\$file\" ]; then
-                echo \"Found: \$file\"
-                SIZE=\$(stat -c %s \$file)
-                echo \"  Size: \$SIZE bytes\"
-
-                # Check if file is all zeros
-                ZEROS=\$(head -c 1024 \$file | xxd -p | tr -d '0' | wc -c)
-                if [ \$ZEROS -eq 0 ]; then
-                    echo '  WARNING: First 1KB is all zeros - no valid data captured!'
-                else
-                    echo '  Data appears valid (non-zero)'
-
-                    # Show byte distribution
-                    echo ''
-                    echo '  Byte value distribution (first 4KB):'
-                    head -c 4096 \$file | xxd -p | fold -w2 | sort | uniq -c | sort -rn | head -5
-
-                    # For UYVY, we expect Y (luma) values spread across range
-                    # and U/V (chroma) centered around 128 for gray/neutral
-                    echo ''
-                    echo '  First 32 bytes (UYVY interleaved):'
-                    echo '  Format: U0 Y0 V0 Y1 U2 Y2 V2 Y3 ...'
-                    head -c 32 \$file | xxd
-                fi
-                echo ''
-            fi
-        done
-
-        if [ ! -f /tmp/testpattern.raw ] && [ ! -f /tmp/camera_frame.raw ]; then
-            echo 'No captured frame files found'
-            echo 'Run \"testpattern\" or \"pix\" mode first to capture data'
-        fi
-    "
-}
-
-# Test PREVIEW mode (640x480) - matches MT9M113 Context A output
-# The sensor defaults to Context A (preview) mode which outputs 640x480
-# This is the correct resolution to match what the sensor actually streams
-test_preview_mode() {
-    log_step "Testing PREVIEW mode (640x480)..."
-    log_info "Path: Sensor -> CSIPHY -> CSID -> VFE PIX -> /dev/video3"
-    log_info "Resolution: 640x480 (MT9M113 Context A / Preview mode)"
-    log_info "Link frequency: 96 MHz (correct for this resolution)"
-
-    run_on_device "
-        echo '=== PREVIEW Mode Test (640x480 via VFE PIX) ==='
-        echo ''
-        echo 'NOTE: MT9M113 streams Context A (640x480) by default.'
-        echo 'SEQ_CAP_MODE=0x0030 selects preview mode.'
-        echo 'Link frequency 96 MHz is correct for 640x480 output.'
-        echo ''
-
-        # Reset media links first to avoid conflicts from previous tests
-        echo 'Resetting media links...'
-        media-ctl -r 2>/dev/null || true
-
-        # Setup full PIX path: CSIPHY1 -> CSID1 -> VFE PIX
-        echo 'Setting up PIX media pipeline for 640x480...'
-        # Enable CSIPHY1 -> CSID1 link
-        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1
-        # Enable CSID1 -> VFE PIX link (pad 4 = PIX source)
-        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1
-
-        # Set formats along the path for 640x480
-        # CRITICAL: Must configure sensor FIRST, then propagate downstream
-        # MT9M113 Context A (preview) = 640x480 output
-        echo 'Configuring sensor for 640x480...'
-        media-ctl -V '\"mt9m114 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488 crop:(0,0)/648x488]' 2>/dev/null
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[fmt:SGRBG10_1X10/648x488 crop:(4,4)/640x480]' 2>/dev/null
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>/dev/null
-        echo 'Configuring downstream pipeline...'
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>/dev/null
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>/dev/null
-        echo 'PIX pipeline configured for 640x480'
-
-        echo ''
-        echo 'Testing capture with 640x480 UYVY...'
-        timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
-            fakesink 2>&1
-
-        if [ \$? -eq 0 ]; then
-            echo ''
-            echo 'SUCCESS: PREVIEW capture completed!'
-            echo ''
-            echo 'Saving frame to /tmp/preview_frame.raw...'
-            timeout 10 gst-launch-1.0 v4l2src device=/dev/video3 num-buffers=1 ! \\
-                'video/x-raw,format=UYVY,width=640,height=480' ! \\
-                filesink location=/tmp/preview_frame.raw 2>&1
-            ls -la /tmp/preview_frame.raw 2>/dev/null
-            SIZE=\$(stat -c %s /tmp/preview_frame.raw 2>/dev/null || echo 0)
-            EXPECTED=\$((640 * 480 * 2))
-            echo \"File size: \$SIZE bytes (expected: \$EXPECTED)\"
-        else
-            echo ''
-            echo 'FAILED: PREVIEW capture did not complete'
-            echo 'Check dmesg for errors'
-        fi
-    "
-}
-
-# Test with EFS sync mode (instead of APS)
-# EFS = Embedded Frame Sync - uses embedded sync codes in data stream
-# APS = Active Pixel Sync - uses external sync signals from CSIPHY (default)
-test_efs_mode() {
-    log_step "Testing with EFS sync mode enabled..."
-    log_info "This changes CAMIF sync mode from APS (default) to EFS"
-    log_info "Some MIPI sensors may require EFS mode for proper framing"
-
-    run_on_device "
-        echo '=== EFS Sync Mode Test ==='
-        echo ''
-
-        # Check current setting
-        echo 'Current vfe31_use_efs_sync setting:'
-        cat /sys/module/qcom_camss/parameters/vfe31_use_efs_sync 2>/dev/null || echo 'Parameter not found (module not loaded?)'
-
-        # Enable EFS mode
-        echo ''
-        echo 'Enabling EFS sync mode (vfe31_use_efs_sync=1)...'
-        echo 1 > /sys/module/qcom_camss/parameters/vfe31_use_efs_sync 2>/dev/null
-        if [ \$? -eq 0 ]; then
-            echo 'EFS mode enabled'
-        else
-            echo 'ERROR: Failed to set EFS mode - is qcom_camss module loaded?'
-            exit 1
-        fi
-
-        # Verify setting
-        echo 'Verifying: vfe31_use_efs_sync='
-        cat /sys/module/qcom_camss/parameters/vfe31_use_efs_sync
-
-        # Clear dmesg to see fresh output
-        dmesg -C
-
-        # Setup media pipeline (same as pix mode)
-        echo ''
-        echo 'Setting up PIX media pipeline...'
-        media-ctl -r 2>/dev/null || true
-        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1
-        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-        echo 'Pipeline configured'
-
-        # Attempt capture
-        echo ''
-        echo 'Testing capture with EFS sync mode...'
-        timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
-            fakesink 2>&1
-        RESULT=\$?
-
-        # Show relevant dmesg
-        echo ''
-        echo '=== Relevant dmesg output ==='
-        dmesg | grep -iE 'vfe.*efs|vfe.*aps|camif_cfg|sync.*mode' | tail -20
-
-        # Disable EFS mode (back to APS default)
-        echo ''
-        echo 'Disabling EFS mode (back to APS default)...'
-        echo 0 > /sys/module/qcom_camss/parameters/vfe31_use_efs_sync
-
-        if [ \$RESULT -eq 0 ]; then
-            echo ''
-            echo 'SUCCESS: Capture with EFS mode completed!'
-            echo 'EFS mode may be the correct setting for this sensor.'
-        else
-            echo ''
-            echo 'FAILED: Capture with EFS mode did not work'
-            echo 'Try APS mode (default) or check other VFE configuration.'
-        fi
-    "
-}
-
-# Full debug capture mode with clock and register dumps
-test_debug_capture() {
-    log_step "DEBUG MODE: Full diagnostic capture with clock/register dumps..."
-    log_info "This mode captures comprehensive debug info for VFE troubleshooting"
-
-    run_on_device "
-        echo '=============================================='
-        echo '  CAMSS DEBUG CAPTURE MODE'
-        echo '=============================================='
-        echo ''
-
-        # Clear dmesg to start fresh
-        echo 'Clearing dmesg...'
-        dmesg -C
-
-        # Step 1: Show initial state
-        echo ''
-        echo '=== Step 1: Initial System State ==='
-        echo 'Clock debugfs (if available):'
-        if [ -d /sys/kernel/debug/clk ]; then
-            echo '  VFE clocks:'
-            for clk in vfe vfe_axi vfe_ahb vfe_csi0 vfe_csi1 csi_rdi csi_pix csi1 csi1_phy; do
-                if [ -f /sys/kernel/debug/clk/\$clk/clk_enable_count ]; then
-                    echo \"    \$clk: enable_count=\$(cat /sys/kernel/debug/clk/\$clk/clk_enable_count)\"
-                fi
-            done
-        else
-            echo '  debugfs/clk not available - check dmesg for clock enables'
-        fi
-
-        # Step 2: Power on sensor
-        echo ''
-        echo '=== Step 2: Powering on Sensor ==='
-        # Touch the subdev to trigger runtime PM
-        v4l2-ctl -d /dev/v4l-subdev3 --get-ctrl=test_pattern 2>/dev/null || true
-        sleep 1
-
-        # Step 3: Show clock state after sensor power on
-        echo ''
-        echo '=== Step 3: Clock State After Sensor Power On ==='
-        if [ -d /sys/kernel/debug/clk ]; then
-            echo '  VFE clocks:'
-            for clk in vfe vfe_axi vfe_ahb vfe_csi0 vfe_csi1 csi_rdi csi_pix csi1 csi1_phy; do
-                if [ -f /sys/kernel/debug/clk/\$clk/clk_enable_count ]; then
-                    echo \"    \$clk: enable_count=\$(cat /sys/kernel/debug/clk/\$clk/clk_enable_count)\"
-                fi
-            done
-        fi
-
-        # Step 4: Setup media pipeline
-        echo ''
-        echo '=== Step 4: Setting Up Media Pipeline ==='
-        # Reset media links first
-        media-ctl -r 2>/dev/null || true
-        # Enable full PIX path: CSIPHY1 -> CSID1 -> VFE PIX
-        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1
-        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1
-        # Set formats along the path
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1288x968]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-        echo 'PIX pipeline configured: CSIPHY1 -> CSID1 -> VFE_PIX'
-
-        # Step 5: Show clock state after pipeline setup
-        echo ''
-        echo '=== Step 5: Clock State After Pipeline Setup ==='
-        if [ -d /sys/kernel/debug/clk ]; then
-            for clk in vfe vfe_axi vfe_ahb vfe_csi0 vfe_csi1 csi_rdi csi_pix csi1 csi1_phy; do
-                if [ -f /sys/kernel/debug/clk/\$clk/clk_enable_count ]; then
-                    echo \"    \$clk: enable_count=\$(cat /sys/kernel/debug/clk/\$clk/clk_enable_count)\"
-                fi
-            done
-        fi
-
-        # Step 6: Attempt capture (will likely fail but generate debug output)
-        echo ''
-        echo '=== Step 6: Attempting Capture ==='
-        echo 'Starting gst-launch (expect VFE SOF timeout)...'
-        timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=5 ! \\
-            'video/x-raw,format=UYVY,width=1280,height=968' ! \\
-            fakesink 2>&1 || echo 'Capture failed as expected'
-
-        # Step 7: Dump full dmesg for analysis
-        echo ''
-        echo '=== Step 7: Full DMESG Output ==='
-        echo '(Focus on clock enables, VFE registers, CSIPHY status)'
-        echo ''
-        dmesg | grep -iE 'camss|csiphy|csid|vfe|clock|enable' | tail -100
-
-        # Step 8: Show CSIPHY interrupt status
-        echo ''
-        echo '=== Step 8: CSIPHY Interrupt Summary ==='
-        dmesg | grep -i 'csiphy.*sof_count\\|csiphy.*irq\\|csiphy.*status' | tail -20
-
-        # Step 9: Show VFE register state
-        echo ''
-        echo '=== Step 9: VFE Register Dumps ==='
-        dmesg | grep -iE 'vfe31:|core_cfg|camif_cfg|axi_out|irq_status' | tail -30
-
-        # Step 10: Final summary
-        echo ''
-        echo '=== Step 10: Debug Summary ==='
-        echo 'Key things to check:'
-        echo '  1. Are vfe_csi0 and vfe_csi1 clocks enabled? (look for enable_clocks output)'
-        echo '  2. Does CSIPHY1 show sof_count > 0? (CSIPHY receiving frames)'
-        echo '  3. Does VFE IRQ_STATUS0 show any interrupts? (VFE receiving data)'
-        echo '  4. What are CAMIF_CFG and CORE_CFG values?'
-        echo ''
-        echo 'If CSIPHY gets frames but VFE does not:'
-        echo '  -> Check vfe_csi1 clock enable (CSI1 to VFE data path)'
-        echo '  -> Check VFE CAMIF configuration'
-        echo ''
     "
 }
 
@@ -1039,37 +569,17 @@ main() {
             pix)
                 MODE="pix"
                 ;;
-            testpattern)
-                MODE="testpattern"
-                ;;
-            analyze)
-                MODE="analyze"
-                ;;
-            debug)
-                MODE="debug"
-                ;;
-            efs)
-                MODE="efs"
-                ;;
-            preview|vga|640)
-                MODE="preview"
-                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
                 echo "Modes:"
-                echo "  preview     Test PREVIEW mode (640x480) - matches MT9M113 Context A"
-                echo "  raw         Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
-                echo "  pix         Test PIX mode (1280x968, through VFE ISP processing)"
-                echo "  efs         Test PIX mode with EFS sync (instead of default APS)"
-                echo "  testpattern Enable sensor test pattern and capture (debug data path)"
-                echo "  analyze     Analyze previously captured frame data"
-                echo "  debug       Full debug capture with clock and register dumps"
-                echo "  --info      Show camera device information only"
-                echo "  --setup     Set up media pipeline only"
-                echo "  --capture   Test capture only (assumes pipeline is set up)"
-                echo "  --quick     Quick capture test without media-ctl setup"
-                echo "  (no args)   Run full test sequence"
+                echo "  raw        Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
+                echo "  pix        Test PIX mode (through VFE ISP processing)"
+                echo "  --info     Show camera device information only"
+                echo "  --setup    Set up media pipeline only"
+                echo "  --capture  Test capture only (assumes pipeline is set up)"
+                echo "  --quick    Quick capture test without media-ctl setup"
+                echo "  (no args)  Run full test sequence"
                 exit 0
                 ;;
         esac
@@ -1108,30 +618,6 @@ main() {
             ensure_camera_ready
             test_pix_mode
             check_dmesg
-            ;;
-        preview)
-            show_camera_info
-            ensure_camera_ready
-            test_preview_mode
-            check_dmesg
-            ;;
-        testpattern)
-            show_camera_info
-            ensure_camera_ready
-            test_sensor_pattern
-            check_dmesg
-            ;;
-        efs)
-            show_camera_info
-            ensure_camera_ready
-            test_efs_mode
-            check_dmesg
-            ;;
-        analyze)
-            analyze_frame
-            ;;
-        debug)
-            test_debug_capture
             ;;
         full)
             show_camera_info
