@@ -1473,17 +1473,37 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev, "VFE: EFS_CFG=0x0 at 0x1E4 (APS mode, no embedded sync)\n");
 	writel_relaxed(0, vfe->base + VFE31_CAMIF_EFS_CFG);
 
-	/* Step 3: Configure CAMIF frame dimensions at 0x1E8 */
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
-	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
-	dev_info(vfe->camss->dev, "VFE: FRAME_CFG=0x%08x at 0x%03x\n",
-		 val, VFE31_CAMIF_FRAME_CFG);
+	/*
+	 * Step 3: Configure CAMIF frame dimensions at 0x1E8
+	 * FRAME_CFG register format (from webOS vfe_camifframe_update):
+	 *   bits 0-13:  pixelsPerLine (14 bits) - pixels, NOT bytes
+	 *   bits 16-29: linesPerFrame (14 bits)
+	 */
+	val = (line->fmt[MSM_VFE_PAD_SINK].width & 0x3FFF);
+	val |= ((line->fmt[MSM_VFE_PAD_SINK].height & 0x3FFF) << 16);
+	dev_info(vfe->camss->dev, "VFE: FRAME_CFG=0x%08x (pixels=%u lines=%u)\n",
+		 val, line->fmt[MSM_VFE_PAD_SINK].width,
+		 line->fmt[MSM_VFE_PAD_SINK].height);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_FRAME_CFG);
 
-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
+	/*
+	 * WINDOW_WIDTH_CFG register format:
+	 *   bits 0-13:  lastPixel (14 bits) - width-1
+	 *   bits 16-29: firstPixel (14 bits) - 0
+	 */
+	val = ((line->fmt[MSM_VFE_PAD_SINK].width - 1) & 0x3FFF);
+	dev_info(vfe->camss->dev, "VFE: WINDOW_WIDTH=0x%08x (last=%u first=0)\n",
+		 val, line->fmt[MSM_VFE_PAD_SINK].width - 1);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_WIDTH_CFG);
 
-	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+	/*
+	 * WINDOW_HEIGHT_CFG register format:
+	 *   bits 0-13:  lastLine (14 bits) - height-1
+	 *   bits 16-29: firstLine (14 bits) - 0
+	 */
+	val = ((line->fmt[MSM_VFE_PAD_SINK].height - 1) & 0x3FFF);
+	dev_info(vfe->camss->dev, "VFE: WINDOW_HEIGHT=0x%08x (last=%u first=0)\n",
+		 val, line->fmt[MSM_VFE_PAD_SINK].height - 1);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_HEIGHT_CFG);
 
 	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_0);
