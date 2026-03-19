@@ -1863,15 +1863,6 @@ mt9m113_streaming:
 				goto error;
 			}
 
-			/* Configure RESET_REGISTER for streaming mode */
-			ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-					MT9M113_RESET_REG_STREAMING, NULL);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: RESET_REGISTER failed: %d\n", ret);
-				goto error;
-			}
-
 			/* Verify OUTPUT_CONTROL was set correctly */
 			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
 			dev_info(&sensor->client->dev,
@@ -1880,6 +1871,22 @@ mt9m113_streaming:
 			dev_info(&sensor->client->dev,
 				 "MT9M113: MIPI already enabled, skipping reconfiguration\n");
 		}
+
+		/*
+		 * RESET_REGISTER must ALWAYS be written for streaming mode.
+		 * WebOS writes both 0x3400=0x7A08 and 0x301A=0x120C together
+		 * when starting streaming. Even if MIPI output is already
+		 * enabled, the RESET_REGISTER may not be in streaming mode.
+		 */
+		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+				MT9M113_RESET_REG_STREAMING, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev,
+				"MT9M113: RESET_REGISTER failed: %d\n", ret);
+			goto error;
+		}
+		dev_info(&sensor->client->dev,
+			 "MT9M113: RESET_REGISTER=0x120C (streaming mode)\n");
 
 		/*
 		 * Force sequencer refresh to reinitialize MIPI output.
