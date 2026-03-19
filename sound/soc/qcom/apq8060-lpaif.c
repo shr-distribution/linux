@@ -27,8 +27,8 @@
 
 #define DRIVER_NAME "apq8060-lpaif"
 
-/* WM8958/WM8994 MCLK rate from GP_CLK3 (TCXO-based) */
-#define WM8994_MCLK_RATE	19200000
+/* Include WM8994 register definitions for direct register access */
+#include <linux/mfd/wm8994/registers.h>
 
 struct apq8060_lpaif_data {
 	struct snd_soc_card card;
@@ -43,6 +43,7 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	struct snd_soc_component *component = codec_dai->component;
 	unsigned int rate = params_rate(params);
 	unsigned int sysclk_rate;
 	int ret;
@@ -54,7 +55,11 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	 */
 	sysclk_rate = rate * 256;
 
-	dev_dbg(rtd->dev, "hw_params: rate=%u, sysclk=%u\n", rate, sysclk_rate);
+	/* Ensure minimum sysclk of 4.096MHz */
+	if (sysclk_rate < 4096000)
+		sysclk_rate = 4096000;
+
+	dev_info(rtd->dev, "hw_params: rate=%u, sysclk=%u\n", rate, sysclk_rate);
 
 	/* Set CPU DAI sysclk */
 	ret = snd_soc_dai_set_sysclk(cpu_dai, 0, sysclk_rate, SND_SOC_CLOCK_OUT);
@@ -64,12 +69,16 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	/*
-	 * Configure WM8994/WM8958 FLL1 to generate sysclk from MCLK1.
-	 * MCLK1 is 19.2MHz from GP_CLK3 (TCXO-based).
-	 * FLL will generate the required sysclk rate.
+	 * Configure WM8994/WM8958 FLL1 to generate sysclk from LRCLK.
+	 * LRCLK (word clock) runs at the sample rate and is provided by
+	 * the LPAIF when the stream starts. The FLL will multiply this
+	 * to generate the required sysclk rate.
+	 *
+	 * Note: We cannot use MCLK because there's no GP_CLK3 available
+	 * on this platform. LRCLK is the only reliable clock source.
 	 */
-	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_MCLK1,
-				  WM8994_MCLK_RATE, sysclk_rate);
+	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_LRCLK,
+				  rate, sysclk_rate);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set codec FLL: %d\n", ret);
 		return ret;
@@ -81,6 +90,56 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set codec sysclk: %d\n", ret);
 		return ret;
+	}
+
+	/*
+	 * Force-enable power management registers for the output path.
+	 * DAPM may not properly power up all widgets because the path
+	 * detection doesn't always work correctly. Enable them here
+	 * during hw_params so they're ready when playback starts.
+	 *
+	 * TouchPad uses LINEOUT (not SPKOUT) connected to external amp.
+	 */
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		dev_info(rtd->dev, "Enabling output power registers\n");
+
+		/* PM5: Enable DAC1 left and right */
+		snd_soc_component_update_bits(component, WM8994_POWER_MANAGEMENT_5,
+					      WM8994_DAC1L_ENA | WM8994_DAC1R_ENA,
+					      WM8994_DAC1L_ENA | WM8994_DAC1R_ENA);
+
+		/* PM3: Enable LINEOUT drivers and output mixers */
+		snd_soc_component_update_bits(component, WM8994_POWER_MANAGEMENT_3,
+					      WM8994_LINEOUT1P_ENA | WM8994_LINEOUT1N_ENA |
+					      WM8994_LINEOUT2P_ENA | WM8994_LINEOUT2N_ENA |
+					      WM8994_MIXOUTLVOL_ENA | WM8994_MIXOUTRVOL_ENA,
+					      WM8994_LINEOUT1P_ENA | WM8994_LINEOUT1N_ENA |
+					      WM8994_LINEOUT2P_ENA | WM8994_LINEOUT2N_ENA |
+					      WM8994_MIXOUTLVOL_ENA | WM8994_MIXOUTRVOL_ENA);
+
+		/* Enable DAC1 to output mixer paths */
+		snd_soc_component_update_bits(component, WM8994_OUTPUT_MIXER_1,
+					      WM8994_DAC1L_TO_MIXOUTL,
+					      WM8994_DAC1L_TO_MIXOUTL);
+		snd_soc_component_update_bits(component, WM8994_OUTPUT_MIXER_2,
+					      WM8994_DAC1R_TO_MIXOUTR,
+					      WM8994_DAC1R_TO_MIXOUTR);
+
+		/* Enable output mixer to LINEOUT paths */
+		snd_soc_component_update_bits(component, WM8994_LINE_MIXER_1,
+					      WM8994_MIXOUTL_TO_LINEOUT1P,
+					      WM8994_MIXOUTL_TO_LINEOUT1P);
+		snd_soc_component_update_bits(component, WM8994_LINE_MIXER_2,
+					      WM8994_MIXOUTR_TO_LINEOUT2P,
+					      WM8994_MIXOUTR_TO_LINEOUT2P);
+
+		/* Enable AIF1 to DAC1 path */
+		snd_soc_component_update_bits(component, WM8994_DAC1_LEFT_MIXER_ROUTING,
+					      WM8994_AIF1DAC1L_TO_DAC1L,
+					      WM8994_AIF1DAC1L_TO_DAC1L);
+		snd_soc_component_update_bits(component, WM8994_DAC1_RIGHT_MIXER_ROUTING,
+					      WM8994_AIF1DAC1R_TO_DAC1R,
+					      WM8994_AIF1DAC1R_TO_DAC1R);
 	}
 
 	return 0;
