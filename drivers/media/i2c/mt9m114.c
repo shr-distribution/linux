@@ -1882,37 +1882,63 @@ mt9m113_streaming:
 		}
 
 		/*
-		 * Check current sensor state and restart streaming if needed.
-		 * If sensor is already in streaming state (SEQ_STATE=0x3) from
-		 * initialization, issuing SEQ_CMD=1 may not restart MIPI output.
-		 * We need to stop first, then start.
+		 * Force sequencer refresh to reinitialize MIPI output.
+		 *
+		 * WebOS uses SEQ_CMD=6 (REFRESH_MODE) followed by SEQ_CMD=5
+		 * (REFRESH) in its sequencer table. This forces the sensor to
+		 * reinitialize mode settings and restart MIPI output.
+		 *
+		 * Simply issuing SEQ_CMD=1 (RUN) when already streaming may
+		 * not restart MIPI output if the sensor went idle.
 		 */
 		{
-			u64 seq_state;
+			u64 seq_state, seq_cmd;
+
 			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
 			dev_info(&sensor->client->dev,
-				 "MT9M113: SEQ_STATE before start=0x%llx\n", seq_state);
+				 "MT9M113: SEQ_STATE=0x%llx before refresh\n", seq_state);
 
-			if (seq_state == 0x03) {
-				/*
-				 * Already streaming - need to stop first to restart
-				 * MIPI output. Issue SEQ_CMD=0 (standby).
-				 */
-				dev_info(&sensor->client->dev,
-					 "MT9M113: Already streaming, stopping first\n");
-				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD, 0);
-				if (ret) {
-					dev_err(&sensor->client->dev,
-						"MT9M113: SEQ_CMD STOP failed: %d\n", ret);
-					goto error;
-				}
-				/* Wait for standby state */
-				msleep(50);
-
-				mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-				dev_info(&sensor->client->dev,
-					 "MT9M113: SEQ_STATE after stop=0x%llx\n", seq_state);
+			/* Issue REFRESH_MODE (0x0006) to force mode reinit */
+			dev_info(&sensor->client->dev,
+				 "MT9M113: Issuing SEQ_CMD=6 (REFRESH_MODE)\n");
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+						    MT9M113_SEQ_CMD_REFRESH_MODE);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: SEQ_CMD REFRESH_MODE failed: %d\n", ret);
+				goto error;
 			}
+
+			/* Wait for command to complete (SEQ_CMD returns to 0) */
+			msleep(10);
+			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0, 500);
+			if (ret < 0) {
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: REFRESH_MODE timeout, continuing\n");
+			}
+
+			/* Issue REFRESH (0x0005) per webOS sequencer table */
+			dev_info(&sensor->client->dev,
+				 "MT9M113: Issuing SEQ_CMD=5 (REFRESH)\n");
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+						    MT9M113_SEQ_CMD_REFRESH);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: SEQ_CMD REFRESH failed: %d\n", ret);
+				goto error;
+			}
+
+			/* Wait for refresh to complete */
+			msleep(10);
+			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0, 500);
+			if (ret < 0) {
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: REFRESH timeout, continuing\n");
+			}
+
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+			dev_info(&sensor->client->dev,
+				 "MT9M113: SEQ_STATE=0x%llx after refresh\n", seq_state);
 		}
 
 		/*
