@@ -28,7 +28,7 @@ static const struct reg_default wm1811_defaults[] = {
 	{ 0x001B, 0x008B },    /* R27   - Right Line Input 3&4 Volume */
 	{ 0x001C, 0x006D },    /* R28   - Left Output Volume */
 	{ 0x001D, 0x006D },    /* R29   - Right Output Volume */
-	{ 0x001E, 0x0066 },    /* R30   - Line Outputs Volume */
+	{ 0x001E, 0x0000 },    /* R30   - Line Outputs Volume (unmuted, 0dB) */
 	{ 0x001F, 0x0020 },    /* R31   - HPOUT2 Volume */
 	{ 0x0020, 0x0079 },    /* R32   - Left OPGA Volume */
 	{ 0x0021, 0x0079 },    /* R33   - Right OPGA Volume */
@@ -260,7 +260,7 @@ static const struct reg_default wm8994_defaults[] = {
 	{ 0x001B, 0x008B },    /* R27    - Right Line Input 3&4 Volume */ 
 	{ 0x001C, 0x006D },    /* R28    - Left Output Volume */ 
 	{ 0x001D, 0x006D },    /* R29    - Right Output Volume */ 
-	{ 0x001E, 0x0066 },    /* R30    - Line Outputs Volume */ 
+	{ 0x001E, 0x0000 },    /* R30    - Line Outputs Volume (unmuted, 0dB) */ 
 	{ 0x001F, 0x0020 },    /* R31    - HPOUT2 Volume */ 
 	{ 0x0020, 0x0079 },    /* R32    - Left OPGA Volume */ 
 	{ 0x0021, 0x0079 },    /* R33    - Right OPGA Volume */ 
@@ -479,7 +479,7 @@ static const struct reg_default wm8958_defaults[] = {
 	{ 0x001B, 0x008B },    /* R27    - Right Line Input 3&4 Volume */
 	{ 0x001C, 0x006D },    /* R28    - Left Output Volume */
 	{ 0x001D, 0x006D },    /* R29    - Right Output Volume */
-	{ 0x001E, 0x0066 },    /* R30    - Line Outputs Volume */
+	{ 0x001E, 0x0000 },    /* R30    - Line Outputs Volume (unmuted, 0dB) */
 	{ 0x001F, 0x0020 },    /* R31    - HPOUT2 Volume */
 	{ 0x0020, 0x0079 },    /* R32    - Left OPGA Volume */
 	{ 0x0021, 0x0079 },    /* R33    - Right OPGA Volume */
