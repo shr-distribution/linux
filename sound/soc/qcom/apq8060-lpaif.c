@@ -46,6 +46,7 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_component *component = codec_dai->component;
 	unsigned int rate = params_rate(params);
 	unsigned int sysclk_rate;
+	unsigned int bclk_rate;
 	int ret;
 
 	/*
@@ -69,16 +70,24 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	/*
-	 * Configure WM8994/WM8958 FLL1 to generate sysclk from LRCLK.
-	 * LRCLK (word clock) runs at the sample rate and is provided by
-	 * the LPAIF when the stream starts. The FLL will multiply this
-	 * to generate the required sysclk rate.
+	 * Configure WM8994/WM8958 FLL1 to generate sysclk from BCLK.
 	 *
-	 * Note: We cannot use MCLK because there's no GP_CLK3 available
-	 * on this platform. LRCLK is the only reliable clock source.
+	 * IMPORTANT: We use BCLK (GPIO 109) instead of LRCLK (GPIO 108) as
+	 * the FLL source because GPIO 108 is shared with LDO2ENA on the
+	 * HP TouchPad. When LRCLK toggles during audio playback, it causes
+	 * LDO2 power instability resulting in I2C failures.
+	 *
+	 * BCLK runs at sample_rate * channels * bits_per_sample.
+	 * For 48kHz 16-bit stereo: 48000 * 2 * 16 = 1,536,000 Hz
 	 */
-	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_LRCLK,
-				  rate, sysclk_rate);
+	bclk_rate = rate * params_channels(params) *
+		    snd_pcm_format_width(params_format(params));
+
+	dev_info(rtd->dev, "FLL input: BCLK=%u Hz, output sysclk=%u Hz\n",
+		 bclk_rate, sysclk_rate);
+
+	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_BCLK,
+				  bclk_rate, sysclk_rate);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set codec FLL: %d\n", ret);
 		return ret;
