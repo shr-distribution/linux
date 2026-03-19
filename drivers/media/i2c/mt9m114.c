@@ -1421,33 +1421,14 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	dev_info(dev, "MT9M113: sequencer refresh completed\n");
 
 	/*
-	 * Configure MIPI output interface.
-	 * 0x3400 = 0x7A08 enables MIPI CSI-2 output on MT9M113.
-	 * Note: MT9M114 uses 0x3C40 instead, but that register doesn't exist on MT9M113.
+	 * NOTE: Do NOT enable MIPI output here during init.
+	 * MIPI output (0x3400, 0x3404) is enabled during s_stream when the
+	 * pipeline is ready to receive data. Enabling it here would cause
+	 * the sensor to output MIPI while idle, which may cause the MIPI
+	 * transmitter to enter a stuck state by the time s_stream is called.
 	 */
-	if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
-		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-		if (ret < 0) {
-			dev_err(dev, "MT9M113: failed to enable MIPI output: %d\n", ret);
-			return ret;
-		}
-		dev_info(dev, "MT9M113: MIPI output enabled (0x3400=0x7A08)\n");
 
-		/*
-		 * Enable Frame Start/End short packets via CUSTOM_SHORT_PKT.
-		 * Bit 7 must be set or VFE never receives CAMIF_SOF interrupts.
-		 */
-		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-		if (ret < 0) {
-			dev_err(dev, "MT9M113: failed to enable FS/FE packets: %d\n", ret);
-			return ret;
-		}
-		dev_info(dev, "MT9M113: Frame Start/End packets enabled (0x3404=0x0080)\n");
-	}
-
-	dev_info(dev, "MT9M113: initialization complete\n");
+	dev_info(dev, "MT9M113: initialization complete (MIPI deferred to s_stream)\n");
 	return 0;
 }
 
