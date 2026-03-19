@@ -455,6 +455,13 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 		goto err_regulator_free;
 	}
 
+	/*
+	 * Give the codec time to stabilize after supplies are enabled.
+	 * Without this delay, I2C access may fail on some platforms.
+	 * The WM8994/WM8958 needs time to initialize its internal state.
+	 */
+	msleep(50);
+
 	ret = wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET);
 	if (ret < 0) {
 		dev_err(wm8994->dev, "Failed to read ID register\n");
