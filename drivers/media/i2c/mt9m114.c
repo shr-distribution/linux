@@ -83,11 +83,10 @@
  * MT9M113 OUTPUT_CONTROL register (physical register, not MCU variable)
  * This register controls the output interface mode (parallel vs MIPI).
  * Value 0x7A08 enables MIPI CSI-2 output with LP (Low Power) mode.
- * Value 0x7A0C enables MIPI CSI-2 output with continuous clock.
- * Use continuous clock to prevent MIPI PHY from going idle between frames.
+ * Value 0x7A0C enables continuous clock but breaks MIPI output - don't use.
  */
 #define MT9M113_OUTPUT_CONTROL				CCI_REG16(0x3400)
-#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A0C
+#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08
 
 /*
  * MT9M113 CUSTOM_SHORT_PKT register (0x3404)
