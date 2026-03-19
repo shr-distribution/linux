@@ -1827,50 +1827,37 @@ mt9m113_streaming:
 		 * Re-writing OUTPUT_CONTROL when MIPI is already active causes
 		 * a PHY reset that stops data output (CSIPHY IRQs stop).
 		 *
-		 * WebOS writes OUTPUT_CONTROL/RESET_REGISTER only ONCE during
-		 * initial sensor configuration. For subsequent s_stream calls,
-		 * it only issues SEQ_CMD to start/stop.
+		 * Always write MIPI configuration during s_stream.
+		 * Even if OUTPUT_CONTROL appears set, the MIPI PHY may have
+		 * gone idle and needs to be re-triggered.
 		 */
 		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx (need 0x7a08)\n",
+		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL before=0x%llx\n",
 			 output_ctrl);
 
-		if (output_ctrl != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: MIPI not enabled, configuring now\n");
-
-			/*
-			 * Enable Frame Start/End short packets FIRST.
-			 * Without this, VFE never receives CAMIF_SOF interrupts.
-			 * Must be done BEFORE enabling MIPI output.
-			 */
-			ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-					MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
-				goto error;
-			}
-			dev_info(&sensor->client->dev,
-				 "MT9M113: CUSTOM_SHORT_PKT=0x80 (FS/FE enabled)\n");
-
-			/* Now enable MIPI output interface */
-			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-					MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
-				goto error;
-			}
-
-			/* Verify OUTPUT_CONTROL was set correctly */
-			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: OUTPUT_CONTROL after write=0x%llx\n", output_ctrl);
-		} else {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: MIPI already enabled, skipping reconfiguration\n");
+		/*
+		 * Enable Frame Start/End short packets FIRST.
+		 * Without this, VFE never receives CAMIF_SOF interrupts.
+		 * Must be done BEFORE enabling MIPI output.
+		 */
+		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev,
+				"MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
+			goto error;
 		}
+
+		/* Enable MIPI output interface */
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+		if (ret) {
+			dev_err(&sensor->client->dev,
+				"MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
+			goto error;
+		}
+		dev_info(&sensor->client->dev,
+			 "MT9M113: OUTPUT_CONTROL=0x7A08 (MIPI enabled)\n");
 
 		/*
 		 * RESET_REGISTER must ALWAYS be written for streaming mode.
