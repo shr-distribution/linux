@@ -1889,68 +1889,12 @@ mt9m113_streaming:
 			 "MT9M113: RESET_REGISTER=0x120C (streaming mode)\n");
 
 		/*
-		 * Force sequencer refresh to reinitialize MIPI output.
-		 *
-		 * WebOS uses SEQ_CMD=6 (REFRESH_MODE) followed by SEQ_CMD=5
-		 * (REFRESH) in its sequencer table. This forces the sensor to
-		 * reinitialize mode settings and restart MIPI output.
-		 *
-		 * Simply issuing SEQ_CMD=1 (RUN) when already streaming may
-		 * not restart MIPI output if the sensor went idle.
-		 */
-		{
-			u64 seq_state, seq_cmd;
-
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: SEQ_STATE=0x%llx before refresh\n", seq_state);
-
-			/* Issue REFRESH_MODE (0x0006) to force mode reinit */
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Issuing SEQ_CMD=6 (REFRESH_MODE)\n");
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						    MT9M113_SEQ_CMD_REFRESH_MODE);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: SEQ_CMD REFRESH_MODE failed: %d\n", ret);
-				goto error;
-			}
-
-			/* Wait for command to complete (SEQ_CMD returns to 0) */
-			msleep(10);
-			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0, 500);
-			if (ret < 0) {
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: REFRESH_MODE timeout, continuing\n");
-			}
-
-			/* Issue REFRESH (0x0005) per webOS sequencer table */
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Issuing SEQ_CMD=5 (REFRESH)\n");
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						    MT9M113_SEQ_CMD_REFRESH);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: SEQ_CMD REFRESH failed: %d\n", ret);
-				goto error;
-			}
-
-			/* Wait for refresh to complete */
-			msleep(10);
-			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0, 500);
-			if (ret < 0) {
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: REFRESH timeout, continuing\n");
-			}
-
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: SEQ_STATE=0x%llx after refresh\n", seq_state);
-		}
-
-		/*
 		 * Set capture mode via MCU interface.
 		 * From webOS kernel: SEQ_CAP_MODE=0x0030 for preview mode.
+		 *
+		 * Note: WebOS only uses REFRESH_MODE/REFRESH during sensor
+		 * initialization, NOT during streaming start. Issuing these
+		 * commands here disrupts active MIPI output from the sensor.
 		 */
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 		if (ret) {
