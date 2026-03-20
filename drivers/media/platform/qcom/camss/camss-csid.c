@@ -1351,6 +1351,9 @@ static int csid_link_setup(struct media_entity *entity,
 			lane_cfg = &csiphy->cfg.csi2->lane_cfg;
 			csid->phy.lane_cnt = lane_cfg->num_data;
 			csid->phy.lane_assign = csid_get_lane_assign(lane_cfg);
+			dev_info(csid->camss->dev,
+				"CSID%d: link_setup SINK from csiphy=%d, lanes=%d, assign=0x%x (from sensor)\n",
+				csid->id, csiphy->id, csid->phy.lane_cnt, csid->phy.lane_assign);
 		} else {
 			/*
 			 * No sensor bound yet - use defaults.
@@ -1360,9 +1363,9 @@ static int csid_link_setup(struct media_entity *entity,
 			 */
 			csid->phy.lane_cnt = 1;  /* Most common: 1 data lane */
 			csid->phy.lane_assign = 0;
-			dev_dbg(csid->camss->dev,
-				"CSID%d: No sensor bound yet, using default phy config (csiphy=%d)\n",
-				csid->id, csiphy->id);
+			dev_info(csid->camss->dev,
+				"CSID%d: link_setup SINK from csiphy=%d, lanes=%d (default, no sensor cfg)\n",
+				csid->id, csiphy->id, csid->phy.lane_cnt);
 		}
 	}
 	/* Decide which virtual channels to enable based on which source pads are enabled */
@@ -1378,8 +1381,9 @@ static int csid_link_setup(struct media_entity *entity,
 
 		csid->phy.need_vc_update = true;
 
-		dev_dbg(dev, "%s: Enabled CSID virtual channels mask 0x%x\n",
-			__func__, csid->phy.en_vc);
+		dev_info(dev, "CSID%d: link_setup SOURCE pad=%d, en_vc=0x%x, phy=%d lanes=%d\n",
+			csid->id, local->index, csid->phy.en_vc,
+			csid->phy.csiphy_id, csid->phy.lane_cnt);
 	}
 
 	return 0;
