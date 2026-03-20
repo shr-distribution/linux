@@ -3372,17 +3372,10 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 				dev_info(dev, "power_on: OUTPUT_CONTROL=0x%llx (expected 0x7A08)\n", readback);
 
 				/*
-				 * CUSTOM_SHORT_PKT (0x3404) enables Frame Start/End packets.
-				 * Without bit 7 set, VFE never receives CAMIF_SOF.
+				 * NOTE: webOS does NOT write CUSTOM_SHORT_PKT (0x3404).
+				 * VFE CAMIF generates SOF internally from pixel data,
+				 * not from MIPI short packets. Leave register at default.
 				 */
-				cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-					  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
-				if (ret < 0) {
-					dev_err(dev, "power_on: CUSTOM_SHORT_PKT failed: %d\n", ret);
-					goto error_clock;
-				}
-				cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-				dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (expected 0x0080)\n", readback);
 
 				/* RESET_REGISTER for streaming (0x120C per webOS/Samsung) */
 				cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
