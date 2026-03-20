@@ -790,6 +790,73 @@ static int mt9m113_poll_mcu_var(struct mt9m114 *sensor, u16 addr,
 	return -ETIMEDOUT;
 }
 
+/*
+ * mt9m113_configure_ifp - Configure MT9M113 output resolution via MCU variables
+ * @sensor: Sensor device
+ * @state: V4L2 subdev state containing the requested format
+ *
+ * MT9M113 uses MCU variables for resolution configuration, not direct registers
+ * like MT9M114. The output resolution is set via:
+ * - MODE_OUTPUT_WIDTH_A (0x2703)
+ * - MODE_OUTPUT_HEIGHT_A (0x2705)
+ *
+ * After changing resolution, a REFRESH_MODE command must be issued.
+ */
+static int mt9m113_configure_ifp(struct mt9m114 *sensor,
+				 struct v4l2_subdev_state *state)
+{
+	const struct v4l2_rect *compose;
+	int ret;
+
+	compose = v4l2_subdev_state_get_compose(state, 0);
+
+	dev_info(&sensor->client->dev,
+		 "MT9M113: configuring output resolution %ux%u\n",
+		 compose->width, compose->height);
+
+	/* Set MODE_OUTPUT_WIDTH_A */
+	ret = mt9m113_write_mcu_var(sensor, 0x2703, compose->width);
+	if (ret) {
+		dev_err(&sensor->client->dev,
+			"MT9M113: failed to set MODE_OUTPUT_WIDTH_A: %d\n", ret);
+		return ret;
+	}
+
+	/* Set MODE_OUTPUT_HEIGHT_A */
+	ret = mt9m113_write_mcu_var(sensor, 0x2705, compose->height);
+	if (ret) {
+		dev_err(&sensor->client->dev,
+			"MT9M113: failed to set MODE_OUTPUT_HEIGHT_A: %d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * Issue REFRESH_MODE command to apply the new resolution.
+	 * SEQ_CMD = 0x0006 triggers a mode refresh.
+	 */
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+				    MT9M113_SEQ_CMD_REFRESH_MODE);
+	if (ret) {
+		dev_err(&sensor->client->dev,
+			"MT9M113: failed to issue REFRESH_MODE: %d\n", ret);
+		return ret;
+	}
+
+	/* Wait for refresh to complete (SEQ_CMD returns to 0) */
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	if (ret) {
+		dev_err(&sensor->client->dev,
+			"MT9M113: REFRESH_MODE timeout\n");
+		return ret;
+	}
+
+	dev_info(&sensor->client->dev,
+		 "MT9M113: resolution configured to %ux%u\n",
+		 compose->width, compose->height);
+
+	return 0;
+}
+
 /* -----------------------------------------------------------------------------
  * MT9M113 Initialization Table
  *
@@ -1748,12 +1815,15 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 
 	/*
 	 * MT9M113 uses indirect MCU variable access (0x098C/0x0990) instead
-	 * of direct writes to 0xC000+ addresses. Skip the configure functions
-	 * which write to wrong addresses for MT9M113 - the sensor uses its
-	 * default configuration set during power_on.
+	 * of direct writes to 0xC000+ addresses. Configure the output
+	 * resolution via MCU variables before starting streaming.
 	 */
-	if (sensor->model == MT9M113_MODEL)
+	if (sensor->model == MT9M113_MODEL) {
+		ret = mt9m113_configure_ifp(sensor, ifp_state);
+		if (ret)
+			goto error;
 		goto mt9m113_streaming;
+	}
 
 	ret = mt9m114_configure_ifp(sensor, ifp_state);
 	if (ret)
