@@ -70,24 +70,24 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	/*
-	 * Configure WM8994/WM8958 FLL1 to generate sysclk from BCLK.
+	 * Configure WM8994/WM8958 FLL1 using internal oscillator.
 	 *
-	 * IMPORTANT: We use BCLK (GPIO 109) instead of LRCLK (GPIO 108) as
-	 * the FLL source because GPIO 108 is shared with LDO2ENA on the
-	 * HP TouchPad. When LRCLK toggles during audio playback, it causes
-	 * LDO2 power instability resulting in I2C failures.
+	 * GPIO 108 is shared with LDO2ENA on the HP TouchPad. We cannot use
+	 * I2S function on GPIO 108 as the I2S hardware drives it LOW when
+	 * idle, disabling LDO2 and causing I2C failures to the codec.
 	 *
-	 * BCLK runs at sample_rate * channels * bits_per_sample.
-	 * For 48kHz 16-bit stereo: 48000 * 2 * 16 = 1,536,000 Hz
+	 * Using FLL internal source (12MHz oscillator) avoids the need for
+	 * any external clock reference. The internal oscillator is always
+	 * running when the codec is powered.
 	 */
 	bclk_rate = rate * params_channels(params) *
 		    snd_pcm_format_width(params_format(params));
 
-	dev_info(rtd->dev, "FLL input: BCLK=%u Hz, output sysclk=%u Hz\n",
-		 bclk_rate, sysclk_rate);
+	dev_info(rtd->dev, "FLL using internal 12MHz oscillator, output sysclk=%u Hz\n",
+		 sysclk_rate);
 
-	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_BCLK,
-				  bclk_rate, sysclk_rate);
+	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_INTERNAL,
+				  12000000, sysclk_rate);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set codec FLL: %d\n", ret);
 		return ret;

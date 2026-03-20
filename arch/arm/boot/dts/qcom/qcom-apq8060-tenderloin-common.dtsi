@@ -1696,16 +1696,18 @@
 		 * The 3G device tree should override this pinctrl.
 		 */
 		/*
-		 * GPIO 108: I2S WS (LRCLK) with pull-up bias.
-		 * This pin is shared with WM8958 LDO2 enable. Using pull-up
-		 * helps keep the average voltage high when I2S toggles the
-		 * signal, hopefully maintaining LDO2 enabled.
+		 * GPIO 108: Keep as GPIO output HIGH for LDO2 enable.
+		 * Cannot use I2S function - the I2S hardware drives LOW when
+		 * idle, disabling LDO2 and causing I2C failures to codec.
+		 * Pull-up bias is not strong enough to overcome active drive.
+		 * Codec configured as I2S master to generate its own LRCLK.
 		 */
 		i2s-ws-pins {
 			pins = "gpio108";
-			function = "i2s";
+			function = "gpio";
 			drive-strength = <8>;
-			bias-pull-up;
+			bias-disable;
+			output-high;
 		};
 		i2s-sck-pins {
 			pins = "gpio109";
