@@ -1829,6 +1829,8 @@ mt9m113_streaming:
 				"MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
 			goto error;
 		}
+		dev_info(&sensor->client->dev,
+			 "MT9M113: CUSTOM_SHORT_PKT=0x0080 (FS/FE packets enabled)\n");
 
 		/* Enable MIPI output interface */
 		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
