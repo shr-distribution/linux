@@ -188,10 +188,36 @@ static int apq8060_lpaif_dai_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_card *card = rtd->card;
 	struct apq8060_lpaif_data *data = snd_soc_card_get_drvdata(card);
 	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_component *component = codec_dai->component;
 	int ret;
 
 	dev_info(card->dev, "LPAIF DAI init for %s\n", rtd->dai_link->name);
+
+	/*
+	 * Configure codec as I2S master (CBP_CFP = codec provides BCLK and LRCLK).
+	 * This is required because GPIO 108 (LRCLK) must stay as GPIO output HIGH
+	 * to keep WM8958 LDO2 enabled. The codec will generate its own LRCLK
+	 * from the FLL output.
+	 */
+	ret = snd_soc_dai_set_fmt(codec_dai,
+				  SND_SOC_DAIFMT_I2S |
+				  SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_CBP_CFP);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(card->dev, "Failed to set codec DAI format: %d\n", ret);
+		return ret;
+	}
+
+	/* Configure LPAIF as I2S slave (receive clocks from codec) */
+	ret = snd_soc_dai_set_fmt(cpu_dai,
+				  SND_SOC_DAIFMT_I2S |
+				  SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_CBC_CFC);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(card->dev, "Failed to set CPU DAI format: %d\n", ret);
+		return ret;
+	}
 
 	/* Set up headphone jack detection if not already done */
 	if (!data->jack_setup) {

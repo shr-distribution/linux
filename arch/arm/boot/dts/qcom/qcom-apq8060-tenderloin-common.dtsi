@@ -1709,12 +1709,16 @@
 			bias-disable;
 			output-high;
 		};
+		/*
+		 * GPIO 109 (BCLK) - in codec master mode, this receives
+		 * BCLK from the codec. Configure as input.
+		 */
 		i2s-sck-pins {
 			pins = "gpio109";
 			function = "i2s";
-			drive-strength = <8>;
-			bias-disable;
-			output-high;
+			drive-strength = <2>;
+			bias-pull-down;
+			input-enable;
 		};
 		i2s-data-pins {
 			pins = "gpio110";
