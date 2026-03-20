@@ -1695,9 +1695,15 @@
 		 * Note: On 3G variants, GPIO 110 is used for BT_POWER instead.
 		 * The 3G device tree should override this pinctrl.
 		 */
+		/*
+		 * GPIO 108 kept as GPIO output HIGH for LDO2 enable.
+		 * Cannot use I2S function as it drives the pin LOW when idle,
+		 * disabling LDO2 and causing I2C failures to the codec.
+		 * Audio will need to work without LRCLK from this pin.
+		 */
 		i2s-ws-pins {
 			pins = "gpio108";
-			function = "i2s";
+			function = "gpio";
 			drive-strength = <8>;
 			bias-disable;
 			output-high;
