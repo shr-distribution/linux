@@ -1818,19 +1818,12 @@ mt9m113_streaming:
 			 output_ctrl);
 
 		/*
-		 * Enable Frame Start/End short packets FIRST.
-		 * Without this, VFE never receives CAMIF_SOF interrupts.
-		 * Must be done BEFORE enabling MIPI output.
+		 * NOTE: webOS does NOT write CUSTOM_SHORT_PKT (0x3404).
+		 * The VFE CAMIF generates its own SOF based on detecting
+		 * active pixel data, not from MIPI short packets.
+		 * Previous attempts to enable FS/FE packets may have
+		 * interfered with normal data flow.
 		 */
-		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev,
-				"MT9M113: CUSTOM_SHORT_PKT failed: %d\n", ret);
-			goto error;
-		}
-		dev_info(&sensor->client->dev,
-			 "MT9M113: CUSTOM_SHORT_PKT=0x0080 (FS/FE packets enabled)\n");
 
 		/* Enable MIPI output interface */
 		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
@@ -1890,12 +1883,36 @@ mt9m113_streaming:
 		 */
 		msleep(50);
 
-		/* Check sensor state */
+		/*
+		 * Comprehensive sensor state readback for debugging.
+		 * This logs all critical registers after streaming starts.
+		 */
 		{
-			u64 seq_state;
+			u64 seq_state, seq_cmd, reset_reg, output_ctrl_after;
+			u64 mode_width, mode_height, frame_length, line_length;
+
+			/* Sequencer state */
 			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			dev_info(&sensor->client->dev, "MT9M113: SEQ_STATE after start=0x%llx (streaming if 0x03)\n",
-				 seq_state);
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
+			dev_info(&sensor->client->dev,
+				 "MT9M113: SEQ_STATE=0x%llx (0x03=streaming) SEQ_CMD=0x%llx (0x00=ready)\n",
+				 seq_state, seq_cmd);
+
+			/* Control registers */
+			cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &reset_reg, NULL);
+			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl_after, NULL);
+			dev_info(&sensor->client->dev,
+				 "MT9M113: RESET_REG=0x%llx (0x120C=streaming) OUTPUT_CTRL=0x%llx (0x7A08=MIPI)\n",
+				 reset_reg, output_ctrl_after);
+
+			/* Mode configuration - verify resolution via MCU vars */
+			mt9m113_read_mcu_var(sensor, 0x2703, &mode_width);  /* MODE_OUTPUT_WIDTH_A */
+			mt9m113_read_mcu_var(sensor, 0x2705, &mode_height); /* MODE_OUTPUT_HEIGHT_A */
+			mt9m113_read_mcu_var(sensor, 0x2719, &frame_length); /* MODE_SENSOR_FRAME_LENGTH_A */
+			mt9m113_read_mcu_var(sensor, 0x271B, &line_length);  /* MODE_SENSOR_LINE_LENGTH_PCK_A */
+			dev_info(&sensor->client->dev,
+				 "MT9M113: MODE_A: %lldx%lld, frame_len=%lld, line_len=%lld\n",
+				 mode_width, mode_height, frame_length, line_length);
 		}
 
 		dev_info(&sensor->client->dev, "MT9M113: streaming command sequence complete\n");
