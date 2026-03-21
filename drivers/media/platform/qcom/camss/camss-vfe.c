@@ -824,13 +824,15 @@ int vfe_reset(struct vfe_device *vfe)
 #define MSM8660_VFE_CC_REG_CSI1_VFE_EN	BIT(10)  /* CSI1->VFE bridge */
 #define MSM8660_VFE_CC_REG_CSI0_VFE_EN	BIT(12)  /* CSI0->VFE bridge */
 
-/* Clock halt status register at 0x01CC */
+/*
+ * Clock halt status register at 0x01CC (CLK_HALT_STATEC)
+ * Halt bits from mmcc-msm8660.c clock driver definitions.
+ * 1 = clock halted/not running, 0 = clock running
+ */
 #define MSM8660_CLK_HALT_STATEC_OFFSET	0x01CC
-#define MSM8660_CLK_HALT_VFE_CLK	BIT(0)   /* VFE clock halted */
-#define MSM8660_CLK_HALT_CSI0_CLK	BIT(7)   /* CSI0 clock halted */
-#define MSM8660_CLK_HALT_CSI1_CLK	BIT(8)   /* CSI1 clock halted */
-#define MSM8660_CLK_HALT_CSI0_VFE_CLK	BIT(9)   /* CSI0-VFE bridge halted */
-#define MSM8660_CLK_HALT_CSI1_VFE_CLK	BIT(10)  /* CSI1-VFE bridge halted */
+#define MSM8660_CLK_HALT_VFE_CLK	BIT(6)   /* vfe_clk halted */
+#define MSM8660_CLK_HALT_VFE_CSI0_CLK	BIT(7)   /* vfe_csi0_clk halted */
+#define MSM8660_CLK_HALT_VFE_CSI1_CLK	BIT(8)   /* vfe_csi1_clk halted - CRITICAL for MT9M113 */
 
 /* CSI source clock NS registers */
 #define MSM8660_CSI0_NS_REG_OFFSET	0x0024
@@ -1032,26 +1034,26 @@ static void vfe31_debug_dump_clock_state(struct device *dev)
 
 	/*
 	 * 5. Clock Halt Status - verify clocks are actually running
+	 * Bit positions from mmcc-msm8660.c clock driver:
+	 *   vfe_clk:      halt_bit = 6
+	 *   vfe_csi0_clk: halt_bit = 7
+	 *   vfe_csi1_clk: halt_bit = 8  <-- CRITICAL for MT9M113
 	 */
 	halt_status = readl_relaxed(mmcc_base + MSM8660_CLK_HALT_STATEC_OFFSET);
 	dev_info(dev, "CLOCK DEBUG: CLK_HALT_STATEC (0x%03x) = 0x%08x  <-- 1=HALTED, 0=running\n",
 		 MSM8660_CLK_HALT_STATEC_OFFSET, halt_status);
-	dev_info(dev, "  VFE_CLK halt (bit 0):       %s\n",
+	dev_info(dev, "  vfe_clk halt (bit 6):      %s\n",
 		 (halt_status & MSM8660_CLK_HALT_VFE_CLK) ? "HALTED!" : "running");
-	dev_info(dev, "  CSI0_CLK halt (bit 7):      %s\n",
-		 (halt_status & MSM8660_CLK_HALT_CSI0_CLK) ? "HALTED!" : "running");
-	dev_info(dev, "  CSI1_CLK halt (bit 8):      %s\n",
-		 (halt_status & MSM8660_CLK_HALT_CSI1_CLK) ? "HALTED!" : "running");
-	dev_info(dev, "  CSI0_VFE_CLK halt (bit 9):  %s\n",
-		 (halt_status & MSM8660_CLK_HALT_CSI0_VFE_CLK) ? "HALTED!" : "running");
-	dev_info(dev, "  CSI1_VFE_CLK halt (bit 10): %s  <-- CRITICAL\n",
-		 (halt_status & MSM8660_CLK_HALT_CSI1_VFE_CLK) ? "HALTED!" : "running");
+	dev_info(dev, "  vfe_csi0_clk halt (bit 7): %s\n",
+		 (halt_status & MSM8660_CLK_HALT_VFE_CSI0_CLK) ? "HALTED!" : "running");
+	dev_info(dev, "  vfe_csi1_clk halt (bit 8): %s  <-- CRITICAL for MT9M113\n",
+		 (halt_status & MSM8660_CLK_HALT_VFE_CSI1_CLK) ? "HALTED!" : "running");
 
-	if (halt_status & MSM8660_CLK_HALT_CSI1_VFE_CLK) {
-		dev_err(dev, "  *** ERROR: CSI1_VFE_CLK is HALTED - data cannot flow! ***\n");
+	if (halt_status & MSM8660_CLK_HALT_VFE_CSI1_CLK) {
+		dev_err(dev, "  *** ERROR: vfe_csi1_clk is HALTED - CSI1->VFE data path blocked! ***\n");
 	}
-	if (halt_status & MSM8660_CLK_HALT_CSI1_CLK) {
-		dev_err(dev, "  *** ERROR: CSI1_CLK is HALTED! ***\n");
+	if (halt_status & MSM8660_CLK_HALT_VFE_CLK) {
+		dev_err(dev, "  *** ERROR: vfe_clk is HALTED - VFE core not running! ***\n");
 	}
 
 	iounmap(mmcc_base);
