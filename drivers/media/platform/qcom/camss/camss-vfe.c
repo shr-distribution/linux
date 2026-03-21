@@ -1040,8 +1040,13 @@ static void vfe31_debug_dump_clock_state(struct device *dev)
 		 MSM8660_VFE_CC_REG_OFFSET, vfe_cc_reg);
 	dev_info(dev, "  VFE_CLK (bit 0):      %s\n",
 		 (vfe_cc_reg & MSM8660_VFE_CC_REG_VFE_CLK_EN) ? "ENABLED" : "disabled");
-	dev_info(dev, "  VFE_AXI_CLK (bit 1):  %s\n",
-		 (vfe_cc_reg & MSM8660_VFE_CC_REG_VFE_AXI_EN) ? "ENABLED" : "disabled");
+	/*
+	 * Note: VFE_CC_REG bit 1 is NOT the same as the clock driver's vfe_axi_clk
+	 * which is in MAXI_EN_REG (0x0018) bit 18. This bit's exact function in
+	 * VFE_CC_REG is unclear - webOS may not use it.
+	 */
+	dev_info(dev, "  VFE_CC bit 1 (unused?): %s  (vfe_axi_clk is at MAXI_EN_REG)\n",
+		 (vfe_cc_reg & MSM8660_VFE_CC_REG_VFE_AXI_EN) ? "set" : "clear");
 	dev_info(dev, "  CSI1_VFE_CLK (bit 10): %s  <-- CRITICAL: CSI1->VFE bridge\n",
 		 (vfe_cc_reg & MSM8660_VFE_CC_REG_CSI1_VFE_EN) ? "ENABLED" : "disabled");
 	dev_info(dev, "  CSI0_VFE_CLK (bit 12): %s\n",

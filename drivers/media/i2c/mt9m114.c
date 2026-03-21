@@ -1903,8 +1903,30 @@ mt9m113_streaming:
 				"MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
 			goto error;
 		}
-		dev_info(&sensor->client->dev,
-			 "MT9M113: OUTPUT_CONTROL=0x7A08 (MIPI enabled)\n");
+
+		/* Verify the write took effect */
+		{
+			u64 readback;
+			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+			if (readback != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: OUTPUT_CONTROL write FAILED! wrote=0x7A08 read=0x%llx\n",
+					 readback);
+				/*
+				 * Try writing again - some sensors need delay or
+				 * specific sequencing for MIPI enable to stick.
+				 */
+				usleep_range(1000, 2000);
+				cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+					  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+				dev_info(&sensor->client->dev,
+					 "MT9M113: OUTPUT_CONTROL retry: 0x%llx\n", readback);
+			} else {
+				dev_info(&sensor->client->dev,
+					 "MT9M113: OUTPUT_CONTROL=0x7A08 (MIPI enabled, verified)\n");
+			}
+		}
 
 		/*
 		 * RESET_REGISTER must ALWAYS be written for streaming mode.
