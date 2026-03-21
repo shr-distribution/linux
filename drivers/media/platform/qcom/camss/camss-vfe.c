@@ -784,19 +784,80 @@ int vfe_reset(struct vfe_device *vfe)
  *   May contain CSI mux registers that route CSIPHY to VFE.
  *   Exact layout unknown - dumping first 32 bytes for analysis.
  */
+/*
+ * MSM8660 Clock Controller Registers for Debug
+ *
+ * MMCC (Multimedia Clock Controller) base: 0x04000000
+ *
+ * Key registers for CSI->VFE data path:
+ *   CSI_CC_REG (0x0040): CSI core clock enables
+ *   MISC_CC_REG (0x0058): csi_pix/csi_rdi clock mux and enables
+ *   VFE_CC_REG (0x0104): VFE and CSI-VFE bridge clock enables
+ *   CLK_HALT_STATEC_REG (0x0108): Clock halt status for VFE/CSI
+ *
+ * CSI Source Clock RCGs:
+ *   CSI0_NS_REG (0x0024): CSI0 source clock configuration
+ *   CSI1_NS_REG (0x0034): CSI1 source clock configuration
+ */
 #define MSM8660_MMCC_BASE		0x04000000
 #define MSM8660_MMCC_SIZE		0x1000
+
+/* CSI_CC_REG at 0x0040 - CSI core and PHY clock enables */
 #define MSM8660_CSI_CC_REG_OFFSET	0x0040
 #define MSM8660_CSI_CC_REG_CSI0_EN	BIT(0)
 #define MSM8660_CSI_CC_REG_CSI1_EN	BIT(7)
 #define MSM8660_CSI_CC_REG_CSI0_PHY_EN	BIT(8)
 #define MSM8660_CSI_CC_REG_CSI1_PHY_EN	BIT(9)
+
+/* MISC_CC_REG at 0x0058 - csi_pix and csi_rdi clock mux and enables */
+#define MSM8660_MISC_CC_REG_OFFSET	0x0058
+#define MSM8660_MISC_CC_REG_CSI_RDI_SEL	BIT(12)  /* 0=CSI0, 1=CSI1 */
+#define MSM8660_MISC_CC_REG_CSI_RDI_EN	BIT(13)  /* csi_rdi_clk enable */
+#define MSM8660_MISC_CC_REG_CSI_PIX_SEL	BIT(25)  /* 0=CSI0, 1=CSI1 */
+#define MSM8660_MISC_CC_REG_CSI_PIX_EN	BIT(26)  /* csi_pix_clk enable */
+
+/* VFE_CC_REG at 0x0104 - VFE and CSI-VFE bridge clock enables */
 #define MSM8660_VFE_CC_REG_OFFSET	0x0104
-#define MSM8660_VFE_CC_REG_CSI1_VFE_EN	BIT(10)
-#define MSM8660_VFE_CC_REG_CSI0_VFE_EN	BIT(12)
+#define MSM8660_VFE_CC_REG_VFE_CLK_EN	BIT(0)   /* VFE core clock */
+#define MSM8660_VFE_CC_REG_VFE_AXI_EN	BIT(1)   /* VFE AXI clock */
+#define MSM8660_VFE_CC_REG_VFE_AHB_EN	BIT(2)   /* VFE AHB clock */
+#define MSM8660_VFE_CC_REG_CSI1_VFE_EN	BIT(10)  /* CSI1->VFE bridge */
+#define MSM8660_VFE_CC_REG_CSI0_VFE_EN	BIT(12)  /* CSI0->VFE bridge */
+
+/* Clock halt status register at 0x01CC */
+#define MSM8660_CLK_HALT_STATEC_OFFSET	0x01CC
+#define MSM8660_CLK_HALT_VFE_CLK	BIT(0)   /* VFE clock halted */
+#define MSM8660_CLK_HALT_CSI0_CLK	BIT(7)   /* CSI0 clock halted */
+#define MSM8660_CLK_HALT_CSI1_CLK	BIT(8)   /* CSI1 clock halted */
+#define MSM8660_CLK_HALT_CSI0_VFE_CLK	BIT(9)   /* CSI0-VFE bridge halted */
+#define MSM8660_CLK_HALT_CSI1_VFE_CLK	BIT(10)  /* CSI1-VFE bridge halted */
+
+/* CSI source clock NS registers */
+#define MSM8660_CSI0_NS_REG_OFFSET	0x0024
+#define MSM8660_CSI1_NS_REG_OFFSET	0x0034
 
 #define MSM8660_TCSR_BASE		0x16B00000
 #define MSM8660_TCSR_SIZE		0x1000
+
+/*
+ * VFE31 Test Generator registers
+ *
+ * The test generator can produce internal test patterns without
+ * requiring external camera input. Useful for verifying VFE pipeline.
+ *
+ * Note: VFE31 test generator register offsets may differ from VFE8x.
+ * VFE8x uses 0x36C. VFE31 appears to use same address based on
+ * command structure similarity.
+ */
+#define VFE31_TESTGEN_CMD		0x36C
+#define VFE31_TESTGEN_CFG		0x970  /* Test generator config */
+#define VFE31_TESTGEN_GO		0x01
+#define VFE31_TESTGEN_STOP		0x02
+
+/* Module parameter to enable VFE test generator mode */
+static int vfe31_use_testgen = 0;
+module_param(vfe31_use_testgen, int, 0644);
+MODULE_PARM_DESC(vfe31_use_testgen, "VFE31: Use internal test generator instead of camera (0=camera, 1=testgen)")
 
 /*
  * Debug option: Use EFS sync mode instead of APS for MIPI CSI-2.
@@ -813,118 +874,315 @@ module_param(vfe31_use_efs_sync, int, 0644);
 MODULE_PARM_DESC(vfe31_use_efs_sync, "VFE31: Use EFS sync mode instead of APS (0=APS, 1=EFS)");
 
 /*
- * vfe31_debug_dump_external_regs - Dump MMCC and TCSR registers for debug
+ * vfe31_debug_dump_clock_state - Comprehensive CSI->VFE clock state dump
  * @dev: Device for logging
  *
- * This function temporarily maps external registers (clock controller, TCSR)
- * to read their values during VFE initialization. This helps debug CSI-to-VFE
- * data path issues by verifying clock enables and potential CSI mux settings.
+ * This function dumps the COMPLETE clock state for the CSI->VFE data path:
+ * 1. CSI source clocks (CSI0/CSI1 NS registers)
+ * 2. CSI core and PHY clocks (CSI_CC_REG)
+ * 3. CSI pixel/RDI clock mux selection and enables (MISC_CC_REG)
+ * 4. VFE and CSI-VFE bridge clocks (VFE_CC_REG)
+ * 5. Clock halt status (CLK_HALT_STATEC_REG)
+ * 6. CSIPHY register state
  */
-static void vfe31_debug_dump_external_regs(struct device *dev)
+static void vfe31_debug_dump_clock_state(struct device *dev)
 {
 	void __iomem *mmcc_base, *tcsr_base;
-	u32 vfe_cc_reg;
+	u32 csi_cc_reg, misc_cc_reg, vfe_cc_reg, halt_status;
+	u32 csi0_ns, csi1_ns;
 	int i;
+	bool all_clocks_ok = true;
+
+	dev_info(dev, "===== VFE31 COMPREHENSIVE CLOCK STATE DUMP =====\n");
 
 	/* Map and read MMCC registers */
 	mmcc_base = ioremap(MSM8660_MMCC_BASE, MSM8660_MMCC_SIZE);
-	if (mmcc_base) {
-		u32 csi_cc_reg;
+	if (!mmcc_base) {
+		dev_err(dev, "CLOCK DEBUG: Failed to map MMCC base 0x%08x\n",
+			MSM8660_MMCC_BASE);
+		return;
+	}
 
-		/* CSI_CC_REG at 0x0040 - controls CSI core clocks */
-		csi_cc_reg = readl_relaxed(mmcc_base + MSM8660_CSI_CC_REG_OFFSET);
-		dev_info(dev, "VFE DEBUG: MMCC CSI_CC_REG (0x%08x) = 0x%08x\n",
-			 MSM8660_MMCC_BASE + MSM8660_CSI_CC_REG_OFFSET, csi_cc_reg);
-		dev_info(dev, "VFE DEBUG:   CSI0_CLK (bit 0): %s\n",
-			 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI0_EN) ? "ENABLED" : "disabled");
-		dev_info(dev, "VFE DEBUG:   CSI1_CLK (bit 7): %s\n",
-			 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_EN) ? "ENABLED" : "disabled");
-		dev_info(dev, "VFE DEBUG:   CSI0_PHY_CLK (bit 8): %s\n",
-			 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI0_PHY_EN) ? "ENABLED" : "disabled");
-		dev_info(dev, "VFE DEBUG:   CSI1_PHY_CLK (bit 9): %s\n",
-			 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_PHY_EN) ? "ENABLED" : "disabled");
+	/*
+	 * 1. CSI Source Clock NS Registers
+	 * These show if the CSI PLLs are configured
+	 */
+	csi0_ns = readl_relaxed(mmcc_base + MSM8660_CSI0_NS_REG_OFFSET);
+	csi1_ns = readl_relaxed(mmcc_base + MSM8660_CSI1_NS_REG_OFFSET);
+	dev_info(dev, "CLOCK DEBUG: CSI Source Clocks:\n");
+	dev_info(dev, "  CSI0_NS_REG (0x%03x) = 0x%08x\n",
+		 MSM8660_CSI0_NS_REG_OFFSET, csi0_ns);
+	dev_info(dev, "  CSI1_NS_REG (0x%03x) = 0x%08x\n",
+		 MSM8660_CSI1_NS_REG_OFFSET, csi1_ns);
 
-		/* VFE_CC_REG at 0x0104 - controls CSI-to-VFE bridge clocks */
+	/*
+	 * 2. CSI_CC_REG - CSI core and PHY clock enables
+	 */
+	csi_cc_reg = readl_relaxed(mmcc_base + MSM8660_CSI_CC_REG_OFFSET);
+	dev_info(dev, "CLOCK DEBUG: CSI_CC_REG (0x%03x) = 0x%08x\n",
+		 MSM8660_CSI_CC_REG_OFFSET, csi_cc_reg);
+	dev_info(dev, "  CSI0_CLK (bit 0):     %s\n",
+		 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI0_EN) ? "ENABLED" : "disabled");
+	dev_info(dev, "  CSI1_CLK (bit 7):     %s  <-- MT9M113 uses CSI1\n",
+		 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_EN) ? "ENABLED" : "disabled");
+	dev_info(dev, "  CSI0_PHY_CLK (bit 8): %s\n",
+		 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI0_PHY_EN) ? "ENABLED" : "disabled");
+	dev_info(dev, "  CSI1_PHY_CLK (bit 9): %s  <-- MT9M113 uses CSI1\n",
+		 (csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_PHY_EN) ? "ENABLED" : "disabled");
+
+	if (!(csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_EN)) {
+		dev_err(dev, "  *** ERROR: CSI1_CLK NOT ENABLED! ***\n");
+		all_clocks_ok = false;
+	}
+	if (!(csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_PHY_EN)) {
+		dev_err(dev, "  *** ERROR: CSI1_PHY_CLK NOT ENABLED! ***\n");
+		all_clocks_ok = false;
+	}
+
+	/*
+	 * 3. MISC_CC_REG - csi_pix and csi_rdi clock mux and enables
+	 * This is CRITICAL - it selects which CSI port data flows through
+	 */
+	misc_cc_reg = readl_relaxed(mmcc_base + MSM8660_MISC_CC_REG_OFFSET);
+	dev_info(dev, "CLOCK DEBUG: MISC_CC_REG (0x%03x) = 0x%08x  <-- CRITICAL for data routing\n",
+		 MSM8660_MISC_CC_REG_OFFSET, misc_cc_reg);
+	dev_info(dev, "  csi_rdi_sel (bit 12): %s  <-- should be CSI1 for MT9M113\n",
+		 (misc_cc_reg & MSM8660_MISC_CC_REG_CSI_RDI_SEL) ? "CSI1" : "CSI0");
+	dev_info(dev, "  csi_rdi_clk (bit 13): %s\n",
+		 (misc_cc_reg & MSM8660_MISC_CC_REG_CSI_RDI_EN) ? "ENABLED" : "disabled");
+	dev_info(dev, "  csi_pix_sel (bit 25): %s  <-- should be CSI1 for MT9M113\n",
+		 (misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_SEL) ? "CSI1" : "CSI0");
+	dev_info(dev, "  csi_pix_clk (bit 26): %s\n",
+		 (misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_EN) ? "ENABLED" : "disabled");
+
+	/* Check and fix CSI mux selection */
+	if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_SEL)) {
+		dev_warn(dev, "  *** WARNING: csi_pix_sel is CSI0, should be CSI1 ***\n");
+		dev_info(dev, "  Attempting to set csi_pix_sel to CSI1...\n");
+		misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_PIX_SEL;
+		all_clocks_ok = false;
+	}
+	if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_RDI_SEL)) {
+		dev_warn(dev, "  *** WARNING: csi_rdi_sel is CSI0, should be CSI1 ***\n");
+		dev_info(dev, "  Attempting to set csi_rdi_sel to CSI1...\n");
+		misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_RDI_SEL;
+		all_clocks_ok = false;
+	}
+	if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_EN)) {
+		dev_warn(dev, "  *** WARNING: csi_pix_clk not enabled ***\n");
+		misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_PIX_EN;
+		all_clocks_ok = false;
+	}
+	if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_RDI_EN)) {
+		dev_warn(dev, "  *** WARNING: csi_rdi_clk not enabled ***\n");
+		misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_RDI_EN;
+		all_clocks_ok = false;
+	}
+
+	/* Apply fixes to MISC_CC_REG if needed */
+	if (!all_clocks_ok) {
+		dev_info(dev, "  Writing corrected MISC_CC_REG = 0x%08x\n", misc_cc_reg);
+		writel_relaxed(misc_cc_reg, mmcc_base + MSM8660_MISC_CC_REG_OFFSET);
+		wmb();
+		misc_cc_reg = readl_relaxed(mmcc_base + MSM8660_MISC_CC_REG_OFFSET);
+		dev_info(dev, "  After write: MISC_CC_REG = 0x%08x\n", misc_cc_reg);
+	}
+
+	/*
+	 * 4. VFE_CC_REG - VFE and CSI-VFE bridge clocks
+	 */
+	vfe_cc_reg = readl_relaxed(mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+	dev_info(dev, "CLOCK DEBUG: VFE_CC_REG (0x%03x) = 0x%08x\n",
+		 MSM8660_VFE_CC_REG_OFFSET, vfe_cc_reg);
+	dev_info(dev, "  VFE_CLK (bit 0):      %s\n",
+		 (vfe_cc_reg & MSM8660_VFE_CC_REG_VFE_CLK_EN) ? "ENABLED" : "disabled");
+	dev_info(dev, "  VFE_AXI_CLK (bit 1):  %s\n",
+		 (vfe_cc_reg & MSM8660_VFE_CC_REG_VFE_AXI_EN) ? "ENABLED" : "disabled");
+	dev_info(dev, "  CSI1_VFE_CLK (bit 10): %s  <-- CRITICAL: CSI1->VFE bridge\n",
+		 (vfe_cc_reg & MSM8660_VFE_CC_REG_CSI1_VFE_EN) ? "ENABLED" : "disabled");
+	dev_info(dev, "  CSI0_VFE_CLK (bit 12): %s\n",
+		 (vfe_cc_reg & MSM8660_VFE_CC_REG_CSI0_VFE_EN) ? "ENABLED" : "disabled");
+
+	if (!(vfe_cc_reg & MSM8660_VFE_CC_REG_CSI1_VFE_EN)) {
+		dev_err(dev, "  *** ERROR: CSI1_VFE_CLK NOT ENABLED! Attempting manual enable... ***\n");
+		writel_relaxed(vfe_cc_reg | MSM8660_VFE_CC_REG_CSI1_VFE_EN |
+			       MSM8660_VFE_CC_REG_CSI0_VFE_EN,
+			       mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+		wmb();
 		vfe_cc_reg = readl_relaxed(mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
-		dev_info(dev, "VFE DEBUG: MMCC VFE_CC_REG (0x%08x) = 0x%08x\n",
-			 MSM8660_MMCC_BASE + MSM8660_VFE_CC_REG_OFFSET, vfe_cc_reg);
-		dev_info(dev, "VFE DEBUG:   CSI0_VFE_CLK (bit 12): %s\n",
-			 (vfe_cc_reg & MSM8660_VFE_CC_REG_CSI0_VFE_EN) ? "ENABLED" : "disabled");
-		dev_info(dev, "VFE DEBUG:   CSI1_VFE_CLK (bit 10): %s\n",
-			 (vfe_cc_reg & MSM8660_VFE_CC_REG_CSI1_VFE_EN) ? "ENABLED" : "disabled");
+		dev_info(dev, "  After manual enable: VFE_CC_REG = 0x%08x\n", vfe_cc_reg);
+	}
 
-		/* If any CSI1 clocks are not enabled, warn */
-		if (!(csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_EN)) {
-			dev_warn(dev, "VFE DEBUG: CSI1_CLK (bit 7) not enabled!\n");
-		}
-		if (!(csi_cc_reg & MSM8660_CSI_CC_REG_CSI1_PHY_EN)) {
-			dev_warn(dev, "VFE DEBUG: CSI1_PHY_CLK (bit 9) not enabled!\n");
-		}
-		if (!(vfe_cc_reg & MSM8660_VFE_CC_REG_CSI1_VFE_EN)) {
-			dev_warn(dev, "VFE DEBUG: CSI1_VFE_CLK not enabled! Attempting manual enable...\n");
-			writel_relaxed(vfe_cc_reg | MSM8660_VFE_CC_REG_CSI1_VFE_EN,
-				       mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
-			wmb();
-			vfe_cc_reg = readl_relaxed(mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
-			dev_info(dev, "VFE DEBUG: After manual enable: VFE_CC_REG = 0x%08x\n", vfe_cc_reg);
-		}
+	/*
+	 * 5. Clock Halt Status - verify clocks are actually running
+	 */
+	halt_status = readl_relaxed(mmcc_base + MSM8660_CLK_HALT_STATEC_OFFSET);
+	dev_info(dev, "CLOCK DEBUG: CLK_HALT_STATEC (0x%03x) = 0x%08x  <-- 1=HALTED, 0=running\n",
+		 MSM8660_CLK_HALT_STATEC_OFFSET, halt_status);
+	dev_info(dev, "  VFE_CLK halt (bit 0):       %s\n",
+		 (halt_status & MSM8660_CLK_HALT_VFE_CLK) ? "HALTED!" : "running");
+	dev_info(dev, "  CSI0_CLK halt (bit 7):      %s\n",
+		 (halt_status & MSM8660_CLK_HALT_CSI0_CLK) ? "HALTED!" : "running");
+	dev_info(dev, "  CSI1_CLK halt (bit 8):      %s\n",
+		 (halt_status & MSM8660_CLK_HALT_CSI1_CLK) ? "HALTED!" : "running");
+	dev_info(dev, "  CSI0_VFE_CLK halt (bit 9):  %s\n",
+		 (halt_status & MSM8660_CLK_HALT_CSI0_VFE_CLK) ? "HALTED!" : "running");
+	dev_info(dev, "  CSI1_VFE_CLK halt (bit 10): %s  <-- CRITICAL\n",
+		 (halt_status & MSM8660_CLK_HALT_CSI1_VFE_CLK) ? "HALTED!" : "running");
 
-		iounmap(mmcc_base);
-	} else {
-		dev_err(dev, "VFE DEBUG: Failed to map MMCC base 0x%08x\n", MSM8660_MMCC_BASE);
+	if (halt_status & MSM8660_CLK_HALT_CSI1_VFE_CLK) {
+		dev_err(dev, "  *** ERROR: CSI1_VFE_CLK is HALTED - data cannot flow! ***\n");
+	}
+	if (halt_status & MSM8660_CLK_HALT_CSI1_CLK) {
+		dev_err(dev, "  *** ERROR: CSI1_CLK is HALTED! ***\n");
+	}
+
+	iounmap(mmcc_base);
+
+	/*
+	 * 6. CSIPHY register dump
+	 */
+	{
+		void __iomem *csi1_base = ioremap(0x04900000, 0x100);
+		if (csi1_base) {
+			u32 phy_ctrl = readl_relaxed(csi1_base + 0x00);
+			u32 protocol = readl_relaxed(csi1_base + 0x04);
+			u32 irq_status = readl_relaxed(csi1_base + 0x08);
+			u32 d1_ctrl = readl_relaxed(csi1_base + 0x20);
+			u32 camera_cntl = readl_relaxed(csi1_base + 0x24);
+			u32 d0_ctrl2 = readl_relaxed(csi1_base + 0x38);
+
+			dev_info(dev, "CLOCK DEBUG: CSIPHY1 (0x04900000) registers:\n");
+			dev_info(dev, "  PHY_CONTROL (0x00):     0x%08x\n", phy_ctrl);
+			dev_info(dev, "  PROTOCOL_CONTROL (0x04): 0x%08x\n", protocol);
+			dev_info(dev, "  IRQ_STATUS (0x08):       0x%08x\n", irq_status);
+			dev_info(dev, "  D1_CONTROL (0x20):       0x%08x  <-- should be 0x300\n", d1_ctrl);
+			dev_info(dev, "  CAMERA_CNTL (0x24):      0x%08x  <-- should be 0xE404\n", camera_cntl);
+			dev_info(dev, "  D0_CONTROL2 (0x38):      0x%08x\n", d0_ctrl2);
+
+			if (d1_ctrl != 0x300) {
+				dev_warn(dev, "  *** WARNING: D1_CONTROL != 0x300, PHY may not be enabled ***\n");
+			}
+			iounmap(csi1_base);
+		}
 	}
 
 	/* Map and dump TCSR registers */
 	tcsr_base = ioremap(MSM8660_TCSR_BASE, MSM8660_TCSR_SIZE);
 	if (tcsr_base) {
-		dev_info(dev, "VFE DEBUG: TCSR register dump (base 0x%08x):\n", MSM8660_TCSR_BASE);
+		dev_info(dev, "CLOCK DEBUG: TCSR register dump (base 0x%08x):\n", MSM8660_TCSR_BASE);
 		for (i = 0; i < 32; i += 4) {
 			u32 val = readl_relaxed(tcsr_base + i);
 			if (val != 0)  /* Only print non-zero registers */
-				dev_info(dev, "VFE DEBUG:   TCSR[0x%03x] = 0x%08x\n", i, val);
+				dev_info(dev, "  TCSR[0x%03x] = 0x%08x\n", i, val);
 		}
 		/* Also check offsets 0x100-0x120 where CSI mux might be */
-		dev_info(dev, "VFE DEBUG: TCSR potential CSI mux area (0x100-0x120):\n");
+		dev_info(dev, "CLOCK DEBUG: TCSR potential CSI mux area (0x100-0x120):\n");
 		for (i = 0x100; i < 0x120; i += 4) {
 			u32 val = readl_relaxed(tcsr_base + i);
-			dev_info(dev, "VFE DEBUG:   TCSR[0x%03x] = 0x%08x\n", i, val);
+			dev_info(dev, "  TCSR[0x%03x] = 0x%08x\n", i, val);
 		}
 		iounmap(tcsr_base);
 	} else {
-		dev_err(dev, "VFE DEBUG: Failed to map TCSR base 0x%08x\n", MSM8660_TCSR_BASE);
+		dev_err(dev, "CLOCK DEBUG: Failed to map TCSR base 0x%08x\n", MSM8660_TCSR_BASE);
 	}
 
-	/*
-	 * Dump CSIPHY register space to verify which PHY is active.
-	 * CSIPHY0 at 0x04800000, CSIPHY1 at 0x04900000.
-	 * MT9M113 uses CSIPHY1 (0x04900000).
-	 */
-	{
-		void __iomem *csi0_base, *csi1_base;
+	dev_info(dev, "===== END CLOCK STATE DUMP =====\n");
+}
 
-		csi0_base = ioremap(0x04800000, 0x100);
-		csi1_base = ioremap(0x04900000, 0x100);
+/*
+ * vfe31_configure_testgen - Configure VFE31 internal test generator
+ * @vfe: VFE device
+ * @enable: true to enable, false to disable
+ * @width: test pattern width
+ * @height: test pattern height
+ *
+ * The VFE31 has an internal test pattern generator that can produce
+ * color bar patterns without requiring external camera input. This is
+ * useful for verifying the VFE pipeline independently of CSIPHY/sensor.
+ *
+ * Test generator configuration registers (based on VFE8x, VFE31 similar):
+ *   0x970: TEST_GEN_CFG - test pattern configuration
+ *   0x36C: TEST_GEN_CMD - start/stop command
+ *
+ * To use test generator:
+ *   1. Set VFE_CFG inputSource to TESTGEN (bits 16-17 = 1)
+ *   2. Configure test pattern dimensions at 0x970
+ *   3. Write 1 to 0x36C to start test generator
+ */
+static void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
+				    u16 width, u16 height)
+{
+	u32 cfg_val;
 
-		if (csi0_base && csi1_base) {
-			u32 csi0_protocol = readl_relaxed(csi0_base + 0x04);
-			u32 csi0_d1_ctrl = readl_relaxed(csi0_base + 0x20);
-			u32 csi0_camera = readl_relaxed(csi0_base + 0x24);
-			u32 csi1_protocol = readl_relaxed(csi1_base + 0x04);
-			u32 csi1_d1_ctrl = readl_relaxed(csi1_base + 0x20);
-			u32 csi1_camera = readl_relaxed(csi1_base + 0x24);
+	dev_info(vfe->camss->dev, "VFE TESTGEN: %s test generator (%dx%d)\n",
+		 enable ? "Enabling" : "Disabling", width, height);
 
-			dev_info(dev, "VFE DEBUG: CSIPHY0 (0x04800000): PROTOCOL=0x%08x D1_CTRL=0x%08x CAMERA_CNTL=0x%08x\n",
-				 csi0_protocol, csi0_d1_ctrl, csi0_camera);
-			dev_info(dev, "VFE DEBUG: CSIPHY1 (0x04900000): PROTOCOL=0x%08x D1_CTRL=0x%08x CAMERA_CNTL=0x%08x\n",
-				 csi1_protocol, csi1_d1_ctrl, csi1_camera);
-			dev_info(dev, "VFE DEBUG:   MT9M113 should use CSIPHY1 with D1_CTRL=0x300 (PHY enabled)\n");
-		}
+	if (enable) {
+		/*
+		 * Configure test generator:
+		 * - Set VFE_CFG inputSource to TESTGEN
+		 * - Configure pattern dimensions
+		 * - Start test generator
+		 *
+		 * Note: VFE31 VFE_CFG may not have inputSource bits (see earlier
+		 * analysis). If inputSource doesn't work, we can still try
+		 * starting the test generator and see if it overrides CAMIF.
+		 */
 
-		if (csi0_base)
-			iounmap(csi0_base);
-		if (csi1_base)
-			iounmap(csi1_base);
+		/* Try setting inputSource to TESTGEN in VFE_CFG */
+		cfg_val = readl_relaxed(vfe->base + 0x014);  /* VFE_CFG_OFF */
+		dev_info(vfe->camss->dev, "VFE TESTGEN: VFE_CFG before = 0x%08x\n", cfg_val);
+
+		/* Set inputSource = TESTGEN (bits 16-17 = 1) */
+		cfg_val = (cfg_val & ~(3 << 16)) | (1 << 16);
+		/* Set pixel pattern for test (use YUV CbYCrY = 6) */
+		cfg_val = (cfg_val & ~0x7) | 6;
+		writel_relaxed(cfg_val, vfe->base + 0x014);
+		wmb();
+
+		cfg_val = readl_relaxed(vfe->base + 0x014);
+		dev_info(vfe->camss->dev, "VFE TESTGEN: VFE_CFG after = 0x%08x (wanted inputSource=TESTGEN)\n",
+			 cfg_val);
+
+		/*
+		 * Configure test generator dimensions
+		 * The exact register layout for VFE31 test generator is not fully
+		 * documented. Trying common format: width | (height << 16)
+		 */
+		writel_relaxed(width | ((u32)height << 16), vfe->base + VFE31_TESTGEN_CFG);
+		wmb();
+
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Wrote dimensions 0x%08x to TESTGEN_CFG (0x%03x)\n",
+			 width | ((u32)height << 16), VFE31_TESTGEN_CFG);
+
+		/* Start test generator */
+		writel_relaxed(VFE31_TESTGEN_GO, vfe->base + VFE31_TESTGEN_CMD);
+		wmb();
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Started (wrote 0x%x to 0x%03x)\n",
+			 VFE31_TESTGEN_GO, VFE31_TESTGEN_CMD);
+
+		/* Issue REG_UPDATE to latch config */
+		writel_relaxed(1, vfe->base + 0x260);  /* VFE_REG_UPDATE_CMD */
+		wmb();
+
+		/* Start CAMIF to begin frame capture from test generator */
+		writel_relaxed(1, vfe->base + 0x1E0);  /* VFE_CAMIF_CMD = START */
+		wmb();
+		dev_info(vfe->camss->dev, "VFE TESTGEN: CAMIF started\n");
+
+	} else {
+		/* Stop test generator */
+		writel_relaxed(VFE31_TESTGEN_STOP, vfe->base + VFE31_TESTGEN_CMD);
+		wmb();
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Stopped\n");
 	}
+}
+
+/* Wrapper to keep old function name for compatibility */
+static void vfe31_debug_dump_external_regs(struct device *dev)
+{
+	vfe31_debug_dump_clock_state(dev);
 }
 
 /*
@@ -1622,6 +1880,31 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE31_IRQ_MASK_0);
 	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE31_IRQ_MASK_1);
 	wmb();
+
+	/*
+	 * Dump comprehensive clock state before CAMIF start.
+	 * This helps debug CSI->VFE data path issues.
+	 */
+	vfe31_debug_dump_clock_state(vfe->camss->dev);
+
+	/*
+	 * Check if VFE test generator mode is enabled.
+	 * If enabled, use internal test pattern instead of camera input.
+	 * This is useful for verifying the VFE pipeline independently.
+	 */
+	if (vfe31_use_testgen) {
+		dev_info(vfe->camss->dev,
+			 "VFE: Test generator mode enabled - bypassing camera input\n");
+		vfe31_configure_testgen(vfe, true,
+					line->fmt[MSM_VFE_PAD_SINK].width,
+					line->fmt[MSM_VFE_PAD_SINK].height);
+		vfe->camif_pending = false;
+		line->output.state = VFE_OUTPUT_ON;
+		dev_info(vfe->camss->dev,
+			 "VFE: Test generator started (stream_count=%d)\n",
+			 vfe->stream_count);
+		return;  /* testgen handles REG_UPDATE and CAMIF start internally */
+	}
 
 	/*
 	 * Step 6: REG_UPDATE then START CAMIF
