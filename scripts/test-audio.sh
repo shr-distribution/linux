@@ -3,7 +3,15 @@
 # Audio Test Script for HP TouchPad
 # Deploys firmware, tools, configures mixer, and tests playback
 #
-# Usage: ./scripts/test-audio.sh [--skip-transfer] [--dump-regs] [--dapm]
+# Usage: ./scripts/test-audio.sh [OPTIONS]
+#
+# Options:
+#   --skip-transfer-firmware  Skip firmware transfer (Q6, WM8958)
+#   --skip-transfer-audio     Skip audio file transfer (test WAV files)
+#   --skip-transfer           Skip all transfers (equivalent to both above)
+#   --dump-regs               Dump codec registers and exit
+#   --dapm                    Show DAPM widget states and exit
+#   --simple                  Use simple direct playback (no Q6 DSP, just codec)
 #
 # Requirements:
 # - Device accessible at 172.16.42.2 via USB network
@@ -110,14 +118,16 @@ prepare_host_files() {
     ls -la /tmp/q6-firmware.tar.gz /tmp/tinyplay /tmp/tinymix /tmp/notification_48k.wav /tmp/phone_48k.wav 2>/dev/null || true
 }
 
-# Transfer files to device via SCP
-transfer_files() {
-    log_step "Transferring files to device via SCP..."
+# Transfer firmware files to device via SCP
+transfer_firmware() {
+    log_step "Transferring firmware to device via SCP..."
 
     # Transfer Q6 firmware
-    log_info "Transferring Q6 firmware..."
-    scp_to_device /tmp/q6-firmware.tar.gz /tmp/
-    run_on_device "cd /tmp && tar xzf q6-firmware.tar.gz && ls q6.mdt"
+    if [ -f /tmp/q6-firmware.tar.gz ]; then
+        log_info "Transferring Q6 firmware..."
+        scp_to_device /tmp/q6-firmware.tar.gz /tmp/
+        run_on_device "cd /tmp && tar xzf q6-firmware.tar.gz && ls q6.mdt"
+    fi
 
     # Transfer WM8958 firmware (optional)
     if [ -f /tmp/wm8958-firmware.tar.gz ]; then
@@ -127,24 +137,36 @@ transfer_files() {
     fi
 
     # Transfer TinyALSA tools
-    log_info "Transferring tinyplay..."
-    scp_to_device /tmp/tinyplay /tmp/
+    if [ -f /tmp/tinyplay ]; then
+        log_info "Transferring tinyplay..."
+        scp_to_device /tmp/tinyplay /tmp/
+        run_on_device "chmod +x /tmp/tinyplay"
+    fi
 
-    log_info "Transferring tinymix..."
-    scp_to_device /tmp/tinymix /tmp/
+    if [ -f /tmp/tinymix ]; then
+        log_info "Transferring tinymix..."
+        scp_to_device /tmp/tinymix /tmp/
+        run_on_device "chmod +x /tmp/tinymix"
+    fi
+}
 
-    log_info "Transferring notification_48k.wav..."
-    scp_to_device /tmp/notification_48k.wav /tmp/
+# Transfer audio test files to device via SCP
+transfer_audio_files() {
+    log_step "Transferring audio files to device via SCP..."
 
-    log_info "Transferring phone_48k.wav (longer test file)..."
-    scp_to_device /tmp/phone_48k.wav /tmp/
+    if [ -f /tmp/notification_48k.wav ]; then
+        log_info "Transferring notification_48k.wav..."
+        scp_to_device /tmp/notification_48k.wav /tmp/
+    fi
 
-    # Make executables
-    run_on_device "chmod +x /tmp/tinyplay /tmp/tinymix"
+    if [ -f /tmp/phone_48k.wav ]; then
+        log_info "Transferring phone_48k.wav (longer test file)..."
+        scp_to_device /tmp/phone_48k.wav /tmp/
+    fi
 
-    # Verify
-    log_info "Verifying transfers..."
-    run_on_device "ls -la /tmp/tinyplay /tmp/tinymix /tmp/notification_48k.wav /tmp/phone_48k.wav /tmp/q6.mdt"
+    # Verify audio files
+    log_info "Verifying audio file transfers..."
+    run_on_device "ls -la /tmp/notification_48k.wav /tmp/phone_48k.wav 2>/dev/null" || true
 }
 
 # Deploy firmware to /lib/firmware
@@ -445,6 +467,140 @@ chmod +x /tmp/check_dapm.sh
 /tmp/check_dapm.sh"
 }
 
+# Configure mixer for simple direct playback (no Q6 DSP)
+configure_mixer_simple() {
+    log_step "Configuring audio mixer for simple direct playback..."
+
+    # For simple mode, we bypass Q6 DSP and route directly through codec
+    # AIF1 -> DAC1 -> Output Mixer -> LINEOUT
+
+    # Enable DAC paths (AIF1 -> DAC1)
+    log_info "Enabling DAC mixer paths..."
+    run_on_device "amixer -c 0 sset 'DAC1L Mixer AIF1.1 Switch' on 2>/dev/null" || \
+        run_on_device "cd /tmp && ./tinymix set 'DAC1L Mixer AIF1.1 Switch' 1 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'DAC1R Mixer AIF1.1 Switch' on 2>/dev/null" || \
+        run_on_device "cd /tmp && ./tinymix set 'DAC1R Mixer AIF1.1 Switch' 1 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'DAC1 Switch' on on 2>/dev/null" || \
+        run_on_device "cd /tmp && ./tinymix set 'DAC1 Switch' 1 1 2>/dev/null" || true
+
+    # Enable output mixers (DAC -> Output Mixer)
+    log_info "Enabling output mixers..."
+    run_on_device "amixer -c 0 sset 'Left Output Mixer DAC Switch' on 2>/dev/null" || \
+        run_on_device "cd /tmp && ./tinymix set 'Left Output Mixer DAC Switch' 1 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'Right Output Mixer DAC Switch' on 2>/dev/null" || \
+        run_on_device "cd /tmp && ./tinymix set 'Right Output Mixer DAC Switch' 1 2>/dev/null" || true
+
+    # Enable LINEOUT paths
+    log_info "Enabling LINEOUT paths..."
+    run_on_device "amixer -c 0 sset 'Left Line Output Switch' on 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'Right Line Output Switch' on 2>/dev/null" || true
+
+    # Set volumes
+    log_info "Setting volumes..."
+    run_on_device "amixer -c 0 sset 'AIF1DAC1 Volume' 96 96 2>/dev/null" || \
+        run_on_device "cd /tmp && ./tinymix set 'AIF1DAC1 Volume' 96 96 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'DAC1 Volume' 96 96 2>/dev/null" || \
+        run_on_device "cd /tmp && ./tinymix set 'DAC1 Volume' 96 96 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'Output Volume' 63 63 2>/dev/null" || \
+        run_on_device "cd /tmp && ./tinymix set 'Output Volume' 63 63 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'LINEOUT1 Volume' 1 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'LINEOUT2 Volume' 1 2>/dev/null" || true
+
+    # Unmute
+    log_info "Unmuting outputs..."
+    run_on_device "amixer -c 0 sset 'AIF1DAC1 Switch' on on 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'LINEOUT1N Switch' on 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'LINEOUT1P Switch' on 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'LINEOUT2N Switch' on 2>/dev/null" || true
+    run_on_device "amixer -c 0 sset 'LINEOUT2P Switch' on 2>/dev/null" || true
+
+    log_result "Simple mixer configured for direct LINEOUT playback"
+}
+
+# Test simple audio playback (no Q6 DSP)
+test_playback_simple() {
+    log_step "Testing simple audio playback (direct, no Q6 DSP)..."
+
+    # Check if aplay is available
+    if run_on_device "which aplay" >/dev/null 2>&1; then
+        log_info "Using aplay for playback..."
+        PLAY_CMD="aplay"
+    elif run_on_device "test -x /tmp/tinyplay"; then
+        log_info "Using tinyplay for playback..."
+        PLAY_CMD="/tmp/tinyplay"
+    else
+        log_error "No playback tool available (need aplay or tinyplay)"
+        return 1
+    fi
+
+    # Generate a simple test tone if no test file exists
+    log_info "Checking for test audio file..."
+    if ! run_on_device "test -f /tmp/test.wav"; then
+        log_info "Generating test tone (440Hz sine wave)..."
+        # Try to generate with sox if available, otherwise use a simple method
+        if run_on_device "which sox" >/dev/null 2>&1; then
+            run_on_device "sox -n -r 48000 -c 2 /tmp/test.wav synth 3 sine 440"
+        else
+            log_info "No sox available, will try with existing files or skip tone generation"
+        fi
+    fi
+
+    # Try playing test files
+    local test_files="/tmp/test.wav /tmp/notification_48k.wav /tmp/phone_48k.wav"
+    local played=0
+
+    for f in $test_files; do
+        if run_on_device "test -f $f" 2>/dev/null; then
+            log_info "Playing $f..."
+            local result=$(run_on_device "$PLAY_CMD $f 2>&1")
+            echo "$result"
+            if ! echo "$result" | grep -qi "error\|fail\|cannot"; then
+                log_result "Playback of $f completed"
+                played=1
+                break
+            fi
+        fi
+    done
+
+    if [ $played -eq 0 ]; then
+        log_error "No test files found or playback failed"
+        log_info "You can manually test with: aplay /path/to/file.wav"
+        return 1
+    fi
+}
+
+# Simple mode main function
+run_simple_test() {
+    log_step "Running simple audio test (direct playback, no Q6 DSP)..."
+
+    # Transfer audio files if not skipped (firmware not needed for simple mode)
+    if [ $SKIP_TRANSFER_AUDIO -eq 0 ]; then
+        prepare_host_files
+        transfer_audio_files
+    fi
+
+    check_sound_card || exit 1
+
+    # Show current PCM devices
+    log_info "Available PCM devices:"
+    run_on_device "cat /proc/asound/pcm"
+
+    # Enable amplifier
+    enable_class_d_amplifier
+
+    # Configure mixer
+    configure_mixer_simple
+
+    # Test playback
+    test_playback_simple
+
+    # Show status
+    log_info "Checking for audio errors in dmesg..."
+    run_on_device "dmesg | grep -iE 'wm8994|asoc|error' | tail -10" || true
+
+    log_result "Simple audio test complete"
+}
+
 # Check dmesg for ASM/AFE status
 check_dmesg() {
     log_step "Checking kernel messages..."
@@ -512,16 +668,27 @@ main() {
     echo "=============================================="
     echo ""
 
-    SKIP_TRANSFER=0
+    SKIP_TRANSFER_FIRMWARE=0
+    SKIP_TRANSFER_AUDIO=0
     DUMP_REGS_ONLY=0
     DAPM_ONLY=0
+    SIMPLE_MODE=0
 
     # Parse arguments
     for arg in "$@"; do
         case $arg in
             --skip-transfer)
-                SKIP_TRANSFER=1
-                log_info "Skipping file transfer (using existing files)"
+                SKIP_TRANSFER_FIRMWARE=1
+                SKIP_TRANSFER_AUDIO=1
+                log_info "Skipping all file transfers"
+                ;;
+            --skip-transfer-firmware)
+                SKIP_TRANSFER_FIRMWARE=1
+                log_info "Skipping firmware transfer"
+                ;;
+            --skip-transfer-audio)
+                SKIP_TRANSFER_AUDIO=1
+                log_info "Skipping audio file transfer"
                 ;;
             --dump-regs)
                 DUMP_REGS_ONLY=1
@@ -530,6 +697,10 @@ main() {
             --dapm)
                 DAPM_ONLY=1
                 log_info "DAPM widgets mode"
+                ;;
+            --simple)
+                SIMPLE_MODE=1
+                log_info "Simple mode (direct playback, no Q6 DSP)"
                 ;;
         esac
     done
@@ -547,10 +718,21 @@ main() {
         exit 0
     fi
 
-    # Full test flow
-    if [ $SKIP_TRANSFER -eq 0 ]; then
+    # Simple mode - direct playback without Q6 DSP
+    if [ $SIMPLE_MODE -eq 1 ]; then
+        run_simple_test
+        exit 0
+    fi
+
+    # Full test flow (with Q6 DSP)
+    if [ $SKIP_TRANSFER_FIRMWARE -eq 0 ] || [ $SKIP_TRANSFER_AUDIO -eq 0 ]; then
         prepare_host_files
-        transfer_files
+    fi
+    if [ $SKIP_TRANSFER_FIRMWARE -eq 0 ]; then
+        transfer_firmware
+    fi
+    if [ $SKIP_TRANSFER_AUDIO -eq 0 ]; then
+        transfer_audio_files
     fi
 
     deploy_firmware
