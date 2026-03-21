@@ -1345,11 +1345,15 @@
 	 * WM8958 audio codec internal LDO enable GPIOs.
 	 * These must be enabled early (before the WM8994 MFD driver probes)
 	 * because the chip won't respond on I2C until its internal LDOs
-	 * are powered. Use GPIO hogs to ensure they're enabled at boot.
+	 * are powered.
 	 *
-	 * GPIO 66 enables LDO1 via gpio-hog.
-	 * GPIO 108 (LDO2 enable) uses I2S mode with bias-pull-up instead of
-	 * gpio-hog to allow I2S WS function while keeping LDO2 enabled.
+	 * GPIO 66 enables LDO1 via gpio-hog (keeps LDO1 always on).
+	 *
+	 * GPIO 108 (LDO2 enable) is NOT hogged because it's needed for I2S.
+	 * The wm8994-core driver briefly enables LDO2 during probe, then
+	 * releases GPIO 108 so pinctrl can switch it to I2S mode for LRCLK.
+	 * Since DCVDD is supplied externally via pm8058_s3, LDO2 state
+	 * doesn't matter after initial probe.
 	 */
 	aud-ldo1-hog {
 		gpio-hog;
@@ -1357,13 +1361,6 @@
 		output-high;
 		line-name = "AUD_LDO1_EN";
 	};
-
-	/*
-	 * Note: GPIO 108 gpio-hog is NOT used here because it would prevent
-	 * pinctrl from switching to I2S mode. Instead, wlf,ldo2ena-gpios in
-	 * the codec node enables LDO2 during probe, then releases the GPIO
-	 * so pinctrl can later claim it for I2S function.
-	 */
 
 	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
 
@@ -1668,67 +1665,66 @@
 	};
 
 	/*
-	 * Primary I2S pins for WM8958 codec.
+	 * Primary I2S pins for WM8958 codec - CPU MASTER MODE.
 	 *
-	 * The Q6 LPASS DSP uses PRIMARY_I2S ports (legacy ports 0/1) which
-	 * output I2S signals to the WM8958 codec. The webOS kernel
-	 * configures only GPIO 108/109 in i2s function mode (FUNC_1) via
-	 * MSM_SNDDEV_ACTIVE_CONFIG in gpiomux-tenderloin.c.
+	 * LPASS uses PRIMARY_I2S ports (codec_i2s_spkr) to output I2S signals
+	 * to the WM8958 codec. This matches webOS kernel behavior.
 	 *
-	 * GPIO 108: I2S_WS (Word Select / LRCLK)
-	 * GPIO 109: I2S_SCK (Serial Clock / BCLK)
+	 * GPIO 108: I2S_WS (Word Select / LRCLK) - LPASS output
+	 * GPIO 109: I2S_SCK (Serial Clock / BCLK) - LPASS output
+	 * GPIO 110: I2S_SD0 (Serial Data) - LPASS output
 	 *
-	 * Note: GPIO 108 was previously used for AUD_LDO2_EN, but since
-	 * DCVDD is already supplied directly via pm8058_s3, LDO2 is not
-	 * needed. This frees GPIO 108 for I2S use.
+	 * LDO2 handling: The wm8994-core driver briefly sets GPIO 108 HIGH
+	 * during probe to enable LDO2, then releases it. After that, pinctrl
+	 * switches GPIO 108 to I2S mode for LRCLK output. Since DCVDD is
+	 * supplied externally via pm8058_s3, LDO2 state doesn't matter after
+	 * initial probe - the codec runs on external power.
 	 */
 	primary_i2s_pins: primary-i2s-state {
 		/*
-		 * I2S pins for WM8958 codec connection.
+		 * I2S pins for WM8958 codec connection - CPU MASTER MODE.
 		 *
-		 * For direct LPAIF path (non-Q6), codec must be I2S master
-		 * because GPIO 108 cannot be used for LRCLK:
-		 * - GPIO 108 is shared with LDO2ENA (codec power enable)
-		 * - Using I2S function would drive LOW when idle, killing codec
+		 * LPASS generates BCLK and LRCLK, codec receives them.
+		 * This matches how webOS handled audio (codec_i2s_spkr clocks).
 		 *
-		 * Codec master mode:
-		 * - WM8958 generates BCLK and LRCLK using internal FLL
-		 * - GPIO 109 receives BCLK from codec (input)
-		 * - GPIO 110 sends audio data to codec (output)
-		 * - LPASS uses WSSRC_EXTERNAL to sync with codec's BCLK
+		 * GPIO 108 (WS/LRCLK): LPASS outputs word select
+		 * GPIO 109 (SCK/BCLK): LPASS outputs bit clock
+		 * GPIO 110 (SD0/DATA): LPASS outputs audio data
+		 *
+		 * LDO2 handling: The wm8994-core driver briefly enables GPIO 108
+		 * as output HIGH during probe to enable LDO2, then releases it.
+		 * After that, pinctrl switches to I2S mode. Since DCVDD is
+		 * supplied externally via pm8058_s3, LDO2 being in an undefined
+		 * state doesn't matter - the codec gets power from external DCVDD.
 		 *
 		 * Note: On 3G variants, GPIO 110 is used for BT_POWER instead.
 		 * The 3G device tree should override this pinctrl.
 		 */
 
 		/*
-		 * GPIO 108: Keep as GPIO output HIGH for LDO2 enable.
-		 * Cannot use I2S function - required for codec power.
-		 * LRCLK is generated internally by codec (master mode).
+		 * GPIO 108 (WS/LRCLK): LPASS outputs word select to codec.
+		 * I2S function mode - hardware controls the pin during audio.
 		 */
 		i2s-ws-pins {
 			pins = "gpio108";
-			function = "gpio";
+			function = "i2s";
 			drive-strength = <8>;
 			bias-disable;
-			output-high;
 		};
 
 		/*
-		 * GPIO 109 (BCLK): Receive bit clock from codec.
-		 * In codec master mode, WM8958 drives BCLK.
-		 * Configure as input with I2S function.
+		 * GPIO 109 (SCK/BCLK): LPASS outputs bit clock to codec.
+		 * I2S function mode for clock output.
 		 */
 		i2s-sck-pins {
 			pins = "gpio109";
 			function = "i2s";
+			drive-strength = <8>;
 			bias-disable;
-			input-enable;
 		};
 
 		/*
-		 * GPIO 110 (SD0): Send audio data to codec.
-		 * LPASS drives I2S data output.
+		 * GPIO 110 (SD0/DATA): LPASS outputs audio data to codec.
 		 */
 		i2s-data-pins {
 			pins = "gpio110";
@@ -2787,9 +2783,13 @@
 		 *
 		 * LDO2 (GPIO 108) is enabled by wm8994-core driver during probe,
 		 * then released so pinctrl can claim it for I2S WS function.
-		 * The codec driver sets GPIO 108 HIGH at probe time to enable
-		 * internal LDO2, waits for it to stabilize, then releases the
-		 * GPIO. Later, primary_i2s_pins pinctrl switches it to I2S mode.
+		 * The driver sets GPIO 108 HIGH at probe time, waits for LDO2
+		 * to stabilize, then releases the GPIO via gpiod_put().
+		 *
+		 * After probe, primary_i2s_pins switches GPIO 108 to I2S mode
+		 * for LPASS to output LRCLK (CPU master mode). Since DCVDD is
+		 * supplied externally via pm8058_s3 at 1.8V, LDO2 state doesn't
+		 * matter after initial probe - the codec runs on external power.
 		 *
 		 * Since LDO1 is always driven by the gpio-hog, tell the driver
 		 * to skip the software reset during suspend (which would cause
