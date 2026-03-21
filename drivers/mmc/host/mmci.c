@@ -1030,16 +1030,32 @@ static void mmci_dma_unmap(struct mmci_host *host, struct mmc_data *data)
 void mmci_dmae_error(struct mmci_host *host)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
+	struct mmci_dmae_next *next = &dmae->next_data;
+	struct dma_chan *chan = dmae->cur;
 
 	if (!dma_inprogress(host))
 		return;
 
 	dev_err(mmc_dev(host->mmc), "error during DMA transfer!\n");
-	dmaengine_terminate_all(dmae->cur);
+	dmaengine_terminate_all(chan);
 	host->dma_in_progress = false;
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
 	host->data->host_cookie = 0;
+
+	/*
+	 * Clear next_data if it was prepared on the same channel that we
+	 * just terminated. dmaengine_terminate_all() frees all pending
+	 * descriptors on the channel, so next->desc would be a stale
+	 * pointer if next->chan matches the terminated channel.
+	 *
+	 * If next->chan is a different channel (e.g., RX vs TX), the
+	 * descriptor may still be valid and should not be cleared.
+	 */
+	if (next->chan == chan) {
+		next->desc = NULL;
+		next->chan = NULL;
+	}
 
 	mmci_dma_unmap(host, host->data);
 }
