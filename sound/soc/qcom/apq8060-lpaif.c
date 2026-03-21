@@ -50,20 +50,21 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	int ret;
 
 	/*
-	 * Configure I2S master/slave mode.
+	 * Configure I2S master/slave mode - CPU MASTER MODE.
 	 *
-	 * GPIO 108 is shared with LDO2ENA on the HP TouchPad. We cannot use
-	 * GPIO 108 for I2S LRCLK output because the I2S hardware drives it
-	 * LOW when idle, which would disable LDO2 and cause I2C failures.
+	 * LPASS generates BCLK and LRCLK, codec receives them.
+	 * This matches how webOS handled audio (codec_i2s_spkr clocks).
 	 *
-	 * Solution: Configure the WM8958 codec as I2S master (generates both
-	 * BCLK and LRCLK) and the LPASS CPU as slave (receives clocks).
-	 * The codec uses its internal FLL to generate the master clock.
+	 * GPIO 108 is configured in I2S mode (not GPIO mode) so LPASS can
+	 * output LRCLK. The wm8994-core driver briefly enables LDO2 during
+	 * probe by setting GPIO 108 HIGH, then releases it. Since DCVDD is
+	 * supplied externally via pm8058_s3, LDO2 isn't needed for codec
+	 * power - the external supply keeps the codec running.
 	 */
 	ret = snd_soc_dai_set_fmt(cpu_dai,
 				  SND_SOC_DAIFMT_I2S |
 				  SND_SOC_DAIFMT_NB_NF |
-				  SND_SOC_DAIFMT_BC_FC);
+				  SND_SOC_DAIFMT_BP_FP);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set cpu dai format: %d\n", ret);
 		return ret;
@@ -72,7 +73,7 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	ret = snd_soc_dai_set_fmt(codec_dai,
 				  SND_SOC_DAIFMT_I2S |
 				  SND_SOC_DAIFMT_NB_NF |
-				  SND_SOC_DAIFMT_CBP_CFP);
+				  SND_SOC_DAIFMT_BC_FC);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set codec dai format: %d\n", ret);
 		return ret;
@@ -99,21 +100,23 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	/*
-	 * Configure WM8994/WM8958 FLL1 using internal oscillator.
+	 * Configure WM8994/WM8958 FLL1 using BCLK from LPASS.
 	 *
-	 * Using FLL internal source (12MHz oscillator) avoids the need for
-	 * any external clock reference. The internal oscillator is always
-	 * running when the codec is powered. The FLL generates the BCLK
-	 * and LRCLK that the codec outputs to the LPASS.
+	 * In CPU master mode, LPASS generates BCLK. The codec receives BCLK
+	 * and uses it as the FLL reference to generate its internal SYSCLK.
+	 * This ensures the codec is synchronized with LPASS clocks.
+	 *
+	 * BCLK rate = sample_rate * channels * bits_per_sample
+	 * For 48kHz stereo 16-bit: 48000 * 2 * 16 = 1,536,000 Hz
 	 */
 	bclk_rate = rate * params_channels(params) *
 		    snd_pcm_format_width(params_format(params));
 
-	dev_info(rtd->dev, "FLL using internal 12MHz oscillator, output sysclk=%u Hz\n",
-		 sysclk_rate);
+	dev_info(rtd->dev, "FLL using BCLK=%u Hz from LPASS, output sysclk=%u Hz\n",
+		 bclk_rate, sysclk_rate);
 
-	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_INTERNAL,
-				  12000000, sysclk_rate);
+	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_BCLK,
+				  bclk_rate, sysclk_rate);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set codec FLL: %d\n", ret);
 		return ret;

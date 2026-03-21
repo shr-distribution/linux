@@ -49,8 +49,9 @@
 		model = "HP-TouchPad-LPAIF";
 
 		/*
-		 * Primary I2S pinctrl - same as Q6 path.
-		 * GPIO 108 (WS) and GPIO 109 (SCK) for codec I2S.
+		 * Primary I2S pinctrl - CPU MASTER MODE.
+		 * GPIO 108 (WS/LRCLK), GPIO 109 (SCK/BCLK), GPIO 110 (DATA)
+		 * are all configured as I2S outputs from LPASS.
 		 */
 		pinctrl-names = "default";
 		pinctrl-0 = <&primary_i2s_pins>;
