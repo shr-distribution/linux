@@ -14,8 +14,23 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/ktime.h>
+#include <linux/module.h>
 
 #include "camss.h"
+
+/*
+ * AXI output mode selection for VFE31.
+ * 0x60  = Raw/RDI mode (CAMIF_TO_AXI_VIA_OUTPUT_2) - raw bypass
+ * 0x200 = PIX/Preview mode (OUTPUT_2) - ISP processing
+ *
+ * Default is 0x60 for raw capture. Set to 0x200 for PIX/preview mode.
+ * Can be changed at runtime via:
+ *   echo 0x200 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
+ */
+static int vfe31_axi_output_mode = 0x60;
+module_param(vfe31_axi_output_mode, int, 0644);
+MODULE_PARM_DESC(vfe31_axi_output_mode,
+		 "VFE31 AXI output mode (0x60=raw/RDI, 0x200=PIX/preview)");
 #include "camss-vfe.h"
 #include "camss-vfe-gen1.h"
 
@@ -708,11 +723,14 @@ static int vfe31_enable(struct vfe_line *line)
 		 wm, width, height, bytesperline, ping_addr, pong_addr);
 
 	/*
-	 * Step 1: Configure AXI output mode for raw snapshot (WM0)
-	 * Value 0x60 from legacy webOS driver for CAMIF_TO_AXI_VIA_OUTPUT_2
+	 * Step 1: Configure AXI output mode
+	 * Use module parameter vfe31_axi_output_mode:
+	 *   0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
+	 *   0x200 = PIX/Preview mode (through ISP processing)
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x60\n");
-	writel_relaxed(VFE_0_BUS_AXI_OUT_MODE_RAW_WM0,
+	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x%x\n",
+		 vfe31_axi_output_mode);
+	writel_relaxed(vfe31_axi_output_mode,
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
 	/*
@@ -1299,9 +1317,15 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * Critical: AXI mode and WM addresses must be set BEFORE CAMIF starts.
 	 */
 
-	/* Step 1: Configure AXI output mode for raw snapshot (WM0) */
-	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x60 (raw WM0)\n");
-	writel_relaxed(VFE_0_BUS_AXI_OUT_MODE_RAW_WM0,
+	/*
+	 * Step 1: Configure AXI output mode
+	 * Use module parameter vfe31_axi_output_mode:
+	 *   0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
+	 *   0x200 = PIX/Preview mode (through ISP processing)
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x%x\n",
+		 vfe31_axi_output_mode);
+	writel_relaxed(vfe31_axi_output_mode,
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 	wmb();
 
