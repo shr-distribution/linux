@@ -483,6 +483,9 @@ test_raw_mode() {
     log_info "Path: Sensor -> CSIPHY -> CSID -> VFE RDI0 -> /dev/video0"
     log_info "Data goes directly to memory, bypassing ISP"
 
+    # Set AXI output mode to raw/RDI (0x60)
+    set_axi_output_mode "0x60"
+
     run_on_device "
         echo '=== RAW Mode Test (video0 via RDI0) ==='
         echo ''
@@ -498,6 +501,25 @@ test_raw_mode() {
             echo ''
             echo 'FAILED: RAW capture did not complete'
             echo 'Check dmesg for errors'
+        fi
+    "
+}
+
+# Set VFE31 AXI output mode
+# 0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
+# 0x200 = PIX/Preview mode (through ISP processing)
+set_axi_output_mode() {
+    local mode="$1"
+    log_step "Setting VFE31 AXI output mode to: $mode"
+
+    run_on_device "
+        PARAM='/sys/module/qcom_camss/parameters/vfe31_axi_output_mode'
+        if [ -f \"\$PARAM\" ]; then
+            echo $mode > \$PARAM
+            echo \"vfe31_axi_output_mode set to: \$(cat \$PARAM)\"
+        else
+            echo 'WARNING: vfe31_axi_output_mode parameter not found'
+            echo 'Module may not be loaded or parameter not available'
         fi
     "
 }
@@ -525,6 +547,9 @@ test_testgen_mode() {
     log_step "Testing VFE internal test generator..."
     log_info "This bypasses the camera sensor entirely"
     log_info "Useful for verifying VFE pipeline independently"
+
+    # Set AXI output mode to PIX/preview (0x200) for test generator
+    set_axi_output_mode "0x200"
 
     run_on_device "
         echo '=== VFE Test Generator Mode ==='
@@ -588,6 +613,9 @@ test_pix_mode() {
     log_step "Testing PIX/CAMIF mode (ISP processing)..."
     log_info "Path: Sensor -> CSIPHY -> CSID -> VFE PIX -> /dev/video3"
     log_info "Data goes through VFE ISP for processing"
+
+    # Set AXI output mode to PIX/preview (0x200)
+    set_axi_output_mode "0x200"
 
     run_on_device "
         echo '=== PIX Mode Test (video3 via VFE PIX) ==='
