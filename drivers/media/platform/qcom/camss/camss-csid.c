@@ -24,6 +24,7 @@
 
 #include "camss-csid.h"
 #include "camss-csid-gen1.h"
+#include "camss-csiphy.h"
 #include "camss.h"
 
 /* offset of CSID registers in VFE region for VFE 480 */
@@ -786,6 +787,8 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 
 		if (!csid->testgen.enabled) {
 			struct media_pad *remote;
+			struct v4l2_subdev *sd;
+			struct csiphy_device *csiphy;
 
 			remote = media_pad_remote_pad_first(&csid->pads[MSM_CSID_PAD_SINK]);
 			dev_info(csid->camss->dev,
@@ -796,6 +799,25 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 					"CSID%d: No remote pad - link not enabled?\n",
 					csid->id);
 				return -ENOLINK;
+			}
+
+			/*
+			 * MSM8660 fix: Populate phy config from linked CSIPHY.
+			 * The link_setup callback isn't called for links created
+			 * at probe time, so we need to get the config here.
+			 */
+			sd = media_entity_to_v4l2_subdev(remote->entity);
+			csiphy = v4l2_get_subdevdata(sd);
+			if (csiphy && csid->phy.csiphy_id == 0 && csid->phy.lane_cnt == 0) {
+				csid->phy.csiphy_id = csiphy->id;
+				if (csiphy->cfg.csi2) {
+					csid->phy.lane_cnt = csiphy->cfg.csi2->lane_cfg.num_data;
+				} else {
+					csid->phy.lane_cnt = 1; /* Default */
+				}
+				dev_info(csid->camss->dev,
+					 "CSID%d: populated phy config from CSIPHY%d, lanes=%d\n",
+					 csid->id, csid->phy.csiphy_id, csid->phy.lane_cnt);
 			}
 		}
 	}
