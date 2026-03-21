@@ -1209,6 +1209,12 @@ int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	int ret;
 
+	if (!dmae->desc_current || !dmae->cur) {
+		dev_dbg(mmc_dev(host->mmc),
+			"DMA submit without descriptor, falling back to PIO\n");
+		return -EINVAL;
+	}
+
 	host->dma_in_progress = true;
 	ret = dma_submit_error(dmaengine_submit(dmae->desc_current));
 	if (ret < 0) {
