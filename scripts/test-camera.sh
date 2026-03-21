@@ -502,6 +502,86 @@ test_raw_mode() {
     "
 }
 
+# Enable/disable VFE test generator mode
+set_testgen_mode() {
+    local enable="$1"
+    log_step "Setting VFE test generator mode to: $enable"
+
+    run_on_device "
+        PARAM='/sys/module/qcom_camss/parameters/vfe31_use_testgen'
+        if [ -f \"\$PARAM\" ]; then
+            echo $enable > \$PARAM
+            echo \"vfe31_use_testgen set to: \$(cat \$PARAM)\"
+        else
+            echo 'WARNING: vfe31_use_testgen parameter not found'
+            echo 'Module may not be loaded or parameter not available'
+        fi
+    "
+}
+
+# Test VFE internal test generator mode
+# Bypasses camera sensor entirely to verify VFE pipeline
+test_testgen_mode() {
+    log_step "Testing VFE internal test generator..."
+    log_info "This bypasses the camera sensor entirely"
+    log_info "Useful for verifying VFE pipeline independently"
+
+    run_on_device "
+        echo '=== VFE Test Generator Mode ==='
+        echo ''
+
+        # Check if parameter exists
+        PARAM='/sys/module/qcom_camss/parameters/vfe31_use_testgen'
+        if [ ! -f \"\$PARAM\" ]; then
+            echo 'ERROR: vfe31_use_testgen parameter not found'
+            echo 'Make sure qcom_camss module is loaded with testgen support'
+            exit 1
+        fi
+
+        # Enable test generator
+        echo '1. Enabling VFE test generator...'
+        echo 1 > \$PARAM
+        echo \"   vfe31_use_testgen = \$(cat \$PARAM)\"
+
+        # Clear dmesg to see fresh output
+        dmesg -c > /dev/null 2>&1
+
+        # Setup media pipeline for PIX mode
+        echo ''
+        echo '2. Setting up media pipeline...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+
+        # Try capture - this should use test generator internally
+        echo ''
+        echo '3. Testing capture with test generator...'
+        timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
+            'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
+            fakesink 2>&1
+        RESULT=\$?
+
+        # Show VFE debug output
+        echo ''
+        echo '4. VFE debug messages:'
+        dmesg | grep -E 'VFE|TESTGEN|CAMIF|CLOCK' | tail -50
+
+        # Disable test generator
+        echo ''
+        echo '5. Disabling VFE test generator...'
+        echo 0 > \$PARAM
+        echo \"   vfe31_use_testgen = \$(cat \$PARAM)\"
+
+        if [ \$RESULT -eq 0 ]; then
+            echo ''
+            echo 'SUCCESS: Test generator capture completed!'
+        else
+            echo ''
+            echo 'FAILED: Test generator capture did not complete'
+        fi
+    "
+}
+
 # Test PIX/CAMIF mode (through ISP processing)
 # Uses /dev/video3 (msm_vfe0_pix)
 test_pix_mode() {
@@ -569,12 +649,16 @@ main() {
             pix)
                 MODE="pix"
                 ;;
+            testgen)
+                MODE="testgen"
+                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
                 echo "Modes:"
                 echo "  raw        Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
                 echo "  pix        Test PIX mode (through VFE ISP processing)"
+                echo "  testgen    Test VFE internal test generator (bypasses camera)"
                 echo "  --info     Show camera device information only"
                 echo "  --setup    Set up media pipeline only"
                 echo "  --capture  Test capture only (assumes pipeline is set up)"
@@ -618,6 +702,10 @@ main() {
             ensure_camera_ready
             test_pix_mode
             check_dmesg
+            ;;
+        testgen)
+            show_camera_info
+            test_testgen_mode
             ;;
         full)
             show_camera_info

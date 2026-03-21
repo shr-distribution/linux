@@ -857,7 +857,7 @@ int vfe_reset(struct vfe_device *vfe)
 /* Module parameter to enable VFE test generator mode */
 static int vfe31_use_testgen = 0;
 module_param(vfe31_use_testgen, int, 0644);
-MODULE_PARM_DESC(vfe31_use_testgen, "VFE31: Use internal test generator instead of camera (0=camera, 1=testgen)")
+MODULE_PARM_DESC(vfe31_use_testgen, "VFE31: Use internal test generator instead of camera (0=camera, 1=testgen)");
 
 /*
  * Debug option: Use EFS sync mode instead of APS for MIPI CSI-2.
