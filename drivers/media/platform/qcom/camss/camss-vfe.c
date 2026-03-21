@@ -29,6 +29,9 @@
 #include "camss-vfe.h"
 #include "camss.h"
 
+/* Module parameter from camss-vfe-3-1.c for AXI output mode selection */
+extern int vfe31_axi_output_mode;
+
 #define MSM_VFE_NAME "msm_vfe"
 
 /* VFE reset timeout */
@@ -1888,25 +1891,17 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *   PIX mode (preview):   0x200 (OUTPUT_2) - data flows through VFE ISP
 	 *   RDI mode (raw):       0x60  (CAMIF_TO_AXI) - data bypasses VFE ISP
 	 */
-	if (vfe->camif_pending_line_id == VFE_LINE_PIX) {
-		/*
-		 * Use raw mode (0x60) instead of preview mode (0x200).
-		 * Raw mode bypasses VFE ISP and sends CAMIF data directly
-		 * to memory via WM0. This is simpler and helps debug
-		 * whether data is reaching CAMIF at all.
-		 */
-		dev_info(vfe->camss->dev,
-			 "VFE: AXI_OUT_MODE (PIX) = 0x%03x (CAMIF_TO_AXI/raw)\n",
-			 VFE31_AXI_OUT_MODE_RAW_SNAPSHOT);
-		writel_relaxed(VFE31_AXI_OUT_MODE_RAW_SNAPSHOT,
-			       vfe->base + VFE31_AXI_OUT_MODE_CFG);
-	} else {
-		dev_info(vfe->camss->dev,
-			 "VFE: AXI_OUT_MODE (RDI) = 0x%03x (CAMIF_TO_AXI/raw)\n",
-			 VFE31_AXI_OUT_MODE_RAW_SNAPSHOT);
-		writel_relaxed(VFE31_AXI_OUT_MODE_RAW_SNAPSHOT,
-			       vfe->base + VFE31_AXI_OUT_MODE_CFG);
-	}
+	/*
+	 * Use module parameter vfe31_axi_output_mode for AXI output mode:
+	 *   0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
+	 *   0x200 = PIX/Preview mode (through ISP processing)
+	 */
+	dev_info(vfe->camss->dev,
+		 "VFE: AXI_OUT_MODE = 0x%03x (%s)\n",
+		 vfe31_axi_output_mode,
+		 vfe31_axi_output_mode == 0x200 ? "PIX/preview" : "raw/RDI");
+	writel_relaxed(vfe31_axi_output_mode,
+		       vfe->base + VFE31_AXI_OUT_MODE_CFG);
 	wmb();
 
 	/*
