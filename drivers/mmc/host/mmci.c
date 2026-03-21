@@ -1031,31 +1031,31 @@ void mmci_dmae_error(struct mmci_host *host)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	struct mmci_dmae_next *next = &dmae->next_data;
+	struct dma_chan *chan = dmae->cur;
 
 	if (!dma_inprogress(host))
 		return;
 
 	dev_err(mmc_dev(host->mmc), "error during DMA transfer!\n");
-	dmaengine_terminate_all(dmae->cur);
+	dmaengine_terminate_all(chan);
 	host->dma_in_progress = false;
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
 	host->data->host_cookie = 0;
 
 	/*
-	 * Always clear next_data during error recovery.
+	 * Clear next_data if it was prepared on the same channel that we
+	 * just terminated. dmaengine_terminate_all() frees all pending
+	 * descriptors on the channel, so next->desc would be a stale
+	 * pointer if next->chan matches the terminated channel.
 	 *
-	 * Any pre-prepared descriptor in next_data is now invalid because:
-	 * 1. dmaengine_terminate_all() frees all pending descriptors
-	 * 2. On Qualcomm ADM, RX and TX share the same DMA channel
-	 * 3. The MMC core will re-prepare requests after error recovery
-	 *
-	 * Not clearing this causes stale pointers to be used during
-	 * mmc_hw_reset() recovery, triggering WARN_ON in
-	 * mmci_dmae_get_next_data() and potential crashes.
+	 * If next->chan is a different channel (e.g., RX vs TX), the
+	 * descriptor may still be valid and should not be cleared.
 	 */
-	next->desc = NULL;
-	next->chan = NULL;
+	if (next->chan == chan) {
+		next->desc = NULL;
+		next->chan = NULL;
+	}
 
 	mmci_dma_unmap(host, host->data);
 }
