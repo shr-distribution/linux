@@ -115,6 +115,14 @@ struct lpass_data {
 	/* The state of MI2S prepare dai_ops was called */
 	bool mi2s_was_prepared[LPASS_MAX_MI2S_PORTS];
 
+	/*
+	 * MI2S Word Select (LRCLK) source configuration per port.
+	 * When true, use external WSSRC (codec is master, generates LRCLK).
+	 * When false, use internal WSSRC (CPU is master, generates LRCLK).
+	 * This is set by the set_fmt callback based on DAI format.
+	 */
+	bool mi2s_wssrc_external[LPASS_MAX_MI2S_PORTS];
+
 	int hdmi_port_enable;
 	int codec_dma_enable;
 

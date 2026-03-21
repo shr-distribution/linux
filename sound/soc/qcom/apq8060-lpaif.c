@@ -50,6 +50,35 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	int ret;
 
 	/*
+	 * Configure I2S master/slave mode.
+	 *
+	 * GPIO 108 is shared with LDO2ENA on the HP TouchPad. We cannot use
+	 * GPIO 108 for I2S LRCLK output because the I2S hardware drives it
+	 * LOW when idle, which would disable LDO2 and cause I2C failures.
+	 *
+	 * Solution: Configure the WM8958 codec as I2S master (generates both
+	 * BCLK and LRCLK) and the LPASS CPU as slave (receives clocks).
+	 * The codec uses its internal FLL to generate the master clock.
+	 */
+	ret = snd_soc_dai_set_fmt(cpu_dai,
+				  SND_SOC_DAIFMT_I2S |
+				  SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_BC_FC);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(rtd->dev, "failed to set cpu dai format: %d\n", ret);
+		return ret;
+	}
+
+	ret = snd_soc_dai_set_fmt(codec_dai,
+				  SND_SOC_DAIFMT_I2S |
+				  SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_CBP_CFP);
+	if (ret && ret != -ENOTSUPP) {
+		dev_err(rtd->dev, "failed to set codec dai format: %d\n", ret);
+		return ret;
+	}
+
+	/*
 	 * Set sysclk rate based on sample rate.
 	 * For 48kHz family: 12288000 Hz (256 * 48000)
 	 * For 44.1kHz family: 11289600 Hz (256 * 44100)
@@ -72,13 +101,10 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	/*
 	 * Configure WM8994/WM8958 FLL1 using internal oscillator.
 	 *
-	 * GPIO 108 is shared with LDO2ENA on the HP TouchPad. We cannot use
-	 * I2S function on GPIO 108 as the I2S hardware drives it LOW when
-	 * idle, disabling LDO2 and causing I2C failures to the codec.
-	 *
 	 * Using FLL internal source (12MHz oscillator) avoids the need for
 	 * any external clock reference. The internal oscillator is always
-	 * running when the codec is powered.
+	 * running when the codec is powered. The FLL generates the BCLK
+	 * and LRCLK that the codec outputs to the LPASS.
 	 */
 	bclk_rate = rate * params_channels(params) *
 		    snd_pcm_format_width(params_format(params));
