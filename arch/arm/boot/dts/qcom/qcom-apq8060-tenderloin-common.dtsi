@@ -1703,24 +1703,24 @@
 
 		/*
 		 * GPIO 108 (WS/LRCLK): LPASS outputs word select to codec.
-		 * I2S function mode - hardware controls the pin during audio.
 		 */
 		i2s-ws-pins {
 			pins = "gpio108";
 			function = "i2s";
 			drive-strength = <8>;
 			bias-disable;
+			output-enable;
 		};
 
 		/*
 		 * GPIO 109 (SCK/BCLK): LPASS outputs bit clock to codec.
-		 * I2S function mode for clock output.
 		 */
 		i2s-sck-pins {
 			pins = "gpio109";
 			function = "i2s";
 			drive-strength = <8>;
 			bias-disable;
+			output-enable;
 		};
 
 		/*
@@ -1731,6 +1731,7 @@
 			function = "i2s";
 			drive-strength = <8>;
 			bias-disable;
+			output-enable;
 		};
 	};
 
