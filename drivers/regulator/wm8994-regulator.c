@@ -139,8 +139,17 @@ static const struct regulator_init_data wm8994_ldo_default[] = {
 		.num_consumer_supplies = 1,
 	},
 	{
+		/*
+		 * LDO2 default: Set always_on to prevent the regulator
+		 * framework from disabling it when there are no consumers.
+		 * This is needed when DCVDD is supplied externally and LDO2
+		 * has no explicit consumers, but we still need LDO2 enabled
+		 * for proper codec operation (e.g., HP TouchPad where LDO2
+		 * GPIO is shared with I2S LRCLK).
+		 */
 		.constraints = {
 			.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+			.always_on = 1,
 		},
 		.num_consumer_supplies = 1,
 	},
