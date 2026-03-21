@@ -2866,6 +2866,9 @@ static int wm8994_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		break;
 	}
 
+	dev_info(component->dev, "set_dai_fmt: aif1_reg=0x%x, aif1=0x%x, ms=0x%x\n",
+		 aif1_reg, aif1, ms);
+
 	snd_soc_component_update_bits(component, aif1_reg,
 			    WM8994_AIF1_BCLK_INV | WM8994_AIF1_LRCLK_INV |
 			    WM8994_AIF1_FMT_MASK,

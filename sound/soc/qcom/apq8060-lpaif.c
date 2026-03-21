@@ -77,6 +77,7 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 				  SND_SOC_DAIFMT_I2S |
 				  SND_SOC_DAIFMT_NB_NF |
 				  SND_SOC_DAIFMT_BP_FP);
+	dev_info(rtd->dev, "codec set_fmt returned: %d\n", ret);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set codec dai format: %d\n", ret);
 		return ret;
