@@ -991,37 +991,45 @@ static void vfe31_debug_dump_clock_state(struct device *dev)
 	dev_info(dev, "  csi_pix_clk (bit 26): %s\n",
 		 (misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_EN) ? "ENABLED" : "disabled");
 
-	/* Check and fix CSI mux selection */
-	if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_SEL)) {
-		dev_warn(dev, "  *** WARNING: csi_pix_sel is CSI0, should be CSI1 ***\n");
-		dev_info(dev, "  Attempting to set csi_pix_sel to CSI1...\n");
-		misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_PIX_SEL;
-		all_clocks_ok = false;
-	}
-	if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_RDI_SEL)) {
-		dev_warn(dev, "  *** WARNING: csi_rdi_sel is CSI0, should be CSI1 ***\n");
-		dev_info(dev, "  Attempting to set csi_rdi_sel to CSI1...\n");
-		misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_RDI_SEL;
-		all_clocks_ok = false;
-	}
-	if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_EN)) {
-		dev_warn(dev, "  *** WARNING: csi_pix_clk not enabled ***\n");
-		misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_PIX_EN;
-		all_clocks_ok = false;
-	}
-	if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_RDI_EN)) {
-		dev_warn(dev, "  *** WARNING: csi_rdi_clk not enabled ***\n");
-		misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_RDI_EN;
-		all_clocks_ok = false;
-	}
+	/*
+	 * Check and fix CSI mux selection - but NOT in legacy mode!
+	 * In legacy mode, we intentionally keep MISC_CC_REG at 0x0.
+	 */
+	if (vfe31_legacy_routing) {
+		dev_info(dev, "  LEGACY MODE: Keeping MISC_CC_REG at 0x%08x (no correction)\n",
+			 misc_cc_reg);
+	} else {
+		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_SEL)) {
+			dev_warn(dev, "  *** WARNING: csi_pix_sel is CSI0, should be CSI1 ***\n");
+			dev_info(dev, "  Attempting to set csi_pix_sel to CSI1...\n");
+			misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_PIX_SEL;
+			all_clocks_ok = false;
+		}
+		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_RDI_SEL)) {
+			dev_warn(dev, "  *** WARNING: csi_rdi_sel is CSI0, should be CSI1 ***\n");
+			dev_info(dev, "  Attempting to set csi_rdi_sel to CSI1...\n");
+			misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_RDI_SEL;
+			all_clocks_ok = false;
+		}
+		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_EN)) {
+			dev_warn(dev, "  *** WARNING: csi_pix_clk not enabled ***\n");
+			misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_PIX_EN;
+			all_clocks_ok = false;
+		}
+		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_RDI_EN)) {
+			dev_warn(dev, "  *** WARNING: csi_rdi_clk not enabled ***\n");
+			misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_RDI_EN;
+			all_clocks_ok = false;
+		}
 
-	/* Apply fixes to MISC_CC_REG if needed */
-	if (!all_clocks_ok) {
-		dev_info(dev, "  Writing corrected MISC_CC_REG = 0x%08x\n", misc_cc_reg);
-		writel_relaxed(misc_cc_reg, mmcc_base + MSM8660_MISC_CC_REG_OFFSET);
-		wmb();
-		misc_cc_reg = readl_relaxed(mmcc_base + MSM8660_MISC_CC_REG_OFFSET);
-		dev_info(dev, "  After write: MISC_CC_REG = 0x%08x\n", misc_cc_reg);
+		/* Apply fixes to MISC_CC_REG if needed */
+		if (!all_clocks_ok) {
+			dev_info(dev, "  Writing corrected MISC_CC_REG = 0x%08x\n", misc_cc_reg);
+			writel_relaxed(misc_cc_reg, mmcc_base + MSM8660_MISC_CC_REG_OFFSET);
+			wmb();
+			misc_cc_reg = readl_relaxed(mmcc_base + MSM8660_MISC_CC_REG_OFFSET);
+			dev_info(dev, "  After write: MISC_CC_REG = 0x%08x\n", misc_cc_reg);
+		}
 	}
 
 	/*
