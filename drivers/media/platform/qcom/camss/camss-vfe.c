@@ -840,17 +840,34 @@ int vfe_reset(struct vfe_device *vfe)
 #define MSM8660_TCSR_SIZE		0x1000
 
 /*
- * VFE31 Test Generator registers
+ * VFE31 Test Generator registers (from webOS msm_vfe8x_proc.h)
  *
  * The test generator can produce internal test patterns without
  * requiring external camera input. Useful for verifying VFE pipeline.
  *
- * Note: VFE31 test generator register offsets may differ from VFE8x.
- * VFE8x uses 0x36C. VFE31 appears to use same address based on
- * command structure similarity.
+ * Register layout from VFE8x/VFE31:
+ *   0x364: VFE_TESTGEN_CFG - Software test generator config
+ *   0x368: VFE_SW_TESTGEN_CMD - Software test generator command
+ *   0x36C: VFE_HW_TESTGEN_CMD - Hardware test generator command
+ *   0x370: VFE_HW_TESTGEN_CFG - Hardware test generator config
+ *   0x374: VFE_HW_TESTGEN_IMAGE_CFG - Image dimensions
+ *   0x378-0x39C: Additional timing/pattern config registers
  */
-#define VFE31_TESTGEN_CMD		0x36C
-#define VFE31_TESTGEN_CFG		0x970  /* Test generator config */
+#define VFE31_TESTGEN_CFG		0x364  /* SW testgen config */
+#define VFE31_SW_TESTGEN_CMD		0x368  /* SW testgen command */
+#define VFE31_HW_TESTGEN_CMD		0x36C  /* HW testgen command */
+#define VFE31_HW_TESTGEN_CFG		0x370  /* HW testgen config */
+#define VFE31_HW_TESTGEN_IMAGE_CFG	0x374  /* width | (height << 16) */
+#define VFE31_HW_TESTGEN_SOF_OFFSET	0x378  /* SOF offset */
+#define VFE31_HW_TESTGEN_EOF_NOFFSET	0x37C  /* EOF negative offset */
+#define VFE31_HW_TESTGEN_SOL_OFFSET	0x380  /* SOL offset */
+#define VFE31_HW_TESTGEN_EOL_NOFFSET	0x384  /* EOL negative offset */
+#define VFE31_HW_TESTGEN_HBI_CFG	0x388  /* Horizontal blank interval */
+#define VFE31_HW_TESTGEN_VBL_CFG	0x38C  /* Vertical blank lines */
+#define VFE31_HW_TESTGEN_SOF_DUMMY	0x390  /* SOF dummy lines */
+#define VFE31_HW_TESTGEN_EOF_DUMMY	0x394  /* EOF dummy lines */
+#define VFE31_HW_TESTGEN_COLOR_BARS	0x398  /* Color bars config */
+#define VFE31_HW_TESTGEN_RANDOM		0x39C  /* Random pattern seed */
 #define VFE31_TESTGEN_GO		0x01
 #define VFE31_TESTGEN_STOP		0x02
 
@@ -1091,6 +1108,39 @@ static void vfe31_debug_dump_clock_state(struct device *dev)
 }
 
 /*
+ * vfe31_force_enable_axi_clock - Force enable VFE_AXI_CLK if not running
+ * @dev: Device for logging
+ *
+ * The VFE requires the AXI clock for DMA operations. If the clock framework
+ * hasn't enabled it properly, we force it on via direct register write.
+ */
+static void vfe31_force_enable_axi_clock(struct device *dev)
+{
+	void __iomem *mmcc_base;
+	u32 vfe_cc_reg;
+
+	mmcc_base = ioremap(MSM8660_MMCC_BASE, MSM8660_MMCC_SIZE);
+	if (!mmcc_base) {
+		dev_err(dev, "VFE AXI: Failed to map MMCC\n");
+		return;
+	}
+
+	vfe_cc_reg = readl_relaxed(mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+	dev_info(dev, "VFE AXI: VFE_CC_REG before = 0x%08x\n", vfe_cc_reg);
+
+	if (!(vfe_cc_reg & MSM8660_VFE_CC_REG_VFE_AXI_EN)) {
+		dev_warn(dev, "VFE AXI: VFE_AXI_CLK (bit 1) NOT enabled, forcing on\n");
+		vfe_cc_reg |= MSM8660_VFE_CC_REG_VFE_AXI_EN;
+		writel_relaxed(vfe_cc_reg, mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+		wmb();
+		vfe_cc_reg = readl_relaxed(mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+		dev_info(dev, "VFE AXI: VFE_CC_REG after = 0x%08x\n", vfe_cc_reg);
+	}
+
+	iounmap(mmcc_base);
+}
+
+/*
  * vfe31_configure_testgen - Configure VFE31 internal test generator
  * @vfe: VFE device
  * @enable: true to enable, false to disable
@@ -1101,14 +1151,12 @@ static void vfe31_debug_dump_clock_state(struct device *dev)
  * color bar patterns without requiring external camera input. This is
  * useful for verifying the VFE pipeline independently of CSIPHY/sensor.
  *
- * Test generator configuration registers (based on VFE8x, VFE31 similar):
- *   0x970: TEST_GEN_CFG - test pattern configuration
- *   0x36C: TEST_GEN_CMD - start/stop command
- *
- * To use test generator:
- *   1. Set VFE_CFG inputSource to TESTGEN (bits 16-17 = 1)
- *   2. Configure test pattern dimensions at 0x970
- *   3. Write 1 to 0x36C to start test generator
+ * Test generator configuration (from webOS msm_vfe8x_proc.h):
+ *   0x370: HW_TESTGEN_CFG - numFrame, pixel config, sync edges
+ *   0x374: HW_TESTGEN_IMAGE_CFG - width | (height << 16)
+ *   0x378-0x394: Timing configuration (offsets, blanking)
+ *   0x398: HW_TESTGEN_COLOR_BARS - color bar pattern config
+ *   0x36C: HW_TESTGEN_CMD - start (0x01) / stop (0x02)
  */
 static void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 				    u16 width, u16 height)
@@ -1119,16 +1167,8 @@ static void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 enable ? "Enabling" : "Disabling", width, height);
 
 	if (enable) {
-		/*
-		 * Configure test generator:
-		 * - Set VFE_CFG inputSource to TESTGEN
-		 * - Configure pattern dimensions
-		 * - Start test generator
-		 *
-		 * Note: VFE31 VFE_CFG may not have inputSource bits (see earlier
-		 * analysis). If inputSource doesn't work, we can still try
-		 * starting the test generator and see if it overrides CAMIF.
-		 */
+		/* Force enable VFE_AXI_CLK if not running */
+		vfe31_force_enable_axi_clock(vfe->camss->dev);
 
 		/* Try setting inputSource to TESTGEN in VFE_CFG */
 		cfg_val = readl_relaxed(vfe->base + 0x014);  /* VFE_CFG_OFF */
@@ -1142,25 +1182,64 @@ static void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		wmb();
 
 		cfg_val = readl_relaxed(vfe->base + 0x014);
-		dev_info(vfe->camss->dev, "VFE TESTGEN: VFE_CFG after = 0x%08x (wanted inputSource=TESTGEN)\n",
+		dev_info(vfe->camss->dev, "VFE TESTGEN: VFE_CFG after = 0x%08x (inputSource=TESTGEN)\n",
 			 cfg_val);
 
 		/*
-		 * Configure test generator dimensions
-		 * The exact register layout for VFE31 test generator is not fully
-		 * documented. Trying common format: width | (height << 16)
+		 * Configure HW test generator fully:
+		 *
+		 * HW_TESTGEN_CFG (0x370):
+		 *   bits 0-9: numFrame = 10 (generate 10 frames)
+		 *   bit 12: pixelDataSelect = 0
+		 *   bit 13: systematicDataSelect = 0
+		 *   bits 16-17: pixelDataSize = 1 (8-bit)
+		 *   bit 18: hsyncEdge = 0 (rising)
+		 *   bit 19: vsyncEdge = 0 (rising)
 		 */
-		writel_relaxed(width | ((u32)height << 16), vfe->base + VFE31_TESTGEN_CFG);
+		writel_relaxed(0x0001000A, vfe->base + VFE31_HW_TESTGEN_CFG);
+
+		/* HW_TESTGEN_IMAGE_CFG (0x374): width | (height << 16) */
+		writel_relaxed(width | ((u32)height << 16),
+			       vfe->base + VFE31_HW_TESTGEN_IMAGE_CFG);
+
+		/* Timing configuration - use reasonable defaults */
+		writel_relaxed(0x00000100, vfe->base + VFE31_HW_TESTGEN_SOF_OFFSET);  /* SOF offset */
+		writel_relaxed(0x00000010, vfe->base + VFE31_HW_TESTGEN_EOF_NOFFSET); /* EOF offset */
+		writel_relaxed(0x00000010, vfe->base + VFE31_HW_TESTGEN_SOL_OFFSET);  /* SOL offset */
+		writel_relaxed(0x00000010, vfe->base + VFE31_HW_TESTGEN_EOL_NOFFSET); /* EOL offset */
+		writel_relaxed(0x00000100, vfe->base + VFE31_HW_TESTGEN_HBI_CFG);     /* H blank = 256 */
+		writel_relaxed(0x00010010, vfe->base + VFE31_HW_TESTGEN_VBL_CFG);     /* V blank = 16, enable */
+		writel_relaxed(0x00000002, vfe->base + VFE31_HW_TESTGEN_SOF_DUMMY);   /* SOF dummy lines */
+		writel_relaxed(0x00000002, vfe->base + VFE31_HW_TESTGEN_EOF_DUMMY);   /* EOF dummy lines */
+
+		/*
+		 * HW_TESTGEN_COLOR_BARS (0x398):
+		 *   bits 0-2: unicolorBarSelect = 0
+		 *   bit 4: unicolorBarEnable = 0 (use color bars, not unicolor)
+		 *   bit 5: splitEnable = 0
+		 *   bits 6-7: pixelPattern = 1 (color bars)
+		 *   bits 8-13: rotatePeriod = 8
+		 */
+		writel_relaxed(0x00000840, vfe->base + VFE31_HW_TESTGEN_COLOR_BARS);
+
+		/* Random seed (0x39C) - not used for color bars but set anyway */
+		writel_relaxed(0x0000CAFE, vfe->base + VFE31_HW_TESTGEN_RANDOM);
+
 		wmb();
 
-		dev_info(vfe->camss->dev, "VFE TESTGEN: Wrote dimensions 0x%08x to TESTGEN_CFG (0x%03x)\n",
-			 width | ((u32)height << 16), VFE31_TESTGEN_CFG);
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Config written:\n");
+		dev_info(vfe->camss->dev, "  HW_TESTGEN_CFG (0x370) = 0x%08x\n",
+			 readl_relaxed(vfe->base + VFE31_HW_TESTGEN_CFG));
+		dev_info(vfe->camss->dev, "  HW_TESTGEN_IMAGE_CFG (0x374) = 0x%08x\n",
+			 readl_relaxed(vfe->base + VFE31_HW_TESTGEN_IMAGE_CFG));
+		dev_info(vfe->camss->dev, "  HW_TESTGEN_COLOR_BARS (0x398) = 0x%08x\n",
+			 readl_relaxed(vfe->base + VFE31_HW_TESTGEN_COLOR_BARS));
 
-		/* Start test generator */
-		writel_relaxed(VFE31_TESTGEN_GO, vfe->base + VFE31_TESTGEN_CMD);
+		/* Start HW test generator */
+		writel_relaxed(VFE31_TESTGEN_GO, vfe->base + VFE31_HW_TESTGEN_CMD);
 		wmb();
-		dev_info(vfe->camss->dev, "VFE TESTGEN: Started (wrote 0x%x to 0x%03x)\n",
-			 VFE31_TESTGEN_GO, VFE31_TESTGEN_CMD);
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Started HW testgen (0x%x to 0x%03x)\n",
+			 VFE31_TESTGEN_GO, VFE31_HW_TESTGEN_CMD);
 
 		/* Issue REG_UPDATE to latch config */
 		writel_relaxed(1, vfe->base + 0x260);  /* VFE_REG_UPDATE_CMD */
@@ -1173,7 +1252,7 @@ static void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 
 	} else {
 		/* Stop test generator */
-		writel_relaxed(VFE31_TESTGEN_STOP, vfe->base + VFE31_TESTGEN_CMD);
+		writel_relaxed(VFE31_TESTGEN_STOP, vfe->base + VFE31_HW_TESTGEN_CMD);
 		wmb();
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Stopped\n");
 	}
