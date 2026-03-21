@@ -1271,12 +1271,34 @@ void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data)
 	if (!host->use_dma)
 		return;
 
-	WARN_ON(!data->host_cookie && (next->desc || next->chan));
-
-	dmae->desc_current = next->desc;
-	dmae->cur = next->chan;
-	next->desc = NULL;
-	next->chan = NULL;
+	/*
+	 * Only use the pre-prepared "next" descriptor if this request
+	 * was actually pre-prepared (has a host_cookie). If host_cookie
+	 * is 0, this request wasn't pre-prepared via mmci_pre_request(),
+	 * so any descriptor in next->desc belongs to a different request.
+	 *
+	 * This can happen during MMC hardware reset recovery, where new
+	 * internal commands (CMD8, CMD13, etc.) come through mmci_request()
+	 * without going through mmci_pre_request() first.
+	 *
+	 * Key fix: We only clear next_data when we actually consume it.
+	 * If we don't use it (host_cookie=0), leave it intact for when
+	 * the actual pre-prepared request is issued later. Setting
+	 * desc_current to NULL will trigger inline DMA preparation via
+	 * mmci_dmae_prep_data().
+	 */
+	if (data->host_cookie) {
+		/* Request was pre-prepared, use and consume the descriptor */
+		dmae->desc_current = next->desc;
+		dmae->cur = next->chan;
+		next->desc = NULL;
+		next->chan = NULL;
+	} else {
+		/* Request not pre-prepared, prepare DMA inline */
+		dmae->desc_current = NULL;
+		dmae->cur = NULL;
+		/* Leave next_data intact for its actual owner */
+	}
 }
 
 void mmci_dmae_unprep_data(struct mmci_host *host,
