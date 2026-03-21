@@ -472,6 +472,7 @@ static u8 pix_rdi_get_parent(struct clk_hw *hw)
 static const struct clk_ops clk_ops_pix_rdi = {
 	.enable = clk_enable_regmap,
 	.disable = clk_disable_regmap,
+	.is_enabled = clk_is_enabled_regmap,
 	.set_parent = pix_rdi_set_parent,
 	.get_parent = pix_rdi_get_parent,
 	.determine_rate = __clk_mux_determine_rate,
