@@ -2781,18 +2781,19 @@
 		 * keeps it always enabled - don't specify wlf,ldo1ena-gpios here
 		 * as it would conflict with the hog.
 		 *
-		 * LDO2 (GPIO 108) is NOT specified here because GPIO 108 is used
-		 * for I2S LRCLK output in CPU master mode. Since DCVDD is supplied
-		 * externally via pm8058_s3 at 1.8V (same as LDO2 output voltage),
-		 * the internal LDO2 regulator is not needed - the codec runs on
-		 * external power directly. Not specifying wlf,ldo2ena-gpios means
-		 * the wm8994-ldo driver won't try to control GPIO 108.
+		 * LDO2 (GPIO 108): The wm8994-core driver enables LDO2 during
+		 * probe by setting GPIO 108 HIGH, waits for it to stabilize,
+		 * then releases the GPIO via gpiod_put(). After probe completes,
+		 * primary_i2s_pins pinctrl switches GPIO 108 to I2S mode for
+		 * LPASS to output LRCLK. The codec continues to run because
+		 * DCVDD is supplied externally via pm8058_s3.
 		 *
 		 * Since LDO1 is always driven by the gpio-hog, tell the driver
 		 * to skip the software reset during suspend (which would cause
 		 * I2C failures as the codec becomes unresponsive after reset).
 		 */
 		wlf,ldo-ena-always-driven;
+		wlf,ldo2ena-gpios = <&tlmm 108 GPIO_ACTIVE_HIGH>;
 
 		/* GPIO configuration for WM8958 internal GPIOs */
 		wlf,gpio-cfg = <
