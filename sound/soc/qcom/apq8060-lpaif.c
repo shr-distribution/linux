@@ -50,24 +50,20 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	int ret;
 
 	/*
-	 * Configure I2S master/slave mode - CODEC MASTER MODE.
+	 * Configure I2S master/slave mode - CPU MASTER MODE.
 	 *
-	 * WM8958 generates BCLK and LRCLK via FLL, LPASS receives them.
-	 * This avoids the GPIO 108 conflict: GPIO 108 must stay HIGH to
-	 * enable LDO2, but in CPU master mode the I2S hardware would
-	 * drive it LOW as LRCLK when idle, disabling LDO2 and killing
-	 * codec power.
+	 * LPASS generates BCLK and LRCLK, codec receives them.
+	 * GPIO 108 is used for LRCLK output in I2S mode.
 	 *
-	 * In codec master mode:
-	 * - GPIO 108 stays GPIO output HIGH (LDO2 enabled)
-	 * - GPIO 109 receives BCLK from codec (I2S input mode)
-	 * - GPIO 110 outputs DATA to codec (I2S output mode)
-	 * - Codec generates BCLK/LRCLK from FLL using MCLK
+	 * Note: GPIO 108 is also used for LDO2 enable, but since DCVDD
+	 * is supplied externally by pm8058_s3, LDO2 isn't needed for
+	 * codec power. The wm8994-ldo driver sets always_on=1 for LDO2
+	 * to prevent the regulator framework from trying to disable it.
 	 */
 	ret = snd_soc_dai_set_fmt(cpu_dai,
 				  SND_SOC_DAIFMT_I2S |
 				  SND_SOC_DAIFMT_NB_NF |
-				  SND_SOC_DAIFMT_BC_FC);
+				  SND_SOC_DAIFMT_BP_FP);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set cpu dai format: %d\n", ret);
 		return ret;
@@ -76,7 +72,7 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	ret = snd_soc_dai_set_fmt(codec_dai,
 				  SND_SOC_DAIFMT_I2S |
 				  SND_SOC_DAIFMT_NB_NF |
-				  SND_SOC_DAIFMT_BP_FP);
+				  SND_SOC_DAIFMT_BC_FC);
 	dev_info(rtd->dev, "codec set_fmt returned: %d\n", ret);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set codec dai format: %d\n", ret);
@@ -104,23 +100,23 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	/*
-	 * Configure WM8994/WM8958 FLL1 using internal reference.
+	 * Configure WM8994/WM8958 FLL1 using BCLK from LPASS.
 	 *
-	 * In codec master mode, the codec generates BCLK and LRCLK. Since
-	 * there's no external MCLK connected on TouchPad, we use the codec's
-	 * internal FLL reference (WM8994_FLL_SRC_INTERNAL).
+	 * In CPU master mode, LPASS generates BCLK. The codec receives BCLK
+	 * and uses it as the FLL reference to generate its internal SYSCLK.
+	 * This ensures the codec is synchronized with LPASS clocks.
 	 *
-	 * The internal reference is a low-frequency oscillator that FLL
-	 * multiplies up to generate the required SYSCLK.
+	 * BCLK rate = sample_rate * channels * bits_per_sample
+	 * For 48kHz stereo 16-bit: 48000 * 2 * 16 = 1,536,000 Hz
 	 */
 	bclk_rate = rate * params_channels(params) *
 		    snd_pcm_format_width(params_format(params));
 
-	dev_info(rtd->dev, "FLL using internal reference, output sysclk=%u Hz\n",
-		 sysclk_rate);
+	dev_info(rtd->dev, "FLL using BCLK=%u Hz from LPASS, output sysclk=%u Hz\n",
+		 bclk_rate, sysclk_rate);
 
-	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_INTERNAL,
-				  32768, sysclk_rate);
+	ret = snd_soc_dai_set_pll(codec_dai, WM8994_FLL1, WM8994_FLL_SRC_BCLK,
+				  bclk_rate, sysclk_rate);
 	if (ret && ret != -ENOTSUPP) {
 		dev_err(rtd->dev, "failed to set codec FLL: %d\n", ret);
 		return ret;

@@ -1349,10 +1349,11 @@
 	 *
 	 * GPIO 66 enables LDO1 via gpio-hog (keeps LDO1 always on).
 	 *
-	 * GPIO 108 (LDO2 enable) is configured as GPIO output HIGH in
-	 * primary_i2s_pins (not I2S mode) to keep LDO2 enabled. Using
-	 * I2S mode would cause the I2S hardware to drive GPIO 108 LOW
-	 * when idle, disabling LDO2 and causing codec I2C failures.
+	 * GPIO 108 is used for both LDO2 enable and I2S LRCLK. During probe,
+	 * the wm8994-core driver sets GPIO 108 HIGH to enable LDO2. After
+	 * probe, primary_i2s_pins switches GPIO 108 to I2S mode for LRCLK.
+	 * Since DCVDD is supplied externally by pm8058_s3, the codec doesn't
+	 * need LDO2 for power after initial probe.
 	 */
 	aud-ldo1-hog {
 		gpio-hog;
@@ -1664,59 +1665,54 @@
 	};
 
 	/*
-	 * Primary I2S pins for WM8958 codec - CODEC MASTER MODE.
+	 * Primary I2S pins for WM8958 codec - CPU MASTER MODE.
 	 *
-	 * In codec master mode, the WM8958 generates BCLK and LRCLK using
-	 * its internal FLL. LPASS receives these clocks and outputs data.
+	 * LPASS generates BCLK and LRCLK, codec receives them.
 	 *
-	 * GPIO 108: Kept as GPIO output HIGH for LDO2 enable (not I2S mode)
-	 * GPIO 109: I2S_SCK (Serial Clock / BCLK) - Input from codec
+	 * GPIO 108: I2S_WS (Word Select / LRCLK) - LPASS output
+	 * GPIO 109: I2S_SCK (Serial Clock / BCLK) - LPASS output
 	 * GPIO 110: I2S_SD0 (Serial Data) - LPASS output
 	 *
-	 * LDO2 handling: GPIO 108 must stay HIGH to keep LDO2 enabled. In
-	 * CPU master mode, the I2S hardware drives GPIO 108 LOW when idle
-	 * (as LRCLK), which disables LDO2 and causes I2C failures. Codec
-	 * master mode avoids this by keeping GPIO 108 as a GPIO output.
+	 * LDO2 handling: GPIO 108 is also used for LDO2 enable during
+	 * codec probe. However, DCVDD is supplied externally by pm8058_s3,
+	 * so the codec doesn't actually need LDO2 for power. The
+	 * wm8994-ldo driver sets always_on=1 for LDO2 to prevent the
+	 * regulator framework from disabling it.
 	 */
 	primary_i2s_pins: primary-i2s-state {
 		/*
-		 * I2S pins for WM8958 codec connection - CODEC MASTER MODE.
+		 * I2S pins for WM8958 codec connection - CPU MASTER MODE.
 		 *
-		 * WM8958 generates BCLK and LRCLK via its internal FLL.
-		 * LPASS receives BCLK from codec, outputs audio data.
+		 * LPASS generates BCLK and LRCLK, codec receives them.
 		 *
-		 * GPIO 108 (WS/LRCLK): GPIO output HIGH for LDO2, not I2S
-		 * GPIO 109 (SCK/BCLK): I2S input from codec
-		 * GPIO 110 (SD0/DATA): I2S output to codec
+		 * GPIO 108 (WS/LRCLK): LPASS outputs word select
+		 * GPIO 109 (SCK/BCLK): LPASS outputs bit clock
+		 * GPIO 110 (SD0/DATA): LPASS outputs audio data
 		 *
 		 * Note: On 3G variants, GPIO 110 is used for BT_POWER instead.
 		 * The 3G device tree should override this pinctrl.
 		 */
 
 		/*
-		 * GPIO 108: Keep as GPIO output HIGH for LDO2 enable.
-		 * Cannot use I2S function because I2S hardware drives LOW
-		 * when idle, which disables LDO2 and kills codec power.
-		 * Codec master mode: WM8958 generates LRCLK internally.
+		 * GPIO 108 (WS/LRCLK): LPASS outputs word select.
 		 */
 		i2s-ws-pins {
 			pins = "gpio108";
-			function = "gpio";
+			function = "i2s";
 			drive-strength = <8>;
 			bias-disable;
-			output-high;
+			output-enable;
 		};
 
 		/*
-		 * GPIO 109 (SCK/BCLK): Receive bit clock from codec.
-		 * Codec master mode: WM8958 generates BCLK via FLL.
+		 * GPIO 109 (SCK/BCLK): LPASS outputs bit clock.
 		 */
 		i2s-sck-pins {
 			pins = "gpio109";
 			function = "i2s";
 			drive-strength = <8>;
 			bias-disable;
-			input-enable;
+			output-enable;
 		};
 
 		/*
@@ -2778,10 +2774,12 @@
 		 * keeps it always enabled - don't specify wlf,ldo1ena-gpios here
 		 * as it would conflict with the hog.
 		 *
-		 * LDO2 (GPIO 108): In codec master mode, GPIO 108 is kept as
-		 * GPIO output HIGH to keep LDO2 enabled. The wm8994-ldo driver
-		 * sets always_on=1 for LDO2 to prevent regulator framework
-		 * from disabling it.
+		 * LDO2 (GPIO 108): The wm8994-core driver enables LDO2 during
+		 * probe by setting GPIO 108 HIGH. After probe, primary_i2s_pins
+		 * switches GPIO 108 to I2S mode for LRCLK output. Since DCVDD
+		 * is supplied externally by pm8058_s3, LDO2 isn't needed after
+		 * initial probe. The wm8994-ldo driver sets always_on=1 for
+		 * LDO2 to prevent regulator framework issues.
 		 *
 		 * Since LDO1 is always driven by the gpio-hog, tell the driver
 		 * to skip the software reset during suspend (which would cause
