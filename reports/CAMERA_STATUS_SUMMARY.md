@@ -1,6 +1,6 @@
 # HP TouchPad Camera Driver Status Summary
 
-**Date:** March 2026
+**Date:** March 21, 2026 (Updated)
 **Kernel:** Linux 6.18 mainline
 **Target:** HP TouchPad (APQ8060 / MSM8660 SoC)
 **Goal:** Get MT9M113 front camera working with mainline CAMSS drivers
@@ -85,9 +85,9 @@ CSID1 (unified with CSIPHY on MSM8660 - no separate ISPIF)
 | CSIPHY 8x60 | ✅ Verified | Register offsets match webOS, settle count calculation correct |
 | CSID 8x60 | ✅ Verified | Pass-through architecture correct for MSM8660 |
 | VFE31 core | ✅ Fixed | CAMIF register layout corrected |
-| VFE31 clocks | ⚠️ Needs verification | vfe_csi1_clk path may need debugging |
+| VFE31 clocks | ✅ Verified | All clocks enabled including vfe_csi1_clk |
 | CAMIF sync mode | ✅ Fixed | Uses APS mode (EFS_CFG = 0) |
-| AXI output mode | ✅ Fixed | Uses 0x60 for CAMIF_TO_AXI |
+| AXI output mode | ✅ Module param | Configurable: 0x60=raw/RDI, 0x200=PIX/preview |
 
 **VFE31 Fixes Applied:**
 1. `BUS_CFG (0x03C)`: Correctly NOT written (part of AXI block, not config)
@@ -147,10 +147,14 @@ At shutdown, CAMIF_STATUS returns to 0x80000000 (halted) - indicating no data wa
 
 **Key Finding:** CSIPHY sees SOT (line-level) but not Frame Start (frame-level).
 
-**Possible Causes:**
-1. MT9M113 not sending Short Packet Frame Start (expected for SOF interrupt)
-2. MT9M113 using Embedded Data for frame sync instead
-3. OUTPUT_CONTROL (0x3400) value needs different bits for frame packets
+**Tested and Did Not Help:**
+1. ✅ CUSTOM_SHORT_PKT (0x3404) = 0x0080: Tried enabling Frame Start/End short packets - no change
+2. ✅ Continuous clock mode (0x7A0C): Tried instead of LP mode (0x7A08) - reverted, no change
+3. ✅ Various settle counts (0x10, 0x14, 0x20): No effect on frame sync
+
+**Currently Using:**
+- OUTPUT_CONTROL = 0x7A08 (LP clock mode, matches webOS)
+- CUSTOM_SHORT_PKT = not written (matches webOS)
 
 **Note:** The MT9M113 MIPI timing registers (0xC988-0xC992) are defined but not written. webOS also doesn't write them.
 
@@ -192,10 +196,13 @@ The test script (`scripts/test-camera.sh`) supports these modes:
 | File | Description |
 |------|-------------|
 | `drivers/media/i2c/mt9m114.c` | MT9M113/MT9M114 sensor driver |
-| `drivers/media/platform/qcom/camss/camss-vfe-4-1.c` | VFE31 implementation |
+| `drivers/media/platform/qcom/camss/camss-vfe-3-1.c` | VFE31 implementation (MSM8660) |
+| `drivers/media/platform/qcom/camss/camss-vfe.c` | VFE common code (deferred CAMIF config) |
 | `drivers/media/platform/qcom/camss/camss-csiphy.c` | CSIPHY driver |
 | `drivers/media/platform/qcom/camss/camss-csid.c` | CSID driver |
+| `drivers/clk/qcom/mmcc-msm8660.c` | Clock controller (CSI/VFE clocks) |
 | `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi` | Device tree |
+| `scripts/test-camera.sh` | Camera test script with AXI mode selection |
 
 ---
 
@@ -240,42 +247,60 @@ The test script (`scripts/test-camera.sh`) supports these modes:
 2. **Software SOF:** Should we try triggering software SOF?
    - **Answer:** Yes, tested with `software_sof_enable=1`. SOF triggers work but REG_UPDATE still times out because no pixel data.
 
+3. **CUSTOM_SHORT_PKT (0x3404):** Does enabling FS/FE short packets help?
+   - **Answer:** Tested with 0x0080 to enable frame count/FS/FE - no change in behavior.
+
+4. **Continuous clock mode:** Does continuous MIPI clock (0x7A0C) help?
+   - **Answer:** Tested, no improvement, reverted to LP mode (0x7A08) to match webOS.
+
+5. **Settle count variations:** Do different settle counts help?
+   - **Answer:** Tested 0x10, 0x14, 0x20 - no change in frame sync behavior.
+
 ### Open Questions
 
-3. **Why no Frame Start (BIT 16) in CSIPHY?**
+6. **Why no Frame Start (BIT 16) in CSIPHY?**
    - CSIPHY sees SOT (line level) but never Frame Start (frame level)
    - Does MT9M113 send MIPI Short Packets for frame start?
    - Or does it use embedded data sync?
 
-4. **Are csi_pix_clk/csi_rdi_clk relevant to MSM8660?**
+7. **Are csi_pix_clk/csi_rdi_clk relevant to MSM8660?**
    - webOS doesn't use these clocks
    - webOS MISC_CC_REG = 0x00000000
    - May be MSM8960+ only additions
 
-5. **What is the actual CSIPHY→VFE data path on MSM8660?**
+8. **What is the actual CSIPHY→VFE data path on MSM8660?**
    - webOS uses CSI0_VFE_CLK / CSI1_VFE_CLK directly
    - No intermediate csi_pix/csi_rdi layer
    - May need to trace webOS msm_io_8x60.c more carefully
 
-6. **VFE31 Input Source Configuration:**
+9. **VFE31 Input Source Configuration:**
    - Does VFE31 have an OPERATION_CFG or input source register?
    - How does VFE know to read from CSI1 vs CSI0?
    - webOS may configure this somewhere we haven't found
 
-7. **MIPI Data Format:**
-   - Is MT9M113 outputting data in the format VFE expects?
-   - Check DATA_TYPE setting in CSIPHY matches sensor output
+10. **MIPI Data Format:**
+    - Is MT9M113 outputting data in the format VFE expects?
+    - Check DATA_TYPE setting in CSIPHY matches sensor output
 
 ---
 
-## Recent Commits
+## Recent Commits (March 21, 2026)
 
+### Camera Infrastructure
 ```
-0164a187d91f mmc: mmci: Fix race between mmci_pre_request and mmci_dmae_error
+95e0fe263656 media: qcom: camss: vfe31: Export AXI output mode variable
+d875451ad698 media: qcom: camss: vfe: Use module parameter for deferred AXI mode
+88d65aea93b8 scripts: test-camera: Configure AXI output mode per capture type
+df9441ab19c2 media: qcom: camss: vfe31: Add module parameter for AXI output mode
+d197ca373a84 media: qcom: camss: vfe31: Fix clock halt status bit definitions
+2c20a0879c86 clk: qcom: mmcc-msm8660: Add missing is_enabled for csi_pix/csi_rdi clocks
+```
+
+### Previous Session
+```
 6db84f96d35a media: qcom: camss: Set csi_pix/csi_rdi clock parents to CSI1 for MSM8660
 f36b6df90003 clk: qcom: mmcc-msm8660: Add CSI PIX/RDI clock parent mux support
 26cbbd91a90e media: i2c: mt9m114: Add OUTPUT_CONTROL write verification for MT9M113
-afbe509fff76 mmc: mmci: Fix use-after-free in DMA error recovery path
 1f45115b7ffe media: i2c: mt9m114: Add MT9M113 preview/snapshot AE tables and mode support
 38545b2fab58 media: qcom: camss: Fix hardcoded bpp in MSM8660 set_power path
 d341a03f989a media: i2c: mt9m114: Add sequencer refresh when MT9M113 not in preview mode
@@ -286,6 +311,31 @@ d341a03f989a media: i2c: mt9m114: Add sequencer refresh when MT9M113 not in prev
 ## Summary
 
 **Current Status: BLOCKED - Pixel data not reaching VFE CAMIF despite correct clock configuration**
+
+### Major Findings (March 21, 2026 - Latest Session)
+
+#### AXI Output Mode Now Configurable ✅
+Added module parameter to allow runtime AXI mode selection:
+```bash
+# Set via sysfs
+echo 0x200 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
+
+# Or via kernel command line
+qcom_camss.vfe31_axi_output_mode=0x200
+```
+- **0x60** = CAMIF_TO_AXI (raw/RDI mode)
+- **0x200** = OUTPUT_2 (PIX/preview mode with ISP)
+
+The test-camera.sh script now automatically sets the appropriate mode per capture type.
+
+#### Things Tested Without Success ❌
+| Test | Result |
+|------|--------|
+| CUSTOM_SHORT_PKT = 0x0080 | No frame sync improvement |
+| Continuous clock mode (0x7A0C) | No change, reverted to LP mode |
+| Settle count variations | 0x10, 0x14, 0x20 all same behavior |
+| Software SOF workaround | Bypasses SOF timeout but REG_UPDATE still fails |
+| Both PIX and RDI modes | Both timeout - issue before VFE |
 
 ### Major Findings (March 15, 2026 - Session 3)
 
@@ -368,22 +418,26 @@ The webOS MISC_CC_REG value is **0x00000000** (no mux selection bits set), yet c
 
 ## Next Steps
 
-### Immediate Investigation
+### Remaining Investigation Areas
 
-1. **Compare CSI-to-VFE data path with webOS**
-   - webOS uses CSI0_VFE_CLK and CSI1_VFE_CLK directly
-   - No intermediate csi_pix/csi_rdi layer
-   - May need to bypass these clocks entirely
-
-2. **Check VFE Input Selection**
-   - VFE31 may have an input source register not yet configured
+1. **VFE Input Source Selection**
+   - VFE31 may have an input source register selecting CSI0 vs CSI1
    - Look for OPERATION_CFG or similar in VFE31 register set
-   - webOS VFE may configure this in a different path
+   - webOS HAL (libqcameralib.so) may configure this
 
-3. **MIPI Frame Sync Packets**
-   - Sensor sends SOT (line level) but no Frame Start (BIT 16)
-   - Check if MT9M113 needs explicit configuration for frame sync
-   - Verify OUTPUT_CONTROL value enables frame packets
+2. **MIPI Timing Registers (0xC988-0xC992)**
+   - Defined but never written during init
+   - May affect PHY timing/sync behavior
+   - webOS also doesn't write them, so probably not the issue
+
+3. **Hardware Mux Configuration**
+   - The actual CSIPHY→VFE hardware connection on MSM8660
+   - May require TCSR mux configuration beyond clock enables
+   - Need deeper webOS kernel/HAL comparison
+
+4. **Trace webOS HAL more carefully**
+   - libqcameralib.so decompiled but may have missed VFE input config
+   - Check for any IOCTL calls configuring CSI routing
 
 ### Hardware Data Path Investigation
 
@@ -452,3 +506,54 @@ CLK_8X60("csi_vfe_clk", CSI1_VFE_CLK, WEBCAM_DEV, OFF), // MT9M113 (front camera
 ```
 
 MISC_CC_REG = 0x00000000 in webOS (no mux bits set).
+
+---
+
+## Comprehensive Testing Log
+
+### Sensor Configuration Tests
+
+| Test | Register/Value | Result | Notes |
+|------|----------------|--------|-------|
+| LP clock mode | OUTPUT_CONTROL=0x7A08 | ✅ Active | Matches webOS |
+| Continuous clock | OUTPUT_CONTROL=0x7A0C | ❌ No change | Reverted |
+| Enable FS/FE packets | CUSTOM_SHORT_PKT=0x0080 | ❌ No change | CSIPHY still no BIT(16) |
+| Preview AE table | 5 MCU vars | ✅ Applied | From webOS |
+| Snapshot mode | SEQ_CAP_MODE=0x0000 | ✅ Working | Confirmed via SEQ_STATE |
+
+### VFE Configuration Tests
+
+| Test | Setting | Result | Notes |
+|------|---------|--------|-------|
+| AXI mode 0x60 | CAMIF_TO_AXI | ❌ SOF timeout | Raw passthrough |
+| AXI mode 0x200 | OUTPUT_2/PIX | ❌ SOF timeout | ISP processing |
+| EFS sync mode | EFS_CFG bits | ❌ Worse | Reverted to APS |
+| Software SOF | Timer-triggered | ⚠️ Partial | Bypasses SOF but REG_UPDATE fails |
+| VFE test generator | Internal pattern | ❌ Not working | May need more config |
+
+### Clock/PHY Tests
+
+| Test | Configuration | Result | Notes |
+|------|---------------|--------|-------|
+| CSI1 mux selection | csi_pix_sel=1 | ✅ Set | MISC_CC_REG verified |
+| Settle count 0x10 | CSIPHY config | ❌ No change | |
+| Settle count 0x14 | CSIPHY config | ❌ No change | Default |
+| Settle count 0x20 | CSIPHY config | ❌ No change | |
+| Force AXI clocks | Debug function | ✅ Enabled | CSI1_VFE_CLK confirmed |
+
+### Observed Behavior (Consistent)
+
+1. **CSIPHY IRQ**: SOT + ECC interrupts fire (line-level MIPI data arriving)
+2. **CSIPHY IRQ**: BIT(16) Frame Start never fires
+3. **VFE CAMIF_STATUS**: Transitions 0x80000000 → 0x00000000 (starts waiting)
+4. **VFE CAMIF_STATUS**: Returns to 0x80000000 at shutdown (never received data)
+5. **Sensor SEQ_STATE**: Reports 0x03 (streaming/preview mode active)
+
+### Root Cause Hypothesis
+
+The pixel data IS being transmitted by the sensor (SOT confirms lane activity), but:
+- Either the VFE is not connected to the correct CSI input
+- Or there's a hardware mux/routing configuration missing
+- Or the MIPI decoder in CSIPHY/CSID isn't decoding the packets correctly
+
+webOS camera works, so the hardware path exists. The difference must be in software configuration.
