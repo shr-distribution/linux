@@ -524,6 +524,25 @@ set_axi_output_mode() {
     "
 }
 
+# Set VFE31 legacy routing mode
+# 0 = Modern mux mode (csi_pix/csi_rdi parent to CSI1)
+# 1 = Legacy webOS mode (MISC_CC_REG = 0x0, direct CSI1_VFE_CLK routing)
+set_legacy_routing() {
+    local mode="$1"
+    log_step "Setting VFE31 legacy routing mode to: $mode"
+
+    run_on_device "
+        PARAM='/sys/module/qcom_camss/parameters/vfe31_legacy_routing'
+        if [ -f \"\$PARAM\" ]; then
+            echo $mode > \$PARAM
+            echo \"vfe31_legacy_routing set to: \$(cat \$PARAM)\"
+        else
+            echo 'WARNING: vfe31_legacy_routing parameter not found'
+            echo 'Module may not be loaded or parameter not available'
+        fi
+    "
+}
+
 # Enable/disable VFE test generator mode
 set_testgen_mode() {
     local enable="$1"
@@ -647,6 +666,66 @@ test_pix_mode() {
     "
 }
 
+# Test legacy routing mode (webOS-style MISC_CC=0)
+# This bypasses the modern csi_pix/csi_rdi clock mux and uses direct CSI1_VFE_CLK routing
+test_legacy_mode() {
+    log_step "Testing LEGACY routing mode (webOS-style MISC_CC=0)..."
+    log_info "This bypasses the modern csi_pix/csi_rdi mux"
+    log_info "Data routes directly via CSI1_VFE_CLK like webOS"
+
+    # Enable legacy routing mode BEFORE pipeline setup
+    set_legacy_routing "1"
+
+    # Set AXI output mode to PIX/preview (0x200)
+    set_axi_output_mode "0x200"
+
+    run_on_device "
+        echo '=== LEGACY Routing Mode Test ==='
+        echo ''
+        echo 'This mode writes MISC_CC_REG=0x0 like webOS'
+        echo 'Data routes: CSIPHY1 -> CSI1_VFE_CLK -> VFE CAMIF'
+        echo ''
+
+        # Check current MISC_CC state
+        echo 'Current module parameters:'
+        cat /sys/module/qcom_camss/parameters/vfe31_legacy_routing 2>/dev/null || echo '  (not found)'
+        cat /sys/module/qcom_camss/parameters/vfe31_axi_output_mode 2>/dev/null || echo '  (not found)'
+        echo ''
+
+        # Setup media pipeline: CSID1 -> VFE PIX link
+        echo 'Setting up media pipeline...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        echo 'Pipeline configured'
+
+        echo ''
+        echo 'Testing capture with 1280x968 UYVY (LEGACY mode)...'
+        timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
+            'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
+            fakesink 2>&1
+
+        RESULT=\$?
+
+        echo ''
+        echo 'Checking MISC_CC_REG state after test...'
+        # Need devmem to check, but dmesg should show it
+        dmesg | grep -E 'MISC_CC|LEGACY' | tail -10
+
+        if [ \$RESULT -eq 0 ]; then
+            echo ''
+            echo 'SUCCESS: LEGACY mode capture completed!'
+        else
+            echo ''
+            echo 'FAILED: LEGACY mode capture did not complete'
+            echo 'Check dmesg for errors'
+        fi
+    "
+
+    # Disable legacy routing mode after test
+    set_legacy_routing "0"
+}
+
 # Main
 main() {
     echo "=============================================="
@@ -680,6 +759,9 @@ main() {
             testgen)
                 MODE="testgen"
                 ;;
+            legacy)
+                MODE="legacy"
+                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
@@ -687,6 +769,7 @@ main() {
                 echo "  raw        Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
                 echo "  pix        Test PIX mode (through VFE ISP processing)"
                 echo "  testgen    Test VFE internal test generator (bypasses camera)"
+                echo "  legacy     Test with webOS-style legacy routing (MISC_CC=0)"
                 echo "  --info     Show camera device information only"
                 echo "  --setup    Set up media pipeline only"
                 echo "  --capture  Test capture only (assumes pipeline is set up)"
@@ -734,6 +817,12 @@ main() {
         testgen)
             show_camera_info
             test_testgen_mode
+            ;;
+        legacy)
+            show_camera_info
+            ensure_camera_ready
+            test_legacy_mode
+            check_dmesg
             ;;
         full)
             show_camera_info
