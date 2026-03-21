@@ -27,7 +27,7 @@
  * Can be changed at runtime via:
  *   echo 0x200 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
  */
-static int vfe31_axi_output_mode = 0x60;
+int vfe31_axi_output_mode = 0x60;
 module_param(vfe31_axi_output_mode, int, 0644);
 MODULE_PARM_DESC(vfe31_axi_output_mode,
 		 "VFE31 AXI output mode (0x60=raw/RDI, 0x200=PIX/preview)");
