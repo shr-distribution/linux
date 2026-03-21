@@ -1685,22 +1685,26 @@
 	primary_i2s_pins: primary-i2s-state {
 		/*
 		 * I2S pins for WM8958 codec connection.
-		 * Q6 LPASS is master, generating BCLK, LRCLK, and driving data.
-		 * WM8958 codec is slave, receiving clocks and data.
 		 *
-		 * GPIO 108 = I2S WS (LRCLK / Word Select)
-		 * GPIO 109 = I2S SCK (BCLK / Bit Clock)
-		 * GPIO 110 = I2S SD0 (Data Out to codec)
+		 * For direct LPAIF path (non-Q6), codec must be I2S master
+		 * because GPIO 108 cannot be used for LRCLK:
+		 * - GPIO 108 is shared with LDO2ENA (codec power enable)
+		 * - Using I2S function would drive LOW when idle, killing codec
+		 *
+		 * Codec master mode:
+		 * - WM8958 generates BCLK and LRCLK using internal FLL
+		 * - GPIO 109 receives BCLK from codec (input)
+		 * - GPIO 110 sends audio data to codec (output)
+		 * - LPASS uses WSSRC_EXTERNAL to sync with codec's BCLK
 		 *
 		 * Note: On 3G variants, GPIO 110 is used for BT_POWER instead.
 		 * The 3G device tree should override this pinctrl.
 		 */
+
 		/*
 		 * GPIO 108: Keep as GPIO output HIGH for LDO2 enable.
-		 * Cannot use I2S function - the I2S hardware drives LOW when
-		 * idle, disabling LDO2 and causing I2C failures to codec.
-		 * Pull-up bias is not strong enough to overcome active drive.
-		 * Codec configured as I2S master to generate its own LRCLK.
+		 * Cannot use I2S function - required for codec power.
+		 * LRCLK is generated internally by codec (master mode).
 		 */
 		i2s-ws-pins {
 			pins = "gpio108";
@@ -1709,20 +1713,28 @@
 			bias-disable;
 			output-high;
 		};
-		/* GPIO 109 (BCLK) - LPAIF drives BCLK to codec */
+
+		/*
+		 * GPIO 109 (BCLK): Receive bit clock from codec.
+		 * In codec master mode, WM8958 drives BCLK.
+		 * Configure as input with I2S function.
+		 */
 		i2s-sck-pins {
 			pins = "gpio109";
 			function = "i2s";
-			drive-strength = <8>;
 			bias-disable;
-			output-high;
+			input-enable;
 		};
+
+		/*
+		 * GPIO 110 (SD0): Send audio data to codec.
+		 * LPASS drives I2S data output.
+		 */
 		i2s-data-pins {
 			pins = "gpio110";
 			function = "i2s";
 			drive-strength = <8>;
 			bias-disable;
-			output-low;
 		};
 	};
 

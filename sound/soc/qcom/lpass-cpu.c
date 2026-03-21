@@ -80,6 +80,51 @@ static int lpass_cpu_daiops_set_sysclk(struct snd_soc_dai *dai, int clk_id,
 	return ret;
 }
 
+/*
+ * Configure I2S master/slave mode for LPASS CPU DAI.
+ *
+ * This determines the Word Select (LRCLK) source:
+ * - CPU master (BP_FP/CBS_CFS): LPASS generates LRCLK internally (WSSRC_INT)
+ * - CPU slave (BC_FC/CBM_CFM): Codec generates LRCLK, LPASS receives (WSSRC_EXT)
+ *
+ * This is particularly important for platforms like HP TouchPad where the
+ * GPIO pin normally used for LRCLK output has a hardware conflict (shared
+ * with codec LDO enable), requiring the codec to be I2S master.
+ */
+static int lpass_cpu_daiops_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
+{
+	struct lpass_data *drvdata = snd_soc_dai_get_drvdata(dai);
+	unsigned int id = dai->driver->id;
+
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_BP_FP:
+		/* CPU is bit clock and frame clock provider (master) */
+		drvdata->mi2s_wssrc_external[id] = false;
+		break;
+	case SND_SOC_DAIFMT_BC_FC:
+		/* CPU is bit clock and frame clock consumer (slave) */
+		drvdata->mi2s_wssrc_external[id] = true;
+		break;
+	case SND_SOC_DAIFMT_BP_FC:
+		/* CPU provides bit clock, codec provides frame clock */
+		drvdata->mi2s_wssrc_external[id] = true;
+		break;
+	case SND_SOC_DAIFMT_BC_FP:
+		/* CPU provides frame clock, codec provides bit clock */
+		drvdata->mi2s_wssrc_external[id] = false;
+		break;
+	default:
+		dev_err(dai->dev, "unsupported clock provider mode: 0x%x\n",
+			fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK);
+		return -EINVAL;
+	}
+
+	dev_dbg(dai->dev, "set_fmt: id=%u, wssrc_external=%d\n",
+		id, drvdata->mi2s_wssrc_external[id]);
+
+	return 0;
+}
+
 static int lpass_cpu_daiops_startup(struct snd_pcm_substream *substream,
 		struct snd_soc_dai *dai)
 {
@@ -157,12 +202,21 @@ static int lpass_cpu_daiops_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
+	/*
+	 * Configure Word Select (LRCLK) source based on set_fmt configuration.
+	 * INTERNAL: LPASS generates LRCLK (CPU is master)
+	 * EXTERNAL: Codec generates LRCLK (CPU is slave)
+	 */
 	ret = regmap_fields_write(i2sctl->wssrc, id,
-				 LPAIF_I2SCTL_WSSRC_INTERNAL);
+				  drvdata->mi2s_wssrc_external[id] ?
+				  LPAIF_I2SCTL_WSSRC_EXTERNAL :
+				  LPAIF_I2SCTL_WSSRC_INTERNAL);
 	if (ret) {
 		dev_err(dai->dev, "error updating wssrc field: %d\n", ret);
 		return ret;
 	}
+	dev_dbg(dai->dev, "hw_params: id=%u, wssrc=%s\n", id,
+		drvdata->mi2s_wssrc_external[id] ? "external" : "internal");
 
 	switch (bitwidth) {
 	case 16:
@@ -438,6 +492,7 @@ static int lpass_cpu_daiops_probe(struct snd_soc_dai *dai)
 const struct snd_soc_dai_ops asoc_qcom_lpass_cpu_dai_ops = {
 	.probe		= lpass_cpu_daiops_probe,
 	.set_sysclk	= lpass_cpu_daiops_set_sysclk,
+	.set_fmt	= lpass_cpu_daiops_set_fmt,
 	.startup	= lpass_cpu_daiops_startup,
 	.shutdown	= lpass_cpu_daiops_shutdown,
 	.hw_params	= lpass_cpu_daiops_hw_params,
@@ -450,6 +505,7 @@ const struct snd_soc_dai_ops asoc_qcom_lpass_cpu_dai_ops2 = {
 	.pcm_new	= lpass_cpu_daiops_pcm_new,
 	.probe		= lpass_cpu_daiops_probe,
 	.set_sysclk	= lpass_cpu_daiops_set_sysclk,
+	.set_fmt	= lpass_cpu_daiops_set_fmt,
 	.startup	= lpass_cpu_daiops_startup,
 	.shutdown	= lpass_cpu_daiops_shutdown,
 	.hw_params	= lpass_cpu_daiops_hw_params,
