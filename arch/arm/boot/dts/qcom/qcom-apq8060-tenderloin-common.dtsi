@@ -1703,12 +1703,14 @@
 
 		/*
 		 * GPIO 108 (WS/LRCLK): LPASS outputs word select to codec.
+		 * Use pull-up to keep LDO2 enabled when I2S is idle.
+		 * GPIO 108 is also the LDO2 enable pin - must stay HIGH.
 		 */
 		i2s-ws-pins {
 			pins = "gpio108";
 			function = "i2s";
 			drive-strength = <8>;
-			bias-disable;
+			bias-pull-up;
 			output-enable;
 		};
 
