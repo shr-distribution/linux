@@ -985,9 +985,13 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
 	dev_info(vfe->camss->dev, "VFE31 RDI: EFS_CFG=0x40 (matches webOS)\n");
 
-	/* FRAME_CFG: bytes per line | lines per frame */
-	val = bytes_per_line | (height << 16);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+	/*
+	 * FRAME_CFG: webOS does NOT write this register (value remains 0).
+	 * Writing FRAME_CFG on VFE31 overrides the MIPI unpacker's auto-derived
+	 * line/frame lengths, potentially breaking the data path. Skip this write
+	 * and let the WINDOW_WIDTH/HEIGHT registers define the capture area.
+	 */
+	dev_dbg(vfe->camss->dev, "VFE31 RDI: FRAME_CFG skipped (matches webOS)\n");
 
 	/* WINDOW_WIDTH: lastPixel | firstPixel<<16 (first=0) */
 	val = (bytes_per_line - 1) | (0 << 16);
@@ -1405,13 +1409,13 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	dev_info(vfe->camss->dev, "VFE31: EFS_CFG (0x1E4) = 0x40 (matches webOS)\n");
 	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
 
-	/* FRAME_CFG at 0x1E8: pixels per line | lines per frame */
-	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2) |
-	      (line->fmt[MSM_VFE_PAD_SINK].height << 16);
-	dev_info(vfe->camss->dev, "VFE31: FRAME_CFG (0x1E8) = 0x%08x (pixels=%d, lines=%d)\n",
-		 val, line->fmt[MSM_VFE_PAD_SINK].width * 2,
-		 line->fmt[MSM_VFE_PAD_SINK].height);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+	/*
+	 * FRAME_CFG at 0x1E8: webOS does NOT write this register (value is 0).
+	 * Writing FRAME_CFG overrides the MIPI unpacker's auto-derived
+	 * line/frame lengths, breaking the CSIPHY->VFE data path on MSM8660.
+	 * Skip this write - WINDOW_WIDTH/HEIGHT define the capture window.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: FRAME_CFG skipped (webOS=0x00000000)\n");
 
 	/* WINDOW_WIDTH_CFG at 0x1EC: lastPixel | firstPixel<<16 */
 	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1) | (0 << 16);
