@@ -15,16 +15,53 @@ echo "=== VFE31 & MMCC Register Dump ==="
 echo "Date: $(date)"
 echo ""
 
-# Check if devmem2 is available
-if ! command -v devmem2 &> /dev/null; then
-    echo "ERROR: devmem2 not found. Install with: opkg install devmem2"
+# Find a working method to read physical memory
+DEVMEM_CMD=""
+
+if command -v devmem2 &> /dev/null; then
+    DEVMEM_CMD="devmem2"
+    echo "Using: devmem2"
+elif command -v devmem &> /dev/null; then
+    DEVMEM_CMD="devmem"
+    echo "Using: devmem"
+elif command -v memtool &> /dev/null; then
+    DEVMEM_CMD="memtool"
+    echo "Using: memtool"
+elif busybox devmem 0x04000000 w &> /dev/null; then
+    DEVMEM_CMD="busybox devmem"
+    echo "Using: busybox devmem"
+else
+    echo "ERROR: No devmem tool found."
+    echo ""
+    echo "Options to fix:"
+    echo "  1. webOS: Check if memtool exists: which memtool"
+    echo "  2. webOS: Try: ipkg install devmem2"
+    echo "  3. LuneOS: opkg install busybox (includes devmem)"
+    echo "  4. Build devmem from source (simple single-file tool)"
+    echo ""
+    echo "Or use kernel debug output instead - see dmesg for:"
+    echo "  vfe31_debug_dump_external_regs() output"
     exit 1
 fi
 
 # Helper function to read register
 read_reg() {
     local addr=$1
-    devmem2 $addr w 2>/dev/null | tail -1 | awk '{print $NF}'
+    case "$DEVMEM_CMD" in
+        devmem2)
+            devmem2 $addr w 2>/dev/null | tail -1 | awk '{print $NF}'
+            ;;
+        devmem)
+            devmem $addr w 2>/dev/null
+            ;;
+        memtool)
+            # memtool syntax: memtool md.l <addr> 1
+            memtool md.l $addr 1 2>/dev/null | tail -1 | awk '{print $2}'
+            ;;
+        "busybox devmem")
+            busybox devmem $addr w 2>/dev/null
+            ;;
+    esac
 }
 
 echo "=============================================="
