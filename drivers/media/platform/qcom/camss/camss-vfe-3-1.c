@@ -882,7 +882,8 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 {
 	u32 val, even_cfg, odd_cfg;
 
-	writel_relaxed(VFE_0_MODULE_CFG_DEMUX,
+	/* Use webOS MODULE_CFG value (0x01c00c0c) - not just DEMUX bit */
+	writel_relaxed(0x01c00c0c,
 		       vfe->base + VFE_0_MODULE_CFG);
 
 	val = VFE_0_DEMUX_CFG_PERIOD;
@@ -1073,12 +1074,16 @@ static void vfe31_set_camif_cmd(struct vfe_device *vfe, u8 enable)
 
 static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable)
 {
-	u32 val = VFE_0_MODULE_CFG_DEMUX |
-		  VFE_0_MODULE_CFG_CHROMA_UPSAMPLE |
-		  VFE_0_MODULE_CFG_SCALE_ENC |
-		  VFE_0_MODULE_CFG_CROP_ENC;
+	/*
+	 * Use exact webOS MODULE_CFG value: 0x01c00c0c
+	 * - bit 2: DEMUX
+	 * - bit 3: CHROMA_UPSAMPLE
+	 * - bits 10-11: Unknown but required by webOS
+	 * - bit 24: Unknown but required by webOS
+	 */
+	u32 val = 0x01c00c0c;
 
-	dev_info(vfe->camss->dev, "VFE31 set_module_cfg: enable=%d val=0x%x\n",
+	dev_info(vfe->camss->dev, "VFE31 set_module_cfg: enable=%d val=0x%x (webOS)\n",
 		 enable, enable ? val : 0);
 
 	if (enable)
