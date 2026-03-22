@@ -66,6 +66,11 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB	0x5
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY	0x6
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY	0x7
+/*
+ * Bit 6 of VFE_CFG_OFF: webOS always sets this (0x46 instead of 0x06).
+ * Purpose unknown, but required for data path to work.
+ */
+#define VFE_0_CORE_CFG_INPUT_MUX_ENABLE		BIT(6)
 
 #define VFE_0_IRQ_CMD			0x018
 #define VFE_0_IRQ_CMD_GLOBAL_CLEAR	BIT(0)
@@ -942,7 +947,7 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		 "VFE31 set_camif_cfg: ENTRY width=%d height=%d bytes_per_line=%d\n",
 		 width, height, bytes_per_line);
 
-	/* Configure pixel pattern in CORE_CFG */
+	/* Configure pixel pattern in CORE_CFG + bit 6 (webOS uses 0x46 for UYVY) */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -962,6 +967,8 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
 		break;
 	}
+	/* Add bit 6 - webOS always sets this (0x46 instead of 0x06) */
+	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 
 	/*
@@ -1437,7 +1444,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF registers configured\n");
 
-	/* Configure pixel pattern in CORE_CFG */
+	/* Configure pixel pattern in CORE_CFG + bit 6 (webOS uses 0x46 for UYVY) */
 	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
@@ -1458,6 +1465,8 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
 		break;
 	}
+	/* Add bit 6 - webOS always sets this (0x46 instead of 0x06) */
+	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 	wmb();
 
