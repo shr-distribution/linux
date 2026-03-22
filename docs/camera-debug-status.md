@@ -385,22 +385,54 @@ Video pipeline stop failed: -515
 
 ---
 
-## Gemini Analysis (2026-03-22)
+## Gemini Analysis (2026-03-22) - Updated
 
-### Key Insight: VFE as MIPI Receiver
+### NEW: Protocol Matching - The Root Cause Mechanism
 
-Because MSM8660 lacks a standalone CSID, **VFE itself must act as the MIPI receiver**. Mainline `camss` assumes CSID handles Virtual Channel (VC) and Data Type (DT) filtering. If mainline treats 8x60 CSID as pass-through without programming VFE's internal CSI-2 decode, VFE won't know to grab VC=0/DT=0x1E data.
+Since MSM8660 lacks an inputSource mux, the physical routing is **hardwired** (CSIPHY1 → VFE CSI1 input). Instead of routing, the **VFE acts as a strict filter**:
 
-**However:** Investigation shows VFE31 does NOT have VC/DT configuration registers. The CSIPHY handles all MIPI decode and is supposed to pass decoded pixels automatically.
+1. VFE's internal CSI-2 wrapper evaluates incoming decoded byte stream
+2. It looks for specific **Virtual Channels (VC)** and **Data Types (DT)**
+3. If incoming packet (e.g., VC=0, DT=0x1E for YUV422) doesn't match VFE config, **packets are silently dropped**
+4. No error generated - just silence, and `CAMIF_SOF` never fires
 
-### Clock HALT Status
+**This is our most likely root cause!** We need to verify VC/DT configuration matches.
 
+### NEW: CDC/Async FIFO Mechanism
+
+The CSIPHY operates on MIPI byte clock (recovered from sensor), VFE core operates on `vfe_clk`:
+
+- **CDC crossing** relies on an async FIFO buffer
+- No single "CDC Enable" bit - FIFO functions automatically IF both clocks are toggling AND block is out of reset
+- **Stall Condition:** If `vfe_csi1_clk` not ticking, or VFE processing slower than PHY pushing (overflow), FIFO stalls
+- When stalled/reset, no data reaches CAMIF = zero-byte capture + SOF timeout
+
+### NEW: Critical MMCC Registers to Check
+
+**Clock Halt Registers (CLK_HALT_STATE*)** at 0x04000100-0x04000120:
+- Must verify `vfe_clk`, `vfe_csi1_clk`, `csi_pix_clk`, `csi_rdi_clk` halt bits = **0 (running)**
+- If bit = 1, clock halted by hardware (downstream block in reset or PLL issue)
+
+**Software Reset Registers (SW_RESET_*):**
+- Check for VFE or CSI software reset bits
+- If `CSI1_SW_RESET` not cleared, FIFO remains locked
+
+### NEW: MODULE_CFG Requirements
+
+VFE pipeline is highly modular - CAMIF must be explicitly enabled:
+
+1. **MODULE_CFG top-level enable:** Bit for CAMIF/Demux must be set
+2. **Data format expectation:** `FRAME_CFG`, `EPOCH_CFG`, packing config must match 8-bit YUV payload
+3. If CAMIF expects 10-bit raw but PHY sends 8-bit YUV, input state machine hangs waiting for byte boundaries that never align
+
+### Previous Analysis (Still Relevant)
+
+#### Clock HALT Status
 Even with clocks enabled, need to verify HALT status bits:
 - **DBG_BUS_VEC_B_REG:** Contains halt bits for CSI and VFE clocks
 - If downstream block holds clock in reset, data won't flow
 
-### Async FIFO Stall Theory
-
+#### Async FIFO Stall Theory
 An async FIFO sits between MIPI byte clock and VFE core clock:
 - If VFE input formatter is misconfigured (expects 10-bit raw but receives 8-bit YUV)
 - The byte-packing logic stalls
@@ -412,8 +444,7 @@ An async FIFO sits between MIPI byte clock and VFE core clock:
 - FRAME_CFG
 - Any registers with PACK/UNPACK in name
 
-### Clock Domain Crossing (CDC) Issue
-
+#### Clock Domain Crossing (CDC) Issue
 Gemini suggested: "If webOS left MISC_CC_REG at 0x00000000, it implies hardware defaults to hardwired CDC path between CSIPHY1 and VFE. By setting 0x06003440, mainline might be severing the default bridge."
 
 **Status:** We tested MISC_CC_REG=0 (legacy mode) and it also failed. So this isn't the issue.
