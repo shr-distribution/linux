@@ -2693,13 +2693,23 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 
 	/*
 	 * Initialize CSI and MISC CC registers.
-	 * WebOS: writel(0x00000000, CSI_CC_REG);
-	 *        rmwreg(0x00000000, MISC_CC_REG, 0xFEFFF3FF);
-	 *        rmwreg(0x000007FD, MISC_CC2_REG, 0xFFFF7FFF);
-	 * MISC_CC2 also sets DSI byte clock src and HDMI app clock src later.
+	 *
+	 * CSI_CC_REG (0x040): webOS camera dump shows 0x85
+	 *   - Bit 0: CSI digital wrapper 0 enable
+	 *   - Bit 2: CSI digital wrapper 1 enable
+	 *   - Bit 7: Unknown (possibly global CSI enable)
+	 * Without these bits set, CSIPHY data never reaches VFE.
+	 *
+	 * MISC_CC_REG (0x058): webOS camera dump shows 0x0400
+	 *   - Bit 10: CSI1-to-VFE async bridge enable
+	 * MSM8660 has direct CSIPHY->VFE path, NOT the csi_pix/csi_rdi mux
+	 * architecture found in VFE3.2+. The csi_pix_clk/csi_rdi_clk (bits
+	 * 25-26 and 12-13) don't exist on this SoC - only bit 10 matters.
+	 *
+	 * MISC_CC2_REG: webOS shows 0x004007fd - additional enables.
 	 */
-	regmap_write(regmap, CSI_CC_REG, 0x00000000);
-	regmap_update_bits(regmap, MISC_CC_REG, 0xfefff3ff, 0x00000000);
+	regmap_write(regmap, CSI_CC_REG, 0x00000085);
+	regmap_update_bits(regmap, MISC_CC_REG, 0xfefff7ff, 0x00000400);
 	regmap_update_bits(regmap, MISC_CC2_REG, 0xffff7fff, 0x000007fd);
 	/* Set dsi_byte_clk src to DSI PHY PLL, hdmi_app_clk src to PXO */
 	regmap_update_bits(regmap, MISC_CC2_REG, 0x00424003, 0x00400001);
