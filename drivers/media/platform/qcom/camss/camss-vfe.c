@@ -2733,12 +2733,16 @@ int vfe_get(struct vfe_device *vfe)
 					 *   - Bit 7: Global CSI enable
 					 */
 					dev_info(vfe->camss->dev,
-						 "VFE: WEBOS MODE - writing 0x0400 to MISC_CC_REG, 0x85 to CSI_CC_REG\n");
+						 "VFE: WEBOS MODE - writing 0x0400 to MISC_CC_REG, 0x285 to CSI_CC_REG\n");
 					dev_info(vfe->camss->dev,
 						 "VFE: MISC_CC before: 0x%08x\n", misc_cc);
 
-					/* Force CSI_CC_REG to webOS value */
-					writel_relaxed(0x00000085, mmcc_base + 0x0040);
+					/*
+					 * Force CSI_CC_REG - webOS shows 0x85 but we also need
+					 * CSI1_PHY_CLK (bit 9) enabled for the PHY to work.
+					 * Use 0x285 = 0x85 | BIT(9)
+					 */
+					writel_relaxed(0x00000285, mmcc_base + 0x0040);
 					wmb();
 
 					/* Force MISC_CC_REG to webOS value (bit 10 only) */
@@ -2753,7 +2757,7 @@ int vfe_get(struct vfe_device *vfe)
 					{
 						u32 csi_cc = readl_relaxed(mmcc_base + 0x0040);
 						dev_info(vfe->camss->dev,
-							 "VFE: CSI_CC after webOS write: 0x%08x (expect 0x85)\n",
+							 "VFE: CSI_CC after webOS write: 0x%08x (expect 0x285)\n",
 							 csi_cc);
 					}
 				} else if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(12))) {
