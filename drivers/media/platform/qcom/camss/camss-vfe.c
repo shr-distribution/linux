@@ -773,6 +773,7 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_CORE_CFG_PIXEL_YCRYCB	0x5
 #define VFE31_CORE_CFG_PIXEL_CBYCRY	0x6
 #define VFE31_CORE_CFG_PIXEL_CRYCBY	0x7
+#define VFE31_CORE_CFG_INPUT_MUX_EN	BIT(6)	/* webOS uses 0x46 not 0x06 */
 
 /*
  * Note: VFE31 does NOT have a separate VFE_CFG register for CAMIF_TO_BUS.
@@ -1805,6 +1806,8 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		val = VFE31_CORE_CFG_PIXEL_CRYCBY;
 		break;
 	}
+	/* Add bit 6 - webOS always sets this (0x46 instead of 0x06) */
+	val |= VFE31_CORE_CFG_INPUT_MUX_EN;
 	writel_relaxed(val, vfe->base + VFE31_CORE_CFG);
 
 	/*
