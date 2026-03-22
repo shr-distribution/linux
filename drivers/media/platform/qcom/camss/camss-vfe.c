@@ -1858,14 +1858,21 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0x40, vfe->base + VFE31_CAMIF_EFS_CFG);
 
 	/*
-	 * Step 3: FRAME_CFG at 0x1E8 - SKIP per webOS behavior
+	 * Step 3: FRAME_CFG at 0x1E8
 	 *
-	 * webOS camera dump shows FRAME_CFG = 0x00000000 (not written).
-	 * Writing FRAME_CFG on VFE31 overrides the MIPI unpacker's auto-derived
-	 * line/frame lengths, breaking the CSIPHY->VFE data path on MSM8660.
-	 * WINDOW_WIDTH/HEIGHT registers define the capture window instead.
+	 * Format: pixelsPerLine[13:0] | linesPerFrame[29:16]
+	 * This register tells CAMIF the expected frame dimensions.
+	 * Without it, CAMIF fires CAMIF_ERROR because it doesn't know
+	 * when a frame should end.
+	 *
+	 * For UYVY format (2 bytes per pixel), pixelsPerLine = width * 2.
 	 */
-	dev_info(vfe->camss->dev, "VFE: FRAME_CFG skipped (webOS=0x00000000)\n");
+	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2) |
+	      (line->fmt[MSM_VFE_PAD_SINK].height << 16);
+	dev_info(vfe->camss->dev, "VFE: FRAME_CFG=0x%08x (pixels=%d, lines=%d)\n",
+		 val, line->fmt[MSM_VFE_PAD_SINK].width * 2,
+		 line->fmt[MSM_VFE_PAD_SINK].height);
+	writel_relaxed(val, vfe->base + VFE31_CAMIF_FRAME_CFG);
 
 	/*
 	 * WINDOW_WIDTH_CFG register format:
