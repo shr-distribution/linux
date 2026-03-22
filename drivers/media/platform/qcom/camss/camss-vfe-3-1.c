@@ -23,14 +23,17 @@
  * 0x60  = Raw/RDI mode (CAMIF_TO_AXI_VIA_OUTPUT_2) - raw bypass
  * 0x200 = PIX/Preview mode (OUTPUT_2) - ISP processing
  *
- * Default is 0x60 for raw capture. Set to 0x200 for PIX/preview mode.
+ * webOS uses 0x01 for video recording. Values observed:
+ *   0x01  = VIDEO mode (webOS default while recording)
+ *   0x60  = CAMIF_TO_AXI raw snapshot mode
+ *   0x200 = OUTPUT_2 preview mode with ISP
  * Can be changed at runtime via:
- *   echo 0x200 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
+ *   echo 0x01 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
  */
-int vfe31_axi_output_mode = 0x60;
+int vfe31_axi_output_mode = 0x01;
 module_param(vfe31_axi_output_mode, int, 0644);
 MODULE_PARM_DESC(vfe31_axi_output_mode,
-		 "VFE31 AXI output mode (0x60=raw/RDI, 0x200=PIX/preview)");
+		 "VFE31 AXI output mode (0x01=video, 0x60=raw, 0x200=preview)");
 #include "camss-vfe.h"
 #include "camss-vfe-gen1.h"
 
@@ -977,10 +980,10 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 *   - 0x200: OUTPUT_2 (PIX mode, VFE ISP processing)
 	 *   - 0x60:  CAMIF_TO_AXI_VIA_OUTPUT_2 (RDI mode, raw bypass)
 	 *
-	 * For MIPI CSI-2 (APS mode), EFS_CFG should be 0.
+	 * webOS uses EFS_CFG=0x40 (bit 6 set). This may enable some timing mode.
 	 */
-	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
-	dev_info(vfe->camss->dev, "VFE31 RDI: EFS_CFG=0x0 (APS mode, routing via AXI_OUT_MODE)\n");
+	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	dev_info(vfe->camss->dev, "VFE31 RDI: EFS_CFG=0x40 (matches webOS)\n");
 
 	/* FRAME_CFG: bytes per line | lines per frame */
 	val = bytes_per_line | (height << 16);
@@ -1398,9 +1401,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF configuration\n");
 
-	/* EFS_CFG at 0x1E4: Set to 0 for APS mode (no embedded sync codes) */
-	dev_info(vfe->camss->dev, "VFE31: EFS_CFG (0x1E4) = 0 (APS mode, no EFS codes)\n");
-	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	/* EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set) */
+	dev_info(vfe->camss->dev, "VFE31: EFS_CFG (0x1E4) = 0x40 (matches webOS)\n");
+	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
 
 	/* FRAME_CFG at 0x1E8: pixels per line | lines per frame */
 	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2) |
