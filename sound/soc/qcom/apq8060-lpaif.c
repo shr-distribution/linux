@@ -131,6 +131,45 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	/*
+	 * Configure BCLK-only mode: Force internal LRCLK generation.
+	 *
+	 * Since GPIO 108 must stay HIGH for LDO2, we can't use it for LRCLK.
+	 * Instead, configure the codec to derive LRCLK timing from BCLK:
+	 *
+	 * 1. Set AIF1_LRCLK_FRC bit to force internal LRCLK generation
+	 * 2. Set AIF1DAC_LRCLK rate = BCLK cycles per frame (e.g., 32 for 16-bit stereo)
+	 *
+	 * The codec counts BCLK cycles and generates internal frame strobes,
+	 * eliminating the need for an external LRCLK signal.
+	 */
+	{
+		unsigned int lrclk_rate;
+		unsigned int channels = params_channels(params);
+		unsigned int width = snd_pcm_format_width(params_format(params));
+
+		/* LRCLK rate = bits per channel * channels = bits per frame */
+		lrclk_rate = width * channels;
+
+		dev_info(rtd->dev, "BCLK-only mode: LRCLK_FRC=1, rate=%u (width=%u, ch=%u)\n",
+			 lrclk_rate, width, channels);
+
+		/* Set AIF1_LRCLK_FRC to force internal LRCLK generation */
+		snd_soc_component_update_bits(component, WM8994_AIF1_CONTROL_1,
+					      WM8994_AIF1_LRCLK_FRC,
+					      WM8994_AIF1_LRCLK_FRC);
+
+		/* Set AIF1DAC LRCLK rate (BCLK cycles per frame) */
+		snd_soc_component_update_bits(component, WM8994_AIF1DAC_LRCLK,
+					      WM8994_AIF1DAC_RATE_MASK,
+					      lrclk_rate);
+
+		/* Also set AIF1ADC LRCLK rate for symmetry */
+		snd_soc_component_update_bits(component, WM8994_AIF1ADC_LRCLK,
+					      WM8994_AIF1DAC_RATE_MASK,
+					      lrclk_rate);
+	}
+
+	/*
 	 * Force-enable power management registers for the output path.
 	 * DAPM may not properly power up all widgets because the path
 	 * detection doesn't always work correctly. Enable them here

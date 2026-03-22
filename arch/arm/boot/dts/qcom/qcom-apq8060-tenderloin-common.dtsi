@@ -1665,27 +1665,25 @@
 	};
 
 	/*
-	 * Primary I2S pins for WM8958 codec - CPU MASTER MODE.
+	 * Primary I2S pins for WM8958 codec - BCLK-ONLY MODE.
 	 *
-	 * LPASS generates BCLK and LRCLK, codec receives them.
-	 *
-	 * GPIO 108: I2S_WS (Word Select / LRCLK) - LPASS output
+	 * GPIO 108: Kept as GPIO OUTPUT HIGH for LDO2 enable
+	 *           (NOT used for I2S LRCLK - codec derives LRCLK from BCLK)
 	 * GPIO 109: I2S_SCK (Serial Clock / BCLK) - LPASS output
 	 * GPIO 110: I2S_SD0 (Serial Data) - LPASS output
 	 *
-	 * LDO2 handling: GPIO 108 is also used for LDO2 enable during
-	 * codec probe. However, DCVDD is supplied externally by pm8058_s3,
-	 * so the codec doesn't actually need LDO2 for power. The
-	 * wm8994-ldo driver sets always_on=1 for LDO2 to prevent the
-	 * regulator framework from disabling it.
+	 * The WM8958 codec uses its internal LRCLK_FRC (force) mode to
+	 * derive frame timing from BCLK, eliminating the need for an
+	 * external LRCLK signal. This allows GPIO 108 to remain HIGH
+	 * to keep the codec's LDO2 enabled and operational.
 	 */
 	primary_i2s_pins: primary-i2s-state {
 		/*
-		 * I2S pins for WM8958 codec connection - CPU MASTER MODE.
+		 * I2S pins for WM8958 codec connection - BCLK-ONLY MODE.
 		 *
-		 * LPASS generates BCLK and LRCLK, codec receives them.
+		 * LPASS generates BCLK only, codec derives LRCLK internally.
 		 *
-		 * GPIO 108 (WS/LRCLK): LPASS outputs word select
+		 * GPIO 108: GPIO output HIGH (LDO2 enable, NOT used for LRCLK)
 		 * GPIO 109 (SCK/BCLK): LPASS outputs bit clock
 		 * GPIO 110 (SD0/DATA): LPASS outputs audio data
 		 *
@@ -1694,14 +1692,15 @@
 		 */
 
 		/*
-		 * GPIO 108 (WS/LRCLK): LPASS outputs word select.
+		 * GPIO 108: Keep as GPIO output HIGH for LDO2 enable.
+		 * NOT used for I2S LRCLK - codec uses LRCLK_FRC mode.
 		 */
-		i2s-ws-pins {
+		ldo2-enable-pins {
 			pins = "gpio108";
-			function = "i2s";
+			function = "gpio";
 			drive-strength = <8>;
 			bias-disable;
-			output-enable;
+			output-high;
 		};
 
 		/*
