@@ -1734,10 +1734,20 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * complete, and VSYNC requires active data flow which we don't have
 	 * yet. The config will latch on the first SOF after CAMIF starts.
 	 */
-	dev_info(vfe->camss->dev, "VFE: Step 0d - Enable modules\n");
-	writel_relaxed(0x0C, vfe->base + VFE31_MODULE_CFG);  /* DEMUX + CHROMA_UPSAMPLE */
+	/*
+	 * webOS MODULE_CFG value: 0x01c00c0c
+	 * Bits set:
+	 *   BIT(2)  = demuxEnable
+	 *   BIT(3)  = chromaUpsampleEnable
+	 *   BIT(10) = yHistEnable
+	 *   BIT(11) = skinToneEnable
+	 *   BIT(22) = unknown (VFE31 specific)
+	 *   BIT(23) = unknown (VFE31 specific)
+	 *   BIT(24) = unknown (VFE31 specific)
+	 */
+	writel_relaxed(0x01c00c0c, vfe->base + VFE31_MODULE_CFG);
 	wmb();
-	dev_info(vfe->camss->dev, "VFE: VFE_MODULE_CFG=0x0C (DEMUX+CHROMA enabled)\n");
+	dev_info(vfe->camss->dev, "VFE: VFE_MODULE_CFG=0x01c00c0c (webOS value)\n");
 
 	/*
 	 * Step 0b: Write VFE_CFG_OFF with pixel pattern ONLY
