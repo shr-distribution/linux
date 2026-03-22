@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # Dump VFE31 and MMCC registers for MSM8660 camera debugging
 # Run this on the device (TouchPad) while camera is streaming
@@ -18,16 +18,16 @@ echo ""
 # Find a working method to read physical memory
 DEVMEM_CMD=""
 
-if command -v devmem2 &> /dev/null; then
+if command -v devmem2 >/dev/null 2>&1; then
     DEVMEM_CMD="devmem2"
     echo "Using: devmem2"
-elif command -v devmem &> /dev/null; then
+elif command -v devmem >/dev/null 2>&1; then
     DEVMEM_CMD="devmem"
     echo "Using: devmem"
-elif command -v memtool &> /dev/null; then
+elif command -v memtool >/dev/null 2>&1; then
     DEVMEM_CMD="memtool"
     echo "Using: memtool"
-elif busybox devmem 0x04000000 w &> /dev/null; then
+elif busybox devmem 0x04000000 w >/dev/null 2>&1; then
     DEVMEM_CMD="busybox devmem"
     echo "Using: busybox devmem"
 elif [ -x "$(dirname $0)/devmem" ]; then
