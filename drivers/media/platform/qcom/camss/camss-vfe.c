@@ -44,7 +44,7 @@ extern int vfe31_axi_output_mode;
 static int vfe31_legacy_routing = 0;
 module_param(vfe31_legacy_routing, int, 0644);
 MODULE_PARM_DESC(vfe31_legacy_routing,
-		 "MSM8660 legacy routing (0=modern mux, 1=webOS style MISC_CC=0)");
+		 "MSM8660 legacy routing (0=modern mux [working], 1=MISC_CC=0 [broken])");
 
 #define MSM_VFE_NAME "msm_vfe"
 
@@ -993,10 +993,11 @@ static void vfe31_debug_dump_clock_state(struct device *dev)
 
 	/*
 	 * Check and fix CSI mux selection - but NOT in legacy mode!
-	 * In legacy mode, we intentionally keep MISC_CC_REG at 0x0.
+	 * Note: Legacy mode (MISC_CC=0x0) is BROKEN - it blocks the data path.
+	 * Use modern mux mode (default) for working camera.
 	 */
 	if (vfe31_legacy_routing) {
-		dev_info(dev, "  LEGACY MODE: Keeping MISC_CC_REG at 0x%08x (no correction)\n",
+		dev_warn(dev, "  LEGACY MODE: MISC_CC_REG=0x%08x (BROKEN - use modern mode!)\n",
 			 misc_cc_reg);
 	} else {
 		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_SEL)) {
@@ -2574,7 +2575,7 @@ int vfe_get(struct vfe_device *vfe)
 			 *
 			 * In modern mode (vfe31_legacy_routing=0):
 			 *   Set csi_pix and csi_rdi clock parents to CSI1.
-			 *   Clock indices: 5=csi_rdi, 6=csi_pix
+			 *   Clock indices: 5=csi_pix, 6=csi_rdi (from camss.c clock array)
 			 *
 			 * In legacy mode (vfe31_legacy_routing=1):
 			 *   Skip the csi_pix/csi_rdi parent setting entirely.
@@ -2598,21 +2599,9 @@ int vfe_get(struct vfe_device *vfe)
 					 * camss_enable_clocks(). Set their parents to CSI1.
 					 */
 
-					/* Set csi_rdi parent to CSI1 (index 5) */
+					/* Set csi_pix parent to CSI1 (index 5) */
 					if (vfe->nclocks > 5 && vfe->clock[5].clk) {
 						ret = clk_set_parent(vfe->clock[5].clk, csi1_clk);
-						if (ret) {
-							dev_warn(vfe->camss->dev,
-								 "VFE: Failed to set csi_rdi parent to CSI1: %d\n",
-								 ret);
-						} else {
-							dev_info(vfe->camss->dev,
-								 "VFE: csi_rdi parent set to CSI1\n");
-						}
-					}
-					/* Set csi_pix parent to CSI1 (index 6) */
-					if (vfe->nclocks > 6 && vfe->clock[6].clk) {
-						ret = clk_set_parent(vfe->clock[6].clk, csi1_clk);
 						if (ret) {
 							dev_warn(vfe->camss->dev,
 								 "VFE: Failed to set csi_pix parent to CSI1: %d\n",
@@ -2620,6 +2609,18 @@ int vfe_get(struct vfe_device *vfe)
 						} else {
 							dev_info(vfe->camss->dev,
 								 "VFE: csi_pix parent set to CSI1\n");
+						}
+					}
+					/* Set csi_rdi parent to CSI1 (index 6) */
+					if (vfe->nclocks > 6 && vfe->clock[6].clk) {
+						ret = clk_set_parent(vfe->clock[6].clk, csi1_clk);
+						if (ret) {
+							dev_warn(vfe->camss->dev,
+								 "VFE: Failed to set csi_rdi parent to CSI1: %d\n",
+								 ret);
+						} else {
+							dev_info(vfe->camss->dev,
+								 "VFE: csi_rdi parent set to CSI1\n");
 						}
 					}
 				}
@@ -2707,9 +2708,9 @@ int vfe_get(struct vfe_device *vfe)
 				 *    This is the MSM8960+ style routing.
 				 *
 				 * 2. Legacy mode (vfe31_legacy_routing=1):
-				 *    Writes 0x0 to MISC_CC_REG like webOS does.
-				 *    MSM8660 may use direct CSI1_VFE_CLK routing without
-				 *    the intermediate csi_pix/csi_rdi mux.
+				 *    Writes 0x0 to MISC_CC_REG for testing purposes.
+				 *    NOTE: This DOES NOT work - webOS actually uses 0x06003000
+				 *    which enables both csi_pix and csi_rdi with CSI1 selected.
 				 *
 				 * MISC_CC_REG (0x0058) bits:
 				 *   BIT(25): csi_pix_sel (0=CSI0, 1=CSI1)
@@ -2720,9 +2721,9 @@ int vfe_get(struct vfe_device *vfe)
 				if (vfe31_legacy_routing) {
 					/*
 					 * LEGACY MODE: Zero out MISC_CC_REG.
-					 * webOS leaves this register at 0x00000000, suggesting
-					 * MSM8660 hardware routes CSI data to VFE via
-					 * CSI1_VFE_CLK directly without the pix/rdi mux.
+					 * WARNING: This does not work! webOS actually uses
+					 * MISC_CC_REG=0x06003000 (csi_pix+csi_rdi enabled, CSI1 selected).
+					 * This legacy mode is kept only for debugging purposes.
 					 */
 					dev_info(vfe->camss->dev,
 						 "VFE: LEGACY ROUTING MODE - writing 0x0 to MISC_CC_REG\n");
