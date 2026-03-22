@@ -541,7 +541,33 @@ static void vfe31_violation_read(struct vfe_device *vfe)
 {
 	u32 violation = readl_relaxed(vfe->base + VFE_0_VIOLATION_STATUS);
 
-	dev_dbg(vfe->camss->dev, "VFE violation status: 0x%x\n", violation);
+	dev_err(vfe->camss->dev, "VFE31 VIOLATION! status=0x%08x\n", violation);
+	if (violation & BIT(0))
+		dev_err(vfe->camss->dev, "  CAMIF_OVERFLOW\n");
+	if (violation & BIT(1))
+		dev_err(vfe->camss->dev, "  DEMOSAIC_OUTPUT_OVERFLOW\n");
+	if (violation & BIT(2))
+		dev_err(vfe->camss->dev, "  DEMUX_OUTPUT_OVERFLOW\n");
+	if (violation & BIT(3))
+		dev_err(vfe->camss->dev, "  CLF_OUTPUT_OVERFLOW\n");
+	if (violation & BIT(4))
+		dev_err(vfe->camss->dev, "  CC_OUTPUT_OVERFLOW\n");
+	if (violation & BIT(5))
+		dev_err(vfe->camss->dev, "  REALIGN_BUF_OVERFLOW\n");
+	if (violation & BIT(6))
+		dev_err(vfe->camss->dev, "  SCALE_OUTPUT_Y_OVERFLOW\n");
+	if (violation & BIT(7))
+		dev_err(vfe->camss->dev, "  SCALE_OUTPUT_CBCR_OVERFLOW\n");
+	if (violation & BIT(8))
+		dev_err(vfe->camss->dev, "  ASF_OUTPUT_OVERFLOW\n");
+	if (violation & BIT(9))
+		dev_err(vfe->camss->dev, "  CROP_OUTPUT_Y_OVERFLOW\n");
+	if (violation & BIT(10))
+		dev_err(vfe->camss->dev, "  CROP_OUTPUT_CBCR_OVERFLOW\n");
+	if (violation & BIT(20))
+		dev_err(vfe->camss->dev, "  AXI_WM0_FIFO_OVERFLOW\n");
+	if (violation & BIT(21))
+		dev_err(vfe->camss->dev, "  AXI_WM1_FIFO_OVERFLOW\n");
 }
 
 static void vfe31_isr_read(struct vfe_device *vfe, u32 *value0, u32 *value1)
