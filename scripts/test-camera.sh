@@ -476,11 +476,12 @@ quick_capture_test() {
     "
 }
 
-# Test RAW passthrough mode (CAMIF -> memory, no ISP)
+# Test RAW passthrough mode (RDI -> memory, no ISP)
 # Uses /dev/video0 (msm_vfe0_rdi0)
+# CSID pad 1 (RDI0) -> VFE RDI0 (line 0)
 test_raw_mode() {
     log_step "Testing RAW passthrough mode..."
-    log_info "Path: Sensor -> CSIPHY -> CSID -> VFE RDI0 -> /dev/video0"
+    log_info "Path: Sensor -> CSIPHY -> CSID:1 -> VFE RDI0 -> /dev/video0"
     log_info "Data goes directly to memory, bypassing ISP"
 
     # Set AXI output mode to raw/RDI (0x60)
@@ -488,6 +489,38 @@ test_raw_mode() {
 
     run_on_device "
         echo '=== RAW Mode Test (video0 via RDI0) ==='
+        echo ''
+
+        # Setup media pipeline for RDI mode
+        # CSID pad 1 = RDI0 source, VFE RDI0 = msm_vfe0_rdi0
+        # This is DIFFERENT from PIX mode which uses CSID pad 4
+        echo 'Setting up RDI media pipeline...'
+
+        # Reset all links first
+        media-ctl -r 2>/dev/null || true
+
+        # Enable upstream links: sensor -> csiphy -> csid
+        echo 'Enabling upstream links...'
+        media-ctl -l '\"mt9m114 4-003c\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
+
+        # Enable RDI link: CSID pad 1 (RDI0) -> VFE RDI0 pad 0
+        echo 'Enabling RDI link (CSID:1 -> VFE RDI0)...'
+        media-ctl -l '\"msm_csid1\":1->\"msm_vfe0_rdi0\":0[1]' 2>&1 || echo '  csid:1->vfe_rdi0 link failed'
+
+        # Set formats on the RDI path
+        echo 'Setting formats...'
+        media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_rdi0\":0[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
+
+        echo ''
+        echo 'Current pipeline:'
+        media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -40
+
         echo ''
         echo 'Testing capture with 1288x968 UYVY...'
         timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=10 ! \\
