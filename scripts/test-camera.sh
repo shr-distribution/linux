@@ -207,7 +207,9 @@ chmod +x /tmp/v4l2_info.sh
 setup_media_pipeline() {
     log_step "Setting up media pipeline..."
 
-    # MT9M114 outputs 1280x960 UYVY (or 1288x968 with blanking)
+    # MT9M113 supported resolutions (from webOS init table):
+    # - Context A: 640x480 (preview)
+    # - Context B: 1280x1024 (capture/full resolution)
     # Sensor -> CSIPHY1 -> CSID1 -> VFE -> video node
 
     run_on_device "cat <<'SCRIPT' > /tmp/setup_pipeline.sh
@@ -272,30 +274,30 @@ if [ -z \"\$SENSOR\" ] || [ -z \"\$CSIPHY\" ]; then
 fi
 
 # Set format on sensor (source pad 0)
-# MT9M114 native resolution is 1288x968 UYVY
-# For MSM8660 CAMIF PIX mode, use 2X8 format (8-bit data on 16-bit bus)
+# MT9M113 supported: 640x480 (preview), 1280x1024 (capture)
+# Using 1280x1024 for full capture mode testing
 echo ''
-echo 'Setting sensor format (1288x968 UYVY8_2X8)...'
-media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || \
-media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_1X16/1288x968]\" 2>&1 || \
+echo 'Setting sensor format (1280x1024 UYVY8_2X8)...'
+media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_2X8/1280x1024]\" 2>&1 || \
+media-ctl -d \$MEDIA_DEV -V \"'\$SENSOR':0[fmt:UYVY8_1X16/1280x1024]\" 2>&1 || \
 echo 'Sensor format set may have failed'
 
 # Set CSIPHY format (sink and source)
 echo 'Setting CSIPHY format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
-media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':1[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':0[fmt:UYVY8_2X8/1280x1024]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSIPHY':1[fmt:UYVY8_2X8/1280x1024]\" 2>&1 || true
 
 # Set CSID format (sink=0, PIX source=4)
 echo 'Setting CSID format...'
-media-ctl -d \$MEDIA_DEV -V \"'\$CSID':0[fmt:UYVY8_2X8/1288x968]\" 2>&1 || true
-media-ctl -d \$MEDIA_DEV -V \"'\$CSID':4[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSID':0[fmt:UYVY8_2X8/1280x1024]\" 2>&1 || true
+media-ctl -d \$MEDIA_DEV -V \"'\$CSID':4[fmt:UYVY8_2X8/1280x1024]\" 2>&1 || true
 
-# Set VFE PIX format (without blanking pixels)
+# Set VFE PIX format
 echo 'Setting VFE format...'
 if [ -n \"\$VFE_PIX\" ]; then
-    media-ctl -d \$MEDIA_DEV -V \"'\$VFE_PIX':0[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
+    media-ctl -d \$MEDIA_DEV -V \"'\$VFE_PIX':0[fmt:UYVY8_2X8/1280x1024]\" 2>&1 || true
 else
-    media-ctl -d \$MEDIA_DEV -V \"'\$VFE':0[fmt:UYVY8_2X8/1280x968]\" 2>&1 || true
+    media-ctl -d \$MEDIA_DEV -V \"'\$VFE':0[fmt:UYVY8_2X8/1280x1024]\" 2>&1 || true
 fi
 
 # Enable links: sensor -> csiphy -> csid -> vfe
@@ -352,9 +354,9 @@ if command -v v4l2-ctl >/dev/null 2>&1; then
     echo ''
     echo '=== Testing with v4l2-ctl ==='
 
-    # Set format to match mt9m114 sensor output (1288x968 UYVY)
-    echo 'Setting video format to 1288x968 UYVY (mt9m114 native)...'
-    v4l2-ctl -d \$VIDEO_DEV --set-fmt-video=width=1288,height=968,pixelformat=UYVY 2>&1
+    # MT9M113 supported: 640x480 (preview), 1280x1024 (capture)
+    echo 'Setting video format to 1280x1024 UYVY (MT9M113 capture mode)...'
+    v4l2-ctl -d \$VIDEO_DEV --set-fmt-video=width=1280,height=1024,pixelformat=UYVY 2>&1
 
     echo 'Current format:'
     v4l2-ctl -d \$VIDEO_DEV --get-fmt-video 2>&1
@@ -368,8 +370,8 @@ if command -v v4l2-ctl >/dev/null 2>&1; then
         echo \"Captured file size: \$SIZE bytes\"
         if [ \"\$SIZE\" -gt 0 ]; then
             echo 'SUCCESS: Captured frame data!'
-            # Expected size: 1288 * 968 * 2 bytes/pixel * 5 frames = 12468160 bytes
-            EXPECTED=\$((1288 * 968 * 2 * FRAMES))
+            # Expected size: 1280 * 1024 * 2 bytes/pixel * 5 frames = 13107200 bytes
+            EXPECTED=\$((1280 * 1024 * 2 * FRAMES))
             echo \"Expected size: \$EXPECTED bytes\"
         else
             echo 'WARNING: Captured file is empty'
@@ -384,11 +386,10 @@ if command -v gst-launch-1.0 >/dev/null 2>&1; then
     echo ''
     echo '=== Testing with GStreamer ==='
 
-    # Test with fakesink first (no actual output, just test pipeline)
-    # IMPORTANT: Use 1288x968 UYVY - the exact mt9m114 sensor resolution
-    echo 'Testing pipeline with fakesink (1288x968 UYVY)...'
+    # MT9M113 supported: 640x480 (preview), 1280x1024 (capture)
+    echo 'Testing pipeline with fakesink (1280x1024 UYVY)...'
     timeout 10 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=5 ! \
-        'video/x-raw,format=UYVY,width=1288,height=968' ! \
+        'video/x-raw,format=UYVY,width=1280,height=1024' ! \
         fakesink 2>&1
 
     # If that works, try saving a frame
@@ -396,7 +397,7 @@ if command -v gst-launch-1.0 >/dev/null 2>&1; then
         echo ''
         echo 'Saving single frame as PPM...'
         timeout 10 gst-launch-1.0 v4l2src device=\$VIDEO_DEV num-buffers=1 ! \
-            'video/x-raw,format=UYVY,width=1288,height=968' ! \
+            'video/x-raw,format=UYVY,width=1280,height=1024' ! \
             videoconvert ! \
             pnmenc ! \
             filesink location=/tmp/frame.ppm 2>&1
@@ -432,14 +433,13 @@ check_dmesg() {
 quick_capture_test() {
     log_step "Quick capture test..."
 
-    log_info "Testing capture with correct mt9m114 format (1288x968 UYVY)..."
+    log_info "Testing capture with MT9M113 supported format..."
     run_on_device "
         if command -v gst-launch-1.0 >/dev/null 2>&1; then
-            # MT9M114 native resolution is 1288x968 UYVY
-            # IMPORTANT: Must specify exact format to avoid wrong negotiation
-            echo '=== Test: 1288x968 UYVY (native mt9m114 resolution) ==='
+            # MT9M113 supported: 640x480 (preview), 1280x1024 (capture)
+            echo '=== Test: 1280x1024 UYVY (MT9M113 capture mode) ==='
             timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
-                'video/x-raw,format=UYVY,width=1288,height=968' ! \\
+                'video/x-raw,format=UYVY,width=1280,height=1024' ! \\
                 fakesink 2>&1
 
             if [ \$? -eq 0 ]; then
@@ -448,21 +448,15 @@ quick_capture_test() {
                 echo ''
                 echo '=== Saving test frame to /tmp/camera_frame.raw ==='
                 timeout 10 gst-launch-1.0 v4l2src device=/dev/video0 num-buffers=1 ! \\
-                    'video/x-raw,format=UYVY,width=1288,height=968' ! \\
+                    'video/x-raw,format=UYVY,width=1280,height=1024' ! \\
                     filesink location=/tmp/camera_frame.raw 2>&1
                 ls -la /tmp/camera_frame.raw 2>/dev/null && echo 'Frame saved!'
             else
                 echo ''
-                echo 'Native resolution failed, trying alternatives...'
+                echo 'Full resolution failed, trying preview mode...'
 
                 echo ''
-                echo '=== Test: 1280x960 UYVY ==='
-                timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
-                    'video/x-raw,format=UYVY,width=1280,height=960' ! \\
-                    fakesink 2>&1 || echo 'Test failed'
-
-                echo ''
-                echo '=== Test: 640x480 UYVY (VGA) ==='
+                echo '=== Test: 640x480 UYVY (MT9M113 preview mode) ==='
                 timeout 10 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=3 ! \\
                     'video/x-raw,format=UYVY,width=640,height=480' ! \\
                     fakesink 2>&1 || echo 'Test failed'
@@ -509,22 +503,23 @@ test_raw_mode() {
         media-ctl -l '\"msm_csid1\":1->\"msm_vfe0_rdi0\":0[1]' 2>&1 || echo '  csid:1->vfe_rdi0 link failed'
 
         # Set formats on the RDI path
-        echo 'Setting formats...'
-        media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_rdi0\":0[fmt:UYVY8_2X8/1288x968]' 2>&1 || true
+        # MT9M113 supported: 640x480 (preview), 1280x1024 (capture)
+        echo 'Setting formats (1280x1024)...'
+        media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_rdi0\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
 
         echo ''
         echo 'Current pipeline:'
         media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -40
 
         echo ''
-        echo 'Testing capture with 1288x968 UYVY...'
+        echo 'Testing capture with 1280x1024 UYVY...'
         timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=1288,height=968,framerate=30/1' ! \\
+            'video/x-raw,format=UYVY,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -623,18 +618,18 @@ test_testgen_mode() {
         # Clear dmesg to see fresh output
         dmesg -c > /dev/null 2>&1
 
-        # Setup media pipeline for PIX mode
+        # Setup media pipeline for PIX mode (1280x1024)
         echo ''
         echo '2. Setting up media pipeline...'
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
 
         # Try capture - this should use test generator internally
         echo ''
         echo '3. Testing capture with test generator...'
         timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
+            'video/x-raw,format=UYVY,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
         RESULT=\$?
 
@@ -673,19 +668,22 @@ test_pix_mode() {
         echo '=== PIX Mode Test (video3 via VFE PIX) ==='
         echo ''
 
+        # MT9M113 supported resolutions (from webOS init table):
+        # - Context A: 640x480 (preview)
+        # - Context B: 1280x1024 (capture/full resolution)
+        # Using 1280x1024 for full capture mode testing
+
         # Setup media pipeline: CSID1 -> VFE PIX link
-        # VFE PIX mode expects UYVY8_2X8 format at 1280x968 (without blanking)
-        # The VFE extracts 8-bit data from the 16-bit MIPI bus
-        echo 'Setting up media pipeline...'
+        echo 'Setting up media pipeline for 1280x1024...'
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
         echo 'Pipeline configured'
 
         echo ''
-        echo 'Testing capture with 1280x968 UYVY...'
+        echo 'Testing capture with 1280x1024 UYVY (full MT9M113 resolution)...'
         timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
+            'video/x-raw,format=UYVY,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -694,7 +692,16 @@ test_pix_mode() {
         else
             echo ''
             echo 'FAILED: PIX capture did not complete'
-            echo 'Check dmesg for errors'
+            echo ''
+            echo 'Trying 640x480 (preview mode)...'
+            media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>/dev/null
+            media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>/dev/null
+            timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
+                'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
+                fakesink 2>&1
+            if [ \$? -eq 0 ]; then
+                echo 'SUCCESS: 640x480 preview mode capture completed!'
+            fi
         fi
     "
 }
@@ -726,16 +733,17 @@ test_legacy_mode() {
         echo ''
 
         # Setup media pipeline: CSID1 -> VFE PIX link
-        echo 'Setting up media pipeline...'
+        # MT9M113 supported: 640x480 (preview), 1280x1024 (capture)
+        echo 'Setting up media pipeline (1280x1024)...'
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x968]' 2>/dev/null
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
         echo 'Pipeline configured'
 
         echo ''
-        echo 'Testing capture with 1280x968 UYVY (LEGACY mode)...'
+        echo 'Testing capture with 1280x1024 UYVY (LEGACY mode)...'
         timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=1280,height=968,framerate=30/1' ! \\
+            'video/x-raw,format=UYVY,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         RESULT=\$?
