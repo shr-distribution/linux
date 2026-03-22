@@ -402,6 +402,10 @@ static inline void vfe31_reg_update_clear(struct vfe_device *vfe,
 	/* VFE31 doesn't need explicit clear - auto-clears */
 }
 
+/* Forward declarations for functions used in vfe31_enable */
+static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line);
+static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
+
 static void vfe31_global_reset(struct vfe_device *vfe)
 {
 	u32 hw_version;
@@ -766,6 +770,15 @@ static int vfe31_enable(struct vfe_line *line)
 		 vfe31_axi_output_mode);
 	writel_relaxed(vfe31_axi_output_mode,
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+
+	/*
+	 * Step 1b: Configure scale and crop modules
+	 * These must be set up before WM registers for the ISP pipeline
+	 * to process data correctly.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure scale/crop\n");
+	vfe31_set_scale_cfg(vfe, line);
+	vfe31_set_crop_cfg(vfe, line);
 
 	/*
 	 * Step 2: Configure WM registers
