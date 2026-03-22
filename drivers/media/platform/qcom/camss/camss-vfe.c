@@ -3559,13 +3559,14 @@ static int vfe_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 
 	/*
 	 * VFE 3.1 uses parallel camera interface (CAMIF) which requires
-	 * 2X8 media bus formats instead of 1X16. The resolution matches
-	 * MT9M114 IFP output: 1288x968 (pixel array 1296x976 minus 8 border).
+	 * 2X8 media bus formats instead of 1X16. Use 1280x1024 to match
+	 * webOS MT9M113 Context B (capture) resolution. MT9M113 has a
+	 * larger pixel array than MT9M114 (rows 4-1035 = 1032 rows).
 	 */
 	if (vfe->res->hw_ops == &vfe_ops_3_1) {
 		format.format.code = MEDIA_BUS_FMT_UYVY8_2X8;
-		format.format.width = 1288;
-		format.format.height = 968;
+		format.format.width = 1280;
+		format.format.height = 1024;
 		dev_info(vfe->camss->dev,
 			 "VFE 3.1 init format: %ux%u code=0x%04x\n",
 			 format.format.width, format.format.height,
