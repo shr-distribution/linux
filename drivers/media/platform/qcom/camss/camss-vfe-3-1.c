@@ -1063,12 +1063,13 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	dev_info(vfe->camss->dev, "VFE31 RDI: EFS_CFG=0x40 (matches webOS)\n");
 
 	/*
-	 * FRAME_CFG: webOS does NOT write this register (value remains 0).
-	 * Writing FRAME_CFG on VFE31 overrides the MIPI unpacker's auto-derived
-	 * line/frame lengths, potentially breaking the data path. Skip this write
-	 * and let the WINDOW_WIDTH/HEIGHT registers define the capture area.
+	 * FRAME_CFG: pixelsPerLine[13:0] | linesPerFrame[29:16]
+	 * Must be set for CAMIF to know expected frame dimensions.
 	 */
-	dev_dbg(vfe->camss->dev, "VFE31 RDI: FRAME_CFG skipped (matches webOS)\n");
+	val = bytes_per_line | (height << 16);
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+	dev_info(vfe->camss->dev, "VFE31 RDI: FRAME_CFG=0x%08x (pixels=%d, lines=%d)\n",
+		 val, bytes_per_line, height);
 
 	/* WINDOW_WIDTH: lastPixel | firstPixel<<16 (first=0) */
 	val = (bytes_per_line - 1) | (0 << 16);
@@ -1491,12 +1492,18 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
 
 	/*
-	 * FRAME_CFG at 0x1E8: webOS does NOT write this register (value is 0).
-	 * Writing FRAME_CFG overrides the MIPI unpacker's auto-derived
-	 * line/frame lengths, breaking the CSIPHY->VFE data path on MSM8660.
-	 * Skip this write - WINDOW_WIDTH/HEIGHT define the capture window.
+	 * FRAME_CFG at 0x1E8: pixelsPerLine[13:0] | linesPerFrame[29:16]
+	 *
+	 * Previous comment was WRONG: webOS DOES write this register as part of
+	 * the 32-byte V31_CAMIF_CFG command block. Without FRAME_CFG, the CAMIF
+	 * doesn't know expected frame dimensions and fires CAMIF_ERROR.
+	 *
+	 * For UYVY format, pixelsPerLine = width * 2 (2 bytes per pixel).
 	 */
-	dev_info(vfe->camss->dev, "VFE31: FRAME_CFG skipped (webOS=0x00000000)\n");
+	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2) | (line->fmt[MSM_VFE_PAD_SINK].height << 16);
+	dev_info(vfe->camss->dev, "VFE31: FRAME_CFG (0x1E8) = 0x%08x (pixels=%d, lines=%d)\n",
+		 val, line->fmt[MSM_VFE_PAD_SINK].width * 2, line->fmt[MSM_VFE_PAD_SINK].height);
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
 
 	/* WINDOW_WIDTH_CFG at 0x1EC: lastPixel | firstPixel<<16 */
 	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1) | (0 << 16);
