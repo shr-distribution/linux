@@ -2005,6 +2005,32 @@ mt9m113_streaming:
 			dev_info(&sensor->client->dev,
 				 "MT9M113: MODE_A: %lldx%lld, frame_len=%lld, line_len=%lld\n",
 				 mode_width, mode_height, frame_length, line_length);
+
+			/*
+			 * CRITICAL: MCU clears OUTPUT_CONTROL BIT(3) when SEQ_CMD=RUN.
+			 * Re-write OUTPUT_CONTROL to enable MIPI output AFTER MCU starts.
+			 */
+			if (output_ctrl_after != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+				u64 verify;
+
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: OUTPUT_CONTROL=0x%llx, MCU cleared BIT(3)! Re-enabling MIPI...\n",
+					 output_ctrl_after);
+
+				cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+					  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+				usleep_range(1000, 2000);
+
+				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &verify, NULL);
+				if (verify != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+					dev_err(&sensor->client->dev,
+						"MT9M113: CRITICAL - OUTPUT_CONTROL still wrong: 0x%llx\n",
+						verify);
+				} else {
+					dev_info(&sensor->client->dev,
+						 "MT9M113: OUTPUT_CONTROL=0x7A08 (MIPI re-enabled after MCU start)\n");
+				}
+			}
 		}
 
 		dev_info(&sensor->client->dev, "MT9M113: streaming command sequence complete\n");
