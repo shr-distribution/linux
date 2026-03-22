@@ -931,15 +931,45 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 
 static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line)
 {
-	u32 width = line->fmt[MSM_VFE_PAD_SINK].width;
-	u32 height = line->fmt[MSM_VFE_PAD_SINK].height;
+	u32 p = line->video_out.active_fmt.fmt.pix_mp.pixelformat;
+	u32 reg;
+	u16 first, last;
 
-	writel_relaxed((height << 16) | width,
-		       vfe->base + VFE_0_CROP_ENC_Y_WIDTH);
-	writel_relaxed(height, vfe->base + VFE_0_CROP_ENC_Y_HEIGHT);
-	writel_relaxed((height << 16) | (width / 2),
-		       vfe->base + VFE_0_CROP_ENC_CBCR_WIDTH);
-	writel_relaxed(height, vfe->base + VFE_0_CROP_ENC_CBCR_HEIGHT);
+	/*
+	 * VFE31 crop registers use first/last pixel format:
+	 * CROP_Y_WIDTH:   (first_pixel << 16) | last_pixel
+	 * CROP_Y_HEIGHT:  (first_line << 16) | last_line
+	 *
+	 * line->crop contains the crop rectangle from pad selection.
+	 */
+	first = line->crop.left;
+	last = line->crop.left + line->crop.width - 1;
+	reg = (first << 16) | last;
+	writel_relaxed(reg, vfe->base + VFE_0_CROP_ENC_Y_WIDTH);
+	dev_dbg(vfe->camss->dev, "VFE31 CROP: Y_WIDTH=0x%08x (first=%d last=%d)\n",
+		reg, first, last);
+
+	first = line->crop.top;
+	last = line->crop.top + line->crop.height - 1;
+	reg = (first << 16) | last;
+	writel_relaxed(reg, vfe->base + VFE_0_CROP_ENC_Y_HEIGHT);
+	dev_dbg(vfe->camss->dev, "VFE31 CROP: Y_HEIGHT=0x%08x (first=%d last=%d)\n",
+		reg, first, last);
+
+	/* CbCr is half width for YUV422/420 */
+	first = line->crop.left / 2;
+	last = line->crop.left / 2 + line->crop.width / 2 - 1;
+	reg = (first << 16) | last;
+	writel_relaxed(reg, vfe->base + VFE_0_CROP_ENC_CBCR_WIDTH);
+
+	first = line->crop.top;
+	last = line->crop.top + line->crop.height - 1;
+	if (p == V4L2_PIX_FMT_NV12 || p == V4L2_PIX_FMT_NV21) {
+		first = line->crop.top / 2;
+		last = line->crop.top / 2 + line->crop.height / 2 - 1;
+	}
+	reg = (first << 16) | last;
+	writel_relaxed(reg, vfe->base + VFE_0_CROP_ENC_CBCR_HEIGHT);
 }
 
 static void vfe31_set_clamp_cfg(struct vfe_device *vfe)
