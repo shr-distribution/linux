@@ -1946,24 +1946,49 @@ mt9m113_streaming:
 
 		/*
 		 * Set capture mode via MCU interface.
-		 * From webOS kernel: SEQ_CAP_MODE=0x0030 for preview mode.
+		 * From webOS kernel:
+		 * - Preview mode (640x480, Context A): SEQ_CAP_MODE=0x0030, SEQ_CMD=0x01
+		 * - Snapshot mode (1280x1024, Context B): SEQ_CAP_MODE=0x0000, SEQ_CMD=0x02
 		 *
-		 * Note: WebOS only uses REFRESH_MODE/REFRESH during sensor
-		 * initialization, NOT during streaming start. Issuing these
-		 * commands here disrupts active MIPI output from the sensor.
+		 * Note: ifp_state is already locked by mt9m114_ifp_s_stream() and
+		 * passed as a parameter - do NOT try to lock it again!
 		 */
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
-			goto error;
-		}
-		dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x0030 (preview)\n");
-		usleep_range(40000, 50000);
+		{
+			const struct v4l2_rect *compose;
+			bool use_capture_mode;
 
-		/* Issue SEQ_CMD=1 to start streaming */
-		dev_info(&sensor->client->dev, "MT9M113: Issuing SEQ_CMD=1 (RUN)\n");
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					    MT9M113_SEQ_CMD_RUN);
+			compose = v4l2_subdev_state_get_compose(ifp_state, 0);
+			use_capture_mode = (compose->width > 640 || compose->height > 480);
+
+			if (use_capture_mode) {
+				/* Context B (1280x1024): Snapshot mode */
+				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0000);
+				if (ret) {
+					dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
+					goto error;
+				}
+				dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x0000 (snapshot/Context B)\n");
+			} else {
+				/* Context A (640x480): Preview mode */
+				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
+				if (ret) {
+					dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
+					goto error;
+				}
+				dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x0030 (preview/Context A)\n");
+			}
+			usleep_range(40000, 50000);
+
+			/* Issue SEQ_CMD to start streaming */
+			if (use_capture_mode) {
+				dev_info(&sensor->client->dev, "MT9M113: Issuing SEQ_CMD=2 (CAPTURE)\n");
+				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0002);
+			} else {
+				dev_info(&sensor->client->dev, "MT9M113: Issuing SEQ_CMD=1 (RUN)\n");
+				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+							    MT9M113_SEQ_CMD_RUN);
+			}
+		}
 		if (ret) {
 			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD RUN failed: %d\n", ret);
 			goto error;
