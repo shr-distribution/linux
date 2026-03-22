@@ -1876,12 +1876,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	/*
 	 * WINDOW_WIDTH_CFG register format:
-	 *   bits 0-13:  lastPixel (14 bits) - width-1
+	 *   bits 0-13:  lastPixel (14 bits) - in bytes for YUV
 	 *   bits 16-29: firstPixel (14 bits) - 0
+	 *
+	 * For UYVY (2 bytes per pixel): lastPixel = width * 2 - 1
+	 * Must match FRAME_CFG which uses width * 2 for pixelsPerLine.
 	 */
-	val = ((line->fmt[MSM_VFE_PAD_SINK].width - 1) & 0x3FFF);
+	val = ((line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1) & 0x3FFF);
 	dev_info(vfe->camss->dev, "VFE: WINDOW_WIDTH=0x%08x (last=%u first=0)\n",
-		 val, line->fmt[MSM_VFE_PAD_SINK].width - 1);
+		 val, line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_WIDTH_CFG);
 
 	/*
