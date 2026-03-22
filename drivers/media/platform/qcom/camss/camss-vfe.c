@@ -1767,9 +1767,11 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		val = VFE31_PIXEL_PATTERN_YUV_CrYCbY;
 		break;
 	}
+	/* Add bit 6 from the start - webOS uses 0x46, not 0x06 */
+	val |= VFE31_CORE_CFG_INPUT_MUX_EN;
 	vfe_cfg_val = val;
 	dev_info(vfe->camss->dev,
-		 "VFE: Step 0b - VFE_CFG_OFF=0x%08x (pixel pattern only)\n", val);
+		 "VFE: Step 0b - VFE_CFG_OFF=0x%08x (pixel pattern + bit 6)\n", val);
 	writel(val, vfe->base + VFE31_CFG_OFF);
 	wmb();
 
@@ -1808,6 +1810,7 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	}
 	/* Add bit 6 - webOS always sets this (0x46 instead of 0x06) */
 	val |= VFE31_CORE_CFG_INPUT_MUX_EN;
+	vfe_cfg_val = val;  /* Update saved value with bit 6 for re-application */
 	writel_relaxed(val, vfe->base + VFE31_CORE_CFG);
 
 	/*
