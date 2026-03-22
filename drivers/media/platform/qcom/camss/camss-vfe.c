@@ -41,10 +41,10 @@ extern int vfe31_axi_output_mode;
  * csi_pix_sel and csi_rdi_sel mux bits. MSM8660 may use direct
  * CSI1_VFE_CLK routing without the intermediate mux.
  */
-static int vfe31_legacy_routing = 0;
+static int vfe31_legacy_routing = 1;
 module_param(vfe31_legacy_routing, int, 0644);
 MODULE_PARM_DESC(vfe31_legacy_routing,
-		 "MSM8660 legacy routing (0=modern mux [working], 1=MISC_CC=0 [broken])");
+		 "MSM8660 routing mode (0=modern mux, 1=webOS mode [MISC_CC=0x400, CSI_CC=0x85])");
 
 #define MSM_VFE_NAME "msm_vfe"
 
@@ -992,13 +992,12 @@ static void vfe31_debug_dump_clock_state(struct device *dev)
 		 (misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_EN) ? "ENABLED" : "disabled");
 
 	/*
-	 * Check and fix CSI mux selection - but NOT in legacy mode!
-	 * Note: Legacy mode (MISC_CC=0x0) is BROKEN - it blocks the data path.
-	 * Use modern mux mode (default) for working camera.
+	 * Check CSI mux selection.
+	 * In webOS mode (vfe31_legacy_routing=1), we use direct CSI1->VFE path
+	 * with MISC_CC=0x0400, CSI_CC=0x85 - no mux bits needed.
 	 */
 	if (vfe31_legacy_routing) {
-		dev_warn(dev, "  LEGACY MODE: MISC_CC_REG=0x%08x (BROKEN - use modern mode!)\n",
-			 misc_cc_reg);
+		dev_info(dev, "  WEBOS MODE: Using direct CSI1->VFE path (MISC_CC=0x0400)\n");
 	} else {
 		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_SEL)) {
 			dev_warn(dev, "  *** WARNING: csi_pix_sel is CSI0, should be CSI1 ***\n");
@@ -2719,27 +2718,43 @@ int vfe_get(struct vfe_device *vfe)
 				 */
 				if (vfe31_legacy_routing) {
 					/*
-					 * LEGACY MODE: Zero out MISC_CC_REG.
-					 * WARNING: This does not work! webOS actually uses
-					 * MISC_CC_REG=0x06003000 (csi_pix+csi_rdi enabled, CSI1 selected).
-					 * This legacy mode is kept only for debugging purposes.
+					 * WEBOS MODE: Set MISC_CC_REG to 0x0400 (bit 10 only).
+					 *
+					 * webOS camera register dump shows MISC_CC_REG = 0x00000400.
+					 * Bit 10 is the CSI1-to-VFE async bridge enable.
+					 *
+					 * MSM8660 has a DIRECT CSIPHY->VFE path that bypasses
+					 * the csi_pix/csi_rdi mux architecture found in VFE3.2+.
+					 * The mux bits (12-13, 25-26) don't exist on this SoC.
+					 *
+					 * Also set CSI_CC_REG to 0x85 (webOS value):
+					 *   - Bit 0: CSI digital wrapper 0 enable
+					 *   - Bit 2: CSI digital wrapper 1 enable
+					 *   - Bit 7: Global CSI enable
 					 */
 					dev_info(vfe->camss->dev,
-						 "VFE: LEGACY ROUTING MODE - writing 0x0 to MISC_CC_REG\n");
+						 "VFE: WEBOS MODE - writing 0x0400 to MISC_CC_REG, 0x85 to CSI_CC_REG\n");
 					dev_info(vfe->camss->dev,
 						 "VFE: MISC_CC before: 0x%08x\n", misc_cc);
 
-					writel_relaxed(0x00000000, mmcc_base + 0x0058);
+					/* Force CSI_CC_REG to webOS value */
+					writel_relaxed(0x00000085, mmcc_base + 0x0040);
+					wmb();
+
+					/* Force MISC_CC_REG to webOS value (bit 10 only) */
+					writel_relaxed(0x00000400, mmcc_base + 0x0058);
 					wmb();
 
 					misc_cc = readl_relaxed(mmcc_base + 0x0058);
 					dev_info(vfe->camss->dev,
-						 "VFE: MISC_CC after legacy write: 0x%08x (expect 0x0)\n",
+						 "VFE: MISC_CC after webOS write: 0x%08x (expect 0x0400)\n",
 						 misc_cc);
 
-					if (misc_cc != 0) {
-						dev_warn(vfe->camss->dev,
-							 "VFE: WARNING - MISC_CC not zero after write!\n");
+					{
+						u32 csi_cc = readl_relaxed(mmcc_base + 0x0040);
+						dev_info(vfe->camss->dev,
+							 "VFE: CSI_CC after webOS write: 0x%08x (expect 0x85)\n",
+							 csi_cc);
 					}
 				} else if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(12))) {
 					u32 new_misc_cc = misc_cc;
