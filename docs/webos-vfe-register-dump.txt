@@ -1,0 +1,160 @@
+=== VFE31 & MMCC Register Dump ===
+Date: Sun Mar 22 10:22:54 CET 2026
+Mode: webOS camera recording (also same values in preview mode)
+
+Using: /tmp/devmem (local build)
+==============================================
+=== CRITICAL: Clock HALT Status Registers ===
+==============================================
+If any bit is 1, that clock is HALTED (not running)
+
+CLK_HALT_STATEC (0x104):  0x80ff14a5
+CLK_HALT_STATED (0x108):  0x000002f8
+CLK_HALT_STATEE (0x10C):  0x00fa0001
+DBG_BUS_VEC_A (0x110):    0x80ff0005
+DBG_BUS_VEC_B (0x114):    0x00000000
+DBG_BUS_VEC_C (0x118):    0x00003001
+DBG_BUS_VEC_D (0x11C):    0x00000000
+DBG_BUS_VEC_E (0x120):    0x000004ff
+DBG_BUS_VEC_F (0x124):    0x000004ff
+DBG_BUS_VEC_G (0x128):    0x00000000
+DBG_BUS_VEC_H (0x12C):    0x00000000
+DBG_BUS_VEC_I (0x130):    0x80000000
+
+=== VFE Clock Halt Status (from DBG_BUS_VEC_B) ===
+DBG_BUS_VEC_B raw: 0x00000000
+  vfe_csi1_clk halt (bit 8): 0
+  vfe_csi0_clk halt (bit 9): 0
+
+============================================
+=== Software Reset Registers ===
+============================================
+SW_RESET_CORE (0x020):    0x7a27fcff
+SW_RESET_AHB (0x024):     0x00000000
+SW_RESET_AHB2 (0x028):    0x00000000
+SW_RESET_ALL (0x02C):     0x3fe7fcff
+
+============================================
+=== MMCC Clock Enable/Select Registers ===
+============================================
+CSI_CC_REG (0x040):       0x00000085
+CSI1_CC_REG (0x044):      0x00000000
+CSI_NS_REG (0x048):       0x00000002
+MISC_CC_REG (0x058):      0x00000400
+MISC_CC2_REG (0x05C):     0x004007fd
+VFE_CC_REG (0x104-dup):   0x80ff14a5
+VFE_NS_REG (0x014):       0x04a48c71
+VFE_CC2_REG (0x018):      0x100f07f9
+
+=== Decoding MISC_CC_REG (0x058) ===
+  Raw value: 0x00000400
+  csi_pix_en (bit 26):  0
+  csi_pix_sel (bit 25): 0 (0=CSI0, 1=CSI1)
+  csi_rdi_en (bit 13):  0
+  csi_rdi_sel (bit 12): 0 (0=CSI0, 1=CSI1)
+
+============================================
+=== VFE Core Configuration Registers ===
+============================================
+VFE_HW_VERSION (0x000):   0x00030217
+VFE_GLOBAL_RESET (0x004): 0x00000000
+VFE_CGC_OVERRIDE (0x00C): 0x000fffff
+VFE_MODULE_CFG (0x010):   0x01c00c0c  <-- Module enables
+VFE_CFG_OFF (0x014):      0x00000046  <-- pixelPattern
+VFE_IRQ_CMD (0x018):      0x00000001
+VFE_IRQ_MASK_0 (0x01C):   0x00efe021
+VFE_IRQ_MASK_1 (0x020):   0x00400000
+VFE_IRQ_CLEAR_0 (0x024):  0x00200442
+VFE_IRQ_CLEAR_1 (0x028):  0x00000000
+VFE_IRQ_STATUS_0 (0x02C): 0x00000004
+VFE_IRQ_STATUS_1 (0x030): 0x00000000
+
+=== VFE AXI/Bus Configuration ===
+VFE_BUS_CMD (0x038):      0x00003fff
+AXI_OUT_MODE (0x040):     0x00000001  <-- CRITICAL: webOS uses 0x01
+AXI_CFG_1 (0x044):        0x00001a1b
+AXI_STATUS (0x1DC):       0x00000000
+
+=== VFE CAMIF Registers (Critical!) ===
+CAMIF_CMD (0x1E0):        0x00000001
+EFS_CFG (0x1E4):          0x00000040  <-- CRITICAL: webOS uses 0x40
+FRAME_CFG (0x1E8):        0x00000000  <-- webOS doesn't use this!
+WINDOW_WIDTH (0x1EC):     0x01e00500
+WINDOW_HEIGHT (0x1F0):    0x000004ff
+SUBSAMPLE_0 (0x1F4):      0x000001df
+SUBSAMPLE_1 (0x1F8):      0xffffffff
+EPOCH_CFG (0x1FC):        0x00000000
+RAW_CROP_WIDTH (0x200):   0x3fff3fff
+CAMIF_STATUS (0x204):     0x00000000  <-- Check for errors
+
+=== VFE ISP Pipeline Config ===
+DEMUX_CFG (0x284):        0x00000003
+DEMUX_GAIN_0 (0x288):     0x00800080
+DEMUX_GAIN_1 (0x28C):     0x00800080
+CHROMA_UP (0x35C):        0x00000001
+REG_UPDATE_CMD (0x260):   0x00000001
+
+=== VFE VBIF/CDC Registers (if exist) ===
+VBIF_CLK_ON? (0x400):     0x00000000
+VBIF_AXI_CFG? (0x404):    0x00000000
+
+============================================
+=== CSIPHY1 Registers ===
+============================================
+PHY_CONTROL (0x00):       0x00000004
+PROTOCOL_CONTROL (0x04): 0x00260000
+IRQ_STATUS (0x08):        0x00400830  <-- SOT/ECC IRQs
+IRQ_MASK (0x0C):          0xf0f7f3ff
+CALIBRATION_CTRL (0x18): 0x00f00080
+D1_CONTROL (0x20):        0x00000300  <-- PHY enable
+CAMERA_CNTL (0x24):       0x0000e404  <-- Lane config
+D0_CONTROL (0x34):        0x00000000
+D0_CONTROL2 (0x38):       0x140f0018
+CL_CONTROL (0x48):        0x0f000004
+
+============================================
+=== ANALYSIS ===
+============================================
+
+--- VFE_CFG_OFF (0x014) Decode ---
+  Raw value: 0x00000046
+  pixelPattern (bits 0-2): 6
+    -> VFE_YUV_CbYCrY (UYVY) <-- Expected for MT9M113
+
+--- VFE_MODULE_CFG (0x010) Decode ---
+  Raw value: 0x01C00C0C
+  bit 2 (demuxEnable):    1
+  bit 3 (chromaUpsample): 1
+  bit 23 (scaleEnc):      1
+  bit 27 (cropEnc):       0
+
+--- FRAME_CFG (0x1E8) Decode ---
+  Raw value: 0x00000000
+  Width:  0
+  Height: 0
+
+--- CSIPHY PROTOCOL_CONTROL (0x04) Decode ---
+  Raw value: 0x00260000
+  ECC_EN (bit 17):     1
+  DECODE_ID (bit 18):  1
+  DATA_FORMAT (19-20): 0
+  LONG_PKT_CAP (21):   1
+
+=== KEY FINDINGS FOR MAINLINE DRIVER ===
+
+1. AXI_OUT_MODE = 0x01 (we were using 0x60)
+2. EFS_CFG = 0x40 (we were using 0x00)
+3. FRAME_CFG = 0x00 (webOS doesn't use this register for dimensions)
+4. VFE clocks NOT halted (DBG_BUS_VEC_B bit 8 = 0)
+5. pixelPattern = 6 (UYVY) - correct for MT9M113
+6. demuxEnable = 1, chromaUpsample = 1 - correct for YUV
+
+=== COMPARISON: webOS vs Our Mainline Driver ===
+
+| Register        | webOS Value | Our Value | Status  |
+|-----------------|-------------|-----------|---------|
+| AXI_OUT_MODE    | 0x01        | 0x60      | FIXED   |
+| EFS_CFG         | 0x40        | 0x00      | FIXED   |
+| FRAME_CFG       | 0x00        | width|h   | CHECK   |
+| VFE_MODULE_CFG  | 0x01C00C0C  | varies    | CHECK   |
+| MISC_CC_REG     | 0x0400      | varies    | CHECK   |
