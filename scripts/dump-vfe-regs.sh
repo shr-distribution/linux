@@ -30,14 +30,18 @@ elif command -v memtool &> /dev/null; then
 elif busybox devmem 0x04000000 w &> /dev/null; then
     DEVMEM_CMD="busybox devmem"
     echo "Using: busybox devmem"
+elif [ -x "$(dirname $0)/devmem" ]; then
+    DEVMEM_CMD="$(dirname $0)/devmem"
+    echo "Using: $DEVMEM_CMD (local build)"
 else
     echo "ERROR: No devmem tool found."
     echo ""
     echo "Options to fix:"
-    echo "  1. webOS: Check if memtool exists: which memtool"
-    echo "  2. webOS: Try: ipkg install devmem2"
+    echo "  1. Build devmem from scripts/devmem.c:"
+    echo "     arm-linux-gnueabihf-gcc -static -o devmem scripts/devmem.c"
+    echo "     scp devmem root@device:/tmp/"
+    echo "  2. webOS: ipkg install devmem2"
     echo "  3. LuneOS: opkg install busybox (includes devmem)"
-    echo "  4. Build devmem from source (simple single-file tool)"
     echo ""
     echo "Or use kernel debug output instead - see dmesg for:"
     echo "  vfe31_debug_dump_external_regs() output"
@@ -60,6 +64,10 @@ read_reg() {
             ;;
         "busybox devmem")
             busybox devmem $addr w 2>/dev/null
+            ;;
+        *)
+            # Our custom devmem or full path to any devmem
+            $DEVMEM_CMD $addr 2>/dev/null
             ;;
     esac
 }
