@@ -703,9 +703,9 @@ test_pix_mode() {
         echo 'Resetting media links...'
         media-ctl -r 2>/dev/null || true
 
-        # Enable upstream links: sensor -> csiphy -> csid
+        # Enable upstream links: csiphy -> csid
+        # Note: sensor -> csiphy link is IMMUTABLE (always enabled)
         echo 'Enabling upstream links...'
-        media-ctl -l '\"mt9m114 4-003c\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
         media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
 
         # Enable PIX link: CSID pad 4 (PIX) -> VFE PIX pad 0
@@ -713,11 +713,12 @@ test_pix_mode() {
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
 
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B)
-        echo 'Setting formats (1280x1024 UYVY8_2X8)...'
-        media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        # IFP pad 1 is source, uses UYVY8_1X16; CSID pad 4/VFE use UYVY8_2X8
+        echo 'Setting formats (1280x1024)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
 
@@ -739,10 +740,10 @@ test_pix_mode() {
             echo 'FAILED: PIX capture at 1280x1024 did not complete'
             echo ''
             echo 'Trying 640x480 (MT9M113 Context A preview mode)...'
-            media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-            media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-            media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-            media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+            media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
             media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>&1 || true
             media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
             timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
@@ -785,9 +786,9 @@ test_legacy_mode() {
         echo 'Resetting media links...'
         media-ctl -r 2>/dev/null || true
 
-        # Enable upstream links: sensor -> csiphy -> csid
+        # Enable upstream links: csiphy -> csid
+        # Note: sensor -> csiphy link is IMMUTABLE (always enabled)
         echo 'Enabling upstream links...'
-        media-ctl -l '\"mt9m114 4-003c\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
         media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
 
         # Enable PIX link: CSID pad 4 (PIX) -> VFE PIX pad 0
@@ -795,11 +796,12 @@ test_legacy_mode() {
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
 
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B)
-        echo 'Setting formats (1280x1024 UYVY8_2X8)...'
-        media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        # IFP pad 1 is source, uses UYVY8_1X16; CSID pad 4/VFE use UYVY8_2X8
+        echo 'Setting formats (1280x1024)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         echo 'Pipeline configured'
