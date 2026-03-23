@@ -358,6 +358,10 @@ static int lpass_cpu_daiops_trigger(struct snd_pcm_substream *substream,
 	unsigned int id = dai->driver->id;
 	int ret = -EINVAL;
 
+	dev_info(dai->dev, "trigger: cmd=%d, id=%u, stream=%s\n",
+		 cmd, id, substream->stream == SNDRV_PCM_STREAM_PLAYBACK ?
+		 "playback" : "capture");
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -375,8 +379,18 @@ static int lpass_cpu_daiops_trigger(struct snd_pcm_substream *substream,
 		 *     it.
 		 */
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			unsigned int val;
+			dev_info(dai->dev, "trigger: enabling spken for port %u\n", id);
 			ret = regmap_fields_write(i2sctl->spken, id,
 						 LPAIF_I2SCTL_SPKEN_ENABLE);
+			dev_info(dai->dev, "trigger: spken write returned %d\n", ret);
+			/* Read back and verify */
+			regmap_fields_read(i2sctl->spken, id, &val);
+			dev_info(dai->dev, "trigger: spken readback = %u\n", val);
+			/* Also read raw register */
+			regmap_read(drvdata->lpaif_map,
+				    LPAIF_I2SCTL_REG(drvdata->variant, id), &val);
+			dev_info(dai->dev, "trigger: I2SCTL[%u] raw = 0x%08x\n", id, val);
 		} else  {
 			ret = regmap_fields_write(i2sctl->micen, id,
 						 LPAIF_I2SCTL_MICEN_ENABLE);
