@@ -348,6 +348,28 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 			goto error;
 	}
 
+	/*
+	 * MSM8660/VFE31 workaround: Now that ALL entities have been s_streamed
+	 * (including the sensor), we can safely start the VFE CAMIF.
+	 *
+	 * The sensor is now streaming MIPI data, so when we start CAMIF it will
+	 * immediately see valid frame data and not report CAMIF_ERROR.
+	 *
+	 * Previously, CAMIF was started from CSIPHY s_stream (before sensor),
+	 * which caused CAMIF_ERROR because no data was present yet.
+	 */
+	{
+		int i;
+		for (i = 0; i < video->camss->res->vfe_num; i++) {
+			if (video->camss->vfe[i].camif_pending) {
+				dev_info(video->camss->dev,
+					 "[TIMING] video_start_streaming: enabling VFE%d CAMIF after sensor streaming\n",
+					 i);
+				vfe_enable_pending_camif(&video->camss->vfe[i]);
+			}
+		}
+	}
+
 	dev_info(video->camss->dev,
 		 "[TIMING] video_start_streaming: COMPLETE total elapsed=%lld ns\n",
 		 ktime_to_ns(ktime_get()) - ktime_to_ns(pipeline_start));
