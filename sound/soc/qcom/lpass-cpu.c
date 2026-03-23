@@ -339,6 +339,11 @@ static int lpass_cpu_daiops_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
+	dev_info(dai->dev, "hw_params: setting bitclk to %u Hz (rate=%u, bitwidth=%u)\n",
+		 rate * bitwidth * 2, rate, bitwidth);
+	dev_info(dai->dev, "hw_params: bitclk before set_rate = %lu Hz\n",
+		 clk_get_rate(drvdata->mi2s_bit_clk[id]));
+
 	ret = clk_set_rate(drvdata->mi2s_bit_clk[id],
 			   rate * bitwidth * 2);
 	if (ret) {
@@ -346,6 +351,9 @@ static int lpass_cpu_daiops_hw_params(struct snd_pcm_substream *substream,
 			rate * bitwidth * 2, ret);
 		return ret;
 	}
+
+	dev_info(dai->dev, "hw_params: bitclk after set_rate = %lu Hz\n",
+		 clk_get_rate(drvdata->mi2s_bit_clk[id]));
 
 	return 0;
 }
