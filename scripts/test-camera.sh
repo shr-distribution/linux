@@ -478,6 +478,9 @@ test_raw_mode() {
     log_info "Path: Sensor -> CSIPHY -> CSID:1 -> VFE RDI0 -> /dev/video0"
     log_info "Data goes directly to memory, bypassing ISP"
 
+    # Set modern mux mode (CSI1 for front camera)
+    set_legacy_routing "0"
+
     # Set AXI output mode to raw/RDI (0x60)
     set_axi_output_mode "0x60"
 
@@ -595,6 +598,9 @@ test_testgen_mode() {
     log_info "This bypasses the camera sensor entirely"
     log_info "Useful for verifying VFE pipeline independently"
 
+    # Set modern mux mode
+    set_legacy_routing "0"
+
     # Set AXI output mode to PIX/preview (0x200) for test generator
     set_axi_output_mode "0x200"
 
@@ -618,12 +624,28 @@ test_testgen_mode() {
         # Clear dmesg to see fresh output
         dmesg -c > /dev/null 2>&1
 
-        # Setup media pipeline for PIX mode (1280x1024)
+        # Reset all links first
         echo ''
         echo '2. Setting up media pipeline...'
-        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
+        media-ctl -r 2>/dev/null || true
+
+        # Enable upstream links (even for testgen, pipeline must be valid)
+        echo 'Enabling upstream links...'
+        media-ctl -l '\"mt9m114 4-003c\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
+
+        # Enable PIX link: CSID pad 4 (PIX) -> VFE PIX pad 0
+        echo 'Enabling PIX link (CSID:4 -> VFE PIX)...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
+
+        # Set formats on entire pipeline (1280x1024)
+        echo 'Setting formats (1280x1024 UYVY8_2X8)...'
+        media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
 
         # Try capture - this should use test generator internally
         echo ''
@@ -656,10 +678,14 @@ test_testgen_mode() {
 
 # Test PIX/CAMIF mode (through ISP processing)
 # Uses /dev/video3 (msm_vfe0_pix)
+# CSID pad 4 (PIX line) -> VFE PIX (line 3)
 test_pix_mode() {
     log_step "Testing PIX/CAMIF mode (ISP processing)..."
-    log_info "Path: Sensor -> CSIPHY -> CSID -> VFE PIX -> /dev/video3"
+    log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
     log_info "Data goes through VFE ISP for processing"
+
+    # Set modern mux mode (CSI1 for front camera)
+    set_legacy_routing "0"
 
     # Set AXI output mode to PIX/preview (0x200)
     set_axi_output_mode "0x200"
@@ -673,12 +699,31 @@ test_pix_mode() {
         # - Context B: 1280x1024 (capture/full resolution)
         # Using 1280x1024 for full capture mode testing
 
-        # Setup media pipeline: CSID1 -> VFE PIX link
-        echo 'Setting up media pipeline for 1280x1024...'
-        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
-        echo 'Pipeline configured'
+        # Reset all links first
+        echo 'Resetting media links...'
+        media-ctl -r 2>/dev/null || true
+
+        # Enable upstream links: sensor -> csiphy -> csid
+        echo 'Enabling upstream links...'
+        media-ctl -l '\"mt9m114 4-003c\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
+
+        # Enable PIX link: CSID pad 4 (PIX) -> VFE PIX pad 0
+        echo 'Enabling PIX link (CSID:4 -> VFE PIX)...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
+
+        # Set formats on entire pipeline (1280x1024 = MT9M113 Context B)
+        echo 'Setting formats (1280x1024 UYVY8_2X8)...'
+        media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+
+        echo ''
+        echo 'Current pipeline configuration:'
+        media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -40
 
         echo ''
         echo 'Testing capture with 1280x1024 UYVY (full MT9M113 resolution)...'
@@ -691,11 +736,15 @@ test_pix_mode() {
             echo 'SUCCESS: PIX capture completed!'
         else
             echo ''
-            echo 'FAILED: PIX capture did not complete'
+            echo 'FAILED: PIX capture at 1280x1024 did not complete'
             echo ''
-            echo 'Trying 640x480 (preview mode)...'
-            media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>/dev/null
-            media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>/dev/null
+            echo 'Trying 640x480 (MT9M113 Context A preview mode)...'
+            media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
             timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
                 'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
                 fakesink 2>&1
@@ -732,12 +781,27 @@ test_legacy_mode() {
         cat /sys/module/qcom_camss/parameters/vfe31_axi_output_mode 2>/dev/null || echo '  (not found)'
         echo ''
 
-        # Setup media pipeline: CSID1 -> VFE PIX link
-        # MT9M113 supported: 640x480 (preview), 1280x1024 (capture)
-        echo 'Setting up media pipeline (1280x1024)...'
-        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>/dev/null
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>/dev/null
+        # Reset all links first
+        echo 'Resetting media links...'
+        media-ctl -r 2>/dev/null || true
+
+        # Enable upstream links: sensor -> csiphy -> csid
+        echo 'Enabling upstream links...'
+        media-ctl -l '\"mt9m114 4-003c\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
+
+        # Enable PIX link: CSID pad 4 (PIX) -> VFE PIX pad 0
+        echo 'Enabling PIX link (CSID:4 -> VFE PIX)...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
+
+        # Set formats on entire pipeline (1280x1024 = MT9M113 Context B)
+        echo 'Setting formats (1280x1024 UYVY8_2X8)...'
+        media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         echo 'Pipeline configured'
 
         echo ''
