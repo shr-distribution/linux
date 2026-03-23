@@ -1892,17 +1892,23 @@ mt9m113_streaming:
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
 		/*
-		 * OUTPUT_CONTROL was already set to 0x7A08 during init (after MCU
-		 * refresh completed). Just verify it's still set correctly.
-		 * The sensor MIPI enable bit only works immediately after init.
+		 * Reset MIPI transmitter by toggling OUTPUT_CONTROL.
+		 * The transmitter may be in a bad state if it was enabled before
+		 * the CSIPHY receiver was ready. WebOS rewrites OUTPUT_CONTROL
+		 * during set_sensor_mode after CSI is configured.
 		 */
 		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx\n",
+		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL before=0x%llx\n",
 			 output_ctrl);
-		if (output_ctrl != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
-			dev_warn(&sensor->client->dev,
-				 "MT9M113: OUTPUT_CONTROL changed! expected 0x7A08\n");
-		}
+
+		/* Disable MIPI output, wait, then re-enable */
+		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x7A00, NULL);
+		usleep_range(1000, 2000);
+		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+			  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
+		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL after toggle=0x%llx\n",
+			 output_ctrl);
 
 		/*
 		 * RESET_REGISTER must ALWAYS be written for streaming mode.
