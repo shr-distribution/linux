@@ -440,18 +440,19 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 	}
 
 	/*
-	 * MSM8660 workaround: Enable any VFEs that deferred CAMIF during
-	 * their s_stream. This must be done from stream_on (not set_power
-	 * or lanes_enable) because VFE s_stream runs before CSIPHY s_stream.
+	 * MSM8660 workaround: CAMIF start has been moved to video_start_streaming
+	 * in camss-video.c. This ensures the sensor is streaming BEFORE CAMIF starts.
+	 *
+	 * Previously, enabling CAMIF here (during CSIPHY s_stream) caused CAMIF_ERROR
+	 * because the sensor s_stream hadn't been called yet, so no MIPI data was
+	 * present when CAMIF started looking for frames.
+	 *
+	 * The V4L2 pipeline walk order is: VFE -> CSID -> CSIPHY -> sensor
+	 * So CSIPHY s_stream runs BEFORE sensor s_stream.
+	 *
+	 * Now CAMIF starts after ALL s_stream calls complete, when sensor is
+	 * actually outputting MIPI data.
 	 */
-	if (csiphy->camss->res->version == CAMSS_8x60) {
-		int i;
-
-		dev_info(csiphy->camss->dev,
-			 "CSIPHY%d: enabling deferred VFE CAMIF\n", csiphy->id);
-		for (i = 0; i < csiphy->camss->res->vfe_num; i++)
-			vfe_enable_pending_camif(&csiphy->camss->vfe[i]);
-	}
 
 	return 0;
 }
