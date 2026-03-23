@@ -678,6 +678,9 @@ static int lpass_platform_pcmops_trigger(struct snd_soc_component *component,
 	id = __lpass_get_id(substream, component);
 	map = __lpass_get_regmap_handle(substream, component);
 
+	dev_info(soc_runtime->dev, "platform trigger: cmd=%d, dai_id=%u, dma_ch=%d, id=%d\n",
+		 cmd, dai_id, ch, id);
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -771,6 +774,8 @@ static int lpass_platform_pcmops_trigger(struct snd_soc_component *component,
 			dev_err(soc_runtime->dev, "error writing to irqen reg: %d\n", ret);
 			return ret;
 		}
+		dev_info(soc_runtime->dev, "platform trigger: DMA enabled, IRQ reg=0x%x mask=0x%x val=0x%x\n",
+			 reg_irqen, val_mask, val_irqen);
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
@@ -1031,9 +1036,15 @@ static irqreturn_t lpass_platform_lpaif_irq(int irq, void *data)
 		return IRQ_NONE;
 	}
 
+	pr_info("lpaif_irq: irqs=0x%08x\n", irqs);
+
 	/* Handle per channel interrupts */
 	for (chan = 0; chan < LPASS_MAX_DMA_CHANNELS; chan++) {
 		if (irqs & LPAIF_IRQ_ALL(chan) && drvdata->substream[chan]) {
+			if (irqs & LPAIF_IRQ_ERR(chan))
+				pr_err("lpaif_irq: chan %d ERR interrupt\n", chan);
+			if (irqs & LPAIF_IRQ_XRUN(chan))
+				pr_warn("lpaif_irq: chan %d XRUN interrupt\n", chan);
 			rv = lpass_dma_interrupt_handler(
 						drvdata->substream[chan],
 						drvdata, chan, irqs);
