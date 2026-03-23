@@ -756,6 +756,90 @@ test_pix_mode() {
     "
 }
 
+# Test with v4l2-ctl directly (bypasses GStreamer)
+# This is useful for debugging as it has fewer layers
+test_v4l2_mode() {
+    log_step "Testing PIX mode with v4l2-ctl (direct capture)..."
+    log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
+    log_info "Using v4l2-ctl instead of GStreamer for direct capture"
+
+    # Ensure legacy routing is disabled (use modern mux)
+    set_legacy_routing "0"
+
+    # Set AXI output mode to PIX/preview (0x200)
+    set_axi_output_mode "0x200"
+
+    run_on_device "
+        echo '=== v4l2-ctl Direct Capture Test (video3 via VFE PIX) ==='
+        echo ''
+
+        # Reset all links first
+        echo 'Resetting media links...'
+        media-ctl -r 2>/dev/null || true
+
+        # Enable upstream links: csiphy -> csid
+        # Note: sensor -> csiphy link is IMMUTABLE (always enabled)
+        echo 'Enabling upstream links...'
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
+
+        # Enable PIX link: CSID pad 4 (PIX) -> VFE PIX pad 0
+        echo 'Enabling PIX link (CSID:4 -> VFE PIX)...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
+
+        # Set formats on entire pipeline (1280x1024 = MT9M113 Context B)
+        # IFP pad 1 is source, uses UYVY8_1X16; CSID pad 4/VFE use UYVY8_2X8
+        echo 'Setting formats (1280x1024)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+
+        echo ''
+        echo 'Current pipeline configuration:'
+        media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -40
+
+        echo ''
+        echo 'Setting video format on /dev/video3...'
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=UYVY 2>&1
+        echo ''
+        echo 'Current format:'
+        v4l2-ctl -d /dev/video3 --get-fmt-video 2>&1
+
+        echo ''
+        echo 'Capturing 5 frames with v4l2-ctl...'
+        rm -f /tmp/frame.raw
+        timeout 10 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=5 --stream-to=/tmp/frame.raw 2>&1
+
+        if [ \$? -eq 0 ] && [ -s /tmp/frame.raw ]; then
+            SIZE=\$(stat -c%s /tmp/frame.raw 2>/dev/null || echo 0)
+            EXPECTED=\$((1280 * 1024 * 2 * 5))  # 5 frames of UYVY
+            echo ''
+            echo \"SUCCESS: Captured \$SIZE bytes (expected ~\$EXPECTED for 5 frames)\"
+            echo 'Frame saved to /tmp/frame.raw'
+        else
+            echo ''
+            echo 'FAILED: v4l2-ctl capture did not complete'
+            echo ''
+            echo 'Trying 640x480 mode...'
+            media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+            media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+            v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=UYVY 2>&1
+            rm -f /tmp/frame.raw
+            timeout 10 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=5 --stream-to=/tmp/frame.raw 2>&1
+            if [ \$? -eq 0 ] && [ -s /tmp/frame.raw ]; then
+                SIZE=\$(stat -c%s /tmp/frame.raw 2>/dev/null || echo 0)
+                echo \"SUCCESS: 640x480 capture - \$SIZE bytes\"
+            fi
+        fi
+    "
+}
+
 # Test legacy routing mode (webOS-style MISC_CC=0)
 # This bypasses the modern csi_pix/csi_rdi clock mux and uses direct CSI1_VFE_CLK routing
 test_legacy_mode() {
@@ -869,12 +953,16 @@ main() {
             legacy)
                 MODE="legacy"
                 ;;
+            v4l2)
+                MODE="v4l2"
+                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
                 echo "Modes:"
                 echo "  raw        Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
-                echo "  pix        Test PIX mode (through VFE ISP processing)"
+                echo "  pix        Test PIX mode (through VFE ISP, uses GStreamer)"
+                echo "  v4l2       Test PIX mode with v4l2-ctl (direct, no GStreamer)"
                 echo "  testgen    Test VFE internal test generator (bypasses camera)"
                 echo "  legacy     Test with webOS-style legacy routing (MISC_CC=0)"
                 echo "  --info     Show camera device information only"
@@ -919,6 +1007,12 @@ main() {
             show_camera_info
             ensure_camera_ready
             test_pix_mode
+            check_dmesg
+            ;;
+        v4l2)
+            show_camera_info
+            ensure_camera_ready
+            test_v4l2_mode
             check_dmesg
             ;;
         testgen)
