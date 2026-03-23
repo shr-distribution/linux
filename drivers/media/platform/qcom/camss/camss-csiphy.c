@@ -27,10 +27,15 @@
 #define MSM_CSIPHY_NAME "msm_csiphy"
 
 static const struct csiphy_format_info formats_8x16[] = {
-	{ MEDIA_BUS_FMT_UYVY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_VYUY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YUYV8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YVYU8_1X16, 8 },
+	/*
+	 * YUV 4:2:2 8-bit formats: bpp=16 for link frequency calculation.
+	 * Each pixel is 16 bits (Y=8 + U/V=8) on the MIPI link.
+	 * Formula: link_freq = pixel_rate * bpp / (2 * lanes)
+	 */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 16 },
 	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8 },
@@ -47,10 +52,11 @@ static const struct csiphy_format_info formats_8x16[] = {
 };
 
 static const struct csiphy_format_info formats_8x96[] = {
-	{ MEDIA_BUS_FMT_UYVY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_VYUY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YUYV8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YVYU8_1X16, 8 },
+	/* YUV 4:2:2 8-bit: bpp=16 (Y=8 + U/V=8 per pixel) */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 16 },
 	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8 },
@@ -71,10 +77,11 @@ static const struct csiphy_format_info formats_8x96[] = {
 };
 
 static const struct csiphy_format_info formats_sdm845[] = {
-	{ MEDIA_BUS_FMT_UYVY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_VYUY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YUYV8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YVYU8_1X16, 8 },
+	/* YUV 4:2:2 8-bit: bpp=16 (Y=8 + U/V=8 per pixel) */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 16 },
 	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8 },
