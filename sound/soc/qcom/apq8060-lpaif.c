@@ -247,6 +247,20 @@ static const struct snd_soc_dapm_widget apq8060_lpaif_dapm_widgets[] = {
 	SND_SOC_DAPM_SPK("Speaker", apq8060_lpaif_spkr_event),
 };
 
+/*
+ * Inter-link routes connecting CPU DAI streams to codec DAI streams.
+ *
+ * The LPAIF CPU DAI uses stream names like "Codec Speaker Playback"
+ * while the WM8994 codec uses "AIF1 Playback". DAPM needs explicit
+ * routes to connect these different stream names.
+ */
+static const struct snd_soc_dapm_route apq8060_lpaif_dapm_routes[] = {
+	/* Connect LPAIF playback to WM8994 AIF1 */
+	{ "AIF1 Playback", NULL, "Codec Speaker Playback" },
+	/* Connect WM8994 AIF1 capture to LPAIF */
+	{ "Codec Mic Capture", NULL, "AIF1 Capture" },
+};
+
 static const struct snd_soc_ops apq8060_lpaif_ops = {
 	.hw_params = apq8060_lpaif_hw_params,
 };
@@ -317,6 +331,8 @@ static int apq8060_lpaif_probe(struct platform_device *pdev)
 	card->dev = dev;
 	card->dapm_widgets = apq8060_lpaif_dapm_widgets;
 	card->num_dapm_widgets = ARRAY_SIZE(apq8060_lpaif_dapm_widgets);
+	card->dapm_routes = apq8060_lpaif_dapm_routes;
+	card->num_dapm_routes = ARRAY_SIZE(apq8060_lpaif_dapm_routes);
 
 	snd_soc_card_set_drvdata(card, data);
 
