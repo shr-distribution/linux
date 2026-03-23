@@ -50,35 +50,36 @@
 #   0x35        0x01    MIXOUTR → LINEOUT2
 #
 # =============================================================================
-# Mixer Controls Reference (by numid)
+# Mixer Controls Reference
 # =============================================================================
 #
-#   numid  Control Name                      Purpose
-#   -----  --------------------------------  ----------------------------------
-#   144    DAC1 Switch                       Enable DAC1 L/R
-#   206    DAC1L Mixer AIF1.1 Switch         Route AIF1 to DAC1L
-#   201    DAC1R Mixer AIF1.1 Switch         Route AIF1 to DAC1R
-#   257    Left Output Mixer DAC Switch      Route DAC to Left Output Mixer
-#   249    Right Output Mixer DAC Switch     Route DAC to Right Output Mixer
-#   191    SPKL DAC1 Switch                  Speaker Left DAC1 input
-#   186    SPKR DAC1 Switch                  Speaker Right DAC1 input
-#   190    SPKL Output Switch                Speaker Left output enable
-#   185    SPKR Output Switch                Speaker Right output enable
-#   87     Speaker Switch                    Main speaker enable
-#   237    SPKL Boost SPKL Switch            Speaker Left boost
-#   235    SPKR Boost SPKR Switch            Speaker Right boost
-#   232    LINEOUT1 Mixer Output Switch      LINEOUT1 mixer from output mixer
-#   229    LINEOUT2 Mixer Output Switch      LINEOUT2 mixer from output mixer
-#   95     LINEOUT1N Switch                  LINEOUT1 negative enable
-#   96     LINEOUT1P Switch                  LINEOUT1 positive enable
-#   98     LINEOUT2N Switch                  LINEOUT2 negative enable
-#   99     LINEOUT2P Switch                  LINEOUT2 positive enable
-#   97     LINEOUT1 Volume                   LINEOUT1 volume (0-1)
-#   100    LINEOUT2 Volume                   LINEOUT2 volume (0-1)
-#   85     Speaker Mixer Volume              Speaker mixer volume (0-3)
-#   86     Speaker Volume                    Speaker output volume (0-63)
-#   112    AIF1DAC1 Volume                   AIF1 DAC1 volume (0-96)
-#   143    DAC1 Volume                       DAC1 output volume (0-96)
+# NOTE: webOS amixer is broken for numid-based commands (cset/cget).
+# Use control names with sset/sget instead.
+#
+#   Control Name                      Purpose
+#   --------------------------------  ----------------------------------
+#   DAC1                              Enable DAC1 L/R + volume
+#   DAC1L Mixer AIF1.1                Route AIF1 to DAC1L
+#   DAC1R Mixer AIF1.1                Route AIF1 to DAC1R
+#   Left Output Mixer DAC             Route DAC to Left Output Mixer
+#   Right Output Mixer DAC            Route DAC to Right Output Mixer
+#   SPKL DAC1                         Speaker Left DAC1 input
+#   SPKR DAC1                         Speaker Right DAC1 input
+#   SPKL Output                       Speaker Left output enable
+#   SPKR Output                       Speaker Right output enable
+#   Speaker                           Main speaker enable + volume
+#   SPKL Boost SPKL                   Speaker Left boost
+#   SPKR Boost SPKR                   Speaker Right boost
+#   LINEOUT1 Mixer Output             LINEOUT1 mixer from output mixer
+#   LINEOUT2 Mixer Output             LINEOUT2 mixer from output mixer
+#   LINEOUT1N                         LINEOUT1 negative enable
+#   LINEOUT1P                         LINEOUT1 positive enable
+#   LINEOUT2N                         LINEOUT2 negative enable
+#   LINEOUT2P                         LINEOUT2 positive enable
+#   LINEOUT1                          LINEOUT1 volume (0-1)
+#   LINEOUT2                          LINEOUT2 volume (0-1)
+#   Speaker Mixer                     Speaker mixer volume (0-3)
+#   AIF1DAC1                          AIF1 DAC1 volume (0-96)
 #
 # =============================================================================
 
@@ -102,48 +103,48 @@ fi
 echo -e "${GREEN}Device connected.${NC} Restoring audio routing..."
 echo ""
 
-# Full audio routing restore
-# Note: webOS amixer outputs full mixer state, so we redirect to /dev/null
+# Full audio routing restore using sset with control names
+# Note: webOS amixer ignores numid-based cset commands, so we use sset with names
 novacom run file://bin/sh -- -c '
 echo "Enabling DAC1..."
-amixer -c 0 cset numid=144 on,on >/dev/null 2>&1       # DAC1 Switch
+amixer -c 0 sset "DAC1" on >/dev/null 2>&1
+amixer -c 0 sset "DAC1" 96 >/dev/null 2>&1
 
 echo "Enabling AIF1 -> DAC1 routing..."
-amixer -c 0 cset numid=206 on >/dev/null 2>&1          # DAC1L Mixer AIF1.1 Switch
-amixer -c 0 cset numid=201 on >/dev/null 2>&1          # DAC1R Mixer AIF1.1 Switch
+amixer -c 0 sset "DAC1L Mixer AIF1.1" on >/dev/null 2>&1
+amixer -c 0 sset "DAC1R Mixer AIF1.1" on >/dev/null 2>&1
 
 echo "Enabling Output Mixer DAC path..."
-amixer -c 0 cset numid=257 on >/dev/null 2>&1          # Left Output Mixer DAC Switch
-amixer -c 0 cset numid=249 on >/dev/null 2>&1          # Right Output Mixer DAC Switch
+amixer -c 0 sset "Left Output Mixer DAC" on >/dev/null 2>&1
+amixer -c 0 sset "Right Output Mixer DAC" on >/dev/null 2>&1
 
 echo "Enabling Speaker mixer routing..."
-amixer -c 0 cset numid=191 on >/dev/null 2>&1          # SPKL DAC1 Switch
-amixer -c 0 cset numid=186 on >/dev/null 2>&1          # SPKR DAC1 Switch
-amixer -c 0 cset numid=85 3,3 >/dev/null 2>&1          # Speaker Mixer Volume
+amixer -c 0 sset "SPKL DAC1" on >/dev/null 2>&1
+amixer -c 0 sset "SPKR DAC1" on >/dev/null 2>&1
+amixer -c 0 sset "Speaker Mixer" 3 >/dev/null 2>&1
 
 echo "Enabling Speaker output..."
-amixer -c 0 cset numid=190 on >/dev/null 2>&1          # SPKL Output Switch
-amixer -c 0 cset numid=185 on >/dev/null 2>&1          # SPKR Output Switch
-amixer -c 0 cset numid=87 on,on >/dev/null 2>&1        # Speaker Switch
-amixer -c 0 cset numid=86 57,57 >/dev/null 2>&1        # Speaker Volume
+amixer -c 0 sset "SPKL Output" on >/dev/null 2>&1
+amixer -c 0 sset "SPKR Output" on >/dev/null 2>&1
+amixer -c 0 sset "Speaker" on >/dev/null 2>&1
+amixer -c 0 sset "Speaker" 57 >/dev/null 2>&1
 
 echo "Enabling Speaker boost..."
-amixer -c 0 cset numid=237 on >/dev/null 2>&1          # SPKL Boost SPKL Switch
-amixer -c 0 cset numid=235 on >/dev/null 2>&1          # SPKR Boost SPKR Switch
+amixer -c 0 sset "SPKL Boost SPKL" on >/dev/null 2>&1
+amixer -c 0 sset "SPKR Boost SPKR" on >/dev/null 2>&1
 
 echo "Enabling LINEOUT path (external Class-D amp)..."
-amixer -c 0 cset numid=232 on >/dev/null 2>&1          # LINEOUT1 Mixer Output Switch
-amixer -c 0 cset numid=229 on >/dev/null 2>&1          # LINEOUT2 Mixer Output Switch
-amixer -c 0 cset numid=95 on >/dev/null 2>&1           # LINEOUT1N Switch
-amixer -c 0 cset numid=96 on >/dev/null 2>&1           # LINEOUT1P Switch
-amixer -c 0 cset numid=98 on >/dev/null 2>&1           # LINEOUT2N Switch
-amixer -c 0 cset numid=99 on >/dev/null 2>&1           # LINEOUT2P Switch
-amixer -c 0 cset numid=97 1 >/dev/null 2>&1            # LINEOUT1 Volume
-amixer -c 0 cset numid=100 1 >/dev/null 2>&1           # LINEOUT2 Volume
+amixer -c 0 sset "LINEOUT1 Mixer Output" on >/dev/null 2>&1
+amixer -c 0 sset "LINEOUT2 Mixer Output" on >/dev/null 2>&1
+amixer -c 0 sset "LINEOUT1N" on >/dev/null 2>&1
+amixer -c 0 sset "LINEOUT1P" on >/dev/null 2>&1
+amixer -c 0 sset "LINEOUT2N" on >/dev/null 2>&1
+amixer -c 0 sset "LINEOUT2P" on >/dev/null 2>&1
+amixer -c 0 sset "LINEOUT1" 1 >/dev/null 2>&1
+amixer -c 0 sset "LINEOUT2" 1 >/dev/null 2>&1
 
-echo "Setting DAC/AIF volumes..."
-amixer -c 0 cset numid=112 96,96 >/dev/null 2>&1       # AIF1DAC1 Volume
-amixer -c 0 cset numid=143 96,96 >/dev/null 2>&1       # DAC1 Volume
+echo "Setting AIF1DAC1 volume..."
+amixer -c 0 sset "AIF1DAC1" 96 >/dev/null 2>&1
 
 echo ""
 echo "Audio routing restored!"
