@@ -1449,8 +1449,12 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
  * From vfe31_start_common() in msm_vfe31.c:
  *   msm_io_w(0x00EFE021, vfe31_ctrl->vfebase + VFE_IRQ_MASK_0);
  *   msm_io_w(VFE_IMASK_WHILE_STOPPING_1, ...) = 0x00400000
+ *
+ * NOTE: We add BIT(8) for IMAGE_MASTER_0_PING_PONG IRQ which is needed
+ * for buffer switching. webOS may have handled this differently or used
+ * a different write master for video data.
  */
-#define VFE31_IRQ_MASK_0_WEBOS			0x00EFE021
+#define VFE31_IRQ_MASK_0_WEBOS			(0x00EFE021 | VFE31_IRQ_MASK_0_PING_PONG_WM(0))
 #define VFE31_IRQ_MASK_1_WEBOS			0x00400000
 
 /*
