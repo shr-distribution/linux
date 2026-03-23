@@ -1488,14 +1488,33 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	dev_info(dev, "MT9M113: sequencer refresh completed\n");
 
 	/*
-	 * NOTE: Do NOT enable MIPI output here during init.
-	 * MIPI output (0x3400, 0x3404) is enabled during s_stream when the
-	 * pipeline is ready to receive data. Enabling it here would cause
-	 * the sensor to output MIPI while idle, which may cause the MIPI
-	 * transmitter to enter a stuck state by the time s_stream is called.
+	 * Enable MIPI output immediately after MCU refresh completes.
+	 * This matches webOS behavior where OUTPUT_CONTROL=0x7A08 is written
+	 * inside mt9m113_reg_init() after the second SEQ_CMD poll.
+	 *
+	 * The sensor's MIPI enable bit (bit 3) will NOT stick if written
+	 * later - the sensor must be in the post-init state for this to work.
 	 */
+	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+			MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
+		return ret;
+	}
 
-	dev_info(dev, "MT9M113: initialization complete (MIPI deferred to s_stream)\n");
+	/* Verify the write took effect */
+	{
+		u64 readback;
+		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+		if (readback != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+			dev_err(dev, "MT9M113: OUTPUT_CONTROL verify FAILED! wrote=0x7A08 read=0x%llx\n",
+				readback);
+			return -EIO;
+		}
+		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x7A08 verified (MIPI enabled)\n");
+	}
+
+	dev_info(dev, "MT9M113: initialization complete\n");
 	return 0;
 }
 
@@ -1862,7 +1881,7 @@ mt9m113_streaming:
 	 * 0x098C/0x0990) and doesn't support MT9M114's COMMAND_REGISTER.
 	 *
 	 * WebOS driver order (after CSI controller is configured):
-	 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI output
+	 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - already enabled during init
 	 * 2. RESET_REGISTER (0x301A) = 0x120C - streaming mode
 	 * 3. SEQ_CAP_MODE = 0x0030 - preview mode
 	 * 4. SEQ_CMD = 0x0001 - start streaming
@@ -1873,59 +1892,16 @@ mt9m113_streaming:
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
 		/*
-		 * CRITICAL: Check if MIPI output is already enabled.
-		 *
-		 * The sensor may already be outputting MIPI data after init.
-		 * Re-writing OUTPUT_CONTROL when MIPI is already active causes
-		 * a PHY reset that stops data output (CSIPHY IRQs stop).
-		 *
-		 * Always write MIPI configuration during s_stream.
-		 * Even if OUTPUT_CONTROL appears set, the MIPI PHY may have
-		 * gone idle and needs to be re-triggered.
+		 * OUTPUT_CONTROL was already set to 0x7A08 during init (after MCU
+		 * refresh completed). Just verify it's still set correctly.
+		 * The sensor MIPI enable bit only works immediately after init.
 		 */
 		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL before=0x%llx\n",
+		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx\n",
 			 output_ctrl);
-
-		/*
-		 * NOTE: webOS does NOT write CUSTOM_SHORT_PKT (0x3404).
-		 * The VFE CAMIF generates its own SOF based on detecting
-		 * active pixel data, not from MIPI short packets.
-		 * Previous attempts to enable FS/FE packets may have
-		 * interfered with normal data flow.
-		 */
-
-		/* Enable MIPI output interface */
-		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev,
-				"MT9M113: OUTPUT_CONTROL failed: %d\n", ret);
-			goto error;
-		}
-
-		/* Verify the write took effect */
-		{
-			u64 readback;
-			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-			if (readback != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: OUTPUT_CONTROL write FAILED! wrote=0x7A08 read=0x%llx\n",
-					 readback);
-				/*
-				 * Try writing again - some sensors need delay or
-				 * specific sequencing for MIPI enable to stick.
-				 */
-				usleep_range(1000, 2000);
-				cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-					  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-				dev_info(&sensor->client->dev,
-					 "MT9M113: OUTPUT_CONTROL retry: 0x%llx\n", readback);
-			} else {
-				dev_info(&sensor->client->dev,
-					 "MT9M113: OUTPUT_CONTROL=0x7A08 (MIPI enabled, verified)\n");
-			}
+		if (output_ctrl != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+			dev_warn(&sensor->client->dev,
+				 "MT9M113: OUTPUT_CONTROL changed! expected 0x7A08\n");
 		}
 
 		/*
