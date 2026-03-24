@@ -774,8 +774,12 @@ static int lpass_platform_pcmops_trigger(struct snd_soc_component *component,
 			dev_err(soc_runtime->dev, "error writing to irqen reg: %d\n", ret);
 			return ret;
 		}
-		dev_info(soc_runtime->dev, "platform trigger: DMA enabled, IRQ reg=0x%x mask=0x%x val=0x%x\n",
-			 reg_irqen, val_mask, val_irqen);
+		{
+			unsigned int readback;
+			regmap_read(map, reg_irqen, &readback);
+			dev_info(soc_runtime->dev, "platform trigger: DMA enabled, IRQ reg=0x%x mask=0x%x val=0x%x readback=0x%x\n",
+				 reg_irqen, val_mask, val_irqen, readback);
+		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:

@@ -660,6 +660,8 @@ static bool lpass_cpu_regmap_volatile(struct device *dev, unsigned int reg)
 	int i;
 
 	for (i = 0; i < v->irq_ports; ++i) {
+		if (reg == LPAIF_IRQEN_REG(v, i))
+			return true;
 		if (reg == LPAIF_IRQCLEAR_REG(v, i))
 			return true;
 		if (reg == LPAIF_IRQSTAT_REG(v, i))
