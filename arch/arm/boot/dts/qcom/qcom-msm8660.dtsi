@@ -604,7 +604,7 @@
 			reg = <0x28100000 0xe000>;
 			reg-names = "lpass-lpaif";
 
-			interrupts = <GIC_SPI 85 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 85 IRQ_TYPE_EDGE_RISING>;
 			interrupt-names = "lpass-irq-lpaif";
 
 			clocks = <&lcc CODEC_I2S_SPKR_OSR_CLK>,
