@@ -201,28 +201,6 @@ static int msm8660_lpass_init(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret, i;
 
-	/*
-	 * Get the optional SFAB LPASS AXI clock (ahbix equivalent).
-	 * This clock provides bus fabric access to the LPAIF hardware.
-	 * It may not be strictly required on MSM8660/APQ8060, so we
-	 * treat it as optional and continue if it's not available.
-	 */
-	drvdata->ahbix_clk = devm_clk_get_optional(dev, "sfab-lpass-clk");
-	if (IS_ERR(drvdata->ahbix_clk)) {
-		ret = PTR_ERR(drvdata->ahbix_clk);
-		if (ret != -EPROBE_DEFER)
-			dev_warn(dev, "sfab-lpass-clk not available: %d\n", ret);
-		drvdata->ahbix_clk = NULL;
-	} else if (drvdata->ahbix_clk) {
-		ret = clk_prepare_enable(drvdata->ahbix_clk);
-		if (ret) {
-			dev_warn(dev, "failed to enable sfab-lpass-clk: %d (continuing)\n", ret);
-			drvdata->ahbix_clk = NULL;
-		} else {
-			dev_info(dev, "SFAB LPASS AXI clock enabled\n");
-		}
-	}
-
 	/* Get OSR and bit clocks for each I2S port */
 	for (i = 0; i < drvdata->variant->num_dai; i++) {
 		const char *osr_name = drvdata->variant->dai_osr_clk_names[i];
@@ -284,9 +262,6 @@ static int msm8660_lpass_exit(struct platform_device *pdev)
 	if (drvdata->mi2s_osr_clk[MSM8660_LPAIF_I2S_PORT_CODEC_SPKR])
 		clk_disable_unprepare(
 			drvdata->mi2s_osr_clk[MSM8660_LPAIF_I2S_PORT_CODEC_SPKR]);
-
-	if (drvdata->ahbix_clk)
-		clk_disable_unprepare(drvdata->ahbix_clk);
 
 	return 0;
 }
