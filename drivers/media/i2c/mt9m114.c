@@ -2018,22 +2018,6 @@ mt9m113_streaming:
 		}
 
 		/*
-		 * RESET_REGISTER must ALWAYS be written for streaming mode.
-		 * WebOS writes both 0x3400=0x7A00 and 0x301A=0x120C together
-		 * when starting streaming. Even if MIPI output is already
-		 * enabled, the RESET_REGISTER may not be in streaming mode.
-		 */
-		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-				MT9M113_RESET_REG_STREAMING, NULL);
-		if (ret) {
-			dev_err(&sensor->client->dev,
-				"MT9M113: RESET_REGISTER failed: %d\n", ret);
-			goto error;
-		}
-		dev_info(&sensor->client->dev,
-			 "MT9M113: RESET_REGISTER=0x120C (streaming mode)\n");
-
-		/*
 		 * Set capture mode via MCU interface.
 		 * From webOS kernel:
 		 * - Preview mode (640x480, Context A): SEQ_CAP_MODE=0x0030, SEQ_CMD=0x01
@@ -2045,28 +2029,66 @@ mt9m113_streaming:
 		{
 			const struct v4l2_rect *compose;
 			bool use_capture_mode;
+			u16 reset_reg_val;
 
 			compose = v4l2_subdev_state_get_compose(ifp_state, 0);
 			use_capture_mode = (compose->width > 640 || compose->height > 480);
 
 			if (use_capture_mode) {
-				/* Context B (1280x1024): Snapshot mode */
+				/* Context B (1280x1024): Snapshot mode per webOS */
+				reset_reg_val = MT9M113_RESET_REG_SNAPSHOT;
+
 				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0000);
 				if (ret) {
 					dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
 					goto error;
 				}
-				dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x0000 (snapshot/Context B)\n");
+				usleep_range(40000, 50000);
+
+				/* SEQ_CAP_NUM_FRAMES = 8 per webOS */
+				ret = mt9m113_write_mcu_var(sensor, 0xA116, 0x0008);
+				if (ret) {
+					dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_NUM_FRAMES failed: %d\n", ret);
+					goto error;
+				}
+
+				/* SEQ_MODE = 0 per webOS */
+				ret = mt9m113_write_mcu_var(sensor, 0xA102, 0x0000);
+				if (ret) {
+					dev_err(&sensor->client->dev, "MT9M113: SEQ_MODE failed: %d\n", ret);
+					goto error;
+				}
+
+				dev_info(&sensor->client->dev,
+					 "MT9M113: snapshot mode - SEQ_CAP_MODE=0x0000 SEQ_CAP_NUM=8 SEQ_MODE=0\n");
 			} else {
 				/* Context A (640x480): Preview mode */
+				reset_reg_val = MT9M113_RESET_REG_STREAMING;
+
 				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 				if (ret) {
 					dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
 					goto error;
 				}
-				dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x0030 (preview/Context A)\n");
+				usleep_range(40000, 50000);
+
+				dev_info(&sensor->client->dev, "MT9M113: preview mode - SEQ_CAP_MODE=0x0030\n");
 			}
-			usleep_range(40000, 50000);
+
+			/*
+			 * RESET_REGISTER value depends on mode:
+			 * - Preview (Context A): 0x120C
+			 * - Snapshot (Context B): 0x12CE per webOS
+			 */
+			ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+					reset_reg_val, NULL);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: RESET_REGISTER failed: %d\n", ret);
+				goto error;
+			}
+			dev_info(&sensor->client->dev,
+				 "MT9M113: RESET_REGISTER=0x%04X\n", reset_reg_val);
 
 			/* Issue SEQ_CMD to start streaming */
 			if (use_capture_mode) {
