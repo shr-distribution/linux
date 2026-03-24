@@ -1960,6 +1960,21 @@ mt9m113_streaming:
 		}
 
 		/*
+		 * CRITICAL: Disable MIPI output immediately after MCU refresh!
+		 *
+		 * The MCU refresh (SEQ_CMD=0x0005) restores OUTPUT_CONTROL to
+		 * its default value, re-enabling MIPI output. This causes the
+		 * sensor to start transmitting MIPI data while we're still
+		 * setting up the streaming sequence, resulting in ECC/SOT errors.
+		 *
+		 * We must disable MIPI output here and only enable it after
+		 * all streaming configuration is complete.
+		 */
+		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
+		dev_info(&sensor->client->dev,
+			 "MT9M113: MIPI disabled after MCU refresh\n");
+
+		/*
 		 * Now enable MIPI output - this should work after MCU refresh.
 		 * Reset MIPI transmitter by toggling OUTPUT_CONTROL.
 		 * The transmitter may be in a bad state if it was enabled before
