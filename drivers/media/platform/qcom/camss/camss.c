@@ -84,15 +84,18 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		 * - VFE: 228570000 Hz (board-tenderloin.c:1780)
 		 * - CSI source: 384000000 Hz (msm_io_8x60.c:452)
 		 *
-		 * Note: CSIPHY timer clocks omitted - csiphytimer_src RCG fails
-		 * to configure on MSM8660. Driver uses default settle_cnt=0x04.
+		 * CSIPHY timer clock added to enable proper settle_cnt
+		 * calculation. The csiphytimer_src provides 27MHz for settle
+		 * time measurements.
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
 			   "csi0_ahb", "csi1_ahb", "csi0_src", "csi1_src",
-			   "csi0", "csi1", "csi0_phy", "csi1_phy" },
+			   "csi0", "csi1", "csi0_phy", "csi1_phy",
+			   "csiphy1_timer_clk" },
 		.clock_rate = { { 228570000 }, { 0 }, { 0 }, { 0 }, { 0 },
 				{ 0 }, { 0 }, { 384000000 }, { 384000000 },
-				{ 0 }, { 0 }, { 0 }, { 0 } },
+				{ 0 }, { 0 }, { 0 }, { 0 },
+				{ 27000000 } },
 		.reg = { "csiphy1" },
 		.interrupt = { "csiphy1" },
 		.csiphy = {
