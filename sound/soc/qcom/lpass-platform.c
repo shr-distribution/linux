@@ -30,7 +30,8 @@ static const struct snd_pcm_hardware lpass_platform_pcm_hardware = {
 					SNDRV_PCM_INFO_MMAP_VALID |
 					SNDRV_PCM_INFO_INTERLEAVED |
 					SNDRV_PCM_INFO_PAUSE |
-					SNDRV_PCM_INFO_RESUME,
+					SNDRV_PCM_INFO_RESUME |
+					SNDRV_PCM_INFO_NO_PERIOD_WAKEUP,
 	.formats		=	SNDRV_PCM_FMTBIT_S16 |
 					SNDRV_PCM_FMTBIT_S24 |
 					SNDRV_PCM_FMTBIT_S32,
