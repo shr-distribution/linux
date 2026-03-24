@@ -1501,39 +1501,20 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	dev_info(dev, "MT9M113: sequencer refresh completed\n");
 
 	/*
-	 * Enable MIPI output immediately after MCU refresh completes.
-	 * This matches webOS behavior where OUTPUT_CONTROL=0x7A08 is written
-	 * inside mt9m113_reg_init() after the second SEQ_CMD poll.
+	 * IMPORTANT: We do NOT enable MIPI output here!
 	 *
-	 * The sensor's MIPI enable bit (bit 3) will NOT stick if written
-	 * later - the sensor must be in the post-init state for this to work.
-	 */
-	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-			MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-	if (ret < 0) {
-		dev_err(dev, "MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
-		return ret;
-	}
-
-	/* Verify the write took effect (mask out RO bit 3) */
-	{
-		u64 readback;
-		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-		if ((readback & ~MT9M113_OUTPUT_CONTROL_RO_MASK) !=
-		    MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY) {
-			dev_err(dev, "MT9M113: OUTPUT_CONTROL verify FAILED! wrote=0x7A00 read=0x%llx (masked=0x%llx)\n",
-				readback, readback & ~MT9M113_OUTPUT_CONTROL_RO_MASK);
-			return -EIO;
-		}
-		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%llx verified (MIPI enabled, bit3 is RO)\n",
-			 readback);
-	}
-
-	/*
-	 * Enable Frame Start/End short packets (CUSTOM_SHORT_PKT register).
+	 * Previously, OUTPUT_CONTROL was written here to enable MIPI,
+	 * but this caused the sensor to start outputting MIPI data
+	 * before the CSIPHY was configured, corrupting the PHY state
+	 * machine and causing ECC/SOT errors.
+	 *
+	 * MIPI output is now enabled in s_stream() AFTER the CSIPHY
+	 * has been configured by the V4L2 pipeline.
+	 *
+	 * Configure Frame Start/End short packets (CUSTOM_SHORT_PKT).
 	 * Per datasheet, bit 7 (frame_cnt_en) must be set to insert frame
-	 * counter in FS/FE word count field. Default is 0x0000 which means
-	 * NO Frame Start/End packets are sent - this may cause VFE SOF issues.
+	 * counter in FS/FE word count field. This just configures WHAT
+	 * packets to send, not WHEN to send them.
 	 */
 	ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
 			MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
@@ -1544,11 +1525,33 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	{
 		u64 readback;
 		cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-		dev_info(dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE enabled)\n",
+		dev_info(dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE configured)\n",
 			 readback);
 	}
 
-	dev_info(dev, "MT9M113: initialization complete\n");
+	/*
+	 * CRITICAL: Explicitly disable MIPI output after initialization.
+	 *
+	 * The sensor's MCU/default state after SEQ_CMD=REFRESH may have
+	 * MIPI output enabled (OUTPUT_CONTROL reads back 0x7A2C).
+	 * We must disable it here so that the CSIPHY can be configured
+	 * before the sensor outputs any MIPI data.
+	 *
+	 * Write 0x0000 to OUTPUT_CONTROL to put MIPI transmitter in reset.
+	 * MIPI will be properly enabled in s_stream() after CSIPHY is ready.
+	 */
+	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: Failed to disable MIPI output: %d\n", ret);
+		return ret;
+	}
+	{
+		u64 readback;
+		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%llx (MIPI disabled)\n", readback);
+	}
+
+	dev_info(dev, "MT9M113: initialization complete (MIPI disabled, waiting for s_stream)\n");
 	return 0;
 }
 
@@ -1911,14 +1914,23 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 
 mt9m113_streaming:
 	/*
-	 * MT9M113 uses a different command mechanism (MCU indirect via
-	 * 0x098C/0x0990) and doesn't support MT9M114's COMMAND_REGISTER.
+	 * MT9M113 streaming sequence - MIPI output enabled HERE.
 	 *
-	 * WebOS driver order (after CSI controller is configured):
-	 * 1. OUTPUT_CONTROL (0x3400) = 0x7A00 - already enabled during init (bit3 RO)
-	 * 2. RESET_REGISTER (0x301A) = 0x120C - streaming mode
-	 * 3. SEQ_CAP_MODE = 0x0030 - preview mode
-	 * 4. SEQ_CMD = 0x0001 - start streaming
+	 * CRITICAL: At this point, the CSIPHY has already been configured
+	 * by earlier entities in the pipeline (VFE -> CSID -> CSIPHY).
+	 * The sensor must NOT output MIPI data until NOW, otherwise the
+	 * CSIPHY state machine gets corrupted causing ECC/SOT errors.
+	 *
+	 * WebOS driver sequence (mt9m113_set_sensor_mode):
+	 * 1. msm_camio_csi_config() - configure CSIPHY FIRST
+	 * 2. mdelay(10) - wait for CSIPHY to stabilize
+	 * 3. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI output
+	 * 4. RESET_REGISTER (0x301A) = 0x120C - streaming mode
+	 * 5. SEQ_CAP_MODE = 0x0030 - preview mode (Context A)
+	 * 6. SEQ_CMD = 0x0001 - start streaming
+	 *
+	 * We follow the same order here, with CSIPHY already configured
+	 * by the V4L2 pipeline before this s_stream callback is called.
 	 */
 	{
 		u64 output_ctrl;
@@ -3455,13 +3467,19 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 			} else {
 				/*
 				 * Cold boot or sensor not responding.
-				 * Perform full MIPI init sequence per webOS:
-				 * 1. Soft reset (0x001A = 1, then 0)
-				 * 2. OUTPUT_CONTROL (0x3400 = 0x7A08) enables MIPI
-				 * 3. RESET_REGISTER (0x301A = 0x120C) for streaming
-				 * Note: MT9M113 uses 0x3400 for MIPI, NOT 0x3C40.
+				 * Perform soft reset and basic initialization, but
+				 * DO NOT enable MIPI output or streaming yet.
+				 *
+				 * CRITICAL: MIPI output must NOT be enabled until
+				 * CSIPHY is configured. If the sensor outputs MIPI
+				 * data before the PHY is ready, the PHY state machine
+				 * gets corrupted causing ECC/SOT errors.
+				 *
+				 * The OUTPUT_CONTROL and RESET_REGISTER writes that
+				 * enable MIPI streaming are done in s_stream() AFTER
+				 * the CSIPHY has been configured by the pipeline.
 				 */
-				dev_info(dev, "power_on: MT9M113 MIPI early init sequence\n");
+				dev_info(dev, "power_on: MT9M113 soft reset (MIPI disabled until s_stream)\n");
 
 				/* Soft reset */
 				cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
@@ -3484,24 +3502,10 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 					dev_warn(dev, "power_on: ACCESS_CTL_STAT write failed: %d\n", ret);
 
 				/*
-				 * OUTPUT_CONTROL (0x3400) enables MIPI output.
-				 * This is the correct register for MT9M113 - the 0x3C40
-				 * register used by MT9M114 does NOT exist on MT9M113.
-				 */
-				cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-					  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, &ret);
-				if (ret < 0) {
-					dev_err(dev, "power_on: OUTPUT_CONTROL failed: %d\n", ret);
-					goto error_clock;
-				}
-				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-				dev_info(dev, "power_on: OUTPUT_CONTROL=0x%llx (expect 0x7A00/0x7A08, bit3 is RO)\n", readback);
-
-				/*
 				 * Enable Frame Start/End short packets per datasheet.
 				 * Bit 7 (frame_cnt_en) inserts frame counter in FS/FE
 				 * word count field, enabling proper MIPI frame sync.
-				 * Default is 0x0000 which means NO FS/FE packets sent!
+				 * This just configures WHAT to send, not WHEN to send.
 				 */
 				cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
 					  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
@@ -3510,17 +3514,15 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 					goto error_clock;
 				}
 				cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-				dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE enabled)\n", readback);
+				dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE configured)\n", readback);
 
-				/* RESET_REGISTER for streaming (0x120C per webOS/Samsung) */
-				cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-					  MT9M113_RESET_REG_STREAMING, &ret);
-				if (ret < 0) {
-					dev_err(dev, "power_on: RESET_REGISTER failed: %d\n", ret);
-					goto error_clock;
-				}
-				cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &readback, NULL);
-				dev_info(dev, "power_on: RESET_REGISTER=0x%llx (expected 0x120C)\n", readback);
+				/*
+				 * NOTE: We intentionally do NOT write:
+				 * - OUTPUT_CONTROL (0x3400) - would enable MIPI output
+				 * - RESET_REGISTER (0x301A) = 0x120C - would enable streaming
+				 * These are written in s_stream() after CSIPHY is ready.
+				 */
+				dev_info(dev, "power_on: MT9M113 in standby (MIPI output disabled)\n");
 			}
 		}
 	} else {
