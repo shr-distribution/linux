@@ -863,6 +863,19 @@ static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 		return ret;
 	}
 
+	/*
+	 * CRITICAL: Disable MIPI output after REFRESH_MODE.
+	 * The MCU refresh restores OUTPUT_CONTROL to its internal state,
+	 * which may have MIPI enabled. We must disable it here to prevent
+	 * MIPI transmission before CSIPHY is fully ready.
+	 */
+	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
+	if (ret < 0) {
+		dev_warn(&sensor->client->dev,
+			 "MT9M113: failed to disable MIPI after resolution config: %d\n",
+			 ret);
+	}
+
 	dev_info(&sensor->client->dev,
 		 "MT9M113: resolution configured to %ux%u\n",
 		 compose->width, compose->height);
