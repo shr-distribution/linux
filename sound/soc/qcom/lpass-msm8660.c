@@ -201,25 +201,6 @@ static int msm8660_lpass_init(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret, i;
 
-	/*
-	 * Get and enable the SFAB LPASS AXI clock (ahbix equivalent).
-	 * This clock provides bus fabric access to the LPAIF hardware.
-	 * Without it, the LPAIF DMA and I2S serializers cannot function.
-	 */
-	drvdata->ahbix_clk = devm_clk_get(dev, "sfab-lpass-clk");
-	if (IS_ERR(drvdata->ahbix_clk)) {
-		dev_err(dev, "error getting sfab-lpass-clk: %ld\n",
-			PTR_ERR(drvdata->ahbix_clk));
-		return PTR_ERR(drvdata->ahbix_clk);
-	}
-
-	ret = clk_prepare_enable(drvdata->ahbix_clk);
-	if (ret) {
-		dev_err(dev, "error enabling sfab-lpass-clk: %d\n", ret);
-		return ret;
-	}
-	dev_info(dev, "SFAB LPASS AXI clock enabled\n");
-
 	/* Get OSR and bit clocks for each I2S port */
 	for (i = 0; i < drvdata->variant->num_dai; i++) {
 		const char *osr_name = drvdata->variant->dai_osr_clk_names[i];
@@ -231,8 +212,7 @@ static int msm8660_lpass_init(struct platform_device *pdev)
 				dev_err(dev, "error getting %s: %ld\n",
 					osr_name,
 					PTR_ERR(drvdata->mi2s_osr_clk[i]));
-				ret = PTR_ERR(drvdata->mi2s_osr_clk[i]);
-				goto err_ahbix_clk;
+				return PTR_ERR(drvdata->mi2s_osr_clk[i]);
 			}
 		}
 
@@ -242,8 +222,7 @@ static int msm8660_lpass_init(struct platform_device *pdev)
 				dev_err(dev, "error getting %s: %ld\n",
 					bit_name,
 					PTR_ERR(drvdata->mi2s_bit_clk[i]));
-				ret = PTR_ERR(drvdata->mi2s_bit_clk[i]);
-				goto err_ahbix_clk;
+				return PTR_ERR(drvdata->mi2s_bit_clk[i]);
 			}
 		}
 	}
@@ -260,7 +239,7 @@ static int msm8660_lpass_init(struct platform_device *pdev)
 		if (ret) {
 			dev_err(dev, "error setting codec spkr osr rate: %d\n",
 				ret);
-			goto err_ahbix_clk;
+			return ret;
 		}
 
 		ret = clk_prepare_enable(
@@ -268,16 +247,12 @@ static int msm8660_lpass_init(struct platform_device *pdev)
 		if (ret) {
 			dev_err(dev, "error enabling codec spkr osr clk: %d\n",
 				ret);
-			goto err_ahbix_clk;
+			return ret;
 		}
 	}
 
 	dev_info(dev, "MSM8660 LPASS initialized\n");
 	return 0;
-
-err_ahbix_clk:
-	clk_disable_unprepare(drvdata->ahbix_clk);
-	return ret;
 }
 
 static int msm8660_lpass_exit(struct platform_device *pdev)
@@ -287,9 +262,6 @@ static int msm8660_lpass_exit(struct platform_device *pdev)
 	if (drvdata->mi2s_osr_clk[MSM8660_LPAIF_I2S_PORT_CODEC_SPKR])
 		clk_disable_unprepare(
 			drvdata->mi2s_osr_clk[MSM8660_LPAIF_I2S_PORT_CODEC_SPKR]);
-
-	if (drvdata->ahbix_clk)
-		clk_disable_unprepare(drvdata->ahbix_clk);
 
 	return 0;
 }
