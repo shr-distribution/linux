@@ -80,13 +80,26 @@
 #define MT9M113_RESET_REG_SNAPSHOT			0x12CE
 
 /*
- * MT9M113 OUTPUT_CONTROL register (physical register, not MCU variable)
- * This register controls the output interface mode (parallel vs MIPI).
- * Value 0x7A08 enables MIPI CSI-2 output with LP (Low Power) mode.
- * Value 0x7A0C enables continuous clock but breaks MIPI output - don't use.
+ * MT9M113 OUTPUT_CONTROL register (R0x3400) - MIPI control
+ *
+ * Bit layout per datasheet:
+ *   [15:10] data_type - MIPI data type (0x1E = YUV422)
+ *   [9]     mipi_en   - MIPI enable (0=disabled, 1=enabled)
+ *   [8:6]   chan_num  - Virtual channel number
+ *   [4]     standby_eof - Wait until EOF for standby
+ *   [3]     reg_frame_sync - READ-ONLY frame sync status bit
+ *   [2]     cont_mipi_clk - Continuous MIPI clock
+ *   [1]     standby_en - MIPI standby (0=active, 1=standby)
+ *   [0]     restart_en - MIPI restart enable
+ *
+ * IMPORTANT: Bit 3 (reg_frame_sync) is READ-ONLY! It's a hardware status
+ * bit indicating frame sync state. Writes to bit 3 are ignored by hardware.
+ * When verifying writes, mask out bit 3 before comparison.
  */
 #define MT9M113_OUTPUT_CONTROL				CCI_REG16(0x3400)
-#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08
+#define MT9M113_OUTPUT_CONTROL_RO_MASK			0x0008	/* Bit 3 is RO */
+#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A00	/* Write value */
+#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY	0x7A00	/* Expected readback (ignoring RO bit) */
 
 /*
  * MT9M113 CUSTOM_SHORT_PKT register (0x3404)
@@ -604,7 +617,7 @@ mt9m114_format_info(struct mt9m114 *sensor, unsigned int pad, u32 code)
 
 static const struct cci_reg_sequence mt9m114_init[] = {
 	/*
-	 * Note: MT9M113 MIPI is configured via OUTPUT_CONTROL (0x3400) = 0x7A08,
+	 * Note: MT9M113 MIPI is configured via OUTPUT_CONTROL (0x3400) = 0x7A00,
 	 * which is written during start_streaming. The 0x3C40 register does NOT
 	 * exist on MT9M113 (it's MT9M114-specific), so we don't write it here.
 	 *
@@ -1502,16 +1515,37 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 		return ret;
 	}
 
-	/* Verify the write took effect */
+	/* Verify the write took effect (mask out RO bit 3) */
 	{
 		u64 readback;
 		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-		if (readback != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
-			dev_err(dev, "MT9M113: OUTPUT_CONTROL verify FAILED! wrote=0x7A08 read=0x%llx\n",
-				readback);
+		if ((readback & ~MT9M113_OUTPUT_CONTROL_RO_MASK) !=
+		    MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY) {
+			dev_err(dev, "MT9M113: OUTPUT_CONTROL verify FAILED! wrote=0x7A00 read=0x%llx (masked=0x%llx)\n",
+				readback, readback & ~MT9M113_OUTPUT_CONTROL_RO_MASK);
 			return -EIO;
 		}
-		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x7A08 verified (MIPI enabled)\n");
+		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%llx verified (MIPI enabled, bit3 is RO)\n",
+			 readback);
+	}
+
+	/*
+	 * Enable Frame Start/End short packets (CUSTOM_SHORT_PKT register).
+	 * Per datasheet, bit 7 (frame_cnt_en) must be set to insert frame
+	 * counter in FS/FE word count field. Default is 0x0000 which means
+	 * NO Frame Start/End packets are sent - this may cause VFE SOF issues.
+	 */
+	ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+			MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: CUSTOM_SHORT_PKT write failed: %d\n", ret);
+		return ret;
+	}
+	{
+		u64 readback;
+		cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
+		dev_info(dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE enabled)\n",
+			 readback);
 	}
 
 	dev_info(dev, "MT9M113: initialization complete\n");
@@ -1881,7 +1915,7 @@ mt9m113_streaming:
 	 * 0x098C/0x0990) and doesn't support MT9M114's COMMAND_REGISTER.
 	 *
 	 * WebOS driver order (after CSI controller is configured):
-	 * 1. OUTPUT_CONTROL (0x3400) = 0x7A08 - already enabled during init
+	 * 1. OUTPUT_CONTROL (0x3400) = 0x7A00 - already enabled during init (bit3 RO)
 	 * 2. RESET_REGISTER (0x301A) = 0x120C - streaming mode
 	 * 3. SEQ_CAP_MODE = 0x0030 - preview mode
 	 * 4. SEQ_CMD = 0x0001 - start streaming
@@ -1924,23 +1958,28 @@ mt9m113_streaming:
 		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL before=0x%llx\n",
 			 output_ctrl);
 
-		/* Disable MIPI output, wait, then re-enable */
+		/*
+		 * Disable MIPI output, wait, then re-enable.
+		 * Note: Bit 3 (reg_frame_sync) is READ-ONLY per datasheet.
+		 * We write 0x7A00 and verify with bit 3 masked out.
+		 */
 		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x7A00, NULL);
 		usleep_range(1000, 2000);
 		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 			  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
 		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL after toggle=0x%llx\n",
+		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL after toggle=0x%llx (bit3 is RO)\n",
 			 output_ctrl);
-		if (output_ctrl != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+		if ((output_ctrl & ~MT9M113_OUTPUT_CONTROL_RO_MASK) !=
+		    MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY) {
 			dev_err(&sensor->client->dev,
-				"MT9M113: OUTPUT_CONTROL write failed! (0x%llx != 0x7A08)\n",
-				output_ctrl);
+				"MT9M113: OUTPUT_CONTROL write failed! (0x%llx masked=0x%llx)\n",
+				output_ctrl, output_ctrl & ~MT9M113_OUTPUT_CONTROL_RO_MASK);
 		}
 
 		/*
 		 * RESET_REGISTER must ALWAYS be written for streaming mode.
-		 * WebOS writes both 0x3400=0x7A08 and 0x301A=0x120C together
+		 * WebOS writes both 0x3400=0x7A00 and 0x301A=0x120C together
 		 * when starting streaming. Even if MIPI output is already
 		 * enabled, the RESET_REGISTER may not be in streaming mode.
 		 */
@@ -2029,7 +2068,7 @@ mt9m113_streaming:
 			cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &reset_reg, NULL);
 			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl_after, NULL);
 			dev_info(&sensor->client->dev,
-				 "MT9M113: RESET_REG=0x%llx (0x120C=streaming) OUTPUT_CTRL=0x%llx (0x7A08=MIPI)\n",
+				 "MT9M113: RESET_REG=0x%llx (0x120C=streaming) OUTPUT_CTRL=0x%llx (0x7A00=MIPI, bit3 RO)\n",
 				 reset_reg, output_ctrl_after);
 
 			/* Mode configuration - verify resolution via MCU vars */
@@ -2042,29 +2081,21 @@ mt9m113_streaming:
 				 mode_width, mode_height, frame_length, line_length);
 
 			/*
-			 * CRITICAL: MCU clears OUTPUT_CONTROL BIT(3) when SEQ_CMD=RUN.
-			 * Re-write OUTPUT_CONTROL to enable MIPI output AFTER MCU starts.
+			 * Verify MIPI is enabled. Bit 3 (reg_frame_sync) is READ-ONLY
+			 * and reflects hardware frame sync state - not a control bit.
+			 * Mask it out when checking if MIPI output is properly enabled.
 			 */
-			if (output_ctrl_after != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
-				u64 verify;
-
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: OUTPUT_CONTROL=0x%llx, MCU cleared BIT(3)! Re-enabling MIPI...\n",
+			if ((output_ctrl_after & ~MT9M113_OUTPUT_CONTROL_RO_MASK) !=
+			    MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: OUTPUT_CONTROL wrong: 0x%llx (masked=0x%llx, expected=0x%x)\n",
+					output_ctrl_after,
+					output_ctrl_after & ~MT9M113_OUTPUT_CONTROL_RO_MASK,
+					MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY);
+			} else {
+				dev_info(&sensor->client->dev,
+					 "MT9M113: OUTPUT_CONTROL=0x%llx OK (bit3 is RO frame_sync status)\n",
 					 output_ctrl_after);
-
-				cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-					  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-				usleep_range(1000, 2000);
-
-				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &verify, NULL);
-				if (verify != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
-					dev_err(&sensor->client->dev,
-						"MT9M113: CRITICAL - OUTPUT_CONTROL still wrong: 0x%llx\n",
-						verify);
-				} else {
-					dev_info(&sensor->client->dev,
-						 "MT9M113: OUTPUT_CONTROL=0x7A08 (MIPI re-enabled after MCU start)\n");
-				}
 			}
 		}
 
@@ -3464,13 +3495,22 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 					goto error_clock;
 				}
 				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-				dev_info(dev, "power_on: OUTPUT_CONTROL=0x%llx (expected 0x7A08)\n", readback);
+				dev_info(dev, "power_on: OUTPUT_CONTROL=0x%llx (expect 0x7A00/0x7A08, bit3 is RO)\n", readback);
 
 				/*
-				 * NOTE: webOS does NOT write CUSTOM_SHORT_PKT (0x3404).
-				 * VFE CAMIF generates SOF internally from pixel data,
-				 * not from MIPI short packets. Leave register at default.
+				 * Enable Frame Start/End short packets per datasheet.
+				 * Bit 7 (frame_cnt_en) inserts frame counter in FS/FE
+				 * word count field, enabling proper MIPI frame sync.
+				 * Default is 0x0000 which means NO FS/FE packets sent!
 				 */
+				cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+					  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
+				if (ret < 0) {
+					dev_err(dev, "power_on: CUSTOM_SHORT_PKT failed: %d\n", ret);
+					goto error_clock;
+				}
+				cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
+				dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE enabled)\n", readback);
 
 				/* RESET_REGISTER for streaming (0x120C per webOS/Samsung) */
 				cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
