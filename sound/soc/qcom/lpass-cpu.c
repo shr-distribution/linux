@@ -386,6 +386,22 @@ static int lpass_cpu_daiops_trigger(struct snd_pcm_substream *substream,
 		 *     turn off the shared BCLK while other devices are using
 		 *     it.
 		 */
+		/*
+		 * Enable bit clock BEFORE enabling I2S to ensure the
+		 * serializer sees clock edges when it starts.
+		 */
+		ret = clk_enable(drvdata->mi2s_bit_clk[id]);
+		if (ret) {
+			dev_err(dai->dev, "error in enabling mi2s bit clk: %d\n", ret);
+			clk_disable(drvdata->mi2s_osr_clk[id]);
+			return ret;
+		}
+		dev_info(dai->dev, "trigger: bit_clk enabled, rate=%lu Hz\n",
+			 clk_get_rate(drvdata->mi2s_bit_clk[id]));
+
+		/* Small delay to let clocks stabilize */
+		udelay(10);
+
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 			unsigned int val;
 			dev_info(dai->dev, "trigger: enabling spken for port %u\n", id);
@@ -407,12 +423,6 @@ static int lpass_cpu_daiops_trigger(struct snd_pcm_substream *substream,
 			dev_err(dai->dev, "error writing to i2sctl reg: %d\n",
 				ret);
 
-		ret = clk_enable(drvdata->mi2s_bit_clk[id]);
-		if (ret) {
-			dev_err(dai->dev, "error in enabling mi2s bit clk: %d\n", ret);
-			clk_disable(drvdata->mi2s_osr_clk[id]);
-			return ret;
-		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:

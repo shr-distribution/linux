@@ -917,6 +917,19 @@ static snd_pcm_uframes_t lpass_platform_pcmops_pointer(
 		return ret;
 	}
 
+	/* Debug: Print DMA position periodically */
+	{
+		static unsigned long last_jiffies;
+		if (time_after(jiffies, last_jiffies + HZ)) {
+			unsigned int offset = curr_addr - base_addr;
+			dev_info_ratelimited(soc_runtime->dev,
+				"pointer: base=0x%x curr=0x%x offset=%u bytes (%u frames)\n",
+				base_addr, curr_addr, offset,
+				(unsigned int)bytes_to_frames(substream->runtime, offset));
+			last_jiffies = jiffies;
+		}
+	}
+
 	return bytes_to_frames(substream->runtime, curr_addr - base_addr);
 }
 
