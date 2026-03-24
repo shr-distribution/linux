@@ -1892,6 +1892,29 @@ mt9m113_streaming:
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
 
 		/*
+		 * Issue MCU refresh (SEQ_CMD=0x0005) before enabling MIPI output.
+		 * OUTPUT_CONTROL BIT(3) only accepts writes immediately after MCU
+		 * refresh completes. If time has passed since init, the sensor
+		 * may be in a state where BIT(3) won't stick.
+		 */
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					    MT9M113_SEQ_CMD_REFRESH);
+		if (ret < 0) {
+			dev_err(&sensor->client->dev,
+				"MT9M113: SEQ_CMD refresh failed: %d\n", ret);
+			goto error;
+		}
+		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+		if (ret < 0) {
+			dev_warn(&sensor->client->dev,
+				 "MT9M113: MCU refresh timeout (continuing anyway)\n");
+		} else {
+			dev_info(&sensor->client->dev,
+				 "MT9M113: MCU refresh complete\n");
+		}
+
+		/*
+		 * Now enable MIPI output - this should work after MCU refresh.
 		 * Reset MIPI transmitter by toggling OUTPUT_CONTROL.
 		 * The transmitter may be in a bad state if it was enabled before
 		 * the CSIPHY receiver was ready. WebOS rewrites OUTPUT_CONTROL
@@ -1909,6 +1932,11 @@ mt9m113_streaming:
 		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
 		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL after toggle=0x%llx\n",
 			 output_ctrl);
+		if (output_ctrl != MT9M113_OUTPUT_CONTROL_MIPI_ENABLE) {
+			dev_err(&sensor->client->dev,
+				"MT9M113: OUTPUT_CONTROL write failed! (0x%llx != 0x7A08)\n",
+				output_ctrl);
+		}
 
 		/*
 		 * RESET_REGISTER must ALWAYS be written for streaming mode.
