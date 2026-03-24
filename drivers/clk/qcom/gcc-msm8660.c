@@ -2548,6 +2548,32 @@ static struct clk_branch rpm_msg_ram_h_clk = {
 	},
 };
 
+/*
+ * SFAB_LPASS_Q6_A_CLK - System Fabric to LPASS AXI clock.
+ *
+ * This clock provides AXI bus access to the LPASS (Low Power Audio Subsystem)
+ * hardware including LPAIF registers, DMA engine, and I2S serializers.
+ *
+ * Note: This clock may not be strictly required on MSM8660/APQ8060 when the
+ * Q6 DSP is not used. The LPASS driver treats it as optional.
+ *
+ * Register 0x23a0: Bit 4 = clock enable
+ * Halt register 0x2fc8: Bit 0 = halt status
+ */
+static struct clk_branch sfab_lpass_q6_a_clk = {
+	.halt_reg = 0x2fc8,
+	.halt_check = BRANCH_HALT_VOTED,
+	.halt_bit = 0,
+	.clkr = {
+		.enable_reg = 0x23a0,
+		.enable_mask = BIT(4),
+		.hw.init = &(struct clk_init_data){
+			.name = "sfab_lpass_q6_a_clk",
+			.ops = &clk_branch_ops,
+		},
+	},
+};
+
 static struct clk_regmap *gcc_msm8660_clks[] = {
 	[PLL8] = &pll8.clkr,
 	[PLL8_VOTE] = &pll8_vote,
@@ -2664,6 +2690,7 @@ static struct clk_regmap *gcc_msm8660_clks[] = {
 	[PMIC_ARB1_H_CLK] = &pmic_arb1_h_clk.clkr,
 	[PMIC_SSBI2_CLK] = &pmic_ssbi2_clk.clkr,
 	[RPM_MSG_RAM_H_CLK] = &rpm_msg_ram_h_clk.clkr,
+	[SFAB_LPASS_Q6_A_CLK] = &sfab_lpass_q6_a_clk.clkr,
 };
 
 static const struct qcom_reset_map gcc_msm8660_resets[] = {
