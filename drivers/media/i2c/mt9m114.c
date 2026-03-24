@@ -2141,16 +2141,28 @@ error:
 
 static int mt9m114_stop_streaming(struct mt9m114 *sensor)
 {
+	struct device *dev = &sensor->client->dev;
 	int ret = 0;
 
 	sensor->streaming = false;
 
-	/*
-	 * MT9M113 doesn't support COMMAND_REGISTER. The sensor will stop
-	 * streaming when powered down via runtime PM.
-	 */
-	if (sensor->model != MT9M113_MODEL)
+	if (sensor->model == MT9M113_MODEL) {
+		/*
+		 * MT9M113: Explicitly disable MIPI output before runtime PM
+		 * puts the sensor into autosuspend. This is critical because
+		 * the sensor may stay powered due to autosuspend delay, and
+		 * if MIPI output remains enabled, the next stream-on will
+		 * see ECC/SOT errors when CSIPHY is reconfigured while the
+		 * sensor is mid-transmission.
+		 */
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
+		if (ret < 0)
+			dev_warn(dev, "MT9M113: failed to disable MIPI on stop: %d\n", ret);
+		else
+			dev_info(dev, "MT9M113: MIPI output disabled on stream stop\n");
+	} else {
 		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_SUSPEND);
+	}
 
 	pm_runtime_put_autosuspend(&sensor->client->dev);
 
