@@ -607,12 +607,7 @@
 			interrupts = <GIC_SPI 85 IRQ_TYPE_EDGE_RISING>;
 			interrupt-names = "lpass-irq-lpaif";
 
-			/*
-			 * sfab-lpass-clk: System Fabric to LPASS AXI clock.
-			 * Optional - provides bus fabric access to LPAIF.
-			 */
-			clocks = <&gcc SFAB_LPASS_Q6_A_CLK>,
-				 <&lcc CODEC_I2S_SPKR_OSR_CLK>,
+			clocks = <&lcc CODEC_I2S_SPKR_OSR_CLK>,
 				 <&lcc CODEC_I2S_SPKR_BIT_CLK>,
 				 <&lcc CODEC_I2S_MIC_OSR_CLK>,
 				 <&lcc CODEC_I2S_MIC_BIT_CLK>,
@@ -620,8 +615,7 @@
 				 <&lcc SPARE_I2S_SPKR_BIT_CLK>,
 				 <&lcc SPARE_I2S_MIC_OSR_CLK>,
 				 <&lcc SPARE_I2S_MIC_BIT_CLK>;
-			clock-names = "sfab-lpass-clk",
-				      "codec-i2s-spkr-osr-clk",
+			clock-names = "codec-i2s-spkr-osr-clk",
 				      "codec-i2s-spkr-bit-clk",
 				      "codec-i2s-mic-osr-clk",
 				      "codec-i2s-mic-bit-clk",
