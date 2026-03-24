@@ -2080,10 +2080,18 @@ mt9m113_streaming:
 		}
 
 		/*
-		 * Wait for streaming to start. The MCU processes the command
-		 * and should transition to SEQ_STATE=0x03.
+		 * Wait for SEQ_CMD to return to 0 (command processed).
+		 * Then verify SEQ_STATE transitions to 0x03 (streaming).
 		 */
-		msleep(50);
+		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+		if (ret) {
+			dev_err(&sensor->client->dev,
+				"MT9M113: SEQ_CMD RUN timeout (still processing)\n");
+			/* Continue anyway to see the state */
+		}
+
+		/* Additional delay for sensor to stabilize */
+		msleep(20);
 
 		/*
 		 * Comprehensive sensor state readback for debugging.
@@ -2110,8 +2118,8 @@ mt9m113_streaming:
 			/* Mode configuration - verify resolution via MCU vars */
 			mt9m113_read_mcu_var(sensor, 0x2703, &mode_width);  /* MODE_OUTPUT_WIDTH_A */
 			mt9m113_read_mcu_var(sensor, 0x2705, &mode_height); /* MODE_OUTPUT_HEIGHT_A */
-			mt9m113_read_mcu_var(sensor, 0x2719, &frame_length); /* MODE_SENSOR_FRAME_LENGTH_A */
-			mt9m113_read_mcu_var(sensor, 0x271B, &line_length);  /* MODE_SENSOR_LINE_LENGTH_PCK_A */
+			mt9m113_read_mcu_var(sensor, 0x271F, &frame_length); /* MODE_SENSOR_FRAME_LENGTH_A */
+			mt9m113_read_mcu_var(sensor, 0x2721, &line_length);  /* MODE_SENSOR_LINE_LENGTH_PCK_A */
 			dev_info(&sensor->client->dev,
 				 "MT9M113: MODE_A: %lldx%lld, frame_len=%lld, line_len=%lld\n",
 				 mode_width, mode_height, frame_length, line_length);
