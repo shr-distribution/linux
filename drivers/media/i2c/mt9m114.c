@@ -98,8 +98,8 @@
  */
 #define MT9M113_OUTPUT_CONTROL				CCI_REG16(0x3400)
 #define MT9M113_OUTPUT_CONTROL_RO_MASK			0x0008	/* Bit 3 is RO */
-#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A00	/* Write value */
-#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY	0x7A00	/* Expected readback (ignoring RO bit) */
+#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08	/* Write value - match webOS exactly */
+#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY	0x7A00	/* Expected readback (ignoring RO bit 3) */
 
 /*
  * MT9M113 CUSTOM_SHORT_PKT register (0x3404)
