@@ -819,66 +819,23 @@ static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 				 struct v4l2_subdev_state *state)
 {
 	const struct v4l2_rect *compose;
-	int ret;
 
 	compose = v4l2_subdev_state_get_compose(state, 0);
 
-	dev_info(&sensor->client->dev,
-		 "MT9M113: configuring output resolution %ux%u\n",
-		 compose->width, compose->height);
-
-	/* Set MODE_OUTPUT_WIDTH_A */
-	ret = mt9m113_write_mcu_var(sensor, 0x2703, compose->width);
-	if (ret) {
-		dev_err(&sensor->client->dev,
-			"MT9M113: failed to set MODE_OUTPUT_WIDTH_A: %d\n", ret);
-		return ret;
-	}
-
-	/* Set MODE_OUTPUT_HEIGHT_A */
-	ret = mt9m113_write_mcu_var(sensor, 0x2705, compose->height);
-	if (ret) {
-		dev_err(&sensor->client->dev,
-			"MT9M113: failed to set MODE_OUTPUT_HEIGHT_A: %d\n", ret);
-		return ret;
-	}
-
 	/*
-	 * Issue REFRESH_MODE command to apply the new resolution.
-	 * SEQ_CMD = 0x0006 triggers a mode refresh.
+	 * MT9M113 has fixed Context A (640x480) and Context B (1280x1024)
+	 * configured by the init table. We don't reconfigure resolutions
+	 * dynamically - instead, the streaming code selects Context A or B
+	 * via SEQ_CAP_MODE based on the requested size.
+	 *
+	 * Skip resolution reconfiguration to avoid MCU REFRESH_MODE timeouts.
+	 * The init table already configured optimal settings for both contexts.
 	 */
-	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-				    MT9M113_SEQ_CMD_REFRESH_MODE);
-	if (ret) {
-		dev_err(&sensor->client->dev,
-			"MT9M113: failed to issue REFRESH_MODE: %d\n", ret);
-		return ret;
-	}
-
-	/* Wait for refresh to complete (SEQ_CMD returns to 0) */
-	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-	if (ret) {
-		dev_err(&sensor->client->dev,
-			"MT9M113: REFRESH_MODE timeout\n");
-		return ret;
-	}
-
-	/*
-	 * CRITICAL: Disable MIPI output after REFRESH_MODE.
-	 * The MCU refresh restores OUTPUT_CONTROL to its internal state,
-	 * which may have MIPI enabled. We must disable it here to prevent
-	 * MIPI transmission before CSIPHY is fully ready.
-	 */
-	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
-	if (ret < 0) {
-		dev_warn(&sensor->client->dev,
-			 "MT9M113: failed to disable MIPI after resolution config: %d\n",
-			 ret);
-	}
-
 	dev_info(&sensor->client->dev,
-		 "MT9M113: resolution configured to %ux%u\n",
-		 compose->width, compose->height);
+		 "MT9M113: requested %ux%u (using %s context)\n",
+		 compose->width, compose->height,
+		 (compose->width > 640 || compose->height > 480) ?
+		 "Context B (1280x1024)" : "Context A (640x480)");
 
 	return 0;
 }
