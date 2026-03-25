@@ -1856,10 +1856,11 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * - AXI output mode at 0x040 (0x60 for raw, 0x200 for preview)
 	 * - Write master configuration
 	 *
-	 * webOS uses EFS_CFG=0x40 (bit 6 set). Setting to match webOS behavior.
+	 * For MIPI CSI-2 input, EFS codes are not used - MIPI has its own
+	 * frame sync via short packets (FS/FE). Set to 0 for APS mode.
 	 */
-	dev_info(vfe->camss->dev, "VFE: EFS_CFG=0x40 at 0x1E4 (matches webOS)\n");
-	writel_relaxed(0x40, vfe->base + VFE31_CAMIF_EFS_CFG);
+	dev_info(vfe->camss->dev, "VFE: EFS_CFG=0x0 at 0x1E4 (APS mode for MIPI)\n");
+	writel_relaxed(0x0, vfe->base + VFE31_CAMIF_EFS_CFG);
 
 	/*
 	 * Step 3: FRAME_CFG at 0x1E8
