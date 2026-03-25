@@ -1988,6 +1988,20 @@ mt9m113_streaming:
 			 "MT9M113: MIPI disabled after MCU refresh\n");
 
 		/*
+		 * Configure MIPI D-PHY timing parameters.
+		 * These registers are in the 0xCxxx MCU variable space and must
+		 * be written via XDMA (address at 0x098C, data at 0x0990).
+		 * These values match the MT9M113 datasheet recommendations.
+		 */
+		dev_info(&sensor->client->dev, "MT9M113: configuring MIPI timing\n");
+		mt9m113_write_mcu_var(sensor, 0xC988, 0x0F00); /* T_HS_ZERO */
+		mt9m113_write_mcu_var(sensor, 0xC98A, 0x0B07); /* T_HS_EXIT_TRAIL */
+		mt9m113_write_mcu_var(sensor, 0xC98C, 0x0D01); /* T_CLK_POST_PRE */
+		mt9m113_write_mcu_var(sensor, 0xC98E, 0x071D); /* T_CLK_TRAIL_ZERO */
+		mt9m113_write_mcu_var(sensor, 0xC990, 0x0006); /* T_LPX */
+		mt9m113_write_mcu_var(sensor, 0xC992, 0x0A0C); /* MIPI_TIMING_INIT */
+
+		/*
 		 * Now enable MIPI output - this should work after MCU refresh.
 		 * Reset MIPI transmitter by toggling OUTPUT_CONTROL.
 		 * The transmitter may be in a bad state if it was enabled before
