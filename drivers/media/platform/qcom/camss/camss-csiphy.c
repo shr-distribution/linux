@@ -435,6 +435,34 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 		dev_info(csiphy->camss->dev,
 			 "CSIPHY%d: stream_on - lanes already enabled in set_power\n",
 			 csiphy->id);
+
+		/*
+		 * MSM8660: Issue a protocol SW_RST to refresh the CSIPHY state.
+		 * The lanes were enabled ~1-2 seconds ago during set_power.
+		 * WebOS issues msm_camio_csi_config() (which includes SW_RST)
+		 * right before enabling sensor MIPI output. This ensures the
+		 * CSIPHY is in a fresh state when MIPI data starts flowing.
+		 *
+		 * Without this reset, we get ECC/SOT errors because the CSIPHY
+		 * state may have drifted while waiting for the sensor to start.
+		 */
+		if (csiphy->base) {
+			u32 val;
+
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: stream_on - issuing protocol SW_RST\n",
+				 csiphy->id);
+
+			/* SW_RST to PROTOCOL_CONTROL */
+			writel(BIT(27), csiphy->base + 0x04);
+
+			/* Re-configure PROTOCOL_CONTROL */
+			val = BIT(21) | BIT(18) | BIT(17); /* LONG_PKT | DECODE_ID | ECC_EN */
+			writel(val, csiphy->base + 0x04);
+
+			/* Small delay for reset to take effect */
+			udelay(10);
+		}
 	} else {
 		dev_info(csiphy->camss->dev,
 			 "CSIPHY%d: stream_on calling lanes_enable lane_mask=0x%x link_freq=%lld\n",
