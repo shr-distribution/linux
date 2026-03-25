@@ -2789,6 +2789,7 @@ int vfe_get(struct vfe_device *vfe)
 					}
 				} else if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(12))) {
 					u32 new_misc_cc = misc_cc;
+					u32 csi_cc;
 
 					dev_warn(vfe->camss->dev,
 						 "VFE: CSI mux not set to CSI1, forcing via direct write\n");
@@ -2796,6 +2797,24 @@ int vfe_get(struct vfe_device *vfe)
 					/* Set both mux selects to CSI1 */
 					new_misc_cc |= BIT(25);  /* csi_pix_sel = CSI1 */
 					new_misc_cc |= BIT(12);  /* csi_rdi_sel = CSI1 */
+
+					/*
+					 * CRITICAL: Also set CSI_CC_REG to enable CSI1 PHY clock.
+					 * The clock framework enables the csi1_phy clock in the
+					 * clock tree, but the hardware enable bit in CSI_CC_REG
+					 * must also be set for the PHY to receive data.
+					 *
+					 * CSI_CC_REG bits:
+					 *   BIT(7): CSI1_EN - CSI1 core enable
+					 *   BIT(9): CSI1_PHY_EN - CSI1 PHY clock enable
+					 */
+					csi_cc = readl_relaxed(mmcc_base + 0x0040);
+					csi_cc |= BIT(7) | BIT(9);  /* CSI1_EN | CSI1_PHY_EN */
+					writel_relaxed(csi_cc, mmcc_base + 0x0040);
+					wmb();
+					dev_info(vfe->camss->dev,
+						 "VFE: CSI_CC_REG set to 0x%08x (CSI1 + PHY enabled)\n",
+						 csi_cc);
 
 					/* Ensure enables are set */
 					new_misc_cc |= BIT(26);  /* csi_pix_clk enable */
@@ -2822,6 +2841,22 @@ int vfe_get(struct vfe_device *vfe)
 				if (!vfe31_legacy_routing && !(misc_cc & BIT(26))) {
 					dev_err(vfe->camss->dev,
 						"VFE: ERROR - csi_pix_clk not enabled! Data path blocked.\n");
+				}
+
+				/*
+				 * Always ensure CSI1_PHY_EN is set when using CSI1.
+				 * This is critical for the CSIPHY to receive MIPI data.
+				 */
+				if (!vfe31_legacy_routing) {
+					u32 csi_cc = readl_relaxed(mmcc_base + 0x0040);
+					if (!(csi_cc & BIT(9))) {
+						csi_cc |= BIT(7) | BIT(9);
+						writel_relaxed(csi_cc, mmcc_base + 0x0040);
+						wmb();
+						dev_info(vfe->camss->dev,
+							 "VFE: CSI_CC_REG forced to 0x%08x (CSI1_PHY_EN)\n",
+							 csi_cc);
+					}
 				}
 
 				iounmap(mmcc_base);
