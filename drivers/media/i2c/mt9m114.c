@@ -1409,17 +1409,10 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	{ 0x001A, 0x021C, 0 },		/* RESET_AND_MISC_CONTROL */
 
 	/*
-	 * MIPI D-PHY timing parameters - CRITICAL for avoiding ECC errors.
-	 * These configure the sensor's MIPI transmitter timing to match
-	 * the CSIPHY receiver on MSM8660.
-	 * From webOS mt9m114_reg.c (also used by MT9M113).
+	 * NOTE: MT9M114 has MIPI timing registers at 0xC988-0xC992, but
+	 * MT9M113 does NOT have these registers. MIPI timing on MT9M113
+	 * is fixed in hardware based on PLL configuration.
 	 */
-	{ 0xC988, 0x0F00, 0 },		/* CAM_PORT_MIPI_TIMING_T_HS_ZERO */
-	{ 0xC98A, 0x0B07, 0 },		/* CAM_PORT_MIPI_TIMING_T_HS_EXIT_HS_TRAIL */
-	{ 0xC98C, 0x0D01, 0 },		/* CAM_PORT_MIPI_TIMING_T_CLK_POST_CLK_PRE */
-	{ 0xC98E, 0x071D, 0 },		/* CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_CLK_ZERO */
-	{ 0xC990, 0x0006, 0 },		/* CAM_PORT_MIPI_TIMING_T_LPX */
-	{ 0xC992, 0x0A0C, 0 },		/* CAM_PORT_MIPI_TIMING_INIT_TIMING */
 
 	/* Issue refresh command - MCU will be polled for completion */
 	{ 0x098C, 0xA103, 0 },		/* SEQ_CMD */
@@ -1935,6 +1928,14 @@ mt9m113_streaming:
 		 * We previously had MCU refresh here which may have been
 		 * disrupting the sensor state.
 		 */
+
+		/*
+		 * Step 1: Wait for CSIPHY to stabilize (matches webOS mdelay(10)
+		 * between msm_camio_csi_config() and OUTPUT_CONTROL write).
+		 * This delay is CRITICAL - CSIPHY needs time after configuration
+		 * before sensor starts sending MIPI data.
+		 */
+		msleep(10);
 
 		/* Step 2: Enable MIPI output (0x7A08) */
 		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
