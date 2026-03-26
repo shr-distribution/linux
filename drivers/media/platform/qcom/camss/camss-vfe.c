@@ -1543,6 +1543,7 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 #define VFE31_IRQ_CLEAR_1		0x028
 
 /* VFE31 Write Master registers - used for DMA buffer addresses */
+#define VFE31_WM_WR_CFG(n)		(0x04C + 0x18 * (n))
 #define VFE31_WM_WR_PING_ADDR(n)	(0x050 + 0x18 * (n))
 #define VFE31_WM_WR_PONG_ADDR(n)	(0x054 + 0x18 * (n))
 #define VFE31_WM_WR_ADDR_CFG(n)		(0x058 + 0x18 * (n))
@@ -2072,6 +2073,24 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	/* Immediately start CAMIF (no waiting for REG_UPDATE IRQ) */
 	writel(VFE31_CAMIF_CMD_START, vfe->base + VFE31_CAMIF_CMD);
 	wmb();
+
+	/*
+	 * Step 7: Enable Write Master
+	 *
+	 * CRITICAL: vfe31_enable() bypasses the gen1 path which would normally
+	 * call wm_enable(). We must enable WM here after CAMIF is started,
+	 * otherwise the WM never gets enabled and no data flows to memory!
+	 *
+	 * WR_CFG bits:
+	 *   Bit 0: enable - enables the write master
+	 *   Bit 1: frame_based mode - complete frame before switching buffers
+	 */
+	dev_info(vfe->camss->dev, "VFE: Step 7 - Enable Write Master WM0\n");
+	writel_relaxed(BIT(0) | BIT(1), vfe->base + VFE31_WM_WR_CFG(0));
+	wmb();
+
+	dev_info(vfe->camss->dev, "VFE: WM0 WR_CFG after enable: 0x%08x\n",
+		 readl_relaxed(vfe->base + VFE31_WM_WR_CFG(0)));
 
 	/* Small delay then check status */
 	udelay(100);
