@@ -52,6 +52,17 @@ module_param(settle_cnt_override, int, 0644);
 MODULE_PARM_DESC(settle_cnt_override,
 		 "Override settle count (0x00-0xFF, -1=use calculated/default 0x14)");
 
+/*
+ * HS termination impedance override.
+ * Valid range: 0x00-0x0F, default 0x0F (matches webOS).
+ * Higher values = higher impedance = less signal attenuation.
+ * If ECC/DATA_CMM errors persist, try 0x07, 0x0B, or 0x0F.
+ */
+static int hs_term_imp_override = -1;
+module_param(hs_term_imp_override, int, 0644);
+MODULE_PARM_DESC(hs_term_imp_override,
+		 "Override HS termination impedance (0x00-0x0F, -1=use default 0x0F)");
+
 /* MSM8660 MIPI CSI Controller Register Offsets */
 #define MIPI_PHY_CONTROL		0x00
 #define MIPI_PROTOCOL_CONTROL		0x04
@@ -268,14 +279,25 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	/*
 	 * D0_CONTROL2 value verified against webOS: 0x140F0018
 	 * - settle_cnt in bits 31:24
-	 * - HS_TERM_IMP = 0x0F in bits 23:16
+	 * - HS_TERM_IMP = 0x0F in bits 23:16 (can be overridden)
 	 * - LP_REC_EN = 1 in bit 4 (CRITICAL for MIPI LP-to-HS detection)
 	 * - ERR_SOT_HS_EN = 1 in bit 3
 	 */
-	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
-	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
-	      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
-	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+	{
+		u8 hs_term_imp = 0x0F;  /* Default matches webOS */
+
+		if (hs_term_imp_override >= 0 && hs_term_imp_override <= 0x0F) {
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: HS_TERM_IMP OVERRIDE: 0x%02x -> 0x%02x\n",
+				 csiphy->id, hs_term_imp, hs_term_imp_override);
+			hs_term_imp = hs_term_imp_override;
+		}
+
+		val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
+		      (hs_term_imp << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
+		      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
+		      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+	}
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0-D3_CONTROL2 = 0x%08x\n", csiphy->id, val);
 	/* webOS uses plain writel() - sequential writes, no barriers between */
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
