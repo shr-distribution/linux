@@ -2013,8 +2013,12 @@ mt9m113_streaming:
 		/* Step 4: Set context mode based on resolution */
 		compose = v4l2_subdev_state_get_compose(ifp_state, 0);
 		if (compose->width > 640 || compose->height > 480) {
-			/* Context B (1280x1024): Full resolution */
-			seq_cap_mode = 0x0000;
+			/*
+			 * Context B (1280x1024): Full resolution capture mode.
+			 * SEQ_CAP_MODE = 0x0002 selects Context B for capture.
+			 * Value 0x0000 didn't work - sensor stayed in Context A.
+			 */
+			seq_cap_mode = 0x0002;
 		} else {
 			/* Context A (640x480): Preview resolution */
 			seq_cap_mode = 0x0030;
