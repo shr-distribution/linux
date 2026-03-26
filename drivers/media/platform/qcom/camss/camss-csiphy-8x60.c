@@ -284,10 +284,12 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
 
 	/*
-	 * CL_CONTROL verified against webOS: 0x00000000
-	 * webOS does NOT set HS_TERM_IMP or LP_REC_EN for clock lane.
+	 * CL_CONTROL - webOS msm_camio_csi_config() writes:
+	 * (0x0F << 24) | (0x1 << 2) = 0x0F000004
+	 * - HS_TERM_IMP = 0x0F at bits [27:24]
+	 * - LP_REC_EN = 0x1 at bit 2
 	 */
-	val = 0x00000000;
+	val = 0x0F000004;
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL = 0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
 
@@ -338,11 +340,12 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: D0-D3_CONTROL2 writes done\n", csiphy->id);
 
 	/*
-	 * CL_CONTROL - webOS uses 0x00000000 for clock lane.
-	 * No HS_TERM_IMP or LP_REC_EN for clock lane per webOS dump.
+	 * CL_CONTROL - webOS msm_camio_csi_config() writes 0x0F000004:
+	 * - HS_TERM_IMP = 0x0F at bits [27:24]
+	 * - LP_REC_EN = 0x1 at bit 2
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL=0x00000000 (webOS)\n", csiphy->id);
-	writel(0x00000000, csiphy->base + MIPI_PHY_CL_CONTROL);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL=0x0F000004 (webOS)\n", csiphy->id);
+	writel(0x0F000004, csiphy->base + MIPI_PHY_CL_CONTROL);
 
 	/* D0_CONTROL - HS receiver equalization */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0_CONTROL=0\n", csiphy->id);
