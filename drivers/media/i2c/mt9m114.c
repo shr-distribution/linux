@@ -53,6 +53,20 @@ module_param(mt9m113_cont_mipi_clk, int, 0644);
 MODULE_PARM_DESC(mt9m113_cont_mipi_clk,
 		 "Use continuous MIPI clock instead of LP mode (0=LP, 1=continuous default)");
 
+/*
+ * MT9M113 Context V4L2 Control
+ *
+ * Custom control to select MT9M113 capture context from userspace.
+ * Context A: 640x480 preview mode (SEQ_CAP_MODE = 0x0030)
+ * Context B: 1280x1024 capture mode (SEQ_CAP_MODE = 0x0002)
+ *
+ * Usage: v4l2-ctl -d /dev/v4l-subdev8 --set-ctrl=mt9m113_context=1
+ */
+#define V4L2_CID_MT9M113_CONTEXT	(V4L2_CID_USER_BASE + 0x1001)
+
+#define MT9M113_CONTEXT_A		0	/* 640x480 preview */
+#define MT9M113_CONTEXT_B		1	/* 1280x1024 capture */
+
 /* Sysctl registers */
 #define MT9M114_CHIP_ID					CCI_REG16(0x0000)
 #define MT9M114_COMMAND_REGISTER			CCI_REG16(0x0080)
@@ -538,6 +552,7 @@ struct mt9m114 {
 		unsigned int frame_rate;
 
 		struct v4l2_ctrl *tpg[4];
+		struct v4l2_ctrl *context;	/* MT9M113 context selection */
 	} ifp;
 };
 
@@ -1937,33 +1952,34 @@ mt9m113_streaming:
 	 * by the V4L2 pipeline before this s_stream callback is called.
 	 */
 	{
-		u64 output_ctrl;
 		const struct v4l2_rect *compose;
 		u16 seq_cap_mode;
+		u16 output_width, output_height;
 
-		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence (webOS-compatible)\n");
+		dev_info(&sensor->client->dev, "MT9M113: starting streaming (webOS sequence)\n");
 
 		/*
-		 * webOS streaming sequence (from mt9m113_set_sensor_mode):
-		 * 1. Configure CSIPHY (already done by V4L2 pipeline)
-		 * 2. Write OUTPUT_CONTROL = 0x7A08 (enable MIPI)
-		 * 3. Write RESET_REGISTER = 0x120C (streaming mode)
-		 * 4. Set SEQ_CAP_MODE (context selection)
-		 * 5. Wait 40ms
-		 * 6. Set SEQ_CMD = 1 (RUN)
+		 * Exact webOS streaming sequence from mt9m113_set_sensor_mode():
+		 * 1. mdelay(10) - after CSI config
+		 * 2. 0x3400 = 0x7A08 - enable MIPI output
+		 * 3. 0x301A = 0x120C - streaming mode
+		 * 4. SEQ_CAP_MODE (0xA115) = 0x0030 - preview mode
+		 * 5. mdelay(40)
+		 * 6. SEQ_CMD (0xA103) = 0x0001 - RUN
 		 *
-		 * NOTE: webOS does NOT issue MCU refresh before streaming!
-		 * We previously had MCU refresh here which may have been
-		 * disrupting the sensor state.
+		 * NOTE: webOS does NOT reconfigure Context A or issue MCU REFRESH!
+		 * It uses the init table settings (Context A = 640x480).
 		 */
 
-		/*
-		 * Step 1: Wait for CSIPHY to stabilize (matches webOS mdelay(10)
-		 * between msm_camio_csi_config() and OUTPUT_CONTROL write).
-		 * This delay is CRITICAL - CSIPHY needs time after configuration
-		 * before sensor starts sending MIPI data.
-		 * Adjustable via module parameter mt9m113_pre_mipi_delay_ms.
-		 */
+		/* Log what resolution was requested (for debugging) */
+		compose = v4l2_subdev_state_get_compose(ifp_state, 0);
+		output_width = 640;
+		output_height = 480;
+		dev_info(&sensor->client->dev,
+			 "MT9M113: compose=%ux%u, using Context A (640x480 from init table)\n",
+			 compose->width, compose->height);
+
+		/* Step 1: Wait for CSIPHY stabilization (webOS: mdelay(10)) */
 		if (mt9m113_pre_mipi_delay_ms > 0) {
 			dev_info(&sensor->client->dev,
 				 "MT9M113: pre-MIPI delay %dms\n",
@@ -1971,20 +1987,17 @@ mt9m113_streaming:
 			msleep(mt9m113_pre_mipi_delay_ms);
 		}
 
-		/* Step 2: Enable MIPI output
-		 * 0x7A08 = LP mode (default webOS)
-		 * 0x7A0C = Continuous MIPI clock mode (bit 2 set)
-		 */
+		/* Step 2: Enable MIPI output (webOS: 0x3400 = 0x7A08) */
 		{
 			u16 output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
 			if (mt9m113_cont_mipi_clk) {
-				output_ctrl_val |= 0x0004;  /* Set cont_mipi_clk bit */
+				output_ctrl_val |= 0x0004;
 				dev_info(&sensor->client->dev,
-					 "MT9M113: Using CONTINUOUS MIPI clock mode (0x%04x)\n",
+					 "MT9M113: OUTPUT_CONTROL=0x%04x (MIPI+cont_clk)\n",
 					 output_ctrl_val);
 			} else {
 				dev_info(&sensor->client->dev,
-					 "MT9M113: Using LP MIPI clock mode (0x%04x)\n",
+					 "MT9M113: OUTPUT_CONTROL=0x%04x (webOS LP mode)\n",
 					 output_ctrl_val);
 			}
 			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
@@ -1995,11 +2008,8 @@ mt9m113_streaming:
 				"MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
 			goto error;
 		}
-		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx (MIPI enabled)\n",
-			 output_ctrl);
 
-		/* Step 3: Set streaming mode in RESET_REGISTER */
+		/* Step 3: Set streaming mode (webOS: 0x301A = 0x120C) */
 		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
 		if (ret) {
@@ -2007,29 +2017,18 @@ mt9m113_streaming:
 				"MT9M113: RESET_REGISTER failed: %d\n", ret);
 			goto error;
 		}
-		dev_info(&sensor->client->dev,
-			 "MT9M113: RESET_REGISTER=0x120C (streaming mode)\n");
+		dev_info(&sensor->client->dev, "MT9M113: RESET_REGISTER=0x120C\n");
 
-		/* Step 4: Set context mode based on resolution */
-		compose = v4l2_subdev_state_get_compose(ifp_state, 0);
-		if (compose->width > 640 || compose->height > 480) {
-			/*
-			 * Context B (1280x1024): Full resolution capture mode.
-			 * SEQ_CAP_MODE = 0x0002 selects Context B for capture.
-			 * Value 0x0000 didn't work - sensor stayed in Context A.
-			 */
-			seq_cap_mode = 0x0002;
-		} else {
-			/* Context A (640x480): Preview resolution */
-			seq_cap_mode = 0x0030;
-		}
-
+		/* Step 4: Set SEQ_CAP_MODE = 0x0030 (preview mode) */
+		seq_cap_mode = 0x0030;
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, seq_cap_mode);
 		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
+			dev_err(&sensor->client->dev,
+				"MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
 			goto error;
 		}
-		dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x%04X\n", seq_cap_mode);
+		dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x%04X\n",
+			 seq_cap_mode);
 
 		/* Step 5: Wait 40ms (as per webOS) */
 		msleep(40);
@@ -2695,6 +2694,23 @@ static const unsigned int mt9m114_test_pattern_value[] = {
 	MT9M114_CAM_MODE_TEST_PATTERN_SELECT_WALKING_1S_8B,
 };
 
+/* MT9M113 context menu - keep in sync with MT9M113_CONTEXT_* defines */
+static const char * const mt9m113_context_menu[] = {
+	"Context A (640x480 preview)",
+	"Context B (1280x1024 capture)",
+};
+
+/* Custom control config for MT9M113 context selection */
+static const struct v4l2_ctrl_config mt9m113_context_ctrl_cfg = {
+	.id = V4L2_CID_MT9M113_CONTEXT,
+	.name = "MT9M113 Context",
+	.type = V4L2_CTRL_TYPE_MENU,
+	.min = MT9M113_CONTEXT_A,
+	.max = MT9M113_CONTEXT_B,
+	.def = MT9M113_CONTEXT_B,	/* Default to full resolution */
+	.qmenu = mt9m113_context_menu,
+};
+
 static inline struct mt9m114 *ifp_ctrl_to_mt9m114(struct v4l2_ctrl *ctrl)
 {
 	return container_of(ctrl->handler, struct mt9m114, ifp.hdl);
@@ -2787,6 +2803,63 @@ static int mt9m114_ifp_s_ctrl(struct v4l2_ctrl *ctrl)
 					MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
 		break;
 	}
+
+	case V4L2_CID_MT9M113_CONTEXT:
+		/*
+		 * MT9M113 context selection - only applicable to MT9M113.
+		 *
+		 * NOTE: MT9M113 always streams from Context A!
+		 * To switch resolutions, we reconfigure Context A's output
+		 * dimensions and issue an MCU refresh.
+		 *
+		 * Context A (control=0): 640x480 preview
+		 * Context B (control=1): 1280x1024 full resolution
+		 *
+		 * If streaming, apply the change immediately.
+		 * Otherwise, the value will be applied when streaming starts.
+		 */
+		if (sensor->model != MT9M113_MODEL) {
+			ret = -EINVAL;
+			break;
+		}
+
+		if (sensor->streaming) {
+			u16 output_width, output_height;
+
+			if (ctrl->val == MT9M113_CONTEXT_B) {
+				output_width = 1280;
+				output_height = 1024;
+			} else {
+				output_width = 640;
+				output_height = 480;
+			}
+
+			dev_info(&sensor->client->dev,
+				 "MT9M113: Switching Context A to %ux%u\n",
+				 output_width, output_height);
+
+			/* Configure Context A output dimensions */
+			ret = mt9m113_write_mcu_var(sensor, 0x2703, output_width);
+			if (ret)
+				break;
+			ret = mt9m113_write_mcu_var(sensor, 0x2705, output_height);
+			if (ret)
+				break;
+
+			/* Issue SEQ_CMD=REFRESH_MODE to apply context change */
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+						    MT9M113_SEQ_CMD_REFRESH_MODE);
+			if (ret)
+				break;
+
+			/* Wait for command to complete */
+			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
+						   0x0000, 500);
+			if (ret)
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: Context switch timeout\n");
+		}
+		break;
 
 	default:
 		ret = -EINVAL;
@@ -3336,6 +3409,18 @@ static int mt9m114_ifp_init(struct mt9m114 *sensor)
 				  0, 1023, 1, 1023);
 
 	v4l2_ctrl_cluster(ARRAY_SIZE(sensor->ifp.tpg), sensor->ifp.tpg);
+
+	/*
+	 * MT9M113-specific context selection control.
+	 * Allows switching between Context A (640x480) and Context B (1280x1024).
+	 */
+	if (sensor->model == MT9M113_MODEL) {
+		sensor->ifp.context = v4l2_ctrl_new_custom(hdl,
+					&mt9m113_context_ctrl_cfg, NULL);
+		if (sensor->ifp.context)
+			dev_info(&sensor->client->dev,
+				 "MT9M113: Context control registered\n");
+	}
 
 	if (hdl->error) {
 		ret = hdl->error;
