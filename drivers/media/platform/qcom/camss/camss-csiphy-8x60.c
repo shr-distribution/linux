@@ -394,12 +394,14 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(val, csiphy->base + MIPI_CAMERA_CNTL);
 
 	/*
-	 * Configure interrupts - webOS uses 0x00000000 (no masking).
-	 * Clear any pending status first, then enable all interrupts.
+	 * Configure interrupts.
+	 * Enable SOT, ECC, Frame Start/End interrupts to debug MIPI data flow.
+	 * IRQ_MASK: bit=1 means interrupt ENABLED.
 	 */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Configuring interrupts\n", csiphy->id);
 	writel(0xFFFFFFFF, csiphy->base + MIPI_INTERRUPT_STATUS);  /* Clear pending */
-	writel(0x00000000, csiphy->base + MIPI_INTERRUPT_MASK);    /* No masking */
+	writel(0x000300F0, csiphy->base + MIPI_INTERRUPT_MASK);    /* Enable SOT/ECC/FS/FE */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: IRQ_MASK=0x000300F0 (SOT/ECC/FS/FE enabled)\n", csiphy->id);
 
 	/*
 	 * Note: MSM8660 does NOT have separate CSID CID registers.
