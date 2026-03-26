@@ -1567,10 +1567,17 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * For RDI/raw mode we need at minimum: SOF + REG_UPDATE + PING_PONG for WM0
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 4.5 - Enable IRQs\n");
+	/*
+	 * VFE31 uses IMAGE_COMPOSITE_DONE (bits 21-23) for frame completion,
+	 * NOT IMAGE_MASTER_PING_PONG (bits 8+) like later VFE versions.
+	 * webOS uses IRQ_MASK_0 = 0x00EFE021.
+	 */
 	vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
 				VFE_0_IRQ_MASK_0_CAMIF_EOF |
 				VFE_0_IRQ_MASK_0_REG_UPDATE |
-				VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm);
+				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0) |
+				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(1) |
+				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
 	vfe->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK |
 				VFE_0_IRQ_MASK_1_VIOLATION |
 				VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK |
