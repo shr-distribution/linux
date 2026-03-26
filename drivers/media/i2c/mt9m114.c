@@ -452,6 +452,13 @@ MODULE_PARM_DESC(mt9m113_cont_mipi_clk,
 #define MT9M114_PIXEL_ARRAY_HEIGHT			976U
 
 /*
+ * MT9M113 has a taller pixel array to support 1280x1024 output.
+ * The extra height is needed for Context B (capture mode).
+ */
+#define MT9M113_PIXEL_ARRAY_WIDTH			1296U
+#define MT9M113_PIXEL_ARRAY_HEIGHT			1040U
+
+/*
  * These values are not well documented and are semi-arbitrary. The pixel array
  * minimum output size is 8 pixels larger than the minimum scaler cropped input
  * width to account for the demosaicing.
@@ -2356,20 +2363,31 @@ static inline struct mt9m114 *pa_to_mt9m114(struct v4l2_subdev *sd)
 static int mt9m114_pa_init_state(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_state *state)
 {
+	struct mt9m114 *sensor = pa_to_mt9m114(sd);
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
+	unsigned int width, height;
+
+	/* Use sensor-specific pixel array dimensions */
+	if (sensor->expected_model == MT9M113_MODEL) {
+		width = MT9M113_PIXEL_ARRAY_WIDTH;
+		height = MT9M113_PIXEL_ARRAY_HEIGHT;
+	} else {
+		width = MT9M114_PIXEL_ARRAY_WIDTH;
+		height = MT9M114_PIXEL_ARRAY_HEIGHT;
+	}
 
 	crop = v4l2_subdev_state_get_crop(state, 0);
 
 	crop->left = 0;
 	crop->top = 0;
-	crop->width = MT9M114_PIXEL_ARRAY_WIDTH;
-	crop->height = MT9M114_PIXEL_ARRAY_HEIGHT;
+	crop->width = width;
+	crop->height = height;
 
 	format = v4l2_subdev_state_get_format(state, 0);
 
-	format->width = MT9M114_PIXEL_ARRAY_WIDTH;
-	format->height = MT9M114_PIXEL_ARRAY_HEIGHT;
+	format->width = width;
+	format->height = height;
 	format->code = MEDIA_BUS_FMT_SGRBG10_1X10;
 	format->field = V4L2_FIELD_NONE;
 	format->colorspace = V4L2_COLORSPACE_RAW;
@@ -2868,11 +2886,21 @@ static int mt9m114_ifp_init_state(struct v4l2_subdev *sd,
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
 	struct v4l2_rect *compose;
+	unsigned int pa_width, pa_height;
+
+	/* Use sensor-specific pixel array dimensions */
+	if (sensor->expected_model == MT9M113_MODEL) {
+		pa_width = MT9M113_PIXEL_ARRAY_WIDTH;
+		pa_height = MT9M113_PIXEL_ARRAY_HEIGHT;
+	} else {
+		pa_width = MT9M114_PIXEL_ARRAY_WIDTH;
+		pa_height = MT9M114_PIXEL_ARRAY_HEIGHT;
+	}
 
 	format = v4l2_subdev_state_get_format(state, 0);
 
-	format->width = MT9M114_PIXEL_ARRAY_WIDTH;
-	format->height = MT9M114_PIXEL_ARRAY_HEIGHT;
+	format->width = pa_width;
+	format->height = pa_height;
 	format->code = MEDIA_BUS_FMT_SGRBG10_1X10;
 	format->field = V4L2_FIELD_NONE;
 	format->colorspace = V4L2_COLORSPACE_RAW;
