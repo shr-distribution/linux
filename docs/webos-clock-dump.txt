@@ -1,0 +1,366 @@
+============================================================
+WebOS FULL Clock and PLL Configuration Dump
+HP TouchPad (MSM8660/APQ8060)
+Captured: 2024 (webOS 3.0.5)
+============================================================
+
+============================================
+SECTION 1: GCC PLLs (Base 0x00900000)
+============================================
+
+-- PLL0 (APPS_FABRIC PLL) -- OFF
+MODE:   0x00000000
+L_VAL:  0x00000000
+M_VAL:  0x00000000
+N_VAL:  0x00000000
+CONFIG: 0x00000000
+STATUS: 0x00000000
+
+-- PLL1 --
+MODE:   0x00000800
+L_VAL:  0x00001800
+M_VAL:  0x00000000
+N_VAL:  0x00000000
+STATUS: 0x00000000
+
+-- PLL2 --
+MODE:   0x0000183C
+L_VAL:  0x00001800
+M_VAL:  0x00000000
+N_VAL:  0x00000000
+CONFIG: 0x00000000
+STATUS: 0x00000000
+
+-- PLL3 -- ACTIVE (LPASS 486MHz)
+MODE:   0x0013C900  (enabled, locked)
+L_VAL:  0x00000012  (18)
+M_VAL:  0x00000010  (16)
+N_VAL:  0x0000001B  (27)
+STATUS: 0x00000000
+# Freq = 27MHz * (18 + 16/27) = 27 * 18.59 = 502 MHz
+
+-- PLL4 (LPASS) -- OFF
+MODE:   0x00000000
+L_VAL:  0x00000000
+M_VAL:  0x00000000
+N_VAL:  0x00000001
+STATUS: 0x00000000
+
+-- PLL5 -- OFF
+MODE:   0x00000000
+L_VAL:  0x00000000
+STATUS: 0x00000000
+
+-- PLL8 (384MHz USB/CSI) -- ACTIVE
+MODE:   0x0013C900  (enabled, locked)
+L_VAL:  0x0000000E  (14)
+M_VAL:  0x00000002  (2)
+N_VAL:  0x00000009  (9)
+CONFIG: 0x00000000
+STATUS: 0x00010001  (active, locked)
+# Freq = 27MHz * (14 + 2/9) = 27 * 14.222 = 384 MHz
+
+-- PLL9 -- OFF
+MODE:   0x00000000
+L_VAL:  0x00000000
+STATUS: 0x00000000
+
+-- PLL10 -- OFF
+MODE:   0x00000000
+L_VAL:  0x0000002E
+STATUS: 0x00000000
+
+-- PLL11 -- OFF
+MODE:   0x00000000
+L_VAL:  0x00000000
+STATUS: 0x00000000
+
+-- PLL12 -- OFF
+MODE:   0x00000000
+L_VAL:  0x00000000
+STATUS: 0x00000000
+
+-- PLL14 (RPM) --
+MODE:   0x00000000
+L_VAL:  0x00840068
+STATUS: 0x00200194
+
+-- PLL18 --
+MODE:   0x00000000
+L_VAL:  0x008000B0
+M_VAL:  0x1C0802B2
+N_VAL:  0x00000000
+STATUS: 0x00200194
+
+============================================
+SECTION 2: MMCC (Multimedia) PLLs
+Base: 0x04000000
+============================================
+
+-- MM_PLL0 -- ACTIVE (~1296 MHz)
+MODE:   0x00000007  (enabled)
+L_VAL:  0x00000030  (48)
+M_VAL:  0x00000008  (8)
+N_VAL:  0x00000009  (9)
+CONFIG: 0x00014580
+STATUS: 0x0000000A
+# Freq = 27MHz * (48 + 8/9) = 27 * 48.89 = 1320 MHz
+
+-- MM_PLL1 -- ACTIVE (~810 MHz)
+MODE:   0x00000007  (enabled)
+L_VAL:  0x0000001D  (29)
+M_VAL:  0x00000011  (17)
+N_VAL:  0x0000001B  (27)
+CONFIG: 0x00C22080
+STATUS: 0x00000001
+# Freq = 27MHz * (29 + 17/27) = 27 * 29.63 = 800 MHz
+
+-- MM_PLL2 -- OFF
+MODE:   0x00000000
+L_VAL:  0x00000000
+M_VAL:  0x00000000
+N_VAL:  0x00000000
+CONFIG: 0x00800000
+STATUS: 0x00000000
+
+============================================
+SECTION 3: MMCC Camera/VFE Clocks
+============================================
+
+-- CSI Clocks --
+CSI_CC (0x40):       0x00000085
+  BIT(0)=1: csi0_clk enabled
+  BIT(2)=1: csi0_phy_clk enabled
+  BIT(7)=1: csi_src enabled
+CSI0_MD (0x48):      0x00000002
+CSI0_NS (0x4C):      0x00000000
+CSI1_NS (0x54):      0x00000000
+
+-- VFE Clocks --
+VFE_MD (0x10):       0x00000000
+VFE_NS (0x14):       0x04A48C71
+  # Complex MN:D divider for VFE clock
+VFE_CC (0x18):       0x100F07F9
+  # VFE clock enables
+VFE_CC_REG (0x104):  0x80FF14A5
+  BIT(31)=1: VFE_AHB_CLK_SLEEP_ENA
+  BIT(12)=1: CSI0_VFE_CLK enabled
+  BIT(10)=1: CSI1_VFE_CLK enabled
+
+-- CSIPHY Timer -- NOT CONFIGURED!
+TIMER_CC (0x160):    0x00000000
+TIMER_MD (0x164):    0x00000000
+TIMER_NS (0x168):    0x00000000
+# webOS does NOT use CSIPHY timer clock!
+
+-- Misc Camera --
+MISC_CC (0x58):      0x00000400
+  BIT(10)=1: CSI1 selected for csi_pix_clk
+CAMCLK_CC (0x60):    0x80FF0400
+CAMCLK_MD (0x64):    0x00000028
+CAMCLK_NS (0x68):    0x00000000
+
+============================================
+SECTION 4: MMCC Display Clocks
+============================================
+
+-- MDP/LCDC --
+MDP_MD (0xC0):       0x80FF0CA5
+MDP_NS (0xD0):       0x3FFF0031
+MDP_CC (0xC4):       0x000001FC
+LCDC_MD (0xC8):      0x000001FB
+LCDC_NS (0xCC):      0x00000000
+PIXEL_MD (0xD4):     0x80FF0105
+PIXEL_NS (0xD8):     0x0000FFFF
+PIXEL_CC (0xDC):     0xFFFFC002
+
+-- DSI --
+DSI1_MD (0x50):      0x00000000
+DSI1_NS (0x54):      0x00000000
+DSI2_MD (0x58):      0x00000400
+DSI2_NS (0x5C):      0x004007FD
+DSI_BYTE_MD (0x100): 0x0007C002
+DSI_BYTE_NS (0x108): 0x000002F8
+DSI_ESC_MD (0x0E8):  0x01010000
+DSI_ESC_NS (0x0EC):  0x80FF0000
+DSI_PIXEL_MD (0x134): 0x00000000
+DSI_PIXEL_NS (0x138): 0x00000000
+
+============================================
+SECTION 5: MMCC JPEG/VPE/Rotator Clocks
+============================================
+
+IJPEG_MD (0x98):     0x80FF0000
+IJPEG_NS (0x9C):     0x00000000
+IJPEG_CC (0xA0):     0x00FF0006
+VPE_MD (0x110):      0x80FF0005
+VPE_NS (0x114):      0x00000000
+VPE_CC (0x118):      0x00003001
+ROT_MD (0x70):       0x00F00030
+ROT_NS (0x74):       0x80FF0400
+
+============================================
+SECTION 6: MMCC GFX (GPU) Clocks
+============================================
+
+GFX2D0_MD (0x80):    0x80FF0400
+GFX2D0_NS (0x84):    0x0000001C
+GFX2D1_MD (0x88):    0x00000000
+GFX2D1_NS (0x8C):    0x003C0030
+GFX3D_MD (0x90):     0x00000000
+GFX3D_NS (0x94):     0x00000000
+
+============================================
+SECTION 7: MMCC TV/HDMI Clocks
+============================================
+
+TV_MD (0x124):       0x000004FF
+TV_NS (0x128):       0x00000000
+TV_CC (0x128):       0x00000000
+HDMI_MD (0x150):     0x00000000
+HDMI_NS (0x154):     0x00000000
+
+============================================
+SECTION 8: MMCC AXI Clocks
+============================================
+
+MAXI_EN (0x020):     0x7A27FCFF
+MAXI_EN2 (0x024):    0x00000000
+MAXI_EN3 (0x028):    0x00000000
+MAXI_EN4 (0x02C):    0x3FE7FCFF
+SAXI_EN (0x030):     0x000001D8
+
+============================================
+SECTION 9: MMCC AHB Clocks
+============================================
+
+AHB_EN (0x008):      0x90913C83
+AHB_EN2 (0x038):     0x000007F9
+AHB_NS (0x004):      0x0010151A
+
+============================================
+SECTION 10: MMCC Clock Halt Status
+============================================
+
+HALT_STATEA (0x1E0): 0x71EBC01F
+HALT_STATEB (0x1E4): 0x4E1F7300
+HALT_STATEC (0x1E8): 0x00085008
+  BIT(17)=0: csiphy0_timer_clk NOT halted
+  BIT(18)=0: csiphy1_timer_clk NOT halted
+  BIT(19)=1: something halted
+HALT_STATED (0x1EC): 0x00000000
+
+============================================
+SECTION 11: GCC Peripheral Clocks
+============================================
+
+-- GSBI HCLK Enables --
+GSBI1_HCLK:   0x00000000  (disabled)
+GSBI2_HCLK:   0x00000000  (disabled)
+GSBI3_HCLK:   0x00000010  (enabled)
+GSBI4_HCLK:   0x00000000  (disabled)
+GSBI5_HCLK:   0x00000000  (disabled)
+GSBI6_HCLK:   0x00000010  (enabled)
+GSBI7_HCLK:   0x00000000  (disabled)
+GSBI8_HCLK:   0x00000010  (enabled)
+GSBI9_HCLK:   0x00000000  (disabled)
+GSBI10_HCLK:  0x00000010  (enabled - touchscreen UART)
+GSBI11_HCLK:  0x00000000  (disabled)
+GSBI12_HCLK:  0x00000000  (disabled)
+
+-- USB Clocks --
+USB_HS1_HCLK: 0x00000010  (enabled)
+USB_HS1_XCLK: 0x000500DF
+USB_FS1_HCLK: 0x00000000  (disabled)
+USB_FS1_XCLK: 0x00FF0006
+USB_FS2_HCLK: 0x00000000  (disabled)
+
+-- SDC Clocks --
+SDC1_MD:      0x000100FD
+SDC1_NS:      0x00FE0B5B
+SDC2_MD:      0x00000000  (disabled)
+SDC2_NS:      0x00FF0006
+SDC3_MD:      0x000100CF
+SDC3_NS:      0x00FF0106
+SDC4_MD:      0x000100FD
+SDC4_NS:      0x00FE0B5B
+SDC5_MD:      0x00000000  (disabled)
+SDC5_NS:      0x00FF0006
+
+============================================
+SECTION 12: GSBI QUP/UART Clocks
+============================================
+
+-- GSBI QUP Clocks --
+GSBI3_QUP_MD:   0x00000000
+GSBI3_QUP_NS:   0x00000000
+GSBI6_QUP_MD:   0x00000000
+GSBI6_QUP_NS:   0xFFFF0006
+GSBI8_QUP_MD:   0x00000000
+GSBI8_QUP_NS:   0xFFFF0006
+GSBI10_QUP_MD:  0x00000000
+GSBI10_QUP_NS:  0xFFFF0006
+
+-- GSBI UART Clocks --
+GSBI6_UART_MD:  0x0000004F
+GSBI6_UART_NS:  0x00000000
+
+============================================
+SECTION 13: LPASS (Audio) Clocks
+============================================
+
+LPA_AIF_MD:     0x00384331
+LPA_AIF_NS:     0x00002A00
+LPA_CORE_MD:    0xFFFF0006
+LPA_CORE_NS:    0x00000000
+LPA_CODEC_MD:   0x0000006C
+LPA_CODEC_NS:   0x00000003
+
+============================================
+SECTION 14: GCC Clock Halt Status
+============================================
+
+SC0_HALT (0x2FD8): 0x00180200
+SC1_HALT (0x2FDC): 0x08F407F2
+CLK_HALT_CFPB (0x2FCC): 0x0003FFF6
+CLK_HALT_DFAB (0x2FD4): 0x07FFFFE9
+CLK_HALT_SFPB (0x2FD0): 0x0FF3F6F3
+CLK_HALT_AFAB (0x2FC8): 0x001AB6B5
+
+============================================
+SECTION 15: Fabric Clocks
+============================================
+
+SFAB_AIF_MD:    0x00000000
+SFAB_AIF_NS:    0x00000000
+SFAB_CORE_MD:   0x00000000
+SFAB_CORE_NS:   0x00000000
+AFAB_CORE_MD:   0x00000300
+AFAB_CORE_NS:   0x00000300
+
+============================================
+KEY FINDINGS
+============================================
+
+1. ACTIVE PLLs:
+   - PLL3: ~500 MHz (LPASS)
+   - PLL8: 384 MHz (USB/CSI) - CONFIRMED
+   - MM_PLL0: ~1320 MHz (multimedia high speed)
+   - MM_PLL1: ~800 MHz (multimedia)
+
+2. CAMERA CLOCKS:
+   - CSI_CC: 0x85 (CSI0 enabled, CSI0_PHY enabled, CSI_SRC enabled)
+   - VFE_CC_REG: CSI0_VFE and CSI1_VFE both enabled
+   - CSIPHY Timer: NOT CONFIGURED (all zeros)
+   - MISC_CC: CSI1 selected for csi_pix_clk
+
+3. ACTIVE GSBI:
+   - GSBI3: enabled
+   - GSBI6: enabled
+   - GSBI8: enabled
+   - GSBI10: enabled (touchscreen UART @ 4Mbps)
+
+4. STORAGE:
+   - SDC1: active (eMMC)
+   - SDC3: active
+   - SDC4: active
