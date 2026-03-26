@@ -1904,96 +1904,38 @@ mt9m113_streaming:
 	 */
 	{
 		u64 output_ctrl;
+		const struct v4l2_rect *compose;
+		u16 seq_cap_mode;
 
-		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence\n");
+		dev_info(&sensor->client->dev, "MT9M113: starting streaming sequence (webOS-compatible)\n");
 
 		/*
-		 * Issue MCU refresh (SEQ_CMD=0x0005) before enabling MIPI output.
-		 * OUTPUT_CONTROL BIT(3) only accepts writes immediately after MCU
-		 * refresh completes. If time has passed since init, the sensor
-		 * may be in a state where BIT(3) won't stick.
+		 * webOS streaming sequence (from mt9m113_set_sensor_mode):
+		 * 1. Configure CSIPHY (already done by V4L2 pipeline)
+		 * 2. Write OUTPUT_CONTROL = 0x7A08 (enable MIPI)
+		 * 3. Write RESET_REGISTER = 0x120C (streaming mode)
+		 * 4. Set SEQ_CAP_MODE (context selection)
+		 * 5. Wait 40ms
+		 * 6. Set SEQ_CMD = 1 (RUN)
+		 *
+		 * NOTE: webOS does NOT issue MCU refresh before streaming!
+		 * We previously had MCU refresh here which may have been
+		 * disrupting the sensor state.
 		 */
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					    MT9M113_SEQ_CMD_REFRESH);
-		if (ret < 0) {
+
+		/* Step 2: Enable MIPI output (0x7A08) */
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+		if (ret) {
 			dev_err(&sensor->client->dev,
-				"MT9M113: SEQ_CMD refresh failed: %d\n", ret);
+				"MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
 			goto error;
 		}
-		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-		if (ret < 0) {
-			dev_warn(&sensor->client->dev,
-				 "MT9M113: MCU refresh timeout (continuing anyway)\n");
-		} else {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: MCU refresh complete\n");
-		}
-
-		/*
-		 * CRITICAL: Disable MIPI output immediately after MCU refresh!
-		 *
-		 * The MCU refresh (SEQ_CMD=0x0005) restores OUTPUT_CONTROL to
-		 * its default value, re-enabling MIPI output. This causes the
-		 * sensor to start transmitting MIPI data while we're still
-		 * setting up the streaming sequence, resulting in ECC/SOT errors.
-		 *
-		 * We must disable MIPI output here and only enable it after
-		 * all streaming configuration is complete.
-		 */
-		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
-		dev_info(&sensor->client->dev,
-			 "MT9M113: MIPI disabled after MCU refresh\n");
-
-		/*
-		 * Configure MIPI D-PHY timing parameters.
-		 * These registers are in the 0xCxxx MCU variable space and must
-		 * be written via XDMA (address at 0x098C, data at 0x0990).
-		 * These values match the MT9M113 datasheet recommendations.
-		 */
-		dev_info(&sensor->client->dev, "MT9M113: configuring MIPI timing\n");
-		mt9m113_write_mcu_var(sensor, 0xC988, 0x0F00); /* T_HS_ZERO */
-		mt9m113_write_mcu_var(sensor, 0xC98A, 0x0B07); /* T_HS_EXIT_TRAIL */
-		mt9m113_write_mcu_var(sensor, 0xC98C, 0x0D01); /* T_CLK_POST_PRE */
-		mt9m113_write_mcu_var(sensor, 0xC98E, 0x071D); /* T_CLK_TRAIL_ZERO */
-		mt9m113_write_mcu_var(sensor, 0xC990, 0x0006); /* T_LPX */
-		mt9m113_write_mcu_var(sensor, 0xC992, 0x0A0C); /* MIPI_TIMING_INIT */
-
-		/*
-		 * Now enable MIPI output - this should work after MCU refresh.
-		 * Reset MIPI transmitter by toggling OUTPUT_CONTROL.
-		 * The transmitter may be in a bad state if it was enabled before
-		 * the CSIPHY receiver was ready. WebOS rewrites OUTPUT_CONTROL
-		 * during set_sensor_mode after CSI is configured.
-		 */
 		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL before=0x%llx\n",
+		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL=0x%llx (MIPI enabled)\n",
 			 output_ctrl);
 
-		/*
-		 * Disable MIPI output, wait, then re-enable.
-		 * Note: Bit 3 (reg_frame_sync) is READ-ONLY per datasheet.
-		 * We write 0x7A00 and verify with bit 3 masked out.
-		 */
-		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x7A00, NULL);
-		usleep_range(1000, 2000);
-		cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-			  MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
-		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl, NULL);
-		dev_info(&sensor->client->dev, "MT9M113: OUTPUT_CONTROL after toggle=0x%llx (bit3 is RO)\n",
-			 output_ctrl);
-		if ((output_ctrl & ~MT9M113_OUTPUT_CONTROL_RO_MASK) !=
-		    MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY) {
-			dev_err(&sensor->client->dev,
-				"MT9M113: OUTPUT_CONTROL write failed! (0x%llx masked=0x%llx)\n",
-				output_ctrl, output_ctrl & ~MT9M113_OUTPUT_CONTROL_RO_MASK);
-		}
-
-		/*
-		 * RESET_REGISTER must ALWAYS be written for streaming mode.
-		 * WebOS writes both 0x3400=0x7A00 and 0x301A=0x120C together
-		 * when starting streaming. Even if MIPI output is already
-		 * enabled, the RESET_REGISTER may not be in streaming mode.
-		 */
+		/* Step 3: Set streaming mode in RESET_REGISTER */
 		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
 		if (ret) {
@@ -2004,64 +1946,42 @@ mt9m113_streaming:
 		dev_info(&sensor->client->dev,
 			 "MT9M113: RESET_REGISTER=0x120C (streaming mode)\n");
 
-		/*
-		 * Set streaming mode via MCU interface.
-		 *
-		 * For continuous video streaming, always use SEQ_CMD=1 (RUN).
-		 * The webOS CAPTURE mode (SEQ_CMD=2) is for single-frame still
-		 * image capture with frame count limit, not continuous streaming.
-		 *
-		 * SEQ_CAP_MODE selects the context:
-		 * - 0x0030: Preview mode (Context A, 640x480)
-		 * - 0x0000: Capture mode (Context B, 1280x1024)
-		 *
-		 * Note: ifp_state is already locked by mt9m114_ifp_s_stream() and
-		 * passed as a parameter - do NOT try to lock it again!
-		 */
-		{
-			const struct v4l2_rect *compose;
-			u16 seq_cap_mode;
-
-			compose = v4l2_subdev_state_get_compose(ifp_state, 0);
-
-			if (compose->width > 640 || compose->height > 480) {
-				/* Context B (1280x1024): Full resolution */
-				seq_cap_mode = 0x0000;
-			} else {
-				/* Context A (640x480): Preview resolution */
-				seq_cap_mode = 0x0030;
-			}
-
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, seq_cap_mode);
-			if (ret) {
-				dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
-				goto error;
-			}
-			dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x%04X\n", seq_cap_mode);
-
-			usleep_range(40000, 50000);
-
-			/* Always use RUN (0x01) for continuous streaming */
-			dev_info(&sensor->client->dev, "MT9M113: Issuing SEQ_CMD=1 (RUN)\n");
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD, MT9M113_SEQ_CMD_RUN);
+		/* Step 4: Set context mode based on resolution */
+		compose = v4l2_subdev_state_get_compose(ifp_state, 0);
+		if (compose->width > 640 || compose->height > 480) {
+			/* Context B (1280x1024): Full resolution */
+			seq_cap_mode = 0x0000;
+		} else {
+			/* Context A (640x480): Preview resolution */
+			seq_cap_mode = 0x0030;
 		}
+
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, seq_cap_mode);
+		if (ret) {
+			dev_err(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
+			goto error;
+		}
+		dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x%04X\n", seq_cap_mode);
+
+		/* Step 5: Wait 40ms (as per webOS) */
+		msleep(40);
+
+		/* Step 6: Issue SEQ_CMD=1 (RUN) to start streaming */
+		dev_info(&sensor->client->dev, "MT9M113: Issuing SEQ_CMD=1 (RUN)\n");
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD, MT9M113_SEQ_CMD_RUN);
 		if (ret) {
 			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD RUN failed: %d\n", ret);
 			goto error;
 		}
 
-		/*
-		 * Wait for SEQ_CMD to return to 0 (command processed).
-		 * Then verify SEQ_STATE transitions to 0x03 (streaming).
-		 */
+		/* Wait for SEQ_CMD to return to 0 (command processed) */
 		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
 		if (ret) {
-			dev_err(&sensor->client->dev,
-				"MT9M113: SEQ_CMD RUN timeout (still processing)\n");
-			/* Continue anyway to see the state */
+			dev_warn(&sensor->client->dev,
+				"MT9M113: SEQ_CMD RUN timeout (continuing anyway)\n");
 		}
 
-		/* Additional delay for sensor to stabilize */
+		/* Small delay for sensor to stabilize */
 		msleep(20);
 
 		/*
