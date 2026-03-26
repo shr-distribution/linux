@@ -337,11 +337,12 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: D0-D3_CONTROL2 writes done\n", csiphy->id);
 
-	/* CL_CONTROL with LP_REC_EN=1 */
-	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
-	      (0x1 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL=0x%08x\n", csiphy->id, val);
-	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
+	/*
+	 * CL_CONTROL - webOS uses 0x00000000 for clock lane.
+	 * No HS_TERM_IMP or LP_REC_EN for clock lane per webOS dump.
+	 */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL=0x00000000 (webOS)\n", csiphy->id);
+	writel(0x00000000, csiphy->base + MIPI_PHY_CL_CONTROL);
 
 	/* D0_CONTROL - HS receiver equalization */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0_CONTROL=0\n", csiphy->id);
