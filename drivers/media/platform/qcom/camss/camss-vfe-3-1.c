@@ -1603,6 +1603,20 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
 	wmb();
 
+	/* Step 6: Enable Write Master
+	 *
+	 * CRITICAL: vfe31_enable() bypasses the gen1 path which would normally
+	 * call wm_enable(). We must enable WM here after CAMIF is configured
+	 * and started, otherwise the WM never gets enabled and no data flows!
+	 *
+	 * WR_CFG bits:
+	 *   Bit 0: enable
+	 *   Bit 1: frame_based mode
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 6 - Enable Write Master WM%d\n", wm);
+	writel_relaxed(BIT(0) | BIT(1), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+	wmb();
+
 	/* Debug dump of all relevant registers after CAMIF start */
 	dev_info(vfe->camss->dev,
 		 "VFE31: CAMIF started - comprehensive register dump:\n");
