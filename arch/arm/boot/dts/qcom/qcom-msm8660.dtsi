@@ -1156,9 +1156,11 @@
 					  "csiphy1";
 
 			/*
-			 * CSIPHY timer clocks added for proper settle count
-			 * calculation. These drive the timing for the settle
-			 * count register (MIPI_PHY_Dx_CONTROL2 bits 31:24).
+			 * Note: CSIPHY timer clocks removed - webOS does NOT use
+			 * them (registers 0x160-0x168 are all zeros in webOS).
+			 * The clock enable fails with EBUSY on mainline, blocking
+			 * the entire camera pipeline. Settle count uses hardcoded
+			 * value 0x14 (20) per webOS instead.
 			 */
 			clocks = <&mmcc VFE_CLK>,
 				 <&mmcc VFE_AXI_CLK>,
@@ -1174,9 +1176,7 @@
 				 <&mmcc CSI0_PHY_CLK>,
 				 <&mmcc CSI1_SRC>,
 				 <&mmcc CSI1_CLK>,
-				 <&mmcc CSI1_PHY_CLK>,
-				 <&mmcc CSIPHY0_TIMER_CLK>,
-				 <&mmcc CSIPHY1_TIMER_CLK>;
+				 <&mmcc CSI1_PHY_CLK>;
 			clock-names = "vfe",
 				      "vfe_axi",
 				      "vfe_ahb",
@@ -1191,9 +1191,7 @@
 				      "csi0_phy",
 				      "csi1_src",
 				      "csi1",
-				      "csi1_phy",
-				      "csiphy0_timer_clk",
-				      "csiphy1_timer_clk";
+				      "csi1_phy";
 
 			/* Clock rates from webOS kernel msm_io_8x60.c */
 			assigned-clocks = <&mmcc VFE_CLK>,

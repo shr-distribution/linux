@@ -55,9 +55,13 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		 * These match the assigned-clock-rates in the device tree.
 		 * Using wrong rates causes CSI register access to hang.
 		 */
+		/*
+		 * Note: csiphy0_timer_clk removed - webOS does NOT use CSIPHY
+		 * timer clocks (registers 0x160-0x168 are all zeros in webOS).
+		 * The clock enable fails with EBUSY, blocking the pipeline.
+		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "csi0_ahb",
-			   "csi0_src", "csi0", "csi0_phy",
-			   "csiphy0_timer_clk" },
+			   "csi0_src", "csi0", "csi0_phy" },
 		.clock_rate = { { 228570000 },
 				{ 0 },
 				{ 0 },
@@ -65,8 +69,7 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 				{ 0 },
 				{ 384000000 },
 				{ 0 },
-				{ 0 },
-				{ 85330000 } },
+				{ 0 } },
 		.reg = { "csiphy0" },
 		.interrupt = { "csiphy0" },
 		.csiphy = {
@@ -83,16 +86,17 @@ static const struct camss_subdev_resources csiphy_res_8x60[] = {
 		 * accessing any CSI registers. Clock rates from webOS kernel:
 		 * - VFE: 228570000 Hz (board-tenderloin.c:1780)
 		 * - CSI source: 384000000 Hz (msm_io_8x60.c:452)
-		 * - CSIPHY timer: 85330000 Hz (PLL8/9*2, for settle count)
+		 *
+		 * Note: csiphy1_timer_clk removed - webOS does NOT use CSIPHY
+		 * timer clocks (registers 0x160-0x168 are all zeros in webOS).
+		 * The clock enable fails with EBUSY, blocking the pipeline.
 		 */
 		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
 			   "csi0_ahb", "csi1_ahb", "csi0_src", "csi1_src",
-			   "csi0", "csi1", "csi0_phy", "csi1_phy",
-			   "csiphy1_timer_clk" },
+			   "csi0", "csi1", "csi0_phy", "csi1_phy" },
 		.clock_rate = { { 228570000 }, { 0 }, { 0 }, { 0 }, { 0 },
 				{ 0 }, { 0 }, { 384000000 }, { 384000000 },
-				{ 0 }, { 0 }, { 0 }, { 0 },
-				{ 85330000 } },
+				{ 0 }, { 0 }, { 0 }, { 0 } },
 		.reg = { "csiphy1" },
 		.interrupt = { "csiphy1" },
 		.csiphy = {
