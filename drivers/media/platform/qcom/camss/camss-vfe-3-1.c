@@ -1060,11 +1060,12 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 *   - 0x60:  CAMIF_TO_AXI_VIA_OUTPUT_2 (RDI mode, raw bypass)
 	 *
 	 * For MIPI CSI-2 input, EFS codes are not used - MIPI has its own
-	 * frame sync via short packets (FS/FE).
-	 * webOS uses 0x40 (bit 6 set) - verified via register dump.
+	 * frame sync via short packets (FS/FE). EFS_CFG must be 0 for APS mode.
+	 * Note: 0x40 value was a bug - it's INPUT_MUX_ENABLE for CORE_CFG,
+	 * not for EFS_CFG.
 	 */
-	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
-	dev_info(vfe->camss->dev, "VFE31: EFS_CFG=0x40 (matches webOS)\n");
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	dev_info(vfe->camss->dev, "VFE31: EFS_CFG=0 (APS mode for MIPI CSI-2)\n");
 
 	/*
 	 * FRAME_CFG: pixelsPerLine[13:0] | linesPerFrame[29:16]
@@ -1491,9 +1492,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF configuration\n");
 
-	/* EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set) */
-	dev_info(vfe->camss->dev, "VFE31: EFS_CFG (0x1E4) = 0x40 (matches webOS)\n");
-	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	/* EFS_CFG at 0x1E4: Must be 0 for MIPI CSI-2 (APS mode) */
+	dev_info(vfe->camss->dev, "VFE31: EFS_CFG (0x1E4) = 0 (APS mode for MIPI CSI-2)\n");
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
 
 	/*
 	 * FRAME_CFG at 0x1E8: pixelsPerLine[13:0] | linesPerFrame[29:16]
