@@ -1408,6 +1408,19 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	/* Reset command before sequencer */
 	{ 0x001A, 0x021C, 0 },		/* RESET_AND_MISC_CONTROL */
 
+	/*
+	 * MIPI D-PHY timing parameters - CRITICAL for avoiding ECC errors.
+	 * These configure the sensor's MIPI transmitter timing to match
+	 * the CSIPHY receiver on MSM8660.
+	 * From webOS mt9m114_reg.c (also used by MT9M113).
+	 */
+	{ 0xC988, 0x0F00, 0 },		/* CAM_PORT_MIPI_TIMING_T_HS_ZERO */
+	{ 0xC98A, 0x0B07, 0 },		/* CAM_PORT_MIPI_TIMING_T_HS_EXIT_HS_TRAIL */
+	{ 0xC98C, 0x0D01, 0 },		/* CAM_PORT_MIPI_TIMING_T_CLK_POST_CLK_PRE */
+	{ 0xC98E, 0x071D, 0 },		/* CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_CLK_ZERO */
+	{ 0xC990, 0x0006, 0 },		/* CAM_PORT_MIPI_TIMING_T_LPX */
+	{ 0xC992, 0x0A0C, 0 },		/* CAM_PORT_MIPI_TIMING_INIT_TIMING */
+
 	/* Issue refresh command - MCU will be polled for completion */
 	{ 0x098C, 0xA103, 0 },		/* SEQ_CMD */
 	{ 0x0990, 0x0006, 0 },		/* REFRESH_MODE */
