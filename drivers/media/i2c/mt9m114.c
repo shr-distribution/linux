@@ -42,6 +42,16 @@ module_param(mt9m113_pre_mipi_delay_ms, int, 0644);
 MODULE_PARM_DESC(mt9m113_pre_mipi_delay_ms,
 		 "Delay (ms) before enabling MIPI output (default 10, matches webOS)");
 
+/*
+ * MIPI clock mode: 0 = LP (low power, default webOS), 1 = continuous clock.
+ * webOS comment: "0x7A08 will enable LP mode, while 0x7A0C will let MIPI clock continuous."
+ * Continuous clock may help with clock/data synchronization if ECC errors persist.
+ */
+static int mt9m113_cont_mipi_clk;
+module_param(mt9m113_cont_mipi_clk, int, 0644);
+MODULE_PARM_DESC(mt9m113_cont_mipi_clk,
+		 "Use continuous MIPI clock instead of LP mode (0=LP default, 1=continuous)");
+
 /* Sysctl registers */
 #define MT9M114_CHIP_ID					CCI_REG16(0x0000)
 #define MT9M114_COMMAND_REGISTER			CCI_REG16(0x0080)
@@ -1953,9 +1963,25 @@ mt9m113_streaming:
 			msleep(mt9m113_pre_mipi_delay_ms);
 		}
 
-		/* Step 2: Enable MIPI output (0x7A08) */
-		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-				MT9M113_OUTPUT_CONTROL_MIPI_ENABLE, NULL);
+		/* Step 2: Enable MIPI output
+		 * 0x7A08 = LP mode (default webOS)
+		 * 0x7A0C = Continuous MIPI clock mode (bit 2 set)
+		 */
+		{
+			u16 output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
+			if (mt9m113_cont_mipi_clk) {
+				output_ctrl_val |= 0x0004;  /* Set cont_mipi_clk bit */
+				dev_info(&sensor->client->dev,
+					 "MT9M113: Using CONTINUOUS MIPI clock mode (0x%04x)\n",
+					 output_ctrl_val);
+			} else {
+				dev_info(&sensor->client->dev,
+					 "MT9M113: Using LP MIPI clock mode (0x%04x)\n",
+					 output_ctrl_val);
+			}
+			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+					output_ctrl_val, NULL);
+		}
 		if (ret) {
 			dev_err(&sensor->client->dev,
 				"MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
@@ -2049,18 +2075,23 @@ mt9m113_streaming:
 			 * Verify MIPI is enabled. Bit 3 (reg_frame_sync) is READ-ONLY
 			 * and reflects hardware frame sync state - not a control bit.
 			 * Mask it out when checking if MIPI output is properly enabled.
+			 * Also account for continuous clock mode (bit 2).
 			 */
-			if ((output_ctrl_after & ~MT9M113_OUTPUT_CONTROL_RO_MASK) !=
-			    MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: OUTPUT_CONTROL wrong: 0x%llx (masked=0x%llx, expected=0x%x)\n",
-					output_ctrl_after,
-					output_ctrl_after & ~MT9M113_OUTPUT_CONTROL_RO_MASK,
-					MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY);
-			} else {
-				dev_info(&sensor->client->dev,
-					 "MT9M113: OUTPUT_CONTROL=0x%llx OK (bit3 is RO frame_sync status)\n",
-					 output_ctrl_after);
+			{
+				u16 expected = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY;
+				if (mt9m113_cont_mipi_clk)
+					expected |= 0x0004;  /* cont_mipi_clk bit */
+				if ((output_ctrl_after & ~MT9M113_OUTPUT_CONTROL_RO_MASK) != expected) {
+					dev_err(&sensor->client->dev,
+						"MT9M113: OUTPUT_CONTROL wrong: 0x%llx (masked=0x%llx, expected=0x%x)\n",
+						output_ctrl_after,
+						output_ctrl_after & ~MT9M113_OUTPUT_CONTROL_RO_MASK,
+						expected);
+				} else {
+					dev_info(&sensor->client->dev,
+						 "MT9M113: OUTPUT_CONTROL=0x%llx OK (bit3 is RO frame_sync status)\n",
+						 output_ctrl_after);
+				}
 			}
 		}
 
