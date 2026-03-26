@@ -265,9 +265,16 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - msleep(10) then write D0-D3_CONTROL2\n", csiphy->id);
 	msleep(10);
 
+	/*
+	 * D0_CONTROL2 value verified against webOS: 0x140F0018
+	 * - settle_cnt in bits 31:24
+	 * - HS_TERM_IMP = 0x0F in bits 23:16
+	 * - LP_REC_EN = 1 in bit 4 (CRITICAL for MIPI LP-to-HS detection)
+	 * - ERR_SOT_HS_EN = 1 in bit 3
+	 */
 	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
-	      (0x0 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
+	      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0-D3_CONTROL2 = 0x%08x\n", csiphy->id, val);
 	/* webOS uses plain writel() - sequential writes, no barriers between */
@@ -276,8 +283,11 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
 
-	val = (0x0F << MIPI_PHY_CL_CONTROL_HS_TERM_IMP_SHFT) |
-	      (0x0 << MIPI_PHY_CL_CONTROL_LP_REC_EN_SHFT);
+	/*
+	 * CL_CONTROL verified against webOS: 0x00000000
+	 * webOS does NOT set HS_TERM_IMP or LP_REC_EN for clock lane.
+	 */
+	val = 0x00000000;
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL = 0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
 
@@ -379,10 +389,13 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CAMERA_CNTL=0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_CAMERA_CNTL);
 
-	/* Configure interrupts - mask out de-featured errors */
+	/*
+	 * Configure interrupts - webOS uses 0x00000000 (no masking).
+	 * Clear any pending status first, then enable all interrupts.
+	 */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Configuring interrupts\n", csiphy->id);
-	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_MASK);
-	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_STATUS);
+	writel(0xFFFFFFFF, csiphy->base + MIPI_INTERRUPT_STATUS);  /* Clear pending */
+	writel(0x00000000, csiphy->base + MIPI_INTERRUPT_MASK);    /* No masking */
 
 	/*
 	 * Note: MSM8660 does NOT have separate CSID CID registers.
