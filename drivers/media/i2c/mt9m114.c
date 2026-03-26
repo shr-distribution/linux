@@ -43,14 +43,15 @@ MODULE_PARM_DESC(mt9m113_pre_mipi_delay_ms,
 		 "Delay (ms) before enabling MIPI output (default 10, matches webOS)");
 
 /*
- * MIPI clock mode: 0 = LP (low power, default webOS), 1 = continuous clock.
- * webOS comment: "0x7A08 will enable LP mode, while 0x7A0C will let MIPI clock continuous."
- * Continuous clock may help with clock/data synchronization if ECC errors persist.
+ * MIPI clock mode: 0 = LP (low power), 1 = continuous clock (default).
+ * webOS uses LP mode (0x7A08), but continuous clock (0x7A0C) eliminates
+ * ECC errors on mainline kernel by keeping clock/data lanes synchronized.
+ * Testing showed: LP mode = ~34% ECC errors, continuous = 0% ECC errors.
  */
-static int mt9m113_cont_mipi_clk;
+static int mt9m113_cont_mipi_clk = 1;
 module_param(mt9m113_cont_mipi_clk, int, 0644);
 MODULE_PARM_DESC(mt9m113_cont_mipi_clk,
-		 "Use continuous MIPI clock instead of LP mode (0=LP default, 1=continuous)");
+		 "Use continuous MIPI clock instead of LP mode (0=LP, 1=continuous default)");
 
 /* Sysctl registers */
 #define MT9M114_CHIP_ID					CCI_REG16(0x0000)
