@@ -32,6 +32,16 @@
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
+/*
+ * Delay before enabling MIPI output (in ms).
+ * This allows CSIPHY to stabilize after configuration.
+ * webOS uses 10ms. Adjust if ECC errors persist.
+ */
+static int mt9m113_pre_mipi_delay_ms = 10;
+module_param(mt9m113_pre_mipi_delay_ms, int, 0644);
+MODULE_PARM_DESC(mt9m113_pre_mipi_delay_ms,
+		 "Delay (ms) before enabling MIPI output (default 10, matches webOS)");
+
 /* Sysctl registers */
 #define MT9M114_CHIP_ID					CCI_REG16(0x0000)
 #define MT9M114_COMMAND_REGISTER			CCI_REG16(0x0080)
@@ -1934,8 +1944,14 @@ mt9m113_streaming:
 		 * between msm_camio_csi_config() and OUTPUT_CONTROL write).
 		 * This delay is CRITICAL - CSIPHY needs time after configuration
 		 * before sensor starts sending MIPI data.
+		 * Adjustable via module parameter mt9m113_pre_mipi_delay_ms.
 		 */
-		msleep(10);
+		if (mt9m113_pre_mipi_delay_ms > 0) {
+			dev_info(&sensor->client->dev,
+				 "MT9M113: pre-MIPI delay %dms\n",
+				 mt9m113_pre_mipi_delay_ms);
+			msleep(mt9m113_pre_mipi_delay_ms);
+		}
 
 		/* Step 2: Enable MIPI output (0x7A08) */
 		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
