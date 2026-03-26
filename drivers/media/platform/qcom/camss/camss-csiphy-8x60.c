@@ -340,7 +340,14 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing PROTOCOL_CONTROL=0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
-	/* CALIBRATION_CONTROL */
+	/*
+	 * CALIBRATION_CONTROL - Per Gemini analysis:
+	 * Bit 23 appears to be "Calibration Done" or "Active Override" status.
+	 * Hardware sets this bit after internal calibration completes.
+	 *
+	 * Strategy: Write initial config, wait for bit 23, then re-apply
+	 * HS_TERM_IMP values to ensure they take effect after calibration.
+	 */
 	val = (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_CAL_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_STRENGTH_OVERRIDE_EN_SHFT) |
 	      (0x1 << MIPI_CALIBRATION_CONTROL_CAL_SW_HW_MODE_SHFT) |
@@ -348,12 +355,45 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CALIBRATION_CONTROL=0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
 
-	/* D0-D3_CONTROL2 with LP_REC_EN=1 - overwrites Phase 1 values */
-	val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
-	      (0x0F << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
-	      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
-	      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0-D3_CONTROL2 (LP_REC_EN=1) = 0x%08x\n",
+	/* Poll for bit 23 (calibration done) - max 10ms */
+	{
+		int i;
+		u32 cal_status;
+		for (i = 0; i < 100; i++) {
+			cal_status = readl(csiphy->base + MIPI_CALIBRATION_CONTROL);
+			if (cal_status & BIT(23)) {
+				dev_info(csiphy->camss->dev,
+					 "CSIPHY%d: Calibration done after %d iterations, status=0x%08x\n",
+					 csiphy->id, i, cal_status);
+				break;
+			}
+			udelay(100);
+		}
+		if (i == 100)
+			dev_warn(csiphy->camss->dev,
+				 "CSIPHY%d: Calibration bit 23 not set after 10ms, status=0x%08x\n",
+				 csiphy->id, cal_status);
+	}
+
+	/*
+	 * D0-D3_CONTROL2 with LP_REC_EN=1 - AFTER calibration completes
+	 * Per Gemini: Apply HS_TERM_IMP values AFTER bit 23 is set,
+	 * otherwise hardware calibration may override our settings.
+	 */
+	{
+		u8 hs_term_imp = 0x0F;  /* Default matches webOS */
+		if (hs_term_imp_override >= 0 && hs_term_imp_override <= 0x0F) {
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: HS_TERM_IMP OVERRIDE: 0x%02x -> 0x%02x (post-calibration)\n",
+				 csiphy->id, hs_term_imp, hs_term_imp_override);
+			hs_term_imp = hs_term_imp_override;
+		}
+		val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
+		      (hs_term_imp << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
+		      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
+		      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+	}
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0-D3_CONTROL2 (post-cal) = 0x%08x\n",
 		 csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
