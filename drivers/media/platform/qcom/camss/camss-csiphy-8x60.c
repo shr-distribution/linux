@@ -23,6 +23,7 @@
 #include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
+#include <linux/workqueue.h>
 
 /*
  * Software SOF generation - disabled by default.
@@ -98,6 +99,30 @@ bool ecc_disable;  /* Exported for use in camss-csiphy.c stream_on */
 module_param(ecc_disable, bool, 0644);
 MODULE_PARM_DESC(ecc_disable,
 		 "Disable ECC checking to allow corrupted packets (default: false)");
+
+/*
+ * Debug polling mode - poll CSIPHY status register periodically.
+ *
+ * When enabled, polls the INTERRUPT_STATUS register every 100ms during
+ * streaming to detect if data is arriving even when interrupts aren't firing.
+ * This helps diagnose:
+ * - Data arriving but interrupts not working (edge vs level trigger issue)
+ * - No data arriving at all (sensor/MIPI issue)
+ */
+static bool debug_poll_enable;
+module_param(debug_poll_enable, bool, 0644);
+MODULE_PARM_DESC(debug_poll_enable,
+		 "Enable periodic CSIPHY status polling for debug (default: false)");
+
+/* Debug polling workqueue and state */
+static struct delayed_work debug_poll_work;
+static void __iomem *debug_poll_base;
+static int debug_poll_id;
+static bool debug_poll_active;
+
+/* Forward declarations for debug polling */
+static void csiphy_8x60_start_debug_poll(struct csiphy_device *csiphy);
+static void csiphy_8x60_stop_debug_poll(void);
 
 /* MSM8660 MIPI CSI Controller Register Offsets */
 #define MIPI_PHY_CONTROL		0x00
@@ -622,6 +647,9 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 				 csiphy->id, rb_camera_cntl & 0x7, num_lanes + 3);
 		}
 	}
+
+	/* Start debug polling if enabled */
+	csiphy_8x60_start_debug_poll(csiphy);
 }
 
 /*
@@ -632,6 +660,9 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 static void csiphy_8x60_lanes_disable(struct csiphy_device *csiphy,
 				      struct csiphy_config *cfg)
 {
+	/* Stop debug polling if active */
+	csiphy_8x60_stop_debug_poll();
+
 	/* Disable PHY by asserting shutdown */
 	writel(0, csiphy->base + MIPI_PHY_D1_CONTROL);
 
@@ -680,6 +711,74 @@ static void csiphy_8x60_lanes_disable(struct csiphy_device *csiphy,
  * - Frame gap (vertical blanking): ~500us to several ms
  * - Threshold: 200us gap indicates frame start
  */
+/*
+ * Debug polling work function - called periodically to check CSIPHY status.
+ */
+static void csiphy_8x60_debug_poll(struct work_struct *work)
+{
+	u32 status, protocol, d1_ctrl, cl_ctrl, irq_mask;
+	static int poll_count;
+	static u32 last_polled_status;
+
+	if (!debug_poll_active || !debug_poll_base)
+		return;
+
+	status = readl_relaxed(debug_poll_base + MIPI_INTERRUPT_STATUS);
+	protocol = readl_relaxed(debug_poll_base + MIPI_PROTOCOL_CONTROL);
+	d1_ctrl = readl_relaxed(debug_poll_base + MIPI_PHY_D1_CONTROL);
+	cl_ctrl = readl_relaxed(debug_poll_base + MIPI_PHY_CL_CONTROL);
+	irq_mask = readl_relaxed(debug_poll_base + MIPI_INTERRUPT_MASK);
+
+	poll_count++;
+
+	/* Log if status changed or every 10th poll */
+	if (status != last_polled_status || (poll_count % 10) == 1) {
+		pr_info("CSIPHY%d POLL #%d: IRQ_STATUS=0x%08x [%s%s%s%s] MASK=0x%08x PROTOCOL=0x%08x D1_CTRL=0x%08x\n",
+			debug_poll_id, poll_count, status,
+			(status & BIT(4)) ? "SOT " : "",
+			(status & BIT(5)) ? "ECC " : "",
+			(status & BIT(16)) ? "FS " : "",
+			(status & BIT(17)) ? "FE " : "",
+			irq_mask, protocol, d1_ctrl);
+		last_polled_status = status;
+	}
+
+	/* If status bits are set but no interrupt fired, this indicates IRQ issue */
+	if (status != 0) {
+		pr_warn("CSIPHY%d POLL: Non-zero status 0x%08x detected without IRQ!\n",
+			debug_poll_id, status);
+		/* Clear status to see if new events accumulate */
+		writel(status, debug_poll_base + MIPI_INTERRUPT_STATUS);
+	}
+
+	/* Reschedule if still active */
+	if (debug_poll_active)
+		schedule_delayed_work(&debug_poll_work, msecs_to_jiffies(100));
+}
+
+/* Start debug polling */
+static void csiphy_8x60_start_debug_poll(struct csiphy_device *csiphy)
+{
+	if (!debug_poll_enable)
+		return;
+
+	debug_poll_base = csiphy->base;
+	debug_poll_id = csiphy->id;
+	debug_poll_active = true;
+
+	INIT_DELAYED_WORK(&debug_poll_work, csiphy_8x60_debug_poll);
+	schedule_delayed_work(&debug_poll_work, msecs_to_jiffies(500)); /* Start after 500ms */
+
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Debug polling enabled\n", csiphy->id);
+}
+
+/* Stop debug polling */
+static void csiphy_8x60_stop_debug_poll(void)
+{
+	debug_poll_active = false;
+	cancel_delayed_work_sync(&debug_poll_work);
+}
+
 #define CSIPHY_FRAME_GAP_THRESHOLD_NS	200000	/* 200us in nanoseconds */
 
 /*
