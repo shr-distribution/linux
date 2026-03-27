@@ -94,7 +94,7 @@ MODULE_PARM_DESC(calibration_mode,
  * 0 = ECC enabled (default, matches webOS)
  * 1 = ECC disabled (allow corrupted packets through)
  */
-static bool ecc_disable;
+bool ecc_disable;  /* Exported for use in camss-csiphy.c stream_on */
 module_param(ecc_disable, bool, 0644);
 MODULE_PARM_DESC(ecc_disable,
 		 "Disable ECC checking to allow corrupted packets (default: false)");
