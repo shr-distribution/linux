@@ -496,33 +496,38 @@ test_raw_mode() {
         # Reset all links first
         media-ctl -r 2>/dev/null || true
 
-        # Enable upstream links: sensor -> csiphy -> csid
+        # Enable upstream links: csiphy -> csid
+        # Note: sensor -> csiphy link is IMMUTABLE (always enabled)
         echo 'Enabling upstream links...'
-        media-ctl -l '\"mt9m114 4-003c\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
         media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
 
         # Enable RDI link: CSID pad 1 (RDI0) -> VFE RDI0 pad 0
         echo 'Enabling RDI link (CSID:1 -> VFE RDI0)...'
         media-ctl -l '\"msm_csid1\":1->\"msm_vfe0_rdi0\":0[1]' 2>&1 || echo '  csid:1->vfe_rdi0 link failed'
 
-        # Set formats on the RDI path
+        # Set formats on the RDI path (640x480 preview mode)
         # MT9M113 supported: 640x480 (preview), 1280x1024 (capture)
-        echo 'Setting formats (1280x1024)...'
-        media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_rdi0\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        # IFP pad 1 is source, uses UYVY8_1X16
+        echo 'Setting formats (640x480 preview mode)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_rdi0\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_rdi0\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+
+        # Set V4L2 video device format
+        v4l2-ctl -d /dev/video0 --set-fmt-video=width=640,height=480,pixelformat=UYVY 2>&1 || true
 
         echo ''
         echo 'Current pipeline:'
         media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -40
 
         echo ''
-        echo 'Testing capture with 1280x1024 UYVY...'
-        timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=1280,height=1024,framerate=30/1' ! \\
+        echo 'Testing capture with 640x480 UYVY...'
+        timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=10 ! \\
+            'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -695,9 +700,9 @@ test_pix_mode() {
         echo ''
 
         # MT9M113 supported resolutions (from webOS init table):
-        # - Context A: 640x480 (preview)
+        # - Context A: 640x480 (preview) - USE THIS for testing
         # - Context B: 1280x1024 (capture/full resolution)
-        # Using 1280x1024 for full capture mode testing
+        # Using 640x480 to avoid memory allocation issues
 
         # Reset all links first
         echo 'Resetting media links...'
@@ -712,24 +717,28 @@ test_pix_mode() {
         echo 'Enabling PIX link (CSID:4 -> VFE PIX)...'
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
 
-        # Set formats on entire pipeline (1280x1024 = MT9M113 Context B)
+        # Set formats on entire pipeline (640x480 = MT9M113 Context A preview)
         # IFP pad 1 is source, uses UYVY8_1X16; CSID pad 4/VFE use UYVY8_2X8
-        echo 'Setting formats (1280x1024)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        echo 'Setting formats (640x480 preview mode)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+
+        # Set V4L2 video device format
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=UYVY 2>&1 || true
 
         echo ''
         echo 'Current pipeline configuration:'
         media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -40
 
         echo ''
-        echo 'Testing capture with 1280x1024 UYVY (full MT9M113 resolution)...'
-        timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=1280,height=1024,framerate=30/1' ! \\
+        echo 'Testing capture with 640x480 UYVY (MT9M113 preview mode)...'
+        timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
+            'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -737,21 +746,9 @@ test_pix_mode() {
             echo 'SUCCESS: PIX capture completed!'
         else
             echo ''
-            echo 'FAILED: PIX capture at 1280x1024 did not complete'
+            echo 'FAILED: PIX capture did not complete'
             echo ''
-            echo 'Trying 640x480 (MT9M113 Context A preview mode)...'
-            media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-            media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-            media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-            media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-            media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-            media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-            timeout 15 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-                'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
-                fakesink 2>&1
-            if [ \$? -eq 0 ]; then
-                echo 'SUCCESS: 640x480 preview mode capture completed!'
-            fi
+            echo 'Check dmesg for errors'
         fi
     "
 }
