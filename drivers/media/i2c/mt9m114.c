@@ -1959,13 +1959,23 @@ mt9m113_streaming:
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming (webOS sequence)\n");
 
 		/*
-		 * Exact webOS streaming sequence from mt9m113_set_sensor_mode():
-		 * 1. mdelay(10) - after CSI config
-		 * 2. 0x3400 = 0x7A08 - enable MIPI output
-		 * 3. 0x301A = 0x120C - streaming mode
-		 * 4. SEQ_CAP_MODE (0xA115) = 0x0030 - preview mode
-		 * 5. mdelay(40)
-		 * 6. SEQ_CMD (0xA103) = 0x0001 - RUN
+		 * Modified streaming sequence to fix VFE CAMIF timing:
+		 *
+		 * Problem: webOS sequence enables MIPI (OUTPUT_CONTROL) early,
+		 * but mainline V4L2 pipeline enables VFE CAMIF AFTER s_stream
+		 * returns. This causes 400-500ms where sensor outputs MIPI
+		 * data but VFE isn't ready to receive it.
+		 *
+		 * Fix: Delay OUTPUT_CONTROL (MIPI enable) until the very end
+		 * of s_stream, so MIPI starts as late as possible.
+		 *
+		 * New sequence:
+		 * 1. RESET_REGISTER = 0x120C (streaming mode registers)
+		 * 2. SEQ_CAP_MODE = 0x0030 (preview mode)
+		 * 3. mdelay(40)
+		 * 4. SEQ_CMD = 0x0001 (RUN)
+		 * 5. Poll SEQ_CMD until 0
+		 * 6. OUTPUT_CONTROL = 0x7A08 (enable MIPI - LAST!)
 		 *
 		 * NOTE: webOS does NOT reconfigure Context A or issue MCU REFRESH!
 		 * It uses the init table settings (Context A = 640x480).
@@ -1979,37 +1989,7 @@ mt9m113_streaming:
 			 "MT9M113: compose=%ux%u, using Context A (640x480 from init table)\n",
 			 compose->width, compose->height);
 
-		/* Step 1: Wait for CSIPHY stabilization (webOS: mdelay(10)) */
-		if (mt9m113_pre_mipi_delay_ms > 0) {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: pre-MIPI delay %dms\n",
-				 mt9m113_pre_mipi_delay_ms);
-			msleep(mt9m113_pre_mipi_delay_ms);
-		}
-
-		/* Step 2: Enable MIPI output (webOS: 0x3400 = 0x7A08) */
-		{
-			u16 output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
-			if (mt9m113_cont_mipi_clk) {
-				output_ctrl_val |= 0x0004;
-				dev_info(&sensor->client->dev,
-					 "MT9M113: OUTPUT_CONTROL=0x%04x (MIPI+cont_clk)\n",
-					 output_ctrl_val);
-			} else {
-				dev_info(&sensor->client->dev,
-					 "MT9M113: OUTPUT_CONTROL=0x%04x (webOS LP mode)\n",
-					 output_ctrl_val);
-			}
-			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-					output_ctrl_val, NULL);
-		}
-		if (ret) {
-			dev_err(&sensor->client->dev,
-				"MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
-			goto error;
-		}
-
-		/* Step 3: Set streaming mode (webOS: 0x301A = 0x120C) */
+		/* Step 1: Set streaming mode (webOS: 0x301A = 0x120C) */
 		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
 		if (ret) {
@@ -2019,7 +1999,7 @@ mt9m113_streaming:
 		}
 		dev_info(&sensor->client->dev, "MT9M113: RESET_REGISTER=0x120C\n");
 
-		/* Step 4: Set SEQ_CAP_MODE = 0x0030 (preview mode) */
+		/* Step 2: Set SEQ_CAP_MODE = 0x0030 (preview mode) */
 		seq_cap_mode = 0x0030;
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, seq_cap_mode);
 		if (ret) {
@@ -2030,10 +2010,10 @@ mt9m113_streaming:
 		dev_info(&sensor->client->dev, "MT9M113: SEQ_CAP_MODE=0x%04X\n",
 			 seq_cap_mode);
 
-		/* Step 5: Wait 40ms (as per webOS) */
+		/* Step 3: Wait 40ms (as per webOS) */
 		msleep(40);
 
-		/* Step 6: Issue SEQ_CMD=1 (RUN) to start streaming */
+		/* Step 4: Issue SEQ_CMD=1 (RUN) to start streaming */
 		dev_info(&sensor->client->dev, "MT9M113: Issuing SEQ_CMD=1 (RUN)\n");
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD, MT9M113_SEQ_CMD_RUN);
 		if (ret) {
@@ -2041,11 +2021,39 @@ mt9m113_streaming:
 			goto error;
 		}
 
-		/* Wait for SEQ_CMD to return to 0 (command processed) */
+		/* Step 5: Wait for SEQ_CMD to return to 0 (command processed) */
 		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
 		if (ret) {
 			dev_warn(&sensor->client->dev,
 				"MT9M113: SEQ_CMD RUN timeout (continuing anyway)\n");
+		}
+
+		/*
+		 * Step 6: Enable MIPI output LAST (0x3400 = 0x7A08)
+		 *
+		 * This is deliberately done AFTER SEQ_CMD completes, to give
+		 * the V4L2 pipeline time to enable VFE CAMIF before we start
+		 * outputting MIPI data.
+		 */
+		{
+			u16 output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
+			if (mt9m113_cont_mipi_clk) {
+				output_ctrl_val |= 0x0004;
+				dev_info(&sensor->client->dev,
+					 "MT9M113: OUTPUT_CONTROL=0x%04x (MIPI+cont_clk) LATE\n",
+					 output_ctrl_val);
+			} else {
+				dev_info(&sensor->client->dev,
+					 "MT9M113: OUTPUT_CONTROL=0x%04x (webOS LP mode) LATE\n",
+					 output_ctrl_val);
+			}
+			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+					output_ctrl_val, NULL);
+		}
+		if (ret) {
+			dev_err(&sensor->client->dev,
+				"MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
+			goto error;
 		}
 
 		/* Small delay for sensor to stabilize */
