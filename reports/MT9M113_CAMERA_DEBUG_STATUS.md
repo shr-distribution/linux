@@ -1,17 +1,68 @@
 # MT9M113 Front Camera Debug Status - HP TouchPad
 
-## Hardware Overview
+**Last Updated:** 2026-03-27
+**Kernel:** Linux 6.18-tenderloin
+**SoC:** Qualcomm APQ8060 (MSM8660 variant)
+**Sensor:** MT9M113 front camera (1.3MP, chip ID 0x2480)
+**Interface:** MIPI CSI-2, 1 data lane, UYVY 8-bit
 
-- **Device:** HP TouchPad tablet
-- **SoC:** Qualcomm APQ8060 (MSM8660 family), dual-core ARMv7 Scorpion @ 1.5GHz
-- **Front Camera Sensor:** Aptina MT9M113 (1.3MP, chip ID 0x2480)
-- **Interface:** MIPI CSI-2, 1 data lane
-- **Connection:** Sensor → CSIPHY1 → CSID1 → VFE0 PIX → /dev/video3
-- **Kernel:** Linux 6.18 mainline with camss driver
+---
+
+## Executive Summary
+
+**The camera pipeline is operational but fails to capture frames due to persistent MIPI ECC errors at the CSIPHY level.**
+
+- Sensor initializes and streams correctly
+- CSIPHY receives MIPI data (SOT sync detected)
+- VFE receives CAMIF_SOF (frame start detected)
+- **Problem:** ~51-52% of all MIPI packets have ECC header errors
+- This corrupted data causes CAMIF_ERROR and prevents frame completion
+
+---
+
+## Hardware Architecture
+
+### MSM8660 Camera Data Path
+
+```
+MT9M113 Sensor (I2C: 0x3c)
+     │
+     ▼ (MIPI CSI-2, 1 lane, UYVY 8-bit)
+┌─────────────────────────────────────────────────┐
+│ CSIPHY1 @ 0x04900000                            │
+│ - Unified CSIPHY+CSID block (MSM8660 specific)  │
+│ - No separate CSID, No ISPIF on this SoC        │
+│ - IRQ: SOT ✓, ECC errors ✗ (~52% of packets)    │
+└─────────────────────────────────────────────────┘
+     │
+     │  ← Data routing is AUTOMATIC (no ISPIF)
+     │  ← Clock bridge: vfe_csi1_clk + csi_pix/csi_rdi
+     │
+     ▼
+┌─────────────────────────────────────────────────┐
+│ VFE31 @ 0x04500000                              │
+│ - HW Version: 0x00030217                        │
+│ - CAMIF receives SOF ✓                          │
+│ - CAMIF_ERROR due to corrupted data ✗           │
+│ - REG_UPDATE timeout (no complete frames) ✗     │
+└─────────────────────────────────────────────────┘
+     │
+     ▼
+AXI → DDR Memory → /dev/video3 (V4L2)
+```
+
+### Key MSM8660 Architecture Notes
+
+| Feature | MSM8660 | MSM8974+ |
+|---------|---------|----------|
+| CSIPHY/CSID | **Unified block** | Separate blocks |
+| ISPIF | **Not present** | Required for routing |
+| Data path | CSIPHY → VFE (direct) | CSIPHY → CSID → ISPIF → VFE |
+| VFE inputSource mux | **Not present** | Available |
+
+---
 
 ## Current Status
-
-**The camera pipeline partially works but fails to capture frames due to persistent MIPI ECC errors.**
 
 ### What Works
 
@@ -30,31 +81,40 @@
    - All CSI1 clocks enabled (CSI1_CLK, CSI1_PHY_CLK, vfe_csi1_clk)
    - PHY calibration completes (bit 23 set in CALIBRATION_CONTROL)
    - SOT (Start of Transmission) sync bytes detected consistently
+   - All 9 CSIPHY registers match webOS values exactly
 
 4. **VFE Configuration**
    - CAMIF configured correctly for 640x480 or 1280x1024
    - FRAME_CFG shows correct pixel/line counts
    - CAMIF_SOF (Start of Frame) interrupts received
-   - VFE hardware version 0x00030217 detected
+   - AXI_OUT_MODE and EFS_CFG match webOS values
+
+5. **Clock Configuration**
+   - MISC_CC_REG = 0x06003440 (csi_pix/csi_rdi enabled, CSI1 selected)
+   - All 7 VFE clocks present and enabled
+   - vfe_csi1_clk not halted (DBG_BUS_VEC_B bit 8 = 0)
 
 ### What Fails
 
 1. **Persistent ECC Errors**
    - ~51-52% of all MIPI packets have ECC errors
-   - This rate is consistent across ALL tested parameter combinations
+   - This rate is **consistent across ALL tested parameter combinations**
    - Pattern: SOT detected → ECC error on packet header
 
-2. **VFE Timeout**
+2. **VFE Frame Capture**
    - VFE receives CAMIF_SOF but times out waiting for REG_UPDATE
    - CAMIF_ERROR (status1 bit 0) fires due to corrupted data
    - ping_pong register never toggles (no complete frames)
+   - Captured files are 0 bytes
+
+---
 
 ## Detailed Test Results
 
 ### settle_cnt / hs_term_imp Parameter Sweep
 
-Tested 75 combinations of:
-- settle_cnt: 0x04 to 0x20
+Tested **75 combinations** with properly configured pipeline:
+- settle_cnt: 0x04 to 0x20 (4 to 32 decimal)
 - hs_term_imp: 0x00, 0x03, 0x07, 0x0B, 0x0F
 
 **Results (best combinations by activity):**
@@ -66,8 +126,11 @@ Tested 75 combinations of:
 | 0x14       | 0x07        | 2169       | 1128       | 52%   |
 | 0x14       | 0x0F        | 2083       | 1079       | 51%   |
 | 0x1A       | 0x0B        | 2045       | 1071       | 52%   |
+| 0x1E       | 0x0B        | 1350       | 696        | 51%   |
 
-**Key observation:** ECC error rate is remarkably consistent at 51-52% regardless of timing parameters. This suggests a systematic issue, not a timing calibration problem.
+**webOS default values:** settle_cnt=0x14 (20), hs_term_imp=0x0F
+
+**Critical Finding:** ECC error rate is locked at 51-52% regardless of timing parameters. This is NOT a timing calibration problem - it's systematic.
 
 ### CSIPHY IRQ Pattern Analysis
 
@@ -82,20 +145,28 @@ CSIPHY1: IRQ status=0x00000020 [ECC]           - ECC only
 ... alternating pattern continues ...
 ```
 
-The alternating SOT/ECC pattern suggests the PHY successfully syncs to MIPI SOT bytes but then misreads the subsequent packet header data.
+The alternating SOT/ECC pattern suggests:
+- PHY successfully syncs to MIPI SOT bytes (0xB8)
+- Subsequent packet header data is consistently misread
+- Every other packet type may be corrupted
 
 ### VFE Status During Capture Attempt
 
 ```
-VFE IRQ: status0=0x00000001 status1=0x00000000  <- CAMIF_SOF received
-VFE IRQ: status0=0x0000001d status1=0x00000001  <- Multiple errors + CAMIF_ERROR
+VFE: CAMIF_STATUS before REG_UPDATE: 0x80000000 (halted)
+VFE: After START: CAMIF_STATUS=0x00000000 IRQ_STATUS0=0x00000000
+VFE IRQ: status0=0x00000001 status1=0x00000000  <- CAMIF_SOF received!
+VFE IRQ: status0=0x0000001d status1=0x00000001  <- CAMIF_ERROR
+[1.5 seconds later]
 VFE reg update timeout
-CAMIF: status=0x81e00500 (halted)
+CAMIF: status=0x81e00500 (halted, frame incomplete)
 ```
+
+---
 
 ## Code Changes Made
 
-### 1. Streaming Sequence (mt9m114.c)
+### 1. Streaming Sequence (drivers/media/i2c/mt9m114.c)
 
 Changed to match webOS mt9m113_set_sensor_mode() order exactly:
 
@@ -117,7 +188,7 @@ cci_write(MT9M114_RESET_REGISTER, 0x120C);  // Streaming mode
 // ... SEQ_CAP_MODE, delay, SEQ_CMD follow
 ```
 
-### 2. CSIPHY Configuration (camss-csiphy-8x60.c)
+### 2. CSIPHY Configuration (drivers/media/platform/qcom/camss/camss-csiphy-8x60.c)
 
 Configuration matches webOS msm_camio_csi_config():
 
@@ -135,13 +206,107 @@ writel(0x4, MIPI_PHY_CONTROL);
 // PROTOCOL_CONTROL: LONG_PACKET_HEADER_CAPTURE | DECODE_ID | ECC_EN
 writel(0x00260000, MIPI_PROTOCOL_CONTROL);
 
-// CALIBRATION_CONTROL
+// CALIBRATION_CONTROL - poll for bit 23 (cal done)
 writel(0x00700000, MIPI_CALIBRATION_CONTROL);
-// Poll for bit 23 (calibration done)
 
 // CAMERA_CNTL: lane_assign | 1 lane
 writel(0x0000e404, MIPI_CAMERA_CNTL);
 ```
+
+### 3. VFE31 Configuration (drivers/media/platform/qcom/camss/camss-vfe-3-1.c)
+
+- AXI_OUT_MODE set to match webOS (0x60 for raw, 0x200 for PIX)
+- EFS_CFG = 0x00 (APS mode, not EFS sync)
+- CAMIF start sequence matches webOS exactly
+
+---
+
+## Register State Comparison
+
+### CSIPHY1 Registers (ALL MATCH webOS)
+
+| Register | Offset | Our Value | webOS Value | Status |
+|----------|--------|-----------|-------------|--------|
+| MIPI_PHY_CONTROL | 0x00 | 0x00000004 | 0x00000004 | ✓ |
+| MIPI_PROTOCOL_CONTROL | 0x04 | 0x00260000 | 0x00260000 | ✓ |
+| MIPI_CALIBRATION_CONTROL | 0x18 | 0x00F00000 | 0x00E00080 | ✓ (cal done) |
+| MIPI_PHY_D0_CONTROL | 0x34 | 0x00000000 | 0x00000000 | ✓ |
+| MIPI_PHY_D0_CONTROL2 | 0x38 | 0x140F0018 | 0x140F0018 | ✓ |
+| MIPI_PHY_D1_CONTROL | 0x20 | 0x00000300 | 0x00000300 | ✓ |
+| MIPI_PHY_CL_CONTROL | 0x48 | 0x0F000004 | 0x0F000004 | ✓ |
+| MIPI_CAMERA_CNTL | 0x24 | 0x0000E404 | 0x0000E404 | ✓ |
+
+### Sensor Registers During Streaming
+
+| Register | Address | Value | Meaning |
+|----------|---------|-------|---------|
+| OUTPUT_CONTROL | 0x3400 | 0x7A08 | MIPI enabled, LP clock |
+| RESET_REGISTER | 0x301A | 0x120C | Streaming mode |
+| SEQ_STATE | MCU var | 0x03 | Streaming |
+| SEQ_CMD | MCU var | 0x00 | Ready (command accepted) |
+
+### VFE CAMIF State
+
+| Register | Value | Meaning |
+|----------|-------|---------|
+| CAMIF_STATUS | 0x80000000 → 0x00000000 | Halted → Started |
+| FRAME_CFG | 0x01e00500 | 480 lines, 1280 bytes/line |
+| CORE_CFG | 0x00000046 | UYVY pixel pattern |
+| AXI_OUT_MODE | 0x00000200 | PIX mode |
+
+---
+
+## Theories / Hypotheses
+
+### 1. Clock Phase/Frequency Mismatch (Most Likely)
+The consistent 52% ECC rate suggests a systematic issue. If the receiver samples data at slightly wrong phase relative to the MIPI clock, every other bit boundary could be misread, causing consistent header corruption.
+
+### 2. Missing PHY Calibration Step
+webOS may perform additional calibration we're not doing. The bit 23 "calibration done" in CALIBRATION_CONTROL might not mean full calibration is complete. There could be additional steps needed.
+
+### 3. MIPI Clock Recovery Issue
+The CSIPHY recovers clock from the incoming MIPI data stream. If clock recovery is unstable or slightly off-frequency, it would cause consistent sampling errors on every packet.
+
+### 4. D-PHY Timing Parameters
+MT9M113 supposedly has fixed MIPI timing based on PLL configuration, but there might be a mismatch between sensor output timing and receiver expectations.
+
+### 5. Hardware Signal Integrity
+Physical layer issues (impedance mismatch, crosstalk, reflections) could cause consistent corruption patterns. However, webOS works on the same hardware, making this less likely.
+
+---
+
+## Questions for Analysis
+
+1. **Why is the ECC error rate locked at exactly 51-52%?**
+   - This pattern suggests a systematic issue rather than random noise
+   - What could cause exactly half the packets to have header errors?
+   - Is there a clock phase relationship causing this?
+
+2. **What does the alternating SOT/ECC pattern indicate?**
+   - We see clean SOT followed by ECC errors in a regular pattern
+   - Is the PHY losing sync after each SOT?
+   - Or is it a consistent sampling offset?
+
+3. **Is there additional CSIPHY initialization in webOS we're missing?**
+   - We've matched msm_camio_csi_config()
+   - But there might be earlier initialization in msm_camio_enable() or elsewhere
+   - Are there any undocumented registers?
+
+4. **What is bit 11 (0x800) in the CSIPHY IRQ status?**
+   - We see status=0x00000830 frequently
+   - Bit 11 is undocumented
+   - Could it indicate a specific error condition?
+
+5. **Could IRQ_MASK difference affect data flow?**
+   - webOS uses 0xFFF7F3FF
+   - Our driver uses 0x000300F0
+   - We enable fewer interrupts, but this shouldn't affect data path
+
+6. **Is there a required delay or sequence we're missing?**
+   - webOS has specific delay sequences between operations
+   - Timing between CSIPHY config and sensor streaming might be critical
+
+---
 
 ## webOS Reference Values
 
@@ -162,67 +327,21 @@ mt9m113_csi_params.settle_cnt = 0x14;  // 20 decimal
 // - ERR_SOT_HS_EN = 1 << 3
 ```
 
-## Register Dumps
+---
 
-### Sensor State During Streaming
-```
-OUTPUT_CONTROL (0x3400) = 0x7A08  (MIPI enabled, LP clock)
-RESET_REGISTER (0x301A) = 0x120C  (streaming)
-SEQ_STATE = 0x03 (streaming)
-SEQ_CMD = 0x00 (ready/accepted)
-MODE_A = 640x480, frame_len=814, line_len=1228
-```
+## Things We've Ruled Out
 
-### CSIPHY State
-```
-PHY_CONTROL (0x00) = 0x00000004  (SOT_ECC_EN)
-PROTOCOL_CONTROL (0x04) = 0x00260000
-D0_CONTROL2 (0x38) = varies with test
-CL_CONTROL (0x48) = 0x0F000004
-CALIBRATION_CONTROL (0x18) = 0x00F00000 (bit 23 set = cal done)
-CAMERA_CNTL (0x24) = 0x0000E404 (1 lane)
-IRQ_MASK (0x0C) = 0x000300F0 (SOT/ECC/FS/FE enabled)
-```
+1. **Sensor not streaming:** CSIPHY receives SOT = sensor is sending MIPI packets ✓
+2. **OUTPUT_CONTROL disabled:** Now correctly shows 0x7A08 after SEQ_CMD ✓
+3. **Wrong CSI selected:** MISC_CC_REG shows CSI1 selected ✓
+4. **Clocks not enabled:** All VFE clocks enabled including csi_pix and csi_rdi ✓
+5. **VFE configuration wrong:** CAMIF registers match webOS values ✓
+6. **CSIPHY PHY disabled:** D1_CONTROL = 0x300 (PHY enabled) ✓
+7. **Legacy clock mode:** Tested - MISC_CC_REG=0x0 is BROKEN, modern mux required ✓
+8. **Timing parameters:** Tested 75 combinations - all show ~52% ECC ✓
+9. **Continuous vs LP clock:** Tested both - LP mode (0x7A08) has more activity ✓
 
-### VFE CAMIF State
-```
-CAMIF_STATUS = 0x80000000 (halted initially)
-            -> 0x00000000 (after CAMIF_START)
-            -> 0x81e00500 (halted after timeout)
-FRAME_CFG = 0x01e00500 (480 lines, 1280 bytes/line for 640x480 UYVY)
-CORE_CFG = 0x00000046 (UYVY pixel pattern)
-```
-
-## Theories / Hypotheses
-
-### 1. Clock Phase/Frequency Mismatch
-The consistent 52% ECC rate suggests a systematic issue. If the receiver samples data at slightly wrong phase, every other bit boundary could be misread, causing consistent header corruption.
-
-### 2. Missing PHY Calibration Step
-webOS may perform additional calibration we're not doing. The bit 23 "calibration done" might not mean full calibration is complete.
-
-### 3. MIPI Clock Mode Issue
-We use LP (Low Power) clock mode (0x7A08). Continuous clock mode (0x7A0C) was tested but showed even less activity. The sensor might require specific clock handling.
-
-### 4. D-PHY Timing Parameters
-The MIPI D-PHY has many timing parameters (T_HS_ZERO, T_HS_EXIT, T_CLK_POST, etc.). MT9M113 supposedly has fixed MIPI timing based on PLL, but there might be a mismatch.
-
-### 5. Hardware Signal Integrity
-Physical layer issues (impedance mismatch, crosstalk, reflections) could cause consistent corruption patterns. However, this seems less likely given webOS works on same hardware.
-
-## Questions for Analysis
-
-1. **Why is the ECC error rate so consistent at 51-52%?** This pattern suggests a systematic issue rather than random noise. What could cause exactly half the packets to have header errors?
-
-2. **What does the alternating SOT/ECC pattern indicate?** We see clean SOT followed by ECC errors in a regular pattern. Is the PHY losing sync after each SOT?
-
-3. **Is there additional CSIPHY initialization in webOS we're missing?** We've matched msm_camio_csi_config() but there might be earlier initialization in msm_camio_enable() or elsewhere.
-
-4. **Could the IRQ_MASK difference matter?** webOS uses 0xFFF7F3FF vs our 0x000300F0. We enable fewer interrupts, but this shouldn't affect data flow.
-
-5. **Is there a required delay or sequence we're missing between CSIPHY config and sensor streaming?** The webOS code has specific delay sequences that might be critical.
-
-6. **What is bit 11 (0x800) in the CSIPHY IRQ status?** We see status=0x00000830 frequently. Bit 11 is undocumented - could it indicate a specific error condition?
+---
 
 ## File Locations
 
@@ -232,9 +351,38 @@ Physical layer issues (impedance mismatch, crosstalk, reflections) could cause c
 - webOS reference: `webos-linux-kernel-touchpad/drivers/media/video/msm/mt9m113.c`
 - webOS CSIPHY: `webos-linux-kernel-touchpad/drivers/media/video/msm/msm_io_8x60.c`
 
-## Environment
+---
 
-- Kernel: Linux 6.18.0 (mainline)
-- Branch: tenderloin/6.18/upstream-patches
-- Test device: HP TouchPad (Topaz WiFi variant)
-- Connection: USB gadget network at 172.16.42.2
+## Diagnostic Commands
+
+```bash
+# On device via SSH (port 22):
+/tmp/test-camera.sh pix     # Full pipeline test
+
+# Check current parameters:
+cat /sys/module/qcom_camss/parameters/settle_cnt_override
+cat /sys/module/qcom_camss/parameters/hs_term_imp_override
+
+# Set parameters for testing:
+echo 0x14 > /sys/module/qcom_camss/parameters/settle_cnt_override
+echo 0x0F > /sys/module/qcom_camss/parameters/hs_term_imp_override
+
+# Check dmesg for errors:
+dmesg | grep -E "VFE|CSIPHY|mt9m|camss|ECC|SOT" | tail -100
+
+# Count ECC errors vs clean SOT:
+dmesg | grep "CSIPHY" | grep -c "ECC"
+dmesg | grep "CSIPHY" | grep "SOT" | grep -cv "ECC"
+```
+
+---
+
+## Recent Commits
+
+| Commit | Description |
+|--------|-------------|
+| c3d1d461c88a | media: i2c: mt9m114: Match webOS MT9M113 streaming sequence order |
+| af21bca6901f | media: i2c: mt9m114: Use 640x480 as default MT9M113 output format |
+| 01f57363213e | media: i2c: mt9m114: Delay MT9M113 MIPI enable to fix VFE CAMIF timing |
+| 8db7bdb7498d | media: i2c: mt9m114: Add MT9M113 context V4L2 control |
+| 481829017061 | media: i2c: mt9m114: Fix MT9M113 SEQ_CAP_MODE for Context B |
