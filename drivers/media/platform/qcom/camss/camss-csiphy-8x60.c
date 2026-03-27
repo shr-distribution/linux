@@ -550,13 +550,14 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 
 	/*
 	 * Configure interrupts.
-	 * Enable SOT, ECC, Frame Start/End interrupts to debug MIPI data flow.
+	 * Use webOS IRQ mask (0xFFF7F3FF) which enables most interrupt sources.
+	 * This matches msm_io_8x60.c:949 - helps debug MIPI data flow issues.
 	 * IRQ_MASK: bit=1 means interrupt ENABLED.
 	 */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Configuring interrupts\n", csiphy->id);
 	writel(0xFFFFFFFF, csiphy->base + MIPI_INTERRUPT_STATUS);  /* Clear pending */
-	writel(0x000300F0, csiphy->base + MIPI_INTERRUPT_MASK);    /* Enable SOT/ECC/FS/FE */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: IRQ_MASK=0x000300F0 (SOT/ECC/FS/FE enabled)\n", csiphy->id);
+	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_MASK);    /* webOS mask */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: IRQ_MASK=0xFFF7F3FF (webOS mask)\n", csiphy->id);
 
 	/*
 	 * Note: MSM8660 does NOT have separate CSID CID registers.
