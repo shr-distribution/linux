@@ -3007,13 +3007,14 @@ static int mt9m114_ifp_init_state(struct v4l2_subdev *sd,
 
 	/*
 	 * MT9M113 uses webOS-configured output resolutions (640x480 preview,
-	 * 1280x1024 capture) via MCU variables. Use 1280x1024 as default to
-	 * match Context B (capture mode). MT9M113 has a larger pixel array
-	 * than MT9M114 - Context B reads rows 4-1035 (1032 rows).
+	 * 1280x1024 capture) via MCU variables. Use 640x480 as default to
+	 * match Context A (preview mode) from the init table. The sensor
+	 * is configured for 640x480 by the initialization table and we
+	 * don't dynamically reconfigure Context A dimensions.
 	 */
 	if (sensor->expected_model == MT9M113_MODEL) {
-		compose->width = 1280;
-		compose->height = 1024;
+		compose->width = 640;
+		compose->height = 480;
 	} else {
 		compose->width = crop->width;
 		compose->height = crop->height;
