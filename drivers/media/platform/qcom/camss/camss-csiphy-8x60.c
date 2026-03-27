@@ -80,6 +80,25 @@ module_param(calibration_mode, int, 0644);
 MODULE_PARM_DESC(calibration_mode,
 		 "Calibration mode: 0=normal (poll bit23), 1=bypass (no cal), 2=webOS-style (no poll)");
 
+/*
+ * ECC disable mode for debugging.
+ *
+ * The persistent ~52% ECC error rate may be caused by:
+ * - Signal integrity issues corrupting MIPI packet headers
+ * - CSIPHY dropping packets with uncorrectable ECC errors before VFE
+ *
+ * When enabled, ECC checking is disabled to allow potentially corrupted
+ * packets to flow through to VFE. This helps diagnose whether ECC errors
+ * are blocking data flow.
+ *
+ * 0 = ECC enabled (default, matches webOS)
+ * 1 = ECC disabled (allow corrupted packets through)
+ */
+static bool ecc_disable;
+module_param(ecc_disable, bool, 0644);
+MODULE_PARM_DESC(ecc_disable,
+		 "Disable ECC checking to allow corrupted packets (default: false)");
+
 /* MSM8660 MIPI CSI Controller Register Offsets */
 #define MIPI_PHY_CONTROL		0x00
 #define MIPI_PROTOCOL_CONTROL		0x04
@@ -351,10 +370,12 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 
 	/* PROTOCOL_CONTROL with config */
 	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
-	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK |
-	      MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
+	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK;
+	if (!ecc_disable)
+		val |= MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
 	val |= (0x0 << MIPI_PROTOCOL_CONTROL_DATA_FORMAT_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing PROTOCOL_CONTROL=0x%08x\n", csiphy->id, val);
+	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing PROTOCOL_CONTROL=0x%08x (ECC %s)\n",
+		 csiphy->id, val, ecc_disable ? "DISABLED" : "enabled");
 	writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
 	/*
