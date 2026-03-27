@@ -575,14 +575,17 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 
 	/*
 	 * Configure interrupts.
-	 * Use webOS IRQ mask (0xFFF7F3FF) which enables most interrupt sources.
-	 * This matches msm_io_8x60.c:949 - helps debug MIPI data flow issues.
+	 * Enable ALL interrupt sources (0xFFFFFFFF) for debugging.
+	 *
+	 * webOS used 0xFFF7F3FF which masks bits 10,11,12. But polling shows
+	 * BIT(11)=0x800 is the main activity without triggering IRQs.
+	 * Enable all bits to see full interrupt behavior.
 	 * IRQ_MASK: bit=1 means interrupt ENABLED.
 	 */
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Configuring interrupts\n", csiphy->id);
 	writel(0xFFFFFFFF, csiphy->base + MIPI_INTERRUPT_STATUS);  /* Clear pending */
-	writel(0xFFF7F3FF, csiphy->base + MIPI_INTERRUPT_MASK);    /* webOS mask */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: IRQ_MASK=0xFFF7F3FF (webOS mask)\n", csiphy->id);
+	writel(0xFFFFFFFF, csiphy->base + MIPI_INTERRUPT_MASK);    /* Enable ALL */
+	dev_info(csiphy->camss->dev, "CSIPHY%d: IRQ_MASK=0xFFFFFFFF (all enabled)\n", csiphy->id);
 
 	/*
 	 * Note: MSM8660 does NOT have separate CSID CID registers.
@@ -692,10 +695,13 @@ static void csiphy_8x60_lanes_disable(struct csiphy_device *csiphy,
  * Note: webOS driver doesn't use CSIPHY frame start detection.
  * Frame sync comes from VFE CAMIF internal sync, not CSIPHY IRQ bits.
  */
-#define MIPI_IRQ_SOT_SYNC	BIT(4)
-#define MIPI_IRQ_ECC_ERROR	BIT(5)
-#define MIPI_IRQ_FRAME_START	BIT(16)
-#define MIPI_IRQ_FRAME_END	BIT(17)
+#define MIPI_IRQ_LP_RX		BIT(3)	/* LP receive complete? */
+#define MIPI_IRQ_SOT_SYNC	BIT(4)	/* Start of Transmission sync */
+#define MIPI_IRQ_ECC_ERROR	BIT(5)	/* ECC error detected */
+#define MIPI_IRQ_DATA_DL	BIT(11)	/* Data on data lane? */
+#define MIPI_IRQ_FRAME_START	BIT(16)	/* Frame Start short packet */
+#define MIPI_IRQ_FRAME_END	BIT(17)	/* Frame End short packet */
+#define MIPI_IRQ_LONG_PKT	BIT(21)	/* Long packet header captured */
 
 /*
  * MSM8660 SOF generation state - used for software SOF when sensor
@@ -866,12 +872,15 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 	 */
 	if (irq_count <= 10 || status != last_status || (irq_count % 100) == 0) {
 		dev_info(csiphy->camss->dev,
-			 "CSIPHY%d: IRQ #%d status=0x%08x [%s%s%s%s] sof_count=%d\n",
+			 "CSIPHY%d: IRQ #%d status=0x%08x [%s%s%s%s%s%s%s] sof_count=%d\n",
 			 csiphy->id, irq_count, status,
+			 (status & MIPI_IRQ_LP_RX) ? "LP " : "",
 			 (status & MIPI_IRQ_SOT_SYNC) ? "SOT " : "",
 			 (status & MIPI_IRQ_ECC_ERROR) ? "ECC " : "",
+			 (status & MIPI_IRQ_DATA_DL) ? "DATA " : "",
 			 (status & MIPI_IRQ_FRAME_START) ? "FS " : "",
 			 (status & MIPI_IRQ_FRAME_END) ? "FE " : "",
+			 (status & MIPI_IRQ_LONG_PKT) ? "LPKT " : "",
 			 sof_count);
 		last_status = status;
 	}
