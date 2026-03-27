@@ -63,6 +63,23 @@ module_param(hs_term_imp_override, int, 0644);
 MODULE_PARM_DESC(hs_term_imp_override,
 		 "Override HS termination impedance (0x00-0x0F, -1=use default 0x0F)");
 
+/*
+ * Calibration bypass mode (per Gemini AI analysis suggestion).
+ *
+ * The persistent ~50% ECC error rate may be caused by hardware calibration
+ * overriding manual HS_TERM_IMP settings. Bit 23 in CALIBRATION_CONTROL
+ * gets set by hardware after calibration completes, potentially with
+ * different impedance than we specified.
+ *
+ * Mode 0 (default): Normal calibration - wait for bit 23, apply settings after
+ * Mode 1: Skip calibration entirely - write impedance directly, no cal
+ * Mode 2: webOS-style - write cal+impedance without polling (original behavior)
+ */
+static int calibration_mode = 0;
+module_param(calibration_mode, int, 0644);
+MODULE_PARM_DESC(calibration_mode,
+		 "Calibration mode: 0=normal (poll bit23), 1=bypass (no cal), 2=webOS-style (no poll)");
+
 /* MSM8660 MIPI CSI Controller Register Offsets */
 #define MIPI_PHY_CONTROL		0x00
 #define MIPI_PROTOCOL_CONTROL		0x04
@@ -341,65 +358,120 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
 	/*
-	 * CALIBRATION_CONTROL - Per Gemini analysis:
-	 * Bit 23 appears to be "Calibration Done" or "Active Override" status.
-	 * Hardware sets this bit after internal calibration completes.
+	 * CALIBRATION_CONTROL and D0-D3_CONTROL2 configuration.
 	 *
-	 * Strategy: Write initial config, wait for bit 23, then re-apply
-	 * HS_TERM_IMP values to ensure they take effect after calibration.
-	 */
-	val = (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_CAL_EN_SHFT) |
-	      (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_STRENGTH_OVERRIDE_EN_SHFT) |
-	      (0x1 << MIPI_CALIBRATION_CONTROL_CAL_SW_HW_MODE_SHFT) |
-	      (0x1 << MIPI_CALIBRATION_CONTROL_MANUAL_OVERRIDE_EN_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CALIBRATION_CONTROL=0x%08x\n", csiphy->id, val);
-	writel(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
-
-	/* Poll for bit 23 (calibration done) - max 10ms */
-	{
-		int i;
-		u32 cal_status;
-		for (i = 0; i < 100; i++) {
-			cal_status = readl(csiphy->base + MIPI_CALIBRATION_CONTROL);
-			if (cal_status & BIT(23)) {
-				dev_info(csiphy->camss->dev,
-					 "CSIPHY%d: Calibration done after %d iterations, status=0x%08x\n",
-					 csiphy->id, i, cal_status);
-				break;
-			}
-			udelay(100);
-		}
-		if (i == 100)
-			dev_warn(csiphy->camss->dev,
-				 "CSIPHY%d: Calibration bit 23 not set after 10ms, status=0x%08x\n",
-				 csiphy->id, cal_status);
-	}
-
-	/*
-	 * D0-D3_CONTROL2 with LP_REC_EN=1 - AFTER calibration completes
-	 * Per Gemini: Apply HS_TERM_IMP values AFTER bit 23 is set,
-	 * otherwise hardware calibration may override our settings.
+	 * Per Gemini AI analysis: The ~50% ECC error rate may be caused by
+	 * hardware calibration overriding manual HS_TERM_IMP settings.
+	 *
+	 * calibration_mode controls the approach:
+	 * - 0: Poll for bit 23 (calibration done), then apply impedance
+	 * - 1: Bypass calibration entirely, write impedance directly
+	 * - 2: webOS-style - write everything without polling
 	 */
 	{
 		u8 hs_term_imp = 0x0F;  /* Default matches webOS */
 		if (hs_term_imp_override >= 0 && hs_term_imp_override <= 0x0F) {
 			dev_info(csiphy->camss->dev,
-				 "CSIPHY%d: HS_TERM_IMP OVERRIDE: 0x%02x -> 0x%02x (post-calibration)\n",
+				 "CSIPHY%d: HS_TERM_IMP OVERRIDE: 0x%02x -> 0x%02x\n",
 				 csiphy->id, hs_term_imp, hs_term_imp_override);
 			hs_term_imp = hs_term_imp_override;
 		}
-		val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
-		      (hs_term_imp << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
-		      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
-		      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+
+		if (calibration_mode == 1) {
+			/*
+			 * Mode 1: Bypass calibration entirely.
+			 * Per Gemini: If hardware calibration overrides our settings,
+			 * try skipping it completely. Write 0 to CALIBRATION_CONTROL
+			 * then directly write impedance settings.
+			 */
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: CALIBRATION BYPASS MODE - no cal, direct impedance\n",
+				 csiphy->id);
+			writel(0, csiphy->base + MIPI_CALIBRATION_CONTROL);
+
+			/* Write impedance directly without calibration */
+			val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
+			      (hs_term_imp << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
+			      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
+			      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: Writing D0-D3_CONTROL2 (bypass) = 0x%08x\n",
+				 csiphy->id, val);
+		} else if (calibration_mode == 2) {
+			/*
+			 * Mode 2: webOS-style - write cal config and impedance
+			 * without polling for bit 23. webOS doesn't wait.
+			 */
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: webOS-STYLE MODE - no bit23 poll\n",
+				 csiphy->id);
+			val = (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_CAL_EN_SHFT) |
+			      (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_STRENGTH_OVERRIDE_EN_SHFT) |
+			      (0x1 << MIPI_CALIBRATION_CONTROL_CAL_SW_HW_MODE_SHFT) |
+			      (0x1 << MIPI_CALIBRATION_CONTROL_MANUAL_OVERRIDE_EN_SHFT);
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: Writing CALIBRATION_CONTROL=0x%08x (no poll)\n",
+				 csiphy->id, val);
+			writel(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
+
+			/* Write impedance immediately (no poll) */
+			val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
+			      (hs_term_imp << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
+			      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
+			      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: Writing D0-D3_CONTROL2 (webOS) = 0x%08x\n",
+				 csiphy->id, val);
+		} else {
+			/*
+			 * Mode 0 (default): Poll for bit 23 (calibration done),
+			 * then apply HS_TERM_IMP. This ensures impedance is set
+			 * AFTER hardware calibration completes.
+			 */
+			int i;
+			u32 cal_status;
+
+			val = (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_CAL_EN_SHFT) |
+			      (0x1 << MIPI_CALIBRATION_CONTROL_SWCAL_STRENGTH_OVERRIDE_EN_SHFT) |
+			      (0x1 << MIPI_CALIBRATION_CONTROL_CAL_SW_HW_MODE_SHFT) |
+			      (0x1 << MIPI_CALIBRATION_CONTROL_MANUAL_OVERRIDE_EN_SHFT);
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: Writing CALIBRATION_CONTROL=0x%08x (poll mode)\n",
+				 csiphy->id, val);
+			writel(val, csiphy->base + MIPI_CALIBRATION_CONTROL);
+
+			/* Poll for bit 23 (calibration done) - max 10ms */
+			for (i = 0; i < 100; i++) {
+				cal_status = readl(csiphy->base + MIPI_CALIBRATION_CONTROL);
+				if (cal_status & BIT(23)) {
+					dev_info(csiphy->camss->dev,
+						 "CSIPHY%d: Cal done after %d iter, status=0x%08x\n",
+						 csiphy->id, i, cal_status);
+					break;
+				}
+				udelay(100);
+			}
+			if (i == 100)
+				dev_warn(csiphy->camss->dev,
+					 "CSIPHY%d: Cal bit 23 not set after 10ms, status=0x%08x\n",
+					 csiphy->id, cal_status);
+
+			/* Write impedance AFTER calibration */
+			val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
+			      (hs_term_imp << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
+			      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
+			      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: Writing D0-D3_CONTROL2 (post-cal) = 0x%08x\n",
+				 csiphy->id, val);
+		}
+
+		writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
+		writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
+		writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
+		writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
+		dev_info(csiphy->camss->dev, "CSIPHY%d: D0-D3_CONTROL2 writes done\n", csiphy->id);
 	}
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0-D3_CONTROL2 (post-cal) = 0x%08x\n",
-		 csiphy->id, val);
-	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
-	writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: D0-D3_CONTROL2 writes done\n", csiphy->id);
 
 	/*
 	 * CL_CONTROL - webOS msm_camio_csi_config() writes 0x0F000004:
