@@ -1084,9 +1084,17 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	val = (height - 1) | (0 << 16);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 
-	/* SUBSAMPLE_CFG: 0xFFFFFFFF = no subsampling */
+	/*
+	 * SUBSAMPLE_CFG_0: pixelSkip[15:0] | lineSkip[31:16]
+	 * - 0xFFFF = keep all (no skip pattern)
+	 * - 0xFFFFFFFF = no pixel/line subsampling
+	 *
+	 * SUBSAMPLE_CFG_1: frameSkip[3:0] | frameSkipMode[4] | pixelSkipWrap[5]
+	 * - 0 = no frame skipping (capture every frame)
+	 * - 0xFFFFFFFF was wrong - it sets frameSkip=0xF (skip 15 frames!)
+	 */
 	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
 
 	dev_dbg(vfe->camss->dev,
 		"VFE31 set_camif_cfg: core_cfg=0x%08x frame=0x%08x\n",
@@ -1522,10 +1530,10 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 val, line->fmt[MSM_VFE_PAD_SINK].height - 1);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 
-	/* SUBSAMPLE_CFG_0 at 0x1F4: 0xFFFFFFFF = no subsampling */
+	/* SUBSAMPLE_CFG_0 at 0x1F4: 0xFFFFFFFF = no pixel/line subsampling */
 	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-	/* SUBSAMPLE_CFG_1 at 0x1F8: 0xFFFFFFFF = no frame skip */
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+	/* SUBSAMPLE_CFG_1 at 0x1F8: 0 = no frame skip (bits [3:0] = frameSkip) */
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
 	wmb();
 
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF registers configured\n");
