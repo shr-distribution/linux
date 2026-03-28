@@ -719,21 +719,42 @@ static void csiphy_8x60_lanes_disable(struct csiphy_device *csiphy,
  */
 /*
  * Debug polling work function - called periodically to check CSIPHY status.
+ *
+ * IMPORTANT: This function must check debug_poll_base validity before ANY
+ * register access because clocks may be disabled asynchronously.
  */
 static void csiphy_8x60_debug_poll(struct work_struct *work)
 {
-	u32 status, protocol, d1_ctrl, cl_ctrl, irq_mask;
+	void __iomem *base;
+	u32 status, protocol, d1_ctrl, irq_mask;
 	static int poll_count;
 	static u32 last_polled_status;
 
-	if (!debug_poll_active || !debug_poll_base)
+	/*
+	 * Atomic read of base pointer with memory barrier.
+	 * If NULL, clocks are being/have been disabled - abort immediately.
+	 */
+	base = READ_ONCE(debug_poll_base);
+	if (!base || !READ_ONCE(debug_poll_active))
 		return;
 
-	status = readl_relaxed(debug_poll_base + MIPI_INTERRUPT_STATUS);
-	protocol = readl_relaxed(debug_poll_base + MIPI_PROTOCOL_CONTROL);
-	d1_ctrl = readl_relaxed(debug_poll_base + MIPI_PHY_D1_CONTROL);
-	cl_ctrl = readl_relaxed(debug_poll_base + MIPI_PHY_CL_CONTROL);
-	irq_mask = readl_relaxed(debug_poll_base + MIPI_INTERRUPT_MASK);
+	/*
+	 * Read registers using local base pointer captured above.
+	 * If clocks are disabled between here and the check above,
+	 * we might get garbage but won't crash.
+	 */
+	status = readl_relaxed(base + MIPI_INTERRUPT_STATUS);
+
+	/* Quick sanity check - if we get all 1s or all Fs, clocks are likely off */
+	if (status == 0xFFFFFFFF || (status & 0xF0000000) == 0xF0000000) {
+		pr_debug("CSIPHY%d POLL: Garbage read (0x%08x) - clocks likely off, stopping\n",
+			 debug_poll_id, status);
+		return;  /* Don't reschedule - we're shutting down */
+	}
+
+	protocol = readl_relaxed(base + MIPI_PROTOCOL_CONTROL);
+	d1_ctrl = readl_relaxed(base + MIPI_PHY_D1_CONTROL);
+	irq_mask = readl_relaxed(base + MIPI_INTERRUPT_MASK);
 
 	poll_count++;
 
@@ -754,11 +775,11 @@ static void csiphy_8x60_debug_poll(struct work_struct *work)
 		pr_warn("CSIPHY%d POLL: Non-zero status 0x%08x detected without IRQ!\n",
 			debug_poll_id, status);
 		/* Clear status to see if new events accumulate */
-		writel(status, debug_poll_base + MIPI_INTERRUPT_STATUS);
+		writel(status, base + MIPI_INTERRUPT_STATUS);
 	}
 
-	/* Reschedule if still active */
-	if (debug_poll_active)
+	/* Reschedule if still active - check again in case stop was called */
+	if (READ_ONCE(debug_poll_active) && READ_ONCE(debug_poll_base))
 		schedule_delayed_work(&debug_poll_work, msecs_to_jiffies(100));
 }
 
@@ -768,20 +789,39 @@ static void csiphy_8x60_start_debug_poll(struct csiphy_device *csiphy)
 	if (!debug_poll_enable)
 		return;
 
-	debug_poll_base = csiphy->base;
 	debug_poll_id = csiphy->id;
-	debug_poll_active = true;
-
 	INIT_DELAYED_WORK(&debug_poll_work, csiphy_8x60_debug_poll);
+
+	/*
+	 * Set base pointer last and use WRITE_ONCE for consistency with stop.
+	 * The poll function won't run until base is non-NULL.
+	 */
+	smp_wmb();  /* Ensure work is initialized before setting base */
+	WRITE_ONCE(debug_poll_base, csiphy->base);
+	WRITE_ONCE(debug_poll_active, true);
+
 	schedule_delayed_work(&debug_poll_work, msecs_to_jiffies(500)); /* Start after 500ms */
 
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Debug polling enabled\n", csiphy->id);
 }
 
-/* Stop debug polling */
+/* Stop debug polling - must be called BEFORE disabling clocks */
 static void csiphy_8x60_stop_debug_poll(void)
 {
-	debug_poll_active = false;
+	/*
+	 * Order matters here to prevent race with poll function:
+	 * 1. Clear base pointer first (poll function checks this first)
+	 * 2. Memory barrier to ensure visibility
+	 * 3. Clear active flag
+	 * 4. Cancel work (may wait for in-progress work to complete)
+	 *
+	 * The poll function will see NULL base and exit immediately,
+	 * even if it was already past the active flag check.
+	 */
+	WRITE_ONCE(debug_poll_base, NULL);
+	smp_wmb();  /* Ensure NULL write is visible before clearing active */
+	WRITE_ONCE(debug_poll_active, false);
+
 	cancel_delayed_work_sync(&debug_poll_work);
 }
 
