@@ -119,6 +119,7 @@ static struct delayed_work debug_poll_work;
 static void __iomem *debug_poll_base;
 static int debug_poll_id;
 static bool debug_poll_active;
+static bool debug_poll_initialized;  /* Track if work was ever initialized */
 
 /* Forward declarations for debug polling */
 static void csiphy_8x60_start_debug_poll(struct csiphy_device *csiphy);
@@ -791,6 +792,7 @@ static void csiphy_8x60_start_debug_poll(struct csiphy_device *csiphy)
 
 	debug_poll_id = csiphy->id;
 	INIT_DELAYED_WORK(&debug_poll_work, csiphy_8x60_debug_poll);
+	debug_poll_initialized = true;  /* Mark work as initialized */
 
 	/*
 	 * Set base pointer last and use WRITE_ONCE for consistency with stop.
@@ -808,6 +810,14 @@ static void csiphy_8x60_start_debug_poll(struct csiphy_device *csiphy)
 /* Stop debug polling - must be called BEFORE disabling clocks */
 static void csiphy_8x60_stop_debug_poll(void)
 {
+	/*
+	 * Only cancel work if it was ever initialized. Calling
+	 * cancel_delayed_work_sync on uninitialized work triggers
+	 * a kernel warning.
+	 */
+	if (!debug_poll_initialized)
+		return;
+
 	/*
 	 * Order matters here to prevent race with poll function:
 	 * 1. Clear base pointer first (poll function checks this first)
