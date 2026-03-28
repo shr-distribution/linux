@@ -1,6 +1,6 @@
 # MT9M113 Front Camera Debug Status - HP TouchPad
 
-**Last Updated:** 2026-03-27 (Session 2 - Calibration Mode Testing)
+**Last Updated:** 2026-03-28 (Session 3 - VFE Write Master Configuration)
 **Kernel:** Linux 6.18-tenderloin
 **SoC:** Qualcomm APQ8060 (MSM8660 variant)
 **Sensor:** MT9M113 front camera (1.3MP, chip ID 0x2480)
@@ -10,26 +10,38 @@
 
 ## Executive Summary
 
-**The camera pipeline receives MIPI data at CSIPHY but fails to deliver it to VFE CAMIF.**
+**CAMIF receives complete frames but VFE Write Master doesn't write to memory.**
 
-### Session 2 Update (March 27, 2026)
+### Session 3 Update (March 28, 2026)
+
+**KEY DISCOVERY:**
+The VFE31 IRQ STATUS_0 bits reveal the root cause:
+- **Bit 2 (0x04): CAMIF_NO_SOT** - No Start of Transmission detected
+- **Bit 3 (0x08): CAMIF_EOF_MISMATCH** - End of Frame mismatch
+
+These are MIPI frame synchronization errors. The VFE cannot properly sync frames without MIPI Frame Start (FS) short packets.
 
 **NEW FINDINGS:**
-1. Calibration bypass mode significantly reduces ECC errors
-2. High settle_cnt values (0x50-0x60) further improve signal quality
-3. CSIPHY now receives Frame Start (FS) and Frame End (FE) packets successfully
-4. **NEW CRITICAL ISSUE:** VFE CAMIF never receives SOF despite CSIPHY seeing frames
+1. CAMIF_STATUS shows complete frames: 480 lines × 1280 pixels (640×480 UYVY)
+2. CSIPHY `sof_count=0` - No MIPI Frame Start packets detected
+3. BIT(22) in CSIPHY IRQ fires at exactly frame rate (~330ms = 3fps)
+4. VFE IRQ pattern: `status0=0x0000001d` = SOF + NO_SOT + EOF_MISMATCH
+5. ping_pong register never changes (no frames written)
+6. Software SOF mechanism exists but requires proper frame start detection
+
+**FIXES APPLIED THIS SESSION:**
+1. IRQ_COMPOSITE_MASK (0x034) configuration for IMAGE_COMPOSITE_DONE IRQs
+2. SUBSAMPLE_CFG_1 fixed from 0xFFFFFFFF to 0 (was causing 15/16 frame skip)
+3. UB_CFG (Unified Buffer) configuration for Write Master
+4. BIT(22) added as frame start trigger for software SOF
+5. MT9M113 Context A dimensions configured dynamically
 
 **Current State:**
-- CSIPHY1 receives clean FS/FE MIPI short packets ✓
-- Continuous clock mode active (OUTPUT_CONTROL=0x7A0C) ✓
-- VFE CSI1 bridge clock enabled (vfe_csi1_clk running) ✓
-- **Problem:** VFE CAMIF_STATUS stays at 0x80000000 (halted) - never sees frames
-- Data path from CSIPHY to VFE appears broken
-
-### Previous Session Summary
-- ~51-52% ECC error rate across ALL 75 timing parameter combinations
-- This rate was consistent regardless of settle_cnt or HS_TERM_IMP values
+- CSIPHY receives DATA IRQs (0x800) and BIT(22) at frame boundaries ✓
+- CAMIF sees complete 640×480 frames (status=0x81e00500) ✓
+- CAMIF_ERROR fires every frame due to missing MIPI FS packets ✗
+- VFE Write Master configured but ping_pong never toggles ✗
+- Captured files are 0 bytes ✗
 
 ---
 
@@ -45,7 +57,8 @@ MT9M113 Sensor (I2C: 0x3c)
 │ CSIPHY1 @ 0x04900000                            │
 │ - Unified CSIPHY+CSID block (MSM8660 specific)  │
 │ - No separate CSID, No ISPIF on this SoC        │
-│ - IRQ: SOT ✓, ECC errors ✗ (~52% of packets)    │
+│ - IRQ: DATA (0x800) ✓, BIT(22) at frame rate ✓  │
+│ - IRQ: No FS (0x10000) or SOT (0x10) detected ✗ │
 └─────────────────────────────────────────────────┘
      │
      │  ← Data routing is AUTOMATIC (no ISPIF)
@@ -55,23 +68,17 @@ MT9M113 Sensor (I2C: 0x3c)
 ┌─────────────────────────────────────────────────┐
 │ VFE31 @ 0x04500000                              │
 │ - HW Version: 0x00030217                        │
-│ - CAMIF receives SOF ✓                          │
-│ - CAMIF_ERROR due to corrupted data ✗           │
-│ - REG_UPDATE timeout (no complete frames) ✗     │
+│ - CAMIF receives 480 lines × 1280 pixels ✓     │
+│ - CAMIF_SOF (bit 0) fires ✓                     │
+│ - CAMIF_NO_SOT (bit 2) fires ✗                  │
+│ - CAMIF_EOF_MISMATCH (bit 3) fires ✗            │
+│ - CAMIF_ERROR (status1 bit 0) fires ✗           │
+│ - ping_pong never toggles (no DMA writes) ✗     │
 └─────────────────────────────────────────────────┘
      │
      ▼
-AXI → DDR Memory → /dev/video3 (V4L2)
+AXI → DDR Memory → /dev/video3 (V4L2) [0 bytes]
 ```
-
-### Key MSM8660 Architecture Notes
-
-| Feature | MSM8660 | MSM8974+ |
-|---------|---------|----------|
-| CSIPHY/CSID | **Unified block** | Separate blocks |
-| ISPIF | **Not present** | Required for routing |
-| Data path | CSIPHY → VFE (direct) | CSIPHY → CSID → ISPIF → VFE |
-| VFE inputSource mux | **Not present** | Available |
 
 ---
 
@@ -81,417 +88,147 @@ AXI → DDR Memory → /dev/video3 (V4L2)
 
 1. **Sensor Detection & Initialization**
    - MT9M113 detected at I2C address 0x3c (chip ID 0x2480)
-   - PLL configuration matches webOS exactly
-   - MCU boot sequence completes successfully
-   - Sensor enters streaming state (SEQ_STATE=0x3, SEQ_CMD=0x0)
+   - Full 522-entry initialization table applied
+   - Context A configured dynamically for requested resolution
+   - Sensor streams correctly (CAMIF sees complete frames)
 
-2. **MIPI Output Configuration**
-   - OUTPUT_CONTROL = 0x7A08 (MIPI enabled, LP clock mode)
-   - RESET_REGISTER = 0x120C (streaming mode)
-   - Streaming sequence matches webOS order exactly
+2. **CSIPHY Configuration**
+   - DATA lane IRQs (0x800) firing during frame reception
+   - BIT(22) IRQs firing at frame boundaries (~3fps)
+   - Module parameters available for tuning (settle_cnt, hs_term_imp)
 
-3. **CSIPHY Configuration**
-   - All CSI1 clocks enabled (CSI1_CLK, CSI1_PHY_CLK, vfe_csi1_clk)
-   - PHY calibration completes (bit 23 set in CALIBRATION_CONTROL)
-   - SOT (Start of Transmission) sync bytes detected consistently
-   - All 9 CSIPHY registers match webOS values exactly
+3. **VFE CAMIF Configuration**
+   - FRAME_CFG = 0x01e00500 (480 lines, 1280 bytes/line) ✓
+   - WINDOW_WIDTH = 0x000004ff (last=1279, first=0) ✓
+   - WINDOW_HEIGHT = 0x000001df (last=479, first=0) ✓
+   - EFS_CFG = 0 (APS mode for MIPI) ✓
+   - SUBSAMPLE_CFG_1 = 0 (no frame skip) ✓
 
-4. **VFE Configuration**
-   - CAMIF configured correctly for 640x480 or 1280x1024
-   - FRAME_CFG shows correct pixel/line counts
-   - CAMIF_SOF (Start of Frame) interrupts received
-   - AXI_OUT_MODE and EFS_CFG match webOS values
-
-5. **Clock Configuration**
-   - MISC_CC_REG = 0x06003440 (csi_pix/csi_rdi enabled, CSI1 selected)
-   - All 7 VFE clocks present and enabled
-   - vfe_csi1_clk not halted (DBG_BUS_VEC_B bit 8 = 0)
+4. **VFE Write Master Configuration**
+   - WM0 ping/pong addresses valid (e.g., 0x72d00000/0x72d80000)
+   - WM0 stride = 1280 (correct for 640×2 UYVY)
+   - UB_CFG = 0x000003ff (offset=0, depth=1023) ✓
+   - WR_CFG = 0x00000001 (enabled, but bit 1 doesn't stick)
+   - IRQ_COMPOSITE_MASK = 0x00000001 (WM0 → COMP0) ✓
 
 ### What Fails
 
-1. **Persistent ECC Errors**
-   - ~51-52% of all MIPI packets have ECC errors
-   - This rate is **consistent across ALL tested parameter combinations**
-   - Pattern: SOT detected → ECC error on packet header
+1. **MIPI Frame Sync Detection**
+   - CSIPHY never detects FS (Frame Start) short packets
+   - CSIPHY `sof_count=0` throughout streaming
+   - VFE reports CAMIF_NO_SOT and CAMIF_EOF_MISMATCH
 
 2. **VFE Frame Capture**
-   - VFE receives CAMIF_SOF but times out waiting for REG_UPDATE
-   - CAMIF_ERROR (status1 bit 0) fires due to corrupted data
-   - ping_pong register never toggles (no complete frames)
+   - CAMIF_ERROR (status1 bit 0) fires every frame
+   - IRQ_STATUS_0 = 0x1d (SOF + sync errors)
+   - No IMAGE_COMPOSITE_DONE IRQs (bit 21 never fires)
+   - ping_pong register stuck at 0x00010000
    - Captured files are 0 bytes
 
 ---
 
-## Detailed Test Results
+## Session 3 Detailed Findings
 
-### Session 2: Calibration Mode Testing (March 27, 2026)
+### VFE IRQ Status Decode
 
-Based on Gemini AI analysis suggesting hardware calibration may override HS_TERM_IMP settings, we added a `calibration_mode` parameter:
+Observed pattern: `status0=0x0000001d status1=0x00000001`
 
-| Mode | Description | Result |
-|------|-------------|--------|
-| 0 | Normal - poll for bit 23, apply impedance after | ~52% ECC |
-| 1 | **Bypass** - no calibration, direct impedance write | **Cleaner IRQs, FS/FE detected** |
-| 2 | webOS-style - write cal+impedance without polling | Similar to mode 0 |
+**STATUS_0 bits (0x1d = 0b11101):**
+| Bit | Value | IRQ Name | Meaning |
+|-----|-------|----------|---------|
+| 0 | 0x01 | CAMIF_SOF | Start of Frame detected ✓ |
+| 2 | 0x04 | CAMIF_NO_SOT | **No MIPI Start of Transmission** |
+| 3 | 0x08 | CAMIF_EOF_MISMATCH | **Frame end timing mismatch** |
+| 4 | 0x10 | REG_UPDATE | Register update (intermittent) |
 
-**Calibration Bypass + High Settle Count Results:**
+**STATUS_1 bits (0x01):**
+| Bit | Value | IRQ Name | Meaning |
+|-----|-------|----------|---------|
+| 0 | 0x01 | CAMIF_ERROR | **Frame sync error** |
 
-| settle_cnt | Calibration | IRQ Quality | Notes |
-|------------|-------------|-------------|-------|
-| 0x14 (default) | Mode 0 | ~52% ECC | Baseline |
-| 0x30 | Mode 1 (bypass) | Reduced ECC, occasional | Better |
-| 0x40 | Mode 1 (bypass) | 5 IRQs, 1 ECC | Good |
-| 0x50 | Mode 1 (bypass) | FS/FE packets visible | Excellent |
-| 0x60 | Mode 1 (bypass) | Clean FS/FE, rare ECC | **Best** |
-
-**Typical IRQ pattern with settle=0x60, calibration bypass:**
-```
-CSIPHY1: IRQ status=0x00200010 [SOT ]      - Clean Start of Transmission
-CSIPHY1: IRQ status=0x00010040 [FS ]       - Frame Start short packet!
-CSIPHY1: IRQ status=0x00000080 []          - Frame End detected
-CSIPHY1: IRQ status=0x004f00c0 [FS FE ]    - Frame Start + Frame End
-... occasional ECC at end ...
-```
-
-**Key Discovery:** With calibration bypass and high settle count, CSIPHY successfully receives complete MIPI frames (FS and FE short packets). However, VFE CAMIF still never sees SOF.
-
-### VFE CAMIF Status During Session 2 Tests
-
-Despite CSIPHY receiving frames:
-```
-VFE: CAMIF_STATUS before REG_UPDATE: 0x80000000  <- halted
-VFE: After START: CAMIF_STATUS=0x80000000        <- STILL halted!
-[timeout]
-VFE sof timeout
-VFE reg update timeout
-```
-
-**The CAMIF never leaves halted state** even though:
-- CAMIF_CMD START is issued
-- CSI1_VFE_CLK is enabled and running
-- CSIPHY is receiving valid frame data
-
-### Session 1: settle_cnt / hs_term_imp Parameter Sweep
-
-Tested **75 combinations** with properly configured pipeline:
-- settle_cnt: 0x04 to 0x20 (4 to 32 decimal)
-- hs_term_imp: 0x00, 0x03, 0x07, 0x0B, 0x0F
-
-**Results (best combinations by activity):**
-
-| settle_cnt | hs_term_imp | Total IRQs | ECC Errors | ECC % |
-|------------|-------------|------------|------------|-------|
-| 0x18       | 0x0F        | 3073       | 1601       | 52%   |
-| 0x06       | 0x03        | 2284       | 1204       | 52%   |
-| 0x14       | 0x07        | 2169       | 1128       | 52%   |
-| 0x14       | 0x0F        | 2083       | 1079       | 51%   |
-| 0x1A       | 0x0B        | 2045       | 1071       | 52%   |
-| 0x1E       | 0x0B        | 1350       | 696        | 51%   |
-
-**webOS default values:** settle_cnt=0x14 (20), hs_term_imp=0x0F
-
-**Critical Finding:** ECC error rate is locked at 51-52% regardless of timing parameters. This is NOT a timing calibration problem - it's systematic.
-
-### CSIPHY IRQ Pattern Analysis
-
-Typical IRQ sequence observed:
-```
-CSIPHY1: IRQ status=0x00600010 [SOT]           - Clean SOT
-CSIPHY1: IRQ status=0x00000030 [SOT ECC]       - SOT + ECC error
-CSIPHY1: IRQ status=0x00000830 [SOT ECC]       - SOT + ECC + bit 11
-CSIPHY1: IRQ status=0x00000020 [ECC]           - ECC only
-CSIPHY1: IRQ status=0x00000010 [SOT]           - Clean SOT
-CSIPHY1: IRQ status=0x00000020 [ECC]           - ECC only
-... alternating pattern continues ...
-```
-
-The alternating SOT/ECC pattern suggests:
-- PHY successfully syncs to MIPI SOT bytes (0xB8)
-- Subsequent packet header data is consistently misread
-- Every other packet type may be corrupted
-
-### VFE Status During Capture Attempt
+### CSIPHY IRQ Pattern
 
 ```
-VFE: CAMIF_STATUS before REG_UPDATE: 0x80000000 (halted)
-VFE: After START: CAMIF_STATUS=0x00000000 IRQ_STATUS0=0x00000000
-VFE IRQ: status0=0x00000001 status1=0x00000000  <- CAMIF_SOF received!
-VFE IRQ: status0=0x0000001d status1=0x00000001  <- CAMIF_ERROR
-[1.5 seconds later]
-VFE reg update timeout
-CAMIF: status=0x81e00500 (halted, frame incomplete)
+CSIPHY1: IRQ status=0x00000800 [DATA ] sof_count=0   <- During line data
+CSIPHY1: IRQ status=0x00400000 []      sof_count=0   <- Frame boundary (BIT 22)
+CSIPHY1: IRQ status=0x00000800 [DATA ] sof_count=0   <- During line data
+CSIPHY1: IRQ status=0x00400000 []      sof_count=0   <- Frame boundary
+... pattern repeats at ~3fps ...
 ```
+
+**Key observation:** BIT(22) fires exactly at frame rate but is undocumented. We've added it as a frame start trigger for software SOF generation.
+
+### CAMIF Status Analysis
+
+At stream stop: `CAMIF_STATUS=0x81e00500`
+- Bit 31 (0x80000000): Halted
+- Bits 28:16 (0x1e0): 480 = lines received ✓
+- Bits 11:0 (0x500): 1280 = pixels per line ✓
+
+**This confirms CAMIF receives complete 640×480 UYVY frames!**
+
+The data path from sensor to CAMIF works. The issue is:
+1. Missing MIPI FS packets prevent proper frame sync
+2. CAMIF_ERROR blocks frame from being sent to Write Master
+3. No data reaches memory despite complete frames in CAMIF
 
 ---
 
-## Code Changes Made
+## Code Changes This Session
 
-### 1. Streaming Sequence (drivers/media/i2c/mt9m114.c)
-
-Changed to match webOS mt9m113_set_sensor_mode() order exactly:
+### 1. IRQ_COMPOSITE_MASK Configuration (camss-vfe.c)
 
 ```c
-/* webOS streaming sequence:
- * 1. CSIPHY configured (done by V4L2 pipeline)
- * 2. mdelay(10) - wait for CSIPHY to stabilize
- * 3. OUTPUT_CONTROL = 0x7A08 (enable MIPI output)
- * 4. RESET_REGISTER = 0x120C (streaming mode)
- * 5. SEQ_CAP_MODE = 0x0030 (preview mode)
- * 6. mdelay(40)
- * 7. SEQ_CMD = 0x0001 (RUN)
- *
- * CRITICAL: MIPI must be enabled BEFORE SEQ_CMD
+/*
+ * CRITICAL: Configure IRQ_COMPOSITE_MASK (0x034) to map Write Masters
+ * to composite interrupt groups. Without this, IMAGE_COMPOSITE_DONE
+ * IRQs (bits 21-23) never fire!
  */
-msleep(10);
-cci_write(MT9M113_OUTPUT_CONTROL, 0x7A08);  // Enable MIPI FIRST
-cci_write(MT9M114_RESET_REGISTER, 0x120C);  // Streaming mode
-// ... SEQ_CAP_MODE, delay, SEQ_CMD follow
+u32 comp_mask = BIT(vfe->camif_pending_wm);
+writel_relaxed(comp_mask, vfe->base + VFE31_IRQ_COMPOSITE_MASK_0);
 ```
 
-### 2. CSIPHY Configuration (drivers/media/platform/qcom/camss/camss-csiphy-8x60.c)
-
-Configuration matches webOS msm_camio_csi_config():
+### 2. SUBSAMPLE_CFG_1 Fix (camss-vfe.c)
 
 ```c
-// D0-D3_CONTROL2: settle_cnt, HS_TERM_IMP, LP_REC_EN, ERR_SOT_HS_EN
-val = (settle_cnt << 24) | (hs_term_imp << 16) | (1 << 4) | (1 << 3);
-writel(val, MIPI_PHY_D0_CONTROL2);  // 0x140F0018 with defaults
-
-// CL_CONTROL: HS_TERM_IMP, LP_REC_EN
-writel(0x0F000004, MIPI_PHY_CL_CONTROL);
-
-// PHY_CONTROL: SOT_ECC_EN
-writel(0x4, MIPI_PHY_CONTROL);
-
-// PROTOCOL_CONTROL: LONG_PACKET_HEADER_CAPTURE | DECODE_ID | ECC_EN
-writel(0x00260000, MIPI_PROTOCOL_CONTROL);
-
-// CALIBRATION_CONTROL - poll for bit 23 (cal done)
-writel(0x00700000, MIPI_CALIBRATION_CONTROL);
-
-// CAMERA_CNTL: lane_assign | 1 lane
-writel(0x0000e404, MIPI_CAMERA_CNTL);
+/* SUBSAMPLE_CFG_1: Must be 0 for no frame skipping!
+ * Bits [3:0] = frameSkip count. 0xFFFFFFFF sets frameSkip=0xF,
+ * which skips 15 out of 16 frames. */
+writel_relaxed(0, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_1);
 ```
 
-### 3. VFE31 Configuration (drivers/media/platform/qcom/camss/camss-vfe-3-1.c)
-
-- AXI_OUT_MODE set to match webOS (0x60 for raw, 0x200 for PIX)
-- EFS_CFG = 0x00 (APS mode, not EFS sync)
-- CAMIF start sequence matches webOS exactly
-
----
-
-## Register State Comparison
-
-### CSIPHY1 Registers (ALL MATCH webOS)
-
-| Register | Offset | Our Value | webOS Value | Status |
-|----------|--------|-----------|-------------|--------|
-| MIPI_PHY_CONTROL | 0x00 | 0x00000004 | 0x00000004 | ✓ |
-| MIPI_PROTOCOL_CONTROL | 0x04 | 0x00260000 | 0x00260000 | ✓ |
-| MIPI_CALIBRATION_CONTROL | 0x18 | 0x00F00000 | 0x00E00080 | ✓ (cal done) |
-| MIPI_PHY_D0_CONTROL | 0x34 | 0x00000000 | 0x00000000 | ✓ |
-| MIPI_PHY_D0_CONTROL2 | 0x38 | 0x140F0018 | 0x140F0018 | ✓ |
-| MIPI_PHY_D1_CONTROL | 0x20 | 0x00000300 | 0x00000300 | ✓ |
-| MIPI_PHY_CL_CONTROL | 0x48 | 0x0F000004 | 0x0F000004 | ✓ |
-| MIPI_CAMERA_CNTL | 0x24 | 0x0000E404 | 0x0000E404 | ✓ |
-
-### Sensor Registers During Streaming
-
-| Register | Address | Value | Meaning |
-|----------|---------|-------|---------|
-| OUTPUT_CONTROL | 0x3400 | 0x7A08 | MIPI enabled, LP clock |
-| RESET_REGISTER | 0x301A | 0x120C | Streaming mode |
-| SEQ_STATE | MCU var | 0x03 | Streaming |
-| SEQ_CMD | MCU var | 0x00 | Ready (command accepted) |
-
-### VFE CAMIF State
-
-| Register | Value | Meaning |
-|----------|-------|---------|
-| CAMIF_STATUS | 0x80000000 → 0x00000000 | Halted → Started |
-| FRAME_CFG | 0x01e00500 | 480 lines, 1280 bytes/line |
-| CORE_CFG | 0x00000046 | UYVY pixel pattern |
-| AXI_OUT_MODE | 0x00000200 | PIX mode |
-
----
-
-## NEW: CSIPHY to VFE Data Path Issue
-
-### The Core Problem
-
-After calibration mode improvements, we can now see:
-1. **CSIPHY receives valid frames** - FS (Frame Start) and FE (Frame End) short packets detected
-2. **VFE never receives SOF** - CAMIF_STATUS stays halted at 0x80000000
-
-This points to a **data routing issue** between CSIPHY output and VFE input.
-
-### Data Path Architecture (MSM8660)
-
-```
-MT9M113 Sensor
-     │
-     ▼ (MIPI CSI-2)
-CSIPHY1 @ 0x04900000
-     │  ← FS/FE packets received ✓
-     │
-     │  ??? Gap in data path ???
-     │
-     ▼
-VFE31 CAMIF @ 0x04500000
-     │  ← Never sees SOF
-```
-
-### Clocks Verified Enabled
-
-| Clock | Register | Status |
-|-------|----------|--------|
-| CSI1_VFE_CLK | VFE_CC_REG bit 10 | ENABLED ✓ |
-| vfe_csi1_clk halt | DBG_BUS_VEC_B bit 8 | Running ✓ |
-| csi_pix_clk | MISC_CC_REG | CSI1 selected ✓ |
-| csi1_phy_clk | - | Enabled ✓ |
-
-### Possible Causes
-
-1. **Missing input mux configuration** - VFE may need explicit input source selection
-2. **CSID configuration** - The "unified CSIPHY+CSID" may need additional setup
-3. **Internal routing register** - There may be an undocumented routing register
-4. **Timing dependency** - VFE may need to be "listening" before CSIPHY starts
-
-### What webOS Does Differently
-
-webOS camera stack uses a custom kernel driver that:
-1. Configures CSIPHY via msm_camio_csi_config()
-2. Has a "VFE configuration" phase before streaming
-3. May configure routing that we're missing
-
----
-
-## Previous Theories (Session 1)
-
-### 1. Clock Phase/Frequency Mismatch (Partially Addressed)
-The consistent 52% ECC rate suggests a systematic issue. If the receiver samples data at slightly wrong phase relative to the MIPI clock, every other bit boundary could be misread, causing consistent header corruption.
-
-### 2. Missing PHY Calibration Step
-webOS may perform additional calibration we're not doing. The bit 23 "calibration done" in CALIBRATION_CONTROL might not mean full calibration is complete. There could be additional steps needed.
-
-### 3. MIPI Clock Recovery Issue
-The CSIPHY recovers clock from the incoming MIPI data stream. If clock recovery is unstable or slightly off-frequency, it would cause consistent sampling errors on every packet.
-
-### 4. D-PHY Timing Parameters
-MT9M113 supposedly has fixed MIPI timing based on PLL configuration, but there might be a mismatch between sensor output timing and receiver expectations.
-
-### 5. Hardware Signal Integrity
-Physical layer issues (impedance mismatch, crosstalk, reflections) could cause consistent corruption patterns. However, webOS works on the same hardware, making this less likely.
-
----
-
-## Questions for Analysis (Updated Session 2)
-
-### NEW Priority Questions
-
-1. **Why does VFE CAMIF never leave halted state?**
-   - CSIPHY receives valid FS/FE packets
-   - CSI1_VFE_CLK is enabled
-   - CAMIF_CMD START is issued
-   - But CAMIF_STATUS stays 0x80000000
-   - **What triggers CAMIF to start accepting data?**
-
-2. **Is there an internal routing/mux on MSM8660?**
-   - The unified CSIPHY+CSID architecture may have internal routing
-   - webOS may configure this routing somewhere we haven't found
-   - Are there undocumented registers between CSIPHY and VFE?
-
-3. **Does VFE need to be "listening" before CSIPHY starts?**
-   - Current sequence: CSIPHY config → Sensor stream → VFE config
-   - Should VFE be fully ready before sensor starts streaming?
-
-4. **Is there a CSID-specific configuration for MSM8660?**
-   - Our CSID driver is minimal (pass-through for unified PHY+CSID)
-   - webOS may do additional CSID configuration
-
-### Previous Questions (Session 1)
-
-5. **Why was ECC error rate locked at exactly 51-52%?**
-   - **PARTIALLY RESOLVED:** Calibration bypass + high settle_cnt reduces ECC significantly
-   - Clean FS/FE packets now visible with optimized settings
-
-6. **What is bit 11 (0x800) in the CSIPHY IRQ status?**
-   - We see status=0x00000830 and 0x00000880 frequently
-   - Bit 11 is undocumented - could indicate frame boundary
-
-7. **Could IRQ_MASK difference affect data flow?**
-   - webOS uses 0xFFF7F3FF
-   - Our driver uses 0x000300F0
-   - Less likely to be the issue since data does reach CSIPHY
-
----
-
-## webOS Reference Values
-
-From webOS kernel mt9m113.c and msm_io_8x60.c:
+### 3. UB_CFG Configuration (camss-vfe.c)
 
 ```c
-// MT9M113 CSI parameters
-mt9m113_csi_params.lane_cnt = 1;
-mt9m113_csi_params.data_format = CSI_8BIT;  // = 0
-mt9m113_csi_params.lane_assign = 0xe4;
-mt9m113_csi_params.dpcm_scheme = 0;
-mt9m113_csi_params.settle_cnt = 0x14;  // 20 decimal
-
-// D0_CONTROL2 calculated value: 0x140F0018
-// - settle_cnt = 0x14 << 24
-// - HS_TERM_IMP = 0x0F << 16
-// - LP_REC_EN = 1 << 4
-// - ERR_SOT_HS_EN = 1 << 3
+/* VFE31 has a 1024-byte unified buffer shared among Write Masters.
+ * For single WM operation, use full buffer: offset=0, depth=1023. */
+u32 ub_cfg = (0 << 16) | 1023;
+writel_relaxed(ub_cfg, vfe->base + VFE31_WM_WR_UB_CFG(wm));
 ```
 
----
+### 4. BIT(22) Frame Start Detection (camss-csiphy-8x60.c)
 
-## Things We've Ruled Out
+```c
+/* BIT(22) fires at frame boundaries on MT9M113.
+ * Use it as frame start trigger for software SOF. */
+if (status & MIPI_IRQ_FRAME_START) {
+    frame_start_detected = true;
+} else if (status & BIT(22)) {
+    frame_start_detected = true;  // Added this case
+} else if (status & MIPI_IRQ_SOT_SYNC) {
+    // timing-based detection...
+}
+```
 
-1. **Sensor not streaming:** CSIPHY receives SOT = sensor is sending MIPI packets ✓
-2. **OUTPUT_CONTROL disabled:** Now correctly shows 0x7A08 after SEQ_CMD ✓
-3. **Wrong CSI selected:** MISC_CC_REG shows CSI1 selected ✓
-4. **Clocks not enabled:** All VFE clocks enabled including csi_pix and csi_rdi ✓
-5. **VFE configuration wrong:** CAMIF registers match webOS values ✓
-6. **CSIPHY PHY disabled:** D1_CONTROL = 0x300 (PHY enabled) ✓
-7. **Legacy clock mode:** Tested - MISC_CC_REG=0x0 is BROKEN, modern mux required ✓
-8. **Timing parameters:** Tested 75 combinations - all show ~52% ECC ✓
-9. **Continuous vs LP clock:** Tested both - LP mode (0x7A08) has more activity ✓
+### 5. MT9M113 Context A Dynamic Configuration (mt9m114.c)
 
----
-
-## File Locations
-
-- Sensor driver: `drivers/media/i2c/mt9m114.c`
-- CSIPHY driver: `drivers/media/platform/qcom/camss/camss-csiphy-8x60.c`
-- VFE driver: `drivers/media/platform/qcom/camss/camss-vfe-3-1.c`
-- webOS reference: `webos-linux-kernel-touchpad/drivers/media/video/msm/mt9m113.c`
-- webOS CSIPHY: `webos-linux-kernel-touchpad/drivers/media/video/msm/msm_io_8x60.c`
-
----
-
-## Diagnostic Commands
-
-```bash
-# On device via SSH (port 22):
-/tmp/test-camera.sh pix     # Full pipeline test
-
-# Check current parameters:
-cat /sys/module/qcom_camss/parameters/settle_cnt_override
-cat /sys/module/qcom_camss/parameters/hs_term_imp_override
-
-# Set parameters for testing:
-echo 0x14 > /sys/module/qcom_camss/parameters/settle_cnt_override
-echo 0x0F > /sys/module/qcom_camss/parameters/hs_term_imp_override
-
-# Check dmesg for errors:
-dmesg | grep -E "VFE|CSIPHY|mt9m|camss|ECC|SOT" | tail -100
-
-# Count ECC errors vs clean SOT:
-dmesg | grep "CSIPHY" | grep -c "ECC"
-dmesg | grep "CSIPHY" | grep "SOT" | grep -cv "ECC"
+```c
+/* Configure Context A dimensions based on requested format */
+compose = v4l2_subdev_state_get_compose(ifp_state, 0);
+if (compose->width <= 640 && compose->height <= 480) {
+    mt9m113_write_mcu_var(sensor, 0x2703, 640);   // OUTPUT_WIDTH_A
+    mt9m113_write_mcu_var(sensor, 0x2705, 480);   // OUTPUT_HEIGHT_A
+}
 ```
 
 ---
@@ -500,31 +237,133 @@ dmesg | grep "CSIPHY" | grep "SOT" | grep -cv "ECC"
 
 | Commit | Description |
 |--------|-------------|
-| 2323af7a4f6d | **media: qcom: camss: csiphy-8x60: Add calibration mode parameter** |
-| c2ad99be2984 | docs: Consolidate camera debug documents |
-| c3d1d461c88a | media: i2c: mt9m114: Match webOS MT9M113 streaming sequence order |
-| af21bca6901f | media: i2c: mt9m114: Use 640x480 as default MT9M113 output format |
-| 01f57363213e | media: i2c: mt9m114: Delay MT9M113 MIPI enable to fix VFE CAMIF timing |
-| 8db7bdb7498d | media: i2c: mt9m114: Add MT9M113 context V4L2 control |
-| 481829017061 | media: i2c: mt9m114: Fix MT9M113 SEQ_CAP_MODE for Context B |
+| 0fa29de2d5fc | **media: qcom: camss: csiphy-8x60: Use BIT(22) for frame start detection** |
+| 04ff38089234 | **media: qcom: camss: vfe31: Add UB_CFG configuration to deferred CAMIF path** |
+| 4e9e1fe4198c | **media: qcom: camss: vfe31: Add IRQ_COMPOSITE_MASK to deferred CAMIF path** |
+| c789223a9f8b | media: qcom: camss: vfe31: Fix SUBSAMPLE_CFG_1 frame skip configuration |
+| 387c7ac35106 | media: i2c: mt9m114: Configure MT9M113 Context A dimensions dynamically |
 
-## New Module Parameters (Session 2)
+---
 
-### CSIPHY Calibration Mode
+## Root Cause Analysis
+
+### The Core Problem
+
+The MT9M113 sensor is NOT sending proper MIPI Frame Start (FS) short packets, OR the CSIPHY isn't detecting them. Without FS packets:
+1. VFE CAMIF cannot properly sync to frame boundaries
+2. CAMIF_NO_SOT and CAMIF_EOF_MISMATCH errors fire
+3. CAMIF_ERROR prevents data from reaching Write Master
+4. No frames are written to memory
+
+### Evidence
+
+1. **CSIPHY `sof_count=0`** - No FS packets detected in hardware
+2. **MT9M113 CUSTOM_SHORT_PKT=0x0080** - FS/FE supposedly configured
+3. **BIT(22) fires at frame rate** - Some frame boundary signal exists
+4. **CAMIF sees complete frames** - Data path to CAMIF works
+5. **No MIPI_IRQ_FRAME_START (0x10000)** - Standard FS bit never fires
+
+### Possible Causes
+
+1. **MT9M113 not actually sending FS packets** despite register config
+2. **CSIPHY IRQ routing issue** - FS might be at different bit position
+3. **MIPI timing mismatch** - FS packets corrupted/missed
+4. **webOS uses different frame sync** - Maybe line counting or software sync
+
+---
+
+## Next Steps
+
+### Immediate (Needs Testing)
+
+1. **Test with BIT(22) software SOF** - Rebuild kernel and test
+   ```bash
+   echo 1 > /sys/module/qcom_camss/parameters/software_sof_enable
+   ```
+
+2. **Check if software SOF triggers VFE properly**
+   - If software SOF fires, does CAMIF_ERROR clear?
+   - Does ping_pong start toggling?
+
+### If Software SOF Doesn't Help
+
+3. **Investigate CAMIF_ERROR source**
+   - What specific condition triggers CAMIF_ERROR?
+   - Can we mask or ignore frame sync errors?
+
+4. **Try RDI bypass mode**
+   - RDI might work without proper frame sync
+   - Data goes directly to memory bypassing CAMIF
+
+5. **Check webOS frame sync mechanism**
+   - Does webOS rely on FS packets?
+   - How does webOS handle MT9M113 frame boundaries?
+
+---
+
+## Module Parameters
+
+### Current Recommended Settings
+
 ```bash
-# Check current mode
-cat /sys/module/qcom_camss/parameters/calibration_mode
+# Enable software SOF (uses BIT(22) for frame start)
+echo 1 > /sys/module/qcom_camss/parameters/software_sof_enable
 
-# Mode 0: Normal (poll for bit 23, apply impedance after)
-# Mode 1: Bypass (no calibration, direct impedance write) <- RECOMMENDED
-# Mode 2: webOS-style (write cal+impedance without polling)
-echo 1 > /sys/module/qcom_camss/parameters/calibration_mode
+# AXI output mode (512=0x200 for PIX, 96=0x60 for RDI)
+echo 512 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
+
+# MIPI timing parameters (optional)
+echo 0x14 > /sys/module/qcom_camss/parameters/settle_cnt_override
+echo 0x0F > /sys/module/qcom_camss/parameters/hs_term_imp_override
 ```
 
-### Recommended Test Configuration
+### All Available Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| software_sof_enable | N | Enable software SOF generation from CSIPHY |
+| vfe31_axi_output_mode | 1 | AXI output mode (0x200=PIX, 0x60=RDI) |
+| settle_cnt_override | -1 | MIPI settle count (-1=use default 0x14) |
+| hs_term_imp_override | -1 | HS termination impedance (-1=use default 0x0F) |
+| calibration_mode | 0 | PHY calibration mode (0=normal, 1=bypass) |
+
+---
+
+## Diagnostic Commands
+
 ```bash
-# Apply optimal settings found in Session 2
-echo 1 > /sys/module/qcom_camss/parameters/calibration_mode
-echo 0x60 > /sys/module/qcom_camss/parameters/settle_cnt_override
-echo 0x60 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
+# Run camera test
+ssh root@172.16.42.2 "cd /tmp && ./test-camera.sh pix"
+
+# Check VFE IRQ status and CAMIF state
+ssh root@172.16.42.2 "dmesg | grep -E 'status0=|CAMIF_STATUS|ping_pong' | tail -30"
+
+# Check CSIPHY frame detection
+ssh root@172.16.42.2 "dmesg | grep -E 'CSIPHY.*sof_count|BIT.22|Software SOF' | tail -20"
+
+# Enable software SOF
+ssh root@172.16.42.2 "echo 1 > /sys/module/qcom_camss/parameters/software_sof_enable"
+
+# Check current module parameters
+ssh root@172.16.42.2 "cat /sys/module/qcom_camss/parameters/*"
 ```
+
+---
+
+## File Locations
+
+- Sensor driver: `drivers/media/i2c/mt9m114.c`
+- CSIPHY driver: `drivers/media/platform/qcom/camss/camss-csiphy-8x60.c`
+- VFE driver: `drivers/media/platform/qcom/camss/camss-vfe-3-1.c`
+- VFE common: `drivers/media/platform/qcom/camss/camss-vfe.c`
+- webOS reference: `webos-linux-kernel-touchpad/drivers/media/video/msm/`
+
+---
+
+## Session History
+
+| Session | Date | Focus | Key Finding |
+|---------|------|-------|-------------|
+| 1 | 2026-03-26 | Parameter sweep | 52% ECC rate consistent across all params |
+| 2 | 2026-03-27 | Calibration modes | Calibration bypass + high settle helps |
+| 3 | 2026-03-28 | VFE Write Master | CAMIF sees frames but sync errors block WM |
