@@ -1569,13 +1569,40 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 4.5 - Enable IRQs\n");
 	/*
-	 * VFE31 uses IMAGE_COMPOSITE_DONE (bits 21-23) for frame completion,
-	 * NOT IMAGE_MASTER_PING_PONG (bits 8+) like later VFE versions.
-	 * webOS uses IRQ_MASK_0 = 0x00EFE021.
+	 * CRITICAL: Configure IRQ_COMPOSITE_MASK (0x034) to map WMs to composite
+	 * interrupt groups. Without this, IMAGE_COMPOSITE_DONE IRQs never fire!
+	 *
+	 * Bit layout:
+	 * - Bits 0-7:   WMs mapped to COMPOSITE_DONE_0 (IRQ_STATUS_0 bit 21)
+	 * - Bits 8-15:  WMs mapped to COMPOSITE_DONE_1 (IRQ_STATUS_0 bit 22)
+	 * - Bits 16-23: WMs mapped to COMPOSITE_DONE_2 (IRQ_STATUS_0 bit 23)
+	 *
+	 * For raw capture using WM0, map it to COMPOSITE_DONE_0 (set bit 0).
+	 */
+	{
+		u32 comp_mask = BIT(wm);  /* Map WM to COMPOSITE_DONE_0 */
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: Setting IRQ_COMPOSITE_MASK_0=0x%08x (WM%d -> COMP0)\n",
+			 comp_mask, wm);
+		writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+		wmb();
+	}
+
+	/*
+	 * VFE31 uses IMAGE_COMPOSITE_DONE (bits 21-23) for frame completion.
+	 * webOS uses IRQ_MASK_0 = 0x00EFE021 which includes:
+	 * - Bit 0: CAMIF_SOF
+	 * - Bit 5: REG_UPDATE
+	 * - Bits 8-14: IMAGE_MASTER_PING_PONG for WM0-6
+	 * - Bits 21-23: IMAGE_COMPOSITE_DONE_0-2
+	 *
+	 * We enable both PING_PONG and COMPOSITE_DONE for compatibility.
 	 */
 	vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
 				VFE_0_IRQ_MASK_0_CAMIF_EOF |
 				VFE_0_IRQ_MASK_0_REG_UPDATE |
+				VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm) |
 				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0) |
 				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(1) |
 				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
@@ -1813,6 +1840,24 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 		   VFE_0_IRQ_MASK_0_line_n_REG_UPDATE(VFE_LINE_PIX);
 	u32 val1 = VFE_0_IRQ_MASK_1_CAMIF_ERROR;
 
+	/*
+	 * Configure IRQ_COMPOSITE_MASK_0 (0x034) to map WM0 to the composite
+	 * group. Without this, IMAGE_COMPOSITE_DONE IRQs never fire!
+	 *
+	 * For PIX line, WM0 is used. Map it to the specified composite group:
+	 * - comp 0: bits 0-7 (COMPOSITE_DONE_0)
+	 * - comp 1: bits 8-15 (COMPOSITE_DONE_1)
+	 * - comp 2: bits 16-23 (COMPOSITE_DONE_2)
+	 */
+	if (enable) {
+		u32 comp_mask = BIT(comp * 8);  /* WM0 mapped to composite group */
+
+		dev_info(vfe->camss->dev,
+			 "VFE31 pix_line: Setting IRQ_COMPOSITE_MASK=0x%08x (WM0 -> COMP%d)\n",
+			 comp_mask, comp);
+		writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+	}
+
 	if (enable) {
 		vfe->irq_mask0_shadow |= val0;
 		vfe->irq_mask1_shadow |= val1;
@@ -1825,8 +1870,8 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 
 	dev_info(vfe->camss->dev,
-		 "VFE31 IRQ pix_line: enable=%d mask0=0x%08x mask1=0x%08x\n",
-		 enable, vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
+		 "VFE31 IRQ pix_line: enable=%d comp=%d mask0=0x%08x mask1=0x%08x\n",
+		 enable, comp, vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
 }
 
 static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
