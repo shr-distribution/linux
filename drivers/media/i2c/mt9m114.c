@@ -1978,13 +1978,73 @@ mt9m113_streaming:
 		 * It uses the init table settings (Context A = 640x480).
 		 */
 
-		/* Log what resolution was requested (for debugging) */
+		/*
+		 * Get the requested output resolution from the compose rectangle.
+		 * MT9M113 supports two resolutions:
+		 * - 640x480 (Context A default)
+		 * - 1280x1024 (Context B / full resolution)
+		 *
+		 * If the requested resolution differs from 640x480, we must
+		 * reconfigure Context A's output dimensions before streaming.
+		 */
 		compose = v4l2_subdev_state_get_compose(ifp_state, 0);
-		output_width = 640;
-		output_height = 480;
+		output_width = compose->width;
+		output_height = compose->height;
+
+		/* Validate and normalize resolution to supported modes */
+		if (output_width > 640 || output_height > 480) {
+			output_width = 1280;
+			output_height = 1024;
+		} else {
+			output_width = 640;
+			output_height = 480;
+		}
+
 		dev_info(&sensor->client->dev,
-			 "MT9M113: compose=%ux%u, using Context A (640x480 from init table)\n",
-			 compose->width, compose->height);
+			 "MT9M113: compose=%ux%u, configuring Context A to %ux%u\n",
+			 compose->width, compose->height, output_width, output_height);
+
+		/*
+		 * Configure Context A output dimensions if not 640x480.
+		 * This must be done BEFORE enabling MIPI output.
+		 */
+		if (output_width != 640 || output_height != 480) {
+			/* Set Context A output width (MCU var 0x2703) */
+			ret = mt9m113_write_mcu_var(sensor, 0x2703, output_width);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: Context A width failed: %d\n", ret);
+				goto error;
+			}
+
+			/* Set Context A output height (MCU var 0x2705) */
+			ret = mt9m113_write_mcu_var(sensor, 0x2705, output_height);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: Context A height failed: %d\n", ret);
+				goto error;
+			}
+
+			/* Issue SEQ_CMD=REFRESH to apply context changes */
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+						    MT9M113_SEQ_CMD_REFRESH);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: REFRESH failed: %d\n", ret);
+				goto error;
+			}
+
+			/* Wait for refresh to complete */
+			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+			if (ret) {
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: REFRESH timeout (continuing)\n");
+			}
+
+			dev_info(&sensor->client->dev,
+				 "MT9M113: Context A reconfigured to %ux%u\n",
+				 output_width, output_height);
+		}
 
 		/* Step 1: Wait 10ms for CSIPHY to stabilize (webOS: mdelay(10) after csi_config) */
 		msleep(10);
