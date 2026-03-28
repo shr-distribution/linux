@@ -1418,6 +1418,7 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
  */
 #define VFE31_IRQ_MASK_0		0x01C
 #define VFE31_IRQ_MASK_1		0x020
+#define VFE31_IRQ_COMPOSITE_MASK_0	0x034
 
 /* IRQ_MASK_0 individual bits */
 #define VFE31_IRQ_MASK_0_CAMIF_SOF		BIT(0)
@@ -1904,8 +1905,14 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		 val, line->fmt[MSM_VFE_PAD_SINK].height - 1);
 	writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_HEIGHT_CFG);
 
+	/* SUBSAMPLE_CFG_0 at 0x1F4: 0xFFFFFFFF = no pixel/line subsampling */
 	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_0);
-	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_1);
+	/*
+	 * SUBSAMPLE_CFG_1 at 0x1F8: Must be 0 for no frame skipping!
+	 * Bits [3:0] = frameSkip count. 0xFFFFFFFF sets frameSkip=0xF,
+	 * which skips 15 out of 16 frames. webOS uses 0 here.
+	 */
+	writel_relaxed(0, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_1);
 
 	/*
 	 * EPOCH_CFG at 0x200 - epoch interrupt timing.
@@ -2012,6 +2019,30 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE31_IRQ_MASK_0);
 	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE31_IRQ_MASK_1);
 	wmb();
+
+	/*
+	 * CRITICAL: Configure IRQ_COMPOSITE_MASK (0x034) to map Write Masters
+	 * to composite interrupt groups. Without this, IMAGE_COMPOSITE_DONE
+	 * IRQs (bits 21-23) never fire, and frame completion is never signaled!
+	 *
+	 * Bit layout:
+	 *   Bits 0-7:   WMs mapped to COMPOSITE_DONE_0 (IRQ_STATUS_0 bit 21)
+	 *   Bits 8-15:  WMs mapped to COMPOSITE_DONE_1 (IRQ_STATUS_0 bit 22)
+	 *   Bits 16-23: WMs mapped to COMPOSITE_DONE_2 (IRQ_STATUS_0 bit 23)
+	 *
+	 * For PIX mode using WM0, map it to COMPOSITE_DONE_0 (set bit 0).
+	 * webOS uses composite group 2 for preview (OUTPUT_2), but group 0
+	 * should work for our purposes.
+	 */
+	{
+		u32 comp_mask = BIT(vfe->camif_pending_wm);  /* Map WM to COMPOSITE_DONE_0 */
+
+		dev_info(vfe->camss->dev,
+			 "VFE: Setting IRQ_COMPOSITE_MASK=0x%08x (WM%d -> COMP0)\n",
+			 comp_mask, vfe->camif_pending_wm);
+		writel_relaxed(comp_mask, vfe->base + VFE31_IRQ_COMPOSITE_MASK_0);
+		wmb();
+	}
 
 	/*
 	 * Dump comprehensive clock state before CAMIF start.
