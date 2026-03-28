@@ -869,9 +869,16 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 	/*
 	 * Frame start detection:
 	 * 1. If MIPI_IRQ_FRAME_START bit is set, use it (preferred)
-	 * 2. Otherwise, use timing-based detection from SOT gaps
+	 * 2. If BIT(22) is set - observed on MT9M113 at frame boundaries
+	 * 3. Otherwise, use timing-based detection from SOT gaps
+	 *
+	 * BIT(22) fires at exactly frame rate on MSM8660/MT9M113 combo and
+	 * appears to be an undocumented frame boundary indicator.
 	 */
 	if (status & MIPI_IRQ_FRAME_START) {
+		frame_start_detected = true;
+	} else if (status & BIT(22)) {
+		/* BIT(22) fires at frame boundaries on MT9M113 */
 		frame_start_detected = true;
 	} else if (status & MIPI_IRQ_SOT_SYNC) {
 		now = ktime_get();
