@@ -2111,17 +2111,44 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * CRITICAL: vfe31_enable() bypasses the gen1 path which would normally
 	 * call wm_enable(). We must enable WM here after CAMIF is started,
 	 * otherwise the WM never gets enabled and no data flows to memory!
+	 */
+	dev_info(vfe->camss->dev, "VFE: Step 7 - Enable Write Master WM%d\n",
+		 vfe->camif_pending_wm);
+
+	/*
+	 * Step 7a: Configure Unified Buffer (UB) for WM
+	 *
+	 * VFE31 has a 1024-byte unified buffer shared among Write Masters.
+	 * For single WM operation, use full buffer: offset=0, depth=1023.
+	 * Without this configuration, WM cannot buffer data for DMA transfer!
+	 *
+	 * UB_CFG register format:
+	 *   Bits [15:0]:  depth (number of 128-bit entries - 1)
+	 *   Bits [31:16]: offset in UB
+	 */
+	{
+		u32 ub_cfg = (0 << 16) | 1023;  /* offset=0, depth=1023 (full UB) */
+		u8 wm = vfe->camif_pending_wm;
+
+		dev_info(vfe->camss->dev, "VFE: WM%d UB_CFG=0x%08x (offset=0, depth=1023)\n",
+			 wm, ub_cfg);
+		writel_relaxed(ub_cfg, vfe->base + VFE31_WM_WR_UB_CFG(wm));
+		wmb();
+	}
+
+	/*
+	 * Step 7b: Enable WM
 	 *
 	 * WR_CFG bits:
 	 *   Bit 0: enable - enables the write master
 	 *   Bit 1: frame_based mode - complete frame before switching buffers
 	 */
-	dev_info(vfe->camss->dev, "VFE: Step 7 - Enable Write Master WM0\n");
-	writel_relaxed(BIT(0) | BIT(1), vfe->base + VFE31_WM_WR_CFG(0));
+	writel_relaxed(BIT(0) | BIT(1), vfe->base + VFE31_WM_WR_CFG(vfe->camif_pending_wm));
 	wmb();
 
-	dev_info(vfe->camss->dev, "VFE: WM0 WR_CFG after enable: 0x%08x\n",
-		 readl_relaxed(vfe->base + VFE31_WM_WR_CFG(0)));
+	dev_info(vfe->camss->dev, "VFE: WM%d WR_CFG after enable: 0x%08x\n",
+		 vfe->camif_pending_wm,
+		 readl_relaxed(vfe->base + VFE31_WM_WR_CFG(vfe->camif_pending_wm)));
 
 	/* Small delay then check status */
 	udelay(100);
