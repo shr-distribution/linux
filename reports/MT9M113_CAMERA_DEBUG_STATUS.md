@@ -1,6 +1,6 @@
 # MT9M113 Front Camera Debug Status - HP TouchPad
 
-**Last Updated:** 2026-03-28 (Session 3 - VFE Write Master Configuration)
+**Last Updated:** 2026-03-28 (Session 4 - CSI Mux Fix)
 **Kernel:** Linux 6.18-tenderloin
 **SoC:** Qualcomm APQ8060 (MSM8660 variant)
 **Sensor:** MT9M113 front camera (1.3MP, chip ID 0x2480)
@@ -10,38 +10,60 @@
 
 ## Executive Summary
 
-**CAMIF receives complete frames but VFE Write Master doesn't write to memory.**
+**CAMIF receives complete frames but VFE Write Master doesn't write to memory due to MIPI frame sync errors.**
 
-### Session 3 Update (March 28, 2026)
+### Session 4 Update (March 28, 2026)
 
-**KEY DISCOVERY:**
-The VFE31 IRQ STATUS_0 bits reveal the root cause:
-- **Bit 2 (0x04): CAMIF_NO_SOT** - No Start of Transmission detected
-- **Bit 3 (0x08): CAMIF_EOF_MISMATCH** - End of Frame mismatch
+**CRITICAL FIX DISCOVERED:**
+The CSI pixel/RDI mux in MISC_CC_REG (0x04000058) was selecting **CSI0** instead of **CSI1**. MT9M113 uses CSI1, so data was being routed incorrectly!
 
-These are MIPI frame synchronization errors. The VFE cannot properly sync frames without MIPI Frame Start (FS) short packets.
+**Before Fix (webOS legacy mode):**
+```
+MISC_CC_REG = 0x00000400  (bit 10 only)
+csi_pix_sel (bit 25): CSI0  ← WRONG
+csi_rdi_sel (bit 12): CSI0  ← WRONG
+```
 
-**NEW FINDINGS:**
-1. CAMIF_STATUS shows complete frames: 480 lines × 1280 pixels (640×480 UYVY)
-2. CSIPHY `sof_count=0` - No MIPI Frame Start packets detected
-3. BIT(22) in CSIPHY IRQ fires at exactly frame rate (~330ms = 3fps)
-4. VFE IRQ pattern: `status0=0x0000001d` = SOF + NO_SOT + EOF_MISMATCH
-5. ping_pong register never changes (no frames written)
-6. Software SOF mechanism exists but requires proper frame start detection
+**After Fix (modern mux mode):**
+```
+MISC_CC_REG = 0x06003400
+csi_pix_sel (bit 25): CSI1  ← CORRECT
+csi_rdi_sel (bit 12): CSI1  ← CORRECT
+csi_pix_clk (bit 26): ENABLED
+csi_rdi_clk (bit 13): ENABLED
+```
 
-**FIXES APPLIED THIS SESSION:**
-1. IRQ_COMPOSITE_MASK (0x034) configuration for IMAGE_COMPOSITE_DONE IRQs
-2. SUBSAMPLE_CFG_1 fixed from 0xFFFFFFFF to 0 (was causing 15/16 frame skip)
-3. UB_CFG (Unified Buffer) configuration for Write Master
-4. BIT(22) added as frame start trigger for software SOF
-5. MT9M113 Context A dimensions configured dynamically
+**Fix Applied:**
+```bash
+echo 0 > /sys/module/qcom_camss/parameters/vfe31_legacy_routing
+```
+
+**Remaining Issue:**
+Even with correct CSI mux routing, CAMIF still reports frame sync errors:
+- `status0=0x0000001d` (CAMIF_SOF + NO_SOT + EOF_MISMATCH + REG_UPDATE)
+- `status1=0x00000001` (CAMIF_ERROR)
+- ping_pong register stuck at 0x00010000
+
+**Root Cause:**
+MT9M113 sends line sync (SOT packets per line) but NOT frame sync (FS/FE short packets). CSIPHY never detects MIPI Frame Start. VFE CAMIF cannot synchronize frames without proper FS packets.
 
 **Current State:**
-- CSIPHY receives DATA IRQs (0x800) and BIT(22) at frame boundaries ✓
-- CAMIF sees complete 640×480 frames (status=0x81e00500) ✓
+- CSI mux correctly routing CSI1 to VFE ✓
+- CSIPHY receives DATA IRQs and BIT(22) at frame boundaries ✓
+- CAMIF sees 512+ lines of data (frames flowing) ✓
+- Software SOF (sof_count) incrementing via BIT(22) ✓
 - CAMIF_ERROR fires every frame due to missing MIPI FS packets ✗
 - VFE Write Master configured but ping_pong never toggles ✗
 - Captured files are 0 bytes ✗
+
+### Session 3 Summary
+
+**VFE Write Master configuration verified:**
+1. IRQ_COMPOSITE_MASK (0x034) = 0x00000001 (WM0 → COMP0)
+2. SUBSAMPLE_CFG_1 = 0 (no frame skip)
+3. UB_CFG = 0x000003ff (offset=0, depth=1023)
+4. WM0 ping/pong addresses valid
+5. WM0 stride = 1280 (correct for 640×2 UYVY)
 
 ---
 
@@ -274,30 +296,41 @@ The MT9M113 sensor is NOT sending proper MIPI Frame Start (FS) short packets, OR
 
 ## Next Steps
 
-### Immediate (Needs Testing)
+### Tested (Session 4 - Not Successful)
 
-1. **Test with BIT(22) software SOF** - Rebuild kernel and test
-   ```bash
-   echo 1 > /sys/module/qcom_camss/parameters/software_sof_enable
-   ```
+1. ~~**CSI mux fix** - Changed `vfe31_legacy_routing` from 1 to 0~~
+   - CSI mux now correctly selects CSI1
+   - CAMIF_ERROR still fires (frame sync issue remains)
 
-2. **Check if software SOF triggers VFE properly**
-   - If software SOF fires, does CAMIF_ERROR clear?
-   - Does ping_pong start toggling?
+2. ~~**Software SOF via BIT(22)** - sof_count increments~~
+   - Software SOF triggers but doesn't inject actual MIPI FS packets
+   - VFE CAMIF still reports NO_SOT and EOF_MISMATCH
 
-### If Software SOF Doesn't Help
+3. ~~**RDI bypass mode** - VFE31 doesn't have true RDI bypass~~
+   - All data paths go through CAMIF on VFE31
+   - RDI mode shows same CAMIF_ERROR issues
 
-3. **Investigate CAMIF_ERROR source**
-   - What specific condition triggers CAMIF_ERROR?
-   - Can we mask or ignore frame sync errors?
+### Remaining Options
 
-4. **Try RDI bypass mode**
-   - RDI might work without proper frame sync
-   - Data goes directly to memory bypassing CAMIF
+1. **Investigate CAMIF frame sync bypass**
+   - Look for CAMIF register to disable frame boundary checking
+   - Check if EFS mode has alternative sync options
 
-5. **Check webOS frame sync mechanism**
-   - Does webOS rely on FS packets?
-   - How does webOS handle MT9M113 frame boundaries?
+2. **VFE Test Pattern Generator**
+   - Use VFE internal test pattern to verify Write Master works
+   - Isolate issue to CAMIF frame sync vs data path
+
+3. **webOS qcameralib decompilation**
+   - Check Ghidra decompiled code for frame sync handling
+   - Look for any special CAMIF configuration
+
+4. **Hardware MIPI analyzer**
+   - Verify MT9M113 actually sends FS packets
+   - Check MIPI timing and packet structure
+
+5. **Alternative sensor test**
+   - Test with rear camera (VX6953) to verify VFE pipeline
+   - If VX6953 works, confirms MT9M113-specific issue
 
 ---
 
@@ -306,6 +339,9 @@ The MT9M113 sensor is NOT sending proper MIPI Frame Start (FS) short packets, OR
 ### Current Recommended Settings
 
 ```bash
+# CRITICAL: Use modern mux mode for CSI1 routing (MT9M113)
+echo 0 > /sys/module/qcom_camss/parameters/vfe31_legacy_routing
+
 # Enable software SOF (uses BIT(22) for frame start)
 echo 1 > /sys/module/qcom_camss/parameters/software_sof_enable
 
@@ -321,11 +357,14 @@ echo 0x0F > /sys/module/qcom_camss/parameters/hs_term_imp_override
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| **vfe31_legacy_routing** | **1** | **CSI mux mode: 0=modern (CSI1), 1=webOS legacy (CSI0)** |
 | software_sof_enable | N | Enable software SOF generation from CSIPHY |
 | vfe31_axi_output_mode | 1 | AXI output mode (0x200=PIX, 0x60=RDI) |
 | settle_cnt_override | -1 | MIPI settle count (-1=use default 0x14) |
 | hs_term_imp_override | -1 | HS termination impedance (-1=use default 0x0F) |
 | calibration_mode | 0 | PHY calibration mode (0=normal, 1=bypass) |
+
+**Important:** For MT9M113 (front camera on CSI1), set `vfe31_legacy_routing=0` to enable CSI1 mux selection.
 
 ---
 
@@ -367,3 +406,4 @@ ssh root@172.16.42.2 "cat /sys/module/qcom_camss/parameters/*"
 | 1 | 2026-03-26 | Parameter sweep | 52% ECC rate consistent across all params |
 | 2 | 2026-03-27 | Calibration modes | Calibration bypass + high settle helps |
 | 3 | 2026-03-28 | VFE Write Master | CAMIF sees frames but sync errors block WM |
+| 4 | 2026-03-28 | CSI Mux Fix | Found CSI mux selecting CSI0 instead of CSI1 |
