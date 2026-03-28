@@ -46,6 +46,18 @@ module_param(vfe31_legacy_routing, int, 0644);
 MODULE_PARM_DESC(vfe31_legacy_routing,
 		 "MSM8660 routing mode (0=modern mux with CSI1 selection, 1=webOS legacy)");
 
+/*
+ * VFE31 CAMIF window height override.
+ * MT9M113 reports 512 lines in MODE_OUTPUT_HEIGHT_A even when configured for 480.
+ * If the VFE WINDOW_HEIGHT doesn't match actual sensor output, EOF_MISMATCH fires.
+ * Set this to the actual sensor output height (e.g., 512) to fix EOF_MISMATCH.
+ * Value 0 means use the format height from V4L2 pipeline (default behavior).
+ */
+static int vfe31_window_height_override = 0;
+module_param(vfe31_window_height_override, int, 0644);
+MODULE_PARM_DESC(vfe31_window_height_override,
+		 "Override CAMIF window height (0=use format, >0=force value)");
+
 #define MSM_VFE_NAME "msm_vfe"
 
 /* VFE reset timeout */
@@ -1874,13 +1886,24 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * when a frame should end.
 	 *
 	 * For UYVY format (2 bytes per pixel), pixelsPerLine = width * 2.
+	 *
+	 * IMPORTANT: MT9M113 may output more lines than configured (e.g., 512
+	 * instead of 480). Use vfe31_window_height_override to match actual
+	 * sensor output and avoid EOF_MISMATCH errors.
 	 */
-	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2) |
-	      (line->fmt[MSM_VFE_PAD_SINK].height << 16);
-	dev_info(vfe->camss->dev, "VFE: FRAME_CFG=0x%08x (pixels=%d, lines=%d)\n",
-		 val, line->fmt[MSM_VFE_PAD_SINK].width * 2,
-		 line->fmt[MSM_VFE_PAD_SINK].height);
-	writel_relaxed(val, vfe->base + VFE31_CAMIF_FRAME_CFG);
+	{
+		u32 frame_height = line->fmt[MSM_VFE_PAD_SINK].height;
+		if (vfe31_window_height_override > 0) {
+			dev_info(vfe->camss->dev,
+				 "VFE: Using height override: %d -> %d\n",
+				 frame_height, vfe31_window_height_override);
+			frame_height = vfe31_window_height_override;
+		}
+		val = (line->fmt[MSM_VFE_PAD_SINK].width * 2) | (frame_height << 16);
+		dev_info(vfe->camss->dev, "VFE: FRAME_CFG=0x%08x (pixels=%d, lines=%d)\n",
+			 val, line->fmt[MSM_VFE_PAD_SINK].width * 2, frame_height);
+		writel_relaxed(val, vfe->base + VFE31_CAMIF_FRAME_CFG);
+	}
 
 	/*
 	 * WINDOW_WIDTH_CFG register format:
@@ -1900,10 +1923,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *   bits 0-13:  lastLine (14 bits) - height-1
 	 *   bits 16-29: firstLine (14 bits) - 0
 	 */
-	val = ((line->fmt[MSM_VFE_PAD_SINK].height - 1) & 0x3FFF);
-	dev_info(vfe->camss->dev, "VFE: WINDOW_HEIGHT=0x%08x (last=%u first=0)\n",
-		 val, line->fmt[MSM_VFE_PAD_SINK].height - 1);
-	writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_HEIGHT_CFG);
+	{
+		u32 window_height = line->fmt[MSM_VFE_PAD_SINK].height;
+		if (vfe31_window_height_override > 0)
+			window_height = vfe31_window_height_override;
+		val = ((window_height - 1) & 0x3FFF);
+		dev_info(vfe->camss->dev, "VFE: WINDOW_HEIGHT=0x%08x (last=%u first=0)\n",
+			 val, window_height - 1);
+		writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_HEIGHT_CFG);
+	}
 
 	/* SUBSAMPLE_CFG_0 at 0x1F4: 0xFFFFFFFF = no pixel/line subsampling */
 	writel_relaxed(0xffffffff, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_0);
@@ -1920,12 +1948,16 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * Set to reasonable defaults (line counts for timing interrupts).
 	 * Use height/2 for epoch1 and height-1 for epoch2.
 	 */
-	val = ((line->fmt[MSM_VFE_PAD_SINK].height / 2) & 0x3FFF) |       /* epoch1Line */
-	      (((line->fmt[MSM_VFE_PAD_SINK].height - 1) & 0x3FFF) << 16); /* epoch2Line */
-	dev_info(vfe->camss->dev, "VFE: EPOCH_CFG=0x%08x (epoch1=%d epoch2=%d)\n",
-		 val, line->fmt[MSM_VFE_PAD_SINK].height / 2,
-		 line->fmt[MSM_VFE_PAD_SINK].height - 1);
-	writel_relaxed(val, vfe->base + VFE31_CAMIF_EPOCH_CFG);
+	{
+		u32 epoch_height = line->fmt[MSM_VFE_PAD_SINK].height;
+		if (vfe31_window_height_override > 0)
+			epoch_height = vfe31_window_height_override;
+		val = ((epoch_height / 2) & 0x3FFF) |       /* epoch1Line */
+		      (((epoch_height - 1) & 0x3FFF) << 16); /* epoch2Line */
+		dev_info(vfe->camss->dev, "VFE: EPOCH_CFG=0x%08x (epoch1=%d epoch2=%d)\n",
+			 val, epoch_height / 2, epoch_height - 1);
+		writel_relaxed(val, vfe->base + VFE31_CAMIF_EPOCH_CFG);
+	}
 
 	/*
 	 * Step 2b: Enable write masters via VFE_BUS_CMD (0x38)
