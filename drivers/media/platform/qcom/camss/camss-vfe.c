@@ -41,10 +41,10 @@ extern int vfe31_axi_output_mode;
  * csi_pix_sel and csi_rdi_sel mux bits. MSM8660 may use direct
  * CSI1_VFE_CLK routing without the intermediate mux.
  */
-static int vfe31_legacy_routing = 1;
+static int vfe31_legacy_routing = 0;
 module_param(vfe31_legacy_routing, int, 0644);
 MODULE_PARM_DESC(vfe31_legacy_routing,
-		 "MSM8660 routing mode (0=modern mux, 1=webOS mode [MISC_CC=0x400, CSI_CC=0x85])");
+		 "MSM8660 routing mode (0=modern mux with CSI1 selection, 1=webOS legacy)");
 
 #define MSM_VFE_NAME "msm_vfe"
 
