@@ -364,4 +364,14 @@ int vfe_queue_buffer_v2(struct camss_video *vid,
 /* VFE31 test generator mode (extern from camss-vfe.c) */
 extern int vfe31_use_testgen;
 
+/*
+ * vfe31_configure_testgen - Configure VFE31 internal test generator
+ * @vfe: VFE device
+ * @enable: true to enable, false to disable
+ * @width: test pattern width
+ * @height: test pattern height
+ */
+void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
+			     u16 width, u16 height);
+
 #endif /* QC_MSM_CAMSS_VFE_H */
