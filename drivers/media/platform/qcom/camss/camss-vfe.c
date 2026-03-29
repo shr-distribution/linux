@@ -2456,10 +2456,32 @@ void vfe_trigger_software_reg_update(struct vfe_device *vfe)
 		return;
 
 	/*
-	 * VFE31 REG_UPDATE_CMD is at offset 0x018.
-	 * Writing 1 triggers shadow register latch.
+	 * MSM8660/MT9M113 aggressive frame sync workaround:
+	 *
+	 * The sensor doesn't send MIPI FS/FE packets, so CAMIF accumulates
+	 * frame sync errors (NO_SOT, EOF_MISMATCH). These errors cause CAMIF
+	 * to halt and prevent data from reaching the Write Master.
+	 *
+	 * At each frame boundary (detected via CSIPHY BIT(22)):
+	 * 1. Clear CAMIF status to reset error state
+	 * 2. Restart CAMIF to resume data flow
+	 * 3. Trigger REG_UPDATE to latch shadow registers
+	 *
+	 * VFE31 register offsets:
+	 *   0x018: REG_UPDATE_CMD
+	 *   0x1E0: CAMIF_CMD (1=start, 2=stop, 4=clear_status)
 	 */
-	writel(1, vfe->base + 0x018);
+
+	/* Clear CAMIF status to reset error flags */
+	writel(4, vfe->base + 0x1E0);  /* CAMIF_CMD = CLEAR_STATUS */
+	wmb();
+
+	/* Restart CAMIF to resume data acceptance */
+	writel(1, vfe->base + 0x1E0);  /* CAMIF_CMD = START */
+	wmb();
+
+	/* Trigger REG_UPDATE to latch shadow registers */
+	writel(1, vfe->base + 0x018);  /* REG_UPDATE_CMD */
 	wmb();
 }
 EXPORT_SYMBOL_GPL(vfe_trigger_software_reg_update);
