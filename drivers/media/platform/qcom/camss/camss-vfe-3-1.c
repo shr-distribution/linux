@@ -823,6 +823,34 @@ static int vfe31_enable(struct vfe_line *line)
 	wmb();
 
 	/*
+	 * VFE31 testgen mode: Skip CSIPHY deferral and start testgen directly.
+	 * The test generator produces data internally, no external camera needed.
+	 */
+	if (vfe31_use_testgen) {
+		dev_info(vfe->camss->dev,
+			 "VFE31: Testgen mode - starting directly (WM%d, line %d)\n",
+			 wm, line->id);
+
+		/* Configure and start the test generator */
+		vfe31_configure_testgen(vfe, true, width, height);
+
+		/* Set output state to ON since testgen is running */
+		output->state = VFE_OUTPUT_ON;
+		output->sequence = 0;
+		output->gen1.active_buf = 0;
+		vfe->camif_pending = false;
+
+		mutex_lock(&vfe->stream_lock);
+		vfe->stream_count++;
+		mutex_unlock(&vfe->stream_lock);
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: Testgen started, stream_count=%d\n",
+			 vfe->stream_count);
+		return 0;
+	}
+
+	/*
 	 * MSM8660 WORKAROUND: Defer CAMIF configuration until CSIPHY is ready.
 	 *
 	 * On MSM8660, VFE CAMIF registers must NOT be written until after

@@ -1212,8 +1212,8 @@ static void vfe31_force_enable_axi_clock(struct device *dev)
  *   0x398: HW_TESTGEN_COLOR_BARS - color bar pattern config
  *   0x36C: HW_TESTGEN_CMD - start (0x01) / stop (0x02)
  */
-static void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
-				    u16 width, u16 height)
+void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
+			     u16 width, u16 height)
 {
 	u32 cfg_val;
 
