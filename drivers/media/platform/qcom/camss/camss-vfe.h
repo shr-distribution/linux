@@ -361,4 +361,7 @@ int vfe_enable_output_v2(struct vfe_line *line);
 int vfe_queue_buffer_v2(struct camss_video *vid,
 			struct camss_buffer *buf);
 
+/* VFE31 test generator mode (extern from camss-vfe.c) */
+extern int vfe31_use_testgen;
+
 #endif /* QC_MSM_CAMSS_VFE_H */
