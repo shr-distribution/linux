@@ -903,6 +903,14 @@ int vfe_reset(struct vfe_device *vfe)
 #define VFE31_TESTGEN_GO		0x01
 #define VFE31_TESTGEN_STOP		0x02
 
+/* VFE31 Write Master registers - used for DMA buffer addresses */
+#define VFE31_WM_WR_CFG(n)		(0x04C + 0x18 * (n))
+#define VFE31_WM_WR_PING_ADDR(n)	(0x050 + 0x18 * (n))
+#define VFE31_WM_WR_PONG_ADDR(n)	(0x054 + 0x18 * (n))
+#define VFE31_WM_WR_ADDR_CFG(n)		(0x058 + 0x18 * (n))
+#define VFE31_WM_WR_UB_CFG(n)		(0x05C + 0x18 * (n))
+#define VFE31_WM_WR_IMAGE_SIZE(n)	(0x060 + 0x18 * (n))
+
 /* Module parameter to enable VFE test generator mode */
 static int vfe31_use_testgen = 0;
 module_param(vfe31_use_testgen, int, 0644);
@@ -1295,6 +1303,53 @@ static void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		wmb();
 		dev_info(vfe->camss->dev, "VFE TESTGEN: CAMIF started\n");
 
+		/*
+		 * CRITICAL: Verify Write Master is enabled for testgen output.
+		 *
+		 * Note: WM buffer addresses and enable bits are already configured by
+		 * vfe31_enable() before vfe_enable_pending_camif() calls us. The WM
+		 * should already be enabled, but we verify and re-apply just in case.
+		 */
+		{
+			u8 wm = vfe->camif_pending_wm;
+			u32 ub_cfg, wr_cfg;
+
+			dev_info(vfe->camss->dev, "VFE TESTGEN: Verifying Write Master WM%d\n", wm);
+
+			/* Read current config */
+			ub_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_UB_CFG(wm));
+			wr_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_CFG(wm));
+
+			dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d current UB_CFG=0x%08x WR_CFG=0x%08x\n",
+				 wm, ub_cfg, wr_cfg);
+
+			/* If not enabled, enable it */
+			if (!(wr_cfg & BIT(0))) {
+				dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d not enabled, enabling now\n", wm);
+				writel_relaxed((0 << 16) | 1023, vfe->base + VFE31_WM_WR_UB_CFG(wm));
+				writel_relaxed(BIT(0) | BIT(1), vfe->base + VFE31_WM_WR_CFG(wm));
+				wmb();
+			}
+
+			/* Dump buffer addresses */
+			dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d PING=0x%08x PONG=0x%08x\n",
+				 wm,
+				 readl_relaxed(vfe->base + VFE31_WM_WR_PING_ADDR(wm)),
+				 readl_relaxed(vfe->base + VFE31_WM_WR_PONG_ADDR(wm)));
+		}
+
+		/* Dump status after testgen start for diagnostics */
+		udelay(100);
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Post-start status:\n");
+		dev_info(vfe->camss->dev, "  CAMIF_STATUS=0x%08x (bit31=halted)\n",
+			 readl_relaxed(vfe->base + 0x204));  /* VFE_CAMIF_STATUS */
+		dev_info(vfe->camss->dev, "  IRQ_STATUS_0=0x%08x IRQ_STATUS_1=0x%08x\n",
+			 readl_relaxed(vfe->base + 0x02C),
+			 readl_relaxed(vfe->base + 0x030));
+		dev_info(vfe->camss->dev, "  PING_PONG=0x%08x HW_TESTGEN_CMD=0x%08x\n",
+			 readl_relaxed(vfe->base + 0x180),   /* VFE_BUS_PING_PONG_STATUS */
+			 readl_relaxed(vfe->base + VFE31_HW_TESTGEN_CMD));
+
 	} else {
 		/* Stop test generator */
 		writel_relaxed(VFE31_TESTGEN_STOP, vfe->base + VFE31_HW_TESTGEN_CMD);
@@ -1554,14 +1609,6 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
 #define VFE31_IRQ_CMD			0x018
 #define VFE31_IRQ_CLEAR_0		0x024
 #define VFE31_IRQ_CLEAR_1		0x028
-
-/* VFE31 Write Master registers - used for DMA buffer addresses */
-#define VFE31_WM_WR_CFG(n)		(0x04C + 0x18 * (n))
-#define VFE31_WM_WR_PING_ADDR(n)	(0x050 + 0x18 * (n))
-#define VFE31_WM_WR_PONG_ADDR(n)	(0x054 + 0x18 * (n))
-#define VFE31_WM_WR_ADDR_CFG(n)		(0x058 + 0x18 * (n))
-#define VFE31_WM_WR_UB_CFG(n)		(0x05C + 0x18 * (n))
-#define VFE31_WM_WR_IMAGE_SIZE(n)	(0x060 + 0x18 * (n))
 
 /*
  * vfe31_reg_update_poll - Issue REG_UPDATE and poll until bit 0 clears
