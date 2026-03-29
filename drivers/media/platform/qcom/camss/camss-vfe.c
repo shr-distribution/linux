@@ -2440,6 +2440,31 @@ void vfe_trigger_software_sof(struct vfe_device *vfe, enum vfe_line_id line_id)
 EXPORT_SYMBOL_GPL(vfe_trigger_software_sof);
 
 /*
+ * vfe_trigger_software_reg_update - Trigger software REG_UPDATE for VFE
+ * @vfe: VFE device
+ *
+ * MSM8660 workaround: Force REG_UPDATE to latch shadow registers and
+ * swap DMA buffers when the sensor doesn't send proper frame sync.
+ *
+ * This writes to VFE REG_UPDATE_CMD register to trigger the latch operation.
+ * Combined with software SOF, this enables frame capture on sensors like
+ * MT9M113 that don't send MIPI Frame Start/End short packets.
+ */
+void vfe_trigger_software_reg_update(struct vfe_device *vfe)
+{
+	if (!vfe || !vfe->base)
+		return;
+
+	/*
+	 * VFE31 REG_UPDATE_CMD is at offset 0x018.
+	 * Writing 1 triggers shadow register latch.
+	 */
+	writel(1, vfe->base + 0x018);
+	wmb();
+}
+EXPORT_SYMBOL_GPL(vfe_trigger_software_reg_update);
+
+/*
  * vfe_pm_domain_off - Disable power domains specific to this VFE.
  * @vfe: VFE Device
  */

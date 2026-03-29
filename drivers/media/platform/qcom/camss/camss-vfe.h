@@ -247,6 +247,20 @@ void vfe_enable_pending_camif(struct vfe_device *vfe);
 void vfe_trigger_software_sof(struct vfe_device *vfe, enum vfe_line_id line_id);
 
 /*
+ * vfe_trigger_software_reg_update - Trigger software REG_UPDATE for VFE
+ * @vfe: VFE device
+ *
+ * MSM8660 workaround: When the sensor doesn't send MIPI Frame Start/End
+ * short packets, the VFE CAMIF cannot properly sync frame boundaries.
+ * This function triggers a REG_UPDATE to force the VFE to latch shadow
+ * registers and swap DMA buffers, enabling frame capture.
+ *
+ * Called from CSIPHY when BIT(22) (undocumented frame boundary indicator)
+ * fires on MT9M113.
+ */
+void vfe_trigger_software_reg_update(struct vfe_device *vfe);
+
+/*
  * vfe_disable - Disable streaming on VFE line
  * @line: VFE line
  *

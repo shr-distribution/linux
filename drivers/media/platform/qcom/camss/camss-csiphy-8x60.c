@@ -15,6 +15,7 @@
  */
 
 #include "camss-csiphy.h"
+#include "camss-vfe.h"
 #include "camss.h"
 
 #include <linux/delay.h>
@@ -899,17 +900,29 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 	}
 
 	/*
-	 * Trigger software SOF if frame start detected AND software SOF is enabled.
+	 * Trigger software SOF + REG_UPDATE if frame start detected AND software SOF is enabled.
 	 *
 	 * This is disabled by default because the hardware path (CSIPHY -> CSID ->
 	 * VFE CAMIF) should generate proper CAMIF_SOF interrupts. Enable via:
 	 *   echo 1 > /sys/module/qcom_camss/parameters/software_sof_enable
+	 *
+	 * MSM8660/MT9M113 workaround: The sensor doesn't send MIPI Frame Start/End
+	 * short packets, so VFE CAMIF cannot sync frame boundaries. When BIT(22)
+	 * fires (undocumented frame boundary indicator), we:
+	 * 1. Trigger software SOF to update frame counters
+	 * 2. Trigger software REG_UPDATE to force buffer swap
+	 *
+	 * This enables frame capture despite missing hardware frame sync.
 	 */
 	if (software_sof_enable && frame_start_detected &&
 	    csiphy->camss && csiphy->camss->vfe) {
 		int line;
 
 		vfe = &csiphy->camss->vfe[0];  /* Use first VFE */
+
+		/* Trigger REG_UPDATE to force buffer swap at frame boundary */
+		vfe_trigger_software_reg_update(vfe);
+
 		/* Send SOF to all VFE lines, just like VFE31 IRQ handler does */
 		for (line = 0; line < vfe->res->line_num; line++)
 			vfe_trigger_software_sof(vfe, line);
@@ -918,7 +931,7 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 		/* Log SOF generation periodically */
 		if ((sof_count % 30) == 1) {
 			dev_info(csiphy->camss->dev,
-				 "CSIPHY%d: Software SOF #%d triggered (IRQ #%d)\n",
+				 "CSIPHY%d: Software SOF+REG_UPDATE #%d triggered (IRQ #%d)\n",
 				 csiphy->id, sof_count, irq_count);
 		}
 	}
