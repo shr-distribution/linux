@@ -1250,7 +1250,8 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 *   bit 18: hsyncEdge = 0 (rising)
 		 *   bit 19: vsyncEdge = 0 (rising)
 		 */
-		writel_relaxed(0x0001000A, vfe->base + VFE31_HW_TESTGEN_CFG);
+		/* Use numFrame=0 for continuous, pixelDataSize=0 for 10-bit */
+		writel_relaxed(0x00000000, vfe->base + VFE31_HW_TESTGEN_CFG);
 
 		/* HW_TESTGEN_IMAGE_CFG (0x374): width | (height << 16) */
 		writel_relaxed(width | ((u32)height << 16),
@@ -1294,6 +1295,76 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		wmb();
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Started HW testgen (0x%x to 0x%03x)\n",
 			 VFE31_TESTGEN_GO, VFE31_HW_TESTGEN_CMD);
+
+		/*
+		 * Configure CAMIF frame dimensions for testgen.
+		 * This is normally done in vfe_enable_pending_camif() but testgen
+		 * bypasses that path, so we must configure it here.
+		 */
+		/*
+		 * Configure CAMIF frame dimensions using raw offsets.
+		 * (Macros defined later in file, can't use here)
+		 */
+		{
+			u32 frame_cfg, window_w, window_h;
+
+			/* FRAME_CFG (0x1E8): pixelsPerLine | (linesPerFrame << 16) */
+			/* For UYVY: pixelsPerLine = width * 2 */
+			frame_cfg = (width * 2) | ((u32)height << 16);
+			writel_relaxed(frame_cfg, vfe->base + 0x1E8);
+
+			/* WINDOW_WIDTH (0x1EC): lastPixel[13:0] | firstPixel[29:16] */
+			window_w = (width * 2 - 1) & 0x3FFF;
+			writel_relaxed(window_w, vfe->base + 0x1EC);
+
+			/* WINDOW_HEIGHT (0x1F0): lastLine[13:0] | firstLine[29:16] */
+			window_h = (height - 1) & 0x3FFF;
+			writel_relaxed(window_h, vfe->base + 0x1F0);
+
+			/* EFS_CFG (0x1E4) = 0 for APS mode (not embedded sync) */
+			writel_relaxed(0, vfe->base + 0x1E4);
+
+			/* SUBSAMPLE_CFG_0 (0x1F4) = 0 (no subsampling) */
+			writel_relaxed(0, vfe->base + 0x1F4);
+			/* SUBSAMPLE_CFG_1 (0x1F8) = 0 */
+			writel_relaxed(0, vfe->base + 0x1F8);
+
+			wmb();
+
+			dev_info(vfe->camss->dev,
+				 "VFE TESTGEN: CAMIF config: FRAME=0x%08x W=0x%08x H=0x%08x\n",
+				 frame_cfg, window_w, window_h);
+		}
+
+		/*
+		 * Enable VFE pipeline modules for testgen.
+		 * MODULE_CFG (0x018) = 0x01c00c0c enables DEMUX and other
+		 * modules needed for data flow through the pipeline.
+		 */
+		writel_relaxed(0x01c00c0c, vfe->base + 0x018);
+		wmb();
+		dev_info(vfe->camss->dev,
+			 "VFE TESTGEN: MODULE_CFG=0x%08x (DEMUX enabled)\n",
+			 readl_relaxed(vfe->base + 0x018));
+
+		/*
+		 * Configure IRQ masks for testgen using raw values.
+		 * IRQ_MASK_0 = 0x00EFE121 (CAMIF_SOF|REG_UPDATE|STATS|COMP|WM0_PP)
+		 * IRQ_MASK_1 = 0x00400000 (RESET_ACK only)
+		 */
+		vfe->irq_mask0_shadow = 0x00EFE121;
+		vfe->irq_mask1_shadow = 0x00400000;
+		writel_relaxed(vfe->irq_mask0_shadow, vfe->base + 0x01C);
+		writel_relaxed(vfe->irq_mask1_shadow, vfe->base + 0x020);
+
+		/* IRQ_COMPOSITE_MASK (0x034): Map WM0 to COMPOSITE_DONE_0 */
+		writel_relaxed(BIT(0), vfe->base + 0x034);
+		wmb();
+
+		dev_info(vfe->camss->dev,
+			 "VFE TESTGEN: IRQ masks: MASK0=0x%08x MASK1=0x%08x COMP=0x%08x\n",
+			 vfe->irq_mask0_shadow, vfe->irq_mask1_shadow,
+			 readl_relaxed(vfe->base + 0x034));
 
 		/* Issue REG_UPDATE to latch config */
 		writel_relaxed(1, vfe->base + 0x260);  /* VFE_REG_UPDATE_CMD */
