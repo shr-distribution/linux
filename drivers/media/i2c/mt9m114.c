@@ -54,6 +54,18 @@ MODULE_PARM_DESC(mt9m113_cont_mipi_clk,
 		 "Use continuous MIPI clock instead of LP mode (0=LP, 1=continuous default)");
 
 /*
+ * Skip CUSTOM_SHORT_PKT (0x3404) write to match webOS exactly.
+ *
+ * webOS didn't configure this register, yet camera worked. Setting it to
+ * 0x0080 was added to enable MIPI FS/FE packets, but might be causing issues.
+ * Set to 1 to skip this write and match webOS behavior exactly.
+ */
+static int mt9m113_skip_short_pkt = 0;
+module_param(mt9m113_skip_short_pkt, int, 0644);
+MODULE_PARM_DESC(mt9m113_skip_short_pkt,
+		 "Skip CUSTOM_SHORT_PKT (0x3404) write to match webOS (0=write, 1=skip)");
+
+/*
  * MT9M113 Context V4L2 Control
  *
  * Custom control to select MT9M113 capture context from userspace.
@@ -1534,17 +1546,24 @@ static int mt9m113_sensor_init(struct mt9m114 *sensor)
 	 * Per datasheet, bit 7 (frame_cnt_en) must be set to insert frame
 	 * counter in FS/FE word count field. This just configures WHAT
 	 * packets to send, not WHEN to send them.
+	 *
+	 * NOTE: webOS didn't configure this register! Use mt9m113_skip_short_pkt
+	 * module parameter to skip this write and match webOS exactly.
 	 */
-	ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-			MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-	if (ret < 0) {
-		dev_err(dev, "MT9M113: CUSTOM_SHORT_PKT write failed: %d\n", ret);
-		return ret;
+	if (mt9m113_skip_short_pkt) {
+		dev_info(dev, "MT9M113: SKIPPING CUSTOM_SHORT_PKT write (matching webOS)\n");
+	} else {
+		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+		if (ret < 0) {
+			dev_err(dev, "MT9M113: CUSTOM_SHORT_PKT write failed: %d\n", ret);
+			return ret;
+		}
 	}
 	{
 		u64 readback;
 		cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-		dev_info(dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE configured)\n",
+		dev_info(dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE, 0=webOS default)\n",
 			 readback);
 	}
 
@@ -3683,15 +3702,23 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 				 * Bit 7 (frame_cnt_en) inserts frame counter in FS/FE
 				 * word count field, enabling proper MIPI frame sync.
 				 * This just configures WHAT to send, not WHEN to send.
+				 *
+				 * NOTE: webOS kernel did NOT configure this register,
+				 * yet camera worked. Use mt9m113_skip_short_pkt=1 to
+				 * match webOS behavior exactly for debugging.
 				 */
-				cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-					  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
-				if (ret < 0) {
-					dev_err(dev, "power_on: CUSTOM_SHORT_PKT failed: %d\n", ret);
-					goto error_clock;
+				if (mt9m113_skip_short_pkt) {
+					dev_info(dev, "power_on: SKIPPING CUSTOM_SHORT_PKT write (matching webOS)\n");
+				} else {
+					cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+						  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
+					if (ret < 0) {
+						dev_err(dev, "power_on: CUSTOM_SHORT_PKT failed: %d\n", ret);
+						goto error_clock;
+					}
+					cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
+					dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE configured)\n", readback);
 				}
-				cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-				dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE configured)\n", readback);
 
 				/*
 				 * NOTE: We intentionally do NOT write:
