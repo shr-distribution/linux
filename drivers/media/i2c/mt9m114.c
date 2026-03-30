@@ -1974,6 +1974,30 @@ mt9m113_streaming:
 		const struct v4l2_rect *compose;
 		u16 seq_cap_mode;
 		u16 output_width, output_height;
+		u64 health_check;
+
+		/*
+		 * MCU Health Check: After extended idle time, the MT9M113's MCU
+		 * can become unresponsive despite the sensor staying powered.
+		 * Read MODE_OUTPUT_WIDTH_A to verify MCU is alive. If it returns
+		 * 0 (should be 640 after init), the MCU needs re-initialization.
+		 */
+		ret = mt9m113_read_mcu_var(sensor, 0x2703, &health_check);
+		if (ret < 0 || health_check == 0) {
+			dev_warn(&sensor->client->dev,
+				 "MT9M113: MCU unresponsive (width=%lld), re-initializing\n",
+				 health_check);
+			ret = mt9m113_sensor_init(sensor);
+			if (ret < 0) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: re-init failed: %d\n", ret);
+				goto error;
+			}
+			dev_info(&sensor->client->dev, "MT9M113: MCU re-initialized\n");
+		} else {
+			dev_info(&sensor->client->dev,
+				 "MT9M113: MCU responsive (width=%lld)\n", health_check);
+		}
 
 		dev_info(&sensor->client->dev, "MT9M113: starting streaming (webOS sequence)\n");
 
