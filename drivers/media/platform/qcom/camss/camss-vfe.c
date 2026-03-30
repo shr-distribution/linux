@@ -1250,8 +1250,12 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 *   bit 18: hsyncEdge = 0 (rising)
 		 *   bit 19: vsyncEdge = 0 (rising)
 		 */
-		/* Use numFrame=0 for continuous, pixelDataSize=0 for 10-bit */
-		writel_relaxed(0x00000000, vfe->base + VFE31_HW_TESTGEN_CFG);
+		/*
+		 * Set numFrame=10 for 10 frames, pixelDataSize=1 for 8-bit data.
+		 * numFrame=0 might mean "disabled" on VFE31.
+		 * Value: 0x0001000A = (1 << 16) | 10
+		 */
+		writel_relaxed(0x0001000A, vfe->base + VFE31_HW_TESTGEN_CFG);
 
 		/* HW_TESTGEN_IMAGE_CFG (0x374): width | (height << 16) */
 		writel_relaxed(width | ((u32)height << 16),
