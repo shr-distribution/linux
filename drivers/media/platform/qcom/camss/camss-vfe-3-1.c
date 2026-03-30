@@ -646,6 +646,18 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	if (value1 & VFE_0_IRQ_STATUS_1_BUS_BDG_HALT_ACK)
 		vfe->isr_ops.halt_ack(vfe);
 
+	/* Debug: Print CAMIF state when CAMIF_ERROR fires */
+	if (value1 & VFE_0_IRQ_MASK_1_CAMIF_ERROR) {
+		u32 camif_status = readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS);
+		u32 frame_cfg = readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG);
+
+		dev_warn(vfe->camss->dev,
+			 "CAMIF_ERROR! status=0x%08x frame_cfg=0x%08x (pixels=%d/%d lines=%d/%d)\n",
+			 camif_status, frame_cfg,
+			 camif_status & 0x3FFF, frame_cfg & 0x3FFF,
+			 (camif_status >> 16) & 0x3FFF, (frame_cfg >> 16) & 0x3FFF);
+	}
+
 	/*
 	 * VFE31: REG_UPDATE applies to all lines since we only have one
 	 * CAMIF. Notify all active lines.
