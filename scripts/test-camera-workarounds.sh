@@ -66,8 +66,9 @@ capture_frames() {
 
     echo "Capturing $FRAME_COUNT frames to $outfile..."
 
-    # 640x480 NV16 = 640 * 480 * 2 = 614400 bytes per frame (Y + UV planes)
-    # VFE31 PIX mode outputs NV16/NV61 (YUV 4:2:2 semi-planar)
+    # 640x480 NV16 = 640 * 480 * 2 = 614400 bytes per frame
+    # NV16 is semi-planar YUV 4:2:2 - needs WM0 (Y) + WM1 (UV)
+    # BUT: VFE31 PIX mode currently only supports single WM
     timeout 10 v4l2-ctl -d /dev/video3 \
         --set-fmt-video=width=640,height=480,pixelformat=NV16 \
         --stream-mmap --stream-count=$FRAME_COUNT \
