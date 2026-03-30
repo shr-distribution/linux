@@ -20,20 +20,20 @@
 
 /*
  * AXI output mode selection for VFE31.
- * 0x60  = Raw/RDI mode (CAMIF_TO_AXI_VIA_OUTPUT_2) - raw bypass
- * 0x200 = PIX/Preview mode (OUTPUT_2) - ISP processing
+ * Values from webOS msm_vfe31.c vfe31_config_axi():
+ *   0x200 = OUTPUT_2 preview mode (WM0+WM1, no XBAR needed)
+ *   0x01  = OUTPUT_1_AND_3 mode (needs XBAR CFG1=0x1a03 for WM0/4+WM1/5)
+ *   0x60  = CAMIF_TO_AXI raw snapshot mode (WM0 only, no XBAR)
  *
- * webOS uses 0x01 for video recording. Values observed:
- *   0x01  = VIDEO mode (webOS default while recording)
- *   0x60  = CAMIF_TO_AXI raw snapshot mode
- *   0x200 = OUTPUT_2 preview mode with ISP
+ * For basic preview with semi-planar output (Y+CbCr), use 0x200.
+ * For preview+video recording, use 0x01 (requires XBAR CFG1).
  * Can be changed at runtime via:
- *   echo 0x01 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
+ *   echo 0x200 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
  */
-int vfe31_axi_output_mode = 0x01;
+int vfe31_axi_output_mode = 0x200;
 module_param(vfe31_axi_output_mode, int, 0644);
 MODULE_PARM_DESC(vfe31_axi_output_mode,
-		 "VFE31 AXI output mode (0x01=PIX/preview, 0x60=raw bypass)");
+		 "VFE31 AXI output mode (0x200=preview, 0x01=preview+video, 0x60=raw)");
 #include "camss-vfe.h"
 #include "camss-vfe-gen1.h"
 
