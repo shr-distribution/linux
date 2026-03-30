@@ -1691,15 +1691,19 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 	wmb();
 
-	/* REG_UPDATE command to latch the IRQ mask */
-	writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+	/*
+	 * REG_UPDATE + CAMIF_START sequence - match webOS exactly:
+	 * 1. Write REG_UPDATE_CMD = 1 with memory barrier
+	 * 2. Write CAMIF_COMMAND = 1 (start, no separate clear)
+	 *
+	 * webOS vfe31_start_common():
+	 *   msm_io_w_mb(1, vfebase + VFE_REG_UPDATE_CMD);
+	 *   msm_io_w(1, vfebase + VFE_CAMIF_COMMAND);
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Issuing REG_UPDATE_CMD + CAMIF_START (webOS sequence)\n");
+	writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 	wmb();
-
-	/* Step 5: Start CAMIF */
-	dev_info(vfe->camss->dev, "VFE31: Step 5 - Start CAMIF\n");
-	writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS, vfe->base + VFE_0_CAMIF_CMD);
-	wmb();
-	writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+	writel(1, vfe->base + VFE_0_CAMIF_CMD);
 	wmb();
 
 	/* Step 6: Enable Write Master
