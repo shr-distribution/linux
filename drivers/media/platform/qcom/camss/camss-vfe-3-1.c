@@ -33,7 +33,7 @@
 int vfe31_axi_output_mode = 0x01;
 module_param(vfe31_axi_output_mode, int, 0644);
 MODULE_PARM_DESC(vfe31_axi_output_mode,
-		 "VFE31 AXI output mode (0x01=video, 0x60=raw, 0x200=preview)");
+		 "VFE31 AXI output mode (0x01=PIX/preview, 0x60=raw bypass)");
 #include "camss-vfe.h"
 #include "camss-vfe-gen1.h"
 
@@ -166,14 +166,28 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
 #define VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR	(1 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
 
 /*
- * VFE31 AXI output mode register at 0x40
- * This configures which write masters are used and how data is routed.
+ * VFE31 AXI output mode and XBAR configuration registers
+ * These configure which write masters are used and how data is routed.
+ *
+ * The webOS driver builds a 188-byte AXI config block starting at 0x38.
+ * Key registers from that block:
+ *   0x40 (ao[2]) = XBAR CFG0 / AXI output mode
+ *   0x44 (ao[3]) = XBAR CFG1
+ *
  * Values from legacy webOS driver:
- *   0x60  = Raw snapshot with WM0 (CAMIF_TO_AXI_VIA_OUTPUT_2)
- *   0x200 = Preview with WM0 & WM1 (OUTPUT_2 mode)
+ *   For raw mode (CAMIF_TO_AXI_VIA_OUTPUT_2):
+ *     0x40 = 0x60 (raw bypass via WM0)
+ *     0x44 = 0 (not configured)
+ *
+ *   For PIX/preview mode (OUTPUT_2):
+ *     0x40 = 0x01 (xbar cfg0 - enable crossbar)
+ *     0x44 = 0x1a03 (xbar cfg1 - route CAMIF to WM0/WM1)
  */
 #define VFE_0_BUS_AXI_OUT_MODE_CFG		0x040
+#define VFE_0_BUS_XBAR_CFG1			0x044
 #define VFE_0_BUS_AXI_OUT_MODE_RAW_WM0		0x60
+#define VFE_0_BUS_XBAR_CFG0_PIX_MODE		0x01
+#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1a03
 #define VFE_0_BUS_CFG_RAW_WR_PATH_VIEW_CBCR	(2 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
 
 /*
@@ -762,15 +776,26 @@ static int vfe31_enable(struct vfe_line *line)
 		 wm, width, height, bytesperline, ping_addr, pong_addr);
 
 	/*
-	 * Step 1: Configure AXI output mode
+	 * Step 1: Configure AXI output mode and XBAR
 	 * Use module parameter vfe31_axi_output_mode:
 	 *   0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
-	 *   0x200 = PIX/Preview mode (through ISP processing)
+	 *   0x01  = PIX/Preview mode (OUTPUT_2 with XBAR routing)
+	 *
+	 * For PIX mode, we also need XBAR CFG1 at 0x44 = 0x1a03
+	 * This configures the crossbar to route CAMIF data to WM0/WM1.
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x%x\n",
 		 vfe31_axi_output_mode);
 	writel_relaxed(vfe31_axi_output_mode,
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+
+	/* For PIX mode (0x01), configure XBAR CFG1 to route data to WMs */
+	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
+		dev_info(vfe->camss->dev, "VFE31: PIX mode - XBAR CFG1=0x%x\n",
+			 VFE_0_BUS_XBAR_CFG1_PIX_MODE);
+		writel_relaxed(VFE_0_BUS_XBAR_CFG1_PIX_MODE,
+			       vfe->base + VFE_0_BUS_XBAR_CFG1);
+	}
 
 	/*
 	 * Step 1b: Configure DEMUX, scale and crop modules
@@ -1448,15 +1473,26 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 */
 
 	/*
-	 * Step 1: Configure AXI output mode
+	 * Step 1: Configure AXI output mode and XBAR
 	 * Use module parameter vfe31_axi_output_mode:
 	 *   0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
-	 *   0x200 = PIX/Preview mode (through ISP processing)
+	 *   0x01  = PIX/Preview mode (OUTPUT_2 with XBAR routing)
+	 *
+	 * For PIX mode, we also need XBAR CFG1 at 0x44 = 0x1a03
+	 * This configures the crossbar to route CAMIF data to WM0/WM1.
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x%x\n",
 		 vfe31_axi_output_mode);
 	writel_relaxed(vfe31_axi_output_mode,
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+
+	/* For PIX mode (0x01), configure XBAR CFG1 to route data to WMs */
+	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
+		dev_info(vfe->camss->dev, "VFE31: PIX mode - XBAR CFG1=0x%x\n",
+			 VFE_0_BUS_XBAR_CFG1_PIX_MODE);
+		writel_relaxed(VFE_0_BUS_XBAR_CFG1_PIX_MODE,
+			       vfe->base + VFE_0_BUS_XBAR_CFG1);
+	}
 	wmb();
 
 	/* Step 2: Configure WM registers (must be BEFORE CAMIF start) */
