@@ -1338,14 +1338,14 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 
 		/*
 		 * Enable VFE pipeline modules for testgen.
-		 * MODULE_CFG (0x018) = 0x01c00c0c enables DEMUX and other
+		 * MODULE_CFG (0x010) = 0x01c00c0c enables DEMUX and other
 		 * modules needed for data flow through the pipeline.
 		 */
-		writel_relaxed(0x01c00c0c, vfe->base + 0x018);
+		writel_relaxed(0x01c00c0c, vfe->base + 0x010);
 		wmb();
 		dev_info(vfe->camss->dev,
 			 "VFE TESTGEN: MODULE_CFG=0x%08x (DEMUX enabled)\n",
-			 readl_relaxed(vfe->base + 0x018));
+			 readl_relaxed(vfe->base + 0x010));
 
 		/*
 		 * Configure IRQ masks for testgen using raw values.
