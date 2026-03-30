@@ -548,6 +548,16 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	writel_relaxed(0x7FFF, vfe->base + VFE_0_BUS_CMD);
 	wmb();
 
+	/*
+	 * Step 7: Clear AXI halt to ensure DMA can operate.
+	 * After global reset, the AXI might be in halted state.
+	 * Write 0 to VFE_AXI_CMD (0x1D8) to clear any halt condition.
+	 * Without this, ping_pong register never toggles and DMA hangs.
+	 */
+	dev_info(vfe->camss->dev, "VFE reset: clearing AXI halt (AXI_CMD=0)\n");
+	writel_relaxed(0x0, vfe->base + VFE_0_AXI_CMD);
+	wmb();
+
 	dev_info(vfe->camss->dev, "VFE reset: complete, all defaults applied\n");
 
 	/* Set flag to indicate reset done - vfe_reset() will check this */
