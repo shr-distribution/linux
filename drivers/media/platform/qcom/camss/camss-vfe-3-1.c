@@ -34,6 +34,11 @@ int vfe31_axi_output_mode = 0x200;
 module_param(vfe31_axi_output_mode, int, 0644);
 MODULE_PARM_DESC(vfe31_axi_output_mode,
 		 "VFE31 AXI output mode (0x200=preview, 0x01=preview+video, 0x60=raw)");
+
+/* External module parameters from camss-vfe.c */
+extern int software_sof_enable;
+extern int software_eof_enable;
+
 #include "camss-vfe.h"
 #include "camss-vfe-gen1.h"
 
@@ -78,6 +83,9 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
 #define VFE_0_IRQ_MASK_0		0x01C
 #define VFE_0_IRQ_MASK_0_CAMIF_SOF			BIT(0)
 #define VFE_0_IRQ_MASK_0_CAMIF_EOF			BIT(1)
+#define VFE_0_IRQ_MASK_0_EPOCH_IRQ_0			BIT(2)
+#define VFE_0_IRQ_MASK_0_EPOCH_IRQ_1			BIT(3)
+#define VFE_0_IRQ_MASK_0_EPOCH_IRQ_2			BIT(4)
 #define VFE_0_IRQ_MASK_0_REG_UPDATE			BIT(5)
 #define VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(n)	BIT((n) + 8)
 #define VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(n)	BIT((n) + 21)
@@ -656,6 +664,51 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			 camif_status, frame_cfg,
 			 camif_status & 0x3FFF, frame_cfg & 0x3FFF,
 			 (camif_status >> 16) & 0x3FFF, (frame_cfg >> 16) & 0x3FFF);
+
+		/*
+		 * Software EOF workaround: When CAMIF_ERROR fires due to missing
+		 * MIPI Frame End packet, manually complete the frame if we have
+		 * received enough data.
+		 *
+		 * The MT9M113 sensor doesn't send FE packets, so CAMIF always
+		 * errors out. But if pixel/line counts match the expected frame,
+		 * the data is actually valid - just missing the EOF signal.
+		 */
+		if (software_eof_enable) {
+			u32 expected_lines = (frame_cfg >> 16) & 0x3FFF;
+			u32 received_lines = (camif_status >> 16) & 0x3FFF;
+
+			/* If we received close to expected lines, consider it a complete frame */
+			if (received_lines >= expected_lines - 2) {
+				static int eof_frame_count;
+
+				eof_frame_count++;
+				if (eof_frame_count <= 3) {
+					dev_info(vfe->camss->dev,
+						 "Software EOF: completing frame #%d (lines=%d/%d)\n",
+						 eof_frame_count, received_lines, expected_lines);
+				}
+
+				/* Clear CAMIF status to reset error state */
+				writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS,
+					       vfe->base + VFE_0_CAMIF_CMD);
+				wmb();
+
+				/* Issue REG_UPDATE to latch shadow registers */
+				writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+				wmb();
+
+				/*
+				 * Manually trigger frame completion for WM0.
+				 * This simulates what would happen if EOF fired normally.
+				 */
+				vfe->isr_ops.wm_done(vfe, 0);
+
+				/* Notify all lines of reg_update */
+				for (i = 0; i < vfe->res->line_num; i++)
+					vfe->isr_ops.reg_update(vfe, i);
+			}
+		}
 	}
 
 	/*

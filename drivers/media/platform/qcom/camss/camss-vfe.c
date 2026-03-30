@@ -932,6 +932,27 @@ module_param(vfe31_use_efs_sync, int, 0644);
 MODULE_PARM_DESC(vfe31_use_efs_sync, "VFE31: Use EFS sync mode instead of APS (0=APS, 1=EFS)");
 
 /*
+ * Software EOF workaround for sensors that don't send MIPI Frame End packets.
+ *
+ * The MT9M113 sensor doesn't send MIPI FS/FE short packets, causing VFE to
+ * fire CAMIF_ERROR on every frame (missing EOF) and REG_UPDATE never fires.
+ * This prevents DMA completion and no frames are captured.
+ *
+ * When enabled, this workaround:
+ * 1. Sets EPOCH_CFG to fire at (height - 1) line (near end of frame)
+ * 2. When EPOCH1 fires, manually:
+ *    - Clear CAMIF_STATUS error state
+ *    - Trigger a manual REG_UPDATE
+ *    - Signal frame completion to DMA
+ *
+ * Use with software_sof_enable for complete frame boundary emulation.
+ */
+int software_eof_enable;
+module_param(software_eof_enable, int, 0644);
+MODULE_PARM_DESC(software_eof_enable, "Enable software EOF workaround for sensors without MIPI FE packets");
+EXPORT_SYMBOL(software_eof_enable);
+
+/*
  * vfe31_debug_dump_clock_state - Comprehensive CSI->VFE clock state dump
  * @dev: Device for logging
  *
