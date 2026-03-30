@@ -1251,11 +1251,15 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 *   bit 19: vsyncEdge = 0 (rising)
 		 */
 		/*
-		 * Set numFrame=10 for 10 frames, pixelDataSize=1 for 8-bit data.
-		 * numFrame=0 might mean "disabled" on VFE31.
-		 * Value: 0x0001000A = (1 << 16) | 10
+		 * HW_TESTGEN_CFG configuration:
+		 * Try multiple enable bits as VFE31 testgen may have undocumented enables.
+		 * Bit 31: Global enable (speculative)
+		 * Bit 24: Output enable (speculative)
+		 * bits 16-17: pixelDataSize = 1 (8-bit)
+		 * bits 0-9: numFrame = 0 (continuous)
+		 * Value: 0x81010000 = enable bits + 8-bit continuous
 		 */
-		writel_relaxed(0x0001000A, vfe->base + VFE31_HW_TESTGEN_CFG);
+		writel_relaxed(0x81010000, vfe->base + VFE31_HW_TESTGEN_CFG);
 
 		/* HW_TESTGEN_IMAGE_CFG (0x374): width | (height << 16) */
 		writel_relaxed(width | ((u32)height << 16),
@@ -1413,6 +1417,14 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 				 readl_relaxed(vfe->base + VFE31_WM_WR_PING_ADDR(wm)),
 				 readl_relaxed(vfe->base + VFE31_WM_WR_PONG_ADDR(wm)));
 		}
+
+		/*
+		 * Issue another REG_UPDATE after all config is done.
+		 * Some VFE versions need the update after CAMIF starts.
+		 */
+		writel_relaxed(1, vfe->base + 0x260);  /* VFE_REG_UPDATE_CMD */
+		wmb();
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Final REG_UPDATE issued\n");
 
 		/* Dump status after testgen start for diagnostics */
 		udelay(100);
