@@ -1413,14 +1413,23 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		/* Dump status after testgen start for diagnostics */
 		udelay(100);
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Post-start status:\n");
+		dev_info(vfe->camss->dev, "  VFE_CFG(0x014)=0x%08x AXI_OUT(0x040)=0x%08x\n",
+			 readl_relaxed(vfe->base + 0x014),
+			 readl_relaxed(vfe->base + 0x040));
+		dev_info(vfe->camss->dev, "  MODULE_CFG(0x010)=0x%08x CAMIF_CMD(0x1E0)=0x%08x\n",
+			 readl_relaxed(vfe->base + 0x010),
+			 readl_relaxed(vfe->base + 0x1E0));
+		dev_info(vfe->camss->dev, "  TESTGEN_CMD(0x36C)=0x%08x TESTGEN_CFG(0x370)=0x%08x\n",
+			 readl_relaxed(vfe->base + VFE31_HW_TESTGEN_CMD),
+			 readl_relaxed(vfe->base + VFE31_HW_TESTGEN_CFG));
 		dev_info(vfe->camss->dev, "  CAMIF_STATUS=0x%08x (bit31=halted)\n",
 			 readl_relaxed(vfe->base + 0x204));  /* VFE_CAMIF_STATUS */
 		dev_info(vfe->camss->dev, "  IRQ_STATUS_0=0x%08x IRQ_STATUS_1=0x%08x\n",
 			 readl_relaxed(vfe->base + 0x02C),
 			 readl_relaxed(vfe->base + 0x030));
-		dev_info(vfe->camss->dev, "  PING_PONG=0x%08x HW_TESTGEN_CMD=0x%08x\n",
+		dev_info(vfe->camss->dev, "  PING_PONG=0x%08x IRQ_MASK_0=0x%08x\n",
 			 readl_relaxed(vfe->base + 0x180),   /* VFE_BUS_PING_PONG_STATUS */
-			 readl_relaxed(vfe->base + VFE31_HW_TESTGEN_CMD));
+			 readl_relaxed(vfe->base + 0x01C));  /* IRQ_MASK_0 */
 
 	} else {
 		/* Stop test generator */
