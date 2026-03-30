@@ -881,15 +881,20 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 	} else if (status & BIT(22)) {
 		/* BIT(22) fires at frame boundaries on MT9M113 */
 		frame_start_detected = true;
-	} else if (status & MIPI_IRQ_SOT_SYNC) {
+	} else if (status & (MIPI_IRQ_SOT_SYNC | MIPI_IRQ_DATA_DL)) {
+		/*
+		 * Use SOT or DATA interrupts for timing-based frame detection.
+		 * With ECC disabled, we may only get DATA (BIT 11) without SOT,
+		 * so include both as triggers for the timing gap check.
+		 */
 		now = ktime_get();
 
 		if (first_sot) {
-			/* First SOT after reset - treat as frame start */
+			/* First data after reset - treat as frame start */
 			frame_start_detected = true;
 			first_sot = false;
 		} else {
-			/* Check gap since last SOT */
+			/* Check gap since last data interrupt */
 			gap_ns = ktime_to_ns(ktime_sub(now, last_sot_time));
 			if (gap_ns > CSIPHY_FRAME_GAP_THRESHOLD_NS) {
 				/* Large gap - this is a new frame */
