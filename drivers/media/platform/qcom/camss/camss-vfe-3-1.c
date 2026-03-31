@@ -967,11 +967,17 @@ static int vfe31_enable(struct vfe_line *line)
 	reg |= (((wpl + 1) / 2 - 1) & 0x3FF) << 16;
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
 
-	/* WR_ADDR_CFG */
+	/*
+	 * WR_ADDR_CFG - webOS format: (lines << 16) | burst_words
+	 * webOS WM0: 0x0000012F = (lines=0 << 16) | burst=303
+	 * webOS WM1: 0x01C8012F = (lines=456 << 16) | burst=303
+	 *
+	 * For single-plane UYVY, only WM0 is used with lines=0.
+	 * burst_words = words_per_line - 1 (webOS uses wpl-1)
+	 */
 	wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
-	reg = 0x2;  /* Burst length = 16 beats */
-	reg |= ((height - 1) & 0xFFF) << 4;
-	reg |= (wpl & 0xFFF) << 16;
+	reg = (wpl - 1) & 0xFFFF;  /* burst = words_per_line - 1 */
+	/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 
 	/* WR_UB_CFG - use full UB for single WM */
@@ -1764,15 +1770,20 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 wm, height, width, wpl, reg);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
 
-		/* WR_ADDR_CFG register */
+		/*
+		 * WR_ADDR_CFG - webOS format: (lines << 16) | burst_words
+		 * webOS WM0: 0x0000012F = burst=303, lines=0
+		 * webOS WM1: 0x01C8012F = burst=303, lines=456
+		 *
+		 * burst_words = words_per_line - 1
+		 */
 		wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
-		reg = 0x2;  /* Burst length = 16 beats */
-		reg |= ((height - 1) & 0xFFF) << 4;
-		reg |= (wpl & 0xFFF) << 16;
+		reg = (wpl - 1) & 0xFFFF;  /* burst = words_per_line - 1 */
+		/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
 
 		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d ADDR_CFG stride=%d rows=%d reg=0x%x\n",
-			 wm, bytesperline, height, reg);
+			 "VFE31: WM%d ADDR_CFG stride=%d wpl=%d burst=%d reg=0x%x\n",
+			 wm, bytesperline, wpl, wpl - 1, reg);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 
 		/* WR_UB_CFG register */
