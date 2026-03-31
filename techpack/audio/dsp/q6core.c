@@ -1227,7 +1227,8 @@ bool q6core_is_adsp_ready(void)
 		}
 	}
 bail:
-	pr_debug("%s: leave, rc %d, adsp ready %d\n", __func__, rc, ret);
+	pr_err("%s: leave, rc %d, adsp ready %d, param %d (5=MODULES_READY)\n",
+		__func__, rc, ret, q6core_lcl.param);
 	mutex_unlock(&(q6core_lcl.cmd_lock));
 	return ret;
 }

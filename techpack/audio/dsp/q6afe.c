@@ -1136,7 +1136,7 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 					__func__, data->payload_size);
 				return -EINVAL;
 			}
-			pr_debug("%s:opcode = 0x%x cmd = 0x%x status = 0x%x token=%d\n",
+			pr_err("%s:opcode = 0x%x cmd = 0x%x status = 0x%x token=%d\n",
 				__func__, data->opcode,
 				payload[0], payload[1], data->token);
 			/* payload[1] contains the error status for response */
@@ -3235,10 +3235,12 @@ static int afe_send_port_topology_id(u16 port_id)
 					      AFE_LSM_TOPOLOGY_CAL);
 	}
 	if (ret || !topology_id) {
-		pr_debug("%s: AFE port[%d] get_cal_topology[%d] invalid!\n",
-				__func__, port_id, topology_id);
+		pr_err("%s: AFE port[0x%x] get_cal_topology[0x%x] ret=%d (no topo)\n",
+				__func__, port_id, topology_id, ret);
 		goto done;
 	}
+	pr_err("%s: AFE port[0x%x] topology_id=0x%x\n",
+			__func__, port_id, topology_id);
 
 	param_info.module_id = AFE_MODULE_AUDIO_DEV_INTERFACE;
 	param_info.instance_id = INSTANCE_ID_0;
@@ -4180,10 +4182,11 @@ static int afe_send_cmd_port_start(u16 port_id)
 	start.hdr.token = index;
 	start.hdr.opcode = AFE_PORT_CMD_DEVICE_START;
 	start.port_id = q6audio_get_port_id(port_id);
-	pr_debug("%s: cmd device start opcode[0x%x] port id[0x%x]\n",
-		 __func__, start.hdr.opcode, start.port_id);
+	pr_err("%s: cmd device start opcode[0x%x] port id[0x%x] index=%d\n",
+		 __func__, start.hdr.opcode, start.port_id, index);
 
 	ret = afe_apr_send_pkt(&start, &this_afe.wait[index]);
+	pr_err("%s: port_start port_id=0x%x ret=%d\n", __func__, start.port_id, ret);
 	if (ret)
 		pr_err("%s: AFE enable for port 0x%x failed %d\n", __func__,
 		       port_id, ret);
@@ -5543,6 +5546,8 @@ static int __afe_port_start(u16 port_id, union afe_port_config *afe_config,
 	port_index = afe_get_port_index(port_id);
 
 	/* Also send the topology id here: */
+	pr_err("%s: port 0x%x cal_mode=%d port_index=%d\n",
+		__func__, port_id, this_afe.afe_cal_mode[port_index], port_index);
 	if (!(this_afe.afe_cal_mode[port_index] == AFE_CAL_MODE_NONE)) {
 		/* One time call: only for first time */
 		afe_send_custom_topology();
@@ -5746,6 +5751,19 @@ static int __afe_port_start(u16 port_id, union afe_port_config *afe_config,
 	param_hdr.param_size = sizeof(union afe_port_config);
 
 	port_cfg = *afe_config;
+
+	/* DEBUG: dump I2S config for MI2S ports */
+	if (cfg_type == AFE_PARAM_ID_I2S_CONFIG) {
+		pr_err("%s: I2S_CONFIG port=0x%x: minor_ver=%d ws_src=%d ch_mode=%d mono_stereo=%d bit_width=%d data_format=%d\n",
+			__func__, port_id,
+			port_cfg.i2s.i2s_cfg_minor_version,
+			port_cfg.i2s.ws_src,
+			port_cfg.i2s.channel_mode,
+			port_cfg.i2s.mono_stereo,
+			port_cfg.i2s.bit_width,
+			port_cfg.i2s.data_format);
+	}
+
 	if (((enc_cfg != NULL) || (dec_cfg != NULL)) &&
 	    (codec_format != ASM_MEDIA_FMT_NONE) &&
 	    (cfg_type == AFE_PARAM_ID_SLIMBUS_CONFIG)) {
@@ -5760,6 +5778,8 @@ static int __afe_port_start(u16 port_id, union afe_port_config *afe_config,
 			__func__, port_id, ret);
 		goto fail_cmd;
 	}
+	pr_err("%s: AFE port_cfg sent for port 0x%x ret=%d cfg_type=0x%x\n",
+		__func__, port_id, ret, cfg_type);
 
 	if ((codec_format != ASM_MEDIA_FMT_NONE) &&
 	    (cfg_type == AFE_PARAM_ID_SLIMBUS_CONFIG)) {
@@ -9175,15 +9195,15 @@ int afe_set_lpass_clk_cfg(int index, struct afe_clk_set *cfg)
 	param_hdr.param_size = sizeof(struct afe_clk_set);
 
 
-	pr_debug("%s: Minor version =0x%x clk id = %d\n"
-		 "clk freq (Hz) = %d, clk attri = 0x%x\n"
-		 "clk root = 0x%x clk enable = 0x%x\n",
+	pr_err("%s: Minor version=0x%x clk_id=%d freq=%d attri=0x%x root=0x%x enable=0x%x index=%d iid=%d\n",
 		 __func__, cfg->clk_set_minor_version,
 		 cfg->clk_id, cfg->clk_freq_in_hz, cfg->clk_attri,
-		 cfg->clk_root, cfg->enable);
+		 cfg->clk_root, cfg->enable, index,
+		 q6common_is_instance_id_supported());
 
 	ret = q6afe_svc_pack_and_set_param_in_band(index, param_hdr,
 						   (u8 *) cfg);
+	pr_err("%s: AFE clk cfg ret=%d for clk_id=%d\n", __func__, ret, cfg->clk_id);
 	if (ret < 0) {
 		pr_err_ratelimited("%s: AFE clk cfg failed with ret %d\n",
 				__func__, ret);

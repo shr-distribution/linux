@@ -1,5 +1,6 @@
 /* Copyright (C) 2016 Tcl Corporation Limited */
 #ifdef CONFIG_SND_SOC_TFA98XX_MMI_TEST
+#include <linux/pinctrl/consumer.h>
 #include "tfa98xx_tfafieldnames.h"
 #include "tfa_internal.h"
 #include "tfa.h"

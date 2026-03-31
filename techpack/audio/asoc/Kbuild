@@ -11,6 +11,11 @@ ifeq ($(KERNEL_BUILD), 1)
 	# Need to explicitly configure for Android-based builds
 	AUDIO_BLD_DIR := $(shell pwd)/kernel/msm-4.19
 	AUDIO_ROOT := $(AUDIO_BLD_DIR)/techpack/audio
+	ifeq ($(CONFIG_ARCH_SDM660), y)
+		include $(srctree)/techpack/audio/config/sdm660auto.conf
+		export
+		INCS    +=  -include $(srctree)/techpack/audio/config/sdm660autoconf.h
+	endif
 endif
 
 ifeq ($(KERNEL_BUILD), 0)

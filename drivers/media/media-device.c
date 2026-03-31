@@ -102,12 +102,32 @@ static struct media_entity *find_entity(struct media_device *mdev, u32 id)
 	return NULL;
 }
 
+/* Compat: OREO blobs enumerate entities by incrementing id 1,2,3,...
+ * without MEDIA_ENT_ID_FLAG_NEXT. In 4.19, entity IDs have gaps
+ * (shared global counter), so treat id as 1-based index. */
+static struct media_entity *find_entity_by_index(struct media_device *mdev,
+						 u32 id)
+{
+	struct media_entity *entity;
+	unsigned int idx = 0;
+
+	if (id & MEDIA_ENT_ID_FLAG_NEXT)
+		return find_entity(mdev, id);
+
+	media_device_for_each_entity(entity, mdev) {
+		if (++idx == id)
+			return entity;
+	}
+
+	return NULL;
+}
+
 static long media_device_enum_entities(struct media_device *mdev, void *arg)
 {
 	struct media_entity_desc *entd = arg;
 	struct media_entity *ent;
 
-	ent = find_entity(mdev, entd->id);
+	ent = find_entity_by_index(mdev, entd->id);
 	if (ent == NULL)
 		return -EINVAL;
 
@@ -117,9 +137,20 @@ static long media_device_enum_entities(struct media_device *mdev, void *arg)
 	if (ent->name)
 		strlcpy(entd->name, ent->name, sizeof(entd->name));
 	entd->type = ent->function;
-	entd->revision = 0;		/* Unused */
+	entd->revision = 0;
 	entd->flags = ent->flags;
-	entd->group_id = 0;		/* Unused */
+	/* Expose group_id for OREO camera blobs compat:
+	 * - Config device (video0): group_id=2 (QCAMERA_VNODE_GROUP_ID)
+	 * - Camera subdevs: group_id=entity.function (MSM_CAMERA_SUBDEV_* 0-21)
+	 * MCT shim checks type==0x10001 && group_id==2 for config device,
+	 * then uses group_id to identify sensor_init and other subdevs */
+	if (ent->function == MEDIA_ENT_F_IO_V4L)
+		entd->group_id = 2;
+	else if (is_media_entity_v4l2_subdev(ent) &&
+		 ent->function < MEDIA_ENT_F_OLD_BASE)
+		entd->group_id = ent->function;
+	else
+		entd->group_id = 0;
 	entd->pads = ent->num_pads;
 	entd->links = ent->num_links - ent->num_backlinks;
 

@@ -1,5 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2017-2018, 2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -120,8 +119,7 @@ static int32_t msm_laser_led_init(
 }
 
 static int msm_laser_led_close(struct v4l2_subdev *sd,
-			struct v4l2_subdev_fh *fh)
-{
+			struct v4l2_subdev_fh *fh) {
 	int rc = 0;
 	struct msm_laser_led_ctrl_t *l_ctrl =  v4l2_get_subdevdata(sd);
 
@@ -178,7 +176,7 @@ static int32_t msm_laser_led_control32(
 	struct msm_camera_i2c_reg_setting conf_array;
 	int32_t rc = 0;
 	struct msm_laser_led_cfg_data_t32 laser_led_data;
-	uint32_t *debug_reg = NULL;
+	uint32_t *debug_reg;
 	int i;
 	uint16_t local_data;
 
@@ -226,31 +224,29 @@ static int32_t msm_laser_led_control32(
 		kfree(conf_array.reg_setting);
 		return -EFAULT;
 	}
-	if (laser_led_data.debug_reg_size <= sizeof(uint32_t)) {
-		debug_reg = kzalloc(laser_led_data.debug_reg_size *
-			(sizeof(uint32_t)), GFP_KERNEL);
-		if (!debug_reg) {
-			kfree(conf_array.reg_setting);
-			return -ENOMEM;
-		}
 
-		if (copy_from_user(debug_reg,
-			(void __user *)compat_ptr(laser_led_data.debug_reg),
-			laser_led_data.debug_reg_size *
-			sizeof(uint32_t))) {
-			pr_err("%s:%d failed\n", __func__, __LINE__);
-			kfree(conf_array.reg_setting);
-			kfree(debug_reg);
-			return -EFAULT;
-		}
-	} else {
+	debug_reg = kzalloc(laser_led_data.debug_reg_size *
+		(sizeof(uint32_t)), GFP_KERNEL);
+	if (!debug_reg) {
 		kfree(conf_array.reg_setting);
+		return -ENOMEM;
+	}
+
+	if (copy_from_user(debug_reg,
+		(void __user *)compat_ptr(laser_led_data.debug_reg),
+		laser_led_data.debug_reg_size *
+		sizeof(uint32_t))) {
+		pr_err("%s:%d failed\n", __func__, __LINE__);
+		kfree(conf_array.reg_setting);
+		kfree(debug_reg);
 		return -EFAULT;
 	}
+
 	laser_led_ctrl->i2c_client.addr_type = conf_array.addr_type;
 
-	rc = laser_led_ctrl->i2c_client.i2c_func_tbl->i2c_write_table(
-		&(laser_led_ctrl->i2c_client), &conf_array);
+	rc = laser_led_ctrl->i2c_client.i2c_func_tbl->
+		i2c_write_table(&(laser_led_ctrl->i2c_client),
+		&conf_array);
 
 	for (i = 0; i < laser_led_data.debug_reg_size; i++) {
 		rc = laser_led_ctrl->i2c_client.i2c_func_tbl->i2c_read(
@@ -320,7 +316,7 @@ static int32_t msm_laser_led_control(
 	struct msm_camera_i2c_reg_setting conf_array;
 	struct msm_laser_led_cfg_data_t laser_led_data;
 
-	uint32_t *debug_reg = NULL;
+	uint32_t *debug_reg;
 	int i;
 	uint16_t local_data;
 	int32_t rc = 0;
@@ -364,32 +360,29 @@ static int32_t msm_laser_led_control(
 		kfree(conf_array.reg_setting);
 		return -EFAULT;
 	}
-	if (laser_led_data.debug_reg_size <= sizeof(uint32_t)) {
-		debug_reg = kzalloc(laser_led_data.debug_reg_size *
-			(sizeof(uint32_t)), GFP_KERNEL);
-		if (!debug_reg) {
-			kfree(conf_array.reg_setting);
-			return -ENOMEM;
-		}
 
-		if (copy_from_user(debug_reg,
-			(laser_led_data.debug_reg),
-			laser_led_data.debug_reg_size *
-			sizeof(uint32_t))) {
-			pr_err("%s:%d failed\n", __func__, __LINE__);
-			kfree(debug_reg);
-			kfree(conf_array.reg_setting);
-			return -EFAULT;
-		}
-	} else {
+	debug_reg = kzalloc(laser_led_data.debug_reg_size *
+		(sizeof(uint32_t)), GFP_KERNEL);
+	if (!debug_reg) {
 		kfree(conf_array.reg_setting);
-		kfree(debug_reg);
 		return -ENOMEM;
 	}
+
+	if (copy_from_user(debug_reg,
+		(laser_led_data.debug_reg),
+		laser_led_data.debug_reg_size *
+		sizeof(uint32_t))) {
+		pr_err("%s:%d failed\n", __func__, __LINE__);
+		kfree(debug_reg);
+		kfree(conf_array.reg_setting);
+		return -EFAULT;
+	}
+
 	laser_led_ctrl->i2c_client.addr_type = conf_array.addr_type;
 
-	rc = laser_led_ctrl->i2c_client.i2c_func_tbl->i2c_write_table(
-		&(laser_led_ctrl->i2c_client), &conf_array);
+	rc = laser_led_ctrl->i2c_client.i2c_func_tbl->
+		i2c_write_table(&(laser_led_ctrl->i2c_client),
+		&conf_array);
 
 	for (i = 0; i < laser_led_data.debug_reg_size; i++) {
 		rc = laser_led_ctrl->i2c_client.i2c_func_tbl->i2c_read(
@@ -532,6 +525,7 @@ static int32_t msm_laser_led_platform_probe(struct platform_device *pdev)
 		&pdev->id);
 	CDBG("cell-index %d, rc %d\n", pdev->id, rc);
 	if (rc < 0) {
+		kfree(laser_led_ctrl);
 		pr_err("reading cell index failed: rc %d\n", rc);
 		return rc;
 	}
@@ -540,6 +534,7 @@ static int32_t msm_laser_led_platform_probe(struct platform_device *pdev)
 		&laser_led_ctrl->cci_master);
 	CDBG("qcom,cci-master %d, rc %d\n", laser_led_ctrl->cci_master, rc);
 	if (rc < 0 || laser_led_ctrl->cci_master >= MASTER_MAX) {
+		kfree(laser_led_ctrl);
 		pr_err("invalid cci master info: rc %d\n", rc);
 		return rc;
 	}
@@ -595,6 +590,7 @@ static struct platform_driver msm_laser_led_platform_driver = {
 	.probe = msm_laser_led_platform_probe,
 	.driver = {
 		.name = "qcom,laser-led",
+		.owner = THIS_MODULE,
 		.of_match_table = msm_laser_led_dt_match,
 	},
 };

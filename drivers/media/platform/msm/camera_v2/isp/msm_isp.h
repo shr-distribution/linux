@@ -891,4 +891,12 @@ struct vfe_parent_device {
 };
 int vfe_hw_probe(struct platform_device *pdev);
 void msm_isp_update_last_overflow_ab_ib(struct vfe_device *vfe_dev);
+
+/* avtimer function pointer table */
+struct avtimer_fptr_t {
+	int (*fptr_avtimer_open)(void);
+	int (*fptr_avtimer_enable)(int enable);
+	int (*fptr_avtimer_get_time)(uint64_t *avtimer_tick);
+};
+
 #endif

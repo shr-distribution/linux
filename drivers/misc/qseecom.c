@@ -7611,6 +7611,8 @@ static long qseecom_ioctl(struct file *file,
 		__wakeup_unregister_listener_kthread();
 	__wakeup_unload_app_kthread();
 
+	pr_err("QSEECOM: ioctl cmd=0x%x pid=%d comm=%s\n", cmd, current->pid, current->comm);
+
 	switch (cmd) {
 	case QSEECOM_IOCTL_REGISTER_LISTENER_REQ: {
 		mutex_lock(&listener_access_lock);
@@ -7625,6 +7627,7 @@ static long qseecom_ioctl(struct file *file,
 		atomic_inc(&data->ioctl_count);
 		data->type = QSEECOM_LISTENER_SERVICE;
 		ret = qseecom_register_listener(data, argp);
+		pr_err("QSEECOM: register_listener ret=%d pid=%d\n", ret, current->pid);
 		atomic_dec(&data->ioctl_count);
 		wake_up_all(&data->abort_wq);
 		mutex_unlock(&listener_access_lock);
@@ -7832,11 +7835,12 @@ static long qseecom_ioctl(struct file *file,
 			ret = -EINVAL;
 			break;
 		}
-		pr_debug("SET_MEM_PARAM: qseecom addr = 0x%pK\n", data);
+		pr_err("QSEECOM: SET_MEM_PARAM from pid=%d\n", current->pid);
 		atomic_inc(&data->ioctl_count);
 		ret = qseecom_set_client_mem_param(data, argp);
 		atomic_dec(&data->ioctl_count);
 		mutex_unlock(&app_access_lock);
+		pr_err("QSEECOM: set_mem_param ret=%d\n", ret);
 		if (ret)
 			pr_err("failed Qqseecom_set_mem_param request: %d\n",
 								ret);
@@ -7853,11 +7857,12 @@ static long qseecom_ioctl(struct file *file,
 			break;
 		}
 		data->type = QSEECOM_CLIENT_APP;
-		pr_debug("LOAD_APP_REQ: qseecom_addr = 0x%pK\n", data);
+		pr_err("QSEECOM: LOAD_APP_REQ from pid=%d\n", current->pid);
 		atomic_inc(&data->ioctl_count);
 		ret = qseecom_load_app(data, argp);
 		atomic_dec(&data->ioctl_count);
 		mutex_unlock(&app_access_lock);
+		pr_err("QSEECOM: load_app ret=%d\n", ret);
 		if (ret)
 			pr_err("failed load_app request: %d\n", ret);
 		__wakeup_unload_app_kthread();
@@ -8387,6 +8392,7 @@ static int qseecom_open(struct inode *inode, struct file *file)
 				&data->sglistinfo_shm);
 	if (!data->sglistinfo_ptr)
 		return -ENOMEM;
+	pr_err("QSEECOM: open() called by pid=%d comm=%s\n", current->pid, current->comm);
 	return ret;
 }
 
@@ -9644,43 +9650,64 @@ static int qseecom_probe(struct platform_device *pdev)
 {
 	int rc;
 
+	pr_err("QSEECOM: probe starting\n");
+
 	rc = qseecom_init_dev(pdev);
-	if (rc)
+	if (rc) {
+		pr_err("QSEECOM: init_dev failed rc=%d\n", rc);
 		return rc;
+	}
 
 	rc = qseecom_init_control();
-	if (rc)
+	if (rc) {
+		pr_err("QSEECOM: init_control failed rc=%d\n", rc);
 		goto exit_deinit_dev;
+	}
 
 	rc = qseecom_parse_dt(pdev);
-	if (rc)
+	if (rc) {
+		pr_err("QSEECOM: parse_dt failed rc=%d\n", rc);
 		goto exit_deinit_dev;
+	}
 
 	rc = qseecom_retrieve_ce_data(pdev);
-	if (rc)
+	if (rc) {
+		pr_err("QSEECOM: retrieve_ce_data failed rc=%d\n", rc);
 		goto exit_deinit_dev;
+	}
 
 	rc = qseecom_init_clk();
-	if (rc)
+	if (rc) {
+		pr_err("QSEECOM: init_clk failed rc=%d\n", rc);
 		goto exit_release_ce_data;
+	}
 
 	rc = qseecom_init_bus(pdev);
-	if (rc)
+	if (rc) {
+		pr_err("QSEECOM: init_bus failed rc=%d\n", rc);
 		goto exit_deinit_clock;
+	}
 
 	rc = qseecom_send_app_region(pdev);
-	if (rc)
+	if (rc) {
+		pr_err("QSEECOM: send_app_region failed rc=%d\n", rc);
 		goto exit_deinit_bus;
+	}
 
 	rc = qseecom_create_kthreads();
-	if (rc)
+	if (rc) {
+		pr_err("QSEECOM: create_kthreads failed rc=%d\n", rc);
 		goto exit_deinit_bus;
+	}
 
 	rc = qseecom_register_shmbridge();
-	if (rc)
+	if (rc) {
+		pr_err("QSEECOM: register_shmbridge failed rc=%d\n", rc);
 		goto exit_stop_kthreads;
+	}
 
 	atomic_set(&qseecom.qseecom_state, QSEECOM_STATE_READY);
+	pr_err("QSEECOM: probe SUCCESS\n");
 	return 0;
 
 exit_stop_kthreads:

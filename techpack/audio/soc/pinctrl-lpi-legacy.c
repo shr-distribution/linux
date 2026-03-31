@@ -122,47 +122,29 @@ static const char *const lpi_gpio_functions[] = {
 static int lpi_gpio_read(struct lpi_gpio_pad *pad, unsigned int addr)
 {
 	int ret;
-	struct lpi_gpio_state *state = dev_get_drvdata(lpi_dev);
 
-	mutex_lock(&state->lpi_mutex);
 	if (!lpi_dev_up) {
 		pr_err_ratelimited("%s: ADSP is down due to SSR, return\n",
 				   __func__);
-		mutex_unlock(&state->lpi_mutex);
 		return 0;
 	}
 
-	pm_runtime_get_sync(lpi_dev);
-
 	ret = ioread32(pad->base + pad->offset + addr);
-	if (ret < 0)
-		pr_err("%s: read 0x%x failed\n", __func__, addr);
 
-	pm_runtime_mark_last_busy(lpi_dev);
-	pm_runtime_put_autosuspend(lpi_dev);
-	mutex_unlock(&state->lpi_mutex);
 	return ret;
 }
 
 static int lpi_gpio_write(struct lpi_gpio_pad *pad, unsigned int addr,
 			  unsigned int val)
 {
-	struct lpi_gpio_state *state = dev_get_drvdata(lpi_dev);
-
-	mutex_lock(&state->lpi_mutex);
 	if (!lpi_dev_up) {
 		pr_err_ratelimited("%s: ADSP is down due to SSR, return\n",
 				   __func__);
-		mutex_unlock(&state->lpi_mutex);
 		return 0;
 	}
-	pm_runtime_get_sync(lpi_dev);
 
 	iowrite32(val, pad->base + pad->offset + addr);
 
-	pm_runtime_mark_last_busy(lpi_dev);
-	pm_runtime_put_autosuspend(lpi_dev);
-	mutex_unlock(&state->lpi_mutex);
 	return 0;
 }
 
@@ -232,6 +214,10 @@ static int lpi_gpio_set_mux(struct pinctrl_dev *pctldev, unsigned int function,
 	        val &= ~(LPI_GPIO_REG_FUNCTION_MASK);
 	        val |= pad->function << LPI_GPIO_REG_FUNCTION_SHIFT;
 	        lpi_gpio_write(pad, LPI_GPIO_REG_VAL_CTL, val);
+	        pr_err("lpi_gpio_set_mux: pin=%u func=%u val=0x%x offset=0x%x\n",
+	               pin, function, val, pad->offset);
+        } else {
+	        pr_err("lpi_gpio_set_mux: pin=%u pad is NULL!\n", pin);
         }
 	return 0;
 }
@@ -649,18 +635,10 @@ static int lpi_pinctrl_probe(struct platform_device *pdev)
 		goto err_snd_evt;
 	}
 
-	/* Register LPASS core hw vote */
-	ret = lpi_get_lpass_core_hw_clk(dev, state);
-	if (ret)
-		dev_dbg(dev, "%s: unable to get core clk handle %d\n",
-			__func__, ret);
-
+	/* Skip LPASS core hw vote and pm_runtime for SDM660 -
+	 * matches working 4.4 kernel behavior (direct register access)
+	 */
 	state->core_hw_vote_status = false;
-	pm_runtime_set_autosuspend_delay(&pdev->dev, LPI_AUTO_SUSPEND_DELAY);
-	pm_runtime_use_autosuspend(&pdev->dev);
-	pm_runtime_set_suspended(&pdev->dev);
-	pm_runtime_enable(&pdev->dev);
-	mutex_init(&state->lpi_mutex);
 
 	return 0;
 
@@ -675,10 +653,6 @@ err_chip:
 static int lpi_pinctrl_remove(struct platform_device *pdev)
 {
 	struct lpi_gpio_state *state = platform_get_drvdata(pdev);
-
-	mutex_destroy(&state->lpi_mutex);
-	pm_runtime_disable(&pdev->dev);
-	pm_runtime_set_suspended(&pdev->dev);
 
 	snd_event_client_deregister(&pdev->dev);
 	audio_notifier_deregister("lpi_tlmm");

@@ -1,5 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2016-2020 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2018 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -12,7 +11,7 @@
  *
  */
 
-#define pr_fmt(fmt) "%s:%d\n" fmt, __func__, __LINE__
+#define pr_fmt(fmt) "%s:%d " fmt, __func__, __LINE__
 
 #include <linux/module.h>
 #include <linux/pwm.h>
@@ -181,7 +180,7 @@ static int32_t msm_ir_led_handle_init(
 }
 
 static int32_t msm_ir_led_config(struct msm_ir_led_ctrl_t *ir_led_ctrl,
-	void *argp)
+	void __user *argp)
 {
 	int32_t rc = -EINVAL;
 	struct msm_ir_led_cfg_data_t *ir_led_data =
@@ -226,7 +225,7 @@ static long msm_ir_led_subdev_ioctl(struct v4l2_subdev *sd,
 	unsigned int cmd, void *arg)
 {
 	struct msm_ir_led_ctrl_t *fctrl = NULL;
-	void *argp = (void *)arg;
+	void __user *argp = (void __user *)arg;
 
 	CDBG("Enter\n");
 
@@ -269,8 +268,8 @@ static struct v4l2_subdev_ops msm_ir_led_subdev_ops = {
 };
 
 static int msm_ir_led_close(struct v4l2_subdev *sd,
-			struct v4l2_subdev_fh *fh)
-{
+			struct v4l2_subdev_fh *fh) {
+
 	int rc = 0;
 	struct msm_ir_led_ctrl_t *ir_led_ctrl = v4l2_get_subdevdata(sd);
 
@@ -380,6 +379,7 @@ static int32_t msm_ir_led_platform_probe(struct platform_device *pdev)
 	rc = msm_ir_led_get_dt_data(pdev->dev.of_node, ir_led_ctrl);
 	if (rc < 0) {
 		pr_err("msm_ir_led_get_dt_data failed\n");
+		devm_kfree(&pdev->dev, ir_led_ctrl);
 		return -EINVAL;
 	}
 
@@ -421,6 +421,7 @@ static struct platform_driver msm_ir_led_platform_driver = {
 	.probe = msm_ir_led_platform_probe,
 	.driver = {
 		.name = "qcom,ir-led",
+		.owner = THIS_MODULE,
 		.of_match_table = msm_ir_led_dt_match,
 	},
 };

@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -10,12 +10,15 @@
  * GNU General Public License for more details.
  */
 
-#ifndef MSM_SENSOR_DRIVER_H
-#define MSM_SENSOR_DRIVER_H
-
-#include "msm_sensor.h"
-
-int32_t msm_sensor_driver_probe(void *setting,
-	struct msm_sensor_info_t *probed_info, char *entity_name);
-
+#ifndef __GEN_VKEYS_
+struct vkeys_platform_data {
+	const char *name;
+	int disp_maxx;
+	int disp_maxy;
+	int panel_maxx;
+	int panel_maxy;
+	int *keycodes;
+	int num_keys;
+	int y_offset;
+};
 #endif

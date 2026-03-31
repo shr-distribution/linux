@@ -116,3 +116,4 @@ obj-$(CONFIG_TOUCHSCREEN_FTS)	+= focaltech_touch/
 obj-$(CONFIG_TOUCHSCREEN_NT36XXX)	+= nt36xxx/
 obj-$(CONFIG_TOUCHSCREEN_FOCALTECH_TDDI) += focaltech_bbry/
 obj-$(CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_V27) 	+= synaptics_dsx_2.7/
+obj-$(CONFIG_TOUCHSCREEN_GEN_VKEYS)	+= gen_vkeys.o

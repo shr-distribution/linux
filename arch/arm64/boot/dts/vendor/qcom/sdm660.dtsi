@@ -362,7 +362,7 @@
 		removed_regions1: removed_regions@86200000 {
 			compatible = "removed-dma-pool";
 			no-map;
-			reg =  <0x0 0x86200000 0x0 0x2d00000>;
+			reg = <0x0 0x86200000 0x0 0x4900000>;
 		};
 
 		modem_fw_mem: modem_fw_region@8ac00000 {
@@ -1581,6 +1581,7 @@
 		};
 
 		ipa_smmu_wlan: ipa_smmu_wlan {
+			status = "disabled";
 			compatible = "qcom,ipa-smmu-wlan-cb";
 			iommus = <&anoc2_smmu 0x19C1 0x0>;
 			qcom,iommu-dma = "bypass";
@@ -2317,6 +2318,7 @@
 		qcom,firmware-name = "modem";
 		qcom,pil-self-auth;
 		qcom,sysmon-id = <0>;
+		qcom,smem-id = <421>;
 		qcom,ssctl-instance-id = <0x12>;
 		qcom,qdsp6v62-1-5;
 		memory-region = <&modem_fw_mem>;
@@ -2343,7 +2345,7 @@
 		qcom,smem-states = <&modem_smp2p_out 0>;
 		qcom,smem-state-names = "qcom,force-stop";
 
-		status = "disabled"; //temp
+		status = "ok";
 		qcom,mba-mem@0 {
 			compatible = "qcom,pil-mba-mem";
 			memory-region = <&pil_mba_mem>;
@@ -2434,7 +2436,7 @@
 
 	qcom_seecom: qseecom@86d00000 {
 		compatible = "qcom,qseecom";
-		reg = <0x86d00000 0x2200000>;
+		reg = <0x86d00000 0x3E00000>;
 		reg-names = "secapp-region";
 		qcom,hlos-num-ce-hw-instances = <1>;
 		qcom,hlos-ce-hw-instance = <0>;

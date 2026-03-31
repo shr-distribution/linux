@@ -2767,6 +2767,14 @@ enum Tfa98xx_Error tfaRunStartup(Tfa98xx_handle_t handle, int profile)
 	for ( tries=1; tries < CFSTABLE_TRIES; tries++ ) {
 		err = tfa98xx_dsp_system_stable(handle, &status);
 		_ASSERT(err == Tfa98xx_Error_Ok);
+		if (tries == 1 || tries == CFSTABLE_TRIES - 1) {
+			int regval = TFA_READ_REG(handle, AREFS);
+			pr_err("tfa_pll_wait: try=%d status=%d reg=0x%04x AREFS=%d CLKS=%d PLLS=%d\n",
+				tries, status, regval >= 0 ? regval : 0,
+				regval >= 0 ? (regval >> 13) & 1 : -1,
+				regval >= 0 ? (regval >> 5) & 1 : -1,
+				regval >= 0 ? (regval >> 1) & 1 : -1);
+		}
 		if ( status )
 			break;
 		else

@@ -1359,4 +1359,14 @@ source "drivers/input/touchscreen/focaltech_bbry/Kconfig"
 
 source "drivers/input/touchscreen/nt36xxx/Kconfig"
 
+config TOUCHSCREEN_GEN_VKEYS
+	tristate "QCom Gen Virtual Keys Driver"
+	depends on OF
+	help
+	  Say Y here if you want support for virtual keys generated
+	  from device tree properties. Used for capacitive navigation
+	  buttons on Qualcomm devices.
+
+	  If unsure, say N.
+
 endif

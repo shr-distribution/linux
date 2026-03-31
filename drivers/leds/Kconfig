@@ -816,6 +816,13 @@ config LEDS_QPNP_VIBRATOR
 	  manually or by the DTEST lines.It uses the android timed-output
 	  framework.
 
+config LEDS_SMG31323
+	tristate "LED Support for SMG31323"
+	depends on I2C && LEDS_CLASS
+	help
+	  This option enables support for the SMG31323 LED driver
+	  on SMG31323.
+
 comment "LED Triggers"
 source "drivers/leds/trigger/Kconfig"
 

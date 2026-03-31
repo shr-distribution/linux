@@ -63,39 +63,7 @@
 		};
 	};
 };
-/* [PLATFORM]-Mod-BEGIN by yejunwen */
-/* [PLATFORM]-Mod-BEGIN by yejunwen,5415486, 2017/10/19 */
-&pm660l_3 {
-		qcom,leds@d000 {
-			red_led: qcom,rgb_0 {
-				qcom,ramp-step-ms = <62>;
-				qcom,idx-len = <48>;
-				qcom,duty-pcts =
-					[00 01 02 03 05 07 0a 0f 14 19 1e 23 28 2d 32 37 3c 41 46 4b 50 57 5e 64
-                                         64 5e 57 50 4b 46 41 3c 37 32 2d 28 23 1e 19 14 0f 0a 06 03 02 01 00 00];
-			};
-			green_led: qcom,rgb_1 {
-				qcom,ramp-step-ms = <62>;
-				qcom,start-idx = <0>;
-				qcom,idx-len = <48>;
-				qcom,duty-pcts =
-					[00 01 02 03 05 07 0a 0f 14 19 1e 23 28 2d 32 37 3c 41 46 4b 50 57 5e 64
-                                         64 5e 57 50 4b 46 41 3c 37 32 2d 28 23 1e 19 14 0f 0a 06 03 02 01 00 00];
-				qcom,use-blink;
-			};
-
-			blue_led: qcom,rgb_2 {
-				qcom,ramp-step-ms = <62>;
-				qcom,start-idx = <0>;
-				qcom,idx-len = <48>;
-				qcom,duty-pcts =
-					[00 01 02 03 05 07 0a 0f 14 19 1e 23 28 2d 32 37 3c 41 46 4b 50 57 5e 64
-                                         64 5e 57 50 4b 46 41 3c 37 32 2d 28 23 1e 19 14 0f 0a 06 03 02 01 00 00];
-				qcom,use-blink;
-			};
-		};
-};
-/* [PLATFORM]-Mod-END by yejunwen */
+/* BB LED override removed - base pm660l tri-led nodes used instead */
 
 
 &soc {
@@ -438,6 +406,7 @@
 	/delete-property/interrupts;
 	/delete-property/interrupt-names;
 	qcom,led-strings-list = [00 01];
+	qcom,string-cfg = <0x3>;
 	qcom,fs-curr-ua = <20000>;
 	status = "okay";
 };
@@ -808,8 +777,8 @@
 	hphlr-switch-gpios = <&hph_lr_switch_gpio>;
 
 	/* MODIFIED-BEGIN by hongwei.tian, 2017-09-01,BUG-5247152*/
-	qcom,msm-mi2s-master = <1>, <1>, <1>, <1>;
-	qcom,msm-mi2s-ext-mclk = <1>, <1>, <1>, <1>;
+	qcom,msm-mi2s-master = <1>, <1>, <1>, <1>, <1>;
+	qcom,msm-mi2s-ext-mclk = <1>, <1>, <1>, <1>, <1>;
 
 	asoc-codec = <&stub_codec>, <&msm_digital_codec>,
 			<&pmic_analog_codec>, <&ext_disp_audio_codec>;
@@ -1082,8 +1051,8 @@
 
 /* MODIFIED-BEGIN by Wu Yan, 2017-09-13,BUG-5325119*/
 &soc {
-	qcom,rmtfs_sharedmem@85e00000 {
-		reg = <0x00000000 0x400000>;
+	qcom,rmtfs_sharedmem@0 {
+		reg = <0x0 0x400000>;
 	};
 };
 /* MODIFIED-END by Wu Yan,BUG-5325119*/

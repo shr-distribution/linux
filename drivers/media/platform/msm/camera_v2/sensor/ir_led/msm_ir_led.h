@@ -1,5 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2016, 2018, 2020. The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -38,13 +37,13 @@ enum msm_ir_led_driver_type {
 struct msm_ir_led_ctrl_t;
 
 struct msm_ir_led_func_t {
-	int32_t (*camera_ir_led_init)(struct msm_ir_led_ctrl_t *ir_led_ctrl,
-		struct msm_ir_led_cfg_data_t *ir_led_data);
-	int32_t (*camera_ir_led_release)(struct msm_ir_led_ctrl_t *ir_led_ctrl);
-	int32_t (*camera_ir_led_off)(struct msm_ir_led_ctrl_t *ir_led_ctrl,
-		struct msm_ir_led_cfg_data_t *ir_led_data);
-	int32_t (*camera_ir_led_on)(struct msm_ir_led_ctrl_t *ir_led_ctrl,
-		struct msm_ir_led_cfg_data_t *ir_led_data);
+	int32_t (*camera_ir_led_init)(struct msm_ir_led_ctrl_t *,
+		struct msm_ir_led_cfg_data_t *);
+	int32_t (*camera_ir_led_release)(struct msm_ir_led_ctrl_t *);
+	int32_t (*camera_ir_led_off)(struct msm_ir_led_ctrl_t *,
+		struct msm_ir_led_cfg_data_t *);
+	int32_t (*camera_ir_led_on)(struct msm_ir_led_ctrl_t *,
+		struct msm_ir_led_cfg_data_t *);
 };
 
 struct msm_ir_led_table {
