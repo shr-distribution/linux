@@ -2048,10 +2048,12 @@ mt9m113_streaming:
 			 compose->width, compose->height, output_width, output_height);
 
 		/*
-		 * Configure Context A output dimensions if not 640x480.
+		 * Configure Context A output dimensions.
+		 * Always write these even for 640x480 - the init table values
+		 * may have been reset by sensor firmware after power cycle.
 		 * This must be done BEFORE enabling MIPI output.
 		 */
-		if (output_width != 640 || output_height != 480) {
+		{
 			/* Set Context A output width (MCU var 0x2703) */
 			ret = mt9m113_write_mcu_var(sensor, 0x2703, output_width);
 			if (ret) {
@@ -2084,9 +2086,19 @@ mt9m113_streaming:
 					 "MT9M113: REFRESH timeout (continuing)\n");
 			}
 
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Context A reconfigured to %ux%u\n",
-				 output_width, output_height);
+			/* Verify MCU variables were written correctly */
+			{
+				u64 verify_width, verify_height;
+				mt9m113_read_mcu_var(sensor, 0x2703, &verify_width);
+				mt9m113_read_mcu_var(sensor, 0x2705, &verify_height);
+				dev_info(&sensor->client->dev,
+					 "MT9M113: Context A after REFRESH: written=%ux%u, readback=%lldx%lld\n",
+					 output_width, output_height, verify_width, verify_height);
+				if (verify_width != output_width || verify_height != output_height) {
+					dev_err(&sensor->client->dev,
+						"MT9M113: WARNING - MCU vars not applied! Sensor may override.\n");
+				}
+			}
 		}
 
 		/* Step 1: Wait 10ms for CSIPHY to stabilize (webOS: mdelay(10) after csi_config) */
