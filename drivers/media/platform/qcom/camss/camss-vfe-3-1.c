@@ -979,9 +979,12 @@ static int vfe31_enable(struct vfe_line *line)
 	reg = (0 << 16) | 1023;  /* offset=0, depth=1023 */
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
 
-	/* WR_CFG - enable + frame_based */
-	writel_relaxed(BIT(0) | BIT(1),
-		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+	/*
+	 * WR_CFG - enable only (BIT(0)).
+	 * Note: VFE31 does NOT have frame_based mode in WR_CFG bit 1.
+	 * webOS only writes 1 here, not 3. Hardware ignores bit 1.
+	 */
+	writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 	wmb();
 
 	/* Reload WM0 to apply new configuration */
@@ -1425,8 +1428,8 @@ static void __maybe_unused vfe31_configure_video_wm(struct vfe_device *vfe,
 	writel_relaxed(reg,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
 
-	/* Enable WM4 in frame-based mode */
-	writel_relaxed(BIT(0) | BIT(1),
+	/* Enable WM4 (VFE31 has no frame_based bit, just enable) */
+	writel_relaxed(BIT(0),
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
 
 	/*
@@ -1445,8 +1448,8 @@ static void __maybe_unused vfe31_configure_video_wm(struct vfe_device *vfe,
 		writel_relaxed(reg,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
 
-		/* Enable WM5 */
-		writel_relaxed(BIT(0) | BIT(1),
+		/* Enable WM5 (VFE31 has no frame_based bit, just enable) */
+		writel_relaxed(BIT(0),
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
 	}
 
@@ -1880,16 +1883,28 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * - Bits 8-15:  WMs mapped to COMPOSITE_DONE_1 (IRQ_STATUS_0 bit 22)
 	 * - Bits 16-23: WMs mapped to COMPOSITE_DONE_2 (IRQ_STATUS_0 bit 23)
 	 *
-	 * webOS uses COMPOSITE_DONE_1 for raw/snapshot output (output path 1):
-	 *   irq_comp_mask |= (0x1 << (out1.ch0 + 8));  // WM0 -> bits 8-15
-	 * This maps to IMAGE_COMPOSITE_DONE_1 (bit 22 in IRQ_STATUS_0).
+	 * webOS mapping (from msm_vfe31.c):
+	 * - Preview/PIX mode (OUTPUT_2, 0x200): WMs mapped to COMPOSITE_DONE_0
+	 *     irq_comp_mask |= BIT(out0.ch0) | BIT(out0.ch1);  // bits 0-7
+	 * - Raw snapshot mode (CAMIF_TO_AXI, 0x60): WM0 mapped to COMPOSITE_DONE_1
+	 *     irq_comp_mask |= BIT(out1.ch0 + 8);  // bits 8-15
 	 */
 	{
-		u32 comp_mask = BIT(wm + 8);  /* Map WM to COMPOSITE_DONE_1 (webOS) */
+		u32 comp_mask;
 
-		dev_info(vfe->camss->dev,
-			 "VFE31: Setting IRQ_COMPOSITE_MASK_0=0x%08x (WM%d -> COMP1)\n",
-			 comp_mask, wm);
+		if (vfe31_axi_output_mode == 0x60) {
+			/* Raw mode: map WM to COMPOSITE_DONE_1 */
+			comp_mask = BIT(wm + 8);
+			dev_info(vfe->camss->dev,
+				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (WM%d -> COMP1, raw mode)\n",
+				 comp_mask, wm);
+		} else {
+			/* PIX/preview mode: map WM to COMPOSITE_DONE_0 */
+			comp_mask = BIT(wm);
+			dev_info(vfe->camss->dev,
+				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (WM%d -> COMP0, PIX mode)\n",
+				 comp_mask, wm);
+		}
 		writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		wmb();
 	}
@@ -1947,10 +1962,10 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 *
 	 * WR_CFG bits:
 	 *   Bit 0: enable
-	 *   Bit 1: frame_based mode
+	 * Note: VFE31 does NOT have frame_based mode in bit 1. webOS writes 1.
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 6 - Enable Write Master WM%d\n", wm);
-	writel_relaxed(BIT(0) | BIT(1), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
+	writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 	wmb();
 
 	/* Debug dump of all relevant registers after CAMIF start */
@@ -2044,12 +2059,13 @@ static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
 	/*
 	 * VFE31 WM enable - write complete WR_CFG value.
 	 * Bit 0: enable
-	 * Bit 1: frame_based mode (for RDI/raw)
 	 *
-	 * Don't use read-modify-write as reading WR_CFG may also hang.
+	 * Note: VFE31 does NOT have frame_based mode in WR_CFG bit 1.
+	 * webOS only writes 1 here. Don't use read-modify-write as
+	 * reading WR_CFG may cause hangs.
 	 */
 	if (enable)
-		val = BIT(0) | BIT(1);  /* enable + frame_based */
+		val = BIT(0);  /* enable only */
 	else
 		val = 0;
 

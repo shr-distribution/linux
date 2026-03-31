@@ -837,6 +837,97 @@ test_v4l2_mode() {
     "
 }
 
+# Test VIDEO mode (preview + video output via WM4/WM5)
+# Uses AXI mode 0x01 with XBAR_CFG1 = 0x1a1b
+# This configures both preview (WM0/WM1) and video (WM4/WM5) outputs
+test_video_mode() {
+    log_step "Testing VIDEO mode (preview + video output)..."
+    log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
+    log_info "AXI mode 0x01 enables both preview (WM0/1) and video (WM4/5) paths"
+
+    # Set modern mux mode (CSI1 for front camera)
+    set_legacy_routing "0"
+
+    # Set AXI output mode to PIX+Video (0x01)
+    set_axi_output_mode "0x01"
+
+    # Enable video output
+    set_video_output "1"
+
+    run_on_device "
+        echo '=== VIDEO Mode Test (preview + video output) ==='
+        echo ''
+        echo 'AXI mode 0x01 = preview + video'
+        echo 'XBAR_CFG1 = 0x1a1b (routes to WM0/1 + WM4/5)'
+        echo ''
+
+        # Reset all links first
+        echo 'Resetting media links...'
+        media-ctl -r 2>/dev/null || true
+
+        # Enable upstream links: csiphy -> csid
+        echo 'Enabling upstream links...'
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
+
+        # Enable PIX link: CSID pad 4 (PIX) -> VFE PIX pad 0
+        echo 'Enabling PIX link (CSID:4 -> VFE PIX)...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
+
+        # Set formats on entire pipeline (640x480 = MT9M113 Context A preview)
+        echo 'Setting formats (640x480 preview mode)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+
+        # Set V4L2 video device format
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=UYVY 2>&1 || true
+
+        echo ''
+        echo 'Current module parameters:'
+        echo \"  vfe31_axi_output_mode = \$(cat /sys/module/qcom_camss/parameters/vfe31_axi_output_mode 2>/dev/null)\"
+        echo \"  vfe31_video_output_enable = \$(cat /sys/module/qcom_camss/parameters/vfe31_video_output_enable 2>/dev/null)\"
+
+        echo ''
+        echo 'Testing capture with 640x480 UYVY (VIDEO mode)...'
+        timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
+            'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
+            fakesink 2>&1
+
+        if [ \$? -eq 0 ]; then
+            echo ''
+            echo 'SUCCESS: VIDEO mode capture completed!'
+        else
+            echo ''
+            echo 'FAILED: VIDEO mode capture did not complete'
+            echo 'Check dmesg for errors'
+        fi
+    "
+
+    # Disable video output after test
+    set_video_output "0"
+}
+
+# Enable/disable VFE31 video output (WM4/WM5)
+set_video_output() {
+    local enable="$1"
+    log_step "Setting VFE31 video output enable to: $enable"
+
+    run_on_device "
+        PARAM='/sys/module/qcom_camss/parameters/vfe31_video_output_enable'
+        if [ -f \"\$PARAM\" ]; then
+            echo $enable > \$PARAM
+            echo \"vfe31_video_output_enable set to: \$(cat \$PARAM)\"
+        else
+            echo 'WARNING: vfe31_video_output_enable parameter not found'
+            echo 'Module may not be loaded or parameter not available'
+        fi
+    "
+}
+
 # Test legacy routing mode (webOS-style MISC_CC=0)
 # This bypasses the modern csi_pix/csi_rdi clock mux and uses direct CSI1_VFE_CLK routing
 test_legacy_mode() {
@@ -950,6 +1041,9 @@ main() {
             legacy)
                 MODE="legacy"
                 ;;
+            video)
+                MODE="video"
+                ;;
             v4l2)
                 MODE="v4l2"
                 ;;
@@ -959,6 +1053,7 @@ main() {
                 echo "Modes:"
                 echo "  raw        Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
                 echo "  pix        Test PIX mode (through VFE ISP, uses GStreamer)"
+                echo "  video      Test VIDEO mode (preview+video via WM4/WM5, AXI mode 0x01)"
                 echo "  v4l2       Test PIX mode with v4l2-ctl (direct, no GStreamer)"
                 echo "  testgen    Test VFE internal test generator (bypasses camera)"
                 echo "  legacy     Test with webOS-style legacy routing (MISC_CC=0)"
@@ -1020,6 +1115,12 @@ main() {
             show_camera_info
             ensure_camera_ready
             test_legacy_mode
+            check_dmesg
+            ;;
+        video)
+            show_camera_info
+            ensure_camera_ready
+            test_video_mode
             check_dmesg
             ;;
         full)
