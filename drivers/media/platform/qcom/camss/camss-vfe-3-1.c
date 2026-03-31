@@ -961,10 +961,17 @@ static int vfe31_enable(struct vfe_line *line)
 	writel_relaxed(pong_addr,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 
-	/* WR_IMAGE_SIZE */
-	wpl = vfe_word_per_line(pix->pixelformat, width);
-	reg = (height - 1) & 0xFFF;
-	reg |= (((wpl + 1) / 2 - 1) & 0x3FF) << 16;
+	/*
+	 * WR_IMAGE_SIZE - VFE31 format (from webOS register dumps):
+	 * webOS WM0: 0x00501DF2 = ((80) << 16) | ((479 << 4) | 2)
+	 *
+	 * Upper 16 bits: bytesperline / 16 (128-bit words per line)
+	 * Lower 16 bits: ((height - 1) << 4) | 2
+	 *
+	 * This is DIFFERENT from VFE4.x which uses (height-1) | (wpl<<16)
+	 */
+	reg = ((bytesperline / 16) & 0xFFFF) << 16;
+	reg |= ((height - 1) << 4) | 2;
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
 
 	/*
@@ -980,8 +987,18 @@ static int vfe31_enable(struct vfe_line *line)
 	/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 
-	/* WR_UB_CFG - use full UB for single WM */
-	reg = (0 << 16) | 1023;  /* offset=0, depth=1023 */
+	/*
+	 * WR_UB_CFG - VFE31 format (from webOS register dumps):
+	 * webOS WM0: 0x002701DF = ((39) << 16) | 479
+	 *
+	 * Upper 16 bits: (wpl / 8) + 1, where wpl is 32-bit words per line
+	 * Lower 16 bits: height - 1
+	 *
+	 * This is DIFFERENT from VFE4.x which uses (offset << 16) | depth
+	 */
+	wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
+	reg = ((wpl / 8 + 1) & 0xFFFF) << 16;
+	reg |= (height - 1) & 0xFFFF;
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
 
 	/*
@@ -1420,21 +1437,40 @@ static void __maybe_unused vfe31_configure_video_wm(struct vfe_device *vfe,
 	/*
 	 * WM4 - Video Y channel
 	 * Same register layout as WM0 but for video output path
+	 * Using VFE31/webOS format for all WM registers
 	 */
 	writel_relaxed(y_addr,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_Y));
 	writel_relaxed(y_addr,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_Y));
 
-	/* WR_IMAGE_SIZE: [31:16]=width, [15:0]=height */
-	reg = ((width & 0x1FFF) << 16) | (height & 0xFFF);
+	/*
+	 * WR_IMAGE_SIZE - VFE31 format:
+	 * Upper 16 bits: stride / 16 (128-bit words per line)
+	 * Lower 16 bits: ((height - 1) << 4) | 2
+	 */
+	reg = ((stride / 16) & 0xFFFF) << 16;
+	reg |= ((height - 1) << 4) | 2;
 	writel_relaxed(reg,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
 
-	/* WR_BUFFER_CFG: [31:16]=words_per_line, [15:0]=row_increment */
-	reg = ((wpl & 0x1FFF) << 16) | (wpl & 0x1FFF);
+	/*
+	 * WR_ADDR_CFG - VFE31 format:
+	 * burst_words = words_per_line - 1
+	 */
+	reg = (wpl - 1) & 0xFFFF;
 	writel_relaxed(reg,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
+
+	/*
+	 * WR_UB_CFG - VFE31 format:
+	 * Upper 16 bits: (wpl / 8) + 1
+	 * Lower 16 bits: height - 1
+	 */
+	reg = ((wpl / 8 + 1) & 0xFFFF) << 16;
+	reg |= (height - 1) & 0xFFFF;
+	writel_relaxed(reg,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_Y));
 
 	/* Enable WM4 (VFE31 has no frame_based bit, just enable) */
 	writel_relaxed(BIT(0),
@@ -1451,10 +1487,19 @@ static void __maybe_unused vfe31_configure_video_wm(struct vfe_device *vfe,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
 
 		/* Same size/buffer config as Y for 4:2:2 video */
+		reg = ((stride / 16) & 0xFFFF) << 16;
+		reg |= ((height - 1) << 4) | 2;
 		writel_relaxed(reg,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
+
+		reg = (wpl - 1) & 0xFFFF;
 		writel_relaxed(reg,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
+
+		reg = ((wpl / 8 + 1) & 0xFFFF) << 16;
+		reg |= (height - 1) & 0xFFFF;
+		writel_relaxed(reg,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_CBCR));
 
 		/* Enable WM5 (VFE31 has no frame_based bit, just enable) */
 		writel_relaxed(BIT(0),
@@ -1760,14 +1805,19 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		writel_relaxed(vfe->pending_pong_addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 
-		/* WR_IMAGE_SIZE register */
-		wpl = vfe_word_per_line(pix->pixelformat, width);
-		reg = (height - 1) & 0xFFF;
-		reg |= (((wpl + 1) / 2 - 1) & 0x3FF) << 16;
+		/*
+		 * WR_IMAGE_SIZE - VFE31 format (from webOS register dumps):
+		 * webOS WM0: 0x00501DF2 = ((80) << 16) | ((479 << 4) | 2)
+		 *
+		 * Upper 16 bits: bytesperline / 16 (128-bit words per line)
+		 * Lower 16 bits: ((height - 1) << 4) | 2
+		 */
+		reg = ((bytesperline / 16) & 0xFFFF) << 16;
+		reg |= ((height - 1) << 4) | 2;
 
 		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d IMAGE_SIZE height=%d width=%d wpl=%d reg=0x%x\n",
-			 wm, height, width, wpl, reg);
+			 "VFE31: WM%d IMAGE_SIZE bpl=%d height=%d reg=0x%x (webOS format)\n",
+			 wm, bytesperline, height, reg);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
 
 		/*
@@ -1786,11 +1836,19 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 wm, bytesperline, wpl, wpl - 1, reg);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 
-		/* WR_UB_CFG register */
-		reg = (vfe->pending_ub_offset << 16) | vfe->pending_ub_depth;
+		/*
+		 * WR_UB_CFG - VFE31 format (from webOS register dumps):
+		 * webOS WM0: 0x002701DF = ((39) << 16) | 479
+		 *
+		 * Upper 16 bits: (wpl / 8) + 1, where wpl is 32-bit words per line
+		 * Lower 16 bits: height - 1
+		 */
+		wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
+		reg = ((wpl / 8 + 1) & 0xFFFF) << 16;
+		reg |= (height - 1) & 0xFFFF;
 		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d UB_CFG offset=%d depth=%d reg=0x%x\n",
-			 wm, vfe->pending_ub_offset, vfe->pending_ub_depth, reg);
+			 "VFE31: WM%d UB_CFG wpl=%d height=%d reg=0x%x (webOS format)\n",
+			 wm, wpl, height, reg);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
 		wmb();
 	}
