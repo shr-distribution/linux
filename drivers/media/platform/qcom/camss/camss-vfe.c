@@ -1336,21 +1336,26 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		/*
 		 * Configure CAMIF frame dimensions using raw offsets.
 		 * (Macros defined later in file, can't use here)
+		 *
+		 * WINDOW register encoding for VFE31 (from webOS dumps):
+		 *   WINDOW_WIDTH  = (height << 16) | width_bytes
+		 *   WINDOW_HEIGHT = width_bytes - 1
 		 */
 		{
 			u32 window_w, window_h;
+			u32 width_bytes = width * 2;  /* UYVY format */
 
 			/*
 			 * FRAME_CFG (0x1E8): webOS does NOT write this register!
 			 * Leave it as 0 - CAMIF gets dimensions from WINDOW regs.
 			 */
 
-			/* WINDOW_WIDTH (0x1EC): lastPixel[13:0] | firstPixel[29:16] */
-			window_w = (width * 2 - 1) & 0x3FFF;
+			/* WINDOW_WIDTH = (height << 16) | width_bytes */
+			window_w = (height << 16) | (width_bytes & 0xFFFF);
 			writel_relaxed(window_w, vfe->base + 0x1EC);
 
-			/* WINDOW_HEIGHT (0x1F0): lastLine[13:0] | firstLine[29:16] */
-			window_h = (height - 1) & 0x3FFF;
+			/* WINDOW_HEIGHT = width_bytes - 1 */
+			window_h = width_bytes - 1;
 			writel_relaxed(window_h, vfe->base + 0x1F0);
 
 			/* EFS_CFG (0x1E4) = 0x40 per webOS */
@@ -1364,7 +1369,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 			wmb();
 
 			dev_info(vfe->camss->dev,
-				 "VFE TESTGEN: CAMIF config: W=0x%08x H=0x%08x (webOS values)\n",
+				 "VFE TESTGEN: CAMIF config: W=0x%08x H=0x%08x (webOS encoding)\n",
 				 window_w, window_h);
 		}
 
@@ -1656,11 +1661,12 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
  *   msm_io_w(0x00EFE021, vfe31_ctrl->vfebase + VFE_IRQ_MASK_0);
  *   msm_io_w(VFE_IMASK_WHILE_STOPPING_1, ...) = 0x00400000
  *
- * NOTE: We add BIT(8) for IMAGE_MASTER_0_PING_PONG IRQ which is needed
- * for buffer switching. webOS may have handled this differently or used
- * a different write master for video data.
+ * IMPORTANT: Use EXACT webOS values! webOS does NOT enable WM0 PING_PONG
+ * (bit 8). It relies on IMAGE_COMPOSITE_DONE (bits 21-23) for frame
+ * completion instead. Adding BIT(8) causes 0x00EFE121 which differs from
+ * webOS 0x00EFE021 and may cause issues.
  */
-#define VFE31_IRQ_MASK_0_WEBOS			(0x00EFE021 | VFE31_IRQ_MASK_0_PING_PONG_WM(0))
+#define VFE31_IRQ_MASK_0_WEBOS			0x00EFE021
 #define VFE31_IRQ_MASK_1_WEBOS			0x00400000
 
 /*
@@ -2070,30 +2076,41 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev, "VFE: FRAME_CFG=0 (not used per webOS)\n");
 
 	/*
-	 * WINDOW_WIDTH_CFG register format:
-	 *   bits 0-13:  lastPixel (14 bits) - in bytes for YUV
-	 *   bits 16-29: firstPixel (14 bits) - 0
+	 * WINDOW_WIDTH_CFG (0x1EC) and WINDOW_HEIGHT_CFG (0x1F0):
 	 *
-	 * For UYVY (2 bytes per pixel): lastPixel = width * 2 - 1
-	 * Must match FRAME_CFG which uses width * 2 for pixelsPerLine.
-	 */
-	val = ((line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1) & 0x3FFF);
-	dev_info(vfe->camss->dev, "VFE: WINDOW_WIDTH=0x%08x (last=%u first=0)\n",
-		 val, line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1);
-	writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_WIDTH_CFG);
-
-	/*
-	 * WINDOW_HEIGHT_CFG register format:
-	 *   bits 0-13:  lastLine (14 bits) - height-1
-	 *   bits 16-29: firstLine (14 bits) - 0
+	 * webOS register dump shows a DIFFERENT encoding than VFE4.x:
+	 *
+	 * webOS preview mode (640x480 UYVY = 1280 bytes/line):
+	 *   WINDOW_WIDTH  = 0x01E00500 = (480 << 16) | 1280
+	 *   WINDOW_HEIGHT = 0x000004FF = 1279 = (1280 - 1)
+	 *
+	 * So for VFE31:
+	 *   WINDOW_WIDTH  = (height << 16) | width_bytes
+	 *   WINDOW_HEIGHT = width_bytes - 1
+	 *
+	 * This encoding combines both dimensions in WINDOW_WIDTH and puts
+	 * width_bytes-1 in WINDOW_HEIGHT (unlike VFE4.x which uses simple
+	 * width-1 and height-1 values).
 	 */
 	{
-		u32 window_height = line->fmt[MSM_VFE_PAD_SINK].height;
+		u32 width_bytes = line->fmt[MSM_VFE_PAD_SINK].width * 2;
+		u32 height = line->fmt[MSM_VFE_PAD_SINK].height;
+
 		if (vfe31_window_height_override > 0)
-			window_height = vfe31_window_height_override;
-		val = ((window_height - 1) & 0x3FFF);
-		dev_info(vfe->camss->dev, "VFE: WINDOW_HEIGHT=0x%08x (last=%u first=0)\n",
-			 val, window_height - 1);
+			height = vfe31_window_height_override;
+
+		/* WINDOW_WIDTH = (height << 16) | width_bytes */
+		val = (height << 16) | (width_bytes & 0xFFFF);
+		dev_info(vfe->camss->dev,
+			 "VFE: WINDOW_WIDTH=0x%08x (height=%u, width_bytes=%u)\n",
+			 val, height, width_bytes);
+		writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_WIDTH_CFG);
+
+		/* WINDOW_HEIGHT = width_bytes - 1 */
+		val = width_bytes - 1;
+		dev_info(vfe->camss->dev,
+			 "VFE: WINDOW_HEIGHT=0x%08x (width_bytes-1=%u)\n",
+			 val, width_bytes - 1);
 		writel_relaxed(val, vfe->base + VFE31_CAMIF_WINDOW_HEIGHT_CFG);
 	}
 
@@ -2116,29 +2133,21 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_CAMIF_SUBSAMPLE_CFG_1);
 
 	/*
-	 * EPOCH_CFG at 0x200 - epoch interrupt timing.
-	 * webOS vfe_camifcfg structure shows epoch1Line and epoch2Line fields.
-	 * Set to reasonable defaults (line counts for timing interrupts).
-	 * Use height/2 for epoch1 and height-1 for epoch2.
+	 * EPOCH_CFG at 0x1FC - epoch interrupt timing.
+	 * webOS register dump shows EPOCH_CFG = 0x00000000 in all modes.
+	 * Use exact webOS value for compatibility.
 	 */
-	{
-		u32 epoch_height = line->fmt[MSM_VFE_PAD_SINK].height;
-		if (vfe31_window_height_override > 0)
-			epoch_height = vfe31_window_height_override;
-		val = ((epoch_height / 2) & 0x3FFF) |       /* epoch1Line */
-		      (((epoch_height - 1) & 0x3FFF) << 16); /* epoch2Line */
-		dev_info(vfe->camss->dev, "VFE: EPOCH_CFG=0x%08x (epoch1=%d epoch2=%d)\n",
-			 val, epoch_height / 2, epoch_height - 1);
-		writel_relaxed(val, vfe->base + VFE31_CAMIF_EPOCH_CFG);
-	}
+	dev_info(vfe->camss->dev, "VFE: EPOCH_CFG=0x00000000 (webOS value)\n");
+	writel_relaxed(0x00000000, vfe->base + VFE31_CAMIF_EPOCH_CFG);
 
 	/*
 	 * Step 2b: Enable write masters via VFE_BUS_CMD (0x38)
-	 * webOS writes 0x7FFF here to "reload all write masters (frame & line)"
-	 * This prepares write masters for receiving data from CAMIF.
+	 * webOS register dump shows BUS_CMD = 0x3FFF (14 bits set).
+	 * Bits 0-6 = reload WM0-WM6, bits 7-13 = additional reload flags.
+	 * Using exact webOS value for compatibility.
 	 */
 #define VFE31_BUS_CMD			0x038
-#define VFE31_BUS_CMD_RELOAD_WM		0x7FFF
+#define VFE31_BUS_CMD_RELOAD_WM		0x3FFF	/* webOS value */
 	dev_info(vfe->camss->dev,
 		 "VFE: BUS_CMD writing 0x%04x (reload write masters)\n",
 		 VFE31_BUS_CMD_RELOAD_WM);

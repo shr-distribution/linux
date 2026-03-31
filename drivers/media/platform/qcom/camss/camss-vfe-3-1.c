@@ -534,7 +534,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 * 3. Issue reset command (0x3FF to VFE_GLOBAL_RESET)
 	 * 4. Wait for reset to complete
 	 * 5. THEN set default register values (CGC, DEMUX, FRAMEDROP, CLAMP)
-	 * 6. Reload all write masters (BUS_CMD = 0x7FFF)
+	 * 6. Reload all write masters (BUS_CMD = 0x3FFF per webOS)
 	 *
 	 * CRITICAL: The reset command clears all VFE registers, so default
 	 * values MUST be set AFTER reset completes, not before!
@@ -600,11 +600,11 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 
 	/*
 	 * Step 6: Reload all write masters.
-	 * webOS writes BUS_CMD=0x7FFF after reset to reload all WMs.
-	 * This is critical for proper WM operation.
+	 * webOS register dump shows BUS_CMD = 0x3FFF (14 bits set).
+	 * Use exact webOS value for compatibility.
 	 */
-	dev_info(vfe->camss->dev, "VFE reset: reloading all write masters (BUS_CMD=0x7FFF)\n");
-	writel_relaxed(0x7FFF, vfe->base + VFE_0_BUS_CMD);
+	dev_info(vfe->camss->dev, "VFE reset: reloading all write masters (BUS_CMD=0x3FFF)\n");
+	writel_relaxed(0x3FFF, vfe->base + VFE_0_BUS_CMD);
 	wmb();
 
 	/*
@@ -1269,12 +1269,20 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 */
 	dev_info(vfe->camss->dev, "VFE31 RDI: FRAME_CFG=0 (not used per webOS)\n");
 
-	/* WINDOW_WIDTH: lastPixel | firstPixel<<16 (first=0) */
-	val = (bytes_per_line - 1) | (0 << 16);
+	/*
+	 * WINDOW register encoding for VFE31 (from webOS dumps):
+	 *   WINDOW_WIDTH  = (height << 16) | width_bytes
+	 *   WINDOW_HEIGHT = width_bytes - 1
+	 */
+	val = (height << 16) | (bytes_per_line & 0xFFFF);
+	dev_info(vfe->camss->dev,
+		 "VFE31 RDI: WINDOW_WIDTH=0x%08x (h=%u, w_bytes=%u)\n",
+		 val, height, bytes_per_line);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
 
-	/* WINDOW_HEIGHT: lastLine | firstLine<<16 (first=0) */
-	val = (height - 1) | (0 << 16);
+	val = bytes_per_line - 1;
+	dev_info(vfe->camss->dev,
+		 "VFE31 RDI: WINDOW_HEIGHT=0x%08x (w_bytes-1)\n", val);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 
 	/*
@@ -1807,17 +1815,31 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 */
 	dev_info(vfe->camss->dev, "VFE31: FRAME_CFG (0x1E8) = 0 (not used per webOS)\n");
 
-	/* WINDOW_WIDTH_CFG at 0x1EC: lastPixel | firstPixel<<16 */
-	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1) | (0 << 16);
-	dev_info(vfe->camss->dev, "VFE31: WINDOW_WIDTH_CFG (0x1EC) = 0x%08x (last=%d, first=0)\n",
-		 val, line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+	/*
+	 * WINDOW register encoding for VFE31 (from webOS dumps):
+	 * webOS preview mode (640x480 UYVY = 1280 bytes/line):
+	 *   WINDOW_WIDTH  = 0x01E00500 = (480 << 16) | 1280
+	 *   WINDOW_HEIGHT = 0x000004FF = 1279 = (1280 - 1)
+	 *
+	 * So:
+	 *   WINDOW_WIDTH  = (height << 16) | width_bytes
+	 *   WINDOW_HEIGHT = width_bytes - 1
+	 */
+	{
+		u32 width_bytes = line->fmt[MSM_VFE_PAD_SINK].width * 2;
+		u32 height = line->fmt[MSM_VFE_PAD_SINK].height;
 
-	/* WINDOW_HEIGHT_CFG at 0x1F0: lastLine | firstLine<<16 */
-	val = (line->fmt[MSM_VFE_PAD_SINK].height - 1) | (0 << 16);
-	dev_info(vfe->camss->dev, "VFE31: WINDOW_HEIGHT_CFG (0x1F0) = 0x%08x (last=%d, first=0)\n",
-		 val, line->fmt[MSM_VFE_PAD_SINK].height - 1);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+		val = (height << 16) | (width_bytes & 0xFFFF);
+		dev_info(vfe->camss->dev,
+			 "VFE31: WINDOW_WIDTH (0x1EC) = 0x%08x (h=%u, w_bytes=%u)\n",
+			 val, height, width_bytes);
+		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+
+		val = width_bytes - 1;
+		dev_info(vfe->camss->dev,
+			 "VFE31: WINDOW_HEIGHT (0x1F0) = 0x%08x (w_bytes-1)\n", val);
+		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+	}
 
 	/*
 	 * SUBSAMPLE_CFG_0 at 0x1F4: webOS uses (height - 1) = 0x1DF for 480 lines
