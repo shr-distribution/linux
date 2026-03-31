@@ -2159,11 +2159,21 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 	/*
 	 * IMPORTANT: VFE31 IRQ_MASK_0/1 registers are WRITE-ONLY!
 	 * Use shadow registers instead of read-modify-write.
+	 *
+	 * NOTE: webOS does NOT enable CAMIF_ERROR (bit 0) in IRQ_MASK_1!
+	 * webOS sets IRQ_MASK_1 = 0x00400000 (only RESET_ACK).
+	 * The MT9M113 sensor doesn't send MIPI FS/FE short packets, so
+	 * CAMIF_ERROR fires on every frame. Enabling it in the mask causes
+	 * the ISR to process these errors, which interferes with normal
+	 * frame completion via COMPOSITE_DONE.
+	 *
+	 * Setting val1 = 0 matches webOS behavior and allows frames to
+	 * complete normally even without MIPI frame sync packets.
 	 */
 	u32 val0 = VFE_0_IRQ_MASK_0_CAMIF_SOF |
 		   VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(comp) |
 		   VFE_0_IRQ_MASK_0_line_n_REG_UPDATE(VFE_LINE_PIX);
-	u32 val1 = VFE_0_IRQ_MASK_1_CAMIF_ERROR;
+	u32 val1 = 0;  /* Don't enable CAMIF_ERROR - matches webOS */
 
 	/*
 	 * Configure IRQ_COMPOSITE_MASK_0 (0x034) to map WMs to composite
