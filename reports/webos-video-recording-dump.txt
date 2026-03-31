@@ -1,0 +1,99 @@
+==========================================
+  VIDEO RECORDING MODE REGISTER DUMP
+  Date: 2026-03-31 18:09 CEST
+==========================================
+
+=== VFE31 CORE (same as preview) ===
+VFE+0x000: 0x00030217  (HW_VERSION)
+VFE+0x00C: 0x000FFFFF  (CGC_OVERRIDE)
+VFE+0x010: 0x01C00C0C  (MODULE_CFG)
+VFE+0x014: 0x00000046  (CORE_CFG)
+VFE+0x01C: 0x00EFE021  (IRQ_MASK_0)
+VFE+0x020: 0x00400000  (IRQ_MASK_1)
+VFE+0x034: 0x00220011  (IRQ_COMPOSITE_MASK)
+
+=== VFE31 BUS/AXI/XBAR (same as preview) ===
+VFE+0x038: 0x00003FFF  (BUS_CMD)
+VFE+0x040: 0x00000001  (AXI_OUT_MODE)
+VFE+0x044: 0x00001A1B  (XBAR_CFG1)
+
+=== VFE31 WRITE MASTERS ===
+WM0 (Preview Y):
+VFE+0x050: 0x42300000  (PING_ADDR)
+VFE+0x054: 0x425A3000  (PONG_ADDR) <- changed from 0x42765000
+VFE+0x058: 0x0000012F  (WR_CFG)
+
+WM1 (Preview CbCr):
+VFE+0x068: 0x42A79000  (PING_ADDR)
+VFE+0x06C: 0x42A08000  (PONG_ADDR)
+VFE+0x070: 0x01C8012F  (WR_CFG)
+
+WM4 (Video Y):
+VFE+0x0B0: 0x4234B000  (PING_ADDR) <- changed
+VFE+0x0B4: 0x425EE000  (PONG_ADDR) <- changed
+VFE+0x0B8: 0x01300097  (WR_CFG)
+
+WM5 (Video CbCr):
+VFE+0x0C8: 0x42AC4000  (PING_ADDR)
+VFE+0x0CC: 0x42A53000  (PONG_ADDR)
+VFE+0x0D0: 0x02F80097  (WR_CFG)
+
+=== STATUS ===
+VFE+0x180: 0x00010000  (PING_PONG - different toggle state)
+VFE+0x1E0: 0x00000001  (CAMIF_CMD)
+VFE+0x1E4: 0x00000040  (EFS_CFG)
+VFE+0x1E8: 0x00000000  (FRAME_CFG)
+VFE+0x1EC: 0x01E00500  (WINDOW_WIDTH)
+VFE+0x1F0: 0x000004FF  (WINDOW_HEIGHT)
+VFE+0x204: 0x00000000  (CAMIF_STATUS - NO ERRORS)
+
+==========================================
+  KEY FINDINGS FOR VIDEO RECORDING:
+==========================================
+1. Same AXI_OUT_MODE = 0x01 as preview
+2. Same XBAR_CFG1 = 0x1A1B as preview
+3. Same IRQ masks and configuration
+4. Buffer addresses rotate (different PING/PONG addrs)
+5. CAMIF_STATUS = 0 (no errors)
+6. Both preview (WM0/1) and video (WM4/5) paths active
+
+==========================================
+  AXI/DMA STATUS - VIDEO RECORDING
+  Date: 2026-03-31 18:33 CEST
+==========================================
+
+=== AXI Config ===
+AXI_OUT_MODE (0x040): 0x00000001
+XBAR_CFG1 (0x044):    0x00001A1B
+(Same as preview mode)
+
+=== Live IRQ Status ===
+IRQ_STATUS0: 0x00000002 / 0x00000004 (bits 1,2 alternating)
+IRQ_STATUS1: 0x00000000
+PING_PONG:   0x00010000 <-> 0x00010011 (toggling!)
+CAMIF_STATUS: 0x00000000 (no errors)
+
+=== Write Master Config Comparison ===
+
+| WM | Mode | PING | PONG | WR_CFG |
+|----|------|------|------|--------|
+| WM0 | Prev Y | 0x42300000 | 0x425A3000 | 0x0000012F |
+| WM1 | Prev Cb | 0x42A79000 | 0x42A08000 | 0x01C8012F |
+| WM4 | Vid Y | 0x4250D000 | 0x42891000 | 0x01300097 |
+| WM5 | Vid Cb | 0x42AC4000 | 0x42A53000 | 0x02F80097 |
+
+=== WR_CFG Decoded ===
+WM0 (Preview Y):  burst=0x12F (303), lines=0
+WM1 (Preview Cb): burst=0x12F (303), lines=0x1C8 (456)
+WM4 (Video Y):    burst=0x097 (151), lines=0x130 (304)
+WM5 (Video Cb):   burst=0x097 (151), lines=0x2F8 (760)
+
+=== IRQ Composite Masks ===
+COMP0: 0x03900007
+COMP1: 0x03980007
+COMP2: 0x03A0000F
+
+=== KEY OBSERVATION ===
+Both preview (WM0/1) and video (WM4/5) paths are active
+simultaneously during video recording. PING_PONG toggles
+confirming DMA is working for both paths.

@@ -1,0 +1,98 @@
+==========================================
+  PHOTO CAPTURE MODE REGISTER DUMP
+  Date: 2026-03-31 18:10 CEST
+  (Rapid polling during photo capture)
+==========================================
+
+=== KEY OBSERVATIONS ===
+
+1. Photo capture uses SAME AXI mode as preview/video:
+   - AXI_OUT_MODE = 0x01 when active
+   - XBAR_CFG1 = 0x1A1B when active
+
+2. During mode transitions (capture moment):
+   - AXI_OUT_MODE briefly goes to 0x00
+   - XBAR_CFG1 briefly goes to 0x00
+   - Then returns to 0x01 / 0x1A1B
+
+3. CAMIF_STATUS observations:
+   - 0x00000000 = normal operation
+   - 0x80000000 = bit 31 set during transitions (stop/start indicator)
+
+4. WM0_CFG variations seen:
+   - 0x0000012F = normal preview config (width=0x12F=303 words)
+   - 0x0000001D = different config seen briefly
+
+5. WM1_WR_CFG (0x070) variations:
+   - 0x01C8012F = preview mode (height=0x1C8=456, width=0x12F)
+   - 0x002D0240 = seen during capture (different dimensions)
+   - 0x00000000 = during reconfiguration
+
+=== SAMPLE CAPTURES DURING PHOTO ===
+
+Stable preview between shots:
+  AXI=0x00000001 XBAR=0x00001A1B PP=0x00010011 CAMIF=0x00000000
+
+During capture transition:
+  AXI=0x00000000 XBAR=0x00000000 PP=0x00010000 CAMIF=0x80000000
+  VFE+0x058: 0x0000001D  (different WM0 config)
+
+Right after capture:
+  AXI=0x00000001 XBAR=0x00001A1B PP=0x00010011 CAMIF=0x00000000
+
+==========================================
+  CONCLUSIONS FOR MAINLINE DRIVER:
+==========================================
+
+1. ALL modes (preview, video, photo) use:
+   - AXI_OUT_MODE = 0x01
+   - XBAR_CFG1 = 0x1A1B (VIDEO_MODE routing)
+
+2. Our driver change (0x200 -> 0x01) is CORRECT!
+
+3. CAMIF_STATUS bit 31 may indicate stop/reconfigure state
+
+4. PING_PONG toggles normally (0x00010000 <-> 0x00010011)
+   when DMA is working correctly
+
+5. Buffer addresses rotate during operation (normal behavior)
+
+==========================================
+  VFE AXI/DMA REGISTERS - PHOTO CAPTURE
+  Date: 2026-03-31
+==========================================
+
+During photo capture, VFE registers show rapid transitions:
+
+=== AXI_OUT_MODE (0x040) ===
+- 0x00000001 = Normal streaming
+- 0x00000000 = Briefly during reconfiguration
+
+=== CAMIF_STATUS (0x204) ===
+- 0x00000000 = Normal (no errors)
+- 0x80000000 = Bit 31 set during capture transition
+
+=== WM0 WR_CFG (0x058) Transitions ===
+- 0x0000012F = Normal preview (burst=303)
+- 0x0000001D = During capture (burst=29)
+- 0x00000000 = Cleared during reconfiguration
+
+=== WM4 WR_CFG (0x0B8) Transitions ===
+- 0x01300097 = Normal video path (lines=304, burst=151)
+- 0x001E000E = During capture (lines=30, burst=14)
+- 0x00000000 = Cleared during reconfiguration
+
+=== PING_PONG (0x180) ===
+Continues to toggle 0x00010000 <-> 0x00010011
+(DMA still working during transitions)
+
+=== KEY FINDINGS ===
+1. VFE temporarily reconfigures WMs during photo capture
+2. AXI mode briefly goes to 0x00 during transition
+3. CAMIF_STATUS bit 31 indicates capture/stop state
+4. Write Master burst sizes change significantly
+5. DMA continues toggling (no stalls)
+
+This explains why photo capture stays in preview mode -
+the VFE just briefly reconfigures for capture then
+returns to preview streaming.

@@ -1,0 +1,169 @@
+==========================================
+  COMPREHENSIVE CAMERA REGISTER DUMP
+  Mode: PREVIEW
+  Date: 2026-03-31 18:07 CEST
+==========================================
+
+=== VFE31 CORE (0x000-0x034) ===
+VFE+0x000: 0x00030217  (HW_VERSION)
+VFE+0x004: 0x00000000  (GLOBAL_RESET_CMD)
+VFE+0x008: 0x00000000  
+VFE+0x00C: 0x000FFFFF  (CGC_OVERRIDE)
+VFE+0x010: 0x01C00C0C  (MODULE_CFG)
+VFE+0x014: 0x00000046  (CORE_CFG - pixel pattern UYVY)
+VFE+0x018: 0x00000001  (IRQ_CMD)
+VFE+0x01C: 0x00EFE021  (IRQ_MASK_0)
+VFE+0x020: 0x00400000  (IRQ_MASK_1)
+VFE+0x024: 0x00200442  (IRQ_CLEAR_0)
+VFE+0x028: 0x00000000  (IRQ_CLEAR_1)
+VFE+0x02C: 0x00000004  (IRQ_STATUS_0)
+VFE+0x030: 0x00000000  (IRQ_STATUS_1)
+VFE+0x034: 0x00220011  (IRQ_COMPOSITE_MASK)
+
+=== VFE31 BUS/AXI/XBAR (0x038-0x04C) ===
+VFE+0x038: 0x00003FFF  (BUS_CMD)
+VFE+0x03C: 0x02AAA771  
+VFE+0x040: 0x00000001  (AXI_OUT_MODE) <-- KEY: mode 0x01
+VFE+0x044: 0x00001A1B  (XBAR_CFG1) <-- KEY: VIDEO_MODE routing
+VFE+0x048: 0x00000000  
+VFE+0x04C: 0x00000001  
+
+=== VFE31 WRITE MASTERS (0x050-0x0D8) ===
+WM0 (Preview Y):
+VFE+0x050: 0x42300000  (WM0_PING_ADDR)
+VFE+0x054: 0x42765000  (WM0_PONG_ADDR)
+VFE+0x058: 0x0000012F  (WM0_WR_CFG - width=0x12F=303)
+VFE+0x05C: 0x002701DF  (WM0_y/x_off)
+VFE+0x060: 0x00501DF2  (WM0_WR_PATTERN)
+VFE+0x064: 0x00000000  
+
+WM1 (Preview CbCr):
+VFE+0x068: 0x42A79000  (WM1_PING_ADDR)
+VFE+0x06C: 0x42A08000  (WM1_PONG_ADDR)
+VFE+0x070: 0x01C8012F  (WM1_WR_CFG - height=0x1C8=456, width=0x12F=303)
+VFE+0x074: 0x002701DF  (WM1_y/x_off)
+VFE+0x078: 0x00501DF2  (WM1_WR_PATTERN)
+VFE+0x07C: 0x00000000  
+
+WM2/WM3: All zeros (unused)
+
+WM4 (Video Y):
+VFE+0x0B0: 0x4250D000  (WM4_PING_ADDR)
+VFE+0x0B4: 0x4242C000  (WM4_PONG_ADDR)
+VFE+0x0B8: 0x01300097  (WM4_WR_CFG)
+VFE+0x0BC: 0x002700EF  (WM4_y/x_off)
+VFE+0x0C0: 0x00500EF2  (WM4_WR_PATTERN)
+VFE+0x0C4: 0x00000000  
+
+WM5 (Video CbCr):
+VFE+0x0C8: 0x42AC4000  (WM5_PING_ADDR)
+VFE+0x0CC: 0x42A53000  (WM5_PONG_ADDR)
+VFE+0x0D0: 0x02F80097  (WM5_WR_CFG)
+VFE+0x0D4: 0x002700EF  (WM5_y/x_off)
+VFE+0x0D8: 0x00500EF2  (WM5_WR_PATTERN)
+
+=== IRQ COMPOSITE CONFIG (0x0FC-0x120) ===
+VFE+0x0FC: 0x03900007  (COMP_0 mask?)
+VFE+0x108: 0x03980007  (COMP_1 mask?)
+VFE+0x114: 0x03A0000F  (COMP_2 mask?)
+VFE+0x120: 0x03B00007  (COMP_3 mask?)
+
+=== PING PONG STATUS ===
+VFE+0x180: 0x00010011  (PING_PONG_STATUS - WM0,WM4 active)
+
+=== VFE31 CAMIF (0x1E0-0x210) ===
+VFE+0x1E0: 0x00000001  (CAMIF_CMD - enabled)
+VFE+0x1E4: 0x00000040  (EFS_CFG)
+VFE+0x1E8: 0x00000000  (FRAME_CFG - not used!)
+VFE+0x1EC: 0x01E00500  (WINDOW_WIDTH - 1280 pixels)
+VFE+0x1F0: 0x000004FF  (WINDOW_HEIGHT - 1279)
+VFE+0x1F4: 0x000001DF  (SUBSAMPLE_0 - 479)
+VFE+0x1F8: 0xFFFFFFFF  (SUBSAMPLE_1)
+VFE+0x1FC: 0x00000000  (EPOCH_CFG)
+VFE+0x200: 0x3FFF3FFF  (RAW_CROP_WIDTH)
+VFE+0x204: 0x00000000  (CAMIF_STATUS - NO ERRORS!)
+
+=== VFE31 DEMUX (0x284-0x290) ===
+VFE+0x284: 0x00000003  (DEMUX_CFG)
+VFE+0x288: 0x00800080  (DEMUX_GAIN_0)
+VFE+0x28C: 0x00800080  (DEMUX_GAIN_1)
+VFE+0x290: 0x0000C9CA  (DEMUX_EVEN)
+
+==========================================
+  KEY FINDINGS FOR PREVIEW MODE:
+==========================================
+1. AXI_OUT_MODE = 0x01 (OUTPUT_1_AND_3)
+2. XBAR_CFG1 = 0x1A1B (VIDEO_MODE routing)
+3. IRQ_COMPOSITE_MASK (0x034) = 0x00220011
+4. PING_PONG toggles (0x00010011) - DMA working!
+5. CAMIF_STATUS = 0 (no errors)
+6. FRAME_CFG = 0 (webOS doesn't use this register)
+7. WM0/WM1 for preview, WM4/WM5 for video path
+
+==========================================
+  ADDITIONAL AXI/DMA STATUS REGISTERS
+  (Preview Mode - Live)
+==========================================
+
+=== IRQ Composite Masks ===
+VFE+0x0FC: 0x03900007  (COMP0 mask)
+VFE+0x108: 0x03980007  (COMP1 mask)
+VFE+0x114: 0x03A0000F  (COMP2 mask)
+VFE+0x120: 0x03B00007  (COMP3 mask)
+
+=== Live IRQ Status (sampled 3x) ===
+IRQ_STATUS0 = 0x00000004 (bit 2 = SOF?)
+IRQ_STATUS1 = 0x00000000
+PING_PONG toggles: 0x00010000 <-> 0x00010011
+CAMIF_STATUS = 0x00000000 (no errors)
+
+=== Framedrop Config ===
+VFE+0x504: 0x0000001F  (enc Y framedrop period)
+VFE+0x508: 0x0000001F  (enc CbCr framedrop period)
+VFE+0x50C: 0xFFFFFFFF  (enc Y framedrop pattern)
+VFE+0x510: 0xFFFFFFFF  (enc CbCr framedrop pattern)
+VFE+0x514: 0x0000001F  (view Y framedrop period)
+VFE+0x518: 0x0000001F  (view CbCr framedrop period)
+VFE+0x51C: 0xFFFFFFFF  (view Y framedrop pattern)
+VFE+0x520: 0xFFFFFFFF  (view CbCr framedrop pattern)
+
+=== KEY OBSERVATIONS ===
+1. PING_PONG actively toggling = DMA is working
+2. CAMIF_STATUS = 0 = no errors
+3. IRQ_STATUS0 bit 2 set = frames being received
+4. Framedrop = 0xFFFFFFFF = all frames captured (no drop)
+
+==========================================
+  WRITE MASTER DETAILED CONFIG (Preview)
+==========================================
+
+=== WM0 (Preview Y) ===
+PING_ADDR: 0x42765000
+PONG_ADDR: 0x42684000
+WR_CFG:    0x0000012F (burst=303 words)
+y/x_OFF:   0x002701DF
+FRAMEDROP: 0x00501DF2
+IRQ_SUB:   0x00000000
+
+=== WM1 (Preview CbCr) ===
+PING_ADDR: 0x42A79000
+PONG_ADDR: 0x42A08000
+WR_CFG:    0x01C8012F (height=456, burst=303)
+y/x_OFF:   0x002701DF
+FRAMEDROP: 0x00501DF2
+IRQ_SUB:   0x00000000
+
+=== WR_CFG Decoded ===
+WM0: lines=0 (full frame?), burst=303 (2424 bytes)
+WM1: lines=456, burst=303 (2424 bytes)
+
+=== y/x_OFF Decoded (0x002701DF) ===
+y_offset bits[25:16] = 0x027 = 39
+x_offset bits[9:0] = 0x1DF = 479
+
+=== FRAMEDROP (0x00501DF2) ===
+This configures frame/line drop patterns
+
+=== BUFFER ADDRESSES ===
+Preview Y buffers:  0x42684000 - 0x42765000 (delta=0xE1000 = 921KB)
+Preview Cb buffers: 0x42A08000 - 0x42A79000 (delta=0x71000 = 452KB)
