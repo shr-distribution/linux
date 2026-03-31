@@ -981,8 +981,12 @@ static int vfe31_enable(struct vfe_line *line)
 	 *
 	 * For single-plane UYVY, only WM0 is used with lines=0.
 	 * burst_words = words_per_line - 1 (webOS uses wpl-1)
+	 *
+	 * NOTE: wpl is in 32-bit words. bytesperline is already in bytes,
+	 * so divide by 4 directly (don't use vfe_word_per_line which
+	 * expects pixel width and multiplies by bytes-per-pixel again).
 	 */
-	wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
+	wpl = bytesperline / 4;  /* 32-bit words per line */
 	reg = (wpl - 1) & 0xFFFF;  /* burst = words_per_line - 1 */
 	/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
@@ -996,7 +1000,7 @@ static int vfe31_enable(struct vfe_line *line)
 	 *
 	 * This is DIFFERENT from VFE4.x which uses (offset << 16) | depth
 	 */
-	wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
+	wpl = bytesperline / 4;  /* 32-bit words per line */
 	reg = ((wpl / 8 + 1) & 0xFFFF) << 16;
 	reg |= (height - 1) & 0xFFFF;
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
@@ -1826,8 +1830,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * webOS WM1: 0x01C8012F = burst=303, lines=456
 		 *
 		 * burst_words = words_per_line - 1
+		 * NOTE: wpl is in 32-bit words. bytesperline is already in bytes.
 		 */
-		wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
+		wpl = bytesperline / 4;  /* 32-bit words per line */
 		reg = (wpl - 1) & 0xFFFF;  /* burst = words_per_line - 1 */
 		/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
 
@@ -1843,7 +1848,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * Upper 16 bits: (wpl / 8) + 1, where wpl is 32-bit words per line
 		 * Lower 16 bits: height - 1
 		 */
-		wpl = vfe_word_per_line(pix->pixelformat, bytesperline);
+		wpl = bytesperline / 4;  /* 32-bit words per line */
 		reg = ((wpl / 8 + 1) & 0xFFFF) << 16;
 		reg |= (height - 1) & 0xFFFF;
 		dev_info(vfe->camss->dev,
