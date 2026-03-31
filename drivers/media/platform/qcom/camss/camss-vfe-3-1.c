@@ -21,29 +21,28 @@
 /*
  * AXI output mode selection for VFE31.
  * Values from webOS msm_vfe31.c vfe31_config_axi():
- *   0x200 = OUTPUT_2 preview mode (WM0+WM1, no XBAR needed)
- *   0x01  = OUTPUT_1_AND_3 mode (needs XBAR CFG1=0x1a03 for WM0/4+WM1/5)
+ *   0x01  = OUTPUT_1_AND_3 mode (default, matches webOS preview/video)
+ *   0x200 = OUTPUT_2 preview mode (semi-planar Y+CbCr)
  *   0x60  = CAMIF_TO_AXI raw snapshot mode (WM0 only, no XBAR)
  *
- * For basic preview with semi-planar output (Y+CbCr), use 0x200.
- * For preview+video recording, use 0x01 (requires XBAR CFG1).
+ * WebOS uses 0x01 with XBAR CFG1=0x1a1b (VIDEO_MODE routing).
  * Can be changed at runtime via:
- *   echo 0x200 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
+ *   echo 0x01 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
  */
-int vfe31_axi_output_mode = 0x200;
+int vfe31_axi_output_mode = 0x01;
 module_param(vfe31_axi_output_mode, int, 0644);
 MODULE_PARM_DESC(vfe31_axi_output_mode,
 		 "VFE31 AXI output mode (0x200=preview, 0x01=preview+video, 0x60=raw)");
 
 /*
  * VFE31 video output enable:
- *   0 = Video output disabled (default)
- *   1 = Video output enabled (uses WM4/WM5 and COMPOSITE_DONE_2)
+ *   1 = Video output enabled (default, matches webOS - uses XBAR CFG1=0x1a1b)
+ *   0 = Video output disabled (uses XBAR CFG1=0x1a03)
  *
- * When enabled, video recording uses a separate output path from preview.
- * This requires AXI mode 0x01 and XBAR CFG1 = 0x1a1b.
+ * WebOS uses video mode routing for preview, which routes data to WM2/WM3
+ * instead of WM0/WM1, matching the XBAR CFG1 = 0x1a1b seen in registers.
  */
-int vfe31_video_output_enable;
+int vfe31_video_output_enable = 1;
 module_param(vfe31_video_output_enable, int, 0644);
 MODULE_PARM_DESC(vfe31_video_output_enable,
 		 "VFE31 video output enable (0=off, 1=on with WM4/WM5)");
