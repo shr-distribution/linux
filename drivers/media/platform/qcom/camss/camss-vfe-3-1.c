@@ -1256,22 +1256,18 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 *   - 0x200: OUTPUT_2 (PIX mode, VFE ISP processing)
 	 *   - 0x60:  CAMIF_TO_AXI_VIA_OUTPUT_2 (RDI mode, raw bypass)
 	 *
-	 * For MIPI CSI-2 input, EFS codes are not used - MIPI has its own
-	 * frame sync via short packets (FS/FE). EFS_CFG must be 0 for APS mode.
-	 * Note: 0x40 value was a bug - it's INPUT_MUX_ENABLE for CORE_CFG,
-	 * not for EFS_CFG.
+	 * EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set)
+	 * This enables some timing/sync feature needed for proper operation.
 	 */
-	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
-	dev_info(vfe->camss->dev, "VFE31: EFS_CFG=0 (APS mode for MIPI CSI-2)\n");
+	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	dev_info(vfe->camss->dev, "VFE31: EFS_CFG=0x40 (webOS value)\n");
 
 	/*
-	 * FRAME_CFG: pixelsPerLine[13:0] | linesPerFrame[29:16]
-	 * Must be set for CAMIF to know expected frame dimensions.
+	 * FRAME_CFG at 0x1E8: webOS does NOT write this register!
+	 * webOS register dump shows FRAME_CFG = 0x00000000 in all modes.
+	 * The CAMIF gets frame dimensions from WINDOW_WIDTH/HEIGHT instead.
 	 */
-	val = bytes_per_line | (height << 16);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-	dev_info(vfe->camss->dev, "VFE31 RDI: FRAME_CFG=0x%08x (pixels=%d, lines=%d)\n",
-		 val, bytes_per_line, height);
+	dev_info(vfe->camss->dev, "VFE31 RDI: FRAME_CFG=0 (not used per webOS)\n");
 
 	/* WINDOW_WIDTH: lastPixel | firstPixel<<16 (first=0) */
 	val = (bytes_per_line - 1) | (0 << 16);
@@ -1282,16 +1278,15 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 
 	/*
-	 * SUBSAMPLE_CFG_0: pixelSkip[15:0] | lineSkip[31:16]
-	 * - 0xFFFF = keep all (no skip pattern)
-	 * - 0xFFFFFFFF = no pixel/line subsampling
-	 *
-	 * SUBSAMPLE_CFG_1: frameSkip[3:0] | frameSkipMode[4] | pixelSkipWrap[5]
-	 * - 0 = no frame skipping (capture every frame)
-	 * - 0xFFFFFFFF was wrong - it sets frameSkip=0xF (skip 15 frames!)
+	 * SUBSAMPLE_CFG_0 at 0x1F4: webOS uses (height - 1)
+	 * This appears to be the last line number.
 	 */
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-	writel_relaxed(0, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+	writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+
+	/*
+	 * SUBSAMPLE_CFG_1 at 0x1F8: webOS uses 0xFFFFFFFF (no frame skip)
+	 */
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
 
 	dev_dbg(vfe->camss->dev,
 		"VFE31 set_camif_cfg: core_cfg=0x%08x frame=0x%08x\n",
@@ -1797,23 +1792,20 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF configuration\n");
 
-	/* EFS_CFG at 0x1E4: Must be 0 for MIPI CSI-2 (APS mode) */
-	dev_info(vfe->camss->dev, "VFE31: EFS_CFG (0x1E4) = 0 (APS mode for MIPI CSI-2)\n");
-	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	/*
+	 * EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set)
+	 * This enables some timing/sync feature needed for proper operation.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: EFS_CFG (0x1E4) = 0x40 (webOS value)\n");
+	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
 
 	/*
-	 * FRAME_CFG at 0x1E8: pixelsPerLine[13:0] | linesPerFrame[29:16]
-	 *
-	 * Previous comment was WRONG: webOS DOES write this register as part of
-	 * the 32-byte V31_CAMIF_CFG command block. Without FRAME_CFG, the CAMIF
-	 * doesn't know expected frame dimensions and fires CAMIF_ERROR.
-	 *
-	 * For UYVY format, pixelsPerLine = width * 2 (2 bytes per pixel).
+	 * FRAME_CFG at 0x1E8: webOS does NOT write this register!
+	 * webOS register dump shows FRAME_CFG = 0x00000000 in all modes.
+	 * The CAMIF gets frame dimensions from WINDOW_WIDTH/HEIGHT instead.
+	 * Do NOT write to FRAME_CFG - leave it as reset default (0).
 	 */
-	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2) | (line->fmt[MSM_VFE_PAD_SINK].height << 16);
-	dev_info(vfe->camss->dev, "VFE31: FRAME_CFG (0x1E8) = 0x%08x (pixels=%d, lines=%d)\n",
-		 val, line->fmt[MSM_VFE_PAD_SINK].width * 2, line->fmt[MSM_VFE_PAD_SINK].height);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+	dev_info(vfe->camss->dev, "VFE31: FRAME_CFG (0x1E8) = 0 (not used per webOS)\n");
 
 	/* WINDOW_WIDTH_CFG at 0x1EC: lastPixel | firstPixel<<16 */
 	val = (line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1) | (0 << 16);
@@ -1827,10 +1819,19 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 val, line->fmt[MSM_VFE_PAD_SINK].height - 1);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 
-	/* SUBSAMPLE_CFG_0 at 0x1F4: 0xFFFFFFFF = no pixel/line subsampling */
-	writel_relaxed(0xffffffff, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-	/* SUBSAMPLE_CFG_1 at 0x1F8: 0 = no frame skip (bits [3:0] = frameSkip) */
-	writel_relaxed(0, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+	/*
+	 * SUBSAMPLE_CFG_0 at 0x1F4: webOS uses (height - 1) = 0x1DF for 480 lines
+	 * This appears to be the last line number, not a skip pattern.
+	 */
+	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+	dev_info(vfe->camss->dev, "VFE31: SUBSAMPLE_CFG_0 (0x1F4) = 0x%08x (height-1)\n", val);
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+
+	/*
+	 * SUBSAMPLE_CFG_1 at 0x1F8: webOS uses 0xFFFFFFFF (no frame skip)
+	 */
+	dev_info(vfe->camss->dev, "VFE31: SUBSAMPLE_CFG_1 (0x1F8) = 0xFFFFFFFF (no skip)\n");
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
 	wmb();
 
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF registers configured\n");
@@ -1897,6 +1898,16 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			dev_info(vfe->camss->dev,
 				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (WM%d -> COMP1, raw mode)\n",
 				 comp_mask, wm);
+		} else if (vfe31_video_output_enable) {
+			/*
+			 * Video mode: use webOS composite mask 0x00220011
+			 * - WM0 + WM4 -> COMPOSITE_DONE_0 (bits 0,4)
+			 * - WM1 + WM5 -> COMPOSITE_DONE_2 (bits 17,21)
+			 */
+			comp_mask = 0x00220011;
+			dev_info(vfe->camss->dev,
+				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (webOS video mode)\n",
+				 comp_mask);
 		} else {
 			/* PIX/preview mode: map WM to COMPOSITE_DONE_0 */
 			comp_mask = BIT(wm);
