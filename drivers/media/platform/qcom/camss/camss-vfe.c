@@ -800,7 +800,9 @@ int vfe_reset(struct vfe_device *vfe)
  * It's part of the 188-byte AXI output config block (ao[1]).
  * webOS leaves this at 0. We only read it for debug purposes.
  */
-#define VFE31_AXI_CFG_1			0x03C  /* ao[1] - must be 0 */
+#define VFE31_AXI_CFG_1			0x044  /* XBAR CFG1 - routes data to WMs */
+#define VFE31_XBAR_CFG1_PIX_MODE	0x1a03	/* Preview: route CAMIF to WM0/WM1 */
+#define VFE31_XBAR_CFG1_VIDEO_MODE	0x1a1b	/* Preview+Video: WM0/1 + WM4/5 */
 
 /*
  * MSM8660 External Register Addresses for Debug
@@ -2163,6 +2165,30 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(vfe31_axi_output_mode,
 		       vfe->base + VFE31_AXI_OUT_MODE_CFG);
 	wmb();
+
+	/*
+	 * CRITICAL: Configure XBAR CFG1 for PIX modes (0x200, 0x01).
+	 * XBAR routes processed data from the ISP to write masters.
+	 * Without this, data stays in the ISP and never reaches memory!
+	 *
+	 * For raw/RDI mode (0x60), data bypasses the ISP entirely via
+	 * CAMIF_TO_AXI path, so XBAR configuration is not needed.
+	 *
+	 * XBAR CFG1 value breakdown:
+	 *   0x1a03 = Preview only: route ViewY/ViewCbCr to WM0/WM1
+	 *   0x1a1b = Preview+Video: also route EncY/EncCbCr to WM4/WM5
+	 */
+	if (vfe31_axi_output_mode != 0x60) {
+		u32 xbar_val = VFE31_XBAR_CFG1_PIX_MODE;
+		dev_info(vfe->camss->dev,
+			 "VFE: XBAR_CFG1 = 0x%04x (routing ISP data to WMs)\n",
+			 xbar_val);
+		writel_relaxed(xbar_val, vfe->base + VFE31_AXI_CFG_1);
+		wmb();
+	} else {
+		dev_info(vfe->camss->dev,
+			 "VFE: Raw mode - skipping XBAR (CAMIF_TO_AXI path)\n");
+	}
 
 	/*
 	 * NOTE: WM buffer addresses (ping/pong, image_size, addr_cfg, ub_cfg)
