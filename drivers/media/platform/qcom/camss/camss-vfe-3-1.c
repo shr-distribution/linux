@@ -1724,13 +1724,15 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * - Bits 8-15:  WMs mapped to COMPOSITE_DONE_1 (IRQ_STATUS_0 bit 22)
 	 * - Bits 16-23: WMs mapped to COMPOSITE_DONE_2 (IRQ_STATUS_0 bit 23)
 	 *
-	 * For raw capture using WM0, map it to COMPOSITE_DONE_0 (set bit 0).
+	 * webOS uses COMPOSITE_DONE_1 for raw/snapshot output (output path 1):
+	 *   irq_comp_mask |= (0x1 << (out1.ch0 + 8));  // WM0 -> bits 8-15
+	 * This maps to IMAGE_COMPOSITE_DONE_1 (bit 22 in IRQ_STATUS_0).
 	 */
 	{
-		u32 comp_mask = BIT(wm);  /* Map WM to COMPOSITE_DONE_0 */
+		u32 comp_mask = BIT(wm + 8);  /* Map WM to COMPOSITE_DONE_1 (webOS) */
 
 		dev_info(vfe->camss->dev,
-			 "VFE31: Setting IRQ_COMPOSITE_MASK_0=0x%08x (WM%d -> COMP0)\n",
+			 "VFE31: Setting IRQ_COMPOSITE_MASK_0=0x%08x (WM%d -> COMP1)\n",
 			 comp_mask, wm);
 		writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		wmb();
