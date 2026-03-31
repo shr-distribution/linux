@@ -29,8 +29,9 @@
 #include "camss-vfe.h"
 #include "camss.h"
 
-/* Module parameter from camss-vfe-3-1.c for AXI output mode selection */
+/* Module parameters from camss-vfe-3-1.c for VFE31 configuration */
 extern int vfe31_axi_output_mode;
+extern int vfe31_video_output_enable;
 
 /*
  * MSM8660 legacy routing mode.
@@ -2196,10 +2197,12 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *   0x1a1b = Preview+Video: also route EncY/EncCbCr to WM4/WM5
 	 */
 	if (vfe31_axi_output_mode != 0x60) {
-		u32 xbar_val = VFE31_XBAR_CFG1_PIX_MODE;
+		u32 xbar_val = vfe31_video_output_enable ?
+				VFE31_XBAR_CFG1_VIDEO_MODE :
+				VFE31_XBAR_CFG1_PIX_MODE;
 		dev_info(vfe->camss->dev,
-			 "VFE: XBAR_CFG1 = 0x%04x (routing ISP data to WMs)\n",
-			 xbar_val);
+			 "VFE: XBAR_CFG1 = 0x%04x (routing ISP to WMs, video=%d)\n",
+			 xbar_val, vfe31_video_output_enable);
 		writel_relaxed(xbar_val, vfe->base + VFE31_AXI_CFG_1);
 		wmb();
 	} else {
