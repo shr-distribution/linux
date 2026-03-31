@@ -1430,7 +1430,8 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 			if (!(wr_cfg & BIT(0))) {
 				dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d not enabled, enabling now\n", wm);
 				writel_relaxed((0 << 16) | 1023, vfe->base + VFE31_WM_WR_UB_CFG(wm));
-				writel_relaxed(BIT(0) | BIT(1), vfe->base + VFE31_WM_WR_CFG(wm));
+				/* VFE31 only uses BIT(0) for enable, no frame_based in bit 1 */
+				writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(wm));
 				wmb();
 			}
 
@@ -2378,9 +2379,10 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *
 	 * WR_CFG bits:
 	 *   Bit 0: enable - enables the write master
-	 *   Bit 1: frame_based mode - complete frame before switching buffers
+	 * Note: VFE31 does NOT have frame_based mode in WR_CFG bit 1.
+	 * webOS only writes 1 (BIT(0)) to enable the write master.
 	 */
-	writel_relaxed(BIT(0) | BIT(1), vfe->base + VFE31_WM_WR_CFG(vfe->camif_pending_wm));
+	writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(vfe->camif_pending_wm));
 	wmb();
 
 	dev_info(vfe->camss->dev, "VFE: WM%d WR_CFG after enable: 0x%08x\n",
