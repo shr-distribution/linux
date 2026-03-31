@@ -35,6 +35,19 @@ module_param(vfe31_axi_output_mode, int, 0644);
 MODULE_PARM_DESC(vfe31_axi_output_mode,
 		 "VFE31 AXI output mode (0x200=preview, 0x01=preview+video, 0x60=raw)");
 
+/*
+ * VFE31 video output enable:
+ *   0 = Video output disabled (default)
+ *   1 = Video output enabled (uses WM4/WM5 and COMPOSITE_DONE_2)
+ *
+ * When enabled, video recording uses a separate output path from preview.
+ * This requires AXI mode 0x01 and XBAR CFG1 = 0x1a1b.
+ */
+int vfe31_video_output_enable;
+module_param(vfe31_video_output_enable, int, 0644);
+MODULE_PARM_DESC(vfe31_video_output_enable,
+		 "VFE31 video output enable (0=off, 1=on with WM4/WM5)");
+
 /* External module parameters from camss-vfe.c */
 extern int software_sof_enable;
 extern int software_eof_enable;
@@ -196,7 +209,54 @@ extern int software_eof_enable;
 #define VFE_0_BUS_AXI_OUT_MODE_RAW_WM0		0x60
 #define VFE_0_BUS_XBAR_CFG0_PIX_MODE		0x01
 #define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1a03
+/*
+ * VFE31 Video mode XBAR configuration:
+ *   0x1a1b = preview + video mode (WM0/WM1 for preview, WM4/WM5 for video)
+ *
+ * XBAR CFG1 bit layout (per webOS msm_vfe31.c):
+ *   Bits 0-3:   Y output XBAR routing (WM0 for preview, WM4 for video)
+ *   Bits 4-7:   CbCr output XBAR routing (WM1 for preview, WM5 for video)
+ *   Bits 8-15:  Additional routing configuration
+ *
+ * webOS values:
+ *   0x1a03 = preview only (WM0/WM1)
+ *   0x1a1b = preview + video (WM0/WM1 + WM4/WM5)
+ */
+#define VFE_0_BUS_XBAR_CFG1_VIDEO_MODE		0x1a1b
 #define VFE_0_BUS_CFG_RAW_WR_PATH_VIEW_CBCR	(2 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
+
+/*
+ * Video mode write master assignments:
+ * - Preview: WM0 (Y) + WM1 (CbCr) → COMPOSITE_DONE_0
+ * - Snapshot: WM0 (or dedicated WM) → COMPOSITE_DONE_1
+ * - Video:   WM4 (Y) + WM5 (CbCr) → COMPOSITE_DONE_2
+ */
+#define VFE31_VIDEO_WM_Y		4
+#define VFE31_VIDEO_WM_CBCR		5
+
+/*
+ * VFE31 Video Mode Configuration Summary
+ * ======================================
+ *
+ * Video mode enables simultaneous preview and video recording using separate
+ * output paths through the VFE31 bus infrastructure.
+ *
+ * Output Paths (per webOS msm_vfe31.c vfe31_config_axi):
+ * - out0 (PT/Preview): WM0 (Y) + WM1 (CbCr) → COMPOSITE_DONE_0 (IRQ bit 21)
+ * - out1 (S/Snapshot): WM (configurable) → COMPOSITE_DONE_1 (IRQ bit 22)
+ * - out2 (V/Video):    WM4 (Y) + WM5 (CbCr) → COMPOSITE_DONE_2 (IRQ bit 23)
+ *
+ * Configuration Steps:
+ * 1. Set vfe31_video_output_enable=1 (module parameter)
+ * 2. Set vfe31_axi_output_mode=0x01 (preview+video mode)
+ * 3. XBAR CFG1 automatically uses 0x1a1b to route to WM0/1 + WM4/5
+ * 4. IRQ_COMPOSITE_MASK includes WM4/5 → COMPOSITE_DONE_2 mapping
+ * 5. Configure WM4/WM5 with video buffer addresses (requires userspace)
+ *
+ * Note: Full video recording requires userspace to provide separate video
+ * buffers and configure WM4/WM5 addresses. This infrastructure enables
+ * the hardware support; actual video capture needs V4L2 multi-planar setup.
+ */
 
 /*
  * NOTE: VFE31 does NOT have a VFE_CFG register at 0x01C!
@@ -864,12 +924,19 @@ static int vfe31_enable(struct vfe_line *line)
 	writel_relaxed(vfe31_axi_output_mode,
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
-	/* For PIX mode (0x01), configure XBAR CFG1 to route data to WMs */
+	/*
+	 * For PIX mode (0x01), configure XBAR CFG1 to route data to WMs.
+	 * Use video mode XBAR (0x1a1b) if video output is enabled,
+	 * otherwise use preview-only XBAR (0x1a03).
+	 */
 	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		dev_info(vfe->camss->dev, "VFE31: PIX mode - XBAR CFG1=0x%x\n",
-			 VFE_0_BUS_XBAR_CFG1_PIX_MODE);
-		writel_relaxed(VFE_0_BUS_XBAR_CFG1_PIX_MODE,
-			       vfe->base + VFE_0_BUS_XBAR_CFG1);
+		u32 xbar_cfg1 = vfe31_video_output_enable ?
+				VFE_0_BUS_XBAR_CFG1_VIDEO_MODE :
+				VFE_0_BUS_XBAR_CFG1_PIX_MODE;
+		dev_info(vfe->camss->dev,
+			 "VFE31: PIX mode - XBAR CFG1=0x%x (video=%d)\n",
+			 xbar_cfg1, vfe31_video_output_enable);
+		writel_relaxed(xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
 	}
 
 	/*
@@ -1304,6 +1371,88 @@ static void vfe31_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output
 	}
 }
 
+/*
+ * vfe31_configure_video_wm - Configure video write masters (WM4/WM5)
+ * @vfe: VFE device
+ * @y_addr: Physical address for Y (luma) video buffer
+ * @cbcr_addr: Physical address for CbCr (chroma) video buffer
+ * @width: Video frame width in pixels
+ * @height: Video frame height in lines
+ * @stride: Bytes per line (bytesperline)
+ *
+ * This function configures WM4 and WM5 for video recording output.
+ * Used when vfe31_video_output_enable=1 for simultaneous preview+video.
+ *
+ * Video output uses COMPOSITE_DONE_2 (IRQ bit 23) for frame completion.
+ * This is separate from preview (COMPOSITE_DONE_0, IRQ bit 21).
+ */
+static void __maybe_unused vfe31_configure_video_wm(struct vfe_device *vfe,
+						    u32 y_addr, u32 cbcr_addr,
+						    u16 width, u16 height, u16 stride)
+{
+	u16 wpl;  /* words per line */
+	u32 reg;
+
+	if (!vfe31_video_output_enable) {
+		dev_dbg(vfe->camss->dev,
+			"VFE31: video output disabled, skipping WM4/5 config\n");
+		return;
+	}
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: Configuring video WM4/5: %ux%u stride=%u Y=0x%08x CbCr=0x%08x\n",
+		 width, height, stride, y_addr, cbcr_addr);
+
+	/* Words per line (32-bit words) */
+	wpl = (stride + 3) / 4;
+
+	/*
+	 * WM4 - Video Y channel
+	 * Same register layout as WM0 but for video output path
+	 */
+	writel_relaxed(y_addr,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_Y));
+	writel_relaxed(y_addr,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_Y));
+
+	/* WR_IMAGE_SIZE: [31:16]=width, [15:0]=height */
+	reg = ((width & 0x1FFF) << 16) | (height & 0xFFF);
+	writel_relaxed(reg,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
+
+	/* WR_BUFFER_CFG: [31:16]=words_per_line, [15:0]=row_increment */
+	reg = ((wpl & 0x1FFF) << 16) | (wpl & 0x1FFF);
+	writel_relaxed(reg,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
+
+	/* Enable WM4 in frame-based mode */
+	writel_relaxed(BIT(0) | BIT(1),
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
+
+	/*
+	 * WM5 - Video CbCr channel (for semi-planar formats like NV12/NV16)
+	 * For packed formats (UYVY/YUYV), this WM is not used.
+	 */
+	if (cbcr_addr) {
+		writel_relaxed(cbcr_addr,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_CBCR));
+		writel_relaxed(cbcr_addr,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
+
+		/* Same size/buffer config as Y for 4:2:2 video */
+		writel_relaxed(reg,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
+		writel_relaxed(reg,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
+
+		/* Enable WM5 */
+		writel_relaxed(BIT(0) | BIT(1),
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+	}
+
+	wmb();
+}
+
 static void vfe31_set_realign_cfg(struct vfe_device *vfe, struct vfe_line *line,
 				  u8 enable)
 {
@@ -1561,12 +1710,19 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(vfe31_axi_output_mode,
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
-	/* For PIX mode (0x01), configure XBAR CFG1 to route data to WMs */
+	/*
+	 * For PIX mode (0x01), configure XBAR CFG1 to route data to WMs.
+	 * Use video mode XBAR (0x1a1b) if video output is enabled,
+	 * otherwise use preview-only XBAR (0x1a03).
+	 */
 	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		dev_info(vfe->camss->dev, "VFE31: PIX mode - XBAR CFG1=0x%x\n",
-			 VFE_0_BUS_XBAR_CFG1_PIX_MODE);
-		writel_relaxed(VFE_0_BUS_XBAR_CFG1_PIX_MODE,
-			       vfe->base + VFE_0_BUS_XBAR_CFG1);
+		u32 xbar_cfg1 = vfe31_video_output_enable ?
+				VFE_0_BUS_XBAR_CFG1_VIDEO_MODE :
+				VFE_0_BUS_XBAR_CFG1_PIX_MODE;
+		dev_info(vfe->camss->dev,
+			 "VFE31: PIX mode - XBAR CFG1=0x%x (video=%d)\n",
+			 xbar_cfg1, vfe31_video_output_enable);
+		writel_relaxed(xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
 	}
 	wmb();
 
@@ -1994,20 +2150,41 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 	u32 val1 = VFE_0_IRQ_MASK_1_CAMIF_ERROR;
 
 	/*
-	 * Configure IRQ_COMPOSITE_MASK_0 (0x034) to map WM0 to the composite
-	 * group. Without this, IMAGE_COMPOSITE_DONE IRQs never fire!
+	 * Configure IRQ_COMPOSITE_MASK_0 (0x034) to map WMs to composite
+	 * groups. Without this, IMAGE_COMPOSITE_DONE IRQs never fire!
 	 *
-	 * For PIX line, WM0 is used. Map it to the specified composite group:
-	 * - comp 0: bits 0-7 (COMPOSITE_DONE_0)
-	 * - comp 1: bits 8-15 (COMPOSITE_DONE_1)
-	 * - comp 2: bits 16-23 (COMPOSITE_DONE_2)
+	 * VFE31 output paths (per webOS msm_vfe31.c):
+	 * - out0 (Preview):  WM0/WM1 → COMPOSITE_DONE_0 (bits 0-7)
+	 * - out1 (Snapshot): WM → COMPOSITE_DONE_1 (bits 8-15)
+	 * - out2 (Video):    WM4/WM5 → COMPOSITE_DONE_2 (bits 16-23)
+	 *
+	 * Composite group mapping:
+	 * - comp 0: bits 0-7 (COMPOSITE_DONE_0) - preview
+	 * - comp 1: bits 8-15 (COMPOSITE_DONE_1) - snapshot
+	 * - comp 2: bits 16-23 (COMPOSITE_DONE_2) - video
 	 */
 	if (enable) {
 		u32 comp_mask = BIT(comp * 8);  /* WM0 mapped to composite group */
 
+		/*
+		 * If video output is enabled, also map WM4/WM5 to COMPOSITE_DONE_2.
+		 * This allows video recording to trigger IRQs independently from
+		 * preview (which uses COMPOSITE_DONE_0).
+		 */
+		if (vfe31_video_output_enable) {
+			/* Map WM4 (video Y) to COMPOSITE_DONE_2 (bits 16-23) */
+			comp_mask |= BIT(VFE31_VIDEO_WM_Y + 16);
+			/* Map WM5 (video CbCr) to COMPOSITE_DONE_2 */
+			comp_mask |= BIT(VFE31_VIDEO_WM_CBCR + 16);
+
+			/* Enable COMPOSITE_DONE_2 IRQ for video */
+			val0 |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
+		}
+
 		dev_info(vfe->camss->dev,
-			 "VFE31 pix_line: Setting IRQ_COMPOSITE_MASK=0x%08x (WM0 -> COMP%d)\n",
-			 comp_mask, comp);
+			 "VFE31 pix_line: Setting IRQ_COMPOSITE_MASK=0x%08x (WM0 -> COMP%d%s)\n",
+			 comp_mask, comp,
+			 vfe31_video_output_enable ? ", WM4/5 -> COMP2" : "");
 		writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 	}
 
