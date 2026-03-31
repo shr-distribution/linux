@@ -398,6 +398,32 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		subdev = media_entity_to_v4l2_subdev(entity);
 		entity_num++;
 
+		/*
+		 * VFE31 start order fix: Enable CAMIF BEFORE the sensor starts.
+		 *
+		 * The sensor is the data source - once it starts streaming,
+		 * data flows immediately. The VFE CAMIF must be ready to
+		 * receive BEFORE the sensor begins transmitting, otherwise
+		 * CAMIF sees partial frame data and reports errors.
+		 *
+		 * Detect sensor entities (MEDIA_ENT_F_CAM_SENSOR) and enable
+		 * any pending CAMIF configuration first.
+		 */
+		if (entity->function == MEDIA_ENT_F_CAM_SENSOR) {
+			int i;
+			dev_info(video->camss->dev,
+				 "[TIMING] Pipeline[%d]: detected sensor '%s', enabling pending CAMIF first\n",
+				 entity_num, entity->name);
+			for (i = 0; i < video->camss->res->vfe_num; i++) {
+				if (video->camss->vfe[i].camif_pending) {
+					dev_info(video->camss->dev,
+						 "[TIMING] Enabling VFE%d CAMIF before sensor start\n",
+						 i);
+					vfe_enable_pending_camif(&video->camss->vfe[i]);
+				}
+			}
+		}
+
 		entity_start = ktime_get();
 		dev_info(video->camss->dev,
 			 "[TIMING] Pipeline[%d]: calling s_stream(1) on '%s' at %lld ns\n",
@@ -412,26 +438,11 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	}
 
 	/*
-	 * MSM8660/VFE31 workaround: Now that ALL entities have been s_streamed
-	 * (including the sensor), we can safely start the VFE CAMIF.
-	 *
-	 * The sensor is now streaming MIPI data, so when we start CAMIF it will
-	 * immediately see valid frame data and not report CAMIF_ERROR.
-	 *
-	 * Previously, CAMIF was started from CSIPHY s_stream (before sensor),
-	 * which caused CAMIF_ERROR because no data was present yet.
+	 * Note: VFE CAMIF is now enabled BEFORE the sensor starts (in the
+	 * pipeline walk above), not after. This ensures CAMIF is ready to
+	 * receive data when the sensor begins streaming, avoiding mid-frame
+	 * sync issues.
 	 */
-	{
-		int i;
-		for (i = 0; i < video->camss->res->vfe_num; i++) {
-			if (video->camss->vfe[i].camif_pending) {
-				dev_info(video->camss->dev,
-					 "[TIMING] video_start_streaming: enabling VFE%d CAMIF after sensor streaming\n",
-					 i);
-				vfe_enable_pending_camif(&video->camss->vfe[i]);
-			}
-		}
-	}
 
 	dev_info(video->camss->dev,
 		 "[TIMING] video_start_streaming: COMPLETE total elapsed=%lld ns\n",
