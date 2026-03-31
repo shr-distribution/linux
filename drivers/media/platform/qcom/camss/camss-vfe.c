@@ -2227,16 +2227,30 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *   Bits 8-15:  WMs mapped to COMPOSITE_DONE_1 (IRQ_STATUS_0 bit 22)
 	 *   Bits 16-23: WMs mapped to COMPOSITE_DONE_2 (IRQ_STATUS_0 bit 23)
 	 *
-	 * For PIX mode using WM0, map it to COMPOSITE_DONE_0 (set bit 0).
-	 * webOS uses composite group 2 for preview (OUTPUT_2), but group 0
-	 * should work for our purposes.
+	 * webOS output path mapping:
+	 *   - out0 (Preview, PIX mode 0x200): WM0/WM1 -> COMPOSITE_DONE_0
+	 *   - out1 (Snapshot/Raw, mode 0x60): WM -> COMPOSITE_DONE_1
+	 *   - out2 (Video): WM4/WM5 -> COMPOSITE_DONE_2
+	 *
+	 * Use COMPOSITE_DONE_1 (bits 8-15) for raw/RDI mode to match webOS.
 	 */
 	{
-		u32 comp_mask = BIT(vfe->camif_pending_wm);  /* Map WM to COMPOSITE_DONE_0 */
+		u32 comp_mask;
+		int comp_group;
+
+		if (vfe31_axi_output_mode == 0x60) {
+			/* Raw/RDI mode: use COMPOSITE_DONE_1 (webOS out1 path) */
+			comp_mask = BIT(vfe->camif_pending_wm + 8);
+			comp_group = 1;
+		} else {
+			/* PIX/preview mode: use COMPOSITE_DONE_0 (webOS out0 path) */
+			comp_mask = BIT(vfe->camif_pending_wm);
+			comp_group = 0;
+		}
 
 		dev_info(vfe->camss->dev,
-			 "VFE: Setting IRQ_COMPOSITE_MASK=0x%08x (WM%d -> COMP0)\n",
-			 comp_mask, vfe->camif_pending_wm);
+			 "VFE: Setting IRQ_COMPOSITE_MASK=0x%08x (WM%d -> COMP%d, mode=0x%x)\n",
+			 comp_mask, vfe->camif_pending_wm, comp_group, vfe31_axi_output_mode);
 		writel_relaxed(comp_mask, vfe->base + VFE31_IRQ_COMPOSITE_MASK_0);
 		wmb();
 	}
