@@ -1,0 +1,170 @@
+==========================================
+  MT9M113 Sensor Register Dump (webOS)
+  Date: 2026-03-31
+  Mode: Preview (Camera app active)
+==========================================
+
+=== Core ID & Revision ===
+Reg 0x0000 = 0x2480  (Chip ID - MT9M113)
+Reg 0x0002 = 0x0000
+Reg 0x0004 = 0x0000
+Reg 0x0006 = 0x0100  (Revision)
+
+=== Control Registers ===
+Reg 0x0010 = 0x0114
+Reg 0x0014 = 0xB046
+Reg 0x0016 = 0x02DF
+Reg 0x0018 = 0x002A  (STANDBY_CONTROL)
+Reg 0x001A = 0x001C  (RESET_MISC_CTRL)
+Reg 0x001C = 0x5500
+Reg 0x001E = 0x0400
+
+=== Sensor Control (Frame Timing) ===
+Reg 0x3006 = 0x03CD  (y_end_addr = 973)
+Reg 0x3008 = 0x050D  (x_end_addr = 1293)
+Reg 0x300A = 0x032E  (frame_length_lines = 814)
+Reg 0x300C = 0x04CC  (line_length_pclk = 1228)
+Reg 0x3010 = 0x00AC
+Reg 0x3012 = 0x0660  (coarse_integration_time)
+Reg 0x3014 = 0x0279
+Reg 0x301A = 0x120C  (RESET_REGISTER - streaming enabled)
+
+=== MIPI Control (0x31xx) ===
+Reg 0x3100 = 0x4F45
+Reg 0x3102 = 0x652E
+Reg 0x3104 = 0x7552
+Reg 0x3106 = 0x2D05
+Reg 0x3108 = 0x4405
+Reg 0x310A = 0x7A01
+Reg 0x310C = 0x7601
+Reg 0x310E = 0x7A08
+Reg 0x3110 = 0x7601
+Reg 0x3112 = 0x00FF
+Reg 0x3114 = 0x00FF
+Reg 0x3116 = 0x7A02
+Reg 0x311A = 0x5045
+Reg 0x311E = 0x0601
+
+=== KEY INSIGHTS ===
+1. Chip ID 0x2480 confirms MT9M113 (not MT9M114 0x2481)
+2. RESET_REGISTER 0x301A = 0x120C indicates streaming mode
+3. Frame timing: 1294x974 sensor window
+4. MIPI registers have non-zero values = MIPI output active
+5. CAM/IFP registers (0xC8xx) are all zeros - not used or different addresses
+
+==========================================
+  MCU Variable Dump (via XDMA 0x098C/0x0990)
+==========================================
+
+=== MIPI Control Registers ===
+OUTPUT_CONTROL (0x3400) = 0x782E
+  - data_type bits[15:10] = 0x1E (YUV422)
+  - This controls MIPI output format
+CUSTOM_SHORT_PKT (0x3404) = 0x0000
+  - NO Frame Start/End short packets!
+
+=== Sequencer MCU Variables ===
+SEQ_CMD (0xA103) = 0x0006 (REFRESH_MODE)
+SEQ_STATE (0xA104) = 0x0003 (Streaming)
+SEQ_CAP_MODE (0xA115) = 0x0006
+
+=== Mode Context A (Preview) ===
+MODE_OUTPUT_WIDTH_A (0x2703) = 0x0280 (640)
+MODE_OUTPUT_HEIGHT_A (0x2705) = 0x01E0 (480)
+MODE_SENSOR_READ_MODE_A (0x2717) = 0x046C
+  - xy_bin_en (bit 10) = 1 (2x2 binning)
+  - x_odd_inc = 3 (skip columns)
+  - y_odd_inc = 3 (skip rows)
+MODE_SENSOR_FRAME_LENGTH_A (0x271F) = 0x032E (814)
+MODE_OUTPUT_FORMAT_A (0x2755) = 0x0000 (YUV, no swap)
+
+=== Mode Context B (Capture/Full Res) ===
+MODE_OUTPUT_WIDTH_B (0x2707) = 0x0500 (1280)
+MODE_OUTPUT_HEIGHT_B (0x2709) = 0x0400 (1024)
+MODE_SENSOR_READ_MODE_B (0x272D) = 0x0024 (no binning)
+MODE_OUTPUT_FORMAT_B (0x2757) = 0x0006
+
+=== CRITICAL FINDINGS ===
+1. CUSTOM_SHORT_PKT = 0x0000 confirms NO MIPI FS/FE packets
+2. Preview uses 2x2 binning (1280x1024 -> 640x512 sensor, output 640x480)
+3. OUTPUT_CONTROL = 0x782E controls MIPI YUV422 output
+4. Sensor is in streaming state (SEQ_STATE=3)
+
+==========================================
+  VIDEO RECORDING MODE - Sensor Registers
+  Date: 2026-03-31 18:27 CEST
+==========================================
+
+=== MIPI Control ===
+OUTPUT_CONTROL (0x3400) = 0x7A08  <-- MIPI enabled, LP clock!
+CUSTOM_SHORT_PKT (0x3404) = 0x0000
+
+=== Sequencer ===
+SEQ_CMD (0xA103) = 0x0000 (idle/complete)
+SEQ_STATE (0xA104) = 0x0003 (streaming)
+SEQ_CAP_MODE (0xA115) = 0x0030 (preview mode)
+
+=== Context A (Preview - Active) ===
+MODE_OUTPUT_WIDTH_A = 640
+MODE_OUTPUT_HEIGHT_A = 480
+MODE_SENSOR_READ_MODE_A = 0x046C (2x2 binning)
+MODE_SENSOR_FRAME_LENGTH_A = 814 lines
+MODE_SENSOR_LINE_LENGTH_A = 1228 pclk
+MODE_OUTPUT_FORMAT_A = 0x0000 (YUV)
+
+=== Context B (Capture - Not active) ===
+MODE_OUTPUT_WIDTH_B = 1280
+MODE_OUTPUT_HEIGHT_B = 1024
+MODE_OUTPUT_FORMAT_B = 0x0000
+
+=== Direct Registers ===
+CHIP_ID (0x0000) = 0x2480 (MT9M113)
+RESET_REGISTER (0x301A) = 0x120C (streaming)
+FRAME_LENGTH (0x300A) = 814
+LINE_LENGTH (0x300C) = 1228
+
+=== COMPARISON: Preview idle vs Video Recording ===
+| Register | Preview Idle | Video Recording |
+|----------|--------------|-----------------|
+| OUTPUT_CONTROL | 0x782E | 0x7A08 |
+| SEQ_CMD | 0x0006 | 0x0000 |
+| SEQ_CAP_MODE | 0x0006 | 0x0030 |
+
+VIDEO mode uses OUTPUT_CONTROL = 0x7A08 which is the expected
+MIPI configuration (data_type=0x1E, mipi_en=1, LP clock mode)
+
+==========================================
+  PHOTO CAPTURE MODE - Sensor Transitions
+  Date: 2026-03-31
+==========================================
+
+During photo capture, the sensor goes through rapid state changes:
+
+=== OUTPUT_CONTROL Transitions ===
+- 0x7A08 = Normal streaming (MIPI enabled)
+- 0x7A00 = Brief transition (MIPI output disabled, bit 3 = 0)
+
+=== Sequencer Command Sequence ===
+SEQ_CMD values seen during capture:
+- 0x0000 = Idle/complete
+- 0x0001 = RUN command
+- 0x0002 = Capture mode command  
+- 0x0005 = REFRESH command
+
+=== Sequencer State Changes ===
+SEQ_STATE values:
+- 0x0003 = Normal streaming
+- 0x0007 = Capture/processing state
+- 0x0002 = Transition state
+
+=== Other Register Changes ===
+- RESET_REGISTER: 0x12CC <-> 0x12C8 (bit 2 toggles)
+- SEQ_CAP_MODE: 0x0030 (preview) <-> 0x0000 (capture)
+
+=== KEY INSIGHT ===
+Photo capture in webOS stays in Context A (640x480) and doesn't
+switch to Context B (1280x1024 full resolution). Photos appear
+to use the preview stream with software post-processing.
+
+The sensor briefly disables MIPI output (0x7A00) during mode
+transitions, then re-enables it (0x7A08).
