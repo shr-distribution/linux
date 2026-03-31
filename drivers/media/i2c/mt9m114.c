@@ -56,14 +56,16 @@ MODULE_PARM_DESC(mt9m113_cont_mipi_clk,
 /*
  * Skip CUSTOM_SHORT_PKT (0x3404) write to match webOS exactly.
  *
- * webOS didn't configure this register, yet camera worked. Setting it to
- * 0x0080 was added to enable MIPI FS/FE packets, but might be causing issues.
- * Set to 1 to skip this write and match webOS behavior exactly.
+ * webOS didn't configure this register, yet camera worked. The VFE31 uses
+ * CAMIF pixel/line counting for frame sync, not MIPI FS/FE short packets.
+ * Default to 1 (skip) to match webOS behavior exactly.
+ *
+ * Set to 0 to enable MIPI FS/FE packets (might cause CAMIF_ERROR on VFE31).
  */
-static int mt9m113_skip_short_pkt = 0;
+static int mt9m113_skip_short_pkt = 1;
 module_param(mt9m113_skip_short_pkt, int, 0644);
 MODULE_PARM_DESC(mt9m113_skip_short_pkt,
-		 "Skip CUSTOM_SHORT_PKT (0x3404) write to match webOS (0=write, 1=skip)");
+		 "Skip CUSTOM_SHORT_PKT (0x3404) write to match webOS (1=skip default, 0=enable FS/FE)");
 
 /*
  * MT9M113 Context V4L2 Control
