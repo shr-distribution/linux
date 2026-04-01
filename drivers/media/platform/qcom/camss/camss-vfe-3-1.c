@@ -1764,32 +1764,19 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 
 	/*
 	 * Step 1: Configure AXI output mode and XBAR
-	 * Use module parameter vfe31_axi_output_mode:
-	 *   0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
-	 *   0x01  = PIX/Preview mode (OUTPUT_2 with XBAR routing)
 	 *
-	 * For PIX mode, we also need XBAR CFG1 at 0x44 = 0x1a03
-	 * This configures the crossbar to route CAMIF data to WM0/WM1.
+	 * CRITICAL: WebOS register dumps show that ALL modes (preview, video,
+	 * photo capture) use AXI_OUT_MODE=0x01 and XBAR_CFG1=0x1a1b.
+	 * The 0x60 "raw bypass" mode we tried doesn't work - it's not used
+	 * by webOS and doesn't properly route data to the write masters.
+	 *
+	 * Force AXI mode 0x01 and XBAR 0x1a1b regardless of module parameter.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x%x\n",
-		 vfe31_axi_output_mode);
-	writel_relaxed(vfe31_axi_output_mode,
+	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x01 (webOS), XBAR=0x1a1b\n");
+	writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-
-	/*
-	 * For PIX mode (0x01), configure XBAR CFG1 to route data to WMs.
-	 * Use video mode XBAR (0x1a1b) if video output is enabled,
-	 * otherwise use preview-only XBAR (0x1a03).
-	 */
-	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		u32 xbar_cfg1 = vfe31_video_output_enable ?
-				VFE_0_BUS_XBAR_CFG1_VIDEO_MODE :
-				VFE_0_BUS_XBAR_CFG1_PIX_MODE;
-		dev_info(vfe->camss->dev,
-			 "VFE31: PIX mode - XBAR CFG1=0x%x (video=%d)\n",
-			 xbar_cfg1, vfe31_video_output_enable);
-		writel_relaxed(xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
-	}
+	writel_relaxed(VFE_0_BUS_XBAR_CFG1_VIDEO_MODE,
+		       vfe->base + VFE_0_BUS_XBAR_CFG1);
 	wmb();
 
 	/* Step 2: Configure WM registers (must be BEFORE CAMIF start) */
@@ -1992,52 +1979,35 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 *     irq_comp_mask |= BIT(out1.ch0 + 8);  // bits 8-15
 	 */
 	{
-		u32 new_bits;
-
 		/*
 		 * IRQ_COMPOSITE_MASK is write-only, use shadow register.
-		 * OR in the new WM bits to support multiple active WMs.
+		 *
+		 * WebOS video mode uses 0x00220011 which maps:
+		 * - WM0 + WM4 -> COMPOSITE_DONE_0 (bits 0,4)
+		 * - WM1 + WM5 -> COMPOSITE_DONE_2 (bits 17,21)
+		 *
+		 * For our dynamic configuration, map the active WM to COMP0.
+		 * This follows webOS pattern where WM0 -> COMP0 (bit 0).
 		 */
-		if (vfe31_axi_output_mode == 0x60) {
-			/* Raw mode: map WM to COMPOSITE_DONE_1 (bits 8-15) */
-			new_bits = BIT(wm + 8);
-			dev_info(vfe->camss->dev,
-				 "VFE31: Adding WM%d -> COMP1 (raw mode)\n", wm);
-		} else if (vfe31_video_output_enable) {
-			/*
-			 * Video mode: use webOS composite mask 0x00220011
-			 * - WM0 + WM4 -> COMPOSITE_DONE_0 (bits 0,4)
-			 * - WM1 + WM5 -> COMPOSITE_DONE_2 (bits 17,21)
-			 */
-			new_bits = 0x00220011;
-			dev_info(vfe->camss->dev,
-				 "VFE31: Setting video mode composite mask\n");
-		} else {
-			/* PIX/preview mode: map WM to COMPOSITE_DONE_0 (bits 0-7) */
-			new_bits = BIT(wm);
-			dev_info(vfe->camss->dev,
-				 "VFE31: Adding WM%d -> COMP0 (PIX mode)\n", wm);
-		}
-
-		/* OR in new bits to shadow and write to register */
-		vfe->irq_comp_mask_shadow |= new_bits;
+		vfe->irq_comp_mask_shadow |= BIT(wm);  /* Map WM to COMP0 */
 		dev_info(vfe->camss->dev,
-			 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (added 0x%x)\n",
-			 vfe->irq_comp_mask_shadow, new_bits);
+			 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (WM%d -> COMP0)\n",
+			 vfe->irq_comp_mask_shadow, wm);
 		writel_relaxed(vfe->irq_comp_mask_shadow,
 			       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		wmb();
 	}
 
 	/*
-	 * VFE31 uses IMAGE_COMPOSITE_DONE (bits 21-23) for frame completion.
-	 * webOS uses IRQ_MASK_0 = 0x00EFE021 which includes:
-	 * - Bit 0: CAMIF_SOF
-	 * - Bit 5: REG_UPDATE
-	 * - Bits 8-14: IMAGE_MASTER_PING_PONG for WM0-6
-	 * - Bits 21-23: IMAGE_COMPOSITE_DONE_0-2
+	 * Configure IRQ masks dynamically based on active WM.
 	 *
-	 * We enable both PING_PONG and COMPOSITE_DONE for compatibility.
+	 * WebOS uses IRQ_MASK_0 = 0x00EFE021 which includes:
+	 *   - Bit 0: CAMIF_SOF
+	 *   - Bit 5: REG_UPDATE
+	 *   - Bits 9-13: PING_PONG for WM1-5
+	 *   - Bits 21-23: IMAGE_COMPOSITE_DONE_0-2
+	 *
+	 * We build this dynamically to include PING_PONG for our active WM.
 	 */
 	vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
 				VFE_0_IRQ_MASK_0_CAMIF_EOF |
