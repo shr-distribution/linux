@@ -12,7 +12,6 @@
 
 
 #include <linux/of.h>
-#include <media/media-device.h>
 #include <linux/module.h>
 #include <linux/workqueue.h>
 #include <linux/delay.h>
@@ -875,37 +874,6 @@ static struct v4l2_file_operations camera_v4l2_fops = {
 #endif
 };
 
-#if defined(CONFIG_MEDIA_CONTROLLER)
-/* Callback to proxy entities from media0 to the session's media device (media1).
- * This ensures the MCT pproc module can discover CPP on the session's media device. */
-static void camera_entity_notify_cb(struct media_entity *entity, void *data)
-{
-	struct media_device *session_mdev = data;
-	struct media_entity *proxy;
-
-	pr_info("camera_entity_notify_cb: entity=%s func=%u mdev=%p\n", entity ? entity->name : "null", entity ? entity->function : 0, session_mdev);
-	if (!entity || !session_mdev || !is_media_entity_v4l2_subdev(entity))
-		return;
-
-	proxy = kzalloc(sizeof(*proxy), GFP_KERNEL);
-	if (!proxy)
-		return;
-
-	proxy->name = entity->name;
-	proxy->function = entity->function;
-	proxy->flags = entity->flags;
-	proxy->info = entity->info;
-	proxy->obj_type = entity->obj_type;
-	{
-		int rc = media_device_register_entity(session_mdev, proxy);
-		if (rc < 0)
-			pr_err("camera_entity_proxy: failed to register %s rc=%d\n", entity->name, rc);
-		else
-			pr_info("camera_entity_proxy: registered %s func=%u on session mdev\n", entity->name, entity->function);
-	}
-}
-#endif
-
 int camera_init_v4l2(struct device *dev, unsigned int *session)
 {
 	struct msm_video_device *pvdev;
@@ -975,33 +943,6 @@ int camera_init_v4l2(struct device *dev, unsigned int *session)
 #if defined(CONFIG_MEDIA_CONTROLLER)
 	/* FIXME: How to get rid of this messy? */
 	pvdev->vdev->entity.name = video_device_node_name(pvdev->vdev);
-
-	/* Register entity notify callback to proxy new entities from media0
-	 * (main config device) to this session's media device (media1).
-	 * The MCT pproc module enumerates the session's media device to
-	 * discover CPP, but CPP registers on media0 AFTER camera_init_v4l2.
-	 * This callback ensures CPP's entity also appears on media1. */
-	{
-		extern struct v4l2_device *msm_v4l2_dev;
-		if (msm_v4l2_dev && msm_v4l2_dev->mdev && v4l2_dev->mdev) {
-			static struct media_entity_notify cam_entity_notify;
-			static struct media_device *session_mdev;
-			session_mdev = v4l2_dev->mdev;
-			cam_entity_notify.notify_data = session_mdev;
-			cam_entity_notify.notify = camera_entity_notify_cb;
-			media_device_register_entity_notify(
-				msm_v4l2_dev->mdev, &cam_entity_notify);
-			/* Also copy entities already registered on media0 */
-			{
-				struct media_entity *ent;
-				media_device_for_each_entity(ent,
-						msm_v4l2_dev->mdev) {
-					camera_entity_notify_cb(ent,
-						session_mdev);
-				}
-			}
-		}
-	}
 #endif
 
 	*session = pvdev->vdev->num;

@@ -32,7 +32,7 @@
 #include "cam_hw_ops.h"
 #include <media/msmb_generic_buf_mgr.h>
 
-struct v4l2_device *msm_v4l2_dev;
+static struct v4l2_device *msm_v4l2_dev;
 static struct list_head    ordered_sd_list;
 static struct mutex        ordered_sd_mtx;
 static struct mutex        v4l2_event_mtx;
