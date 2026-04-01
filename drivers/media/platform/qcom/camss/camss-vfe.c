@@ -2361,7 +2361,8 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 					line->fmt[MSM_VFE_PAD_SINK].width,
 					line->fmt[MSM_VFE_PAD_SINK].height);
 		vfe->camif_pending = false;
-		line->output.state = VFE_OUTPUT_ON;
+		/* Note: Do NOT change output->state - it's already set correctly
+		 * by vfe_enable_output_gen1() to SINGLE/CONTINUOUS */
 		dev_info(vfe->camss->dev,
 			 "VFE: Test generator started (stream_count=%d)\n",
 			 vfe->stream_count);
@@ -2437,9 +2438,15 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	vfe->camif_pending = false;
 
-	/* Complete streaming setup - set output state */
-	line->output.state = VFE_OUTPUT_ON;
-	/* Note: stream_count is already incremented in vfe31_enable() */
+	/*
+	 * Note: Do NOT change output->state here. The state is already set
+	 * correctly by vfe_enable_output_gen1() to VFE_OUTPUT_SINGLE or
+	 * VFE_OUTPUT_CONTINUOUS based on buffer availability. Overwriting
+	 * it to VFE_OUTPUT_ON breaks the gen1 state machine which expects
+	 * SINGLE/CONTINUOUS states in vfe_buf_update_wm_on_next().
+	 *
+	 * stream_count is already incremented in vfe31_enable().
+	 */
 
 	dev_info(vfe->camss->dev,
 		 "VFE: CAMIF configured and streaming started (stream_count=%d)\n",
