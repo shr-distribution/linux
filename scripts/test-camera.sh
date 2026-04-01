@@ -692,8 +692,9 @@ test_pix_mode() {
     # Set modern mux mode (CSI1 for front camera)
     set_legacy_routing "0"
 
-    # Set AXI output mode to PIX/preview (0x200)
-    set_axi_output_mode "0x200"
+    # Set AXI output mode to PIX/preview (0x01 = webOS value for ISP path)
+    # Note: 0x200 is raw/CAMIF_TO_AXI bypass, 0x01 is ISP processing path
+    set_axi_output_mode "0x01"
 
     run_on_device "
         echo '=== PIX Mode Test (video3 via VFE PIX) ==='
