@@ -2372,20 +2372,28 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 7a: Configure Unified Buffer (UB) for WM
 	 *
-	 * VFE31 has a 1024-byte unified buffer shared among Write Masters.
-	 * For single WM operation, use full buffer: offset=0, depth=1023.
-	 * Without this configuration, WM cannot buffer data for DMA transfer!
+	 * VFE31 UB_CFG format (from webOS register dumps):
+	 * webOS WM0: 0x002701DF = ((39) << 16) | 479
 	 *
-	 * UB_CFG register format:
-	 *   Bits [15:0]:  depth (number of 128-bit entries - 1)
-	 *   Bits [31:16]: offset in UB
+	 * Upper 16 bits: (wpl / 8) + 1, where wpl is 32-bit words per line
+	 * Lower 16 bits: height - 1
+	 *
+	 * This is DIFFERENT from VFE4.x which uses (offset << 16) | depth
 	 */
 	{
-		u32 ub_cfg = (0 << 16) | 1023;  /* offset=0, depth=1023 (full UB) */
+		struct v4l2_pix_format_mplane *pix =
+			&line->video_out.active_fmt.fmt.pix_mp;
+		u16 bytesperline = pix->plane_fmt[0].bytesperline;
+		u16 height = pix->height;
+		u16 wpl = bytesperline / 4;  /* 32-bit words per line */
+		u32 ub_cfg = ((wpl / 8 + 1) & 0xFFFF) << 16;
 		u8 wm = vfe->camif_pending_wm;
 
-		dev_info(vfe->camss->dev, "VFE: WM%d UB_CFG=0x%08x (offset=0, depth=1023)\n",
-			 wm, ub_cfg);
+		ub_cfg |= (height - 1) & 0xFFFF;
+
+		dev_info(vfe->camss->dev,
+			 "VFE: WM%d UB_CFG=0x%08x (wpl=%d, height=%d, webOS format)\n",
+			 wm, ub_cfg, wpl, height);
 		writel_relaxed(ub_cfg, vfe->base + VFE31_WM_WR_UB_CFG(wm));
 		wmb();
 	}
