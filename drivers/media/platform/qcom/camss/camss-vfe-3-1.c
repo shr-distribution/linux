@@ -762,11 +762,11 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		 * on every frame. If we received the expected number of lines,
 		 * the frame data is valid - just missing the EOF signal.
 		 *
-		 * CRITICAL: Always clear CAMIF_STATUS to allow next frame.
-		 * Without this, CAMIF stays halted (bit 31 set) and no more
-		 * frames are processed.
+		 * CRITICAL: Clear CAMIF_STATUS AND restart CAMIF for next frame.
+		 * Write 0x5 = CLEAR_STATUS (bit 2) + START (bit 0) per webOS.
+		 * Without restarting, CAMIF stays halted and no more frames come.
 		 */
-		writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS,
+		writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS | VFE_0_CAMIF_CMD_START,
 			       vfe->base + VFE_0_CAMIF_CMD);
 		wmb();
 
