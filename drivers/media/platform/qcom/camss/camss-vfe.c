@@ -2312,6 +2312,44 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	}
 
 	/*
+	 * Step 5.5: Enable Write Master BEFORE REG_UPDATE
+	 *
+	 * CRITICAL: WM must be enabled before REG_UPDATE so the enable bit
+	 * gets latched into the active configuration. Previously this was
+	 * done after CAMIF_START which is wrong - by then the shadow register
+	 * latch has already happened and the WM enable isn't active!
+	 *
+	 * WebOS sequence: configure WM -> enable WM -> REG_UPDATE -> CAMIF_START
+	 */
+	{
+		struct v4l2_pix_format_mplane *pix =
+			&line->video_out.active_fmt.fmt.pix_mp;
+		u16 bytesperline = pix->plane_fmt[0].bytesperline;
+		u16 height = pix->height;
+		u16 wpl = bytesperline / 4;  /* 32-bit words per line */
+		u32 ub_cfg = ((wpl / 8 + 1) & 0xFFFF) << 16;
+		u8 wm = vfe->camif_pending_wm;
+
+		ub_cfg |= (height - 1) & 0xFFFF;
+
+		dev_info(vfe->camss->dev,
+			 "VFE: Step 5.5 - Enable WM%d BEFORE REG_UPDATE\n", wm);
+		dev_info(vfe->camss->dev,
+			 "VFE: WM%d UB_CFG=0x%08x (wpl=%d, height=%d)\n",
+			 wm, ub_cfg, wpl, height);
+
+		/* Configure UB */
+		writel_relaxed(ub_cfg, vfe->base + VFE31_WM_WR_UB_CFG(wm));
+
+		/* Enable WM - this goes to shadow register */
+		writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(wm));
+		wmb();
+
+		dev_info(vfe->camss->dev, "VFE: WM%d WR_CFG=0x%08x (before REG_UPDATE)\n",
+			 wm, readl_relaxed(vfe->base + VFE31_WM_WR_CFG(wm)));
+	}
+
+	/*
 	 * Dump comprehensive clock state before CAMIF start.
 	 * This helps debug CSI->VFE data path issues.
 	 */
@@ -2373,58 +2411,9 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * Step 7: Enable Write Master
-	 *
-	 * CRITICAL: vfe31_enable() bypasses the gen1 path which would normally
-	 * call wm_enable(). We must enable WM here after CAMIF is started,
-	 * otherwise the WM never gets enabled and no data flows to memory!
+	 * Note: WM was already enabled in Step 5.5 BEFORE REG_UPDATE.
+	 * This ensures the WM enable bit is latched with the shadow registers.
 	 */
-	dev_info(vfe->camss->dev, "VFE: Step 7 - Enable Write Master WM%d\n",
-		 vfe->camif_pending_wm);
-
-	/*
-	 * Step 7a: Configure Unified Buffer (UB) for WM
-	 *
-	 * VFE31 UB_CFG format (from webOS register dumps):
-	 * webOS WM0: 0x002701DF = ((39) << 16) | 479
-	 *
-	 * Upper 16 bits: (wpl / 8) + 1, where wpl is 32-bit words per line
-	 * Lower 16 bits: height - 1
-	 *
-	 * This is DIFFERENT from VFE4.x which uses (offset << 16) | depth
-	 */
-	{
-		struct v4l2_pix_format_mplane *pix =
-			&line->video_out.active_fmt.fmt.pix_mp;
-		u16 bytesperline = pix->plane_fmt[0].bytesperline;
-		u16 height = pix->height;
-		u16 wpl = bytesperline / 4;  /* 32-bit words per line */
-		u32 ub_cfg = ((wpl / 8 + 1) & 0xFFFF) << 16;
-		u8 wm = vfe->camif_pending_wm;
-
-		ub_cfg |= (height - 1) & 0xFFFF;
-
-		dev_info(vfe->camss->dev,
-			 "VFE: WM%d UB_CFG=0x%08x (wpl=%d, height=%d, webOS format)\n",
-			 wm, ub_cfg, wpl, height);
-		writel_relaxed(ub_cfg, vfe->base + VFE31_WM_WR_UB_CFG(wm));
-		wmb();
-	}
-
-	/*
-	 * Step 7b: Enable WM
-	 *
-	 * WR_CFG bits:
-	 *   Bit 0: enable - enables the write master
-	 * Note: VFE31 does NOT have frame_based mode in WR_CFG bit 1.
-	 * webOS only writes 1 (BIT(0)) to enable the write master.
-	 */
-	writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(vfe->camif_pending_wm));
-	wmb();
-
-	dev_info(vfe->camss->dev, "VFE: WM%d WR_CFG after enable: 0x%08x\n",
-		 vfe->camif_pending_wm,
-		 readl_relaxed(vfe->base + VFE31_WM_WR_CFG(vfe->camif_pending_wm)));
 
 	/* Small delay then check status */
 	udelay(100);
