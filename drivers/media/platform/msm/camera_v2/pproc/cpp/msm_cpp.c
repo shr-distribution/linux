@@ -157,7 +157,7 @@ static int32_t msm_cpp_reset_vbif_and_load_fw(struct cpp_device *cpp_dev);
 	qcmd;			 \
 })
 
-#define MSM_CPP_MAX_TIMEOUT_TRIAL 255
+#define MSM_CPP_MAX_TIMEOUT_TRIAL 3
 
 struct msm_cpp_timer_data_t {
 	struct cpp_device *cpp_dev;
@@ -1923,8 +1923,12 @@ static void msm_cpp_do_timeout_work(struct work_struct *work)
 
 	if (cpp_dev->timeout_trial_cnt >=
 		cpp_dev->max_timeout_trial_cnt) {
-		pr_warn("Max trial reached\n");
+		pr_warn("CPP: max trial reached, resetting hardware\n");
 		msm_cpp_flush_queue_and_release_buffer(cpp_dev, queue_len);
+		/* Reset CPP micro to recover from stall.
+		 * This reloads firmware and restores operation. */
+		msm_cpp_reset_vbif_and_load_fw(cpp_dev);
+		cpp_dev->timeout_trial_cnt = 0;
 		msm_cpp_set_micro_irq_mask(cpp_dev, 1, 0x8);
 		goto end;
 	}
