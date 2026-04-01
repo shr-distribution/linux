@@ -1889,25 +1889,36 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * 4. Then configure VFE_CFG_OFF with inputSource=CSI for live camera
 	 */
 
-	/* Debug: Read VBIF state before configuration */
-	dev_info(vfe->camss->dev,
-		 "VFE: VBIF PRE-CONFIG: 0x400=0x%08x 0x404=0x%08x 0x408=0x%08x\n",
-		 readl_relaxed(vfe->base + 0x400),
-		 readl_relaxed(vfe->base + 0x404),
-		 readl_relaxed(vfe->base + 0x408));
+	/* Debug: Read VBIF state before configuration (skip for VFE31) */
+	if (vfe->camss->res->version != CAMSS_8x60) {
+		dev_info(vfe->camss->dev,
+			 "VFE: VBIF PRE-CONFIG: 0x400=0x%08x 0x404=0x%08x 0x408=0x%08x\n",
+			 readl_relaxed(vfe->base + 0x400),
+			 readl_relaxed(vfe->base + 0x404),
+			 readl_relaxed(vfe->base + 0x408));
+	}
 
 	/* Step 0a: Force ALL VFE clocks on (full 32-bit mask) */
 	writel_relaxed(0xFFFFFFFF, vfe->base + 0x00C);  /* VFE_CGC_OVERRIDE */
 	wmb();
 	dev_info(vfe->camss->dev, "VFE: CGC_OVERRIDE=0xFFFFFFFF (all clocks forced on)\n");
 
-	/* Step 0b: Wake up VBIF (VFE Bus Interface) */
-	writel_relaxed(0x00000001, vfe->base + 0x400);  /* VBIF_CLK_ON */
-	wmb();
-	writel_relaxed(0x00000110, vfe->base + 0x404);  /* VBIF_AXI_CFG (standard priority) */
-	wmb();
-	dev_info(vfe->camss->dev,
-		 "VFE: VBIF configured: 0x400=0x1, 0x404=0x110\n");
+	/*
+	 * Step 0b: Wake up VBIF (VFE Bus Interface)
+	 * NOTE: VFE31 (MSM8660/CAMSS_8x60) does NOT have VBIF. The 0x400 offset
+	 * on VFE31 is a different register entirely. Skip VBIF config for VFE31.
+	 */
+	if (vfe->camss->res->version != CAMSS_8x60) {
+		writel_relaxed(0x00000001, vfe->base + 0x400);  /* VBIF_CLK_ON */
+		wmb();
+		writel_relaxed(0x00000110, vfe->base + 0x404);  /* VBIF_AXI_CFG */
+		wmb();
+		dev_info(vfe->camss->dev,
+			 "VFE: VBIF configured: 0x400=0x1, 0x404=0x110\n");
+	} else {
+		dev_info(vfe->camss->dev,
+			 "VFE31: Skipping VBIF config (not present on MSM8660)\n");
+	}
 
 	/* Step 0c: Clear any pending resets */
 	writel_relaxed(0, vfe->base + 0x00C);
@@ -1917,12 +1928,14 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0xFFFFFFFF, vfe->base + 0x00C);
 	wmb();
 
-	/* Debug: Read VBIF state after configuration */
-	dev_info(vfe->camss->dev,
-		 "VFE: VBIF POST-CONFIG: 0x400=0x%08x 0x404=0x%08x 0x408=0x%08x\n",
-		 readl_relaxed(vfe->base + 0x400),
-		 readl_relaxed(vfe->base + 0x404),
-		 readl_relaxed(vfe->base + 0x408));
+	/* Debug: Read VBIF state after configuration (skip for VFE31) */
+	if (vfe->camss->res->version != CAMSS_8x60) {
+		dev_info(vfe->camss->dev,
+			 "VFE: VBIF POST-CONFIG: 0x400=0x%08x 0x404=0x%08x 0x408=0x%08x\n",
+			 readl_relaxed(vfe->base + 0x400),
+			 readl_relaxed(vfe->base + 0x404),
+			 readl_relaxed(vfe->base + 0x408));
+	}
 
 	/* Set DEMUX gains to passthrough (required for YUV input) */
 	writel_relaxed(0x800080, vfe->base + 0x288); /* VFE_DEMUX_GAIN_0 */
