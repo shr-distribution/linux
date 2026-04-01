@@ -739,60 +739,52 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	if (value1 & VFE_0_IRQ_STATUS_1_BUS_BDG_HALT_ACK)
 		vfe->isr_ops.halt_ack(vfe);
 
-	/* Debug: Print CAMIF state when CAMIF_ERROR fires */
+	/* Handle CAMIF_ERROR - clear status to allow next frame */
 	if (value1 & VFE_0_IRQ_MASK_1_CAMIF_ERROR) {
 		u32 camif_status = readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS);
 		u32 frame_cfg = readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG);
+		u32 expected_lines = (frame_cfg >> 16) & 0x3FFF;
+		u32 received_lines = (camif_status >> 16) & 0x3FFF;
+		static int camif_error_count;
 
-		dev_warn(vfe->camss->dev,
-			 "CAMIF_ERROR! status=0x%08x frame_cfg=0x%08x (pixels=%d/%d lines=%d/%d)\n",
-			 camif_status, frame_cfg,
-			 camif_status & 0x3FFF, frame_cfg & 0x3FFF,
-			 (camif_status >> 16) & 0x3FFF, (frame_cfg >> 16) & 0x3FFF);
+		camif_error_count++;
+		if (camif_error_count <= 3) {
+			dev_warn(vfe->camss->dev,
+				 "CAMIF_ERROR #%d: status=0x%08x frame_cfg=0x%08x (pixels=%d/%d lines=%d/%d)\n",
+				 camif_error_count, camif_status, frame_cfg,
+				 camif_status & 0x3FFF, frame_cfg & 0x3FFF,
+				 received_lines, expected_lines);
+		}
 
 		/*
-		 * Software EOF workaround: When CAMIF_ERROR fires due to missing
-		 * MIPI Frame End packet, manually complete the frame if we have
-		 * received enough data.
+		 * CAMIF_ERROR typically fires when MIPI Frame End packet is missing.
+		 * The MT9M113 sensor may not send FE packets, causing this error
+		 * on every frame. If we received the expected number of lines,
+		 * the frame data is valid - just missing the EOF signal.
 		 *
-		 * The MT9M113 sensor doesn't send FE packets, so CAMIF always
-		 * errors out. But if pixel/line counts match the expected frame,
-		 * the data is actually valid - just missing the EOF signal.
+		 * CRITICAL: Always clear CAMIF_STATUS to allow next frame.
+		 * Without this, CAMIF stays halted (bit 31 set) and no more
+		 * frames are processed.
 		 */
-		if (software_eof_enable) {
-			u32 expected_lines = (frame_cfg >> 16) & 0x3FFF;
-			u32 received_lines = (camif_status >> 16) & 0x3FFF;
+		writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS,
+			       vfe->base + VFE_0_CAMIF_CMD);
+		wmb();
 
-			/* If we received close to expected lines, consider it a complete frame */
-			if (received_lines >= expected_lines - 2) {
-				static int eof_frame_count;
+		/* If frame data is complete, trigger frame completion */
+		if (received_lines >= expected_lines - 2 && expected_lines > 0) {
+			/* Issue REG_UPDATE to latch shadow registers */
+			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+			wmb();
 
-				eof_frame_count++;
-				if (eof_frame_count <= 3) {
-					dev_info(vfe->camss->dev,
-						 "Software EOF: completing frame #%d (lines=%d/%d)\n",
-						 eof_frame_count, received_lines, expected_lines);
-				}
+			/*
+			 * Manually trigger frame completion for active WMs.
+			 * This simulates what would happen if EOF fired normally.
+			 */
+			vfe->isr_ops.wm_done(vfe, 0);
 
-				/* Clear CAMIF status to reset error state */
-				writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS,
-					       vfe->base + VFE_0_CAMIF_CMD);
-				wmb();
-
-				/* Issue REG_UPDATE to latch shadow registers */
-				writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
-				wmb();
-
-				/*
-				 * Manually trigger frame completion for WM0.
-				 * This simulates what would happen if EOF fired normally.
-				 */
-				vfe->isr_ops.wm_done(vfe, 0);
-
-				/* Notify all lines of reg_update */
-				for (i = 0; i < vfe->res->line_num; i++)
-					vfe->isr_ops.reg_update(vfe, i);
-			}
+			/* Notify all lines of reg_update */
+			for (i = 0; i < vfe->res->line_num; i++)
+				vfe->isr_ops.reg_update(vfe, i);
 		}
 	}
 
