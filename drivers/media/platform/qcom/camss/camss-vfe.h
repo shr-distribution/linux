@@ -180,6 +180,7 @@ struct vfe_device {
 	/* VFE31: Shadow registers for write-only IRQ_MASK registers */
 	u32 irq_mask0_shadow;
 	u32 irq_mask1_shadow;
+	u32 irq_comp_mask_shadow;  /* VFE31: Shadow for IRQ_COMPOSITE_MASK */
 };
 
 struct camss_subdev_resources;

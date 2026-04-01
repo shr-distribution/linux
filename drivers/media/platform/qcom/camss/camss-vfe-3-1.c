@@ -540,6 +540,11 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 * values MUST be set AFTER reset completes, not before!
 	 */
 
+	/* Clear shadow registers before reset */
+	vfe->irq_mask0_shadow = 0;
+	vfe->irq_mask1_shadow = 0;
+	vfe->irq_comp_mask_shadow = 0;
+
 	/* Step 1: Disable all IRQs before reset */
 	dev_info(vfe->camss->dev, "VFE reset: disabling IRQs (MASK=0)\n");
 	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_0);
@@ -1109,6 +1114,7 @@ static void vfe31_enable_irq_common(struct vfe_device *vfe)
 	vfe->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK |
 				VFE_0_IRQ_MASK_1_VIOLATION |
 				VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK;
+	vfe->irq_comp_mask_shadow = 0;  /* Clear composite mask shadow */
 
 	dev_info(vfe->camss->dev, "VFE31 enable_irq_common: mask0=0x%x mask1=0x%x\n",
 		 vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
@@ -1986,32 +1992,40 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 *     irq_comp_mask |= BIT(out1.ch0 + 8);  // bits 8-15
 	 */
 	{
-		u32 comp_mask;
+		u32 new_bits;
 
+		/*
+		 * IRQ_COMPOSITE_MASK is write-only, use shadow register.
+		 * OR in the new WM bits to support multiple active WMs.
+		 */
 		if (vfe31_axi_output_mode == 0x60) {
-			/* Raw mode: map WM to COMPOSITE_DONE_1 */
-			comp_mask = BIT(wm + 8);
+			/* Raw mode: map WM to COMPOSITE_DONE_1 (bits 8-15) */
+			new_bits = BIT(wm + 8);
 			dev_info(vfe->camss->dev,
-				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (WM%d -> COMP1, raw mode)\n",
-				 comp_mask, wm);
+				 "VFE31: Adding WM%d -> COMP1 (raw mode)\n", wm);
 		} else if (vfe31_video_output_enable) {
 			/*
 			 * Video mode: use webOS composite mask 0x00220011
 			 * - WM0 + WM4 -> COMPOSITE_DONE_0 (bits 0,4)
 			 * - WM1 + WM5 -> COMPOSITE_DONE_2 (bits 17,21)
 			 */
-			comp_mask = 0x00220011;
+			new_bits = 0x00220011;
 			dev_info(vfe->camss->dev,
-				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (webOS video mode)\n",
-				 comp_mask);
+				 "VFE31: Setting video mode composite mask\n");
 		} else {
-			/* PIX/preview mode: map WM to COMPOSITE_DONE_0 */
-			comp_mask = BIT(wm);
+			/* PIX/preview mode: map WM to COMPOSITE_DONE_0 (bits 0-7) */
+			new_bits = BIT(wm);
 			dev_info(vfe->camss->dev,
-				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (WM%d -> COMP0, PIX mode)\n",
-				 comp_mask, wm);
+				 "VFE31: Adding WM%d -> COMP0 (PIX mode)\n", wm);
 		}
-		writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+
+		/* OR in new bits to shadow and write to register */
+		vfe->irq_comp_mask_shadow |= new_bits;
+		dev_info(vfe->camss->dev,
+			 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (added 0x%x)\n",
+			 vfe->irq_comp_mask_shadow, new_bits);
+		writel_relaxed(vfe->irq_comp_mask_shadow,
+			       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		wmb();
 	}
 
@@ -2296,7 +2310,7 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 	 * - comp 2: bits 16-23 (COMPOSITE_DONE_2) - video
 	 */
 	if (enable) {
-		u32 comp_mask = BIT(comp * 8);  /* WM0 mapped to composite group */
+		u32 new_bits = BIT(comp * 8);  /* WM0 mapped to composite group */
 
 		/*
 		 * If video output is enabled, also map WM4/WM5 to COMPOSITE_DONE_2.
@@ -2305,19 +2319,22 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 		 */
 		if (vfe31_video_output_enable) {
 			/* Map WM4 (video Y) to COMPOSITE_DONE_2 (bits 16-23) */
-			comp_mask |= BIT(VFE31_VIDEO_WM_Y + 16);
+			new_bits |= BIT(VFE31_VIDEO_WM_Y + 16);
 			/* Map WM5 (video CbCr) to COMPOSITE_DONE_2 */
-			comp_mask |= BIT(VFE31_VIDEO_WM_CBCR + 16);
+			new_bits |= BIT(VFE31_VIDEO_WM_CBCR + 16);
 
 			/* Enable COMPOSITE_DONE_2 IRQ for video */
 			val0 |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
 		}
 
+		/* OR new bits into shadow and write to register */
+		vfe->irq_comp_mask_shadow |= new_bits;
 		dev_info(vfe->camss->dev,
-			 "VFE31 pix_line: Setting IRQ_COMPOSITE_MASK=0x%08x (WM0 -> COMP%d%s)\n",
-			 comp_mask, comp,
+			 "VFE31 pix_line: IRQ_COMPOSITE_MASK=0x%08x (added 0x%x, COMP%d%s)\n",
+			 vfe->irq_comp_mask_shadow, new_bits, comp,
 			 vfe31_video_output_enable ? ", WM4/5 -> COMP2" : "");
-		writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+		writel_relaxed(vfe->irq_comp_mask_shadow,
+			       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 	}
 
 	if (enable) {
