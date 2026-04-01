@@ -4441,6 +4441,7 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 		break;
 	case MSM_SD_NOTIFY_FREEZE:
 		break;
+		pr_info("CPP: GET_INST_INFO32 called\n");
 	case MSM_SD_UNNOTIFY_FREEZE:
 		break;
 	default:
