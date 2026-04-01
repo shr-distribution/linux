@@ -403,6 +403,7 @@ extern int software_eof_enable;
 #define VFE_0_DEMUX_GAIN_1		0x28C
 #define VFE_0_DEMUX_GAIN_1_CH1		(0x80 << 0)
 #define VFE_0_DEMUX_GAIN_1_CH2		(0x80 << 16)
+#define VFE_0_DEMUX_EVEN_CFG		0x290
 
 /* Chroma subsample */
 #define VFE_0_CHROMA_SUBS_CFG		0x4F8
@@ -1154,7 +1155,11 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	case MEDIA_BUS_FMT_UYVY8_1X16:
 	case MEDIA_BUS_FMT_UYVY8_2X8:
 	default:
-		even_cfg = 0x9c;
+		/*
+		 * webOS uses 0xC9CA for UYVY preview mode.
+		 * This seems to be (0xC9 << 8) | 0xCA format.
+		 */
+		even_cfg = 0xc9;
 		odd_cfg = 0xca;
 		break;
 	case MEDIA_BUS_FMT_VYUY8_1X16:
@@ -1164,7 +1169,13 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		break;
 	}
 
-	writel_relaxed(even_cfg << 4 | odd_cfg, vfe->base + VFE_0_DEMUX_CFG);
+	/*
+	 * Write even/odd config to DEMUX_EVEN_CFG (0x290), NOT DEMUX_CFG!
+	 * webOS register dump shows:
+	 *   DEMUX_CFG (0x284) = 0x03 (period)
+	 *   DEMUX_EVEN (0x290) = 0xC9CA (even << 8 | odd for UYVY)
+	 */
+	writel_relaxed((even_cfg << 8) | odd_cfg, vfe->base + VFE_0_DEMUX_EVEN_CFG);
 }
 
 static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
