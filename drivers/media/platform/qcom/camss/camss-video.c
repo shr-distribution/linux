@@ -406,14 +406,19 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		 * receive BEFORE the sensor begins transmitting, otherwise
 		 * CAMIF sees partial frame data and reports errors.
 		 *
-		 * Detect sensor entities (MEDIA_ENT_F_CAM_SENSOR) and enable
-		 * any pending CAMIF configuration first.
+		 * Detect entities that start data flow:
+		 * - MEDIA_ENT_F_CAM_SENSOR: Simple sensors
+		 * - MEDIA_ENT_F_PROC_VIDEO_ISP: ISP processors like mt9m114 IFP
+		 *   (the IFP controls streaming, not the pixel array)
+		 *
+		 * Enable any pending CAMIF configuration before calling s_stream.
 		 */
-		if (entity->function == MEDIA_ENT_F_CAM_SENSOR) {
+		if (entity->function == MEDIA_ENT_F_CAM_SENSOR ||
+		    entity->function == MEDIA_ENT_F_PROC_VIDEO_ISP) {
 			int i;
 			dev_info(video->camss->dev,
-				 "[TIMING] Pipeline[%d]: detected sensor '%s', enabling pending CAMIF first\n",
-				 entity_num, entity->name);
+				 "[TIMING] Pipeline[%d]: detected data source '%s' (func=0x%x), enabling pending CAMIF first\n",
+				 entity_num, entity->name, entity->function);
 			for (i = 0; i < video->camss->res->vfe_num; i++) {
 				if (video->camss->vfe[i].camif_pending) {
 					dev_info(video->camss->dev,
