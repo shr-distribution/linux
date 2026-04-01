@@ -1038,8 +1038,12 @@ static int vfe31_enable(struct vfe_line *line)
 		/* Configure and start the test generator */
 		vfe31_configure_testgen(vfe, true, width, height);
 
-		/* Set output state to ON since testgen is running */
-		output->state = VFE_OUTPUT_ON;
+		/*
+		 * Note: Do NOT change output->state here. It was already set
+		 * correctly above to VFE_OUTPUT_SINGLE or VFE_OUTPUT_CONTINUOUS
+		 * based on buffer availability. Setting VFE_OUTPUT_ON would break
+		 * the gen1 state machine in vfe_buf_update_wm_on_next().
+		 */
 		output->sequence = 0;
 		output->gen1.active_buf = 0;
 		vfe->camif_pending = false;
