@@ -478,8 +478,8 @@ test_raw_mode() {
     log_info "Path: Sensor -> CSIPHY -> CSID:1 -> VFE RDI0 -> /dev/video0"
     log_info "Data goes directly to memory, bypassing ISP"
 
-    # Set modern mux mode (CSI1 for front camera)
-    set_legacy_routing "0"
+    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
+    set_legacy_routing "1"
 
     # Set AXI output mode to raw/RDI (0x60)
     set_axi_output_mode "0x60"
@@ -561,8 +561,11 @@ set_axi_output_mode() {
 }
 
 # Set VFE31 legacy routing mode
-# 0 = Modern mux mode (csi_pix/csi_rdi parent to CSI1)
-# 1 = Legacy webOS mode (MISC_CC_REG = 0x0, direct CSI1_VFE_CLK routing)
+# 0 = Modern mux mode (tries csi_pix_sel/csi_pix_en bits - NOT supported on MSM8660!)
+# 1 = Legacy webOS mode (MISC_CC_REG = 0x0400, direct CSI1_VFE_CLK routing) - USE THIS
+#
+# MSM8660/VFE31 does NOT have the csi_pix_sel (bit 25) and csi_pix_en (bit 26) bits
+# that the modern mode tries to use. Always use legacy mode for MSM8660.
 set_legacy_routing() {
     local mode="$1"
     log_step "Setting VFE31 legacy routing mode to: $mode"
@@ -603,8 +606,8 @@ test_testgen_mode() {
     log_info "This bypasses the camera sensor entirely"
     log_info "Useful for verifying VFE pipeline independently"
 
-    # Set modern mux mode
-    set_legacy_routing "0"
+    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
+    set_legacy_routing "1"
 
     # Set AXI output mode to PIX/preview (0x200) for test generator
     set_axi_output_mode "0x200"
@@ -689,8 +692,9 @@ test_pix_mode() {
     log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
     log_info "Data goes through VFE ISP for processing"
 
-    # Set modern mux mode (CSI1 for front camera)
-    set_legacy_routing "0"
+    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
+    # MSM8660 doesn't have csi_pix_sel/csi_pix_en bits that modern mode uses
+    set_legacy_routing "1"
 
     # Set AXI output mode to PIX/preview (0x01 = webOS value for ISP path)
     # Note: 0x200 is raw/CAMIF_TO_AXI bypass, 0x01 is ISP processing path
@@ -761,8 +765,8 @@ test_v4l2_mode() {
     log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
     log_info "Using v4l2-ctl instead of GStreamer for direct capture"
 
-    # Ensure legacy routing is disabled (use modern mux)
-    set_legacy_routing "0"
+    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
+    set_legacy_routing "1"
 
     # Set AXI output mode to PIX/preview (0x200)
     set_axi_output_mode "0x200"
@@ -846,8 +850,8 @@ test_video_mode() {
     log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
     log_info "AXI mode 0x01 enables both preview (WM0/1) and video (WM4/5) paths"
 
-    # Set modern mux mode (CSI1 for front camera)
-    set_legacy_routing "0"
+    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
+    set_legacy_routing "1"
 
     # Set AXI output mode to PIX+Video (0x01)
     set_axi_output_mode "0x01"
@@ -929,18 +933,19 @@ set_video_output() {
     "
 }
 
-# Test legacy routing mode (webOS-style MISC_CC=0)
-# This bypasses the modern csi_pix/csi_rdi clock mux and uses direct CSI1_VFE_CLK routing
+# Test legacy routing mode (webOS-style MISC_CC=0x0400)
+# This is now the DEFAULT and RECOMMENDED mode for MSM8660/VFE31
+# Uses direct CSI1_VFE_CLK routing like webOS (MISC_CC bit 10 only)
 test_legacy_mode() {
-    log_step "Testing LEGACY routing mode (webOS-style MISC_CC=0)..."
-    log_info "This bypasses the modern csi_pix/csi_rdi mux"
-    log_info "Data routes directly via CSI1_VFE_CLK like webOS"
+    log_step "Testing LEGACY routing mode (webOS-style MISC_CC=0x0400)..."
+    log_info "This is the RECOMMENDED mode for MSM8660 (matches webOS)"
+    log_info "Data routes directly via CSI1_VFE_CLK"
 
     # Enable legacy routing mode BEFORE pipeline setup
     set_legacy_routing "1"
 
-    # Set AXI output mode to PIX/preview (0x200)
-    set_axi_output_mode "0x200"
+    # Set AXI output mode to PIX/preview (0x01 = webOS value)
+    set_axi_output_mode "0x01"
 
     run_on_device "
         echo '=== LEGACY Routing Mode Test ==='
@@ -1001,9 +1006,7 @@ test_legacy_mode() {
             echo 'Check dmesg for errors'
         fi
     "
-
-    # Disable legacy routing mode after test
-    set_legacy_routing "0"
+    # Note: Keep legacy routing enabled - it's the correct mode for MSM8660
 }
 
 # Main
