@@ -542,8 +542,9 @@ test_raw_mode() {
 }
 
 # Set VFE31 AXI output mode
+# 0x01  = PIX/Preview mode (through ISP processing) - webOS default
 # 0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
-# 0x200 = PIX/Preview mode (through ISP processing)
+# 0x200 = OUTPUT_2 mode (was incorrectly used, webOS uses 0x01)
 set_axi_output_mode() {
     local mode="$1"
     log_step "Setting VFE31 AXI output mode to: $mode"
@@ -609,8 +610,9 @@ test_testgen_mode() {
     # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
     set_legacy_routing "1"
 
-    # Set AXI output mode to PIX/preview (0x200) for test generator
-    set_axi_output_mode "0x200"
+    # Set AXI output mode to PIX/preview (0x01 = webOS value)
+    # Note: 0x200 was incorrect - webOS uses 0x01 for ISP processing path
+    set_axi_output_mode "0x01"
 
     run_on_device "
         echo '=== VFE Test Generator Mode ==='
@@ -768,8 +770,9 @@ test_v4l2_mode() {
     # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
     set_legacy_routing "1"
 
-    # Set AXI output mode to PIX/preview (0x200)
-    set_axi_output_mode "0x200"
+    # Set AXI output mode to PIX/preview (0x01 = webOS value)
+    # Note: 0x200 was incorrect - webOS uses 0x01 for ISP processing path
+    set_axi_output_mode "0x01"
 
     run_on_device "
         echo '=== v4l2-ctl Direct Capture Test (video3 via VFE PIX) ==='

@@ -643,6 +643,16 @@ static void vfe31_violation_read(struct vfe_device *vfe)
 {
 	u32 violation = readl_relaxed(vfe->base + VFE_0_VIOLATION_STATUS);
 
+	/*
+	 * If VIOLATION_STATUS = 0, this is a spurious interrupt.
+	 * webOS doesn't mask VIOLATION IRQ, so this can happen during
+	 * normal operation. Only log actual violations.
+	 */
+	if (!violation) {
+		dev_dbg(vfe->camss->dev, "VFE31 spurious VIOLATION IRQ (status=0)\n");
+		return;
+	}
+
 	dev_err(vfe->camss->dev, "VFE31 VIOLATION! status=0x%08x\n", violation);
 	if (violation & BIT(0))
 		dev_err(vfe->camss->dev, "  CAMIF_OVERFLOW\n");
@@ -1112,9 +1122,8 @@ static void vfe31_enable_irq_common(struct vfe_device *vfe)
 	 * the current mask values.
 	 */
 	vfe->irq_mask0_shadow = 0;
-	vfe->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK |
-				VFE_0_IRQ_MASK_1_VIOLATION |
-				VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK;
+	/* IRQ_MASK_1: webOS uses only RESET_ACK (0x00400000) */
+	vfe->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK;
 	vfe->irq_comp_mask_shadow = 0;  /* Clear composite mask shadow */
 
 	dev_info(vfe->camss->dev, "VFE31 enable_irq_common: mask0=0x%x mask1=0x%x\n",
@@ -2027,10 +2036,16 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0) |
 				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(1) |
 				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
-	vfe->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK |
-				VFE_0_IRQ_MASK_1_VIOLATION |
-				VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK |
-				VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(wm);
+	/*
+	 * IRQ_MASK_1: webOS uses 0x00400000 (only RESET_ACK, bit 22).
+	 *
+	 * webOS does NOT mask VIOLATION or CAMIF_ERROR - these are considered
+	 * informational and don't prevent frame capture. Masking VIOLATION
+	 * causes spurious IRQs with status=0x00000000.
+	 *
+	 * Match webOS exactly to avoid spurious interrupts.
+	 */
+	vfe->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK;
 
 	dev_info(vfe->camss->dev,
 		 "VFE31: Setting IRQ_MASK_0=0x%08x IRQ_MASK_1=0x%08x\n",
