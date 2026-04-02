@@ -1252,15 +1252,25 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		cfg_val = readl_relaxed(vfe->base + 0x014);  /* VFE_CFG_OFF */
 		dev_info(vfe->camss->dev, "VFE TESTGEN: VFE_CFG before = 0x%08x\n", cfg_val);
 
-		/* Set inputSource = TESTGEN (bits 16-17 = 1) */
-		cfg_val = (cfg_val & ~(3 << 16)) | (1 << 16);
-		/* Set pixel pattern for test (use YUV CbYCrY = 6) */
-		cfg_val = (cfg_val & ~0x7) | 6;
+		/*
+		 * VFE_CFG (0x014) bit layout for VFE31:
+		 *   bits 0-2: inputPixelPattern (6 = CbYCrY)
+		 *   bit 3: reserved
+		 *   bits 4-5: inputMuxSelect (0=CAMIF, 1=TESTGEN, 2=unused, 3=AXI)
+		 *   bit 6: input mux enable (webOS sets this for all modes)
+		 *
+		 * For TESTGEN mode: pixelPattern=6, inputMuxSelect=1, enable=1
+		 * Value = 6 | (1 << 4) | (1 << 6) = 0x56
+		 */
+		cfg_val = (cfg_val & ~(0x7F)) |  /* Clear bits 0-6 */
+			  6 |                     /* Pixel pattern CbYCrY */
+			  (1 << 4) |              /* inputMuxSelect = TESTGEN */
+			  (1 << 6);               /* Input mux enable */
 		writel_relaxed(cfg_val, vfe->base + 0x014);
 		wmb();
 
 		cfg_val = readl_relaxed(vfe->base + 0x014);
-		dev_info(vfe->camss->dev, "VFE TESTGEN: VFE_CFG after = 0x%08x (inputSource=TESTGEN)\n",
+		dev_info(vfe->camss->dev, "VFE TESTGEN: VFE_CFG after = 0x%08x (inputSource=TESTGEN, should be 0x56)\n",
 			 cfg_val);
 
 		/*
