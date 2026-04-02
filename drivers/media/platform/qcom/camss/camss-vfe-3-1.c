@@ -1034,13 +1034,14 @@ static int vfe31_enable(struct vfe_line *line)
 	 * WR_UB_CFG - VFE31 format (from webOS register dumps):
 	 * webOS WM0: 0x002701DF = ((39) << 16) | 479
 	 *
-	 * Upper 16 bits: (wpl / 8) + 1, where wpl is 32-bit words per line
+	 * Upper 16 bits: (wpl / 8) - 1, where wpl is 32-bit words per line
+	 *   For 1280 bytes/line: wpl = 320, (320/8)-1 = 39 = 0x27
 	 * Lower 16 bits: height - 1
 	 *
 	 * This is DIFFERENT from VFE4.x which uses (offset << 16) | depth
 	 */
 	wpl = bytesperline / 4;  /* 32-bit words per line */
-	reg = ((wpl / 8 + 1) & 0xFFFF) << 16;
+	reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 	reg |= (height - 1) & 0xFFFF;
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
 
@@ -1530,10 +1531,10 @@ static void __maybe_unused vfe31_configure_video_wm(struct vfe_device *vfe,
 
 	/*
 	 * WR_UB_CFG - VFE31 format:
-	 * Upper 16 bits: (wpl / 8) + 1
+	 * Upper 16 bits: (wpl / 8) - 1
 	 * Lower 16 bits: height - 1
 	 */
-	reg = ((wpl / 8 + 1) & 0xFFFF) << 16;
+	reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 	reg |= (height - 1) & 0xFFFF;
 	writel_relaxed(reg,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_Y));
@@ -1562,7 +1563,7 @@ static void __maybe_unused vfe31_configure_video_wm(struct vfe_device *vfe,
 		writel_relaxed(reg,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
 
-		reg = ((wpl / 8 + 1) & 0xFFFF) << 16;
+		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 		reg |= (height - 1) & 0xFFFF;
 		writel_relaxed(reg,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_CBCR));
@@ -1903,11 +1904,12 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * WR_UB_CFG - VFE31 format (from webOS register dumps):
 		 * webOS WM0: 0x002701DF = ((39) << 16) | 479
 		 *
-		 * Upper 16 bits: (wpl / 8) + 1, where wpl is 32-bit words per line
+		 * Upper 16 bits: (wpl / 8) - 1, where wpl is 32-bit words per line
+		 *   For 1280 bytes/line: wpl = 320, (320/8)-1 = 39 = 0x27
 		 * Lower 16 bits: height - 1
 		 */
 		wpl = bytesperline / 4;  /* 32-bit words per line */
-		reg = ((wpl / 8 + 1) & 0xFFFF) << 16;
+		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 		reg |= (height - 1) & 0xFFFF;
 		dev_info(vfe->camss->dev,
 			 "VFE31: WM%d UB_CFG wpl=%d height=%d reg=0x%x (webOS format)\n",
