@@ -34,18 +34,12 @@ extern int vfe31_axi_output_mode;
 extern int vfe31_video_output_enable;
 
 /*
- * MSM8660 legacy routing mode.
- * When enabled (1), skip the csi_pix/csi_rdi clock mux configuration
- * and write 0x0 to MISC_CC_REG like webOS does.
- *
- * The mainline driver assumes MSM8960+ style routing with explicit
- * csi_pix_sel and csi_rdi_sel mux bits. MSM8660 may use direct
- * CSI1_VFE_CLK routing without the intermediate mux.
+ * MSM8660 CSI routing is configured via direct register writes to MISC_CC_REG
+ * using the value from webOS (0x06003400). This enables all CSI1 paths:
+ *   - CSI1-to-VFE async bridge
+ *   - csi_pix_sel/csi_rdi_sel mux to CSI1
+ *   - csi_pix_clk/csi_rdi_clk enables
  */
-static int vfe31_legacy_routing = 0;
-module_param(vfe31_legacy_routing, int, 0644);
-MODULE_PARM_DESC(vfe31_legacy_routing,
-		 "MSM8660 routing mode (0=modern mux with CSI1 selection, 1=webOS legacy)");
 
 /*
  * VFE31 CAMIF window height override.
@@ -1037,45 +1031,9 @@ static void vfe31_debug_dump_clock_state(struct device *dev)
 	dev_info(dev, "  csi_pix_clk (bit 26): %s\n",
 		 (misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_EN) ? "ENABLED" : "disabled");
 
-	/*
-	 * Check CSI mux selection.
-	 * In webOS mode (vfe31_legacy_routing=1), we use the webOS-style
-	 * MISC_CC=0x06003400 which enables all CSI1 paths (bridge + mux clocks).
-	 */
-	if (vfe31_legacy_routing) {
-		dev_info(dev, "  WEBOS MODE: Using webOS CSI1 config (MISC_CC=0x06003400)\n");
-	} else {
-		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_SEL)) {
-			dev_warn(dev, "  *** WARNING: csi_pix_sel is CSI0, should be CSI1 ***\n");
-			dev_info(dev, "  Attempting to set csi_pix_sel to CSI1...\n");
-			misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_PIX_SEL;
-			all_clocks_ok = false;
-		}
-		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_RDI_SEL)) {
-			dev_warn(dev, "  *** WARNING: csi_rdi_sel is CSI0, should be CSI1 ***\n");
-			dev_info(dev, "  Attempting to set csi_rdi_sel to CSI1...\n");
-			misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_RDI_SEL;
-			all_clocks_ok = false;
-		}
-		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_EN)) {
-			dev_warn(dev, "  *** WARNING: csi_pix_clk not enabled ***\n");
-			misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_PIX_EN;
-			all_clocks_ok = false;
-		}
-		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_RDI_EN)) {
-			dev_warn(dev, "  *** WARNING: csi_rdi_clk not enabled ***\n");
-			misc_cc_reg |= MSM8660_MISC_CC_REG_CSI_RDI_EN;
-			all_clocks_ok = false;
-		}
-
-		/* Apply fixes to MISC_CC_REG if needed */
-		if (!all_clocks_ok) {
-			dev_info(dev, "  Writing corrected MISC_CC_REG = 0x%08x\n", misc_cc_reg);
-			writel_relaxed(misc_cc_reg, mmcc_base + MSM8660_MISC_CC_REG_OFFSET);
-			wmb();
-			misc_cc_reg = readl_relaxed(mmcc_base + MSM8660_MISC_CC_REG_OFFSET);
-			dev_info(dev, "  After write: MISC_CC_REG = 0x%08x\n", misc_cc_reg);
-		}
+	/* Check CSI mux selection status (actual configuration done in vfe_get) */
+	if (misc_cc_reg != 0x06003400) {
+		dev_info(dev, "  Note: MISC_CC will be set to 0x06003400 in vfe_get()\n");
 	}
 
 	/*
@@ -3005,76 +2963,20 @@ int vfe_get(struct vfe_device *vfe)
 			 * MSM8660: CSI clock routing configuration.
 			 *
 			 * The MT9M113 front camera is connected to CSIPHY1/CSI1.
-			 *
-			 * In modern mode (vfe31_legacy_routing=0):
-			 *   Set csi_pix and csi_rdi clock parents to CSI1.
-			 *   Clock indices: 5=csi_pix, 6=csi_rdi (from camss.c clock array)
-			 *
-			 * In legacy mode (vfe31_legacy_routing=1):
-			 *   Skip the csi_pix/csi_rdi parent setting entirely.
-			 *   webOS doesn't use these clocks - data routes directly
-			 *   via CSI1_VFE_CLK.
+			 * We configure routing via direct MMCC register writes using
+			 * the values from webOS, as the clock framework mux parents
+			 * don't reliably work on MSM8660.
 			 */
 			csi1_clk = devm_clk_get(vfe->camss->dev, "csi1");
 			if (!IS_ERR(csi1_clk)) {
-				if (vfe31_legacy_routing) {
-					/*
-					 * LEGACY MODE: Skip csi_pix/csi_rdi parent setting.
-					 * These clocks may not exist on MSM8660 or may route
-					 * to a silicon black hole.
-					 */
-					dev_info(vfe->camss->dev,
-						 "VFE: LEGACY MODE - skipping csi_pix/csi_rdi parent config\n");
-				} else {
-					/*
-					 * Modern mux parent setting:
-					 * The csi_pix and csi_rdi clocks are already enabled by
-					 * camss_enable_clocks(). Set their parents to CSI1.
-					 */
-
-					/* Set csi_pix parent to CSI1 (index 5) */
-					if (vfe->nclocks > 5 && vfe->clock[5].clk) {
-						ret = clk_set_parent(vfe->clock[5].clk, csi1_clk);
-						if (ret) {
-							dev_warn(vfe->camss->dev,
-								 "VFE: Failed to set csi_pix parent to CSI1: %d\n",
-								 ret);
-						} else {
-							dev_info(vfe->camss->dev,
-								 "VFE: csi_pix parent set to CSI1\n");
-						}
-					}
-					/* Set csi_rdi parent to CSI1 (index 6) */
-					if (vfe->nclocks > 6 && vfe->clock[6].clk) {
-						ret = clk_set_parent(vfe->clock[6].clk, csi1_clk);
-						if (ret) {
-							dev_warn(vfe->camss->dev,
-								 "VFE: Failed to set csi_rdi parent to CSI1: %d\n",
-								 ret);
-						} else {
-							dev_info(vfe->camss->dev,
-								 "VFE: csi_rdi parent set to CSI1\n");
-						}
-					}
-				}
-
-				/*
-				 * Ensure CSI1 clock is explicitly enabled.
-				 * This is needed in both modes - the bridge clock
-				 * CSI1_VFE_CLK needs to be on for data to flow.
-				 */
 				ret = clk_prepare_enable(csi1_clk);
 				if (ret) {
 					dev_warn(vfe->camss->dev,
 						 "VFE: Failed to enable CSI1 clock: %d\n", ret);
 				} else {
 					dev_info(vfe->camss->dev,
-						 "VFE: CSI1 clock explicitly enabled\n");
+						 "VFE: CSI1 clock enabled\n");
 				}
-			} else {
-				dev_warn(vfe->camss->dev,
-					 "VFE: Could not get csi1 clock for parent setting: %ld\n",
-					 PTR_ERR(csi1_clk));
 			}
 
 			mmcc_base = ioremap(0x04000000, 0x1000);
@@ -3135,140 +3037,49 @@ int vfe_get(struct vfe_device *vfe)
 				/*
 				 * MSM8660 CSI routing configuration.
 				 *
-				 * Two modes are supported:
-				 * 1. Modern mux mode (vfe31_legacy_routing=0):
-				 *    Sets csi_pix_sel/csi_rdi_sel to CSI1 and enables clocks.
-				 *    This is the MSM8960+ style routing.
+				 * Configure CSI routing using the exact values from webOS.
+				 * This enables all CSI1 paths for the MT9M113 front camera.
 				 *
-				 * 2. Legacy mode (vfe31_legacy_routing=1):
-				 *    Writes 0x0 to MISC_CC_REG for testing purposes.
-				 *    NOTE: This DOES NOT work - webOS actually uses 0x06003000
-				 *    which enables both csi_pix and csi_rdi with CSI1 selected.
+				 * CSI_CC_REG (0x0040) = 0x285:
+				 *   - Bit 0: CSI digital wrapper 0 enable
+				 *   - Bit 2: CSI digital wrapper 1 enable
+				 *   - Bit 7: Global CSI enable
+				 *   - Bit 9: CSI1_PHY_CLK enable
 				 *
-				 * MISC_CC_REG (0x0058) bits:
-				 *   BIT(25): csi_pix_sel (0=CSI0, 1=CSI1)
-				 *   BIT(26): csi_pix_clk enable
-				 *   BIT(12): csi_rdi_sel (0=CSI0, 1=CSI1)
-				 *   BIT(13): csi_rdi_clk enable
+				 * MISC_CC_REG (0x0058) = 0x06003400:
+				 *   - Bit 10 (0x400): CSI1-to-VFE async bridge enable
+				 *   - Bit 12 (0x1000): csi_rdi_sel = CSI1
+				 *   - Bit 13 (0x2000): csi_rdi_clk enable
+				 *   - Bit 25 (0x2000000): csi_pix_sel = CSI1
+				 *   - Bit 26 (0x4000000): csi_pix_clk enable
 				 */
-				if (vfe31_legacy_routing) {
-					/*
-					 * WEBOS MODE: Set MISC_CC_REG to 0x06003400.
-					 *
-					 * webOS camera register dump shows MISC_CC_REG = 0x06003400:
-					 *   - Bit 10 (0x400): CSI1-to-VFE async bridge enable
-					 *   - Bit 12 (0x1000): csi_rdi_sel = CSI1
-					 *   - Bit 13 (0x2000): csi_rdi_clk enable
-					 *   - Bit 25 (0x2000000): csi_pix_sel = CSI1
-					 *   - Bit 26 (0x4000000): csi_pix_clk enable
-					 *
-					 * This enables ALL CSI routing paths - both the direct
-					 * CSI1->VFE bridge AND the csi_pix/csi_rdi mux clocks.
-					 *
-					 * Also set CSI_CC_REG to 0x285:
-					 *   - Bit 0: CSI digital wrapper 0 enable
-					 *   - Bit 2: CSI digital wrapper 1 enable
-					 *   - Bit 7: Global CSI enable
-					 *   - Bit 9: CSI1_PHY_CLK enable
-					 */
-					dev_info(vfe->camss->dev,
-						 "VFE: WEBOS MODE - writing 0x06003400 to MISC_CC_REG, 0x285 to CSI_CC_REG\n");
-					dev_info(vfe->camss->dev,
-						 "VFE: MISC_CC before: 0x%08x\n", misc_cc);
+				dev_info(vfe->camss->dev,
+					 "VFE: MISC_CC before: 0x%08x\n", misc_cc);
 
-					/*
-					 * Force CSI_CC_REG - webOS shows 0x85 but we also need
-					 * CSI1_PHY_CLK (bit 9) enabled for the PHY to work.
-					 * Use 0x285 = 0x85 | BIT(9)
-					 */
-					writel_relaxed(0x00000285, mmcc_base + 0x0040);
-					wmb();
+				/* Set CSI_CC_REG to enable CSI1 PHY */
+				writel_relaxed(0x00000285, mmcc_base + 0x0040);
+				wmb();
 
-					/* Force MISC_CC_REG to webOS value (all CSI1 paths enabled) */
-					writel_relaxed(0x06003400, mmcc_base + 0x0058);
-					wmb();
+				/* Set MISC_CC_REG to enable all CSI1 paths */
+				writel_relaxed(0x06003400, mmcc_base + 0x0058);
+				wmb();
 
-					misc_cc = readl_relaxed(mmcc_base + 0x0058);
-					dev_info(vfe->camss->dev,
-						 "VFE: MISC_CC after webOS write: 0x%08x (expect 0x06003400)\n",
-						 misc_cc);
+				/* Verify the writes */
+				misc_cc = readl_relaxed(mmcc_base + 0x0058);
+				dev_info(vfe->camss->dev,
+					 "VFE: MISC_CC after: 0x%08x (expect 0x06003400)\n",
+					 misc_cc);
 
-					{
-						u32 csi_cc = readl_relaxed(mmcc_base + 0x0040);
-						dev_info(vfe->camss->dev,
-							 "VFE: CSI_CC after webOS write: 0x%08x (expect 0x285)\n",
-							 csi_cc);
-					}
-				} else if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(12))) {
-					u32 new_misc_cc = misc_cc;
-					u32 csi_cc;
-
-					dev_warn(vfe->camss->dev,
-						 "VFE: CSI mux not set to CSI1, forcing via direct write\n");
-
-					/* Set both mux selects to CSI1 */
-					new_misc_cc |= BIT(25);  /* csi_pix_sel = CSI1 */
-					new_misc_cc |= BIT(12);  /* csi_rdi_sel = CSI1 */
-
-					/*
-					 * CRITICAL: Also set CSI_CC_REG to enable CSI1 PHY clock.
-					 * The clock framework enables the csi1_phy clock in the
-					 * clock tree, but the hardware enable bit in CSI_CC_REG
-					 * must also be set for the PHY to receive data.
-					 *
-					 * CSI_CC_REG bits:
-					 *   BIT(7): CSI1_EN - CSI1 core enable
-					 *   BIT(9): CSI1_PHY_EN - CSI1 PHY clock enable
-					 */
-					csi_cc = readl_relaxed(mmcc_base + 0x0040);
-					csi_cc |= BIT(7) | BIT(9);  /* CSI1_EN | CSI1_PHY_EN */
-					writel_relaxed(csi_cc, mmcc_base + 0x0040);
-					wmb();
-					dev_info(vfe->camss->dev,
-						 "VFE: CSI_CC_REG set to 0x%08x (CSI1 + PHY enabled)\n",
-						 csi_cc);
-
-					/* Ensure enables are set */
-					new_misc_cc |= BIT(26);  /* csi_pix_clk enable */
-					new_misc_cc |= BIT(13);  /* csi_rdi_clk enable */
-
-					writel_relaxed(new_misc_cc, mmcc_base + 0x0058);
-					wmb();
-
-					/* Verify the write took effect */
-					misc_cc = readl_relaxed(mmcc_base + 0x0058);
-					dev_info(vfe->camss->dev,
-						 "VFE: MISC_CC after force: 0x%08x "
-						 "(csi_pix_sel=%s, csi_rdi_sel=%s)\n",
-						 misc_cc,
-						 (misc_cc & BIT(25)) ? "CSI1" : "CSI0",
-						 (misc_cc & BIT(12)) ? "CSI1" : "CSI0");
-
-					if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(12))) {
-						dev_err(vfe->camss->dev,
-							"VFE: CRITICAL - CSI mux force write FAILED!\n");
-					}
-				}
-
-				if (!vfe31_legacy_routing && !(misc_cc & BIT(26))) {
-					dev_err(vfe->camss->dev,
-						"VFE: ERROR - csi_pix_clk not enabled! Data path blocked.\n");
-				}
-
-				/*
-				 * Always ensure CSI1_PHY_EN is set when using CSI1.
-				 * This is critical for the CSIPHY to receive MIPI data.
-				 */
-				if (!vfe31_legacy_routing) {
+				{
 					u32 csi_cc = readl_relaxed(mmcc_base + 0x0040);
-					if (!(csi_cc & BIT(9))) {
-						csi_cc |= BIT(7) | BIT(9);
-						writel_relaxed(csi_cc, mmcc_base + 0x0040);
-						wmb();
-						dev_info(vfe->camss->dev,
-							 "VFE: CSI_CC_REG forced to 0x%08x (CSI1_PHY_EN)\n",
-							 csi_cc);
-					}
+					dev_info(vfe->camss->dev,
+						 "VFE: CSI_CC after: 0x%08x (expect 0x285)\n",
+						 csi_cc);
+				}
+
+				if (misc_cc != 0x06003400) {
+					dev_err(vfe->camss->dev,
+						"VFE: CRITICAL - MISC_CC write failed!\n");
 				}
 
 				iounmap(mmcc_base);
