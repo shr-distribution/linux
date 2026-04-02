@@ -2337,7 +2337,7 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		u16 bytesperline = pix->plane_fmt[0].bytesperline;
 		u16 height = pix->height;
 		u16 wpl = bytesperline / 4;  /* 32-bit words per line */
-		u32 ub_cfg = ((wpl / 8 + 1) & 0xFFFF) << 16;
+		u32 ub_cfg = ((wpl / 8 - 1) & 0xFFFF) << 16;  /* webOS: 0x27 for 1280 bpl */
 		u8 wm = vfe->camif_pending_wm;
 
 		ub_cfg |= (height - 1) & 0xFFFF;
