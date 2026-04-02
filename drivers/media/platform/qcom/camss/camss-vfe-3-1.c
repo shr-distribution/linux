@@ -2173,12 +2173,18 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * complete. If WM4/WM5 aren't configured, COMPOSITE_DONE never
 		 * fires! Use preview-only mask (0x00020001) when video disabled.
 		 *
-		 * Preview-only mask:
-		 *   - 0x01 (bits 0-7):   WM0 only -> COMPOSITE_DONE_0
-		 *   - 0x02 (bits 16-23): WM1 only -> COMPOSITE_DONE_2
+		 * Preview-only mask (FIXED for multi-WM support):
+		 *   - 0x03 (bits 0-7):   WM0 + WM1 -> COMPOSITE_DONE_0
+		 *
+		 * By putting BOTH WM0 and WM1 in the same composite group,
+		 * COMPOSITE_DONE_0 fires only when BOTH write masters complete.
+		 * This ensures we deliver one frame per completion, not two.
+		 *
+		 * Previous buggy mask 0x00020001 put WM0 in group 0 and WM1
+		 * in group 2, causing TWO interrupts per frame!
 		 */
 #define VFE31_IRQ_COMP_MASK_WEBOS		0x00220011  /* WM0+4,WM1+5 */
-#define VFE31_IRQ_COMP_MASK_PREVIEW_ONLY	0x00020001  /* WM0,WM1 only */
+#define VFE31_IRQ_COMP_MASK_PREVIEW_ONLY	0x00000003  /* WM0+WM1 in group 0 */
 		if (vfe31_video_output_enable) {
 			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_WEBOS;
 			dev_info(vfe->camss->dev,
@@ -2553,12 +2559,12 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 		/* Choose mask based on whether WM4/WM5 are active */
 		if (vfe31_video_output_enable) {
 			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_WEBOS;
+			/* Video mode: WM0+WM4 in group 0, WM1+WM5 in group 2 */
+			val0 |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
 		} else {
 			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PREVIEW_ONLY;
+			/* Preview-only: WM0+WM1 both in group 0, no group 2 needed */
 		}
-
-		/* Enable COMPOSITE_DONE_2 IRQ (for WM1) in addition to COMP0 */
-		val0 |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
 
 		dev_info(vfe->camss->dev,
 			 "VFE31 pix_line: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
