@@ -42,10 +42,18 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
  * WebOS uses video mode routing for preview, which routes data to WM2/WM3
  * instead of WM0/WM1, matching the XBAR CFG1 = 0x1a1b seen in registers.
  */
-int vfe31_video_output_enable = 1;
+/*
+ * VFE31 video output enable.
+ * When enabled (1), WM4/WM5 should be configured for video recording.
+ * Default is 0 because vfe31_configure_video_wm() is not called in
+ * the current driver, so WM4/WM5 are never configured with buffers.
+ * Without this, IRQ_COMPOSITE_MASK would require WM4/WM5 to complete,
+ * but they never do, so COMPOSITE_DONE never fires.
+ */
+int vfe31_video_output_enable = 0;
 module_param(vfe31_video_output_enable, int, 0644);
 MODULE_PARM_DESC(vfe31_video_output_enable,
-		 "VFE31 video output enable (0=off, 1=on with WM4/WM5)");
+		 "VFE31 video output enable (0=preview only, 1=with WM4/WM5)");
 
 /* External module parameters from camss-vfe.c */
 extern int software_sof_enable;
@@ -2053,14 +2061,27 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 *   - 0x00 (bits 8-15):  nothing -> COMPOSITE_DONE_1
 		 *   - 0x22 (bits 16-23): WM1 + WM5 -> COMPOSITE_DONE_2
 		 *
-		 * Use exact webOS value for compatibility instead of
-		 * dynamically building the mask.
+		 * IMPORTANT: webOS mask requires WM0+WM4 AND WM1+WM5 to both
+		 * complete. If WM4/WM5 aren't configured, COMPOSITE_DONE never
+		 * fires! Use preview-only mask (0x00020001) when video disabled.
+		 *
+		 * Preview-only mask:
+		 *   - 0x01 (bits 0-7):   WM0 only -> COMPOSITE_DONE_0
+		 *   - 0x02 (bits 16-23): WM1 only -> COMPOSITE_DONE_2
 		 */
-#define VFE31_IRQ_COMP_MASK_WEBOS	0x00220011
-		vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_WEBOS;
-		dev_info(vfe->camss->dev,
-			 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (webOS value)\n",
-			 vfe->irq_comp_mask_shadow);
+#define VFE31_IRQ_COMP_MASK_WEBOS		0x00220011  /* WM0+4,WM1+5 */
+#define VFE31_IRQ_COMP_MASK_PREVIEW_ONLY	0x00020001  /* WM0,WM1 only */
+		if (vfe31_video_output_enable) {
+			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_WEBOS;
+			dev_info(vfe->camss->dev,
+				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (video+preview)\n",
+				 vfe->irq_comp_mask_shadow);
+		} else {
+			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PREVIEW_ONLY;
+			dev_info(vfe->camss->dev,
+				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (preview-only)\n",
+				 vfe->irq_comp_mask_shadow);
+		}
 		writel_relaxed(vfe->irq_comp_mask_shadow,
 			       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		wmb();
@@ -2373,19 +2394,26 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 	 *   - 0x00 (bits 8-15):  nothing -> COMPOSITE_DONE_1
 	 *   - 0x22 (bits 16-23): WM1 + WM5 -> COMPOSITE_DONE_2
 	 *
-	 * Use exact webOS value instead of building dynamically.
-	 * Also enable COMPOSITE_DONE_2 IRQ since WM1/WM5 are mapped there.
+	 * IMPORTANT: webOS mask requires WM0+WM4 AND WM1+WM5 to complete.
+	 * Use preview-only mask (0x00020001) when video disabled.
+	 *
+	 * Also enable COMPOSITE_DONE_2 IRQ since WM1 is mapped there.
 	 */
 	if (enable) {
-		/* Use exact webOS value for IRQ_COMPOSITE_MASK */
-		vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_WEBOS;
+		/* Choose mask based on whether WM4/WM5 are active */
+		if (vfe31_video_output_enable) {
+			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_WEBOS;
+		} else {
+			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PREVIEW_ONLY;
+		}
 
-		/* Enable COMPOSITE_DONE_2 IRQ (for WM1/WM5) in addition to COMP0 */
+		/* Enable COMPOSITE_DONE_2 IRQ (for WM1) in addition to COMP0 */
 		val0 |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
 
 		dev_info(vfe->camss->dev,
-			 "VFE31 pix_line: IRQ_COMPOSITE_MASK=0x%08x (webOS value)\n",
-			 vfe->irq_comp_mask_shadow);
+			 "VFE31 pix_line: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
+			 vfe->irq_comp_mask_shadow,
+			 vfe31_video_output_enable ? "video+preview" : "preview-only");
 		writel_relaxed(vfe->irq_comp_mask_shadow,
 			       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 	}
