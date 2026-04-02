@@ -2352,6 +2352,71 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	}
 
 	/*
+	 * Step 5.6: Configure WM4/WM5 for video output (when enabled)
+	 *
+	 * When vfe31_video_output_enable=1, the IRQ_COMPOSITE_MASK is set to
+	 * 0x00220011 which requires WM0+WM4 and WM1+WM5 to both complete.
+	 * Without configuring WM4/WM5, COMPOSITE_DONE never fires!
+	 *
+	 * Solution: Mirror WM0/WM1 addresses to WM4/WM5 so they complete
+	 * together when writing to the same buffers.
+	 */
+	if (vfe31_video_output_enable && vfe31_axi_output_mode != 0x60) {
+		struct vfe_output *output = &line->output;
+		u32 wm0_ping, wm0_pong, wm1_ping, wm1_pong;
+		u32 wm0_size, wm0_addr_cfg, wm0_ub_cfg;
+		u32 wm1_size, wm1_addr_cfg, wm1_ub_cfg;
+
+		dev_info(vfe->camss->dev,
+			 "VFE: Step 5.6 - Configuring WM4/WM5 for video mode\n");
+
+		/* Read WM0 configuration */
+		wm0_ping = readl_relaxed(vfe->base + VFE31_WM_WR_PING_ADDR(0));
+		wm0_pong = readl_relaxed(vfe->base + VFE31_WM_WR_PONG_ADDR(0));
+		wm0_size = readl_relaxed(vfe->base + VFE31_WM_WR_IMAGE_SIZE(0));
+		wm0_addr_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_ADDR_CFG(0));
+		wm0_ub_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_UB_CFG(0));
+
+		/* Configure WM4 (video Y) to mirror WM0 (preview Y) */
+		writel_relaxed(wm0_ping, vfe->base + VFE31_WM_WR_PING_ADDR(4));
+		writel_relaxed(wm0_pong, vfe->base + VFE31_WM_WR_PONG_ADDR(4));
+		writel_relaxed(wm0_size, vfe->base + VFE31_WM_WR_IMAGE_SIZE(4));
+		writel_relaxed(wm0_addr_cfg, vfe->base + VFE31_WM_WR_ADDR_CFG(4));
+		writel_relaxed(wm0_ub_cfg, vfe->base + VFE31_WM_WR_UB_CFG(4));
+		writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(4));
+
+		dev_info(vfe->camss->dev,
+			 "VFE: WM4 configured: PING=0x%08x PONG=0x%08x\n",
+			 wm0_ping, wm0_pong);
+
+		/* Configure WM5 (video CbCr) to mirror WM1 (preview CbCr) if used */
+		if (output->wm_num >= 2) {
+			wm1_ping = readl_relaxed(vfe->base + VFE31_WM_WR_PING_ADDR(1));
+			wm1_pong = readl_relaxed(vfe->base + VFE31_WM_WR_PONG_ADDR(1));
+			wm1_size = readl_relaxed(vfe->base + VFE31_WM_WR_IMAGE_SIZE(1));
+			wm1_addr_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_ADDR_CFG(1));
+			wm1_ub_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_UB_CFG(1));
+
+			writel_relaxed(wm1_ping, vfe->base + VFE31_WM_WR_PING_ADDR(5));
+			writel_relaxed(wm1_pong, vfe->base + VFE31_WM_WR_PONG_ADDR(5));
+			writel_relaxed(wm1_size, vfe->base + VFE31_WM_WR_IMAGE_SIZE(5));
+			writel_relaxed(wm1_addr_cfg, vfe->base + VFE31_WM_WR_ADDR_CFG(5));
+			writel_relaxed(wm1_ub_cfg, vfe->base + VFE31_WM_WR_UB_CFG(5));
+			writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(5));
+
+			dev_info(vfe->camss->dev,
+				 "VFE: WM5 configured: PING=0x%08x PONG=0x%08x\n",
+				 wm1_ping, wm1_pong);
+		}
+
+		/* Reload WM4 and WM5 */
+		writel_relaxed(BIT(4) | BIT(5), vfe->base + VFE31_BUS_CMD);
+		wmb();
+		dev_info(vfe->camss->dev,
+			 "VFE: WM4/WM5 reload issued (BUS_CMD bits 4,5)\n");
+	}
+
+	/*
 	 * Dump comprehensive clock state before CAMIF start.
 	 * This helps debug CSI->VFE data path issues.
 	 */
