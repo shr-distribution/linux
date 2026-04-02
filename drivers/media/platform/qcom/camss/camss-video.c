@@ -443,11 +443,25 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	}
 
 	/*
-	 * Note: VFE CAMIF is now enabled BEFORE the sensor starts (in the
-	 * pipeline walk above), not after. This ensures CAMIF is ready to
-	 * receive data when the sensor begins streaming, avoiding mid-frame
-	 * sync issues.
+	 * Fallback: If pipeline walk didn't reach the sensor (e.g., due to
+	 * media_pad_remote_pad_first() returning NULL), any pending CAMIF
+	 * configurations would not have been triggered. Enable them now.
+	 *
+	 * This ensures CAMIF starts even when the pipeline traversal is
+	 * incomplete, which can happen on MSM8660 where the CSID->VFE
+	 * link topology is different from newer chips.
 	 */
+	{
+		int i;
+		for (i = 0; i < video->camss->res->vfe_num; i++) {
+			if (video->camss->vfe[i].camif_pending) {
+				dev_info(video->camss->dev,
+					 "[TIMING] Fallback: Enabling VFE%d CAMIF (pipeline walk incomplete)\n",
+					 i);
+				vfe_enable_pending_camif(&video->camss->vfe[i]);
+			}
+		}
+	}
 
 	dev_info(video->camss->dev,
 		 "[TIMING] video_start_streaming: COMPLETE total elapsed=%lld ns\n",
