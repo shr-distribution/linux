@@ -153,26 +153,23 @@ extern int software_eof_enable;
 
 #define VFE_0_BUS_CFG			0x03C
 /*
- * NOTE: These BUS_CFG bit definitions are from VFE8x and are NOT used by VFE31!
+ * VFE31 BUS_CFG register at 0x03C - CRITICAL for DMA operation!
  *
- * In VFE31, offset 0x03C is part of the 188-byte AXI output config block
- * (starting at 0x038) and should be left at 0. The webOS VFE31 driver does
- * not write to this offset.
+ * WebOS register dumps show this register contains 0x02AAA771 during operation.
+ * The lower bits enable write paths required for DMA:
+ *   Bit 0: stripeRdPathEn
+ *   Bit 4: encYWrPathEn - enables encoder Y write path
+ *   Bit 5: encCbcrWrPathEn - enables encoder CbCr write path
+ *   Bit 6: viewYWrPathEn - enables viewfinder Y write path
+ *   Bit 7: viewCbcrWrPathEn - enables viewfinder CbCr write path
  *
- * VFE31 controls data routing through AXI output mode at 0x040:
- *   0x60  = Raw snapshot (CAMIF_TO_AXI_VIA_OUTPUT_2)
- *   0x200 = Preview (OUTPUT_2)
+ * Without setting this register, DMA writes never complete and the
+ * ping_pong status register never toggles.
  *
- * These defines are kept for reference only (from VFE8x):
- * Bit 0: stripeRdPathEn
- * Bits 1-3: reserved
- * Bit 4: encYWrPathEn
- * Bit 5: encCbcrWrPathEn
- * Bit 6: viewYWrPathEn
- * Bit 7: viewCbcrWrPathEn
- * Bits 8-9: rawPixelDataSize (0=8bit, 1=10bit, 2=12bit)
- * Bits 10-11: rawWritePathSelect (0=disabled, 1=enc_cbcr, 2=view_cbcr)
+ * The upper bits (0x02AAA) appear to be timing/strobe configuration.
+ * Use the exact webOS value 0x02AAA771 for reliable operation.
  */
+#define VFE_0_BUS_CFG_WEBOS_VALUE		0x02AAA771
 #define VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN		BIT(4)
 #define VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN	BIT(5)
 #define VFE_0_BUS_CFG_VIEW_Y_WR_PATH_EN		BIT(6)
@@ -944,16 +941,24 @@ static int vfe31_enable(struct vfe_line *line)
 	vfe->pending_pong_addr = pong_addr;
 
 	/*
-	 * Step 1: Configure AXI output mode and XBAR
+	 * Step 1: Configure BUS_CFG, AXI output mode and XBAR
 	 * Use module parameter vfe31_axi_output_mode:
 	 *   0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
 	 *   0x01  = PIX/Preview mode (OUTPUT_2 with XBAR routing)
 	 *
+	 * CRITICAL: BUS_CFG at 0x03C must be set to 0x02AAA771 per webOS dumps.
+	 * This value enables the write paths (bits 4-6) required for DMA:
+	 *   - Bit 4: encYWrPathEn
+	 *   - Bit 5: encCbcrWrPathEn
+	 *   - Bit 6: viewYWrPathEn
+	 * Without this, DMA writes don't complete and ping_pong never toggles.
+	 *
 	 * For PIX mode, we also need XBAR CFG1 at 0x44 = 0x1a03
 	 * This configures the crossbar to route CAMIF data to WM0/WM1.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x%x\n",
-		 vfe31_axi_output_mode);
+	dev_info(vfe->camss->dev, "VFE31: Step 1 - BUS_CFG=0x%08x, AXI=0x%x\n",
+		 VFE_0_BUS_CFG_WEBOS_VALUE, vfe31_axi_output_mode);
+	writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
 	writel_relaxed(vfe31_axi_output_mode,
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
@@ -1814,16 +1819,25 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 */
 
 	/*
-	 * Step 1: Configure AXI output mode and XBAR
+	 * Step 1: Configure AXI output mode, BUS_CFG, and XBAR
 	 *
 	 * CRITICAL: WebOS register dumps show that ALL modes (preview, video,
 	 * photo capture) use AXI_OUT_MODE=0x01 and XBAR_CFG1=0x1a1b.
 	 * The 0x60 "raw bypass" mode we tried doesn't work - it's not used
 	 * by webOS and doesn't properly route data to the write masters.
 	 *
+	 * CRITICAL: BUS_CFG at 0x03C must be set to 0x02AAA771 per webOS dumps.
+	 * This value enables the write paths (bits 4-6) required for DMA:
+	 *   - Bit 4: encYWrPathEn
+	 *   - Bit 5: encCbcrWrPathEn
+	 *   - Bit 6: viewYWrPathEn
+	 * Without this, DMA writes don't complete and ping_pong never toggles.
+	 *
 	 * Force AXI mode 0x01 and XBAR 0x1a1b regardless of module parameter.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 1 - AXI output mode=0x01 (webOS), XBAR=0x1a1b\n");
+	dev_info(vfe->camss->dev, "VFE31: Step 1 - BUS_CFG=0x%08x, AXI=0x01, XBAR=0x1a1b\n",
+		 VFE_0_BUS_CFG_WEBOS_VALUE);
+	writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
 	writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 	writel_relaxed(VFE_0_BUS_XBAR_CFG1_VIDEO_MODE,
