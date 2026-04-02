@@ -918,6 +918,13 @@ static int vfe31_enable(struct vfe_line *line)
 		 wm, width, height, bytesperline, ping_addr, pong_addr);
 
 	/*
+	 * Store addresses in pending_* for vfe31_start_camif_for_rdi() which
+	 * will write them to hardware after CSIPHY is configured.
+	 */
+	vfe->pending_ping_addr = ping_addr;
+	vfe->pending_pong_addr = pong_addr;
+
+	/*
 	 * Step 1: Configure AXI output mode and XBAR
 	 * Use module parameter vfe31_axi_output_mode:
 	 *   0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
@@ -2098,6 +2105,17 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 	wmb();
 
+	/*
+	 * Step 7: Reload WM configuration via BUS_CMD
+	 *
+	 * After writing WM registers (ping/pong addresses, image size, etc.),
+	 * we must issue a BUS_CMD reload to tell the DMA engine to read the
+	 * new configuration. Without this, the DMA uses stale/zero addresses.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: Step 7 - BUS_CMD reload WM%d\n", wm);
+	writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(wm), vfe->base + VFE_0_BUS_CMD);
+	wmb();
+
 	/* Debug dump of all relevant registers after CAMIF start */
 	dev_info(vfe->camss->dev,
 		 "VFE31: CAMIF started - comprehensive register dump:\n");
@@ -2224,23 +2242,37 @@ static void vfe31_wm_set_ub_cfg(struct vfe_device *vfe, u8 wm,
 static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 {
 	/*
-	 * VFE31: Defer ping address write until CAMIF is started.
-	 * Writing to WM registers before CAMIF setup causes hangs.
+	 * VFE31: If CAMIF is not yet running, defer the write.
+	 * Once CAMIF is running (camif_pending=false), write directly.
 	 */
-	dev_info(vfe->camss->dev,
-		 "VFE31: WM%d ping_addr=0x%08x (deferred)\n", wm, addr);
-	vfe->pending_ping_addr = addr;
+	if (vfe->camif_pending) {
+		dev_dbg(vfe->camss->dev,
+			"VFE31: WM%d ping_addr=0x%08x (deferred)\n", wm, addr);
+		vfe->pending_ping_addr = addr;
+	} else {
+		dev_dbg(vfe->camss->dev,
+			"VFE31: WM%d ping_addr=0x%08x (direct write)\n", wm, addr);
+		writel_relaxed(addr,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+	}
 }
 
 static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 {
 	/*
-	 * VFE31: Defer pong address write until CAMIF is started.
-	 * Writing to WM registers before CAMIF setup causes hangs.
+	 * VFE31: If CAMIF is not yet running, defer the write.
+	 * Once CAMIF is running (camif_pending=false), write directly.
 	 */
-	dev_info(vfe->camss->dev,
-		 "VFE31: WM%d pong_addr=0x%08x (deferred)\n", wm, addr);
-	vfe->pending_pong_addr = addr;
+	if (vfe->camif_pending) {
+		dev_dbg(vfe->camss->dev,
+			"VFE31: WM%d pong_addr=0x%08x (deferred)\n", wm, addr);
+		vfe->pending_pong_addr = addr;
+	} else {
+		dev_dbg(vfe->camss->dev,
+			"VFE31: WM%d pong_addr=0x%08x (direct write)\n", wm, addr);
+		writel_relaxed(addr,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+	}
 }
 
 static int vfe31_wm_get_ping_pong_status(struct vfe_device *vfe, u8 wm)
