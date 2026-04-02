@@ -1032,9 +1032,17 @@ static int vfe31_enable(struct vfe_line *line)
 	 * NOTE: wpl is in 32-bit words. bytesperline is already in bytes,
 	 * so divide by 4 directly (don't use vfe_word_per_line which
 	 * expects pixel width and multiplies by bytes-per-pixel again).
+	 *
+	 * IMPORTANT: webOS uses (wpl - 17), not (wpl - 1)!
+	 * For 640x480 UYVY (1280 bytes/line = 320 words):
+	 *   Our old: 320 - 1 = 319
+	 *   webOS:   320 - 17 = 303 = 0x12F (matches register dump!)
+	 * The 16-word (64-byte) difference may be DMA alignment overhead.
 	 */
 	wpl = bytesperline / 4;  /* 32-bit words per line */
-	reg = (wpl - 1) & 0xFFFF;  /* burst = words_per_line - 1 */
+	reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 (webOS formula) */
+	dev_info(vfe->camss->dev, "VFE31: WM%d WR_ADDR_CFG=0x%04x (wpl=%d, burst=%d)\n",
+		 wm, reg, wpl, reg);
 	/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 
@@ -1896,16 +1904,17 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * webOS WM0: 0x0000012F = burst=303, lines=0
 		 * webOS WM1: 0x01C8012F = burst=303, lines=456
 		 *
-		 * burst_words = words_per_line - 1
+		 * IMPORTANT: webOS uses (wpl - 17), not (wpl - 1)!
+		 * For 1280 bytes/line: wpl=320, burst=320-17=303=0x12F
 		 * NOTE: wpl is in 32-bit words. bytesperline is already in bytes.
 		 */
 		wpl = bytesperline / 4;  /* 32-bit words per line */
-		reg = (wpl - 1) & 0xFFFF;  /* burst = words_per_line - 1 */
+		reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 (webOS formula) */
 		/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
 
 		dev_info(vfe->camss->dev,
 			 "VFE31: WM%d ADDR_CFG stride=%d wpl=%d burst=%d reg=0x%x\n",
-			 wm, bytesperline, wpl, wpl - 1, reg);
+			 wm, bytesperline, wpl, reg, reg);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 
 		/*
