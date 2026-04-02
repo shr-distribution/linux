@@ -2256,12 +2256,20 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 *   - 0x00 (bits 8-15): nothing -> COMPOSITE_DONE_1
 	 *   - 0x22 (bits 16-23): WM1 + WM5 -> COMPOSITE_DONE_2
 	 *
-	 * This maps both preview WMs (0,1) and video WMs (4,5) even though
-	 * we only use preview. Use exact webOS value for compatibility.
+	 * IMPORTANT: The webOS mask requires WM0+WM4 AND WM1+WM5 to BOTH
+	 * complete for COMPOSITE_DONE to fire. If WM4/WM5 are not configured
+	 * (vfe31_video_output_enable=0 or no video buffers), COMP_DONE never
+	 * fires because WM4/WM5 never complete!
+	 *
+	 * Solution: Use different masks based on output configuration:
+	 *   - Full video mode (WM4/5 active): 0x00220011
+	 *   - Preview-only mode (WM0/1 only): 0x00020001
+	 *   - Raw/RDI mode: WM mapped to COMPOSITE_DONE_1
 	 *
 	 * For raw mode (0x60), use COMPOSITE_DONE_1 (bits 8-15).
 	 */
-#define VFE31_IRQ_COMP_MASK_WEBOS_VIDEO	0x00220011
+#define VFE31_IRQ_COMP_MASK_WEBOS_VIDEO		0x00220011  /* WM0+4,WM1+5 */
+#define VFE31_IRQ_COMP_MASK_PREVIEW_ONLY	0x00020001  /* WM0,WM1 only */
 	{
 		u32 comp_mask;
 
@@ -2271,11 +2279,26 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 			dev_info(vfe->camss->dev,
 				 "VFE: Setting IRQ_COMPOSITE_MASK=0x%08x (Raw mode, WM%d -> COMP1)\n",
 				 comp_mask, vfe->camif_pending_wm);
-		} else {
-			/* PIX/preview mode: use exact webOS value 0x00220011 */
+		} else if (vfe31_video_output_enable) {
+			/*
+			 * Video+Preview mode: use webOS value requiring WM0+WM4
+			 * and WM1+WM5 to complete. Only works if WM4/WM5 are
+			 * actually configured with buffer addresses!
+			 */
 			comp_mask = VFE31_IRQ_COMP_MASK_WEBOS_VIDEO;
 			dev_info(vfe->camss->dev,
-				 "VFE: Setting IRQ_COMPOSITE_MASK=0x%08x (webOS video mode value)\n",
+				 "VFE: Setting IRQ_COMPOSITE_MASK=0x%08x (video+preview mode)\n",
+				 comp_mask);
+		} else {
+			/*
+			 * Preview-only mode: only require WM0 and WM1 to complete.
+			 *   - COMP0: WM0 (bit 0) = 0x01
+			 *   - COMP2: WM1 (bit 1 in bits 16-23) = 0x00020000
+			 * This fires COMPOSITE_DONE without needing WM4/WM5.
+			 */
+			comp_mask = VFE31_IRQ_COMP_MASK_PREVIEW_ONLY;
+			dev_info(vfe->camss->dev,
+				 "VFE: Setting IRQ_COMPOSITE_MASK=0x%08x (preview-only mode)\n",
 				 comp_mask);
 		}
 
