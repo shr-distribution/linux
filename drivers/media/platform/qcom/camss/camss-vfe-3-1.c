@@ -757,17 +757,21 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	/* Handle CAMIF_ERROR - clear status to allow next frame */
 	if (value1 & VFE_0_IRQ_MASK_1_CAMIF_ERROR) {
 		u32 camif_status = readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS);
-		u32 frame_cfg = readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG);
-		u32 expected_lines = (frame_cfg >> 16) & 0x3FFF;
+		u32 window_height = readl_relaxed(vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+		u32 window_width = readl_relaxed(vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+		/* WINDOW_HEIGHT_CFG: [29:16]=firstLine, [13:0]=lastLine */
+		u32 expected_lines = (window_height & 0x3FFF) + 1;  /* lastLine + 1 */
+		u32 expected_pixels = (window_width & 0x3FFF) + 1;  /* lastPixel + 1 */
 		u32 received_lines = (camif_status >> 16) & 0x3FFF;
+		u32 received_pixels = camif_status & 0x3FFF;
 		static int camif_error_count;
 
 		camif_error_count++;
 		if (camif_error_count <= 3) {
 			dev_warn(vfe->camss->dev,
-				 "CAMIF_ERROR #%d: status=0x%08x frame_cfg=0x%08x (pixels=%d/%d lines=%d/%d)\n",
-				 camif_error_count, camif_status, frame_cfg,
-				 camif_status & 0x3FFF, frame_cfg & 0x3FFF,
+				 "CAMIF_ERROR #%d: status=0x%08x (pixels=%d/%d lines=%d/%d)\n",
+				 camif_error_count, camif_status,
+				 received_pixels, expected_pixels,
 				 received_lines, expected_lines);
 		}
 
@@ -1334,40 +1338,40 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	dev_info(vfe->camss->dev, "VFE31: EFS_CFG=0x40 (webOS value)\n");
 
 	/*
-	 * FRAME_CFG at 0x1E8: Frame dimensions for pixel/line counting
-	 * This is REQUIRED for CAMIF to count pixels and lines properly.
+	 * FRAME_CFG at 0x1E8: WebOS does NOT set this register (leaves at 0).
+	 * Do NOT write FRAME_CFG.
+	 */
+
+	/*
+	 * VFE31 CAMIF register semantics (based on WebOS register dump):
+	 *
+	 * WINDOW_WIDTH_CFG (0x1EC): Frame dimensions
+	 *   [29:16] = height (lines per frame)
+	 *   [13:0]  = width (pixels/bytes per line)
+	 *   WebOS example: 0x01E00500 = (480 << 16) | 1280
+	 *
+	 * WINDOW_HEIGHT_CFG (0x1F0): Last pixel index
+	 *   [13:0]  = lastPixel = width - 1
+	 *   WebOS example: 0x000004FF = 1279 = 1280 - 1
+	 *
+	 * SUBSAMPLE_CFG_0 (0x1F4): Last line index
+	 *   [13:0]  = lastLine = height - 1
+	 *   WebOS example: 0x000001DF = 479 = 480 - 1
 	 */
 	val = (height << 16) | (bytes_per_line & 0x3FFF);
 	dev_info(vfe->camss->dev,
-		 "VFE31 RDI: FRAME_CFG=0x%08x (lines=%u, pixels=%u)\n",
+		 "VFE31: WINDOW_WIDTH_CFG=0x%08x (lines=%u, pixels=%u)\n",
 		 val, height, bytes_per_line);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-
-	/*
-	 * WINDOW_WIDTH_CFG at 0x1EC: Horizontal capture window
-	 *   [13:0]  lastPixel (byte index)
-	 *   [29:16] firstPixel (byte index)
-	 */
-	val = ((0 & 0x3FFF) << 16) | ((bytes_per_line - 1) & 0x3FFF);
-	dev_info(vfe->camss->dev,
-		 "VFE31 RDI: WINDOW_WIDTH_CFG=0x%08x (first=0, last=%u)\n",
-		 val, bytes_per_line - 1);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
 
-	/*
-	 * WINDOW_HEIGHT_CFG at 0x1F0: Vertical capture window
-	 *   [13:0]  lastLine
-	 *   [29:16] firstLine
-	 */
-	val = ((0 & 0x3FFF) << 16) | ((height - 1) & 0x3FFF);
+	val = (bytes_per_line - 1) & 0x3FFF;
 	dev_info(vfe->camss->dev,
-		 "VFE31 RDI: WINDOW_HEIGHT_CFG=0x%08x (first=0, last=%u)\n",
-		 val, height - 1);
+		 "VFE31: WINDOW_HEIGHT_CFG=0x%08x (lastPixel=%u)\n",
+		 val, bytes_per_line - 1);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 
 	/*
-	 * SUBSAMPLE_CFG_0 at 0x1F4: webOS uses (height - 1)
-	 * This appears to be the last line number.
+	 * SUBSAMPLE_CFG_0 at 0x1F4: Last line index (height - 1)
 	 */
 	writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
 
@@ -1922,45 +1926,35 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
 
 	/*
-	 * VFE31 CAMIF register layout (corrected based on actual hardware behavior):
+	 * VFE31 CAMIF register layout (based on WebOS register dump):
 	 *
-	 * FRAME_CFG at 0x1E8: Frame dimensions for pixel/line counting
-	 *   [13:0]  pixelsPerLine (width in bytes for YUV/UYVY)
-	 *   [29:16] linesPerFrame (height in lines)
-	 *   This register is REQUIRED for CAMIF to count pixels and lines!
-	 *   Without it, pixel count stays at 0.
+	 * FRAME_CFG at 0x1E8: WebOS does NOT set this register (leaves at 0).
 	 *
-	 * WINDOW_WIDTH_CFG at 0x1EC: Horizontal capture window
-	 *   [13:0]  lastPixel (byte index, width_bytes - 1)
-	 *   [29:16] firstPixel (byte index, typically 0)
+	 * WINDOW_WIDTH_CFG (0x1EC): Frame dimensions
+	 *   [29:16] = height (lines per frame)
+	 *   [13:0]  = width (pixels/bytes per line)
+	 *   WebOS example: 0x01E00500 = (480 << 16) | 1280
 	 *
-	 * WINDOW_HEIGHT_CFG at 0x1F0: Vertical capture window
-	 *   [13:0]  lastLine (height - 1)
-	 *   [29:16] firstLine (typically 0)
+	 * WINDOW_HEIGHT_CFG (0x1F0): Last pixel index
+	 *   [13:0]  = lastPixel = width - 1
+	 *   WebOS example: 0x000004FF = 1279 = 1280 - 1
 	 */
 	{
 		u32 width_bytes = line->fmt[MSM_VFE_PAD_SINK].width * 2;
 		u32 height = line->fmt[MSM_VFE_PAD_SINK].height;
 
-		/* FRAME_CFG: Full frame dimensions for pixel/line counting */
+		/* WINDOW_WIDTH_CFG: (height << 16) | width_bytes */
 		val = (height << 16) | (width_bytes & 0x3FFF);
 		dev_info(vfe->camss->dev,
-			 "VFE31: FRAME_CFG (0x1E8) = 0x%08x (lines=%u, pixels=%u)\n",
+			 "VFE31: WINDOW_WIDTH_CFG (0x1EC) = 0x%08x (lines=%u, pixels=%u)\n",
 			 val, height, width_bytes);
-		writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-
-		/* WINDOW_WIDTH_CFG: Horizontal capture window (full width) */
-		val = ((0 & 0x3FFF) << 16) | ((width_bytes - 1) & 0x3FFF);
-		dev_info(vfe->camss->dev,
-			 "VFE31: WINDOW_WIDTH_CFG (0x1EC) = 0x%08x (first=0, last=%u)\n",
-			 val, width_bytes - 1);
 		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
 
-		/* WINDOW_HEIGHT_CFG: Vertical capture window (full height) */
-		val = ((0 & 0x3FFF) << 16) | ((height - 1) & 0x3FFF);
+		/* WINDOW_HEIGHT_CFG: lastPixel = width_bytes - 1 */
+		val = (width_bytes - 1) & 0x3FFF;
 		dev_info(vfe->camss->dev,
-			 "VFE31: WINDOW_HEIGHT_CFG (0x1F0) = 0x%08x (first=0, last=%u)\n",
-			 val, height - 1);
+			 "VFE31: WINDOW_HEIGHT_CFG (0x1F0) = 0x%08x (lastPixel=%u)\n",
+			 val, width_bytes - 1);
 		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 	}
 
