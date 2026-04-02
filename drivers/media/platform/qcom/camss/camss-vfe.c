@@ -1399,11 +1399,17 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 * This was missing and is required for data to flow from
 		 * the VFE pipeline to the Write Masters.
 		 *
-		 * AXI_OUT_MODE (0x040) = 0x200 for preview mode
-		 * XBAR_CFG1 (0x044) = 0x1a03 for PIX mode routing
+		 * Use module parameter vfe31_axi_output_mode (default 0x01).
+		 * XBAR_CFG1 selection matches normal path logic:
+		 *   0x1a1b = video enabled (routes to WM0/1 + WM4/5)
+		 *   0x1a03 = preview only (routes to WM0/1)
 		 */
-		writel_relaxed(0x200, vfe->base + 0x040);  /* AXI_OUT_MODE = preview */
-		writel_relaxed(0x1a03, vfe->base + 0x044); /* XBAR_CFG1 = PIX mode */
+		{
+			u32 xbar_cfg1 = vfe31_video_output_enable ? 0x1a1b : 0x1a03;
+
+			writel_relaxed(vfe31_axi_output_mode, vfe->base + 0x040);
+			writel_relaxed(xbar_cfg1, vfe->base + 0x044);
+		}
 		wmb();
 		dev_info(vfe->camss->dev,
 			 "VFE TESTGEN: AXI_OUT_MODE=0x%08x XBAR_CFG1=0x%08x\n",
