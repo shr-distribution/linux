@@ -1039,11 +1039,11 @@ static void vfe31_debug_dump_clock_state(struct device *dev)
 
 	/*
 	 * Check CSI mux selection.
-	 * In webOS mode (vfe31_legacy_routing=1), we use direct CSI1->VFE path
-	 * with MISC_CC=0x0400, CSI_CC=0x85 - no mux bits needed.
+	 * In webOS mode (vfe31_legacy_routing=1), we use the webOS-style
+	 * MISC_CC=0x06003400 which enables all CSI1 paths (bridge + mux clocks).
 	 */
 	if (vfe31_legacy_routing) {
-		dev_info(dev, "  WEBOS MODE: Using direct CSI1->VFE path (MISC_CC=0x0400)\n");
+		dev_info(dev, "  WEBOS MODE: Using webOS CSI1 config (MISC_CC=0x06003400)\n");
 	} else {
 		if (!(misc_cc_reg & MSM8660_MISC_CC_REG_CSI_PIX_SEL)) {
 			dev_warn(dev, "  *** WARNING: csi_pix_sel is CSI0, should be CSI1 ***\n");
@@ -3153,22 +3153,26 @@ int vfe_get(struct vfe_device *vfe)
 				 */
 				if (vfe31_legacy_routing) {
 					/*
-					 * WEBOS MODE: Set MISC_CC_REG to 0x0400 (bit 10 only).
+					 * WEBOS MODE: Set MISC_CC_REG to 0x06003400.
 					 *
-					 * webOS camera register dump shows MISC_CC_REG = 0x00000400.
-					 * Bit 10 is the CSI1-to-VFE async bridge enable.
+					 * webOS camera register dump shows MISC_CC_REG = 0x06003400:
+					 *   - Bit 10 (0x400): CSI1-to-VFE async bridge enable
+					 *   - Bit 12 (0x1000): csi_rdi_sel = CSI1
+					 *   - Bit 13 (0x2000): csi_rdi_clk enable
+					 *   - Bit 25 (0x2000000): csi_pix_sel = CSI1
+					 *   - Bit 26 (0x4000000): csi_pix_clk enable
 					 *
-					 * MSM8660 has a DIRECT CSIPHY->VFE path that bypasses
-					 * the csi_pix/csi_rdi mux architecture found in VFE3.2+.
-					 * The mux bits (12-13, 25-26) don't exist on this SoC.
+					 * This enables ALL CSI routing paths - both the direct
+					 * CSI1->VFE bridge AND the csi_pix/csi_rdi mux clocks.
 					 *
-					 * Also set CSI_CC_REG to 0x85 (webOS value):
+					 * Also set CSI_CC_REG to 0x285:
 					 *   - Bit 0: CSI digital wrapper 0 enable
 					 *   - Bit 2: CSI digital wrapper 1 enable
 					 *   - Bit 7: Global CSI enable
+					 *   - Bit 9: CSI1_PHY_CLK enable
 					 */
 					dev_info(vfe->camss->dev,
-						 "VFE: WEBOS MODE - writing 0x0400 to MISC_CC_REG, 0x285 to CSI_CC_REG\n");
+						 "VFE: WEBOS MODE - writing 0x06003400 to MISC_CC_REG, 0x285 to CSI_CC_REG\n");
 					dev_info(vfe->camss->dev,
 						 "VFE: MISC_CC before: 0x%08x\n", misc_cc);
 
@@ -3180,13 +3184,13 @@ int vfe_get(struct vfe_device *vfe)
 					writel_relaxed(0x00000285, mmcc_base + 0x0040);
 					wmb();
 
-					/* Force MISC_CC_REG to webOS value (bit 10 only) */
-					writel_relaxed(0x00000400, mmcc_base + 0x0058);
+					/* Force MISC_CC_REG to webOS value (all CSI1 paths enabled) */
+					writel_relaxed(0x06003400, mmcc_base + 0x0058);
 					wmb();
 
 					misc_cc = readl_relaxed(mmcc_base + 0x0058);
 					dev_info(vfe->camss->dev,
-						 "VFE: MISC_CC after webOS write: 0x%08x (expect 0x0400)\n",
+						 "VFE: MISC_CC after webOS write: 0x%08x (expect 0x06003400)\n",
 						 misc_cc);
 
 					{
