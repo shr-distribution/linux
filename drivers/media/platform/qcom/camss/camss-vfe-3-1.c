@@ -441,6 +441,20 @@ extern int software_eof_enable;
 
 /* Bus XBAR configuration */
 #define VFE_0_BUS_XBAR_CFG_x(x)		(0x058 + 0x4 * ((x) / 2))
+/*
+ * VFE31 per-WM XBAR configuration bits (same layout as VFE41).
+ * These control which internal stream is routed to each write master.
+ *
+ * For NV16 semi-planar output:
+ * - WM0: SINGLE_STREAM_SEL_LUMA (select luma/Y stream)
+ * - WM1: PAIR_STREAM_EN + SWAP (enable paired chroma/CbCr stream)
+ *
+ * For odd WM indices, values are shifted left by 16 bits.
+ */
+#define VFE_0_BUS_XBAR_CFG_x_M_PAIR_STREAM_EN			BIT(1)
+#define VFE_0_BUS_XBAR_CFG_x_M_PAIR_STREAM_SWAP_INTER_INTRA	(0x3 << 4)
+#define VFE_0_BUS_XBAR_CFG_x_M_SINGLE_STREAM_SEL_SHIFT		8
+#define VFE_0_BUS_XBAR_CFG_x_M_SINGLE_STREAM_SEL_LUMA		0
 
 /* Register update */
 #define VFE_0_REG_UPDATE_CMD		0x260
@@ -1606,13 +1620,57 @@ static int vfe31_camif_wait_for_stop(struct vfe_device *vfe, struct device *dev)
 static void vfe31_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output,
 			       u8 enable)
 {
-	/* VFE31 XBAR configuration */
-	u32 val;
+	/*
+	 * VFE31 per-WM XBAR configuration (same approach as VFE41).
+	 *
+	 * For NV16 semi-planar output (wm_num == 2):
+	 * - WM0: Select LUMA stream (Y channel)
+	 * - WM1: Enable PAIR_STREAM for CbCr channel with swap for NV16
+	 *
+	 * For single-WM output (raw/RDI):
+	 * - WM0: Just set stream selection bits
+	 *
+	 * Note: For odd WM indices, value is shifted left by 16 bits
+	 * because two WMs share one XBAR register (WM0/WM1, WM2/WM3, etc.)
+	 */
+	struct vfe_line *line = container_of(output, struct vfe_line, output);
+	u32 p = line->video_out.active_fmt.fmt.pix_mp.pixelformat;
+	u32 reg;
+	unsigned int i;
 
-	if (output->wm_num == 1) {
-		val = (output->wm_idx[0] << 8);
-		writel_relaxed(val, vfe->base +
-			       VFE_0_BUS_XBAR_CFG_x(output->wm_idx[0]));
+	for (i = 0; i < output->wm_num; i++) {
+		if (i == 0) {
+			/* WM0: Select luma/Y stream */
+			reg = VFE_0_BUS_XBAR_CFG_x_M_SINGLE_STREAM_SEL_LUMA <<
+				VFE_0_BUS_XBAR_CFG_x_M_SINGLE_STREAM_SEL_SHIFT;
+		} else if (i == 1) {
+			/* WM1: Enable paired chroma/CbCr stream */
+			reg = VFE_0_BUS_XBAR_CFG_x_M_PAIR_STREAM_EN;
+			/* Add swap for NV12/NV16 (CbCr order) */
+			if (p == V4L2_PIX_FMT_NV12 || p == V4L2_PIX_FMT_NV16)
+				reg |= VFE_0_BUS_XBAR_CFG_x_M_PAIR_STREAM_SWAP_INTER_INTRA;
+		} else {
+			/* On current devices output->wm_num is always <= 2 */
+			break;
+		}
+
+		/* Odd WM indices use upper 16 bits of shared register */
+		if (output->wm_idx[i] % 2 == 1)
+			reg <<= 16;
+
+		dev_dbg(vfe->camss->dev,
+			"VFE31: XBAR cfg WM%d enable=%d reg=0x%x val=0x%08x\n",
+			output->wm_idx[i], enable,
+			VFE_0_BUS_XBAR_CFG_x(output->wm_idx[i]), reg);
+
+		if (enable)
+			vfe_reg_set(vfe,
+				    VFE_0_BUS_XBAR_CFG_x(output->wm_idx[i]),
+				    reg);
+		else
+			vfe_reg_clr(vfe,
+				    VFE_0_BUS_XBAR_CFG_x(output->wm_idx[i]),
+				    reg);
 	}
 }
 
