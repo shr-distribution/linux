@@ -887,17 +887,53 @@ static int vfe31_enable(struct vfe_line *line)
 	}
 	output->state = VFE_OUTPUT_RESERVED;
 	output->gen1.active_buf = 0;
-	output->wm_num = 1;  /* Raw mode uses single WM */
 	output->drop_update_idx = 0;
+
+	/*
+	 * WM configuration for PIX mode with DEMUX (ISP processing):
+	 * - WM0: Y (luma) channel
+	 * - WM1: CbCr (chroma) channel
+	 *
+	 * For raw/RDI mode (AXI=0x60), only WM0 is needed.
+	 * For PIX mode with DEMUX (AXI=0x01), we need both WM0 and WM1
+	 * because DEMUX separates Y and CbCr internally.
+	 *
+	 * Note: Even for "packed" UYVY format, the VFE31 DEMUX outputs
+	 * Y and CbCr to separate WMs. The CbCr is interleaved (CbYCrY).
+	 */
+	if (vfe31_axi_output_mode == 0x01) {
+		/* PIX mode: need both WM0 (Y) and WM1 (CbCr) */
+		output->wm_num = 2;
+		dev_info(vfe->camss->dev, "VFE31: PIX mode - using 2 WMs (Y+CbCr)\n");
+	} else {
+		/* Raw/RDI mode: single WM for packed data */
+		output->wm_num = 1;
+		dev_info(vfe->camss->dev, "VFE31: Raw mode - using 1 WM\n");
+	}
 
 	wm_idx = vfe_reserve_wm(vfe, line->id);
 	if (wm_idx < 0) {
-		dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM\n");
+		dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM0\n");
 		output->state = VFE_OUTPUT_OFF;
 		spin_unlock_irqrestore(&vfe->output_lock, flags);
 		return wm_idx;
 	}
 	output->wm_idx[0] = wm_idx;
+
+	/* Reserve WM1 for PIX mode */
+	if (output->wm_num == 2) {
+		wm_idx = vfe_reserve_wm(vfe, line->id);
+		if (wm_idx < 0) {
+			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM1\n");
+			vfe_release_wm(vfe, output->wm_idx[0]);
+			output->state = VFE_OUTPUT_OFF;
+			spin_unlock_irqrestore(&vfe->output_lock, flags);
+			return wm_idx;
+		}
+		output->wm_idx[1] = wm_idx;
+		dev_info(vfe->camss->dev, "VFE31: Reserved WM0=%d, WM1=%d\n",
+			 output->wm_idx[0], output->wm_idx[1]);
+	}
 
 	/* Get buffers from pending queue (inline from gen1's vfe_enable_output) */
 	output->buf[0] = vfe_buf_get_pending(output);
@@ -1069,9 +1105,72 @@ static int vfe31_enable(struct vfe_line *line)
 	writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 	wmb();
 
-	/* Reload WM0 to apply new configuration */
+	/*
+	 * Step 2b: Configure WM1 for CbCr output (PIX mode only)
+	 *
+	 * In PIX mode with DEMUX enabled, the VFE separates Y and CbCr:
+	 * - WM0: Y (luma) channel
+	 * - WM1: CbCr (chroma) channel, interleaved
+	 *
+	 * webOS WM1 configuration (from register dump):
+	 * - WR_ADDR_CFG: 0x01C8012F = (lines=456 << 16) | burst=303
+	 * - WR_UB_CFG: 0x002701DF (same as WM0)
+	 * - WR_IMAGE_SIZE: 0x00501DF2 (same as WM0)
+	 *
+	 * For buffer address: webOS uses separate Y and CbCr buffers.
+	 * Since userspace provides a single UYVY buffer, we write CbCr
+	 * to an offset within the same buffer (semi-planar layout).
+	 */
+	if (output->wm_num == 2) {
+		u8 wm1 = output->wm_idx[1];
+		u32 cbcr_offset = width * height;  /* Y plane size in bytes */
+		u32 wm1_ping_addr = ping_addr + cbcr_offset;
+		u32 wm1_pong_addr = pong_addr + cbcr_offset;
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: Configuring WM%d (CbCr) offset=0x%x ping=0x%08x\n",
+			 wm1, cbcr_offset, wm1_ping_addr);
+
+		/* WM1 PING/PONG addresses (CbCr buffer after Y) */
+		writel_relaxed(wm1_ping_addr,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm1));
+		writel_relaxed(wm1_pong_addr,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm1));
+
+		/* WM1 IMAGE_SIZE - same as WM0 */
+		reg = ((bytesperline / 16) & 0xFFFF) << 16;
+		reg |= ((height - 1) << 4) | 2;
+		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
+
+		/*
+		 * WM1 ADDR_CFG - webOS uses (height << 16) | burst for CbCr
+		 * webOS WM1: 0x01C8012F = (456 << 16) | 303
+		 * The height value seems to be (height * 0.95) ≈ 456 for 480
+		 * Using (height - 24) to match webOS pattern.
+		 */
+		wpl = bytesperline / 4;
+		reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
+		dev_info(vfe->camss->dev,
+			 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
+			 wm1, reg, height - 24, (wpl - 17) & 0xFFFF);
+		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
+
+		/* WM1 UB_CFG - same as WM0 */
+		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
+		reg |= (height - 1) & 0xFFFF;
+		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm1));
+
+		/* Enable WM1 */
+		writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm1));
+		wmb();
+	}
+
+	/* Reload WMs to apply new configuration */
 	dev_info(vfe->camss->dev, "VFE31: Reloading WM%d (BUS_CMD)\n", wm);
-	writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(wm), vfe->base + VFE_0_BUS_CMD);
+	reg = VFE_0_BUS_CMD_Mx_RLD_CMD(wm);
+	if (output->wm_num == 2)
+		reg |= VFE_0_BUS_CMD_Mx_RLD_CMD(output->wm_idx[1]);
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_CMD);
 	wmb();
 
 	/*
@@ -2312,6 +2411,28 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		writel_relaxed(addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
 	}
+
+	/*
+	 * VIDEO mode support: When video_output_enable=1, also configure
+	 * WM4/WM5 with the same buffer addresses as WM0/WM1.
+	 * This makes COMPOSITE_DONE fire because WM4/WM5 complete together
+	 * with WM0/WM1, satisfying IRQ_COMPOSITE_MASK=0x00220011.
+	 */
+	if (vfe31_video_output_enable) {
+		if (wm == 0) {
+			/* WM0 (preview Y) -> also configure WM4 (video Y) */
+			writel_relaxed(addr,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_Y));
+			dev_dbg(vfe->camss->dev,
+				"VFE31: WM4 ping_addr=0x%08x (video mirror)\n", addr);
+		} else if (wm == 1) {
+			/* WM1 (preview CbCr) -> also configure WM5 (video CbCr) */
+			writel_relaxed(addr,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_CBCR));
+			dev_dbg(vfe->camss->dev,
+				"VFE31: WM5 ping_addr=0x%08x (video mirror)\n", addr);
+		}
+	}
 }
 
 static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
@@ -2329,6 +2450,26 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 			"VFE31: WM%d pong_addr=0x%08x (direct write)\n", wm, addr);
 		writel_relaxed(addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+	}
+
+	/*
+	 * VIDEO mode support: When video_output_enable=1, also configure
+	 * WM4/WM5 with the same buffer addresses as WM0/WM1.
+	 */
+	if (vfe31_video_output_enable) {
+		if (wm == 0) {
+			/* WM0 (preview Y) -> also configure WM4 (video Y) */
+			writel_relaxed(addr,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_Y));
+			dev_dbg(vfe->camss->dev,
+				"VFE31: WM4 pong_addr=0x%08x (video mirror)\n", addr);
+		} else if (wm == 1) {
+			/* WM1 (preview CbCr) -> also configure WM5 (video CbCr) */
+			writel_relaxed(addr,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
+			dev_dbg(vfe->camss->dev,
+				"VFE31: WM5 pong_addr=0x%08x (video mirror)\n", addr);
+		}
 	}
 }
 
