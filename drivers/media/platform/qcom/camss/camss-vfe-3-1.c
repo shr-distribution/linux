@@ -44,11 +44,12 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
  */
 /*
  * VFE31 video output enable.
- * When enabled (1), WM4/WM5 should be configured for video recording.
- * Default is 0 because vfe31_configure_video_wm() is not called in
- * the current driver, so WM4/WM5 are never configured with buffers.
- * Without this, IRQ_COMPOSITE_MASK would require WM4/WM5 to complete,
- * but they never do, so COMPOSITE_DONE never fires.
+ * When enabled (1), WM4/WM5 are configured to mirror preview WM0/WM1.
+ * This enables the full webOS IRQ_COMPOSITE_MASK (0x00220011) which
+ * requires WM0+WM4 (group 0) and WM1+WM5 (group 2) to both complete.
+ *
+ * Default is 0 for preview-only mode with simplified IRQ handling.
+ * Set to 1 for video recording compatibility with webOS configuration.
  */
 int vfe31_video_output_enable = 0;
 module_param(vfe31_video_output_enable, int, 0644);
@@ -1607,9 +1608,9 @@ static void vfe31_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output
  * Video output uses COMPOSITE_DONE_2 (IRQ bit 23) for frame completion.
  * This is separate from preview (COMPOSITE_DONE_0, IRQ bit 21).
  */
-static void __maybe_unused vfe31_configure_video_wm(struct vfe_device *vfe,
-						    u32 y_addr, u32 cbcr_addr,
-						    u16 width, u16 height, u16 stride)
+static void vfe31_configure_video_wm(struct vfe_device *vfe,
+				     u32 y_addr, u32 cbcr_addr,
+				     u16 width, u16 height, u16 stride)
 {
 	u16 wpl;  /* words per line */
 	u32 reg;
@@ -1648,10 +1649,11 @@ static void __maybe_unused vfe31_configure_video_wm(struct vfe_device *vfe,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
 
 	/*
-	 * WR_ADDR_CFG - VFE31 format:
-	 * burst_words = words_per_line - 1
+	 * WR_ADDR_CFG - VFE31/webOS format:
+	 * burst_words = words_per_line - 17 (webOS formula)
+	 * For 1280 bytes/line: wpl=320, burst=320-17=303=0x12F
 	 */
-	reg = (wpl - 1) & 0xFFFF;
+	reg = (wpl - 17) & 0xFFFF;
 	writel_relaxed(reg,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
 
@@ -1685,7 +1687,8 @@ static void __maybe_unused vfe31_configure_video_wm(struct vfe_device *vfe,
 		writel_relaxed(reg,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
 
-		reg = (wpl - 1) & 0xFFFF;
+		/* CbCr ADDR_CFG uses (height << 16) | burst per webOS WM1 */
+		reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
 		writel_relaxed(reg,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
 
@@ -2376,6 +2379,40 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 "VFE31: Step 7b - BUS_CMD reload WM%d (CbCr plane)\n",
 			 wm1);
 		writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(wm1),
+			       vfe->base + VFE_0_BUS_CMD);
+		wmb();
+	}
+
+	/*
+	 * Step 8: Configure WM4/WM5 for video output (when enabled)
+	 *
+	 * When vfe31_video_output_enable=1, we need to configure WM4/WM5
+	 * with the same buffer addresses as WM0/WM1. This makes the
+	 * IRQ_COMPOSITE_MASK (0x00220011) work correctly because it requires
+	 * both WM0+WM4 (group 0) and WM1+WM5 (group 2) to complete.
+	 */
+	if (vfe31_video_output_enable) {
+		struct v4l2_pix_format_mplane *pix =
+			&line->video_out.active_fmt.fmt.pix_mp;
+		u16 width = pix->width;
+		u16 height = pix->height;
+		u16 stride = pix->plane_fmt[0].bytesperline;
+		u32 cbcr_addr = 0;
+
+		/* For semi-planar formats, CbCr is after Y plane */
+		if (line->output.wm_num == 2)
+			cbcr_addr = vfe->pending_ping_addr + (width * height);
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: Step 8 - Configuring video WM4/WM5 (mirror preview)\n");
+		vfe31_configure_video_wm(vfe, vfe->pending_ping_addr, cbcr_addr,
+					 width, height, stride);
+
+		/* Reload WM4 and WM5 */
+		dev_info(vfe->camss->dev,
+			 "VFE31: Step 8b - BUS_CMD reload WM4/WM5\n");
+		writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(VFE31_VIDEO_WM_Y) |
+			       VFE_0_BUS_CMD_Mx_RLD_CMD(VFE31_VIDEO_WM_CBCR),
 			       vfe->base + VFE_0_BUS_CMD);
 		wmb();
 	}
