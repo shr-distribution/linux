@@ -508,6 +508,8 @@ static inline void vfe31_reg_update_clear(struct vfe_device *vfe,
 static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line);
 static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line);
 static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
+static void vfe31_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output,
+			       u8 enable);
 
 static void vfe31_global_reset(struct vfe_device *vfe)
 {
@@ -1057,6 +1059,12 @@ static int vfe31_enable(struct vfe_line *line)
 			 "VFE31: PIX mode - XBAR CFG1=0x%x (video=%d)\n",
 			 xbar_cfg1, vfe31_video_output_enable);
 		writel_relaxed(xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
+
+		/*
+		 * Configure per-WM XBAR routing (0x058+ registers).
+		 * This routes Y stream to WM0 and CbCr stream to WM1.
+		 */
+		vfe31_set_xbar_cfg(vfe, output, 1);
 	}
 
 	/*
@@ -1658,10 +1666,10 @@ static void vfe31_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output
 		if (output->wm_idx[i] % 2 == 1)
 			reg <<= 16;
 
-		dev_dbg(vfe->camss->dev,
-			"VFE31: XBAR cfg WM%d enable=%d reg=0x%x val=0x%08x\n",
-			output->wm_idx[i], enable,
-			VFE_0_BUS_XBAR_CFG_x(output->wm_idx[i]), reg);
+		dev_info(vfe->camss->dev,
+			 "VFE31: XBAR per-WM cfg WM%d enable=%d reg=0x%03x val=0x%08x\n",
+			 output->wm_idx[i], enable,
+			 VFE_0_BUS_XBAR_CFG_x(output->wm_idx[i]), reg);
 
 		if (enable)
 			vfe_reg_set(vfe,
