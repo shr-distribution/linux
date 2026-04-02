@@ -649,7 +649,7 @@ static void vfe31_violation_read(struct vfe_device *vfe)
 	 * normal operation. Only log actual violations.
 	 */
 	if (!violation) {
-		dev_dbg(vfe->camss->dev, "VFE31 spurious VIOLATION IRQ (status=0)\n");
+		dev_info(vfe->camss->dev, "VFE31 VIOLATION IRQ (status=0, spurious)\n");
 		return;
 	}
 
@@ -727,6 +727,21 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			 "VFE: PING_PONG changed: 0x%08x -> 0x%08x (data flowing!)\n",
 			 last_ping_pong, ping_pong);
 		last_ping_pong = ping_pong;
+	}
+
+	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
+	if (irq_count <= 3) {
+		u32 wm0_cfg = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(0));
+		u32 wm0_ping = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(0));
+		u32 wm0_pong = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(0));
+		u32 wm0_size = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(0));
+		u32 wm0_ub = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(0));
+		u32 axi_mode = readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+		u32 xbar_cfg1 = readl_relaxed(vfe->base + VFE_0_BUS_XBAR_CFG1);
+
+		dev_info(vfe->camss->dev,
+			 "VFE IRQ#%d WM0: CFG=0x%x PING=0x%08x PONG=0x%08x SIZE=0x%x UB=0x%x AXI=0x%x XBAR=0x%x\n",
+			 irq_count, wm0_cfg, wm0_ping, wm0_pong, wm0_size, wm0_ub, axi_mode, xbar_cfg1);
 	}
 
 	/* VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31 */
