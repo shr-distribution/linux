@@ -1224,10 +1224,21 @@ static int vfe31_enable(struct vfe_line *line)
 	vfe->camif_pending_wm = wm;
 	vfe->camif_pending_line_id = line->id;
 
-	/* Set output state - actual streaming starts after CAMIF config */
-	output->state = VFE_OUTPUT_IDLE;
+	/*
+	 * DO NOT reset output->state here! It was correctly set based on
+	 * buffer availability at lines 947-951:
+	 *   - SINGLE if buf[0] found
+	 *   - CONTINUOUS if buf[0] and buf[1] found
+	 *
+	 * Previously this line incorrectly overwrote state to IDLE, causing
+	 * "Next buf in wrong state! 4" errors on first frame completion.
+	 */
 	output->sequence = 0;
 	output->gen1.active_buf = 0;
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: Output state=%d (2=SINGLE, 3=CONTINUOUS) buf[0]=%px buf[1]=%px\n",
+		 output->state, output->buf[0], output->buf[1]);
 
 	dev_info(vfe->camss->dev,
 		 "VFE31: WM configured, waiting for CSIPHY before CAMIF start\n");
