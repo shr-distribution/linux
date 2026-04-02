@@ -936,6 +936,97 @@ set_video_output() {
     "
 }
 
+# Test NV16 semi-planar format (native VFE31 DEMUX output)
+# VFE31 DEMUX outputs Y to WM0 and CbCr to WM1 in NV16 format
+# This is the NATIVE output format - no conversion needed
+test_nv16_mode() {
+    log_step "Testing NV16 semi-planar format (native VFE31 output)..."
+    log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
+    log_info "VFE31 DEMUX outputs: Y plane to WM0, CbCr plane to WM1"
+    log_info "NV16 = Y plane followed by interleaved CbCr plane"
+
+    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
+    set_legacy_routing "1"
+
+    # Set AXI output mode to PIX/preview (0x01 = webOS value)
+    set_axi_output_mode "0x01"
+
+    run_on_device "
+        echo '=== NV16 Mode Test (video3 via VFE PIX) ==='
+        echo ''
+        echo 'NV16 is the NATIVE VFE31 DEMUX output format:'
+        echo '  - WM0: Y plane (luma)'
+        echo '  - WM1: CbCr plane (interleaved chroma)'
+        echo ''
+
+        # Reset all links first
+        echo 'Resetting media links...'
+        media-ctl -r 2>/dev/null || true
+
+        # Enable upstream links: csiphy -> csid
+        echo 'Enabling upstream links...'
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
+
+        # Enable PIX link: CSID pad 4 (PIX) -> VFE PIX pad 0
+        echo 'Enabling PIX link (CSID:4 -> VFE PIX)...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
+
+        # Set formats on entire pipeline (640x480 = MT9M113 Context A preview)
+        echo 'Setting formats (640x480 preview mode)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+
+        # Set V4L2 video device format to NV16
+        echo ''
+        echo 'Setting V4L2 format to NV16...'
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=NV16 2>&1 || true
+        echo ''
+        echo 'Current format:'
+        v4l2-ctl -d /dev/video3 --get-fmt-video 2>&1
+
+        echo ''
+        echo 'Current pipeline configuration:'
+        media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -40
+
+        echo ''
+        echo 'Testing capture with 640x480 NV16...'
+        echo 'Expected size: 640*480 (Y) + 640*480 (CbCr) = 614400 bytes per frame'
+        timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
+            'video/x-raw,format=NV16,width=640,height=480,framerate=30/1' ! \\
+            fakesink 2>&1
+
+        if [ \$? -eq 0 ]; then
+            echo ''
+            echo 'SUCCESS: NV16 capture completed!'
+            echo ''
+            echo 'Saving frame to /tmp/camera_nv16.raw...'
+            timeout 10 gst-launch-1.0 v4l2src device=/dev/video3 num-buffers=1 ! \\
+                'video/x-raw,format=NV16,width=640,height=480' ! \\
+                filesink location=/tmp/camera_nv16.raw 2>&1
+            if [ -f /tmp/camera_nv16.raw ]; then
+                SIZE=\$(stat -c%s /tmp/camera_nv16.raw 2>/dev/null || echo 0)
+                echo \"Frame saved: \$SIZE bytes (expected 614400 for 640x480 NV16)\"
+            fi
+        else
+            echo ''
+            echo 'FAILED: NV16 capture did not complete'
+            echo ''
+            echo 'Trying v4l2-ctl direct capture...'
+            rm -f /tmp/camera_nv16.raw
+            timeout 10 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=1 --stream-to=/tmp/camera_nv16.raw 2>&1
+            if [ -s /tmp/camera_nv16.raw ]; then
+                SIZE=\$(stat -c%s /tmp/camera_nv16.raw 2>/dev/null || echo 0)
+                echo \"SUCCESS with v4l2-ctl: \$SIZE bytes captured\"
+            fi
+        fi
+    "
+}
+
 # Test legacy routing mode (webOS-style MISC_CC=0x0400)
 # This is now the DEFAULT and RECOMMENDED mode for MSM8660/VFE31
 # Uses direct CSI1_VFE_CLK routing like webOS (MISC_CC bit 10 only)
@@ -1054,12 +1145,16 @@ main() {
             v4l2)
                 MODE="v4l2"
                 ;;
+            nv16)
+                MODE="nv16"
+                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
                 echo "Modes:"
                 echo "  raw        Test RAW passthrough (CAMIF->memory via RDI, no ISP)"
                 echo "  pix        Test PIX mode (through VFE ISP, uses GStreamer)"
+                echo "  nv16       Test NV16 semi-planar format (native VFE31 output)"
                 echo "  video      Test VIDEO mode (preview+video via WM4/WM5, AXI mode 0x01)"
                 echo "  v4l2       Test PIX mode with v4l2-ctl (direct, no GStreamer)"
                 echo "  testgen    Test VFE internal test generator (bypasses camera)"
@@ -1112,6 +1207,12 @@ main() {
             show_camera_info
             ensure_camera_ready
             test_v4l2_mode
+            check_dmesg
+            ;;
+        nv16)
+            show_camera_info
+            ensure_camera_ready
+            test_nv16_mode
             check_dmesg
             ;;
         testgen)
