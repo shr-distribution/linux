@@ -906,6 +906,29 @@ static int vfe31_enable(struct vfe_line *line)
 		/* PIX mode: need both WM0 (Y) and WM1 (CbCr) */
 		output->wm_num = 2;
 		dev_info(vfe->camss->dev, "VFE31: PIX mode - using 2 WMs (Y+CbCr)\n");
+
+		/*
+		 * IMPORTANT: VFE31 PIX mode ALWAYS outputs semi-planar format
+		 * (Y to WM0, CbCr to WM1) regardless of requested pixel format.
+		 * If userspace requests packed UYVY/YUYV, the data will still
+		 * be semi-planar NV16 in memory, causing wrong colors when
+		 * interpreted as packed format.
+		 *
+		 * Warn users if they request packed formats with PIX mode.
+		 */
+		switch (pix->pixelformat) {
+		case V4L2_PIX_FMT_UYVY:
+		case V4L2_PIX_FMT_VYUY:
+		case V4L2_PIX_FMT_YUYV:
+		case V4L2_PIX_FMT_YVYU:
+			dev_warn(vfe->camss->dev,
+				 "VFE31: WARNING - Packed format requested but PIX mode outputs NV16!\n");
+			dev_warn(vfe->camss->dev,
+				 "VFE31: Use V4L2_PIX_FMT_NV16 for correct colors, or use RAW mode (axi=0x60) for packed output.\n");
+			break;
+		default:
+			break;
+		}
 	} else {
 		/* Raw/RDI mode: single WM for packed data */
 		output->wm_num = 1;
