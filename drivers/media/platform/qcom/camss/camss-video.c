@@ -376,21 +376,41 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		 ktime_to_ns(ktime_get()));
 
 	entity = &vdev->entity;
-	dev_info(video->camss->dev, "[TIMING] Pipeline walk: starting at %s\n", entity->name);
+	dev_info(video->camss->dev, "[TIMING] Pipeline walk: starting at %s (pads=%d)\n",
+		 entity->name, entity->num_pads);
 	while (1) {
 		pad = &entity->pads[0];
+		dev_info(video->camss->dev,
+			 "[TIMING] Pipeline walk: at '%s' pad 0 (flags=0x%x, %s)\n",
+			 entity->name, pad->flags,
+			 (pad->flags & MEDIA_PAD_FL_SINK) ? "SINK" : "SOURCE");
 		if (!(pad->flags & MEDIA_PAD_FL_SINK)) {
-			dev_info(video->camss->dev, "[TIMING] Pipeline walk: pad is not sink, stopping\n");
+			dev_info(video->camss->dev,
+				 "[TIMING] Pipeline walk: '%s' pad 0 is not sink, stopping\n",
+				 entity->name);
 			break;
 		}
 
 		pad = media_pad_remote_pad_first(pad);
 		if (!pad) {
-			dev_info(video->camss->dev, "[TIMING] Pipeline walk: no remote pad, stopping\n");
+			/* Debug: count links on this entity */
+			struct media_link *link;
+			int link_count = 0, enabled_count = 0;
+
+			list_for_each_entry(link, &entity->links, list) {
+				link_count++;
+				if (link->flags & MEDIA_LNK_FL_ENABLED)
+					enabled_count++;
+			}
+			dev_info(video->camss->dev,
+				 "[TIMING] Pipeline walk: '%s' pad 0 has no remote (links=%d, enabled=%d)\n",
+				 entity->name, link_count, enabled_count);
 			break;
 		}
 		if (!is_media_entity_v4l2_subdev(pad->entity)) {
-			dev_info(video->camss->dev, "[TIMING] Pipeline walk: remote is not subdev, stopping\n");
+			dev_info(video->camss->dev,
+				 "[TIMING] Pipeline walk: remote '%s' is not subdev, stopping\n",
+				 pad->entity->name);
 			break;
 		}
 
