@@ -1951,27 +1951,38 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	/*
 	 * Step 1: Configure AXI output mode, BUS_CFG, and XBAR
 	 *
-	 * CRITICAL: WebOS register dumps show that ALL modes (preview, video,
-	 * photo capture) use AXI_OUT_MODE=0x01 and XBAR_CFG1=0x1a1b.
-	 * The 0x60 "raw bypass" mode we tried doesn't work - it's not used
-	 * by webOS and doesn't properly route data to the write masters.
+	 * Two modes are supported:
+	 *   0x01 (PIX): Data goes through CAMIF → DEMUX → XBAR → WM
+	 *               Requires XBAR_CFG1 to route Y/CbCr to write masters
+	 *               Used by webOS for all preview/video/photo capture
 	 *
-	 * CRITICAL: BUS_CFG at 0x03C must be set to 0x02AAA771 per webOS dumps.
-	 * This value enables the write paths (bits 4-6) required for DMA:
-	 *   - Bit 4: encYWrPathEn
-	 *   - Bit 5: encCbcrWrPathEn
-	 *   - Bit 6: viewYWrPathEn
-	 * Without this, DMA writes don't complete and ping_pong never toggles.
+	 *   0x60 (RDI): Raw bypass mode, CAMIF → directly to WM0
+	 *               No XBAR configuration needed (data bypasses XBAR)
+	 *               For RAW8/RAW10 sensor output
 	 *
-	 * Force AXI mode 0x01 and XBAR 0x1a1b regardless of module parameter.
+	 * BUS_CFG at 0x03C must be set to enable the write paths.
+	 * webOS uses 0x02AAA771 which enables view/enc Y/CbCr paths.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 1 - BUS_CFG=0x%08x, AXI=0x01, XBAR=0x1a1b\n",
-		 VFE_0_BUS_CFG_WEBOS_VALUE);
-	writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
-	writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
-		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-	writel_relaxed(VFE_0_BUS_XBAR_CFG1_VIDEO_MODE,
-		       vfe->base + VFE_0_BUS_XBAR_CFG1);
+	if (vfe31_axi_output_mode == VFE_0_BUS_AXI_OUT_MODE_RAW_WM0) {
+		/* RDI mode (0x60): Raw bypass, no XBAR needed */
+		dev_info(vfe->camss->dev,
+			 "VFE31: Step 1 - RDI mode: BUS_CFG=0x%08x, AXI=0x60 (raw bypass)\n",
+			 VFE_0_BUS_CFG_WEBOS_VALUE);
+		writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
+		writel_relaxed(VFE_0_BUS_AXI_OUT_MODE_RAW_WM0,
+			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+		/* No XBAR configuration for RDI mode */
+	} else {
+		/* PIX mode (0x01): Use XBAR to route DEMUX output to WMs */
+		dev_info(vfe->camss->dev,
+			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x01, XBAR=0x1a1b\n",
+			 VFE_0_BUS_CFG_WEBOS_VALUE);
+		writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
+		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
+			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+		writel_relaxed(VFE_0_BUS_XBAR_CFG1_VIDEO_MODE,
+			       vfe->base + VFE_0_BUS_XBAR_CFG1);
+	}
 	wmb();
 
 	/* Step 2: Configure WM registers (must be BEFORE CAMIF start) */
