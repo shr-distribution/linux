@@ -922,6 +922,104 @@ set_video_output() {
     "
 }
 
+# Test VIDEO4 mode - dual output capture via WM4/WM5
+# Uses /dev/video4 (msm_vfe0_video) for high-quality capture
+# This is the RECOMMENDED mode for capture as it uses dedicated WMs
+# CSID pad 5 (VIDEO line) -> VFE VIDEO (line 4)
+test_video4_mode() {
+    log_step "Testing VIDEO4 mode (capture via WM4/WM5)..."
+    log_info "Path: Sensor -> CSIPHY -> CSID:5 -> VFE VIDEO -> /dev/video4"
+    log_info "Uses WM4 (Y) + WM5 (CbCr) for dedicated capture output"
+    log_info "This is the RECOMMENDED mode for FULL RESOLUTION capture"
+
+    # Set AXI output mode to PIX/preview (0x01 = webOS value)
+    set_axi_output_mode "0x01"
+
+    run_on_device "
+        echo '=== VIDEO4 Mode Test (video4 via VFE VIDEO with WM4/WM5) ==='
+        echo ''
+        echo 'VIDEO4 uses dedicated write masters for capture:'
+        echo '  - WM4: Y plane (luma)'
+        echo '  - WM5: CbCr plane (interleaved chroma)'
+        echo ''
+        echo 'This leaves WM0/WM1 free for preview output'
+        echo 'Using FULL RESOLUTION 1280x1024 (MT9M113 Context B capture mode)'
+        echo ''
+
+        # Reset all links first
+        echo 'Resetting media links...'
+        media-ctl -r 2>/dev/null || true
+
+        # Enable upstream links: csiphy -> csid
+        echo 'Enabling upstream links...'
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
+
+        # Enable VIDEO link: CSID pad 5 (VIDEO) -> VFE VIDEO pad 0
+        # MSM_CSID_PAD_FIRST_SRC + VFE_LINE_VIDEO = 1 + 4 = 5
+        echo 'Enabling VIDEO link (CSID:5 -> VFE VIDEO)...'
+        media-ctl -l '\"msm_csid1\":5->\"msm_vfe0_video\":0[1]' 2>&1 || echo '  csid:5->vfe_video link failed'
+
+        # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
+        echo 'Setting formats (1280x1024 capture mode)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":5[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_video\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_video\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+
+        # Set V4L2 video device format to NV16 (native VFE31 output)
+        echo ''
+        echo 'Setting V4L2 format to NV16 1280x1024 on /dev/video4...'
+        v4l2-ctl -d /dev/video4 --set-fmt-video=width=1280,height=1024,pixelformat=NV16 2>&1 || true
+        echo ''
+        echo 'Current format:'
+        v4l2-ctl -d /dev/video4 --get-fmt-video 2>&1
+
+        echo ''
+        echo 'Current pipeline configuration:'
+        media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -50
+
+        echo ''
+        echo 'Current module parameters:'
+        echo \"  vfe31_axi_output_mode = \$(cat /sys/module/qcom_camss/parameters/vfe31_axi_output_mode 2>/dev/null)\"
+        echo \"  vfe31_video_output_enable = \$(cat /sys/module/qcom_camss/parameters/vfe31_video_output_enable 2>/dev/null)\"
+        echo \"  vfe31_xbar_cfg1 = \$(cat /sys/module/qcom_camss/parameters/vfe31_xbar_cfg1 2>/dev/null)\"
+
+        echo ''
+        echo 'Testing capture with 1280x1024 NV16 on VIDEO4...'
+        echo 'Expected size: 1280*1024 (Y) + 1280*1024 (CbCr) = 2621440 bytes per frame'
+        timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video4 num-buffers=10 ! \\
+            'video/x-raw,format=NV16,width=1280,height=1024,framerate=30/1' ! \\
+            fakesink 2>&1
+
+        if [ \$? -eq 0 ]; then
+            echo ''
+            echo 'SUCCESS: VIDEO4 capture completed!'
+            echo ''
+            echo 'Saving frame to /tmp/capture_video4.raw...'
+            rm -f /tmp/capture_video4.raw
+            timeout 10 v4l2-ctl -d /dev/video4 --stream-mmap --stream-count=1 --stream-to=/tmp/capture_video4.raw 2>&1
+            if [ -s /tmp/capture_video4.raw ]; then
+                SIZE=\$(stat -c%s /tmp/capture_video4.raw 2>/dev/null || echo 0)
+                echo \"Frame saved: \$SIZE bytes (expected 2621440 for 1280x1024 NV16)\"
+            fi
+        else
+            echo ''
+            echo 'FAILED: VIDEO4 capture did not complete'
+            echo ''
+            echo 'Trying v4l2-ctl direct capture...'
+            rm -f /tmp/capture_video4.raw
+            timeout 10 v4l2-ctl -d /dev/video4 --stream-mmap --stream-count=1 --stream-to=/tmp/capture_video4.raw 2>&1
+            if [ -s /tmp/capture_video4.raw ]; then
+                SIZE=\$(stat -c%s /tmp/capture_video4.raw 2>/dev/null || echo 0)
+                echo \"SUCCESS with v4l2-ctl: \$SIZE bytes captured\"
+            fi
+        fi
+    "
+}
+
 # Test NV16 semi-planar format (native VFE31 DEMUX output)
 # VFE31 DEMUX outputs Y to WM0 and CbCr to WM1 in NV16 format
 # This is the NATIVE output format - no conversion needed
@@ -1194,6 +1292,9 @@ main() {
             video)
                 MODE="video"
                 ;;
+            video4)
+                MODE="video4"
+                ;;
             v4l2)
                 MODE="v4l2"
                 ;;
@@ -1220,6 +1321,7 @@ main() {
                 echo "  pix        Test PIX mode (through VFE ISP, uses GStreamer)"
                 echo "  nv16       Test NV16 semi-planar format (native VFE31 output)"
                 echo "  video      Test VIDEO mode (preview+video via WM4/WM5, AXI mode 0x01)"
+                echo "  video4     Test VIDEO4 mode (WM4/WM5 capture, RECOMMENDED for full resolution)"
                 echo "  v4l2       Test PIX mode with v4l2-ctl (direct, no GStreamer)"
                 echo "  testgen    Test VFE internal test generator (bypasses camera)"
                 echo "  legacy     Test with webOS-style legacy routing (MISC_CC=0)"
@@ -1300,6 +1402,12 @@ main() {
             test_video_mode
             check_dmesg
             ;;
+        video4)
+            show_camera_info
+            ensure_camera_ready
+            test_video4_mode
+            check_dmesg
+            ;;
         capture-uyvy)
             ensure_camera_ready
             capture_frames "pix" "UYVY" 640 480 1
@@ -1329,6 +1437,8 @@ main() {
             test_nv16_mode
             echo ""
             test_video_mode
+            echo ""
+            test_video4_mode
             echo ""
             test_raw_mode
             echo ""
