@@ -802,8 +802,8 @@ int vfe_reset(struct vfe_device *vfe)
  * 0x1a1b has CBCR_ROUTING=1 (WM1) - properly routes CbCr to WM1
  * See camss-vfe-3-1.c XBAR documentation for bit field details.
  */
-#define VFE31_XBAR_CFG1_PIX_MODE	0x1a1b	/* Preview: Y→WM0, CbCr→WM1 */
-#define VFE31_XBAR_CFG1_VIDEO_MODE	0x1a1b	/* Same routing for video mode */
+#define VFE31_XBAR_CFG1_PIX_MODE	0x1a13	/* Preview: Y→WM0, CbCr→WM1 */
+#define VFE31_XBAR_CFG1_VIDEO_MODE	0x1a1b	/* Video: Y→WM0+WM4, CbCr→WM1 */
 
 /*
  * MSM8660 External Register Addresses for Debug
@@ -2179,7 +2179,9 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * For raw/RDI mode (0x60), data bypasses the ISP entirely via
 	 * CAMIF_TO_AXI path, so XBAR configuration is not needed.
 	 *
-	 * XBAR CFG1 = 0x1a1b routes Y→WM0 and CbCr→WM1 for semi-planar output.
+	 * XBAR CFG1 routing for semi-planar output:
+	 *   0x1a13 = preview only (Y→WM0, CbCr→WM1)
+	 *   0x1a1b = with video (Y→WM0+WM4, CbCr→WM1)
 	 * Using 0x1a03 (CBCR_ROUTING=0) would break semi-planar formats!
 	 */
 	if (vfe31_axi_output_mode != 0x60) {

@@ -394,10 +394,10 @@ extern int software_eof_enable;
  * The original Qualcomm msm_vfe31.c OUTPUT_1_AND_3 code used 0x1A03, which
  * does NOT route CbCr anywhere, causing broken semi-planar output.
  *
- * We use 0x1A1B for all PIX modes to ensure CbCr is properly routed to WM1.
+ * Use 0x1A13 for preview-only (WM0+WM1), 0x1A1B when video mode uses WM4.
  */
-#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1A1B
-#define VFE_0_BUS_XBAR_CFG1_VIDEO_MODE		0x1A1B
+#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1A13  /* Y→WM0, CbCr→WM1 */
+#define VFE_0_BUS_XBAR_CFG1_VIDEO_MODE		0x1A1B  /* Y→WM0+WM4, CbCr→WM1 */
 
 /* Legacy define - Qualcomm's broken value that doesn't route CbCr */
 #define VFE_0_BUS_XBAR_CFG1_BROKEN_NO_CBCR	0x1A03
