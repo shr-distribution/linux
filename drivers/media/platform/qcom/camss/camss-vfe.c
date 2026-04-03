@@ -1357,12 +1357,13 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 * the VFE pipeline to the Write Masters.
 		 *
 		 * Use module parameter vfe31_axi_output_mode (default 0x01).
-		 * XBAR_CFG1 selection matches normal path logic:
-		 *   0x1a1b = video enabled (routes to WM0/1 + WM4/5)
-		 *   0x1a03 = preview only (routes to WM0/1)
+		 * XBAR_CFG1 selection:
+		 *   0x1a1b = video enabled (Y to WM0+WM4, CbCr to WM1+WM5)
+		 *   0x1a13 = preview only (Y to WM0, CbCr to WM1)
+		 * NOTE: 0x1a03 is BROKEN - it doesn't route CbCr to WM1!
 		 */
 		{
-			u32 xbar_cfg1 = vfe31_video_output_enable ? 0x1a1b : 0x1a03;
+			u32 xbar_cfg1 = vfe31_video_output_enable ? 0x1a1b : 0x1a13;
 
 			writel_relaxed(vfe31_axi_output_mode, vfe->base + 0x040);
 			writel_relaxed(xbar_cfg1, vfe->base + 0x044);
