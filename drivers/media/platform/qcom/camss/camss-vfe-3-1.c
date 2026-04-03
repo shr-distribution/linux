@@ -1124,8 +1124,8 @@ static int vfe31_enable(struct vfe_line *line)
 	 *   - Bit 6: viewYWrPathEn
 	 * Without this, DMA writes don't complete and ping_pong never toggles.
 	 *
-	 * For PIX mode, we also need XBAR CFG1 at 0x44 = 0x1a03
-	 * This configures the crossbar to route CAMIF data to WM0/WM1.
+	 * For PIX mode, we also need XBAR CFG1 at 0x44 = 0x1a1b
+	 * This routes Y→WM0 and CbCr→WM1 for semi-planar output.
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 1 - BUS_CFG=0x%08x, AXI=0x%x\n",
 		 VFE_0_BUS_CFG_WEBOS_VALUE, vfe31_axi_output_mode);
