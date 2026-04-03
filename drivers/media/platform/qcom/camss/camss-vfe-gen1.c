@@ -671,15 +671,18 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 	u64 ts = ktime_get_ns();
 	unsigned int i;
 
+	/*
+	 * VFE31 video mode routes data to WM4/WM5 in parallel with WM0/WM1.
+	 * These secondary WMs generate IRQs but aren't mapped to output lines.
+	 * Silently ignore them - we only track buffer completion via WM0/WM1.
+	 * This is expected behavior when XBAR routes CbCr to both WM1 and WM5.
+	 */
+	if (vfe->wm_output_map[wm] == VFE_LINE_NONE)
+		return;
+
 	active_index = vfe->ops_gen1->wm_get_ping_pong_status(vfe, wm);
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
-
-	if (vfe->wm_output_map[wm] == VFE_LINE_NONE) {
-		dev_err_ratelimited(vfe->camss->dev,
-				    "Received wm done for unmapped index\n");
-		goto out_unlock;
-	}
 	output = &vfe->line[vfe->wm_output_map[wm]].output;
 
 	if (output->gen1.active_buf == active_index && 0) {

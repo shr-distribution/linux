@@ -45,15 +45,12 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
 /*
  * VFE31 video output enable.
  * When enabled (1), WM4/WM5 are configured to mirror preview WM0/WM1.
+ * WM4/WM5 IRQs are silently ignored since they're just auxiliary routing
+ * paths - buffer completion is tracked via WM0/WM1 only.
  *
- * WARNING: video_output_enable=1 causes "unmapped index" errors and
- * potential memory corruption because WM4/WM5 IRQs fire but aren't
- * mapped in wm_output_map. Keep disabled until proper IRQ handling
- * is implemented for WM4/WM5.
- *
- * Default is 0 for stability.
+ * Default is 1 to match webOS behavior and enable full dual-output mode.
  */
-int vfe31_video_output_enable = 0;
+int vfe31_video_output_enable = 1;
 module_param(vfe31_video_output_enable, int, 0644);
 MODULE_PARM_DESC(vfe31_video_output_enable,
 		 "VFE31 video output enable (0=preview only, 1=with WM4/WM5)");
@@ -77,14 +74,15 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *
  * Known values:
  *   0x1A03 = Y→WM0, CbCr→DISABLED (Qualcomm default - BROKEN for semi-planar!)
- *   0x1A13 = Y→WM0, CbCr→WM1 (preview-only mode, no WM4/WM5 needed)
- *   0x1A1B = Y→WM0+WM4, CbCr→WM1 (webOS default, requires WM4 configured)
- *   0x1A9B = Y→WM0+WM4, CbCr→WM1+WM5 (full dual video mode)
+ *   0x1A13 = Y→WM0, CbCr→WM1 (preview-only mode - CbCr often corrupted)
+ *   0x1A1B = Y→WM0+WM4, CbCr→WM1 (webOS default)
+ *   0x1A9B = Y→WM0+WM4, CbCr→WM1+WM5 (full dual video mode - works correctly!)
  *
- * Default 0x1A13 for preview-only mode without WM4/WM5 dependency.
+ * Default 0x1A9B for correct CbCr plane data. WM4/WM5 IRQs are silently
+ * ignored - we only track buffer completion via WM0/WM1.
  * Set via: echo 0x1a1b > /sys/module/qcom_camss/parameters/vfe31_xbar_cfg1
  */
-int vfe31_xbar_cfg1 = 0x1A13;
+int vfe31_xbar_cfg1 = 0x1A9B;
 module_param(vfe31_xbar_cfg1, int, 0644);
 MODULE_PARM_DESC(vfe31_xbar_cfg1,
 		 "VFE31 XBAR_CFG1 routing (0x1a13=preview, 0x1a1b=video, 0x1a9b=dual)");

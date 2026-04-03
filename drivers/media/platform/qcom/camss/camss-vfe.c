@@ -509,7 +509,7 @@ u32 vfe_hw_version(struct vfe_device *vfe)
  */
 void vfe_buf_done(struct vfe_device *vfe, int wm)
 {
-	struct vfe_line *line = &vfe->line[vfe->wm_output_map[wm]];
+	struct vfe_line *line;
 	const struct vfe_hw_ops *ops = vfe->res->hw_ops;
 	struct camss_buffer *ready_buf;
 	struct vfe_output *output;
@@ -517,14 +517,19 @@ void vfe_buf_done(struct vfe_device *vfe, int wm)
 	u32 index;
 	u64 ts = ktime_get_ns();
 
+	/*
+	 * VFE31 video mode routes data to WM4/WM5 in parallel with WM0/WM1.
+	 * These secondary WMs generate IRQs but aren't mapped to output lines.
+	 * Silently ignore them - we only track buffer completion via primary WMs.
+	 */
+	if (vfe->wm_output_map[wm] == VFE_LINE_NONE)
+		return;
+
+	line = &vfe->line[vfe->wm_output_map[wm]];
+
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
-	if (vfe->wm_output_map[wm] == VFE_LINE_NONE) {
-		dev_err_ratelimited(vfe->camss->dev,
-				    "Received wm done for unmapped index\n");
-		goto out_unlock;
-	}
-	output = &vfe->line[vfe->wm_output_map[wm]].output;
+	output = &line->output;
 
 	ready_buf = output->buf[0];
 	if (!ready_buf) {
