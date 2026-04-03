@@ -192,84 +192,173 @@ extern int software_eof_enable;
 #define VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR	(1 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
 
 /*
- * VFE31 AXI output mode and XBAR configuration registers
- * These configure which write masters are used and how data is routed.
+ * ============================================================================
+ * VFE31 CROSSBAR (XBAR) AND AXI OUTPUT CONFIGURATION
+ * ============================================================================
  *
- * The webOS driver builds a 188-byte AXI config block starting at 0x38.
- * Key registers from that block:
- *   0x40 (ao[2]) = XBAR CFG0 / AXI output mode
- *   0x44 (ao[3]) = XBAR CFG1
+ * The VFE31 crossbar routes processed image data from the ISP pipeline to
+ * Write Masters (WM0-WM6) for DMA transfer to memory. Unlike VFE41+ which
+ * has per-WM XBAR registers at 0x058+, VFE31 uses only TWO global registers:
  *
- * Values from legacy webOS driver:
- *   For raw mode (CAMIF_TO_AXI_VIA_OUTPUT_2):
- *     0x40 = 0x60 (raw bypass via WM0)
- *     0x44 = 0 (not configured)
+ *   Register        Offset   Description
+ *   ─────────────────────────────────────────────────────────────────────────
+ *   XBAR_CFG0       0x040    AXI output mode selection
+ *   XBAR_CFG1       0x044    Data routing configuration
  *
- *   For PIX/preview mode (OUTPUT_2):
- *     0x40 = 0x01 (xbar cfg0 - enable crossbar)
- *     0x44 = 0x1a03 (xbar cfg1 - route CAMIF to WM0/WM1)
+ * Source: Qualcomm msm_vfe31.h (V31_XBAR_CFG_OFF=0x40, V31_XBAR_CFG_LEN=8)
+ *
+ * IMPORTANT: VFE31 does NOT have per-WM XBAR registers! The address 0x058
+ * in VFE31 is WM0_WR_CFG, not an XBAR register. Do not apply VFE41 XBAR
+ * patterns to VFE31.
+ *
+ * ============================================================================
+ * XBAR_CFG0 (0x040) - AXI Output Mode
+ * ============================================================================
+ *
+ * Selects the overall output routing mode. Values from msm_vfe31.c:
+ *
+ *   Value   Mode                    Description
+ *   ─────────────────────────────────────────────────────────────────────────
+ *   0x01    OUTPUT_1_AND_3          Preview + Video (WM0/1 + WM4/5)
+ *   0x60    CAMIF_TO_AXI_VIA_OUT2   Raw bypass direct to WM0
+ *   0x200   OUTPUT_2                Preview only (older mode)
+ *
+ * webOS uses 0x01 for all modes (preview, photo capture, video recording).
  */
-#define VFE_0_BUS_AXI_OUT_MODE_CFG		0x040
+#define VFE_0_BUS_XBAR_CFG0			0x040
+#define VFE_0_BUS_AXI_OUT_MODE_CFG		VFE_0_BUS_XBAR_CFG0
+
+/* XBAR_CFG0 values */
+#define VFE_0_BUS_XBAR_CFG0_OUTPUT_1_AND_3	0x01
+#define VFE_0_BUS_XBAR_CFG0_RAW_BYPASS		0x60
+#define VFE_0_BUS_XBAR_CFG0_OUTPUT_2		0x200
+
+/* Aliases for compatibility */
+#define VFE_0_BUS_XBAR_CFG0_PIX_MODE		VFE_0_BUS_XBAR_CFG0_OUTPUT_1_AND_3
+#define VFE_0_BUS_AXI_OUT_MODE_RAW_WM0		VFE_0_BUS_XBAR_CFG0_RAW_BYPASS
+
+/*
+ * ============================================================================
+ * XBAR_CFG1 (0x044) - Data Routing Configuration
+ * ============================================================================
+ *
+ * Controls how Y (luma) and CbCr (chroma) data are routed to Write Masters.
+ * This is the ONLY register that controls semi-planar output routing!
+ *
+ * Bit Layout (32-bit register):
+ *
+ *   Bits    Field           Description
+ *   ─────────────────────────────────────────────────────────────────────────
+ *   [3:0]   Y_ROUTING       Luma output destination
+ *                           0x3 = WM0 only (preview Y)
+ *                           0xB = WM0 + WM4 (preview + video Y)
+ *
+ *   [7:4]   CBCR_ROUTING    Chroma output destination
+ *                           0x0 = DISABLED (no CbCr output!)
+ *                           0x1 = WM1 only (preview CbCr)
+ *                           0x9 = WM1 + WM5 (preview + video CbCr)
+ *
+ *   [15:8]  ISP_PATH_CFG    ISP pipeline routing
+ *                           0x1A = Standard processed output
+ *
+ *   [31:16] Reserved        Should be 0
+ *
+ * CRITICAL: For semi-planar formats (NV12, NV16, NV21, NV61), bits [7:4]
+ * MUST be non-zero to route CbCr to a write master. If CBCR_ROUTING=0,
+ * the chroma plane receives duplicate luma data!
+ */
 #define VFE_0_BUS_XBAR_CFG1			0x044
-#define VFE_0_BUS_AXI_OUT_MODE_RAW_WM0		0x60
-#define VFE_0_BUS_XBAR_CFG0_PIX_MODE		0x01
+
+/* XBAR_CFG1 bit field definitions */
+#define VFE_0_BUS_XBAR_CFG1_Y_ROUTING_MASK	0x0000000F
+#define VFE_0_BUS_XBAR_CFG1_Y_ROUTING_SHIFT	0
+#define VFE_0_BUS_XBAR_CFG1_Y_WM0		0x3
+#define VFE_0_BUS_XBAR_CFG1_Y_WM0_WM4		0xB
+
+#define VFE_0_BUS_XBAR_CFG1_CBCR_ROUTING_MASK	0x000000F0
+#define VFE_0_BUS_XBAR_CFG1_CBCR_ROUTING_SHIFT	4
+#define VFE_0_BUS_XBAR_CFG1_CBCR_DISABLED	0x0
+#define VFE_0_BUS_XBAR_CFG1_CBCR_WM1		0x1
+#define VFE_0_BUS_XBAR_CFG1_CBCR_WM1_WM5	0x9
+
+#define VFE_0_BUS_XBAR_CFG1_ISP_PATH_MASK	0x0000FF00
+#define VFE_0_BUS_XBAR_CFG1_ISP_PATH_SHIFT	8
+#define VFE_0_BUS_XBAR_CFG1_ISP_PATH_STANDARD	0x1A
+
 /*
- * XBAR_CFG1 bit layout:
- *   Bits 0-3: Y output routing (0x3=WM0, 0xB=WM0+WM4)
- *   Bits 4-7: CbCr output routing (0x0=disabled, 0x1=WM1, 0x9=WM1+WM5)
- *   Bits 8-15: Additional config (0x1A = standard ISP path)
+ * Pre-computed XBAR_CFG1 values:
  *
- * PIX_MODE must have bit 4 set to route CbCr to WM1 for semi-planar output!
- * webOS always uses 0x1a1b; 0x1a03 only routes Y, leaving CbCr unrouted.
+ *   Value   Binary                  Routing
+ *   ─────────────────────────────────────────────────────────────────────────
+ *   0x1A03  0001_1010_0000_0011     Y→WM0, CbCr→DISABLED (BROKEN for NV16!)
+ *   0x1A1B  0001_1010_0001_1011     Y→WM0+WM4, CbCr→WM1 (CORRECT)
+ *   0x1A9B  0001_1010_1001_1011     Y→WM0+WM4, CbCr→WM1+WM5 (video mode)
+ *
+ * The original Qualcomm msm_vfe31.c OUTPUT_1_AND_3 code used 0x1A03, which
+ * does NOT route CbCr anywhere! webOS fixed this to 0x1A1B.
+ *
+ * We use 0x1A1B for all PIX modes to ensure CbCr is properly routed to WM1.
  */
-#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1a1b
-/*
- * VFE31 Video mode XBAR configuration:
- *   0x1a1b = preview + video mode (WM0/WM1 for preview, WM4/WM5 for video)
- *
- * XBAR CFG1 bit layout (per webOS msm_vfe31.c):
- *   Bits 0-3:   Y output XBAR routing (WM0 for preview, WM4 for video)
- *   Bits 4-7:   CbCr output XBAR routing (WM1 for preview, WM5 for video)
- *   Bits 8-15:  Additional routing configuration
- *
- * webOS values:
- *   0x1a03 = preview only (WM0/WM1)
- *   0x1a1b = preview + video (WM0/WM1 + WM4/WM5)
- */
-#define VFE_0_BUS_XBAR_CFG1_VIDEO_MODE		0x1a1b
+#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1A1B
+#define VFE_0_BUS_XBAR_CFG1_VIDEO_MODE		0x1A1B
+
+/* Legacy define - Qualcomm's broken value that doesn't route CbCr */
+#define VFE_0_BUS_XBAR_CFG1_BROKEN_NO_CBCR	0x1A03
+
 #define VFE_0_BUS_CFG_RAW_WR_PATH_VIEW_CBCR	(2 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
 
 /*
- * Video mode write master assignments:
- * - Preview: WM0 (Y) + WM1 (CbCr) → COMPOSITE_DONE_0
- * - Snapshot: WM0 (or dedicated WM) → COMPOSITE_DONE_1
- * - Video:   WM4 (Y) + WM5 (CbCr) → COMPOSITE_DONE_2
+ * ============================================================================
+ * VFE31 WRITE MASTER (WM) ASSIGNMENTS
+ * ============================================================================
+ *
+ * The VFE31 has 7 Write Masters (WM0-WM6) for DMA output. Their assignments
+ * depend on the output mode configured in XBAR_CFG0/CFG1:
+ *
+ *   WM      Preview Mode    Video Mode      Raw Mode
+ *   ─────────────────────────────────────────────────────────────────────────
+ *   WM0     Y plane         Y plane         Raw data
+ *   WM1     CbCr plane      CbCr plane      -
+ *   WM2     -               -               -
+ *   WM3     -               -               -
+ *   WM4     -               Video Y         -
+ *   WM5     -               Video CbCr      -
+ *   WM6     -               -               -
+ *
+ * IRQ Composite Groups (IRQ_COMPOSITE_MASK at 0x034):
+ *   - Group 0 (bit 21): WM0 + WM4 completion
+ *   - Group 1 (bit 22): Snapshot WM completion
+ *   - Group 2 (bit 23): WM1 + WM5 completion (requires video mode)
+ *
+ * webOS vfe31_config_axi() output path comments:
+ *   - out0 (PT/Preview): "use wm0&4 for preview"
+ *   - out2 (V/Video):    "wm1&5 for video"
  */
+#define VFE31_PREVIEW_WM_Y		0
+#define VFE31_PREVIEW_WM_CBCR		1
 #define VFE31_VIDEO_WM_Y		4
 #define VFE31_VIDEO_WM_CBCR		5
 
 /*
- * VFE31 Video Mode Configuration Summary
- * ======================================
+ * ============================================================================
+ * CONFIGURATION SUMMARY
+ * ============================================================================
  *
- * Video mode enables simultaneous preview and video recording using separate
- * output paths through the VFE31 bus infrastructure.
+ * For semi-planar preview (NV12/NV16/NV21/NV61):
+ *   XBAR_CFG0 = 0x01   (OUTPUT_1_AND_3)
+ *   XBAR_CFG1 = 0x1A1B (Y→WM0, CbCr→WM1, ISP=standard)
+ *   BUS_CFG   = 0x02AAA771 (enable Y+CbCr write paths)
  *
- * Output Paths (per webOS msm_vfe31.c vfe31_config_axi):
- * - out0 (PT/Preview): WM0 (Y) + WM1 (CbCr) → COMPOSITE_DONE_0 (IRQ bit 21)
- * - out1 (S/Snapshot): WM (configurable) → COMPOSITE_DONE_1 (IRQ bit 22)
- * - out2 (V/Video):    WM4 (Y) + WM5 (CbCr) → COMPOSITE_DONE_2 (IRQ bit 23)
+ * For raw bypass (SRGGB8/10/12):
+ *   XBAR_CFG0 = 0x60   (RAW_BYPASS)
+ *   XBAR_CFG1 = 0x00   (not used)
+ *   BUS_CFG   = configured for raw pixel size
  *
- * Configuration Steps:
- * 1. Set vfe31_video_output_enable=1 (module parameter)
- * 2. Set vfe31_axi_output_mode=0x01 (preview+video mode)
- * 3. XBAR CFG1 automatically uses 0x1a1b to route to WM0/1 + WM4/5
- * 4. IRQ_COMPOSITE_MASK includes WM4/5 → COMPOSITE_DONE_2 mapping
- * 5. Configure WM4/WM5 with video buffer addresses (requires userspace)
- *
- * Note: Full video recording requires userspace to provide separate video
- * buffers and configure WM4/WM5 addresses. This infrastructure enables
- * the hardware support; actual video capture needs V4L2 multi-planar setup.
+ * For video recording (preview + video):
+ *   XBAR_CFG0 = 0x01   (OUTPUT_1_AND_3)
+ *   XBAR_CFG1 = 0x1A1B (or 0x1A9B for dual video output)
+ *   Configure WM4/WM5 with video buffer addresses
+ *   Enable COMPOSITE_DONE_2 IRQ for video frame completion
  */
 
 /*
@@ -450,16 +539,10 @@ extern int software_eof_enable;
 
 /*
  * NOTE: VFE31 does NOT have per-WM XBAR registers like VFE41/47/48.
- * In VFE41+, VFE_0_BUS_XBAR_CFG_x(x) at 0x90+ controls per-WM stream routing.
- * In VFE31, 0x058 is WM0_WR_CFG, not an XBAR register!
+ * VFE41+ has VFE_0_BUS_XBAR_CFG_x(x) at 0x90+ for per-WM stream routing.
+ * VFE31 address 0x058 is WM0_WR_CFG, not an XBAR register!
  *
- * VFE31 Y/CbCr routing is handled by:
- * 1. XBAR_CFG1 at 0x044 - routes ISP output to WM0/WM1 (or WM4/WM5 for video)
- * 2. DEMUX module - splits UYVY into Y and CbCr streams internally
- *
- * XBAR_CFG1 values:
- * - 0x1a03: PIX mode - WM0 (Y) + WM1 (CbCr)
- * - 0x1a1b: VIDEO mode - WM0/WM1 + WM4/WM5
+ * See VFE31 CROSSBAR documentation above for XBAR_CFG0/CFG1 details.
  */
 
 /* Register update */
@@ -1051,9 +1134,12 @@ static int vfe31_enable(struct vfe_line *line)
 		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
 	/*
-	 * For PIX mode (0x01), configure XBAR CFG1 to route data to WMs.
-	 * Use video mode XBAR (0x1a1b) if video output is enabled,
-	 * otherwise use preview-only XBAR (0x1a03).
+	 * For PIX mode (OUTPUT_1_AND_3), configure XBAR_CFG1 to route
+	 * Y to WM0 and CbCr to WM1. We always use 0x1A1B which properly
+	 * routes both planes. See XBAR_CFG1 documentation above.
+	 *
+	 * Note: PIX_MODE and VIDEO_MODE both use 0x1A1B. The video_output_enable
+	 * flag controls WM4/WM5 configuration, not the XBAR value itself.
 	 */
 	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
 		u32 xbar_cfg1 = vfe31_video_output_enable ?
@@ -1629,16 +1715,14 @@ static void vfe31_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output
 {
 	/*
 	 * VFE31 does NOT have per-WM XBAR registers like VFE41/47/48.
-	 *
-	 * In VFE41+, per-WM XBAR registers at 0x90+ control stream routing.
-	 * In VFE31, 0x058+ are WM_WR_CFG registers, not XBAR!
+	 * See "VFE31 CROSSBAR (XBAR)" documentation block above.
 	 *
 	 * VFE31 Y/CbCr routing is controlled entirely by:
-	 * 1. XBAR_CFG1 at 0x044 - routes ISP output to write masters
-	 *    - 0x1a03: PIX mode (WM0=Y, WM1=CbCr)
-	 *    - 0x1a1b: VIDEO mode (WM0/1 + WM4/5)
-	 * 2. DEMUX module - internally separates UYVY into Y and CbCr streams
+	 * 1. XBAR_CFG0 at 0x040 - output mode selection
+	 * 2. XBAR_CFG1 at 0x044 - Y/CbCr routing to write masters
+	 * 3. DEMUX module - internally separates UYVY into Y and CbCr
 	 *
+	 * XBAR_CFG1 is configured in vfe31_enable(), not here.
 	 * This function is intentionally empty for VFE31.
 	 */
 }
