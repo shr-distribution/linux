@@ -173,16 +173,21 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 		.interrupt = { "vfe0" },
 		.vfe = {
 			/*
-			 * line_num = 4 to include VFE_LINE_PIX (3) for CAMIF.
+			 * line_num = 5 to include VFE_LINE_PIX (3) for CAMIF
+			 * and VFE_LINE_VIDEO (4) for dual-output via WM4/WM5.
 			 * Parallel cameras use the pixel pipeline (CAMIF),
 			 * not RDI (Raw Data Interface).
+			 *
+			 * VFE_LINE_VIDEO provides a second output path that
+			 * receives the same frame data as VFE_LINE_PIX but
+			 * writes to separate buffers via WM4/WM5.
 			 *
 			 * has_pd is NOT set because MSM8660 has a single power
 			 * domain that is attached at platform probe level. The
 			 * runtime PM framework handles power domain management
 			 * automatically through pm_runtime_resume_and_get().
 			 */
-			.line_num = 4,
+			.line_num = 5,
 			.hw_ops = &vfe_ops_3_1,
 			.formats_rdi = &vfe_formats_rdi_8x16,
 			.formats_pix = &vfe_formats_pix_8x16

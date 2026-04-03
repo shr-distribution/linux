@@ -65,13 +65,15 @@ static int vfe_disable_output(struct vfe_line *line)
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
-	if (line->id != VFE_LINE_PIX) {
+	if (line->id != VFE_LINE_PIX && line->id != VFE_LINE_VIDEO) {
+		/* RDI lines use frame-based mode with RDI connection */
 		vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 0);
 		vfe->ops_gen1->bus_disconnect_wm_from_rdi(vfe, output->wm_idx[0], line->id);
 		vfe->ops_gen1->enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 0);
 		vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[0], 0);
 		spin_unlock_irqrestore(&vfe->output_lock, flags);
 	} else {
+		/* PIX and VIDEO lines use the pixel pipeline */
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_line_based(vfe, output->wm_idx[i], NULL, i, 0);
 			vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[i], 0);
@@ -239,7 +241,8 @@ static int vfe_enable_output(struct vfe_line *line)
 
 	vfe_output_init_addrs(vfe, output, 0, line);
 
-	if (line->id != VFE_LINE_PIX) {
+	if (line->id != VFE_LINE_PIX && line->id != VFE_LINE_VIDEO) {
+		/* RDI path - frame-based raw data capture */
 		dev_info(vfe->camss->dev, "VFE enable_output: RDI path line_id=%d\n", line->id);
 		dev_info(vfe->camss->dev, "VFE enable_output: calling set_cgc_override\n");
 		vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[0], 1);
@@ -281,7 +284,8 @@ static int vfe_enable_output(struct vfe_line *line)
 		vfe->ops_gen1->set_clamp_cfg(vfe);
 		vfe->ops_gen1->set_camif_cmd(vfe, 1);
 	} else {
-		dev_info(vfe->camss->dev, "VFE enable_output: PIX path wm_num=%d\n", output->wm_num);
+		/* PIX/VIDEO path - line-based pixel pipeline capture */
+		dev_info(vfe->camss->dev, "VFE enable_output: PIX/VIDEO path wm_num=%d\n", output->wm_num);
 		ub_size /= output->wm_num;
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[i], 1);

@@ -1429,28 +1429,63 @@ static int vfe31_enable(struct vfe_line *line)
 		dev_info(vfe->camss->dev, "VFE31: Raw mode - using 1 WM\n");
 	}
 
-	wm_idx = vfe_reserve_wm(vfe, line->id);
-	if (wm_idx < 0) {
-		dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM0\n");
-		output->state = VFE_OUTPUT_OFF;
-		spin_unlock_irqrestore(&vfe->output_lock, flags);
-		return wm_idx;
-	}
-	output->wm_idx[0] = wm_idx;
-
-	/* Reserve WM1 for PIX mode */
-	if (output->wm_num == 2) {
-		wm_idx = vfe_reserve_wm(vfe, line->id);
+	/*
+	 * VFE31 WM assignment:
+	 * - VFE_LINE_PIX (preview/primary): WM0 (Y) + WM1 (CbCr)
+	 * - VFE_LINE_VIDEO (video/secondary): WM4 (Y) + WM5 (CbCr)
+	 *
+	 * Both paths receive the same frame data via XBAR routing.
+	 * This enables dual-output mode for simultaneous preview and recording.
+	 */
+	if (line->id == VFE_LINE_VIDEO) {
+		/* VIDEO line uses WM4/WM5 specifically */
+		wm_idx = vfe_reserve_wm_specific(vfe, 4, line->id);
 		if (wm_idx < 0) {
-			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM1\n");
-			vfe_release_wm(vfe, output->wm_idx[0]);
+			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM4 for VIDEO\n");
 			output->state = VFE_OUTPUT_OFF;
 			spin_unlock_irqrestore(&vfe->output_lock, flags);
 			return wm_idx;
 		}
-		output->wm_idx[1] = wm_idx;
-		dev_info(vfe->camss->dev, "VFE31: Reserved WM0=%d, WM1=%d\n",
-			 output->wm_idx[0], output->wm_idx[1]);
+		output->wm_idx[0] = wm_idx;
+
+		if (output->wm_num == 2) {
+			wm_idx = vfe_reserve_wm_specific(vfe, 5, line->id);
+			if (wm_idx < 0) {
+				dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM5 for VIDEO\n");
+				vfe_release_wm(vfe, output->wm_idx[0]);
+				output->state = VFE_OUTPUT_OFF;
+				spin_unlock_irqrestore(&vfe->output_lock, flags);
+				return wm_idx;
+			}
+			output->wm_idx[1] = wm_idx;
+		}
+		dev_info(vfe->camss->dev, "VFE31: VIDEO line using WM4=%d, WM5=%d\n",
+			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
+	} else {
+		/* PIX/RDI lines use first available WMs (typically WM0/WM1) */
+		wm_idx = vfe_reserve_wm(vfe, line->id);
+		if (wm_idx < 0) {
+			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM for line %d\n", line->id);
+			output->state = VFE_OUTPUT_OFF;
+			spin_unlock_irqrestore(&vfe->output_lock, flags);
+			return wm_idx;
+		}
+		output->wm_idx[0] = wm_idx;
+
+		if (output->wm_num == 2) {
+			wm_idx = vfe_reserve_wm(vfe, line->id);
+			if (wm_idx < 0) {
+				dev_err(vfe->camss->dev, "VFE31: Cannot reserve second WM\n");
+				vfe_release_wm(vfe, output->wm_idx[0]);
+				output->state = VFE_OUTPUT_OFF;
+				spin_unlock_irqrestore(&vfe->output_lock, flags);
+				return wm_idx;
+			}
+			output->wm_idx[1] = wm_idx;
+		}
+		dev_info(vfe->camss->dev, "VFE31: Line %d using WM%d, WM%d\n",
+			 line->id, output->wm_idx[0],
+			 output->wm_num == 2 ? output->wm_idx[1] : -1);
 	}
 
 	/* Get buffers from pending queue (inline from gen1's vfe_enable_output) */
