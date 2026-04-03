@@ -1357,13 +1357,16 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 * the VFE pipeline to the Write Masters.
 		 *
 		 * Use module parameter vfe31_axi_output_mode (default 0x01).
-		 * XBAR_CFG1 selection:
-		 *   0x1a1b = video enabled (Y to WM0+WM4, CbCr to WM1+WM5)
-		 *   0x1a13 = preview only (Y to WM0, CbCr to WM1)
-		 * NOTE: 0x1a03 is BROKEN - it doesn't route CbCr to WM1!
+		 * XBAR_CFG1 must be 0x1A1B for PIX mode to route:
+		 *   - Y (luma) to WM0 (and WM4 for video)
+		 *   - CbCr (chroma) to WM1 (and WM5 for video)
+		 *
+		 * NOTE: 0x1a03 is BROKEN - it has CbCr routing disabled!
+		 * NOTE: 0x1a13 also causes issues - use 0x1A1B consistently.
 		 */
 		{
-			u32 xbar_cfg1 = vfe31_video_output_enable ? 0x1a1b : 0x1a13;
+			/* Always use 0x1A1B for proper Y/CbCr routing */
+			u32 xbar_cfg1 = 0x1a1b;
 
 			writel_relaxed(vfe31_axi_output_mode, vfe->base + 0x040);
 			writel_relaxed(xbar_cfg1, vfe->base + 0x044);
@@ -1384,8 +1387,12 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		writel_relaxed(vfe->irq_mask0_shadow, vfe->base + 0x01C);
 		writel_relaxed(vfe->irq_mask1_shadow, vfe->base + 0x020);
 
-		/* IRQ_COMPOSITE_MASK (0x034): Map WM0 to COMPOSITE_DONE_0 */
-		writel_relaxed(BIT(0), vfe->base + 0x034);
+		/*
+		 * IRQ_COMPOSITE_MASK (0x034): Map WMs to COMPOSITE_DONE groups.
+		 * For NV16 semi-planar, we need both WM0 (Y) and WM1 (CbCr).
+		 * 0x00000003 = WM0 + WM1 -> COMPOSITE_DONE_0
+		 */
+		writel_relaxed(0x00000003, vfe->base + 0x034);
 		wmb();
 
 		dev_info(vfe->camss->dev,
@@ -1403,39 +1410,54 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		dev_info(vfe->camss->dev, "VFE TESTGEN: CAMIF started\n");
 
 		/*
-		 * CRITICAL: Verify Write Master is enabled for testgen output.
+		 * CRITICAL: Verify Write Masters are enabled for testgen output.
+		 *
+		 * For NV16 semi-planar output, we need both:
+		 *   WM0 = Y (luma) plane
+		 *   WM1 = CbCr (chroma) plane
 		 *
 		 * Note: WM buffer addresses and enable bits are already configured by
-		 * vfe31_enable() before vfe_enable_pending_camif() calls us. The WM
+		 * vfe31_enable() before vfe_enable_pending_camif() calls us. The WMs
 		 * should already be enabled, but we verify and re-apply just in case.
 		 */
 		{
-			u8 wm = vfe->camif_pending_wm;
+			u8 wm0 = vfe->camif_pending_wm;  /* Y plane */
+			u8 wm1 = 1;  /* CbCr plane - always WM1 for VFE31 */
 			u32 ub_cfg, wr_cfg;
 
-			dev_info(vfe->camss->dev, "VFE TESTGEN: Verifying Write Master WM%d\n", wm);
-
-			/* Read current config */
-			ub_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_UB_CFG(wm));
-			wr_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_CFG(wm));
-
-			dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d current UB_CFG=0x%08x WR_CFG=0x%08x\n",
-				 wm, ub_cfg, wr_cfg);
-
-			/* If not enabled, enable it */
+			/* Verify WM0 (Y plane) */
+			dev_info(vfe->camss->dev, "VFE TESTGEN: Verifying Write Master WM%d (Y)\n", wm0);
+			ub_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_UB_CFG(wm0));
+			wr_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_CFG(wm0));
+			dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d UB_CFG=0x%08x WR_CFG=0x%08x\n",
+				 wm0, ub_cfg, wr_cfg);
 			if (!(wr_cfg & BIT(0))) {
-				dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d not enabled, enabling now\n", wm);
-				writel_relaxed((0 << 16) | 1023, vfe->base + VFE31_WM_WR_UB_CFG(wm));
-				/* VFE31 only uses BIT(0) for enable, no frame_based in bit 1 */
-				writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(wm));
+				dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d not enabled, enabling now\n", wm0);
+				writel_relaxed((0 << 16) | 1023, vfe->base + VFE31_WM_WR_UB_CFG(wm0));
+				writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(wm0));
 				wmb();
 			}
-
-			/* Dump buffer addresses */
 			dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d PING=0x%08x PONG=0x%08x\n",
-				 wm,
-				 readl_relaxed(vfe->base + VFE31_WM_WR_PING_ADDR(wm)),
-				 readl_relaxed(vfe->base + VFE31_WM_WR_PONG_ADDR(wm)));
+				 wm0,
+				 readl_relaxed(vfe->base + VFE31_WM_WR_PING_ADDR(wm0)),
+				 readl_relaxed(vfe->base + VFE31_WM_WR_PONG_ADDR(wm0)));
+
+			/* Verify WM1 (CbCr plane) for NV16 semi-planar */
+			dev_info(vfe->camss->dev, "VFE TESTGEN: Verifying Write Master WM%d (CbCr)\n", wm1);
+			ub_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_UB_CFG(wm1));
+			wr_cfg = readl_relaxed(vfe->base + VFE31_WM_WR_CFG(wm1));
+			dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d UB_CFG=0x%08x WR_CFG=0x%08x\n",
+				 wm1, ub_cfg, wr_cfg);
+			if (!(wr_cfg & BIT(0))) {
+				dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d not enabled, enabling now\n", wm1);
+				writel_relaxed((0 << 16) | 1023, vfe->base + VFE31_WM_WR_UB_CFG(wm1));
+				writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(wm1));
+				wmb();
+			}
+			dev_info(vfe->camss->dev, "VFE TESTGEN: WM%d PING=0x%08x PONG=0x%08x\n",
+				 wm1,
+				 readl_relaxed(vfe->base + VFE31_WM_WR_PING_ADDR(wm1)),
+				 readl_relaxed(vfe->base + VFE31_WM_WR_PONG_ADDR(wm1)));
 		}
 
 		/*
