@@ -2662,6 +2662,30 @@ int vfe_reserve_wm(struct vfe_device *vfe, enum vfe_line_id line_id)
 	return ret;
 }
 
+/*
+ * vfe_reserve_wm_specific - Reserve a specific write master
+ * @vfe: VFE device
+ * @wm: The specific WM index to reserve (0-6)
+ * @line_id: The line ID to map to this WM
+ *
+ * Used by VFE31 for dual-output mode where VFE_LINE_VIDEO must use
+ * WM4/WM5 specifically (not just any available WM).
+ *
+ * Return: The WM index on success, negative error code otherwise
+ */
+int vfe_reserve_wm_specific(struct vfe_device *vfe, u8 wm,
+			    enum vfe_line_id line_id)
+{
+	if (wm >= ARRAY_SIZE(vfe->wm_output_map))
+		return -EINVAL;
+
+	if (vfe->wm_output_map[wm] != VFE_LINE_NONE)
+		return -EBUSY;
+
+	vfe->wm_output_map[wm] = line_id;
+	return wm;
+}
+
 int vfe_release_wm(struct vfe_device *vfe, u8 wm)
 {
 	if (wm >= ARRAY_SIZE(vfe->wm_output_map))
@@ -3578,7 +3602,8 @@ static void vfe_try_format(struct vfe_line *line,
 
 		fmt->code = vfe_src_pad_code(line, fmt->code, 0, code);
 
-		if (line->id == VFE_LINE_PIX) {
+		if (line->id == VFE_LINE_PIX || line->id == VFE_LINE_VIDEO) {
+			/* PIX and VIDEO lines use the scaler/crop path */
 			struct v4l2_rect *rect;
 
 			rect = __vfe_get_crop(line, sd_state, which);
@@ -3801,12 +3826,13 @@ static int vfe_set_format(struct v4l2_subdev *sd,
 		struct v4l2_subdev_selection sel = { 0 };
 		int ret;
 
-		if (line->id == VFE_LINE_PIX) {
+		if (line->id == VFE_LINE_PIX || line->id == VFE_LINE_VIDEO) {
 			/*
 			 * Reset compose/crop selection BEFORE propagating
 			 * format to source pad. vfe_try_format for source pad
 			 * uses the crop rectangle dimensions, so crop must be
 			 * updated first to avoid using stale values.
+			 * Applies to PIX and VIDEO lines which use the scaler.
 			 */
 			sel.which = fmt->which;
 			sel.pad = MSM_VFE_PAD_SINK;
@@ -3847,7 +3873,7 @@ static int vfe_get_selection(struct v4l2_subdev *sd,
 	struct v4l2_rect *rect;
 	int ret;
 
-	if (line->id != VFE_LINE_PIX)
+	if (line->id != VFE_LINE_PIX && line->id != VFE_LINE_VIDEO)
 		return -EINVAL;
 
 	if (sel->pad == MSM_VFE_PAD_SINK)
@@ -3916,7 +3942,7 @@ static int vfe_set_selection(struct v4l2_subdev *sd,
 	struct v4l2_rect *rect;
 	int ret;
 
-	if (line->id != VFE_LINE_PIX)
+	if (line->id != VFE_LINE_PIX && line->id != VFE_LINE_VIDEO)
 		return -EINVAL;
 
 	if (sel->target == V4L2_SEL_TGT_COMPOSE &&
@@ -4141,10 +4167,12 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 		init_completion(&l->output.sof);
 		init_completion(&l->output.reg_update);
 
-		if (i == VFE_LINE_PIX) {
+		if (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO) {
+			/* PIX and VIDEO lines use the pixel pipeline formats */
 			l->nformats = res->vfe.formats_pix->nformats;
 			l->formats = res->vfe.formats_pix->formats;
 		} else {
+			/* RDI lines use raw formats */
 			l->nformats = res->vfe.formats_rdi->nformats;
 			l->formats = res->vfe.formats_rdi->formats;
 		}
@@ -4278,6 +4306,9 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		if (i == VFE_LINE_PIX)
 			snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d_%s",
 				 MSM_VFE_NAME, vfe->id, "pix");
+		else if (i == VFE_LINE_VIDEO)
+			snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d_%s",
+				 MSM_VFE_NAME, vfe->id, "video");
 		else
 			snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d_%s%d",
 				 MSM_VFE_NAME, vfe->id, "rdi", i);
@@ -4311,7 +4342,8 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		video_out->ops = &vfe->video_ops;
 		video_out->bpl_alignment = vfe_bpl_align(vfe);
 		video_out->line_based = 0;
-		if (i == VFE_LINE_PIX) {
+		if (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO) {
+			/* PIX and VIDEO lines use line-based pixel pipeline */
 			video_out->bpl_alignment = 16;
 			video_out->line_based = 1;
 		}

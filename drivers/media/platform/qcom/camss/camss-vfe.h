@@ -53,7 +53,8 @@ enum vfe_line_id {
 	VFE_LINE_RDI1 = 1,
 	VFE_LINE_RDI2 = 2,
 	VFE_LINE_PIX = 3,
-	VFE_LINE_NUM_MAX = 4
+	VFE_LINE_VIDEO = 4,	/* VFE31: dual output via WM4/WM5 */
+	VFE_LINE_NUM_MAX = 5
 };
 
 struct vfe_output {
@@ -217,6 +218,8 @@ void vfe_isr_reset_ack(struct vfe_device *vfe);
 int vfe_put_output(struct vfe_line *line);
 int vfe_release_wm(struct vfe_device *vfe, u8 wm);
 int vfe_reserve_wm(struct vfe_device *vfe, enum vfe_line_id line_id);
+int vfe_reserve_wm_specific(struct vfe_device *vfe, u8 wm,
+			    enum vfe_line_id line_id);
 
 /*
  * vfe_reset - Trigger reset on VFE module and wait to complete
