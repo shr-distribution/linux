@@ -56,6 +56,19 @@ module_param(vfe31_video_output_enable, int, 0644);
 MODULE_PARM_DESC(vfe31_video_output_enable,
 		 "VFE31 video output enable (0=preview only, 1=with WM4/WM5)");
 
+/*
+ * VFE31 UV swap control for debugging color issues.
+ * When enabled, swaps the DEMUX_EVEN_CFG odd byte to reverse UV channel order.
+ * This converts NV16 (CbCr) output to NV61 (CrCb) order or vice versa.
+ *
+ * 0 = Normal (webOS default: UYVY → 0xC9CA)
+ * 1 = Swap UV (UYVY → 0xC9AC, exchanges Cb and Cr)
+ */
+static int vfe31_swap_uv = 0;
+module_param(vfe31_swap_uv, int, 0644);
+MODULE_PARM_DESC(vfe31_swap_uv,
+		 "VFE31 swap UV channels (0=normal CbCr, 1=swap to CrCb)");
+
 /* External module parameters from camss-vfe.c */
 extern int software_sof_enable;
 extern int software_eof_enable;
@@ -1482,6 +1495,20 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		even_cfg = 0xc9;
 		odd_cfg = 0xac;
 		break;
+	}
+
+	/*
+	 * Apply UV swap if requested via module parameter.
+	 * This exchanges Cb and Cr channel routing in the DEMUX output.
+	 * For UYVY: normal=0xCA, swapped=0xAC
+	 */
+	if (vfe31_swap_uv) {
+		if (odd_cfg == 0xca)
+			odd_cfg = 0xac;
+		else if (odd_cfg == 0xac)
+			odd_cfg = 0xca;
+		dev_info(vfe->camss->dev,
+			 "VFE31: UV swap enabled, odd_cfg=0x%02x\n", odd_cfg);
 	}
 
 	/*
