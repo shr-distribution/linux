@@ -69,6 +69,24 @@ module_param(vfe31_swap_uv, int, 0644);
 MODULE_PARM_DESC(vfe31_swap_uv,
 		 "VFE31 swap UV channels (0=normal CbCr, 1=swap to CrCb)");
 
+/*
+ * VFE31 XBAR_CFG1 override for testing data routing configurations.
+ * Controls how Y (luma) and CbCr (chroma) are routed to Write Masters.
+ *
+ * Known values:
+ *   0x1A03 = Y→WM0, CbCr→DISABLED (Qualcomm default - BROKEN for semi-planar!)
+ *   0x1A13 = Y→WM0, CbCr→WM1 (preview-only mode)
+ *   0x1A1B = Y→WM0+WM4, CbCr→WM1 (webOS default, requires WM4 configured)
+ *   0x1A9B = Y→WM0+WM4, CbCr→WM1+WM5 (full dual video mode)
+ *
+ * Default 0x1A1B matches webOS configuration.
+ * Set via: echo 0x1a13 > /sys/module/qcom_camss/parameters/vfe31_xbar_cfg1
+ */
+int vfe31_xbar_cfg1 = 0x1A1B;
+module_param(vfe31_xbar_cfg1, int, 0644);
+MODULE_PARM_DESC(vfe31_xbar_cfg1,
+		 "VFE31 XBAR_CFG1 routing (0x1a13=preview, 0x1a1b=video, 0x1a9b=dual)");
+
 /* External module parameters from camss-vfe.c */
 extern int software_sof_enable;
 extern int software_eof_enable;
@@ -1526,14 +1544,10 @@ static int vfe31_enable(struct vfe_line *line)
 	 * flag controls WM4/WM5 configuration, not the XBAR value itself.
 	 */
 	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		u32 xbar_cfg1 = vfe31_video_output_enable ?
-				VFE_0_BUS_XBAR_CFG1_VIDEO_MODE :
-				VFE_0_BUS_XBAR_CFG1_PIX_MODE;
 		dev_info(vfe->camss->dev,
-			 "VFE31: PIX mode - XBAR CFG1=0x%x (video=%d)\n",
-			 xbar_cfg1, vfe31_video_output_enable);
-		writel_relaxed(xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
-
+			 "VFE31: PIX mode - XBAR CFG1=0x%x (module param)\n",
+			 vfe31_xbar_cfg1);
+		writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
 	}
 
 	/*
@@ -2486,12 +2500,11 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		/* PIX mode (0x01): Use XBAR to route DEMUX output to WMs */
 		dev_info(vfe->camss->dev,
 			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x01, XBAR=0x%04x\n",
-			 VFE_0_BUS_CFG_WEBOS_VALUE, VFE_0_BUS_XBAR_CFG1_PIX_MODE);
+			 VFE_0_BUS_CFG_WEBOS_VALUE, vfe31_xbar_cfg1);
 		writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-		writel_relaxed(VFE_0_BUS_XBAR_CFG1_PIX_MODE,
-			       vfe->base + VFE_0_BUS_XBAR_CFG1);
+		writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
 	}
 	wmb();
 
