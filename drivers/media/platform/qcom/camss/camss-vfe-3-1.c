@@ -514,8 +514,8 @@ extern int software_eof_enable;
  * WR_ADDR_CFG Register Format (0x058 + 0x18*n):
  * ---------------------------------------------
  * Bits [15:0]  - burst_words: Number of 32-bit words per DMA burst
- *                Formula: (words_per_line - 17)
- *                Example: 1280 bytes/line = 320 words, burst = 320-17 = 303
+ *                Formula: (bytes_per_line / 4) - 17
+ *                For UYVY input: bytes_per_line = width * 2
  *
  * Bits [31:16] - lines: DMA line count control
  *                WM0 (Y plane):    lines=0 means "use height from IMAGE_SIZE"
@@ -530,26 +530,75 @@ extern int software_eof_enable;
  *                but this matches webOS register dumps and is empirically
  *                required for correct semi-planar (NV16) output.
  *
- * WebOS Register Examples (640x480 UYVY -> NV16):
- *   WM0 (Y):    0x0000012F = (0 << 16) | 303    lines=0, burst=303
- *   WM1 (CbCr): 0x01C8012F = (456 << 16) | 303  lines=456, burst=303
- *   Where: 456 = 480 - 24, and 303 = 320 - 17 = (1280/4) - 17
+ *                NOTE: webOS only uses 640x480, so the 24 might be fixed or
+ *                might scale with resolution (5% of 480 = 24). For higher
+ *                resolutions, start with fixed 24 and adjust if needed.
+ *
+ * Resolution Scaling Formulas (UYVY input -> NV16 output):
+ * --------------------------------------------------------
+ * Given: width (pixels), height (lines)
+ *
+ *   bytes_per_line = width * 2  (UYVY = 2 bytes/pixel)
+ *   words_per_line = bytes_per_line / 4
+ *   burst = words_per_line - 17
+ *
+ *   WM0 WR_ADDR_CFG = (0 << 16) | (burst & 0xFFFF)
+ *   WM1 WR_ADDR_CFG = ((height - 24) << 16) | (burst & 0xFFFF)
+ *
+ * WebOS @ 640x480:
+ *   bytes_per_line = 640 * 2 = 1280
+ *   words_per_line = 1280 / 4 = 320
+ *   burst = 320 - 17 = 303 = 0x12F
+ *   WM0: 0x0000012F, WM1: 0x01C8012F (456 = 480 - 24)
+ *
+ * Calculated @ 1280x1024 (UNTESTED - extrapolated from webOS formulas):
+ *   bytes_per_line = 1280 * 2 = 2560
+ *   words_per_line = 2560 / 4 = 640
+ *   burst = 640 - 17 = 623 = 0x26F
+ *   WM0: 0x0000026F, WM1: 0x03E8026F (1000 = 1024 - 24)
+ *
+ * NOTE: webOS register dumps show it ONLY uses:
+ *   - Preview (WM0/WM1): 640x480 (burst=303)
+ *   - Video (WM4/WM5): ~336x240 downscaled (burst=151, height=240)
+ *   - CAMIF receives 1280x1279 but VFE scales/crops to output size
+ *   webOS never configures WMs for full 1280x1024 output!
  *
  * WR_UB_CFG Register Format (0x05C + 0x18*n):
  * -------------------------------------------
  * Bits [15:0]  - height_minus_1: (height - 1)
- * Bits [31:16] - ub_depth: (words_per_line / 8 - 1)
+ * Bits [31:16] - ub_depth: (words_per_line / 8) - 1
  *
- * WebOS Example: 0x002701DF = (39 << 16) | 479
- *   Where: 39 = (320/8) - 1, and 479 = 480 - 1
+ * Resolution Scaling:
+ *   ub_depth = (bytes_per_line / 4 / 8) - 1 = (bytes_per_line / 32) - 1
+ *   WR_UB_CFG = (ub_depth << 16) | (height - 1)
+ *
+ * WebOS @ 640x480: 0x002701DF = (39 << 16) | 479
+ *   ub_depth = (1280/32) - 1 = 39, height_minus_1 = 479
+ *
+ * Calculated @ 1280x1024: 0x004F03FF = (79 << 16) | 1023
+ *   ub_depth = (2560/32) - 1 = 79, height_minus_1 = 1023
  *
  * WR_IMAGE_SIZE Register Format (0x060 + 0x18*n):
  * -----------------------------------------------
  * Bits [15:0]  - size_cfg: ((height - 1) << 4) | 2
- * Bits [31:16] - stride: (bytesperline / 16)
+ * Bits [31:16] - stride: bytes_per_line / 16
  *
- * WebOS Example: 0x00501DF2 = (80 << 16) | 0x1DF2
- *   Where: 80 = 1280/16, and 0x1DF2 = (479 << 4) | 2
+ * Resolution Scaling:
+ *   stride = bytes_per_line / 16
+ *   size_cfg = ((height - 1) << 4) | 2
+ *   WR_IMAGE_SIZE = (stride << 16) | size_cfg
+ *
+ * WebOS @ 640x480: 0x00501DF2 = (80 << 16) | 0x1DF2
+ *   stride = 1280/16 = 80, size_cfg = (479 << 4) | 2 = 0x1DF2
+ *
+ * Calculated @ 1280x1024: 0x00A03FF2 = (160 << 16) | 0x3FF2
+ *   stride = 2560/16 = 160, size_cfg = (1023 << 4) | 2 = 0x3FF2
+ *
+ * WM4/WM5 (Video Path) - webOS uses downscaled ~336x240:
+ *   WM4 WR_CFG = 0x01300097 = lines=304, burst=151
+ *   WM5 WR_CFG = 0x02F80097 = lines=760, burst=151
+ *   burst=151 → bytes_per_line = (151+17)*4 = 672 = 336 pixels
+ *   WM4 y/x_off = 0x002700EF → height_minus_1=239 (height=240)
  *
  * Sources:
  *   - webOS kernel msm_vfe31.c register dumps
