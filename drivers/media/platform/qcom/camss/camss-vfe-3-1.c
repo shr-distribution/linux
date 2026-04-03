@@ -258,8 +258,18 @@ extern int software_eof_enable;
  *                           0x1 = WM1 only (preview CbCr)
  *                           0x9 = WM1 + WM5 (preview + video CbCr)
  *
- *   [15:8]  ISP_PATH_CFG    ISP pipeline routing
- *                           0x1A = Standard processed output
+ *   [15:8]  ISP_PATH_CFG    ISP pipeline routing configuration
+ *                           0x1A = Standard processed output (binary: 0001_1010)
+ *
+ *                           Bit analysis of 0x1A (bits 8-15 of register):
+ *                             Bit 9:  Set (function unknown - possibly enable processed path)
+ *                             Bit 11: Set (function unknown - possibly ISP module select)
+ *                             Bit 12: Set (function unknown - possibly output format)
+ *
+ *                           Note: Qualcomm documentation for these bits is not publicly
+ *                           available. Value 0x1A is used consistently in all known
+ *                           Qualcomm msm_vfe31.c sources (Android kernels, webOS, etc.)
+ *                           for ISP-processed output. Do not change without testing.
  *
  *   [31:16] Reserved        Should be 0
  *
@@ -291,11 +301,17 @@ extern int software_eof_enable;
  *   Value   Binary                  Routing
  *   ─────────────────────────────────────────────────────────────────────────
  *   0x1A03  0001_1010_0000_0011     Y→WM0, CbCr→DISABLED (BROKEN for NV16!)
- *   0x1A1B  0001_1010_0001_1011     Y→WM0+WM4, CbCr→WM1 (CORRECT)
- *   0x1A9B  0001_1010_1001_1011     Y→WM0+WM4, CbCr→WM1+WM5 (video mode)
+ *   0x1A13  0001_1010_0001_0011     Y→WM0, CbCr→WM1 (preview only)
+ *   0x1A1B  0001_1010_0001_1011     Y→WM0+WM4, CbCr→WM1 (preview + video Y)
+ *   0x1A9B  0001_1010_1001_1011     Y→WM0+WM4, CbCr→WM1+WM5 (dual video)
+ *
+ * Sources consulted for XBAR register behavior:
+ *   - freedreno/kernel-msm hp-tenderloin-3.0 branch (webOS kernel)
+ *   - android.googlesource.com/kernel/msm msm_vfe31.c/msm_vfe32.c
+ *   - gitlab.com/k2wl/g2_kernel msm_vfe31.h (V31_XBAR_CFG_OFF=0x40, LEN=8)
  *
  * The original Qualcomm msm_vfe31.c OUTPUT_1_AND_3 code used 0x1A03, which
- * does NOT route CbCr anywhere! webOS fixed this to 0x1A1B.
+ * does NOT route CbCr anywhere, causing broken semi-planar output.
  *
  * We use 0x1A1B for all PIX modes to ensure CbCr is properly routed to WM1.
  */
