@@ -4021,6 +4021,7 @@ static int camss_link_entities(struct camss *camss)
 				for (j = 0; j < camss->vfe[k].res->line_num; j++) {
 					struct v4l2_subdev *csid = &camss->csid[i].subdev;
 					struct v4l2_subdev *vfe = &camss->vfe[k].line[j].subdev;
+					unsigned int csid_pad;
 
 					/*
 					 * Don't enable CSID->VFE links by default.
@@ -4033,8 +4034,19 @@ static int camss_link_entities(struct camss *camss)
 					 * links explicitly.
 					 */
 					flags = 0;
+
+					/*
+					 * VFE_LINE_VIDEO shares CSID pad with VFE_LINE_PIX.
+					 * Both get data from the same CAMIF/DEMUX path,
+					 * with XBAR routing to different write masters.
+					 */
+					if (j == VFE_LINE_VIDEO)
+						csid_pad = MSM_CSID_PAD_FIRST_SRC + VFE_LINE_PIX;
+					else
+						csid_pad = MSM_CSID_PAD_FIRST_SRC + j;
+
 					ret = media_create_pad_link(&csid->entity,
-								    MSM_CSID_PAD_FIRST_SRC + j,
+								    csid_pad,
 								    &vfe->entity,
 								    MSM_VFE_PAD_SINK,
 								    flags);
