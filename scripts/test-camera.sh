@@ -478,9 +478,6 @@ test_raw_mode() {
     log_info "Path: Sensor -> CSIPHY -> CSID:1 -> VFE RDI0 -> /dev/video0"
     log_info "Data goes directly to memory, bypassing ISP"
 
-    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
-    set_legacy_routing "1"
-
     # Set AXI output mode to raw/RDI (0x60)
     set_axi_output_mode "0x60"
 
@@ -569,28 +566,6 @@ set_axi_output_mode() {
     "
 }
 
-# Set VFE31 legacy routing mode
-# 0 = Modern mux mode (tries csi_pix_sel/csi_pix_en bits - NOT supported on MSM8660!)
-# 1 = Legacy webOS mode (MISC_CC_REG = 0x0400, direct CSI1_VFE_CLK routing) - USE THIS
-#
-# MSM8660/VFE31 does NOT have the csi_pix_sel (bit 25) and csi_pix_en (bit 26) bits
-# that the modern mode tries to use. Always use legacy mode for MSM8660.
-set_legacy_routing() {
-    local mode="$1"
-    log_step "Setting VFE31 legacy routing mode to: $mode"
-
-    run_on_device "
-        PARAM='/sys/module/qcom_camss/parameters/vfe31_legacy_routing'
-        if [ -f \"\$PARAM\" ]; then
-            echo $mode > \$PARAM
-            echo \"vfe31_legacy_routing set to: \$(cat \$PARAM)\"
-        else
-            echo 'WARNING: vfe31_legacy_routing parameter not found'
-            echo 'Module may not be loaded or parameter not available'
-        fi
-    "
-}
-
 # Enable/disable VFE test generator mode
 set_testgen_mode() {
     local enable="$1"
@@ -614,9 +589,6 @@ test_testgen_mode() {
     log_step "Testing VFE internal test generator..."
     log_info "This bypasses the camera sensor entirely"
     log_info "Useful for verifying VFE pipeline independently"
-
-    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
-    set_legacy_routing "1"
 
     # Set AXI output mode to PIX/preview (0x01 = webOS value)
     # Note: 0x200 was incorrect - webOS uses 0x01 for ISP processing path
@@ -702,10 +674,6 @@ test_pix_mode() {
     log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
     log_info "Data goes through VFE ISP for processing"
 
-    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
-    # MSM8660 doesn't have csi_pix_sel/csi_pix_en bits that modern mode uses
-    set_legacy_routing "1"
-
     # Set AXI output mode to PIX/preview (0x01 = webOS value for ISP path)
     # Note: 0x200 is raw/CAMIF_TO_AXI bypass, 0x01 is ISP processing path
     set_axi_output_mode "0x01"
@@ -782,9 +750,6 @@ test_v4l2_mode() {
     log_step "Testing PIX mode with v4l2-ctl (direct capture)..."
     log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
     log_info "Using v4l2-ctl instead of GStreamer for direct capture"
-
-    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
-    set_legacy_routing "1"
 
     # Set AXI output mode to PIX/preview (0x01 = webOS value)
     # Note: 0x200 was incorrect - webOS uses 0x01 for ISP processing path
@@ -868,9 +833,6 @@ test_video_mode() {
     log_step "Testing VIDEO mode (preview + video output)..."
     log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
     log_info "AXI mode 0x01 enables both preview (WM0/1) and video (WM4/5) paths"
-
-    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
-    set_legacy_routing "1"
 
     # Set AXI output mode to PIX+Video (0x01)
     set_axi_output_mode "0x01"
@@ -969,9 +931,6 @@ test_nv16_mode() {
     log_info "VFE31 DEMUX outputs: Y plane to WM0, CbCr plane to WM1"
     log_info "NV16 = Y plane followed by interleaved CbCr plane"
 
-    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
-    set_legacy_routing "1"
-
     # Set AXI output mode to PIX/preview (0x01 = webOS value)
     set_axi_output_mode "0x01"
 
@@ -1062,8 +1021,6 @@ capture_frames() {
 
     log_step "Capturing $frames frame(s) in $format format ($width x $height)..."
 
-    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
-    set_legacy_routing "1"
     set_axi_output_mode "0x01"
 
     run_on_device "
@@ -1134,9 +1091,6 @@ test_legacy_mode() {
     log_info "This is the RECOMMENDED mode for MSM8660 (matches webOS)"
     log_info "Data routes directly via CSI1_VFE_CLK"
 
-    # Enable legacy routing mode BEFORE pipeline setup
-    set_legacy_routing "1"
-
     # Set AXI output mode to PIX/preview (0x01 = webOS value)
     set_axi_output_mode "0x01"
 
@@ -1147,9 +1101,8 @@ test_legacy_mode() {
         echo 'Data routes: CSIPHY1 -> CSI1_VFE_CLK -> VFE CAMIF'
         echo ''
 
-        # Check current MISC_CC state
+        # Check current module parameters
         echo 'Current module parameters:'
-        cat /sys/module/qcom_camss/parameters/vfe31_legacy_routing 2>/dev/null || echo '  (not found)'
         cat /sys/module/qcom_camss/parameters/vfe31_axi_output_mode 2>/dev/null || echo '  (not found)'
         echo ''
 
@@ -1271,7 +1224,8 @@ main() {
                 echo "  testgen    Test VFE internal test generator (bypasses camera)"
                 echo "  legacy     Test with webOS-style legacy routing (MISC_CC=0)"
                 echo "  capture-uyvy  Capture frame in UYVY format"
-                echo "  capture-nv16  Capture frame in NV16 format"
+                echo "  capture-nv16  Capture frame in NV16 format (CbCr order)"
+                echo "  capture-nv61  Capture frame in NV61 format (CrCb order, for color test)"
                 echo "  fetch      Fetch all captures from device to current directory"
                 echo "  all        Run all test modes sequentially"
                 echo "  --info     Show camera device information only"
@@ -1354,6 +1308,12 @@ main() {
         capture-nv16)
             ensure_camera_ready
             capture_frames "pix" "NV16" 640 480 1
+            check_dmesg
+            ;;
+        capture-nv61)
+            # Test NV61 (CrCb order) to see if UV channels are swapped
+            ensure_camera_ready
+            capture_frames "pix" "NV61" 640 480 1
             check_dmesg
             ;;
         fetch)
