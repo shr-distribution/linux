@@ -497,16 +497,64 @@ extern int software_eof_enable;
 #define VFE_0_BUS_PING_PONG_STATUS	0x180
 
 /*
- * Bus image masters - VFE31 layout (different from VFE41!)
+ * VFE31 BUS IMAGE MASTER REGISTERS
+ * =================================
  *
  * VFE31 AXI output block starts at 0x38, with write masters at 0x4C.
  * Each WM block is 0x18 (24) bytes with 6 registers.
  *
- * From webOS kernel msm_vfe31.c:
- *   #define VFE31_AXI_OFFSET 0x0050
- *   vfe31_get_ch_ping_addr(chn) = 0x0050 + 0x18 * (chn)
- *   vfe31_get_ch_pong_addr(chn) = 0x0050 + 0x18 * (chn) + 4
- *   WM enable at V31_AXI_OUT_OFF + 20 + 24*wm = 0x38 + 0x14 + 0x18*wm = 0x4C + 0x18*wm
+ * Register Layout per Write Master (WM0-WM5):
+ *   0x04C + 0x18*n: WR_CFG       - Write master enable (bit 0)
+ *   0x050 + 0x18*n: WR_PING_ADDR - Ping buffer physical address
+ *   0x054 + 0x18*n: WR_PONG_ADDR - Pong buffer physical address
+ *   0x058 + 0x18*n: WR_ADDR_CFG  - DMA address/burst configuration
+ *   0x05C + 0x18*n: WR_UB_CFG    - Micro-block configuration
+ *   0x060 + 0x18*n: WR_IMAGE_SIZE - Image dimensions
+ *
+ * WR_ADDR_CFG Register Format (0x058 + 0x18*n):
+ * ---------------------------------------------
+ * Bits [15:0]  - burst_words: Number of 32-bit words per DMA burst
+ *                Formula: (words_per_line - 17)
+ *                Example: 1280 bytes/line = 320 words, burst = 320-17 = 303
+ *
+ * Bits [31:16] - lines: DMA line count control
+ *                WM0 (Y plane):    lines=0 means "use height from IMAGE_SIZE"
+ *                WM1 (CbCr plane): lines=N means "write N lines of CbCr data"
+ *
+ *                IMPORTANT: For CbCr write masters (WM1, WM5), the lines field
+ *                must be set to (height - 24) for proper operation. Setting
+ *                lines=0 causes only ~half the UV data to be written.
+ *
+ *                This is NOT a crop value - it controls DMA behavior.
+ *                The exact hardware reason for the -24 offset is unknown,
+ *                but this matches webOS register dumps and is empirically
+ *                required for correct semi-planar (NV16) output.
+ *
+ * WebOS Register Examples (640x480 UYVY -> NV16):
+ *   WM0 (Y):    0x0000012F = (0 << 16) | 303    lines=0, burst=303
+ *   WM1 (CbCr): 0x01C8012F = (456 << 16) | 303  lines=456, burst=303
+ *   Where: 456 = 480 - 24, and 303 = 320 - 17 = (1280/4) - 17
+ *
+ * WR_UB_CFG Register Format (0x05C + 0x18*n):
+ * -------------------------------------------
+ * Bits [15:0]  - height_minus_1: (height - 1)
+ * Bits [31:16] - ub_depth: (words_per_line / 8 - 1)
+ *
+ * WebOS Example: 0x002701DF = (39 << 16) | 479
+ *   Where: 39 = (320/8) - 1, and 479 = 480 - 1
+ *
+ * WR_IMAGE_SIZE Register Format (0x060 + 0x18*n):
+ * -----------------------------------------------
+ * Bits [15:0]  - size_cfg: ((height - 1) << 4) | 2
+ * Bits [31:16] - stride: (bytesperline / 16)
+ *
+ * WebOS Example: 0x00501DF2 = (80 << 16) | 0x1DF2
+ *   Where: 80 = 1280/16, and 0x1DF2 = (479 << 4) | 2
+ *
+ * Sources:
+ *   - webOS kernel msm_vfe31.c register dumps
+ *   - Empirical testing on HP TouchPad (APQ8060/VFE31)
+ *   - Linux mainline camss-vfe-4-1.c (similar but not identical)
  */
 #define VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(n)		(0x04C + 0x18 * (n))
 #define VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(n)	(0x050 + 0x18 * (n))
