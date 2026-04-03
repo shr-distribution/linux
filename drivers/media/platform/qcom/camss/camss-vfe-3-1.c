@@ -1446,17 +1446,36 @@ static int vfe31_enable(struct vfe_line *line)
 	wm = output->wm_idx[0];
 	width = pix->width;
 	height = pix->height;
+
 	/*
-	 * CRITICAL: For VFE31 PIX mode (UYVY -> NV16), the DMA burst must be
-	 * based on the UYVY input stride (width * 2), NOT the NV16 output
-	 * plane bytesperline. WebOS uses 1280 bytes for 640x480, which is
-	 * 640 * 2 = UYVY input line size.
+	 * CRITICAL FIX: DMA bytesperline must match the OUTPUT plane format,
+	 * not the INPUT format. This was causing severe memory corruption!
 	 *
-	 * The output plane_fmt[0].bytesperline would be 640 (Y plane width),
-	 * but the DMA needs to know the full UYVY line width to properly
-	 * demux Y and CbCr bytes.
+	 * For semi-planar NV16 output (wm_num == 2):
+	 *   - WM0 writes Y plane: 1 byte/pixel -> bytesperline = width
+	 *   - WM1 writes CbCr plane: 2 bytes/2 pixels -> bytesperline = width
+	 *   - Buffer layout: Y (width*height bytes) then CbCr (width*height bytes)
+	 *
+	 * For packed UYVY output (wm_num == 1):
+	 *   - WM0 writes packed YUYV: 2 bytes/pixel -> bytesperline = width * 2
+	 *
+	 * Previous bug: Using width*2 for NV16 caused DMA to write 2x expected
+	 * data to Y plane, overwriting CbCr area and corrupting kernel memory.
+	 * Symptom: "Bad swap offset entry 00808080" (0x80 = neutral UV value).
 	 */
-	bytesperline = width * 2;  /* UYVY input stride, not output plane */
+	if (output->wm_num == 2) {
+		/* Semi-planar NV16: each plane is width bytes per line */
+		bytesperline = width;
+		dev_info(vfe->camss->dev,
+			 "VFE31: NV16 mode - using bytesperline=%u (per plane)\n",
+			 bytesperline);
+	} else {
+		/* Packed UYVY: 2 bytes per pixel */
+		bytesperline = width * 2;
+		dev_info(vfe->camss->dev,
+			 "VFE31: UYVY mode - using bytesperline=%u (packed)\n",
+			 bytesperline);
+	}
 
 	/* Get buffer addresses */
 	if (output->buf[0])
@@ -1550,56 +1569,52 @@ static int vfe31_enable(struct vfe_line *line)
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 
 	/*
-	 * WR_IMAGE_SIZE - VFE31 format (from webOS register dumps):
-	 * webOS WM0: 0x00501DF2 = ((80) << 16) | ((479 << 4) | 2)
-	 *
+	 * WR_IMAGE_SIZE - VFE31 format:
 	 * Upper 16 bits: bytesperline / 16 (128-bit words per line)
 	 * Lower 16 bits: ((height - 1) << 4) | 2
 	 *
-	 * This is DIFFERENT from VFE4.x which uses (height-1) | (wpl<<16)
+	 * For NV16 640x480: (640/16) << 16 = 40 << 16 = 0x00280000
+	 * For UYVY 640x480: (1280/16) << 16 = 80 << 16 = 0x00500000
+	 *
+	 * webOS UYVY reference: 0x00501DF2 = ((80) << 16) | ((479 << 4) | 2)
 	 */
 	reg = ((bytesperline / 16) & 0xFFFF) << 16;
 	reg |= ((height - 1) << 4) | 2;
+	dev_info(vfe->camss->dev, "VFE31: WM%d WR_IMAGE_SIZE=0x%08x (wpl_128=%u)\n",
+		 wm, reg, bytesperline / 16);
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
 
 	/*
-	 * WR_ADDR_CFG - webOS format: (lines << 16) | burst_words
-	 * webOS WM0: 0x0000012F = (lines=0 << 16) | burst=303
-	 * webOS WM1: 0x01C8012F = (lines=456 << 16) | burst=303
+	 * WR_ADDR_CFG - format: (lines << 16) | burst_words
 	 *
-	 * For single-plane UYVY, only WM0 is used with lines=0.
-	 * burst_words = words_per_line - 1 (webOS uses wpl-1)
+	 * burst_words = (wpl - 17), where wpl = 32-bit words per line
+	 * The 16-word (64-byte) difference is DMA alignment overhead.
 	 *
-	 * NOTE: wpl is in 32-bit words. bytesperline is already in bytes,
-	 * so divide by 4 directly (don't use vfe_word_per_line which
-	 * expects pixel width and multiplies by bytes-per-pixel again).
+	 * For NV16 640x480: wpl = 160, burst = 160 - 17 = 143 = 0x8F
+	 * For UYVY 640x480: wpl = 320, burst = 320 - 17 = 303 = 0x12F
 	 *
-	 * IMPORTANT: webOS uses (wpl - 17), not (wpl - 1)!
-	 * For 640x480 UYVY (1280 bytes/line = 320 words):
-	 *   Our old: 320 - 1 = 319
-	 *   webOS:   320 - 17 = 303 = 0x12F (matches register dump!)
-	 * The 16-word (64-byte) difference may be DMA alignment overhead.
+	 * lines field: 0 for WM0 (Y/first plane), (height-24) for WM1 (CbCr)
 	 */
 	wpl = bytesperline / 4;  /* 32-bit words per line */
-	reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 (webOS formula) */
+	reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 */
 	dev_info(vfe->camss->dev, "VFE31: WM%d WR_ADDR_CFG=0x%04x (wpl=%d, burst=%d)\n",
-		 wm, reg, wpl, reg);
-	/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
+		 wm, reg, wpl, wpl - 17);
+	/* WM0 (Y plane) uses lines=0 */
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 
 	/*
-	 * WR_UB_CFG - VFE31 format (from webOS register dumps):
-	 * webOS WM0: 0x002701DF = ((39) << 16) | 479
-	 *
+	 * WR_UB_CFG - VFE31 format:
 	 * Upper 16 bits: (wpl / 8) - 1, where wpl is 32-bit words per line
-	 *   For 1280 bytes/line: wpl = 320, (320/8)-1 = 39 = 0x27
 	 * Lower 16 bits: height - 1
 	 *
-	 * This is DIFFERENT from VFE4.x which uses (offset << 16) | depth
+	 * For NV16 640x480: wpl=160, (160/8)-1 = 19 = 0x13
+	 * For UYVY 640x480: wpl=320, (320/8)-1 = 39 = 0x27
 	 */
 	wpl = bytesperline / 4;  /* 32-bit words per line */
 	reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 	reg |= (height - 1) & 0xFFFF;
+	dev_info(vfe->camss->dev, "VFE31: WM%d WR_UB_CFG=0x%08x (wpl/8-1=%u)\n",
+		 wm, reg, wpl / 8 - 1);
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
 
 	/*
@@ -1642,9 +1657,11 @@ static int vfe31_enable(struct vfe_line *line)
 		writel_relaxed(wm1_pong_addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm1));
 
-		/* WM1 IMAGE_SIZE - same as WM0 */
+		/* WM1 IMAGE_SIZE - same format as WM0, same bytesperline for NV16 */
 		reg = ((bytesperline / 16) & 0xFFFF) << 16;
 		reg |= ((height - 1) << 4) | 2;
+		dev_info(vfe->camss->dev, "VFE31: WM%d WR_IMAGE_SIZE=0x%08x (wpl_128=%u)\n",
+			 wm1, reg, bytesperline / 16);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 
 		/*
@@ -1665,9 +1682,11 @@ static int vfe31_enable(struct vfe_line *line)
 			 wm1, reg, height - 24, (wpl - 17) & 0xFFFF);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
 
-		/* WM1 UB_CFG - same as WM0 */
+		/* WM1 UB_CFG - same format as WM0 */
 		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 		reg |= (height - 1) & 0xFFFF;
+		dev_info(vfe->camss->dev, "VFE31: WM%d WR_UB_CFG=0x%08x (wpl/8-1=%u)\n",
+			 wm1, reg, wpl / 8 - 1);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm1));
 
 		/* Enable WM1 */
