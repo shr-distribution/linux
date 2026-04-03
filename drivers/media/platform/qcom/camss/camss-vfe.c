@@ -796,8 +796,14 @@ int vfe_reset(struct vfe_device *vfe)
  * webOS leaves this at 0. We only read it for debug purposes.
  */
 #define VFE31_AXI_CFG_1			0x044  /* XBAR CFG1 - routes data to WMs */
-#define VFE31_XBAR_CFG1_PIX_MODE	0x1a03	/* Preview: route CAMIF to WM0/WM1 */
-#define VFE31_XBAR_CFG1_VIDEO_MODE	0x1a1b	/* Preview+Video: WM0/1 + WM4/5 */
+/*
+ * XBAR_CFG1 must route BOTH Y and CbCr for semi-planar output!
+ * 0x1a03 has CBCR_ROUTING=0 (disabled) - only routes Y, CbCr plane gets Y data
+ * 0x1a1b has CBCR_ROUTING=1 (WM1) - properly routes CbCr to WM1
+ * See camss-vfe-3-1.c XBAR documentation for bit field details.
+ */
+#define VFE31_XBAR_CFG1_PIX_MODE	0x1a1b	/* Preview: Y→WM0, CbCr→WM1 */
+#define VFE31_XBAR_CFG1_VIDEO_MODE	0x1a1b	/* Same routing for video mode */
 
 /*
  * MSM8660 External Register Addresses for Debug
@@ -2177,9 +2183,8 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * For raw/RDI mode (0x60), data bypasses the ISP entirely via
 	 * CAMIF_TO_AXI path, so XBAR configuration is not needed.
 	 *
-	 * XBAR CFG1 value breakdown:
-	 *   0x1a03 = Preview only: route ViewY/ViewCbCr to WM0/WM1
-	 *   0x1a1b = Preview+Video: also route EncY/EncCbCr to WM4/WM5
+	 * XBAR CFG1 = 0x1a1b routes Y→WM0 and CbCr→WM1 for semi-planar output.
+	 * Using 0x1a03 (CBCR_ROUTING=0) would break semi-planar formats!
 	 */
 	if (vfe31_axi_output_mode != 0x60) {
 		u32 xbar_val = vfe31_video_output_enable ?
