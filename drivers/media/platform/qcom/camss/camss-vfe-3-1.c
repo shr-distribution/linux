@@ -257,9 +257,15 @@ extern int software_eof_enable;
  * ping_pong status register never toggles.
  *
  * The upper bits (0x02AAA) appear to be timing/strobe configuration.
- * Use the exact webOS value 0x02AAA771 for reliable operation.
+ *
+ * IMPORTANT: webOS uses 0x02AAA771 but this has bit 7 DISABLED!
+ * WM1 (CbCr plane) uses the viewfinder CbCr write path, so we MUST
+ * enable bit 7 (viewCbcrWrPathEn) for NV16 semi-planar output to work.
+ * Without bit 7, WM1 never receives data (ping_pong bit 1 stays at 0).
+ *
+ * Changed from 0x02AAA771 to 0x02AAA7F1 to enable all Y+CbCr paths.
  */
-#define VFE_0_BUS_CFG_WEBOS_VALUE		0x02AAA771
+#define VFE_0_BUS_CFG_WEBOS_VALUE		0x02AAA7F1
 #define VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN		BIT(4)
 #define VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN	BIT(5)
 #define VFE_0_BUS_CFG_VIEW_Y_WR_PATH_EN		BIT(6)
@@ -394,9 +400,12 @@ extern int software_eof_enable;
  * The original Qualcomm msm_vfe31.c OUTPUT_1_AND_3 code used 0x1A03, which
  * does NOT route CbCr anywhere, causing broken semi-planar output.
  *
- * We use 0x1A1B for all PIX modes to ensure CbCr is properly routed to WM1.
+ * For preview-only mode: use 0x1A13 (Y→WM0, CbCr→WM1)
+ * For video mode: use 0x1A1B (Y→WM0+WM4, CbCr→WM1) - requires WM4 config
+ *
+ * Using 0x1A1B without WM4 configured causes WM1 to not receive data!
  */
-#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1A1B
+#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1A13
 #define VFE_0_BUS_XBAR_CFG1_VIDEO_MODE		0x1A1B
 
 /* Legacy define - Qualcomm's broken value that doesn't route CbCr */
@@ -2476,12 +2485,12 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	} else {
 		/* PIX mode (0x01): Use XBAR to route DEMUX output to WMs */
 		dev_info(vfe->camss->dev,
-			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x01, XBAR=0x1a1b\n",
-			 VFE_0_BUS_CFG_WEBOS_VALUE);
+			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x01, XBAR=0x%04x\n",
+			 VFE_0_BUS_CFG_WEBOS_VALUE, VFE_0_BUS_XBAR_CFG1_PIX_MODE);
 		writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-		writel_relaxed(VFE_0_BUS_XBAR_CFG1_VIDEO_MODE,
+		writel_relaxed(VFE_0_BUS_XBAR_CFG1_PIX_MODE,
 			       vfe->base + VFE_0_BUS_XBAR_CFG1);
 	}
 	wmb();
