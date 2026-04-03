@@ -925,10 +925,11 @@ set_video_output() {
 # Test VIDEO4 mode - dual output capture via WM4/WM5
 # Uses /dev/video4 (msm_vfe0_video) for high-quality capture
 # This is the RECOMMENDED mode for capture as it uses dedicated WMs
-# CSID pad 5 (VIDEO line) -> VFE VIDEO (line 4)
+# CSID pad 4 (shared with PIX) -> VFE VIDEO (line 4)
+# Note: VFE_LINE_VIDEO shares CSID pad with VFE_LINE_PIX - both use pad 4
 test_video4_mode() {
     log_step "Testing VIDEO4 mode (capture via WM4/WM5)..."
-    log_info "Path: Sensor -> CSIPHY -> CSID:5 -> VFE VIDEO -> /dev/video4"
+    log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE VIDEO -> /dev/video4"
     log_info "Uses WM4 (Y) + WM5 (CbCr) for dedicated capture output"
     log_info "This is the RECOMMENDED mode for FULL RESOLUTION capture"
 
@@ -954,10 +955,10 @@ test_video4_mode() {
         echo 'Enabling upstream links...'
         media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
 
-        # Enable VIDEO link: CSID pad 5 (VIDEO) -> VFE VIDEO pad 0
-        # MSM_CSID_PAD_FIRST_SRC + VFE_LINE_VIDEO = 1 + 4 = 5
-        echo 'Enabling VIDEO link (CSID:5 -> VFE VIDEO)...'
-        media-ctl -l '\"msm_csid1\":5->\"msm_vfe0_video\":0[1]' 2>&1 || echo '  csid:5->vfe_video link failed'
+        # Enable VIDEO link: CSID pad 4 -> VFE VIDEO pad 0
+        # VFE_LINE_VIDEO shares CSID pad 4 with VFE_LINE_PIX (both from CAMIF/DEMUX)
+        echo 'Enabling VIDEO link (CSID:4 -> VFE VIDEO)...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_video\":0[1]' 2>&1 || echo '  csid:4->vfe_video link failed'
 
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
         echo 'Setting formats (1280x1024 capture mode)...'
@@ -965,7 +966,7 @@ test_video4_mode() {
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":5[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_vfe0_video\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_vfe0_video\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
 
