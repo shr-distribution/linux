@@ -213,7 +213,16 @@ extern int software_eof_enable;
 #define VFE_0_BUS_XBAR_CFG1			0x044
 #define VFE_0_BUS_AXI_OUT_MODE_RAW_WM0		0x60
 #define VFE_0_BUS_XBAR_CFG0_PIX_MODE		0x01
-#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1a03
+/*
+ * XBAR_CFG1 bit layout:
+ *   Bits 0-3: Y output routing (0x3=WM0, 0xB=WM0+WM4)
+ *   Bits 4-7: CbCr output routing (0x0=disabled, 0x1=WM1, 0x9=WM1+WM5)
+ *   Bits 8-15: Additional config (0x1A = standard ISP path)
+ *
+ * PIX_MODE must have bit 4 set to route CbCr to WM1 for semi-planar output!
+ * webOS always uses 0x1a1b; 0x1a03 only routes Y, leaving CbCr unrouted.
+ */
+#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1a1b
 /*
  * VFE31 Video mode XBAR configuration:
  *   0x1a1b = preview + video mode (WM0/WM1 for preview, WM4/WM5 for video)
@@ -439,22 +448,19 @@ extern int software_eof_enable;
 #define VFE_0_STATS_CS_CFG		0x574
 #define VFE_0_STATS_IHIST_CFG		0x57C
 
-/* Bus XBAR configuration */
-#define VFE_0_BUS_XBAR_CFG_x(x)		(0x058 + 0x4 * ((x) / 2))
 /*
- * VFE31 per-WM XBAR configuration bits (same layout as VFE41).
- * These control which internal stream is routed to each write master.
+ * NOTE: VFE31 does NOT have per-WM XBAR registers like VFE41/47/48.
+ * In VFE41+, VFE_0_BUS_XBAR_CFG_x(x) at 0x90+ controls per-WM stream routing.
+ * In VFE31, 0x058 is WM0_WR_CFG, not an XBAR register!
  *
- * For NV16 semi-planar output:
- * - WM0: SINGLE_STREAM_SEL_LUMA (select luma/Y stream)
- * - WM1: PAIR_STREAM_EN + SWAP (enable paired chroma/CbCr stream)
+ * VFE31 Y/CbCr routing is handled by:
+ * 1. XBAR_CFG1 at 0x044 - routes ISP output to WM0/WM1 (or WM4/WM5 for video)
+ * 2. DEMUX module - splits UYVY into Y and CbCr streams internally
  *
- * For odd WM indices, values are shifted left by 16 bits.
+ * XBAR_CFG1 values:
+ * - 0x1a03: PIX mode - WM0 (Y) + WM1 (CbCr)
+ * - 0x1a1b: VIDEO mode - WM0/WM1 + WM4/WM5
  */
-#define VFE_0_BUS_XBAR_CFG_x_M_PAIR_STREAM_EN			BIT(1)
-#define VFE_0_BUS_XBAR_CFG_x_M_PAIR_STREAM_SWAP_INTER_INTRA	(0x3 << 4)
-#define VFE_0_BUS_XBAR_CFG_x_M_SINGLE_STREAM_SEL_SHIFT		8
-#define VFE_0_BUS_XBAR_CFG_x_M_SINGLE_STREAM_SEL_LUMA		0
 
 /* Register update */
 #define VFE_0_REG_UPDATE_CMD		0x260
@@ -508,8 +514,6 @@ static inline void vfe31_reg_update_clear(struct vfe_device *vfe,
 static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line);
 static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line);
 static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
-static void vfe31_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output,
-			       u8 enable);
 
 static void vfe31_global_reset(struct vfe_device *vfe)
 {
@@ -1060,11 +1064,6 @@ static int vfe31_enable(struct vfe_line *line)
 			 xbar_cfg1, vfe31_video_output_enable);
 		writel_relaxed(xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
 
-		/*
-		 * Configure per-WM XBAR routing (0x058+ registers).
-		 * This routes Y stream to WM0 and CbCr stream to WM1.
-		 */
-		vfe31_set_xbar_cfg(vfe, output, 1);
 	}
 
 	/*
@@ -1629,57 +1628,19 @@ static void vfe31_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output
 			       u8 enable)
 {
 	/*
-	 * VFE31 per-WM XBAR configuration (same approach as VFE41).
+	 * VFE31 does NOT have per-WM XBAR registers like VFE41/47/48.
 	 *
-	 * For NV16 semi-planar output (wm_num == 2):
-	 * - WM0: Select LUMA stream (Y channel)
-	 * - WM1: Enable PAIR_STREAM for CbCr channel with swap for NV16
+	 * In VFE41+, per-WM XBAR registers at 0x90+ control stream routing.
+	 * In VFE31, 0x058+ are WM_WR_CFG registers, not XBAR!
 	 *
-	 * For single-WM output (raw/RDI):
-	 * - WM0: Just set stream selection bits
+	 * VFE31 Y/CbCr routing is controlled entirely by:
+	 * 1. XBAR_CFG1 at 0x044 - routes ISP output to write masters
+	 *    - 0x1a03: PIX mode (WM0=Y, WM1=CbCr)
+	 *    - 0x1a1b: VIDEO mode (WM0/1 + WM4/5)
+	 * 2. DEMUX module - internally separates UYVY into Y and CbCr streams
 	 *
-	 * Note: For odd WM indices, value is shifted left by 16 bits
-	 * because two WMs share one XBAR register (WM0/WM1, WM2/WM3, etc.)
+	 * This function is intentionally empty for VFE31.
 	 */
-	struct vfe_line *line = container_of(output, struct vfe_line, output);
-	u32 p = line->video_out.active_fmt.fmt.pix_mp.pixelformat;
-	u32 reg;
-	unsigned int i;
-
-	for (i = 0; i < output->wm_num; i++) {
-		if (i == 0) {
-			/* WM0: Select luma/Y stream */
-			reg = VFE_0_BUS_XBAR_CFG_x_M_SINGLE_STREAM_SEL_LUMA <<
-				VFE_0_BUS_XBAR_CFG_x_M_SINGLE_STREAM_SEL_SHIFT;
-		} else if (i == 1) {
-			/* WM1: Enable paired chroma/CbCr stream */
-			reg = VFE_0_BUS_XBAR_CFG_x_M_PAIR_STREAM_EN;
-			/* Add swap for NV12/NV16 (CbCr order) */
-			if (p == V4L2_PIX_FMT_NV12 || p == V4L2_PIX_FMT_NV16)
-				reg |= VFE_0_BUS_XBAR_CFG_x_M_PAIR_STREAM_SWAP_INTER_INTRA;
-		} else {
-			/* On current devices output->wm_num is always <= 2 */
-			break;
-		}
-
-		/* Odd WM indices use upper 16 bits of shared register */
-		if (output->wm_idx[i] % 2 == 1)
-			reg <<= 16;
-
-		dev_info(vfe->camss->dev,
-			 "VFE31: XBAR per-WM cfg WM%d enable=%d reg=0x%03x val=0x%08x\n",
-			 output->wm_idx[i], enable,
-			 VFE_0_BUS_XBAR_CFG_x(output->wm_idx[i]), reg);
-
-		if (enable)
-			vfe_reg_set(vfe,
-				    VFE_0_BUS_XBAR_CFG_x(output->wm_idx[i]),
-				    reg);
-		else
-			vfe_reg_clr(vfe,
-				    VFE_0_BUS_XBAR_CFG_x(output->wm_idx[i]),
-				    reg);
-	}
 }
 
 /*

@@ -533,6 +533,14 @@ test_raw_mode() {
         if [ \$? -eq 0 ]; then
             echo ''
             echo 'SUCCESS: RAW capture completed!'
+            echo ''
+            echo 'Saving frame to /tmp/camera_raw.raw...'
+            rm -f /tmp/camera_raw.raw
+            timeout 10 v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1 --stream-to=/tmp/camera_raw.raw 2>&1
+            if [ -s /tmp/camera_raw.raw ]; then
+                SIZE=\$(stat -c%s /tmp/camera_raw.raw 2>/dev/null || echo 0)
+                echo \"Frame saved: \$SIZE bytes (expected 614400 for 640x480 UYVY)\"
+            fi
         else
             echo ''
             echo 'FAILED: RAW capture did not complete'
@@ -751,6 +759,14 @@ test_pix_mode() {
         if [ \$? -eq 0 ]; then
             echo ''
             echo 'SUCCESS: PIX capture completed!'
+            echo ''
+            echo 'Saving frame to /tmp/camera_pix.raw...'
+            rm -f /tmp/camera_pix.raw
+            timeout 10 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=1 --stream-to=/tmp/camera_pix.raw 2>&1
+            if [ -s /tmp/camera_pix.raw ]; then
+                SIZE=\$(stat -c%s /tmp/camera_pix.raw 2>/dev/null || echo 0)
+                echo \"Frame saved: \$SIZE bytes (expected 614400 for 640x480 UYVY)\"
+            fi
         else
             echo ''
             echo 'FAILED: PIX capture did not complete'
@@ -908,6 +924,14 @@ test_video_mode() {
         if [ \$? -eq 0 ]; then
             echo ''
             echo 'SUCCESS: VIDEO mode capture completed!'
+            echo ''
+            echo 'Saving frame to /tmp/camera_video.raw...'
+            rm -f /tmp/camera_video.raw
+            timeout 10 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=1 --stream-to=/tmp/camera_video.raw 2>&1
+            if [ -s /tmp/camera_video.raw ]; then
+                SIZE=\$(stat -c%s /tmp/camera_video.raw 2>/dev/null || echo 0)
+                echo \"Frame saved: \$SIZE bytes (expected 614400 for 640x480 UYVY)\"
+            fi
         else
             echo ''
             echo 'FAILED: VIDEO mode capture did not complete'
@@ -1025,6 +1049,81 @@ test_nv16_mode() {
             fi
         fi
     "
+}
+
+# Capture frames in specified format and fetch to host
+# Usage: capture_and_fetch <mode> <format> <output_file>
+capture_frames() {
+    local mode="$1"
+    local format="${2:-UYVY}"
+    local width="${3:-640}"
+    local height="${4:-480}"
+    local frames="${5:-1}"
+
+    log_step "Capturing $frames frame(s) in $format format ($width x $height)..."
+
+    # Use legacy routing mode (matches webOS MISC_CC=0x0400 configuration)
+    set_legacy_routing "1"
+    set_axi_output_mode "0x01"
+
+    run_on_device "
+        echo '=== Capture Mode: $format $width x $height ==='
+
+        # Reset and setup pipeline
+        media-ctl -r 2>/dev/null || true
+        media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
+
+        # Set formats
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/${width}x${height}]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/${width}x${height}]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/${width}x${height}]' 2>&1 || true
+
+        # Set V4L2 format
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=$width,height=$height,pixelformat=$format 2>&1 || true
+
+        # Capture
+        rm -f /tmp/capture_$format.raw
+        timeout 15 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=$frames --stream-to=/tmp/capture_$format.raw 2>&1
+
+        if [ -s /tmp/capture_$format.raw ]; then
+            SIZE=\$(stat -c%s /tmp/capture_$format.raw 2>/dev/null || echo 0)
+            echo \"SUCCESS: Captured \$SIZE bytes to /tmp/capture_$format.raw\"
+        else
+            echo 'FAILED: No capture data'
+        fi
+    "
+}
+
+# Fetch captures from device
+fetch_captures() {
+    local dest="${1:-.}"
+    log_step "Fetching captures from device to $dest..."
+
+    # Get list of captured files
+    local files=$(run_on_device "ls -1 /tmp/camera_*.raw /tmp/capture_*.raw 2>/dev/null" || true)
+
+    if [ -z "$files" ]; then
+        log_error "No capture files found on device"
+        return 1
+    fi
+
+    log_info "Found captures:"
+    echo "$files"
+
+    for f in $files; do
+        local basename=$(basename "$f")
+        log_info "Fetching $basename..."
+        scp -P $SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            root@$DEVICE_IP:"$f" "$dest/$basename" 2>/dev/null
+        if [ -f "$dest/$basename" ]; then
+            log_result "Saved: $dest/$basename ($(stat -c%s "$dest/$basename") bytes)"
+        fi
+    done
 }
 
 # Test legacy routing mode (webOS-style MISC_CC=0x0400)
@@ -1148,6 +1247,18 @@ main() {
             nv16)
                 MODE="nv16"
                 ;;
+            fetch)
+                MODE="fetch"
+                ;;
+            capture-uyvy)
+                MODE="capture-uyvy"
+                ;;
+            capture-nv16)
+                MODE="capture-nv16"
+                ;;
+            all)
+                MODE="all"
+                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
@@ -1159,6 +1270,10 @@ main() {
                 echo "  v4l2       Test PIX mode with v4l2-ctl (direct, no GStreamer)"
                 echo "  testgen    Test VFE internal test generator (bypasses camera)"
                 echo "  legacy     Test with webOS-style legacy routing (MISC_CC=0)"
+                echo "  capture-uyvy  Capture frame in UYVY format"
+                echo "  capture-nv16  Capture frame in NV16 format"
+                echo "  fetch      Fetch all captures from device to current directory"
+                echo "  all        Run all test modes sequentially"
                 echo "  --info     Show camera device information only"
                 echo "  --setup    Set up media pipeline only"
                 echo "  --capture  Test capture only (assumes pipeline is set up)"
@@ -1230,6 +1345,36 @@ main() {
             ensure_camera_ready
             test_video_mode
             check_dmesg
+            ;;
+        capture-uyvy)
+            ensure_camera_ready
+            capture_frames "pix" "UYVY" 640 480 1
+            check_dmesg
+            ;;
+        capture-nv16)
+            ensure_camera_ready
+            capture_frames "pix" "NV16" 640 480 1
+            check_dmesg
+            ;;
+        fetch)
+            fetch_captures "."
+            ;;
+        all)
+            show_camera_info
+            ensure_camera_ready
+            log_step "Running all test modes..."
+            echo ""
+            test_pix_mode
+            echo ""
+            test_nv16_mode
+            echo ""
+            test_video_mode
+            echo ""
+            test_raw_mode
+            echo ""
+            check_dmesg
+            log_step "Fetching all captures..."
+            fetch_captures "."
             ;;
         full)
             show_camera_info
