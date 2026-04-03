@@ -799,11 +799,15 @@ int vfe_reset(struct vfe_device *vfe)
 /*
  * XBAR_CFG1 must route BOTH Y and CbCr for semi-planar output!
  * 0x1a03 has CBCR_ROUTING=0 (disabled) - only routes Y, CbCr plane gets Y data
- * 0x1a1b has CBCR_ROUTING=1 (WM1) - properly routes CbCr to WM1
+ * 0x1a13 has CBCR_ROUTING=1 (WM1), Y_ROUTING=3 (WM0 only)
+ * 0x1a1b has CBCR_ROUTING=1, Y_ROUTING=B (WM0+WM4) - requires WM4 configured
  * See camss-vfe-3-1.c XBAR documentation for bit field details.
+ *
+ * For preview-only: use 0x1a13 to avoid need for WM4 configuration
+ * For video mode: use 0x1a1b (Y→WM0+WM4) with WM4/WM5 configured
  */
-#define VFE31_XBAR_CFG1_PIX_MODE	0x1a1b	/* Preview: Y→WM0, CbCr→WM1 */
-#define VFE31_XBAR_CFG1_VIDEO_MODE	0x1a1b	/* Same routing for video mode */
+#define VFE31_XBAR_CFG1_PIX_MODE	0x1a13	/* Preview: Y→WM0, CbCr→WM1 */
+#define VFE31_XBAR_CFG1_VIDEO_MODE	0x1a1b	/* Video: Y→WM0+WM4, CbCr→WM1 */
 
 /*
  * MSM8660 External Register Addresses for Debug
@@ -1357,16 +1361,15 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 * the VFE pipeline to the Write Masters.
 		 *
 		 * Use module parameter vfe31_axi_output_mode (default 0x01).
-		 * XBAR_CFG1 must be 0x1A1B for PIX mode to route:
-		 *   - Y (luma) to WM0 (and WM4 for video)
-		 *   - CbCr (chroma) to WM1 (and WM5 for video)
+		 * XBAR_CFG1 must route both Y and CbCr for semi-planar output:
+		 *   - 0x1a13: Y→WM0, CbCr→WM1 (preview-only)
+		 *   - 0x1a1b: Y→WM0+WM4, CbCr→WM1 (requires WM4 configured)
 		 *
 		 * NOTE: 0x1a03 is BROKEN - it has CbCr routing disabled!
-		 * NOTE: 0x1a13 also causes issues - use 0x1A1B consistently.
 		 */
 		{
-			/* Always use 0x1A1B for proper Y/CbCr routing */
-			u32 xbar_cfg1 = 0x1a1b;
+			/* Use preview-only mode for testgen (no WM4/WM5) */
+			u32 xbar_cfg1 = VFE31_XBAR_CFG1_PIX_MODE;
 
 			writel_relaxed(vfe31_axi_output_mode, vfe->base + 0x040);
 			writel_relaxed(xbar_cfg1, vfe->base + 0x044);
