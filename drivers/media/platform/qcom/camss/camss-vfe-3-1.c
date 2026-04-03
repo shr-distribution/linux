@@ -114,36 +114,97 @@ extern int software_eof_enable;
 #define VFE_0_IRQ_CMD			0x018
 #define VFE_0_IRQ_CMD_GLOBAL_CLEAR	BIT(0)
 
+/*
+ * IRQ_MASK_0 / IRQ_STATUS_0 bit definitions (0x01C / 0x02C)
+ *
+ * Per Mako/webOS kernel msm_vfe31.h:
+ *   Bit 0:  CAMIF_SOF (Start of Frame)
+ *   Bit 1:  (reserved in VFE31)
+ *   Bit 2:  CAMIF_EOF (End of Frame) - NOTE: bit 2, not bit 1!
+ *   Bit 3:  (reserved)
+ *   Bit 4:  EPOCH_IRQ_0
+ *   Bit 5:  REG_UPDATE
+ *   Bit 6:  RESET_ACK (also in STATUS_1 bit 22)
+ *   Bit 8-14: IMAGE_MASTER_0-6_PING_PONG
+ *   Bit 13: STATS_AEC
+ *   Bit 14: STATS_AF
+ *   Bit 15: STATS_AWB
+ *   Bit 16: STATS_RS
+ *   Bit 17: STATS_CS
+ *   Bit 18: STATS_IHIST
+ *   Bit 21-23: IMAGE_COMPOSITE_DONE_0/1/2
+ *   Bit 24: STATS_COMPOSITE
+ *   Bit 25-27: SYNC_TIMER_0/1/2
+ *   Bit 28-31: ASYNC_TIMER_0/1/2/3
+ */
 #define VFE_0_IRQ_MASK_0		0x01C
 #define VFE_0_IRQ_MASK_0_CAMIF_SOF			BIT(0)
-#define VFE_0_IRQ_MASK_0_CAMIF_EOF			BIT(1)
-#define VFE_0_IRQ_MASK_0_EPOCH_IRQ_0			BIT(2)
-#define VFE_0_IRQ_MASK_0_EPOCH_IRQ_1			BIT(3)
-#define VFE_0_IRQ_MASK_0_EPOCH_IRQ_2			BIT(4)
+#define VFE_0_IRQ_MASK_0_CAMIF_EOF			BIT(2)  /* bit 2, not 1! */
+#define VFE_0_IRQ_MASK_0_EPOCH_IRQ_0			BIT(4)
 #define VFE_0_IRQ_MASK_0_REG_UPDATE			BIT(5)
 #define VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(n)	BIT((n) + 8)
+#define VFE_0_IRQ_MASK_0_STATS_AEC			BIT(13)
+#define VFE_0_IRQ_MASK_0_STATS_AF			BIT(14)
+#define VFE_0_IRQ_MASK_0_STATS_AWB			BIT(15)
+#define VFE_0_IRQ_MASK_0_STATS_RS			BIT(16)
+#define VFE_0_IRQ_MASK_0_STATS_CS			BIT(17)
+#define VFE_0_IRQ_MASK_0_STATS_IHIST			BIT(18)
 #define VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(n)	BIT((n) + 21)
 #define VFE_0_IRQ_MASK_0_STATS_COMPOSITE		BIT(24)
+#define VFE_0_IRQ_MASK_0_SYNC_TIMER_0			BIT(25)
+#define VFE_0_IRQ_MASK_0_SYNC_TIMER_1			BIT(26)
+#define VFE_0_IRQ_MASK_0_SYNC_TIMER_2			BIT(27)
+#define VFE_0_IRQ_MASK_0_ASYNC_TIMER_0			BIT(28)
+#define VFE_0_IRQ_MASK_0_ASYNC_TIMER_1			BIT(29)
+#define VFE_0_IRQ_MASK_0_ASYNC_TIMER_2			BIT(30)
+#define VFE_0_IRQ_MASK_0_ASYNC_TIMER_3			BIT(31)
 #define VFE_0_IRQ_MASK_0_RESET_ACK			BIT(31)
 #define VFE_0_IRQ_MASK_0_line_n_REG_UPDATE(n)		\
 	((n) == VFE_LINE_PIX ? BIT(5) : 0)
 
+/*
+ * IRQ_MASK_1 / IRQ_STATUS_1 bit definitions (0x020 / 0x030)
+ *
+ * Per Mako/webOS kernel msm_vfe31.h, these are error interrupts:
+ *   Bit 0:  CAMIF_ERROR
+ *   Bit 1:  STATS_CS_OVERFLOW
+ *   Bit 2:  STATS_IHIST_OVERFLOW
+ *   Bit 3:  REALIGN_BUF_Y_OVERFLOW
+ *   Bit 4:  REALIGN_BUF_CB_OVERFLOW
+ *   Bit 5:  REALIGN_BUF_CR_OVERFLOW
+ *   Bit 6:  VIOLATION
+ *   Bit 7-13: IMAGE_MASTER_0-6_BUS_OVERFLOW
+ *   Bit 14-20: STATS buffer overflows (AE, AF, AWB, RS, CS, IHIST, SKIN)
+ *   Bit 21: AXI_ERROR
+ *   Bit 22: RESET_ACK (VFE31-specific location!)
+ *   Bit 23: BUS_BDG_HALT_ACK
+ */
 #define VFE_0_IRQ_MASK_1		0x020
 #define VFE_0_IRQ_MASK_1_CAMIF_ERROR			BIT(0)
+#define VFE_0_IRQ_MASK_1_STATS_CS_OVERFLOW		BIT(1)
+#define VFE_0_IRQ_MASK_1_STATS_IHIST_OVERFLOW		BIT(2)
+#define VFE_0_IRQ_MASK_1_REALIGN_BUF_Y_OVERFLOW		BIT(3)
+#define VFE_0_IRQ_MASK_1_REALIGN_BUF_CB_OVERFLOW	BIT(4)
+#define VFE_0_IRQ_MASK_1_REALIGN_BUF_CR_OVERFLOW	BIT(5)
 #define VFE_0_IRQ_MASK_1_VIOLATION			BIT(6)
+#define VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(n)	BIT((n) + 7)
+#define VFE_0_IRQ_MASK_1_STATS_AE_BUS_OVERFLOW		BIT(14)
+#define VFE_0_IRQ_MASK_1_STATS_AF_BUS_OVERFLOW		BIT(15)
+#define VFE_0_IRQ_MASK_1_STATS_AWB_BUS_OVERFLOW		BIT(16)
+#define VFE_0_IRQ_MASK_1_STATS_RS_BUS_OVERFLOW		BIT(17)
+#define VFE_0_IRQ_MASK_1_STATS_CS_BUS_OVERFLOW		BIT(18)
+#define VFE_0_IRQ_MASK_1_STATS_IHIST_BUS_OVERFLOW	BIT(19)
+#define VFE_0_IRQ_MASK_1_STATS_SKIN_BUS_OVERFLOW	BIT(20)
+#define VFE_0_IRQ_MASK_1_AXI_ERROR			BIT(21)
 /*
  * VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31.
  * This differs from later VFE versions.
  */
 #define VFE_0_IRQ_MASK_1_RESET_ACK			BIT(22)
 #define VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK		BIT(23)
-/*
- * VFE31 IRQ_MASK_1 bit layout per webOS vfe31.h:
- * Bit 6: VIOLATION
- * Bit 7-13: IMAGE_MASTER_0-6_BUS_OVERFLOW
- * Our VIOLATION define is at BIT(7) which conflicts - needs review
- */
-#define VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(n)	BIT((n) + 7)
+
+/* Common error mask for all error bits in IRQ_MASK_1/STATUS_1 */
+#define VFE_0_IRQ_MASK_1_ERROR_ONLY			0x003FFFFF
 
 #define VFE_0_IRQ_CLEAR_0		0x024
 #define VFE_0_IRQ_CLEAR_1		0x028
@@ -391,6 +452,59 @@ extern int software_eof_enable;
  */
 
 /*
+ * ============================================================================
+ * LEGACY WEBOS VFE31 ENUMERATIONS (from msm_vfe31.h)
+ * ============================================================================
+ *
+ * These enumerations are preserved from the webOS kernel msm_vfe31.h for
+ * reference when debugging or extending the driver:
+ *
+ * enum VFE_AXI_OUTPUT_MODE {
+ *     VFE_AXI_OUTPUT_MODE_Output1,                     // 0
+ *     VFE_AXI_OUTPUT_MODE_Output2,                     // 1
+ *     VFE_AXI_OUTPUT_MODE_Output1AndOutput2,           // 2
+ *     VFE_AXI_OUTPUT_MODE_CAMIFToAXIViaOutput2,        // 3 (0x60)
+ *     VFE_AXI_OUTPUT_MODE_Output2AndCAMIFToAXIViaOutput1,  // 4
+ *     VFE_AXI_OUTPUT_MODE_Output1AndCAMIFToAXIViaOutput2,  // 5
+ *     VFE_AXI_LAST_OUTPUT_MODE_ENUM
+ * };
+ *
+ * enum VFE_RAW_WR_PATH_SEL {
+ *     VFE_RAW_OUTPUT_DISABLED,          // 0 - Raw output disabled
+ *     VFE_RAW_OUTPUT_ENC_CBCR_PATH,     // 1 - Route raw to encoder CbCr WM
+ *     VFE_RAW_OUTPUT_VIEW_CBCR_PATH,    // 2 - Route raw to viewfinder CbCr WM
+ *     VFE_RAW_OUTPUT_PATH_INVALID
+ * };
+ *
+ * enum VFE_START_PIXEL_PATTERN {
+ *     VFE_BAYER_RGRGRG,   // 0
+ *     VFE_BAYER_GRGRGR,   // 1
+ *     VFE_BAYER_BGBGBG,   // 2
+ *     VFE_BAYER_GBGBGB,   // 3
+ *     VFE_YUV_YCbYCr,     // 4 - YCBYCR
+ *     VFE_YUV_YCrYCb,     // 5 - YCRYCB
+ *     VFE_YUV_CbYCrY,     // 6 - CBYCRY (webOS default for UYVY input)
+ *     VFE_YUV_CrYCbY      // 7 - CRYCBY
+ * };
+ *
+ * IRQ_STATUS_1 Error Bits (per msm_vfe31.h):
+ *   Bit 0:  CAMIF_ERROR
+ *   Bit 1:  STATS_CS_OVWR
+ *   Bit 2:  STATS_IHIST_OVWR
+ *   Bit 3:  REALIGN_BUF_Y_OVFL
+ *   Bit 4:  REALIGN_BUF_CB_OVFL
+ *   Bit 5:  REALIGN_BUF_CR_OVFL
+ *   Bit 6:  VIOLATION
+ *   Bit 7:  IMG_MAST_0_BUS_OVFL (WM0 overflow)
+ *   Bit 8:  IMG_MAST_1_BUS_OVFL (WM1 overflow)
+ *   ...
+ *   Bit 13: IMG_MAST_6_BUS_OVFL (WM6 overflow)
+ *   Bit 14-21: STATS overflow bits
+ *   Bit 22: RESET_ACK (VFE31 unique location!)
+ *   Bit 23: AXI_HALT_ACK
+ */
+
+/*
  * NOTE: VFE31 does NOT have a VFE_CFG register at 0x01C!
  * The 0x01C offset is VFE_IRQ_MASK_0 in VFE31.
  *
@@ -494,7 +608,15 @@ extern int software_eof_enable;
 #define VFE_0_AXI_STATUS		0x1DC
 #define VFE_0_AXI_STATUS_HALT_ACK	BIT(0)
 
+/*
+ * Bus Status and Performance Monitor Registers (from Mako kernel)
+ */
 #define VFE_0_BUS_PING_PONG_STATUS	0x180
+#define VFE_0_BUS_OPERATION_STATUS	0x184
+#define VFE_0_BUS_PM_CMD		0x188
+#define VFE_0_BUS_PM_CFG		0x18C
+#define VFE_0_BUS_IMAGE_MASTER_0_WR_PM_STATS_0	0x190
+#define VFE_0_BUS_IMAGE_MASTER_0_WR_PM_STATS_1	0x194
 
 /*
  * VFE31 BUS IMAGE MASTER REGISTERS
@@ -656,12 +778,121 @@ extern int software_eof_enable;
 #define VFE_0_REALIGN_BUF_CFG		0x388
 
 /* Statistics configuration */
+#define VFE_0_STATS_CFG			0x530
 #define VFE_0_STATS_AE_CFG		0x534
 #define VFE_0_STATS_AF_CFG		0x53C
 #define VFE_0_STATS_AWB_CFG		0x54C
+#define VFE_0_STATS_AWB_SGW_CFG		0x554
 #define VFE_0_STATS_RS_CFG		0x56C
 #define VFE_0_STATS_CS_CFG		0x574
 #define VFE_0_STATS_IHIST_CFG		0x57C
+
+/*
+ * DMI (Direct Memory Interface) for LUT table access
+ * Used to program gamma, rolloff, and histogram lookup tables
+ */
+#define VFE_0_DMI_CFG			0x598
+#define VFE_0_DMI_CFG_DEFAULT		0x00000100
+#define VFE_0_DMI_ADDR			0x59C
+#define VFE_0_DMI_DATA_LO		0x5A4
+
+/* DMI RAM selection values for VFE_0_DMI_CFG */
+#define VFE_DMI_NO_MEM_SELECTED		0x0
+#define VFE_DMI_ROLLOFF_RAM		0x1
+#define VFE_DMI_RGBLUT_RAM_CH0_BANK0	0x2
+#define VFE_DMI_RGBLUT_RAM_CH0_BANK1	0x3
+#define VFE_DMI_RGBLUT_RAM_CH1_BANK0	0x4
+#define VFE_DMI_RGBLUT_RAM_CH1_BANK1	0x5
+#define VFE_DMI_RGBLUT_RAM_CH2_BANK0	0x6
+#define VFE_DMI_RGBLUT_RAM_CH2_BANK1	0x7
+#define VFE_DMI_STATS_HIST_RAM		0x8
+#define VFE_DMI_RGBLUT_CHX_BANK0	0x9
+#define VFE_DMI_RGBLUT_CHX_BANK1	0xA
+#define VFE_DMI_LUMA_ADAPT_LUT_BANK0	0xB
+#define VFE_DMI_LUMA_ADAPT_LUT_BANK1	0xC
+
+/*
+ * Additional processing module offsets (from Mako kernel)
+ * These are used for ISP processing pipeline configuration.
+ */
+#define VFE_0_DEMOSAIC_CFG		0x298	/* Demosaic general */
+#define VFE_0_DEMOSAIC_BPC_CFG		0x29C	/* Bad pixel correction */
+#define VFE_0_DEMOSAIC_ABF_CFG		0x2A4	/* Adaptive bayer filter */
+#define VFE_0_BLACK_LEVEL_CFG		0x264	/* Black level config */
+#define VFE_0_ROLLOFF_CFG		0x274	/* Lens rolloff */
+#define VFE_0_WB_CFG			0x384	/* White balance */
+#define VFE_0_COLOR_COR_CFG		0x388	/* Color correction */
+#define VFE_0_GAMMA_CFG			0x3BC	/* Gamma config */
+#define VFE_0_LA_CFG			0x3C0	/* Luma adaptation */
+#define VFE_0_CHROMA_EN_CFG		0x3C4	/* Chroma enhancement */
+#define VFE_0_CHROMA_SUP_CFG		0x3E8	/* Chroma suppression */
+#define VFE_0_MCE_CFG			0x3F4	/* Memory color enhancement */
+#define VFE_0_SCE_CFG			0x418	/* Skin color enhancement */
+#define VFE_0_ASF_CFG			0x4A0	/* Adaptive spatial filter */
+#define VFE_0_S2Y_CFG			0x4D0	/* Scaler 2 Y */
+#define VFE_0_S2CBCR_CFG		0x4E4	/* Scaler 2 CbCr */
+#define VFE_0_FOV_CFG			0x360	/* Field of view */
+#define VFE_0_CHROMA_UP_CFG		0x35C	/* Chroma upsample */
+
+/* Timer registers */
+#define VFE_0_SYNC_TIMER_OFF		0x20C
+#define VFE_0_SYNC_TIMER_POLARITY_OFF	0x234
+#define VFE_0_ASYNC_TIMER_OFF		0x238
+#define VFE_0_TIMER_SELECT_OFF		0x25C
+
+/*
+ * Statistics Buffer Registers (from Mako kernel msm_vfe31.h)
+ *
+ * VFE31 has dedicated write paths for statistics data (AEC, AF, AWB, etc.)
+ * Each statistics type has its own ping/pong buffers and address config.
+ * These are separate from the image write masters (WM0-WM6).
+ */
+#define VFE_0_BUS_STATS_AEC_WR_PING_ADDR	0x0F4
+#define VFE_0_BUS_STATS_AEC_WR_PONG_ADDR	0x0F8
+#define VFE_0_BUS_STATS_AEC_WR_ADDR_CFG		0x0FC
+#define VFE_0_BUS_STATS_AF_WR_PING_ADDR		0x100
+#define VFE_0_BUS_STATS_AF_WR_PONG_ADDR		0x104
+#define VFE_0_BUS_STATS_AF_WR_ADDR_CFG		0x108
+#define VFE_0_BUS_STATS_AWB_WR_PING_ADDR	0x10C
+#define VFE_0_BUS_STATS_AWB_WR_PONG_ADDR	0x110
+#define VFE_0_BUS_STATS_AWB_WR_ADDR_CFG		0x114
+#define VFE_0_BUS_STATS_RS_WR_PING_ADDR		0x118
+#define VFE_0_BUS_STATS_RS_WR_PONG_ADDR		0x11C
+#define VFE_0_BUS_STATS_RS_WR_ADDR_CFG		0x120
+#define VFE_0_BUS_STATS_CS_WR_PING_ADDR		0x124
+#define VFE_0_BUS_STATS_CS_WR_PONG_ADDR		0x128
+#define VFE_0_BUS_STATS_CS_WR_ADDR_CFG		0x12C
+#define VFE_0_BUS_STATS_HIST_WR_PING_ADDR	0x130
+#define VFE_0_BUS_STATS_HIST_WR_PONG_ADDR	0x134
+#define VFE_0_BUS_STATS_HIST_WR_ADDR_CFG	0x138
+#define VFE_0_BUS_STATS_SKIN_WR_PING_ADDR	0x13C
+#define VFE_0_BUS_STATS_SKIN_WR_PONG_ADDR	0x140
+#define VFE_0_BUS_STATS_SKIN_WR_ADDR_CFG	0x144
+
+/*
+ * Statistics Composite Group Config
+ * Allows combining multiple statistics IRQs into a single composite IRQ
+ */
+#define VFE_0_STATS_COMP_GRP_CFG		0x148
+
+/*
+ * Test Pattern Generator Registers (from Mako kernel)
+ * Used for internal testing without a real sensor
+ */
+#define VFE_0_TESTGEN_STATUS		0x158
+#define VFE_0_TESTGEN_CFG		0x15C
+#define VFE_0_TESTGEN_SEED_0		0x160
+#define VFE_0_TESTGEN_SEED_1		0x164
+#define VFE_0_TESTGEN_SEED_2		0x168
+#define VFE_0_TESTGEN_SEED_3		0x16C
+#define VFE_0_TESTGEN_DIMS		0x170
+#define VFE_0_TESTGEN_START_PIXEL	0x174
+
+/*
+ * MISR (Multiple Input Signature Register) for debug
+ */
+#define VFE_0_BUS_MISR_CFG		0x178
+#define VFE_0_BUS_MISR_VALUE		0x17C
 
 /*
  * NOTE: VFE31 does NOT have per-WM XBAR registers like VFE41/47/48.
