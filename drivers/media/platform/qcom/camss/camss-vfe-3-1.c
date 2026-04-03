@@ -1290,16 +1290,21 @@ static int vfe31_enable(struct vfe_line *line)
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 
 		/*
-		 * WM1 ADDR_CFG - webOS uses (height << 16) | burst for CbCr
-		 * webOS WM1: 0x01C8012F = (456 << 16) | 303
-		 * The height value seems to be (height * 0.95) ≈ 456 for 480
-		 * Using (height - 24) to match webOS pattern.
+		 * WM1 ADDR_CFG - burst configuration for CbCr write master
+		 *
+		 * webOS uses (456 << 16) | 303 for 640x480, which includes a 5%
+		 * crop (height - 24). However, for semi-planar NV16 output where
+		 * Y and CbCr share a contiguous buffer, we use lines=0 like WM0.
+		 *
+		 * The "lines" field in upper 16 bits may control buffer wrapping
+		 * or line counting behavior. Using lines=0 for both WM0 and WM1
+		 * ensures both planes write the full frame height.
 		 */
 		wpl = bytesperline / 4;
-		reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
+		reg = (wpl - 17) & 0xFFFF;  /* lines=0, same as WM0 */
 		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
-			 wm1, reg, height - 24, (wpl - 17) & 0xFFFF);
+			 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=0, burst=%d)\n",
+			 wm1, reg, (wpl - 17) & 0xFFFF);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
 
 		/* WM1 UB_CFG - same as WM0 */
@@ -1837,8 +1842,8 @@ static void vfe31_configure_video_wm(struct vfe_device *vfe,
 		writel_relaxed(reg,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
 
-		/* CbCr ADDR_CFG uses (height << 16) | burst per webOS WM1 */
-		reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
+		/* CbCr ADDR_CFG - use lines=0 like Y plane for consistency */
+		reg = (wpl - 17) & 0xFFFF;  /* lines=0 */
 		writel_relaxed(reg,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
 
@@ -2240,15 +2245,14 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 
 			/*
-			 * WM1 ADDR_CFG - webOS uses (height << 16) | burst for CbCr
-			 * webOS WM1: 0x01C8012F = (456 << 16) | 303
-			 * Using (height - 24) to match webOS pattern.
+			 * WM1 ADDR_CFG - burst config for CbCr
+			 * Use lines=0 like WM0 for proper semi-planar output.
 			 */
 			wpl = bytesperline / 4;
-			reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
+			reg = (wpl - 17) & 0xFFFF;  /* lines=0 */
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
-				 wm1, reg, height - 24, (wpl - 17) & 0xFFFF);
+				 "VFE31: WM%d ADDR_CFG=0x%08x (lines=0, burst=%d)\n",
+				 wm1, reg, (wpl - 17) & 0xFFFF);
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
 
