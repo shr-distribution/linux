@@ -394,10 +394,10 @@ extern int software_eof_enable;
  * The original Qualcomm msm_vfe31.c OUTPUT_1_AND_3 code used 0x1A03, which
  * does NOT route CbCr anywhere, causing broken semi-planar output.
  *
- * Use 0x1A13 for preview-only (WM0+WM1), 0x1A1B when video mode uses WM4.
+ * We use 0x1A1B for all PIX modes to ensure CbCr is properly routed to WM1.
  */
-#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1A13  /* Y→WM0, CbCr→WM1 */
-#define VFE_0_BUS_XBAR_CFG1_VIDEO_MODE		0x1A1B  /* Y→WM0+WM4, CbCr→WM1 */
+#define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1A1B
+#define VFE_0_BUS_XBAR_CFG1_VIDEO_MODE		0x1A1B
 
 /* Legacy define - Qualcomm's broken value that doesn't route CbCr */
 #define VFE_0_BUS_XBAR_CFG1_BROKEN_NO_CBCR	0x1A03
@@ -2122,12 +2122,6 @@ static void vfe31_configure_video_wm(struct vfe_device *vfe,
 	u16 wpl;  /* words per line */
 	u32 reg;
 
-	if (!vfe31_video_output_enable) {
-		dev_dbg(vfe->camss->dev,
-			"VFE31: video output disabled, skipping WM4/5 config\n");
-		return;
-	}
-
 	dev_info(vfe->camss->dev,
 		 "VFE31: Configuring video WM4/5: %ux%u stride=%u Y=0x%08x CbCr=0x%08x\n",
 		 width, height, stride, y_addr, cbcr_addr);
@@ -2907,12 +2901,13 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	/*
 	 * Step 8: Configure WM4/WM5 for video output (when enabled)
 	 *
-	 * When vfe31_video_output_enable=1, we need to configure WM4/WM5
-	 * with the same buffer addresses as WM0/WM1. This makes the
-	 * IRQ_COMPOSITE_MASK (0x00220011) work correctly because it requires
-	 * both WM0+WM4 (group 0) and WM1+WM5 (group 2) to complete.
+	 * XBAR 0x1A1B routes Y to WM0+WM4 and CbCr to WM1. We must configure
+	 * WM4 to mirror WM0 even in preview-only mode, otherwise the XBAR
+	 * routing fails and WM1 (CbCr) doesn't receive data.
+	 *
+	 * Configure WM4/WM5 with the same buffer addresses as WM0/WM1.
 	 */
-	if (vfe31_video_output_enable) {
+	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
 		struct v4l2_pix_format_mplane *pix =
 			&line->video_out.active_fmt.fmt.pix_mp;
 		u16 width = pix->width;
