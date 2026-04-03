@@ -2327,10 +2327,16 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * latch has already happened and the WM enable isn't active!
 	 *
 	 * WebOS sequence: configure WM -> enable WM -> REG_UPDATE -> CAMIF_START
+	 *
+	 * For NV16 semi-planar format (wm_num == 2):
+	 *   WM0 = Y plane (luma)
+	 *   WM1 = CbCr plane (chroma)
+	 * Both write masters MUST be enabled for complete frame data!
 	 */
 	{
 		struct v4l2_pix_format_mplane *pix =
 			&line->video_out.active_fmt.fmt.pix_mp;
+		struct vfe_output *output = &line->output;
 		u16 bytesperline = pix->plane_fmt[0].bytesperline;
 		u16 height = pix->height;
 		u16 wpl = bytesperline / 4;  /* 32-bit words per line */
@@ -2348,12 +2354,49 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 		/* Configure UB */
 		writel_relaxed(ub_cfg, vfe->base + VFE31_WM_WR_UB_CFG(wm));
 
-		/* Enable WM - this goes to shadow register */
+		/* Enable WM0 - this goes to shadow register */
 		writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(wm));
 		wmb();
 
 		dev_info(vfe->camss->dev, "VFE: WM%d WR_CFG=0x%08x (before REG_UPDATE)\n",
 			 wm, readl_relaxed(vfe->base + VFE31_WM_WR_CFG(wm)));
+
+		/*
+		 * Step 5.5b: Enable WM1 for semi-planar formats (NV16)
+		 *
+		 * For NV16 output, WM1 handles the interleaved CbCr plane.
+		 * Without enabling WM1, only Y plane data is captured and
+		 * the UV plane gets stale/Y data copied in, causing wrong colors.
+		 */
+		if (output->wm_num >= 2) {
+			u8 wm1 = output->wm_idx[1];
+			u32 wm1_ub_cfg;
+
+			/*
+			 * WM1 (CbCr plane) uses same burst but different lines.
+			 * From webOS: WM1 lines = height - 24 for proper UV output.
+			 */
+			wm1_ub_cfg = ((wpl / 8 - 1) & 0xFFFF) << 16;
+			wm1_ub_cfg |= (height - 24) & 0xFFFF;
+
+			dev_info(vfe->camss->dev,
+				 "VFE: Step 5.5b - Enable WM%d (CbCr plane) BEFORE REG_UPDATE\n",
+				 wm1);
+			dev_info(vfe->camss->dev,
+				 "VFE: WM%d UB_CFG=0x%08x (wpl=%d, lines=%d)\n",
+				 wm1, wm1_ub_cfg, wpl, height - 24);
+
+			/* Configure UB for WM1 */
+			writel_relaxed(wm1_ub_cfg, vfe->base + VFE31_WM_WR_UB_CFG(wm1));
+
+			/* Enable WM1 */
+			writel_relaxed(BIT(0), vfe->base + VFE31_WM_WR_CFG(wm1));
+			wmb();
+
+			dev_info(vfe->camss->dev,
+				 "VFE: WM%d WR_CFG=0x%08x (before REG_UPDATE)\n",
+				 wm1, readl_relaxed(vfe->base + VFE31_WM_WR_CFG(wm1)));
+		}
 	}
 
 	/*
