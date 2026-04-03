@@ -1208,7 +1208,17 @@ static int vfe31_enable(struct vfe_line *line)
 	wm = output->wm_idx[0];
 	width = pix->width;
 	height = pix->height;
-	bytesperline = pix->plane_fmt[0].bytesperline;
+	/*
+	 * CRITICAL: For VFE31 PIX mode (UYVY -> NV16), the DMA burst must be
+	 * based on the UYVY input stride (width * 2), NOT the NV16 output
+	 * plane bytesperline. WebOS uses 1280 bytes for 640x480, which is
+	 * 640 * 2 = UYVY input line size.
+	 *
+	 * The output plane_fmt[0].bytesperline would be 640 (Y plane width),
+	 * but the DMA needs to know the full UYVY line width to properly
+	 * demux Y and CbCr bytes.
+	 */
+	bytesperline = width * 2;  /* UYVY input stride, not output plane */
 
 	/* Get buffer addresses */
 	if (output->buf[0])
@@ -2269,7 +2279,11 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
 		u16 width = pix->width;
 		u16 height = pix->height;
-		u16 bytesperline = pix->plane_fmt[0].bytesperline;
+		/*
+		 * CRITICAL: Use UYVY input stride (width * 2), not output plane
+		 * bytesperline. See comment in vfe31_enable() for details.
+		 */
+		u16 bytesperline = width * 2;  /* UYVY input stride */
 		u16 wpl;
 		u32 reg;
 
@@ -2685,7 +2699,8 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			&line->video_out.active_fmt.fmt.pix_mp;
 		u16 width = pix->width;
 		u16 height = pix->height;
-		u16 stride = pix->plane_fmt[0].bytesperline;
+		/* Use UYVY input stride, not output plane bytesperline */
+		u16 stride = width * 2;
 		u32 cbcr_addr = 0;
 
 		/* For semi-planar formats, CbCr is after Y plane */
