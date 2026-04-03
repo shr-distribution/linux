@@ -32,6 +32,7 @@
 /* Module parameters from camss-vfe-3-1.c for VFE31 configuration */
 extern int vfe31_axi_output_mode;
 extern int vfe31_video_output_enable;
+extern int vfe31_xbar_cfg1;
 
 /*
  * MSM8660 CSI routing is configured via direct register writes to MISC_CC_REG
@@ -1368,11 +1369,9 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 * NOTE: 0x1a03 is BROKEN - it has CbCr routing disabled!
 		 */
 		{
-			/* Use preview-only mode for testgen (no WM4/WM5) */
-			u32 xbar_cfg1 = VFE31_XBAR_CFG1_PIX_MODE;
-
+			/* Use module param for XBAR routing */
 			writel_relaxed(vfe31_axi_output_mode, vfe->base + 0x040);
-			writel_relaxed(xbar_cfg1, vfe->base + 0x044);
+			writel_relaxed(vfe31_xbar_cfg1, vfe->base + 0x044);
 		}
 		wmb();
 		dev_info(vfe->camss->dev,
@@ -2208,13 +2207,10 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * Using 0x1a03 (CBCR_ROUTING=0) would break semi-planar formats!
 	 */
 	if (vfe31_axi_output_mode != 0x60) {
-		u32 xbar_val = vfe31_video_output_enable ?
-				VFE31_XBAR_CFG1_VIDEO_MODE :
-				VFE31_XBAR_CFG1_PIX_MODE;
 		dev_info(vfe->camss->dev,
-			 "VFE: XBAR_CFG1 = 0x%04x (routing ISP to WMs, video=%d)\n",
-			 xbar_val, vfe31_video_output_enable);
-		writel_relaxed(xbar_val, vfe->base + VFE31_AXI_CFG_1);
+			 "VFE: XBAR_CFG1 = 0x%04x (module param)\n",
+			 vfe31_xbar_cfg1);
+		writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE31_AXI_CFG_1);
 		wmb();
 	} else {
 		dev_info(vfe->camss->dev,
