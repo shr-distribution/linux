@@ -97,6 +97,13 @@ extern int software_eof_enable;
 #define VFE_0_MODULE_CFG		0x010
 #define VFE_0_MODULE_CFG_DEMUX		BIT(2)
 #define VFE_0_MODULE_CFG_CHROMA_UPSAMPLE BIT(3)
+/* Statistics module enable bits (from Mako kernel) */
+#define VFE_0_MODULE_CFG_STATS_AE_EN	BIT(5)	/* AEC/BG stats enable */
+#define VFE_0_MODULE_CFG_STATS_AF_EN	BIT(6)	/* AF/BF stats enable */
+#define VFE_0_MODULE_CFG_STATS_AWB_EN	BIT(7)	/* AWB stats enable */
+#define VFE_0_MODULE_CFG_STATS_RS_EN	BIT(8)	/* Row Sum stats enable */
+#define VFE_0_MODULE_CFG_STATS_CS_EN	BIT(9)	/* Column Sum stats enable */
+#define VFE_0_MODULE_CFG_STATS_IHIST_EN	BIT(15)	/* Image Histogram enable */
 #define VFE_0_MODULE_CFG_SCALE_ENC	BIT(23)
 #define VFE_0_MODULE_CFG_CROP_ENC	BIT(27)
 
@@ -760,22 +767,22 @@ extern int software_eof_enable;
 /* Chroma subsample */
 #define VFE_0_CHROMA_SUBS_CFG		0x4F8
 
-/* Scale configuration */
+/*
+ * Scale configuration - Main Scaler block
+ * VFE31 Main Scaler spans 28 bytes (0x368-0x383), followed by WB at 0x384.
+ * Unlike VFE4x, VFE31 does NOT have dedicated CROP_ENC registers.
+ * Output cropping in VFE31 is handled by FOV (0x360) and scaler configuration.
+ */
 #define VFE_0_SCALE_ENC_Y_CFG		0x368
 #define VFE_0_SCALE_ENC_CBCR_CFG	0x36C
-
-/* Crop configuration */
-#define VFE_0_CROP_ENC_Y_WIDTH		0x378
-#define VFE_0_CROP_ENC_Y_HEIGHT		0x37C
-#define VFE_0_CROP_ENC_CBCR_WIDTH	0x380
-#define VFE_0_CROP_ENC_CBCR_HEIGHT	0x384
+/* Main scaler output crop is configured within the scaler structure (0x368-0x383) */
 
 /* Output clamp */
 #define VFE_0_CLAMP_ENC_MAX_CFG		0x524
 #define VFE_0_CLAMP_ENC_MIN_CFG		0x528
 
-/* Realign configuration */
-#define VFE_0_REALIGN_BUF_CFG		0x388
+/* Realign buffer configuration (from Mako kernel - NOT at 0x388 which is Color Cor) */
+#define VFE_0_REALIGN_BUF_CFG		0x52C
 
 /* Statistics configuration */
 #define VFE_0_STATS_CFG			0x530
@@ -1867,45 +1874,24 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 
 static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line)
 {
-	u32 p = line->video_out.active_fmt.fmt.pix_mp.pixelformat;
-	u32 reg;
-	u16 first, last;
-
 	/*
-	 * VFE31 crop registers use first/last pixel format:
-	 * CROP_Y_WIDTH:   (first_pixel << 16) | last_pixel
-	 * CROP_Y_HEIGHT:  (first_line << 16) | last_line
+	 * VFE31 does NOT have dedicated CROP_ENC registers like VFE4x.
 	 *
-	 * line->crop contains the crop rectangle from pad selection.
+	 * Per Mako kernel analysis:
+	 * - Main Scaler at 0x368-0x383 (28 bytes) handles output sizing
+	 * - FOV (Field of View) at 0x360 handles input region selection
+	 * - 0x384 is White Balance, NOT crop (was incorrectly used before)
+	 * - 0x388 is Color Correction, NOT realign buffer
+	 *
+	 * The previous code was writing crop values to the scaler and WB
+	 * registers, which corrupted ISP processing. Output dimensions
+	 * are controlled by the scaler and AXI write master configuration.
+	 *
+	 * TODO: If hardware cropping is needed, implement proper VFE31
+	 * FOV configuration or use scaler for output size control.
 	 */
-	first = line->crop.left;
-	last = line->crop.left + line->crop.width - 1;
-	reg = (first << 16) | last;
-	writel_relaxed(reg, vfe->base + VFE_0_CROP_ENC_Y_WIDTH);
-	dev_dbg(vfe->camss->dev, "VFE31 CROP: Y_WIDTH=0x%08x (first=%d last=%d)\n",
-		reg, first, last);
-
-	first = line->crop.top;
-	last = line->crop.top + line->crop.height - 1;
-	reg = (first << 16) | last;
-	writel_relaxed(reg, vfe->base + VFE_0_CROP_ENC_Y_HEIGHT);
-	dev_dbg(vfe->camss->dev, "VFE31 CROP: Y_HEIGHT=0x%08x (first=%d last=%d)\n",
-		reg, first, last);
-
-	/* CbCr is half width for YUV422/420 */
-	first = line->crop.left / 2;
-	last = line->crop.left / 2 + line->crop.width / 2 - 1;
-	reg = (first << 16) | last;
-	writel_relaxed(reg, vfe->base + VFE_0_CROP_ENC_CBCR_WIDTH);
-
-	first = line->crop.top;
-	last = line->crop.top + line->crop.height - 1;
-	if (p == V4L2_PIX_FMT_NV12 || p == V4L2_PIX_FMT_NV21) {
-		first = line->crop.top / 2;
-		last = line->crop.top / 2 + line->crop.height / 2 - 1;
-	}
-	reg = (first << 16) | last;
-	writel_relaxed(reg, vfe->base + VFE_0_CROP_ENC_CBCR_HEIGHT);
+	dev_dbg(vfe->camss->dev,
+		"VFE31 crop: no-op (VFE31 uses FOV/scaler, not CROP_ENC regs)\n");
 }
 
 static void vfe31_set_clamp_cfg(struct vfe_device *vfe)
