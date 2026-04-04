@@ -2730,16 +2730,25 @@ error:
  * vfe_isr_comp_done() - Process composite image done interrupt
  * @vfe: VFE Device
  * @comp: Composite image id
+ *
+ * Called when a composite image done IRQ fires. This indicates that all
+ * write masters in a composite group have completed writing their data.
+ * For VFE31 with NV16 output, we have multiple WMs per line:
+ * - VFE_LINE_PIX: WM0 (Y) + WM1 (CbCr)
+ * - VFE_LINE_VIDEO: WM4 (Y) + WM5 (CbCr)
+ *
+ * We call wm_done for each WM that belongs to an active PIX or VIDEO line.
  */
 void vfe_isr_comp_done(struct vfe_device *vfe, u8 comp)
 {
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(vfe->wm_output_map); i++)
-		if (vfe->wm_output_map[i] == VFE_LINE_PIX) {
+	for (i = 0; i < ARRAY_SIZE(vfe->wm_output_map); i++) {
+		if (vfe->wm_output_map[i] == VFE_LINE_PIX ||
+		    vfe->wm_output_map[i] == VFE_LINE_VIDEO) {
 			vfe->isr_ops.wm_done(vfe, i);
-			break;
 		}
+	}
 }
 
 void vfe_isr_reset_ack(struct vfe_device *vfe)
