@@ -2288,8 +2288,13 @@ static void vfe31_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output
  * @height: Video frame height in lines
  * @stride: Bytes per line (bytesperline)
  *
- * This function configures WM4 and WM5 for video recording output.
- * Used when vfe31_video_output_enable=1 for simultaneous preview+video.
+ * WARNING: This function is currently DISABLED/NOT USED because it causes
+ * kernel memory corruption when WM4/WM5 are enabled with the same addresses
+ * as WM0/WM1. XBAR 0x1A1B routes Y to both WM0 AND WM4, so if both are enabled
+ * with the same address, two DMA engines write to the same memory.
+ *
+ * For future VIDEO line support, this function needs to be called with
+ * SEPARATE buffer addresses (not the same as WM0/WM1 preview buffers).
  *
  * Video output uses COMPOSITE_DONE_2 (IRQ bit 23) for frame completion.
  * This is separate from preview (COMPOSITE_DONE_0, IRQ bit 21).
@@ -2347,9 +2352,12 @@ static void vfe31_configure_video_wm(struct vfe_device *vfe,
 	writel_relaxed(reg,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_Y));
 
-	/* Enable WM4 (VFE31 has no frame_based bit, just enable) */
-	writel_relaxed(BIT(0),
-		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
+	/*
+	 * DO NOT enable WM4 here! Enabling causes DMA corruption because
+	 * XBAR routes Y to both WM0 and WM4. If this function is called,
+	 * the caller must enable WM4 explicitly after ensuring the address
+	 * is different from WM0.
+	 */
 
 	/*
 	 * WM5 - Video CbCr channel (for semi-planar formats like NV12/NV16)
@@ -2377,9 +2385,11 @@ static void vfe31_configure_video_wm(struct vfe_device *vfe,
 		writel_relaxed(reg,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_CBCR));
 
-		/* Enable WM5 (VFE31 has no frame_based bit, just enable) */
-		writel_relaxed(BIT(0),
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+		/*
+		 * DO NOT enable WM5 here! See WM4 comment above.
+		 * The caller must enable WM5 explicitly after ensuring
+		 * the address is different from WM1.
+		 */
 	}
 
 	wmb();
@@ -3101,38 +3111,32 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	}
 
 	/*
-	 * Step 8: Configure WM4/WM5 for video output (when enabled)
+	 * Step 8: WM4/WM5 configuration for video output
 	 *
-	 * XBAR 0x1A1B routes Y to WM0+WM4 and CbCr to WM1. We must configure
-	 * WM4 to mirror WM0 even in preview-only mode, otherwise the XBAR
-	 * routing fails and WM1 (CbCr) doesn't receive data.
+	 * CRITICAL: WebOS register dumps show that WM4 is enabled but WM5 is
+	 * disabled during preview. Also, webOS uses DIFFERENT buffer addresses
+	 * for WM4 than WM0 - they are NOT mirrors!
 	 *
-	 * Configure WM4/WM5 with the same buffer addresses as WM0/WM1.
+	 * When video_output_enable=0 (default), we must NOT enable WM4/WM5
+	 * DMA because XBAR 0x1A1B routes Y data to both WM0 AND WM4. If both
+	 * are enabled with the same address, two DMA engines write to the
+	 * same memory simultaneously, causing kernel memory corruption.
+	 *
+	 * The previous code enabled WM4/WM5 unconditionally, causing crashes.
+	 *
+	 * FIX: Only enable WM4/WM5 when explicitly requested AND with
+	 * separate buffer addresses (not implemented yet - requires VIDEO
+	 * line support with separate buffers).
 	 */
 	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		struct v4l2_pix_format_mplane *pix =
-			&line->video_out.active_fmt.fmt.pix_mp;
-		u16 width = pix->width;
-		u16 height = pix->height;
-		/* Use UYVY input stride, not output plane bytesperline */
-		u16 stride = width * 2;
-		u32 cbcr_addr = 0;
-
-		/* For semi-planar formats, CbCr is after Y plane */
-		if (line->output.wm_num == 2)
-			cbcr_addr = vfe->pending_ping_addr + (width * height);
-
+		/*
+		 * Explicitly DISABLE WM4/WM5 to prevent DMA corruption.
+		 * Writing 0 to WR_CFG disables the write master.
+		 */
 		dev_info(vfe->camss->dev,
-			 "VFE31: Step 8 - Configuring video WM4/WM5 (mirror preview)\n");
-		vfe31_configure_video_wm(vfe, vfe->pending_ping_addr, cbcr_addr,
-					 width, height, stride);
-
-		/* Reload WM4 and WM5 */
-		dev_info(vfe->camss->dev,
-			 "VFE31: Step 8b - BUS_CMD reload WM4/WM5\n");
-		writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(VFE31_VIDEO_WM_Y) |
-			       VFE_0_BUS_CMD_Mx_RLD_CMD(VFE31_VIDEO_WM_CBCR),
-			       vfe->base + VFE_0_BUS_CMD);
+			 "VFE31: Step 8 - Disabling WM4/WM5 (no video output)\n");
+		writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
+		writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
 		wmb();
 	}
 
