@@ -1274,6 +1274,171 @@ test_legacy_mode() {
     # Note: Keep legacy routing enabled - it's the correct mode for MSM8660
 }
 
+# Comprehensive test at specific resolution
+# Usage: test_resolution <width> <height> <mode> <video_dev>
+# mode: pix, rdi, video, testgen
+# video_dev: video0-4
+test_at_resolution() {
+    local width="$1"
+    local height="$2"
+    local mode="$3"
+    local video_dev="${4:-video3}"
+    local csid="${5:-msm_csid0}"
+    local csiphy="${6:-msm_csiphy1}"
+
+    log_info "Testing $mode at ${width}x${height} on /dev/$video_dev"
+
+    run_on_device "
+        # Reset pipeline
+        media-ctl -d /dev/media0 -r 2>/dev/null || true
+
+        # Enable upstream links
+        media-ctl -d /dev/media0 -l '\"$csiphy\":1->\"$csid\":0[1]' 2>&1 || true
+
+        # Mode-specific setup
+        case '$mode' in
+            pix)
+                # PIX mode: CSID pad 4 -> VFE PIX
+                media-ctl -d /dev/media0 -l '\"$csid\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
+                VFE_ENTITY='msm_vfe0_pix'
+                ;;
+            rdi)
+                # RDI mode: CSID pad 1 -> VFE RDI0
+                media-ctl -d /dev/media0 -l '\"$csid\":1->\"msm_vfe0_rdi0\":0[1]' 2>&1 || true
+                VFE_ENTITY='msm_vfe0_rdi0'
+                ;;
+            video)
+                # VIDEO mode: CSID pad 4 -> VFE VIDEO
+                media-ctl -d /dev/media0 -l '\"$csid\":4->\"msm_vfe0_video\":0[1]' 2>&1 || true
+                VFE_ENTITY='msm_vfe0_video'
+                ;;
+            testgen)
+                # TESTGEN mode: same as PIX but with testgen enabled
+                media-ctl -d /dev/media0 -l '\"$csid\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
+                VFE_ENTITY='msm_vfe0_pix'
+                echo 1 > /sys/module/qcom_camss/parameters/vfe31_use_testgen 2>/dev/null || true
+                ;;
+        esac
+
+        # Set formats on pipeline
+        media-ctl -d /dev/media0 -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/${width}x${height}]' 2>&1 || true
+        media-ctl -d /dev/media0 -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+        media-ctl -d /dev/media0 -V '\"$csiphy\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+        media-ctl -d /dev/media0 -V '\"$csiphy\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+        media-ctl -d /dev/media0 -V '\"$csid\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+
+        # Set appropriate CSID source pad format
+        case '$mode' in
+            rdi)
+                media-ctl -d /dev/media0 -V '\"$csid\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+                ;;
+            *)
+                media-ctl -d /dev/media0 -V '\"$csid\":4[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+                ;;
+        esac
+
+        media-ctl -d /dev/media0 -V '\"\$VFE_ENTITY\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+
+        # Set V4L2 format - use NV16 for PIX/VIDEO, UYVY for RDI
+        case '$mode' in
+            rdi)
+                v4l2-ctl -d /dev/$video_dev --set-fmt-video=width=$width,height=$height,pixelformat=UYVY 2>&1 || true
+                PIXFMT='UYVY'
+                ;;
+            *)
+                v4l2-ctl -d /dev/$video_dev --set-fmt-video=width=$width,height=$height,pixelformat=NV16 2>&1 || true
+                PIXFMT='NV16'
+                ;;
+        esac
+
+        # Capture
+        OUTPUT=\"/tmp/test_${mode}_${width}x${height}.raw\"
+        rm -f \"\$OUTPUT\"
+        timeout 10 v4l2-ctl -d /dev/$video_dev --stream-mmap --stream-count=3 --stream-to=\"\$OUTPUT\" 2>&1
+
+        # Disable testgen if it was enabled
+        if [ '$mode' = 'testgen' ]; then
+            echo 0 > /sys/module/qcom_camss/parameters/vfe31_use_testgen 2>/dev/null || true
+        fi
+
+        # Check result
+        if [ -s \"\$OUTPUT\" ]; then
+            SIZE=\$(stat -c%s \"\$OUTPUT\" 2>/dev/null || echo 0)
+            echo \"PASS: $mode ${width}x${height} - \$SIZE bytes captured\"
+        else
+            echo \"FAIL: $mode ${width}x${height} - no data captured\"
+        fi
+    "
+}
+
+# Comprehensive test - all modes at both resolutions
+test_comprehensive() {
+    log_step "Running comprehensive camera tests..."
+    echo ""
+    echo "=============================================="
+    echo "  Comprehensive Camera Test"
+    echo "  Resolutions: 640x480, 1280x1024"
+    echo "  Modes: PIX, RDI, VIDEO, TESTGEN"
+    echo "=============================================="
+    echo ""
+
+    # Results array
+    local results=""
+
+    # Test PIX mode (video3) at both resolutions
+    log_step "=== PIX Mode Tests (video3) ==="
+    echo ""
+    test_at_resolution 640 480 pix video3 msm_csid0 msm_csiphy1
+    echo ""
+    test_at_resolution 1280 1024 pix video3 msm_csid0 msm_csiphy1
+    echo ""
+
+    # Test RDI mode (video0) at both resolutions
+    log_step "=== RDI Mode Tests (video0) ==="
+    echo ""
+    test_at_resolution 640 480 rdi video0 msm_csid0 msm_csiphy1
+    echo ""
+    test_at_resolution 1280 1024 rdi video0 msm_csid0 msm_csiphy1
+    echo ""
+
+    # Test VIDEO mode (video4) at both resolutions
+    log_step "=== VIDEO Mode Tests (video4) ==="
+    echo ""
+    test_at_resolution 640 480 video video4 msm_csid0 msm_csiphy1
+    echo ""
+    test_at_resolution 1280 1024 video video4 msm_csid0 msm_csiphy1
+    echo ""
+
+    # Test TESTGEN mode (video3) at both resolutions
+    log_step "=== TESTGEN Mode Tests (video3) ==="
+    echo ""
+    test_at_resolution 640 480 testgen video3 msm_csid0 msm_csiphy1
+    echo ""
+    test_at_resolution 1280 1024 testgen video3 msm_csid0 msm_csiphy1
+    echo ""
+
+    # Summary
+    log_step "=== Test Summary ==="
+    run_on_device "
+        echo ''
+        echo 'Captured files:'
+        ls -la /tmp/test_*.raw 2>/dev/null || echo '  (none)'
+        echo ''
+        echo 'Results:'
+        for f in /tmp/test_*.raw; do
+            if [ -f \"\$f\" ]; then
+                SIZE=\$(stat -c%s \"\$f\" 2>/dev/null || echo 0)
+                NAME=\$(basename \"\$f\" .raw)
+                if [ \"\$SIZE\" -gt 0 ]; then
+                    echo \"  PASS: \$NAME (\$SIZE bytes)\"
+                else
+                    echo \"  FAIL: \$NAME (empty)\"
+                fi
+            fi
+        done 2>/dev/null || echo '  No test files found'
+    "
+}
+
 # Main
 main() {
     echo "=============================================="
@@ -1334,6 +1499,33 @@ main() {
             all)
                 MODE="all"
                 ;;
+            comprehensive|comp)
+                MODE="comprehensive"
+                ;;
+            pix640)
+                MODE="pix640"
+                ;;
+            pix1024)
+                MODE="pix1024"
+                ;;
+            rdi640)
+                MODE="rdi640"
+                ;;
+            rdi1024)
+                MODE="rdi1024"
+                ;;
+            video640)
+                MODE="video640"
+                ;;
+            video1024)
+                MODE="video1024"
+                ;;
+            testgen640)
+                MODE="testgen640"
+                ;;
+            testgen1024)
+                MODE="testgen1024"
+                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
@@ -1351,6 +1543,17 @@ main() {
                 echo "  capture-nv61  Capture frame in NV61 format (CrCb order, for color test)"
                 echo "  fetch      Fetch all captures from device to current directory"
                 echo "  all        Run all test modes sequentially"
+                echo "  comprehensive  Test ALL modes at 640x480 AND 1280x1024 (RECOMMENDED)"
+                echo ""
+                echo "Resolution-specific modes:"
+                echo "  pix640     PIX mode at 640x480"
+                echo "  pix1024    PIX mode at 1280x1024"
+                echo "  rdi640     RDI mode at 640x480"
+                echo "  rdi1024    RDI mode at 1280x1024"
+                echo "  video640   VIDEO mode at 640x480"
+                echo "  video1024  VIDEO mode at 1280x1024"
+                echo "  testgen640   TESTGEN mode at 640x480"
+                echo "  testgen1024  TESTGEN mode at 1280x1024"
                 echo "  --info     Show camera device information only"
                 echo "  --setup    Set up media pipeline only"
                 echo "  --capture  Test capture only (assumes pipeline is set up)"
@@ -1447,6 +1650,52 @@ main() {
             ;;
         fetch)
             fetch_captures "."
+            ;;
+        comprehensive)
+            show_camera_info
+            ensure_camera_ready
+            test_comprehensive
+            check_dmesg
+            ;;
+        pix640)
+            ensure_camera_ready
+            test_at_resolution 640 480 pix video3 msm_csid0 msm_csiphy1
+            check_dmesg
+            ;;
+        pix1024)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 pix video3 msm_csid0 msm_csiphy1
+            check_dmesg
+            ;;
+        rdi640)
+            ensure_camera_ready
+            test_at_resolution 640 480 rdi video0 msm_csid0 msm_csiphy1
+            check_dmesg
+            ;;
+        rdi1024)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 rdi video0 msm_csid0 msm_csiphy1
+            check_dmesg
+            ;;
+        video640)
+            ensure_camera_ready
+            test_at_resolution 640 480 video video4 msm_csid0 msm_csiphy1
+            check_dmesg
+            ;;
+        video1024)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 video video4 msm_csid0 msm_csiphy1
+            check_dmesg
+            ;;
+        testgen640)
+            ensure_camera_ready
+            test_at_resolution 640 480 testgen video3 msm_csid0 msm_csiphy1
+            check_dmesg
+            ;;
+        testgen1024)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 testgen video3 msm_csid0 msm_csiphy1
+            check_dmesg
             ;;
         all)
             show_camera_info
