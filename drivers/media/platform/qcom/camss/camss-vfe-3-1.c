@@ -3466,4 +3466,13 @@ const struct vfe_hw_ops vfe_ops_3_1 = {
 	.vfe_enable = vfe31_enable,
 	.vfe_halt = vfe31_halt,
 	.violation_read = vfe31_violation_read,
+	/*
+	 * enable_pending_camif: VFE31 CAMIF enable logic is currently in the
+	 * fallback code in camss-vfe.c:vfe_enable_pending_camif(). When this
+	 * callback is NULL, the fallback implementation is used.
+	 *
+	 * TODO: Move the VFE31-specific CAMIF enable code from camss-vfe.c
+	 * to a vfe31_enable_pending_camif() function here, then add it to
+	 * this ops structure for cleaner code organization.
+	 */
 };
