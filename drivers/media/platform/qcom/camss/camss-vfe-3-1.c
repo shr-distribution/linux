@@ -1337,8 +1337,10 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	for (i = 0; i < MSM_VFE_COMPOSITE_IRQ_NUM; i++)
 		if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(i)) {
 			vfe->isr_ops.comp_done(vfe, i);
+			/* Clear PING_PONG bits for WMs handled by comp_done to prevent double-handling */
 			for (j = 0; j < ARRAY_SIZE(vfe->wm_output_map); j++)
-				if (vfe->wm_output_map[j] == VFE_LINE_PIX)
+				if (vfe->wm_output_map[j] == VFE_LINE_PIX ||
+				    vfe->wm_output_map[j] == VFE_LINE_VIDEO)
 					value0 &= ~VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(j);
 		}
 
