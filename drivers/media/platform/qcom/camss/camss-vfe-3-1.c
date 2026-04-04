@@ -1414,6 +1414,30 @@ static int vfe31_enable(struct vfe_line *line)
 	output->drop_update_idx = 0;
 
 	/*
+	 * Determine AXI output mode based on line type:
+	 * - RDI lines (RDI0, RDI1, RDI2): MUST use RAW mode (0x60) for raw bypass
+	 * - PIX/VIDEO lines: Use module parameter (default 0x01 for DEMUX)
+	 *
+	 * VFE31 doesn't have true RDI hardware. RDI is emulated by configuring
+	 * the AXI output mode for raw bypass (CAMIF_TO_AXI = 0x60).
+	 */
+	u32 axi_mode;
+	bool is_rdi_line = (line->id == VFE_LINE_RDI0 ||
+			    line->id == VFE_LINE_RDI1 ||
+			    line->id == VFE_LINE_RDI2);
+
+	if (is_rdi_line) {
+		/* RDI lines always use raw bypass mode */
+		axi_mode = 0x60;
+		dev_info(vfe->camss->dev,
+			 "VFE31: RDI line %d - forcing RAW mode (axi=0x60)\n",
+			 line->id);
+	} else {
+		/* PIX/VIDEO lines use module parameter */
+		axi_mode = vfe31_axi_output_mode;
+	}
+
+	/*
 	 * WM configuration for PIX mode with DEMUX (ISP processing):
 	 * - WM0: Y (luma) channel
 	 * - WM1: CbCr (chroma) channel
@@ -1425,7 +1449,7 @@ static int vfe31_enable(struct vfe_line *line)
 	 * Note: Even for "packed" UYVY format, the VFE31 DEMUX outputs
 	 * Y and CbCr to separate WMs. The CbCr is interleaved (CbYCrY).
 	 */
-	if (vfe31_axi_output_mode == 0x01) {
+	if (axi_mode == 0x01) {
 		/* PIX mode: need both WM0 (Y) and WM1 (CbCr) */
 		output->wm_num = 2;
 		dev_info(vfe->camss->dev, "VFE31: PIX mode - using 2 WMs (Y+CbCr)\n");
@@ -1594,10 +1618,9 @@ static int vfe31_enable(struct vfe_line *line)
 	 * This routes Y→WM0 and CbCr→WM1 for semi-planar output.
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 1 - BUS_CFG=0x%08x, AXI=0x%x\n",
-		 VFE_0_BUS_CFG_WEBOS_VALUE, vfe31_axi_output_mode);
+		 VFE_0_BUS_CFG_WEBOS_VALUE, axi_mode);
 	writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
-	writel_relaxed(vfe31_axi_output_mode,
-		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+	writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
 	/*
 	 * For PIX mode (OUTPUT_1_AND_3), configure XBAR_CFG1 to route
@@ -1607,7 +1630,7 @@ static int vfe31_enable(struct vfe_line *line)
 	 * Note: PIX_MODE and VIDEO_MODE both use 0x1A1B. The video_output_enable
 	 * flag controls WM4/WM5 configuration, not the XBAR value itself.
 	 */
-	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
+	if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
 		dev_info(vfe->camss->dev,
 			 "VFE31: PIX mode - XBAR CFG1=0x%x (module param)\n",
 			 vfe31_xbar_cfg1);
@@ -1615,14 +1638,21 @@ static int vfe31_enable(struct vfe_line *line)
 	}
 
 	/*
-	 * Step 1b: Configure DEMUX, scale and crop modules
+	 * Step 1b: Configure DEMUX, scale and crop modules (PIX mode only)
 	 * These must be set up before WM registers for the ISP pipeline
 	 * to process data correctly. DEMUX is essential for YUV data.
+	 *
+	 * For RDI mode (axi=0x60), data bypasses the ISP entirely,
+	 * so DEMUX/scale/crop configuration is not needed.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure demux/scale/crop\n");
-	vfe31_set_demux_cfg(vfe, line);
-	vfe31_set_scale_cfg(vfe, line);
-	vfe31_set_crop_cfg(vfe, line);
+	if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
+		dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure demux/scale/crop\n");
+		vfe31_set_demux_cfg(vfe, line);
+		vfe31_set_scale_cfg(vfe, line);
+		vfe31_set_crop_cfg(vfe, line);
+	} else {
+		dev_info(vfe->camss->dev, "VFE31: Step 1b - Skip ISP config (RDI mode)\n");
+	}
 
 	/*
 	 * Step 2: Configure WM registers
