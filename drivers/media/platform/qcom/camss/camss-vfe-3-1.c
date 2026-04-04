@@ -1262,11 +1262,15 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	/* Handle CAMIF_ERROR - clear status to allow next frame */
 	if (value1 & VFE_0_IRQ_MASK_1_CAMIF_ERROR) {
 		u32 camif_status = readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS);
-		u32 window_height = readl_relaxed(vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
-		u32 window_width = readl_relaxed(vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
-		/* WINDOW_HEIGHT_CFG: [29:16]=firstLine, [13:0]=lastLine */
-		u32 expected_lines = (window_height & 0x3FFF) + 1;  /* lastLine + 1 */
-		u32 expected_pixels = (window_width & 0x3FFF) + 1;  /* lastPixel + 1 */
+		u32 window_width_cfg = readl_relaxed(vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+		u32 subsample_cfg = readl_relaxed(vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+		/*
+		 * WINDOW_WIDTH_CFG: [29:16]=height, [13:0]=width_bytes
+		 * SUBSAMPLE_CFG_0: [13:0]=lastLine (height-1)
+		 * CAMIF_STATUS: [29:16]=received_lines, [13:0]=received_pixels
+		 */
+		u32 expected_lines = (subsample_cfg & 0x3FFF) + 1;  /* height */
+		u32 expected_pixels = window_width_cfg & 0x3FFF;    /* width_bytes */
 		u32 received_lines = (camif_status >> 16) & 0x3FFF;
 		u32 received_pixels = camif_status & 0x3FFF;
 		static int camif_error_count;
