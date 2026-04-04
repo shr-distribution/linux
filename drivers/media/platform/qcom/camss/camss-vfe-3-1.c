@@ -10,7 +10,6 @@
  */
 
 #include <linux/delay.h>
-#include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -44,28 +43,13 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
  * instead of WM0/WM1, matching the XBAR CFG1 = 0x1a1b seen in registers.
  */
 /*
- * VFE31 video output enable.
+ * VFE31 VIDEO line (WM4/WM5) is now properly supported:
+ * - When only PIX line active: XBAR routes to WM0/WM1 only (0x1A13)
+ * - When VIDEO line active: XBAR routes to WM4/WM5 with separate buffers (0x1A1B)
+ * - VIDEO line's /dev/video node provides its own buffer allocation
  *
- * When disabled (0, default):
- *   WM4 is configured with a dedicated dummy buffer that safely absorbs
- *   the duplicate Y data from XBAR 0x1A1B (which routes Y to WM0+WM4).
- *   WM5 is disabled since XBAR doesn't route CbCr to it anyway.
- *   This is the proper fix matching webOS behavior.
- *
- * When enabled (1):
- *   WM4/WM5 addresses mirror WM0/WM1 addresses during buffer rotation.
- *   WARNING: This causes DMA corruption! Only enable for testing or
- *   when implementing real VIDEO line support with separate buffers.
- *
- * WebOS behavior analysis:
- *   - XBAR_CFG1 = 0x1A1B routes Y to WM0+WM4, CbCr to WM1 only
- *   - WM4 uses DIFFERENT buffer (0x4250D000) from WM0 (0x42300000)
- *   - WM5 is configured but receives no data (XBAR doesn't route to it)
+ * The vfe31_video_output_enable parameter is deprecated and removed.
  */
-int vfe31_video_output_enable = 0;
-module_param(vfe31_video_output_enable, int, 0644);
-MODULE_PARM_DESC(vfe31_video_output_enable,
-		 "VFE31 video output (0=dummy buffer for WM4, 1=mirror WM0/WM1)");
 
 /*
  * VFE31 UV swap control for debugging color issues.
@@ -81,53 +65,37 @@ MODULE_PARM_DESC(vfe31_swap_uv,
 		 "VFE31 swap UV channels (0=normal CbCr, 1=swap to CrCb)");
 
 /*
- * VFE31 XBAR_CFG1 override for testing data routing configurations.
+ * VFE31 XBAR_CFG1 routing values.
  * Controls how Y (luma) and CbCr (chroma) are routed to Write Masters.
  *
- * Known values:
- *   0x1A03 = Y→WM0, CbCr→DISABLED (Qualcomm default - BROKEN for semi-planar!)
- *   0x1A13 = Y→WM0, CbCr→WM1 (preview-only mode, NO WM4/WM5)
- *   0x1A1B = Y→WM0+WM4, CbCr→WM1 (webOS default - requires WM4 config)
- *   0x1A9B = Y→WM0+WM4, CbCr→WM1+WM5 (dual video - requires WM4/WM5 config)
+ * The XBAR value is selected dynamically based on which lines are active:
+ *   - PIX only:       0x1A13 = Y→WM0, CbCr→WM1 (preview-only, no WM4/WM5)
+ *   - PIX + VIDEO:    0x1A1B = Y→WM0+WM4, CbCr→WM1 (dual Y output)
+ *   - Full dual mode: 0x1A9B = Y→WM0+WM4, CbCr→WM1+WM5 (full dual output)
  *
- * NOTE: 0x1A13 (preview-only) was tried but doesn't work - the DEMUX
- * doesn't properly separate Y/CbCr unless bit 3 is set in Y routing.
- * webOS always used 0x1A1B which routes Y to WM0+WM4.
- * WM4 must be configured (even with dummy addresses) or CbCr doesn't work.
+ * This eliminates the need for dummy buffers - WM4/WM5 only receive data
+ * when VIDEO line is active with its own buffers.
  */
-int vfe31_xbar_cfg1 = 0x1A1B;
+#define VFE31_XBAR_PIX_ONLY	0x1A13  /* Y→WM0, CbCr→WM1 */
+#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Y→WM0+WM4, CbCr→WM1 */
+#define VFE31_XBAR_DUAL		0x1A9B  /* Y→WM0+WM4, CbCr→WM1+WM5 */
+
+/* Module param for manual override/testing */
+int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select based on active lines */
 module_param(vfe31_xbar_cfg1, int, 0644);
 MODULE_PARM_DESC(vfe31_xbar_cfg1,
-		 "VFE31 XBAR_CFG1 routing (0x1a13=preview, 0x1a1b=video, 0x1a9b=dual)");
+		 "VFE31 XBAR_CFG1 override (0=auto, 0x1a13=preview, 0x1a1b=video, 0x1a9b=dual)");
 
 /* External module parameters from camss-vfe.c */
 extern int software_sof_enable;
 extern int software_eof_enable;
 
 /*
- * VFE31 WM4 Dummy Buffer
- *
- * WebOS register dumps show that XBAR_CFG1 = 0x1A1B routes Y data to BOTH
- * WM0 AND WM4 simultaneously. This hardware behavior requires WM4 to be
- * properly configured, even if we don't want the video output.
- *
- * WebOS solution: Allocate separate buffers for WM0 and WM4:
- *   WM0 PING: 0x42300000 (preview Y buffer)
- *   WM4 PING: 0x4250D000 (video Y buffer, ~2MB offset)
- *
- * Our solution: Allocate a small "dummy" buffer for WM4 that safely absorbs
- * the duplicate Y data. This prevents DMA corruption without needing to
- * implement full VIDEO line support with separate buffer allocation.
- *
- * The dummy buffer only needs to be large enough for one Y plane at the
- * maximum supported resolution (1280x1024 = 1.3MB for Y plane).
+ * VFE31 now uses proper XBAR switching instead of dummy buffers:
+ * - PIX only mode: XBAR 0x1A13 routes Y→WM0, CbCr→WM1 (no WM4/WM5)
+ * - PIX+VIDEO mode: XBAR 0x1A1B routes Y→WM0+WM4, CbCr→WM1
+ * - VIDEO line provides its own buffers for WM4/WM5
  */
-#define VFE31_WM4_DUMMY_BUFFER_SIZE	(1280 * 1024)  /* 1.3MB for Y plane */
-
-static void *vfe31_wm4_dummy_vaddr;
-static dma_addr_t vfe31_wm4_dummy_dma_addr;
-static bool vfe31_wm4_dummy_allocated;
-static DEFINE_MUTEX(vfe31_wm4_dummy_lock);
 
 /*
  * MSM8660 Clock Controller addresses for VFE AXI clock forcing.
@@ -1014,77 +982,6 @@ static inline void vfe_reg_set(struct vfe_device *vfe, u32 reg, u32 set_bits)
 	writel_relaxed(bits | set_bits, vfe->base + reg);
 }
 
-/*
- * vfe31_alloc_wm4_dummy_buffer - Allocate dummy buffer for WM4
- *
- * WebOS uses XBAR_CFG1 = 0x1A1B which routes Y data to BOTH WM0 AND WM4.
- * This hardware behavior requires WM4 to have a valid buffer address,
- * otherwise we get DMA corruption when WM4 tries to write to the same
- * address as WM0.
- *
- * This function allocates a one-time dummy buffer that WM4 will write to,
- * safely absorbing the duplicate Y data without corrupting the main buffer.
- *
- * Returns: 0 on success, negative error code on failure
- */
-static int vfe31_alloc_wm4_dummy_buffer(struct vfe_device *vfe)
-{
-	int ret = 0;
-
-	mutex_lock(&vfe31_wm4_dummy_lock);
-
-	if (vfe31_wm4_dummy_allocated) {
-		/* Already allocated */
-		mutex_unlock(&vfe31_wm4_dummy_lock);
-		return 0;
-	}
-
-	vfe31_wm4_dummy_vaddr = dma_alloc_coherent(vfe->camss->dev,
-						   VFE31_WM4_DUMMY_BUFFER_SIZE,
-						   &vfe31_wm4_dummy_dma_addr,
-						   GFP_KERNEL);
-	if (!vfe31_wm4_dummy_vaddr) {
-		dev_err(vfe->camss->dev,
-			"VFE31: Failed to allocate WM4 dummy buffer (%d bytes)\n",
-			VFE31_WM4_DUMMY_BUFFER_SIZE);
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	vfe31_wm4_dummy_allocated = true;
-	dev_info(vfe->camss->dev,
-		 "VFE31: Allocated WM4 dummy buffer: vaddr=%px dma_addr=0x%08llx size=%d\n",
-		 vfe31_wm4_dummy_vaddr, (u64)vfe31_wm4_dummy_dma_addr,
-		 VFE31_WM4_DUMMY_BUFFER_SIZE);
-
-out:
-	mutex_unlock(&vfe31_wm4_dummy_lock);
-	return ret;
-}
-
-/*
- * vfe31_free_wm4_dummy_buffer - Free the WM4 dummy buffer
- *
- * Called during driver cleanup to free the dummy buffer.
- */
-static void vfe31_free_wm4_dummy_buffer(struct vfe_device *vfe)
-{
-	mutex_lock(&vfe31_wm4_dummy_lock);
-
-	if (vfe31_wm4_dummy_allocated && vfe31_wm4_dummy_vaddr) {
-		dma_free_coherent(vfe->camss->dev,
-				  VFE31_WM4_DUMMY_BUFFER_SIZE,
-				  vfe31_wm4_dummy_vaddr,
-				  vfe31_wm4_dummy_dma_addr);
-		vfe31_wm4_dummy_vaddr = NULL;
-		vfe31_wm4_dummy_dma_addr = 0;
-		vfe31_wm4_dummy_allocated = false;
-		dev_info(vfe->camss->dev, "VFE31: Freed WM4 dummy buffer\n");
-	}
-
-	mutex_unlock(&vfe31_wm4_dummy_lock);
-}
-
 static u32 vfe31_hw_version(struct vfe_device *vfe)
 {
 	u32 hw_version;
@@ -1739,17 +1636,22 @@ static int vfe31_enable(struct vfe_line *line)
 
 	/*
 	 * For PIX mode (OUTPUT_1_AND_3), configure XBAR_CFG1 to route
-	 * Y to WM0 and CbCr to WM1. We always use 0x1A1B which properly
-	 * routes both planes. See XBAR_CFG1 documentation above.
+	 * Y to WM0 and CbCr to WM1.
 	 *
-	 * Note: PIX_MODE and VIDEO_MODE both use 0x1A1B. The video_output_enable
-	 * flag controls WM4/WM5 configuration, not the XBAR value itself.
+	 * Note: This is an initial setup. The final XBAR value is set in
+	 * enable_pending_camif() which uses auto-select logic based on
+	 * whether VIDEO line is active. Use PIX_ONLY as default here.
+	 *
+	 * When vfe31_xbar_cfg1 module param is 0 (auto mode), use the
+	 * PIX_ONLY default. If param is set explicitly, use that value.
 	 */
 	if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
+		u32 xbar_initial = (vfe31_xbar_cfg1 != 0) ?
+				   vfe31_xbar_cfg1 : VFE31_XBAR_PIX_ONLY;
 		dev_info(vfe->camss->dev,
-			 "VFE31: PIX mode - XBAR CFG1=0x%x (module param)\n",
-			 vfe31_xbar_cfg1);
-		writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
+			 "VFE31: PIX mode - XBAR CFG1=0x%x (initial, param=%d)\n",
+			 xbar_initial, vfe31_xbar_cfg1);
+		writel_relaxed(xbar_initial, vfe->base + VFE_0_BUS_XBAR_CFG1);
 	}
 
 	/*
@@ -2768,14 +2670,42 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 		/* No XBAR configuration for RDI mode */
 	} else {
-		/* PIX mode (0x01): Use XBAR to route DEMUX output to WMs */
+		/*
+		 * PIX mode (0x01): Use XBAR to route DEMUX output to WMs
+		 *
+		 * XBAR selection based on active lines:
+		 * - PIX only:    0x1A13 = Y→WM0, CbCr→WM1 (no WM4/WM5 routing)
+		 * - PIX+VIDEO:   0x1A1B = Y→WM0+WM4, CbCr→WM1
+		 *
+		 * This eliminates need for dummy buffers - WM4/WM5 only receive
+		 * data when VIDEO line is active with its own buffers.
+		 */
+		struct vfe_output *video_output = &vfe->line[VFE_LINE_VIDEO].output;
+		bool video_active = (video_output->state == VFE_OUTPUT_ON ||
+				     video_output->state == VFE_OUTPUT_RESERVED ||
+				     video_output->state == VFE_OUTPUT_CONTINUOUS);
+		u32 xbar_value;
+
+		/* Use manual override if set, otherwise auto-select */
+		if (vfe31_xbar_cfg1 != 0) {
+			xbar_value = vfe31_xbar_cfg1;
+		} else if (line->id == VFE_LINE_VIDEO || video_active) {
+			/* VIDEO line active - route Y to WM0+WM4 */
+			xbar_value = VFE31_XBAR_PIX_VIDEO;
+		} else {
+			/* PIX only - route Y to WM0 only, no WM4 */
+			xbar_value = VFE31_XBAR_PIX_ONLY;
+		}
+
 		dev_info(vfe->camss->dev,
-			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x01, XBAR=0x%04x\n",
-			 VFE_0_BUS_CFG_WEBOS_VALUE, vfe31_xbar_cfg1);
+			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x01, XBAR=0x%04x (%s)\n",
+			 VFE_0_BUS_CFG_WEBOS_VALUE, xbar_value,
+			 xbar_value == VFE31_XBAR_PIX_ONLY ? "PIX only" :
+			 xbar_value == VFE31_XBAR_PIX_VIDEO ? "PIX+VIDEO" : "manual");
 		writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-		writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
+		writel_relaxed(xbar_value, vfe->base + VFE_0_BUS_XBAR_CFG1);
 	}
 	wmb();
 
@@ -3057,22 +2987,29 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * Previous buggy mask 0x00020001 put WM0 in group 0 and WM1
 		 * in group 2, causing TWO interrupts per frame!
 		 */
-#define VFE31_IRQ_COMP_MASK_WEBOS		0x00220011  /* WM0+4,WM1+5 */
-#define VFE31_IRQ_COMP_MASK_PREVIEW_ONLY	0x00000003  /* WM0+WM1 in group 0 */
-		if (vfe31_video_output_enable) {
-			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_WEBOS;
-			dev_info(vfe->camss->dev,
-				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (video+preview)\n",
-				 vfe->irq_comp_mask_shadow);
-		} else {
-			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PREVIEW_ONLY;
-			dev_info(vfe->camss->dev,
-				 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (preview-only)\n",
-				 vfe->irq_comp_mask_shadow);
+#define VFE31_IRQ_COMP_MASK_VIDEO		0x00220011  /* WM0+4,WM1+5 */
+#define VFE31_IRQ_COMP_MASK_PIX_ONLY		0x00000003  /* WM0+WM1 in group 0 */
+		{
+			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+			bool video_active = (video_out->state == VFE_OUTPUT_ON ||
+					     video_out->state == VFE_OUTPUT_RESERVED ||
+					     video_out->state == VFE_OUTPUT_CONTINUOUS);
+
+			if (line->id == VFE_LINE_VIDEO || video_active) {
+				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_VIDEO;
+				dev_info(vfe->camss->dev,
+					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (VIDEO active)\n",
+					 vfe->irq_comp_mask_shadow);
+			} else {
+				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_ONLY;
+				dev_info(vfe->camss->dev,
+					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (PIX only)\n",
+					 vfe->irq_comp_mask_shadow);
+			}
+			writel_relaxed(vfe->irq_comp_mask_shadow,
+				       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+			wmb();
 		}
-		writel_relaxed(vfe->irq_comp_mask_shadow,
-			       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
-		wmb();
 	}
 
 	/*
@@ -3216,107 +3153,101 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	}
 
 	/*
-	 * Step 8: WM4/WM5 configuration for video output
+	 * Step 8: WM4/WM5 configuration for VIDEO line output
 	 *
-	 * WebOS register analysis shows:
+	 * With dynamic XBAR selection in Step 1:
+	 * - PIX only:    XBAR 0x1A13 routes Y→WM0, CbCr→WM1 (no WM4/WM5)
+	 * - PIX+VIDEO:   XBAR 0x1A1B routes Y→WM0+WM4, CbCr→WM1
 	 *
-	 * 1. XBAR_CFG1 = 0x1A1B routes:
-	 *    - Y data to BOTH WM0 AND WM4 (bits 0-3 = 0xB)
-	 *    - CbCr data to WM1 ONLY (bits 4-7 = 0x1, NOT to WM5!)
-	 *
-	 * 2. WebOS configures WM4 with DIFFERENT addresses than WM0:
-	 *    - WM0 PING: 0x42300000 (preview Y buffer)
-	 *    - WM4 PING: 0x4250D000 (video Y buffer, ~2MB offset)
-	 *    - WM4 WR_CFG: 0x01300097 (enabled, different burst/lines)
-	 *
-	 * 3. WM5 is configured but doesn't receive data (XBAR doesn't route
-	 *    CbCr to WM5 with value 0x1A1B). We can safely disable it.
-	 *
-	 * Our implementation:
-	 * - Allocate a dummy buffer for WM4 to absorb the duplicate Y data
-	 * - Configure WM4 with the dummy buffer address and enable it
-	 * - Disable WM5 since it doesn't receive data anyway
-	 *
-	 * This matches webOS behavior while preventing DMA corruption.
+	 * This means WM4/WM5 only receive data when VIDEO line is active,
+	 * eliminating the need for dummy buffers.
 	 */
 	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
-		u32 width = pix->width;
-		u32 height = pix->height;
-		u32 stride = pix->plane_fmt[0].bytesperline;
-		int ret;
-
-		/* Allocate dummy buffer for WM4 (one-time allocation) */
-		ret = vfe31_alloc_wm4_dummy_buffer(vfe);
-		if (ret) {
-			dev_warn(vfe->camss->dev,
-				 "VFE31: Step 8 - Failed to alloc WM4 dummy, disabling WM4/5\n");
-			writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
-			writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
-			wmb();
-		} else {
-			u32 wpl = stride / 8;  /* 64-bit words per line */
+		if (line->id == VFE_LINE_VIDEO) {
+			/*
+			 * VIDEO line starting - configure WM4/WM5 with
+			 * VIDEO line's buffer addresses.
+			 */
+			struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
+			u32 width = pix->width;
+			u32 height = pix->height;
+			u32 stride = pix->plane_fmt[0].bytesperline;
+			u32 wpl = stride / 8;
 			u32 reg;
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: Step 8 - Configuring WM4 with dummy buffer 0x%08llx\n",
-				 (u64)vfe31_wm4_dummy_dma_addr);
+				 "VFE31: Step 8 - VIDEO line: configuring WM4/WM5\n");
 
-			/*
-			 * WM4 configuration - matches webOS register values:
-			 * - PING/PONG: point to dummy buffer
-			 * - IMAGE_SIZE: match preview dimensions
-			 * - ADDR_CFG: Y stride configuration
-			 * - UB_CFG: microblock configuration
-			 * - WR_CFG: enable (bit 0)
-			 */
+			/* WM4 configuration for VIDEO line Y plane */
+			/* Addresses set via wm_set_ping_addr/wm_set_pong_addr */
 
-			/* WM4 PING/PONG addresses - use dummy buffer */
-			writel_relaxed(vfe31_wm4_dummy_dma_addr,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_Y));
-			writel_relaxed(vfe31_wm4_dummy_dma_addr,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_Y));
-
-			/* WM4 IMAGE_SIZE - same as WM0 for preview */
-			reg = ((height - 1) & 0xFFF) << 16;  /* height_minus_1 */
-			reg |= (width - 1) & 0x1FFF;          /* width_minus_1 */
+			/* WM4 IMAGE_SIZE */
+			reg = ((height - 1) & 0xFFF) << 16;
+			reg |= (width - 1) & 0x1FFF;
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
 
-			/* WM4 ADDR_CFG - Y stride */
+			/* WM4 ADDR_CFG */
 			reg = ((wpl - 1) & 0xFFFF) << 16;
 			reg |= (height - 1) & 0xFFFF;
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
 
-			/* WM4 UB_CFG - microblock config */
+			/* WM4 UB_CFG */
 			reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 			reg |= (height - 1) & 0xFFFF;
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_Y));
 
-			/* WM4 WR_CFG - enable */
+			/* WM4 enable */
 			writel_relaxed(BIT(0),
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
-
-			/* Reload WM4 configuration */
 			writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(VFE31_VIDEO_WM_Y),
 				       vfe->base + VFE_0_BUS_CMD);
 
-			/*
-			 * WM5 - Disable
-			 * XBAR 0x1A1B doesn't route CbCr to WM5 (only to WM1).
-			 * WebOS enables WM5 but it doesn't receive any data.
-			 * We simply disable it since there's no point in enabling it.
-			 */
-			writel_relaxed(0,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+			/* WM5 for CbCr - only with XBAR 0x1A9B (dual CbCr) */
+			if (vfe31_xbar_cfg1 == VFE31_XBAR_DUAL && line->output.wm_num == 2) {
+				/* WM5 IMAGE_SIZE */
+				reg = ((height - 1) & 0xFFF) << 16;
+				reg |= (width - 1) & 0x1FFF;
+				writel_relaxed(reg,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
 
+				/* WM5 ADDR_CFG */
+				reg = ((wpl - 1) & 0xFFFF) << 16;
+				reg |= (height - 1) & 0xFFFF;
+				writel_relaxed(reg,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
+
+				/* WM5 enable */
+				writel_relaxed(BIT(0),
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+				writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(VFE31_VIDEO_WM_CBCR),
+					       vfe->base + VFE_0_BUS_CMD);
+
+				dev_info(vfe->camss->dev,
+					 "VFE31: WM5 enabled (XBAR dual mode)\n");
+			} else {
+				/* Standard XBAR - CbCr goes to WM1 only */
+				writel_relaxed(0,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+			}
 			wmb();
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM4 configured: %ux%u stride=%u dummy_addr=0x%08llx, WM5 disabled\n",
-				 width, height, stride, (u64)vfe31_wm4_dummy_dma_addr);
+				 "VFE31: VIDEO line WM4/WM5: %ux%u stride=%u\n",
+				 width, height, stride);
+		} else {
+			/*
+			 * PIX line only (not VIDEO line).
+			 * With XBAR 0x1A13, WM4/WM5 don't receive data.
+			 * Explicitly disable them to ensure clean state.
+			 */
+			dev_info(vfe->camss->dev,
+				 "VFE31: Step 8 - PIX only, disabling WM4/WM5 (XBAR 0x1A13)\n");
+			writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
+			writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+			wmb();
 		}
 	}
 
@@ -3467,26 +3398,18 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	}
 
 	/*
-	 * VIDEO mode support: When video_output_enable=1, also configure
-	 * WM4/WM5 with the same buffer addresses as WM0/WM1.
-	 * This makes COMPOSITE_DONE fire because WM4/WM5 complete together
-	 * with WM0/WM1, satisfying IRQ_COMPOSITE_MASK=0x00220011.
+	 * NOTE: WM4/WM5 addresses are NOT mirrored from WM0/WM1.
+	 *
+	 * When VIDEO line (VFE_LINE_VIDEO) is active, it sets WM4/WM5
+	 * addresses directly via wm=4/wm=5 calls with its own buffers.
+	 *
+	 * When VIDEO line is NOT active, WM4 uses a dummy buffer configured
+	 * in enable_pending_camif() to safely absorb duplicate Y data from
+	 * XBAR 0x1A1B routing.
+	 *
+	 * The old video_output_enable mirror code caused DMA corruption by
+	 * making WM0 and WM4 write to the same addresses simultaneously.
 	 */
-	if (vfe31_video_output_enable) {
-		if (wm == 0) {
-			/* WM0 (preview Y) -> also configure WM4 (video Y) */
-			writel_relaxed(addr,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_Y));
-			dev_dbg(vfe->camss->dev,
-				"VFE31: WM4 ping_addr=0x%08x (video mirror)\n", addr);
-		} else if (wm == 1) {
-			/* WM1 (preview CbCr) -> also configure WM5 (video CbCr) */
-			writel_relaxed(addr,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_CBCR));
-			dev_dbg(vfe->camss->dev,
-				"VFE31: WM5 ping_addr=0x%08x (video mirror)\n", addr);
-		}
-	}
 }
 
 static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
@@ -3510,25 +3433,7 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 	}
 
-	/*
-	 * VIDEO mode support: When video_output_enable=1, also configure
-	 * WM4/WM5 with the same buffer addresses as WM0/WM1.
-	 */
-	if (vfe31_video_output_enable) {
-		if (wm == 0) {
-			/* WM0 (preview Y) -> also configure WM4 (video Y) */
-			writel_relaxed(addr,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_Y));
-			dev_dbg(vfe->camss->dev,
-				"VFE31: WM4 pong_addr=0x%08x (video mirror)\n", addr);
-		} else if (wm == 1) {
-			/* WM1 (preview CbCr) -> also configure WM5 (video CbCr) */
-			writel_relaxed(addr,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
-			dev_dbg(vfe->camss->dev,
-				"VFE31: WM5 pong_addr=0x%08x (video mirror)\n", addr);
-		}
-	}
+	/* See comment in vfe31_wm_set_ping_addr about WM4/WM5 handling */
 }
 
 static int vfe31_wm_get_ping_pong_status(struct vfe_device *vfe, u8 wm)
@@ -3608,20 +3513,25 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 	 * Also enable COMPOSITE_DONE_2 IRQ since WM1 is mapped there.
 	 */
 	if (enable) {
-		/* Choose mask based on whether WM4/WM5 are active */
-		if (vfe31_video_output_enable) {
-			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_WEBOS;
+		/* Choose mask based on whether VIDEO line is active */
+		struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+		bool video_active = (video_out->state == VFE_OUTPUT_ON ||
+				     video_out->state == VFE_OUTPUT_RESERVED ||
+				     video_out->state == VFE_OUTPUT_CONTINUOUS);
+
+		if (line_id == VFE_LINE_VIDEO || video_active) {
+			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_VIDEO;
 			/* Video mode: WM0+WM4 in group 0, WM1+WM5 in group 2 */
 			val0 |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
 		} else {
-			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PREVIEW_ONLY;
-			/* Preview-only: WM0+WM1 both in group 0, no group 2 needed */
+			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_ONLY;
+			/* PIX only: WM0+WM1 both in group 0, no group 2 needed */
 		}
 
 		dev_info(vfe->camss->dev,
 			 "VFE31 pix_line: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
 			 vfe->irq_comp_mask_shadow,
-			 vfe31_video_output_enable ? "video+preview" : "preview-only");
+			 video_active ? "VIDEO active" : "PIX only");
 		writel_relaxed(vfe->irq_comp_mask_shadow,
 			       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 	}
@@ -3779,8 +3689,12 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		wmb();
 
 		/* Configure AXI output mode and XBAR */
-		writel_relaxed(vfe31_axi_output_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-		writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
+		{
+			u32 xbar_val = (vfe31_xbar_cfg1 != 0) ?
+				       vfe31_xbar_cfg1 : VFE31_XBAR_PIX_ONLY;
+			writel_relaxed(vfe31_axi_output_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+			writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
+		}
 		wmb();
 
 		/* Configure IRQ masks */
@@ -3959,7 +3873,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		/* Only configure XBAR for PIX mode - RDI bypasses XBAR */
 		if (!is_rdi && axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-			writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
+			u32 xbar_val = (vfe31_xbar_cfg1 != 0) ?
+				       vfe31_xbar_cfg1 : VFE31_XBAR_PIX_ONLY;
+			writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
 		}
 	}
 
@@ -4046,10 +3962,20 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				 "VFE31: RDI COMPOSITE_MASK=0x%08x (WM%d->group1)\n",
 				 comp_mask, vfe->camif_pending_wm);
 			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
-		} else if (vfe31_video_output_enable) {
-			writel_relaxed(0x00220011, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		} else {
-			writel_relaxed(0x00000003, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+			/* PIX mode - check if VIDEO line is also active */
+			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+			bool video_active = (video_out->state == VFE_OUTPUT_ON ||
+					     video_out->state == VFE_OUTPUT_RESERVED ||
+					     video_out->state == VFE_OUTPUT_CONTINUOUS);
+
+			if (line->id == VFE_LINE_VIDEO || video_active) {
+				writel_relaxed(VFE31_IRQ_COMP_MASK_VIDEO,
+					       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+			} else {
+				writel_relaxed(VFE31_IRQ_COMP_MASK_PIX_ONLY,
+					       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+			}
 		}
 	}
 	wmb();
