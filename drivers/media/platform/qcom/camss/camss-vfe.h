@@ -121,6 +121,7 @@ struct vfe_hw_ops {
 	void (*vfe_buf_done)(struct vfe_device *vfe, int port_id);
 	void (*vfe_wm_update)(struct vfe_device *vfe, u8 wm, u32 addr,
 			      struct vfe_line *line);
+	void (*enable_pending_camif)(struct vfe_device *vfe);
 };
 
 struct vfe_isr_ops {

@@ -1753,90 +1753,6 @@ static void vfe31_debug_dump_external_regs(struct device *dev)
  * VFE31 - the hardware architecture is fundamentally different.
  */
 
-/* VFE31 global reset and IRQ clear registers */
-#define VFE31_GLOBAL_RESET_CMD		0x004
-#define VFE31_IRQ_CMD			0x018
-#define VFE31_IRQ_CLEAR_0		0x024
-#define VFE31_IRQ_CLEAR_1		0x028
-
-/*
- * vfe31_reg_update_poll - Issue REG_UPDATE and poll until bit 0 clears
- * @vfe: VFE device
- * @timeout_us: Timeout in microseconds
- *
- * VFE31 shadow registers require REG_UPDATE to latch new values. This function
- * writes 1 to VFE_REG_UPDATE_CMD and polls until bit 0 auto-clears, indicating
- * the update completed. Without proper REG_UPDATE completion, configuration
- * writes to VFE_CFG_OFF and other shadow registers won't take effect.
- *
- * Returns 0 on success, -ETIMEDOUT if polling times out.
- */
-static int vfe31_reg_update_poll(struct vfe_device *vfe, unsigned int timeout_us)
-{
-	u32 val;
-	int ret;
-
-	/* Write 1 to trigger register update */
-	writel_relaxed(1, vfe->base + VFE31_REG_UPDATE_CMD);
-	wmb();
-
-	/* Poll until bit 0 clears (update complete) */
-	ret = readl_relaxed_poll_timeout(vfe->base + VFE31_REG_UPDATE_CMD,
-					 val, !(val & 1), 10, timeout_us);
-	if (ret) {
-		dev_warn(vfe->camss->dev,
-			 "VFE31: REG_UPDATE timeout (val=0x%08x after %u us)\n",
-			 val, timeout_us);
-	} else {
-		dev_dbg(vfe->camss->dev, "VFE31: REG_UPDATE completed\n");
-	}
-
-	return ret;
-}
-
-/*
- * vfe31_cold_reset - Perform a cold reset of VFE31 to unstick registers
- * @vfe: VFE device
- *
- * If VFE shadow registers are stuck (writes don't take effect), a full reset
- * can clear the internal state machine. This follows the webOS reset sequence:
- * 1. Disable all IRQs
- * 2. Clear all pending IRQs
- * 3. Issue global reset (0x3FF to reset all modules)
- * 4. Wait for reset completion
- * 5. Re-enable clock gates
- *
- * Note: This is a heavyweight operation - use only if REG_UPDATE polling fails.
- */
-static void vfe31_cold_reset(struct vfe_device *vfe)
-{
-	dev_info(vfe->camss->dev, "VFE31: Performing cold reset to unstick registers\n");
-
-	/* Step 1: Disable all IRQs */
-	writel_relaxed(0x0, vfe->base + VFE31_IRQ_MASK_0);
-	writel_relaxed(0x0, vfe->base + VFE31_IRQ_MASK_1);
-	wmb();
-
-	/* Step 2: Clear all pending IRQs */
-	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_IRQ_CLEAR_0);
-	writel_relaxed(0xFFFFFFFF, vfe->base + VFE31_IRQ_CLEAR_1);
-	writel_relaxed(1, vfe->base + VFE31_IRQ_CMD);  /* Acknowledge clear */
-	wmb();
-
-	/* Step 3: Issue global reset - 0x3FF resets all VFE modules */
-	writel_relaxed(0x3FF, vfe->base + VFE31_GLOBAL_RESET_CMD);
-	wmb();
-
-	/* Step 4: Wait for reset to complete */
-	usleep_range(2000, 3000);
-
-	/* Step 5: Re-enable all clock gates */
-	writel_relaxed(0xFFFFFFFF, vfe->base + 0x00C);  /* CGC_OVERRIDE */
-	wmb();
-
-	dev_info(vfe->camss->dev, "VFE31: Cold reset complete\n");
-}
-
 /*
  * vfe_enable_pending_camif - Configure and enable deferred CAMIF
  * @vfe: VFE device
@@ -1845,6 +1761,10 @@ static void vfe31_cold_reset(struct vfe_device *vfe)
  * CSIPHY is configured. Writing to VFE CAMIF registers before CSIPHY is
  * ready blocks CSI register access. This matches the legacy webOS kernel
  * behavior where CSI is initialized before VFE CAMIF.
+ *
+ * If the VFE has an ops->enable_pending_camif callback, use that.
+ * This allows version-specific CAMIF enable logic to be moved to the
+ * appropriate VFE-specific file (e.g., camss-vfe-3-1.c for VFE31).
  */
 void vfe_enable_pending_camif(struct vfe_device *vfe)
 {
@@ -1855,6 +1775,17 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 
 	if (!vfe->camif_pending) {
 		dev_dbg(vfe->camss->dev, "VFE: no pending CAMIF config\n");
+		return;
+	}
+
+	/*
+	 * If the VFE hardware ops provide an enable_pending_camif callback,
+	 * use it. This allows VFE-specific logic to be in the version-specific
+	 * file. If no callback is provided, fall through to the default
+	 * implementation below (currently VFE31-specific).
+	 */
+	if (vfe->res->hw_ops->enable_pending_camif) {
+		vfe->res->hw_ops->enable_pending_camif(vfe);
 		return;
 	}
 
