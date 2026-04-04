@@ -1925,7 +1925,18 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 *   DEMUX_CFG (0x284) = 0x03 (period)
 	 *   DEMUX_EVEN (0x290) = 0xC9CA (even << 8 | odd for UYVY)
 	 */
-	writel_relaxed((even_cfg << 8) | odd_cfg, vfe->base + VFE_0_DEMUX_EVEN_CFG);
+	val = (even_cfg << 8) | odd_cfg;
+	writel_relaxed(val, vfe->base + VFE_0_DEMUX_EVEN_CFG);
+
+	/* Readback to verify */
+	{
+		u32 cfg_rb = readl_relaxed(vfe->base + VFE_0_DEMUX_CFG);
+		u32 even_rb = readl_relaxed(vfe->base + VFE_0_DEMUX_EVEN_CFG);
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: DEMUX config: wrote CFG=0x%02x EVEN_CFG=0x%04x, readback CFG=0x%x EVEN=0x%x\n",
+			 VFE_0_DEMUX_CFG_PERIOD, val, cfg_rb, even_rb);
+	}
 }
 
 static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
