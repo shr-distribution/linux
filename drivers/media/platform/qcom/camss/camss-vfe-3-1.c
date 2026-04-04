@@ -77,15 +77,15 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *
  * Known values:
  *   0x1A03 = Y→WM0, CbCr→DISABLED (Qualcomm default - BROKEN for semi-planar!)
- *   0x1A13 = Y→WM0, CbCr→WM1 (preview-only mode - CbCr often corrupted)
- *   0x1A1B = Y→WM0+WM4, CbCr→WM1 (webOS default)
- *   0x1A9B = Y→WM0+WM4, CbCr→WM1+WM5 (full dual video mode - works correctly!)
+ *   0x1A13 = Y→WM0, CbCr→WM1 (preview-only mode, NO WM4/WM5)
+ *   0x1A1B = Y→WM0+WM4, CbCr→WM1 (webOS default - requires WM4 config)
+ *   0x1A9B = Y→WM0+WM4, CbCr→WM1+WM5 (dual video - requires WM4/WM5 config)
  *
- * Default 0x1A9B for correct CbCr plane data. WM4/WM5 IRQs are silently
- * ignored - we only track buffer completion via WM0/WM1.
- * Set via: echo 0x1a1b > /sys/module/qcom_camss/parameters/vfe31_xbar_cfg1
+ * WARNING: Using 0x1A1B/0x1A9B without configuring WM4/WM5 buffer addresses
+ * causes DMA writes to uninitialized memory, corrupting kernel memory!
+ * Default is 0x1A13 (preview-only) for safe operation with PIX line.
  */
-int vfe31_xbar_cfg1 = 0x1A9B;
+int vfe31_xbar_cfg1 = 0x1A13;
 module_param(vfe31_xbar_cfg1, int, 0644);
 MODULE_PARM_DESC(vfe31_xbar_cfg1,
 		 "VFE31 XBAR_CFG1 routing (0x1a13=preview, 0x1a1b=video, 0x1a9b=dual)");
