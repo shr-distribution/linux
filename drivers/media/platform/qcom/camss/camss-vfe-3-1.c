@@ -3123,11 +3123,17 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	/*
 	 * VFE31: If CAMIF is not yet running, defer the write.
 	 * Once CAMIF is running (camif_pending=false), write directly.
+	 *
+	 * IMPORTANT: Only save WM0's address to pending_ping_addr!
+	 * For semi-planar formats (NV16), WM1's address is computed later
+	 * as pending_ping_addr + Y_plane_size. If we save WM1's address
+	 * here, it overwrites WM0's address and breaks the offset calculation.
 	 */
 	if (vfe->camif_pending) {
 		dev_dbg(vfe->camss->dev,
 			"VFE31: WM%d ping_addr=0x%08x (deferred)\n", wm, addr);
-		vfe->pending_ping_addr = addr;
+		if (wm == 0)
+			vfe->pending_ping_addr = addr;
 	} else {
 		dev_dbg(vfe->camss->dev,
 			"VFE31: WM%d ping_addr=0x%08x (direct write)\n", wm, addr);
@@ -3163,11 +3169,15 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	/*
 	 * VFE31: If CAMIF is not yet running, defer the write.
 	 * Once CAMIF is running (camif_pending=false), write directly.
+	 *
+	 * IMPORTANT: Only save WM0's address to pending_pong_addr!
+	 * See comment in vfe31_wm_set_ping_addr for explanation.
 	 */
 	if (vfe->camif_pending) {
 		dev_dbg(vfe->camss->dev,
 			"VFE31: WM%d pong_addr=0x%08x (deferred)\n", wm, addr);
-		vfe->pending_pong_addr = addr;
+		if (wm == 0)
+			vfe->pending_pong_addr = addr;
 	} else {
 		dev_dbg(vfe->camss->dev,
 			"VFE31: WM%d pong_addr=0x%08x (direct write)\n", wm, addr);
