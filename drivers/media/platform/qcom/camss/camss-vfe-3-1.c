@@ -3871,6 +3871,38 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 
 	/*
+	 * Step 11b: Enable Write Masters
+	 *
+	 * CRITICAL: Explicitly enable WMs here before CAMIF start.
+	 * The WMs were configured in vfe31_enable() but the enable bit
+	 * may be cleared by BUS_CMD reload or other operations.
+	 *
+	 * For PIX mode: Enable WM0 (Y) and WM1 (CbCr)
+	 * For RDI mode: Enable only WM0 (raw)
+	 */
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+
+		/* Always enable WM0 */
+		writel_relaxed(BIT(0),
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(vfe->camif_pending_wm));
+		dev_info(vfe->camss->dev,
+			 "VFE31: Enabled WM%d (WR_CFG=0x1)\n", vfe->camif_pending_wm);
+
+		/* For PIX mode, also enable WM1 (CbCr plane) */
+		if (!is_rdi && line->output.wm_num == 2) {
+			u8 wm1 = line->output.wm_idx[1];
+			writel_relaxed(BIT(0),
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm1));
+			dev_info(vfe->camss->dev,
+				 "VFE31: Enabled WM%d (CbCr, WR_CFG=0x1)\n", wm1);
+		}
+		wmb();
+	}
+
+	/*
 	 * Step 12: Issue REG_UPDATE command
 	 * This latches all the shadow register values on the next VSYNC.
 	 */
