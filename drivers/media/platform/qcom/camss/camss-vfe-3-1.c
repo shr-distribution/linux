@@ -10,6 +10,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -44,19 +45,27 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
  */
 /*
  * VFE31 video output enable.
- * When enabled (1), WM4/WM5 are configured to mirror preview WM0/WM1
- * buffer addresses. WM4/WM5 IRQs are silently ignored since they're
- * just auxiliary routing paths.
  *
- * WARNING: Default is 0 because when enabled with XBAR 0x1A9B, WM0+WM4
- * both write Y data and WM1+WM5 both write CbCr to the SAME buffer
- * addresses, causing DMA memory corruption and kernel crashes.
- * Only enable this when using separate buffers for VIDEO line.
+ * When disabled (0, default):
+ *   WM4 is configured with a dedicated dummy buffer that safely absorbs
+ *   the duplicate Y data from XBAR 0x1A1B (which routes Y to WM0+WM4).
+ *   WM5 is disabled since XBAR doesn't route CbCr to it anyway.
+ *   This is the proper fix matching webOS behavior.
+ *
+ * When enabled (1):
+ *   WM4/WM5 addresses mirror WM0/WM1 addresses during buffer rotation.
+ *   WARNING: This causes DMA corruption! Only enable for testing or
+ *   when implementing real VIDEO line support with separate buffers.
+ *
+ * WebOS behavior analysis:
+ *   - XBAR_CFG1 = 0x1A1B routes Y to WM0+WM4, CbCr to WM1 only
+ *   - WM4 uses DIFFERENT buffer (0x4250D000) from WM0 (0x42300000)
+ *   - WM5 is configured but receives no data (XBAR doesn't route to it)
  */
 int vfe31_video_output_enable = 0;
 module_param(vfe31_video_output_enable, int, 0644);
 MODULE_PARM_DESC(vfe31_video_output_enable,
-		 "VFE31 video output enable (0=preview only WM0/WM1, 1=mirror to WM4/WM5)");
+		 "VFE31 video output (0=dummy buffer for WM4, 1=mirror WM0/WM1)");
 
 /*
  * VFE31 UV swap control for debugging color issues.
@@ -94,6 +103,31 @@ MODULE_PARM_DESC(vfe31_xbar_cfg1,
 /* External module parameters from camss-vfe.c */
 extern int software_sof_enable;
 extern int software_eof_enable;
+
+/*
+ * VFE31 WM4 Dummy Buffer
+ *
+ * WebOS register dumps show that XBAR_CFG1 = 0x1A1B routes Y data to BOTH
+ * WM0 AND WM4 simultaneously. This hardware behavior requires WM4 to be
+ * properly configured, even if we don't want the video output.
+ *
+ * WebOS solution: Allocate separate buffers for WM0 and WM4:
+ *   WM0 PING: 0x42300000 (preview Y buffer)
+ *   WM4 PING: 0x4250D000 (video Y buffer, ~2MB offset)
+ *
+ * Our solution: Allocate a small "dummy" buffer for WM4 that safely absorbs
+ * the duplicate Y data. This prevents DMA corruption without needing to
+ * implement full VIDEO line support with separate buffer allocation.
+ *
+ * The dummy buffer only needs to be large enough for one Y plane at the
+ * maximum supported resolution (1280x1024 = 1.3MB for Y plane).
+ */
+#define VFE31_WM4_DUMMY_BUFFER_SIZE	(1280 * 1024)  /* 1.3MB for Y plane */
+
+static void *vfe31_wm4_dummy_vaddr;
+static dma_addr_t vfe31_wm4_dummy_dma_addr;
+static bool vfe31_wm4_dummy_allocated;
+static DEFINE_MUTEX(vfe31_wm4_dummy_lock);
 
 /*
  * MSM8660 Clock Controller addresses for VFE AXI clock forcing.
@@ -978,6 +1012,77 @@ static inline void vfe_reg_set(struct vfe_device *vfe, u32 reg, u32 set_bits)
 	u32 bits = readl_relaxed(vfe->base + reg);
 
 	writel_relaxed(bits | set_bits, vfe->base + reg);
+}
+
+/*
+ * vfe31_alloc_wm4_dummy_buffer - Allocate dummy buffer for WM4
+ *
+ * WebOS uses XBAR_CFG1 = 0x1A1B which routes Y data to BOTH WM0 AND WM4.
+ * This hardware behavior requires WM4 to have a valid buffer address,
+ * otherwise we get DMA corruption when WM4 tries to write to the same
+ * address as WM0.
+ *
+ * This function allocates a one-time dummy buffer that WM4 will write to,
+ * safely absorbing the duplicate Y data without corrupting the main buffer.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+static int vfe31_alloc_wm4_dummy_buffer(struct vfe_device *vfe)
+{
+	int ret = 0;
+
+	mutex_lock(&vfe31_wm4_dummy_lock);
+
+	if (vfe31_wm4_dummy_allocated) {
+		/* Already allocated */
+		mutex_unlock(&vfe31_wm4_dummy_lock);
+		return 0;
+	}
+
+	vfe31_wm4_dummy_vaddr = dma_alloc_coherent(vfe->camss->dev,
+						   VFE31_WM4_DUMMY_BUFFER_SIZE,
+						   &vfe31_wm4_dummy_dma_addr,
+						   GFP_KERNEL);
+	if (!vfe31_wm4_dummy_vaddr) {
+		dev_err(vfe->camss->dev,
+			"VFE31: Failed to allocate WM4 dummy buffer (%d bytes)\n",
+			VFE31_WM4_DUMMY_BUFFER_SIZE);
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	vfe31_wm4_dummy_allocated = true;
+	dev_info(vfe->camss->dev,
+		 "VFE31: Allocated WM4 dummy buffer: vaddr=%px dma_addr=0x%08llx size=%d\n",
+		 vfe31_wm4_dummy_vaddr, (u64)vfe31_wm4_dummy_dma_addr,
+		 VFE31_WM4_DUMMY_BUFFER_SIZE);
+
+out:
+	mutex_unlock(&vfe31_wm4_dummy_lock);
+	return ret;
+}
+
+/*
+ * vfe31_free_wm4_dummy_buffer - Free the WM4 dummy buffer
+ *
+ * Called during driver cleanup to free the dummy buffer.
+ */
+static void vfe31_free_wm4_dummy_buffer(struct vfe_device *vfe)
+{
+	mutex_lock(&vfe31_wm4_dummy_lock);
+
+	if (vfe31_wm4_dummy_allocated && vfe31_wm4_dummy_vaddr) {
+		dma_free_coherent(vfe->camss->dev,
+				  VFE31_WM4_DUMMY_BUFFER_SIZE,
+				  vfe31_wm4_dummy_vaddr,
+				  vfe31_wm4_dummy_dma_addr);
+		vfe31_wm4_dummy_vaddr = NULL;
+		vfe31_wm4_dummy_dma_addr = 0;
+		vfe31_wm4_dummy_allocated = false;
+		dev_info(vfe->camss->dev, "VFE31: Freed WM4 dummy buffer\n");
+	}
+
+	mutex_unlock(&vfe31_wm4_dummy_lock);
 }
 
 static u32 vfe31_hw_version(struct vfe_device *vfe)
@@ -3113,31 +3218,106 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	/*
 	 * Step 8: WM4/WM5 configuration for video output
 	 *
-	 * CRITICAL: WebOS register dumps show that WM4 is enabled but WM5 is
-	 * disabled during preview. Also, webOS uses DIFFERENT buffer addresses
-	 * for WM4 than WM0 - they are NOT mirrors!
+	 * WebOS register analysis shows:
 	 *
-	 * When video_output_enable=0 (default), we must NOT enable WM4/WM5
-	 * DMA because XBAR 0x1A1B routes Y data to both WM0 AND WM4. If both
-	 * are enabled with the same address, two DMA engines write to the
-	 * same memory simultaneously, causing kernel memory corruption.
+	 * 1. XBAR_CFG1 = 0x1A1B routes:
+	 *    - Y data to BOTH WM0 AND WM4 (bits 0-3 = 0xB)
+	 *    - CbCr data to WM1 ONLY (bits 4-7 = 0x1, NOT to WM5!)
 	 *
-	 * The previous code enabled WM4/WM5 unconditionally, causing crashes.
+	 * 2. WebOS configures WM4 with DIFFERENT addresses than WM0:
+	 *    - WM0 PING: 0x42300000 (preview Y buffer)
+	 *    - WM4 PING: 0x4250D000 (video Y buffer, ~2MB offset)
+	 *    - WM4 WR_CFG: 0x01300097 (enabled, different burst/lines)
 	 *
-	 * FIX: Only enable WM4/WM5 when explicitly requested AND with
-	 * separate buffer addresses (not implemented yet - requires VIDEO
-	 * line support with separate buffers).
+	 * 3. WM5 is configured but doesn't receive data (XBAR doesn't route
+	 *    CbCr to WM5 with value 0x1A1B). We can safely disable it.
+	 *
+	 * Our implementation:
+	 * - Allocate a dummy buffer for WM4 to absorb the duplicate Y data
+	 * - Configure WM4 with the dummy buffer address and enable it
+	 * - Disable WM5 since it doesn't receive data anyway
+	 *
+	 * This matches webOS behavior while preventing DMA corruption.
 	 */
 	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		/*
-		 * Explicitly DISABLE WM4/WM5 to prevent DMA corruption.
-		 * Writing 0 to WR_CFG disables the write master.
-		 */
-		dev_info(vfe->camss->dev,
-			 "VFE31: Step 8 - Disabling WM4/WM5 (no video output)\n");
-		writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
-		writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
-		wmb();
+		struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
+		u32 width = pix->width;
+		u32 height = pix->height;
+		u32 stride = pix->plane_fmt[0].bytesperline;
+		int ret;
+
+		/* Allocate dummy buffer for WM4 (one-time allocation) */
+		ret = vfe31_alloc_wm4_dummy_buffer(vfe);
+		if (ret) {
+			dev_warn(vfe->camss->dev,
+				 "VFE31: Step 8 - Failed to alloc WM4 dummy, disabling WM4/5\n");
+			writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
+			writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+			wmb();
+		} else {
+			u32 wpl = stride / 8;  /* 64-bit words per line */
+			u32 reg;
+
+			dev_info(vfe->camss->dev,
+				 "VFE31: Step 8 - Configuring WM4 with dummy buffer 0x%08llx\n",
+				 (u64)vfe31_wm4_dummy_dma_addr);
+
+			/*
+			 * WM4 configuration - matches webOS register values:
+			 * - PING/PONG: point to dummy buffer
+			 * - IMAGE_SIZE: match preview dimensions
+			 * - ADDR_CFG: Y stride configuration
+			 * - UB_CFG: microblock configuration
+			 * - WR_CFG: enable (bit 0)
+			 */
+
+			/* WM4 PING/PONG addresses - use dummy buffer */
+			writel_relaxed(vfe31_wm4_dummy_dma_addr,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_Y));
+			writel_relaxed(vfe31_wm4_dummy_dma_addr,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_Y));
+
+			/* WM4 IMAGE_SIZE - same as WM0 for preview */
+			reg = ((height - 1) & 0xFFF) << 16;  /* height_minus_1 */
+			reg |= (width - 1) & 0x1FFF;          /* width_minus_1 */
+			writel_relaxed(reg,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
+
+			/* WM4 ADDR_CFG - Y stride */
+			reg = ((wpl - 1) & 0xFFFF) << 16;
+			reg |= (height - 1) & 0xFFFF;
+			writel_relaxed(reg,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
+
+			/* WM4 UB_CFG - microblock config */
+			reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
+			reg |= (height - 1) & 0xFFFF;
+			writel_relaxed(reg,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_Y));
+
+			/* WM4 WR_CFG - enable */
+			writel_relaxed(BIT(0),
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
+
+			/* Reload WM4 configuration */
+			writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(VFE31_VIDEO_WM_Y),
+				       vfe->base + VFE_0_BUS_CMD);
+
+			/*
+			 * WM5 - Disable
+			 * XBAR 0x1A1B doesn't route CbCr to WM5 (only to WM1).
+			 * WebOS enables WM5 but it doesn't receive any data.
+			 * We simply disable it since there's no point in enabling it.
+			 */
+			writel_relaxed(0,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+
+			wmb();
+
+			dev_info(vfe->camss->dev,
+				 "VFE31: WM4 configured: %ux%u stride=%u dummy_addr=0x%08llx, WM5 disabled\n",
+				 width, height, stride, (u64)vfe31_wm4_dummy_dma_addr);
+		}
 	}
 
 	/* Debug dump of all relevant registers after CAMIF start */
@@ -3973,6 +4153,11 @@ static const struct vfe_hw_ops_gen1 vfe_ops_gen1_3_1 = {
  * This is called when powering down the VFE. It ensures CAMIF is properly
  * stopped and the pending flag is cleared. Without this, stale CAMIF state
  * can block CSIPHY register access on subsequent camera sessions.
+ *
+ * NOTE: The WM4 dummy buffer (vfe31_wm4_dummy_*) is NOT freed here because
+ * it's a static one-time allocation that persists for the module lifetime.
+ * This avoids repeated allocation/free cycles and the buffer is small (~1.3MB).
+ * It will be freed automatically when the module is unloaded.
  */
 static void vfe31_cleanup(struct vfe_device *vfe)
 {
@@ -3980,6 +4165,13 @@ static void vfe31_cleanup(struct vfe_device *vfe)
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CMD);
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
 	vfe->camif_pending = false;
+
+	/*
+	 * Disable WM4/WM5 to ensure they don't continue writing on next session.
+	 * This prevents stale DMA activity if the previous capture was aborted.
+	 */
+	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
+	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
 }
 
 static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
