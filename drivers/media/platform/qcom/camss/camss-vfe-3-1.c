@@ -1921,34 +1921,39 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	}
 
 	/*
-	 * Write even/odd config to separate DEMUX registers.
+	 * Write even/odd config to DEMUX registers.
 	 *
 	 * VFE31 DEMUX register layout (from webOS msm_vfe31.h V31_DEMUX_LEN=20):
 	 *   0x284: DEMUX_CFG     (period)
 	 *   0x288: DEMUX_GAIN_0  (Y gains)
 	 *   0x28C: DEMUX_GAIN_1  (CbCr gains)
-	 *   0x290: DEMUX_EVEN_CFG (even column routing)
-	 *   0x294: DEMUX_ODD_CFG  (odd column routing)
+	 *   0x290: DEMUX_EVEN_CFG [15:8]=ODD_CFG, [7:0]=EVEN_CFG
+	 *   0x294: DEMUX_ODD_CFG  (same format)
 	 *
-	 * VFE4x writes the SAME pattern to both EVEN_CFG and ODD_CFG.
-	 * For UYVY: both get 0xC9CA.
+	 * DEMUX_EVEN_CFG register format:
+	 *   Bits [7:0]:  EVEN_CFG - routing for even pixel columns
+	 *   Bits [15:8]: ODD_CFG  - routing for odd pixel columns
 	 *
-	 * Previous code only wrote to EVEN_CFG, leaving ODD_CFG uninitialized.
-	 * This caused the DEMUX to output Y on both Y and CbCr channels.
+	 * For UYVY input: even_cfg=0xC9, odd_cfg=0xCA
+	 *   Combined value = (0xCA << 8) | 0xC9 = 0xCAC9
+	 *
+	 * Byte routing codes (from empirical testing):
+	 *   0xC9 = Y from byte position 1 (Y0 in UYVY)
+	 *   0xCA = Cb from byte position 0 (U in UYVY)
+	 *   0xAC = Cr from byte position 2 (V in UYVY)
 	 */
-	val = (even_cfg << 8) | odd_cfg;
+	val = (odd_cfg << 8) | even_cfg;
 	writel_relaxed(val, vfe->base + VFE_0_DEMUX_EVEN_CFG);
 	writel_relaxed(val, vfe->base + VFE_0_DEMUX_ODD_CFG);
 
 	/* Readback to verify */
 	{
-		u32 cfg_rb = readl_relaxed(vfe->base + VFE_0_DEMUX_CFG);
 		u32 even_rb = readl_relaxed(vfe->base + VFE_0_DEMUX_EVEN_CFG);
 		u32 odd_rb = readl_relaxed(vfe->base + VFE_0_DEMUX_ODD_CFG);
 
 		dev_info(vfe->camss->dev,
-			 "VFE31: DEMUX config: EVEN=0x%04x ODD=0x%04x (readback EVEN=0x%x ODD=0x%x)\n",
-			 val, val, even_rb, odd_rb);
+			 "VFE31: DEMUX config: val=0x%04x (even_cfg=0x%02x odd_cfg=0x%02x) readback EVEN=0x%x ODD=0x%x\n",
+			 val, even_cfg, odd_cfg, even_rb, odd_rb);
 	}
 }
 
