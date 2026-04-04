@@ -2138,21 +2138,21 @@ mt9m113_streaming:
 		}
 
 		/*
-		 * Step 3: Set RESET_REGISTER based on context
-		 *   Context A (preview):  0x120C (streaming mode)
-		 *   Context B (capture):  0x12CE (snapshot mode)
+		 * Step 3: Set RESET_REGISTER for continuous streaming
+		 *
+		 * CRITICAL: Use 0x120C (streaming mode) for BOTH contexts.
+		 * 0x12CE (snapshot mode) only captures ONE frame then stops.
+		 * For video4 continuous capture, we need streaming mode.
+		 *
+		 * Context switching (A->B) is done via SEQ_CMD=CAPTURE (0x0002),
+		 * which switches to Context B's 1280x1024 resolution while
+		 * maintaining continuous streaming.
 		 */
-		if (use_context_b) {
-			ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-					MT9M113_RESET_REG_SNAPSHOT, NULL);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: RESET_REGISTER=0x12CE (snapshot mode)\n");
-		} else {
-			ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-					MT9M113_RESET_REG_STREAMING, NULL);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: RESET_REGISTER=0x120C (streaming mode)\n");
-		}
+		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
+				MT9M113_RESET_REG_STREAMING, NULL);
+		dev_info(&sensor->client->dev,
+			 "MT9M113: RESET_REGISTER=0x120C (streaming mode, Context %s)\n",
+			 use_context_b ? "B" : "A");
 		if (ret) {
 			dev_err(&sensor->client->dev,
 				"MT9M113: RESET_REGISTER failed: %d\n", ret);

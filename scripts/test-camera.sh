@@ -773,8 +773,11 @@ test_v4l2_mode() {
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
 
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B)
-        # IFP pad 1 is source, uses UYVY8_1X16; CSID pad 4/VFE use UYVY8_2X8
+        # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
+        # The sensor output format on pad 1 is derived from the compose size
         echo 'Setting formats (1280x1024)...'
+        echo 'Setting compose rectangle to 1280x1024 (triggers Context B)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
         media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -961,7 +964,11 @@ test_video4_mode() {
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_video\":0[1]' 2>&1 || echo '  csid:4->vfe_video link failed'
 
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
+        # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
+        # The sensor output format on pad 1 is derived from the compose size
         echo 'Setting formats (1280x1024 capture mode)...'
+        echo 'Setting compose rectangle to 1280x1024 (triggers Context B)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
         media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -1219,8 +1226,11 @@ test_legacy_mode() {
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
 
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B)
-        # IFP pad 1 is source, uses UYVY8_1X16; CSID pad 4/VFE use UYVY8_2X8
+        # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
+        # The sensor output format on pad 1 is derived from the compose size
         echo 'Setting formats (1280x1024)...'
+        echo 'Setting compose rectangle to 1280x1024 (triggers Context B)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
         media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
