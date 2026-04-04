@@ -95,6 +95,15 @@ MODULE_PARM_DESC(vfe31_xbar_cfg1,
 extern int software_sof_enable;
 extern int software_eof_enable;
 
+/*
+ * MSM8660 Clock Controller addresses for VFE AXI clock forcing.
+ * Used by vfe31_force_enable_axi_clock() for testgen mode.
+ */
+#define MSM8660_MMCC_BASE		0x04000000
+#define MSM8660_MMCC_SIZE		0x1000
+#define MSM8660_VFE_CC_REG_OFFSET	0x0104
+#define MSM8660_VFE_CC_REG_VFE_AXI_EN	BIT(1)
+
 #include "camss-vfe.h"
 #include "camss-vfe-gen1.h"
 
@@ -134,6 +143,8 @@ extern int software_eof_enable;
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB	0x5
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY	0x6
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY	0x7
+/* Input mux select (bits 4-5): 0=CAMIF, 1=TESTGEN, 2=unused, 3=AXI */
+#define VFE_0_CORE_CFG_INPUT_MUX_TESTGEN	(1 << 4)
 /*
  * Bit 6 of VFE_CFG_OFF: webOS always sets this (0x46 instead of 0x06).
  * Purpose unknown, but required for data path to work.
@@ -926,6 +937,13 @@ extern int software_eof_enable;
 #define VFE_0_TESTGEN_SEED_3		0x16C
 #define VFE_0_TESTGEN_DIMS		0x170
 #define VFE_0_TESTGEN_START_PIXEL	0x174
+
+/* TESTGEN_CFG bit definitions */
+#define VFE_0_TESTGEN_CFG_ENABLE	BIT(0)
+#define VFE_0_TESTGEN_CFG_COLORBAR	(0 << 1)
+#define VFE_0_TESTGEN_CFG_RANDOM	(1 << 1)
+#define VFE_0_TESTGEN_CFG_CHECKER	(2 << 1)
+#define VFE_0_TESTGEN_CFG_SOLID		(3 << 1)
 
 /*
  * MISR (Multiple Input Signature Register) for debug
@@ -3407,6 +3425,306 @@ static int vfe31_pm_domain_on(struct vfe_device *vfe)
 	return vfe_pm_domain_on(vfe);
 }
 
+/*
+ * vfe31_force_enable_axi_clock - Force enable VFE_AXI_CLK if not running
+ * @dev: Device for logging
+ *
+ * The VFE requires the AXI clock for DMA operations. If the clock framework
+ * hasn't enabled it properly, we force it on via direct register write.
+ * Used primarily for testgen mode.
+ */
+static void vfe31_force_enable_axi_clock(struct device *dev)
+{
+	void __iomem *mmcc_base;
+	u32 vfe_cc_reg;
+
+	mmcc_base = ioremap(MSM8660_MMCC_BASE, MSM8660_MMCC_SIZE);
+	if (!mmcc_base) {
+		dev_err(dev, "VFE AXI: Failed to map MMCC\n");
+		return;
+	}
+
+	vfe_cc_reg = readl_relaxed(mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+	dev_dbg(dev, "VFE AXI: VFE_CC_REG before = 0x%08x\n", vfe_cc_reg);
+
+	if (!(vfe_cc_reg & MSM8660_VFE_CC_REG_VFE_AXI_EN)) {
+		dev_warn(dev, "VFE AXI: VFE_AXI_CLK not enabled, forcing on\n");
+		vfe_cc_reg |= MSM8660_VFE_CC_REG_VFE_AXI_EN;
+		writel_relaxed(vfe_cc_reg, mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+		wmb();
+	}
+
+	iounmap(mmcc_base);
+}
+
+/*
+ * vfe31_configure_testgen - Configure VFE31 internal test generator
+ * @vfe: VFE device
+ * @enable: true to enable, false to disable
+ * @width: test pattern width
+ * @height: test pattern height
+ *
+ * The VFE31 has an internal test pattern generator that can produce
+ * color bar patterns without requiring external camera input.
+ */
+void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
+			     u16 width, u16 height)
+{
+	u32 cfg_val;
+
+	dev_info(vfe->camss->dev, "VFE TESTGEN: %s test generator (%dx%d)\n",
+		 enable ? "Enabling" : "Disabling", width, height);
+
+	if (enable) {
+		/* Force enable VFE_AXI_CLK if not running */
+		vfe31_force_enable_axi_clock(vfe->camss->dev);
+
+		/* Set inputSource to TESTGEN in VFE_CFG */
+		cfg_val = readl_relaxed(vfe->base + VFE_0_CORE_CFG);
+		cfg_val = (cfg_val & ~(0x7F)) |
+			  VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY |
+			  VFE_0_CORE_CFG_INPUT_MUX_TESTGEN |
+			  VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
+		writel_relaxed(cfg_val, vfe->base + VFE_0_CORE_CFG);
+		wmb();
+
+		/* Configure test generator dimensions */
+		writel_relaxed(width | ((u32)height << 16),
+			       vfe->base + VFE_0_TESTGEN_DIMS);
+		writel_relaxed(0, vfe->base + VFE_0_TESTGEN_START_PIXEL);
+
+		/* Set random seeds for pattern variation */
+		writel_relaxed(0xDEADBEEF, vfe->base + VFE_0_TESTGEN_SEED_0);
+		writel_relaxed(0xCAFEBABE, vfe->base + VFE_0_TESTGEN_SEED_1);
+		writel_relaxed(0x12345678, vfe->base + VFE_0_TESTGEN_SEED_2);
+		writel_relaxed(0x87654321, vfe->base + VFE_0_TESTGEN_SEED_3);
+
+		/* Enable testgen with colorbar pattern */
+		writel_relaxed(VFE_0_TESTGEN_CFG_ENABLE | VFE_0_TESTGEN_CFG_COLORBAR,
+			       vfe->base + VFE_0_TESTGEN_CFG);
+		wmb();
+
+		/* Configure CAMIF for testgen */
+		{
+			u32 window_w, window_h;
+			u32 width_bytes = width * 2;  /* UYVY format */
+
+			window_w = (height << 16) | (width_bytes & 0xFFFF);
+			writel_relaxed(window_w, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+
+			window_h = width_bytes - 1;
+			writel_relaxed(window_h, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+
+			writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
+			writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+			writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+			wmb();
+		}
+
+		/* Enable VFE pipeline modules */
+		writel_relaxed(0x01c00c0c, vfe->base + VFE_0_MODULE_CFG);
+		wmb();
+
+		/* Configure AXI output mode and XBAR */
+		writel_relaxed(vfe31_axi_output_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+		writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
+		wmb();
+
+		/* Configure IRQ masks */
+		vfe->irq_mask0_shadow = 0x00EFE121;
+		vfe->irq_mask1_shadow = 0x00400000;
+		writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+		writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+		writel_relaxed(0x00000003, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+		wmb();
+
+		/* Issue REG_UPDATE and start CAMIF */
+		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+		wmb();
+		writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+		wmb();
+
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Started\n");
+	} else {
+		/* Stop test generator */
+		writel_relaxed(0, vfe->base + VFE_0_TESTGEN_CFG);
+		wmb();
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Stopped\n");
+	}
+}
+EXPORT_SYMBOL(vfe31_configure_testgen);
+
+/*
+ * vfe31_enable_pending_camif - Enable CAMIF that was deferred during VFE s_stream
+ *
+ * This is called from CSID when CSI is fully configured and ready to provide
+ * data to VFE. At this point we can complete the VFE CAMIF configuration and
+ * start streaming.
+ *
+ * This function replaces the VFE31-specific fallback code that was previously
+ * in camss-vfe.c:vfe_enable_pending_camif().
+ */
+static void vfe31_enable_pending_camif(struct vfe_device *vfe)
+{
+	struct vfe_line *line;
+	u32 val;
+	u32 width_bytes, height;
+
+	if (!vfe->camif_pending) {
+		dev_dbg(vfe->camss->dev, "VFE31: no pending CAMIF config\n");
+		return;
+	}
+
+	line = &vfe->line[vfe->camif_pending_line_id];
+	width_bytes = line->fmt[MSM_VFE_PAD_SINK].width * 2;  /* YUV422: 2 bytes/pixel */
+	height = line->fmt[MSM_VFE_PAD_SINK].height;
+
+	dev_info(vfe->camss->dev,
+		 "VFE31 enable_pending_camif: line=%d %ux%u stride=%u\n",
+		 vfe->camif_pending_line_id,
+		 line->fmt[MSM_VFE_PAD_SINK].width, height, width_bytes);
+
+	/*
+	 * Step 1: Force all VFE internal clocks on via CGC_OVERRIDE
+	 */
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
+	wmb();
+
+	/*
+	 * Step 2: Configure MODULE_CFG with webOS value (0x01c00c0c)
+	 * This enables DEMUX and other required processing modules.
+	 */
+	writel_relaxed(0x01c00c0c, vfe->base + VFE_0_MODULE_CFG);
+	wmb();
+
+	/*
+	 * Step 3: Configure CORE_CFG with pixel pattern + input mux enable
+	 * webOS uses 0x46 for UYVY: pixel pattern 0x6 + bit 6 (input mux)
+	 */
+	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
+	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
+		break;
+	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB;
+		break;
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
+	default:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
+		break;
+	case MEDIA_BUS_FMT_VYUY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
+		break;
+	}
+	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
+	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
+
+	/*
+	 * Step 4: Configure DEMUX gains (passthrough for YUV input)
+	 */
+	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_0);
+	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_1);
+
+	/*
+	 * Step 5: Configure clamp values for output
+	 */
+	writel_relaxed(0x00ffffff, vfe->base + VFE_0_CLAMP_ENC_MAX_CFG);
+	writel_relaxed(0x0, vfe->base + VFE_0_CLAMP_ENC_MIN_CFG);
+
+	/*
+	 * Step 6: Configure CAMIF registers
+	 *
+	 * EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set)
+	 * FRAME_CFG at 0x1E8: webOS leaves at 0 (not used)
+	 * WINDOW_WIDTH_CFG at 0x1EC: (height << 16) | width_bytes
+	 * WINDOW_HEIGHT_CFG at 0x1F0: width_bytes - 1
+	 * SUBSAMPLE_CFG_0 at 0x1F4: height - 1
+	 * SUBSAMPLE_CFG_1 at 0x1F8: 0xFFFFFFFF (no frame skip)
+	 */
+	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+
+	val = (height << 16) | (width_bytes & 0xFFFF);
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+	dev_info(vfe->camss->dev,
+		 "VFE31: WINDOW_WIDTH=0x%08x (height=%u, width_bytes=%u)\n",
+		 val, height, width_bytes);
+
+	val = width_bytes - 1;
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+
+	writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+
+	/*
+	 * Step 7: Configure AXI output mode and XBAR routing
+	 */
+	writel_relaxed(vfe31_axi_output_mode,
+		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+
+	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
+		writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
+	}
+
+	/*
+	 * Step 8: Configure BUS_CFG for DMA write paths
+	 */
+	writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
+
+	/*
+	 * Step 9: Reload all write masters via BUS_CMD
+	 */
+	writel_relaxed(0x3FFF, vfe->base + VFE_0_BUS_CMD);
+	wmb();
+
+	/*
+	 * Step 10: Configure IRQ masks using webOS values
+	 * IRQ_MASK_0 = 0x00EFE021 (from vfe31_start_common)
+	 * IRQ_MASK_1 = 0x00400000 (RESET_ACK)
+	 */
+	vfe->irq_mask0_shadow = 0x00EFE021;
+	vfe->irq_mask1_shadow = 0x00400000;
+	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+
+	/*
+	 * Step 11: Configure composite IRQ mask for buffer completion
+	 * Use preview-only mask (WM0+WM1 in group 0) unless video mode enabled
+	 */
+	if (vfe31_video_output_enable) {
+		writel_relaxed(0x00220011, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+	} else {
+		writel_relaxed(0x00000003, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+	}
+	wmb();
+
+	/*
+	 * Step 12: Issue REG_UPDATE command
+	 * This latches all the shadow register values on the next VSYNC.
+	 */
+	writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+	wmb();
+
+	/*
+	 * Step 13: Start CAMIF
+	 * Write 1 to CAMIF_CMD (webOS vfe31_start_common writes 1, not 0x5)
+	 */
+	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+	wmb();
+
+	vfe->camif_pending = false;
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: CAMIF started - status=0x%08x axi=0x%08x xbar=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS),
+		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG),
+		 readl_relaxed(vfe->base + VFE_0_BUS_XBAR_CFG1));
+}
+
 /* Gen1 operations structure for VFE31 */
 static const struct vfe_hw_ops_gen1 vfe_ops_gen1_3_1 = {
 	.bus_connect_wm_to_rdi = vfe31_bus_connect_wm_to_rdi,
@@ -3445,6 +3763,21 @@ static const struct vfe_hw_ops_gen1 vfe_ops_gen1_3_1 = {
 	.wm_set_ub_cfg = vfe31_wm_set_ub_cfg,
 };
 
+/*
+ * vfe31_cleanup - Clean up VFE31 state during vfe_put
+ *
+ * This is called when powering down the VFE. It ensures CAMIF is properly
+ * stopped and the pending flag is cleared. Without this, stale CAMIF state
+ * can block CSIPHY register access on subsequent camera sessions.
+ */
+static void vfe31_cleanup(struct vfe_device *vfe)
+{
+	/* Stop CAMIF and clear EFS config */
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CMD);
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	vfe->camif_pending = false;
+}
+
 static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
 {
 	dev_info(dev, "VFE31 subdev_init: setting up ops_gen1\n");
@@ -3468,13 +3801,6 @@ const struct vfe_hw_ops vfe_ops_3_1 = {
 	.vfe_enable = vfe31_enable,
 	.vfe_halt = vfe31_halt,
 	.violation_read = vfe31_violation_read,
-	/*
-	 * enable_pending_camif: VFE31 CAMIF enable logic is currently in the
-	 * fallback code in camss-vfe.c:vfe_enable_pending_camif(). When this
-	 * callback is NULL, the fallback implementation is used.
-	 *
-	 * TODO: Move the VFE31-specific CAMIF enable code from camss-vfe.c
-	 * to a vfe31_enable_pending_camif() function here, then add it to
-	 * this ops structure for cleaner code organization.
-	 */
+	.enable_pending_camif = vfe31_enable_pending_camif,
+	.vfe_cleanup = vfe31_cleanup,
 };
