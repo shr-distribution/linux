@@ -1355,11 +1355,21 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	for (i = 0; i < MSM_VFE_COMPOSITE_IRQ_NUM; i++)
 		if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(i)) {
 			vfe->isr_ops.comp_done(vfe, i);
-			/* Clear PING_PONG bits for WMs handled by comp_done to prevent double-handling */
-			for (j = 0; j < ARRAY_SIZE(vfe->wm_output_map); j++)
-				if (vfe->wm_output_map[j] == VFE_LINE_PIX ||
-				    vfe->wm_output_map[j] == VFE_LINE_VIDEO)
+			/*
+			 * Clear PING_PONG bits for WMs handled by comp_done.
+			 * Note: VFE31 doesn't have per-WM PING_PONG IRQ bits in
+			 * STATUS_0 (bits 8+ are for bus overflow errors), but we
+			 * clear them anyway for compatibility with newer VFEs.
+			 */
+			for (j = 0; j < ARRAY_SIZE(vfe->wm_output_map); j++) {
+				enum vfe_line_id line = vfe->wm_output_map[j];
+				if (line == VFE_LINE_PIX ||
+				    line == VFE_LINE_VIDEO ||
+				    line == VFE_LINE_RDI0 ||
+				    line == VFE_LINE_RDI1 ||
+				    line == VFE_LINE_RDI2)
 					value0 &= ~VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(j);
+			}
 		}
 
 	for (i = 0; i < MSM_VFE_IMAGE_MASTERS_NUM; i++)
@@ -3783,7 +3793,18 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 10: Configure IRQ masks
 	 * PIX mode: webOS values (0x00EFE021) with composite interrupts
-	 * RDI mode: Minimal mask with per-WM PING_PONG interrupt
+	 * RDI mode: Use IMAGE_COMPOSITE_DONE_1 for frame completion
+	 *
+	 * VFE31 IRQ_STATUS_0 layout (from downstream):
+	 *   Bit 0: CAMIF_SOF
+	 *   Bit 5: REG_UPDATE
+	 *   Bits 13-18: Stats interrupts
+	 *   Bit 21: IMAGE_COMPOSITE_DONE_0 (composite group 0)
+	 *   Bit 22: IMAGE_COMPOSITE_DONE_1 (composite group 1)
+	 *   Bit 23: IMAGE_COMPOSITE_DONE_2 (composite group 2)
+	 *
+	 * IMPORTANT: Bits 8+ are NOT per-WM ping/pong interrupts in VFE31!
+	 * WM completion must use COMPOSITE_DONE interrupts.
 	 */
 	{
 		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
@@ -3792,15 +3813,17 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * RDI mode: Use per-WM PING_PONG interrupt for single WM.
-			 * Enable SOF, REG_UPDATE, and WM0 PING_PONG.
+			 * RDI mode: Map WM0 to composite group 1, use COMPOSITE_DONE_1.
+			 * This follows downstream raw snapshot configuration:
+			 * - IRQ_COMP_MASK bit 8 = WM0 in composite group 1
+			 * - When WM0 finishes, IMAGE_COMPOSITE_DONE_1 (bit 22) fires
 			 */
 			vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
 						VFE_0_IRQ_MASK_0_REG_UPDATE |
-						VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(vfe->camif_pending_wm);
+						VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(1);
 			dev_info(vfe->camss->dev,
-				 "VFE31: RDI IRQ_MASK_0=0x%08x (WM%d PING_PONG)\n",
-				 vfe->irq_mask0_shadow, vfe->camif_pending_wm);
+				 "VFE31: RDI IRQ_MASK_0=0x%08x (COMPOSITE_DONE_1)\n",
+				 vfe->irq_mask0_shadow);
 		} else {
 			/* PIX mode: Use webOS value with composite interrupts */
 			vfe->irq_mask0_shadow = 0x00EFE021;
@@ -3815,8 +3838,14 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 	/*
 	 * Step 11: Configure composite IRQ mask for buffer completion
+	 *
+	 * IRQ_COMPOSITE_MASK (0x034) maps WMs to composite interrupt groups:
+	 *   Bits 0-7:   WMs that trigger COMPOSITE_DONE_0 (IRQ bit 21)
+	 *   Bits 8-15:  WMs that trigger COMPOSITE_DONE_1 (IRQ bit 22)
+	 *   Bits 16-23: WMs that trigger COMPOSITE_DONE_2 (IRQ bit 23)
+	 *
 	 * PIX mode: WM0+WM1 in group 0 (or video mode mask)
-	 * RDI mode: Use 0 (no composite - use per-WM PING_PONG instead)
+	 * RDI mode: WM0 in group 1 (bit 8 = 0x100) per downstream raw snapshot
 	 */
 	{
 		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
@@ -3824,10 +3853,15 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
 
 		if (is_rdi) {
-			/* RDI: No composite mask - use per-WM interrupts */
+			/*
+			 * RDI: Map WM0 to composite group 1 (bit 8).
+			 * When WM0 completes a frame, COMPOSITE_DONE_1 fires.
+			 */
+			u32 comp_mask = (1 << (vfe->camif_pending_wm + 8));
 			dev_info(vfe->camss->dev,
-				 "VFE31: RDI COMPOSITE_MASK=0x0 (using per-WM IRQ)\n");
-			writel_relaxed(0, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+				 "VFE31: RDI COMPOSITE_MASK=0x%08x (WM%d->group1)\n",
+				 comp_mask, vfe->camif_pending_wm);
+			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		} else if (vfe31_video_output_enable) {
 			writel_relaxed(0x00220011, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		} else {

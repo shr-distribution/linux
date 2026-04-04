@@ -1010,19 +1010,31 @@ error:
  *
  * Called when a composite image done IRQ fires. This indicates that all
  * write masters in a composite group have completed writing their data.
- * For VFE31 with NV16 output, we have multiple WMs per line:
- * - VFE_LINE_PIX: WM0 (Y) + WM1 (CbCr)
- * - VFE_LINE_VIDEO: WM4 (Y) + WM5 (CbCr)
  *
- * We call wm_done for each WM that belongs to an active PIX or VIDEO line.
+ * VFE31 composite group mapping (IRQ_COMPOSITE_MASK):
+ * - Composite 0 (bits 0-7):   PIX mode - WM0 (Y) + WM1 (CbCr)
+ * - Composite 1 (bits 8-15):  RDI raw mode - WM0 (raw bypass)
+ * - Composite 2 (bits 16-23): VIDEO mode - WM4 (Y) + WM5 (CbCr)
+ *
+ * We call wm_done for each WM that belongs to an active line of the
+ * appropriate type for this composite group.
  */
 void vfe_isr_comp_done(struct vfe_device *vfe, u8 comp)
 {
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(vfe->wm_output_map); i++) {
-		if (vfe->wm_output_map[i] == VFE_LINE_PIX ||
-		    vfe->wm_output_map[i] == VFE_LINE_VIDEO) {
+		enum vfe_line_id line = vfe->wm_output_map[i];
+
+		/*
+		 * Check if this WM belongs to a line type that uses
+		 * composite interrupts: PIX, VIDEO, or RDI lines.
+		 */
+		if (line == VFE_LINE_PIX ||
+		    line == VFE_LINE_VIDEO ||
+		    line == VFE_LINE_RDI0 ||
+		    line == VFE_LINE_RDI1 ||
+		    line == VFE_LINE_RDI2) {
 			vfe->isr_ops.wm_done(vfe, i);
 		}
 	}
