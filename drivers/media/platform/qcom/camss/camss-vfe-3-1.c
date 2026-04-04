@@ -794,6 +794,7 @@ extern int software_eof_enable;
 #define VFE_0_DEMUX_GAIN_1_CH1		(0x80 << 0)
 #define VFE_0_DEMUX_GAIN_1_CH2		(0x80 << 16)
 #define VFE_0_DEMUX_EVEN_CFG		0x290
+#define VFE_0_DEMUX_ODD_CFG		0x294
 
 /* Chroma subsample */
 #define VFE_0_CHROMA_SUBS_CFG		0x4F8
@@ -1920,22 +1921,34 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	}
 
 	/*
-	 * Write even/odd config to DEMUX_EVEN_CFG (0x290), NOT DEMUX_CFG!
-	 * webOS register dump shows:
-	 *   DEMUX_CFG (0x284) = 0x03 (period)
-	 *   DEMUX_EVEN (0x290) = 0xC9CA (even << 8 | odd for UYVY)
+	 * Write even/odd config to separate DEMUX registers.
+	 *
+	 * VFE31 DEMUX register layout (from webOS msm_vfe31.h V31_DEMUX_LEN=20):
+	 *   0x284: DEMUX_CFG     (period)
+	 *   0x288: DEMUX_GAIN_0  (Y gains)
+	 *   0x28C: DEMUX_GAIN_1  (CbCr gains)
+	 *   0x290: DEMUX_EVEN_CFG (even column routing)
+	 *   0x294: DEMUX_ODD_CFG  (odd column routing)
+	 *
+	 * VFE4x writes the SAME pattern to both EVEN_CFG and ODD_CFG.
+	 * For UYVY: both get 0xC9CA.
+	 *
+	 * Previous code only wrote to EVEN_CFG, leaving ODD_CFG uninitialized.
+	 * This caused the DEMUX to output Y on both Y and CbCr channels.
 	 */
 	val = (even_cfg << 8) | odd_cfg;
 	writel_relaxed(val, vfe->base + VFE_0_DEMUX_EVEN_CFG);
+	writel_relaxed(val, vfe->base + VFE_0_DEMUX_ODD_CFG);
 
 	/* Readback to verify */
 	{
 		u32 cfg_rb = readl_relaxed(vfe->base + VFE_0_DEMUX_CFG);
 		u32 even_rb = readl_relaxed(vfe->base + VFE_0_DEMUX_EVEN_CFG);
+		u32 odd_rb = readl_relaxed(vfe->base + VFE_0_DEMUX_ODD_CFG);
 
 		dev_info(vfe->camss->dev,
-			 "VFE31: DEMUX config: wrote CFG=0x%02x EVEN_CFG=0x%04x, readback CFG=0x%x EVEN=0x%x\n",
-			 VFE_0_DEMUX_CFG_PERIOD, val, cfg_rb, even_rb);
+			 "VFE31: DEMUX config: EVEN=0x%04x ODD=0x%04x (readback EVEN=0x%x ODD=0x%x)\n",
+			 val, val, even_rb, odd_rb);
 	}
 }
 
