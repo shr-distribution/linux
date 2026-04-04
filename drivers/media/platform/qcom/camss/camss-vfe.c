@@ -2303,7 +2303,7 @@ void vfe_enable_pending_camif(struct vfe_device *vfe)
 	 * For raw mode (0x60), use COMPOSITE_DONE_1 (bits 8-15).
 	 */
 #define VFE31_IRQ_COMP_MASK_WEBOS_VIDEO		0x00220011  /* WM0+4,WM1+5 */
-#define VFE31_IRQ_COMP_MASK_PREVIEW_ONLY	0x00020001  /* WM0,WM1 only */
+#define VFE31_IRQ_COMP_MASK_PREVIEW_ONLY	0x00000003  /* WM0+WM1 in group 0 */
 	{
 		u32 comp_mask;
 
