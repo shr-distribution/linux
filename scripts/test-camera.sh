@@ -477,6 +477,7 @@ test_raw_mode() {
     log_step "Testing RAW passthrough mode..."
     log_info "Path: Sensor -> CSIPHY -> CSID:1 -> VFE RDI0 -> /dev/video0"
     log_info "Data goes directly to memory, bypassing ISP"
+    log_info "Using 1280x1024 (Context B - full resolution)"
 
     # Set AXI output mode to raw/RDI (0x60)
     set_axi_output_mode "0x60"
@@ -502,29 +503,29 @@ test_raw_mode() {
         echo 'Enabling RDI link (CSID:1 -> VFE RDI0)...'
         media-ctl -l '\"msm_csid1\":1->\"msm_vfe0_rdi0\":0[1]' 2>&1 || echo '  csid:1->vfe_rdi0 link failed'
 
-        # Set formats on the RDI path (640x480 preview mode)
-        # MT9M113 supported: 640x480 (preview), 1280x1024 (capture)
-        # IFP pad 1 is source, uses UYVY8_1X16
-        echo 'Setting formats (640x480 preview mode)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_rdi0\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_rdi0\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+        # Set formats on the RDI path (1280x1024 = MT9M113 Context B full capture)
+        # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
+        echo 'Setting formats (1280x1024 Context B capture mode)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_rdi0\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_rdi0\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
 
         # Set V4L2 video device format
-        v4l2-ctl -d /dev/video0 --set-fmt-video=width=640,height=480,pixelformat=UYVY 2>&1 || true
+        v4l2-ctl -d /dev/video0 --set-fmt-video=width=1280,height=1024,pixelformat=UYVY 2>&1 || true
 
         echo ''
         echo 'Current pipeline:'
         media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -40
 
         echo ''
-        echo 'Testing capture with 640x480 UYVY...'
+        echo 'Testing capture with 1280x1024 UYVY...'
         timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video0 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
+            'video/x-raw,format=UYVY,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -536,7 +537,7 @@ test_raw_mode() {
             timeout 10 v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1 --stream-to=/tmp/camera_raw.raw 2>&1
             if [ -s /tmp/camera_raw.raw ]; then
                 SIZE=\$(stat -c%s /tmp/camera_raw.raw 2>/dev/null || echo 0)
-                echo \"Frame saved: \$SIZE bytes (expected 614400 for 640x480 UYVY)\"
+                echo \"Frame saved: \$SIZE bytes (expected 2621440 for 1280x1024 UYVY)\"
             fi
         else
             echo ''
@@ -673,6 +674,7 @@ test_pix_mode() {
     log_step "Testing PIX/CAMIF mode (ISP processing)..."
     log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
     log_info "Data goes through VFE ISP for processing"
+    log_info "Using 1280x1024 (Context B - full resolution)"
 
     # Set AXI output mode to PIX/preview (0x01 = webOS value for ISP path)
     # Note: 0x200 is raw/CAMIF_TO_AXI bypass, 0x01 is ISP processing path
@@ -683,9 +685,9 @@ test_pix_mode() {
         echo ''
 
         # MT9M113 supported resolutions (from webOS init table):
-        # - Context A: 640x480 (preview) - USE THIS for testing
+        # - Context A: 640x480 (preview)
         # - Context B: 1280x1024 (capture/full resolution)
-        # Using 640x480 to avoid memory allocation issues
+        # Using Context B for FULL RESOLUTION capture
 
         # Reset all links first
         echo 'Resetting media links...'
@@ -700,28 +702,29 @@ test_pix_mode() {
         echo 'Enabling PIX link (CSID:4 -> VFE PIX)...'
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
 
-        # Set formats on entire pipeline (640x480 = MT9M113 Context A preview)
-        # IFP pad 1 is source, uses UYVY8_1X16; CSID pad 4/VFE use UYVY8_2X8
-        echo 'Setting formats (640x480 preview mode)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+        # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
+        # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
+        echo 'Setting formats (1280x1024 Context B capture mode)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
 
-        # Set V4L2 video device format
-        v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=UYVY 2>&1 || true
+        # Set V4L2 video device format to NV16 (native VFE31 output)
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV16 2>&1 || true
 
         echo ''
         echo 'Current pipeline configuration:'
         media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -40
 
         echo ''
-        echo 'Testing capture with 640x480 UYVY (MT9M113 preview mode)...'
+        echo 'Testing capture with 1280x1024 NV16 (MT9M113 Context B)...'
         timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
+            'video/x-raw,format=NV16,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -733,7 +736,7 @@ test_pix_mode() {
             timeout 10 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=1 --stream-to=/tmp/camera_pix.raw 2>&1
             if [ -s /tmp/camera_pix.raw ]; then
                 SIZE=\$(stat -c%s /tmp/camera_pix.raw 2>/dev/null || echo 0)
-                echo \"Frame saved: \$SIZE bytes (expected 614400 for 640x480 UYVY)\"
+                echo \"Frame saved: \$SIZE bytes (expected 2621440 for 1280x1024 NV16)\"
             fi
         else
             echo ''
@@ -836,6 +839,7 @@ test_video_mode() {
     log_step "Testing VIDEO mode (preview + video output)..."
     log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
     log_info "AXI mode 0x01 enables both preview (WM0/1) and video (WM4/5) paths"
+    log_info "Using 1280x1024 (Context B - full resolution)"
 
     # Set AXI output mode to PIX+Video (0x01)
     set_axi_output_mode "0x01"
@@ -862,18 +866,20 @@ test_video_mode() {
         echo 'Enabling PIX link (CSID:4 -> VFE PIX)...'
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
 
-        # Set formats on entire pipeline (640x480 = MT9M113 Context A preview)
-        echo 'Setting formats (640x480 preview mode)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+        # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
+        # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
+        echo 'Setting formats (1280x1024 Context B capture mode)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
 
-        # Set V4L2 video device format
-        v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=UYVY 2>&1 || true
+        # Set V4L2 video device format to NV16 (native VFE31 output)
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV16 2>&1 || true
 
         echo ''
         echo 'Current module parameters:'
@@ -881,9 +887,9 @@ test_video_mode() {
         echo \"  vfe31_video_output_enable = \$(cat /sys/module/qcom_camss/parameters/vfe31_video_output_enable 2>/dev/null)\"
 
         echo ''
-        echo 'Testing capture with 640x480 UYVY (VIDEO mode)...'
+        echo 'Testing capture with 1280x1024 NV16 (VIDEO mode)...'
         timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=UYVY,width=640,height=480,framerate=30/1' ! \\
+            'video/x-raw,format=NV16,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -895,7 +901,7 @@ test_video_mode() {
             timeout 10 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=1 --stream-to=/tmp/camera_video.raw 2>&1
             if [ -s /tmp/camera_video.raw ]; then
                 SIZE=\$(stat -c%s /tmp/camera_video.raw 2>/dev/null || echo 0)
-                echo \"Frame saved: \$SIZE bytes (expected 614400 for 640x480 UYVY)\"
+                echo \"Frame saved: \$SIZE bytes (expected 2621440 for 1280x1024 NV16)\"
             fi
         else
             echo ''
@@ -1036,6 +1042,7 @@ test_nv16_mode() {
     log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE PIX -> /dev/video3"
     log_info "VFE31 DEMUX outputs: Y plane to WM0, CbCr plane to WM1"
     log_info "NV16 = Y plane followed by interleaved CbCr plane"
+    log_info "Using 1280x1024 (Context B - full resolution)"
 
     # Set AXI output mode to PIX/preview (0x01 = webOS value)
     set_axi_output_mode "0x01"
@@ -1060,20 +1067,22 @@ test_nv16_mode() {
         echo 'Enabling PIX link (CSID:4 -> VFE PIX)...'
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || echo '  csid:4->vfe_pix link failed'
 
-        # Set formats on entire pipeline (640x480 = MT9M113 Context A preview)
-        echo 'Setting formats (640x480 preview mode)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/640x480]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/640x480]' 2>&1 || true
+        # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
+        # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
+        echo 'Setting formats (1280x1024 Context B capture mode)...'
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
 
         # Set V4L2 video device format to NV16
         echo ''
-        echo 'Setting V4L2 format to NV16...'
-        v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=NV16 2>&1 || true
+        echo 'Setting V4L2 format to NV16 1280x1024...'
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV16 2>&1 || true
         echo ''
         echo 'Current format:'
         v4l2-ctl -d /dev/video3 --get-fmt-video 2>&1
@@ -1083,10 +1092,10 @@ test_nv16_mode() {
         media-ctl -p 2>/dev/null | grep -E 'entity|pad|->|<-' | head -40
 
         echo ''
-        echo 'Testing capture with 640x480 NV16...'
-        echo 'Expected size: 640*480 (Y) + 640*480 (CbCr) = 614400 bytes per frame'
+        echo 'Testing capture with 1280x1024 NV16...'
+        echo 'Expected size: 1280*1024 (Y) + 1280*1024 (CbCr) = 2621440 bytes per frame'
         timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=NV16,width=640,height=480,framerate=30/1' ! \\
+            'video/x-raw,format=NV16,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -1095,11 +1104,11 @@ test_nv16_mode() {
             echo ''
             echo 'Saving frame to /tmp/camera_nv16.raw...'
             timeout 10 gst-launch-1.0 v4l2src device=/dev/video3 num-buffers=1 ! \\
-                'video/x-raw,format=NV16,width=640,height=480' ! \\
+                'video/x-raw,format=NV16,width=1280,height=1024' ! \\
                 filesink location=/tmp/camera_nv16.raw 2>&1
             if [ -f /tmp/camera_nv16.raw ]; then
                 SIZE=\$(stat -c%s /tmp/camera_nv16.raw 2>/dev/null || echo 0)
-                echo \"Frame saved: \$SIZE bytes (expected 614400 for 640x480 NV16)\"
+                echo \"Frame saved: \$SIZE bytes (expected 2621440 for 1280x1024 NV16)\"
             fi
         else
             echo ''
@@ -1120,9 +1129,9 @@ test_nv16_mode() {
 # Usage: capture_and_fetch <mode> <format> <output_file>
 capture_frames() {
     local mode="$1"
-    local format="${2:-UYVY}"
-    local width="${3:-640}"
-    local height="${4:-480}"
+    local format="${2:-NV16}"
+    local width="${3:-1280}"
+    local height="${4:-1024}"
     local frames="${5:-1}"
 
     log_step "Capturing $frames frame(s) in $format format ($width x $height)..."
@@ -1137,7 +1146,8 @@ capture_frames() {
         media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
 
-        # Set formats
+        # Set formats - set compose first to trigger Context B for 1280x1024
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/${width}x${height}]' 2>&1 || true
         media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
@@ -1421,18 +1431,18 @@ main() {
             ;;
         capture-uyvy)
             ensure_camera_ready
-            capture_frames "pix" "UYVY" 640 480 1
+            capture_frames "pix" "UYVY" 1280 1024 1
             check_dmesg
             ;;
         capture-nv16)
             ensure_camera_ready
-            capture_frames "pix" "NV16" 640 480 1
+            capture_frames "pix" "NV16" 1280 1024 1
             check_dmesg
             ;;
         capture-nv61)
             # Test NV61 (CrCb order) to see if UV channels are swapped
             ensure_camera_ready
-            capture_frames "pix" "NV61" 640 480 1
+            capture_frames "pix" "NV61" 1280 1024 1
             check_dmesg
             ;;
         fetch)
