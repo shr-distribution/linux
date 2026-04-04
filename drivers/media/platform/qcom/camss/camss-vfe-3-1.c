@@ -81,11 +81,12 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *   0x1A1B = Y→WM0+WM4, CbCr→WM1 (webOS default - requires WM4 config)
  *   0x1A9B = Y→WM0+WM4, CbCr→WM1+WM5 (dual video - requires WM4/WM5 config)
  *
- * WARNING: Using 0x1A1B/0x1A9B without configuring WM4/WM5 buffer addresses
- * causes DMA writes to uninitialized memory, corrupting kernel memory!
- * Default is 0x1A13 (preview-only) for safe operation with PIX line.
+ * NOTE: 0x1A13 (preview-only) was tried but doesn't work - the DEMUX
+ * doesn't properly separate Y/CbCr unless bit 3 is set in Y routing.
+ * webOS always used 0x1A1B which routes Y to WM0+WM4.
+ * WM4 must be configured (even with dummy addresses) or CbCr doesn't work.
  */
-int vfe31_xbar_cfg1 = 0x1A13;
+int vfe31_xbar_cfg1 = 0x1A1B;
 module_param(vfe31_xbar_cfg1, int, 0644);
 MODULE_PARM_DESC(vfe31_xbar_cfg1,
 		 "VFE31 XBAR_CFG1 routing (0x1a13=preview, 0x1a1b=video, 0x1a9b=dual)");
