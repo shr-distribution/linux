@@ -2853,23 +2853,35 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 *   - Bits 21-23: IMAGE_COMPOSITE_DONE_0-2
 	 *
 	 * We build this dynamically to include PING_PONG for active WMs.
-	 * For NV16 semi-planar (wm_num == 2), include both WM0 and WM1.
+	 *
+	 * IMPORTANT: Use line->output.wm_idx[0] for the primary WM, NOT the 'wm'
+	 * parameter! The 'wm' parameter is whichever WM was enabled first, which
+	 * may be WM1/WM5 (CbCr) rather than WM0/WM4 (Y). Using wm_idx[0] ensures
+	 * we always enable IRQs for the correct primary write master.
 	 */
-	vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
-				VFE_0_IRQ_MASK_0_CAMIF_EOF |
-				VFE_0_IRQ_MASK_0_REG_UPDATE |
-				VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm) |
-				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0) |
-				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(1) |
-				VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
+	{
+		u8 wm0 = line->output.wm_idx[0];
 
-	/* Add WM1 PING_PONG for NV16 semi-planar formats */
+		vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
+					VFE_0_IRQ_MASK_0_CAMIF_EOF |
+					VFE_0_IRQ_MASK_0_REG_UPDATE |
+					VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm0) |
+					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0) |
+					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(1) |
+					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: IRQ_MASK_0 primary WM%d (wm_idx[0]), param wm=%d\n",
+			 wm0, wm);
+	}
+
+	/* Add second WM PING_PONG for NV16 semi-planar formats */
 	if (line->output.wm_num == 2) {
 		u8 wm1 = line->output.wm_idx[1];
 
 		vfe->irq_mask0_shadow |= VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm1);
 		dev_info(vfe->camss->dev,
-			 "VFE31: Added WM%d PING_PONG to IRQ mask (NV16 mode)\n", wm1);
+			 "VFE31: Added WM%d PING_PONG to IRQ mask (semi-planar)\n", wm1);
 	}
 	/*
 	 * IRQ_MASK_1: webOS uses 0x00400000 (only RESET_ACK, bit 22).
@@ -2915,16 +2927,20 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 *   Bit 0: enable
 	 * Note: VFE31 does NOT have frame_based mode in bit 1. webOS writes 1.
 	 *
-	 * For NV16/semi-planar formats (wm_num == 2):
-	 *   WM0 = Y plane (luma)
-	 *   WM1 = CbCr plane (chroma)
-	 * Both must be enabled for complete frame data!
+	 * IMPORTANT: Use line->output.wm_idx[] to enable the correct WMs for
+	 * this line, NOT the 'wm' parameter (which may be any WM).
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 6 - Enable Write Master WM%d\n", wm);
-	writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
-	wmb();
+	{
+		u8 wm0 = line->output.wm_idx[0];
 
-	/* Enable WM1 for semi-planar formats (NV16) */
+		dev_info(vfe->camss->dev,
+			 "VFE31: Step 6 - Enable Write Master WM%d (Y plane)\n", wm0);
+		writel_relaxed(BIT(0),
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm0));
+		wmb();
+	}
+
+	/* Enable second WM for semi-planar formats (NV16) */
 	if (line->output.wm_num == 2) {
 		u8 wm1 = line->output.wm_idx[1];
 
@@ -2942,12 +2958,20 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * After writing WM registers (ping/pong addresses, image size, etc.),
 	 * we must issue a BUS_CMD reload to tell the DMA engine to read the
 	 * new configuration. Without this, the DMA uses stale/zero addresses.
+	 *
+	 * IMPORTANT: Use line->output.wm_idx[] to reload the correct WMs.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 7 - BUS_CMD reload WM%d\n", wm);
-	writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(wm), vfe->base + VFE_0_BUS_CMD);
-	wmb();
+	{
+		u8 wm0 = line->output.wm_idx[0];
 
-	/* Reload WM1 for semi-planar formats */
+		dev_info(vfe->camss->dev,
+			 "VFE31: Step 7 - BUS_CMD reload WM%d (Y plane)\n", wm0);
+		writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(wm0),
+			       vfe->base + VFE_0_BUS_CMD);
+		wmb();
+	}
+
+	/* Reload second WM for semi-planar formats */
 	if (line->output.wm_num == 2) {
 		u8 wm1 = line->output.wm_idx[1];
 
