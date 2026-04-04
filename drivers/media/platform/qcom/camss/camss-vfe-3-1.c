@@ -44,16 +44,19 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
  */
 /*
  * VFE31 video output enable.
- * When enabled (1), WM4/WM5 are configured to mirror preview WM0/WM1.
- * WM4/WM5 IRQs are silently ignored since they're just auxiliary routing
- * paths - buffer completion is tracked via WM0/WM1 only.
+ * When enabled (1), WM4/WM5 are configured to mirror preview WM0/WM1
+ * buffer addresses. WM4/WM5 IRQs are silently ignored since they're
+ * just auxiliary routing paths.
  *
- * Default is 1 to match webOS behavior and enable full dual-output mode.
+ * WARNING: Default is 0 because when enabled with XBAR 0x1A9B, WM0+WM4
+ * both write Y data and WM1+WM5 both write CbCr to the SAME buffer
+ * addresses, causing DMA memory corruption and kernel crashes.
+ * Only enable this when using separate buffers for VIDEO line.
  */
-int vfe31_video_output_enable = 1;
+int vfe31_video_output_enable = 0;
 module_param(vfe31_video_output_enable, int, 0644);
 MODULE_PARM_DESC(vfe31_video_output_enable,
-		 "VFE31 video output enable (0=preview only, 1=with WM4/WM5)");
+		 "VFE31 video output enable (0=preview only WM0/WM1, 1=mirror to WM4/WM5)");
 
 /*
  * VFE31 UV swap control for debugging color issues.
