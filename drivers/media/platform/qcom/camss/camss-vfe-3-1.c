@@ -1840,17 +1840,46 @@ static int vfe31_enable(struct vfe_line *line)
 	 * CSIPHY is configured and lanes are enabled. Writing to CAMIF
 	 * registers before CSIPHY is ready causes data path issues.
 	 *
+	 * For RDI lines (raw bypass mode), CAMIF is NOT used. Data goes
+	 * directly from CSID to the write master without ISP processing.
+	 * Skip CAMIF configuration entirely for RDI lines.
+	 *
 	 * Set camif_pending flag here. The actual CAMIF configuration
 	 * (steps 3-6) will be done by vfe_enable_pending_camif() which
 	 * is called from CSIPHY set_stream after lanes are enabled.
 	 */
-	dev_info(vfe->camss->dev,
-		 "VFE31: Deferring CAMIF config until CSIPHY ready (WM%d, line %d)\n",
-		 wm, line->id);
+	if (is_rdi_line) {
+		/*
+		 * RDI mode: Data bypasses DEMUX/XBAR but still needs CAMIF config.
+		 * VFE31 raw bypass mode (AXI=0x60) routes: CSID → CAMIF → WM0
+		 *
+		 * Unlike PIX mode which defers CAMIF config until CSIPHY is ready,
+		 * RDI mode also needs deferral because CAMIF depends on CSIPHY timing.
+		 *
+		 * Set up IRQs and basic config here, but defer CAMIF to
+		 * vfe31_enable_pending_camif() like PIX mode does.
+		 */
+		dev_info(vfe->camss->dev,
+			 "VFE31: RDI line %d - deferring to pending_camif (raw bypass)\n",
+			 line->id);
 
-	vfe->camif_pending = true;
-	vfe->camif_pending_wm = wm;
-	vfe->camif_pending_line_id = line->id;
+		/*
+		 * For RDI, we still use the camif_pending path but with
+		 * AXI mode 0x60 (already set above in the BUS registers).
+		 * The pending_camif handler will configure CAMIF and IRQs.
+		 */
+		vfe->camif_pending = true;
+		vfe->camif_pending_wm = wm;
+		vfe->camif_pending_line_id = line->id;
+	} else {
+		dev_info(vfe->camss->dev,
+			 "VFE31: Deferring CAMIF config until CSIPHY ready (WM%d, line %d)\n",
+			 wm, line->id);
+
+		vfe->camif_pending = true;
+		vfe->camif_pending_wm = wm;
+		vfe->camif_pending_line_id = line->id;
+	}
 
 	/*
 	 * DO NOT reset output->state here! It was correctly set based on
@@ -3621,15 +3650,31 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * Step 2: Configure MODULE_CFG with webOS value (0x01c00c0c)
-	 * This enables DEMUX and other required processing modules.
+	 * Step 2: Configure MODULE_CFG
+	 * PIX mode: Enable DEMUX and processing modules (0x01c00c0c)
+	 * RDI mode: Disable all modules (0) - data bypasses ISP
 	 */
-	writel_relaxed(0x01c00c0c, vfe->base + VFE_0_MODULE_CFG);
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+
+		if (is_rdi) {
+			dev_info(vfe->camss->dev,
+				 "VFE31: MODULE_CFG=0x0 (RDI raw bypass)\n");
+			writel_relaxed(0, vfe->base + VFE_0_MODULE_CFG);
+		} else {
+			dev_info(vfe->camss->dev,
+				 "VFE31: MODULE_CFG=0x01c00c0c (PIX with DEMUX)\n");
+			writel_relaxed(0x01c00c0c, vfe->base + VFE_0_MODULE_CFG);
+		}
+	}
 	wmb();
 
 	/*
 	 * Step 3: Configure CORE_CFG with pixel pattern + input mux enable
 	 * webOS uses 0x46 for UYVY: pixel pattern 0x6 + bit 6 (input mux)
+	 * For RDI, we still need input mux enabled but no pixel pattern.
 	 */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
@@ -3654,10 +3699,19 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 
 	/*
-	 * Step 4: Configure DEMUX gains (passthrough for YUV input)
+	 * Step 4: Configure DEMUX gains (PIX mode only)
+	 * RDI mode bypasses DEMUX, so no gain configuration needed.
 	 */
-	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_0);
-	writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_1);
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+
+		if (!is_rdi) {
+			writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_0);
+			writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_1);
+		}
+	}
 
 	/*
 	 * Step 5: Configure clamp values for output
@@ -3692,12 +3746,27 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 	/*
 	 * Step 7: Configure AXI output mode and XBAR routing
+	 *
+	 * RDI lines (RDI0, RDI1, RDI2) use raw bypass mode (0x60) which
+	 * routes data directly from CAMIF to write master, bypassing DEMUX.
+	 * PIX/VIDEO lines use the module parameter (typically 0x01 for DEMUX).
 	 */
-	writel_relaxed(vfe31_axi_output_mode,
-		       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		u32 axi_mode = is_rdi ? VFE_0_BUS_AXI_OUT_MODE_RAW_WM0 :
+					vfe31_axi_output_mode;
 
-	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
+		dev_info(vfe->camss->dev,
+			 "VFE31: AXI_OUT_MODE=0x%x (%s)\n",
+			 axi_mode, is_rdi ? "RDI raw bypass" : "PIX/DEMUX");
+		writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+
+		/* Only configure XBAR for PIX mode - RDI bypasses XBAR */
+		if (!is_rdi && axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
+			writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
+		}
 	}
 
 	/*
@@ -3712,23 +3781,58 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * Step 10: Configure IRQ masks using webOS values
-	 * IRQ_MASK_0 = 0x00EFE021 (from vfe31_start_common)
-	 * IRQ_MASK_1 = 0x00400000 (RESET_ACK)
+	 * Step 10: Configure IRQ masks
+	 * PIX mode: webOS values (0x00EFE021) with composite interrupts
+	 * RDI mode: Minimal mask with per-WM PING_PONG interrupt
 	 */
-	vfe->irq_mask0_shadow = 0x00EFE021;
-	vfe->irq_mask1_shadow = 0x00400000;
-	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
-	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+
+		if (is_rdi) {
+			/*
+			 * RDI mode: Use per-WM PING_PONG interrupt for single WM.
+			 * Enable SOF, REG_UPDATE, and WM0 PING_PONG.
+			 */
+			vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
+						VFE_0_IRQ_MASK_0_REG_UPDATE |
+						VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(vfe->camif_pending_wm);
+			dev_info(vfe->camss->dev,
+				 "VFE31: RDI IRQ_MASK_0=0x%08x (WM%d PING_PONG)\n",
+				 vfe->irq_mask0_shadow, vfe->camif_pending_wm);
+		} else {
+			/* PIX mode: Use webOS value with composite interrupts */
+			vfe->irq_mask0_shadow = 0x00EFE021;
+			dev_info(vfe->camss->dev,
+				 "VFE31: PIX IRQ_MASK_0=0x%08x (composite)\n",
+				 vfe->irq_mask0_shadow);
+		}
+		vfe->irq_mask1_shadow = 0x00400000;
+		writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+		writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+	}
 
 	/*
 	 * Step 11: Configure composite IRQ mask for buffer completion
-	 * Use preview-only mask (WM0+WM1 in group 0) unless video mode enabled
+	 * PIX mode: WM0+WM1 in group 0 (or video mode mask)
+	 * RDI mode: Use 0 (no composite - use per-WM PING_PONG instead)
 	 */
-	if (vfe31_video_output_enable) {
-		writel_relaxed(0x00220011, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
-	} else {
-		writel_relaxed(0x00000003, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+
+		if (is_rdi) {
+			/* RDI: No composite mask - use per-WM interrupts */
+			dev_info(vfe->camss->dev,
+				 "VFE31: RDI COMPOSITE_MASK=0x0 (using per-WM IRQ)\n");
+			writel_relaxed(0, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+		} else if (vfe31_video_output_enable) {
+			writel_relaxed(0x00220011, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+		} else {
+			writel_relaxed(0x00000003, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+		}
 	}
 	wmb();
 
