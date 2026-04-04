@@ -2232,8 +2232,18 @@ mt9m113_streaming:
 				 "MT9M113: SEQ_CMD timeout (continuing anyway)\n");
 		}
 
-		/* Small delay for sensor to stabilize after streaming starts */
-		msleep(20);
+		/*
+		 * Delay for sensor to stabilize after streaming starts.
+		 * Context B (capture mode) needs longer delay for the full
+		 * resolution pipeline to initialize.
+		 */
+		if (use_context_b) {
+			dev_info(&sensor->client->dev,
+				 "MT9M113: Context B - waiting 100ms for capture mode\n");
+			msleep(100);
+		} else {
+			msleep(20);
+		}
 
 		/*
 		 * Comprehensive sensor state readback for debugging.
@@ -2265,6 +2275,47 @@ mt9m113_streaming:
 			dev_info(&sensor->client->dev,
 				 "MT9M113: MODE_A: %lldx%lld, frame_len=%lld, line_len=%lld\n",
 				 mode_width, mode_height, frame_length, line_length);
+
+			/* Also read MODE_B registers when Context B is requested */
+			if (use_context_b) {
+				u64 mode_b_width, mode_b_height;
+				u64 cam_out_width, cam_out_height;
+
+				mt9m113_read_mcu_var(sensor, 0x2707, &mode_b_width);  /* MODE_OUTPUT_WIDTH_B */
+				mt9m113_read_mcu_var(sensor, 0x2709, &mode_b_height); /* MODE_OUTPUT_HEIGHT_B */
+				dev_info(&sensor->client->dev,
+					 "MT9M113: MODE_B: %lldx%lld (requested Context B)\n",
+					 mode_b_width, mode_b_height);
+
+				/* Read actual CAM_OUTPUT registers */
+				cci_read(sensor->regmap, MT9M114_CAM_OUTPUT_WIDTH, &cam_out_width, NULL);
+				cci_read(sensor->regmap, MT9M114_CAM_OUTPUT_HEIGHT, &cam_out_height, NULL);
+				dev_info(&sensor->client->dev,
+					 "MT9M113: CAM_OUTPUT: %lldx%lld (actual output config)\n",
+					 cam_out_width, cam_out_height);
+
+				/*
+				 * SEQ_STATE values:
+				 *   0x03 = Streaming in Context A
+				 *   0x07 = Streaming in Context B (capture mode)
+				 * Verify we're in the correct context.
+				 */
+				if (seq_state != 0x07) {
+					dev_warn(&sensor->client->dev,
+						 "MT9M113: Context B requested but SEQ_STATE=0x%llx (expected 0x07)\n",
+						 seq_state);
+				} else {
+					dev_info(&sensor->client->dev,
+						 "MT9M113: Context B active (SEQ_STATE=0x07)\n");
+				}
+
+				/* Warn if CAM_OUTPUT doesn't match requested resolution */
+				if (cam_out_width != 1280 || cam_out_height != 1024) {
+					dev_warn(&sensor->client->dev,
+						 "MT9M113: CAM_OUTPUT mismatch! Expected 1280x1024, got %lldx%lld\n",
+						 cam_out_width, cam_out_height);
+				}
+			}
 
 			/*
 			 * Verify MIPI is enabled. Bit 3 (reg_frame_sync) is READ-ONLY
