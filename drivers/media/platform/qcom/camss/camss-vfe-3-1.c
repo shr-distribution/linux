@@ -440,7 +440,6 @@ extern int software_eof_enable;
  */
 #define VFE_0_BUS_XBAR_CFG1_PIX_MODE		0x1A13
 #define VFE_0_BUS_XBAR_CFG1_VIDEO_MODE		0x1A1B
-#define VFE_0_BUS_XBAR_CFG1_DUAL_MODE		0x1A9B  /* Y→WM0+WM4, CbCr→WM1+WM5 */
 
 /* Legacy define - Qualcomm's broken value that doesn't route CbCr */
 #define VFE_0_BUS_XBAR_CFG1_BROKEN_NO_CBCR	0x1A03
@@ -1602,25 +1601,17 @@ static int vfe31_enable(struct vfe_line *line)
 
 	/*
 	 * For PIX mode (OUTPUT_1_AND_3), configure XBAR_CFG1 to route
-	 * Y and CbCr to write masters. For VIDEO line (WM4/WM5), we need
-	 * dual mode (0x1A9B) to route to both WM0/WM1 and WM4/WM5.
+	 * Y to WM0 and CbCr to WM1. We always use 0x1A1B which properly
+	 * routes both planes. See XBAR_CFG1 documentation above.
+	 *
+	 * Note: PIX_MODE and VIDEO_MODE both use 0x1A1B. The video_output_enable
+	 * flag controls WM4/WM5 configuration, not the XBAR value itself.
 	 */
 	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		u32 xbar_val;
-
-		if (line->id == VFE_LINE_VIDEO) {
-			/* VIDEO line needs dual output routing to WM4/WM5 */
-			xbar_val = VFE_0_BUS_XBAR_CFG1_DUAL_MODE;
-			dev_info(vfe->camss->dev,
-				 "VFE31: VIDEO mode - XBAR CFG1=0x%x (dual output)\n",
-				 xbar_val);
-		} else {
-			xbar_val = vfe31_xbar_cfg1;
-			dev_info(vfe->camss->dev,
-				 "VFE31: PIX mode - XBAR CFG1=0x%x (module param)\n",
-				 xbar_val);
-		}
-		writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
+		dev_info(vfe->camss->dev,
+			 "VFE31: PIX mode - XBAR CFG1=0x%x (module param)\n",
+			 vfe31_xbar_cfg1);
+		writel_relaxed(vfe31_xbar_cfg1, vfe->base + VFE_0_BUS_XBAR_CFG1);
 	}
 
 	/*
