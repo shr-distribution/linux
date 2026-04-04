@@ -3873,8 +3873,26 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		/* Only configure XBAR for PIX mode - RDI bypasses XBAR */
 		if (!is_rdi && axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-			u32 xbar_val = (vfe31_xbar_cfg1 != 0) ?
-				       vfe31_xbar_cfg1 : VFE31_XBAR_PIX_ONLY;
+			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+			bool video_active = (video_out->state == VFE_OUTPUT_ON ||
+					     video_out->state == VFE_OUTPUT_RESERVED ||
+					     video_out->state == VFE_OUTPUT_CONTINUOUS);
+			u32 xbar_val;
+
+			/* Auto-select XBAR based on active lines */
+			if (vfe31_xbar_cfg1 != 0) {
+				xbar_val = vfe31_xbar_cfg1;
+			} else if (line->id == VFE_LINE_VIDEO || video_active) {
+				/* VIDEO line - route Y to WM0+WM4 */
+				xbar_val = VFE31_XBAR_PIX_VIDEO;
+			} else {
+				/* PIX only - route Y to WM0 only */
+				xbar_val = VFE31_XBAR_PIX_ONLY;
+			}
+			dev_info(vfe->camss->dev,
+				 "VFE31: XBAR=0x%04x (%s)\n", xbar_val,
+				 xbar_val == VFE31_XBAR_PIX_ONLY ? "PIX only" :
+				 xbar_val == VFE31_XBAR_PIX_VIDEO ? "PIX+VIDEO" : "manual");
 			writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
 		}
 	}
