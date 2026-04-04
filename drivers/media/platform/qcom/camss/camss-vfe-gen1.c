@@ -269,20 +269,14 @@ static int vfe_enable_output(struct vfe_line *line)
 					     &line->video_out.active_fmt.fmt.pix_mp, 0, 1);
 		vfe->ops_gen1->wm_enable(vfe, output->wm_idx[0], 1);
 		vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[0]);
-
 		/*
-		 * VFE31 RDI path needs same ISP configuration as PIX path.
-		 * WebOS uses PIX mode (AXI_OUT_MODE=0x01) for all capture modes,
-		 * not separate RDI bypass. Configure MODULE_CFG, CAMIF, and XBAR
-		 * to match webOS initialization sequence.
+		 * For VFE31, wm_enable() triggers vfe31_start_camif_for_rdi()
+		 * which does the full CAMIF/DEMUX/XBAR configuration.
+		 * No additional ISP config calls needed here.
+		 *
+		 * For VFE41+, the RDI path uses dedicated RDI_CFG registers
+		 * and doesn't need CAMIF/DEMUX/XBAR configuration.
 		 */
-		dev_info(vfe->camss->dev, "VFE enable_output: RDI - configuring ISP like PIX\n");
-		vfe->ops_gen1->set_module_cfg(vfe, 1);
-		vfe->ops_gen1->set_camif_cfg(vfe, line);
-		vfe->ops_gen1->set_xbar_cfg(vfe, output, 1);
-		vfe->ops_gen1->set_demux_cfg(vfe, line);
-		vfe->ops_gen1->set_clamp_cfg(vfe);
-		vfe->ops_gen1->set_camif_cmd(vfe, 1);
 	} else {
 		/* PIX/VIDEO path - line-based pixel pipeline capture */
 		dev_info(vfe->camss->dev, "VFE enable_output: PIX/VIDEO path wm_num=%d\n", output->wm_num);
