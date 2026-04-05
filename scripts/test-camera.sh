@@ -1283,78 +1283,91 @@ test_at_resolution() {
     local height="$2"
     local mode="$3"
     local video_dev="${4:-video3}"
-    local csid="${5:-msm_csid0}"
+    local csid="${5:-msm_csid1}"
     local csiphy="${6:-msm_csiphy1}"
 
     log_info "Testing $mode at ${width}x${height} on /dev/$video_dev"
 
     run_on_device "
-        # Reset pipeline
+        # Kill any stuck capture processes first
+        pkill -9 v4l2-ctl 2>/dev/null || true
+        pkill -9 gst-launch 2>/dev/null || true
+        sleep 1
+
+        # Reset pipeline completely (this disables all non-immutable links)
         media-ctl -d /dev/media0 -r 2>/dev/null || true
+        sleep 0.5
 
-        # Enable upstream links
-        media-ctl -d /dev/media0 -l '\"$csiphy\":1->\"$csid\":0[1]' 2>&1 || true
-
-        # Mode-specific setup
+        # Mode-specific format setup (links will be enabled AFTER formats are set)
+        # NOTE: CSID output format is always UYVY8_1X16 (from sensor via MIPI)
+        # VFE PIX/VIDEO input accepts UYVY8_1X16 and converts internally via DEMUX
         case '$mode' in
             pix)
                 # PIX mode: CSID pad 4 -> VFE PIX
-                media-ctl -d /dev/media0 -l '\"$csid\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
+                CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_pix'
+                VFE_FMT='UYVY8_1X16'
+                PIXFMT='NV16'
                 ;;
             rdi)
-                # RDI mode: CSID pad 1 -> VFE RDI0
-                media-ctl -d /dev/media0 -l '\"$csid\":1->\"msm_vfe0_rdi0\":0[1]' 2>&1 || true
+                # RDI mode: CSID pad 1 -> VFE RDI0 (raw passthrough)
+                CSID_PAD=1
                 VFE_ENTITY='msm_vfe0_rdi0'
+                VFE_FMT='UYVY8_1X16'
+                PIXFMT='UYVY'
                 ;;
             video)
                 # VIDEO mode: CSID pad 4 -> VFE VIDEO
-                media-ctl -d /dev/media0 -l '\"$csid\":4->\"msm_vfe0_video\":0[1]' 2>&1 || true
+                CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_video'
+                VFE_FMT='UYVY8_1X16'
+                PIXFMT='NV16'
                 ;;
             testgen)
                 # TESTGEN mode: same as PIX but with testgen enabled
-                media-ctl -d /dev/media0 -l '\"$csid\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
+                CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_pix'
+                VFE_FMT='UYVY8_1X16'
+                PIXFMT='NV16'
                 echo 1 > /sys/module/qcom_camss/parameters/vfe31_use_testgen 2>/dev/null || true
                 ;;
         esac
 
-        # Set formats on pipeline
+        # Set sensor output format first
         media-ctl -d /dev/media0 -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/${width}x${height}]' 2>&1 || true
         media-ctl -d /dev/media0 -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
-        media-ctl -d /dev/media0 -V '\"$csiphy\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
-        media-ctl -d /dev/media0 -V '\"$csiphy\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
-        media-ctl -d /dev/media0 -V '\"$csid\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
 
-        # Set appropriate CSID source pad format
-        case '$mode' in
-            rdi)
-                media-ctl -d /dev/media0 -V '\"$csid\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
-                ;;
-            *)
-                media-ctl -d /dev/media0 -V '\"$csid\":4[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
-                ;;
-        esac
+        # Set CSIPHY format
+        media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":0[fmt:UYVY8_1X16/${width}x${height}]\" 2>&1 || true
+        media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":1[fmt:UYVY8_1X16/${width}x${height}]\" 2>&1 || true
 
-        media-ctl -d /dev/media0 -V '\"\$VFE_ENTITY\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+        # Set CSID formats (input and output) - always UYVY8_1X16
+        media-ctl -d /dev/media0 -V \"\\\"$csid\\\":0[fmt:UYVY8_1X16/${width}x${height}]\" 2>&1 || true
+        media-ctl -d /dev/media0 -V \"\\\"$csid\\\":\${CSID_PAD}[fmt:UYVY8_1X16/${width}x${height}]\" 2>&1 || true
 
-        # Set V4L2 format - use NV16 for PIX/VIDEO, UYVY for RDI
-        case '$mode' in
-            rdi)
-                v4l2-ctl -d /dev/$video_dev --set-fmt-video=width=$width,height=$height,pixelformat=UYVY 2>&1 || true
-                PIXFMT='UYVY'
-                ;;
-            *)
-                v4l2-ctl -d /dev/$video_dev --set-fmt-video=width=$width,height=$height,pixelformat=NV16 2>&1 || true
-                PIXFMT='NV16'
-                ;;
-        esac
+        # Set VFE entity format - must match CSID output
+        media-ctl -d /dev/media0 -V \"\\\"\${VFE_ENTITY}\\\":0[fmt:\${VFE_FMT}/${width}x${height}]\" 2>&1 || true
+
+        # Enable all pipeline links AFTER setting formats (format changes can disable links)
+        # Link order: CSIPHY -> CSID -> VFE
+        media-ctl -d /dev/media0 -l \"\\\"$csiphy\\\":1->\\\"$csid\\\":0[1]\" 2>&1 || true
+        media-ctl -d /dev/media0 -l \"\\\"$csid\\\":\${CSID_PAD}->\\\"\${VFE_ENTITY}\\\":0[1]\" 2>&1 || true
+
+        # Verify links are enabled
+        echo \"Verifying pipeline links...\"
+        media-ctl -d /dev/media0 -p 2>&1 | grep -E \"\${VFE_ENTITY}.*ENABLED\" || echo 'WARNING: VFE link not enabled!'
+
+        # Set V4L2 device format
+        v4l2-ctl -d /dev/$video_dev --set-fmt-video=width=$width,height=$height,pixelformat=\$PIXFMT 2>&1 || true
+
+        # Show configured format
+        echo \"Pipeline configured for $mode mode:\"
+        v4l2-ctl -d /dev/$video_dev --get-fmt-video 2>&1 | grep -E 'Width|Pixel'
 
         # Capture
         OUTPUT=\"/tmp/test_${mode}_${width}x${height}.raw\"
         rm -f \"\$OUTPUT\"
-        timeout 10 v4l2-ctl -d /dev/$video_dev --stream-mmap --stream-count=3 --stream-to=\"\$OUTPUT\" 2>&1
+        timeout 15 v4l2-ctl -d /dev/$video_dev --stream-mmap --stream-count=3 --stream-to=\"\$OUTPUT\" 2>&1
 
         # Disable testgen if it was enabled
         if [ '$mode' = 'testgen' ]; then
