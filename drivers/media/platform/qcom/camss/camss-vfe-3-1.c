@@ -1738,15 +1738,14 @@ static int vfe31_enable(struct vfe_line *line)
 	height = pix->height;
 
 	/*
-	 * NV16 output format: DEMUX separates UYVY input into Y and CbCr planes.
-	 * Each output plane has width bytes per line (not width*2):
-	 * - WM0 writes Y plane: 640 bytes/line @ 640x480
-	 * - WM1 writes CbCr plane: 640 bytes/line @ 640x480
+	 * VFE31 DMA stride must match UYVY input line size (width * 2), NOT the
+	 * individual output plane size. The DEMUX separates Y and CbCr internally,
+	 * but the DMA operates on the full UYVY line width for addressing.
 	 *
-	 * Use the actual plane bytesperline from the format structure.
-	 * webOS used 1280 for UYVY output, but we're outputting NV16.
+	 * webOS always used stride=1280 for 640x480, stride=2560 for 1280x1024.
+	 * Using plane_fmt[0].bytesperline (640/1280) causes data misalignment.
 	 */
-	bytesperline = pix->plane_fmt[0].bytesperline;
+	bytesperline = width * 2;  /* UYVY input line size */
 
 	/* Get buffer addresses */
 	if (output->buf[0])
