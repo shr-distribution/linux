@@ -313,46 +313,23 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct media_entity *entity;
 	struct media_pad *pad;
 	struct v4l2_subdev *subdev;
-	ktime_t pipeline_start, entity_start;
-	int entity_num = 0;
 	int ret;
-
-	pipeline_start = ktime_get();
-	dev_info(video->camss->dev,
-		 "[TIMING] video_start_streaming: ENTER count=%d START at %lld ns\n",
-		 count, ktime_to_ns(pipeline_start));
 
 	/*
 	 * VFE31 testgen mode: bypass media pipeline validation and upstream
 	 * entity setup. The test generator produces data internally within
 	 * VFE, so no sensor/CSIPHY/CSID configuration is needed.
-	 * Note: vfe_get() was already called in prepare_streaming.
 	 */
 	if (vfe31_use_testgen) {
-		struct vfe_line *line;
-		struct vfe_device *vfe;
+		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
+		struct vfe_device *vfe = to_vfe(line);
 
-		dev_info(video->camss->dev,
-			 "[TESTGEN] Bypassing pipeline validation for testgen mode\n");
-
-		line = container_of(video, struct vfe_line, video_out);
-		vfe = to_vfe(line);
-
-		dev_info(video->camss->dev,
-			 "[TESTGEN] VFE%d line=%d, calling vfe_enable\n",
-			 vfe->id, line->id);
-
-		/* Set output state and enable VFE with testgen */
 		line->output.state = VFE_OUTPUT_RESERVED;
 		ret = vfe->res->hw_ops->vfe_enable(line);
 		if (ret < 0) {
-			dev_err(video->camss->dev,
-				"[TESTGEN] Failed to enable VFE: %d\n", ret);
+			dev_err(video->camss->dev, "testgen: VFE enable failed: %d\n", ret);
 			goto flush_buffers;
 		}
-
-		dev_info(video->camss->dev,
-			 "[TESTGEN] VFE testgen started successfully\n");
 		return 0;
 	}
 
@@ -362,57 +339,21 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		goto flush_buffers;
 	}
 
-	dev_info(video->camss->dev,
-		 "[TIMING] video_start_streaming: pipeline alloc done, checking format\n");
-
 	ret = video_check_format(video);
 	if (ret < 0) {
 		dev_err(video->camss->dev, "video_start_streaming: format check failed: %d\n", ret);
 		goto error;
 	}
 
-	dev_info(video->camss->dev,
-		 "[TIMING] video_start_streaming: format OK, starting pipeline walk at %lld ns\n",
-		 ktime_to_ns(ktime_get()));
-
 	entity = &vdev->entity;
-	dev_info(video->camss->dev, "[TIMING] Pipeline walk: starting at %s (pads=%d)\n",
-		 entity->name, entity->num_pads);
 	while (1) {
 		pad = &entity->pads[0];
-		dev_info(video->camss->dev,
-			 "[TIMING] Pipeline walk: at '%s' pad 0 (flags=0x%x, %s)\n",
-			 entity->name, pad->flags,
-			 (pad->flags & MEDIA_PAD_FL_SINK) ? "SINK" : "SOURCE");
-		if (!(pad->flags & MEDIA_PAD_FL_SINK)) {
-			dev_info(video->camss->dev,
-				 "[TIMING] Pipeline walk: '%s' pad 0 is not sink, stopping\n",
-				 entity->name);
+		if (!(pad->flags & MEDIA_PAD_FL_SINK))
 			break;
-		}
 
 		pad = media_pad_remote_pad_first(pad);
-		if (!pad) {
-			/* Debug: count links on this entity */
-			struct media_link *link;
-			int link_count = 0, enabled_count = 0;
-
-			list_for_each_entry(link, &entity->links, list) {
-				link_count++;
-				if (link->flags & MEDIA_LNK_FL_ENABLED)
-					enabled_count++;
-			}
-			dev_info(video->camss->dev,
-				 "[TIMING] Pipeline walk: '%s' pad 0 has no remote (links=%d, enabled=%d)\n",
-				 entity->name, link_count, enabled_count);
+		if (!pad || !is_media_entity_v4l2_subdev(pad->entity))
 			break;
-		}
-		if (!is_media_entity_v4l2_subdev(pad->entity)) {
-			dev_info(video->camss->dev,
-				 "[TIMING] Pipeline walk: remote '%s' is not subdev, stopping\n",
-				 pad->entity->name);
-			break;
-		}
 
 		entity = pad->entity;
 		subdev = media_entity_to_v4l2_subdev(entity);
@@ -425,67 +366,33 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		 * data flows immediately. The VFE CAMIF must be ready to
 		 * receive BEFORE the sensor begins transmitting, otherwise
 		 * CAMIF sees partial frame data and reports errors.
-		 *
-		 * Detect entities that start data flow:
-		 * - MEDIA_ENT_F_CAM_SENSOR: Simple sensors
-		 * - MEDIA_ENT_F_PROC_VIDEO_ISP: ISP processors like mt9m114 IFP
-		 *   (the IFP controls streaming, not the pixel array)
-		 *
-		 * Enable any pending CAMIF configuration before calling s_stream.
 		 */
 		if (entity->function == MEDIA_ENT_F_CAM_SENSOR ||
 		    entity->function == MEDIA_ENT_F_PROC_VIDEO_ISP) {
 			int i;
-			dev_info(video->camss->dev,
-				 "[TIMING] Pipeline[%d]: detected data source '%s' (func=0x%x), enabling pending CAMIF first\n",
-				 entity_num, entity->name, entity->function);
 			for (i = 0; i < video->camss->res->vfe_num; i++) {
-				if (video->camss->vfe[i].camif_pending) {
-					dev_info(video->camss->dev,
-						 "[TIMING] Enabling VFE%d CAMIF before sensor start\n",
-						 i);
+				if (video->camss->vfe[i].camif_pending)
 					vfe_enable_pending_camif(&video->camss->vfe[i]);
-				}
 			}
 		}
 
-		entity_start = ktime_get();
-		dev_info(video->camss->dev,
-			 "[TIMING] Pipeline[%d]: calling s_stream(1) on '%s' at %lld ns\n",
-			 entity_num, entity->name, ktime_to_ns(entity_start));
 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
-		dev_info(video->camss->dev,
-			 "[TIMING] Pipeline[%d]: '%s' s_stream returned %d (elapsed %lld ns)\n",
-			 entity_num, entity->name, ret,
-			 ktime_to_ns(ktime_get()) - ktime_to_ns(entity_start));
 		if (ret < 0 && ret != -ENOIOCTLCMD)
 			goto error;
 	}
 
 	/*
-	 * Fallback: If pipeline walk didn't reach the sensor (e.g., due to
-	 * media_pad_remote_pad_first() returning NULL), any pending CAMIF
-	 * configurations would not have been triggered. Enable them now.
-	 *
-	 * This ensures CAMIF starts even when the pipeline traversal is
-	 * incomplete, which can happen on MSM8660 where the CSID->VFE
-	 * link topology is different from newer chips.
+	 * Fallback: If pipeline walk didn't reach the sensor, enable any
+	 * pending CAMIF configurations now.
 	 */
 	{
 		int i;
 		for (i = 0; i < video->camss->res->vfe_num; i++) {
-			if (video->camss->vfe[i].camif_pending) {
-				dev_info(video->camss->dev,
-					 "[TIMING] Fallback: Enabling VFE%d CAMIF (pipeline walk incomplete)\n",
-					 i);
+			if (video->camss->vfe[i].camif_pending)
 				vfe_enable_pending_camif(&video->camss->vfe[i]);
-			}
 		}
 	}
 
-	dev_info(video->camss->dev,
-		 "[TIMING] video_start_streaming: COMPLETE total elapsed=%lld ns\n",
-		 ktime_to_ns(ktime_get()) - ktime_to_ns(pipeline_start));
 	return 0;
 
 error:
