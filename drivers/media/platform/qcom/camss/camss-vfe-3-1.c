@@ -1651,8 +1651,12 @@ static int vfe31_enable(struct vfe_line *line)
 			/*
 			 * VIDEO line: WM1 for CbCr (shared with PIX)
 			 *
-			 * Same as PIX: reserve WM1 but don't map it to avoid
-			 * double buffer processing in vfe_isr_comp_done().
+			 * Note: Unlike PIX mode, VIDEO mode does NOT clear the
+			 * line mapping for WM1. VIDEO uses WM4 for Y (not WM0),
+			 * so when COMPOSITE_DONE fires, wm_done(WM4) is called
+			 * first and processes the frame. If we also cleared WM1's
+			 * mapping, the double buffer processing fix would cause
+			 * VIDEO mode to fail.
 			 */
 			wm_idx = vfe_reserve_wm_specific(vfe, VFE31_VIDEO_WM_CBCR, line->id);
 			if (wm_idx < 0) {
@@ -1664,10 +1668,9 @@ static int vfe31_enable(struct vfe_line *line)
 				return wm_idx;
 			}
 			output->wm_idx[1] = wm_idx;
-			/* Clear line mapping - only primary WM triggers buffer completion */
-			vfe->wm_output_map[wm_idx] = VFE_LINE_NONE;
+			/* Keep WM1 mapped to VIDEO line for buffer completion */
 		}
-		dev_info(vfe->camss->dev, "VFE31: VIDEO line using WM%d(Y), WM%d(CbCr, no-map)\n",
+		dev_info(vfe->camss->dev, "VFE31: VIDEO line using WM%d(Y), WM%d(CbCr)\n",
 			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
 	} else if (line->id == VFE_LINE_PIX) {
 		/* PIX line: WM0 for Y, WM4 for CbCr (webOS offset-by-4) */
