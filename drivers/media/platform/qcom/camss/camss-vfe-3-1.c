@@ -89,31 +89,31 @@ MODULE_PARM_DESC(vfe31_swap_uv,
 
 /*
  * ============================================================================
- * VFE31 XBAR_CFG1 REGISTER - CORRECTED FROM ACTUAL REGISTER DUMPS
+ * VFE31 XBAR_CFG1 REGISTER - MODE-DEPENDENT ROUTING
  * ============================================================================
  *
  * XBAR_CFG1 (0x044) controls Y/CbCr routing to Write Masters.
  *
- * IMPORTANT: WebOS REGISTER DUMPS show 0x1A1B, not the 0x1A03 in code!
- * The 0x1A03 value is inside #ifdef CONFIG_MSM_CAMERA_V4L2 which wasn't enabled.
- *
- * Verified from: reports/webos-preview-mode-dump.txt, webos-video-mode-dump.txt
- *   XBAR_CFG1 = 0x1A1B (both preview AND video recording modes)
- *
  * Bit field interpretation:
- *   Bits [3:0]  = 0xB = Y routes to WM0 AND WM4
- *   Bits [7:4]  = 0x1 = CbCr routes to WM1 ONLY (not WM5!)
+ *   Bits [3:0]  = Y routing (0x3 = WM0 only, 0xB = WM0+WM4)
+ *   Bits [7:4]  = CbCr routing (0x1 = WM1 only)
  *   Bits [15:8] = 0x1A = standard ISP processing
  *
- * This means with XBAR 0x1A1B:
- *   - WM0 and WM4 BOTH receive Y data
- *   - WM1 is the ONLY destination for CbCr
- *   - WM5 receives NOTHING (CbCr never routes there!)
+ * PIX-ONLY mode (0x1A13):
+ *   - Y routes to WM0 only (avoids DMA to unconfigured WM4)
+ *   - CbCr routes to WM1
+ *   - Required because WM4 has no buffer in PIX-only mode
  *
- * webOS worked around CbCr sharing by DISABLING CbCr WMs entirely.
+ * PIX+VIDEO mode (0x1A1B):
+ *   - Y routes to WM0 AND WM4 (both lines receive Y)
+ *   - CbCr routes to WM1 (shared between lines)
+ *   - WM4 must have buffer configured for VIDEO line
+ *
+ * webOS register dumps show 0x1A1B was used, but webOS disabled CbCr WMs
+ * entirely (WM1_CFG_PNTR=0x00), only capturing Y planes.
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A1B  /* webOS actual value (verified from dumps) */
-#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Same - Y→WM0+WM4, CbCr→WM1 only */
+#define VFE31_XBAR_PIX_ONLY	0x1A13  /* Y→WM0 only, CbCr→WM1 (avoids WM4 DMA) */
+#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Y→WM0+WM4, CbCr→WM1 (VIDEO uses WM4) */
 
 /* Module param for manual override/testing */
 int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select based on active lines */
