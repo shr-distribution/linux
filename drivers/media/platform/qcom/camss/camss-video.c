@@ -362,32 +362,37 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		entity = pad->entity;
 		subdev = media_entity_to_v4l2_subdev(entity);
 
-		/*
-		 * VFE31 start order fix: Enable CAMIF BEFORE the sensor starts.
-		 *
-		 * The sensor is the data source - once it starts streaming,
-		 * data flows immediately. The VFE CAMIF must be ready to
-		 * receive BEFORE the sensor begins transmitting, otherwise
-		 * CAMIF sees partial frame data and reports errors.
-		 */
-		if (entity->function == MEDIA_ENT_F_CAM_SENSOR ||
-		    entity->function == MEDIA_ENT_F_PROC_VIDEO_ISP) {
-			int i;
-			for (i = 0; i < video->camss->res->vfe_num; i++) {
-				if (video->camss->vfe[i].camif_pending) {
-					dev_dbg(video->camss->dev,
-						"enabling VFE%d CAMIF before %s\n",
-						i, entity->name);
-					vfe_enable_pending_camif(&video->camss->vfe[i]);
-				}
-			}
-		}
-
 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
 		if (ret < 0 && ret != -ENOIOCTLCMD) {
 			dev_err(video->camss->dev, "s_stream(1) on %s failed: %d\n",
 				entity->name, ret);
 			goto error;
+		}
+
+		/*
+		 * VFE31 CAMIF start timing fix: Enable CAMIF AFTER sensor starts.
+		 *
+		 * The sensor s_stream() blocks until the sensor is actively
+		 * outputting valid frame data. CAMIF must be enabled AFTER
+		 * this point, not before, otherwise it receives garbage data
+		 * during the sensor's initialization phase (which can take
+		 * 300-400ms) and reports CAMIF_ERRORs.
+		 *
+		 * The old approach enabled CAMIF before s_stream, but that
+		 * caused CAMIF to see partial/invalid data while the sensor
+		 * was still configuring, leading to resolution mismatches
+		 * and crashes.
+		 */
+		if (entity->function == MEDIA_ENT_F_CAM_SENSOR) {
+			int i;
+			for (i = 0; i < video->camss->res->vfe_num; i++) {
+				if (video->camss->vfe[i].camif_pending) {
+					dev_dbg(video->camss->dev,
+						"enabling VFE%d CAMIF after sensor streaming\n",
+						i);
+					vfe_enable_pending_camif(&video->camss->vfe[i]);
+				}
+			}
 		}
 	}
 
