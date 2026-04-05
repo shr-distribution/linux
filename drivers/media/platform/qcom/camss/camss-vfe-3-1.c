@@ -3878,16 +3878,21 @@ static void vfe31_force_enable_axi_clock(struct device *dev)
  * vfe31_configure_testgen - Configure VFE31 internal test generator
  * @vfe: VFE device
  * @enable: true to enable, false to disable
- * @width: test pattern width
- * @height: test pattern height
+ * @width: test pattern width in pixels
+ * @height: test pattern height in lines
  *
  * The VFE31 has an internal test pattern generator that can produce
  * color bar patterns without requiring external camera input.
+ *
+ * The testgen bypasses CSIPHY/CSID and feeds data directly to CAMIF.
+ * WM registers must already be configured by vfe31_enable() before
+ * calling this function.
  */
 void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 			     u16 width, u16 height)
 {
 	u32 cfg_val;
+	u32 width_bytes = width * 2;  /* UYVY format: 2 bytes per pixel */
 
 	dev_info(vfe->camss->dev, "VFE TESTGEN: %s test generator (%dx%d)\n",
 		 enable ? "Enabling" : "Disabling", width, height);
@@ -3896,17 +3901,30 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		/* Force enable VFE_AXI_CLK if not running */
 		vfe31_force_enable_axi_clock(vfe->camss->dev);
 
-		/* Set inputSource to TESTGEN in VFE_CFG */
-		cfg_val = readl_relaxed(vfe->base + VFE_0_CORE_CFG);
-		cfg_val = (cfg_val & ~(0x7F)) |
-			  VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY |
-			  VFE_0_CORE_CFG_INPUT_MUX_TESTGEN |
-			  VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
-		writel_relaxed(cfg_val, vfe->base + VFE_0_CORE_CFG);
+		/*
+		 * Step 1: Configure DEMUX for YUV processing
+		 * The DEMUX separates Y and CbCr for semi-planar output.
+		 * Configure gains for unity (0x80 = 1.0x).
+		 */
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring DEMUX\n");
+		writel_relaxed(VFE_0_DEMUX_CFG_PERIOD, vfe->base + VFE_0_DEMUX_CFG);
+		writel_relaxed(VFE_0_DEMUX_GAIN_0_CH0_EVEN | VFE_0_DEMUX_GAIN_0_CH0_ODD,
+			       vfe->base + VFE_0_DEMUX_GAIN_0);
+		writel_relaxed(VFE_0_DEMUX_GAIN_1_CH1 | VFE_0_DEMUX_GAIN_1_CH2,
+			       vfe->base + VFE_0_DEMUX_GAIN_1);
+		/* UYVY (CbYCrY) demux pattern: even=0xc9, odd=0xac */
+		writel_relaxed(0xc9, vfe->base + VFE_0_DEMUX_EVEN_CFG);
+		writel_relaxed(0xac, vfe->base + VFE_0_DEMUX_ODD_CFG);
 		wmb();
 
-		/* Configure test generator dimensions */
-		writel_relaxed(width | ((u32)height << 16),
+		/*
+		 * Step 2: Configure test generator registers
+		 * TESTGEN_DIMS: [15:0]=width_bytes, [31:16]=height
+		 * The testgen produces UYVY data so width is in bytes.
+		 */
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring dimensions %ux%u (bytes=%u)\n",
+			 width, height, width_bytes);
+		writel_relaxed(width_bytes | ((u32)height << 16),
 			       vfe->base + VFE_0_TESTGEN_DIMS);
 		writel_relaxed(0, vfe->base + VFE_0_TESTGEN_START_PIXEL);
 
@@ -3915,59 +3933,88 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		writel_relaxed(0xCAFEBABE, vfe->base + VFE_0_TESTGEN_SEED_1);
 		writel_relaxed(0x12345678, vfe->base + VFE_0_TESTGEN_SEED_2);
 		writel_relaxed(0x87654321, vfe->base + VFE_0_TESTGEN_SEED_3);
+		wmb();
 
-		/* Enable testgen with colorbar pattern */
+		/*
+		 * Step 3: Configure CAMIF for testgen input
+		 * CAMIF expects frame dimensions in the same format as camera input.
+		 */
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring CAMIF\n");
+		writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
+		writel_relaxed((height << 16) | (width_bytes & 0x3FFF),
+			       vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+		writel_relaxed((width_bytes - 1) & 0x3FFF,
+			       vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+		writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+		writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+		wmb();
+
+		/*
+		 * Step 4: Enable VFE pipeline modules and configure AXI/XBAR
+		 */
+		writel_relaxed(0x01c00c0c, vfe->base + VFE_0_MODULE_CFG);
+		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
+			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+		writel_relaxed((vfe31_xbar_cfg1 != 0) ? vfe31_xbar_cfg1 : VFE31_XBAR_PIX_ONLY,
+			       vfe->base + VFE_0_BUS_XBAR_CFG1);
+		wmb();
+
+		/*
+		 * Step 5: Configure IRQ masks
+		 * Use same masks as PIX mode: SOF, REG_UPDATE, PING_PONG, COMPOSITE_DONE
+		 */
+		vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
+				       VFE_0_IRQ_MASK_0_CAMIF_EOF |
+				       VFE_0_IRQ_MASK_0_REG_UPDATE |
+				       VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(0) |
+				       VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(1) |
+				       VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0);
+		vfe->irq_mask1_shadow = 0;
+		vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_ONLY;
+
+		writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+		writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+		writel_relaxed(vfe->irq_comp_mask_shadow, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+		wmb();
+
+		/*
+		 * Step 6: Set CORE_CFG to use testgen as input source
+		 * This must be done AFTER DEMUX/CAMIF are configured.
+		 */
+		cfg_val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY |
+			  VFE_0_CORE_CFG_INPUT_MUX_TESTGEN |
+			  VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
+		dev_info(vfe->camss->dev, "VFE TESTGEN: CORE_CFG=0x%02x (testgen input)\n", cfg_val);
+		writel_relaxed(cfg_val, vfe->base + VFE_0_CORE_CFG);
+		wmb();
+
+		/*
+		 * Step 7: Enable testgen and start CAMIF
+		 * Order: enable testgen -> reg update -> start CAMIF
+		 */
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Enabling pattern generator\n");
 		writel_relaxed(VFE_0_TESTGEN_CFG_ENABLE | VFE_0_TESTGEN_CFG_COLORBAR,
 			       vfe->base + VFE_0_TESTGEN_CFG);
 		wmb();
 
-		/* Configure CAMIF for testgen */
-		{
-			u32 window_w, window_h;
-			u32 width_bytes = width * 2;  /* UYVY format */
-
-			window_w = (height << 16) | (width_bytes & 0xFFFF);
-			writel_relaxed(window_w, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
-
-			window_h = width_bytes - 1;
-			writel_relaxed(window_h, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
-
-			writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
-			writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-			writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
-			wmb();
-		}
-
-		/* Enable VFE pipeline modules */
-		writel_relaxed(0x01c00c0c, vfe->base + VFE_0_MODULE_CFG);
-		wmb();
-
-		/* Configure AXI output mode and XBAR */
-		{
-			u32 xbar_val = (vfe31_xbar_cfg1 != 0) ?
-				       vfe31_xbar_cfg1 : VFE31_XBAR_PIX_ONLY;
-			writel_relaxed(vfe31_axi_output_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-			writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
-		}
-		wmb();
-
-		/* Configure IRQ masks */
-		vfe->irq_mask0_shadow = 0x00EFE121;
-		vfe->irq_mask1_shadow = 0x00400000;
-		writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
-		writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
-		writel_relaxed(0x00000003, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
-		wmb();
-
-		/* Issue REG_UPDATE and start CAMIF */
+		/* Issue REG_UPDATE to latch all configuration */
 		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 		wmb();
+
+		/* Small delay to allow testgen to start generating */
+		udelay(100);
+
+		/* Start CAMIF to begin capturing from testgen */
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Starting CAMIF\n");
 		writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
 		wmb();
 
-		dev_info(vfe->camss->dev, "VFE TESTGEN: Started\n");
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Started successfully\n");
 	} else {
-		/* Stop test generator */
+		/* Stop test generator and CAMIF */
+		writel_relaxed(VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY,
+			       vfe->base + VFE_0_CAMIF_CMD);
+		wmb();
 		writel_relaxed(0, vfe->base + VFE_0_TESTGEN_CFG);
 		wmb();
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Stopped\n");
