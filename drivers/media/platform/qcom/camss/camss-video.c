@@ -315,6 +315,9 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct v4l2_subdev *subdev;
 	int ret;
 
+	dev_dbg(video->camss->dev, "start_streaming: %s count=%d\n",
+		vdev->entity.name, count);
+
 	/*
 	 * VFE31 testgen mode: bypass media pipeline validation and upstream
 	 * entity setup. The test generator produces data internally within
@@ -324,6 +327,7 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
 		struct vfe_device *vfe = to_vfe(line);
 
+		dev_info(video->camss->dev, "testgen: starting VFE%d\n", vfe->id);
 		line->output.state = VFE_OUTPUT_RESERVED;
 		ret = vfe->res->hw_ops->vfe_enable(line);
 		if (ret < 0) {
@@ -357,7 +361,6 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 
 		entity = pad->entity;
 		subdev = media_entity_to_v4l2_subdev(entity);
-		entity_num++;
 
 		/*
 		 * VFE31 start order fix: Enable CAMIF BEFORE the sensor starts.
@@ -371,14 +374,21 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		    entity->function == MEDIA_ENT_F_PROC_VIDEO_ISP) {
 			int i;
 			for (i = 0; i < video->camss->res->vfe_num; i++) {
-				if (video->camss->vfe[i].camif_pending)
+				if (video->camss->vfe[i].camif_pending) {
+					dev_dbg(video->camss->dev,
+						"enabling VFE%d CAMIF before %s\n",
+						i, entity->name);
 					vfe_enable_pending_camif(&video->camss->vfe[i]);
+				}
 			}
 		}
 
 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
-		if (ret < 0 && ret != -ENOIOCTLCMD)
+		if (ret < 0 && ret != -ENOIOCTLCMD) {
+			dev_err(video->camss->dev, "s_stream(1) on %s failed: %d\n",
+				entity->name, ret);
 			goto error;
+		}
 	}
 
 	/*
