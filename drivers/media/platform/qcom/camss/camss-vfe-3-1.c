@@ -4220,17 +4220,6 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			dev_info(vfe->camss->dev,
 				 "VFE31: Enabled WM%d (CbCr, WR_CFG=0x1)\n", cbcr_wm);
 		}
-
-		/*
-		 * CRITICAL: Explicitly disable WM2 and WM5 to prevent DMA corruption.
-		 * XBAR 0x1A1B routes data to WM0, WM1, WM2, WM4, WM5 but we only
-		 * configure buffers for WM0+WM1 (PIX) or WM4+WM1 (VIDEO).
-		 * Unconfigured WMs receiving data will DMA to invalid addresses.
-		 * WebOS avoided this by disabling CbCr WMs entirely.
-		 */
-		writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(2));
-		writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(5));
-		dev_dbg(vfe->camss->dev, "VFE31: Disabled WM2 and WM5 (prevent XBAR DMA)\n");
 		wmb();
 	}
 
