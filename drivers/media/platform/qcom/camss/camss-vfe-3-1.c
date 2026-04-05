@@ -2226,9 +2226,13 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * Previous code only wrote to EVEN_CFG, leaving ODD_CFG uninitialized.
 	 * This caused the DEMUX to output Y on both Y and CbCr channels.
 	 */
-	val = (even_cfg << 8) | odd_cfg;
-	writel_relaxed(val, vfe->base + VFE_0_DEMUX_EVEN_CFG);
-	writel_relaxed(val, vfe->base + VFE_0_DEMUX_ODD_CFG);
+	/*
+	 * VFE31 uses separate 8-bit values for EVEN and ODD config.
+	 * For UYVY: EVEN=0xC9 (Y+U routing), ODD=0xCA (Y+V routing)
+	 */
+	writel_relaxed(even_cfg, vfe->base + VFE_0_DEMUX_EVEN_CFG);
+	writel_relaxed(odd_cfg, vfe->base + VFE_0_DEMUX_ODD_CFG);
+	val = (even_cfg << 8) | odd_cfg;  /* For debug log only */
 
 	/* Readback to verify */
 	{
