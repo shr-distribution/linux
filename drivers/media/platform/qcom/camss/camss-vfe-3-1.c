@@ -97,26 +97,28 @@ MODULE_PARM_DESC(vfe31_xbar_cfg1,
  * VFE31 IRQ composite mask values.
  * Controls which Write Masters trigger COMPOSITE_DONE interrupts.
  *
- * Bits 0-7:   WMs that trigger COMPOSITE_DONE_0 (all must complete together)
- * Bits 8-15:  WMs that trigger COMPOSITE_DONE_1
- * Bits 16-23: WMs that trigger COMPOSITE_DONE_2
+ * VFE31 IRQ Composite Mask values:
+ * All write masters for a line MUST be in the SAME composite group!
+ * Group 0 = bits 0-7, Group 1 = bits 8-15, Group 2 = bits 16-23, etc.
  *
- * Since VIDEO line uses WM4 (Y) + WM1 (CbCr) - sharing WM1 with PIX:
- *   0x00000003 = PIX_ONLY:   WM0+WM1 → DONE_0 (PIX line only)
- *   0x00020011 = PIX_VIDEO:  WM0+WM4 → DONE_0, WM1 → DONE_2 (both lines)
- *   0x00020010 = VIDEO_ONLY: WM4 → DONE_0, WM1 → DONE_2 (VIDEO line only)
+ * CRITICAL: If WMs are in different groups, the gen1 code maps each group
+ * to a different VFE line index. Putting WM1 in group 2 causes the driver
+ * to access line index 5 (non-existent), causing stack corruption and crash.
  *
- * Note: WM1 is in group 2 for VIDEO to avoid conflict with PIX group 0.
+ * VIDEO line uses WM4 (Y) + WM1 (CbCr), both must be in group 0:
+ *   0x00000003 = PIX_ONLY:   WM0+WM1 in group 0
+ *   0x00000013 = PIX_VIDEO:  WM0+WM1+WM4 all in group 0
+ *   0x00000012 = VIDEO_ONLY: WM1+WM4 in group 0
  */
 #define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00000003  /* WM0+WM1 in group 0 */
-#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00020011  /* WM0+WM4→0, WM1→2 */
-#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00020010  /* WM4→0, WM1→2 */
+#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00000013  /* WM0+WM1+WM4 all in group 0 */
+#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00000012  /* WM1+WM4 in group 0 */
 
 /* Module param for manual override/testing */
 static int vfe31_irq_comp_mask = 0;  /* 0 = auto-select based on active lines */
 module_param(vfe31_irq_comp_mask, int, 0644);
 MODULE_PARM_DESC(vfe31_irq_comp_mask,
-		 "VFE31 IRQ composite mask (0=auto, 0x03=pix, 0x20011=pix+video, 0x20010=video)");
+		 "VFE31 IRQ composite mask (0=auto, 0x03=pix, 0x13=pix+video, 0x12=video)");
 
 /* External module parameters from camss-vfe.c */
 extern int software_sof_enable;
