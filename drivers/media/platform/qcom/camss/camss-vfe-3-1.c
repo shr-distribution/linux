@@ -3983,6 +3983,25 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		wmb();
 
 		/*
+		 * Step 4b: Configure BUS_CFG and reload write masters
+		 * This must be done for WMs to properly DMA data to memory.
+		 */
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring BUS_CFG and reloading WMs\n");
+		writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
+		writel_relaxed(0x3FFF, vfe->base + VFE_0_BUS_CMD);
+		wmb();
+
+		/*
+		 * Step 4c: Explicitly enable WMs (WM0 for Y, WM4 for CbCr)
+		 * The WM configuration was done in vfe31_enable() but the enable
+		 * bit may have been cleared by BUS_CMD reload.
+		 */
+		writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(0));
+		writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(4));
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Enabled WM0 and WM4\n");
+		wmb();
+
+		/*
 		 * Step 5: Configure IRQ masks
 		 * Use same masks as PIX mode: SOF, REG_UPDATE, PING_PONG, COMPOSITE_DONE
 		 */
