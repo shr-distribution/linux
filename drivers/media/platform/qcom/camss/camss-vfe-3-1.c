@@ -1648,7 +1648,12 @@ static int vfe31_enable(struct vfe_line *line)
 		output->wm_idx[0] = wm_idx;
 
 		if (output->wm_num == 2) {
-			/* VIDEO line: WM5 for CbCr (offset-by-4 from WM1) */
+			/*
+			 * VIDEO line: WM1 for CbCr (shared with PIX)
+			 *
+			 * Same as PIX: reserve WM1 but don't map it to avoid
+			 * double buffer processing in vfe_isr_comp_done().
+			 */
 			wm_idx = vfe_reserve_wm_specific(vfe, VFE31_VIDEO_WM_CBCR, line->id);
 			if (wm_idx < 0) {
 				dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for VIDEO CbCr\n",
@@ -1659,8 +1664,10 @@ static int vfe31_enable(struct vfe_line *line)
 				return wm_idx;
 			}
 			output->wm_idx[1] = wm_idx;
+			/* Clear line mapping - only primary WM triggers buffer completion */
+			vfe->wm_output_map[wm_idx] = VFE_LINE_NONE;
 		}
-		dev_info(vfe->camss->dev, "VFE31: VIDEO line using WM%d(Y), WM%d(CbCr)\n",
+		dev_info(vfe->camss->dev, "VFE31: VIDEO line using WM%d(Y), WM%d(CbCr, no-map)\n",
 			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
 	} else if (line->id == VFE_LINE_PIX) {
 		/* PIX line: WM0 for Y, WM4 for CbCr (webOS offset-by-4) */
@@ -1675,7 +1682,17 @@ static int vfe31_enable(struct vfe_line *line)
 		output->wm_idx[0] = wm_idx;
 
 		if (output->wm_num == 2) {
-			/* PIX line: WM4 for CbCr (offset-by-4 from WM0) */
+			/*
+			 * PIX line: WM1 for CbCr (semi-planar format)
+			 *
+			 * IMPORTANT: Reserve WM1 but do NOT map it to this line!
+			 * Both WMs share the same frame buffer. If we map WM1 to
+			 * the line, vfe_isr_comp_done() will call wm_done() for
+			 * BOTH WMs, causing double buffer processing and state
+			 * corruption. Only WM0 (Y plane) should trigger buffer
+			 * completion - WM1 just needs to be claimed so it's not
+			 * used by another line.
+			 */
 			wm_idx = vfe_reserve_wm_specific(vfe, VFE31_PREVIEW_WM_CBCR, line->id);
 			if (wm_idx < 0) {
 				dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for PIX CbCr\n",
@@ -1686,8 +1703,14 @@ static int vfe31_enable(struct vfe_line *line)
 				return wm_idx;
 			}
 			output->wm_idx[1] = wm_idx;
+			/*
+			 * Clear the line mapping for WM1 - it's claimed but shouldn't
+			 * trigger buffer completion. The wm_done() handler checks
+			 * wm_output_map and skips WMs mapped to VFE_LINE_NONE.
+			 */
+			vfe->wm_output_map[wm_idx] = VFE_LINE_NONE;
 		}
-		dev_info(vfe->camss->dev, "VFE31: PIX line using WM%d(Y), WM%d(CbCr)\n",
+		dev_info(vfe->camss->dev, "VFE31: PIX line using WM%d(Y), WM%d(CbCr, no-map)\n",
 			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
 	} else {
 		/* RDI lines use first available WMs */
