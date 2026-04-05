@@ -122,6 +122,33 @@ MODULE_PARM_DESC(vfe31_xbar_cfg1,
 		 "VFE31 XBAR_CFG1 override (0=auto, 0x1a03=webOS default, 0x1a1b=pix+video)");
 
 /*
+ * WM bytesperline override for testing stride issues.
+ * 0 = auto (use V4L2 format bytesperline, e.g., 640 for NV16)
+ * 1280 = UYVY input stride (webOS style)
+ * 640 = NV16 output plane stride
+ */
+static int vfe31_bytesperline = 0;
+module_param(vfe31_bytesperline, int, 0644);
+MODULE_PARM_DESC(vfe31_bytesperline,
+		 "VFE31 WM bytesperline override (0=auto/format, 640=NV16, 1280=UYVY)");
+
+/*
+ * DEMUX config overrides for testing different pixel format routing.
+ * Default values (0) use format-specific auto-detection.
+ * UYVY: even=0xC9, odd=0xCA
+ * YUYV: even=0xC9, odd=0xAC
+ */
+static int vfe31_demux_even = 0;
+module_param(vfe31_demux_even, int, 0644);
+MODULE_PARM_DESC(vfe31_demux_even,
+		 "VFE31 DEMUX even config (0=auto, 0xC9=UYVY/YUYV even)");
+
+static int vfe31_demux_odd = 0;
+module_param(vfe31_demux_odd, int, 0644);
+MODULE_PARM_DESC(vfe31_demux_odd,
+		 "VFE31 DEMUX odd config (0=auto, 0xCA=UYVY, 0xAC=YUYV)");
+
+/*
  * ============================================================================
  * VFE31 IRQ COMPOSITE MASK - CORRECTED BASED ON REGISTER DUMPS
  * ============================================================================
@@ -1759,14 +1786,17 @@ static int vfe31_enable(struct vfe_line *line)
 	height = pix->height;
 
 	/*
-	 * VFE31 DMA stride must match UYVY input line size (width * 2), NOT the
-	 * individual output plane size. The DEMUX separates Y and CbCr internally,
-	 * but the DMA operates on the full UYVY line width for addressing.
+	 * NV16 output format: DEMUX separates UYVY input into Y and CbCr planes.
+	 * Each output plane has width bytes per line:
+	 * - WM0 writes Y plane: 640 bytes/line @ 640x480
+	 * - WM1 writes CbCr plane: 640 bytes/line @ 640x480 (interleaved Cb/Cr)
 	 *
-	 * webOS always used stride=1280 for 640x480, stride=2560 for 1280x1024.
-	 * Using plane_fmt[0].bytesperline (640/1280) causes data misalignment.
+	 * Use module param if set, otherwise use V4L2 format bytesperline.
 	 */
-	bytesperline = width * 2;  /* UYVY input line size */
+	if (vfe31_bytesperline > 0)
+		bytesperline = vfe31_bytesperline;
+	else
+		bytesperline = pix->plane_fmt[0].bytesperline;
 
 	/* Get buffer addresses */
 	if (output->buf[0])
@@ -2195,6 +2225,15 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		odd_cfg = 0xac;
 		break;
 	}
+
+	/*
+	 * Apply module param overrides if set.
+	 * These allow testing different DEMUX routing without rebuilding.
+	 */
+	if (vfe31_demux_even > 0)
+		even_cfg = vfe31_demux_even;
+	if (vfe31_demux_odd > 0)
+		odd_cfg = vfe31_demux_odd;
 
 	/*
 	 * Apply UV swap if requested via module parameter.
@@ -2986,10 +3025,11 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		u16 width = pix->width;
 		u16 height = pix->height;
 		/*
-		 * CRITICAL: Use UYVY input stride (width * 2), not output plane
-		 * bytesperline. See comment in vfe31_enable() for details.
+		 * NV16 output: Use module param if set, otherwise V4L2 format.
+		 * DEMUX separates UYVY input into Y and CbCr planes internally.
 		 */
-		u16 bytesperline = width * 2;  /* UYVY input stride */
+		u16 bytesperline = (vfe31_bytesperline > 0) ?
+				   vfe31_bytesperline : pix->plane_fmt[0].bytesperline;
 		u16 wpl;
 		u32 reg;
 
