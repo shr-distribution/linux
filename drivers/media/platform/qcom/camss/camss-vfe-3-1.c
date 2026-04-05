@@ -1945,7 +1945,12 @@ static int vfe31_enable(struct vfe_line *line)
 	 */
 	if (output->wm_num == 2) {
 		u8 wm1 = output->wm_idx[1];
-		u32 cbcr_offset = width * height;  /* Y plane size in bytes */
+		/*
+		 * CbCr plane offset: must use VFE bytesperline (width * 2) not
+		 * plane_fmt[0].bytesperline (width). VFE writes Y data at full
+		 * UYVY stride, so Y plane occupies bytesperline * height bytes.
+		 */
+		u32 cbcr_offset = bytesperline * height;
 		u32 wm1_ping_addr = ping_addr + cbcr_offset;
 		u32 wm1_pong_addr = pong_addr + cbcr_offset;
 
