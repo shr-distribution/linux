@@ -84,7 +84,13 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *   - 0x1A13 = Y→WM0, CbCr→WM1 (PIX only)
  *   - 0x1A1B = Y→WM0+WM4, CbCr→WM1 (PIX + VIDEO Y, shared CbCr)
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A13  /* Y→WM0, CbCr→WM1 */
+/*
+ * WebOS uses 0x1A03 for preview mode, NOT 0x1A13!
+ * Despite having bits[7:4]=0 (which we thought meant "CbCr disabled"),
+ * webOS successfully routes CbCr to WM4 with this value.
+ * The XBAR bit interpretation appears to be different than documented.
+ */
+#define VFE31_XBAR_PIX_ONLY	0x1A03  /* webOS preview value */
 #define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Y→WM0+WM4, CbCr→WM1 (VIDEO shares WM1!) */
 
 /* Module param for manual override/testing */
@@ -508,8 +514,16 @@ extern int software_eof_enable;
  *   - Group 1 (bit 22): Snapshot WM completion
  *   - Group 2 (bit 23): WM1 completion (CbCr, shared by PIX and VIDEO)
  */
+/*
+ * PIX/Preview WM assignments - using webOS pairing (offset-by-4):
+ * webOS uses WM0 (Y) + WM4 (CbCr) for preview, NOT WM0+WM1!
+ * See: webos-linux-kernel-touchpad/drivers/media/video/msm/msm_vfe31.c line 711:
+ *   "use wm0& 4 for preview, wm1&5 for video."
+ *   vfe31_ctrl->outpath.out0.ch0 = 0; // preview luma
+ *   vfe31_ctrl->outpath.out0.ch1 = 4; // preview chroma
+ */
 #define VFE31_PREVIEW_WM_Y		0
-#define VFE31_PREVIEW_WM_CBCR		1
+#define VFE31_PREVIEW_WM_CBCR		4  /* WM4 for CbCr, not WM1! */
 /*
  * VIDEO mode WM assignments - CRITICAL: XBAR routing is opposite of documentation!
  *
