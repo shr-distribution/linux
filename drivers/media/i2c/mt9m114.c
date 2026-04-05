@@ -2233,14 +2233,55 @@ mt9m113_streaming:
 		}
 
 		/*
-		 * Delay for sensor to stabilize after streaming starts.
-		 * Context B (capture mode) needs longer delay for the full
-		 * resolution pipeline to initialize.
+		 * Step 8: For Context B, poll SEQ_STATE until it reaches 0x07
+		 * (Context B streaming). This ensures the sensor has actually
+		 * completed the context switch before we return and let the
+		 * VFE start expecting 1280x1024 data.
+		 *
+		 * SEQ_STATE values:
+		 *   0x03 = Streaming in Context A
+		 *   0x07 = Streaming in Context B
 		 */
 		if (use_context_b) {
+			int poll_count;
+			u64 seq_state = 0;
+
 			dev_info(&sensor->client->dev,
-				 "MT9M113: Context B - waiting 100ms for capture mode\n");
-			msleep(100);
+				 "MT9M113: Waiting for Context B streaming (SEQ_STATE=0x07)...\n");
+
+			for (poll_count = 0; poll_count < 100; poll_count++) {
+				ret = mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+				if (ret < 0) {
+					dev_err(&sensor->client->dev,
+						"MT9M113: Failed to read SEQ_STATE: %d\n", ret);
+					goto error;
+				}
+
+				if (seq_state == 0x07) {
+					dev_info(&sensor->client->dev,
+						 "MT9M113: Context B streaming active after %d ms\n",
+						 poll_count * 10);
+					break;
+				}
+
+				msleep(10);
+			}
+
+			if (seq_state != 0x07) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: Context B switch FAILED! SEQ_STATE=0x%llx (expected 0x07)\n",
+					seq_state);
+				/*
+				 * Return error to prevent VFE from expecting 1280x1024
+				 * while sensor outputs 640x480. This mismatch causes
+				 * DMA buffer overrun and kernel memory corruption.
+				 */
+				ret = -ETIMEDOUT;
+				goto error;
+			}
+
+			/* Extra stabilization delay after context switch */
+			msleep(50);
 		} else {
 			msleep(20);
 		}
