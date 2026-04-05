@@ -1738,16 +1738,15 @@ static int vfe31_enable(struct vfe_line *line)
 	height = pix->height;
 
 	/*
-	 * CRITICAL: For VFE31 PIX mode (UYVY -> NV16), the DMA burst must be
-	 * based on the UYVY input stride (width * 2), NOT the NV16 output
-	 * plane bytesperline. WebOS uses 1280 bytes for 640x480, which is
-	 * 640 * 2 = UYVY input line size.
+	 * NV16 output format: DEMUX separates UYVY input into Y and CbCr planes.
+	 * Each output plane has width bytes per line (not width*2):
+	 * - WM0 writes Y plane: 640 bytes/line @ 640x480
+	 * - WM1 writes CbCr plane: 640 bytes/line @ 640x480
 	 *
-	 * The output plane_fmt[0].bytesperline would be 640 (Y plane width),
-	 * but the DMA needs to know the full UYVY line width to properly
-	 * demux Y and CbCr bytes.
+	 * Use the actual plane bytesperline from the format structure.
+	 * webOS used 1280 for UYVY output, but we're outputting NV16.
 	 */
-	bytesperline = width * 2;  /* UYVY input stride, not output plane */
+	bytesperline = pix->plane_fmt[0].bytesperline;
 
 	/* Get buffer addresses */
 	if (output->buf[0])
