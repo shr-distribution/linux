@@ -942,10 +942,10 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 	}
 
 	/*
-	 * Log interrupt status - use dev_info for first 10 IRQs to diagnose
-	 * what bits the hardware actually sets, then switch to dev_dbg.
+	 * Log interrupt status - only first 3 IRQs to verify hardware is
+	 * responding. Per-frame logging causes soft lockups from printk flood.
 	 */
-	if (irq_count <= 10 || status != last_status || (irq_count % 100) == 0) {
+	if (irq_count <= 3) {
 		dev_info(csiphy->camss->dev,
 			 "CSIPHY%d: IRQ #%d status=0x%08x [%s%s%s%s%s%s%s] sof_count=%d\n",
 			 csiphy->id, irq_count, status,
@@ -957,8 +957,8 @@ static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 			 (status & MIPI_IRQ_FRAME_END) ? "FE " : "",
 			 (status & MIPI_IRQ_LONG_PKT) ? "LPKT " : "",
 			 sof_count);
-		last_status = status;
 	}
+	last_status = status;
 
 	return IRQ_HANDLED;
 }
