@@ -1692,12 +1692,12 @@ main() {
             ;;
         rdi640)
             ensure_camera_ready
-            test_at_resolution 640 480 rdi video0 msm_csid0 msm_csiphy1
+            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1
             check_dmesg
             ;;
         rdi1024)
             ensure_camera_ready
-            test_at_resolution 1280 1024 rdi video0 msm_csid0 msm_csiphy1
+            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1
             check_dmesg
             ;;
         video640)
@@ -1712,12 +1712,12 @@ main() {
             ;;
         testgen640)
             ensure_camera_ready
-            test_at_resolution 640 480 testgen video3 msm_csid0 msm_csiphy1
+            test_at_resolution 640 480 testgen video3 msm_csid1 msm_csiphy1
             check_dmesg
             ;;
         testgen1024)
             ensure_camera_ready
-            test_at_resolution 1280 1024 testgen video3 msm_csid0 msm_csiphy1
+            test_at_resolution 1280 1024 testgen video3 msm_csid1 msm_csiphy1
             check_dmesg
             ;;
         all)
