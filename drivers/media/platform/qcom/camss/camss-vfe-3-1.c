@@ -1946,11 +1946,14 @@ static int vfe31_enable(struct vfe_line *line)
 	if (output->wm_num == 2) {
 		u8 wm1 = output->wm_idx[1];
 		/*
-		 * CbCr plane offset: must use VFE bytesperline (width * 2) not
-		 * plane_fmt[0].bytesperline (width). VFE writes Y data at full
-		 * UYVY stride, so Y plane occupies bytesperline * height bytes.
+		 * CbCr plane offset for NV16 semi-planar format:
+		 * Y plane = width * height bytes (1 byte per pixel)
+		 * CbCr plane starts immediately after Y plane.
+		 *
+		 * Note: bytesperline (width * 2) is the UYVY packed stride,
+		 * but in NV16 mode each plane uses width bytes per line.
 		 */
-		u32 cbcr_offset = bytesperline * height;
+		u32 cbcr_offset = width * height;
 		u32 wm1_ping_addr = ping_addr + cbcr_offset;
 		u32 wm1_pong_addr = pong_addr + cbcr_offset;
 
