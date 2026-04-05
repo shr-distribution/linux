@@ -86,6 +86,29 @@ module_param(vfe31_xbar_cfg1, int, 0644);
 MODULE_PARM_DESC(vfe31_xbar_cfg1,
 		 "VFE31 XBAR_CFG1 override (0=auto, 0x1a13=preview, 0x1a1b=video, 0x1a9b=dual)");
 
+/*
+ * VFE31 IRQ composite mask values.
+ * Controls which Write Masters trigger COMPOSITE_DONE interrupts.
+ *
+ * Bits 0-7:   WMs that trigger COMPOSITE_DONE_0 (all must complete together)
+ * Bits 8-15:  WMs that trigger COMPOSITE_DONE_1
+ * Bits 16-23: WMs that trigger COMPOSITE_DONE_2
+ *
+ * Available masks:
+ *   0x00000003 = PIX_ONLY:   WM0+WM1 → DONE_0 (PIX line only)
+ *   0x00220011 = PIX_VIDEO:  WM0+WM4 → DONE_0, WM1+WM5 → DONE_2 (both lines)
+ *   0x00200010 = VIDEO_ONLY: WM4 → DONE_0, WM5 → DONE_2 (VIDEO line only)
+ */
+#define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00000003  /* WM0+WM1 in group 0 */
+#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00220011  /* WM0+4→0, WM1+5→2 */
+#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00200010  /* WM4→0, WM5→2 */
+
+/* Module param for manual override/testing */
+static int vfe31_irq_comp_mask = 0;  /* 0 = auto-select based on active lines */
+module_param(vfe31_irq_comp_mask, int, 0644);
+MODULE_PARM_DESC(vfe31_irq_comp_mask,
+		 "VFE31 IRQ composite mask (0=auto, 0x03=pix, 0x220011=pix+video, 0x200010=video)");
+
 /* External module parameters from camss-vfe.c */
 extern int software_sof_enable;
 extern int software_eof_enable;
@@ -2987,20 +3010,36 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * Previous buggy mask 0x00020001 put WM0 in group 0 and WM1
 		 * in group 2, causing TWO interrupts per frame!
 		 */
-#define VFE31_IRQ_COMP_MASK_VIDEO		0x00220011  /* WM0+4,WM1+5 */
-#define VFE31_IRQ_COMP_MASK_PIX_ONLY		0x00000003  /* WM0+WM1 in group 0 */
 		{
 			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+			struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
 			bool video_active = (video_out->state == VFE_OUTPUT_ON ||
 					     video_out->state == VFE_OUTPUT_RESERVED ||
 					     video_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool pix_active = (pix_out->state == VFE_OUTPUT_ON ||
+					   pix_out->state == VFE_OUTPUT_RESERVED ||
+					   pix_out->state == VFE_OUTPUT_CONTINUOUS);
 
-			if (line->id == VFE_LINE_VIDEO || video_active) {
-				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_VIDEO;
+			/* Module param override takes priority */
+			if (vfe31_irq_comp_mask != 0) {
+				vfe->irq_comp_mask_shadow = vfe31_irq_comp_mask;
 				dev_info(vfe->camss->dev,
-					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (VIDEO active)\n",
+					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (module param)\n",
+					 vfe->irq_comp_mask_shadow);
+			} else if ((line->id == VFE_LINE_VIDEO || video_active) && !pix_active) {
+				/* VIDEO-only: WM4+WM5 only, don't wait for WM0/WM1 */
+				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
+				dev_info(vfe->camss->dev,
+					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (VIDEO only)\n",
+					 vfe->irq_comp_mask_shadow);
+			} else if ((line->id == VFE_LINE_VIDEO || video_active) && pix_active) {
+				/* PIX+VIDEO: both lines active, wait for all WMs */
+				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_VIDEO;
+				dev_info(vfe->camss->dev,
+					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (PIX+VIDEO)\n",
 					 vfe->irq_comp_mask_shadow);
 			} else {
+				/* PIX only */
 				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_ONLY;
 				dev_info(vfe->camss->dev,
 					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (PIX only)\n",
@@ -3513,25 +3552,41 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 	 * Also enable COMPOSITE_DONE_2 IRQ since WM1 is mapped there.
 	 */
 	if (enable) {
-		/* Choose mask based on whether VIDEO line is active */
+		/* Choose mask based on which lines are active */
 		struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+		struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
 		bool video_active = (video_out->state == VFE_OUTPUT_ON ||
 				     video_out->state == VFE_OUTPUT_RESERVED ||
 				     video_out->state == VFE_OUTPUT_CONTINUOUS);
+		bool pix_active = (pix_out->state == VFE_OUTPUT_ON ||
+				   pix_out->state == VFE_OUTPUT_RESERVED ||
+				   pix_out->state == VFE_OUTPUT_CONTINUOUS);
+		const char *mode_str;
 
-		if (line_id == VFE_LINE_VIDEO || video_active) {
-			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_VIDEO;
-			/* Video mode: WM0+WM4 in group 0, WM1+WM5 in group 2 */
-			val0 |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
+		/* Module param override takes priority */
+		if (vfe31_irq_comp_mask != 0) {
+			vfe->irq_comp_mask_shadow = vfe31_irq_comp_mask;
+			mode_str = "module param";
+		} else if ((line_id == VFE_LINE_VIDEO || video_active) && !pix_active) {
+			/* VIDEO-only: WM4+WM5 only, don't wait for WM0/WM1 */
+			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
+			mode_str = "VIDEO only";
+		} else if ((line_id == VFE_LINE_VIDEO || video_active) && pix_active) {
+			/* PIX+VIDEO: both lines active */
+			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_VIDEO;
+			mode_str = "PIX+VIDEO";
 		} else {
 			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_ONLY;
-			/* PIX only: WM0+WM1 both in group 0, no group 2 needed */
+			mode_str = "PIX only";
 		}
+
+		/* Enable COMPOSITE_DONE_2 if WM5 is in use */
+		if (vfe->irq_comp_mask_shadow & 0x00FF0000)
+			val0 |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
 
 		dev_info(vfe->camss->dev,
 			 "VFE31 pix_line: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
-			 vfe->irq_comp_mask_shadow,
-			 video_active ? "VIDEO active" : "PIX only");
+			 vfe->irq_comp_mask_shadow, mode_str);
 		writel_relaxed(vfe->irq_comp_mask_shadow,
 			       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 	}
@@ -4008,19 +4063,35 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				 comp_mask, vfe->camif_pending_wm);
 			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		} else {
-			/* PIX mode - check if VIDEO line is also active */
+			/* PIX/VIDEO mode - check which lines are active */
 			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+			struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
 			bool video_active = (video_out->state == VFE_OUTPUT_ON ||
 					     video_out->state == VFE_OUTPUT_RESERVED ||
 					     video_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool pix_active = (pix_out->state == VFE_OUTPUT_ON ||
+					   pix_out->state == VFE_OUTPUT_RESERVED ||
+					   pix_out->state == VFE_OUTPUT_CONTINUOUS);
+			u32 comp_mask;
 
-			if (line->id == VFE_LINE_VIDEO || video_active) {
-				writel_relaxed(VFE31_IRQ_COMP_MASK_VIDEO,
-					       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+			/* Module param override takes priority */
+			if (vfe31_irq_comp_mask != 0) {
+				comp_mask = vfe31_irq_comp_mask;
+			} else if ((line->id == VFE_LINE_VIDEO || video_active) && !pix_active) {
+				/* VIDEO-only: WM4+WM5 only */
+				comp_mask = VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
+			} else if ((line->id == VFE_LINE_VIDEO || video_active) && pix_active) {
+				/* PIX+VIDEO: both lines */
+				comp_mask = VFE31_IRQ_COMP_MASK_PIX_VIDEO;
 			} else {
-				writel_relaxed(VFE31_IRQ_COMP_MASK_PIX_ONLY,
-					       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+				/* PIX only */
+				comp_mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
 			}
+
+			vfe->irq_comp_mask_shadow = comp_mask;
+			dev_info(vfe->camss->dev,
+				 "VFE31 enable_camif: IRQ_COMPOSITE_MASK=0x%08x\n", comp_mask);
+			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		}
 	}
 	wmb();
