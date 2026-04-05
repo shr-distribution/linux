@@ -1310,11 +1310,16 @@ test_at_resolution() {
                 PIXFMT='NV16'
                 ;;
             rdi)
-                # RDI mode: CSID pad 1 -> VFE RDI0 (raw passthrough)
-                CSID_PAD=1
+                # RDI mode: Raw bypass through CAMIF
+                # On MSM8660/VFE31, there's no hardware RDI path - all data goes
+                # through CAMIF. RDI is emulated via AXI output mode 0x60.
+                # Use CSID pad 4 (same as PIX) but configure VFE for raw bypass.
+                CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_rdi0'
                 VFE_FMT='UYVY8_1X16'
                 PIXFMT='UYVY'
+                # Enable raw bypass mode (AXI=0x60)
+                echo 0x60 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode 2>/dev/null || true
                 ;;
             video)
                 # VIDEO mode: CSID pad 4 -> VFE VIDEO
@@ -1372,6 +1377,11 @@ test_at_resolution() {
         # Disable testgen if it was enabled
         if [ '$mode' = 'testgen' ]; then
             echo 0 > /sys/module/qcom_camss/parameters/vfe31_use_testgen 2>/dev/null || true
+        fi
+
+        # Reset AXI mode to PIX (0x01) if RDI was used
+        if [ '$mode' = 'rdi' ]; then
+            echo 0x01 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode 2>/dev/null || true
         fi
 
         # Check result

@@ -4036,14 +4036,37 @@ static int camss_link_entities(struct camss *camss)
 					flags = 0;
 
 					/*
-					 * VFE_LINE_VIDEO shares CSID pad with VFE_LINE_PIX.
-					 * Both get data from the same CAMIF/DEMUX path,
-					 * with XBAR routing to different write masters.
+					 * CSID pad assignment for VFE lines:
+					 *
+					 * On MSM8660 (VFE31), there's no hardware RDI path.
+					 * All data flows through a single CAMIF interface.
+					 * RDI "mode" is emulated by using AXI output mode
+					 * 0x60 (raw bypass) instead of 0x01 (PIX/DEMUX).
+					 * Therefore, RDI lines must use the same CSID pad
+					 * as PIX to receive data from CAMIF.
+					 *
+					 * On newer SoCs (VFE32+), RDI lines have dedicated
+					 * hardware paths with separate RDI_CFG registers.
+					 *
+					 * VFE_LINE_VIDEO always shares CSID pad with PIX
+					 * since it uses the same CAMIF/DEMUX path with
+					 * different XBAR routing to write masters.
 					 */
-					if (j == VFE_LINE_VIDEO)
+					if (j == VFE_LINE_VIDEO) {
 						csid_pad = MSM_CSID_PAD_FIRST_SRC + VFE_LINE_PIX;
-					else
+					} else if (camss->res->version == CAMSS_8x60 &&
+						   (j == VFE_LINE_RDI0 ||
+						    j == VFE_LINE_RDI1 ||
+						    j == VFE_LINE_RDI2)) {
+						/*
+						 * MSM8660: Route RDI through PIX pad.
+						 * Raw bypass is achieved via AXI mode,
+						 * not via separate hardware path.
+						 */
+						csid_pad = MSM_CSID_PAD_FIRST_SRC + VFE_LINE_PIX;
+					} else {
 						csid_pad = MSM_CSID_PAD_FIRST_SRC + j;
+					}
 
 					ret = media_create_pad_link(&csid->entity,
 								    csid_pad,
