@@ -4042,13 +4042,13 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		wmb();
 
 		/*
-		 * Step 4c: Explicitly enable WMs (WM0 for Y, WM4 for CbCr)
-		 * The WM configuration was done in vfe31_enable() but the enable
-		 * bit may have been cleared by BUS_CMD reload.
+		 * Step 4c: Explicitly enable WMs (WM0 for Y, WM1 for CbCr)
+		 * For PIX mode with DEMUX, Y goes to WM0 and CbCr goes to WM1.
+		 * WM4 is only used for VIDEO line (duplicate Y), not for CbCr.
 		 */
 		writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(0));
-		writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(4));
-		dev_info(vfe->camss->dev, "VFE TESTGEN: Enabled WM0 and WM4\n");
+		writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(1));
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Enabled WM0 and WM1\n");
 		wmb();
 
 		/*
