@@ -913,26 +913,27 @@ extern int software_eof_enable;
 #define VFE_0_DEMUX_EVEN_CFG		0x290
 #define VFE_0_DEMUX_ODD_CFG		0x294
 
-/* Chroma subsample */
-#define VFE_0_CHROMA_SUBS_CFG		0x4F8
-
 /*
  * Scale configuration - VFE31 has TWO scaler blocks:
  *
- * 1. Main Scaler (0x368-0x37C): Y channel scaling
- *    VFE31 Main Scaler spans 28 bytes (0x368-0x383), followed by WB at 0x384.
+ * 1. Main Scaler (0x368-0x384): Y channel scaling
+ *    VFE31 Main Scaler spans 28 bytes (7 registers), followed by WB at 0x384.
+ *    Verified against Mako kernel: V31_MAIN_SCALER_OFF=0x368, V31_MAIN_SCALER_LEN=28
  *    Unlike VFE4x, VFE31 does NOT have dedicated CROP_ENC registers.
  *    Output cropping in VFE31 is handled by FOV (0x360) and scaler configuration.
  */
 #define VFE_0_SCALE_Y_CFG		0x368
 #define VFE_0_SCALE_Y_H_IMAGE		0x36C	/* (out << 16) | in */
 #define VFE_0_SCALE_Y_H_PHASE		0x370
+#define VFE_0_SCALE_Y_H_STRIPE		0x374	/* Horizontal stripe config (unused, 0) */
 #define VFE_0_SCALE_Y_V_IMAGE		0x378	/* (out << 16) | in */
 #define VFE_0_SCALE_Y_V_PHASE		0x37C
+#define VFE_0_SCALE_Y_V_STRIPE		0x380	/* Vertical stripe config (unused, 0) */
 
 /*
- * 2. Scaler 2 / Chroma Scale (0x4D0-0x4F8): S2Y and CbCr channel scaling
+ * 2. Scaler 2 / Chroma Scale (0x4D0-0x504): S2Y and CbCr channel scaling
  *    Used for chroma subsampling (4:2:0 or 4:2:2).
+ *    Verified against Mako kernel: V31_S2CbCr_OFF=0x4E4, V31_S2CbCr_LEN=20
  */
 #define VFE_0_S2Y_H_IMAGE		0x4D4
 #define VFE_0_S2Y_H_PHASE		0x4D8
@@ -942,6 +943,14 @@ extern int software_eof_enable;
 #define VFE_0_CHROMA_H_PHASE		0x4EC
 #define VFE_0_CHROMA_V_IMAGE		0x4F0	/* (out << 16) | in */
 #define VFE_0_CHROMA_V_PHASE		0x4F4
+
+/*
+ * Chroma subsample block (0x4F8-0x504): 12 bytes / 3 registers
+ * Verified against Mako kernel: V31_CHROMA_SUBS_OFF=0x4F8, V31_CHROMA_SUBS_LEN=12
+ */
+#define VFE_0_CHROMA_SUBS_CFG		0x4F8	/* Chroma subsample config */
+#define VFE_0_CHROMA_SUBS_CFG2		0x4FC	/* Additional config (unused) */
+#define VFE_0_CHROMA_SUBS_CFG3		0x500	/* Additional config (unused) */
 
 /* Output clamp */
 #define VFE_0_CLAMP_ENC_MAX_CFG		0x524
