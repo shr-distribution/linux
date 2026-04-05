@@ -1370,20 +1370,15 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	if (irq_count == 1)
 		first_irq_time = now;
 
-	/* Debug: log all interrupts with timing and ping-pong status */
-	dev_info(vfe->camss->dev,
-		 "[TIMING] VFE IRQ #%d: status0=0x%08x status1=0x%08x ping_pong=0x%08x at %lld ns (delta=%lld ns)\n",
-		 irq_count, value0, value1, ping_pong,
-		 ktime_to_ns(now),
-		 ktime_to_ns(now) - ktime_to_ns(first_irq_time));
+	/*
+	 * Note: Per-frame debug logging removed to prevent soft lockups.
+	 * The console subsystem can't keep up with ~30fps dev_info() calls.
+	 * Use trace events or dynamic debug for per-frame diagnostics.
+	 */
 
-	/* Log if ping-pong status changes (indicates data flow) */
-	if (ping_pong != last_ping_pong) {
-		dev_info(vfe->camss->dev,
-			 "VFE: PING_PONG changed: 0x%08x -> 0x%08x (data flowing!)\n",
-			 last_ping_pong, ping_pong);
+	/* Track ping-pong changes silently (useful for debugging) */
+	if (ping_pong != last_ping_pong)
 		last_ping_pong = ping_pong;
-	}
 
 	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
 	if (irq_count <= 3) {
