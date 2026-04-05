@@ -3877,13 +3877,24 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			bool video_active = (video_out->state == VFE_OUTPUT_ON ||
 					     video_out->state == VFE_OUTPUT_RESERVED ||
 					     video_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool video_needs_cbcr = video_active && (video_out->wm_num == 2);
 			u32 xbar_val;
 
-			/* Auto-select XBAR based on active lines */
+			/*
+			 * Auto-select XBAR based on active lines:
+			 * - PIX only:       0x1A13 = Y→WM0, CbCr→WM1
+			 * - VIDEO (Y only): 0x1A1B = Y→WM0+WM4, CbCr→WM1
+			 * - VIDEO (Y+CbCr): 0x1A9B = Y→WM0+WM4, CbCr→WM1+WM5
+			 *
+			 * VIDEO line needs 0x1A9B to route CbCr to WM5!
+			 */
 			if (vfe31_xbar_cfg1 != 0) {
 				xbar_val = vfe31_xbar_cfg1;
-			} else if (line->id == VFE_LINE_VIDEO || video_active) {
-				/* VIDEO line - route Y to WM0+WM4 */
+			} else if (line->id == VFE_LINE_VIDEO || video_needs_cbcr) {
+				/* VIDEO line with CbCr - route to WM4+WM5 */
+				xbar_val = VFE31_XBAR_DUAL;
+			} else if (video_active) {
+				/* VIDEO line Y-only - route Y to WM0+WM4 */
 				xbar_val = VFE31_XBAR_PIX_VIDEO;
 			} else {
 				/* PIX only - route Y to WM0 only */
@@ -3892,7 +3903,8 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			dev_info(vfe->camss->dev,
 				 "VFE31: XBAR=0x%04x (%s)\n", xbar_val,
 				 xbar_val == VFE31_XBAR_PIX_ONLY ? "PIX only" :
-				 xbar_val == VFE31_XBAR_PIX_VIDEO ? "PIX+VIDEO" : "manual");
+				 xbar_val == VFE31_XBAR_PIX_VIDEO ? "PIX+VIDEO(Y)" :
+				 xbar_val == VFE31_XBAR_DUAL ? "DUAL(Y+CbCr)" : "manual");
 			writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
 		}
 	}
@@ -3944,10 +3956,25 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				 vfe->irq_mask0_shadow);
 		} else {
 			/* PIX mode: Use webOS value with composite interrupts */
+			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+			bool video_active = (video_out->state == VFE_OUTPUT_ON ||
+					     video_out->state == VFE_OUTPUT_RESERVED ||
+					     video_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool video_needs_cbcr = video_active && (video_out->wm_num == 2);
+
 			vfe->irq_mask0_shadow = 0x00EFE021;
+
+			/*
+			 * VIDEO line with CbCr uses WM5 which triggers COMPOSITE_DONE_2.
+			 * Add bit 23 to receive WM5 completion interrupts.
+			 */
+			if (line->id == VFE_LINE_VIDEO || video_needs_cbcr)
+				vfe->irq_mask0_shadow |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
+
 			dev_info(vfe->camss->dev,
-				 "VFE31: PIX IRQ_MASK_0=0x%08x (composite)\n",
-				 vfe->irq_mask0_shadow);
+				 "VFE31: PIX IRQ_MASK_0=0x%08x (composite%s)\n",
+				 vfe->irq_mask0_shadow,
+				 (vfe->irq_mask0_shadow & 0x800000) ? "+DONE2" : "");
 		}
 		vfe->irq_mask1_shadow = 0x00400000;
 		writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
