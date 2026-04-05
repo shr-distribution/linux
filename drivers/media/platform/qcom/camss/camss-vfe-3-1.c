@@ -917,14 +917,31 @@ extern int software_eof_enable;
 #define VFE_0_CHROMA_SUBS_CFG		0x4F8
 
 /*
- * Scale configuration - Main Scaler block
- * VFE31 Main Scaler spans 28 bytes (0x368-0x383), followed by WB at 0x384.
- * Unlike VFE4x, VFE31 does NOT have dedicated CROP_ENC registers.
- * Output cropping in VFE31 is handled by FOV (0x360) and scaler configuration.
+ * Scale configuration - VFE31 has TWO scaler blocks:
+ *
+ * 1. Main Scaler (0x368-0x37C): Y channel scaling
+ *    VFE31 Main Scaler spans 28 bytes (0x368-0x383), followed by WB at 0x384.
+ *    Unlike VFE4x, VFE31 does NOT have dedicated CROP_ENC registers.
+ *    Output cropping in VFE31 is handled by FOV (0x360) and scaler configuration.
  */
-#define VFE_0_SCALE_ENC_Y_CFG		0x368
-#define VFE_0_SCALE_ENC_CBCR_CFG	0x36C
-/* Main scaler output crop is configured within the scaler structure (0x368-0x383) */
+#define VFE_0_SCALE_Y_CFG		0x368
+#define VFE_0_SCALE_Y_H_IMAGE		0x36C	/* (out << 16) | in */
+#define VFE_0_SCALE_Y_H_PHASE		0x370
+#define VFE_0_SCALE_Y_V_IMAGE		0x378	/* (out << 16) | in */
+#define VFE_0_SCALE_Y_V_PHASE		0x37C
+
+/*
+ * 2. Scaler 2 / Chroma Scale (0x4D0-0x4F8): S2Y and CbCr channel scaling
+ *    Used for chroma subsampling (4:2:0 or 4:2:2).
+ */
+#define VFE_0_S2Y_H_IMAGE		0x4D4
+#define VFE_0_S2Y_H_PHASE		0x4D8
+#define VFE_0_S2Y_V_IMAGE		0x4DC
+#define VFE_0_S2Y_V_PHASE		0x4E0
+#define VFE_0_CHROMA_H_IMAGE		0x4E8	/* (out << 16) | in */
+#define VFE_0_CHROMA_H_PHASE		0x4EC
+#define VFE_0_CHROMA_V_IMAGE		0x4F0	/* (out << 16) | in */
+#define VFE_0_CHROMA_V_PHASE		0x4F4
 
 /* Output clamp */
 #define VFE_0_CLAMP_ENC_MAX_CFG		0x524
@@ -987,7 +1004,8 @@ extern int software_eof_enable;
 #define VFE_0_ASF_CFG			0x4A0	/* Adaptive spatial filter */
 #define VFE_0_S2Y_CFG			0x4D0	/* Scaler 2 Y */
 #define VFE_0_S2CBCR_CFG		0x4E4	/* Scaler 2 CbCr */
-#define VFE_0_FOV_CFG			0x360	/* Field of view */
+#define VFE_0_FOV_Y			0x360	/* FOV Y = width-1 */
+#define VFE_0_FOV_CBCR			0x364	/* FOV CbCr = height-1 */
 #define VFE_0_CHROMA_UP_CFG		0x35C	/* Chroma upsample */
 
 /* Timer registers */
@@ -2190,9 +2208,87 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 
 static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 {
-	/* VFE31 scale configuration */
-	writel_relaxed(0, vfe->base + VFE_0_SCALE_ENC_Y_CFG);
-	writel_relaxed(0, vfe->base + VFE_0_SCALE_ENC_CBCR_CFG);
+	u32 width = line->fmt[MSM_VFE_PAD_SINK].width;
+	u32 height = line->fmt[MSM_VFE_PAD_SINK].height;
+	u32 p = line->video_out.active_fmt.fmt.pix_mp.pixelformat;
+
+	/*
+	 * VFE31 scale/FOV configuration (from webOS register dumps):
+	 *
+	 * FOV (Field of View) - 0x360-0x364:
+	 *    - 0x360: FOV_Y = width-1
+	 *    - 0x364: FOV_CBCR = height-1
+	 *
+	 * Main Scaler (0x368-0x37C): Y channel scaling
+	 *    - 0x368: SCALE_Y_CFG (enable=0x03)
+	 *    - 0x36C: SCALE_Y_H_IMAGE (out<<16 | in)
+	 *    - 0x370: SCALE_Y_H_PHASE
+	 *    - 0x378: SCALE_Y_V_IMAGE (out<<16 | in)
+	 *    - 0x37C: SCALE_Y_V_PHASE
+	 *
+	 * Scaler 2 / Chroma Scale (0x4D0-0x4F8): CbCr channel scaling
+	 *    - 0x4D0: S2Y_CFG (enable=0x03)
+	 *    - 0x4E4: S2CBCR_CFG (enable=0x03)
+	 *    - 0x4E8: CHROMA_H_IMAGE (out<<16 | in)
+	 *    - 0x4EC: CHROMA_H_PHASE
+	 *    - 0x4F0: CHROMA_V_IMAGE (out<<16 | in)
+	 *    - 0x4F4: CHROMA_V_PHASE
+	 *    - 0x4F8: CHROMA_SUBS_CFG (webOS: 0x30)
+	 *
+	 * Phase value 0x00310000 = 1:1 scaling
+	 * Phase value 0x00320000 = 2:1 scaling
+	 */
+
+	/* FOV - Field of View (input cropping) */
+	writel_relaxed(width - 1, vfe->base + VFE_0_FOV_Y);
+	writel_relaxed(height - 1, vfe->base + VFE_0_FOV_CBCR);
+
+	/* Main Scaler - Y channel (1:1 scaling) */
+	writel_relaxed(0x03, vfe->base + VFE_0_SCALE_Y_CFG);
+	writel_relaxed((width << 16) | width, vfe->base + VFE_0_SCALE_Y_H_IMAGE);
+	writel_relaxed(0x00310000, vfe->base + VFE_0_SCALE_Y_H_PHASE);
+	writel_relaxed((height << 16) | height, vfe->base + VFE_0_SCALE_Y_V_IMAGE);
+	writel_relaxed(0x00310000, vfe->base + VFE_0_SCALE_Y_V_PHASE);
+
+	/* Scaler 2 - Y pass-through */
+	writel_relaxed(0x03, vfe->base + VFE_0_S2Y_CFG);
+	writel_relaxed((width << 16) | width, vfe->base + VFE_0_S2Y_H_IMAGE);
+	writel_relaxed(0x00310000, vfe->base + VFE_0_S2Y_H_PHASE);
+	writel_relaxed((height << 16) | height, vfe->base + VFE_0_S2Y_V_IMAGE);
+	writel_relaxed(0x00310000, vfe->base + VFE_0_S2Y_V_PHASE);
+
+	/* Scaler 2 - CbCr channel (chroma subsampling) */
+	writel_relaxed(0x03, vfe->base + VFE_0_S2CBCR_CFG);
+
+	/*
+	 * Chroma horizontal: always 2:1 subsample (one Cb-Cr pair per 2 pixels)
+	 * Input = width, Output = width/2 (in samples, not bytes)
+	 */
+	writel_relaxed(((width / 2) << 16) | width, vfe->base + VFE_0_CHROMA_H_IMAGE);
+	writel_relaxed(0x00320000, vfe->base + VFE_0_CHROMA_H_PHASE);
+
+	/*
+	 * Chroma vertical: depends on output format
+	 * - NV12/NV21 (4:2:0): 2:1 vertical subsample
+	 * - NV16/NV61 (4:2:2): 1:1 (no vertical subsample)
+	 */
+	if (p == V4L2_PIX_FMT_NV12 || p == V4L2_PIX_FMT_NV21) {
+		/* 4:2:0: vertical 2:1 subsample */
+		writel_relaxed(((height / 2) << 16) | height, vfe->base + VFE_0_CHROMA_V_IMAGE);
+		writel_relaxed(0x00320000, vfe->base + VFE_0_CHROMA_V_PHASE);
+	} else {
+		/* 4:2:2 (NV16/NV61): no vertical subsample */
+		writel_relaxed((height << 16) | height, vfe->base + VFE_0_CHROMA_V_IMAGE);
+		writel_relaxed(0x00310000, vfe->base + VFE_0_CHROMA_V_PHASE);
+	}
+
+	/* Chroma subsample config - webOS uses 0x30 */
+	writel_relaxed(0x30, vfe->base + VFE_0_CHROMA_SUBS_CFG);
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: Scale/FOV configured: %ux%u, format=0x%x, chroma_v=%s\n",
+		 width, height, p,
+		 (p == V4L2_PIX_FMT_NV12 || p == V4L2_PIX_FMT_NV21) ? "2:1" : "1:1");
 }
 
 static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line)
