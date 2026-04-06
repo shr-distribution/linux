@@ -4373,16 +4373,16 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * RDI mode: Map WM0 to composite group 1, use COMPOSITE_DONE_1.
-			 * This follows downstream raw snapshot configuration:
-			 * - IRQ_COMP_MASK bit 8 = WM0 in composite group 1
-			 * - When WM0 finishes, IMAGE_COMPOSITE_DONE_1 (bit 22) fires
+			 * RDI mode: Use SAME IRQ_MASK_0 as PIX mode (0x00EFE021).
+			 * webOS uses identical IRQ_MASK_0 for ALL modes including
+			 * raw snapshot. The composite group 1 mapping is done via
+			 * IRQ_COMPOSITE_MASK, not IRQ_MASK_0.
+			 *
+			 * Note: COMPOSITE_DONE_1 (bit 22) is already in 0x00EFE021.
 			 */
-			vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
-						VFE_0_IRQ_MASK_0_REG_UPDATE |
-						VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(1);
+			vfe->irq_mask0_shadow = 0x00EFE021;
 			dev_info(vfe->camss->dev,
-				 "VFE31: RDI IRQ_MASK_0=0x%08x (COMPOSITE_DONE_1)\n",
+				 "VFE31: RDI IRQ_MASK_0=0x%08x (same as PIX)\n",
 				 vfe->irq_mask0_shadow);
 		} else {
 			/* PIX mode: Use webOS value with composite interrupts */
@@ -4518,6 +4518,15 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * Write 1 to CAMIF_CMD (webOS vfe31_start_common writes 1, not 0x5)
 	 */
 	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+	wmb();
+
+	/*
+	 * Step 14: Enable BUS power management (from webOS vfe31_capture)
+	 * webOS writes these after CAMIF start with comment "for debug".
+	 * Without these writes, COMPOSITE_DONE interrupts never fire.
+	 */
+	writel_relaxed(1, vfe->base + VFE_0_BUS_PM_CFG);
+	writel_relaxed(1, vfe->base + VFE_0_BUS_PM_CMD);
 	wmb();
 
 	vfe->camif_pending = false;
