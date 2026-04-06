@@ -2967,6 +2967,8 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	enum vfe_line_id line_id = vfe->wm_output_map[wm];
 	struct vfe_line *line;
 	u32 val;
+	bool is_rdi_line;
+	u32 axi_mode;
 
 	if (line_id == VFE_LINE_NONE || line_id >= vfe->res->line_num) {
 		dev_err(vfe->camss->dev, "VFE31: Invalid line_id %d for WM%d\n",
@@ -2976,11 +2978,26 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 
 	line = &vfe->line[line_id];
 
+	/*
+	 * Determine AXI mode based on line type:
+	 * - RDI lines (RDI0, RDI1, RDI2) MUST use 0x60 (raw bypass)
+	 * - PIX/VIDEO lines use module parameter (default 0x01 for DEMUX)
+	 */
+	is_rdi_line = (line_id == VFE_LINE_RDI0 ||
+		       line_id == VFE_LINE_RDI1 ||
+		       line_id == VFE_LINE_RDI2);
+
+	if (is_rdi_line) {
+		axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0;  /* 0x60 */
+	} else {
+		axi_mode = vfe31_axi_output_mode;
+	}
+
 	dev_info(vfe->camss->dev,
-		 "VFE31: Starting CAMIF for WM%d RDI%d (fmt %ux%u code=0x%x)\n",
+		 "VFE31: Starting CAMIF for WM%d line%d (fmt %ux%u code=0x%x axi=0x%x)\n",
 		 wm, line_id, line->fmt[MSM_VFE_PAD_SINK].width,
 		 line->fmt[MSM_VFE_PAD_SINK].height,
-		 line->fmt[MSM_VFE_PAD_SINK].code);
+		 line->fmt[MSM_VFE_PAD_SINK].code, axi_mode);
 
 	/*
 	 * VFE31 raw capture initialization - matching webOS sequence:
@@ -3011,7 +3028,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * BUS_CFG at 0x03C must be set to enable the write paths.
 	 * webOS uses 0x02AAA771 which enables view/enc Y/CbCr paths.
 	 */
-	if (vfe31_axi_output_mode == VFE_0_BUS_AXI_OUT_MODE_RAW_WM0) {
+	if (axi_mode == VFE_0_BUS_AXI_OUT_MODE_RAW_WM0) {
 		/* RDI mode (0x60): Raw bypass, no XBAR needed */
 		dev_info(vfe->camss->dev,
 			 "VFE31: Step 1 - RDI mode: BUS_CFG=0x%08x, AXI=0x60 (raw bypass)\n",
@@ -3228,8 +3245,38 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 *   WebOS example: 0x000004FF = 1279 = 1280 - 1
 	 */
 	{
-		u32 width_bytes = line->fmt[MSM_VFE_PAD_SINK].width * 2;
+		u32 width = line->fmt[MSM_VFE_PAD_SINK].width;
 		u32 height = line->fmt[MSM_VFE_PAD_SINK].height;
+		u32 code = line->fmt[MSM_VFE_PAD_SINK].code;
+		u32 width_bytes;
+
+		/*
+		 * Calculate bytes per line based on format:
+		 * - RAW8 formats (Bayer): 1 byte per pixel
+		 * - RAW10 formats (packed): 10 bits per pixel (5 bytes per 4 pixels)
+		 * - YUV422 formats: 2 bytes per pixel
+		 */
+		switch (code) {
+		case MEDIA_BUS_FMT_SBGGR8_1X8:
+		case MEDIA_BUS_FMT_SGBRG8_1X8:
+		case MEDIA_BUS_FMT_SGRBG8_1X8:
+		case MEDIA_BUS_FMT_SRGGB8_1X8:
+			width_bytes = width;  /* 1 byte per pixel */
+			break;
+		case MEDIA_BUS_FMT_SBGGR10_1X10:
+		case MEDIA_BUS_FMT_SGBRG10_1X10:
+		case MEDIA_BUS_FMT_SGRBG10_1X10:
+		case MEDIA_BUS_FMT_SRGGB10_1X10:
+			width_bytes = (width * 10 + 7) / 8;  /* 10-bit packed */
+			break;
+		default:
+			width_bytes = width * 2;  /* YUV422: 2 bytes per pixel */
+			break;
+		}
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: Step 3 - CAMIF config (code=0x%x width=%u bpl=%u)\n",
+			 code, width, width_bytes);
 
 		/* WINDOW_WIDTH_CFG: (height << 16) | width_bytes */
 		val = (height << 16) | (width_bytes & 0x3FFF);
@@ -3263,7 +3310,12 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF registers configured\n");
 
-	/* Configure pixel pattern in CORE_CFG + bit 6 (webOS uses 0x46 for UYVY) */
+	/*
+	 * Configure pixel pattern in CORE_CFG + bit 6 (webOS uses 0x46 for UYVY)
+	 *
+	 * For RDI/raw bypass mode (AXI=0x60), CORE_CFG is still needed to
+	 * configure the input MUX, but pixel pattern doesn't affect raw data.
+	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
@@ -3276,12 +3328,27 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		break;
 	case MEDIA_BUS_FMT_UYVY8_1X16:
 	case MEDIA_BUS_FMT_UYVY8_2X8:
-	default:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
 		break;
 	case MEDIA_BUS_FMT_VYUY8_1X16:
 	case MEDIA_BUS_FMT_VYUY8_2X8:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
+		break;
+	/* RAW Bayer formats - use default pattern (doesn't affect raw bypass) */
+	case MEDIA_BUS_FMT_SBGGR8_1X8:
+	case MEDIA_BUS_FMT_SGBRG8_1X8:
+	case MEDIA_BUS_FMT_SGRBG8_1X8:
+	case MEDIA_BUS_FMT_SRGGB8_1X8:
+	case MEDIA_BUS_FMT_SBGGR10_1X10:
+	case MEDIA_BUS_FMT_SGBRG10_1X10:
+	case MEDIA_BUS_FMT_SGRBG10_1X10:
+	case MEDIA_BUS_FMT_SRGGB10_1X10:
+		val = 0;  /* Raw bypass - pattern not used */
+		dev_info(vfe->camss->dev,
+			 "VFE31: RAW format detected - CORE_CFG pattern=0\n");
+		break;
+	default:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
 		break;
 	}
 	/* Add bit 6 - webOS always sets this (0x46 instead of 0x06) */
@@ -3516,8 +3583,11 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * Using webOS offset-by-4 pairing:
 	 *   - VIDEO line uses WM1 (Y) + WM5 (CbCr)
 	 *   - When VIDEO is active, XBAR=0x1A1B routes Y to WM0+WM1
+	 *
+	 * Note: This is skipped for RDI lines (axi_mode = 0x60) since they
+	 * use raw bypass mode and don't need VIDEO WM configuration.
 	 */
-	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
+	if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
 		if (line->id == VFE_LINE_VIDEO) {
 			/*
 			 * VIDEO line starting - configure WM4 (Y) and WM1 (CbCr)
