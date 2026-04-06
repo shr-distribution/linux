@@ -1635,37 +1635,64 @@ static int vfe31_enable(struct vfe_line *line)
 	 * Note: Even for "packed" UYVY format, the VFE31 DEMUX outputs
 	 * Y and CbCr to separate WMs. The CbCr is interleaved (CbYCrY).
 	 */
-	if (axi_mode == 0x01) {
-		/* PIX mode: need Y WM + CbCr WM (offset-by-4 pairing) */
-		output->wm_num = 2;
-		dev_info(vfe->camss->dev, "VFE31: PIX mode - using 2 WMs (Y+CbCr)\n");
-
+	/*
+	 * VFE31 PIX mode uses DEMUX which separates Y and CbCr to different
+	 * Write Masters. This ONLY works with semi-planar formats (NV16/NV61)
+	 * where the buffer has separate Y and CbCr planes.
+	 *
+	 * For packed YUV formats (UYVY/YUYV/etc), the buffer is sized for a
+	 * single interleaved plane. Using 2 WMs would cause buffer overflow
+	 * because VFE writes Y_size + CbCr_size = 2x the buffer allocation.
+	 *
+	 * Solution: Force RDI mode (single WM passthrough) for packed formats.
+	 * RDI mode bypasses DEMUX and writes raw sensor data directly.
+	 */
+	switch (pix->pixelformat) {
+	case V4L2_PIX_FMT_UYVY:
+	case V4L2_PIX_FMT_VYUY:
+	case V4L2_PIX_FMT_YUYV:
+	case V4L2_PIX_FMT_YVYU:
 		/*
-		 * IMPORTANT: VFE31 PIX mode ALWAYS outputs semi-planar format
-		 * (Y to WM0, CbCr to WM1) regardless of requested pixel format.
-		 * If userspace requests packed UYVY/YUYV, the data will still
-		 * be semi-planar NV16 in memory, causing wrong colors when
-		 * interpreted as packed format.
-		 *
-		 * Warn users if they request packed formats with PIX mode.
+		 * Packed format: Force RDI mode to avoid buffer overflow.
+		 * PIX mode with 2 WMs would write NV16 layout (5MB at 1280x1024)
+		 * but UYVY buffer is only sized for packed layout (2.5MB).
 		 */
-		switch (pix->pixelformat) {
-		case V4L2_PIX_FMT_UYVY:
-		case V4L2_PIX_FMT_VYUY:
-		case V4L2_PIX_FMT_YUYV:
-		case V4L2_PIX_FMT_YVYU:
-			dev_warn(vfe->camss->dev,
-				 "VFE31: WARNING - Packed format requested but PIX mode outputs NV16!\n");
-			dev_warn(vfe->camss->dev,
-				 "VFE31: Use V4L2_PIX_FMT_NV16 for correct colors, or use RAW mode (axi=0x60) for packed output.\n");
-			break;
-		default:
-			break;
+		if (axi_mode == 0x01) {
+			dev_info(vfe->camss->dev,
+				 "VFE31: Packed format %c%c%c%c - switching to RDI mode (single WM)\n",
+				 (pix->pixelformat >> 0) & 0xff,
+				 (pix->pixelformat >> 8) & 0xff,
+				 (pix->pixelformat >> 16) & 0xff,
+				 (pix->pixelformat >> 24) & 0xff);
+			axi_mode = 0x60;  /* Force RDI passthrough */
 		}
-	} else {
-		/* Raw/RDI mode: single WM for packed data */
 		output->wm_num = 1;
-		dev_info(vfe->camss->dev, "VFE31: Raw mode - using 1 WM\n");
+		dev_info(vfe->camss->dev, "VFE31: Packed format - using 1 WM (RDI passthrough)\n");
+		break;
+
+	case V4L2_PIX_FMT_NV16:
+	case V4L2_PIX_FMT_NV61:
+		/* Semi-planar format: PIX mode with 2 WMs is correct */
+		if (axi_mode == 0x01) {
+			output->wm_num = 2;
+			dev_info(vfe->camss->dev, "VFE31: Semi-planar NV16/NV61 - using 2 WMs (Y+CbCr)\n");
+		} else {
+			/* RDI mode requested, use single WM */
+			output->wm_num = 1;
+			dev_info(vfe->camss->dev, "VFE31: NV16 with RDI mode - using 1 WM\n");
+		}
+		break;
+
+	default:
+		/* Other formats: follow axi_mode setting */
+		if (axi_mode == 0x01) {
+			output->wm_num = 2;
+			dev_info(vfe->camss->dev, "VFE31: PIX mode - using 2 WMs (Y+CbCr)\n");
+		} else {
+			output->wm_num = 1;
+			dev_info(vfe->camss->dev, "VFE31: Raw/RDI mode - using 1 WM\n");
+		}
+		break;
 	}
 
 	/*
