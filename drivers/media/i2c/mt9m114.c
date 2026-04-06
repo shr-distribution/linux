@@ -950,6 +950,30 @@ static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 		 "MT9M113: CAM_OUTPUT_FORMAT=0x%04llx (info->output_format=0x%x)\n",
 		 output_format, info->output_format);
 
+	/*
+	 * Issue REFRESH_MODE (SEQ_CMD=0x0006) to apply the CAM_OUTPUT_FORMAT
+	 * change. Without this, the sensor MCU continues outputting the
+	 * previous format (typically YUV) regardless of CAM_OUTPUT_FORMAT.
+	 */
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+				    MT9M113_SEQ_CMD_REFRESH_MODE);
+	if (ret < 0) {
+		dev_err(&sensor->client->dev,
+			"MT9M113: REFRESH_MODE after CAM_OUTPUT_FORMAT failed: %d\n",
+			ret);
+		return ret;
+	}
+
+	/* Wait for REFRESH_MODE to complete (SEQ_CMD returns to 0) */
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	if (ret < 0) {
+		dev_warn(&sensor->client->dev,
+			 "MT9M113: REFRESH_MODE timeout (continuing)\n");
+	}
+
+	dev_info(&sensor->client->dev,
+		 "MT9M113: REFRESH_MODE complete after CAM_OUTPUT_FORMAT\n");
+
 	return 0;
 }
 
