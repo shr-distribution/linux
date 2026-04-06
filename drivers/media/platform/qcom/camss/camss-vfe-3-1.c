@@ -3735,15 +3735,30 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	 * VFE31: If CAMIF is not yet running, defer the write.
 	 * Once CAMIF is running (camif_pending=false), write directly.
 	 *
-	 * IMPORTANT: Only save WM0's address to pending_ping_addr!
-	 * For semi-planar formats (NV16), WM1's address is computed later
-	 * as pending_ping_addr + Y_plane_size. If we save WM1's address
-	 * here, it overwrites WM0's address and breaks the offset calculation.
+	 * Save the address for the PRIMARY Y WM of the pending line:
+	 *   - PIX mode (VFE_LINE_PIX): WM0
+	 *   - VIDEO mode (VFE_LINE_VIDEO): WM4
+	 *
+	 * For semi-planar formats (NV16), WM1's address (CbCr) is computed
+	 * later as pending_ping_addr + Y_plane_size in enable_pending_camif.
 	 */
 	if (vfe->camif_pending) {
+		bool is_primary_wm;
+
+		/*
+		 * Check if this is the primary Y WM for the pending line.
+		 * PIX uses WM0, VIDEO uses WM4.
+		 */
+		if (vfe->camif_pending_line_id == VFE_LINE_VIDEO)
+			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
+		else
+			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
+
 		dev_dbg(vfe->camss->dev,
-			"VFE31: WM%d ping_addr=0x%08x (deferred)\n", wm, addr);
-		if (wm == 0)
+			"VFE31: WM%d ping_addr=0x%08x (deferred, primary=%d)\n",
+			wm, addr, is_primary_wm);
+
+		if (is_primary_wm)
 			vfe->pending_ping_addr = addr;
 	} else {
 		dev_dbg(vfe->camss->dev,
@@ -3751,20 +3766,6 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		writel_relaxed(addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
 	}
-
-	/*
-	 * NOTE: WM4/WM5 addresses are NOT mirrored from WM0/WM1.
-	 *
-	 * When VIDEO line (VFE_LINE_VIDEO) is active, it sets WM4/WM5
-	 * addresses directly via wm=4/wm=5 calls with its own buffers.
-	 *
-	 * When VIDEO line is NOT active, WM4 uses a dummy buffer configured
-	 * in enable_pending_camif() to safely absorb duplicate Y data from
-	 * XBAR 0x1A1B routing.
-	 *
-	 * The old video_output_enable mirror code caused DMA corruption by
-	 * making WM0 and WM4 write to the same addresses simultaneously.
-	 */
 }
 
 static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
@@ -3773,13 +3774,22 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	 * VFE31: If CAMIF is not yet running, defer the write.
 	 * Once CAMIF is running (camif_pending=false), write directly.
 	 *
-	 * IMPORTANT: Only save WM0's address to pending_pong_addr!
+	 * Save the address for the PRIMARY Y WM of the pending line.
 	 * See comment in vfe31_wm_set_ping_addr for explanation.
 	 */
 	if (vfe->camif_pending) {
+		bool is_primary_wm;
+
+		if (vfe->camif_pending_line_id == VFE_LINE_VIDEO)
+			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
+		else
+			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
+
 		dev_dbg(vfe->camss->dev,
-			"VFE31: WM%d pong_addr=0x%08x (deferred)\n", wm, addr);
-		if (wm == 0)
+			"VFE31: WM%d pong_addr=0x%08x (deferred, primary=%d)\n",
+			wm, addr, is_primary_wm);
+
+		if (is_primary_wm)
 			vfe->pending_pong_addr = addr;
 	} else {
 		dev_dbg(vfe->camss->dev,
@@ -3787,8 +3797,6 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		writel_relaxed(addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 	}
-
-	/* See comment in vfe31_wm_set_ping_addr about WM4/WM5 handling */
 }
 
 static int vfe31_wm_get_ping_pong_status(struct vfe_device *vfe, u8 wm)
