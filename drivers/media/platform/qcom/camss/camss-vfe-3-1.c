@@ -1977,13 +1977,15 @@ static int vfe31_enable(struct vfe_line *line)
 		u8 wm1 = output->wm_idx[1];
 		/*
 		 * CbCr plane offset for NV16 semi-planar format:
-		 * Y plane = width * height bytes (1 byte per pixel)
-		 * CbCr plane starts immediately after Y plane.
+		 * VFE31 DEMUX outputs Y and CbCr with the INPUT stride (bytesperline),
+		 * not the standard NV16 output stride (width).
 		 *
-		 * Note: bytesperline (width * 2) is the UYVY packed stride,
-		 * but in NV16 mode each plane uses width bytes per line.
+		 * WM0 (Y):    writes bytesperline * height bytes
+		 * WM1 (CbCr): writes bytesperline * height bytes
+		 *
+		 * CbCr plane must start AFTER WM0's full output to avoid overlap.
 		 */
-		u32 cbcr_offset = width * height;
+		u32 cbcr_offset = bytesperline * height;
 		u32 wm1_ping_addr = ping_addr + cbcr_offset;
 		u32 wm1_pong_addr = pong_addr + cbcr_offset;
 
@@ -3105,11 +3107,12 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * - WM0: Y (luma) channel
 		 * - WM1: CbCr (chroma) channel, interleaved
 		 *
-		 * CbCr buffer starts after Y plane in the same buffer.
+		 * VFE31 writes with INPUT stride (bytesperline), not NV16 stride (width).
+		 * CbCr must start after WM0's full output to avoid data overlap.
 		 */
 		if (line->output.wm_num == 2) {
 			u8 wm1 = line->output.wm_idx[1];
-			u32 cbcr_offset = width * height;  /* Y plane size in bytes */
+			u32 cbcr_offset = bytesperline * height;  /* WM0 output size */
 			u32 wm1_ping = vfe->pending_ping_addr + cbcr_offset;
 			u32 wm1_pong = vfe->pending_pong_addr + cbcr_offset;
 
