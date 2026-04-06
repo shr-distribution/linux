@@ -3520,14 +3520,16 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	if (vfe31_axi_output_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
 		if (line->id == VFE_LINE_VIDEO) {
 			/*
-			 * VIDEO line starting - configure WM1 (Y) and WM5 (CbCr)
+			 * VIDEO line starting - configure WM4 (Y) and WM1 (CbCr)
 			 * with VIDEO line's buffer addresses.
+			 *
+			 * IMPORTANT: Use VFE31 webOS register format (same as PIX mode)!
+			 * Previous code used incorrect format causing half-height chroma.
 			 */
 			struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
-			u32 width = pix->width;
 			u32 height = pix->height;
-			u32 stride = pix->plane_fmt[0].bytesperline;
-			u32 wpl = stride / 8;
+			u32 bytesperline = pix->plane_fmt[0].bytesperline;
+			u32 wpl = bytesperline / 4;  /* 32-bit words per line */
 			u32 reg;
 
 			dev_info(vfe->camss->dev,
@@ -3537,19 +3539,29 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			/* VIDEO Y WM configuration */
 			/* Addresses set via wm_set_ping_addr/wm_set_pong_addr */
 
-			/* VIDEO Y WM IMAGE_SIZE */
-			reg = ((height - 1) & 0xFFF) << 16;
-			reg |= (width - 1) & 0x1FFF;
+			/*
+			 * VIDEO Y WM IMAGE_SIZE - VFE31 webOS format:
+			 * Upper 16 bits: bytesperline / 16 (128-bit words per line)
+			 * Lower 16 bits: ((height - 1) << 4) | 2
+			 */
+			reg = ((bytesperline / 16) & 0xFFFF) << 16;
+			reg |= ((height - 1) << 4) | 2;
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
 
-			/* VIDEO Y WM ADDR_CFG */
-			reg = ((wpl - 1) & 0xFFFF) << 16;
-			reg |= (height - 1) & 0xFFFF;
+			/*
+			 * VIDEO Y WM ADDR_CFG - VFE31 webOS format:
+			 * burst = wpl - 17 (lower 16 bits only for Y plane)
+			 */
+			reg = (wpl - 17) & 0xFFFF;
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
 
-			/* VIDEO Y WM UB_CFG */
+			/*
+			 * VIDEO Y WM UB_CFG - VFE31 webOS format:
+			 * Upper 16 bits: (wpl / 8) - 1
+			 * Lower 16 bits: height - 1
+			 */
 			reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 			reg |= (height - 1) & 0xFFFF;
 			writel_relaxed(reg,
@@ -3562,20 +3574,35 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				       vfe->base + VFE_0_BUS_CMD);
 
 			/*
-			 * VIDEO CbCr WM (WM5 with offset-by-4 pairing)
+			 * VIDEO CbCr WM (WM1 - shared with PIX)
 			 */
 			if (line->output.wm_num == 2) {
-				/* VIDEO CbCr IMAGE_SIZE */
-				reg = ((height - 1) & 0xFFF) << 16;
-				reg |= (width - 1) & 0x1FFF;
+				/*
+				 * VIDEO CbCr IMAGE_SIZE - VFE31 webOS format:
+				 * Same format as Y plane
+				 */
+				reg = ((bytesperline / 16) & 0xFFFF) << 16;
+				reg |= ((height - 1) << 4) | 2;
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
 
-				/* VIDEO CbCr ADDR_CFG */
-				reg = ((wpl - 1) & 0xFFFF) << 16;
-				reg |= (height - 1) & 0xFFFF;
+				/*
+				 * VIDEO CbCr ADDR_CFG - VFE31 webOS format:
+				 * Upper 16 bits: height - 24 (line count)
+				 * Lower 16 bits: burst = wpl - 17
+				 */
+				reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
+
+				/*
+				 * VIDEO CbCr UB_CFG - VFE31 webOS format:
+				 * Same as Y plane
+				 */
+				reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
+				reg |= (height - 1) & 0xFFFF;
+				writel_relaxed(reg,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_CBCR));
 
 				/* Enable VIDEO CbCr WM */
 				writel_relaxed(BIT(0),
@@ -3590,8 +3617,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			wmb();
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: VIDEO line WM%d(Y)+WM%d(CbCr): %ux%u stride=%u\n",
-				 VFE31_VIDEO_WM_Y, VFE31_VIDEO_WM_CBCR, width, height, stride);
+				 "VFE31: VIDEO line WM%d(Y)+WM%d(CbCr): %ux%u bpl=%u wpl=%u\n",
+				 VFE31_VIDEO_WM_Y, VFE31_VIDEO_WM_CBCR,
+				 pix->width, height, bytesperline, wpl);
 		} else {
 			/*
 			 * PIX line only (not VIDEO line).
