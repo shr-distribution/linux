@@ -4296,6 +4296,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	struct vfe_line *line;
 	u32 val;
 	u32 width_bytes, height;
+	u8 bpp;
 
 	if (!vfe->camif_pending) {
 		dev_dbg(vfe->camss->dev, "VFE31: no pending CAMIF config\n");
@@ -4303,13 +4304,23 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	}
 
 	line = &vfe->line[vfe->camif_pending_line_id];
-	width_bytes = line->fmt[MSM_VFE_PAD_SINK].width * 2;  /* YUV422: 2 bytes/pixel */
+
+	/*
+	 * Calculate width_bytes based on actual format bits-per-pixel.
+	 * YUV422: 16 bpp -> width * 2 bytes
+	 * RAW8:   8 bpp  -> width * 1 byte
+	 * RAW10:  10 bpp -> width * 10/8 bytes (packed)
+	 */
+	bpp = camss_format_get_bpp(line->formats, line->nformats,
+				   line->fmt[MSM_VFE_PAD_SINK].code);
+	width_bytes = line->fmt[MSM_VFE_PAD_SINK].width * bpp / 8;
 	height = line->fmt[MSM_VFE_PAD_SINK].height;
 
 	dev_info(vfe->camss->dev,
-		 "VFE31 enable_pending_camif: line=%d %ux%u stride=%u\n",
+		 "VFE31 enable_pending_camif: line=%d %ux%u stride=%u (bpp=%u code=0x%04x)\n",
 		 vfe->camif_pending_line_id,
-		 line->fmt[MSM_VFE_PAD_SINK].width, height, width_bytes);
+		 line->fmt[MSM_VFE_PAD_SINK].width, height, width_bytes,
+		 bpp, line->fmt[MSM_VFE_PAD_SINK].code);
 
 	/*
 	 * Step 1: Force all VFE internal clocks on via CGC_OVERRIDE
