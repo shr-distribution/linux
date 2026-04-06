@@ -149,6 +149,25 @@ MODULE_PARM_DESC(vfe31_demux_odd,
 		 "VFE31 DEMUX odd config (0=auto, 0xCA=UYVY, 0xAC=YUYV)");
 
 /*
+ * WM4 (VIDEO Y) ADDR_CFG lines field override.
+ * Controls the upper 16 bits of WM4_ADDR_CFG register.
+ *
+ * Values to try:
+ *   -1 = auto (use height-24, same as CbCr WMs)
+ *    0 = disabled (current default, causes ~240 lines captured)
+ *  456 = height-24 for 480 height (matches CbCr formula)
+ *  480 = full height
+ *  544 = height+64 (extrapolated from webOS 304=240+64)
+ *
+ * WebOS VIDEO at 336x240 used lines=304, burst=151
+ * For 640x480, try different values to find what works.
+ */
+static int vfe31_wm4_lines = -1;  /* -1 = auto (height-24) */
+module_param(vfe31_wm4_lines, int, 0644);
+MODULE_PARM_DESC(vfe31_wm4_lines,
+		 "VFE31 WM4 (VIDEO Y) lines override (-1=auto/height-24, 0=disabled, N=explicit)");
+
+/*
  * ============================================================================
  * VFE31 IRQ COMPOSITE MASK - CORRECTED BASED ON REGISTER DUMPS
  * ============================================================================
@@ -3630,12 +3649,31 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
 
 			/*
-			 * VIDEO Y WM ADDR_CFG - VFE31 webOS format:
-			 * burst = wpl - 17 (lower 16 bits only for Y plane)
+			 * VIDEO Y WM ADDR_CFG - VFE31 format:
+			 *
+			 * Unlike WM0 (PIX Y) which uses lines=0, VIDEO Y (WM4)
+			 * may need an explicit lines value. Use module param
+			 * vfe31_wm4_lines for easy runtime testing:
+			 *   -1 = auto (height-24, same as CbCr formula)
+			 *    0 = disabled (original default)
+			 *    N = explicit value
+			 *
+			 * WebOS VIDEO at 336x240 used lines=304, burst=151
 			 */
-			reg = (wpl - 17) & 0xFFFF;
-			writel_relaxed(reg,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
+			{
+				int lines_val;
+				if (vfe31_wm4_lines < 0)
+					lines_val = height - 24;  /* auto: same as CbCr */
+				else
+					lines_val = vfe31_wm4_lines;
+
+				reg = (lines_val << 16) | ((wpl - 17) & 0xFFFF);
+				dev_info(vfe->camss->dev,
+					 "VFE31: WM4 ADDR_CFG=0x%08x (lines=%d, burst=%d, param=%d)\n",
+					 reg, lines_val, wpl - 17, vfe31_wm4_lines);
+				writel_relaxed(reg,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
+			}
 
 			/*
 			 * VIDEO Y WM UB_CFG - VFE31 webOS format:

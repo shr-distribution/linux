@@ -1310,16 +1310,17 @@ test_at_resolution() {
                 PIXFMT='NV16'
                 ;;
             rdi)
-                # RDI mode: Raw bypass through CAMIF
+                # RDI mode: Raw bypass through CAMIF (AXI=0x60)
                 # On MSM8660/VFE31, there's no hardware RDI path - all data goes
                 # through CAMIF. RDI is emulated via AXI output mode 0x60.
-                # Use CSID pad 4 (same as PIX) but configure VFE for raw bypass.
+                #
+                # IMPORTANT: Raw bypass mode requires RAW Bayer format, not UYVY!
+                # Configure sensor to output RAW8 (SGRBG8) instead of YUV.
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_rdi0'
-                VFE_FMT='UYVY8_1X16'
-                PIXFMT='UYVY'
-                # Enable raw bypass mode (AXI=0x60)
-                echo 0x60 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode 2>/dev/null || true
+                VFE_FMT='SGRBG8_1X8'
+                PIXFMT='GRBG'
+                USE_RAW_FORMAT=1
                 ;;
             video)
                 # VIDEO mode: CSID pad 4 -> VFE VIDEO
@@ -1339,16 +1340,24 @@ test_at_resolution() {
         esac
 
         # Set sensor output format first
+        # For RDI mode with raw bypass, use RAW8 (SGRBG8) format
+        if [ -n \"\$USE_RAW_FORMAT\" ]; then
+            SENSOR_FMT='SGRBG8_1X8'
+            echo 'Configuring sensor for RAW8 output (RDI raw bypass mode)...'
+        else
+            SENSOR_FMT='UYVY8_1X16'
+        fi
+
         media-ctl -d /dev/media0 -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/${width}x${height}]' 2>&1 || true
-        media-ctl -d /dev/media0 -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
+        media-ctl -d /dev/media0 -V \"\\\"mt9m114 ifp 4-003c\\\":1[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
 
         # Set CSIPHY format
-        media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":0[fmt:UYVY8_1X16/${width}x${height}]\" 2>&1 || true
-        media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":1[fmt:UYVY8_1X16/${width}x${height}]\" 2>&1 || true
+        media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":0[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
+        media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":1[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
 
-        # Set CSID formats (input and output) - always UYVY8_1X16
-        media-ctl -d /dev/media0 -V \"\\\"$csid\\\":0[fmt:UYVY8_1X16/${width}x${height}]\" 2>&1 || true
-        media-ctl -d /dev/media0 -V \"\\\"$csid\\\":\${CSID_PAD}[fmt:UYVY8_1X16/${width}x${height}]\" 2>&1 || true
+        # Set CSID formats (input and output)
+        media-ctl -d /dev/media0 -V \"\\\"$csid\\\":0[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
+        media-ctl -d /dev/media0 -V \"\\\"$csid\\\":\${CSID_PAD}[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
 
         # Set VFE entity format - must match CSID output
         media-ctl -d /dev/media0 -V \"\\\"\${VFE_ENTITY}\\\":0[fmt:\${VFE_FMT}/${width}x${height}]\" 2>&1 || true
@@ -1369,20 +1378,65 @@ test_at_resolution() {
         echo \"Pipeline configured for $mode mode:\"
         v4l2-ctl -d /dev/$video_dev --get-fmt-video 2>&1 | grep -E 'Width|Pixel'
 
-        # Capture
+        # Capture with register dump during capture
         OUTPUT=\"/tmp/test_${mode}_${width}x${height}.raw\"
-        rm -f \"\$OUTPUT\"
-        timeout 15 v4l2-ctl -d /dev/$video_dev --stream-mmap --stream-count=3 --stream-to=\"\$OUTPUT\" 2>&1
+        REGDUMP=\"/tmp/test_${mode}_${width}x${height}_regs.txt\"
+        rm -f \"\$OUTPUT\" \"\$REGDUMP\"
+
+        # Start capture in background
+        timeout 15 v4l2-ctl -d /dev/$video_dev --stream-mmap --stream-count=3 --stream-to=\"\$OUTPUT\" &
+        CAP_PID=\$!
+
+        # Wait for capture to start
+        sleep 0.5
+
+        # Dump VFE31 registers during capture
+        VFE=0x04500000
+        {
+            echo \"=== VFE31 Registers for $mode ${width}x${height} ===\"
+            echo \"MODULE_CFG:   \$(devmem \$((VFE + 0x010)) 2>/dev/null)\"
+            echo \"CORE_CFG:     \$(devmem \$((VFE + 0x014)) 2>/dev/null)\"
+            echo \"IRQ_COMP:     \$(devmem \$((VFE + 0x034)) 2>/dev/null)\"
+            echo \"BUS_CFG:      \$(devmem \$((VFE + 0x03C)) 2>/dev/null)\"
+            echo \"AXI_OUT:      \$(devmem \$((VFE + 0x040)) 2>/dev/null)\"
+            echo \"XBAR_CFG1:    \$(devmem \$((VFE + 0x044)) 2>/dev/null)\"
+            echo \"WM0_CFG:      \$(devmem \$((VFE + 0x04C)) 2>/dev/null)\"
+            echo \"WM0_ADDR_CFG: \$(devmem \$((VFE + 0x058)) 2>/dev/null)\"
+            echo \"WM0_UB_CFG:   \$(devmem \$((VFE + 0x05C)) 2>/dev/null)\"
+            echo \"WM0_IMG_SIZE: \$(devmem \$((VFE + 0x060)) 2>/dev/null)\"
+            echo \"WM1_CFG:      \$(devmem \$((VFE + 0x064)) 2>/dev/null)\"
+            echo \"WM1_ADDR_CFG: \$(devmem \$((VFE + 0x070)) 2>/dev/null)\"
+            echo \"WM1_UB_CFG:   \$(devmem \$((VFE + 0x074)) 2>/dev/null)\"
+            echo \"WM1_IMG_SIZE: \$(devmem \$((VFE + 0x078)) 2>/dev/null)\"
+            echo \"WM4_CFG:      \$(devmem \$((VFE + 0x0AC)) 2>/dev/null)\"
+            echo \"WM4_ADDR_CFG: \$(devmem \$((VFE + 0x0B8)) 2>/dev/null)\"
+            echo \"WM4_UB_CFG:   \$(devmem \$((VFE + 0x0BC)) 2>/dev/null)\"
+            echo \"WM4_IMG_SIZE: \$(devmem \$((VFE + 0x0C0)) 2>/dev/null)\"
+            echo \"CAMIF_WIN_W:  \$(devmem \$((VFE + 0x1EC)) 2>/dev/null)\"
+            echo \"CAMIF_WIN_H:  \$(devmem \$((VFE + 0x1F0)) 2>/dev/null)\"
+            echo \"CAMIF_SUBS0:  \$(devmem \$((VFE + 0x1F4)) 2>/dev/null)\"
+            echo \"FOV_Y:        \$(devmem \$((VFE + 0x360)) 2>/dev/null)\"
+            echo \"FOV_CBCR:     \$(devmem \$((VFE + 0x364)) 2>/dev/null)\"
+            echo \"SCALE_Y_V:    \$(devmem \$((VFE + 0x378)) 2>/dev/null)\"
+            echo \"CHROMA_V:     \$(devmem \$((VFE + 0x4F0)) 2>/dev/null)\"
+            echo \"DEMUX_EVEN:   \$(devmem \$((VFE + 0x290)) 2>/dev/null)\"
+            echo \"DEMUX_ODD:    \$(devmem \$((VFE + 0x294)) 2>/dev/null)\"
+        } > \"\$REGDUMP\" 2>&1
+
+        # Wait for capture to complete
+        wait \$CAP_PID 2>/dev/null || true
+
+        # Show register dump
+        echo \"VFE31 Registers:\"
+        cat \"\$REGDUMP\" | head -20
 
         # Disable testgen if it was enabled
         if [ '$mode' = 'testgen' ]; then
             echo 0 > /sys/module/qcom_camss/parameters/vfe31_use_testgen 2>/dev/null || true
         fi
 
-        # Reset AXI mode to PIX (0x01) if RDI was used
-        if [ '$mode' = 'rdi' ]; then
-            echo 0x01 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode 2>/dev/null || true
-        fi
+        # Clear RAW format flag (driver auto-detects AXI mode based on line type)
+        USE_RAW_FORMAT=
 
         # Check result
         if [ -s \"\$OUTPUT\" ]; then
@@ -1411,33 +1465,33 @@ test_comprehensive() {
     # Test PIX mode (video3) at both resolutions
     log_step "=== PIX Mode Tests (video3) ==="
     echo ""
-    test_at_resolution 640 480 pix video3 msm_csid0 msm_csiphy1
+    test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1
     echo ""
-    test_at_resolution 1280 1024 pix video3 msm_csid0 msm_csiphy1
+    test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1
     echo ""
 
     # Test RDI mode (video0) at both resolutions
     log_step "=== RDI Mode Tests (video0) ==="
     echo ""
-    test_at_resolution 640 480 rdi video0 msm_csid0 msm_csiphy1
+    test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1
     echo ""
-    test_at_resolution 1280 1024 rdi video0 msm_csid0 msm_csiphy1
+    test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1
     echo ""
 
     # Test VIDEO mode (video4) at both resolutions
     log_step "=== VIDEO Mode Tests (video4) ==="
     echo ""
-    test_at_resolution 640 480 video video4 msm_csid0 msm_csiphy1
+    test_at_resolution 640 480 video video4 msm_csid1 msm_csiphy1
     echo ""
-    test_at_resolution 1280 1024 video video4 msm_csid0 msm_csiphy1
+    test_at_resolution 1280 1024 video video4 msm_csid1 msm_csiphy1
     echo ""
 
     # Test TESTGEN mode (video3) at both resolutions
     log_step "=== TESTGEN Mode Tests (video3) ==="
     echo ""
-    test_at_resolution 640 480 testgen video3 msm_csid0 msm_csiphy1
+    test_at_resolution 640 480 testgen video3 msm_csid1 msm_csiphy1
     echo ""
-    test_at_resolution 1280 1024 testgen video3 msm_csid0 msm_csiphy1
+    test_at_resolution 1280 1024 testgen video3 msm_csid1 msm_csiphy1
     echo ""
 
     # Summary
@@ -1682,12 +1736,12 @@ main() {
             ;;
         pix640)
             ensure_camera_ready
-            test_at_resolution 640 480 pix video3 msm_csid0 msm_csiphy1
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1
             check_dmesg
             ;;
         pix1280)
             ensure_camera_ready
-            test_at_resolution 1280 1024 pix video3 msm_csid0 msm_csiphy1
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1
             check_dmesg
             ;;
         rdi640)
@@ -1702,12 +1756,12 @@ main() {
             ;;
         video640)
             ensure_camera_ready
-            test_at_resolution 640 480 video video4 msm_csid0 msm_csiphy1
+            test_at_resolution 640 480 video video4 msm_csid1 msm_csiphy1
             check_dmesg
             ;;
         video1280)
             ensure_camera_ready
-            test_at_resolution 1280 1024 video video4 msm_csid0 msm_csiphy1
+            test_at_resolution 1280 1024 video video4 msm_csid1 msm_csiphy1
             check_dmesg
             ;;
         testgen640)
