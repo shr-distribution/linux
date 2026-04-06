@@ -2156,8 +2156,45 @@ static int vfe31_enable(struct vfe_line *line)
 
 static int vfe31_disable(struct vfe_line *line)
 {
-	/* Use gen1 common disable implementation */
-	return vfe_gen1_disable(line);
+	struct vfe_device *vfe = to_vfe(line);
+	struct vfe_output *output = &line->output;
+	unsigned long flags;
+	unsigned int i;
+	bool is_rdi = (line->id == VFE_LINE_RDI0 ||
+		       line->id == VFE_LINE_RDI1 ||
+		       line->id == VFE_LINE_RDI2);
+
+	/*
+	 * VFE31 RDI mode: Skip SOF and REG_UPDATE waits.
+	 *
+	 * In RDI/raw bypass mode (AXI=0x60), data goes directly from
+	 * CAMIF to memory without ISP processing. The ISP doesn't
+	 * generate SOF or REG_UPDATE IRQs in this mode, so waiting
+	 * for them would always timeout.
+	 *
+	 * For PIX/VIDEO lines, use the standard gen1 disable path.
+	 */
+	if (!is_rdi)
+		return vfe_gen1_disable(line);
+
+	dev_info(vfe->camss->dev,
+		 "VFE31: RDI disable (skipping SOF/REG_UPDATE wait)\n");
+
+	spin_lock_irqsave(&vfe->output_lock, flags);
+
+	/* Disable write masters */
+	for (i = 0; i < output->wm_num; i++)
+		vfe->ops_gen1->wm_enable(vfe, output->wm_idx[i], 0);
+
+	/* For RDI: disable frame-based mode and disconnect WM */
+	vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 0);
+	vfe->ops_gen1->bus_disconnect_wm_from_rdi(vfe, output->wm_idx[0], line->id);
+	vfe->ops_gen1->enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 0);
+	vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[0], 0);
+
+	spin_unlock_irqrestore(&vfe->output_lock, flags);
+
+	return 0;
 }
 
 /* Gen1-specific operations for VFE31 */
