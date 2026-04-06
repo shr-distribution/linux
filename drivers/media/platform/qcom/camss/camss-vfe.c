@@ -381,6 +381,52 @@ const struct camss_formats vfe_formats_pix_vfe31 = {
 	.formats = formats_pix_vfe31
 };
 
+/*
+ * VFE31 RDI format table
+ *
+ * IMPORTANT: mbus_bpp here is used by camss_format_get_bpp() which is called
+ * in vfe31_enable_pending_camif() to calculate CAMIF stride (width_bytes).
+ * Unlike other VFE versions, VFE31 needs mbus_bpp to reflect actual memory
+ * bytes-per-pixel for correct CAMIF_WINDOW configuration:
+ *   - YUV 4:2:2: 16 bpp (2 bytes per pixel)
+ *   - RAW8:       8 bpp (1 byte per pixel)
+ *   - RAW10:     10 bpp (packed, 10/8 bytes per pixel)
+ */
+static const struct camss_format_info formats_rdi_vfe31[] = {
+	/* YUV 4:2:2 formats - 16 bits per pixel */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 16, V4L2_PIX_FMT_UYVY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 16, V4L2_PIX_FMT_VYUY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 16, V4L2_PIX_FMT_YUYV, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 16, V4L2_PIX_FMT_YVYU, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	/* RAW8 Bayer formats - 8 bits per pixel */
+	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8, V4L2_PIX_FMT_SBGGR8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8, V4L2_PIX_FMT_SGBRG8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8, V4L2_PIX_FMT_SGRBG8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SRGGB8_1X8, 8, V4L2_PIX_FMT_SRGGB8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	/* RAW10 Bayer formats - 10 bits per pixel (packed) */
+	{ MEDIA_BUS_FMT_SBGGR10_1X10, 10, V4L2_PIX_FMT_SBGGR10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SGBRG10_1X10, 10, V4L2_PIX_FMT_SGBRG10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SGRBG10_1X10, 10, V4L2_PIX_FMT_SGRBG10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SRGGB10_1X10, 10, V4L2_PIX_FMT_SRGGB10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+};
+
+const struct camss_formats vfe_formats_rdi_vfe31 = {
+	.nformats = ARRAY_SIZE(formats_rdi_vfe31),
+	.formats = formats_rdi_vfe31
+};
+
 const struct camss_formats vfe_formats_rdi_8x96 = {
 	.nformats = ARRAY_SIZE(formats_rdi_8x96),
 	.formats = formats_rdi_8x96
