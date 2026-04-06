@@ -3645,8 +3645,28 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 
 			/*
 			 * VIDEO CbCr WM (WM1 - shared with PIX)
+			 *
+			 * CRITICAL: Must set PING/PONG addresses for CbCr WM!
+			 * The wm_set_ping/pong_addr functions only save addresses
+			 * for the primary Y WM. CbCr addresses must be computed
+			 * here as Y_addr + cbcr_offset to ensure both WMs write
+			 * to the same frame buffer (Y followed by CbCr).
 			 */
 			if (line->output.wm_num == 2) {
+				u32 cbcr_offset = bytesperline * height;
+				u32 cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
+				u32 cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
+
+				dev_info(vfe->camss->dev,
+					 "VFE31: VIDEO WM%d (CbCr) PING=0x%08x PONG=0x%08x (offset=0x%x)\n",
+					 VFE31_VIDEO_WM_CBCR, cbcr_ping, cbcr_pong, cbcr_offset);
+
+				/* VIDEO CbCr PING/PONG addresses */
+				writel_relaxed(cbcr_ping,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_CBCR));
+				writel_relaxed(cbcr_pong,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
+
 				/*
 				 * VIDEO CbCr IMAGE_SIZE - VFE31 webOS format:
 				 * Same format as Y plane
