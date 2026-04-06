@@ -1528,26 +1528,26 @@ main() {
             pix640)
                 MODE="pix640"
                 ;;
-            pix1024)
-                MODE="pix1024"
+            pix1280)
+                MODE="pix1280"
                 ;;
             rdi640)
                 MODE="rdi640"
                 ;;
-            rdi1024)
-                MODE="rdi1024"
+            rdi1280)
+                MODE="rdi1280"
                 ;;
             video640)
                 MODE="video640"
                 ;;
-            video1024)
-                MODE="video1024"
+            video1280)
+                MODE="video1280"
                 ;;
             testgen640)
                 MODE="testgen640"
                 ;;
-            testgen1024)
-                MODE="testgen1024"
+            testgen1280)
+                MODE="testgen1280"
                 ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
@@ -1570,13 +1570,13 @@ main() {
                 echo ""
                 echo "Resolution-specific modes:"
                 echo "  pix640     PIX mode at 640x480"
-                echo "  pix1024    PIX mode at 1280x1024"
+                echo "  pix1280    PIX mode at 1280x1024"
                 echo "  rdi640     RDI mode at 640x480"
-                echo "  rdi1024    RDI mode at 1280x1024"
+                echo "  rdi1280    RDI mode at 1280x1024"
                 echo "  video640   VIDEO mode at 640x480"
-                echo "  video1024  VIDEO mode at 1280x1024"
+                echo "  video1280  VIDEO mode at 1280x1024"
                 echo "  testgen640   TESTGEN mode at 640x480"
-                echo "  testgen1024  TESTGEN mode at 1280x1024"
+                echo "  testgen1280  TESTGEN mode at 1280x1024"
                 echo "  --info     Show camera device information only"
                 echo "  --setup    Set up media pipeline only"
                 echo "  --capture  Test capture only (assumes pipeline is set up)"
@@ -1685,7 +1685,7 @@ main() {
             test_at_resolution 640 480 pix video3 msm_csid0 msm_csiphy1
             check_dmesg
             ;;
-        pix1024)
+        pix1280)
             ensure_camera_ready
             test_at_resolution 1280 1024 pix video3 msm_csid0 msm_csiphy1
             check_dmesg
@@ -1695,7 +1695,7 @@ main() {
             test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1
             check_dmesg
             ;;
-        rdi1024)
+        rdi1280)
             ensure_camera_ready
             test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1
             check_dmesg
@@ -1705,7 +1705,7 @@ main() {
             test_at_resolution 640 480 video video4 msm_csid0 msm_csiphy1
             check_dmesg
             ;;
-        video1024)
+        video1280)
             ensure_camera_ready
             test_at_resolution 1280 1024 video video4 msm_csid0 msm_csiphy1
             check_dmesg
@@ -1715,7 +1715,7 @@ main() {
             test_at_resolution 640 480 testgen video3 msm_csid1 msm_csiphy1
             check_dmesg
             ;;
-        testgen1024)
+        testgen1280)
             ensure_camera_ready
             test_at_resolution 1280 1024 testgen video3 msm_csid1 msm_csiphy1
             check_dmesg
