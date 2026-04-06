@@ -872,7 +872,7 @@ static int mt9m113_poll_mcu_var(struct mt9m114 *sensor, u16 addr,
 }
 
 /*
- * mt9m113_configure_ifp - Configure MT9M113 output resolution via MCU variables
+ * mt9m113_configure_ifp - Configure MT9M113 output format and resolution
  * @sensor: Sensor device
  * @state: V4L2 subdev state containing the requested format
  *
@@ -881,14 +881,21 @@ static int mt9m113_poll_mcu_var(struct mt9m114 *sensor, u16 addr,
  * - MODE_OUTPUT_WIDTH_A (0x2703)
  * - MODE_OUTPUT_HEIGHT_A (0x2705)
  *
- * After changing resolution, a REFRESH_MODE command must be issued.
+ * This function also configures CAM_OUTPUT_FORMAT for the requested pixel
+ * format (YUV, RGB, or Bayer RAW).
  */
 static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 				 struct v4l2_subdev_state *state)
 {
+	const struct mt9m114_format_info *info;
+	const struct v4l2_mbus_framefmt *format;
 	const struct v4l2_rect *compose;
+	u64 output_format;
+	int ret;
 
 	compose = v4l2_subdev_state_get_compose(state, 0);
+	format = v4l2_subdev_state_get_format(state, 1);
+	info = mt9m114_format_info(sensor, 1, format->code);
 
 	/*
 	 * MT9M113 has fixed Context A (640x480) and Context B (1280x1024)
@@ -900,10 +907,48 @@ static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 	 * The init table already configured optimal settings for both contexts.
 	 */
 	dev_info(&sensor->client->dev,
-		 "MT9M113: requested %ux%u (using %s context)\n",
-		 compose->width, compose->height,
+		 "MT9M113: requested %ux%u format=0x%04x (using %s context)\n",
+		 compose->width, compose->height, format->code,
 		 (compose->width > 640 || compose->height > 480) ?
 		 "Context B (1280x1024)" : "Context A (640x480)");
+
+	/*
+	 * Configure CAM_OUTPUT_FORMAT for the requested pixel format.
+	 * This is critical for RAW/Bayer output - without this, the sensor
+	 * outputs YUV regardless of what format is requested on the pipeline.
+	 *
+	 * CAM_OUTPUT_FORMAT (0xC86C) bit fields:
+	 *   [9:8]  FORMAT: 0=YUV, 1=RGB, 2=Bayer, 3=None
+	 *   [11:10] BAYER_FORMAT: 0=RAW10, 1=PreLSC 8+2, 2=PostLSC 8+2, 3=Processed8
+	 *   [1] SWAP_BYTES
+	 *   [0] SWAP_RED_BLUE
+	 */
+	ret = cci_read(sensor->regmap, MT9M114_CAM_OUTPUT_FORMAT,
+		       &output_format, NULL);
+	if (ret < 0) {
+		dev_err(&sensor->client->dev,
+			"MT9M113: failed to read CAM_OUTPUT_FORMAT: %d\n", ret);
+		return ret;
+	}
+
+	output_format &= ~(MT9M114_CAM_OUTPUT_FORMAT_RGB_FORMAT_MASK |
+			   MT9M114_CAM_OUTPUT_FORMAT_BAYER_FORMAT_MASK |
+			   MT9M114_CAM_OUTPUT_FORMAT_FORMAT_MASK |
+			   MT9M114_CAM_OUTPUT_FORMAT_SWAP_BYTES |
+			   MT9M114_CAM_OUTPUT_FORMAT_SWAP_RED_BLUE);
+	output_format |= info->output_format;
+
+	ret = cci_write(sensor->regmap, MT9M114_CAM_OUTPUT_FORMAT,
+			output_format, NULL);
+	if (ret < 0) {
+		dev_err(&sensor->client->dev,
+			"MT9M113: failed to write CAM_OUTPUT_FORMAT: %d\n", ret);
+		return ret;
+	}
+
+	dev_info(&sensor->client->dev,
+		 "MT9M113: CAM_OUTPUT_FORMAT=0x%04llx (info->output_format=0x%x)\n",
+		 output_format, info->output_format);
 
 	return 0;
 }
