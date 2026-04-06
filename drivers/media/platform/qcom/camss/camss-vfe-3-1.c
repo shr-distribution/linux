@@ -1605,9 +1605,9 @@ static int vfe31_enable(struct vfe_line *line)
 	/*
 	 * WM configuration for PIX mode with DEMUX (ISP processing):
 	 *
-	 * Using webOS offset-by-4 WM pairing:
-	 *   - PIX line:   WM0 (Y) + WM4 (CbCr)
-	 *   - VIDEO line: WM1 (Y) + WM5 (CbCr)
+	 * VFE31 WM assignments:
+	 *   - PIX line:   WM0 (Y) + WM1 (CbCr)
+	 *   - VIDEO line: WM4 (Y) + WM1 (CbCr, shared)
 	 *
 	 * For raw/RDI mode (AXI=0x60), only WM0 is needed.
 	 * For PIX mode with DEMUX (AXI=0x01), we need both Y and CbCr WMs
@@ -1650,15 +1650,16 @@ static int vfe31_enable(struct vfe_line *line)
 	}
 
 	/*
-	 * VFE31 WM assignment - using webOS offset-by-4 pairing:
-	 * - VFE_LINE_PIX (preview): WM0 (Y) + WM4 (CbCr)
-	 * - VFE_LINE_VIDEO:         WM1 (Y) + WM5 (CbCr)
+	 * VFE31 WM assignment:
+	 * - VFE_LINE_PIX:   WM0 (Y) + WM1 (CbCr)
+	 * - VFE_LINE_VIDEO: WM4 (Y) + WM1 (CbCr, shared with PIX)
 	 *
-	 * This allows PIX and VIDEO to capture simultaneously without
-	 * sharing any write masters.
+	 * Note: PIX and VIDEO share WM1 for CbCr because XBAR only routes
+	 * CbCr to WM1 (no routing to WM5). PIX and VIDEO cannot capture
+	 * simultaneously with different buffers for CbCr.
 	 */
 	if (line->id == VFE_LINE_VIDEO) {
-		/* VIDEO line: WM1 for Y */
+		/* VIDEO line: WM4 for Y (VFE31_VIDEO_WM_Y=4) */
 		wm_idx = vfe_reserve_wm_specific(vfe, VFE31_VIDEO_WM_Y, line->id);
 		if (wm_idx < 0) {
 			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for VIDEO Y\n",
@@ -3041,11 +3042,13 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		/*
 		 * PIX mode (0x01): Use XBAR to route DEMUX output to WMs
 		 *
-		 * Using webOS offset-by-4 WM pairing:
-		 *   - PIX:   WM0 (Y) + WM4 (CbCr), XBAR=0x1A03
-		 *   - VIDEO: WM1 (Y) + WM5 (CbCr), XBAR=0x1A1B
+		 * VFE31 WM assignments:
+		 *   - PIX:   WM0 (Y) + WM1 (CbCr)
+		 *   - VIDEO: WM4 (Y) + WM1 (CbCr, shared)
 		 *
-		 * When VIDEO is active, we use 0x1A1B to also route Y to WM1.
+		 * XBAR routing:
+		 *   - 0x1A13 (PIX only):  Y→WM0, CbCr→WM1
+		 *   - 0x1A1B (PIX+VIDEO): Y→WM0+WM4, CbCr→WM1
 		 */
 		struct vfe_output *video_output = &vfe->line[VFE_LINE_VIDEO].output;
 		bool video_active = (video_output->state == VFE_OUTPUT_ON ||
@@ -3580,9 +3583,11 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	/*
 	 * Step 8: VIDEO line WM configuration
 	 *
-	 * Using webOS offset-by-4 pairing:
-	 *   - VIDEO line uses WM1 (Y) + WM5 (CbCr)
-	 *   - When VIDEO is active, XBAR=0x1A1B routes Y to WM0+WM1
+	 * VFE31 WM assignments:
+	 *   - PIX line:   WM0 (Y) + WM1 (CbCr)
+	 *   - VIDEO line: WM4 (Y) + WM1 (CbCr, shared with PIX)
+	 *
+	 * XBAR 0x1A1B routes: Y→WM0+WM4, CbCr→WM1 only
 	 *
 	 * Note: This is skipped for RDI lines (axi_mode = 0x60) since they
 	 * use raw bypass mode and don't need VIDEO WM configuration.
@@ -3593,12 +3598,17 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 * VIDEO line starting - configure WM4 (Y) and WM1 (CbCr)
 			 * with VIDEO line's buffer addresses.
 			 *
-			 * IMPORTANT: Use VFE31 webOS register format (same as PIX mode)!
-			 * Previous code used incorrect format causing half-height chroma.
+			 * VIDEO uses: WM4 (Y) + WM1 (CbCr)
+			 * XBAR 0x1A1B routes: Y→WM0+WM4, CbCr→WM1
+			 *
+			 * IMPORTANT: Use same bytesperline as Step 2 to ensure
+			 * consistent CbCr offset calculation!
 			 */
 			struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
 			u32 height = pix->height;
-			u32 bytesperline = pix->plane_fmt[0].bytesperline;
+			/* Use module param if set, same as Step 2 */
+			u32 bytesperline = (vfe31_bytesperline > 0) ?
+					   vfe31_bytesperline : pix->plane_fmt[0].bytesperline;
 			u32 wpl = bytesperline / 4;  /* 32-bit words per line */
 			u32 reg;
 
@@ -3713,8 +3723,8 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		} else {
 			/*
 			 * PIX line only (not VIDEO line).
-			 * Disable VIDEO WMs to ensure clean state.
-			 * PIX uses WM0 (Y) + WM4 (CbCr), VIDEO WMs are separate.
+			 * Disable VIDEO Y WM (WM4) to ensure clean state.
+			 * PIX uses WM0 (Y) + WM1 (CbCr).
 			 */
 			dev_info(vfe->camss->dev,
 				 "VFE31: Step 8 - PIX only, disabling VIDEO WM%d\n",
