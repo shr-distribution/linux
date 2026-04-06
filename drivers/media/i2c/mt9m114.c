@@ -123,6 +123,30 @@ MODULE_PARM_DESC(mt9m113_skip_short_pkt,
 #define MT9M113_SEQ_CAP_MODE_VIDEO			0xa116
 
 /*
+ * MT9M113 Mode Output Format registers (Driver ID 7 = 0x27xx)
+ * From MT9M113 datasheet Table 31: Driver ID = 7: Mode Variables
+ * Register R0x0055 (mode_output_format_a) and R0x0057 (mode_output_format_b)
+ *
+ * Bit fields:
+ *   [8]   config_processed_bayer - Turn on processed Bayer output
+ *   [7:6] rgb_format - RGB output format (0=565, 1=555, 2=444x, 3=x444)
+ *   [5]   output_mode - 0=YUV, 1=RGB
+ *   [3]   monochrome - Enable monochrome output
+ *   [1]   swap_chrominance_luma - Swap Y and C bytes
+ *   [0]   swap_channels - Swap Cb/Cr or R/B
+ *
+ * Default: 0x0000 = YUV output
+ * Value 0x0100 = Processed Bayer output (bit 8 set)
+ */
+#define MT9M113_MODE_OUTPUT_FORMAT_A			0x2755
+#define MT9M113_MODE_OUTPUT_FORMAT_B			0x2757
+#define MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER	BIT(8)
+#define MT9M113_MODE_OUTPUT_FORMAT_RGB_MODE		BIT(5)
+#define MT9M113_MODE_OUTPUT_FORMAT_MONOCHROME		BIT(3)
+#define MT9M113_MODE_OUTPUT_FORMAT_SWAP_LUMA_CHROMA	BIT(1)
+#define MT9M113_MODE_OUTPUT_FORMAT_SWAP_CHANNELS	BIT(0)
+
+/*
  * SEQ_CAP_MODE (0xA115) values from webOS mt9m113.c:
  *   0x0000 = Normal capture mode (Context B)
  * SEQ_CAP_MODE_VIDEO (0xA116) values:
@@ -876,13 +900,13 @@ static int mt9m113_poll_mcu_var(struct mt9m114 *sensor, u16 addr,
  * @sensor: Sensor device
  * @state: V4L2 subdev state containing the requested format
  *
- * MT9M113 uses MCU variables for resolution configuration, not direct registers
- * like MT9M114. The output resolution is set via:
- * - MODE_OUTPUT_WIDTH_A (0x2703)
- * - MODE_OUTPUT_HEIGHT_A (0x2705)
+ * MT9M113 uses MCU variables for configuration, not direct registers like
+ * MT9M114. This function configures MODE_OUTPUT_FORMAT_A (0x2755) or
+ * MODE_OUTPUT_FORMAT_B (0x2757) for the requested pixel format.
  *
- * This function also configures CAM_OUTPUT_FORMAT for the requested pixel
- * format (YUV, RGB, or Bayer RAW).
+ * IMPORTANT: MT9M113 does NOT use MT9M114's CAM_OUTPUT_FORMAT (0xC86C)!
+ * The correct registers are MODE_OUTPUT_FORMAT_A/B from Table 31 in the
+ * MT9M113 datasheet (Driver ID 7, Mode Variables).
  */
 static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 				 struct v4l2_subdev_state *state)
@@ -913,53 +937,105 @@ static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 		 "Context B (1280x1024)" : "Context A (640x480)");
 
 	/*
-	 * Configure CAM_OUTPUT_FORMAT for the requested pixel format.
-	 * This is critical for RAW/Bayer output - without this, the sensor
-	 * outputs YUV regardless of what format is requested on the pipeline.
+	 * Configure MODE_OUTPUT_FORMAT_A/B for the requested pixel format.
+	 * MT9M113 uses different registers than MT9M114's CAM_OUTPUT_FORMAT!
 	 *
-	 * CAM_OUTPUT_FORMAT (0xC86C) bit fields:
-	 *   [9:8]  FORMAT: 0=YUV, 1=RGB, 2=Bayer, 3=None
-	 *   [11:10] BAYER_FORMAT: 0=RAW10, 1=PreLSC 8+2, 2=PostLSC 8+2, 3=Processed8
-	 *   [1] SWAP_BYTES
-	 *   [0] SWAP_RED_BLUE
+	 * MODE_OUTPUT_FORMAT_A (0x2755) for Context A (preview, 640x480)
+	 * MODE_OUTPUT_FORMAT_B (0x2757) for Context B (capture, 1280x1024)
+	 * From MT9M113 datasheet Table 31 (Driver ID 7, page 96):
+	 *   Bit 8: config_processed_bayer - Turn on processed Bayer output
+	 *   Bit 5: output_mode - 0=YUV, 1=RGB
+	 *   Default 0x0000 = YUV output
+	 *   Value 0x0100 = Processed Bayer output
+	 *
+	 * This is critical for RAW/Bayer output - without setting the correct
+	 * register, the sensor outputs YUV even when Bayer is requested.
 	 */
-	ret = cci_read(sensor->regmap, MT9M114_CAM_OUTPUT_FORMAT,
-		       &output_format, NULL);
-	if (ret < 0) {
-		dev_err(&sensor->client->dev,
-			"MT9M113: failed to read CAM_OUTPUT_FORMAT: %d\n", ret);
-		return ret;
+	{
+		u16 mode_output_format_reg;
+		u16 mode_output_format_val;
+		u64 current_val;
+		bool use_context_b = (compose->width > 640 ||
+				      compose->height > 480);
+
+		/* Select the correct context register */
+		mode_output_format_reg = use_context_b ?
+			MT9M113_MODE_OUTPUT_FORMAT_B :
+			MT9M113_MODE_OUTPUT_FORMAT_A;
+
+		/*
+		 * Determine output format value based on requested format.
+		 * MT9M114's format bits: [9:8] = 0=YUV, 1=RGB, 2=Bayer
+		 * MT9M113's format bits: [8] = processed_bayer, [5] = RGB mode
+		 */
+		if (info->output_format & MT9M114_CAM_OUTPUT_FORMAT_FORMAT_BAYER) {
+			/* Bayer/RAW output - set bit 8 */
+			mode_output_format_val =
+				MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
+		} else if (info->output_format & MT9M114_CAM_OUTPUT_FORMAT_FORMAT_RGB) {
+			/* RGB output - set bit 5 */
+			mode_output_format_val =
+				MT9M113_MODE_OUTPUT_FORMAT_RGB_MODE;
+		} else {
+			/* YUV output (default) */
+			mode_output_format_val = 0x0000;
+		}
+
+		/* Read current value */
+		ret = mt9m113_read_mcu_var(sensor, mode_output_format_reg,
+					   &current_val);
+		if (ret < 0) {
+			dev_err(&sensor->client->dev,
+				"MT9M113: failed to read MODE_OUTPUT_FORMAT_%c: %d\n",
+				use_context_b ? 'B' : 'A', ret);
+			return ret;
+		}
+
+		dev_info(&sensor->client->dev,
+			 "MT9M113: MODE_OUTPUT_FORMAT_%c current=0x%04llx, new=0x%04x\n",
+			 use_context_b ? 'B' : 'A', current_val,
+			 mode_output_format_val);
+
+		/* Write new value */
+		ret = mt9m113_write_mcu_var(sensor, mode_output_format_reg,
+					    mode_output_format_val);
+		if (ret < 0) {
+			dev_err(&sensor->client->dev,
+				"MT9M113: failed to write MODE_OUTPUT_FORMAT_%c: %d\n",
+				use_context_b ? 'B' : 'A', ret);
+			return ret;
+		}
+
+		/*
+		 * Also configure the other context if switching to Bayer
+		 * to ensure consistent behavior.
+		 */
+		if (mode_output_format_val != 0x0000) {
+			u16 other_reg = use_context_b ?
+				MT9M113_MODE_OUTPUT_FORMAT_A :
+				MT9M113_MODE_OUTPUT_FORMAT_B;
+
+			ret = mt9m113_write_mcu_var(sensor, other_reg,
+						    mode_output_format_val);
+			if (ret < 0) {
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: failed to write other context: %d\n",
+					 ret);
+				/* Non-fatal, continue */
+			}
+		}
 	}
-
-	output_format &= ~(MT9M114_CAM_OUTPUT_FORMAT_RGB_FORMAT_MASK |
-			   MT9M114_CAM_OUTPUT_FORMAT_BAYER_FORMAT_MASK |
-			   MT9M114_CAM_OUTPUT_FORMAT_FORMAT_MASK |
-			   MT9M114_CAM_OUTPUT_FORMAT_SWAP_BYTES |
-			   MT9M114_CAM_OUTPUT_FORMAT_SWAP_RED_BLUE);
-	output_format |= info->output_format;
-
-	ret = cci_write(sensor->regmap, MT9M114_CAM_OUTPUT_FORMAT,
-			output_format, NULL);
-	if (ret < 0) {
-		dev_err(&sensor->client->dev,
-			"MT9M113: failed to write CAM_OUTPUT_FORMAT: %d\n", ret);
-		return ret;
-	}
-
-	dev_info(&sensor->client->dev,
-		 "MT9M113: CAM_OUTPUT_FORMAT=0x%04llx (info->output_format=0x%x)\n",
-		 output_format, info->output_format);
 
 	/*
-	 * Issue REFRESH_MODE (SEQ_CMD=0x0006) to apply the CAM_OUTPUT_FORMAT
+	 * Issue REFRESH_MODE (SEQ_CMD=0x0006) to apply the output format
 	 * change. Without this, the sensor MCU continues outputting the
-	 * previous format (typically YUV) regardless of CAM_OUTPUT_FORMAT.
+	 * previous format (typically YUV).
 	 */
 	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 				    MT9M113_SEQ_CMD_REFRESH_MODE);
 	if (ret < 0) {
 		dev_err(&sensor->client->dev,
-			"MT9M113: REFRESH_MODE after CAM_OUTPUT_FORMAT failed: %d\n",
+			"MT9M113: REFRESH_MODE after MODE_OUTPUT_FORMAT failed: %d\n",
 			ret);
 		return ret;
 	}
@@ -972,7 +1048,7 @@ static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 	}
 
 	dev_info(&sensor->client->dev,
-		 "MT9M113: REFRESH_MODE complete after CAM_OUTPUT_FORMAT\n");
+		 "MT9M113: REFRESH_MODE complete after MODE_OUTPUT_FORMAT\n");
 
 	return 0;
 }
