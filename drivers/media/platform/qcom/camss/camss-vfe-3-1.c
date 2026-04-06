@@ -4316,13 +4316,34 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	line = &vfe->line[vfe->camif_pending_line_id];
 
 	/*
-	 * Calculate width_bytes based on actual format bits-per-pixel.
-	 * YUV422: 16 bpp -> width * 2 bytes
-	 * RAW8:   8 bpp  -> width * 1 byte
-	 * RAW10:  10 bpp -> width * 10/8 bytes (packed)
+	 * Calculate width_bytes based on INPUT format bits-per-pixel.
+	 *
+	 * CRITICAL: For PIX/VIDEO mode, the CAMIF sees the full sensor input
+	 * (UYVY = 16 bpp) regardless of output format. The format table's
+	 * mbus_bpp reflects OUTPUT format (8 bpp per NV16 plane), not INPUT.
+	 *
+	 * YUV422 input: 16 bpp -> width * 2 bytes (UYVY, VYUY, YUYV, YVYU)
+	 * RAW8 input:   8 bpp  -> width * 1 byte
+	 * RAW10 input:  10 bpp -> width * 10/8 bytes (packed)
 	 */
-	bpp = camss_format_get_bpp(line->formats, line->nformats,
-				   line->fmt[MSM_VFE_PAD_SINK].code);
+	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
+	case MEDIA_BUS_FMT_VYUY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
+	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
+	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
+		/* YUV422 formats: 16 bits (2 bytes) per pixel */
+		bpp = 16;
+		break;
+	default:
+		/* Other formats: use format table bpp */
+		bpp = camss_format_get_bpp(line->formats, line->nformats,
+					   line->fmt[MSM_VFE_PAD_SINK].code);
+		break;
+	}
 	width_bytes = line->fmt[MSM_VFE_PAD_SINK].width * bpp / 8;
 	height = line->fmt[MSM_VFE_PAD_SINK].height;
 
