@@ -127,6 +127,8 @@ The VFE31 (Video Front End) camera driver is used on MSM8660/APQ8060. Reference 
   - `drivers/media/video/msm/vfe/msm_vfe31.c` and `msm_vfe31.h`
 - LineageOS Mako: https://github.com/LineageOS/lge-kernel-mako
 - Sony MSM8960: https://github.com/LineageOS/sony-kernel-msm8960
+- LG G2 VFE31: https://gitlab.com/k2wl/g2_kernel/-/blob/master/drivers/media/video/msm/msm_vfe31.c
+  - Contains raw snapshot mode (CAMIF_TO_AXI_VIA_OUTPUT_2) useful for RDI implementation
 
 **Key VFE31 register values from webOS dumps:**
 - DEMUX_EVEN_CFG (0x290) = 0xC9CA (16-bit combined, same to both EVEN and ODD)
