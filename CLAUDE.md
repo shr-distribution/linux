@@ -114,14 +114,47 @@ See `UPSTREAM_PATCH_PLAN.md` for the 28-patch submission plan organized into 10 
 - `reports/DEVICE_TREE_CROSSCHECK_REPORT.md` - DT vs webOS kernel comparison
 - `../schematics/` - Hardware schematics PDFs
 
+## VFE31 Reference Kernels (Camera Driver)
+
+The VFE31 (Video Front End) camera driver is used on MSM8660/APQ8060. Reference implementations:
+
+**Local webOS kernel (primary reference):**
+- `/home/herrie/webos/touchpad-kernel/webos-linux-kernel-touchpad/drivers/media/video/msm/msm_vfe31.c`
+- `/home/herrie/webos/touchpad-kernel/webos-linux-kernel-touchpad/drivers/media/video/msm/msm_vfe31.h`
+
+**GitHub reference kernels:**
+- Mako (Nexus 4, MSM8960): https://github.com/raden/ampang-AOSP-mako-kernel
+  - `drivers/media/video/msm/vfe/msm_vfe31.c` and `msm_vfe31.h`
+- LineageOS Mako: https://github.com/LineageOS/lge-kernel-mako
+- Sony MSM8960: https://github.com/LineageOS/sony-kernel-msm8960
+
+**Key VFE31 register values from webOS dumps:**
+- DEMUX_EVEN_CFG (0x290) = 0xC9CA (16-bit combined, same to both EVEN and ODD)
+- DEMUX_ODD_CFG (0x294) = 0xC9CA
+- AXI_OUT_MODE (0x040) = 0x01 (OUTPUT_1_AND_3)
+- XBAR_CFG1 (0x044) = 0x1A1B (VIDEO_MODE routing)
+- MODULE_CFG (0x010) = 0x01C00C0C
+
+**Local register dumps:**
+- `reports/webos-preview-mode-dump.txt` - Live preview mode registers
+- `reports/webos-video-mode-dump.txt` - Video recording registers
+- `reports/webos-vfe-register-dump.txt` - General VFE dump
+
 ## Hardware Access
 
 **From host (webOS running):** `novacom run file://bin/sh`
 **From host (LuneOS debug):** `telnet 172.16.42.2`
 **From host (LuneOS full):** `ssh root@172.16.42.2`
 
+**Important:**
+- Always use port 22 for SSH to the device (172.16.42.2:22), not port 2221. Port 2221 is the default on the host machine, not the TouchPad.
+- Use `scp` to copy files to the device, not base64 encoding or other workarounds. Example: `scp file.txt root@172.16.42.2:/path/`
+
 ## Git Remotes
 
 - `origin` - kernel.org stable
 - `github` - Personal fork (Herrie82)
 - `shr-github` - SHR distribution (shr-distribution/linux)
+- `shr-linux` - Local SHR repo (/home/herrie/Documents/GitHub/linux-shr)
+
+**Always push to `shr-github`** for this project (not `github` which may have access issues).
