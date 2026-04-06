@@ -260,6 +260,58 @@ static const struct camss_format_info formats_pix_8x16[] = {
 	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
 };
 
+/*
+ * VFE31-specific PIX formats for MSM8660.
+ *
+ * VFE31 DEMUX takes UYVY input and separates Y and CbCr to separate Write
+ * Masters. The DMA burst configuration is based on the INPUT stride (UYVY,
+ * width*2 bytes/line), not the output stride (NV16, width bytes/line per plane).
+ *
+ * To allocate sufficient buffer space, we use bpp=16 (gives bytesperline=width*2)
+ * and vsub=1/1 (keeps sizeimage = 2*width*height, same as standard NV16).
+ *
+ * Standard NV16: bpp=8, vsub=1/2 -> bytesperline=width, sizeimage=2*width*height
+ * VFE31 NV16:    bpp=16, vsub=1/1 -> bytesperline=2*width, sizeimage=2*width*height
+ */
+static const struct camss_format_info formats_pix_vfe31[] = {
+	/* NV16 with UYVY input stride for VFE31 DEMUX */
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	/* NV61 with UYVY input stride */
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	/* 2X8 formats for CAMIF */
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	/* Packed YUV 4:2:2 passthrough */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_UYVY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_VYUY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_YUYV, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_YVYU, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+};
+
 static const struct camss_format_info formats_pix_8x96[] = {
 	{ MEDIA_BUS_FMT_YUYV8_1_5X8, 8, V4L2_PIX_FMT_NV12, 1,
 	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
@@ -311,6 +363,11 @@ const struct camss_formats vfe_formats_rdi_8x16 = {
 const struct camss_formats vfe_formats_pix_8x16 = {
 	.nformats = ARRAY_SIZE(formats_pix_8x16),
 	.formats = formats_pix_8x16
+};
+
+const struct camss_formats vfe_formats_pix_vfe31 = {
+	.nformats = ARRAY_SIZE(formats_pix_vfe31),
+	.formats = formats_pix_vfe31
 };
 
 const struct camss_formats vfe_formats_rdi_8x96 = {

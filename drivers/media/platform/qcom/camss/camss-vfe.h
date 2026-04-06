@@ -288,6 +288,7 @@ int vfe_pm_domain_on(struct vfe_device *vfe);
 
 extern const struct camss_formats vfe_formats_rdi_8x16;
 extern const struct camss_formats vfe_formats_pix_8x16;
+extern const struct camss_formats vfe_formats_pix_vfe31;
 extern const struct camss_formats vfe_formats_rdi_8x96;
 extern const struct camss_formats vfe_formats_pix_8x96;
 extern const struct camss_formats vfe_formats_rdi_845;

@@ -190,7 +190,7 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 			.line_num = 5,
 			.hw_ops = &vfe_ops_3_1,
 			.formats_rdi = &vfe_formats_rdi_8x16,
-			.formats_pix = &vfe_formats_pix_8x16
+			.formats_pix = &vfe_formats_pix_vfe31
 		}
 	}
 };
