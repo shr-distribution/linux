@@ -2266,12 +2266,13 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * This caused the DEMUX to output Y on both Y and CbCr channels.
 	 */
 	/*
-	 * VFE31 uses separate 8-bit values for EVEN and ODD config.
-	 * For UYVY: EVEN=0xC9 (Y+U routing), ODD=0xCA (Y+V routing)
+	 * VFE31 writes the combined 16-bit value to both EVEN and ODD registers.
+	 * This was the working state at 20:04 CET - separate 8-bit values broke
+	 * the capture. webOS also uses this combined format (0xC9CA for UYVY).
 	 */
-	writel_relaxed(even_cfg, vfe->base + VFE_0_DEMUX_EVEN_CFG);
-	writel_relaxed(odd_cfg, vfe->base + VFE_0_DEMUX_ODD_CFG);
-	val = (even_cfg << 8) | odd_cfg;  /* For debug log only */
+	val = (even_cfg << 8) | odd_cfg;
+	writel_relaxed(val, vfe->base + VFE_0_DEMUX_EVEN_CFG);
+	writel_relaxed(val, vfe->base + VFE_0_DEMUX_ODD_CFG);
 
 	/* Readback to verify */
 	{
@@ -3985,9 +3986,9 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 			       vfe->base + VFE_0_DEMUX_GAIN_0);
 		writel_relaxed(VFE_0_DEMUX_GAIN_1_CH1 | VFE_0_DEMUX_GAIN_1_CH2,
 			       vfe->base + VFE_0_DEMUX_GAIN_1);
-		/* UYVY (CbYCrY) demux pattern: even=0xc9, odd=0xac */
-		writel_relaxed(0xc9, vfe->base + VFE_0_DEMUX_EVEN_CFG);
-		writel_relaxed(0xac, vfe->base + VFE_0_DEMUX_ODD_CFG);
+		/* UYVY demux pattern: combined 16-bit format (0xC9CA) to both registers */
+		writel_relaxed(0xc9ca, vfe->base + VFE_0_DEMUX_EVEN_CFG);
+		writel_relaxed(0xc9ca, vfe->base + VFE_0_DEMUX_ODD_CFG);
 		wmb();
 
 		/*
