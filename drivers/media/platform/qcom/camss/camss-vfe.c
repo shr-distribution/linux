@@ -264,43 +264,54 @@ static const struct camss_format_info formats_pix_8x16[] = {
  * VFE31-specific PIX formats for MSM8660.
  *
  * VFE31 DEMUX takes UYVY input and separates Y and CbCr to separate Write
- * Masters. The DMA burst configuration is based on the INPUT stride (UYVY,
- * width*2 bytes/line), not the output stride (NV16, width bytes/line per plane).
+ * Masters. Both WMs write with the INPUT stride (UYVY, width*2 bytes/line),
+ * not the NV16 output stride (width bytes/line per plane).
  *
- * To allocate sufficient buffer space, we use bpp=16 (gives bytesperline=width*2)
- * and vsub=1/1 (keeps sizeimage = 2*width*height, same as standard NV16).
+ * Buffer requirements:
+ * - WM0 (Y):    writes bytesperline * height = width*2 * height bytes
+ * - WM1 (CbCr): writes bytesperline * height = width*2 * height bytes
+ * - WM1 starts at offset width*height (CbCr plane offset in NV16)
+ * - Total: width*height + width*2*height = 3 * width * height bytes minimum
  *
- * Standard NV16: bpp=8, vsub=1/2 -> bytesperline=width, sizeimage=2*width*height
- * VFE31 NV16:    bpp=16, vsub=1/1 -> bytesperline=2*width, sizeimage=2*width*height
+ * Actually, WM1 ends at: cbcr_offset + bytesperline*height
+ *                      = width*height + width*2*height = 3*width*height
+ * But buffer starts at 0, so we need 3*width*height bytes total.
+ *
+ * Using vsub=1/3 gives: sizeimage = bytesperline * height * 3 / 1
+ *                                 = width*2 * height * 3 = 6*width*height
+ * That's too much. Let's use a simpler approach:
+ *
+ * With bpp=16, vsub=2/1: bytesperline = width*2, sizeimage = width*2 * height*2
+ *                      = 4*width*height (enough for 3*width*height needed)
  */
 static const struct camss_format_info formats_pix_vfe31[] = {
 	/* NV16 with UYVY input stride for VFE31 DEMUX */
 	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	/* NV61 with UYVY input stride */
 	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	/* 2X8 formats for CAMIF */
 	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
 	/* Packed YUV 4:2:2 passthrough */
 	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_UYVY, 1,
 	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
