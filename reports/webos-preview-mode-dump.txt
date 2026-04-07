@@ -37,17 +37,17 @@ VFE+0x05C: 0x002701DF  (WM0_y/x_off)
 VFE+0x060: 0x00501DF2  (WM0_WR_PATTERN)
 VFE+0x064: 0x00000000  
 
-WM1 (Preview CbCr):
+WM1 (Video Y - per webOS msm_vfe31.c:721):
 VFE+0x068: 0x42A79000  (WM1_PING_ADDR)
 VFE+0x06C: 0x42A08000  (WM1_PONG_ADDR)
 VFE+0x070: 0x01C8012F  (WM1_WR_CFG - height=0x1C8=456, width=0x12F=303)
 VFE+0x074: 0x002701DF  (WM1_y/x_off)
 VFE+0x078: 0x00501DF2  (WM1_WR_PATTERN)
-VFE+0x07C: 0x00000000  
+VFE+0x07C: 0x00000000
 
 WM2/WM3: All zeros (unused)
 
-WM4 (Video Y):
+WM4 (Preview CbCr - per webOS msm_vfe31.c:720):
 VFE+0x0B0: 0x4250D000  (WM4_PING_ADDR)
 VFE+0x0B4: 0x4242C000  (WM4_PONG_ADDR)
 VFE+0x0B8: 0x01300097  (WM4_WR_CFG)
@@ -98,7 +98,7 @@ VFE+0x290: 0x0000C9CA  (DEMUX_EVEN)
 4. PING_PONG toggles (0x00010011) - DMA working!
 5. CAMIF_STATUS = 0 (no errors)
 6. FRAME_CFG = 0 (webOS doesn't use this register)
-7. WM0/WM1 for preview, WM4/WM5 for video path
+7. WM0+WM4 for preview (Y+CbCr), WM1+WM5 for video (Y+CbCr) per msm_vfe31.c:719-722
 
 ==========================================
   ADDITIONAL AXI/DMA STATUS REGISTERS
@@ -145,7 +145,7 @@ y/x_OFF:   0x002701DF
 FRAMEDROP: 0x00501DF2
 IRQ_SUB:   0x00000000
 
-=== WM1 (Preview CbCr) ===
+=== WM1 (Video Y - per msm_vfe31.c:721) ===
 PING_ADDR: 0x42A79000
 PONG_ADDR: 0x42A08000
 WR_CFG:    0x01C8012F (height=456, burst=303)
@@ -165,5 +165,6 @@ x_offset bits[9:0] = 0x1DF = 479
 This configures frame/line drop patterns
 
 === BUFFER ADDRESSES ===
-Preview Y buffers:  0x42684000 - 0x42765000 (delta=0xE1000 = 921KB)
-Preview Cb buffers: 0x42A08000 - 0x42A79000 (delta=0x71000 = 452KB)
+Preview Y buffers (WM0):  0x42684000 - 0x42765000 (delta=0xE1000 = 921KB)
+Video Y buffers (WM1): 0x42A08000 - 0x42A79000 (delta=0x71000 = 452KB)
+Preview CbCr uses WM4, Video CbCr uses WM5 (per msm_vfe31.c:719-722)

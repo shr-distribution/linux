@@ -23,12 +23,12 @@ VFE+0x050: 0x42300000  (PING_ADDR)
 VFE+0x054: 0x425A3000  (PONG_ADDR) <- changed from 0x42765000
 VFE+0x058: 0x0000012F  (WR_CFG)
 
-WM1 (Preview CbCr):
+WM1 (Video Y - per msm_vfe31.c:721):
 VFE+0x068: 0x42A79000  (PING_ADDR)
 VFE+0x06C: 0x42A08000  (PONG_ADDR)
 VFE+0x070: 0x01C8012F  (WR_CFG)
 
-WM4 (Video Y):
+WM4 (Preview CbCr - per msm_vfe31.c:720):
 VFE+0x0B0: 0x4234B000  (PING_ADDR) <- changed
 VFE+0x0B4: 0x425EE000  (PONG_ADDR) <- changed
 VFE+0x0B8: 0x01300097  (WR_CFG)
@@ -55,7 +55,7 @@ VFE+0x204: 0x00000000  (CAMIF_STATUS - NO ERRORS)
 3. Same IRQ masks and configuration
 4. Buffer addresses rotate (different PING/PONG addrs)
 5. CAMIF_STATUS = 0 (no errors)
-6. Both preview (WM0/1) and video (WM4/5) paths active
+6. Both preview (WM0+WM4) and video (WM1+WM5) paths active per msm_vfe31.c:719-722
 
 ==========================================
   AXI/DMA STATUS - VIDEO RECORDING
@@ -75,18 +75,18 @@ CAMIF_STATUS: 0x00000000 (no errors)
 
 === Write Master Config Comparison ===
 
-| WM | Mode | PING | PONG | WR_CFG |
-|----|------|------|------|--------|
-| WM0 | Prev Y | 0x42300000 | 0x425A3000 | 0x0000012F |
-| WM1 | Prev Cb | 0x42A79000 | 0x42A08000 | 0x01C8012F |
-| WM4 | Vid Y | 0x4250D000 | 0x42891000 | 0x01300097 |
-| WM5 | Vid Cb | 0x42AC4000 | 0x42A53000 | 0x02F80097 |
+| WM | Mode (per msm_vfe31.c:719-722) | PING | PONG | WR_CFG |
+|----|--------------------------------|------|------|--------|
+| WM0 | Preview Y | 0x42300000 | 0x425A3000 | 0x0000012F |
+| WM1 | Video Y | 0x42A79000 | 0x42A08000 | 0x01C8012F |
+| WM4 | Preview CbCr | 0x4250D000 | 0x42891000 | 0x01300097 |
+| WM5 | Video CbCr | 0x42AC4000 | 0x42A53000 | 0x02F80097 |
 
 === WR_CFG Decoded ===
-WM0 (Preview Y):  burst=0x12F (303), lines=0
-WM1 (Preview Cb): burst=0x12F (303), lines=0x1C8 (456)
-WM4 (Video Y):    burst=0x097 (151), lines=0x130 (304)
-WM5 (Video Cb):   burst=0x097 (151), lines=0x2F8 (760)
+WM0 (Preview Y):     burst=0x12F (303), lines=0
+WM1 (Video Y):       burst=0x12F (303), lines=0x1C8 (456)
+WM4 (Preview CbCr):  burst=0x097 (151), lines=0x130 (304)
+WM5 (Video CbCr):    burst=0x097 (151), lines=0x2F8 (760)
 
 === IRQ Composite Masks ===
 COMP0: 0x03900007
@@ -94,6 +94,9 @@ COMP1: 0x03980007
 COMP2: 0x03A0000F
 
 === KEY OBSERVATION ===
-Both preview (WM0/1) and video (WM4/5) paths are active
-simultaneously during video recording. PING_PONG toggles
-confirming DMA is working for both paths.
+Per webOS msm_vfe31.c lines 719-722:
+  Preview: WM0 (Y) + WM4 (CbCr)
+  Video:   WM1 (Y) + WM5 (CbCr)
+
+Both preview and video paths are active simultaneously during
+video recording. PING_PONG toggles confirming DMA is working.
