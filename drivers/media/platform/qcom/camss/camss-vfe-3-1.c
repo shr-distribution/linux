@@ -1191,6 +1191,54 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line);
 static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line);
 static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
 
+/*
+ * vfe31_get_cbcr_offset - Calculate CbCr plane offset for semi-planar formats
+ * @pixelformat: V4L2 pixel format (e.g., V4L2_PIX_FMT_NV16)
+ * @width: Frame width in pixels
+ * @height: Frame height in lines
+ *
+ * Returns the byte offset where the CbCr (UV) plane starts within the buffer.
+ * For semi-planar formats (NV16, NV61, NV12, NV21), the UV plane follows
+ * immediately after the Y plane. For packed formats (UYVY, YUYV, etc.) and
+ * RAW formats, returns 0 since they use a single plane.
+ *
+ * This function ensures format-aware offset calculation that works correctly
+ * regardless of bytesperline padding (which may differ from width for alignment).
+ */
+static inline u32 vfe31_get_cbcr_offset(u32 pixelformat, u16 width, u16 height)
+{
+	switch (pixelformat) {
+	case V4L2_PIX_FMT_NV16:
+	case V4L2_PIX_FMT_NV61:
+		/*
+		 * NV16/NV61: Y plane = width * height bytes (8 bits per Y sample)
+		 * CbCr plane starts immediately after Y plane.
+		 * CbCr is interleaved (CbCrCbCr...) with full vertical resolution.
+		 */
+		return (u32)width * height;
+
+	case V4L2_PIX_FMT_NV12:
+	case V4L2_PIX_FMT_NV21:
+		/*
+		 * NV12/NV21: Y plane = width * height bytes
+		 * CbCr plane starts after Y, but with half vertical resolution.
+		 * UV offset is still width * height (Y plane size).
+		 */
+		return (u32)width * height;
+
+	case V4L2_PIX_FMT_UYVY:
+	case V4L2_PIX_FMT_VYUY:
+	case V4L2_PIX_FMT_YUYV:
+	case V4L2_PIX_FMT_YVYU:
+		/* Packed formats: single interleaved plane, no offset needed */
+		return 0;
+
+	default:
+		/* RAW formats and unknown: single plane */
+		return 0;
+	}
+}
+
 static void vfe31_global_reset(struct vfe_device *vfe)
 {
 	u32 hw_version;
@@ -2023,16 +2071,11 @@ static int vfe31_enable(struct vfe_line *line)
 	if (output->wm_num == 2) {
 		u8 wm1 = output->wm_idx[1];
 		/*
-		 * CbCr plane offset for NV16 semi-planar format:
-		 * VFE31 DEMUX outputs Y and CbCr with the INPUT stride (bytesperline),
-		 * not the standard NV16 output stride (width).
-		 *
-		 * WM0 (Y):    writes bytesperline * height bytes
-		 * WM1 (CbCr): writes bytesperline * height bytes
-		 *
-		 * CbCr plane must start AFTER WM0's full output to avoid overlap.
+		 * CbCr plane offset: Use format-aware calculation.
+		 * For NV16/NV61, offset = width * height (Y plane size).
+		 * For packed formats, offset = 0 (single plane).
 		 */
-		u32 cbcr_offset = bytesperline * height;
+		u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, width, height);
 		u32 wm1_ping_addr = ping_addr + cbcr_offset;
 		u32 wm1_pong_addr = pong_addr + cbcr_offset;
 
@@ -3204,18 +3247,14 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		wmb();
 
 		/*
-		 * Step 2b: Configure WM1 for CbCr output (NV16 semi-planar)
+		 * Step 2b: Configure WM1 for CbCr output (semi-planar formats)
 		 *
-		 * In PIX mode with DEMUX enabled, the VFE separates Y and CbCr:
-		 * - WM0: Y (luma) channel
-		 * - WM1: CbCr (chroma) channel, interleaved
-		 *
-		 * VFE31 writes with INPUT stride (bytesperline), not NV16 stride (width).
-		 * CbCr must start after WM0's full output to avoid data overlap.
+		 * In PIX mode with DEMUX enabled, the VFE separates Y and CbCr.
+		 * Use format-aware offset calculation for portability.
 		 */
 		if (line->output.wm_num == 2) {
 			u8 wm1 = line->output.wm_idx[1];
-			u32 cbcr_offset = bytesperline * height;  /* WM0 output size */
+			u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, width, height);
 			u32 wm1_ping = vfe->pending_ping_addr + cbcr_offset;
 			u32 wm1_pong = vfe->pending_pong_addr + cbcr_offset;
 
@@ -3646,11 +3685,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 *
 			 * VIDEO uses: WM4 (Y) + WM1 (CbCr)
 			 * XBAR 0x1A1B routes: Y→WM0+WM4, CbCr→WM1
-			 *
-			 * IMPORTANT: Use same bytesperline as Step 2 to ensure
-			 * consistent CbCr offset calculation!
 			 */
 			struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
+			u32 width = pix->width;
 			u32 height = pix->height;
 			/* Use module param if set, same as Step 2 */
 			u32 bytesperline = (vfe31_bytesperline > 0) ?
@@ -3722,13 +3759,10 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 * VIDEO CbCr WM (WM1 - shared with PIX)
 			 *
 			 * CRITICAL: Must set PING/PONG addresses for CbCr WM!
-			 * The wm_set_ping/pong_addr functions only save addresses
-			 * for the primary Y WM. CbCr addresses must be computed
-			 * here as Y_addr + cbcr_offset to ensure both WMs write
-			 * to the same frame buffer (Y followed by CbCr).
+			 * Use format-aware offset calculation for portability.
 			 */
 			if (line->output.wm_num == 2) {
-				u32 cbcr_offset = bytesperline * height;
+				u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, width, height);
 				u32 cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 				u32 cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
 
