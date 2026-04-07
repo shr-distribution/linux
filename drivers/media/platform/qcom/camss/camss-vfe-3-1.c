@@ -2816,6 +2816,21 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	/* Chroma subsample config - webOS uses 0x30 */
 	writel_relaxed(0x30, vfe->base + VFE_0_CHROMA_SUBS_CFG);
 
+	/* Debug: readback and log actual register values */
+	{
+		u32 v_image = readl_relaxed(vfe->base + VFE_0_CHROMA_V_IMAGE);
+		u32 v_phase = readl_relaxed(vfe->base + VFE_0_CHROMA_V_PHASE);
+		u32 h_image = readl_relaxed(vfe->base + VFE_0_CHROMA_H_IMAGE);
+		u32 subs_cfg = readl_relaxed(vfe->base + VFE_0_CHROMA_SUBS_CFG);
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: CHROMA_V_IMAGE=0x%08x (out=%d, in=%d), V_PHASE=0x%08x\n",
+			 v_image, v_image >> 16, v_image & 0xFFFF, v_phase);
+		dev_info(vfe->camss->dev,
+			 "VFE31: CHROMA_H_IMAGE=0x%08x (out=%d, in=%d), SUBS_CFG=0x%08x\n",
+			 h_image, h_image >> 16, h_image & 0xFFFF, subs_cfg);
+	}
+
 	dev_info(vfe->camss->dev,
 		 "VFE31: Scale/FOV configured: %ux%u, format=0x%x, chroma_v=%s\n",
 		 width, height, p,
