@@ -233,6 +233,81 @@ MODULE_PARM_DESC(vfe31_pix_cbcr_img_height,
 		 "VFE31 PIX CbCr IMAGE_SIZE height (-1=auto, >0=explicit)");
 
 /*
+ * ============================================================================
+ * PIX Y (WM0) debug parameters
+ * ============================================================================
+ */
+static int vfe31_pix_y_lines = -1;
+module_param(vfe31_pix_y_lines, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_y_lines,
+		 "VFE31 PIX Y WM lines (-1=auto, 0=disabled, >0=explicit)");
+
+static int vfe31_pix_y_burst = -1;
+module_param(vfe31_pix_y_burst, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_y_burst,
+		 "VFE31 PIX Y WM burst (-1=auto, >0=explicit)");
+
+static int vfe31_pix_y_ub_height = -1;
+module_param(vfe31_pix_y_ub_height, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_y_ub_height,
+		 "VFE31 PIX Y UB_CFG height (-1=auto, >0=explicit)");
+
+static int vfe31_pix_y_img_height = -1;
+module_param(vfe31_pix_y_img_height, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_y_img_height,
+		 "VFE31 PIX Y IMAGE_SIZE height (-1=auto, >0=explicit)");
+
+/*
+ * ============================================================================
+ * VIDEO Y (WM1) debug parameters
+ * ============================================================================
+ */
+static int vfe31_video_y_lines = -1;
+module_param(vfe31_video_y_lines, int, 0644);
+MODULE_PARM_DESC(vfe31_video_y_lines,
+		 "VFE31 VIDEO Y WM lines (-1=auto, 0=disabled, >0=explicit)");
+
+static int vfe31_video_y_burst = -1;
+module_param(vfe31_video_y_burst, int, 0644);
+MODULE_PARM_DESC(vfe31_video_y_burst,
+		 "VFE31 VIDEO Y WM burst (-1=auto, >0=explicit)");
+
+static int vfe31_video_y_ub_height = -1;
+module_param(vfe31_video_y_ub_height, int, 0644);
+MODULE_PARM_DESC(vfe31_video_y_ub_height,
+		 "VFE31 VIDEO Y UB_CFG height (-1=auto, >0=explicit)");
+
+static int vfe31_video_y_img_height = -1;
+module_param(vfe31_video_y_img_height, int, 0644);
+MODULE_PARM_DESC(vfe31_video_y_img_height,
+		 "VFE31 VIDEO Y IMAGE_SIZE height (-1=auto, >0=explicit)");
+
+/*
+ * ============================================================================
+ * VIDEO CbCr (WM5) debug parameters
+ * ============================================================================
+ */
+static int vfe31_video_cbcr_lines = -1;
+module_param(vfe31_video_cbcr_lines, int, 0644);
+MODULE_PARM_DESC(vfe31_video_cbcr_lines,
+		 "VFE31 VIDEO CbCr WM lines (-1=auto, 0=height-1, >0=explicit)");
+
+static int vfe31_video_cbcr_burst = -1;
+module_param(vfe31_video_cbcr_burst, int, 0644);
+MODULE_PARM_DESC(vfe31_video_cbcr_burst,
+		 "VFE31 VIDEO CbCr WM burst (-1=auto, >0=explicit)");
+
+static int vfe31_video_cbcr_ub_height = -1;
+module_param(vfe31_video_cbcr_ub_height, int, 0644);
+MODULE_PARM_DESC(vfe31_video_cbcr_ub_height,
+		 "VFE31 VIDEO CbCr UB_CFG height (-1=auto, >0=explicit)");
+
+static int vfe31_video_cbcr_img_height = -1;
+module_param(vfe31_video_cbcr_img_height, int, 0644);
+MODULE_PARM_DESC(vfe31_video_cbcr_img_height,
+		 "VFE31 VIDEO CbCr IMAGE_SIZE height (-1=auto, >0=explicit)");
+
+/*
  * Debug: dump all WM registers after configuration.
  * Set to 1 to enable verbose register dumps in dmesg.
  */
@@ -2148,10 +2223,17 @@ static int vfe31_enable(struct vfe_line *line)
 	 */
 	{
 		u16 image_stride = vfe31_calc_image_stride(width, bytesperline, is_rdi_line);
+		int img_height_val;
+
+		if (vfe31_pix_y_img_height < 0)
+			img_height_val = height;  /* auto */
+		else
+			img_height_val = vfe31_pix_y_img_height;  /* explicit */
+
 		reg = ((image_stride / 16) & 0xFFFF) << 16;
-		reg |= ((height - 1) << 4) | 2;
-		dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d (param=%d)\n",
-			 wm, image_stride, vfe31_image_stride);
+		reg |= ((img_height_val - 1) << 4) | 2;
+		dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d)\n",
+			 wm, image_stride, img_height_val, vfe31_image_stride, vfe31_pix_y_img_height);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
 	}
 
@@ -2167,12 +2249,28 @@ static int vfe31_enable(struct vfe_line *line)
 	 * For 640x480 NV16: bytesperline = 640 bytes = 160 words, burst = 143
 	 * For 1280x1024 NV16: bytesperline = 1280 bytes = 320 words, burst = 303
 	 */
-	wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
-	reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 (webOS formula) */
-	dev_info(vfe->camss->dev, "VFE31: WM%d WR_ADDR_CFG=0x%04x (wpl=%d, burst=%d)\n",
-		 wm, reg, wpl, reg);
-	/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
-	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
+	{
+		int lines_val, burst_val;
+
+		wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
+
+		/* Lines field: 0 for single-plane, height-24 for multi-plane Y */
+		if (vfe31_pix_y_lines < 0)
+			lines_val = 0;  /* auto: lines=0 for Y WM (webOS behavior) */
+		else
+			lines_val = vfe31_pix_y_lines;  /* explicit */
+
+		/* Burst field */
+		if (vfe31_pix_y_burst < 0)
+			burst_val = (wpl - 17) & 0xFFFF;  /* auto: webOS formula */
+		else
+			burst_val = vfe31_pix_y_burst & 0xFFFF;  /* explicit */
+
+		reg = (lines_val << 16) | burst_val;
+		dev_info(vfe->camss->dev, "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d, l_param=%d, b_param=%d)\n",
+			 wm, reg, lines_val, burst_val, vfe31_pix_y_lines, vfe31_pix_y_burst);
+		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
+	}
 
 	/*
 	 * WR_UB_CFG - VFE31 format (from webOS register dumps):
@@ -2195,6 +2293,7 @@ static int vfe31_enable(struct vfe_line *line)
 	{
 		u16 input_stride;
 		u16 input_wpl;
+		int ub_height_val;
 
 		if (is_rdi_line) {
 			/* RDI mode: RAW data, use bytesperline (1 byte per pixel for RAW8) */
@@ -2204,11 +2303,17 @@ static int vfe31_enable(struct vfe_line *line)
 			input_stride = width * 2;
 		}
 		input_wpl = input_stride / 4;  /* 32-bit words per line */
+
+		if (vfe31_pix_y_ub_height < 0)
+			ub_height_val = height - 1;  /* auto */
+		else
+			ub_height_val = vfe31_pix_y_ub_height;  /* explicit */
+
 		reg = ((input_wpl / 8 - 1) & 0xFFFF) << 16;
-		reg |= (height - 1) & 0xFFFF;
-		dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, input_wpl=%d, %s)\n",
-			 wm, reg, (input_wpl / 8 - 1), input_wpl,
-			 is_rdi_line ? "RDI" : "PIX/VIDEO");
+		reg |= ub_height_val & 0xFFFF;
+		dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, %s, param=%d)\n",
+			 wm, reg, (input_wpl / 8 - 1), ub_height_val,
+			 is_rdi_line ? "RDI" : "PIX/VIDEO", vfe31_pix_y_ub_height);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
 	}
 
@@ -3931,10 +4036,18 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			/* VIDEO Y WM IMAGE_SIZE */
 			{
 				u16 image_stride = vfe31_calc_image_stride(width, bytesperline, false);
+				int img_height_val;
+
+				if (vfe31_video_y_img_height < 0)
+					img_height_val = height;  /* auto */
+				else
+					img_height_val = vfe31_video_y_img_height;  /* explicit */
+
 				reg = ((image_stride / 16) & 0xFFFF) << 16;
-				reg |= ((height - 1) << 4) | 2;
-				dev_info(vfe->camss->dev, "VFE31: VIDEO WM1 IMAGE_SIZE stride=%d\n",
-					 image_stride);
+				reg |= ((img_height_val - 1) << 4) | 2;
+				dev_info(vfe->camss->dev,
+					 "VFE31: VIDEO WM1 IMAGE_SIZE stride=%d height=%d (h_param=%d)\n",
+					 image_stride, img_height_val, vfe31_video_y_img_height);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
 			}
@@ -3944,18 +4057,23 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 * Use bytesperline to match buffer allocation.
 			 */
 			{
-				int lines_val;
+				int lines_val, burst_val;
 				u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
 
-				if (vfe31_wm4_lines < 0)
+				if (vfe31_video_y_lines < 0)
 					lines_val = height - 24;  /* auto: same as CbCr */
 				else
-					lines_val = vfe31_wm4_lines;
+					lines_val = vfe31_video_y_lines;
 
-				reg = (lines_val << 16) | ((buf_wpl - 17) & 0xFFFF);
+				if (vfe31_video_y_burst < 0)
+					burst_val = (buf_wpl - 17) & 0xFFFF;  /* auto */
+				else
+					burst_val = vfe31_video_y_burst & 0xFFFF;  /* explicit */
+
+				reg = (lines_val << 16) | burst_val;
 				dev_info(vfe->camss->dev,
-					 "VFE31: VIDEO WM1 ADDR_CFG=0x%08x (lines=%d, burst=%d, param=%d)\n",
-					 reg, lines_val, buf_wpl - 17, vfe31_wm4_lines);
+					 "VFE31: VIDEO WM1 ADDR_CFG=0x%08x (lines=%d, burst=%d, l_param=%d, b_param=%d)\n",
+					 reg, lines_val, burst_val, vfe31_video_y_lines, vfe31_video_y_burst);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
 			}
@@ -3967,11 +4085,18 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 */
 			{
 				u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
+				int ub_height_val;
+
+				if (vfe31_video_y_ub_height < 0)
+					ub_height_val = height - 1;  /* auto */
+				else
+					ub_height_val = vfe31_video_y_ub_height;  /* explicit */
+
 				reg = ((buf_wpl / 8 - 1) & 0xFFFF) << 16;
-				reg |= (height - 1) & 0xFFFF;
+				reg |= ub_height_val & 0xFFFF;
 				dev_info(vfe->camss->dev,
-					 "VFE31: VIDEO WM1 UB_CFG=0x%08x (ub_depth=%d)\n",
-					 reg, (buf_wpl / 8 - 1));
+					 "VFE31: VIDEO WM1 UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, param=%d)\n",
+					 reg, (buf_wpl / 8 - 1), ub_height_val, vfe31_video_y_ub_height);
 			}
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_Y));
@@ -4012,10 +4137,18 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				 */
 				{
 					u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
+					int img_height_val;
+
+					if (vfe31_video_cbcr_img_height < 0)
+						img_height_val = height;  /* auto */
+					else
+						img_height_val = vfe31_video_cbcr_img_height;  /* explicit */
+
 					reg = ((cbcr_stride / 16) & 0xFFFF) << 16;
-					reg |= ((height - 1) << 4) | 2;
-					dev_info(vfe->camss->dev, "VFE31: VIDEO WM5 IMAGE_SIZE stride=%d (cbcr_param=%d)\n",
-						 cbcr_stride, vfe31_cbcr_stride);
+					reg |= ((img_height_val - 1) << 4) | 2;
+					dev_info(vfe->camss->dev,
+						 "VFE31: VIDEO WM5 IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d)\n",
+						 cbcr_stride, img_height_val, vfe31_cbcr_stride, vfe31_video_cbcr_img_height);
 				}
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
@@ -4028,7 +4161,24 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				 */
 				{
 					u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
-					reg = ((height - 24) << 16) | ((buf_wpl - 17) & 0xFFFF);
+					int lines_val, burst_val;
+
+					if (vfe31_video_cbcr_lines < 0)
+						lines_val = height - 24;  /* auto */
+					else if (vfe31_video_cbcr_lines == 0)
+						lines_val = height - 1;  /* full height */
+					else
+						lines_val = vfe31_video_cbcr_lines;  /* explicit */
+
+					if (vfe31_video_cbcr_burst < 0)
+						burst_val = (buf_wpl - 17) & 0xFFFF;  /* auto */
+					else
+						burst_val = vfe31_video_cbcr_burst & 0xFFFF;  /* explicit */
+
+					reg = (lines_val << 16) | burst_val;
+					dev_info(vfe->camss->dev,
+						 "VFE31: VIDEO WM5 ADDR_CFG=0x%08x (lines=%d, burst=%d, l_param=%d, b_param=%d)\n",
+						 reg, lines_val, burst_val, vfe31_video_cbcr_lines, vfe31_video_cbcr_burst);
 				}
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
@@ -4038,8 +4188,18 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				 */
 				{
 					u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
+					int ub_height_val;
+
+					if (vfe31_video_cbcr_ub_height < 0)
+						ub_height_val = height - 1;  /* auto */
+					else
+						ub_height_val = vfe31_video_cbcr_ub_height;  /* explicit */
+
 					reg = ((buf_wpl / 8 - 1) & 0xFFFF) << 16;
-					reg |= (height - 1) & 0xFFFF;
+					reg |= ub_height_val & 0xFFFF;
+					dev_info(vfe->camss->dev,
+						 "VFE31: VIDEO WM5 UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, param=%d)\n",
+						 reg, (buf_wpl / 8 - 1), ub_height_val, vfe31_video_cbcr_ub_height);
 				}
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_CBCR));
