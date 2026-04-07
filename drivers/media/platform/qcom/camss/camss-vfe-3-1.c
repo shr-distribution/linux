@@ -207,7 +207,7 @@ MODULE_PARM_DESC(vfe31_irq_comp_mask,
 		 "VFE31 IRQ composite mask (0=auto, 0x11=pix, 0x13=pix+video, 0x02=video)");
 
 /*
- * IMAGE_SIZE stride mode for WM configuration:
+ * IMAGE_SIZE stride mode for Y WM configuration:
  * 0 = auto (input stride for PIX/VIDEO, output stride for RDI)
  * 1 = force input stride (width * 2) - matches webOS
  * 2 = force output stride (bytesperline)
@@ -216,10 +216,25 @@ MODULE_PARM_DESC(vfe31_irq_comp_mask,
 static int vfe31_image_stride = 0;
 module_param(vfe31_image_stride, int, 0644);
 MODULE_PARM_DESC(vfe31_image_stride,
-		 "VFE31 IMAGE_SIZE stride (0=auto, 1=input, 2=output, >2=custom bytes)");
+		 "VFE31 Y WM IMAGE_SIZE stride (0=auto, 1=input, 2=output, >2=custom bytes)");
 
 /*
- * Helper to calculate IMAGE_SIZE stride based on module parameter.
+ * IMAGE_SIZE stride mode for CbCr WM configuration:
+ * 0 = auto (use bytesperline/output stride - safe default)
+ * 1 = force input stride (width * 2)
+ * 2 = force output stride (bytesperline)
+ * >2 = use this value directly as stride in bytes
+ *
+ * CbCr WMs write to the output buffer, so auto uses bytesperline.
+ * Using input stride causes buffer overflow and crashes!
+ */
+static int vfe31_cbcr_stride = 0;
+module_param(vfe31_cbcr_stride, int, 0644);
+MODULE_PARM_DESC(vfe31_cbcr_stride,
+		 "VFE31 CbCr WM IMAGE_SIZE stride (0=auto/output, 1=input, 2=output, >2=custom bytes)");
+
+/*
+ * Helper to calculate IMAGE_SIZE stride for Y WMs.
  * Returns stride in bytes.
  */
 static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline, bool is_rdi)
@@ -232,6 +247,21 @@ static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline, bool is_r
 		return bytesperline;
 	else
 		return is_rdi ? bytesperline : (width * 2);
+}
+
+/*
+ * Helper to calculate IMAGE_SIZE stride for CbCr WMs.
+ * Returns stride in bytes. Default is bytesperline (safe).
+ */
+static inline u16 vfe31_calc_cbcr_stride(u16 width, u16 bytesperline)
+{
+	if (vfe31_cbcr_stride > 2)
+		return (u16)vfe31_cbcr_stride;
+	else if (vfe31_cbcr_stride == 1)
+		return width * 2;
+	else
+		/* Auto and mode 2 both use bytesperline (safe default) */
+		return bytesperline;
 }
 
 /* External module parameters from camss-vfe.c */
@@ -2159,13 +2189,13 @@ static int vfe31_enable(struct vfe_line *line)
 		writel_relaxed(wm1_pong_addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm1));
 
-		/* CbCr WM IMAGE_SIZE - use same stride as Y WM */
+		/* CbCr WM IMAGE_SIZE - use vfe31_cbcr_stride module param */
 		{
-			u16 image_stride = vfe31_calc_image_stride(width, bytesperline, false);
-			reg = ((image_stride / 16) & 0xFFFF) << 16;
+			u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
+			reg = ((cbcr_stride / 16) & 0xFFFF) << 16;
 			reg |= ((height - 1) << 4) | 2;
-			dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d\n",
-				 wm1, image_stride);
+			dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d (cbcr_param=%d)\n",
+				 wm1, cbcr_stride, vfe31_cbcr_stride);
 			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 		}
 
@@ -3353,13 +3383,13 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			writel_relaxed(wm1_pong,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm1));
 
-			/* WM1 IMAGE_SIZE - use same stride as WM0 */
+			/* CbCr WM IMAGE_SIZE - use vfe31_cbcr_stride module param */
 			{
-				u16 image_stride = vfe31_calc_image_stride(width, bytesperline, false);
-				reg = ((image_stride / 16) & 0xFFFF) << 16;
+				u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
+				reg = ((cbcr_stride / 16) & 0xFFFF) << 16;
 				reg |= ((height - 1) << 4) | 2;
-				dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d\n",
-					 wm1, image_stride);
+				dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d (cbcr_param=%d)\n",
+					 wm1, cbcr_stride, vfe31_cbcr_stride);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 			}
@@ -3868,16 +3898,22 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				writel_relaxed(cbcr_pong,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
 
-				/* VIDEO CbCr IMAGE_SIZE */
+				/*
+				 * VIDEO CbCr IMAGE_SIZE - use vfe31_cbcr_stride module param.
+				 *
+				 * CRITICAL: CbCr WMs must use bytesperline, NOT input stride!
+				 * Using input stride (width*2) causes DMA to write beyond
+				 * the buffer, corrupting memory and crashing the kernel.
+				 */
 				{
-					u16 image_stride = vfe31_calc_image_stride(width, bytesperline, false);
-					reg = ((image_stride / 16) & 0xFFFF) << 16;
+					u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
+					reg = ((cbcr_stride / 16) & 0xFFFF) << 16;
 					reg |= ((height - 1) << 4) | 2;
-					dev_info(vfe->camss->dev, "VFE31: VIDEO WM5 IMAGE_SIZE stride=%d\n",
-						 image_stride);
-					writel_relaxed(reg,
-						       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
+					dev_info(vfe->camss->dev, "VFE31: VIDEO WM5 IMAGE_SIZE stride=%d (cbcr_param=%d)\n",
+						 cbcr_stride, vfe31_cbcr_stride);
 				}
+				writel_relaxed(reg,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
 
 				/*
 				 * VIDEO CbCr ADDR_CFG - VFE31 format:
