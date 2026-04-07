@@ -318,6 +318,43 @@ MODULE_PARM_DESC(vfe31_dump_wm_regs,
 
 /*
  * ============================================================================
+ * Chroma scale debug parameters
+ * ============================================================================
+ *
+ * CHROMA_V_IMAGE register (0x4F0) controls vertical chroma scaling:
+ *   Format: (output_height << 16) | input_height
+ *   1:1 scaling: (height << 16) | height = 0x01E001E0 for 480
+ *   2:1 scaling: (height/2 << 16) | height = 0x00F001E0 for 480
+ *
+ * WebOS used 2:1 (0x00F001E0) even for video - they used NV12 internally.
+ * For NV16 (4:2:2), we need 1:1 scaling.
+ */
+static int vfe31_chroma_v_out = -1;  /* -1 = auto (same as input for NV16) */
+module_param(vfe31_chroma_v_out, int, 0644);
+MODULE_PARM_DESC(vfe31_chroma_v_out,
+		 "VFE31 CHROMA_V_IMAGE output height (-1=auto, 0=half, >0=explicit)");
+
+/*
+ * CHROMA_V_PHASE register (0x4F4) controls vertical scaling phase:
+ *   0x00310000 = 1:1 scaling (no subsample)
+ *   0x00320000 = 2:1 scaling (vertical subsample)
+ */
+static int vfe31_chroma_v_phase = -1;  /* -1 = auto based on format */
+module_param(vfe31_chroma_v_phase, int, 0644);
+MODULE_PARM_DESC(vfe31_chroma_v_phase,
+		 "VFE31 CHROMA_V_PHASE (-1=auto, 0x00310000=1:1, 0x00320000=2:1)");
+
+/*
+ * CHROMA_SUBS_CFG register (0x4F8) - chroma subsample config
+ * WebOS uses 0x30. Try different values if CbCr capture is wrong.
+ */
+static int vfe31_chroma_subs_cfg = -1;  /* -1 = use 0x30 (webOS default) */
+module_param(vfe31_chroma_subs_cfg, int, 0644);
+MODULE_PARM_DESC(vfe31_chroma_subs_cfg,
+		 "VFE31 CHROMA_SUBS_CFG (-1=0x30, >0=explicit)");
+
+/*
+ * ============================================================================
  * VFE31 IRQ COMPOSITE MASK - CORRECTED BASED ON REGISTER DUMPS
  * ============================================================================
  *
@@ -2803,18 +2840,45 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * - NV12/NV21 (4:2:0): 2:1 vertical subsample
 	 * - NV16/NV61 (4:2:2): 1:1 (no vertical subsample)
 	 */
-	if (p == V4L2_PIX_FMT_NV12 || p == V4L2_PIX_FMT_NV21) {
-		/* 4:2:0: vertical 2:1 subsample */
-		writel_relaxed(((height / 2) << 16) | height, vfe->base + VFE_0_CHROMA_V_IMAGE);
-		writel_relaxed(0x00320000, vfe->base + VFE_0_CHROMA_V_PHASE);
-	} else {
-		/* 4:2:2 (NV16/NV61): no vertical subsample */
-		writel_relaxed((height << 16) | height, vfe->base + VFE_0_CHROMA_V_IMAGE);
-		writel_relaxed(0x00310000, vfe->base + VFE_0_CHROMA_V_PHASE);
-	}
+	/*
+	 * Chroma vertical scaling - controllable via module params
+	 */
+	{
+		u32 v_out, v_phase, subs_cfg;
 
-	/* Chroma subsample config - webOS uses 0x30 */
-	writel_relaxed(0x30, vfe->base + VFE_0_CHROMA_SUBS_CFG);
+		/* Determine output height */
+		if (vfe31_chroma_v_out < 0) {
+			/* Auto: based on format */
+			if (p == V4L2_PIX_FMT_NV12 || p == V4L2_PIX_FMT_NV21)
+				v_out = height / 2;  /* 4:2:0: 2:1 */
+			else
+				v_out = height;  /* 4:2:2: 1:1 */
+		} else if (vfe31_chroma_v_out == 0) {
+			v_out = height / 2;  /* Force 2:1 */
+		} else {
+			v_out = vfe31_chroma_v_out;  /* Explicit */
+		}
+
+		/* Determine phase */
+		if (vfe31_chroma_v_phase < 0) {
+			/* Auto: based on scaling ratio */
+			v_phase = (v_out < height) ? 0x00320000 : 0x00310000;
+		} else {
+			v_phase = vfe31_chroma_v_phase;
+		}
+
+		/* Determine subs_cfg */
+		subs_cfg = (vfe31_chroma_subs_cfg < 0) ? 0x30 : vfe31_chroma_subs_cfg;
+
+		writel_relaxed((v_out << 16) | height, vfe->base + VFE_0_CHROMA_V_IMAGE);
+		writel_relaxed(v_phase, vfe->base + VFE_0_CHROMA_V_PHASE);
+		writel_relaxed(subs_cfg, vfe->base + VFE_0_CHROMA_SUBS_CFG);
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: CHROMA_V params: v_out=%d, phase=0x%x, subs=0x%x (params: %d, %d, %d)\n",
+			 v_out, v_phase, subs_cfg,
+			 vfe31_chroma_v_out, vfe31_chroma_v_phase, vfe31_chroma_subs_cfg);
+	}
 
 	/* Debug: readback and log actual register values */
 	{
