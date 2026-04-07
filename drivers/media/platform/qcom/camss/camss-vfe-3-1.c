@@ -1883,7 +1883,7 @@ static int vfe31_enable(struct vfe_line *line)
 	struct vfe_output *output = &line->output;
 	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
 	u32 ping_addr, pong_addr;
-	u16 width, height, bytesperline, wpl;
+	u16 width, height, cbcr_height, bytesperline, wpl;
 	u32 val, reg;
 	unsigned long flags;
 	int wm_idx;
@@ -2141,10 +2141,25 @@ static int vfe31_enable(struct vfe_line *line)
 	height = pix->height;
 
 	/*
-	 * NV16 output format: DEMUX separates UYVY input into Y and CbCr planes.
+	 * CbCr height depends on format:
+	 * - NV12/NV21 (4:2:0): CbCr height = Y height / 2
+	 * - NV16/NV61 (4:2:2): CbCr height = Y height (full)
+	 */
+	if (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
+	    pix->pixelformat == V4L2_PIX_FMT_NV21) {
+		cbcr_height = height / 2;
+		dev_info(vfe->camss->dev,
+			 "VFE31: NV12/NV21 format - CbCr height=%d (Y height=%d)\n",
+			 cbcr_height, height);
+	} else {
+		cbcr_height = height;
+	}
+
+	/*
+	 * Semi-planar output: DEMUX separates UYVY input into Y and CbCr planes.
 	 * Each output plane has width bytes per line:
 	 * - WM0 writes Y plane: 640 bytes/line @ 640x480
-	 * - WM1 writes CbCr plane: 640 bytes/line @ 640x480 (interleaved Cb/Cr)
+	 * - WM1 writes CbCr plane: 640 bytes/line @ cbcr_height
 	 *
 	 * Use module param if set, otherwise use V4L2 format bytesperline.
 	 */
@@ -2399,13 +2414,13 @@ static int vfe31_enable(struct vfe_line *line)
 		writel_relaxed(wm1_pong_addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm1));
 
-		/* CbCr WM IMAGE_SIZE - use vfe31_cbcr_stride and vfe31_pix_cbcr_img_height */
+		/* CbCr WM IMAGE_SIZE - use cbcr_height for NV12 */
 		{
 			u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
 			int img_height_val;
 
 			if (vfe31_pix_cbcr_img_height < 0)
-				img_height_val = height;  /* auto */
+				img_height_val = cbcr_height;  /* auto: use format-based height */
 			else
 				img_height_val = vfe31_pix_cbcr_img_height;  /* explicit */
 
@@ -2424,17 +2439,17 @@ static int vfe31_enable(struct vfe_line *line)
 		 * Use bytesperline to match buffer allocation.
 		 *
 		 * Lines field controlled by vfe31_pix_cbcr_lines parameter:
-		 *   -1 = auto (height-24)
-		 *    0 = height-1 (full height)
+		 *   -1 = auto (cbcr_height - 24 based on webOS formula)
+		 *    0 = cbcr_height - 1 (full CbCr height)
 		 *   >0 = explicit value
 		 */
 		{
 			int lines_val, burst_val;
 
 			if (vfe31_pix_cbcr_lines < 0)
-				lines_val = height - 24;  /* auto: webOS formula */
+				lines_val = cbcr_height - 24;  /* auto: webOS formula */
 			else if (vfe31_pix_cbcr_lines == 0)
-				lines_val = height - 1;   /* full height */
+				lines_val = cbcr_height - 1;   /* full CbCr height */
 			else
 				lines_val = vfe31_pix_cbcr_lines;  /* explicit */
 
@@ -4099,15 +4114,23 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
 			u32 width = pix->width;
 			u32 height = pix->height;
+			u32 cbcr_height;
 			/* Use module param if set, same as Step 2 */
 			u32 bytesperline = (vfe31_bytesperline > 0) ?
 					   vfe31_bytesperline : pix->plane_fmt[0].bytesperline;
 			u32 wpl = bytesperline / 4;  /* 32-bit words per line */
 			u32 reg;
 
+			/* Calculate CbCr height based on format */
+			if (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
+			    pix->pixelformat == V4L2_PIX_FMT_NV21)
+				cbcr_height = height / 2;
+			else
+				cbcr_height = height;
+
 			dev_info(vfe->camss->dev,
-				 "VFE31: Step 8 - VIDEO line: configuring WM%d(Y)/WM%d(CbCr)\n",
-				 VFE31_VIDEO_WM_Y, VFE31_VIDEO_WM_CBCR);
+				 "VFE31: Step 8 - VIDEO line: configuring WM%d(Y)/WM%d(CbCr) cbcr_h=%d\n",
+				 VFE31_VIDEO_WM_Y, VFE31_VIDEO_WM_CBCR, cbcr_height);
 
 			/* VIDEO Y WM configuration */
 			/* Addresses set via wm_set_ping_addr/wm_set_pong_addr */
@@ -4208,7 +4231,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
 
 				/*
-				 * VIDEO CbCr IMAGE_SIZE - use vfe31_cbcr_stride module param.
+				 * VIDEO CbCr IMAGE_SIZE - use cbcr_height for NV12.
 				 *
 				 * CRITICAL: CbCr WMs must use bytesperline, NOT input stride!
 				 * Using input stride (width*2) causes DMA to write beyond
@@ -4219,7 +4242,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 					int img_height_val;
 
 					if (vfe31_video_cbcr_img_height < 0)
-						img_height_val = height;  /* auto */
+						img_height_val = cbcr_height;  /* auto: format-based */
 					else
 						img_height_val = vfe31_video_cbcr_img_height;  /* explicit */
 
@@ -4234,7 +4257,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 
 				/*
 				 * VIDEO CbCr ADDR_CFG - VFE31 format:
-				 * Upper 16 bits: height - 24 (line count)
+				 * Upper 16 bits: cbcr_height - 24 (line count)
 				 * Lower 16 bits: burst = wpl - 17
 				 * Use bytesperline to match buffer allocation.
 				 */
@@ -4243,9 +4266,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 					int lines_val, burst_val;
 
 					if (vfe31_video_cbcr_lines < 0)
-						lines_val = height - 24;  /* auto */
+						lines_val = cbcr_height - 24;  /* auto */
 					else if (vfe31_video_cbcr_lines == 0)
-						lines_val = height - 1;  /* full height */
+						lines_val = cbcr_height - 1;  /* full CbCr height */
 					else
 						lines_val = vfe31_video_cbcr_lines;  /* explicit */
 
