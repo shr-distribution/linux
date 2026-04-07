@@ -174,6 +174,23 @@ MODULE_PARM_DESC(vfe31_wm4_lines,
 		 "VFE31 WM4 (VIDEO Y) lines override (-1=auto/height-24, 0=disabled, N=explicit)");
 
 /*
+ * PIX CbCr WM (WM4) ADDR_CFG lines field override.
+ * Controls the lines field (upper 16 bits) of WM4_ADDR_CFG register for PIX mode.
+ *
+ * Values:
+ *   -1 = auto (use height-24, same as Y WMs)
+ *   0  = use height-1 (full height)
+ *   >0 = use explicit value
+ *
+ * WebOS at 1280 height used lines=304, but that may be subsampled output.
+ * For full height NV16, we need lines = height or height-1.
+ */
+static int vfe31_pix_cbcr_lines = -1;  /* -1 = auto (height-24) */
+module_param(vfe31_pix_cbcr_lines, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_cbcr_lines,
+		 "VFE31 PIX CbCr WM lines (-1=auto/height-24, 0=height-1, >0=explicit)");
+
+/*
  * ============================================================================
  * VFE31 IRQ COMPOSITE MASK - CORRECTED BASED ON REGISTER DUMPS
  * ============================================================================
@@ -2204,15 +2221,29 @@ static int vfe31_enable(struct vfe_line *line)
 		 * CbCr WM ADDR_CFG - burst and line count
 		 *
 		 * Format: (lines << 16) | burst_words
-		 * Where lines = height - 24 (webOS value)
 		 * Use bytesperline to match buffer allocation.
+		 *
+		 * Lines field controlled by vfe31_pix_cbcr_lines parameter:
+		 *   -1 = auto (height-24)
+		 *    0 = height-1 (full height)
+		 *   >0 = explicit value
 		 */
-		wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
-		reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
-		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
-			 wm1, reg, height - 24, (wpl - 17) & 0xFFFF);
-		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
+		{
+			int lines_val;
+			if (vfe31_pix_cbcr_lines < 0)
+				lines_val = height - 24;  /* auto: webOS formula */
+			else if (vfe31_pix_cbcr_lines == 0)
+				lines_val = height - 1;   /* full height */
+			else
+				lines_val = vfe31_pix_cbcr_lines;  /* explicit */
+
+			wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
+			reg = (lines_val << 16) | ((wpl - 17) & 0xFFFF);
+			dev_info(vfe->camss->dev,
+				 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d, param=%d)\n",
+				 wm1, reg, lines_val, (wpl - 17) & 0xFFFF, vfe31_pix_cbcr_lines);
+			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
+		}
 
 		/*
 		 * CbCr WM UB_CFG - use INPUT stride, same as Y WM!
