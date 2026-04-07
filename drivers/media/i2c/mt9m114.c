@@ -1034,9 +1034,9 @@ static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 	}
 
 	/*
-	 * Issue REFRESH_MODE (SEQ_CMD=0x0006) to apply the output format
-	 * change. Without this, the sensor MCU continues outputting the
-	 * previous format (typically YUV).
+	 * Issue REFRESH_MODE then REFRESH to apply the output format change.
+	 * Per datasheet: "refresh and refresh mode commands always be run
+	 * together, and refresh mode should be issued before the refresh command."
 	 */
 	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 				    MT9M113_SEQ_CMD_REFRESH_MODE);
@@ -1056,6 +1056,25 @@ static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 
 	dev_info(&sensor->client->dev,
 		 "MT9M113: REFRESH_MODE complete after MODE_OUTPUT_FORMAT\n");
+
+	/* Now issue REFRESH (must follow REFRESH_MODE per datasheet) */
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+				    MT9M113_SEQ_CMD_REFRESH);
+	if (ret < 0) {
+		dev_err(&sensor->client->dev,
+			"MT9M113: REFRESH after MODE_OUTPUT_FORMAT failed: %d\n",
+			ret);
+		return ret;
+	}
+
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	if (ret < 0) {
+		dev_warn(&sensor->client->dev,
+			 "MT9M113: REFRESH timeout (continuing)\n");
+	}
+
+	dev_info(&sensor->client->dev,
+		 "MT9M113: REFRESH complete after MODE_OUTPUT_FORMAT\n");
 
 	return 0;
 }
@@ -2307,9 +2326,10 @@ mt9m113_streaming:
 			}
 
 			/*
-			 * Issue REFRESH_MODE after OUTPUT_CONTROL change.
-			 * The MCU needs to apply the new MIPI data_type setting.
-			 * Without this, RAW8 data_type (0x2A) doesn't take effect.
+			 * Issue REFRESH_MODE then REFRESH after OUTPUT_CONTROL change.
+			 * Per datasheet: "refresh and refresh mode commands always be
+			 * run together, and refresh mode should be issued before the
+			 * refresh command."
 			 */
 			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 						    MT9M113_SEQ_CMD_REFRESH_MODE);
@@ -2325,6 +2345,22 @@ mt9m113_streaming:
 			else
 				dev_info(&sensor->client->dev,
 					 "MT9M113: REFRESH_MODE complete after OUTPUT_CONTROL\n");
+
+			/* Now issue REFRESH (must follow REFRESH_MODE per datasheet) */
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+						    MT9M113_SEQ_CMD_REFRESH);
+			if (ret) {
+				dev_err(&sensor->client->dev,
+					"MT9M113: REFRESH after OUTPUT_CONTROL failed: %d\n", ret);
+				goto error;
+			}
+			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+			if (ret)
+				dev_warn(&sensor->client->dev,
+					 "MT9M113: REFRESH timeout after OUTPUT_CONTROL\n");
+			else
+				dev_info(&sensor->client->dev,
+					 "MT9M113: REFRESH complete after OUTPUT_CONTROL\n");
 		}
 
 		/*
