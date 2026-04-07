@@ -1311,7 +1311,10 @@ int stmpe_handle_keypress(struct stmpe_keypad *keypad)
 					}
 
 					translated = stmpe_get_modifier_key(keypad, key_data[i]);
-					keypad->keys[key_data[i].code].translated = translated;
+					if (translated)
+						keypad->keys[key_data[i].code].translated = translated;
+					else
+						translated = key_data[i].key;
 					key_data[i].key = translated;
 
 					/* sticky ALT consumed */

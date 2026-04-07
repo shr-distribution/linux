@@ -533,10 +533,17 @@ static int cam_smmu_attach_device(int idx)
 		iommu_cb_set.cb_info[idx].domain;
 
 	/* attach the mapping to device */
+	iommu_enable_config_clocks(domain);
 	rc = iommu_attach_device(domain, cb->dev);
 	if (rc < 0) {
 		pr_err("Error: ARM IOMMU attach failed. ret = %d\n", rc);
+		iommu_disable_config_clocks(domain);
 		return -ENODEV;
+	}
+	{
+		int no_stall = 1;
+		iommu_domain_set_attr(domain,
+			DOMAIN_ATTR_FAULT_MODEL_NO_STALL, &no_stall);
 	}
 	return rc;
 }

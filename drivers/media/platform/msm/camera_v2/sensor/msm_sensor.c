@@ -841,8 +841,7 @@ static int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl,
 		reg_setting = compat_ptr(stop_setting32.reg_setting);
 
 		if (!stop_setting->size) {
-			pr_err("%s:%d failed\n", __func__, __LINE__);
-			rc = -EFAULT;
+			/* Accept size=0 - some blobs send empty stop settings */
 			break;
 		}
 		stop_setting->reg_setting = kzalloc(stop_setting->size *
