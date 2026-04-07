@@ -197,14 +197,14 @@ MODULE_PARM_DESC(vfe31_wm4_lines,
  * and CbCr WMs in Group 2, but we use Group 0 for simplicity.
  */
 #define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00000011  /* WM0+WM4 (PIX Y+CbCr) */
-#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00000013  /* WM0+WM1+WM4 (no WM5, disabled by XBAR) */
-#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00000002  /* WM1 only (VIDEO Y, no CbCr with XBAR 0x1A1B) */
+#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00000033  /* WM0+WM1+WM4+WM5 (all WMs) */
+#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00000022  /* WM1+WM5 (VIDEO Y+CbCr) */
 
 /* Module param for manual override/testing */
 static int vfe31_irq_comp_mask = 0;  /* 0 = auto-select based on active lines */
 module_param(vfe31_irq_comp_mask, int, 0644);
 MODULE_PARM_DESC(vfe31_irq_comp_mask,
-		 "VFE31 IRQ composite mask (0=auto, 0x11=pix, 0x13=pix+video, 0x02=video)");
+		 "VFE31 IRQ composite mask (0=auto, 0x11=pix, 0x33=pix+video, 0x22=video)");
 
 /*
  * IMAGE_SIZE stride mode for WM configuration:
