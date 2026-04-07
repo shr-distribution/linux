@@ -1769,16 +1769,15 @@ static int vfe31_enable(struct vfe_line *line)
 	}
 
 	/*
-	 * VFE31 WM assignment:
-	 * - VFE_LINE_PIX:   WM0 (Y) + WM1 (CbCr)
-	 * - VFE_LINE_VIDEO: WM4 (Y) + WM1 (CbCr, shared with PIX)
+	 * VFE31 WM assignment (from webOS msm_vfe31.c lines 719-722):
+	 * - VFE_LINE_PIX:   WM0 (Y) + WM4 (CbCr)  [output0.ch0 + output0.ch1]
+	 * - VFE_LINE_VIDEO: WM1 (Y) + WM5 (CbCr)  [output2.ch0 + output2.ch1]
 	 *
-	 * Note: PIX and VIDEO share WM1 for CbCr because XBAR only routes
-	 * CbCr to WM1 (no routing to WM5). PIX and VIDEO cannot capture
-	 * simultaneously with different buffers for CbCr.
+	 * This is OUTPUT_1_AND_3 mode with "offset-by-4" CbCr channel pairing.
+	 * XBAR routing determines which WMs receive Y vs CbCr data.
 	 */
 	if (line->id == VFE_LINE_VIDEO) {
-		/* VIDEO line: WM4 for Y (VFE31_VIDEO_WM_Y=4) */
+		/* VIDEO line: WM1 for Y (VFE31_VIDEO_WM_Y=1) */
 		wm_idx = vfe_reserve_wm_specific(vfe, VFE31_VIDEO_WM_Y, line->id);
 		if (wm_idx < 0) {
 			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for VIDEO Y\n",
@@ -1791,14 +1790,12 @@ static int vfe31_enable(struct vfe_line *line)
 
 		if (output->wm_num == 2) {
 			/*
-			 * VIDEO line: WM1 for CbCr (shared with PIX)
+			 * VIDEO line: WM5 for CbCr (VFE31_VIDEO_WM_CBCR=5)
 			 *
 			 * Note: Unlike PIX mode, VIDEO mode does NOT clear the
-			 * line mapping for WM1. VIDEO uses WM4 for Y (not WM0),
-			 * so when COMPOSITE_DONE fires, wm_done(WM4) is called
-			 * first and processes the frame. If we also cleared WM1's
-			 * mapping, the double buffer processing fix would cause
-			 * VIDEO mode to fail.
+			 * line mapping for the CbCr WM. VIDEO uses WM1 for Y (not WM0),
+			 * so when COMPOSITE_DONE fires, wm_done(WM1) is called
+			 * first and processes the frame.
 			 */
 			wm_idx = vfe_reserve_wm_specific(vfe, VFE31_VIDEO_WM_CBCR, line->id);
 			if (wm_idx < 0) {
@@ -1810,7 +1807,7 @@ static int vfe31_enable(struct vfe_line *line)
 				return wm_idx;
 			}
 			output->wm_idx[1] = wm_idx;
-			/* Keep WM1 mapped to VIDEO line for buffer completion */
+			/* Keep WM5 mapped to VIDEO line for buffer completion */
 		}
 		dev_info(vfe->camss->dev, "VFE31: VIDEO line using WM%d(Y), WM%d(CbCr)\n",
 			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
@@ -1828,14 +1825,14 @@ static int vfe31_enable(struct vfe_line *line)
 
 		if (output->wm_num == 2) {
 			/*
-			 * PIX line: WM1 for CbCr (semi-planar format)
+			 * PIX line: WM4 for CbCr (VFE31_PREVIEW_WM_CBCR=4)
 			 *
-			 * IMPORTANT: Reserve WM1 but do NOT map it to this line!
-			 * Both WMs share the same frame buffer. If we map WM1 to
+			 * IMPORTANT: Reserve WM4 but do NOT map it to this line!
+			 * Both WMs share the same frame buffer. If we map WM4 to
 			 * the line, vfe_isr_comp_done() will call wm_done() for
 			 * BOTH WMs, causing double buffer processing and state
 			 * corruption. Only WM0 (Y plane) should trigger buffer
-			 * completion - WM1 just needs to be claimed so it's not
+			 * completion - WM4 just needs to be claimed so it's not
 			 * used by another line.
 			 */
 			wm_idx = vfe_reserve_wm_specific(vfe, VFE31_PREVIEW_WM_CBCR, line->id);
@@ -1849,7 +1846,7 @@ static int vfe31_enable(struct vfe_line *line)
 			}
 			output->wm_idx[1] = wm_idx;
 			/*
-			 * Clear the line mapping for WM1 - it's claimed but shouldn't
+			 * Clear the line mapping for WM4 - it's claimed but shouldn't
 			 * trigger buffer completion. The wm_done() handler checks
 			 * wm_output_map and skips WMs mapped to VFE_LINE_NONE.
 			 */
@@ -2020,15 +2017,23 @@ static int vfe31_enable(struct vfe_line *line)
 	 * WR_IMAGE_SIZE - VFE31 format (from webOS register dumps):
 	 * webOS WM0: 0x00501DF2 = ((80) << 16) | ((479 << 4) | 2)
 	 *
-	 * Upper 16 bits: input_bytesperline / 16 (128-bit words per line)
+	 * Upper 16 bits: bytesperline / 16 (128-bit words per line)
 	 * Lower 16 bits: ((height - 1) << 4) | 2
 	 *
-	 * CRITICAL: This must use INPUT stride (UYVY = width*2), not output stride.
-	 * webOS used 80 = 1280/16 for 640-wide UYVY input, not 40 = 640/16.
-	 * Using output stride causes only 50% of each frame to be captured.
+	 * CRITICAL: The stride field controls ROW ADDRESS INCREMENT, not input rate.
+	 * Using INPUT stride (width*2) causes buffer overflow when the buffer is
+	 * allocated with OUTPUT stride (bytesperline = width for NV16).
+	 *
+	 * webOS worked at 640x480 where INPUT stride = 1280, and their buffer
+	 * happened to accommodate this. But at 1280x1024, INPUT stride = 2560
+	 * causes writes beyond the 2.5MB buffer, corrupting kernel memory.
+	 *
+	 * Fix: Use bytesperline (from V4L2 format) which matches buffer allocation.
 	 */
-	reg = (((width * 2) / 16) & 0xFFFF) << 16;
+	reg = ((bytesperline / 16) & 0xFFFF) << 16;
 	reg |= ((height - 1) << 4) | 2;
+	dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d (bytesperline=%d)\n",
+		 wm, bytesperline / 16, bytesperline);
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
 
 	/*
@@ -2039,13 +2044,13 @@ static int vfe31_enable(struct vfe_line *line)
 	 * For single-plane UYVY, only WM0 is used with lines=0.
 	 * burst_words = words_per_line - 17 (webOS formula)
 	 *
-	 * CRITICAL: This must use INPUT stride (UYVY = width*2), not output stride.
-	 * For 640x480: input stride = 1280 bytes = 320 words, burst = 320-17 = 303 = 0x12F
-	 * Using output stride causes only 50% of each frame to be captured.
+	 * Use bytesperline (OUTPUT stride) to match buffer allocation.
+	 * For 640x480 NV16: bytesperline = 640 bytes = 160 words, burst = 143
+	 * For 1280x1024 NV16: bytesperline = 1280 bytes = 320 words, burst = 303
 	 */
-	wpl = (width * 2) / 4;  /* 32-bit words per line for UYVY INPUT */
+	wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
 	reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 (webOS formula) */
-	dev_info(vfe->camss->dev, "VFE31: WM%d WR_ADDR_CFG=0x%04x (input_wpl=%d, burst=%d)\n",
+	dev_info(vfe->camss->dev, "VFE31: WM%d WR_ADDR_CFG=0x%04x (wpl=%d, burst=%d)\n",
 		 wm, reg, wpl, reg);
 	/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
@@ -2058,17 +2063,15 @@ static int vfe31_enable(struct vfe_line *line)
 	 *   For 1280 bytes/line: wpl = 320, (320/8)-1 = 39 = 0x27
 	 * Lower 16 bits: height - 1
 	 *
-	 * CRITICAL: UB (Unified Buffer) buffers data BEFORE the DEMUX.
-	 * For semi-planar NV16, input is still UYVY at width*2 bytes/line.
-	 * Using output bytesperline (width) causes UB to be undersized,
-	 * resulting in only 50% of each frame being captured.
+	 * UB_CFG controls the Unified Buffer depth per line. Use bytesperline
+	 * to match the buffer allocation stride.
 	 *
 	 * This is DIFFERENT from VFE4.x which uses (offset << 16) | depth
 	 */
-	wpl = (width * 2) / 4;  /* 32-bit words per line for UYVY INPUT */
+	wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
 	reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 	reg |= (height - 1) & 0xFFFF;
-	dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, input_wpl=%d)\n",
+	dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, wpl=%d)\n",
 		 wm, reg, (wpl / 8 - 1), wpl);
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
 
@@ -2118,37 +2121,34 @@ static int vfe31_enable(struct vfe_line *line)
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm1));
 
 		/*
-		 * WM1 IMAGE_SIZE - CbCr write master
+		 * CbCr WM IMAGE_SIZE - use bytesperline to match buffer allocation.
 		 *
-		 * CRITICAL: WebOS uses INPUT stride (UYVY width*2) for ALL WMs,
-		 * not OUTPUT stride. Both WM0 and WM1 track the same input frame
-		 * rate even though they output different planes. Using OUTPUT
-		 * stride causes 50% CbCr coverage (every other line missing).
-		 *
-		 * WebOS reference: WM1_IMAGE_SIZE = 0x00501DF2 (stride=80=1280/16)
+		 * The CbCr plane has the same bytesperline as the Y plane for NV16.
+		 * Using INPUT stride (width*2) causes buffer overflow because the
+		 * buffer is allocated with OUTPUT stride (bytesperline).
 		 */
-		reg = (((width * 2) / 16) & 0xFFFF) << 16;  /* INPUT stride */
+		reg = ((bytesperline / 16) & 0xFFFF) << 16;
 		reg |= ((height - 1) << 4) | 2;
+		dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d\n",
+			 wm1, bytesperline / 16);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 
 		/*
-		 * WM1 ADDR_CFG - burst and line count for CbCr write master
+		 * CbCr WM ADDR_CFG - burst and line count
 		 *
 		 * Format: (lines << 16) | burst_words
 		 * Where lines = height - 24 (webOS value)
-		 *
-		 * CRITICAL: burst must use INPUT stride (width*2) to match
-		 * the frame rate. WebOS uses burst=303 = 320-17 where 320=1280/4.
+		 * Use bytesperline to match buffer allocation.
 		 */
-		wpl = (width * 2) / 4;  /* INPUT stride (UYVY) */
+		wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
 		reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
 		dev_info(vfe->camss->dev,
 			 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
 			 wm1, reg, height - 24, (wpl - 17) & 0xFFFF);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
 
-		/* WM1 UB_CFG - use UYVY input stride like WM0 */
-		wpl = (width * 2) / 4;  /* UYVY INPUT stride */
+		/* CbCr WM UB_CFG - use bytesperline */
+		wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
 		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 		reg |= (height - 1) & 0xFFFF;
 		dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d)\n",
@@ -3744,58 +3744,50 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			/* Addresses set via wm_set_ping_addr/wm_set_pong_addr */
 
 			/*
-			 * VIDEO Y WM IMAGE_SIZE - VFE31 webOS format:
-			 * Upper 16 bits: input_bytesperline / 16 (128-bit words)
+			 * VIDEO Y WM IMAGE_SIZE - use bytesperline to match buffer.
+			 * Upper 16 bits: bytesperline / 16 (128-bit words)
 			 * Lower 16 bits: ((height - 1) << 4) | 2
-			 *
-			 * CRITICAL: Must use INPUT stride (width*2), not output stride.
 			 */
-			reg = (((width * 2) / 16) & 0xFFFF) << 16;
+			reg = ((bytesperline / 16) & 0xFFFF) << 16;
 			reg |= ((height - 1) << 4) | 2;
+			dev_info(vfe->camss->dev, "VFE31: VIDEO WM1 IMAGE_SIZE stride=%d\n",
+				 bytesperline / 16);
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
 
 			/*
 			 * VIDEO Y WM ADDR_CFG - VFE31 format:
-			 *
-			 * Unlike WM0 (PIX Y) which uses lines=0, VIDEO Y (WM4)
-			 * may need an explicit lines value. Use module param
-			 * vfe31_wm4_lines for easy runtime testing:
-			 *   -1 = auto (height-24, same as CbCr formula)
-			 *    0 = disabled (original default)
-			 *    N = explicit value
-			 *
-			 * CRITICAL: burst must use INPUT stride (width*2), not output stride.
+			 * Use bytesperline to match buffer allocation.
 			 */
 			{
 				int lines_val;
-				u32 input_wpl = (width * 2) / 4;  /* UYVY INPUT stride */
+				u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
 
 				if (vfe31_wm4_lines < 0)
 					lines_val = height - 24;  /* auto: same as CbCr */
 				else
 					lines_val = vfe31_wm4_lines;
 
-				reg = (lines_val << 16) | ((input_wpl - 17) & 0xFFFF);
+				reg = (lines_val << 16) | ((buf_wpl - 17) & 0xFFFF);
 				dev_info(vfe->camss->dev,
-					 "VFE31: WM4 ADDR_CFG=0x%08x (lines=%d, burst=%d, param=%d)\n",
-					 reg, lines_val, input_wpl - 17, vfe31_wm4_lines);
+					 "VFE31: VIDEO WM1 ADDR_CFG=0x%08x (lines=%d, burst=%d, param=%d)\n",
+					 reg, lines_val, buf_wpl - 17, vfe31_wm4_lines);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_Y));
 			}
 
 			/*
-			 * VIDEO Y WM UB_CFG - use UYVY input stride
-			 * Upper 16 bits: (input_wpl / 8) - 1
+			 * VIDEO Y WM UB_CFG - use bytesperline
+			 * Upper 16 bits: (wpl / 8) - 1
 			 * Lower 16 bits: height - 1
 			 */
 			{
-				u32 input_wpl = (width * 2) / 4;  /* UYVY INPUT */
-				reg = ((input_wpl / 8 - 1) & 0xFFFF) << 16;
+				u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
+				reg = ((buf_wpl / 8 - 1) & 0xFFFF) << 16;
 				reg |= (height - 1) & 0xFFFF;
 				dev_info(vfe->camss->dev,
-					 "VFE31: WM4 UB_CFG=0x%08x (ub_depth=%d)\n",
-					 reg, (input_wpl / 8 - 1));
+					 "VFE31: VIDEO WM1 UB_CFG=0x%08x (ub_depth=%d)\n",
+					 reg, (buf_wpl / 8 - 1));
 			}
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_Y));
@@ -3828,37 +3820,34 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
 
 				/*
-				 * VIDEO CbCr IMAGE_SIZE - uses INPUT stride
-				 * WebOS uses INPUT stride (width*2) for ALL WMs,
-				 * not OUTPUT stride. This matches the frame rate.
-				 * Using OUTPUT stride causes 50% CbCr coverage.
+				 * VIDEO CbCr IMAGE_SIZE - use bytesperline to match buffer.
 				 */
-				reg = (((width * 2) / 16) & 0xFFFF) << 16;  /* INPUT stride */
+				reg = ((bytesperline / 16) & 0xFFFF) << 16;
 				reg |= ((height - 1) << 4) | 2;
+				dev_info(vfe->camss->dev, "VFE31: VIDEO WM5 IMAGE_SIZE stride=%d\n",
+					 bytesperline / 16);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
 
 				/*
 				 * VIDEO CbCr ADDR_CFG - VFE31 format:
 				 * Upper 16 bits: height - 24 (line count)
-				 * Lower 16 bits: burst = input_wpl - 17
-				 *
-				 * CRITICAL: burst must use INPUT stride (width*2)
-				 * to match the frame rate.
+				 * Lower 16 bits: burst = wpl - 17
+				 * Use bytesperline to match buffer allocation.
 				 */
 				{
-					u32 input_wpl = (width * 2) / 4;  /* INPUT stride */
-					reg = ((height - 24) << 16) | ((input_wpl - 17) & 0xFFFF);
+					u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
+					reg = ((height - 24) << 16) | ((buf_wpl - 17) & 0xFFFF);
 				}
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
 
 				/*
-				 * VIDEO CbCr UB_CFG - use UYVY input stride
+				 * VIDEO CbCr UB_CFG - use bytesperline
 				 */
 				{
-					u32 input_wpl = (width * 2) / 4;  /* UYVY INPUT */
-					reg = ((input_wpl / 8 - 1) & 0xFFFF) << 16;
+					u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
+					reg = ((buf_wpl / 8 - 1) & 0xFFFF) << 16;
 					reg |= (height - 1) & 0xFFFF;
 				}
 				writel_relaxed(reg,
