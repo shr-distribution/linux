@@ -191,6 +191,22 @@ MODULE_PARM_DESC(vfe31_pix_cbcr_lines,
 		 "VFE31 PIX CbCr WM lines (-1=auto/height-24, 0=height-1, >0=explicit)");
 
 /*
+ * PIX CbCr WM (WM4) ADDR_CFG burst field override.
+ * Controls the burst field (lower 16 bits) of WM4_ADDR_CFG register for PIX mode.
+ *
+ * Values:
+ *   -1 = auto (use (bytesperline/4) - 17)
+ *   >0 = use explicit value
+ *
+ * WebOS used burst=151 for CbCr. Our auto calculation gives 143 for 640 width.
+ * The difference (8 words = 32 bytes) might be alignment padding.
+ */
+static int vfe31_pix_cbcr_burst = -1;  /* -1 = auto */
+module_param(vfe31_pix_cbcr_burst, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_cbcr_burst,
+		 "VFE31 PIX CbCr WM burst (-1=auto, >0=explicit)");
+
+/*
  * ============================================================================
  * VFE31 IRQ COMPOSITE MASK - CORRECTED BASED ON REGISTER DUMPS
  * ============================================================================
@@ -2229,7 +2245,8 @@ static int vfe31_enable(struct vfe_line *line)
 		 *   >0 = explicit value
 		 */
 		{
-			int lines_val;
+			int lines_val, burst_val;
+
 			if (vfe31_pix_cbcr_lines < 0)
 				lines_val = height - 24;  /* auto: webOS formula */
 			else if (vfe31_pix_cbcr_lines == 0)
@@ -2238,10 +2255,15 @@ static int vfe31_enable(struct vfe_line *line)
 				lines_val = vfe31_pix_cbcr_lines;  /* explicit */
 
 			wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
-			reg = (lines_val << 16) | ((wpl - 17) & 0xFFFF);
+			if (vfe31_pix_cbcr_burst < 0)
+				burst_val = (wpl - 17) & 0xFFFF;  /* auto */
+			else
+				burst_val = vfe31_pix_cbcr_burst & 0xFFFF;  /* explicit */
+
+			reg = (lines_val << 16) | burst_val;
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d, param=%d)\n",
-				 wm1, reg, lines_val, (wpl - 17) & 0xFFFF, vfe31_pix_cbcr_lines);
+				 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d, l_param=%d, b_param=%d)\n",
+				 wm1, reg, lines_val, burst_val, vfe31_pix_cbcr_lines, vfe31_pix_cbcr_burst);
 			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
 		}
 
