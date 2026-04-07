@@ -472,10 +472,10 @@ quick_capture_test() {
 
 # Test RAW passthrough mode (RDI -> memory, no ISP)
 # Uses /dev/video0 (msm_vfe0_rdi0)
-# CSID pad 1 (RDI0) -> VFE RDI0 (line 0)
+# CSID pad 4 -> VFE RDI0 (all CSID sources use pad 4 on MSM8660)
 test_raw_mode() {
     log_step "Testing RAW passthrough mode..."
-    log_info "Path: Sensor -> CSIPHY -> CSID:1 -> VFE RDI0 -> /dev/video0"
+    log_info "Path: Sensor -> CSIPHY -> CSID:4 -> VFE RDI0 -> /dev/video0"
     log_info "Data goes directly to memory, bypassing ISP"
     log_info "Using 1280x1024 (Context B - full resolution)"
 
@@ -487,8 +487,8 @@ test_raw_mode() {
         echo ''
 
         # Setup media pipeline for RDI mode
-        # CSID pad 1 = RDI0 source, VFE RDI0 = msm_vfe0_rdi0
-        # This is DIFFERENT from PIX mode which uses CSID pad 4
+        # All CSID sources use pad 4 on MSM8660 (no separate RDI pads)
+        # RDI vs PIX is determined by VFE AXI output mode, not CSID pad
         echo 'Setting up RDI media pipeline...'
 
         # Reset all links first
@@ -499,9 +499,9 @@ test_raw_mode() {
         echo 'Enabling upstream links...'
         media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
 
-        # Enable RDI link: CSID pad 1 (RDI0) -> VFE RDI0 pad 0
-        echo 'Enabling RDI link (CSID:1 -> VFE RDI0)...'
-        media-ctl -l '\"msm_csid1\":1->\"msm_vfe0_rdi0\":0[1]' 2>&1 || echo '  csid:1->vfe_rdi0 link failed'
+        # Enable RDI link: CSID pad 4 -> VFE RDI0 pad 0
+        echo 'Enabling RDI link (CSID:4 -> VFE RDI0)...'
+        media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_rdi0\":0[1]' 2>&1 || echo '  csid:4->vfe_rdi0 link failed'
 
         # Set formats on the RDI path (1280x1024 = MT9M113 Context B full capture)
         # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
@@ -511,7 +511,7 @@ test_raw_mode() {
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_vfe0_rdi0\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_vfe0_rdi0\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
 
@@ -1314,8 +1314,7 @@ test_at_resolution() {
                 # On MSM8660/VFE31, there's no hardware RDI path - all data goes
                 # through CAMIF. RDI is emulated via AXI output mode 0x60.
                 #
-                # IMPORTANT: Raw bypass mode requires RAW Bayer format, not UYVY!
-                # Configure sensor to output RAW8 (SGRBG8) instead of YUV.
+                # MT9M113 supports RAW output - configure sensor for RAW8.
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_rdi0'
                 VFE_FMT='SGRBG8_1X8'
@@ -1446,6 +1445,92 @@ test_at_resolution() {
             echo \"FAIL: $mode ${width}x${height} - no data captured\"
         fi
     "
+}
+
+# Convert raw frames to PNG with timestamped filenames
+# Usage: convert_frames <mode> <width> <height> <raw_file_on_device>
+# Output: captures/mode_YYYYMMDD_HHMMSS_fN.png
+convert_frames() {
+    local mode="$1"
+    local width="$2"
+    local height="$3"
+    local remote_raw="${4:-/tmp/test_${mode}_${width}x${height}.raw}"
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local local_raw="/tmp/${mode}${width}_${timestamp}.raw"
+    local output_dir="captures"
+
+    # Ensure output directory exists
+    mkdir -p "$output_dir"
+    local frame_size
+    local num_frames
+    local pixfmt
+
+    # Determine frame size and pixel format based on mode
+    case "$mode" in
+        rdi)
+            # RAW8 Bayer - 1 byte per pixel
+            frame_size=$((width * height))
+            pixfmt="gray"  # Use gray for Bayer, demosaic separately
+            ;;
+        pix|video|testgen)
+            # NV16 - Y plane + UV plane = 2 bytes per pixel
+            frame_size=$((width * height * 2))
+            pixfmt="nv16"
+            ;;
+        *)
+            log_error "Unknown mode: $mode"
+            return 1
+            ;;
+    esac
+
+    # Fetch raw file from device
+    log_info "Fetching $remote_raw from device..."
+    scp -P $SSH_PORT root@$DEVICE_IP:"$remote_raw" "$local_raw" 2>/dev/null
+    if [ ! -f "$local_raw" ]; then
+        log_error "Failed to fetch raw file"
+        return 1
+    fi
+
+    local file_size=$(stat -c%s "$local_raw" 2>/dev/null || echo 0)
+    num_frames=$((file_size / frame_size))
+
+    if [ "$num_frames" -eq 0 ]; then
+        log_error "Raw file too small or empty"
+        rm -f "$local_raw"
+        return 1
+    fi
+
+    log_info "Converting $num_frames frames (${width}x${height} $pixfmt)..."
+
+    # Extract and convert each frame
+    for i in $(seq 1 $num_frames); do
+        local frame_raw="/tmp/${mode}${width}_f${i}.raw"
+        local frame_png="${output_dir}/${mode}${width}_${timestamp}_f${i}.png"
+
+        # Extract frame using dd with efficient block size
+        dd if="$local_raw" bs=$frame_size skip=$((i-1)) count=1 of="$frame_raw" 2>/dev/null
+
+        # Convert to PNG using ffmpeg
+        if [ "$pixfmt" = "gray" ]; then
+            # For RAW Bayer, just save as grayscale (proper demosaic needs more work)
+            ffmpeg -y -f rawvideo -pix_fmt gray -s ${width}x${height} \
+                   -i "$frame_raw" "$frame_png" 2>/dev/null
+        else
+            # For NV16 semi-planar
+            ffmpeg -y -f rawvideo -pix_fmt nv16 -s ${width}x${height} \
+                   -i "$frame_raw" "$frame_png" 2>/dev/null
+        fi
+
+        rm -f "$frame_raw"
+
+        if [ -f "$frame_png" ]; then
+            local png_size=$(stat -c%s "$frame_png" 2>/dev/null)
+            echo "  Created: $frame_png ($png_size bytes)"
+        fi
+    done
+
+    rm -f "$local_raw"
+    log_info "Conversion complete: ${output_dir}/${mode}${width}_${timestamp}_f[1-${num_frames}].png"
 }
 
 # Comprehensive test - all modes at both resolutions
@@ -1603,6 +1688,30 @@ main() {
             testgen1280)
                 MODE="testgen1280"
                 ;;
+            convert-video640)
+                MODE="convert-video640"
+                ;;
+            convert-video1280)
+                MODE="convert-video1280"
+                ;;
+            convert-pix640)
+                MODE="convert-pix640"
+                ;;
+            convert-pix1280)
+                MODE="convert-pix1280"
+                ;;
+            convert-rdi640)
+                MODE="convert-rdi640"
+                ;;
+            convert-rdi1280)
+                MODE="convert-rdi1280"
+                ;;
+            convert-testgen640)
+                MODE="convert-testgen640"
+                ;;
+            convert-testgen1280)
+                MODE="convert-testgen1280"
+                ;;
             --help|-h)
                 echo "Usage: $0 [MODE]"
                 echo ""
@@ -1619,6 +1728,8 @@ main() {
                 echo "  capture-nv16  Capture frame in NV16 format (CbCr order)"
                 echo "  capture-nv61  Capture frame in NV61 format (CrCb order, for color test)"
                 echo "  fetch      Fetch all captures from device to current directory"
+                echo "  convert-MODE-RES  Convert captured frames to timestamped PNGs"
+                echo "              (e.g., convert-video640, convert-pix1280, convert-rdi640)"
                 echo "  all        Run all test modes sequentially"
                 echo "  comprehensive  Test ALL modes at 640x480 AND 1280x1024 (RECOMMENDED)"
                 echo ""
@@ -1727,6 +1838,30 @@ main() {
             ;;
         fetch)
             fetch_captures "."
+            ;;
+        convert-video640)
+            convert_frames video 640 480
+            ;;
+        convert-video1280)
+            convert_frames video 1280 1024
+            ;;
+        convert-pix640)
+            convert_frames pix 640 480
+            ;;
+        convert-pix1280)
+            convert_frames pix 1280 1024
+            ;;
+        convert-rdi640)
+            convert_frames rdi 640 480
+            ;;
+        convert-rdi1280)
+            convert_frames rdi 1280 1024
+            ;;
+        convert-testgen640)
+            convert_frames testgen 640 480
+            ;;
+        convert-testgen1280)
+            convert_frames testgen 1280 1024
             ;;
         comprehensive)
             show_camera_info
