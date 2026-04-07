@@ -2120,11 +2120,14 @@ static int vfe31_enable(struct vfe_line *line)
 		/*
 		 * WM1 IMAGE_SIZE - CbCr write master
 		 *
-		 * CRITICAL: WM1 writes POST-DEMUX CbCr data at OUTPUT stride (width),
-		 * not INPUT stride (width*2). The DEMUX outputs 640 bytes/line of
-		 * CbCr for 640-wide input, not 1280 bytes/line.
+		 * CRITICAL: WebOS uses INPUT stride (UYVY width*2) for ALL WMs,
+		 * not OUTPUT stride. Both WM0 and WM1 track the same input frame
+		 * rate even though they output different planes. Using OUTPUT
+		 * stride causes 50% CbCr coverage (every other line missing).
+		 *
+		 * WebOS reference: WM1_IMAGE_SIZE = 0x00501DF2 (stride=80=1280/16)
 		 */
-		reg = ((bytesperline / 16) & 0xFFFF) << 16;
+		reg = (((width * 2) / 16) & 0xFFFF) << 16;  /* INPUT stride */
 		reg |= ((height - 1) << 4) | 2;
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 
@@ -2134,10 +2137,10 @@ static int vfe31_enable(struct vfe_line *line)
 		 * Format: (lines << 16) | burst_words
 		 * Where lines = height - 24 (webOS value)
 		 *
-		 * CRITICAL: burst must use OUTPUT stride (bytesperline) because
-		 * WM1 writes POST-DEMUX CbCr data.
+		 * CRITICAL: burst must use INPUT stride (width*2) to match
+		 * the frame rate. WebOS uses burst=303 = 320-17 where 320=1280/4.
 		 */
-		wpl = bytesperline / 4;  /* OUTPUT stride for CbCr */
+		wpl = (width * 2) / 4;  /* INPUT stride (UYVY) */
 		reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
 		dev_info(vfe->camss->dev,
 			 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
@@ -3825,10 +3828,12 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
 
 				/*
-				 * VIDEO CbCr IMAGE_SIZE - uses OUTPUT stride
-				 * CbCr is POST-DEMUX data at bytesperline, not input stride.
+				 * VIDEO CbCr IMAGE_SIZE - uses INPUT stride
+				 * WebOS uses INPUT stride (width*2) for ALL WMs,
+				 * not OUTPUT stride. This matches the frame rate.
+				 * Using OUTPUT stride causes 50% CbCr coverage.
 				 */
-				reg = ((bytesperline / 16) & 0xFFFF) << 16;
+				reg = (((width * 2) / 16) & 0xFFFF) << 16;  /* INPUT stride */
 				reg |= ((height - 1) << 4) | 2;
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
@@ -3836,14 +3841,14 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				/*
 				 * VIDEO CbCr ADDR_CFG - VFE31 format:
 				 * Upper 16 bits: height - 24 (line count)
-				 * Lower 16 bits: burst = output_wpl - 17
+				 * Lower 16 bits: burst = input_wpl - 17
 				 *
-				 * CRITICAL: burst must use OUTPUT stride (bytesperline)
-				 * because CbCr is POST-DEMUX data.
+				 * CRITICAL: burst must use INPUT stride (width*2)
+				 * to match the frame rate.
 				 */
 				{
-					u32 output_wpl = bytesperline / 4;  /* OUTPUT stride */
-					reg = ((height - 24) << 16) | ((output_wpl - 17) & 0xFFFF);
+					u32 input_wpl = (width * 2) / 4;  /* INPUT stride */
+					reg = ((height - 24) << 16) | ((input_wpl - 17) & 0xFFFF);
 				}
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
