@@ -207,6 +207,41 @@ MODULE_PARM_DESC(vfe31_pix_cbcr_burst,
 		 "VFE31 PIX CbCr WM burst (-1=auto, >0=explicit)");
 
 /*
+ * PIX CbCr WM (WM4) UB_CFG height field override.
+ * Controls the lower 16 bits of WM4_UB_CFG register.
+ *
+ * Values:
+ *   -1 = auto (use height-1)
+ *   >0 = use explicit value
+ */
+static int vfe31_pix_cbcr_ub_height = -1;
+module_param(vfe31_pix_cbcr_ub_height, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_cbcr_ub_height,
+		 "VFE31 PIX CbCr UB_CFG height (-1=auto/height-1, >0=explicit)");
+
+/*
+ * PIX CbCr WM (WM4) IMAGE_SIZE height field override.
+ * Controls the height encoding in IMAGE_SIZE register: ((height-1) << 4) | 2
+ *
+ * Values:
+ *   -1 = auto (use height from format)
+ *   >0 = use explicit height value
+ */
+static int vfe31_pix_cbcr_img_height = -1;
+module_param(vfe31_pix_cbcr_img_height, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_cbcr_img_height,
+		 "VFE31 PIX CbCr IMAGE_SIZE height (-1=auto, >0=explicit)");
+
+/*
+ * Debug: dump all WM registers after configuration.
+ * Set to 1 to enable verbose register dumps in dmesg.
+ */
+static int vfe31_dump_wm_regs = 0;
+module_param(vfe31_dump_wm_regs, int, 0644);
+MODULE_PARM_DESC(vfe31_dump_wm_regs,
+		 "VFE31 dump WM registers (0=off, 1=on)");
+
+/*
  * ============================================================================
  * VFE31 IRQ COMPOSITE MASK - CORRECTED BASED ON REGISTER DUMPS
  * ============================================================================
@@ -2222,14 +2257,21 @@ static int vfe31_enable(struct vfe_line *line)
 		writel_relaxed(wm1_pong_addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm1));
 
-		/* CbCr WM IMAGE_SIZE - use vfe31_cbcr_stride module param */
+		/* CbCr WM IMAGE_SIZE - use vfe31_cbcr_stride and vfe31_pix_cbcr_img_height */
 		{
 			u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
+			int img_height_val;
+
+			if (vfe31_pix_cbcr_img_height < 0)
+				img_height_val = height;  /* auto */
+			else
+				img_height_val = vfe31_pix_cbcr_img_height;  /* explicit */
+
 			reg = ((cbcr_stride / 16) & 0xFFFF) << 16;
-			reg |= ((height - 1) << 4) | 2;
+			reg |= ((img_height_val - 1) << 4) | 2;
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d cbcr_param=%d)\n",
-				 wm1, reg, cbcr_stride, height, vfe31_cbcr_stride);
+				 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d s_param=%d h_param=%d)\n",
+				 wm1, reg, cbcr_stride, img_height_val, vfe31_cbcr_stride, vfe31_pix_cbcr_img_height);
 			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 		}
 
@@ -2277,10 +2319,18 @@ static int vfe31_enable(struct vfe_line *line)
 		{
 			u16 input_stride = width * 2;  /* UYVY input: 2 bytes per pixel */
 			u16 input_wpl = input_stride / 4;  /* 32-bit words per line */
+			int ub_height_val;
+
+			if (vfe31_pix_cbcr_ub_height < 0)
+				ub_height_val = height - 1;  /* auto */
+			else
+				ub_height_val = vfe31_pix_cbcr_ub_height;  /* explicit */
+
 			reg = ((input_wpl / 8 - 1) & 0xFFFF) << 16;
-			reg |= (height - 1) & 0xFFFF;
-			dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, input_wpl=%d)\n",
-				 wm1, reg, (input_wpl / 8 - 1), input_wpl);
+			reg |= ub_height_val & 0xFFFF;
+			dev_info(vfe->camss->dev,
+				 "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, param=%d)\n",
+				 wm1, reg, (input_wpl / 8 - 1), ub_height_val, vfe31_pix_cbcr_ub_height);
 			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm1));
 		}
 
