@@ -1214,7 +1214,7 @@ static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
 /*
  * vfe31_get_cbcr_offset - Calculate CbCr plane offset for semi-planar formats
  * @pixelformat: V4L2 pixel format (e.g., V4L2_PIX_FMT_NV16)
- * @width: Frame width in pixels
+ * @bytesperline: Bytes per line (stride) for the Y plane
  * @height: Frame height in lines
  *
  * Returns the byte offset where the CbCr (UV) plane starts within the buffer.
@@ -1222,29 +1222,33 @@ static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
  * immediately after the Y plane. For packed formats (UYVY, YUYV, etc.) and
  * RAW formats, returns 0 since they use a single plane.
  *
- * This function ensures format-aware offset calculation that works correctly
- * regardless of bytesperline padding (which may differ from width for alignment).
+ * IMPORTANT: VFE31 format table uses bpp=16 for NV16 to match UYVY input
+ * stride (e.g., 1280 bytes/line for 640 width). The cbcr_offset must use
+ * the actual bytesperline, not width, to correctly position the CbCr plane
+ * after the Y plane written by the WM with this stride.
  */
-static inline u32 vfe31_get_cbcr_offset(u32 pixelformat, u16 width, u16 height)
+static inline u32 vfe31_get_cbcr_offset(u32 pixelformat, u32 bytesperline, u16 height)
 {
 	switch (pixelformat) {
 	case V4L2_PIX_FMT_NV16:
 	case V4L2_PIX_FMT_NV61:
 		/*
-		 * NV16/NV61: Y plane = width * height bytes (8 bits per Y sample)
+		 * NV16/NV61: Y plane = bytesperline * height bytes
 		 * CbCr plane starts immediately after Y plane.
 		 * CbCr is interleaved (CbCrCbCr...) with full vertical resolution.
+		 *
+		 * For VFE31, bytesperline is 2*width (UYVY stride from format
+		 * table with bpp=16), so Y plane is 2*width*height bytes.
 		 */
-		return (u32)width * height;
+		return bytesperline * height;
 
 	case V4L2_PIX_FMT_NV12:
 	case V4L2_PIX_FMT_NV21:
 		/*
-		 * NV12/NV21: Y plane = width * height bytes
+		 * NV12/NV21: Y plane = bytesperline * height bytes
 		 * CbCr plane starts after Y, but with half vertical resolution.
-		 * UV offset is still width * height (Y plane size).
 		 */
-		return (u32)width * height;
+		return bytesperline * height;
 
 	case V4L2_PIX_FMT_UYVY:
 	case V4L2_PIX_FMT_VYUY:
@@ -2096,10 +2100,10 @@ static int vfe31_enable(struct vfe_line *line)
 		u8 wm1 = output->wm_idx[1];
 		/*
 		 * CbCr plane offset: Use format-aware calculation.
-		 * For NV16/NV61, offset = width * height (Y plane size).
+		 * For NV16/NV61, offset = bytesperline * height (Y plane size).
 		 * For packed formats, offset = 0 (single plane).
 		 */
-		u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, width, height);
+		u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
 		u32 wm1_ping_addr = ping_addr + cbcr_offset;
 		u32 wm1_pong_addr = pong_addr + cbcr_offset;
 
@@ -3278,7 +3282,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 */
 		if (line->output.wm_num == 2) {
 			u8 wm1 = line->output.wm_idx[1];
-			u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, width, height);
+			u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
 			u32 wm1_ping = vfe->pending_ping_addr + cbcr_offset;
 			u32 wm1_pong = vfe->pending_pong_addr + cbcr_offset;
 
@@ -3786,7 +3790,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 * Use format-aware offset calculation for portability.
 			 */
 			if (line->output.wm_num == 2) {
-				u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, width, height);
+				u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
 				u32 cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 				u32 cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
 
