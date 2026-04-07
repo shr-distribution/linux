@@ -182,8 +182,15 @@ MODULE_PARM_DESC(mt9m113_skip_short_pkt,
  */
 #define MT9M113_OUTPUT_CONTROL				CCI_REG16(0x3400)
 #define MT9M113_OUTPUT_CONTROL_RO_MASK			0x0008	/* Bit 3 is RO */
-#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08	/* Write value - match webOS exactly */
+#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08	/* YUV422: data_type=0x1E */
 #define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY	0x7A00	/* Expected readback (ignoring RO bit 3) */
+/*
+ * RAW8 MIPI output: data_type=0x2A (RAW8) instead of 0x1E (YUV422)
+ * Bits [15:10] = 0x2A = 42 decimal = RAW8 MIPI data type
+ * 0x2A << 10 = 0xA800, plus MIPI enable (bit 9) = 0xAA00, plus standby_eof (bit 4) = 0xAA08
+ */
+#define MT9M113_OUTPUT_CONTROL_MIPI_RAW8		0xAA08	/* RAW8: data_type=0x2A */
+#define MT9M113_OUTPUT_CONTROL_MIPI_RAW8_VERIFY		0xAA00	/* Expected readback */
 
 /*
  * MT9M113 CUSTOM_SHORT_PKT register (0x3404)
@@ -2260,19 +2267,37 @@ mt9m113_streaming:
 		/* Step 1: Wait 10ms for CSIPHY to stabilize (webOS: mdelay(10) after csi_config) */
 		msleep(10);
 
-		/* Step 2: Enable MIPI output FIRST (webOS: 0x3400 = 0x7A08) */
+		/* Step 2: Enable MIPI output with correct data type for format */
 		{
-			u16 output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
-			if (mt9m113_cont_mipi_clk) {
+			const struct v4l2_mbus_framefmt *format;
+			u16 output_ctrl_val;
+			bool is_bayer;
+
+			format = v4l2_subdev_state_get_format(ifp_state, 1);
+			is_bayer = (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
+				    format->code == MEDIA_BUS_FMT_SGRBG10_1X10);
+
+			/*
+			 * CRITICAL: Set MIPI data type based on output format!
+			 * - YUV422: data_type=0x1E -> OUTPUT_CONTROL=0x7A08
+			 * - RAW8:   data_type=0x2A -> OUTPUT_CONTROL=0xAA08
+			 * Without this, RDI mode fails because CSID expects RAW8
+			 * but sensor sends YUV data type.
+			 */
+			if (is_bayer)
+				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
+			else
+				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
+
+			if (mt9m113_cont_mipi_clk)
 				output_ctrl_val |= 0x0004;
-				dev_info(&sensor->client->dev,
-					 "MT9M113: OUTPUT_CONTROL=0x%04x (MIPI+cont_clk)\n",
-					 output_ctrl_val);
-			} else {
-				dev_info(&sensor->client->dev,
-					 "MT9M113: OUTPUT_CONTROL=0x%04x (webOS LP mode)\n",
-					 output_ctrl_val);
-			}
+
+			dev_info(&sensor->client->dev,
+				 "MT9M113: OUTPUT_CONTROL=0x%04x (%s, %s)\n",
+				 output_ctrl_val,
+				 is_bayer ? "RAW8 dt=0x2A" : "YUV dt=0x1E",
+				 mt9m113_cont_mipi_clk ? "cont_clk" : "LP");
+
 			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 					output_ctrl_val, NULL);
 		}
@@ -2507,22 +2532,35 @@ mt9m113_streaming:
 			 * Verify MIPI is enabled. Bit 3 (reg_frame_sync) is READ-ONLY
 			 * and reflects hardware frame sync state - not a control bit.
 			 * Mask it out when checking if MIPI output is properly enabled.
-			 * Also account for continuous clock mode (bit 2).
+			 * Also account for continuous clock mode (bit 2) and RAW8 vs YUV.
 			 */
 			{
-				u16 expected = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY;
+				const struct v4l2_mbus_framefmt *fmt;
+				bool is_raw;
+				u16 expected;
+
+				fmt = v4l2_subdev_state_get_format(ifp_state, 1);
+				is_raw = (fmt->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
+					  fmt->code == MEDIA_BUS_FMT_SGRBG10_1X10);
+
+				if (is_raw)
+					expected = MT9M113_OUTPUT_CONTROL_MIPI_RAW8_VERIFY;
+				else
+					expected = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY;
+
 				if (mt9m113_cont_mipi_clk)
 					expected |= 0x0004;  /* cont_mipi_clk bit */
+
 				if ((output_ctrl_after & ~MT9M113_OUTPUT_CONTROL_RO_MASK) != expected) {
 					dev_err(&sensor->client->dev,
-						"MT9M113: OUTPUT_CONTROL wrong: 0x%llx (masked=0x%llx, expected=0x%x)\n",
+						"MT9M113: OUTPUT_CONTROL wrong: 0x%llx (masked=0x%llx, expected=0x%x for %s)\n",
 						output_ctrl_after,
 						output_ctrl_after & ~MT9M113_OUTPUT_CONTROL_RO_MASK,
-						expected);
+						expected, is_raw ? "RAW8" : "YUV");
 				} else {
 					dev_info(&sensor->client->dev,
-						 "MT9M113: OUTPUT_CONTROL=0x%llx OK (bit3 is RO frame_sync status)\n",
-						 output_ctrl_after);
+						 "MT9M113: OUTPUT_CONTROL=0x%llx OK (%s, bit3 is RO frame_sync)\n",
+						 output_ctrl_after, is_raw ? "RAW8" : "YUV");
 				}
 			}
 		}
