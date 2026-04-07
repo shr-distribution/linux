@@ -2117,25 +2117,27 @@ static int vfe31_enable(struct vfe_line *line)
 		writel_relaxed(wm1_pong_addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm1));
 
-		/* WM1 IMAGE_SIZE - same as WM0, uses INPUT stride */
-		reg = (((width * 2) / 16) & 0xFFFF) << 16;
+		/*
+		 * WM1 IMAGE_SIZE - CbCr write master
+		 *
+		 * CRITICAL: WM1 writes POST-DEMUX CbCr data at OUTPUT stride (width),
+		 * not INPUT stride (width*2). The DEMUX outputs 640 bytes/line of
+		 * CbCr for 640-wide input, not 1280 bytes/line.
+		 */
+		reg = ((bytesperline / 16) & 0xFFFF) << 16;
 		reg |= ((height - 1) << 4) | 2;
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 
 		/*
 		 * WM1 ADDR_CFG - burst and line count for CbCr write master
 		 *
-		 * webOS uses (456 << 16) | 303 for 640x480 = (height-24) << 16 | burst
-		 * The "lines" field is NOT a crop - it appears to control DMA line
-		 * counting behavior for the CbCr plane. Without it, only ~half the
-		 * UV data is written.
-		 *
 		 * Format: (lines << 16) | burst_words
-		 * Where lines = height - 24 (webOS value, reason unknown but required)
+		 * Where lines = height - 24 (webOS value)
 		 *
-		 * CRITICAL: burst must use INPUT stride (width*2), not output stride.
+		 * CRITICAL: burst must use OUTPUT stride (bytesperline) because
+		 * WM1 writes POST-DEMUX CbCr data.
 		 */
-		wpl = (width * 2) / 4;  /* UYVY INPUT stride */
+		wpl = bytesperline / 4;  /* OUTPUT stride for CbCr */
 		reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
 		dev_info(vfe->camss->dev,
 			 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
@@ -3823,24 +3825,25 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
 
 				/*
-				 * VIDEO CbCr IMAGE_SIZE - VFE31 webOS format:
-				 * Same format as Y plane, uses INPUT stride
+				 * VIDEO CbCr IMAGE_SIZE - uses OUTPUT stride
+				 * CbCr is POST-DEMUX data at bytesperline, not input stride.
 				 */
-				reg = (((width * 2) / 16) & 0xFFFF) << 16;
+				reg = ((bytesperline / 16) & 0xFFFF) << 16;
 				reg |= ((height - 1) << 4) | 2;
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
 
 				/*
-				 * VIDEO CbCr ADDR_CFG - VFE31 webOS format:
+				 * VIDEO CbCr ADDR_CFG - VFE31 format:
 				 * Upper 16 bits: height - 24 (line count)
-				 * Lower 16 bits: burst = input_wpl - 17
+				 * Lower 16 bits: burst = output_wpl - 17
 				 *
-				 * CRITICAL: burst must use INPUT stride (width*2).
+				 * CRITICAL: burst must use OUTPUT stride (bytesperline)
+				 * because CbCr is POST-DEMUX data.
 				 */
 				{
-					u32 input_wpl = (width * 2) / 4;  /* UYVY INPUT */
-					reg = ((height - 24) << 16) | ((input_wpl - 17) & 0xFFFF);
+					u32 output_wpl = bytesperline / 4;  /* OUTPUT stride */
+					reg = ((height - 24) << 16) | ((output_wpl - 17) & 0xFFFF);
 				}
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
