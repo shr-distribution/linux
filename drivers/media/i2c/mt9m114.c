@@ -2300,6 +2300,29 @@ mt9m113_streaming:
 
 			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 					output_ctrl_val, NULL);
+
+			/*
+			 * For 8-bit Bayer output, set TRUNCATE_RAW_BAYER bit in
+			 * CAM_PORT_OUTPUT_CONTROL to truncate 10-bit RAW to 8-bit.
+			 * Without this, sensor outputs 10-bit data (2 bytes/pixel)
+			 * instead of 8-bit (1 byte/pixel).
+			 */
+			if (is_bayer && format->code == MEDIA_BUS_FMT_SGRBG8_1X8) {
+				u64 port_ctrl;
+
+				ret = cci_read(sensor->regmap,
+					       MT9M114_CAM_PORT_OUTPUT_CONTROL,
+					       &port_ctrl, NULL);
+				if (ret == 0) {
+					port_ctrl |= MT9M114_CAM_PORT_TRUNCATE_RAW_BAYER;
+					ret = cci_write(sensor->regmap,
+							MT9M114_CAM_PORT_OUTPUT_CONTROL,
+							port_ctrl, NULL);
+					dev_info(&sensor->client->dev,
+						 "MT9M113: CAM_PORT_OUTPUT_CONTROL=0x%llx (TRUNCATE_RAW_BAYER set)\n",
+						 port_ctrl);
+				}
+			}
 		}
 		if (ret) {
 			dev_err(&sensor->client->dev,
