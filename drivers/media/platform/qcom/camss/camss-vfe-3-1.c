@@ -112,7 +112,7 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  */
 /*
  * XBAR_CFG1 enables OUTPUT CHANNELS, not WMs directly!
- * OUTPUT_1_AND_3 mode WM mapping:
+ * OUTPUT_1_AND_3 mode WM mapping (from webOS msm_vfe31.c lines 719-722):
  *   output0.ch0 = WM0 (Preview Y)
  *   output0.ch1 = WM4 (Preview CbCr)
  *   output2.ch0 = WM1 (Video Y)
@@ -700,7 +700,7 @@ extern int software_eof_enable;
  * need to be 0x9. Current XBAR disables VIDEO CbCr output.
  */
 #define VFE31_VIDEO_WM_Y		1  /* WM1 = output2.ch0 (video Y) */
-#define VFE31_VIDEO_WM_CBCR		5  /* WM5 = output2.ch1 (video CbCr, needs XBAR 0x9) */
+#define VFE31_VIDEO_WM_CBCR		5  /* WM5 = output2.ch1 (video CbCr) */
 
 /*
  * ============================================================================
@@ -2194,8 +2194,9 @@ static int vfe31_enable(struct vfe_line *line)
 			u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
 			reg = ((cbcr_stride / 16) & 0xFFFF) << 16;
 			reg |= ((height - 1) << 4) | 2;
-			dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d (cbcr_param=%d)\n",
-				 wm1, cbcr_stride, vfe31_cbcr_stride);
+			dev_info(vfe->camss->dev,
+				 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d cbcr_param=%d)\n",
+				 wm1, reg, cbcr_stride, height, vfe31_cbcr_stride);
 			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 		}
 
@@ -3388,8 +3389,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
 				reg = ((cbcr_stride / 16) & 0xFFFF) << 16;
 				reg |= ((height - 1) << 4) | 2;
-				dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d (cbcr_param=%d)\n",
-					 wm1, cbcr_stride, vfe31_cbcr_stride);
+				dev_info(vfe->camss->dev,
+					 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d cbcr_param=%d)\n",
+					 wm1, reg, cbcr_stride, height, vfe31_cbcr_stride);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 			}

@@ -1,0 +1,103 @@
+==========================================
+  VFE31 CAPTURE POLLING ANALYSIS
+  Mode: Picture Capture (multiple shots)
+  Date: 2026-04-04 09:20 CEST
+==========================================
+
+METHODOLOGY:
+- Fast polling (~10Hz) of key VFE31 registers
+- User took multiple pictures while polling active
+- Caught register transitions during capture
+
+==========================================
+  KEY REGISTER STATES OBSERVED
+==========================================
+
+NORMAL PREVIEW STATE:
+  MOD=0x01C00C0C CORE=0x00000046 AXI=0x00000001 XBAR=0x00001A1B
+  WM0=0x00000001 WM1=0x00000000 WM4=0x00000001 WM5=0x00000000
+
+  Interpretation:
+  - WM0 (Y) ENABLED
+  - WM1 (CbCr) DISABLED  <-- Only Y plane captured in preview!
+  - WM4 (Y) ENABLED
+  - WM5 (CbCr) DISABLED  <-- Only Y plane captured in preview!
+
+DURING PICTURE CAPTURE (caught multiple times):
+  09:20:40 WM0=0x00000001 WM1=0x00000001 WM4=0x00000000 WM5=0x00000000
+  09:20:41 WM0=0x00000000 WM1=0x00000001 WM4=0x00000001 WM5=0x00000001
+  09:20:42 WM0=0x00000000 WM1=0x00000000 WM4=0x00000001 WM5=0x00000001
+  09:20:44 WM0=0x00000001 WM1=0x00000001 WM4=0x00000001 WM5=0x00000001  <-- ALL 4!
+  09:20:45 WM0=0x00000001 WM1=0x00000001 WM4=0x00000001 WM5=0x00000001  <-- ALL 4!
+  09:20:49 WM0=0x00000001 WM1=0x00000001 WM4=0x00000000 WM5=0x00000000
+  09:20:55 WM0=0x00000001 WM1=0x00000001 WM4=0x00000001 WM5=0x00000001  <-- ALL 4!
+  09:20:57 WM0=0x00000001 WM1=0x00000001 WM4=0x00000001 WM5=0x00000001  <-- ALL 4!
+  09:20:58 WM0=0x00000000 WM1=0x00000001 WM4=0x00000001 WM5=0x00000001
+
+  Interpretation:
+  - WM0 (Y) ENABLED
+  - WM1 (CbCr) ENABLED  <-- CbCr plane captured during photo!
+  - WM4 (Y) ENABLED
+  - WM5 (CbCr) ENABLED  <-- CbCr plane captured during photo!
+
+RESET/TRANSITION STATES (during VFE reconfiguration):
+  MOD=0x00000000 CORE=0x00000000 AXI=0x00000000 XBAR=0x00000000
+  WM0=0x00000000 WM1=0x00000000 WM4=0x00000000 WM5=0x00000000
+
+  Interpretation:
+  - VFE being reset/reconfigured between modes
+
+==========================================
+  CONCLUSIONS
+==========================================
+
+WM mapping per webOS msm_vfe31.c lines 719-722:
+  Preview: WM0 (Y) + WM4 (CbCr)
+  Video:   WM1 (Y) + WM5 (CbCr)
+
+1. WebOS PREVIEW MODE: Y-only capture
+   - WM0 (Preview Y) = ENABLED
+   - WM4 (Preview CbCr) = ENABLED
+   - WM1 (Video Y) = DISABLED
+   - WM5 (Video CbCr) = DISABLED
+   - Format: Grayscale Y plane only (no chroma written to memory)
+   - Chroma likely reconstructed from UYVY input for display
+
+2. WebOS PICTURE CAPTURE: Full NV16 Y+CbCr
+   - WM0 (Preview Y) = ENABLED
+   - WM4 (Preview CbCr) = ENABLED
+   - WM1 (Video Y) = ENABLED
+   - WM5 (Video CbCr) = ENABLED
+   - Format: Full NV16 semi-planar (Y plane + interleaved CbCr)
+   - Both planes captured for full-quality JPEG encoding
+
+3. WebOS VIDEO RECORDING: Same as preview (Y-only from VFE)
+   - Video encoder likely processes UYVY directly before DEMUX
+   - Or software converts Y + raw UYVY to final video format
+
+==========================================
+  IMPLICATIONS FOR LINUX DRIVER
+==========================================
+
+Our current Linux VFE31 driver attempts NV16 capture (Y + CbCr).
+The CbCr plane contains Y-like data instead of proper chroma.
+
+The issue is NOT the DEMUX configuration (0xC9CA is correct).
+
+Possible root causes to investigate:
+1. WM1/WM5 enable bit not being set correctly
+2. XBAR routing not configured for NV16 output
+3. AXI_OUT_MODE not configured for dual-plane output
+4. Write master address/stride configuration issues
+
+Register addresses for WM enable (WM_CFG_PNTR):
+- WM0: 0x04C (bit 0 = enable)
+- WM1: 0x064 (bit 0 = enable)
+- WM4: 0x0AC (bit 0 = enable)
+- WM5: 0x0C4 (bit 0 = enable)
+
+Next steps:
+1. Check Linux driver WM enable logic in vfe_3_1_wm_enable()
+2. Verify WM1/WM5 addresses are configured with valid buffer addresses
+3. Compare WM stride/burst configuration between webOS and Linux
+4. Test with explicit WM1/WM5 enable in vfe_enable()
