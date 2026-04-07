@@ -50,28 +50,26 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
  * Source: webos-linux-kernel-touchpad/drivers/media/video/msm/msm_vfe31.c
  *         Lines 710-722, vfe31_config_axi() OUTPUT_1_AND_3 case
  *
- * WebOS uses OFFSET-BY-4 WM PAIRING, not consecutive pairing:
+ * WebOS uses OFFSET-BY-4 WM PAIRING in OUTPUT_1_AND_3 mode:
  *   - Preview (out0): WM0 (Y) + WM4 (CbCr)
  *   - Video (out2):   WM1 (Y) + WM5 (CbCr)
  *
- * This is fundamentally different from what we originally assumed (WM0+WM1).
+ * This is controlled by XBAR_CFG1:
+ *   - bits[3:0] = Y routing: 0xB = output0 + output2 (preview + video Y)
+ *   - bits[7:4] = CbCr routing: 0x1 = output0 only (preview CbCr)
  *
- * WebOS code:
- *   case OUTPUT_1_AND_3: {
- *       // use wm0& 4 for preview, wm1&5 for video.
- *       *p++ = 0x1;      // xbar cfg0
- *       *p = 0x1a03;     // xbar cfg1
- *       vfe31_ctrl->outpath.out0.ch0 = 0;  // preview luma   → WM0
- *       vfe31_ctrl->outpath.out0.ch1 = 4;  // preview chroma → WM4
- *       vfe31_ctrl->outpath.out2.ch0 = 1;  // video luma     → WM1
- *       vfe31_ctrl->outpath.out2.ch1 = 5;  // video chroma   → WM5
- *   }
+ * XBAR ROUTING (0x1A1B):
+ *   - Y goes to output0.ch0 (WM0) AND output2.ch0 (WM1)
+ *   - CbCr goes to output0.ch1 (WM4) ONLY
+ *   - output2.ch1 (WM5) is disabled by XBAR
  *
- * IMPORTANT: WebOS DISABLED CbCr write masters in practice!
- *   See reports/webos-video-mode-dump.txt:
- *   - WM1_CFG_PNTR = 0x00000000 (DISABLED)
- *   - WM5_CFG_PNTR = 0x00000000 (DISABLED)
- *   WebOS only captured Y planes, never CbCr, so this pairing was untested!
+ * WebOS channel assignments (out0.ch1=4, out2.ch1=5) confirm:
+ *   - Preview CbCr → WM4
+ *   - Video CbCr → WM5 (but disabled by XBAR 0x1A1B)
+ *
+ * IMPORTANT: WebOS DISABLED CbCr write masters in register dumps!
+ *   See reports/webos-video-mode-dump.txt. They only captured Y planes.
+ *   We're attempting what webOS never actually tested.
  */
 
 /*
@@ -112,8 +110,16 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  * webOS register dumps show 0x1A1B was used, but webOS disabled CbCr WMs
  * entirely (WM1_CFG_PNTR=0x00), only capturing Y planes.
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A13  /* Y→WM0 only, CbCr→WM1 (avoids WM4 DMA) */
-#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Y→WM0+WM4, CbCr→WM1 (VIDEO uses WM4) */
+/*
+ * XBAR_CFG1 enables OUTPUT CHANNELS, not WMs directly!
+ * OUTPUT_1_AND_3 mode WM mapping:
+ *   output0.ch0 = WM0 (Preview Y)
+ *   output0.ch1 = WM4 (Preview CbCr)
+ *   output2.ch0 = WM1 (Video Y)
+ *   output2.ch1 = WM5 (Video CbCr)
+ */
+#define VFE31_XBAR_PIX_ONLY	0x1A13  /* Y→output0, CbCr→output0 (WM0+WM4) */
+#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Y→output0+2, CbCr→output0 (WM0+WM1+WM4) */
 
 /* Module param for manual override/testing */
 int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select based on active lines */
@@ -179,35 +185,35 @@ MODULE_PARM_DESC(vfe31_wm4_lines,
  * CRITICAL: All WMs for a line MUST be in the same group! Mixing groups
  * causes the gen1 code to access non-existent line indices → crash.
  *
- * With XBAR 0x1A1B: Y→WM0+WM4, CbCr→WM1 only:
- *   PIX line:   WM0 (Y) + WM1 (CbCr) → bits 0,1 → 0x03
- *   VIDEO line: WM4 (Y) + WM1 (CbCr) → bits 4,1 → 0x12
- *   Combined:   WM0 + WM1 + WM4      → bits 0,1,4 → 0x13
+ * With corrected WM assignments:
+ *   PIX:   WM0 (Y) + WM4 (CbCr) → bits 0,4 → 0x11
+ *   VIDEO: WM1 (Y) + WM5 (CbCr) → bits 1,5 → 0x22
+ *   Both:  WM0 + WM1 + WM4 + WM5 → bits 0,1,4,5 → 0x33
  *
- * Note: WM1 is SHARED between PIX and VIDEO for CbCr!
+ * NOTE: With XBAR 0x1A1B, VIDEO CbCr (WM5) is disabled.
+ * To enable VIDEO CbCr, XBAR bits[7:4] needs to be 0x9 (both outputs).
  *
  * WebOS IRQ_COMPOSITE_MASK = 0x00220011 puts Y WMs in Group 0
  * and CbCr WMs in Group 2, but we use Group 0 for simplicity.
  */
-#define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00000003  /* WM0+WM1 (PIX Y+CbCr) */
-#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00000013  /* WM0+WM1+WM4 (shared WM1) */
-#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00000012  /* WM4+WM1 (VIDEO Y + shared CbCr) */
+#define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00000011  /* WM0+WM4 (PIX Y+CbCr) */
+#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00000013  /* WM0+WM1+WM4 (no WM5, disabled by XBAR) */
+#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00000002  /* WM1 only (VIDEO Y, no CbCr with XBAR 0x1A1B) */
 
 /* Module param for manual override/testing */
 static int vfe31_irq_comp_mask = 0;  /* 0 = auto-select based on active lines */
 module_param(vfe31_irq_comp_mask, int, 0644);
 MODULE_PARM_DESC(vfe31_irq_comp_mask,
-		 "VFE31 IRQ composite mask (0=auto, 0x03=pix, 0x13=pix+video, 0x12=video)");
+		 "VFE31 IRQ composite mask (0=auto, 0x11=pix, 0x13=pix+video, 0x02=video)");
 
 /* External module parameters from camss-vfe.c */
 extern int software_sof_enable;
 extern int software_eof_enable;
 
 /*
- * VFE31 XBAR routing - using webOS values:
- * - All modes: XBAR 0x1A03 with offset-by-4 WM pairing
+ * VFE31 XBAR routing - OUTPUT_1_AND_3 mode with XBAR 0x1A1B:
  *   - PIX:   WM0 (Y) + WM4 (CbCr)
- *   - VIDEO: WM1 (Y) + WM5 (CbCr)
+ *   - VIDEO: WM1 (Y) + WM5 (CbCr) [CbCr disabled by XBAR unless 0x1A9B]
  * - Raw mode: XBAR 0x60 (CAMIF_TO_AXI) bypasses DEMUX
  *
  * Note: webOS never enabled CbCr WMs (WM4/WM5), so this routing is
@@ -518,17 +524,24 @@ extern int software_eof_enable;
  */
 #define VFE_0_BUS_XBAR_CFG1			0x044
 
-/* XBAR_CFG1 bit field definitions */
+/*
+ * XBAR_CFG1 bit field definitions
+ *
+ * IMPORTANT: These route to OUTPUT CHANNELS, not WMs directly!
+ * OUTPUT_1_AND_3 mode maps channels to WMs:
+ *   output0.ch0 → WM0, output0.ch1 → WM4
+ *   output2.ch0 → WM1, output2.ch1 → WM5
+ */
 #define VFE_0_BUS_XBAR_CFG1_Y_ROUTING_MASK	0x0000000F
 #define VFE_0_BUS_XBAR_CFG1_Y_ROUTING_SHIFT	0
-#define VFE_0_BUS_XBAR_CFG1_Y_WM0		0x3
-#define VFE_0_BUS_XBAR_CFG1_Y_WM0_WM4		0xB
+#define VFE_0_BUS_XBAR_CFG1_Y_WM0		0x3   /* Y → output0 only (WM0) */
+#define VFE_0_BUS_XBAR_CFG1_Y_WM0_WM4		0xB   /* Y → output0+2 (WM0+WM1) */
 
 #define VFE_0_BUS_XBAR_CFG1_CBCR_ROUTING_MASK	0x000000F0
 #define VFE_0_BUS_XBAR_CFG1_CBCR_ROUTING_SHIFT	4
-#define VFE_0_BUS_XBAR_CFG1_CBCR_DISABLED	0x0
-#define VFE_0_BUS_XBAR_CFG1_CBCR_WM1		0x1
-#define VFE_0_BUS_XBAR_CFG1_CBCR_WM1_WM5	0x9
+#define VFE_0_BUS_XBAR_CFG1_CBCR_DISABLED	0x0   /* CbCr disabled */
+#define VFE_0_BUS_XBAR_CFG1_CBCR_WM1		0x1   /* CbCr → output0 only (WM4!) */
+#define VFE_0_BUS_XBAR_CFG1_CBCR_WM1_WM5	0x9   /* CbCr → output0+2 (WM4+WM5) */
 
 #define VFE_0_BUS_XBAR_CFG1_ISP_PATH_MASK	0x0000FF00
 #define VFE_0_BUS_XBAR_CFG1_ISP_PATH_SHIFT	8
@@ -607,48 +620,55 @@ extern int software_eof_enable;
  * The webOS code comment "wm0& 4 for preview, wm1&5 for video" is MISLEADING!
  * Those are software channel indices (outpath.out0.ch0/ch1), NOT XBAR routing.
  *
- * Correct WM assignments based on XBAR 0x1A1B:
- *   PIX:   WM0 (Y) + WM1 (CbCr)
- *   VIDEO: WM4 (Y) + WM1 (CbCr) - SHARED WM1!
+ * Correct WM assignments based on webOS channel assignments:
+ *   Preview (output0): ch0=WM0 (Y), ch1=WM4 (CbCr)
+ *   Video (output2):   ch0=WM1 (Y), ch1=WM5 (CbCr)
  *
- * webOS worked around CbCr sharing by DISABLING CbCr WMs entirely.
+ * XBAR_CFG1 = 0x1A1B enables:
+ *   - Y to output0.ch0 (WM0) AND output2.ch0 (WM1)
+ *   - CbCr to output0.ch1 (WM4) ONLY (bits[7:4]=0x1)
+ *
+ * NOTE: Previous code incorrectly used WM1 for preview CbCr, but
+ * WM1 is output2.ch0 = VIDEO Y! That's why WM1 contained Y data.
  */
-#define VFE31_PREVIEW_WM_Y		0
-#define VFE31_PREVIEW_WM_CBCR		1  /* WM1 - only place CbCr is routed! */
+#define VFE31_PREVIEW_WM_Y		0  /* WM0 = output0.ch0 (preview Y) */
+#define VFE31_PREVIEW_WM_CBCR		4  /* WM4 = output0.ch1 (preview CbCr) */
 
 /*
- * VIDEO mode: WM4 for Y, WM1 for CbCr (shared with PIX!)
+ * VIDEO mode: WM1 for Y (output2.ch0), WM5 for CbCr (output2.ch1)
  *
- * LIMITATION: PIX and VIDEO cannot both capture CbCr simultaneously
- * because they share WM1. For VIDEO-only mode, this works fine.
- * For simultaneous capture, need to disable one line's CbCr.
+ * NOTE: With XBAR 0x1A1B, CbCr only goes to output0.ch1 (WM4).
+ * To enable VIDEO CbCr (output2.ch1/WM5), XBAR bits[7:4] would
+ * need to be 0x9. Current XBAR disables VIDEO CbCr output.
  */
-#define VFE31_VIDEO_WM_Y		4  /* WM4 - receives Y from XBAR 0x1A1B */
-#define VFE31_VIDEO_WM_CBCR		1  /* WM1 - shared with PIX (only CbCr destination!) */
+#define VFE31_VIDEO_WM_Y		1  /* WM1 = output2.ch0 (video Y) */
+#define VFE31_VIDEO_WM_CBCR		5  /* WM5 = output2.ch1 (video CbCr, needs XBAR 0x9) */
 
 /*
  * ============================================================================
- * CONFIGURATION SUMMARY (CORRECTED FROM REGISTER DUMPS)
+ * CONFIGURATION SUMMARY (CORRECTED FROM REGISTER DUMPS AND WEBOS CODE)
  * ============================================================================
+ *
+ * OUTPUT_1_AND_3 mode (AXI=0x01) assigns WMs to output channels:
+ *   output0 (Preview): ch0=WM0 (Y), ch1=WM4 (CbCr)
+ *   output2 (Video):   ch0=WM1 (Y), ch1=WM5 (CbCr)
  *
  * For semi-planar preview (NV12/NV16/NV21/NV61):
  *   XBAR_CFG0 = 0x01   (OUTPUT_1_AND_3)
- *   XBAR_CFG1 = 0x1A1B (webOS actual: Y→WM0+WM4, CbCr→WM1 only!)
- *   BUS_CFG   = 0x02AAA771 (enable Y+CbCr write paths)
- *   WM0 = Y plane, WM1 = CbCr plane
+ *   XBAR_CFG1 = 0x1A1B (Y→output0+output2, CbCr→output0 only)
+ *   BUS_CFG   = 0x02AAA771
+ *   WM0 = Preview Y, WM4 = Preview CbCr
  *
  * For video recording (VIDEO line active):
- *   XBAR_CFG0 = 0x01   (OUTPUT_1_AND_3)
- *   XBAR_CFG1 = 0x1A1B (Y duplicated to WM4, CbCr still only WM1)
- *   VIDEO: WM4 (Y) + WM1 (CbCr - SHARED with PIX!)
+ *   Same XBAR settings, but VIDEO uses:
+ *   WM1 = Video Y, WM5 = Video CbCr (needs XBAR 0x1A9B for CbCr)
  *
  * For raw bypass (SRGGB8/10/12):
  *   XBAR_CFG0 = 0x60   (RAW_BYPASS / CAMIF_TO_AXI)
  *   XBAR_CFG1 = 0x00   (not used in raw mode)
  *   BUS_CFG   = configured for raw pixel size
  *
- * LIMITATION: PIX and VIDEO share WM1 for CbCr!
- * webOS disabled CbCr WMs entirely to avoid conflicts.
+ * NOTE: webOS only captured Y data - CbCr WMs were disabled in dumps.
  * For VIDEO-only capture, WM1 is available since PIX isn't using it.
  */
 
@@ -1720,10 +1740,14 @@ static int vfe31_enable(struct vfe_line *line)
 
 	case V4L2_PIX_FMT_NV16:
 	case V4L2_PIX_FMT_NV61:
-		/* Semi-planar format: PIX mode with 2 WMs is correct */
-		if (axi_mode == 0x01) {
+		/*
+		 * Semi-planar format: PIX mode with 2 WMs.
+		 * Both 0x01 (OUTPUT_1_AND_3) and 0x200 (OUTPUT_2) support 2 WMs.
+		 * 0x200 is the webOS preview mode with WM0(Y)+WM1(CbCr).
+		 */
+		if (axi_mode == 0x01 || axi_mode == 0x200) {
 			output->wm_num = 2;
-			dev_info(vfe->camss->dev, "VFE31: Semi-planar NV16/NV61 - using 2 WMs (Y+CbCr)\n");
+			dev_info(vfe->camss->dev, "VFE31: Semi-planar NV16/NV61 - using 2 WMs (Y+CbCr) axi=0x%x\n", axi_mode);
 		} else {
 			/* RDI mode requested, use single WM */
 			output->wm_num = 1;
@@ -1966,11 +1990,11 @@ static int vfe31_enable(struct vfe_line *line)
 	 * These must be set up before WM registers for the ISP pipeline
 	 * to process data correctly. DEMUX is essential for YUV data.
 	 *
-	 * For RDI mode (axi=0x60), data bypasses the ISP entirely,
-	 * so DEMUX/scale/crop configuration is not needed.
+	 * Both 0x01 (OUTPUT_1_AND_3) and 0x200 (OUTPUT_2) use the ISP pipeline.
+	 * For RDI mode (axi=0x60), data bypasses the ISP entirely.
 	 */
-	if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure demux/scale/crop\n");
+	if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE || axi_mode == 0x200) {
+		dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure demux/scale/crop (axi=0x%x)\n", axi_mode);
 		vfe31_set_demux_cfg(vfe, line);
 		vfe31_set_scale_cfg(vfe, line);
 		vfe31_set_crop_cfg(vfe, line);
