@@ -2513,6 +2513,58 @@ mt9m113_streaming:
 		}
 
 		/*
+		 * CRITICAL: Re-write OUTPUT_CONTROL after SEQ_CMD completes!
+		 *
+		 * The sensor MCU restores OUTPUT_CONTROL to its default (YUV) value
+		 * when SEQ_CMD=RUN is issued. We must re-write the RAW8 data type
+		 * AFTER the command completes for RDI/RAW capture to work.
+		 *
+		 * Without this, the sensor sends YUV packets (dt=0x1E) but CSID
+		 * expects RAW8 (dt=0x2A), causing all data to be ignored.
+		 */
+		{
+			const struct v4l2_mbus_framefmt *format;
+			bool is_bayer;
+
+			format = v4l2_subdev_state_get_format(ifp_state, 1);
+			is_bayer = (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
+				    format->code == MEDIA_BUS_FMT_SGRBG10_1X10);
+
+			if (is_bayer) {
+				u16 output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
+				u64 readback;
+
+				if (mt9m113_cont_mipi_clk)
+					output_ctrl_val |= 0x0004;
+
+				dev_info(&sensor->client->dev,
+					 "MT9M113: Re-writing OUTPUT_CONTROL=0x%04x after SEQ_CMD (RAW8 fix)\n",
+					 output_ctrl_val);
+
+				ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+						output_ctrl_val, NULL);
+				if (ret) {
+					dev_err(&sensor->client->dev,
+						"MT9M113: OUTPUT_CONTROL re-write failed: %d\n", ret);
+					goto error;
+				}
+
+				/* Verify it stuck this time */
+				msleep(5);
+				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
+				dev_info(&sensor->client->dev,
+					 "MT9M113: OUTPUT_CONTROL readback=0x%04llx (expected=0x%04x)\n",
+					 readback, output_ctrl_val);
+
+				if ((readback & ~MT9M113_OUTPUT_CONTROL_RO_MASK) !=
+				    (output_ctrl_val & ~MT9M113_OUTPUT_CONTROL_RO_MASK)) {
+					dev_warn(&sensor->client->dev,
+						 "MT9M113: OUTPUT_CONTROL still wrong after re-write!\n");
+				}
+			}
+		}
+
+		/*
 		 * Comprehensive sensor state readback for debugging.
 		 * This logs all critical registers after streaming starts.
 		 */
