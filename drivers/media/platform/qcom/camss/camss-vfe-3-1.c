@@ -3675,10 +3675,22 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
 			u32 wm1_ping = vfe->pending_ping_addr + cbcr_offset;
 			u32 wm1_pong = vfe->pending_pong_addr + cbcr_offset;
+			u16 cbcr_height;
+
+			/*
+			 * CbCr height depends on format:
+			 * - NV12/NV21 (4:2:0): CbCr height = Y height / 2
+			 * - NV16/NV61 (4:2:2): CbCr height = Y height (full)
+			 */
+			if (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
+			    pix->pixelformat == V4L2_PIX_FMT_NV21)
+				cbcr_height = height / 2;
+			else
+				cbcr_height = height;
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d (CbCr) offset=0x%x PING=0x%08x PONG=0x%08x\n",
-				 wm1, cbcr_offset, wm1_ping, wm1_pong);
+				 "VFE31: WM%d (CbCr) offset=0x%x PING=0x%08x cbcr_height=%d\n",
+				 wm1, cbcr_offset, wm1_ping, cbcr_height);
 
 			/* WM1 PING/PONG addresses */
 			writel_relaxed(wm1_ping,
@@ -3686,27 +3698,30 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			writel_relaxed(wm1_pong,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm1));
 
-			/* CbCr WM IMAGE_SIZE - use vfe31_cbcr_stride module param */
+			/* CbCr WM IMAGE_SIZE - use cbcr_height for NV12 */
 			{
 				u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
 				reg = ((cbcr_stride / 16) & 0xFFFF) << 16;
-				reg |= ((height - 1) << 4) | 2;
+				reg |= ((cbcr_height - 1) << 4) | 2;
 				dev_info(vfe->camss->dev,
-					 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d cbcr_param=%d)\n",
-					 wm1, reg, cbcr_stride, height, vfe31_cbcr_stride);
+					 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d)\n",
+					 wm1, reg, cbcr_stride, cbcr_height);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm1));
 			}
 
 			/*
 			 * WM1 ADDR_CFG - lines and burst for CbCr
-			 * Use (height - 24) << 16 | burst (webOS value required)
+			 * Use (cbcr_height - 24) << 16 | burst (webOS formula)
+			 *
+			 * NOTE: For NV12, cbcr_height=240, so lines=216.
+			 * The -24 offset appears to be a timing/safety margin.
 			 */
 			wpl = bytesperline / 4;
-			reg = ((height - 24) << 16) | ((wpl - 17) & 0xFFFF);
+			reg = ((cbcr_height - 24) << 16) | ((wpl - 17) & 0xFFFF);
 			dev_info(vfe->camss->dev,
 				 "VFE31: WM%d ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
-				 wm1, reg, height - 24, (wpl - 17) & 0xFFFF);
+				 wm1, reg, cbcr_height - 24, (wpl - 17) & 0xFFFF);
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
 
