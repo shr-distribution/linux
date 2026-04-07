@@ -2665,11 +2665,10 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		 val, height, bytes_per_line);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
 
-	/* WINDOW_HEIGHT should be lastLine (height-1), not lastPixel (width-1)! */
-	val = (height - 1) & 0x3FFF;
+	val = (bytes_per_line - 1) & 0x3FFF;
 	dev_info(vfe->camss->dev,
-		 "VFE31: WINDOW_HEIGHT_CFG=0x%08x (lastLine=%u)\n",
-		 val, height - 1);
+		 "VFE31: WINDOW_HEIGHT_CFG=0x%08x (lastPixel=%u)\n",
+		 val, bytes_per_line - 1);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 
 	/*
@@ -3415,11 +3414,11 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 val, height, width_bytes);
 		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
 
-		/* WINDOW_HEIGHT_CFG: lastLine = height - 1 (NOT width_bytes!) */
-		val = (height - 1) & 0x3FFF;
+		/* WINDOW_HEIGHT_CFG: lastPixel = width_bytes - 1 */
+		val = (width_bytes - 1) & 0x3FFF;
 		dev_info(vfe->camss->dev,
-			 "VFE31: WINDOW_HEIGHT_CFG (0x1F0) = 0x%08x (lastLine=%u)\n",
-			 val, height - 1);
+			 "VFE31: WINDOW_HEIGHT_CFG (0x1F0) = 0x%08x (lastPixel=%u)\n",
+			 val, width_bytes - 1);
 		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 	}
 
@@ -4343,8 +4342,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
 		writel_relaxed((height << 16) | (width_bytes & 0x3FFF),
 			       vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
-		/* WINDOW_HEIGHT_CFG: lastLine = height - 1 (NOT width_bytes!) */
-		writel_relaxed((height - 1) & 0x3FFF,
+		writel_relaxed((width_bytes - 1) & 0x3FFF,
 			       vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 		writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
 		writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
@@ -4599,8 +4597,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		 "VFE31: WINDOW_WIDTH=0x%08x (height=%u, width_bytes=%u)\n",
 		 val, height, width_bytes);
 
-	/* WINDOW_HEIGHT_CFG: lastLine = height - 1 (NOT width_bytes!) */
-	val = height - 1;
+	val = width_bytes - 1;
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
 
 	writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
