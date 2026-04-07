@@ -285,33 +285,37 @@ static const struct camss_format_info formats_pix_8x16[] = {
  *                      = 4*width*height (enough for 3*width*height needed)
  */
 static const struct camss_format_info formats_pix_vfe31[] = {
-	/* NV16 with UYVY input stride for VFE31 DEMUX */
+	/*
+	 * NV16 semi-planar: Y and CbCr are separate planes, each 8 bpp.
+	 * The DEMUX separates UYVY input (16 bpp) into Y (8 bpp) and CbCr (8 bpp).
+	 * Each plane has stride = width bytes, not width*2.
+	 */
 	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
-	/* NV61 with UYVY input stride */
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	/* NV61 semi-planar: same as NV16 but CbCr order reversed */
 	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	/* 2X8 formats for CAMIF */
 	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
-	  PER_PLANE_DATA(0, 1, 1, 1, 2, 16) },
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	/* Packed YUV 4:2:2 passthrough */
 	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_UYVY, 1,
 	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },

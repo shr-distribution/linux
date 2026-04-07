@@ -1222,10 +1222,8 @@ static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
  * immediately after the Y plane. For packed formats (UYVY, YUYV, etc.) and
  * RAW formats, returns 0 since they use a single plane.
  *
- * IMPORTANT: VFE31 format table uses bpp=16 for NV16 to match UYVY input
- * stride (e.g., 1280 bytes/line for 640 width). The cbcr_offset must use
- * the actual bytesperline, not width, to correctly position the CbCr plane
- * after the Y plane written by the WM with this stride.
+ * For NV16/NV61, bytesperline = width (bpp=8 per plane) since the DEMUX
+ * separates UYVY input into separate Y and CbCr planes, each 8 bits/pixel.
  */
 static inline u32 vfe31_get_cbcr_offset(u32 pixelformat, u32 bytesperline, u16 height)
 {
@@ -1237,8 +1235,7 @@ static inline u32 vfe31_get_cbcr_offset(u32 pixelformat, u32 bytesperline, u16 h
 		 * CbCr plane starts immediately after Y plane.
 		 * CbCr is interleaved (CbCrCbCr...) with full vertical resolution.
 		 *
-		 * For VFE31, bytesperline is 2*width (UYVY stride from format
-		 * table with bpp=16), so Y plane is 2*width*height bytes.
+		 * bytesperline = width (8 bpp per plane after DEMUX separation)
 		 */
 		return bytesperline * height;
 
