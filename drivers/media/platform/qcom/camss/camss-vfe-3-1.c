@@ -3848,20 +3848,70 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				       vfe->base + VFE_0_BUS_CMD);
 
 			/*
-			 * VIDEO CbCr WM (WM5) - DISABLED
+			 * VIDEO CbCr WM (WM1 - shared with PIX)
 			 *
-			 * XBAR 0x1A1B only routes CbCr to WM4 (PIX), not WM5 (VIDEO).
-			 * Enabling WM5 when XBAR doesn't route data to it causes
-			 * kernel crashes (WM5 never completes, corrupts state).
-			 *
-			 * To enable VIDEO CbCr, XBAR bits[7:4] need to be 0x9 (0x1A9B)
-			 * which routes CbCr to both WM4 and WM5.
-			 *
-			 * For now, VIDEO mode only captures Y plane (grayscale).
+			 * CRITICAL: Must set PING/PONG addresses for CbCr WM!
+			 * Use format-aware offset calculation for portability.
 			 */
 			if (line->output.wm_num == 2) {
+				u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
+				u32 cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
+				u32 cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
+
 				dev_info(vfe->camss->dev,
-					 "VFE31: VIDEO WM5 (CbCr) DISABLED - XBAR 0x1A1B only routes to WM4\n");
+					 "VFE31: VIDEO WM%d (CbCr) PING=0x%08x PONG=0x%08x (offset=0x%x)\n",
+					 VFE31_VIDEO_WM_CBCR, cbcr_ping, cbcr_pong, cbcr_offset);
+
+				/* VIDEO CbCr PING/PONG addresses */
+				writel_relaxed(cbcr_ping,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(VFE31_VIDEO_WM_CBCR));
+				writel_relaxed(cbcr_pong,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
+
+				/* VIDEO CbCr IMAGE_SIZE */
+				{
+					u16 image_stride = vfe31_calc_image_stride(width, bytesperline, false);
+					reg = ((image_stride / 16) & 0xFFFF) << 16;
+					reg |= ((height - 1) << 4) | 2;
+					dev_info(vfe->camss->dev, "VFE31: VIDEO WM5 IMAGE_SIZE stride=%d\n",
+						 image_stride);
+					writel_relaxed(reg,
+						       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
+				}
+
+				/*
+				 * VIDEO CbCr ADDR_CFG - VFE31 format:
+				 * Upper 16 bits: height - 24 (line count)
+				 * Lower 16 bits: burst = wpl - 17
+				 * Use bytesperline to match buffer allocation.
+				 */
+				{
+					u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
+					reg = ((height - 24) << 16) | ((buf_wpl - 17) & 0xFFFF);
+				}
+				writel_relaxed(reg,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(VFE31_VIDEO_WM_CBCR));
+
+				/*
+				 * VIDEO CbCr UB_CFG - use bytesperline
+				 */
+				{
+					u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
+					reg = ((buf_wpl / 8 - 1) & 0xFFFF) << 16;
+					reg |= (height - 1) & 0xFFFF;
+				}
+				writel_relaxed(reg,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_CBCR));
+
+				/* Enable VIDEO CbCr WM */
+				writel_relaxed(BIT(0),
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+				writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(VFE31_VIDEO_WM_CBCR),
+					       vfe->base + VFE_0_BUS_CMD);
+
+				dev_info(vfe->camss->dev,
+					 "VFE31: WM%d enabled for VIDEO CbCr\n",
+					 VFE31_VIDEO_WM_CBCR);
 			}
 			wmb();
 
