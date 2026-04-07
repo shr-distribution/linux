@@ -2063,17 +2063,35 @@ static int vfe31_enable(struct vfe_line *line)
 	 *   For 1280 bytes/line: wpl = 320, (320/8)-1 = 39 = 0x27
 	 * Lower 16 bits: height - 1
 	 *
-	 * UB_CFG controls the Unified Buffer depth per line. Use bytesperline
-	 * to match the buffer allocation stride.
+	 * CRITICAL: UB buffers INCOMING data BEFORE DEMUX separates Y/CbCr!
+	 * - PIX/VIDEO mode (UYVY input): use width * 2 (2 bytes per pixel)
+	 * - RDI mode (RAW8 input): use bytesperline (1 byte per pixel)
+	 *
+	 * For PIX/VIDEO: Using output stride (640) instead of input stride (1280)
+	 * causes UB to only buffer half the input line, resulting in half-frame
+	 * capture (only 240 of 480 lines).
 	 *
 	 * This is DIFFERENT from VFE4.x which uses (offset << 16) | depth
 	 */
-	wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
-	reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
-	reg |= (height - 1) & 0xFFFF;
-	dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, wpl=%d)\n",
-		 wm, reg, (wpl / 8 - 1), wpl);
-	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
+	{
+		u16 input_stride;
+		u16 input_wpl;
+
+		if (is_rdi_line) {
+			/* RDI mode: RAW data, use bytesperline (1 byte per pixel for RAW8) */
+			input_stride = bytesperline;
+		} else {
+			/* PIX/VIDEO mode: UYVY input, 2 bytes per pixel */
+			input_stride = width * 2;
+		}
+		input_wpl = input_stride / 4;  /* 32-bit words per line */
+		reg = ((input_wpl / 8 - 1) & 0xFFFF) << 16;
+		reg |= (height - 1) & 0xFFFF;
+		dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, input_wpl=%d, %s)\n",
+			 wm, reg, (input_wpl / 8 - 1), input_wpl,
+			 is_rdi_line ? "RDI" : "PIX/VIDEO");
+		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
+	}
 
 	/*
 	 * WR_CFG - enable only (BIT(0)).
@@ -2147,13 +2165,22 @@ static int vfe31_enable(struct vfe_line *line)
 			 wm1, reg, height - 24, (wpl - 17) & 0xFFFF);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
 
-		/* CbCr WM UB_CFG - use bytesperline */
-		wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
-		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
-		reg |= (height - 1) & 0xFFFF;
-		dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d)\n",
-			 wm1, reg, (wpl / 8 - 1));
-		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm1));
+		/*
+		 * CbCr WM UB_CFG - use INPUT stride, same as Y WM!
+		 *
+		 * CRITICAL: UB buffers INCOMING data (UYVY) BEFORE DEMUX.
+		 * Both Y and CbCr write masters share the same input buffer,
+		 * so both need the same UB configuration based on input stride.
+		 */
+		{
+			u16 input_stride = width * 2;  /* UYVY input: 2 bytes per pixel */
+			u16 input_wpl = input_stride / 4;  /* 32-bit words per line */
+			reg = ((input_wpl / 8 - 1) & 0xFFFF) << 16;
+			reg |= (height - 1) & 0xFFFF;
+			dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, input_wpl=%d)\n",
+				 wm1, reg, (input_wpl / 8 - 1), input_wpl);
+			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm1));
+		}
 
 		/* Enable WM1 */
 		writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm1));
