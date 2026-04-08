@@ -1829,7 +1829,12 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			 wm, ping_pong, active_index, output->sequence - 1);
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
-			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
+			/*
+			 * NOTE: Do NOT call bus_reload_wm() here!
+			 * webOS doesn't reload after writing addresses during streaming.
+			 * The hardware picks up new addresses automatically on next frame.
+			 * Reloading may interfere with ping-pong operation.
+			 */
 		}
 	} else {
 		dev_info(vfe->camss->dev,
@@ -1837,7 +1842,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			 wm, ping_pong, active_index, output->sequence - 1);
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
-			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
+			/* No bus_reload_wm() - see comment above */
 		}
 	}
 
