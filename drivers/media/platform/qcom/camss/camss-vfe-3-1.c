@@ -478,6 +478,24 @@ MODULE_PARM_DESC(vfe31_single_buffer,
 		 "VFE31 single-buffer mode: 0=normal, 1=PONG=PING (workaround for empty PONG)");
 
 /*
+ * VFE31 ping-pong SWAP mode (webOS V4L2 workaround).
+ *
+ * When enabled, after each frame completion, the driver swaps the contents
+ * of PING and PONG address registers. This is a workaround for VFE31 hardware
+ * that may only write to the PING buffer location regardless of PP status.
+ *
+ * This matches the CONFIG_MSM_CAMERA_V4L2 code path in webOS msm_vfe31.c
+ * (lines 2564-2574 in vfe31_process_output_path_irq_0).
+ *
+ * 0 = Normal mode (update one register based on PP status)
+ * 1 = Swap mode (swap PING and PONG addresses after each frame)
+ */
+static int vfe31_swap_pingpong = 0;
+module_param(vfe31_swap_pingpong, int, 0644);
+MODULE_PARM_DESC(vfe31_swap_pingpong,
+		 "VFE31 swap PING/PONG addresses each frame: 0=normal, 1=swap (webOS V4L2 workaround)");
+
+/*
  * Invert PP bit interpretation.
  * 0 = normal (PP=1 means PING completed)
  * 1 = inverted (PP=1 means PONG completed)
@@ -2003,6 +2021,39 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			dev_info(vfe->camss->dev, "VFE31: wm_set_pong_addr WM%d addr=0x%08x\n",
 				output->wm_idx[i], (u32)new_addr[i]);
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
+		}
+	}
+
+	/*
+	 * VFE31 SWAP mode (webOS V4L2 workaround):
+	 * After updating addresses, swap the contents of PING and PONG registers.
+	 *
+	 * This mirrors the CONFIG_MSM_CAMERA_V4L2 code path in webOS msm_vfe31.c.
+	 * If VFE31 hardware only writes to PING regardless of PP status, this
+	 * swap ensures different buffers are used for each frame:
+	 *   - Frame N: HW writes to PING(A)
+	 *   - Swap: PING←B, PONG←A
+	 *   - Frame N+1: HW writes to PING(B)
+	 *   - Swap: PING←A, PONG←B
+	 *   - etc.
+	 */
+	if (vfe31_swap_pingpong && !vfe31_single_buffer) {
+		for (i = 0; i < output->wm_num; i++) {
+			u8 wm_idx = output->wm_idx[i];
+			u32 cur_ping = readl_relaxed(vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm_idx));
+			u32 cur_pong = readl_relaxed(vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm_idx));
+
+			/* Swap: write PONG value to PING, PING value to PONG */
+			writel_relaxed(cur_pong, vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm_idx));
+			writel_relaxed(cur_ping, vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm_idx));
+
+			dev_info(vfe->camss->dev,
+				"VFE31: SWAP WM%d: PING 0x%08x↔PONG 0x%08x\n",
+				wm_idx, cur_ping, cur_pong);
 		}
 	}
 
