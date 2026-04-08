@@ -10,6 +10,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -509,12 +510,13 @@ MODULE_PARM_DESC(vfe31_swap_pingpong,
  * - Potential for tearing if userspace reads during DMA write
  *
  * 0 = Normal ping-pong based on PP status
- * 1 = Always return PING buffer (buf[0])
+ * 1 = Address-based buffer matching (read PING, find matching buf)
+ * 2 = Static buffer mode (always return buf[0], never rotate)
  */
 static int vfe31_ping_only = 0;
 module_param(vfe31_ping_only, int, 0644);
 MODULE_PARM_DESC(vfe31_ping_only,
-		 "VFE31 PING-only mode: 0=normal, 1=always return buf[0]");
+		 "VFE31 PING-only mode: 0=normal, 1=addr match, 2=static buf[0]");
 
 /*
  * Invert PP bit interpretation.
@@ -1976,15 +1978,27 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	 *
 	 * Normal mode: return buf[!active_index] - the buffer that just completed
 	 *
-	 * Ping-only mode (vfe31_ping_only=1):
-	 * VFE31 hardware appears to only write to the PING register address,
-	 * regardless of PP status. Read the actual PING address from hardware
-	 * and find the matching buffer to return.
+	 * Ping-only mode 1 (vfe31_ping_only=1):
+	 * Read actual PING address from hardware and find matching buffer.
+	 *
+	 * Ping-only mode 2 (vfe31_ping_only=2):
+	 * Static buffer mode - always return buf[0], never rotate buffers.
+	 * This ensures all frames go to the same address (potential tearing).
 	 */
 	{
 		int ready_idx;  /* Track which buffer index we're returning */
+		int skip_rotation = 0;  /* Set to 1 to keep using same buffer */
 
-		if (vfe31_ping_only) {
+		if (vfe31_ping_only == 2) {
+			/* Static buffer mode: always use buf[0], no rotation */
+			ready_buf = output->buf[0];
+			ready_idx = 0;
+			skip_rotation = 1;
+			dev_info(vfe->camss->dev,
+				"VFE31: static mode: returning buf[0]=0x%08x seq=%d\n",
+				ready_buf ? (u32)ready_buf->addr[0] : 0,
+				output->sequence);
+		} else if (vfe31_ping_only == 1) {
 			u8 y_wm = output->wm_idx[0];
 			u32 hw_ping = readl_relaxed(vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
@@ -2031,21 +2045,27 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		 * Get next buffer from pending queue.
 		 * In ping_only mode, replace the buffer we're returning (ready_idx).
 		 * In normal mode, replace !active_index slot as before.
+		 * In static mode (skip_rotation), don't rotate at all.
 		 */
-		output->buf[ready_idx] = vfe_buf_get_pending(output);
-		if (!output->buf[ready_idx]) {
-			/*
-			 * No next buffer available - reuse same address.
-			 * Transition to SINGLE state (only one buffer active).
-			 */
+		if (skip_rotation) {
+			/* Static mode: keep using same buffer, don't update address */
 			new_addr = ready_buf->addr;
-			if (output->state == VFE_OUTPUT_CONTINUOUS)
-				output->state = VFE_OUTPUT_SINGLE;
-			else if (output->state == VFE_OUTPUT_SINGLE)
-				output->state = VFE_OUTPUT_STOPPING;
 		} else {
-			new_addr = output->buf[ready_idx]->addr;
-			/* Stay in CONTINUOUS state */
+			output->buf[ready_idx] = vfe_buf_get_pending(output);
+			if (!output->buf[ready_idx]) {
+				/*
+				 * No next buffer available - reuse same address.
+				 * Transition to SINGLE state (only one buffer active).
+				 */
+				new_addr = ready_buf->addr;
+				if (output->state == VFE_OUTPUT_CONTINUOUS)
+					output->state = VFE_OUTPUT_SINGLE;
+				else if (output->state == VFE_OUTPUT_SINGLE)
+					output->state = VFE_OUTPUT_STOPPING;
+			} else {
+				new_addr = output->buf[ready_idx]->addr;
+				/* Stay in CONTINUOUS state */
+			}
 		}
 	}
 
@@ -2062,7 +2082,12 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	 *
 	 * In ping_only mode, we always update PING since hardware only writes there.
 	 */
-	if (vfe31_ping_only) {
+	if (vfe31_ping_only == 2) {
+		/* Static mode: don't update any addresses, keep using same buffer */
+		dev_dbg(vfe->camss->dev,
+			"VFE31: static mode: keeping PING/PONG at 0x%08x\n",
+			(u32)new_addr[0]);
+	} else if (vfe31_ping_only == 1) {
 		/* Ping-only mode: always update PING (hardware only writes to PING) */
 		dev_info(vfe->camss->dev,
 			"VFE31: ping_only: updating PING to 0x%08x for next frame (seq=%d)\n",
@@ -2156,8 +2181,31 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 
 	if (output->state == VFE_OUTPUT_STOPPING)
 		output->last_buffer = ready_buf;
-	else
-		vb2_buffer_done(&ready_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+	else {
+		/*
+		 * VFE31 cache coherency fix:
+		 * The vb2_dma_sg memops uses DMA_ATTR_SKIP_CPU_SYNC, which
+		 * defers cache synchronization. While vb2_buffer_done() should
+		 * call the finish memop to sync, testing shows PONG buffers
+		 * still have stale cache data (devmem shows valid physical
+		 * data but userspace reads zeros).
+		 *
+		 * Force explicit cache invalidation before returning buffer
+		 * to ensure CPU sees the DMA-written data.
+		 */
+		struct vb2_buffer *vb = &ready_buf->vb.vb2_buf;
+		unsigned int plane;
+
+		for (plane = 0; plane < vb->num_planes; plane++) {
+			dma_addr_t addr = ready_buf->addr[plane];
+			size_t size = vb2_plane_size(vb, plane);
+
+			dma_sync_single_for_cpu(vfe->camss->dev, addr, size,
+						DMA_FROM_DEVICE);
+		}
+
+		vb2_buffer_done(vb, VB2_BUF_STATE_DONE);
+	}
 
 	return;
 
