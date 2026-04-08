@@ -2094,10 +2094,12 @@ static int vfe31_enable(struct vfe_line *line)
 			/*
 			 * VIDEO line CbCr: Use module param vfe31_video_cbcr_wm
 			 *
-			 * Note: Unlike PIX mode, VIDEO mode does NOT clear the
-			 * line mapping for the CbCr WM. VIDEO uses its Y WM (not WM0),
-			 * so when COMPOSITE_DONE fires, wm_done() is called
-			 * and processes the frame.
+			 * IMPORTANT: Reserve the CbCr WM but do NOT map it to
+			 * this line! Both WMs share the same frame buffer. If
+			 * we map CbCr WM to the line, vfe_isr_comp_done() will
+			 * call wm_done() for BOTH WMs, causing double buffer
+			 * processing and corrupted CbCr data (green frames).
+			 * Only the Y WM triggers buffer completion.
 			 */
 			wm_idx = vfe_reserve_wm_specific(vfe, video_cbcr_wm, line->id);
 			if (wm_idx < 0) {
@@ -2109,6 +2111,13 @@ static int vfe31_enable(struct vfe_line *line)
 				return wm_idx;
 			}
 			output->wm_idx[1] = wm_idx;
+			/*
+			 * Clear the line mapping for CbCr WM - it's claimed but
+			 * shouldn't trigger buffer completion. The wm_done()
+			 * handler checks wm_output_map and skips WMs mapped to
+			 * VFE_LINE_NONE.
+			 */
+			vfe->wm_output_map[wm_idx] = VFE_LINE_NONE;
 		}
 		dev_info(vfe->camss->dev, "VFE31: VIDEO line using WM%d(Y), WM%d(CbCr) [params: y=%d cbcr=%d]\n",
 			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1,
