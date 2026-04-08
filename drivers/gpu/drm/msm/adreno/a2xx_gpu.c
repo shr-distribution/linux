@@ -33,38 +33,20 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	ctx_switch = (ring->cur_ctx_seqno != submit->queue->ctx->seqno);
 
 	/*
-	 * A22X workaround: Emit commands to restore critical GPU state
-	 * on EVERY submit. Mesa's fd2_emit_restore() should handle this,
-	 * but random artifacts suggest state corruption between batches.
+	 * A22X note: Previous attempts to restore GPU state here (before
+	 * Mesa's command buffer) did not fix random faceted rendering.
+	 * The issue can change MID-RUN, which means Mesa's command buffer
+	 * itself must be involved. Focus debugging on Mesa fd2 driver.
 	 *
-	 * This ensures smooth interpolation and correct LRZ/VSC state
-	 * regardless of what the previous batch left behind.
+	 * Registers that were tested:
+	 * - SQ_INTERPOLATOR_CNTL (0xffffffff for smooth)
+	 * - A220_RB_LRZ_VSC_CONTROL (0)
+	 * - A220_GRAS_CONTROL (0)
+	 * - SQ_GPR_MANAGEMENT (0x00040400)
 	 *
-	 * Use PKT0 for direct register writes - simpler than CP_SET_CONSTANT.
-	 *
-	 * Note: This is intentionally done on every submit (not just context
-	 * switches) to debug random faceted rendering issues.
+	 * None of these kernel-side restores fixed the random issue.
 	 */
-	if (!adreno_is_a20x(adreno_gpu)) {
-		/* Force SQ_INTERPOLATOR_CNTL to all smooth (0xffffffff) */
-		OUT_PKT0(ring, REG_A2XX_SQ_INTERPOLATOR_CNTL, 1);
-		OUT_RING(ring, 0xffffffff);
-
-		/* Reset A22X-specific LRZ/VSC and GRAS control */
-		OUT_PKT0(ring, REG_A2XX_A220_RB_LRZ_VSC_CONTROL, 1);
-		OUT_RING(ring, 0x00000000);
-
-		OUT_PKT0(ring, REG_A2XX_A220_GRAS_CONTROL, 1);
-		OUT_RING(ring, 0x00000000);
-
-		/* Ensure GPR allocation is sane (64 VS / 64 PS) */
-		OUT_PKT0(ring, REG_A2XX_SQ_GPR_MANAGEMENT, 1);
-		OUT_RING(ring, 0x00040400);
-
-		/* Wait for these state changes to take effect */
-		OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
-		OUT_RING(ring, 0x00000000);
-	}
+	(void)ctx_switch; /* unused for now */
 
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
