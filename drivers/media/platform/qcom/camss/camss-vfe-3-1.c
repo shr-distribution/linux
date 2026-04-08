@@ -1853,10 +1853,12 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 		}
 	} else if (active_index) {
-		dev_dbg(vfe->camss->dev,
-			"VFE31: wm_done wm=%d PP=0x%x active=%d → PING complete, seq=%d\n",
-			wm, ping_pong, active_index, output->sequence - 1);
+		dev_info(vfe->camss->dev,
+			"VFE31: wm_done wm=%d PP=0x%x active=%d → PING complete, updating PING with 0x%08x, seq=%d\n",
+			wm, ping_pong, active_index, (u32)new_addr[0], output->sequence - 1);
 		for (i = 0; i < output->wm_num; i++) {
+			dev_info(vfe->camss->dev, "VFE31: wm_set_ping_addr WM%d addr=0x%08x\n",
+				output->wm_idx[i], (u32)new_addr[i]);
 			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
 			/*
 			 * NOTE: Do NOT call bus_reload_wm() here!
@@ -1866,12 +1868,13 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			 */
 		}
 	} else {
-		dev_dbg(vfe->camss->dev,
-			"VFE31: wm_done wm=%d PP=0x%x active=%d → PONG complete, seq=%d\n",
-			wm, ping_pong, active_index, output->sequence - 1);
+		dev_info(vfe->camss->dev,
+			"VFE31: wm_done wm=%d PP=0x%x active=%d → PONG complete, updating PONG with 0x%08x, seq=%d\n",
+			wm, ping_pong, active_index, (u32)new_addr[0], output->sequence - 1);
 		for (i = 0; i < output->wm_num; i++) {
+			dev_info(vfe->camss->dev, "VFE31: wm_set_pong_addr WM%d addr=0x%08x\n",
+				output->wm_idx[i], (u32)new_addr[i]);
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
-			/* No bus_reload_wm() - see comment above */
 		}
 	}
 
@@ -4752,9 +4755,9 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		else
 			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
 
-		dev_dbg(vfe->camss->dev,
-			"VFE31: WM%d ping_addr=0x%08x (deferred, primary=%d)\n",
-			wm, addr, is_primary_wm);
+		dev_info(vfe->camss->dev,
+			"VFE31: WM%d ping_addr=0x%08x (DEFERRED - camif_pending=true)\n",
+			wm, addr);
 
 		if (is_primary_wm)
 			vfe->pending_ping_addr = addr;
@@ -4773,24 +4776,33 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 
 		if (is_y_wm) {
 			vfe->last_y_ping_addr = addr;
-			dev_dbg(vfe->camss->dev,
-				"VFE31: WM%d ping_addr=0x%08x (Y, stored)\n", wm, addr);
+			dev_info(vfe->camss->dev,
+				"VFE31: WM%d PING write 0x%08x (Y)\n", wm, addr);
 		} else if (vfe->last_y_ping_addr && vfe->active_cbcr_offset) {
 			/*
 			 * Non-Y WM with offset set = CbCr. Calculate address.
 			 * Works regardless of which WM is used for CbCr.
 			 */
 			addr = vfe->last_y_ping_addr + vfe->active_cbcr_offset;
-			dev_dbg(vfe->camss->dev,
-				"VFE31: WM%d ping_addr=0x%08x (CbCr, calculated from Y=0x%08x + offset=0x%x)\n",
-				wm, addr, vfe->last_y_ping_addr, vfe->active_cbcr_offset);
+			dev_info(vfe->camss->dev,
+				"VFE31: WM%d PING write 0x%08x (CbCr from Y=0x%08x)\n",
+				wm, addr, vfe->last_y_ping_addr);
 		} else {
-			dev_dbg(vfe->camss->dev,
-				"VFE31: WM%d ping_addr=0x%08x (direct)\n", wm, addr);
+			dev_info(vfe->camss->dev,
+				"VFE31: WM%d PING write 0x%08x (direct)\n", wm, addr);
 		}
 
 		writel_relaxed(addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+
+		/* Readback verification */
+		{
+			u32 readback = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+			if (readback != addr)
+				dev_err(vfe->camss->dev,
+					"VFE31: WM%d PING readback MISMATCH! wrote=0x%08x read=0x%08x\n",
+					wm, addr, readback);
+		}
 	}
 }
 
