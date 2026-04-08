@@ -478,6 +478,28 @@ MODULE_PARM_DESC(vfe31_single_buffer,
 		 "VFE31 single-buffer mode: 0=normal, 1=PONG=PING (workaround for empty PONG)");
 
 /*
+ * BUS_CFG register value override.
+ * 0 = use default (0x02AAA771 per webOS)
+ * >0 = use this value directly
+ *
+ * WebOS value: 0x02AAA771
+ * Bits 4-7 control write paths: encY, encCbCr, viewY, viewCbCr
+ */
+static unsigned int vfe31_bus_cfg = 0;
+module_param(vfe31_bus_cfg, uint, 0644);
+MODULE_PARM_DESC(vfe31_bus_cfg,
+		 "VFE31 BUS_CFG override: 0=default (0x02AAA771), >0=use value (e.g., 0x02AAA7F1)");
+
+/*
+ * Helper to get effective BUS_CFG value (module param or default).
+ * Default is 0x02AAA771 per webOS register dumps.
+ */
+static inline u32 vfe31_get_bus_cfg(void)
+{
+	return vfe31_bus_cfg ? vfe31_bus_cfg : 0x02AAA771;
+}
+
+/*
  * Helper to calculate IMAGE_SIZE stride for Y WMs.
  * Returns stride in bytes.
  */
@@ -2547,7 +2569,7 @@ static int vfe31_enable(struct vfe_line *line)
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 1 - BUS_CFG=0x%08x, AXI=0x%x\n",
 		 VFE_0_BUS_CFG_WEBOS_VALUE, axi_mode);
-	writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
+	writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
 	writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
 	/*
@@ -3884,7 +3906,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		dev_info(vfe->camss->dev,
 			 "VFE31: Step 1 - RDI mode: BUS_CFG=0x%08x, AXI=0x60 (raw bypass)\n",
 			 VFE_0_BUS_CFG_WEBOS_VALUE);
-		writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
+		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(VFE_0_BUS_AXI_OUT_MODE_RAW_WM0,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 		/* No XBAR configuration for RDI mode */
@@ -3922,7 +3944,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 VFE_0_BUS_CFG_WEBOS_VALUE, xbar_value,
 			 xbar_value == VFE31_XBAR_PIX_ONLY ? "PIX only" :
 			 xbar_value == VFE31_XBAR_PIX_VIDEO ? "PIX+VIDEO" : "manual");
-		writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
+		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 		writel_relaxed(xbar_value, vfe->base + VFE_0_BUS_XBAR_CFG1);
@@ -5244,7 +5266,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 * This must be done for WMs to properly DMA data to memory.
 		 */
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring BUS_CFG and reloading WMs\n");
-		writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
+		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(0x3FFF, vfe->base + VFE_0_BUS_CMD);
 		wmb();
 
@@ -5539,7 +5561,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 8: Configure BUS_CFG for DMA write paths
 	 */
-	writel_relaxed(VFE_0_BUS_CFG_WEBOS_VALUE, vfe->base + VFE_0_BUS_CFG);
+	writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
 
 	/*
 	 * Step 9: Reload all write masters via BUS_CMD
