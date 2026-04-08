@@ -712,16 +712,19 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 		vfe_buf_update_wm_on_next(vfe, output);
 	}
 
-	if (active_index)
+	if (active_index) {
+		dev_info(vfe->camss->dev, "gen1: active=%d updating PING\n", active_index);
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
 			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
 		}
-	else
+	} else {
+		dev_info(vfe->camss->dev, "gen1: active=%d updating PONG\n", active_index);
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
 		}
+	}
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
