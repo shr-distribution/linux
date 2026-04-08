@@ -4642,22 +4642,12 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 
 		if (is_y_wm) {
 			vfe->last_y_pong_addr = addr;
-			dev_dbg(vfe->camss->dev,
-				"VFE31: WM%d pong_addr=0x%08x (Y, stored)\n", wm, addr);
 		} else if (vfe->last_y_pong_addr && vfe->active_cbcr_offset) {
-			/*
-			 * Non-Y WM with offset set = CbCr. Calculate address.
-			 * Works regardless of which WM is used for CbCr.
-			 */
 			addr = vfe->last_y_pong_addr + vfe->active_cbcr_offset;
-			dev_dbg(vfe->camss->dev,
-				"VFE31: WM%d pong_addr=0x%08x (CbCr, calculated from Y=0x%08x + offset=0x%x)\n",
-				wm, addr, vfe->last_y_pong_addr, vfe->active_cbcr_offset);
-		} else {
-			dev_dbg(vfe->camss->dev,
-				"VFE31: WM%d pong_addr=0x%08x (direct)\n", wm, addr);
 		}
 
+		dev_info(vfe->camss->dev,
+			 "VFE31: WM%d PONG write 0x%08x\n", wm, addr);
 		writel_relaxed(addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 	}
