@@ -496,6 +496,27 @@ MODULE_PARM_DESC(vfe31_swap_pingpong,
 		 "VFE31 swap PING/PONG addresses each frame: 0=normal, 1=swap (webOS V4L2 workaround)");
 
 /*
+ * VFE31 force PING-only mode.
+ *
+ * When enabled, always return buf[0] (PING buffer) regardless of PP status.
+ * This is a workaround for hardware that only writes to PING address even
+ * though PP status toggles.
+ *
+ * In this mode:
+ * - buf[0] is always configured as both PING and PONG
+ * - All frames are written to the same physical address
+ * - We always return buf[0] which contains valid data
+ * - Potential for tearing if userspace reads during DMA write
+ *
+ * 0 = Normal ping-pong based on PP status
+ * 1 = Always return PING buffer (buf[0])
+ */
+static int vfe31_ping_only = 0;
+module_param(vfe31_ping_only, int, 0644);
+MODULE_PARM_DESC(vfe31_ping_only,
+		 "VFE31 PING-only mode: 0=normal, 1=always return buf[0]");
+
+/*
  * Invert PP bit interpretation.
  * 0 = normal (PP=1 means PING completed)
  * 1 = inverted (PP=1 means PONG completed)
@@ -1950,32 +1971,82 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			active_index);
 	}
 
-	ready_buf = output->buf[!active_index];
-	if (!ready_buf) {
-		dev_err_ratelimited(vfe->camss->dev,
-				    "VFE31: Missing ready buf wm=%d idx=%d state=%d!\n",
-				    wm, !active_index, output->state);
-		goto out_unlock;
-	}
+	/*
+	 * Select which buffer to return to userspace and track buffer index.
+	 *
+	 * Normal mode: return buf[!active_index] - the buffer that just completed
+	 *
+	 * Ping-only mode (vfe31_ping_only=1):
+	 * VFE31 hardware appears to only write to the PING register address,
+	 * regardless of PP status. Read the actual PING address from hardware
+	 * and find the matching buffer to return.
+	 */
+	{
+		int ready_idx;  /* Track which buffer index we're returning */
 
-	ready_buf->vb.vb2_buf.timestamp = ts;
-	ready_buf->vb.sequence = output->sequence++;
+		if (vfe31_ping_only) {
+			u8 y_wm = output->wm_idx[0];
+			u32 hw_ping = readl_relaxed(vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
 
-	/* Get next buffer from pending queue */
-	output->buf[!active_index] = vfe_buf_get_pending(output);
-	if (!output->buf[!active_index]) {
+			/* Find buffer matching PING address */
+			if (output->buf[0] && (u32)output->buf[0]->addr[0] == hw_ping) {
+				ready_buf = output->buf[0];
+				ready_idx = 0;
+				dev_info(vfe->camss->dev,
+					"VFE31: ping_only: returning buf[0] (matches PING 0x%08x)\n",
+					hw_ping);
+			} else if (output->buf[1] && (u32)output->buf[1]->addr[0] == hw_ping) {
+				ready_buf = output->buf[1];
+				ready_idx = 1;
+				dev_info(vfe->camss->dev,
+					"VFE31: ping_only: returning buf[1] (matches PING 0x%08x)\n",
+					hw_ping);
+			} else {
+				/* Neither buffer matches - use buf[0] as fallback */
+				ready_buf = output->buf[0];
+				ready_idx = 0;
+				dev_warn(vfe->camss->dev,
+					"VFE31: ping_only: NO MATCH! PING=0x%08x buf[0]=0x%08x buf[1]=0x%08x\n",
+					hw_ping,
+					output->buf[0] ? (u32)output->buf[0]->addr[0] : 0,
+					output->buf[1] ? (u32)output->buf[1]->addr[0] : 0);
+			}
+		} else {
+			ready_buf = output->buf[!active_index];
+			ready_idx = !active_index;
+		}
+
+		if (!ready_buf) {
+			dev_err_ratelimited(vfe->camss->dev,
+					    "VFE31: Missing ready buf wm=%d idx=%d state=%d!\n",
+					    wm, ready_idx, output->state);
+			goto out_unlock;
+		}
+
+		ready_buf->vb.vb2_buf.timestamp = ts;
+		ready_buf->vb.sequence = output->sequence++;
+
 		/*
-		 * No next buffer available - reuse same address.
-		 * Transition to SINGLE state (only one buffer active).
+		 * Get next buffer from pending queue.
+		 * In ping_only mode, replace the buffer we're returning (ready_idx).
+		 * In normal mode, replace !active_index slot as before.
 		 */
-		new_addr = ready_buf->addr;
-		if (output->state == VFE_OUTPUT_CONTINUOUS)
-			output->state = VFE_OUTPUT_SINGLE;
-		else if (output->state == VFE_OUTPUT_SINGLE)
-			output->state = VFE_OUTPUT_STOPPING;
-	} else {
-		new_addr = output->buf[!active_index]->addr;
-		/* Stay in CONTINUOUS state */
+		output->buf[ready_idx] = vfe_buf_get_pending(output);
+		if (!output->buf[ready_idx]) {
+			/*
+			 * No next buffer available - reuse same address.
+			 * Transition to SINGLE state (only one buffer active).
+			 */
+			new_addr = ready_buf->addr;
+			if (output->state == VFE_OUTPUT_CONTINUOUS)
+				output->state = VFE_OUTPUT_SINGLE;
+			else if (output->state == VFE_OUTPUT_SINGLE)
+				output->state = VFE_OUTPUT_STOPPING;
+		} else {
+			new_addr = output->buf[ready_idx]->addr;
+			/* Stay in CONTINUOUS state */
+		}
 	}
 
 	/*
@@ -1988,8 +2059,18 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	 *
 	 * In single-buffer mode, we update BOTH PING and PONG with the same address
 	 * to ensure the hardware always has a valid write location.
+	 *
+	 * In ping_only mode, we always update PING since hardware only writes there.
 	 */
-	if (vfe31_single_buffer) {
+	if (vfe31_ping_only) {
+		/* Ping-only mode: always update PING (hardware only writes to PING) */
+		dev_info(vfe->camss->dev,
+			"VFE31: ping_only: updating PING to 0x%08x for next frame (seq=%d)\n",
+			(u32)new_addr[0], output->sequence);
+		for (i = 0; i < output->wm_num; i++) {
+			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+		}
+	} else if (vfe31_single_buffer) {
 		/* Single-buffer mode: update both PING and PONG with same address */
 		dev_dbg(vfe->camss->dev,
 			"VFE31: wm_done wm=%d single-buffer mode, updating both PING+PONG\n",
@@ -2037,7 +2118,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	 *   - Swap: PING←A, PONG←B
 	 *   - etc.
 	 */
-	if (vfe31_swap_pingpong && !vfe31_single_buffer) {
+	if (vfe31_swap_pingpong && !vfe31_single_buffer && !vfe31_ping_only) {
 		for (i = 0; i < output->wm_num; i++) {
 			u8 wm_idx = output->wm_idx[i];
 			u32 cur_ping = readl_relaxed(vfe->base +
