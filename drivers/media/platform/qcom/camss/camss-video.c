@@ -475,7 +475,7 @@ static void video_stop_streaming(struct vb2_queue *q)
 
 		ret = v4l2_subdev_call(subdev, video, s_stream, 0);
 
-		if (ret)
+		if (ret < 0 && ret != -ENOIOCTLCMD)
 			dev_err(video->camss->dev, "Video pipeline stop failed: %d\n", ret);
 	}
 
