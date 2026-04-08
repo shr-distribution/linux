@@ -20,12 +20,50 @@ static bool a2xx_idle(struct msm_gpu *gpu);
 
 static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
 	struct msm_ringbuffer *ring = submit->ring;
 	unsigned int i;
 	int wptr_delay;
+	bool ctx_switch;
 
 	/* Debug: log submit details */
 	a2xx_debug_log_submit(gpu, submit);
+
+	/* Detect context switch - critical for A22X state management */
+	ctx_switch = (ring->cur_ctx_seqno != submit->queue->ctx->seqno);
+
+	/*
+	 * A22X workaround: On context switch, emit commands to restore
+	 * critical GPU state that Mesa's fd2_emit_restore() might not cover.
+	 * This ensures smooth interpolation and correct LRZ/VSC state
+	 * regardless of what the previous context (e.g., compositor) left.
+	 *
+	 * Without this, the GPU state depends on whether hw_init ran
+	 * (which only happens on resume from suspend), causing random
+	 * rendering artifacts when the compositor keeps the GPU active.
+	 *
+	 * Use PKT0 for direct register writes - simpler than CP_SET_CONSTANT.
+	 */
+	if (ctx_switch && !adreno_is_a20x(adreno_gpu)) {
+		/* Force SQ_INTERPOLATOR_CNTL to all smooth (0xffffffff) */
+		OUT_PKT0(ring, REG_A2XX_SQ_INTERPOLATOR_CNTL, 1);
+		OUT_RING(ring, 0xffffffff);
+
+		/* Reset A22X-specific LRZ/VSC and GRAS control */
+		OUT_PKT0(ring, REG_A2XX_A220_RB_LRZ_VSC_CONTROL, 1);
+		OUT_RING(ring, 0x00000000);
+
+		OUT_PKT0(ring, REG_A2XX_A220_GRAS_CONTROL, 1);
+		OUT_RING(ring, 0x00000000);
+
+		/* Ensure GPR allocation is sane (64 VS / 64 PS) */
+		OUT_PKT0(ring, REG_A2XX_SQ_GPR_MANAGEMENT, 1);
+		OUT_RING(ring, 0x00040400);
+
+		/* Wait for these state changes to take effect */
+		OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
+		OUT_RING(ring, 0x00000000);
+	}
 
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
