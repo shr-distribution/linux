@@ -478,6 +478,16 @@ MODULE_PARM_DESC(vfe31_single_buffer,
 		 "VFE31 single-buffer mode: 0=normal, 1=PONG=PING (workaround for empty PONG)");
 
 /*
+ * Invert PP bit interpretation.
+ * 0 = normal (PP=1 means PING completed)
+ * 1 = inverted (PP=1 means PONG completed)
+ */
+static int vfe31_invert_pp = 0;
+module_param(vfe31_invert_pp, int, 0644);
+MODULE_PARM_DESC(vfe31_invert_pp,
+		 "VFE31 invert PP interpretation: 0=normal, 1=inverted");
+
+/*
  * BUS_CFG register value override.
  * 0 = use default (0x02AAA771 per webOS)
  * >0 = use this value directly
@@ -1829,8 +1839,12 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	 * VFE31 PP bit interpretation (from webOS analysis):
 	 *   PP bit=0: Hardware is writing to PING, just completed PONG
 	 *   PP bit=1: Hardware is writing to PONG, just completed PING
+	 *
+	 * Use vfe31_invert_pp module param to test inverted interpretation.
 	 */
 	active_index = (ping_pong >> wm) & 1;
+	if (vfe31_invert_pp)
+		active_index = !active_index;
 
 	/*
 	 * Debug: Log the PP-to-buffer mapping for this completion
