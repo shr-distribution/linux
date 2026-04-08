@@ -1750,10 +1750,9 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	struct vfe_device *vfe = dev;
 	static ktime_t first_irq_time;
 	static int irq_count;
-	static u32 last_ping_pong;
 	ktime_t now;
 	u32 value0, value1, ping_pong;
-	int i, j;
+	int i;
 
 	vfe->res->hw_ops->isr_read(vfe, &value0, &value1);
 
@@ -1772,32 +1771,20 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 */
 
 	/*
-	 * VFE31 ping-pong fix: COMP_DONE doesn't fire reliably for every frame,
-	 * so we detect PP transitions to trigger frame completion.
+	 * VFE31 frame completion: Use IMAGE_COMPOSITE_DONE IRQs only.
 	 *
-	 * Detect BOTH rising and falling edges of PP status:
-	 * - PP 0→1 (rising):  PING completed, PONG now active
-	 * - PP 1→0 (falling): PONG completed, PING now active
+	 * Unlike newer VFEs, VFE31 does NOT have per-WM PING_PONG IRQs in
+	 * STATUS_0 - bits 8-13 are bus overflow errors, not frame completion.
 	 *
-	 * Check all WMs that have their PP bit transitioning and trigger
-	 * wm_done if they're mapped to PIX or VIDEO output lines.
+	 * WebOS relies solely on COMP_DONE for frame completion, which fires
+	 * after EVERY frame (both PING and PONG buffers) when all WMs in a
+	 * composite group complete their writes. This is handled below by
+	 * the COMP_DONE processing loop.
 	 *
-	 * Note: VIDEO mode may use WM1 or WM4 depending on module parameters.
+	 * Previous workaround using PP transition detection caused issues:
+	 * - Called wm_done before/alongside COMP_DONE causing double-counting
+	 * - PP status is for buffer state tracking, not frame completion IRQ
 	 */
-	if (ping_pong != last_ping_pong) {
-		u32 pp_rising = ping_pong & ~last_ping_pong;   /* bits 0→1 */
-		u32 pp_falling = ~ping_pong & last_ping_pong; /* bits 1→0 */
-		u32 pp_changed = pp_rising | pp_falling;
-
-		for (i = 0; i < MSM_VFE_IMAGE_MASTERS_NUM; i++) {
-			if ((pp_changed & BIT(i)) &&
-			    (vfe->wm_output_map[i] == VFE_LINE_PIX ||
-			     vfe->wm_output_map[i] == VFE_LINE_VIDEO)) {
-				vfe->isr_ops.wm_done(vfe, i);
-			}
-		}
-		last_ping_pong = ping_pong;
-	}
 
 	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
 	if (irq_count <= 10) {
@@ -1899,29 +1886,17 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			vfe->isr_ops.sof(vfe, i);
 	}
 
+	/*
+	 * VFE31 frame completion: IMAGE_COMPOSITE_DONE is the ONLY frame
+	 * completion IRQ. comp_done() calls wm_done() for each active WM.
+	 *
+	 * Note: VFE31 does NOT have per-WM PING_PONG IRQs in STATUS_0.
+	 * Bits 8-13 are bus overflow errors (IMG_MAST_n_BUS_OVFL), not
+	 * frame completion signals. Do NOT check these for wm_done.
+	 */
 	for (i = 0; i < MSM_VFE_COMPOSITE_IRQ_NUM; i++)
-		if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(i)) {
+		if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(i))
 			vfe->isr_ops.comp_done(vfe, i);
-			/*
-			 * Clear PING_PONG bits for WMs handled by comp_done.
-			 * Note: VFE31 doesn't have per-WM PING_PONG IRQ bits in
-			 * STATUS_0 (bits 8+ are for bus overflow errors), but we
-			 * clear them anyway for compatibility with newer VFEs.
-			 */
-			for (j = 0; j < ARRAY_SIZE(vfe->wm_output_map); j++) {
-				enum vfe_line_id line = vfe->wm_output_map[j];
-				if (line == VFE_LINE_PIX ||
-				    line == VFE_LINE_VIDEO ||
-				    line == VFE_LINE_RDI0 ||
-				    line == VFE_LINE_RDI1 ||
-				    line == VFE_LINE_RDI2)
-					value0 &= ~VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(j);
-			}
-		}
-
-	for (i = 0; i < MSM_VFE_IMAGE_MASTERS_NUM; i++)
-		if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_MASTER_n_PING_PONG(i))
-			vfe->isr_ops.wm_done(vfe, i);
 
 	return IRQ_HANDLED;
 }
@@ -4068,39 +4043,20 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 	 * WebOS uses IRQ_MASK_0 = 0x00EFE021 which includes:
 	 *   - Bit 0: CAMIF_SOF
 	 *   - Bit 5: REG_UPDATE
-	 *   - Bits 8-14: PING_PONG for WM0-6
+	 *   - Bits 13-19: Stats IRQs (AEC, AF, AWB, RS, CS, IHIST, SKIN)
 	 *   - Bits 21-23: IMAGE_COMPOSITE_DONE_0-2
 	 *
-	 * We build this dynamically to include PING_PONG for active WMs.
-	 *
-	 * IMPORTANT: Use line->output.wm_idx[0] for the primary WM, NOT the 'wm'
-	 * parameter! The 'wm' parameter is whichever WM was enabled first, which
-	 * may be WM1/WM5 (CbCr) rather than WM0/WM4 (Y). Using wm_idx[0] ensures
-	 * we always enable IRQs for the correct primary write master.
+	 * NOTE: Bits 8-13 are NOT per-WM PING_PONG IRQs on VFE31!
+	 * They are bus overflow errors (IMG_MAST_n_BUS_OVFL) in STATUS_1.
+	 * Frame completion is signaled ONLY via IMAGE_COMPOSITE_DONE.
 	 */
 	{
-		u8 wm0 = line->output.wm_idx[0];
-
 		vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
 					VFE_0_IRQ_MASK_0_CAMIF_EOF |
 					VFE_0_IRQ_MASK_0_REG_UPDATE |
-					VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm0) |
 					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0) |
 					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(1) |
 					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
-
-		dev_info(vfe->camss->dev,
-			 "VFE31: IRQ_MASK_0 primary WM%d (wm_idx[0]), param wm=%d\n",
-			 wm0, wm);
-	}
-
-	/* Add second WM PING_PONG for NV16 semi-planar formats */
-	if (line->output.wm_num == 2) {
-		u8 wm1 = line->output.wm_idx[1];
-
-		vfe->irq_mask0_shadow |= VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(wm1);
-		dev_info(vfe->camss->dev,
-			 "VFE31: Added WM%d PING_PONG to IRQ mask (semi-planar)\n", wm1);
 	}
 	/*
 	 * IRQ_MASK_1: webOS uses 0x00400000 (only RESET_ACK, bit 22).
@@ -5001,11 +4957,10 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 * Step 5: Configure IRQ masks
 		 * Use same masks as PIX mode: SOF, REG_UPDATE, PING_PONG, COMPOSITE_DONE
 		 */
+		/* VFE31 uses COMP_DONE only - no per-WM PING_PONG IRQs */
 		vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
 				       VFE_0_IRQ_MASK_0_CAMIF_EOF |
 				       VFE_0_IRQ_MASK_0_REG_UPDATE |
-				       VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(0) |
-				       VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(1) |
 				       VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0);
 		vfe->irq_mask1_shadow = 0;
 		vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_ONLY;
