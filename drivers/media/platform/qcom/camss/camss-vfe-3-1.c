@@ -501,12 +501,35 @@ MODULE_PARM_DESC(vfe31_bus_cfg,
 		 "VFE31 BUS_CFG override: 0=default (0x02AAA771), >0=use value (e.g., 0x02AAA7F1)");
 
 /*
+ * BUS_CMD reload value override.
+ * 0 = use default (0x7FFF per webOS code)
+ * >0 = use this value directly
+ *
+ * WebOS CODE writes 0x7FFF (not 0x3FFF as in register dumps).
+ * Bit 14 is a pingpong reload trigger that enables proper dual-buffer operation.
+ * Without bit 14, hardware may only write to PING and ignore PONG addresses.
+ */
+static unsigned int vfe31_bus_cmd_reload = 0;
+module_param(vfe31_bus_cmd_reload, uint, 0644);
+MODULE_PARM_DESC(vfe31_bus_cmd_reload,
+		 "VFE31 BUS_CMD reload value: 0=default (0x7FFF), >0=use value");
+
+/*
  * Helper to get effective BUS_CFG value (module param or default).
  * Default is 0x02AAA771 per webOS register dumps.
  */
 static inline u32 vfe31_get_bus_cfg(void)
 {
 	return vfe31_bus_cfg ? vfe31_bus_cfg : 0x02AAA771;
+}
+
+/*
+ * Helper to get effective BUS_CMD reload value (module param or default).
+ * Default is 0x7FFF per webOS code (includes pingpong reload bit 14).
+ */
+static inline u32 vfe31_get_bus_cmd_reload(void)
+{
+	return vfe31_bus_cmd_reload ? vfe31_bus_cmd_reload : 0x7FFF;
 }
 
 /*
@@ -1642,7 +1665,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 * 3. Issue reset command (0x3FF to VFE_GLOBAL_RESET)
 	 * 4. Wait for reset to complete
 	 * 5. THEN set default register values (CGC, DEMUX, FRAMEDROP, CLAMP)
-	 * 6. Reload all write masters (BUS_CMD = 0x3FFF per webOS)
+	 * 6. Reload all write masters with pingpong (BUS_CMD = 0x7FFF per webOS code)
 	 *
 	 * CRITICAL: The reset command clears all VFE registers, so default
 	 * values MUST be set AFTER reset completes, not before!
@@ -1712,12 +1735,23 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * Step 6: Reload all write masters.
-	 * webOS register dump shows BUS_CMD = 0x3FFF (14 bits set).
-	 * Use exact webOS value for compatibility.
+	 * Step 6: Reload all write masters including pingpong buffers.
+	 *
+	 * CRITICAL: webOS CODE writes 0x7FFF (15 bits), not 0x3FFF!
+	 * The register DUMP shows 0x3FFF because bit 14 is pulse-based
+	 * and clears after the command executes.
+	 *
+	 * Bit 14 appears to be a "busPingpongReload" trigger (similar to VFE8x)
+	 * that enables proper ping-pong alternation. Without it, the hardware
+	 * may only write to PING buffers and ignore PONG addresses.
+	 *
+	 * BUS_CMD bits:
+	 *   - Bits 0-13: Per-WM reload commands
+	 *   - Bit 14: Pingpong reload trigger (critical for dual-buffer operation)
 	 */
-	dev_info(vfe->camss->dev, "VFE reset: reloading all write masters (BUS_CMD=0x3FFF)\n");
-	writel_relaxed(0x3FFF, vfe->base + VFE_0_BUS_CMD);
+	dev_info(vfe->camss->dev, "VFE reset: reloading all WMs with pingpong (BUS_CMD=0x%04x)\n",
+		 vfe31_get_bus_cmd_reload());
+	writel_relaxed(vfe31_get_bus_cmd_reload(), vfe->base + VFE_0_BUS_CMD);
 	wmb();
 
 	/*
@@ -5279,9 +5313,10 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 * Step 4b: Configure BUS_CFG and reload write masters
 		 * This must be done for WMs to properly DMA data to memory.
 		 */
-		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring BUS_CFG and reloading WMs\n");
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring BUS_CFG and reloading WMs with pingpong (0x%04x)\n",
+			 vfe31_get_bus_cmd_reload());
 		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
-		writel_relaxed(0x3FFF, vfe->base + VFE_0_BUS_CMD);
+		writel_relaxed(vfe31_get_bus_cmd_reload(), vfe->base + VFE_0_BUS_CMD);
 		wmb();
 
 		/*
@@ -5578,9 +5613,10 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
 
 	/*
-	 * Step 9: Reload all write masters via BUS_CMD
+	 * Step 9: Reload all write masters with pingpong via BUS_CMD
+	 * Use 0x7FFF (not 0x3FFF) to include pingpong reload bit 14
 	 */
-	writel_relaxed(0x3FFF, vfe->base + VFE_0_BUS_CMD);
+	writel_relaxed(vfe31_get_bus_cmd_reload(), vfe->base + VFE_0_BUS_CMD);
 	wmb();
 
 	/*
