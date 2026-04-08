@@ -4573,19 +4573,25 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	} else {
 		/*
 		 * During streaming: track Y addresses and calculate CbCr.
-		 * For CbCr WM (WM1 or WM5), ALWAYS calculate from stored Y
-		 * address + cbcr_offset. The addr passed by gen1 for CbCr WM
-		 * is garbage (buf->addr[1] uninitialized for single-plane NV12).
+		 *
+		 * Gen1 processes WMs in order: wm_idx[0] (Y), then wm_idx[1] (CbCr).
+		 * For CbCr WM, gen1 passes buf->addr[1] which is garbage for
+		 * single-plane NV12. We calculate CbCr from Y + offset.
+		 *
+		 * Use module params for Y WM detection (allows runtime testing).
 		 */
-		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y);
-		bool is_cbcr_wm = (wm == VFE31_PREVIEW_WM_CBCR || wm == VFE31_VIDEO_WM_CBCR);
+		bool is_y_wm = (wm == (u8)vfe31_pix_y_wm ||
+				wm == (u8)vfe31_video_y_wm);
 
 		if (is_y_wm) {
 			vfe->last_y_ping_addr = addr;
 			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d ping_addr=0x%08x (Y, stored)\n", wm, addr);
-		} else if (is_cbcr_wm && vfe->last_y_ping_addr && vfe->active_cbcr_offset) {
-			/* Always calculate CbCr address - ignore garbage addr from gen1 */
+		} else if (vfe->last_y_ping_addr && vfe->active_cbcr_offset) {
+			/*
+			 * Non-Y WM with offset set = CbCr. Calculate address.
+			 * Works regardless of which WM is used for CbCr.
+			 */
 			addr = vfe->last_y_ping_addr + vfe->active_cbcr_offset;
 			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d ping_addr=0x%08x (CbCr, calculated from Y=0x%08x + offset=0x%x)\n",
@@ -4626,19 +4632,25 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	} else {
 		/*
 		 * During streaming: track Y addresses and calculate CbCr.
-		 * For CbCr WM (WM1 or WM5), ALWAYS calculate from stored Y
-		 * address + cbcr_offset. The addr passed by gen1 for CbCr WM
-		 * is garbage (buf->addr[1] uninitialized for single-plane NV12).
+		 *
+		 * Gen1 processes WMs in order: wm_idx[0] (Y), then wm_idx[1] (CbCr).
+		 * For CbCr WM, gen1 passes buf->addr[1] which is garbage for
+		 * single-plane NV12. We calculate CbCr from Y + offset.
+		 *
+		 * Use module params for Y WM detection (allows runtime testing).
 		 */
-		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y);
-		bool is_cbcr_wm = (wm == VFE31_PREVIEW_WM_CBCR || wm == VFE31_VIDEO_WM_CBCR);
+		bool is_y_wm = (wm == (u8)vfe31_pix_y_wm ||
+				wm == (u8)vfe31_video_y_wm);
 
 		if (is_y_wm) {
 			vfe->last_y_pong_addr = addr;
 			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d pong_addr=0x%08x (Y, stored)\n", wm, addr);
-		} else if (is_cbcr_wm && vfe->last_y_pong_addr && vfe->active_cbcr_offset) {
-			/* Always calculate CbCr address - ignore garbage addr from gen1 */
+		} else if (vfe->last_y_pong_addr && vfe->active_cbcr_offset) {
+			/*
+			 * Non-Y WM with offset set = CbCr. Calculate address.
+			 * Works regardless of which WM is used for CbCr.
+			 */
 			addr = vfe->last_y_pong_addr + vfe->active_cbcr_offset;
 			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d pong_addr=0x%08x (CbCr, calculated from Y=0x%08x + offset=0x%x)\n",
