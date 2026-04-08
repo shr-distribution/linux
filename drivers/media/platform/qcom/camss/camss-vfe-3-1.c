@@ -3460,12 +3460,10 @@ static void vfe31_bus_enable_wr_if(struct vfe_device *vfe, u8 enable)
 
 static void vfe31_bus_reload_wm(struct vfe_device *vfe, u8 wm)
 {
-	dev_info(vfe->camss->dev, "VFE31: bus_reload_wm wm=%d\n", wm);
 	wmb();
 	writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(wm),
 		       vfe->base + VFE_0_BUS_CMD);
 	wmb();
-	dev_info(vfe->camss->dev, "VFE31: bus_reload_wm done\n");
 }
 
 static void vfe31_wm_frame_based(struct vfe_device *vfe, u8 wm, u8 enable)

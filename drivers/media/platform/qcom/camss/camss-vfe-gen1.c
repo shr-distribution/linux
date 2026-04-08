@@ -713,11 +713,15 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 	}
 
 	if (active_index)
-		for (i = 0; i < output->wm_num; i++)
+		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
+		}
 	else
-		for (i = 0; i < output->wm_num; i++)
+		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
+			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
+		}
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
