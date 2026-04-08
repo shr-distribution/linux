@@ -1776,7 +1776,7 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		last_ping_pong = ping_pong;
 
 	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
-	if (irq_count <= 3) {
+	if (irq_count <= 10) {
 		u32 wm0_cfg = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(0));
 		u32 wm0_ping = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(0));
 		u32 wm0_pong = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(0));
@@ -1786,8 +1786,8 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		u32 xbar_cfg1 = readl_relaxed(vfe->base + VFE_0_BUS_XBAR_CFG1);
 
 		dev_info(vfe->camss->dev,
-			 "VFE IRQ#%d WM0: CFG=0x%x PING=0x%08x PONG=0x%08x SIZE=0x%x UB=0x%x AXI=0x%x XBAR=0x%x\n",
-			 irq_count, wm0_cfg, wm0_ping, wm0_pong, wm0_size, wm0_ub, axi_mode, xbar_cfg1);
+			 "VFE IRQ#%d PP=0x%x PING=0x%08x PONG=0x%08x CFG=0x%x SIZE=0x%x\n",
+			 irq_count, ping_pong, wm0_ping, wm0_pong, wm0_cfg, wm0_size);
 	}
 
 	/* VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31 */
