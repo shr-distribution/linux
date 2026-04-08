@@ -1776,19 +1776,26 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 * so we miss PING completion. Detect PP transition 0→1 and call
 	 * wm_done manually to update PING buffer for the next cycle.
 	 *
-	 * When bit 0 transitions 0→1: PING just completed, PONG now active.
-	 * When COMP_DONE fires (PP bit 0 = 0): PONG just completed.
+	 * When bit 0 transitions 0→1: WM0 PING just completed (PIX mode)
+	 * When bit 4 transitions 0→1: WM4 PING just completed (VIDEO mode)
+	 *
+	 * PIX mode: WM0=Y (primary), WM1=CbCr -> trigger on WM0
+	 * VIDEO mode: WM4=Y (primary), WM5=CbCr -> trigger on WM4
+	 *
+	 * Only trigger wm_done for WMs that are mapped to active output lines.
 	 */
 	if (ping_pong != last_ping_pong) {
 		u32 pp_rising = (ping_pong & ~last_ping_pong) & 0x11;
 
 		if (pp_rising & BIT(0)) {
-			/* WM0 PING completed - manually trigger wm_done */
-			vfe->isr_ops.wm_done(vfe, 0);
+			/* WM0 PING completed - trigger if mapped to PIX line */
+			if (vfe->wm_output_map[0] == VFE_LINE_PIX)
+				vfe->isr_ops.wm_done(vfe, 0);
 		}
 		if (pp_rising & BIT(4)) {
-			/* WM4 PING completed - but WM4 is CbCr, shares buffer with WM0 */
-			/* Don't call wm_done for WM4 to avoid double processing */
+			/* WM4 PING completed - trigger if mapped to VIDEO line */
+			if (vfe->wm_output_map[4] == VFE_LINE_VIDEO)
+				vfe->isr_ops.wm_done(vfe, 4);
 		}
 		last_ping_pong = ping_pong;
 	}
