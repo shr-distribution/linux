@@ -1771,9 +1771,27 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 * Use trace events or dynamic debug for per-frame diagnostics.
 	 */
 
-	/* Track ping-pong changes silently (useful for debugging) */
-	if (ping_pong != last_ping_pong)
+	/*
+	 * VFE31 ping-pong fix: COMP_DONE only fires after PONG completes,
+	 * so we miss PING completion. Detect PP transition 0→1 and call
+	 * wm_done manually to update PING buffer for the next cycle.
+	 *
+	 * When bit 0 transitions 0→1: PING just completed, PONG now active.
+	 * When COMP_DONE fires (PP bit 0 = 0): PONG just completed.
+	 */
+	if (ping_pong != last_ping_pong) {
+		u32 pp_rising = (ping_pong & ~last_ping_pong) & 0x11;
+
+		if (pp_rising & BIT(0)) {
+			/* WM0 PING completed - manually trigger wm_done */
+			vfe->isr_ops.wm_done(vfe, 0);
+		}
+		if (pp_rising & BIT(4)) {
+			/* WM4 PING completed - but WM4 is CbCr, shares buffer with WM0 */
+			/* Don't call wm_done for WM4 to avoid double processing */
+		}
 		last_ping_pong = ping_pong;
+	}
 
 	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
 	if (irq_count <= 10) {
