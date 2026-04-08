@@ -234,6 +234,48 @@ MODULE_PARM_DESC(vfe31_pix_cbcr_img_height,
 
 /*
  * ============================================================================
+ * Write Master selection parameters
+ * ============================================================================
+ *
+ * These parameters allow runtime selection of which Write Master (WM)
+ * receives each data type. This is critical for matching XBAR routing.
+ *
+ * VFE31 WM layout:
+ *   WM0 = output0.ch0 (Preview Y)
+ *   WM1 = output0.ch1 OR output2.ch0 (CbCr or Video Y, XBAR-dependent)
+ *   WM4 = output0.ch1 OR output2.ch0 (Preview CbCr or Video Y)
+ *   WM5 = output2.ch1 (Video CbCr)
+ *
+ * XBAR 0x1A13 (PIX only):   Y→WM0, CbCr→WM1
+ * XBAR 0x1A1B (PIX+VIDEO):  Y→WM0+WM4, CbCr→WM1
+ */
+
+/* PIX Y Write Master (default: WM0) */
+static int vfe31_pix_y_wm = 0;
+module_param(vfe31_pix_y_wm, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_y_wm,
+		 "VFE31 PIX Y WM selection (0=WM0/default)");
+
+/* PIX CbCr Write Master (default: WM4, but WM1 matches XBAR) */
+static int vfe31_pix_cbcr_wm = 4;
+module_param(vfe31_pix_cbcr_wm, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_cbcr_wm,
+		 "VFE31 PIX CbCr WM selection (1=WM1/XBAR-match, 4=WM4/legacy)");
+
+/* VIDEO Y Write Master (default: WM1) */
+static int vfe31_video_y_wm = 1;
+module_param(vfe31_video_y_wm, int, 0644);
+MODULE_PARM_DESC(vfe31_video_y_wm,
+		 "VFE31 VIDEO Y WM selection (1=WM1/default, 4=WM4)");
+
+/* VIDEO CbCr Write Master (default: WM5) */
+static int vfe31_video_cbcr_wm = 5;
+module_param(vfe31_video_cbcr_wm, int, 0644);
+MODULE_PARM_DESC(vfe31_video_cbcr_wm,
+		 "VFE31 VIDEO CbCr WM selection (5=WM5/default)");
+
+/*
+ * ============================================================================
  * PIX Y (WM0) debug parameters
  * ============================================================================
  */
@@ -2015,11 +2057,14 @@ static int vfe31_enable(struct vfe_line *line)
 	 * XBAR routing determines which WMs receive Y vs CbCr data.
 	 */
 	if (line->id == VFE_LINE_VIDEO) {
-		/* VIDEO line: WM1 for Y (VFE31_VIDEO_WM_Y=1) */
-		wm_idx = vfe_reserve_wm_specific(vfe, VFE31_VIDEO_WM_Y, line->id);
+		/* VIDEO line: Use module params for WM selection */
+		u8 video_y_wm = (u8)vfe31_video_y_wm;
+		u8 video_cbcr_wm = (u8)vfe31_video_cbcr_wm;
+
+		wm_idx = vfe_reserve_wm_specific(vfe, video_y_wm, line->id);
 		if (wm_idx < 0) {
 			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for VIDEO Y\n",
-				VFE31_VIDEO_WM_Y);
+				video_y_wm);
 			output->state = VFE_OUTPUT_OFF;
 			spin_unlock_irqrestore(&vfe->output_lock, flags);
 			return wm_idx;
@@ -2028,33 +2073,36 @@ static int vfe31_enable(struct vfe_line *line)
 
 		if (output->wm_num == 2) {
 			/*
-			 * VIDEO line: WM5 for CbCr (VFE31_VIDEO_WM_CBCR=5)
+			 * VIDEO line CbCr: Use module param vfe31_video_cbcr_wm
 			 *
 			 * Note: Unlike PIX mode, VIDEO mode does NOT clear the
-			 * line mapping for the CbCr WM. VIDEO uses WM1 for Y (not WM0),
-			 * so when COMPOSITE_DONE fires, wm_done(WM1) is called
-			 * first and processes the frame.
+			 * line mapping for the CbCr WM. VIDEO uses its Y WM (not WM0),
+			 * so when COMPOSITE_DONE fires, wm_done() is called
+			 * and processes the frame.
 			 */
-			wm_idx = vfe_reserve_wm_specific(vfe, VFE31_VIDEO_WM_CBCR, line->id);
+			wm_idx = vfe_reserve_wm_specific(vfe, video_cbcr_wm, line->id);
 			if (wm_idx < 0) {
 				dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for VIDEO CbCr\n",
-					VFE31_VIDEO_WM_CBCR);
+					video_cbcr_wm);
 				vfe_release_wm(vfe, output->wm_idx[0]);
 				output->state = VFE_OUTPUT_OFF;
 				spin_unlock_irqrestore(&vfe->output_lock, flags);
 				return wm_idx;
 			}
 			output->wm_idx[1] = wm_idx;
-			/* Keep WM5 mapped to VIDEO line for buffer completion */
 		}
-		dev_info(vfe->camss->dev, "VFE31: VIDEO line using WM%d(Y), WM%d(CbCr)\n",
-			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
+		dev_info(vfe->camss->dev, "VFE31: VIDEO line using WM%d(Y), WM%d(CbCr) [params: y=%d cbcr=%d]\n",
+			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1,
+			 vfe31_video_y_wm, vfe31_video_cbcr_wm);
 	} else if (line->id == VFE_LINE_PIX) {
-		/* PIX line: WM0 for Y, WM4 for CbCr (webOS offset-by-4) */
-		wm_idx = vfe_reserve_wm_specific(vfe, VFE31_PREVIEW_WM_Y, line->id);
+		/* PIX line: Use module params for WM selection */
+		u8 pix_y_wm = (u8)vfe31_pix_y_wm;
+		u8 pix_cbcr_wm = (u8)vfe31_pix_cbcr_wm;
+
+		wm_idx = vfe_reserve_wm_specific(vfe, pix_y_wm, line->id);
 		if (wm_idx < 0) {
 			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for PIX Y\n",
-				VFE31_PREVIEW_WM_Y);
+				pix_y_wm);
 			output->state = VFE_OUTPUT_OFF;
 			spin_unlock_irqrestore(&vfe->output_lock, flags);
 			return wm_idx;
@@ -2063,20 +2111,22 @@ static int vfe31_enable(struct vfe_line *line)
 
 		if (output->wm_num == 2) {
 			/*
-			 * PIX line: WM4 for CbCr (VFE31_PREVIEW_WM_CBCR=4)
+			 * PIX line CbCr: Use module param vfe31_pix_cbcr_wm
 			 *
-			 * IMPORTANT: Reserve WM4 but do NOT map it to this line!
-			 * Both WMs share the same frame buffer. If we map WM4 to
-			 * the line, vfe_isr_comp_done() will call wm_done() for
-			 * BOTH WMs, causing double buffer processing and state
-			 * corruption. Only WM0 (Y plane) should trigger buffer
-			 * completion - WM4 just needs to be claimed so it's not
-			 * used by another line.
+			 * XBAR routing determines where CbCr data goes:
+			 *   - WM1 matches XBAR 0x1A13/0x1A1B CbCr routing
+			 *   - WM4 was legacy assumption (doesn't match XBAR)
+			 *
+			 * IMPORTANT: Reserve the CbCr WM but do NOT map it to
+			 * this line! Both WMs share the same frame buffer. If
+			 * we map CbCr WM to the line, vfe_isr_comp_done() will
+			 * call wm_done() for BOTH WMs, causing double buffer
+			 * processing. Only WM0 (Y) triggers buffer completion.
 			 */
-			wm_idx = vfe_reserve_wm_specific(vfe, VFE31_PREVIEW_WM_CBCR, line->id);
+			wm_idx = vfe_reserve_wm_specific(vfe, pix_cbcr_wm, line->id);
 			if (wm_idx < 0) {
 				dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for PIX CbCr\n",
-					VFE31_PREVIEW_WM_CBCR);
+					pix_cbcr_wm);
 				vfe_release_wm(vfe, output->wm_idx[0]);
 				output->state = VFE_OUTPUT_OFF;
 				spin_unlock_irqrestore(&vfe->output_lock, flags);
@@ -2084,14 +2134,16 @@ static int vfe31_enable(struct vfe_line *line)
 			}
 			output->wm_idx[1] = wm_idx;
 			/*
-			 * Clear the line mapping for WM4 - it's claimed but shouldn't
-			 * trigger buffer completion. The wm_done() handler checks
-			 * wm_output_map and skips WMs mapped to VFE_LINE_NONE.
+			 * Clear the line mapping for CbCr WM - it's claimed but
+			 * shouldn't trigger buffer completion. The wm_done()
+			 * handler checks wm_output_map and skips WMs mapped to
+			 * VFE_LINE_NONE.
 			 */
 			vfe->wm_output_map[wm_idx] = VFE_LINE_NONE;
 		}
-		dev_info(vfe->camss->dev, "VFE31: PIX line using WM%d(Y), WM%d(CbCr, no-map)\n",
-			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
+		dev_info(vfe->camss->dev, "VFE31: PIX line using WM%d(Y), WM%d(CbCr) [params: y=%d cbcr=%d]\n",
+			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1,
+			 vfe31_pix_y_wm, vfe31_pix_cbcr_wm);
 	} else {
 		/* RDI lines use first available WMs */
 		wm_idx = vfe_reserve_wm(vfe, line->id);
