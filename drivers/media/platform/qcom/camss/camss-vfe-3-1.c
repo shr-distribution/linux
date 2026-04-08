@@ -1786,8 +1786,8 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		u32 xbar_cfg1 = readl_relaxed(vfe->base + VFE_0_BUS_XBAR_CFG1);
 
 		dev_info(vfe->camss->dev,
-			 "VFE IRQ#%d PP=0x%x PING=0x%08x PONG=0x%08x CFG=0x%x SIZE=0x%x\n",
-			 irq_count, ping_pong, wm0_ping, wm0_pong, wm0_cfg, wm0_size);
+			 "VFE IRQ#%d S0=0x%08x S1=0x%08x PP=0x%x PING=0x%08x PONG=0x%08x\n",
+			 irq_count, value0, value1, ping_pong, wm0_ping, wm0_pong);
 	}
 
 	/* VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31 */
