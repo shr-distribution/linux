@@ -3986,12 +3986,17 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		{
 			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
 			struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
-			bool video_active = (video_out->state == VFE_OUTPUT_ON ||
+			/* Consider the line being started as active */
+			bool starting_pix = (line->id == VFE_LINE_PIX);
+			bool starting_video = (line->id == VFE_LINE_VIDEO);
+			bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
 					     video_out->state == VFE_OUTPUT_RESERVED ||
 					     video_out->state == VFE_OUTPUT_CONTINUOUS);
-			bool pix_active = (pix_out->state == VFE_OUTPUT_ON ||
+			bool pix_state_active = (pix_out->state == VFE_OUTPUT_ON ||
 					   pix_out->state == VFE_OUTPUT_RESERVED ||
 					   pix_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool video_active = starting_video || video_state_active;
+			bool pix_active = starting_pix || pix_state_active;
 
 			/* Module param override takes priority */
 			if (vfe31_irq_comp_mask != 0) {
@@ -3999,13 +4004,13 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				dev_info(vfe->camss->dev,
 					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (module param)\n",
 					 vfe->irq_comp_mask_shadow);
-			} else if ((line->id == VFE_LINE_VIDEO || video_active) && !pix_active) {
+			} else if (video_active && !pix_active) {
 				/* VIDEO-only: WM1 (Y) + WM4 (CbCr), no WM0 */
 				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
 				dev_info(vfe->camss->dev,
 					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (VIDEO only)\n",
 					 vfe->irq_comp_mask_shadow);
-			} else if ((line->id == VFE_LINE_VIDEO || video_active) && pix_active) {
+			} else if (video_active && pix_active) {
 				/* PIX+VIDEO: both lines active, wait for all WMs */
 				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_VIDEO;
 				dev_info(vfe->camss->dev,
@@ -4730,23 +4735,28 @@ static void vfe31_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 		/* Choose mask based on which lines are active */
 		struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
 		struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
-		bool video_active = (video_out->state == VFE_OUTPUT_ON ||
+		/* Consider the line being enabled as active */
+		bool starting_pix = (line_id == VFE_LINE_PIX);
+		bool starting_video = (line_id == VFE_LINE_VIDEO);
+		bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
 				     video_out->state == VFE_OUTPUT_RESERVED ||
 				     video_out->state == VFE_OUTPUT_CONTINUOUS);
-		bool pix_active = (pix_out->state == VFE_OUTPUT_ON ||
+		bool pix_state_active = (pix_out->state == VFE_OUTPUT_ON ||
 				   pix_out->state == VFE_OUTPUT_RESERVED ||
 				   pix_out->state == VFE_OUTPUT_CONTINUOUS);
+		bool video_active = starting_video || video_state_active;
+		bool pix_active = starting_pix || pix_state_active;
 		const char *mode_str;
 
 		/* Module param override takes priority */
 		if (vfe31_irq_comp_mask != 0) {
 			vfe->irq_comp_mask_shadow = vfe31_irq_comp_mask;
 			mode_str = "module param";
-		} else if ((line_id == VFE_LINE_VIDEO || video_active) && !pix_active) {
+		} else if (video_active && !pix_active) {
 			/* VIDEO-only: WM1 (Y) + WM5 (CbCr) */
 			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
 			mode_str = "VIDEO only";
-		} else if ((line_id == VFE_LINE_VIDEO || video_active) && pix_active) {
+		} else if (video_active && pix_active) {
 			/* PIX+VIDEO: both lines active */
 			vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_VIDEO;
 			mode_str = "PIX+VIDEO";
@@ -5338,31 +5348,50 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			/* PIX/VIDEO mode - check which lines are active */
 			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
 			struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
-			bool video_active = (video_out->state == VFE_OUTPUT_ON ||
+			/*
+			 * CRITICAL: Consider the line we're currently enabling as active!
+			 * The output state may not be updated yet when enable_camif runs.
+			 */
+			bool starting_pix = (line->id == VFE_LINE_PIX);
+			bool starting_video = (line->id == VFE_LINE_VIDEO);
+			bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
 					     video_out->state == VFE_OUTPUT_RESERVED ||
 					     video_out->state == VFE_OUTPUT_CONTINUOUS);
-			bool pix_active = (pix_out->state == VFE_OUTPUT_ON ||
+			bool pix_state_active = (pix_out->state == VFE_OUTPUT_ON ||
 					   pix_out->state == VFE_OUTPUT_RESERVED ||
 					   pix_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool video_active = starting_video || video_state_active;
+			bool pix_active = starting_pix || pix_state_active;
 			u32 comp_mask;
+			const char *mode_str;
+
+			dev_info(vfe->camss->dev,
+				 "VFE31: comp_mask select: line=%d starting_pix=%d starting_video=%d pix_state=%d video_state=%d\n",
+				 line->id, starting_pix, starting_video,
+				 pix_out->state, video_out->state);
 
 			/* Module param override takes priority */
 			if (vfe31_irq_comp_mask != 0) {
 				comp_mask = vfe31_irq_comp_mask;
-			} else if ((line->id == VFE_LINE_VIDEO || video_active) && !pix_active) {
+				mode_str = "module param";
+			} else if (video_active && !pix_active) {
 				/* VIDEO-only: WM1 (Y) + WM5 (CbCr) */
 				comp_mask = VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
-			} else if ((line->id == VFE_LINE_VIDEO || video_active) && pix_active) {
+				mode_str = "VIDEO only";
+			} else if (video_active && pix_active) {
 				/* PIX+VIDEO: both lines active */
 				comp_mask = VFE31_IRQ_COMP_MASK_PIX_VIDEO;
+				mode_str = "PIX+VIDEO";
 			} else {
-				/* PIX only */
+				/* PIX only (or no VIDEO) */
 				comp_mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
+				mode_str = "PIX only";
 			}
 
 			vfe->irq_comp_mask_shadow = comp_mask;
 			dev_info(vfe->camss->dev,
-				 "VFE31 enable_camif: IRQ_COMPOSITE_MASK=0x%08x\n", comp_mask);
+				 "VFE31 enable_camif: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
+				 comp_mask, mode_str);
 			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		}
 	}
