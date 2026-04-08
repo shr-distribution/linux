@@ -33,18 +33,19 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	ctx_switch = (ring->cur_ctx_seqno != submit->queue->ctx->seqno);
 
 	/*
-	 * A22X workaround: On context switch, emit commands to restore
-	 * critical GPU state that Mesa's fd2_emit_restore() might not cover.
-	 * This ensures smooth interpolation and correct LRZ/VSC state
-	 * regardless of what the previous context (e.g., compositor) left.
+	 * A22X workaround: Emit commands to restore critical GPU state
+	 * on EVERY submit. Mesa's fd2_emit_restore() should handle this,
+	 * but random artifacts suggest state corruption between batches.
 	 *
-	 * Without this, the GPU state depends on whether hw_init ran
-	 * (which only happens on resume from suspend), causing random
-	 * rendering artifacts when the compositor keeps the GPU active.
+	 * This ensures smooth interpolation and correct LRZ/VSC state
+	 * regardless of what the previous batch left behind.
 	 *
 	 * Use PKT0 for direct register writes - simpler than CP_SET_CONSTANT.
+	 *
+	 * Note: This is intentionally done on every submit (not just context
+	 * switches) to debug random faceted rendering issues.
 	 */
-	if (ctx_switch && !adreno_is_a20x(adreno_gpu)) {
+	if (!adreno_is_a20x(adreno_gpu)) {
 		/* Force SQ_INTERPOLATOR_CNTL to all smooth (0xffffffff) */
 		OUT_PKT0(ring, REG_A2XX_SQ_INTERPOLATOR_CNTL, 1);
 		OUT_RING(ring, 0xffffffff);
