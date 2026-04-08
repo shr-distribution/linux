@@ -42,7 +42,7 @@ int gf_parse_dts(struct gf_dev *gf_dev)
 	struct device_node *np = dev->of_node;
 
     /*get pwr resource*/
-    gf_dev->pwr_gpio = of_get_named_gpio(np,"fp-gpio_pwr",0);
+    gf_dev->pwr_gpio = of_get_named_gpio(np,"goodix,gpio_pwr",0);
     if(gf_dev->pwr_gpio < 0) {
         pr_err("falied to get pwr gpio!\n");
         return gf_dev->pwr_gpio;
@@ -55,7 +55,7 @@ int gf_parse_dts(struct gf_dev *gf_dev)
     }
 
 
-	gf_dev->reset_gpio = of_get_named_gpio(np, "fp-gpio-reset", 0);
+	gf_dev->reset_gpio = of_get_named_gpio(np, "goodix,gpio_reset", 0);
 	if (gf_dev->reset_gpio < 0) {
 		pr_err("falied to get reset gpio!\n");
 		return gf_dev->reset_gpio;
@@ -68,7 +68,7 @@ int gf_parse_dts(struct gf_dev *gf_dev)
 	}
 	gpio_direction_output(gf_dev->reset_gpio, 0); // MODIFIED by Ji.Chen, 2018-01-19,BUG-5888909
 
-	gf_dev->irq_gpio = of_get_named_gpio(np, "fp-gpio-irq", 0);
+	gf_dev->irq_gpio = of_get_named_gpio(np, "goodix,gpio_irq", 0);
 	if (gf_dev->irq_gpio < 0) {
 		pr_err("falied to get irq gpio!\n");
 		return gf_dev->irq_gpio;
