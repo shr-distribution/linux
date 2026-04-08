@@ -456,6 +456,23 @@ MODULE_PARM_DESC(vfe31_cbcr_stride,
 		 "VFE31 CbCr WM IMAGE_SIZE stride (0=auto/output, 1=input, 2=output, >2=custom bytes)");
 
 /*
+ * VFE31 single-buffer mode:
+ *   0 = Normal double-buffering (PING and PONG have different addresses)
+ *   1 = Single-buffer mode (PONG = PING, same address for both)
+ *
+ * Use single-buffer mode as a workaround if PONG frames are always empty.
+ * In single-buffer mode, the hardware writes all frames to the same buffer
+ * address. This sacrifices double-buffering but ensures valid frame data.
+ *
+ * The trade-off: potential tearing if software reads while hardware writes,
+ * but all frames will have valid data instead of alternating empty frames.
+ */
+static int vfe31_single_buffer = 0;
+module_param(vfe31_single_buffer, int, 0644);
+MODULE_PARM_DESC(vfe31_single_buffer,
+		 "VFE31 single-buffer mode: 0=normal, 1=PONG=PING (workaround for empty PONG)");
+
+/*
  * Helper to calculate IMAGE_SIZE stride for Y WMs.
  * Returns stride in bytes.
  */
@@ -1822,11 +1839,23 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	 *
 	 * When active_index=1 (writing to PONG), PING just completed → update PING
 	 * When active_index=0 (writing to PING), PONG just completed → update PONG
+	 *
+	 * In single-buffer mode, we update BOTH PING and PONG with the same address
+	 * to ensure the hardware always has a valid write location.
 	 */
-	if (active_index) {
-		dev_info(vfe->camss->dev,
-			 "VFE31: wm_done wm=%d PP=0x%x active=%d → PING complete, seq=%d\n",
-			 wm, ping_pong, active_index, output->sequence - 1);
+	if (vfe31_single_buffer) {
+		/* Single-buffer mode: update both PING and PONG with same address */
+		dev_dbg(vfe->camss->dev,
+			"VFE31: wm_done wm=%d single-buffer mode, updating both PING+PONG\n",
+			wm);
+		for (i = 0; i < output->wm_num; i++) {
+			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
+		}
+	} else if (active_index) {
+		dev_dbg(vfe->camss->dev,
+			"VFE31: wm_done wm=%d PP=0x%x active=%d → PING complete, seq=%d\n",
+			wm, ping_pong, active_index, output->sequence - 1);
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
 			/*
@@ -1837,9 +1866,9 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			 */
 		}
 	} else {
-		dev_info(vfe->camss->dev,
-			 "VFE31: wm_done wm=%d PP=0x%x active=%d → PONG complete, seq=%d\n",
-			 wm, ping_pong, active_index, output->sequence - 1);
+		dev_dbg(vfe->camss->dev,
+			"VFE31: wm_done wm=%d PP=0x%x active=%d → PONG complete, seq=%d\n",
+			wm, ping_pong, active_index, output->sequence - 1);
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 			/* No bus_reload_wm() - see comment above */
@@ -2391,9 +2420,29 @@ static int vfe31_enable(struct vfe_line *line)
 		return -EINVAL;
 	}
 
+	/*
+	 * Single-buffer mode workaround: set PONG = PING
+	 * This ensures all frames have valid data at the cost of true double-buffering.
+	 * Useful if PONG frames are consistently empty (hardware issue).
+	 */
+	if (vfe31_single_buffer) {
+		dev_info(vfe->camss->dev,
+			 "VFE31: Single-buffer mode enabled - PONG=PING=0x%08x\n",
+			 ping_addr);
+		pong_addr = ping_addr;
+	}
+
+	/* Verify addresses are valid and different (unless single-buffer mode) */
+	if (!vfe31_single_buffer && ping_addr == pong_addr) {
+		dev_warn(vfe->camss->dev,
+			 "VFE31: WARNING - PING and PONG have same address 0x%08x!\n",
+			 ping_addr);
+	}
+
 	dev_info(vfe->camss->dev,
-		 "VFE31: WM%d %ux%u stride=%u ping=0x%08x pong=0x%08x\n",
-		 wm, width, height, bytesperline, ping_addr, pong_addr);
+		 "VFE31: WM%d %ux%u stride=%u ping=0x%08x pong=0x%08x%s\n",
+		 wm, width, height, bytesperline, ping_addr, pong_addr,
+		 vfe31_single_buffer ? " (single-buffer)" : "");
 
 	/*
 	 * Store addresses in pending_* for vfe31_start_camif_for_rdi() which
@@ -4787,8 +4836,8 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 			addr = vfe->last_y_pong_addr + vfe->active_cbcr_offset;
 		}
 
-		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d PONG write 0x%08x\n", wm, addr);
+		dev_dbg(vfe->camss->dev,
+			"VFE31: WM%d PONG write 0x%08x\n", wm, addr);
 		writel_relaxed(addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 	}
