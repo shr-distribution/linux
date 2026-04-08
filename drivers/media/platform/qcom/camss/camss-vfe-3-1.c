@@ -415,12 +415,17 @@ MODULE_PARM_DESC(vfe31_chroma_subs_cfg,
  * NOTE: With XBAR 0x1A1B, VIDEO CbCr (WM5) is disabled.
  * To enable VIDEO CbCr, XBAR bits[7:4] needs to be 0x9 (both outputs).
  *
- * WebOS IRQ_COMPOSITE_MASK = 0x00220011 puts Y WMs in Group 0
- * and CbCr WMs in Group 2, but we use Group 0 for simplicity.
+ * WebOS IRQ_COMPOSITE_MASK = 0x00220011:
+ *   Group 0 (bits 0-7):  0x11 = WM0 + WM4 (PIX Y + CbCr)
+ *   Group 1 (bits 8-15): 0x00 = none
+ *   Group 2 (bits 16-23): 0x22 = WM1 + WM5 (VIDEO Y + CbCr)
+ *
+ * CRITICAL: Must use exact webOS value - hardware may require both PIX and
+ * VIDEO composite groups configured even when only using one path.
  */
-#define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00000011  /* WM0+WM4 (PIX Y+CbCr) */
-#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00000013  /* WM0+WM1+WM4 (no WM5, disabled by XBAR) */
-#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00000002  /* WM1 only (VIDEO Y, no CbCr with XBAR 0x1A1B) */
+#define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00220011  /* webOS exact value: PIX in G0, VIDEO in G2 */
+#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00220011  /* Same as PIX_ONLY per webOS */
+#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00220011  /* Same as PIX_ONLY per webOS */
 
 /* Module param for manual override/testing */
 static int vfe31_irq_comp_mask = 0;  /* 0 = auto-select based on active lines */
@@ -718,9 +723,11 @@ extern int software_eof_enable;
  * enable bit 7 (viewCbcrWrPathEn) for NV16 semi-planar output to work.
  * Without bit 7, WM1 never receives data (ping_pong bit 1 stays at 0).
  *
- * Changed from 0x02AAA771 to 0x02AAA7F1 to enable all Y+CbCr paths.
+ * CRITICAL: Must match exact webOS value 0x02AAA771!
+ * Bit 7 (viewCbcrWrPathEn) must NOT be set - enabling it may interfere
+ * with ping-pong DMA causing PONG buffers to be empty.
  */
-#define VFE_0_BUS_CFG_WEBOS_VALUE		0x02AAA7F1
+#define VFE_0_BUS_CFG_WEBOS_VALUE		0x02AAA771
 #define VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN		BIT(4)
 #define VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN	BIT(5)
 #define VFE_0_BUS_CFG_VIEW_Y_WR_PATH_EN		BIT(6)
