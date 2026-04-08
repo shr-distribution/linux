@@ -1750,8 +1750,10 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	struct vfe_device *vfe = dev;
 	static ktime_t first_irq_time;
 	static int irq_count;
+	static u32 last_ping_pong;  /* Track PP transitions between IRQs */
 	ktime_t now;
 	u32 value0, value1, ping_pong;
+	u32 pp_changed;
 	int i;
 
 	vfe->res->hw_ops->isr_read(vfe, &value0, &value1);
@@ -1761,8 +1763,10 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 
 	irq_count++;
 	now = ktime_get();
-	if (irq_count == 1)
+	if (irq_count == 1) {
 		first_irq_time = now;
+		last_ping_pong = ping_pong;  /* Initialize on first IRQ */
+	}
 
 	/*
 	 * Note: Per-frame debug logging removed to prevent soft lockups.
@@ -1771,20 +1775,29 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 */
 
 	/*
-	 * VFE31 frame completion: Use IMAGE_COMPOSITE_DONE IRQs only.
+	 * VFE31 frame completion: Use PING-PONG TRANSITION DETECTION.
 	 *
 	 * Unlike newer VFEs, VFE31 does NOT have per-WM PING_PONG IRQs in
 	 * STATUS_0 - bits 8-13 are bus overflow errors, not frame completion.
 	 *
-	 * WebOS relies solely on COMP_DONE for frame completion, which fires
-	 * after EVERY frame (both PING and PONG buffers) when all WMs in a
-	 * composite group complete their writes. This is handled below by
-	 * the COMP_DONE processing loop.
+	 * CRITICAL FINDING: IMAGE_COMPOSITE_DONE only fires for ONE direction
+	 * of ping-pong transition:
+	 *   - PIX mode:   COMP_DONE fires on PP 1→0 only (PONG→PING)
+	 *   - VIDEO mode: COMP_DONE fires on PP 0→1 only (PING→PONG)
+	 * This causes alternating empty frames because the other direction
+	 * is never signaled.
 	 *
-	 * Previous workaround using PP transition detection caused issues:
-	 * - Called wm_done before/alongside COMP_DONE causing double-counting
-	 * - PP status is for buffer state tracking, not frame completion IRQ
+	 * Solution: Use ping-pong STATUS transition detection for frame
+	 * completion. When a WM's PP bit transitions (either direction),
+	 * that WM's buffer is ready. This handles BOTH directions correctly.
+	 *
+	 * The PP status register (0x22C) bit N indicates which buffer is
+	 * currently being written to for WM N:
+	 *   - bit=0: Writing to PING, PONG buffer is ready
+	 *   - bit=1: Writing to PONG, PING buffer is ready
+	 * Any change in this bit means a buffer just completed.
 	 */
+	pp_changed = ping_pong ^ last_ping_pong;
 
 	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
 	if (irq_count <= 10) {
@@ -1887,16 +1900,33 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	}
 
 	/*
-	 * VFE31 frame completion: IMAGE_COMPOSITE_DONE is the ONLY frame
-	 * completion IRQ. comp_done() calls wm_done() for each active WM.
+	 * VFE31 frame completion: Use PING-PONG TRANSITION detection.
 	 *
-	 * Note: VFE31 does NOT have per-WM PING_PONG IRQs in STATUS_0.
-	 * Bits 8-13 are bus overflow errors (IMG_MAST_n_BUS_OVFL), not
-	 * frame completion signals. Do NOT check these for wm_done.
+	 * For each WM whose ping-pong status bit changed since the last IRQ,
+	 * a buffer has completed. Call wm_done to process that buffer.
+	 *
+	 * This replaces COMP_DONE-based frame completion because COMP_DONE
+	 * only fires for one direction of PP transition (missing half the
+	 * frames). PP transition detection catches BOTH directions.
+	 *
+	 * WM assignment in OUTPUT_1_AND_3 mode:
+	 *   - PIX:   WM0 (Y) + WM4 (CbCr)
+	 *   - VIDEO: WM1 (Y) + WM5 (CbCr)
+	 * Only call wm_done for Y WMs (0 and 1) - the gen1 framework handles
+	 * CbCr WMs automatically based on the Y WM's completion.
 	 */
-	for (i = 0; i < MSM_VFE_COMPOSITE_IRQ_NUM; i++)
-		if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(i))
-			vfe->isr_ops.comp_done(vfe, i);
+	if (pp_changed) {
+		/* Check WM0 (PIX Y) */
+		if ((pp_changed & BIT(0)) && vfe->wm_output_map[0] != VFE_LINE_NONE)
+			vfe->isr_ops.wm_done(vfe, 0);
+
+		/* Check WM1 (VIDEO Y) */
+		if ((pp_changed & BIT(1)) && vfe->wm_output_map[1] != VFE_LINE_NONE)
+			vfe->isr_ops.wm_done(vfe, 1);
+
+		/* Update last_ping_pong for next IRQ comparison */
+		last_ping_pong = ping_pong;
+	}
 
 	return IRQ_HANDLED;
 }
