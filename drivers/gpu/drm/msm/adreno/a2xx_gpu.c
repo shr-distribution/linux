@@ -199,6 +199,13 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	if (!adreno_is_a20x(adreno_gpu))
 		gpu_write(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1, 0x00032f07);
 
+	/*
+	 * Ensure MMU/MH configuration is complete before proceeding.
+	 * The memory hub must be fully configured before shader units
+	 * attempt memory accesses.
+	 */
+	wmb();
+
 	gpu_write(gpu, REG_A2XX_SQ_VS_PROGRAM, 0x00000000);
 	gpu_write(gpu, REG_A2XX_SQ_PS_PROGRAM, 0x00000000);
 
@@ -233,6 +240,13 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	 * random values from GPU power-on could starve one shader type of GPRs.
 	 */
 	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, 0x00040400);
+
+	/*
+	 * Ensure shader unit configuration is complete before interrupt
+	 * setup and ring buffer initialization. Shader state must be
+	 * stable before any drawing commands are issued.
+	 */
+	wmb();
 
 	/* note: gsl doesn't set this */
 	gpu_write(gpu, REG_A2XX_RBBM_DEBUG, 0x00080000);
@@ -297,8 +311,12 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_AXXX_CP_DEBUG,
 			AXXX_CP_DEBUG_MIU_128BIT_WRITE_ENABLE);
 	gpu_write(gpu, REG_AXXX_CP_ME_RAM_WADDR, 0);
+	/* Ensure WADDR is latched before streaming DATA writes */
+	wmb();
 	for (i = 1; i < len; i++)
 		gpu_write(gpu, REG_AXXX_CP_ME_RAM_DATA, ptr[i]);
+	/* Ensure PM4 firmware upload is complete */
+	wmb();
 
 	/* Load PFP: */
 	ptr = (uint32_t *)(adreno_gpu->fw[ADRENO_FW_PFP]->data);
@@ -306,8 +324,12 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	DBG("loading PFP ucode version: %x", ptr[5]);
 
 	gpu_write(gpu, REG_A2XX_CP_PFP_UCODE_ADDR, 0);
+	/* Ensure UCODE_ADDR is latched before streaming DATA writes */
+	wmb();
 	for (i = 1; i < len; i++)
 		gpu_write(gpu, REG_A2XX_CP_PFP_UCODE_DATA, ptr[i]);
+	/* Ensure PFP firmware upload is complete before starting ME */
+	wmb();
 
 	gpu_write(gpu, REG_AXXX_CP_QUEUE_THRESHOLDS, 0x000C0804);
 
