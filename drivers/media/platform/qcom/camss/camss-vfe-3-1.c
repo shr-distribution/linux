@@ -1796,13 +1796,64 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	 *
 	 * active_index = which buffer the hardware is CURRENTLY writing to.
 	 * The completed (ready) buffer is the OTHER one: !active_index
+	 *
+	 * VFE31 PP bit interpretation (from webOS analysis):
+	 *   PP bit=0: Hardware is writing to PING, just completed PONG
+	 *   PP bit=1: Hardware is writing to PONG, just completed PING
 	 */
 	active_index = (ping_pong >> wm) & 1;
+
+	/*
+	 * Debug: Log the PP-to-buffer mapping for this completion
+	 */
+	dev_info(vfe->camss->dev,
+		"VFE31: wm_done entry: wm=%d PP=0x%x bit%d=%d → HW writing to %s, returning %s buffer\n",
+		wm, ping_pong, wm, active_index,
+		active_index ? "PONG" : "PING",
+		active_index ? "PING" : "PONG");
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
 	output = &vfe->line[vfe->wm_output_map[wm]].output;
 
 	output->gen1.active_buf = active_index;
+
+	/*
+	 * Debug: On first frame, dump complete WM register state
+	 */
+	if (output->sequence == 0) {
+		u8 y_wm = output->wm_idx[0];
+		u8 cbcr_wm = (output->wm_num == 2) ? output->wm_idx[1] : 0xff;
+		dev_info(vfe->camss->dev,
+			"VFE31: FIRST FRAME WM%d dump:\n"
+			"  Y_WM%d: PING=0x%08x PONG=0x%08x CFG=0x%08x IMG_SIZE=0x%08x UB=0x%08x\n",
+			wm, y_wm,
+			readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm)),
+			readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(y_wm)),
+			readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(y_wm)),
+			readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(y_wm)),
+			readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(y_wm)));
+		if (cbcr_wm != 0xff) {
+			dev_info(vfe->camss->dev,
+				"  CbCr_WM%d: PING=0x%08x PONG=0x%08x CFG=0x%08x IMG_SIZE=0x%08x UB=0x%08x\n",
+				cbcr_wm,
+				readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(cbcr_wm)),
+				readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(cbcr_wm)),
+				readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(cbcr_wm)),
+				readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(cbcr_wm)),
+				readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(cbcr_wm)));
+		}
+		dev_info(vfe->camss->dev,
+			"  BUS_CFG=0x%08x AXI_OUT=0x%08x PP_STATUS=0x%08x CAMIF_STATUS=0x%08x\n",
+			readl_relaxed(vfe->base + 0x03C),
+			readl_relaxed(vfe->base + 0x040),
+			ping_pong,
+			readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
+		dev_info(vfe->camss->dev,
+			"  buf[0]=0x%08x buf[1]=0x%08x active_index=%d\n",
+			output->buf[0] ? (u32)output->buf[0]->addr[0] : 0,
+			output->buf[1] ? (u32)output->buf[1]->addr[0] : 0,
+			active_index);
+	}
 
 	ready_buf = output->buf[!active_index];
 	if (!ready_buf) {
@@ -1876,6 +1927,20 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 				output->wm_idx[i], (u32)new_addr[i]);
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 		}
+	}
+
+	/*
+	 * Debug: Dump current WM register state after buffer update.
+	 * This helps verify the hardware actually has the addresses we wrote.
+	 */
+	{
+		u8 y_wm = output->wm_idx[0];
+		u32 hw_ping = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
+		u32 hw_pong = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(y_wm));
+		u32 hw_pp = readl_relaxed(vfe->base + VFE_0_BUS_PING_PONG_STATUS);
+		dev_info(vfe->camss->dev,
+			"VFE31: wm_done complete: WM%d HW_PING=0x%08x HW_PONG=0x%08x PP=0x%x returned_buf=0x%08x seq=%d\n",
+			y_wm, hw_ping, hw_pong, hw_pp, (u32)ready_buf->addr[0], output->sequence - 1);
 	}
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
@@ -2523,10 +2588,20 @@ static int vfe31_enable(struct vfe_line *line)
 	/* WR_PING_ADDR */
 	writel_relaxed(ping_addr,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+	{
+		u32 readback = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+		dev_info(vfe->camss->dev, "VFE31: WM%d PING_ADDR=0x%08x (readback=0x%08x)\n",
+			wm, ping_addr, readback);
+	}
 
 	/* WR_PONG_ADDR */
 	writel_relaxed(pong_addr,
 		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+	{
+		u32 readback = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+		dev_info(vfe->camss->dev, "VFE31: WM%d PONG_ADDR=0x%08x (readback=0x%08x)\n",
+			wm, pong_addr, readback);
+	}
 
 	/*
 	 * WR_IMAGE_SIZE - VFE31 format (from webOS register dumps):
@@ -4844,14 +4919,29 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 
 		if (is_y_wm) {
 			vfe->last_y_pong_addr = addr;
+			dev_info(vfe->camss->dev,
+				"VFE31: WM%d PONG write 0x%08x (Y)\n", wm, addr);
 		} else if (vfe->last_y_pong_addr && vfe->active_cbcr_offset) {
 			addr = vfe->last_y_pong_addr + vfe->active_cbcr_offset;
+			dev_info(vfe->camss->dev,
+				"VFE31: WM%d PONG write 0x%08x (CbCr from Y=0x%08x)\n",
+				wm, addr, vfe->last_y_pong_addr);
+		} else {
+			dev_info(vfe->camss->dev,
+				"VFE31: WM%d PONG write 0x%08x (direct)\n", wm, addr);
 		}
 
-		dev_dbg(vfe->camss->dev,
-			"VFE31: WM%d PONG write 0x%08x\n", wm, addr);
 		writel_relaxed(addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+
+		/* Readback verification */
+		{
+			u32 readback = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+			if (readback != addr)
+				dev_err(vfe->camss->dev,
+					"VFE31: WM%d PONG readback MISMATCH! wrote=0x%08x read=0x%08x\n",
+					wm, addr, readback);
+		}
 	}
 }
 
