@@ -142,6 +142,12 @@ struct vfe_subdev_resources {
 	const struct vfe_hw_ops *hw_ops;
 	const struct camss_formats *formats_rdi;
 	const struct camss_formats *formats_pix;
+	/*
+	 * Stride factor for PIX/VIDEO buffer allocation (default 0 = 1).
+	 * VFE31 requires 2 because its DMA uses input UYVY stride (width*2)
+	 * rather than output Y stride, so buffers must be 2x larger.
+	 */
+	u8 pix_stride_factor;
 };
 
 struct vfe_device {
