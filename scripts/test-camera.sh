@@ -537,7 +537,7 @@ test_raw_mode() {
             timeout 10 v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1 --stream-to=/tmp/camera_raw.raw 2>&1
             if [ -s /tmp/camera_raw.raw ]; then
                 SIZE=\$(stat -c%s /tmp/camera_raw.raw 2>/dev/null || echo 0)
-                echo \"Frame saved: \$SIZE bytes (expected 2621440 for 1280x1024 UYVY)\"
+                echo \"Frame saved: \$SIZE bytes (expected 1966080 for 1280x1024 UYVY)\"
             fi
         else
             echo ''
@@ -714,8 +714,8 @@ test_pix_mode() {
         media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
 
-        # Set V4L2 video device format to NV16 (native VFE31 output)
-        v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV16 2>&1 || true
+        # Set V4L2 video device format to NV12 (native VFE31 output)
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
 
         echo ''
         echo 'Current pipeline configuration:'
@@ -724,7 +724,7 @@ test_pix_mode() {
         echo ''
         echo 'Testing capture with 1280x1024 NV16 (MT9M113 Context B)...'
         timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=NV16,width=1280,height=1024,framerate=30/1' ! \\
+            'video/x-raw,format=NV12,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -736,7 +736,7 @@ test_pix_mode() {
             timeout 10 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=1 --stream-to=/tmp/camera_pix.raw 2>&1
             if [ -s /tmp/camera_pix.raw ]; then
                 SIZE=\$(stat -c%s /tmp/camera_pix.raw 2>/dev/null || echo 0)
-                echo \"Frame saved: \$SIZE bytes (expected 2621440 for 1280x1024 NV16)\"
+                echo \"Frame saved: \$SIZE bytes (expected 1966080 for 1280x1024 NV12)\"
             fi
         else
             echo ''
@@ -878,8 +878,8 @@ test_video_mode() {
         media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
 
-        # Set V4L2 video device format to NV16 (native VFE31 output)
-        v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV16 2>&1 || true
+        # Set V4L2 video device format to NV12 (native VFE31 output)
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
 
         echo ''
         echo 'Current module parameters:'
@@ -889,7 +889,7 @@ test_video_mode() {
         echo ''
         echo 'Testing capture with 1280x1024 NV16 (VIDEO mode)...'
         timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=NV16,width=1280,height=1024,framerate=30/1' ! \\
+            'video/x-raw,format=NV12,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -901,7 +901,7 @@ test_video_mode() {
             timeout 10 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=1 --stream-to=/tmp/camera_video.raw 2>&1
             if [ -s /tmp/camera_video.raw ]; then
                 SIZE=\$(stat -c%s /tmp/camera_video.raw 2>/dev/null || echo 0)
-                echo \"Frame saved: \$SIZE bytes (expected 2621440 for 1280x1024 NV16)\"
+                echo \"Frame saved: \$SIZE bytes (expected 1966080 for 1280x1024 NV12)\"
             fi
         else
             echo ''
@@ -983,10 +983,10 @@ test_video4_mode() {
         media-ctl -V '\"msm_vfe0_video\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_vfe0_video\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
 
-        # Set V4L2 video device format to NV16 (native VFE31 output)
+        # Set V4L2 video device format to NV12 (native VFE31 output)
         echo ''
         echo 'Setting V4L2 format to NV16 1280x1024 on /dev/video4...'
-        v4l2-ctl -d /dev/video4 --set-fmt-video=width=1280,height=1024,pixelformat=NV16 2>&1 || true
+        v4l2-ctl -d /dev/video4 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
         echo ''
         echo 'Current format:'
         v4l2-ctl -d /dev/video4 --get-fmt-video 2>&1
@@ -1005,7 +1005,7 @@ test_video4_mode() {
         echo 'Testing capture with 1280x1024 NV16 on VIDEO4...'
         echo 'Expected size: 1280*1024 (Y) + 1280*1024 (CbCr) = 2621440 bytes per frame'
         timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video4 num-buffers=10 ! \\
-            'video/x-raw,format=NV16,width=1280,height=1024,framerate=30/1' ! \\
+            'video/x-raw,format=NV12,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -1017,7 +1017,7 @@ test_video4_mode() {
             timeout 10 v4l2-ctl -d /dev/video4 --stream-mmap --stream-count=1 --stream-to=/tmp/capture_video4.raw 2>&1
             if [ -s /tmp/capture_video4.raw ]; then
                 SIZE=\$(stat -c%s /tmp/capture_video4.raw 2>/dev/null || echo 0)
-                echo \"Frame saved: \$SIZE bytes (expected 2621440 for 1280x1024 NV16)\"
+                echo \"Frame saved: \$SIZE bytes (expected 1966080 for 1280x1024 NV12)\"
             fi
         else
             echo ''
@@ -1082,7 +1082,7 @@ test_nv16_mode() {
         # Set V4L2 video device format to NV16
         echo ''
         echo 'Setting V4L2 format to NV16 1280x1024...'
-        v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV16 2>&1 || true
+        v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
         echo ''
         echo 'Current format:'
         v4l2-ctl -d /dev/video3 --get-fmt-video 2>&1
@@ -1095,7 +1095,7 @@ test_nv16_mode() {
         echo 'Testing capture with 1280x1024 NV16...'
         echo 'Expected size: 1280*1024 (Y) + 1280*1024 (CbCr) = 2621440 bytes per frame'
         timeout 20 gst-launch-1.0 -v v4l2src device=/dev/video3 num-buffers=10 ! \\
-            'video/x-raw,format=NV16,width=1280,height=1024,framerate=30/1' ! \\
+            'video/x-raw,format=NV12,width=1280,height=1024,framerate=30/1' ! \\
             fakesink 2>&1
 
         if [ \$? -eq 0 ]; then
@@ -1104,11 +1104,11 @@ test_nv16_mode() {
             echo ''
             echo 'Saving frame to /tmp/camera_nv16.raw...'
             timeout 10 gst-launch-1.0 v4l2src device=/dev/video3 num-buffers=1 ! \\
-                'video/x-raw,format=NV16,width=1280,height=1024' ! \\
+                'video/x-raw,format=NV12,width=1280,height=1024' ! \\
                 filesink location=/tmp/camera_nv16.raw 2>&1
             if [ -f /tmp/camera_nv16.raw ]; then
                 SIZE=\$(stat -c%s /tmp/camera_nv16.raw 2>/dev/null || echo 0)
-                echo \"Frame saved: \$SIZE bytes (expected 2621440 for 1280x1024 NV16)\"
+                echo \"Frame saved: \$SIZE bytes (expected 1966080 for 1280x1024 NV12)\"
             fi
         else
             echo ''
