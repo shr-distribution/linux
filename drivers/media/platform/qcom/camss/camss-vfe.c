@@ -2704,10 +2704,17 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		video_out->ops = &vfe->video_ops;
 		video_out->bpl_alignment = vfe_bpl_align(vfe);
 		video_out->line_based = 0;
+		video_out->stride_factor = 0;
 		if (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO) {
 			/* PIX and VIDEO lines use line-based pixel pipeline */
 			video_out->bpl_alignment = 16;
 			video_out->line_based = 1;
+			/*
+			 * VFE31 DMA uses input stride (e.g., UYVY width*2)
+			 * rather than output stride. Set stride_factor to
+			 * allocate buffers large enough for actual DMA writes.
+			 */
+			video_out->stride_factor = vfe->res->pix_stride_factor;
 		}
 
 		video_out->nformats = vfe->line[i].nformats;

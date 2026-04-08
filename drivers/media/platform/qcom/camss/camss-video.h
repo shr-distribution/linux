@@ -46,6 +46,12 @@ struct camss_video {
 	struct mutex q_lock;
 	unsigned int bpl_alignment;
 	unsigned int line_based;
+	/*
+	 * Stride factor for buffer sizing (default 1). VFE31 PIX/VIDEO modes
+	 * require 2 because DMA uses input UYVY stride (width*2) rather than
+	 * output Y stride (width*1). Buffer must be sized for actual DMA writes.
+	 */
+	unsigned int stride_factor;
 	const struct camss_format_info *formats;
 	unsigned int nformats;
 	/* Default resolution from upstream VFE subdev (0 = use 1920x1080) */

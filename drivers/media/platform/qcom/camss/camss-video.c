@@ -35,6 +35,8 @@
  * @pix: v4l2_pix_format_mplane format (output)
  * @f: a pointer to formats array element to be used for the conversion
  * @alignment: bytesperline alignment value
+ * @stride_factor: multiplier for sizeimage (VFE31 uses 2 for PIX/VIDEO modes
+ *                 because DMA uses input UYVY stride rather than output stride)
  *
  * Fill the output pix structure with information from the input mbus format.
  *
@@ -43,10 +45,14 @@
 static int video_mbus_to_pix_mp(const struct v4l2_mbus_framefmt *mbus,
 				struct v4l2_pix_format_mplane *pix,
 				const struct camss_format_info *f,
-				unsigned int alignment)
+				unsigned int alignment,
+				unsigned int stride_factor)
 {
 	unsigned int i;
 	u32 bytesperline;
+
+	if (!stride_factor)
+		stride_factor = 1;
 
 	memset(pix, 0, sizeof(*pix));
 	v4l2_fill_pix_format_mplane(pix, mbus);
@@ -59,7 +65,7 @@ static int video_mbus_to_pix_mp(const struct v4l2_mbus_framefmt *mbus,
 		pix->plane_fmt[i].bytesperline = bytesperline;
 		pix->plane_fmt[i].sizeimage = pix->height /
 				f->vsub[i].numerator * f->vsub[i].denominator *
-				bytesperline;
+				bytesperline * stride_factor;
 	}
 
 	return 0;
@@ -128,7 +134,8 @@ static int video_get_subdev_format(struct camss_video *video,
 	format->type = video->type;
 
 	return video_mbus_to_pix_mp(&fmt.format, &format->fmt.pix_mp,
-				    &video->formats[ret], video->bpl_alignment);
+				    &video->formats[ret], video->bpl_alignment,
+				    video->stride_factor);
 }
 
 /* -----------------------------------------------------------------------------
@@ -673,12 +680,15 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		pix_mp->width &= ~0xf;
 	pix_mp->num_planes = fi->planes;
 	for (i = 0; i < pix_mp->num_planes; i++) {
+		unsigned int stride_factor = video->stride_factor ? video->stride_factor : 1;
+
 		bpl = pix_mp->width / fi->hsub[i].numerator *
 			fi->hsub[i].denominator * fi->bpp[i] / 8;
 		bpl = ALIGN(bpl, video->bpl_alignment);
 		pix_mp->plane_fmt[i].bytesperline = bpl;
 		pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
-			fi->vsub[i].numerator * fi->vsub[i].denominator * bpl;
+			fi->vsub[i].numerator * fi->vsub[i].denominator * bpl *
+			stride_factor;
 	}
 
 	pix_mp->field = V4L2_FIELD_NONE;
