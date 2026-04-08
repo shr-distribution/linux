@@ -1745,6 +1745,115 @@ static void vfe31_isr_read(struct vfe_device *vfe, u32 *value0, u32 *value1)
 	writel_relaxed(VFE_0_IRQ_CMD_GLOBAL_CLEAR, vfe->base + VFE_0_IRQ_CMD);
 }
 
+/*
+ * vfe31_wm_done - VFE31-specific buffer completion handler
+ *
+ * Unlike gen1's wm_done which reads PP status from hardware, this function
+ * takes the PP status as a parameter. This is critical because:
+ *
+ * 1. We detect PP transitions in the ISR by comparing current vs last PP
+ * 2. If we read PP status AGAIN inside wm_done, it might have changed
+ * 3. By passing the PP value from detection time, we process the correct buffer
+ *
+ * @vfe: VFE device
+ * @wm: Write master index (0 for PIX, 1 for VIDEO)
+ * @ping_pong: The PP status at the time the transition was detected
+ */
+static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
+{
+	struct camss_buffer *ready_buf;
+	struct vfe_output *output;
+	dma_addr_t *new_addr;
+	unsigned long flags;
+	u32 active_index;
+	u64 ts = ktime_get_ns();
+	unsigned int i;
+
+	if (vfe->wm_output_map[wm] == VFE_LINE_NONE)
+		return;
+
+	/*
+	 * Use the passed ping_pong value instead of reading from hardware.
+	 * This ensures we process the buffer that actually completed, not
+	 * whatever the current hardware state happens to be.
+	 *
+	 * active_index = which buffer the hardware is CURRENTLY writing to.
+	 * The completed (ready) buffer is the OTHER one: !active_index
+	 */
+	active_index = (ping_pong >> wm) & 1;
+
+	spin_lock_irqsave(&vfe->output_lock, flags);
+	output = &vfe->line[vfe->wm_output_map[wm]].output;
+
+	output->gen1.active_buf = active_index;
+
+	ready_buf = output->buf[!active_index];
+	if (!ready_buf) {
+		dev_err_ratelimited(vfe->camss->dev,
+				    "VFE31: Missing ready buf wm=%d idx=%d state=%d!\n",
+				    wm, !active_index, output->state);
+		goto out_unlock;
+	}
+
+	ready_buf->vb.vb2_buf.timestamp = ts;
+	ready_buf->vb.sequence = output->sequence++;
+
+	/* Get next buffer from pending queue */
+	output->buf[!active_index] = vfe_buf_get_pending(output);
+	if (!output->buf[!active_index]) {
+		/*
+		 * No next buffer available - reuse same address.
+		 * Transition to SINGLE state (only one buffer active).
+		 */
+		new_addr = ready_buf->addr;
+		if (output->state == VFE_OUTPUT_CONTINUOUS)
+			output->state = VFE_OUTPUT_SINGLE;
+		else if (output->state == VFE_OUTPUT_SINGLE)
+			output->state = VFE_OUTPUT_STOPPING;
+	} else {
+		new_addr = output->buf[!active_index]->addr;
+		/* Stay in CONTINUOUS state */
+	}
+
+	/*
+	 * Update the buffer address that just completed (was just read from).
+	 * active_index tells us which buffer is currently being written to,
+	 * so we update the OTHER buffer's address (!active_index).
+	 *
+	 * When active_index=1 (writing to PONG), PING just completed → update PING
+	 * When active_index=0 (writing to PING), PONG just completed → update PONG
+	 */
+	if (active_index) {
+		dev_info(vfe->camss->dev,
+			 "VFE31: wm_done wm=%d PP=0x%x active=%d → PING complete, seq=%d\n",
+			 wm, ping_pong, active_index, output->sequence - 1);
+		for (i = 0; i < output->wm_num; i++) {
+			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
+		}
+	} else {
+		dev_info(vfe->camss->dev,
+			 "VFE31: wm_done wm=%d PP=0x%x active=%d → PONG complete, seq=%d\n",
+			 wm, ping_pong, active_index, output->sequence - 1);
+		for (i = 0; i < output->wm_num; i++) {
+			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
+			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
+		}
+	}
+
+	spin_unlock_irqrestore(&vfe->output_lock, flags);
+
+	if (output->state == VFE_OUTPUT_STOPPING)
+		output->last_buffer = ready_buf;
+	else
+		vb2_buffer_done(&ready_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+
+	return;
+
+out_unlock:
+	spin_unlock_irqrestore(&vfe->output_lock, flags);
+}
+
 static irqreturn_t vfe31_isr(int irq, void *dev)
 {
 	struct vfe_device *vfe = dev;
@@ -1903,26 +2012,29 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 * VFE31 frame completion: Use PING-PONG TRANSITION detection.
 	 *
 	 * For each WM whose ping-pong status bit changed since the last IRQ,
-	 * a buffer has completed. Call wm_done to process that buffer.
+	 * a buffer has completed. Call our VFE31-specific wm_done that takes
+	 * the PP status as a parameter (instead of gen1's wm_done which reads
+	 * it again from hardware, potentially getting a stale value).
 	 *
-	 * This replaces COMP_DONE-based frame completion because COMP_DONE
-	 * only fires for one direction of PP transition (missing half the
-	 * frames). PP transition detection catches BOTH directions.
+	 * CRITICAL: Pass the current ping_pong value to vfe31_wm_done.
+	 * This ensures we process the correct buffer based on the PP state
+	 * at the time we detected the transition, not whatever the hardware
+	 * state happens to be when wm_done reads the register again.
 	 *
 	 * WM assignment in OUTPUT_1_AND_3 mode:
 	 *   - PIX:   WM0 (Y) + WM4 (CbCr)
 	 *   - VIDEO: WM1 (Y) + WM5 (CbCr)
-	 * Only call wm_done for Y WMs (0 and 1) - the gen1 framework handles
+	 * Only call wm_done for Y WMs (0 and 1) - the framework handles
 	 * CbCr WMs automatically based on the Y WM's completion.
 	 */
 	if (pp_changed) {
 		/* Check WM0 (PIX Y) */
 		if ((pp_changed & BIT(0)) && vfe->wm_output_map[0] != VFE_LINE_NONE)
-			vfe->isr_ops.wm_done(vfe, 0);
+			vfe31_wm_done(vfe, 0, ping_pong);
 
 		/* Check WM1 (VIDEO Y) */
 		if ((pp_changed & BIT(1)) && vfe->wm_output_map[1] != VFE_LINE_NONE)
-			vfe->isr_ops.wm_done(vfe, 1);
+			vfe31_wm_done(vfe, 1, ping_pong);
 
 		/* Update last_ping_pong for next IRQ comparison */
 		last_ping_pong = ping_pong;
