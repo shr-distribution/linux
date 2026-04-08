@@ -2243,9 +2243,12 @@ static int vfe31_enable(struct vfe_line *line)
 	/*
 	 * Store addresses in pending_* for vfe31_start_camif_for_rdi() which
 	 * will write them to hardware after CSIPHY is configured.
+	 * Also store in last_y_* for runtime CbCr address calculation.
 	 */
 	vfe->pending_ping_addr = ping_addr;
 	vfe->pending_pong_addr = pong_addr;
+	vfe->last_y_ping_addr = ping_addr;
+	vfe->last_y_pong_addr = pong_addr;
 
 	/*
 	 * Step 1: Configure BUS_CFG, AXI output mode and XBAR
@@ -2455,6 +2458,9 @@ static int vfe31_enable(struct vfe_line *line)
 		u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
 		u32 wm1_ping_addr = ping_addr + cbcr_offset;
 		u32 wm1_pong_addr = pong_addr + cbcr_offset;
+
+		/* Store for runtime CbCr address calculation during streaming */
+		vfe->active_cbcr_offset = cbcr_offset;
 
 		dev_info(vfe->camss->dev,
 			 "VFE31: Configuring WM%d (CbCr) offset=0x%x ping=0x%08x\n",
@@ -3729,6 +3735,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			u32 wm1_pong = vfe->pending_pong_addr + cbcr_offset;
 			u16 cbcr_height;
 
+			/* Store for runtime CbCr address calculation */
+			vfe->active_cbcr_offset = cbcr_offset;
+
 			/*
 			 * CbCr height depends on format:
 			 * - NV12/NV21 (4:2:0): CbCr height = Y height / 2
@@ -4287,6 +4296,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				u32 cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 				u32 cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
 
+				/* Store for runtime CbCr address calculation */
+				vfe->active_cbcr_offset = cbcr_offset;
+
 				dev_info(vfe->camss->dev,
 					 "VFE31: VIDEO WM%d (CbCr) PING=0x%08x PONG=0x%08x (offset=0x%x)\n",
 					 VFE31_VIDEO_WM_CBCR, cbcr_ping, cbcr_pong, cbcr_offset);
@@ -4536,8 +4548,9 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	 *   - PIX mode (VFE_LINE_PIX): WM0
 	 *   - VIDEO mode (VFE_LINE_VIDEO): WM4
 	 *
-	 * For semi-planar formats (NV16), WM1's address (CbCr) is computed
-	 * later as pending_ping_addr + Y_plane_size in enable_pending_camif.
+	 * For semi-planar formats (NV12/NV16), WM1's address (CbCr) is computed
+	 * as Y_addr + cbcr_offset. During streaming, gen1 passes addr=0 for
+	 * CbCr WM because buf->addr[1] is not set for single-plane formats.
 	 */
 	if (vfe->camif_pending) {
 		bool is_primary_wm;
@@ -4558,8 +4571,30 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		if (is_primary_wm)
 			vfe->pending_ping_addr = addr;
 	} else {
-		dev_dbg(vfe->camss->dev,
-			"VFE31: WM%d ping_addr=0x%08x (direct write)\n", wm, addr);
+		/*
+		 * During streaming: track Y addresses and calculate CbCr.
+		 * For CbCr WM (WM1 or WM5), ALWAYS calculate from stored Y
+		 * address + cbcr_offset. The addr passed by gen1 for CbCr WM
+		 * is garbage (buf->addr[1] uninitialized for single-plane NV12).
+		 */
+		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y);
+		bool is_cbcr_wm = (wm == VFE31_PREVIEW_WM_CBCR || wm == VFE31_VIDEO_WM_CBCR);
+
+		if (is_y_wm) {
+			vfe->last_y_ping_addr = addr;
+			dev_dbg(vfe->camss->dev,
+				"VFE31: WM%d ping_addr=0x%08x (Y, stored)\n", wm, addr);
+		} else if (is_cbcr_wm && vfe->last_y_ping_addr && vfe->active_cbcr_offset) {
+			/* Always calculate CbCr address - ignore garbage addr from gen1 */
+			addr = vfe->last_y_ping_addr + vfe->active_cbcr_offset;
+			dev_dbg(vfe->camss->dev,
+				"VFE31: WM%d ping_addr=0x%08x (CbCr, calculated from Y=0x%08x + offset=0x%x)\n",
+				wm, addr, vfe->last_y_ping_addr, vfe->active_cbcr_offset);
+		} else {
+			dev_dbg(vfe->camss->dev,
+				"VFE31: WM%d ping_addr=0x%08x (direct)\n", wm, addr);
+		}
+
 		writel_relaxed(addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
 	}
@@ -4589,8 +4624,30 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		if (is_primary_wm)
 			vfe->pending_pong_addr = addr;
 	} else {
-		dev_dbg(vfe->camss->dev,
-			"VFE31: WM%d pong_addr=0x%08x (direct write)\n", wm, addr);
+		/*
+		 * During streaming: track Y addresses and calculate CbCr.
+		 * For CbCr WM (WM1 or WM5), ALWAYS calculate from stored Y
+		 * address + cbcr_offset. The addr passed by gen1 for CbCr WM
+		 * is garbage (buf->addr[1] uninitialized for single-plane NV12).
+		 */
+		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y);
+		bool is_cbcr_wm = (wm == VFE31_PREVIEW_WM_CBCR || wm == VFE31_VIDEO_WM_CBCR);
+
+		if (is_y_wm) {
+			vfe->last_y_pong_addr = addr;
+			dev_dbg(vfe->camss->dev,
+				"VFE31: WM%d pong_addr=0x%08x (Y, stored)\n", wm, addr);
+		} else if (is_cbcr_wm && vfe->last_y_pong_addr && vfe->active_cbcr_offset) {
+			/* Always calculate CbCr address - ignore garbage addr from gen1 */
+			addr = vfe->last_y_pong_addr + vfe->active_cbcr_offset;
+			dev_dbg(vfe->camss->dev,
+				"VFE31: WM%d pong_addr=0x%08x (CbCr, calculated from Y=0x%08x + offset=0x%x)\n",
+				wm, addr, vfe->last_y_pong_addr, vfe->active_cbcr_offset);
+		} else {
+			dev_dbg(vfe->camss->dev,
+				"VFE31: WM%d pong_addr=0x%08x (direct)\n", wm, addr);
+		}
+
 		writel_relaxed(addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 	}

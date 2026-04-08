@@ -184,6 +184,10 @@ struct vfe_device {
 	u32 pending_pong_addr;
 	u16 pending_ub_offset;
 	u16 pending_ub_depth;
+	/* VFE31: Track Y addresses for CbCr offset calculation during streaming */
+	u32 last_y_ping_addr;
+	u32 last_y_pong_addr;
+	u32 active_cbcr_offset;
 	/* VFE31: Reset done flag - IRQ doesn't work, use polling */
 	bool vfe31_reset_done;
 	/* VFE31: Shadow registers for write-only IRQ_MASK registers */
