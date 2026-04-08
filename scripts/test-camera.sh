@@ -1147,14 +1147,14 @@ capture_frames() {
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
 
         # Set formats - set compose first to trigger Context B for 1280x1024
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/${width}x${height}]' 2>&1 || true
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
-        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/${width}x${height}]' 2>&1 || true
-        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/${width}x${height}]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/${width}x${height}]' 2>&1 || true
-        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/${width}x${height}]' 2>&1 || true
+        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"msm_csid1\":4[fmt:UYVY8_2X8/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":0[fmt:UYVY8_2X8/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"msm_vfe0_pix\":1[fmt:UYVY8_2X8/'$width'x'$height']' 2>&1 || true
 
         # Set V4L2 format
         v4l2-ctl -d /dev/video3 --set-fmt-video=width=$width,height=$height,pixelformat=$format 2>&1 || true
@@ -1304,50 +1304,60 @@ test_at_resolution() {
         case '$mode' in
             pix)
                 # PIX mode: CSID pad 4 -> VFE PIX
+                # NV12 (4:2:0) is the native VFE31 output format (half-height CbCr)
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_pix'
                 VFE_FMT='UYVY8_1X16'
-                PIXFMT='NV16'
+                PIXFMT='NV12'
                 ;;
             rdi)
                 # RDI mode: Raw bypass through CAMIF (AXI=0x60)
                 # On MSM8660/VFE31, there's no hardware RDI path - all data goes
                 # through CAMIF. RDI is emulated via AXI output mode 0x60.
                 #
-                # MT9M113 supports RAW output - configure sensor for RAW8.
+                # MT9M113 outputs 10-bit Bayer in 8+2 format (2 bytes per pixel).
+                # Use UYVY format for stride calculation (2 bytes/pixel) since
+                # VFE doesn't support unpacked 10-bit Bayer. The actual data
+                # is 10-bit Bayer but we treat it as raw bytes for transport.
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_rdi0'
-                VFE_FMT='SGRBG8_1X8'
-                PIXFMT='GRBG'
+                VFE_FMT='UYVY8_1X16'
+                PIXFMT='UYVY'
                 USE_RAW_FORMAT=1
                 ;;
             video)
                 # VIDEO mode: CSID pad 4 -> VFE VIDEO
+                # NV12 (4:2:0) is the native VFE31 output format (half-height CbCr)
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_video'
                 VFE_FMT='UYVY8_1X16'
-                PIXFMT='NV16'
+                PIXFMT='NV12'
                 ;;
             testgen)
                 # TESTGEN mode: same as PIX but with testgen enabled
+                # NV12 (4:2:0) is the native VFE31 output format (half-height CbCr)
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_pix'
                 VFE_FMT='UYVY8_1X16'
-                PIXFMT='NV16'
+                PIXFMT='NV12'
                 echo 1 > /sys/module/qcom_camss/parameters/vfe31_use_testgen 2>/dev/null || true
                 ;;
         esac
 
         # Set sensor output format first
-        # For RDI mode with raw bypass, use RAW8 (SGRBG8) format
+        # For RDI mode, we use UYVY format for consistent 2 bytes/pixel stride.
+        # MT9M113 outputs 10-bit Bayer in 8+2 format (2 bytes/pixel), but
+        # since the VFE doesn't support unpacked 10-bit, we use UYVY as a
+        # transport format. The actual data will be 10-bit Bayer.
         if [ -n \"\$USE_RAW_FORMAT\" ]; then
-            SENSOR_FMT='SGRBG8_1X8'
-            echo 'Configuring sensor for RAW8 output (RDI raw bypass mode)...'
+            # Use UYVY for RDI to get 2 bytes/pixel layout
+            SENSOR_FMT='UYVY8_1X16'
+            echo 'Configuring sensor for RDI mode (UYVY transport, 2 bytes/pixel)...'
         else
             SENSOR_FMT='UYVY8_1X16'
         fi
 
-        media-ctl -d /dev/media0 -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/${width}x${height}]' 2>&1 || true
+        media-ctl -d /dev/media0 -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
         media-ctl -d /dev/media0 -V \"\\\"mt9m114 ifp 4-003c\\\":1[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
 
         # Set CSIPHY format
