@@ -1772,20 +1772,25 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 */
 
 	/*
-	 * VFE31 ping-pong fix: COMP_DONE only fires after PONG completes,
-	 * so we miss PING completion. Detect PP transition 0→1 and call
-	 * wm_done manually to update PING buffer for the next cycle.
+	 * VFE31 ping-pong fix: COMP_DONE doesn't fire reliably for every frame,
+	 * so we detect PP transitions to trigger frame completion.
 	 *
-	 * Check all WMs that have their PP bit transitioning 0→1 and trigger
+	 * Detect BOTH rising and falling edges of PP status:
+	 * - PP 0→1 (rising):  PING completed, PONG now active
+	 * - PP 1→0 (falling): PONG completed, PING now active
+	 *
+	 * Check all WMs that have their PP bit transitioning and trigger
 	 * wm_done if they're mapped to PIX or VIDEO output lines.
 	 *
 	 * Note: VIDEO mode may use WM1 or WM4 depending on module parameters.
 	 */
 	if (ping_pong != last_ping_pong) {
-		u32 pp_rising = ping_pong & ~last_ping_pong;
+		u32 pp_rising = ping_pong & ~last_ping_pong;   /* bits 0→1 */
+		u32 pp_falling = ~ping_pong & last_ping_pong; /* bits 1→0 */
+		u32 pp_changed = pp_rising | pp_falling;
 
 		for (i = 0; i < MSM_VFE_IMAGE_MASTERS_NUM; i++) {
-			if ((pp_rising & BIT(i)) &&
+			if ((pp_changed & BIT(i)) &&
 			    (vfe->wm_output_map[i] == VFE_LINE_PIX ||
 			     vfe->wm_output_map[i] == VFE_LINE_VIDEO)) {
 				vfe->isr_ops.wm_done(vfe, i);
