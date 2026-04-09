@@ -2137,6 +2137,38 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 					output->buf[0] ? (u32)output->buf[0]->addr[0] : 0,
 					output->buf[1] ? (u32)output->buf[1]->addr[0] : 0);
 			}
+		} else if (vfe31_single_buffer) {
+			/*
+			 * Single-buffer mode: PING and PONG have the same address,
+			 * so we can't use PP status to determine which buffer has data.
+			 * Instead, find the buffer that matches the HW PING address.
+			 */
+			u8 y_wm = output->wm_idx[0];
+			u32 hw_ping = readl_relaxed(vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
+
+			if (output->buf[0] && (u32)output->buf[0]->addr[0] == hw_ping) {
+				ready_buf = output->buf[0];
+				ready_idx = 0;
+				dev_info(vfe->camss->dev,
+					"VFE31: single_buffer: returning buf[0] (matches 0x%08x)\n",
+					hw_ping);
+			} else if (output->buf[1] && (u32)output->buf[1]->addr[0] == hw_ping) {
+				ready_buf = output->buf[1];
+				ready_idx = 1;
+				dev_info(vfe->camss->dev,
+					"VFE31: single_buffer: returning buf[1] (matches 0x%08x)\n",
+					hw_ping);
+			} else {
+				/* Neither buffer matches - use buf[0] as fallback */
+				ready_buf = output->buf[0];
+				ready_idx = 0;
+				dev_warn(vfe->camss->dev,
+					"VFE31: single_buffer: NO MATCH! PING=0x%08x buf[0]=0x%08x buf[1]=0x%08x\n",
+					hw_ping,
+					output->buf[0] ? (u32)output->buf[0]->addr[0] : 0,
+					output->buf[1] ? (u32)output->buf[1]->addr[0] : 0);
+			}
 		} else {
 			ready_buf = output->buf[!active_index];
 			ready_idx = !active_index;
