@@ -398,6 +398,39 @@ MODULE_PARM_DESC(vfe31_chroma_subs_cfg,
 
 /*
  * ============================================================================
+ * VFE31 FORMAT OVERRIDE - For testing NV16 (4:2:2) vs NV12 (4:2:0)
+ * ============================================================================
+ *
+ * Controls how the driver interprets format for hardware configuration.
+ * This affects chroma subsampling, CbCr WM height, UB height, etc.
+ *
+ *   0 = Auto - use actual requested format (default)
+ *   1 = Force 4:2:0 - treat all semi-planar formats as NV12/NV21
+ *   2 = Force 4:2:2 - treat all semi-planar formats as NV16/NV61
+ *
+ * Use this to test if VFE31 hardware supports 4:2:2 output.
+ * When forcing 4:2:2, ensure userspace allocates NV16-sized buffers
+ * (Width * Height * 2 instead of Width * Height * 1.5).
+ *
+ * To test NV16 properly:
+ *   1. Set vfe31_force_422=2 to configure hardware for 4:2:2
+ *   2. Use v4l2-ctl to request NV16 format from userspace
+ *   3. Or use vfe31_force_422=2 with NV12 buffers to test HW capability
+ *      (CbCr plane may overrun if HW actually outputs full height!)
+ *
+ * Related parameters for fine-tuning:
+ *   - vfe31_chroma_v_out: Force specific chroma output height
+ *   - vfe31_chroma_v_phase: Force specific scaling phase
+ *   - vfe31_pix_cbcr_img_height: Force CbCr IMAGE_SIZE height
+ *   - vfe31_pix_cbcr_ub_height: Force CbCr UB_CFG height
+ */
+static int vfe31_force_422 = 0;
+module_param(vfe31_force_422, int, 0644);
+MODULE_PARM_DESC(vfe31_force_422,
+		 "VFE31 format mode: 0=auto, 1=force 4:2:0, 2=force 4:2:2");
+
+/*
+ * ============================================================================
  * VFE31 IRQ COMPOSITE MASK - CORRECTED BASED ON REGISTER DUMPS
  * ============================================================================
  *
@@ -619,6 +652,47 @@ static inline u16 vfe31_calc_cbcr_stride(u16 width, u16 bytesperline)
 	else
 		/* Auto and mode 2 both use bytesperline (safe default) */
 		return bytesperline;
+}
+
+/*
+ * Helper to determine if format should use 4:2:0 chroma subsampling.
+ * Returns true for 4:2:0 formats (NV12/NV21), false for 4:2:2 (NV16/NV61).
+ *
+ * When vfe31_force_422 is set:
+ *   0 = auto (based on actual format)
+ *   1 = force 4:2:0 (return true for all semi-planar)
+ *   2 = force 4:2:2 (return false for all semi-planar)
+ */
+static inline bool vfe31_is_420_format(u32 pixelformat)
+{
+	/* Check if it's a semi-planar format at all */
+	bool is_semiplanar = (pixelformat == V4L2_PIX_FMT_NV12 ||
+			      pixelformat == V4L2_PIX_FMT_NV21 ||
+			      pixelformat == V4L2_PIX_FMT_NV16 ||
+			      pixelformat == V4L2_PIX_FMT_NV61);
+
+	if (!is_semiplanar)
+		return false;  /* Not semi-planar, doesn't apply */
+
+	/* Check format override */
+	if (vfe31_force_422 == 1)
+		return true;   /* Force 4:2:0 */
+	if (vfe31_force_422 == 2)
+		return false;  /* Force 4:2:2 */
+
+	/* Auto: based on actual format */
+	return (pixelformat == V4L2_PIX_FMT_NV12 ||
+		pixelformat == V4L2_PIX_FMT_NV21);
+}
+
+/*
+ * Helper to calculate CbCr height based on format and overrides.
+ * For 4:2:0: returns height / 2
+ * For 4:2:2: returns height (full)
+ */
+static inline u16 vfe31_calc_cbcr_height(u32 pixelformat, u16 height)
+{
+	return vfe31_is_420_format(pixelformat) ? height / 2 : height;
 }
 
 /* External module parameters from camss-vfe.c */
@@ -2709,19 +2783,14 @@ static int vfe31_enable(struct vfe_line *line)
 	height = pix->height;
 
 	/*
-	 * CbCr height depends on format:
-	 * - NV12/NV21 (4:2:0): CbCr height = Y height / 2
-	 * - NV16/NV61 (4:2:2): CbCr height = Y height (full)
+	 * CbCr height depends on format (controllable via vfe31_force_422):
+	 * - 4:2:0 (NV12/NV21): CbCr height = Y height / 2
+	 * - 4:2:2 (NV16/NV61): CbCr height = Y height (full)
 	 */
-	if (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
-	    pix->pixelformat == V4L2_PIX_FMT_NV21) {
-		cbcr_height = height / 2;
-		dev_info(vfe->camss->dev,
-			 "VFE31: NV12/NV21 format - CbCr height=%d (Y height=%d)\n",
-			 cbcr_height, height);
-	} else {
-		cbcr_height = height;
-	}
+	cbcr_height = vfe31_calc_cbcr_height(pix->pixelformat, height);
+	dev_info(vfe->camss->dev,
+		 "VFE31: format=0x%x cbcr_height=%d (Y height=%d) force_422=%d\n",
+		 pix->pixelformat, cbcr_height, height, vfe31_force_422);
 
 	/*
 	 * Semi-planar output: DEMUX separates UYVY input into Y and CbCr planes.
@@ -3487,18 +3556,16 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * - NV16/NV61 (4:2:2): 1:1 (no vertical subsample)
 	 */
 	/*
-	 * Chroma vertical scaling - controllable via module params
+	 * Chroma vertical scaling - controllable via module params.
+	 * vfe31_force_422 affects the auto mode, vfe31_chroma_v_out overrides.
 	 */
 	{
 		u32 v_out, v_phase, subs_cfg;
 
 		/* Determine output height */
 		if (vfe31_chroma_v_out < 0) {
-			/* Auto: based on format */
-			if (p == V4L2_PIX_FMT_NV12 || p == V4L2_PIX_FMT_NV21)
-				v_out = height / 2;  /* 4:2:0: 2:1 */
-			else
-				v_out = height;  /* 4:2:2: 1:1 */
+			/* Auto: based on format (respects vfe31_force_422) */
+			v_out = vfe31_calc_cbcr_height(p, height);
 		} else if (vfe31_chroma_v_out == 0) {
 			v_out = height / 2;  /* Force 2:1 */
 		} else {
@@ -3542,9 +3609,10 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	}
 
 	dev_info(vfe->camss->dev,
-		 "VFE31: Scale/FOV configured: %ux%u, format=0x%x, chroma_v=%s\n",
+		 "VFE31: Scale/FOV configured: %ux%u, format=0x%x, chroma_v=%s (force_422=%d)\n",
 		 width, height, p,
-		 (p == V4L2_PIX_FMT_NV12 || p == V4L2_PIX_FMT_NV21) ? "2:1" : "1:1");
+		 vfe31_is_420_format(p) ? "2:1 (4:2:0)" : "1:1 (4:2:2)",
+		 vfe31_force_422);
 }
 
 static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line)
@@ -4066,11 +4134,9 @@ static void vfe31_get_wm_sizes(struct v4l2_pix_format_mplane *pix, u8 plane,
 	*height = pix->height;
 	*bytesperline = pix->plane_fmt[0].bytesperline;
 
-	/* For NV12/NV21, chroma plane is half height */
-	if (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
-	    pix->pixelformat == V4L2_PIX_FMT_NV21)
-		if (plane == 1)
-			*height /= 2;
+	/* For CbCr plane, use format-appropriate height (respects vfe31_force_422) */
+	if (plane == 1)
+		*height = vfe31_calc_cbcr_height(pix->pixelformat, *height);
 }
 
 static void vfe31_wm_line_based(struct vfe_device *vfe, u32 wm,
@@ -4312,19 +4378,15 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			vfe->active_cbcr_offset = cbcr_offset;
 
 			/*
-			 * CbCr height depends on format:
-			 * - NV12/NV21 (4:2:0): CbCr height = Y height / 2
-			 * - NV16/NV61 (4:2:2): CbCr height = Y height (full)
+			 * CbCr height depends on format (controllable via vfe31_force_422):
+			 * - 4:2:0 (NV12/NV21): CbCr height = Y height / 2
+			 * - 4:2:2 (NV16/NV61): CbCr height = Y height (full)
 			 */
-			if (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
-			    pix->pixelformat == V4L2_PIX_FMT_NV21)
-				cbcr_height = height / 2;
-			else
-				cbcr_height = height;
+			cbcr_height = vfe31_calc_cbcr_height(pix->pixelformat, height);
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d (CbCr) offset=0x%x PING=0x%08x cbcr_height=%d\n",
-				 wm1, cbcr_offset, wm1_ping, cbcr_height);
+				 "VFE31: WM%d (CbCr) offset=0x%x PING=0x%08x cbcr_height=%d force_422=%d\n",
+				 wm1, cbcr_offset, wm1_ping, cbcr_height, vfe31_force_422);
 
 			/* WM1 PING/PONG addresses */
 			writel_relaxed(wm1_ping,
@@ -4756,16 +4818,12 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			u32 wpl = bytesperline / 4;  /* 32-bit words per line */
 			u32 reg;
 
-			/* Calculate CbCr height based on format */
-			if (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
-			    pix->pixelformat == V4L2_PIX_FMT_NV21)
-				cbcr_height = height / 2;
-			else
-				cbcr_height = height;
+			/* Calculate CbCr height based on format (controllable via vfe31_force_422) */
+			cbcr_height = vfe31_calc_cbcr_height(pix->pixelformat, height);
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: Step 8 - VIDEO line: configuring WM%d(Y)/WM%d(CbCr) cbcr_h=%d\n",
-				 VFE31_VIDEO_WM_Y, VFE31_VIDEO_WM_CBCR, cbcr_height);
+				 "VFE31: Step 8 - VIDEO line: WM%d(Y)/WM%d(CbCr) cbcr_h=%d force_422=%d\n",
+				 VFE31_VIDEO_WM_Y, VFE31_VIDEO_WM_CBCR, cbcr_height, vfe31_force_422);
 
 			/* VIDEO Y WM configuration */
 			/* Addresses set via wm_set_ping_addr/wm_set_pong_addr */
