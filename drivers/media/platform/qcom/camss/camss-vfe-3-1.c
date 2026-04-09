@@ -624,19 +624,39 @@ static inline u32 vfe31_get_bus_cmd_reload(void)
 }
 
 /*
+ * Helper to check if format is semi-planar (NV12/NV21/NV16/NV61).
+ * Semi-planar formats have separate Y and CbCr planes with 1 byte per sample.
+ */
+static inline bool vfe31_is_semiplanar_format(u32 pixelformat)
+{
+	return (pixelformat == V4L2_PIX_FMT_NV12 ||
+		pixelformat == V4L2_PIX_FMT_NV21 ||
+		pixelformat == V4L2_PIX_FMT_NV16 ||
+		pixelformat == V4L2_PIX_FMT_NV61);
+}
+
+/*
  * Helper to calculate IMAGE_SIZE stride for Y WMs.
  * Returns stride in bytes.
+ *
+ * For semi-planar formats (NV12/NV16): stride = bytesperline (1 byte/pixel)
+ * For packed formats (UYVY): stride = width * 2 (2 bytes/pixel)
  */
-static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline, bool is_rdi)
+static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline,
+					  bool is_rdi, u32 pixelformat)
 {
 	if (vfe31_image_stride > 2)
 		return (u16)vfe31_image_stride;
 	else if (vfe31_image_stride == 1)
-		return width * 2;
+		return width * 2;  /* Force packed stride */
 	else if (vfe31_image_stride == 2)
-		return bytesperline;
-	else
-		return is_rdi ? bytesperline : (width * 2);
+		return bytesperline;  /* Force V4L2 stride */
+	else {
+		/* Auto: use bytesperline for semi-planar, width*2 for packed */
+		if (is_rdi)
+			return bytesperline;
+		return vfe31_is_semiplanar_format(pixelformat) ? bytesperline : (width * 2);
+	}
 }
 
 /*
@@ -2949,7 +2969,8 @@ static int vfe31_enable(struct vfe_line *line)
 	 * Use vfe31_nv12_stride_fix module param to test both modes.
 	 */
 	{
-		u16 image_stride = vfe31_calc_image_stride(width, bytesperline, is_rdi_line);
+		u16 image_stride = vfe31_calc_image_stride(width, bytesperline,
+							   is_rdi_line, pix->pixelformat);
 		int img_height_val;
 		bool is_nv12 = (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
 				pix->pixelformat == V4L2_PIX_FMT_NV21);
@@ -3086,12 +3107,17 @@ static int vfe31_enable(struct vfe_line *line)
 	if (output->wm_num == 2) {
 		u8 wm1 = output->wm_idx[1];
 		/*
-		 * CbCr plane offset: Must use actual Y WM stride (IMAGE_SIZE),
-		 * not V4L2 format's bytesperline. For PIX mode processing UYVY
-		 * input, Y stride = width*2, which may differ from bytesperline.
+		 * CbCr plane offset: Must use V4L2 bytesperline to match buffer layout.
+		 * The V4L2 buffer has Y at offset 0 with stride=bytesperline, so
+		 * CbCr starts at bytesperline * height.
+		 *
+		 * For NV12 640x480: Y=640*480=307200, CbCr starts at 307200
+		 * For NV16 640x480: Y=640*480=307200, CbCr starts at 307200
+		 *
+		 * This is independent of VFE IMAGE_SIZE stride which controls
+		 * how the hardware writes each line internally.
 		 */
-		u16 y_image_stride = vfe31_calc_image_stride(width, bytesperline, is_rdi_line);
-		u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, y_image_stride, height);
+		u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
 		u32 wm1_ping_addr = ping_addr + cbcr_offset;
 		u32 wm1_pong_addr = pong_addr + cbcr_offset;
 
@@ -3099,8 +3125,8 @@ static int vfe31_enable(struct vfe_line *line)
 		vfe->active_cbcr_offset = cbcr_offset;
 
 		dev_info(vfe->camss->dev,
-			 "VFE31: Configuring WM%d (CbCr) offset=0x%x ping=0x%08x\n",
-			 wm1, cbcr_offset, wm1_ping_addr);
+			 "VFE31: WM%d (CbCr) offset=0x%x (bpl=%d h=%d) ping=0x%08x\n",
+			 wm1, cbcr_offset, bytesperline, height, wm1_ping_addr);
 
 		/* WM1 PING/PONG addresses (CbCr buffer after Y) */
 		writel_relaxed(wm1_ping_addr,
@@ -4367,9 +4393,11 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 */
 		if (line->output.wm_num == 2) {
 			u8 wm1 = line->output.wm_idx[1];
-			/* Use actual Y stride for offset, not V4L2 bytesperline */
-			u16 y_image_stride = vfe31_calc_image_stride(width, bytesperline, false);
-			u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, y_image_stride, height);
+			/*
+			 * CbCr offset: Use bytesperline to match V4L2 buffer layout.
+			 * Y plane occupies bytesperline * height bytes.
+			 */
+			u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
 			u32 wm1_ping = vfe->pending_ping_addr + cbcr_offset;
 			u32 wm1_pong = vfe->pending_pong_addr + cbcr_offset;
 			u16 cbcr_height;
@@ -4830,7 +4858,8 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 
 			/* VIDEO Y WM IMAGE_SIZE */
 			{
-				u16 image_stride = vfe31_calc_image_stride(width, bytesperline, false);
+				u16 image_stride = vfe31_calc_image_stride(width, bytesperline,
+									   false, pix->pixelformat);
 				int img_height_val;
 				bool is_nv12 = (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
 						pix->pixelformat == V4L2_PIX_FMT_NV21);
@@ -4923,9 +4952,11 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 * Use format-aware offset calculation for portability.
 			 */
 			if (line->output.wm_num == 2) {
-				/* Use actual Y stride for offset, not V4L2 bytesperline */
-				u16 y_image_stride = vfe31_calc_image_stride(width, bytesperline, false);
-				u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, y_image_stride, height);
+				/*
+				 * CbCr offset: Use bytesperline to match V4L2 buffer layout.
+				 * Y plane occupies bytesperline * height bytes.
+				 */
+				u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
 				u32 cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 				u32 cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
 
@@ -4933,8 +4964,8 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				vfe->active_cbcr_offset = cbcr_offset;
 
 				dev_info(vfe->camss->dev,
-					 "VFE31: VIDEO WM%d (CbCr) PING=0x%08x PONG=0x%08x (offset=0x%x)\n",
-					 VFE31_VIDEO_WM_CBCR, cbcr_ping, cbcr_pong, cbcr_offset);
+					 "VFE31: VIDEO WM%d (CbCr) offset=0x%x (bpl=%d h=%d) PING=0x%08x\n",
+					 VFE31_VIDEO_WM_CBCR, cbcr_offset, bytesperline, height, cbcr_ping);
 
 				/* VIDEO CbCr PING/PONG addresses */
 				writel_relaxed(cbcr_ping,
