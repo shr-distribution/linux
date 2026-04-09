@@ -2029,21 +2029,34 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	 *
 	 * Use vfe31_invert_pp module param to test inverted interpretation.
 	 */
-	active_index = (ping_pong >> wm) & 1;
-	if (vfe31_invert_pp)
-		active_index = !active_index;
-
-	/*
-	 * Debug: Log the PP-to-buffer mapping for this completion
-	 */
-	dev_info(vfe->camss->dev,
-		"VFE31: wm_done entry: wm=%d PP=0x%x bit%d=%d → HW writing to %s, returning %s buffer\n",
-		wm, ping_pong, wm, active_index,
-		active_index ? "PONG" : "PING",
-		active_index ? "PING" : "PONG");
-
 	spin_lock_irqsave(&vfe->output_lock, flags);
 	output = &vfe->line[vfe->wm_output_map[wm]].output;
+
+	/*
+	 * VFE31 PP bit quirk: For some WMs (like WM1 VIDEO Y), the PP bit
+	 * never toggles in the status register. However, the CbCr WM's bit
+	 * (WM5 for VIDEO, WM4 for PIX) DOES toggle.
+	 *
+	 * When using 2 WMs (semi-planar Y+CbCr), check the CbCr WM's PP bit
+	 * instead of the Y WM's bit, since they complete together via
+	 * COMPOSITE_DONE and should have the same state.
+	 */
+	{
+		u8 pp_wm = output->wm_idx[0];  /* Default: Y plane WM */
+		if (output->wm_num == 2) {
+			/* Use CbCr plane WM - its PP bit actually toggles */
+			pp_wm = output->wm_idx[1];
+		}
+		active_index = (ping_pong >> pp_wm) & 1;
+		if (vfe31_invert_pp)
+			active_index = !active_index;
+
+		dev_info(vfe->camss->dev,
+			"VFE31: wm_done entry: wm=%d PP=0x%x using_bit%d=%d → HW writing to %s, returning %s buffer\n",
+			wm, ping_pong, pp_wm, active_index,
+			active_index ? "PONG" : "PING",
+			active_index ? "PING" : "PONG");
+	}
 
 	output->gen1.active_buf = active_index;
 
@@ -2157,6 +2170,29 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		} else {
 			ready_buf = output->buf[!active_index];
 			ready_idx = !active_index;
+		}
+
+		/*
+		 * DEBUG: Verify buffer address matches where hardware wrote.
+		 * Read HW PING/PONG BEFORE we update them to see what addresses
+		 * the hardware was actually using.
+		 */
+		{
+			u8 y_wm = output->wm_idx[0];
+			u32 hw_ping_before = readl_relaxed(vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
+			u32 hw_pong_before = readl_relaxed(vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(y_wm));
+			u32 expected_addr = active_index ? hw_ping_before : hw_pong_before;
+			u32 returning_addr = ready_buf ? (u32)ready_buf->addr[0] : 0;
+			bool addr_match = (returning_addr == expected_addr);
+
+			dev_info(vfe->camss->dev,
+				"VFE31: buf_verify seq=%d: HW_PING=0x%08x HW_PONG=0x%08x "
+				"active=%d expect=0x%08x returning=0x%08x %s\n",
+				output->sequence, hw_ping_before, hw_pong_before,
+				active_index, expected_addr, returning_addr,
+				addr_match ? "MATCH" : "MISMATCH!");
 		}
 
 		if (!ready_buf) {
