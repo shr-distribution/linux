@@ -500,16 +500,18 @@ MODULE_PARM_DESC(vfe31_cbcr_stride,
 
 /*
  * NV12 stride workaround control:
- *   0 = Disabled - use configured stride (test COMPOSITE_DONE fix)
- *   1 = Enabled - force input stride for NV12 (legacy workaround)
+ *   0 = Disabled - use configured stride (test mode)
+ *   1 = Enabled - force input stride for NV12 (required for full frame)
  *
- * With COMPOSITE_DONE-based frame completion, the workaround should no
- * longer be needed. Set to 0 to test if output stride (640) works correctly.
+ * VFE31 IMAGE_SIZE register needs input stride (1280 for UYVY) not output
+ * stride (640 for Y plane) for NV12. Without this fix, only half the frame
+ * is captured (240 lines instead of 480). NV16 doesn't need this fix since
+ * it has full-height CbCr.
  */
-static int vfe31_nv12_stride_fix = 0;
+static int vfe31_nv12_stride_fix = 1;
 module_param(vfe31_nv12_stride_fix, int, 0644);
 MODULE_PARM_DESC(vfe31_nv12_stride_fix,
-		 "VFE31 NV12 stride workaround: 0=disabled (test), 1=force input stride (legacy)");
+		 "VFE31 NV12 stride fix: 0=disabled, 1=force input stride (default)");
 
 /*
  * VFE31 single-buffer mode:
@@ -2316,16 +2318,25 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		/*
 		 * VFE31 quirk: Hardware ONLY writes to PING address, never PONG.
 		 * The PP status bit toggles, but it doesn't reflect actual write
-		 * behavior. Always update PING with the next buffer address, and
-		 * also set PONG=PING for safety in case hardware ever uses it.
+		 * behavior. Only update PING with the next buffer address.
+		 * Keep PONG pointing to the buffer we just returned (for safety).
+		 *
+		 * Also issue a WM reload via BUS_CMD to ensure hardware picks up
+		 * the new address immediately.
 		 */
+		u32 bus_reload = 0;
+
 		dev_info(vfe->camss->dev,
-			"VFE31: wm_done wm=%d PP=0x%x active=%d → updating PING+PONG with 0x%08x, seq=%d\n",
+			"VFE31: wm_done wm=%d PP=0x%x active=%d → updating PING with 0x%08x, seq=%d\n",
 			wm, ping_pong, active_index, (u32)new_addr[0], output->sequence - 1);
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
-			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
+			bus_reload |= VFE_0_BUS_CMD_Mx_RLD_CMD(output->wm_idx[i]);
 		}
+		/* Memory barrier to ensure address writes complete before reload */
+		wmb();
+		/* Reload WMs to pick up new addresses */
+		writel_relaxed(bus_reload, vfe->base + VFE_0_BUS_CMD);
 	}
 
 	/*
@@ -3066,11 +3077,11 @@ static int vfe31_enable(struct vfe_line *line)
 		/*
 		 * NV12 stride workaround (controlled by vfe31_nv12_stride_fix):
 		 * When enabled, force input stride for NV12 to avoid half-frame.
-		 * When disabled, use configured stride (test COMPOSITE_DONE fix).
+		 * NV12 has half-height CbCr, NV16 has full-height so doesn't need this.
 		 */
 		if (vfe31_nv12_stride_fix && is_nv12 && !is_rdi_line && image_stride < width * 2) {
 			dev_info(vfe->camss->dev,
-				 "VFE31: NV12 stride workaround enabled, forcing stride=%d→%d\n",
+				 "VFE31: NV12 stride fix enabled, forcing stride=%d→%d\n",
 				 image_stride, width * 2);
 			image_stride = width * 2;
 		}
@@ -4958,7 +4969,7 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				 */
 				if (vfe31_nv12_stride_fix && is_nv12 && image_stride < width * 2) {
 					dev_info(vfe->camss->dev,
-						 "VFE31: VIDEO NV12 stride workaround, forcing stride=%d→%d\n",
+						 "VFE31: VIDEO NV12 stride fix, forcing stride=%d→%d\n",
 						 image_stride, width * 2);
 					image_stride = width * 2;
 				}
