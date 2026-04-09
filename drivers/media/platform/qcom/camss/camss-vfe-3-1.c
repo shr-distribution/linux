@@ -2140,15 +2140,18 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			}
 		} else if (vfe31_single_buffer) {
 			/*
-			 * Single-buffer mode: PING and PONG have the same address,
-			 * so true double-buffering isn't possible. Use buf[0] and
-			 * skip rotation to avoid depleting the pending queue.
+			 * Single-buffer mode: PING and PONG have the same address.
+			 * Use normal buffer rotation - each frame gets a new buffer,
+			 * but PING=PONG ensures hardware writes to same location
+			 * regardless of internal ping-pong state.
+			 * This avoids the alternating-empty-frame issue while still
+			 * delivering all frames to userspace.
 			 */
-			ready_buf = output->buf[0];
-			ready_idx = 0;
-			skip_rotation = 1;
+			ready_buf = output->buf[!active_index];
+			ready_idx = !active_index;
 			dev_dbg(vfe->camss->dev,
-				"VFE31: single_buffer: returning buf[0]=0x%08x seq=%d\n",
+				"VFE31: single_buffer: returning buf[%d]=0x%08x seq=%d\n",
+				ready_idx,
 				ready_buf ? (u32)ready_buf->addr[0] : 0,
 				output->sequence);
 		} else {
