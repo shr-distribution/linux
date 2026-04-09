@@ -2010,6 +2010,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	u32 active_index;
 	u64 ts = ktime_get_ns();
 	unsigned int i;
+	int return_buffer = 1;  /* Set to 0 if buffer should not be returned to userspace */
 
 	if (vfe->wm_output_map[wm] == VFE_LINE_NONE)
 		return;
@@ -2140,35 +2141,16 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		} else if (vfe31_single_buffer) {
 			/*
 			 * Single-buffer mode: PING and PONG have the same address,
-			 * so we can't use PP status to determine which buffer has data.
-			 * Instead, find the buffer that matches the HW PING address.
+			 * so true double-buffering isn't possible. Use buf[0] and
+			 * skip rotation to avoid depleting the pending queue.
 			 */
-			u8 y_wm = output->wm_idx[0];
-			u32 hw_ping = readl_relaxed(vfe->base +
-				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
-
-			if (output->buf[0] && (u32)output->buf[0]->addr[0] == hw_ping) {
-				ready_buf = output->buf[0];
-				ready_idx = 0;
-				dev_info(vfe->camss->dev,
-					"VFE31: single_buffer: returning buf[0] (matches 0x%08x)\n",
-					hw_ping);
-			} else if (output->buf[1] && (u32)output->buf[1]->addr[0] == hw_ping) {
-				ready_buf = output->buf[1];
-				ready_idx = 1;
-				dev_info(vfe->camss->dev,
-					"VFE31: single_buffer: returning buf[1] (matches 0x%08x)\n",
-					hw_ping);
-			} else {
-				/* Neither buffer matches - use buf[0] as fallback */
-				ready_buf = output->buf[0];
-				ready_idx = 0;
-				dev_warn(vfe->camss->dev,
-					"VFE31: single_buffer: NO MATCH! PING=0x%08x buf[0]=0x%08x buf[1]=0x%08x\n",
-					hw_ping,
-					output->buf[0] ? (u32)output->buf[0]->addr[0] : 0,
-					output->buf[1] ? (u32)output->buf[1]->addr[0] : 0);
-			}
+			ready_buf = output->buf[0];
+			ready_idx = 0;
+			skip_rotation = 1;
+			dev_dbg(vfe->camss->dev,
+				"VFE31: single_buffer: returning buf[0]=0x%08x seq=%d\n",
+				ready_buf ? (u32)ready_buf->addr[0] : 0,
+				output->sequence);
 		} else {
 			ready_buf = output->buf[!active_index];
 			ready_idx = !active_index;
@@ -2191,20 +2173,34 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		 * In static mode (skip_rotation), don't rotate at all.
 		 */
 		if (skip_rotation) {
-			/* Static mode: keep using same buffer, don't update address */
+			/*
+			 * Static/single-buffer mode: keep using same buffer.
+			 * Don't return buffer to userspace - it's still in use for DMA.
+			 * This prevents list corruption from returning a buffer that
+			 * hardware is still writing to.
+			 */
 			new_addr = ready_buf->addr;
+			return_buffer = 0;
 		} else {
 			output->buf[ready_idx] = vfe_buf_get_pending(output);
 			if (!output->buf[ready_idx]) {
 				/*
 				 * No next buffer available - reuse same address.
-				 * Transition to SINGLE state (only one buffer active).
+				 * CRITICAL: Don't return ready_buf to userspace since
+				 * we're still using its address for DMA. Returning it
+				 * would cause list corruption when the next frame
+				 * completes and we try to return it again.
 				 */
+				output->buf[ready_idx] = ready_buf;  /* Keep buffer in slot */
 				new_addr = ready_buf->addr;
+				return_buffer = 0;
 				if (output->state == VFE_OUTPUT_CONTINUOUS)
 					output->state = VFE_OUTPUT_SINGLE;
 				else if (output->state == VFE_OUTPUT_SINGLE)
 					output->state = VFE_OUTPUT_STOPPING;
+				dev_dbg(vfe->camss->dev,
+					"VFE31: no pending buffer, reusing 0x%08x (not returning)\n",
+					(u32)new_addr[0]);
 			} else {
 				new_addr = output->buf[ready_idx]->addr;
 				/* Stay in CONTINUOUS state */
@@ -2331,7 +2327,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 
 	if (output->state == VFE_OUTPUT_STOPPING)
 		output->last_buffer = ready_buf;
-	else {
+	else if (return_buffer) {
 		/*
 		 * VFE31 cache coherency fix:
 		 * The vb2_dma_sg memops uses DMA_ATTR_SKIP_CPU_SYNC, which
@@ -2356,6 +2352,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 
 		vb2_buffer_done(vb, VB2_BUF_STATE_DONE);
 	}
+	/* else: buffer stays with driver for continued DMA use */
 
 	return;
 
