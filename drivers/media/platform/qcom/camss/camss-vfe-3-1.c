@@ -440,11 +440,22 @@ MODULE_PARM_DESC(vfe31_irq_comp_mask,
  * 1 = force input stride (width * 2) - matches webOS
  * 2 = force output stride (bytesperline)
  * >2 = use this value directly as stride in bytes
+ *
+ * CRITICAL FOR NV12 FORMAT:
+ * VFE31 uses chroma output height (240 for 480p NV12) as a global frame
+ * completion trigger. When Y stride equals output bytesperline (640), only
+ * 240 Y lines are captured because each write is 1 line and frame completion
+ * is triggered after 240 writes. When Y stride equals input width*2 (1280),
+ * each write contains 2 Y lines packed together, so 240 writes = 480 Y lines.
+ *
+ * For NV12 format, always use stride=0 (auto) or stride=1 (input) to ensure
+ * full Y plane capture. The auto mode correctly uses width*2 for PIX/VIDEO.
+ * Stride=2 (output/bytesperline) will result in half-frame Y capture!
  */
 static int vfe31_image_stride = 0;
 module_param(vfe31_image_stride, int, 0644);
 MODULE_PARM_DESC(vfe31_image_stride,
-		 "VFE31 Y WM IMAGE_SIZE stride (0=auto, 1=input, 2=output, >2=custom bytes)");
+		 "VFE31 Y WM IMAGE_SIZE stride (0=auto, 1=input, 2=output[NV12:BROKEN!], >2=custom bytes)");
 
 /*
  * IMAGE_SIZE stride mode for CbCr WM configuration:
@@ -2866,10 +2877,32 @@ static int vfe31_enable(struct vfe_line *line)
 	 *
 	 * Upper 16 bits: stride / 16 (128-bit words per line)
 	 * Lower 16 bits: ((height - 1) << 4) | 2
+	 *
+	 * CRITICAL: For NV12 format, stride MUST be width*2 (input UYVY stride),
+	 * NOT bytesperline (output Y stride). VFE31 uses chroma output height
+	 * (half of Y height for 4:2:0) as frame completion trigger. If Y stride
+	 * equals bytesperline (640), only half the Y frame is captured because
+	 * each write contains 1 line and frame completion occurs after 240 writes.
+	 * With stride=width*2 (1280), each write contains 2 Y lines packed
+	 * together, so 240 writes = 480 Y lines (full frame).
 	 */
 	{
 		u16 image_stride = vfe31_calc_image_stride(width, bytesperline, is_rdi_line);
 		int img_height_val;
+		bool is_nv12 = (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
+				pix->pixelformat == V4L2_PIX_FMT_NV21);
+
+		/*
+		 * NV12 fix: If stride was set to bytesperline (640) and this is
+		 * NV12 format, force stride to width*2 (1280) to avoid half-frame.
+		 */
+		if (is_nv12 && !is_rdi_line && image_stride < width * 2) {
+			dev_warn(vfe->camss->dev,
+				 "VFE31: NV12 detected with stride=%d < input_stride=%d, "
+				 "forcing input stride to avoid half-frame capture\n",
+				 image_stride, width * 2);
+			image_stride = width * 2;
+		}
 
 		if (vfe31_pix_y_img_height < 0)
 			img_height_val = height;  /* auto */
@@ -2878,8 +2911,9 @@ static int vfe31_enable(struct vfe_line *line)
 
 		reg = ((image_stride / 16) & 0xFFFF) << 16;
 		reg |= ((img_height_val - 1) << 4) | 2;
-		dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d)\n",
-			 wm, image_stride, img_height_val, vfe31_image_stride, vfe31_pix_y_img_height);
+		dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d%s)\n",
+			 wm, image_stride, img_height_val, vfe31_image_stride, vfe31_pix_y_img_height,
+			 is_nv12 ? " NV12" : "");
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
 	}
 
@@ -4747,6 +4781,19 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			{
 				u16 image_stride = vfe31_calc_image_stride(width, bytesperline, false);
 				int img_height_val;
+				bool is_nv12 = (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
+						pix->pixelformat == V4L2_PIX_FMT_NV21);
+
+				/*
+				 * NV12 fix: Force input stride to avoid half-frame capture.
+				 * See PIX mode IMAGE_SIZE comment for detailed explanation.
+				 */
+				if (is_nv12 && image_stride < width * 2) {
+					dev_warn(vfe->camss->dev,
+						 "VFE31: VIDEO NV12 stride=%d < input=%d, forcing input stride\n",
+						 image_stride, width * 2);
+					image_stride = width * 2;
+				}
 
 				if (vfe31_video_y_img_height < 0)
 					img_height_val = height;  /* auto */
@@ -4756,8 +4803,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				reg = ((image_stride / 16) & 0xFFFF) << 16;
 				reg |= ((img_height_val - 1) << 4) | 2;
 				dev_info(vfe->camss->dev,
-					 "VFE31: VIDEO WM1 IMAGE_SIZE stride=%d height=%d (h_param=%d)\n",
-					 image_stride, img_height_val, vfe31_video_y_img_height);
+					 "VFE31: VIDEO WM1 IMAGE_SIZE stride=%d height=%d (h_param=%d%s)\n",
+					 image_stride, img_height_val, vfe31_video_y_img_height,
+					 is_nv12 ? " NV12" : "");
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
 			}
