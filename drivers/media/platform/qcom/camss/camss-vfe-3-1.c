@@ -1614,7 +1614,7 @@ static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
 /*
  * vfe31_get_cbcr_offset - Calculate CbCr plane offset for semi-planar formats
  * @pixelformat: V4L2 pixel format (e.g., V4L2_PIX_FMT_NV16)
- * @bytesperline: Bytes per line (stride) for the Y plane
+ * @y_stride: Actual bytes per line used by Y WM (IMAGE_SIZE stride)
  * @height: Frame height in lines
  *
  * Returns the byte offset where the CbCr (UV) plane starts within the buffer.
@@ -1622,30 +1622,30 @@ static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
  * immediately after the Y plane. For packed formats (UYVY, YUYV, etc.) and
  * RAW formats, returns 0 since they use a single plane.
  *
- * For NV16/NV61, bytesperline = width (bpp=8 per plane) since the DEMUX
- * separates UYVY input into separate Y and CbCr planes, each 8 bits/pixel.
+ * IMPORTANT: y_stride must be the actual stride used by the Y write master
+ * (from vfe31_calc_image_stride), NOT the V4L2 format's bytesperline.
+ * For PIX/VIDEO mode, this is width*2 (UYVY input processing), which may
+ * differ from the format's bytesperline (width for NV12/NV16 output).
  */
-static inline u32 vfe31_get_cbcr_offset(u32 pixelformat, u32 bytesperline, u16 height)
+static inline u32 vfe31_get_cbcr_offset(u32 pixelformat, u32 y_stride, u16 height)
 {
 	switch (pixelformat) {
 	case V4L2_PIX_FMT_NV16:
 	case V4L2_PIX_FMT_NV61:
 		/*
-		 * NV16/NV61: Y plane = bytesperline * height bytes
+		 * NV16/NV61: Y plane = y_stride * height bytes
 		 * CbCr plane starts immediately after Y plane.
 		 * CbCr is interleaved (CbCrCbCr...) with full vertical resolution.
-		 *
-		 * bytesperline = width (8 bpp per plane after DEMUX separation)
 		 */
-		return bytesperline * height;
+		return y_stride * height;
 
 	case V4L2_PIX_FMT_NV12:
 	case V4L2_PIX_FMT_NV21:
 		/*
-		 * NV12/NV21: Y plane = bytesperline * height bytes
+		 * NV12/NV21: Y plane = y_stride * height bytes
 		 * CbCr plane starts after Y, but with half vertical resolution.
 		 */
-		return bytesperline * height;
+		return y_stride * height;
 
 	case V4L2_PIX_FMT_UYVY:
 	case V4L2_PIX_FMT_VYUY:
@@ -2990,11 +2990,12 @@ static int vfe31_enable(struct vfe_line *line)
 	if (output->wm_num == 2) {
 		u8 wm1 = output->wm_idx[1];
 		/*
-		 * CbCr plane offset: Use format-aware calculation.
-		 * For NV16/NV61, offset = bytesperline * height (Y plane size).
-		 * For packed formats, offset = 0 (single plane).
+		 * CbCr plane offset: Must use actual Y WM stride (IMAGE_SIZE),
+		 * not V4L2 format's bytesperline. For PIX mode processing UYVY
+		 * input, Y stride = width*2, which may differ from bytesperline.
 		 */
-		u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
+		u16 y_image_stride = vfe31_calc_image_stride(width, bytesperline, is_rdi_line);
+		u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, y_image_stride, height);
 		u32 wm1_ping_addr = ping_addr + cbcr_offset;
 		u32 wm1_pong_addr = pong_addr + cbcr_offset;
 
@@ -3064,27 +3065,33 @@ static int vfe31_enable(struct vfe_line *line)
 		}
 
 		/*
-		 * CbCr WM UB_CFG - use INPUT stride, same as Y WM!
-		 *
-		 * CRITICAL: UB buffers INCOMING data (UYVY) BEFORE DEMUX.
-		 * Both Y and CbCr write masters share the same input buffer,
-		 * so both need the same UB configuration based on input stride.
+		 * CbCr WM UB_CFG configuration:
+		 * - ub_depth: Use input stride (UYVY, same as Y WM) since UB
+		 *   buffers incoming data before DEMUX separates Y and CbCr.
+		 * - ub_height: Use cbcr_height (NOT Y height!) since this controls
+		 *   the OUTPUT frame height for this write master.
+		 *   For NV12 4:2:0, cbcr_height = Y_height/2.
 		 */
 		{
 			u16 input_stride = width * 2;  /* UYVY input: 2 bytes per pixel */
 			u16 input_wpl = input_stride / 4;  /* 32-bit words per line */
 			int ub_height_val;
 
+			/*
+			 * FIX: Use cbcr_height for CbCr WM UB_CFG, not Y height!
+			 * For NV12 4:2:0, cbcr_height = height/2 = 240 for 480p.
+			 * Using Y height (480) caused only 120/240 UV lines to be written.
+			 */
 			if (vfe31_pix_cbcr_ub_height < 0)
-				ub_height_val = height - 1;  /* auto */
+				ub_height_val = cbcr_height - 1;  /* auto: use CbCr height */
 			else
 				ub_height_val = vfe31_pix_cbcr_ub_height;  /* explicit */
 
 			reg = ((input_wpl / 8 - 1) & 0xFFFF) << 16;
 			reg |= ub_height_val & 0xFFFF;
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, param=%d)\n",
-				 wm1, reg, (input_wpl / 8 - 1), ub_height_val, vfe31_pix_cbcr_ub_height);
+				 "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, cbcr_h=%d, param=%d)\n",
+				 wm1, reg, (input_wpl / 8 - 1), ub_height_val, cbcr_height, vfe31_pix_cbcr_ub_height);
 			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm1));
 		}
 
@@ -4267,7 +4274,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 */
 		if (line->output.wm_num == 2) {
 			u8 wm1 = line->output.wm_idx[1];
-			u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
+			/* Use actual Y stride for offset, not V4L2 bytesperline */
+			u16 y_image_stride = vfe31_calc_image_stride(width, bytesperline, false);
+			u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, y_image_stride, height);
 			u32 wm1_ping = vfe->pending_ping_addr + cbcr_offset;
 			u32 wm1_pong = vfe->pending_pong_addr + cbcr_offset;
 			u16 cbcr_height;
@@ -4815,7 +4824,9 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 * Use format-aware offset calculation for portability.
 			 */
 			if (line->output.wm_num == 2) {
-				u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
+				/* Use actual Y stride for offset, not V4L2 bytesperline */
+				u16 y_image_stride = vfe31_calc_image_stride(width, bytesperline, false);
+				u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, y_image_stride, height);
 				u32 cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 				u32 cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
 
@@ -4889,21 +4900,25 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 
 				/*
 				 * VIDEO CbCr UB_CFG - use bytesperline
+				 *
+				 * FIX: Use cbcr_height for CbCr WM UB_CFG, not Y height!
+				 * For NV12 4:2:0, cbcr_height = height/2 = 240 for 480p.
+				 * Using Y height (480) caused only 120/240 UV lines to be written.
 				 */
 				{
 					u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
 					int ub_height_val;
 
 					if (vfe31_video_cbcr_ub_height < 0)
-						ub_height_val = height - 1;  /* auto */
+						ub_height_val = cbcr_height - 1;  /* auto: use CbCr height */
 					else
 						ub_height_val = vfe31_video_cbcr_ub_height;  /* explicit */
 
 					reg = ((buf_wpl / 8 - 1) & 0xFFFF) << 16;
 					reg |= ub_height_val & 0xFFFF;
 					dev_info(vfe->camss->dev,
-						 "VFE31: VIDEO WM5 UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, param=%d)\n",
-						 reg, (buf_wpl / 8 - 1), ub_height_val, vfe31_video_cbcr_ub_height);
+						 "VFE31: VIDEO WM5 UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, cbcr_h=%d, param=%d)\n",
+						 reg, (buf_wpl / 8 - 1), ub_height_val, cbcr_height, vfe31_video_cbcr_ub_height);
 				}
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_CBCR));
