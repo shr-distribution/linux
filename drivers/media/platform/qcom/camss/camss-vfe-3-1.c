@@ -2168,8 +2168,31 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 				ready_buf ? (u32)ready_buf->addr[0] : 0,
 				output->sequence);
 		} else {
-			ready_buf = output->buf[!active_index];
-			ready_idx = !active_index;
+			/*
+			 * VFE31 quirk: Hardware ONLY writes to PING address.
+			 * Always find and return the buffer matching hw_ping,
+			 * regardless of what the PP status bit says.
+			 */
+			u8 y_wm = output->wm_idx[0];
+			u32 hw_ping = readl_relaxed(vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
+
+			if (output->buf[0] && (u32)output->buf[0]->addr[0] == hw_ping) {
+				ready_buf = output->buf[0];
+				ready_idx = 0;
+			} else if (output->buf[1] && (u32)output->buf[1]->addr[0] == hw_ping) {
+				ready_buf = output->buf[1];
+				ready_idx = 1;
+			} else {
+				/* Fallback: use PP-based selection */
+				ready_buf = output->buf[!active_index];
+				ready_idx = !active_index;
+				dev_warn(vfe->camss->dev,
+					"VFE31: PING addr 0x%08x not in buf[0]=0x%08x or buf[1]=0x%08x, using fallback\n",
+					hw_ping,
+					output->buf[0] ? (u32)output->buf[0]->addr[0] : 0,
+					output->buf[1] ? (u32)output->buf[1]->addr[0] : 0);
+			}
 		}
 
 		/*
@@ -2183,7 +2206,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
 			u32 hw_pong_before = readl_relaxed(vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(y_wm));
-			u32 expected_addr = active_index ? hw_ping_before : hw_pong_before;
+			u32 expected_addr = hw_ping_before;  /* VFE31 always writes to PING */
 			u32 returning_addr = ready_buf ? (u32)ready_buf->addr[0] : 0;
 			bool addr_match = (returning_addr == expected_addr);
 
@@ -2289,28 +2312,18 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 		}
-	} else if (active_index) {
-		dev_info(vfe->camss->dev,
-			"VFE31: wm_done wm=%d PP=0x%x active=%d → PING complete, updating PING with 0x%08x, seq=%d\n",
-			wm, ping_pong, active_index, (u32)new_addr[0], output->sequence - 1);
-		for (i = 0; i < output->wm_num; i++) {
-			dev_info(vfe->camss->dev, "VFE31: wm_set_ping_addr WM%d addr=0x%08x\n",
-				output->wm_idx[i], (u32)new_addr[i]);
-			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
-			/*
-			 * NOTE: Do NOT call bus_reload_wm() here!
-			 * webOS doesn't reload after writing addresses during streaming.
-			 * The hardware picks up new addresses automatically on next frame.
-			 * Reloading may interfere with ping-pong operation.
-			 */
-		}
 	} else {
+		/*
+		 * VFE31 quirk: Hardware ONLY writes to PING address, never PONG.
+		 * The PP status bit toggles, but it doesn't reflect actual write
+		 * behavior. Always update PING with the next buffer address, and
+		 * also set PONG=PING for safety in case hardware ever uses it.
+		 */
 		dev_info(vfe->camss->dev,
-			"VFE31: wm_done wm=%d PP=0x%x active=%d → PONG complete, updating PONG with 0x%08x, seq=%d\n",
+			"VFE31: wm_done wm=%d PP=0x%x active=%d → updating PING+PONG with 0x%08x, seq=%d\n",
 			wm, ping_pong, active_index, (u32)new_addr[0], output->sequence - 1);
 		for (i = 0; i < output->wm_num; i++) {
-			dev_info(vfe->camss->dev, "VFE31: wm_set_pong_addr WM%d addr=0x%08x\n",
-				output->wm_idx[i], (u32)new_addr[i]);
+			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 		}
 	}
