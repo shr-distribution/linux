@@ -671,6 +671,9 @@ static inline u16 vfe31_calc_cbcr_stride(u16 width, u16 bytesperline)
 		return (u16)vfe31_cbcr_stride;
 	else if (vfe31_cbcr_stride == 1)
 		return width * 2;
+	else if (vfe31_nv12_stride_fix)
+		/* When NV12 stride fix is enabled, CbCr also needs input stride */
+		return width * 2;
 	else
 		/* Auto and mode 2 both use bytesperline (safe default) */
 		return bytesperline;
@@ -2316,21 +2319,22 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		}
 	} else {
 		/*
-		 * VFE31 quirk: Hardware ONLY writes to PING address, never PONG.
-		 * The PP status bit toggles, but it doesn't reflect actual write
-		 * behavior. Only update PING with the next buffer address.
-		 * Keep PONG pointing to the buffer we just returned (for safety).
+		 * VFE31: Update both PING and PONG with the same address.
+		 * Hardware alternates between PING and PONG based on PP status,
+		 * so both must point to a valid buffer. Using the same address
+		 * ensures data goes to our buffer regardless of which one HW uses.
 		 *
 		 * Also issue a WM reload via BUS_CMD to ensure hardware picks up
-		 * the new address immediately.
+		 * the new addresses immediately.
 		 */
 		u32 bus_reload = 0;
 
 		dev_info(vfe->camss->dev,
-			"VFE31: wm_done wm=%d PP=0x%x active=%d → updating PING with 0x%08x, seq=%d\n",
+			"VFE31: wm_done wm=%d PP=0x%x active=%d → updating PING+PONG with 0x%08x, seq=%d\n",
 			wm, ping_pong, active_index, (u32)new_addr[0], output->sequence - 1);
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 			bus_reload |= VFE_0_BUS_CMD_Mx_RLD_CMD(output->wm_idx[i]);
 		}
 		/* Memory barrier to ensure address writes complete before reload */
