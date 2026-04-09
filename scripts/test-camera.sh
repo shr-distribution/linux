@@ -1285,8 +1285,9 @@ test_at_resolution() {
     local video_dev="${4:-video3}"
     local csid="${5:-msm_csid1}"
     local csiphy="${6:-msm_csiphy1}"
+    local format="${7:-NV12}"  # Default to NV12, can be NV16
 
-    log_info "Testing $mode at ${width}x${height} on /dev/$video_dev"
+    log_info "Testing $mode at ${width}x${height} on /dev/$video_dev (format=$format)"
 
     run_on_device "
         # Kill any stuck capture processes first
@@ -1301,14 +1302,22 @@ test_at_resolution() {
         # Mode-specific format setup (links will be enabled AFTER formats are set)
         # NOTE: CSID output format is always UYVY8_1X16 (from sensor via MIPI)
         # VFE PIX/VIDEO input accepts UYVY8_1X16 and converts internally via DEMUX
+        # Format passed from caller (default NV12 for semi-planar modes)
+        PIXFMT='$format'
+
         case '$mode' in
             pix)
                 # PIX mode: CSID pad 4 -> VFE PIX
-                # NV12 (4:2:0) is the native VFE31 output format (half-height CbCr)
+                # Supports NV12 (4:2:0) and NV16 (4:2:2) output formats
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_pix'
                 VFE_FMT='UYVY8_1X16'
-                PIXFMT='NV12'
+                # For NV16, also set hardware mode override
+                if [ \"\$PIXFMT\" = \"NV16\" ] || [ \"\$PIXFMT\" = \"NV61\" ]; then
+                    echo 2 > /sys/module/qcom_camss/parameters/vfe31_force_422 2>/dev/null || true
+                else
+                    echo 0 > /sys/module/qcom_camss/parameters/vfe31_force_422 2>/dev/null || true
+                fi
                 ;;
             rdi)
                 # RDI mode: Raw bypass through CAMIF (AXI=0x60)
@@ -1327,20 +1336,29 @@ test_at_resolution() {
                 ;;
             video)
                 # VIDEO mode: CSID pad 4 -> VFE VIDEO
-                # NV12 (4:2:0) is the native VFE31 output format (half-height CbCr)
+                # Supports NV12 (4:2:0) and NV16 (4:2:2) output formats
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_video'
                 VFE_FMT='UYVY8_1X16'
-                PIXFMT='NV12'
+                # For NV16, also set hardware mode override
+                if [ \"\$PIXFMT\" = \"NV16\" ] || [ \"\$PIXFMT\" = \"NV61\" ]; then
+                    echo 2 > /sys/module/qcom_camss/parameters/vfe31_force_422 2>/dev/null || true
+                else
+                    echo 0 > /sys/module/qcom_camss/parameters/vfe31_force_422 2>/dev/null || true
+                fi
                 ;;
             testgen)
                 # TESTGEN mode: same as PIX but with testgen enabled
-                # NV12 (4:2:0) is the native VFE31 output format (half-height CbCr)
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_pix'
                 VFE_FMT='UYVY8_1X16'
-                PIXFMT='NV12'
                 echo 1 > /sys/module/qcom_camss/parameters/vfe31_use_testgen 2>/dev/null || true
+                # For NV16, also set hardware mode override
+                if [ \"\$PIXFMT\" = \"NV16\" ] || [ \"\$PIXFMT\" = \"NV61\" ]; then
+                    echo 2 > /sys/module/qcom_camss/parameters/vfe31_force_422 2>/dev/null || true
+                else
+                    echo 0 > /sys/module/qcom_camss/parameters/vfe31_force_422 2>/dev/null || true
+                fi
                 ;;
         esac
 
@@ -1384,12 +1402,13 @@ test_at_resolution() {
         v4l2-ctl -d /dev/$video_dev --set-fmt-video=width=$width,height=$height,pixelformat=\$PIXFMT 2>&1 || true
 
         # Show configured format
-        echo \"Pipeline configured for $mode mode:\"
+        echo \"Pipeline configured for $mode mode (format=\$PIXFMT):\"
         v4l2-ctl -d /dev/$video_dev --get-fmt-video 2>&1 | grep -E 'Width|Pixel'
 
         # Capture with register dump during capture
-        OUTPUT=\"/tmp/test_${mode}_${width}x${height}.raw\"
-        REGDUMP=\"/tmp/test_${mode}_${width}x${height}_regs.txt\"
+        # Include format in filename for NV12 vs NV16 comparison
+        OUTPUT=\"/tmp/test_${mode}_${width}x${height}_\${PIXFMT}.raw\"
+        REGDUMP=\"/tmp/test_${mode}_${width}x${height}_\${PIXFMT}_regs.txt\"
         rm -f \"\$OUTPUT\" \"\$REGDUMP\"
 
         # Start capture in background
@@ -1680,6 +1699,12 @@ main() {
             pix1280)
                 MODE="pix1280"
                 ;;
+            pix640-nv16)
+                MODE="pix640-nv16"
+                ;;
+            pix1280-nv16)
+                MODE="pix1280-nv16"
+                ;;
             rdi640)
                 MODE="rdi640"
                 ;;
@@ -1692,11 +1717,23 @@ main() {
             video1280)
                 MODE="video1280"
                 ;;
+            video640-nv16)
+                MODE="video640-nv16"
+                ;;
+            video1280-nv16)
+                MODE="video1280-nv16"
+                ;;
             testgen640)
                 MODE="testgen640"
                 ;;
             testgen1280)
                 MODE="testgen1280"
+                ;;
+            testgen640-nv16)
+                MODE="testgen640-nv16"
+                ;;
+            testgen1280-nv16)
+                MODE="testgen1280-nv16"
                 ;;
             convert-video640)
                 MODE="convert-video640"
@@ -1743,15 +1780,23 @@ main() {
                 echo "  all        Run all test modes sequentially"
                 echo "  comprehensive  Test ALL modes at 640x480 AND 1280x1024 (RECOMMENDED)"
                 echo ""
-                echo "Resolution-specific modes:"
+                echo "Resolution-specific modes (NV12 - 4:2:0 default):"
                 echo "  pix640     PIX mode at 640x480"
                 echo "  pix1280    PIX mode at 1280x1024"
-                echo "  rdi640     RDI mode at 640x480"
-                echo "  rdi1280    RDI mode at 1280x1024"
+                echo "  rdi640     RDI mode at 640x480 (UYVY raw)"
+                echo "  rdi1280    RDI mode at 1280x1024 (UYVY raw)"
                 echo "  video640   VIDEO mode at 640x480"
                 echo "  video1280  VIDEO mode at 1280x1024"
                 echo "  testgen640   TESTGEN mode at 640x480"
                 echo "  testgen1280  TESTGEN mode at 1280x1024"
+                echo ""
+                echo "NV16 (4:2:2) modes - full chroma height:"
+                echo "  pix640-nv16     PIX mode at 640x480 (NV16)"
+                echo "  pix1280-nv16    PIX mode at 1280x1024 (NV16)"
+                echo "  video640-nv16   VIDEO mode at 640x480 (NV16)"
+                echo "  video1280-nv16  VIDEO mode at 1280x1024 (NV16)"
+                echo "  testgen640-nv16   TESTGEN mode at 640x480 (NV16)"
+                echo "  testgen1280-nv16  TESTGEN mode at 1280x1024 (NV16)"
                 echo "  --info     Show camera device information only"
                 echo "  --setup    Set up media pipeline only"
                 echo "  --capture  Test capture only (assumes pipeline is set up)"
@@ -1881,42 +1926,72 @@ main() {
             ;;
         pix640)
             ensure_camera_ready
-            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12
             check_dmesg
             ;;
         pix1280)
             ensure_camera_ready
-            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12
+            check_dmesg
+            ;;
+        pix640-nv16)
+            ensure_camera_ready
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV16
+            check_dmesg
+            ;;
+        pix1280-nv16)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV16
             check_dmesg
             ;;
         rdi640)
             ensure_camera_ready
-            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1
+            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
         rdi1280)
             ensure_camera_ready
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1
+            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
         video640)
             ensure_camera_ready
-            test_at_resolution 640 480 video video4 msm_csid1 msm_csiphy1
+            test_at_resolution 640 480 video video4 msm_csid1 msm_csiphy1 NV12
             check_dmesg
             ;;
         video1280)
             ensure_camera_ready
-            test_at_resolution 1280 1024 video video4 msm_csid1 msm_csiphy1
+            test_at_resolution 1280 1024 video video4 msm_csid1 msm_csiphy1 NV12
+            check_dmesg
+            ;;
+        video640-nv16)
+            ensure_camera_ready
+            test_at_resolution 640 480 video video4 msm_csid1 msm_csiphy1 NV16
+            check_dmesg
+            ;;
+        video1280-nv16)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 video video4 msm_csid1 msm_csiphy1 NV16
             check_dmesg
             ;;
         testgen640)
             ensure_camera_ready
-            test_at_resolution 640 480 testgen video3 msm_csid1 msm_csiphy1
+            test_at_resolution 640 480 testgen video3 msm_csid1 msm_csiphy1 NV12
             check_dmesg
             ;;
         testgen1280)
             ensure_camera_ready
-            test_at_resolution 1280 1024 testgen video3 msm_csid1 msm_csiphy1
+            test_at_resolution 1280 1024 testgen video3 msm_csid1 msm_csiphy1 NV12
+            check_dmesg
+            ;;
+        testgen640-nv16)
+            ensure_camera_ready
+            test_at_resolution 640 480 testgen video3 msm_csid1 msm_csiphy1 NV16
+            check_dmesg
+            ;;
+        testgen1280-nv16)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 testgen video3 msm_csid1 msm_csiphy1 NV16
             check_dmesg
             ;;
         all)
