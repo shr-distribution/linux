@@ -2231,12 +2231,19 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			"VFE31: static mode: keeping PING/PONG at 0x%08x\n",
 			(u32)new_addr[0]);
 	} else if (vfe31_ping_only == 1) {
-		/* Ping-only mode: always update PING (hardware only writes to PING) */
+		/*
+		 * Ping-only mode: always update PING.
+		 * If single_buffer is also set, update PONG=PING to ensure
+		 * hardware writes to the same buffer regardless of PP state.
+		 */
 		dev_info(vfe->camss->dev,
-			"VFE31: ping_only: updating PING to 0x%08x for next frame (seq=%d)\n",
-			(u32)new_addr[0], output->sequence);
+			"VFE31: ping_only: updating PING to 0x%08x for next frame (seq=%d)%s\n",
+			(u32)new_addr[0], output->sequence,
+			vfe31_single_buffer ? " (+PONG)" : "");
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+			if (vfe31_single_buffer)
+				vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 		}
 	} else if (vfe31_single_buffer) {
 		/* Single-buffer mode: update both PING and PONG with same address */
