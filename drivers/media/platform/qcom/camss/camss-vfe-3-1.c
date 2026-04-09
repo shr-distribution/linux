@@ -2232,7 +2232,6 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	static u32 last_ping_pong;  /* Track PP transitions between IRQs */
 	ktime_t now;
 	u32 value0, value1, ping_pong;
-	u32 pp_changed;
 	int i;
 
 	vfe->res->hw_ops->isr_read(vfe, &value0, &value1);
@@ -2254,29 +2253,35 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 */
 
 	/*
-	 * VFE31 frame completion: Use PING-PONG TRANSITION DETECTION.
+	 * VFE31 frame completion: Use IMAGE_COMPOSITE_DONE interrupts.
 	 *
-	 * Unlike newer VFEs, VFE31 does NOT have per-WM PING_PONG IRQs in
-	 * STATUS_0 - bits 8-13 are bus overflow errors, not frame completion.
+	 * WebOS uses COMPOSITE_DONE for frame completion:
+	 * - COMPOSITE_DONE_0 (bit 21): Fires when all WMs in Group 0 complete
+	 * - COMPOSITE_DONE_2 (bit 23): Fires when all WMs in Group 2 complete
 	 *
-	 * CRITICAL FINDING: IMAGE_COMPOSITE_DONE only fires for ONE direction
-	 * of ping-pong transition:
-	 *   - PIX mode:   COMP_DONE fires on PP 1→0 only (PONG→PING)
-	 *   - VIDEO mode: COMP_DONE fires on PP 0→1 only (PING→PONG)
-	 * This causes alternating empty frames because the other direction
-	 * is never signaled.
+	 * With IRQ_COMPOSITE_MASK=0x00220011:
+	 * - Group 0: WM0 + WM4 (PIX Y + CbCr) → COMPOSITE_DONE_0
+	 * - Group 2: WM1 + WM5 (VIDEO Y + CbCr) → COMPOSITE_DONE_2
 	 *
-	 * Solution: Use ping-pong STATUS transition detection for frame
-	 * completion. When a WM's PP bit transitions (either direction),
-	 * that WM's buffer is ready. This handles BOTH directions correctly.
+	 * When COMPOSITE_DONE fires, read PP status to determine which buffer
+	 * (PING or PONG) just completed. This is how webOS handles it.
 	 *
-	 * The PP status register (0x22C) bit N indicates which buffer is
-	 * currently being written to for WM N:
-	 *   - bit=0: Writing to PING, PONG buffer is ready
-	 *   - bit=1: Writing to PONG, PING buffer is ready
-	 * Any change in this bit means a buffer just completed.
+	 * NOTE: Previous implementation used PP transition detection which
+	 * had issues with stride=640 causing half-frame capture. Switching
+	 * to COMPOSITE_DONE like webOS should fix this.
 	 */
-	pp_changed = ping_pong ^ last_ping_pong;
+
+	/* Handle IMAGE_COMPOSITE_DONE_0 (PIX line: WM0+WM4) */
+	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(0)) {
+		if (vfe->wm_output_map[0] != VFE_LINE_NONE)
+			vfe31_wm_done(vfe, 0, ping_pong);
+	}
+
+	/* Handle IMAGE_COMPOSITE_DONE_2 (VIDEO line: WM1+WM5) */
+	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(2)) {
+		if (vfe->wm_output_map[1] != VFE_LINE_NONE)
+			vfe31_wm_done(vfe, 1, ping_pong);
+	}
 
 	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
 	if (irq_count <= 10) {
@@ -2379,36 +2384,21 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	}
 
 	/*
-	 * VFE31 frame completion: Use PING-PONG TRANSITION detection.
-	 *
-	 * For each WM whose ping-pong status bit changed since the last IRQ,
-	 * a buffer has completed. Call our VFE31-specific wm_done that takes
-	 * the PP status as a parameter (instead of gen1's wm_done which reads
-	 * it again from hardware, potentially getting a stale value).
-	 *
-	 * CRITICAL: Pass the current ping_pong value to vfe31_wm_done.
-	 * This ensures we process the correct buffer based on the PP state
-	 * at the time we detected the transition, not whatever the hardware
-	 * state happens to be when wm_done reads the register again.
-	 *
-	 * WM assignment in OUTPUT_1_AND_3 mode:
-	 *   - PIX:   WM0 (Y) + WM4 (CbCr)
-	 *   - VIDEO: WM1 (Y) + WM5 (CbCr)
-	 * Only call wm_done for Y WMs (0 and 1) - the framework handles
-	 * CbCr WMs automatically based on the Y WM's completion.
+	 * Handle RDI mode via COMPOSITE_DONE_1.
+	 * RDI uses WM0 mapped to group 1, so COMPOSITE_DONE_1 fires.
 	 */
-	if (pp_changed) {
-		/* Check WM0 (PIX Y) */
-		if ((pp_changed & BIT(0)) && vfe->wm_output_map[0] != VFE_LINE_NONE)
-			vfe31_wm_done(vfe, 0, ping_pong);
-
-		/* Check WM1 (VIDEO Y) */
-		if ((pp_changed & BIT(1)) && vfe->wm_output_map[1] != VFE_LINE_NONE)
-			vfe31_wm_done(vfe, 1, ping_pong);
-
-		/* Update last_ping_pong for next IRQ comparison */
-		last_ping_pong = ping_pong;
+	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(1)) {
+		/* RDI mode: WM0 in group 1 */
+		if (vfe->wm_output_map[0] != VFE_LINE_NONE) {
+			enum vfe_line_id line_id = vfe->wm_output_map[0];
+			/* Only process if this is an RDI line */
+			if (line_id >= VFE_LINE_RDI0 && line_id <= VFE_LINE_RDI2)
+				vfe31_wm_done(vfe, 0, ping_pong);
+		}
 	}
+
+	/* Track last PP status for debug purposes */
+	last_ping_pong = ping_pong;
 
 	return IRQ_HANDLED;
 }
