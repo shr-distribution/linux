@@ -441,21 +441,14 @@ MODULE_PARM_DESC(vfe31_irq_comp_mask,
  * 2 = force output stride (bytesperline)
  * >2 = use this value directly as stride in bytes
  *
- * CRITICAL FOR NV12 FORMAT:
- * VFE31 uses chroma output height (240 for 480p NV12) as a global frame
- * completion trigger. When Y stride equals output bytesperline (640), only
- * 240 Y lines are captured because each write is 1 line and frame completion
- * is triggered after 240 writes. When Y stride equals input width*2 (1280),
- * each write contains 2 Y lines packed together, so 240 writes = 480 Y lines.
- *
- * For NV12 format, always use stride=0 (auto) or stride=1 (input) to ensure
- * full Y plane capture. The auto mode correctly uses width*2 for PIX/VIDEO.
- * Stride=2 (output/bytesperline) will result in half-frame Y capture!
+ * NOTE: With COMPOSITE_DONE-based frame completion, output stride (mode 2)
+ * should work correctly for NV12. Use vfe31_nv12_stride_fix to enable/disable
+ * the legacy workaround that forces input stride for NV12 format.
  */
 static int vfe31_image_stride = 0;
 module_param(vfe31_image_stride, int, 0644);
 MODULE_PARM_DESC(vfe31_image_stride,
-		 "VFE31 Y WM IMAGE_SIZE stride (0=auto, 1=input, 2=output[NV12:BROKEN!], >2=custom bytes)");
+		 "VFE31 Y WM IMAGE_SIZE stride (0=auto, 1=input, 2=output, >2=custom bytes)");
 
 /*
  * IMAGE_SIZE stride mode for CbCr WM configuration:
@@ -471,6 +464,19 @@ static int vfe31_cbcr_stride = 0;
 module_param(vfe31_cbcr_stride, int, 0644);
 MODULE_PARM_DESC(vfe31_cbcr_stride,
 		 "VFE31 CbCr WM IMAGE_SIZE stride (0=auto/output, 1=input, 2=output, >2=custom bytes)");
+
+/*
+ * NV12 stride workaround control:
+ *   0 = Disabled - use configured stride (test COMPOSITE_DONE fix)
+ *   1 = Enabled - force input stride for NV12 (legacy workaround)
+ *
+ * With COMPOSITE_DONE-based frame completion, the workaround should no
+ * longer be needed. Set to 0 to test if output stride (640) works correctly.
+ */
+static int vfe31_nv12_stride_fix = 0;
+module_param(vfe31_nv12_stride_fix, int, 0644);
+MODULE_PARM_DESC(vfe31_nv12_stride_fix,
+		 "VFE31 NV12 stride workaround: 0=disabled (test), 1=force input stride (legacy)");
 
 /*
  * VFE31 single-buffer mode:
@@ -2868,13 +2874,10 @@ static int vfe31_enable(struct vfe_line *line)
 	 * Upper 16 bits: stride / 16 (128-bit words per line)
 	 * Lower 16 bits: ((height - 1) << 4) | 2
 	 *
-	 * CRITICAL: For NV12 format, stride MUST be width*2 (input UYVY stride),
-	 * NOT bytesperline (output Y stride). VFE31 uses chroma output height
-	 * (half of Y height for 4:2:0) as frame completion trigger. If Y stride
-	 * equals bytesperline (640), only half the Y frame is captured because
-	 * each write contains 1 line and frame completion occurs after 240 writes.
-	 * With stride=width*2 (1280), each write contains 2 Y lines packed
-	 * together, so 240 writes = 480 Y lines (full frame).
+	 * NOTE: Previous workaround forced input stride (1280) for NV12 to avoid
+	 * half-frame capture with PP transition detection. With COMPOSITE_DONE
+	 * based frame completion, output stride (640) should work correctly.
+	 * Use vfe31_nv12_stride_fix module param to test both modes.
 	 */
 	{
 		u16 image_stride = vfe31_calc_image_stride(width, bytesperline, is_rdi_line);
@@ -2883,13 +2886,13 @@ static int vfe31_enable(struct vfe_line *line)
 				pix->pixelformat == V4L2_PIX_FMT_NV21);
 
 		/*
-		 * NV12 fix: If stride was set to bytesperline (640) and this is
-		 * NV12 format, force stride to width*2 (1280) to avoid half-frame.
+		 * NV12 stride workaround (controlled by vfe31_nv12_stride_fix):
+		 * When enabled, force input stride for NV12 to avoid half-frame.
+		 * When disabled, use configured stride (test COMPOSITE_DONE fix).
 		 */
-		if (is_nv12 && !is_rdi_line && image_stride < width * 2) {
-			dev_warn(vfe->camss->dev,
-				 "VFE31: NV12 detected with stride=%d < input_stride=%d, "
-				 "forcing input stride to avoid half-frame capture\n",
+		if (vfe31_nv12_stride_fix && is_nv12 && !is_rdi_line && image_stride < width * 2) {
+			dev_info(vfe->camss->dev,
+				 "VFE31: NV12 stride workaround enabled, forcing stride=%d→%d\n",
 				 image_stride, width * 2);
 			image_stride = width * 2;
 		}
@@ -4775,12 +4778,12 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 						pix->pixelformat == V4L2_PIX_FMT_NV21);
 
 				/*
-				 * NV12 fix: Force input stride to avoid half-frame capture.
+				 * NV12 stride workaround (controlled by vfe31_nv12_stride_fix).
 				 * See PIX mode IMAGE_SIZE comment for detailed explanation.
 				 */
-				if (is_nv12 && image_stride < width * 2) {
-					dev_warn(vfe->camss->dev,
-						 "VFE31: VIDEO NV12 stride=%d < input=%d, forcing input stride\n",
+				if (vfe31_nv12_stride_fix && is_nv12 && image_stride < width * 2) {
+					dev_info(vfe->camss->dev,
+						 "VFE31: VIDEO NV12 stride workaround, forcing stride=%d→%d\n",
 						 image_stride, width * 2);
 					image_stride = width * 2;
 				}
