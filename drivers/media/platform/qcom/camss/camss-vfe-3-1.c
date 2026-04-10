@@ -19,6 +19,17 @@
 
 #include "camss.h"
 
+/* Forward declarations for VFE31-specific functions */
+static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr);
+static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr);
+static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable);
+static void vfe31_wm_frame_based(struct vfe_device *vfe, u8 wm, u8 enable);
+static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
+					     enum vfe_line_id id);
+static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
+				     enum vfe_line_id line_id, u8 enable);
+static void vfe31_set_cgc_override(struct vfe_device *vfe, u8 wm, u8 enable);
+
 /*
  * AXI output mode selection for VFE31.
  * Values from webOS msm_vfe31.c vfe31_config_axi():
@@ -2299,9 +2310,9 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			(u32)new_addr[0], output->sequence,
 			vfe31_single_buffer ? " (+PONG)" : "");
 		for (i = 0; i < output->wm_num; i++) {
-			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+			vfe31_wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
 			if (vfe31_single_buffer)
-				vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
+				vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 		}
 	} else if (vfe31_single_buffer) {
 		/* Single-buffer mode: update both PING and PONG with same address */
@@ -2309,8 +2320,8 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			"VFE31: wm_done wm=%d single-buffer mode, updating both PING+PONG\n",
 			wm);
 		for (i = 0; i < output->wm_num; i++) {
-			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
-			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
+			vfe31_wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+			vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 		}
 	} else {
 		/*
@@ -2331,10 +2342,10 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		for (i = 0; i < output->wm_num; i++) {
 			if (active_index) {
 				/* PONG active → update PING */
-				vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+				vfe31_wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
 			} else {
 				/* PING active → update PONG */
-				vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
+				vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 			}
 		}
 	}
@@ -3473,13 +3484,13 @@ static int vfe31_disable(struct vfe_line *line)
 
 	/* Disable write masters */
 	for (i = 0; i < output->wm_num; i++)
-		vfe->ops_gen1->wm_enable(vfe, output->wm_idx[i], 0);
+		vfe31_wm_enable(vfe, output->wm_idx[i], 0);
 
 	/* For RDI: disable frame-based mode and disconnect WM */
-	vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 0);
-	vfe->ops_gen1->bus_disconnect_wm_from_rdi(vfe, output->wm_idx[0], line->id);
-	vfe->ops_gen1->enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 0);
-	vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[0], 0);
+	vfe31_wm_frame_based(vfe, output->wm_idx[0], 0);
+	vfe31_bus_disconnect_wm_from_rdi(vfe, output->wm_idx[0], line->id);
+	vfe31_enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 0);
+	vfe31_set_cgc_override(vfe, output->wm_idx[0], 0);
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
