@@ -3755,8 +3755,20 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 			v_phase = vfe31_chroma_v_phase;
 		}
 
-		/* Determine subs_cfg */
-		subs_cfg = (vfe31_chroma_subs_cfg < 0) ? 0x30 : vfe31_chroma_subs_cfg;
+		/*
+		 * Determine subs_cfg - controls chroma subsampling:
+		 * Bit 4: V_SUBSAMPLE (vertical 2:1)
+		 * Bit 5: H_SUBSAMPLE (horizontal 2:1)
+		 *
+		 * For 4:2:0 (NV12): 0x30 = both H and V subsample
+		 * For 4:2:2 (NV16): 0x20 = only H subsample (no vertical)
+		 */
+		if (vfe31_chroma_subs_cfg >= 0)
+			subs_cfg = vfe31_chroma_subs_cfg;  /* explicit override */
+		else if (vfe31_is_420_format(p))
+			subs_cfg = 0x30;  /* 4:2:0: H + V subsample */
+		else
+			subs_cfg = 0x20;  /* 4:2:2: H subsample only */
 
 		writel_relaxed((v_out << 16) | height, vfe->base + VFE_0_CHROMA_V_IMAGE);
 		writel_relaxed(v_phase, vfe->base + VFE_0_CHROMA_V_PHASE);
