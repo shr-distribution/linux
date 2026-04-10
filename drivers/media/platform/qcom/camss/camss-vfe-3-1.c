@@ -5979,9 +5979,32 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 3: Configure CORE_CFG with pixel pattern + input mux enable
 	 * webOS uses 0x46 for UYVY: pixel pattern 0x6 + bit 6 (input mux)
-	 * For RDI, we still need input mux enabled but no pixel pattern.
+	 * For RDI/RAW, we still need input mux enabled but no pixel pattern.
+	 *
+	 * RAW Bayer formats bypass the DEMUX entirely so pixel pattern is
+	 * not applicable - just enable the input mux.
 	 */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
+	/* RAW Bayer formats - no pixel pattern needed */
+	case MEDIA_BUS_FMT_SBGGR8_1X8:
+	case MEDIA_BUS_FMT_SGBRG8_1X8:
+	case MEDIA_BUS_FMT_SGRBG8_1X8:
+	case MEDIA_BUS_FMT_SRGGB8_1X8:
+	case MEDIA_BUS_FMT_SBGGR10_1X10:
+	case MEDIA_BUS_FMT_SGBRG10_1X10:
+	case MEDIA_BUS_FMT_SGRBG10_1X10:
+	case MEDIA_BUS_FMT_SRGGB10_1X10:
+	case MEDIA_BUS_FMT_SBGGR12_1X12:
+	case MEDIA_BUS_FMT_SGBRG12_1X12:
+	case MEDIA_BUS_FMT_SGRBG12_1X12:
+	case MEDIA_BUS_FMT_SRGGB12_1X12:
+	case MEDIA_BUS_FMT_Y10_1X10:
+		val = 0;  /* No pixel pattern for RAW input */
+		dev_info(vfe->camss->dev,
+			 "VFE31: CORE_CFG RAW mode (code=0x%04x, no pixel pattern)\n",
+			 line->fmt[MSM_VFE_PAD_SINK].code);
+		break;
+	/* YUV formats - set appropriate pixel pattern */
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
@@ -5992,12 +6015,18 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		break;
 	case MEDIA_BUS_FMT_UYVY8_1X16:
 	case MEDIA_BUS_FMT_UYVY8_2X8:
-	default:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
 		break;
 	case MEDIA_BUS_FMT_VYUY8_1X16:
 	case MEDIA_BUS_FMT_VYUY8_2X8:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
+		break;
+	default:
+		/* Unknown format - fall back to UYVY pattern */
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
+		dev_warn(vfe->camss->dev,
+			 "VFE31: unknown format code=0x%04x, using UYVY pattern\n",
+			 line->fmt[MSM_VFE_PAD_SINK].code);
 		break;
 	}
 	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;

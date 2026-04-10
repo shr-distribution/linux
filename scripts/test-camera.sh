@@ -1324,14 +1324,12 @@ test_at_resolution() {
                 # On MSM8660/VFE31, there's no hardware RDI path - all data goes
                 # through CAMIF. RDI is emulated via AXI output mode 0x60.
                 #
-                # MT9M113 outputs 10-bit Bayer in 8+2 format (2 bytes per pixel).
-                # Use UYVY format for stride calculation (2 bytes/pixel) since
-                # VFE doesn't support unpacked 10-bit Bayer. The actual data
-                # is 10-bit Bayer but we treat it as raw bytes for transport.
+                # MT9M114 Bayer CFA pattern is GRBG (Gr at top-left).
+                # Use 8-bit RAW Bayer for true raw capture.
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_rdi0'
-                VFE_FMT='UYVY8_1X16'
-                PIXFMT='UYVY'
+                VFE_FMT='SGRBG8_1X8'
+                PIXFMT='GRBG'
                 USE_RAW_FORMAT=1
                 ;;
             video)
@@ -1362,15 +1360,13 @@ test_at_resolution() {
                 ;;
         esac
 
-        # Set sensor output format first
-        # For RDI mode, we use UYVY format for consistent 2 bytes/pixel stride.
-        # MT9M113 outputs 10-bit Bayer in 8+2 format (2 bytes/pixel), but
-        # since the VFE doesn't support unpacked 10-bit, we use UYVY as a
-        # transport format. The actual data will be 10-bit Bayer.
+        # Set sensor output format
+        # For RDI mode, use RAW Bayer format (MT9M114 CFA is GRBG)
+        # For PIX/VIDEO mode, use UYVY for DEMUX processing
         if [ -n \"\$USE_RAW_FORMAT\" ]; then
-            # Use UYVY for RDI to get 2 bytes/pixel layout
-            SENSOR_FMT='UYVY8_1X16'
-            echo 'Configuring sensor for RDI mode (UYVY transport, 2 bytes/pixel)...'
+            # RAW Bayer 8-bit for true raw capture
+            SENSOR_FMT='SGRBG8_1X8'
+            echo 'Configuring sensor for RDI mode (RAW Bayer GRBG, 1 byte/pixel)...'
         else
             SENSOR_FMT='UYVY8_1X16'
         fi
