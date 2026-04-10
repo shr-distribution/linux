@@ -130,8 +130,19 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *   output2.ch0 = WM1 (Video Y)
  *   output2.ch1 = WM5 (Video CbCr)
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A13  /* Y→output0, CbCr→output0 (WM0+WM4) */
-#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Y→output0+2, CbCr→output0 (WM0+WM1+WM4) */
+/*
+ * XBAR_CFG1 values - MUST use 0x1A1B for CbCr to work!
+ *
+ * WebOS preview mode dump shows XBAR=0x1A1B even for preview-only mode.
+ * With 0x1A13 (bits[3:0]=0x3), CbCr path is broken - WM4 gets no data.
+ * With 0x1A1B (bits[3:0]=0xB), both Y and CbCr work correctly.
+ *
+ * The Y routing bits[3:0] apparently affect CbCr path enablement:
+ *   0x3 = Y to output0 only → CbCr path BROKEN
+ *   0xB = Y to output0+2   → CbCr path WORKS
+ */
+#define VFE31_XBAR_PIX_ONLY	0x1A1B  /* Match webOS: Y→output0+2, CbCr→output0 */
+#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Same as PIX_ONLY per webOS dumps */
 
 /* Module param for manual override/testing */
 int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select based on active lines */
@@ -197,23 +208,36 @@ MODULE_PARM_DESC(vfe31_wm4_lines,
  * WebOS at 1280 height used lines=304, but that may be subsampled output.
  * For full height NV16, we need lines = height or height-1.
  */
-static int vfe31_pix_cbcr_lines = -1;  /* -1 = auto (height-24) */
-module_param(vfe31_pix_cbcr_lines, int, 0644);
-MODULE_PARM_DESC(vfe31_pix_cbcr_lines,
-		 "VFE31 PIX CbCr WM lines (-1=auto/height-24, 0=height-1, >0=explicit)");
-
 /*
- * PIX CbCr WM (WM4) ADDR_CFG burst field override.
- * Controls the burst field (lower 16 bits) of WM4_ADDR_CFG register for PIX mode.
+ * PIX CbCr WM (WM4) ADDR_CFG lines field.
+ * Controls the lines field (upper 16 bits) of WM4_ADDR_CFG register for PIX mode.
+ *
+ * WebOS uses lines = height + 64 for CbCr WM.
+ * For 640x480 NV12: CbCr height=240, lines=304 (240 + 64).
+ * The extra 64 lines provides pipeline headroom.
  *
  * Values:
- *   -1 = auto (use (bytesperline/4) - 17)
+ *   -1 = auto (height + 64, matching webOS formula) [DEFAULT]
+ *   0  = use height-1
  *   >0 = use explicit value
- *
- * WebOS used burst=151 for CbCr. Our auto calculation gives 143 for 640 width.
- * The difference (8 words = 32 bytes) might be alignment padding.
  */
-static int vfe31_pix_cbcr_burst = -1;  /* -1 = auto */
+static int vfe31_pix_cbcr_lines = -1;  /* -1 = auto (height + 64) */
+module_param(vfe31_pix_cbcr_lines, int, 0644);
+MODULE_PARM_DESC(vfe31_pix_cbcr_lines,
+		 "VFE31 PIX CbCr WM lines (-1=auto/height+64, 0=height-1, >0=explicit)");
+
+/*
+ * PIX CbCr WM (WM4) ADDR_CFG burst field.
+ * Controls the burst field (lower 16 bits) of WM4_ADDR_CFG register for PIX mode.
+ *
+ * WebOS uses burst = (width/4) - 9 for CbCr WM.
+ * For 640 width: burst = 160 - 9 = 151.
+ *
+ * Values:
+ *   -1 = auto ((width/4) - 9, matching webOS formula) [DEFAULT]
+ *   >0 = use explicit value
+ */
+static int vfe31_pix_cbcr_burst = -1;  /* -1 = auto ((width/4) - 9) */
 module_param(vfe31_pix_cbcr_burst, int, 0644);
 MODULE_PARM_DESC(vfe31_pix_cbcr_burst,
 		 "VFE31 PIX CbCr WM burst (-1=auto, >0=explicit)");
@@ -3278,26 +3302,29 @@ static int vfe31_enable(struct vfe_line *line)
 		 * CbCr WM ADDR_CFG - burst and line count
 		 *
 		 * Format: (lines << 16) | burst_words
-		 * Use bytesperline to match buffer allocation.
 		 *
-		 * Lines field controlled by vfe31_pix_cbcr_lines parameter:
-		 *   -1 = auto (cbcr_height - 24 based on webOS formula)
-		 *    0 = cbcr_height - 1 (full CbCr height)
-		 *   >0 = explicit value
+		 * WebOS formulas (verified from register dumps):
+		 *   lines = cbcr_height + 64 (e.g., 240 + 64 = 304 for 640x480 NV12)
+		 *   burst = (width/4) - 9 (e.g., 160 - 9 = 151 for 640 width)
+		 *
+		 * The extra 64 lines and adjusted burst provide pipeline headroom.
+		 *
+		 * Module params allow override:
+		 *   vfe31_pix_cbcr_lines: -1=auto, 0=height-1, >0=explicit
+		 *   vfe31_pix_cbcr_burst: -1=auto, >0=explicit
 		 */
 		{
 			int lines_val, burst_val;
 
 			if (vfe31_pix_cbcr_lines < 0)
-				lines_val = cbcr_height - 24;  /* auto: webOS formula */
+				lines_val = cbcr_height + 64;  /* auto: webOS formula */
 			else if (vfe31_pix_cbcr_lines == 0)
 				lines_val = cbcr_height - 1;   /* full CbCr height */
 			else
 				lines_val = vfe31_pix_cbcr_lines;  /* explicit */
 
-			wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
 			if (vfe31_pix_cbcr_burst < 0)
-				burst_val = (wpl - 17) & 0xFFFF;  /* auto */
+				burst_val = ((width / 4) - 9) & 0xFFFF;  /* auto: webOS formula */
 			else
 				burst_val = vfe31_pix_cbcr_burst & 0xFFFF;  /* explicit */
 
@@ -4567,23 +4594,26 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 
 			/*
 			 * WM1 ADDR_CFG - lines and burst for CbCr
-			 * Use (cbcr_height - 24) << 16 | burst (webOS formula)
 			 *
-			 * NOTE: For NV12, cbcr_height=240, so lines=216.
-			 * The -24 offset appears to be a timing/safety margin.
+			 * WebOS formulas (verified from register dumps):
+			 *   lines = cbcr_height + 64 (e.g., 240 + 64 = 304)
+			 *   burst = (width/4) - 9 (e.g., 160 - 9 = 151)
 			 */
-			wpl = bytesperline / 4;
-			reg = ((cbcr_height - 24) << 16) | ((wpl - 17) & 0xFFFF);
-			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
-				 wm1, reg, cbcr_height - 24, (wpl - 17) & 0xFFFF);
-			writel_relaxed(reg,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
+			{
+				int lines_val = cbcr_height + 64;
+				int burst_val = (width / 4) - 9;
+				reg = (lines_val << 16) | (burst_val & 0xFFFF);
+				dev_info(vfe->camss->dev,
+					 "VFE31: WM%d ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
+					 wm1, reg, lines_val, burst_val);
+				writel_relaxed(reg,
+					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm1));
+			}
 
-			/* WM1 UB_CFG - use UYVY input stride like WM0 */
+			/* WM1 UB_CFG - use cbcr_height for NV12 */
 			wpl = (width * 2) / 4;  /* UYVY INPUT stride */
 			reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
-			reg |= (height - 1) & 0xFFFF;
+			reg |= (cbcr_height - 1) & 0xFFFF;  /* Use cbcr_height, not height */
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm1));
 			wmb();
