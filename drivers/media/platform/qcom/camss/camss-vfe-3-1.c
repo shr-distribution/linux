@@ -710,19 +710,28 @@ static inline bool vfe31_is_420_format(u32 pixelformat)
 			      pixelformat == V4L2_PIX_FMT_NV21 ||
 			      pixelformat == V4L2_PIX_FMT_NV16 ||
 			      pixelformat == V4L2_PIX_FMT_NV61);
+	bool is_native_420 = (pixelformat == V4L2_PIX_FMT_NV12 ||
+			      pixelformat == V4L2_PIX_FMT_NV21);
 
 	if (!is_semiplanar)
 		return false;  /* Not semi-planar, doesn't apply */
 
-	/* Check format override */
+	/*
+	 * Check format override - but NEVER allow force_422=2 (4:2:2) on
+	 * a 4:2:0 format (NV12/NV21) because the buffer is sized for half-height
+	 * CbCr and writing full-height would overflow. This prevents crashes
+	 * when switching formats at runtime.
+	 *
+	 * force_422=1 (force 4:2:0) is always safe - it reduces CbCr height.
+	 * force_422=2 (force 4:2:2) is only safe on NV16/NV61 buffers.
+	 */
 	if (vfe31_force_422 == 1)
-		return true;   /* Force 4:2:0 */
-	if (vfe31_force_422 == 2)
-		return false;  /* Force 4:2:2 */
+		return true;   /* Force 4:2:0 - always safe */
+	if (vfe31_force_422 == 2 && !is_native_420)
+		return false;  /* Force 4:2:2 - only safe on NV16/NV61 */
 
-	/* Auto: based on actual format */
-	return (pixelformat == V4L2_PIX_FMT_NV12 ||
-		pixelformat == V4L2_PIX_FMT_NV21);
+	/* Auto or force_422=2 on NV12: based on actual format */
+	return is_native_420;
 }
 
 /*
