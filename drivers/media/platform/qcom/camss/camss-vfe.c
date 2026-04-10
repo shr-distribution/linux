@@ -33,6 +33,7 @@
 extern int vfe31_axi_output_mode;
 extern int vfe31_video_output_enable;
 extern int vfe31_xbar_cfg1;
+extern int vfe31_force_422;
 
 /*
  * MSM8660 CSI routing is configured via direct register writes to MISC_CC_REG
@@ -2705,6 +2706,7 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		video_out->bpl_alignment = vfe_bpl_align(vfe);
 		video_out->line_based = 0;
 		video_out->stride_factor = 0;
+		video_out->vsub_override = 0;
 		if (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO) {
 			/* PIX and VIDEO lines use line-based pixel pipeline */
 			video_out->bpl_alignment = 16;
@@ -2715,6 +2717,14 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 			 * allocate buffers large enough for actual DMA writes.
 			 */
 			video_out->stride_factor = vfe->res->pix_stride_factor;
+			/*
+			 * VFE31 vsub_override: adjust buffer size based on
+			 * force_422 parameter. When force_422=2 (force 4:2:2),
+			 * allocate NV16-sized buffers (2x height) even for
+			 * NV12 format requests.
+			 */
+			if (vfe->res->pix_stride_factor && vfe31_force_422 == 2)
+				video_out->vsub_override = 0x0102; /* NV16: 2x height */
 		}
 
 		video_out->nformats = vfe->line[i].nformats;
