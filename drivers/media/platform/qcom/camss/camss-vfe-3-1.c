@@ -3009,7 +3009,7 @@ static int vfe31_enable(struct vfe_line *line)
 		 vfe31_single_buffer ? " (single-buffer)" : "");
 
 	/*
-	 * Store addresses in pending_* for vfe31_start_camif_for_rdi() which
+	 * Store addresses in pending_* for vfe31_configure_pending_camif() which
 	 * will write them to hardware after CSIPHY is configured.
 	 * Also store in last_y_* for runtime CbCr address calculation.
 	 */
@@ -4203,7 +4203,7 @@ static void vfe31_bus_connect_wm_to_rdi(struct vfe_device *vfe, u8 wm,
 	 * causes bus hangs.
 	 *
 	 * Solution: Set camif_pending flag here. The actual CAMIF
-	 * configuration happens in vfe31_start_camif_for_rdi() which
+	 * configuration happens in vfe31_configure_pending_camif() which
 	 * is called from vfe31_wm_enable() after all WM setup is done.
 	 */
 	dev_info(vfe->camss->dev,
@@ -4324,7 +4324,7 @@ static void vfe31_wm_line_based(struct vfe_device *vfe, u32 wm,
 	 * Writing to WR_IMAGE_SIZE (0x060) and WR_ADDR_CFG (0x058) before
 	 * CAMIF is configured causes system hangs.
 	 *
-	 * These registers are configured in vfe31_start_camif_for_rdi()
+	 * These registers are configured in vfe31_configure_pending_camif()
 	 * which runs after CAMIF setup.
 	 */
 	dev_info(vfe->camss->dev,
@@ -4333,12 +4333,12 @@ static void vfe31_wm_line_based(struct vfe_device *vfe, u32 wm,
 }
 
 /*
- * vfe31_start_camif_for_rdi - Configure and start CAMIF after WM is ready
+ * vfe31_configure_pending_camif - Configure and start CAMIF after WM is ready
  *
  * This is called from wm_enable() when camif_pending is set. All WM
  * configuration must be complete before calling this.
  */
-static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
+static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 {
 	enum vfe_line_id line_id = vfe->wm_output_map[wm];
 	struct vfe_line *line;
@@ -4489,11 +4489,13 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * Upper 16 bits: stride / 16 (128-bit words per line)
 		 * Lower 16 bits: ((height - 1) << 4) | 2
 		 *
-		 * CRITICAL: Use INPUT stride (width * 2 for UYVY), not output
-		 * bytesperline! Using output stride causes half-frame capture.
+		 * CRITICAL: Use INPUT stride, not output bytesperline!
+		 * - UYVY (PIX/VIDEO): 2 bytes/pixel -> width * 2
+		 * - RAW8 (RDI): 1 byte/pixel -> width * 1
+		 * Using output stride causes half-frame capture.
 		 */
 		{
-			u16 image_stride = width * 2;  /* UYVY input: 2 bytes/pixel */
+			u16 image_stride = is_rdi_line ? width : (width * 2);
 			reg = ((image_stride / 16) & 0xFFFF) << 16;
 			reg |= ((height - 1) << 4) | 2;
 
@@ -4511,10 +4513,12 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * IMPORTANT: webOS uses (wpl - 17), not (wpl - 1)!
 		 * For 1280 bytes/line: wpl=320, burst=320-17=303=0x12F
 		 *
-		 * Use INPUT stride (width * 2), not output bytesperline!
+		 * Use INPUT stride based on mode:
+		 * - UYVY (PIX/VIDEO): width * 2
+		 * - RAW8 (RDI): width * 1
 		 */
 		{
-			u16 input_stride = width * 2;  /* UYVY input */
+			u16 input_stride = is_rdi_line ? width : (width * 2);
 			wpl = input_stride / 4;  /* 32-bit words per line */
 			reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 (webOS formula) */
 			/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
@@ -4533,9 +4537,11 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 *   For 1280 bytes/line: wpl = 320, (320/8)-1 = 39 = 0x27
 		 * Lower 16 bits: height - 1
 		 *
-		 * CRITICAL: UB buffers UYVY INPUT data (width*2), not NV16 output.
+		 * Use INPUT stride based on mode:
+		 * - UYVY (PIX/VIDEO): width * 2
+		 * - RAW8 (RDI): width * 1
 		 */
-		wpl = (width * 2) / 4;  /* UYVY INPUT stride */
+		wpl = (is_rdi_line ? width : (width * 2)) / 4;
 		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 		reg |= (height - 1) & 0xFFFF;
 		dev_info(vfe->camss->dev,
@@ -5348,7 +5354,7 @@ static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
 	 * Writing to WR_CFG before CAMIF is configured causes hangs.
 	 */
 	if (enable && vfe->camif_pending) {
-		vfe31_start_camif_for_rdi(vfe, wm);
+		vfe31_configure_pending_camif(vfe, wm);
 	}
 
 	/*
@@ -5376,7 +5382,7 @@ static void vfe31_wm_set_ub_cfg(struct vfe_device *vfe, u8 wm,
 	/*
 	 * VFE31: Defer UB_CFG write until after CAMIF is started.
 	 * Writing to WM registers before CAMIF is configured causes bus hangs.
-	 * Store the values and write them in vfe31_start_camif_for_rdi.
+	 * Store the values and write them in vfe31_configure_pending_camif.
 	 */
 	dev_info(vfe->camss->dev,
 		 "VFE31: wm_set_ub_cfg wm=%d offset=%d depth=%d (deferred to CAMIF start)\n",
