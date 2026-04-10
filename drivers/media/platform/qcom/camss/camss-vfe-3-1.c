@@ -519,7 +519,7 @@ MODULE_PARM_DESC(vfe31_cbcr_stride,
  * is captured (240 lines instead of 480). NV16 doesn't need this fix since
  * it has full-height CbCr.
  */
-static int vfe31_nv12_stride_fix = 1;
+int vfe31_nv12_stride_fix = 1;
 module_param(vfe31_nv12_stride_fix, int, 0644);
 MODULE_PARM_DESC(vfe31_nv12_stride_fix,
 		 "VFE31 NV12 stride fix: 0=disabled, 1=force input stride (default)");

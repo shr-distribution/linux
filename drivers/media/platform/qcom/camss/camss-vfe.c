@@ -34,6 +34,7 @@ extern int vfe31_axi_output_mode;
 extern int vfe31_video_output_enable;
 extern int vfe31_xbar_cfg1;
 extern int vfe31_force_422;
+extern int vfe31_nv12_stride_fix;
 
 /*
  * MSM8660 CSI routing is configured via direct register writes to MISC_CC_REG
@@ -2715,17 +2716,24 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 			 * VFE31 DMA uses input stride (e.g., UYVY width*2)
 			 * rather than output stride. Set stride_factor to
 			 * allocate buffers large enough for actual DMA writes.
+			 *
+			 * Use pix_stride_factor from resources, but also check
+			 * vfe31_nv12_stride_fix module param as fallback. This
+			 * ensures buffer allocation matches VFE31 DMA behavior.
 			 */
 			video_out->stride_factor = vfe->res->pix_stride_factor;
-			dev_info(dev, "VFE line %d: stride_factor=%u (from pix_stride_factor=%u)\n",
-				 i, video_out->stride_factor, vfe->res->pix_stride_factor);
+			if (!video_out->stride_factor && vfe31_nv12_stride_fix)
+				video_out->stride_factor = 2;
+			dev_info(dev, "VFE line %d: stride_factor=%u (pix_stride_factor=%u, nv12_stride_fix=%d)\n",
+				 i, video_out->stride_factor, vfe->res->pix_stride_factor,
+				 vfe31_nv12_stride_fix);
 			/*
 			 * VFE31 vsub_override: adjust buffer size based on
 			 * force_422 parameter. When force_422=2 (force 4:2:2),
 			 * allocate NV16-sized buffers (2x height) even for
 			 * NV12 format requests.
 			 */
-			if (vfe->res->pix_stride_factor && vfe31_force_422 == 2)
+			if (video_out->stride_factor && vfe31_force_422 == 2)
 				video_out->vsub_override = 0x0102; /* NV16: 2x height */
 		}
 
