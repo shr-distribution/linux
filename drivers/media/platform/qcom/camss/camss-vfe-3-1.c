@@ -698,24 +698,21 @@ static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline,
 
 /*
  * Helper to calculate IMAGE_SIZE stride for CbCr WMs.
- * Returns stride in bytes. Default is bytesperline (safe).
+ * Returns stride in bytes.
+ *
+ * WebOS used input stride (width*2) for CbCr IMAGE_SIZE, which gives
+ * correct output for both NV12 and NV16. Using output stride (bytesperline)
+ * results in only half the expected CbCr lines being written.
  */
 static inline u16 vfe31_calc_cbcr_stride(u16 width, u16 bytesperline)
 {
-	/*
-	 * CbCr stride calculation for NV12/NV16.
-	 * Unlike Y plane, CbCr is already at output resolution (subsampled),
-	 * so it should use output width (bytesperline), NOT input width.
-	 *
-	 * The nv12_stride_fix only applies to Y plane (WM0), not CbCr (WM4).
-	 */
 	if (vfe31_cbcr_stride > 2)
-		return (u16)vfe31_cbcr_stride;
-	else if (vfe31_cbcr_stride == 1)
-		return width * 2;
+		return (u16)vfe31_cbcr_stride;  /* explicit override */
+	else if (vfe31_cbcr_stride == 2)
+		return bytesperline;  /* force output stride */
 	else
-		/* Auto: use bytesperline (output width) */
-		return bytesperline;
+		/* Auto (0, 1, -1): use input stride like webOS */
+		return width * 2;
 }
 
 /*
