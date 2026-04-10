@@ -2174,52 +2174,43 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 				output->sequence);
 		} else {
 			/*
-			 * VFE31 quirk: Hardware ONLY writes to PING address.
-			 * Always find and return the buffer matching hw_ping,
-			 * regardless of what the PP status bit says.
+			 * Normal double-buffer mode:
+			 * - active_index=1 (PONG active): HW writing to PONG, PING just completed
+			 * - active_index=0 (PING active): HW writing to PING, PONG just completed
+			 *
+			 * Return the buffer from the COMPLETED slot (!active_index).
+			 * The buf[] array tracks: buf[0]=PING slot, buf[1]=PONG slot.
 			 */
-			u8 y_wm = output->wm_idx[0];
-			u32 hw_ping = readl_relaxed(vfe->base +
-				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
+			ready_idx = !active_index;
+			ready_buf = output->buf[ready_idx];
 
-			if (output->buf[0] && (u32)output->buf[0]->addr[0] == hw_ping) {
-				ready_buf = output->buf[0];
-				ready_idx = 0;
-			} else if (output->buf[1] && (u32)output->buf[1]->addr[0] == hw_ping) {
-				ready_buf = output->buf[1];
-				ready_idx = 1;
-			} else {
-				/* Fallback: use PP-based selection */
-				ready_buf = output->buf[!active_index];
-				ready_idx = !active_index;
-				dev_warn(vfe->camss->dev,
-					"VFE31: PING addr 0x%08x not in buf[0]=0x%08x or buf[1]=0x%08x, using fallback\n",
-					hw_ping,
-					output->buf[0] ? (u32)output->buf[0]->addr[0] : 0,
-					output->buf[1] ? (u32)output->buf[1]->addr[0] : 0);
-			}
+			dev_dbg(vfe->camss->dev,
+				"VFE31: double-buffer: active=%d returning buf[%d]=0x%08x\n",
+				active_index, ready_idx,
+				ready_buf ? (u32)ready_buf->addr[0] : 0);
 		}
 
 		/*
 		 * DEBUG: Verify buffer address matches where hardware wrote.
-		 * Read HW PING/PONG BEFORE we update them to see what addresses
-		 * the hardware was actually using.
+		 * active_index=1: PONG active, PING just completed → expect hw_ping
+		 * active_index=0: PING active, PONG just completed → expect hw_pong
 		 */
 		{
 			u8 y_wm = output->wm_idx[0];
-			u32 hw_ping_before = readl_relaxed(vfe->base +
+			u32 hw_ping = readl_relaxed(vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
-			u32 hw_pong_before = readl_relaxed(vfe->base +
+			u32 hw_pong = readl_relaxed(vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(y_wm));
-			u32 expected_addr = hw_ping_before;  /* VFE31 always writes to PING */
+			u32 expected_addr = active_index ? hw_ping : hw_pong;
 			u32 returning_addr = ready_buf ? (u32)ready_buf->addr[0] : 0;
 			bool addr_match = (returning_addr == expected_addr);
 
 			dev_info(vfe->camss->dev,
-				"VFE31: buf_verify seq=%d: HW_PING=0x%08x HW_PONG=0x%08x "
-				"active=%d expect=0x%08x returning=0x%08x %s\n",
-				output->sequence, hw_ping_before, hw_pong_before,
-				active_index, expected_addr, returning_addr,
+				"VFE31: buf_verify seq=%d: PING=0x%08x PONG=0x%08x "
+				"active=%d expect_%s=0x%08x returning=0x%08x %s\n",
+				output->sequence, hw_ping, hw_pong,
+				active_index, active_index ? "PING" : "PONG",
+				expected_addr, returning_addr,
 				addr_match ? "MATCH" : "MISMATCH!");
 		}
 
@@ -2319,28 +2310,29 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		}
 	} else {
 		/*
-		 * VFE31: Update both PING and PONG with the same address.
-		 * Hardware alternates between PING and PONG based on PP status,
-		 * so both must point to a valid buffer. Using the same address
-		 * ensures data goes to our buffer regardless of which one HW uses.
+		 * Normal double-buffer mode:
+		 * Update only the INACTIVE register (the one that just completed).
+		 * The ACTIVE register is currently being written to by hardware.
 		 *
-		 * Also issue a WM reload via BUS_CMD to ensure hardware picks up
-		 * the new addresses immediately.
+		 * - active_index=1 (PONG active): update PING (just completed)
+		 * - active_index=0 (PING active): update PONG (just completed)
+		 *
+		 * This maintains proper double-buffering with alternating buffers.
 		 */
-		u32 bus_reload = 0;
-
 		dev_info(vfe->camss->dev,
-			"VFE31: wm_done wm=%d PP=0x%x active=%d → updating PING+PONG with 0x%08x, seq=%d\n",
-			wm, ping_pong, active_index, (u32)new_addr[0], output->sequence - 1);
+			"VFE31: wm_done wm=%d PP=0x%x active=%d → updating %s with 0x%08x, seq=%d\n",
+			wm, ping_pong, active_index,
+			active_index ? "PING" : "PONG",
+			(u32)new_addr[0], output->sequence - 1);
 		for (i = 0; i < output->wm_num; i++) {
-			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
-			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
-			bus_reload |= VFE_0_BUS_CMD_Mx_RLD_CMD(output->wm_idx[i]);
+			if (active_index) {
+				/* PONG active → update PING */
+				vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+			} else {
+				/* PING active → update PONG */
+				vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
+			}
 		}
-		/* Memory barrier to ensure address writes complete before reload */
-		wmb();
-		/* Reload WMs to pick up new addresses */
-		writel_relaxed(bus_reload, vfe->base + VFE_0_BUS_CMD);
 	}
 
 	/*
