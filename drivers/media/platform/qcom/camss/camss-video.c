@@ -59,13 +59,30 @@ static int video_mbus_to_pix_mp(const struct v4l2_mbus_framefmt *mbus,
 	pix->pixelformat = f->pixelformat;
 	pix->num_planes = f->planes;
 	for (i = 0; i < pix->num_planes; i++) {
+		u32 vsub_num = f->vsub[i].numerator;
+		u32 vsub_den = f->vsub[i].denominator;
+
 		bytesperline = pix->width / f->hsub[i].numerator *
 			f->hsub[i].denominator * f->bpp[i] / 8;
 		bytesperline = ALIGN(bytesperline, alignment);
 		pix->plane_fmt[i].bytesperline = bytesperline;
-		pix->plane_fmt[i].sizeimage = pix->height /
-				f->vsub[i].numerator * f->vsub[i].denominator *
-				bytesperline * stride_factor;
+
+		/*
+		 * VFE31 PIX/VIDEO mode with NV12: DMA writes Y plane at UYVY
+		 * input stride (2x), but CbCr plane uses normal output stride.
+		 * Only apply stride_factor to the Y portion of single-plane
+		 * semi-planar formats (NV12/NV21/NV16/NV61).
+		 */
+		if (stride_factor > 1 && f->planes == 1 && vsub_num > 1) {
+			/* Semi-planar: Y needs stride_factor, CbCr doesn't */
+			u32 y_size = pix->height * bytesperline * stride_factor;
+			u32 cbcr_height = pix->height * (vsub_den - vsub_num) / vsub_num;
+			u32 cbcr_size = cbcr_height * bytesperline;
+			pix->plane_fmt[i].sizeimage = y_size + cbcr_size;
+		} else {
+			pix->plane_fmt[i].sizeimage = pix->height /
+				vsub_num * vsub_den * bytesperline * stride_factor;
+		}
 	}
 
 	return 0;
@@ -702,8 +719,25 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 			vsub_den = fi->vsub[i].denominator;
 		}
 
-		pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
-			vsub_num * vsub_den * bpl * stride_factor;
+		/*
+		 * VFE31 PIX/VIDEO mode with NV12: DMA writes Y plane at UYVY
+		 * input stride (2x), but CbCr plane uses normal output stride.
+		 * Only apply stride_factor to the Y portion of single-plane
+		 * semi-planar formats (NV12/NV21/NV16/NV61).
+		 *
+		 * For single-plane formats where vsub_num > 1 (meaning Y + CbCr
+		 * packed in one buffer), calculate Y and CbCr sizes separately.
+		 */
+		if (stride_factor > 1 && fi->planes == 1 && vsub_num > 1) {
+			/* Semi-planar: Y needs stride_factor, CbCr doesn't */
+			u32 y_size = pix_mp->height * bpl * stride_factor;
+			u32 cbcr_height = pix_mp->height * (vsub_den - vsub_num) / vsub_num;
+			u32 cbcr_size = cbcr_height * bpl;
+			pix_mp->plane_fmt[i].sizeimage = y_size + cbcr_size;
+		} else {
+			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
+				vsub_num * vsub_den * bpl * stride_factor;
+		}
 	}
 
 	pix_mp->field = V4L2_FIELD_NONE;
