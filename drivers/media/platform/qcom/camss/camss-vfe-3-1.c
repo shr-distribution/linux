@@ -3229,17 +3229,11 @@ static int vfe31_enable(struct vfe_line *line)
 		u32 cbcr_offset;
 
 		/*
-		 * CbCr plane offset: Y plane size depends on stride_factor.
-		 * With vfe31_nv12_stride_fix enabled, Y DMA uses 2x stride
-		 * (UYVY input), so Y plane is bytesperline * height * 2.
-		 * Without stride fix, Y plane is bytesperline * height.
+		 * CbCr plane offset: VFE31 outputs Y at output stride (not
+		 * input UYVY stride), so CbCr follows immediately after Y.
+		 * Y plane size = bytesperline * height (e.g., 640*480=307200)
 		 */
-		if (vfe31_nv12_stride_fix) {
-			/* Y plane uses 2x stride due to UYVY DMA */
-			y_plane_size = bytesperline * height * 2;
-		} else {
-			y_plane_size = bytesperline * height;
-		}
+		y_plane_size = bytesperline * height;
 		cbcr_offset = y_plane_size;
 		u32 wm1_ping_addr = ping_addr + cbcr_offset;
 		u32 wm1_pong_addr = pong_addr + cbcr_offset;
@@ -4522,14 +4516,10 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			u16 cbcr_height;
 
 			/*
-			 * CbCr offset: Y plane size depends on stride_factor.
-			 * With vfe31_nv12_stride_fix, Y uses 2x stride (UYVY DMA).
+			 * CbCr offset: VFE31 outputs Y at output stride, so
+			 * CbCr follows immediately after Y plane.
 			 */
-			if (vfe31_nv12_stride_fix) {
-				y_plane_size = bytesperline * height * 2;
-			} else {
-				y_plane_size = bytesperline * height;
-			}
+			y_plane_size = bytesperline * height;
 			cbcr_offset = y_plane_size;
 			wm1_ping = vfe->pending_ping_addr + cbcr_offset;
 			wm1_pong = vfe->pending_pong_addr + cbcr_offset;
@@ -5089,14 +5079,10 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 				u32 cbcr_ping, cbcr_pong;
 
 				/*
-				 * CbCr offset: Y plane size depends on stride_factor.
-				 * With vfe31_nv12_stride_fix, Y uses 2x stride (UYVY DMA).
+				 * CbCr offset: VFE31 outputs Y at output stride, so
+				 * CbCr follows immediately after Y plane.
 				 */
-				if (vfe31_nv12_stride_fix) {
-					y_plane_size = bytesperline * height * 2;
-				} else {
-					y_plane_size = bytesperline * height;
-				}
+				y_plane_size = bytesperline * height;
 				cbcr_offset = y_plane_size;
 				cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 				cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
