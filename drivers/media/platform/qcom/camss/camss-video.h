@@ -52,6 +52,16 @@ struct camss_video {
 	 * output Y stride (width*1). Buffer must be sized for actual DMA writes.
 	 */
 	unsigned int stride_factor;
+	/*
+	 * Chroma vertical subsampling override (0 = use format default).
+	 * VFE31 uses this to adjust buffer size based on force_422 parameter.
+	 * Format: (numerator << 8) | denominator
+	 * Used in: sizeimage = height / numerator * denominator * bpl
+	 *   0x0000 = use format's vsub (default)
+	 *   0x0102 = vsub {1,2} (Y + full CbCr = 2*height, NV16-style)
+	 *   0x0203 = vsub {2,3} (Y + half CbCr = 1.5*height, NV12-style)
+	 */
+	unsigned int vsub_override;
 	const struct camss_format_info *formats;
 	unsigned int nformats;
 	/* Default resolution from upstream VFE subdev (0 = use 1920x1080) */

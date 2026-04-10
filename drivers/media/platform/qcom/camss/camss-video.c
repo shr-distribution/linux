@@ -681,14 +681,29 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 	pix_mp->num_planes = fi->planes;
 	for (i = 0; i < pix_mp->num_planes; i++) {
 		unsigned int stride_factor = video->stride_factor ? video->stride_factor : 1;
+		unsigned int vsub_num, vsub_den;
 
 		bpl = pix_mp->width / fi->hsub[i].numerator *
 			fi->hsub[i].denominator * fi->bpp[i] / 8;
 		bpl = ALIGN(bpl, video->bpl_alignment);
 		pix_mp->plane_fmt[i].bytesperline = bpl;
+
+		/*
+		 * Use vsub_override if set, otherwise use format's vsub.
+		 * vsub_override format: (numerator << 8) | denominator
+		 * This allows VFE31 to adjust buffer size when force_422
+		 * changes the effective chroma subsampling.
+		 */
+		if (video->vsub_override) {
+			vsub_num = (video->vsub_override >> 8) & 0xFF;
+			vsub_den = video->vsub_override & 0xFF;
+		} else {
+			vsub_num = fi->vsub[i].numerator;
+			vsub_den = fi->vsub[i].denominator;
+		}
+
 		pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
-			fi->vsub[i].numerator * fi->vsub[i].denominator * bpl *
-			stride_factor;
+			vsub_num * vsub_den * bpl * stride_factor;
 	}
 
 	pix_mp->field = V4L2_FIELD_NONE;

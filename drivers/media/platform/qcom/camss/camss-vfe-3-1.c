@@ -435,7 +435,7 @@ MODULE_PARM_DESC(vfe31_chroma_subs_cfg,
  *   - vfe31_pix_cbcr_img_height: Force CbCr IMAGE_SIZE height
  *   - vfe31_pix_cbcr_ub_height: Force CbCr UB_CFG height
  */
-static int vfe31_force_422 = 0;
+int vfe31_force_422 = 0;
 module_param(vfe31_force_422, int, 0644);
 MODULE_PARM_DESC(vfe31_force_422,
 		 "VFE31 format mode: 0=auto, 1=force 4:2:0, 2=force 4:2:2");
