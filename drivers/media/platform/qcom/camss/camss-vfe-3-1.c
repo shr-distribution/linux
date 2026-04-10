@@ -4486,16 +4486,22 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 * WR_IMAGE_SIZE - VFE31 format (from webOS register dumps):
 		 * webOS WM0: 0x00501DF2 = ((80) << 16) | ((479 << 4) | 2)
 		 *
-		 * Upper 16 bits: bytesperline / 16 (128-bit words per line)
+		 * Upper 16 bits: stride / 16 (128-bit words per line)
 		 * Lower 16 bits: ((height - 1) << 4) | 2
+		 *
+		 * CRITICAL: Use INPUT stride (width * 2 for UYVY), not output
+		 * bytesperline! Using output stride causes half-frame capture.
 		 */
-		reg = ((bytesperline / 16) & 0xFFFF) << 16;
-		reg |= ((height - 1) << 4) | 2;
+		{
+			u16 image_stride = width * 2;  /* UYVY input: 2 bytes/pixel */
+			reg = ((image_stride / 16) & 0xFFFF) << 16;
+			reg |= ((height - 1) << 4) | 2;
 
-		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d IMAGE_SIZE bpl=%d height=%d reg=0x%x (webOS format)\n",
-			 wm, bytesperline, height, reg);
-		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
+			dev_info(vfe->camss->dev,
+				 "VFE31: WM%d IMAGE_SIZE stride=%d height=%d reg=0x%x\n",
+				 wm, image_stride, height, reg);
+			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
+		}
 
 		/*
 		 * WR_ADDR_CFG - webOS format: (lines << 16) | burst_words
@@ -4504,16 +4510,20 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 *
 		 * IMPORTANT: webOS uses (wpl - 17), not (wpl - 1)!
 		 * For 1280 bytes/line: wpl=320, burst=320-17=303=0x12F
-		 * NOTE: wpl is in 32-bit words. bytesperline is already in bytes.
+		 *
+		 * Use INPUT stride (width * 2), not output bytesperline!
 		 */
-		wpl = bytesperline / 4;  /* 32-bit words per line */
-		reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 (webOS formula) */
-		/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
+		{
+			u16 input_stride = width * 2;  /* UYVY input */
+			wpl = input_stride / 4;  /* 32-bit words per line */
+			reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 (webOS formula) */
+			/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
 
-		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d ADDR_CFG stride=%d wpl=%d burst=%d reg=0x%x\n",
-			 wm, bytesperline, wpl, reg, reg);
-		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
+			dev_info(vfe->camss->dev,
+				 "VFE31: WM%d ADDR_CFG stride=%d wpl=%d burst=%d reg=0x%x\n",
+				 wm, input_stride, wpl, reg, reg);
+			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
+		}
 
 		/*
 		 * WR_UB_CFG - VFE31 format (from webOS register dumps):
