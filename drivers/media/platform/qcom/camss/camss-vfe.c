@@ -2717,6 +2717,8 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 			 * allocate buffers large enough for actual DMA writes.
 			 */
 			video_out->stride_factor = vfe->res->pix_stride_factor;
+			dev_info(dev, "VFE line %d: stride_factor=%u (from pix_stride_factor=%u)\n",
+				 i, video_out->stride_factor, vfe->res->pix_stride_factor);
 			/*
 			 * VFE31 vsub_override: adjust buffer size based on
 			 * force_422 parameter. When force_422=2 (force 4:2:2),
