@@ -703,6 +703,9 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		unsigned int stride_factor = video->stride_factor ? video->stride_factor : 1;
 		unsigned int vsub_num, vsub_den;
 
+		pr_info("camss-video: __video_try_fmt: video->stride_factor=%u effective=%u planes=%u\n",
+			video->stride_factor, stride_factor, fi->planes);
+
 		bpl = pix_mp->width / fi->hsub[i].numerator *
 			fi->hsub[i].denominator * fi->bpp[i] / 8;
 		bpl = ALIGN(bpl, video->bpl_alignment);
