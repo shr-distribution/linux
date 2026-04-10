@@ -667,15 +667,19 @@ static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline,
  */
 static inline u16 vfe31_calc_cbcr_stride(u16 width, u16 bytesperline)
 {
+	/*
+	 * CbCr stride calculation for NV12/NV16.
+	 * Unlike Y plane, CbCr is already at output resolution (subsampled),
+	 * so it should use output width (bytesperline), NOT input width.
+	 *
+	 * The nv12_stride_fix only applies to Y plane (WM0), not CbCr (WM4).
+	 */
 	if (vfe31_cbcr_stride > 2)
 		return (u16)vfe31_cbcr_stride;
 	else if (vfe31_cbcr_stride == 1)
 		return width * 2;
-	else if (vfe31_nv12_stride_fix)
-		/* When NV12 stride fix is enabled, CbCr also needs input stride */
-		return width * 2;
 	else
-		/* Auto and mode 2 both use bytesperline (safe default) */
+		/* Auto: use bytesperline (output width) */
 		return bytesperline;
 }
 
