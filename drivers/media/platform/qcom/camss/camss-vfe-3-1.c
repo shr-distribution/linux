@@ -3225,18 +3225,22 @@ static int vfe31_enable(struct vfe_line *line)
 	 */
 	if (output->wm_num == 2) {
 		u8 wm1 = output->wm_idx[1];
+		u32 y_plane_size;
+		u32 cbcr_offset;
+
 		/*
-		 * CbCr plane offset: Must use V4L2 bytesperline to match buffer layout.
-		 * The V4L2 buffer has Y at offset 0 with stride=bytesperline, so
-		 * CbCr starts at bytesperline * height.
-		 *
-		 * For NV12 640x480: Y=640*480=307200, CbCr starts at 307200
-		 * For NV16 640x480: Y=640*480=307200, CbCr starts at 307200
-		 *
-		 * This is independent of VFE IMAGE_SIZE stride which controls
-		 * how the hardware writes each line internally.
+		 * CbCr plane offset: Y plane size depends on stride_factor.
+		 * With vfe31_nv12_stride_fix enabled, Y DMA uses 2x stride
+		 * (UYVY input), so Y plane is bytesperline * height * 2.
+		 * Without stride fix, Y plane is bytesperline * height.
 		 */
-		u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
+		if (vfe31_nv12_stride_fix) {
+			/* Y plane uses 2x stride due to UYVY DMA */
+			y_plane_size = bytesperline * height * 2;
+		} else {
+			y_plane_size = bytesperline * height;
+		}
+		cbcr_offset = y_plane_size;
 		u32 wm1_ping_addr = ping_addr + cbcr_offset;
 		u32 wm1_pong_addr = pong_addr + cbcr_offset;
 
@@ -4512,14 +4516,23 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 		 */
 		if (line->output.wm_num == 2) {
 			u8 wm1 = line->output.wm_idx[1];
-			/*
-			 * CbCr offset: Use bytesperline to match V4L2 buffer layout.
-			 * Y plane occupies bytesperline * height bytes.
-			 */
-			u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
-			u32 wm1_ping = vfe->pending_ping_addr + cbcr_offset;
-			u32 wm1_pong = vfe->pending_pong_addr + cbcr_offset;
+			u32 y_plane_size;
+			u32 cbcr_offset;
+			u32 wm1_ping, wm1_pong;
 			u16 cbcr_height;
+
+			/*
+			 * CbCr offset: Y plane size depends on stride_factor.
+			 * With vfe31_nv12_stride_fix, Y uses 2x stride (UYVY DMA).
+			 */
+			if (vfe31_nv12_stride_fix) {
+				y_plane_size = bytesperline * height * 2;
+			} else {
+				y_plane_size = bytesperline * height;
+			}
+			cbcr_offset = y_plane_size;
+			wm1_ping = vfe->pending_ping_addr + cbcr_offset;
+			wm1_pong = vfe->pending_pong_addr + cbcr_offset;
 
 			/* Store for runtime CbCr address calculation */
 			vfe->active_cbcr_offset = cbcr_offset;
@@ -5071,13 +5084,22 @@ static void vfe31_start_camif_for_rdi(struct vfe_device *vfe, u8 wm)
 			 * Use format-aware offset calculation for portability.
 			 */
 			if (line->output.wm_num == 2) {
+				u32 y_plane_size;
+				u32 cbcr_offset;
+				u32 cbcr_ping, cbcr_pong;
+
 				/*
-				 * CbCr offset: Use bytesperline to match V4L2 buffer layout.
-				 * Y plane occupies bytesperline * height bytes.
+				 * CbCr offset: Y plane size depends on stride_factor.
+				 * With vfe31_nv12_stride_fix, Y uses 2x stride (UYVY DMA).
 				 */
-				u32 cbcr_offset = vfe31_get_cbcr_offset(pix->pixelformat, bytesperline, height);
-				u32 cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
-				u32 cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
+				if (vfe31_nv12_stride_fix) {
+					y_plane_size = bytesperline * height * 2;
+				} else {
+					y_plane_size = bytesperline * height;
+				}
+				cbcr_offset = y_plane_size;
+				cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
+				cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
 
 				/* Store for runtime CbCr address calculation */
 				vfe->active_cbcr_offset = cbcr_offset;
