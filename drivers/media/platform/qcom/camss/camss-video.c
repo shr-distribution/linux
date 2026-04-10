@@ -181,8 +181,11 @@ static int video_queue_setup(struct vb2_queue *q,
 
 	*num_planes = format->num_planes;
 
-	for (i = 0; i < *num_planes; i++)
+	for (i = 0; i < *num_planes; i++) {
 		sizes[i] = format->plane_fmt[i].sizeimage;
+		pr_info("camss-video: queue_setup plane[%d] size=%u bpl=%u\n",
+			i, sizes[i], format->plane_fmt[i].bytesperline);
+	}
 
 	return 0;
 }
@@ -734,9 +737,15 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 			u32 cbcr_height = pix_mp->height * (vsub_den - vsub_num) / vsub_num;
 			u32 cbcr_size = cbcr_height * bpl;
 			pix_mp->plane_fmt[i].sizeimage = y_size + cbcr_size;
+			pr_info("camss-video: sizeimage stride_factor path: y=%u cbcr=%u total=%u (sf=%u vsub=%u/%u)\n",
+				y_size, cbcr_size, y_size + cbcr_size,
+				stride_factor, vsub_num, vsub_den);
 		} else {
 			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
 				vsub_num * vsub_den * bpl * stride_factor;
+			pr_info("camss-video: sizeimage default path: %u (h=%u vsub=%u/%u bpl=%u sf=%u)\n",
+				pix_mp->plane_fmt[i].sizeimage, pix_mp->height,
+				vsub_num, vsub_den, bpl, stride_factor);
 		}
 	}
 
