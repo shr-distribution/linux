@@ -331,7 +331,7 @@ static const struct camss_format_info formats_pix_vfe31[] = {
 	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
 	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
-	/* 2X8 formats for CAMIF - NV12 recommended */
+	/* 2X8 formats for CAMIF - NV12 (4:2:0) */
 	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV12, 1,
 	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
 	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV12, 1,
@@ -340,6 +340,33 @@ static const struct camss_format_info formats_pix_vfe31[] = {
 	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
 	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV12, 1,
 	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	/* 2X8 formats for CAMIF - NV21 (4:2:0, CrCb order) */
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	/* 2X8 formats for CAMIF - NV16 (4:2:2) */
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	/* 2X8 formats for CAMIF - NV61 (4:2:2, CrCb order) */
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	/* Packed YUV 4:2:2 passthrough */
 	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_UYVY, 1,
 	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
