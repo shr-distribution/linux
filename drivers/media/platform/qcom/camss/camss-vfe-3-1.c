@@ -141,8 +141,8 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *   0x3 = Y to output0 only → CbCr path BROKEN
  *   0xB = Y to output0+2   → CbCr path WORKS
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A1B  /* Match webOS: Y→output0+2, CbCr→output0 */
-#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Same as PIX_ONLY per webOS dumps */
+#define VFE31_XBAR_PIX_ONLY	0x1A03  /* PIX mode: Y→WM0, CbCr→WM4 (matches COMPOSITE_MASK) */
+#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* PIX+VIDEO: Y→WM0/WM1, CbCr→WM1/WM5 */
 
 /* Module param for manual override/testing */
 int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select based on active lines */
@@ -295,17 +295,17 @@ MODULE_PARM_DESC(vfe31_pix_y_wm,
 /*
  * PIX CbCr Write Master
  *
- * XBAR CFG1=0x1A1B routes data as follows:
- *   - 0x1A = Y to WM0
- *   - 0x1B = CbCr to WM1
+ * XBAR routing determines which WM receives CbCr data:
+ *   - XBAR 0x1A03: CbCr routes to WM4 (default, matches COMPOSITE_MASK)
+ *   - XBAR 0x1A1B: CbCr routes to WM1
  *
- * WM1 must be used to receive CbCr data from the XBAR routing.
- * WM4 was incorrectly used previously and received no data.
+ * IRQ_COMPOSITE_MASK=0x00220011 expects WM0+WM4 for PIX mode COMPOSITE_DONE.
+ * Using WM4 as default ensures frame completion IRQs fire correctly.
  */
-static int vfe31_pix_cbcr_wm = 1;
+static int vfe31_pix_cbcr_wm = 4;
 module_param(vfe31_pix_cbcr_wm, int, 0644);
 MODULE_PARM_DESC(vfe31_pix_cbcr_wm,
-		 "VFE31 PIX CbCr WM selection (1=WM1/default/XBAR, 4=WM4)");
+		 "VFE31 PIX CbCr WM selection (4=WM4/default, 1=WM1 with XBAR 0x1A1B)");
 
 /* VIDEO Y Write Master (default: WM1) */
 static int vfe31_video_y_wm = 1;
