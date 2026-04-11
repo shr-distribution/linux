@@ -1,0 +1,270 @@
+/*
+ * BlackBerry KEY2 (athena) camera DTB - ALL athena-specific content from
+ * LOS22 retail kernel (4.4) ported to LOS23 (4.19) as overrides.
+ *
+ * Camera layout:
+ *   camera@0 - rear main (s5k2l9)        - MCLK0 gpio32, RESET gpio46
+ *   camera@1 - front (s5k4h7)            - MCLK1 gpio35, RESET gpio52, VANA gpio51
+ *   camera@2 - rear telephoto (s5k3m3)   - MCLK2 gpio33, RESET gpio47, STANDBY gpio51
+ *
+ * Camera VDIG/VANA power via PMIC GPIOs:
+ *   pm660l_gpios 3 (gpio@c200) - rear sensor VDIG (cam_dvdd)
+ *   pm660l_gpios 4 (gpio@c300) - front sensor VANA + VDIG (cam_avdd, cam_front_dvdd)
+ */
+
+&soc {
+	/* Restore BB OEM PMIC flash/torch current mitigation tables (LOS22 retail) */
+	led_flash0: qcom,camera-flash@0 {
+		oem,flash-mitigation-levels = <2000 1800 1600 1400 1200 1000
+						850 700 550 400 200 100 0>;
+		oem,torch-mitigation-levels = <200 0>;
+	};
+
+	/* Enable camera regulators (LOS22 retail config) */
+	cam_avdd_gpio_regulator: cam_avdd_fixed_regulator {
+		status = "ok";
+		enable-active-high;
+		gpio = <&pm660l_gpios 4 0>;
+		vin-supply = <&pm660l_bob>;
+	};
+
+	cam_dvdd_gpio_regulator: cam_dvdd_fixed_regulator {
+		status = "ok";
+		enable-active-high;
+		gpio = <&pm660l_gpios 3 0>;
+		vin-supply = <&pm660_s4>;
+	};
+
+	/* Front camera VDIG regulator (new node, LOS22 only) */
+	cam_front_dvdd_gpio_regulator: cam_front_dvdd_fixed_regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_front_dvdd_gpio_regulator";
+		regulator-min-microvolt = <2040000>;
+		regulator-max-microvolt = <2040000>;
+		enable-active-high;
+		gpio = <&pm660l_gpios 4 0>;
+		vin-supply = <&pm660_s4>;
+	};
+};
+
+/* Re-enable rear DVDD regulator (BB LOS22 retail had it active) */
+&cam_rear_dvdd_gpio_regulator {
+	status = "ok";
+	enable-active-high;
+	gpio = <&pm660l_gpios 4 0>;
+	vin-supply = <&pm660_s5>;
+};
+
+/* TOF/laser IRQ on gpio45 was commented out in BB LOS22 retail DT.
+ * The 4.19 base mtp dtsi re-enabled it, which conflicts with BB pinmux.
+ * Disable it again to match BB. */
+&tof0 {
+	/delete-property/ stm,irq-gpio;
+};
+
+/* Athena uses gpio45 as synaptics keypad reset, NOT for cam_tof.
+ * The 4.19 base pinctrl added gpio45 to cam_tof mux groups, which
+ * conflicts with the keypad. Restore BB's pinctrl (gpio50 + gpio42 only). */
+&cam_tof_active {
+	mux {
+		pins = "gpio50", "gpio42";
+		function = "gpio";
+	};
+	config {
+		pins = "gpio50", "gpio42";
+		bias-pull-up;
+		drive-strength = <2>;
+	};
+};
+
+&cam_tof_suspend {
+	mux {
+		pins = "gpio50", "gpio42";
+		function = "gpio";
+	};
+	config {
+		pins = "gpio50", "gpio42";
+		bias-pull-down;
+		drive-strength = <2>;
+	};
+};
+
+&cci {
+	/* eeprom1: front camera - MCLK3 source */
+	eeprom1: qcom,eeprom@1 {
+		clocks = <&clock_mmss MCLK3_CLK_SRC>,
+			<&clock_mmss MMSS_CAMSS_MCLK3_CLK>;
+	};
+
+	/* eeprom2: telephoto - MCLK1 source */
+	eeprom2: qcom,eeprom@2 {
+		clocks = <&clock_mmss MCLK1_CLK_SRC>,
+			<&clock_mmss MMSS_CAMSS_MCLK1_CLK>;
+	};
+
+	/* camera@1: front camera - MCLK3 source */
+	qcom,camera@1 {
+		clocks = <&clock_mmss MCLK3_CLK_SRC>,
+			<&clock_mmss MMSS_CAMSS_MCLK3_CLK>;
+	};
+
+	/* camera@2: telephoto - MCLK1 source */
+	qcom,camera@2 {
+		clocks = <&clock_mmss MCLK1_CLK_SRC>,
+			<&clock_mmss MMSS_CAMSS_MCLK1_CLK>;
+	};
+
+	/* Remove unused front-iris camera */
+	/delete-node/ qcom,camera@3;
+};
+
+/* PMIC GPIO setup for camera VDIG control (LOS22 retail config) */
+&pm660l_gpios {
+	gpio@c300 { /* GPIO4 - CAMERA SENSOR 0 VDIG (front) */
+		qcom,mode = <1>;                /* Output */
+		qcom,pull = <5>;                /* No Pull */
+		qcom,vin-sel = <0>;             /* VIN1 GPIO_LV */
+		qcom,src-sel = <0>;             /* GPIO */
+		qcom,invert = <0>;              /* Invert */
+		qcom,master-en = <1>;           /* Enable GPIO */
+		status = "ok";
+	};
+
+	gpio@c200 { /* GPIO3 - CAMERA SENSOR 2 VDIG (rear) */
+		qcom,mode = <1>;                /* Output */
+		qcom,pull = <5>;                /* No Pull */
+		qcom,vin-sel = <0>;             /* VIN1 GPIO_LV */
+		qcom,src-sel = <0>;             /* GPIO */
+		qcom,invert = <0>;              /* Invert */
+		qcom,master-en = <1>;           /* Enable GPIO */
+		status = "ok";
+	};
+};
+
+/* Pinctrl overrides: athena KEY2 hardware GPIO mapping (from LOS22 retail) */
+&tlmm {
+	/* MCLK1 actually wired to gpio35 (front camera) */
+	cam_sensor_mclk1_active: cam_sensor_mclk1_active {
+		mux {
+			pins = "gpio35";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio35";
+			bias-disable;
+			drive-strength = <2>;
+		};
+	};
+
+	cam_sensor_mclk1_suspend: cam_sensor_mclk1_suspend {
+		mux {
+			pins = "gpio35";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio35";
+			bias-pull-down;
+			drive-strength = <2>;
+		};
+	};
+
+	/* MCLK2 actually wired to gpio33 (telephoto) */
+	cam_sensor_mclk2_active: cam_sensor_mclk2_active {
+		mux {
+			pins = "gpio33";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio33";
+			bias-disable;
+			drive-strength = <2>;
+		};
+	};
+
+	cam_sensor_mclk2_suspend: cam_sensor_mclk2_suspend {
+		mux {
+			pins = "gpio33";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio33";
+			bias-pull-down;
+			drive-strength = <2>;
+		};
+	};
+
+	/* Rear main camera RESET on gpio46 (athena uses single GPIO, not 46+44) */
+	cam_sensor_rear_active: cam_sensor_rear_active {
+		mux {
+			pins = "gpio46";
+			function = "gpio";
+		};
+		config {
+			pins = "gpio46";
+			bias-disable;
+			drive-strength = <2>;
+		};
+	};
+
+	cam_sensor_rear_suspend: cam_sensor_rear_suspend {
+		mux {
+			pins = "gpio46";
+			function = "gpio";
+		};
+		config {
+			pins = "gpio46";
+			bias-disable;
+			drive-strength = <2>;
+		};
+	};
+
+	/* Telephoto camera RESET on gpio47 (not gpio48), STANDBY on gpio51 */
+	cam_sensor_rear2_active: cam_sensor_rear2_active {
+		mux {
+			pins = "gpio47", "gpio51";
+			function = "gpio";
+		};
+		config {
+			pins = "gpio47", "gpio51";
+			bias-disable;
+			drive-strength = <2>;
+		};
+	};
+
+	cam_sensor_rear2_suspend: cam_sensor_rear2_suspend {
+		mux {
+			pins = "gpio47", "gpio51";
+			function = "gpio";
+		};
+		config {
+			pins = "gpio47", "gpio51";
+			bias-disable;
+			drive-strength = <2>;
+		};
+	};
+
+	/* Front camera RESET on gpio52, VANA on gpio51 */
+	cam_sensor_front_active: cam_sensor_front_active {
+		mux {
+			pins = "gpio52", "gpio51";
+			function = "gpio";
+		};
+		config {
+			pins = "gpio52", "gpio51";
+			bias-disable;
+			drive-strength = <2>;
+		};
+	};
+
+	cam_sensor_front_suspend: cam_sensor_front_suspend {
+		mux {
+			pins = "gpio52";
+			function = "gpio";
+		};
+		config {
+			pins = "gpio52";
+			bias-disable;
+			drive-strength = <2>;
+		};
+	};
+};

@@ -1,5 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2016, 2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016, 2019,  The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -36,6 +35,11 @@ TRACE_EVENT(msm_cam_string,
 	TP_printk("msm_cam: %s", __entry->str)
 );
 
+/*
+ * BB OREO debug trace events take struct-by-value, which conflicts
+ * with 4.19 BPF tracepoint sizeof() expansion. Stubbed out.
+ */
+#if 0
 TRACE_EVENT(msm_cam_tasklet_debug_dump,
 	TP_PROTO(struct msm_vfe_irq_debug_info tasklet_state),
 	TP_ARGS(tasklet_state),
@@ -98,8 +102,8 @@ TRACE_EVENT(msm_cam_ping_pong_debug_dump,
 		__entry->curr_irq_status1 =
 			ping_pong_state.irq_status1[ping_pong_state.vfe_id];
 		__entry->curr_ping_pong_status =
-			ping_pong_state.ping_pong_status[
-			ping_pong_state.vfe_id];
+			ping_pong_state.
+			ping_pong_status[ping_pong_state.vfe_id];
 		__entry->othr_vfe_id =
 			!ping_pong_state.vfe_id;
 		__entry->othr_irq_status0 =
@@ -107,8 +111,8 @@ TRACE_EVENT(msm_cam_ping_pong_debug_dump,
 		__entry->othr_irq_status1 =
 			ping_pong_state.irq_status1[!ping_pong_state.vfe_id];
 		__entry->othr_ping_pong_status =
-			ping_pong_state.ping_pong_status[
-			!ping_pong_state.vfe_id];
+			ping_pong_state.
+			ping_pong_status[!ping_pong_state.vfe_id];
 		__entry->othr_tv_sec =
 			ping_pong_state.ts.buf_time.tv_sec;
 		__entry->othr_tv_usec =
@@ -131,20 +135,19 @@ TRACE_EVENT(msm_cam_ping_pong_debug_dump,
 		__entry->core_id
 	)
 );
+#endif /* BB OREO debug trace events stubbed */
 
 TRACE_EVENT(msm_cam_isp_status_dump,
 	TP_PROTO(char *event, uint32_t vfe_id, uint32_t frame_id,
-		uint32_t irq_status0, uint32_t irq_status1,
-		uint32_t dual_irq_status),
+		uint32_t irq_status0, uint32_t irq_status1),
 	TP_ARGS(event, vfe_id, frame_id, irq_status0,
-		irq_status1, dual_irq_status),
+		irq_status1),
 	TP_STRUCT__entry(
 		__field(char *, event)
 		__field(unsigned int, vfe_id)
 		__field(unsigned int, frame_id)
 		__field(unsigned int, irq_status0)
 		__field(unsigned int, irq_status1)
-		__field(unsigned int, dual_irq_status)
 	),
 	TP_fast_assign(
 		__entry->event = event;
@@ -152,15 +155,13 @@ TRACE_EVENT(msm_cam_isp_status_dump,
 		__entry->frame_id = frame_id;
 		__entry->irq_status0 = irq_status0;
 		__entry->irq_status1 = irq_status1;
-		__entry->dual_irq_status = dual_irq_status;
 	),
-	TP_printk("%s vfe %d, frame %d, irq_st0 %x, irq_st1 %x dual_irq %x",
+	TP_printk("%s vfe %d, frame %d, irq_st0 %x, irq_st1 %x\n",
 		__entry->event,
 		__entry->vfe_id,
 		__entry->frame_id,
 		__entry->irq_status0,
-		__entry->irq_status1,
-		__entry->dual_irq_status
+		__entry->irq_status1
 	)
 );
 

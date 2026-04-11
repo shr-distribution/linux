@@ -16,7 +16,8 @@
 
 #include "sdm660.dtsi"
 #include "sdm660-mtp.dtsi" 
-#include "sdm660-camera-sensor-mtp.dtsi"  
+#include "sdm660-camera-sensor-mtp.dtsi"
+#include "sdm660-bbry-athena-camera.dtsi"
 #include "sdm660-internal-codec.dtsi"
 #include "sdm660-bbry-athena.dtsi" // MODIFIED by hongwei.tian, 2017-08-25,BUG-5156882
 

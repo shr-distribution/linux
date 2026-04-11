@@ -26,7 +26,7 @@
 #include "sde_rotator_trace.h"
 
 /* Start v4l2 device number (default allocation) */
-#define SDE_ROTATOR_BASE_DEVICE_NUMBER 32
+#define SDE_ROTATOR_BASE_DEVICE_NUMBER	-1
 
 /* Default value for early_submit flag */
 #define SDE_ROTATOR_EARLY_SUBMIT	1

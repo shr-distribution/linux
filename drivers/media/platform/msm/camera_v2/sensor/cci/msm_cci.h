@@ -1,4 +1,5 @@
-/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright (c) 2012-2018, 2020 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -158,6 +159,9 @@ struct cci_device {
 	uint8_t ref_count;
 	enum msm_cci_state_t cci_state;
 	size_t num_clk;
+#ifdef CONFIG_MACH_ASUS_SDM660
+	struct mutex mutex;
+#endif
 	size_t num_clk_cases;
 	struct clk **cci_clk;
 	uint32_t **cci_clk_rates;

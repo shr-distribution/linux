@@ -1,9 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 #ifndef __UAPI_LINUX_MSMB_CAMERA_H
 #define __UAPI_LINUX_MSMB_CAMERA_H
 
 #include <linux/videodev2.h>
 #include <linux/types.h>
 #include <linux/ioctl.h>
+#include <linux/media.h>
 
 #define MSM_CAM_LOGSYNC_FILE_NAME "logsync"
 #define MSM_CAM_LOGSYNC_FILE_BASEDIR "camera"
@@ -26,11 +28,11 @@
 #define MSM_CAM_V4L2_IOCTL_DAEMON_DISABLED \
 	_IOW('V', BASE_VIDIOC_PRIVATE + 35, struct msm_v4l2_event_data)
 
-#define QCAMERA_DEVICE_GROUP_ID	1
 #define QCAMERA_VNODE_GROUP_ID	2
 #define MSM_CAMERA_NAME			"msm_camera"
 #define MSM_CONFIGURATION_NAME	"msm_config"
 
+#define MSM_CAMERA_SUBDEV_BASE         (MEDIA_ENT_F_OLD_BASE + 0xF00)
 #define MSM_CAMERA_SUBDEV_CSIPHY       0
 #define MSM_CAMERA_SUBDEV_CSID         1
 #define MSM_CAMERA_SUBDEV_ISPIF        2
@@ -60,7 +62,8 @@
  * large value for number of buffer due to data structure corruption
  * we return error to avoid integer overflow. Group processing
  * can have max of 9 groups of 8 bufs each. This value may be
- * configured in future*/
+ * configured in future
+ */
 #define MSM_CAMERA_MAX_STREAM_BUF 72
 
 /* Max batch size of processing */
@@ -107,8 +110,8 @@
 #define MSM_CAMERA_PRIV_CMD_MAX  20
 
 /* data.status - success */
-#define MSM_CAMERA_CMD_SUCESS      0x00000001
-#define MSM_CAMERA_BUF_MAP_SUCESS  0x00000002
+#define MSM_CAMERA_CMD_SUCCESS      0x00000001
+#define MSM_CAMERA_BUF_MAP_SUCCESS  0x00000002
 
 /* data.status - error */
 #define MSM_CAMERA_ERR_EVT_BASE 0x00010000
@@ -116,13 +119,10 @@
 #define MSM_CAMERA_ERR_MAPPING		(MSM_CAMERA_ERR_EVT_BASE + 2)
 #define MSM_CAMERA_ERR_DEVICE_BUSY	(MSM_CAMERA_ERR_EVT_BASE + 3)
 
-/* data.status - success values should be same as above*/
-#define MSM_CAMERA_CMD_SUCCESS      0x00000001
-#define MSM_CAMERA_BUF_MAP_SUCCESS  0x00000002
-
 /* The msm_v4l2_event_data structure should match the
  * v4l2_event.u.data field.
- * should not exceed 16 elements */
+ * should not exceed 16 elements
+ */
 struct msm_v4l2_event_data {
 	/*word 0*/
 	unsigned int command;
@@ -222,11 +222,10 @@ struct msm_camera_private_ioctl_arg {
 	__u32 size;
 	__u32 result;
 	__u32 reserved;
-	__user __u64 ioctl_ptr;
+	__u64 ioctl_ptr;
 };
 
 #define VIDIOC_MSM_CAMERA_PRIVATE_IOCTL_CMD \
 	_IOWR('V', BASE_VIDIOC_PRIVATE, struct msm_camera_private_ioctl_arg)
 
 #endif
-

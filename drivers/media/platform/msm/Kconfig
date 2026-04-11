@@ -40,6 +40,19 @@ menuconfig MSMB_CAMERA
        adds support for the camera driver stack including sensor, isp
        and postprocessing drivers.
 
+menuconfig MSMB_CAMERA_LEGACY
+     bool "QTI MSM camera and video capture 2.0 legacy support"
+     depends on ARCH_QCOM && VIDEO_V4L2 && I2C
+     select MSMB_CAMERA
+     help
+       Say Y here to build the kernel-4.4 era msm camera_v2 driver
+       (camera_v2-legacy/) instead of the modern camera_v2/ tree.
+       This is required when running with kernel-4.4 vintage mm-camera
+       vendor blobs (BB OREO, Xiaomi Oreo, Sony nile Oreo, etc.) on a
+       4.19 kernel base. The legacy tree preserves the OREO ABI that
+       those userspace blobs were compiled against.
+       Legacy msm-4.4 version
+
 config MSMB_CAMERA_DEBUG
      bool "QTI MSM camera 2.0 debugging with printk"
      depends on MSMB_CAMERA

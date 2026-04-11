@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 #ifndef __UAPI_LINUX_MSM_CAMSENSOR_SDK_H
 #define __UAPI_LINUX_MSM_CAMSENSOR_SDK_H
 
@@ -57,6 +58,8 @@ enum msm_sensor_camera_id_t {
 	CAMERA_1,
 	CAMERA_2,
 	CAMERA_3,
+	CAMERA_4,
+	CAMERA_5,
 	MAX_CAMERAS,
 };
 
@@ -196,8 +199,6 @@ enum msm_flash_cfg_type_t {
 	CFG_FLASH_INIT,
 	CFG_FLASH_RELEASE,
 	CFG_FLASH_OFF,
-	CFG_FLASH_MITIGATION_LEVELS,
-	CFG_TORCH_ON,
 	CFG_FLASH_LOW,
 	CFG_FLASH_HIGH,
 };
@@ -247,10 +248,10 @@ struct msm_sensor_power_setting {
 
 struct msm_sensor_power_setting_array {
 	struct msm_sensor_power_setting  power_setting_a[MAX_POWER_CONFIG];
-	struct msm_sensor_power_setting *power_setting;
+	struct msm_sensor_power_setting  *power_setting;
 	unsigned short size;
 	struct msm_sensor_power_setting  power_down_setting_a[MAX_POWER_CONFIG];
-	struct msm_sensor_power_setting *power_down_setting;
+	struct msm_sensor_power_setting  *power_down_setting;
 	unsigned short size_down;
 };
 
@@ -258,6 +259,12 @@ enum msm_camera_i2c_operation {
 	MSM_CAM_WRITE = 0,
 	MSM_CAM_POLL,
 	MSM_CAM_READ,
+	MSM_CAM_READ_PAGE,
+	MSM_CAM_WRITE_DELAYUSEC,
+	MSM_CAM_READ_CONTINUOUS,
+#ifdef CONFIG_MACH_ASUS_X00TD
+	MSM_CAM_SINGLE_LOOP_READ,
+#endif
 };
 
 struct msm_sensor_i2c_sync_params {
@@ -409,8 +416,8 @@ struct damping_params_t {
 
 struct region_params_t {
 	/* [0] = ForwardDirection Macro boundary
-	   [1] = ReverseDirection Inf boundary
-	*/
+	 *  [1] = ReverseDirection Inf boundary
+	 */
 	unsigned short step_bound[2];
 	unsigned short code_per_step;
 	/* qvalue for converting float type numbers to integer format */

@@ -102,32 +102,12 @@ static struct media_entity *find_entity(struct media_device *mdev, u32 id)
 	return NULL;
 }
 
-/* Compat: OREO blobs enumerate entities by incrementing id 1,2,3,...
- * without MEDIA_ENT_ID_FLAG_NEXT. In 4.19, entity IDs have gaps
- * (shared global counter), so treat id as 1-based index. */
-static struct media_entity *find_entity_by_index(struct media_device *mdev,
-						 u32 id)
-{
-	struct media_entity *entity;
-	unsigned int idx = 0;
-
-	if (id & MEDIA_ENT_ID_FLAG_NEXT)
-		return find_entity(mdev, id);
-
-	media_device_for_each_entity(entity, mdev) {
-		if (++idx == id)
-			return entity;
-	}
-
-	return NULL;
-}
-
 static long media_device_enum_entities(struct media_device *mdev, void *arg)
 {
 	struct media_entity_desc *entd = arg;
 	struct media_entity *ent;
 
-	ent = find_entity_by_index(mdev, entd->id);
+	ent = find_entity(mdev, entd->id);
 	if (ent == NULL)
 		return -EINVAL;
 
@@ -137,20 +117,9 @@ static long media_device_enum_entities(struct media_device *mdev, void *arg)
 	if (ent->name)
 		strlcpy(entd->name, ent->name, sizeof(entd->name));
 	entd->type = ent->function;
-	entd->revision = 0;
+	entd->revision = ent->revision;
 	entd->flags = ent->flags;
-	/* Expose group_id for OREO camera blobs compat:
-	 * - Config device (video0): group_id=2 (QCAMERA_VNODE_GROUP_ID)
-	 * - Camera subdevs: group_id=entity.function (MSM_CAMERA_SUBDEV_* 0-21)
-	 * MCT shim checks type==0x10001 && group_id==2 for config device,
-	 * then uses group_id to identify sensor_init and other subdevs */
-	if (ent->function == MEDIA_ENT_F_IO_V4L)
-		entd->group_id = 2;
-	else if (is_media_entity_v4l2_subdev(ent) &&
-		 ent->function < MEDIA_ENT_F_OLD_BASE)
-		entd->group_id = ent->function;
-	else
-		entd->group_id = 0;
+	entd->group_id = ent->group_id;
 	entd->pads = ent->num_pads;
 	entd->links = ent->num_links - ent->num_backlinks;
 
@@ -165,8 +134,14 @@ static long media_device_enum_entities(struct media_device *mdev, void *arg)
 	 * printing the graphviz diagram. So, map them into the devnode
 	 * old range.
 	 */
-	if (ent->function < MEDIA_ENT_F_OLD_BASE ||
-	    ent->function > MEDIA_ENT_F_TUNER) {
+	/*
+	 * Only remap when the driver explicitly left function as UNKNOWN.
+	 * This preserves custom small-int function values used by msm
+	 * camera_v2-legacy subdevs (MSM_CAMERA_SUBDEV_FLASH = 16, etc.)
+	 * so BB OREO mm-camera userspace can identify them by type.
+	 */
+	if (ent->function == MEDIA_ENT_F_V4L2_SUBDEV_UNKNOWN ||
+	    ent->function == MEDIA_ENT_F_UNKNOWN) {
 		if (is_media_entity_v4l2_subdev(ent))
 			entd->type = MEDIA_ENT_F_V4L2_SUBDEV_UNKNOWN;
 		else if (ent->function != MEDIA_ENT_F_IO_V4L)
@@ -668,6 +643,11 @@ int __must_check media_device_register_entity(struct media_device *mdev,
 	/* Initialize media_gobj embedded at the entity */
 	media_gobj_create(mdev, MEDIA_GRAPH_ENTITY, &entity->graph_obj);
 
+	if (entity->id == 0)
+		entity->id = mdev->entity_id++;
+	else
+		mdev->entity_id = max(entity->id + 1, mdev->entity_id);
+
 	/* Initialize objects at the pads */
 	for (i = 0; i < entity->num_pads; i++)
 		media_gobj_create(mdev, MEDIA_GRAPH_PAD,
@@ -758,6 +738,7 @@ int __must_check __media_device_register(struct media_device *mdev,
 		return -ENOMEM;
 
 	/* Register the device node. */
+	mdev->entity_id = 1;
 	mdev->devnode = devnode;
 	devnode->fops = &media_device_fops;
 	devnode->parent = mdev->dev;
