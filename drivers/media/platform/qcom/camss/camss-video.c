@@ -74,10 +74,13 @@ static int video_mbus_to_pix_mp(const struct v4l2_mbus_framefmt *mbus,
 		 * semi-planar formats (NV12/NV21/NV16/NV61).
 		 */
 		if (stride_factor > 1 && f->planes == 1 && vsub_num > 1) {
-			/* Semi-planar: Y needs stride_factor, CbCr doesn't */
+			/*
+			 * Semi-planar with stride_factor: Both Y and CbCr use
+			 * input stride on VFE31, so both need stride_factor.
+			 */
 			u32 y_size = pix->height * bytesperline * stride_factor;
 			u32 cbcr_height = pix->height * (vsub_den - vsub_num) / vsub_num;
-			u32 cbcr_size = cbcr_height * bytesperline;
+			u32 cbcr_size = cbcr_height * bytesperline * stride_factor;
 			pix->plane_fmt[i].sizeimage = y_size + cbcr_size;
 		} else {
 			pix->plane_fmt[i].sizeimage = pix->height /
@@ -735,10 +738,14 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		 * packed in one buffer), calculate Y and CbCr sizes separately.
 		 */
 		if (stride_factor > 1 && fi->planes == 1 && vsub_num > 1) {
-			/* Semi-planar: Y needs stride_factor, CbCr doesn't */
+			/*
+			 * Semi-planar with stride_factor: Both Y and CbCr use
+			 * input stride (width*2) on VFE31, so both need
+			 * stride_factor applied to their buffer sizes.
+			 */
 			u32 y_size = pix_mp->height * bpl * stride_factor;
 			u32 cbcr_height = pix_mp->height * (vsub_den - vsub_num) / vsub_num;
-			u32 cbcr_size = cbcr_height * bpl;
+			u32 cbcr_size = cbcr_height * bpl * stride_factor;
 			pix_mp->plane_fmt[i].sizeimage = y_size + cbcr_size;
 			pr_info("camss-video: sizeimage stride_factor path: y=%u cbcr=%u total=%u (sf=%u vsub=%u/%u)\n",
 				y_size, cbcr_size, y_size + cbcr_size,
