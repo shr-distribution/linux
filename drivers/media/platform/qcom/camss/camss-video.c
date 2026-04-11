@@ -215,10 +215,19 @@ static int video_buf_init(struct vb2_buffer *vb)
 	if (format->pixelformat == V4L2_PIX_FMT_NV12 ||
 			format->pixelformat == V4L2_PIX_FMT_NV21 ||
 			format->pixelformat == V4L2_PIX_FMT_NV16 ||
-			format->pixelformat == V4L2_PIX_FMT_NV61)
-		buffer->addr[1] = buffer->addr[0] +
-				format->plane_fmt[0].bytesperline *
-				format->height;
+			format->pixelformat == V4L2_PIX_FMT_NV61) {
+		/*
+		 * CbCr offset = Y plane size.
+		 * For VFE31 with stride_factor, Y plane uses input stride
+		 * (bytesperline * stride_factor), not output stride.
+		 * This must match VFE31's cbcr_offset calculation.
+		 */
+		u32 y_plane_size = format->plane_fmt[0].bytesperline *
+				   format->height;
+		if (video->stride_factor > 1)
+			y_plane_size *= video->stride_factor;
+		buffer->addr[1] = buffer->addr[0] + y_plane_size;
+	}
 
 	return 0;
 }
@@ -739,13 +748,13 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		 */
 		if (stride_factor > 1 && fi->planes == 1 && vsub_num > 1) {
 			/*
-			 * Semi-planar with stride_factor: Both Y and CbCr use
-			 * input stride (width*2) on VFE31, so both need
-			 * stride_factor applied to their buffer sizes.
+			 * Semi-planar with stride_factor: Y plane uses input
+			 * stride (width*2) on VFE31, but CbCr uses output stride.
+			 * Only apply stride_factor to Y size.
 			 */
 			u32 y_size = pix_mp->height * bpl * stride_factor;
 			u32 cbcr_height = pix_mp->height * (vsub_den - vsub_num) / vsub_num;
-			u32 cbcr_size = cbcr_height * bpl * stride_factor;
+			u32 cbcr_size = cbcr_height * bpl;  /* CbCr uses output stride */
 			pix_mp->plane_fmt[i].sizeimage = y_size + cbcr_size;
 			pr_info("camss-video: sizeimage stride_factor path: y=%u cbcr=%u total=%u (sf=%u vsub=%u/%u)\n",
 				y_size, cbcr_size, y_size + cbcr_size,
