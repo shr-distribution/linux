@@ -3349,11 +3349,13 @@ static int vfe31_enable(struct vfe_line *line)
 
 			if (vfe31_pix_cbcr_burst < 0) {
 				/*
-				 * FIX: Use cbcr_stride (not width) for burst.
-				 * CbCr has same per-line bytes as Y for semi-planar.
-				 * burst = (stride/4) - 17 matches Y WM formula.
+				 * CbCr burst uses OUTPUT width (not stride) because
+				 * the chroma scaler outputs at output resolution.
+				 * Formula: (width/4) - 9 = 151 for 640 width.
+				 * Using stride (1280) caused VFE to hang waiting
+				 * for data that never arrives from the scaler.
 				 */
-				burst_val = ((cbcr_stride / 4) - 17) & 0xFFFF;
+				burst_val = ((width / 4) - 9) & 0xFFFF;
 			} else
 				burst_val = vfe31_pix_cbcr_burst & 0xFFFF;  /* explicit */
 
@@ -4672,14 +4674,13 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			/*
 			 * WM1 ADDR_CFG - lines and burst for CbCr
 			 *
-			 * FIX: Use cbcr_stride (not width) for burst calculation.
-			 * CbCr has same per-line bytes as Y for semi-planar.
-			 * burst = (stride/4) - 17 matches Y WM formula.
+			 * CbCr burst uses OUTPUT width (not stride) because
+			 * the chroma scaler outputs at output resolution.
+			 * Formula: (width/4) - 9 = 151 for 640 width.
 			 */
 			{
-				u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
 				int lines_val = cbcr_height + 64;
-				int burst_val = (cbcr_stride / 4) - 17;
+				int burst_val = (width / 4) - 9;
 				reg = (lines_val << 16) | (burst_val & 0xFFFF);
 				dev_info(vfe->camss->dev,
 					 "VFE31: WM%d ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
