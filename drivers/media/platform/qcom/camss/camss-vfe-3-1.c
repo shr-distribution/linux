@@ -292,11 +292,20 @@ module_param(vfe31_pix_y_wm, int, 0644);
 MODULE_PARM_DESC(vfe31_pix_y_wm,
 		 "VFE31 PIX Y WM selection (0=WM0/default)");
 
-/* PIX CbCr Write Master (default: WM4, but WM1 matches XBAR) */
-static int vfe31_pix_cbcr_wm = 4;
+/*
+ * PIX CbCr Write Master
+ *
+ * XBAR CFG1=0x1A1B routes data as follows:
+ *   - 0x1A = Y to WM0
+ *   - 0x1B = CbCr to WM1
+ *
+ * WM1 must be used to receive CbCr data from the XBAR routing.
+ * WM4 was incorrectly used previously and received no data.
+ */
+static int vfe31_pix_cbcr_wm = 1;
 module_param(vfe31_pix_cbcr_wm, int, 0644);
 MODULE_PARM_DESC(vfe31_pix_cbcr_wm,
-		 "VFE31 PIX CbCr WM selection (1=WM1/XBAR-match, 4=WM4/legacy)");
+		 "VFE31 PIX CbCr WM selection (1=WM1/default/XBAR, 4=WM4)");
 
 /* VIDEO Y Write Master (default: WM1) */
 static int vfe31_video_y_wm = 1;
@@ -463,6 +472,23 @@ int vfe31_force_422 = 0;
 module_param(vfe31_force_422, int, 0644);
 MODULE_PARM_DESC(vfe31_force_422,
 		 "VFE31 format mode: 0=auto, 1=force 4:2:0, 2=force 4:2:2");
+
+/*
+ * VFE31 SCALER DISABLE - For debugging scaler issues
+ *
+ * Controls whether the Main Scaler and S2Y/S2CbCr scalers are enabled:
+ *   0 = Normal - enable all scalers with 1:1 pass-through (default)
+ *   1 = Disable Main Scaler (0x368) - set CFG to 0
+ *   2 = Disable S2Y scaler (0x4D0) - set CFG to 0
+ *   3 = Disable both Main and S2Y scalers
+ *   4 = Disable all scalers (Main + S2Y + S2CbCr)
+ *
+ * Use this to test if scalers are causing image issues.
+ */
+static int vfe31_disable_scaling = 0;
+module_param(vfe31_disable_scaling, int, 0644);
+MODULE_PARM_DESC(vfe31_disable_scaling,
+		 "VFE31 disable scalers: 0=enable, 1=no main, 2=no S2Y, 3=no main+S2Y, 4=all off");
 
 /*
  * ============================================================================
@@ -3699,21 +3725,41 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	writel_relaxed(height - 1, vfe->base + VFE_0_FOV_CBCR);
 
 	/* Main Scaler - Y channel (1:1 scaling) */
-	writel_relaxed(0x03, vfe->base + VFE_0_SCALE_Y_CFG);
-	writel_relaxed((width << 16) | width, vfe->base + VFE_0_SCALE_Y_H_IMAGE);
-	writel_relaxed(0x00310000, vfe->base + VFE_0_SCALE_Y_H_PHASE);
-	writel_relaxed((height << 16) | height, vfe->base + VFE_0_SCALE_Y_V_IMAGE);
-	writel_relaxed(0x00310000, vfe->base + VFE_0_SCALE_Y_V_PHASE);
+	{
+		u32 main_cfg = (vfe31_disable_scaling & 1) ? 0x00 : 0x03;
+		writel_relaxed(main_cfg, vfe->base + VFE_0_SCALE_Y_CFG);
+		writel_relaxed((width << 16) | width, vfe->base + VFE_0_SCALE_Y_H_IMAGE);
+		writel_relaxed(0x00310000, vfe->base + VFE_0_SCALE_Y_H_PHASE);
+		writel_relaxed((height << 16) | height, vfe->base + VFE_0_SCALE_Y_V_IMAGE);
+		writel_relaxed(0x00310000, vfe->base + VFE_0_SCALE_Y_V_PHASE);
+		dev_info(vfe->camss->dev,
+			 "VFE31: SCALE_Y: CFG=0x%02x H=0x%08x V=0x%08x (%dx%d, disable=%d)\n",
+			 main_cfg, (width << 16) | width, (height << 16) | height,
+			 width, height, vfe31_disable_scaling);
+	}
 
 	/* Scaler 2 - Y pass-through */
-	writel_relaxed(0x03, vfe->base + VFE_0_S2Y_CFG);
-	writel_relaxed((width << 16) | width, vfe->base + VFE_0_S2Y_H_IMAGE);
-	writel_relaxed(0x00310000, vfe->base + VFE_0_S2Y_H_PHASE);
-	writel_relaxed((height << 16) | height, vfe->base + VFE_0_S2Y_V_IMAGE);
-	writel_relaxed(0x00310000, vfe->base + VFE_0_S2Y_V_PHASE);
+	{
+		u32 s2y_cfg = (vfe31_disable_scaling & 2) ? 0x00 : 0x03;
+		writel_relaxed(s2y_cfg, vfe->base + VFE_0_S2Y_CFG);
+		writel_relaxed((width << 16) | width, vfe->base + VFE_0_S2Y_H_IMAGE);
+		writel_relaxed(0x00310000, vfe->base + VFE_0_S2Y_H_PHASE);
+		writel_relaxed((height << 16) | height, vfe->base + VFE_0_S2Y_V_IMAGE);
+		writel_relaxed(0x00310000, vfe->base + VFE_0_S2Y_V_PHASE);
+		dev_info(vfe->camss->dev,
+			 "VFE31: S2Y: CFG=0x%02x H=0x%08x V=0x%08x (%dx%d)\n",
+			 s2y_cfg, (width << 16) | width, (height << 16) | height,
+			 width, height);
+	}
 
 	/* Scaler 2 - CbCr channel (chroma subsampling) */
-	writel_relaxed(0x03, vfe->base + VFE_0_S2CBCR_CFG);
+	{
+		u32 s2cbcr_cfg = (vfe31_disable_scaling & 4) ? 0x00 : 0x03;
+		writel_relaxed(s2cbcr_cfg, vfe->base + VFE_0_S2CBCR_CFG);
+		dev_info(vfe->camss->dev,
+			 "VFE31: S2CBCR: CFG=0x%02x (disable_scaling=%d)\n",
+			 s2cbcr_cfg, vfe31_disable_scaling);
+	}
 
 	/*
 	 * Chroma horizontal: always 2:1 subsample (one Cb-Cr pair per 2 pixels)
