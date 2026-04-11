@@ -3338,6 +3338,7 @@ static int vfe31_enable(struct vfe_line *line)
 		 */
 		{
 			int lines_val, burst_val;
+			u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
 
 			if (vfe31_pix_cbcr_lines < 0)
 				lines_val = cbcr_height + 64;  /* auto: webOS formula */
@@ -3346,9 +3347,14 @@ static int vfe31_enable(struct vfe_line *line)
 			else
 				lines_val = vfe31_pix_cbcr_lines;  /* explicit */
 
-			if (vfe31_pix_cbcr_burst < 0)
-				burst_val = ((width / 4) - 9) & 0xFFFF;  /* auto: webOS formula */
-			else
+			if (vfe31_pix_cbcr_burst < 0) {
+				/*
+				 * FIX: Use cbcr_stride (not width) for burst.
+				 * CbCr has same per-line bytes as Y for semi-planar.
+				 * burst = (stride/4) - 17 matches Y WM formula.
+				 */
+				burst_val = ((cbcr_stride / 4) - 17) & 0xFFFF;
+			} else
 				burst_val = vfe31_pix_cbcr_burst & 0xFFFF;  /* explicit */
 
 			reg = (lines_val << 16) | burst_val;
@@ -4666,13 +4672,14 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			/*
 			 * WM1 ADDR_CFG - lines and burst for CbCr
 			 *
-			 * WebOS formulas (verified from register dumps):
-			 *   lines = cbcr_height + 64 (e.g., 240 + 64 = 304)
-			 *   burst = (width/4) - 9 (e.g., 160 - 9 = 151)
+			 * FIX: Use cbcr_stride (not width) for burst calculation.
+			 * CbCr has same per-line bytes as Y for semi-planar.
+			 * burst = (stride/4) - 17 matches Y WM formula.
 			 */
 			{
+				u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
 				int lines_val = cbcr_height + 64;
-				int burst_val = (width / 4) - 9;
+				int burst_val = (cbcr_stride / 4) - 17;
 				reg = (lines_val << 16) | (burst_val & 0xFFFF);
 				dev_info(vfe->camss->dev,
 					 "VFE31: WM%d ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
