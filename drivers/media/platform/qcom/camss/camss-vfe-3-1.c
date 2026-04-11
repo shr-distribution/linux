@@ -3807,19 +3807,21 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		}
 
 		/*
-		 * Determine subs_cfg - controls chroma subsampling:
-		 * Bit 4: V_SUBSAMPLE (vertical 2:1)
-		 * Bit 5: H_SUBSAMPLE (horizontal 2:1)
+		 * Determine subs_cfg - controls chroma subsampling output format.
+		 * Bit 4: V_SUBSAMPLE - indicates vertical 2:1 output
+		 * Bit 5: H_SUBSAMPLE - indicates horizontal 2:1 output
 		 *
-		 * For 4:2:0 (NV12): 0x30 = both H and V subsample
-		 * For 4:2:2 (NV16): 0x20 = only H subsample (no vertical)
+		 * IMPORTANT: CHROMA_V_IMAGE scaler already does vertical scaling
+		 * (480->240 for NV12). Do NOT set V_SUBSAMPLE (bit 4) here or
+		 * we get double subsampling (480->240->120 = only 120 lines)!
+		 *
+		 * Use 0x20 (H only) for all semi-planar formats since vertical
+		 * scaling is handled by CHROMA_V_IMAGE register above.
 		 */
 		if (vfe31_chroma_subs_cfg >= 0)
 			subs_cfg = vfe31_chroma_subs_cfg;  /* explicit override */
-		else if (vfe31_is_420_format(p))
-			subs_cfg = 0x30;  /* 4:2:0: H + V subsample */
 		else
-			subs_cfg = 0x20;  /* 4:2:2: H subsample only */
+			subs_cfg = 0x20;  /* H subsample only, V done by scaler */
 
 		writel_relaxed((v_out << 16) | height, vfe->base + VFE_0_CHROMA_V_IMAGE);
 		writel_relaxed(v_phase, vfe->base + VFE_0_CHROMA_V_PHASE);
