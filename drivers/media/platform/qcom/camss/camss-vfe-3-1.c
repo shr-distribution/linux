@@ -3146,17 +3146,18 @@ static int vfe31_enable(struct vfe_line *line)
 		u16 image_stride = vfe31_calc_image_stride(width, bytesperline,
 							   is_rdi_line, pix->pixelformat);
 		int img_height_val;
-		bool is_nv12 = (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
-				pix->pixelformat == V4L2_PIX_FMT_NV21);
+		bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
 
 		/*
-		 * NV12 stride workaround (controlled by vfe31_nv12_stride_fix):
-		 * When enabled, force input stride for NV12 to avoid half-frame.
-		 * NV12 has half-height CbCr, NV16 has full-height so doesn't need this.
+		 * Semi-planar stride workaround (controlled by vfe31_nv12_stride_fix):
+		 * When enabled, force input stride for all semi-planar formats to
+		 * avoid half-frame capture. The VFE31's Y output is tied to input
+		 * stride timing - using output stride causes only half the lines
+		 * to be captured for both NV12 and NV16.
 		 */
-		if (vfe31_nv12_stride_fix && is_nv12 && !is_rdi_line && image_stride < width * 2) {
+		if (vfe31_nv12_stride_fix && is_semi_planar && !is_rdi_line && image_stride < width * 2) {
 			dev_info(vfe->camss->dev,
-				 "VFE31: NV12 stride fix enabled, forcing stride=%d→%d\n",
+				 "VFE31: Semi-planar stride fix, forcing stride=%d→%d\n",
 				 image_stride, width * 2);
 			image_stride = width * 2;
 		}
@@ -3170,7 +3171,7 @@ static int vfe31_enable(struct vfe_line *line)
 		reg |= ((img_height_val - 1) << 4) | 2;
 		dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d%s)\n",
 			 y_wm, image_stride, img_height_val, vfe31_image_stride, vfe31_pix_y_img_height,
-			 is_nv12 ? " NV12" : "");
+			 is_semi_planar ? " semi-planar" : "");
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(y_wm));
 	}
 
@@ -3182,14 +3183,20 @@ static int vfe31_enable(struct vfe_line *line)
 	 * For single-plane UYVY, only WM0 is used with lines=0.
 	 * burst_words = words_per_line - 17 (webOS formula)
 	 *
-	 * Use bytesperline (OUTPUT stride) to match buffer allocation.
-	 * For 640x480 NV16: bytesperline = 640 bytes = 160 words, burst = 143
-	 * For 1280x1024 NV16: bytesperline = 1280 bytes = 320 words, burst = 303
+	 * For semi-planar formats with stride fix: use INPUT stride (width * 2).
+	 * For other formats: use bytesperline (OUTPUT stride).
+	 *
+	 * webOS used burst = (1280/4) - 17 = 303 for 640x480 video mode.
 	 */
 	{
 		int lines_val, burst_val;
+		bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
 
-		wpl = bytesperline / 4;  /* 32-bit words per line from buffer stride */
+		/* Use input stride for semi-planar with stride fix, else output stride */
+		if (vfe31_nv12_stride_fix && is_semi_planar && !is_rdi_line)
+			wpl = (width * 2) / 4;  /* Input stride in 32-bit words */
+		else
+			wpl = bytesperline / 4;  /* Output stride in 32-bit words */
 
 		/* Lines field: 0 for single-plane, height-24 for multi-plane Y */
 		if (vfe31_pix_y_lines < 0)
@@ -5124,16 +5131,15 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				u16 image_stride = vfe31_calc_image_stride(width, bytesperline,
 									   false, pix->pixelformat);
 				int img_height_val;
-				bool is_nv12 = (pix->pixelformat == V4L2_PIX_FMT_NV12 ||
-						pix->pixelformat == V4L2_PIX_FMT_NV21);
+				bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
 
 				/*
-				 * NV12 stride workaround (controlled by vfe31_nv12_stride_fix).
+				 * Semi-planar stride workaround (controlled by vfe31_nv12_stride_fix).
 				 * See PIX mode IMAGE_SIZE comment for detailed explanation.
 				 */
-				if (vfe31_nv12_stride_fix && is_nv12 && image_stride < width * 2) {
+				if (vfe31_nv12_stride_fix && is_semi_planar && image_stride < width * 2) {
 					dev_info(vfe->camss->dev,
-						 "VFE31: VIDEO NV12 stride fix, forcing stride=%d→%d\n",
+						 "VFE31: VIDEO semi-planar stride fix, forcing stride=%d→%d\n",
 						 image_stride, width * 2);
 					image_stride = width * 2;
 				}
@@ -5148,18 +5154,26 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				dev_info(vfe->camss->dev,
 					 "VFE31: VIDEO WM1 IMAGE_SIZE stride=%d height=%d (h_param=%d%s)\n",
 					 image_stride, img_height_val, vfe31_video_y_img_height,
-					 is_nv12 ? " NV12" : "");
+					 is_semi_planar ? " semi-planar" : "");
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
 			}
 
 			/*
 			 * VIDEO Y WM ADDR_CFG - VFE31 format:
-			 * Use bytesperline to match buffer allocation.
+			 * For semi-planar with stride fix: use INPUT stride (width * 2).
+			 * For other formats: use bytesperline (OUTPUT stride).
 			 */
 			{
 				int lines_val, burst_val;
-				u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
+				bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
+				u32 buf_wpl;
+
+				/* Use input stride for semi-planar with stride fix, else output stride */
+				if (vfe31_nv12_stride_fix && is_semi_planar)
+					buf_wpl = (width * 2) / 4;  /* Input stride in 32-bit words */
+				else
+					buf_wpl = bytesperline / 4;  /* Output stride in 32-bit words */
 
 				if (vfe31_video_y_lines < 0)
 					lines_val = height - 24;  /* auto: same as CbCr */
@@ -5180,12 +5194,13 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			}
 
 			/*
-			 * VIDEO Y WM UB_CFG - use bytesperline
+			 * VIDEO Y WM UB_CFG - use INPUT stride (width * 2)
+			 * UB buffers incoming data BEFORE demux, so needs input stride.
 			 * Upper 16 bits: (wpl / 8) - 1
 			 * Lower 16 bits: height - 1
 			 */
 			{
-				u32 buf_wpl = bytesperline / 4;  /* words per line from buffer stride */
+				u32 input_wpl = (width * 2) / 4;  /* Input stride in 32-bit words */
 				int ub_height_val;
 
 				if (vfe31_video_y_ub_height < 0)
@@ -5193,11 +5208,11 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				else
 					ub_height_val = vfe31_video_y_ub_height;  /* explicit */
 
-				reg = ((buf_wpl / 8 - 1) & 0xFFFF) << 16;
+				reg = ((input_wpl / 8 - 1) & 0xFFFF) << 16;
 				reg |= ub_height_val & 0xFFFF;
 				dev_info(vfe->camss->dev,
 					 "VFE31: VIDEO WM1 UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, param=%d)\n",
-					 reg, (buf_wpl / 8 - 1), ub_height_val, vfe31_video_y_ub_height);
+					 reg, (input_wpl / 8 - 1), ub_height_val, vfe31_video_y_ub_height);
 			}
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(VFE31_VIDEO_WM_Y));
