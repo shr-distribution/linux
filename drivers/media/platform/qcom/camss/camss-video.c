@@ -68,23 +68,26 @@ static int video_mbus_to_pix_mp(const struct v4l2_mbus_framefmt *mbus,
 		pix->plane_fmt[i].bytesperline = bytesperline;
 
 		/*
-		 * VFE31 PIX/VIDEO mode with NV12: DMA writes Y plane at UYVY
-		 * input stride (2x), but CbCr plane uses normal output stride.
-		 * Only apply stride_factor to the Y portion of single-plane
-		 * semi-planar formats (NV12/NV21/NV16/NV61).
+		 * VFE31 PIX/VIDEO mode: VFE writes Y and CbCr at OUTPUT stride
+		 * (width), not input stride. The stride_factor was incorrectly
+		 * applied here based on the assumption that Y uses input stride.
+		 *
+		 * Actual VFE31 behavior (verified via register dumps and captures):
+		 * - Y plane:    width * height bytes (e.g., 640 * 480 = 307200)
+		 * - CbCr plane: width * cbcr_height bytes (e.g., 640 * 240 = 153600)
+		 *
+		 * The stride_factor only affects IMAGE_SIZE register config
+		 * (for IRQ timing), not actual DMA write stride.
 		 */
-		if (stride_factor > 1 && f->planes == 1 && vsub_num > 1) {
-			/*
-			 * Semi-planar with stride_factor: Both Y and CbCr use
-			 * input stride on VFE31, so both need stride_factor.
-			 */
-			u32 y_size = pix->height * bytesperline * stride_factor;
+		if (f->planes == 1 && vsub_num > 1) {
+			/* Semi-planar: Y + CbCr in single contiguous buffer */
+			u32 y_size = pix->height * bytesperline;
 			u32 cbcr_height = pix->height * (vsub_den - vsub_num) / vsub_num;
-			u32 cbcr_size = cbcr_height * bytesperline * stride_factor;
+			u32 cbcr_size = cbcr_height * bytesperline;
 			pix->plane_fmt[i].sizeimage = y_size + cbcr_size;
 		} else {
 			pix->plane_fmt[i].sizeimage = pix->height /
-				vsub_num * vsub_den * bytesperline * stride_factor;
+				vsub_num * vsub_den * bytesperline;
 		}
 	}
 
@@ -217,15 +220,14 @@ static int video_buf_init(struct vb2_buffer *vb)
 			format->pixelformat == V4L2_PIX_FMT_NV16 ||
 			format->pixelformat == V4L2_PIX_FMT_NV61) {
 		/*
-		 * CbCr offset = Y plane size.
-		 * For VFE31 with stride_factor, Y plane uses input stride
-		 * (bytesperline * stride_factor), not output stride.
-		 * This must match VFE31's cbcr_offset calculation.
+		 * CbCr offset = Y plane size = bytesperline * height.
+		 *
+		 * VFE31 writes Y at OUTPUT stride (width), not input stride.
+		 * The stride_factor only affects IMAGE_SIZE register timing,
+		 * not actual DMA write stride. Do NOT multiply by stride_factor.
 		 */
 		u32 y_plane_size = format->plane_fmt[0].bytesperline *
 				   format->height;
-		if (video->stride_factor > 1)
-			y_plane_size *= video->stride_factor;
 		buffer->addr[1] = buffer->addr[0] + y_plane_size;
 	}
 
@@ -738,39 +740,31 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		}
 
 		/*
-		 * VFE31 PIX/VIDEO mode with NV12: DMA writes Y plane at UYVY
-		 * input stride (2x), but CbCr plane uses normal output stride.
-		 * Only apply stride_factor to the Y portion of single-plane
-		 * semi-planar formats (NV12/NV21/NV16/NV61).
+		 * VFE31 PIX/VIDEO mode: VFE writes Y and CbCr at OUTPUT stride
+		 * (width), not input stride. The stride_factor only affects
+		 * IMAGE_SIZE register config (for IRQ timing), not actual DMA.
 		 *
 		 * For single-plane formats where vsub_num > 1 (meaning Y + CbCr
 		 * packed in one buffer), calculate Y and CbCr sizes separately.
 		 */
-		if (stride_factor > 1 && fi->planes == 1 && vsub_num > 1) {
-			/*
-			 * Semi-planar with stride_factor: Y plane uses input
-			 * stride (width*2) on VFE31, but CbCr uses output stride.
-			 * Only apply stride_factor to Y size.
-			 *
-			 * Round up to page boundary to ensure DMA-SG allocator
-			 * provides enough contiguous IOVA space for the full buffer.
-			 */
-			u32 y_size = pix_mp->height * bpl * stride_factor;
+		if (fi->planes == 1 && vsub_num > 1) {
+			/* Semi-planar: Y + CbCr in single contiguous buffer */
+			u32 y_size = pix_mp->height * bpl;
 			u32 cbcr_height = pix_mp->height * (vsub_den - vsub_num) / vsub_num;
-			u32 cbcr_size = cbcr_height * bpl;  /* CbCr uses output stride */
+			u32 cbcr_size = cbcr_height * bpl;
 			u32 total = y_size + cbcr_size;
 			/* Round up to 1MB boundary to ensure DMA-SG provides
 			 * enough contiguous IOVA space between buffers */
 			pix_mp->plane_fmt[i].sizeimage = ALIGN(total, SZ_1M);
-			pr_info("camss-video: sizeimage stride_factor path: y=%u cbcr=%u total=%u aligned=%u (sf=%u vsub=%u/%u)\n",
+			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u total=%u aligned=%u (vsub=%u/%u)\n",
 				y_size, cbcr_size, total, pix_mp->plane_fmt[i].sizeimage,
-				stride_factor, vsub_num, vsub_den);
+				vsub_num, vsub_den);
 		} else {
 			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
-				vsub_num * vsub_den * bpl * stride_factor;
-			pr_info("camss-video: sizeimage default path: %u (h=%u vsub=%u/%u bpl=%u sf=%u)\n",
+				vsub_num * vsub_den * bpl;
+			pr_info("camss-video: sizeimage default path: %u (h=%u vsub=%u/%u bpl=%u)\n",
 				pix_mp->plane_fmt[i].sizeimage, pix_mp->height,
-				vsub_num, vsub_den, bpl, stride_factor);
+				vsub_num, vsub_den, bpl);
 		}
 	}
 
