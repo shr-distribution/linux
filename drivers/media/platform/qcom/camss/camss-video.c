@@ -751,13 +751,19 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 			 * Semi-planar with stride_factor: Y plane uses input
 			 * stride (width*2) on VFE31, but CbCr uses output stride.
 			 * Only apply stride_factor to Y size.
+			 *
+			 * Round up to page boundary to ensure DMA-SG allocator
+			 * provides enough contiguous IOVA space for the full buffer.
 			 */
 			u32 y_size = pix_mp->height * bpl * stride_factor;
 			u32 cbcr_height = pix_mp->height * (vsub_den - vsub_num) / vsub_num;
 			u32 cbcr_size = cbcr_height * bpl;  /* CbCr uses output stride */
-			pix_mp->plane_fmt[i].sizeimage = y_size + cbcr_size;
-			pr_info("camss-video: sizeimage stride_factor path: y=%u cbcr=%u total=%u (sf=%u vsub=%u/%u)\n",
-				y_size, cbcr_size, y_size + cbcr_size,
+			u32 total = y_size + cbcr_size;
+			/* Round up to 1MB boundary to ensure DMA-SG provides
+			 * enough contiguous IOVA space between buffers */
+			pix_mp->plane_fmt[i].sizeimage = ALIGN(total, SZ_1M);
+			pr_info("camss-video: sizeimage stride_factor path: y=%u cbcr=%u total=%u aligned=%u (sf=%u vsub=%u/%u)\n",
+				y_size, cbcr_size, total, pix_mp->plane_fmt[i].sizeimage,
 				stride_factor, vsub_num, vsub_den);
 		} else {
 			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
