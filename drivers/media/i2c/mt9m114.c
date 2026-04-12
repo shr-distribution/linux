@@ -2532,6 +2532,7 @@ mt9m113_streaming:
 
 			if (is_bayer) {
 				u16 output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
+				u16 mode_output_format_reg;
 				u64 readback;
 
 				if (mt9m113_cont_mipi_clk)
@@ -2560,6 +2561,41 @@ mt9m113_streaming:
 				    (output_ctrl_val & ~MT9M113_OUTPUT_CONTROL_RO_MASK)) {
 					dev_warn(&sensor->client->dev,
 						 "MT9M113: OUTPUT_CONTROL still wrong after re-write!\n");
+				}
+
+				/*
+				 * CRITICAL: Also re-write MODE_OUTPUT_FORMAT after SEQ_CMD!
+				 *
+				 * Just like OUTPUT_CONTROL, the MCU may reset MODE_OUTPUT_FORMAT
+				 * to its default (YUV=0x0000) when SEQ_CMD=RUN completes.
+				 * We must re-write it to 0x0100 (Processed Bayer) for RAW capture.
+				 */
+				mode_output_format_reg = use_context_b ?
+					MT9M113_MODE_OUTPUT_FORMAT_B :
+					MT9M113_MODE_OUTPUT_FORMAT_A;
+
+				dev_info(&sensor->client->dev,
+					 "MT9M113: Re-writing MODE_OUTPUT_FORMAT_%c=0x0100 after SEQ_CMD (Bayer fix)\n",
+					 use_context_b ? 'B' : 'A');
+
+				ret = mt9m113_write_mcu_var(sensor, mode_output_format_reg,
+							   MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER);
+				if (ret) {
+					dev_err(&sensor->client->dev,
+						"MT9M113: MODE_OUTPUT_FORMAT re-write failed: %d\n", ret);
+					goto error;
+				}
+
+				/* Verify MODE_OUTPUT_FORMAT stuck */
+				msleep(5);
+				mt9m113_read_mcu_var(sensor, mode_output_format_reg, &readback);
+				dev_info(&sensor->client->dev,
+					 "MT9M113: MODE_OUTPUT_FORMAT_%c readback=0x%04llx (expected=0x0100)\n",
+					 use_context_b ? 'B' : 'A', readback);
+
+				if (readback != MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER) {
+					dev_warn(&sensor->client->dev,
+						 "MT9M113: MODE_OUTPUT_FORMAT still wrong after re-write!\n");
 				}
 			}
 		}
