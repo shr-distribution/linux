@@ -5099,15 +5099,19 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 *
 	 * Note: This is skipped for RDI lines (axi_mode = 0x60) since they
 	 * use raw bypass mode and don't need VIDEO WM configuration.
+	 *
+	 * Also skip when VIDEO uses the same WMs as PIX (WM0+WM4), since
+	 * the WM configuration was already done in Steps 2-6 above.
 	 */
 	if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		if (line->id == VFE_LINE_VIDEO) {
+		if (line->id == VFE_LINE_VIDEO &&
+		    vfe31_video_y_wm != 0) {
 			/*
-			 * VIDEO line starting - configure WM4 (Y) and WM1 (CbCr)
-			 * with VIDEO line's buffer addresses.
+			 * VIDEO line starting with dedicated WMs (WM1+WM5).
+			 * Configure WM1 (Y) and WM5 (CbCr) with VIDEO buffer addresses.
 			 *
-			 * VIDEO uses: WM4 (Y) + WM1 (CbCr)
-			 * XBAR 0x1A1B routes: Y→WM0+WM4, CbCr→WM1
+			 * Note: When VIDEO uses WM0+WM4 (same as PIX), this is skipped
+			 * because the WMs are already configured by Steps 2-6 above.
 			 */
 			struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
 			u32 width = pix->width;
