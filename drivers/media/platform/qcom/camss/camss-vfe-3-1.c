@@ -1116,13 +1116,56 @@ extern int software_eof_enable;
 #define VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN	BIT(5)
 #define VFE_0_BUS_CFG_VIEW_Y_WR_PATH_EN		BIT(6)
 #define VFE_0_BUS_CFG_VIEW_CBCR_WR_PATH_EN	BIT(7)
-#define VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT	8
+/*
+ * RAW pixel data size field is at bits 2-3 (shift = 2), discovered from
+ * HTC liboemcamera.so axi_raw_snapshot_config decompilation:
+ *   8-bit:  0x2aaa771 (bits 2-3 = 00)
+ *   10-bit: 0x2aaa775 (bits 2-3 = 01)
+ *   12-bit: 0x2aaa779 (bits 2-3 = 10)
+ */
+#define VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT	2
+#define VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_MASK	(0x3 << VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT)
 #define VFE_0_BUS_CFG_RAW_PIXEL_8BIT		(0 << VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT)
 #define VFE_0_BUS_CFG_RAW_PIXEL_10BIT		(1 << VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT)
 #define VFE_0_BUS_CFG_RAW_PIXEL_12BIT		(2 << VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_SHFT)
 #define VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT	10
 #define VFE_0_BUS_CFG_RAW_WR_PATH_DISABLED	(0 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
 #define VFE_0_BUS_CFG_RAW_WR_PATH_ENC_CBCR	(1 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
+
+/*
+ * Get BUS_CFG value adjusted for RAW pixel bit depth.
+ * @raw_bpp: bits per pixel (8, 10, or 12 for RAW; 0 for non-RAW)
+ *
+ * From HTC liboemcamera.so axi_raw_snapshot_config decompilation:
+ *   8-bit RAW:  BUS_CFG = 0x2aaa771 (bits 2-3 = 00)
+ *   10-bit RAW: BUS_CFG = 0x2aaa775 (bits 2-3 = 01)
+ *   12-bit RAW: BUS_CFG = 0x2aaa779 (bits 2-3 = 10)
+ *
+ * The RAW pixel data size field is at bits 2-3 (shift = 2).
+ */
+static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
+{
+	u32 base_cfg = vfe31_bus_cfg ? vfe31_bus_cfg : VFE_0_BUS_CFG_WEBOS_VALUE;
+	u32 raw_size_bits;
+
+	/* Clear existing RAW pixel size bits (2-3) */
+	base_cfg &= ~VFE_0_BUS_CFG_RAW_PIXEL_DATA_SIZE_MASK;
+
+	switch (raw_bpp) {
+	case 10:
+		raw_size_bits = VFE_0_BUS_CFG_RAW_PIXEL_10BIT;
+		break;
+	case 12:
+		raw_size_bits = VFE_0_BUS_CFG_RAW_PIXEL_12BIT;
+		break;
+	case 8:
+	default:
+		raw_size_bits = VFE_0_BUS_CFG_RAW_PIXEL_8BIT;
+		break;
+	}
+
+	return base_cfg | raw_size_bits;
+}
 
 /*
  * ============================================================================
@@ -4721,11 +4764,21 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 * webOS uses 0x02AAA771 which enables view/enc Y/CbCr paths.
 	 */
 	if (axi_mode == VFE_0_BUS_AXI_OUT_MODE_RAW_WM0) {
-		/* RDI mode (0x60): Raw bypass, no XBAR needed */
+		/*
+		 * RDI mode (0x60): Raw bypass, configure based on format bit depth.
+		 * BUS_CFG RAW pixel size field (bits 2-3) must match the format:
+		 *   8-bit:  BUS_CFG = 0x2aaa771
+		 *   10-bit: BUS_CFG = 0x2aaa775
+		 *   12-bit: BUS_CFG = 0x2aaa779
+		 */
+		u8 raw_bpp = camss_format_get_bpp(line->formats, line->nformats,
+						  line->fmt[MSM_VFE_PAD_SINK].code);
+		u32 bus_cfg = vfe31_get_bus_cfg_for_raw(raw_bpp);
+
 		dev_info(vfe->camss->dev,
-			 "VFE31: Step 1 - RDI mode: BUS_CFG=0x%08x, AXI=0x60 (raw bypass)\n",
-			 VFE_0_BUS_CFG_WEBOS_VALUE);
-		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
+			 "VFE31: Step 1 - RDI mode: BUS_CFG=0x%08x (bpp=%u), AXI=0x60 (raw bypass)\n",
+			 bus_cfg, raw_bpp);
+		writel_relaxed(bus_cfg, vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(VFE_0_BUS_AXI_OUT_MODE_RAW_WM0,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 		/* No XBAR configuration for RDI mode */
