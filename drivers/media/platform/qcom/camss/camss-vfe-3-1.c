@@ -5406,6 +5406,17 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				dev_info(vfe->camss->dev,
 					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (module param)\n",
 					 vfe->irq_comp_mask_shadow);
+			} else if (is_rdi_line) {
+				/*
+				 * RDI mode: Map WM to composite group 1 (bits 8-15).
+				 * COMPOSITE_DONE_1 (IRQ bit 22) fires when WM completes.
+				 * This matches webOS raw snapshot mode.
+				 */
+				u8 wm0 = line->output.wm_idx[0];
+				vfe->irq_comp_mask_shadow = (1 << (wm0 + 8));
+				dev_info(vfe->camss->dev,
+					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (RDI WM%d->group1)\n",
+					 vfe->irq_comp_mask_shadow, wm0);
 			} else if (video_active && !pix_active) {
 				/* VIDEO-only: WM1 (Y) + WM4 (CbCr), no WM0 */
 				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
