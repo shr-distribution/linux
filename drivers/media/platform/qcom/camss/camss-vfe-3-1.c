@@ -676,6 +676,21 @@ MODULE_PARM_DESC(vfe31_bus_cmd_reload,
 		 "VFE31 BUS_CMD reload value: 0=default (0x7FFF), >0=use value");
 
 /*
+ * RDI/raw mode EFS_CFG override.
+ * -1 = use default (0x40, same as PIX mode)
+ *  0 = APS mode (EFS codes ignored, CAMIF counts lines internally)
+ * >0 = use this value directly
+ *
+ * If RDI mode doesn't count lines properly, try setting this to 0.
+ * EFS_CFG 0x40 (bit 6) enables some timing/sync feature from webOS.
+ * For raw capture without MIPI embedded sync, 0 (APS mode) might work better.
+ */
+static int vfe31_rdi_efs_cfg = -1;
+module_param(vfe31_rdi_efs_cfg, int, 0644);
+MODULE_PARM_DESC(vfe31_rdi_efs_cfg,
+		 "VFE31 RDI EFS_CFG: -1=default (0x40), 0=APS mode, >0=use value");
+
+/*
  * Helper to get effective BUS_CFG value (module param or default).
  * Default is 0x02AAA771 per webOS register dumps.
  */
@@ -6177,14 +6192,62 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * Step 6: Configure CAMIF registers
 	 *
 	 * EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set)
-	 * FRAME_CFG at 0x1E8: webOS leaves at 0 (not used)
+	 * FRAME_CFG at 0x1E8: Frame dimensions for raw mode
+	 *   - webOS leaves at 0 for PIX mode (not needed with DEMUX)
+	 *   - For RDI/raw mode, set frame dimensions to help CAMIF count lines
 	 * WINDOW_WIDTH_CFG at 0x1EC: (height << 16) | width_bytes
 	 * WINDOW_HEIGHT_CFG at 0x1F0: width_bytes - 1
 	 * SUBSAMPLE_CFG_0 at 0x1F4: height - 1
 	 * SUBSAMPLE_CFG_1 at 0x1F8: 0xFFFFFFFF (no frame skip)
 	 */
-	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
-	writel_relaxed(0, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		u32 efs_cfg;
+
+		if (is_rdi && vfe31_rdi_efs_cfg >= 0) {
+			/* Use module parameter for RDI EFS_CFG */
+			efs_cfg = vfe31_rdi_efs_cfg;
+			dev_info(vfe->camss->dev,
+				 "VFE31: RDI EFS_CFG=0x%02x (module param)\n", efs_cfg);
+		} else {
+			/* Default: 0x40 (webOS value) */
+			efs_cfg = 0x40;
+			dev_info(vfe->camss->dev,
+				 "VFE31: EFS_CFG=0x%02x (webOS default)\n", efs_cfg);
+		}
+		writel_relaxed(efs_cfg, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	}
+
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+
+		if (is_rdi) {
+			/*
+			 * RDI/raw mode: Set FRAME_CFG with frame dimensions.
+			 * This tells CAMIF the exact pixelsPerLine and linesPerFrame
+			 * so it can count lines even without embedded sync codes.
+			 *
+			 * FRAME_CFG format:
+			 *   [13:0]  = pixelsPerLine (width in bytes)
+			 *   [29:16] = linesPerFrame (height)
+			 *
+			 * webOS never used raw mode, so leaving FRAME_CFG=0 was OK
+			 * for their PIX/VIDEO modes. For raw mode we need it set.
+			 */
+			val = (height << 16) | (width_bytes & 0x3FFF);
+			writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+			dev_info(vfe->camss->dev,
+				 "VFE31: RDI FRAME_CFG=0x%08x (lines=%u, pixels=%u)\n",
+				 val, height, width_bytes);
+		} else {
+			/* PIX/VIDEO mode: webOS leaves FRAME_CFG at 0 */
+			writel_relaxed(0, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+		}
+	}
 
 	val = (height << 16) | (width_bytes & 0xFFFF);
 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
