@@ -3666,15 +3666,17 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	/*
 	 * Apply UV swap if requested via module parameter.
 	 * This exchanges Cb and Cr channel routing in the DEMUX output.
-	 * For UYVY: normal=0xCA, swapped=0xAC
+	 * For UYVY: normal=0xC9CA, swapped=0xCAC9 (swap both bytes).
+	 * From webOS msm_vfe8x_proc.c: normal demeven/odd=0xC9CA, swapped=0xCAC9.
 	 */
 	if (vfe31_swap_uv) {
-		if (odd_cfg == 0xca)
-			odd_cfg = 0xac;
-		else if (odd_cfg == 0xac)
-			odd_cfg = 0xca;
+		u8 tmp = even_cfg;
+
+		even_cfg = odd_cfg;
+		odd_cfg = tmp;
 		dev_info(vfe->camss->dev,
-			 "VFE31: UV swap enabled, odd_cfg=0x%02x\n", odd_cfg);
+			 "VFE31: UV swap enabled, even=0x%02x odd=0x%02x\n",
+			 even_cfg, odd_cfg);
 	}
 
 	/*
