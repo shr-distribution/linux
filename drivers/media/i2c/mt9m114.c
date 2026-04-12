@@ -624,18 +624,11 @@ static const struct mt9m114_format_info mt9m114_format_infos[] = {
 		 */
 		.code = MEDIA_BUS_FMT_UYVY8_2X8,
 		.flags = MT9M114_FMT_FLAG_PARALLEL,
-		/*
-		 * VFE31 DEMUX configured for UYVY produces NV21 instead of NV12,
-		 * indicating sensor actually outputs VYUY by default. Add
-		 * SWAP_RED_BLUE to swap Cb/Cr and get proper UYVY output.
-		 */
-		.output_format = MT9M114_CAM_OUTPUT_FORMAT_FORMAT_YUV
-			       | MT9M114_CAM_OUTPUT_FORMAT_SWAP_RED_BLUE,
+		.output_format = MT9M114_CAM_OUTPUT_FORMAT_FORMAT_YUV,
 	}, {
 		.code = MEDIA_BUS_FMT_UYVY8_1X16,
 		.flags = MT9M114_FMT_FLAG_CSI2,
-		.output_format = MT9M114_CAM_OUTPUT_FORMAT_FORMAT_YUV
-			       | MT9M114_CAM_OUTPUT_FORMAT_SWAP_RED_BLUE,
+		.output_format = MT9M114_CAM_OUTPUT_FORMAT_FORMAT_YUV,
 	}, {
 		.code = MEDIA_BUS_FMT_YUYV8_2X8,
 		.flags = MT9M114_FMT_FLAG_PARALLEL,
