@@ -3641,11 +3641,12 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	case MEDIA_BUS_FMT_UYVY8_2X8:
 	default:
 		/*
-		 * webOS uses 0xC9CA for UYVY preview mode.
-		 * This seems to be (0xC9 << 8) | 0xCA format.
+		 * Use swapped config 0xCAC9 instead of webOS 0xC9CA.
+		 * Testing shows 0xC9CA produces NV21 (CrCb) output but we
+		 * report NV12 (CbCr). Swapping to 0xCAC9 fixes the Cb/Cr order.
 		 */
-		even_cfg = 0xc9;
-		odd_cfg = 0xca;
+		even_cfg = 0xca;
+		odd_cfg = 0xc9;
 		break;
 	case MEDIA_BUS_FMT_VYUY8_1X16:
 	case MEDIA_BUS_FMT_VYUY8_2X8:
