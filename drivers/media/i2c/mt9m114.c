@@ -68,6 +68,17 @@ MODULE_PARM_DESC(mt9m113_skip_short_pkt,
 		 "Skip CUSTOM_SHORT_PKT (0x3404) write to match webOS (1=skip default, 0=enable FS/FE)");
 
 /*
+ * Fake YUV trick for VFE31 RDI mode debugging.
+ * When enabled, RAW Bayer output uses YUV MIPI data type (0x1E) instead of
+ * RAW8 (0x2A). This tests if VFE31's CAMIF_TO_AXI path has data type filtering.
+ * The actual pixel data is still RAW Bayer, only the MIPI packet type changes.
+ */
+static int mt9m113_fake_yuv = 0;
+module_param(mt9m113_fake_yuv, int, 0644);
+MODULE_PARM_DESC(mt9m113_fake_yuv,
+		 "Use YUV MIPI data type for RAW Bayer output (0=normal, 1=fake YUV for RDI debug)");
+
+/*
  * MT9M113 Context V4L2 Control
  *
  * Custom control to select MT9M113 capture context from userspace.
@@ -2302,8 +2313,11 @@ mt9m113_streaming:
 			 * - RAW8:   data_type=0x2A -> OUTPUT_CONTROL=0xAA08
 			 * Without this, RDI mode fails because CSID expects RAW8
 			 * but sensor sends YUV data type.
+			 *
+			 * Fake YUV trick: If mt9m113_fake_yuv=1, use YUV data type
+			 * even for RAW Bayer to test VFE31 data type filtering.
 			 */
-			if (is_bayer)
+			if (is_bayer && !mt9m113_fake_yuv)
 				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
 			else
 				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
@@ -2312,9 +2326,10 @@ mt9m113_streaming:
 				output_ctrl_val |= 0x0004;
 
 			dev_info(&sensor->client->dev,
-				 "MT9M113: OUTPUT_CONTROL=0x%04x (%s, %s)\n",
+				 "MT9M113: OUTPUT_CONTROL=0x%04x (%s%s, %s)\n",
 				 output_ctrl_val,
-				 is_bayer ? "RAW8 dt=0x2A" : "YUV dt=0x1E",
+				 is_bayer ? "RAW8" : "YUV",
+				 (is_bayer && mt9m113_fake_yuv) ? " FAKE_YUV dt=0x1E" : (is_bayer ? " dt=0x2A" : " dt=0x1E"),
 				 mt9m113_cont_mipi_clk ? "cont_clk" : "LP");
 
 			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
@@ -2531,16 +2546,23 @@ mt9m113_streaming:
 				    format->code == MEDIA_BUS_FMT_SGRBG10_1X10);
 
 			if (is_bayer) {
-				u16 output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
+				u16 output_ctrl_val;
 				u16 mode_output_format_reg;
 				u64 readback;
+
+				/* Use fake YUV trick if enabled (YUV dt for RAW data) */
+				if (mt9m113_fake_yuv)
+					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
+				else
+					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
 
 				if (mt9m113_cont_mipi_clk)
 					output_ctrl_val |= 0x0004;
 
 				dev_info(&sensor->client->dev,
-					 "MT9M113: Re-writing OUTPUT_CONTROL=0x%04x after SEQ_CMD (RAW8 fix)\n",
-					 output_ctrl_val);
+					 "MT9M113: Re-writing OUTPUT_CONTROL=0x%04x after SEQ_CMD (%s)\n",
+					 output_ctrl_val,
+					 mt9m113_fake_yuv ? "FAKE_YUV" : "RAW8 fix");
 
 				ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 						output_ctrl_val, NULL);
