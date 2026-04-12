@@ -1008,7 +1008,49 @@ extern int software_eof_enable;
 #define VFE_0_IRQ_STATUS_1_RESET_ACK			BIT(22)
 #define VFE_0_IRQ_STATUS_1_BUS_BDG_HALT_ACK		BIT(23)
 
+/*
+ * IRQ_COMPOSITE_MASK_0 (0x034) - Maps Write Masters to Composite IRQ Groups
+ *
+ * This register controls which Write Masters (WM0-WM6) trigger which
+ * IMAGE_COMPOSITE_DONE_n interrupt. Essential for frame completion detection.
+ *
+ * Bit Layout (32-bit register):
+ *   Bits [7:0]   Group 0 → IMAGE_COMPOSITE_DONE_0 (IRQ_STATUS_0 bit 21)
+ *   Bits [15:8]  Group 1 → IMAGE_COMPOSITE_DONE_1 (IRQ_STATUS_0 bit 22)
+ *   Bits [23:16] Group 2 → IMAGE_COMPOSITE_DONE_2 (IRQ_STATUS_0 bit 23)
+ *
+ * Each bit within a group corresponds to a WM:
+ *   Bit 0/8/16  = WM0    Bit 4/12/20 = WM4
+ *   Bit 1/9/17  = WM1    Bit 5/13/21 = WM5
+ *   Bit 2/10/18 = WM2    Bit 6/14/22 = WM6
+ *   Bit 3/11/19 = WM3
+ *
+ * PIX/YUV Mode Configuration (webOS value: 0x00220011):
+ *   Group 0: 0x11 = WM0 + WM4 (PIX Y + CbCr)
+ *   Group 1: 0x00 = none
+ *   Group 2: 0x22 = WM1 + WM5 (VIDEO Y + CbCr)
+ *   Result: COMPOSITE_DONE_0 fires when both WM0 AND WM4 complete
+ *
+ * Raw/RDI Mode Configuration (from webOS msm_vfe31.c):
+ *   Group 1: bit 8 = WM0 (raw data)
+ *   Formula: irq_comp_mask |= (0x1 << (out1.ch0 + 8))
+ *            = (0x1 << (0 + 8)) = 0x100
+ *   Result: COMPOSITE_DONE_1 fires when WM0 completes
+ *
+ * IMPORTANT: Raw mode uses COMPOSITE_DONE_1 (group 1), not COMPOSITE_DONE_0!
+ * This is because raw snapshot is considered a separate output path from
+ * the normal PIX preview/video modes.
+ */
 #define VFE_0_IRQ_COMPOSITE_MASK_0	0x034
+
+/*
+ * VIOLATION_STATUS (0x048) - Reports ISP pipeline violations
+ *
+ * NOTE: This register may NOT exist on VFE31 (MSM8660). WebOS header
+ * defines it but the hardware may not implement it. Reads often return 0
+ * even when VIOLATION IRQ fires, indicating spurious interrupt or
+ * different violation reporting mechanism on this SoC.
+ */
 #define VFE_0_VIOLATION_STATUS		0x048
 
 #define VFE_0_BUS_CMD			0x038
@@ -1074,16 +1116,61 @@ extern int software_eof_enable;
  * patterns to VFE31.
  *
  * ============================================================================
- * XBAR_CFG0 (0x040) - AXI Output Mode
+ * XBAR_CFG0 (0x040) - AXI Output Mode Selection
  * ============================================================================
  *
- * Selects the overall output routing mode. Values from msm_vfe31.c:
+ * Selects the overall output routing mode. This is the PRIMARY register that
+ * determines whether data flows through the ISP pipeline or bypasses it.
  *
- *   Value   Mode                    Description
+ * Values from webOS msm_vfe31.c enum VFE_AXI_OUTPUT_MODE:
+ *
+ *   Value   Mode                           Description
  *   ─────────────────────────────────────────────────────────────────────────
- *   0x01    OUTPUT_1_AND_3          Preview + Video (WM0/1 + WM4/5)
- *   0x60    CAMIF_TO_AXI_VIA_OUT2   Raw bypass direct to WM0
- *   0x200   OUTPUT_2                Preview only (older mode)
+ *   0x01    OUTPUT_1_AND_3                 Preview + Video with ISP processing
+ *                                          Data path: CAMIF → DEMUX → XBAR → WM
+ *                                          Uses: WM0+WM4 (Y), WM1+WM5 (CbCr)
+ *
+ *   0x60    CAMIF_TO_AXI_VIA_OUTPUT_2      Raw bypass direct to WM0
+ *                                          Data path: CAMIF → WM0 (bypasses ISP)
+ *                                          Uses: WM0 only (raw sensor data)
+ *                                          ISP modules (DEMUX, scale, etc) disabled
+ *
+ *   0x200   OUTPUT_2                       Preview only (older/alternate mode)
+ *                                          Data path: Similar to 0x01 but limited
+ *
+ * ============================================================================
+ * Raw/RDI Mode Configuration (AXI_OUT_MODE = 0x60)
+ * ============================================================================
+ *
+ * Raw snapshot mode (CAMIF_TO_AXI_VIA_OUTPUT_2) routes sensor data directly
+ * from CAMIF to memory via WM0, bypassing all ISP processing modules.
+ *
+ * Required configuration for raw mode:
+ *   1. AXI_OUT_MODE = 0x60 (this register)
+ *   2. MODULE_CFG = 0x00 (disable all ISP modules)
+ *   3. CORE_CFG = 0x40 (input mux enable only, no pixel pattern)
+ *   4. WM0 configured with raw buffer addresses
+ *   5. IRQ_COMPOSITE_MASK: bit 8 set (WM0 → COMPOSITE_DONE_1)
+ *   6. XBAR_CFG1 = 0x00 (not used in raw mode)
+ *
+ * Key differences from YUV mode (0x01):
+ *   - Single WM (WM0) vs dual WM (WM0+WM4 for Y, WM1+WM5 for CbCr)
+ *   - No DEMUX processing (data passes through unchanged)
+ *   - No chroma subsampling or color conversion
+ *   - IRQ uses COMPOSITE_DONE_1 (group 1) vs COMPOSITE_DONE_0 (group 0)
+ *
+ * From webOS msm_vfe31.c raw snapshot configuration:
+ *   case CAMIF_TO_AXI_VIA_OUTPUT_2:
+ *       *p = 0x60;  // raw snapshot with wm0
+ *       vfe31_ctrl->outpath.out1.ch0 = 0;  // raw uses ch0
+ *       vfe31_ctrl->outpath.output_mode |= VFE31_OUTPUT_MODE_S;
+ *       // IRQ: irq_comp_mask |= (0x1 << (out1.ch0 + 8)) = bit 8
+ *
+ * IMPORTANT: webOS never validated raw mode on TouchPad hardware. The code
+ * exists but was not used in production. Raw capture may not work due to:
+ *   - CSIPHY data type filtering (may only pass YUV data types)
+ *   - Missing register configuration not present in webOS code
+ *   - Hardware limitations on APQ8060 VFE31 silicon
  *
  * webOS uses 0x01 for all modes (preview, photo capture, video recording).
  */
@@ -2038,17 +2125,94 @@ static void vfe31_halt_clear(struct vfe_device *vfe)
 	writel_relaxed(0x0, vfe->base + VFE_0_AXI_CMD);
 }
 
+/*
+ * vfe31_dump_axi_wm_debug - Dump AXI and WM status for debugging
+ * @vfe: VFE device
+ *
+ * Dumps comprehensive AXI bus and Write Master status for debugging
+ * data flow issues, especially in RDI mode where CAMIF shows no data.
+ */
+static void vfe31_dump_axi_wm_debug(struct vfe_device *vfe)
+{
+	u32 axi_status, bus_op_status, pp_status, camif_status;
+	u32 wm0_cfg, wm0_ping, wm0_pong, wm0_addr_cfg, wm0_ub_cfg, wm0_img_size;
+	u32 axi_mode, bus_cfg, core_cfg, module_cfg;
+	static int dump_count;
+
+	/* Rate limit to first 5 dumps and every 100th after */
+	if (dump_count > 5 && (dump_count % 100) != 0) {
+		dump_count++;
+		return;
+	}
+	dump_count++;
+
+	/* Read AXI and bus status registers */
+	axi_status = readl_relaxed(vfe->base + VFE_0_AXI_STATUS);
+	bus_op_status = readl_relaxed(vfe->base + VFE_0_BUS_OPERATION_STATUS);
+	pp_status = readl_relaxed(vfe->base + VFE_0_BUS_PING_PONG_STATUS);
+	camif_status = readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS);
+
+	/* Read core configuration */
+	axi_mode = readl_relaxed(vfe->base + VFE_0_BUS_XBAR_CFG0);
+	bus_cfg = readl_relaxed(vfe->base + VFE_0_BUS_CFG);
+	core_cfg = readl_relaxed(vfe->base + VFE_0_CORE_CFG);
+	module_cfg = readl_relaxed(vfe->base + VFE_0_MODULE_CFG);
+
+	/* Read WM0 configuration */
+	wm0_cfg = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(0));
+	wm0_ping = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(0));
+	wm0_pong = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(0));
+	wm0_addr_cfg = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(0));
+	wm0_ub_cfg = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(0));
+	wm0_img_size = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(0));
+
+	dev_info(vfe->camss->dev,
+		 "VFE31 DEBUG DUMP #%d:\n", dump_count);
+	dev_info(vfe->camss->dev,
+		 "  AXI_STATUS(0x1DC)=0x%08x BUS_OP_STATUS(0x184)=0x%08x PP_STATUS(0x180)=0x%08x\n",
+		 axi_status, bus_op_status, pp_status);
+	dev_info(vfe->camss->dev,
+		 "  CAMIF_STATUS(0x204)=0x%08x [lines=%d pixels=%d active=%d]\n",
+		 camif_status,
+		 (camif_status >> 16) & 0x3FFF,
+		 camif_status & 0x3FFF,
+		 (camif_status >> 31) & 1);
+	dev_info(vfe->camss->dev,
+		 "  AXI_MODE(0x40)=0x%08x BUS_CFG(0x3C)=0x%08x CORE_CFG(0x14)=0x%08x MODULE_CFG(0x10)=0x%08x\n",
+		 axi_mode, bus_cfg, core_cfg, module_cfg);
+	dev_info(vfe->camss->dev,
+		 "  WM0: CFG=0x%08x PING=0x%08x PONG=0x%08x\n",
+		 wm0_cfg, wm0_ping, wm0_pong);
+	dev_info(vfe->camss->dev,
+		 "  WM0: ADDR_CFG=0x%08x UB_CFG=0x%08x IMG_SIZE=0x%08x [stride=%d height=%d]\n",
+		 wm0_addr_cfg, wm0_ub_cfg, wm0_img_size,
+		 ((wm0_img_size >> 16) & 0xFFFF) * 16,
+		 (wm0_img_size & 0xFFFF) + 1);
+}
+
 static void vfe31_violation_read(struct vfe_device *vfe)
 {
 	u32 violation = readl_relaxed(vfe->base + VFE_0_VIOLATION_STATUS);
+	static int spurious_count;
 
 	/*
 	 * If VIOLATION_STATUS = 0, this is a spurious interrupt.
 	 * webOS doesn't mask VIOLATION IRQ, so this can happen during
 	 * normal operation. Only log actual violations.
+	 *
+	 * For RDI mode debugging: Dump AXI/WM status on spurious violations
+	 * since these fire continuously and indicate data path issues.
 	 */
 	if (!violation) {
-		dev_info(vfe->camss->dev, "VFE31 VIOLATION IRQ (status=0, spurious)\n");
+		spurious_count++;
+		/* Log first few and every 100th spurious violation */
+		if (spurious_count <= 3 || (spurious_count % 100) == 0) {
+			dev_info(vfe->camss->dev,
+				 "VFE31 VIOLATION IRQ #%d (status=0, spurious)\n",
+				 spurious_count);
+			/* Dump debug info to help diagnose RDI issues */
+			vfe31_dump_axi_wm_debug(vfe);
+		}
 		return;
 	}
 
@@ -6512,6 +6676,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * Step 13: Start CAMIF
 	 * Write 1 to CAMIF_CMD (webOS vfe31_start_common writes 1, not 0x5)
 	 */
+	dev_info(vfe->camss->dev, "VFE31: About to start CAMIF - dumping state BEFORE:\n");
+	vfe31_dump_axi_wm_debug(vfe);
+
 	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
 	wmb();
 
@@ -6531,6 +6698,10 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS),
 		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_BUS_XBAR_CFG1));
+
+	/* Dump state after CAMIF start for comparison */
+	dev_info(vfe->camss->dev, "VFE31: CAMIF started - dumping state AFTER:\n");
+	vfe31_dump_axi_wm_debug(vfe);
 }
 
 /* Gen1 operations structure for VFE31 */
