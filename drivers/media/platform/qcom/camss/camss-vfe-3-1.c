@@ -1859,7 +1859,21 @@ extern int software_eof_enable;
 
 /*
  * Test Pattern Generator Registers (from Mako kernel)
- * Used for internal testing without a real sensor
+ *
+ * NOTE: TESTGEN IS NOT FUNCTIONAL ON APQ8060/MSM8660
+ *
+ * Investigation confirmed that the testgen hardware block does not exist
+ * or is not implemented in silicon on APQ8060 VFE31:
+ *
+ * - TESTGEN_CFG (0x15C) reads back 0x00 after writing - writes don't stick
+ * - Adjacent registers (CORE_CFG, MODULE_CFG) work correctly
+ * - WebOS VFE31 code has testgen command placeholder but no implementation
+ * - VFE32 kernels (Mako, G2) show same pattern - placeholder without code
+ * - VFE8x (older) has working testgen with different register layout (0x364+)
+ *
+ * The register definitions are kept for reference but vfe31_configure_testgen()
+ * will not produce any output on APQ8060. The testgen feature was likely
+ * removed or never implemented in the MSM8660-era VFE31 silicon.
  */
 #define VFE_0_TESTGEN_STATUS		0x158
 #define VFE_0_TESTGEN_CFG		0x15C
@@ -1870,7 +1884,7 @@ extern int software_eof_enable;
 #define VFE_0_TESTGEN_DIMS		0x170
 #define VFE_0_TESTGEN_START_PIXEL	0x174
 
-/* TESTGEN_CFG bit definitions */
+/* TESTGEN_CFG bit definitions (non-functional on APQ8060) */
 #define VFE_0_TESTGEN_CFG_ENABLE	BIT(0)
 #define VFE_0_TESTGEN_CFG_COLORBAR	(0 << 1)
 #define VFE_0_TESTGEN_CFG_RANDOM	(1 << 1)
@@ -6046,12 +6060,15 @@ static void vfe31_force_enable_axi_clock(struct device *dev)
  * @width: test pattern width in pixels
  * @height: test pattern height in lines
  *
- * The VFE31 has an internal test pattern generator that can produce
- * color bar patterns without requiring external camera input.
+ * WARNING: TESTGEN IS NOT FUNCTIONAL ON APQ8060/MSM8660
  *
- * The testgen bypasses CSIPHY/CSID and feeds data directly to CAMIF.
- * WM registers must already be configured by vfe31_enable() before
- * calling this function.
+ * Investigation confirmed that the testgen hardware block does not exist
+ * in APQ8060 silicon. Writes to TESTGEN_CFG do not stick (read back 0x00).
+ * This function is kept for potential use on other VFE31 variants but
+ * will NOT produce any output on HP TouchPad or other APQ8060 devices.
+ *
+ * The testgen was designed to bypass CSIPHY/CSID and feed data directly
+ * to CAMIF for testing without a real camera sensor.
  */
 void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 			     u16 width, u16 height)
