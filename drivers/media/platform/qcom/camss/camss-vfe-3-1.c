@@ -307,17 +307,24 @@ module_param(vfe31_pix_cbcr_wm, int, 0644);
 MODULE_PARM_DESC(vfe31_pix_cbcr_wm,
 		 "VFE31 PIX CbCr WM selection (4=WM4/default, 1=WM1 with XBAR 0x1A1B)");
 
-/* VIDEO Y Write Master (default: WM1) */
-static int vfe31_video_y_wm = 1;
+/*
+ * VIDEO Y Write Master (default: WM0)
+ *
+ * NOTE: With XBAR 0x1A03, CbCr only routes to WM4.
+ * WM1/WM5 do NOT receive correct data with this XBAR setting.
+ * For VIDEO-only capture, use WM0+WM4 (same as PIX mode).
+ * For simultaneous PIX+VIDEO, different WMs would be needed.
+ */
+static int vfe31_video_y_wm = 0;
 module_param(vfe31_video_y_wm, int, 0644);
 MODULE_PARM_DESC(vfe31_video_y_wm,
-		 "VFE31 VIDEO Y WM selection (1=WM1/default, 4=WM4)");
+		 "VFE31 VIDEO Y WM selection (0=WM0/default, 1=WM1)");
 
-/* VIDEO CbCr Write Master (default: WM5) */
-static int vfe31_video_cbcr_wm = 5;
+/* VIDEO CbCr Write Master (default: WM4) */
+static int vfe31_video_cbcr_wm = 4;
 module_param(vfe31_video_cbcr_wm, int, 0644);
 MODULE_PARM_DESC(vfe31_video_cbcr_wm,
-		 "VFE31 VIDEO CbCr WM selection (5=WM5/default)");
+		 "VFE31 VIDEO CbCr WM selection (4=WM4/default, 5=WM5)");
 
 /*
  * ============================================================================
