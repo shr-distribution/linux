@@ -4690,36 +4690,28 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		/*
 		 * PIX mode (0x01): Use XBAR to route DEMUX output to WMs
 		 *
-		 * VFE31 WM assignments:
-		 *   - PIX:   WM0 (Y) + WM1 (CbCr)
-		 *   - VIDEO: WM4 (Y) + WM1 (CbCr, shared)
+		 * Both PIX and VIDEO modes use:
+		 *   - WM0 (Y) + WM4 (CbCr)
 		 *
-		 * XBAR routing:
-		 *   - 0x1A13 (PIX only):  Y→WM0, CbCr→WM1
-		 *   - 0x1A1B (PIX+VIDEO): Y→WM0+WM4, CbCr→WM1
+		 * XBAR routing options:
+		 *   - 0x1A03: CbCr→WM4 (correct for our WM assignment)
+		 *   - 0x1A1B: CbCr→WM1 (wrong, causes Cb/Cr swap)
 		 */
-		struct vfe_output *video_output = &vfe->line[VFE_LINE_VIDEO].output;
-		bool video_active = (video_output->state == VFE_OUTPUT_ON ||
-				     video_output->state == VFE_OUTPUT_RESERVED ||
-				     video_output->state == VFE_OUTPUT_CONTINUOUS);
 		u32 xbar_value;
 
-		/* Use manual override if set, otherwise auto-select */
+		/* Use manual override if set, otherwise use 0x1A03 for WM4 CbCr */
 		if (vfe31_xbar_cfg1 != 0) {
 			xbar_value = vfe31_xbar_cfg1;
-		} else if (line->id == VFE_LINE_VIDEO || video_active) {
-			/* VIDEO line active - route Y to WM0+WM4 */
-			xbar_value = VFE31_XBAR_PIX_VIDEO;
 		} else {
-			/* PIX only - route Y to WM0 only, no WM4 */
+			/* Both PIX and VIDEO use WM4 for CbCr - use 0x1A03 */
 			xbar_value = VFE31_XBAR_PIX_ONLY;
 		}
 
 		dev_info(vfe->camss->dev,
 			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x01, XBAR=0x%04x (%s)\n",
 			 VFE_0_BUS_CFG_WEBOS_VALUE, xbar_value,
-			 xbar_value == VFE31_XBAR_PIX_ONLY ? "PIX only" :
-			 xbar_value == VFE31_XBAR_PIX_VIDEO ? "PIX+VIDEO" : "manual");
+			 xbar_value == VFE31_XBAR_PIX_ONLY ? "CbCr→WM4" :
+			 xbar_value == VFE31_XBAR_PIX_VIDEO ? "CbCr→WM1" : "manual");
 		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
@@ -6453,27 +6445,29 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			u32 xbar_val;
 
 			/*
-			 * Auto-select XBAR based on active lines:
-			 *   - PIX only:  0x1A03 (webOS value, offset-by-4 pairing)
-			 *   - PIX+VIDEO: 0x1A1B (route Y to WM0+WM1)
+			 * Auto-select XBAR based on CbCr WM assignment:
+			 *   - WM4 for CbCr: 0x1A03 (routes CbCr to WM4)
+			 *   - WM1 for CbCr: 0x1A1B (routes CbCr to WM1)
 			 *
-			 * With offset-by-4 pairing:
-			 *   - PIX uses WM0 (Y) + WM4 (CbCr)
-			 *   - VIDEO uses WM1 (Y) + WM5 (CbCr)
+			 * Both PIX and VIDEO modes currently use WM0(Y)+WM4(CbCr),
+			 * so they should both use 0x1A03 for correct Cb/Cr order.
+			 *
+			 * The old logic selected 0x1A1B for VIDEO line, which
+			 * routes CbCr to WM1, causing Cb/Cr swap when WM4 is used.
 			 */
 			if (vfe31_xbar_cfg1 != 0) {
 				xbar_val = vfe31_xbar_cfg1;
-			} else if (line->id == VFE_LINE_VIDEO || video_active) {
-				/* VIDEO line active - enable Y routing to WM1 */
-				xbar_val = VFE31_XBAR_PIX_VIDEO;
 			} else {
-				/* PIX only - webOS default */
+				/*
+				 * Use PIX_ONLY (0x1A03) for both PIX and VIDEO
+				 * since both use WM4 for CbCr output.
+				 */
 				xbar_val = VFE31_XBAR_PIX_ONLY;
 			}
 			dev_info(vfe->camss->dev,
 				 "VFE31: XBAR=0x%04x (%s)\n", xbar_val,
-				 xbar_val == VFE31_XBAR_PIX_ONLY ? "PIX only" :
-				 xbar_val == VFE31_XBAR_PIX_VIDEO ? "PIX+VIDEO" : "manual");
+				 xbar_val == VFE31_XBAR_PIX_ONLY ? "CbCr→WM4" :
+				 xbar_val == VFE31_XBAR_PIX_VIDEO ? "CbCr→WM1" : "manual");
 			writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
 		}
 	}
