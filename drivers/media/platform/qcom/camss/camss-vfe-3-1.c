@@ -3336,10 +3336,26 @@ static int vfe31_enable(struct vfe_line *line)
 	 *
 	 * For PIX mode, we also need XBAR CFG1 at 0x44 = 0x1a1b
 	 * This routes Y→WM0 and CbCr→WM1 for semi-planar output.
+	 *
+	 * For RDI/RAW mode (0x60), use format-aware BUS_CFG that sets the
+	 * RAW pixel size bits (2-3) based on the actual format bit depth.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 1 - BUS_CFG=0x%08x, AXI=0x%x\n",
-		 VFE_0_BUS_CFG_WEBOS_VALUE, axi_mode);
-	writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
+	if (axi_mode == VFE_0_BUS_AXI_OUT_MODE_RAW_WM0) {
+		/* RDI mode: use format-aware BUS_CFG */
+		u8 raw_bpp = camss_format_get_bpp(line->formats, line->nformats,
+						  line->fmt[MSM_VFE_PAD_SINK].code);
+		u32 bus_cfg = vfe31_get_bus_cfg_for_raw(raw_bpp);
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: Step 1 - RDI mode: BUS_CFG=0x%08x (bpp=%u), AXI=0x%x\n",
+			 bus_cfg, raw_bpp, axi_mode);
+		writel_relaxed(bus_cfg, vfe->base + VFE_0_BUS_CFG);
+	} else {
+		/* PIX mode: use base BUS_CFG */
+		dev_info(vfe->camss->dev, "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x%x\n",
+			 VFE_0_BUS_CFG_WEBOS_VALUE, axi_mode);
+		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
+	}
 	writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
 	/*
