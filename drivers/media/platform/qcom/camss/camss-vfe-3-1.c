@@ -270,6 +270,35 @@ MODULE_PARM_DESC(vfe31_pix_cbcr_img_height,
 
 /*
  * ============================================================================
+ * RAW-through-PIX mode (Y-Plane Hack)
+ * ============================================================================
+ *
+ * When enabled, uses PIX mode path (AXI=0x01) but disables DEMUX processing
+ * (MODULE_CFG=0). This allows capturing RAW data through the working PIX path
+ * instead of the broken RDI/CAMIF_TO_AXI path.
+ *
+ * How it works:
+ * 1. Sensor sends RAW8 pixels tagged with YUV MIPI data type (fake_yuv=1)
+ * 2. CAMIF accepts the data (it filters on MIPI data type)
+ * 3. MODULE_CFG=0 disables DEMUX so pixels pass through as-is
+ * 4. WM0 captures the raw bytes (only Y plane used, CbCr disabled)
+ *
+ * Width adjustment: Since RAW8 is 8 bits/pixel (not 16 like YUV422),
+ * the CAMIF width must be halved to get correct byte count:
+ *   1280 input pixels at 8bpp = 1280 bytes
+ *   640 "fake" pixels at 16bpp = 1280 bytes (same data)
+ *
+ * Values:
+ *   0 = Normal PIX mode with DEMUX (default)
+ *   1 = RAW-through-PIX mode (MODULE_CFG=0, WM0 only)
+ */
+static int vfe31_raw_pix_mode = 0;
+module_param(vfe31_raw_pix_mode, int, 0644);
+MODULE_PARM_DESC(vfe31_raw_pix_mode,
+		 "VFE31 RAW-through-PIX mode (0=normal PIX+DEMUX, 1=bypass DEMUX for RAW)");
+
+/*
+ * ============================================================================
  * Write Master selection parameters
  * ============================================================================
  *
@@ -6249,6 +6278,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * Step 2: Configure MODULE_CFG
 	 * PIX mode: Enable DEMUX and processing modules (0x01c00c0c)
 	 * RDI mode: Disable all modules (0) - data bypasses ISP
+	 * RAW-through-PIX mode: Use PIX path but disable DEMUX (0)
 	 */
 	{
 		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
@@ -6258,6 +6288,16 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		if (is_rdi) {
 			dev_info(vfe->camss->dev,
 				 "VFE31: MODULE_CFG=0x0 (RDI raw bypass)\n");
+			writel_relaxed(0, vfe->base + VFE_0_MODULE_CFG);
+		} else if (vfe31_raw_pix_mode) {
+			/*
+			 * RAW-through-PIX mode: Use PIX path but disable DEMUX.
+			 * This allows RAW data to pass through without
+			 * interpretation as YUV. Only WM0 (Y plane) will
+			 * receive data - CbCr is meaningless for RAW.
+			 */
+			dev_info(vfe->camss->dev,
+				 "VFE31: MODULE_CFG=0x0 (RAW-through-PIX, DEMUX disabled)\n");
 			writel_relaxed(0, vfe->base + VFE_0_MODULE_CFG);
 		} else {
 			dev_info(vfe->camss->dev,
