@@ -469,12 +469,24 @@ MODULE_PARM_DESC(vfe31_chroma_v_phase,
 
 /*
  * CHROMA_SUBS_CFG register (0x4F8) - chroma subsample config
- * WebOS uses 0x30. Try different values if CbCr capture is wrong.
+ *
+ * From HTC vfe_chroma_subsample_config decompilation:
+ *   Bit 4: Enable (always set)
+ *   Bit 5: vsubSampleEnable - controls NV12 vs NV16
+ *          1 = NV12 (4:2:0, 2:1 vertical chroma subsampling)
+ *          0 = NV16 (4:2:2, no vertical subsampling)
+ *
+ * Values:
+ *   0x30 = NV12 mode (bit 4 + bit 5) - webOS default
+ *   0x10 = NV16 mode (bit 4 only) - for 4:2:2 full chroma
+ *
+ * Note: HTC binary writes 12 bytes total to 0x4F8-0x503, including
+ * crop configuration. Mainline only writes the first byte.
  */
 static int vfe31_chroma_subs_cfg = -1;  /* -1 = use 0x30 (webOS default) */
 module_param(vfe31_chroma_subs_cfg, int, 0644);
 MODULE_PARM_DESC(vfe31_chroma_subs_cfg,
-		 "VFE31 CHROMA_SUBS_CFG (-1=0x30, >0=explicit)");
+		 "VFE31 CHROMA_SUBS_CFG (-1=0x30/NV12, 0x10=NV16, >0=explicit)");
 
 /*
  * ============================================================================
@@ -875,6 +887,129 @@ extern int software_eof_enable;
 
 #include "camss-vfe.h"
 #include "camss-vfe-gen1.h"
+
+/*
+ * ============================================================================
+ * VFE31 CONFIGURATION REFERENCE - HTC CAMERA BINARY ANALYSIS
+ * ============================================================================
+ *
+ * This section documents configuration values discovered through decompilation
+ * of HTC camera binaries from MSM8660-based devices. These values complement
+ * the webOS kernel sources and provide additional insight into raw capture
+ * and advanced configurations that webOS never used.
+ *
+ * SOURCES:
+ *   - HTC liboemcamera.so (MSM8660 camera HAL library, decompiled with Ghidra)
+ *   - HP webOS msm_vfe31.c/msm_vfe31.h (TouchPad kernel)
+ *   - Qualcomm CAF kernels (Mako, Sony, LG G2)
+ *
+ * Full analysis available in:
+ *   - reports/htc-camera-decompiled/RAW_MODE_ANALYSIS.md
+ *   - reports/vfe31-htc-vs-mainline-comparison.md
+ *   - reports/vfe31-video-path-nv16-analysis.md
+ *
+ * ============================================================================
+ * RAW CAPTURE MODE (from HTC axi_raw_snapshot_config)
+ * ============================================================================
+ *
+ * HTC binary reveals RAW bit depth configuration at BUS_CFG bits 2-3:
+ *
+ *   Bit Depth   BUS_CFG Value   Bits 2-3   Burst Divisor
+ *   ─────────────────────────────────────────────────────────
+ *   8-bit       0x2AAA771       00         8
+ *   10-bit      0x2AAA775       01         6
+ *   12-bit      0x2AAA779       10         5
+ *
+ * The RAW pixel data size field is at bits 2-3 (shift = 2), NOT bits 8-9.
+ * This was discovered from HTC axi_raw_snapshot_config decompilation.
+ *
+ * RAW mode also uses:
+ *   - AXI_OUT_MODE = 0x60 (CAMIF_TO_AXI_VIA_OUTPUT_2)
+ *   - Frame drop pattern = 0x3FFF (no frame drops)
+ *   - WM0 only (single write master, raw bypass)
+ *   - IRQ COMPOSITE_MASK: WM0 in group 1 (bit 8)
+ *
+ * ============================================================================
+ * CHROMA SUBSAMPLE CONFIGURATION (from HTC vfe_chroma_subsample_config)
+ * ============================================================================
+ *
+ * Register: CHROMA_SUBS_CFG at 0x4F8 (12 bytes total)
+ *
+ * Configuration byte (offset 0x4F8) bit layout:
+ *
+ *   Bit   Name              NV12 (4:2:0)   NV16 (4:2:2)
+ *   ─────────────────────────────────────────────────────────
+ *   0-1   Reserved          0              0
+ *   2     Format select     varies         varies
+ *   4     Enable            1              1
+ *   5     vsubSampleEnable  1 (2:1 vert)   0 (no vert sub)
+ *
+ * For NV16 (4:2:2 full chroma):
+ *   - Set bit 4 = 1 (enable)
+ *   - Set bit 5 = 0 (no vertical subsampling)
+ *   - Result: CHROMA_SUBS_CFG[0] = 0x10
+ *
+ * For NV12 (4:2:0 half chroma):
+ *   - Set bit 4 = 1 (enable)
+ *   - Set bit 5 = 1 (2:1 vertical subsampling)
+ *   - Result: CHROMA_SUBS_CFG[0] = 0x30
+ *
+ * Current mainline only writes 1 byte (0x30 for NV12). Full 12-byte
+ * configuration may be needed for proper NV16 support.
+ *
+ * ============================================================================
+ * AXI OUTPUT MODE VALUES (from HTC axi_vfe_config)
+ * ============================================================================
+ *
+ *   Format Mask   Output Mode   Format Type
+ *   ─────────────────────────────────────────────
+ *   0x86          0x200         YUV420 (NV12/NV21)
+ *   0x41          0x1A00        YUV422 (NV16/NV61)
+ *   0x20          0x204000      Other format
+ *   RAW           0x60          Raw bypass
+ *
+ * NOTE: NV16/YUV422 may use different output mode (0x1A00) than NV12 (0x200).
+ * This is NOT yet implemented in mainline - we use 0x01 for all YUV modes.
+ *
+ * ============================================================================
+ * VIDEO PATH (WM1/WM5) CONFIGURATION
+ * ============================================================================
+ *
+ * For simultaneous preview + video capture using WM4/WM5:
+ *
+ *   XBAR_CFG1 = 0x1A9B needed for CbCr to reach both WM1 and WM5:
+ *     - bits [3:0] = 0xB = Y routing to WM0 + WM4
+ *     - bits [7:4] = 0x9 = CbCr routing to WM1 + WM5
+ *     - bits [15:8] = 0x1A = ISP path standard
+ *
+ *   Current XBAR values:
+ *     0x1A1B: CbCr → WM1 only (WM5 receives nothing!)
+ *     0x1A9B: CbCr → WM1 + WM5 (required for VIDEO CbCr)
+ *
+ * WebOS observation: CbCr write masters (WM1, WM4, WM5) were DISABLED
+ * during preview/video! Only Y plane was captured. CbCr was only enabled
+ * during picture capture mode. This means webOS never actually tested
+ * full NV16 output during streaming.
+ *
+ * ============================================================================
+ * VFE COMMAND CODES (from HTC vfe_util_write_hw_cmd)
+ * ============================================================================
+ *
+ *   Command   Value   Description
+ *   ─────────────────────────────────────
+ *   GET_HW_VERSION     0x42   Get VFE hardware version
+ *   MODULE_CFG         0x71   Module configuration
+ *   DEMUX              0x0B   Demux config
+ *   DEMUX_UPDATE       0x21   Demux update
+ *   CHROMA_SS          0x19   Chroma subsample config (12 bytes)
+ *   GAMMA              0x10   Gamma config
+ *   COLOR_CORRECT      0x0F   Color correction config
+ *   WB                 0x0E   White balance config
+ *   STATS_AEC          0x56   AEC stats config
+ *   STATS_AF           0x54   AF stats config
+ *
+ * ============================================================================
+ */
 
 /* VFE 3.1 Register Offsets - based on MSM8x60 VFE31 */
 #define VFE_0_HW_VERSION		0x000
@@ -1325,29 +1460,52 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
 
 /*
  * ============================================================================
- * XBAR_CFG1 VALUES - UPDATED BASED ON WEBOS ANALYSIS
+ * XBAR_CFG1 VALUES - UPDATED BASED ON WEBOS + HTC ANALYSIS
  * ============================================================================
  *
- *   Value   Binary                  Our interpretation (may be wrong!)
- *   ─────────────────────────────────────────────────────────────────────────
- *   0x1A03  0001_1010_0000_0011     WebOS value: offset-by-4 WM pairing
- *   0x1A13  0001_1010_0001_0011     Our orig guess: Y→WM0, CbCr→WM1
- *   0x1A1B  0001_1010_0001_1011     Y→WM0+WM4, CbCr→WM1 (for VIDEO Y output)
- *   0x1A9B  (NOT SUPPORTED - bit 7 not writable, reads back as 0x1A1B)
+ * Analysis of XBAR_CFG1 values and their CbCr routing:
  *
- * KEY INSIGHT FROM WEBOS KERNEL:
- *   - webOS used 0x1A03 with WM0 (Y) + WM4 (CbCr) for preview
- *   - webOS used 0x1A03 with WM1 (Y) + WM5 (CbCr) for video
- *   - BUT webOS NEVER ENABLED the CbCr WMs (WM4, WM5)!
- *   - So we don't actually know if 0x1A03 routes CbCr correctly
+ *   Value   bits[7:4]  CbCr Routing                     Use Case
+ *   ─────────────────────────────────────────────────────────────────────────
+ *   0x1A03  0x0        CbCr DISABLED                    webOS default (Y only!)
+ *   0x1A1B  0x1        CbCr → WM1 only (output0.ch1)    PIX with CbCr
+ *   0x1A9B  0x9        CbCr → WM1 + WM5 (both outputs)  PIX + VIDEO CbCr
+ *
+ * CRITICAL DISCOVERY FROM WEBOS REGISTER DUMPS:
+ *
+ * WebOS captured register state shows CbCr WMs (WM1, WM4, WM5) were DISABLED
+ * during preview/video streaming! Only during PICTURE CAPTURE were CbCr WMs
+ * enabled. This means:
+ *
+ *   1. WebOS never actually streamed CbCr data during preview/video
+ *   2. The XBAR routing for CbCr was never validated in practice
+ *   3. Color preview was likely reconstructed from raw UYVY input in software
+ *
+ * From webOS register dumps:
+ *   PREVIEW/VIDEO MODE:
+ *     WM0 (Y)    = ENABLED
+ *     WM1 (CbCr) = DISABLED!
+ *     WM4 (Y)    = ENABLED
+ *     WM5 (CbCr) = DISABLED!
+ *
+ *   PICTURE CAPTURE MODE:
+ *     WM0 (Y)    = ENABLED
+ *     WM1 (CbCr) = ENABLED!
+ *     WM4 (Y)    = ENABLED
+ *     WM5 (CbCr) = ENABLED!
+ *
+ * For VIDEO path (WM4/WM5) to receive CbCr, XBAR must be 0x1A9B:
+ *   - bits[7:4] = 0x9 routes CbCr to BOTH output0 (WM1) AND output2 (WM5)
+ *   - 0x1A1B only routes to output0 (WM1), leaving WM5 without CbCr data
  *
  * Sources:
  *   - webos-linux-kernel-touchpad/drivers/media/video/msm/msm_vfe31.c
- *   - android.googlesource.com/kernel/msm msm_vfe31.c/msm_vfe32.c
- *   - gitlab.com/k2wl/g2_kernel msm_vfe31.h
+ *   - reports/webos-vfe31-analysis-summary.txt (register dump analysis)
+ *   - reports/vfe31-video-path-nv16-analysis.md (detailed path analysis)
  *
  * We use VFE31_XBAR_PIX_ONLY (0x1A03) defined at top of file, matching webOS.
  * The VFE31_XBAR_PIX_VIDEO (0x1A1B) is available for explicit VIDEO Y routing.
+ * VFE31_XBAR_VIDEO_DUAL (0x1A9B) would be needed for VIDEO CbCr output.
  */
 
 #define VFE_0_BUS_CFG_RAW_WR_PATH_VIEW_CBCR	(2 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
@@ -1787,12 +1945,35 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
 #define VFE_0_CHROMA_V_PHASE		0x4F4
 
 /*
- * Chroma subsample block (0x4F8-0x504): 12 bytes / 3 registers
+ * Chroma subsample block (0x4F8-0x503): 12 bytes / 3 registers
  * Verified against Mako kernel: V31_CHROMA_SUBS_OFF=0x4F8, V31_CHROMA_SUBS_LEN=12
+ *
+ * From HTC liboemcamera.so vfe_chroma_subsample_config decompilation:
+ *
+ *   Offset   Size   Description
+ *   ──────────────────────────────────────────────────────────────
+ *   0x4F8    1      Config byte:
+ *                     Bit 0-1: Reserved (cleared)
+ *                     Bit 2:   Format select (mode-dependent)
+ *                     Bit 4:   Enable (always set)
+ *                     Bit 5:   vsubSampleEnable (1=NV12, 0=NV16)
+ *   0x4F9    1      Crop enable, etc.
+ *   0x4FA    2      Crop width first pixel (16-bit)
+ *   0x4FC    2      Crop width last pixel (16-bit)
+ *   0x4FE    2      Crop height first line (16-bit)
+ *   0x500    2      Crop height last line (16-bit)
+ *   0x502    2      (extends block to 12 bytes)
+ *
+ * HTC writes command 0x19 with 12 bytes (0xC) to configure this block.
+ * Current mainline only writes the config byte at 0x4F8.
+ *
+ * Values for config byte:
+ *   0x30 = NV12 mode (4:2:0): bit 4 (enable) + bit 5 (vsub)
+ *   0x10 = NV16 mode (4:2:2): bit 4 (enable) only
  */
 #define VFE_0_CHROMA_SUBS_CFG		0x4F8	/* Chroma subsample config */
-#define VFE_0_CHROMA_SUBS_CFG2		0x4FC	/* Additional config (unused) */
-#define VFE_0_CHROMA_SUBS_CFG3		0x500	/* Additional config (unused) */
+#define VFE_0_CHROMA_SUBS_CFG2		0x4FC	/* Crop width last pixel */
+#define VFE_0_CHROMA_SUBS_CFG3		0x500	/* Crop height last line */
 
 /* Output clamp */
 #define VFE_0_CLAMP_ENC_MAX_CFG		0x524
