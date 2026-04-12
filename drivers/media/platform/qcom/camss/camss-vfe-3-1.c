@@ -6625,8 +6625,32 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 	/*
 	 * Step 8: Configure BUS_CFG for DMA write paths
+	 *
+	 * For RDI mode, use format-aware BUS_CFG that sets the correct
+	 * RAW pixel data size bits based on bit depth (8/10/12-bit).
+	 * For PIX/VIDEO mode, use the base configuration.
 	 */
-	writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		u32 bus_cfg;
+
+		if (is_rdi) {
+			u8 raw_bpp = camss_format_get_bpp(line->formats,
+							  line->nformats,
+							  line->fmt[MSM_VFE_PAD_SINK].code);
+			bus_cfg = vfe31_get_bus_cfg_for_raw(raw_bpp);
+			dev_info(vfe->camss->dev,
+				 "VFE31: BUS_CFG=0x%08x (RDI, bpp=%u)\n",
+				 bus_cfg, raw_bpp);
+		} else {
+			bus_cfg = vfe31_get_bus_cfg();
+			dev_info(vfe->camss->dev,
+				 "VFE31: BUS_CFG=0x%08x (PIX/VIDEO)\n", bus_cfg);
+		}
+		writel_relaxed(bus_cfg, vfe->base + VFE_0_BUS_CFG);
+	}
 
 	/*
 	 * Step 9: Reload all write masters with pingpong via BUS_CMD
