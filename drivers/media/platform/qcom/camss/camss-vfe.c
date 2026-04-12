@@ -942,6 +942,17 @@ MODULE_PARM_DESC(vfe31_use_testgen, "VFE31: Use internal test generator instead 
 EXPORT_SYMBOL(vfe31_use_testgen);
 
 /*
+ * Testgen dimensions format parameter
+ * Some VFE versions expect pixel width in TESTGEN_DIMS, others expect byte width.
+ * 0 = byte width (default, width_bytes = width * 2 for UYVY)
+ * 1 = pixel width (just the pixel count)
+ */
+int vfe31_testgen_pixel_dims;
+module_param(vfe31_testgen_pixel_dims, int, 0644);
+MODULE_PARM_DESC(vfe31_testgen_pixel_dims, "VFE31 testgen dimensions format (0=bytes, 1=pixels)");
+EXPORT_SYMBOL(vfe31_testgen_pixel_dims);
+
+/*
  * Software EOF workaround for sensors that don't send MIPI Frame End packets.
  *
  * The MT9M113 sensor doesn't send MIPI FS/FE short packets, causing VFE to
