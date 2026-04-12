@@ -381,6 +381,7 @@ int vfe_queue_buffer_v2(struct camss_video *vid,
 
 /* VFE31 test generator mode (extern from camss-vfe.c) */
 extern int vfe31_use_testgen;
+extern int vfe31_testgen_pixel_dims;
 
 /*
  * vfe31_configure_testgen - Configure VFE31 internal test generator

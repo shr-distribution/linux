@@ -2350,7 +2350,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		if (vfe31_invert_pp)
 			active_index = !active_index;
 
-		dev_info(vfe->camss->dev,
+		dev_dbg(vfe->camss->dev,
 			"VFE31: wm_done entry: wm=%d PP=0x%x using_bit%d=%d → HW writing to %s, returning %s buffer\n",
 			wm, ping_pong, pp_wm, active_index,
 			active_index ? "PONG" : "PING",
@@ -2499,7 +2499,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			u32 returning_addr = ready_buf ? (u32)ready_buf->addr[0] : 0;
 			bool addr_match = (returning_addr == expected_addr);
 
-			dev_info(vfe->camss->dev,
+			dev_dbg(vfe->camss->dev,
 				"VFE31: buf_verify seq=%d: PING=0x%08x PONG=0x%08x "
 				"active=%d expect_%s=0x%08x returning=0x%08x %s\n",
 				output->sequence, hw_ping, hw_pong,
@@ -2613,7 +2613,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		 *
 		 * This maintains proper double-buffering with alternating buffers.
 		 */
-		dev_info(vfe->camss->dev,
+		dev_dbg(vfe->camss->dev,
 			"VFE31: wm_done wm=%d PP=0x%x active=%d → updating %s with 0x%08x, seq=%d\n",
 			wm, ping_pong, active_index,
 			active_index ? "PING" : "PONG",
@@ -2671,7 +2671,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		u32 hw_ping = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
 		u32 hw_pong = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(y_wm));
 		u32 hw_pp = readl_relaxed(vfe->base + VFE_0_BUS_PING_PONG_STATUS);
-		dev_info(vfe->camss->dev,
+		dev_dbg(vfe->camss->dev,
 			"VFE31: wm_done complete: WM%d HW_PING=0x%08x HW_PONG=0x%08x PP=0x%x returned_buf=0x%08x seq=%d\n",
 			y_wm, hw_ping, hw_pong, hw_pp, (u32)ready_buf->addr[0], output->sequence - 1);
 	}
@@ -5743,7 +5743,7 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 
 		if (is_y_wm) {
 			vfe->last_y_ping_addr = addr;
-			dev_info(vfe->camss->dev,
+			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PING write 0x%08x (Y)\n", wm, addr);
 		} else if (vfe->last_y_ping_addr && vfe->active_cbcr_offset) {
 			/*
@@ -5751,11 +5751,11 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 			 * Works regardless of which WM is used for CbCr.
 			 */
 			addr = vfe->last_y_ping_addr + vfe->active_cbcr_offset;
-			dev_info(vfe->camss->dev,
+			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PING write 0x%08x (CbCr from Y=0x%08x)\n",
 				wm, addr, vfe->last_y_ping_addr);
 		} else {
-			dev_info(vfe->camss->dev,
+			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PING write 0x%08x (direct)\n", wm, addr);
 		}
 
@@ -5811,15 +5811,15 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 
 		if (is_y_wm) {
 			vfe->last_y_pong_addr = addr;
-			dev_info(vfe->camss->dev,
+			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PONG write 0x%08x (Y)\n", wm, addr);
 		} else if (vfe->last_y_pong_addr && vfe->active_cbcr_offset) {
 			addr = vfe->last_y_pong_addr + vfe->active_cbcr_offset;
-			dev_info(vfe->camss->dev,
+			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PONG write 0x%08x (CbCr from Y=0x%08x)\n",
 				wm, addr, vfe->last_y_pong_addr);
 		} else {
-			dev_info(vfe->camss->dev,
+			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PONG write 0x%08x (direct)\n", wm, addr);
 		}
 
@@ -6084,13 +6084,19 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 
 		/*
 		 * Step 2: Configure test generator registers
-		 * TESTGEN_DIMS: [15:0]=width_bytes, [31:16]=height
-		 * The testgen produces UYVY data so width is in bytes.
+		 * TESTGEN_DIMS: [15:0]=width dimension, [31:16]=height
+		 *
+		 * The format depends on hardware - some expect pixel count,
+		 * others expect byte count. Use module parameter to control.
 		 */
-		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring dimensions %ux%u (bytes=%u)\n",
-			 width, height, width_bytes);
-		writel_relaxed(width_bytes | ((u32)height << 16),
-			       vfe->base + VFE_0_TESTGEN_DIMS);
+		{
+			u32 dim_width = vfe31_testgen_pixel_dims ? width : width_bytes;
+			dev_info(vfe->camss->dev, "VFE TESTGEN: TESTGEN_DIMS=%ux%u (%s)\n",
+				 dim_width, height,
+				 vfe31_testgen_pixel_dims ? "pixels" : "bytes");
+			writel_relaxed(dim_width | ((u32)height << 16),
+				       vfe->base + VFE_0_TESTGEN_DIMS);
+		}
 		writel_relaxed(0, vfe->base + VFE_0_TESTGEN_START_PIXEL);
 
 		/* Set random seeds for pattern variation */
@@ -6103,13 +6109,21 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		/*
 		 * Step 3: Configure CAMIF for testgen input
 		 * CAMIF expects frame dimensions in the same format as camera input.
+		 * For testgen, we also need FRAME_CFG to help CAMIF count lines.
 		 */
-		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring CAMIF\n");
+		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring CAMIF %ux%u (bytes=%u)\n",
+			 width, height, width_bytes);
 		writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
+		/* FRAME_CFG: [13:0]=pixelsPerLine, [29:16]=linesPerFrame */
+		writel_relaxed((height << 16) | (width_bytes & 0x3FFF),
+			       vfe->base + VFE_0_CAMIF_FRAME_CFG);
+		/* WINDOW_WIDTH_CFG: same format */
 		writel_relaxed((height << 16) | (width_bytes & 0x3FFF),
 			       vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+		/* WINDOW_HEIGHT_CFG: last pixel offset */
 		writel_relaxed((width_bytes - 1) & 0x3FFF,
 			       vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+		/* SUBSAMPLE: line count minus 1, no skip */
 		writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
 		writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
 		wmb();
@@ -6193,6 +6207,17 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
 		wmb();
 
+		/* Wait and read back status registers for debug */
+		udelay(500);
+		dev_info(vfe->camss->dev, "VFE TESTGEN: TESTGEN_STATUS=0x%08x TESTGEN_CFG=0x%08x\n",
+			 readl_relaxed(vfe->base + VFE_0_TESTGEN_STATUS),
+			 readl_relaxed(vfe->base + VFE_0_TESTGEN_CFG));
+		dev_info(vfe->camss->dev, "VFE TESTGEN: CAMIF_STATUS=0x%08x CORE_CFG=0x%08x\n",
+			 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS),
+			 readl_relaxed(vfe->base + VFE_0_CORE_CFG));
+		dev_info(vfe->camss->dev, "VFE TESTGEN: MODULE_CFG=0x%08x AXI_OUT_MODE=0x%08x\n",
+			 readl_relaxed(vfe->base + VFE_0_MODULE_CFG),
+			 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG));
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Started successfully\n");
 	} else {
 		/* Stop test generator and CAMIF */
