@@ -1324,13 +1324,12 @@ test_at_resolution() {
                 # On MSM8660/VFE31, there's no hardware RDI path - all data goes
                 # through CAMIF. RDI is emulated via AXI output mode 0x60.
                 #
-                # MT9M114 Bayer CFA pattern is GRBG (Gr at top-left).
-                # Use 8-bit RAW Bayer for true raw capture.
+                # Format depends on USE_RAW_FORMAT:
+                # - RAW mode: SGRBG8 (1 byte/pixel, RAW Bayer from sensor)
+                # - YUV mode: UYVY8 (2 bytes/pixel, YUV from sensor ISP)
                 CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_rdi0'
-                VFE_FMT='SGRBG8_1X8'
-                PIXFMT='GRBG'
-                USE_RAW_FORMAT=1
+                # VFE_FMT will be set after USE_RAW_FORMAT check below
                 ;;
             video)
                 # VIDEO mode: CSID pad 4 -> VFE VIDEO
@@ -1363,12 +1362,21 @@ test_at_resolution() {
         # Set sensor output format
         # For RDI mode, use RAW Bayer format (MT9M114 CFA is GRBG)
         # For PIX/VIDEO mode, use UYVY for DEMUX processing
-        if [ -n \"\$USE_RAW_FORMAT\" ]; then
+        # RAW mode is triggered when format is GRBG (V4L2 8-bit Bayer GRGR/BGBG)
+        if [ \"\$PIXFMT\" = \"GRBG\" ] || [ \"\$PIXFMT\" = \"GREY\" ] || [ \"\$PIXFMT\" = \"SGRBG8\" ]; then
             # RAW Bayer 8-bit for true raw capture
             SENSOR_FMT='SGRBG8_1X8'
+            # VFE must also use RAW format to match sensor
+            VFE_FMT='SGRBG8_1X8'
+            # V4L2 pixel format is GRBG (8-bit Bayer GRGR/BGBG)
+            PIXFMT='GRBG'
             echo 'Configuring sensor for RDI mode (RAW Bayer GRBG, 1 byte/pixel)...'
         else
             SENSOR_FMT='UYVY8_1X16'
+            # For non-RAW RDI mode, use UYVY
+            if [ -z \"\$VFE_FMT\" ]; then
+                VFE_FMT='UYVY8_2X8'
+            fi
         fi
 
         media-ctl -d /dev/media0 -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
@@ -1458,9 +1466,6 @@ test_at_resolution() {
         if [ '$mode' = 'testgen' ]; then
             echo 0 > /sys/module/qcom_camss/parameters/vfe31_use_testgen 2>/dev/null || true
         fi
-
-        # Clear RAW format flag (driver auto-detects AXI mode based on line type)
-        USE_RAW_FORMAT=
 
         # Check result
         if [ -s \"\$OUTPUT\" ]; then
@@ -1704,8 +1709,14 @@ main() {
             rdi640)
                 MODE="rdi640"
                 ;;
+            rdi640-raw)
+                MODE="rdi640-raw"
+                ;;
             rdi1280)
                 MODE="rdi1280"
+                ;;
+            rdi1280-raw)
+                MODE="rdi1280-raw"
                 ;;
             video640)
                 MODE="video640"
@@ -1779,8 +1790,10 @@ main() {
                 echo "Resolution-specific modes (NV12 - 4:2:0 default):"
                 echo "  pix640     PIX mode at 640x480"
                 echo "  pix1280    PIX mode at 1280x1024"
-                echo "  rdi640     RDI mode at 640x480 (UYVY raw)"
-                echo "  rdi1280    RDI mode at 1280x1024 (UYVY raw)"
+                echo "  rdi640     RDI mode at 640x480 (UYVY bypass)"
+                echo "  rdi640-raw RDI mode at 640x480 (RAW Bayer GRBG)"
+                echo "  rdi1280    RDI mode at 1280x1024 (UYVY bypass)"
+                echo "  rdi1280-raw RDI mode at 1280x1024 (RAW Bayer GRBG)"
                 echo "  video640   VIDEO mode at 640x480"
                 echo "  video1280  VIDEO mode at 1280x1024"
                 echo "  testgen640   TESTGEN mode at 640x480"
@@ -1945,9 +1958,19 @@ main() {
             test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
+        rdi640-raw)
+            ensure_camera_ready
+            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 GRBG
+            check_dmesg
+            ;;
         rdi1280)
             ensure_camera_ready
             test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 UYVY
+            check_dmesg
+            ;;
+        rdi1280-raw)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 GRBG
             check_dmesg
             ;;
         video640)
