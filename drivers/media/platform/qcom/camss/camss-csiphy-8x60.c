@@ -143,7 +143,37 @@ static void csiphy_8x60_stop_debug_poll(void);
 #define MIPI_PHY_D3_CONTROL2		0x44
 #define MIPI_PHY_CL_CONTROL		0x48
 
-/* MIPI_PROTOCOL_CONTROL bit definitions */
+/*
+ * MIPI_PROTOCOL_CONTROL Register (0x04) bit definitions
+ *
+ * This register controls CSI-2 protocol decoding and data format handling.
+ *
+ * Key fields:
+ *   Bits [20:19] DATA_FORMAT - Controls pixel unpacking/decoding
+ *                0 = 8-bit data (CSI_8BIT) - for YUV422 and RAW8
+ *                1 = 10-bit data (CSI_10BIT) - for RAW10
+ *                2 = 12-bit data - for RAW12
+ *                3 = Reserved
+ *
+ *   Bit 18      DECODE_ID - Enable decode ID (purpose unclear on MSM8660)
+ *   Bit 17      ECC_EN - Enable ECC error correction for packet headers
+ *   Bit 21      LONG_PACKET_HEADER_CAPTURE - Capture long packet headers
+ *   Bit 27      SW_RST - Software reset
+ *
+ * IMPORTANT: Unlike newer Qualcomm chips (MSM8974+), MSM8660 does NOT have
+ * separate CSID CID_LUT registers for MIPI data type filtering. The integrated
+ * CSIPHY+CSID architecture on MSM8660 passes ALL data types to VFE.
+ *
+ * The DATA_FORMAT field controls HOW data is decoded (8/10/12 bit), NOT which
+ * MIPI data types (0x1E=YUV, 0x2A=RAW8, etc.) are accepted. All data types
+ * should pass through regardless of this setting.
+ *
+ * From webOS msm_io_8x60.c msm_camio_csi_config():
+ *   val |= (csi_params->data_format) << MIPI_PROTOCOL_CONTROL_DATA_FORMAT_SHFT;
+ *   val |= csi_params->dpcm_scheme << MIPI_PROTOCOL_CONTROL_DPCM_SCHEME_SHFT;
+ *
+ * webOS mt9m113 sensor uses: data_format=CSI_8BIT (0), settle_cnt=0x14
+ */
 #define MIPI_PROTOCOL_CONTROL_SW_RST_BMSK			BIT(27)
 #define MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK	BIT(21)
 #define MIPI_PROTOCOL_CONTROL_DATA_FORMAT_BMSK			(0x3 << 19)
