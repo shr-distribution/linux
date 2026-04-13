@@ -202,6 +202,14 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
  */
 #define MT9M113_OUTPUT_CONTROL_MIPI_RAW8		0xAA08	/* RAW8: data_type=0x2A */
 #define MT9M113_OUTPUT_CONTROL_MIPI_RAW8_VERIFY		0xAA00	/* Expected readback */
+/*
+ * RAW10 MIPI output: data_type=0x2B (RAW10) for true raw bypass mode
+ * Bits [15:10] = 0x2B = 43 decimal = RAW10 MIPI data type
+ * 0x2B << 10 = 0xAC00, plus MIPI enable (bit 9) = 0xAC00, plus standby_eof (bit 4) = 0xAC08
+ * Use this for true RAW bypass (no IFP processing) - outputs 10 bits per pixel packed
+ */
+#define MT9M113_OUTPUT_CONTROL_MIPI_RAW10		0xAC08	/* RAW10: data_type=0x2B */
+#define MT9M113_OUTPUT_CONTROL_MIPI_RAW10_VERIFY	0xAC00	/* Expected readback */
 
 /*
  * MT9M113 CUSTOM_SHORT_PKT register (0x3404)
@@ -985,11 +993,27 @@ static int mt9m113_configure_ifp(struct mt9m114 *sensor,
 		 * Determine output format value based on requested format.
 		 * MT9M114's format bits: [9:8] = 0=YUV, 1=RGB, 2=Bayer
 		 * MT9M113's format bits: [8] = processed_bayer, [5] = RGB mode
+		 *
+		 * For MT9M113 Bayer output:
+		 * - bit 8 = 0: Raw Bayer (unprocessed, bypasses IFP)
+		 * - bit 8 = 1: Processed Bayer (8-bit, uses IFP)
 		 */
 		if (info->output_format & MT9M114_CAM_OUTPUT_FORMAT_FORMAT_BAYER) {
-			/* Bayer/RAW output - set bit 8 */
-			mode_output_format_val =
-				MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
+			/*
+			 * Check BAYER_FORMAT field [11:10] to determine
+			 * if we want raw or processed output:
+			 * RAWR10 (0) -> bit 8 = 0 (raw)
+			 * PROCESSED8 (3) -> bit 8 = 1 (processed)
+			 */
+			u16 bayer_format = info->output_format &
+				MT9M114_CAM_OUTPUT_FORMAT_BAYER_FORMAT_MASK;
+
+			if (bayer_format == MT9M114_CAM_OUTPUT_FORMAT_BAYER_FORMAT_PROCESSED8)
+				mode_output_format_val =
+					MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
+			else
+				/* Raw Bayer - don't set bit 8 */
+				mode_output_format_val = 0x0000;
 		} else if (info->output_format & MT9M114_CAM_OUTPUT_FORMAT_FORMAT_RGB) {
 			/* RGB output - set bit 5 */
 			mode_output_format_val =
