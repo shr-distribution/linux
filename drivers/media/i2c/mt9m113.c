@@ -178,12 +178,20 @@ struct mt9m113 {
 	unsigned int pixrate;
 	bool streaming;
 
-	/* Subdev */
-	struct v4l2_subdev sd;
-	struct media_pad pad;
+	/* Pixel Array sub-device */
+	struct {
+		struct v4l2_subdev sd;
+		struct media_pad pad;
+	} pa;
 
-	struct v4l2_ctrl_handler hdl;
-	struct v4l2_ctrl *context;
+	/* Image Flow Processor sub-device */
+	struct {
+		struct v4l2_subdev sd;
+		struct media_pad pads[2];
+
+		struct v4l2_ctrl_handler hdl;
+		struct v4l2_ctrl *context;
+	} ifp;
 };
 
 /* -----------------------------------------------------------------------------
@@ -905,7 +913,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	}
 
 	/* Apply all V4L2 controls (color effects, etc.) before streaming */
-	ret = __v4l2_ctrl_handler_setup(&sensor->hdl);
+	ret = __v4l2_ctrl_handler_setup(&sensor->ifp.hdl);
 	if (ret) {
 		dev_err(dev, "Failed to setup controls: %d\n", ret);
 		goto error;
@@ -1037,14 +1045,19 @@ static int mt9m113_stop_streaming(struct mt9m113 *sensor)
  * V4L2 Subdev Operations
  */
 
-static inline struct mt9m113 *to_mt9m113(struct v4l2_subdev *sd)
+static inline struct mt9m113 *pa_to_mt9m113(struct v4l2_subdev *sd)
 {
-	return container_of(sd, struct mt9m113, sd);
+	return container_of(sd, struct mt9m113, pa.sd);
 }
 
-static int mt9m113_s_stream(struct v4l2_subdev *sd, int enable)
+static inline struct mt9m113 *ifp_to_mt9m113(struct v4l2_subdev *sd)
 {
-	struct mt9m113 *sensor = to_mt9m113(sd);
+	return container_of(sd, struct mt9m113, ifp.sd);
+}
+
+static int mt9m113_ifp_s_stream(struct v4l2_subdev *sd, int enable)
+{
+	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
 	struct v4l2_subdev_state *state;
 	int ret;
 
@@ -1059,19 +1072,117 @@ static int mt9m113_s_stream(struct v4l2_subdev *sd, int enable)
 	return ret;
 }
 
-static int mt9m113_init_state(struct v4l2_subdev *sd,
-			      struct v4l2_subdev_state *state)
+/* -----------------------------------------------------------------------------
+ * Pixel Array Subdev Operations
+ */
+
+static int mt9m113_pa_init_state(struct v4l2_subdev *sd,
+				 struct v4l2_subdev_state *state)
+{
+	struct v4l2_mbus_framefmt *format;
+	struct v4l2_rect *crop;
+
+	crop = v4l2_subdev_state_get_crop(state, 0);
+	crop->left = 0;
+	crop->top = 0;
+	crop->width = MT9M113_PIXEL_ARRAY_WIDTH;
+	crop->height = MT9M113_PIXEL_ARRAY_HEIGHT;
+
+	format = v4l2_subdev_state_get_format(state, 0);
+	format->width = MT9M113_PIXEL_ARRAY_WIDTH;
+	format->height = MT9M113_PIXEL_ARRAY_HEIGHT;
+	format->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	format->field = V4L2_FIELD_NONE;
+	format->colorspace = V4L2_COLORSPACE_RAW;
+
+	return 0;
+}
+
+static int mt9m113_pa_enum_mbus_code(struct v4l2_subdev *sd,
+				     struct v4l2_subdev_state *state,
+				     struct v4l2_subdev_mbus_code_enum *code)
+{
+	if (code->index > 0)
+		return -EINVAL;
+
+	code->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	return 0;
+}
+
+static int mt9m113_pa_enum_framesizes(struct v4l2_subdev *sd,
+				      struct v4l2_subdev_state *state,
+				      struct v4l2_subdev_frame_size_enum *fse)
+{
+	if (fse->index > 0)
+		return -EINVAL;
+
+	if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
+		return -EINVAL;
+
+	fse->min_width = MT9M113_PIXEL_ARRAY_WIDTH;
+	fse->max_width = MT9M113_PIXEL_ARRAY_WIDTH;
+	fse->min_height = MT9M113_PIXEL_ARRAY_HEIGHT;
+	fse->max_height = MT9M113_PIXEL_ARRAY_HEIGHT;
+
+	return 0;
+}
+
+static int mt9m113_pa_get_selection(struct v4l2_subdev *sd,
+				    struct v4l2_subdev_state *state,
+				    struct v4l2_subdev_selection *sel)
+{
+	switch (sel->target) {
+	case V4L2_SEL_TGT_CROP:
+		sel->r = *v4l2_subdev_state_get_crop(state, sel->pad);
+		return 0;
+
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+	case V4L2_SEL_TGT_NATIVE_SIZE:
+		sel->r.left = 0;
+		sel->r.top = 0;
+		sel->r.width = MT9M113_PIXEL_ARRAY_WIDTH;
+		sel->r.height = MT9M113_PIXEL_ARRAY_HEIGHT;
+		return 0;
+
+	default:
+		return -EINVAL;
+	}
+}
+
+static const struct v4l2_subdev_pad_ops mt9m113_pa_pad_ops = {
+	.enum_mbus_code = mt9m113_pa_enum_mbus_code,
+	.enum_frame_size = mt9m113_pa_enum_framesizes,
+	.get_fmt = v4l2_subdev_get_fmt,
+	.get_selection = mt9m113_pa_get_selection,
+};
+
+static const struct v4l2_subdev_ops mt9m113_pa_ops = {
+	.pad = &mt9m113_pa_pad_ops,
+};
+
+static const struct v4l2_subdev_internal_ops mt9m113_pa_internal_ops = {
+	.init_state = mt9m113_pa_init_state,
+};
+
+/* -----------------------------------------------------------------------------
+ * IFP Subdev Operations
+ */
+
+static int mt9m113_ifp_init_state(struct v4l2_subdev *sd,
+				  struct v4l2_subdev_state *state)
 {
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
 	struct v4l2_rect *compose;
 
+	/* Sink pad - receives raw data from PA */
 	format = v4l2_subdev_state_get_format(state, 0);
-	format->width = 640;
-	format->height = 480;
-	format->code = MEDIA_BUS_FMT_UYVY8_1X16;
+	format->width = MT9M113_PIXEL_ARRAY_WIDTH;
+	format->height = MT9M113_PIXEL_ARRAY_HEIGHT;
+	format->code = MEDIA_BUS_FMT_SGRBG10_1X10;
 	format->field = V4L2_FIELD_NONE;
-	format->colorspace = V4L2_COLORSPACE_SRGB;
+	format->colorspace = V4L2_COLORSPACE_RAW;
 
 	crop = v4l2_subdev_state_get_crop(state, 0);
 	crop->left = 0;
@@ -1085,13 +1196,30 @@ static int mt9m113_init_state(struct v4l2_subdev *sd,
 	compose->width = 640;
 	compose->height = 480;
 
+	/* Source pad - outputs processed data to host */
+	format = v4l2_subdev_state_get_format(state, 1);
+	format->width = 640;
+	format->height = 480;
+	format->code = MEDIA_BUS_FMT_UYVY8_1X16;
+	format->field = V4L2_FIELD_NONE;
+	format->colorspace = V4L2_COLORSPACE_SRGB;
+
 	return 0;
 }
 
-static int mt9m113_enum_mbus_code(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_state *state,
-				  struct v4l2_subdev_mbus_code_enum *code)
+static int mt9m113_ifp_enum_mbus_code(struct v4l2_subdev *sd,
+				      struct v4l2_subdev_state *state,
+				      struct v4l2_subdev_mbus_code_enum *code)
 {
+	/* Sink pad only accepts raw from PA */
+	if (code->pad == 0) {
+		if (code->index > 0)
+			return -EINVAL;
+		code->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+		return 0;
+	}
+
+	/* Source pad supports multiple output formats */
 	if (code->index >= ARRAY_SIZE(mt9m113_format_infos))
 		return -EINVAL;
 
@@ -1099,10 +1227,24 @@ static int mt9m113_enum_mbus_code(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int mt9m113_enum_frame_size(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_state *state,
-				   struct v4l2_subdev_frame_size_enum *fse)
+static int mt9m113_ifp_enum_frame_size(struct v4l2_subdev *sd,
+				       struct v4l2_subdev_state *state,
+				       struct v4l2_subdev_frame_size_enum *fse)
 {
+	/* Sink pad - fixed raw input size */
+	if (fse->pad == 0) {
+		if (fse->index > 0)
+			return -EINVAL;
+		if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
+			return -EINVAL;
+		fse->min_width = MT9M113_PIXEL_ARRAY_WIDTH;
+		fse->max_width = MT9M113_PIXEL_ARRAY_WIDTH;
+		fse->min_height = MT9M113_PIXEL_ARRAY_HEIGHT;
+		fse->max_height = MT9M113_PIXEL_ARRAY_HEIGHT;
+		return 0;
+	}
+
+	/* Source pad - Context A (640x480) and Context B (1280x1024) */
 	if (fse->index > 1)
 		return -EINVAL;
 
@@ -1121,17 +1263,25 @@ static int mt9m113_enum_frame_size(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int mt9m113_set_fmt(struct v4l2_subdev *sd,
-			   struct v4l2_subdev_state *state,
-			   struct v4l2_subdev_format *fmt)
+static int mt9m113_ifp_set_fmt(struct v4l2_subdev *sd,
+			       struct v4l2_subdev_state *state,
+			       struct v4l2_subdev_format *fmt)
 {
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *compose;
 	const struct mt9m113_format_info *info;
 
+	/* Sink pad format is fixed */
+	if (fmt->pad == 0) {
+		format = v4l2_subdev_state_get_format(state, 0);
+		fmt->format = *format;
+		return 0;
+	}
+
+	/* Source pad */
 	info = mt9m113_format_info(fmt->format.code);
 
-	/* Clamp to supported sizes */
+	/* Clamp to supported sizes (Context A or Context B) */
 	if (fmt->format.width <= 640) {
 		fmt->format.width = 640;
 		fmt->format.height = 480;
@@ -1140,7 +1290,7 @@ static int mt9m113_set_fmt(struct v4l2_subdev *sd,
 		fmt->format.height = 1024;
 	}
 
-	format = v4l2_subdev_state_get_format(state, 0);
+	format = v4l2_subdev_state_get_format(state, 1);
 	format->width = fmt->format.width;
 	format->height = fmt->format.height;
 	format->code = info->code;
@@ -1155,24 +1305,98 @@ static int mt9m113_set_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static const struct v4l2_subdev_video_ops mt9m113_video_ops = {
-	.s_stream = mt9m113_s_stream,
+static int mt9m113_ifp_get_selection(struct v4l2_subdev *sd,
+				     struct v4l2_subdev_state *state,
+				     struct v4l2_subdev_selection *sel)
+{
+	if (sel->pad != 0)
+		return -EINVAL;
+
+	switch (sel->target) {
+	case V4L2_SEL_TGT_CROP:
+		sel->r = *v4l2_subdev_state_get_crop(state, 0);
+		return 0;
+
+	case V4L2_SEL_TGT_COMPOSE:
+		sel->r = *v4l2_subdev_state_get_compose(state, 0);
+		return 0;
+
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+		sel->r.left = 0;
+		sel->r.top = 0;
+		sel->r.width = MT9M113_PIXEL_ARRAY_WIDTH;
+		sel->r.height = MT9M113_PIXEL_ARRAY_HEIGHT;
+		return 0;
+
+	case V4L2_SEL_TGT_COMPOSE_DEFAULT:
+	case V4L2_SEL_TGT_COMPOSE_BOUNDS:
+		sel->r.left = 0;
+		sel->r.top = 0;
+		sel->r.width = MT9M113_PIXEL_ARRAY_WIDTH;
+		sel->r.height = MT9M113_PIXEL_ARRAY_HEIGHT;
+		return 0;
+
+	default:
+		return -EINVAL;
+	}
+}
+
+/* IFP registered callback - registers PA and creates link */
+static void mt9m113_ifp_unregistered(struct v4l2_subdev *sd)
+{
+	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
+
+	v4l2_device_unregister_subdev(&sensor->pa.sd);
+}
+
+static int mt9m113_ifp_registered(struct v4l2_subdev *sd)
+{
+	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
+	int ret;
+
+	ret = v4l2_device_register_subdev(sd->v4l2_dev, &sensor->pa.sd);
+	if (ret < 0) {
+		dev_err(&sensor->client->dev,
+			"Failed to register pixel array subdev\n");
+		return ret;
+	}
+
+	ret = media_create_pad_link(&sensor->pa.sd.entity, 0,
+				    &sensor->ifp.sd.entity, 0,
+				    MEDIA_LNK_FL_ENABLED |
+				    MEDIA_LNK_FL_IMMUTABLE);
+	if (ret < 0) {
+		dev_err(&sensor->client->dev,
+			"Failed to link pixel array to ifp\n");
+		v4l2_device_unregister_subdev(&sensor->pa.sd);
+		return ret;
+	}
+
+	return 0;
+}
+
+static const struct v4l2_subdev_video_ops mt9m113_ifp_video_ops = {
+	.s_stream = mt9m113_ifp_s_stream,
 };
 
-static const struct v4l2_subdev_pad_ops mt9m113_pad_ops = {
-	.enum_mbus_code = mt9m113_enum_mbus_code,
-	.enum_frame_size = mt9m113_enum_frame_size,
+static const struct v4l2_subdev_pad_ops mt9m113_ifp_pad_ops = {
+	.enum_mbus_code = mt9m113_ifp_enum_mbus_code,
+	.enum_frame_size = mt9m113_ifp_enum_frame_size,
 	.get_fmt = v4l2_subdev_get_fmt,
-	.set_fmt = mt9m113_set_fmt,
+	.set_fmt = mt9m113_ifp_set_fmt,
+	.get_selection = mt9m113_ifp_get_selection,
 };
 
-static const struct v4l2_subdev_internal_ops mt9m113_internal_ops = {
-	.init_state = mt9m113_init_state,
+static const struct v4l2_subdev_ops mt9m113_ifp_ops = {
+	.video = &mt9m113_ifp_video_ops,
+	.pad = &mt9m113_ifp_pad_ops,
 };
 
-static const struct v4l2_subdev_ops mt9m113_subdev_ops = {
-	.video = &mt9m113_video_ops,
-	.pad = &mt9m113_pad_ops,
+static const struct v4l2_subdev_internal_ops mt9m113_ifp_internal_ops = {
+	.init_state = mt9m113_ifp_init_state,
+	.registered = mt9m113_ifp_registered,
+	.unregistered = mt9m113_ifp_unregistered,
 };
 
 /* -----------------------------------------------------------------------------
@@ -1187,7 +1411,7 @@ static const char * const mt9m113_context_menu[] = {
 static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct mt9m113 *sensor = container_of(ctrl->handler,
-					       struct mt9m113, hdl);
+					       struct mt9m113, ifp.hdl);
 	int ret = 0;
 
 	if (!pm_runtime_get_if_in_use(&sensor->client->dev))
@@ -1397,7 +1621,7 @@ static void mt9m113_power_off(struct mt9m113 *sensor)
 static int __maybe_unused mt9m113_runtime_resume(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
-	struct mt9m113 *sensor = to_mt9m113(sd);
+	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
 	int ret;
 
 	if (sensor->powerdown)
@@ -1413,7 +1637,7 @@ static int __maybe_unused mt9m113_runtime_resume(struct device *dev)
 static int __maybe_unused mt9m113_runtime_suspend(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
-	struct mt9m113 *sensor = to_mt9m113(sd);
+	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
 
 	if (sensor->powerdown)
 		return 0;
@@ -1539,36 +1763,56 @@ static int mt9m113_probe(struct i2c_client *client)
 	if (ret < 0)
 		goto error_power_off;
 
-	/* Initialize V4L2 subdev */
-	v4l2_i2c_subdev_init(&sensor->sd, client, &mt9m113_subdev_ops);
-	sensor->sd.internal_ops = &mt9m113_internal_ops;
-	sensor->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
-	sensor->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
-
-	sensor->pad.flags = MEDIA_PAD_FL_SOURCE;
-	ret = media_entity_pads_init(&sensor->sd.entity, 1, &sensor->pad);
+	/* Initialize Pixel Array subdev */
+	v4l2_subdev_init(&sensor->pa.sd, &mt9m113_pa_ops);
+	sensor->pa.sd.internal_ops = &mt9m113_pa_internal_ops;
+	v4l2_i2c_subdev_set_name(&sensor->pa.sd, client, NULL, " pixel array");
+	sensor->pa.sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+	sensor->pa.sd.owner = THIS_MODULE;
+	sensor->pa.sd.dev = dev;
+	v4l2_set_subdevdata(&sensor->pa.sd, client);
+	sensor->pa.sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+	sensor->pa.pad.flags = MEDIA_PAD_FL_SOURCE;
+	ret = media_entity_pads_init(&sensor->pa.sd.entity, 1, &sensor->pa.pad);
 	if (ret < 0)
 		goto error_power_off;
 
-	/* Initialize controls */
-	v4l2_ctrl_handler_init(&sensor->hdl, 2);
-	sensor->context = v4l2_ctrl_new_custom(&sensor->hdl,
-					       &mt9m113_context_ctrl_cfg, NULL);
-	v4l2_ctrl_new_std_menu(&sensor->hdl, &mt9m113_ctrl_ops,
+	ret = v4l2_subdev_init_finalize(&sensor->pa.sd);
+	if (ret < 0)
+		goto error_pa_entity;
+
+	/* Initialize IFP subdev */
+	v4l2_i2c_subdev_init(&sensor->ifp.sd, client, &mt9m113_ifp_ops);
+	v4l2_i2c_subdev_set_name(&sensor->ifp.sd, client, NULL, " ifp");
+	sensor->ifp.sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+	sensor->ifp.sd.internal_ops = &mt9m113_ifp_internal_ops;
+	sensor->ifp.sd.entity.function = MEDIA_ENT_F_PROC_VIDEO_ISP;
+	sensor->ifp.pads[0].flags = MEDIA_PAD_FL_SINK;
+	sensor->ifp.pads[1].flags = MEDIA_PAD_FL_SOURCE;
+	ret = media_entity_pads_init(&sensor->ifp.sd.entity, 2, sensor->ifp.pads);
+	if (ret < 0)
+		goto error_pa_subdev;
+
+	/* Initialize controls on IFP */
+	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 2);
+	sensor->ifp.context = v4l2_ctrl_new_custom(&sensor->ifp.hdl,
+						   &mt9m113_context_ctrl_cfg, NULL);
+	v4l2_ctrl_new_std_menu(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
 			       V4L2_CID_COLORFX,
 			       V4L2_COLORFX_SOLARIZATION, 0,
 			       V4L2_COLORFX_NONE);
 
-	if (sensor->hdl.error) {
-		ret = sensor->hdl.error;
-		goto error_entity;
+	if (sensor->ifp.hdl.error) {
+		ret = sensor->ifp.hdl.error;
+		goto error_ifp_entity;
 	}
 
-	sensor->sd.ctrl_handler = &sensor->hdl;
+	sensor->ifp.sd.ctrl_handler = &sensor->ifp.hdl;
+	sensor->ifp.sd.state_lock = sensor->ifp.hdl.lock;
 
-	ret = v4l2_subdev_init_finalize(&sensor->sd);
+	ret = v4l2_subdev_init_finalize(&sensor->ifp.sd);
 	if (ret < 0)
-		goto error_handler;
+		goto error_ifp_handler;
 
 	/* Enable runtime PM */
 	pm_runtime_set_active(dev);
@@ -1577,21 +1821,28 @@ static int mt9m113_probe(struct i2c_client *client)
 	pm_runtime_set_autosuspend_delay(dev, 1000);
 	pm_runtime_use_autosuspend(dev);
 
-	ret = v4l2_async_register_subdev(&sensor->sd);
+	/* Register only the IFP - PA will be registered in ifp_registered callback */
+	ret = v4l2_async_register_subdev(&sensor->ifp.sd);
 	if (ret < 0)
 		goto error_pm;
 
 	pm_runtime_put_autosuspend(dev);
 
+	dev_info(dev, "MT9M113 driver with IFP sub-device initialized\n");
 	return 0;
 
 error_pm:
 	pm_runtime_disable(dev);
 	pm_runtime_put_noidle(dev);
-error_handler:
-	v4l2_ctrl_handler_free(&sensor->hdl);
-error_entity:
-	media_entity_cleanup(&sensor->sd.entity);
+	v4l2_subdev_cleanup(&sensor->ifp.sd);
+error_ifp_handler:
+	v4l2_ctrl_handler_free(&sensor->ifp.hdl);
+error_ifp_entity:
+	media_entity_cleanup(&sensor->ifp.sd.entity);
+error_pa_subdev:
+	v4l2_subdev_cleanup(&sensor->pa.sd);
+error_pa_entity:
+	media_entity_cleanup(&sensor->pa.sd.entity);
 error_power_off:
 	mt9m113_power_off(sensor);
 error_ep_free:
@@ -1602,12 +1853,17 @@ error_ep_free:
 static void mt9m113_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
-	struct mt9m113 *sensor = to_mt9m113(sd);
+	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
 	struct device *dev = &client->dev;
 
-	v4l2_async_unregister_subdev(&sensor->sd);
-	v4l2_ctrl_handler_free(&sensor->hdl);
-	media_entity_cleanup(&sensor->sd.entity);
+	v4l2_async_unregister_subdev(&sensor->ifp.sd);
+	v4l2_subdev_cleanup(&sensor->ifp.sd);
+	v4l2_ctrl_handler_free(&sensor->ifp.hdl);
+	media_entity_cleanup(&sensor->ifp.sd.entity);
+
+	v4l2_subdev_cleanup(&sensor->pa.sd);
+	media_entity_cleanup(&sensor->pa.sd.entity);
+
 	v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
 
 	pm_runtime_disable(dev);
