@@ -1809,8 +1809,8 @@ main() {
                 echo "  rdi640-raw8  RDI mode at 640x480 (RAW8 processed Bayer, Context A)"
                 echo "  rdi640-raw10 RDI mode at 640x480 (RAW10 true raw)"
                 echo "  rdi1280    RDI mode at 1280x1024 (UYVY, Context B)"
-                echo "  rdi1280-raw8  RDI mode at 1280x1024 (RAW8 processed Bayer, Context B)"
-                echo "  rdi1280-raw10 RDI mode at 1280x1024 (RAW10 true raw, RECOMMENDED)"
+                echo "  rdi1280-raw8  RDI mode at 1280x976 (RAW8 processed Bayer, Context B)"
+                echo "  rdi1280-raw10 RDI mode at 1280x976 (RAW10 true raw, RECOMMENDED)"
                 echo "  video640   VIDEO mode at 640x480"
                 echo "  video1280  VIDEO mode at 1280x1024"
                 echo "  testgen640   TESTGEN mode at 640x480"
@@ -1996,15 +1996,15 @@ main() {
             ;;
         rdi1280-raw8)
             ensure_camera_ready
-            # RAW8 at 1280x1024 uses Context B (processed Bayer through IFP)
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 GRBG
+            # RAW8 at 1280x976 - actual sensor output resolution in RAW mode
+            test_at_resolution 1280 976 rdi video0 msm_csid1 msm_csiphy1 GRBG
             check_dmesg
             ;;
         rdi1280-raw10)
             ensure_camera_ready
-            # RAW10 at 1280x1024 uses Context B (true raw bypass, no IFP)
-            # This is the recommended mode for full resolution raw capture
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 pgAA
+            # RAW10 at 1280x976 - actual sensor output resolution in RAW mode
+            # Uses Context B (true raw bypass, no IFP) for snapshot capture
+            test_at_resolution 1280 976 rdi video0 msm_csid1 msm_csiphy1 pgAA
             check_dmesg
             ;;
         video640)
