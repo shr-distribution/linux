@@ -1362,15 +1362,24 @@ test_at_resolution() {
         # Set sensor output format
         # For RDI mode, use RAW Bayer format (MT9M114 CFA is GRBG)
         # For PIX/VIDEO mode, use UYVY for DEMUX processing
-        # RAW mode is triggered when format is GRBG (V4L2 8-bit Bayer GRGR/BGBG)
-        if [ \"\$PIXFMT\" = \"GRBG\" ] || [ \"\$PIXFMT\" = \"GREY\" ] || [ \"\$PIXFMT\" = \"SGRBG8\" ]; then
-            # RAW Bayer 8-bit for true raw capture
+        # RAW8 mode is triggered when format is GRBG (V4L2 8-bit Bayer GRGR/BGBG)
+        # RAW10 mode is triggered when format is pgAA (V4L2 10-bit Bayer GRGR/BGBG Packed)
+        if [ \"\$PIXFMT\" = \"pgAA\" ] || [ \"\$PIXFMT\" = \"SGRBG10\" ]; then
+            # RAW Bayer 10-bit for true raw capture (Context B full resolution)
+            SENSOR_FMT='SGRBG10_1X10'
+            # VFE must also use RAW10 format to match sensor
+            VFE_FMT='SGRBG10_1X10'
+            # V4L2 pixel format is pgAA (10-bit Bayer GRGR/BGBG Packed)
+            PIXFMT='pgAA'
+            echo 'Configuring sensor for RAW10 RDI mode (RAW Bayer GRBG 10-bit packed)...'
+        elif [ \"\$PIXFMT\" = \"GRBG\" ] || [ \"\$PIXFMT\" = \"GREY\" ] || [ \"\$PIXFMT\" = \"SGRBG8\" ]; then
+            # RAW Bayer 8-bit for raw capture (processed Bayer through IFP)
             SENSOR_FMT='SGRBG8_1X8'
             # VFE must also use RAW format to match sensor
             VFE_FMT='SGRBG8_1X8'
             # V4L2 pixel format is GRBG (8-bit Bayer GRGR/BGBG)
             PIXFMT='GRBG'
-            echo 'Configuring sensor for RDI mode (RAW Bayer GRBG, 1 byte/pixel)...'
+            echo 'Configuring sensor for RAW8 RDI mode (RAW Bayer GRBG 8-bit)...'
         else
             SENSOR_FMT='UYVY8_1X16'
             # For non-RAW RDI mode, use UYVY
@@ -1709,14 +1718,20 @@ main() {
             rdi640)
                 MODE="rdi640"
                 ;;
-            rdi640-raw)
-                MODE="rdi640-raw"
+            rdi640-raw|rdi640-raw8)
+                MODE="rdi640-raw8"
+                ;;
+            rdi640-raw10)
+                MODE="rdi640-raw10"
                 ;;
             rdi1280)
                 MODE="rdi1280"
                 ;;
-            rdi1280-raw)
-                MODE="rdi1280-raw"
+            rdi1280-raw|rdi1280-raw8)
+                MODE="rdi1280-raw8"
+                ;;
+            rdi1280-raw10)
+                MODE="rdi1280-raw10"
                 ;;
             video640)
                 MODE="video640"
@@ -1790,10 +1805,12 @@ main() {
                 echo "Resolution-specific modes (NV12 - 4:2:0 default):"
                 echo "  pix640     PIX mode at 640x480"
                 echo "  pix1280    PIX mode at 1280x1024"
-                echo "  rdi640     RDI mode at 640x480 (UYVY bypass)"
-                echo "  rdi640-raw RDI mode at 640x480 (RAW Bayer GRBG)"
-                echo "  rdi1280    RDI mode at 1280x1024 (UYVY bypass)"
-                echo "  rdi1280-raw RDI mode at 1280x1024 (RAW Bayer GRBG)"
+                echo "  rdi640     RDI mode at 640x480 (UYVY, Context A)"
+                echo "  rdi640-raw8  RDI mode at 640x480 (RAW8 processed Bayer, Context A)"
+                echo "  rdi640-raw10 RDI mode at 640x480 (RAW10 true raw)"
+                echo "  rdi1280    RDI mode at 1280x1024 (UYVY, Context B)"
+                echo "  rdi1280-raw8  RDI mode at 1280x1024 (RAW8 processed Bayer, Context B)"
+                echo "  rdi1280-raw10 RDI mode at 1280x1024 (RAW10 true raw, RECOMMENDED)"
                 echo "  video640   VIDEO mode at 640x480"
                 echo "  video1280  VIDEO mode at 1280x1024"
                 echo "  testgen640   TESTGEN mode at 640x480"
@@ -1958,19 +1975,36 @@ main() {
             test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
-        rdi640-raw)
+        rdi640-raw8)
             ensure_camera_ready
+            # RAW8 at 640x480 goes through IFP (processed Bayer, Context A)
             test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 GRBG
+            check_dmesg
+            ;;
+        rdi640-raw10)
+            ensure_camera_ready
+            # RAW10 at 640x480 - note: sensor outputs full resolution in RAW10,
+            # so this may still use Context B internally
+            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 pgAA
             check_dmesg
             ;;
         rdi1280)
             ensure_camera_ready
+            # UYVY at 1280x1024 uses Context B (full resolution)
             test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
-        rdi1280-raw)
+        rdi1280-raw8)
             ensure_camera_ready
+            # RAW8 at 1280x1024 uses Context B (processed Bayer through IFP)
             test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 GRBG
+            check_dmesg
+            ;;
+        rdi1280-raw10)
+            ensure_camera_ready
+            # RAW10 at 1280x1024 uses Context B (true raw bypass, no IFP)
+            # This is the recommended mode for full resolution raw capture
+            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 pgAA
             check_dmesg
             ;;
         video640)
