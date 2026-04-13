@@ -158,6 +158,50 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M113_MODE_OUTPUT_FORMAT_SWAP_CHANNELS	BIT(0)
 
 /*
+ * MT9M113 MODE_SPEC_EFFECTS_A/B registers (Driver ID 7, R0x0059/R0x005B)
+ *
+ * These registers control special image effects in the Image Flow Processor.
+ * Effects only work with processed output (YUV/RGB), not with RAW Bayer.
+ *
+ * Bit fields:
+ *   [15:8] solarization_thresh - Threshold for solarization effect (default 0x64)
+ *   [6]    dither_luma - 0=dither all channels, 1=dither luma only
+ *   [5:3]  dither_bit_width - 1-4 valid, 0/5/6/7 = no dither
+ *   [2:0]  selection - Effect selection:
+ *          0x0000 = Disabled
+ *          0x0001 = Monochrome (B&W)
+ *          0x0002 = Sepia
+ *          0x0003 = Negative
+ *          0x0004 = Solarization with unmodified UV
+ *          0x0005 = Solarization with -UV
+ *
+ * Default: 0x6440 (disabled, dither_luma=1, solarization_thresh=0x64)
+ */
+#define MT9M113_MODE_SPEC_EFFECTS_A			CCI_REG16(0x2759)
+#define MT9M113_MODE_SPEC_EFFECTS_B			CCI_REG16(0x275B)
+#define MT9M113_SPEC_EFFECTS_DEFAULT			0x6440
+#define MT9M113_SPEC_EFFECTS_MASK			0x0007
+#define MT9M113_SPEC_EFFECTS_NONE			0x0000
+#define MT9M113_SPEC_EFFECTS_MONOCHROME			0x0001
+#define MT9M113_SPEC_EFFECTS_SEPIA			0x0002
+#define MT9M113_SPEC_EFFECTS_NEGATIVE			0x0003
+#define MT9M113_SPEC_EFFECTS_SOLARIZE			0x0004
+#define MT9M113_SPEC_EFFECTS_SOLARIZE_NEG_UV		0x0005
+
+/*
+ * MT9M113 MODE_SEPIA_SETTINGS register (Driver ID 7, R0x0063)
+ *
+ * Controls the Cb/Cr chroma values for sepia effect.
+ * Bit fields:
+ *   [15:8] sepia_cb - Cb magnitude in 0.7 fixed point
+ *   [7:0]  sepia_cr - Cr magnitude in 0.7 fixed point
+ *
+ * Default values produce a brownish sepia tone.
+ * Can be customized for other color tints.
+ */
+#define MT9M113_MODE_SEPIA_SETTINGS			CCI_REG16(0x2763)
+
+/*
  * SEQ_CAP_MODE (0xA115) values from webOS mt9m113.c:
  *   0x0000 = Normal capture mode (Context B)
  * SEQ_CAP_MODE_VIDEO (0xA116) values:
@@ -3498,6 +3542,83 @@ static int mt9m114_ifp_s_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
+	case V4L2_CID_COLORFX: {
+		/*
+		 * Color effects control for MT9M113/MT9M114.
+		 * Maps V4L2 color effects to sensor MODE_SPEC_EFFECTS registers.
+		 * Effects only work with processed output (YUV/RGB), not RAW.
+		 */
+		u16 effect;
+
+		switch (ctrl->val) {
+		case V4L2_COLORFX_NONE:
+			effect = MT9M113_SPEC_EFFECTS_NONE;
+			break;
+		case V4L2_COLORFX_BW:
+			effect = MT9M113_SPEC_EFFECTS_MONOCHROME;
+			break;
+		case V4L2_COLORFX_SEPIA:
+			effect = MT9M113_SPEC_EFFECTS_SEPIA;
+			break;
+		case V4L2_COLORFX_NEGATIVE:
+			effect = MT9M113_SPEC_EFFECTS_NEGATIVE;
+			break;
+		case V4L2_COLORFX_SOLARIZATION:
+			effect = MT9M113_SPEC_EFFECTS_SOLARIZE;
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
+
+		if (ret)
+			break;
+
+		/*
+		 * Preserve default solarization threshold (0x64) and
+		 * dither settings (dither_luma=1) from bits [15:3].
+		 */
+		effect |= (MT9M113_SPEC_EFFECTS_DEFAULT & ~MT9M113_SPEC_EFFECTS_MASK);
+
+		/* Write to both Context A and Context B registers */
+		cci_write(sensor->regmap, MT9M113_MODE_SPEC_EFFECTS_A,
+			  effect, &ret);
+		cci_write(sensor->regmap, MT9M113_MODE_SPEC_EFFECTS_B,
+			  effect, &ret);
+
+		if (ret) {
+			dev_err(&sensor->client->dev,
+				"Failed to write color effect: %d\n", ret);
+			break;
+		}
+
+		/*
+		 * Issue REFRESH command to apply the change.
+		 * For MT9M113, use SEQ_CMD=REFRESH.
+		 * For MT9M114, use COMMAND_REGISTER Config-Change.
+		 */
+		if (sensor->streaming) {
+			if (sensor->model == MT9M113_MODEL) {
+				ret = mt9m113_write_mcu_var(sensor,
+							   MT9M113_SEQ_CMD,
+							   MT9M113_SEQ_CMD_REFRESH);
+				if (!ret)
+					ret = mt9m113_poll_mcu_var(sensor,
+								  MT9M113_SEQ_CMD,
+								  0x0000, 500);
+			} else {
+				ret = mt9m114_set_state(sensor,
+					MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
+			}
+		}
+
+		if (!ret)
+			dev_dbg(&sensor->client->dev,
+				"Color effect set to %d (reg=0x%04x)\n",
+				ctrl->val, effect);
+		break;
+	}
+
 	case V4L2_CID_MT9M113_CONTEXT:
 		/*
 		 * MT9M113 context selection - only applicable to MT9M113.
@@ -4149,6 +4270,21 @@ static int mt9m114_ifp_init(struct mt9m114 *sensor)
 				  0, 1023, 1, 1023);
 
 	v4l2_ctrl_cluster(ARRAY_SIZE(sensor->ifp.tpg), sensor->ifp.tpg);
+
+	/*
+	 * Color effects control - available on MT9M113/MT9M114.
+	 * Effects only work with processed output (YUV/RGB), not RAW Bayer.
+	 * Supported effects: None, B&W, Sepia, Negative, Solarization.
+	 */
+	v4l2_ctrl_new_std_menu(hdl, &mt9m114_ifp_ctrl_ops,
+			       V4L2_CID_COLORFX,
+			       V4L2_COLORFX_SOLARIZATION,
+			       ~(BIT(V4L2_COLORFX_NONE) |
+				 BIT(V4L2_COLORFX_BW) |
+				 BIT(V4L2_COLORFX_SEPIA) |
+				 BIT(V4L2_COLORFX_NEGATIVE) |
+				 BIT(V4L2_COLORFX_SOLARIZATION)),
+			       V4L2_COLORFX_NONE);
 
 	/*
 	 * MT9M113-specific context selection control.
