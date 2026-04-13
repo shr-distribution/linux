@@ -2614,18 +2614,29 @@ mt9m113_streaming:
 				 *
 				 * Just like OUTPUT_CONTROL, the MCU may reset MODE_OUTPUT_FORMAT
 				 * to its default (YUV=0x0000) when SEQ_CMD=RUN completes.
-				 * We must re-write it to 0x0100 (Processed Bayer) for RAW capture.
+				 *
+				 * For processed Bayer (8-bit): set bit 8 = 1 (0x0100)
+				 * For raw Bayer (10-bit): set bit 8 = 0 (0x0000)
 				 */
+				u16 mode_output_format_val;
+
 				mode_output_format_reg = use_context_b ?
 					MT9M113_MODE_OUTPUT_FORMAT_B :
 					MT9M113_MODE_OUTPUT_FORMAT_A;
 
+				/* RAW10 = raw (bit 8=0), RAW8 = processed (bit 8=1) */
+				if (format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
+					mode_output_format_val = 0x0000;
+				else
+					mode_output_format_val =
+						MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
+
 				dev_info(&sensor->client->dev,
-					 "MT9M113: Re-writing MODE_OUTPUT_FORMAT_%c=0x0100 after SEQ_CMD (Bayer fix)\n",
-					 use_context_b ? 'B' : 'A');
+					 "MT9M113: Re-writing MODE_OUTPUT_FORMAT_%c=0x%04x after SEQ_CMD (Bayer fix)\n",
+					 use_context_b ? 'B' : 'A', mode_output_format_val);
 
 				ret = mt9m113_write_mcu_var(sensor, mode_output_format_reg,
-							   MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER);
+							   mode_output_format_val);
 				if (ret) {
 					dev_err(&sensor->client->dev,
 						"MT9M113: MODE_OUTPUT_FORMAT re-write failed: %d\n", ret);
@@ -2636,10 +2647,10 @@ mt9m113_streaming:
 				msleep(5);
 				mt9m113_read_mcu_var(sensor, mode_output_format_reg, &readback);
 				dev_info(&sensor->client->dev,
-					 "MT9M113: MODE_OUTPUT_FORMAT_%c readback=0x%04llx (expected=0x0100)\n",
-					 use_context_b ? 'B' : 'A', readback);
+					 "MT9M113: MODE_OUTPUT_FORMAT_%c readback=0x%04llx (expected=0x%04x)\n",
+					 use_context_b ? 'B' : 'A', readback, mode_output_format_val);
 
-				if (readback != MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER) {
+				if (readback != mode_output_format_val) {
 					dev_warn(&sensor->client->dev,
 						 "MT9M113: MODE_OUTPUT_FORMAT still wrong after re-write!\n");
 				}
