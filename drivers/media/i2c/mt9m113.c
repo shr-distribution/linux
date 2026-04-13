@@ -921,7 +921,8 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	}
 
 	compose = v4l2_subdev_state_get_compose(state, 0);
-	format = v4l2_subdev_state_get_format(state, 0);
+	/* Get source pad format (pad 1) for MIPI output configuration */
+	format = v4l2_subdev_state_get_format(state, 1);
 
 	/* Determine context based on resolution */
 	use_context_b = (compose->width > 640 || compose->height > 480);
@@ -932,7 +933,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	/* Wait for CSIPHY stabilization */
 	msleep(mt9m113_pre_mipi_delay_ms);
 
-	/* Configure MIPI output based on format */
+	/* Configure MIPI output based on source pad format */
 	{
 		bool is_bayer = (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
 				 format->code == MEDIA_BUS_FMT_SGRBG10_1X10);
@@ -942,8 +943,12 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW10;
 			else
 				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
+			dev_info(dev, "MT9M113: MIPI output RAW mode (code=0x%04x)\n",
+				 format->code);
 		} else {
 			output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
+			dev_info(dev, "MT9M113: MIPI output YUV mode (code=0x%04x)\n",
+				 format->code);
 		}
 
 		if (mt9m113_cont_mipi_clk)
