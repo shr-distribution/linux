@@ -732,6 +732,25 @@ MODULE_PARM_DESC(vfe31_rdi_efs_cfg,
 		 "VFE31 RDI EFS_CFG: -1=default (0x40), 0=APS mode, >0=use value");
 
 /*
+ * RDI mode force 16bpp input.
+ *
+ * Some sensors (like MT9M113 with IFP) always output 2 bytes per pixel
+ * even when configured for "Processed Bayer" mode. The MIPI data type
+ * might be RAW8 (0x2A) but the actual data width is still 16 bits.
+ *
+ * When enabled, the CAMIF is configured to expect 16 bpp input for RDI
+ * regardless of the mbus format. This allows capture of 1280 bytes for
+ * 640 pixels instead of the expected 640 bytes.
+ *
+ * 0 = use format's actual bpp (8 for RAW8, 10 for RAW10, etc.)
+ * 1 = force 16 bpp for all RDI formats
+ */
+static int vfe31_rdi_force_16bpp = 0;
+module_param(vfe31_rdi_force_16bpp, int, 0644);
+MODULE_PARM_DESC(vfe31_rdi_force_16bpp,
+		 "VFE31 RDI force 16bpp: 0=use format bpp, 1=force 16bpp (for MT9M113 IFP)");
+
+/*
  * Helper to get effective BUS_CFG value (module param or default).
  * Default is 0x02AAA771 per webOS register dumps.
  */
@@ -4900,6 +4919,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	struct vfe_line *line;
 	u32 val;
 	bool is_rdi_line;
+	bool rdi_use_16bpp;
 	u32 axi_mode;
 
 	if (line_id == VFE_LINE_NONE || line_id >= vfe->res->line_num) {
@@ -4918,6 +4938,14 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	is_rdi_line = (line_id == VFE_LINE_RDI0 ||
 		       line_id == VFE_LINE_RDI1 ||
 		       line_id == VFE_LINE_RDI2);
+
+	/*
+	 * Determine if we should use 16bpp stride for this RDI line.
+	 * When vfe31_rdi_force_16bpp is set, RDI mode uses 2 bytes/pixel
+	 * instead of the format's actual bpp. This is needed for sensors
+	 * like MT9M113 that output 2 bytes/pixel even in "Bayer" mode.
+	 */
+	rdi_use_16bpp = is_rdi_line && vfe31_rdi_force_16bpp;
 
 	if (is_rdi_line) {
 		axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0;  /* 0x60 */
@@ -5050,10 +5078,11 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 * CRITICAL: Use INPUT stride, not output bytesperline!
 		 * - UYVY (PIX/VIDEO): 2 bytes/pixel -> width * 2
 		 * - RAW8 (RDI): 1 byte/pixel -> width * 1
+		 * - RDI with force_16bpp: 2 bytes/pixel -> width * 2
 		 * Using output stride causes half-frame capture.
 		 */
 		{
-			u16 image_stride = is_rdi_line ? width : (width * 2);
+			u16 image_stride = (is_rdi_line && !rdi_use_16bpp) ? width : (width * 2);
 			reg = ((image_stride / 16) & 0xFFFF) << 16;
 			reg |= ((height - 1) << 4) | 2;
 
@@ -5074,9 +5103,10 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 * Use INPUT stride based on mode:
 		 * - UYVY (PIX/VIDEO): width * 2
 		 * - RAW8 (RDI): width * 1
+		 * - RDI with force_16bpp: width * 2
 		 */
 		{
-			u16 input_stride = is_rdi_line ? width : (width * 2);
+			u16 input_stride = (is_rdi_line && !rdi_use_16bpp) ? width : (width * 2);
 			wpl = input_stride / 4;  /* 32-bit words per line */
 			reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 (webOS formula) */
 			/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
@@ -5098,8 +5128,9 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 * Use INPUT stride based on mode:
 		 * - UYVY (PIX/VIDEO): width * 2
 		 * - RAW8 (RDI): width * 1
+		 * - RDI with force_16bpp: width * 2
 		 */
-		wpl = (is_rdi_line ? width : (width * 2)) / 4;
+		wpl = ((is_rdi_line && !rdi_use_16bpp) ? width : (width * 2)) / 4;
 		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 		reg |= (height - 1) & 0xFFFF;
 		dev_info(vfe->camss->dev,
@@ -6544,23 +6575,43 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * RAW8 input:   8 bpp  -> width * 1 byte
 	 * RAW10 input:  10 bpp -> width * 10/8 bytes (packed)
 	 */
-	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
-	case MEDIA_BUS_FMT_UYVY8_1X16:
-	case MEDIA_BUS_FMT_UYVY8_2X8:
-	case MEDIA_BUS_FMT_VYUY8_1X16:
-	case MEDIA_BUS_FMT_VYUY8_2X8:
-	case MEDIA_BUS_FMT_YUYV8_1X16:
-	case MEDIA_BUS_FMT_YUYV8_2X8:
-	case MEDIA_BUS_FMT_YVYU8_1X16:
-	case MEDIA_BUS_FMT_YVYU8_2X8:
-		/* YUV422 formats: 16 bits (2 bytes) per pixel */
-		bpp = 16;
-		break;
-	default:
-		/* Other formats: use format table bpp */
-		bpp = camss_format_get_bpp(line->formats, line->nformats,
-					   line->fmt[MSM_VFE_PAD_SINK].code);
-		break;
+	/*
+	 * Check if this is an RDI line for format-specific handling.
+	 */
+	{
+		bool is_rdi = (line->id == VFE_LINE_RDI0 ||
+			       line->id == VFE_LINE_RDI1 ||
+			       line->id == VFE_LINE_RDI2);
+
+		/*
+		 * Force 16 bpp for RDI mode if vfe31_rdi_force_16bpp is set.
+		 * This is needed for sensors like MT9M113 where the IFP always
+		 * outputs 2 bytes per pixel even in "Processed Bayer" mode.
+		 */
+		if (is_rdi && vfe31_rdi_force_16bpp) {
+			bpp = 16;
+			dev_info(vfe->camss->dev,
+				 "VFE31: RDI force 16bpp enabled (actual format bpp ignored)\n");
+		} else {
+			switch (line->fmt[MSM_VFE_PAD_SINK].code) {
+			case MEDIA_BUS_FMT_UYVY8_1X16:
+			case MEDIA_BUS_FMT_UYVY8_2X8:
+			case MEDIA_BUS_FMT_VYUY8_1X16:
+			case MEDIA_BUS_FMT_VYUY8_2X8:
+			case MEDIA_BUS_FMT_YUYV8_1X16:
+			case MEDIA_BUS_FMT_YUYV8_2X8:
+			case MEDIA_BUS_FMT_YVYU8_1X16:
+			case MEDIA_BUS_FMT_YVYU8_2X8:
+				/* YUV422 formats: 16 bits (2 bytes) per pixel */
+				bpp = 16;
+				break;
+			default:
+				/* Other formats: use format table bpp */
+				bpp = camss_format_get_bpp(line->formats, line->nformats,
+							   line->fmt[MSM_VFE_PAD_SINK].code);
+				break;
+			}
+		}
 	}
 	width_bytes = line->fmt[MSM_VFE_PAD_SINK].width * bpp / 8;
 	height = line->fmt[MSM_VFE_PAD_SINK].height;
