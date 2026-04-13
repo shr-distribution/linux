@@ -3077,17 +3077,29 @@ static int mt9m114_pa_enum_framesizes(struct v4l2_subdev *sd,
 				      struct v4l2_subdev_state *state,
 				      struct v4l2_subdev_frame_size_enum *fse)
 {
+	struct mt9m114 *sensor = pa_to_mt9m114(sd);
+	unsigned int pa_width, pa_height;
+
 	if (fse->index > 1)
 		return -EINVAL;
 
 	if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
 		return -EINVAL;
 
+	/* Use sensor-specific pixel array dimensions */
+	if (sensor->expected_model == MT9M113_MODEL) {
+		pa_width = MT9M113_PIXEL_ARRAY_WIDTH;
+		pa_height = MT9M113_PIXEL_ARRAY_HEIGHT;
+	} else {
+		pa_width = MT9M114_PIXEL_ARRAY_WIDTH;
+		pa_height = MT9M114_PIXEL_ARRAY_HEIGHT;
+	}
+
 	/* Report binning capability through frame size enumeration. */
-	fse->min_width = MT9M114_PIXEL_ARRAY_WIDTH / (fse->index + 1);
-	fse->max_width = MT9M114_PIXEL_ARRAY_WIDTH / (fse->index + 1);
-	fse->min_height = MT9M114_PIXEL_ARRAY_HEIGHT / (fse->index + 1);
-	fse->max_height = MT9M114_PIXEL_ARRAY_HEIGHT / (fse->index + 1);
+	fse->min_width = pa_width / (fse->index + 1);
+	fse->max_width = pa_width / (fse->index + 1);
+	fse->min_height = pa_height / (fse->index + 1);
+	fse->max_height = pa_height / (fse->index + 1);
 
 	return 0;
 }
@@ -3123,6 +3135,18 @@ static int mt9m114_pa_get_selection(struct v4l2_subdev *sd,
 				    struct v4l2_subdev_state *state,
 				    struct v4l2_subdev_selection *sel)
 {
+	struct mt9m114 *sensor = pa_to_mt9m114(sd);
+	unsigned int pa_width, pa_height;
+
+	/* Use sensor-specific pixel array dimensions */
+	if (sensor->expected_model == MT9M113_MODEL) {
+		pa_width = MT9M113_PIXEL_ARRAY_WIDTH;
+		pa_height = MT9M113_PIXEL_ARRAY_HEIGHT;
+	} else {
+		pa_width = MT9M114_PIXEL_ARRAY_WIDTH;
+		pa_height = MT9M114_PIXEL_ARRAY_HEIGHT;
+	}
+
 	switch (sel->target) {
 	case V4L2_SEL_TGT_CROP:
 		sel->r = *v4l2_subdev_state_get_crop(state, sel->pad);
@@ -3133,8 +3157,8 @@ static int mt9m114_pa_get_selection(struct v4l2_subdev *sd,
 	case V4L2_SEL_TGT_NATIVE_SIZE:
 		sel->r.left = 0;
 		sel->r.top = 0;
-		sel->r.width = MT9M114_PIXEL_ARRAY_WIDTH;
-		sel->r.height = MT9M114_PIXEL_ARRAY_HEIGHT;
+		sel->r.width = pa_width;
+		sel->r.height = pa_height;
 		return 0;
 
 	default:
@@ -3149,10 +3173,20 @@ static int mt9m114_pa_set_selection(struct v4l2_subdev *sd,
 	struct mt9m114 *sensor = pa_to_mt9m114(sd);
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
+	unsigned int pa_width, pa_height;
 	int ret = 0;
 
 	if (sel->target != V4L2_SEL_TGT_CROP)
 		return -EINVAL;
+
+	/* Use sensor-specific pixel array dimensions */
+	if (sensor->expected_model == MT9M113_MODEL) {
+		pa_width = MT9M113_PIXEL_ARRAY_WIDTH;
+		pa_height = MT9M113_PIXEL_ARRAY_HEIGHT;
+	} else {
+		pa_width = MT9M114_PIXEL_ARRAY_WIDTH;
+		pa_height = MT9M114_PIXEL_ARRAY_HEIGHT;
+	}
 
 	crop = v4l2_subdev_state_get_crop(state, sel->pad);
 	format = v4l2_subdev_state_get_format(state, sel->pad);
@@ -3169,10 +3203,10 @@ static int mt9m114_pa_set_selection(struct v4l2_subdev *sd,
 	sel->r.top = ALIGN(sel->r.top, 2);
 	sel->r.width = clamp_t(unsigned int, ALIGN(sel->r.width, 4),
 			       MT9M114_PIXEL_ARRAY_MIN_OUTPUT_WIDTH,
-			       MT9M114_PIXEL_ARRAY_WIDTH - sel->r.left);
+			       pa_width - sel->r.left);
 	sel->r.height = clamp_t(unsigned int, ALIGN(sel->r.height, 2),
 				MT9M114_PIXEL_ARRAY_MIN_OUTPUT_HEIGHT,
-				MT9M114_PIXEL_ARRAY_HEIGHT - sel->r.top);
+				pa_height - sel->r.top);
 
 	/* Changing the selection size is not allowed in streaming state. */
 	if (sensor->streaming &&
@@ -3772,6 +3806,7 @@ static int mt9m114_ifp_enum_framesizes(struct v4l2_subdev *sd,
 {
 	struct mt9m114 *sensor = ifp_to_mt9m114(sd);
 	const struct mt9m114_format_info *info;
+	unsigned int pa_width, pa_height;
 
 	if (fse->index > 0)
 		return -EINVAL;
@@ -3780,11 +3815,20 @@ static int mt9m114_ifp_enum_framesizes(struct v4l2_subdev *sd,
 	if (!info || info->code != fse->code)
 		return -EINVAL;
 
+	/* Use sensor-specific pixel array dimensions */
+	if (sensor->expected_model == MT9M113_MODEL) {
+		pa_width = MT9M113_PIXEL_ARRAY_WIDTH;
+		pa_height = MT9M113_PIXEL_ARRAY_HEIGHT;
+	} else {
+		pa_width = MT9M114_PIXEL_ARRAY_WIDTH;
+		pa_height = MT9M114_PIXEL_ARRAY_HEIGHT;
+	}
+
 	if (fse->pad == 0) {
 		fse->min_width = MT9M114_PIXEL_ARRAY_MIN_OUTPUT_WIDTH;
-		fse->max_width = MT9M114_PIXEL_ARRAY_WIDTH;
+		fse->max_width = pa_width;
 		fse->min_height = MT9M114_PIXEL_ARRAY_MIN_OUTPUT_HEIGHT;
-		fse->max_height = MT9M114_PIXEL_ARRAY_HEIGHT;
+		fse->max_height = pa_height;
 	} else {
 		const struct v4l2_rect *crop;
 
