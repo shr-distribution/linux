@@ -1286,8 +1286,21 @@ test_at_resolution() {
     local csid="${5:-msm_csid1}"
     local csiphy="${6:-msm_csiphy1}"
     local format="${7:-NV12}"  # Default to NV12, can be NV16
+    local color_effect="${8:-0}"  # Color effect: 0=None, 1=B&W, 2=Sepia, 3=Negative, 13=Solarize
 
-    log_info "Testing $mode at ${width}x${height} on /dev/$video_dev (format=$format)"
+    local effect_name="none"
+    case "$color_effect" in
+        1) effect_name="mono" ;;
+        2) effect_name="sepia" ;;
+        3) effect_name="negative" ;;
+        13) effect_name="solarize" ;;
+    esac
+
+    if [ "$color_effect" != "0" ]; then
+        log_info "Testing $mode at ${width}x${height} on /dev/$video_dev (format=$format, effect=$effect_name)"
+    else
+        log_info "Testing $mode at ${width}x${height} on /dev/$video_dev (format=$format)"
+    fi
 
     run_on_device "
         # Kill any stuck capture processes first
@@ -1418,10 +1431,25 @@ test_at_resolution() {
         echo \"Pipeline configured for $mode mode (format=\$PIXFMT):\"
         v4l2-ctl -d /dev/$video_dev --get-fmt-video 2>&1 | grep -E 'Width|Pixel'
 
+        # Set color effect if specified (0=None, 1=B&W, 2=Sepia, 3=Negative, 13=Solarize)
+        COLOR_EFFECT='$color_effect'
+        EFFECT_NAME='$effect_name'
+        if [ \"\$COLOR_EFFECT\" != \"0\" ]; then
+            echo \"Setting color effect: \$COLOR_EFFECT (\$EFFECT_NAME)\"
+            v4l2-ctl -d /dev/v4l-subdev10 --set-ctrl=color_effects=\$COLOR_EFFECT 2>&1 || echo 'WARNING: Failed to set color effect'
+            # Verify effect was set
+            v4l2-ctl -d /dev/v4l-subdev10 --get-ctrl=color_effects 2>&1
+        fi
+
         # Capture with register dump during capture
-        # Include format in filename for NV12 vs NV16 comparison
-        OUTPUT=\"/tmp/test_${mode}_${width}x${height}_\${PIXFMT}.raw\"
-        REGDUMP=\"/tmp/test_${mode}_${width}x${height}_\${PIXFMT}_regs.txt\"
+        # Include format and effect in filename
+        if [ \"\$COLOR_EFFECT\" != \"0\" ]; then
+            OUTPUT=\"/tmp/test_${mode}_${width}x${height}_\${PIXFMT}_\${EFFECT_NAME}.raw\"
+            REGDUMP=\"/tmp/test_${mode}_${width}x${height}_\${PIXFMT}_\${EFFECT_NAME}_regs.txt\"
+        else
+            OUTPUT=\"/tmp/test_${mode}_${width}x${height}_\${PIXFMT}.raw\"
+            REGDUMP=\"/tmp/test_${mode}_${width}x${height}_\${PIXFMT}_regs.txt\"
+        fi
         rm -f \"\$OUTPUT\" \"\$REGDUMP\"
 
         # Start capture in background
@@ -1474,6 +1502,12 @@ test_at_resolution() {
         # Disable testgen if it was enabled
         if [ '$mode' = 'testgen' ]; then
             echo 0 > /sys/module/qcom_camss/parameters/vfe31_use_testgen 2>/dev/null || true
+        fi
+
+        # Reset color effect to none after capture
+        if [ \"\$COLOR_EFFECT\" != \"0\" ]; then
+            echo 'Resetting color effect to none...'
+            v4l2-ctl -d /dev/v4l-subdev10 --set-ctrl=color_effects=0 2>&1 || true
         fi
 
         # Check result
@@ -1757,6 +1791,33 @@ main() {
             testgen1280-nv16)
                 MODE="testgen1280-nv16"
                 ;;
+            pix640-mono|pix640-bw)
+                MODE="pix640-mono"
+                ;;
+            pix1280-mono|pix1280-bw)
+                MODE="pix1280-mono"
+                ;;
+            pix640-sepia)
+                MODE="pix640-sepia"
+                ;;
+            pix1280-sepia)
+                MODE="pix1280-sepia"
+                ;;
+            pix640-negative)
+                MODE="pix640-negative"
+                ;;
+            pix1280-negative)
+                MODE="pix1280-negative"
+                ;;
+            pix640-solarize)
+                MODE="pix640-solarize"
+                ;;
+            pix1280-solarize)
+                MODE="pix1280-solarize"
+                ;;
+            effects-test)
+                MODE="effects-test"
+                ;;
             convert-video640)
                 MODE="convert-video640"
                 ;;
@@ -1823,6 +1884,18 @@ main() {
                 echo "  video1280-nv16  VIDEO mode at 1280x1024 (NV16)"
                 echo "  testgen640-nv16   TESTGEN mode at 640x480 (NV16)"
                 echo "  testgen1280-nv16  TESTGEN mode at 1280x1024 (NV16)"
+                echo ""
+                echo "Color effects modes (sensor ISP effects):"
+                echo "  pix640-mono     PIX mode at 640x480 with Black & White effect"
+                echo "  pix1280-mono    PIX mode at 1280x1024 with Black & White effect"
+                echo "  pix640-sepia    PIX mode at 640x480 with Sepia effect"
+                echo "  pix1280-sepia   PIX mode at 1280x1024 with Sepia effect"
+                echo "  pix640-negative PIX mode at 640x480 with Negative effect"
+                echo "  pix1280-negative PIX mode at 1280x1024 with Negative effect"
+                echo "  pix640-solarize PIX mode at 640x480 with Solarization effect"
+                echo "  pix1280-solarize PIX mode at 1280x1024 with Solarization effect"
+                echo "  effects-test    Run all color effects at both resolutions"
+                echo ""
                 echo "  --info     Show camera device information only"
                 echo "  --setup    Set up media pipeline only"
                 echo "  --capture  Test capture only (assumes pipeline is set up)"
@@ -1968,6 +2041,62 @@ main() {
         pix1280-nv16)
             ensure_camera_ready
             test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV16
+            check_dmesg
+            ;;
+        pix640-mono)
+            ensure_camera_ready
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12 1
+            check_dmesg
+            ;;
+        pix1280-mono)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12 1
+            check_dmesg
+            ;;
+        pix640-sepia)
+            ensure_camera_ready
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12 2
+            check_dmesg
+            ;;
+        pix1280-sepia)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12 2
+            check_dmesg
+            ;;
+        pix640-negative)
+            ensure_camera_ready
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12 3
+            check_dmesg
+            ;;
+        pix1280-negative)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12 3
+            check_dmesg
+            ;;
+        pix640-solarize)
+            ensure_camera_ready
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12 13
+            check_dmesg
+            ;;
+        pix1280-solarize)
+            ensure_camera_ready
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12 13
+            check_dmesg
+            ;;
+        effects-test)
+            ensure_camera_ready
+            log_step "Testing all color effects at 640x480..."
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12 0
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12 1
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12 2
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12 3
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12 13
+            log_step "Testing all color effects at 1280x1024..."
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12 0
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12 1
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12 2
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12 3
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12 13
             check_dmesg
             ;;
         rdi640)
