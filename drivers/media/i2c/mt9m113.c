@@ -1763,6 +1763,17 @@ static int mt9m113_probe(struct i2c_client *client)
 	if (ret < 0)
 		goto error_power_off;
 
+	/* Calculate pixel rate from input clock
+	 * MT9M113 PLL: MCLK=27MHz, typical output ~54MHz pixel clock
+	 * Using half the input clock rate as a reasonable default
+	 */
+	sensor->pixrate = clk_get_rate(sensor->clk);
+	if (sensor->pixrate == 0)
+		sensor->pixrate = 27000000; /* Default 27MHz if clock rate unknown */
+	sensor->pixrate = sensor->pixrate * 2; /* PLL typically doubles the rate */
+
+	dev_info(dev, "MT9M113: pixel rate %u Hz\n", sensor->pixrate);
+
 	/* Initialize Pixel Array subdev */
 	v4l2_subdev_init(&sensor->pa.sd, &mt9m113_pa_ops);
 	sensor->pa.sd.internal_ops = &mt9m113_pa_internal_ops;
@@ -1794,13 +1805,29 @@ static int mt9m113_probe(struct i2c_client *client)
 		goto error_pa_subdev;
 
 	/* Initialize controls on IFP */
-	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 2);
+	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 5);
 	sensor->ifp.context = v4l2_ctrl_new_custom(&sensor->ifp.hdl,
 						   &mt9m113_context_ctrl_cfg, NULL);
 	v4l2_ctrl_new_std_menu(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
 			       V4L2_CID_COLORFX,
 			       V4L2_COLORFX_SOLARIZATION, 0,
 			       V4L2_COLORFX_NONE);
+
+	/* Link frequency control - required by CSIPHY */
+	if (sensor->bus_cfg.nr_of_link_frequencies > 0) {
+		struct v4l2_ctrl *link_freq;
+
+		link_freq = v4l2_ctrl_new_int_menu(&sensor->ifp.hdl, NULL,
+						   V4L2_CID_LINK_FREQ,
+						   sensor->bus_cfg.nr_of_link_frequencies - 1,
+						   0, sensor->bus_cfg.link_frequencies);
+		if (link_freq)
+			link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	}
+
+	/* Pixel rate control */
+	v4l2_ctrl_new_std(&sensor->ifp.hdl, NULL, V4L2_CID_PIXEL_RATE,
+			  sensor->pixrate, sensor->pixrate, 1, sensor->pixrate);
 
 	if (sensor->ifp.hdl.error) {
 		ret = sensor->ifp.hdl.error;
