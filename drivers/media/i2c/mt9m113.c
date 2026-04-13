@@ -182,6 +182,7 @@ struct mt9m113 {
 	struct {
 		struct v4l2_subdev sd;
 		struct media_pad pad;
+		struct v4l2_ctrl_handler hdl;
 	} pa;
 
 	/* Image Flow Processor sub-device */
@@ -1788,9 +1789,21 @@ static int mt9m113_probe(struct i2c_client *client)
 	if (ret < 0)
 		goto error_power_off;
 
+	/* Initialize PA controls - PIXEL_RATE is needed by camss for link freq */
+	v4l2_ctrl_handler_init(&sensor->pa.hdl, 1);
+	v4l2_ctrl_new_std(&sensor->pa.hdl, NULL, V4L2_CID_PIXEL_RATE,
+			  sensor->pixrate, sensor->pixrate, 1, sensor->pixrate);
+	if (sensor->pa.hdl.error) {
+		ret = sensor->pa.hdl.error;
+		goto error_pa_hdl;
+	}
+	sensor->pa.sd.state_lock = sensor->pa.hdl.lock;
+
 	ret = v4l2_subdev_init_finalize(&sensor->pa.sd);
 	if (ret < 0)
-		goto error_pa_entity;
+		goto error_pa_hdl;
+
+	sensor->pa.sd.ctrl_handler = &sensor->pa.hdl;
 
 	/* Initialize IFP subdev */
 	v4l2_i2c_subdev_init(&sensor->ifp.sd, client, &mt9m113_ifp_ops);
@@ -1886,6 +1899,8 @@ error_ifp_entity:
 	media_entity_cleanup(&sensor->ifp.sd.entity);
 error_pa_subdev:
 	v4l2_subdev_cleanup(&sensor->pa.sd);
+error_pa_hdl:
+	v4l2_ctrl_handler_free(&sensor->pa.hdl);
 error_pa_entity:
 	media_entity_cleanup(&sensor->pa.sd.entity);
 error_power_off:
@@ -1907,6 +1922,7 @@ static void mt9m113_remove(struct i2c_client *client)
 	media_entity_cleanup(&sensor->ifp.sd.entity);
 
 	v4l2_subdev_cleanup(&sensor->pa.sd);
+	v4l2_ctrl_handler_free(&sensor->pa.hdl);
 	media_entity_cleanup(&sensor->pa.sd.entity);
 
 	v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
