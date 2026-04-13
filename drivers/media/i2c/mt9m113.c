@@ -1813,14 +1813,32 @@ static int mt9m113_probe(struct i2c_client *client)
 			       V4L2_COLORFX_SOLARIZATION, 0,
 			       V4L2_COLORFX_NONE);
 
-	/* Link frequency control - required by CSIPHY */
-	if (sensor->bus_cfg.nr_of_link_frequencies > 0) {
+	/* Link frequency control - required by CSIPHY
+	 * Use DT link-frequencies if available, otherwise calculate default
+	 * For MIPI CSI-2: link_freq = pixel_rate * bpp / (2 * lanes)
+	 * MT9M113: 1 lane, YUV422 16bpp -> link_freq = pixel_rate * 8
+	 */
+	{
+		static s64 default_link_freq;
 		struct v4l2_ctrl *link_freq;
+		const s64 *frequencies;
+		unsigned int nfreqs;
+
+		if (sensor->bus_cfg.nr_of_link_frequencies > 0) {
+			frequencies = sensor->bus_cfg.link_frequencies;
+			nfreqs = sensor->bus_cfg.nr_of_link_frequencies;
+		} else {
+			/* Default: pixel_rate * 8 for 1-lane YUV422 */
+			default_link_freq = (s64)sensor->pixrate * 8;
+			frequencies = &default_link_freq;
+			nfreqs = 1;
+			dev_info(dev, "MT9M113: using default link freq %lld Hz\n",
+				 default_link_freq);
+		}
 
 		link_freq = v4l2_ctrl_new_int_menu(&sensor->ifp.hdl, NULL,
 						   V4L2_CID_LINK_FREQ,
-						   sensor->bus_cfg.nr_of_link_frequencies - 1,
-						   0, sensor->bus_cfg.link_frequencies);
+						   nfreqs - 1, 0, frequencies);
 		if (link_freq)
 			link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 	}
