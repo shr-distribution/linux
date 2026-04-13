@@ -7060,9 +7060,11 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_BUS_XBAR_CFG1));
 
-	/* Dump state after CAMIF start for comparison */
-	dev_info(vfe->camss->dev, "VFE31: CAMIF started - dumping state AFTER:\n");
-	vfe31_dump_axi_wm_debug(vfe);
+	/*
+	 * NOTE: Do NOT call vfe31_dump_axi_wm_debug() after CAMIF starts!
+	 * Reading VFE_0_AXI_STATUS (0x1DC) while CAMIF is active causes
+	 * a bus hang on VFE31. The pre-CAMIF dump is sufficient for debugging.
+	 */
 }
 
 /* Gen1 operations structure for VFE31 */
