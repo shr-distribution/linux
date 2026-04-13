@@ -2379,16 +2379,21 @@ mt9m113_streaming:
 			 * CRITICAL: Set MIPI data type based on output format!
 			 * - YUV422: data_type=0x1E -> OUTPUT_CONTROL=0x7A08
 			 * - RAW8:   data_type=0x2A -> OUTPUT_CONTROL=0xAA08
-			 * Without this, RDI mode fails because CSID expects RAW8
-			 * but sensor sends YUV data type.
+			 * - RAW10:  data_type=0x2B -> OUTPUT_CONTROL=0xAC08
+			 * Without this, RDI mode fails because CSID expects the
+			 * correct data type but sensor sends wrong type.
 			 *
 			 * Fake YUV trick: If mt9m113_fake_yuv=1, use YUV data type
 			 * even for RAW Bayer to test VFE31 data type filtering.
 			 */
-			if (is_bayer && !mt9m113_fake_yuv)
-				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
-			else
+			if (is_bayer && !mt9m113_fake_yuv) {
+				if (format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
+					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW10;
+				else
+					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
+			} else {
 				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
+			}
 
 			if (mt9m113_cont_mipi_clk)
 				output_ctrl_val |= 0x0004;
@@ -2396,8 +2401,11 @@ mt9m113_streaming:
 			dev_info(&sensor->client->dev,
 				 "MT9M113: OUTPUT_CONTROL=0x%04x (%s%s, %s)\n",
 				 output_ctrl_val,
-				 is_bayer ? "RAW8" : "YUV",
-				 (is_bayer && mt9m113_fake_yuv) ? " FAKE_YUV dt=0x1E" : (is_bayer ? " dt=0x2A" : " dt=0x1E"),
+				 (format->code == MEDIA_BUS_FMT_SGRBG10_1X10) ? "RAW10" :
+				 (format->code == MEDIA_BUS_FMT_SGRBG8_1X8) ? "RAW8" : "YUV",
+				 (is_bayer && mt9m113_fake_yuv) ? " FAKE_YUV dt=0x1E" :
+				 (format->code == MEDIA_BUS_FMT_SGRBG10_1X10) ? " dt=0x2B" :
+				 (format->code == MEDIA_BUS_FMT_SGRBG8_1X8) ? " dt=0x2A" : " dt=0x1E",
 				 mt9m113_cont_mipi_clk ? "cont_clk" : "LP");
 
 			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
@@ -2619,10 +2627,13 @@ mt9m113_streaming:
 				u64 readback;
 
 				/* Use fake YUV trick if enabled (YUV dt for RAW data) */
-				if (mt9m113_fake_yuv)
+				if (mt9m113_fake_yuv) {
 					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
-				else
+				} else if (format->code == MEDIA_BUS_FMT_SGRBG10_1X10) {
+					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW10;
+				} else {
 					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
+				}
 
 				if (mt9m113_cont_mipi_clk)
 					output_ctrl_val |= 0x0004;
@@ -2630,7 +2641,8 @@ mt9m113_streaming:
 				dev_info(&sensor->client->dev,
 					 "MT9M113: Re-writing OUTPUT_CONTROL=0x%04x after SEQ_CMD (%s)\n",
 					 output_ctrl_val,
-					 mt9m113_fake_yuv ? "FAKE_YUV" : "RAW8 fix");
+					 mt9m113_fake_yuv ? "FAKE_YUV" :
+					 (format->code == MEDIA_BUS_FMT_SGRBG10_1X10) ? "RAW10 fix" : "RAW8 fix");
 
 				ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 						output_ctrl_val, NULL);
