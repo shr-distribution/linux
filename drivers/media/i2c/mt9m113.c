@@ -312,73 +312,79 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	{ 0x098C, 0x2709, 0 },
 	{ 0x0990, 0x0400, 0 },
 
-	/* Context A sensor configuration */
-	{ 0x098C, 0x270D, 0 },
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x270F, 0 },
-	{ 0x0990, 0x0000, 0 },
+	/*
+	 * Context A sensor configuration (datasheet defaults from Table 19)
+	 * Preview mode: 640x480 output with 2x skip/binning
+	 */
+	{ 0x098C, 0x270D, 0 },		/* MODE_SENSOR_ROW_START_A */
+	{ 0x0990, 0x0000, 0 },		/* 0 */
+	{ 0x098C, 0x270F, 0 },		/* MODE_SENSOR_COL_START_A */
+	{ 0x0990, 0x0000, 0 },		/* 0 */
 	{ 0x098C, 0x2711, 0 },		/* MODE_SENSOR_ROW_END_A */
-	{ 0x0990, 0x03CD, 0 },		/* 973 - from webOS driver (TODO: investigate if 1023 works) */
-	{ 0x098C, 0x2713, 0 },
-	{ 0x0990, 0x050D, 0 },
-	{ 0x098C, 0x2715, 0 },
-	{ 0x0990, 0x2111, 0 },
-	{ 0x098C, 0x2717, 0 },
-	{ 0x0990, 0x046C, 0 },
-	{ 0x098C, 0x2719, 0 },
-	{ 0x0990, 0x00AC, 0 },
-	{ 0x098C, 0x271B, 0 },
-	{ 0x0990, 0x01F1, 0 },
-	{ 0x098C, 0x271D, 0 },
-	{ 0x0990, 0x013F, 0 },
-	{ 0x098C, 0x271F, 0 },
-	{ 0x0990, 0x032E, 0 },
-	{ 0x098C, 0x2721, 0 },
-	{ 0x0990, 0x04CC, 0 },
+	{ 0x0990, 0x04BD, 0 },		/* 1213 - datasheet default */
+	{ 0x098C, 0x2713, 0 },		/* MODE_SENSOR_COL_END_A */
+	{ 0x0990, 0x064D, 0 },		/* 1613 - datasheet default */
+	{ 0x098C, 0x2715, 0 },		/* MODE_SENSOR_ROW_SPEED_A */
+	{ 0x0990, 0x2112, 0 },		/* 8466 - datasheet default */
+	{ 0x098C, 0x2717, 0 },		/* MODE_SENSOR_READ_MODE_A */
+	{ 0x0990, 0x046C, 0 },		/* 1132 - 2x skip, x-mirror */
+	{ 0x098C, 0x2719, 0 },		/* MODE_SENSOR_FINE_CORRECTION_A */
+	{ 0x0990, 0x007B, 0 },		/* 123 - datasheet default */
+	{ 0x098C, 0x271B, 0 },		/* MODE_SENSOR_FINE_IT_MIN_A */
+	{ 0x0990, 0x0408, 0 },		/* 1032 - datasheet default */
+	{ 0x098C, 0x271D, 0 },		/* MODE_SENSOR_FINE_IT_MAX_MARGIN_A */
+	{ 0x0990, 0x00AB, 0 },		/* 171 - datasheet default */
+	{ 0x098C, 0x271F, 0 },		/* MODE_SENSOR_FRAME_LENGTH_A */
+	{ 0x0990, 0x0293, 0 },		/* 659 - datasheet default */
+	{ 0x098C, 0x2721, 0 },		/* MODE_SENSOR_LINE_LENGTH_PCK_A */
+	{ 0x0990, 0x07D0, 0 },		/* 2000 - datasheet default */
 
-	/* Context B sensor configuration */
-	{ 0x098C, 0x2723, 0 },
-	{ 0x0990, 0x0004, 0 },
-	{ 0x098C, 0x2725, 0 },
-	{ 0x0990, 0x0004, 0 },
-	{ 0x098C, 0x2727, 0 },
-	{ 0x0990, 0x040B, 0 },
-	{ 0x098C, 0x2729, 0 },
-	{ 0x0990, 0x050B, 0 },
-	{ 0x098C, 0x272B, 0 },
-	{ 0x0990, 0x2111, 0 },
-	{ 0x098C, 0x272D, 0 },
-	{ 0x0990, 0x0024, 0 },
-	{ 0x098C, 0x272F, 0 },
-	{ 0x0990, 0x004C, 0 },
-	{ 0x098C, 0x2731, 0 },
-	{ 0x0990, 0x00F9, 0 },
-	{ 0x098C, 0x2733, 0 },
-	{ 0x0990, 0x00A7, 0 },
-	{ 0x098C, 0x2735, 0 },
-	{ 0x0990, 0x0559, 0 },
-	{ 0x098C, 0x2737, 0 },
-	{ 0x0990, 0x0722, 0 },
+	/*
+	 * Context B sensor configuration (datasheet defaults from Table 19)
+	 * Capture mode: 1280x1024 full resolution
+	 */
+	{ 0x098C, 0x2723, 0 },		/* MODE_SENSOR_ROW_START_B */
+	{ 0x0990, 0x0004, 0 },		/* 4 - datasheet default */
+	{ 0x098C, 0x2725, 0 },		/* MODE_SENSOR_COL_START_B */
+	{ 0x0990, 0x0004, 0 },		/* 4 - datasheet default */
+	{ 0x098C, 0x2727, 0 },		/* MODE_SENSOR_ROW_END_B */
+	{ 0x0990, 0x04BB, 0 },		/* 1211 - datasheet default */
+	{ 0x098C, 0x2729, 0 },		/* MODE_SENSOR_COL_END_B */
+	{ 0x0990, 0x064B, 0 },		/* 1611 - datasheet default */
+	{ 0x098C, 0x272B, 0 },		/* MODE_SENSOR_ROW_SPEED_B */
+	{ 0x0990, 0x2111, 0 },		/* 8465 - datasheet default */
+	{ 0x098C, 0x272D, 0 },		/* MODE_SENSOR_READ_MODE_B */
+	{ 0x0990, 0x0024, 0 },		/* 36 - no skip, x-mirror */
+	{ 0x098C, 0x272F, 0 },		/* MODE_SENSOR_FINE_CORRECTION_B */
+	{ 0x0990, 0x00A4, 0 },		/* 164 - datasheet default */
+	{ 0x098C, 0x2731, 0 },		/* MODE_SENSOR_FINE_IT_MIN_B */
+	{ 0x0990, 0x0408, 0 },		/* 1032 - datasheet default */
+	{ 0x098C, 0x2733, 0 },		/* MODE_SENSOR_FINE_IT_MAX_MARGIN_B */
+	{ 0x0990, 0x00A4, 0 },		/* 164 - datasheet default */
+	{ 0x098C, 0x2735, 0 },		/* MODE_SENSOR_FRAME_LENGTH_B */
+	{ 0x0990, 0x04ED, 0 },		/* 1261 - datasheet default */
+	{ 0x098C, 0x2737, 0 },		/* MODE_SENSOR_LINE_LENGTH_PCK_B */
+	{ 0x0990, 0x0D06, 0 },		/* 3334 - datasheet default */
 
-	/* Crop configuration - Context A */
-	{ 0x098C, 0x2739, 0 },
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x273B, 0 },
-	{ 0x0990, 0x027F, 0 },
-	{ 0x098C, 0x273D, 0 },
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x273F, 0 },
-	{ 0x0990, 0x01DF, 0 },
+	/* Crop configuration - Context A (640x480 output) */
+	{ 0x098C, 0x2739, 0 },		/* MODE_CROP_X0_A */
+	{ 0x0990, 0x0000, 0 },		/* 0 */
+	{ 0x098C, 0x273B, 0 },		/* MODE_CROP_X1_A */
+	{ 0x0990, 0x027F, 0 },		/* 639 */
+	{ 0x098C, 0x273D, 0 },		/* MODE_CROP_Y0_A */
+	{ 0x0990, 0x0000, 0 },		/* 0 */
+	{ 0x098C, 0x273F, 0 },		/* MODE_CROP_Y1_A */
+	{ 0x0990, 0x01DF, 0 },		/* 479 - for 480 output height */
 
-	/* Crop configuration - Context B */
-	{ 0x098C, 0x2747, 0 },
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x2749, 0 },
-	{ 0x0990, 0x04FF, 0 },
-	{ 0x098C, 0x274B, 0 },
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x274D, 0 },
-	{ 0x0990, 0x03FF, 0 },
+	/* Crop configuration - Context B (1280x1024 output) */
+	{ 0x098C, 0x2747, 0 },		/* MODE_CROP_X0_B */
+	{ 0x0990, 0x0000, 0 },		/* 0 */
+	{ 0x098C, 0x2749, 0 },		/* MODE_CROP_X1_B */
+	{ 0x0990, 0x04FF, 0 },		/* 1279 */
+	{ 0x098C, 0x274B, 0 },		/* MODE_CROP_Y0_B */
+	{ 0x0990, 0x0000, 0 },		/* 0 */
+	{ 0x098C, 0x274D, 0 },		/* MODE_CROP_Y1_B */
+	{ 0x0990, 0x03FF, 0 },		/* 1023 */
 
 	/* Flicker detection */
 	{ 0x098C, 0x222D, 0 },
@@ -393,14 +399,14 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	{ 0x0990, 0x003C, 0 },
 	{ 0x098C, 0xA40B, 0 },
 	{ 0x0990, 0x003E, 0 },
-	{ 0x098C, 0x2411, 0 },
-	{ 0x0990, 0x00CC, 0 },
-	{ 0x098C, 0x2413, 0 },
-	{ 0x0990, 0x00F4, 0 },
-	{ 0x098C, 0x2415, 0 },
-	{ 0x0990, 0x0089, 0 },
-	{ 0x098C, 0x2417, 0 },
-	{ 0x0990, 0x00A4, 0 },
+	{ 0x098C, 0x2411, 0 },		/* FD_R9_STEP_F60_A */
+	{ 0x0990, 0x009D, 0 },		/* 157 - datasheet default */
+	{ 0x098C, 0x2413, 0 },		/* FD_R9_STEP_F50_A */
+	{ 0x0990, 0x00BC, 0 },		/* 188 - datasheet default */
+	{ 0x098C, 0x2415, 0 },		/* FD_R9_STEP_F60_B */
+	{ 0x0990, 0x0000, 0 },		/* 0 - datasheet default */
+	{ 0x098C, 0x2417, 0 },		/* FD_R9_STEP_F50_B */
+	{ 0x0990, 0x00E0, 0 },		/* 224 - datasheet default */
 	{ 0x098C, 0xA40D, 0 },
 	{ 0x0990, 0x0002, 0 },
 	{ 0x098C, 0xA40E, 0 },
