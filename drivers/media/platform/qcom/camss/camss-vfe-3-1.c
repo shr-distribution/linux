@@ -2875,6 +2875,18 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			wm, ping_pong, active_index,
 			active_index ? "PING" : "PONG",
 			(u32)new_addr[0], output->sequence - 1);
+
+		/*
+		 * Debug: For 2-WM mode (NV16), log addr[1] to help trace issues.
+		 * The CbCr address should be addr[0] + y_plane_size.
+		 */
+		if (output->wm_num == 2) {
+			dev_dbg(vfe->camss->dev,
+				"VFE31: 2-WM mode: addr[0]=0x%08x addr[1]=0x%08x cbcr_offset=0x%x\n",
+				(u32)new_addr[0], (u32)new_addr[1],
+				vfe->active_cbcr_offset);
+		}
+
 		for (i = 0; i < output->wm_num; i++) {
 			if (active_index) {
 				/* PONG active → update PING */
@@ -2933,11 +2945,20 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			y_wm, hw_ping, hw_pong, hw_pp, (u32)ready_buf->addr[0], output->sequence - 1);
 	}
 
+	/*
+	 * Capture output state while holding the lock.
+	 * The vb2_buffer_done() call must happen outside the lock
+	 * (it can trigger other locks), but we need to check state
+	 * and update last_buffer atomically.
+	 */
+	if (output->state == VFE_OUTPUT_STOPPING) {
+		output->last_buffer = ready_buf;
+		return_buffer = 0;  /* Don't return stopping buffer */
+	}
+
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
-	if (output->state == VFE_OUTPUT_STOPPING)
-		output->last_buffer = ready_buf;
-	else if (return_buffer) {
+	if (return_buffer && ready_buf) {
 		/*
 		 * VFE31 cache coherency fix:
 		 * The vb2_dma_sg memops uses DMA_ATTR_SKIP_CPU_SYNC, which
@@ -2951,6 +2972,19 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		 */
 		struct vb2_buffer *vb = &ready_buf->vb.vb2_buf;
 		unsigned int plane;
+
+		/*
+		 * Validate buffer address sanity before processing.
+		 * DMA addresses should be in the valid physical memory range,
+		 * not small values (NULL-ish) or kernel virtual addresses.
+		 */
+		if (ready_buf->addr[0] < 0x10000000 ||
+		    ready_buf->addr[0] > 0xFFFFFFFF) {
+			dev_err(vfe->camss->dev,
+				"VFE31: Invalid buffer addr[0]=0x%llx, skipping return\n",
+				(unsigned long long)ready_buf->addr[0]);
+			return;
+		}
 
 		for (plane = 0; plane < vb->num_planes; plane++) {
 			dma_addr_t addr = ready_buf->addr[plane];
