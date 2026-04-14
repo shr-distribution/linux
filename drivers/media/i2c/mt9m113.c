@@ -1160,11 +1160,17 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	 * This ensures the MCU is in a clean state before we start streaming.
 	 * Only call standby_exit if we actually entered standby previously.
 	 */
+	dev_info(dev, "MT9M113: start_streaming, in_standby=%d\n",
+		 sensor->in_standby);
 	if (sensor->in_standby) {
+		dev_info(dev, "MT9M113: exiting standby...\n");
 		ret = mt9m113_standby_exit(sensor);
 		if (ret < 0) {
 			dev_warn(dev, "MT9M113: standby exit failed: %d\n", ret);
 			/* Continue anyway - try to recover */
+		} else {
+			dev_info(dev, "MT9M113: standby exited, in_standby=%d\n",
+				 sensor->in_standby);
 		}
 	}
 
@@ -1401,9 +1407,13 @@ static int mt9m113_stop_streaming(struct mt9m113 *sensor)
 	 * Enter standby mode to cleanly stop the MCU sequencer.
 	 * This puts the sensor in a known state for the next streaming start.
 	 */
+	dev_info(dev, "MT9M113: entering standby...\n");
 	ret = mt9m113_standby_enter(sensor);
 	if (ret < 0)
 		dev_warn(dev, "MT9M113: standby enter failed: %d\n", ret);
+	else
+		dev_info(dev, "MT9M113: standby entered, in_standby=%d\n",
+			 sensor->in_standby);
 
 	dev_info(dev, "MT9M113: streaming stopped\n");
 
