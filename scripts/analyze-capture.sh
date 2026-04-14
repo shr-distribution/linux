@@ -67,17 +67,39 @@ esac
 FILE_SIZE=$(stat -c%s "$RAW_FILE")
 
 # Auto-detect buffer size (VFE31 may use stride_factor=2)
-# VFE31 stride_factor=2 buffer = width * height * 2.5 (not 2x data size!)
-# For NV12: data=1.5 bpp, buffer=2.5 bpp -> buffer = data * 5/3
-# For NV16: data=2.0 bpp, buffer=4.0 bpp -> buffer = data * 2
+# VFE31 stride_factor=2: stride = width * 2 = 1280 for 640 width
+# Buffer sizes are power-of-2 aligned (1MB for 640x480, 4MB for 1280x1024)
+#
+# For NV12 640x480 with stride=1280:
+#   Y plane: 1280 * 480 = 614400 bytes
+#   CbCr: 1280 * 240 = 307200 bytes
+#   Total strided data: 921600 bytes -> buffer rounds to 1MB (1048576)
+#
+# For NV16 640x480 with stride=1280:
+#   Y plane: 1280 * 480 = 614400 bytes
+#   CbCr: 1280 * 480 = 614400 bytes
+#   Total strided data: 1228800 bytes -> buffer rounds to 2MB (2097152)
+
+STRIDE=$((WIDTH * 2))
 case "$FORMAT" in
     NV12|nv12)
-        BUFFER_STRIDE2=$((WIDTH * HEIGHT * 5 / 2))  # 2.5 bytes/pixel
+        STRIDED_DATA=$((STRIDE * HEIGHT + STRIDE * HEIGHT / 2))  # Y + CbCr (half height)
         ;;
     NV16|nv16)
-        BUFFER_STRIDE2=$((WIDTH * HEIGHT * 4))       # 4 bytes/pixel
+        STRIDED_DATA=$((STRIDE * HEIGHT * 2))  # Y + CbCr (full height)
         ;;
 esac
+
+# Round up to power of 2 for buffer size
+if [ $STRIDED_DATA -le 1048576 ]; then
+    BUFFER_STRIDE2=1048576   # 1MB
+elif [ $STRIDED_DATA -le 2097152 ]; then
+    BUFFER_STRIDE2=2097152   # 2MB
+elif [ $STRIDED_DATA -le 4194304 ]; then
+    BUFFER_STRIDE2=4194304   # 4MB
+else
+    BUFFER_STRIDE2=$((STRIDED_DATA + 1048575 & ~1048575))  # Round to 1MB
+fi
 
 # Try stride_factor=2 buffer first (more common with VFE31)
 if [ $((FILE_SIZE % BUFFER_STRIDE2)) -eq 0 ]; then
@@ -117,16 +139,43 @@ if [ $NUM_FRAMES -eq 0 ]; then
     exit 1
 fi
 
-# Extract individual frames (data portion only, skip buffer padding)
+# Extract individual frames (with de-striding if stride_factor > 1)
 echo "=== Extracting frames ==="
 for i in $(seq 1 $NUM_FRAMES); do
     BUFFER_OFFSET=$(( (i-1) * BUFFER_SIZE ))
-    # Extract only DATA_SIZE bytes from each buffer (skip padding)
-    tail -c +$((BUFFER_OFFSET + 1)) "$RAW_FILE" | head -c $DATA_SIZE > "/tmp/frame_${i}.raw"
+
     if [ $STRIDE_FACTOR -gt 1 ]; then
-        echo "  Frame $i: extracted $DATA_SIZE bytes from buffer at offset $BUFFER_OFFSET"
+        # Extract strided data and de-stride it
+        # VFE31 stride_factor=2 means stride = width * 2
+        STRIDE=$((WIDTH * STRIDE_FACTOR))
+
+        echo "  Frame $i: de-striding from buffer at offset $BUFFER_OFFSET (stride=$STRIDE)"
+
+        # Extract raw buffer for this frame
+        tail -c +$((BUFFER_OFFSET + 1)) "$RAW_FILE" | head -c $BUFFER_SIZE > "/tmp/frame_${i}_strided.raw"
+
+        # De-stride Y plane: extract WIDTH bytes from each STRIDE-byte row
+        > "/tmp/frame_${i}_y.raw"
+        for row in $(seq 0 $((HEIGHT - 1))); do
+            ROW_OFFSET=$((row * STRIDE))
+            dd if="/tmp/frame_${i}_strided.raw" bs=1 skip=$ROW_OFFSET count=$WIDTH 2>/dev/null >> "/tmp/frame_${i}_y.raw"
+        done
+
+        # De-stride CbCr plane: starts at HEIGHT * STRIDE
+        CBCR_START=$((HEIGHT * STRIDE))
+        > "/tmp/frame_${i}_cbcr.raw"
+        for row in $(seq 0 $((UV_HEIGHT - 1))); do
+            ROW_OFFSET=$((CBCR_START + row * STRIDE))
+            dd if="/tmp/frame_${i}_strided.raw" bs=1 skip=$ROW_OFFSET count=$WIDTH 2>/dev/null >> "/tmp/frame_${i}_cbcr.raw"
+        done
+
+        # Combine Y and CbCr
+        cat "/tmp/frame_${i}_y.raw" "/tmp/frame_${i}_cbcr.raw" > "/tmp/frame_${i}.raw"
+        rm -f "/tmp/frame_${i}_strided.raw" "/tmp/frame_${i}_cbcr.raw"
     else
-        echo "  Frame $i: extracted ($DATA_SIZE bytes at offset $BUFFER_OFFSET)"
+        # No striding - extract contiguous data
+        tail -c +$((BUFFER_OFFSET + 1)) "$RAW_FILE" | head -c $DATA_SIZE > "/tmp/frame_${i}.raw"
+        echo "  Frame $i: extracted $DATA_SIZE bytes at offset $BUFFER_OFFSET"
     fi
 done
 
