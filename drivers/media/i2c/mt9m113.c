@@ -318,7 +318,7 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	{ 0x098C, 0x270F, 0 },
 	{ 0x0990, 0x0000, 0 },
 	{ 0x098C, 0x2711, 0 },		/* MODE_SENSOR_ROW_END_A */
-	{ 0x0990, 0x03FF, 0 },		/* 1023 (MT9M113 has 1024 active rows, not 976 like MT9M114) */
+	{ 0x0990, 0x03CD, 0 },		/* 973 - from webOS driver (TODO: investigate if 1023 works) */
 	{ 0x098C, 0x2713, 0 },
 	{ 0x0990, 0x050D, 0 },
 	{ 0x098C, 0x2715, 0 },
