@@ -1480,14 +1480,18 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			goto error;
 
 		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-		if (ret < 0) {
+		{
 			u64 seq_cmd_final, seq_state_final, standby_final;
 
 			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd_final);
 			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state_final);
 			cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_final, NULL);
-			dev_err(dev, "MT9M113: SEQ_CMD poll failed! SEQ_CMD=0x%llx SEQ_STATE=0x%llx STANDBY=0x%llx\n",
-				seq_cmd_final, seq_state_final, standby_final);
+			if (ret < 0)
+				dev_err(dev, "MT9M113: SEQ_CMD poll failed! SEQ_CMD=0x%llx SEQ_STATE=0x%llx STANDBY=0x%llx\n",
+					seq_cmd_final, seq_state_final, standby_final);
+			else
+				dev_info(dev, "MT9M113: SEQ_CMD done, SEQ_STATE=0x%llx STANDBY=0x%llx\n",
+					 seq_state_final, standby_final);
 		}
 
 		msleep(20);
@@ -1503,6 +1507,9 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			output_ctrl_val, NULL);
 	if (ret)
 		goto error;
+
+	dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x written, streaming started\n",
+		 output_ctrl_val);
 
 	sensor->streaming = true;
 	return 0;
