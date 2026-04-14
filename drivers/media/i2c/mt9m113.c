@@ -150,12 +150,20 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M113_RESET_REG_SNAPSHOT		0x12CE
 #define MT9M113_OFIFO_CONTROL_STATUS		CCI_REG16(0x321c)
 
-/* OUTPUT_CONTROL register (0x3400) - MIPI control */
+/* OUTPUT_CONTROL register (0x3400) - MIPI/Parallel control */
 #define MT9M113_OUTPUT_CONTROL			CCI_REG16(0x3400)
 #define MT9M113_OUTPUT_CONTROL_RO_MASK		0x0008
 #define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE	0x7A08	/* YUV422 dt=0x1E */
 #define MT9M113_OUTPUT_CONTROL_MIPI_RAW8	0xAA08	/* RAW8 dt=0x2A */
 #define MT9M113_OUTPUT_CONTROL_MIPI_RAW10	0xAC08	/* RAW10 dt=0x2B */
+#define MT9M113_OUTPUT_CONTROL_PARALLEL		0x0000	/* Disable MIPI, use parallel */
+
+/*
+ * PAD_SLEW register (0x001E) - Parallel output drive strength
+ * Used when parallel interface is enabled (UNTESTED)
+ */
+#define MT9M113_PAD_SLEW			CCI_REG16(0x001e)
+#define MT9M113_PAD_SLEW_DEFAULT		0x0777	/* Default drive strength */
 
 /* CUSTOM_SHORT_PKT register */
 #define MT9M113_CUSTOM_SHORT_PKT		CCI_REG16(0x3404)
@@ -239,26 +247,26 @@ struct mt9m113 {
 static const struct mt9m113_format_info mt9m113_format_infos[] = {
 	{
 		.code = MEDIA_BUS_FMT_UYVY8_1X16,
-		.flags = MT9M113_FMT_FLAG_CSI2,
+		.flags = MT9M113_FMT_FLAG_CSI2 | MT9M113_FMT_FLAG_PARALLEL,
 		.output_format = MT9M113_CAM_OUTPUT_FORMAT_FORMAT_YUV,
 	}, {
 		.code = MEDIA_BUS_FMT_YUYV8_1X16,
-		.flags = MT9M113_FMT_FLAG_CSI2,
+		.flags = MT9M113_FMT_FLAG_CSI2 | MT9M113_FMT_FLAG_PARALLEL,
 		.output_format = MT9M113_CAM_OUTPUT_FORMAT_FORMAT_YUV,
 	}, {
 		.code = MEDIA_BUS_FMT_RGB565_1X16,
-		.flags = MT9M113_FMT_FLAG_CSI2,
+		.flags = MT9M113_FMT_FLAG_CSI2 | MT9M113_FMT_FLAG_PARALLEL,
 		.output_format = MT9M113_CAM_OUTPUT_FORMAT_FORMAT_RGB,
 	}, {
 		.code = MEDIA_BUS_FMT_SGRBG8_1X8,
 		.output_format = MT9M113_CAM_OUTPUT_FORMAT_BAYER_FORMAT_PROCESSED8
 			       | MT9M113_CAM_OUTPUT_FORMAT_FORMAT_BAYER,
-		.flags = MT9M113_FMT_FLAG_CSI2,
+		.flags = MT9M113_FMT_FLAG_CSI2 | MT9M113_FMT_FLAG_PARALLEL,
 	}, {
 		.code = MEDIA_BUS_FMT_SGRBG10_1X10,
 		.output_format = MT9M113_CAM_OUTPUT_FORMAT_BAYER_FORMAT_RAWR10
 			| MT9M113_CAM_OUTPUT_FORMAT_FORMAT_BAYER,
-		.flags = MT9M113_FMT_FLAG_CSI2,
+		.flags = MT9M113_FMT_FLAG_CSI2 | MT9M113_FMT_FLAG_PARALLEL,
 	}
 };
 
@@ -1120,8 +1128,9 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		}
 	}
 
-	/* Configure MIPI output based on source pad format */
-	{
+	/* Configure output interface (MIPI CSI-2 or Parallel) */
+	if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
+		/* MIPI CSI-2 output configuration */
 		bool is_bayer = (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
 				 format->code == MEDIA_BUS_FMT_SGRBG10_1X10);
 
@@ -1140,13 +1149,35 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 
 		if (mt9m113_cont_mipi_clk)
 			output_ctrl_val |= 0x0004;
+	} else {
+		/*
+		 * Parallel output configuration - UNTESTED
+		 *
+		 * Disable MIPI and use parallel output pins.
+		 * The parallel interface uses:
+		 * - PIXCLK: Pixel clock output
+		 * - LINE_VALID: Horizontal sync (active during valid pixels)
+		 * - FRAME_VALID: Vertical sync (active during valid lines)
+		 * - D[9:0] or D[7:0]: Pixel data (depending on format)
+		 */
+		output_ctrl_val = MT9M113_OUTPUT_CONTROL_PARALLEL;
+		dev_info(dev, "MT9M113: Parallel output mode (code=0x%04x) - UNTESTED\n",
+			 format->code);
 
-		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-				output_ctrl_val, NULL);
+		/* Configure parallel output pad drive strength */
+		ret = cci_write(sensor->regmap, MT9M113_PAD_SLEW,
+				MT9M113_PAD_SLEW_DEFAULT, NULL);
 		if (ret)
 			goto error;
+	}
 
-		/* Refresh after OUTPUT_CONTROL change */
+	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+			output_ctrl_val, NULL);
+	if (ret)
+		goto error;
+
+	/* Refresh after OUTPUT_CONTROL change */
+	{
 		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 				      MT9M113_SEQ_CMD_REFRESH_MODE);
 		mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
@@ -2103,8 +2134,24 @@ static int mt9m113_parse_dt(struct mt9m113 *sensor)
 	if (ret < 0)
 		return ret;
 
-	if (sensor->bus_cfg.bus_type != V4L2_MBUS_CSI2_DPHY) {
-		dev_err(&sensor->client->dev, "Unsupported bus type\n");
+	switch (sensor->bus_cfg.bus_type) {
+	case V4L2_MBUS_CSI2_DPHY:
+		/* MIPI CSI-2 - tested and working */
+		break;
+	case V4L2_MBUS_PARALLEL:
+	case V4L2_MBUS_BT656:
+		/*
+		 * Parallel interface support - UNTESTED
+		 * The MT9M113 supports 8/10-bit parallel output with
+		 * PIXCLK, LINE_VALID, FRAME_VALID signals.
+		 * This code path has not been tested on real hardware.
+		 */
+		dev_warn(&sensor->client->dev,
+			 "Parallel interface support is UNTESTED\n");
+		break;
+	default:
+		dev_err(&sensor->client->dev, "Unsupported bus type %d\n",
+			sensor->bus_cfg.bus_type);
 		v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
 		return -EINVAL;
 	}
