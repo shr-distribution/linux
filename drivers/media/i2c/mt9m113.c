@@ -72,6 +72,8 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M113_PLL_CONTROL			CCI_REG16(0x0014)
 #define MT9M113_CLOCKS_CONTROL			CCI_REG16(0x0016)
 #define MT9M113_STANDBY_CONTROL			CCI_REG16(0x0018)
+#define MT9M113_STANDBY_CONTROL_STANDBY		BIT(0)
+#define MT9M113_STANDBY_CONTROL_DONE		BIT(14)
 #define MT9M113_RESET_AND_MISC_CONTROL		CCI_REG16(0x001a)
 #define MT9M113_RESET_SOC			BIT(0)
 #define MT9M113_MCU_BOOT_MODE			CCI_REG16(0x001c)
@@ -108,12 +110,39 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M113_SPEC_EFFECTS_NEGATIVE		0x0003
 #define MT9M113_SPEC_EFFECTS_SOLARIZE		0x0004
 
+/* Sensor Read Mode MCU variables (for flip/mirror control) */
+#define MT9M113_SENSOR_READ_MODE_A		0x2717
+#define MT9M113_SENSOR_READ_MODE_B		0x272d
+#define MT9M113_SENSOR_READ_MODE_HMIRROR	BIT(0)
+#define MT9M113_SENSOR_READ_MODE_VMIRROR	BIT(1)
+
 /* Auto Exposure MCU variables (for preview vs snapshot optimization) */
 #define MT9M113_AE_MAX_INDEX			0xa20c
 #define MT9M113_AE_MAX_VIRTGAIN			0xa20e
 #define MT9M113_AE_MAX_DGAIN_AE1		0xa21a
 #define MT9M113_AE_JUMP_DIVISOR			0xa21c
 #define MT9M113_AE_SKIP_FRAMES			0xa21e
+
+/* Flicker detection MCU variable */
+#define MT9M113_FD_MODE				0xa404
+#define MT9M113_FD_MODE_DISABLED		0x00
+#define MT9M113_FD_MODE_50HZ			0x01
+#define MT9M113_FD_MODE_60HZ			0x02
+#define MT9M113_FD_MODE_AUTO			0x03
+
+/* AWB/Color MCU variables */
+#define MT9M113_AWB_SATURATION			0xa354
+#define MT9M113_AWB_MODE			0xa34a
+
+/* Auto Exposure MCU variables */
+#define MT9M113_AE_GATE				0xa207
+#define MT9M113_AE_GATE_ENABLE			0x0000
+#define MT9M113_AE_GATE_DISABLE			0x00FF
+
+/* Sensor core exposure/gain registers */
+#define MT9M113_COARSE_IT_TIME_A		CCI_REG16(0x3012)
+#define MT9M113_COARSE_IT_TIME_B		CCI_REG16(0x3014)
+#define MT9M113_ANALOG_GAIN			CCI_REG16(0x3028)
 
 /* Sensor core registers */
 #define MT9M113_RESET_REGISTER			CCI_REG16(0x301a)
@@ -216,6 +245,10 @@ static const struct mt9m113_format_info mt9m113_format_infos[] = {
 		.flags = MT9M113_FMT_FLAG_CSI2,
 		.output_format = MT9M113_CAM_OUTPUT_FORMAT_FORMAT_YUV,
 	}, {
+		.code = MEDIA_BUS_FMT_RGB565_1X16,
+		.flags = MT9M113_FMT_FLAG_CSI2,
+		.output_format = MT9M113_CAM_OUTPUT_FORMAT_FORMAT_RGB,
+	}, {
 		.code = MEDIA_BUS_FMT_SGRBG8_1X8,
 		.output_format = MT9M113_CAM_OUTPUT_FORMAT_BAYER_FORMAT_PROCESSED8
 			       | MT9M113_CAM_OUTPUT_FORMAT_FORMAT_BAYER,
@@ -283,6 +316,72 @@ static int mt9m113_poll_mcu_var(struct mt9m113 *sensor, u16 addr,
 	dev_err(&sensor->client->dev,
 		"MCU var 0x%04x timeout (got 0x%llx, expected 0x%04x)\n",
 		addr, value, expected);
+	return -ETIMEDOUT;
+}
+
+/* -----------------------------------------------------------------------------
+ * Soft Standby Control
+ */
+
+static int mt9m113_standby_enter(struct mt9m113 *sensor)
+{
+	u64 value;
+	int ret;
+	unsigned int i;
+
+	/* Set STANDBY bit to enter soft standby */
+	ret = cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &value, NULL);
+	if (ret)
+		return ret;
+
+	value |= MT9M113_STANDBY_CONTROL_STANDBY;
+	ret = cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL, value, NULL);
+	if (ret)
+		return ret;
+
+	/* Poll STANDBY_DONE bit until set (timeout 100ms) */
+	for (i = 0; i < 10; i++) {
+		ret = cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL,
+			       &value, NULL);
+		if (ret)
+			return ret;
+		if (value & MT9M113_STANDBY_CONTROL_DONE)
+			return 0;
+		msleep(10);
+	}
+
+	dev_err(&sensor->client->dev, "Standby enter timeout\n");
+	return -ETIMEDOUT;
+}
+
+static int mt9m113_standby_exit(struct mt9m113 *sensor)
+{
+	u64 value;
+	int ret;
+	unsigned int i;
+
+	/* Clear STANDBY bit to exit soft standby */
+	ret = cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &value, NULL);
+	if (ret)
+		return ret;
+
+	value &= ~MT9M113_STANDBY_CONTROL_STANDBY;
+	ret = cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL, value, NULL);
+	if (ret)
+		return ret;
+
+	/* Poll STANDBY_DONE bit until clear (timeout 100ms) */
+	for (i = 0; i < 10; i++) {
+		ret = cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL,
+			       &value, NULL);
+		if (ret)
+			return ret;
+		if (!(value & MT9M113_STANDBY_CONTROL_DONE))
+			return 0;
+		msleep(10);
+	}
+
+	dev_err(&sensor->client->dev, "Standby exit timeout\n");
 	return -ETIMEDOUT;
 }
 
@@ -1368,6 +1467,54 @@ static int mt9m113_ifp_enum_frame_size(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static int mt9m113_ifp_enum_frame_interval(struct v4l2_subdev *sd,
+					   struct v4l2_subdev_state *state,
+					   struct v4l2_subdev_frame_interval_enum *fie)
+{
+	/* Only source pad (pad 1) supports frame interval enumeration */
+	if (fie->pad != 1)
+		return -EINVAL;
+
+	/* One interval per resolution */
+	if (fie->index > 0)
+		return -EINVAL;
+
+	/* Context A: 640x480 @ 30fps, Context B: 1280x1024 @ 15fps */
+	if (fie->width == 640 && fie->height == 480) {
+		fie->interval.numerator = 1;
+		fie->interval.denominator = 30;
+	} else if (fie->width == 1280 && fie->height == 1024) {
+		fie->interval.numerator = 1;
+		fie->interval.denominator = 15;
+	} else {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int mt9m113_ifp_g_frame_interval(struct v4l2_subdev *sd,
+					struct v4l2_subdev_state *state,
+					struct v4l2_subdev_frame_interval *fi)
+{
+	struct v4l2_mbus_framefmt *format;
+
+	format = v4l2_subdev_state_get_format(state, 1);
+
+	/* Return interval based on current resolution */
+	if (format->width <= 640 && format->height <= 480) {
+		/* Context A: 30fps */
+		fi->interval.numerator = 1;
+		fi->interval.denominator = 30;
+	} else {
+		/* Context B: 15fps */
+		fi->interval.numerator = 1;
+		fi->interval.denominator = 15;
+	}
+
+	return 0;
+}
+
 static int mt9m113_ifp_set_fmt(struct v4l2_subdev *sd,
 			       struct v4l2_subdev_state *state,
 			       struct v4l2_subdev_format *fmt)
@@ -1488,8 +1635,10 @@ static const struct v4l2_subdev_video_ops mt9m113_ifp_video_ops = {
 static const struct v4l2_subdev_pad_ops mt9m113_ifp_pad_ops = {
 	.enum_mbus_code = mt9m113_ifp_enum_mbus_code,
 	.enum_frame_size = mt9m113_ifp_enum_frame_size,
+	.enum_frame_interval = mt9m113_ifp_enum_frame_interval,
 	.get_fmt = v4l2_subdev_get_fmt,
 	.set_fmt = mt9m113_ifp_set_fmt,
+	.get_frame_interval = mt9m113_ifp_g_frame_interval,
 	.get_selection = mt9m113_ifp_get_selection,
 };
 
@@ -1542,6 +1691,76 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 		}
 		break;
 
+	case V4L2_CID_HFLIP: {
+		u64 mode_a, mode_b;
+
+		ret = mt9m113_read_mcu_var(sensor, MT9M113_SENSOR_READ_MODE_A,
+					   &mode_a);
+		if (ret)
+			break;
+		ret = mt9m113_read_mcu_var(sensor, MT9M113_SENSOR_READ_MODE_B,
+					   &mode_b);
+		if (ret)
+			break;
+
+		if (ctrl->val) {
+			mode_a |= MT9M113_SENSOR_READ_MODE_HMIRROR;
+			mode_b |= MT9M113_SENSOR_READ_MODE_HMIRROR;
+		} else {
+			mode_a &= ~MT9M113_SENSOR_READ_MODE_HMIRROR;
+			mode_b &= ~MT9M113_SENSOR_READ_MODE_HMIRROR;
+		}
+
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SENSOR_READ_MODE_A,
+					    mode_a);
+		if (!ret)
+			ret = mt9m113_write_mcu_var(sensor,
+						    MT9M113_SENSOR_READ_MODE_B,
+						    mode_b);
+		if (!ret) {
+			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					      MT9M113_SEQ_CMD_REFRESH);
+			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
+					     0x0000, 500);
+		}
+		break;
+	}
+
+	case V4L2_CID_VFLIP: {
+		u64 mode_a, mode_b;
+
+		ret = mt9m113_read_mcu_var(sensor, MT9M113_SENSOR_READ_MODE_A,
+					   &mode_a);
+		if (ret)
+			break;
+		ret = mt9m113_read_mcu_var(sensor, MT9M113_SENSOR_READ_MODE_B,
+					   &mode_b);
+		if (ret)
+			break;
+
+		if (ctrl->val) {
+			mode_a |= MT9M113_SENSOR_READ_MODE_VMIRROR;
+			mode_b |= MT9M113_SENSOR_READ_MODE_VMIRROR;
+		} else {
+			mode_a &= ~MT9M113_SENSOR_READ_MODE_VMIRROR;
+			mode_b &= ~MT9M113_SENSOR_READ_MODE_VMIRROR;
+		}
+
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SENSOR_READ_MODE_A,
+					    mode_a);
+		if (!ret)
+			ret = mt9m113_write_mcu_var(sensor,
+						    MT9M113_SENSOR_READ_MODE_B,
+						    mode_b);
+		if (!ret) {
+			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					      MT9M113_SEQ_CMD_REFRESH);
+			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
+					     0x0000, 500);
+		}
+		break;
+	}
+
 	case V4L2_CID_COLORFX: {
 		u16 effect;
 
@@ -1584,6 +1803,72 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 		}
 		break;
 	}
+
+	case V4L2_CID_POWER_LINE_FREQUENCY: {
+		u8 fd_mode;
+
+		switch (ctrl->val) {
+		case V4L2_CID_POWER_LINE_FREQUENCY_DISABLED:
+			fd_mode = MT9M113_FD_MODE_DISABLED;
+			break;
+		case V4L2_CID_POWER_LINE_FREQUENCY_50HZ:
+			fd_mode = MT9M113_FD_MODE_50HZ;
+			break;
+		case V4L2_CID_POWER_LINE_FREQUENCY_60HZ:
+			fd_mode = MT9M113_FD_MODE_60HZ;
+			break;
+		case V4L2_CID_POWER_LINE_FREQUENCY_AUTO:
+			fd_mode = MT9M113_FD_MODE_AUTO;
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
+
+		if (!ret)
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_FD_MODE,
+						    fd_mode);
+		break;
+	}
+
+	case V4L2_CID_SATURATION:
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AWB_SATURATION,
+					    ctrl->val);
+		if (!ret) {
+			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					      MT9M113_SEQ_CMD_REFRESH);
+			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
+					     0x0000, 500);
+		}
+		break;
+
+	case V4L2_CID_EXPOSURE_AUTO:
+		/* Enable/disable internal AE algorithm via AE_GATE */
+		if (ctrl->val == V4L2_EXPOSURE_AUTO)
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_GATE,
+						    MT9M113_AE_GATE_ENABLE);
+		else
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_GATE,
+						    MT9M113_AE_GATE_DISABLE);
+		break;
+
+	case V4L2_CID_EXPOSURE:
+		/* Write coarse integration time (Context A register) */
+		ret = cci_write(sensor->regmap, MT9M113_COARSE_IT_TIME_A,
+				ctrl->val, NULL);
+		break;
+
+	case V4L2_CID_ANALOGUE_GAIN:
+		/* Write analog gain register */
+		ret = cci_write(sensor->regmap, MT9M113_ANALOG_GAIN,
+				ctrl->val, NULL);
+		break;
+
+	case V4L2_CID_AUTO_WHITE_BALANCE:
+		/* Enable/disable internal AWB via awb_mode */
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AWB_MODE,
+					    ctrl->val ? 0x02 : 0x00);
+		break;
 
 	default:
 		ret = -EINVAL;
@@ -1867,13 +2152,19 @@ static int mt9m113_probe(struct i2c_client *client)
 	if (ret < 0)
 		goto error_power_off;
 
-	/* Calculate pixel rate from input clock
-	 * MT9M113 PLL: MCLK=27MHz, typical output ~54MHz pixel clock
-	 * Using half the input clock rate as a reasonable default
+	/* Validate and calculate pixel rate from input clock
+	 * MT9M113 supports EXTCLK in range 6-27MHz per datasheet
+	 * PLL typically produces ~54MHz pixel clock from 27MHz input
 	 */
 	sensor->pixrate = clk_get_rate(sensor->clk);
 	if (sensor->pixrate == 0)
 		sensor->pixrate = 27000000; /* Default 27MHz if clock rate unknown */
+	if (sensor->pixrate < 6000000 || sensor->pixrate > 27000000) {
+		dev_err(dev, "EXTCLK rate %u Hz out of range (6-27MHz)\n",
+			sensor->pixrate);
+		ret = -EINVAL;
+		goto error_power_off;
+	}
 	sensor->pixrate = sensor->pixrate * 2; /* PLL typically doubles the rate */
 
 	dev_info(dev, "MT9M113: pixel rate %u Hz\n", sensor->pixrate);
@@ -1921,13 +2212,33 @@ static int mt9m113_probe(struct i2c_client *client)
 		goto error_pa_subdev;
 
 	/* Initialize controls on IFP */
-	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 5);
+	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 13);
 	sensor->ifp.context = v4l2_ctrl_new_custom(&sensor->ifp.hdl,
 						   &mt9m113_context_ctrl_cfg, NULL);
+	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
+			  V4L2_CID_HFLIP, 0, 1, 1, 0);
+	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
+			  V4L2_CID_VFLIP, 0, 1, 1, 0);
 	v4l2_ctrl_new_std_menu(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
 			       V4L2_CID_COLORFX,
 			       V4L2_COLORFX_SOLARIZATION, 0,
 			       V4L2_COLORFX_NONE);
+	v4l2_ctrl_new_std_menu(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
+			       V4L2_CID_POWER_LINE_FREQUENCY,
+			       V4L2_CID_POWER_LINE_FREQUENCY_AUTO, 0,
+			       V4L2_CID_POWER_LINE_FREQUENCY_AUTO);
+	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
+			  V4L2_CID_SATURATION, 0, 255, 1, 128);
+	v4l2_ctrl_new_std_menu(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
+			       V4L2_CID_EXPOSURE_AUTO,
+			       V4L2_EXPOSURE_MANUAL, 0,
+			       V4L2_EXPOSURE_AUTO);
+	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
+			  V4L2_CID_EXPOSURE, 1, 1000, 1, 100);
+	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
+			  V4L2_CID_ANALOGUE_GAIN, 0, 127, 1, 32);
+	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
+			  V4L2_CID_AUTO_WHITE_BALANCE, 0, 1, 1, 1);
 
 	/* Link frequency control - required by CSIPHY
 	 * Use DT link-frequencies if available, otherwise calculate default
