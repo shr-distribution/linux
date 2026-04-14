@@ -1207,22 +1207,12 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	if (ret)
 		goto error;
 
-	/* Refresh after OUTPUT_CONTROL change */
-	{
-		/* Ensure MCU is idle before issuing commands */
-		ret = mt9m113_seq_cmd_ready(sensor);
-		if (ret < 0) {
-			dev_err(dev, "MT9M113: MCU not ready for REFRESH\n");
-			goto error;
-		}
-
-		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-				      MT9M113_SEQ_CMD_REFRESH_MODE);
-		mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-				      MT9M113_SEQ_CMD_REFRESH);
-		mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-	}
+	/*
+	 * Note: The webOS driver does NOT issue REFRESH commands during
+	 * streaming - only during init. REFRESH_MODE/REFRESH are used to
+	 * apply parameter changes, but the init table already handles this.
+	 * Issuing REFRESH here causes MCU hangs.
+	 */
 
 	/* Set RESET_REGISTER for streaming */
 	ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
