@@ -134,6 +134,19 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M113_AWB_SATURATION			0xa354
 #define MT9M113_AWB_MODE			0xa34a
 
+/* Test pattern MCU variables (mode_common_mode_settings) */
+#define MT9M113_CAM_MODE_SELECT			0xc84c
+#define MT9M113_CAM_MODE_SELECT_NORMAL		0x00
+#define MT9M113_CAM_MODE_SELECT_TEST_PATTERN	0x02
+#define MT9M113_CAM_MODE_TEST_PATTERN_SELECT	0xc84d
+#define MT9M113_TEST_PATTERN_SOLID_COLOR	0x01
+#define MT9M113_TEST_PATTERN_COLOR_BARS		0x04
+#define MT9M113_TEST_PATTERN_FADE_TO_GRAY	0x08
+
+/* Double buffer control register */
+#define MT9M113_DOUBLE_BUFFER_CONTROL		CCI_REG16(0x0248)
+#define MT9M113_DOUBLE_BUFFER_SUSPEND		BIT(15)
+
 /* Auto Exposure MCU variables */
 #define MT9M113_AE_GATE				0xa207
 #define MT9M113_AE_GATE_ENABLE			0x0000
@@ -222,6 +235,7 @@ struct mt9m113 {
 	unsigned int pixrate;
 	s64 link_freq;
 	bool streaming;
+	bool in_standby;
 
 	/* Pixel Array sub-device */
 	struct {
@@ -385,8 +399,10 @@ static int mt9m113_standby_enter(struct mt9m113 *sensor)
 			       &value, NULL);
 		if (ret)
 			return ret;
-		if (value & MT9M113_STANDBY_CONTROL_DONE)
+		if (value & MT9M113_STANDBY_CONTROL_DONE) {
+			sensor->in_standby = true;
 			return 0;
+		}
 		msleep(10);
 	}
 
@@ -416,13 +432,49 @@ static int mt9m113_standby_exit(struct mt9m113 *sensor)
 			       &value, NULL);
 		if (ret)
 			return ret;
-		if (!(value & MT9M113_STANDBY_CONTROL_DONE))
+		if (!(value & MT9M113_STANDBY_CONTROL_DONE)) {
+			sensor->in_standby = false;
 			return 0;
+		}
 		msleep(10);
 	}
 
 	dev_err(&sensor->client->dev, "Standby exit timeout\n");
 	return -ETIMEDOUT;
+}
+
+/* -----------------------------------------------------------------------------
+ * Double Buffer Control
+ *
+ * The MT9M113 uses double buffering for context parameters. Setting bit 15
+ * of register 0x0248 suspends updates from shadow to active registers,
+ * allowing atomic multi-register configuration changes.
+ */
+
+static int __maybe_unused mt9m113_double_buffer_suspend(struct mt9m113 *sensor)
+{
+	u64 value;
+	int ret;
+
+	ret = cci_read(sensor->regmap, MT9M113_DOUBLE_BUFFER_CONTROL, &value, NULL);
+	if (ret)
+		return ret;
+
+	value |= MT9M113_DOUBLE_BUFFER_SUSPEND;
+	return cci_write(sensor->regmap, MT9M113_DOUBLE_BUFFER_CONTROL, value, NULL);
+}
+
+static int __maybe_unused mt9m113_double_buffer_resume(struct mt9m113 *sensor)
+{
+	u64 value;
+	int ret;
+
+	ret = cci_read(sensor->regmap, MT9M113_DOUBLE_BUFFER_CONTROL, &value, NULL);
+	if (ret)
+		return ret;
+
+	value &= ~MT9M113_DOUBLE_BUFFER_SUSPEND;
+	return cci_write(sensor->regmap, MT9M113_DOUBLE_BUFFER_CONTROL, value, NULL);
 }
 
 /* -----------------------------------------------------------------------------
@@ -1106,11 +1158,14 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	/*
 	 * Exit standby mode if we were in standby from a previous stop.
 	 * This ensures the MCU is in a clean state before we start streaming.
+	 * Only call standby_exit if we actually entered standby previously.
 	 */
-	ret = mt9m113_standby_exit(sensor);
-	if (ret < 0) {
-		dev_warn(dev, "MT9M113: standby exit failed: %d\n", ret);
-		/* Continue anyway - sensor might not have been in standby */
+	if (sensor->in_standby) {
+		ret = mt9m113_standby_exit(sensor);
+		if (ret < 0) {
+			dev_warn(dev, "MT9M113: standby exit failed: %d\n", ret);
+			/* Continue anyway - try to recover */
+		}
 	}
 
 	/* MCU health check */
@@ -1773,6 +1828,20 @@ static const char * const mt9m113_context_menu[] = {
 	"Context B (1280x1024)",
 };
 
+static const char * const mt9m113_test_pattern_menu[] = {
+	"Disabled",
+	"Solid Color",
+	"Color Bars",
+	"Fade to Gray",
+};
+
+static const u8 mt9m113_test_pattern_value[] = {
+	/* Values written to CAM_MODE_TEST_PATTERN_SELECT (indexed by menu - 1) */
+	MT9M113_TEST_PATTERN_SOLID_COLOR,
+	MT9M113_TEST_PATTERN_COLOR_BARS,
+	MT9M113_TEST_PATTERN_FADE_TO_GRAY,
+};
+
 static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct mt9m113 *sensor = container_of(ctrl->handler,
@@ -1985,6 +2054,29 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 		/* Enable/disable internal AWB via awb_mode */
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_AWB_MODE,
 					    ctrl->val ? 0x02 : 0x00);
+		break;
+
+	case V4L2_CID_TEST_PATTERN:
+		if (ctrl->val == 0) {
+			/* Disable test pattern, return to normal mode */
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_CAM_MODE_SELECT,
+						    MT9M113_CAM_MODE_SELECT_NORMAL);
+		} else {
+			/* Enable test pattern mode */
+			ret = mt9m113_write_mcu_var(sensor,
+						    MT9M113_CAM_MODE_TEST_PATTERN_SELECT,
+						    mt9m113_test_pattern_value[ctrl->val - 1]);
+			if (!ret)
+				ret = mt9m113_write_mcu_var(sensor,
+							    MT9M113_CAM_MODE_SELECT,
+							    MT9M113_CAM_MODE_SELECT_TEST_PATTERN);
+		}
+		/* Issue refresh to apply test pattern change */
+		if (!ret && sensor->streaming) {
+			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					      MT9M113_SEQ_CMD_REFRESH);
+			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+		}
 		break;
 
 	default:
@@ -2345,7 +2437,7 @@ static int mt9m113_probe(struct i2c_client *client)
 		goto error_pa_subdev;
 
 	/* Initialize controls on IFP */
-	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 13);
+	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 14);
 	sensor->ifp.context = v4l2_ctrl_new_custom(&sensor->ifp.hdl,
 						   &mt9m113_context_ctrl_cfg, NULL);
 	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
@@ -2373,6 +2465,10 @@ static int mt9m113_probe(struct i2c_client *client)
 			  V4L2_CID_ANALOGUE_GAIN, 0, 127, 1, 32);
 	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
 			  V4L2_CID_AUTO_WHITE_BALANCE, 0, 1, 1, 1);
+	v4l2_ctrl_new_std_menu_items(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
+				     V4L2_CID_TEST_PATTERN,
+				     ARRAY_SIZE(mt9m113_test_pattern_menu) - 1,
+				     0, 0, mt9m113_test_pattern_menu);
 
 	/* Link frequency control - required by CSIPHY
 	 * Use DT link-frequencies if available, otherwise calculate default
