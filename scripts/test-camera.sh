@@ -7,7 +7,7 @@
 #
 # Requirements:
 # - Device accessible at 172.16.42.2 via USB network
-# - Camera drivers loaded (camss, mt9m114)
+# - Camera drivers loaded (camss, mt9m113 or mt9m114)
 #
 
 set -e
@@ -61,35 +61,41 @@ check_device() {
     fi
 }
 
-# Check and ensure mt9m114 sensor is powered and bound
+# Check and ensure mt9m113/mt9m114 sensor is powered and bound
 ensure_camera_ready() {
     log_step "Checking camera sensor status..."
 
     run_on_device "cat <<'SCRIPT' > /tmp/ensure_camera.sh
 #!/bin/sh
 
-echo '=== Checking mt9m114 sensor ==='
+echo '=== Checking camera sensor ==='
 
 # Check if sensor is bound
 SENSOR_PATH='/sys/bus/i2c/devices/4-003c'
-DRIVER_PATH='/sys/bus/i2c/drivers/mt9m114'
 
 if [ ! -d \"\$SENSOR_PATH\" ]; then
     echo 'ERROR: Sensor device not found at 4-003c'
     exit 1
 fi
 
-# Check if driver is bound
+# Check if driver is bound - support both mt9m113 and mt9m114
 if [ -L \"\$SENSOR_PATH/driver\" ]; then
     BOUND_DRIVER=\$(basename \$(readlink \$SENSOR_PATH/driver))
     echo \"Sensor bound to driver: \$BOUND_DRIVER\"
 else
     echo 'WARNING: Sensor not bound to any driver'
-    echo 'Attempting to bind mt9m114 driver...'
-    echo '4-003c' > \$DRIVER_PATH/bind 2>/dev/null
+    # Try mt9m113 first (standalone driver), then mt9m114 (combined)
+    if [ -d '/sys/bus/i2c/drivers/mt9m113' ]; then
+        echo 'Attempting to bind mt9m113 driver...'
+        echo '4-003c' > /sys/bus/i2c/drivers/mt9m113/bind 2>/dev/null
+    elif [ -d '/sys/bus/i2c/drivers/mt9m114' ]; then
+        echo 'Attempting to bind mt9m114 driver...'
+        echo '4-003c' > /sys/bus/i2c/drivers/mt9m114/bind 2>/dev/null
+    fi
     sleep 2
     if [ -L \"\$SENSOR_PATH/driver\" ]; then
-        echo 'SUCCESS: Sensor bound to mt9m114 driver'
+        BOUND_DRIVER=\$(basename \$(readlink \$SENSOR_PATH/driver))
+        echo \"SUCCESS: Sensor bound to \$BOUND_DRIVER driver\"
     else
         echo 'ERROR: Failed to bind sensor'
         exit 1
@@ -107,7 +113,7 @@ fi
 
 # Verify sensor appears in media topology
 if command -v media-ctl >/dev/null 2>&1; then
-    if media-ctl -p 2>/dev/null | grep -q 'mt9m114'; then
+    if media-ctl -p 2>/dev/null | grep -qE 'mt9m113|mt9m114'; then
         echo 'Sensor found in media topology'
     else
         echo 'WARNING: Sensor not in media topology - may need reboot'
@@ -126,7 +132,7 @@ show_camera_info() {
     log_step "Camera driver information..."
 
     log_info "Loaded camera modules:"
-    run_on_device "lsmod | grep -E 'camss|mt9m114|v4l2' || echo 'No camera modules loaded'"
+    run_on_device "lsmod | grep -E 'camss|mt9m11[34]|v4l2' || echo 'No camera modules loaded'"
 
     log_info "Video devices:"
     run_on_device "ls -la /dev/video* 2>/dev/null || echo 'No video devices found'"
@@ -238,8 +244,26 @@ media-ctl -d \$MEDIA_DEV -r 2>/dev/null || true
 # Get entity names from topology
 echo ''
 echo 'Discovering entities...'
-SENSOR=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -o 'mt9m114[^\"]*' | head -1)
-echo \"Sensor: \$SENSOR\"
+# Try mt9m113 first (standalone driver), then mt9m114 (combined driver)
+# SENSOR_BASE is the direct sensor entity (mt9m113 4-003c or mt9m114 4-003c)
+# SENSOR is the entity to use for format configuration (same for mt9m113, or ifp for mt9m114)
+SENSOR_BASE=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+if [ -n \"\$SENSOR_BASE\" ]; then
+    # mt9m113 driver with IFP sub-device architecture
+    SENSOR=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+    if [ -z \"\$SENSOR\" ]; then
+        SENSOR=\"\$SENSOR_BASE\"
+    fi
+else
+    # mt9m114 combined driver - has separate sensor and IFP entities
+    SENSOR_BASE=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'mt9m114 [0-9]+-[0-9a-f]+' | grep -v ifp | head -1)
+    SENSOR=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -o 'mt9m114 ifp[^\"]*' | head -1)
+    if [ -z \"\$SENSOR\" ]; then
+        SENSOR=\"\$SENSOR_BASE\"
+    fi
+fi
+echo \"Sensor base: \$SENSOR_BASE\"
+echo \"Sensor (for config): \$SENSOR\"
 
 # Common entity patterns for MSM8660 CAMSS
 # Format: sensor -> csiphy -> csid -> ispif -> vfe -> video
@@ -423,7 +447,7 @@ check_dmesg() {
     log_step "Checking kernel messages..."
 
     log_info "Recent camera-related messages:"
-    run_on_device "dmesg | grep -iE 'camss|csiphy|csid|vfe|mt9m114|video|format' | tail -30"
+    run_on_device "dmesg | grep -iE 'camss|csiphy|csid|vfe|mt9m11[34]|video|format' | tail -30"
 
     log_info "Any errors:"
     run_on_device "dmesg | grep -iE 'error|fail|timeout' | grep -iE 'camss|csiphy|csid|vfe|video' | tail -10"
@@ -506,8 +530,8 @@ test_raw_mode() {
         # Set formats on the RDI path (1280x1024 = MT9M113 Context B full capture)
         # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
         echo 'Setting formats (1280x1024 Context B capture mode)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -622,7 +646,7 @@ test_testgen_mode() {
 
         # Enable upstream links (even for testgen, pipeline must be valid)
         echo 'Enabling upstream links...'
-        media-ctl -l '\"mt9m114 4-003c\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
+        media-ctl -l '\"\$SENSOR_BASE\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
         media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
 
         # Enable PIX link: CSID pad 4 (PIX) -> VFE PIX pad 0
@@ -631,7 +655,7 @@ test_testgen_mode() {
 
         # Set formats on entire pipeline (1280x1024)
         echo 'Setting formats (1280x1024 UYVY8_2X8)...'
-        media-ctl -V '\"mt9m114 4-003c\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR_BASE\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
@@ -705,8 +729,8 @@ test_pix_mode() {
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
         # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
         echo 'Setting formats (1280x1024 Context B capture mode)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -780,8 +804,8 @@ test_v4l2_mode() {
         # The sensor output format on pad 1 is derived from the compose size
         echo 'Setting formats (1280x1024)...'
         echo 'Setting compose rectangle to 1280x1024 (triggers Context B)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -815,7 +839,7 @@ test_v4l2_mode() {
             echo 'FAILED: v4l2-ctl capture did not complete'
             echo ''
             echo 'Trying 640x480 mode...'
-            media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+            media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
             media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
             media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
             media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
@@ -869,8 +893,8 @@ test_video_mode() {
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
         # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
         echo 'Setting formats (1280x1024 Context B capture mode)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -974,8 +998,8 @@ test_video4_mode() {
         # The sensor output format on pad 1 is derived from the compose size
         echo 'Setting formats (1280x1024 capture mode)...'
         echo 'Setting compose rectangle to 1280x1024 (triggers Context B)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -1070,8 +1094,8 @@ test_nv16_mode() {
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
         # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
         echo 'Setting formats (1280x1024 Context B capture mode)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -1147,8 +1171,8 @@ capture_frames() {
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
 
         # Set formats - set compose first to trigger Context B for 1280x1024
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
@@ -1240,8 +1264,8 @@ test_legacy_mode() {
         # The sensor output format on pad 1 is derived from the compose size
         echo 'Setting formats (1280x1024)...'
         echo 'Setting compose rectangle to 1280x1024 (triggers Context B)...'
-        media-ctl -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"mt9m114 ifp 4-003c\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -1401,8 +1425,8 @@ test_at_resolution() {
             fi
         fi
 
-        media-ctl -d /dev/media0 -V '\"mt9m114 ifp 4-003c\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
-        media-ctl -d /dev/media0 -V \"\\\"mt9m114 ifp 4-003c\\\":1[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
+        media-ctl -d /dev/media0 -V '\"\$SENSOR\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
+        media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
 
         # Set CSIPHY format
         media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":0[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
