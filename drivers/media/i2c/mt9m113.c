@@ -1052,19 +1052,16 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	/*
 	 * Configure capture/streaming mode.
 	 *
-	 * SEQ_CAP_MODE controls how Context B operates:
-	 * - 0x0000: Normal capture mode
-	 * - 0x0030: Preview mode (Context A)
+	 * SEQ_CAP_MODE (0xa115) bit 1 controls video vs capture mode:
+	 * - Bit 1 = 0: Capture mode - returns to preview after N frames
+	 * - Bit 1 = 1: Video mode - stays in Context B until explicit switch
 	 *
-	 * SEQ_CAP_NUM_FRAMES controls how many frames to capture:
-	 * - 0: Infinite/continuous streaming (for video)
-	 * - N: Capture N frames then return to Context A (for snapshot)
-	 *
-	 * For V4L2 continuous streaming, we always use infinite frames.
+	 * For V4L2 continuous streaming, we use video mode (0x0002) so the
+	 * sequencer stays in Context B indefinitely. SEQ_CAP_NUM_FRAMES is
+	 * only used in capture mode (bit 1 = 0).
 	 */
 	if (use_context_b) {
-		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0000);
-		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_NUM_FRAMES, 0x0000);
+		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0002);
 	} else {
 		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 	}
@@ -1523,10 +1520,9 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_MT9M113_CONTEXT:
 		if (sensor->streaming) {
 			if (ctrl->val == MT9M113_CONTEXT_B) {
+				/* Video mode (bit 1=1) for continuous streaming */
 				mt9m113_write_mcu_var(sensor,
-					MT9M113_SEQ_CAP_MODE, 0x0000);
-				mt9m113_write_mcu_var(sensor,
-					MT9M113_SEQ_CAP_NUM_FRAMES, 0x0000);
+					MT9M113_SEQ_CAP_MODE, 0x0002);
 				ret = mt9m113_write_mcu_var(sensor,
 					MT9M113_SEQ_CMD,
 					MT9M113_SEQ_CMD_CAPTURE);
