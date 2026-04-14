@@ -412,6 +412,7 @@ static int mt9m113_standby_enter(struct mt9m113 *sensor)
 
 static int mt9m113_standby_exit(struct mt9m113 *sensor)
 {
+	struct device *dev = &sensor->client->dev;
 	u64 value;
 	int ret;
 	unsigned int i;
@@ -432,15 +433,46 @@ static int mt9m113_standby_exit(struct mt9m113 *sensor)
 			       &value, NULL);
 		if (ret)
 			return ret;
-		if (!(value & MT9M113_STANDBY_CONTROL_DONE)) {
-			sensor->in_standby = false;
-			return 0;
-		}
+		if (!(value & MT9M113_STANDBY_CONTROL_DONE))
+			break;
 		msleep(10);
 	}
 
-	dev_err(&sensor->client->dev, "Standby exit timeout\n");
-	return -ETIMEDOUT;
+	if (i >= 10) {
+		dev_err(dev, "Standby exit timeout\n");
+		return -ETIMEDOUT;
+	}
+
+	sensor->in_standby = false;
+
+	/*
+	 * After exiting standby, the MCU sequencer needs to be re-synchronized.
+	 * Wait for SEQ_CMD to be ready (0), then issue REFRESH command.
+	 * This matches the webOS driver behavior that always issues REFRESH
+	 * after configuration changes or state transitions.
+	 */
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	if (ret) {
+		dev_warn(dev, "MCU not ready after standby exit: %d\n", ret);
+		return ret;
+	}
+
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+				    MT9M113_SEQ_CMD_REFRESH);
+	if (ret) {
+		dev_warn(dev, "Failed to issue REFRESH after standby: %d\n", ret);
+		return ret;
+	}
+
+	/* Wait for REFRESH to complete */
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	if (ret) {
+		dev_warn(dev, "REFRESH timeout after standby exit: %d\n", ret);
+		return ret;
+	}
+
+	dev_dbg(dev, "Standby exit complete, MCU refreshed\n");
+	return 0;
 }
 
 /* -----------------------------------------------------------------------------
@@ -1330,17 +1362,52 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		goto error;
 	}
 
+	/* Debug: dump MCU state before issuing SEQ_CMD */
+	{
+		u64 seq_state, seq_cmd, standby_ctrl, mode_config;
+
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
+		cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_ctrl, NULL);
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, &mode_config);
+		dev_info(dev, "MT9M113: PRE-CMD state: SEQ_STATE=0x%llx SEQ_CMD=0x%llx STANDBY=0x%llx CAP_MODE=0x%llx\n",
+			 seq_state, seq_cmd, standby_ctrl, mode_config);
+	}
+
 	if (use_context_b) {
+		dev_info(dev, "MT9M113: Writing SEQ_CMD_CAPTURE (0x02)\n");
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					    MT9M113_SEQ_CMD_CAPTURE);
 	} else {
+		dev_info(dev, "MT9M113: Writing SEQ_CMD_RUN (0x01)\n");
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					    MT9M113_SEQ_CMD_RUN);
 	}
 	if (ret)
 		goto error;
 
-	mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	/* Debug: immediate read-back of SEQ_CMD */
+	{
+		u64 seq_cmd_readback, seq_state_readback;
+
+		usleep_range(1000, 2000);  /* Small delay for MCU to react */
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd_readback);
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state_readback);
+		dev_info(dev, "MT9M113: POST-CMD (1ms): SEQ_CMD=0x%llx SEQ_STATE=0x%llx\n",
+			 seq_cmd_readback, seq_state_readback);
+	}
+
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	if (ret < 0) {
+		u64 seq_cmd_final, seq_state_final, standby_final;
+
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd_final);
+		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state_final);
+		cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_final, NULL);
+		dev_err(dev, "MT9M113: SEQ_CMD poll failed! SEQ_CMD=0x%llx SEQ_STATE=0x%llx STANDBY=0x%llx\n",
+			seq_cmd_final, seq_state_final, standby_final);
+		/* Continue anyway - webOS doesn't fail here */
+	}
 
 	/* Wait for context switch if using Context B */
 	if (use_context_b) {
