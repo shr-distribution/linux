@@ -328,6 +328,37 @@ static int mt9m113_poll_mcu_var(struct mt9m113 *sensor, u16 addr,
 	return -ETIMEDOUT;
 }
 
+/*
+ * Ensure MCU sequencer is idle before issuing a new command.
+ * This prevents cascading failures where a timed-out command
+ * causes subsequent commands to also fail.
+ */
+static int mt9m113_seq_cmd_ready(struct mt9m113 *sensor)
+{
+	u64 seq_cmd;
+	int ret;
+
+	ret = mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
+	if (ret < 0)
+		return ret;
+
+	if (seq_cmd == 0)
+		return 0;  /* Already idle */
+
+	/*
+	 * A previous command is still pending. This can happen if:
+	 * 1. Previous streaming start failed mid-way
+	 * 2. The MCU is slow to process a command
+	 *
+	 * Wait up to 2 seconds for it to complete. This is longer than
+	 * normal command timeouts to handle recovery scenarios.
+	 */
+	dev_info(&sensor->client->dev,
+		 "MT9M113: SEQ_CMD=0x%llx, waiting for idle\n", seq_cmd);
+
+	return mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 2000);
+}
+
 /* -----------------------------------------------------------------------------
  * Soft Standby Control
  */
@@ -1178,6 +1209,13 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 
 	/* Refresh after OUTPUT_CONTROL change */
 	{
+		/* Ensure MCU is idle before issuing commands */
+		ret = mt9m113_seq_cmd_ready(sensor);
+		if (ret < 0) {
+			dev_err(dev, "MT9M113: MCU not ready for REFRESH\n");
+			goto error;
+		}
+
 		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 				      MT9M113_SEQ_CMD_REFRESH_MODE);
 		mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
@@ -1223,6 +1261,14 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	 * with SEQ_CAP_NUM_FRAMES=0 for infinite/continuous streaming.
 	 * For Context A, we use RUN for continuous preview.
 	 */
+
+	/* Ensure MCU is idle before issuing RUN/CAPTURE command */
+	ret = mt9m113_seq_cmd_ready(sensor);
+	if (ret < 0) {
+		dev_err(dev, "MT9M113: MCU not ready for streaming command\n");
+		goto error;
+	}
+
 	if (use_context_b) {
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					    MT9M113_SEQ_CMD_CAPTURE);
