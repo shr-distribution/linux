@@ -90,7 +90,7 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M113_SEQ_CMD_REFRESH_MODE		0x0006
 #define MT9M113_SEQ_STATE			0xa104
 #define MT9M113_SEQ_CAP_MODE			0xa115
-#define MT9M113_SEQ_CAP_MODE_VIDEO		0xa116
+#define MT9M113_SEQ_CAP_NUM_FRAMES		0xa116	/* 0 = infinite/continuous */
 
 /* Mode Output Format registers (Driver ID 7) */
 #define MT9M113_MODE_OUTPUT_FORMAT_A		0x2755
@@ -1043,17 +1043,38 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	if (ret)
 		goto error;
 
-	/* Configure capture mode */
+	/*
+	 * Configure capture/streaming mode.
+	 *
+	 * SEQ_CAP_MODE controls how Context B operates:
+	 * - 0x0000: Normal capture mode
+	 * - 0x0030: Preview mode (Context A)
+	 *
+	 * SEQ_CAP_NUM_FRAMES controls how many frames to capture:
+	 * - 0: Infinite/continuous streaming (for video)
+	 * - N: Capture N frames then return to Context A (for snapshot)
+	 *
+	 * For V4L2 continuous streaming, we always use infinite frames.
+	 */
 	if (use_context_b) {
 		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0000);
-		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE_VIDEO, 0x0008);
+		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_NUM_FRAMES, 0x0000);
 	} else {
 		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 	}
 
 	msleep(40);
 
-	/* Issue SEQ_CMD to start streaming */
+	/*
+	 * Issue SEQ_CMD to start streaming.
+	 *
+	 * SEQ_CMD_RUN (0x01): Continue streaming in current context
+	 * SEQ_CMD_CAPTURE (0x02): Switch to Context B and capture
+	 *
+	 * For Context B, we use CAPTURE to trigger the context switch, but
+	 * with SEQ_CAP_NUM_FRAMES=0 for infinite/continuous streaming.
+	 * For Context A, we use RUN for continuous preview.
+	 */
 	if (use_context_b) {
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					    MT9M113_SEQ_CMD_CAPTURE);
@@ -1499,7 +1520,7 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 				mt9m113_write_mcu_var(sensor,
 					MT9M113_SEQ_CAP_MODE, 0x0000);
 				mt9m113_write_mcu_var(sensor,
-					MT9M113_SEQ_CAP_MODE_VIDEO, 0x0008);
+					MT9M113_SEQ_CAP_NUM_FRAMES, 0x0000);
 				ret = mt9m113_write_mcu_var(sensor,
 					MT9M113_SEQ_CMD,
 					MT9M113_SEQ_CMD_CAPTURE);
