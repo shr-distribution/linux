@@ -3881,9 +3881,18 @@ static int vfe31_enable(struct vfe_line *line)
 			int lines_val, burst_val;
 			u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
 
-			if (vfe31_pix_cbcr_lines < 0)
-				lines_val = cbcr_height + 64;  /* auto: webOS formula */
-			else if (vfe31_pix_cbcr_lines == 0)
+			if (vfe31_pix_cbcr_lines < 0) {
+				/*
+				 * Auto mode: For 4:2:0 (NV12), add +64 headroom
+				 * as webOS did. For 4:2:2 (NV16), DON'T add
+				 * headroom - the buffer is sized for exactly
+				 * cbcr_height lines and adding 64 causes overflow.
+				 */
+				if (vfe31_is_420_format(pix->pixelformat))
+					lines_val = cbcr_height + 64;
+				else
+					lines_val = cbcr_height;  /* NV16: no headroom */
+			} else if (vfe31_pix_cbcr_lines == 0)
 				lines_val = cbcr_height - 1;   /* full CbCr height */
 			else
 				lines_val = vfe31_pix_cbcr_lines;  /* explicit */
@@ -5236,10 +5245,20 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			 * CbCr burst uses OUTPUT width (not stride) because
 			 * the chroma scaler outputs at output resolution.
 			 * Formula: (width/4) - 9 = 151 for 640 width.
+			 *
+			 * Lines: For 4:2:0, add +64 headroom (webOS formula).
+			 * For 4:2:2 (NV16), DON'T add headroom - buffer is
+			 * sized exactly for cbcr_height lines.
 			 */
 			{
-				int lines_val = cbcr_height + 64;
+				int lines_val;
 				int burst_val = (width / 4) - 9;
+
+				if (vfe31_is_420_format(pix->pixelformat))
+					lines_val = cbcr_height + 64;
+				else
+					lines_val = cbcr_height;  /* NV16: no headroom */
+
 				reg = (lines_val << 16) | (burst_val & 0xFFFF);
 				dev_info(vfe->camss->dev,
 					 "VFE31: WM%d ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
