@@ -108,6 +108,13 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M113_SPEC_EFFECTS_NEGATIVE		0x0003
 #define MT9M113_SPEC_EFFECTS_SOLARIZE		0x0004
 
+/* Auto Exposure MCU variables (for preview vs snapshot optimization) */
+#define MT9M113_AE_MAX_INDEX			0xa20c
+#define MT9M113_AE_MAX_VIRTGAIN			0xa20e
+#define MT9M113_AE_MAX_DGAIN_AE1		0xa21a
+#define MT9M113_AE_JUMP_DIVISOR			0xa21c
+#define MT9M113_AE_SKIP_FRAMES			0xa21e
+
 /* Sensor core registers */
 #define MT9M113_RESET_REGISTER			CCI_REG16(0x301a)
 #define MT9M113_RESET_REG_STREAMING		0x120C
@@ -886,6 +893,57 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
  * Streaming
  */
 
+/*
+ * Configure AE (Auto Exposure) parameters for preview vs snapshot/video mode.
+ * From webOS driver: snapshot mode allows longer exposure for better quality,
+ * while preview mode optimizes for higher frame rate and lower power.
+ */
+static int mt9m113_configure_ae_mode(struct mt9m113 *sensor, bool snapshot_mode)
+{
+	struct device *dev = &sensor->client->dev;
+	int ret;
+
+	if (snapshot_mode) {
+		/* Snapshot/Capture mode: allow longer exposure for quality */
+		dev_dbg(dev, "MT9M113: configuring AE for snapshot mode\n");
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_MAX_INDEX, 0x0028);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_MAX_VIRTGAIN, 0x0060);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_MAX_DGAIN_AE1, 0x00C8);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_JUMP_DIVISOR, 0x0002);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_SKIP_FRAMES, 0x0002);
+		if (ret)
+			return ret;
+	} else {
+		/* Preview mode: optimize for frame rate and responsiveness */
+		dev_dbg(dev, "MT9M113: configuring AE for preview mode\n");
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_MAX_INDEX, 0x0008);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_MAX_VIRTGAIN, 0x00A0);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_MAX_DGAIN_AE1, 0x0150);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_JUMP_DIVISOR, 0x0001);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_AE_SKIP_FRAMES, 0x0001);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 static int mt9m113_start_streaming(struct mt9m113 *sensor,
 				   struct v4l2_subdev_state *state)
 {
@@ -929,6 +987,17 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 
 	dev_info(dev, "MT9M113: %ux%u -> Context %c\n",
 		 compose->width, compose->height, use_context_b ? 'B' : 'A');
+
+	/*
+	 * Configure AE parameters for the selected context:
+	 * - Context B (snapshot/capture): longer exposure allowed for quality
+	 * - Context A (preview): optimize for frame rate and responsiveness
+	 */
+	ret = mt9m113_configure_ae_mode(sensor, use_context_b);
+	if (ret) {
+		dev_err(dev, "Failed to configure AE mode: %d\n", ret);
+		goto error;
+	}
 
 	/* Wait for CSIPHY stabilization */
 	msleep(mt9m113_pre_mipi_delay_ms);
