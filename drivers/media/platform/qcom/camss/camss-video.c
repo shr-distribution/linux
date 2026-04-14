@@ -740,25 +740,30 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		}
 
 		/*
-		 * VFE31 PIX/VIDEO mode: VFE writes Y and CbCr at OUTPUT stride
-		 * (width), not input stride. The stride_factor only affects
-		 * IMAGE_SIZE register config (for IRQ timing), not actual DMA.
+		 * VFE31 PIX/VIDEO mode with stride fix: VFE writes Y and CbCr
+		 * at INPUT stride (width * 2), not OUTPUT stride (bytesperline).
+		 * The stride_factor indicates this mode is active.
 		 *
 		 * For single-plane formats where vsub_num > 1 (meaning Y + CbCr
 		 * packed in one buffer), calculate Y and CbCr sizes separately.
+		 *
+		 * CRITICAL: When stride_factor > 1, multiply by it to get the
+		 * actual buffer size needed. Without this, the buffer is too
+		 * small and DMA writes overflow into adjacent memory!
 		 */
 		if (fi->planes == 1 && vsub_num > 1) {
 			/* Semi-planar: Y + CbCr in single contiguous buffer */
-			u32 y_size = pix_mp->height * bpl;
+			u32 actual_stride = bpl * stride_factor;
+			u32 y_size = pix_mp->height * actual_stride;
 			u32 cbcr_height = pix_mp->height * (vsub_den - vsub_num) / vsub_num;
-			u32 cbcr_size = cbcr_height * bpl;
+			u32 cbcr_size = cbcr_height * actual_stride;
 			u32 total = y_size + cbcr_size;
 			/* Round up to 1MB boundary to ensure DMA-SG provides
 			 * enough contiguous IOVA space between buffers */
 			pix_mp->plane_fmt[i].sizeimage = ALIGN(total, SZ_1M);
-			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u total=%u aligned=%u (vsub=%u/%u)\n",
+			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u total=%u aligned=%u (stride=%u sf=%u vsub=%u/%u)\n",
 				y_size, cbcr_size, total, pix_mp->plane_fmt[i].sizeimage,
-				vsub_num, vsub_den);
+				actual_stride, stride_factor, vsub_num, vsub_den);
 		} else {
 			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
 				vsub_num * vsub_den * bpl;
