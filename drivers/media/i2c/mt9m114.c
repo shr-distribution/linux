@@ -1213,7 +1213,7 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	{ 0x098C, 0x270F, 0 },		/* MODE_SENSOR_COL_START_A */
 	{ 0x0990, 0x0000, 0 },
 	{ 0x098C, 0x2711, 0 },		/* MODE_SENSOR_ROW_END_A */
-	{ 0x0990, 0x03CD, 0 },		/* 973 */
+	{ 0x0990, 0x03FF, 0 },		/* 1023 (MT9M113 has 1024 active rows, not 976 like MT9M114) */
 	{ 0x098C, 0x2713, 0 },		/* MODE_SENSOR_COL_END_A */
 	{ 0x0990, 0x050D, 0 },		/* 1293 */
 	{ 0x098C, 0x2715, 0 },		/* MODE_SENSOR_ROW_SPEED_A */
@@ -5127,7 +5127,6 @@ static void mt9m114_remove(struct i2c_client *client)
 }
 
 static const struct of_device_id mt9m114_of_ids[] = {
-	{ .compatible = "aptina,mt9m113", .data = (void *)MT9M113_MODEL },
 	{ .compatible = "onnn,mt9m114", .data = (void *)MT9M114_MODEL },
 	{ /* sentinel */ },
 };
