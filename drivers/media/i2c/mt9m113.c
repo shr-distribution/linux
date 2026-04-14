@@ -1188,22 +1188,43 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		return ret;
 
 	/*
-	 * Exit standby mode if we were in standby from a previous stop.
-	 * This ensures the MCU is in a clean state before we start streaming.
-	 * Only call standby_exit if we actually entered standby previously.
+	 * Always ensure we're out of standby mode before streaming.
+	 *
+	 * The power_on sequence writes 0x002A to STANDBY_CONTROL which puts
+	 * the sensor in a low-power state. Even if in_standby=false (first
+	 * streaming after boot), the sensor may still be in standby.
+	 *
+	 * Clear the STANDBY bit to ensure MCU can process commands.
 	 */
 	dev_info(dev, "MT9M113: start_streaming, in_standby=%d\n",
 		 sensor->in_standby);
-	if (sensor->in_standby) {
-		dev_info(dev, "MT9M113: exiting standby...\n");
-		ret = mt9m113_standby_exit(sensor);
-		if (ret < 0) {
-			dev_warn(dev, "MT9M113: standby exit failed: %d\n", ret);
-			/* Continue anyway - try to recover */
-		} else {
-			dev_info(dev, "MT9M113: standby exited, in_standby=%d\n",
-				 sensor->in_standby);
+
+	/* Check and ensure MCU is out of standby */
+	{
+		u64 standby_val;
+		bool standby_bit, standby_done;
+
+		cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_val, NULL);
+		standby_bit = (standby_val & MT9M113_STANDBY_CONTROL_STANDBY) != 0;
+		standby_done = (standby_val & MT9M113_STANDBY_CONTROL_DONE) != 0;
+		dev_info(dev, "MT9M113: STANDBY_CONTROL=0x%llx (STANDBY=%d, DONE=%d)\n",
+			 standby_val, standby_bit, standby_done);
+
+		/*
+		 * If STANDBY_DONE is set, the sensor is in standby even if
+		 * STANDBY bit is clear. This can happen after power-on.
+		 * We need to ensure both bits are clear for normal operation.
+		 */
+		if (standby_done || standby_bit) {
+			dev_info(dev, "MT9M113: Sensor in standby state, exiting...\n");
+			ret = mt9m113_standby_exit(sensor);
+			if (ret < 0)
+				dev_warn(dev, "MT9M113: standby exit failed: %d\n", ret);
+
+			cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_val, NULL);
+			dev_info(dev, "MT9M113: STANDBY_CONTROL after exit: 0x%llx\n", standby_val);
 		}
+		sensor->in_standby = false;
 	}
 
 	/* MCU health check */
