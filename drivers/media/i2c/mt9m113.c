@@ -1273,13 +1273,13 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			goto error;
 	}
 
-	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-			output_ctrl_val, NULL);
-	if (ret)
-		goto error;
-
 	/*
-	 * Note: The webOS driver does NOT issue REFRESH commands during
+	 * Note: Do NOT enable MIPI output (OUTPUT_CONTROL) here!
+	 * The MIPI output must be enabled AFTER the MCU sequencer starts.
+	 * Enabling MIPI before SEQ_CMD causes the sensor to output data
+	 * while the sequencer isn't running, which corrupts the MCU state.
+	 *
+	 * The webOS driver does NOT issue REFRESH commands during
 	 * streaming - only during init. REFRESH_MODE/REFRESH are used to
 	 * apply parameter changes, but the init table already handles this.
 	 * Issuing REFRESH here causes MCU hangs.
@@ -1370,7 +1370,12 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		msleep(20);
 	}
 
-	/* Re-write OUTPUT_CONTROL after SEQ_CMD (MCU may reset it) */
+	/*
+	 * Enable MIPI output AFTER the MCU sequencer has started.
+	 * This is critical - enabling MIPI before SEQ_CMD causes the
+	 * sensor to output data before the sequencer is ready, which
+	 * corrupts the MCU state and causes SEQ_CMD timeouts.
+	 */
 	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 			output_ctrl_val, NULL);
 	if (ret)
