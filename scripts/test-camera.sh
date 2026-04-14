@@ -1336,6 +1336,24 @@ test_at_resolution() {
         media-ctl -d /dev/media0 -r 2>/dev/null || true
         sleep 0.5
 
+        # Detect sensor entity (each run_on_device is a new shell session)
+        SENSOR_BASE=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+        if [ -n \"\$SENSOR_BASE\" ]; then
+            # mt9m113 driver with IFP sub-device - use IFP entity for format config
+            SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+            if [ -z \"\$SENSOR\" ]; then
+                SENSOR=\"\$SENSOR_BASE\"
+            fi
+        else
+            # mt9m114 combined driver
+            SENSOR_BASE=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m114 [0-9]+-[0-9a-f]+' | grep -v ifp | head -1)
+            SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -o 'mt9m114 ifp[^\"]*' | head -1)
+            if [ -z \"\$SENSOR\" ]; then
+                SENSOR=\"\$SENSOR_BASE\"
+            fi
+        fi
+        echo \"Using sensor: \$SENSOR\"
+
         # Mode-specific format setup (links will be enabled AFTER formats are set)
         # NOTE: CSID output format is always UYVY8_1X16 (from sensor via MIPI)
         # VFE PIX/VIDEO input accepts UYVY8_1X16 and converts internally via DEMUX
