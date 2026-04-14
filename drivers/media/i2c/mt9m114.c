@@ -32,66 +32,6 @@
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
-/*
- * Delay before enabling MIPI output (in ms).
- * This allows CSIPHY to stabilize after configuration.
- * webOS uses 10ms. Adjust if ECC errors persist.
- */
-static int mt9m113_pre_mipi_delay_ms = 10;
-module_param(mt9m113_pre_mipi_delay_ms, int, 0644);
-MODULE_PARM_DESC(mt9m113_pre_mipi_delay_ms,
-		 "Delay (ms) before enabling MIPI output (default 10, matches webOS)");
-
-/*
- * MIPI clock mode: 0 = LP (low power), 1 = continuous clock (default).
- * webOS uses LP mode (0x7A08), but continuous clock (0x7A0C) eliminates
- * ECC errors on mainline kernel by keeping clock/data lanes synchronized.
- * Testing showed: LP mode = ~34% ECC errors, continuous = 0% ECC errors.
- */
-static int mt9m113_cont_mipi_clk = 1;
-module_param(mt9m113_cont_mipi_clk, int, 0644);
-MODULE_PARM_DESC(mt9m113_cont_mipi_clk,
-		 "Use continuous MIPI clock instead of LP mode (0=LP, 1=continuous default)");
-
-/*
- * Skip CUSTOM_SHORT_PKT (0x3404) write to match webOS exactly.
- *
- * webOS didn't configure this register, yet camera worked. The VFE31 uses
- * CAMIF pixel/line counting for frame sync, not MIPI FS/FE short packets.
- * Default to 1 (skip) to match webOS behavior exactly.
- *
- * Set to 0 to enable MIPI FS/FE packets (might cause CAMIF_ERROR on VFE31).
- */
-static int mt9m113_skip_short_pkt = 1;
-module_param(mt9m113_skip_short_pkt, int, 0644);
-MODULE_PARM_DESC(mt9m113_skip_short_pkt,
-		 "Skip CUSTOM_SHORT_PKT (0x3404) write to match webOS (1=skip default, 0=enable FS/FE)");
-
-/*
- * Fake YUV trick for VFE31 RDI mode debugging.
- * When enabled, RAW Bayer output uses YUV MIPI data type (0x1E) instead of
- * RAW8 (0x2A). This tests if VFE31's CAMIF_TO_AXI path has data type filtering.
- * The actual pixel data is still RAW Bayer, only the MIPI packet type changes.
- */
-static int mt9m113_fake_yuv = 0;
-module_param(mt9m113_fake_yuv, int, 0644);
-MODULE_PARM_DESC(mt9m113_fake_yuv,
-		 "Use YUV MIPI data type for RAW Bayer output (0=normal, 1=fake YUV for RDI debug)");
-
-/*
- * MT9M113 Context V4L2 Control
- *
- * Custom control to select MT9M113 capture context from userspace.
- * Context A: 640x480 preview mode (SEQ_CAP_MODE = 0x0030)
- * Context B: 1280x1024 capture mode (SEQ_CAP_MODE = 0x0002)
- *
- * Usage: v4l2-ctl -d /dev/v4l-subdev8 --set-ctrl=mt9m113_context=1
- */
-#define V4L2_CID_MT9M113_CONTEXT	(V4L2_CID_USER_BASE + 0x1001)
-
-#define MT9M113_CONTEXT_A		0	/* 640x480 preview */
-#define MT9M113_CONTEXT_B		1	/* 1280x1024 capture */
-
 /* Sysctl registers */
 #define MT9M114_CHIP_ID					CCI_REG16(0x0000)
 #define MT9M114_COMMAND_REGISTER			CCI_REG16(0x0080)
@@ -100,14 +40,8 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M114_COMMAND_REGISTER_REFRESH			BIT(2)
 #define MT9M114_COMMAND_REGISTER_WAIT_FOR_EVENT			BIT(3)
 #define MT9M114_COMMAND_REGISTER_OK				BIT(15)
-#define MT9M114_PLL_DIVIDERS				CCI_REG16(0x0010)
-#define MT9M114_PLL_P_DIVIDERS				CCI_REG16(0x0012)
-#define MT9M114_PLL_CONTROL				CCI_REG16(0x0014)
-#define MT9M114_CLOCKS_CONTROL				CCI_REG16(0x0016)
-#define MT9M114_STANDBY_CONTROL				CCI_REG16(0x0018)
 #define MT9M114_RESET_AND_MISC_CONTROL			CCI_REG16(0x001a)
 #define MT9M114_RESET_SOC					BIT(0)
-#define MT9M114_MCU_BOOT_MODE				CCI_REG16(0x001c)
 #define MT9M114_PAD_SLEW				CCI_REG16(0x001e)
 #define MT9M114_PAD_SLEW_MIN					0
 #define MT9M114_PAD_SLEW_MAX					7
@@ -118,181 +52,6 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M114_ACCESS_CTL_STAT				CCI_REG16(0x0982)
 #define MT9M114_PHYSICAL_ADDRESS_ACCESS			CCI_REG16(0x098a)
 #define MT9M114_LOGICAL_ADDRESS_ACCESS			CCI_REG16(0x098e)
-
-/* MCU indirect access registers (MT9M113) */
-#define MT9M114_MCU_ADDRESS				CCI_REG16(0x098c)
-#define MT9M114_MCU_DATA				CCI_REG16(0x0990)
-
-/* MT9M113 MCU variable addresses */
-#define MT9M113_SEQ_CMD					0xa103
-#define MT9M113_SEQ_CMD_RUN				0x0001
-#define MT9M113_SEQ_CMD_CAPTURE				0x0002  /* Switch to Context B */
-#define MT9M113_SEQ_CMD_REFRESH				0x0005
-#define MT9M113_SEQ_CMD_REFRESH_MODE			0x0006
-#define MT9M113_SEQ_STATE				0xa104
-#define MT9M113_SEQ_CAP_MODE				0xa115
-#define MT9M113_SEQ_CAP_MODE_VIDEO			0xa116
-
-/*
- * MT9M113 Mode Output Format registers (Driver ID 7 = 0x27xx)
- * From MT9M113 datasheet Table 31: Driver ID = 7: Mode Variables
- * Register R0x0055 (mode_output_format_a) and R0x0057 (mode_output_format_b)
- *
- * Bit fields:
- *   [8]   config_processed_bayer - Turn on processed Bayer output
- *   [7:6] rgb_format - RGB output format (0=565, 1=555, 2=444x, 3=x444)
- *   [5]   output_mode - 0=YUV, 1=RGB
- *   [3]   monochrome - Enable monochrome output
- *   [1]   swap_chrominance_luma - Swap Y and C bytes
- *   [0]   swap_channels - Swap Cb/Cr or R/B
- *
- * Default: 0x0000 = YUV output
- * Value 0x0100 = Processed Bayer output (bit 8 set)
- */
-#define MT9M113_MODE_OUTPUT_FORMAT_A			0x2755
-#define MT9M113_MODE_OUTPUT_FORMAT_B			0x2757
-#define MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER	BIT(8)
-#define MT9M113_MODE_OUTPUT_FORMAT_RGB_MODE		BIT(5)
-#define MT9M113_MODE_OUTPUT_FORMAT_MONOCHROME		BIT(3)
-#define MT9M113_MODE_OUTPUT_FORMAT_SWAP_LUMA_CHROMA	BIT(1)
-#define MT9M113_MODE_OUTPUT_FORMAT_SWAP_CHANNELS	BIT(0)
-
-/*
- * MT9M113 MODE_SPEC_EFFECTS_A/B registers (Driver ID 7, R0x0059/R0x005B)
- *
- * These registers control special image effects in the Image Flow Processor.
- * Effects only work with processed output (YUV/RGB), not with RAW Bayer.
- *
- * Bit fields:
- *   [15:8] solarization_thresh - Threshold for solarization effect (default 0x64)
- *   [6]    dither_luma - 0=dither all channels, 1=dither luma only
- *   [5:3]  dither_bit_width - 1-4 valid, 0/5/6/7 = no dither
- *   [2:0]  selection - Effect selection:
- *          0x0000 = Disabled
- *          0x0001 = Monochrome (B&W)
- *          0x0002 = Sepia
- *          0x0003 = Negative
- *          0x0004 = Solarization with unmodified UV
- *          0x0005 = Solarization with -UV
- *
- * Default: 0x6440 (disabled, dither_luma=1, solarization_thresh=0x64)
- */
-#define MT9M113_MODE_SPEC_EFFECTS_A			CCI_REG16(0x2759)
-#define MT9M113_MODE_SPEC_EFFECTS_B			CCI_REG16(0x275B)
-#define MT9M113_SPEC_EFFECTS_DEFAULT			0x6440
-#define MT9M113_SPEC_EFFECTS_MASK			0x0007
-#define MT9M113_SPEC_EFFECTS_NONE			0x0000
-#define MT9M113_SPEC_EFFECTS_MONOCHROME			0x0001
-#define MT9M113_SPEC_EFFECTS_SEPIA			0x0002
-#define MT9M113_SPEC_EFFECTS_NEGATIVE			0x0003
-#define MT9M113_SPEC_EFFECTS_SOLARIZE			0x0004
-#define MT9M113_SPEC_EFFECTS_SOLARIZE_NEG_UV		0x0005
-
-/*
- * MT9M113 MODE_SEPIA_SETTINGS register (Driver ID 7, R0x0063)
- *
- * Controls the Cb/Cr chroma values for sepia effect.
- * Bit fields:
- *   [15:8] sepia_cb - Cb magnitude in 0.7 fixed point
- *   [7:0]  sepia_cr - Cr magnitude in 0.7 fixed point
- *
- * Default values produce a brownish sepia tone.
- * Can be customized for other color tints.
- */
-#define MT9M113_MODE_SEPIA_SETTINGS			CCI_REG16(0x2763)
-
-/*
- * SEQ_CAP_MODE (0xA115) values from webOS mt9m113.c:
- *   0x0000 = Normal capture mode (Context B)
- * SEQ_CAP_MODE_VIDEO (0xA116) values:
- *   0x0008 = Snapshot video mode setting
- */
-#define MT9M113_CAP_MODE_NORMAL				0x0000
-#define MT9M113_CAP_MODE_VIDEO_SNAPSHOT			0x0008
-
-/*
- * MT9M113 RESET_REGISTER (0x301A) values from webOS/Samsung legacy drivers.
- * Both drivers use 0x120C for streaming in MIPI mode.
- * 0x12CE is used for snapshot mode.
- */
-#define MT9M113_RESET_REG_STREAMING			0x120C
-#define MT9M113_RESET_REG_SNAPSHOT			0x12CE
-
-/*
- * MT9M113 OUTPUT_CONTROL register (R0x3400) - MIPI control
- *
- * Bit layout per datasheet:
- *   [15:10] data_type - MIPI data type (0x1E = YUV422)
- *   [9]     mipi_en   - MIPI enable (0=disabled, 1=enabled)
- *   [8:6]   chan_num  - Virtual channel number
- *   [4]     standby_eof - Wait until EOF for standby
- *   [3]     reg_frame_sync - READ-ONLY frame sync status bit
- *   [2]     cont_mipi_clk - Continuous MIPI clock
- *   [1]     standby_en - MIPI standby (0=active, 1=standby)
- *   [0]     restart_en - MIPI restart enable
- *
- * IMPORTANT: Bit 3 (reg_frame_sync) is READ-ONLY! It's a hardware status
- * bit indicating frame sync state. Writes to bit 3 are ignored by hardware.
- * When verifying writes, mask out bit 3 before comparison.
- */
-#define MT9M113_OUTPUT_CONTROL				CCI_REG16(0x3400)
-#define MT9M113_OUTPUT_CONTROL_RO_MASK			0x0008	/* Bit 3 is RO */
-#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE		0x7A08	/* YUV422: data_type=0x1E */
-#define MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY	0x7A00	/* Expected readback (ignoring RO bit 3) */
-/*
- * RAW8 MIPI output: data_type=0x2A (RAW8) instead of 0x1E (YUV422)
- * Bits [15:10] = 0x2A = 42 decimal = RAW8 MIPI data type
- * 0x2A << 10 = 0xA800, plus MIPI enable (bit 9) = 0xAA00, plus standby_eof (bit 4) = 0xAA08
- */
-#define MT9M113_OUTPUT_CONTROL_MIPI_RAW8		0xAA08	/* RAW8: data_type=0x2A */
-#define MT9M113_OUTPUT_CONTROL_MIPI_RAW8_VERIFY		0xAA00	/* Expected readback */
-/*
- * RAW10 MIPI output: data_type=0x2B (RAW10) for true raw bypass mode
- * Bits [15:10] = 0x2B = 43 decimal = RAW10 MIPI data type
- * 0x2B << 10 = 0xAC00, plus MIPI enable (bit 9) = 0xAC00, plus standby_eof (bit 4) = 0xAC08
- * Use this for true RAW bypass (no IFP processing) - outputs 10 bits per pixel packed
- */
-#define MT9M113_OUTPUT_CONTROL_MIPI_RAW10		0xAC08	/* RAW10: data_type=0x2B */
-#define MT9M113_OUTPUT_CONTROL_MIPI_RAW10_VERIFY	0xAC00	/* Expected readback */
-
-/*
- * MT9M113 CUSTOM_SHORT_PKT register (0x3404)
- * Controls MIPI CSI-2 short packet transmission including Frame Start/End.
- * Default value 0x0000 means FS/FE packets are NOT sent!
- * Bit 7 (frame_cnt_en): Insert frame counter in FS/FE word count field
- * Setting this bit enables Frame Start/End short packet transmission.
- */
-#define MT9M113_CUSTOM_SHORT_PKT			CCI_REG16(0x3404)
-#define MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN		0x0080
-
-/*
- * MT9M114 MIPI_CONTROL register (0x3C40) - MT9M114 ONLY, NOT on MT9M113!
- * This register does NOT exist on MT9M113 - always reads 0x0.
- * MT9M113 uses OUTPUT_CONTROL (0x3400) instead for MIPI configuration.
- * Keeping these defines for MT9M114 compatibility only.
- */
-#define MT9M114_MIPI_CONTROL				CCI_REG16(0x3C40)
-#define MT9M114_MIPI_CONTROL_VALUE			0x783C
-
-/*
- * MIPI timing registers (MCU variables) from webOS kernel.
- * These configure CSI-2 D-PHY timing parameters for proper signaling.
- */
-#define MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO		CCI_REG16(0xC988)
-#define MT9M113_CAM_PORT_MIPI_TIMING_T_HS_ZERO_VAL	0x0F00
-#define MT9M113_CAM_PORT_MIPI_TIMING_T_HS_EXIT_TRAIL	CCI_REG16(0xC98A)
-#define MT9M113_CAM_PORT_MIPI_TIMING_T_HS_EXIT_TRAIL_VAL 0x0B07
-#define MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_POST_PRE	CCI_REG16(0xC98C)
-#define MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_POST_PRE_VAL	0x0D01
-#define MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_ZERO	CCI_REG16(0xC98E)
-#define MT9M113_CAM_PORT_MIPI_TIMING_T_CLK_TRAIL_ZERO_VAL 0x071D
-#define MT9M113_CAM_PORT_MIPI_TIMING_T_LPX		CCI_REG16(0xC990)
-#define MT9M113_CAM_PORT_MIPI_TIMING_T_LPX_VAL		0x0006
-#define MT9M113_CAM_PORT_MIPI_TIMING_INIT		CCI_REG16(0xC992)
-#define MT9M113_CAM_PORT_MIPI_TIMING_INIT_VAL		0x0A0C
-
-/* MT9M113 OFIFO control (from webOS kernel) */
-#define MT9M114_OFIFO_CONTROL_STATUS			CCI_REG16(0x321c)
 
 /* Sensor Core registers */
 #define MT9M114_COARSE_INTEGRATION_TIME			CCI_REG16(0x3012)
@@ -585,13 +344,6 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M114_PIXEL_ARRAY_HEIGHT			976U
 
 /*
- * MT9M113 has a taller pixel array to support 1280x1024 output.
- * The extra height is needed for Context B (capture mode).
- */
-#define MT9M113_PIXEL_ARRAY_WIDTH			1296U
-#define MT9M113_PIXEL_ARRAY_HEIGHT			1040U
-
-/*
  * These values are not well documented and are semi-arbitrary. The pixel array
  * minimum output size is 8 pixels larger than the minimum scaler cropped input
  * width to account for the demosaicing.
@@ -611,11 +363,6 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
  * Data Structures
  */
 
-enum mt9m114_model {
-	MT9M113_MODEL = 0x2480,
-	MT9M114_MODEL = 0x2481,
-};
-
 enum mt9m114_format_flag {
 	MT9M114_FMT_FLAG_PARALLEL = BIT(0),
 	MT9M114_FMT_FLAG_CSI2 = BIT(1),
@@ -630,12 +377,9 @@ struct mt9m114_format_info {
 struct mt9m114 {
 	struct i2c_client *client;
 	struct regmap *regmap;
-	enum mt9m114_model model;
-	enum mt9m114_model expected_model;	/* From DT compatible */
 
 	struct clk *clk;
 	struct gpio_desc *reset;
-	struct gpio_desc *powerdown;
 	struct regulator_bulk_data supplies[3];
 	struct v4l2_fwnode_endpoint bus_cfg;
 	bool bypass_pll;
@@ -671,7 +415,6 @@ struct mt9m114 {
 		unsigned int frame_rate;
 
 		struct v4l2_ctrl *tpg[4];
-		struct v4l2_ctrl *context;	/* MT9M113 context selection */
 	} ifp;
 };
 
@@ -778,15 +521,9 @@ mt9m114_format_info(struct mt9m114 *sensor, unsigned int pad, u32 code)
  */
 
 static const struct cci_reg_sequence mt9m114_init[] = {
-	/*
-	 * Note: MT9M113 MIPI is configured via OUTPUT_CONTROL (0x3400) = 0x7A00,
-	 * which is written during start_streaming. The 0x3C40 register does NOT
-	 * exist on MT9M113 (it's MT9M114-specific), so we don't write it here.
-	 *
-	 * RESET_REGISTER: Use 0x120C for streaming (from webOS/Samsung drivers).
-	 * Both MIPI and parallel modes use this value for streaming enable.
-	 */
-	{ MT9M114_RESET_REGISTER, MT9M113_RESET_REG_STREAMING },
+	{ MT9M114_RESET_REGISTER, MT9M114_RESET_REGISTER_MASK_BAD |
+				  MT9M114_RESET_REGISTER_LOCK_REG |
+				  0x0010 },
 
 	/* Sensor optimization */
 	{ CCI_REG16(0x316a), 0x8270 },
@@ -916,947 +653,6 @@ static const struct cci_reg_sequence mt9m114_init[] = {
 };
 
 /* -----------------------------------------------------------------------------
- * MT9M113 MCU Variable Access Helpers
- *
- * MT9M113 uses indirect MCU variable access via XDMA registers:
- * - Write MCU variable address to 0x098C (MCU_ADDRESS)
- * - Read/write data via 0x0990 (MCU_DATA)
- *
- * This is different from MT9M114 which uses direct access to 0xC000+ addresses.
- */
-
-static int mt9m113_write_mcu_var(struct mt9m114 *sensor, u16 addr, u16 value)
-{
-	int ret = 0;
-
-	cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, addr, &ret);
-	cci_write(sensor->regmap, MT9M114_MCU_DATA, value, &ret);
-	return ret;
-}
-
-static int mt9m113_read_mcu_var(struct mt9m114 *sensor, u16 addr, u64 *value)
-{
-	int ret;
-
-	ret = cci_write(sensor->regmap, MT9M114_MCU_ADDRESS, addr, NULL);
-	if (ret)
-		return ret;
-	return cci_read(sensor->regmap, MT9M114_MCU_DATA, value, NULL);
-}
-
-static int mt9m113_poll_mcu_var(struct mt9m114 *sensor, u16 addr,
-				u16 expected, unsigned int timeout_ms)
-{
-	unsigned int i;
-	u64 value;
-	int ret;
-
-	for (i = 0; i < timeout_ms / 10; i++) {
-		ret = mt9m113_read_mcu_var(sensor, addr, &value);
-		if (ret < 0)
-			return ret;
-		if (value == expected)
-			return 0;
-		msleep(10);
-	}
-
-	dev_err(&sensor->client->dev, "MCU var 0x%04x timeout (got 0x%llx, expected 0x%04x)\n",
-		addr, value, expected);
-	return -ETIMEDOUT;
-}
-
-/*
- * mt9m113_configure_ifp - Configure MT9M113 output format and resolution
- * @sensor: Sensor device
- * @state: V4L2 subdev state containing the requested format
- *
- * MT9M113 uses MCU variables for configuration, not direct registers like
- * MT9M114. This function configures MODE_OUTPUT_FORMAT_A (0x2755) or
- * MODE_OUTPUT_FORMAT_B (0x2757) for the requested pixel format.
- *
- * IMPORTANT: MT9M113 does NOT use MT9M114's CAM_OUTPUT_FORMAT (0xC86C)!
- * The correct registers are MODE_OUTPUT_FORMAT_A/B from Table 31 in the
- * MT9M113 datasheet (Driver ID 7, Mode Variables).
- */
-static int mt9m113_configure_ifp(struct mt9m114 *sensor,
-				 struct v4l2_subdev_state *state)
-{
-	const struct mt9m114_format_info *info;
-	const struct v4l2_mbus_framefmt *format;
-	const struct v4l2_rect *compose;
-	u64 output_format;
-	int ret;
-
-	compose = v4l2_subdev_state_get_compose(state, 0);
-	format = v4l2_subdev_state_get_format(state, 1);
-	info = mt9m114_format_info(sensor, 1, format->code);
-
-	/*
-	 * MT9M113 has fixed Context A (640x480) and Context B (1280x1024)
-	 * configured by the init table. We don't reconfigure resolutions
-	 * dynamically - instead, the streaming code selects Context A or B
-	 * via SEQ_CAP_MODE based on the requested size.
-	 *
-	 * Skip resolution reconfiguration to avoid MCU REFRESH_MODE timeouts.
-	 * The init table already configured optimal settings for both contexts.
-	 */
-	dev_info(&sensor->client->dev,
-		 "MT9M113: requested %ux%u format=0x%04x (using %s context)\n",
-		 compose->width, compose->height, format->code,
-		 (compose->width > 640 || compose->height > 480) ?
-		 "Context B (1280x1024)" : "Context A (640x480)");
-
-	/*
-	 * Configure MODE_OUTPUT_FORMAT_A/B for the requested pixel format.
-	 * MT9M113 uses different registers than MT9M114's CAM_OUTPUT_FORMAT!
-	 *
-	 * MODE_OUTPUT_FORMAT_A (0x2755) for Context A (preview, 640x480)
-	 * MODE_OUTPUT_FORMAT_B (0x2757) for Context B (capture, 1280x1024)
-	 * From MT9M113 datasheet Table 31 (Driver ID 7, page 96):
-	 *   Bit 8: config_processed_bayer - Turn on processed Bayer output
-	 *   Bit 5: output_mode - 0=YUV, 1=RGB
-	 *   Default 0x0000 = YUV output
-	 *   Value 0x0100 = Processed Bayer output
-	 *
-	 * This is critical for RAW/Bayer output - without setting the correct
-	 * register, the sensor outputs YUV even when Bayer is requested.
-	 */
-	{
-		u16 mode_output_format_reg;
-		u16 mode_output_format_val;
-		u64 current_val;
-		bool use_context_b = (compose->width > 640 ||
-				      compose->height > 480);
-
-		/* Select the correct context register */
-		mode_output_format_reg = use_context_b ?
-			MT9M113_MODE_OUTPUT_FORMAT_B :
-			MT9M113_MODE_OUTPUT_FORMAT_A;
-
-		/*
-		 * Determine output format value based on requested format.
-		 * MT9M114's format bits: [9:8] = 0=YUV, 1=RGB, 2=Bayer
-		 * MT9M113's format bits: [8] = processed_bayer, [5] = RGB mode
-		 *
-		 * For MT9M113 Bayer output:
-		 * - bit 8 = 0: Raw Bayer (unprocessed, bypasses IFP)
-		 * - bit 8 = 1: Processed Bayer (8-bit, uses IFP)
-		 */
-		if (info->output_format & MT9M114_CAM_OUTPUT_FORMAT_FORMAT_BAYER) {
-			/*
-			 * Check BAYER_FORMAT field [11:10] to determine
-			 * if we want raw or processed output:
-			 * RAWR10 (0) -> bit 8 = 0 (raw)
-			 * PROCESSED8 (3) -> bit 8 = 1 (processed)
-			 */
-			u16 bayer_format = info->output_format &
-				MT9M114_CAM_OUTPUT_FORMAT_BAYER_FORMAT_MASK;
-
-			if (bayer_format == MT9M114_CAM_OUTPUT_FORMAT_BAYER_FORMAT_PROCESSED8)
-				mode_output_format_val =
-					MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
-			else
-				/* Raw Bayer - don't set bit 8 */
-				mode_output_format_val = 0x0000;
-		} else if (info->output_format & MT9M114_CAM_OUTPUT_FORMAT_FORMAT_RGB) {
-			/* RGB output - set bit 5 */
-			mode_output_format_val =
-				MT9M113_MODE_OUTPUT_FORMAT_RGB_MODE;
-		} else {
-			/* YUV output (default) */
-			mode_output_format_val = 0x0000;
-		}
-
-		/* Read current value */
-		ret = mt9m113_read_mcu_var(sensor, mode_output_format_reg,
-					   &current_val);
-		if (ret < 0) {
-			dev_err(&sensor->client->dev,
-				"MT9M113: failed to read MODE_OUTPUT_FORMAT_%c: %d\n",
-				use_context_b ? 'B' : 'A', ret);
-			return ret;
-		}
-
-		dev_info(&sensor->client->dev,
-			 "MT9M113: MODE_OUTPUT_FORMAT_%c current=0x%04llx, new=0x%04x\n",
-			 use_context_b ? 'B' : 'A', current_val,
-			 mode_output_format_val);
-
-		/* Write new value */
-		ret = mt9m113_write_mcu_var(sensor, mode_output_format_reg,
-					    mode_output_format_val);
-		if (ret < 0) {
-			dev_err(&sensor->client->dev,
-				"MT9M113: failed to write MODE_OUTPUT_FORMAT_%c: %d\n",
-				use_context_b ? 'B' : 'A', ret);
-			return ret;
-		}
-
-		/*
-		 * Also configure the other context if switching to Bayer
-		 * to ensure consistent behavior.
-		 */
-		if (mode_output_format_val != 0x0000) {
-			u16 other_reg = use_context_b ?
-				MT9M113_MODE_OUTPUT_FORMAT_A :
-				MT9M113_MODE_OUTPUT_FORMAT_B;
-
-			ret = mt9m113_write_mcu_var(sensor, other_reg,
-						    mode_output_format_val);
-			if (ret < 0) {
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: failed to write other context: %d\n",
-					 ret);
-				/* Non-fatal, continue */
-			}
-		}
-	}
-
-	/*
-	 * Issue REFRESH_MODE then REFRESH to apply the output format change.
-	 * Per datasheet: "refresh and refresh mode commands always be run
-	 * together, and refresh mode should be issued before the refresh command."
-	 */
-	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-				    MT9M113_SEQ_CMD_REFRESH_MODE);
-	if (ret < 0) {
-		dev_err(&sensor->client->dev,
-			"MT9M113: REFRESH_MODE after MODE_OUTPUT_FORMAT failed: %d\n",
-			ret);
-		return ret;
-	}
-
-	/* Wait for REFRESH_MODE to complete (SEQ_CMD returns to 0) */
-	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-	if (ret < 0) {
-		dev_warn(&sensor->client->dev,
-			 "MT9M113: REFRESH_MODE timeout (continuing)\n");
-	}
-
-	dev_info(&sensor->client->dev,
-		 "MT9M113: REFRESH_MODE complete after MODE_OUTPUT_FORMAT\n");
-
-	/* Now issue REFRESH (must follow REFRESH_MODE per datasheet) */
-	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-				    MT9M113_SEQ_CMD_REFRESH);
-	if (ret < 0) {
-		dev_err(&sensor->client->dev,
-			"MT9M113: REFRESH after MODE_OUTPUT_FORMAT failed: %d\n",
-			ret);
-		return ret;
-	}
-
-	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-	if (ret < 0) {
-		dev_warn(&sensor->client->dev,
-			 "MT9M113: REFRESH timeout (continuing)\n");
-	}
-
-	dev_info(&sensor->client->dev,
-		 "MT9M113: REFRESH complete after MODE_OUTPUT_FORMAT\n");
-
-	return 0;
-}
-
-/* -----------------------------------------------------------------------------
- * MT9M113 Initialization Table
- *
- * Ported from webOS mt9m113_reg.c. This table configures:
- * - PLL and clock settings for 24MHz input, MIPI output
- * - Resolution: Context A = 640x480 (preview), Context B = 1280x1024 (capture)
- * - Auto-exposure, auto-white-balance, flicker detection
- * - Lens shading correction, gamma curves, color correction matrices
- *
- * Register types:
- * - Direct registers (0x0xxx, 0x3xxx): written directly via CCI
- * - MCU variables (0x2xxx, 0xAxxx, etc.): written via XDMA (0x098C/0x0990)
- *
- * The webOS format is {reg, mask, value, word_len, delay}. For MCU variables,
- * pairs of 0x098C (address) and 0x0990 (data) are used.
- */
-
-struct mt9m113_reg_entry {
-	u16 reg;
-	u16 value;
-	u16 delay_ms;
-};
-
-/*
- * MT9M113 initialization sequence from webOS kernel.
- * Each entry is either:
- * - A direct register write (reg < 0x8000)
- * - An MCU variable write encoded as reg=0x098C (address) followed by
- *   reg=0x0990 (data), which is handled specially.
- *
- * NOTE: MCU boot and PLL configuration are handled by mt9m114_power_on(),
- * so this table starts AFTER PLL is configured and stable.
- */
-static const struct mt9m113_reg_entry mt9m113_init_table[] = {
-	/* OFIFO control - first entry after PLL is configured */
-	{ 0x321C, 0x0003, 0 },		/* OFIFO_CONTROL_STATUS */
-
-	/* Context A output (640x480 preview) - via MCU variables */
-	{ 0x098C, 0x2703, 0 },		/* MCU_ADDRESS = MODE_OUTPUT_WIDTH_A */
-	{ 0x0990, 0x0280, 0 },		/* MCU_DATA = 640 */
-	{ 0x098C, 0x2705, 0 },		/* MCU_ADDRESS = MODE_OUTPUT_HEIGHT_A */
-	{ 0x0990, 0x01E0, 0 },		/* MCU_DATA = 480 */
-
-	/* Context B output (1280x1024 capture) */
-	{ 0x098C, 0x2707, 0 },		/* MCU_ADDRESS = MODE_OUTPUT_WIDTH_B */
-	{ 0x0990, 0x0500, 0 },		/* MCU_DATA = 1280 */
-	{ 0x098C, 0x2709, 0 },		/* MCU_ADDRESS = MODE_OUTPUT_HEIGHT_B */
-	{ 0x0990, 0x0400, 0 },		/* MCU_DATA = 1024 */
-
-	/* Context A sensor configuration */
-	{ 0x098C, 0x270D, 0 },		/* MODE_SENSOR_ROW_START_A */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x270F, 0 },		/* MODE_SENSOR_COL_START_A */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x2711, 0 },		/* MODE_SENSOR_ROW_END_A */
-	{ 0x0990, 0x03CD, 0 },		/* 973 */
-	{ 0x098C, 0x2713, 0 },		/* MODE_SENSOR_COL_END_A */
-	{ 0x0990, 0x050D, 0 },		/* 1293 */
-	{ 0x098C, 0x2715, 0 },		/* MODE_SENSOR_ROW_SPEED_A */
-	{ 0x0990, 0x2111, 0 },
-	{ 0x098C, 0x2717, 0 },		/* MODE_SENSOR_READ_MODE_A */
-	{ 0x0990, 0x046C, 0 },
-	{ 0x098C, 0x2719, 0 },		/* MODE_SENSOR_FINE_CORRECTION_A */
-	{ 0x0990, 0x00AC, 0 },
-	{ 0x098C, 0x271B, 0 },		/* MODE_SENSOR_FINE_IT_MIN_A */
-	{ 0x0990, 0x01F1, 0 },
-	{ 0x098C, 0x271D, 0 },		/* MODE_SENSOR_FINE_IT_MAX_MARGIN_A */
-	{ 0x0990, 0x013F, 0 },
-	{ 0x098C, 0x271F, 0 },		/* MODE_SENSOR_FRAME_LENGTH_A */
-	{ 0x0990, 0x032E, 0 },		/* 814 */
-	{ 0x098C, 0x2721, 0 },		/* MODE_SENSOR_LINE_LENGTH_PCK_A */
-	{ 0x0990, 0x04CC, 0 },		/* 1228 */
-
-	/* Context B sensor configuration */
-	{ 0x098C, 0x2723, 0 },		/* MODE_SENSOR_ROW_START_B */
-	{ 0x0990, 0x0004, 0 },
-	{ 0x098C, 0x2725, 0 },		/* MODE_SENSOR_COL_START_B */
-	{ 0x0990, 0x0004, 0 },
-	{ 0x098C, 0x2727, 0 },		/* MODE_SENSOR_ROW_END_B */
-	{ 0x0990, 0x040B, 0 },
-	{ 0x098C, 0x2729, 0 },		/* MODE_SENSOR_COL_END_B */
-	{ 0x0990, 0x050B, 0 },
-	{ 0x098C, 0x272B, 0 },		/* MODE_SENSOR_ROW_SPEED_B */
-	{ 0x0990, 0x2111, 0 },
-	{ 0x098C, 0x272D, 0 },		/* MODE_SENSOR_READ_MODE_B */
-	{ 0x0990, 0x0024, 0 },
-	{ 0x098C, 0x272F, 0 },		/* MODE_SENSOR_FINE_CORRECTION_B */
-	{ 0x0990, 0x004C, 0 },
-	{ 0x098C, 0x2731, 0 },		/* MODE_SENSOR_FINE_IT_MIN_B */
-	{ 0x0990, 0x00F9, 0 },
-	{ 0x098C, 0x2733, 0 },		/* MODE_SENSOR_FINE_IT_MAX_MARGIN_B */
-	{ 0x0990, 0x00A7, 0 },
-	{ 0x098C, 0x2735, 0 },		/* MODE_SENSOR_FRAME_LENGTH_B */
-	{ 0x0990, 0x0559, 0 },
-	{ 0x098C, 0x2737, 0 },		/* MODE_SENSOR_LINE_LENGTH_PCK_B */
-	{ 0x0990, 0x0722, 0 },
-
-	/* Crop configuration - Context A */
-	{ 0x098C, 0x2739, 0 },		/* MODE_CROP_X0_A */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x273B, 0 },		/* MODE_CROP_X1_A */
-	{ 0x0990, 0x027F, 0 },
-	{ 0x098C, 0x273D, 0 },		/* MODE_CROP_Y0_A */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x273F, 0 },		/* MODE_CROP_Y1_A */
-	{ 0x0990, 0x01DF, 0 },
-
-	/* Crop configuration - Context B */
-	{ 0x098C, 0x2747, 0 },		/* MODE_CROP_X0_B */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x2749, 0 },		/* MODE_CROP_X1_B */
-	{ 0x0990, 0x04FF, 0 },
-	{ 0x098C, 0x274B, 0 },		/* MODE_CROP_Y0_B */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0x274D, 0 },		/* MODE_CROP_Y1_B */
-	{ 0x0990, 0x03FF, 0 },
-
-	/* Flicker detection */
-	{ 0x098C, 0x222D, 0 },		/* AE_R9_STEP */
-	{ 0x0990, 0x00CC, 0 },
-	{ 0x098C, 0xA404, 0 },		/* FD_MODE */
-	{ 0x0990, 0x0010, 0 },
-	{ 0x098C, 0xA408, 0 },		/* FD_SEARCH_F1_50 */
-	{ 0x0990, 0x0032, 0 },
-	{ 0x098C, 0xA409, 0 },		/* FD_SEARCH_F2_50 */
-	{ 0x0990, 0x0034, 0 },
-	{ 0x098C, 0xA40A, 0 },		/* FD_SEARCH_F1_60 */
-	{ 0x0990, 0x003C, 0 },
-	{ 0x098C, 0xA40B, 0 },		/* FD_SEARCH_F2_60 */
-	{ 0x0990, 0x003E, 0 },
-	{ 0x098C, 0x2411, 0 },		/* FD_R9_STEP_F60_A */
-	{ 0x0990, 0x00CC, 0 },
-	{ 0x098C, 0x2413, 0 },		/* FD_R9_STEP_F50_A */
-	{ 0x0990, 0x00F4, 0 },
-	{ 0x098C, 0x2415, 0 },		/* FD_R9_STEP_F60_B */
-	{ 0x0990, 0x0089, 0 },
-	{ 0x098C, 0x2417, 0 },		/* FD_R9_STEP_F50_B */
-	{ 0x0990, 0x00A4, 0 },
-	{ 0x098C, 0xA40D, 0 },		/* FD_STAT_MIN */
-	{ 0x0990, 0x0002, 0 },
-	{ 0x098C, 0xA40E, 0 },		/* FD_STAT_MAX */
-	{ 0x0990, 0x0003, 0 },
-	{ 0x098C, 0xA410, 0 },		/* FD_MIN_AMPLITUDE */
-	{ 0x0990, 0x000A, 0 },
-
-	/* Sensor core reserved registers */
-	{ 0x3044, 0x0504, 0 },
-	{ 0x3086, 0x24F7, 0 },
-	{ 0x3088, 0xF059, 0 },
-	{ 0x3090, 0x0716, 0 },
-	{ 0x3092, 0xAB1F, 0 },
-	{ 0x30D4, 0x9020, 0 },
-	{ 0x30E2, 0x6645, 0 },
-	{ 0x30E4, 0x7A66, 0 },
-	{ 0x30E6, 0x6652, 0 },
-	{ 0x30E8, 0x7766, 0 },
-	{ 0x30EA, 0x2E03, 0 },
-	{ 0x30EC, 0x452E, 0 },
-	{ 0x30EE, 0x2E17, 0 },
-	{ 0x30F0, 0x452E, 0 },
-	{ 0x30F6, 0x0501, 0 },
-	{ 0x30F8, 0x0501, 0 },
-	{ 0x30FA, 0x0401, 0 },
-	{ 0x30FC, 0x0401, 0 },
-	{ 0x30FE, 0x5145, 0 },
-	{ 0x3100, 0x4F45, 0 },
-	{ 0x3102, 0x652E, 0 },
-	{ 0x3104, 0x7552, 0 },
-	{ 0x3106, 0x2D05, 0 },
-	{ 0x3108, 0x4405, 0 },
-	{ 0x311A, 0x5045, 0 },
-	{ 0x311E, 0x0601, 0 },
-	{ 0x3122, 0x0601, 0 },
-	{ 0x316C, 0x8406, 0 },
-
-	/* Noise reduction */
-	{ 0x098C, 0xAB2D, 0 },		/* HG_NR_START_G */
-	{ 0x0990, 0x002A, 0 },
-	{ 0x098C, 0xAB31, 0 },		/* HG_NR_STOP_G */
-	{ 0x0990, 0x002E, 0 },
-
-	/* Low-light enhancement */
-	{ 0x098C, 0x2B28, 0 },		/* HG_LL_BRIGHTNESSSTART */
-	{ 0x0990, 0x1F40, 0 },
-	{ 0x098C, 0x2B2A, 0 },		/* HG_LL_BRIGHTNESSSTOP */
-	{ 0x0990, 0x3A98, 0 },
-	{ 0x098C, 0x2B38, 0 },		/* HG_GAMMASTARTMORPH */
-	{ 0x0990, 0x1F40, 0 },
-	{ 0x098C, 0x2B3A, 0 },		/* HG_GAMMASTOPMORPH */
-	{ 0x0990, 0x3A98, 0 },
-
-	/* AE settings */
-	{ 0x098C, 0x2257, 0 },		/* RESERVED_AE_57 */
-	{ 0x0990, 0x2710, 0 },
-	{ 0x098C, 0x2250, 0 },		/* RESERVED_AE_50 */
-	{ 0x0990, 0x1B58, 0 },
-	{ 0x098C, 0x2252, 0 },		/* RESERVED_AE_52 */
-	{ 0x0990, 0x32C8, 0 },
-	{ 0x098C, 0xA24B, 0 },		/* AE_TARGETMAX */
-	{ 0x0990, 0x0082, 0 },
-
-	/* Aperture */
-	{ 0x326C, 0x0C00, 0 },		/* APERTURE_PARAMETERS */
-
-	/* More Context A settings */
-	{ 0x098C, 0x2717, 0 },		/* MODE_SENSOR_READ_MODE_A */
-	{ 0x0990, 0x046C, 0 },
-	{ 0x098C, 0x2719, 0 },		/* MODE_SENSOR_FINE_CORRECTION_A */
-	{ 0x0990, 0x00AC, 0 },
-	{ 0x098C, 0x271B, 0 },		/* MODE_SENSOR_FINE_IT_MIN_A */
-	{ 0x0990, 0x01F1, 0 },
-	{ 0x098C, 0x271D, 0 },		/* MODE_SENSOR_FINE_IT_MAX_MARGIN_A */
-	{ 0x0990, 0x013F, 0 },
-	{ 0x098C, 0x271F, 0 },		/* MODE_SENSOR_FRAME_LENGTH_A */
-	{ 0x0990, 0x032E, 0 },
-	{ 0x098C, 0x2721, 0 },		/* MODE_SENSOR_LINE_LENGTH_PCK_A */
-	{ 0x0990, 0x04CC, 0 },
-	{ 0x098C, 0x275F, 0 },		/* RESERVED_MODE_5F */
-	{ 0x0990, 0x0596, 0 },
-	{ 0x098C, 0x2761, 0 },		/* RESERVED_MODE_61 */
-	{ 0x0990, 0x0094, 0 },
-
-	/* Lens shading correction - P0Q0 through P4Q4 for GR, RD, BL, GB */
-	{ 0x364E, 0x07B0, 0 },		/* P_GR_P0Q0 */
-	{ 0x3650, 0x7E0E, 0 },
-	{ 0x3652, 0x3D31, 0 },
-	{ 0x3654, 0x80AE, 0 },
-	{ 0x3656, 0xE131, 0 },
-	{ 0x3658, 0x01B0, 0 },		/* P_RD_P0Q0 */
-	{ 0x365A, 0x878D, 0 },
-	{ 0x365C, 0x2671, 0 },
-	{ 0x365E, 0x7D2D, 0 },
-	{ 0x3660, 0xA5D1, 0 },
-	{ 0x3662, 0x03B0, 0 },		/* P_BL_P0Q0 */
-	{ 0x3664, 0x5A0E, 0 },
-	{ 0x3666, 0x0E71, 0 },
-	{ 0x3668, 0x99EE, 0 },
-	{ 0x366A, 0xA671, 0 },
-	{ 0x366C, 0x0170, 0 },		/* P_GB_P0Q0 */
-	{ 0x366E, 0xF44D, 0 },
-	{ 0x3670, 0x2971, 0 },
-	{ 0x3672, 0x2D4A, 0 },
-	{ 0x3674, 0xD671, 0 },
-
-	/* P1Q0-P1Q4 */
-	{ 0x3676, 0x674C, 0 },
-	{ 0x3678, 0x748D, 0 },
-	{ 0x367A, 0x3FEE, 0 },
-	{ 0x367C, 0x89AE, 0 },
-	{ 0x367E, 0xB410, 0 },
-	{ 0x3680, 0x168C, 0 },
-	{ 0x3682, 0xC56D, 0 },
-	{ 0x3684, 0x7CAC, 0 },
-	{ 0x3686, 0x038F, 0 },
-	{ 0x3688, 0xA86F, 0 },
-	{ 0x368A, 0xDB6B, 0 },
-	{ 0x368C, 0xA2AE, 0 },
-	{ 0x368E, 0xFA8D, 0 },
-	{ 0x3690, 0x5C8E, 0 },
-	{ 0x3692, 0x740C, 0 },
-	{ 0x3694, 0x9F4B, 0 },
-	{ 0x3696, 0x1C4D, 0 },
-	{ 0x3698, 0x978D, 0 },
-	{ 0x369A, 0x21EC, 0 },
-	{ 0x369C, 0xF5AD, 0 },
-
-	/* P2Q0-P2Q4 */
-	{ 0x369E, 0x7D10, 0 },
-	{ 0x36A0, 0x3E2E, 0 },
-	{ 0x36A2, 0x8953, 0 },
-	{ 0x36A4, 0xD910, 0 },
-	{ 0x36A6, 0x3033, 0 },
-	{ 0x36A8, 0x06D1, 0 },
-	{ 0x36AA, 0xAD4E, 0 },
-	{ 0x36AC, 0xD2D2, 0 },
-	{ 0x36AE, 0x5CCE, 0 },
-	{ 0x36B0, 0x3B93, 0 },
-	{ 0x36B2, 0x50D0, 0 },
-	{ 0x36B4, 0x79AD, 0 },
-	{ 0x36B6, 0xDFF2, 0 },
-	{ 0x36B8, 0x88AF, 0 },
-	{ 0x36BA, 0x2453, 0 },
-	{ 0x36BC, 0x0051, 0 },
-	{ 0x36BE, 0x81CF, 0 },
-	{ 0x36C0, 0x8313, 0 },
-	{ 0x36C2, 0x2250, 0 },
-	{ 0x36C4, 0x4A53, 0 },
-
-	/* P3Q0-P3Q4 */
-	{ 0x36C6, 0x0C8D, 0 },
-	{ 0x36C8, 0x362B, 0 },
-	{ 0x36CA, 0xAD51, 0 },
-	{ 0x36CC, 0xA470, 0 },
-	{ 0x36CE, 0x3DD2, 0 },
-	{ 0x36D0, 0x174C, 0 },
-	{ 0x36D2, 0x152F, 0 },
-	{ 0x36D4, 0x82F1, 0 },
-	{ 0x36D6, 0xDED0, 0 },
-	{ 0x36D8, 0x6F12, 0 },
-	{ 0x36DA, 0xD36C, 0 },
-	{ 0x36DC, 0x51AE, 0 },
-	{ 0x36DE, 0xD0AE, 0 },
-	{ 0x36E0, 0x274E, 0 },
-	{ 0x36E2, 0x25F2, 0 },
-	{ 0x36E4, 0xDCCA, 0 },
-	{ 0x36E6, 0x438E, 0 },
-	{ 0x36E8, 0xD64E, 0 },
-	{ 0x36EA, 0x8A71, 0 },
-	{ 0x36EC, 0x1492, 0 },
-
-	/* P4Q0-P4Q4 */
-	{ 0x36EE, 0xD5B1, 0 },
-	{ 0x36F0, 0xEBF0, 0 },
-	{ 0x36F2, 0x53F3, 0 },
-	{ 0x36F4, 0x3492, 0 },
-	{ 0x36F6, 0x9AF4, 0 },
-	{ 0x36F8, 0x8BF1, 0 },
-	{ 0x36FA, 0x204F, 0 },
-	{ 0x36FC, 0x3A93, 0 },
-	{ 0x36FE, 0xB551, 0 },
-	{ 0x3700, 0xE214, 0 },
-	{ 0x3702, 0xF2B0, 0 },
-	{ 0x3704, 0x8C30, 0 },
-	{ 0x3706, 0x3053, 0 },
-	{ 0x3708, 0x64F0, 0 },
-	{ 0x370A, 0xFC73, 0 },
-	{ 0x370C, 0xD311, 0 },
-	{ 0x370E, 0x336F, 0 },
-	{ 0x3710, 0x5AF3, 0 },
-	{ 0x3712, 0x4EAF, 0 },
-	{ 0x3714, 0xDBD4, 0 },
-
-	/* Lens shading origin */
-	{ 0x3644, 0x02A0, 0 },		/* POLY_ORIGIN_C */
-	{ 0x3642, 0x01FC, 0 },		/* POLY_ORIGIN_R */
-	{ 0x3210, 0x01B8, 0 },		/* COLOR_PIPELINE_CONTROL */
-
-	/* Color correction matrix - Low light */
-	{ 0x098C, 0x2306, 0 },		/* AWB_CCM_L_0 */
-	{ 0x0990, 0x0233, 0 },
-	{ 0x098C, 0x2308, 0 },
-	{ 0x0990, 0xFF0B, 0 },
-	{ 0x098C, 0x230A, 0 },
-	{ 0x0990, 0x0024, 0 },
-	{ 0x098C, 0x230C, 0 },
-	{ 0x0990, 0xFFC8, 0 },
-	{ 0x098C, 0x230E, 0 },
-	{ 0x0990, 0x01DE, 0 },
-	{ 0x098C, 0x2310, 0 },
-	{ 0x0990, 0xFFBD, 0 },
-	{ 0x098C, 0x2312, 0 },
-	{ 0x0990, 0x0019, 0 },
-	{ 0x098C, 0x2314, 0 },
-	{ 0x0990, 0xFF2B, 0 },
-	{ 0x098C, 0x2316, 0 },
-	{ 0x0990, 0x01E8, 0 },
-	{ 0x098C, 0x2318, 0 },
-	{ 0x0990, 0x0024, 0 },
-	{ 0x098C, 0x231A, 0 },
-	{ 0x0990, 0x0030, 0 },
-
-	/* Color correction matrix - RL (delta) */
-	{ 0x098C, 0x231C, 0 },		/* AWB_CCM_RL_0 */
-	{ 0x0990, 0xFF7D, 0 },
-	{ 0x098C, 0x231E, 0 },
-	{ 0x0990, 0x002C, 0 },
-	{ 0x098C, 0x2320, 0 },
-	{ 0x0990, 0x002C, 0 },
-	{ 0x098C, 0x2322, 0 },
-	{ 0x0990, 0x0006, 0 },
-	{ 0x098C, 0x2324, 0 },
-	{ 0x0990, 0x00A3, 0 },
-	{ 0x098C, 0x2326, 0 },
-	{ 0x0990, 0xFF75, 0 },
-	{ 0x098C, 0x2328, 0 },
-	{ 0x0990, 0xFFF4, 0 },
-	{ 0x098C, 0x232A, 0 },
-	{ 0x0990, 0x00AC, 0 },
-	{ 0x098C, 0x232C, 0 },
-	{ 0x0990, 0xFF75, 0 },
-	{ 0x098C, 0x232E, 0 },
-	{ 0x0990, 0x0010, 0 },
-	{ 0x098C, 0x2330, 0 },
-	{ 0x0990, 0xFFF4, 0 },
-
-	/* AWB settings */
-	{ 0x098C, 0xA348, 0 },		/* AWB_GAIN_BUFFER_SPEED */
-	{ 0x0990, 0x0008, 0 },
-	{ 0x098C, 0xA349, 0 },		/* AWB_JUMP_DIVISOR */
-	{ 0x0990, 0x0002, 0 },
-	{ 0x098C, 0xA34A, 0 },		/* AWB_GAIN_MIN */
-	{ 0x0990, 0x0059, 0 },
-	{ 0x098C, 0xA34B, 0 },		/* AWB_GAIN_MAX */
-	{ 0x0990, 0x00A6, 0 },
-	{ 0x098C, 0xA351, 0 },		/* AWB_CCM_POSITION_MIN */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0xA352, 0 },		/* AWB_CCM_POSITION_MAX */
-	{ 0x0990, 0x007F, 0 },
-	{ 0x098C, 0xA35D, 0 },		/* AWB_STEADY_BGAIN_OUT_MIN */
-	{ 0x0990, 0x0078, 0 },
-	{ 0x098C, 0xA35E, 0 },		/* AWB_STEADY_BGAIN_OUT_MAX */
-	{ 0x0990, 0x0086, 0 },
-	{ 0x098C, 0xA35F, 0 },		/* AWB_STEADY_BGAIN_IN_MIN */
-	{ 0x0990, 0x007E, 0 },
-	{ 0x098C, 0xA360, 0 },		/* AWB_STEADY_BGAIN_IN_MAX */
-	{ 0x0990, 0x0082, 0 },
-
-	/* Cold color adjustment */
-	{ 0x098C, 0xA369, 0 },		/* AWB_KR_R */
-	{ 0x0990, 0x0097, 0 },
-	{ 0x098C, 0xA36A, 0 },		/* AWB_KG_R */
-	{ 0x0990, 0x008C, 0 },
-	{ 0x098C, 0xA36B, 0 },		/* AWB_KB_R */
-	{ 0x0990, 0x0080, 0 },
-
-	/* AWB window */
-	{ 0x098C, 0xA302, 0 },		/* AWB_WINDOW_POS */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0xA303, 0 },		/* AWB_WINDOW_SIZE */
-	{ 0x0990, 0x00FF, 0 },
-
-	/* AE preview settings */
-	{ 0x098C, 0xA11D, 0 },		/* SEQ_PREVIEW_1_AE */
-	{ 0x0990, 0x0002, 0 },
-	{ 0x098C, 0x271F, 0 },		/* MODE_SENSOR_FRAME_LENGTH_A */
-	{ 0x0990, 0x032E, 0 },
-	{ 0x098C, 0x2721, 0 },		/* MODE_SENSOR_LINE_LENGTH_PCK_A */
-	{ 0x0990, 0x04CC, 0 },
-
-	/* AE gain settings */
-	{ 0x098C, 0xA216, 0 },		/* AE_MAXGAIN23 */
-	{ 0x0990, 0x0060, 0 },
-	{ 0x098C, 0xA215, 0 },		/* AE_INDEX_TH23 */
-	{ 0x0990, 0x000A, 0 },
-	{ 0x098C, 0xA20C, 0 },		/* AE_MAX_INDEX */
-	{ 0x0990, 0x0028, 0 },
-	{ 0x098C, 0xA24F, 0 },		/* AE_BASETARGET */
-	{ 0x0990, 0x0042, 0 },
-	{ 0x098C, 0xA20E, 0 },		/* AE_MAX_VIRTGAIN */
-	{ 0x0990, 0x0060, 0 },
-
-	/* AE window */
-	{ 0x098C, 0xA202, 0 },		/* AE_WINDOW_POS */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0xA203, 0 },		/* AE_WINDOW_SIZE */
-	{ 0x0990, 0x00FF, 0 },
-	{ 0x098C, 0xA207, 0 },		/* AE_GATE */
-	{ 0x0990, 0x0004, 0 },
-
-	/* Gamma morph control */
-	{ 0x098C, 0xAB37, 0 },		/* HG_GAMMA_MORPH_CTRL */
-	{ 0x0990, 0x0003, 0 },
-	{ 0x098C, 0x2B38, 0 },		/* HG_GAMMASTARTMORPH */
-	{ 0x0990, 0x3A98, 0 },
-	{ 0x098C, 0x2B3A, 0 },		/* HG_GAMMASTOPMORPH */
-	{ 0x0990, 0x5000, 0 },
-
-	/* Saturation */
-	{ 0x098C, 0xAB20, 0 },		/* HG_LL_SAT1 */
-	{ 0x0990, 0x0023, 0 },
-	{ 0x098C, 0xAB24, 0 },		/* HG_LL_SAT2 */
-	{ 0x0990, 0x0010, 0 },
-
-	/* AE speed */
-	{ 0x098C, 0xA109, 0 },		/* SEQ_AE_FASTBUFF */
-	{ 0x0990, 0x0020, 0 },
-	{ 0x098C, 0xA10A, 0 },		/* SEQ_AE_FASTSTEP */
-	{ 0x0990, 0x0002, 0 },
-
-	/* Gamma table A */
-	{ 0x098C, 0xAB3C, 0 },		/* HG_GAMMA_TABLE_A_0 */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0xAB3D, 0 },
-	{ 0x0990, 0x0006, 0 },
-	{ 0x098C, 0xAB3E, 0 },
-	{ 0x0990, 0x0014, 0 },
-	{ 0x098C, 0xAB3F, 0 },
-	{ 0x0990, 0x0038, 0 },
-	{ 0x098C, 0xAB40, 0 },
-	{ 0x0990, 0x005F, 0 },
-	{ 0x098C, 0xAB41, 0 },
-	{ 0x0990, 0x0079, 0 },
-	{ 0x098C, 0xAB42, 0 },
-	{ 0x0990, 0x008D, 0 },
-	{ 0x098C, 0xAB43, 0 },
-	{ 0x0990, 0x009E, 0 },
-	{ 0x098C, 0xAB44, 0 },
-	{ 0x0990, 0x00AC, 0 },
-	{ 0x098C, 0xAB45, 0 },
-	{ 0x0990, 0x00B8, 0 },
-	{ 0x098C, 0xAB46, 0 },
-	{ 0x0990, 0x00C3, 0 },
-	{ 0x098C, 0xAB47, 0 },
-	{ 0x0990, 0x00CD, 0 },
-	{ 0x098C, 0xAB48, 0 },
-	{ 0x0990, 0x00D5, 0 },
-	{ 0x098C, 0xAB49, 0 },
-	{ 0x0990, 0x00DE, 0 },
-	{ 0x098C, 0xAB4A, 0 },
-	{ 0x0990, 0x00E5, 0 },
-	{ 0x098C, 0xAB4B, 0 },
-	{ 0x0990, 0x00EC, 0 },
-	{ 0x098C, 0xAB4C, 0 },
-	{ 0x0990, 0x00F3, 0 },
-	{ 0x098C, 0xAB4D, 0 },
-	{ 0x0990, 0x00F9, 0 },
-	{ 0x098C, 0xAB4E, 0 },
-	{ 0x0990, 0x00FF, 0 },
-
-	/* Noise reduction RGB */
-	{ 0x098C, 0xAB2C, 0 },		/* HG_NR_START_R */
-	{ 0x0990, 0x0010, 0 },
-	{ 0x098C, 0xAB2D, 0 },		/* HG_NR_START_G */
-	{ 0x0990, 0x002A, 0 },
-	{ 0x098C, 0xAB2E, 0 },		/* HG_NR_START_B */
-	{ 0x0990, 0x0010, 0 },
-	{ 0x098C, 0xAB2F, 0 },		/* HG_NR_START_OL */
-	{ 0x0990, 0x0010, 0 },
-
-	/* Gamma table B */
-	{ 0x098C, 0xAB4F, 0 },		/* HG_GAMMA_TABLE_B_0 */
-	{ 0x0990, 0x0000, 0 },
-	{ 0x098C, 0xAB50, 0 },
-	{ 0x0990, 0x0004, 0 },
-	{ 0x098C, 0xAB51, 0 },
-	{ 0x0990, 0x000D, 0 },
-	{ 0x098C, 0xAB52, 0 },
-	{ 0x0990, 0x0028, 0 },
-	{ 0x098C, 0xAB53, 0 },
-	{ 0x0990, 0x0053, 0 },
-	{ 0x098C, 0xAB54, 0 },
-	{ 0x0990, 0x0075, 0 },
-	{ 0x098C, 0xAB55, 0 },
-	{ 0x0990, 0x0092, 0 },
-	{ 0x098C, 0xAB56, 0 },
-	{ 0x0990, 0x00A7, 0 },
-	{ 0x098C, 0xAB57, 0 },
-	{ 0x0990, 0x00B7, 0 },
-	{ 0x098C, 0xAB58, 0 },
-	{ 0x0990, 0x00C4, 0 },
-	{ 0x098C, 0xAB59, 0 },
-	{ 0x0990, 0x00CF, 0 },
-	{ 0x098C, 0xAB5A, 0 },
-	{ 0x0990, 0x00D8, 0 },
-	{ 0x098C, 0xAB5B, 0 },
-	{ 0x0990, 0x00DF, 0 },
-	{ 0x098C, 0xAB5C, 0 },
-	{ 0x0990, 0x00E6, 0 },
-	{ 0x098C, 0xAB5D, 0 },
-	{ 0x0990, 0x00EC, 0 },
-	{ 0x098C, 0xAB5E, 0 },
-	{ 0x0990, 0x00F2, 0 },
-	{ 0x098C, 0xAB5F, 0 },
-	{ 0x0990, 0x00F6, 0 },
-	{ 0x098C, 0xAB60, 0 },
-	{ 0x0990, 0x00FB, 0 },
-	{ 0x098C, 0xAB61, 0 },
-	{ 0x0990, 0x00FF, 0 },
-
-	/* Read mode - no mirror/flip */
-	{ 0x098C, 0x2717, 0 },		/* MODE_SENSOR_READ_MODE_A */
-	{ 0x0990, 0x046C, 0 },
-	{ 0x098C, 0x272D, 0 },		/* MODE_SENSOR_READ_MODE_B */
-	{ 0x0990, 0x0024, 0 },
-
-	/* Reset command before sequencer */
-	{ 0x001A, 0x021C, 0 },		/* RESET_AND_MISC_CONTROL */
-
-	/*
-	 * NOTE: MT9M114 has MIPI timing registers at 0xC988-0xC992, but
-	 * MT9M113 does NOT have these registers. MIPI timing on MT9M113
-	 * is fixed in hardware based on PLL configuration.
-	 */
-
-	/* Issue refresh command - MCU will be polled for completion */
-	{ 0x098C, 0xA103, 0 },		/* SEQ_CMD */
-	{ 0x0990, 0x0006, 0 },		/* REFRESH_MODE */
-};
-
-/*
- * Apply the MT9M113 initialization table.
- * Returns 0 on success, negative error code on failure.
- */
-static int mt9m113_sensor_init(struct mt9m114 *sensor)
-{
-	struct device *dev = &sensor->client->dev;
-	int ret = 0;
-	unsigned int i;
-
-	dev_info(dev, "MT9M113: applying initialization table (%zu entries)\n",
-		 ARRAY_SIZE(mt9m113_init_table));
-
-	for (i = 0; i < ARRAY_SIZE(mt9m113_init_table); i++) {
-		const struct mt9m113_reg_entry *entry = &mt9m113_init_table[i];
-
-		ret = cci_write(sensor->regmap, CCI_REG16(entry->reg),
-				entry->value, NULL);
-		if (ret < 0) {
-			dev_err(dev, "MT9M113: failed to write reg 0x%04x: %d\n",
-				entry->reg, ret);
-			return ret;
-		}
-
-		if (entry->delay_ms > 0)
-			msleep(entry->delay_ms);
-	}
-
-	/*
-	 * Wait for MCU to complete refresh (SEQ_CMD returns to 0).
-	 * The last entry issued SEQ_CMD=0x0006 (REFRESH_MODE).
-	 */
-	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 1000);
-	if (ret < 0) {
-		dev_err(dev, "MT9M113: MCU refresh timeout after init table\n");
-		return ret;
-	}
-	dev_info(dev, "MT9M113: MCU refresh completed\n");
-
-	/*
-	 * Issue sequencer refresh (SEQ_CMD=0x0005) per webOS driver.
-	 * This fully initializes the sequencer after loading settings.
-	 */
-	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-				    MT9M113_SEQ_CMD_REFRESH);
-	if (ret < 0) {
-		dev_err(dev, "MT9M113: failed to issue SEQ_CMD refresh: %d\n", ret);
-		return ret;
-	}
-
-	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 1000);
-	if (ret < 0) {
-		dev_err(dev, "MT9M113: MCU SEQ refresh timeout\n");
-		return ret;
-	}
-	dev_info(dev, "MT9M113: sequencer refresh completed\n");
-
-	/*
-	 * IMPORTANT: We do NOT enable MIPI output here!
-	 *
-	 * Previously, OUTPUT_CONTROL was written here to enable MIPI,
-	 * but this caused the sensor to start outputting MIPI data
-	 * before the CSIPHY was configured, corrupting the PHY state
-	 * machine and causing ECC/SOT errors.
-	 *
-	 * MIPI output is now enabled in s_stream() AFTER the CSIPHY
-	 * has been configured by the V4L2 pipeline.
-	 *
-	 * Configure Frame Start/End short packets (CUSTOM_SHORT_PKT).
-	 * Per datasheet, bit 7 (frame_cnt_en) must be set to insert frame
-	 * counter in FS/FE word count field. This just configures WHAT
-	 * packets to send, not WHEN to send them.
-	 *
-	 * NOTE: webOS didn't configure this register! Use mt9m113_skip_short_pkt
-	 * module parameter to skip this write and match webOS exactly.
-	 */
-	if (mt9m113_skip_short_pkt) {
-		dev_info(dev, "MT9M113: SKIPPING CUSTOM_SHORT_PKT write (matching webOS)\n");
-	} else {
-		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-		if (ret < 0) {
-			dev_err(dev, "MT9M113: CUSTOM_SHORT_PKT write failed: %d\n", ret);
-			return ret;
-		}
-	}
-	{
-		u64 readback;
-		cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-		dev_info(dev, "MT9M113: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE, 0=webOS default)\n",
-			 readback);
-	}
-
-	/*
-	 * CRITICAL: Explicitly disable MIPI output after initialization.
-	 *
-	 * The sensor's MCU/default state after SEQ_CMD=REFRESH may have
-	 * MIPI output enabled (OUTPUT_CONTROL reads back 0x7A2C).
-	 * We must disable it here so that the CSIPHY can be configured
-	 * before the sensor outputs any MIPI data.
-	 *
-	 * Write 0x0000 to OUTPUT_CONTROL to put MIPI transmitter in reset.
-	 * MIPI will be properly enabled in s_stream() after CSIPHY is ready.
-	 */
-	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
-	if (ret < 0) {
-		dev_err(dev, "MT9M113: Failed to disable MIPI output: %d\n", ret);
-		return ret;
-	}
-	{
-		u64 readback;
-		cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%llx (MIPI disabled)\n", readback);
-	}
-
-	dev_info(dev, "MT9M113: initialization complete (MIPI disabled, waiting for s_stream)\n");
-	return 0;
-}
-
-/* -----------------------------------------------------------------------------
  * Hardware Configuration
  */
 
@@ -1942,21 +738,6 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 	u32 value;
 	int ret;
 
-	/*
-	 * MT9M113 uses a completely different initialization sequence.
-	 * It requires the full webOS register table applied via MCU indirect
-	 * access (0x098C/0x0990) rather than direct writes to 0xC000+ addresses.
-	 * Use mt9m113_sensor_init() which applies the complete 500+ entry table.
-	 */
-	if (sensor->model == MT9M113_MODEL) {
-		dev_info(&sensor->client->dev, "mt9m114_initialize: using MT9M113 initialization\n");
-		return mt9m113_sensor_init(sensor);
-	}
-
-	/* MT9M114 initialization path */
-	dev_info(&sensor->client->dev, "mt9m114_initialize: writing init table (%zu entries)\n",
-		 ARRAY_SIZE(mt9m114_init));
-
 	ret = cci_multi_reg_write(sensor->regmap, mt9m114_init,
 				  ARRAY_SIZE(mt9m114_init), NULL);
 	if (ret < 0) {
@@ -2007,7 +788,6 @@ static int mt9m114_initialize(struct mt9m114 *sensor)
 	if (ret < 0)
 		return ret;
 
-	dev_info(&sensor->client->dev, "mt9m114_initialize: issuing Change Config\n");
 	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
 	if (ret < 0)
 		return ret;
@@ -2170,18 +950,6 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 	if (ret)
 		return ret;
 
-	/*
-	 * MT9M113 uses indirect MCU variable access (0x098C/0x0990) instead
-	 * of direct writes to 0xC000+ addresses. Configure the output
-	 * resolution via MCU variables before starting streaming.
-	 */
-	if (sensor->model == MT9M113_MODEL) {
-		ret = mt9m113_configure_ifp(sensor, ifp_state);
-		if (ret)
-			goto error;
-		goto mt9m113_streaming;
-	}
-
 	ret = mt9m114_configure_ifp(sensor, ifp_state);
 	if (ret)
 		goto error;
@@ -2211,621 +979,6 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 		goto error;
 
 	sensor->streaming = true;
-	return 0;
-
-mt9m113_streaming:
-	/*
-	 * MT9M113 streaming sequence - MIPI output enabled HERE.
-	 *
-	 * CRITICAL: At this point, the CSIPHY has already been configured
-	 * by earlier entities in the pipeline (VFE -> CSID -> CSIPHY).
-	 * The sensor must NOT output MIPI data until NOW, otherwise the
-	 * CSIPHY state machine gets corrupted causing ECC/SOT errors.
-	 *
-	 * WebOS driver sequence (mt9m113_set_sensor_mode):
-	 * 1. msm_camio_csi_config() - configure CSIPHY FIRST
-	 * 2. mdelay(10) - wait for CSIPHY to stabilize
-	 * 3. OUTPUT_CONTROL (0x3400) = 0x7A08 - enable MIPI output
-	 * 4. RESET_REGISTER (0x301A) = 0x120C - streaming mode
-	 * 5. SEQ_CAP_MODE = 0x0030 - preview mode (Context A)
-	 * 6. SEQ_CMD = 0x0001 - start streaming
-	 *
-	 * We follow the same order here, with CSIPHY already configured
-	 * by the V4L2 pipeline before this s_stream callback is called.
-	 */
-	{
-		const struct v4l2_rect *compose;
-		u16 seq_cap_mode;
-		u16 output_width, output_height;
-		bool use_context_b;
-		u64 health_check;
-
-		/*
-		 * MCU Health Check: After extended idle time, the MT9M113's MCU
-		 * can become unresponsive despite the sensor staying powered.
-		 * Read MODE_OUTPUT_WIDTH_A to verify MCU is alive. If it returns
-		 * 0 (should be 640 after init), the MCU needs re-initialization.
-		 */
-		ret = mt9m113_read_mcu_var(sensor, 0x2703, &health_check);
-		if (ret < 0 || health_check == 0) {
-			dev_warn(&sensor->client->dev,
-				 "MT9M113: MCU unresponsive (width=%lld), re-initializing\n",
-				 health_check);
-			ret = mt9m113_sensor_init(sensor);
-			if (ret < 0) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: re-init failed: %d\n", ret);
-				goto error;
-			}
-			dev_info(&sensor->client->dev, "MT9M113: MCU re-initialized\n");
-		} else {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: MCU responsive (width=%lld)\n", health_check);
-		}
-
-		dev_info(&sensor->client->dev, "MT9M113: starting streaming (webOS sequence)\n");
-
-		/*
-		 * webOS streaming sequence from mt9m113_set_sensor_mode():
-		 *
-		 * 1. msm_camio_csi_config() - CSIPHY configured (done by V4L2 pipeline)
-		 * 2. mdelay(10) - wait for CSIPHY to stabilize
-		 * 3. OUTPUT_CONTROL = 0x7A08 (enable MIPI output)
-		 * 4. RESET_REGISTER = 0x120C (streaming mode)
-		 * 5. SEQ_CAP_MODE = 0x0030 (preview mode)
-		 * 6. mdelay(40)
-		 * 7. SEQ_CMD = 0x0001 (RUN)
-		 *
-		 * CRITICAL: MIPI must be enabled BEFORE SEQ_CMD. The sensor MCU
-		 * needs the MIPI interface active before it can properly start
-		 * generating frames. Enabling MIPI after SEQ_CMD causes the MCU
-		 * to buffer/discard initial frames, leading to corruption.
-		 *
-		 * NOTE: webOS does NOT reconfigure Context A or issue MCU REFRESH!
-		 * It uses the init table settings (Context A = 640x480).
-		 */
-
-		/*
-		 * Get the requested output resolution from the compose rectangle.
-		 * MT9M113 supports two contexts with different resolutions:
-		 *
-		 * Context A: 640x480 preview mode
-		 *   - MODE_SENSOR_READ_MODE_A = 0x046C (2x2 binning enabled)
-		 *   - Lower power, higher frame rate
-		 *
-		 * Context B: 1280x1024 capture mode
-		 *   - MODE_SENSOR_READ_MODE_B = 0x0024 (no binning)
-		 *   - Full resolution, lower frame rate
-		 *
-		 * Unlike earlier attempts to reconfigure Context A for 1280x1024,
-		 * we now properly switch to Context B when full resolution is
-		 * requested. Context B is already configured in the init table
-		 * with no binning and 1280x1024 output.
-		 */
-		compose = v4l2_subdev_state_get_compose(ifp_state, 0);
-		output_width = compose->width;
-		output_height = compose->height;
-
-		/* Determine which context to use based on resolution */
-		if (output_width > 640 || output_height > 480) {
-			use_context_b = true;
-			output_width = 1280;
-			output_height = 1024;
-			dev_info(&sensor->client->dev,
-				 "MT9M113: compose=%ux%u -> using Context B (1280x1024, no binning)\n",
-				 compose->width, compose->height);
-		} else {
-			use_context_b = false;
-			output_width = 640;
-			output_height = 480;
-			dev_info(&sensor->client->dev,
-				 "MT9M113: compose=%ux%u -> using Context A (640x480, binned)\n",
-				 compose->width, compose->height);
-		}
-
-		/*
-		 * For Context A (preview), refresh the output dimensions.
-		 * For Context B (capture), the init table already configures
-		 * 1280x1024 output, so we just need to switch contexts later.
-		 */
-		if (!use_context_b) {
-			/* Set Context A output width (MCU var 0x2703) */
-			ret = mt9m113_write_mcu_var(sensor, 0x2703, output_width);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: Context A width failed: %d\n", ret);
-				goto error;
-			}
-
-			/* Set Context A output height (MCU var 0x2705) */
-			ret = mt9m113_write_mcu_var(sensor, 0x2705, output_height);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: Context A height failed: %d\n", ret);
-				goto error;
-			}
-
-			/* Issue SEQ_CMD=REFRESH to apply context changes */
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						    MT9M113_SEQ_CMD_REFRESH);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: REFRESH failed: %d\n", ret);
-				goto error;
-			}
-
-			/* Wait for refresh to complete */
-			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-			if (ret) {
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: REFRESH timeout (continuing)\n");
-			}
-		}
-
-		/* Step 1: Wait 10ms for CSIPHY to stabilize (webOS: mdelay(10) after csi_config) */
-		msleep(10);
-
-		/* Step 2: Enable MIPI output with correct data type for format */
-		{
-			const struct v4l2_mbus_framefmt *format;
-			u16 output_ctrl_val;
-			bool is_bayer;
-
-			format = v4l2_subdev_state_get_format(ifp_state, 1);
-			is_bayer = (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
-				    format->code == MEDIA_BUS_FMT_SGRBG10_1X10);
-
-			/*
-			 * CRITICAL: Set MIPI data type based on output format!
-			 * - YUV422: data_type=0x1E -> OUTPUT_CONTROL=0x7A08
-			 * - RAW8:   data_type=0x2A -> OUTPUT_CONTROL=0xAA08
-			 * - RAW10:  data_type=0x2B -> OUTPUT_CONTROL=0xAC08
-			 * Without this, RDI mode fails because CSID expects the
-			 * correct data type but sensor sends wrong type.
-			 *
-			 * Fake YUV trick: If mt9m113_fake_yuv=1, use YUV data type
-			 * even for RAW Bayer to test VFE31 data type filtering.
-			 */
-			if (is_bayer && !mt9m113_fake_yuv) {
-				if (format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
-					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW10;
-				else
-					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
-			} else {
-				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
-			}
-
-			if (mt9m113_cont_mipi_clk)
-				output_ctrl_val |= 0x0004;
-
-			dev_info(&sensor->client->dev,
-				 "MT9M113: OUTPUT_CONTROL=0x%04x (%s%s, %s)\n",
-				 output_ctrl_val,
-				 (format->code == MEDIA_BUS_FMT_SGRBG10_1X10) ? "RAW10" :
-				 (format->code == MEDIA_BUS_FMT_SGRBG8_1X8) ? "RAW8" : "YUV",
-				 (is_bayer && mt9m113_fake_yuv) ? " FAKE_YUV dt=0x1E" :
-				 (format->code == MEDIA_BUS_FMT_SGRBG10_1X10) ? " dt=0x2B" :
-				 (format->code == MEDIA_BUS_FMT_SGRBG8_1X8) ? " dt=0x2A" : " dt=0x1E",
-				 mt9m113_cont_mipi_clk ? "cont_clk" : "LP");
-
-			ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-					output_ctrl_val, NULL);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: OUTPUT_CONTROL write failed: %d\n", ret);
-				goto error;
-			}
-
-			/*
-			 * Issue REFRESH_MODE then REFRESH after OUTPUT_CONTROL change.
-			 * Per datasheet: "refresh and refresh mode commands always be
-			 * run together, and refresh mode should be issued before the
-			 * refresh command."
-			 */
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						    MT9M113_SEQ_CMD_REFRESH_MODE);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: REFRESH_MODE after OUTPUT_CONTROL failed: %d\n", ret);
-				goto error;
-			}
-			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-			if (ret)
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: REFRESH_MODE timeout after OUTPUT_CONTROL\n");
-			else
-				dev_info(&sensor->client->dev,
-					 "MT9M113: REFRESH_MODE complete after OUTPUT_CONTROL\n");
-
-			/* Now issue REFRESH (must follow REFRESH_MODE per datasheet) */
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						    MT9M113_SEQ_CMD_REFRESH);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: REFRESH after OUTPUT_CONTROL failed: %d\n", ret);
-				goto error;
-			}
-			ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-			if (ret)
-				dev_warn(&sensor->client->dev,
-					 "MT9M113: REFRESH timeout after OUTPUT_CONTROL\n");
-			else
-				dev_info(&sensor->client->dev,
-					 "MT9M113: REFRESH complete after OUTPUT_CONTROL\n");
-		}
-
-		/*
-		 * Step 3: Set RESET_REGISTER for continuous streaming
-		 *
-		 * CRITICAL: Use 0x120C (streaming mode) for BOTH contexts.
-		 * 0x12CE (snapshot mode) only captures ONE frame then stops.
-		 * For video4 continuous capture, we need streaming mode.
-		 *
-		 * Context switching (A->B) is done via SEQ_CMD=CAPTURE (0x0002),
-		 * which switches to Context B's 1280x1024 resolution while
-		 * maintaining continuous streaming.
-		 */
-		ret = cci_write(sensor->regmap, MT9M114_RESET_REGISTER,
-				MT9M113_RESET_REG_STREAMING, NULL);
-		dev_info(&sensor->client->dev,
-			 "MT9M113: RESET_REGISTER=0x120C (streaming mode, Context %s)\n",
-			 use_context_b ? "B" : "A");
-		if (ret) {
-			dev_err(&sensor->client->dev,
-				"MT9M113: RESET_REGISTER failed: %d\n", ret);
-			goto error;
-		}
-
-		/*
-		 * Step 4: Configure capture mode based on context
-		 *   Context A: SEQ_CAP_MODE = 0x0030 (preview)
-		 *   Context B: SEQ_CAP_MODE = 0x0000, SEQ_CAP_MODE_VIDEO = 0x0008 (capture)
-		 *
-		 * WebOS mt9m113.c SENSOR_SNAPSHOT_MODE sequence:
-		 *   A115 (SEQ_CAP_MODE) = 0x0000
-		 *   A116 (SEQ_CAP_MODE_VIDEO) = 0x0008
-		 */
-		if (use_context_b) {
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE,
-						    MT9M113_CAP_MODE_NORMAL);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
-				goto error;
-			}
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE_VIDEO,
-						    MT9M113_CAP_MODE_VIDEO_SNAPSHOT);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: SEQ_CAP_MODE_VIDEO failed: %d\n", ret);
-				goto error;
-			}
-			dev_info(&sensor->client->dev,
-				 "MT9M113: SEQ_CAP_MODE=0x0000, SEQ_CAP_MODE_VIDEO=0x0008 (capture)\n");
-		} else {
-			seq_cap_mode = 0x0030;
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE,
-						    seq_cap_mode);
-			if (ret) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: SEQ_CAP_MODE failed: %d\n", ret);
-				goto error;
-			}
-			dev_info(&sensor->client->dev,
-				 "MT9M113: SEQ_CAP_MODE=0x%04X (preview)\n", seq_cap_mode);
-		}
-
-		/* Step 5: Wait 40ms (as per webOS) */
-		msleep(40);
-
-		/*
-		 * Step 6: Issue SEQ_CMD to start streaming
-		 *   Context A: SEQ_CMD = 0x0001 (RUN) - stay in Context A
-		 *   Context B: SEQ_CMD = 0x0002 (CAPTURE) - switch to Context B
-		 *
-		 * This is the key difference from earlier attempts which always
-		 * used RUN. Context B requires CAPTURE to switch contexts.
-		 */
-		if (use_context_b) {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Issuing SEQ_CMD=2 (CAPTURE -> Context B)\n");
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						    MT9M113_SEQ_CMD_CAPTURE);
-		} else {
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Issuing SEQ_CMD=1 (RUN -> Context A)\n");
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						    MT9M113_SEQ_CMD_RUN);
-		}
-		if (ret) {
-			dev_err(&sensor->client->dev, "MT9M113: SEQ_CMD failed: %d\n", ret);
-			goto error;
-		}
-
-		/* Step 7: Wait for SEQ_CMD to return to 0 (command processed) */
-		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-		if (ret) {
-			dev_warn(&sensor->client->dev,
-				 "MT9M113: SEQ_CMD timeout (continuing anyway)\n");
-		}
-
-		/*
-		 * Step 8: For Context B, poll SEQ_STATE until it reaches 0x07
-		 * (Context B streaming). This ensures the sensor has actually
-		 * completed the context switch before we return and let the
-		 * VFE start expecting 1280x1024 data.
-		 *
-		 * SEQ_STATE values:
-		 *   0x03 = Streaming in Context A
-		 *   0x07 = Streaming in Context B
-		 */
-		if (use_context_b) {
-			int poll_count;
-			u64 seq_state = 0;
-
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Waiting for Context B streaming (SEQ_STATE=0x07)...\n");
-
-			for (poll_count = 0; poll_count < 100; poll_count++) {
-				ret = mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-				if (ret < 0) {
-					dev_err(&sensor->client->dev,
-						"MT9M113: Failed to read SEQ_STATE: %d\n", ret);
-					goto error;
-				}
-
-				if (seq_state == 0x07) {
-					dev_info(&sensor->client->dev,
-						 "MT9M113: Context B streaming active after %d ms\n",
-						 poll_count * 10);
-					break;
-				}
-
-				msleep(10);
-			}
-
-			if (seq_state != 0x07) {
-				dev_err(&sensor->client->dev,
-					"MT9M113: Context B switch FAILED! SEQ_STATE=0x%llx (expected 0x07)\n",
-					seq_state);
-				/*
-				 * Return error to prevent VFE from expecting 1280x1024
-				 * while sensor outputs 640x480. This mismatch causes
-				 * DMA buffer overrun and kernel memory corruption.
-				 */
-				ret = -ETIMEDOUT;
-				goto error;
-			}
-
-			/* Extra stabilization delay after context switch */
-			msleep(50);
-		} else {
-			msleep(20);
-		}
-
-		/*
-		 * CRITICAL: Re-write OUTPUT_CONTROL after SEQ_CMD completes!
-		 *
-		 * The sensor MCU restores OUTPUT_CONTROL to its default (YUV) value
-		 * when SEQ_CMD=RUN is issued. We must re-write the RAW8 data type
-		 * AFTER the command completes for RDI/RAW capture to work.
-		 *
-		 * Without this, the sensor sends YUV packets (dt=0x1E) but CSID
-		 * expects RAW8 (dt=0x2A), causing all data to be ignored.
-		 */
-		{
-			const struct v4l2_mbus_framefmt *format;
-			bool is_bayer;
-
-			format = v4l2_subdev_state_get_format(ifp_state, 1);
-			is_bayer = (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
-				    format->code == MEDIA_BUS_FMT_SGRBG10_1X10);
-
-			if (is_bayer) {
-				u16 output_ctrl_val;
-				u16 mode_output_format_reg;
-				u64 readback;
-
-				/* Use fake YUV trick if enabled (YUV dt for RAW data) */
-				if (mt9m113_fake_yuv) {
-					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
-				} else if (format->code == MEDIA_BUS_FMT_SGRBG10_1X10) {
-					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW10;
-				} else {
-					output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
-				}
-
-				if (mt9m113_cont_mipi_clk)
-					output_ctrl_val |= 0x0004;
-
-				dev_info(&sensor->client->dev,
-					 "MT9M113: Re-writing OUTPUT_CONTROL=0x%04x after SEQ_CMD (%s)\n",
-					 output_ctrl_val,
-					 mt9m113_fake_yuv ? "FAKE_YUV" :
-					 (format->code == MEDIA_BUS_FMT_SGRBG10_1X10) ? "RAW10 fix" : "RAW8 fix");
-
-				ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-						output_ctrl_val, NULL);
-				if (ret) {
-					dev_err(&sensor->client->dev,
-						"MT9M113: OUTPUT_CONTROL re-write failed: %d\n", ret);
-					goto error;
-				}
-
-				/* Verify it stuck this time */
-				msleep(5);
-				cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &readback, NULL);
-				dev_info(&sensor->client->dev,
-					 "MT9M113: OUTPUT_CONTROL readback=0x%04llx (expected=0x%04x)\n",
-					 readback, output_ctrl_val);
-
-				if ((readback & ~MT9M113_OUTPUT_CONTROL_RO_MASK) !=
-				    (output_ctrl_val & ~MT9M113_OUTPUT_CONTROL_RO_MASK)) {
-					dev_warn(&sensor->client->dev,
-						 "MT9M113: OUTPUT_CONTROL still wrong after re-write!\n");
-				}
-
-				/*
-				 * CRITICAL: Also re-write MODE_OUTPUT_FORMAT after SEQ_CMD!
-				 *
-				 * Just like OUTPUT_CONTROL, the MCU may reset MODE_OUTPUT_FORMAT
-				 * to its default (YUV=0x0000) when SEQ_CMD=RUN completes.
-				 *
-				 * For processed Bayer (8-bit): set bit 8 = 1 (0x0100)
-				 * For raw Bayer (10-bit): set bit 8 = 0 (0x0000)
-				 */
-				u16 mode_output_format_val;
-
-				mode_output_format_reg = use_context_b ?
-					MT9M113_MODE_OUTPUT_FORMAT_B :
-					MT9M113_MODE_OUTPUT_FORMAT_A;
-
-				/* RAW10 = raw (bit 8=0), RAW8 = processed (bit 8=1) */
-				if (format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
-					mode_output_format_val = 0x0000;
-				else
-					mode_output_format_val =
-						MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
-
-				dev_info(&sensor->client->dev,
-					 "MT9M113: Re-writing MODE_OUTPUT_FORMAT_%c=0x%04x after SEQ_CMD (Bayer fix)\n",
-					 use_context_b ? 'B' : 'A', mode_output_format_val);
-
-				ret = mt9m113_write_mcu_var(sensor, mode_output_format_reg,
-							   mode_output_format_val);
-				if (ret) {
-					dev_err(&sensor->client->dev,
-						"MT9M113: MODE_OUTPUT_FORMAT re-write failed: %d\n", ret);
-					goto error;
-				}
-
-				/* Verify MODE_OUTPUT_FORMAT stuck */
-				msleep(5);
-				mt9m113_read_mcu_var(sensor, mode_output_format_reg, &readback);
-				dev_info(&sensor->client->dev,
-					 "MT9M113: MODE_OUTPUT_FORMAT_%c readback=0x%04llx (expected=0x%04x)\n",
-					 use_context_b ? 'B' : 'A', readback, mode_output_format_val);
-
-				if (readback != mode_output_format_val) {
-					dev_warn(&sensor->client->dev,
-						 "MT9M113: MODE_OUTPUT_FORMAT still wrong after re-write!\n");
-				}
-			}
-		}
-
-		/*
-		 * Comprehensive sensor state readback for debugging.
-		 * This logs all critical registers after streaming starts.
-		 */
-		{
-			u64 seq_state, seq_cmd, reset_reg, output_ctrl_after;
-			u64 mode_width, mode_height, frame_length, line_length;
-
-			/* Sequencer state */
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: SEQ_STATE=0x%llx (0x03=streaming) SEQ_CMD=0x%llx (0x00=ready)\n",
-				 seq_state, seq_cmd);
-
-			/* Control registers */
-			cci_read(sensor->regmap, MT9M114_RESET_REGISTER, &reset_reg, NULL);
-			cci_read(sensor->regmap, MT9M113_OUTPUT_CONTROL, &output_ctrl_after, NULL);
-			dev_info(&sensor->client->dev,
-				 "MT9M113: RESET_REG=0x%llx (0x120C=streaming) OUTPUT_CTRL=0x%llx (0x7A00=MIPI, bit3 RO)\n",
-				 reset_reg, output_ctrl_after);
-
-			/* Mode configuration - verify resolution via MCU vars */
-			mt9m113_read_mcu_var(sensor, 0x2703, &mode_width);  /* MODE_OUTPUT_WIDTH_A */
-			mt9m113_read_mcu_var(sensor, 0x2705, &mode_height); /* MODE_OUTPUT_HEIGHT_A */
-			mt9m113_read_mcu_var(sensor, 0x271F, &frame_length); /* MODE_SENSOR_FRAME_LENGTH_A */
-			mt9m113_read_mcu_var(sensor, 0x2721, &line_length);  /* MODE_SENSOR_LINE_LENGTH_PCK_A */
-			dev_info(&sensor->client->dev,
-				 "MT9M113: MODE_A: %lldx%lld, frame_len=%lld, line_len=%lld\n",
-				 mode_width, mode_height, frame_length, line_length);
-
-			/* Also read MODE_B registers when Context B is requested */
-			if (use_context_b) {
-				u64 mode_b_width, mode_b_height;
-				u64 cam_out_width, cam_out_height;
-
-				mt9m113_read_mcu_var(sensor, 0x2707, &mode_b_width);  /* MODE_OUTPUT_WIDTH_B */
-				mt9m113_read_mcu_var(sensor, 0x2709, &mode_b_height); /* MODE_OUTPUT_HEIGHT_B */
-				dev_info(&sensor->client->dev,
-					 "MT9M113: MODE_B: %lldx%lld (requested Context B)\n",
-					 mode_b_width, mode_b_height);
-
-				/* Read actual CAM_OUTPUT registers */
-				cci_read(sensor->regmap, MT9M114_CAM_OUTPUT_WIDTH, &cam_out_width, NULL);
-				cci_read(sensor->regmap, MT9M114_CAM_OUTPUT_HEIGHT, &cam_out_height, NULL);
-				dev_info(&sensor->client->dev,
-					 "MT9M113: CAM_OUTPUT: %lldx%lld (actual output config)\n",
-					 cam_out_width, cam_out_height);
-
-				/*
-				 * SEQ_STATE values:
-				 *   0x03 = Streaming in Context A
-				 *   0x07 = Streaming in Context B (capture mode)
-				 * Verify we're in the correct context.
-				 */
-				if (seq_state != 0x07) {
-					dev_warn(&sensor->client->dev,
-						 "MT9M113: Context B requested but SEQ_STATE=0x%llx (expected 0x07)\n",
-						 seq_state);
-				} else {
-					dev_info(&sensor->client->dev,
-						 "MT9M113: Context B active (SEQ_STATE=0x07)\n");
-				}
-
-				/* Warn if CAM_OUTPUT doesn't match requested resolution */
-				if (cam_out_width != 1280 || cam_out_height != 1024) {
-					dev_warn(&sensor->client->dev,
-						 "MT9M113: CAM_OUTPUT mismatch! Expected 1280x1024, got %lldx%lld\n",
-						 cam_out_width, cam_out_height);
-				}
-			}
-
-			/*
-			 * Verify MIPI is enabled. Bit 3 (reg_frame_sync) is READ-ONLY
-			 * and reflects hardware frame sync state - not a control bit.
-			 * Mask it out when checking if MIPI output is properly enabled.
-			 * Also account for continuous clock mode (bit 2) and RAW8 vs YUV.
-			 */
-			{
-				const struct v4l2_mbus_framefmt *fmt;
-				bool is_raw;
-				u16 expected;
-
-				fmt = v4l2_subdev_state_get_format(ifp_state, 1);
-				is_raw = (fmt->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
-					  fmt->code == MEDIA_BUS_FMT_SGRBG10_1X10);
-
-				if (is_raw)
-					expected = MT9M113_OUTPUT_CONTROL_MIPI_RAW8_VERIFY;
-				else
-					expected = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE_VERIFY;
-
-				if (mt9m113_cont_mipi_clk)
-					expected |= 0x0004;  /* cont_mipi_clk bit */
-
-				if ((output_ctrl_after & ~MT9M113_OUTPUT_CONTROL_RO_MASK) != expected) {
-					dev_err(&sensor->client->dev,
-						"MT9M113: OUTPUT_CONTROL wrong: 0x%llx (masked=0x%llx, expected=0x%x for %s)\n",
-						output_ctrl_after,
-						output_ctrl_after & ~MT9M113_OUTPUT_CONTROL_RO_MASK,
-						expected, is_raw ? "RAW8" : "YUV");
-				} else {
-					dev_info(&sensor->client->dev,
-						 "MT9M113: OUTPUT_CONTROL=0x%llx OK (%s, bit3 is RO frame_sync)\n",
-						 output_ctrl_after, is_raw ? "RAW8" : "YUV");
-				}
-			}
-		}
-
-		dev_info(&sensor->client->dev, "MT9M113: streaming command sequence complete\n");
-	}
-
-	sensor->streaming = true;
 
 	return 0;
 
@@ -2837,28 +990,11 @@ error:
 
 static int mt9m114_stop_streaming(struct mt9m114 *sensor)
 {
-	struct device *dev = &sensor->client->dev;
-	int ret = 0;
+	int ret;
 
 	sensor->streaming = false;
 
-	if (sensor->model == MT9M113_MODEL) {
-		/*
-		 * MT9M113: Explicitly disable MIPI output before runtime PM
-		 * puts the sensor into autosuspend. This is critical because
-		 * the sensor may stay powered due to autosuspend delay, and
-		 * if MIPI output remains enabled, the next stream-on will
-		 * see ECC/SOT errors when CSIPHY is reconfigured while the
-		 * sensor is mid-transmission.
-		 */
-		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
-		if (ret < 0)
-			dev_warn(dev, "MT9M113: failed to disable MIPI on stop: %d\n", ret);
-		else
-			dev_info(dev, "MT9M113: MIPI output disabled on stream stop\n");
-	} else {
-		ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_SUSPEND);
-	}
+	ret = mt9m114_set_state(sensor, MT9M114_SYS_STATE_ENTER_SUSPEND);
 
 	pm_runtime_put_autosuspend(&sensor->client->dev);
 
@@ -2869,46 +1005,8 @@ static int mt9m114_stop_streaming(struct mt9m114 *sensor)
  * Common Subdev Operations
  */
 
-/*
- * Custom link validation for the IFP sink pad.
- *
- * The pixel array outputs full resolution (1296x976) but the IFP internally
- * crops the image. The default v4l2_subdev_link_validate requires exact format
- * matches which fails because the PA output is larger than the IFP sink format.
- *
- * This function validates that the source format can be cropped to match
- * the IFP sink format using the crop settings.
- */
-static int mt9m114_link_validate(struct media_link *link)
-{
-	struct v4l2_subdev *sink_sd;
-
-	/* Only apply custom validation to IFP sink pad */
-	if (!is_media_entity_v4l2_subdev(link->sink->entity))
-		return v4l2_subdev_link_validate(link);
-
-	sink_sd = media_entity_to_v4l2_subdev(link->sink->entity);
-
-	/* Check if this is the IFP (has " ifp" suffix in name) */
-	if (!strstr(sink_sd->name, " ifp"))
-		return v4l2_subdev_link_validate(link);
-
-	/*
-	 * For the internal pixel array -> IFP link, skip format validation.
-	 *
-	 * The pixel array outputs full resolution (1296x976) but the IFP
-	 * internally crops the image. This is an immutable internal link
-	 * managed by the mt9m114 driver, so we trust it is valid.
-	 *
-	 * The default v4l2_subdev_link_validate would fail because it requires
-	 * exact format matches, but the PA output is larger than the IFP sink.
-	 */
-	dev_dbg(sink_sd->dev, "mt9m114: PA->IFP link validated (internal)\n");
-	return 0;
-}
-
 static const struct media_entity_operations mt9m114_entity_ops = {
-	.link_validate = mt9m114_link_validate,
+	.link_validate = v4l2_subdev_link_validate,
 };
 
 /* -----------------------------------------------------------------------------
@@ -3082,31 +1180,20 @@ static inline struct mt9m114 *pa_to_mt9m114(struct v4l2_subdev *sd)
 static int mt9m114_pa_init_state(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_state *state)
 {
-	struct mt9m114 *sensor = pa_to_mt9m114(sd);
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
-	unsigned int width, height;
-
-	/* Use sensor-specific pixel array dimensions */
-	if (sensor->expected_model == MT9M113_MODEL) {
-		width = MT9M113_PIXEL_ARRAY_WIDTH;
-		height = MT9M113_PIXEL_ARRAY_HEIGHT;
-	} else {
-		width = MT9M114_PIXEL_ARRAY_WIDTH;
-		height = MT9M114_PIXEL_ARRAY_HEIGHT;
-	}
 
 	crop = v4l2_subdev_state_get_crop(state, 0);
 
 	crop->left = 0;
 	crop->top = 0;
-	crop->width = width;
-	crop->height = height;
+	crop->width = MT9M114_PIXEL_ARRAY_WIDTH;
+	crop->height = MT9M114_PIXEL_ARRAY_HEIGHT;
 
 	format = v4l2_subdev_state_get_format(state, 0);
 
-	format->width = width;
-	format->height = height;
+	format->width = MT9M114_PIXEL_ARRAY_WIDTH;
+	format->height = MT9M114_PIXEL_ARRAY_HEIGHT;
 	format->code = MEDIA_BUS_FMT_SGRBG10_1X10;
 	format->field = V4L2_FIELD_NONE;
 	format->colorspace = V4L2_COLORSPACE_RAW;
@@ -3133,29 +1220,17 @@ static int mt9m114_pa_enum_framesizes(struct v4l2_subdev *sd,
 				      struct v4l2_subdev_state *state,
 				      struct v4l2_subdev_frame_size_enum *fse)
 {
-	struct mt9m114 *sensor = pa_to_mt9m114(sd);
-	unsigned int pa_width, pa_height;
-
 	if (fse->index > 1)
 		return -EINVAL;
 
 	if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
 		return -EINVAL;
 
-	/* Use sensor-specific pixel array dimensions */
-	if (sensor->expected_model == MT9M113_MODEL) {
-		pa_width = MT9M113_PIXEL_ARRAY_WIDTH;
-		pa_height = MT9M113_PIXEL_ARRAY_HEIGHT;
-	} else {
-		pa_width = MT9M114_PIXEL_ARRAY_WIDTH;
-		pa_height = MT9M114_PIXEL_ARRAY_HEIGHT;
-	}
-
 	/* Report binning capability through frame size enumeration. */
-	fse->min_width = pa_width / (fse->index + 1);
-	fse->max_width = pa_width / (fse->index + 1);
-	fse->min_height = pa_height / (fse->index + 1);
-	fse->max_height = pa_height / (fse->index + 1);
+	fse->min_width = MT9M114_PIXEL_ARRAY_WIDTH / (fse->index + 1);
+	fse->max_width = MT9M114_PIXEL_ARRAY_WIDTH / (fse->index + 1);
+	fse->min_height = MT9M114_PIXEL_ARRAY_HEIGHT / (fse->index + 1);
+	fse->max_height = MT9M114_PIXEL_ARRAY_HEIGHT / (fse->index + 1);
 
 	return 0;
 }
@@ -3191,18 +1266,6 @@ static int mt9m114_pa_get_selection(struct v4l2_subdev *sd,
 				    struct v4l2_subdev_state *state,
 				    struct v4l2_subdev_selection *sel)
 {
-	struct mt9m114 *sensor = pa_to_mt9m114(sd);
-	unsigned int pa_width, pa_height;
-
-	/* Use sensor-specific pixel array dimensions */
-	if (sensor->expected_model == MT9M113_MODEL) {
-		pa_width = MT9M113_PIXEL_ARRAY_WIDTH;
-		pa_height = MT9M113_PIXEL_ARRAY_HEIGHT;
-	} else {
-		pa_width = MT9M114_PIXEL_ARRAY_WIDTH;
-		pa_height = MT9M114_PIXEL_ARRAY_HEIGHT;
-	}
-
 	switch (sel->target) {
 	case V4L2_SEL_TGT_CROP:
 		sel->r = *v4l2_subdev_state_get_crop(state, sel->pad);
@@ -3213,8 +1276,8 @@ static int mt9m114_pa_get_selection(struct v4l2_subdev *sd,
 	case V4L2_SEL_TGT_NATIVE_SIZE:
 		sel->r.left = 0;
 		sel->r.top = 0;
-		sel->r.width = pa_width;
-		sel->r.height = pa_height;
+		sel->r.width = MT9M114_PIXEL_ARRAY_WIDTH;
+		sel->r.height = MT9M114_PIXEL_ARRAY_HEIGHT;
 		return 0;
 
 	default:
@@ -3229,20 +1292,10 @@ static int mt9m114_pa_set_selection(struct v4l2_subdev *sd,
 	struct mt9m114 *sensor = pa_to_mt9m114(sd);
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
-	unsigned int pa_width, pa_height;
 	int ret = 0;
 
 	if (sel->target != V4L2_SEL_TGT_CROP)
 		return -EINVAL;
-
-	/* Use sensor-specific pixel array dimensions */
-	if (sensor->expected_model == MT9M113_MODEL) {
-		pa_width = MT9M113_PIXEL_ARRAY_WIDTH;
-		pa_height = MT9M113_PIXEL_ARRAY_HEIGHT;
-	} else {
-		pa_width = MT9M114_PIXEL_ARRAY_WIDTH;
-		pa_height = MT9M114_PIXEL_ARRAY_HEIGHT;
-	}
 
 	crop = v4l2_subdev_state_get_crop(state, sel->pad);
 	format = v4l2_subdev_state_get_format(state, sel->pad);
@@ -3259,10 +1312,10 @@ static int mt9m114_pa_set_selection(struct v4l2_subdev *sd,
 	sel->r.top = ALIGN(sel->r.top, 2);
 	sel->r.width = clamp_t(unsigned int, ALIGN(sel->r.width, 4),
 			       MT9M114_PIXEL_ARRAY_MIN_OUTPUT_WIDTH,
-			       pa_width - sel->r.left);
+			       MT9M114_PIXEL_ARRAY_WIDTH - sel->r.left);
 	sel->r.height = clamp_t(unsigned int, ALIGN(sel->r.height, 2),
 				MT9M114_PIXEL_ARRAY_MIN_OUTPUT_HEIGHT,
-				pa_height - sel->r.top);
+				MT9M114_PIXEL_ARRAY_HEIGHT - sel->r.top);
 
 	/* Changing the selection size is not allowed in streaming state. */
 	if (sensor->streaming &&
@@ -3285,14 +1338,9 @@ static int mt9m114_pa_set_selection(struct v4l2_subdev *sd,
 		ret = mt9m114_configure_pa(sensor, state);
 		if (ret)
 			return ret;
-		/*
-		 * Changing the cropping config requires a CONFIG_CHANGE.
-		 * MT9M113 doesn't support COMMAND_REGISTER - changes take
-		 * effect immediately.
-		 */
-		if (sensor->model != MT9M113_MODEL)
-			ret = mt9m114_set_state(sensor,
-						MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
+		/* Changing the cropping config requires a CONFIG_CHANGE. */
+		ret = mt9m114_set_state(sensor,
+					MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
 	}
 	return ret;
 }
@@ -3444,23 +1492,6 @@ static const unsigned int mt9m114_test_pattern_value[] = {
 	MT9M114_CAM_MODE_TEST_PATTERN_SELECT_WALKING_1S_8B,
 };
 
-/* MT9M113 context menu - keep in sync with MT9M113_CONTEXT_* defines */
-static const char * const mt9m113_context_menu[] = {
-	"Context A (640x480 preview)",
-	"Context B (1280x1024 capture)",
-};
-
-/* Custom control config for MT9M113 context selection */
-static const struct v4l2_ctrl_config mt9m113_context_ctrl_cfg = {
-	.id = V4L2_CID_MT9M113_CONTEXT,
-	.name = "MT9M113 Context",
-	.type = V4L2_CTRL_TYPE_MENU,
-	.min = MT9M113_CONTEXT_A,
-	.max = MT9M113_CONTEXT_B,
-	.def = MT9M113_CONTEXT_B,	/* Default to full resolution */
-	.qmenu = mt9m113_context_menu,
-};
-
 static inline struct mt9m114 *ifp_ctrl_to_mt9m114(struct v4l2_ctrl *ctrl)
 {
 	return container_of(ctrl->handler, struct mt9m114, ifp.hdl);
@@ -3542,186 +1573,14 @@ static int mt9m114_ifp_s_ctrl(struct v4l2_ctrl *ctrl)
 		 * A Config-Change needs to be issued for the change to take
 		 * effect. If we're not streaming ignore this, the change will
 		 * be applied when the stream is started.
-		 * MT9M113 doesn't support COMMAND_REGISTER - changes take
-		 * effect immediately.
 		 */
-		if (ret || !sensor->streaming ||
-		    sensor->model == MT9M113_MODEL)
+		if (ret || !sensor->streaming)
 			break;
 
 		ret = mt9m114_set_state(sensor,
 					MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
 		break;
 	}
-
-	case V4L2_CID_COLORFX: {
-		/*
-		 * Color effects control for MT9M113/MT9M114.
-		 * Maps V4L2 color effects to sensor MODE_SPEC_EFFECTS registers.
-		 * Effects only work with processed output (YUV/RGB), not RAW.
-		 */
-		u16 effect;
-
-		switch (ctrl->val) {
-		case V4L2_COLORFX_NONE:
-			effect = MT9M113_SPEC_EFFECTS_NONE;
-			break;
-		case V4L2_COLORFX_BW:
-			effect = MT9M113_SPEC_EFFECTS_MONOCHROME;
-			break;
-		case V4L2_COLORFX_SEPIA:
-			effect = MT9M113_SPEC_EFFECTS_SEPIA;
-			break;
-		case V4L2_COLORFX_NEGATIVE:
-			effect = MT9M113_SPEC_EFFECTS_NEGATIVE;
-			break;
-		case V4L2_COLORFX_SOLARIZATION:
-			effect = MT9M113_SPEC_EFFECTS_SOLARIZE;
-			break;
-		default:
-			ret = -EINVAL;
-			break;
-		}
-
-		if (ret)
-			break;
-
-		/*
-		 * Preserve default solarization threshold (0x64) and
-		 * dither settings (dither_luma=1) from bits [15:3].
-		 */
-		effect |= (MT9M113_SPEC_EFFECTS_DEFAULT & ~MT9M113_SPEC_EFFECTS_MASK);
-
-		/* Write to both Context A and Context B registers */
-		cci_write(sensor->regmap, MT9M113_MODE_SPEC_EFFECTS_A,
-			  effect, &ret);
-		cci_write(sensor->regmap, MT9M113_MODE_SPEC_EFFECTS_B,
-			  effect, &ret);
-
-		if (ret) {
-			dev_err(&sensor->client->dev,
-				"Failed to write color effect: %d\n", ret);
-			break;
-		}
-
-		/*
-		 * Issue REFRESH command to apply the change.
-		 * For MT9M113, use SEQ_CMD=REFRESH.
-		 * For MT9M114, use COMMAND_REGISTER Config-Change.
-		 */
-		if (sensor->streaming) {
-			if (sensor->model == MT9M113_MODEL) {
-				ret = mt9m113_write_mcu_var(sensor,
-							   MT9M113_SEQ_CMD,
-							   MT9M113_SEQ_CMD_REFRESH);
-				if (!ret)
-					ret = mt9m113_poll_mcu_var(sensor,
-								  MT9M113_SEQ_CMD,
-								  0x0000, 500);
-			} else {
-				ret = mt9m114_set_state(sensor,
-					MT9M114_SYS_STATE_ENTER_CONFIG_CHANGE);
-			}
-		}
-
-		if (!ret)
-			dev_dbg(&sensor->client->dev,
-				"Color effect set to %d (reg=0x%04x)\n",
-				ctrl->val, effect);
-		break;
-	}
-
-	case V4L2_CID_MT9M113_CONTEXT:
-		/*
-		 * MT9M113 context selection - only applicable to MT9M113.
-		 *
-		 * Context A (control=0): 640x480 preview mode
-		 *   - Binning enabled (MODE_SENSOR_READ_MODE_A = 0x046C)
-		 *   - Uses SEQ_CMD=RUN to start/stay in Context A
-		 *
-		 * Context B (control=1): 1280x1024 capture mode
-		 *   - No binning (MODE_SENSOR_READ_MODE_B = 0x0024)
-		 *   - Uses SEQ_CMD=CAPTURE (0x0002) to switch to Context B
-		 *   - This is how webOS achieves full resolution capture
-		 *
-		 * The init table already configures Context B for 1280x1024.
-		 * We just need to issue SEQ_CMD to switch contexts.
-		 */
-		if (sensor->model != MT9M113_MODEL) {
-			ret = -EINVAL;
-			break;
-		}
-
-		if (sensor->streaming) {
-			if (ctrl->val == MT9M113_CONTEXT_B) {
-				dev_info(&sensor->client->dev,
-					 "MT9M113: Switching to Context B (1280x1024 capture)\n");
-
-				/*
-				 * WebOS snapshot sequence from mt9m113.c:
-				 * 1. Write SEQ_CAP_MODE (0xA115) = 0x0000
-				 * 2. Write SEQ_CAP_MODE_VIDEO (0xA116) = 0x0008
-				 * 3. Issue SEQ_CMD = 0x0002 (CAPTURE)
-				 */
-				ret = mt9m113_write_mcu_var(sensor,
-							    MT9M113_SEQ_CAP_MODE,
-							    MT9M113_CAP_MODE_NORMAL);
-				if (ret)
-					break;
-
-				ret = mt9m113_write_mcu_var(sensor,
-							    MT9M113_SEQ_CAP_MODE_VIDEO,
-							    MT9M113_CAP_MODE_VIDEO_SNAPSHOT);
-				if (ret)
-					break;
-
-				/* Switch to Context B via SEQ_CMD=CAPTURE */
-				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-							    MT9M113_SEQ_CMD_CAPTURE);
-				if (ret)
-					break;
-
-				/* Wait for context switch to complete */
-				ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
-							   0x0000, 500);
-				if (ret)
-					dev_warn(&sensor->client->dev,
-						 "MT9M113: Context B switch timeout\n");
-
-				/* Write RESET_REGISTER for snapshot mode */
-				ret = cci_write(sensor->regmap,
-						CCI_REG16(0x301A),
-						MT9M113_RESET_REG_SNAPSHOT, NULL);
-				if (ret)
-					dev_warn(&sensor->client->dev,
-						 "MT9M113: RESET_REG snapshot write failed\n");
-			} else {
-				dev_info(&sensor->client->dev,
-					 "MT9M113: Switching to Context A (640x480 preview)\n");
-
-				/* Return to Context A via SEQ_CMD=RUN */
-				ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-							    MT9M113_SEQ_CMD_RUN);
-				if (ret)
-					break;
-
-				/* Wait for command to complete */
-				ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
-							   0x0000, 500);
-				if (ret)
-					dev_warn(&sensor->client->dev,
-						 "MT9M113: Context A switch timeout\n");
-
-				/* Write RESET_REGISTER for streaming mode */
-				ret = cci_write(sensor->regmap,
-						CCI_REG16(0x301A),
-						MT9M113_RESET_REG_STREAMING, NULL);
-				if (ret)
-					dev_warn(&sensor->client->dev,
-						 "MT9M113: RESET_REG streaming write failed\n");
-			}
-		}
-		break;
 
 	default:
 		ret = -EINVAL;
@@ -3825,21 +1684,11 @@ static int mt9m114_ifp_init_state(struct v4l2_subdev *sd,
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
 	struct v4l2_rect *compose;
-	unsigned int pa_width, pa_height;
-
-	/* Use sensor-specific pixel array dimensions */
-	if (sensor->expected_model == MT9M113_MODEL) {
-		pa_width = MT9M113_PIXEL_ARRAY_WIDTH;
-		pa_height = MT9M113_PIXEL_ARRAY_HEIGHT;
-	} else {
-		pa_width = MT9M114_PIXEL_ARRAY_WIDTH;
-		pa_height = MT9M114_PIXEL_ARRAY_HEIGHT;
-	}
 
 	format = v4l2_subdev_state_get_format(state, 0);
 
-	format->width = pa_width;
-	format->height = pa_height;
+	format->width = MT9M114_PIXEL_ARRAY_WIDTH;
+	format->height = MT9M114_PIXEL_ARRAY_HEIGHT;
 	format->code = MEDIA_BUS_FMT_SGRBG10_1X10;
 	format->field = V4L2_FIELD_NONE;
 	format->colorspace = V4L2_COLORSPACE_RAW;
@@ -3858,21 +1707,8 @@ static int mt9m114_ifp_init_state(struct v4l2_subdev *sd,
 
 	compose->left = 0;
 	compose->top = 0;
-
-	/*
-	 * MT9M113 uses webOS-configured output resolutions (640x480 preview,
-	 * 1280x1024 capture) via MCU variables. Use 640x480 as default to
-	 * match Context A (preview mode) from the init table. The sensor
-	 * is configured for 640x480 by the initialization table and we
-	 * don't dynamically reconfigure Context A dimensions.
-	 */
-	if (sensor->expected_model == MT9M113_MODEL) {
-		compose->width = 640;
-		compose->height = 480;
-	} else {
-		compose->width = crop->width;
-		compose->height = crop->height;
-	}
+	compose->width = crop->width;
+	compose->height = crop->height;
 
 	format = v4l2_subdev_state_get_format(state, 1);
 
@@ -3939,7 +1775,6 @@ static int mt9m114_ifp_enum_framesizes(struct v4l2_subdev *sd,
 {
 	struct mt9m114 *sensor = ifp_to_mt9m114(sd);
 	const struct mt9m114_format_info *info;
-	unsigned int pa_width, pa_height;
 
 	if (fse->index > 0)
 		return -EINVAL;
@@ -3948,20 +1783,11 @@ static int mt9m114_ifp_enum_framesizes(struct v4l2_subdev *sd,
 	if (!info || info->code != fse->code)
 		return -EINVAL;
 
-	/* Use sensor-specific pixel array dimensions */
-	if (sensor->expected_model == MT9M113_MODEL) {
-		pa_width = MT9M113_PIXEL_ARRAY_WIDTH;
-		pa_height = MT9M113_PIXEL_ARRAY_HEIGHT;
-	} else {
-		pa_width = MT9M114_PIXEL_ARRAY_WIDTH;
-		pa_height = MT9M114_PIXEL_ARRAY_HEIGHT;
-	}
-
 	if (fse->pad == 0) {
 		fse->min_width = MT9M114_PIXEL_ARRAY_MIN_OUTPUT_WIDTH;
-		fse->max_width = pa_width;
+		fse->max_width = MT9M114_PIXEL_ARRAY_WIDTH;
 		fse->min_height = MT9M114_PIXEL_ARRAY_MIN_OUTPUT_HEIGHT;
-		fse->max_height = pa_height;
+		fse->max_height = MT9M114_PIXEL_ARRAY_HEIGHT;
 	} else {
 		const struct v4l2_rect *crop;
 
@@ -4283,33 +2109,6 @@ static int mt9m114_ifp_init(struct mt9m114 *sensor)
 
 	v4l2_ctrl_cluster(ARRAY_SIZE(sensor->ifp.tpg), sensor->ifp.tpg);
 
-	/*
-	 * Color effects control - available on MT9M113/MT9M114.
-	 * Effects only work with processed output (YUV/RGB), not RAW Bayer.
-	 * Supported effects: None, B&W, Sepia, Negative, Solarization.
-	 */
-	v4l2_ctrl_new_std_menu(hdl, &mt9m114_ifp_ctrl_ops,
-			       V4L2_CID_COLORFX,
-			       V4L2_COLORFX_SOLARIZATION,
-			       ~(BIT(V4L2_COLORFX_NONE) |
-				 BIT(V4L2_COLORFX_BW) |
-				 BIT(V4L2_COLORFX_SEPIA) |
-				 BIT(V4L2_COLORFX_NEGATIVE) |
-				 BIT(V4L2_COLORFX_SOLARIZATION)),
-			       V4L2_COLORFX_NONE);
-
-	/*
-	 * MT9M113-specific context selection control.
-	 * Allows switching between Context A (640x480) and Context B (1280x1024).
-	 */
-	if (sensor->model == MT9M113_MODEL) {
-		sensor->ifp.context = v4l2_ctrl_new_custom(hdl,
-					&mt9m113_context_ctrl_cfg, NULL);
-		if (sensor->ifp.context)
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Context control registered\n");
-	}
-
 	if (hdl->error) {
 		ret = hdl->error;
 		goto error;
@@ -4342,205 +2141,37 @@ static void mt9m114_ifp_cleanup(struct mt9m114 *sensor)
 
 static int mt9m114_power_on(struct mt9m114 *sensor)
 {
-	struct device *dev = &sensor->client->dev;
 	int ret;
-
-	dev_info(dev, "power_on: starting\n");
 
 	/* Enable power and clocks. */
 	ret = regulator_bulk_enable(ARRAY_SIZE(sensor->supplies),
 				    sensor->supplies);
-	if (ret < 0) {
-		dev_err(dev, "power_on: regulator_bulk_enable failed: %d\n", ret);
+	if (ret < 0)
 		return ret;
-	}
-	dev_info(dev, "power_on: regulators enabled\n");
-
-	/*
-	 * Deassert powerdown to enable the sensor. The legacy webOS driver
-	 * controls power state entirely through the powerdown GPIO.
-	 */
-	if (sensor->powerdown) {
-		dev_info(dev, "power_on: deasserting powerdown\n");
-		gpiod_set_value(sensor->powerdown, 0);
-	}
-
-	/*
-	 * After enabling regulators and deasserting powerdown, wait for power
-	 * to stabilize before enabling clock. Legacy driver waits 20ms.
-	 */
-	usleep_range(20000, 25000);
-	dev_info(dev, "power_on: power stabilization wait complete\n");
 
 	ret = clk_prepare_enable(sensor->clk);
-	if (ret < 0) {
-		dev_err(dev, "power_on: clk_prepare_enable failed: %d\n", ret);
+	if (ret < 0)
 		goto error_regulator;
-	}
-	dev_info(dev, "power_on: clock enabled, rate=%lu Hz\n",
-		 clk_get_rate(sensor->clk));
-
-	/*
-	 * Wait for clock to stabilize before reset.
-	 * Extended to 20ms at cold boot to ensure MMCC is fully initialized
-	 * and the clock is actually outputting. Legacy driver waits 5ms,
-	 * but we observed I2C failures at cold boot with short delays.
-	 */
-	msleep(20);
-	dev_info(dev, "power_on: clock stabilization complete, rate=%lu Hz\n",
-		 clk_get_rate(sensor->clk));
 
 	/* Perform a hard reset if available, or a soft reset otherwise. */
 	if (sensor->reset) {
+		long freq = clk_get_rate(sensor->clk);
+		unsigned int duration;
+
 		/*
-		 * Assert reset for at least 1ms. The datasheet specifies a
-		 * minimum of 50 clock cycles (~2µs at 24MHz), but in practice
-		 * the sensor needs a longer pulse to reliably reset,
-		 * especially after a power cycle during runtime resume.
+		 * The minimum duration is 50 clock cycles, thus typically
+		 * around 2µs. Double it to be safe.
 		 */
-		dev_info(dev, "power_on: asserting reset for 1ms\n");
+		duration = DIV_ROUND_UP(2 * 50 * 1000000, freq);
+
 		gpiod_set_value(sensor->reset, 1);
-		usleep_range(1000, 2000);
+		fsleep(duration);
 		gpiod_set_value(sensor->reset, 0);
-		dev_info(dev, "power_on: reset released, waiting 45ms\n");
-
-		/*
-		 * After releasing reset, the sensor needs time to boot up
-		 * before it can respond to I2C commands. The datasheet
-		 * specifies a minimum of 44.5ms for internal initialization.
-		 */
-		usleep_range(44500, 50000);
-	} else if (sensor->powerdown) {
-		/*
-		 * When using powerdown GPIO, the sensor is in a fresh state
-		 * after powerdown deassert. Wait for sensor to be ready.
-		 */
-		dev_info(dev, "power_on: powerdown GPIO used, waiting 45ms\n");
-		usleep_range(44500, 50000);
-
-		/*
-		 * MT9M113 MIPI mode: Check if sensor is already initialized
-		 * (runtime resume case) or needs full initialization (cold boot).
-		 * During runtime resume from powerdown standby, the sensor
-		 * may need extra time to restore I2C functionality.
-		 */
-		if (sensor->expected_model == MT9M113_MODEL &&
-		    sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
-			u64 readback = 0;
-			int read_ret;
-			int retry;
-
-			/*
-			 * Try reading CLOCKS_CONTROL with retries to check if
-			 * sensor is responding and already initialized.
-			 * After powerdown resume, the sensor may need extra time
-			 * to restore I2C functionality.
-			 */
-			for (retry = 0; retry < 5; retry++) {
-				read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL,
-						    &readback, NULL);
-				dev_info(dev, "power_on: CLOCKS_CONTROL=0x%llx ret=%d (try %d)\n",
-					 readback, read_ret, retry + 1);
-				if (read_ret == 0)
-					break;
-				/* I2C failed, wait and retry */
-				msleep(100);
-			}
-
-			if (read_ret < 0) {
-				/*
-				 * I2C still failing after retries. The sensor
-				 * is not responding, which can happen if powerdown
-				 * GPIO isn't working or the sensor is damaged.
-				 */
-				dev_err(dev, "power_on: sensor not responding after %d retries\n",
-					retry);
-				ret = read_ret;
-				goto error_clock;
-			}
-
-			if (readback != 0) {
-				/*
-				 * Sensor already initialized (runtime resume).
-				 * Skip soft reset, just ensure MIPI settings.
-				 */
-				dev_info(dev, "power_on: sensor already init, skipping soft reset\n");
-				msleep(50); /* Brief stabilization */
-			} else {
-				/*
-				 * Cold boot or sensor not responding.
-				 * Perform soft reset and basic initialization, but
-				 * DO NOT enable MIPI output or streaming yet.
-				 *
-				 * CRITICAL: MIPI output must NOT be enabled until
-				 * CSIPHY is configured. If the sensor outputs MIPI
-				 * data before the PHY is ready, the PHY state machine
-				 * gets corrupted causing ECC/SOT errors.
-				 *
-				 * The OUTPUT_CONTROL and RESET_REGISTER writes that
-				 * enable MIPI streaming are done in s_stream() AFTER
-				 * the CSIPHY has been configured by the pipeline.
-				 */
-				dev_info(dev, "power_on: MT9M113 soft reset (MIPI disabled until s_stream)\n");
-
-				/* Soft reset */
-				cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
-					  MT9M114_RESET_SOC, &ret);
-				cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
-					  0, &ret);
-				if (ret < 0) {
-					dev_err(dev, "power_on: soft reset failed: %d\n", ret);
-					goto error_clock;
-				}
-				msleep(200); /* webOS uses 200ms delay after reset */
-
-				/*
-				 * Unlock register access via ACCESS_CTL_STAT.
-				 * webOS kernel writes 0x0982 = 0x0001 which may be
-				 * required to unlock access to MIPI registers.
-				 */
-				cci_write(sensor->regmap, MT9M114_ACCESS_CTL_STAT, 0x0001, &ret);
-				if (ret < 0)
-					dev_warn(dev, "power_on: ACCESS_CTL_STAT write failed: %d\n", ret);
-
-				/*
-				 * Enable Frame Start/End short packets per datasheet.
-				 * Bit 7 (frame_cnt_en) inserts frame counter in FS/FE
-				 * word count field, enabling proper MIPI frame sync.
-				 * This just configures WHAT to send, not WHEN to send.
-				 *
-				 * NOTE: webOS kernel did NOT configure this register,
-				 * yet camera worked. Use mt9m113_skip_short_pkt=1 to
-				 * match webOS behavior exactly for debugging.
-				 */
-				if (mt9m113_skip_short_pkt) {
-					dev_info(dev, "power_on: SKIPPING CUSTOM_SHORT_PKT write (matching webOS)\n");
-				} else {
-					cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-						  MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, &ret);
-					if (ret < 0) {
-						dev_err(dev, "power_on: CUSTOM_SHORT_PKT failed: %d\n", ret);
-						goto error_clock;
-					}
-					cci_read(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT, &readback, NULL);
-					dev_info(dev, "power_on: CUSTOM_SHORT_PKT=0x%llx (0x0080=FS/FE configured)\n", readback);
-				}
-
-				/*
-				 * NOTE: We intentionally do NOT write:
-				 * - OUTPUT_CONTROL (0x3400) - would enable MIPI output
-				 * - RESET_REGISTER (0x301A) = 0x120C - would enable streaming
-				 * These are written in s_stream() after CSIPHY is ready.
-				 */
-				dev_info(dev, "power_on: MT9M113 in standby (MIPI output disabled)\n");
-			}
-		}
 	} else {
 		/*
-		 * No reset GPIO and no powerdown GPIO - the sensor may have
-		 * been left in an unknown state. Perform soft reset.
+		 * The power may have just been turned on, we need to wait for
+		 * the sensor to be ready to accept I2C commands.
 		 */
-		dev_info(dev, "power_on: no reset/powerdown GPIO, waiting 45ms then soft reset\n");
 		usleep_range(44500, 50000);
 
 		cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL,
@@ -4549,133 +2180,9 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 			  &ret);
 
 		if (ret < 0) {
-			dev_err(dev, "power_on: Soft reset failed: %d\n", ret);
+			dev_err(&sensor->client->dev, "Soft reset failed\n");
 			goto error_clock;
 		}
-		dev_info(dev, "power_on: soft reset complete\n");
-	}
-
-	/*
-	 * MT9M113 requires MCU boot and PLL initialization before it can
-	 * respond to commands. This sequence is derived from the webOS kernel.
-	 */
-	if (sensor->expected_model == MT9M113_MODEL) {
-		u64 clocks_val = 0;
-		int read_ret;
-
-		/*
-		 * Check if sensor is already initialized by reading CLOCKS_CONTROL.
-		 * At fresh power-on, this reads 0x0. After initialization, it
-		 * reads non-zero (e.g., 0x2df). During runtime resume, the sensor
-		 * retains its configuration from boot, so we can skip MCU boot
-		 * and PLL init to avoid I2C errors on already-configured registers.
-		 */
-		read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL, &clocks_val, NULL);
-		dev_info(dev, "power_on: MT9M113 CLOCKS_CONTROL=0x%llx ret=%d\n",
-			 clocks_val, read_ret);
-
-		if (read_ret < 0) {
-			/*
-			 * I2C read failed - sensor not responding. This can happen
-			 * at cold boot if the clock isn't stable yet. Retry once
-			 * after additional delay.
-			 */
-			dev_warn(dev, "power_on: CLOCKS_CONTROL read failed, retrying after 50ms\n");
-			msleep(50);
-			read_ret = cci_read(sensor->regmap, MT9M114_CLOCKS_CONTROL, &clocks_val, NULL);
-			dev_info(dev, "power_on: MT9M113 CLOCKS_CONTROL retry=0x%llx ret=%d\n",
-				 clocks_val, read_ret);
-			if (read_ret < 0) {
-				dev_err(dev, "power_on: sensor not responding to I2C\n");
-				ret = read_ret;
-				goto error_clock;
-			}
-		}
-
-		if (clocks_val != 0) {
-			/*
-			 * Sensor is already initialized (runtime resume case).
-			 * Skip MCU boot and PLL config - just wait for stabilization.
-			 */
-			dev_info(dev, "power_on: MT9M113 already initialized, skipping MCU boot\n");
-			msleep(50);
-			goto mt9m113_init_done;
-		}
-
-		dev_info(dev, "power_on: MT9M113 MCU boot sequence starting\n");
-
-		/* Boot the MCU */
-		cci_write(sensor->regmap, MT9M114_MCU_BOOT_MODE, 0x0001, &ret);
-		if (ret < 0) {
-			dev_err(dev, "power_on: MCU_BOOT_MODE write 1 failed: %d\n", ret);
-			goto error_clock;
-		}
-		usleep_range(1000, 2000);
-		cci_write(sensor->regmap, MT9M114_MCU_BOOT_MODE, 0x0000, &ret);
-		if (ret < 0) {
-			dev_err(dev, "power_on: MCU_BOOT_MODE write 0 failed: %d\n", ret);
-			goto error_clock;
-		}
-		dev_info(dev, "power_on: MCU boot complete, waiting 200ms\n");
-		msleep(200); /* Extended delay for sensor stabilization */
-
-		/*
-		 * Note: MIPI_CONTROL and RESET_REGISTER were already configured
-		 * earlier in the power_on sequence (right after soft reset),
-		 * matching the webOS kernel initialization order.
-		 */
-
-		/*
-		 * Configure clocks and PLL - sequence from webOS kernel.
-		 * Note: PLL_CONTROL is written 3 times before PLL_DIVIDERS
-		 * as per the webOS init sequence. This appears to be required
-		 * for the sensor to accept the PLL_DIVIDERS write.
-		 */
-		dev_info(dev, "power_on: configuring PLL\n");
-		cci_write(sensor->regmap, MT9M114_CLOCKS_CONTROL, 0x00FF, &ret);
-		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x0028, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2145, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_DIVIDERS, 0x0114, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_P_DIVIDERS, 0x00F1, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2545, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x2547, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3447, &ret);
-		if (ret < 0) {
-			dev_err(dev, "power_on: PLL config phase 1 failed: %d\n", ret);
-			goto error_clock;
-		}
-		dev_info(dev, "power_on: PLL phase 1 complete, waiting for lock\n");
-		msleep(20); /* Allow PLL to lock */
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3047, &ret);
-		cci_write(sensor->regmap, MT9M114_PLL_CONTROL, 0x3046, &ret);
-		cci_write(sensor->regmap, MT9M114_RESET_AND_MISC_CONTROL, 0x0218, &ret);
-		cci_write(sensor->regmap, MT9M114_STANDBY_CONTROL, 0x002A, &ret);
-		if (ret < 0) {
-			dev_err(dev, "power_on: PLL config phase 2 failed: %d\n", ret);
-			goto error_clock;
-		}
-		dev_info(dev, "power_on: PLL phase 2 complete, stabilizing\n");
-		msleep(50); /* Wait for sensor to stabilize */
-
-		/*
-		 * Configure output FIFO control.
-		 * From webOS kernel: OFIFO_CONTROL_STATUS = 0x0003.
-		 */
-		cci_write(sensor->regmap, MT9M114_OFIFO_CONTROL_STATUS, 0x0003, &ret);
-		if (ret < 0) {
-			dev_err(dev, "power_on: OFIFO_CONTROL_STATUS failed: %d\n", ret);
-			goto error_clock;
-		}
-
-		/*
-		 * MT9M113 is now ready after MCU boot and PLL initialization.
-		 * Skip the SET_STATE poll since no command was issued - the
-		 * sensor entered its operational state automatically.
-		 */
-		dev_info(dev, "power_on: MT9M113 init complete\n");
-		goto mt9m113_init_done;
 	}
 
 	/*
@@ -4687,16 +2194,6 @@ static int mt9m114_power_on(struct mt9m114 *sensor)
 	ret = mt9m114_poll_command(sensor, MT9M114_COMMAND_REGISTER_SET_STATE);
 	if (ret < 0)
 		goto error_clock;
-
-mt9m113_init_done:
-	/*
-	 * MT9M113 uses a different command mechanism (MCU indirect via
-	 * 0x098C/0x0990) and doesn't support the MT9M114's COMMAND_REGISTER.
-	 * Skip the SET_STATE commands for MT9M113 - the sensor is already
-	 * in the proper state after MCU boot and PLL initialization.
-	 */
-	if (sensor->expected_model == MT9M113_MODEL)
-		return 0;
 
 	if (sensor->bus_cfg.bus_type == V4L2_MBUS_PARALLEL) {
 		/*
@@ -4724,31 +2221,14 @@ mt9m113_init_done:
 error_clock:
 	clk_disable_unprepare(sensor->clk);
 error_regulator:
-	/* Only disable regulators if not using powerdown GPIO control */
-	if (!sensor->powerdown)
-		regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
-				       sensor->supplies);
+	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
 	return ret;
 }
 
 static void mt9m114_power_off(struct mt9m114 *sensor)
 {
-	/*
-	 * Assert powerdown to disable the sensor. The legacy webOS driver
-	 * only toggles the powerdown GPIO and does NOT disable regulators.
-	 * Keeping regulators enabled ensures proper sensor initialization
-	 * on the next power-on cycle.
-	 */
-	if (sensor->powerdown) {
-		gpiod_set_value(sensor->powerdown, 1);
-		clk_disable_unprepare(sensor->clk);
-		/* Keep regulators enabled - only powerdown controls power */
-	} else {
-		/* No powerdown GPIO - use full power cycle */
-		clk_disable_unprepare(sensor->clk);
-		regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
-				       sensor->supplies);
-	}
+	clk_disable_unprepare(sensor->clk);
+	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
 }
 
 static int __maybe_unused mt9m114_runtime_resume(struct device *dev)
@@ -4757,33 +2237,16 @@ static int __maybe_unused mt9m114_runtime_resume(struct device *dev)
 	struct mt9m114 *sensor = ifp_to_mt9m114(sd);
 	int ret;
 
-	dev_info(dev, "runtime_resume: starting\n");
-
-	/*
-	 * MT9M113 with powerdown GPIO: Sensor was never actually suspended
-	 * (suspend is a no-op), so resume is also a no-op. The sensor stays
-	 * powered and initialized like webOS does.
-	 */
-	if (sensor->powerdown && sensor->expected_model == MT9M113_MODEL) {
-		dev_info(dev, "runtime_resume: MT9M113 already powered (no-op)\n");
-		return 0;
-	}
-
-	/* Standard power-on for other configurations */
 	ret = mt9m114_power_on(sensor);
-	if (ret) {
-		dev_err(dev, "runtime_resume: power_on failed: %d\n", ret);
+	if (ret)
 		return ret;
-	}
 
 	ret = mt9m114_initialize(sensor);
 	if (ret) {
-		dev_err(dev, "runtime_resume: initialize failed: %d\n", ret);
 		mt9m114_power_off(sensor);
 		return ret;
 	}
 
-	dev_info(dev, "runtime_resume: complete\n");
 	return 0;
 }
 
@@ -4792,26 +2255,6 @@ static int __maybe_unused mt9m114_runtime_suspend(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct mt9m114 *sensor = ifp_to_mt9m114(sd);
 
-	dev_info(dev, "runtime_suspend: starting\n");
-
-	/*
-	 * MT9M113 with powerdown GPIO: Keep sensor powered like webOS does.
-	 * The legacy webOS driver never suspends the camera between streaming
-	 * sessions - it keeps it initialized and ready. Runtime PM suspend
-	 * causes issues because:
-	 * - Powerdown GPIO toggling makes I2C unresponsive on resume
-	 * - Soft standby via SYS_STATE doesn't work reliably on MT9M113
-	 * - SYSMGR_CURRENT_STATE reads 0x0 instead of expected values
-	 *
-	 * Just return success without actually suspending the sensor.
-	 */
-	if (sensor->powerdown && sensor->expected_model == MT9M113_MODEL) {
-		dev_info(dev, "runtime_suspend: MT9M113 stays powered (no-op)\n");
-		return 0;
-	}
-
-	/* Standard power-off for other configurations */
-	dev_info(dev, "runtime_suspend: powering off\n");
 	mt9m114_power_off(sensor);
 
 	return 0;
@@ -4889,18 +2332,7 @@ static int mt9m114_identify(struct mt9m114 *sensor)
 		return -ENXIO;
 	}
 
-	switch (value) {
-	case MT9M113_MODEL:
-		sensor->model = MT9M113_MODEL;
-		dev_info(&sensor->client->dev, "Detected MT9M113 chip ID 0x%04llx\n",
-			 value);
-		break;
-	case MT9M114_MODEL:
-		sensor->model = MT9M114_MODEL;
-		dev_info(&sensor->client->dev, "Detected MT9M114 chip ID 0x%04llx\n",
-			 value);
-		break;
-	default:
+	if (value != 0x2481) {
 		dev_err(&sensor->client->dev, "Invalid chip ID 0x%04llx\n",
 			value);
 		return -ENXIO;
@@ -4983,7 +2415,6 @@ static int mt9m114_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	sensor->client = client;
-	sensor->expected_model = (uintptr_t)device_get_match_data(dev);
 
 	sensor->regmap = devm_cci_regmap_init_i2c(client, 16);
 	if (IS_ERR(sensor->regmap)) {
@@ -5007,19 +2438,6 @@ static int mt9m114_probe(struct i2c_client *client)
 	if (IS_ERR(sensor->reset)) {
 		ret = PTR_ERR(sensor->reset);
 		dev_err_probe(dev, ret, "Failed to get reset GPIO\n");
-		goto error_ep_free;
-	}
-
-	/*
-	 * Powerdown GPIO controls the sensor power state. When asserted (high),
-	 * the sensor is powered down. When deasserted (low), the sensor is
-	 * enabled. This matches the legacy webOS driver behavior.
-	 */
-	sensor->powerdown = devm_gpiod_get_optional(dev, "powerdown",
-						    GPIOD_OUT_HIGH);
-	if (IS_ERR(sensor->powerdown)) {
-		ret = PTR_ERR(sensor->powerdown);
-		dev_err_probe(dev, ret, "Failed to get powerdown GPIO\n");
 		goto error_ep_free;
 	}
 
@@ -5127,7 +2545,7 @@ static void mt9m114_remove(struct i2c_client *client)
 }
 
 static const struct of_device_id mt9m114_of_ids[] = {
-	{ .compatible = "onnn,mt9m114", .data = (void *)MT9M114_MODEL },
+	{ .compatible = "onnn,mt9m114" },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, mt9m114_of_ids);
