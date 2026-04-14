@@ -1109,7 +1109,10 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
 			return ret;
 	}
 
-	/* Disable MIPI output until streaming starts */
+	/*
+	 * Disable MIPI output until streaming starts.
+	 * The VFE must be configured and ready before sensor outputs data.
+	 */
 	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
 	if (ret < 0)
 		return ret;
@@ -1384,6 +1387,16 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		u64 seq_state;
 		int i;
 
+		/*
+		 * Enable MIPI output FIRST (matching webOS set_sensor_mode order).
+		 * WebOS enables OUTPUT_CONTROL before SEQ_CMD_RUN.
+		 */
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				output_ctrl_val, NULL);
+		if (ret)
+			goto error;
+		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
+
 		/* Step 1: Enter preview mode (Context A) first */
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 		if (ret)
@@ -1468,6 +1481,18 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		msleep(200);
 	} else {
 		/* Context A: Simple preview mode */
+
+		/*
+		 * Enable MIPI output FIRST (matching webOS set_sensor_mode order).
+		 * WebOS enables OUTPUT_CONTROL before SEQ_CMD_RUN. The VFE is
+		 * already configured and waiting for frames at this point.
+		 */
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				output_ctrl_val, NULL);
+		if (ret)
+			goto error;
+		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
+
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 		if (ret)
 			goto error;
@@ -1497,19 +1522,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		msleep(20);
 	}
 
-	/*
-	 * Enable MIPI output AFTER the MCU sequencer has started.
-	 * This is critical - enabling MIPI before SEQ_CMD causes the
-	 * sensor to output data before the sequencer is ready, which
-	 * corrupts the MCU state and causes SEQ_CMD timeouts.
-	 */
-	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
-			output_ctrl_val, NULL);
-	if (ret)
-		goto error;
-
-	dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x written, streaming started\n",
-		 output_ctrl_val);
+	dev_info(dev, "MT9M113: streaming started\n");
 
 	sensor->streaming = true;
 	return 0;
