@@ -1732,7 +1732,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			ret = mt9m113_write_mcu_var(sensor,
 						    MT9M113_SENSOR_READ_MODE_B,
 						    mode_b);
-		if (!ret) {
+		/* Only refresh if streaming - otherwise MCU may not be ready */
+		if (!ret && sensor->streaming) {
 			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					      MT9M113_SEQ_CMD_REFRESH);
 			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
@@ -1767,7 +1768,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			ret = mt9m113_write_mcu_var(sensor,
 						    MT9M113_SENSOR_READ_MODE_B,
 						    mode_b);
-		if (!ret) {
+		/* Only refresh if streaming - otherwise MCU may not be ready */
+		if (!ret && sensor->streaming) {
 			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					      MT9M113_SEQ_CMD_REFRESH);
 			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
@@ -1808,8 +1810,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			if (!ret)
 				ret = mt9m113_write_mcu_var(sensor, 0x275B, effect);
 
-			/* Issue REFRESH to apply the effect change */
-			if (!ret) {
+			/* Only refresh if streaming - otherwise MCU may not be ready */
+			if (!ret && sensor->streaming) {
 				mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 						      MT9M113_SEQ_CMD_REFRESH);
 				mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
@@ -1849,7 +1851,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_SATURATION:
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_AWB_SATURATION,
 					    ctrl->val);
-		if (!ret) {
+		/* Only refresh if streaming - otherwise MCU may not be ready */
+		if (!ret && sensor->streaming) {
 			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					      MT9M113_SEQ_CMD_REFRESH);
 			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
