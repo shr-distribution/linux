@@ -1103,6 +1103,16 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	if (ret)
 		return ret;
 
+	/*
+	 * Exit standby mode if we were in standby from a previous stop.
+	 * This ensures the MCU is in a clean state before we start streaming.
+	 */
+	ret = mt9m113_standby_exit(sensor);
+	if (ret < 0) {
+		dev_warn(dev, "MT9M113: standby exit failed: %d\n", ret);
+		/* Continue anyway - sensor might not have been in standby */
+	}
+
 	/* MCU health check */
 	{
 		u64 health_check;
@@ -1316,11 +1326,30 @@ error:
 static int mt9m113_stop_streaming(struct mt9m113 *sensor)
 {
 	struct device *dev = &sensor->client->dev;
+	int ret;
 
 	sensor->streaming = false;
 
-	/* Disable MIPI output */
+	/* Disable MIPI output first */
 	cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
+
+	/*
+	 * Wait for any pending SEQ_CMD to complete before entering standby.
+	 * If we enter standby while MCU is processing a command, it may
+	 * get stuck in an inconsistent state on next streaming attempt.
+	 */
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	if (ret < 0)
+		dev_warn(dev, "MT9M113: SEQ_CMD did not complete before stop\n");
+
+	/*
+	 * Enter standby mode to cleanly stop the MCU sequencer.
+	 * This puts the sensor in a known state for the next streaming start.
+	 */
+	ret = mt9m113_standby_enter(sensor);
+	if (ret < 0)
+		dev_warn(dev, "MT9M113: standby enter failed: %d\n", ret);
+
 	dev_info(dev, "MT9M113: streaming stopped\n");
 
 	pm_runtime_put_autosuspend(dev);
