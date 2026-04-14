@@ -212,6 +212,7 @@ struct mt9m113 {
 	struct v4l2_fwnode_endpoint bus_cfg;
 
 	unsigned int pixrate;
+	s64 link_freq;
 	bool streaming;
 
 	/* Pixel Array sub-device */
@@ -1107,6 +1108,18 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	/* Wait for CSIPHY stabilization */
 	msleep(mt9m113_pre_mipi_delay_ms);
 
+	/* Configure IFP output format (YUV/RGB/Bayer) based on selected format */
+	{
+		const struct mt9m113_format_info *info;
+
+		info = mt9m113_format_info(format->code);
+		ret = mt9m113_write_mcu_var(sensor, 0xc86c, info->output_format);
+		if (ret) {
+			dev_err(dev, "Failed to set output format: %d\n", ret);
+			goto error;
+		}
+	}
+
 	/* Configure MIPI output based on source pad format */
 	{
 		bool is_bayer = (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
@@ -1160,10 +1173,12 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	 * only used in capture mode (bit 1 = 0).
 	 */
 	if (use_context_b) {
-		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0002);
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0002);
 	} else {
-		mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 	}
+	if (ret)
+		goto error;
 
 	msleep(40);
 
@@ -1853,9 +1868,12 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 
 	case V4L2_CID_EXPOSURE:
-		/* Write coarse integration time (Context A register) */
+		/* Write coarse integration time to both contexts */
 		ret = cci_write(sensor->regmap, MT9M113_COARSE_IT_TIME_A,
 				ctrl->val, NULL);
+		if (!ret)
+			ret = cci_write(sensor->regmap, MT9M113_COARSE_IT_TIME_B,
+					ctrl->val, NULL);
 		break;
 
 	case V4L2_CID_ANALOGUE_GAIN:
@@ -2219,9 +2237,10 @@ static int mt9m113_probe(struct i2c_client *client)
 			  V4L2_CID_HFLIP, 0, 1, 1, 0);
 	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
 			  V4L2_CID_VFLIP, 0, 1, 1, 0);
+	/* COLORFX: mask out unsupported effects 4-12 (EMBOSS through SILHOUETTE) */
 	v4l2_ctrl_new_std_menu(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
 			       V4L2_CID_COLORFX,
-			       V4L2_COLORFX_SOLARIZATION, 0,
+			       V4L2_COLORFX_SOLARIZATION, 0x1ff0,
 			       V4L2_COLORFX_NONE);
 	v4l2_ctrl_new_std_menu(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
 			       V4L2_CID_POWER_LINE_FREQUENCY,
@@ -2246,8 +2265,7 @@ static int mt9m113_probe(struct i2c_client *client)
 	 * MT9M113: 1 lane, YUV422 16bpp -> link_freq = pixel_rate * 8
 	 */
 	{
-		static s64 default_link_freq;
-		struct v4l2_ctrl *link_freq;
+		struct v4l2_ctrl *link_freq_ctrl;
 		const s64 *frequencies;
 		unsigned int nfreqs;
 
@@ -2256,18 +2274,18 @@ static int mt9m113_probe(struct i2c_client *client)
 			nfreqs = sensor->bus_cfg.nr_of_link_frequencies;
 		} else {
 			/* Default: pixel_rate * 8 for 1-lane YUV422 */
-			default_link_freq = (s64)sensor->pixrate * 8;
-			frequencies = &default_link_freq;
+			sensor->link_freq = (s64)sensor->pixrate * 8;
+			frequencies = &sensor->link_freq;
 			nfreqs = 1;
 			dev_info(dev, "MT9M113: using default link freq %lld Hz\n",
-				 default_link_freq);
+				 sensor->link_freq);
 		}
 
-		link_freq = v4l2_ctrl_new_int_menu(&sensor->ifp.hdl, NULL,
-						   V4L2_CID_LINK_FREQ,
-						   nfreqs - 1, 0, frequencies);
-		if (link_freq)
-			link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+		link_freq_ctrl = v4l2_ctrl_new_int_menu(&sensor->ifp.hdl, NULL,
+							V4L2_CID_LINK_FREQ,
+							nfreqs - 1, 0, frequencies);
+		if (link_freq_ctrl)
+			link_freq_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 	}
 
 	/* Pixel rate control */
@@ -2315,7 +2333,6 @@ error_pa_subdev:
 	v4l2_subdev_cleanup(&sensor->pa.sd);
 error_pa_hdl:
 	v4l2_ctrl_handler_free(&sensor->pa.hdl);
-error_pa_entity:
 	media_entity_cleanup(&sensor->pa.sd.entity);
 error_power_off:
 	mt9m113_power_off(sensor);
