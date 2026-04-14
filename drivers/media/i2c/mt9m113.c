@@ -1351,32 +1351,11 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	 * - Bit 1 = 0: Capture mode - returns to preview after N frames
 	 * - Bit 1 = 1: Video mode - stays in Context B until explicit switch
 	 *
-	 * For V4L2 continuous streaming, we use video mode (0x0002) so the
-	 * sequencer stays in Context B indefinitely. SEQ_CAP_NUM_FRAMES is
-	 * only used in capture mode (bit 1 = 0).
-	 */
-	if (use_context_b) {
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0002);
-	} else {
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
-	}
-	if (ret)
-		goto error;
-
-	msleep(40);
-
-	/*
-	 * Issue SEQ_CMD to start streaming.
-	 *
-	 * SEQ_CMD_RUN (0x01): Continue streaming in current context
-	 * SEQ_CMD_CAPTURE (0x02): Switch to Context B and capture
-	 *
-	 * For Context B, we use CAPTURE to trigger the context switch, but
-	 * with SEQ_CAP_NUM_FRAMES=0 for infinite/continuous streaming.
-	 * For Context A, we use RUN for continuous preview.
+	 * For Context A (preview), use 0x0030 for continuous preview.
+	 * For Context B (capture), use 0x0002 for video mode (stays in B).
 	 */
 
-	/* Ensure MCU is idle before issuing RUN/CAPTURE command */
+	/* Ensure MCU is idle before issuing any command */
 	ret = mt9m113_seq_cmd_ready(sensor);
 	if (ret < 0) {
 		dev_err(dev, "MT9M113: MCU not ready for streaming command\n");
@@ -1385,56 +1364,86 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 
 	/* Debug: dump MCU state before issuing SEQ_CMD */
 	{
-		u64 seq_state, seq_cmd, standby_ctrl, mode_config;
+		u64 seq_state, seq_cmd, standby_ctrl;
 
 		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
 		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
 		cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_ctrl, NULL);
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, &mode_config);
-		dev_info(dev, "MT9M113: PRE-CMD state: SEQ_STATE=0x%llx SEQ_CMD=0x%llx STANDBY=0x%llx CAP_MODE=0x%llx\n",
-			 seq_state, seq_cmd, standby_ctrl, mode_config);
+		dev_info(dev, "MT9M113: PRE-CMD state: SEQ_STATE=0x%llx SEQ_CMD=0x%llx STANDBY=0x%llx\n",
+			 seq_state, seq_cmd, standby_ctrl);
 	}
 
-	if (use_context_b) {
-		dev_info(dev, "MT9M113: Writing SEQ_CMD_CAPTURE (0x02)\n");
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					    MT9M113_SEQ_CMD_CAPTURE);
-	} else {
-		dev_info(dev, "MT9M113: Writing SEQ_CMD_RUN (0x01)\n");
-		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					    MT9M113_SEQ_CMD_RUN);
-	}
-	if (ret)
-		goto error;
-
-	/* Debug: immediate read-back of SEQ_CMD */
-	{
-		u64 seq_cmd_readback, seq_state_readback;
-
-		usleep_range(1000, 2000);  /* Small delay for MCU to react */
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd_readback);
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state_readback);
-		dev_info(dev, "MT9M113: POST-CMD (1ms): SEQ_CMD=0x%llx SEQ_STATE=0x%llx\n",
-			 seq_cmd_readback, seq_state_readback);
-	}
-
-	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-	if (ret < 0) {
-		u64 seq_cmd_final, seq_state_final, standby_final;
-
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd_final);
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state_final);
-		cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_final, NULL);
-		dev_err(dev, "MT9M113: SEQ_CMD poll failed! SEQ_CMD=0x%llx SEQ_STATE=0x%llx STANDBY=0x%llx\n",
-			seq_cmd_final, seq_state_final, standby_final);
-		/* Continue anyway - webOS doesn't fail here */
-	}
-
-	/* Wait for context switch if using Context B */
+	/*
+	 * For Context B, we must first enter stable preview mode.
+	 * The webOS driver always enters preview first, then switches to
+	 * capture. Issuing SEQ_CMD_CAPTURE directly from standby/init
+	 * doesn't work - the MCU needs to be in stable preview state
+	 * (SEQ_STATE=0x04) before it can process CAPTURE.
+	 */
 	if (use_context_b) {
 		u64 seq_state;
 		int i;
 
+		/* Step 1: Enter preview mode (Context A) first */
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
+		if (ret)
+			goto error;
+		msleep(40);
+
+		dev_info(dev, "MT9M113: Entering preview mode first (SEQ_CMD_RUN)\n");
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					    MT9M113_SEQ_CMD_RUN);
+		if (ret)
+			goto error;
+
+		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+		if (ret < 0)
+			dev_warn(dev, "MT9M113: SEQ_CMD_RUN did not complete\n");
+
+		/* Step 2: Wait for stable preview state (SEQ_STATE=0x04) */
+		for (i = 0; i < 100; i++) {
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
+			if (seq_state == 0x04)
+				break;
+			msleep(10);
+		}
+
+		if (seq_state != 0x04) {
+			dev_warn(dev, "MT9M113: Preview state not reached (SEQ_STATE=0x%llx), continuing anyway\n",
+				 seq_state);
+		} else {
+			dev_info(dev, "MT9M113: Reached stable preview (SEQ_STATE=0x04)\n");
+		}
+
+		/* Step 3: Now switch to video mode (Context B) */
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0002);
+		if (ret)
+			goto error;
+		msleep(40);
+
+		ret = mt9m113_seq_cmd_ready(sensor);
+		if (ret < 0) {
+			dev_err(dev, "MT9M113: MCU not ready for CAPTURE command\n");
+			goto error;
+		}
+
+		dev_info(dev, "MT9M113: Switching to Context B (SEQ_CMD_CAPTURE)\n");
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					    MT9M113_SEQ_CMD_CAPTURE);
+		if (ret)
+			goto error;
+
+		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+		if (ret < 0) {
+			u64 seq_cmd_final, seq_state_final;
+
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd_final);
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state_final);
+			dev_err(dev, "MT9M113: SEQ_CMD_CAPTURE poll failed! SEQ_CMD=0x%llx SEQ_STATE=0x%llx\n",
+				seq_cmd_final, seq_state_final);
+		}
+
+		/* Step 4: Wait for capture state (SEQ_STATE=0x07) */
 		for (i = 0; i < 100; i++) {
 			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
 			if (seq_state == 0x07)
@@ -1443,18 +1452,44 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		}
 
 		if (seq_state != 0x07) {
-			dev_err(dev, "MT9M113: Context B switch failed\n");
+			dev_err(dev, "MT9M113: Context B switch failed (SEQ_STATE=0x%llx)\n",
+				seq_state);
 			ret = -ETIMEDOUT;
 			goto error;
 		}
+
+		dev_info(dev, "MT9M113: Reached capture state (SEQ_STATE=0x07)\n");
+
 		/*
 		 * Wait for sensor to fully switch to Context B output.
 		 * The sequencer state reaches 0x07 (capture) but the sensor
 		 * pipeline needs additional time to reconfigure for 1280x1024.
-		 * Without this delay, first frames may still contain 640x480 data.
 		 */
 		msleep(200);
 	} else {
+		/* Context A: Simple preview mode */
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
+		if (ret)
+			goto error;
+		msleep(40);
+
+		dev_info(dev, "MT9M113: Writing SEQ_CMD_RUN (0x01)\n");
+		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+					    MT9M113_SEQ_CMD_RUN);
+		if (ret)
+			goto error;
+
+		ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+		if (ret < 0) {
+			u64 seq_cmd_final, seq_state_final, standby_final;
+
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd_final);
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state_final);
+			cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_final, NULL);
+			dev_err(dev, "MT9M113: SEQ_CMD poll failed! SEQ_CMD=0x%llx SEQ_STATE=0x%llx STANDBY=0x%llx\n",
+				seq_cmd_final, seq_state_final, standby_final);
+		}
+
 		msleep(20);
 	}
 
