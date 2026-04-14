@@ -1107,7 +1107,13 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			ret = -ETIMEDOUT;
 			goto error;
 		}
-		msleep(50);
+		/*
+		 * Wait for sensor to fully switch to Context B output.
+		 * The sequencer state reaches 0x07 (capture) but the sensor
+		 * pipeline needs additional time to reconfigure for 1280x1024.
+		 * Without this delay, first frames may still contain 640x480 data.
+		 */
+		msleep(200);
 	} else {
 		msleep(20);
 	}
