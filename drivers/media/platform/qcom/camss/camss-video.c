@@ -765,11 +765,16 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 				y_size, cbcr_size, total, pix_mp->plane_fmt[i].sizeimage,
 				actual_stride, stride_factor, vsub_num, vsub_den);
 		} else {
+			/*
+			 * Default path for formats like NV16 where vsub_num=1.
+			 * Still need to apply stride_factor for VFE31 stride fix.
+			 */
+			u32 actual_bpl = bpl * stride_factor;
 			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
-				vsub_num * vsub_den * bpl;
-			pr_info("camss-video: sizeimage default path: %u (h=%u vsub=%u/%u bpl=%u)\n",
+				vsub_num * vsub_den * actual_bpl;
+			pr_info("camss-video: sizeimage default path: %u (h=%u vsub=%u/%u bpl=%u sf=%u)\n",
 				pix_mp->plane_fmt[i].sizeimage, pix_mp->height,
-				vsub_num, vsub_den, bpl);
+				vsub_num, vsub_den, actual_bpl, stride_factor);
 		}
 	}
 
