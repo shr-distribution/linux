@@ -583,9 +583,9 @@ MODULE_PARM_DESC(vfe31_irq_comp_mask,
  * 2 = force output stride (bytesperline)
  * >2 = use this value directly as stride in bytes
  *
- * NOTE: With COMPOSITE_DONE-based frame completion, output stride (mode 2)
- * should work correctly for NV12. Use vfe31_nv12_stride_fix to enable/disable
- * the legacy workaround that forces input stride for NV12 format.
+ * NOTE: Auto mode (0) uses input stride for PIX/VIDEO (required for full
+ * frame capture) and output stride for RDI. Mode 2 forces output stride
+ * but may cause half-frame capture for semi-planar formats.
  */
 static int vfe31_image_stride = 0;
 module_param(vfe31_image_stride, int, 0644);
@@ -606,25 +606,6 @@ static int vfe31_cbcr_stride = 0;
 module_param(vfe31_cbcr_stride, int, 0644);
 MODULE_PARM_DESC(vfe31_cbcr_stride,
 		 "VFE31 CbCr WM IMAGE_SIZE stride (0=auto/output, 1=input, 2=output, >2=custom bytes)");
-
-/*
- * NV12 stride workaround control:
- *   0 = Disabled - use bytesperline stride (default, works with COMPOSITE_DONE)
- *   1 = Enabled - force input stride (legacy workaround, causes CbCr issues)
- *
- * When enabled, forces Y WM IMAGE_SIZE to use input stride (width*2) instead
- * of bytesperline. This was originally a workaround for half-frame capture
- * with ping-pong transition detection. However, with COMPOSITE_DONE based
- * frame completion, bytesperline stride works correctly.
- *
- * IMPORTANT: When stride_fix=1, Y data spans width*2*height bytes but the
- * CbCr offset is calculated from bytesperline*height, causing CbCr to be
- * placed in the middle of the Y plane. Leave disabled (0) unless testing.
- */
-int vfe31_nv12_stride_fix = 0;
-module_param(vfe31_nv12_stride_fix, int, 0644);
-MODULE_PARM_DESC(vfe31_nv12_stride_fix,
-		 "VFE31 NV12 stride fix: 0=disabled (default), 1=force input stride");
 
 /*
  * VFE31 single-buffer mode:
@@ -788,8 +769,12 @@ static inline bool vfe31_is_semiplanar_format(u32 pixelformat)
  * Helper to calculate IMAGE_SIZE stride for Y WMs.
  * Returns stride in bytes.
  *
- * For semi-planar formats (NV12/NV16): stride = bytesperline (1 byte/pixel)
- * For packed formats (UYVY): stride = width * 2 (2 bytes/pixel)
+ * In PIX/VIDEO mode, IMAGE_SIZE stride must match UB_CFG depth calculation
+ * (both use input UYVY stride = width*2). Using output bytesperline for
+ * semi-planar formats causes IMAGE_SIZE/UB_CFG mismatch and half-frame capture.
+ *
+ * RDI mode: use bytesperline (raw data pass-through, no DEMUX processing)
+ * PIX/VIDEO mode: use width*2 (input UYVY stride, regardless of output format)
  */
 static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline,
 					  bool is_rdi, u32 pixelformat)
@@ -797,14 +782,14 @@ static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline,
 	if (vfe31_image_stride > 2)
 		return (u16)vfe31_image_stride;
 	else if (vfe31_image_stride == 1)
-		return width * 2;  /* Force packed stride */
+		return width * 2;  /* Force input stride */
 	else if (vfe31_image_stride == 2)
-		return bytesperline;  /* Force V4L2 stride */
+		return bytesperline;  /* Force output stride */
 	else {
-		/* Auto: use bytesperline for semi-planar, width*2 for packed */
+		/* Auto: RDI uses bytesperline, PIX/VIDEO uses input stride */
 		if (is_rdi)
 			return bytesperline;
-		return vfe31_is_semiplanar_format(pixelformat) ? bytesperline : (width * 2);
+		return width * 2;  /* PIX/VIDEO: always use input UYVY stride */
 	}
 }
 
@@ -3663,30 +3648,14 @@ static int vfe31_enable(struct vfe_line *line)
 	 * Upper 16 bits: stride / 16 (128-bit words per line)
 	 * Lower 16 bits: ((height - 1) << 4) | 2
 	 *
-	 * NOTE: Previous workaround forced input stride (1280) for NV12 to avoid
-	 * half-frame capture with PP transition detection. With COMPOSITE_DONE
-	 * based frame completion, output stride (640) should work correctly.
-	 * Use vfe31_nv12_stride_fix module param to test both modes.
+	 * For PIX/VIDEO mode, IMAGE_SIZE stride must match UB_CFG depth (both
+	 * use input UYVY stride = width*2). vfe31_calc_image_stride handles
+	 * this automatically for non-RDI modes.
 	 */
 	{
 		u16 image_stride = vfe31_calc_image_stride(width, bytesperline,
 							   is_rdi_line, pix->pixelformat);
 		int img_height_val;
-		bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
-
-		/*
-		 * Semi-planar stride workaround (controlled by vfe31_nv12_stride_fix):
-		 * When enabled, force input stride for all semi-planar formats to
-		 * avoid half-frame capture. The VFE31's Y output is tied to input
-		 * stride timing - using output stride causes only half the lines
-		 * to be captured for both NV12 and NV16.
-		 */
-		if (vfe31_nv12_stride_fix && is_semi_planar && !is_rdi_line && image_stride < width * 2) {
-			dev_info(vfe->camss->dev,
-				 "VFE31: Semi-planar stride fix, forcing stride=%d→%d\n",
-				 image_stride, width * 2);
-			image_stride = width * 2;
-		}
 
 		if (vfe31_pix_y_img_height < 0)
 			img_height_val = height;  /* auto */
@@ -3695,9 +3664,8 @@ static int vfe31_enable(struct vfe_line *line)
 
 		reg = ((image_stride / 16) & 0xFFFF) << 16;
 		reg |= ((img_height_val - 1) << 4) | 2;
-		dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d%s)\n",
-			 y_wm, image_stride, img_height_val, vfe31_image_stride, vfe31_pix_y_img_height,
-			 is_semi_planar ? " semi-planar" : "");
+		dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d)\n",
+			 y_wm, image_stride, img_height_val, vfe31_image_stride, vfe31_pix_y_img_height);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(y_wm));
 	}
 
@@ -3716,13 +3684,12 @@ static int vfe31_enable(struct vfe_line *line)
 	 */
 	{
 		int lines_val, burst_val;
-		bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
 
-		/* Use input stride for semi-planar with stride fix, else output stride */
-		if (vfe31_nv12_stride_fix && is_semi_planar && !is_rdi_line)
-			wpl = (width * 2) / 4;  /* Input stride in 32-bit words */
-		else
-			wpl = bytesperline / 4;  /* Output stride in 32-bit words */
+		/*
+		 * Burst controls actual DMA write size, use bytesperline (output stride).
+		 * This differs from IMAGE_SIZE which uses input stride for VFE timing.
+		 */
+		wpl = bytesperline / 4;  /* Output stride in 32-bit words */
 
 		/* Lines field: 0 for single-plane, height-24 for multi-plane Y */
 		if (vfe31_pix_y_lines < 0)
@@ -3819,13 +3786,12 @@ static int vfe31_enable(struct vfe_line *line)
 		/*
 		 * CbCr plane offset = Y plane size in memory.
 		 *
-		 * With stride_fix=0 (default), Y WM uses bytesperline stride.
 		 * Y plane size = bytesperline * height = 640 * 480 = 307200 bytes.
 		 * CbCr immediately follows Y at this offset.
 		 *
-		 * WARNING: If stride_fix=1 is enabled, Y WM uses width*2 stride,
-		 * so Y spans width*2*height bytes, but this calculation would be
-		 * wrong. Keep stride_fix=0 for correct semi-planar buffer layout.
+		 * Note: stride_fix affects IMAGE_SIZE register (VFE internal timing)
+		 * but actual DMA uses bytesperline stride, so this offset is correct
+		 * regardless of stride_fix setting.
 		 */
 		y_plane_size = bytesperline * height;
 		cbcr_offset = y_plane_size;
@@ -5707,18 +5673,6 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				u16 image_stride = vfe31_calc_image_stride(width, bytesperline,
 									   false, pix->pixelformat);
 				int img_height_val;
-				bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
-
-				/*
-				 * Semi-planar stride workaround (controlled by vfe31_nv12_stride_fix).
-				 * See PIX mode IMAGE_SIZE comment for detailed explanation.
-				 */
-				if (vfe31_nv12_stride_fix && is_semi_planar && image_stride < width * 2) {
-					dev_info(vfe->camss->dev,
-						 "VFE31: VIDEO semi-planar stride fix, forcing stride=%d→%d\n",
-						 image_stride, width * 2);
-					image_stride = width * 2;
-				}
 
 				if (vfe31_video_y_img_height < 0)
 					img_height_val = height;  /* auto */
@@ -5728,28 +5682,19 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				reg = ((image_stride / 16) & 0xFFFF) << 16;
 				reg |= ((img_height_val - 1) << 4) | 2;
 				dev_info(vfe->camss->dev,
-					 "VFE31: VIDEO WM1 IMAGE_SIZE stride=%d height=%d (h_param=%d%s)\n",
-					 image_stride, img_height_val, vfe31_video_y_img_height,
-					 is_semi_planar ? " semi-planar" : "");
+					 "VFE31: VIDEO WM1 IMAGE_SIZE stride=%d height=%d (h_param=%d)\n",
+					 image_stride, img_height_val, vfe31_video_y_img_height);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_Y));
 			}
 
 			/*
 			 * VIDEO Y WM ADDR_CFG - VFE31 format:
-			 * For semi-planar with stride fix: use INPUT stride (width * 2).
-			 * For other formats: use bytesperline (OUTPUT stride).
+			 * Burst controls actual DMA write size, use bytesperline (output stride).
 			 */
 			{
 				int lines_val, burst_val;
-				bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
-				u32 buf_wpl;
-
-				/* Use input stride for semi-planar with stride fix, else output stride */
-				if (vfe31_nv12_stride_fix && is_semi_planar)
-					buf_wpl = (width * 2) / 4;  /* Input stride in 32-bit words */
-				else
-					buf_wpl = bytesperline / 4;  /* Output stride in 32-bit words */
+				u32 buf_wpl = bytesperline / 4;  /* Output stride in 32-bit words */
 
 				if (vfe31_video_y_lines < 0)
 					lines_val = height - 24;  /* auto: same as CbCr */
