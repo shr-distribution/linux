@@ -3812,19 +3812,15 @@ static int vfe31_enable(struct vfe_line *line)
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(cbcr_wm));
 
 		/*
-		 * CbCr WM IMAGE_SIZE - stride must match actual output format
+		 * CbCr WM IMAGE_SIZE - MUST use INPUT stride, not output stride!
 		 *
-		 * Uses vfe31_cbcr_stride module param for control:
-		 *   0 = auto (bytesperline for output format)
-		 *   1 = force input stride (width * 2)
-		 *   2 = force output stride (bytesperline)
-		 *   >2 = explicit byte value
-		 *
-		 * For NV16 at high resolutions, using input stride (width*2) causes
-		 * horizontal line artifacts due to stride mismatch with actual buffer.
+		 * webOS uses stride=1280 for both Y and CbCr IMAGE_SIZE, even though
+		 * CbCr only writes 640 bytes per line (controlled by burst in ADDR_CFG).
+		 * The IMAGE_SIZE stride must match UB_CFG depth calculation (both use
+		 * input stride) or the hardware gets confused and only writes half the lines.
 		 */
 		{
-			u16 cbcr_img_stride = vfe31_calc_cbcr_stride(width, bytesperline);
+			u16 input_stride = width * 2;  /* UYVY input stride, same as Y */
 			int img_height_val;
 
 			if (vfe31_pix_cbcr_img_height < 0)
@@ -3832,11 +3828,11 @@ static int vfe31_enable(struct vfe_line *line)
 			else
 				img_height_val = vfe31_pix_cbcr_img_height;  /* explicit */
 
-			reg = ((cbcr_img_stride / 16) & 0xFFFF) << 16;
+			reg = ((input_stride / 16) & 0xFFFF) << 16;
 			reg |= ((img_height_val - 1) << 4) | 2;
 			dev_info(vfe->camss->dev,
 				 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d s_param=%d h_param=%d)\n",
-				 cbcr_wm, reg, cbcr_img_stride, img_height_val, vfe31_cbcr_stride, vfe31_pix_cbcr_img_height);
+				 cbcr_wm, reg, input_stride, img_height_val, vfe31_cbcr_stride, vfe31_pix_cbcr_img_height);
 			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(cbcr_wm));
 		}
 
@@ -5784,14 +5780,13 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
 
 				/*
-				 * VIDEO CbCr IMAGE_SIZE - use vfe31_cbcr_stride param
+				 * VIDEO CbCr IMAGE_SIZE - MUST use INPUT stride (same as Y WM)
 				 *
-				 * Uses same stride calculation as PIX mode for consistency.
-				 * For NV16 at high resolutions, using input stride (width*2)
-				 * causes horizontal line artifacts due to stride mismatch.
+				 * webOS uses stride=1280 for both Y and CbCr IMAGE_SIZE.
+				 * IMAGE_SIZE stride must match UB_CFG depth or hardware fails.
 				 */
 				{
-					u16 cbcr_img_stride = vfe31_calc_cbcr_stride(width, bytesperline);
+					u16 input_stride = width * 2;  /* UYVY input stride */
 					int img_height_val;
 
 					if (vfe31_video_cbcr_img_height < 0)
@@ -5799,11 +5794,11 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 					else
 						img_height_val = vfe31_video_cbcr_img_height;  /* explicit */
 
-					reg = ((cbcr_img_stride / 16) & 0xFFFF) << 16;
+					reg = ((input_stride / 16) & 0xFFFF) << 16;
 					reg |= ((img_height_val - 1) << 4) | 2;
 					dev_info(vfe->camss->dev,
 						 "VFE31: VIDEO WM5 IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d)\n",
-						 cbcr_img_stride, img_height_val, vfe31_cbcr_stride, vfe31_video_cbcr_img_height);
+						 input_stride, img_height_val, vfe31_cbcr_stride, vfe31_video_cbcr_img_height);
 				}
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
