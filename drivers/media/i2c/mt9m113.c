@@ -41,10 +41,10 @@ module_param(mt9m113_pre_mipi_delay_ms, int, 0644);
 MODULE_PARM_DESC(mt9m113_pre_mipi_delay_ms,
 		 "Delay (ms) before enabling MIPI output (default 10)");
 
-static int mt9m113_cont_mipi_clk = 1;
+static int mt9m113_cont_mipi_clk;
 module_param(mt9m113_cont_mipi_clk, int, 0644);
 MODULE_PARM_DESC(mt9m113_cont_mipi_clk,
-		 "Use continuous MIPI clock (0=LP, 1=continuous default)");
+		 "Use continuous MIPI clock (0=LP default, 1=continuous)");
 
 static int mt9m113_skip_short_pkt = 1;
 module_param(mt9m113_skip_short_pkt, int, 0644);
