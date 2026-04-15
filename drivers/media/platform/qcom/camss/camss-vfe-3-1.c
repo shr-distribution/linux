@@ -608,6 +608,23 @@ MODULE_PARM_DESC(vfe31_cbcr_stride,
 		 "VFE31 CbCr WM IMAGE_SIZE stride (0=auto/output, 1=input, 2=output, >2=custom bytes)");
 
 /*
+ * VFE31 CbCr plane offset calculation mode:
+ *   0 = Old behavior: cbcr_offset = bytesperline * height
+ *   1 = New behavior: cbcr_offset = (width * 2) * height for PIX/VIDEO
+ *
+ * VFE31 PIX/VIDEO mode writes Y and CbCr at INPUT stride (width * 2),
+ * not OUTPUT stride (bytesperline). Using old behavior causes Y and CbCr
+ * planes to overlap at high resolutions, causing memory corruption.
+ *
+ * Default: 1 (new behavior) to prevent corruption.
+ * Set to 0 for debugging or if captures show gaps between Y and CbCr.
+ */
+static int vfe31_cbcr_offset_mode = 1;
+module_param(vfe31_cbcr_offset_mode, int, 0644);
+MODULE_PARM_DESC(vfe31_cbcr_offset_mode,
+		 "VFE31 CbCr offset mode (0=bytesperline*h, 1=width*2*h for PIX/VIDEO)");
+
+/*
  * VFE31 single-buffer mode:
  *   0 = Normal double-buffering (PING and PONG have different addresses)
  *   1 = Single-buffer mode (PONG = PING, same address for both)
@@ -3786,14 +3803,22 @@ static int vfe31_enable(struct vfe_line *line)
 		/*
 		 * CbCr plane offset = Y plane size in memory.
 		 *
-		 * Y plane size = bytesperline * height = 640 * 480 = 307200 bytes.
-		 * CbCr immediately follows Y at this offset.
+		 * vfe31_cbcr_offset_mode controls the calculation:
+		 *   0 = Old: bytesperline * height (may cause overlap at high res)
+		 *   1 = New: width * 2 * height for PIX/VIDEO (prevents overlap)
 		 *
-		 * Note: stride_fix affects IMAGE_SIZE register (VFE internal timing)
-		 * but actual DMA uses bytesperline stride, so this offset is correct
-		 * regardless of stride_fix setting.
+		 * For RDI mode, always use bytesperline (no DEMUX processing).
 		 */
-		y_plane_size = bytesperline * height;
+		if (is_rdi_line || vfe31_cbcr_offset_mode == 0) {
+			/* RDI mode or old behavior: use bytesperline */
+			y_plane_size = bytesperline * height;
+		} else {
+			/* PIX/VIDEO mode with new behavior: use input stride */
+			y_plane_size = (width * 2) * height;
+		}
+		dev_info(vfe->camss->dev,
+			 "VFE31: cbcr_offset mode=%d y_plane_size=%u (bpl=%u w*2=%u h=%u)\n",
+			 vfe31_cbcr_offset_mode, y_plane_size, bytesperline, width * 2, height);
 		cbcr_offset = y_plane_size;
 		u32 cbcr_ping_addr = ping_addr + cbcr_offset;
 		u32 cbcr_pong_addr = pong_addr + cbcr_offset;
@@ -5172,10 +5197,22 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			/*
 			 * CbCr plane offset = Y plane size in memory.
 			 *
-			 * Y WM writes rows contiguously at bytesperline, not strided.
-			 * stride_fix only affects IMAGE_SIZE timing, not DMA stride.
+			 * vfe31_cbcr_offset_mode controls the calculation:
+			 *   0 = Old: bytesperline * height
+			 *   1 = New: width * 2 * height for PIX/VIDEO
+			 *
+			 * For RDI RAW8 mode, always use bytesperline.
 			 */
-			y_plane_size = bytesperline * height;
+			if ((is_rdi_line && !rdi_use_16bpp) || vfe31_cbcr_offset_mode == 0) {
+				/* RDI RAW8 or old behavior: use bytesperline */
+				y_plane_size = bytesperline * height;
+			} else {
+				/* PIX/VIDEO or RDI 16bpp with new behavior: use input stride */
+				y_plane_size = (width * 2) * height;
+			}
+			dev_info(vfe->camss->dev,
+				 "VFE31: cbcr_offset mode=%d y_plane=%u (is_rdi=%d 16bpp=%d)\n",
+				 vfe31_cbcr_offset_mode, y_plane_size, is_rdi_line, rdi_use_16bpp);
 			cbcr_offset = y_plane_size;
 			cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 			cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
@@ -5758,10 +5795,18 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				/*
 				 * CbCr plane offset = Y plane size in memory.
 				 *
-				 * Y WM writes rows contiguously at bytesperline, not strided.
-				 * stride_fix only affects IMAGE_SIZE timing, not DMA stride.
+				 * vfe31_cbcr_offset_mode controls the calculation:
+				 *   0 = Old: bytesperline * height
+				 *   1 = New: width * 2 * height (VIDEO always uses DEMUX)
 				 */
-				y_plane_size = bytesperline * height;
+				if (vfe31_cbcr_offset_mode == 0) {
+					y_plane_size = bytesperline * height;
+				} else {
+					y_plane_size = (width * 2) * height;
+				}
+				dev_info(vfe->camss->dev,
+					 "VFE31: VIDEO cbcr_offset mode=%d y_plane=%u\n",
+					 vfe31_cbcr_offset_mode, y_plane_size);
 				cbcr_offset = y_plane_size;
 				cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 				cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
