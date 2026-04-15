@@ -2320,11 +2320,28 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 
 	case V4L2_CID_TEST_PATTERN:
 		if (ctrl->val == 0) {
-			/* Disable test pattern, return to normal mode */
+			/* Disable test pattern, restart MCU and return to normal mode */
+			dev_info(&sensor->client->dev,
+				 "MT9M113: Disabling test pattern, restarting MCU\n");
+			/* Restart MCU from boot mode */
+			cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE, 0x0000, &ret);
+			usleep_range(10000, 15000);
+			/* Return to normal mode */
 			ret = mt9m113_write_mcu_var(sensor, MT9M113_CAM_MODE_SELECT,
 						    MT9M113_CAM_MODE_SELECT_NORMAL);
 		} else {
-			/* Enable test pattern mode */
+			/*
+			 * Enable test pattern mode.
+			 * Per datasheet: "Disabling the MCU is recommended
+			 * before enabling test patterns."
+			 *
+			 * Sequence:
+			 * 1. Configure test pattern via MCU variables (MCU running)
+			 * 2. Issue refresh to apply settings
+			 * 3. Hold MCU in boot mode to prevent override
+			 */
+			dev_info(&sensor->client->dev,
+				 "MT9M113: Enabling test pattern %d\n", ctrl->val);
 			ret = mt9m113_write_mcu_var(sensor,
 						    MT9M113_CAM_MODE_TEST_PATTERN_SELECT,
 						    mt9m113_test_pattern_value[ctrl->val - 1]);
@@ -2332,10 +2349,17 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 				ret = mt9m113_write_mcu_var(sensor,
 							    MT9M113_CAM_MODE_SELECT,
 							    MT9M113_CAM_MODE_SELECT_TEST_PATTERN);
+			/* Issue refresh while MCU is still running */
+			if (!ret && sensor->streaming)
+				mt9m113_refresh(sensor);
+			/* Now disable MCU to let test pattern generator run */
+			if (!ret) {
+				dev_info(&sensor->client->dev,
+					 "MT9M113: Stopping MCU for test pattern\n");
+				cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE,
+					  0x0001, &ret);
+			}
 		}
-		/* Issue refresh to apply test pattern change */
-		if (!ret && sensor->streaming)
-			mt9m113_refresh(sensor);
 		break;
 
 	default:
