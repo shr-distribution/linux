@@ -1304,15 +1304,15 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		 * Determine output format value:
 		 * Bit 8: Processed Bayer (1 = processed, 0 = raw)
 		 * Bit 5: RGB mode (1 = RGB, 0 = YUV)
-		 * Default value (0x0030) = YUV output
+		 * Default value 0x0000 = YUV output
 		 */
 		if (format->code == MEDIA_BUS_FMT_RGB565_1X16)
-			format_val = 0x0030 | BIT(5);	/* RGB mode */
+			format_val = BIT(5);	/* RGB mode */
 		else if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
 			 format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
-			format_val = 0x0030 | MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
+			format_val = MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
 		else
-			format_val = 0x0030;		/* YUV (default) */
+			format_val = 0x0000;		/* YUV (default) */
 
 		/*
 		 * Suspend double buffer updates so dimension and format changes
@@ -1595,12 +1595,12 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			u16 format_val;
 
 			if (format->code == MEDIA_BUS_FMT_RGB565_1X16)
-				format_val = 0x0030 | BIT(5);
+				format_val = BIT(5);
 			else if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
 				 format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
-				format_val = 0x0030 | MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
+				format_val = MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
 			else
-				format_val = 0x0030;
+				format_val = 0x0000;
 
 			ret = mt9m113_write_mcu_var(sensor, MT9M113_MODE_OUTPUT_FORMAT_B, format_val);
 			if (ret)
@@ -1679,16 +1679,14 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 
 		{
 			u16 format_val;
-			const struct mt9m113_format_info *info;
 
-			info = mt9m113_format_info(format->code);
 			if (format->code == MEDIA_BUS_FMT_RGB565_1X16)
-				format_val = 0x0030 | BIT(5);
+				format_val = BIT(5);
 			else if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
 				 format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
-				format_val = 0x0030 | MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
+				format_val = MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
 			else
-				format_val = 0x0030;
+				format_val = 0x0000;
 
 			ret = mt9m113_write_mcu_var(sensor, MT9M113_MODE_OUTPUT_FORMAT_A, format_val);
 			if (ret)
