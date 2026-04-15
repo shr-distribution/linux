@@ -1330,22 +1330,17 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	}
 
 	/*
-	 * Note: Do NOT enable MIPI output (OUTPUT_CONTROL) here!
-	 * The MIPI output must be enabled AFTER the MCU sequencer starts.
-	 * Enabling MIPI before SEQ_CMD causes the sensor to output data
-	 * while the sequencer isn't running, which corrupts the MCU state.
+	 * Note: Do NOT enable MIPI output (OUTPUT_CONTROL) here yet!
+	 * The webOS sequence is:
+	 *   1. OUTPUT_CONTROL (enable MIPI)
+	 *   2. RESET_REGISTER (0x120C)
+	 *   3. SEQ_CAP_MODE
+	 *   4. delay
+	 *   5. SEQ_CMD_RUN
 	 *
-	 * The webOS driver does NOT issue REFRESH commands during
-	 * streaming - only during init. REFRESH_MODE/REFRESH are used to
-	 * apply parameter changes, but the init table already handles this.
-	 * Issuing REFRESH here causes MCU hangs.
+	 * We apply OUTPUT_CONTROL and RESET_REGISTER together below,
+	 * then SEQ_CMD to start streaming.
 	 */
-
-	/* Set RESET_REGISTER for streaming */
-	ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
-			MT9M113_RESET_REG_STREAMING, NULL);
-	if (ret)
-		goto error;
 
 	/*
 	 * Configure capture/streaming mode.
@@ -1388,14 +1383,19 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		int i;
 
 		/*
-		 * Enable MIPI output FIRST (matching webOS set_sensor_mode order).
-		 * WebOS enables OUTPUT_CONTROL before SEQ_CMD_RUN.
+		 * Enable MIPI output FIRST, then RESET_REGISTER (matching webOS).
+		 * WebOS sequence: OUTPUT_CONTROL -> RESET_REGISTER -> SEQ_CAP_MODE -> SEQ_CMD
 		 */
 		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 				output_ctrl_val, NULL);
 		if (ret)
 			goto error;
 		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
+
+		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
+				MT9M113_RESET_REG_STREAMING, NULL);
+		if (ret)
+			goto error;
 
 		/* Step 1: Enter preview mode (Context A) first */
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
@@ -1483,15 +1483,19 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		/* Context A: Simple preview mode */
 
 		/*
-		 * Enable MIPI output FIRST (matching webOS set_sensor_mode order).
-		 * WebOS enables OUTPUT_CONTROL before SEQ_CMD_RUN. The VFE is
-		 * already configured and waiting for frames at this point.
+		 * Enable MIPI output FIRST, then RESET_REGISTER (matching webOS).
+		 * WebOS sequence: OUTPUT_CONTROL -> RESET_REGISTER -> SEQ_CAP_MODE -> SEQ_CMD
 		 */
 		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 				output_ctrl_val, NULL);
 		if (ret)
 			goto error;
 		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
+
+		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
+				MT9M113_RESET_REG_STREAMING, NULL);
+		if (ret)
+			goto error;
 
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CAP_MODE, 0x0030);
 		if (ret)
