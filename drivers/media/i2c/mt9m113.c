@@ -478,14 +478,16 @@ static int mt9m113_standby_exit(struct mt9m113 *sensor)
 	sensor->in_standby = false;
 
 	/*
-	 * After exiting standby, the MCU sequencer needs to be re-synchronized.
-	 * Issue REFRESH_MODE + REFRESH per datasheet recommendation.
+	 * After exiting standby, the MCU needs time to fully wake up before
+	 * accepting commands. The webOS driver only used simple REFRESH after
+	 * init, not REFRESH_MODE. Let start_streaming handle MCU synchronization
+	 * via its existing pre-streaming REFRESH sequence.
+	 *
+	 * Add a delay to let the MCU stabilize after standby exit.
 	 */
-	ret = mt9m113_refresh(sensor);
-	if (ret)
-		dev_warn(dev, "REFRESH after standby exit failed: %d\n", ret);
+	msleep(50);
 
-	dev_dbg(dev, "Standby exit complete, MCU refreshed\n");
+	dev_dbg(dev, "Standby exit complete\n");
 	return 0;
 }
 
@@ -1208,12 +1210,12 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	/*
 	 * Ensure sensor is not in standby mode before streaming.
 	 * Write 0x0028 directly to STANDBY_CONTROL to ensure MCU is active.
-	 * Don't use complex standby_exit polling - just write the value.
+	 * Give MCU time to wake up (50ms matches webOS driver behavior).
 	 */
 	dev_info(dev, "MT9M113: start_streaming\n");
 	cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL, 0x0028, NULL);
 	sensor->in_standby = false;
-	msleep(10);
+	msleep(50);
 
 	/* MCU health check */
 	{
