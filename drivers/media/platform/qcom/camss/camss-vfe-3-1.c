@@ -3815,23 +3815,15 @@ static int vfe31_enable(struct vfe_line *line)
 		/*
 		 * CbCr plane offset = Y plane size in memory.
 		 *
-		 * CRITICAL: When stride fix is enabled, Y WM writes at INPUT
-		 * stride (width * 2), not OUTPUT stride (bytesperline).
-		 * The cbcr_offset MUST match the actual Y WM write stride,
-		 * otherwise Y and CbCr planes overlap causing memory corruption.
+		 * The Y WM always writes rows contiguously at bytesperline stride,
+		 * regardless of stride_fix setting. stride_fix only affects the
+		 * IMAGE_SIZE register timing for frame sync, not DMA write stride.
+		 *
+		 * Raw capture analysis confirmed: Y data is contiguous at 640*480,
+		 * not strided at 1280*480. CbCr must immediately follow Y.
 		 */
-		{
-			bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
-			u16 actual_y_stride;
-
-			if (vfe31_nv12_stride_fix && is_semi_planar)
-				actual_y_stride = width * 2;  /* Input stride */
-			else
-				actual_y_stride = bytesperline;  /* Output stride */
-
-			y_plane_size = actual_y_stride * height;
-			cbcr_offset = y_plane_size;
-		}
+		y_plane_size = bytesperline * height;
+		cbcr_offset = y_plane_size;
 		u32 cbcr_ping_addr = ping_addr + cbcr_offset;
 		u32 cbcr_pong_addr = pong_addr + cbcr_offset;
 
@@ -5209,22 +5201,11 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			/*
 			 * CbCr plane offset = Y plane size in memory.
 			 *
-			 * CRITICAL: When stride fix is enabled, Y WM writes at
-			 * INPUT stride (width * 2), not OUTPUT stride (bytesperline).
-			 * The cbcr_offset MUST match the actual Y WM write stride.
+			 * Y WM writes rows contiguously at bytesperline, not strided.
+			 * stride_fix only affects IMAGE_SIZE timing, not DMA stride.
 			 */
-			{
-				bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
-				u16 actual_y_stride;
-
-				if (vfe31_nv12_stride_fix && is_semi_planar)
-					actual_y_stride = width * 2;  /* Input stride */
-				else
-					actual_y_stride = bytesperline;  /* Output stride */
-
-				y_plane_size = actual_y_stride * height;
-				cbcr_offset = y_plane_size;
-			}
+			y_plane_size = bytesperline * height;
+			cbcr_offset = y_plane_size;
 			cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 			cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
 
@@ -5827,22 +5808,11 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				/*
 				 * CbCr plane offset = Y plane size in memory.
 				 *
-				 * CRITICAL: When stride fix is enabled, Y WM writes at
-				 * INPUT stride (width * 2), not OUTPUT stride (bytesperline).
-				 * The cbcr_offset MUST match the actual Y WM write stride.
+				 * Y WM writes rows contiguously at bytesperline, not strided.
+				 * stride_fix only affects IMAGE_SIZE timing, not DMA stride.
 				 */
-				{
-					bool is_semi_planar = vfe31_is_semiplanar_format(pix->pixelformat);
-					u16 actual_y_stride;
-
-					if (vfe31_nv12_stride_fix && is_semi_planar)
-						actual_y_stride = width * 2;  /* Input stride */
-					else
-						actual_y_stride = bytesperline;  /* Output stride */
-
-					y_plane_size = actual_y_stride * height;
-					cbcr_offset = y_plane_size;
-				}
+				y_plane_size = bytesperline * height;
+				cbcr_offset = y_plane_size;
 				cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 				cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
 
