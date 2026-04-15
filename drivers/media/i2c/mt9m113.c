@@ -373,6 +373,38 @@ static int mt9m113_seq_cmd_ready(struct mt9m113 *sensor)
 	return mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 2000);
 }
 
+/*
+ * mt9m113_refresh - Issue REFRESH_MODE + REFRESH sequence
+ *
+ * Per datasheet: "It is recommended that refresh and refresh mode commands
+ * always be run together, and that refresh mode should be issued BEFORE
+ * the refresh command."
+ */
+static int mt9m113_refresh(struct mt9m113 *sensor)
+{
+	int ret;
+
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+				    MT9M113_SEQ_CMD_REFRESH_MODE);
+	if (ret)
+		return ret;
+
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	if (ret < 0)
+		dev_warn(&sensor->client->dev, "MT9M113: REFRESH_MODE timeout\n");
+
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
+				    MT9M113_SEQ_CMD_REFRESH);
+	if (ret)
+		return ret;
+
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	if (ret < 0)
+		dev_warn(&sensor->client->dev, "MT9M113: REFRESH timeout\n");
+
+	return 0;
+}
+
 /* -----------------------------------------------------------------------------
  * Soft Standby Control
  */
@@ -447,29 +479,11 @@ static int mt9m113_standby_exit(struct mt9m113 *sensor)
 
 	/*
 	 * After exiting standby, the MCU sequencer needs to be re-synchronized.
-	 * Wait for SEQ_CMD to be ready (0), then issue REFRESH command.
-	 * This matches the webOS driver behavior that always issues REFRESH
-	 * after configuration changes or state transitions.
+	 * Issue REFRESH_MODE + REFRESH per datasheet recommendation.
 	 */
-	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-	if (ret) {
-		dev_warn(dev, "MCU not ready after standby exit: %d\n", ret);
-		return ret;
-	}
-
-	ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-				    MT9M113_SEQ_CMD_REFRESH);
-	if (ret) {
-		dev_warn(dev, "Failed to issue REFRESH after standby: %d\n", ret);
-		return ret;
-	}
-
-	/* Wait for REFRESH to complete */
-	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-	if (ret) {
-		dev_warn(dev, "REFRESH timeout after standby exit: %d\n", ret);
-		return ret;
-	}
+	ret = mt9m113_refresh(sensor);
+	if (ret)
+		dev_warn(dev, "REFRESH after standby exit failed: %d\n", ret);
 
 	dev_dbg(dev, "Standby exit complete, MCU refreshed\n");
 	return 0;
@@ -1110,12 +1124,13 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
 	}
 
 	/*
-	 * Disable MIPI output until streaming starts.
-	 * The VFE must be configured and ready before sensor outputs data.
+	 * IMPORTANT: Do NOT enable MIPI output here!
+	 *
+	 * The working commit 054aebb233460fb13196c0cadc46cf70ce165efb shows
+	 * that MIPI should only be enabled in start_streaming, followed by
+	 * REFRESH_MODE + REFRESH commands to apply the output config.
+	 * Enabling MIPI here before CSIPHY is configured causes issues.
 	 */
-	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
-	if (ret < 0)
-		return ret;
 
 	dev_info(dev, "MT9M113: init complete\n");
 	return 0;
@@ -1360,6 +1375,16 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		goto error;
 	}
 
+	/*
+	 * Pre-streaming REFRESH sequence from working commit 054aebb233460fb13196c0cadc46cf70ce165efb.
+	 * The configure_ifp function issues REFRESH_MODE + REFRESH before the streaming
+	 * sequence to ensure MCU is in a known state.
+	 */
+	dev_info(dev, "MT9M113: Pre-streaming REFRESH sequence\n");
+	ret = mt9m113_refresh(sensor);
+	if (ret)
+		goto error;
+
 	/* Debug: dump MCU state before issuing SEQ_CMD */
 	{
 		u64 seq_state, seq_cmd, standby_ctrl;
@@ -1383,14 +1408,26 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		int i;
 
 		/*
-		 * Enable MIPI output FIRST, then RESET_REGISTER (matching webOS).
-		 * WebOS sequence: OUTPUT_CONTROL -> RESET_REGISTER -> SEQ_CAP_MODE -> SEQ_CMD
+		 * Working sequence from commit 054aebb233460fb13196c0cadc46cf70ce165efb:
+		 * 1. OUTPUT_CONTROL (enable MIPI)
+		 * 2. REFRESH_MODE + REFRESH (apply output config)
+		 * 3. RESET_REGISTER
+		 * 4. SEQ_CAP_MODE
+		 * 5. delay
+		 * 6. SEQ_CMD_RUN (enter preview first)
+		 * 7. Wait for SEQ_STATE=0x04
+		 * 8. SEQ_CMD_CAPTURE (switch to Context B)
 		 */
 		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 				output_ctrl_val, NULL);
 		if (ret)
 			goto error;
 		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
+
+		/* Issue REFRESH_MODE then REFRESH after OUTPUT_CONTROL change */
+		ret = mt9m113_refresh(sensor);
+		if (ret)
+			goto error;
 
 		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
@@ -1483,14 +1520,24 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		/* Context A: Simple preview mode */
 
 		/*
-		 * Enable MIPI output FIRST, then RESET_REGISTER (matching webOS).
-		 * WebOS sequence: OUTPUT_CONTROL -> RESET_REGISTER -> SEQ_CAP_MODE -> SEQ_CMD
+		 * Working sequence from commit 054aebb233460fb13196c0cadc46cf70ce165efb:
+		 * 1. OUTPUT_CONTROL (enable MIPI)
+		 * 2. REFRESH_MODE + REFRESH (apply output config)
+		 * 3. RESET_REGISTER
+		 * 4. SEQ_CAP_MODE
+		 * 5. delay
+		 * 6. SEQ_CMD_RUN
 		 */
 		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 				output_ctrl_val, NULL);
 		if (ret)
 			goto error;
 		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
+
+		/* Issue REFRESH_MODE then REFRESH after OUTPUT_CONTROL change */
+		ret = mt9m113_refresh(sensor);
+		if (ret)
+			goto error;
 
 		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
@@ -2060,12 +2107,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 						    MT9M113_SENSOR_READ_MODE_B,
 						    mode_b);
 		/* Only refresh if streaming - otherwise MCU may not be ready */
-		if (!ret && sensor->streaming) {
-			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					      MT9M113_SEQ_CMD_REFRESH);
-			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
-					     0x0000, 500);
-		}
+		if (!ret && sensor->streaming)
+			mt9m113_refresh(sensor);
 		break;
 	}
 
@@ -2096,12 +2139,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 						    MT9M113_SENSOR_READ_MODE_B,
 						    mode_b);
 		/* Only refresh if streaming - otherwise MCU may not be ready */
-		if (!ret && sensor->streaming) {
-			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					      MT9M113_SEQ_CMD_REFRESH);
-			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
-					     0x0000, 500);
-		}
+		if (!ret && sensor->streaming)
+			mt9m113_refresh(sensor);
 		break;
 	}
 
@@ -2138,12 +2177,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 				ret = mt9m113_write_mcu_var(sensor, 0x275B, effect);
 
 			/* Only refresh if streaming - otherwise MCU may not be ready */
-			if (!ret && sensor->streaming) {
-				mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-						      MT9M113_SEQ_CMD_REFRESH);
-				mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
-						     0x0000, 500);
-			}
+			if (!ret && sensor->streaming)
+				mt9m113_refresh(sensor);
 		}
 		break;
 	}
@@ -2179,12 +2214,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_AWB_SATURATION,
 					    ctrl->val);
 		/* Only refresh if streaming - otherwise MCU may not be ready */
-		if (!ret && sensor->streaming) {
-			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					      MT9M113_SEQ_CMD_REFRESH);
-			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
-					     0x0000, 500);
-		}
+		if (!ret && sensor->streaming)
+			mt9m113_refresh(sensor);
 		break;
 
 	case V4L2_CID_EXPOSURE_AUTO:
@@ -2234,11 +2265,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 							    MT9M113_CAM_MODE_SELECT_TEST_PATTERN);
 		}
 		/* Issue refresh to apply test pattern change */
-		if (!ret && sensor->streaming) {
-			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
-					      MT9M113_SEQ_CMD_REFRESH);
-			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-		}
+		if (!ret && sensor->streaming)
+			mt9m113_refresh(sensor);
 		break;
 
 	default:
