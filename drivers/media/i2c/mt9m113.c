@@ -1206,44 +1206,14 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		return ret;
 
 	/*
-	 * Always ensure we're out of standby mode before streaming.
-	 *
-	 * The power_on sequence writes 0x002A to STANDBY_CONTROL which puts
-	 * the sensor in a low-power state. Even if in_standby=false (first
-	 * streaming after boot), the sensor may still be in standby.
-	 *
-	 * Clear the STANDBY bit to ensure MCU can process commands.
+	 * Ensure sensor is not in standby mode before streaming.
+	 * Write 0x0028 directly to STANDBY_CONTROL to ensure MCU is active.
+	 * Don't use complex standby_exit polling - just write the value.
 	 */
-	dev_info(dev, "MT9M113: start_streaming, in_standby=%d\n",
-		 sensor->in_standby);
-
-	/* Check and ensure MCU is out of standby */
-	{
-		u64 standby_val;
-		bool standby_bit, standby_done;
-
-		cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_val, NULL);
-		standby_bit = (standby_val & MT9M113_STANDBY_CONTROL_STANDBY) != 0;
-		standby_done = (standby_val & MT9M113_STANDBY_CONTROL_DONE) != 0;
-		dev_info(dev, "MT9M113: STANDBY_CONTROL=0x%llx (STANDBY=%d, DONE=%d)\n",
-			 standby_val, standby_bit, standby_done);
-
-		/*
-		 * If STANDBY_DONE is set, the sensor is in standby even if
-		 * STANDBY bit is clear. This can happen after power-on.
-		 * We need to ensure both bits are clear for normal operation.
-		 */
-		if (standby_done || standby_bit) {
-			dev_info(dev, "MT9M113: Sensor in standby state, exiting...\n");
-			ret = mt9m113_standby_exit(sensor);
-			if (ret < 0)
-				dev_warn(dev, "MT9M113: standby exit failed: %d\n", ret);
-
-			cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_val, NULL);
-			dev_info(dev, "MT9M113: STANDBY_CONTROL after exit: 0x%llx\n", standby_val);
-		}
-		sensor->in_standby = false;
-	}
+	dev_info(dev, "MT9M113: start_streaming\n");
+	cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL, 0x0028, NULL);
+	sensor->in_standby = false;
+	msleep(10);
 
 	/* MCU health check */
 	{
@@ -1697,29 +1667,21 @@ static int mt9m113_stop_streaming(struct mt9m113 *sensor)
 
 	sensor->streaming = false;
 
-	/* Disable MIPI output first */
+	/* Disable MIPI output */
 	cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
 
 	/*
-	 * Wait for any pending SEQ_CMD to complete before entering standby.
-	 * If we enter standby while MCU is processing a command, it may
-	 * get stuck in an inconsistent state on next streaming attempt.
+	 * Wait for any pending SEQ_CMD to complete.
 	 */
 	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
 	if (ret < 0)
 		dev_warn(dev, "MT9M113: SEQ_CMD did not complete before stop\n");
 
 	/*
-	 * Enter standby mode to cleanly stop the MCU sequencer.
-	 * This puts the sensor in a known state for the next streaming start.
+	 * Issue REFRESH to reset MCU state for next streaming start.
+	 * Don't use standby - the working commit 054aebb didn't use standby.
 	 */
-	dev_info(dev, "MT9M113: entering standby...\n");
-	ret = mt9m113_standby_enter(sensor);
-	if (ret < 0)
-		dev_warn(dev, "MT9M113: standby enter failed: %d\n", ret);
-	else
-		dev_info(dev, "MT9M113: standby entered, in_standby=%d\n",
-			 sensor->in_standby);
+	mt9m113_refresh(sensor);
 
 	dev_info(dev, "MT9M113: streaming stopped\n");
 
@@ -2479,7 +2441,12 @@ static int mt9m113_power_on(struct mt9m113 *sensor)
 		cci_write(sensor->regmap, MT9M113_PLL_CONTROL, 0x3047, &ret);
 		cci_write(sensor->regmap, MT9M113_PLL_CONTROL, 0x3046, &ret);
 		cci_write(sensor->regmap, MT9M113_RESET_AND_MISC_CONTROL, 0x0218, &ret);
-		cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL, 0x002A, &ret);
+		/*
+		 * Do NOT put sensor in standby (0x002A) after power-on.
+		 * The working commit 054aebb didn't use standby and worked
+		 * reliably. Keep sensor active with 0x0028.
+		 */
+		cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL, 0x0028, &ret);
 		if (ret < 0)
 			goto error_clock;
 		msleep(50);
