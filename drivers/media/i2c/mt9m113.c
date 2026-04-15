@@ -499,7 +499,7 @@ static int mt9m113_standby_exit(struct mt9m113 *sensor)
  * allowing atomic multi-register configuration changes.
  */
 
-static int __maybe_unused mt9m113_double_buffer_suspend(struct mt9m113 *sensor)
+static int mt9m113_double_buffer_suspend(struct mt9m113 *sensor)
 {
 	u64 value;
 	int ret;
@@ -512,7 +512,7 @@ static int __maybe_unused mt9m113_double_buffer_suspend(struct mt9m113 *sensor)
 	return cci_write(sensor->regmap, MT9M113_DOUBLE_BUFFER_CONTROL, value, NULL);
 }
 
-static int __maybe_unused mt9m113_double_buffer_resume(struct mt9m113 *sensor)
+static int mt9m113_double_buffer_resume(struct mt9m113 *sensor)
 {
 	u64 value;
 	int ret;
@@ -1083,6 +1083,17 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
 	dev_info(dev, "MT9M113: applying init table (%zu entries)\n",
 		 ARRAY_SIZE(mt9m113_init_table));
 
+	/*
+	 * Suspend double buffer updates so all init table writes take effect
+	 * atomically at frame start. Per datasheet, R0x0248[15] inhibits
+	 * transfers from pending to live registers.
+	 */
+	ret = mt9m113_double_buffer_suspend(sensor);
+	if (ret) {
+		dev_warn(dev, "Failed to suspend double buffer: %d\n", ret);
+		/* Continue anyway - not fatal */
+	}
+
 	for (i = 0; i < ARRAY_SIZE(mt9m113_init_table); i++) {
 		const struct mt9m113_reg_entry *entry = &mt9m113_init_table[i];
 
@@ -1091,11 +1102,19 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
 		if (ret < 0) {
 			dev_err(dev, "MT9M113: reg 0x%04x write failed: %d\n",
 				entry->reg, ret);
+			mt9m113_double_buffer_resume(sensor);
 			return ret;
 		}
 
 		if (entry->delay_ms > 0)
 			msleep(entry->delay_ms);
+	}
+
+	/* Resume double buffer updates - changes take effect at next frame start */
+	ret = mt9m113_double_buffer_resume(sensor);
+	if (ret) {
+		dev_warn(dev, "Failed to resume double buffer: %d\n", ret);
+		/* Continue anyway - not fatal */
 	}
 
 	/* Wait for MCU to complete refresh */
@@ -1301,18 +1320,37 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		else
 			format_val = 0x0030;		/* YUV (default) */
 
+		/*
+		 * Suspend double buffer updates so dimension and format changes
+		 * take effect atomically at the next frame start.
+		 */
+		ret = mt9m113_double_buffer_suspend(sensor);
+		if (ret)
+			dev_warn(dev, "Failed to suspend double buffer: %d\n", ret);
+
 		/* Program output dimensions */
 		ret = mt9m113_write_mcu_var(sensor, width_reg, width_val);
-		if (ret)
+		if (ret) {
+			mt9m113_double_buffer_resume(sensor);
 			goto error;
+		}
 		ret = mt9m113_write_mcu_var(sensor, height_reg, height_val);
-		if (ret)
+		if (ret) {
+			mt9m113_double_buffer_resume(sensor);
 			goto error;
+		}
 
 		/* Program output format */
 		ret = mt9m113_write_mcu_var(sensor, format_reg, format_val);
-		if (ret)
+		if (ret) {
+			mt9m113_double_buffer_resume(sensor);
 			goto error;
+		}
+
+		/* Resume double buffer - changes applied at next frame start */
+		ret = mt9m113_double_buffer_resume(sensor);
+		if (ret)
+			dev_warn(dev, "Failed to resume double buffer: %d\n", ret);
 
 		dev_info(dev, "MT9M113: Context %c: %dx%d, format=0x%04x\n",
 			 use_context_b ? 'B' : 'A', width_val, height_val, format_val);
