@@ -801,10 +801,17 @@ static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline,
 	else if (vfe31_image_stride == 2)
 		return bytesperline;  /* Force V4L2 stride */
 	else {
-		/* Auto: use bytesperline for semi-planar, width*2 for packed */
+		/*
+		 * Auto: For PIX/VIDEO mode with semi-planar output (NV12/NV16),
+		 * use input stride (width*2) for Y WM IMAGE_SIZE. The VFE31
+		 * Y DMA timing is tied to input UYVY stride, not output Y stride.
+		 * Using bytesperline (output stride) causes only half the Y lines
+		 * to be captured.
+		 */
 		if (is_rdi)
 			return bytesperline;
-		return vfe31_is_semiplanar_format(pixelformat) ? bytesperline : (width * 2);
+		/* Always use input stride (width*2) for PIX/VIDEO mode */
+		return width * 2;
 	}
 }
 
