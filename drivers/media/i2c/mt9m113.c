@@ -1353,6 +1353,20 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		ret = mt9m113_refresh(sensor);
 		if (ret)
 			goto error;
+
+		/* Diagnostic: readback actual sensor configuration */
+		{
+			u64 actual_width, actual_height, read_mode, row_end;
+
+			mt9m113_read_mcu_var(sensor, width_reg, &actual_width);
+			mt9m113_read_mcu_var(sensor, height_reg, &actual_height);
+			mt9m113_read_mcu_var(sensor, use_context_b ? 0x272D : 0x2717,
+					     &read_mode);
+			mt9m113_read_mcu_var(sensor, use_context_b ? 0x2727 : 0x2711,
+					     &row_end);
+			dev_info(dev, "MT9M113: Readback: %llux%llu read_mode=0x%04llx row_end=%llu\n",
+				 actual_width, actual_height, read_mode, row_end);
+		}
 	}
 
 	/* Wait for CSIPHY stabilization */
