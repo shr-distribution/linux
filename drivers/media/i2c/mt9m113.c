@@ -1286,20 +1286,73 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		goto error;
 	}
 
-	/* Wait for CSIPHY stabilization */
-	msleep(mt9m113_pre_mipi_delay_ms);
-
-	/* Configure IFP output format (YUV/RGB/Bayer) based on selected format */
+	/*
+	 * Configure output dimensions and format for the selected context.
+	 * The working commit 054aebb233460fb13196c0cadc46cf70ce165efb shows that
+	 * output dimensions and format must be programmed before streaming,
+	 * followed by REFRESH to apply the changes.
+	 */
 	{
 		const struct mt9m113_format_info *info;
+		u16 width_reg, height_reg, format_reg;
+		u16 width_val, height_val, format_val;
 
 		info = mt9m113_format_info(format->code);
-		ret = mt9m113_write_mcu_var(sensor, 0xc86c, info->output_format);
-		if (ret) {
-			dev_err(dev, "Failed to set output format: %d\n", ret);
-			goto error;
+
+		if (use_context_b) {
+			/* Context B: 1280x1024 capture */
+			width_reg = 0x2707;	/* MODE_OUTPUT_WIDTH_B */
+			height_reg = 0x2709;	/* MODE_OUTPUT_HEIGHT_B */
+			format_reg = MT9M113_MODE_OUTPUT_FORMAT_B;
+			width_val = 1280;
+			height_val = 1024;
+		} else {
+			/* Context A: 640x480 preview */
+			width_reg = 0x2703;	/* MODE_OUTPUT_WIDTH_A */
+			height_reg = 0x2705;	/* MODE_OUTPUT_HEIGHT_A */
+			format_reg = MT9M113_MODE_OUTPUT_FORMAT_A;
+			width_val = 640;
+			height_val = 480;
 		}
+
+		/*
+		 * Determine output format value:
+		 * Bit 8: Processed Bayer (1 = processed, 0 = raw)
+		 * Bit 5: RGB mode (1 = RGB, 0 = YUV)
+		 * Default value (0x0030) = YUV output
+		 */
+		if (format->code == MEDIA_BUS_FMT_RGB565_1X16)
+			format_val = 0x0030 | BIT(5);	/* RGB mode */
+		else if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
+			 format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
+			format_val = 0x0030 | MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
+		else
+			format_val = 0x0030;		/* YUV (default) */
+
+		/* Program output dimensions */
+		ret = mt9m113_write_mcu_var(sensor, width_reg, width_val);
+		if (ret)
+			goto error;
+		ret = mt9m113_write_mcu_var(sensor, height_reg, height_val);
+		if (ret)
+			goto error;
+
+		/* Program output format */
+		ret = mt9m113_write_mcu_var(sensor, format_reg, format_val);
+		if (ret)
+			goto error;
+
+		dev_info(dev, "MT9M113: Context %c: %dx%d, format=0x%04x\n",
+			 use_context_b ? 'B' : 'A', width_val, height_val, format_val);
+
+		/* REFRESH to apply dimension and format changes */
+		ret = mt9m113_refresh(sensor);
+		if (ret)
+			goto error;
 	}
+
+	/* Wait for CSIPHY stabilization */
+	msleep(mt9m113_pre_mipi_delay_ms);
 
 	/* Configure output interface (MIPI CSI-2 or Parallel) */
 	if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
@@ -1511,6 +1564,32 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		dev_info(dev, "MT9M113: Reached capture state (SEQ_STATE=0x07)\n");
 
 		/*
+		 * Re-write OUTPUT_CONTROL and MODE_OUTPUT_FORMAT after SEQ_CMD completes.
+		 * The working commit 054aebb shows this is critical because the MCU
+		 * resets these to YUV defaults during state transitions.
+		 */
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				output_ctrl_val, NULL);
+		if (ret)
+			dev_warn(dev, "MT9M113: OUTPUT_CONTROL re-write failed\n");
+
+		{
+			u16 format_val;
+
+			if (format->code == MEDIA_BUS_FMT_RGB565_1X16)
+				format_val = 0x0030 | BIT(5);
+			else if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
+				 format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
+				format_val = 0x0030 | MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
+			else
+				format_val = 0x0030;
+
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_MODE_OUTPUT_FORMAT_B, format_val);
+			if (ret)
+				dev_warn(dev, "MT9M113: MODE_OUTPUT_FORMAT_B re-write failed\n");
+		}
+
+		/*
 		 * Wait for sensor to fully switch to Context B output.
 		 * The sequencer state reaches 0x07 (capture) but the sensor
 		 * pipeline needs additional time to reconfigure for 1280x1024.
@@ -1568,6 +1647,34 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			else
 				dev_info(dev, "MT9M113: SEQ_CMD done, SEQ_STATE=0x%llx STANDBY=0x%llx\n",
 					 seq_state_final, standby_final);
+		}
+
+		/*
+		 * Re-write OUTPUT_CONTROL and MODE_OUTPUT_FORMAT after SEQ_CMD completes.
+		 * The working commit 054aebb shows this is critical because the MCU
+		 * resets these to YUV defaults during state transitions.
+		 */
+		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
+				output_ctrl_val, NULL);
+		if (ret)
+			dev_warn(dev, "MT9M113: OUTPUT_CONTROL re-write failed\n");
+
+		{
+			u16 format_val;
+			const struct mt9m113_format_info *info;
+
+			info = mt9m113_format_info(format->code);
+			if (format->code == MEDIA_BUS_FMT_RGB565_1X16)
+				format_val = 0x0030 | BIT(5);
+			else if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
+				 format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
+				format_val = 0x0030 | MT9M113_MODE_OUTPUT_FORMAT_PROCESSED_BAYER;
+			else
+				format_val = 0x0030;
+
+			ret = mt9m113_write_mcu_var(sensor, MT9M113_MODE_OUTPUT_FORMAT_A, format_val);
+			if (ret)
+				dev_warn(dev, "MT9M113: MODE_OUTPUT_FORMAT_A re-write failed\n");
 		}
 
 		msleep(20);
