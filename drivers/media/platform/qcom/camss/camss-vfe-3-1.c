@@ -609,18 +609,22 @@ MODULE_PARM_DESC(vfe31_cbcr_stride,
 
 /*
  * NV12 stride workaround control:
- *   0 = Disabled - use configured stride (test mode)
- *   1 = Enabled - force input stride for NV12 (required for full frame)
+ *   0 = Disabled - use bytesperline stride (default, works with COMPOSITE_DONE)
+ *   1 = Enabled - force input stride (legacy workaround, causes CbCr issues)
  *
- * VFE31 IMAGE_SIZE register needs input stride (1280 for UYVY) not output
- * stride (640 for Y plane) for NV12. Without this fix, only half the frame
- * is captured (240 lines instead of 480). NV16 doesn't need this fix since
- * it has full-height CbCr.
+ * When enabled, forces Y WM IMAGE_SIZE to use input stride (width*2) instead
+ * of bytesperline. This was originally a workaround for half-frame capture
+ * with ping-pong transition detection. However, with COMPOSITE_DONE based
+ * frame completion, bytesperline stride works correctly.
+ *
+ * IMPORTANT: When stride_fix=1, Y data spans width*2*height bytes but the
+ * CbCr offset is calculated from bytesperline*height, causing CbCr to be
+ * placed in the middle of the Y plane. Leave disabled (0) unless testing.
  */
-int vfe31_nv12_stride_fix = 1;
+int vfe31_nv12_stride_fix = 0;
 module_param(vfe31_nv12_stride_fix, int, 0644);
 MODULE_PARM_DESC(vfe31_nv12_stride_fix,
-		 "VFE31 NV12 stride fix: 0=disabled, 1=force input stride (default)");
+		 "VFE31 NV12 stride fix: 0=disabled (default), 1=force input stride");
 
 /*
  * VFE31 single-buffer mode:
@@ -3815,12 +3819,13 @@ static int vfe31_enable(struct vfe_line *line)
 		/*
 		 * CbCr plane offset = Y plane size in memory.
 		 *
-		 * The Y WM always writes rows contiguously at bytesperline stride,
-		 * regardless of stride_fix setting. stride_fix only affects the
-		 * IMAGE_SIZE register timing for frame sync, not DMA write stride.
+		 * With stride_fix=0 (default), Y WM uses bytesperline stride.
+		 * Y plane size = bytesperline * height = 640 * 480 = 307200 bytes.
+		 * CbCr immediately follows Y at this offset.
 		 *
-		 * Raw capture analysis confirmed: Y data is contiguous at 640*480,
-		 * not strided at 1280*480. CbCr must immediately follow Y.
+		 * WARNING: If stride_fix=1 is enabled, Y WM uses width*2 stride,
+		 * so Y spans width*2*height bytes, but this calculation would be
+		 * wrong. Keep stride_fix=0 for correct semi-planar buffer layout.
 		 */
 		y_plane_size = bytesperline * height;
 		cbcr_offset = y_plane_size;
