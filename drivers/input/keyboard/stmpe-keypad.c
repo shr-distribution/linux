@@ -48,13 +48,8 @@
 #define STMPE_KEYPAD_KEYMAP_MAX_SIZE \
 	(STMPE_KEYPAD_MAX_ROWS * STMPE_KEYPAD_MAX_COLS)
 
-
-#define STMPE1601_NUM_DATA	5
-#define STMPE2401_NUM_DATA	3
-#define STMPE2403_NUM_DATA	5
-
-/* Make sure it covers all cases above */
-#define MAX_NUM_DATA		5
+/* Maximum num_data across all STMPE variants (5 for STMPE1601/2403) */
+#define STMPE_KEYPAD_MAX_NUM_DATA	5
 
 /**
  * struct stmpe_keypad_variant - model-specific attributes
@@ -82,7 +77,7 @@ struct stmpe_keypad_variant {
 static const struct stmpe_keypad_variant stmpe_keypad_variants[] = {
 	[STMPE1601] = {
 		.auto_increment		= true,
-		.num_data		= STMPE1601_NUM_DATA,
+		.num_data		= 5,
 		.num_normal_data	= 3,
 		.max_cols		= 8,
 		.max_rows		= 8,
@@ -92,7 +87,7 @@ static const struct stmpe_keypad_variant stmpe_keypad_variants[] = {
 	[STMPE2401] = {
 		.auto_increment		= false,
 		.set_pullup		= true,
-		.num_data		= STMPE2401_NUM_DATA,
+		.num_data		= 3,
 		.num_normal_data	= 2,
 		.max_cols		= 8,
 		.max_rows		= 12,
@@ -102,7 +97,7 @@ static const struct stmpe_keypad_variant stmpe_keypad_variants[] = {
 	[STMPE2403] = {
 		.auto_increment		= true,
 		.set_pullup		= true,
-		.num_data		= STMPE2403_NUM_DATA,
+		.num_data		= 5,
 		.num_normal_data	= 3,
 		.max_cols		= 8,
 		.max_rows		= 12,
@@ -164,7 +159,7 @@ static irqreturn_t stmpe_keypad_irq(int irq, void *dev)
 	struct stmpe_keypad *keypad = dev;
 	struct input_dev *input = keypad->input;
 	const struct stmpe_keypad_variant *variant = keypad->variant;
-	u8 fifo[MAX_NUM_DATA];
+	u8 fifo[STMPE_KEYPAD_MAX_NUM_DATA];
 	int ret;
 	int i;
 
