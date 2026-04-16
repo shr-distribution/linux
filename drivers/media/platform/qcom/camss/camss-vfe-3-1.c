@@ -1940,6 +1940,26 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
 #define VFE31_VIDEO_WM_CBCR		5  /* WM5 = output2.ch1 (video CbCr) */
 
 /*
+ * VFE31 Dummy Buffer for Unused Write Masters
+ *
+ * The VFE31 XBAR can route data to any of the 7 WMs (WM0-WM6) based on mode.
+ * If a WM receives data but has no valid DMA address configured, the system
+ * may crash or hang. This dummy buffer acts as a "bit bucket" - all unused
+ * WMs point here so any errant DMA writes are safely absorbed.
+ *
+ * Size calculation:
+ *   - Maximum resolution: 1280x1024
+ *   - VFE31 Sparse DMA writes at INPUT stride (width*2 = 2560 bytes/line)
+ *   - Maximum Y plane: 2560 * 1024 = 2,621,440 bytes (~2.5MB)
+ *   - Round up to 3MB to provide safety margin
+ *
+ * Note: webOS didn't use dummy buffers - they relied on proper WM disable
+ * and XBAR configuration. We use this as a safety net because XBAR routing
+ * and WM enable/disable may not be perfectly synchronized during mode changes.
+ */
+#define VFE31_DUMMY_BUF_SIZE		(3 * 1024 * 1024)  /* 3MB */
+
+/*
  * ============================================================================
  * CONFIGURATION SUMMARY (CORRECTED FROM REGISTER DUMPS AND WEBOS CODE)
  * ============================================================================
@@ -2706,6 +2726,32 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	writel_relaxed(0xFFFFFF, vfe->base + VFE_0_CLAMP_ENC_MAX_CFG);
 	writel_relaxed(0, vfe->base + VFE_0_CLAMP_ENC_MIN_CFG);
 	wmb();
+
+	/*
+	 * Step 5b: Point ALL Write Masters to dummy buffer.
+	 *
+	 * This ensures any WM that receives data has a valid DMA address,
+	 * preventing crashes if XBAR routes data unexpectedly. The dummy
+	 * buffer acts as a bit bucket - data written there is discarded.
+	 *
+	 * Active WMs will get real buffers assigned during vfe_enable().
+	 */
+	if (vfe->dummy_buf_addr) {
+		int wm;
+		u32 dummy_addr = (u32)vfe->dummy_buf_addr;
+
+		dev_info(vfe->camss->dev,
+			 "VFE reset: pointing all 7 WMs to dummy buffer 0x%08x\n",
+			 dummy_addr);
+
+		for (wm = 0; wm < MSM_VFE_IMAGE_MASTERS_NUM; wm++) {
+			writel_relaxed(dummy_addr,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+			writel_relaxed(dummy_addr,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+		}
+		wmb();
+	}
 
 	/*
 	 * Step 6: Reload all write masters including pingpong buffers.
@@ -7303,10 +7349,10 @@ static const struct vfe_hw_ops_gen1 vfe_ops_gen1_3_1 = {
  * stopped and the pending flag is cleared. Without this, stale CAMIF state
  * can block CSIPHY register access on subsequent camera sessions.
  *
- * NOTE: The WM4 dummy buffer (vfe31_wm4_dummy_*) is NOT freed here because
- * it's a static one-time allocation that persists for the module lifetime.
- * This avoids repeated allocation/free cycles and the buffer is small (~1.3MB).
- * It will be freed automatically when the module is unloaded.
+ * NOTE: The dummy buffer (vfe->dummy_buf_*) is NOT freed here because
+ * it's allocated once in subdev_init and persists for the device lifetime.
+ * This avoids repeated allocation/free cycles. The 3MB buffer will
+ * be freed automatically when the device is removed/module unloaded.
  */
 static void vfe31_cleanup(struct vfe_device *vfe)
 {
@@ -7316,10 +7362,11 @@ static void vfe31_cleanup(struct vfe_device *vfe)
 	vfe->camif_pending = false;
 
 	/*
-	 * Disable VIDEO line WMs to ensure they don't continue writing on next session.
+	 * Disable ALL WMs to ensure they don't continue writing on next session.
 	 * This prevents stale DMA activity if the previous capture was aborted.
-	 * Note: WM1 (CbCr) is shared with PIX but safe to disable during full cleanup.
 	 */
+	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_PREVIEW_WM_Y));
+	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_PREVIEW_WM_CBCR));
 	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
 	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
 }
@@ -7330,6 +7377,24 @@ static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
 	vfe->isr_ops = vfe_isr_ops_gen1;
 	vfe->ops_gen1 = &vfe_ops_gen1_3_1;
 	vfe->video_ops = vfe_video_ops_gen1;
+
+	/*
+	 * Allocate dummy buffer for unused Write Masters.
+	 * All WMs point here by default until real buffers are assigned.
+	 * This prevents crashes if XBAR routes data to an unconfigured WM.
+	 */
+	if (!vfe->dummy_buf_vaddr) {
+		vfe->dummy_buf_vaddr = dma_alloc_coherent(dev, VFE31_DUMMY_BUF_SIZE,
+							  &vfe->dummy_buf_addr,
+							  GFP_KERNEL);
+		if (vfe->dummy_buf_vaddr) {
+			dev_info(dev, "VFE31: Allocated dummy buffer at DMA 0x%pad\n",
+				 &vfe->dummy_buf_addr);
+		} else {
+			dev_warn(dev, "VFE31: Failed to allocate dummy buffer\n");
+		}
+	}
+
 	dev_info(dev, "VFE31 subdev_init: ops_gen1=%px\n", vfe->ops_gen1);
 }
 
