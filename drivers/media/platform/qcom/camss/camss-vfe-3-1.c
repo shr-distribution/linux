@@ -141,14 +141,20 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *   0x3 = Y to output0 only → CbCr path BROKEN
  *   0xB = Y to output0+2   → CbCr path WORKS
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A03  /* PIX mode: Y→WM0, CbCr→WM4 (matches COMPOSITE_MASK) */
-#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* PIX+VIDEO: Y→WM0/WM1, CbCr→WM1/WM5 */
+/*
+ * CRITICAL: Both PIX and VIDEO modes MUST use 0x1A1B for CbCr to work!
+ * WebOS preview mode dump shows XBAR=0x1A1B even for preview-only mode.
+ * With bits[3:0]=0x3 (as in 0x1A03), CbCr path is broken - WM4 gets no data.
+ * With bits[3:0]=0xB (as in 0x1A1B), both Y and CbCr work correctly.
+ */
+#define VFE31_XBAR_PIX_ONLY	0x1A1B  /* PIX mode: Y→WM0, CbCr→WM4 (0xB enables CbCr!) */
+#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* PIX+VIDEO: Y→WM0/WM1, CbCr→WM4 */
 
 /* Module param for manual override/testing */
-int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select based on active lines */
+int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select (always 0x1A1B for CbCr to work) */
 module_param(vfe31_xbar_cfg1, int, 0644);
 MODULE_PARM_DESC(vfe31_xbar_cfg1,
-		 "VFE31 XBAR_CFG1 override (0=auto, 0x1a03=webOS default, 0x1a1b=pix+video)");
+		 "VFE31 XBAR_CFG1 override (0=auto/0x1a1b, 0x1a03=BROKEN CbCr)");
 
 /*
  * WM bytesperline override for testing stride issues.
@@ -1026,10 +1032,20 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->cbcr_height = cbcr_height;
 
 	/*
-	 * Y plane size uses OUTPUT stride for memory layout.
-	 * CbCr immediately follows Y in the buffer.
+	 * Y plane size for CbCr offset calculation.
+	 *
+	 * CRITICAL: VFE31 Y WM writes at INPUT stride (width*2), not output stride!
+	 * The IMAGE_SIZE register uses input_stride for pipeline timing, and the
+	 * DMA actually writes that many bytes per line.
+	 *
+	 * For 640x480: Y occupies 1280*480 = 614,400 bytes, not 640*480 = 307,200
+	 * CbCr must start AFTER the full Y plane at input stride.
+	 *
+	 * This was verified by commit 9179c4d831f7 which set cbcr_offset_mode=1.
+	 * The centralization commit incorrectly changed this to output_stride,
+	 * causing buffer overflow and crashes.
 	 */
-	cfg->y_plane_size = output_stride * height;
+	cfg->y_plane_size = input_stride * height;
 	cfg->cbcr_offset = cfg->y_plane_size;
 
 	/*
@@ -1043,14 +1059,17 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	/*
 	 * Y WM config:
 	 * - UB_CFG/IMAGE_SIZE use INPUT stride (pre-DEMUX pipeline timing)
-	 * - ADDR_CFG burst uses OUTPUT stride (actual DMA burst size)
+	 * - ADDR_CFG burst ALSO uses INPUT stride (webOS: 303 = (1280/4)-17)
 	 * - Lines = 0 for Y WM (webOS behavior)
+	 *
+	 * The previous comment about "OUTPUT stride for burst" was WRONG.
+	 * webOS register dump shows Y WM ADDR_CFG = 0x12F = 303 = (1280/4)-17.
 	 */
 	cfg->y_wm.ub_depth = (input_stride / 32) - 1;
 	cfg->y_wm.ub_height = height - 1;
 	cfg->y_wm.image_stride = input_stride / 16;
 	cfg->y_wm.image_height = height - 1;
-	cfg->y_wm.burst_words = (output_stride / 4) - 17;
+	cfg->y_wm.burst_words = (input_stride / 4) - 17;  /* INPUT stride! */
 	cfg->y_wm.burst_lines = 0;
 
 	/*
