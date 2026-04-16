@@ -1,0 +1,456 @@
+# VFE31 Register Reference and Analysis
+
+## Overview
+
+VFE31 (Video Front End version 3.1) is the camera ISP in MSM8660/APQ8060 SoCs.
+This document summarizes our understanding of the register configuration for
+semi-planar (NV12/NV16) output modes.
+
+## Hardware Block Diagram
+
+```
+Sensor (UYVY 8-bit)
+    ↓
+CSIPHY (MIPI CSI-2 receiver)
+    ↓
+CSID (CSI Decoder)
+    ↓
+VFE31 Input (CAMIF)
+    ↓
+DEMUX (separates Y and CbCr from interleaved UYVY)
+    ↓
+Scaler/Chroma Subsample
+    ↓
+XBAR (routes Y/CbCr to Write Masters)
+    ↓
+Write Masters (WM0-WM7) → DMA to memory
+```
+
+## Write Masters (WM)
+
+VFE31 has 8 Write Masters (WM0-WM7) organized into outputs:
+
+| WM | Output | Channel | Typical Use |
+|----|--------|---------|-------------|
+| WM0 | output0 | ch0 | Preview Y |
+| WM1 | output1 | ch0 | Video Y (or shared) |
+| WM2 | output2 | ch0 | RDI0 |
+| WM3 | output3 | ch0 | RDI1 |
+| WM4 | output0 | ch1 | Preview CbCr |
+| WM5 | output1 | ch1 | Video CbCr |
+| WM6 | output2 | ch1 | RDI2 |
+| WM7 | output3 | ch1 | Snapshot/RDI |
+
+**Our Current Configuration:**
+- PIX line: WM0 (Y) + WM4 (CbCr) via module params
+- VIDEO line: WM0 (Y) + WM4 (CbCr) via module params (same as PIX!)
+
+**Question:** Should VIDEO use different WMs (WM1+WM5) to avoid conflicts?
+
+## Register Addresses
+
+Base: 0x04500000 (VFE)
+
+### Per-WM Registers (WM0 example, add 0x18 per WM)
+
+| Register | Offset | Description |
+|----------|--------|-------------|
+| WM0_WR_CFG | 0x04C | Enable/config (bit 0 = enable) |
+| WM0_WR_PING_ADDR | 0x050 | Ping buffer DMA address |
+| WM0_WR_PONG_ADDR | 0x054 | Pong buffer DMA address |
+| WM0_WR_ADDR_CFG | 0x058 | Lines (upper 16) + Burst (lower 16) |
+| WM0_WR_UB_CFG | 0x05C | FIFO depth (upper 16) + height (lower 16) |
+| WM0_WR_IMAGE_SIZE | 0x060 | Stride + height encoding |
+
+Formula for WMn: base + 0x04C + (n * 0x18)
+
+## AXI_OUTPUT_MODE (0x040)
+
+Controls which output mode VFE uses:
+
+| Value | Mode | Description |
+|-------|------|-------------|
+| 0x00 | Output 1 | Single output |
+| 0x01 | Output 1 and 3 | PIX + VIDEO (our mode) |
+| 0x02 | Output 1 and 2 | PIX + RDI |
+| 0x03 | Camif to AXI | Raw CAMIF output |
+
+**Our setting:** 0x01 (OUTPUT_1_AND_3)
+
+## XBAR_CFG1 (0x044)
+
+Routes DEMUX output (Y and CbCr) to Write Masters.
+
+### Bit Layout (16-bit value)
+
+```
+Bits [15:12] = Reserved/unused
+Bits [11:8]  = CbCr routing to output1 (VIDEO)
+Bits [7:4]   = CbCr routing to output0 (PIX)
+Bits [3:0]   = Y routing
+```
+
+### Y Routing (bits [3:0])
+
+| Value | Meaning |
+|-------|---------|
+| 0x3 | Y → WM0 only |
+| 0xB | Y → WM0 AND WM4 (duplicate!) |
+
+### CbCr Routing (bits [7:4] for output0)
+
+| Value | Meaning |
+|-------|---------|
+| 0x0 | CbCr disabled |
+| 0x1 | CbCr → output0.ch1 (WM4) |
+| 0x9 | CbCr → output0+output2 (WM4+WM5?) |
+
+### Common XBAR Values
+
+| Value | Meaning | Use Case |
+|-------|---------|----------|
+| 0x1A03 | Y→WM0, CbCr→WM4 | PIX-only semi-planar |
+| 0x1A13 | Y→WM0, CbCr→WM4 | Same as above? |
+| 0x1A1B | Y→WM0+WM4(?), CbCr→WM4 | PIX+VIDEO? |
+
+**Our setting:** 0x1A03 (when param=0)
+
+**QUESTION:** What do bits [15:8] actually control? The 0x1A prefix is unclear.
+
+## DEMUX Configuration
+
+DEMUX separates interleaved UYVY into Y and CbCr planes.
+
+### DEMUX_EVEN_CFG (0x290) and DEMUX_ODD_CFG (0x294)
+
+For UYVY input (U0 Y0 V0 Y1 U1 Y2 V1 Y3...):
+
+```
+UYVY byte order: [U][Y][V][Y] [U][Y][V][Y]...
+Byte positions:   0  1  2  3   4  5  6  7
+```
+
+Each config register has format: (value1 << 8) | value2
+
+**webOS values:**
+- DEMUX_EVEN_CFG = 0xC9CA
+- DEMUX_ODD_CFG = 0xC9CA
+
+**Our current values:**
+- vfe31_demux_even = 201 (0xC9) - only lower byte!
+- vfe31_demux_odd = 202 (0xCA) - only lower byte!
+
+**QUESTION:** Should these be 0xC9CA (16-bit) or just 0xC9/0xCA (8-bit)?
+
+The register appears to be 32-bit. webOS writes 0xC9CA to both EVEN and ODD.
+
+### DEMUX Channel Mapping
+
+The 0xC9 and 0xCA values likely encode:
+- Which input byte position maps to Y output
+- Which input byte positions map to Cb and Cr outputs
+
+**QUESTION:** What is the exact bit field layout of DEMUX_CFG?
+
+## IMAGE_SIZE Register Format
+
+Each WM has an IMAGE_SIZE register controlling DMA behavior.
+
+### Observed Values
+
+| Resolution | Y WM0 | CbCr WM4 |
+|------------|-------|----------|
+| 640x480 | 0x00501df2 | 0x00500ef2 |
+| 1280x1024 | 0x00a03ff2 | 0x00a01ff2 |
+
+### Bit Layout Analysis
+
+For 1280x1024 Y (0x00a03ff2):
+```
+0x00a0 = 160 decimal
+0x3ff2 = lower 16 bits
+  0x3ff = 1023 = height - 1
+  0x2 = flags?
+```
+
+**Hypothesis:**
+- Bits [31:16] = stride / 16 = 2560 / 16 = 160 ✓
+- Bits [15:4] = height - 1 = 1023 ✓
+- Bits [3:0] = mode flags (0x2)
+
+For 1280x1024 CbCr (0x00a01ff2):
+```
+0x00a0 = 160 = stride / 16 = 2560 / 16 ✓
+0x1ff = 511 = cbcr_height - 1 (512 for NV12 4:2:0) ✓
+0x2 = flags
+```
+
+**Formula:** `IMAGE_SIZE = ((stride/16) << 16) | ((height-1) << 4) | flags`
+
+**QUESTION:** What do the flag bits [3:0] mean? Always 0x2?
+
+## ADDR_CFG Register Format
+
+Controls burst size and line count for DMA.
+
+### Observed Values
+
+| Resolution | Y WM0 | CbCr WM4 |
+|------------|-------|----------|
+| 640x480 | 0x01e0012f | 0x01300097 |
+| 1280x1024 | 0x01e0012f | 0x02400137 |
+
+### Bit Layout
+
+```
+Bits [31:16] = lines
+Bits [15:0] = burst
+```
+
+For 640x480 Y (0x01e0012f):
+- lines = 0x01e0 = 480
+- burst = 0x012f = 303 = (640/4) - 1 + some offset?
+
+For 640x480 CbCr (0x01300097):
+- lines = 0x0130 = 304 = 240 + 64 (headroom!)
+- burst = 0x0097 = 151 = (640/4) - 9
+
+**webOS Formula:**
+- Y lines = height (or height + headroom)
+- CbCr lines = cbcr_height + 64 (headroom for NV12)
+- burst = (width/4) - 9 or similar
+
+**QUESTION:** Why +64 headroom for CbCr? Pipeline latency?
+
+## UB_CFG Register Format
+
+Controls the Unified Buffer (FIFO) allocation per WM.
+
+### Observed Values
+
+| Resolution | Y WM0 | CbCr WM4 |
+|------------|-------|----------|
+| 640x480 | 0x002701df | 0x002700ef |
+| 1280x1024 | 0x004f03ff | 0x004f01ff |
+
+### Bit Layout
+
+```
+Bits [31:16] = ub_depth (FIFO depth in 256-byte chunks?)
+Bits [15:0] = ub_height (height - 1)
+```
+
+For 640x480 Y:
+- ub_depth = 0x0027 = 39
+- ub_height = 0x01df = 479 = height - 1
+
+For 1280x1024 Y:
+- ub_depth = 0x004f = 79
+- ub_height = 0x03ff = 1023 = height - 1
+
+**Observation:** ub_depth scales with resolution:
+- 640: depth = 39
+- 1280: depth = 79 (roughly 2x)
+
+**QUESTION:** How is ub_depth calculated? Total UB is shared across all active WMs.
+
+## Semi-Planar Format Handling
+
+### NV12 (4:2:0)
+- Y plane: width × height bytes
+- CbCr plane: width × (height/2) bytes (interleaved Cb,Cr)
+- Total: width × height × 1.5 bytes
+
+### NV16 (4:2:2)
+- Y plane: width × height bytes
+- CbCr plane: width × height bytes (interleaved Cb,Cr)
+- Total: width × height × 2 bytes
+
+### Stride Confusion
+
+**Input stride** (from sensor): width × 2 (UYVY = 2 bytes/pixel)
+**Output stride** (Y plane): width × 1 (Y = 1 byte/pixel)
+
+**CRITICAL QUESTION:** Does VFE31 write Y/CbCr at:
+- Input stride (width × 2)?
+- Output stride (width × 1)?
+
+Our `stride_factor = 2` suggests input stride, but comments in code are contradictory.
+
+### Buffer Layout for 640x480 NV12
+
+If output stride = 640:
+```
+Y plane:    640 × 480 = 307,200 bytes
+CbCr plane: 640 × 240 = 153,600 bytes
+Total: 460,800 bytes
+```
+
+If input stride = 1280:
+```
+Y plane:    1280 × 480 = 614,400 bytes
+CbCr plane: 1280 × 240 = 307,200 bytes
+Total: 921,600 bytes
+```
+
+**Our buffer sizing:** Uses stride_factor=2, so 921,600 bytes (input stride).
+
+### CbCr Offset Calculation
+
+**Current code (vfe31_cbcr_offset_mode=1):**
+```c
+cbcr_offset = (width * 2) * height  // Input stride × height
+```
+
+For 640x480: cbcr_offset = 1280 × 480 = 614,400
+
+**QUESTION:** Is this correct? Does VFE31 really write at input stride?
+
+## IRQ and Composite Mask
+
+### IRQ_COMPOSITE_MASK (0x01C)
+
+Groups WMs for combined completion interrupt.
+
+```
+Bits [7:0]   = Group 0 (COMPOSITE_DONE_0)
+Bits [15:8]  = Group 1 (COMPOSITE_DONE_1)
+Bits [23:16] = Group 2 (COMPOSITE_DONE_2)
+```
+
+Within each group:
+- Bit 0 = WM0
+- Bit 1 = WM1
+- Bit 4 = WM4
+- Bit 5 = WM5
+
+**Our setting:** 0x00220011
+- Group 0: 0x11 = WM0 + WM4 (PIX Y + CbCr)
+- Group 1: 0x00 = none
+- Group 2: 0x22 = WM1 + WM5 (VIDEO Y + CbCr)
+
+## webOS Reference Values
+
+From webOS kernel dumps:
+
+| Register | Value | Notes |
+|----------|-------|-------|
+| AXI_OUT_MODE | 0x01 | OUTPUT_1_AND_3 |
+| XBAR_CFG1 | 0x1A1B | PIX+VIDEO routing |
+| DEMUX_EVEN_CFG | 0xC9CA | UYVY separation |
+| DEMUX_ODD_CFG | 0xC9CA | Same |
+| MODULE_CFG | 0x01C00C0C | Enables DEMUX etc |
+| BUS_CFG | 0x02AAA771 | Bus arbitration |
+
+## Open Questions - ANSWERED (via Gemini/Copilot Review)
+
+### 1. XBAR bits [15:8]: What does 0x1A prefix mean?
+**ANSWER:** Bits [15:8] control Output 1 (VIDEO) and Output 2 (RDI) routing.
+- `0x1A` routes Y/CbCr of secondary output to WM1/WM5
+- `0x1A03` disables/parks secondary routing (PIX-only mode)
+- For concurrent PIX+VIDEO, need different XBAR value
+
+### 2. DEMUX values: Should we write 0xC9CA (16-bit) or 0xC9/0xCA (8-bit)?
+**ANSWER:** Must write full 16-bit `0xC9CA` to both registers.
+- Writing only 0xC9 (= 0x00C9) zeroes upper byte
+- This corrupts chroma extraction mapping
+- **Our code is CORRECT** - we do `(0xC9 << 8) | 0xCA = 0xC9CA`
+
+### 3. IMAGE_SIZE flags: What do bits [3:0] control?
+**ANSWER:** AXI write formatting and memory arrangement flags.
+- `0x2` = linear memory layout with 16-byte aligned bursts
+- Changing this causes skewed images or bus faults
+
+### 4. ADDR_CFG lines: Why +64 headroom for CbCr?
+**ANSWER:** Hardware pipeline flush requirement.
+- DEMUX/Chroma blocks process 16x16 macroblocks
+- Extra lines ensure EOF isn't asserted before final AXI transactions complete
+- Required to prevent bottom rows being cut off
+
+### 5. Stride: Does VFE31 write at input stride or output stride?
+**ANSWER:** VFE31 writes at **OUTPUT stride** (width bytes for Y).
+- DEMUX unpacks UYVY into separate 8-bit Y and CbCr streams
+- Y WM receives pure 8-bit data, stride = width
+- **OUR CODE IS WRONG** - we configure IMAGE_SIZE for input stride (width*2)!
+
+### 6. WM assignment: Should VIDEO use WM1+WM5 instead of WM0+WM4?
+**ANSWER:** **YES, absolutely.**
+- Using same WMs for PIX and VIDEO causes race conditions
+- Both outputs program same ping/pong addresses = buffer corruption
+- **PIX:** WM0 (Y) + WM4 (CbCr)
+- **VIDEO:** WM1 (Y) + WM5 (CbCr)
+
+### 7. UB_CFG depth: How is FIFO depth calculated/shared?
+**ANSWER:** UB is fixed SRAM pool shared among active WMs.
+- Must absorb DDR latency during AXI stalls
+- Larger lines consume FIFO faster → need more depth
+- Sum of all ub_depth must not exceed total physical UB size
+
+### 8. CbCr offset: Is (width×2×height) correct for semi-planar?
+**ANSWER:** **NO, it is INCORRECT.**
+- Y plane written at output stride: width × height bytes
+- CbCr should start immediately after Y
+- **Correct formula:** `cbcr_offset = width * height`
+- Our formula leaves massive empty gap in buffer
+
+## Known Bugs (Fixed)
+
+1. **Deferred address path used wrong WM defines** (commit 4130ab0b8379)
+   - `VFE31_VIDEO_WM_Y=1` but module param `vfe31_video_y_wm=0`
+   - Caused pending_ping_addr not to be set for VIDEO line
+   - Fixed by using module params instead of hardcoded defines
+
+## Critical Bugs To Fix (from Gemini Review)
+
+### Bug 1: IMAGE_SIZE stride is wrong
+**Current:** `image_stride = width * 2` (input stride)
+**Correct:** `image_stride = width` (output stride)
+
+The DEMUX outputs 8-bit streams. IMAGE_SIZE should use output stride.
+This likely causes the "half-frame" issue - hardware writes at wrong stride.
+
+**Files to fix:**
+- `camss-vfe-3-1.c`: All IMAGE_SIZE calculations
+- Change from `input_stride / 16` to `output_stride / 16`
+
+### Bug 2: stride_factor should be 1, not 2
+**Current:** `pix_stride_factor = 2` in camss.c
+**Correct:** `pix_stride_factor = 1`
+
+We're allocating 2x the memory needed. VFE writes at output stride.
+
+**Files to fix:**
+- `camss.c`: line 199
+
+### Bug 3: cbcr_offset calculation is wrong
+**Current:** `cbcr_offset = width * 2 * height`
+**Correct:** `cbcr_offset = width * height`
+
+Y plane is width×height bytes at output stride. CbCr follows immediately.
+
+**Files to fix:**
+- `camss-vfe-3-1.c`: Multiple locations where y_plane_size calculated
+
+### Bug 4: VIDEO line should use WM1+WM5
+**Current:** `vfe31_video_y_wm = 0`, `vfe31_video_cbcr_wm = 4`
+**Correct:** `vfe31_video_y_wm = 1`, `vfe31_video_cbcr_wm = 5`
+
+Sharing WMs with PIX causes corruption when both active.
+
+**Files to fix:**
+- `camss-vfe-3-1.c`: Module param defaults
+
+## Test Results
+
+| Test | Result | Notes |
+|------|--------|-------|
+| pix640 | PASS | 3,145,728 bytes |
+| pix1280 | PASS | 12,582,912 bytes |
+| video640 | PASS | 3,145,728 bytes |
+| video1280 | CRASH | list_add corruption (before fix) |
+
+## References
+
+- webOS kernel: `drivers/media/video/msm/msm_vfe31.c`
+- Mako kernel: `drivers/media/video/msm/vfe/msm_vfe31.c`
+- Local dumps: `reports/webos-preview-mode-dump.txt`
