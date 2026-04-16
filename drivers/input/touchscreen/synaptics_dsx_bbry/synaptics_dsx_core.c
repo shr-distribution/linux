@@ -7232,10 +7232,12 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 	init_completion(&rmi4_data->proxi_completion);
 #endif
 
-	/* Create link to the touch_keypad in sysfs */
+	/* Create link to the touch_keypad in sysfs.
+	 * 4.19 adds a /platform/ layer under /sys/devices, so we need one
+	 * more .parent hop than LOS22/4.4 did to land on /sys/devices. */
 	if (strcmp(rmi4_data->input_dev->name, "touch_keypad") == 0) {
 		retval = sysfs_create_link(
-			rmi4_data->input_dev->dev.kobj.parent->parent->parent->parent->parent->parent,
+			rmi4_data->input_dev->dev.kobj.parent->parent->parent->parent->parent->parent->parent,
 			&rmi4_data->input_dev->dev.kobj, "touch_keypad");
 		if (retval < 0)
 			dev_err(&pdev->dev,
@@ -7407,8 +7409,9 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 	if (rmi4_data->hw_if->board_data->wg_enabled) {
 		rmi4_data->wakeup_gesture.double_tap = 1;
 		rmi4_data->wakeup_gesture.swipe = 1;
+		/* Same 4.19 /platform/ layer compensation as the touch_keypad link above. */
 		retval = sysfs_create_link(
-			rmi4_data->input_dev->dev.kobj.parent->parent->parent->parent->parent->parent,
+			rmi4_data->input_dev->dev.kobj.parent->parent->parent->parent->parent->parent->parent,
 			&rmi4_data->input_dev->dev.kobj, "touch");
 
 		if (retval)
