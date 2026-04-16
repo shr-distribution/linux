@@ -2750,10 +2750,9 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 			video_out->bpl_alignment = 16;
 			video_out->line_based = 1;
 			/*
-			 * VFE31 DMA uses input stride (e.g., UYVY width*2)
-			 * rather than output stride. Set stride_factor from
-			 * pix_stride_factor resource to allocate buffers
-			 * large enough for actual DMA writes.
+			 * VFE31 DMA writes at output stride (bytesperline),
+			 * not input stride. stride_factor from pix_stride_factor
+			 * resource (now 1) for standard buffer allocation.
 			 */
 			video_out->stride_factor = vfe->res->pix_stride_factor;
 			dev_info(dev, "VFE line %d: stride_factor=%u\n",

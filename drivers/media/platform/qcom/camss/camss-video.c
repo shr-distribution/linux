@@ -35,8 +35,8 @@
  * @pix: v4l2_pix_format_mplane format (output)
  * @f: a pointer to formats array element to be used for the conversion
  * @alignment: bytesperline alignment value
- * @stride_factor: multiplier for sizeimage (VFE31 uses 2 for PIX/VIDEO modes
- *                 because DMA uses input UYVY stride rather than output stride)
+ * @stride_factor: multiplier for sizeimage (VFE31 uses 1 since DMA writes at
+ *                 output stride, not input stride)
  *
  * Fill the output pix structure with information from the input mbus format.
  *
@@ -740,16 +740,11 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		}
 
 		/*
-		 * VFE31 PIX/VIDEO mode with stride fix: VFE writes Y and CbCr
-		 * at INPUT stride (width * 2), not OUTPUT stride (bytesperline).
-		 * The stride_factor indicates this mode is active.
+		 * VFE31 PIX/VIDEO mode: VFE writes Y and CbCr at OUTPUT stride
+		 * (bytesperline), not INPUT stride. stride_factor is now 1.
 		 *
 		 * For single-plane formats where vsub_num > 1 (meaning Y + CbCr
 		 * packed in one buffer), calculate Y and CbCr sizes separately.
-		 *
-		 * CRITICAL: When stride_factor > 1, multiply by it to get the
-		 * actual buffer size needed. Without this, the buffer is too
-		 * small and DMA writes overflow into adjacent memory!
 		 */
 		if (fi->planes == 1 && vsub_num > 1) {
 			/* Semi-planar: Y + CbCr in single contiguous buffer */
@@ -767,7 +762,7 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		} else {
 			/*
 			 * Default path for formats like NV16 where vsub_num=1.
-			 * Still need to apply stride_factor for VFE31 stride fix.
+			 * stride_factor is 1 for VFE31 (DMA writes at output stride).
 			 */
 			u32 actual_bpl = bpl * stride_factor;
 			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /

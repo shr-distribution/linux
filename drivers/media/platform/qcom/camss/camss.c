@@ -192,11 +192,10 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 			.formats_rdi = &vfe_formats_rdi_vfe31,
 			.formats_pix = &vfe_formats_pix_vfe31,
 			/*
-			 * VFE31 DMA uses input UYVY stride (width*2) rather
-			 * than output Y stride, so buffers must be 2x larger
-			 * to prevent DMA overflow and memory corruption.
+			 * VFE31 DMA writes at output stride (bytesperline),
+			 * not input stride. No stride multiplication needed.
 			 */
-			.pix_stride_factor = 2
+			.pix_stride_factor = 1
 		}
 	}
 };
