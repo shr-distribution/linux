@@ -194,6 +194,14 @@ struct vfe_device {
 	u32 irq_mask0_shadow;
 	u32 irq_mask1_shadow;
 	u32 irq_comp_mask_shadow;  /* VFE31: Shadow for IRQ_COMPOSITE_MASK */
+	/*
+	 * VFE31: Dummy buffer for unused Write Masters.
+	 * All WMs point here by default. This prevents crashes when XBAR
+	 * routes data to a WM that doesn't have real buffers assigned.
+	 * Acts as a "bit bucket" - data written here is discarded.
+	 */
+	dma_addr_t dummy_buf_addr;
+	void *dummy_buf_vaddr;
 };
 
 struct camss_subdev_resources;
