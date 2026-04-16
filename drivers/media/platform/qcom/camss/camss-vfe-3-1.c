@@ -1034,18 +1034,23 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	/*
 	 * Y plane size for CbCr offset calculation.
 	 *
-	 * CRITICAL: VFE31 Y WM writes at INPUT stride (width*2), not output stride!
-	 * The IMAGE_SIZE register uses input_stride for pipeline timing, and the
-	 * DMA actually writes that many bytes per line.
+	 * VERIFIED BY RAW DATA ANALYSIS: Y WM writes at OUTPUT stride (compact)!
 	 *
-	 * For 640x480: Y occupies 1280*480 = 614,400 bytes, not 640*480 = 307,200
-	 * CbCr must start AFTER the full Y plane at input stride.
+	 * The IMAGE_SIZE register uses input_stride for VFE pipeline timing,
+	 * but DEMUX only outputs 640 bytes of Y per line (one byte per pixel),
+	 * so the Y WM can only write what DEMUX provides - compact data.
 	 *
-	 * This was verified by commit 9179c4d831f7 which set cbcr_offset_mode=1.
-	 * The centralization commit incorrectly changed this to output_stride,
-	 * causing buffer overflow and crashes.
+	 * Raw capture analysis (2026-04-16):
+	 *   - Y line 0 at offset 0-639 (valid Y data)
+	 *   - Y line 1 at offset 640-1279 (valid Y data, NOT zeros)
+	 *   - Y line 479 at offset 306560-307199 (valid Y data)
+	 *   - Offset 307200+ is zeros (gap before CbCr)
+	 *   - CbCr starts at offset 614400 (wrong - 307KB gap!)
+	 *
+	 * Fix: cbcr_offset = output_stride * height = 640 * 480 = 307,200
+	 * CbCr immediately follows Y with no gap.
 	 */
-	cfg->y_plane_size = input_stride * height;
+	cfg->y_plane_size = output_stride * height;
 	cfg->cbcr_offset = cfg->y_plane_size;
 
 	/*
@@ -1058,34 +1063,35 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 
 	/*
 	 * Y WM config:
-	 * - UB_CFG/IMAGE_SIZE use INPUT stride (pre-DEMUX pipeline timing)
-	 * - ADDR_CFG burst ALSO uses INPUT stride (webOS: 303 = (1280/4)-17)
-	 * - Lines = 0 for Y WM (webOS behavior)
+	 * - UB_CFG/IMAGE_SIZE use INPUT stride for VFE pipeline timing
+	 * - ADDR_CFG burst uses INPUT stride (webOS: 303 = (1280/4)-17)
+	 * - Lines = 0 for Y WM
 	 *
-	 * The previous comment about "OUTPUT stride for burst" was WRONG.
-	 * webOS register dump shows Y WM ADDR_CFG = 0x12F = 303 = (1280/4)-17.
+	 * Note: Despite burst being configured for input_stride, the actual
+	 * DMA write is limited by what DEMUX provides (output_stride bytes).
+	 * Raw data analysis confirms Y is written at compact/output stride.
+	 * The burst_words seems to set max burst, not actual bytes written.
 	 */
 	cfg->y_wm.ub_depth = (input_stride / 32) - 1;
 	cfg->y_wm.ub_height = height - 1;
 	cfg->y_wm.image_stride = input_stride / 16;
 	cfg->y_wm.image_height = height - 1;
-	cfg->y_wm.burst_words = (input_stride / 4) - 17;  /* INPUT stride! */
+	cfg->y_wm.burst_words = (input_stride / 4) - 17;
 	cfg->y_wm.burst_lines = 0;
 
 	/*
 	 * CbCr WM config:
-	 * - UB_CFG/IMAGE_SIZE use INPUT stride (same as Y, for VFE timing)
-	 * - ADDR_CFG burst uses width/4 - 9 (chroma is downsampled horizontally)
-	 * - Lines: cbcr_height + 64 for NV12 (headroom), cbcr_height for NV16
+	 * - UB_CFG/IMAGE_SIZE use INPUT stride for VFE pipeline timing
+	 * - ADDR_CFG burst uses output width (chroma horizontally downsampled)
+	 * - Lines: cbcr_height + 64 for NV12 (DMA headroom), cbcr_height for NV16
 	 *
-	 * The +64 headroom for NV12 was discovered in webOS register dumps
-	 * and confirmed by Gemini - it prevents DMA hanging waiting for lines.
+	 * Like Y WM, CbCr is also written at compact stride (output_stride).
 	 */
 	cfg->cbcr_wm.ub_depth = (input_stride / 32) - 1;
 	cfg->cbcr_wm.ub_height = cbcr_height - 1;
 	cfg->cbcr_wm.image_stride = input_stride / 16;
 	cfg->cbcr_wm.image_height = cbcr_height - 1;
-	cfg->cbcr_wm.burst_words = (width / 4) - 9;  /* Chroma horizontally downsampled */
+	cfg->cbcr_wm.burst_words = (width / 4) - 9;
 	cfg->cbcr_wm.burst_lines = is_420 ? cbcr_height + 64 : cbcr_height;
 }
 
