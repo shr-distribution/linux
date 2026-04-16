@@ -31,7 +31,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
-#include <synaptics_dsx.h>
+#include "synaptics_dsx.h"
 #include "synaptics_dsx_core.h"
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_DDT
 #include "synaptics_dsx_ddt.h"

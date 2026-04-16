@@ -2,6 +2,20 @@
 # Makefile for the Synaptics DSX touchscreen driver.
 #
 
+# Prefer the local synaptics_dsx.h (which carries the BBRY-specific
+# board_data fields like resolution_x/y and num_of_{rx,tx}_electrodes)
+# over include/linux/input/synaptics_dsx.h which is the upstream one.
+ccflags-y += -I$(srctree)/$(src)
+
+# 4.19 + newer clang are stricter than 4.4 was. Relax a few Werrors the
+# original BlackBerry code trips (VLAs, typedef redefinitions, unused
+# vars, NULL/0 non-literal conversions, -Wfortify-source).
+ccflags-y += -Wno-error=vla-extension \
+	     -Wno-error=typedef-redefinition \
+	     -Wno-error=unused-variable \
+	     -Wno-error=non-literal-null-conversion \
+	     -Wno-error=fortify-source
+
 # Each configuration option enables a list of files.
 obj-y += synaptics_dsx_i2c.o
 obj-y += synaptics_dsx_core.o

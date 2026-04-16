@@ -28,7 +28,7 @@
 #include <linux/firmware.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
-#include <synaptics_dsx.h>
+#include "synaptics_dsx.h"
 #include "synaptics_dsx_core.h"
 
 #define FW_IMAGE_FOLDER "synaptics/"

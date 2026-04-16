@@ -32,7 +32,7 @@
 #include <linux/reboot.h>
 #include <linux/regulator/consumer.h>
 #include <linux/version.h>
-#include <synaptics_dsx.h>
+#include "synaptics_dsx.h"
 #include "synaptics_dsx_core.h"
 #ifdef KERNEL_ABOVE_2_6_38
 #include <linux/input/mt.h>
@@ -1360,11 +1360,12 @@ static void watchdog_timeout_check(struct work_struct *work)
 	return;
 }
 
-static void synaptics_rmi4_timer_handler(unsigned long arg)
+static void synaptics_rmi4_timer_handler(struct timer_list *t)
 {
 
-	struct synaptics_rmi4_data  *rmi4_data =
-			(struct synaptics_rmi4_data *) arg;
+	struct synaptics_rmi4_timer *mt = from_timer(mt, t, timer);
+	struct synaptics_rmi4_data *rmi4_data =
+			container_of(mt, struct synaptics_rmi4_data, monitor_timer);
 
 	queue_work(rmi4_data->workqueue,
 		&rmi4_data->monitor_timer.timeout_work);
@@ -1381,12 +1382,10 @@ static void synaptics_rmi4_timer_init(struct synaptics_rmi4_timer *timer,
 	mutex_init(&timer->mutex);
 
 	/* initialize timer */
-	init_timer(&timer->timer);
+	timer_setup(&timer->timer, synaptics_rmi4_timer_handler, 0);
 	timer->active = 0;
 	timer->name = name;
 	timer->interval_ms = interval_ms;
-	timer->timer.data = (unsigned long)rmi4_data;
-	timer->timer.function = synaptics_rmi4_timer_handler;
 
 	INIT_WORK(&timer->timeout_work, timeout_work);
 }
@@ -1782,10 +1781,11 @@ static void synaptics_rmi4_stats_restart(
 	mutex_unlock(&rmi4_data->stats.mutex);
 }
 
-static void synaptics_rmi4_stats_handler(unsigned long arg)
+static void synaptics_rmi4_stats_handler(struct timer_list *t)
 {
-	struct synaptics_rmi4_data  *rmi4_data =
-		(struct synaptics_rmi4_data *) arg;
+	struct synaptics_rmi4_stats *stats = from_timer(stats, t, timer);
+	struct synaptics_rmi4_data *rmi4_data =
+		container_of(stats, struct synaptics_rmi4_data, stats);
 
 	queue_work(rmi4_data->workqueue,
 		&rmi4_data->stats.timeout_work);
@@ -1904,9 +1904,7 @@ static void synaptics_rmi4_stats_init(struct synaptics_rmi4_data *rmi4_data)
 	mutex_init(&rmi4_data->stats.mutex);
 
 	/* initialize timer */
-	init_timer(&rmi4_data->stats.timer);
-	rmi4_data->stats.timer.data = (unsigned long)rmi4_data;
-	rmi4_data->stats.timer.function = synaptics_rmi4_stats_handler;
+	timer_setup(&rmi4_data->stats.timer, synaptics_rmi4_stats_handler, 0);
 
 	INIT_WORK(&rmi4_data->stats.timeout_work, stats_timeout_work);
 }
