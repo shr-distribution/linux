@@ -35,8 +35,8 @@
  * @pix: v4l2_pix_format_mplane format (output)
  * @f: a pointer to formats array element to be used for the conversion
  * @alignment: bytesperline alignment value
- * @stride_factor: multiplier for sizeimage (VFE31 uses 2 since Y WM writes at
- *                 input stride, requiring 2x buffer size)
+ * @stride_factor: multiplier for sizeimage calculation (normally 1; legacy
+ *                 parameter kept for API compatibility)
  *
  * Fill the output pix structure with information from the input mbus format.
  *
@@ -747,15 +747,16 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		 *
 		 * Correct buffer sizes for NV12 at 640x480:
 		 * VFE31 PIX/VIDEO mode writes Y and CbCr at INPUT stride
-		 * (width*2 for UYVY input), NOT output stride (width).
+		 * CORRECTED based on raw data analysis (2026-04-16):
+		 * VFE31 Y and CbCr WMs write at OUTPUT stride (compact),
+		 * not input stride. The IMAGE_SIZE register uses input stride
+		 * for VFE pipeline timing, but DEMUX outputs data at output
+		 * width, and WMs can only write what DEMUX provides.
 		 *
-		 * For 640x480 NV12 with stride_factor=2:
-		 *   Y plane:    1280 * 480 = 614,400 bytes (INPUT stride!)
-		 *   CbCr plane: 1280 * 240 = 307,200 bytes
-		 *   Total:      921,600 bytes
-		 *
-		 * The stride_factor multiplier is REQUIRED for VFE31 to prevent
-		 * buffer overflow. Without it, CbCr writes past allocated memory.
+		 * For 640x480 NV12 with stride_factor=1:
+		 *   Y plane:    640 * 480 = 307,200 bytes
+		 *   CbCr plane: 640 * 240 = 153,600 bytes
+		 *   Total:      460,800 bytes (standard NV12 size)
 		 */
 		if (fi->planes == 1 && vsub_num > 1) {
 			/* Semi-planar: Y + CbCr in single contiguous buffer */
