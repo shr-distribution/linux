@@ -141,7 +141,7 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *   0x3 = Y to output0 only → CbCr path BROKEN
  *   0xB = Y to output0+2   → CbCr path WORKS
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A03  /* PIX mode: Y→WM0, CbCr→WM4 */
+#define VFE31_XBAR_PIX_ONLY	0x1A03  /* PIX mode: Y→WM0, CbCr→WM4 (matches COMPOSITE_MASK) */
 #define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* PIX+VIDEO: Y→WM0/WM1, CbCr→WM1/WM5 */
 
 /* Module param for manual override/testing */
@@ -311,8 +311,8 @@ MODULE_PARM_DESC(vfe31_raw_pix_mode,
  *   WM4 = output0.ch1 OR output2.ch0 (Preview CbCr or Video Y)
  *   WM5 = output2.ch1 (Video CbCr)
  *
- * XBAR 0x1A13 (PIX only):   Y→WM0, CbCr→WM4
- * XBAR 0x1A1B (PIX+VIDEO):  Y→WM0+WM1, CbCr→WM4
+ * XBAR 0x1A13 (PIX only):   Y→WM0, CbCr→WM1
+ * XBAR 0x1A1B (PIX+VIDEO):  Y→WM0+WM4, CbCr→WM1
  */
 
 /* PIX Y Write Master (default: WM0) */
@@ -325,9 +325,8 @@ MODULE_PARM_DESC(vfe31_pix_y_wm,
  * PIX CbCr Write Master
  *
  * XBAR routing determines which WM receives CbCr data:
- *   - XBAR 0x1A03: CbCr DISABLED (was buggy, do not use!)
- *   - XBAR 0x1A13: CbCr routes to WM4 (correct for PIX mode)
- *   - XBAR 0x1A1B: Y also routes to WM1, CbCr to WM4
+ *   - XBAR 0x1A03: CbCr routes to WM4 (default, matches COMPOSITE_MASK)
+ *   - XBAR 0x1A1B: CbCr routes to WM1
  *
  * IRQ_COMPOSITE_MASK=0x00220011 expects WM0+WM4 for PIX mode COMPOSITE_DONE.
  * Using WM4 as default ensures frame completion IRQs fire correctly.
@@ -340,7 +339,7 @@ MODULE_PARM_DESC(vfe31_pix_cbcr_wm,
 /*
  * VIDEO Y Write Master (default: WM0)
  *
- * NOTE: With XBAR 0x1A13, CbCr only routes to WM4.
+ * NOTE: With XBAR 0x1A03, CbCr only routes to WM4.
  * WM1/WM5 do NOT receive correct data with this XBAR setting.
  * For VIDEO-only capture, use WM0+WM4 (same as PIX mode).
  * For simultaneous PIX+VIDEO, different WMs would be needed.
@@ -471,23 +470,26 @@ MODULE_PARM_DESC(vfe31_chroma_v_phase,
 /*
  * CHROMA_SUBS_CFG register (0x4F8) - chroma subsample config
  *
- * From HTC vfe_chroma_subsample_config decompilation:
- *   Bit 4: Enable (always set)
- *   Bit 5: vsubSampleEnable - controls NV12 vs NV16
+ * From HTC vfe_chroma_subsample_config decompilation and Gemini validation:
+ *   Bit 4: Enable - MUST always be set
+ *   Bit 5: vsubSampleEnable - controls vertical chroma subsampling
  *          1 = NV12 (4:2:0, 2:1 vertical chroma subsampling)
  *          0 = NV16 (4:2:2, no vertical subsampling)
  *
  * Values:
- *   0x30 = NV12 mode (bit 4 + bit 5) - webOS default
- *   0x10 = NV16 mode (bit 4 only) - for 4:2:2 full chroma
+ *   0x10 = Enable only - NV16 mode (4:2:2, full height CbCr)
+ *   0x30 = Enable + vsubSample - NV12 mode (4:2:0, half height CbCr)
  *
  * Note: HTC binary writes 12 bytes total to 0x4F8-0x503, including
- * crop configuration. Mainline only writes the first byte.
+ * crop configuration. Mainline only writes the config byte.
+ *
+ * IMPORTANT: Previous code incorrectly defaulted to 0x20 which was
+ * missing the Enable bit (bit 4). Now auto-detects based on format.
  */
-static int vfe31_chroma_subs_cfg = -1;  /* -1 = use 0x30 (webOS default) */
+static int vfe31_chroma_subs_cfg = -1;  /* -1 = auto (0x30 for NV12, 0x10 for NV16) */
 module_param(vfe31_chroma_subs_cfg, int, 0644);
 MODULE_PARM_DESC(vfe31_chroma_subs_cfg,
-		 "VFE31 CHROMA_SUBS_CFG (-1=0x30/NV12, 0x10=NV16, >0=explicit)");
+		 "VFE31 CHROMA_SUBS_CFG (-1=auto, 0x30=NV12, 0x10=NV16, >0=explicit)");
 
 /*
  * ============================================================================
@@ -607,23 +609,6 @@ static int vfe31_cbcr_stride = 0;
 module_param(vfe31_cbcr_stride, int, 0644);
 MODULE_PARM_DESC(vfe31_cbcr_stride,
 		 "VFE31 CbCr WM IMAGE_SIZE stride (0=auto/output, 1=input, 2=output, >2=custom bytes)");
-
-/*
- * VFE31 CbCr plane offset calculation mode:
- *   0 = Output stride: cbcr_offset = bytesperline * height
- *   1 = Input stride: cbcr_offset = (width * 2) * height (default)
- *
- * VFE31 Y WM writes at INPUT stride (width * 2) in PIX/VIDEO modes.
- * The Y plane occupies (width * 2) * height bytes. CbCr must start
- * after this, so mode=1 (input stride) is required for correct layout.
- *
- * Mode 0 causes Y data to overwrite CbCr, resulting in green/pink lines.
- * Use mode 0 only for debugging or if Y somehow writes at output stride.
- */
-static int vfe31_cbcr_offset_mode = 1;
-module_param(vfe31_cbcr_offset_mode, int, 0644);
-MODULE_PARM_DESC(vfe31_cbcr_offset_mode,
-		 "VFE31 CbCr offset mode (0=output stride, 1=input stride)");
 
 /*
  * VFE31 single-buffer mode:
@@ -886,6 +871,337 @@ static inline bool vfe31_is_420_format(u32 pixelformat)
 static inline u16 vfe31_calc_cbcr_height(u32 pixelformat, u16 height)
 {
 	return vfe31_is_420_format(pixelformat) ? height / 2 : height;
+}
+
+/*
+ * ============================================================================
+ * VFE31 CENTRALIZED CONFIGURATION STRUCTURES
+ * ============================================================================
+ *
+ * These structures provide deterministic, pre-calculated configuration for
+ * VFE31 Write Masters. This replaces the scattered inline calculations and
+ * numerous module parameters with a single source of truth.
+ *
+ * Key insights from reference implementations (webOS, Mako, LG G2):
+ *
+ * 1. UB_CFG and IMAGE_SIZE stride sit BEFORE DEMUX → use INPUT stride (width×2)
+ * 2. ADDR_CFG burst sits AFTER DEMUX → use OUTPUT stride for Y, (width/4) for CbCr
+ * 3. CbCr offset uses OUTPUT stride (bytesperline × height), not input stride
+ * 4. For 4:2:0, CbCr WM lines = cbcr_height + 64 (pipeline headroom)
+ * 5. For 4:2:2, CbCr WM lines = cbcr_height (no headroom needed)
+ */
+
+/**
+ * struct vfe31_wm_config - Pre-calculated Write Master configuration
+ * @ub_depth:       Unified Buffer depth: (input_stride/32) - 1 (pre-DEMUX)
+ * @ub_height:      UB height value: output_height - 1
+ * @image_stride:   IMAGE_SIZE stride: input_stride / 16 (pre-DEMUX, 128-bit units)
+ * @image_height:   IMAGE_SIZE height: output_height - 1
+ * @burst_words:    ADDR_CFG burst: (output_stride/4) - 17 for Y, (width/4) - 9 for CbCr
+ * @burst_lines:    ADDR_CFG lines: 0 for Y, cbcr_height(+64) for CbCr
+ * @ping_addr:      PING buffer address (set at runtime)
+ * @pong_addr:      PONG buffer address (set at runtime)
+ */
+struct vfe31_wm_config {
+	u16 ub_depth;
+	u16 ub_height;
+	u16 image_stride;
+	u16 image_height;
+	u16 burst_words;
+	u16 burst_lines;
+	u32 ping_addr;
+	u32 pong_addr;
+};
+
+/**
+ * struct vfe31_line_config - Complete line configuration
+ * @path:           VFE_LINE_RDI, VFE_LINE_PIX, or VFE_LINE_VIDEO
+ * @pixelformat:    V4L2 pixel format (NV12, NV16, etc.)
+ * @width:          Frame width in pixels
+ * @height:         Frame height in lines
+ * @input_stride:   Bytes per line at VFE input (width×2 for UYVY)
+ * @output_stride:  Bytes per line at DMA output (bytesperline)
+ * @cbcr_height:    CbCr plane height (height/2 for NV12, height for NV16)
+ * @y_plane_size:   Y plane size in bytes (output_stride × height)
+ * @cbcr_offset:    CbCr plane offset from buffer start (= y_plane_size)
+ * @axi_mode:       AXI output mode (0x01, 0x60, 0x200)
+ * @xbar_value:     XBAR_CFG1 routing value
+ * @chroma_v_out:   CHROMA_V_IMAGE output height
+ * @chroma_subs_cfg: CHROMA_SUBS_CFG value (0x10 or 0x30)
+ * @y_wm:           Y Write Master config
+ * @cbcr_wm:        CbCr Write Master config (if semi-planar)
+ * @has_cbcr:       True if format uses separate CbCr WM
+ */
+struct vfe31_line_config {
+	enum vfe_line_id path;
+	u32 pixelformat;
+	u16 width;
+	u16 height;
+	u16 input_stride;
+	u16 output_stride;
+	u16 cbcr_height;
+	u32 y_plane_size;
+	u32 cbcr_offset;
+	u32 axi_mode;
+	u16 xbar_value;
+	u16 chroma_v_out;
+	u8 chroma_subs_cfg;
+	struct vfe31_wm_config y_wm;
+	struct vfe31_wm_config cbcr_wm;
+	bool has_cbcr;
+};
+
+/**
+ * vfe31_calc_rdi_config - Calculate config for RDI/RAW bypass mode
+ * @cfg: Configuration structure to fill
+ * @width: Frame width in pixels
+ * @height: Frame height in lines
+ * @bpp: Bits per pixel (8, 10, or 12)
+ *
+ * RDI mode bypasses DEMUX and writes raw sensor data directly.
+ * Only the Y WM is used, and stride is simply width * (bpp/8).
+ */
+static void vfe31_calc_rdi_config(struct vfe31_line_config *cfg,
+				  u16 width, u16 height, u8 bpp)
+{
+	u16 stride = width * bpp / 8;
+
+	cfg->input_stride = stride;
+	cfg->output_stride = stride;
+	cfg->cbcr_height = 0;
+	cfg->y_plane_size = stride * height;
+	cfg->cbcr_offset = 0;
+	cfg->has_cbcr = false;
+	cfg->axi_mode = 0x60;  /* CAMIF_TO_AXI raw bypass */
+	cfg->xbar_value = 0;   /* XBAR not used in RDI mode */
+	cfg->chroma_v_out = 0;
+	cfg->chroma_subs_cfg = 0;
+
+	/* Y WM config - all use stride directly (no DEMUX separation) */
+	cfg->y_wm.ub_depth = (stride / 32) - 1;
+	cfg->y_wm.ub_height = height - 1;
+	cfg->y_wm.image_stride = stride / 16;
+	cfg->y_wm.image_height = height - 1;
+	cfg->y_wm.burst_words = (stride / 4) - 17;
+	cfg->y_wm.burst_lines = 0;
+}
+
+/**
+ * vfe31_calc_pix_config - Calculate config for PIX/VIDEO mode (UYVY → NV12/NV16)
+ * @cfg: Configuration structure to fill
+ * @width: Frame width in pixels
+ * @height: Frame height in lines
+ * @bytesperline: Output bytes per line from V4L2 format
+ * @pixelformat: V4L2 pixel format (NV12, NV16, etc.)
+ *
+ * PIX mode uses DEMUX to separate UYVY input into Y and CbCr planes.
+ * UB_CFG and IMAGE_SIZE use INPUT stride (width*2 for VFE timing).
+ * ADDR_CFG burst uses OUTPUT stride (actual DMA writes).
+ *
+ * From Gemini validation:
+ * - CHROMA_V_IMAGE does vertical scaling (480→240 for NV12)
+ * - CHROMA_SUBS_CFG tells CbCr DMA how many lines to expect
+ * - Both must be configured consistently for the hardware to work
+ */
+static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
+				  u16 width, u16 height, u16 bytesperline,
+				  u32 pixelformat)
+{
+	u16 input_stride = width * 2;           /* UYVY input (VFE pipeline timing) */
+	u16 output_stride = bytesperline;       /* DMA output stride */
+	u16 cbcr_height;
+	bool is_420;
+
+	cfg->pixelformat = pixelformat;
+	cfg->width = width;
+	cfg->height = height;
+	cfg->input_stride = input_stride;
+	cfg->output_stride = output_stride;
+	cfg->has_cbcr = true;
+	cfg->axi_mode = 0x01;  /* OUTPUT_1_AND_3 mode */
+
+	/* Determine if 4:2:0 or 4:2:2 format */
+	is_420 = vfe31_is_420_format(pixelformat);
+	cbcr_height = is_420 ? height / 2 : height;
+	cfg->cbcr_height = cbcr_height;
+
+	/*
+	 * Y plane size uses OUTPUT stride for memory layout.
+	 * CbCr immediately follows Y in the buffer.
+	 */
+	cfg->y_plane_size = output_stride * height;
+	cfg->cbcr_offset = cfg->y_plane_size;
+
+	/*
+	 * Chroma scaling configuration (from Gemini validation):
+	 * - CHROMA_V_IMAGE: (output_height << 16) | input_height
+	 * - CHROMA_SUBS_CFG: 0x30 for NV12 (Enable + vsubSample), 0x10 for NV16
+	 */
+	cfg->chroma_v_out = cbcr_height;
+	cfg->chroma_subs_cfg = is_420 ? 0x30 : 0x10;
+
+	/*
+	 * Y WM config:
+	 * - UB_CFG/IMAGE_SIZE use INPUT stride (pre-DEMUX pipeline timing)
+	 * - ADDR_CFG burst uses OUTPUT stride (actual DMA burst size)
+	 * - Lines = 0 for Y WM (webOS behavior)
+	 */
+	cfg->y_wm.ub_depth = (input_stride / 32) - 1;
+	cfg->y_wm.ub_height = height - 1;
+	cfg->y_wm.image_stride = input_stride / 16;
+	cfg->y_wm.image_height = height - 1;
+	cfg->y_wm.burst_words = (output_stride / 4) - 17;
+	cfg->y_wm.burst_lines = 0;
+
+	/*
+	 * CbCr WM config:
+	 * - UB_CFG/IMAGE_SIZE use INPUT stride (same as Y, for VFE timing)
+	 * - ADDR_CFG burst uses width/4 - 9 (chroma is downsampled horizontally)
+	 * - Lines: cbcr_height + 64 for NV12 (headroom), cbcr_height for NV16
+	 *
+	 * The +64 headroom for NV12 was discovered in webOS register dumps
+	 * and confirmed by Gemini - it prevents DMA hanging waiting for lines.
+	 */
+	cfg->cbcr_wm.ub_depth = (input_stride / 32) - 1;
+	cfg->cbcr_wm.ub_height = cbcr_height - 1;
+	cfg->cbcr_wm.image_stride = input_stride / 16;
+	cfg->cbcr_wm.image_height = cbcr_height - 1;
+	cfg->cbcr_wm.burst_words = (width / 4) - 9;  /* Chroma horizontally downsampled */
+	cfg->cbcr_wm.burst_lines = is_420 ? cbcr_height + 64 : cbcr_height;
+}
+
+/**
+ * vfe31_calc_xbar - Calculate XBAR_CFG1 routing value
+ * @pix_active: True if PIX line is active
+ * @video_active: True if VIDEO line is active
+ *
+ * XBAR_CFG1 routes DEMUX outputs to Write Masters:
+ * - PIX only:      0x1A03 (Y→WM0, CbCr→WM4)
+ * - PIX + VIDEO:   0x1A1B (Y→WM0+WM1, CbCr→WM4) - VIDEO CbCr (WM5) disabled
+ * - VIDEO only:    0x1A03 (same as PIX only, reuses WM0/WM4)
+ *
+ * Note: webOS never enabled VIDEO CbCr (WM5). For full VIDEO CbCr support,
+ * XBAR 0x1A9B would be needed, but that's untested on this hardware.
+ *
+ * Returns: XBAR_CFG1 value to write to register 0x044
+ */
+static u16 vfe31_calc_xbar(bool pix_active, bool video_active)
+{
+	/*
+	 * For simplicity and compatibility with webOS behavior,
+	 * use 0x1A03 for PIX-only and 0x1A1B for PIX+VIDEO.
+	 * VIDEO-only mode reuses PIX WMs (WM0/WM4).
+	 */
+	if (pix_active && video_active)
+		return VFE31_XBAR_PIX_VIDEO;  /* 0x1A1B */
+	else
+		return VFE31_XBAR_PIX_ONLY;   /* 0x1A03 */
+}
+
+/**
+ * vfe31_dump_line_config - Debug helper to log calculated configuration
+ * @dev: Device for logging
+ * @cfg: Configuration to dump
+ */
+static void vfe31_dump_line_config(struct device *dev,
+				   const struct vfe31_line_config *cfg)
+{
+	dev_info(dev, "VFE31 config: path=%d w=%u h=%u in_stride=%u out_stride=%u\n",
+		 cfg->path, cfg->width, cfg->height,
+		 cfg->input_stride, cfg->output_stride);
+	dev_info(dev, "  Y WM: ub_depth=%u ub_height=%u img_stride=%u img_height=%u\n",
+		 cfg->y_wm.ub_depth, cfg->y_wm.ub_height,
+		 cfg->y_wm.image_stride, cfg->y_wm.image_height);
+	dev_info(dev, "  Y WM: burst=%u lines=%u\n",
+		 cfg->y_wm.burst_words, cfg->y_wm.burst_lines);
+	if (cfg->has_cbcr) {
+		dev_info(dev, "  CbCr WM: ub_depth=%u ub_height=%u img_stride=%u img_height=%u\n",
+			 cfg->cbcr_wm.ub_depth, cfg->cbcr_wm.ub_height,
+			 cfg->cbcr_wm.image_stride, cfg->cbcr_wm.image_height);
+		dev_info(dev, "  CbCr WM: burst=%u lines=%u offset=0x%x\n",
+			 cfg->cbcr_wm.burst_words, cfg->cbcr_wm.burst_lines,
+			 cfg->cbcr_offset);
+		dev_info(dev, "  Chroma: v_out=%u subs_cfg=0x%02x\n",
+			 cfg->chroma_v_out, cfg->chroma_subs_cfg);
+	}
+}
+
+/* Forward declarations needed for vfe31_apply_wm_config */
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_CFG_FWD(n)		(0x04C + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR_FWD(n)	(0x050 + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR_FWD(n)	(0x054 + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG_FWD(n)	(0x058 + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG_FWD(n)	(0x05C + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE_FWD(n)	(0x060 + 0x18 * (n))
+
+/**
+ * vfe31_apply_wm_config - Write WM configuration to hardware registers
+ * @vfe: VFE device
+ * @wm: Write Master index (0-7)
+ * @cfg: Pre-calculated WM configuration
+ *
+ * Writes all WM registers using the pre-calculated values from cfg.
+ * This replaces scattered inline calculations with a single function
+ * that applies deterministic values.
+ *
+ * Register format (VFE31):
+ * - IMAGE_SIZE: (stride/16) << 16 | ((height-1) << 4) | 2
+ * - ADDR_CFG:   (lines << 16) | burst_words
+ * - UB_CFG:     (depth << 16) | height
+ */
+static void vfe31_apply_wm_config(struct vfe_device *vfe, u8 wm,
+				  const struct vfe31_wm_config *cfg)
+{
+	u32 reg;
+
+	/* WR_PING_ADDR */
+	writel_relaxed(cfg->ping_addr,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR_FWD(wm));
+
+	/* WR_PONG_ADDR */
+	writel_relaxed(cfg->pong_addr,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR_FWD(wm));
+
+	/* WR_IMAGE_SIZE: (stride/16) << 16 | ((height-1) << 4) | 2 */
+	reg = ((cfg->image_stride) & 0xFFFF) << 16;
+	reg |= ((cfg->image_height) << 4) | 2;
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE_FWD(wm));
+
+	/* WR_ADDR_CFG: (lines << 16) | burst_words */
+	reg = ((cfg->burst_lines) << 16) | (cfg->burst_words & 0xFFFF);
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG_FWD(wm));
+
+	/* WR_UB_CFG: (depth << 16) | height */
+	reg = ((cfg->ub_depth) << 16) | (cfg->ub_height & 0xFFFF);
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG_FWD(wm));
+
+	/* WR_CFG: enable only (BIT(0)) - VFE31 doesn't use frame_based in bit 1 */
+	writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG_FWD(wm));
+
+	wmb();
+}
+
+/**
+ * vfe31_apply_line_config - Apply complete line configuration to hardware
+ * @vfe: VFE device
+ * @cfg: Pre-calculated line configuration
+ * @y_wm: Y plane Write Master index
+ * @cbcr_wm: CbCr plane Write Master index (ignored if !has_cbcr)
+ *
+ * Applies the calculated configuration to all relevant WMs.
+ * Call vfe31_calc_pix_config() or vfe31_calc_rdi_config() first
+ * to populate the cfg structure.
+ */
+static void vfe31_apply_line_config(struct vfe_device *vfe,
+				    const struct vfe31_line_config *cfg,
+				    u8 y_wm, u8 cbcr_wm)
+{
+	/* Apply Y WM configuration */
+	vfe31_apply_wm_config(vfe, y_wm, &cfg->y_wm);
+
+	/* Apply CbCr WM configuration if semi-planar format */
+	if (cfg->has_cbcr)
+		vfe31_apply_wm_config(vfe, cbcr_wm, &cfg->cbcr_wm);
 }
 
 /* External module parameters from camss-vfe.c */
@@ -3213,8 +3529,8 @@ static int vfe31_enable(struct vfe_line *line)
 	struct vfe_output *output = &line->output;
 	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
 	u32 ping_addr, pong_addr;
-	u16 width, height, cbcr_height, bytesperline, wpl;
-	u32 val, reg;
+	u16 width, height, cbcr_height, bytesperline;
+	u32 reg;
 	unsigned long flags;
 	int wm_idx;
 	u8 y_wm;  /* Y plane write master (WM0) */
@@ -3637,319 +3953,72 @@ static int vfe31_enable(struct vfe_line *line)
 	}
 
 	/*
-	 * Step 2: Configure Y WM registers (WM0)
-	 */
-	dev_info(vfe->camss->dev, "VFE31: Step 2 - Y WM%d registers\n", y_wm);
-
-	/* WR_PING_ADDR */
-	writel_relaxed(ping_addr,
-		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
-	{
-		u32 readback = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(y_wm));
-		dev_info(vfe->camss->dev, "VFE31: WM%d PING_ADDR=0x%08x (readback=0x%08x)\n",
-			y_wm, ping_addr, readback);
-	}
-
-	/* WR_PONG_ADDR */
-	writel_relaxed(pong_addr,
-		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(y_wm));
-	{
-		u32 readback = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(y_wm));
-		dev_info(vfe->camss->dev, "VFE31: WM%d PONG_ADDR=0x%08x (readback=0x%08x)\n",
-			y_wm, pong_addr, readback);
-	}
-
-	/*
-	 * WR_IMAGE_SIZE - VFE31 format (from webOS register dumps):
-	 * webOS WM0: 0x00501DF2 = ((80) << 16) | ((479 << 4) | 2)
+	 * Step 2: Configure Write Masters using centralized config
 	 *
-	 * Upper 16 bits: stride / 16 (128-bit words per line)
-	 * Lower 16 bits: ((height - 1) << 4) | 2
-	 *
-	 * For PIX/VIDEO mode, IMAGE_SIZE stride must match UB_CFG depth (both
-	 * use input UYVY stride = width*2). vfe31_calc_image_stride handles
-	 * this automatically for non-RDI modes.
+	 * Use vfe31_calc_pix_config() or vfe31_calc_rdi_config() to calculate
+	 * all register values deterministically, then apply with vfe31_apply_wm_config().
+	 * Module param overrides are checked after calculation for debugging.
 	 */
 	{
-		u16 image_stride = vfe31_calc_image_stride(width, bytesperline,
-							   is_rdi_line, pix->pixelformat);
-		int img_height_val;
+		struct vfe31_line_config cfg = {0};
+		u8 cbcr_wm = (output->wm_num == 2) ? output->wm_idx[1] : 0;
 
-		if (vfe31_pix_y_img_height < 0)
-			img_height_val = height;  /* auto */
-		else
-			img_height_val = vfe31_pix_y_img_height;  /* explicit */
-
-		reg = ((image_stride / 16) & 0xFFFF) << 16;
-		reg |= ((img_height_val - 1) << 4) | 2;
-		dev_info(vfe->camss->dev, "VFE31: WM%d IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d)\n",
-			 y_wm, image_stride, img_height_val, vfe31_image_stride, vfe31_pix_y_img_height);
-		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(y_wm));
-	}
-
-	/*
-	 * WR_ADDR_CFG - webOS format: (lines << 16) | burst_words
-	 * webOS WM0: 0x0000012F = (lines=0 << 16) | burst=303
-	 * webOS WM1: 0x01C8012F = (lines=456 << 16) | burst=303
-	 *
-	 * For single-plane UYVY, only WM0 is used with lines=0.
-	 * burst_words = words_per_line - 17 (webOS formula)
-	 *
-	 * For semi-planar formats with stride fix: use INPUT stride (width * 2).
-	 * For other formats: use bytesperline (OUTPUT stride).
-	 *
-	 * webOS used burst = (1280/4) - 17 = 303 for 640x480 video mode.
-	 */
-	{
-		int lines_val, burst_val;
-
-		/*
-		 * Burst controls actual DMA write size, use bytesperline (output stride).
-		 * This differs from IMAGE_SIZE which uses input stride for VFE timing.
-		 */
-		wpl = bytesperline / 4;  /* Output stride in 32-bit words */
-
-		/* Lines field: 0 for single-plane, height-24 for multi-plane Y */
-		if (vfe31_pix_y_lines < 0)
-			lines_val = 0;  /* auto: lines=0 for Y WM (webOS behavior) */
-		else
-			lines_val = vfe31_pix_y_lines;  /* explicit */
-
-		/* Burst field */
-		if (vfe31_pix_y_burst < 0)
-			burst_val = (wpl - 17) & 0xFFFF;  /* auto: webOS formula */
-		else
-			burst_val = vfe31_pix_y_burst & 0xFFFF;  /* explicit */
-
-		reg = (lines_val << 16) | burst_val;
-		dev_info(vfe->camss->dev, "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d, l_param=%d, b_param=%d)\n",
-			 y_wm, reg, lines_val, burst_val, vfe31_pix_y_lines, vfe31_pix_y_burst);
-		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(y_wm));
-	}
-
-	/*
-	 * WR_UB_CFG - VFE31 format (from webOS register dumps):
-	 * webOS WM0: 0x002701DF = ((39) << 16) | 479
-	 *
-	 * Upper 16 bits: (wpl / 8) - 1, where wpl is 32-bit words per line
-	 *   For 1280 bytes/line: wpl = 320, (320/8)-1 = 39 = 0x27
-	 * Lower 16 bits: height - 1
-	 *
-	 * CRITICAL: UB buffers INCOMING data BEFORE DEMUX separates Y/CbCr!
-	 * - PIX/VIDEO mode (UYVY input): use width * 2 (2 bytes per pixel)
-	 * - RDI mode (RAW8 input): use bytesperline (1 byte per pixel)
-	 *
-	 * For PIX/VIDEO: Using output stride (640) instead of input stride (1280)
-	 * causes UB to only buffer half the input line, resulting in half-frame
-	 * capture (only 240 of 480 lines).
-	 *
-	 * This is DIFFERENT from VFE4.x which uses (offset << 16) | depth
-	 */
-	{
-		u16 input_stride;
-		u16 input_wpl;
-		int ub_height_val;
-
+		/* Calculate configuration based on line type */
 		if (is_rdi_line) {
-			/* RDI mode: RAW data, use bytesperline (1 byte per pixel for RAW8) */
-			input_stride = bytesperline;
+			u8 bpp = camss_format_get_bpp(line->formats, line->nformats,
+						      line->fmt[MSM_VFE_PAD_SINK].code);
+			vfe31_calc_rdi_config(&cfg, width, height, bpp);
+			cfg.path = line->id;
 		} else {
-			/* PIX/VIDEO mode: UYVY input, 2 bytes per pixel */
-			input_stride = width * 2;
+			vfe31_calc_pix_config(&cfg, width, height, bytesperline,
+					      pix->pixelformat);
+			cfg.path = line->id;
 		}
-		input_wpl = input_stride / 4;  /* 32-bit words per line */
 
-		if (vfe31_pix_y_ub_height < 0)
-			ub_height_val = height - 1;  /* auto */
-		else
-			ub_height_val = vfe31_pix_y_ub_height;  /* explicit */
-
-		reg = ((input_wpl / 8 - 1) & 0xFFFF) << 16;
-		reg |= ub_height_val & 0xFFFF;
-		dev_info(vfe->camss->dev, "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, %s, param=%d)\n",
-			 y_wm, reg, (input_wpl / 8 - 1), ub_height_val,
-			 is_rdi_line ? "RDI" : "PIX/VIDEO", vfe31_pix_y_ub_height);
-		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(y_wm));
-	}
-
-	/*
-	 * WR_CFG - enable only (BIT(0)).
-	 * Note: VFE31 does NOT have frame_based mode in WR_CFG bit 1.
-	 * webOS only writes 1 here, not 3. Hardware ignores bit 1.
-	 */
-	writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(y_wm));
-	wmb();
-
-	/*
-	 * Step 2b: Configure WM1 for CbCr output (PIX mode only)
-	 *
-	 * In PIX mode with DEMUX enabled, the VFE separates Y and CbCr:
-	 * - WM0: Y (luma) channel
-	 * - WM1: CbCr (chroma) channel, interleaved
-	 *
-	 * webOS WM1 configuration (from register dump):
-	 * - WR_ADDR_CFG: 0x01C8012F = (lines=456 << 16) | burst=303
-	 * - WR_UB_CFG: 0x002701DF (same as WM0)
-	 * - WR_IMAGE_SIZE: 0x00501DF2 (same as WM0)
-	 *
-	 * For buffer address: webOS uses separate Y and CbCr buffers.
-	 * Since userspace provides a single UYVY buffer, we write CbCr
-	 * to an offset within the same buffer (semi-planar layout).
-	 */
-	if (output->wm_num == 2) {
-		u8 cbcr_wm = output->wm_idx[1];  /* CbCr WM (WM4 with XBAR 0x1A03) */
-		u32 y_plane_size;
-		u32 cbcr_offset;
-
-		/*
-		 * CbCr plane offset = Y plane size in memory.
-		 *
-		 * vfe31_cbcr_offset_mode controls the calculation:
-		 *   0 = Old: bytesperline * height (may cause overlap at high res)
-		 *   1 = New: width * 2 * height for PIX/VIDEO (prevents overlap)
-		 *
-		 * For RDI mode, always use bytesperline (no DEMUX processing).
-		 */
-		if (is_rdi_line || vfe31_cbcr_offset_mode == 0) {
-			/* RDI mode or old behavior: use bytesperline */
-			y_plane_size = bytesperline * height;
-		} else {
-			/* PIX/VIDEO mode with new behavior: use input stride */
-			y_plane_size = (width * 2) * height;
+		/* Set buffer addresses */
+		cfg.y_wm.ping_addr = ping_addr;
+		cfg.y_wm.pong_addr = pong_addr;
+		if (cfg.has_cbcr) {
+			cfg.cbcr_wm.ping_addr = ping_addr + cfg.cbcr_offset;
+			cfg.cbcr_wm.pong_addr = pong_addr + cfg.cbcr_offset;
+			vfe->active_cbcr_offset = cfg.cbcr_offset;
 		}
-		dev_info(vfe->camss->dev,
-			 "VFE31: cbcr_offset mode=%d y_plane_size=%u (bpl=%u w*2=%u h=%u)\n",
-			 vfe31_cbcr_offset_mode, y_plane_size, bytesperline, width * 2, height);
-		cbcr_offset = y_plane_size;
-		u32 cbcr_ping_addr = ping_addr + cbcr_offset;
-		u32 cbcr_pong_addr = pong_addr + cbcr_offset;
 
-		/* Store for runtime CbCr address calculation during streaming */
-		vfe->active_cbcr_offset = cbcr_offset;
+		/* Apply module param overrides (escape hatches for debugging) */
+		if (vfe31_pix_y_img_height >= 0)
+			cfg.y_wm.image_height = vfe31_pix_y_img_height - 1;
+		if (vfe31_pix_y_ub_height >= 0)
+			cfg.y_wm.ub_height = vfe31_pix_y_ub_height;
+		if (vfe31_pix_y_burst >= 0)
+			cfg.y_wm.burst_words = vfe31_pix_y_burst;
+		if (vfe31_pix_y_lines >= 0)
+			cfg.y_wm.burst_lines = vfe31_pix_y_lines;
 
-		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d (CbCr) offset=0x%x (bpl=%d h=%d) ping=0x%08x\n",
-			 cbcr_wm, cbcr_offset, bytesperline, height, cbcr_ping_addr);
+		if (cfg.has_cbcr) {
+			if (vfe31_pix_cbcr_img_height >= 0)
+				cfg.cbcr_wm.image_height = vfe31_pix_cbcr_img_height - 1;
+			if (vfe31_pix_cbcr_ub_height >= 0)
+				cfg.cbcr_wm.ub_height = vfe31_pix_cbcr_ub_height;
+			if (vfe31_pix_cbcr_burst >= 0)
+				cfg.cbcr_wm.burst_words = vfe31_pix_cbcr_burst;
+			if (vfe31_pix_cbcr_lines >= 0)
+				cfg.cbcr_wm.burst_lines = vfe31_pix_cbcr_lines;
+		}
 
-		/* CbCr WM PING/PONG addresses (CbCr buffer after Y) */
-		writel_relaxed(cbcr_ping_addr,
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(cbcr_wm));
-		writel_relaxed(cbcr_pong_addr,
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(cbcr_wm));
+		/* Log calculated configuration */
+		vfe31_dump_line_config(vfe->camss->dev, &cfg);
 
-		/*
-		 * CbCr WM IMAGE_SIZE - MUST use INPUT stride, not output stride!
-		 *
-		 * webOS uses stride=1280 for both Y and CbCr IMAGE_SIZE, even though
-		 * CbCr only writes 640 bytes per line (controlled by burst in ADDR_CFG).
-		 * The IMAGE_SIZE stride must match UB_CFG depth calculation (both use
-		 * input stride) or the hardware gets confused and only writes half the lines.
-		 */
-		{
-			u16 input_stride = width * 2;  /* UYVY input stride, same as Y */
-			int img_height_val;
+		/* Apply Y WM configuration */
+		dev_info(vfe->camss->dev, "VFE31: Step 2 - Applying Y WM%d config\n", y_wm);
+		vfe31_apply_wm_config(vfe, y_wm, &cfg.y_wm);
 
-			if (vfe31_pix_cbcr_img_height < 0)
-				img_height_val = cbcr_height;  /* auto: use format-based height */
-			else
-				img_height_val = vfe31_pix_cbcr_img_height;  /* explicit */
-
-			reg = ((input_stride / 16) & 0xFFFF) << 16;
-			reg |= ((img_height_val - 1) << 4) | 2;
+		/* Apply CbCr WM configuration if semi-planar */
+		if (output->wm_num == 2 && cfg.has_cbcr) {
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d s_param=%d h_param=%d)\n",
-				 cbcr_wm, reg, input_stride, img_height_val, vfe31_cbcr_stride, vfe31_pix_cbcr_img_height);
-			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(cbcr_wm));
+				 "VFE31: Step 2b - Applying CbCr WM%d config (offset=0x%x)\n",
+				 cbcr_wm, cfg.cbcr_offset);
+			vfe31_apply_wm_config(vfe, cbcr_wm, &cfg.cbcr_wm);
 		}
-
-		/*
-		 * CbCr WM ADDR_CFG - burst and line count
-		 *
-		 * Format: (lines << 16) | burst_words
-		 *
-		 * WebOS formulas (verified from register dumps):
-		 *   lines = cbcr_height + 64 (e.g., 240 + 64 = 304 for 640x480 NV12)
-		 *   burst = (width/4) - 9 (e.g., 160 - 9 = 151 for 640 width)
-		 *
-		 * The extra 64 lines and adjusted burst provide pipeline headroom.
-		 *
-		 * Module params allow override:
-		 *   vfe31_pix_cbcr_lines: -1=auto, 0=height-1, >0=explicit
-		 *   vfe31_pix_cbcr_burst: -1=auto, >0=explicit
-		 */
-		{
-			int lines_val, burst_val;
-			u16 cbcr_stride = vfe31_calc_cbcr_stride(width, bytesperline);
-
-			if (vfe31_pix_cbcr_lines < 0) {
-				/*
-				 * Auto mode: For 4:2:0 (NV12), add +64 headroom
-				 * as webOS did. For 4:2:2 (NV16), DON'T add
-				 * headroom - the buffer is sized for exactly
-				 * cbcr_height lines and adding 64 causes overflow.
-				 */
-				if (vfe31_is_420_format(pix->pixelformat))
-					lines_val = cbcr_height + 64;
-				else
-					lines_val = cbcr_height;  /* NV16: no headroom */
-			} else if (vfe31_pix_cbcr_lines == 0)
-				lines_val = cbcr_height - 1;   /* full CbCr height */
-			else
-				lines_val = vfe31_pix_cbcr_lines;  /* explicit */
-
-			if (vfe31_pix_cbcr_burst < 0) {
-				/*
-				 * CbCr burst uses OUTPUT width (not stride) because
-				 * the chroma scaler outputs at output resolution.
-				 * Formula: (width/4) - 9 = 151 for 640 width.
-				 * Using stride (1280) caused VFE to hang waiting
-				 * for data that never arrives from the scaler.
-				 */
-				burst_val = ((width / 4) - 9) & 0xFFFF;
-			} else
-				burst_val = vfe31_pix_cbcr_burst & 0xFFFF;  /* explicit */
-
-			reg = (lines_val << 16) | burst_val;
-			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d WR_ADDR_CFG=0x%08x (lines=%d, burst=%d, l_param=%d, b_param=%d)\n",
-				 cbcr_wm, reg, lines_val, burst_val, vfe31_pix_cbcr_lines, vfe31_pix_cbcr_burst);
-			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(cbcr_wm));
-		}
-
-		/*
-		 * CbCr WM UB_CFG configuration:
-		 * - ub_depth: MUST use INPUT stride (same as Y WM), not output stride!
-		 *   webOS uses depth=39 for both Y and CbCr WMs (1280 bytes/line).
-		 *   UB_CFG depth must match IMAGE_SIZE stride for hardware to work.
-		 * - ub_height: Use cbcr_height (NOT Y height!) since this controls
-		 *   the OUTPUT frame height for this write master.
-		 *   For NV12 4:2:0, cbcr_height = Y_height/2.
-		 */
-		{
-			u16 input_stride = width * 2;  /* UYVY input stride, same as Y */
-			u16 input_wpl = input_stride / 4;  /* 32-bit words per line */
-			int ub_height_val;
-
-			/*
-			 * Use cbcr_height for ub_height, not Y height.
-			 * For NV12 4:2:0, cbcr_height = height/2 = 240 for 480p.
-			 */
-			if (vfe31_pix_cbcr_ub_height < 0)
-				ub_height_val = cbcr_height - 1;  /* auto: use CbCr height */
-			else
-				ub_height_val = vfe31_pix_cbcr_ub_height;  /* explicit */
-
-			reg = ((input_wpl / 8 - 1) & 0xFFFF) << 16;
-			reg |= ub_height_val & 0xFFFF;
-			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, ub_height=%d, cbcr_h=%d, param=%d)\n",
-				 cbcr_wm, reg, (input_wpl / 8 - 1), ub_height_val, cbcr_height, vfe31_pix_cbcr_ub_height);
-			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(cbcr_wm));
-		}
-
-		/* Enable CbCr WM */
-		writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(cbcr_wm));
-		wmb();
 	}
 
 	/* Reload WMs to apply new configuration */
@@ -4360,21 +4429,37 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		}
 
 		/*
-		 * Determine subs_cfg - controls chroma subsampling output format.
-		 * Bit 4: V_SUBSAMPLE - indicates vertical 2:1 output
-		 * Bit 5: H_SUBSAMPLE - indicates horizontal 2:1 output
+		 * CHROMA_SUBS_CFG (0x4F8) - Chroma subsampling block control.
 		 *
-		 * IMPORTANT: CHROMA_V_IMAGE scaler already does vertical scaling
-		 * (480->240 for NV12). Do NOT set V_SUBSAMPLE (bit 4) here or
-		 * we get double subsampling (480->240->120 = only 120 lines)!
+		 * Bit layout (from webOS HTC analysis and Gemini validation):
+		 *   Bit 4: Enable - MUST always be set (0x10)
+		 *   Bit 5: vsubSampleEnable - controls vertical chroma subsampling
 		 *
-		 * Use 0x20 (H only) for all semi-planar formats since vertical
-		 * scaling is handled by CHROMA_V_IMAGE register above.
+		 * Values:
+		 *   0x10 = Enable only - NV16 (4:2:2, no vertical chroma subsampling)
+		 *   0x30 = Enable + vsubSample - NV12 (4:2:0, vertical 2:1 subsampling)
+		 *
+		 * IMPORTANT: CHROMA_V_IMAGE scaler and CHROMA_SUBS_CFG work TOGETHER:
+		 *   - CHROMA_V_IMAGE: Controls the chroma scaler (height to height/2)
+		 *   - CHROMA_SUBS_CFG: Enables the subsampler and tells CbCr DMA
+		 *     engine to expect half as many lines (for NV12)
+		 *
+		 * For NV12: CHROMA_V_IMAGE scales 480->240, CHROMA_SUBS_CFG=0x30
+		 *           tells hardware to expect 240 CbCr lines.
+		 * For NV16: CHROMA_V_IMAGE passes 480->480, CHROMA_SUBS_CFG=0x10
+		 *           tells hardware to expect 480 CbCr lines.
+		 *
+		 * Previous bug: 0x20 (only bit 5) was used, missing the Enable bit!
 		 */
-		if (vfe31_chroma_subs_cfg >= 0)
+		if (vfe31_chroma_subs_cfg >= 0) {
 			subs_cfg = vfe31_chroma_subs_cfg;  /* explicit override */
-		else
-			subs_cfg = 0x20;  /* H subsample only, V done by scaler */
+		} else {
+			/* Auto: based on output format */
+			if (vfe31_is_420_format(p))
+				subs_cfg = 0x30;  /* NV12: Enable + vsubSample */
+			else
+				subs_cfg = 0x10;  /* NV16: Enable only */
+		}
 
 		writel_relaxed((v_out << 16) | height, vfe->base + VFE_0_CHROMA_V_IMAGE);
 		writel_relaxed(v_phase, vfe->base + VFE_0_CHROMA_V_PHASE);
@@ -5198,22 +5283,10 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			/*
 			 * CbCr plane offset = Y plane size in memory.
 			 *
-			 * vfe31_cbcr_offset_mode controls the calculation:
-			 *   0 = Old: bytesperline * height
-			 *   1 = New: width * 2 * height for PIX/VIDEO
-			 *
-			 * For RDI RAW8 mode, always use bytesperline.
+			 * Y WM writes rows contiguously at bytesperline, not strided.
+			 * stride_fix only affects IMAGE_SIZE timing, not DMA stride.
 			 */
-			if ((is_rdi_line && !rdi_use_16bpp) || vfe31_cbcr_offset_mode == 0) {
-				/* RDI RAW8 or old behavior: use bytesperline */
-				y_plane_size = bytesperline * height;
-			} else {
-				/* PIX/VIDEO or RDI 16bpp with new behavior: use input stride */
-				y_plane_size = (width * 2) * height;
-			}
-			dev_info(vfe->camss->dev,
-				 "VFE31: cbcr_offset mode=%d y_plane=%u (is_rdi=%d 16bpp=%d)\n",
-				 vfe31_cbcr_offset_mode, y_plane_size, is_rdi_line, rdi_use_16bpp);
+			y_plane_size = bytesperline * height;
 			cbcr_offset = y_plane_size;
 			cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 			cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
@@ -5796,18 +5869,10 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				/*
 				 * CbCr plane offset = Y plane size in memory.
 				 *
-				 * vfe31_cbcr_offset_mode controls the calculation:
-				 *   0 = Old: bytesperline * height
-				 *   1 = New: width * 2 * height (VIDEO always uses DEMUX)
+				 * Y WM writes rows contiguously at bytesperline, not strided.
+				 * stride_fix only affects IMAGE_SIZE timing, not DMA stride.
 				 */
-				if (vfe31_cbcr_offset_mode == 0) {
-					y_plane_size = bytesperline * height;
-				} else {
-					y_plane_size = (width * 2) * height;
-				}
-				dev_info(vfe->camss->dev,
-					 "VFE31: VIDEO cbcr_offset mode=%d y_plane=%u\n",
-					 vfe31_cbcr_offset_mode, y_plane_size);
+				y_plane_size = bytesperline * height;
 				cbcr_offset = y_plane_size;
 				cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 				cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
@@ -6077,16 +6142,16 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 
 		/*
 		 * Check if this is the primary Y WM for the pending line.
-		 * Use module params to match actual WM assignment.
+		 * PIX uses WM0, VIDEO uses WM4.
 		 */
 		if (vfe->camif_pending_line_id == VFE_LINE_VIDEO)
-			is_primary_wm = (wm == (u8)vfe31_video_y_wm);
+			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
 		else
-			is_primary_wm = (wm == (u8)vfe31_pix_y_wm);
+			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
 
 		dev_info(vfe->camss->dev,
-			"VFE31: WM%d ping_addr=0x%08x (DEFERRED - camif_pending=true, primary=%d)\n",
-			wm, addr, is_primary_wm);
+			"VFE31: WM%d ping_addr=0x%08x (DEFERRED - camif_pending=true)\n",
+			wm, addr);
 
 		if (is_primary_wm)
 			vfe->pending_ping_addr = addr;
@@ -6147,14 +6212,10 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	if (vfe->camif_pending) {
 		bool is_primary_wm;
 
-		/*
-		 * Check if this is the primary Y WM for the pending line.
-		 * Use module params to match actual WM assignment.
-		 */
 		if (vfe->camif_pending_line_id == VFE_LINE_VIDEO)
-			is_primary_wm = (wm == (u8)vfe31_video_y_wm);
+			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
 		else
-			is_primary_wm = (wm == (u8)vfe31_pix_y_wm);
+			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
 
 		dev_dbg(vfe->camss->dev,
 			"VFE31: WM%d pong_addr=0x%08x (deferred, primary=%d)\n",
