@@ -4312,13 +4312,18 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	case MEDIA_BUS_FMT_UYVY8_2X8:
 	default:
 		/*
-		 * Use webOS default 0xC9CA for UYVY input.
-		 * Raw data analysis (2026-04-16) confirmed:
-		 *   - 0xCAC9 produces NV21 (CrCb order, colors wrong with NV12 decode)
-		 *   - 0xC9CA produces NV12 (CbCr order, correct colors)
+		 * DEMUX config 0xCAC9 - ONLY working config for this hardware.
+		 *
+		 * Testing (2026-04-16) confirmed:
+		 *   - 0xCAC9: Works, outputs NV21 (CrCb order)
+		 *   - 0xC9CA: Causes hard lock/watchdog reset (webOS default)
+		 *
+		 * The 0xC9CA config that webOS used causes the VFE to crash
+		 * on this hardware. Unknown why - possibly different sensor
+		 * or ISP configuration. Use NV21 format in userspace.
 		 */
-		even_cfg = 0xc9;
-		odd_cfg = 0xca;
+		even_cfg = 0xca;
+		odd_cfg = 0xc9;
 		break;
 	case MEDIA_BUS_FMT_VYUY8_1X16:
 	case MEDIA_BUS_FMT_VYUY8_2X8:
