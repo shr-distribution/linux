@@ -192,10 +192,11 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 			.formats_rdi = &vfe_formats_rdi_vfe31,
 			.formats_pix = &vfe_formats_pix_vfe31,
 			/*
-			 * VFE31 DMA writes at output stride (bytesperline),
-			 * not input stride. No stride multiplication needed.
+			 * VFE31 Y WM writes at INPUT stride (width*2) for
+			 * PIX/VIDEO modes. Buffers must be 2x larger to
+			 * prevent Y from overwriting CbCr data.
 			 */
-			.pix_stride_factor = 1
+			.pix_stride_factor = 2
 		}
 	}
 };

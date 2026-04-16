@@ -610,20 +610,20 @@ MODULE_PARM_DESC(vfe31_cbcr_stride,
 
 /*
  * VFE31 CbCr plane offset calculation mode:
- *   0 = Correct behavior: cbcr_offset = bytesperline * height (OUTPUT stride)
- *   1 = Legacy behavior: cbcr_offset = (width * 2) * height (INPUT stride)
+ *   0 = Output stride: cbcr_offset = bytesperline * height
+ *   1 = Input stride: cbcr_offset = (width * 2) * height (default)
  *
- * VFE31 PIX/VIDEO mode writes Y and CbCr at OUTPUT stride (bytesperline),
- * NOT INPUT stride (width * 2). The DEMUX extracts Y from UYVY input but
- * writes the extracted Y bytes contiguously at output width.
+ * VFE31 Y WM writes at INPUT stride (width * 2) in PIX/VIDEO modes.
+ * The Y plane occupies (width * 2) * height bytes. CbCr must start
+ * after this, so mode=1 (input stride) is required for correct layout.
  *
- * Default: 0 (correct behavior using OUTPUT stride).
- * Mode 1 causes gaps between Y and CbCr planes resulting in half-frame captures.
+ * Mode 0 causes Y data to overwrite CbCr, resulting in green/pink lines.
+ * Use mode 0 only for debugging or if Y somehow writes at output stride.
  */
-static int vfe31_cbcr_offset_mode = 0;
+static int vfe31_cbcr_offset_mode = 1;
 module_param(vfe31_cbcr_offset_mode, int, 0644);
 MODULE_PARM_DESC(vfe31_cbcr_offset_mode,
-		 "VFE31 CbCr offset mode (0=output stride, 1=input stride - causes half-frames)");
+		 "VFE31 CbCr offset mode (0=output stride, 1=input stride)");
 
 /*
  * VFE31 single-buffer mode:
