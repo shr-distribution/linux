@@ -6077,16 +6077,16 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 
 		/*
 		 * Check if this is the primary Y WM for the pending line.
-		 * PIX uses WM0, VIDEO uses WM4.
+		 * Use module params to match actual WM assignment.
 		 */
 		if (vfe->camif_pending_line_id == VFE_LINE_VIDEO)
-			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
+			is_primary_wm = (wm == (u8)vfe31_video_y_wm);
 		else
-			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
+			is_primary_wm = (wm == (u8)vfe31_pix_y_wm);
 
 		dev_info(vfe->camss->dev,
-			"VFE31: WM%d ping_addr=0x%08x (DEFERRED - camif_pending=true)\n",
-			wm, addr);
+			"VFE31: WM%d ping_addr=0x%08x (DEFERRED - camif_pending=true, primary=%d)\n",
+			wm, addr, is_primary_wm);
 
 		if (is_primary_wm)
 			vfe->pending_ping_addr = addr;
@@ -6147,10 +6147,14 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	if (vfe->camif_pending) {
 		bool is_primary_wm;
 
+		/*
+		 * Check if this is the primary Y WM for the pending line.
+		 * Use module params to match actual WM assignment.
+		 */
 		if (vfe->camif_pending_line_id == VFE_LINE_VIDEO)
-			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
+			is_primary_wm = (wm == (u8)vfe31_video_y_wm);
 		else
-			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
+			is_primary_wm = (wm == (u8)vfe31_pix_y_wm);
 
 		dev_dbg(vfe->camss->dev,
 			"VFE31: WM%d pong_addr=0x%08x (deferred, primary=%d)\n",
