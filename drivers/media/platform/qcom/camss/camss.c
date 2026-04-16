@@ -192,11 +192,15 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 			.formats_rdi = &vfe_formats_rdi_vfe31,
 			.formats_pix = &vfe_formats_pix_vfe31,
 			/*
-			 * VFE31 Y WM writes at INPUT stride (width*2) for
-			 * PIX/VIDEO modes. Buffers must be 2x larger to
-			 * prevent Y from overwriting CbCr data.
+			 * VFE31 PIX/VIDEO: IMAGE_SIZE uses INPUT stride for
+			 * pipeline timing, but DMA writes at OUTPUT stride.
+			 * Buffer allocation uses OUTPUT stride (width), not
+			 * INPUT stride (width*2). stride_factor=1 is correct.
+			 *
+			 * Validated April 2026: stride_factor=2 was WRONG and
+			 * caused kernel heap corruption via CbCr offset overflow.
 			 */
-			.pix_stride_factor = 2
+			.pix_stride_factor = 1
 		}
 	}
 };
