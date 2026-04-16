@@ -898,15 +898,23 @@
 		};
 	};
 
-	/* MODIFIED-BEGIN by qifeng.wu, 2017-12-05,BUG-5711757*/
+	/* MODIFIED-BEGIN by qifeng.wu, 2017-12-05,BUG-5711757 (ported to qti-haptics/4.19)
+	 *
+	 * athena LRA tuning. LOS22 used qpnp-haptic which read qcom,wave-shape,
+	 * qcom,wave-play-rate-us, qcom,lra-auto-res-mode, qcom,lra-high-z. LOS23
+	 * uses qti-haptics which uses different names (qcom,play-rate-us,
+	 * qcom,lra-resonance-sig-shape, qcom,lra-auto-resonance-mode) and doesn't
+	 * honour top-level brake-pattern (per-effect qcom,wf-brake-pattern only).
+	 *
+	 * The original qcom,wave-shape = "sine" collapses into qti-haptics'
+	 * qcom,lra-resonance-sig-shape which the base pm660.dtsi already sets to
+	 * "sine", so no override needed there.
+	 */
 	qcom,pm660@1 {
 		pm660_haptics: qcom,haptic@c000 {
-			qcom,vmax-mv = <1740>;  /* change 0xC051 to 0x1e */
-			qcom,wave-shape = "sine";
-			qcom,wave-play-rate-us = <4255>;   /* change 0xC054 to 0x53，0xC055 to 0x3 */
-			qcom,brake-pattern = [02 01 00 00]; // MODIFIED by qifeng.wu, 2017-12-14,BUG-5711757
-			qcom,lra-auto-res-mode = "zxd";
-			qcom,lra-high-z = "opt1"; // MODIFIED by qifeng.wu, 2018-02-08,BUG-5968317
+			qcom,vmax-mv = <1740>;
+			qcom,play-rate-us = <4255>;
+			qcom,lra-auto-resonance-mode = "zxd";
 			/delete-property/ qcom,correct-lra-drive-freq;
 		};
 	};
