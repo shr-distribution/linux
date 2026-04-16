@@ -1047,10 +1047,11 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	 *   - Offset 307200+ is zeros (gap before CbCr)
 	 *   - CbCr starts at offset 614400 (wrong - 307KB gap!)
 	 *
-	 * Fix: cbcr_offset = output_stride * height = 640 * 480 = 307,200
-	 * CbCr immediately follows Y with no gap.
+	 * Fix: cbcr_offset = width * height (NOT bytesperline * height!)
+	 * VFE writes compactly at width stride, so CbCr immediately follows Y.
+	 * Example: 640x480 -> cbcr_offset = 640*480 = 307,200
 	 */
-	cfg->y_plane_size = output_stride * height;
+	cfg->y_plane_size = width * height;  /* Actual Y size at width stride */
 	cfg->cbcr_offset = cfg->y_plane_size;
 
 	/*
@@ -5360,10 +5361,10 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			/*
 			 * CbCr plane offset = Y plane size in memory.
 			 *
-			 * Y WM writes rows contiguously at bytesperline, not strided.
-			 * stride_fix only affects IMAGE_SIZE timing, not DMA stride.
+			 * VFE31 writes Y compactly at width stride, not bytesperline.
+			 * Use width * height for correct CbCr offset.
 			 */
-			y_plane_size = bytesperline * height;
+			y_plane_size = width * height;
 			cbcr_offset = y_plane_size;
 			cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 			cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
@@ -5946,10 +5947,10 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				/*
 				 * CbCr plane offset = Y plane size in memory.
 				 *
-				 * Y WM writes rows contiguously at bytesperline, not strided.
-				 * stride_fix only affects IMAGE_SIZE timing, not DMA stride.
+				 * VFE31 writes Y compactly at width stride, not bytesperline.
+				 * Use width * height for correct CbCr offset.
 				 */
-				y_plane_size = bytesperline * height;
+				y_plane_size = width * height;
 				cbcr_offset = y_plane_size;
 				cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
 				cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
