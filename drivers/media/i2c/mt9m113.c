@@ -1717,17 +1717,13 @@ static int mt9m113_stop_streaming(struct mt9m113 *sensor)
 	cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
 
 	/*
-	 * Wait for any pending SEQ_CMD to complete.
+	 * Wait briefly for any pending SEQ_CMD to complete.
+	 * Don't issue REFRESH here - it can leave MCU stuck if it times out.
+	 * Start_streaming will handle full re-initialization.
 	 */
-	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
+	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 100);
 	if (ret < 0)
-		dev_warn(dev, "MT9M113: SEQ_CMD did not complete before stop\n");
-
-	/*
-	 * Issue REFRESH to reset MCU state for next streaming start.
-	 * Don't use standby - the working commit 054aebb didn't use standby.
-	 */
-	mt9m113_refresh(sensor);
+		dev_dbg(dev, "MT9M113: SEQ_CMD did not complete before stop\n");
 
 	dev_info(dev, "MT9M113: streaming stopped\n");
 
