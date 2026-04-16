@@ -4312,12 +4312,13 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	case MEDIA_BUS_FMT_UYVY8_2X8:
 	default:
 		/*
-		 * Use swapped config 0xCAC9 instead of webOS 0xC9CA.
-		 * Testing shows 0xC9CA produces NV21 (CrCb) output but we
-		 * report NV12 (CbCr). Swapping to 0xCAC9 fixes the Cb/Cr order.
+		 * Use webOS default 0xC9CA for UYVY input.
+		 * Raw data analysis (2026-04-16) confirmed:
+		 *   - 0xCAC9 produces NV21 (CrCb order, colors wrong with NV12 decode)
+		 *   - 0xC9CA produces NV12 (CbCr order, correct colors)
 		 */
-		even_cfg = 0xca;
-		odd_cfg = 0xc9;
+		even_cfg = 0xc9;
+		odd_cfg = 0xca;
 		break;
 	case MEDIA_BUS_FMT_VYUY8_1X16:
 	case MEDIA_BUS_FMT_VYUY8_2X8:
