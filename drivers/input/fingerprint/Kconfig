@@ -1,0 +1,5 @@
+config GOODIX_FINGERPRINT_GF5216
+	tristate "Goodix GF5216 fingerprint driver (athena)"
+	depends on SPI
+	help
+	  Goodix Fingerprint chip GF316M/GF318M/GF3118M/GF518M/GF5118M/GF516M/GF816M/GF3208/GF3206/GF3266/GF3288/GF5206/GF5216/GF5208 TEE driver.
