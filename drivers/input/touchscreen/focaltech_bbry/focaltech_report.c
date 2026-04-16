@@ -39,6 +39,8 @@
 #include "focaltech_comm.h"
 #include "focaltech_core.h"
 
+extern bool fts_get_buttons_enabled(void);
+
 /*******************************************************************************
 * Private constant and macro definitions using #define
 *******************************************************************************/
@@ -220,6 +222,10 @@ void btn_mask_on_notif(bool btn_mask_on_change)
 
 static void fts_nav_key_report_work(struct work_struct *work)
 {
+	if (!fts_get_buttons_enabled()) {
+		nav_key_is_reporting = 0;
+		return;
+	}
 	if (nav_key_need_report) {
 		printk("[haojun] %s report nav key down x = %d, y = %d key_num = %d \n", 
 				__func__, nav_key_position_x, nav_key_position_y, nav_key_position_id);
@@ -238,6 +244,8 @@ static void fts_nav_key_report_work(struct work_struct *work)
 
 static void fts_nav_key_report_down_up(void)
 {
+	if (!fts_get_buttons_enabled())
+		return;
 	printk("[haojun] %s \n", __func__);
 	input_mt_slot(g_input_dev, nav_key_position_id);
 	input_report_abs(g_input_dev, ABS_MT_PRESSURE,0x3f/*data->pressure[i]*/);
@@ -478,9 +486,9 @@ static int fts_input_dev_A_init(void *platform_data)
 	// set device property
 	g_input_dev->name = "fts_input_device_A";
 	g_input_dev->id.bustype = BUS_I2C;
-	//g_input_dev->id.vendor = 0x12FA;
-	//g_input_dev->id.product = 0x2143;
-	//g_input_dev->id.version = 0x0100;
+	g_input_dev->id.vendor = 0x12FA;
+	g_input_dev->id.product = 0x2143;
+	g_input_dev->id.version = 0x0100;
 
 	/* 2. set */
    	 /* 2.1 set event of input device.*/
@@ -551,9 +559,9 @@ static int fts_input_dev_B_init(void *platform_data)
 	/* set device property */
 	g_input_dev->name = "fts_input_device_B";
 	g_input_dev->id.bustype = BUS_I2C;
-	//g_input_dev->id.vendor = 0x12FA;
-	//g_input_dev->id.product = 0x2143;
-	//g_input_dev->id.version = 0x0100;
+	g_input_dev->id.vendor = 0x12FA;
+	g_input_dev->id.product = 0x2143;
+	g_input_dev->id.version = 0x0100;
 
 	/* 2. set */
    	 /* 2.1 set event property  */
@@ -740,6 +748,10 @@ static int fts_input_dev_report_B(struct ts_event *data)
 
 	for (i = 0; i < data->touch_point; i++)
 	{
+		 /* Skip touches in the virtual key zone when fts_buttons_enabled is disabled */
+		 if (!fts_get_buttons_enabled() && FTS_KEY_ALL_Y_POS == data->au16_y[i])
+			continue;
+
 		 input_mt_slot(g_input_dev, data->au8_finger_id[i]);
 
 		if ((data->au8_touch_event[i]== DOWN_EVENT)
@@ -841,6 +853,10 @@ static int fts_input_dev_report_key_event(struct ts_event *data)
  {
 	int i = 0;
 	int bUsedKeyEvent = 1;//0:not used, 1: used
+
+	/* gate on fts_buttons_enabled sysfs toggle */
+	if (!fts_get_buttons_enabled())
+		return -1;
 
 #if !defined(CONFIG_TCT_SDM660_COMMON)
 	/*is enable?*/

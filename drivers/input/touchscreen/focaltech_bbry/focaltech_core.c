@@ -476,6 +476,8 @@ static int fts_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	}
 #endif
 
+	device_init_wakeup(&client->dev, true);
+
 	// init report point module
 	err = fts_report_init(client, fts_platform_data);
 	if(err < 0)
