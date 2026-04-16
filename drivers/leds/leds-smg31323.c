@@ -406,8 +406,12 @@ static int smg31323_probe(struct i2c_client *client,
 	} else {
 		rc = regulator_set_voltage(pdata->vdd_vreg, 2800000, 2800000);
 		if (rc) {
-			INFO(pdata->name, "Regulator set_vtg failed vdd rc=%d", rc);
-			pdata->vdd_vreg = NULL;
+			/*
+			 * 4.19 regulator core is strict about voltage range; pm660l_bob
+			 * only supports ~3.3-3.96V. Accept the DT-configured voltage
+			 * and still enable the supply so the LED chip is powered.
+			 */
+			INFO(pdata->name, "Regulator set_vtg failed vdd rc=%d (ignoring)", rc);
 		}
 	}
 
