@@ -192,15 +192,17 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 			.formats_rdi = &vfe_formats_rdi_vfe31,
 			.formats_pix = &vfe_formats_pix_vfe31,
 			/*
-			 * VFE31 PIX/VIDEO: IMAGE_SIZE uses INPUT stride for
-			 * pipeline timing, but DMA writes at OUTPUT stride.
-			 * Buffer allocation uses OUTPUT stride (width), not
-			 * INPUT stride (width*2). stride_factor=1 is correct.
+			 * VFE31 PIX/VIDEO: Both IMAGE_SIZE and ADDR_CFG use
+			 * INPUT stride (width*2). The VFE writes at input stride,
+			 * so buffer allocation must account for this.
 			 *
-			 * Validated April 2026: stride_factor=2 was WRONG and
-			 * caused kernel heap corruption via CbCr offset overflow.
+			 * stride_factor=2 ensures buffers are large enough:
+			 *   640x480 NV12: 1280*480 + 1280*240 = 921,600 bytes
+			 *
+			 * With stride_factor=1, buffers were too small (460,800)
+			 * causing Y to overflow into CbCr region -> crashes.
 			 */
-			.pix_stride_factor = 1
+			.pix_stride_factor = 2
 		}
 	}
 };

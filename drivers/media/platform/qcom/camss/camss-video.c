@@ -68,26 +68,25 @@ static int video_mbus_to_pix_mp(const struct v4l2_mbus_framefmt *mbus,
 		pix->plane_fmt[i].bytesperline = bytesperline;
 
 		/*
-		 * VFE31 PIX/VIDEO mode: VFE writes Y and CbCr at OUTPUT stride
-		 * (width), not input stride. The stride_factor was incorrectly
-		 * applied here based on the assumption that Y uses input stride.
+		 * VFE31 PIX/VIDEO mode: VFE writes Y and CbCr at INPUT stride
+		 * (width*2 for UYVY), not output stride. stride_factor=2 must
+		 * be applied to allocate sufficient buffer space.
 		 *
-		 * Actual VFE31 behavior (verified via register dumps and captures):
-		 * - Y plane:    width * height bytes (e.g., 640 * 480 = 307200)
-		 * - CbCr plane: width * cbcr_height bytes (e.g., 640 * 240 = 153600)
-		 *
-		 * The stride_factor only affects IMAGE_SIZE register config
-		 * (for IRQ timing), not actual DMA write stride.
+		 * For 640x480 NV12 with stride_factor=2:
+		 *   Y plane:    1280 * 480 = 614,400 bytes
+		 *   CbCr plane: 1280 * 240 = 307,200 bytes
+		 *   Total:      921,600 bytes
 		 */
 		if (f->planes == 1 && vsub_num > 1) {
 			/* Semi-planar: Y + CbCr in single contiguous buffer */
-			u32 y_size = pix->height * bytesperline;
-			u32 cbcr_height = pix->height * (vsub_den - vsub_num) / vsub_num;
-			u32 cbcr_size = cbcr_height * bytesperline;
+			u32 effective_stride = bytesperline * stride_factor;
+			u32 y_size = pix->height * effective_stride;
+			u32 cbcr_height = pix->height / vsub_num;  /* NV12: height/2 */
+			u32 cbcr_size = cbcr_height * effective_stride;
 			pix->plane_fmt[i].sizeimage = y_size + cbcr_size;
 		} else {
 			pix->plane_fmt[i].sizeimage = pix->height /
-				vsub_num * vsub_den * bytesperline;
+				vsub_num * vsub_den * bytesperline * stride_factor;
 		}
 	}
 
@@ -747,27 +746,28 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		 * not actual memory layout.
 		 *
 		 * Correct buffer sizes for NV12 at 640x480:
-		 *   Y plane:    640 * 480 = 307,200 bytes
-		 *   CbCr plane: 640 * 240 = 153,600 bytes
-		 *   Total:      460,800 bytes
+		 * VFE31 PIX/VIDEO mode writes Y and CbCr at INPUT stride
+		 * (width*2 for UYVY input), NOT output stride (width).
 		 *
-		 * The previous stride_factor=2 hack was WRONG and caused:
-		 *   - 2x memory overallocation (921,600 vs 460,800)
-		 *   - Kernel heap corruption when cbcr_offset was calculated
-		 *     using input stride (width*2*height = 614,400) but buffer
-		 *     was only 460,800 bytes
+		 * For 640x480 NV12 with stride_factor=2:
+		 *   Y plane:    1280 * 480 = 614,400 bytes (INPUT stride!)
+		 *   CbCr plane: 1280 * 240 = 307,200 bytes
+		 *   Total:      921,600 bytes
 		 *
-		 * stride_factor is now ignored for buffer allocation.
+		 * The stride_factor multiplier is REQUIRED for VFE31 to prevent
+		 * buffer overflow. Without it, CbCr writes past allocated memory.
 		 */
 		if (fi->planes == 1 && vsub_num > 1) {
 			/* Semi-planar: Y + CbCr in single contiguous buffer */
-			u32 y_size = pix_mp->height * bpl;
-			u32 cbcr_height = pix_mp->height * (vsub_den - vsub_num) / vsub_num;
-			u32 cbcr_size = cbcr_height * bpl;
+			/* Use stride_factor to account for VFE writing at input stride */
+			u32 effective_bpl = bpl * video->stride_factor;
+			u32 y_size = pix_mp->height * effective_bpl;
+			u32 cbcr_height = pix_mp->height / vsub_num;  /* NV12: height/2 */
+			u32 cbcr_size = cbcr_height * effective_bpl;
 			u32 total = y_size + cbcr_size;
 			pix_mp->plane_fmt[i].sizeimage = total;
-			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u total=%u (bpl=%u vsub=%u/%u)\n",
-				y_size, cbcr_size, total, bpl, vsub_num, vsub_den);
+			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u total=%u (bpl=%u sf=%u vsub=%u)\n",
+				y_size, cbcr_size, total, bpl, video->stride_factor, vsub_num);
 		} else {
 			/*
 			 * Default path for formats like NV16 where vsub_num=1.
