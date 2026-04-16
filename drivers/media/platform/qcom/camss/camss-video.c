@@ -755,8 +755,12 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		 *
 		 * For 640x480 NV12 with stride_factor=1:
 		 *   Y plane:    640 * 480 = 307,200 bytes
-		 *   CbCr plane: 640 * 240 = 153,600 bytes
-		 *   Total:      460,800 bytes (standard NV12 size)
+		 *   CbCr plane: 640 * (240+64) = 194,560 bytes (includes DMA headroom)
+		 *   Total:      501,760 bytes
+		 *
+		 * VFE31 requires +64 lines DMA headroom for CbCr in NV12 mode.
+		 * WebOS uses burst_lines = cbcr_height + 64, so buffer must match.
+		 * Without this headroom, DMA overflows into adjacent memory.
 		 */
 		if (fi->planes == 1 && vsub_num > 1) {
 			/* Semi-planar: Y + CbCr in single contiguous buffer */
@@ -764,11 +768,17 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 			u32 effective_bpl = bpl * video->stride_factor;
 			u32 y_size = pix_mp->height * effective_bpl;
 			u32 cbcr_height = pix_mp->height / vsub_num;  /* NV12: height/2 */
-			u32 cbcr_size = cbcr_height * effective_bpl;
+			/*
+			 * Add 64 lines DMA headroom for NV12/NV21 (4:2:0).
+			 * VFE31 CbCr WM uses burst_lines = cbcr_height + 64 per webOS.
+			 * Buffer must accommodate this or DMA will overflow.
+			 */
+			u32 cbcr_alloc_height = cbcr_height + 64;
+			u32 cbcr_size = cbcr_alloc_height * effective_bpl;
 			u32 total = y_size + cbcr_size;
 			pix_mp->plane_fmt[i].sizeimage = total;
-			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u total=%u (bpl=%u sf=%u vsub=%u)\n",
-				y_size, cbcr_size, total, bpl, video->stride_factor, vsub_num);
+			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u total=%u (bpl=%u cbcr_h=%u+64)\n",
+				y_size, cbcr_size, total, bpl, cbcr_height);
 		} else {
 			/*
 			 * Default path for formats like NV16 where vsub_num=1.
