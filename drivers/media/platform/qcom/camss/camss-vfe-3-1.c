@@ -141,7 +141,7 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *   0x3 = Y to output0 only → CbCr path BROKEN
  *   0xB = Y to output0+2   → CbCr path WORKS
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A03  /* PIX mode: Y→WM0, CbCr→WM4 (matches COMPOSITE_MASK) */
+#define VFE31_XBAR_PIX_ONLY	0x1A03  /* PIX mode: Y→WM0, CbCr→WM4 */
 #define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* PIX+VIDEO: Y→WM0/WM1, CbCr→WM1/WM5 */
 
 /* Module param for manual override/testing */
@@ -311,8 +311,8 @@ MODULE_PARM_DESC(vfe31_raw_pix_mode,
  *   WM4 = output0.ch1 OR output2.ch0 (Preview CbCr or Video Y)
  *   WM5 = output2.ch1 (Video CbCr)
  *
- * XBAR 0x1A13 (PIX only):   Y→WM0, CbCr→WM1
- * XBAR 0x1A1B (PIX+VIDEO):  Y→WM0+WM4, CbCr→WM1
+ * XBAR 0x1A13 (PIX only):   Y→WM0, CbCr→WM4
+ * XBAR 0x1A1B (PIX+VIDEO):  Y→WM0+WM1, CbCr→WM4
  */
 
 /* PIX Y Write Master (default: WM0) */
@@ -325,8 +325,9 @@ MODULE_PARM_DESC(vfe31_pix_y_wm,
  * PIX CbCr Write Master
  *
  * XBAR routing determines which WM receives CbCr data:
- *   - XBAR 0x1A03: CbCr routes to WM4 (default, matches COMPOSITE_MASK)
- *   - XBAR 0x1A1B: CbCr routes to WM1
+ *   - XBAR 0x1A03: CbCr DISABLED (was buggy, do not use!)
+ *   - XBAR 0x1A13: CbCr routes to WM4 (correct for PIX mode)
+ *   - XBAR 0x1A1B: Y also routes to WM1, CbCr to WM4
  *
  * IRQ_COMPOSITE_MASK=0x00220011 expects WM0+WM4 for PIX mode COMPOSITE_DONE.
  * Using WM4 as default ensures frame completion IRQs fire correctly.
@@ -339,7 +340,7 @@ MODULE_PARM_DESC(vfe31_pix_cbcr_wm,
 /*
  * VIDEO Y Write Master (default: WM0)
  *
- * NOTE: With XBAR 0x1A03, CbCr only routes to WM4.
+ * NOTE: With XBAR 0x1A13, CbCr only routes to WM4.
  * WM1/WM5 do NOT receive correct data with this XBAR setting.
  * For VIDEO-only capture, use WM0+WM4 (same as PIX mode).
  * For simultaneous PIX+VIDEO, different WMs would be needed.
