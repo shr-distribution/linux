@@ -17,8 +17,6 @@
 #include <linux/ktime.h>
 #include <linux/module.h>
 
-#include <media/videobuf2-dma-sg.h>
-
 #include "camss.h"
 
 /* Forward declarations for VFE31-specific functions */
@@ -3357,46 +3355,17 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 
 	if (return_buffer && ready_buf) {
 		/*
-		 * VFE31 cache coherency workaround:
+		 * Return buffer to userspace via vb2_buffer_done().
 		 *
-		 * TODO: REVISIT - This manual sync may be unnecessary.
-		 * Other VFE implementations (gen1, 17x, etc.) do NOT perform
-		 * manual cache sync - they just call vb2_buffer_done() and
-		 * rely on the vb2 framework's finish() memop to handle it.
+		 * Cache sync is handled by vb2's finish() memop - we do NOT
+		 * perform manual dma_sync here, matching other VFE implementations
+		 * (gen1, 17x, etc.) which also rely on vb2's built-in sync.
 		 *
-		 * This was added because testing showed PONG buffers had stale
-		 * cache data (devmem showed valid physical data but userspace
-		 * read zeros). However, this may have been masking another bug
-		 * or may no longer be needed. Consider removing this block and
-		 * testing if vb2's built-in sync is sufficient.
-		 *
-		 * If manual sync IS needed, we MUST use dma_sync_sgtable_for_cpu()
-		 * because vb2_dma_sg uses scatter-gather buffers which may span
-		 * non-contiguous physical pages. Using dma_sync_single_for_cpu()
-		 * caused kernel crashes (e.g., fault at 0x80100000 when syncing
-		 * beyond the first SG entry's physical range).
+		 * Previous attempts at manual sync caused issues:
+		 * - dma_sync_single_for_cpu() crashed (SG buffers non-contiguous)
+		 * - dma_sync_sgtable_for_cpu() caused hangs
 		 */
-		struct vb2_buffer *vb = &ready_buf->vb.vb2_buf;
-		unsigned int plane;
-
-		/* Validate buffer address sanity before processing */
-		if (ready_buf->addr[0] < 0x10000000 ||
-		    ready_buf->addr[0] > 0xFFFFFFFF) {
-			dev_err(vfe->camss->dev,
-				"VFE31: Invalid buffer addr[0]=0x%llx, skipping return\n",
-				(unsigned long long)ready_buf->addr[0]);
-			return;
-		}
-
-		for (plane = 0; plane < vb->num_planes; plane++) {
-			struct sg_table *sgt = vb2_dma_sg_plane_desc(vb, plane);
-
-			if (sgt)
-				dma_sync_sgtable_for_cpu(vfe->camss->dev, sgt,
-							 DMA_FROM_DEVICE);
-		}
-
-		vb2_buffer_done(vb, VB2_BUF_STATE_DONE);
+		vb2_buffer_done(&ready_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
 	}
 	/* else: buffer stays with driver for continued DMA use */
 
