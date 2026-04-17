@@ -1087,10 +1087,14 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	 * CbCr WM config:
 	 * - UB_CFG/IMAGE_SIZE use INPUT stride for VFE pipeline timing
 	 * - ADDR_CFG burst uses output width (chroma horizontally downsampled)
-	 * - Lines: cbcr_height - 24 (webOS uses this offset for CbCr timing)
-	 *   The -24 offset is empirically required for correct NV16 output.
-	 *   Without it, CbCr data has gaps causing green bands in the image.
-	 *   Note: webOS dump shows 480 height → 456 lines = height - 24.
+	 * - Lines: cbcr_height + 64 (DMA headroom for pipeline flush)
+	 *
+	 * webOS register dumps show CbCr WM4 uses lines=304 for 640x480 NV12:
+	 *   304 = 240 (cbcr_height for 4:2:0) + 64 (headroom)
+	 * Sony Nozomi decompilation confirms +64 pattern: "(short)iVar15 + 0x40U"
+	 *
+	 * NOTE: WM1 (VIDEO Y) uses height-24, but that's for Y WMs, not CbCr!
+	 * The 0x01C8 (456=480-24) value seen in dumps is WM1, not WM4.
 	 *
 	 * Like Y WM, CbCr is also written at compact stride (output_stride).
 	 */
@@ -1099,7 +1103,7 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->cbcr_wm.image_stride = input_stride / 16;
 	cfg->cbcr_wm.image_height = cbcr_height - 1;
 	cfg->cbcr_wm.burst_words = (width / 4) - 9;
-	cfg->cbcr_wm.burst_lines = cbcr_height > 24 ? cbcr_height - 24 : 1;
+	cfg->cbcr_wm.burst_lines = cbcr_height + 64;
 }
 
 /**
