@@ -17,6 +17,8 @@
 #include <linux/ktime.h>
 #include <linux/module.h>
 
+#include <media/videobuf2-dma-sg.h>
+
 #include "camss.h"
 
 /* Forward declarations for VFE31-specific functions */
@@ -3355,24 +3357,29 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 
 	if (return_buffer && ready_buf) {
 		/*
-		 * VFE31 cache coherency fix:
-		 * The vb2_dma_sg memops uses DMA_ATTR_SKIP_CPU_SYNC, which
-		 * defers cache synchronization. While vb2_buffer_done() should
-		 * call the finish memop to sync, testing shows PONG buffers
-		 * still have stale cache data (devmem shows valid physical
-		 * data but userspace reads zeros).
+		 * VFE31 cache coherency workaround:
 		 *
-		 * Force explicit cache invalidation before returning buffer
-		 * to ensure CPU sees the DMA-written data.
+		 * TODO: REVISIT - This manual sync may be unnecessary.
+		 * Other VFE implementations (gen1, 17x, etc.) do NOT perform
+		 * manual cache sync - they just call vb2_buffer_done() and
+		 * rely on the vb2 framework's finish() memop to handle it.
+		 *
+		 * This was added because testing showed PONG buffers had stale
+		 * cache data (devmem showed valid physical data but userspace
+		 * read zeros). However, this may have been masking another bug
+		 * or may no longer be needed. Consider removing this block and
+		 * testing if vb2's built-in sync is sufficient.
+		 *
+		 * If manual sync IS needed, we MUST use dma_sync_sgtable_for_cpu()
+		 * because vb2_dma_sg uses scatter-gather buffers which may span
+		 * non-contiguous physical pages. Using dma_sync_single_for_cpu()
+		 * caused kernel crashes (e.g., fault at 0x80100000 when syncing
+		 * beyond the first SG entry's physical range).
 		 */
 		struct vb2_buffer *vb = &ready_buf->vb.vb2_buf;
 		unsigned int plane;
 
-		/*
-		 * Validate buffer address sanity before processing.
-		 * DMA addresses should be in the valid physical memory range,
-		 * not small values (NULL-ish) or kernel virtual addresses.
-		 */
+		/* Validate buffer address sanity before processing */
 		if (ready_buf->addr[0] < 0x10000000 ||
 		    ready_buf->addr[0] > 0xFFFFFFFF) {
 			dev_err(vfe->camss->dev,
@@ -3382,11 +3389,11 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		}
 
 		for (plane = 0; plane < vb->num_planes; plane++) {
-			dma_addr_t addr = ready_buf->addr[plane];
-			size_t size = vb2_plane_size(vb, plane);
+			struct sg_table *sgt = vb2_dma_sg_plane_desc(vb, plane);
 
-			dma_sync_single_for_cpu(vfe->camss->dev, addr, size,
-						DMA_FROM_DEVICE);
+			if (sgt)
+				dma_sync_sgtable_for_cpu(vfe->camss->dev, sgt,
+							 DMA_FROM_DEVICE);
 		}
 
 		vb2_buffer_done(vb, VB2_BUF_STATE_DONE);
