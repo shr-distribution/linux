@@ -745,64 +745,22 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		 * (width*2 for UYVY) is only used for IMAGE_SIZE register timing,
 		 * not actual memory layout.
 		 *
-		 * Correct buffer sizes for NV12 at 640x480:
-		 * VFE31 PIX/VIDEO mode writes Y and CbCr at INPUT stride
-		 * CORRECTED based on raw data analysis (2026-04-16):
-		 * VFE31 Y and CbCr WMs write at OUTPUT stride (compact),
-		 * not input stride. The IMAGE_SIZE register uses input stride
-		 * for VFE pipeline timing, but DEMUX outputs data at output
-		 * width, and WMs can only write what DEMUX provides.
+		 * VERIFIED BY RAW DATA ANALYSIS + GEMINI REVIEW (2026-04-17):
+		 * VFE31 Y and CbCr Write Masters write at OUTPUT stride (compact),
+		 * not input stride. The IMAGE_SIZE register uses input stride for
+		 * VFE pipeline timing, but the AXI packer compacts data to output
+		 * width when writing to DDR.
 		 *
-		 * For 640x480 NV12 with stride_factor=1:
-		 *   Y plane:    640 * 480 = 307,200 bytes
-		 *   CbCr plane: 640 * (240+64) = 194,560 bytes (includes DMA headroom)
-		 *   Total:      501,760 bytes
+		 * Buffer sizes are standard V4L2 compact layout:
+		 *   NV12 640x480: Y=307,200 + CbCr=153,600 = 460,800 bytes
+		 *   NV16 640x480: Y=307,200 + CbCr=307,200 = 614,400 bytes
 		 *
-		 * VFE31 requires +64 lines DMA headroom for CbCr in NV12 mode.
-		 * WebOS uses burst_lines = cbcr_height + 64, so buffer must match.
-		 * Without this headroom, DMA overflows into adjacent memory.
+		 * stride_factor is NOT needed - previous stride_factor=2 caused
+		 * V4L2 to report incorrect bytesperline to userspace, which broke
+		 * pix1280 (userspace looked for CbCr at wrong offset).
 		 */
-		if (fi->planes == 1 && video->stride_factor > 1) {
-			/*
-			 * Semi-planar formats (NV12/NV21/NV16/NV61) on VFE31.
-			 * VFE31 writes at input stride (width*2), so buffer must
-			 * be sized accordingly using stride_factor.
-			 *
-			 * Previous condition "vsub_num > 1" only matched NV12/NV21
-			 * and missed NV16/NV61 (4:2:2 with vsub_num=1), causing
-			 * buffer overflow and memory corruption.
-			 */
-			u32 effective_bpl = bpl * video->stride_factor;
-			u32 y_size = pix_mp->height * effective_bpl;
-			u32 cbcr_height = pix_mp->height / vsub_num;  /* NV12: h/2, NV16: h */
-			u32 cbcr_alloc_height;
-			u32 cbcr_size, total;
-
-			/*
-			 * Add 64 lines DMA headroom for NV12/NV21 (4:2:0) only.
-			 * VFE31 CbCr WM uses burst_lines = cbcr_height + 64 per webOS.
-			 * NV16/NV61 (4:2:2) does not need this headroom.
-			 */
-			if (vsub_num > 1)
-				cbcr_alloc_height = cbcr_height + 64;  /* 4:2:0 */
-			else
-				cbcr_alloc_height = cbcr_height;       /* 4:2:2 */
-
-			cbcr_size = cbcr_alloc_height * effective_bpl;
-			total = y_size + cbcr_size;
-			pix_mp->plane_fmt[i].sizeimage = total;
-			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u total=%u (bpl=%u cbcr_h=%u sf=%u)\n",
-				y_size, cbcr_size, total, bpl, cbcr_height, video->stride_factor);
-		} else {
-			/*
-			 * Default path for formats without stride_factor.
-			 */
-			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
-				vsub_num * vsub_den * bpl;
-			pr_info("camss-video: sizeimage default path: %u (h=%u vsub=%u/%u bpl=%u)\n",
-				pix_mp->plane_fmt[i].sizeimage, pix_mp->height,
-				vsub_num, vsub_den, bpl);
-		}
+		pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
+			vsub_num * vsub_den * bpl;
 	}
 
 	pix_mp->field = V4L2_FIELD_NONE;
