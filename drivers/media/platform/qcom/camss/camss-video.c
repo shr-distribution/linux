@@ -72,21 +72,43 @@ static int video_mbus_to_pix_mp(const struct v4l2_mbus_framefmt *mbus,
 		 * (width*2 for UYVY), not output stride. stride_factor=2 must
 		 * be applied to allocate sufficient buffer space.
 		 *
-		 * For 640x480 NV12 with stride_factor=2:
+		 * Semi-planar formats (NV12, NV16, etc.) have Y + CbCr in one
+		 * contiguous buffer. Calculate each plane's contribution:
+		 *
+		 * For 640x480 NV12 (4:2:0) with stride_factor=2:
 		 *   Y plane:    1280 * 480 = 614,400 bytes
 		 *   CbCr plane: 1280 * 240 = 307,200 bytes
 		 *   Total:      921,600 bytes
+		 *
+		 * For 640x480 NV16 (4:2:2) with stride_factor=2:
+		 *   Y plane:    1280 * 480 = 614,400 bytes
+		 *   CbCr plane: 1280 * 480 = 614,400 bytes (full height)
+		 *   Total:      1,228,800 bytes
 		 */
-		if (f->planes == 1 && vsub_num > 1) {
-			/* Semi-planar: Y + CbCr in single contiguous buffer */
+		if (f->planes == 1 && vsub_den > vsub_num) {
+			/*
+			 * Semi-planar: Y + CbCr in single contiguous buffer.
+			 * vsub_den > vsub_num indicates multi-component format:
+			 *   NV12: vsub={2,3} → total = h * 3/2 → CbCr = h/2
+			 *   NV16: vsub={1,2} → total = h * 2/1 → CbCr = h
+			 *
+			 * CbCr height = total - Y = h * vsub_den/vsub_num - h
+			 *             = h * (vsub_den - vsub_num) / vsub_num
+			 */
 			u32 effective_stride = bytesperline * stride_factor;
 			u32 y_size = pix->height * effective_stride;
-			u32 cbcr_height = pix->height / vsub_num;  /* NV12: height/2 */
+			u32 cbcr_height = pix->height * (vsub_den - vsub_num) / vsub_num;
 			u32 cbcr_size = cbcr_height * effective_stride;
 			pix->plane_fmt[i].sizeimage = y_size + cbcr_size;
+			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u (cbcr_h=%u) total=%u (bpl=%u sf=%u vsub=%u/%u)\n",
+				y_size, cbcr_size, cbcr_height, y_size + cbcr_size,
+				bytesperline, stride_factor, vsub_num, vsub_den);
 		} else {
 			pix->plane_fmt[i].sizeimage = pix->height /
 				vsub_num * vsub_den * bytesperline * stride_factor;
+			pr_info("camss-video: sizeimage default path: %u (h=%u vsub=%u/%u bpl=%u sf=%u)\n",
+				pix->plane_fmt[i].sizeimage, pix->height,
+				vsub_num, vsub_den, bytesperline, stride_factor);
 		}
 	}
 
