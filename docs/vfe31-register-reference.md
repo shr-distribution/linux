@@ -60,16 +60,39 @@ Bit 27: CROP_ENC_EN        - Enable encoder crop
 
 ### VFE_0_CORE_CFG (0x014)
 Core configuration including pixel pattern.
+
+**Confirmed from webOS msm_vfe31.c:**
+- Line 1014: `switch (msm_io_r(vfe31_ctrl->vfebase + VFE_CFG_OFF) & 0x7)`
+  This confirms bits [2:0] are the pixel pattern.
+
 ```
-[2:0] PIXEL_PATTERN:
-      0x4 = YCBYCR (Cb before Cr)
-      0x5 = YCRYCB (Cr before Cb)
-      0x6 = CBYCRY
-      0x7 = CRYCBY
+[2:0] PIXEL_PATTERN (enum VFE_START_PIXEL_PATTERN):
+      0x0 = VFE_BAYER_RGRGRG - Bayer Red-Green
+      0x1 = VFE_BAYER_GRGRGR - Bayer Green-Red
+      0x2 = VFE_BAYER_BGBGBG - Bayer Blue-Green
+      0x3 = VFE_BAYER_GBGBGB - Bayer Green-Blue
+      0x4 = VFE_YUV_YCbYCr   - YUYV (Y before Cb)
+      0x5 = VFE_YUV_YCrYCb   - YVYU (Y before Cr)
+      0x6 = VFE_YUV_CbYCrY   - UYVY (Cb-Y-Cr-Y) **webOS/MT9M113 uses this**
+      0x7 = VFE_YUV_CrYCbY   - VYUY (Cr-Y-Cb-Y)
 
-Bit  6: INPUT_MUX_ENABLE   - Required by webOS (exact function unknown)
+[5:3] Unknown (webOS value has bits 3-5 = 0)
 
-webOS value: 0x00000046 (CBYCRY + bit 6)
+Bit 6: VFE_OUTPUT_EN or similar
+       webOS sets this bit (0x40). Without it, output may not work.
+       Exact function undocumented.
+
+[31:7] Unknown on VFE31 (webOS sets all to 0)
+
+webOS value: 0x00000046
+  Breakdown: 0b01000110
+    - Bits [2:0] = 0x6 (UYVY pixel pattern)
+    - Bits [5:3] = 0x0
+    - Bit 6 = 1 (required enable bit)
+    - Bits [31:7] = 0
+
+IMPORTANT: VFE31 layout differs from VFE8x. Do not use VFE8x struct vfe_cfg
+directly - VFE8x has INPUT_SOURCE at bits [17:16] which is not used by VFE31.
 ```
 
 ---
@@ -156,7 +179,13 @@ Detailed violation information when VIOLATION IRQ fires.
 
 ---
 
-## 3. Bus/AXI/XBAR Configuration (0x038 - 0x044)
+## 3. Bus/AXI/XBAR Configuration (0x038 - 0x04C)
+
+**Important VFE31 Architecture Note:**
+VFE31 uses a single 188-byte AXI output configuration block starting at 0x038:
+- webOS header: `V31_AXI_OUT_OFF = 0x00000038`, `V31_AXI_OUT_LEN = 188`
+- This block includes BUS_CMD, bus config, XBAR, and WM registers
+- Unlike newer VFEs, there is no standalone BUS_CFG register
 
 ### VFE_0_BUS_CMD (0x038) - Write Only
 Write master reload command.
@@ -164,51 +193,84 @@ Write master reload command.
 Bit n: Reload WM n configuration from shadow registers
 
 Example: 0x3F = Reload WM0-WM5
+         0x33 = Reload WM0, WM1, WM4, WM5 (preview + video semi-planar)
 ```
 
 ### VFE_0_BUS_CFG (0x03C)
 Bus configuration - path enables and raw pixel settings.
+
+**WARNING:** This is part of the V31_AXI_OUT block, NOT a standalone register.
+webOS writes this as part of a 188-byte memcpy from userspace via VFE_CMD_AXI_OUT_CFG.
 ```
-[3:0]   (unknown, webOS sets 0x1)
+[3:0]   Base config (webOS sets 0x1, exact function unknown)
+
 Bit  4: ENC_Y_WR_PATH_EN      - Encoder Y write path enable
 Bit  5: ENC_CBCR_WR_PATH_EN   - Encoder CbCr write path enable
 Bit  6: VIEW_Y_WR_PATH_EN     - Viewfinder Y write path enable
 Bit  7: VIEW_CBCR_WR_PATH_EN  - Viewfinder CbCr write path enable
-[9:8]   RAW_PIXEL_DATA_SIZE:
-        0 = 8-bit
-        1 = 10-bit
-        2 = 12-bit
-[11:10] RAW_WR_PATH_SEL:
-        0 = Disabled
-        1 = Route to encoder CbCr path
-        2 = Route to viewfinder CbCr path
-[31:12] Timing/strobe config (0x02AAA in webOS, details unknown)
 
-webOS value: 0x02AAA771 (all paths enabled, 8-bit raw)
+[9:8]   RAW_PIXEL_DATA_SIZE (enum VFE_RAW_PIXEL_DATA_SIZE):
+        0 = 8-bit raw
+        1 = 10-bit raw
+        2 = 12-bit raw
+
+[11:10] RAW_WR_PATH_SEL (enum VFE_RAW_WR_PATH_SEL):
+        0 = VFE_RAW_OUTPUT_DISABLED
+        1 = VFE_RAW_OUTPUT_ENC_CBCR_PATH - Raw to encoder CbCr
+        2 = VFE_RAW_OUTPUT_VIEW_CBCR_PATH - Raw to viewfinder CbCr
+
+[31:12] Timing/strobe config (0x02AAA in webOS)
+        Exact bit definitions unknown. Likely AXI burst/strobe timing.
+
+webOS values:
+  0x02AAA771 = YUV mode (all Y/CbCr paths enabled, 8-bit)
+  0x02AAA775 = RAW 10-bit mode
+  0x02AAA779 = RAW 12-bit mode
 ```
 
 ### VFE_0_BUS_XBAR_CFG0 (0x040)
-AXI output mode selection.
+AXI output mode selection (enum VFE_AXI_OUTPUT_MODE).
 ```
 [31:0] AXI_OUTPUT_MODE:
-       0x01  = OUTPUT_1_AND_3 (Preview WM0/1 + Video WM4/5)
-       0x200 = OUTPUT_2 (Preview only, older mode)
-       0x60  = CAMIF_TO_AXI_VIA_OUT2 (Raw bypass to WM0)
+       0x00 = VFE_AXI_OUTPUT_MODE_Output1 (WM0 only)
+       0x01 = VFE_AXI_OUTPUT_MODE_Output1AndOutput2 (WM0/1 + WM4/5)
+       0x02 = VFE_AXI_OUTPUT_MODE_Output2 (WM4/5 only, legacy)
+       0x03 = VFE_AXI_OUTPUT_MODE_CAMIFToAXIViaOutput2 (Raw bypass)
+       0x04 = VFE_AXI_OUTPUT_MODE_Output2AndCAMIFToAXIViaOutput1
+       0x05 = VFE_AXI_OUTPUT_MODE_Output1AndCAMIFToAXIViaOutput2
 
-NOTE: VFE31 uses global XBAR, NOT per-WM like VFE41+
+webOS uses: 0x01 (OUTPUT_1_AND_3 in comments, which enables both paths)
+
+NOTE: VFE31 uses global XBAR routing, NOT per-WM configuration like VFE41+.
+      The mode here affects which Write Master pairs are active.
 ```
 
 ### VFE_0_BUS_XBAR_CFG1 (0x044)
-Data routing configuration - CRITICAL for correct output.
+Data routing configuration - CRITICAL for correct semi-planar output.
 ```
-[3:0]   Y_ROUTING:
-        0x3 = Y to WM0 only (preview)
-        0xB = Y to WM0 + WM4 (preview + video)
+[3:0]   Y_ROUTING (confirmed by empirical testing):
+        0x3 = Y to WM0 only (preview path)
+        0xB = Y to WM0 + WM4 (preview + video paths)
 
-[7:4]   CBCR_ROUTING:
-        0x0 = DISABLED (broken for semi-planar!)
-        0x1 = CbCr to WM1 only (preview)
-        0x9 = CbCr to WM1 + WM5 (preview + video)
+[7:4]   CBCR_ROUTING (confirmed by empirical testing):
+        0x0 = DISABLED - CbCr not routed (breaks NV12/NV16!)
+        0x1 = CbCr to WM1 only (preview CbCr)
+        0x9 = CbCr to WM1 + WM5 (preview + video CbCr)
+
+[15:8]  ISP_PATH_CFG (bits 9, 11, 12 typically set):
+        0x1A = Standard ISP processed output
+        Exact bit meanings undocumented.
+
+Common configurations:
+  0x1A03 = BROKEN - Y to WM0, CbCr DISABLED (Qualcomm default, fails NV16)
+  0x1A13 = Preview only - Y to WM0, CbCr to WM1
+  0x1A1B = webOS VIDEO mode - Y to WM0+WM4, CbCr to WM1 (NOT WM5!)
+  0x1A9B = Full dual - Y to WM0+WM4, CbCr to WM1+WM5
+
+webOS uses: 0x1A1B for both preview and video modes
+
+CRITICAL BUG FOUND: Original Qualcomm camss driver used 0x1A03 which
+completely disables CbCr routing, causing pure green images for NV12/NV16.
 
 [15:8]  ISP_PATH_CFG = 0x1A (standard ISP processed output)
         Bits 9, 11, 12 set - exact meaning unknown
@@ -259,21 +321,31 @@ Pong buffer physical address (32-bit aligned).
 ### WM_WR_ADDR_CFG (base + 0x0C)
 Address configuration - burst length and line count.
 ```
-[15:0]  BURST = (bytes_per_line / 4) - 17
-        For UYVY input (2 bytes/pixel): (width * 2 / 4) - 17
-        Example: 640x480 UYVY = (1280 / 4) - 17 = 303 = 0x12F
+[15:0]  BURST_WORDS = (bytes_per_line / 4) - 17
+        Y WM: (output_stride / 4) - 17
+        CbCr WM: (width / 4) - 9  (chroma horizontally downsampled)
 
-[31:16] LINES - Line count for CbCr plane timing
-        WM0/WM4 (Y plane): 0 (uses IMAGE_SIZE height)
-        WM1/WM5 (CbCr plane): height - 24 = 456 for 480 lines
+        Examples @ 640x480:
+          Y burst: (640 / 4) - 17 = 143 (if compact) or (1280/4)-17=303 (UYVY)
+          CbCr burst: (640 / 4) - 9 = 151
 
-        CRITICAL: The -24 offset is empirically required for correct
-        NV16 output. Without it, only top portion of UV plane is written.
-        Reason unknown - may be VFE31-specific timing requirement.
+[31:16] LINES - DMA line count / timing control
+        This field has DIFFERENT meanings for Y vs CbCr Write Masters:
 
-Example @ 640x480:
-  WM0: WR_ADDR_CFG = 0x0000012F (burst=303, lines=0)
-  WM1: WR_ADDR_CFG = 0x01C8012F (burst=303, lines=456)
+        Y WMs (WM0 for PIX Y, WM1 for VIDEO Y):
+          PIX Y (WM0):   lines = 0 (relies on IMAGE_SIZE for height)
+          VIDEO Y (WM1): lines = height - 24 (timing offset)
+
+        CbCr WMs (WM4 for PIX CbCr, WM5 for VIDEO CbCr):
+          CbCr:          lines = cbcr_height + 64 (DMA headroom)
+
+        The +64 provides pipeline flush headroom. Sony Nozomi decompilation
+        confirms this pattern: "(short)iVar15 + 0x40U" (0x40 = 64 decimal).
+
+webOS examples @ 640x480 NV12 (cbcr_height=240):
+  WM0 (PIX Y):    0x0000012F → burst=303, lines=0
+  WM1 (VIDEO Y):  0x01C8012F → burst=303, lines=456 (480-24)
+  WM4 (PIX CbCr): 0x01300097 → burst=151, lines=304 (240+64)
 ```
 
 ### WM_WR_UB_CFG (base + 0x10)
@@ -553,9 +625,16 @@ Toggle indicates data flow is occurring.
 19. VFE_0_CAMIF_CMD = 0x1 (start)
 ```
 
-### webOS WM Configuration @ 640x480
+### webOS WM Configuration @ 640x480 NV12
+
+**WM Assignment (corrected 2026-04-17):**
+- WM0 = PIX Y (preview Y plane)
+- WM1 = VIDEO Y (video recording Y plane)
+- WM4 = PIX CbCr (preview CbCr plane)
+- WM5 = VIDEO CbCr (video recording CbCr - NOT enabled by webOS!)
+
 ```
-WM0 (Y plane):
+WM0 (PIX Y):
   WR_CFG       = 0x00000001
   WR_PING_ADDR = <buffer_phys>
   WR_PONG_ADDR = <buffer_phys + frame_size>
@@ -563,13 +642,19 @@ WM0 (Y plane):
   WR_UB_CFG    = 0x002701DF (ub=39, height=479)
   WR_IMAGE_SIZE= 0x00501DF2 (stride=80, size=0x1DF2)
 
-WM1 (CbCr plane):
+WM1 (VIDEO Y) - only active in video recording:
+  WR_CFG       = 0x00000001
+  WR_ADDR_CFG  = 0x01C8012F (burst=303, lines=456=height-24)
+  WR_UB_CFG    = 0x002701DF (same as WM0)
+  WR_IMAGE_SIZE= 0x00501DF2 (same as WM0)
+
+WM4 (PIX CbCr) - for NV12/NV16 semi-planar output:
   WR_CFG       = 0x00000001
   WR_PING_ADDR = <buffer_phys + y_plane_size>
   WR_PONG_ADDR = <buffer_phys + frame_size + y_plane_size>
-  WR_ADDR_CFG  = 0x01C8012F (burst=303, lines=456)
-  WR_UB_CFG    = 0x002701DF (same as WM0)
-  WR_IMAGE_SIZE= 0x00501DF2 (same as WM0)
+  WR_ADDR_CFG  = 0x01300097 (burst=151, lines=304=cbcr_height+64)
+  WR_UB_CFG    = 0x002700EF (ub=39, height=239 for NV12)
+  WR_IMAGE_SIZE= 0x005000F2 (stride=80, cbcr height in size field)
 ```
 
 ---
@@ -581,10 +666,25 @@ The original Qualcomm/mainline driver used XBAR_CFG1 = 0x1A03 which disables
 CbCr routing to WM1. This causes NV16 output to have no UV data (green image).
 Must use 0x1A1B or 0x1A9B for working semi-planar output.
 
-### WM1 Lines Field (-24 Offset)
-For unknown reasons, WM1 (CbCr plane) requires the lines field in WR_ADDR_CFG
-to be set to (height - 24). Without this, only the top portion of the UV plane
-is written. This appears to be a VFE31-specific timing requirement.
+### WM burst_lines Configuration (ADDR_CFG upper 16 bits)
+
+**Y Write Masters (WM0/WM4):**
+- PIX Y (WM0): lines = 0 (uses IMAGE_SIZE height)
+- VIDEO Y (WM1 in dual mode): lines = height - 24
+
+**CbCr Write Masters (WM1/WM5 for semi-planar, or WM4 when used for CbCr):**
+- CbCr: lines = cbcr_height + 64 (provides DMA headroom)
+
+Evidence from webOS register dumps (640x480 NV12):
+- WM0 (PIX Y): ADDR_CFG = 0x0000012F → lines=0, burst=303
+- WM1 (VIDEO Y): ADDR_CFG = 0x01C8012F → lines=456 (480-24), burst=303
+- WM4 (PIX CbCr): ADDR_CFG = 0x01300097 → lines=304 (240+64), burst=151
+
+Sony Nozomi decompilation confirms +64 pattern: `(short)iVar15 + 0x40U`
+
+**CORRECTION (2026-04-17):** Previous documentation incorrectly stated CbCr
+uses height-24. This was a misreading of WM1 (VIDEO Y) data as CbCr. The
+actual CbCr WMs use cbcr_height + 64 for DMA pipeline headroom.
 
 ### IRQ_STATUS_1 RESET_ACK Location
 VFE31 places RESET_ACK in IRQ_STATUS_1 bit 22, which differs from later VFE
