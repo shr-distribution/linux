@@ -1034,24 +1034,19 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	/*
 	 * Y plane size for CbCr offset calculation.
 	 *
-	 * VERIFIED BY RAW DATA ANALYSIS: Y WM writes at OUTPUT stride (compact)!
+	 * VFE31 Y WM writes at INPUT stride (width*2 for UYVY), not output
+	 * stride. This is confirmed by:
+	 *   - webOS ADDR_CFG burst = 303 = (1280/4)-17 for 640px
+	 *   - Memory corruption when using stride_factor=1 (buffer too small)
 	 *
-	 * The IMAGE_SIZE register uses input_stride for VFE pipeline timing,
-	 * but DEMUX only outputs 640 bytes of Y per line (one byte per pixel),
-	 * so the Y WM can only write what DEMUX provides - compact data.
+	 * For 640x480:
+	 *   Y plane = input_stride * height = 1280 * 480 = 614,400 bytes
+	 *   CbCr starts at offset 614,400
 	 *
-	 * Raw capture analysis (2026-04-16):
-	 *   - Y line 0 at offset 0-639 (valid Y data)
-	 *   - Y line 1 at offset 640-1279 (valid Y data, NOT zeros)
-	 *   - Y line 479 at offset 306560-307199 (valid Y data)
-	 *   - Offset 307200+ is zeros (gap before CbCr)
-	 *   - CbCr starts at offset 614400 (wrong - 307KB gap!)
-	 *
-	 * Fix: cbcr_offset = width * height (NOT bytesperline * height!)
-	 * VFE writes compactly at width stride, so CbCr immediately follows Y.
-	 * Example: 640x480 -> cbcr_offset = 640*480 = 307,200
+	 * Previous analysis claiming compact output stride was incorrect -
+	 * the buffer overflow and kernel panic proved VFE writes at input stride.
 	 */
-	cfg->y_plane_size = width * height;  /* Actual Y size at width stride */
+	cfg->y_plane_size = input_stride * height;  /* Y size at input stride */
 	cfg->cbcr_offset = cfg->y_plane_size;
 
 	/*
@@ -5409,10 +5404,8 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				int lines_val;
 				int burst_val = (width / 4) - 9;
 
-				if (vfe31_is_420_format(pix->pixelformat))
-					lines_val = cbcr_height + 64;
-				else
-					lines_val = cbcr_height;  /* NV16: no headroom */
+				/* CbCr WM always needs +64 headroom per webOS/Sony */
+				lines_val = cbcr_height + 64;
 
 				reg = (lines_val << 16) | (burst_val & 0xFFFF);
 				dev_info(vfe->camss->dev,

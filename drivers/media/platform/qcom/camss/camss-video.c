@@ -219,14 +219,19 @@ static int video_buf_init(struct vb2_buffer *vb)
 			format->pixelformat == V4L2_PIX_FMT_NV16 ||
 			format->pixelformat == V4L2_PIX_FMT_NV61) {
 		/*
-		 * CbCr offset = Y plane size = bytesperline * height.
+		 * CbCr offset = Y plane size.
 		 *
-		 * VFE31 writes Y at OUTPUT stride (width), not input stride.
-		 * The stride_factor only affects IMAGE_SIZE register timing,
-		 * not actual DMA write stride. Do NOT multiply by stride_factor.
+		 * VFE31 writes Y at INPUT stride (width*2 for UYVY), not output
+		 * stride. Must use stride_factor to match buffer allocation.
+		 *
+		 * For 640x480 with stride_factor=2:
+		 *   Y plane = bytesperline * stride_factor * height
+		 *           = 640 * 2 * 480 = 614,400 bytes
+		 *   CbCr starts at offset 614,400
 		 */
+		u32 stride_factor = video->stride_factor ? video->stride_factor : 1;
 		u32 y_plane_size = format->plane_fmt[0].bytesperline *
-				   format->height;
+				   stride_factor * format->height;
 		buffer->addr[1] = buffer->addr[0] + y_plane_size;
 	}
 

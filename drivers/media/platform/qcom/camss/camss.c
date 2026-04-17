@@ -198,19 +198,21 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 			 * Y and CbCr Write Masters both write at OUTPUT stride
 			 * (compact, width bytes per line), NOT input stride.
 			 *
-			 * Raw capture analysis showed:
-			 *   - Y line N at offset N*640 (compact)
-			 *   - CbCr line N at offset Y_size + N*640 (compact)
-			 *   - No sparse gaps within planes
+			 * VFE31 DMA burst configuration (ADDR_CFG register):
+			 *   Y burst = (input_stride / 4) - 17 = (width*2 / 4) - 17
+			 *   For 640px: burst = (1280/4) - 17 = 303
 			 *
-			 * 640x480 NV12: Y=307,200 + CbCr=153,600 = 460,800 bytes
-			 * 640x480 NV16: Y=307,200 + CbCr=307,200 = 614,400 bytes
+			 * This means VFE DMA writes at INPUT stride (1280 bytes/line),
+			 * not output stride (640 bytes/line). Buffer allocation MUST
+			 * use stride_factor=2 to match VFE DMA write pattern.
 			 *
-			 * stride_factor=1: VFE writes compactly at output stride.
-			 * Previous stride_factor=2 caused V4L2 to report wrong
-			 * bytesperline to userspace, breaking pix1280 (Gemini fix).
+			 * webOS register dumps confirm: WM0 ADDR_CFG=0x12F (burst=303)
+			 * with IMAGE_SIZE stride=80 (1280/16).
+			 *
+			 * WARNING: stride_factor=1 with burst=303 causes buffer overflow
+			 * and kernel memory corruption (list_del corruption panic).
 			 */
-			.pix_stride_factor = 1
+			.pix_stride_factor = 2
 		}
 	}
 };
