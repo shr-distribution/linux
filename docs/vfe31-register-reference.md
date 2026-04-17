@@ -962,7 +962,625 @@ VFE_DMI_CFG_DEFAULT = 0x00000100
 
 ---
 
-## 17. Validated Findings (2026-04-17)
+## 17. ISP Processing Modules
+
+This section documents the Image Signal Processing (ISP) modules in the VFE31 pipeline.
+Information derived from webOS kernel headers (msm_vfe31.h, msm_vfe8x_proc.h) and
+decompiled vendor binaries.
+
+### 17.1 Pipeline Overview
+
+The VFE31 ISP pipeline processes data in this order:
+```
+CAMIF → BLACK_LEVEL → ROLLOFF → DEMUX → DEMOSAIC → WB → COLOR_CORRECT →
+GAMMA → LUMA_ADAPT → CHROMA_ENHANCE → CHROMA_SUPPRESS → MCE/SCE →
+ASF → SCALE → FOV_CROP → CHROMA_SUBSAMPLE → OUTPUT_CLAMP → WM
+```
+
+### 17.2 Black Level Correction (0x264)
+
+Corrects sensor black level offset. Applies per-pixel adjustment based on Bayer position.
+
+**Registers:**
+```
+V31_BLACK_LEVEL_OFF = 0x264 (length: 16 bytes)
+```
+
+**Configuration Fields:**
+```c
+struct vfe_blacklevel_cfg {
+    [8:0]  evenEvenAdjustment;  // 9-bit signed adjustment
+    [8:0]  evenOddAdjustment;   // for even row, odd column
+    [8:0]  oddEvenAdjustment;   // for odd row, even column
+    [8:0]  oddOddAdjustment;    // for odd row, odd column
+};
+```
+
+**webOS default:** All adjustments = 0 (no correction)
+
+### 17.3 Lens Rolloff / Shading Correction (0x274)
+
+Corrects lens vignetting (darker corners). Uses a 13×10 grid lookup table.
+
+**Registers:**
+```
+V31_ROLL_OFF_CFG_OFF = 0x274 (length: 16 bytes)
+VFE31_ROLL_OFF_INIT_TABLE_SIZE   = 13
+VFE31_ROLL_OFF_DELTA_TABLE_SIZE  = 208
+LENS_ROLL_OFF_DELTA_TABLE_OFFSET = 32
+```
+
+**Configuration Fields:**
+```c
+struct vfe_rolloff_cfg {
+    // Rolloff 0 Config
+    [8:0]  gridWidth;    // Grid cell width
+    [17:9] gridHeight;   // Grid cell height
+    [26:18] yDelta;      // Y delta accumulator init
+
+    // Rolloff 1 Config
+    [3:0]  gridX;        // Start grid X position
+    [7:4]  gridY;        // Start grid Y position
+    [16:8] pixelX;       // Start pixel X within grid
+    [28:19] pixelY;      // Start pixel Y within grid
+
+    // Rolloff 2 Config
+    [11:0] yDeltaAccum;  // Y delta accumulator
+};
+```
+
+**Table access:** Via DMI (ROLLOFF_RAM = 0x1)
+
+### 17.4 DEMUX Module (0x284 - 0x294)
+
+Separates interleaved sensor data into color channels. For YUV sensors (like MT9M113),
+separates UYVY into Y and CbCr streams.
+
+**Registers:**
+```
+V31_DEMUX_OFF = 0x284 (length: 20 bytes)
+0x284: DEMUX_CFG       - Period configuration
+0x288: DEMUX_GAIN_0    - Channel 0 gains
+0x28C: DEMUX_GAIN_1    - Channel 1/2 gains
+0x290: DEMUX_EVEN_CFG  - Even line byte routing
+0x294: DEMUX_ODD_CFG   - Odd line byte routing
+```
+
+**Configuration:**
+```c
+struct vfe_demux_cfg {
+    // DEMUX_GAIN_0
+    [9:0]  ch0EvenGain;  // 10-bit gain (0x80 = 1.0)
+    [25:16] ch0OddGain;
+
+    // DEMUX_GAIN_1
+    [9:0]  ch1Gain;      // Cb channel gain
+    [25:16] ch2Gain;     // Cr channel gain
+};
+```
+
+**webOS values for UYVY input:**
+```
+DEMUX_CFG      = 0x03      (period = 3 for YUV 4-byte pattern)
+DEMUX_GAIN_0   = 0x00800080 (unity gain)
+DEMUX_GAIN_1   = 0x00800080 (unity gain)
+DEMUX_EVEN_CFG = 0xC9CA    (UYVY byte routing)
+DEMUX_ODD_CFG  = 0xC9CA    (same for all lines)
+```
+
+### 17.5 Demosaic Module (0x298 - 0x358)
+
+Converts Bayer pattern to RGB. Includes ABF (Adaptive Bayer Filtering) and
+BPC (Bad Pixel Correction) sub-modules.
+
+**Registers:**
+```
+V31_DEMOSAIC_0_OFF = 0x298 (length: 4)   - General demosaic config
+V31_DEMOSAIC_2_OFF = 0x29C (length: 8)   - BPC config
+V31_DEMOSAIC_1_OFF = 0x2A4 (length: 180) - ABF config
+```
+
+**Demosaic General Config (0x298):**
+```c
+struct vfe_demosaic_cfg {
+    Bit 0: abfEnable;           // Enable ABF
+    Bit 1: badPixelCorrEnable;  // Enable BPC
+    Bit 2: forceAbfOn;          // Force ABF always on
+    [7:4]  abfShift;            // ABF shift value
+    [14:8] fminThreshold;       // 7-bit min threshold
+    [22:16] fmaxThreshold;      // 7-bit max threshold
+    [30:28] slopeShift;         // 3-bit slope shift
+};
+```
+
+**BPC Config (0x29C - 0x2A0):**
+```c
+struct vfe_demosaic_bpc_cfg {
+    // 0x29C
+    [11:0] blueDiffThreshold;   // Blue difference threshold
+    [23:12] redDiffThreshold;   // Red difference threshold
+
+    // 0x2A0
+    [11:0] greenDiffThreshold;  // Green difference threshold
+};
+```
+
+**ABF Config (0x2A4+):**
+```c
+struct vfe_cmds_demosaic_abf {
+    uint8_t  enable;
+    uint8_t  forceOn;
+    uint8_t  shift;
+    uint16_t lpThreshold;  // Low-pass threshold (10-bit)
+    uint16_t max;          // Max value (10-bit)
+    uint16_t min;          // Min value (10-bit)
+    uint8_t  ratio;        // 4-bit ratio
+};
+```
+
+**NOTE:** For YUV sensors like MT9M113, demosaic is bypassed (DEMUX handles YUV directly).
+
+### 17.6 White Balance (0x384)
+
+Applies per-channel gain to correct color temperature.
+
+**Registers:**
+```
+V31_WB_OFF = 0x384 (length: 4 bytes)
+```
+
+**Configuration:**
+```c
+struct vfe_wb_cfg {
+    [8:0]  ch0Gain;  // 9-bit gain (channel 0 / R)
+    [17:9] ch1Gain;  // 9-bit gain (channel 1 / G)
+    [26:18] ch2Gain; // 9-bit gain (channel 2 / B)
+};
+```
+
+**Command struct:**
+```c
+struct vfe_cmd_white_balance_config {
+    uint8_t  enable;
+    uint16_t ch2Gain;  // 0x100 = 1.0
+    uint16_t ch1Gain;
+    uint16_t ch0Gain;
+};
+```
+
+### 17.7 Color Correction (0x388)
+
+Applies 3×3 color correction matrix plus offsets for accurate color reproduction.
+
+**Registers:**
+```
+V31_COLOR_COR_OFF = 0x388 (length: 52 bytes)
+```
+
+**Configuration:**
+```c
+struct vfe_color_correction_cfg {
+    // 9 matrix coefficients (12-bit signed each)
+    [11:0] c0, c1, c2;  // Row 0: affects R output
+    [11:0] c3, c4, c5;  // Row 1: affects G output
+    [11:0] c6, c7, c8;  // Row 2: affects B output
+
+    // 3 offset values (11-bit signed each)
+    [10:0] k0;  // R offset
+    [10:0] k1;  // G offset
+    [10:0] k2;  // B offset
+
+    // Q-factor for coefficient precision
+    [1:0] coefQFactor;  // 0=Q7, 1=Q8, 2=Q9, 3=Q10
+};
+```
+
+**Matrix operation:**
+```
+R_out = c0*R + c1*G + c2*B + k0
+G_out = c3*R + c4*G + c5*B + k1
+B_out = c6*R + c7*G + c8*B + k2
+```
+
+### 17.8 Gamma / RGB LUT (0x3BC)
+
+Applies gamma correction via lookup tables. Supports independent or shared tables
+for R, G, B channels.
+
+**Registers:**
+```
+V31_GAMMA_CFG_OFF = 0x3BC (length: 4 bytes)
+V31_RGB_G_OFF     = 0x3BC (length: 4 bytes)
+```
+
+**Configuration:**
+```c
+struct VFE_GammaLutSelect_ConfigCmdType {
+    Bit 0: ch0BankSelect;  // Bank select for channel 0 (R)
+    Bit 1: ch1BankSelect;  // Bank select for channel 1 (G)
+    Bit 2: ch2BankSelect;  // Bank select for channel 2 (B)
+};
+
+enum VFE_RGB_GAMMA_TABLE_SELECT {
+    RGB_GAMMA_CH0_SELECTED,
+    RGB_GAMMA_CH1_SELECTED,
+    RGB_GAMMA_CH2_SELECTED,
+    RGB_GAMMA_CH0_CH1_SELECTED,
+    RGB_GAMMA_CH0_CH2_SELECTED,
+    RGB_GAMMA_CH1_CH2_SELECTED,
+    RGB_GAMMA_CH0_CH1_CH2_SELECTED  // All channels share same table
+};
+```
+
+**Constants:**
+```
+VFE31_GAMMA_NUM_ENTRIES  = 64
+VFE_GAMMA_TABLE_LENGTH   = 256
+```
+
+**Table access:** Via DMI with bank selection:
+```
+RGBLUT_RAM_CH0_BANK0 = 0x2
+RGBLUT_RAM_CH0_BANK1 = 0x3
+RGBLUT_RAM_CH1_BANK0 = 0x4
+RGBLUT_RAM_CH1_BANK1 = 0x5
+RGBLUT_RAM_CH2_BANK0 = 0x6
+RGBLUT_RAM_CH2_BANK1 = 0x7
+RGBLUT_CHX_BANK0     = 0x9  // Shared table
+RGBLUT_CHX_BANK1     = 0xA
+```
+
+### 17.9 Luma Adaptation (0x3C0)
+
+Adaptive luma enhancement using lookup table.
+
+**Registers:**
+```
+V31_LA_OFF = 0x3C0 (length: 4 bytes)
+V31_LUMA_CFG_OFF = 0x3C0
+```
+
+**Configuration:**
+```c
+struct VFE_LumaAdaptation_ConfigCmdType {
+    Bit 0: lutBankSelect;  // Which LUT bank is active
+};
+
+struct vfe_cmd_la_config {
+    uint8_t enable;
+    int16_t table[VFE_LA_TABLE_LENGTH];  // 64 entries
+};
+```
+
+**Table access:** Via DMI:
+```
+LUMA_ADAPT_LUT_RAM_BANK0 = 0xB
+LUMA_ADAPT_LUT_RAM_BANK1 = 0xC
+```
+
+### 17.10 Chroma Enhancement (0x3C4)
+
+Adjusts chroma saturation and hue. Implements 2×2 matrix transform on Cb/Cr.
+
+**Registers:**
+```
+V31_CHROMA_EN_OFF = 0x3C4 (length: 36 bytes)
+```
+
+**Configuration:**
+```c
+struct vfe_cmd_chroma_enhan_config {
+    uint8_t enable;
+    // 2×2 matrix coefficients (11-bit signed)
+    int16_t am, ap;  // Cb coefficients
+    int16_t bm, bp;  // Cr coefficients
+    int16_t cm, cp;  // Cross-channel Cb
+    int16_t dm, dp;  // Cross-channel Cr
+
+    // DC offsets
+    int16_t kcr;     // Cr offset
+    int16_t kcb;     // Cb offset
+
+    // RGB to Y conversion
+    int16_t RGBtoYConversionV0;  // R coefficient
+    int16_t RGBtoYConversionV1;  // G coefficient
+    int16_t RGBtoYConversionV2;  // B coefficient
+    uint8_t RGBtoYConversionOffset;
+};
+```
+
+**Register layout:**
+```
+0x3C4: ap[10:0], am[26:16]
+0x3C8: bp[10:0], bm[26:16]
+0x3CC: cp[10:0], cm[26:16]
+0x3D0: dp[10:0], dm[26:16]
+0x3D4: kcr[10:0], kcb[26:16]
+```
+
+### 17.11 Chroma Suppression (0x3E8)
+
+Suppresses chroma noise in low-light / dark regions.
+
+**Registers:**
+```
+V31_CHROMA_SUP_OFF = 0x3E8 (length: 12 bytes)
+```
+
+**Configuration:**
+```c
+struct vfe_cmd_chroma_suppression_config {
+    uint8_t enable;
+    uint8_t m1;   // Threshold 1
+    uint8_t m3;   // Threshold 3
+    uint8_t n1;   // 3-bit suppression level 1
+    uint8_t n3;   // 3-bit suppression level 3
+    uint8_t nn1;  // 3-bit
+    uint8_t mm1;  // 8-bit
+};
+
+struct vfe_chroma_suppress_cfg {
+    // 0x3E8: Chroma Suppress 0
+    [7:0]  m1;
+    [15:8] m3;
+    [18:16] n1;
+    [22:20] n3;
+
+    // 0x3EC: Chroma Suppress 1
+    [7:0]  mm1;
+    [10:8] nn1;
+};
+```
+
+### 17.12 Memory Color Enhancement - MCE (0x3F4)
+
+Enhances specific memory colors (sky blue, grass green, skin tones).
+
+**Registers:**
+```
+V31_MCE_OFF = 0x3F4 (length: 36 bytes)
+```
+
+**Enable mask:**
+```c
+#define MCE_EN_MASK  0xEFFFFFFF  // Bit 28 = MCE enable
+#define MCE_Q_K_MASK 0x0FFFFFFF  // Bits 28-31 = Q_K value
+```
+
+### 17.13 Skin Color Enhancement - SCE (0x418)
+
+Special enhancement for skin tones to improve portrait appearance.
+
+**Registers:**
+```
+V31_SCE_OFF = 0x418 (length: 136 bytes)
+V31_SK_ENHAN_CFG = 24 (command ID)
+```
+
+### 17.14 Adaptive Spatial Filter - ASF (0x4A0)
+
+Edge enhancement / sharpening filter with adaptive behavior.
+
+**Registers:**
+```
+V31_ASF_OFF = 0x4A0 (length: 48 bytes)
+V31_ASF_UPDATE_LEN = 36
+```
+
+**Configuration:**
+```c
+struct vfe_cmd_asf_config {
+    uint8_t enable;
+    uint8_t smoothFilterEnabled;
+    uint8_t sharpMode;           // 2-bit: sharpening mode
+    uint8_t smoothCoefCenter;    // Center coefficient
+    uint8_t smoothCoefSurr;      // Surrounding coefficient
+    uint8_t normalizeFactor;     // 7-bit normalization
+    uint8_t sharpK1;             // 5-bit sharpening K1
+    uint8_t sharpK2;             // 5-bit sharpening K2
+    uint8_t sharpThreshE1;       // Edge threshold 1 (7-bit)
+    int8_t  sharpThreshE2;       // Edge threshold 2 (8-bit signed)
+    int8_t  sharpThreshE3;       // Edge threshold 3
+    int8_t  sharpThreshE4;       // Edge threshold 4
+    int8_t  sharpThreshE5;       // Edge threshold 5
+    int8_t  filter1Coefficients[9];  // 3×3 filter 1
+    int8_t  filter2Coefficients[9];  // 3×3 filter 2
+    // Crop configuration
+    uint8_t  cropEnable;
+    uint16_t cropFirstPixel;
+    uint16_t cropLastPixel;
+    uint16_t cropFirstLine;
+    uint16_t cropLastLine;
+};
+```
+
+**ASF output info:**
+```c
+struct vfe_asf_info {
+    [12:0] maxEdge;    // Maximum edge value detected
+    [27:16] HBICount;  // Horizontal blanking count
+};
+```
+
+### 17.15 Main Scaler (0x368)
+
+Scales image to output resolution. Supports independent H/V scaling.
+
+**Registers:**
+```
+V31_MAIN_SCALER_OFF = 0x368 (length: 28 bytes)
+```
+
+**Configuration:**
+```c
+struct vfe_cmd_main_scaler_config {
+    uint8_t enable;
+    struct vfe_cmds_scaler_one_dimension hconfig;
+    struct vfe_cmds_scaler_one_dimension vconfig;
+    struct vfe_cmds_main_scaler_stripe_init MNInitH;
+    struct vfe_cmds_main_scaler_stripe_init MNInitV;
+};
+
+struct vfe_cmds_scaler_one_dimension {
+    uint8_t  enable;
+    uint16_t inputSize;           // Input dimension
+    uint16_t outputSize;          // Output dimension
+    uint32_t phaseMultiplicationFactor;  // 18-bit phase mult
+    uint8_t  interpolationResolution;    // 2-bit interp res
+};
+```
+
+**Register layout:**
+```
+0x368: hEnable[0], vEnable[1]
+0x36C: inWidth[11:0], outWidth[27:16]
+0x370: horizPhaseMult[17:0], horizInterRes[21:20]
+0x374: horizMNInit[11:0], horizPhaseInit[30:16]
+0x378: inHeight[11:0], outHeight[27:16]
+0x37C: vertPhaseMult[17:0], vertInterRes[21:20]
+0x380: vertMNInit[11:0], vertPhaseInit[30:16]
+```
+
+### 17.16 Scaler 2 Y/CbCr (0x4D0 / 0x4E4)
+
+Secondary scaler for encoder/viewfinder output paths.
+
+**Registers:**
+```
+V31_S2Y_OFF    = 0x4D0 (length: 20 bytes) - Y scaler
+V31_S2CbCr_OFF = 0x4E4 (length: 20 bytes) - CbCr scaler
+```
+
+**Configuration:**
+```c
+struct vfe_cmd_scaler2_config {
+    uint8_t enable;
+    struct vfe_cmds_scaler_one_dimension hconfig;
+    struct vfe_cmds_scaler_one_dimension vconfig;
+};
+```
+
+### 17.17 Field of View Crop (0x360)
+
+Crops input image to region of interest.
+
+**Registers:**
+```
+V31_FOV_OFF = 0x360 (length: 8 bytes)
+```
+
+**Configuration:**
+```c
+struct vfe_cmd_fov_crop_config {
+    uint8_t  enable;
+    uint16_t firstPixel;  // [11:0] First pixel (0-indexed)
+    uint16_t lastPixel;   // [27:16] Last pixel
+    uint16_t firstLine;   // [11:0] First line
+    uint16_t lastLine;    // [27:16] Last line
+};
+```
+
+### 17.18 Chroma Subsample (0x4F8)
+
+Downsamples chroma for 4:2:0 output (NV12) or passes through for 4:2:2 (NV16).
+
+**Registers:**
+```
+V31_CHROMA_SUBS_OFF = 0x4F8 (length: 12 bytes)
+```
+
+**Configuration:**
+```c
+struct vfe_cmd_chroma_subsample_config {
+    uint8_t enable;
+    uint8_t cropEnable;
+    uint8_t vsubSampleEnable;   // Vertical subsampling (4:2:0)
+    uint8_t hsubSampleEnable;   // Horizontal subsampling
+    uint8_t vCosited;           // Vertical cositing
+    uint8_t hCosited;           // Horizontal cositing
+    uint8_t vCositedPhase;
+    uint8_t hCositedPhase;
+    uint16_t cropWidthFirstPixel;
+    uint16_t cropWidthLastPixel;
+    uint16_t cropHeightFirstLine;
+    uint16_t cropHeightLastLine;
+};
+```
+
+**Register layout:**
+```
+0x4F8: hCositedPhase[0], vCositedPhase[1], hCosited[2], vCosited[3],
+       hsubSampleEnable[4], vsubSampleEnable[5], cropEnable[6]
+0x4FC: cropWidthLastPixel[11:0], cropWidthFirstPixel[27:16]
+0x500: cropHeightLastLine[11:0], cropHeightFirstLine[27:16]
+```
+
+**For NV12 (4:2:0):** vsubSampleEnable = 1
+**For NV16 (4:2:2):** vsubSampleEnable = 0
+
+### 17.19 Output Clamp (0x524)
+
+Clamps output values to valid range.
+
+**Registers:**
+```
+V31_OUT_CLAMP_OFF = 0x524 (length: 8 bytes)
+```
+
+**Configuration:**
+```c
+struct vfe_cmd_output_clamp_config {
+    uint8_t minCh0;  // Y min (typically 0)
+    uint8_t minCh1;  // Cb min (typically 0)
+    uint8_t minCh2;  // Cr min (typically 0)
+    uint8_t maxCh0;  // Y max (typically 255)
+    uint8_t maxCh1;  // Cb max (typically 255)
+    uint8_t maxCh2;  // Cr max (typically 255)
+};
+```
+
+**webOS values:**
+```
+CLAMP_MAX = 0x00FFFFFF (no max clamping)
+CLAMP_MIN = 0x00000000 (no min clamping)
+```
+
+### 17.20 Module Enable Bits (MODULE_CFG 0x010)
+
+Summary of which modules are enabled in MODULE_CFG register:
+
+```c
+struct vfe_mod_enable {
+    Bit  0: blackLevelCorrectionEnable;
+    Bit  1: lensRollOffEnable;
+    Bit  2: demuxEnable;              // CRITICAL for YUV processing
+    Bit  3: chromaUpsampleEnable;
+    Bit  4: demosaicEnable;
+    Bit  5: statsEnable;              // AE statistics
+    Bit  6: cropEnable;               // AF statistics enable
+    Bit  7: mainScalerEnable;         // AWB statistics enable
+    Bit  8: whiteBalanceEnable;       // RS statistics enable
+    Bit  9: colorCorrectionEnable;    // CS statistics enable
+    Bit 10: yHistEnable;
+    Bit 11: skinToneEnable;
+    Bit 12: lumaAdaptationEnable;
+    Bit 13: rgbLUTEnable;
+    Bit 14: chromaEnhanEnable;
+    Bit 15: asfEnable;                // Also IHIST enable
+    Bit 16: chromaSuppressionEnable;
+    Bit 17: chromaSubsampleEnable;
+    Bit 18: scaler2YEnable;
+    Bit 19: scaler2CbcrEnable;
+    Bit 23: SCALE_ENC_EN;
+    Bit 27: CROP_ENC_EN;
+};
+```
+
+**webOS minimal config:** 0x00000004 (only DEMUX enabled for YUV bypass)
+
+---
+
+## 18. Validated Findings (2026-04-17)
 
 This section documents findings validated through raw data capture analysis and testing.
 
@@ -1025,7 +1643,7 @@ total = y_size + cbcr_size;
 
 ---
 
-## 18. Open Questions for Investigation
+## 19. Open Questions for Investigation
 
 ### 1. stride_factor Inconsistency
 Raw data shows VFE writes compactly at OUTPUT stride, yet we allocate buffers at 2× size with stride_factor=2. Is this:
@@ -1067,7 +1685,7 @@ VIDEO mode (recording):
 
 ---
 
-## 19. Test Results Summary
+## 20. Test Results Summary
 
 | Test Mode | Resolution | Format | Status | Notes |
 |-----------|------------|--------|--------|-------|
@@ -1091,6 +1709,16 @@ VIDEO mode (recording):
 
 ---
 
-*Document version: 1.2*
+*Document version: 1.3*
 *Last updated: 2026-04-17*
 *Based on VFE HW version 0x00030217*
+
+**Changelog:**
+- v1.3: Added comprehensive ISP Processing Modules section (Section 17) with:
+  - Black level, lens rolloff, DEMUX, demosaic (ABF/BPC)
+  - White balance, color correction, gamma, luma adaptation
+  - Chroma enhancement, suppression, MCE, SCE
+  - ASF (sharpening), scalers, FOV crop, chroma subsample
+  - Output clamp, MODULE_CFG bit summary
+- v1.2: Added CORE_CFG, BUS_CFG, XBAR details; corrected CbCr burst_lines (+64)
+- v1.1: Initial comprehensive register documentation
