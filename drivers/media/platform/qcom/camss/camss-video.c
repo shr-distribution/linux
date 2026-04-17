@@ -762,27 +762,40 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		 * WebOS uses burst_lines = cbcr_height + 64, so buffer must match.
 		 * Without this headroom, DMA overflows into adjacent memory.
 		 */
-		if (fi->planes == 1 && vsub_num > 1) {
-			/* Semi-planar: Y + CbCr in single contiguous buffer */
-			/* Use stride_factor to account for VFE writing at input stride */
+		if (fi->planes == 1 && video->stride_factor > 1) {
+			/*
+			 * Semi-planar formats (NV12/NV21/NV16/NV61) on VFE31.
+			 * VFE31 writes at input stride (width*2), so buffer must
+			 * be sized accordingly using stride_factor.
+			 *
+			 * Previous condition "vsub_num > 1" only matched NV12/NV21
+			 * and missed NV16/NV61 (4:2:2 with vsub_num=1), causing
+			 * buffer overflow and memory corruption.
+			 */
 			u32 effective_bpl = bpl * video->stride_factor;
 			u32 y_size = pix_mp->height * effective_bpl;
-			u32 cbcr_height = pix_mp->height / vsub_num;  /* NV12: height/2 */
+			u32 cbcr_height = pix_mp->height / vsub_num;  /* NV12: h/2, NV16: h */
+			u32 cbcr_alloc_height;
+			u32 cbcr_size, total;
+
 			/*
-			 * Add 64 lines DMA headroom for NV12/NV21 (4:2:0).
+			 * Add 64 lines DMA headroom for NV12/NV21 (4:2:0) only.
 			 * VFE31 CbCr WM uses burst_lines = cbcr_height + 64 per webOS.
-			 * Buffer must accommodate this or DMA will overflow.
+			 * NV16/NV61 (4:2:2) does not need this headroom.
 			 */
-			u32 cbcr_alloc_height = cbcr_height + 64;
-			u32 cbcr_size = cbcr_alloc_height * effective_bpl;
-			u32 total = y_size + cbcr_size;
+			if (vsub_num > 1)
+				cbcr_alloc_height = cbcr_height + 64;  /* 4:2:0 */
+			else
+				cbcr_alloc_height = cbcr_height;       /* 4:2:2 */
+
+			cbcr_size = cbcr_alloc_height * effective_bpl;
+			total = y_size + cbcr_size;
 			pix_mp->plane_fmt[i].sizeimage = total;
-			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u total=%u (bpl=%u cbcr_h=%u+64)\n",
-				y_size, cbcr_size, total, bpl, cbcr_height);
+			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u total=%u (bpl=%u cbcr_h=%u sf=%u)\n",
+				y_size, cbcr_size, total, bpl, cbcr_height, video->stride_factor);
 		} else {
 			/*
-			 * Default path for formats like NV16 where vsub_num=1.
-			 * Use bytesperline directly, no stride_factor multiplier.
+			 * Default path for formats without stride_factor.
 			 */
 			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
 				vsub_num * vsub_den * bpl;
