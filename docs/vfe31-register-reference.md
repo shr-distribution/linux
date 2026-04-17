@@ -862,6 +862,123 @@ VFE_DMI_CFG_DEFAULT = 0x00000100
 
 ---
 
+## 17. Validated Findings (2026-04-17)
+
+This section documents findings validated through raw data capture analysis and testing.
+
+### Write Master DMA Stride Behavior
+
+**Finding:** VFE31 Y and CbCr Write Masters write at **OUTPUT stride (width)**, NOT input stride (width×2).
+
+**Evidence from raw data capture (640×480 NV12):**
+- Y line N found at offset N×640 (compact, no gaps)
+- CbCr line N found at offset Y_size + N×640 (compact)
+- No sparse gaps within planes
+- Total Y plane: 640×480 = 307,200 bytes (compact)
+- Total frame: 307,200 + 153,600 = 460,800 bytes (compact NV12)
+
+**Implication:** The IMAGE_SIZE stride field (width×2/16) controls VFE internal pipeline timing, but ADDR_CFG burst controls actual DMA write width. The VFE writes data compactly at output width, not at input UYVY width.
+
+### CbCr Offset Calculation
+
+**Validated formula:** `cbcr_offset = width × height` (NOT bytesperline × height)
+
+Since VFE writes compactly at output stride, CbCr immediately follows Y without gaps.
+```
+640×480 NV12:  cbcr_offset = 640 × 480 = 307,200
+640×480 NV16:  cbcr_offset = 640 × 480 = 307,200
+1280×1024 NV12: cbcr_offset = 1280 × 1024 = 1,310,720
+```
+
+### Buffer Allocation
+
+**Current approach:** Allocate with `stride_factor=2` for safety margin.
+```c
+effective_bpl = width × stride_factor;  // = width × 2
+y_size = height × effective_bpl;
+cbcr_size = cbcr_height × effective_bpl;
+total = y_size + cbcr_size;
+```
+
+**Open question:** If VFE writes compactly at output stride, why do we need stride_factor=2? Testing suggests it may be:
+- Required for certain resolutions (pix1280)
+- A safety margin for worst-case DMA timing
+- Related to UB (Unified Buffer) configuration
+
+### NV16 Buffer Allocation Fix
+
+**Bug found:** Previous condition `vsub_num > 1` only matched NV12/NV21 (4:2:0) and missed NV16/NV61 (4:2:2 where vsub_num=1). This caused NV16 to bypass stride_factor allocation path.
+
+**Result:** Buffer allocated 614,400 bytes but VFE potentially wrote 1,228,800 bytes → memory corruption.
+
+**Fix (commit 16036c3fd206):** Changed condition to `stride_factor > 1` to catch all semi-planar formats on VFE31.
+
+### DMA Cache Sync
+
+**Finding:** VFE31 should NOT perform manual DMA cache sync.
+
+- `dma_sync_single_for_cpu()` crashes - wrong for SG (scatter-gather) buffers
+- `dma_sync_sgtable_for_cpu()` causes hangs
+- Other VFE implementations (gen1, 17x) rely on vb2's built-in `finish()` memop
+
+**Current approach:** Call `vb2_buffer_done()` directly without manual sync, matching other VFE implementations.
+
+---
+
+## 18. Open Questions for Investigation
+
+### 1. stride_factor Inconsistency
+Raw data shows VFE writes compactly at OUTPUT stride, yet we allocate buffers at 2× size with stride_factor=2. Is this:
+- A safety margin for worst-case scenarios?
+- Required for higher resolutions (1280×1024)?
+- Wasteful but harmless?
+
+### 2. pix1280 Y/CbCr Swap Issue
+At 1280×1024 resolution, Y/CbCr planes appear swapped or offset incorrectly. Possible causes:
+- Different DEMUX/XBAR routing for higher resolutions?
+- UB_CFG depth overflow at larger widths?
+- IMAGE_SIZE stride field overflow (width×2/16 = 160, fits in 16 bits)?
+
+### 3. DEMUX Configuration
+Is DEMUX correctly separating Y and CbCr? Earlier analysis suggested raw data showed UYVY pattern in Y plane, but pix640 NV12 now works correctly.
+
+Key registers to verify:
+```
+DEMUX_EVEN_CFG (0x290) = 0xC9CA (webOS)
+DEMUX_ODD_CFG (0x294) = 0xC9CA (webOS)
+```
+
+### 4. VIDEO Mode CbCr Capture
+webOS never enabled VIDEO CbCr WM (WM5). VIDEO mode uses:
+- WM1 for Y (vs PIX uses WM0)
+- WM5 for CbCr (vs PIX uses WM4)
+
+Is full semi-planar capture in VIDEO mode architecturally possible on VFE31?
+
+### 5. WM Configuration Differences
+PIX mode (preview):
+- Y → WM0, CbCr → WM4
+- XBAR_CFG1 = 0x1A13
+
+VIDEO mode (recording):
+- Y → WM1, CbCr → WM5 (theoretically)
+- XBAR_CFG1 = 0x1A1B (enables both paths)
+- webOS only enabled WM1 (Y), not WM5 (CbCr)
+
+---
+
+## 19. Test Results Summary
+
+| Test Mode | Resolution | Format | Status | Notes |
+|-----------|------------|--------|--------|-------|
+| pix640 | 640×480 | NV12 | PASS | 3 frames captured correctly |
+| pix640 | 640×480 | NV16 | UNTESTED | After buffer fix |
+| pix1280 | 1280×1024 | NV12 | FAIL | Y/CbCr swap issue |
+| video640 | 640×480 | NV12 | UNTESTED | |
+| video1280 | 1280×1024 | NV12 | UNTESTED | |
+
+---
+
 ## References
 
 - webOS kernel: `drivers/media/video/msm/msm_vfe31.h` (1077 lines)
@@ -874,6 +991,6 @@ VFE_DMI_CFG_DEFAULT = 0x00000100
 
 ---
 
-*Document version: 1.1*
-*Last updated: 2026-04-03*
+*Document version: 1.2*
+*Last updated: 2026-04-17*
 *Based on VFE HW version 0x00030217*
