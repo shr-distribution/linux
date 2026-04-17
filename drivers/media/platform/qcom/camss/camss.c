@@ -206,10 +206,11 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 			 * 640x480 NV12: Y=307,200 + CbCr=153,600 = 460,800 bytes
 			 * 640x480 NV16: Y=307,200 + CbCr=307,200 = 614,400 bytes
 			 *
-			 * stride_factor=2 because Y WM may write at input stride
-			 * (width*2) not output stride (width). Testing for pix1280.
+			 * stride_factor=1: VFE writes compactly at output stride.
+			 * Previous stride_factor=2 caused V4L2 to report wrong
+			 * bytesperline to userspace, breaking pix1280 (Gemini fix).
 			 */
-			.pix_stride_factor = 2
+			.pix_stride_factor = 1
 		}
 	}
 };
