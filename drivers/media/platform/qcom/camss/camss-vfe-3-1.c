@@ -1087,7 +1087,9 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	 * CbCr WM config:
 	 * - UB_CFG/IMAGE_SIZE use INPUT stride for VFE pipeline timing
 	 * - ADDR_CFG burst uses output width (chroma horizontally downsampled)
-	 * - Lines: cbcr_height + 64 for NV12 (DMA headroom), cbcr_height for NV16
+	 * - Lines: cbcr_height + 64 (DMA headroom for pipeline flush)
+	 *   Both NV12 and NV16 need headroom - without it, CbCr data has gaps
+	 *   causing green bands in the output image.
 	 *
 	 * Like Y WM, CbCr is also written at compact stride (output_stride).
 	 */
@@ -1096,7 +1098,7 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->cbcr_wm.image_stride = input_stride / 16;
 	cfg->cbcr_wm.image_height = cbcr_height - 1;
 	cfg->cbcr_wm.burst_words = (width / 4) - 9;
-	cfg->cbcr_wm.burst_lines = is_420 ? cbcr_height + 64 : cbcr_height;
+	cfg->cbcr_wm.burst_lines = cbcr_height + 64;
 }
 
 /**
