@@ -1065,19 +1065,22 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	/*
 	 * Y WM config:
 	 * - UB_CFG/IMAGE_SIZE use INPUT stride for VFE pipeline timing
-	 * - ADDR_CFG burst uses INPUT stride (webOS: 303 = (1280/4)-17)
+	 * - ADDR_CFG burst uses OUTPUT stride (width) for actual DMA writes
 	 * - Lines = 0 for Y WM
 	 *
-	 * Note: Despite burst being configured for input_stride, the actual
-	 * DMA write is limited by what DEMUX provides (output_stride bytes).
-	 * Raw data analysis confirms Y is written at compact/output stride.
-	 * The burst_words seems to set max burst, not actual bytes written.
+	 * IMPORTANT: Use OUTPUT stride (width) for burst, not INPUT stride!
+	 * Raw data analysis at 640x480 showed compact writes, but 1280x1024
+	 * crashed with input stride burst (git history d3a4899c0cbd).
+	 * The burst_words controls actual DMA write size per line.
+	 *
+	 * webOS comment "(1280/4)-17=303" was for 640px width where
+	 * input_stride=1280, but that caused overflows at larger sizes.
 	 */
 	cfg->y_wm.ub_depth = (input_stride / 32) - 1;
 	cfg->y_wm.ub_height = height - 1;
 	cfg->y_wm.image_stride = input_stride / 16;
 	cfg->y_wm.image_height = height - 1;
-	cfg->y_wm.burst_words = (input_stride / 4) - 17;
+	cfg->y_wm.burst_words = (width / 4) - 17;  /* OUTPUT stride, not input! */
 	cfg->y_wm.burst_lines = 0;
 
 	/*
@@ -5277,25 +5280,29 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		/*
 		 * WR_ADDR_CFG - webOS format: (lines << 16) | burst_words
 		 * webOS WM0: 0x0000012F = burst=303, lines=0
-		 * webOS WM1: 0x01C8012F = burst=303, lines=456
 		 *
-		 * IMPORTANT: webOS uses (wpl - 17), not (wpl - 1)!
-		 * For 1280 bytes/line: wpl=320, burst=320-17=303=0x12F
+		 * IMPORTANT: Use OUTPUT stride for burst, not INPUT stride!
+		 * Git history (d3a4899c0cbd) shows 1280x1024 crashes when using
+		 * input_stride - VFE writes more data than buffer can hold.
 		 *
-		 * Use INPUT stride based on mode:
-		 * - UYVY (PIX/VIDEO): width * 2
-		 * - RAW8 (RDI): width * 1
-		 * - RDI with force_16bpp: width * 2
+		 * For PIX/VIDEO mode, Y output is at width stride (compact).
+		 * For RDI mode, use actual format stride (no DEMUX processing).
 		 */
 		{
-			u16 input_stride = (is_rdi_line && !rdi_use_16bpp) ? width : (width * 2);
-			wpl = input_stride / 4;  /* 32-bit words per line */
-			reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 (webOS formula) */
-			/* For single-plane formats, lines=0. Multi-plane would add (height << 16) */
+			u16 output_stride;
+			if (is_rdi_line) {
+				/* RDI: use actual format stride */
+				output_stride = rdi_use_16bpp ? (width * 2) : width;
+			} else {
+				/* PIX/VIDEO: Y output at width stride */
+				output_stride = width;
+			}
+			wpl = output_stride / 4;  /* 32-bit words per line */
+			reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 */
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d ADDR_CFG stride=%d wpl=%d burst=%d reg=0x%x\n",
-				 wm, input_stride, wpl, reg, reg);
+				 "VFE31: WM%d ADDR_CFG output_stride=%d wpl=%d burst=%d reg=0x%x\n",
+				 wm, output_stride, wpl, reg, reg);
 			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 		}
 
