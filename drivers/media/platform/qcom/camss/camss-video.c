@@ -234,6 +234,12 @@ static int video_buf_init(struct vb2_buffer *vb)
 			return -EFAULT;
 
 		buffer->addr[i] = sg_dma_address(sgt->sgl);
+
+		/* Debug: show buffer allocation details */
+		pr_info("camss-video: buf_init vb=%d plane=%d addr=0x%08x nents=%d orig_nents=%d sizeimage=%u\n",
+			vb->index, i, (u32)buffer->addr[i],
+			sgt->nents, sgt->orig_nents,
+			format->plane_fmt[i].sizeimage);
 	}
 
 	if (format->pixelformat == V4L2_PIX_FMT_NV12 ||
