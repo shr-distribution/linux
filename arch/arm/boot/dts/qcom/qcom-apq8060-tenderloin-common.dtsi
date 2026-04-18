@@ -2234,6 +2234,14 @@
 &camss {
 	status = "okay";
 
+	/*
+	 * VFE IOMMU enables scatter-gather DMA with contiguous virtual
+	 * addresses. Without this, vb2-dma-sg allocates non-contiguous
+	 * pages that VFE31 cannot handle (writes beyond first SG segment).
+	 * Stream ID 0 is the primary context bank.
+	 */
+	iommus = <&vfe_iommu 0>;
+
 	ports {
 		/* CSIPHY1 (CSI_1) input - MT9M113 front camera */
 		port@1 {
