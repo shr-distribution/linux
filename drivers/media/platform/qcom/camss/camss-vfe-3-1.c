@@ -1038,19 +1038,22 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	/*
 	 * Y plane size for CbCr offset calculation.
 	 *
-	 * VFE31 Y WM writes at INPUT stride (width*2 for UYVY), not output
-	 * stride. This is confirmed by:
-	 *   - webOS ADDR_CFG burst = 303 = (1280/4)-17 for 640px
-	 *   - Memory corruption when using stride_factor=1 (buffer too small)
+	 * IMPORTANT: VFE31 Y WM writes at COMPACT stride (width bytes per line),
+	 * NOT input stride (width*2). This was verified by analyzing raw capture
+	 * data (2026-04-18):
+	 *   - Data at offset 1023*1280 = 1,309,440: present (full Y plane)
+	 *   - Data at offset 512*2560 = 1,310,720: zeros (not at 2x stride)
+	 *   - CbCr at offset 0x280000 (input_stride*h): all zeros (wrong offset)
 	 *
-	 * For 640x480:
-	 *   Y plane = input_stride * height = 1280 * 480 = 614,400 bytes
-	 *   CbCr starts at offset 614,400
+	 * The ADDR_CFG burst uses OUTPUT stride (width), not input stride.
+	 * UB_CFG and IMAGE_SIZE use INPUT stride for pipeline timing, but
+	 * the DMA writes compactly at output stride.
 	 *
-	 * Previous analysis claiming compact output stride was incorrect -
-	 * the buffer overflow and kernel panic proved VFE writes at input stride.
+	 * For 1280x1024:
+	 *   Y plane = width * height = 1280 * 1024 = 1,310,720 bytes
+	 *   CbCr starts at offset 1,310,720 (0x140000)
 	 */
-	cfg->y_plane_size = input_stride * height;  /* Y size at input stride */
+	cfg->y_plane_size = width * height;  /* Y at compact output stride */
 	cfg->cbcr_offset = cfg->y_plane_size;
 
 	/*
