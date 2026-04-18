@@ -142,17 +142,23 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *   0xB = Y to output0+2   → CbCr path WORKS
  */
 /*
- * XBAR_CFG1 routing values - VALIDATED by capture testing (2026-04-18):
+ * XBAR_CFG1 routing values - CORRECTED based on webOS register dump analysis:
  *
- * 0x1A03: PIX-only mode - Y→WM0, CbCr→WM4 (WORKS with vfe31_pix_cbcr_wm=4)
- * 0x1A1B: PIX+VIDEO mode - Y→WM0+WM1, CbCr→WM1 (CbCr goes to WM1, not WM4!)
+ * Bit field layout:
+ *   bits [3:0]  = Y routing:    0x3 = WM0 only, 0xB = WM0+WM1
+ *   bits [7:4]  = CbCr routing: 0x0 = DISABLED, 0x1 = WM4, 0x9 = WM4+WM5
+ *   bits [15:8] = ISP path:     0x1A = standard
  *
- * The previous comment was WRONG. Testing confirms:
- * - 0x1A03 routes CbCr to WM4, which matches code default (vfe31_pix_cbcr_wm=4)
- * - 0x1A1B routes CbCr to WM1, causing all-zero CbCr when using WM4
+ * 0x1A03: Y→WM0, CbCr DISABLED (bits[7:4]=0) - WRONG, don't use!
+ * 0x1A13: Y→WM0, CbCr→WM4 (PIX-only with CbCr enabled)
+ * 0x1A1B: Y→WM0+WM1, CbCr→WM4 (webOS default - always uses VIDEO path)
+ *
+ * webOS TouchPad register dump shows XBAR_CFG1=0x1A1B. The 0x1A03 value in
+ * webOS code is inside #ifdef CONFIG_MSM_CAMERA_V4L2 which is NOT enabled
+ * for TouchPad builds. Use 0x1A1B to match webOS behavior.
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A03  /* PIX mode: Y→WM0, CbCr→WM4 */
-#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* PIX+VIDEO: Y→WM0/WM1, CbCr→WM1 */
+#define VFE31_XBAR_PIX_ONLY	0x1A1B  /* webOS default: Y→WM0+WM1, CbCr→WM4 */
+#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Same as above (webOS always enables both) */
 
 /* Module param for manual override/testing */
 int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select based on mode */
@@ -1082,7 +1088,7 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->y_wm.ub_height = height - 1;
 	cfg->y_wm.image_stride = input_stride / 16;
 	cfg->y_wm.image_height = height - 1;
-	cfg->y_wm.burst_words = (width / 4) - 17;  /* OUTPUT stride: Y is written at compact width */
+	cfg->y_wm.burst_words = (input_stride / 4) - 17;  /* webOS: (1280/4)-17=303 for 640px */
 	cfg->y_wm.burst_lines = 0;
 
 	/*
