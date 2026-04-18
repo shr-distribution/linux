@@ -142,19 +142,23 @@ MODULE_PARM_DESC(vfe31_swap_uv,
  *   0xB = Y to output0+2   → CbCr path WORKS
  */
 /*
- * CRITICAL: Both PIX and VIDEO modes MUST use 0x1A1B for CbCr to work!
- * WebOS preview mode dump shows XBAR=0x1A1B even for preview-only mode.
- * With bits[3:0]=0x3 (as in 0x1A03), CbCr path is broken - WM4 gets no data.
- * With bits[3:0]=0xB (as in 0x1A1B), both Y and CbCr work correctly.
+ * XBAR_CFG1 routing values - VALIDATED by capture testing (2026-04-18):
+ *
+ * 0x1A03: PIX-only mode - Y→WM0, CbCr→WM4 (WORKS with vfe31_pix_cbcr_wm=4)
+ * 0x1A1B: PIX+VIDEO mode - Y→WM0+WM1, CbCr→WM1 (CbCr goes to WM1, not WM4!)
+ *
+ * The previous comment was WRONG. Testing confirms:
+ * - 0x1A03 routes CbCr to WM4, which matches code default (vfe31_pix_cbcr_wm=4)
+ * - 0x1A1B routes CbCr to WM1, causing all-zero CbCr when using WM4
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A1B  /* PIX mode: Y→WM0, CbCr→WM4 (0xB enables CbCr!) */
-#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* PIX+VIDEO: Y→WM0/WM1, CbCr→WM4 */
+#define VFE31_XBAR_PIX_ONLY	0x1A03  /* PIX mode: Y→WM0, CbCr→WM4 */
+#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* PIX+VIDEO: Y→WM0/WM1, CbCr→WM1 */
 
 /* Module param for manual override/testing */
-int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select (always 0x1A1B for CbCr to work) */
+int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select based on mode */
 module_param(vfe31_xbar_cfg1, int, 0644);
 MODULE_PARM_DESC(vfe31_xbar_cfg1,
-		 "VFE31 XBAR_CFG1 override (0=auto/0x1a1b, 0x1a03=BROKEN CbCr)");
+		 "VFE31 XBAR_CFG1 override (0=auto, 0x1a03=PIX, 0x1a1b=PIX+VIDEO)");
 
 /*
  * WM bytesperline override for testing stride issues.
