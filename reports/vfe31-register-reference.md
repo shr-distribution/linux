@@ -41,11 +41,20 @@ VFE31 has 8 Write Masters (WM0-WM7) organized into outputs:
 | WM6 | output2 | ch1 | RDI2 |
 | WM7 | output3 | ch1 | Snapshot/RDI |
 
+**Vendor WM Assignment Table:**
+
+| Vendor | Preview Y | Preview CbCr | Video Y | Video CbCr | Source |
+|--------|-----------|--------------|---------|------------|--------|
+| **webOS TouchPad** | WM0 | WM4 | WM1 | WM5 | msm_vfe31.c:711-722 |
+| **LG G2** | WM0 | WM4 | WM1 | WM5 | gitlab.com/k2wl/g2_kernel |
+| **HTC** | WM0 | WM4 | WM1 | WM5 | HAL binary analysis |
+| **Mako (Nexus 4)** | WM0 | WM4 | WM1 | WM5 | GitHub kernel source |
+
 **Our Current Configuration:**
 - PIX line: WM0 (Y) + WM4 (CbCr) via module params
-- VIDEO line: WM0 (Y) + WM4 (CbCr) via module params (same as PIX!)
+- VIDEO line: WM1 (Y) + WM5 (CbCr) - should use separate WMs
 
-**Question:** Should VIDEO use different WMs (WM1+WM5) to avoid conflicts?
+**ANSWERED:** Yes, VIDEO should use WM1+WM5 to avoid conflicts. All vendors do this.
 
 ## Register Addresses
 
@@ -68,14 +77,32 @@ Formula for WMn: base + 0x04C + (n * 0x18)
 
 Controls which output mode VFE uses:
 
-| Value | Mode | Description |
-|-------|------|-------------|
-| 0x00 | Output 1 | Single output |
-| 0x01 | Output 1 and 3 | PIX + VIDEO (our mode) |
-| 0x02 | Output 1 and 2 | PIX + RDI |
-| 0x03 | Camif to AXI | Raw CAMIF output |
+| Value | Mode | Description | Source |
+|-------|------|-------------|--------|
+| 0x00 | Output 1 | Single output | - |
+| 0x01 | Output 1 and 3 | PIX + VIDEO (our mode) | webOS/Samsung |
+| 0x02 | Output 1 and 2 | PIX + RDI | - |
+| 0x03 | Camif to AXI | Raw CAMIF output | - |
+| 0x60 | RAW snapshot | CAMIF_TO_AXI_VIA_OUTPUT_2 | webOS/HTC |
+| 0x101 | ZSL dual output | Preview + Snapshot | Samsung |
+| **0x214101** | RAW capture | Bypass ISP, direct to memory | Samsung |
 
 **Our setting:** 0x01 (OUTPUT_1_AND_3)
+
+**RAW/RDI Mode Configuration:**
+
+| Vendor | AXI_OUT_MODE | Notes |
+|--------|--------------|-------|
+| **HTC** | **0x60** | Standard Qualcomm CAMIF_TO_AXI_VIA_OUTPUT_2 |
+| **Samsung** | 0x214101 | Samsung-specific extended mode |
+| **Sony** | Kernel default | No HAL override |
+
+**HTC RAW BUS_CFG by depth:**
+- 8-bit RAW: 0x2AAA771 (divisor 8)
+- 10-bit RAW: 0x2AAA775 (divisor 6)
+- 12-bit RAW: 0x2AAA779 (divisor 5)
+
+**Recommendation:** Use **0x60** for RAW mode (HTC/Qualcomm standard)
 
 ## XBAR_CFG1 (0x044)
 
@@ -107,15 +134,27 @@ Bits [3:0]   = Y routing
 
 ### Common XBAR Values
 
-| Value | Meaning | Use Case |
-|-------|---------|----------|
-| 0x1A03 | Y→WM0, CbCr→WM4 | PIX-only semi-planar |
-| 0x1A13 | Y→WM0, CbCr→WM4 | Same as above? |
-| 0x1A1B | Y→WM0+WM4(?), CbCr→WM4 | PIX+VIDEO? |
+| Value | Decoded | Use Case | Vendors Using |
+|-------|---------|----------|---------------|
+| **0x1A03** | Y→WM0, CbCr DISABLED | Broken! | LG G2 kernel (bad default) |
+| **0x1A13** | Y→WM0, CbCr→WM4 | PIX-only with CbCr | Theoretical correct PIX-only |
+| **0x1A1B** | Y→WM0+WM1, CbCr→WM4 | PIX+VIDEO | **webOS TouchPad**, HTC (actual HW) |
+| 0x1A9B | Y→WM0+WM1, CbCr→WM4+WM5 | Full dual output | Hypothetical |
 
-**Our setting:** 0x1A03 (when param=0)
+**Vendor XBAR Configuration Table:**
 
-**QUESTION:** What do bits [15:8] actually control? The 0x1A prefix is unclear.
+| Vendor | SoC | XBAR Value | Evidence |
+|--------|-----|------------|----------|
+| **webOS TouchPad** | APQ8060 | **0x1A1B** | Register dump from live HW |
+| **webOS kernel code** | APQ8060 | 0x1A03 | Inside #ifdef not compiled |
+| **LG G2** | MSM8974 | 0x1A03 | Kernel source (gitlab.com/k2wl/g2_kernel) |
+| **HTC Sensation** | MSM8660 | 0x1A1B | vfe31-htc-vs-mainline-comparison.md |
+| **Samsung Galaxy S II** | MSM8660 | 0x1A1B (preview) / 0x1A03 (video) | Decompiled HAL (lines 41380-41615) |
+| **Sony Xperia S** | MSM8960 | Kernel default | No HAL override found |
+
+**Our setting:** 0x1A1B (matching webOS actual hardware)
+
+**ANSWERED:** bits [15:8] = 0x1A is the ISP path selector. All vendors use 0x1A.
 
 ## DEMUX Configuration
 
@@ -215,12 +254,24 @@ For 640x480 CbCr (0x01300097):
 - lines = 0x0130 = 304 = 240 + 64 (headroom!)
 - burst = 0x0097 = 151 = (640/4) - 9
 
-**webOS Formula:**
-- Y lines = height (or height + headroom)
-- CbCr lines = cbcr_height + 64 (headroom for NV12)
-- burst = (width/4) - 9 or similar
+**Vendor Burst Formulas (verified across sources):**
 
-**QUESTION:** Why +64 headroom for CbCr? Pipeline latency?
+| Component | Formula | Example 640px | Example 1280px |
+|-----------|---------|---------------|----------------|
+| **Y burst** | (input_stride/4) - 17 | (1280/4)-17 = 303 | (2560/4)-17 = 623 |
+| **CbCr burst** | (width/4) - 9 | (640/4)-9 = 151 | (1280/4)-9 = 311 |
+| **Y lines (PIX)** | 0 | 0 | 0 |
+| **Y lines (VIDEO)** | height - 24 | 480-24 = 456 | 1024-24 = 1000 |
+| **CbCr lines (NV12)** | cbcr_h + 64 | 240+64 = 304 | 512+64 = 576 |
+| **CbCr lines (NV16)** | cbcr_h | 480 | 1024 |
+
+**webOS Register Values (640x480 preview):**
+- WM0_WR_CFG: 0x0000012F (burst=303, lines=0)
+- WM1_WR_CFG: 0x01C8012F (burst=303, lines=456)
+- WM4_WR_CFG: 0x01300097 (burst=151, lines=304)
+- WM5_WR_CFG: 0x02F80097 (burst=151, lines=760)
+
+**ANSWERED:** +64 headroom for CbCr is pipeline flush requirement. DEMUX/Chroma blocks process 16x16 macroblocks; extra lines ensure EOF isn't asserted before final AXI transactions complete.
 
 ## UB_CFG Register Format
 
