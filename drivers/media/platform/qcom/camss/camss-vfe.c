@@ -1709,6 +1709,14 @@ int vfe_get(struct vfe_device *vfe)
 		dev_info(vfe->camss->dev, "VFE get: calling hw_version\n");
 		vfe->res->hw_ops->hw_version(vfe);
 
+		/* Set ICC bandwidth for VFE DMA operations */
+		ret = camss_icc_set_bw(vfe->camss, true);
+		if (ret < 0) {
+			dev_warn(vfe->camss->dev,
+				 "VFE get: ICC bandwidth failed: %d\n", ret);
+			/* Non-fatal - continue without bandwidth vote */
+		}
+
 		dev_info(vfe->camss->dev, "VFE get: all init complete\n");
 	} else {
 		ret = vfe_check_clock_rates(vfe);
@@ -1764,6 +1772,9 @@ void vfe_put(struct vfe_device *vfe)
 		 * because the hardware is still active.
 		 */
 		vfe_reset(vfe);
+
+		/* Disable ICC bandwidth before clocks */
+		camss_icc_set_bw(vfe->camss, false);
 
 		camss_disable_clocks(vfe->nclocks, vfe->clock);
 		pm_runtime_put_sync(vfe->camss->dev);
