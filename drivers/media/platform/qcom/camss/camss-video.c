@@ -764,30 +764,41 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		}
 
 		/*
-		 * VFE31 buffer allocation: Use OUTPUT stride (bytesperline), not
-		 * INPUT stride.
+		 * VFE31 buffer allocation: Must use stride_factor for PIX/VIDEO
+		 * paths because VFE31 writes Y and CbCr at INPUT stride (width*2
+		 * for UYVY), not output stride.
 		 *
-		 * Gemini validation (April 2026): The VFE31 DMA engine writes to
-		 * memory at OUTPUT stride, not INPUT stride. The INPUT stride
-		 * (width*2 for UYVY) is only used for IMAGE_SIZE register timing,
-		 * not actual memory layout.
+		 * VALIDATED by crash analysis (2026-04-18): Without stride_factor,
+		 * buffers are allocated too small. For 1280x1024 NV16:
+		 *   Compact: 1280 * 1024 * 2 = 2.5MB per frame
+		 *   VFE31:   2560 * 1024 * 2 = 5MB per frame (what VFE actually writes)
+		 * Result: Buffer overflow, memory corruption, kernel crash.
 		 *
-		 * VERIFIED BY RAW DATA ANALYSIS + GEMINI REVIEW (2026-04-17):
-		 * VFE31 Y and CbCr Write Masters write at OUTPUT stride (compact),
-		 * not input stride. The IMAGE_SIZE register uses input stride for
-		 * VFE pipeline timing, but the AXI packer compacts data to output
-		 * width when writing to DDR.
-		 *
-		 * Buffer sizes are standard V4L2 compact layout:
-		 *   NV12 640x480: Y=307,200 + CbCr=153,600 = 460,800 bytes
-		 *   NV16 640x480: Y=307,200 + CbCr=307,200 = 614,400 bytes
-		 *
-		 * stride_factor is NOT needed - previous stride_factor=2 caused
-		 * V4L2 to report incorrect bytesperline to userspace, which broke
-		 * pix1280 (userspace looked for CbCr at wrong offset).
+		 * video_buf_init() already uses stride_factor for CbCr offset,
+		 * so sizeimage MUST also use stride_factor for consistency.
 		 */
-		pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
-			vsub_num * vsub_den * bpl;
+		if (video->stride_factor && fi->planes == 1 && vsub_den > vsub_num) {
+			/*
+			 * Semi-planar with stride_factor: VFE31 PIX/VIDEO mode.
+			 * Calculate Y + CbCr size at effective stride.
+			 */
+			u32 stride_factor = video->stride_factor;
+			u32 effective_stride = bpl * stride_factor;
+			u32 y_size = pix_mp->height * effective_stride;
+			u32 cbcr_height = pix_mp->height * (vsub_den - vsub_num) / vsub_num;
+			u32 cbcr_size = cbcr_height * effective_stride;
+			pix_mp->plane_fmt[i].sizeimage = y_size + cbcr_size;
+			pr_info("camss-video: __video_try_fmt sizeimage: y=%u cbcr=%u total=%u (bpl=%u sf=%u vsub=%u/%u)\n",
+				y_size, cbcr_size, y_size + cbcr_size, bpl, stride_factor, vsub_num, vsub_den);
+		} else if (video->stride_factor) {
+			/* Non-semi-planar with stride_factor */
+			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
+				vsub_num * vsub_den * bpl * video->stride_factor;
+		} else {
+			/* No stride_factor (RDI, or other VFE versions) */
+			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
+				vsub_num * vsub_den * bpl;
+		}
 	}
 
 	pix_mp->field = V4L2_FIELD_NONE;
