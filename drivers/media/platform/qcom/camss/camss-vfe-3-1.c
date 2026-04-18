@@ -1082,7 +1082,7 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->y_wm.ub_height = height - 1;
 	cfg->y_wm.image_stride = input_stride / 16;
 	cfg->y_wm.image_height = height - 1;
-	cfg->y_wm.burst_words = (input_stride / 4) - 17;  /* webOS: (1280/4)-17=303 for 640px */
+	cfg->y_wm.burst_words = (width / 4) - 17;  /* OUTPUT stride: Y is written at compact width */
 	cfg->y_wm.burst_lines = 0;
 
 	/*

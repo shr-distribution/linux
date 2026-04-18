@@ -202,17 +202,16 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 			 *   Y burst = (input_stride / 4) - 17 = (width*2 / 4) - 17
 			 *   For 640px: burst = (1280/4) - 17 = 303
 			 *
-			 * This means VFE DMA writes at INPUT stride (1280 bytes/line),
-			 * not output stride (640 bytes/line). Buffer allocation MUST
-			 * use stride_factor=2 to match VFE DMA write pattern.
+			 * Raw capture analysis (2026-04-18) proves VFE writes Y at
+			 * OUTPUT stride (width), not INPUT stride (width*2):
+			 *   - CbCr found at offset 1,310,720 (1280*1024 = width*height)
+			 *   - CbCr NOT at 2,621,440 (2560*1024 = input_stride*height)
 			 *
-			 * webOS register dumps confirm: WM0 ADDR_CFG=0x12F (burst=303)
-			 * with IMAGE_SIZE stride=80 (1280/16).
-			 *
-			 * WARNING: stride_factor=1 with burst=303 causes buffer overflow
-			 * and kernel memory corruption (list_del corruption panic).
+			 * Previous crashes with stride_factor=1 were due to burst
+			 * configured for input_stride while buffer at output_stride.
+			 * Fixed by using width (not input_stride) for Y WM burst.
 			 */
-			.pix_stride_factor = 2
+			.pix_stride_factor = 1
 		}
 	}
 };
