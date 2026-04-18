@@ -4497,6 +4497,53 @@ static int camss_icc_get(struct camss *camss)
 	return 0;
 }
 
+/**
+ * camss_icc_set_bw - Set interconnect bandwidth for camera streaming
+ * @camss: CAMSS device instance
+ * @enable: true to enable full bandwidth, false to disable
+ *
+ * This function directly sets the ICC bandwidth for VFE DMA operations.
+ * It should be called when starting/stopping video capture to ensure
+ * sufficient memory bandwidth for frame transfers.
+ *
+ * On MSM8660, the VFE shares the MMSS fabric with MDP. Without proper
+ * bandwidth voting, frame capture can be throttled resulting in low FPS.
+ */
+int camss_icc_set_bw(struct camss *camss, bool enable)
+{
+	const struct resources_icc *icc_res = camss->res->icc_res;
+	int i;
+	int ret;
+
+	if (!camss->res->icc_path_num)
+		return 0;
+
+	for (i = 0; i < camss->res->icc_path_num; i++) {
+		if (!camss->icc_path[i])
+			continue;
+
+		if (enable) {
+			ret = icc_set_bw(camss->icc_path[i],
+					 icc_res[i].icc_bw_tbl.avg,
+					 icc_res[i].icc_bw_tbl.peak);
+			dev_info(camss->dev,
+				 "CAMSS ICC: setting bandwidth avg=%u peak=%u kBps\n",
+				 icc_res[i].icc_bw_tbl.avg,
+				 icc_res[i].icc_bw_tbl.peak);
+		} else {
+			ret = icc_set_bw(camss->icc_path[i], 0, 0);
+			dev_info(camss->dev, "CAMSS ICC: disabling bandwidth\n");
+		}
+
+		if (ret) {
+			dev_err(camss->dev, "CAMSS ICC: icc_set_bw failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 static void camss_genpd_subdevice_cleanup(struct camss *camss)
 {
 	int i;
