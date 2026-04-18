@@ -3350,6 +3350,10 @@
 
 / {
 	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
 		/*
 		 * SMI framebuffer region for DRM display - matches webOS exactly.
 		 *
@@ -3365,6 +3369,23 @@
 			compatible = "shared-dma-pool";
 			reg = <0x38300000 0x3d00000>; /* 61MB - exact webOS size */
 			no-map;
+		};
+
+		/*
+		 * CMA region for camera buffers.
+		 * VFE31 requires physically contiguous memory because:
+		 * 1. msm_iommu defaults to identity mode (no translation)
+		 * 2. vb2-dma-sg allocates scattered pages
+		 * 3. VFE hardware writes to contiguous addresses
+		 *
+		 * 32MB at 0x7C000000 allows ~6 buffers at 1280x1024 NV16 (5MB each).
+		 * Located in upper System RAM region (0x48000000-0x7F5FFFFF).
+		 */
+		linux,cma@7c000000 {
+			compatible = "shared-dma-pool";
+			reg = <0x7c000000 0x2000000>; /* 32MB at fixed address */
+			reusable;
+			linux,cma-default;
 		};
 	};
 };

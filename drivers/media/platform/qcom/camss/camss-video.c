@@ -14,7 +14,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mc.h>
-#include <media/videobuf2-dma-sg.h>
+#include <media/videobuf2-dma-contig.h>
 
 #include "camss-video.h"
 #include "camss.h"
@@ -225,20 +225,19 @@ static int video_buf_init(struct vb2_buffer *vb)
 						   vb);
 	const struct v4l2_pix_format_mplane *format =
 						&video->active_fmt.fmt.pix_mp;
-	struct sg_table *sgt;
 	unsigned int i;
 
 	for (i = 0; i < format->num_planes; i++) {
-		sgt = vb2_dma_sg_plane_desc(vb, i);
-		if (!sgt)
-			return -EFAULT;
-
-		buffer->addr[i] = sg_dma_address(sgt->sgl);
+		/*
+		 * vb2_dma_contig_plane_dma_addr returns a contiguous DMA
+		 * address. With CMA, we get physically contiguous memory
+		 * that VFE31 can DMA to directly.
+		 */
+		buffer->addr[i] = vb2_dma_contig_plane_dma_addr(vb, i);
 
 		/* Debug: show buffer allocation details */
-		pr_info("camss-video: buf_init vb=%d plane=%d addr=0x%08x nents=%d orig_nents=%d sizeimage=%u\n",
+		pr_info("camss-video: buf_init vb=%d plane=%d addr=0x%08x sizeimage=%u\n",
 			vb->index, i, (u32)buffer->addr[i],
-			sgt->nents, sgt->orig_nents,
 			format->plane_fmt[i].sizeimage);
 	}
 
@@ -1013,7 +1012,7 @@ int msm_video_register(struct camss_video *video, struct v4l2_device *v4l2_dev,
 
 	q = &video->vb2_q;
 	q->drv_priv = video;
-	q->mem_ops = &vb2_dma_sg_memops;
+	q->mem_ops = &vb2_dma_contig_memops;
 	q->ops = &msm_video_vb2_q_ops;
 	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 	q->io_modes = VB2_DMABUF | VB2_MMAP | VB2_READ;
