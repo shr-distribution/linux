@@ -1474,10 +1474,13 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		 *
 		 * For RAW8 (SGRBG8): FORMAT_BAYER | BAYER_FORMAT_PROCESSED8 = 0x0E00
 		 * For RAW10 (SGRBG10): FORMAT_BAYER | BAYER_FORMAT_RAWR10 = 0x0200
-		 * For YUV: FORMAT_YUV = 0x0000
-		 * For RGB: FORMAT_RGB = 0x0100
+		 *
+		 * IMPORTANT: Only write this register for Bayer/RAW formats.
+		 * For YUV, the sensor's default value must be preserved - writing
+		 * 0x0000 would clear byte swap bits and cause color corruption.
 		 */
-		if (info) {
+		if (info && (info->output_format & MT9M113_CAM_OUTPUT_FORMAT_FORMAT_MASK)
+		    == MT9M113_CAM_OUTPUT_FORMAT_FORMAT_BAYER) {
 			ret = cci_write(sensor->regmap, MT9M113_CAM_OUTPUT_FORMAT,
 					info->output_format, NULL);
 			if (ret) {
@@ -1485,7 +1488,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 				dev_err(dev, "Failed to set CAM_OUTPUT_FORMAT: %d\n", ret);
 				goto error;
 			}
-			dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x\n",
+			dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x (RAW mode)\n",
 				 info->output_format);
 		}
 
