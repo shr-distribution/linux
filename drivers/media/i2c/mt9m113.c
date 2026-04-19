@@ -1481,14 +1481,18 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		 */
 		if (info && (info->output_format & MT9M113_CAM_OUTPUT_FORMAT_FORMAT_MASK)
 		    == MT9M113_CAM_OUTPUT_FORMAT_FORMAT_BAYER) {
-			ret = cci_write(sensor->regmap, MT9M113_CAM_OUTPUT_FORMAT,
-					info->output_format, NULL);
+			/*
+			 * CAM_OUTPUT_FORMAT at 0xC86C is an MCU variable, not a
+			 * direct register. Must use MCU variable access protocol.
+			 */
+			ret = mt9m113_write_mcu_var(sensor, 0xc86c,
+						    info->output_format);
 			if (ret) {
 				mt9m113_double_buffer_resume(sensor);
 				dev_err(dev, "Failed to set CAM_OUTPUT_FORMAT: %d\n", ret);
 				goto error;
 			}
-			dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x (RAW mode)\n",
+			dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x (RAW mode via MCU)\n",
 				 info->output_format);
 		}
 
