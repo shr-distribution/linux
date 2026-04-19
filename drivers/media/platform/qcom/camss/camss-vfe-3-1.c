@@ -1085,9 +1085,11 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	 * IMAGE_SIZE stride formula (verified HTC/Samsung/Sony/webOS):
 	 *   stride_field = ((width + 15) / 16) - 1  (same as input_stride/16)
 	 *
-	 * ADDR_CFG burst formula (from webOS msm_vfe31.c):
-	 *   burst_words = (input_stride / 4) - 17
-	 *   webOS @ 640px: (1280/4)-17 = 303
+	 * ADDR_CFG burst formula (corrected 2026-04-19):
+	 *   Y burst_words = (output_stride / 4) - 17  (Y plane at compact stride)
+	 *   NV12 @ 640px: (640/4)-17 = 143
+	 *   Note: webOS used UYVY output (2 bytes/pixel), so their burst=303 was correct.
+	 *   For NV12/NV16, Y plane is 1 byte/pixel, so burst uses output_stride.
 	 *
 	 * Note: UB_CFG/IMAGE_SIZE use INPUT stride (width*2) for pipeline timing.
 	 * ADDR_CFG burst also uses INPUT stride for Y WM DMA writes.
@@ -1096,7 +1098,7 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->y_wm.ub_height = height - 1;
 	cfg->y_wm.image_stride = input_stride / 16;    /* VERIFIED: ((width+15)/16)-1 */
 	cfg->y_wm.image_height = height - 1;
-	cfg->y_wm.burst_words = (input_stride / 4) - 17;  /* webOS: (1280/4)-17=303 for 640px */
+	cfg->y_wm.burst_words = (output_stride / 4) - 17;  /* OUTPUT stride for Y DMA writes */
 	cfg->y_wm.burst_lines = 0;
 
 	/*
