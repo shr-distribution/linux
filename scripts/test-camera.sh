@@ -1563,13 +1563,15 @@ test_at_resolution() {
 }
 
 # Convert raw frames to PNG with timestamped filenames
-# Usage: convert_frames <mode> <width> <height> <raw_file_on_device>
+# Usage: convert_frames <mode> <width> <height> <raw_file_on_device> [format]
+# format: NV12 (4:2:0) or NV16 (4:2:2), default NV16
 # Output: captures/mode_YYYYMMDD_HHMMSS_fN.png
 convert_frames() {
     local mode="$1"
     local width="$2"
     local height="$3"
     local remote_raw="${4:-/tmp/test_${mode}_${width}x${height}.raw}"
+    local format="${5:-NV16}"  # Default to NV16 for backward compatibility
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local local_raw="/tmp/${mode}${width}_${timestamp}.raw"
     local output_dir="captures"
@@ -1580,7 +1582,7 @@ convert_frames() {
     local num_frames
     local pixfmt
 
-    # Determine frame size and pixel format based on mode
+    # Determine frame size and pixel format based on mode and format
     case "$mode" in
         rdi)
             # RAW8 Bayer - 1 byte per pixel
@@ -1588,9 +1590,19 @@ convert_frames() {
             pixfmt="gray"  # Use gray for Bayer, demosaic separately
             ;;
         pix|video|testgen)
-            # NV16 - Y plane + UV plane = 2 bytes per pixel
-            frame_size=$((width * height * 2))
-            pixfmt="nv16"
+            # Frame size depends on format
+            case "$format" in
+                NV12|NV21)
+                    # NV12: Y plane (w×h) + UV plane (w×h/2) = 1.5 bytes/pixel
+                    frame_size=$((width * height * 3 / 2))
+                    pixfmt="nv12"
+                    ;;
+                NV16|NV61|*)
+                    # NV16: Y plane (w×h) + UV plane (w×h) = 2 bytes/pixel
+                    frame_size=$((width * height * 2))
+                    pixfmt="nv16"
+                    ;;
+            esac
             ;;
         *)
             log_error "Unknown mode: $mode"
@@ -1630,8 +1642,12 @@ convert_frames() {
             # For RAW Bayer, just save as grayscale (proper demosaic needs more work)
             ffmpeg -y -f rawvideo -pix_fmt gray -s ${width}x${height} \
                    -i "$frame_raw" "$frame_png" 2>/dev/null
+        elif [ "$pixfmt" = "nv12" ]; then
+            # NV12 (4:2:0) semi-planar
+            ffmpeg -y -f rawvideo -pix_fmt nv12 -s ${width}x${height} \
+                   -i "$frame_raw" "$frame_png" 2>/dev/null
         else
-            # For NV16 semi-planar
+            # NV16 (4:2:2) semi-planar
             ffmpeg -y -f rawvideo -pix_fmt nv16 -s ${width}x${height} \
                    -i "$frame_raw" "$frame_png" 2>/dev/null
         fi
@@ -2036,16 +2052,16 @@ main() {
             fetch_captures "."
             ;;
         convert-video640)
-            convert_frames video 640 480
+            convert_frames video 640 480 "/tmp/test_video_640x480.raw" NV12
             ;;
         convert-video1280)
-            convert_frames video 1280 1024
+            convert_frames video 1280 1024 "/tmp/test_video_1280x1024.raw" NV12
             ;;
         convert-pix640)
-            convert_frames pix 640 480
+            convert_frames pix 640 480 "/tmp/test_pix_640x480.raw" NV12
             ;;
         convert-pix1280)
-            convert_frames pix 1280 1024
+            convert_frames pix 1280 1024 "/tmp/test_pix_1280x1024.raw" NV12
             ;;
         convert-rdi640)
             convert_frames rdi 640 480
@@ -2054,10 +2070,10 @@ main() {
             convert_frames rdi 1280 1024
             ;;
         convert-testgen640)
-            convert_frames testgen 640 480
+            convert_frames testgen 640 480 "/tmp/test_testgen_640x480.raw" NV12
             ;;
         convert-testgen1280)
-            convert_frames testgen 1280 1024
+            convert_frames testgen 1280 1024 "/tmp/test_testgen_1280x1024.raw" NV12
             ;;
         comprehensive)
             show_camera_info
