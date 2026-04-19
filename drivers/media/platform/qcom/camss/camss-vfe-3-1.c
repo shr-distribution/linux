@@ -3662,15 +3662,22 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 
 	/*
 	 * Handle RDI mode via COMPOSITE_DONE_1.
-	 * RDI uses WM0 mapped to group 1, so COMPOSITE_DONE_1 fires.
+	 * RDI uses specific WMs mapped to group 1:
+	 *   RDI0 → WM2, RDI1 → WM3, RDI2 → WM6
 	 */
 	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(1)) {
-		/* RDI mode: WM0 in group 1 */
-		if (vfe->wm_output_map[0] != VFE_LINE_NONE) {
-			enum vfe_line_id line_id = vfe->wm_output_map[0];
-			/* Only process if this is an RDI line */
-			if (line_id >= VFE_LINE_RDI0 && line_id <= VFE_LINE_RDI2)
-				vfe31_wm_done(vfe, 0, ping_pong);
+		/* Check RDI WMs: WM2 (RDI0), WM3 (RDI1), WM6 (RDI2) */
+		static const u8 rdi_wms[] = {2, 3, 6};
+		int j;
+
+		for (j = 0; j < ARRAY_SIZE(rdi_wms); j++) {
+			u8 wm = rdi_wms[j];
+			if (vfe->wm_output_map[wm] != VFE_LINE_NONE) {
+				enum vfe_line_id line_id = vfe->wm_output_map[wm];
+				/* Only process if this is an RDI line */
+				if (line_id >= VFE_LINE_RDI0 && line_id <= VFE_LINE_RDI2)
+					vfe31_wm_done(vfe, wm, ping_pong);
+			}
 		}
 	}
 
@@ -3932,30 +3939,47 @@ static int vfe31_enable(struct vfe_line *line)
 			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1,
 			 vfe31_pix_y_wm, vfe31_pix_cbcr_wm);
 	} else {
-		/* RDI lines use first available WMs */
-		wm_idx = vfe_reserve_wm(vfe, line->id);
+		/*
+		 * RDI lines use specific WMs per VFE31 hardware mapping:
+		 *   RDI0 → WM2 (base 0x07C)
+		 *   RDI1 → WM3 (base 0x094)
+		 *   RDI2 → WM6 (base 0x0DC)
+		 *
+		 * This is required because AXI_OUT_MODE=0x60 (CAMIF_TO_AXI)
+		 * routes data to these specific WMs, not WM0.
+		 */
+		u8 rdi_wm;
+
+		switch (line->id) {
+		case VFE_LINE_RDI0:
+			rdi_wm = 2;
+			break;
+		case VFE_LINE_RDI1:
+			rdi_wm = 3;
+			break;
+		case VFE_LINE_RDI2:
+			rdi_wm = 6;
+			break;
+		default:
+			dev_err(vfe->camss->dev, "VFE31: Invalid RDI line %d\n", line->id);
+			output->state = VFE_OUTPUT_OFF;
+			spin_unlock_irqrestore(&vfe->output_lock, flags);
+			return -EINVAL;
+		}
+
+		wm_idx = vfe_reserve_wm_specific(vfe, rdi_wm, line->id);
 		if (wm_idx < 0) {
-			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM for line %d\n", line->id);
+			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for RDI line %d\n",
+				rdi_wm, line->id);
 			output->state = VFE_OUTPUT_OFF;
 			spin_unlock_irqrestore(&vfe->output_lock, flags);
 			return wm_idx;
 		}
 		output->wm_idx[0] = wm_idx;
 
-		if (output->wm_num == 2) {
-			wm_idx = vfe_reserve_wm(vfe, line->id);
-			if (wm_idx < 0) {
-				dev_err(vfe->camss->dev, "VFE31: Cannot reserve second WM\n");
-				vfe_release_wm(vfe, output->wm_idx[0]);
-				output->state = VFE_OUTPUT_OFF;
-				spin_unlock_irqrestore(&vfe->output_lock, flags);
-				return wm_idx;
-			}
-			output->wm_idx[1] = wm_idx;
-		}
-		dev_info(vfe->camss->dev, "VFE31: Line %d using WM%d, WM%d\n",
-			 line->id, output->wm_idx[0],
-			 output->wm_num == 2 ? output->wm_idx[1] : -1);
+		/* RDI is single-plane raw data, no second WM needed */
+		dev_info(vfe->camss->dev, "VFE31: RDI%d using WM%d (hardware mapping)\n",
+			 line->id, output->wm_idx[0]);
 	}
 
 	/* Get buffers from pending queue (inline from gen1's vfe_enable_output) */
@@ -7384,7 +7408,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 *   PIX:   0x11 = WM0+WM4
 	 *   VIDEO: 0x22 = WM1+WM5
 	 *   Both:  0x33 = WM0+WM1+WM4+WM5
-	 * RDI mode: WM0 in group 1 (bit 8 = 0x100)
+	 * RDI mode: RDI WM (WM2/WM3/WM6) in group 1
 	 */
 	{
 		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
@@ -7393,8 +7417,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * RDI: Map WM0 to composite group 1 (bit 8).
-			 * When WM0 completes a frame, COMPOSITE_DONE_1 fires.
+			 * RDI: Map RDI WM to composite group 1.
+			 * RDI0→WM2, RDI1→WM3, RDI2→WM6.
+			 * COMPOSITE_DONE_1 (IRQ bit 22) fires when WM completes.
 			 */
 			u32 comp_mask = (1 << (vfe->camif_pending_wm + 8));
 			dev_info(vfe->camss->dev,
