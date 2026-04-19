@@ -1075,63 +1075,53 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->chroma_subs_cfg = is_420 ? 0x30 : 0x10;
 
 	/*
-	 * Y WM config - CROSS-VENDOR VERIFIED (HTC/Samsung/Sony/webOS):
+	 * Y WM config - REVISED 2026-04-19 per Gemini analysis:
 	 *
-	 * UB_CFG depth formula (verified in all four vendor implementations):
-	 *   depth = (input_stride / 32) - 1
-	 *   Sony: "(width * 2 + 0x1f >> 5) - 1 + 0x40U" (with +64 headroom)
-	 *   webOS: msm_vfe31.c vfe31_config_axi() - same calculation
+	 * The DEMUX compacts UYVY (16-bit) input into separate Y (8-bit) and
+	 * CbCr (8-bit interleaved) planes. This means:
+	 *   - UB_CFG must allocate FIFO for raw INPUT rate (width*2 bytes/line)
+	 *   - IMAGE_SIZE must match OUTPUT rate (width bytes/line for Y)
+	 *   - ADDR_CFG burst must match OUTPUT rate for DMA writes
 	 *
-	 * IMAGE_SIZE stride formula (verified HTC/Samsung/Sony/webOS):
-	 *   stride_field = ((width + 15) / 16) - 1  (same as input_stride/16)
+	 * Previous code used input_stride for IMAGE_SIZE, causing FIFO underrun:
+	 *   - DMA expected 1280 bytes/line but DEMUX only provided 640
+	 *   - This caused vertical wrap (640px) and AXI panic (1280px NV16)
 	 *
-	 * ADDR_CFG burst formula (corrected 2026-04-19):
-	 *   Y burst_words = (output_stride / 4) - 17  (Y plane at compact stride)
-	 *   NV12 @ 640px: (640/4)-17 = 143
-	 *   Note: webOS used UYVY output (2 bytes/pixel), so their burst=303 was correct.
-	 *   For NV12/NV16, Y plane is 1 byte/pixel, so burst uses output_stride.
+	 * FIX: Use output_stride for IMAGE_SIZE and burst calculations.
+	 * Keep input_stride only for UB_CFG (pre-DEMUX FIFO allocation).
 	 *
-	 * Note: UB_CFG/IMAGE_SIZE use INPUT stride (width*2) for pipeline timing.
-	 * ADDR_CFG burst also uses INPUT stride for Y WM DMA writes.
+	 * Universal burst formula: (bytes_per_line / 4) - 17
 	 */
-	cfg->y_wm.ub_depth = (input_stride / 32) - 1;  /* VERIFIED: HTC/Samsung/Sony/webOS */
+	cfg->y_wm.ub_depth = (input_stride / 32) - 1;   /* Pre-DEMUX FIFO allocation */
 	cfg->y_wm.ub_height = height - 1;
-	cfg->y_wm.image_stride = input_stride / 16;    /* VERIFIED: ((width+15)/16)-1 */
+	cfg->y_wm.image_stride = output_stride / 16;    /* Post-DEMUX compacted stride */
 	cfg->y_wm.image_height = height - 1;
-	cfg->y_wm.burst_words = (output_stride / 4) - 17;  /* OUTPUT stride for Y DMA writes */
-	cfg->y_wm.burst_lines = 0;
+	cfg->y_wm.burst_words = (output_stride / 4) - 17;  /* Post-DEMUX DMA burst */
+	cfg->y_wm.burst_lines = 0;  /* Auto-terminate based on image_height */
 
 	/*
-	 * CbCr WM config - CROSS-VENDOR VERIFIED (HTC/Samsung/Sony/webOS):
+	 * CbCr WM config - REVISED 2026-04-19 per Gemini analysis:
 	 *
-	 * UB_CFG with +64 headroom (verified in all four implementations):
-	 *   Sony: "(short)iVar15 + 0x40U" - explicit +64 (0x40) added
-	 *   Samsung: Same pattern confirmed in liboemcamera analysis
-	 *   HTC: Uses same depth as Y WM (input_stride/32 - 1)
-	 *   webOS: msm_vfe31.c register dumps show +64 headroom
+	 * CbCr plane is interleaved (CbCrCbCr...), so horizontal byte width
+	 * matches Y plane (output_stride). Use same burst formula as Y.
 	 *
-	 * ADDR_CFG lines field (verified webOS + Sony):
-	 *   lines = cbcr_height + 64 (DMA headroom for pipeline flush)
-	 *   webOS @ 640x480 NV12: lines=304 = 240 + 64
+	 * UB_CFG still uses input_stride for FIFO allocation.
+	 * IMAGE_SIZE and burst use output_stride for post-DEMUX data.
 	 *
-	 * ADDR_CFG burst for CbCr (chroma downsampled):
-	 *   burst_words = (width / 4) - 9
-	 *   webOS @ 640px: (640/4)-9 = 151
-	 *
-	 * NOTE: IMAGE_SIZE stride uses INPUT stride (width*2), same as Y WM.
-	 * CbCr UB_CFG height uses cbcr_height (4:2:0: h/2, 4:2:2: h).
+	 * burst_lines:
+	 *   - NV12 (4:2:0): cbcr_height + 64 (headroom for vertical scaler flush)
+	 *   - NV16 (4:2:2): 0 (auto-terminate, no vertical scaling)
 	 */
-	cfg->cbcr_wm.ub_depth = (input_stride / 32) - 1;  /* VERIFIED: HTC/Samsung/Sony/webOS */
+	cfg->cbcr_wm.ub_depth = (input_stride / 32) - 1;   /* Pre-DEMUX FIFO allocation */
 	cfg->cbcr_wm.ub_height = cbcr_height - 1;
-	cfg->cbcr_wm.image_stride = input_stride / 16;    /* VERIFIED: same as Y WM */
+	cfg->cbcr_wm.image_stride = output_stride / 16;    /* Post-DEMUX compacted stride */
 	cfg->cbcr_wm.image_height = cbcr_height - 1;
-	cfg->cbcr_wm.burst_words = (width / 4) - 9;       /* VERIFIED: webOS (640/4)-9=151 */
+	cfg->cbcr_wm.burst_words = (output_stride / 4) - 17;  /* Same formula as Y */
 	/*
-	 * burst_lines: +64 headroom ONLY for 4:2:0 (half-height CbCr).
-	 * For 4:2:2 (full-height CbCr), no headroom needed.
-	 * Adding +64 to full-height CbCr causes horizontal line artifacts.
+	 * burst_lines: +64 headroom for NV12 (vertical polyphase scaler flush).
+	 * NV16 uses 0 to auto-terminate based on IMAGE_SIZE + EOF signal.
 	 */
-	cfg->cbcr_wm.burst_lines = is_420 ? (cbcr_height + 64) : cbcr_height;
+	cfg->cbcr_wm.burst_lines = is_420 ? (cbcr_height + 64) : 0;
 }
 
 /**
@@ -3548,13 +3538,25 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 * to COMPOSITE_DONE like webOS should fix this.
 	 */
 
-	/* Handle IMAGE_COMPOSITE_DONE_0 (PIX line: WM0+WM4) */
+	/* Handle IMAGE_COMPOSITE_DONE_0 (PIX line: WM0+WM4 in group 0) */
 	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(0)) {
 		if (vfe->wm_output_map[0] != VFE_LINE_NONE)
 			vfe31_wm_done(vfe, 0, ping_pong);
 	}
 
-	/* Handle IMAGE_COMPOSITE_DONE_2 (VIDEO line: WM1+WM5) */
+	/*
+	 * Handle IMAGE_COMPOSITE_DONE_1 (RDI/RAW mode: WM0 in group 1)
+	 *
+	 * Per webOS msm_vfe31.c, raw snapshot mode routes WM0 to group 1:
+	 *   IRQ_COMPOSITE_MASK = (1 << 8) puts WM0 in group 1
+	 *   This fires COMPOSITE_DONE_1 instead of COMPOSITE_DONE_0
+	 */
+	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(1)) {
+		if (vfe->wm_output_map[0] != VFE_LINE_NONE)
+			vfe31_wm_done(vfe, 0, ping_pong);
+	}
+
+	/* Handle IMAGE_COMPOSITE_DONE_2 (VIDEO line: WM1+WM5 in group 2) */
 	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(2)) {
 		if (vfe->wm_output_map[1] != VFE_LINE_NONE)
 			vfe31_wm_done(vfe, 1, ping_pong);
@@ -3661,25 +3663,14 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	}
 
 	/*
-	 * Handle RDI mode via COMPOSITE_DONE_1.
-	 * RDI uses specific WMs mapped to group 1:
-	 *   RDI0 → WM2, RDI1 → WM3, RDI2 → WM6
+	 * RDI/RAW mode also uses WM0, same as PIX mode.
+	 * Per webOS msm_vfe31.c, raw snapshot mode (CAMIF_TO_AXI_VIA_OUTPUT_2)
+	 * routes data to WM0 with AXI mode 0x60. This is handled by the
+	 * existing COMPOSITE_DONE_0 handler above that processes WM0.
+	 *
+	 * The wm_output_map will have WM0 mapped to the RDI line ID,
+	 * and vfe31_wm_done() will correctly dispatch to that line.
 	 */
-	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(1)) {
-		/* Check RDI WMs: WM2 (RDI0), WM3 (RDI1), WM6 (RDI2) */
-		static const u8 rdi_wms[] = {2, 3, 6};
-		int j;
-
-		for (j = 0; j < ARRAY_SIZE(rdi_wms); j++) {
-			u8 wm = rdi_wms[j];
-			if (vfe->wm_output_map[wm] != VFE_LINE_NONE) {
-				enum vfe_line_id line_id = vfe->wm_output_map[wm];
-				/* Only process if this is an RDI line */
-				if (line_id >= VFE_LINE_RDI0 && line_id <= VFE_LINE_RDI2)
-					vfe31_wm_done(vfe, wm, ping_pong);
-			}
-		}
-	}
 
 	/* Track last PP status for debug purposes */
 	last_ping_pong = ping_pong;
@@ -3940,37 +3931,20 @@ static int vfe31_enable(struct vfe_line *line)
 			 vfe31_pix_y_wm, vfe31_pix_cbcr_wm);
 	} else {
 		/*
-		 * RDI lines use specific WMs per VFE31 hardware mapping:
-		 *   RDI0 → WM2 (base 0x07C)
-		 *   RDI1 → WM3 (base 0x094)
-		 *   RDI2 → WM6 (base 0x0DC)
+		 * RDI/RAW lines use WM0 in VFE31.
 		 *
-		 * This is required because AXI_OUT_MODE=0x60 (CAMIF_TO_AXI)
-		 * routes data to these specific WMs, not WM0.
+		 * Per webOS msm_vfe31.c, raw snapshot mode (CAMIF_TO_AXI_VIA_OUTPUT_2)
+		 * with AXI mode 0x60 routes CAMIF data directly to WM0:
+		 *   case CAMIF_TO_AXI_VIA_OUTPUT_2:
+		 *       *p = 0x60;  // raw snapshot with wm0
+		 *
+		 * The WM2/WM3/WM6 mapping was incorrect - those WMs are not used
+		 * for raw bypass mode in VFE31.
 		 */
-		u8 rdi_wm;
-
-		switch (line->id) {
-		case VFE_LINE_RDI0:
-			rdi_wm = 2;
-			break;
-		case VFE_LINE_RDI1:
-			rdi_wm = 3;
-			break;
-		case VFE_LINE_RDI2:
-			rdi_wm = 6;
-			break;
-		default:
-			dev_err(vfe->camss->dev, "VFE31: Invalid RDI line %d\n", line->id);
-			output->state = VFE_OUTPUT_OFF;
-			spin_unlock_irqrestore(&vfe->output_lock, flags);
-			return -EINVAL;
-		}
-
-		wm_idx = vfe_reserve_wm_specific(vfe, rdi_wm, line->id);
+		wm_idx = vfe_reserve_wm(vfe, line->id);
 		if (wm_idx < 0) {
-			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for RDI line %d\n",
-				rdi_wm, line->id);
+			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM for RDI line %d\n",
+				line->id);
 			output->state = VFE_OUTPUT_OFF;
 			spin_unlock_irqrestore(&vfe->output_lock, flags);
 			return wm_idx;
@@ -3978,7 +3952,7 @@ static int vfe31_enable(struct vfe_line *line)
 		output->wm_idx[0] = wm_idx;
 
 		/* RDI is single-plane raw data, no second WM needed */
-		dev_info(vfe->camss->dev, "VFE31: RDI%d using WM%d (hardware mapping)\n",
+		dev_info(vfe->camss->dev, "VFE31: RDI line %d using WM%d (raw bypass via CAMIF)\n",
 			 line->id, output->wm_idx[0]);
 	}
 
