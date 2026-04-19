@@ -116,6 +116,39 @@ MODULE_PARM_DESC(mt9m113_fake_yuv,
 #define MT9M113_SENSOR_READ_MODE_HMIRROR	BIT(0)
 #define MT9M113_SENSOR_READ_MODE_VMIRROR	BIT(1)
 
+/*
+ * Context A/B sensor configuration MCU variables
+ * These control the sensor readout window and must be re-applied when
+ * switching contexts to ensure correct line counts.
+ */
+#define MT9M113_MODE_SENSOR_ROW_START_A		0x270D
+#define MT9M113_MODE_SENSOR_COL_START_A		0x270F
+#define MT9M113_MODE_SENSOR_ROW_END_A		0x2711
+#define MT9M113_MODE_SENSOR_COL_END_A		0x2713
+#define MT9M113_MODE_SENSOR_ROW_SPEED_A		0x2715
+
+#define MT9M113_MODE_SENSOR_ROW_START_B		0x2723
+#define MT9M113_MODE_SENSOR_COL_START_B		0x2725
+#define MT9M113_MODE_SENSOR_ROW_END_B		0x2727
+#define MT9M113_MODE_SENSOR_COL_END_B		0x2729
+#define MT9M113_MODE_SENSOR_ROW_SPEED_B		0x272B
+
+/* Context A sensor config values (from webOS driver, 640x480 binned) */
+#define MT9M113_CONTEXT_A_ROW_START		0x0000
+#define MT9M113_CONTEXT_A_COL_START		0x0000
+#define MT9M113_CONTEXT_A_ROW_END		0x03CD	/* 973 */
+#define MT9M113_CONTEXT_A_COL_END		0x050D	/* 1293 */
+#define MT9M113_CONTEXT_A_ROW_SPEED		0x2111
+#define MT9M113_CONTEXT_A_READ_MODE		0x046C	/* Binning enabled */
+
+/* Context B sensor config values (from webOS driver, 1280x1024 full res) */
+#define MT9M113_CONTEXT_B_ROW_START		0x0004
+#define MT9M113_CONTEXT_B_COL_START		0x0004
+#define MT9M113_CONTEXT_B_ROW_END		0x040B	/* 1035 */
+#define MT9M113_CONTEXT_B_COL_END		0x050B	/* 1291 */
+#define MT9M113_CONTEXT_B_ROW_SPEED		0x2111
+#define MT9M113_CONTEXT_B_READ_MODE		0x0024	/* Full resolution */
+
 /* Auto Exposure MCU variables (for preview vs snapshot optimization) */
 #define MT9M113_AE_MAX_INDEX			0xa20c
 #define MT9M113_AE_MAX_VIRTGAIN			0xa20e
@@ -401,6 +434,98 @@ static int mt9m113_refresh(struct mt9m113 *sensor)
 	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
 	if (ret < 0)
 		dev_warn(&sensor->client->dev, "MT9M113: REFRESH timeout\n");
+
+	return 0;
+}
+
+/**
+ * mt9m113_configure_sensor_context - Configure sensor readout parameters
+ * @sensor: MT9M113 sensor device
+ * @use_context_b: true for Context B (1280x1024), false for Context A (640x480)
+ *
+ * Re-applies the sensor configuration registers for the selected context.
+ * This is necessary because the MT9M113's MCU variables can become corrupted
+ * or stale after switching between contexts. Without explicitly re-writing
+ * these values, Context A may use incorrect row_end and read_mode values
+ * after running Context B, resulting in wrong line counts and corrupted images.
+ *
+ * Must be called before mt9m113_refresh() to ensure the new values take effect.
+ */
+static int mt9m113_configure_sensor_context(struct mt9m113 *sensor,
+					    bool use_context_b)
+{
+	struct device *dev = &sensor->client->dev;
+	int ret;
+
+	if (use_context_b) {
+		/* Context B: 1280x1024 full resolution */
+		dev_dbg(dev, "MT9M113: Configuring Context B sensor params\n");
+
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_ROW_START_B,
+					    MT9M113_CONTEXT_B_ROW_START);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_COL_START_B,
+					    MT9M113_CONTEXT_B_COL_START);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_ROW_END_B,
+					    MT9M113_CONTEXT_B_ROW_END);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_COL_END_B,
+					    MT9M113_CONTEXT_B_COL_END);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_ROW_SPEED_B,
+					    MT9M113_CONTEXT_B_ROW_SPEED);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_SENSOR_READ_MODE_B,
+					    MT9M113_CONTEXT_B_READ_MODE);
+		if (ret)
+			return ret;
+	} else {
+		/* Context A: 640x480 binned preview */
+		dev_dbg(dev, "MT9M113: Configuring Context A sensor params\n");
+
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_ROW_START_A,
+					    MT9M113_CONTEXT_A_ROW_START);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_COL_START_A,
+					    MT9M113_CONTEXT_A_COL_START);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_ROW_END_A,
+					    MT9M113_CONTEXT_A_ROW_END);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_COL_END_A,
+					    MT9M113_CONTEXT_A_COL_END);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_ROW_SPEED_A,
+					    MT9M113_CONTEXT_A_ROW_SPEED);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_SENSOR_READ_MODE_A,
+					    MT9M113_CONTEXT_A_READ_MODE);
+		if (ret)
+			return ret;
+	}
 
 	return 0;
 }
@@ -1349,6 +1474,19 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		dev_info(dev, "MT9M113: Context %c: %dx%d, format=0x%04x\n",
 			 use_context_b ? 'B' : 'A', width_val, height_val, format_val);
 
+		/*
+		 * Re-apply sensor configuration for the selected context.
+		 * This is critical for correct operation after context switches:
+		 * the MCU variables for row_end and read_mode can become stale
+		 * after switching from Context B to Context A, causing the
+		 * sensor to output wrong line counts (e.g., 543 instead of 480).
+		 */
+		ret = mt9m113_configure_sensor_context(sensor, use_context_b);
+		if (ret) {
+			dev_err(dev, "Failed to configure sensor context: %d\n", ret);
+			goto error;
+		}
+
 		/* REFRESH to apply dimension and format changes */
 		ret = mt9m113_refresh(sensor);
 		if (ret)
@@ -1357,13 +1495,17 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		/* Diagnostic: readback actual sensor configuration */
 		{
 			u64 actual_width, actual_height, read_mode, row_end;
+			u16 read_mode_reg = use_context_b ?
+				MT9M113_SENSOR_READ_MODE_B :
+				MT9M113_SENSOR_READ_MODE_A;
+			u16 row_end_reg = use_context_b ?
+				MT9M113_MODE_SENSOR_ROW_END_B :
+				MT9M113_MODE_SENSOR_ROW_END_A;
 
 			mt9m113_read_mcu_var(sensor, width_reg, &actual_width);
 			mt9m113_read_mcu_var(sensor, height_reg, &actual_height);
-			mt9m113_read_mcu_var(sensor, use_context_b ? 0x272D : 0x2717,
-					     &read_mode);
-			mt9m113_read_mcu_var(sensor, use_context_b ? 0x2727 : 0x2711,
-					     &row_end);
+			mt9m113_read_mcu_var(sensor, read_mode_reg, &read_mode);
+			mt9m113_read_mcu_var(sensor, row_end_reg, &row_end);
 			dev_info(dev, "MT9M113: Readback: %llux%llu read_mode=0x%04llx row_end=%llu\n",
 				 actual_width, actual_height, read_mode, row_end);
 		}
