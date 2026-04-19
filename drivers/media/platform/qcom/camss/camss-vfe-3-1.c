@@ -1429,6 +1429,25 @@ extern int software_eof_enable;
 #define VFE_0_MODULE_CFG_CROP_ENC	BIT(27)
 
 #define VFE_0_CORE_CFG			0x014
+/*
+ * CORE_CFG pixel pattern field (bits 0-2):
+ *   0-3 = Bayer patterns (for RAW sensor input)
+ *   4-7 = YUV patterns (for YUV sensor input)
+ *
+ * From Samsung/HTC VFE31 binaries analysis:
+ *   - Bayer patterns MUST be set correctly for RAW mode
+ *   - Setting pattern=0 for all RAW formats causes CAMIF to not recognize input
+ *
+ * Pattern to media bus format mapping:
+ *   VFE_BAYER_RGRGRG (0) → SRGGB (first pixel R, pattern starts R-Gr-R-Gr...)
+ *   VFE_BAYER_GRGRGR (1) → SGRBG (first pixel Gr, pattern starts Gr-R-Gr-R...)
+ *   VFE_BAYER_BGBGBG (2) → SBGGR (first pixel B, pattern starts B-Gb-B-Gb...)
+ *   VFE_BAYER_GBGBGB (3) → SGBRG (first pixel Gb, pattern starts Gb-B-Gb-B...)
+ */
+#define VFE_0_CORE_CFG_PIXEL_PATTERN_RGRGRG	0x0	/* SRGGB */
+#define VFE_0_CORE_CFG_PIXEL_PATTERN_GRGRGR	0x1	/* SGRBG */
+#define VFE_0_CORE_CFG_PIXEL_PATTERN_BGBGBG	0x2	/* SBGGR */
+#define VFE_0_CORE_CFG_PIXEL_PATTERN_GBGBGB	0x3	/* SGBRG */
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR	0x4
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB	0x5
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY	0x6
@@ -4619,7 +4638,12 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		 "VFE31 set_camif_cfg: ENTRY width=%d height=%d bytes_per_line=%d\n",
 		 width, height, bytes_per_line);
 
-	/* Configure pixel pattern in CORE_CFG + bit 6 (webOS uses 0x46 for UYVY) */
+	/*
+	 * Configure pixel pattern in CORE_CFG + bit 6 (webOS uses 0x46 for UYVY)
+	 *
+	 * IMPORTANT: Samsung/HTC analysis shows Bayer pixel pattern must be set
+	 * correctly even for RAW bypass mode (AXI=0x60).
+	 */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -4631,12 +4655,42 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		break;
 	case MEDIA_BUS_FMT_UYVY8_1X16:
 	case MEDIA_BUS_FMT_UYVY8_2X8:
-	default:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
 		break;
 	case MEDIA_BUS_FMT_VYUY8_1X16:
 	case MEDIA_BUS_FMT_VYUY8_2X8:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
+		break;
+	/* RAW Bayer SBGGR formats - pattern 2 (BGBGBG) */
+	case MEDIA_BUS_FMT_SBGGR8_1X8:
+	case MEDIA_BUS_FMT_SBGGR10_1X10:
+	case MEDIA_BUS_FMT_SBGGR12_1X12:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_BGBGBG;
+		break;
+	/* RAW Bayer SGBRG formats - pattern 3 (GBGBGB) */
+	case MEDIA_BUS_FMT_SGBRG8_1X8:
+	case MEDIA_BUS_FMT_SGBRG10_1X10:
+	case MEDIA_BUS_FMT_SGBRG12_1X12:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_GBGBGB;
+		break;
+	/* RAW Bayer SGRBG formats - pattern 1 (GRGRGR) */
+	case MEDIA_BUS_FMT_SGRBG8_1X8:
+	case MEDIA_BUS_FMT_SGRBG10_1X10:
+	case MEDIA_BUS_FMT_SGRBG12_1X12:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_GRGRGR;
+		break;
+	/* RAW Bayer SRGGB formats - pattern 0 (RGRGRG) */
+	case MEDIA_BUS_FMT_SRGGB8_1X8:
+	case MEDIA_BUS_FMT_SRGGB10_1X10:
+	case MEDIA_BUS_FMT_SRGGB12_1X12:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_RGRGRG;
+		break;
+	/* Monochrome */
+	case MEDIA_BUS_FMT_Y10_1X10:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_RGRGRG;
+		break;
+	default:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
 		break;
 	}
 	/* Add bit 6 - webOS always sets this (0x46 instead of 0x06) */
@@ -5547,8 +5601,9 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	/*
 	 * Configure pixel pattern in CORE_CFG + bit 6 (webOS uses 0x46 for UYVY)
 	 *
-	 * For RDI/raw bypass mode (AXI=0x60), CORE_CFG is still needed to
-	 * configure the input MUX, but pixel pattern doesn't affect raw data.
+	 * IMPORTANT: Samsung/HTC analysis shows that Bayer pixel pattern MUST
+	 * be set correctly even for RAW bypass mode (AXI=0x60). Setting val=0
+	 * for all RAW formats caused CAMIF to not recognize input data.
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
@@ -5568,18 +5623,33 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	case MEDIA_BUS_FMT_VYUY8_2X8:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
 		break;
-	/* RAW Bayer formats - use default pattern (doesn't affect raw bypass) */
+	/* RAW Bayer SBGGR formats - pattern 2 (BGBGBG) */
 	case MEDIA_BUS_FMT_SBGGR8_1X8:
-	case MEDIA_BUS_FMT_SGBRG8_1X8:
-	case MEDIA_BUS_FMT_SGRBG8_1X8:
-	case MEDIA_BUS_FMT_SRGGB8_1X8:
 	case MEDIA_BUS_FMT_SBGGR10_1X10:
-	case MEDIA_BUS_FMT_SGBRG10_1X10:
-	case MEDIA_BUS_FMT_SGRBG10_1X10:
-	case MEDIA_BUS_FMT_SRGGB10_1X10:
-		val = 0;  /* Raw bypass - pattern not used */
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_BGBGBG;
 		dev_info(vfe->camss->dev,
-			 "VFE31: RAW format detected - CORE_CFG pattern=0\n");
+			 "VFE31: RAW SBGGR - CORE_CFG pattern=2\n");
+		break;
+	/* RAW Bayer SGBRG formats - pattern 3 (GBGBGB) */
+	case MEDIA_BUS_FMT_SGBRG8_1X8:
+	case MEDIA_BUS_FMT_SGBRG10_1X10:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_GBGBGB;
+		dev_info(vfe->camss->dev,
+			 "VFE31: RAW SGBRG - CORE_CFG pattern=3\n");
+		break;
+	/* RAW Bayer SGRBG formats - pattern 1 (GRGRGR) */
+	case MEDIA_BUS_FMT_SGRBG8_1X8:
+	case MEDIA_BUS_FMT_SGRBG10_1X10:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_GRGRGR;
+		dev_info(vfe->camss->dev,
+			 "VFE31: RAW SGRBG - CORE_CFG pattern=1\n");
+		break;
+	/* RAW Bayer SRGGB formats - pattern 0 (RGRGRG) */
+	case MEDIA_BUS_FMT_SRGGB8_1X8:
+	case MEDIA_BUS_FMT_SRGGB10_1X10:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_RGRGRG;
+		dev_info(vfe->camss->dev,
+			 "VFE31: RAW SRGGB - CORE_CFG pattern=0\n");
 		break;
 	default:
 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
@@ -6859,29 +6929,59 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 3: Configure CORE_CFG with pixel pattern + input mux enable
 	 * webOS uses 0x46 for UYVY: pixel pattern 0x6 + bit 6 (input mux)
-	 * For RDI/RAW, we still need input mux enabled but no pixel pattern.
 	 *
-	 * RAW Bayer formats bypass the DEMUX entirely so pixel pattern is
-	 * not applicable - just enable the input mux.
+	 * IMPORTANT: Samsung/HTC analysis shows that Bayer pixel pattern MUST
+	 * be set correctly even for RAW bypass mode (AXI=0x60). Setting val=0
+	 * for all RAW formats caused CAMIF to not recognize input data.
+	 *
+	 * Bayer pattern mapping:
+	 *   SBGGR (B-Gb-Gr-R) → pattern 2 (BGBGBG)
+	 *   SGBRG (Gb-B-R-Gr) → pattern 3 (GBGBGB)
+	 *   SGRBG (Gr-R-B-Gb) → pattern 1 (GRGRGR)
+	 *   SRGGB (R-Gr-Gb-B) → pattern 0 (RGRGRG)
 	 */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
-	/* RAW Bayer formats - no pixel pattern needed */
+	/* RAW Bayer SBGGR formats - pattern 2 (BGBGBG) */
 	case MEDIA_BUS_FMT_SBGGR8_1X8:
-	case MEDIA_BUS_FMT_SGBRG8_1X8:
-	case MEDIA_BUS_FMT_SGRBG8_1X8:
-	case MEDIA_BUS_FMT_SRGGB8_1X8:
 	case MEDIA_BUS_FMT_SBGGR10_1X10:
-	case MEDIA_BUS_FMT_SGBRG10_1X10:
-	case MEDIA_BUS_FMT_SGRBG10_1X10:
-	case MEDIA_BUS_FMT_SRGGB10_1X10:
 	case MEDIA_BUS_FMT_SBGGR12_1X12:
-	case MEDIA_BUS_FMT_SGBRG12_1X12:
-	case MEDIA_BUS_FMT_SGRBG12_1X12:
-	case MEDIA_BUS_FMT_SRGGB12_1X12:
-	case MEDIA_BUS_FMT_Y10_1X10:
-		val = 0;  /* No pixel pattern for RAW input */
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_BGBGBG;
 		dev_info(vfe->camss->dev,
-			 "VFE31: CORE_CFG RAW mode (code=0x%04x, no pixel pattern)\n",
+			 "VFE31: CORE_CFG RAW SBGGR (code=0x%04x, pattern=2)\n",
+			 line->fmt[MSM_VFE_PAD_SINK].code);
+		break;
+	/* RAW Bayer SGBRG formats - pattern 3 (GBGBGB) */
+	case MEDIA_BUS_FMT_SGBRG8_1X8:
+	case MEDIA_BUS_FMT_SGBRG10_1X10:
+	case MEDIA_BUS_FMT_SGBRG12_1X12:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_GBGBGB;
+		dev_info(vfe->camss->dev,
+			 "VFE31: CORE_CFG RAW SGBRG (code=0x%04x, pattern=3)\n",
+			 line->fmt[MSM_VFE_PAD_SINK].code);
+		break;
+	/* RAW Bayer SGRBG formats - pattern 1 (GRGRGR) */
+	case MEDIA_BUS_FMT_SGRBG8_1X8:
+	case MEDIA_BUS_FMT_SGRBG10_1X10:
+	case MEDIA_BUS_FMT_SGRBG12_1X12:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_GRGRGR;
+		dev_info(vfe->camss->dev,
+			 "VFE31: CORE_CFG RAW SGRBG (code=0x%04x, pattern=1)\n",
+			 line->fmt[MSM_VFE_PAD_SINK].code);
+		break;
+	/* RAW Bayer SRGGB formats - pattern 0 (RGRGRG) */
+	case MEDIA_BUS_FMT_SRGGB8_1X8:
+	case MEDIA_BUS_FMT_SRGGB10_1X10:
+	case MEDIA_BUS_FMT_SRGGB12_1X12:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_RGRGRG;
+		dev_info(vfe->camss->dev,
+			 "VFE31: CORE_CFG RAW SRGGB (code=0x%04x, pattern=0)\n",
+			 line->fmt[MSM_VFE_PAD_SINK].code);
+		break;
+	/* Monochrome Y10 - use pattern 0 (arbitrary, CAMIF just needs valid pattern) */
+	case MEDIA_BUS_FMT_Y10_1X10:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_RGRGRG;
+		dev_info(vfe->camss->dev,
+			 "VFE31: CORE_CFG RAW Y10 (code=0x%04x, pattern=0)\n",
 			 line->fmt[MSM_VFE_PAD_SINK].code);
 		break;
 	/* YUV formats - set appropriate pixel pattern */
