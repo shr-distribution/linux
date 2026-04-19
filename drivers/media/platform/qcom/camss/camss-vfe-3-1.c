@@ -788,12 +788,16 @@ static inline bool vfe31_is_semiplanar_format(u32 pixelformat)
  * Helper to calculate IMAGE_SIZE stride for Y WMs.
  * Returns stride in bytes.
  *
- * In PIX/VIDEO mode, IMAGE_SIZE stride must match UB_CFG depth calculation
- * (both use input UYVY stride = width*2). Using output bytesperline for
- * semi-planar formats causes IMAGE_SIZE/UB_CFG mismatch and half-frame capture.
+ * Per webOS register dumps, IMAGE_SIZE uses OUTPUT stride (post-DEMUX):
+ * - webOS WM0: 0x00501DF2 shows stride=80 (1280/16), not 160 (2560/16)
+ * - The DEMUX compacts UYVY (2 bytes/pixel) into Y (1 byte/pixel)
+ * - IMAGE_SIZE stride controls DMA write rate, which is at OUTPUT rate
  *
  * RDI mode: use bytesperline (raw data pass-through, no DEMUX processing)
- * PIX/VIDEO mode: use width*2 (input UYVY stride, regardless of output format)
+ * PIX/VIDEO mode: use width (Y output stride, post-DEMUX)
+ *
+ * NOTE: UB_CFG uses INPUT stride for FIFO allocation (pre-DEMUX rate).
+ *       IMAGE_SIZE and ADDR_CFG use OUTPUT stride (post-DEMUX rate).
  */
 static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline,
 					  bool is_rdi, u32 pixelformat)
@@ -801,14 +805,14 @@ static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline,
 	if (vfe31_image_stride > 2)
 		return (u16)vfe31_image_stride;
 	else if (vfe31_image_stride == 1)
-		return width * 2;  /* Force input stride */
+		return width * 2;  /* Force input stride (debug only) */
 	else if (vfe31_image_stride == 2)
-		return bytesperline;  /* Force output stride */
+		return bytesperline;  /* Force bytesperline */
 	else {
-		/* Auto: RDI uses bytesperline, PIX/VIDEO uses input stride */
+		/* Auto: RDI uses bytesperline, PIX/VIDEO uses output stride */
 		if (is_rdi)
 			return bytesperline;
-		return width * 2;  /* PIX/VIDEO: always use input UYVY stride */
+		return width;  /* PIX/VIDEO: use Y output stride (post-DEMUX) */
 	}
 }
 
@@ -5437,14 +5441,23 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 * Upper 16 bits: stride / 16 (128-bit words per line)
 		 * Lower 16 bits: ((height - 1) << 4) | 2
 		 *
-		 * CRITICAL: Use INPUT stride, not output bytesperline!
-		 * - UYVY (PIX/VIDEO): 2 bytes/pixel -> width * 2
-		 * - RAW8 (RDI): 1 byte/pixel -> width * 1
-		 * - RDI with force_16bpp: 2 bytes/pixel -> width * 2
-		 * Using output stride causes half-frame capture.
+		 * CRITICAL: Use OUTPUT stride (Y plane bytes/line), not INPUT stride!
+		 * - PIX/VIDEO: DEMUX outputs Y at width bytes/line (stride=80 for 1280px)
+		 * - RDI RAW8: 1 byte/pixel -> width
+		 * - RDI RAW16/UYVY: 2 bytes/pixel -> width * 2
+		 *
+		 * webOS used 80 (1280/16 = OUTPUT stride), not 160 (2560/16 = INPUT stride).
+		 * Using INPUT stride causes horizontal image duplication.
 		 */
 		{
-			u16 image_stride = (is_rdi_line && !rdi_use_16bpp) ? width : (width * 2);
+			u16 image_stride;
+			if (is_rdi_line) {
+				/* RDI: use format stride (RAW8=width, RAW16=width*2) */
+				image_stride = rdi_use_16bpp ? (width * 2) : width;
+			} else {
+				/* PIX/VIDEO: Y plane at width bytes/line (post-DEMUX) */
+				image_stride = width;
+			}
 			reg = ((image_stride / 16) & 0xFFFF) << 16;
 			reg |= ((height - 1) << 4) | 2;
 
@@ -5550,16 +5563,19 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(cbcr_wm));
 
 			/*
-			 * CbCr WM IMAGE_SIZE - MUST use INPUT stride (same as Y WM)
-			 * webOS uses stride=1280 for both Y and CbCr IMAGE_SIZE.
+			 * CbCr WM IMAGE_SIZE - use OUTPUT stride (same as Y WM)
+			 *
+			 * webOS used stride=80 (1280/16) for both Y and CbCr IMAGE_SIZE.
+			 * CbCr plane is interleaved CbCrCbCr at width bytes/line,
+			 * matching Y plane stride (post-DEMUX output).
 			 */
 			{
-				u16 input_stride = width * 2;  /* UYVY input stride */
-				reg = ((input_stride / 16) & 0xFFFF) << 16;
+				u16 output_stride = width;  /* Post-DEMUX output stride */
+				reg = ((output_stride / 16) & 0xFFFF) << 16;
 				reg |= ((cbcr_height - 1) << 4) | 2;
 				dev_info(vfe->camss->dev,
 					 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d)\n",
-					 cbcr_wm, reg, input_stride, cbcr_height);
+					 cbcr_wm, reg, output_stride, cbcr_height);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(cbcr_wm));
 			}
@@ -6147,13 +6163,13 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
 
 				/*
-				 * VIDEO CbCr IMAGE_SIZE - MUST use INPUT stride (same as Y WM)
+				 * VIDEO CbCr IMAGE_SIZE - use OUTPUT stride (same as Y WM)
 				 *
-				 * webOS uses stride=1280 for both Y and CbCr IMAGE_SIZE.
-				 * IMAGE_SIZE stride must match UB_CFG depth or hardware fails.
+				 * webOS used stride=80 (1280/16) for both Y and CbCr IMAGE_SIZE.
+				 * CbCr plane is interleaved at width bytes/line (post-DEMUX).
 				 */
 				{
-					u16 input_stride = width * 2;  /* UYVY input stride */
+					u16 output_stride = width;  /* Post-DEMUX output stride */
 					int img_height_val;
 
 					if (vfe31_video_cbcr_img_height < 0)
@@ -6161,11 +6177,11 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 					else
 						img_height_val = vfe31_video_cbcr_img_height;  /* explicit */
 
-					reg = ((input_stride / 16) & 0xFFFF) << 16;
+					reg = ((output_stride / 16) & 0xFFFF) << 16;
 					reg |= ((img_height_val - 1) << 4) | 2;
 					dev_info(vfe->camss->dev,
 						 "VFE31: VIDEO WM5 IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d)\n",
-						 input_stride, img_height_val, vfe31_cbcr_stride, vfe31_video_cbcr_img_height);
+						 output_stride, img_height_val, vfe31_cbcr_stride, vfe31_video_cbcr_img_height);
 				}
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
@@ -6204,7 +6220,8 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				 * VIDEO CbCr UB_CFG - MUST use INPUT stride (same as Y WM)
 				 *
 				 * webOS uses depth=39 for both Y and CbCr WMs (1280 bytes/line).
-				 * UB_CFG depth must match IMAGE_SIZE stride.
+				 * UB_CFG controls FIFO sizing (pre-DEMUX), uses INPUT stride.
+				 * IMAGE_SIZE controls DMA writes (post-DEMUX), uses OUTPUT stride.
 				 * Use cbcr_height for ub_height, not Y height.
 				 */
 				{
