@@ -1397,6 +1397,63 @@ extern int software_eof_enable;
  * ============================================================================
  */
 
+/*
+ * ============================================================================
+ * VFE 3.1 REGISTER REFERENCE - MSM8660/APQ8060
+ * ============================================================================
+ *
+ * This documentation is derived from analysis of webOS msm_vfe31.c kernel
+ * source and cross-verified against decompiled vendor camera HAL binaries
+ * from HTC, Samsung, and Sony devices using MSM8660/MSM8960 SoCs.
+ *
+ * VFE31 HARDWARE PIPELINE:
+ *
+ *   Sensor (UYVY) → CSIPHY → CSID → CAMIF → DEMUX → Scaler → XBAR → WMs → DDR
+ *                                     ↓
+ *                              [Y and CbCr separation]
+ *
+ * WRITE MASTER ASSIGNMENT (OUTPUT_1_AND_3 mode):
+ *   WM0 = PIX Y        (output0.ch0)
+ *   WM1 = VIDEO Y      (output2.ch0)
+ *   WM4 = PIX CbCr     (output0.ch1)
+ *   WM5 = VIDEO CbCr   (output2.ch1)
+ *
+ * KEY REGISTER FORMULAS (cross-verified HTC/Samsung/Sony):
+ *
+ *   IMAGE_SIZE register:
+ *     stride_field = ((width + 15) / 16) - 1
+ *     height_field = height - 1
+ *     value = (stride_field << 16) | (height_field << 4) | 0x2
+ *
+ *   UB_CFG register:
+ *     ub_depth = (calculated_depth + 64) & 0x3FF   // +64 headroom required
+ *     value = (ub_depth << 16) | (height - 1)
+ *
+ *   ADDR_CFG register:
+ *     y_burst = (input_stride / 4) - 17
+ *     cbcr_burst = (width / 4) - 9
+ *     cbcr_lines = cbcr_height + 64   // +64 for pipeline flush
+ *
+ *   DEMUX for UYVY (CbYCrY):
+ *     DEMUX_EVEN_CFG = DEMUX_ODD_CFG = 0xC9CA   // 16-bit value
+ *     DEMUX_CFG bits[2:0] = 3 (YUV mode)
+ *
+ * XBAR_CFG1 ROUTING (0x044):
+ *   bits[3:0]  = Y routing:    0x3=WM0, 0xB=WM0+WM1
+ *   bits[7:4]  = CbCr routing: 0x1=WM4, 0x9=WM4+WM5
+ *   bits[15:8] = 0x1A (standard ISP path)
+ *   Common values: 0x1A1B (PIX+VIDEO Y, PIX CbCr only)
+ *                  0x1A9B (PIX+VIDEO Y and CbCr)
+ *
+ * TESTGEN: NOT FUNCTIONAL on VFE31
+ *   The test pattern generator hardware was removed in MSM8660-era silicon.
+ *   INPUT_MUX=0x03 (TESTGEN) exists in CORE_CFG but leads to no hardware.
+ *   TESTGEN_CFG (0x15C) writes don't stick. VFE8x addresses (0x364+) are
+ *   repurposed for FOV/SCALER/WB modules in VFE31.
+ *
+ * ============================================================================
+ */
+
 /* VFE 3.1 Register Offsets - based on MSM8x60 VFE31 */
 #define VFE_0_HW_VERSION		0x000
 
