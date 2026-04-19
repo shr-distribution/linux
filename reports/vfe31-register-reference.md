@@ -752,6 +752,96 @@ Sharing WMs with PIX causes corruption when both active.
 | video640 | PASS | 3,145,728 bytes |
 | video1280 | CRASH | list_add corruption (before fix) |
 
+## Test Pattern Generator (TESTGEN)
+
+### Status: NOT FUNCTIONAL on VFE31
+
+Investigation confirms that VFE31 (MSM8660/APQ8060) does **not have a working TESTGEN block**.
+
+### Evidence
+
+1. **webOS VFE31 has stub command with no implementation:**
+   ```c
+   // msm_vfe31.c line 60 - command array entry
+   {V31_TEST_GEN_START},  // Command ID 4, NO length/offset defined
+
+   // vfe31_proc_general() switch statement:
+   // case V31_TEST_GEN_START is MISSING - command silently ignored!
+   ```
+
+2. **Register writes don't stick:**
+   - TESTGEN_CFG (0x15C) reads back 0x00 after writing
+   - Adjacent registers (CORE_CFG, MODULE_CFG) work correctly
+
+3. **VFE8x TESTGEN addresses repurposed:**
+   - VFE8x had TESTGEN at 0x364-0x39C
+   - VFE31 uses those addresses for ISP modules:
+     - 0x360 = V31_FOV_OFF (Field of View)
+     - 0x368 = V31_MAIN_SCALER_OFF
+     - 0x384 = V31_WB_OFF (White Balance)
+     - 0x388 = V31_COLOR_COR_OFF
+
+### VFE Version Comparison
+
+| VFE | TESTGEN Location | Status | Notes |
+|-----|------------------|--------|-------|
+| **VFE8x** | 0x364-0x39C | ✓ Working | Full hardware TPG |
+| **VFE31** | 0x158-0x174 | ✗ Non-functional | Writes don't stick |
+| **VFE31** | 0x364-0x39C | ✗ Repurposed | Now FOV/SCALER/WB |
+| **VFE32** | 0x188/0x18C | ✗ PM registers | Performance Monitor |
+| **VFE41+** | N/A | ✗ Removed | Only reset bit exists |
+
+### VFE8x TESTGEN Registers (Working Reference)
+
+For comparison, VFE8x had full TESTGEN hardware:
+
+| Register | Offset | Description |
+|----------|--------|-------------|
+| VFE_TESTGEN_CFG | 0x364 | Configuration |
+| VFE_SW_TESTGEN_CMD | 0x368 | Software command |
+| VFE_HW_TESTGEN_CMD | 0x36C | Hardware command (GO=0x01, STOP=0x02) |
+| VFE_HW_TESTGEN_CFG | 0x370 | Hardware config structure |
+| VFE_HW_TESTGEN_IMAGE_CFG | 0x374 | Image dimensions |
+| VFE_HW_TESTGEN_SOF_OFFSET_CFG | 0x378 | Start of frame offset |
+| VFE_HW_TESTGEN_EOF_NOFFSET_CFG | 0x37C | End of frame offset |
+| VFE_HW_TESTGEN_SOL_OFFSET_CFG | 0x380 | Start of line offset |
+| VFE_HW_TESTGEN_EOL_NOFFSET_CFG | 0x384 | End of line offset |
+| VFE_HW_TESTGEN_HBI_CFG | 0x388 | Horizontal blanking |
+| VFE_HW_TESTGEN_VBL_CFG | 0x38C | Vertical blanking |
+| VFE_HW_TESTGEN_COLOR_BARS_CFG | 0x398 | Color bar pattern |
+| VFE_HW_TESTGEN_RANDOM_CFG | 0x39C | Random pattern seed |
+
+### VFE8x Enable Sequence
+
+```c
+// 1. Configure TESTGEN parameters
+vfe_test_gen_start(in);  // Writes to VFE_HW_TESTGEN_CFG (0x370+)
+
+// 2. Start CAMIF for TESTGEN input
+if (inputSource == VFE_START_INPUT_SOURCE_TESTGEN)
+    writel(CAMIF_COMMAND_START, vfebase + CAMIF_COMMAND);
+
+// 3. Send GO command
+writel(VFE_TEST_GEN_GO, vfebase + VFE_HW_TESTGEN_CMD);  // 0x36C
+```
+
+### CORE_CFG INPUT_MUX Values
+
+Despite TESTGEN hardware being absent, the INPUT_MUX field exists:
+
+| Value | bits[6:4] | Source | Status |
+|-------|-----------|--------|--------|
+| 0x01 | 001 | CAMIF | ✓ Working |
+| 0x03 | 011 | TESTGEN | ✗ No hardware behind it |
+| 0x04 | 100 | AXI | ✓ Working (memory input) |
+
+### Conclusion
+
+The TESTGEN was removed from MSM8660-era VFE31 silicon, likely to save die area.
+The INPUT_MUX=0x03 exists but leads to non-existent hardware. The register interface
+(0x158-0x174) appears to be unimplemented silicon. All vendor implementations
+(HTC, Samsung, Sony) only use CAMIF or AXI input, never TESTGEN.
+
 ## Cross-Vendor Verification Summary
 
 All findings have been cross-checked against three vendor binary implementations:
@@ -784,9 +874,17 @@ demux_cfg = 0x3;  // YUV mode
 
 ## References
 
-- webOS kernel: `drivers/media/video/msm/msm_vfe31.c`
+### Local Sources
+- webOS kernel: `drivers/media/video/msm/msm_vfe31.c` and `msm_vfe31.h`
+- webOS VFE8x: `drivers/media/video/msm/msm_vfe8x_proc.c` and `msm_vfe8x_proc.h`
 - Mako kernel: `drivers/media/video/msm/vfe/msm_vfe31.c`
 - Local dumps: `reports/webos-preview-mode-dump.txt`
-- HTC decompiled: `reports/htc-camera-decompiled/liboemcamera.so_decompiled.c`
-- Samsung decompiled: `reports/Samsung II/decompiled/samsung_liboemcamera.so_decompiled.c`
-- Sony decompiled: `reports/sony_nozomi/decompiled/liboemcamera.so_decompiled.c`
+
+### Decompiled Vendor Binaries
+- HTC: `reports/htc-camera-decompiled/liboemcamera.so_decompiled.c`
+- Samsung: `reports/Samsung II/decompiled/samsung_liboemcamera.so_decompiled.c`
+- Sony: `reports/sony_nozomi/decompiled/liboemcamera.so_decompiled.c`
+
+### External Sources
+- [Google MSM Kernel VFE32](https://android.googlesource.com/kernel/msm/+/android-msm-hammerhead-3.4-kk-fr2/drivers/media/platform/msm/camera_v1/vfe/)
+- [Linux Mainline CAMSS VFE drivers](https://github.com/torvalds/linux/tree/master/drivers/media/platform/qcom/camss)
