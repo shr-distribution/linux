@@ -1787,7 +1787,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			    format->code == MEDIA_BUS_FMT_SGRBG10_1X10) {
 				const struct mt9m113_format_info *info;
 
-				info = mt9m113_find_format(format->code);
+				info = mt9m113_format_info(format->code);
 				if (info) {
 					ret = mt9m113_write_mcu_var(sensor, 0xc86c,
 								   info->output_format);
@@ -1899,7 +1899,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			    format->code == MEDIA_BUS_FMT_SGRBG10_1X10) {
 				const struct mt9m113_format_info *info;
 
-				info = mt9m113_find_format(format->code);
+				info = mt9m113_format_info(format->code);
 				if (info) {
 					ret = mt9m113_write_mcu_var(sensor, 0xc86c,
 								   info->output_format);
