@@ -1126,7 +1126,12 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->cbcr_wm.image_stride = input_stride / 16;    /* VERIFIED: same as Y WM */
 	cfg->cbcr_wm.image_height = cbcr_height - 1;
 	cfg->cbcr_wm.burst_words = (width / 4) - 9;       /* VERIFIED: webOS (640/4)-9=151 */
-	cfg->cbcr_wm.burst_lines = cbcr_height + 64;      /* VERIFIED: Sony +0x40U headroom */
+	/*
+	 * burst_lines: +64 headroom ONLY for 4:2:0 (half-height CbCr).
+	 * For 4:2:2 (full-height CbCr), no headroom needed.
+	 * Adding +64 to full-height CbCr causes horizontal line artifacts.
+	 */
+	cfg->cbcr_wm.burst_lines = is_420 ? (cbcr_height + 64) : cbcr_height;
 }
 
 /**
@@ -5576,8 +5581,12 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				int lines_val;
 				int burst_val = (width / 4) - 9;
 
-				/* CbCr WM always needs +64 headroom per webOS/Sony */
-				lines_val = cbcr_height + 64;
+				/*
+				 * +64 headroom ONLY for 4:2:0 (half-height CbCr).
+				 * For 4:2:2 (full-height CbCr), no headroom needed.
+				 */
+				lines_val = (cbcr_height < height) ?
+					    (cbcr_height + 64) : cbcr_height;
 
 				reg = (lines_val << 16) | (burst_val & 0xFFFF);
 				dev_info(vfe->camss->dev,
