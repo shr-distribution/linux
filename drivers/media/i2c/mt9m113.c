@@ -1777,6 +1777,32 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			ret = mt9m113_write_mcu_var(sensor, MT9M113_MODE_OUTPUT_FORMAT_B, format_val);
 			if (ret)
 				dev_warn(dev, "MT9M113: MODE_OUTPUT_FORMAT_B re-write failed\n");
+
+			/*
+			 * Re-write CAM_OUTPUT_FORMAT for RAW modes.
+			 * The MCU resets this to YUV default during state transitions,
+			 * just like MODE_OUTPUT_FORMAT. Without this, RAW output fails.
+			 */
+			if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
+			    format->code == MEDIA_BUS_FMT_SGRBG10_1X10) {
+				const struct mt9m113_format_info *info;
+
+				info = mt9m113_find_format(format->code);
+				if (info) {
+					ret = mt9m113_write_mcu_var(sensor, 0xc86c,
+								   info->output_format);
+					if (ret)
+						dev_warn(dev, "MT9M113: CAM_OUTPUT_FORMAT re-write failed\n");
+					else
+						dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x re-written (Context B)\n",
+							 info->output_format);
+
+					/* REFRESH to apply CAM_OUTPUT_FORMAT change */
+					ret = mt9m113_refresh(sensor);
+					if (ret)
+						dev_warn(dev, "MT9M113: REFRESH after CAM_OUTPUT_FORMAT failed\n");
+				}
+			}
 		}
 
 		/*
@@ -1863,6 +1889,32 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			ret = mt9m113_write_mcu_var(sensor, MT9M113_MODE_OUTPUT_FORMAT_A, format_val);
 			if (ret)
 				dev_warn(dev, "MT9M113: MODE_OUTPUT_FORMAT_A re-write failed\n");
+
+			/*
+			 * Re-write CAM_OUTPUT_FORMAT for RAW modes.
+			 * The MCU resets this to YUV default during state transitions,
+			 * just like MODE_OUTPUT_FORMAT. Without this, RAW output fails.
+			 */
+			if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
+			    format->code == MEDIA_BUS_FMT_SGRBG10_1X10) {
+				const struct mt9m113_format_info *info;
+
+				info = mt9m113_find_format(format->code);
+				if (info) {
+					ret = mt9m113_write_mcu_var(sensor, 0xc86c,
+								   info->output_format);
+					if (ret)
+						dev_warn(dev, "MT9M113: CAM_OUTPUT_FORMAT re-write failed\n");
+					else
+						dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x re-written (Context A)\n",
+							 info->output_format);
+
+					/* REFRESH to apply CAM_OUTPUT_FORMAT change */
+					ret = mt9m113_refresh(sensor);
+					if (ret)
+						dev_warn(dev, "MT9M113: REFRESH after CAM_OUTPUT_FORMAT failed\n");
+				}
+			}
 		}
 
 		msleep(20);
