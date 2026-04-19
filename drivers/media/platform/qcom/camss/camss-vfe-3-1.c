@@ -6931,7 +6931,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 {
 	struct vfe_line *line;
 	u32 val;
-	u32 width_bytes, height;
+	u32 width, width_bytes, height;
 	u8 bpp;
 
 	if (!vfe->camif_pending) {
@@ -6990,13 +6990,14 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			}
 		}
 	}
-	width_bytes = line->fmt[MSM_VFE_PAD_SINK].width * bpp / 8;
+	width = line->fmt[MSM_VFE_PAD_SINK].width;
+	width_bytes = width * bpp / 8;
 	height = line->fmt[MSM_VFE_PAD_SINK].height;
 
 	dev_info(vfe->camss->dev,
 		 "VFE31 enable_pending_camif: line=%d %ux%u stride=%u (bpp=%u code=0x%04x)\n",
 		 vfe->camif_pending_line_id,
-		 line->fmt[MSM_VFE_PAD_SINK].width, height, width_bytes,
+		 width, height, width_bytes,
 		 bpp, line->fmt[MSM_VFE_PAD_SINK].code);
 
 	/*
@@ -7189,17 +7190,21 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			 * so it can count lines even without embedded sync codes.
 			 *
 			 * FRAME_CFG format:
-			 *   [13:0]  = pixelsPerLine (width in bytes)
+			 *   [13:0]  = pixelsPerLine (actual pixel count, NOT bytes!)
 			 *   [29:16] = linesPerFrame (height)
+			 *
+			 * CRITICAL: CAMIF counts pixels from sensor, not bytes.
+			 * For RAW10 @ 640px, use 640 (not 800 = 640*10/8).
+			 * For RAW8 @ 640px, use 640 (matches width_bytes by accident).
 			 *
 			 * webOS never used raw mode, so leaving FRAME_CFG=0 was OK
 			 * for their PIX/VIDEO modes. For raw mode we need it set.
 			 */
-			val = (height << 16) | (width_bytes & 0x3FFF);
+			val = (height << 16) | (width & 0x3FFF);
 			writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
 			dev_info(vfe->camss->dev,
 				 "VFE31: RDI FRAME_CFG=0x%08x (lines=%u, pixels=%u)\n",
-				 val, height, width_bytes);
+				 val, height, width);
 		} else {
 			/* PIX/VIDEO mode: webOS leaves FRAME_CFG at 0 */
 			writel_relaxed(0, vfe->base + VFE_0_CAMIF_FRAME_CFG);
