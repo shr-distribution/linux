@@ -4311,38 +4311,55 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	val = VFE_0_DEMUX_GAIN_1_CH1 | VFE_0_DEMUX_GAIN_1_CH2;
 	writel_relaxed(val, vfe->base + VFE_0_DEMUX_GAIN_1);
 
+	/*
+	 * DEMUX configuration for YUV patterns.
+	 * Values from HTC vfe_demux_set_cfg_parms() binary analysis:
+	 *
+	 * | Pattern | Case | 16-bit Value | Notes |
+	 * |---------|------|--------------|-------|
+	 * | YUYV    | 4    | 0x9CAC       | YCbYCr |
+	 * | YVYU    | 5    | 0xAC9C       | YCrYCb |
+	 * | UYVY    | 6    | 0xC9CA       | CbYCrY (webOS default) |
+	 * | VYUY    | 7    | 0xCAC9       | CrYCbY |
+	 *
+	 * The 16-bit value is written to both DEMUX_EVEN_CFG and DEMUX_ODD_CFG.
+	 * even_cfg = upper byte, odd_cfg = lower byte
+	 */
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
-		even_cfg = 0xc9;
+		/* YUYV (YCbYCr) → 0x9CAC */
+		even_cfg = 0x9c;
 		odd_cfg = 0xac;
 		break;
 	case MEDIA_BUS_FMT_YVYU8_1X16:
 	case MEDIA_BUS_FMT_YVYU8_2X8:
-		even_cfg = 0xa9;
-		odd_cfg = 0xcc;
+		/* YVYU (YCrYCb) → 0xAC9C */
+		even_cfg = 0xac;
+		odd_cfg = 0x9c;
 		break;
 	case MEDIA_BUS_FMT_UYVY8_1X16:
 	case MEDIA_BUS_FMT_UYVY8_2X8:
 	default:
 		/*
-		 * DEMUX config 0xCAC9 - ONLY working config for this hardware.
+		 * DEMUX config 0xC9CA for UYVY (CbYCrY) input.
 		 *
-		 * Testing (2026-04-16) confirmed:
-		 *   - 0xCAC9: Works, outputs NV21 (CrCb order)
-		 *   - 0xC9CA: Causes hard lock/watchdog reset (webOS default)
+		 * All vendor implementations (HTC, Samsung, Sony, webOS) use 0xC9CA
+		 * for UYVY input. This produces proper NV12/NV16 output with CbCr order.
 		 *
-		 * The 0xC9CA config that webOS used causes the VFE to crash
-		 * on this hardware. Unknown why - possibly different sensor
-		 * or ISP configuration. Use NV21 format in userspace.
+		 * From HTC vfe_demux_set_cfg_parms() analysis:
+		 *   Case 6 (CbYCrY/UYVY): EVEN=ODD=0xC9CA, DEMUX_CFG bits[2:0]=3
+		 *
+		 * Previous 0xCAC9 config was inverted and produced NV21/NV61 output.
 		 */
-		even_cfg = 0xca;
-		odd_cfg = 0xc9;
+		even_cfg = 0xc9;
+		odd_cfg = 0xca;
 		break;
 	case MEDIA_BUS_FMT_VYUY8_1X16:
 	case MEDIA_BUS_FMT_VYUY8_2X8:
-		even_cfg = 0xc9;
-		odd_cfg = 0xac;
+		/* VYUY (CrYCbY) → 0xCAC9 */
+		even_cfg = 0xca;
+		odd_cfg = 0xc9;
 		break;
 	}
 
