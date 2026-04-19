@@ -104,6 +104,59 @@ Controls which output mode VFE uses:
 
 **Recommendation:** Use **0x60** for RAW mode (HTC/Qualcomm standard)
 
+## CORE_CFG (0x014)
+
+Controls VFE input source selection and pixel pattern.
+
+### Bit Layout
+
+| Bits | Field | Description |
+|------|-------|-------------|
+| [2:0] | PIXEL_PATTERN | Input pixel format pattern (0-7) |
+| [5:4] | INPUT_MUX | Input source: 0=CAMIF, 1=TESTGEN, 2=unused, 3=AXI |
+| [6] | INPUT_MUX_EN | Input mux enable (always set by webOS) |
+
+### Pixel Pattern Values
+
+**CRITICAL:** Samsung/HTC binary analysis confirms that the correct Bayer pixel
+pattern MUST be set even for RAW bypass mode (AXI=0x60). Setting pattern=0 for
+all RAW formats causes CAMIF to not recognize input data.
+
+| Value | Pattern Name | First Pixel | Linux Format | Use |
+|-------|--------------|-------------|--------------|-----|
+| **0** | RGRGRG | R | SRGGB8/10/12 | Bayer R-first |
+| **1** | GRGRGR | Gr | SGRBG8/10/12 | Bayer Gr-first |
+| **2** | BGBGBG | B | SBGGR8/10/12 | Bayer B-first |
+| **3** | GBGBGB | Gb | SGBRG8/10/12 | Bayer Gb-first |
+| **4** | YCBYCR | Y | YUYV | YUV Y-Cb-Y-Cr |
+| **5** | YCRYCB | Y | YVYU | YUV Y-Cr-Y-Cb |
+| **6** | CBYCRY | Cb | UYVY | YUV Cb-Y-Cr-Y (webOS default) |
+| **7** | CRYCBY | Cr | VYUY | YUV Cr-Y-Cb-Y |
+
+### Vendor Values
+
+| Mode | CORE_CFG | Breakdown | Source |
+|------|----------|-----------|--------|
+| **UYVY input (webOS)** | **0x46** | pattern=6 + bit6 | Register dump |
+| **RAW SBGGR** | 0x42 | pattern=2 + bit6 | Samsung binary |
+| **RAW SRGGB** | 0x40 | pattern=0 + bit6 | Samsung binary |
+
+**Samsung vfe_raw_snapshot_config() pattern mapping:**
+```c
+switch (sensor_pattern) {  // at param_1 + 0x4a8
+case 0: pattern = 3;  // GBGBGB
+case 1: pattern = 2;  // BGBGBG
+case 2: pattern = 1;  // GRGRGR
+case 3: pattern = 0;  // RGRGRG
+case 4: pattern = 4;  // YCBYCR
+case 5: pattern = 5;  // YCRYCB
+case 6: pattern = 6;  // CBYCRY (default for YUV)
+case 7: pattern = 7;  // CRYCBY
+}
+```
+
+**Our setting:** Pattern based on mbus format code + bit 6 always set
+
 ## XBAR_CFG1 (0x044)
 
 Routes DEMUX output (Y and CbCr) to Write Masters.
