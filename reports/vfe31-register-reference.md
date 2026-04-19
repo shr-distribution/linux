@@ -106,15 +106,24 @@ Controls which output mode VFE uses:
 
 ## CORE_CFG (0x014)
 
-Controls VFE input source selection and pixel pattern.
+Controls VFE input source selection and pixel pattern. Also known as `VFE_CFG_OFF` in webOS kernel.
 
 ### Bit Layout
+
+```
+CORE_CFG (0x014) - 32-bit register
+┌─────────────────────────────────────────────────────────────┐
+│ 31            8 │  7  │  6  │  5  │  4  │ 3 │  2   1   0   │
+├─────────────────┼─────┼─────┼─────┼─────┼───┼──────────────┤
+│    Reserved     │ ??? │ EN  │ ??? │TGEN │???│ PIXEL_PATTERN│
+└─────────────────┴─────┴─────┴─────┴─────┴───┴──────────────┘
+```
 
 | Bits | Field | Description |
 |------|-------|-------------|
 | [2:0] | PIXEL_PATTERN | Input pixel format pattern (0-7) |
-| [5:4] | INPUT_MUX | Input source: 0=CAMIF, 1=TESTGEN, 2=unused, 3=AXI |
-| [6] | INPUT_MUX_EN | Input mux enable (always set by webOS) |
+| [4] | INPUT_MUX_TESTGEN | 1 = Input from Test Generator, 0 = CAMIF |
+| [6] | INPUT_MUX_EN | Input mux enable (always set for operation) |
 
 ### Pixel Pattern Values
 
@@ -122,38 +131,113 @@ Controls VFE input source selection and pixel pattern.
 pattern MUST be set even for RAW bypass mode (AXI=0x60). Setting pattern=0 for
 all RAW formats causes CAMIF to not recognize input data.
 
-| Value | Pattern Name | First Pixel | Linux Format | Use |
-|-------|--------------|-------------|--------------|-----|
-| **0** | RGRGRG | R | SRGGB8/10/12 | Bayer R-first |
-| **1** | GRGRGR | Gr | SGRBG8/10/12 | Bayer Gr-first |
-| **2** | BGBGBG | B | SBGGR8/10/12 | Bayer B-first |
-| **3** | GBGBGB | Gb | SGBRG8/10/12 | Bayer Gb-first |
-| **4** | YCBYCR | Y | YUYV | YUV Y-Cb-Y-Cr |
-| **5** | YCRYCB | Y | YVYU | YUV Y-Cr-Y-Cb |
-| **6** | CBYCRY | Cb | UYVY | YUV Cb-Y-Cr-Y (webOS default) |
-| **7** | CRYCBY | Cr | VYUY | YUV Cr-Y-Cb-Y |
+| Value | webOS Enum | Pattern | Linux Format | Description |
+|-------|------------|---------|--------------|-------------|
+| **0** | VFE_BAYER_RGRGRG | RGRGRG | SRGGB8/10/12 | Bayer R-first |
+| **1** | VFE_BAYER_GRGRGR | GRGRGR | SGRBG8/10/12 | Bayer Gr-first |
+| **2** | VFE_BAYER_BGBGBG | BGBGBG | SBGGR8/10/12 | Bayer B-first |
+| **3** | VFE_BAYER_GBGBGB | GBGBGB | SGBRG8/10/12 | Bayer Gb-first |
+| **4** | VFE_YUV_YCbYCr | YCbYCr | YUYV | YUV Y-Cb-Y-Cr |
+| **5** | VFE_YUV_YCrYCb | YCrYCb | YVYU | YUV Y-Cr-Y-Cb |
+| **6** | VFE_YUV_CbYCrY | CbYCrY | UYVY | YUV Cb-Y-Cr-Y (webOS default) |
+| **7** | VFE_YUV_CrYCbY | CrYCbY | VYUY | YUV Cr-Y-Cb-Y |
 
-### Vendor Values
+### V31_OPERATION_CFG Command Structure
 
-| Mode | CORE_CFG | Breakdown | Source |
-|------|----------|-----------|--------|
-| **UYVY input (webOS)** | **0x46** | pattern=6 + bit6 | Register dump |
-| **RAW SBGGR** | 0x42 | pattern=2 + bit6 | Samsung binary |
-| **RAW SRGGB** | 0x40 | pattern=0 + bit6 | Samsung binary |
+CORE_CFG is written via the V31_OPERATION_CFG ioctl command (command ID = 5).
 
-**Samsung vfe_raw_snapshot_config() pattern mapping:**
+**Command Buffer Layout (28 bytes / 7 DWORDs):**
+
+| Offset | Field | Description |
+|--------|-------|-------------|
+| 0x00 | operation_mode | Capture mode flags |
+| 0x04 | stats_comp | Statistics composition flags |
+| 0x08 | **VFE_CFG_OFF** | **→ CORE_CFG (0x014)** |
+| 0x0C | VFE_MODULE_CFG | → MODULE_CFG (0x010) |
+| 0x10 | VFE_REALIGN_BUF | → REALIGN_BUF register |
+| 0x14 | VFE_CHROMA_UP | → CHROMA_UP register |
+| 0x18 | VFE_STATS_CFG | → STATS_CFG register |
+
+**webOS Kernel Code (msm_vfe31.c:887):**
 ```c
-switch (sensor_pattern) {  // at param_1 + 0x4a8
-case 0: pattern = 3;  // GBGBGB
-case 1: pattern = 2;  // BGBGBG
-case 2: pattern = 1;  // GRGRGR
-case 3: pattern = 0;  // RGRGRG
-case 4: pattern = 4;  // YCBYCR
-case 5: pattern = 5;  // YCRYCB
-case 6: pattern = 6;  // CBYCRY (default for YUV)
-case 7: pattern = 7;  // CRYCBY
+static int vfe31_operation_config(uint32_t *cmd)
+{
+    uint32_t *p = cmd;
+    vfe31_ctrl->operation_mode = *p;        // [0] operation mode
+    vfe31_ctrl->stats_comp = *(++p);        // [1] stats comp
+    msm_io_w(*(++p), vfe31_ctrl->vfebase + VFE_CFG_OFF);    // [2] → CORE_CFG
+    msm_io_w(*(++p), vfe31_ctrl->vfebase + VFE_MODULE_CFG); // [3] → MODULE_CFG
+    msm_io_w(*(++p), vfe31_ctrl->vfebase + VFE_REALIGN_BUF);// [4]
+    msm_io_w(*(++p), vfe31_ctrl->vfebase + VFE_CHROMA_UP);  // [5]
+    msm_io_w(*(++p), vfe31_ctrl->vfebase + VFE_STATS_CFG);  // [6]
+    return 0;
 }
 ```
+
+### Vendor Binary Analysis
+
+**HTC liboemcamera.so** stores CORE_CFG at buffer offset **0x96c**.
+**Samsung liboemcamera.so** stores CORE_CFG at buffer offset **0x1488**.
+
+**Sensor-to-VFE Pattern Mapping (both HTC and Samsung use SAME mapping):**
+
+| Sensor Pattern | VFE Pattern | VFE Enum |
+|----------------|-------------|----------|
+| 0 | 3 | GBGBGB |
+| 1 | 2 | BGBGBG |
+| 2 | 1 | GRGRGR |
+| 3 | 0 | RGRGRG |
+| 4 | 4 | YCbYCr |
+| 5 | 5 | YCrYCb |
+| 6 | 6 | CbYCrY (UYVY) |
+| 7 | 7 | CrYCbY |
+
+**Note:** Bayer patterns are **inverted** (sensor 0 → VFE 3, sensor 3 → VFE 0).
+
+**HTC Input Source Configuration (vfe_operation_config line 46492-46504):**
+```c
+if (*(param_1 + 0xe210) == 0) {      // CAMIF input
+    cVar3 = 0x01;                     // bits 4-6 = 001 (CAMIF)
+}
+else if (*(param_1 + 0xe210) == 2) { // AXI input
+    cVar3 = 0x04;                     // bits 4-6 = 100 (AXI)
+}
+else {                                // TESTGEN input
+    cVar3 = 0x03;                     // bits 4-6 = 011 (TESTGEN)
+}
+*(buf + 0x96c) = bVar4 & 0x8f | cVar3 << 4;  // Set bits 4-6
+```
+
+### REG_UPDATE Behavior Based on Pixel Pattern
+
+webOS kernel reads CORE_CFG to determine if REG_UPDATE should be sent:
+
+```c
+// msm_vfe31.c:1014 - vfe31_start_recording()
+switch (msm_io_r(vfe31_ctrl->vfebase + VFE_CFG_OFF) & 0x7) {
+case VFE_YUV_YCbYCr:     // 4
+case VFE_YUV_YCrYCb:     // 5
+case VFE_YUV_CbYCrY:     // 6
+case VFE_YUV_CrYCbY:     // 7
+    msm_io_w_mb(1, vfe31_ctrl->vfebase + VFE_REG_UPDATE_CMD);
+    break;
+default:                  // Bayer patterns 0-3: NO REG_UPDATE
+    break;
+}
+```
+
+**Key Insight:** YUV modes (4-7) require REG_UPDATE, Bayer modes (0-3) do not.
+
+### Common CORE_CFG Values
+
+| Mode | Value | Breakdown |
+|------|-------|-----------|
+| **UYVY from CAMIF (webOS)** | **0x46** | pattern=6, bit6=1 |
+| Bayer SRGGB from CAMIF | 0x40 | pattern=0, bit6=1 |
+| Bayer SGRBG from CAMIF | 0x41 | pattern=1, bit6=1 |
+| Bayer SBGGR from CAMIF | 0x42 | pattern=2, bit6=1 |
+| Bayer SGBRG from CAMIF | 0x43 | pattern=3, bit6=1 |
+| Test Generator | 0x56 | pattern=6, testgen=1, enable=1 |
 
 **Our setting:** Pattern based on mbus format code + bit 6 always set
 
