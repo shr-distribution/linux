@@ -3055,6 +3055,35 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 * CAMIF. Notify all active lines.
 	 */
 	if (value0 & VFE_0_IRQ_STATUS_0_REG_UPDATE) {
+		/*
+		 * Deferred PIX WM enable: enable WM0+WM4 at first frame
+		 * boundary after CAMIF start. This prevents frame wrap
+		 * artifacts caused by starting DMA mid-frame.
+		 *
+		 * Samsung vfe31_start_common() does the same: CAMIF starts
+		 * but WMs are enabled later via the recording state machine.
+		 */
+		if (vfe->camif_pending) {
+			u8 wm0 = vfe->camif_pending_wm;
+			enum vfe_line_id lid = vfe->wm_output_map[wm0];
+
+			if (lid == VFE_LINE_PIX) {
+				struct vfe_output *out = &vfe->line[lid].output;
+
+				writel_relaxed(BIT(0), vfe->base +
+					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[0]));
+				if (out->wm_num == 2)
+					writel_relaxed(BIT(0), vfe->base +
+						VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[1]));
+				vfe->camif_pending = false;
+				writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+				dev_info(vfe->camss->dev,
+					 "VFE31: PIX WMs enabled at frame boundary (WM%d+WM%d)\n",
+					 out->wm_idx[0],
+					 out->wm_num == 2 ? out->wm_idx[1] : -1);
+			}
+		}
+
 		/* Process recording state machine at frame boundary */
 		if (vfe31_recording_state == VFE31_REC_START_REQUESTED) {
 			/* Enable VIDEO WMs at frame boundary */
@@ -5477,39 +5506,35 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	writel(1, vfe->base + VFE_0_CAMIF_CMD);
 	wmb();
 
-	/* Step 6: Enable Write Masters
+	/*
+	 * Step 6: Defer WM enablement to first REG_UPDATE IRQ.
 	 *
-	 * CRITICAL: vfe31_enable() bypasses the gen1 path which would normally
-	 * call wm_enable(). We must enable WM here after CAMIF is configured
-	 * and started, otherwise the WM never gets enabled and no data flows!
+	 * Samsung's vfe31_start_common() does REG_UPDATE + CAMIF_START
+	 * but does NOT enable WMs directly. WMs are enabled at the next
+	 * REG_UPDATE IRQ (frame boundary) to avoid starting DMA mid-frame.
 	 *
-	 * WR_CFG bits:
-	 *   Bit 0: enable
-	 * Note: VFE31 does NOT have frame_based mode in bit 1. webOS writes 1.
+	 * Enabling WMs immediately after CAMIF_START causes frame wrap
+	 * artifacts at 640x480 because the DMA starts writing before
+	 * the sensor has output a complete SOF-to-EOF frame.
 	 *
-	 * IMPORTANT: Use line->output.wm_idx[] to enable the correct WMs for
-	 * this line, NOT the 'wm' parameter (which may be any WM).
+	 * Use the recording state machine for all lines (not just VIDEO):
+	 * - PIX: WM0+WM4 enabled at next REG_UPDATE
+	 * - VIDEO: WM1+WM5 enabled at next REG_UPDATE (already handled)
+	 * - ZSL: WM2+WM6 enabled at next REG_UPDATE (already handled)
 	 */
-	{
-		u8 wm0 = line->output.wm_idx[0];
-
+	if (line_id == VFE_LINE_PIX) {
+		/*
+		 * Store WM indices for deferred enable in REG_UPDATE ISR.
+		 * Use pending state similar to VIDEO recording state.
+		 */
+		vfe->camif_pending_wm = line->output.wm_idx[0];
 		dev_info(vfe->camss->dev,
-			 "VFE31: Step 6 - Enable Write Master WM%d (Y plane)\n", wm0);
-		writel_relaxed(BIT(0),
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm0));
-		wmb();
-	}
-
-	/* Enable CbCr WM for semi-planar formats (NV12/NV16) */
-	if (line->output.wm_num == 2) {
-		u8 cbcr_wm = line->output.wm_idx[1];  /* CbCr WM (WM4) */
-
+			 "VFE31: Step 6 - WM enable deferred to REG_UPDATE (WM%d+WM%d)\n",
+			 line->output.wm_idx[0],
+			 line->output.wm_num == 2 ? line->output.wm_idx[1] : -1);
+	} else {
 		dev_info(vfe->camss->dev,
-			 "VFE31: Step 6b - Enable Write Master WM%d (CbCr plane)\n",
-			 cbcr_wm);
-		writel_relaxed(BIT(0),
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(cbcr_wm));
-		wmb();
+			 "VFE31: Step 6 - WM enable via recording state machine\n");
 	}
 
 	/*
