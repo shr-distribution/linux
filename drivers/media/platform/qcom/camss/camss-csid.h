@@ -20,7 +20,7 @@
 
 #define MSM_CSID_PAD_SINK 0
 #define MSM_CSID_PAD_FIRST_SRC 1
-#define MSM_CSID_PADS_NUM 5
+#define MSM_CSID_PADS_NUM 7  /* 1 sink + up to 6 VFE lines (RDI0-2, PIX, VIDEO, ZSL) */
 
 #define MSM_CSID_PAD_SRC (MSM_CSID_PAD_FIRST_SRC)
 
