@@ -591,19 +591,32 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	 */
 	{
 		/*
-		 * Use dual-output bandwidth (OUTPUT_1_AND_3 mode) since webOS
-		 * always configures both preview and video paths even when only
-		 * preview is active. This matches the webOS register dumps.
+		 * Proportional UB SRAM allocation (cross-vendor verified).
+		 *
+		 * UB_depth = (plane_pixels * 912) / total_bw - 1
+		 * 912 = total UB entries for image WMs (from Opal HAL, same APQ8060)
+		 *
+		 * Total bandwidth depends on format (HTC/Sony verified):
+		 *   NV12 (4:2:0): total_bw = 2 * width * height * 1.5 = y_pixels * 3
+		 *   NV16 (4:2:2): total_bw = 2 * width * height * 2.0 = y_pixels * 4
+		 *
+		 * CbCr UB depth depends on format (HTC/Sony verified):
+		 *   NV12: CbCr depth computed separately (half-width pixels)
+		 *   NV16: CbCr depth = same as Y depth (equal plane sizes)
 		 */
 		u32 y_pixels = width * height;
-		u32 cbcr_pixels = (width / 2) * height;
-		u32 total_bw = (u32)((u64)y_pixels * 3 + (u64)cbcr_pixels * 3);
-		/* total_bw = 2 * (y_pixels + cbcr_pixels) * 1.5
-		 *          = 2 * width * height * 1.5
-		 *          = (y + cbcr) * 3
-		 */
+		u32 total_bw = is_420 ? (y_pixels * 3) : (y_pixels * 4);
 		u32 y_depth = (u32)((u64)y_pixels * 912 / total_bw);
-		u32 cbcr_depth = (u32)((u64)cbcr_pixels * 912 / total_bw);
+		u32 cbcr_depth;
+
+		if (is_420) {
+			/* NV12: CbCr at half-width data rate */
+			u32 cbcr_pixels = (width / 2) * height;
+			cbcr_depth = (u32)((u64)cbcr_pixels * 912 / total_bw);
+		} else {
+			/* NV16: CbCr same depth as Y (HTC/Sony verified) */
+			cbcr_depth = y_depth;
+		}
 
 		if (y_depth > 0)
 			y_depth--;
@@ -4426,6 +4439,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	u32 val;
 	bool is_rdi_line;
 	bool rdi_use_16bpp;
+	bool fmt_is_420;
 	u32 axi_mode;
 
 	if (line_id == VFE_LINE_NONE || line_id >= vfe->res->line_num) {
@@ -4606,13 +4620,22 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 */
 		{
 			u32 ub_depth;
+
+			fmt_is_420 = vfe31_is_420_format(
+				line->video_out.active_fmt.fmt.pix_mp.pixelformat);
+
 			if (is_rdi_line) {
 				/* RDI: single WM, full UB budget */
 				ub_depth = 0x397;  /* 911, matches Samsung raw snapshot */
 			} else {
-				/* PIX/VIDEO: proportional allocation for dual output */
+				/*
+				 * PIX/VIDEO: proportional UB allocation.
+				 * NV12: total_bw = y_pixels * 3 (= 2 * w*h*1.5)
+				 * NV16: total_bw = y_pixels * 4 (= 2 * w*h*2.0)
+				 */
 				u32 y_pixels = width * height;
-				u32 total_bw = (u32)((u64)y_pixels * 3);
+				u32 total_bw = fmt_is_420 ?
+					(y_pixels * 3) : (y_pixels * 4);
 				ub_depth = (u32)((u64)y_pixels * 912 / total_bw);
 				if (ub_depth > 0)
 					ub_depth--;
@@ -4711,18 +4734,27 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			/*
 			 * CbCr WM ADDR_CFG = (UB_start << 16) | UB_depth
 			 *
-			 * CbCr UB depth uses half-width pixels (chroma subsampled).
 			 * UB start = Y_depth + 1 (sequential after Y WM).
+			 * CbCr depth depends on format (HTC/Sony verified):
+			 *   NV12: half-width pixels, separate computation
+			 *   NV16: same depth as Y (equal plane sizes)
 			 *
-			 * webOS: WM4 = 0x01300097 (start=304, depth=151)
+			 * webOS NV12: WM4 = 0x01300097 (start=304, depth=151)
 			 */
 			{
 				u32 y_pixels = width * height;
-				u32 cbcr_pixels = (width / 2) * height;
-				u32 total_bw = (u32)((u64)y_pixels * 3);
+				u32 total_bw = fmt_is_420 ?
+					(y_pixels * 3) : (y_pixels * 4);
 				u32 y_depth = (u32)((u64)y_pixels * 912 / total_bw);
-				u32 cb_depth = (u32)((u64)cbcr_pixels * 912 / total_bw);
+				u32 cb_depth;
 				u32 ub_start;
+
+				if (fmt_is_420) {
+					u32 cbcr_pixels = (width / 2) * height;
+					cb_depth = (u32)((u64)cbcr_pixels * 912 / total_bw);
+				} else {
+					cb_depth = y_depth;
+				}
 
 				if (y_depth > 0)
 					y_depth--;
