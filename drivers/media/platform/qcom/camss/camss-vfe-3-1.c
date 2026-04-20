@@ -568,57 +568,42 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->chroma_subs_cfg = is_420 ? 0x30 : 0x10;
 
 	/*
-	 * Y WM config - CROSS-VENDOR VERIFIED (HTC/Samsung/Sony/webOS):
+	 * Y WM config (cross-vendor verified: webOS, HTC, Samsung, Sony):
 	 *
-	 * UB_CFG depth formula (verified in all four vendor implementations):
-	 *   depth = (input_stride / 32) - 1
-	 *   Sony: "(width * 2 + 0x1f >> 5) - 1 + 0x40U" (with +64 headroom)
-	 *   webOS: msm_vfe31.c vfe31_config_axi() - same calculation
+	 * All registers use INPUT stride (width*2 for UYVY = 1280 @ 640px):
+	 *   UB_CFG depth:    (input_stride / 32) - 1 = 39
+	 *   IMAGE_SIZE stride: input_stride / 16 = 80  (= (width+7)/8)
+	 *   ADDR_CFG burst:  (input_stride / 4) - 17 = 303
 	 *
-	 * IMAGE_SIZE stride formula (verified HTC/Samsung/Sony/webOS):
-	 *   stride_field = ((width + 15) / 16) - 1  (same as input_stride/16)
+	 * Burst offset -17 = 2 * AXI_BURST_LENGTH(8) + 1
+	 * (from webOS msm_vfe31.h VFE_AXI_OUTPUT_BURST_LENGTH)
 	 *
-	 * ADDR_CFG burst formula (corrected 2026-04-19):
-	 *   Y burst_words = (output_stride / 4) - 17  (Y plane at compact stride)
-	 *   NV12 @ 640px: (640/4)-17 = 143
-	 *   Note: webOS used UYVY output (2 bytes/pixel), so their burst=303 was correct.
-	 *   For NV12/NV16, Y plane is 1 byte/pixel, so burst uses output_stride.
-	 *
-	 * Note: UB_CFG/IMAGE_SIZE use INPUT stride (width*2) for pipeline timing.
-	 * ADDR_CFG burst also uses INPUT stride for Y WM DMA writes.
+	 * webOS register dump: WM0_WR_ADDR_CFG = 0x0000012F (burst=303, lines=0)
 	 */
-	cfg->y_wm.ub_depth = (input_stride / 32) - 1;  /* VERIFIED: HTC/Samsung/Sony/webOS */
+	cfg->y_wm.ub_depth = (input_stride / 32) - 1;
 	cfg->y_wm.ub_height = height - 1;
-	cfg->y_wm.image_stride = input_stride / 16;    /* VERIFIED: ((width+15)/16)-1 */
+	cfg->y_wm.image_stride = input_stride / 16;
 	cfg->y_wm.image_height = height - 1;
-	cfg->y_wm.burst_words = (output_stride / 4) - 17;  /* OUTPUT stride for Y DMA writes */
+	cfg->y_wm.burst_words = (input_stride / 4) - 17;
 	cfg->y_wm.burst_lines = 0;
 
 	/*
-	 * CbCr WM config - CROSS-VENDOR VERIFIED (HTC/Samsung/Sony/webOS):
+	 * CbCr WM config (cross-vendor verified: webOS, HTC, Samsung, Sony):
 	 *
-	 * UB_CFG with +64 headroom (verified in all four implementations):
-	 *   Sony: "(short)iVar15 + 0x40U" - explicit +64 (0x40) added
-	 *   Samsung: Same pattern confirmed in liboemcamera analysis
-	 *   HTC: Uses same depth as Y WM (input_stride/32 - 1)
-	 *   webOS: msm_vfe31.c register dumps show +64 headroom
+	 * UB_CFG/IMAGE_SIZE: same depth and stride as Y WM (input_stride based).
+	 * Height uses cbcr_height (NV12: height/2, NV16: height).
 	 *
-	 * ADDR_CFG lines field (verified webOS + Sony):
-	 *   lines = cbcr_height + 64 (DMA headroom for pipeline flush)
-	 *   webOS @ 640x480 NV12: lines=304 = 240 + 64
+	 * ADDR_CFG burst: (width / 4) - 9 = 151 @ 640px
+	 * Burst offset -9 = 2 * AXI_BURST_LENGTH(4) + 1
 	 *
-	 * ADDR_CFG burst for CbCr (chroma downsampled):
-	 *   burst_words = (width / 4) - 9
-	 *   webOS @ 640px: (640/4)-9 = 151
-	 *
-	 * NOTE: IMAGE_SIZE stride uses INPUT stride (width*2), same as Y WM.
-	 * CbCr UB_CFG height uses cbcr_height (4:2:0: h/2, 4:2:2: h).
+	 * ADDR_CFG lines: cbcr_height + 64 for NV12 (pipeline flush headroom).
+	 * webOS register dump: WM4_WR_ADDR_CFG = 0x01300097 (burst=151, lines=304)
 	 */
-	cfg->cbcr_wm.ub_depth = (input_stride / 32) - 1;  /* VERIFIED: HTC/Samsung/Sony/webOS */
+	cfg->cbcr_wm.ub_depth = (input_stride / 32) - 1;
 	cfg->cbcr_wm.ub_height = cbcr_height - 1;
-	cfg->cbcr_wm.image_stride = input_stride / 16;    /* VERIFIED: same as Y WM */
+	cfg->cbcr_wm.image_stride = input_stride / 16;
 	cfg->cbcr_wm.image_height = cbcr_height - 1;
-	cfg->cbcr_wm.burst_words = (width / 4) - 9;       /* VERIFIED: webOS (640/4)-9=151 */
+	cfg->cbcr_wm.burst_words = (width / 4) - 9;
 	/*
 	 * burst_lines: +64 headroom ONLY for 4:2:0 (half-height CbCr).
 	 * For 4:2:2 (full-height CbCr), no headroom needed.
@@ -4582,28 +4567,28 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 * WR_ADDR_CFG - webOS format: (lines << 16) | burst_words
 		 * webOS WM0: 0x0000012F = burst=303, lines=0
 		 *
-		 * IMPORTANT: Use OUTPUT stride for burst, not INPUT stride!
-		 * Git history (d3a4899c0cbd) shows 1280x1024 crashes when using
-		 * input_stride - VFE writes more data than buffer can hold.
+		 * Y burst uses INPUT stride (width*2 for UYVY):
+		 *   burst = (input_stride / 4) - 17
+		 *   Offset -17 = 2 * AXI_BURST_LENGTH(8) + 1
+		 *   webOS WM0: burst = (1280/4)-17 = 303 = 0x12F
 		 *
-		 * For PIX/VIDEO mode, Y output is at width stride (compact).
-		 * For RDI mode, use actual format stride (no DEMUX processing).
+		 * RDI mode: use actual format stride (no DEMUX processing).
 		 */
 		{
-			u16 output_stride;
+			u16 burst_stride;
 			if (is_rdi_line) {
 				/* RDI: use actual format stride */
-				output_stride = rdi_use_16bpp ? (width * 2) : width;
+				burst_stride = rdi_use_16bpp ? (width * 2) : width;
 			} else {
-				/* PIX/VIDEO: Y output at width stride */
-				output_stride = width;
+				/* PIX/VIDEO: use input UYVY stride */
+				burst_stride = width * 2;
 			}
-			wpl = output_stride / 4;  /* 32-bit words per line */
+			wpl = burst_stride / 4;  /* 32-bit words per line */
 			reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 */
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d ADDR_CFG output_stride=%d wpl=%d burst=%d reg=0x%x\n",
-				 wm, output_stride, wpl, reg, reg);
+				 "VFE31: WM%d ADDR_CFG stride=%d wpl=%d burst=%d\n",
+				 wm, burst_stride, wpl, reg);
 			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 		}
 
