@@ -4593,10 +4593,22 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	}
 
 	/*
-	 * Chroma horizontal: always 2:1 subsample (one Cb-Cr pair per 2 pixels)
-	 * Input = width, Output = width/2 (in samples, not bytes)
+	 * Chroma horizontal scaling.
+	 *
+	 * UYVY input already has chroma at 4:2:2 ratio: one CbCr pair per 2 Y pixels.
+	 * For 1280 Y pixels, there are 640 CbCr pairs in the input stream.
+	 *
+	 * The CHROMA_H_IMAGE register controls an ADDITIONAL scaler after DEMUX.
+	 * Setting input=width, output=width/2 would do a 2:1 downscale on TOP of
+	 * the existing 4:2:2 ratio, resulting in 4:4:0 or broken output.
+	 *
+	 * For NV16 (4:2:2) and NV12 (4:2:0), we want 1:1 horizontal passthrough:
+	 * - Input = width/2 (640 CbCr pairs)
+	 * - Output = width/2 (640 CbCr pairs)
+	 *
+	 * The vertical scaler (CHROMA_V_IMAGE) handles 4:2:0 vs 4:2:2 difference.
 	 */
-	writel_relaxed(((width / 2) << 16) | width, vfe->base + VFE_0_CHROMA_H_IMAGE);
+	writel_relaxed(((width / 2) << 16) | (width / 2), vfe->base + VFE_0_CHROMA_H_IMAGE);
 	writel_relaxed(0x00320000, vfe->base + VFE_0_CHROMA_H_PHASE);
 
 	/*
