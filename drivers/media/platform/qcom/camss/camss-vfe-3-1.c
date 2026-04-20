@@ -745,7 +745,7 @@ static void vfe31_apply_wm_config(struct vfe_device *vfe, u8 wm,
  * Call vfe31_calc_pix_config() or vfe31_calc_rdi_config() first
  * to populate the cfg structure.
  */
-static void __maybe_unused vfe31_apply_line_config(struct vfe_device *vfe,
+static void vfe31_apply_line_config(struct vfe_device *vfe,
 				    const struct vfe31_line_config *cfg,
 				    u8 y_wm, u8 cbcr_wm)
 {
@@ -3519,17 +3519,10 @@ static int vfe31_enable(struct vfe_line *line)
 		/* Log calculated configuration */
 		vfe31_dump_line_config(vfe->camss->dev, &cfg);
 
-		/* Apply Y WM configuration */
-		dev_info(vfe->camss->dev, "VFE31: Step 2 - Applying Y WM%d config\n", y_wm);
-		vfe31_apply_wm_config(vfe, y_wm, &cfg.y_wm);
-
-		/* Apply CbCr WM configuration if semi-planar */
-		if (output->wm_num == 2 && cfg.has_cbcr) {
-			dev_info(vfe->camss->dev,
-				 "VFE31: Step 2b - Applying CbCr WM%d config (offset=0x%x)\n",
-				 cbcr_wm, cfg.cbcr_offset);
-			vfe31_apply_wm_config(vfe, cbcr_wm, &cfg.cbcr_wm);
-		}
+		/* Apply Y and CbCr WM configuration */
+		dev_info(vfe->camss->dev, "VFE31: Step 2 - Applying WM config (Y=WM%d, CbCr=WM%d)\n",
+			 y_wm, cbcr_wm);
+		vfe31_apply_line_config(vfe, &cfg, y_wm, cbcr_wm);
 	}
 
 	/* Reload WMs to apply new configuration */
