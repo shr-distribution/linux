@@ -29,6 +29,7 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 static void vfe31_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 				     enum vfe_line_id line_id, u8 enable);
 static void vfe31_set_cgc_override(struct vfe_device *vfe, u8 wm, u8 enable);
+static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable);
 
 /*
  * AXI output mode selection for VFE31.
@@ -3780,31 +3781,63 @@ static int vfe31_disable(struct vfe_line *line)
 	 *
 	 * For PIX/VIDEO lines, use the standard gen1 disable path.
 	 */
-	if (!is_rdi) {
-		/* Request recording stop for VIDEO line at next frame boundary */
-		if (line->id == VFE_LINE_VIDEO &&
-		    vfe31_recording_state == VFE31_REC_STARTED)
-			vfe31_recording_state = VFE31_REC_STOP_REQUESTED;
+	/*
+	 * VFE31-specific disable sequence (replaces vfe_gen1_disable).
+	 * Based on Samsung msm_vfe31.c stop sequence.
+	 *
+	 * For VIDEO line: request recording stop at frame boundary
+	 * via the recording state machine (WMs disabled at REG_UPDATE).
+	 *
+	 * For all lines: stop CAMIF immediately (not at frame boundary
+	 * like gen1 does), then disable WMs and clean up.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: disable line %d (%s)\n",
+		 line->id, is_rdi ? "RDI" : "PIX/VIDEO");
 
-		return vfe_gen1_disable(line);
-	}
+	/* Request recording stop for VIDEO line */
+	if (line->id == VFE_LINE_VIDEO &&
+	    vfe31_recording_state == VFE31_REC_STARTED)
+		vfe31_recording_state = VFE31_REC_STOP_REQUESTED;
 
-	dev_info(vfe->camss->dev,
-		 "VFE31: RDI disable (skipping SOF/REG_UPDATE wait)\n");
+	/* Stop CAMIF immediately (Samsung: CAMIF_COMMAND_STOP_IMMEDIATELY) */
+	writel_relaxed(VFE_0_CAMIF_CMD_STOP_IMMEDIATELY,
+		       vfe->base + VFE_0_CAMIF_CMD);
+	wmb();
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
-	/* Disable write masters */
+	/* Disable write masters for this output */
 	for (i = 0; i < output->wm_num; i++)
 		vfe31_wm_enable(vfe, output->wm_idx[i], 0);
 
-	/* For RDI: disable frame-based mode and disconnect WM */
-	vfe31_wm_frame_based(vfe, output->wm_idx[0], 0);
-	vfe31_bus_disconnect_wm_from_rdi(vfe, output->wm_idx[0], line->id);
-	vfe31_enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 0);
-	vfe31_set_cgc_override(vfe, output->wm_idx[0], 0);
+	if (is_rdi) {
+		/* RDI: disconnect WM from RDI path */
+		vfe31_wm_frame_based(vfe, output->wm_idx[0], 0);
+		vfe31_bus_disconnect_wm_from_rdi(vfe, output->wm_idx[0], line->id);
+		vfe31_enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 0);
+		vfe31_set_cgc_override(vfe, output->wm_idx[0], 0);
+	} else {
+		/* PIX/VIDEO: disable ISP modules and XBAR */
+		for (i = 0; i < output->wm_num; i++)
+			vfe31_set_cgc_override(vfe, output->wm_idx[i], 0);
+		vfe31_set_module_cfg(vfe, 0);
+	}
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
+
+	/* Release output buffers and WM reservations */
+	vfe_put_output(line);
+
+	/* Track stream count (last stream disables bus write interface) */
+	mutex_lock(&vfe->stream_lock);
+	if (vfe->stream_count == 1)
+		vfe->ops_gen1->bus_enable_wr_if(vfe, 0);
+	vfe->stream_count--;
+	mutex_unlock(&vfe->stream_lock);
+
+	/* Clear CAMIF pending state */
+	vfe->camif_pending = false;
+	vfe31_recording_state = VFE31_REC_IDLE;
 
 	return 0;
 }
