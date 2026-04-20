@@ -144,8 +144,18 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
  * webOS code is inside #ifdef CONFIG_MSM_CAMERA_V4L2 which is NOT enabled
  * for TouchPad builds. Use 0x1A1B to match webOS behavior.
  */
-#define VFE31_XBAR_PIX_ONLY	0x1A1B  /* webOS default: Y→WM0+WM1, CbCr→WM4 */
-#define VFE31_XBAR_PIX_VIDEO	0x1A1B  /* Same as above (webOS always enables both) */
+/*
+ * XBAR_CFG1 routing value (register 0x044).
+ * Verified against webOS register dumps (both preview and video mode).
+ *
+ * Bit field layout:
+ *   bits [3:0]  = Y routing:    0xB = WM0+WM1 (preview + video Y)
+ *   bits [7:4]  = CbCr routing: 0x1 = WM4 only (preview CbCr)
+ *   bits [15:8] = ISP path:     0x1A = standard
+ *
+ * All vendors (webOS, HTC, Samsung) use 0x1A1B in practice.
+ */
+#define VFE31_XBAR_CFG1		0x1A1B
 
 /* Module param for manual override/testing */
 int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select based on mode */
@@ -183,21 +193,17 @@ MODULE_PARM_DESC(vfe31_raw_pix_mode,
 		 "VFE31 RAW-through-PIX mode (0=normal PIX+DEMUX, 1=bypass DEMUX for RAW)");
 
 /*
- * VFE31 WM assignments (from webOS msm_vfe31.c lines 719-722):
- *   PIX:   WM0 (Y) + WM4 (CbCr)
- *   VIDEO: WM0 (Y) + WM4 (CbCr) (reuses PIX WMs)
+ * VFE31 Write Master assignments (cross-vendor verified):
  *
- * XBAR 0x1A1B routes: Y→WM0+WM1, CbCr→WM4
+ * webOS OUTPUT_1_AND_3 mode (all vendors agree):
+ *   PIX (output0):   WM0 (Y) + WM4 (CbCr)
+ *   VIDEO (output2): WM1 (Y) + WM5 (CbCr)
+ *
+ * Current driver: VIDEO reuses PIX WMs (WM0+WM4) since only one
+ * line runs at a time. XBAR 0x1A1B routes Y to WM0+WM1 and CbCr
+ * to WM4. WM1/WM5 are configured by XBAR but not enabled.
  */
 
-/*
- * Debug: dump all WM registers after configuration.
- * Set to 1 to enable verbose register dumps in dmesg.
- */
-static int vfe31_dump_wm_regs = 0;
-module_param(vfe31_dump_wm_regs, int, 0644);
-MODULE_PARM_DESC(vfe31_dump_wm_regs,
-		 "VFE31 dump WM registers (0=off, 1=on)");
 
 /*
  * ============================================================================
@@ -244,9 +250,23 @@ MODULE_PARM_DESC(vfe31_force_422,
  * CRITICAL: Must use exact webOS value - hardware may require both PIX and
  * VIDEO composite groups configured even when only using one path.
  */
-#define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00220011  /* webOS exact value: PIX in G0, VIDEO in G2 */
-#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00220011  /* Same as PIX_ONLY per webOS */
-#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00220011  /* Same as PIX_ONLY per webOS */
+/*
+ * IRQ_COMPOSITE_MASK values (register 0x034).
+ *
+ * Groups WMs for COMPOSITE_DONE interrupts:
+ *   Group 0 (bits 0-7):   triggers COMPOSITE_DONE_0
+ *   Group 1 (bits 8-15):  triggers COMPOSITE_DONE_1
+ *   Group 2 (bits 16-23): triggers COMPOSITE_DONE_2
+ *
+ * webOS uses 0x00220011 for OUTPUT_1_AND_3 mode:
+ *   Group 0: 0x11 = WM0 + WM4 (PIX Y + CbCr)
+ *   Group 2: 0x22 = WM1 + WM5 (VIDEO Y + CbCr)
+ *
+ * Currently only PIX group is active (VIDEO reuses PIX WMs).
+ */
+#define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00000011  /* Group 0: WM0+WM4 */
+#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00220011  /* Group 0: WM0+WM4, Group 2: WM1+WM5 */
+#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00220000  /* Group 2: WM1+WM5 */
 
 /* Module param for manual override/testing */
 static int vfe31_irq_comp_mask = 0;  /* 0 = auto-select based on active lines */
@@ -302,58 +322,6 @@ static inline u32 vfe31_get_bus_cfg(void)
 static inline u32 vfe31_get_bus_cmd_reload(void)
 {
 	return 0x7FFF;
-}
-
-/*
- * Helper to check if format is semi-planar (NV12/NV21/NV16/NV61).
- * Semi-planar formats have separate Y and CbCr planes with 1 byte per sample.
- */
-static inline bool vfe31_is_semiplanar_format(u32 pixelformat)
-{
-	return (pixelformat == V4L2_PIX_FMT_NV12 ||
-		pixelformat == V4L2_PIX_FMT_NV21 ||
-		pixelformat == V4L2_PIX_FMT_NV16 ||
-		pixelformat == V4L2_PIX_FMT_NV61);
-}
-
-/*
- * Helper to calculate IMAGE_SIZE stride for Y WMs.
- * Returns stride in bytes.
- *
- * In PIX/VIDEO mode, IMAGE_SIZE stride must match UB_CFG depth calculation
- * (both use input UYVY stride = width*2). Using output bytesperline for
- * semi-planar formats causes IMAGE_SIZE/UB_CFG mismatch and half-frame capture.
- *
- * RDI mode: use bytesperline (raw data pass-through, no DEMUX processing)
- * PIX/VIDEO mode: use width*2 (input UYVY stride, regardless of output format)
- */
-static inline u16 vfe31_calc_image_stride(u16 width, u16 bytesperline,
-					  bool is_rdi, u32 pixelformat)
-{
-	/* RDI uses bytesperline, PIX/VIDEO uses input stride */
-	if (is_rdi)
-		return bytesperline;
-	return width * 2;  /* PIX/VIDEO: always use input UYVY stride */
-}
-
-/*
- * Helper to calculate IMAGE_SIZE stride for CbCr WMs.
- * Returns stride in bytes.
- *
- * CbCr DMA writes at OUTPUT width, not input stride. The Y DMA writes
- * at input stride (UYVY = 2 bytes/pixel), but after DEMUX/scaling,
- * CbCr data is at output resolution.
- *
- * For 640x480 output:
- *   - Y plane:    640 * 2 = 1280 bytes/line (input stride)
- *   - CbCr plane: 640 bytes/line (output width)
- *
- * Using width*2 for CbCr causes buffer overflow for NV16 (4:2:2).
- */
-static inline u16 vfe31_calc_cbcr_stride(u16 width, u16 bytesperline)
-{
-	/* Auto: use output width */
-	return width;
 }
 
 /*
@@ -679,13 +647,13 @@ static void vfe31_dump_line_config(struct device *dev,
 	}
 }
 
-/* Forward declarations needed for vfe31_apply_wm_config */
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_CFG_FWD(n)		(0x04C + 0x18 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR_FWD(n)	(0x050 + 0x18 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR_FWD(n)	(0x054 + 0x18 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG_FWD(n)	(0x058 + 0x18 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG_FWD(n)	(0x05C + 0x18 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE_FWD(n)	(0x060 + 0x18 * (n))
+/* VFE31 BUS Write Master register offsets (WM0-WM6, stride 0x18) */
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(n)		(0x04C + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(n)	(0x050 + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(n)	(0x054 + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(n)		(0x058 + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(n)		(0x05C + 0x18 * (n))
+#define VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(n)	(0x060 + 0x18 * (n))
 
 /**
  * vfe31_apply_wm_config - Write WM configuration to hardware registers
@@ -709,27 +677,27 @@ static void vfe31_apply_wm_config(struct vfe_device *vfe, u8 wm,
 
 	/* WR_PING_ADDR */
 	writel_relaxed(cfg->ping_addr,
-		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR_FWD(wm));
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
 
 	/* WR_PONG_ADDR */
 	writel_relaxed(cfg->pong_addr,
-		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR_FWD(wm));
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 
 	/* WR_IMAGE_SIZE: (stride/16) << 16 | ((height-1) << 4) | 2 */
 	reg = ((cfg->image_stride) & 0xFFFF) << 16;
 	reg |= ((cfg->image_height) << 4) | 2;
-	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE_FWD(wm));
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
 
 	/* WR_ADDR_CFG: (lines << 16) | burst_words */
 	reg = ((cfg->burst_lines) << 16) | (cfg->burst_words & 0xFFFF);
-	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG_FWD(wm));
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 
 	/* WR_UB_CFG: (depth << 16) | height */
 	reg = ((cfg->ub_depth) << 16) | (cfg->ub_height & 0xFFFF);
-	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG_FWD(wm));
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
 
 	/* WR_CFG: enable only (BIT(0)) - VFE31 doesn't use frame_based in bit 1 */
-	writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG_FWD(wm));
+	writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 
 	wmb();
 }
@@ -758,23 +726,15 @@ static void vfe31_apply_line_config(struct vfe_device *vfe,
 }
 
 /**
- * vfe31_calc_xbar - Calculate XBAR_CFG1 routing value
- * @pix_active: True if PIX line is active
- * @video_active: True if VIDEO line is active
+ * vfe31_calc_xbar - Return XBAR_CFG1 routing value
+ * @pix_active: True if PIX line is active (unused, always 0x1A1B)
+ * @video_active: True if VIDEO line is active (unused, always 0x1A1B)
  *
- * XBAR_CFG1 routes DEMUX outputs to Write Masters:
- * - PIX only:      0x1A03 (Y->WM0, CbCr->WM4)
- * - PIX + VIDEO:   0x1A1B (Y->WM0+WM1, CbCr->WM4)
- * - VIDEO only:    0x1A03 (same as PIX only, reuses WM0/WM4)
- *
- * Returns: XBAR_CFG1 value to write to register 0x044
+ * All vendors use 0x1A1B regardless of mode. Returns VFE31_XBAR_CFG1.
  */
 static u16 __maybe_unused vfe31_calc_xbar(bool pix_active, bool video_active)
 {
-	if (pix_active && video_active)
-		return VFE31_XBAR_PIX_VIDEO;  /* 0x1A1B */
-	else
-		return VFE31_XBAR_PIX_ONLY;   /* 0x1A03 */
+	return VFE31_XBAR_CFG1;
 }
 
 /* External module parameters from camss-vfe.c */
@@ -1506,8 +1466,7 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
  *   - reports/webos-vfe31-analysis-summary.txt (register dump analysis)
  *   - reports/vfe31-video-path-nv16-analysis.md (detailed path analysis)
  *
- * We use VFE31_XBAR_PIX_ONLY (0x1A03) defined at top of file, matching webOS.
- * The VFE31_XBAR_PIX_VIDEO (0x1A1B) is available for explicit VIDEO Y routing.
+ * We use VFE31_XBAR_CFG1 (0x1A1B) defined at top of file, matching webOS.
  * VFE31_XBAR_VIDEO_DUAL (0x1A9B) would be needed for VIDEO CbCr output.
  */
 
@@ -1572,14 +1531,16 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
 #define VFE31_PREVIEW_WM_CBCR		4  /* WM4 = output0.ch1 (preview CbCr) */
 
 /*
- * VIDEO mode: WM1 for Y (output2.ch0), WM5 for CbCr (output2.ch1)
+ * VIDEO Write Master assignments per webOS msm_vfe31.c:
+ *   output2.ch0 = WM1 (VIDEO Y)
+ *   output2.ch1 = WM5 (VIDEO CbCr)
  *
- * NOTE: With XBAR 0x1A1B, CbCr only goes to output0.ch1 (WM4).
- * To enable VIDEO CbCr (output2.ch1/WM5), XBAR bits[7:4] would
- * need to be 0x9. Current XBAR disables VIDEO CbCr output.
+ * NOTE: Currently VIDEO reuses PIX WMs (WM0+WM4) since only one
+ * line runs at a time. These defines document the webOS hardware
+ * assignments for future simultaneous PIX+VIDEO support.
  */
-#define VFE31_VIDEO_WM_Y		1  /* WM1 = output2.ch0 (video Y) */
-#define VFE31_VIDEO_WM_CBCR		5  /* WM5 = output2.ch1 (video CbCr) */
+#define VFE31_VIDEO_WM_Y		1
+#define VFE31_VIDEO_WM_CBCR		5
 
 /*
  * VFE31 Dummy Buffer for Unused Write Masters
@@ -1905,12 +1866,6 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
  *   - Empirical testing on HP TouchPad (APQ8060/VFE31)
  *   - Linux mainline camss-vfe-4-1.c (similar but not identical)
  */
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(n)		(0x04C + 0x18 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(n)	(0x050 + 0x18 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(n)	(0x054 + 0x18 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(n)		(0x058 + 0x18 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(n)		(0x05C + 0x18 * (n))
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(n)	(0x060 + 0x18 * (n))
 /* VFE31 doesn't have per-WM framedrop - it's at global offsets 0x504+ */
 #define VFE_0_BUS_IMAGE_MASTER_n_WR_IRQ_SUBSAMPLE_PATTERN(n) (0x060 + 0x18 * (n))
 
@@ -2217,7 +2172,7 @@ static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
  * RAW formats, returns 0 since they use a single plane.
  *
  * IMPORTANT: y_stride must be the actual stride used by the Y write master
- * (from vfe31_calc_image_stride), NOT the V4L2 format's bytesperline.
+ * (width*2 for PIX/VIDEO mode), NOT the V4L2 format's bytesperline.
  * For PIX/VIDEO mode, this is width*2 (UYVY input processing), which may
  * differ from the format's bytesperline (width for NV12/NV16 output).
  */
@@ -2930,10 +2885,17 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			vfe31_wm_done(vfe, 0, ping_pong);
 	}
 
-	/* Handle IMAGE_COMPOSITE_DONE_2 (VIDEO line: WM1+WM5) */
+	/*
+	 * Handle IMAGE_COMPOSITE_DONE_2 (VIDEO line: WM1+WM5 in Group 2).
+	 *
+	 * Currently inactive: VIDEO reuses PIX WMs (WM0+WM4), so VIDEO
+	 * frames complete via COMPOSITE_DONE_0 above. When simultaneous
+	 * PIX+VIDEO is implemented with separate WMs, this handler will
+	 * process WM1 (VIDEO Y) completions.
+	 */
 	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(2)) {
-		if (vfe->wm_output_map[1] != VFE_LINE_NONE)
-			vfe31_wm_done(vfe, 1, ping_pong);
+		if (vfe->wm_output_map[VFE31_VIDEO_WM_Y] != VFE_LINE_NONE)
+			vfe31_wm_done(vfe, VFE31_VIDEO_WM_Y, ping_pong);
 	}
 
 	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
@@ -3477,7 +3439,7 @@ static int vfe31_enable(struct vfe_line *line)
 	 */
 	if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
 		u32 xbar_initial = (vfe31_xbar_cfg1 != 0) ?
-				   vfe31_xbar_cfg1 : VFE31_XBAR_PIX_ONLY;
+				   vfe31_xbar_cfg1 : VFE31_XBAR_CFG1;
 		dev_info(vfe->camss->dev,
 			 "VFE31: PIX mode - XBAR CFG1=0x%x (initial, param=%d)\n",
 			 xbar_initial, vfe31_xbar_cfg1);
@@ -4548,14 +4510,13 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			xbar_value = vfe31_xbar_cfg1;
 		} else {
 			/* Both PIX and VIDEO use WM4 for CbCr - use 0x1A03 */
-			xbar_value = VFE31_XBAR_PIX_ONLY;
+			xbar_value = VFE31_XBAR_CFG1;
 		}
 
 		dev_info(vfe->camss->dev,
 			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x01, XBAR=0x%04x (%s)\n",
 			 VFE_0_BUS_CFG_WEBOS_VALUE, xbar_value,
-			 xbar_value == VFE31_XBAR_PIX_ONLY ? "CbCr→WM4" :
-			 xbar_value == VFE31_XBAR_PIX_VIDEO ? "CbCr→WM1" : "manual");
+			 xbar_value == VFE31_XBAR_CFG1 ? "Y→WM0+WM1,CbCr→WM4" : "manual");
 		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
@@ -5737,7 +5698,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		writel_relaxed(0x01c00c0c, vfe->base + VFE_0_MODULE_CFG);
 		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-		writel_relaxed((vfe31_xbar_cfg1 != 0) ? vfe31_xbar_cfg1 : VFE31_XBAR_PIX_ONLY,
+		writel_relaxed((vfe31_xbar_cfg1 != 0) ? vfe31_xbar_cfg1 : VFE31_XBAR_CFG1,
 			       vfe->base + VFE_0_BUS_XBAR_CFG1);
 		wmb();
 
@@ -6176,12 +6137,11 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				 * Use PIX_ONLY (0x1A03) for both PIX and VIDEO
 				 * since both use WM4 for CbCr output.
 				 */
-				xbar_val = VFE31_XBAR_PIX_ONLY;
+				xbar_val = VFE31_XBAR_CFG1;
 			}
 			dev_info(vfe->camss->dev,
 				 "VFE31: XBAR=0x%04x (%s)\n", xbar_val,
-				 xbar_val == VFE31_XBAR_PIX_ONLY ? "CbCr→WM4" :
-				 xbar_val == VFE31_XBAR_PIX_VIDEO ? "CbCr→WM1" : "manual");
+				 xbar_val == VFE31_XBAR_CFG1 ? "Y→WM0+WM1,CbCr→WM4" : "manual");
 			writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
 		}
 	}
