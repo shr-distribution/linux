@@ -617,14 +617,47 @@ ub_depth = (raw_depth + 64) & 0x3ff;  // +64 headroom, 10-bit mask
 | **UB height (CbCr NV16)** | h-1 | h-1 | h-1 | h-1 | h-1 |
 | **10-bit mask** | implicit | `& 0x3ff` | `& 0x3ff` | `& 0x3ff` | none |
 
+**Magic constant meaning (resolved 2026-04-20):**
+
+The constants represent the **total UB SRAM budget available for image write masters**,
+used as the numerator in a proportional allocation formula that distributes UB space
+among active WMs based on their throughput share.
+
+VFE31 total UB SRAM = **1024 entries** (indices 0-1023):
+- Stats engines use entries 912-1023 (112 entries, hardcoded in webOS msm_vfe31.c)
+- Image WMs share entries 0-911 (**912 entries** available)
+
+The constant is **mode-dependent, NOT sensor/SoC-dependent**:
+
+| Constant | Decimal | Used by | Mode | Meaning |
+|----------|---------|---------|------|---------|
+| 0x298 | 664 | HTC, Sony, Samsung | **Multi-output** (preview+video, snapshot) | Conservative budget for shared UB |
+| 0x318 | 792 | Samsung only | **Single-output** (viewfinder only) | Larger budget when UB not shared |
+
+Evidence: Samsung uses 0x318 in `VFE_AXIOutputViewfinderConfig_Initialize` (single output,
+line 41204) and 0x298 in `vfe_snapshot_axi_init` (dual output, line 41438). HTC and Sony
+always use 0x298 regardless of mode.
+
+**AXI config blob construction:**
+
+All vendor HALs construct the AXI config as a pre-computed blob sent to the kernel
+via `MSM_CAM_IOCTL_AXI_CONFIG` (ioctl 0x40046d10). The kernel writes this blob
+directly to VFE registers at offset 0x38 (V31_AXI_OUT_OFF):
+
+| Vendor | Blob size | Construction | Source lines |
+|--------|-----------|-------------|--------------|
+| webOS | 188 bytes (0xBC) | Userspace HAL, details unknown | kernel: msm_vfe31.c:787 |
+| HTC | 216 bytes (0xD8) | Stack buffer in `axi_config()` | liboemcamera.so:36072 |
+| Samsung | 212 bytes (0xD4) | Global struct at cfgctrl+0x20 | liboemcamera.so:41834 |
+| Sony | 224 bytes (0xE0) | Stack buffer in `axi_config()` | liboemcamera.so:28274 |
+
 **Key insights:**
-1. Magic constants (664 vs 792) likely represent total UB SRAM capacity in some unit,
-   distributed proportionally across outputs by pixel count. Samsung's higher constant
-   suggests larger UB SRAM in their VFE variant.
-2. Samsung chains UB offsets: Y depth+1 becomes CbCr offset (line 41212) for
-   non-overlapping SRAM partitioning.
-3. Our driver matches webOS register dumps exactly. The proportional formula would
-   be needed for multi-output scenarios with SRAM partitioning.
+1. Samsung's approach is more optimal: gives more buffer depth to a single output
+   when the bus isn't shared.
+2. Samsung chains UB offsets: Y depth+1 becomes CbCr start offset (line 41212)
+   for non-overlapping SRAM partitioning.
+3. Our driver matches webOS register dumps exactly using the simpler stride/32-1
+   formula. The proportional formula would be needed for multi-output scenarios.
 
 ## Semi-Planar Format Handling
 
