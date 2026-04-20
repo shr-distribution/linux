@@ -461,16 +461,22 @@ Where:
 - `total_bandwidth = sum of all active plane sizes`
 - `UB_budget` = mode-dependent constant (see below)
 
-### Magic Constants
+### UB Budget Constants
 
-| Constant | Decimal | Vendors | Mode | Derivation |
-|----------|---------|---------|------|------------|
-| 0x390 | 912 | webOS/Opal | All | Direct UB budget, no per-WM headroom |
-| 0x298 | 664 | HTC, Sony, Samsung | Multi-output | 920 - 64*4 WMs = 664 |
-| 0x318 | 792 | Samsung only | Single-output | 920 - 64*2 WMs = 792 |
+All vendor constants derive from the same formula: `920 - 64 * num_active_wms`
+(920 = 912 usable UB entries + 8 margin, 64 = per-WM FIFO headroom).
 
-HTC/Samsung/Sony add `+64` headroom per WM (`(depth + 0x40) & 0x3ff`).
-The effective total converges to ~912-920 entries regardless of approach.
+| Constant | Decimal | Active WMs | Formula | Vendors |
+|----------|---------|------------|---------|---------|
+| 0x390 | 912 | N/A | Direct budget, no per-WM headroom | webOS/Opal |
+| 0x318 | 792 | 2 | 920 - 64*2 = 792 | Samsung (single-output) |
+| 0x2B8 | 696 | 3-4 | 920 - 64*3.5 ≈ 696 | Samsung (ZSL all channels) |
+| 0x298 | 664 | 4 | 920 - 64*4 = 664 | HTC, Sony, Samsung (multi-output) |
+| 0x258 | 600 | 5 | 920 - 64*5 = 600 | Samsung (raw video, case 4) |
+| 0x218 | 536 | 6 | 920 - 64*6 = 536 | Samsung (ZSL) |
+
+HTC/Samsung/Sony pre-subtract headroom then add `+64` per result (`(depth + 0x40) & 0x3ff`).
+webOS/Opal uses 912 directly without per-WM headroom. Both approaches converge to ~912 total.
 
 **Verification (640x480 NV12, OUTPUT_1_AND_3, UB_budget=912):**
 ```
