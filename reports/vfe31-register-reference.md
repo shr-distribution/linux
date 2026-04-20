@@ -407,20 +407,29 @@ For 1280x1024 CbCr (0x00a01ff2):
 - Changing this causes skewed images or bus faults
 - Other values may exist for tiled/macroblock formats but are not used on VFE31
 
-### Cross-Vendor Verification (HTC, Samsung, Sony)
+### Cross-Vendor IMAGE_SIZE Verification (updated 2026-04-20)
 
-All three vendors use **identical** IMAGE_SIZE calculation formulas:
+**Stride field (upper 16 bits) - CRITICAL DISCREPANCY:**
 
-**Stride calculation (upper 16 bits):**
-```c
-// HTC (line 36127): (short)(uVar8 + 0xf >> 4) - 1U & 0x3ff
-// Samsung (line 41206): (short)(uVar5 + 0xf >> 4) - 1U & 0x1ff
-// Sony (line 28323): (short)(uVar7 + 0xf >> 4) - 1U & 0x3ff
-//
-// Formula: (width + 15) / 16 - 1 = (width/16 rounded up) - 1
-```
+| Implementation | Input Parameter | Formula | 640px Result | Mask |
+|---|---|---|---|---|
+| **webOS** (register dumps) | input_stride (width*2) | input_stride / 16 | 1280/16 = **80** (0x50) | - |
+| **Our mainline driver** | input_stride (width*2) | input_stride / 16 | 1280/16 = **80** (0x50) | - |
+| **HTC** (decompiled line 36127) | pixel_width | (width+15)/16 - 1 | (640+15)/16-1 = **39** (0x27) | 0x3ff |
+| **Samsung** (decompiled line 41177) | pixel_width | (width+15)/16 - 1 | (640+15)/16-1 = **39** (0x27) | 0x1ff |
+| **Sony** (decompiled line 28323) | pixel_width | (width+15)/16 - 1 | (640+15)/16-1 = **39** (0x27) | 0x3ff |
+| **Mako/G2** (kernel source) | width | (width+15)/16 - 1 | (640+15)/16-1 = **39** (0x27) | - |
 
-**Height + flags (lower 16 bits):**
+Vendor HAL binaries compute stride_field=39 for 640px, but webOS hardware shows 80.
+The discrepancy exists because webOS computes IMAGE_SIZE in userspace HAL and passes
+it to the kernel as a pre-computed blob (via ioctl, 188 bytes from offset 0x38).
+The webOS HAL apparently uses input_stride (width*2), not pixel_width.
+
+**Our driver matches webOS register dumps (stride=80), which is the ground truth.**
+
+Note: Samsung uses a 9-bit mask (0x1ff) vs HTC/Sony 10-bit mask (0x3ff).
+
+**Height + flags (lower 16 bits) - all vendors agree:**
 ```c
 // HTC (line 36137): (ushort)(uVar14 << 4) | 2
 // Samsung (line 41216): *(byte *)(uVar4 + 0x48) = (byte)uVar13 & 0xfc | 2
@@ -429,7 +438,19 @@ All three vendors use **identical** IMAGE_SIZE calculation formulas:
 // Formula: ((height - 1) << 4) | 0x2
 ```
 
-**Key Insight:** All vendors explicitly set flag 0x2 via `| 2` operation, confirming this is required.
+**Y vs CbCr IMAGE_SIZE differences:**
+
+| Vendor | Y Stride | CbCr Stride | CbCr Height (NV12) | CbCr Height (NV16) |
+|--------|----------|-------------|--------------------|--------------------|
+| **webOS** | input_stride/16 | **same as Y** | cbcr_height-1 | height-1 |
+| **HTC/Sony** | (width+15)/16-1 | **same as Y** | (height/2)-1 | height-1 |
+| **Samsung** (snapshot) | (width+15)/16-1 | **(width/2+15)/16-1** | (height/2)-1 | N/A |
+| **Our driver** | input_stride/16 | **same as Y** | cbcr_height-1 | height-1 |
+
+Samsung uniquely uses half-width for CbCr stride in snapshot mode (line 41187).
+All other vendors use identical stride for Y and CbCr.
+
+**Flag 0x2:** All vendors explicitly set via `| 2`, indicating linear memory with 16-byte aligned bursts.
 
 ## ADDR_CFG Register Format
 
@@ -468,11 +489,23 @@ For 640x480 CbCr (0x01300097):
 | **CbCr lines (NV12)** | cbcr_h + 64 | 240+64 = 304 | 512+64 = 576 |
 | **CbCr lines (NV16)** | cbcr_h | 480 | 1024 |
 
+**Burst offset derivation** (from webOS msm_vfe31.h line 427, 446-451):
+```c
+#define VFE_AXI_OUTPUT_BURST_LENGTH  4
+// burst_words = (bytes_per_line / 4) - (2 * AXI_BURST_LENGTH + 1)
+// Y WMs use AXI_BURST_LENGTH=8:    2*8+1 = 17
+// CbCr WMs use AXI_BURST_LENGTH=4: 2*4+1 = 9
+```
+
 **Cross-vendor verification:**
 - HTC: `burst = (stride >> 2) - 17` (decompiled liboemcamera.so)
 - Samsung: `burst = (stride >> 2) - 17` (decompiled liboemcamera.so)
 - Sony: `burst = (stride >> 2) - 17` (decompiled liboemcamera.so)
 - All three use identical burst offset (-17 for Y, -9 for CbCr)
+
+**Note:** Vendor HAL burst formulas could not be directly verified in decompiled
+binaries (AXI config is a pre-computed struct blob). The formulas are derived from
+webOS kernel headers and confirmed by matching register dump values.
 
 **webOS Register Values (640x480 preview, OUTPUT_1_AND_3):**
 - WM0_ADDR_CFG: 0x0000012F (burst=303, lines=0) - Preview Y
@@ -536,35 +569,62 @@ For 1280x1024 UYVY: input_stride = 2560, ub_depth = 2560/32 - 1 = 79
 Total UB is shared SRAM (~8KB). Each active WM needs enough depth to absorb DDR latency
 during AXI stalls. Sum of all ub_depth values must not exceed total physical UB size.
 
-### Cross-Vendor UB_CFG Verification (HTC, Samsung, Sony)
+### Cross-Vendor UB_CFG Verification (updated 2026-04-20)
 
-All three vendors add **+64 headroom** to the calculated UB depth:
+**CRITICAL FINDING:** Vendor HALs use a **proportional SRAM allocation** formula,
+NOT the simple stride-based formula used by webOS.
 
+**webOS formula** (matches register dumps, used by our driver):
 ```c
-// HTC (line 36153): uVar9 = (short)iVar16 + 0x40U & 0x3ff
-// Samsung (line 41244): uVar2 = (short)iVar8 + 0x40U & 0x3ff
-// Sony (line 28336): uVar3 = (short)iVar15 + 0x40U & 0x3ff
-// Sony (line 28355): local_cc = local_cc & 0xfc00 | (short)iVar15 + 0x40U & 0x3ff
-// Sony (line 28378): uVar10 = (short)iVar15 + 0x40U & 0x3ff
-// Sony (line 28396): local_6c = local_6c & 0xfc00 | (short)iVar15 + 0x40U & 0x3ff
-//
-// Formula: ub_depth_final = (calculated_depth + 64) & 0x3ff
+ub_depth = (input_stride / 32) - 1;
+// 640x480: (1280/32) - 1 = 39.  No +64 headroom in register dumps.
 ```
 
-**Cross-vendor UB_CFG summary:**
+**HTC/Sony formula** (decompiled HALs, magic constant 0x298 = 664):
+```c
+// HTC line 36131-36140, Sony line 28328-28336
+total_bytes = width * height * (is_422 ? 2 : 1.5);
+raw_depth = (pixel_count * 664) / total_bytes - 1;
+ub_depth = (raw_depth + 64) & 0x3ff;  // +64 headroom, 10-bit mask
+```
 
-| Parameter | HTC | Samsung | Sony | webOS | Formula |
-|-----------|-----|---------|------|-------|---------|
-| **UB depth** | `(stride>>5)-1+64` | `(stride>>5)-1+64` | `(stride>>5)-1+64` | `(stride/32)-1` | `(input_stride/32)-1` |
-| **UB height (Y)** | height-1 | height-1 | height-1 | height-1 | `height-1` |
-| **UB height (CbCr NV12)** | cbcr_h-1 | cbcr_h-1 | cbcr_h-1 | cbcr_h-1 | `height/2-1` |
-| **UB height (CbCr NV16)** | height-1 | height-1 | height-1 | height-1 | `height-1` |
-| **+64 headroom** | Yes | Yes | Yes | No (in dumps) | Vendor HALs add, webOS kernel does not |
+**Samsung formula** (decompiled HAL, magic constant 0x318 = 792):
+```c
+// Samsung line 41204-41210
+total_bytes = (int)(width * height * 1.5);
+raw_depth = (pixel_count * 792) / total_bytes - 1;
+ub_depth = (raw_depth + 64) & 0x3ff;  // +64 headroom, 10-bit mask
+```
 
-**Key Insight:** The `+ 0x40U` (= +64) is consistent across HTC/Samsung/Sony HAL binaries
-and provides FIFO headroom for AXI burst absorption. The `& 0x3ff` mask limits to 10 bits.
-webOS register dumps do NOT show the +64 (depth=39 not 103), suggesting the webOS HAL
-did not add headroom, or the kernel overrode it.
+**+64 headroom code evidence:**
+```c
+// HTC (line 36140): (short)iVar16 + 0x40U & 0x3ff
+// Samsung (line 41210): (short)iVar8 + 0x40U & 0x3ff
+// Sony (line 28336): (short)iVar15 + 0x40U & 0x3ff
+```
+
+**Cross-vendor UB_CFG comparison:**
+
+| Parameter | webOS | HTC | Samsung | Sony | Our Driver |
+|-----------|-------|-----|---------|------|------------|
+| **Depth formula** | stride/32-1 | proportional (x664) | proportional (x792) | proportional (x664) | stride/32-1 |
+| **Magic constant** | N/A | 0x298 (664) | 0x318 (792) | 0x298 (664) | N/A |
+| **+64 headroom** | **No** | **Yes** | **Yes** | **Yes** | **No** |
+| **640x480 depth** | 39 | ~505 | ~591 | ~505 | 39 |
+| **Y/CbCr depth** | Same | Same (NV16), separate (NV12) | Same (NV16), separate (NV12) | Same (NV16), separate (NV12) | Same |
+| **UB height (Y)** | height-1 | height-1 | height-1 | height-1 | height-1 |
+| **UB height (CbCr NV12)** | h/2-1 | h/2-1 | h/2-1 | h/2-1 | cbcr_h-1 |
+| **UB height (CbCr NV16)** | h-1 | h-1 | h-1 | h-1 | h-1 |
+| **10-bit mask** | implicit | `& 0x3ff` | `& 0x3ff` | `& 0x3ff` | none |
+
+**Key insights:**
+1. Magic constants (664 vs 792) likely represent total UB SRAM capacity in some unit,
+   distributed proportionally across outputs by pixel count. Samsung's higher constant
+   suggests larger UB SRAM in their VFE variant.
+2. Samsung chains UB offsets: Y depth+1 becomes CbCr offset (line 41212) for
+   non-overlapping SRAM partitioning.
+3. Our driver matches webOS register dumps exactly. The proportional formula would
+   be needed for multi-output scenarios with SRAM partitioning.
 
 ## Semi-Planar Format Handling
 
