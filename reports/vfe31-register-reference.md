@@ -898,8 +898,9 @@ For 640x480: stride=80, Y height=479, CbCr NV12 height=239.
 **Critical note on stride field:**
 - webOS and our driver compute: `input_stride / 16 = 1280/16 = 80`
 - Vendor HALs compute: `(pixel_width + 7) / 8 = (640+7)/8 = 80`
-- Both produce **80** for 640px because `input_stride = pixel_width * 2` and
-  `pixel_width * 2 / 16 = (pixel_width + 7) / 8` when pixel_width is a multiple of 8.
+- Both produce identical results for any width that is a multiple of 8:
+  `pixel_width * 2 / 16 = width / 8 = (width + 7) / 8`
+- Verified: 640px→80, 1280px→160, 320px→40, 1920px→240
 - The apparent 2x discrepancy (stride/16 vs width/8) is a notation difference, not a bug.
 
 ### WM Assignment Differences
