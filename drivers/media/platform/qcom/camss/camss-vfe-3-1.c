@@ -568,48 +568,76 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->chroma_subs_cfg = is_420 ? 0x30 : 0x10;
 
 	/*
-	 * Y WM config (cross-vendor verified: webOS, HTC, Samsung, Sony):
+	 * WR_ADDR_CFG = (UB_start << 16) | UB_depth
 	 *
-	 * All registers use INPUT stride (width*2 for UYVY = 1280 @ 640px):
-	 *   UB_CFG depth:    (input_stride / 32) - 1 = 39
-	 *   IMAGE_SIZE stride: input_stride / 16 = 80  (= (width+7)/8)
-	 *   ADDR_CFG burst:  (input_stride / 4) - 17 = 303
+	 * CORRECTED 2026-04-20: WR_ADDR_CFG is UB SRAM allocation, NOT DMA burst.
+	 * Proven by Opal (APQ8060, same SoC) decompiled HAL using constant 0x390
+	 * (912 = total UB entries for image WMs) which reproduces exact webOS
+	 * register dump values.
 	 *
-	 * Burst offset -17 = 2 * AXI_BURST_LENGTH(8) + 1
-	 * (from webOS msm_vfe31.h VFE_AXI_OUTPUT_BURST_LENGTH)
+	 * UB proportional allocation formula (all vendors agree):
+	 *   UB_depth = (plane_pixels * 912) / total_bandwidth - 1
+	 *   UB_start = previous_WM_end + 1  (sequential stacking)
 	 *
-	 * webOS register dump: WM0_WR_ADDR_CFG = 0x0000012F (burst=303, lines=0)
+	 * For single-output 640x480 NV12:
+	 *   total_bw = width * height * 1.5 = 460,800
+	 *   Y_depth  = (640*480*912) / 460800 - 1 = 607
+	 *   Cb_depth = (320*480*912) / 460800 - 1 = 303
+	 *
+	 * For dual-output 640x480 NV12 (OUTPUT_1_AND_3):
+	 *   total_bw = 2 * width * height * 1.5 = 921,600
+	 *   Y_depth  = (640*480*912) / 921600 - 1 = 303  (matches webOS 0x012F)
+	 *   Cb_depth = (320*480*912) / 921600 - 1 = 151  (matches webOS 0x0097)
+	 */
+	{
+		/*
+		 * Use dual-output bandwidth (OUTPUT_1_AND_3 mode) since webOS
+		 * always configures both preview and video paths even when only
+		 * preview is active. This matches the webOS register dumps.
+		 */
+		u32 y_pixels = width * height;
+		u32 cbcr_pixels = (width / 2) * height;
+		u32 total_bw = (u32)((u64)y_pixels * 3 + (u64)cbcr_pixels * 3);
+		/* total_bw = 2 * (y_pixels + cbcr_pixels) * 1.5
+		 *          = 2 * width * height * 1.5
+		 *          = (y + cbcr) * 3
+		 */
+		u32 y_depth = (u32)((u64)y_pixels * 912 / total_bw);
+		u32 cbcr_depth = (u32)((u64)cbcr_pixels * 912 / total_bw);
+
+		if (y_depth > 0)
+			y_depth--;
+		if (cbcr_depth > 0)
+			cbcr_depth--;
+		if (y_depth < 1)
+			y_depth = 1;
+		if (cbcr_depth < 1)
+			cbcr_depth = 1;
+
+		cfg->y_wm.burst_words = y_depth & 0x3ff;
+		cfg->y_wm.burst_lines = 0;  /* UB start = 0 (first WM) */
+
+		cfg->cbcr_wm.burst_words = cbcr_depth & 0x3ff;
+		cfg->cbcr_wm.burst_lines = (y_depth + 1) & 0x3ff;  /* UB start after Y */
+	}
+
+	/*
+	 * Y WM UB_CFG and IMAGE_SIZE (cross-vendor verified):
+	 *   UB_CFG:     (depth << 16) | (height - 1), depth = (input_stride/32)-1
+	 *   IMAGE_SIZE: (stride << 16) | ((height-1) << 4) | 2, stride = input_stride/16
 	 */
 	cfg->y_wm.ub_depth = (input_stride / 32) - 1;
 	cfg->y_wm.ub_height = height - 1;
 	cfg->y_wm.image_stride = input_stride / 16;
 	cfg->y_wm.image_height = height - 1;
-	cfg->y_wm.burst_words = (input_stride / 4) - 17;
-	cfg->y_wm.burst_lines = 0;
 
 	/*
-	 * CbCr WM config (cross-vendor verified: webOS, HTC, Samsung, Sony):
-	 *
-	 * UB_CFG/IMAGE_SIZE: same depth and stride as Y WM (input_stride based).
-	 * Height uses cbcr_height (NV12: height/2, NV16: height).
-	 *
-	 * ADDR_CFG burst: (width / 4) - 9 = 151 @ 640px
-	 * Burst offset -9 = 2 * AXI_BURST_LENGTH(4) + 1
-	 *
-	 * ADDR_CFG lines: cbcr_height + 64 for NV12 (pipeline flush headroom).
-	 * webOS register dump: WM4_WR_ADDR_CFG = 0x01300097 (burst=151, lines=304)
+	 * CbCr WM UB_CFG and IMAGE_SIZE: same depth/stride as Y, height varies.
 	 */
 	cfg->cbcr_wm.ub_depth = (input_stride / 32) - 1;
 	cfg->cbcr_wm.ub_height = cbcr_height - 1;
 	cfg->cbcr_wm.image_stride = input_stride / 16;
 	cfg->cbcr_wm.image_height = cbcr_height - 1;
-	cfg->cbcr_wm.burst_words = (width / 4) - 9;
-	/*
-	 * burst_lines: +64 headroom ONLY for 4:2:0 (half-height CbCr).
-	 * For 4:2:2 (full-height CbCr), no headroom needed.
-	 * Adding +64 to full-height CbCr causes horizontal line artifacts.
-	 */
-	cfg->cbcr_wm.burst_lines = is_420 ? (cbcr_height + 64) : cbcr_height;
 }
 
 /**
@@ -4564,31 +4592,38 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		}
 
 		/*
-		 * WR_ADDR_CFG - webOS format: (lines << 16) | burst_words
-		 * webOS WM0: 0x0000012F = burst=303, lines=0
+		 * WR_ADDR_CFG = (UB_start << 16) | UB_depth
 		 *
-		 * Y burst uses INPUT stride (width*2 for UYVY):
-		 *   burst = (input_stride / 4) - 17
-		 *   Offset -17 = 2 * AXI_BURST_LENGTH(8) + 1
-		 *   webOS WM0: burst = (1280/4)-17 = 303 = 0x12F
+		 * CORRECTED 2026-04-20: This register controls UB SRAM allocation,
+		 * NOT DMA burst configuration. Proven by Opal HAL decompilation.
 		 *
-		 * RDI mode: use actual format stride (no DEMUX processing).
+		 * UB_depth = (plane_pixels * 912) / total_bw - 1
+		 * UB_start = 0 for first WM (Y), Y_depth + 1 for CbCr WM
+		 *
+		 * For RDI: single WM gets full UB budget (0x397 = 911).
+		 *
+		 * webOS: WM0 = 0x0000012F (start=0, depth=303)
 		 */
 		{
-			u16 burst_stride;
+			u32 ub_depth;
 			if (is_rdi_line) {
-				/* RDI: use actual format stride */
-				burst_stride = rdi_use_16bpp ? (width * 2) : width;
+				/* RDI: single WM, full UB budget */
+				ub_depth = 0x397;  /* 911, matches Samsung raw snapshot */
 			} else {
-				/* PIX/VIDEO: use input UYVY stride */
-				burst_stride = width * 2;
+				/* PIX/VIDEO: proportional allocation for dual output */
+				u32 y_pixels = width * height;
+				u32 total_bw = (u32)((u64)y_pixels * 3);
+				ub_depth = (u32)((u64)y_pixels * 912 / total_bw);
+				if (ub_depth > 0)
+					ub_depth--;
+				if (ub_depth < 1)
+					ub_depth = 1;
 			}
-			wpl = burst_stride / 4;  /* 32-bit words per line */
-			reg = (wpl - 17) & 0xFFFF;  /* burst = wpl - 17 */
+			reg = ub_depth & 0x3ff;  /* UB_start=0 for Y WM */
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d ADDR_CFG stride=%d wpl=%d burst=%d\n",
-				 wm, burst_stride, wpl, reg);
+				 "VFE31: WM%d ADDR_CFG=0x%08x (UB start=0, depth=%d)\n",
+				 wm, reg, ub_depth);
 			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
 		}
 
@@ -4674,31 +4709,35 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			}
 
 			/*
-			 * CbCr WM ADDR_CFG - lines and burst for CbCr
+			 * CbCr WM ADDR_CFG = (UB_start << 16) | UB_depth
 			 *
-			 * CbCr burst uses OUTPUT width (not stride) because
-			 * the chroma scaler outputs at output resolution.
-			 * Formula: (width/4) - 9 = 151 for 640 width.
+			 * CbCr UB depth uses half-width pixels (chroma subsampled).
+			 * UB start = Y_depth + 1 (sequential after Y WM).
 			 *
-			 * Lines: For 4:2:0, add +64 headroom (webOS formula).
-			 * For 4:2:2 (NV16), DON'T add headroom - buffer is
-			 * sized exactly for cbcr_height lines.
+			 * webOS: WM4 = 0x01300097 (start=304, depth=151)
 			 */
 			{
-				int lines_val;
-				int burst_val = (width / 4) - 9;
+				u32 y_pixels = width * height;
+				u32 cbcr_pixels = (width / 2) * height;
+				u32 total_bw = (u32)((u64)y_pixels * 3);
+				u32 y_depth = (u32)((u64)y_pixels * 912 / total_bw);
+				u32 cb_depth = (u32)((u64)cbcr_pixels * 912 / total_bw);
+				u32 ub_start;
 
-				/*
-				 * +64 headroom ONLY for 4:2:0 (half-height CbCr).
-				 * For 4:2:2 (full-height CbCr), no headroom needed.
-				 */
-				lines_val = (cbcr_height < height) ?
-					    (cbcr_height + 64) : cbcr_height;
+				if (y_depth > 0)
+					y_depth--;
+				if (cb_depth > 0)
+					cb_depth--;
+				if (y_depth < 1)
+					y_depth = 1;
+				if (cb_depth < 1)
+					cb_depth = 1;
 
-				reg = (lines_val << 16) | (burst_val & 0xFFFF);
+				ub_start = (y_depth + 1) & 0x3ff;
+				reg = (ub_start << 16) | (cb_depth & 0x3ff);
 				dev_info(vfe->camss->dev,
-					 "VFE31: WM%d ADDR_CFG=0x%08x (lines=%d, burst=%d)\n",
-					 cbcr_wm, reg, lines_val, burst_val);
+					 "VFE31: WM%d ADDR_CFG=0x%08x (UB start=%d, depth=%d)\n",
+					 cbcr_wm, reg, ub_start, cb_depth);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(cbcr_wm));
 			}

@@ -452,70 +452,79 @@ All other vendors use identical stride for Y and CbCr.
 
 **Flag 0x2:** All vendors explicitly set via `| 2`, indicating linear memory with 16-byte aligned bursts.
 
-## ADDR_CFG Register Format
+## ADDR_CFG Register Format -- CORRECTED 2026-04-20
 
-Controls burst size and line count for DMA.
+**ADDR_CFG controls UB (Unified Buffer) SRAM allocation, NOT DMA burst config.**
 
-### Observed Values
+This was previously misidentified as `(burst_lines << 16) | burst_words`. The Opal
+decompilation (same APQ8060 HAL as Topaz) proves it is `(UB_start << 16) | UB_depth`.
+The Opal formula with constant 0x390 (912) reproduces the exact webOS register dump values.
 
-| Resolution | Y WM0 | CbCr WM4 |
-|------------|-------|----------|
-| 640x480 | 0x01e0012f | 0x01300097 |
-| 1280x1024 | 0x01e0012f | 0x02400137 |
-
-### Bit Layout
+### Bit Layout (CORRECTED)
 
 ```
-Bits [31:16] = lines
-Bits [15:0] = burst
+Bits [25:16] = UB start offset (entry index in UB SRAM, 10-bit)
+Bits [9:0]   = UB depth (number of entries allocated to this WM, 10-bit)
 ```
 
-For 640x480 Y (0x01e0012f):
-- lines = 0x01e0 = 480
-- burst = 0x012f = 303 = (640/4) - 1 + some offset?
+### Observed Values (webOS 640x480 NV12 OUTPUT_1_AND_3)
 
-For 640x480 CbCr (0x01300097):
-- lines = 0x0130 = 304 = 240 + 64 (headroom!)
-- burst = 0x0097 = 151 = (640/4) - 9
+| WM | Purpose | Value | UB Start | UB Depth | UB Range |
+|----|---------|-------|----------|----------|----------|
+| WM0 | Preview Y | 0x0000012F | 0 | 303 | [0..302] |
+| WM4 | Preview CbCr | 0x01300097 | 304 | 151 | [304..454] |
+| WM1 | Video Y | 0x01C8012F | 456 | 303 | [456..758] |
+| WM5 | Video CbCr | 0x02F80097 | 760 | 151 | [760..910] |
 
-**Vendor Burst Formulas (cross-vendor verified: HTC, Samsung, Sony, webOS):**
+**Total: 911 of 912 UB entries used (sequential stacking, +1 gap between WMs)**
 
-| Component | Formula | Example 640px | Example 1280px |
-|-----------|---------|---------------|----------------|
-| **Y burst** | (input_stride/4) - 17 | (1280/4)-17 = 303 | (2560/4)-17 = 623 |
-| **CbCr burst** | (width/4) - 9 | (640/4)-9 = 151 | (1280/4)-9 = 311 |
-| **Y lines (PIX/preview)** | 0 | 0 | 0 |
-| **Y lines (VIDEO)** | height - 24 | 480-24 = 456 | 1024-24 = 1000 |
-| **CbCr lines (NV12)** | cbcr_h + 64 | 240+64 = 304 | 512+64 = 576 |
-| **CbCr lines (NV16)** | cbcr_h | 480 | 1024 |
+**UB Depth Proportional Allocation Formula (CORRECTED 2026-04-20):**
 
-**Burst offset derivation** (from webOS msm_vfe31.h line 427, 446-451):
-```c
-#define VFE_AXI_OUTPUT_BURST_LENGTH  4
-// burst_words = (bytes_per_line / 4) - (2 * AXI_BURST_LENGTH + 1)
-// Y WMs use AXI_BURST_LENGTH=8:    2*8+1 = 17
-// CbCr WMs use AXI_BURST_LENGTH=4: 2*4+1 = 9
+The "burst" and "lines" fields are actually UB depth and UB start offset.
+All vendors use proportional UB allocation with constant **0x390 = 912**
+(the total UB SRAM available for image WMs):
+
+```
+UB_depth = floor(plane_pixels * 912 / total_bandwidth) - 1
+UB_start = previous_WM_end + 1  (sequential stacking)
 ```
 
-**Cross-vendor verification:**
-- HTC: `burst = (stride >> 2) - 17` (decompiled liboemcamera.so)
-- Samsung: `burst = (stride >> 2) - 17` (decompiled liboemcamera.so)
-- Sony: `burst = (stride >> 2) - 17` (decompiled liboemcamera.so)
-- All three use identical burst offset (-17 for Y, -9 for CbCr)
+Where:
+- `plane_pixels = width * height` for Y, `(width/2) * height` for CbCr
+- `total_bandwidth = sum of (width * height * 1.5) for all active outputs`
 
-**Note:** Vendor HAL burst formulas could not be directly verified in decompiled
-binaries (AXI config is a pre-computed struct blob). The formulas are derived from
-webOS kernel headers and confirmed by matching register dump values.
+**Verification against webOS register dumps (640x480 NV12, OUTPUT_1_AND_3):**
+```
+total_bw = 2 * (640 * 480 * 1.5) = 921,600
+Y_depth  = (640 * 480 * 912) / 921600 - 1 = 303   ✓ matches 0x012F
+Cb_depth = (320 * 480 * 912) / 921600 - 1 = 151   ✓ matches 0x0097
+```
 
-**webOS Register Values (640x480 preview, OUTPUT_1_AND_3):**
-- WM0_ADDR_CFG: 0x0000012F (burst=303, lines=0) - Preview Y
-- WM1_ADDR_CFG: 0x01C8012F (burst=303, lines=456) - Video Y
-- WM4_ADDR_CFG: 0x01300097 (burst=151, lines=304) - Preview CbCr
-- WM5_ADDR_CFG: 0x02F80097 (burst=151, lines=760) - Video CbCr
+**UB stacking (all 4 WMs in webOS OUTPUT_1_AND_3):**
+```
+WM0 (Prev Y):    start=0,   depth=303  → ADDR_CFG = 0x0000012F ✓
+WM4 (Prev CbCr): start=304, depth=151  → ADDR_CFG = 0x01300097 ✓
+WM1 (Vid Y):     start=456, depth=303  → ADDR_CFG = 0x01C8012F ✓
+WM5 (Vid CbCr):  start=760, depth=151  → ADDR_CFG = 0x02F80097 ✓
+Total: 911 of 912 UB entries used
+```
 
-**+64 headroom:** Pipeline flush requirement verified across all vendors. DEMUX/Chroma
-blocks process 16x16 macroblocks; extra lines ensure EOF isn't asserted before final
-AXI transactions complete.
+**Cross-vendor UB constant equivalence:**
+
+| Vendor | Constant | Headroom | Effective | Source |
+|--------|----------|----------|-----------|--------|
+| **webOS/Opal** | 912 (0x390) | None | 912 | Opal libqcameralib.so |
+| **HTC/Sony** | 664 (0x298) | +64/WM | 664 + 4×64 = 920 | liboemcamera.so |
+| **Samsung (multi)** | 664 (0x298) | +64/WM | 920 | liboemcamera.so |
+| **Samsung (single)** | 792 (0x318) | +64/WM | 792 + 2×64 = 920 | liboemcamera.so |
+
+All converge to ~912-920 total UB entries. The 8-entry difference (920 vs 912)
+is likely a margin for stats engine boundary alignment.
+
+**Previous interpretation was WRONG**: The value 303 was incorrectly identified
+as DMA burst words from `(input_stride/4)-17 = (1280/4)-17 = 303`. This was a
+numerical coincidence. The Opal decompilation with `0x390` constant proves the
+true formula is proportional UB allocation.
 
 ## UB_CFG Register Format
 
