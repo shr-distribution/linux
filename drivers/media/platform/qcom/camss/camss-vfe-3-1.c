@@ -3709,7 +3709,75 @@ static int vfe31_enable(struct vfe_line *line)
 		vfe->camif_pending = true;
 		vfe->camif_pending_wm = y_wm;
 		vfe->camif_pending_line_id = line->id;
+	} else if (line->id == VFE_LINE_VIDEO && vfe->stream_count > 0) {
+		/*
+		 * VIDEO joining already-running PIX stream.
+		 *
+		 * Samsung approach (vfe31_start_recording):
+		 * 1. AXI config pre-configures WM1+WM5 (addresses, sizes)
+		 * 2. start_recording() sets state = START_REQUESTED
+		 * 3. REG_UPDATE IRQ enables WM1+WM5 at frame boundary
+		 *
+		 * We do the same: configure WM1+WM5 directly (CAMIF is
+		 * already running from PIX), then let the recording state
+		 * machine enable them at the next frame boundary.
+		 *
+		 * DO NOT touch: CAMIF, DEMUX, scale, MODULE_CFG, AXI mode
+		 * (all already configured by PIX).
+		 */
+		dev_info(vfe->camss->dev,
+			 "VFE31: VIDEO joining active PIX stream (stream_count=%d)\n",
+			 vfe->stream_count);
+
+		/* Configure WM1+WM5 registers directly */
+		{
+			struct vfe31_line_config cfg = {0};
+			u8 cbcr_wm = (output->wm_num == 2) ?
+				      output->wm_idx[1] : 0;
+
+			vfe31_calc_pix_config(&cfg, width, height,
+					     bytesperline,
+					     pix->pixelformat);
+
+			/* Set buffer addresses */
+			cfg.y_wm.ping_addr = ping_addr;
+			cfg.y_wm.pong_addr = pong_addr;
+			if (output->wm_num == 2 && cfg.has_cbcr) {
+				cfg.cbcr_wm.ping_addr = ping_addr +
+							cfg.cbcr_offset;
+				cfg.cbcr_wm.pong_addr = pong_addr +
+							cfg.cbcr_offset;
+			}
+
+			vfe31_dump_line_config(vfe->camss->dev, &cfg);
+			vfe31_apply_line_config(vfe, &cfg, y_wm, cbcr_wm);
+
+			/* Update XBAR to include VIDEO routing */
+			writel_relaxed(vfe31_calc_xbar(true, true, false),
+				       vfe->base + VFE_0_BUS_XBAR_CFG1);
+
+			/* Update IRQ comp mask to include Group 2 (VIDEO) */
+			vfe->irq_comp_mask_shadow =
+				VFE31_IRQ_COMP_MASK_PIX_VIDEO;
+			writel_relaxed(vfe->irq_comp_mask_shadow,
+				       vfe->base +
+				       VFE_0_IRQ_COMPOSITE_MASK_0);
+			wmb();
+		}
+
+		/* Recording state machine enables WMs at frame boundary */
+		vfe31_recording_state = VFE31_REC_START_REQUESTED;
+		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: VIDEO WM%d+WM%d configured, waiting for REG_UPDATE to enable\n",
+			 y_wm, output->wm_num == 2 ? output->wm_idx[1] : -1);
 	} else {
+		/*
+		 * First stream (PIX or VIDEO alone): full CAMIF setup.
+		 * Defer to vfe31_configure_pending_camif() which runs
+		 * after CSIPHY is ready.
+		 */
 		dev_info(vfe->camss->dev,
 			 "VFE31: Deferring CAMIF config until CSIPHY ready (Y WM%d, line %d)\n",
 			 y_wm, line->id);
@@ -3718,11 +3786,7 @@ static int vfe31_enable(struct vfe_line *line)
 		vfe->camif_pending_wm = y_wm;
 		vfe->camif_pending_line_id = line->id;
 
-		/*
-		 * For VIDEO line on WM1+WM5: use recording state machine
-		 * to enable WMs at frame boundary (Samsung approach).
-		 * For PIX line on WM0+WM4: WMs are enabled directly.
-		 */
+		/* VIDEO starting alone also uses recording state */
 		if (line->id == VFE_LINE_VIDEO)
 			vfe31_recording_state = VFE31_REC_START_REQUESTED;
 	}
