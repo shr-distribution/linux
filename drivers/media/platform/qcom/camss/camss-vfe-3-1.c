@@ -3301,9 +3301,9 @@ static int vfe31_enable(struct vfe_line *line)
 	 * XBAR routing determines which WMs receive Y vs CbCr data.
 	 */
 	if (line->id == VFE_LINE_VIDEO) {
-		/* VIDEO line: WM0 (Y) + WM4 (CbCr) */
-		u8 video_y_wm = 0;
-		u8 video_cbcr_wm = 4;
+		/* VIDEO line: WM1 (Y) + WM5 (CbCr) - separate from PIX WMs */
+		u8 video_y_wm = VFE31_VIDEO_WM_Y;	/* WM1 */
+		u8 video_cbcr_wm = VFE31_VIDEO_WM_CBCR;/* WM5 */
 
 		wm_idx = vfe_reserve_wm_specific(vfe, video_y_wm, line->id);
 		if (wm_idx < 0) {
@@ -3716,6 +3716,14 @@ static int vfe31_enable(struct vfe_line *line)
 		vfe->camif_pending = true;
 		vfe->camif_pending_wm = y_wm;
 		vfe->camif_pending_line_id = line->id;
+
+		/*
+		 * For VIDEO line on WM1+WM5: use recording state machine
+		 * to enable WMs at frame boundary (Samsung approach).
+		 * For PIX line on WM0+WM4: WMs are enabled directly.
+		 */
+		if (line->id == VFE_LINE_VIDEO)
+			vfe31_recording_state = VFE31_REC_START_REQUESTED;
 	}
 
 	/*
@@ -3772,8 +3780,14 @@ static int vfe31_disable(struct vfe_line *line)
 	 *
 	 * For PIX/VIDEO lines, use the standard gen1 disable path.
 	 */
-	if (!is_rdi)
+	if (!is_rdi) {
+		/* Request recording stop for VIDEO line at next frame boundary */
+		if (line->id == VFE_LINE_VIDEO &&
+		    vfe31_recording_state == VFE31_REC_STARTED)
+			vfe31_recording_state = VFE31_REC_STOP_REQUESTED;
+
 		return vfe_gen1_disable(line);
+	}
 
 	dev_info(vfe->camss->dev,
 		 "VFE31: RDI disable (skipping SOF/REG_UPDATE wait)\n");
@@ -5460,7 +5474,7 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		 *
 		 * WM0 is always the Y plane WM for both PIX and VIDEO.
 		 */
-		bool is_y_wm = (wm == 0);  /* WM0 is always Y for both PIX and VIDEO */
+		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y);
 
 		if (is_y_wm) {
 			vfe->last_y_ping_addr = addr;
@@ -5527,7 +5541,7 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		 *
 		 * WM0 is always the Y plane WM for both PIX and VIDEO.
 		 */
-		bool is_y_wm = (wm == 0);  /* WM0 is always Y for both PIX and VIDEO */
+		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y);
 
 		if (is_y_wm) {
 			vfe->last_y_pong_addr = addr;
