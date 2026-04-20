@@ -30,16 +30,21 @@ Write Masters (WM0-WM7) → DMA to memory
 
 VFE31 has 8 Write Masters (WM0-WM7) organized into outputs:
 
-| WM | Output | Channel | Typical Use |
-|----|--------|---------|-------------|
-| WM0 | output0 | ch0 | Preview Y |
-| WM1 | output1 | ch0 | Video Y (or shared) |
-| WM2 | output2 | ch0 | RDI0 |
-| WM3 | output3 | ch0 | RDI1 |
-| WM4 | output0 | ch1 | Preview CbCr |
-| WM5 | output1 | ch1 | Video CbCr |
-| WM6 | output2 | ch1 | RDI2 |
-| WM7 | output3 | ch1 | Snapshot/RDI |
+| WM | Offset | Output | Channel | Use (OUTPUT_1_AND_3) | Use (ZSL/Snapshot) |
+|----|--------|--------|---------|---------------------|--------------------|
+| WM0 | 0x04C | output0 | ch0 | **Preview Y** | Preview Y / RAW bypass |
+| WM1 | 0x064 | output1 | ch0 | **Video Y** | Thumbnail Y |
+| WM2 | 0x07C | output2 | ch0 | (unused) | **Snapshot Y** |
+| WM3 | 0x094 | output3 | ch0 | (unused) | Snapshot CbCr (ZSL_ALL) |
+| WM4 | 0x0AC | output0 | ch1 | **Preview CbCr** | Preview CbCr |
+| WM5 | 0x0C4 | output1 | ch1 | **Video CbCr** | Thumbnail CbCr |
+| WM6 | 0x0DC | output2 | ch1 | (unused) | **Snapshot CbCr** |
+| WM7 | 0x0F4 | output3 | ch1 | (unused) | (unused by all vendors) |
+
+**CORRECTED 2026-04-20:** WM2/WM3/WM6 are NOT RDI write masters. VFE31 has
+no true RDI hardware. Raw bypass (CAMIF_TO_AXI, AXI=0x60) routes to **WM0**,
+confirmed by both webOS and Samsung kernels: `out1.ch0 = 0; /* raw */`.
+WM2+WM6 are for snapshot/ZSL output (OUTPUT_1_2_AND_3 mode).
 
 **Vendor WM Assignment Table (cross-vendor verified 2026-04-20):**
 
