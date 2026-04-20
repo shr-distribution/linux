@@ -2281,10 +2281,14 @@ main() {
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":4[fmt:UYVY8_1X16/640x480]' 2>&1 || true
 
-                # Link CSID to both PIX and VIDEO VFE entities
+                # Link CSID to PIX only - VIDEO joins via internal recording
+                # state machine (shares CAMIF, no separate CSID link needed)
                 media-ctl -d /dev/media0 -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
-                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_video\":0[1]' 2>&1 || true
+
+                # Set VFE entity formats
+                media-ctl -d /dev/media0 -V '\"msm_vfe0_pix\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_vfe0_video\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
 
                 # Set format on both video devices
                 v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
@@ -2295,7 +2299,7 @@ main() {
                 PIX_PID=\$!
                 sleep 2
 
-                echo 'Starting VIDEO capture...'
+                echo 'Starting VIDEO capture (joins running PIX stream)...'
                 timeout 10 v4l2-ctl -d /dev/video4 --stream-mmap --stream-count=3 --stream-to=/tmp/test_pix_video_vid.raw
                 VID_STATUS=\$?
 
@@ -2342,7 +2346,9 @@ main() {
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":4[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
-                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_video\":0[1]' 2>&1 || true
+
+                media-ctl -d /dev/media0 -V '\"msm_vfe0_pix\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_vfe0_video\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
 
                 v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
                 v4l2-ctl -d /dev/video4 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
@@ -2352,7 +2358,7 @@ main() {
                 PIX_PID=\$!
                 sleep 3
 
-                echo 'Starting VIDEO capture...'
+                echo 'Starting VIDEO capture (joins running PIX stream)...'
                 timeout 15 v4l2-ctl -d /dev/video4 --stream-mmap --stream-count=3 --stream-to=/tmp/test_pix_video_vid_1280.raw
                 wait \$PIX_PID 2>/dev/null
 
@@ -2395,9 +2401,11 @@ main() {
                 media-ctl -d /dev/media0 -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":4[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csid1\":6[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_vfe0_rdi5\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
-                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_rdi5\":0[1]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csid1\":6->\"msm_vfe0_rdi5\":0[1]' 2>&1 || true
 
                 v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
                 v4l2-ctl -d /dev/video5 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
@@ -2450,9 +2458,11 @@ main() {
                 media-ctl -d /dev/media0 -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":4[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csid1\":6[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_vfe0_rdi5\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
-                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_rdi5\":0[1]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csid1\":6->\"msm_vfe0_rdi5\":0[1]' 2>&1 || true
 
                 v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
                 v4l2-ctl -d /dev/video5 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
