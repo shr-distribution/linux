@@ -5442,12 +5442,17 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 * Lower 16 bits: ((height - 1) << 4) | 2
 		 *
 		 * CRITICAL: Use OUTPUT stride (Y plane bytes/line), not INPUT stride!
-		 * - PIX/VIDEO: DEMUX outputs Y at width bytes/line (stride=80 for 1280px)
+		 * - PIX/VIDEO: Use INPUT stride (UYVY = width*2) for IMAGE_SIZE
 		 * - RDI RAW8: 1 byte/pixel -> width
 		 * - RDI RAW16/UYVY: 2 bytes/pixel -> width * 2
 		 *
-		 * webOS used 80 (1280/16 = OUTPUT stride), not 160 (2560/16 = INPUT stride).
-		 * Using INPUT stride causes horizontal image duplication.
+		 * CRITICAL: webOS register dump shows IMAGE_SIZE uses INPUT stride:
+		 *   640x480: stride = 80 = 1280/16 = (width*2)/16 = INPUT stride
+		 *   NOT: stride = 40 = 640/16 = width/16 = OUTPUT stride
+		 *
+		 * The IMAGE_SIZE stride controls VFE internal pipeline timing, not
+		 * DMA output stride. VFE needs to know how many bytes per line are
+		 * coming from the sensor (INPUT stride = UYVY = width*2).
 		 */
 		{
 			u16 image_stride;
@@ -5455,8 +5460,8 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				/* RDI: use format stride (RAW8=width, RAW16=width*2) */
 				image_stride = rdi_use_16bpp ? (width * 2) : width;
 			} else {
-				/* PIX/VIDEO: Y plane at width bytes/line (post-DEMUX) */
-				image_stride = width;
+				/* PIX/VIDEO: Use INPUT stride (UYVY = width*2) */
+				image_stride = width * 2;
 			}
 			reg = ((image_stride / 16) & 0xFFFF) << 16;
 			reg |= ((height - 1) << 4) | 2;
@@ -5563,19 +5568,19 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(cbcr_wm));
 
 			/*
-			 * CbCr WM IMAGE_SIZE - use OUTPUT stride (same as Y WM)
+			 * CbCr WM IMAGE_SIZE - use INPUT stride (same as Y WM)
 			 *
-			 * webOS used stride=80 (1280/16) for both Y and CbCr IMAGE_SIZE.
-			 * CbCr plane is interleaved CbCrCbCr at width bytes/line,
-			 * matching Y plane stride (post-DEMUX output).
+			 * CRITICAL: webOS used stride=80 (1280/16 = INPUT stride) for
+			 * both Y and CbCr IMAGE_SIZE. This controls VFE pipeline timing,
+			 * not DMA output rate.
 			 */
 			{
-				u16 output_stride = width;  /* Post-DEMUX output stride */
-				reg = ((output_stride / 16) & 0xFFFF) << 16;
+				u16 input_stride = width * 2;  /* INPUT stride = UYVY */
+				reg = ((input_stride / 16) & 0xFFFF) << 16;
 				reg |= ((cbcr_height - 1) << 4) | 2;
 				dev_info(vfe->camss->dev,
 					 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d)\n",
-					 cbcr_wm, reg, output_stride, cbcr_height);
+					 cbcr_wm, reg, input_stride, cbcr_height);
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(cbcr_wm));
 			}
@@ -6051,10 +6056,9 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			/* VIDEO Y WM configuration */
 			/* Addresses set via wm_set_ping_addr/wm_set_pong_addr */
 
-			/* VIDEO Y WM IMAGE_SIZE */
+			/* VIDEO Y WM IMAGE_SIZE - use INPUT stride (width * 2) */
 			{
-				u16 image_stride = vfe31_calc_image_stride(width, bytesperline,
-									   false, pix->pixelformat);
+				u16 image_stride = width * 2;  /* INPUT stride for pipeline timing */
 				int img_height_val;
 
 				if (vfe31_video_y_img_height < 0)
@@ -6163,13 +6167,13 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(VFE31_VIDEO_WM_CBCR));
 
 				/*
-				 * VIDEO CbCr IMAGE_SIZE - use OUTPUT stride (same as Y WM)
+				 * VIDEO CbCr IMAGE_SIZE - use INPUT stride (width * 2)
 				 *
 				 * webOS used stride=80 (1280/16) for both Y and CbCr IMAGE_SIZE.
-				 * CbCr plane is interleaved at width bytes/line (post-DEMUX).
+				 * IMAGE_SIZE controls VFE pipeline timing, not DMA output.
 				 */
 				{
-					u16 output_stride = width;  /* Post-DEMUX output stride */
+					u16 input_stride = width * 2;  /* INPUT stride for pipeline timing */
 					int img_height_val;
 
 					if (vfe31_video_cbcr_img_height < 0)
@@ -6177,11 +6181,11 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 					else
 						img_height_val = vfe31_video_cbcr_img_height;  /* explicit */
 
-					reg = ((output_stride / 16) & 0xFFFF) << 16;
+					reg = ((input_stride / 16) & 0xFFFF) << 16;
 					reg |= ((img_height_val - 1) << 4) | 2;
 					dev_info(vfe->camss->dev,
 						 "VFE31: VIDEO WM5 IMAGE_SIZE stride=%d height=%d (s_param=%d h_param=%d)\n",
-						 output_stride, img_height_val, vfe31_cbcr_stride, vfe31_video_cbcr_img_height);
+						 input_stride, img_height_val, vfe31_cbcr_stride, vfe31_video_cbcr_img_height);
 				}
 				writel_relaxed(reg,
 					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(VFE31_VIDEO_WM_CBCR));
