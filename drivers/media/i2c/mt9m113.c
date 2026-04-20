@@ -51,11 +51,6 @@ module_param(mt9m113_skip_short_pkt, int, 0644);
 MODULE_PARM_DESC(mt9m113_skip_short_pkt,
 		 "Skip CUSTOM_SHORT_PKT write to match webOS (1=skip default)");
 
-static int mt9m113_fake_yuv;
-module_param(mt9m113_fake_yuv, int, 0644);
-MODULE_PARM_DESC(mt9m113_fake_yuv,
-		 "Use YUV MIPI data type for RAW output (debug only)");
-
 /* MT9M113 Context V4L2 Control */
 #define V4L2_CID_MT9M113_CONTEXT	(V4L2_CID_USER_BASE + 0x1001)
 #define MT9M113_CONTEXT_A		0	/* 640x480 preview */
@@ -1550,7 +1545,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		bool is_bayer = (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
 				 format->code == MEDIA_BUS_FMT_SGRBG10_1X10);
 
-		if (is_bayer && !mt9m113_fake_yuv) {
+		if (is_bayer) {
 			if (format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
 				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW10;
 			else
