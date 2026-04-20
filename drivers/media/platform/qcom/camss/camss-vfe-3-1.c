@@ -734,6 +734,49 @@ static void vfe31_apply_wm_config(struct vfe_device *vfe, u8 wm,
 	wmb();
 }
 
+/**
+ * vfe31_apply_line_config - Apply complete line configuration to hardware
+ * @vfe: VFE device
+ * @cfg: Pre-calculated line configuration
+ * @y_wm: Y plane Write Master index
+ * @cbcr_wm: CbCr plane Write Master index (ignored if !has_cbcr)
+ *
+ * Applies the calculated configuration to all relevant WMs.
+ * Call vfe31_calc_pix_config() or vfe31_calc_rdi_config() first
+ * to populate the cfg structure.
+ */
+static void __maybe_unused vfe31_apply_line_config(struct vfe_device *vfe,
+				    const struct vfe31_line_config *cfg,
+				    u8 y_wm, u8 cbcr_wm)
+{
+	/* Apply Y WM configuration */
+	vfe31_apply_wm_config(vfe, y_wm, &cfg->y_wm);
+
+	/* Apply CbCr WM configuration if semi-planar format */
+	if (cfg->has_cbcr)
+		vfe31_apply_wm_config(vfe, cbcr_wm, &cfg->cbcr_wm);
+}
+
+/**
+ * vfe31_calc_xbar - Calculate XBAR_CFG1 routing value
+ * @pix_active: True if PIX line is active
+ * @video_active: True if VIDEO line is active
+ *
+ * XBAR_CFG1 routes DEMUX outputs to Write Masters:
+ * - PIX only:      0x1A03 (Y->WM0, CbCr->WM4)
+ * - PIX + VIDEO:   0x1A1B (Y->WM0+WM1, CbCr->WM4)
+ * - VIDEO only:    0x1A03 (same as PIX only, reuses WM0/WM4)
+ *
+ * Returns: XBAR_CFG1 value to write to register 0x044
+ */
+static u16 __maybe_unused vfe31_calc_xbar(bool pix_active, bool video_active)
+{
+	if (pix_active && video_active)
+		return VFE31_XBAR_PIX_VIDEO;  /* 0x1A1B */
+	else
+		return VFE31_XBAR_PIX_ONLY;   /* 0x1A03 */
+}
+
 /* External module parameters from camss-vfe.c */
 extern int software_sof_enable;
 extern int software_eof_enable;
