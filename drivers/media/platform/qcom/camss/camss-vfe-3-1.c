@@ -15,6 +15,7 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/ktime.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 
 #include "camss.h"
@@ -620,13 +621,13 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 		 */
 		u32 y_pixels = width * height;
 		u32 total_bw = is_420 ? (y_pixels * 3) : (y_pixels * 4);
-		u32 y_depth = (u32)((u64)y_pixels * 912 / total_bw);
+		u32 y_depth = div_u64((u64)y_pixels * 912, total_bw);
 		u32 cbcr_depth;
 
 		if (is_420) {
 			/* NV12: CbCr at half-width data rate */
 			u32 cbcr_pixels = (width / 2) * height;
-			cbcr_depth = (u32)((u64)cbcr_pixels * 912 / total_bw);
+			cbcr_depth = div_u64((u64)cbcr_pixels * 912, total_bw);
 		} else {
 			/* NV16: CbCr same depth as Y (HTC/Sony verified) */
 			cbcr_depth = y_depth;
@@ -4983,7 +4984,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				u32 y_pixels = width * height;
 				u32 total_bw = fmt_is_420 ?
 					(y_pixels * 3) : (y_pixels * 4);
-				ub_depth = (u32)((u64)y_pixels * 912 / total_bw);
+				ub_depth = div_u64((u64)y_pixels * 912, total_bw);
 				if (ub_depth > 0)
 					ub_depth--;
 				if (ub_depth < 1)
@@ -5092,13 +5093,13 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				u32 y_pixels = width * height;
 				u32 total_bw = fmt_is_420 ?
 					(y_pixels * 3) : (y_pixels * 4);
-				u32 y_depth = (u32)((u64)y_pixels * 912 / total_bw);
+				u32 y_depth = div_u64((u64)y_pixels * 912, total_bw);
 				u32 cb_depth;
 				u32 ub_start;
 
 				if (fmt_is_420) {
 					u32 cbcr_pixels = (width / 2) * height;
-					cb_depth = (u32)((u64)cbcr_pixels * 912 / total_bw);
+					cb_depth = div_u64((u64)cbcr_pixels * 912, total_bw);
 				} else {
 					cb_depth = y_depth;
 				}
