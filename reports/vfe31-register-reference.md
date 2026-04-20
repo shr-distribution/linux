@@ -778,6 +778,199 @@ From webOS kernel dumps:
 | MODULE_CFG | 0x01C00C0C | Enables DEMUX etc |
 | BUS_CFG | 0x02AAA771 | Bus arbitration |
 
+## Cross-Vendor AXI Config Blob Analysis (2026-04-20)
+
+All vendor userspace HALs construct an AXI config blob containing pre-computed WM register
+values, sent to the kernel via `MSM_CAM_IOCTL_AXI_CONFIG` (ioctl 0x40046d10). The kernel
+writes this blob directly to VFE registers at offset 0x038 (`V31_AXI_OUT_OFF`), then
+patches in buffer physical addresses.
+
+### Blob Sizes and Construction
+
+| Vendor | SoC | Blob Size | Construction Method | Source |
+|--------|-----|-----------|-------------------|--------|
+| **webOS** | APQ8060 | 188 bytes (0xBC) | Unknown (userspace HAL) | kernel: msm_vfe31.c:787 |
+| **HTC** | MSM8660 | 216 bytes (0xD8) | Stack buffer in `axi_config()` | liboemcamera.so:36072 |
+| **Samsung** | MSM8660 | 212 bytes (0xD4) | Global struct at cfgctrl+0x20 | liboemcamera.so:41834 |
+| **Sony** | MSM8960 | 224 bytes (0xE0) | Stack buffer in `axi_config()` | liboemcamera.so:28274 |
+
+### Blob-to-VFE Register Layout
+
+The first 5 words are global AXI control, followed by 8 WM blocks of 6 registers each:
+
+```
+Blob+0x00  → VFE 0x038  AXI_OUT_CFG (BUS_CMD reload mask)
+Blob+0x04  → VFE 0x03C  BUS_CFG
+Blob+0x08  → VFE 0x040  AXI_OUT_MODE (XBAR_CFG0)
+Blob+0x0C  → VFE 0x044  XBAR_CFG1
+Blob+0x10  → VFE 0x048  Reserved
+Blob+0x14  → VFE 0x04C  WM0_WR_CFG
+Blob+0x18  → VFE 0x050  WM0_WR_PING_ADDR
+Blob+0x1C  → VFE 0x054  WM0_WR_PONG_ADDR
+Blob+0x20  → VFE 0x058  WM0_WR_ADDR_CFG
+Blob+0x24  → VFE 0x05C  WM0_WR_UB_CFG
+Blob+0x28  → VFE 0x060  WM0_WR_IMAGE_SIZE
+...repeat for WM1-WM7 at +0x18 each...
+Blob+0xB8  → VFE 0x0F0  WM7_WR_IMAGE_SIZE (end of standard 188-byte region)
+```
+
+### Side-by-Side: Global Registers (640x480 NV12, OUTPUT_1_AND_3)
+
+| Register | VFE Offset | webOS Dump | HTC Blob | Samsung Blob | Notes |
+|----------|-----------|------------|----------|-------------|-------|
+| AXI_OUT_CFG | 0x038 | 0x00003FFF | 0x00003FFF | 0x00003FFF | All WMs enabled |
+| BUS_CFG | 0x03C | 0x02AAA771 | 0x02AAA771 | 0x02AAA771 | All vendors identical |
+| AXI_OUT_MODE | 0x040 | 0x00000001 | 0x00000200 | 0x00000001 | HTC: format flag, not mode |
+| XBAR_CFG1 | 0x044 | 0x00001A1B | 0x00001B01 | 0x00001A1B | HTC: byte-swapped? |
+
+Note: HTC writes a **format descriptor** (0x200 for NV12) into the AXI_OUT_MODE position,
+not the routing mode (0x01). The HTC kernel likely overwrites this with the actual mode.
+Samsung and webOS write the standard OUTPUT_1_AND_3 mode (0x01).
+
+### Side-by-Side: WM0 (Preview Y) at 640x480
+
+| Register | VFE | webOS Dump | HTC Blob | Samsung Blob | Formula |
+|----------|-----|------------|----------|-------------|---------|
+| WR_ADDR_CFG | 0x058 | **0x0000012F** | **0x0000011C** | UB alloc | See below |
+| WR_UB_CFG | 0x05C | **0x002701DF** | **0x002701DF** | **0x002701DF** | (39<<16)\|479 |
+| WR_IMAGE_SIZE | 0x060 | **0x00501DF2** | **0x00501DF2** | **0x00501DF2** | (80<<16)\|0x1DF2 |
+
+### Side-by-Side: WM4 (Preview CbCr) at 640x480 NV12
+
+| Register | VFE | webOS Dump | HTC Blob | Samsung Blob | Formula |
+|----------|-----|------------|----------|-------------|---------|
+| WR_ADDR_CFG | 0x0B8 | **0x01300097** | **0x011D00AD** | UB alloc | See below |
+| WR_UB_CFG | 0x0BC | **0x002700EF** | **0x002700EF** | **0x002700EF** | (39<<16)\|239 |
+| WR_IMAGE_SIZE | 0x0C0 | **0x00500EF2** | **0x00500EF2** | **0x00500EF2** | (80<<16)\|0x0EF2 |
+
+**UB_CFG and IMAGE_SIZE match perfectly across all vendors.**
+**ADDR_CFG differs** - see analysis below.
+
+### WR_ADDR_CFG: Two Different Interpretations
+
+The WR_ADDR_CFG register (offset +0x0C within each WM block) is used differently:
+
+**webOS interpretation** (standard DMA config):
+```
+Bits [31:16] = burst_lines (DMA line count)
+Bits [15:0]  = burst_words (32-bit words per burst)
+
+WM0 (Y):    burst=303=(1280/4)-17,  lines=0
+WM4 (CbCr): burst=151=(640/4)-9,    lines=304=240+64
+```
+
+**HTC interpretation** (UB SRAM allocation):
+```
+Bits [25:16] = UB start offset (sequential stacking)
+Bits [9:0]   = UB depth (proportional allocation + 64 headroom)
+
+WM0: depth=284, start=0
+WM1: depth=173, start=285 (=284+1)
+WM4: depth=284, start=459 (=285+173+1)
+WM5: depth=173, start=744 (=459+284+1)
+```
+
+**Samsung interpretation**: Same proportional UB allocation as HTC, written to
+the same register positions. The kernel post-processes these values.
+
+### WR_UB_CFG: All Vendors Agree
+
+```
+Bits [24:16] = depth = (input_stride / 32) - 1     [webOS: simple formula]
+                     or (pixels * K / total) - 1 + 64  [HTC/Samsung: proportional]
+Bits [11:0]  = height - 1  (Y: height-1, CbCr NV12: height/2-1)
+```
+
+For 640x480: depth=39, Y height=479, CbCr height=239.
+The depth value (39) matches across all vendors despite different formulas, because
+webOS's simple formula and the proportional formula converge for single-output scenarios.
+
+### WR_IMAGE_SIZE: All Vendors Agree
+
+```
+Bits [27:16] = stride = (pixel_width + 7) / 8      [in 8-byte units]
+Bits [15:4]  = height - 1
+Bits [1:0]   = 2  (linear memory, 16-byte aligned bursts)
+```
+
+For 640x480: stride=80, Y height=479, CbCr NV12 height=239.
+
+**Critical note on stride field:**
+- webOS and our driver compute: `input_stride / 16 = 1280/16 = 80`
+- Vendor HALs compute: `(pixel_width + 7) / 8 = (640+7)/8 = 80`
+- Both produce **80** for 640px because `input_stride = pixel_width * 2` and
+  `pixel_width * 2 / 16 = (pixel_width + 7) / 8` when pixel_width is a multiple of 8.
+- The apparent 2x discrepancy (stride/16 vs width/8) is a notation difference, not a bug.
+
+### WM Assignment Differences
+
+| Output | webOS (kernel) | HTC (HAL blob) | Samsung (HAL blob) |
+|--------|---------------|----------------|-------------------|
+| Preview Y | WM0 | WM0 | WM0 |
+| Preview CbCr | **WM4** | **WM1** | **WM4** |
+| Video Y | **WM1** | **WM4** | **WM1** |
+| Video CbCr | WM5 | WM5 | WM5 |
+
+**HTC swaps the CbCr/Video WM pairing** compared to webOS and Samsung:
+- webOS/Samsung: preview=WM0+WM4 (ch0+ch1 of output0), video=WM1+WM5 (ch0+ch1 of output2)
+- HTC: preview=WM0+WM1 (sequential), video=WM4+WM5 (sequential)
+
+The XBAR routing (0x1A1B) determines which WMs actually receive data regardless of
+the blob's WM assignment. XBAR sends Y→WM0+WM1 and CbCr→WM4. The HAL blob configures
+PING/PONG addresses and sizes, while XBAR routes the actual pixel data.
+
+### UB SRAM Budget and Proportional Allocation
+
+**Total VFE31 UB SRAM: 1024 entries** (indices 0-1023)
+
+| Region | Entries | Purpose |
+|--------|---------|---------|
+| 0-911 | 912 | Image write masters |
+| 912-919 | 8 | AEC stats |
+| 920-927 | 8 | AF stats |
+| 928-943 | 16 | AWB stats |
+| 944-951 | 8 | RS stats |
+| 952-983 | 32 | CS stats |
+| 984-1015 | 32 | HIST stats |
+| 1016-1023 | 8 | SKIN stats |
+
+**Proportional allocation formula** (HTC/Samsung/Sony HALs):
+```
+total_ub = 920 - 64 * num_active_wms
+
+For each WM:
+  ub_depth = floor(plane_pixels * total_ub / total_weighted_pixels) - 1
+  if (ub_depth < 1) ub_depth = 1
+  ub_value = (ub_depth + 64) & 0x3ff
+
+UB regions are stacked sequentially:
+  WM[0].start = 0
+  WM[n].start = WM[n-1].start + WM[n-1].depth + 1
+```
+
+**Magic constants (total_ub when num_wms=4):**
+
+| Constant | Decimal | Used By | Mode | Derivation |
+|----------|---------|---------|------|------------|
+| 0x298 | 664 | HTC, Sony, Samsung | Multi-output (preview+video) | 920 - 64*4 = 664 |
+| 0x318 | 792 | Samsung only | Single-output (viewfinder) | 920 - 64*2 = 792 |
+
+The constants are NOT arbitrary - they equal `920 - 64 * num_active_wms`:
+- 4 WMs active: 920 - 256 = **664** (0x298)
+- 2 WMs active: 920 - 128 = **792** (0x318)
+
+The 920 base = 912 usable entries + 8 margin. The 64-per-WM reservation provides
+FIFO headroom for AXI burst absorption during DDR stalls.
+
+### Sony (VFE32) Differences
+
+Sony Xperia S uses MSM8960 with VFE32, which has a slightly different register layout:
+- WR_CFG carries expanded fields: `(stride/8 << 16) | ((height-1) << 4) | 2`
+- The VFE32 kernel overwrites WR_CFG with just enable=1, discarding HAL values
+- WR_ADDR_CFG positions are zeroed (burst/lines computed by kernel)
+- WM pairing: WM0+WM1 for preview, WM4+WM5 for video (same as HTC)
+- UB formula identical to HTC (constant 0x298 = 664)
+
 ## Open Questions - ANSWERED (via Gemini/Copilot Review)
 
 ### 1. XBAR bits [15:8]: What does 0x1A prefix mean?
