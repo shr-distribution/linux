@@ -53,8 +53,9 @@ enum vfe_line_id {
 	VFE_LINE_RDI1 = 1,
 	VFE_LINE_RDI2 = 2,
 	VFE_LINE_PIX = 3,
-	VFE_LINE_VIDEO = 4,	/* VFE31: dual output via WM4/WM5 */
-	VFE_LINE_NUM_MAX = 5
+	VFE_LINE_VIDEO = 4,	/* VFE31: dual output via WM1/WM5 */
+	VFE_LINE_ZSL = 5,	/* VFE31: snapshot output via WM2/WM6 */
+	VFE_LINE_NUM_MAX = 6
 };
 
 struct vfe_output {
