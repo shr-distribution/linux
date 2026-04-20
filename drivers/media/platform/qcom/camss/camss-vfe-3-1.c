@@ -2870,6 +2870,7 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	struct vfe_device *vfe = dev;
 	static ktime_t first_irq_time;
 	static int irq_count;
+	static int camif_error_count;
 	static u32 last_ping_pong;  /* Track PP transitions between IRQs */
 	ktime_t now;
 	u32 value0, value1, ping_pong;
@@ -2880,11 +2881,22 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	/* Read ping-pong status to see if data is reaching AXI bus */
 	ping_pong = readl_relaxed(vfe->base + VFE_0_BUS_PING_PONG_STATUS);
 
-	irq_count++;
 	now = ktime_get();
+
+	/*
+	 * Detect new streaming session: if >1 second since last IRQ,
+	 * reset all per-session counters. This ensures debug dumps and
+	 * CAMIF error warnings work correctly across stream restarts.
+	 */
+	if (irq_count == 0 || ktime_ms_delta(now, first_irq_time) > 1000 * (irq_count + 1)) {
+		irq_count = 0;
+		camif_error_count = 0;
+	}
+
+	irq_count++;
 	if (irq_count == 1) {
 		first_irq_time = now;
-		last_ping_pong = ping_pong;  /* Initialize on first IRQ */
+		last_ping_pong = ping_pong;
 	}
 
 	/*
@@ -2958,7 +2970,6 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		u32 expected_pixels = window_width_cfg & 0x3FFF;    /* width_bytes */
 		u32 received_lines = (camif_status >> 16) & 0x3FFF;
 		u32 received_pixels = camif_status & 0x3FFF;
-		static int camif_error_count;
 
 		camif_error_count++;
 		if (camif_error_count <= 3) {
@@ -2991,9 +3002,10 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 
 			/*
 			 * Manually trigger frame completion for active WMs.
-			 * This simulates what would happen if EOF fired normally.
+			 * Use vfe31_wm_done() directly with the ping_pong
+			 * snapshot to avoid re-reading stale HW state.
 			 */
-			vfe->isr_ops.wm_done(vfe, 0);
+			vfe31_wm_done(vfe, 0, ping_pong);
 
 			/* Notify all lines of reg_update */
 			for (i = 0; i < vfe->res->line_num; i++)
@@ -3068,7 +3080,7 @@ static int vfe31_enable(struct vfe_line *line)
 	struct vfe_device *vfe = to_vfe(line);
 	struct vfe_output *output = &line->output;
 	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
-	u32 ping_addr, pong_addr;
+	u32 ping_addr = 0, pong_addr = 0;
 	u16 width, height, cbcr_height, bytesperline;
 	u32 reg;
 	unsigned long flags;
@@ -3386,6 +3398,11 @@ static int vfe31_enable(struct vfe_line *line)
 
 	if (!ping_addr) {
 		dev_err(vfe->camss->dev, "VFE31: No buffers available!\n");
+		spin_lock_irqsave(&vfe->output_lock, flags);
+		for (wm_idx = 0; wm_idx < output->wm_num; wm_idx++)
+			vfe_release_wm(vfe, output->wm_idx[wm_idx]);
+		output->state = VFE_OUTPUT_OFF;
+		spin_unlock_irqrestore(&vfe->output_lock, flags);
 		return -EINVAL;
 	}
 
