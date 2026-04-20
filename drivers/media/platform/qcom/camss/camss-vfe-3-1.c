@@ -222,6 +222,7 @@ enum vfe31_rec_state {
 };
 
 static enum vfe31_rec_state vfe31_recording_state = VFE31_REC_IDLE;
+static enum vfe31_rec_state vfe31_zsl_state = VFE31_REC_IDLE;
 
 /*
  * ============================================================================
@@ -285,6 +286,9 @@ MODULE_PARM_DESC(vfe31_force_422,
 #define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00000011  /* Group 0: WM0+WM4 */
 #define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00220011  /* Group 0: WM0+WM4, Group 2: WM1+WM5 */
 #define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00220000  /* Group 2: WM1+WM5 */
+#define VFE31_IRQ_COMP_MASK_ZSL_ONLY	0x00004400  /* Group 1: WM2+WM6 */
+#define VFE31_IRQ_COMP_MASK_PIX_ZSL	0x00004411  /* Group 0: WM0+WM4, Group 1: WM2+WM6 */
+#define VFE31_IRQ_COMP_MASK_PIX_VID_ZSL	0x00224411  /* Group 0: WM0+WM4, Group 1: WM2+WM6, Group 2: WM1+WM5 */
 
 /* Module param for manual override/testing */
 static int vfe31_irq_comp_mask = 0;  /* 0 = auto-select based on active lines */
@@ -1599,6 +1603,18 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
  */
 #define VFE31_VIDEO_WM_Y		1
 #define VFE31_VIDEO_WM_CBCR		5
+
+/*
+ * ZSL/Snapshot Write Master assignments per webOS msm_vfe31.c:
+ *   output2.ch0 = WM2 (ZSL Y)
+ *   output2.ch1 = WM6 (ZSL CbCr)
+ *
+ * ZSL (Zero Shutter Lag) captures full-resolution snapshot frames
+ * while preview continues on WM0+WM4. XBAR byte2 (bits[23:16])
+ * routes data to output2 channels (WM2+WM6).
+ */
+#define VFE31_ZSL_WM_Y			2  /* WM2 = output2.ch0 (snapshot Y) */
+#define VFE31_ZSL_WM_CBCR		6  /* WM6 = output2.ch1 (snapshot CbCr) */
 
 /*
  * VFE31 Dummy Buffer for Unused Write Masters
@@ -3061,6 +3077,29 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			vfe31_recording_state = VFE31_REC_IDLE;
 		}
 
+		/* Process ZSL state machine at frame boundary */
+		if (vfe31_zsl_state == VFE31_REC_START_REQUESTED) {
+			/* Enable ZSL WMs at frame boundary */
+			writel_relaxed(BIT(0), vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_Y));
+			writel_relaxed(BIT(0), vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
+			vfe31_zsl_state = VFE31_REC_STARTED;
+			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+			dev_info(vfe->camss->dev, "VFE31: ZSL started (WM%d+WM%d enabled)\n",
+				 VFE31_ZSL_WM_Y, VFE31_ZSL_WM_CBCR);
+		} else if (vfe31_zsl_state == VFE31_REC_STOP_REQUESTED) {
+			/* Disable ZSL WMs at frame boundary */
+			writel_relaxed(0, vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_Y));
+			writel_relaxed(0, vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
+			vfe31_zsl_state = VFE31_REC_STOPPED;
+			dev_info(vfe->camss->dev, "VFE31: ZSL stopped\n");
+		} else if (vfe31_zsl_state == VFE31_REC_STOPPED) {
+			vfe31_zsl_state = VFE31_REC_IDLE;
+		}
+
 		for (i = 0; i < vfe->res->line_num; i++)
 			vfe->isr_ops.reg_update(vfe, i);
 	}
@@ -3085,6 +3124,11 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 * = bit 8 = WM0 in Group 1 → COMPOSITE_DONE_1
 	 */
 	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(1)) {
+		/* ZSL: WM2+WM6 are in Group 1 */
+		if (vfe->wm_output_map[VFE31_ZSL_WM_Y] != VFE_LINE_NONE)
+			vfe31_wm_done(vfe, VFE31_ZSL_WM_Y, ping_pong);
+
+		/* RDI: WM0 is in Group 1 for raw bypass mode */
 		if (vfe->wm_output_map[0] != VFE_LINE_NONE) {
 			enum vfe_line_id lid = vfe->wm_output_map[0];
 
@@ -3342,6 +3386,41 @@ static int vfe31_enable(struct vfe_line *line)
 			vfe->wm_output_map[wm_idx] = VFE_LINE_NONE;
 		}
 		dev_info(vfe->camss->dev, "VFE31: VIDEO line using WM%d(Y), WM%d(CbCr)\n",
+			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
+	} else if (line->id == VFE_LINE_ZSL) {
+		/* ZSL/Snapshot line: WM2 (Y) + WM6 (CbCr) */
+		u8 zsl_y_wm = VFE31_ZSL_WM_Y;		/* WM2 */
+		u8 zsl_cbcr_wm = VFE31_ZSL_WM_CBCR;	/* WM6 */
+
+		wm_idx = vfe_reserve_wm_specific(vfe, zsl_y_wm, line->id);
+		if (wm_idx < 0) {
+			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for ZSL Y\n",
+				zsl_y_wm);
+			output->state = VFE_OUTPUT_OFF;
+			spin_unlock_irqrestore(&vfe->output_lock, flags);
+			return wm_idx;
+		}
+		output->wm_idx[0] = wm_idx;
+
+		if (output->wm_num == 2) {
+			/*
+			 * Reserve CbCr WM but do NOT map to this line.
+			 * Both WMs share the same frame buffer. Only the
+			 * Y WM triggers buffer completion.
+			 */
+			wm_idx = vfe_reserve_wm_specific(vfe, zsl_cbcr_wm, line->id);
+			if (wm_idx < 0) {
+				dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for ZSL CbCr\n",
+					zsl_cbcr_wm);
+				vfe_release_wm(vfe, output->wm_idx[0]);
+				output->state = VFE_OUTPUT_OFF;
+				spin_unlock_irqrestore(&vfe->output_lock, flags);
+				return wm_idx;
+			}
+			output->wm_idx[1] = wm_idx;
+			vfe->wm_output_map[wm_idx] = VFE_LINE_NONE;
+		}
+		dev_info(vfe->camss->dev, "VFE31: ZSL line using WM%d(Y), WM%d(CbCr)\n",
 			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
 	} else if (line->id == VFE_LINE_PIX) {
 		/* PIX line: WM0 (Y) + WM4 (CbCr) */
@@ -3761,6 +3840,71 @@ static int vfe31_enable(struct vfe_line *line)
 		dev_info(vfe->camss->dev,
 			 "VFE31: VIDEO WM%d+WM%d configured, waiting for REG_UPDATE to enable\n",
 			 y_wm, output->wm_num == 2 ? output->wm_idx[1] : -1);
+	} else if (line->id == VFE_LINE_ZSL && vfe->stream_count > 0) {
+		/*
+		 * ZSL joining already-running PIX stream.
+		 *
+		 * Same approach as VIDEO-joins-PIX: configure WM2+WM6 directly
+		 * (CAMIF is already running from PIX), then let the ZSL state
+		 * machine enable them at the next frame boundary.
+		 *
+		 * DO NOT touch: CAMIF, DEMUX, scale, MODULE_CFG, AXI mode
+		 * (all already configured by PIX).
+		 */
+		dev_info(vfe->camss->dev,
+			 "VFE31: ZSL joining active PIX stream (stream_count=%d)\n",
+			 vfe->stream_count);
+
+		/* Configure WM2+WM6 registers directly */
+		{
+			struct vfe31_line_config cfg = {0};
+			u8 cbcr_wm = (output->wm_num == 2) ?
+				      output->wm_idx[1] : 0;
+			bool video_active =
+				(vfe->line[VFE_LINE_VIDEO].output.state == VFE_OUTPUT_ON ||
+				 vfe->line[VFE_LINE_VIDEO].output.state == VFE_OUTPUT_CONTINUOUS);
+
+			vfe31_calc_pix_config(&cfg, width, height,
+					     bytesperline,
+					     pix->pixelformat);
+
+			/* Set buffer addresses */
+			cfg.y_wm.ping_addr = ping_addr;
+			cfg.y_wm.pong_addr = pong_addr;
+			if (output->wm_num == 2 && cfg.has_cbcr) {
+				cfg.cbcr_wm.ping_addr = ping_addr +
+							cfg.cbcr_offset;
+				cfg.cbcr_wm.pong_addr = pong_addr +
+							cfg.cbcr_offset;
+			}
+
+			vfe31_dump_line_config(vfe->camss->dev, &cfg);
+			vfe31_apply_line_config(vfe, &cfg, y_wm, cbcr_wm);
+
+			/* Update XBAR to include ZSL routing */
+			writel_relaxed(vfe31_calc_xbar(true, video_active, true),
+				       vfe->base + VFE_0_BUS_XBAR_CFG1);
+
+			/* Update IRQ comp mask to include Group 1 (ZSL) */
+			if (video_active)
+				vfe->irq_comp_mask_shadow =
+					VFE31_IRQ_COMP_MASK_PIX_VID_ZSL;
+			else
+				vfe->irq_comp_mask_shadow =
+					VFE31_IRQ_COMP_MASK_PIX_ZSL;
+			writel_relaxed(vfe->irq_comp_mask_shadow,
+				       vfe->base +
+				       VFE_0_IRQ_COMPOSITE_MASK_0);
+			wmb();
+		}
+
+		/* ZSL state machine enables WMs at frame boundary */
+		vfe31_zsl_state = VFE31_REC_START_REQUESTED;
+		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: ZSL WM%d+WM%d configured, waiting for REG_UPDATE to enable\n",
+			 y_wm, output->wm_num == 2 ? output->wm_idx[1] : -1);
 	} else {
 		/*
 		 * First stream (PIX or VIDEO alone): full CAMIF setup.
@@ -3775,9 +3919,11 @@ static int vfe31_enable(struct vfe_line *line)
 		vfe->camif_pending_wm = y_wm;
 		vfe->camif_pending_line_id = line->id;
 
-		/* VIDEO starting alone also uses recording state */
+		/* VIDEO/ZSL starting alone also uses recording state */
 		if (line->id == VFE_LINE_VIDEO)
 			vfe31_recording_state = VFE31_REC_START_REQUESTED;
+		if (line->id == VFE_LINE_ZSL)
+			vfe31_zsl_state = VFE31_REC_START_REQUESTED;
 	}
 
 	/*
@@ -3852,6 +3998,11 @@ static int vfe31_disable(struct vfe_line *line)
 	    vfe31_recording_state == VFE31_REC_STARTED)
 		vfe31_recording_state = VFE31_REC_STOP_REQUESTED;
 
+	/* Request ZSL stop */
+	if (line->id == VFE_LINE_ZSL &&
+	    vfe31_zsl_state == VFE31_REC_STARTED)
+		vfe31_zsl_state = VFE31_REC_STOP_REQUESTED;
+
 	/* Stop CAMIF immediately (Samsung: CAMIF_COMMAND_STOP_IMMEDIATELY) */
 	writel_relaxed(VFE_0_CAMIF_CMD_STOP_IMMEDIATELY,
 		       vfe->base + VFE_0_CAMIF_CMD);
@@ -3891,6 +4042,7 @@ static int vfe31_disable(struct vfe_line *line)
 	/* Clear CAMIF pending state */
 	vfe->camif_pending = false;
 	vfe31_recording_state = VFE31_REC_IDLE;
+	vfe31_zsl_state = VFE31_REC_IDLE;
 
 	return 0;
 }
@@ -5190,17 +5342,23 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		{
 			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
 			struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
+			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
 			/* Consider the line being started as active */
 			bool starting_pix = (line->id == VFE_LINE_PIX);
 			bool starting_video = (line->id == VFE_LINE_VIDEO);
+			bool starting_zsl = (line->id == VFE_LINE_ZSL);
 			bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
 					     video_out->state == VFE_OUTPUT_RESERVED ||
 					     video_out->state == VFE_OUTPUT_CONTINUOUS);
 			bool pix_state_active = (pix_out->state == VFE_OUTPUT_ON ||
 					   pix_out->state == VFE_OUTPUT_RESERVED ||
 					   pix_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool zsl_state_active = (zsl_out->state == VFE_OUTPUT_ON ||
+					   zsl_out->state == VFE_OUTPUT_RESERVED ||
+					   zsl_out->state == VFE_OUTPUT_CONTINUOUS);
 			bool video_active = starting_video || video_state_active;
 			bool pix_active = starting_pix || pix_state_active;
+			bool zsl_active = starting_zsl || zsl_state_active;
 
 			/* Module param override takes priority */
 			if (vfe31_irq_comp_mask != 0) {
@@ -5219,24 +5377,43 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				dev_info(vfe->camss->dev,
 					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (RDI WM%d->group1)\n",
 					 vfe->irq_comp_mask_shadow, wm0);
-			} else if (video_active && !pix_active) {
-				/* VIDEO-only: WM1 (Y) + WM4 (CbCr), no WM0 */
-				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
-				dev_info(vfe->camss->dev,
-					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (VIDEO only)\n",
-					 vfe->irq_comp_mask_shadow);
-			} else if (video_active && pix_active) {
-				/* PIX+VIDEO: both lines active, wait for all WMs */
-				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_VIDEO;
-				dev_info(vfe->camss->dev,
-					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (PIX+VIDEO)\n",
-					 vfe->irq_comp_mask_shadow);
 			} else {
-				/* PIX only */
-				vfe->irq_comp_mask_shadow = VFE31_IRQ_COMP_MASK_PIX_ONLY;
+				/*
+				 * Build composite mask from active lines:
+				 *   PIX:   Group 0 (WM0+WM4)
+				 *   ZSL:   Group 1 (WM2+WM6)
+				 *   VIDEO: Group 2 (WM1+WM5)
+				 */
+				u32 mask = 0;
+				const char *mode_str;
+
+				if (pix_active)
+					mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
+				if (zsl_active)
+					mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
+				if (video_active)
+					mask |= VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
+
+				if (!mask)
+					mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
+
+				if (pix_active && video_active && zsl_active)
+					mode_str = "PIX+VIDEO+ZSL";
+				else if (pix_active && zsl_active)
+					mode_str = "PIX+ZSL";
+				else if (pix_active && video_active)
+					mode_str = "PIX+VIDEO";
+				else if (video_active)
+					mode_str = "VIDEO only";
+				else if (zsl_active)
+					mode_str = "ZSL only";
+				else
+					mode_str = "PIX only";
+
+				vfe->irq_comp_mask_shadow = mask;
 				dev_info(vfe->camss->dev,
-					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (PIX only)\n",
-					 vfe->irq_comp_mask_shadow);
+					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
+					 vfe->irq_comp_mask_shadow, mode_str);
 			}
 			writel_relaxed(vfe->irq_comp_mask_shadow,
 				       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
@@ -5537,10 +5714,12 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 
 		/*
 		 * Check if this is the primary Y WM for the pending line.
-		 * PIX uses WM0, VIDEO uses WM4.
+		 * PIX uses WM0, VIDEO uses WM1, ZSL uses WM2.
 		 */
 		if (vfe->camif_pending_line_id == VFE_LINE_VIDEO)
 			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
+		else if (vfe->camif_pending_line_id == VFE_LINE_ZSL)
+			is_primary_wm = (wm == VFE31_ZSL_WM_Y);
 		else
 			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
 
@@ -5560,7 +5739,7 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		 *
 		 * WM0 is always the Y plane WM for both PIX and VIDEO.
 		 */
-		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y);
+		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y || wm == VFE31_ZSL_WM_Y);
 
 		if (is_y_wm) {
 			vfe->last_y_ping_addr = addr;
@@ -5608,6 +5787,8 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 
 		if (vfe->camif_pending_line_id == VFE_LINE_VIDEO)
 			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
+		else if (vfe->camif_pending_line_id == VFE_LINE_ZSL)
+			is_primary_wm = (wm == VFE31_ZSL_WM_Y);
 		else
 			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
 
@@ -5627,7 +5808,7 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		 *
 		 * WM0 is always the Y plane WM for both PIX and VIDEO.
 		 */
-		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y);
+		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y || wm == VFE31_ZSL_WM_Y);
 
 		if (is_y_wm) {
 			vfe->last_y_pong_addr = addr;
@@ -6530,47 +6711,69 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				 comp_mask, vfe->camif_pending_wm);
 			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		} else {
-			/* PIX/VIDEO mode - check which lines are active */
+			/* PIX/VIDEO/ZSL mode - check which lines are active */
 			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
 			struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
+			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
 			/*
 			 * CRITICAL: Consider the line we're currently enabling as active!
 			 * The output state may not be updated yet when enable_camif runs.
 			 */
 			bool starting_pix = (line->id == VFE_LINE_PIX);
 			bool starting_video = (line->id == VFE_LINE_VIDEO);
+			bool starting_zsl = (line->id == VFE_LINE_ZSL);
 			bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
 					     video_out->state == VFE_OUTPUT_RESERVED ||
 					     video_out->state == VFE_OUTPUT_CONTINUOUS);
 			bool pix_state_active = (pix_out->state == VFE_OUTPUT_ON ||
 					   pix_out->state == VFE_OUTPUT_RESERVED ||
 					   pix_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool zsl_state_active = (zsl_out->state == VFE_OUTPUT_ON ||
+					   zsl_out->state == VFE_OUTPUT_RESERVED ||
+					   zsl_out->state == VFE_OUTPUT_CONTINUOUS);
 			bool video_active = starting_video || video_state_active;
 			bool pix_active = starting_pix || pix_state_active;
+			bool zsl_active = starting_zsl || zsl_state_active;
 			u32 comp_mask;
 			const char *mode_str;
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: comp_mask select: line=%d starting_pix=%d starting_video=%d pix_state=%d video_state=%d\n",
-				 line->id, starting_pix, starting_video,
-				 pix_out->state, video_out->state);
+				 "VFE31: comp_mask select: line=%d starting_pix=%d starting_video=%d starting_zsl=%d\n",
+				 line->id, starting_pix, starting_video, starting_zsl);
 
 			/* Module param override takes priority */
 			if (vfe31_irq_comp_mask != 0) {
 				comp_mask = vfe31_irq_comp_mask;
 				mode_str = "module param";
-			} else if (video_active && !pix_active) {
-				/* VIDEO-only: WM1 (Y) + WM5 (CbCr) */
-				comp_mask = VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
-				mode_str = "VIDEO only";
-			} else if (video_active && pix_active) {
-				/* PIX+VIDEO: both lines active */
-				comp_mask = VFE31_IRQ_COMP_MASK_PIX_VIDEO;
-				mode_str = "PIX+VIDEO";
 			} else {
-				/* PIX only (or no VIDEO) */
-				comp_mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
-				mode_str = "PIX only";
+				/*
+				 * Build composite mask from active lines:
+				 *   PIX:   Group 0 (WM0+WM4)
+				 *   ZSL:   Group 1 (WM2+WM6)
+				 *   VIDEO: Group 2 (WM1+WM5)
+				 */
+				comp_mask = 0;
+				if (pix_active)
+					comp_mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
+				if (zsl_active)
+					comp_mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
+				if (video_active)
+					comp_mask |= VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
+				if (!comp_mask)
+					comp_mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
+
+				if (pix_active && video_active && zsl_active)
+					mode_str = "PIX+VIDEO+ZSL";
+				else if (pix_active && zsl_active)
+					mode_str = "PIX+ZSL";
+				else if (pix_active && video_active)
+					mode_str = "PIX+VIDEO";
+				else if (video_active)
+					mode_str = "VIDEO only";
+				else if (zsl_active)
+					mode_str = "ZSL only";
+				else
+					mode_str = "PIX only";
 			}
 
 			vfe->irq_comp_mask_shadow = comp_mask;
@@ -6708,6 +6911,7 @@ static const struct vfe_hw_ops_gen1 vfe_ops_gen1_3_1 = {
 static void vfe31_cleanup(struct vfe_device *vfe)
 {
 	vfe31_recording_state = VFE31_REC_IDLE;
+	vfe31_zsl_state = VFE31_REC_IDLE;
 
 	/* Stop CAMIF and clear EFS config */
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CMD);
@@ -6722,6 +6926,8 @@ static void vfe31_cleanup(struct vfe_device *vfe)
 	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_PREVIEW_WM_CBCR));
 	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
 	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_Y));
+	writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
 }
 
 static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)

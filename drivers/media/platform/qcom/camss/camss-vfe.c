@@ -1211,6 +1211,7 @@ void vfe_isr_comp_done(struct vfe_device *vfe, u8 comp)
 		 */
 		if (line == VFE_LINE_PIX ||
 		    line == VFE_LINE_VIDEO ||
+		    line == VFE_LINE_ZSL ||
 		    line == VFE_LINE_RDI0 ||
 		    line == VFE_LINE_RDI1 ||
 		    line == VFE_LINE_RDI2) {
