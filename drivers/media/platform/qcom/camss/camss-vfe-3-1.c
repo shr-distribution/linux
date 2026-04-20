@@ -1087,30 +1087,28 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	 *   - IMAGE_SIZE must match OUTPUT rate (width bytes/line for Y)
 	 *   - ADDR_CFG burst must match OUTPUT rate for DMA writes
 	 *
-	 * Previous code used input_stride for IMAGE_SIZE, causing FIFO underrun:
-	 *   - DMA expected 1280 bytes/line but DEMUX only provided 640
-	 *   - This caused vertical wrap (640px) and AXI panic (1280px NV16)
+	 * CRITICAL: webOS register dumps show IMAGE_SIZE uses INPUT stride:
+	 *   640x480: stride = 80 = 1280/16 = (width*2)/16 = INPUT stride
+	 *   NOT: stride = 40 = 640/16 = width/16 = OUTPUT stride
 	 *
-	 * FIX: Use output_stride for IMAGE_SIZE and burst calculations.
-	 * Keep input_stride only for UB_CFG (pre-DEMUX FIFO allocation).
+	 * IMAGE_SIZE controls VFE internal pipeline timing, not DMA output.
+	 * VFE needs to know the input byte rate (UYVY = 2 bytes/pixel).
+	 * ADDR_CFG burst still uses OUTPUT stride for actual DMA writes.
 	 *
 	 * Universal burst formula: (bytes_per_line / 4) - 17
 	 */
 	cfg->y_wm.ub_depth = (input_stride / 32) - 1;   /* Pre-DEMUX FIFO allocation */
 	cfg->y_wm.ub_height = height - 1;
-	cfg->y_wm.image_stride = output_stride / 16;    /* Post-DEMUX compacted stride */
+	cfg->y_wm.image_stride = input_stride / 16;    /* INPUT stride for VFE timing */
 	cfg->y_wm.image_height = height - 1;
 	cfg->y_wm.burst_words = (output_stride / 4) - 17;  /* Post-DEMUX DMA burst */
 	cfg->y_wm.burst_lines = 0;  /* Auto-terminate based on image_height */
 
 	/*
-	 * CbCr WM config - REVISED 2026-04-19 per Gemini analysis:
+	 * CbCr WM config - Use INPUT stride for IMAGE_SIZE (same as Y WM)
 	 *
-	 * CbCr plane is interleaved (CbCrCbCr...), so horizontal byte width
-	 * matches Y plane (output_stride). Use same burst formula as Y.
-	 *
-	 * UB_CFG still uses input_stride for FIFO allocation.
-	 * IMAGE_SIZE and burst use output_stride for post-DEMUX data.
+	 * IMAGE_SIZE controls VFE pipeline timing and must use INPUT stride.
+	 * ADDR_CFG burst uses OUTPUT stride for actual DMA writes.
 	 *
 	 * burst_lines:
 	 *   - NV12 (4:2:0): cbcr_height + 64 (headroom for vertical scaler flush)
@@ -1118,7 +1116,7 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	 */
 	cfg->cbcr_wm.ub_depth = (input_stride / 32) - 1;   /* Pre-DEMUX FIFO allocation */
 	cfg->cbcr_wm.ub_height = cbcr_height - 1;
-	cfg->cbcr_wm.image_stride = output_stride / 16;    /* Post-DEMUX compacted stride */
+	cfg->cbcr_wm.image_stride = input_stride / 16;    /* INPUT stride for VFE timing */
 	cfg->cbcr_wm.image_height = cbcr_height - 1;
 	cfg->cbcr_wm.burst_words = (output_stride / 4) - 17;  /* Same formula as Y */
 	/*
