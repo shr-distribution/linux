@@ -608,21 +608,98 @@ WR_CFG carries expanded fields, WR_ADDR_CFG positions are zeroed (computed by
 kernel), and WM pairing is WM0+WM1 for preview, WM4+WM5 for video (same as HTC).
 UB formula identical to HTC (constant 0x298 = 664).
 
-## 11. Cross-Vendor Verification Summary
+## 11. Cross-Vendor Decompiled Binary Value Overview
 
-| Parameter | HTC | Samsung | Sony | Status |
-|-----------|-----|---------|------|--------|
-| IMAGE_SIZE stride | `(width+0xf>>4)-1` | `(width+0xf>>4)-1` | `(width+0xf>>4)-1` | All identical |
-| IMAGE_SIZE flags | `\| 2` | `& 0xfc \| 2` | `& 0xc \| ... \| 2` | Flag 0x2 required |
-| UB_CFG headroom | `+ 0x40U` (+64) | `+ 0x40U` (+64) | `+ 0x40U` (+64) | All add +64 |
-| DEMUX UYVY | 0xC9CA | 0xC9CA | 0xC9CA | All identical |
-| XBAR routing | 0x1A1B | 0x1A1B | kernel default | HTC/Samsung match webOS |
-| BUS_CFG | 0x02AAA771 | 0x02AAA771 | 0x02AAA771 | All identical |
+Complete inventory of all VFE31 register values found across 5 decompiled HAL binaries
+and 2 webOS register dumps. Values verified by searching for exact hex constants.
 
-**Source files analyzed:**
-- HTC: `reports/htc-camera-decompiled/liboemcamera.so_decompiled.c` (lines 36127-36170, 56150)
-- Samsung: `reports/Samsung II/decompiled/samsung_liboemcamera.so_decompiled.c` (lines 41177-41264)
-- Sony: `reports/sony_nozomi/decompiled/liboemcamera.so_decompiled.c` (lines 28320-28400)
+### BUS_CFG (0x03C) Values
+
+| Value | webOS Opal | Samsung Quincy | Samsung SII | HTC | Sony |
+|-------|-----------|---------------|------------|-----|------|
+| **0x02AAA771** (8-bit NV12) | Yes | -- | Yes | Yes | Yes |
+| **0x02AAA775** (10-bit RAW) | Yes | -- | Yes | Yes | Yes |
+| **0x02AAA779** (12-bit RAW) | -- | -- | Yes | Yes | Yes |
+| **0x82AAA771** (variant) | -- | -- | Yes | -- | -- |
+
+MODULE_CFG (0x01C00C0C): **Not found in ANY binary** - set by kernel via ioctl blob, not HAL.
+
+### XBAR_CFG1 (0x044) Values
+
+| Value | Meaning | Opal | Quincy | SII | HTC | Sony |
+|-------|---------|------|--------|-----|-----|------|
+| **0x1A1B** | PIX+VIDEO (NV12) | Yes | Yes | Yes | -- | -- |
+| **0x1A03** | PIX Y-only (NV16) | Yes | Yes | Yes | -- | -- |
+| **0x1A00** | RAW/disabled | -- | Yes | Yes | Yes | Yes |
+| **0x021B** | NV12, sensor alt input | Yes | Yes | Yes | Yes | -- |
+| **0x0203** | NV16, sensor alt input | Yes | Yes | Yes | Yes | Yes |
+| **0x1B01** | ZSL all channels | -- | Yes | Yes | Yes | Yes |
+| **0x0301** | ZSL NV16 | Yes | Yes | Yes | Yes | Yes |
+| **0x214101** | Samsung RAW extended | -- | -- | Yes | Yes | Yes |
+
+### UB Budget Constants (920 - 64 * num_wms)
+
+| Constant | WMs | Opal | Quincy | SII | HTC | Sony |
+|----------|-----|------|--------|-----|-----|------|
+| **0x390** (912) | direct | 12 hits | 15 | 1 | 42 | 5 |
+| **0x318** (792) | 2 | 39 | 22 | 7 | 14 | 8 |
+| **0x2B8** (696) | 3-4 | 5 | 22 | 11 | 0 | 1 |
+| **0x298** (664) | 4 | 6 | 14 | 10 | 12 | 52 |
+| **0x258** (600) | 5 | 12 | 8 | 0 | 1 | 2 |
+| **0x218** (536) | 6 | 12 | 21 | 13 | 1 | 1 |
+
+Note: Hit counts include ALL occurrences (some may be struct offsets, not UB constants).
+HTC/Sony use 0x298 predominantly; Samsung uses multiple constants per mode.
+
+### DEMUX Values
+
+| Value | Pattern | Opal | Quincy | HTC | Sony |
+|-------|---------|------|--------|-----|------|
+| **0xC9CA** | UYVY (CbYCrY) | 3 | 2 | 1 | 1 |
+| **0x9CAC** | YUYV (YCbYCr) | 3 | 2 | 1 | 1 |
+| **0xAC9C** | YVYU (YCrYCb) | 3 | 2 | 1 | 1 |
+| **0xCAC9** | VYUY (CrYCbY) | 0 | 2 | 1 | 1 |
+
+All four YUV patterns present in Samsung/HTC/Sony. Opal lacks VYUY.
+
+### RAW Snapshot UB Depth
+
+| Value | Opal | Quincy | HTC | Sony |
+|-------|------|--------|-----|------|
+| **0x38F** (911) | Yes | -- | -- | -- |
+| **0x397** (919) | Yes | Yes | Yes | Yes |
+
+### AXI Output Mode (0x040)
+
+| Value | Mode | Source |
+|-------|------|--------|
+| **0x01** | OUTPUT_1_AND_3 | webOS/Samsung (video/snapshot) |
+| **0x60** | CAMIF_TO_AXI | webOS/HTC (RAW bypass) |
+| **0x101** | ZSL | Samsung |
+| **0x200** | OUTPUT_2 | webOS Opal/Samsung (preview) |
+| **0x214101** | RAW extended | Samsung |
+
+### Source Binaries
+
+| Binary | SoC | Device | Stripped | Functions |
+|--------|-----|--------|---------|-----------|
+| `opal_libqcameralib_decompiled.c` | APQ8060 | HP TouchPad Opal | No | 2384 |
+| `quincy_liboemcamera_decompiled.c` | MSM8660 | Samsung Galaxy Note | Yes | 790 |
+| `samsung_liboemcamera.so_decompiled.c` | MSM8660 | Samsung Galaxy SII | Yes | ~800 |
+| `liboemcamera.so_decompiled.c` (HTC) | MSM8660 | HTC Sensation | Yes | ~800 |
+| `liboemcamera.so_decompiled.c` (Sony) | MSM8960 | Sony Xperia S | Yes | ~800 |
+
+### webOS Register Dumps (live hardware)
+
+| Register | Value | Source |
+|----------|-------|--------|
+| BUS_CFG (0x03C) | 0x02AAA771 | preview + video mode dumps |
+| MODULE_CFG (0x010) | 0x01C00C0C | preview + video mode dumps |
+| AXI_OUT_MODE (0x040) | 0x00000001 | OUTPUT_1_AND_3 |
+| XBAR_CFG1 (0x044) | 0x00001A1B | preview + video mode dumps |
+| DEMUX_EVEN (0x290) | 0x0000C9CA | UYVY mode |
+| DEMUX_ODD (0x294) | 0x0000C9CA | UYVY mode |
+| IRQ_COMP_MASK (0x034) | 0x00220011 | Group 0: WM0+WM4, Group 2: WM1+WM5 |
 
 ## 12. TESTGEN (Non-Functional on VFE31)
 
