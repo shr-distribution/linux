@@ -409,6 +409,36 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		return 0;
 	}
 
+	/*
+	 * VFE31 VIDEO/ZSL joining active PIX stream: bypass pipeline
+	 * validation and upstream s_stream. These lines share PIX's
+	 * CAMIF internally - they don't need their own CSID link or
+	 * sensor configuration. Just enable the VFE output directly.
+	 *
+	 * Samsung's approach: PIX starts the full pipeline (sensor →
+	 * CSIPHY → CSID → VFE CAMIF). VIDEO/ZSL only enable their
+	 * WMs via the recording state machine at frame boundary.
+	 */
+	{
+		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
+		struct vfe_device *vfe = to_vfe(line);
+
+		if ((line->id == VFE_LINE_VIDEO || line->id == VFE_LINE_ZSL) &&
+		    vfe->stream_count > 0) {
+			dev_info(video->camss->dev,
+				 "%s: joining active stream (stream_count=%d), bypass pipeline\n",
+				 vdev->entity.name, vfe->stream_count);
+			ret = vfe->res->hw_ops->vfe_enable(line);
+			if (ret < 0) {
+				dev_err(video->camss->dev,
+					"%s: VFE enable failed: %d\n",
+					vdev->entity.name, ret);
+				goto flush_buffers;
+			}
+			return 0;
+		}
+	}
+
 	ret = video_device_pipeline_alloc_start(vdev);
 	if (ret < 0) {
 		dev_err(video->camss->dev, "Failed to start media pipeline: %d\n", ret);
