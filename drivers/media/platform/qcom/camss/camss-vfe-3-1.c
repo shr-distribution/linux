@@ -86,53 +86,70 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
 
 /*
  * ============================================================================
- * VFE31 XBAR_CFG1 REGISTER (0x044) - DEMUX OUTPUT ROUTING
+ * VFE31 XBAR REGISTERS (0x040-0x044) - DEMUX OUTPUT ROUTING
  * ============================================================================
  *
- * Routes separated Y and CbCr planes from DEMUX to Write Masters.
- * Only active when XBAR_CFG0 (AXI_OUT_MODE) = 0x01 (OUTPUT_1_AND_3).
- * For AXI_OUT_MODE = 0x60 (RAW) or 0x200 (OUTPUT_2), XBAR is bypassed.
+ * The XBAR consists of TWO registers (V31_XBAR_CFG_LEN = 8 bytes):
+ *   0x040 = XBAR_CFG0 (AXI_OUT_MODE) - macro routing mode
+ *   0x044 = XBAR_CFG1 - per-output data routing
  *
- * Bit field layout (cross-vendor verified: webOS, HTC, Samsung, Sony):
+ * Samsung kernel supports runtime XBAR updates via V31_XBAR_CFG ioctl
+ * with xbar_update_pending flag (applied at REG_UPDATE IRQ).
  *
- *   Bits [3:0]  = Y_ROUTING - Luma destination control
- *     0x0 = Disabled (RAW mode)
- *     0x3 = Y → output0.ch0 (WM0 only)
- *     0xB = Y → output0.ch0 + output2.ch0 (WM0 + WM1)
+ * XBAR_CFG0 (0x040) - AXI output mode:
+ *   0x01  = OUTPUT_1_AND_3 (PIX + VIDEO, routes through DEMUX + XBAR_CFG1)
+ *   0x60  = CAMIF_TO_AXI (RAW bypass, ignores XBAR_CFG1)
+ *   0x200 = OUTPUT_2 (preview-only, ignores XBAR_CFG1)
  *
- *   Bits [7:4]  = CBCR_ROUTING - Chroma destination control
- *     0x0 = Disabled (breaks semi-planar output!)
- *     0x1 = CbCr → output0.ch1 (WM4 only)
- *     0x9 = CbCr → output0.ch1 + output2.ch1 (WM4 + WM5)
+ * XBAR_CFG1 (0x044) - per-output routing (24-bit, 3 routing bytes):
  *
- *   Bits [15:8] = ISP_PATH_CFG
- *     0x1A = Standard ISP processing (required, pipeline stalls without it)
+ *   Bits [7:0]   = output0 routing (preview/PIX path)
+ *   Bits [15:8]  = output1 routing (video/snapshot path)
+ *   Bits [23:16] = output2 routing (ZSL/third output path)
  *
- * OUTPUT_1_AND_3 logical-to-physical WM mapping:
- *   output0.ch0 = WM0 (Preview/PIX Y)
- *   output0.ch1 = WM4 (Preview/PIX CbCr)
- *   output2.ch0 = WM1 (Video Y)
- *   output2.ch1 = WM5 (Video CbCr)
+ *   Each routing byte controls Y and CbCr destinations:
+ *     bits[3:0] = Y routing nibble
+ *     bits[7:4] = CbCr routing nibble
+ *
+ *   Known routing nibble values:
+ *     0x0 = disabled
+ *     0x1 = route to ch0 only
+ *     0x3 = route to ch0 + ch1
+ *     0x9 = route to ch0 + ch1 (with additional output)
+ *     0xA = route to ch1 only
+ *     0xB = route to ch0 + ch1 (full)
+ *
+ *   OUTPUT_1_AND_3 logical-to-physical WM mapping:
+ *     output0: ch0 = WM0, ch1 = WM4
+ *     output1: ch0 = WM1, ch1 = WM5
+ *     output2: ch0 = WM2, ch1 = WM6
+ *
+ * Cross-vendor verified values (Samsung kernel + SII/Quincy HALs + webOS):
+ *
+ *   0x001B = PIX only:     out0 Y+CbCr (WM0+WM4)
+ *   0x1A1B = PIX+VIDEO:    out0 Y+CbCr (WM0+WM4), out1 Y+CbCr (WM1+WM5)
+ *   0x1A1B1B = PIX+VID+ZSL: + out2 Y+CbCr (WM2+WM6)
+ *   0x0000 = disabled (OUTPUT_2/RAW modes bypass XBAR)
+ *
+ * Samsung kernel (msm_vfe31.h):
+ *   V31_XBAR_CFG_OFF = 0x040, V31_XBAR_CFG_LEN = 8
  */
 
-/* XBAR_CFG1 building blocks */
-#define VFE31_XBAR_ISP_PATH	(0x1A << 8)	/* Standard ISP processing */
+/* Per-output routing byte values */
+#define VFE31_XBAR_ROUTE_NONE		0x00	/* Output disabled */
+#define VFE31_XBAR_ROUTE_Y_CBCR	0x1B	/* Y+CbCr to ch0+ch1 */
+#define VFE31_XBAR_ROUTE_Y_ONLY	0x03	/* Y to ch0+ch1, no CbCr */
+#define VFE31_XBAR_ROUTE_Y_CH1_CBCR	0x1A	/* Y to ch1, CbCr to ch0 */
 
-#define VFE31_XBAR_Y_NONE	0x0		/* Y disabled (RAW mode) */
-#define VFE31_XBAR_Y_OUT0	0x3		/* Y → WM0 only */
-#define VFE31_XBAR_Y_OUT0_OUT2	0xB		/* Y → WM0 + WM1 */
+/* Pre-built XBAR_CFG1 values for common modes */
+#define VFE31_XBAR_PIX_ONLY	(VFE31_XBAR_ROUTE_Y_CBCR)			/* 0x001B */
+#define VFE31_XBAR_PIX_VIDEO	(VFE31_XBAR_ROUTE_Y_CH1_CBCR << 8 | \
+				 VFE31_XBAR_ROUTE_Y_CBCR)			/* 0x1A1B */
+#define VFE31_XBAR_PIX_VID_ZSL	(VFE31_XBAR_ROUTE_Y_CH1_CBCR << 16 | \
+				 VFE31_XBAR_ROUTE_Y_CBCR << 8 | \
+				 VFE31_XBAR_ROUTE_Y_CBCR)			/* 0x1A1B1B */
 
-#define VFE31_XBAR_CBCR_NONE	(0x0 << 4)	/* CbCr disabled */
-#define VFE31_XBAR_CBCR_OUT0	(0x1 << 4)	/* CbCr → WM4 only */
-#define VFE31_XBAR_CBCR_OUT0_2	(0x9 << 4)	/* CbCr → WM4 + WM5 */
-
-/* Pre-built XBAR values for common modes */
-#define VFE31_XBAR_RAW		(VFE31_XBAR_ISP_PATH | VFE31_XBAR_Y_NONE    | VFE31_XBAR_CBCR_NONE)  /* 0x1A00 */
-#define VFE31_XBAR_PIX_ONLY	(VFE31_XBAR_ISP_PATH | VFE31_XBAR_Y_OUT0    | VFE31_XBAR_CBCR_OUT0)  /* 0x1A13 */
-#define VFE31_XBAR_PIX_VIDEO	(VFE31_XBAR_ISP_PATH | VFE31_XBAR_Y_OUT0_OUT2 | VFE31_XBAR_CBCR_OUT0) /* 0x1A1B */
-#define VFE31_XBAR_DUAL_FULL	(VFE31_XBAR_ISP_PATH | VFE31_XBAR_Y_OUT0_OUT2 | VFE31_XBAR_CBCR_OUT0_2) /* 0x1A9B */
-
-/* Default: 0x1A1B (webOS Topaz register dump value) */
+/* Default: 0x1A1B (webOS Topaz register dump, PIX+VIDEO mode) */
 #define VFE31_XBAR_CFG1		VFE31_XBAR_PIX_VIDEO
 
 /* Module param for manual override/testing */
@@ -748,21 +765,29 @@ static void vfe31_apply_line_config(struct vfe_device *vfe,
  *   PIX+VIDEO Y:   Y→WM0+WM1,  CbCr→WM4       = 0x1A1B (webOS default)
  *   Full dual:     Y→WM0+WM1,  CbCr→WM4+WM5   = 0x1A9B
  */
-static u16 vfe31_calc_xbar(bool pix_active, bool video_active, bool video_cbcr)
+static u32 vfe31_calc_xbar(bool pix_active, bool video_active, bool zsl_active)
 {
 	/*
-	 * Always route Y to both WM0 and WM1 (output0+output2).
-	 * webOS Topaz register dump shows 0x1A1B even for PIX-only mode.
-	 * Routing Y to WM1 is harmless when WM1 is not enabled.
+	 * Build XBAR_CFG1 from per-output routing bytes:
+	 *   byte0 = output0 (PIX/preview)
+	 *   byte1 = output1 (VIDEO/snapshot)
+	 *   byte2 = output2 (ZSL)
+	 *
+	 * webOS Topaz uses 0x1A1B even for PIX-only (out1 routing
+	 * is harmless when WM1/WM5 are not enabled).
 	 */
-	u16 y_route = VFE31_XBAR_Y_OUT0_OUT2;  /* Y → WM0 + WM1 */
-	u16 cbcr_route = VFE31_XBAR_CBCR_OUT0; /* CbCr → WM4 */
+	u32 xbar = 0;
 
-	/* For future: enable CbCr to WM5 when VIDEO CbCr is active */
-	if (video_cbcr)
-		cbcr_route = VFE31_XBAR_CBCR_OUT0_2;   /* CbCr → WM4 + WM5 */
+	if (pix_active)
+		xbar |= VFE31_XBAR_ROUTE_Y_CBCR;		/* out0: WM0+WM4 */
 
-	return VFE31_XBAR_ISP_PATH | cbcr_route | y_route;
+	if (video_active || pix_active)
+		xbar |= (u32)VFE31_XBAR_ROUTE_Y_CH1_CBCR << 8;/* out1: WM1+WM5 */
+
+	if (zsl_active)
+		xbar |= (u32)VFE31_XBAR_ROUTE_Y_CH1_CBCR << 16;/* out2: WM2+WM6 */
+
+	return xbar;
 }
 
 /* External module parameters from camss-vfe.c */

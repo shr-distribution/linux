@@ -293,48 +293,73 @@ default:                  // Bayer patterns 0-3: NO REG_UPDATE
 
 **Our setting:** Pattern based on mbus format code + bit 6 always set
 
-## XBAR_CFG1 (0x044)
+## XBAR Registers (0x040-0x044) -- CORRECTED 2026-04-20
 
-Routes DEMUX output (Y and CbCr) to Write Masters.
+The XBAR consists of TWO registers (V31_XBAR_CFG_LEN = 8 bytes, from Samsung msm_vfe31.h):
 
-### Bit Layout (16-bit value)
+### XBAR_CFG0 / AXI_OUT_MODE (0x040)
+
+| Value | Mode | Description |
+|-------|------|-------------|
+| 0x01 | OUTPUT_1_AND_3 | PIX + VIDEO, routes through DEMUX + XBAR_CFG1 |
+| 0x60 | CAMIF_TO_AXI | RAW bypass, ignores XBAR_CFG1 |
+| 0x101 | ZSL mode | Preview + Snapshot + Video (Samsung) |
+| 0x200 | OUTPUT_2 | Preview-only, ignores XBAR_CFG1 |
+
+### XBAR_CFG1 (0x044) -- Per-Output Routing Register
+
+**CORRECTED:** This is a **24-bit register with 3 routing bytes**, NOT a 16-bit
+register with an "ISP path" field. The previous interpretation of bits[15:8] as
+"ISP path = 0x1A" was wrong -- 0x1A is the output1 routing byte.
+
+Proven by Samsung SII ZSL values (0x1A1B1B) where bits[15:8] = 0x1B (same routing
+value as bits[7:0]), and Samsung kernel V31_XBAR_CFG ioctl infrastructure that
+dynamically updates both registers at runtime (xbar_cfg[0] + xbar_cfg[1]).
 
 ```
-Bits [15:12] = Reserved/unused
-Bits [11:8]  = CbCr routing to output1 (VIDEO)
-Bits [7:4]   = CbCr routing to output0 (PIX)
-Bits [3:0]   = Y routing
+Bits [7:0]   = output0 routing byte (PIX/preview path → WM0/WM4)
+Bits [15:8]  = output1 routing byte (VIDEO/snapshot path → WM1/WM5)
+Bits [23:16] = output2 routing byte (ZSL/third output → WM2/WM6)
+Bits [31:24] = reserved (zero)
 ```
 
-### Y Routing (bits [3:0])
+Each routing byte has Y and CbCr nibbles:
+```
+bits[3:0] = Y routing nibble
+bits[7:4] = CbCr routing nibble
+```
 
-| Value | Meaning |
-|-------|---------|
-| 0x3 | Y → WM0 only |
-| 0xB | Y → WM0 AND WM4 (duplicate!) |
+### Known Routing Byte Values
 
-### CbCr Routing (bits [7:4] for output0)
+| Byte | Y[3:0] | CbCr[7:4] | Effect (OUTPUT_1_AND_3 WM mapping) |
+|------|--------|-----------|-------------------------------------|
+| 0x00 | 0x0 | 0x0 | Output disabled |
+| 0x03 | 0x3 | 0x0 | Y to ch0+ch1, CbCr disabled |
+| 0x1A | 0xA | 0x1 | Y to ch1, CbCr to ch0 |
+| 0x1B | 0xB | 0x1 | Y to ch0+ch1, CbCr to ch0 |
 
-| Value | Meaning |
-|-------|---------|
-| 0x0 | CbCr disabled |
-| 0x1 | CbCr → output0.ch1 (WM4) |
-| 0x9 | CbCr → output0+output2 (WM4+WM5?) |
+OUTPUT_1_AND_3 WM mapping per output:
+- output0: ch0 = WM0, ch1 = WM4
+- output1: ch0 = WM1, ch1 = WM5
+- output2: ch0 = WM2, ch1 = WM6
 
-### XBAR Values (cross-vendor verified 2026-04-20)
+### XBAR_CFG1 Values (cross-vendor verified 2026-04-20)
 
-| Value | Bits[6:0] | Bits[12:8] | Use Case | Vendors |
-|-------|-----------|------------|----------|---------|
-| **0x0000** | none | none | OUTPUT_2 preview (no crossbar) | webOS Opal, Samsung |
-| **0x1A03** | Y→WM0 only, CbCr off | out3 Y | NV16/NV61 format (format=1,2) | Samsung, Mako/G2 kernel |
-| **0x1A1B** | Y→WM0+WM1, CbCr→WM4 | out3 Y | **NV12/NV21 video/snapshot** | **webOS**, Samsung, HTC |
-| **0x021B** | Y→WM0+WM1, CbCr→WM4 | out3 alt | NV12 with sensor input=1 | Samsung, Opal |
-| **0x0203** | Y→WM0 only, CbCr off | out3 alt | NV16 with sensor input=1 | Samsung, Opal |
-| **0x1A00** | disabled | out3 Y | Raw/planar mode | Samsung |
-| **0x1B01** | Y+CbCr interleaved | out2 | ZSL all channels | Samsung |
+| Value | out0 [7:0] | out1 [15:8] | out2 [23:16] | Use Case | Vendors |
+|-------|-----------|-------------|-------------|----------|---------|
+| **0x000000** | disabled | disabled | disabled | OUTPUT_2 preview (XBAR bypassed) | webOS Opal, Samsung |
+| **0x001A03** | 0x03 Y-only | 0x1A Y+CbCr | - | NV16 format (format=1,2) | Samsung, Mako/G2 |
+| **0x001A1B** | 0x1B Y+CbCr | 0x1A Y+CbCr | - | **NV12 video/snapshot** | **webOS**, Samsung, HTC |
+| **0x00021B** | 0x1B Y+CbCr | 0x02 Y-only | - | NV12 sensor input=1 | Samsung, Opal |
+| **0x1A1B1B** | 0x1B Y+CbCr | 0x1B Y+CbCr | 0x1A Y+CbCr | ZSL (3 outputs) | Samsung SII |
+| **0x001B01** | 0x01 Y-ch0 | 0x1B Y+CbCr | - | ZSL all channels | Samsung Quincy |
 
-Samsung `vfe_update_preview_format` dynamically switches XBAR bits[6:0] between
-`0x1B` (NV12 interleaved) and `0x03` (NV16 CbCr-only) at runtime.
+Samsung `vfe_update_preview_format` dynamically switches output0 byte between
+`0x1B` (Y+CbCr) and `0x03` (Y-only) at runtime via V31_XBAR_CFG ioctl.
+
+Samsung kernel supports runtime XBAR update: userspace writes 8 bytes (XBAR_CFG0 +
+XBAR_CFG1) via V31_XBAR_CFG command, kernel stages in xbar_cfg[2] with
+xbar_update_pending flag, applied at next REG_UPDATE IRQ.
 
 **Vendor XBAR Configuration Table:**
 
