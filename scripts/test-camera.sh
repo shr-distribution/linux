@@ -1876,6 +1876,18 @@ main() {
             effects-test)
                 MODE="effects-test"
                 ;;
+            pix+video640)
+                MODE="pix+video640"
+                ;;
+            pix+video1280)
+                MODE="pix+video1280"
+                ;;
+            zsl640)
+                MODE="zsl640"
+                ;;
+            zsl1280)
+                MODE="zsl1280"
+                ;;
             convert-video640)
                 MODE="convert-video640"
                 ;;
@@ -1953,6 +1965,12 @@ main() {
                 echo "  pix640-solarize PIX mode at 640x480 with Solarization effect"
                 echo "  pix1280-solarize PIX mode at 1280x1024 with Solarization effect"
                 echo "  effects-test    Run all color effects at both resolutions"
+                echo ""
+                echo "Simultaneous multi-output modes:"
+                echo "  pix+video640    PIX + VIDEO simultaneous at 640x480"
+                echo "  pix+video1280   PIX + VIDEO simultaneous at 1280x1024"
+                echo "  zsl640          ZSL (PIX preview + snapshot) at 640x480"
+                echo "  zsl1280         ZSL (PIX preview + snapshot) at 1280x1024"
                 echo ""
                 echo "  --info     Show camera device information only"
                 echo "  --setup    Set up media pipeline only"
@@ -2232,6 +2250,234 @@ main() {
         testgen1280-nv16)
             ensure_camera_ready
             test_at_resolution 1280 1024 testgen video3 msm_csid1 msm_csiphy1 NV16
+            check_dmesg
+            ;;
+        pix+video640)
+            ensure_camera_ready
+            log_step "Testing simultaneous PIX + VIDEO at 640x480..."
+            echo ""
+            echo "=============================================="
+            echo "  PIX + VIDEO Simultaneous Test (640x480)"
+            echo "  PIX on /dev/video3 (WM0+WM4)"
+            echo "  VIDEO on /dev/video4 (WM1+WM5)"
+            echo "=============================================="
+            echo ""
+            run_on_device "
+                pkill -9 v4l2-ctl 2>/dev/null || true
+                sleep 1
+                media-ctl -d /dev/media0 -r 2>/dev/null || true
+                sleep 0.5
+
+                SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+                if [ -z \"\$SENSOR\" ]; then
+                    SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+                fi
+                echo \"Using sensor: \$SENSOR\"
+
+                # Configure pipeline
+                media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:UYVY8_1X16/640x480]\" 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csid1\":4[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+
+                # Link CSID to both PIX and VIDEO VFE entities
+                media-ctl -d /dev/media0 -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_video\":0[1]' 2>&1 || true
+
+                # Set format on both video devices
+                v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
+                v4l2-ctl -d /dev/video4 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
+
+                echo 'Starting PIX capture in background...'
+                timeout 15 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=5 --stream-to=/tmp/test_pix_video_pix.raw &
+                PIX_PID=\$!
+                sleep 2
+
+                echo 'Starting VIDEO capture...'
+                timeout 10 v4l2-ctl -d /dev/video4 --stream-mmap --stream-count=3 --stream-to=/tmp/test_pix_video_vid.raw
+                VID_STATUS=\$?
+
+                wait \$PIX_PID 2>/dev/null
+                PIX_STATUS=\$?
+
+                echo ''
+                if [ -s /tmp/test_pix_video_pix.raw ] && [ -s /tmp/test_pix_video_vid.raw ]; then
+                    PIX_SIZE=\$(stat -c%s /tmp/test_pix_video_pix.raw 2>/dev/null || echo 0)
+                    VID_SIZE=\$(stat -c%s /tmp/test_pix_video_vid.raw 2>/dev/null || echo 0)
+                    echo \"PASS: PIX+VIDEO simultaneous - PIX=\${PIX_SIZE} bytes, VIDEO=\${VID_SIZE} bytes\"
+                elif [ -s /tmp/test_pix_video_pix.raw ]; then
+                    PIX_SIZE=\$(stat -c%s /tmp/test_pix_video_pix.raw 2>/dev/null || echo 0)
+                    echo \"PARTIAL: PIX captured \${PIX_SIZE} bytes, VIDEO failed\"
+                else
+                    echo 'FAIL: No data captured from either stream'
+                fi
+            "
+            check_dmesg
+            ;;
+        pix+video1280)
+            ensure_camera_ready
+            log_step "Testing simultaneous PIX + VIDEO at 1280x1024..."
+            echo ""
+            echo "=============================================="
+            echo "  PIX + VIDEO Simultaneous Test (1280x1024)"
+            echo "=============================================="
+            echo ""
+            run_on_device "
+                pkill -9 v4l2-ctl 2>/dev/null || true
+                sleep 1
+                media-ctl -d /dev/media0 -r 2>/dev/null || true
+                sleep 0.5
+
+                SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+                if [ -z \"\$SENSOR\" ]; then
+                    SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+                fi
+
+                media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:UYVY8_1X16/1280x1024]\" 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csid1\":4[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_video\":0[1]' 2>&1 || true
+
+                v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
+                v4l2-ctl -d /dev/video4 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
+
+                echo 'Starting PIX capture in background...'
+                timeout 20 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=5 --stream-to=/tmp/test_pix_video_pix_1280.raw &
+                PIX_PID=\$!
+                sleep 3
+
+                echo 'Starting VIDEO capture...'
+                timeout 15 v4l2-ctl -d /dev/video4 --stream-mmap --stream-count=3 --stream-to=/tmp/test_pix_video_vid_1280.raw
+                wait \$PIX_PID 2>/dev/null
+
+                if [ -s /tmp/test_pix_video_pix_1280.raw ] && [ -s /tmp/test_pix_video_vid_1280.raw ]; then
+                    PIX_SIZE=\$(stat -c%s /tmp/test_pix_video_pix_1280.raw 2>/dev/null || echo 0)
+                    VID_SIZE=\$(stat -c%s /tmp/test_pix_video_vid_1280.raw 2>/dev/null || echo 0)
+                    echo \"PASS: PIX+VIDEO 1280x1024 - PIX=\${PIX_SIZE}, VIDEO=\${VID_SIZE}\"
+                elif [ -s /tmp/test_pix_video_pix_1280.raw ]; then
+                    PIX_SIZE=\$(stat -c%s /tmp/test_pix_video_pix_1280.raw 2>/dev/null || echo 0)
+                    echo \"PARTIAL: PIX captured \${PIX_SIZE} bytes, VIDEO failed\"
+                else
+                    echo 'FAIL: No data captured'
+                fi
+            "
+            check_dmesg
+            ;;
+        zsl640)
+            ensure_camera_ready
+            log_step "Testing ZSL (PIX preview + snapshot) at 640x480..."
+            echo ""
+            echo "=============================================="
+            echo "  ZSL Test (640x480)"
+            echo "  PIX preview on /dev/video3 (WM0+WM4)"
+            echo "  ZSL snapshot on /dev/video5 (WM2+WM6)"
+            echo "=============================================="
+            echo ""
+            run_on_device "
+                pkill -9 v4l2-ctl 2>/dev/null || true
+                sleep 1
+                media-ctl -d /dev/media0 -r 2>/dev/null || true
+                sleep 0.5
+
+                SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+                if [ -z \"\$SENSOR\" ]; then
+                    SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+                fi
+
+                media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:UYVY8_1X16/640x480]\" 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csid1\":4[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_rdi5\":0[1]' 2>&1 || true
+
+                v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
+                v4l2-ctl -d /dev/video5 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
+
+                echo 'Starting PIX preview in background...'
+                timeout 15 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=10 --stream-to=/tmp/test_zsl_preview.raw &
+                PIX_PID=\$!
+                sleep 2
+
+                echo 'Capturing ZSL snapshot...'
+                timeout 10 v4l2-ctl -d /dev/video5 --stream-mmap --stream-count=1 --stream-to=/tmp/test_zsl_snapshot.raw
+                ZSL_STATUS=\$?
+
+                wait \$PIX_PID 2>/dev/null
+
+                if [ -s /tmp/test_zsl_preview.raw ] && [ -s /tmp/test_zsl_snapshot.raw ]; then
+                    PRV_SIZE=\$(stat -c%s /tmp/test_zsl_preview.raw 2>/dev/null || echo 0)
+                    ZSL_SIZE=\$(stat -c%s /tmp/test_zsl_snapshot.raw 2>/dev/null || echo 0)
+                    echo \"PASS: ZSL 640x480 - Preview=\${PRV_SIZE}, Snapshot=\${ZSL_SIZE}\"
+                elif [ -s /tmp/test_zsl_preview.raw ]; then
+                    PRV_SIZE=\$(stat -c%s /tmp/test_zsl_preview.raw 2>/dev/null || echo 0)
+                    echo \"PARTIAL: Preview captured \${PRV_SIZE} bytes, ZSL snapshot failed\"
+                else
+                    echo 'FAIL: No data captured'
+                fi
+            "
+            check_dmesg
+            ;;
+        zsl1280)
+            ensure_camera_ready
+            log_step "Testing ZSL (PIX preview + snapshot) at 1280x1024..."
+            echo ""
+            echo "=============================================="
+            echo "  ZSL Test (1280x1024)"
+            echo "=============================================="
+            echo ""
+            run_on_device "
+                pkill -9 v4l2-ctl 2>/dev/null || true
+                sleep 1
+                media-ctl -d /dev/media0 -r 2>/dev/null || true
+                sleep 0.5
+
+                SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+                if [ -z \"\$SENSOR\" ]; then
+                    SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+                fi
+
+                media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:UYVY8_1X16/1280x1024]\" 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_csid1\":4[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
+                media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_rdi5\":0[1]' 2>&1 || true
+
+                v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
+                v4l2-ctl -d /dev/video5 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
+
+                echo 'Starting PIX preview in background...'
+                timeout 20 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=10 --stream-to=/tmp/test_zsl_preview_1280.raw &
+                PIX_PID=\$!
+                sleep 3
+
+                echo 'Capturing ZSL snapshot...'
+                timeout 15 v4l2-ctl -d /dev/video5 --stream-mmap --stream-count=1 --stream-to=/tmp/test_zsl_snapshot_1280.raw
+
+                wait \$PIX_PID 2>/dev/null
+
+                if [ -s /tmp/test_zsl_preview_1280.raw ] && [ -s /tmp/test_zsl_snapshot_1280.raw ]; then
+                    PRV_SIZE=\$(stat -c%s /tmp/test_zsl_preview_1280.raw 2>/dev/null || echo 0)
+                    ZSL_SIZE=\$(stat -c%s /tmp/test_zsl_snapshot_1280.raw 2>/dev/null || echo 0)
+                    echo \"PASS: ZSL 1280x1024 - Preview=\${PRV_SIZE}, Snapshot=\${ZSL_SIZE}\"
+                elif [ -s /tmp/test_zsl_preview_1280.raw ]; then
+                    PRV_SIZE=\$(stat -c%s /tmp/test_zsl_preview_1280.raw 2>/dev/null || echo 0)
+                    echo \"PARTIAL: Preview captured \${PRV_SIZE} bytes, ZSL snapshot failed\"
+                else
+                    echo 'FAIL: No data captured'
+                fi
+            "
             check_dmesg
             ;;
         all)
