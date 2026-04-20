@@ -123,21 +123,27 @@ All vendors use 0x02AAA771 for NV12/NV16 output.
 0x02AAA771 = 0000_0010 1010_1010 1010_0111 0111_0001
 ```
 
-| Bits | Value | Field | Source |
-|------|-------|-------|--------|
-| 0 | 1 | stripeRdPathEn | VFE8x struct (confirmed) |
-| 1 | 0 | reserved | |
-| 3:2 | 00 | rawPixelDataSize: 00=8bit, 01=10bit, 10=12bit | HTC HAL (3 RAW values confirm) |
-| 4 | 1 | encYWrPathEn | VFE8x mapping (inferred) |
-| 5 | 1 | encCbcrWrPathEn | VFE8x mapping (inferred) |
-| 6 | 1 | viewYWrPathEn | VFE8x mapping (inferred) |
-| 7 | 0 | viewCbcrWrPathEn (DISABLED) | VFE8x mapping (note: CbCr works despite this) |
-| 9:8 | 11 | unknown (always set in all modes) | |
-| 11:10 | 10 | rawWritePathSelect: 2=VIEW_CBCR_PATH | VFE_RAW_WR_PATH_SEL enum |
-| 25:12 | 0x2AAA | per-WM burst config (7x 2-bit = "10" for WM0-WM6) | Pattern analysis |
+**Confirmed from VFE31 vendor evidence (kernels + decompiled HALs):**
+
+| Bits | Value | Field | Evidence |
+|------|-------|-------|----------|
+| 3:2 | 00 | **rawPixelDataSize**: 00=8bit, 01=10bit, 10=12bit | HTC HAL uses 3 distinct values: 0x771/0x775/0x779 |
+| 11:10 | 10 | **rawWritePathSelect**: 0=disabled, 1=ENC_CBCR, 2=VIEW_CBCR | Samsung msm_vfe31.h VFE_RAW_WR_PATH_SEL enum |
+
+**Unconfirmed (names from VFE8x, may NOT apply to VFE31):**
+
+| Bits | Value | VFE8x name | Warning |
+|------|-------|-----------|---------|
+| 0 | 1 | stripeRdPathEn | ⚠ VFE8x name only, no VFE31 confirmation |
+| 4 | 1 | encYWrPathEn | ⚠ VFE8x name only |
+| 5 | 1 | encCbcrWrPathEn | ⚠ VFE8x name only |
+| 6 | 1 | viewYWrPathEn | ⚠ VFE8x name only |
+| 7 | 0 | viewCbcrWrPathEn | ⚠ VFE8x name only. CbCr output works despite bit=0 |
+| 9:8 | 11 | unknown | No VFE8x or VFE31 reference. Always 11 in all modes |
+| 25:12 | 0x2AAA | unknown | Repeating 2-bit "10" pattern for 7 WMs. Purpose unconfirmed |
 | 31:26 | 000000 | reserved | |
 
-**RAW mode variants** (only bits 3:2 change):
+**RAW mode variants** (only bits 3:2 change, confirmed from HTC HAL):
 - 8-bit RAW: 0x2AAA7**71** (bits 3:2 = 00)
 - 10-bit RAW: 0x2AAA7**75** (bits 3:2 = 01)
 - 12-bit RAW: 0x2AAA7**79** (bits 3:2 = 10)
@@ -150,33 +156,36 @@ webOS value: 0x01C00C0C. Enables ISP processing modules needed for YUV pipeline.
 0x01C00C0C = 0000_0001 1100_0000 0000_1100 0000_1100
 ```
 
-| Bit | Value | Field | Confidence |
-|-----|-------|-------|------------|
-| 0 | 0 | Black Level Correction (BLC) | VFE8x confirmed |
-| 1 | 0 | Lens Rolloff | VFE8x confirmed |
-| 2 | **1** | **DEMUX** | All kernels confirmed |
-| 3 | **1** | **CHROMA_UPSAMPLE** | All kernels confirmed |
-| 4 | 0 | Demosaic (CFA interpolation) | VFE8x mapping |
-| 5 | 0 | AE stats (AE_ENABLE_MASK = 0x20) | Samsung header confirmed |
-| 6 | 0 | AF stats (AF_ENABLE_MASK = 0x40) | Samsung header confirmed |
-| 7 | 0 | AWB stats (AWB_ENABLE_MASK = 0x80) | Samsung header confirmed |
-| 8 | 0 | RS stats (RS_ENABLE_MASK = 0x100) | Samsung header confirmed |
-| 9 | 0 | CS stats (CS_ENABLE_MASK = 0x200) | Samsung header confirmed |
-| 10 | **1** | Y Histogram | VFE8x mapping (probable) |
-| 11 | **1** | Skin Tone Enhancement | VFE8x mapping (probable) |
-| 12-14 | 000 | lumaAdaptation/rgbLUT/chromaEnhan | VFE8x mapping |
-| 15 | 0 | IHIST stats (IHIST_ENABLE_MASK = 0x8000) | Samsung header confirmed |
-| 16-21 | 000000 | reserved | |
-| 22 | **1** | output path module (possibly SCALE_VIEW) | unknown |
-| 23 | **1** | **SCALE_ENC** (encoder scaler) | mainline VFE4-1 confirmed |
-| 24 | **1** | output path module (possibly CROP_VIEW) | unknown |
-| 25-26 | 00 | reserved | |
-| 27 | 0 | CROP_ENC (NOT enabled by webOS) | mainline VFE4-1 |
-| 28-31 | 0000 | reserved | |
+**Confirmed from VFE31 vendor evidence (Samsung msm_vfe31.h + all kernels):**
 
-**Stats enable mask** (Samsung header): `STATS_ENABLE_MASK = 0x000483E0` (bits 5,6,7,8,9,15,18).
-Samsung `VFE_CMD_MODULE_CFG` preserves stats bits via read-modify-write to avoid
-clobbering stats configuration when updating ISP modules.
+| Bit | Value | Field | Evidence |
+|-----|-------|-------|----------|
+| 2 | **1** | **DEMUX** | All VFE31 kernels (webOS, Samsung, HTC, Mako) |
+| 3 | **1** | **CHROMA_UPSAMPLE** | All VFE31 kernels |
+| 5 | 0 | AE stats (AE_ENABLE_MASK = 0x20) | Samsung msm_vfe31.h |
+| 6 | 0 | AF stats (AF_ENABLE_MASK = 0x40) | Samsung msm_vfe31.h |
+| 7 | 0 | AWB stats (AWB_ENABLE_MASK = 0x80) | Samsung msm_vfe31.h |
+| 8 | 0 | RS stats (RS_ENABLE_MASK = 0x100) | Samsung msm_vfe31.h |
+| 9 | 0 | CS stats (CS_ENABLE_MASK = 0x200) | Samsung msm_vfe31.h |
+| 15 | 0 | IHIST stats (IHIST_ENABLE_MASK = 0x8000) | Samsung msm_vfe31.h |
+
+**Unconfirmed (names from VFE8x or VFE4x, may NOT apply to VFE31):**
+
+| Bit | Value | Guessed name | Warning |
+|-----|-------|-------------|---------|
+| 0 | 0 | Black Level Correction? | ⚠ VFE8x name only |
+| 1 | 0 | Lens Rolloff? | ⚠ VFE8x name only |
+| 4 | 0 | Demosaic? | ⚠ VFE8x name only |
+| 10 | **1** | Y Histogram? | ⚠ VFE8x name only, no VFE31 confirmation |
+| 11 | **1** | Skin Tone Enhancement? | ⚠ VFE8x name only, no VFE31 confirmation |
+| 12-14 | 000 | lumaAdaptation/rgbLUT/chromaEnhan? | ⚠ VFE8x name only |
+| 22 | **1** | SCALE_VIEW? | ⚠ No VFE31 source confirms this |
+| 23 | **1** | SCALE_ENC? | ⚠ VFE4-1 name only, may differ on VFE31 |
+| 24 | **1** | CROP_VIEW? | ⚠ No VFE31 source confirms this |
+| 27 | 0 | CROP_ENC? | ⚠ VFE4-1 name only |
+
+**Stats enable mask** (Samsung msm_vfe31.h, confirmed): `STATS_ENABLE_MASK = 0x000483E0` (bits 5,6,7,8,9,15,18).
+Samsung `VFE_CMD_MODULE_CFG` preserves stats bits via read-modify-write.
 
 ### CORE_CFG (0x014)
 
