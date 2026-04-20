@@ -209,6 +209,20 @@ MODULE_PARM_DESC(vfe31_dump_wm_regs,
 		 "VFE31 dump WM registers (0=off, 1=on)");
 
 /*
+ * VFE31 recording state machine (from Samsung msm_vfe31.c).
+ * Controls VIDEO WM enable/disable at frame boundaries via REG_UPDATE IRQ.
+ */
+enum vfe31_rec_state {
+	VFE31_REC_IDLE = 0,
+	VFE31_REC_START_REQUESTED,
+	VFE31_REC_STARTED,
+	VFE31_REC_STOP_REQUESTED,
+	VFE31_REC_STOPPED,
+};
+
+static enum vfe31_rec_state vfe31_recording_state = VFE31_REC_IDLE;
+
+/*
  * ============================================================================
  * VFE31 FORMAT OVERRIDE - For testing NV16 (4:2:2) vs NV12 (4:2:0)
  * ============================================================================
@@ -2759,8 +2773,8 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			else if (output->state == VFE_OUTPUT_SINGLE)
 				output->state = VFE_OUTPUT_STOPPING;
 			dev_dbg(vfe->camss->dev,
-				"VFE31: no pending buffer, reusing 0x%08x (not returning)\n",
-				(u32)new_addr[0]);
+				"VFE31: frame drop wm=%d seq=%d: no pending buffer, reusing 0x%08x\n",
+				wm, output->sequence, (u32)new_addr[0]);
 		} else {
 			new_addr = output->buf[ready_idx]->addr;
 			/* Stay in CONTINUOUS state */
@@ -3023,6 +3037,29 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 * CAMIF. Notify all active lines.
 	 */
 	if (value0 & VFE_0_IRQ_STATUS_0_REG_UPDATE) {
+		/* Process recording state machine at frame boundary */
+		if (vfe31_recording_state == VFE31_REC_START_REQUESTED) {
+			/* Enable VIDEO WMs at frame boundary */
+			writel_relaxed(BIT(0), vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
+			writel_relaxed(BIT(0), vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+			vfe31_recording_state = VFE31_REC_STARTED;
+			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+			dev_info(vfe->camss->dev, "VFE31: VIDEO recording started (WM%d+WM%d enabled)\n",
+				 VFE31_VIDEO_WM_Y, VFE31_VIDEO_WM_CBCR);
+		} else if (vfe31_recording_state == VFE31_REC_STOP_REQUESTED) {
+			/* Disable VIDEO WMs at frame boundary */
+			writel_relaxed(0, vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
+			writel_relaxed(0, vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
+			vfe31_recording_state = VFE31_REC_STOPPED;
+			dev_info(vfe->camss->dev, "VFE31: VIDEO recording stopped\n");
+		} else if (vfe31_recording_state == VFE31_REC_STOPPED) {
+			vfe31_recording_state = VFE31_REC_IDLE;
+		}
+
 		for (i = 0; i < vfe->res->line_num; i++)
 			vfe->isr_ops.reg_update(vfe, i);
 	}
@@ -3065,8 +3102,52 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 
 static int vfe31_halt(struct vfe_device *vfe)
 {
-	/* Use gen1 common halt implementation */
-	return vfe_gen1_halt(vfe);
+	unsigned long time;
+
+	/*
+	 * Proper AXI halt sequence (from Samsung msm_vfe31.c vfe31_stop):
+	 * 1. Stop CAMIF immediately
+	 * 2. Disable all IRQs
+	 * 3. Clear all pending IRQs
+	 * 4. Latch IRQ clear (write 1 to IRQ_CMD)
+	 * 5. Enable only AXI_HALT_ACK IRQ
+	 * 6. Issue AXI halt command
+	 * 7. Wait for halt acknowledgment
+	 */
+
+	/* Step 1: Stop CAMIF immediately */
+	writel_relaxed(VFE_0_CAMIF_CMD_STOP_IMMEDIATELY,
+		       vfe->base + VFE_0_CAMIF_CMD);
+	wmb();
+
+	/* Step 2: Disable all IRQs */
+	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_1);
+
+	/* Step 3: Clear all pending IRQs */
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_0);
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_1);
+
+	/* Step 4: Latch IRQ clear */
+	writel_relaxed(1, vfe->base + VFE_0_IRQ_CMD);
+	wmb();
+
+	/* Step 5: Enable only RESET_ACK in MASK_1 for halt completion */
+	writel_relaxed(VFE_0_IRQ_STATUS_1_RESET_ACK,
+		       vfe->base + VFE_0_IRQ_MASK_1);
+
+	/* Step 6: Issue AXI halt */
+	reinit_completion(&vfe->halt_complete);
+	writel_relaxed(VFE_0_AXI_CMD_HALT, vfe->base + VFE_0_AXI_CMD);
+	wmb();
+
+	/* Step 7: Wait for halt ACK */
+	time = wait_for_completion_timeout(&vfe->halt_complete,
+					   msecs_to_jiffies(500));
+	if (!time)
+		dev_err(vfe->camss->dev, "VFE31: AXI halt timeout\n");
+
+	return 0;
 }
 
 /*
@@ -3091,6 +3172,8 @@ static int vfe31_enable(struct vfe_line *line)
 	unsigned long flags;
 	int wm_idx;
 	u8 y_wm;  /* Y plane write master (WM0) */
+
+	vfe31_recording_state = VFE31_REC_IDLE;
 
 	dev_info(vfe->camss->dev, "VFE31 enable: line_id=%d (direct, not gen1)\n",
 		 line->id);
@@ -6524,6 +6607,8 @@ static const struct vfe_hw_ops_gen1 vfe_ops_gen1_3_1 = {
  */
 static void vfe31_cleanup(struct vfe_device *vfe)
 {
+	vfe31_recording_state = VFE31_REC_IDLE;
+
 	/* Stop CAMIF and clear EFS config */
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CMD);
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
