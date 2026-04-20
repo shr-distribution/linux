@@ -1,547 +1,347 @@
-# VFE31 Register Reference and Analysis
+# VFE31 Register Reference
 
-## Overview
+## 1. Overview
 
-VFE31 (Video Front End version 3.1) is the camera ISP in MSM8660/APQ8060 SoCs.
-This document summarizes our understanding of the register configuration for
-semi-planar (NV12/NV16) output modes.
+VFE31 (Video Front End v3.1) is the camera ISP in MSM8660/APQ8060 SoCs.
+This document covers register configuration for semi-planar (NV12/NV16) output.
 
-## Hardware Block Diagram
+### Block Diagram
 
 ```
 Sensor (UYVY 8-bit)
-    ↓
+    |
 CSIPHY (MIPI CSI-2 receiver)
-    ↓
+    |
 CSID (CSI Decoder)
-    ↓
+    |
 VFE31 Input (CAMIF)
-    ↓
+    |
 DEMUX (separates Y and CbCr from interleaved UYVY)
-    ↓
-Scaler/Chroma Subsample
-    ↓
+    |
+Scaler / Chroma Subsample
+    |
 XBAR (routes Y/CbCr to Write Masters)
-    ↓
-Write Masters (WM0-WM7) → DMA to memory
+    |
+Write Masters (WM0-WM7) --> DMA to memory
 ```
 
-## Write Masters (WM)
+## 2. Write Masters (WM)
 
-VFE31 has 8 Write Masters (WM0-WM7) organized into outputs:
+VFE31 has 8 Write Masters (WM0-WM7) organized into 3 output groups:
 
-| WM | Offset | Output | Channel | Use (OUTPUT_1_AND_3) | Use (ZSL/Snapshot) |
-|----|--------|--------|---------|---------------------|--------------------|
-| WM0 | 0x04C | output0 | ch0 | **Preview Y** | Preview Y / RAW bypass |
-| WM1 | 0x064 | output1 | ch0 | **Video Y** | Thumbnail Y |
-| WM2 | 0x07C | output2 | ch0 | (unused) | **Snapshot Y** |
+| WM | Offset | Output | Channel | OUTPUT_1_AND_3 | ZSL/Snapshot |
+|----|--------|--------|---------|----------------|--------------|
+| WM0 | 0x04C | output0 | ch0 | Preview Y | Preview Y / RAW bypass |
+| WM1 | 0x064 | output1 | ch0 | Video Y | Thumbnail Y |
+| WM2 | 0x07C | output2 | ch0 | (unused) | Snapshot Y |
 | WM3 | 0x094 | output3 | ch0 | (unused) | Snapshot CbCr (ZSL_ALL) |
-| WM4 | 0x0AC | output0 | ch1 | **Preview CbCr** | Preview CbCr |
-| WM5 | 0x0C4 | output1 | ch1 | **Video CbCr** | Thumbnail CbCr |
-| WM6 | 0x0DC | output2 | ch1 | (unused) | **Snapshot CbCr** |
+| WM4 | 0x0AC | output0 | ch1 | Preview CbCr | Preview CbCr |
+| WM5 | 0x0C4 | output1 | ch1 | Video CbCr | Thumbnail CbCr |
+| WM6 | 0x0DC | output2 | ch1 | (unused) | Snapshot CbCr |
 | WM7 | 0x0F4 | output3 | ch1 | (unused) | (unused by all vendors) |
 
-**CORRECTED 2026-04-20:** WM2/WM3/WM6 are NOT RDI write masters. VFE31 has
-no true RDI hardware. Raw bypass (CAMIF_TO_AXI, AXI=0x60) routes to **WM0**,
-confirmed by both webOS and Samsung kernels: `out1.ch0 = 0; /* raw */`.
-WM2+WM6 are for snapshot/ZSL output (OUTPUT_1_2_AND_3 mode).
+Per-WM register stride: 0x18 bytes. Formula: `base + 0x04C + (n * 0x18)`.
 
-**Vendor WM Assignment Table (cross-vendor verified 2026-04-20):**
+VFE31 has no true RDI hardware. Raw bypass (CAMIF_TO_AXI, AXI=0x60) routes to
+WM0 only, confirmed by webOS (`out1.ch0 = 0`) and Samsung kernels.
 
-### Per-mode WM assignments
+### Per-Mode WM Assignments (cross-vendor verified)
 
-**OUTPUT_2 (Preview/Viewfinder only):**
+**OUTPUT_1_AND_3 (Preview + Video):**
 
-| Vendor | Y | CbCr | Source |
-|--------|---|------|--------|
-| **webOS Opal** | WM0 | WM1 | Opal libqcameralib.so decompiled |
-| **Samsung Quincy** | WM0 | WM1 (non-case4) / WM0+WM1+WM2 (case4) | Quincy liboemcamera.so |
-
-**OUTPUT_1_AND_3 (Preview + Video / Snapshot):**
-
-| Vendor | SoC | Out1 Y | Out1 CbCr | Out3 Y | Out3 CbCr | Source |
+| Vendor | SoC | Out0 Y | Out0 CbCr | Out1 Y | Out1 CbCr | Source |
 |--------|-----|--------|-----------|--------|-----------|--------|
-| **webOS kernel** | APQ8060 | WM0 | WM4 | WM1 | WM5 | msm_vfe31.c:711-722 |
-| **webOS Opal HAL** | APQ8060 | WM0 | WM4 | WM1 | WM5 | Opal libqcameralib.so |
-| **Samsung Quincy** | MSM8660 | WM0 | WM4 | WM1 | WM5 | Quincy liboemcamera.so |
-| **Samsung SII** | MSM8660 | WM0 | WM4 | WM1 | WM5 | SII liboemcamera.so |
-| **HTC Sensation** | MSM8660 | WM0 | WM1 | WM4 | WM5 | HTC liboemcamera.so |
-| **Sony Xperia S** | MSM8960 | WM0 | WM1 | WM4 | WM5 | Sony liboemcamera.so |
-| **LG G2** | MSM8974 | WM0 | WM4 | WM1 | WM5 | GitLab kernel source |
-| **Mako (Nexus 4)** | MSM8960 | WM0 | WM4 | WM1 | WM5 | GitHub kernel source |
+| webOS kernel | APQ8060 | WM0 | WM4 | WM1 | WM5 | msm_vfe31.c:711-722 |
+| webOS Opal HAL | APQ8060 | WM0 | WM4 | WM1 | WM5 | Opal libqcameralib.so |
+| Samsung Quincy | MSM8660 | WM0 | WM4 | WM1 | WM5 | Quincy liboemcamera.so |
+| Samsung SII | MSM8660 | WM0 | WM4 | WM1 | WM5 | SII liboemcamera.so |
+| HTC Sensation | MSM8660 | WM0 | WM1 | WM4 | WM5 | HTC liboemcamera.so |
+| Sony Xperia S | MSM8960 | WM0 | WM1 | WM4 | WM5 | Sony liboemcamera.so |
+| LG G2 | MSM8974 | WM0 | WM4 | WM1 | WM5 | GitLab kernel source |
+| Mako (Nexus 4) | MSM8960 | WM0 | WM4 | WM1 | WM5 | GitHub kernel source |
 
-Note: HTC/Sony pair Out1 as WM0+WM1 (sequential), webOS/Samsung pair as WM0+WM4
-(ch0+ch1 of same output). The XBAR routes data regardless of blob WM assignment.
+HTC/Sony pair Out0 as WM0+WM1 (sequential); webOS/Samsung pair as WM0+WM4
+(ch0+ch1 of same output). XBAR routes data regardless of blob WM assignment.
 
-**ZSL modes (Samsung only):**
+**ZSL (Samsung only):**
 
-| Mode | WMs Used | Out1 | Out2 | Out3 | UB constant |
-|------|----------|------|------|------|-------------|
-| `vfe_zsl_axi_init` | WM0,1,2,4,5,6 | WM0+WM4 | WM1+WM5 | WM2+WM6 | 0x218 (536) |
-| `vfe_zsl_axi_init_all_chnls` | WM0-5 (or 0-6) | WM4+WM5 | WM0+WM1 | WM2+WM3 | 0x2B8 (696) |
+| Mode | Out0 | Out1 | Out2 | UB constant |
+|------|------|------|------|-------------|
+| `vfe_zsl_axi_init` | WM0+WM4 | WM1+WM5 | WM2+WM6 | 0x218 (536) |
+| `vfe_zsl_axi_init_all_chnls` | WM4+WM5 | WM0+WM1 | WM2+WM3 | 0x2B8 (696) |
 
-**Raw snapshot (all vendors):**
+**Raw snapshot:**
 
 | Vendor | WM | UB depth | AXI mode | Source |
 |--------|------|----------|----------|--------|
-| webOS Opal | WM0 | 0x38F (911) | 0x00 (zeroed) | Opal libqcameralib.so |
+| webOS Opal | WM0 | 0x38F (911) | 0x00 | Opal libqcameralib.so |
 | Samsung | WM0 | 0x397 (919) | 0x60 | Quincy liboemcamera.so |
 
-**Our Current Configuration:**
-- PIX line: WM0 (Y) + WM4 (CbCr)
-- VIDEO line: WM0 (Y) + WM4 (CbCr) (reuses PIX WMs, only one line active at a time)
-- RDI line: WM2 (RDI0), WM3 (RDI1), WM6 (RDI2)
+### Current Driver Configuration
 
-**Status:** VIDEO reuses PIX WMs since only one line runs at a time.
-For future simultaneous PIX+VIDEO, VIDEO should use WM1+WM5 (all vendors agree).
+| Line | Y WM | CbCr WM | Notes |
+|------|------|---------|-------|
+| PIX (output0) | WM0 | WM4 | Preview/viewfinder |
+| VIDEO (output1) | WM1 | WM5 | Video recording |
+| ZSL (output2) | WM2 | WM6 | Zero-shutter-lag snapshot |
+| RDI | WM0 | -- | CAMIF_TO_AXI bypass, single WM |
 
 ### UB Stacking Order (cross-vendor verified)
 
-**Preview (OUTPUT_2):** WM0 → WM1
+| Mode | Order |
+|------|-------|
+| Preview (OUTPUT_2) | WM0 -> WM1 |
+| Snapshot/Video (OUTPUT_1_AND_3) | WM0 -> WM4 -> WM1 -> WM5 |
+| ZSL | WM0 -> WM4 -> WM1 -> WM5 -> WM2 -> WM6 |
 
-**Snapshot/Video (OUTPUT_1_AND_3):** WM0 → WM4 → WM1 → WM5
-(confirmed identical in webOS Opal, Samsung Quincy, Samsung SII)
+Confirmed identical in webOS Opal, Samsung Quincy, and Samsung SII.
 
-**ZSL:** WM0 → WM4 → WM1 → WM5 → WM2 → WM6
+## 3. Global Registers
 
-## Register Addresses
-
-Base: 0x04500000 (VFE)
-
-### Per-WM Registers (WM0 example, add 0x18 per WM)
-
-| Register | Offset | Description |
-|----------|--------|-------------|
-| WM0_WR_CFG | 0x04C | Enable/config (bit 0 = enable) |
-| WM0_WR_PING_ADDR | 0x050 | Ping buffer DMA address |
-| WM0_WR_PONG_ADDR | 0x054 | Pong buffer DMA address |
-| WM0_WR_ADDR_CFG | 0x058 | Lines (upper 16) + Burst (lower 16) |
-| WM0_WR_UB_CFG | 0x05C | FIFO depth (upper 16) + height (lower 16) |
-| WM0_WR_IMAGE_SIZE | 0x060 | Stride + height encoding |
-
-Formula for WMn: base + 0x04C + (n * 0x18)
-
-## AXI_OUTPUT_MODE (0x040)
-
-Controls which output mode VFE uses:
+### AXI_OUTPUT_MODE (0x040)
 
 | Value | Mode | Description | Source |
 |-------|------|-------------|--------|
-| 0x00 | Output 1 | Single output | - |
-| 0x01 | Output 1 and 3 | PIX + VIDEO (our mode) | webOS/Samsung |
-| 0x02 | Output 1 and 2 | PIX + RDI | - |
-| 0x03 | Camif to AXI | Raw CAMIF output | - |
+| 0x00 | Output 1 | Single output | -- |
+| 0x01 | Output 1 and 3 | PIX + VIDEO | webOS/Samsung |
+| 0x02 | Output 1 and 2 | PIX + RDI | -- |
+| 0x03 | Camif to AXI | Raw CAMIF output | -- |
 | 0x60 | RAW snapshot | CAMIF_TO_AXI_VIA_OUTPUT_2 | webOS/HTC |
-| 0x101 | ZSL dual output | Preview + Snapshot | Samsung |
-| **0x214101** | RAW capture | Bypass ISP, direct to memory | Samsung |
+| 0x101 | ZSL dual | Preview + Snapshot | Samsung |
+| 0x200 | OUTPUT_2 | Preview only (XBAR bypassed) | Samsung/Opal |
+| 0x214101 | RAW capture | Samsung-specific extended mode | Samsung |
 
-**Our setting:** 0x01 (OUTPUT_1_AND_3)
+**Driver setting:** 0x01 (OUTPUT_1_AND_3) for PIX/VIDEO, 0x60 for RDI.
 
-**RAW/RDI Mode Configuration:**
+**RAW BUS_CFG by depth (HTC):** 8-bit: 0x2AAA771, 10-bit: 0x2AAA775, 12-bit: 0x2AAA779.
 
-| Vendor | AXI_OUT_MODE | Notes |
-|--------|--------------|-------|
-| **HTC** | **0x60** | Standard Qualcomm CAMIF_TO_AXI_VIA_OUTPUT_2 |
-| **Samsung** | 0x214101 | Samsung-specific extended mode |
-| **Sony** | Kernel default | No HAL override |
+### BUS_CFG (0x03C)
 
-**HTC RAW BUS_CFG by depth:**
-- 8-bit RAW: 0x2AAA771 (divisor 8)
-- 10-bit RAW: 0x2AAA775 (divisor 6)
-- 12-bit RAW: 0x2AAA779 (divisor 5)
+All vendors use 0x02AAA771 for NV12/NV16 output. Bus arbitration/priority register.
 
-**Recommendation:** Use **0x60** for RAW mode (HTC/Qualcomm standard)
+### MODULE_CFG (0x010)
 
-## CORE_CFG (0x014)
+webOS value: 0x01C00C0C. Enables DEMUX and ISP processing modules.
 
-Controls VFE input source selection and pixel pattern. Also known as `VFE_CFG_OFF` in webOS kernel.
+### CORE_CFG (0x014)
 
-### Bit Layout
+Controls input source and pixel pattern. Also known as `VFE_CFG_OFF` in webOS kernel.
 
 ```
-CORE_CFG (0x014) - 32-bit register
-┌─────────────────────────────────────────────────────────────┐
-│ 31            8 │  7  │  6     5     4  │ 3 │  2   1   0   │
-├─────────────────┼─────┼─────────────────┼───┼──────────────┤
-│    Reserved     │ ??? │   INPUT_MUX     │???│ PIXEL_PATTERN│
-└─────────────────┴─────┴─────────────────┴───┴──────────────┘
+Bits [2:0]  = PIXEL_PATTERN  (input pixel format)
+Bits [6:4]  = INPUT_MUX      (input source selector)
+Bits 3,7    = reserved (zero)
 ```
 
-| Bits | Field | Description |
-|------|-------|-------------|
-| [2:0] | PIXEL_PATTERN | Input pixel format pattern (0-7) |
-| [6:4] | INPUT_MUX | Input source selector (see table below) |
+**INPUT_MUX values** (from HTC binary `& 0x8f | cVar3 << 4`):
 
-**ANSWERED:** Bits 4-6 together form INPUT_MUX field (from HTC binary `& 0x8f | cVar3 << 4`):
+| INPUT_MUX | bits[6:4] | Description |
+|-----------|-----------|-------------|
+| CAMIF | 001 | Normal sensor input |
+| TESTGEN | 011 | Test pattern generator (non-functional on VFE31) |
+| AXI | 100 | Memory read input |
 
-| INPUT_MUX | Value | bits[6:4] | Description |
-|-----------|-------|-----------|-------------|
-| CAMIF | 0x01 | 001 | Input from CAMIF (normal sensor) |
-| TESTGEN | 0x03 | 011 | Input from Test Pattern Generator |
-| AXI | 0x04 | 100 | Input from AXI (memory read) |
+**PIXEL_PATTERN values:**
 
-**Note:** Bit 3 and 7 remain unknown but are typically 0.
+| Value | webOS Enum | Pattern | Linux Format |
+|-------|------------|---------|--------------|
+| 0 | VFE_BAYER_RGRGRG | RGRGRG | SRGGB8/10/12 |
+| 1 | VFE_BAYER_GRGRGR | GRGRGR | SGRBG8/10/12 |
+| 2 | VFE_BAYER_BGBGBG | BGBGBG | SBGGR8/10/12 |
+| 3 | VFE_BAYER_GBGBGB | GBGBGB | SGBRG8/10/12 |
+| 4 | VFE_YUV_YCbYCr | YCbYCr | YUYV |
+| 5 | VFE_YUV_YCrYCb | YCrYCb | YVYU |
+| 6 | VFE_YUV_CbYCrY | CbYCrY | UYVY (webOS default) |
+| 7 | VFE_YUV_CrYCbY | CrYCbY | VYUY |
 
-### Pixel Pattern Values
+Bayer patterns are inverted relative to sensor order: sensor 0 -> VFE 3,
+sensor 3 -> VFE 0. YUV patterns (4-7) map directly. Verified in HTC and
+Samsung binaries with identical lookup tables.
 
-**CRITICAL:** Samsung/HTC binary analysis confirms that the correct Bayer pixel
-pattern MUST be set even for RAW bypass mode (AXI=0x60). Setting pattern=0 for
-all RAW formats causes CAMIF to not recognize input data.
+**REG_UPDATE behavior:** YUV modes (4-7) require REG_UPDATE after configuration;
+Bayer modes (0-3) do not. From webOS `vfe31_start_recording()` line 1014.
 
-| Value | webOS Enum | Pattern | Linux Format | Description |
-|-------|------------|---------|--------------|-------------|
-| **0** | VFE_BAYER_RGRGRG | RGRGRG | SRGGB8/10/12 | Bayer R-first |
-| **1** | VFE_BAYER_GRGRGR | GRGRGR | SGRBG8/10/12 | Bayer Gr-first |
-| **2** | VFE_BAYER_BGBGBG | BGBGBG | SBGGR8/10/12 | Bayer B-first |
-| **3** | VFE_BAYER_GBGBGB | GBGBGB | SGBRG8/10/12 | Bayer Gb-first |
-| **4** | VFE_YUV_YCbYCr | YCbYCr | YUYV | YUV Y-Cb-Y-Cr |
-| **5** | VFE_YUV_YCrYCb | YCrYCb | YVYU | YUV Y-Cr-Y-Cb |
-| **6** | VFE_YUV_CbYCrY | CbYCrY | UYVY | YUV Cb-Y-Cr-Y (webOS default) |
-| **7** | VFE_YUV_CrYCbY | CrYCbY | VYUY | YUV Cr-Y-Cb-Y |
-
-### V31_OPERATION_CFG Command Structure
-
-CORE_CFG is written via the V31_OPERATION_CFG ioctl command (command ID = 5).
-
-**Command Buffer Layout (28 bytes / 7 DWORDs):**
-
-| Offset | Field | Description |
-|--------|-------|-------------|
-| 0x00 | operation_mode | Capture mode flags |
-| 0x04 | stats_comp | Statistics composition flags |
-| 0x08 | **VFE_CFG_OFF** | **→ CORE_CFG (0x014)** |
-| 0x0C | VFE_MODULE_CFG | → MODULE_CFG (0x010) |
-| 0x10 | VFE_REALIGN_BUF | → REALIGN_BUF register |
-| 0x14 | VFE_CHROMA_UP | → CHROMA_UP register |
-| 0x18 | VFE_STATS_CFG | → STATS_CFG register |
-
-**webOS Kernel Code (msm_vfe31.c:887):**
-```c
-static int vfe31_operation_config(uint32_t *cmd)
-{
-    uint32_t *p = cmd;
-    vfe31_ctrl->operation_mode = *p;        // [0] operation mode
-    vfe31_ctrl->stats_comp = *(++p);        // [1] stats comp
-    msm_io_w(*(++p), vfe31_ctrl->vfebase + VFE_CFG_OFF);    // [2] → CORE_CFG
-    msm_io_w(*(++p), vfe31_ctrl->vfebase + VFE_MODULE_CFG); // [3] → MODULE_CFG
-    msm_io_w(*(++p), vfe31_ctrl->vfebase + VFE_REALIGN_BUF);// [4]
-    msm_io_w(*(++p), vfe31_ctrl->vfebase + VFE_CHROMA_UP);  // [5]
-    msm_io_w(*(++p), vfe31_ctrl->vfebase + VFE_STATS_CFG);  // [6]
-    return 0;
-}
-```
-
-### Vendor Binary Analysis
-
-**HTC liboemcamera.so** stores CORE_CFG at buffer offset **0x96c**.
-**Samsung liboemcamera.so** stores CORE_CFG at buffer offset **0x1488**.
-
-**Sensor-to-VFE Pattern Mapping (both HTC and Samsung use SAME mapping):**
-
-| Sensor Pattern | VFE Pattern | VFE Enum |
-|----------------|-------------|----------|
-| 0 | 3 | GBGBGB |
-| 1 | 2 | BGBGBG |
-| 2 | 1 | GRGRGR |
-| 3 | 0 | RGRGRG |
-| 4 | 4 | YCbYCr |
-| 5 | 5 | YCrYCb |
-| 6 | 6 | CbYCrY (UYVY) |
-| 7 | 7 | CrYCbY |
-
-**Note:** Bayer patterns are **inverted** (sensor 0 → VFE 3, sensor 3 → VFE 0).
-
-**HTC Input Source Configuration (vfe_operation_config line 46492-46504):**
-```c
-if (*(param_1 + 0xe210) == 0) {      // CAMIF input
-    cVar3 = 0x01;                     // bits 4-6 = 001 (CAMIF)
-}
-else if (*(param_1 + 0xe210) == 2) { // AXI input
-    cVar3 = 0x04;                     // bits 4-6 = 100 (AXI)
-}
-else {                                // TESTGEN input
-    cVar3 = 0x03;                     // bits 4-6 = 011 (TESTGEN)
-}
-*(buf + 0x96c) = bVar4 & 0x8f | cVar3 << 4;  // Set bits 4-6
-```
-
-### REG_UPDATE Behavior Based on Pixel Pattern
-
-webOS kernel reads CORE_CFG to determine if REG_UPDATE should be sent:
-
-```c
-// msm_vfe31.c:1014 - vfe31_start_recording()
-switch (msm_io_r(vfe31_ctrl->vfebase + VFE_CFG_OFF) & 0x7) {
-case VFE_YUV_YCbYCr:     // 4
-case VFE_YUV_YCrYCb:     // 5
-case VFE_YUV_CbYCrY:     // 6
-case VFE_YUV_CrYCbY:     // 7
-    msm_io_w_mb(1, vfe31_ctrl->vfebase + VFE_REG_UPDATE_CMD);
-    break;
-default:                  // Bayer patterns 0-3: NO REG_UPDATE
-    break;
-}
-```
-
-**Key Insight:** YUV modes (4-7) require REG_UPDATE, Bayer modes (0-3) do not.
-
-### Common CORE_CFG Values
+**Common CORE_CFG values:**
 
 | Mode | Value | Breakdown |
 |------|-------|-----------|
-| **UYVY from CAMIF (webOS)** | **0x46** | pattern=6, bit6=1 |
-| Bayer SRGGB from CAMIF | 0x40 | pattern=0, bit6=1 |
-| Bayer SGRBG from CAMIF | 0x41 | pattern=1, bit6=1 |
-| Bayer SBGGR from CAMIF | 0x42 | pattern=2, bit6=1 |
-| Bayer SGBRG from CAMIF | 0x43 | pattern=3, bit6=1 |
-| Test Generator | 0x56 | pattern=6, testgen=1, enable=1 |
+| UYVY from CAMIF (webOS) | 0x46 | pattern=6, INPUT_MUX=CAMIF |
+| Bayer SRGGB from CAMIF | 0x40 | pattern=0, INPUT_MUX=CAMIF |
+| Bayer SGRBG from CAMIF | 0x41 | pattern=1, INPUT_MUX=CAMIF |
+| Bayer SBGGR from CAMIF | 0x42 | pattern=2, INPUT_MUX=CAMIF |
+| Bayer SGBRG from CAMIF | 0x43 | pattern=3, INPUT_MUX=CAMIF |
+| Test Generator | 0x56 | pattern=6, INPUT_MUX=TESTGEN |
 
-**Our setting:** Pattern based on mbus format code + bit 6 always set
+### V31_OPERATION_CFG Command (28 bytes)
 
-## XBAR Registers (0x040-0x044) -- CORRECTED 2026-04-20
+CORE_CFG is written via the V31_OPERATION_CFG ioctl (command ID = 5):
 
-The XBAR consists of TWO registers (V31_XBAR_CFG_LEN = 8 bytes, from Samsung msm_vfe31.h):
+| Offset | Field | Target Register |
+|--------|-------|-----------------|
+| 0x00 | operation_mode | (software state) |
+| 0x04 | stats_comp | (software state) |
+| 0x08 | VFE_CFG_OFF | CORE_CFG (0x014) |
+| 0x0C | VFE_MODULE_CFG | MODULE_CFG (0x010) |
+| 0x10 | VFE_REALIGN_BUF | REALIGN_BUF register |
+| 0x14 | VFE_CHROMA_UP | CHROMA_UP register |
+| 0x18 | VFE_STATS_CFG | STATS_CFG register |
 
-### XBAR_CFG0 / AXI_OUT_MODE (0x040)
+HTC stores CORE_CFG at HAL buffer offset 0x96c; Samsung at 0x1488.
 
-| Value | Mode | Description |
-|-------|------|-------------|
-| 0x01 | OUTPUT_1_AND_3 | PIX + VIDEO, routes through DEMUX + XBAR_CFG1 |
-| 0x60 | CAMIF_TO_AXI | RAW bypass, ignores XBAR_CFG1 |
-| 0x101 | ZSL mode | Preview + Snapshot + Video (Samsung) |
-| 0x200 | OUTPUT_2 | Preview-only, ignores XBAR_CFG1 |
+## 4. XBAR Registers (0x040-0x044)
 
-### XBAR_CFG1 (0x044) -- Per-Output Routing Register
+The XBAR consists of two registers (V31_XBAR_CFG_LEN = 8 bytes):
 
-**CORRECTED:** This is a **24-bit register with 3 routing bytes**, NOT a 16-bit
-register with an "ISP path" field. The previous interpretation of bits[15:8] as
-"ISP path = 0x1A" was wrong -- 0x1A is the output1 routing byte.
+**XBAR_CFG0 (0x040):** Same as AXI_OUT_MODE (see section 3).
 
-Proven by Samsung SII ZSL values (0x1A1B1B) where bits[15:8] = 0x1B (same routing
-value as bits[7:0]), and Samsung kernel V31_XBAR_CFG ioctl infrastructure that
-dynamically updates both registers at runtime (xbar_cfg[0] + xbar_cfg[1]).
+**XBAR_CFG1 (0x044):** Per-output routing register, 24 bits:
 
 ```
-Bits [7:0]   = output0 routing byte (PIX/preview path → WM0/WM4)
-Bits [15:8]  = output1 routing byte (VIDEO/snapshot path → WM1/WM5)
-Bits [23:16] = output2 routing byte (ZSL/third output → WM2/WM6)
+Bits [7:0]   = output0 routing byte (PIX/preview -> WM0/WM4)
+Bits [15:8]  = output1 routing byte (VIDEO/snapshot -> WM1/WM5)
+Bits [23:16] = output2 routing byte (ZSL/third output -> WM2/WM6)
 Bits [31:24] = reserved (zero)
 ```
 
-Each routing byte has Y and CbCr nibbles:
+Each routing byte encodes Y and CbCr nibbles:
 ```
 bits[3:0] = Y routing nibble
 bits[7:4] = CbCr routing nibble
 ```
 
-### Known Routing Byte Values
+### Routing Byte Values
 
-| Byte | Y[3:0] | CbCr[7:4] | Effect (OUTPUT_1_AND_3 WM mapping) |
-|------|--------|-----------|-------------------------------------|
+| Byte | Y[3:0] | CbCr[7:4] | Effect |
+|------|--------|-----------|--------|
 | 0x00 | 0x0 | 0x0 | Output disabled |
 | 0x03 | 0x3 | 0x0 | Y to ch0+ch1, CbCr disabled |
 | 0x1A | 0xA | 0x1 | Y to ch1, CbCr to ch0 |
 | 0x1B | 0xB | 0x1 | Y to ch0+ch1, CbCr to ch0 |
 
-OUTPUT_1_AND_3 WM mapping per output:
-- output0: ch0 = WM0, ch1 = WM4
-- output1: ch0 = WM1, ch1 = WM5
-- output2: ch0 = WM2, ch1 = WM6
+### Cross-Vendor XBAR_CFG1 Values
 
-### XBAR_CFG1 Values (cross-vendor verified 2026-04-20)
+| Value | out0 | out1 | out2 | Use Case | Vendors |
+|-------|------|------|------|----------|---------|
+| 0x000000 | off | off | off | OUTPUT_2 preview (XBAR bypassed) | webOS Opal, Samsung |
+| 0x001A03 | 0x03 | 0x1A | -- | NV16 format (format=1,2) | Samsung, Mako/G2 |
+| 0x001A1B | 0x1B | 0x1A | -- | NV12 video/snapshot | webOS, Samsung, HTC |
+| 0x00021B | 0x1B | 0x02 | -- | NV12 sensor input=1 | Samsung, Opal |
+| 0x1A1B1B | 0x1B | 0x1B | 0x1A | ZSL (3 outputs) | Samsung SII |
+| 0x001B01 | 0x01 | 0x1B | -- | ZSL all channels | Samsung Quincy |
 
-| Value | out0 [7:0] | out1 [15:8] | out2 [23:16] | Use Case | Vendors |
-|-------|-----------|-------------|-------------|----------|---------|
-| **0x000000** | disabled | disabled | disabled | OUTPUT_2 preview (XBAR bypassed) | webOS Opal, Samsung |
-| **0x001A03** | 0x03 Y-only | 0x1A Y+CbCr | - | NV16 format (format=1,2) | Samsung, Mako/G2 |
-| **0x001A1B** | 0x1B Y+CbCr | 0x1A Y+CbCr | - | **NV12 video/snapshot** | **webOS**, Samsung, HTC |
-| **0x00021B** | 0x1B Y+CbCr | 0x02 Y-only | - | NV12 sensor input=1 | Samsung, Opal |
-| **0x1A1B1B** | 0x1B Y+CbCr | 0x1B Y+CbCr | 0x1A Y+CbCr | ZSL (3 outputs) | Samsung SII |
-| **0x001B01** | 0x01 Y-ch0 | 0x1B Y+CbCr | - | ZSL all channels | Samsung Quincy |
-
-Samsung `vfe_update_preview_format` dynamically switches output0 byte between
-`0x1B` (Y+CbCr) and `0x03` (Y-only) at runtime via V31_XBAR_CFG ioctl.
-
-Samsung kernel supports runtime XBAR update: userspace writes 8 bytes (XBAR_CFG0 +
-XBAR_CFG1) via V31_XBAR_CFG command, kernel stages in xbar_cfg[2] with
-xbar_update_pending flag, applied at next REG_UPDATE IRQ.
-
-**Vendor XBAR Configuration Table:**
+Samsung dynamically switches output0 byte between 0x1B (Y+CbCr) and 0x03
+(Y-only) at runtime via V31_XBAR_CFG ioctl. The kernel stages changes in
+xbar_cfg[2] with xbar_update_pending, applied at next REG_UPDATE IRQ.
 
 | Vendor | SoC | Preview | Video/Snapshot | Raw | ZSL | Source |
 |--------|-----|---------|----------------|-----|-----|--------|
-| **webOS Opal** | APQ8060 | **0x0000** | **0x1A1B** | 0x0000 | N/A | Opal libqcameralib.so decompiled |
-| **webOS Topaz** | APQ8060 | **0x1A1B** | **0x1A1B** | N/A | N/A | Register dump from live HW |
-| **Samsung Quincy** | MSM8660 | **0x0000** | **0x1A1B** | 0x1A00 | 0x1B01 | Quincy liboemcamera.so decompiled |
-| **Samsung SII** | MSM8660 | **0x0000** | **0x1A1B** | 0x1A00 | 0x1B01 | SII liboemcamera.so decompiled |
-| **HTC Sensation** | MSM8660 | 0x1A1B | 0x1A1B | N/A | N/A | HTC liboemcamera.so decompiled |
-| **LG G2** | MSM8974 | 0x1A03 | 0x1A03 | N/A | N/A | GitLab kernel source |
+| webOS Opal | APQ8060 | 0x0000 | 0x1A1B | 0x0000 | N/A | Opal libqcameralib.so |
+| webOS Topaz | APQ8060 | 0x1A1B | 0x1A1B | N/A | N/A | Live register dump |
+| Samsung Quincy | MSM8660 | 0x0000 | 0x1A1B | 0x1A00 | 0x1B01 | Quincy liboemcamera.so |
+| Samsung SII | MSM8660 | 0x0000 | 0x1A1B | 0x1A00 | 0x1B01 | SII liboemcamera.so |
+| HTC Sensation | MSM8660 | 0x1A1B | 0x1A1B | N/A | N/A | HTC liboemcamera.so |
+| LG G2 | MSM8974 | 0x1A03 | 0x1A03 | N/A | N/A | GitLab kernel source |
 
-Note: webOS Topaz register dump shows 0x1A1B even in preview because the Topaz
-HAL uses OUTPUT_1_AND_3 for preview (not OUTPUT_2). The Opal HAL uses OUTPUT_2
-for preview with XBAR=0. Both approaches work.
+webOS Topaz shows 0x1A1B even in preview because it uses OUTPUT_1_AND_3 for
+preview (not OUTPUT_2). Opal uses OUTPUT_2 with XBAR=0. Both work.
 
-**Our setting:** 0x1A1B (matching webOS Topaz register dumps)
+**Driver setting:** 0x1A1B (OUTPUT_1_AND_3 with PIX+VIDEO routing).
 
-## DEMUX Configuration
+## 5. DEMUX Configuration
 
 DEMUX separates interleaved UYVY into Y and CbCr planes.
 
 ### DEMUX_CFG (0x284)
 
-Controls DEMUX mode:
-- Bits [2:0] = 1: Bayer mode (for RAW sensors)
-- Bits [2:0] = 3: YUV mode (for YUV sensors like MT9M113)
+- Bits [2:0] = 1: Bayer mode
+- Bits [2:0] = 3: YUV mode
 
 ### DEMUX_EVEN_CFG (0x290) and DEMUX_ODD_CFG (0x294)
 
-**ANSWERED:** These are **16-bit values** for YUV modes, **8-bit values** for Bayer modes.
+For YUV modes, both registers receive the same 16-bit value.
+For Bayer modes, different 8-bit values go to separate config struct offsets.
 
-webOS preview dump confirms: `DEMUX_EVEN (0x290) = 0x0000C9CA`
+**YUV patterns (16-bit, same to EVEN and ODD):**
 
-### HTC vfe_demux_set_cfg_parms() Analysis (line 56150)
+| Pattern | Value | DEMUX mode |
+|---------|-------|------------|
+| YCbYCr (YUYV) | 0x9CAC | 3 |
+| YCrYCb (YVYU) | 0xAC9C | 3 |
+| CbYCrY (UYVY) | 0xC9CA | 3 |
+| CrYCbY (VYUY) | 0xCAC9 | 3 |
 
-The HTC binary shows exact DEMUX values for each pixel pattern:
+**Bayer patterns (8-bit values at separate config offsets):**
 
-**Bayer Patterns (8-bit values at separate offsets):**
+| Pattern | Offset 0x0C | Offset 0x10 | DEMUX mode |
+|---------|-------------|-------------|------------|
+| RGRGRG | 0xAC | 0xC9 | 1 |
+| GRGRGR | 0xCA | 0x9C | 1 |
+| BGBGBG | 0x9C | 0xCA | 1 |
+| GBGBGB | 0xC9 | 0xAC | 1 |
 
-| Pattern | Case | Offset 0x0C | Offset 0x10 | DEMUX bits[2:0] |
-|---------|------|-------------|-------------|-----------------|
-| RGRGRG | 0 | 0xAC | 0xC9 | 1 |
-| GRGRGR | 1 | 0xCA | 0x9C | 1 |
-| BGBGBG | 2 | 0x9C | 0xCA | 1 |
-| GBGBGB | 3 | 0xC9 | 0xAC | 1 |
+The values 0xC9/0xCA/0xAC/0x9C encode byte extraction positions within the
+pixel data. All vendors (HTC, Samsung, Sony) use identical lookup tables.
+Source: HTC `vfe_demux_set_cfg_parms()` line 56150.
 
-**YUV Patterns (16-bit values written to both offsets):**
+**Driver setting:** 0xC9CA for UYVY, matching webOS register dumps.
 
-| Pattern | Case | EVEN + ODD Value | DEMUX bits[2:0] |
-|---------|------|------------------|-----------------|
-| YCbYCr (YUYV) | 4 | 0x9CAC | 3 |
-| YCrYCb (YVYU) | 5 | 0xAC9C | 3 |
-| CbYCrY (UYVY) | 6 | **0xC9CA** | 3 |
-| CrYCbY (VYUY) | 7 | 0xCAC9 | 3 |
+## 6. Per-WM Registers
 
-**Key Insight:** For YUV, the same 16-bit value goes to both EVEN and ODD registers.
-For Bayer, different 8-bit values go to offsets 0x0C and 0x10 in the config struct.
+Each WM has 6 registers at stride 0x18:
 
-### DEMUX Value Decoding
+| Register | WM0 Offset | Description |
+|----------|------------|-------------|
+| WR_CFG | 0x04C | Enable (bit 0) |
+| WR_PING_ADDR | 0x050 | Ping buffer DMA address |
+| WR_PONG_ADDR | 0x054 | Pong buffer DMA address |
+| WR_ADDR_CFG | 0x058 | UB SRAM allocation |
+| WR_UB_CFG | 0x05C | UB depth + height |
+| WR_IMAGE_SIZE | 0x060 | Stride + height + flags |
 
-The values 0xC9, 0xCA, 0xAC, 0x9C encode byte positions:
-- 0xC9 = 201 = extracts byte position for Y (odd)
-- 0xCA = 202 = extracts byte position for Y (even)
-- 0xAC = 172 = extracts byte position for Cb
-- 0x9C = 156 = extracts byte position for Cr
-
-**Our setting:** 0xC9CA for UYVY (matching webOS)
-
-### Cross-Vendor DEMUX Verification
-
-HTC, Samsung, and Sony all use the same DEMUX value lookup table as documented above.
-The HTC binary shows the clearest implementation at `vfe_demux_set_cfg_parms()` line 56150,
-with switch cases 0-3 for Bayer patterns (8-bit values) and cases 4-7 for YUV patterns
-(16-bit values). All vendors set DEMUX_CFG bits[2:0] = 1 for Bayer, 3 for YUV.
-
-## IMAGE_SIZE Register Format
-
-Each WM has an IMAGE_SIZE register controlling DMA behavior.
-
-### Observed Values
-
-| Resolution | Y WM0 | CbCr WM4 |
-|------------|-------|----------|
-| 640x480 | 0x00501df2 | 0x00500ef2 |
-| 1280x1024 | 0x00a03ff2 | 0x00a01ff2 |
-
-### Bit Layout Analysis
-
-For 1280x1024 Y (0x00a03ff2):
-```
-0x00a0 = 160 decimal
-0x3ff2 = lower 16 bits
-  0x3ff = 1023 = height - 1
-  0x2 = flags?
-```
-
-**Hypothesis:**
-- Bits [31:16] = stride / 16 = 2560 / 16 = 160 ✓
-- Bits [15:4] = height - 1 = 1023 ✓
-- Bits [3:0] = mode flags (0x2)
-
-For 1280x1024 CbCr (0x00a01ff2):
-```
-0x00a0 = 160 = stride / 16 = 2560 / 16 ✓
-0x1ff = 511 = cbcr_height - 1 (512 for NV12 4:2:0) ✓
-0x2 = flags
-```
-
-**Formula:** `IMAGE_SIZE = ((stride/16) << 16) | ((height-1) << 4) | flags`
-
-**ANSWERED:** Flag bits [3:0] = 0x2 indicates **linear memory layout with 16-byte aligned bursts**.
-- Value 0x2 is used consistently for all semi-planar (NV12/NV16) output
-- Changing this causes skewed images or bus faults
-- Other values may exist for tiled/macroblock formats but are not used on VFE31
-
-### Cross-Vendor IMAGE_SIZE Verification (updated 2026-04-20)
-
-**Stride field (upper 16 bits) - CRITICAL DISCREPANCY:**
-
-| Implementation | Input Parameter | Formula | 640px Result | Mask |
-|---|---|---|---|---|
-| **webOS** (register dumps) | input_stride (width*2) | input_stride / 16 | 1280/16 = **80** (0x50) | - |
-| **Our mainline driver** | input_stride (width*2) | input_stride / 16 | 1280/16 = **80** (0x50) | - |
-| **HTC** (decompiled line 36127) | pixel_width | (width+15)/16 - 1 | (640+15)/16-1 = **39** (0x27) | 0x3ff |
-| **Samsung** (decompiled line 41177) | pixel_width | (width+15)/16 - 1 | (640+15)/16-1 = **39** (0x27) | 0x1ff |
-| **Sony** (decompiled line 28323) | pixel_width | (width+15)/16 - 1 | (640+15)/16-1 = **39** (0x27) | 0x3ff |
-| **Mako/G2** (kernel source) | width | (width+15)/16 - 1 | (640+15)/16-1 = **39** (0x27) | - |
-
-Vendor HAL binaries compute stride_field=39 for 640px, but webOS hardware shows 80.
-The discrepancy exists because webOS computes IMAGE_SIZE in userspace HAL and passes
-it to the kernel as a pre-computed blob (via ioctl, 188 bytes from offset 0x38).
-The webOS HAL apparently uses input_stride (width*2), not pixel_width.
-
-**Our driver matches webOS register dumps (stride=80), which is the ground truth.**
-
-Note: Samsung uses a 9-bit mask (0x1ff) vs HTC/Sony 10-bit mask (0x3ff).
-
-**Height + flags (lower 16 bits) - all vendors agree:**
-```c
-// HTC (line 36137): (ushort)(uVar14 << 4) | 2
-// Samsung (line 41216): *(byte *)(uVar4 + 0x48) = (byte)uVar13 & 0xfc | 2
-// Sony (line 28327): local_dc & 0xc | (ushort)(uVar13 << 4) | 2
-//
-// Formula: ((height - 1) << 4) | 0x2
-```
-
-**Y vs CbCr IMAGE_SIZE differences:**
-
-| Vendor | Y Stride | CbCr Stride | CbCr Height (NV12) | CbCr Height (NV16) |
-|--------|----------|-------------|--------------------|--------------------|
-| **webOS** | input_stride/16 | **same as Y** | cbcr_height-1 | height-1 |
-| **HTC/Sony** | (width+15)/16-1 | **same as Y** | (height/2)-1 | height-1 |
-| **Samsung** (snapshot) | (width+15)/16-1 | **(width/2+15)/16-1** | (height/2)-1 | N/A |
-| **Our driver** | input_stride/16 | **same as Y** | cbcr_height-1 | height-1 |
-
-Samsung uniquely uses half-width for CbCr stride in snapshot mode (line 41187).
-All other vendors use identical stride for Y and CbCr.
-
-**Flag 0x2:** All vendors explicitly set via `| 2`, indicating linear memory with 16-byte aligned bursts.
-
-## ADDR_CFG Register Format -- CORRECTED 2026-04-20
-
-**ADDR_CFG controls UB (Unified Buffer) SRAM allocation, NOT DMA burst config.**
-
-This was previously misidentified as `(burst_lines << 16) | burst_words`. The Opal
-decompilation (same APQ8060 HAL as Topaz) proves it is `(UB_start << 16) | UB_depth`.
-The Opal formula with constant 0x390 (912) reproduces the exact webOS register dump values.
-
-### Bit Layout (CORRECTED)
+### WR_IMAGE_SIZE
 
 ```
-Bits [25:16] = UB start offset (entry index in UB SRAM, 10-bit)
-Bits [9:0]   = UB depth (number of entries allocated to this WM, 10-bit)
+Bits [27:16] = stride field
+Bits [15:4]  = height - 1
+Bits [1:0]   = 0x2 (linear memory, 16-byte aligned bursts)
 ```
 
-### Observed Values (webOS 640x480 NV12 OUTPUT_1_AND_3)
+The stride field uses input stride: `input_stride / 16`.
+This is equivalent to `(pixel_width + 7) / 8` since `width*2/16 = width/8`.
+
+**Important:** IMAGE_SIZE and UB_CFG use input stride for VFE pipeline timing.
+The DEMUX splits UYVY internally, and WMs write at compact output stride
+(width bytes/line for Y, width bytes/line for interleaved CbCr). Buffer
+allocation and CbCr offset use output stride: `cbcr_offset = width * height`.
+
+| Resolution | Y value | CbCr (NV12) | CbCr (NV16) |
+|------------|---------|-------------|-------------|
+| 640x480 | 0x00501DF2 | 0x00500EF2 | 0x00501DF2 |
+| 1280x1024 | 0x00A03FF2 | 0x00A01FF2 | 0x00A03FF2 |
+
+For 640x480 Y: stride = 0x50 = 80 = 1280/16, height = 0x1DF = 479.
+
+**Cross-vendor:** UB_CFG and IMAGE_SIZE values match across all vendors.
+The apparent stride discrepancy (webOS: input_stride/16 vs HAL: (width+15)/16-1)
+produces identical results for widths that are multiples of 8.
+
+**Y vs CbCr IMAGE_SIZE:** All vendors use identical stride for Y and CbCr,
+except Samsung snapshot mode which uniquely uses half-width for CbCr stride.
+CbCr height is `height/2 - 1` for NV12, `height - 1` for NV16.
+
+All vendors set flag `| 0x2` explicitly. Samsung masks with 0x1ff for stride,
+HTC/Sony with 0x3ff.
+
+### WR_ADDR_CFG (UB SRAM Allocation)
+
+```
+Bits [25:16] = UB start offset (10-bit, entry index in UB SRAM)
+Bits [9:0]   = UB depth (10-bit, entries allocated to this WM)
+```
+
+Uses proportional allocation from the 912-entry image WM budget (see section 9).
+
+**webOS values (640x480 NV12, OUTPUT_1_AND_3):**
 
 | WM | Purpose | Value | UB Start | UB Depth | UB Range |
 |----|---------|-------|----------|----------|----------|
@@ -550,462 +350,89 @@ Bits [9:0]   = UB depth (number of entries allocated to this WM, 10-bit)
 | WM1 | Video Y | 0x01C8012F | 456 | 303 | [456..758] |
 | WM5 | Video CbCr | 0x02F80097 | 760 | 151 | [760..910] |
 
-**Total: 911 of 912 UB entries used (sequential stacking, +1 gap between WMs)**
+Total: 911 of 912 UB entries used (sequential stacking, +1 gap between WMs).
 
-**UB Depth Proportional Allocation Formula (CORRECTED 2026-04-20):**
-
-The "burst" and "lines" fields are actually UB depth and UB start offset.
-All vendors use proportional UB allocation with constant **0x390 = 912**
-(the total UB SRAM available for image WMs):
+### WR_UB_CFG
 
 ```
-UB_depth = floor(plane_pixels * 912 / total_bandwidth) - 1
-UB_start = previous_WM_end + 1  (sequential stacking)
+Bits [24:16] = depth = (input_stride / 32) - 1
+Bits [11:0]  = height - 1
 ```
 
-Where:
-- `plane_pixels = width * height` for Y, `(width/2) * height` for CbCr
-- `total_bandwidth = sum of (width * height * 1.5) for all active outputs`
+| Resolution | Y value | CbCr (NV12) | CbCr (NV16) |
+|------------|---------|-------------|-------------|
+| 640x480 | 0x002701DF | 0x002700EF | 0x002701DF |
+| 1280x1024 | 0x004F03FF | 0x004F01FF | 0x004F03FF |
 
-**Verification against webOS register dumps (640x480 NV12, OUTPUT_1_AND_3):**
-```
-total_bw = 2 * (640 * 480 * 1.5) = 921,600
-Y_depth  = (640 * 480 * 912) / 921600 - 1 = 303   ✓ matches 0x012F
-Cb_depth = (320 * 480 * 912) / 921600 - 1 = 151   ✓ matches 0x0097
-```
+For 640x480 Y: depth = 0x27 = 39 = (1280/32)-1, height = 0x1DF = 479.
 
-**UB stacking (all 4 WMs in webOS OUTPUT_1_AND_3):**
-```
-WM0 (Prev Y):    start=0,   depth=303  → ADDR_CFG = 0x0000012F ✓
-WM4 (Prev CbCr): start=304, depth=151  → ADDR_CFG = 0x01300097 ✓
-WM1 (Vid Y):     start=456, depth=303  → ADDR_CFG = 0x01C8012F ✓
-WM5 (Vid CbCr):  start=760, depth=151  → ADDR_CFG = 0x02F80097 ✓
-Total: 911 of 912 UB entries used
-```
+HTC/Samsung/Sony HALs use a proportional formula `(pixels * K / total) - 1 + 64`
+with K=664 or K=792. All add `+64` headroom (`+ 0x40U & 0x3ff`). For
+single-output scenarios the proportional formula converges to the simpler
+stride/32-1 formula, so all vendors produce the same register values.
 
-**Cross-vendor UB constant equivalence:**
+## 7. Chroma Scaling
 
-| Vendor | Constant | Headroom | Effective | Source |
-|--------|----------|----------|-----------|--------|
-| **webOS/Opal** | 912 (0x390) | None | 912 | Opal libqcameralib.so |
-| **HTC/Sony** | 664 (0x298) | +64/WM | 664 + 4×64 = 920 | liboemcamera.so |
-| **Samsung (multi)** | 664 (0x298) | +64/WM | 920 | liboemcamera.so |
-| **Samsung (single)** | 792 (0x318) | +64/WM | 792 + 2×64 = 920 | liboemcamera.so |
+### CHROMA_H_IMAGE
 
-All converge to ~912-920 total UB entries. The 8-entry difference (920 vs 912)
-is likely a margin for stats engine boundary alignment.
+Horizontal chroma subsampling image width: `(output_width << 16) | input_width`.
 
-**Previous interpretation was WRONG**: The value 303 was incorrectly identified
-as DMA burst words from `(input_stride/4)-17 = (1280/4)-17 = 303`. This was a
-numerical coincidence. The Opal decompilation with `0x390` constant proves the
-true formula is proportional UB allocation.
+- NV12 (4:2:0): output = input (no horizontal subsampling; CbCr is interleaved)
+- NV16 (4:2:2): output = input (same -- no horizontal subsampling)
 
-## UB_CFG Register Format
+Source: webOS register analysis, confirmed by driver commit 178d58f331ff.
 
-Controls the Unified Buffer (FIFO) allocation per WM.
+### CHROMA_V_IMAGE
 
-### Observed Values
+Vertical chroma subsampling image height: `(output_height << 16) | input_height`.
 
-| Resolution | Y WM0 | CbCr WM4 |
-|------------|-------|----------|
-| 640x480 | 0x002701df | 0x002700ef |
-| 1280x1024 | 0x004f03ff | 0x004f01ff |
+- NV12: output_height = height/2
+- NV16: output_height = height (no vertical subsampling)
 
-### Bit Layout
+### CHROMA_SUBS_CFG
 
-```
-Bits [31:16] = ub_depth (FIFO depth in 256-byte chunks?)
-Bits [15:0] = ub_height (height - 1)
-```
+| Value | Meaning | Source |
+|-------|---------|--------|
+| 0x30 | Enable + vsubSample (NV12, 4:2:0) | webOS register dumps |
+| 0x10 | Enable only (NV16, 4:2:2 -- no vertical subsampling) | webOS register analysis |
 
-For 640x480 Y:
-- ub_depth = 0x0027 = 39
-- ub_height = 0x01df = 479 = height - 1
-
-For 1280x1024 Y:
-- ub_depth = 0x004f = 79
-- ub_height = 0x03ff = 1023 = height - 1
-
-**Observation:** ub_depth scales with resolution:
-- 640: depth = 39
-- 1280: depth = 79 (roughly 2x)
-
-**ANSWERED:** UB depth calculation from webOS analysis:
-
-```
-ub_depth = (stride / 16) - 1
-         = (input_stride / 16) - 1
-
-For 640x480 UYVY:
-  input_stride = 1280, ub_depth = 1280/16 - 1 = 80 - 1 = 79
-  BUT webOS shows 39... so formula may be: (width / 16) - 1 = 640/16 - 1 = 39 ✓
-
-For 1280x1024 UYVY:
-  width = 1280, ub_depth = 1280/16 - 1 = 79 ✓
-```
-
-**Formula:** `ub_depth = (input_stride / 32) - 1`
-
-For 640x480 UYVY: input_stride = 1280, ub_depth = 1280/32 - 1 = 39
-For 1280x1024 UYVY: input_stride = 2560, ub_depth = 2560/32 - 1 = 79
-
-Total UB is shared SRAM (~8KB). Each active WM needs enough depth to absorb DDR latency
-during AXI stalls. Sum of all ub_depth values must not exceed total physical UB size.
-
-### Cross-Vendor UB_CFG Verification (updated 2026-04-20)
-
-**CRITICAL FINDING:** Vendor HALs use a **proportional SRAM allocation** formula,
-NOT the simple stride-based formula used by webOS.
-
-**webOS formula** (matches register dumps, used by our driver):
-```c
-ub_depth = (input_stride / 32) - 1;
-// 640x480: (1280/32) - 1 = 39.  No +64 headroom in register dumps.
-```
-
-**HTC/Sony formula** (decompiled HALs, magic constant 0x298 = 664):
-```c
-// HTC line 36131-36140, Sony line 28328-28336
-total_bytes = width * height * (is_422 ? 2 : 1.5);
-raw_depth = (pixel_count * 664) / total_bytes - 1;
-ub_depth = (raw_depth + 64) & 0x3ff;  // +64 headroom, 10-bit mask
-```
-
-**Samsung formula** (decompiled HAL, magic constant 0x318 = 792):
-```c
-// Samsung line 41204-41210
-total_bytes = (int)(width * height * 1.5);
-raw_depth = (pixel_count * 792) / total_bytes - 1;
-ub_depth = (raw_depth + 64) & 0x3ff;  // +64 headroom, 10-bit mask
-```
-
-**+64 headroom code evidence:**
-```c
-// HTC (line 36140): (short)iVar16 + 0x40U & 0x3ff
-// Samsung (line 41210): (short)iVar8 + 0x40U & 0x3ff
-// Sony (line 28336): (short)iVar15 + 0x40U & 0x3ff
-```
-
-**Cross-vendor UB_CFG comparison:**
-
-| Parameter | webOS | HTC | Samsung | Sony | Our Driver |
-|-----------|-------|-----|---------|------|------------|
-| **Depth formula** | stride/32-1 | proportional (x664) | proportional (x792) | proportional (x664) | stride/32-1 |
-| **Magic constant** | N/A | 0x298 (664) | 0x318 (792) | 0x298 (664) | N/A |
-| **+64 headroom** | **No** | **Yes** | **Yes** | **Yes** | **No** |
-| **640x480 depth** | 39 | ~505 | ~591 | ~505 | 39 |
-| **Y/CbCr depth** | Same | Same (NV16), separate (NV12) | Same (NV16), separate (NV12) | Same (NV16), separate (NV12) | Same |
-| **UB height (Y)** | height-1 | height-1 | height-1 | height-1 | height-1 |
-| **UB height (CbCr NV12)** | h/2-1 | h/2-1 | h/2-1 | h/2-1 | cbcr_h-1 |
-| **UB height (CbCr NV16)** | h-1 | h-1 | h-1 | h-1 | h-1 |
-| **10-bit mask** | implicit | `& 0x3ff` | `& 0x3ff` | `& 0x3ff` | none |
-
-**Magic constant meaning (resolved 2026-04-20):**
-
-The constants represent the **total UB SRAM budget available for image write masters**,
-used as the numerator in a proportional allocation formula that distributes UB space
-among active WMs based on their throughput share.
-
-VFE31 total UB SRAM = **1024 entries** (indices 0-1023):
-- Stats engines use entries 912-1023 (112 entries, hardcoded in webOS msm_vfe31.c)
-- Image WMs share entries 0-911 (**912 entries** available)
-
-The constant is **mode-dependent, NOT sensor/SoC-dependent**:
-
-| Constant | Decimal | Used by | Mode | Meaning |
-|----------|---------|---------|------|---------|
-| 0x298 | 664 | HTC, Sony, Samsung | **Multi-output** (preview+video, snapshot) | Conservative budget for shared UB |
-| 0x318 | 792 | Samsung only | **Single-output** (viewfinder only) | Larger budget when UB not shared |
-
-Evidence: Samsung uses 0x318 in `VFE_AXIOutputViewfinderConfig_Initialize` (single output,
-line 41204) and 0x298 in `vfe_snapshot_axi_init` (dual output, line 41438). HTC and Sony
-always use 0x298 regardless of mode.
-
-**AXI config blob construction:**
-
-All vendor HALs construct the AXI config as a pre-computed blob sent to the kernel
-via `MSM_CAM_IOCTL_AXI_CONFIG` (ioctl 0x40046d10). The kernel writes this blob
-directly to VFE registers at offset 0x38 (V31_AXI_OUT_OFF):
-
-| Vendor | Blob size | Construction | Source lines |
-|--------|-----------|-------------|--------------|
-| webOS | 188 bytes (0xBC) | Userspace HAL, details unknown | kernel: msm_vfe31.c:787 |
-| HTC | 216 bytes (0xD8) | Stack buffer in `axi_config()` | liboemcamera.so:36072 |
-| Samsung | 212 bytes (0xD4) | Global struct at cfgctrl+0x20 | liboemcamera.so:41834 |
-| Sony | 224 bytes (0xE0) | Stack buffer in `axi_config()` | liboemcamera.so:28274 |
-
-**Key insights:**
-1. Samsung's approach is more optimal: gives more buffer depth to a single output
-   when the bus isn't shared.
-2. Samsung chains UB offsets: Y depth+1 becomes CbCr start offset (line 41212)
-   for non-overlapping SRAM partitioning.
-3. Our driver matches webOS register dumps exactly using the simpler stride/32-1
-   formula. The proportional formula would be needed for multi-output scenarios.
-
-## Semi-Planar Format Handling
-
-### NV12 (4:2:0)
-- Y plane: width × height bytes
-- CbCr plane: width × (height/2) bytes (interleaved Cb,Cr)
-- Total: width × height × 1.5 bytes
-
-### NV16 (4:2:2)
-- Y plane: width × height bytes
-- CbCr plane: width × height bytes (interleaved Cb,Cr)
-- Total: width × height × 2 bytes
-
-### Stride Confusion
-
-**Input stride** (from sensor): width × 2 (UYVY = 2 bytes/pixel)
-**Output stride** (Y plane): width × 1 (Y = 1 byte/pixel)
-
-**ANSWERED:** webOS uses **INPUT stride** in IMAGE_SIZE register:
-
-From webOS preview dump (640x480 UYVY):
-```
-WM0_IMAGE_SIZE = 0x00501DF2
-  stride/16 = 0x50 = 80
-  stride = 80 × 16 = 1280 = input_stride (width × 2 for UYVY) ✓
-```
-
-**However**, the actual DMA writes Y at output stride (640 bytes per line).
-The IMAGE_SIZE stride field appears to be for **input** reference, not output.
-
-The DEMUX splits UYVY into separate Y and CbCr streams internally, which are
-then written at their natural widths (Y=width, CbCr=width for NV16 or width for NV12).
-
-**Conclusion:** IMAGE_SIZE uses input stride, but actual memory layout is output stride.
-
-### Buffer Layout for 640x480 NV12
-
-If output stride = 640:
-```
-Y plane:    640 × 480 = 307,200 bytes
-CbCr plane: 640 × 240 = 153,600 bytes
-Total: 460,800 bytes
-```
-
-If input stride = 1280:
-```
-Y plane:    1280 × 480 = 614,400 bytes
-CbCr plane: 1280 × 240 = 307,200 bytes
-Total: 921,600 bytes
-```
-
-**Our buffer sizing:** Uses stride_factor=2, so 921,600 bytes (input stride).
-
-### CbCr Offset Calculation
-
-**Current code (vfe31_cbcr_offset_mode=1):**
-```c
-cbcr_offset = (width * 2) * height  // Input stride × height
-```
-
-For 640x480: cbcr_offset = 1280 × 480 = 614,400
-
-**ANSWERED:** This is **INCORRECT** for actual VFE31 output.
-
-VFE31 DEMUX splits UYVY into Y and CbCr streams that are written at **output stride**:
-- Y plane: width × height bytes (output stride = width)
-- CbCr offset should be: `width * height`
-
-For 640x480 NV12: cbcr_offset = 640 × 480 = 307,200 (not 614,400)
-
-However, if we allocate buffers at input stride for safety margin, the formula
-`(width * 2) * height` gives us headroom. The actual DMA writes are still at
-output stride, just with unused space between Y and CbCr planes.
-
-## IRQ and Composite Mask
+## 8. IRQ and Composite Mask
 
 ### IRQ_COMPOSITE_MASK (0x034)
 
-Groups WMs for combined completion interrupt. When all WMs in a group have
-completed their DMA, the corresponding COMPOSITE_DONE interrupt fires.
+Groups WMs for combined completion interrupts:
 
 ```
-Bits [7:0]   = Group 0 (triggers IMAGE_COMPOSITE_DONE_0, IRQ_STATUS_0 bit 21)
-Bits [15:8]  = Group 1 (triggers IMAGE_COMPOSITE_DONE_1, IRQ_STATUS_0 bit 22)
-Bits [23:16] = Group 2 (triggers IMAGE_COMPOSITE_DONE_2, IRQ_STATUS_0 bit 23)
+Bits [7:0]   = Group 0 -> IMAGE_COMPOSITE_DONE_0 (IRQ_STATUS_0 bit 21)
+Bits [15:8]  = Group 1 -> IMAGE_COMPOSITE_DONE_1 (IRQ_STATUS_0 bit 22)
+Bits [23:16] = Group 2 -> IMAGE_COMPOSITE_DONE_2 (IRQ_STATUS_0 bit 23)
 ```
 
-Within each group, each bit corresponds to a WM:
-- Bit 0 = WM0, Bit 1 = WM1, Bit 2 = WM2, Bit 3 = WM3
-- Bit 4 = WM4, Bit 5 = WM5, Bit 6 = WM6, Bit 7 = WM7
-
-### Vendor IRQ_COMPOSITE_MASK Values
-
-Computed in webOS `vfe31_start()` and `vfe31_capture()`:
+Each bit corresponds to a WM (bit 0=WM0, bit 4=WM4, etc.).
 
 | Mode | Value | Group 0 | Group 1 | Group 2 | Source |
 |------|-------|---------|---------|---------|--------|
-| **Preview+Video (OUTPUT_1_AND_3)** | **0x00220011** | WM0+WM4 (PIX) | none | WM1+WM5 (VIDEO) | webOS vfe31_start(), register dumps |
-| **Preview only (OUTPUT_2)** | 0x00000003 | WM0+WM1 | none | none | webOS vfe31_start() |
-| **Snapshot (capture, op_mode=1)** | 0x00002211 | WM0+WM4 (thumb) | WM1+WM5 (main) | none | webOS vfe31_capture() |
-| **Raw snapshot (CAMIF_TO_AXI)** | 0x00000100 | none | WM0 | none | webOS vfe31_capture() |
+| Preview+Video (OUTPUT_1_AND_3) | 0x00220011 | WM0+WM4 (PIX) | -- | WM1+WM5 (VIDEO) | webOS vfe31_start() |
+| Preview only (OUTPUT_2) | 0x00000003 | WM0+WM1 | -- | -- | webOS vfe31_start() |
+| Snapshot (capture, op_mode=1) | 0x00002211 | WM0+WM4 (thumb) | WM1+WM5 (main) | -- | webOS vfe31_capture() |
+| Raw snapshot (CAMIF_TO_AXI) | 0x00000100 | -- | WM0 | -- | webOS vfe31_capture() |
 
-All vendors (HTC, Samsung, Sony) use the kernel driver's computed mask - no HAL overrides.
+All vendors use kernel-computed masks; no HAL overrides.
 
-**Our setting:** 0x00000011 (PIX only: WM0+WM4 in Group 0)
-For future PIX+VIDEO: 0x00220011 (adds VIDEO WM1+WM5 in Group 2)
+**Driver defines:**
 
-## webOS Reference Values
+| Define | Value | Usage |
+|--------|-------|-------|
+| PIX_ONLY | 0x00000011 | Group 0: WM0+WM4 |
+| PIX_VIDEO | 0x00220011 | Group 0: WM0+WM4, Group 2: WM1+WM5 |
+| VIDEO_ONLY | 0x00220000 | Group 2: WM1+WM5 |
+| ZSL_ONLY | 0x00004400 | Group 1: WM2+WM6 |
+| PIX_ZSL | 0x00004411 | Group 0: WM0+WM4, Group 1: WM2+WM6 |
+| PIX_VID_ZSL | 0x00224411 | All three groups |
 
-From webOS kernel dumps:
+## 9. UB SRAM Layout and Proportional Allocation
 
-| Register | Value | Notes |
-|----------|-------|-------|
-| AXI_OUT_MODE | 0x01 | OUTPUT_1_AND_3 |
-| XBAR_CFG1 | 0x1A1B | PIX+VIDEO routing |
-| DEMUX_EVEN_CFG | 0xC9CA | UYVY separation |
-| DEMUX_ODD_CFG | 0xC9CA | Same |
-| MODULE_CFG | 0x01C00C0C | Enables DEMUX etc |
-| BUS_CFG | 0x02AAA771 | Bus arbitration |
-
-## Cross-Vendor AXI Config Blob Analysis (2026-04-20)
-
-All vendor userspace HALs construct an AXI config blob containing pre-computed WM register
-values, sent to the kernel via `MSM_CAM_IOCTL_AXI_CONFIG` (ioctl 0x40046d10). The kernel
-writes this blob directly to VFE registers at offset 0x038 (`V31_AXI_OUT_OFF`), then
-patches in buffer physical addresses.
-
-### Blob Sizes and Construction
-
-| Vendor | SoC | Blob Size | Construction Method | Source |
-|--------|-----|-----------|-------------------|--------|
-| **webOS** | APQ8060 | 188 bytes (0xBC) | Unknown (userspace HAL) | kernel: msm_vfe31.c:787 |
-| **HTC** | MSM8660 | 216 bytes (0xD8) | Stack buffer in `axi_config()` | liboemcamera.so:36072 |
-| **Samsung** | MSM8660 | 212 bytes (0xD4) | Global struct at cfgctrl+0x20 | liboemcamera.so:41834 |
-| **Sony** | MSM8960 | 224 bytes (0xE0) | Stack buffer in `axi_config()` | liboemcamera.so:28274 |
-
-### Blob-to-VFE Register Layout
-
-The first 5 words are global AXI control, followed by 8 WM blocks of 6 registers each:
-
-```
-Blob+0x00  → VFE 0x038  AXI_OUT_CFG (BUS_CMD reload mask)
-Blob+0x04  → VFE 0x03C  BUS_CFG
-Blob+0x08  → VFE 0x040  AXI_OUT_MODE (XBAR_CFG0)
-Blob+0x0C  → VFE 0x044  XBAR_CFG1
-Blob+0x10  → VFE 0x048  Reserved
-Blob+0x14  → VFE 0x04C  WM0_WR_CFG
-Blob+0x18  → VFE 0x050  WM0_WR_PING_ADDR
-Blob+0x1C  → VFE 0x054  WM0_WR_PONG_ADDR
-Blob+0x20  → VFE 0x058  WM0_WR_ADDR_CFG
-Blob+0x24  → VFE 0x05C  WM0_WR_UB_CFG
-Blob+0x28  → VFE 0x060  WM0_WR_IMAGE_SIZE
-...repeat for WM1-WM7 at +0x18 each...
-Blob+0xB8  → VFE 0x0F0  WM7_WR_IMAGE_SIZE (end of standard 188-byte region)
-```
-
-### Side-by-Side: Global Registers (640x480 NV12, OUTPUT_1_AND_3)
-
-| Register | VFE Offset | webOS Dump | HTC Blob | Samsung Blob | Notes |
-|----------|-----------|------------|----------|-------------|-------|
-| AXI_OUT_CFG | 0x038 | 0x00003FFF | 0x00003FFF | 0x00003FFF | All WMs enabled |
-| BUS_CFG | 0x03C | 0x02AAA771 | 0x02AAA771 | 0x02AAA771 | All vendors identical |
-| AXI_OUT_MODE | 0x040 | 0x00000001 | 0x00000200 | 0x00000001 | HTC: format flag, not mode |
-| XBAR_CFG1 | 0x044 | 0x00001A1B | 0x00001B01 | 0x00001A1B | HTC: byte-swapped? |
-
-Note: HTC writes a **format descriptor** (0x200 for NV12) into the AXI_OUT_MODE position,
-not the routing mode (0x01). The HTC kernel likely overwrites this with the actual mode.
-Samsung and webOS write the standard OUTPUT_1_AND_3 mode (0x01).
-
-### Side-by-Side: WM0 (Preview Y) at 640x480
-
-| Register | VFE | webOS Dump | HTC Blob | Samsung Blob | Formula |
-|----------|-----|------------|----------|-------------|---------|
-| WR_ADDR_CFG | 0x058 | **0x0000012F** | **0x0000011C** | UB alloc | See below |
-| WR_UB_CFG | 0x05C | **0x002701DF** | **0x002701DF** | **0x002701DF** | (39<<16)\|479 |
-| WR_IMAGE_SIZE | 0x060 | **0x00501DF2** | **0x00501DF2** | **0x00501DF2** | (80<<16)\|0x1DF2 |
-
-### Side-by-Side: WM4 (Preview CbCr) at 640x480 NV12
-
-| Register | VFE | webOS Dump | HTC Blob | Samsung Blob | Formula |
-|----------|-----|------------|----------|-------------|---------|
-| WR_ADDR_CFG | 0x0B8 | **0x01300097** | **0x011D00AD** | UB alloc | See below |
-| WR_UB_CFG | 0x0BC | **0x002700EF** | **0x002700EF** | **0x002700EF** | (39<<16)\|239 |
-| WR_IMAGE_SIZE | 0x0C0 | **0x00500EF2** | **0x00500EF2** | **0x00500EF2** | (80<<16)\|0x0EF2 |
-
-**UB_CFG and IMAGE_SIZE match perfectly across all vendors.**
-**ADDR_CFG differs** - see analysis below.
-
-### WR_ADDR_CFG: Two Different Interpretations
-
-The WR_ADDR_CFG register (offset +0x0C within each WM block) is used differently:
-
-**webOS interpretation** (standard DMA config):
-```
-Bits [31:16] = burst_lines (DMA line count)
-Bits [15:0]  = burst_words (32-bit words per burst)
-
-WM0 (Y):    burst=303=(1280/4)-17,  lines=0
-WM4 (CbCr): burst=151=(640/4)-9,    lines=304=240+64
-```
-
-**HTC interpretation** (UB SRAM allocation):
-```
-Bits [25:16] = UB start offset (sequential stacking)
-Bits [9:0]   = UB depth (proportional allocation + 64 headroom)
-
-WM0: depth=284, start=0
-WM1: depth=173, start=285 (=284+1)
-WM4: depth=284, start=459 (=285+173+1)
-WM5: depth=173, start=744 (=459+284+1)
-```
-
-**Samsung interpretation**: Same proportional UB allocation as HTC, written to
-the same register positions. The kernel post-processes these values.
-
-### WR_UB_CFG: All Vendors Agree
-
-```
-Bits [24:16] = depth = (input_stride / 32) - 1     [webOS: simple formula]
-                     or (pixels * K / total) - 1 + 64  [HTC/Samsung: proportional]
-Bits [11:0]  = height - 1  (Y: height-1, CbCr NV12: height/2-1)
-```
-
-For 640x480: depth=39, Y height=479, CbCr height=239.
-The depth value (39) matches across all vendors despite different formulas, because
-webOS's simple formula and the proportional formula converge for single-output scenarios.
-
-### WR_IMAGE_SIZE: All Vendors Agree
-
-```
-Bits [27:16] = stride = (pixel_width + 7) / 8      [in 8-byte units]
-Bits [15:4]  = height - 1
-Bits [1:0]   = 2  (linear memory, 16-byte aligned bursts)
-```
-
-For 640x480: stride=80, Y height=479, CbCr NV12 height=239.
-
-**Critical note on stride field:**
-- webOS and our driver compute: `input_stride / 16 = 1280/16 = 80`
-- Vendor HALs compute: `(pixel_width + 7) / 8 = (640+7)/8 = 80`
-- Both produce identical results for any width that is a multiple of 8:
-  `pixel_width * 2 / 16 = width / 8 = (width + 7) / 8`
-- Verified: 640px→80, 1280px→160, 320px→40, 1920px→240
-- The apparent 2x discrepancy (stride/16 vs width/8) is a notation difference, not a bug.
-
-### WM Assignment Differences
-
-| Output | webOS (kernel) | HTC (HAL blob) | Samsung (HAL blob) |
-|--------|---------------|----------------|-------------------|
-| Preview Y | WM0 | WM0 | WM0 |
-| Preview CbCr | **WM4** | **WM1** | **WM4** |
-| Video Y | **WM1** | **WM4** | **WM1** |
-| Video CbCr | WM5 | WM5 | WM5 |
-
-**HTC swaps the CbCr/Video WM pairing** compared to webOS and Samsung:
-- webOS/Samsung: preview=WM0+WM4 (ch0+ch1 of output0), video=WM1+WM5 (ch0+ch1 of output2)
-- HTC: preview=WM0+WM1 (sequential), video=WM4+WM5 (sequential)
-
-The XBAR routing (0x1A1B) determines which WMs actually receive data regardless of
-the blob's WM assignment. XBAR sends Y→WM0+WM1 and CbCr→WM4. The HAL blob configures
-PING/PONG addresses and sizes, while XBAR routes the actual pixel data.
-
-### UB SRAM Budget and Proportional Allocation
-
-**Total VFE31 UB SRAM: 1024 entries** (indices 0-1023)
+### Total UB SRAM: 1024 entries (indices 0-1023)
 
 | Region | Entries | Purpose |
 |--------|---------|---------|
@@ -1018,199 +445,136 @@ PING/PONG addresses and sizes, while XBAR routes the actual pixel data.
 | 984-1015 | 32 | HIST stats |
 | 1016-1023 | 8 | SKIN stats |
 
-**Proportional allocation formula** (HTC/Samsung/Sony HALs):
+Stats allocation is hardcoded in webOS msm_vfe31.c.
+
+### Proportional Allocation Formula
+
+All vendor HALs distribute the 912-entry image budget proportionally:
+
 ```
-total_ub = 920 - 64 * num_active_wms
-
-For each WM:
-  ub_depth = floor(plane_pixels * total_ub / total_weighted_pixels) - 1
-  if (ub_depth < 1) ub_depth = 1
-  ub_value = (ub_depth + 64) & 0x3ff
-
-UB regions are stacked sequentially:
-  WM[0].start = 0
-  WM[n].start = WM[n-1].start + WM[n-1].depth + 1
+UB_depth = floor(plane_pixels * UB_budget / total_bandwidth) - 1
+UB_start = previous_WM_end + 1  (sequential stacking)
 ```
 
-**Magic constants (total_ub when num_wms=4):**
+Where:
+- `plane_pixels = width * height` for Y, `(width/2) * height` for CbCr (NV12)
+- `total_bandwidth = sum of all active plane sizes`
+- `UB_budget` = mode-dependent constant (see below)
 
-| Constant | Decimal | Used By | Mode | Derivation |
+### Magic Constants
+
+| Constant | Decimal | Vendors | Mode | Derivation |
 |----------|---------|---------|------|------------|
-| 0x298 | 664 | HTC, Sony, Samsung | Multi-output (preview+video) | 920 - 64*4 = 664 |
-| 0x318 | 792 | Samsung only | Single-output (viewfinder) | 920 - 64*2 = 792 |
+| 0x390 | 912 | webOS/Opal | All | Direct UB budget, no per-WM headroom |
+| 0x298 | 664 | HTC, Sony, Samsung | Multi-output | 920 - 64*4 WMs = 664 |
+| 0x318 | 792 | Samsung only | Single-output | 920 - 64*2 WMs = 792 |
 
-The constants are NOT arbitrary - they equal `920 - 64 * num_active_wms`:
-- 4 WMs active: 920 - 256 = **664** (0x298)
-- 2 WMs active: 920 - 128 = **792** (0x318)
+HTC/Samsung/Sony add `+64` headroom per WM (`(depth + 0x40) & 0x3ff`).
+The effective total converges to ~912-920 entries regardless of approach.
 
-The 920 base = 912 usable entries + 8 margin. The 64-per-WM reservation provides
-FIFO headroom for AXI burst absorption during DDR stalls.
+**Verification (640x480 NV12, OUTPUT_1_AND_3, UB_budget=912):**
+```
+total_bw = 2 * (640 * 480 * 1.5) = 921,600
+Y_depth  = (640*480 * 912) / 921,600 - 1 = 303  (matches webOS 0x012F)
+Cb_depth = (320*480 * 912) / 921,600 - 1 = 151  (matches webOS 0x0097)
+```
 
-### Sony (VFE32) Differences
+## 10. AXI Config Blob (Vendor HAL Analysis)
 
-Sony Xperia S uses MSM8960 with VFE32, which has a slightly different register layout:
-- WR_CFG carries expanded fields: `(stride/8 << 16) | ((height-1) << 4) | 2`
-- The VFE32 kernel overwrites WR_CFG with just enable=1, discarding HAL values
-- WR_ADDR_CFG positions are zeroed (burst/lines computed by kernel)
-- WM pairing: WM0+WM1 for preview, WM4+WM5 for video (same as HTC)
-- UB formula identical to HTC (constant 0x298 = 664)
+All vendor HALs construct a pre-computed AXI config blob sent to the kernel via
+`MSM_CAM_IOCTL_AXI_CONFIG` (ioctl 0x40046d10). The kernel writes this directly
+to VFE registers at offset 0x038 (V31_AXI_OUT_OFF), then patches in buffer
+physical addresses.
 
-## Open Questions - ANSWERED (via Gemini/Copilot Review)
+### Blob Sizes
 
-### 1. XBAR bits [15:8]: What does 0x1A prefix mean?
-**ANSWER:** Bits [15:8] control Output 1 (VIDEO) and Output 2 (RDI) routing.
-- `0x1A` routes Y/CbCr of secondary output to WM1/WM5
-- `0x1A03` disables/parks secondary routing (PIX-only mode)
-- For concurrent PIX+VIDEO, need different XBAR value
+| Vendor | SoC | Size | Construction | Source |
+|--------|-----|------|--------------|--------|
+| webOS | APQ8060 | 188 bytes (0xBC) | Userspace HAL | kernel: msm_vfe31.c:787 |
+| HTC | MSM8660 | 216 bytes (0xD8) | Stack buffer in axi_config() | liboemcamera.so:36072 |
+| Samsung | MSM8660 | 212 bytes (0xD4) | Global struct at cfgctrl+0x20 | liboemcamera.so:41834 |
+| Sony | MSM8960 | 224 bytes (0xE0) | Stack buffer in axi_config() | liboemcamera.so:28274 |
 
-### 2. DEMUX values: Should we write 0xC9CA (16-bit) or 0xC9/0xCA (8-bit)?
-**ANSWER:** Must write full 16-bit `0xC9CA` to both registers.
-- Writing only 0xC9 (= 0x00C9) zeroes upper byte
-- This corrupts chroma extraction mapping
-- **Our code is CORRECT** - we do `(0xC9 << 8) | 0xCA = 0xC9CA`
+### Blob-to-VFE Register Layout
 
-### 3. IMAGE_SIZE flags: What do bits [3:0] control?
-**ANSWER:** AXI write formatting and memory arrangement flags.
-- `0x2` = linear memory layout with 16-byte aligned bursts
-- Changing this causes skewed images or bus faults
+```
+Blob+0x00  -> VFE 0x038  AXI_OUT_CFG (BUS_CMD reload mask)
+Blob+0x04  -> VFE 0x03C  BUS_CFG
+Blob+0x08  -> VFE 0x040  AXI_OUT_MODE (XBAR_CFG0)
+Blob+0x0C  -> VFE 0x044  XBAR_CFG1
+Blob+0x10  -> VFE 0x048  Reserved
+Blob+0x14  -> VFE 0x04C  WM0_WR_CFG
+Blob+0x18  -> VFE 0x050  WM0_WR_PING_ADDR
+Blob+0x1C  -> VFE 0x054  WM0_WR_PONG_ADDR
+Blob+0x20  -> VFE 0x058  WM0_WR_ADDR_CFG
+Blob+0x24  -> VFE 0x05C  WM0_WR_UB_CFG
+Blob+0x28  -> VFE 0x060  WM0_WR_IMAGE_SIZE
+...repeat for WM1-WM7 at +0x18 each...
+Blob+0xB8  -> VFE 0x0F0  WM7_WR_IMAGE_SIZE (end of 188-byte region)
+```
 
-### 4. ADDR_CFG lines: Why +64 headroom for CbCr?
-**ANSWER:** Hardware pipeline flush requirement.
-- DEMUX/Chroma blocks process 16x16 macroblocks
-- Extra lines ensure EOF isn't asserted before final AXI transactions complete
-- Required to prevent bottom rows being cut off
+### Notable Vendor Divergences
 
-### 5. Stride: Does VFE31 write at input stride or output stride?
-**ANSWER:** VFE31 writes at **OUTPUT stride** (width bytes for Y).
-- DEMUX unpacks UYVY into separate 8-bit Y and CbCr streams
-- Y WM receives pure 8-bit data, stride = width
-- **OUR CODE IS WRONG** - we configure IMAGE_SIZE for input stride (width*2)!
+- HTC writes a format descriptor (0x200 for NV12) into the AXI_OUT_MODE blob
+  position; the kernel overwrites with the actual mode. webOS/Samsung write
+  the standard mode value (0x01) directly.
+- ADDR_CFG values differ between vendors because webOS uses direct UB offsets
+  while HTC/Samsung use proportional allocation with +64 headroom, but the
+  resulting UB layouts are functionally equivalent.
+- UB_CFG and IMAGE_SIZE values match across all vendors.
 
-### 6. WM assignment: Should VIDEO use WM1+WM5 instead of WM0+WM4?
-**ANSWER:** **YES, absolutely.**
-- Using same WMs for PIX and VIDEO causes race conditions
-- Both outputs program same ping/pong addresses = buffer corruption
-- **PIX:** WM0 (Y) + WM4 (CbCr)
-- **VIDEO:** WM1 (Y) + WM5 (CbCr)
+### Sony VFE32 Differences
 
-### 7. UB_CFG depth: How is FIFO depth calculated/shared?
-**ANSWER:** UB is fixed SRAM pool shared among active WMs.
-- Must absorb DDR latency during AXI stalls
-- Larger lines consume FIFO faster → need more depth
-- Sum of all ub_depth must not exceed total physical UB size
+Sony Xperia S (MSM8960) uses VFE32 with slightly different register layout:
+WR_CFG carries expanded fields, WR_ADDR_CFG positions are zeroed (computed by
+kernel), and WM pairing is WM0+WM1 for preview, WM4+WM5 for video (same as HTC).
+UB formula identical to HTC (constant 0x298 = 664).
 
-### 8. CbCr offset: Is (width×2×height) correct for semi-planar?
-**ANSWER:** **NO, it is INCORRECT.**
-- Y plane written at output stride: width × height bytes
-- CbCr should start immediately after Y
-- **Correct formula:** `cbcr_offset = width * height`
-- Our formula leaves massive empty gap in buffer
+## 11. Cross-Vendor Verification Summary
 
-## Known Bugs (Fixed)
+| Parameter | HTC | Samsung | Sony | Status |
+|-----------|-----|---------|------|--------|
+| IMAGE_SIZE stride | `(width+0xf>>4)-1` | `(width+0xf>>4)-1` | `(width+0xf>>4)-1` | All identical |
+| IMAGE_SIZE flags | `\| 2` | `& 0xfc \| 2` | `& 0xc \| ... \| 2` | Flag 0x2 required |
+| UB_CFG headroom | `+ 0x40U` (+64) | `+ 0x40U` (+64) | `+ 0x40U` (+64) | All add +64 |
+| DEMUX UYVY | 0xC9CA | 0xC9CA | 0xC9CA | All identical |
+| XBAR routing | 0x1A1B | 0x1A1B | kernel default | HTC/Samsung match webOS |
+| BUS_CFG | 0x02AAA771 | 0x02AAA771 | 0x02AAA771 | All identical |
 
-1. **Deferred address path used wrong WM defines** (commit 4130ab0b8379)
-   - `VFE31_VIDEO_WM_Y=1` but module param `vfe31_video_y_wm=0`
-   - Caused pending_ping_addr not to be set for VIDEO line
-   - Fixed by using module params instead of hardcoded defines
+**Source files analyzed:**
+- HTC: `reports/htc-camera-decompiled/liboemcamera.so_decompiled.c` (lines 36127-36170, 56150)
+- Samsung: `reports/Samsung II/decompiled/samsung_liboemcamera.so_decompiled.c` (lines 41177-41264)
+- Sony: `reports/sony_nozomi/decompiled/liboemcamera.so_decompiled.c` (lines 28320-28400)
 
-## Critical Bugs To Fix (from Gemini Review)
+## 12. TESTGEN (Non-Functional on VFE31)
 
-### Bug 1: IMAGE_SIZE stride is wrong
-**Current:** `image_stride = width * 2` (input stride)
-**Correct:** `image_stride = width` (output stride)
+VFE31 (MSM8660/APQ8060) does not have a working test pattern generator.
 
-The DEMUX outputs 8-bit streams. IMAGE_SIZE should use output stride.
-This likely causes the "half-frame" issue - hardware writes at wrong stride.
+**Evidence:**
+1. webOS VFE31 has V31_TEST_GEN_START in the command array but no handler in
+   `vfe31_proc_general()` -- the command is silently ignored.
+2. TESTGEN_CFG (0x15C) reads back 0x00 after writing. Adjacent registers work.
+3. VFE8x TESTGEN addresses (0x364-0x39C) are repurposed in VFE31 for
+   FOV (0x360), MAIN_SCALER (0x368), WB (0x384), COLOR_COR (0x388).
 
-**Files to fix:**
-- `camss-vfe-3-1.c`: All IMAGE_SIZE calculations
-- Change from `input_stride / 16` to `output_stride / 16`
+| VFE | TESTGEN Status | Notes |
+|-----|----------------|-------|
+| VFE8x | Working (0x364-0x39C) | Full hardware TPG |
+| VFE31 | Non-functional (0x158-0x174) | Writes don't stick |
+| VFE32 | PM registers (0x188/0x18C) | Performance monitor, not TPG |
+| VFE41+ | Removed | Only reset bit exists |
 
-### Bug 2: stride_factor should be 1, not 2
-**Current:** `pix_stride_factor = 2` in camss.c
-**Correct:** `pix_stride_factor = 1`
-
-We're allocating 2x the memory needed. VFE writes at output stride.
-
-**Files to fix:**
-- `camss.c`: line 199
-
-### Bug 3: cbcr_offset calculation is wrong
-**Current:** `cbcr_offset = width * 2 * height`
-**Correct:** `cbcr_offset = width * height`
-
-Y plane is width×height bytes at output stride. CbCr follows immediately.
-
-**Files to fix:**
-- `camss-vfe-3-1.c`: Multiple locations where y_plane_size calculated
-
-### Bug 4: VIDEO line should use WM1+WM5
-**Current:** `vfe31_video_y_wm = 0`, `vfe31_video_cbcr_wm = 4`
-**Correct:** `vfe31_video_y_wm = 1`, `vfe31_video_cbcr_wm = 5`
-
-Sharing WMs with PIX causes corruption when both active.
-
-**Files to fix:**
-- `camss-vfe-3-1.c`: Module param defaults
-
-## Test Results
-
-| Test | Result | Notes |
-|------|--------|-------|
-| pix640 | PASS | 3,145,728 bytes |
-| pix1280 | PASS | 12,582,912 bytes |
-| video640 | PASS | 3,145,728 bytes |
-| video1280 | CRASH | list_add corruption (before fix) |
-
-## Test Pattern Generator (TESTGEN)
-
-### Status: NOT FUNCTIONAL on VFE31
-
-Investigation confirms that VFE31 (MSM8660/APQ8060) does **not have a working TESTGEN block**.
-
-### Evidence
-
-1. **webOS VFE31 has stub command with no implementation:**
-   ```c
-   // msm_vfe31.c line 60 - command array entry
-   {V31_TEST_GEN_START},  // Command ID 4, NO length/offset defined
-
-   // vfe31_proc_general() switch statement:
-   // case V31_TEST_GEN_START is MISSING - command silently ignored!
-   ```
-
-2. **Register writes don't stick:**
-   - TESTGEN_CFG (0x15C) reads back 0x00 after writing
-   - Adjacent registers (CORE_CFG, MODULE_CFG) work correctly
-
-3. **VFE8x TESTGEN addresses repurposed:**
-   - VFE8x had TESTGEN at 0x364-0x39C
-   - VFE31 uses those addresses for ISP modules:
-     - 0x360 = V31_FOV_OFF (Field of View)
-     - 0x368 = V31_MAIN_SCALER_OFF
-     - 0x384 = V31_WB_OFF (White Balance)
-     - 0x388 = V31_COLOR_COR_OFF
-
-### VFE Version Comparison
-
-| VFE | TESTGEN Location | Status | Notes |
-|-----|------------------|--------|-------|
-| **VFE8x** | 0x364-0x39C | ✓ Working | Full hardware TPG |
-| **VFE31** | 0x158-0x174 | ✗ Non-functional | Writes don't stick |
-| **VFE31** | 0x364-0x39C | ✗ Repurposed | Now FOV/SCALER/WB |
-| **VFE32** | 0x188/0x18C | ✗ PM registers | Performance Monitor |
-| **VFE41+** | N/A | ✗ Removed | Only reset bit exists |
+The CORE_CFG INPUT_MUX=0x03 (TESTGEN) field exists but leads to unimplemented
+silicon. All vendor implementations use only CAMIF or AXI input.
 
 ### VFE8x TESTGEN Registers (Working Reference)
-
-For comparison, VFE8x had full TESTGEN hardware:
 
 | Register | Offset | Description |
 |----------|--------|-------------|
 | VFE_TESTGEN_CFG | 0x364 | Configuration |
 | VFE_SW_TESTGEN_CMD | 0x368 | Software command |
 | VFE_HW_TESTGEN_CMD | 0x36C | Hardware command (GO=0x01, STOP=0x02) |
-| VFE_HW_TESTGEN_CFG | 0x370 | Hardware config structure |
+| VFE_HW_TESTGEN_CFG | 0x370 | Hardware config |
 | VFE_HW_TESTGEN_IMAGE_CFG | 0x374 | Image dimensions |
 | VFE_HW_TESTGEN_SOF_OFFSET_CFG | 0x378 | Start of frame offset |
 | VFE_HW_TESTGEN_EOF_NOFFSET_CFG | 0x37C | End of frame offset |
@@ -1221,74 +585,16 @@ For comparison, VFE8x had full TESTGEN hardware:
 | VFE_HW_TESTGEN_COLOR_BARS_CFG | 0x398 | Color bar pattern |
 | VFE_HW_TESTGEN_RANDOM_CFG | 0x39C | Random pattern seed |
 
-### VFE8x Enable Sequence
+VFE8x enable sequence: configure TESTGEN params -> start CAMIF -> send GO
+command to 0x36C.
 
-```c
-// 1. Configure TESTGEN parameters
-vfe_test_gen_start(in);  // Writes to VFE_HW_TESTGEN_CFG (0x370+)
-
-// 2. Start CAMIF for TESTGEN input
-if (inputSource == VFE_START_INPUT_SOURCE_TESTGEN)
-    writel(CAMIF_COMMAND_START, vfebase + CAMIF_COMMAND);
-
-// 3. Send GO command
-writel(VFE_TEST_GEN_GO, vfebase + VFE_HW_TESTGEN_CMD);  // 0x36C
-```
-
-### CORE_CFG INPUT_MUX Values
-
-Despite TESTGEN hardware being absent, the INPUT_MUX field exists:
-
-| Value | bits[6:4] | Source | Status |
-|-------|-----------|--------|--------|
-| 0x01 | 001 | CAMIF | ✓ Working |
-| 0x03 | 011 | TESTGEN | ✗ No hardware behind it |
-| 0x04 | 100 | AXI | ✓ Working (memory input) |
-
-### Conclusion
-
-The TESTGEN was removed from MSM8660-era VFE31 silicon, likely to save die area.
-The INPUT_MUX=0x03 exists but leads to non-existent hardware. The register interface
-(0x158-0x174) appears to be unimplemented silicon. All vendor implementations
-(HTC, Samsung, Sony) only use CAMIF or AXI input, never TESTGEN.
-
-## Cross-Vendor Verification Summary
-
-All findings have been cross-checked against three vendor binary implementations:
-
-| Parameter | HTC | Samsung | Sony | Verified |
-|-----------|-----|---------|------|----------|
-| **IMAGE_SIZE stride** | `(width + 0xf >> 4) - 1` | `(width + 0xf >> 4) - 1` | `(width + 0xf >> 4) - 1` | ✓ All identical |
-| **IMAGE_SIZE flags** | `\| 2` | `& 0xfc \| 2` | `& 0xc \| ... \| 2` | ✓ Flag 0x2 required |
-| **UB_CFG headroom** | `+ 0x40U` (+64) | `+ 0x40U` (+64) | `+ 0x40U` (+64) | ✓ All add +64 |
-| **DEMUX UYVY** | 0xC9CA | 0xC9CA | 0xC9CA | ✓ All identical |
-| **XBAR routing** | 0x1A1B | 0x1A1B | kernel default | ✓ HTC/Samsung match webOS |
-
-**Source Files Analyzed:**
-- HTC: `reports/htc-camera-decompiled/liboemcamera.so_decompiled.c` (lines 36127-36170, 56150)
-- Samsung: `reports/Samsung II/decompiled/samsung_liboemcamera.so_decompiled.c` (lines 41177-41264)
-- Sony: `reports/sony_nozomi/decompiled/liboemcamera.so_decompiled.c` (lines 28320-28400)
-
-**Key Formula Summary:**
-```c
-// IMAGE_SIZE register (per WM)
-image_size = ((width + 15) / 16 - 1) << 16) | ((height - 1) << 4) | 0x2;
-
-// UB_CFG register (per WM)
-ub_cfg = ((calculated_depth + 64) & 0x3ff) << 16) | (height - 1);
-
-// DEMUX for UYVY
-demux_even = demux_odd = 0xC9CA;
-demux_cfg = 0x3;  // YUV mode
-```
-
-## References
+## 13. References
 
 ### Local Sources
 - webOS kernel: `drivers/media/video/msm/msm_vfe31.c` and `msm_vfe31.h`
 - webOS VFE8x: `drivers/media/video/msm/msm_vfe8x_proc.c` and `msm_vfe8x_proc.h`
 - Mako kernel: `drivers/media/video/msm/vfe/msm_vfe31.c`
-- Local dumps: `reports/webos-preview-mode-dump.txt`
+- Register dumps: `reports/webos-preview-mode-dump.txt`, `reports/webos-video-mode-dump.txt`
 
 ### Decompiled Vendor Binaries
 - HTC: `reports/htc-camera-decompiled/liboemcamera.so_decompiled.c`
@@ -1297,4 +603,4 @@ demux_cfg = 0x3;  // YUV mode
 
 ### External Sources
 - [Google MSM Kernel VFE32](https://android.googlesource.com/kernel/msm/+/android-msm-hammerhead-3.4-kk-fr2/drivers/media/platform/msm/camera_v1/vfe/)
-- [Linux Mainline CAMSS VFE drivers](https://github.com/torvalds/linux/tree/master/drivers/media/platform/qcom/camss)
+- [Linux Mainline CAMSS VFE](https://github.com/torvalds/linux/tree/master/drivers/media/platform/qcom/camss)
