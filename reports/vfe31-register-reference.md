@@ -43,16 +43,44 @@ VFE31 has 8 Write Masters (WM0-WM7) organized into outputs:
 
 **Vendor WM Assignment Table (cross-vendor verified 2026-04-20):**
 
-| Vendor | SoC | Preview Y | Preview CbCr | Video Y | Video CbCr | RDI0 | Source |
-|--------|-----|-----------|--------------|---------|------------|------|--------|
-| **webOS TouchPad** | APQ8060 | WM0 | WM4 | WM1 | WM5 | WM2 | msm_vfe31.c:711-722 |
-| **HTC Sensation** | MSM8660 | WM0 | WM4 | WM1 | WM5 | WM2 | HAL binary decompilation |
-| **Samsung Galaxy SII** | MSM8660 | WM0 | WM4 | WM1 | WM5 | WM2 | liboemcamera.so decompilation |
-| **Sony Xperia S** | MSM8960 | WM0 | WM4 | WM1 | WM5 | WM2 | liboemcamera.so decompilation |
-| **LG G2** | MSM8974 | WM0 | WM4 | WM1 | WM5 | WM2 | gitlab.com/k2wl/g2_kernel |
-| **Mako (Nexus 4)** | MSM8960 | WM0 | WM4 | WM1 | WM5 | WM2 | GitHub kernel source |
+### Per-mode WM assignments
 
-Note: Samsung ZSL mode uses extended WMs (WM2+WM6 for snapshot output).
+**OUTPUT_2 (Preview/Viewfinder only):**
+
+| Vendor | Y | CbCr | Source |
+|--------|---|------|--------|
+| **webOS Opal** | WM0 | WM1 | Opal libqcameralib.so decompiled |
+| **Samsung Quincy** | WM0 | WM1 (non-case4) / WM0+WM1+WM2 (case4) | Quincy liboemcamera.so |
+
+**OUTPUT_1_AND_3 (Preview + Video / Snapshot):**
+
+| Vendor | SoC | Out1 Y | Out1 CbCr | Out3 Y | Out3 CbCr | Source |
+|--------|-----|--------|-----------|--------|-----------|--------|
+| **webOS kernel** | APQ8060 | WM0 | WM4 | WM1 | WM5 | msm_vfe31.c:711-722 |
+| **webOS Opal HAL** | APQ8060 | WM0 | WM4 | WM1 | WM5 | Opal libqcameralib.so |
+| **Samsung Quincy** | MSM8660 | WM0 | WM4 | WM1 | WM5 | Quincy liboemcamera.so |
+| **Samsung SII** | MSM8660 | WM0 | WM4 | WM1 | WM5 | SII liboemcamera.so |
+| **HTC Sensation** | MSM8660 | WM0 | WM1 | WM4 | WM5 | HTC liboemcamera.so |
+| **Sony Xperia S** | MSM8960 | WM0 | WM1 | WM4 | WM5 | Sony liboemcamera.so |
+| **LG G2** | MSM8974 | WM0 | WM4 | WM1 | WM5 | GitLab kernel source |
+| **Mako (Nexus 4)** | MSM8960 | WM0 | WM4 | WM1 | WM5 | GitHub kernel source |
+
+Note: HTC/Sony pair Out1 as WM0+WM1 (sequential), webOS/Samsung pair as WM0+WM4
+(ch0+ch1 of same output). The XBAR routes data regardless of blob WM assignment.
+
+**ZSL modes (Samsung only):**
+
+| Mode | WMs Used | Out1 | Out2 | Out3 | UB constant |
+|------|----------|------|------|------|-------------|
+| `vfe_zsl_axi_init` | WM0,1,2,4,5,6 | WM0+WM4 | WM1+WM5 | WM2+WM6 | 0x218 (536) |
+| `vfe_zsl_axi_init_all_chnls` | WM0-5 (or 0-6) | WM4+WM5 | WM0+WM1 | WM2+WM3 | 0x2B8 (696) |
+
+**Raw snapshot (all vendors):**
+
+| Vendor | WM | UB depth | AXI mode | Source |
+|--------|------|----------|----------|--------|
+| webOS Opal | WM0 | 0x38F (911) | 0x00 (zeroed) | Opal libqcameralib.so |
+| Samsung | WM0 | 0x397 (919) | 0x60 | Quincy liboemcamera.so |
 
 **Our Current Configuration:**
 - PIX line: WM0 (Y) + WM4 (CbCr)
@@ -61,6 +89,15 @@ Note: Samsung ZSL mode uses extended WMs (WM2+WM6 for snapshot output).
 
 **Status:** VIDEO reuses PIX WMs since only one line runs at a time.
 For future simultaneous PIX+VIDEO, VIDEO should use WM1+WM5 (all vendors agree).
+
+### UB Stacking Order (cross-vendor verified)
+
+**Preview (OUTPUT_2):** WM0 → WM1
+
+**Snapshot/Video (OUTPUT_1_AND_3):** WM0 → WM4 → WM1 → WM5
+(confirmed identical in webOS Opal, Samsung Quincy, Samsung SII)
+
+**ZSL:** WM0 → WM4 → WM1 → WM5 → WM2 → WM6
 
 ## Register Addresses
 
@@ -284,30 +321,37 @@ Bits [3:0]   = Y routing
 | 0x1 | CbCr → output0.ch1 (WM4) |
 | 0x9 | CbCr → output0+output2 (WM4+WM5?) |
 
-### Common XBAR Values
+### XBAR Values (cross-vendor verified 2026-04-20)
 
-| Value | Decoded | Use Case | Vendors Using |
-|-------|---------|----------|---------------|
-| **0x1A03** | Y→WM0, CbCr DISABLED | Broken! | LG G2 kernel (bad default) |
-| **0x1A13** | Y→WM0, CbCr→WM4 | PIX-only with CbCr | Theoretical correct PIX-only |
-| **0x1A1B** | Y→WM0+WM1, CbCr→WM4 | PIX+VIDEO | **webOS TouchPad**, HTC (actual HW) |
-| 0x1A9B | Y→WM0+WM1, CbCr→WM4+WM5 | Full dual output | Hypothetical |
+| Value | Bits[6:0] | Bits[12:8] | Use Case | Vendors |
+|-------|-----------|------------|----------|---------|
+| **0x0000** | none | none | OUTPUT_2 preview (no crossbar) | webOS Opal, Samsung |
+| **0x1A03** | Y→WM0 only, CbCr off | out3 Y | NV16/NV61 format (format=1,2) | Samsung, Mako/G2 kernel |
+| **0x1A1B** | Y→WM0+WM1, CbCr→WM4 | out3 Y | **NV12/NV21 video/snapshot** | **webOS**, Samsung, HTC |
+| **0x021B** | Y→WM0+WM1, CbCr→WM4 | out3 alt | NV12 with sensor input=1 | Samsung, Opal |
+| **0x0203** | Y→WM0 only, CbCr off | out3 alt | NV16 with sensor input=1 | Samsung, Opal |
+| **0x1A00** | disabled | out3 Y | Raw/planar mode | Samsung |
+| **0x1B01** | Y+CbCr interleaved | out2 | ZSL all channels | Samsung |
+
+Samsung `vfe_update_preview_format` dynamically switches XBAR bits[6:0] between
+`0x1B` (NV12 interleaved) and `0x03` (NV16 CbCr-only) at runtime.
 
 **Vendor XBAR Configuration Table:**
 
-| Vendor | SoC | XBAR Value | Evidence |
-|--------|-----|------------|----------|
-| **webOS TouchPad** | APQ8060 | **0x1A1B** | Register dump from live HW |
-| **webOS kernel code** | APQ8060 | 0x1A03 | Inside #ifdef not compiled |
-| **LG G2** | MSM8974 | 0x1A03 | Kernel source (gitlab.com/k2wl/g2_kernel) |
-| **HTC Sensation** | MSM8660 | 0x1A1B | vfe31-htc-vs-mainline-comparison.md |
-| **Samsung Galaxy S II** | MSM8660 | 0x1A1B (preview) / 0x1A03 (video) | Decompiled HAL (lines 41380-41615) |
-| **Sony Xperia S** | MSM8960 | Kernel default | No HAL override found |
+| Vendor | SoC | Preview | Video/Snapshot | Raw | ZSL | Source |
+|--------|-----|---------|----------------|-----|-----|--------|
+| **webOS Opal** | APQ8060 | **0x0000** | **0x1A1B** | 0x0000 | N/A | Opal libqcameralib.so decompiled |
+| **webOS Topaz** | APQ8060 | **0x1A1B** | **0x1A1B** | N/A | N/A | Register dump from live HW |
+| **Samsung Quincy** | MSM8660 | **0x0000** | **0x1A1B** | 0x1A00 | 0x1B01 | Quincy liboemcamera.so decompiled |
+| **Samsung SII** | MSM8660 | **0x0000** | **0x1A1B** | 0x1A00 | 0x1B01 | SII liboemcamera.so decompiled |
+| **HTC Sensation** | MSM8660 | 0x1A1B | 0x1A1B | N/A | N/A | HTC liboemcamera.so decompiled |
+| **LG G2** | MSM8974 | 0x1A03 | 0x1A03 | N/A | N/A | GitLab kernel source |
 
-**Our setting:** 0x1A1B (matching webOS actual hardware)
+Note: webOS Topaz register dump shows 0x1A1B even in preview because the Topaz
+HAL uses OUTPUT_1_AND_3 for preview (not OUTPUT_2). The Opal HAL uses OUTPUT_2
+for preview with XBAR=0. Both approaches work.
 
-**Key insight:** bits [15:8] = 0x1A is the ISP path selector. All vendors use 0x1A.
-Samsung ZSL uses 24-bit extended XBAR (0x1A1B1B) adding output2 routing to WM2/WM6.
+**Our setting:** 0x1A1B (matching webOS Topaz register dumps)
 
 ## DEMUX Configuration
 
