@@ -204,6 +204,14 @@ MODULE_PARM_DESC(vfe31_raw_pix_mode,
  * to WM4. WM1/WM5 are configured by XBAR but not enabled.
  */
 
+/*
+ * Debug: dump WM registers during first IRQs of each streaming session.
+ * Set to 1 to enable verbose register dumps in dmesg.
+ */
+static int vfe31_dump_wm_regs = 0;
+module_param(vfe31_dump_wm_regs, int, 0644);
+MODULE_PARM_DESC(vfe31_dump_wm_regs,
+		 "VFE31 dump WM registers (0=off, 1=on)");
 
 /*
  * ============================================================================
@@ -2899,7 +2907,7 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	}
 
 	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
-	if (irq_count <= 10) {
+	if (vfe31_dump_wm_regs && irq_count <= 10) {
 		u32 wm0_ping = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(0));
 		u32 wm0_pong = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(0));
 
