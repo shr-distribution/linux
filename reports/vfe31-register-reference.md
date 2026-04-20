@@ -41,20 +41,26 @@ VFE31 has 8 Write Masters (WM0-WM7) organized into outputs:
 | WM6 | output2 | ch1 | RDI2 |
 | WM7 | output3 | ch1 | Snapshot/RDI |
 
-**Vendor WM Assignment Table:**
+**Vendor WM Assignment Table (cross-vendor verified 2026-04-20):**
 
-| Vendor | Preview Y | Preview CbCr | Video Y | Video CbCr | Source |
-|--------|-----------|--------------|---------|------------|--------|
-| **webOS TouchPad** | WM0 | WM4 | WM1 | WM5 | msm_vfe31.c:711-722 |
-| **LG G2** | WM0 | WM4 | WM1 | WM5 | gitlab.com/k2wl/g2_kernel |
-| **HTC** | WM0 | WM4 | WM1 | WM5 | HAL binary analysis |
-| **Mako (Nexus 4)** | WM0 | WM4 | WM1 | WM5 | GitHub kernel source |
+| Vendor | SoC | Preview Y | Preview CbCr | Video Y | Video CbCr | RDI0 | Source |
+|--------|-----|-----------|--------------|---------|------------|------|--------|
+| **webOS TouchPad** | APQ8060 | WM0 | WM4 | WM1 | WM5 | WM2 | msm_vfe31.c:711-722 |
+| **HTC Sensation** | MSM8660 | WM0 | WM4 | WM1 | WM5 | WM2 | HAL binary decompilation |
+| **Samsung Galaxy SII** | MSM8660 | WM0 | WM4 | WM1 | WM5 | WM2 | liboemcamera.so decompilation |
+| **Sony Xperia S** | MSM8960 | WM0 | WM4 | WM1 | WM5 | WM2 | liboemcamera.so decompilation |
+| **LG G2** | MSM8974 | WM0 | WM4 | WM1 | WM5 | WM2 | gitlab.com/k2wl/g2_kernel |
+| **Mako (Nexus 4)** | MSM8960 | WM0 | WM4 | WM1 | WM5 | WM2 | GitHub kernel source |
+
+Note: Samsung ZSL mode uses extended WMs (WM2+WM6 for snapshot output).
 
 **Our Current Configuration:**
-- PIX line: WM0 (Y) + WM4 (CbCr) via module params
-- VIDEO line: WM1 (Y) + WM5 (CbCr) - should use separate WMs
+- PIX line: WM0 (Y) + WM4 (CbCr)
+- VIDEO line: WM0 (Y) + WM4 (CbCr) (reuses PIX WMs, only one line active at a time)
+- RDI line: WM2 (RDI0), WM3 (RDI1), WM6 (RDI2)
 
-**ANSWERED:** Yes, VIDEO should use WM1+WM5 to avoid conflicts. All vendors do this.
+**Status:** VIDEO reuses PIX WMs since only one line runs at a time.
+For future simultaneous PIX+VIDEO, VIDEO should use WM1+WM5 (all vendors agree).
 
 ## Register Addresses
 
@@ -300,7 +306,8 @@ Bits [3:0]   = Y routing
 
 **Our setting:** 0x1A1B (matching webOS actual hardware)
 
-**ANSWERED:** bits [15:8] = 0x1A is the ISP path selector. All vendors use 0x1A.
+**Key insight:** bits [15:8] = 0x1A is the ISP path selector. All vendors use 0x1A.
+Samsung ZSL uses 24-bit extended XBAR (0x1A1B1B) adding output2 routing to WM2/WM6.
 
 ## DEMUX Configuration
 
@@ -450,24 +457,32 @@ For 640x480 CbCr (0x01300097):
 - lines = 0x0130 = 304 = 240 + 64 (headroom!)
 - burst = 0x0097 = 151 = (640/4) - 9
 
-**Vendor Burst Formulas (verified across sources):**
+**Vendor Burst Formulas (cross-vendor verified: HTC, Samsung, Sony, webOS):**
 
 | Component | Formula | Example 640px | Example 1280px |
 |-----------|---------|---------------|----------------|
 | **Y burst** | (input_stride/4) - 17 | (1280/4)-17 = 303 | (2560/4)-17 = 623 |
 | **CbCr burst** | (width/4) - 9 | (640/4)-9 = 151 | (1280/4)-9 = 311 |
-| **Y lines (PIX)** | 0 | 0 | 0 |
+| **Y lines (PIX/preview)** | 0 | 0 | 0 |
 | **Y lines (VIDEO)** | height - 24 | 480-24 = 456 | 1024-24 = 1000 |
 | **CbCr lines (NV12)** | cbcr_h + 64 | 240+64 = 304 | 512+64 = 576 |
 | **CbCr lines (NV16)** | cbcr_h | 480 | 1024 |
 
-**webOS Register Values (640x480 preview):**
-- WM0_WR_CFG: 0x0000012F (burst=303, lines=0)
-- WM1_WR_CFG: 0x01C8012F (burst=303, lines=456)
-- WM4_WR_CFG: 0x01300097 (burst=151, lines=304)
-- WM5_WR_CFG: 0x02F80097 (burst=151, lines=760)
+**Cross-vendor verification:**
+- HTC: `burst = (stride >> 2) - 17` (decompiled liboemcamera.so)
+- Samsung: `burst = (stride >> 2) - 17` (decompiled liboemcamera.so)
+- Sony: `burst = (stride >> 2) - 17` (decompiled liboemcamera.so)
+- All three use identical burst offset (-17 for Y, -9 for CbCr)
 
-**ANSWERED:** +64 headroom for CbCr is pipeline flush requirement. DEMUX/Chroma blocks process 16x16 macroblocks; extra lines ensure EOF isn't asserted before final AXI transactions complete.
+**webOS Register Values (640x480 preview, OUTPUT_1_AND_3):**
+- WM0_ADDR_CFG: 0x0000012F (burst=303, lines=0) - Preview Y
+- WM1_ADDR_CFG: 0x01C8012F (burst=303, lines=456) - Video Y
+- WM4_ADDR_CFG: 0x01300097 (burst=151, lines=304) - Preview CbCr
+- WM5_ADDR_CFG: 0x02F80097 (burst=151, lines=760) - Video CbCr
+
+**+64 headroom:** Pipeline flush requirement verified across all vendors. DEMUX/Chroma
+blocks process 16x16 macroblocks; extra lines ensure EOF isn't asserted before final
+AXI transactions complete.
 
 ## UB_CFG Register Format
 
@@ -513,12 +528,15 @@ For 1280x1024 UYVY:
   width = 1280, ub_depth = 1280/16 - 1 = 79 ✓
 ```
 
-**Formula:** `ub_depth = (output_width / 16) - 1`
+**Formula:** `ub_depth = (input_stride / 32) - 1`
 
-Total UB is ~1KB shared SRAM. Each active WM needs enough depth to absorb DDR latency
+For 640x480 UYVY: input_stride = 1280, ub_depth = 1280/32 - 1 = 39
+For 1280x1024 UYVY: input_stride = 2560, ub_depth = 2560/32 - 1 = 79
+
+Total UB is shared SRAM (~8KB). Each active WM needs enough depth to absorb DDR latency
 during AXI stalls. Sum of all ub_depth values must not exceed total physical UB size.
 
-### Cross-Vendor Verification (HTC, Samsung, Sony)
+### Cross-Vendor UB_CFG Verification (HTC, Samsung, Sony)
 
 All three vendors add **+64 headroom** to the calculated UB depth:
 
@@ -533,8 +551,20 @@ All three vendors add **+64 headroom** to the calculated UB depth:
 // Formula: ub_depth_final = (calculated_depth + 64) & 0x3ff
 ```
 
-**Key Insight:** The `+ 0x40U` (= +64) is consistent across all vendors and provides FIFO
-headroom for AXI burst absorption. The `& 0x3ff` mask limits the value to 10 bits.
+**Cross-vendor UB_CFG summary:**
+
+| Parameter | HTC | Samsung | Sony | webOS | Formula |
+|-----------|-----|---------|------|-------|---------|
+| **UB depth** | `(stride>>5)-1+64` | `(stride>>5)-1+64` | `(stride>>5)-1+64` | `(stride/32)-1` | `(input_stride/32)-1` |
+| **UB height (Y)** | height-1 | height-1 | height-1 | height-1 | `height-1` |
+| **UB height (CbCr NV12)** | cbcr_h-1 | cbcr_h-1 | cbcr_h-1 | cbcr_h-1 | `height/2-1` |
+| **UB height (CbCr NV16)** | height-1 | height-1 | height-1 | height-1 | `height-1` |
+| **+64 headroom** | Yes | Yes | Yes | No (in dumps) | Vendor HALs add, webOS kernel does not |
+
+**Key Insight:** The `+ 0x40U` (= +64) is consistent across HTC/Samsung/Sony HAL binaries
+and provides FIFO headroom for AXI burst absorption. The `& 0x3ff` mask limits to 10 bits.
+webOS register dumps do NOT show the +64 (depth=39 not 103), suggesting the webOS HAL
+did not add headroom, or the kernel overrode it.
 
 ## Semi-Planar Format Handling
 
@@ -611,26 +641,36 @@ output stride, just with unused space between Y and CbCr planes.
 
 ## IRQ and Composite Mask
 
-### IRQ_COMPOSITE_MASK (0x01C)
+### IRQ_COMPOSITE_MASK (0x034)
 
-Groups WMs for combined completion interrupt.
+Groups WMs for combined completion interrupt. When all WMs in a group have
+completed their DMA, the corresponding COMPOSITE_DONE interrupt fires.
 
 ```
-Bits [7:0]   = Group 0 (COMPOSITE_DONE_0)
-Bits [15:8]  = Group 1 (COMPOSITE_DONE_1)
-Bits [23:16] = Group 2 (COMPOSITE_DONE_2)
+Bits [7:0]   = Group 0 (triggers IMAGE_COMPOSITE_DONE_0, IRQ_STATUS_0 bit 21)
+Bits [15:8]  = Group 1 (triggers IMAGE_COMPOSITE_DONE_1, IRQ_STATUS_0 bit 22)
+Bits [23:16] = Group 2 (triggers IMAGE_COMPOSITE_DONE_2, IRQ_STATUS_0 bit 23)
 ```
 
-Within each group:
-- Bit 0 = WM0
-- Bit 1 = WM1
-- Bit 4 = WM4
-- Bit 5 = WM5
+Within each group, each bit corresponds to a WM:
+- Bit 0 = WM0, Bit 1 = WM1, Bit 2 = WM2, Bit 3 = WM3
+- Bit 4 = WM4, Bit 5 = WM5, Bit 6 = WM6, Bit 7 = WM7
 
-**Our setting:** 0x00220011
-- Group 0: 0x11 = WM0 + WM4 (PIX Y + CbCr)
-- Group 1: 0x00 = none
-- Group 2: 0x22 = WM1 + WM5 (VIDEO Y + CbCr)
+### Vendor IRQ_COMPOSITE_MASK Values
+
+Computed in webOS `vfe31_start()` and `vfe31_capture()`:
+
+| Mode | Value | Group 0 | Group 1 | Group 2 | Source |
+|------|-------|---------|---------|---------|--------|
+| **Preview+Video (OUTPUT_1_AND_3)** | **0x00220011** | WM0+WM4 (PIX) | none | WM1+WM5 (VIDEO) | webOS vfe31_start(), register dumps |
+| **Preview only (OUTPUT_2)** | 0x00000003 | WM0+WM1 | none | none | webOS vfe31_start() |
+| **Snapshot (capture, op_mode=1)** | 0x00002211 | WM0+WM4 (thumb) | WM1+WM5 (main) | none | webOS vfe31_capture() |
+| **Raw snapshot (CAMIF_TO_AXI)** | 0x00000100 | none | WM0 | none | webOS vfe31_capture() |
+
+All vendors (HTC, Samsung, Sony) use the kernel driver's computed mask - no HAL overrides.
+
+**Our setting:** 0x00000011 (PIX only: WM0+WM4 in Group 0)
+For future PIX+VIDEO: 0x00220011 (adds VIDEO WM1+WM5 in Group 2)
 
 ## webOS Reference Values
 
