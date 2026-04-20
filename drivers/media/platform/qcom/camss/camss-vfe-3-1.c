@@ -3075,23 +3075,21 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	}
 
 	/*
-	 * Handle RDI mode via COMPOSITE_DONE_1.
-	 * RDI uses specific WMs mapped to group 1:
-	 *   RDI0 → WM2, RDI1 → WM3, RDI2 → WM6
+	 * Handle RDI/RAW mode via COMPOSITE_DONE_1.
+	 *
+	 * VFE31 raw bypass (AXI=0x60) routes data to WM0, same as PIX.
+	 * The IRQ_COMPOSITE_MASK maps WM0 to Group 1 for RDI mode
+	 * (bit 8 = WM0 in Group 1), so COMPOSITE_DONE_1 fires.
+	 *
+	 * From webOS: raw snapshot IRQ_COMP_MASK = 0x00000100
+	 * = bit 8 = WM0 in Group 1 → COMPOSITE_DONE_1
 	 */
 	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(1)) {
-		/* Check RDI WMs: WM2 (RDI0), WM3 (RDI1), WM6 (RDI2) */
-		static const u8 rdi_wms[] = {2, 3, 6};
-		int j;
+		if (vfe->wm_output_map[0] != VFE_LINE_NONE) {
+			enum vfe_line_id lid = vfe->wm_output_map[0];
 
-		for (j = 0; j < ARRAY_SIZE(rdi_wms); j++) {
-			u8 wm = rdi_wms[j];
-			if (vfe->wm_output_map[wm] != VFE_LINE_NONE) {
-				enum vfe_line_id line_id = vfe->wm_output_map[wm];
-				/* Only process if this is an RDI line */
-				if (line_id >= VFE_LINE_RDI0 && line_id <= VFE_LINE_RDI2)
-					vfe31_wm_done(vfe, wm, ping_pong);
-			}
+			if (lid >= VFE_LINE_RDI0 && lid <= VFE_LINE_RDI2)
+				vfe31_wm_done(vfe, 0, ping_pong);
 		}
 	}
 
@@ -3393,45 +3391,36 @@ static int vfe31_enable(struct vfe_line *line)
 			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
 	} else {
 		/*
-		 * RDI lines use specific WMs per VFE31 hardware mapping:
-		 *   RDI0 → WM2 (base 0x07C)
-		 *   RDI1 → WM3 (base 0x094)
-		 *   RDI2 → WM6 (base 0x0DC)
+		 * RDI/RAW lines use WM0 on VFE31.
 		 *
-		 * This is required because AXI_OUT_MODE=0x60 (CAMIF_TO_AXI)
-		 * routes data to these specific WMs, not WM0.
+		 * VFE31 has no true RDI hardware. Raw capture uses
+		 * CAMIF_TO_AXI_VIA_OUTPUT_2 (AXI=0x60) which routes
+		 * sensor data directly to WM0, bypassing DEMUX/XBAR.
+		 *
+		 * From webOS msm_vfe31.c (CAMIF_TO_AXI_VIA_OUTPUT_2):
+		 *   *p = 0x60;        // raw snapshot with wm0
+		 *   out1.ch0 = 0;     // channel 0 = WM0
+		 *   p1 = ao + 6;      // wm0 for y
+		 *
+		 * Samsung kernel confirms: "use wm0 only" comment.
+		 *
+		 * NOTE: Only one RDI line can be active at a time since
+		 * they all share WM0. This matches VFE31 hardware which
+		 * has a single CAMIF → AXI bypass path.
 		 */
-		u8 rdi_wm;
-
-		switch (line->id) {
-		case VFE_LINE_RDI0:
-			rdi_wm = 2;
-			break;
-		case VFE_LINE_RDI1:
-			rdi_wm = 3;
-			break;
-		case VFE_LINE_RDI2:
-			rdi_wm = 6;
-			break;
-		default:
-			dev_err(vfe->camss->dev, "VFE31: Invalid RDI line %d\n", line->id);
-			output->state = VFE_OUTPUT_OFF;
-			spin_unlock_irqrestore(&vfe->output_lock, flags);
-			return -EINVAL;
-		}
-
-		wm_idx = vfe_reserve_wm_specific(vfe, rdi_wm, line->id);
+		wm_idx = vfe_reserve_wm(vfe, line->id);
 		if (wm_idx < 0) {
-			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for RDI line %d\n",
-				rdi_wm, line->id);
+			dev_err(vfe->camss->dev,
+				"VFE31: Cannot reserve WM for RDI line %d\n",
+				line->id);
 			output->state = VFE_OUTPUT_OFF;
 			spin_unlock_irqrestore(&vfe->output_lock, flags);
 			return wm_idx;
 		}
 		output->wm_idx[0] = wm_idx;
 
-		/* RDI is single-plane raw data, no second WM needed */
-		dev_info(vfe->camss->dev, "VFE31: RDI%d using WM%d (hardware mapping)\n",
+		dev_info(vfe->camss->dev,
+			 "VFE31: RDI line %d using WM%d (CAMIF_TO_AXI bypass)\n",
 			 line->id, output->wm_idx[0]);
 	}
 
