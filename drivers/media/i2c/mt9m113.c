@@ -1555,10 +1555,30 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW10;
 			else
 				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
-			dev_info(dev, "MT9M113: MIPI output RAW mode (code=0x%04x)\n",
+			/*
+			 * For RAW Bayer output, configure OFIFO to get raw sensor data.
+			 * Per MT9M113 datasheet R0x321C (output_control_status):
+			 *   Bit 7 (fifo_input_control): 1 = Sensor Bypass (raw from ADC)
+			 *   Bits 3:0 (output_select): 0 = FIFO Output Selected
+			 * Combined value 0x0080 routes RAW10 from ADC to TX FIFO.
+			 */
+			ret = cci_write(sensor->regmap, MT9M113_OFIFO_CONTROL_STATUS,
+					0x0080, NULL);
+			if (ret)
+				goto error;
+			dev_info(dev, "MT9M113: MIPI output RAW mode (code=0x%04x), OFIFO=0x0080 (Sensor→FIFO)\n",
 				 format->code);
 		} else {
 			output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
+			/*
+			 * For YUV output, configure OFIFO to get SOC (IFP) data.
+			 * Bit 7 = 0 (SOC input), Bits 3:0 = 3 (FIFO Bypass)
+			 * Value 0x0003 routes IFP-processed YUV through.
+			 */
+			ret = cci_write(sensor->regmap, MT9M113_OFIFO_CONTROL_STATUS,
+					0x0003, NULL);
+			if (ret)
+				goto error;
 			dev_info(dev, "MT9M113: MIPI output YUV mode (code=0x%04x)\n",
 				 format->code);
 		}
