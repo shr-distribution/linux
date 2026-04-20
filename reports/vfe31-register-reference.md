@@ -169,20 +169,28 @@ webOS value: 0x01C00C0C. Enables ISP processing modules needed for YUV pipeline.
 | 9 | 0 | CS stats (CS_ENABLE_MASK = 0x200) | Samsung msm_vfe31.h |
 | 15 | 0 | IHIST stats (IHIST_ENABLE_MASK = 0x8000) | Samsung msm_vfe31.h |
 
-**Unconfirmed (names from VFE8x or VFE4x, may NOT apply to VFE31):**
+**Confirmed from HTC VFE31 header masks (msm_vfe31_v4l2.h):**
+
+| Bit | Value | Field | Evidence |
+|-----|-------|-------|----------|
+| 0 | 0 | **DBPC** (Demosaic Bad Pixel Correction) off | HTC DBPC_MASK = 0xFFFFFFFE → bit 0 |
+| 1 | 0 | **DBCC** (Demosaic Bad Cluster Correction) off | HTC DBCC_MASK = 0xFFFFFFFD → bit 1 |
+| 1-2 | 00 | **ABF** (Adaptive Bayer Filter) off | HTC ABF_MASK = 0xFFFFFFF9 → bits 1-2 |
+| 28-30 | 000 | **DEMOSAIC** module off | HTC DEMOSAIC_MASK = 0x8FFFFFFF → bits 28-30 |
+| 28 | 0 | **MCE** (Memory Color Enhancement) off | HTC MCE_EN_MASK = 0xEFFFFFFF → bit 28 |
+
+**Unconfirmed (no VFE31 kernel or HAL confirms these bit assignments):**
 
 | Bit | Value | Guessed name | Warning |
 |-----|-------|-------------|---------|
-| 0 | 0 | Black Level Correction? | ⚠ VFE8x name only |
-| 1 | 0 | Lens Rolloff? | ⚠ VFE8x name only |
-| 4 | 0 | Demosaic? | ⚠ VFE8x name only |
-| 10 | **1** | Y Histogram? | ⚠ VFE8x name only, no VFE31 confirmation |
-| 11 | **1** | Skin Tone Enhancement? | ⚠ VFE8x name only, no VFE31 confirmation |
-| 12-14 | 000 | lumaAdaptation/rgbLUT/chromaEnhan? | ⚠ VFE8x name only |
-| 22 | **1** | SCALE_VIEW? | ⚠ No VFE31 source confirms this |
-| 23 | **1** | SCALE_ENC? | ⚠ VFE4-1 name only, may differ on VFE31 |
-| 24 | **1** | CROP_VIEW? | ⚠ No VFE31 source confirms this |
-| 27 | 0 | CROP_ENC? | ⚠ VFE4-1 name only |
+| 4 | 0 | Demosaic interpolation? | ⚠ No VFE31 source confirms |
+| 10 | **1** | unknown ISP module | ⚠ No VFE31 source confirms |
+| 11 | **1** | unknown ISP module | ⚠ No VFE31 source confirms |
+| 12-14 | 000 | unknown | ⚠ BPC_MASK covers bits 12-13 for Bad Pixel Correction config |
+| 22 | **1** | unknown output path module | ⚠ No VFE31 source confirms |
+| 23 | **1** | unknown output path module | ⚠ No VFE31 source confirms |
+| 24 | **1** | unknown output path module | ⚠ BPC_MASK covers bits 24-26 for BPC config |
+| 27 | 0 | unknown | ⚠ No VFE31 source confirms |
 
 **Stats enable mask** (Samsung msm_vfe31.h, confirmed): `STATS_ENABLE_MASK = 0x000483E0` (bits 5,6,7,8,9,15,18).
 Samsung `VFE_CMD_MODULE_CFG` preserves stats bits via read-modify-write.
