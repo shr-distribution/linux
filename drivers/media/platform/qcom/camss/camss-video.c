@@ -550,9 +550,32 @@ static void video_stop_streaming(struct vb2_queue *q)
 			dev_err(video->camss->dev,
 				"[TESTGEN] VFE disable failed: %d\n", ret);
 
-		/* Flush buffers and return */
 		video->ops->flush_buffers(video, VB2_BUF_STATE_ERROR);
 		return;
+	}
+
+	/*
+	 * VFE31 VIDEO/ZSL that joined an active stream bypassed pipeline
+	 * start, so we must bypass pipeline stop too. Directly call
+	 * vfe_disable and flush buffers without walking the pipeline.
+	 */
+	{
+		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
+		struct vfe_device *vfe = to_vfe(line);
+
+		if ((line->id == VFE_LINE_VIDEO || line->id == VFE_LINE_ZSL) &&
+		    !media_entity_pipeline(&vdev->entity)) {
+			dev_info(video->camss->dev,
+				 "%s: stopping (bypassed pipeline)\n",
+				 vdev->entity.name);
+			ret = vfe->res->hw_ops->vfe_disable(line);
+			if (ret)
+				dev_err(video->camss->dev,
+					"%s: VFE disable failed: %d\n",
+					vdev->entity.name, ret);
+			video->ops->flush_buffers(video, VB2_BUF_STATE_ERROR);
+			return;
+		}
 	}
 
 	entity = &vdev->entity;
