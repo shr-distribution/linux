@@ -2587,9 +2587,11 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 {
 	struct camss_buffer *ready_buf;
 	struct vfe_output *output;
+	dma_addr_t *new_addr;
 	unsigned long flags;
 	u32 active_index;
 	u64 ts = ktime_get_ns();
+	unsigned int i;
 	int return_buffer = 1;
 
 	if (vfe->wm_output_map[wm] == VFE_LINE_NONE)
@@ -2735,13 +2737,36 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		ready_buf->vb.sequence = output->sequence++;
 
 		/*
-		 * Clear the completed buffer slot so the SOF handler knows
-		 * to arm a new buffer for this slot. Don't fetch the next
-		 * buffer here - that's done at SOF time when the inactive
-		 * register is guaranteed to be idle.
+		 * Get next buffer from pending queue and update the
+		 * inactive address register. REG_UPDATE is NOT issued
+		 * here - the SOF handler issues it at the next frame
+		 * boundary to safely latch the new address.
 		 */
-		output->buf[ready_idx] = NULL;
+		output->buf[ready_idx] = vfe_buf_get_pending(output);
+		if (!output->buf[ready_idx]) {
+			output->buf[ready_idx] = ready_buf;
+			new_addr = ready_buf->addr;
+			return_buffer = 0;
+			if (output->state == VFE_OUTPUT_CONTINUOUS)
+				output->state = VFE_OUTPUT_SINGLE;
+			else if (output->state == VFE_OUTPUT_SINGLE)
+				output->state = VFE_OUTPUT_STOPPING;
+		} else {
+			new_addr = output->buf[ready_idx]->addr;
+		}
 	}
+
+	/*
+	 * Write new address to inactive register. SOF will latch it.
+	 * No bus_reload, no REG_UPDATE here - just a clean register write.
+	 */
+	for (i = 0; i < output->wm_num; i++) {
+		if (active_index)
+			vfe31_wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+		else
+			vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
+	}
+	wmb();
 
 	/*
 	 * Capture output state while holding the lock.
@@ -3047,69 +3072,20 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	}
 
 	/*
-	 * VFE31: CAMIF SOF - arm next buffer for the upcoming frame.
-	 *
-	 * At SOF, the hardware has just latched shadow registers and is
-	 * writing to the active buffer. The inactive register is idle.
-	 * This is the safest time to update it - the new address will
-	 * latch at the NEXT SOF via REG_UPDATE.
+	 * VFE31: CAMIF SOF - latch shadow registers for this frame.
 	 *
 	 * At 640x480 (~15fps), COMPOSITE_DONE fires AFTER the next SOF
-	 * due to pipeline latency > VBLANK. Updating addresses at
-	 * COMPOSITE_DONE misses the shadow latch window, causing ~30 line
-	 * progressive drift. Moving updates to SOF guarantees the address
-	 * is ready before the next frame boundary.
+	 * due to pipeline latency > VBLANK. Address updates written at
+	 * COMPOSITE_DONE time miss the shadow latch window for the
+	 * current frame. By issuing REG_UPDATE at SOF, we latch whatever
+	 * addresses were written during the PREVIOUS frame's
+	 * COMPOSITE_DONE, ensuring they take effect for the NEXT frame.
+	 *
+	 * This adds one frame of latency to address updates but
+	 * guarantees clean frame boundaries without UB SRAM corruption.
 	 */
 	if (value0 & VFE_0_IRQ_STATUS_0_CAMIF_SOF) {
-		u32 sof_pp = readl_relaxed(vfe->base + VFE_0_BUS_PING_PONG_STATUS);
-
-		/* Arm next buffer for each active output */
-		for (i = 0; i < ARRAY_SIZE(vfe->wm_output_map); i++) {
-			enum vfe_line_id lid = vfe->wm_output_map[i];
-			struct vfe_output *out;
-			struct camss_buffer *next_buf;
-			u32 active_idx;
-			int target_idx;
-			u8 pp_wm;
-			unsigned int j;
-
-			if (lid == VFE_LINE_NONE || lid >= vfe->res->line_num)
-				continue;
-
-			out = &vfe->line[lid].output;
-			if (out->state < VFE_OUTPUT_SINGLE)
-				continue;
-
-			/* Only process the primary (Y) WM for each output */
-			if (i != out->wm_idx[0])
-				continue;
-
-			/* Use CbCr PP bit if 2 WMs (it toggles reliably) */
-			pp_wm = (out->wm_num == 2) ? out->wm_idx[1] : out->wm_idx[0];
-			active_idx = (sof_pp >> pp_wm) & 1;
-			target_idx = !active_idx;
-
-			/* Only arm if the slot is empty (cleared by wm_done) */
-			if (out->buf[target_idx])
-				continue;
-
-			spin_lock(&vfe->output_lock);
-			next_buf = vfe_buf_get_pending(out);
-			if (next_buf) {
-				out->buf[target_idx] = next_buf;
-				for (j = 0; j < out->wm_num; j++) {
-					if (target_idx == 0)
-						vfe31_wm_set_ping_addr(vfe, out->wm_idx[j],
-								       next_buf->addr[j]);
-					else
-						vfe31_wm_set_pong_addr(vfe, out->wm_idx[j],
-								       next_buf->addr[j]);
-				}
-				wmb();
-				writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
-			}
-			spin_unlock(&vfe->output_lock);
-		}
+		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 
 		for (i = 0; i < vfe->res->line_num; i++)
 			vfe->isr_ops.sof(vfe, i);
