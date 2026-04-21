@@ -2401,6 +2401,7 @@ main() {
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":4[fmt:UYVY8_1X16/640x480]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":6[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_vfe0_pix\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_vfe0_rdi5\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
@@ -2465,6 +2466,7 @@ main() {
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":4[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csid1\":6[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+                media-ctl -d /dev/media0 -V '\"msm_vfe0_pix\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_vfe0_rdi5\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
