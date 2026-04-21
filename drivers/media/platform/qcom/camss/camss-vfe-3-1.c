@@ -6831,8 +6831,29 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			wmb();
 			dev_info(vfe->camss->dev, "VFE31: CAMIF started\n");
 		} else {
+			/*
+			 * CAMIF already running (started by configure_pending_camif).
+			 * Enable deferred PIX WMs directly since no new REG_UPDATE
+			 * will fire (we're not restarting CAMIF).
+			 */
 			dev_info(vfe->camss->dev,
-				 "VFE31: CAMIF already active, skipping restart\n");
+				 "VFE31: CAMIF already active, enabling WMs directly\n");
+			if (vfe31_pix_wm_pending) {
+				struct vfe_output *out = &line->output;
+
+				writel_relaxed(BIT(0), vfe->base +
+					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[0]));
+				if (out->wm_num == 2)
+					writel_relaxed(BIT(0), vfe->base +
+						VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[1]));
+				vfe31_pix_wm_pending = false;
+				writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+				wmb();
+				dev_info(vfe->camss->dev,
+					 "VFE31: PIX WMs enabled (WM%d+WM%d)\n",
+					 out->wm_idx[0],
+					 out->wm_num == 2 ? out->wm_idx[1] : -1);
+			}
 		}
 	}
 
