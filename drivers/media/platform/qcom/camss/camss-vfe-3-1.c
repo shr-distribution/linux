@@ -6812,14 +6812,29 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * Step 13: Start CAMIF
-	 * Write 1 to CAMIF_CMD (webOS vfe31_start_common writes 1, not 0x5)
+	 * Step 13: Start CAMIF (only if not already running)
+	 *
+	 * configure_pending_camif() may have already started CAMIF.
+	 * Double-starting CAMIF in AXI=0x60 (raw bypass) mode kills
+	 * the data path - CAMIF_STATUS goes from 0x80000000 to 0.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: About to start CAMIF - dumping state BEFORE:\n");
-	vfe31_dump_axi_wm_debug(vfe);
+	{
+		u32 camif_status = readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS);
 
-	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
-	wmb();
+		dev_info(vfe->camss->dev, "VFE31: Pre-start CAMIF_STATUS=0x%08x\n",
+			 camif_status);
+
+		if (!(camif_status & BIT(31))) {
+			/* CAMIF not running - start it */
+			vfe31_dump_axi_wm_debug(vfe);
+			writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+			wmb();
+			dev_info(vfe->camss->dev, "VFE31: CAMIF started\n");
+		} else {
+			dev_info(vfe->camss->dev,
+				 "VFE31: CAMIF already active, skipping restart\n");
+		}
+	}
 
 	/*
 	 * Step 14: Enable BUS power management (from webOS vfe31_capture)
@@ -6833,7 +6848,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	vfe->camif_pending = false;
 
 	dev_info(vfe->camss->dev,
-		 "VFE31: CAMIF started - status=0x%08x axi=0x%08x xbar=0x%08x\n",
+		 "VFE31: CAMIF status=0x%08x axi=0x%08x xbar=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS),
 		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_BUS_XBAR_CFG1));
