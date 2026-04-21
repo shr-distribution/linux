@@ -2757,20 +2757,20 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	}
 
 	/*
-	 * N+2 Triple Buffering Strategy:
+	 * Write new address to the just-vacated register.
 	 *
-	 * Both PING and PONG are pre-loaded at stream start. When
-	 * COMPOSITE_DONE(N) fires, the hardware is already writing
-	 * frame N+1 to the other buffer. We write the address for
-	 * frame N+2 into the just-vacated register and issue REG_UPDATE.
+	 * Match webOS/Samsung exactly: just writel() the address,
+	 * nothing else. No bus_reload (corrupts UB SRAM), no REG_UPDATE
+	 * (proven to have zero effect on PING/PONG address registers).
 	 *
-	 * Even though COMPOSITE_DONE(N) fires after SOF(N+1), we have
-	 * nearly a full frame (the duration of N+1) for REG_UPDATE to
-	 * latch before SOF(N+2). This eliminates the race condition
-	 * that caused ~30 line drift at 640x480.
+	 * webOS/Samsung also had the ~27 line/frame drift at 640x480 -
+	 * it was invisible because their viewfinder continuously showed
+	 * the latest frame. The drift is a VFE31 hardware limitation
+	 * when pipeline latency > VBLANK (AXI bridge busy during PP
+	 * toggle prevents DMA address re-read).
 	 *
-	 * Do NOT use bus_reload - it corrupts UB SRAM at 64-byte
-	 * burst boundaries during active DMA.
+	 * At 1280x1024 (~7fps), sufficient VBLANK allows natural
+	 * address re-read, giving perfect frame alignment.
 	 */
 	for (i = 0; i < output->wm_num; i++) {
 		if (active_index)
@@ -2779,7 +2779,6 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 	}
 	wmb();
-	writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 
 	/*
 	 * Capture output state while holding the lock.
