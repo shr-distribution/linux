@@ -98,8 +98,13 @@ struct gf_key_map key_map[] =
 
 
 /**************************debug******************************/
-#define GF_DEBUG
-/*#undef  GF_DEBUG*/
+/* GF_DEBUG enabled gf_dbg/FUNC_ENTRY/FUNC_EXIT -> pr_warn on every
+ * /dev/goodix_fp ioctl. gx_fpd does many ioctls per fingerprint
+ * operation; the synchronous pr_warn latency and logd load visibly
+ * lagged fingerprint auth/enroll. Disable by default.
+ */
+/*#define GF_DEBUG*/
+#undef GF_DEBUG
 
 #ifdef  GF_DEBUG
 #define gf_dbg(fmt, args...) do { \

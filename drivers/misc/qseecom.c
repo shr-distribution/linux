@@ -7611,7 +7611,7 @@ static long qseecom_ioctl(struct file *file,
 		__wakeup_unregister_listener_kthread();
 	__wakeup_unload_app_kthread();
 
-	pr_err("QSEECOM: ioctl cmd=0x%x pid=%d comm=%s\n", cmd, current->pid, current->comm);
+	pr_debug("QSEECOM: ioctl cmd=0x%x pid=%d comm=%s\n", cmd, current->pid, current->comm);
 
 	switch (cmd) {
 	case QSEECOM_IOCTL_REGISTER_LISTENER_REQ: {
@@ -7627,7 +7627,7 @@ static long qseecom_ioctl(struct file *file,
 		atomic_inc(&data->ioctl_count);
 		data->type = QSEECOM_LISTENER_SERVICE;
 		ret = qseecom_register_listener(data, argp);
-		pr_err("QSEECOM: register_listener ret=%d pid=%d\n", ret, current->pid);
+		pr_debug("QSEECOM: register_listener ret=%d pid=%d\n", ret, current->pid);
 		atomic_dec(&data->ioctl_count);
 		wake_up_all(&data->abort_wq);
 		mutex_unlock(&listener_access_lock);
@@ -7835,12 +7835,12 @@ static long qseecom_ioctl(struct file *file,
 			ret = -EINVAL;
 			break;
 		}
-		pr_err("QSEECOM: SET_MEM_PARAM from pid=%d\n", current->pid);
+		pr_debug("QSEECOM: SET_MEM_PARAM from pid=%d\n", current->pid);
 		atomic_inc(&data->ioctl_count);
 		ret = qseecom_set_client_mem_param(data, argp);
 		atomic_dec(&data->ioctl_count);
 		mutex_unlock(&app_access_lock);
-		pr_err("QSEECOM: set_mem_param ret=%d\n", ret);
+		pr_debug("QSEECOM: set_mem_param ret=%d\n", ret);
 		if (ret)
 			pr_err("failed Qqseecom_set_mem_param request: %d\n",
 								ret);
@@ -7857,12 +7857,12 @@ static long qseecom_ioctl(struct file *file,
 			break;
 		}
 		data->type = QSEECOM_CLIENT_APP;
-		pr_err("QSEECOM: LOAD_APP_REQ from pid=%d\n", current->pid);
+		pr_debug("QSEECOM: LOAD_APP_REQ from pid=%d\n", current->pid);
 		atomic_inc(&data->ioctl_count);
 		ret = qseecom_load_app(data, argp);
 		atomic_dec(&data->ioctl_count);
 		mutex_unlock(&app_access_lock);
-		pr_err("QSEECOM: load_app ret=%d\n", ret);
+		pr_debug("QSEECOM: load_app ret=%d\n", ret);
 		if (ret)
 			pr_err("failed load_app request: %d\n", ret);
 		__wakeup_unload_app_kthread();
@@ -8392,7 +8392,7 @@ static int qseecom_open(struct inode *inode, struct file *file)
 				&data->sglistinfo_shm);
 	if (!data->sglistinfo_ptr)
 		return -ENOMEM;
-	pr_err("QSEECOM: open() called by pid=%d comm=%s\n", current->pid, current->comm);
+	pr_debug("QSEECOM: open() called by pid=%d comm=%s\n", current->pid, current->comm);
 	return ret;
 }
 
