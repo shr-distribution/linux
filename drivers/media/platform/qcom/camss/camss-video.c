@@ -513,6 +513,23 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	return 0;
 
 error:
+	/*
+	 * If a subdev s_stream(1) failed (e.g., sensor timeout), the VFE
+	 * was already enabled earlier in the pipeline walk. We must disable
+	 * it to undo the stream_count increment, otherwise stream_count
+	 * leaks and all subsequent tests think a stream is active.
+	 */
+	{
+		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
+		struct vfe_device *vfe = to_vfe(line);
+
+		if (vfe->stream_count > 0) {
+			dev_info(video->camss->dev,
+				 "Pipeline error: cleaning up VFE (stream_count=%d)\n",
+				 vfe->stream_count);
+			vfe->res->hw_ops->vfe_disable(line);
+		}
+	}
 	video_device_pipeline_stop(vdev);
 
 flush_buffers:
