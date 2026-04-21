@@ -1379,10 +1379,9 @@ test_at_resolution() {
                 # On MSM8660/VFE31, there's no hardware RDI path - all data goes
                 # through CAMIF. RDI is emulated via AXI output mode 0x60.
                 #
-                # CSID_PAD=1 maps to VC0 (en_vc = BIT(0)) which matches the
-                # sensor's virtual channel. PAD=4 gives VC3 which filters out
-                # all sensor data since MT9M113 always sends on VC0.
-                CSID_PAD=1
+                # CSID pad 4 connects to all VFE entities.
+                # VC filtering is handled by the CSID driver.
+                CSID_PAD=4
                 VFE_ENTITY='msm_vfe0_rdi0'
                 # VFE_FMT will be set after USE_RAW_FORMAT check below
                 ;;
