@@ -3146,14 +3146,15 @@ static int vfe31_halt(struct vfe_device *vfe)
 	 * 7. Wait for halt acknowledgment
 	 */
 
-	/* Step 1: Stop CAMIF immediately */
+	/* Step 1: Disable all IRQs before stopping CAMIF */
+	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_1);
+	wmb();
+
+	/* Step 2: Stop CAMIF immediately */
 	writel_relaxed(VFE_0_CAMIF_CMD_STOP_IMMEDIATELY,
 		       vfe->base + VFE_0_CAMIF_CMD);
 	wmb();
-
-	/* Step 2: Disable all IRQs */
-	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_0);
-	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_1);
 
 	/* Step 3: Clear all pending IRQs */
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_0);
@@ -3991,6 +3992,14 @@ static int vfe31_disable(struct vfe_line *line)
 	if (line->id == VFE_LINE_ZSL &&
 	    vfe31_zsl_state == VFE31_REC_STARTED)
 		vfe31_zsl_state = VFE31_REC_STOP_REQUESTED;
+
+	/*
+	 * Disable IRQs before stopping CAMIF to prevent spurious
+	 * CAMIF_ERROR from the partial frame caused by STOP_IMMEDIATELY.
+	 */
+	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_1);
+	wmb();
 
 	/* Stop CAMIF immediately (Samsung: CAMIF_COMMAND_STOP_IMMEDIATELY) */
 	writel_relaxed(VFE_0_CAMIF_CMD_STOP_IMMEDIATELY,
