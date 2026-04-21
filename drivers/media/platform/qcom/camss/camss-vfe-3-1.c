@@ -780,8 +780,8 @@ static void vfe31_apply_line_config(struct vfe_device *vfe,
 	/* Apply Y WM configuration */
 	vfe31_apply_wm_config(vfe, y_wm, &cfg->y_wm);
 
-	/* Apply CbCr WM configuration if semi-planar format */
-	if (cfg->has_cbcr)
+	/* Apply CbCr WM configuration if semi-planar format and valid WM */
+	if (cfg->has_cbcr && cbcr_wm != 0xff)
 		vfe31_apply_wm_config(vfe, cbcr_wm, &cfg->cbcr_wm);
 }
 
@@ -3649,7 +3649,7 @@ static int vfe31_enable(struct vfe_line *line)
 	 */
 	{
 		struct vfe31_line_config cfg = {0};
-		u8 cbcr_wm = (output->wm_num == 2) ? output->wm_idx[1] : 0;
+		u8 cbcr_wm = (output->wm_num == 2) ? output->wm_idx[1] : 0xff;
 
 		/* Calculate configuration based on line type */
 		if (is_rdi_line) {
@@ -3783,7 +3783,7 @@ static int vfe31_enable(struct vfe_line *line)
 		{
 			struct vfe31_line_config cfg = {0};
 			u8 cbcr_wm = (output->wm_num == 2) ?
-				      output->wm_idx[1] : 0;
+				      output->wm_idx[1] : 0xff;
 
 			vfe31_calc_pix_config(&cfg, width, height,
 					     bytesperline,
@@ -3841,7 +3841,7 @@ static int vfe31_enable(struct vfe_line *line)
 		{
 			struct vfe31_line_config cfg = {0};
 			u8 cbcr_wm = (output->wm_num == 2) ?
-				      output->wm_idx[1] : 0;
+				      output->wm_idx[1] : 0xff;
 			bool video_active =
 				(vfe->line[VFE_LINE_VIDEO].output.state == VFE_OUTPUT_ON ||
 				 vfe->line[VFE_LINE_VIDEO].output.state == VFE_OUTPUT_CONTINUOUS);
