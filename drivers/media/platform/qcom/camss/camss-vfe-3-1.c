@@ -4762,8 +4762,14 @@ static void vfe31_bus_enable_wr_if(struct vfe_device *vfe, u8 enable)
 
 static void vfe31_bus_reload_wm(struct vfe_device *vfe, u8 wm)
 {
+	/*
+	 * BUS_CMD has separate PING (bits 0-6) and PONG (bits 7-13) reload
+	 * bits for each WM. Reload BOTH to ensure the DMA picks up the new
+	 * address regardless of which buffer is currently active.
+	 * BIT(wm) = PING reload, BIT(wm+7) = PONG reload.
+	 */
 	wmb();
-	writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(wm),
+	writel_relaxed(BIT(wm) | BIT(wm + 7),
 		       vfe->base + VFE_0_BUS_CMD);
 	wmb();
 }
