@@ -929,7 +929,7 @@ extern int software_eof_enable;
  *   XBAR_CFG1 = 0x1A9B needed for CbCr to reach both WM1 and WM5:
  *     - bits [3:0] = 0xB = Y routing to WM0 + WM4
  *     - bits [7:4] = 0x9 = CbCr routing to WM1 + WM5
- *     - bits [15:8] = 0x1A = ISP path standard
+ *     - bits [15:8] = 0x1A = output1 routing byte
  *
  *   Current XBAR values:
  *     0x1A1B: CbCr → WM1 only (WM5 receives nothing!)
@@ -1016,7 +1016,7 @@ extern int software_eof_enable;
  * XBAR_CFG1 ROUTING (0x044):
  *   bits[3:0]  = Y routing:    0x3=WM0, 0xB=WM0+WM1
  *   bits[7:4]  = CbCr routing: 0x1=WM4, 0x9=WM4+WM5
- *   bits[15:8] = 0x1A (standard ISP path)
+ *   bits[15:8] = 0x1A (output1 routing byte)
  *   Common values: 0x1A1B (PIX+VIDEO Y, PIX CbCr only)
  *                  0x1A9B (PIX+VIDEO Y and CbCr)
  *
@@ -1084,12 +1084,14 @@ extern int software_eof_enable;
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB	0x5
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY	0x6
 #define VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY	0x7
-/* Input mux select (bits 4-5): 0=CAMIF, 1=TESTGEN, 2=unused, 3=AXI */
-#define VFE_0_CORE_CFG_INPUT_MUX_TESTGEN	(1 << 4)
 /*
- * Bit 6 of VFE_CFG_OFF: webOS always sets this (0x46 instead of 0x06).
- * Purpose unknown, but required for data path to work.
+ * Input mux select (bits 5:4, 2-bit field): 0=CAMIF, 1=TESTGEN, 2=unused, 3=AXI
+ * Bit 6: Input mux enable (must be set for data to flow)
+ *
+ * Examples: CAMIF+UYVY = 0x46 (bit6=1, bits[5:4]=00, bits[2:0]=110)
+ *           TESTGEN+UYVY = 0x56 (bit6=1, bits[5:4]=01, bits[2:0]=110)
  */
+#define VFE_0_CORE_CFG_INPUT_MUX_TESTGEN	(1 << 4)
 #define VFE_0_CORE_CFG_INPUT_MUX_ENABLE		BIT(6)
 
 #define VFE_0_IRQ_CMD			0x018
@@ -1259,31 +1261,19 @@ extern int software_eof_enable;
 
 #define VFE_0_BUS_CFG			0x03C
 /*
- * VFE31 BUS_CFG register at 0x03C - CRITICAL for DMA operation!
+ * BUS_CFG (0x03C) = 0x02AAA771 for all NV12/NV16 modes.
  *
- * WebOS register dumps show this register contains 0x02AAA771 during operation.
- * The lower bits enable write paths required for DMA:
- *   Bit 0: stripeRdPathEn
- *   Bit 4: encYWrPathEn - enables encoder Y write path
- *   Bit 5: encCbcrWrPathEn - enables encoder CbCr write path
- *   Bit 6: viewYWrPathEn - enables viewfinder Y write path
- *   Bit 7: viewCbcrWrPathEn - enables viewfinder CbCr write path
+ * Confirmed bits (from VFE31 vendor evidence):
+ *   bits 3:2  = rawPixelDataSize (00=8bit, 01=10bit, 10=12bit)
+ *   bits 11:10 = rawWritePathSelect (VFE_RAW_WR_PATH_SEL enum)
  *
- * Without setting this register, DMA writes never complete and the
- * ping_pong status register never toggles.
+ * Remaining bits are unconfirmed (VFE8x names may not apply).
+ * See vfe31-register-reference.md for full bit field analysis.
  *
- * The upper bits (0x02AAA) appear to be timing/strobe configuration.
- *
- * IMPORTANT: webOS uses 0x02AAA771 but this has bit 7 DISABLED!
- * WM1 (CbCr plane) uses the viewfinder CbCr write path, so we MUST
- * enable bit 7 (viewCbcrWrPathEn) for NV16 semi-planar output to work.
- * Without bit 7, WM1 never receives data (ping_pong bit 1 stays at 0).
- *
- * CRITICAL: Must match exact webOS value 0x02AAA771!
- * Bit 7 (viewCbcrWrPathEn) must NOT be set - enabling it may interfere
- * with ping-pong DMA causing PONG buffers to be empty.
+ * RAW mode variants: 8-bit=0x2AAA771, 10-bit=0x2AAA775, 12-bit=0x2AAA779
  */
 #define VFE_0_BUS_CFG_WEBOS_VALUE		0x02AAA771
+#define VFE_0_MODULE_CFG_WEBOS_VALUE		0x01C00C0C
 #define VFE_0_BUS_CFG_ENC_Y_WR_PATH_EN		BIT(4)
 #define VFE_0_BUS_CFG_ENC_CBCR_WR_PATH_EN	BIT(5)
 #define VFE_0_BUS_CFG_VIEW_Y_WR_PATH_EN		BIT(6)
@@ -1451,7 +1441,7 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
  *                           0x1 = WM1 only (preview CbCr)
  *                           0x9 = WM1 + WM5 (preview + video CbCr)
  *
- *   [15:8]  ISP_PATH_CFG    ISP pipeline routing configuration
+ *   [15:8]  OUTPUT1_ROUTING Output1 routing byte
  *                           0x1A = Standard processed output (binary: 0001_1010)
  *
  *                           Bit analysis of 0x1A (bits 8-15 of register):
@@ -1491,9 +1481,9 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
 #define VFE_0_BUS_XBAR_CFG1_CBCR_WM1		0x1   /* CbCr → output0 only (WM4!) */
 #define VFE_0_BUS_XBAR_CFG1_CBCR_WM1_WM5	0x9   /* CbCr → output0+2 (WM4+WM5) */
 
-#define VFE_0_BUS_XBAR_CFG1_ISP_PATH_MASK	0x0000FF00
-#define VFE_0_BUS_XBAR_CFG1_ISP_PATH_SHIFT	8
-#define VFE_0_BUS_XBAR_CFG1_ISP_PATH_STANDARD	0x1A
+#define VFE_0_BUS_XBAR_CFG1_OUT1_ROUTING_MASK	0x0000FF00
+#define VFE_0_BUS_XBAR_CFG1_OUT1_ROUTING_SHIFT	8
+#define VFE_0_BUS_XBAR_CFG1_OUT1_ROUTING_STANDARD	0x1A
 
 /*
  * ============================================================================
@@ -1547,59 +1537,17 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
 #define VFE_0_BUS_CFG_RAW_WR_PATH_VIEW_CBCR	(2 << VFE_0_BUS_CFG_RAW_WR_PATH_SEL_SHFT)
 
 /*
- * ============================================================================
- * VFE31 WRITE MASTER (WM) ASSIGNMENTS
- * ============================================================================
+ * VFE31 has 8 Write Masters (WM0-WM7), WM7 at 0x0F4 is unused by all vendors.
  *
- * The VFE31 has 7 Write Masters (WM0-WM6) for DMA output.
- *
- * ACTUAL XBAR 0x1A1B ROUTING (from register dumps):
- *   Y data    → WM0 AND WM4 (both receive same Y!)
- *   CbCr data → WM1 ONLY (WM5 receives NOTHING!)
- *
- *   WM      PIX line        VIDEO line      Raw Mode
- *   ─────────────────────────────────────────────────────────────────────────
- *   WM0     Y plane         (Y duplicate)   Raw data
- *   WM1     CbCr plane      CbCr (shared!)  -
- *   WM2     -               -               -
- *   WM3     -               -               -
- *   WM4     (Y duplicate)   Y plane         -
- *   WM5     -               NOT USED        -
- *   WM6     -               -               -
- *
- * CRITICAL: WM1 is SHARED between PIX and VIDEO for CbCr!
- *
- * IRQ Composite Mask (bits = WM numbers):
- *   - PIX only:    0x03 = WM0 + WM1
- *   - VIDEO only:  0x12 = WM4 + WM1 (shared)
- *   - PIX + VIDEO: 0x13 = WM0 + WM1 + WM4
- */
-/*
- * ============================================================================
- * WM ASSIGNMENTS - CORRECTED BASED ON ACTUAL REGISTER DUMPS
- * ============================================================================
- *
- * WebOS REGISTER DUMPS show XBAR_CFG1 = 0x1A1B (not 0x1A03!):
- *   bits [3:0] = 0xB = Y routes to WM0 AND WM4
- *   bits [7:4] = 0x1 = CbCr routes to WM1 ONLY
- *
- * This means:
- *   - Both WM0 and WM4 receive the SAME Y data from DEMUX
- *   - Only WM1 receives CbCr data (WM5 gets NOTHING!)
- *
- * The webOS code comment "wm0& 4 for preview, wm1&5 for video" is MISLEADING!
- * Those are software channel indices (outpath.out0.ch0/ch1), NOT XBAR routing.
- *
- * Correct WM assignments based on webOS channel assignments:
+ * WM assignments in OUTPUT_1_AND_3 mode (webOS channel mapping):
  *   Preview (output0): ch0=WM0 (Y), ch1=WM4 (CbCr)
- *   Video (output2):   ch0=WM1 (Y), ch1=WM5 (CbCr)
+ *   Video   (output2): ch0=WM1 (Y), ch1=WM5 (CbCr)
  *
- * XBAR_CFG1 = 0x1A1B enables:
- *   - Y to output0.ch0 (WM0) AND output2.ch0 (WM1)
- *   - CbCr to output0.ch1 (WM4) ONLY (bits[7:4]=0x1)
+ * XBAR_CFG1 controls which outputs receive data from the DEMUX:
+ *   0x1A1B: Y to WM0+WM1, CbCr to WM4 only (WM5 disabled)
+ *   0x1A9B: Y to WM0+WM1, CbCr to WM4+WM5 (full dual output)
  *
- * NOTE: Previous code incorrectly used WM1 for preview CbCr, but
- * WM1 is output2.ch0 = VIDEO Y! That's why WM1 contained Y data.
+ * See vfe31-register-reference.md for full WM register map.
  */
 #define VFE31_PREVIEW_WM_Y		0  /* WM0 = output0.ch0 (preview Y) */
 #define VFE31_PREVIEW_WM_CBCR		4  /* WM4 = output0.ch1 (preview CbCr) */
@@ -1952,9 +1900,6 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
  *   - Empirical testing on HP TouchPad (APQ8060/VFE31)
  *   - Linux mainline camss-vfe-4-1.c (similar but not identical)
  */
-/* VFE31 doesn't have per-WM framedrop - it's at global offsets 0x504+ */
-#define VFE_0_BUS_IMAGE_MASTER_n_WR_IRQ_SUBSAMPLE_PATTERN(n) (0x060 + 0x18 * (n))
-
 /* VFE31 global framedrop registers (not per-WM like VFE41) */
 #define VFE31_FRAMEDROP_ENC_Y_CFG		0x504
 #define VFE31_FRAMEDROP_ENC_CBCR_CFG		0x508
@@ -2367,7 +2312,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 
 	/* Step 3: Issue hardware reset command */
 	dev_info(vfe->camss->dev, "VFE reset: sending hardware reset cmd (0x3FF to 0x04)\n");
-	writel_relaxed(0x3FF, vfe->base + 0x04);  /* VFE_GLOBAL_RESET */
+	writel_relaxed(0x3FF, vfe->base + VFE_0_GLOBAL_RESET_CMD);
 	wmb();
 
 	/* Step 4: Wait for reset to complete - webOS waits for RESET_ACK IRQ, we use delay */
@@ -2375,7 +2320,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 
 	dev_info(vfe->camss->dev,
 		 "VFE reset: hardware reset complete, IRQ_STATUS1=0x%08x\n",
-		 readl_relaxed(vfe->base + 0x30));  /* VFE_IRQ_STATUS_1 */
+		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_1));
 
 	/*
 	 * Step 5: Set default register values AFTER reset completes.
@@ -4112,8 +4057,8 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 {
 	u32 val, even_cfg, odd_cfg;
 
-	/* Use webOS MODULE_CFG value (0x01c00c0c) - not just DEMUX bit */
-	writel_relaxed(0x01c00c0c,
+	/* Use webOS MODULE_CFG value - not just DEMUX bit */
+	writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE,
 		       vfe->base + VFE_0_MODULE_CFG);
 
 	val = VFE_0_DEMUX_CFG_PERIOD;
@@ -4576,13 +4521,13 @@ static void vfe31_set_camif_cmd(struct vfe_device *vfe, u8 enable)
 static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable)
 {
 	/*
-	 * Use exact webOS MODULE_CFG value: 0x01c00c0c
+	 * Use exact webOS MODULE_CFG value (VFE_0_MODULE_CFG_WEBOS_VALUE)
 	 * - bit 2: DEMUX
 	 * - bit 3: CHROMA_UPSAMPLE
 	 * - bits 10-11: Unknown but required by webOS
 	 * - bit 24: Unknown but required by webOS
 	 */
-	u32 val = 0x01c00c0c;
+	u32 val = VFE_0_MODULE_CFG_WEBOS_VALUE;
 
 	dev_info(vfe->camss->dev, "VFE31 set_module_cfg: enable=%d val=0x%x (webOS)\n",
 		 enable, enable ? val : 0);
@@ -6169,7 +6114,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		/*
 		 * Step 4: Enable VFE pipeline modules and configure AXI/XBAR
 		 */
-		writel_relaxed(0x01c00c0c, vfe->base + VFE_0_MODULE_CFG);
+		writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE, vfe->base + VFE_0_MODULE_CFG);
 		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 		writel_relaxed((vfe31_xbar_cfg1 != 0) ? vfe31_xbar_cfg1 :
@@ -6360,7 +6305,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 	/*
 	 * Step 2: Configure MODULE_CFG
-	 * PIX mode: Enable DEMUX and processing modules (0x01c00c0c)
+	 * PIX mode: Enable DEMUX and processing modules (VFE_0_MODULE_CFG_WEBOS_VALUE)
 	 * RDI mode: Disable all modules (0) - data bypasses ISP
 	 * RAW-through-PIX mode: Use PIX path but disable DEMUX (0)
 	 */
@@ -6385,8 +6330,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			writel_relaxed(0, vfe->base + VFE_0_MODULE_CFG);
 		} else {
 			dev_info(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x01c00c0c (PIX with DEMUX)\n");
-			writel_relaxed(0x01c00c0c, vfe->base + VFE_0_MODULE_CFG);
+				 "VFE31: MODULE_CFG=0x%08x (PIX with DEMUX)\n",
+				 VFE_0_MODULE_CFG_WEBOS_VALUE);
+			writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE, vfe->base + VFE_0_MODULE_CFG);
 		}
 	}
 	wmb();
