@@ -6813,50 +6813,23 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * Step 13: Start CAMIF (only if not already running)
+	 * Step 13: Start CAMIF
 	 *
-	 * configure_pending_camif() may have already started CAMIF.
-	 * Double-starting CAMIF in AXI=0x60 (raw bypass) mode kills
-	 * the data path - CAMIF_STATUS goes from 0x80000000 to 0.
+	 * configure_pending_camif() no longer starts CAMIF (it only does
+	 * REG_UPDATE), so we always start it here. This is the correct
+	 * timing: sensor is streaming, all registers are configured.
+	 *
+	 * Note: CAMIF_STATUS bit 31 reads as 0x80000000 after VFE reset
+	 * even when CAMIF is not running - it is NOT a reliable "active"
+	 * indicator. Always issue CAMIF_CMD_START unconditionally.
 	 */
-	{
-		u32 camif_status = readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS);
+	dev_info(vfe->camss->dev, "VFE31: Pre-start CAMIF_STATUS=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
 
-		dev_info(vfe->camss->dev, "VFE31: Pre-start CAMIF_STATUS=0x%08x\n",
-			 camif_status);
-
-		if (!(camif_status & BIT(31))) {
-			/* CAMIF not running - start it */
-			vfe31_dump_axi_wm_debug(vfe);
-			writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
-			wmb();
-			dev_info(vfe->camss->dev, "VFE31: CAMIF started\n");
-		} else {
-			/*
-			 * CAMIF already running (started by configure_pending_camif).
-			 * Enable deferred PIX WMs directly since no new REG_UPDATE
-			 * will fire (we're not restarting CAMIF).
-			 */
-			dev_info(vfe->camss->dev,
-				 "VFE31: CAMIF already active, enabling WMs directly\n");
-			if (vfe31_pix_wm_pending) {
-				struct vfe_output *out = &line->output;
-
-				writel_relaxed(BIT(0), vfe->base +
-					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[0]));
-				if (out->wm_num == 2)
-					writel_relaxed(BIT(0), vfe->base +
-						VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[1]));
-				vfe31_pix_wm_pending = false;
-				writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
-				wmb();
-				dev_info(vfe->camss->dev,
-					 "VFE31: PIX WMs enabled (WM%d+WM%d)\n",
-					 out->wm_idx[0],
-					 out->wm_num == 2 ? out->wm_idx[1] : -1);
-			}
-		}
-	}
+	vfe31_dump_axi_wm_debug(vfe);
+	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+	wmb();
+	dev_info(vfe->camss->dev, "VFE31: CAMIF started\n");
 
 	/*
 	 * Step 14: Enable BUS power management (from webOS vfe31_capture)
