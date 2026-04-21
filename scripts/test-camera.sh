@@ -1379,10 +1379,10 @@ test_at_resolution() {
                 # On MSM8660/VFE31, there's no hardware RDI path - all data goes
                 # through CAMIF. RDI is emulated via AXI output mode 0x60.
                 #
-                # Format depends on USE_RAW_FORMAT:
-                # - RAW mode: SGRBG8 (1 byte/pixel, RAW Bayer from sensor)
-                # - YUV mode: UYVY8 (2 bytes/pixel, YUV from sensor ISP)
-                CSID_PAD=4
+                # CSID_PAD=1 maps to VC0 (en_vc = BIT(0)) which matches the
+                # sensor's virtual channel. PAD=4 gives VC3 which filters out
+                # all sensor data since MT9M113 always sends on VC0.
+                CSID_PAD=1
                 VFE_ENTITY='msm_vfe0_rdi0'
                 # VFE_FMT will be set after USE_RAW_FORMAT check below
                 ;;
@@ -2407,8 +2407,14 @@ main() {
                 media-ctl -d /dev/media0 -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
                 media-ctl -d /dev/media0 -l '\"msm_csid1\":6->\"msm_vfe0_rdi5\":0[1]' 2>&1 || true
 
+                # Set output format on video devices BEFORE streaming
+                # NV12 semi-planar gives wm_num=2 (Y+CbCr WMs)
                 v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
                 v4l2-ctl -d /dev/video5 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
+
+                # Verify ZSL format took effect
+                echo 'ZSL video5 format:'
+                v4l2-ctl -d /dev/video5 --get-fmt-video 2>&1 | grep -E 'Pixel|Width'
 
                 echo 'Starting PIX preview in background...'
                 timeout 15 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=10 --stream-to=/tmp/test_zsl_preview.raw &
@@ -2466,6 +2472,9 @@ main() {
 
                 v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
                 v4l2-ctl -d /dev/video5 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
+
+                echo 'ZSL video5 format:'
+                v4l2-ctl -d /dev/video5 --get-fmt-video 2>&1 | grep -E 'Pixel|Width'
 
                 echo 'Starting PIX preview in background...'
                 timeout 20 v4l2-ctl -d /dev/video3 --stream-mmap --stream-count=10 --stream-to=/tmp/test_zsl_preview_1280.raw &

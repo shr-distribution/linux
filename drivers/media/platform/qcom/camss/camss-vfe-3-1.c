@@ -226,6 +226,13 @@ static enum vfe31_rec_state vfe31_recording_state = VFE31_REC_IDLE;
 static enum vfe31_rec_state vfe31_zsl_state = VFE31_REC_IDLE;
 
 /*
+ * Deferred PIX WM enable flag. Set after CAMIF start, cleared when
+ * REG_UPDATE ISR enables WMs at the first frame boundary. This prevents
+ * starting DMA mid-frame which causes progressive frame wrap at 640x480.
+ */
+static bool vfe31_pix_wm_pending;
+
+/*
  * ============================================================================
  * VFE31 FORMAT OVERRIDE - For testing NV16 (4:2:2) vs NV12 (4:2:0)
  * ============================================================================
@@ -502,16 +509,20 @@ static void vfe31_calc_rdi_config(struct vfe31_line_config *cfg,
 	cfg->chroma_subs_cfg = 0;
 
 	/*
-	 * Y WM config for RDI/RAW - same formulas as PIX mode.
-	 * VERIFIED: HTC/Samsung/Sony/webOS all use identical register formulas.
-	 * For RDI, stride = raw bytes per line (no DEMUX processing).
+	 * Y WM config for RDI/RAW.
+	 *
+	 * UB_CFG: same stride-based depth as PIX.
+	 * IMAGE_SIZE: stride in 16-byte units, same formula as PIX.
+	 * ADDR_CFG (UB allocation): single WM gets full UB budget (911).
+	 *   Samsung raw snapshot uses 0x397 (919), Opal uses 0x38F (911).
+	 *   We use 911 matching Opal (same APQ8060).
 	 */
-	cfg->y_wm.ub_depth = (stride / 32) - 1;    /* Same formula as PIX */
+	cfg->y_wm.ub_depth = (stride / 32) - 1;
 	cfg->y_wm.ub_height = height - 1;
-	cfg->y_wm.image_stride = stride / 16;      /* Same formula as PIX */
+	cfg->y_wm.image_stride = stride / 16;
 	cfg->y_wm.image_height = height - 1;
-	cfg->y_wm.burst_words = (stride / 4) - 17; /* Same formula as PIX */
-	cfg->y_wm.burst_lines = 0;
+	cfg->y_wm.burst_words = 0x38F;  /* Full UB budget for single WM */
+	cfg->y_wm.burst_lines = 0;      /* UB start = 0 */
 }
 
 /**
@@ -3063,25 +3074,20 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		 * Samsung vfe31_start_common() does the same: CAMIF starts
 		 * but WMs are enabled later via the recording state machine.
 		 */
-		if (vfe->camif_pending) {
-			u8 wm0 = vfe->camif_pending_wm;
-			enum vfe_line_id lid = vfe->wm_output_map[wm0];
+		if (vfe31_pix_wm_pending) {
+			struct vfe_output *out = &vfe->line[VFE_LINE_PIX].output;
 
-			if (lid == VFE_LINE_PIX) {
-				struct vfe_output *out = &vfe->line[lid].output;
-
+			writel_relaxed(BIT(0), vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[0]));
+			if (out->wm_num == 2)
 				writel_relaxed(BIT(0), vfe->base +
-					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[0]));
-				if (out->wm_num == 2)
-					writel_relaxed(BIT(0), vfe->base +
-						VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[1]));
-				vfe->camif_pending = false;
-				writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
-				dev_info(vfe->camss->dev,
-					 "VFE31: PIX WMs enabled at frame boundary (WM%d+WM%d)\n",
-					 out->wm_idx[0],
-					 out->wm_num == 2 ? out->wm_idx[1] : -1);
-			}
+					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[1]));
+			vfe31_pix_wm_pending = false;
+			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+			dev_info(vfe->camss->dev,
+				 "VFE31: PIX WMs enabled at frame boundary (WM%d+WM%d)\n",
+				 out->wm_idx[0],
+				 out->wm_num == 2 ? out->wm_idx[1] : -1);
 		}
 
 		/* Process recording state machine at frame boundary */
@@ -3247,6 +3253,7 @@ static int vfe31_enable(struct vfe_line *line)
 	u8 y_wm;  /* Y plane write master (WM0) */
 
 	vfe31_recording_state = VFE31_REC_IDLE;
+	vfe31_pix_wm_pending = false;
 
 	dev_info(vfe->camss->dev, "VFE31 enable: line_id=%d (direct, not gen1)\n",
 		 line->id);
@@ -4073,6 +4080,7 @@ static int vfe31_disable(struct vfe_line *line)
 	vfe->camif_pending = false;
 	vfe31_recording_state = VFE31_REC_IDLE;
 	vfe31_zsl_state = VFE31_REC_IDLE;
+	vfe31_pix_wm_pending = false;
 
 	return 0;
 }
@@ -6814,33 +6822,33 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 11b: Enable Write Masters
 	 *
-	 * CRITICAL: Explicitly enable WMs here before CAMIF start.
-	 * The WMs were configured in vfe31_enable() but the enable bit
-	 * may be cleared by BUS_CMD reload or other operations.
+	 * RDI mode: Enable WM immediately (RDI doesn't generate REG_UPDATE
+	 * since MODULE_CFG=0 disables the ISP pipeline).
 	 *
-	 * For PIX mode: Enable WM0 (Y) and WM4 (CbCr) - offset-by-4 pairing
-	 * For RDI mode: Enable only WM0 (raw)
+	 * PIX/VIDEO mode: Defer WM enable to the first REG_UPDATE IRQ
+	 * (frame boundary). This prevents starting DMA mid-frame which
+	 * causes progressive frame wrap at 640x480. Samsung's
+	 * vfe31_start_common() uses the same approach.
 	 */
 	{
 		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
 
-		/* Always enable WM0 */
-		writel_relaxed(BIT(0),
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(vfe->camif_pending_wm));
-		dev_info(vfe->camss->dev,
-			 "VFE31: Enabled WM%d (WR_CFG=0x1)\n", vfe->camif_pending_wm);
-
-		/* For PIX mode, also enable CbCr WM (WM4 with offset-by-4 pairing) */
-		if (!is_rdi && line->output.wm_num == 2) {
-			u8 cbcr_wm = line->output.wm_idx[1];
+		if (is_rdi) {
+			/* RDI: enable WM immediately (no REG_UPDATE in raw mode) */
 			writel_relaxed(BIT(0),
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(cbcr_wm));
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(vfe->camif_pending_wm));
 			dev_info(vfe->camss->dev,
-				 "VFE31: Enabled WM%d (CbCr, WR_CFG=0x1)\n", cbcr_wm);
+				 "VFE31: RDI WM%d enabled immediately\n",
+				 vfe->camif_pending_wm);
+			wmb();
+		} else {
+			/* PIX: defer WM enable to REG_UPDATE frame boundary */
+			vfe31_pix_wm_pending = true;
+			dev_info(vfe->camss->dev,
+				 "VFE31: PIX WM enable deferred to REG_UPDATE\n");
 		}
-		wmb();
 	}
 
 	/*
@@ -6938,6 +6946,7 @@ static void vfe31_cleanup(struct vfe_device *vfe)
 {
 	vfe31_recording_state = VFE31_REC_IDLE;
 	vfe31_zsl_state = VFE31_REC_IDLE;
+	vfe31_pix_wm_pending = false;
 
 	/* Stop CAMIF and clear EFS config */
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CMD);
