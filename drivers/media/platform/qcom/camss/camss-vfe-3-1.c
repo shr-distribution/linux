@@ -2802,9 +2802,17 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		}
 
 		/*
-		 * Update ALL WM addresses first, then reload ALL at once.
-		 * Reloading WM0 before WM4's address is updated causes
-		 * Y/CbCr desync and frame shift on every other frame.
+		 * Update the inactive buffer's address registers.
+		 *
+		 * Do NOT issue bus_reload here. On VFE31, bus_reload during
+		 * active DMA causes the UB SRAM to mix old and new buffer
+		 * data at 64-byte burst boundaries, creating vertical stripe
+		 * artifacts. The ping/pong address registers are auto-read
+		 * by the DMA engine when the PP bit toggles at the next
+		 * frame boundary - no explicit reload needed during streaming.
+		 *
+		 * Bus_reload is only used during initial setup (before CAMIF
+		 * starts) when no DMA is active.
 		 */
 		for (i = 0; i < output->wm_num; i++) {
 			if (active_index)
@@ -2813,8 +2821,6 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 				vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 		}
 		wmb();
-		for (i = 0; i < output->wm_num; i++)
-			vfe31_bus_reload_wm(vfe, output->wm_idx[i]);
 	}
 
 	/*
