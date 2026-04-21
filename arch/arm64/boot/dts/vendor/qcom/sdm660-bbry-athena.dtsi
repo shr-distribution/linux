@@ -1006,11 +1006,16 @@
 /* MODIFIED-END by Xiaoyun.Wei,BUG-5294788*/
 
 
-/ {
-	athena_batterydata: qcom,battery-data {
-		qcom,batt-id-range-pct = <15>;
-		#include "fg-gen3-batterydata-byd-3500mah.dtsi"
-	};
+/*
+ * Extend mtp_batterydata (defined in sdm660-mtp.dtsi) with the athena BYD
+ * 3500mAh profile. Declaring a separate /qcom,battery-data at root creates a
+ * duplicate that qpnp-fg-gen3's of_find_node_by_name() picks over the one
+ * phandled from &pm660_fg, so the profile match fails. Pattern mirrors
+ * Xiaomi whyred (whyred-base.dtsi).
+ */
+&mtp_batterydata {
+	qcom,batt-id-range-pct = <15>;
+	#include "fg-gen3-batterydata-byd-3500mah.dtsi"
 };
 
 &pm660_charger {
@@ -1028,7 +1033,7 @@
 
 &pm660_fg {
 	status = "ok";
-	qcom,battery-data = <&athena_batterydata>;
+	qcom,battery-data = <&mtp_batterydata>;
 	qcom,fg-jeita-thresholds = <2 10 45 54>;
 	qcom,fg-jeita-hyst-temp = <2>;
 	qcom,fg-batt-temp-delta = <2>;
