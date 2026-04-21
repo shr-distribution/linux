@@ -1760,7 +1760,15 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
  * 0x1FC: EPOCH_CFG - epoch interrupt lines
  * 0x200: (padding to 32 bytes)
  */
-#define VFE_0_CAMIF_EFS_CFG		0x1E4	/* EFS codes (0 for APS mode) */
+/*
+ * CAMIF_CFG at 0x1E4: CAMIF data routing configuration.
+ *   Bit 6 (0x40) = camif2vfeEnable: route data to VFE ISP pipeline (PIX/VIDEO)
+ *   Bit 7 (0x80) = camif2busEnable: route data to AXI bus directly (RDI/raw)
+ * Confirmed across HTC, Samsung, Sony, and Opal HAL binaries.
+ */
+#define VFE_0_CAMIF_CFG			0x1E4
+#define VFE_0_CAMIF_CFG_CAMIF2VFE	BIT(6)	/* Route to ISP pipeline */
+#define VFE_0_CAMIF_CFG_CAMIF2BUS	BIT(7)	/* Route to AXI bus (raw) */
 #define VFE_0_CAMIF_FRAME_CFG		0x1E8	/* Frame dimensions */
 #define VFE_0_CAMIF_WINDOW_WIDTH_CFG	0x1EC	/* Horizontal window */
 #define VFE_0_CAMIF_WINDOW_HEIGHT_CFG	0x1F0	/* Vertical window */
@@ -4447,7 +4455,7 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set)
 	 * This enables some timing/sync feature needed for proper operation.
 	 */
-	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE, vfe->base + VFE_0_CAMIF_CFG);
 	dev_info(vfe->camss->dev, "VFE31: EFS_CFG=0x40 (webOS value)\n");
 
 	/*
@@ -5146,7 +5154,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 * This enables some timing/sync feature needed for proper operation.
 	 */
 	dev_info(vfe->camss->dev, "VFE31: EFS_CFG (0x1E4) = 0x40 (webOS value)\n");
-	writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE, vfe->base + VFE_0_CAMIF_CFG);
 
 	/*
 	 * VFE31 CAMIF register layout (based on WebOS register dump):
@@ -5556,7 +5564,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG));
 	dev_info(vfe->camss->dev,
 		 "  EFS_CFG(0x1E4)=0x%08x  FRAME_CFG(0x1E8)=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_EFS_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
 	dev_info(vfe->camss->dev,
 		 "  CAMIF_STATUS(0x204)=0x%08x\n",
@@ -6092,7 +6100,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 */
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Configuring CAMIF %ux%u (bytes=%u)\n",
 			 width, height, width_bytes);
-		writel_relaxed(0x40, vfe->base + VFE_0_CAMIF_EFS_CFG);
+		writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE, vfe->base + VFE_0_CAMIF_CFG);
 		/* FRAME_CFG: [13:0]=pixelsPerLine, [29:16]=linesPerFrame */
 		writel_relaxed((height << 16) | (width_bytes & 0x3FFF),
 			       vfe->base + VFE_0_CAMIF_FRAME_CFG);
@@ -6463,10 +6471,12 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 6: Configure CAMIF registers
 	 *
-	 * EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set)
+	 * CAMIF_CFG at 0x1E4: Data routing configuration
+	 *   Bit 6 (0x40) = camif2vfeEnable: route to ISP pipeline (PIX/VIDEO)
+	 *   Bit 7 (0x80) = camif2busEnable: route to AXI bus (RDI/raw bypass)
+	 *   Confirmed across HTC, Samsung, Sony, and Opal HAL binaries.
+	 *
 	 * FRAME_CFG at 0x1E8: Frame dimensions for raw mode
-	 *   - webOS leaves at 0 for PIX mode (not needed with DEMUX)
-	 *   - For RDI/raw mode, set frame dimensions to help CAMIF count lines
 	 * WINDOW_WIDTH_CFG at 0x1EC: (height << 16) | width_bytes
 	 * WINDOW_HEIGHT_CFG at 0x1F0: width_bytes - 1
 	 * SUBSAMPLE_CFG_0 at 0x1F4: height - 1
@@ -6476,20 +6486,22 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
-		u32 efs_cfg;
+		u32 camif_cfg;
 
-		if (is_rdi && vfe31_rdi_efs_cfg >= 0) {
-			/* Use module parameter for RDI EFS_CFG */
-			efs_cfg = vfe31_rdi_efs_cfg;
+		if (is_rdi) {
+			/* RDI: route CAMIF data to AXI bus (raw bypass) */
+			camif_cfg = VFE_0_CAMIF_CFG_CAMIF2BUS;
 			dev_info(vfe->camss->dev,
-				 "VFE31: RDI EFS_CFG=0x%02x (module param)\n", efs_cfg);
+				 "VFE31: CAMIF_CFG=0x%02x (camif2bus for RDI)\n",
+				 camif_cfg);
 		} else {
-			/* Default: 0x40 (webOS value) */
-			efs_cfg = 0x40;
+			/* PIX/VIDEO: route CAMIF data to VFE ISP pipeline */
+			camif_cfg = VFE_0_CAMIF_CFG_CAMIF2VFE;
 			dev_info(vfe->camss->dev,
-				 "VFE31: EFS_CFG=0x%02x (webOS default)\n", efs_cfg);
+				 "VFE31: CAMIF_CFG=0x%02x (camif2vfe for PIX)\n",
+				 camif_cfg);
 		}
-		writel_relaxed(efs_cfg, vfe->base + VFE_0_CAMIF_EFS_CFG);
+		writel_relaxed(camif_cfg, vfe->base + VFE_0_CAMIF_CFG);
 	}
 
 	{
@@ -6922,7 +6934,7 @@ static void vfe31_cleanup(struct vfe_device *vfe)
 
 	/* Stop CAMIF and clear EFS config */
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CMD);
-	writel_relaxed(0, vfe->base + VFE_0_CAMIF_EFS_CFG);
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CFG);
 	vfe->camif_pending = false;
 
 	/*
