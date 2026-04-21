@@ -2486,10 +2486,17 @@ static void vfe31_dump_axi_wm_debug(struct vfe_device *vfe)
 		 "  WM0: CFG=0x%08x PING=0x%08x PONG=0x%08x\n",
 		 wm0_cfg, wm0_ping, wm0_pong);
 	dev_info(vfe->camss->dev,
-		 "  WM0: ADDR_CFG=0x%08x UB_CFG=0x%08x IMG_SIZE=0x%08x [stride=%d height=%d]\n",
-		 wm0_addr_cfg, wm0_ub_cfg, wm0_img_size,
+		 "  WM0: ADDR_CFG=0x%08x [ub_start=%d ub_depth=%d] UB_CFG=0x%08x [depth=%d height=%d]\n",
+		 wm0_addr_cfg,
+		 (wm0_addr_cfg >> 16) & 0x3FF, wm0_addr_cfg & 0x3FF,
+		 wm0_ub_cfg,
+		 (wm0_ub_cfg >> 16) & 0x3FF, (wm0_ub_cfg & 0xFFFF) + 1);
+	dev_info(vfe->camss->dev,
+		 "  WM0: IMG_SIZE=0x%08x [stride=%d height=%d flags=0x%x]\n",
+		 wm0_img_size,
 		 ((wm0_img_size >> 16) & 0xFFFF) * 16,
-		 (wm0_img_size & 0xFFFF) + 1);
+		 ((wm0_img_size >> 4) & 0xFFF) + 1,
+		 wm0_img_size & 0xF);
 }
 
 static void vfe31_violation_read(struct vfe_device *vfe)
@@ -2655,8 +2662,8 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		}
 		dev_info(vfe->camss->dev,
 			"  BUS_CFG=0x%08x AXI_OUT=0x%08x PP_STATUS=0x%08x CAMIF_STATUS=0x%08x\n",
-			readl_relaxed(vfe->base + 0x03C),
-			readl_relaxed(vfe->base + 0x040),
+			readl_relaxed(vfe->base + VFE_0_BUS_CFG),
+			readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG),
 			ping_pong,
 			readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
 		dev_info(vfe->camss->dev,
