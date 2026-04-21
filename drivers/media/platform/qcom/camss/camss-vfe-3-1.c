@@ -232,6 +232,9 @@ static enum vfe31_rec_state vfe31_zsl_state = VFE31_REC_IDLE;
  */
 static bool vfe31_pix_wm_pending;
 
+/* Forward declaration - used in vfe31_wm_done, defined later */
+static void vfe31_bus_reload_wm(struct vfe_device *vfe, u8 wm);
+
 /*
  * ============================================================================
  * VFE31 FORMAT OVERRIDE - For testing NV16 (4:2:2) vs NV12 (4:2:0)
@@ -2806,6 +2809,12 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 				/* PING active → update PONG */
 				vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 			}
+			/*
+			 * Reload WM address into DMA engine via BUS_CMD.
+			 * Without this, the DMA keeps using the old address
+			 * causing progressive frame wrap artifacts.
+			 */
+			vfe31_bus_reload_wm(vfe, output->wm_idx[i]);
 		}
 	}
 
