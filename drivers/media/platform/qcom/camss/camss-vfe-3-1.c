@@ -5452,18 +5452,19 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	wmb();
 
 	/*
-	 * REG_UPDATE + CAMIF_START sequence - match webOS exactly:
-	 * 1. Write REG_UPDATE_CMD = 1 with memory barrier
-	 * 2. Write CAMIF_COMMAND = 1 (start, no separate clear)
+	 * Issue REG_UPDATE to latch shadow registers.
 	 *
-	 * webOS vfe31_start_common():
-	 *   msm_io_w_mb(1, vfebase + VFE_REG_UPDATE_CMD);
-	 *   msm_io_w(1, vfebase + VFE_CAMIF_COMMAND);
+	 * Do NOT start CAMIF here. CAMIF must only be started by
+	 * enable_pending_camif() which runs AFTER the sensor starts
+	 * streaming. Starting CAMIF before the sensor is ready causes
+	 * the VFE to run with no input data, corrupting IRQ state.
+	 *
+	 * webOS sequence: REG_UPDATE + CAMIF_START happen together in
+	 * vfe31_start_common(), but that's called AFTER sensor s_stream.
+	 * Our configure_pending_camif runs BEFORE sensor s_stream.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: Issuing REG_UPDATE_CMD + CAMIF_START (webOS sequence)\n");
+	dev_info(vfe->camss->dev, "VFE31: Issuing REG_UPDATE_CMD (CAMIF deferred to enable_pending)\n");
 	writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
-	wmb();
-	writel(1, vfe->base + VFE_0_CAMIF_CMD);
 	wmb();
 
 	/*
