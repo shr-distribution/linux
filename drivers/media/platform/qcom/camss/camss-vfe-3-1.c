@@ -2925,8 +2925,19 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	 * to COMPOSITE_DONE like webOS should fix this.
 	 */
 
-	/* Handle IMAGE_COMPOSITE_DONE_0 (PIX line: WM0+WM4) */
+	/* Handle IMAGE_COMPOSITE_DONE_0 (PIX line: WM0+WM4 in Group 0) */
 	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(0)) {
+		if (vfe->wm_output_map[0] != VFE_LINE_NONE)
+			vfe31_wm_done(vfe, 0, ping_pong);
+	}
+
+	/*
+	 * Handle IMAGE_COMPOSITE_DONE_1 (RDI line: WM0 in Group 1).
+	 *
+	 * RDI raw bypass (AXI=0x60) uses WM0 routed to COMPOSITE group 1.
+	 * This is separate from PIX's group 0 so RDI and PIX can coexist.
+	 */
+	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(1)) {
 		if (vfe->wm_output_map[0] != VFE_LINE_NONE)
 			vfe31_wm_done(vfe, 0, ping_pong);
 	}
@@ -2942,6 +2953,21 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(2)) {
 		if (vfe->wm_output_map[VFE31_VIDEO_WM_Y] != VFE_LINE_NONE)
 			vfe31_wm_done(vfe, VFE31_VIDEO_WM_Y, ping_pong);
+	}
+
+	/*
+	 * Handle WM0 PING_PONG interrupt (RDI raw bypass fallback).
+	 *
+	 * In raw bypass mode (AXI=0x60), COMPOSITE_DONE may not fire because
+	 * the ISP pipeline is disabled. The individual WM0 PING_PONG interrupt
+	 * fires when WM0 completes writing a frame. Only process this if
+	 * COMPOSITE_DONE_0 and COMPOSITE_DONE_1 didn't already handle it.
+	 */
+	if ((value0 & VFE_0_IRQ_STATUS_0_IMAGE_MASTER_n_PING_PONG(0)) &&
+	    !(value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(0)) &&
+	    !(value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(1))) {
+		if (vfe->wm_output_map[0] != VFE_LINE_NONE)
+			vfe31_wm_done(vfe, 0, ping_pong);
 	}
 
 	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
@@ -6634,16 +6660,18 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * RDI mode: Use SAME IRQ_MASK_0 as PIX mode (0x00EFE021).
-			 * webOS uses identical IRQ_MASK_0 for ALL modes including
-			 * raw snapshot. The composite group 1 mapping is done via
-			 * IRQ_COMPOSITE_MASK, not IRQ_MASK_0.
+			 * RDI mode: Use PIX IRQ_MASK_0 plus WM0 PING_PONG.
 			 *
-			 * Note: COMPOSITE_DONE_1 (bit 22) is already in 0x00EFE021.
+			 * In raw bypass (AXI=0x60, MODULE_CFG=0), the ISP pipeline
+			 * is disabled so COMPOSITE_DONE may not fire. Enable the
+			 * individual WM0 PING_PONG interrupt (bit 8) as fallback.
+			 * Both COMPOSITE_DONE_1 and WM0_PING_PONG are enabled so
+			 * whichever fires will trigger frame completion.
 			 */
-			vfe->irq_mask0_shadow = 0x00EFE021;
+			vfe->irq_mask0_shadow = 0x00EFE021 |
+				VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(0);
 			dev_info(vfe->camss->dev,
-				 "VFE31: RDI IRQ_MASK_0=0x%08x (same as PIX)\n",
+				 "VFE31: RDI IRQ_MASK_0=0x%08x (COMPOSITE+WM0_PP)\n",
 				 vfe->irq_mask0_shadow);
 		} else {
 			/* PIX mode: Use webOS value with composite interrupts */
