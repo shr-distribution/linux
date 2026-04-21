@@ -5486,35 +5486,22 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	wmb();
 
 	/*
-	 * Step 6: Defer WM enablement to first REG_UPDATE IRQ.
+	 * Step 6: Store WM index for enable_pending_camif.
 	 *
-	 * Samsung's vfe31_start_common() does REG_UPDATE + CAMIF_START
-	 * but does NOT enable WMs directly. WMs are enabled at the next
-	 * REG_UPDATE IRQ (frame boundary) to avoid starting DMA mid-frame.
+	 * Samsung/webOS enable PIX WMs BEFORE CAMIF_START in vfe31_start().
+	 * WM enable happens in enable_pending_camif() (Step 11b) which runs
+	 * after the sensor starts streaming but before CAMIF_CMD_START.
+	 * CAMIF then waits for the next sensor SOF, so WMs are ready before
+	 * the first frame arrives. No deferred enable needed for PIX.
 	 *
-	 * Enabling WMs immediately after CAMIF_START causes frame wrap
-	 * artifacts at 640x480 because the DMA starts writing before
-	 * the sensor has output a complete SOF-to-EOF frame.
-	 *
-	 * Use the recording state machine for all lines (not just VIDEO):
-	 * - PIX: WM0+WM4 enabled at next REG_UPDATE
-	 * - VIDEO: WM1+WM5 enabled at next REG_UPDATE (already handled)
-	 * - ZSL: WM2+WM6 enabled at next REG_UPDATE (already handled)
+	 * VIDEO/ZSL WMs use the recording state machine (deferred to
+	 * REG_UPDATE) since they join an already-running CAMIF.
 	 */
-	if (line_id == VFE_LINE_PIX) {
-		/*
-		 * Store WM indices for deferred enable in REG_UPDATE ISR.
-		 * Use pending state similar to VIDEO recording state.
-		 */
-		vfe->camif_pending_wm = line->output.wm_idx[0];
-		dev_info(vfe->camss->dev,
-			 "VFE31: Step 6 - WM enable deferred to REG_UPDATE (WM%d+WM%d)\n",
-			 line->output.wm_idx[0],
-			 line->output.wm_num == 2 ? line->output.wm_idx[1] : -1);
-	} else {
-		dev_info(vfe->camss->dev,
-			 "VFE31: Step 6 - WM enable via recording state machine\n");
-	}
+	vfe->camif_pending_wm = line->output.wm_idx[0];
+	dev_info(vfe->camss->dev,
+		 "VFE31: Step 6 - WM%d+WM%d will be enabled before CAMIF start\n",
+		 line->output.wm_idx[0],
+		 line->output.wm_num == 2 ? line->output.wm_idx[1] : -1);
 
 	/*
 	 * Step 7: Reload WM configuration via BUS_CMD
@@ -6794,33 +6781,32 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 11b: Enable Write Masters
 	 *
-	 * RDI mode: Enable WM immediately (RDI doesn't generate REG_UPDATE
-	 * since MODULE_CFG=0 disables the ISP pipeline).
+	 * Samsung/webOS enable PIX WMs BEFORE CAMIF starts. CAMIF waits for
+	 * the next sensor SOF before capturing data, so enabling WMs early
+	 * is safe - they won't see data until SOF arrives. This prevents
+	 * frame wrap caused by enabling WMs after CAMIF is already running.
 	 *
-	 * PIX/VIDEO mode: Defer WM enable to the first REG_UPDATE IRQ
-	 * (frame boundary). This prevents starting DMA mid-frame which
-	 * causes progressive frame wrap at 640x480. Samsung's
-	 * vfe31_start_common() uses the same approach.
+	 * The deferred WM enable (via recording state machine) is only used
+	 * for VIDEO/ZSL WMs that join an already-running CAMIF stream.
+	 *
+	 * RDI mode: Also enable immediately (no REG_UPDATE in raw bypass).
 	 */
 	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		struct vfe_line *line = &vfe->line[vfe->camif_pending_line_id];
+		struct vfe_output *out = &line->output;
+		unsigned int i;
 
-		if (is_rdi) {
-			/* RDI: enable WM immediately (no REG_UPDATE in raw mode) */
-			writel_relaxed(BIT(0),
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(vfe->camif_pending_wm));
-			dev_info(vfe->camss->dev,
-				 "VFE31: RDI WM%d enabled immediately\n",
-				 vfe->camif_pending_wm);
-			wmb();
-		} else {
-			/* PIX: defer WM enable to REG_UPDATE frame boundary */
-			vfe31_pix_wm_pending = true;
-			dev_info(vfe->camss->dev,
-				 "VFE31: PIX WM enable deferred to REG_UPDATE\n");
+		for (i = 0; i < out->wm_num; i++) {
+			writel_relaxed(BIT(0), vfe->base +
+				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[i]));
 		}
+		wmb();
+		vfe31_pix_wm_pending = false;
+
+		dev_info(vfe->camss->dev,
+			 "VFE31: WMs enabled before CAMIF start (WM%d%s)\n",
+			 out->wm_idx[0],
+			 out->wm_num == 2 ? "+WM4" : "");
 	}
 
 	/*
