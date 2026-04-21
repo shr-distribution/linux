@@ -2802,17 +2802,23 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		}
 
 		/*
-		 * Update the inactive buffer's address registers.
+		 * Update the inactive buffer's address registers and commit
+		 * via REG_UPDATE.
 		 *
-		 * Do NOT issue bus_reload here. On VFE31, bus_reload during
-		 * active DMA causes the UB SRAM to mix old and new buffer
-		 * data at 64-byte burst boundaries, creating vertical stripe
-		 * artifacts. The ping/pong address registers are auto-read
-		 * by the DMA engine when the PP bit toggles at the next
-		 * frame boundary - no explicit reload needed during streaming.
+		 * PING/PONG addresses are SHADOW REGISTERS on VFE31. Writing
+		 * a new address does not immediately hand it to the DMA engine.
+		 * The hardware latches shadow values into active DMA pointers
+		 * only at the next SOF/VSYNC when triggered by REG_UPDATE_CMD.
 		 *
-		 * Bus_reload is only used during initial setup (before CAMIF
-		 * starts) when no DMA is active.
+		 * Without REG_UPDATE: at 640x480 (~15fps) the DMA doesn't
+		 * latch new addresses in time, causing ~30 line progressive
+		 * drift per frame. At 1280x1024 (~7fps) the long vertical
+		 * blanking period naturally catches the update.
+		 *
+		 * Do NOT use bus_reload (BUS_CMD) here - it violently resets
+		 * the AXI bridge mid-stream, slicing 64-byte UB SRAM bursts
+		 * in half and splicing two frames together (proven by vertical
+		 * stripe artifacts at exact 64-byte column intervals).
 		 */
 		for (i = 0; i < output->wm_num; i++) {
 			if (active_index)
@@ -2821,6 +2827,9 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 				vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 		}
 		wmb();
+
+		/* Commit shadow registers at next frame boundary */
+		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 	}
 
 	/*
