@@ -2757,8 +2757,20 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	}
 
 	/*
-	 * Write new address to inactive register. SOF will latch it.
-	 * No bus_reload, no REG_UPDATE here - just a clean register write.
+	 * N+2 Triple Buffering Strategy:
+	 *
+	 * Both PING and PONG are pre-loaded at stream start. When
+	 * COMPOSITE_DONE(N) fires, the hardware is already writing
+	 * frame N+1 to the other buffer. We write the address for
+	 * frame N+2 into the just-vacated register and issue REG_UPDATE.
+	 *
+	 * Even though COMPOSITE_DONE(N) fires after SOF(N+1), we have
+	 * nearly a full frame (the duration of N+1) for REG_UPDATE to
+	 * latch before SOF(N+2). This eliminates the race condition
+	 * that caused ~30 line drift at 640x480.
+	 *
+	 * Do NOT use bus_reload - it corrupts UB SRAM at 64-byte
+	 * burst boundaries during active DMA.
 	 */
 	for (i = 0; i < output->wm_num; i++) {
 		if (active_index)
@@ -2767,6 +2779,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 	}
 	wmb();
+	writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 
 	/*
 	 * Capture output state while holding the lock.
@@ -3072,21 +3085,11 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	}
 
 	/*
-	 * VFE31: CAMIF SOF - latch shadow registers for this frame.
-	 *
-	 * At 640x480 (~15fps), COMPOSITE_DONE fires AFTER the next SOF
-	 * due to pipeline latency > VBLANK. Address updates written at
-	 * COMPOSITE_DONE time miss the shadow latch window for the
-	 * current frame. By issuing REG_UPDATE at SOF, we latch whatever
-	 * addresses were written during the PREVIOUS frame's
-	 * COMPOSITE_DONE, ensuring they take effect for the NEXT frame.
-	 *
-	 * This adds one frame of latency to address updates but
-	 * guarantees clean frame boundaries without UB SRAM corruption.
+	 * VFE31: CAMIF SOF - deliver to all lines for synchronization.
+	 * Address updates and REG_UPDATE are handled at COMPOSITE_DONE
+	 * using the N+2 strategy (see wm_done comments).
 	 */
 	if (value0 & VFE_0_IRQ_STATUS_0_CAMIF_SOF) {
-		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
-
 		for (i = 0; i < vfe->res->line_num; i++)
 			vfe->isr_ops.sof(vfe, i);
 	}
