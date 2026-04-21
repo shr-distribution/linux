@@ -2801,21 +2801,20 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 				vfe->active_cbcr_offset);
 		}
 
+		/*
+		 * Update ALL WM addresses first, then reload ALL at once.
+		 * Reloading WM0 before WM4's address is updated causes
+		 * Y/CbCr desync and frame shift on every other frame.
+		 */
 		for (i = 0; i < output->wm_num; i++) {
-			if (active_index) {
-				/* PONG active → update PING */
+			if (active_index)
 				vfe31_wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
-			} else {
-				/* PING active → update PONG */
+			else
 				vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
-			}
-			/*
-			 * Reload WM address into DMA engine via BUS_CMD.
-			 * Without this, the DMA keeps using the old address
-			 * causing progressive frame wrap artifacts.
-			 */
-			vfe31_bus_reload_wm(vfe, output->wm_idx[i]);
 		}
+		wmb();
+		for (i = 0; i < output->wm_num; i++)
+			vfe31_bus_reload_wm(vfe, output->wm_idx[i]);
 	}
 
 	/*
