@@ -1136,7 +1136,7 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 					__func__, data->payload_size);
 				return -EINVAL;
 			}
-			pr_err("%s:opcode = 0x%x cmd = 0x%x status = 0x%x token=%d\n",
+			pr_debug("%s:opcode = 0x%x cmd = 0x%x status = 0x%x token=%d\n",
 				__func__, data->opcode,
 				payload[0], payload[1], data->token);
 			/* payload[1] contains the error status for response */
@@ -3214,7 +3214,7 @@ static int afe_send_port_topology_id(u16 port_id)
 
 	ret = afe_port_topology_deregister(port_id);
 	if (ret < 0) {
-		pr_err("%s: AFE deregister topology for port 0x%x failed %d\n",
+		pr_debug("%s: AFE deregister topology for port 0x%x failed %d\n",
 			__func__, port_id, ret);
 		goto done;
 	}
@@ -3239,7 +3239,7 @@ static int afe_send_port_topology_id(u16 port_id)
 				__func__, port_id, topology_id, ret);
 		goto done;
 	}
-	pr_err("%s: AFE port[0x%x] topology_id=0x%x\n",
+	pr_debug("%s: AFE port[0x%x] topology_id=0x%x\n",
 			__func__, port_id, topology_id);
 
 	param_info.module_id = AFE_MODULE_AUDIO_DEV_INTERFACE;
@@ -9195,7 +9195,7 @@ int afe_set_lpass_clk_cfg(int index, struct afe_clk_set *cfg)
 	param_hdr.param_size = sizeof(struct afe_clk_set);
 
 
-	pr_err("%s: Minor version=0x%x clk_id=%d freq=%d attri=0x%x root=0x%x enable=0x%x index=%d iid=%d\n",
+	pr_debug("%s: Minor version=0x%x clk_id=%d freq=%d attri=0x%x root=0x%x enable=0x%x index=%d iid=%d\n",
 		 __func__, cfg->clk_set_minor_version,
 		 cfg->clk_id, cfg->clk_freq_in_hz, cfg->clk_attri,
 		 cfg->clk_root, cfg->enable, index,
@@ -9203,7 +9203,7 @@ int afe_set_lpass_clk_cfg(int index, struct afe_clk_set *cfg)
 
 	ret = q6afe_svc_pack_and_set_param_in_band(index, param_hdr,
 						   (u8 *) cfg);
-	pr_err("%s: AFE clk cfg ret=%d for clk_id=%d\n", __func__, ret, cfg->clk_id);
+	pr_debug("%s: AFE clk cfg ret=%d for clk_id=%d\n", __func__, ret, cfg->clk_id);
 	if (ret < 0) {
 		pr_err_ratelimited("%s: AFE clk cfg failed with ret %d\n",
 				__func__, ret);
@@ -9254,7 +9254,7 @@ int afe_set_lpass_clock_v2(u16 port_id, struct afe_clk_set *cfg)
 					clk_src_name[CLK_SRC_INTEGRAL]);
 		}
 		if (ret < 0)
-			pr_err("%s: afe_set_source_clk fail %d\n",
+			pr_debug("%s: afe_set_source_clk fail %d\n",
 				__func__, ret);
 	}
 	idx = afe_get_port_idx(port_id);

@@ -214,7 +214,7 @@ static int lpi_gpio_set_mux(struct pinctrl_dev *pctldev, unsigned int function,
 	        val &= ~(LPI_GPIO_REG_FUNCTION_MASK);
 	        val |= pad->function << LPI_GPIO_REG_FUNCTION_SHIFT;
 	        lpi_gpio_write(pad, LPI_GPIO_REG_VAL_CTL, val);
-	        pr_err("lpi_gpio_set_mux: pin=%u func=%u val=0x%x offset=0x%x\n",
+	        pr_debug("lpi_gpio_set_mux: pin=%u func=%u val=0x%x offset=0x%x\n",
 	               pin, function, val, pad->offset);
         } else {
 	        pr_err("lpi_gpio_set_mux: pin=%u pad is NULL!\n", pin);

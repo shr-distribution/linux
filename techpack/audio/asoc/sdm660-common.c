@@ -4604,7 +4604,7 @@ static int msm_mi2s_set_sclk(struct snd_pcm_substream *substream, bool enable)
 	}
 
 	mi2s_clk[index].enable = enable;
-	pr_err("%s: port=0x%x clk_id=%d freq=%d enable=%d\n",
+	pr_debug("%s: port=0x%x clk_id=%d freq=%d enable=%d\n",
 		__func__, port_id, mi2s_clk[index].clk_id,
 		mi2s_clk[index].clk_freq_in_hz, enable);
 	ret = afe_set_lpass_clock_v2(port_id,
@@ -4615,7 +4615,7 @@ static int msm_mi2s_set_sclk(struct snd_pcm_substream *substream, bool enable)
 			__func__, port_id, ret);
 		goto done;
 	}
-	pr_err("%s: afe_set_lpass_clock_v2 port=0x%x ret=%d\n",
+	pr_debug("%s: afe_set_lpass_clock_v2 port=0x%x ret=%d\n",
 		__func__, port_id, ret);
 
 done:
@@ -4640,7 +4640,7 @@ int msm_mi2s_snd_startup(struct snd_pcm_substream *substream)
 	struct msm_asoc_mach_data *pdata =
 				snd_soc_card_get_drvdata(rtd->card);
 
-	pr_err("%s: substream = %s  stream = %d, dai name %s, dai ID %d\n",
+	pr_debug("%s: substream = %s  stream = %d, dai name %s, dai ID %d\n",
 		__func__, substream->name, substream->stream,
 		cpu_dai->name, cpu_dai->id);
 
@@ -4692,7 +4692,7 @@ int msm_mi2s_snd_startup(struct snd_pcm_substream *substream)
 		if (pdata->mi2s_gpio_p[index]) {
 			ret = msm_cdc_pinctrl_select_active_state(
 					pdata->mi2s_gpio_p[index]);
-			pr_err("%s: pinctrl_select_active for MI2S %d ret=%d\n",
+			pr_debug("%s: pinctrl_select_active for MI2S %d ret=%d\n",
 				__func__, index, ret);
 		} else {
 			pr_err("%s: mi2s_gpio_p[%d] is NULL!\n",
