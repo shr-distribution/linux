@@ -6360,19 +6360,16 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * RDI raw bypass: Use full webOS MODULE_CFG value.
+			 * RDI raw bypass: MODULE_CFG=0 (disable all ISP modules).
 			 *
-			 * Vendor code sets MODULE_CFG from userspace for ALL
-			 * modes including raw snapshot. CAMIF needs DEMUX and
-			 * other modules clocked to receive data, even when
-			 * AXI=0x60 routes data directly to WM0 bypassing ISP.
-			 * With MODULE_CFG=0, CAMIF receives zero lines/pixels.
+			 * Samsung raw snapshot (operation_mode=3) sets MODULE_CFG
+			 * to ~0 with minimal bits. Data bypasses ISP entirely
+			 * via AXI=0x60 (CAMIF_TO_AXI). DEMUX must NOT be enabled
+			 * for raw bypass - it would try to split raw data as YUV.
 			 */
 			dev_info(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x%08x (RDI with ISP clocked)\n",
-				 VFE_0_MODULE_CFG_WEBOS_VALUE);
-			writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE,
-				       vfe->base + VFE_0_MODULE_CFG);
+				 "VFE31: MODULE_CFG=0x0 (RDI raw bypass)\n");
+			writel_relaxed(0, vfe->base + VFE_0_MODULE_CFG);
 		} else if (vfe31_raw_pix_mode) {
 			/*
 			 * RAW-through-PIX mode: Use PIX path but disable DEMUX.
@@ -6475,7 +6472,19 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			 line->fmt[MSM_VFE_PAD_SINK].code);
 		break;
 	}
-	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
+	/*
+	 * Input mux enable (bit 6) routes data to DEMUX. Samsung raw
+	 * snapshot sets CORE_CFG=0x01 (pattern only, NO mux enable).
+	 * Only enable mux for PIX/VIDEO which use DEMUX processing.
+	 */
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+
+		if (!is_rdi)
+			val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
+	}
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 
 	/*
