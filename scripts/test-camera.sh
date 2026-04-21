@@ -2407,10 +2407,10 @@ main() {
                 media-ctl -d /dev/media0 -l '\"msm_csid1\":6->\"msm_vfe0_rdi5\":0[1]' 2>&1 || true
 
                 # Set output format on video devices BEFORE streaming
-                # Both PIX and ZSL use NV12 semi-planar (wm_num=2: Y+CbCr WMs)
-                # ZSL goes through DEMUX/XBAR like PIX, not raw passthrough
+                # PIX uses NV12 semi-planar (wm_num=2: Y+CbCr WMs)
+                # ZSL uses UYVY (rdi5 raw passthrough, single WM)
                 v4l2-ctl -d /dev/video3 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
-                v4l2-ctl -d /dev/video5 --set-fmt-video=width=640,height=480,pixelformat=NV12 2>&1 || true
+                v4l2-ctl -d /dev/video5 --set-fmt-video=width=640,height=480,pixelformat=UYVY 2>&1 || true
 
                 # Verify ZSL format took effect
                 echo 'ZSL video5 format:'
@@ -2471,7 +2471,7 @@ main() {
                 media-ctl -d /dev/media0 -l '\"msm_csid1\":6->\"msm_vfe0_rdi5\":0[1]' 2>&1 || true
 
                 v4l2-ctl -d /dev/video3 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
-                v4l2-ctl -d /dev/video5 --set-fmt-video=width=1280,height=1024,pixelformat=NV12 2>&1 || true
+                v4l2-ctl -d /dev/video5 --set-fmt-video=width=1280,height=1024,pixelformat=UYVY 2>&1 || true
 
                 echo 'ZSL video5 format:'
                 v4l2-ctl -d /dev/video5 --get-fmt-video 2>&1 | grep -E 'Pixel|Width'

@@ -2580,13 +2580,8 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 		init_completion(&l->output.sof);
 		init_completion(&l->output.reg_update);
 
-		if (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO ||
-		    i == VFE_LINE_ZSL) {
-			/*
-			 * PIX, VIDEO, and ZSL lines use pixel pipeline formats
-			 * (NV12/NV16). ZSL goes through DEMUX/XBAR like PIX,
-			 * so it needs semi-planar formats for Y+CbCr WMs.
-			 */
+		if (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO) {
+			/* PIX and VIDEO lines use the pixel pipeline formats */
 			l->nformats = res->vfe.formats_pix->nformats;
 			l->formats = res->vfe.formats_pix->formats;
 		} else {
@@ -2762,9 +2757,8 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		video_out->line_based = 0;
 		video_out->stride_factor = 0;
 		video_out->vsub_override = 0;
-		if (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO ||
-		    i == VFE_LINE_ZSL) {
-			/* PIX, VIDEO, and ZSL use line-based pixel pipeline */
+		if (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO) {
+			/* PIX and VIDEO lines use line-based pixel pipeline */
 			video_out->bpl_alignment = 16;
 			video_out->line_based = 1;
 			/*
