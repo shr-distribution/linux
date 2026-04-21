@@ -263,6 +263,7 @@ struct mt9m113 {
 	unsigned int pixrate;
 	s64 link_freq;
 	bool streaming;
+	bool was_streaming;	/* set by stop, cleared by start - skips REFRESH on restart */
 	bool in_standby;
 
 	/* Pixel Array sub-device */
@@ -1837,6 +1838,10 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		 * 4. SEQ_CAP_MODE
 		 * 5. delay
 		 * 6. SEQ_CMD_RUN
+		 *
+		 * IMPORTANT: Skip REFRESH on streaming restart. webOS driver
+		 * never issues REFRESH between sessions - just SEQ_CMD_RUN.
+		 * REFRESH while MCU is in RUN state after stop causes timeout.
 		 */
 		ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL,
 				output_ctrl_val, NULL);
@@ -1844,10 +1849,14 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			goto error;
 		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
 
-		/* Issue REFRESH_MODE then REFRESH after OUTPUT_CONTROL change */
-		ret = mt9m113_refresh(sensor);
-		if (ret)
-			goto error;
+		if (!sensor->was_streaming) {
+			ret = mt9m113_refresh(sensor);
+			if (ret)
+				goto error;
+		} else {
+			dev_info(dev, "MT9M113: Skipping REFRESH (restart)\n");
+			sensor->was_streaming = false;
+		}
 
 		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
@@ -1951,6 +1960,7 @@ static int mt9m113_stop_streaming(struct mt9m113 *sensor)
 	int ret;
 
 	sensor->streaming = false;
+	sensor->was_streaming = true;
 
 	/* Disable MIPI output */
 	cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
