@@ -3116,21 +3116,29 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 
 		/* Process ZSL state machine at frame boundary */
 		if (vfe31_zsl_state == VFE31_REC_START_REQUESTED) {
-			/* Enable ZSL WMs at frame boundary */
+			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
+
+			/* Enable ZSL Y WM at frame boundary */
 			writel_relaxed(BIT(0), vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_Y));
-			writel_relaxed(BIT(0), vfe->base +
-				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
+			/* Only enable CbCr WM if using 2 WMs (NV12/NV16) */
+			if (zsl_out->wm_num == 2)
+				writel_relaxed(BIT(0), vfe->base +
+					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
 			vfe31_zsl_state = VFE31_REC_STARTED;
 			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
-			dev_info(vfe->camss->dev, "VFE31: ZSL started (WM%d+WM%d enabled)\n",
-				 VFE31_ZSL_WM_Y, VFE31_ZSL_WM_CBCR);
+			dev_info(vfe->camss->dev, "VFE31: ZSL started (WM%d%s enabled)\n",
+				 VFE31_ZSL_WM_Y,
+				 zsl_out->wm_num == 2 ? "+WM6" : " only");
 		} else if (vfe31_zsl_state == VFE31_REC_STOP_REQUESTED) {
+			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
+
 			/* Disable ZSL WMs at frame boundary */
 			writel_relaxed(0, vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_Y));
-			writel_relaxed(0, vfe->base +
-				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
+			if (zsl_out->wm_num == 2)
+				writel_relaxed(0, vfe->base +
+					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
 			vfe31_zsl_state = VFE31_REC_STOPPED;
 			dev_info(vfe->camss->dev, "VFE31: ZSL stopped\n");
 		} else if (vfe31_zsl_state == VFE31_REC_STOPPED) {
