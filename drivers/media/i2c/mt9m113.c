@@ -1650,11 +1650,21 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	}
 
 	/*
-	 * No pre-streaming REFRESH. Legacy drivers never issue REFRESH
-	 * during streaming transitions - only at init. Excessive REFRESH
-	 * commands (up to 5 per start_streaming) caused MCU lockup,
-	 * especially after YUV→RAW→YUV format changes.
+	 * Single REFRESH to apply configuration changes.
+	 *
+	 * Legacy drivers issue REFRESH at init only, but they never change
+	 * format/dimensions at runtime. Since our driver reconfigures
+	 * output dimensions and format per streaming session, ONE REFRESH
+	 * is needed for the MCU to pick up the new config. Without it,
+	 * SEQ_CMD_RUN hangs (MCU never clears SEQ_CMD back to 0).
+	 *
+	 * Previous code issued up to 5 REFRESH cycles per start which
+	 * caused MCU lockup. One is sufficient and matches the Allwinner
+	 * driver pattern (REFRESH after config, then SEQ_CMD).
 	 */
+	ret = mt9m113_refresh(sensor);
+	if (ret)
+		dev_warn(dev, "MT9M113: REFRESH failed, continuing\n");
 
 	/* Debug: dump MCU state before issuing SEQ_CMD */
 	{
