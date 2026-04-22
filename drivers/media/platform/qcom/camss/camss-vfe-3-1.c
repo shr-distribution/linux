@@ -6124,38 +6124,40 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
 
-		if (is_rdi) {
-			/*
-			 * RDI/raw mode: Set FRAME_CFG with frame dimensions.
-			 * This tells CAMIF the exact pixelsPerLine and linesPerFrame
-			 * so it can count lines even without embedded sync codes.
-			 *
-			 * FRAME_CFG format:
-			 *   [13:0]  = pixelsPerLine (width in bytes)
-			 *   [29:16] = linesPerFrame (height)
-			 *
-			 * webOS never used raw mode, so leaving FRAME_CFG=0 was OK
-			 * for their PIX/VIDEO modes. For raw mode we need it set.
-			 */
-			val = (height << 16) | (width_bytes & 0x3FFF);
-			writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-			dev_info(vfe->camss->dev,
-				 "VFE31: RDI FRAME_CFG=0x%08x (lines=%u, pixels=%u)\n",
-				 val, height, width_bytes);
-		} else {
-			/* PIX/VIDEO mode: webOS leaves FRAME_CFG at 0 */
-			writel_relaxed(0, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-		}
+		/*
+		 * FRAME_CFG: Samsung/Opal leave at 0 for both PIX and raw modes.
+		 * webOS also never sets it. The CAMIF uses WINDOW registers
+		 * for frame dimensions instead.
+		 */
+		writel_relaxed(0, vfe->base + VFE_0_CAMIF_FRAME_CFG);
 	}
 
-	val = (height << 16) | (width_bytes & 0xFFFF);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
-	dev_info(vfe->camss->dev,
-		 "VFE31: WINDOW_WIDTH=0x%08x (height=%u, width_bytes=%u)\n",
-		 val, height, width_bytes);
+	/*
+	 * WINDOW registers: CAMIF always counts in 16-bit pixel units.
+	 * For UYVY (PIX mode): width_bytes = width * 2 (already correct)
+	 * For RAW: must also use width * 2, not raw stride.
+	 *
+	 * Confirmed from Opal mt9m113_raw_snapshot_config():
+	 *   WINDOW_WIDTH low bits = firstPixel << 1 (= 0)
+	 *   lastPixel = (firstPixel + width * 2) - 1
+	 */
+	{
+		u32 camif_width;
 
-	val = width_bytes - 1;
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+		if (is_rdi)
+			camif_width = line->fmt[MSM_VFE_PAD_SINK].width * 2;
+		else
+			camif_width = width_bytes;
+
+		val = (height << 16) | (camif_width & 0xFFFF);
+		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+		dev_info(vfe->camss->dev,
+			 "VFE31: WINDOW_WIDTH=0x%08x (height=%u, width=%u)\n",
+			 val, height, camif_width);
+
+		val = camif_width - 1;
+		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+	}
 
 	writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
