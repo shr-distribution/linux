@@ -3813,7 +3813,12 @@ static int vfe31_enable(struct vfe_line *line)
 		 * (CAMIF is already running from PIX), then let the ZSL state
 		 * machine enable them at the next frame boundary.
 		 *
-		 * DO NOT touch: CAMIF, DEMUX, scale, MODULE_CFG, AXI mode
+		 * Key: Switch AXI_OUT_MODE from 0x01 to 0x101 to enable the
+		 * third output path (output2 -> WM2+WM6). Samsung uses this
+		 * value for ZSL. Bit 8 enables output2 for snapshot capture
+		 * while PIX preview continues on output0 (WM0+WM4).
+		 *
+		 * DO NOT touch: CAMIF, DEMUX, scale, MODULE_CFG
 		 * (all already configured by PIX).
 		 */
 		dev_info(vfe->camss->dev,
@@ -3846,9 +3851,22 @@ static int vfe31_enable(struct vfe_line *line)
 			vfe31_dump_line_config(vfe->camss->dev, &cfg);
 			vfe31_apply_line_config(vfe, &cfg, y_wm, cbcr_wm);
 
-			/* Update XBAR to include ZSL routing */
+			/*
+			 * Switch AXI_OUT_MODE to 0x101 (ZSL dual output).
+			 * Bit 0 = OUTPUT_1_AND_3 (PIX+VIDEO via XBAR)
+			 * Bit 8 = Third output enable (output2 -> WM2+WM6)
+			 * Samsung uses this for simultaneous preview + snapshot.
+			 */
+			writel_relaxed(0x101,
+				       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+
+			/* Update XBAR to include ZSL routing (24-bit) */
 			writel_relaxed(vfe31_calc_xbar(true, video_active, true),
 				       vfe->base + VFE_0_BUS_XBAR_CFG1);
+
+			dev_info(vfe->camss->dev,
+				 "VFE31: AXI_OUT_MODE=0x101 (ZSL dual), XBAR=0x%06x\n",
+				 vfe31_calc_xbar(true, video_active, true));
 
 			/* Update IRQ comp mask to include Group 1 (ZSL) */
 			if (video_active)
