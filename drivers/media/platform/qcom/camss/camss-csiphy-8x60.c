@@ -425,15 +425,64 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing PROTOCOL_CONTROL SW_RST\n", csiphy->id);
 	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
-	/* PROTOCOL_CONTROL with config */
-	val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
-	      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK;
-	if (!ecc_disable)
-		val |= MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
-	val |= (0x0 << MIPI_PROTOCOL_CONTROL_DATA_FORMAT_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing PROTOCOL_CONTROL=0x%08x (ECC %s)\n",
-		 csiphy->id, val, ecc_disable ? "DISABLED" : "enabled");
-	writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	/*
+	 * PROTOCOL_CONTROL with config.
+	 * DATA_FORMAT field (bits 20:19) must match the sensor output:
+	 *   0 = 8-bit (YUV422, RAW8)
+	 *   1 = 10-bit (RAW10)
+	 *   2 = 12-bit (RAW12)
+	 * From webOS msm_camio_csi_config():
+	 *   val |= csi_params->data_format << DATA_FORMAT_SHFT
+	 */
+	{
+		u32 data_fmt = 0; /* default 8-bit for YUV */
+		struct media_pad *remote_pad;
+		struct v4l2_subdev *sensor_sd;
+
+		/* Detect sensor format to set correct data format */
+		remote_pad = media_pad_remote_pad_first(&csiphy->pads[0]);
+		if (remote_pad) {
+			sensor_sd = media_entity_to_v4l2_subdev(remote_pad->entity);
+			if (sensor_sd) {
+				struct v4l2_subdev_format fmt = {
+					.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+					.pad = remote_pad->index,
+				};
+
+				if (!v4l2_subdev_call(sensor_sd, pad, get_fmt, NULL, &fmt)) {
+					switch (fmt.format.code) {
+					case MEDIA_BUS_FMT_SBGGR10_1X10:
+					case MEDIA_BUS_FMT_SGBRG10_1X10:
+					case MEDIA_BUS_FMT_SGRBG10_1X10:
+					case MEDIA_BUS_FMT_SRGGB10_1X10:
+					case MEDIA_BUS_FMT_Y10_1X10:
+						data_fmt = 1; /* 10-bit */
+						break;
+					case MEDIA_BUS_FMT_SBGGR12_1X12:
+					case MEDIA_BUS_FMT_SGBRG12_1X12:
+					case MEDIA_BUS_FMT_SGRBG12_1X12:
+					case MEDIA_BUS_FMT_SRGGB12_1X12:
+						data_fmt = 2; /* 12-bit */
+						break;
+					default:
+						data_fmt = 0; /* 8-bit */
+						break;
+					}
+				}
+			}
+		}
+
+		val = MIPI_PROTOCOL_CONTROL_LONG_PACKET_HEADER_CAPTURE_BMSK |
+		      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK;
+		if (!ecc_disable)
+			val |= MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
+		val |= (data_fmt << MIPI_PROTOCOL_CONTROL_DATA_FORMAT_SHFT);
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: PROTOCOL_CONTROL=0x%08x (ECC %s, data_fmt=%d)\n",
+			 csiphy->id, val, ecc_disable ? "DISABLED" : "enabled",
+			 data_fmt);
+		writel(val, csiphy->base + MIPI_PROTOCOL_CONTROL);
+	}
 
 	/*
 	 * CALIBRATION_CONTROL and D0-D3_CONTROL2 configuration.
