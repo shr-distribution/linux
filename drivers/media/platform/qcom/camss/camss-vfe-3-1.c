@@ -3898,10 +3898,22 @@ static int vfe31_enable(struct vfe_line *line)
 			/*
 			 * ZSL shares UB with PIX: 2 outputs, ZSL
 			 * starts at second half of 912-entry budget.
+			 *
+			 * Use the PIX line's pixel format (not ZSL's UYVY)
+			 * so the CbCr height matches the CHROMA_V subsample
+			 * setting. The ISP DEMUX outputs CbCr at half-height
+			 * for NV12, and WM6 must use the same height or the
+			 * Y and CbCr frames will be temporally misaligned
+			 * (WM6 takes 2x longer to fill at full height).
 			 */
-			vfe31_calc_pix_config(&cfg, width, height,
-					     bytesperline,
-					     pix->pixelformat, 2, 912 / 2);
+			{
+				struct vfe_line *pix_line = &vfe->line[VFE_LINE_PIX];
+				u32 pix_fmt = pix_line->video_out.active_fmt.fmt.pix_mp.pixelformat;
+
+				vfe31_calc_pix_config(&cfg, width, height,
+						     bytesperline,
+						     pix_fmt, 2, 912 / 2);
+			}
 
 			/* Set buffer addresses */
 			cfg.y_wm.ping_addr = ping_addr;
