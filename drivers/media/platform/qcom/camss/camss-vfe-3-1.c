@@ -532,6 +532,8 @@ static void vfe31_calc_rdi_config(struct vfe31_line_config *cfg,
  * @height: Frame height in lines
  * @bytesperline: Output bytes per line from V4L2 format
  * @pixelformat: V4L2 pixel format (NV12, NV16, etc.)
+ * @num_outputs: Number of output paths sharing UB SRAM (1 or 2)
+ * @ub_start: UB SRAM starting offset for this output (0 for first output)
  *
  * PIX mode uses DEMUX to separate UYVY input into Y and CbCr planes.
  * UB_CFG and IMAGE_SIZE use INPUT stride (width*2 for VFE timing).
@@ -544,7 +546,8 @@ static void vfe31_calc_rdi_config(struct vfe31_line_config *cfg,
  */
 static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 				  u16 width, u16 height, u16 bytesperline,
-				  u32 pixelformat)
+				  u32 pixelformat, int num_outputs,
+				  u16 ub_start)
 {
 	u16 input_stride = width * 2;           /* UYVY input (VFE pipeline timing) */
 	u16 output_stride = bytesperline;       /* DMA output stride */
@@ -619,26 +622,31 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 		/*
 		 * Proportional UB SRAM allocation (cross-vendor verified).
 		 *
-		 * UB_depth = (plane_pixels * 912) / total_bw - 1
-		 * 912 = total UB entries for image WMs (from Opal HAL, same APQ8060)
+		 * UB_depth = (plane_pixels * ub_budget) / total_bw - 1
+		 * Total image WM budget = 912 entries (from Opal HAL, same APQ8060)
 		 *
-		 * Total bandwidth depends on format (HTC/Sony verified):
-		 *   NV12 (4:2:0): total_bw = 2 * width * height * 1.5 = y_pixels * 3
-		 *   NV16 (4:2:2): total_bw = 2 * width * height * 2.0 = y_pixels * 4
+		 * When multiple outputs share the UB (PIX+ZSL or PIX+VIDEO),
+		 * the budget is split: each output gets 912/num_outputs entries.
+		 * The ub_start parameter offsets each output's region to prevent
+		 * overlap. Samsung's HAL does this in userspace; we do it here.
 		 *
-		 * CbCr UB depth depends on format (HTC/Sony verified):
-		 *   NV12: CbCr depth computed separately (half-width pixels)
-		 *   NV16: CbCr depth = same as Y depth (equal plane sizes)
+		 * Total bandwidth per output depends on format:
+		 *   NV12 (4:2:0): total_bw = w*h * 1.5 = y_pixels * 3 / 2
+		 *   NV16 (4:2:2): total_bw = w*h * 2.0 = y_pixels * 2
 		 */
 		u32 y_pixels = width * height;
-		u32 total_bw = is_420 ? (y_pixels * 3) : (y_pixels * 4);
-		u32 y_depth = div_u64((u64)y_pixels * 912, total_bw);
+		u32 ub_budget = 912 / num_outputs;
+		u32 total_bw_per_output = is_420 ?
+			(y_pixels * 3 / 2) : (y_pixels * 2);
+		u32 y_depth = div_u64((u64)y_pixels * ub_budget,
+				      total_bw_per_output);
 		u32 cbcr_depth;
 
 		if (is_420) {
 			/* NV12: CbCr at half-width data rate */
 			u32 cbcr_pixels = (width / 2) * height;
-			cbcr_depth = div_u64((u64)cbcr_pixels * 912, total_bw);
+			cbcr_depth = div_u64((u64)cbcr_pixels * ub_budget,
+					     total_bw_per_output);
 		} else {
 			/* NV16: CbCr same depth as Y (HTC/Sony verified) */
 			cbcr_depth = y_depth;
@@ -654,10 +662,10 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 			cbcr_depth = 1;
 
 		cfg->y_wm.burst_words = y_depth & 0x3ff;
-		cfg->y_wm.burst_lines = 0;  /* UB start = 0 (first WM) */
+		cfg->y_wm.burst_lines = ub_start;
 
 		cfg->cbcr_wm.burst_words = cbcr_depth & 0x3ff;
-		cfg->cbcr_wm.burst_lines = (y_depth + 1) & 0x3ff;  /* UB start after Y */
+		cfg->cbcr_wm.burst_lines = (ub_start + y_depth + 1) & 0x3ff;
 	}
 
 	/*
@@ -3641,8 +3649,14 @@ static int vfe31_enable(struct vfe_line *line)
 			vfe31_calc_rdi_config(&cfg, width, height, bpp);
 			cfg.path = line->id;
 		} else {
+			/*
+			 * Always allocate for 2 outputs (first half of UB).
+			 * This reserves the second half for VIDEO or ZSL
+			 * which may join later. Matches webOS OUTPUT_1_AND_3
+			 * dual-output UB allocation.
+			 */
 			vfe31_calc_pix_config(&cfg, width, height, bytesperline,
-					      pix->pixelformat);
+					      pix->pixelformat, 2, 0);
 			cfg.path = line->id;
 		}
 
@@ -3768,9 +3782,13 @@ static int vfe31_enable(struct vfe_line *line)
 			u8 cbcr_wm = (output->wm_num == 2) ?
 				      output->wm_idx[1] : 0xff;
 
+			/*
+			 * VIDEO shares UB with PIX: 2 outputs, VIDEO
+			 * starts at second half of 912-entry budget.
+			 */
 			vfe31_calc_pix_config(&cfg, width, height,
 					     bytesperline,
-					     pix->pixelformat);
+					     pix->pixelformat, 2, 912 / 2);
 
 			/* Set buffer addresses */
 			cfg.y_wm.ping_addr = ping_addr;
@@ -3860,9 +3878,13 @@ static int vfe31_enable(struct vfe_line *line)
 				(vfe->line[VFE_LINE_VIDEO].output.state == VFE_OUTPUT_ON ||
 				 vfe->line[VFE_LINE_VIDEO].output.state == VFE_OUTPUT_CONTINUOUS);
 
+			/*
+			 * ZSL shares UB with PIX: 2 outputs, ZSL
+			 * starts at second half of 912-entry budget.
+			 */
 			vfe31_calc_pix_config(&cfg, width, height,
 					     bytesperline,
-					     pix->pixelformat);
+					     pix->pixelformat, 2, 912 / 2);
 
 			/* Set buffer addresses */
 			cfg.y_wm.ping_addr = ping_addr;
