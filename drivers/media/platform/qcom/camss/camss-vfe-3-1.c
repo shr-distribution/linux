@@ -6086,16 +6086,20 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		if (is_rdi) {
 			/* RDI: route CAMIF data to AXI bus (raw bypass) */
 			/*
-			 * Use camif2vfe (0x40) even for RDI raw bypass.
-			 * On VFE31, the CAMIF_CFG bit 7 (camif2bus) may not
-			 * function as on VFE8x. The AXI output mode 0x60
-			 * handles the raw bypass routing at the AXI level.
-			 * camif2vfe ensures data flows through CAMIF into the
-			 * VFE internal bus where AXI=0x60 picks it up.
+			 * CAMIF_CFG = 0x10 for raw snapshot mode.
+			 * Confirmed from Opal (APQ8060) decompiled HAL:
+			 * vfe_set_default_cmd() zeroes the CAMIF blob, then
+			 * vfe_raw_snapshot_config() sets byte[0] |= 0x10.
+			 * Samsung Quincy does the same: *pbVar11 &= 0xbf
+			 * (clear bit 6) then |= 0x10 (set bit 4).
+			 *
+			 * Bit 4 enables raw CAMIF data flow to AXI.
+			 * Bit 6 (0x40) = camif2vfe (ISP pipeline, for PIX)
+			 * Bit 7 (0x80) = NOT used on VFE31 (VFE8x only)
 			 */
-			camif_cfg = VFE_0_CAMIF_CFG_CAMIF2VFE;
+			camif_cfg = 0x10;
 			dev_info(vfe->camss->dev,
-				 "VFE31: CAMIF_CFG=0x%02x (camif2vfe for RDI, AXI=0x60 handles bypass)\n",
+				 "VFE31: CAMIF_CFG=0x%02x (raw snapshot mode)\n",
 				 camif_cfg);
 		} else {
 			/* PIX/VIDEO: route CAMIF data to VFE ISP pipeline */
