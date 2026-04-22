@@ -2639,40 +2639,21 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	}
 
 	/*
-	 * Update buffer addresses for next frame.
+	 * Update the just-vacated buffer address register.
 	 *
-	 * Single-buffer mode (640x480): Write BOTH PING and PONG to the
-	 * same address. PP toggle doesn't change the DMA destination, so
-	 * frame overlap in UB SRAM wraps cleanly within one buffer.
+	 * No bus_reload (corrupts UB SRAM at 64-byte burst boundaries),
+	 * no REG_UPDATE (no effect on PING/PONG address registers).
 	 *
-	 * Double-buffer mode (1280x1024): Write only the just-vacated
-	 * register. Sufficient VBLANK allows natural address re-read.
-	 *
-	 * No bus_reload (corrupts UB SRAM), no REG_UPDATE (no effect on
-	 * address registers).
+	 * At 640x480 (~15fps), pipeline latency > VBLANK causes ~27 line
+	 * progressive drift per frame (SRAM Overlap Paradox). This is a
+	 * VFE31 hardware limitation - invisible in viewfinder streaming.
+	 * At 1280x1024 (~7fps), sufficient VBLANK gives perfect alignment.
 	 */
-	{
-		struct vfe_line *line = &vfe->line[vfe->wm_output_map[wm]];
-		bool single_buf = (line->fmt[MSM_VFE_PAD_SINK].height <= 480);
-
-		for (i = 0; i < output->wm_num; i++) {
-			if (single_buf) {
-				/* Both PING and PONG → same address */
-				vfe31_wm_set_ping_addr(vfe, output->wm_idx[i],
-						       new_addr[i]);
-				vfe31_wm_set_pong_addr(vfe, output->wm_idx[i],
-						       new_addr[i]);
-			} else {
-				if (active_index)
-					vfe31_wm_set_ping_addr(vfe,
-							       output->wm_idx[i],
-							       new_addr[i]);
-				else
-					vfe31_wm_set_pong_addr(vfe,
-							       output->wm_idx[i],
-							       new_addr[i]);
-			}
-		}
+	for (i = 0; i < output->wm_num; i++) {
+		if (active_index)
+			vfe31_wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
+		else
+			vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 	}
 	wmb();
 
@@ -3441,31 +3422,8 @@ static int vfe31_enable(struct vfe_line *line)
 		return -EINVAL;
 	}
 
-	/*
-	 * Single-buffer mode for 640x480:
-	 *
-	 * At 640x480 (~15fps), pipeline latency > VBLANK causes frames
-	 * to overlap in the UB SRAM ("SRAM Overlap Paradox"). The DMA
-	 * can't route overlapping data to two different DDR buffers with
-	 * a single AXI pointer, causing ~27 line progressive drift.
-	 *
-	 * Fix: set PING_ADDR == PONG_ADDR. PP toggle changes nothing -
-	 * the DMA always writes to the same buffer. Frame overlap in
-	 * SRAM wraps cleanly within the same buffer, giving perfect
-	 * vertical alignment. Trade double-buffering for frame stability.
-	 *
-	 * At 1280x1024 (~7fps), sufficient VBLANK means no overlap,
-	 * so normal double-buffering works perfectly.
-	 */
-	if (height <= 480 && output->buf[1]) {
-		pong_addr = ping_addr;
-		dev_info(vfe->camss->dev,
-			 "VFE31: Single-buffer mode for %ux%u (PING=PONG=0x%08x)\n",
-			 width, height, ping_addr);
-	}
-
-	/* Verify addresses are valid */
-	if (ping_addr == pong_addr && height > 480) {
+	/* Verify addresses are valid and different */
+	if (ping_addr == pong_addr) {
 		dev_warn(vfe->camss->dev,
 			 "VFE31: WARNING - PING and PONG have same address 0x%08x!\n",
 			 ping_addr);
