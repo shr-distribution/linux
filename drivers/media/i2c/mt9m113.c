@@ -1581,11 +1581,15 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			else
 				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
 			/*
-			 * RAW Bayer output: Sensor Bypass mode per datasheet.
+			 * RAW Bayer output: Sensor data through FIFO.
 			 *
 			 * R0x321C (output_control_status):
-			 *   Bits [3:0] = 0x0001: Sensor Bypass (raw from ADC,
-			 *   bypasses both IFP and FIFO completely)
+			 *   Bit 7 = 1: fifo_input_control = Sensor Bypass
+			 *   Bits [3:0] = 0x0: FIFO Output Selected
+			 *   Combined 0x0080: raw sensor data routed through
+			 *   the TX FIFO. The FIFO is needed for MIPI CSI-2
+			 *   packetization - without it (0x0001 direct bypass)
+			 *   MIPI packets are not formed correctly.
 			 *
 			 * R0x3210 (color_pipeline_control):
 			 *   Disable all ISP processing to prevent MCU from
@@ -1594,14 +1598,14 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			 *   Default is 0x01B8 (scaler+gamma+ap+shading on).
 			 */
 			ret = cci_write(sensor->regmap, MT9M113_OFIFO_CONTROL_STATUS,
-					0x0001, NULL);
+					0x0080, NULL);
 			if (ret)
 				goto error;
 			ret = cci_write(sensor->regmap,
 					CCI_REG16(0x3210), 0x0000, NULL);
 			if (ret)
 				goto error;
-			dev_info(dev, "MT9M113: MIPI RAW mode (code=0x%04x), OFIFO=0x0001 (Sensor Bypass), pipeline disabled\n",
+			dev_info(dev, "MT9M113: MIPI RAW mode (code=0x%04x), OFIFO=0x0080 (Sensor→FIFO), pipeline disabled\n",
 				 format->code);
 		} else {
 			output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
