@@ -1601,11 +1601,13 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 					0x0080, NULL);
 			if (ret)
 				goto error;
-			ret = cci_write(sensor->regmap,
-					CCI_REG16(0x3210), 0x0000, NULL);
-			if (ret)
-				goto error;
-			dev_info(dev, "MT9M113: MIPI RAW mode (code=0x%04x), OFIFO=0x0080 (Sensor→FIFO), pipeline disabled\n",
+			/*
+			 * R0x3210 (color_pipeline_control) is disabled AFTER
+			 * streaming starts (see below). Disabling it before
+			 * REFRESH prevents the MCU from completing REFRESH
+			 * because it can't process the pipeline it manages.
+			 */
+			dev_info(dev, "MT9M113: MIPI RAW mode (code=0x%04x), OFIFO=0x0080 (Sensor→FIFO)\n",
 				 format->code);
 		} else {
 			output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
@@ -1974,6 +1976,22 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		}
 
 		msleep(20);
+	}
+
+	/*
+	 * Disable color pipeline AFTER streaming starts for RAW mode.
+	 * Must be done after REFRESH + SEQ_CMD complete because the MCU
+	 * needs the pipeline active to process those commands. Once
+	 * streaming is running, disable it to prevent MCU AE/AWB from
+	 * conflicting with the bypassed IFP.
+	 */
+	if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
+	    format->code == MEDIA_BUS_FMT_SGRBG10_1X10) {
+		ret = cci_write(sensor->regmap, CCI_REG16(0x3210), 0x0000, NULL);
+		if (ret)
+			dev_warn(dev, "MT9M113: Failed to disable color pipeline\n");
+		else
+			dev_info(dev, "MT9M113: Color pipeline disabled for RAW mode\n");
 	}
 
 	dev_info(dev, "MT9M113: streaming started\n");
