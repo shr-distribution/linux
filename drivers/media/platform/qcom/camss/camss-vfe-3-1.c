@@ -4067,10 +4067,8 @@ static int vfe31_disable(struct vfe_line *line)
 	/* Release output buffers and WM reservations */
 	vfe_put_output(line);
 
-	/* Track stream count (last stream disables bus write interface) */
+	/* Track stream count */
 	mutex_lock(&vfe->stream_lock);
-	if (vfe->stream_count == 1)
-		vfe->ops_gen1->bus_enable_wr_if(vfe, 0);
 	vfe->stream_count--;
 	mutex_unlock(&vfe->stream_lock);
 
@@ -6952,43 +6950,13 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 */
 }
 
-/* Gen1 operations structure for VFE31 */
-static const struct vfe_hw_ops_gen1 vfe_ops_gen1_3_1 = {
-	.bus_connect_wm_to_rdi = vfe31_bus_connect_wm_to_rdi,
-	.bus_disconnect_wm_from_rdi = vfe31_bus_disconnect_wm_from_rdi,
-	.bus_enable_wr_if = vfe31_bus_enable_wr_if,
-	.bus_reload_wm = vfe31_bus_reload_wm,
-	.camif_wait_for_stop = vfe31_camif_wait_for_stop,
-	.enable_irq_common = vfe31_enable_irq_common,
-	.enable_irq_pix_line = vfe31_enable_irq_pix_line,
-	.enable_irq_wm_line = vfe31_enable_irq_wm_line,
-	.get_ub_size = vfe31_get_ub_size,
-	.halt_clear = vfe31_halt_clear,
-	.halt_request = vfe31_halt_request,
-	.set_camif_cfg = vfe31_set_camif_cfg,
-	.set_camif_cmd = vfe31_set_camif_cmd,
-	.set_cgc_override = vfe31_set_cgc_override,
-	.set_clamp_cfg = vfe31_set_clamp_cfg,
-	.set_crop_cfg = vfe31_set_crop_cfg,
-	.set_demux_cfg = vfe31_set_demux_cfg,
-	.set_ds = vfe31_set_ds,
-	.set_module_cfg = vfe31_set_module_cfg,
-	.set_qos = vfe31_set_qos,
-	.set_rdi_cid = vfe31_set_rdi_cid,
-	.set_realign_cfg = vfe31_set_realign_cfg,
-	.set_scale_cfg = vfe31_set_scale_cfg,
-	.set_xbar_cfg = vfe31_set_xbar_cfg,
-	.wm_enable = vfe31_wm_enable,
-	.wm_frame_based = vfe31_wm_frame_based,
-	.wm_get_ping_pong_status = vfe31_wm_get_ping_pong_status,
-	.wm_line_based = vfe31_wm_line_based,
-	.wm_set_framedrop_pattern = vfe31_wm_set_framedrop_pattern,
-	.wm_set_framedrop_period = vfe31_wm_set_framedrop_period,
-	.wm_set_ping_addr = vfe31_wm_set_ping_addr,
-	.wm_set_pong_addr = vfe31_wm_set_pong_addr,
-	.wm_set_subsample = vfe31_wm_set_subsample,
-	.wm_set_ub_cfg = vfe31_wm_set_ub_cfg,
-};
+/*
+ * Gen1 ops struct removed - VFE31 is fully decoupled from gen1 framework.
+ * All streaming, buffer management, and ISR handling is in vfe31_enable,
+ * vfe31_disable, vfe31_isr, and vfe31_wm_done. The gen1 callbacks
+ * (set_camif_cfg, wm_line_based, etc.) were dead code never called
+ * from our code path.
+ */
 
 /*
  * vfe31_cleanup - Clean up VFE31 state during vfe_put
@@ -7027,9 +6995,7 @@ static void vfe31_cleanup(struct vfe_device *vfe)
 
 static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
 {
-	dev_info(dev, "VFE31 subdev_init: setting up ops_gen1\n");
 	vfe->isr_ops = vfe_isr_ops_gen1;
-	vfe->ops_gen1 = &vfe_ops_gen1_3_1;
 	vfe->video_ops = vfe_video_ops_gen1;
 
 	/*
@@ -7049,7 +7015,7 @@ static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
 		}
 	}
 
-	dev_info(dev, "VFE31 subdev_init: ops_gen1=%px\n", vfe->ops_gen1);
+	dev_info(dev, "VFE31 subdev_init: complete\n");
 }
 
 const struct vfe_hw_ops vfe_ops_3_1 = {
