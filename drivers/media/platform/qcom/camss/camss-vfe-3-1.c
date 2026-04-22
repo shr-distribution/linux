@@ -3825,6 +3825,32 @@ static int vfe31_enable(struct vfe_line *line)
 			 "VFE31: ZSL joining active PIX stream (stream_count=%d)\n",
 			 vfe->stream_count);
 
+		/*
+		 * Force wm_num=2 for ZSL joining PIX stream.
+		 * Even though V4L2 format is UYVY (packed), the ISP pipeline
+		 * DEMUX splits Y+CbCr to separate WMs (WM2+WM6). The UYVY
+		 * buffer (w*h*2) has the same size as NV16 (Y + CbCr planes),
+		 * so buffer sizing is correct. Reserve WM6 for CbCr.
+		 */
+		if (output->wm_num == 1) {
+			int wm_idx;
+
+			output->wm_num = 2;
+			wm_idx = vfe_reserve_wm_specific(vfe,
+					VFE31_ZSL_WM_CBCR, line->id);
+			if (wm_idx >= 0) {
+				output->wm_idx[1] = wm_idx;
+				vfe->wm_output_map[wm_idx] = VFE_LINE_NONE;
+				dev_info(vfe->camss->dev,
+					 "VFE31: ZSL forced wm_num=2, reserved WM%d for CbCr\n",
+					 wm_idx);
+			} else {
+				dev_warn(vfe->camss->dev,
+					 "VFE31: Cannot reserve WM6 for ZSL CbCr, using wm_num=1\n");
+				output->wm_num = 1;
+			}
+		}
+
 		/* Configure WM2+WM6 registers directly */
 		{
 			struct vfe31_line_config cfg = {0};
