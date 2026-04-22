@@ -100,18 +100,81 @@ Confirmed identical in webOS Opal, Samsung Quincy, and Samsung SII.
 
 ### AXI_OUTPUT_MODE (0x040)
 
-| Value | Mode | Description | Source |
-|-------|------|-------------|--------|
-| 0x00 | Output 1 | Single output | -- |
-| 0x01 | Output 1 and 3 | PIX + VIDEO | webOS/Samsung |
-| 0x02 | Output 1 and 2 | PIX + RDI | -- |
-| 0x03 | Camif to AXI | Raw CAMIF output | -- |
-| 0x60 | RAW snapshot | CAMIF_TO_AXI_VIA_OUTPUT_2 | webOS/HTC |
-| 0x101 | ZSL dual | Preview + Snapshot | Samsung |
-| 0x200 | OUTPUT_2 | Preview only (XBAR bypassed) | Samsung/Opal |
-| 0x214101 | RAW capture | Samsung-specific extended mode | Samsung |
+This register selects which output paths are active. It shares offset 0x040 with
+XBAR_CFG0 - both are part of the 188-byte AXI config blob starting at 0x038.
+
+**Register values (written to hardware at 0x040):**
+
+| Value | Mode | Bit pattern | WMs active | Source |
+|-------|------|-------------|------------|--------|
+| 0x00 | Output 1 only | `........` | WM0+WM4 | -- |
+| 0x01 | OUTPUT_1_AND_3 | `bit0` | WM0+WM4, WM1+WM5 | webOS/Samsung/HTC |
+| 0x60 | CAMIF_TO_AXI_VIA_OUTPUT_2 | `bit5+bit6` | WM0 only (raw bypass) | webOS/HTC |
+| 0x101 | ZSL dual output | `bit0+bit8` | WM0+WM4, WM1+WM5, WM2+WM6 | Samsung |
+| 0x200 | OUTPUT_2 | `bit9` | WM0+WM4 (XBAR bypassed) | Samsung/Opal |
+| 0x214101 | Extended RAW | Samsung-specific | WM0 (raw, extended) | Samsung |
+
+**Bit field analysis:**
+
+```
+Bit 0:   OUTPUT_1_AND_3 enable (PIX+VIDEO dual output via XBAR)
+Bits 5-6: CAMIF_TO_AXI raw bypass (0x60, direct sensor→WM0)
+Bit 8:   Third output enable (output2 → WM2+WM6 for ZSL snapshot)
+Bit 9:   OUTPUT_2 mode (preview-only, XBAR bypassed)
+```
+
+**0x101 (ZSL) = bit 0 + bit 8:** Enables the standard OUTPUT_1_AND_3 dual path
+(WM0+WM4 for PIX, WM1+WM5 for VIDEO) AND adds a third output path to WM2+WM6
+for simultaneous ZSL snapshot capture. All three outputs receive ISP-processed
+data through the DEMUX/XBAR pipeline. XBAR_CFG1 must be 24-bit (bits[23:16]
+control the third output routing).
+
+**Samsung kernel ioctl mode selectors** (from `include/media/msm_camera.h`):
+
+These are NOT register values - they are mode selectors passed via ioctl.
+The camera HAL constructs the actual register value in the AXI config blob.
+
+```c
+#define OUTPUT_1                                  0   /* Output 1 only */
+#define OUTPUT_2                                  1   /* Output 2 only */
+#define OUTPUT_1_AND_2                            2   /* Snapshot (thumbnail + main) */
+#define OUTPUT_1_AND_3                            3   /* Video (preview + video) */
+#define CAMIF_TO_AXI_VIA_OUTPUT_2                 4   /* Raw snapshot */
+#define OUTPUT_1_AND_CAMIF_TO_AXI_VIA_OUTPUT_2    5
+#define OUTPUT_2_AND_CAMIF_TO_AXI_VIA_OUTPUT_1    6
+#define OUTPUT_1_2_AND_3                          7   /* Preview + Thumbnail + Main */
+#define OUTPUT_ZSL_ALL_CHNLS                     10   /* ZSL all channels */
+```
+
+Source: `LineageOS/android_kernel_samsung_msm8660-q1` branch `ics`.
+
+**Software output mode bitmask** (tracks which outputs are active, NOT a register):
+
+```c
+#define VFE31_OUTPUT_MODE_PT           (0x1 << 0)  /* Preview+Thumbnail */
+#define VFE31_OUTPUT_MODE_S            (0x1 << 1)  /* Snapshot (main image) */
+#define VFE31_OUTPUT_MODE_V            (0x1 << 2)  /* Video */
+#define VFE31_OUTPUT_MODE_P            (0x1 << 3)  /* Preview (separate) */
+#define VFE31_OUTPUT_MODE_T            (0x1 << 4)  /* Thumbnail (separate) */
+#define VFE31_OUTPUT_MODE_P_ALL_CHNLS  (0x1 << 5)  /* Preview all channels (ZSL) */
+```
+
+Source: Samsung kernel `arch/arm/mach-msm/include/mach/camera.h`.
+webOS only defines PT, S, V (bits 0-2). Samsung adds P, T, P_ALL_CHNLS (bits 3-5).
+
+**WM assignments per ioctl mode:**
+
+| Mode | out0 (WM0+WM4) | out1 (WM1+WM5) | out2 (WM2+WM6) | AXI reg |
+|------|-----------------|-----------------|-----------------|---------|
+| OUTPUT_2 | Preview+Thumbnail | -- | -- | 0x200 |
+| OUTPUT_1_AND_2 | Thumbnail | Snapshot | -- | ? |
+| OUTPUT_1_AND_3 | Preview | Video | -- | 0x01 |
+| OUTPUT_1_2_AND_3 | Preview | Thumbnail | Snapshot | 0x101 |
+| OUTPUT_ZSL_ALL_CHNLS | Preview (all ch) | Thumbnail | Snapshot | 0x101 |
+| CAMIF_TO_AXI | -- | -- | -- | 0x60 |
 
 **Driver setting:** 0x01 (OUTPUT_1_AND_3) for PIX/VIDEO, 0x60 for RDI.
+ZSL should use 0x101 with 24-bit XBAR_CFG1 to route ISP output to WM2+WM6.
 
 **RAW BUS_CFG by depth (HTC):** 8-bit: 0x2AAA771, 10-bit: 0x2AAA775, 12-bit: 0x2AAA779.
 
@@ -671,13 +734,15 @@ All four YUV patterns present in Samsung/HTC/Sony. Opal lacks VYUY.
 
 ### AXI Output Mode (0x040)
 
-| Value | Mode | Source |
-|-------|------|--------|
-| **0x01** | OUTPUT_1_AND_3 | webOS/Samsung (video/snapshot) |
-| **0x60** | CAMIF_TO_AXI | webOS/HTC (RAW bypass) |
-| **0x101** | ZSL | Samsung |
-| **0x200** | OUTPUT_2 | webOS Opal/Samsung (preview) |
-| **0x214101** | RAW extended | Samsung |
+See section 3 for full bit-field analysis. Cross-vendor usage summary:
+
+| Value | Mode | Vendors |
+|-------|------|---------|
+| **0x01** | OUTPUT_1_AND_3 (PIX+VIDEO) | webOS, Samsung, HTC |
+| **0x60** | CAMIF_TO_AXI (RAW bypass, WM0 only) | webOS, HTC |
+| **0x101** | ZSL dual (bit0+bit8: 3 outputs) | Samsung |
+| **0x200** | OUTPUT_2 (preview, XBAR bypassed) | webOS Opal, Samsung |
+| **0x214101** | Extended RAW | Samsung only |
 
 ### Source Binaries
 
