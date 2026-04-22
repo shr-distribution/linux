@@ -65,15 +65,13 @@ static int vfe_disable_output(struct vfe_line *line)
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
-	if (line->id != VFE_LINE_PIX && line->id != VFE_LINE_VIDEO) {
-		/* RDI lines use frame-based mode with RDI connection */
+	if (line->id != VFE_LINE_PIX) {
 		vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 0);
 		vfe->ops_gen1->bus_disconnect_wm_from_rdi(vfe, output->wm_idx[0], line->id);
 		vfe->ops_gen1->enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 0);
 		vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[0], 0);
 		spin_unlock_irqrestore(&vfe->output_lock, flags);
 	} else {
-		/* PIX and VIDEO lines use the pixel pipeline */
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->wm_line_based(vfe, output->wm_idx[i], NULL, i, 0);
 			vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[i], 0);
@@ -178,10 +176,7 @@ static int vfe_enable_output(struct vfe_line *line)
 	unsigned int i;
 	u16 ub_size;
 
-	dev_info(vfe->camss->dev, "VFE enable_output: START line_id=%d\n", line->id);
-
 	ub_size = vfe->ops_gen1->get_ub_size(vfe->id);
-	dev_info(vfe->camss->dev, "VFE enable_output: ub_size=%d\n", ub_size);
 	if (!ub_size)
 		return -EINVAL;
 
@@ -241,45 +236,18 @@ static int vfe_enable_output(struct vfe_line *line)
 
 	vfe_output_init_addrs(vfe, output, 0, line);
 
-	if (line->id != VFE_LINE_PIX && line->id != VFE_LINE_VIDEO) {
-		/* RDI path - frame-based raw data capture */
-		dev_info(vfe->camss->dev, "VFE enable_output: RDI path line_id=%d\n", line->id);
-		dev_info(vfe->camss->dev, "VFE enable_output: calling set_cgc_override\n");
+	if (line->id != VFE_LINE_PIX) {
 		vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[0], 1);
-		dev_info(vfe->camss->dev, "VFE enable_output: calling enable_irq_wm_line\n");
 		vfe->ops_gen1->enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 1);
-		pr_emerg("VFE enable_output: ABOUT to call bus_connect_wm_to_rdi\n");
 		vfe->ops_gen1->bus_connect_wm_to_rdi(vfe, output->wm_idx[0], line->id);
-		pr_emerg("VFE enable_output: RETURNED from bus_connect_wm_to_rdi\n");
-		dev_info(vfe->camss->dev, "VFE enable_output: calling wm_set_subsample\n");
 		vfe->ops_gen1->wm_set_subsample(vfe, output->wm_idx[0]);
-		dev_info(vfe->camss->dev, "VFE enable_output: calling set_rdi_cid\n");
 		vfe->ops_gen1->set_rdi_cid(vfe, line->id, 0);
-		dev_info(vfe->camss->dev, "VFE enable_output: calling wm_set_ub_cfg\n");
 		vfe->ops_gen1->wm_set_ub_cfg(vfe, output->wm_idx[0],
 					    (ub_size + 1) * output->wm_idx[0], ub_size);
-		dev_info(vfe->camss->dev, "VFE enable_output: calling wm_frame_based\n");
 		vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 1);
-		/*
-		 * Configure WM image size and stride for RDI path.
-		 * VFE31 requires this configuration even for frame-based mode,
-		 * as the DMA engine needs to know image dimensions and stride.
-		 */
-		vfe->ops_gen1->wm_line_based(vfe, output->wm_idx[0],
-					     &line->video_out.active_fmt.fmt.pix_mp, 0, 1);
 		vfe->ops_gen1->wm_enable(vfe, output->wm_idx[0], 1);
 		vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[0]);
-		/*
-		 * For VFE31, wm_enable() triggers vfe31_start_camif_for_rdi()
-		 * which does the full CAMIF/DEMUX/XBAR configuration.
-		 * No additional ISP config calls needed here.
-		 *
-		 * For VFE41+, the RDI path uses dedicated RDI_CFG registers
-		 * and doesn't need CAMIF/DEMUX/XBAR configuration.
-		 */
 	} else {
-		/* PIX/VIDEO path - line-based pixel pipeline capture */
-		dev_info(vfe->camss->dev, "VFE enable_output: PIX/VIDEO path wm_num=%d\n", output->wm_num);
 		ub_size /= output->wm_num;
 		for (i = 0; i < output->wm_num; i++) {
 			vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[i], 1);
@@ -291,7 +259,6 @@ static int vfe_enable_output(struct vfe_line *line)
 			vfe->ops_gen1->wm_enable(vfe, output->wm_idx[i], 1);
 			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
 		}
-		dev_info(vfe->camss->dev, "VFE enable_output: calling enable_irq_pix_line\n");
 		vfe->ops_gen1->enable_irq_pix_line(vfe, 0, line->id, 1);
 		vfe->ops_gen1->set_module_cfg(vfe, 1);
 		vfe->ops_gen1->set_camif_cfg(vfe, line);
@@ -301,7 +268,6 @@ static int vfe_enable_output(struct vfe_line *line)
 		vfe->ops_gen1->set_scale_cfg(vfe, line);
 		vfe->ops_gen1->set_crop_cfg(vfe, line);
 		vfe->ops_gen1->set_clamp_cfg(vfe);
-		dev_info(vfe->camss->dev, "VFE enable_output: calling set_camif_cmd\n");
 		vfe->ops_gen1->set_camif_cmd(vfe, 1);
 	}
 
@@ -320,9 +286,6 @@ static int vfe_get_output(struct vfe_line *line)
 	unsigned long flags;
 	int i;
 	int wm_idx;
-
-	dev_info(vfe->camss->dev, "VFE get_output: line_id=%d pixfmt=0x%x\n",
-		 line->id, f->fmt.pix_mp.pixelformat);
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
@@ -347,8 +310,6 @@ static int vfe_get_output(struct vfe_line *line)
 		break;
 	}
 
-	dev_info(vfe->camss->dev, "VFE get_output: wm_num=%d\n", output->wm_num);
-
 	for (i = 0; i < output->wm_num; i++) {
 		wm_idx = vfe_reserve_wm(vfe, line->id);
 		if (wm_idx < 0) {
@@ -356,14 +317,12 @@ static int vfe_get_output(struct vfe_line *line)
 			goto error_get_wm;
 		}
 		output->wm_idx[i] = wm_idx;
-		dev_info(vfe->camss->dev, "VFE get_output: wm_idx[%d]=%d\n", i, wm_idx);
 	}
 
 	output->drop_update_idx = 0;
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
-	dev_info(vfe->camss->dev, "VFE get_output: success\n");
 	return 0;
 
 error_get_wm:
@@ -381,20 +340,13 @@ int vfe_gen1_enable(struct vfe_line *line)
 	struct vfe_device *vfe = to_vfe(line);
 	int ret;
 
-	dev_info(vfe->camss->dev, "VFE gen1_enable: line_id=%d stream_count=%d\n",
-		 line->id, vfe->stream_count);
-
 	mutex_lock(&vfe->stream_lock);
 
 	if (!vfe->stream_count) {
-		dev_info(vfe->camss->dev, "VFE gen1_enable: calling enable_irq_common\n");
 		vfe->ops_gen1->enable_irq_common(vfe);
-		dev_info(vfe->camss->dev, "VFE gen1_enable: calling bus_enable_wr_if\n");
 		vfe->ops_gen1->bus_enable_wr_if(vfe, 1);
-		dev_info(vfe->camss->dev, "VFE gen1_enable: calling set_qos/set_ds\n");
 		vfe->ops_gen1->set_qos(vfe);
 		vfe->ops_gen1->set_ds(vfe);
-		dev_info(vfe->camss->dev, "VFE gen1_enable: stream init done\n");
 	}
 
 	vfe->stream_count++;
@@ -402,18 +354,13 @@ int vfe_gen1_enable(struct vfe_line *line)
 	mutex_unlock(&vfe->stream_lock);
 
 	ret = vfe_get_output(line);
-	if (ret < 0) {
-		dev_err(vfe->camss->dev, "VFE gen1_enable: vfe_get_output failed %d\n", ret);
+	if (ret < 0)
 		goto error_get_output;
-	}
 
 	ret = vfe_enable_output(line);
-	if (ret < 0) {
-		dev_err(vfe->camss->dev, "VFE gen1_enable: vfe_enable_output failed %d\n", ret);
+	if (ret < 0)
 		goto error_enable_output;
-	}
 
-	dev_info(vfe->camss->dev, "VFE gen1_enable: success\n");
 	vfe->was_streaming = 1;
 
 	return 0;
@@ -669,18 +616,15 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 	u64 ts = ktime_get_ns();
 	unsigned int i;
 
-	/*
-	 * VFE31 video mode routes data to WM4/WM5 in parallel with WM0/WM1.
-	 * These secondary WMs generate IRQs but aren't mapped to output lines.
-	 * Silently ignore them - we only track buffer completion via WM0/WM1.
-	 * This is expected behavior when XBAR routes CbCr to both WM1 and WM5.
-	 */
-	if (vfe->wm_output_map[wm] == VFE_LINE_NONE)
-		return;
-
 	active_index = vfe->ops_gen1->wm_get_ping_pong_status(vfe, wm);
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
+
+	if (vfe->wm_output_map[wm] == VFE_LINE_NONE) {
+		dev_err_ratelimited(vfe->camss->dev,
+				    "Received wm done for unmapped index\n");
+		goto out_unlock;
+	}
 	output = &vfe->line[vfe->wm_output_map[wm]].output;
 
 	if (output->gen1.active_buf == active_index && 0) {
@@ -712,19 +656,12 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 		vfe_buf_update_wm_on_next(vfe, output);
 	}
 
-	if (active_index) {
-		dev_info(vfe->camss->dev, "gen1: active=%d updating PING\n", active_index);
-		for (i = 0; i < output->wm_num; i++) {
+	if (active_index)
+		for (i = 0; i < output->wm_num; i++)
 			vfe->ops_gen1->wm_set_ping_addr(vfe, output->wm_idx[i], new_addr[i]);
-			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
-		}
-	} else {
-		dev_info(vfe->camss->dev, "gen1: active=%d updating PONG\n", active_index);
-		for (i = 0; i < output->wm_num; i++) {
+	else
+		for (i = 0; i < output->wm_num; i++)
 			vfe->ops_gen1->wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
-			vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[i]);
-		}
-	}
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
