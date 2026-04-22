@@ -6033,18 +6033,13 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		break;
 	}
 	/*
-	 * Input mux enable (bit 6) routes data to DEMUX. Samsung raw
-	 * snapshot sets CORE_CFG=0x01 (pattern only, NO mux enable).
-	 * Only enable mux for PIX/VIDEO which use DEMUX processing.
+	 * Input mux enable (bit 6): Always set for both PIX and RDI modes.
+	 * Despite the name, this bit enables CAMIF data flow into the VFE
+	 * internal bus, not just the DEMUX. Without it, CAMIF receives
+	 * sensor data but doesn't route it to any output path.
+	 * webOS uses 0x46 (UYVY pattern + bit 6) for all modes.
 	 */
-	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
-
-		if (!is_rdi)
-			val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
-	}
+	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 
 	/*
