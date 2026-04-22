@@ -1351,9 +1351,9 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	sensor->in_standby = false;
 	msleep(50);
 
-	/* MCU health check */
+	/* MCU health check and recovery */
 	{
-		u64 health_check;
+		u64 health_check, seq_cmd;
 
 		ret = mt9m113_read_mcu_var(sensor, 0x2703, &health_check);
 		if (ret < 0 || health_check == 0) {
@@ -1361,6 +1361,20 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			ret = mt9m113_sensor_init(sensor);
 			if (ret < 0)
 				goto error;
+		}
+
+		/*
+		 * Clear stale SEQ_CMD. The init table ends with REFRESH
+		 * (SEQ_CMD=0x05) which may not complete before the sensor
+		 * enters standby/suspend. On resume, SEQ_CMD is stuck at
+		 * 0x05 and all subsequent commands fail. Force-clear it.
+		 */
+		ret = mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
+		if (ret == 0 && seq_cmd != 0) {
+			dev_warn(dev, "MT9M113: Clearing stale SEQ_CMD=0x%llx\n",
+				 seq_cmd);
+			mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000);
+			msleep(50);
 		}
 	}
 
