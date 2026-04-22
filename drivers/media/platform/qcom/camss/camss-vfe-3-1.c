@@ -5388,8 +5388,12 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 
 				if (pix_active)
 					mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
-				if (zsl_active)
-					mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
+				if (zsl_active) {
+					if (zsl_out->wm_num == 2)
+						mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
+					else
+						mask |= (1 << (VFE31_ZSL_WM_Y + 8));
+				}
 				if (video_active)
 					mask |= VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
 
@@ -6765,8 +6769,19 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				comp_mask = 0;
 				if (pix_active)
 					comp_mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
-				if (zsl_active)
-					comp_mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
+				if (zsl_active) {
+					/*
+					 * ZSL composite mask depends on wm_num:
+					 * wm_num=2 (NV12/NV16): WM2+WM6 in group 1
+					 * wm_num=1 (UYVY): WM2 only in group 1
+					 * If WM6 is in the mask but not enabled,
+					 * COMPOSITE_DONE_1 never fires.
+					 */
+					if (zsl_out->wm_num == 2)
+						comp_mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
+					else
+						comp_mask |= (1 << (VFE31_ZSL_WM_Y + 8));
+				}
 				if (video_active)
 					comp_mask |= VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
 				if (!comp_mask)
