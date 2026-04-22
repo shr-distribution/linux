@@ -459,14 +459,27 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 			/* SW_RST to PROTOCOL_CONTROL */
 			writel(BIT(27), csiphy->base + 0x04);
 
-			/* Re-configure PROTOCOL_CONTROL - respect ecc_disable setting */
-			val = BIT(21) | BIT(18); /* LONG_PKT | DECODE_ID */
-			if (!ecc_disable)
-				val |= BIT(17); /* ECC_EN */
-			dev_info(csiphy->camss->dev,
-				 "CSIPHY%d: stream_on PROTOCOL_CONTROL=0x%08x (ECC %s)\n",
-				 csiphy->id, val, ecc_disable ? "DISABLED" : "enabled");
-			writel(val, csiphy->base + 0x04);
+			/*
+			 * Re-configure PROTOCOL_CONTROL after SW_RST.
+			 * Must preserve DATA_FORMAT bits set during lanes_enable
+			 * for RAW10/12 modes. Read back current value and keep
+			 * DATA_FORMAT field, only update ECC/DECODE/LONG_PKT.
+			 */
+			{
+				u32 prev = readl(csiphy->base + 0x04);
+				u32 data_fmt_bits = prev & (0x3 << 19);
+
+				val = BIT(21) | BIT(18); /* LONG_PKT | DECODE_ID */
+				if (!ecc_disable)
+					val |= BIT(17); /* ECC_EN */
+				val |= data_fmt_bits; /* Preserve DATA_FORMAT */
+				dev_info(csiphy->camss->dev,
+					 "CSIPHY%d: stream_on PROTOCOL_CONTROL=0x%08x (ECC %s, data_fmt=%d)\n",
+					 csiphy->id, val,
+					 ecc_disable ? "DISABLED" : "enabled",
+					 (data_fmt_bits >> 19) & 0x3);
+				writel(val, csiphy->base + 0x04);
+			}
 
 			/* Small delay for reset to take effect */
 			udelay(10);
