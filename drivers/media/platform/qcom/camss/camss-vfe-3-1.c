@@ -232,9 +232,125 @@ static enum vfe31_rec_state vfe31_zsl_state = VFE31_REC_IDLE;
  */
 static bool vfe31_pix_wm_pending;
 
+/* Forward declaration - used in vfe31_wm_done, defined later */
+static void vfe31_bus_reload_wm(struct vfe_device *vfe, u8 wm);
+
+/*
+ * ============================================================================
+ * VFE31 FORMAT OVERRIDE - For testing NV16 (4:2:2) vs NV12 (4:2:0)
+ * ============================================================================
+ *
+ * Controls how the driver interprets format for hardware configuration.
+ * This affects chroma subsampling, CbCr WM height, UB height, etc.
+ *
+ *   0 = Auto - use actual requested format (default)
+ *   1 = Force 4:2:0 - treat all semi-planar formats as NV12/NV21
+ *   2 = Force 4:2:2 - treat all semi-planar formats as NV16/NV61
+ */
+int vfe31_force_422 = 0;
+module_param(vfe31_force_422, int, 0644);
+MODULE_PARM_DESC(vfe31_force_422,
+		 "VFE31 format mode: 0=auto, 1=force 4:2:0, 2=force 4:2:2");
+
+/*
+ * ============================================================================
+ * VFE31 IRQ COMPOSITE MASK - CORRECTED BASED ON REGISTER DUMPS
+ * ============================================================================
+ *
+ * Controls which Write Masters trigger COMPOSITE_DONE interrupts.
+ * Each bit corresponds to a Write Master (bit 0 = WM0, bit 1 = WM1, etc.)
+ *
+ * Group structure: bits 0-7 = Group 0, bits 8-15 = Group 1, etc.
+ * CRITICAL: All WMs for a line MUST be in the same group! Mixing groups
+ * causes the gen1 code to access non-existent line indices → crash.
+ *
+ * With corrected WM assignments:
+ *   PIX:   WM0 (Y) + WM4 (CbCr) → bits 0,4 → 0x11
+ *   VIDEO: WM1 (Y) + WM5 (CbCr) → bits 1,5 → 0x22
+ *   Both:  WM0 + WM1 + WM4 + WM5 → bits 0,1,4,5 → 0x33
+ *
+ * NOTE: With XBAR 0x1A1B, VIDEO CbCr (WM5) is disabled.
+ * To enable VIDEO CbCr, XBAR bits[7:4] needs to be 0x9 (both outputs).
+ *
+ * WebOS IRQ_COMPOSITE_MASK = 0x00220011:
+ *   Group 0 (bits 0-7):  0x11 = WM0 + WM4 (PIX Y + CbCr)
+ *   Group 1 (bits 8-15): 0x00 = none
+ *   Group 2 (bits 16-23): 0x22 = WM1 + WM5 (VIDEO Y + CbCr)
+ *
+ * CRITICAL: Must use exact webOS value - hardware may require both PIX and
+ * VIDEO composite groups configured even when only using one path.
+ */
+/*
+ * IRQ_COMPOSITE_MASK values (register 0x034).
+ *
+ * Groups WMs for COMPOSITE_DONE interrupts:
+ *   Group 0 (bits 0-7):   triggers COMPOSITE_DONE_0
+ *   Group 1 (bits 8-15):  triggers COMPOSITE_DONE_1
+ *   Group 2 (bits 16-23): triggers COMPOSITE_DONE_2
+ *
+ * webOS uses 0x00220011 for OUTPUT_1_AND_3 mode:
+ *   Group 0: 0x11 = WM0 + WM4 (PIX Y + CbCr)
+ *   Group 2: 0x22 = WM1 + WM5 (VIDEO Y + CbCr)
+ *
+ * Currently only PIX group is active (VIDEO reuses PIX WMs).
+ */
+#define VFE31_IRQ_COMP_MASK_PIX_ONLY	0x00000011  /* Group 0: WM0+WM4 */
+#define VFE31_IRQ_COMP_MASK_PIX_VIDEO	0x00220011  /* Group 0: WM0+WM4, Group 2: WM1+WM5 */
+#define VFE31_IRQ_COMP_MASK_VIDEO_ONLY	0x00220000  /* Group 2: WM1+WM5 */
+#define VFE31_IRQ_COMP_MASK_ZSL_ONLY	0x00004400  /* Group 1: WM2+WM6 */
+#define VFE31_IRQ_COMP_MASK_PIX_ZSL	0x00004411  /* Group 0: WM0+WM4, Group 1: WM2+WM6 */
+#define VFE31_IRQ_COMP_MASK_PIX_VID_ZSL	0x00224411  /* Group 0: WM0+WM4, Group 1: WM2+WM6, Group 2: WM1+WM5 */
+
+/* Module param for manual override/testing */
+static int vfe31_irq_comp_mask = 0;  /* 0 = auto-select based on active lines */
+module_param(vfe31_irq_comp_mask, int, 0644);
+MODULE_PARM_DESC(vfe31_irq_comp_mask,
+		 "VFE31 IRQ composite mask (0=auto, 0x11=pix, 0x13=pix+video, 0x02=video)");
+
+/*
+ * RDI/raw mode EFS_CFG override.
+ * -1 = use default (0x40, same as PIX mode)
+ *  0 = APS mode (EFS codes ignored, CAMIF counts lines internally)
+ * >0 = use this value directly
+ *
+ * If RDI mode doesn't count lines properly, try setting this to 0.
+ * EFS_CFG 0x40 (bit 6) enables some timing/sync feature from webOS.
+ * For raw capture without MIPI embedded sync, 0 (APS mode) might work better.
+ */
+static int vfe31_rdi_efs_cfg = -1;
+module_param(vfe31_rdi_efs_cfg, int, 0644);
+MODULE_PARM_DESC(vfe31_rdi_efs_cfg,
+		 "VFE31 RDI EFS_CFG: -1=default (0x40), 0=APS mode, >0=use value");
+
+/*
+ * RDI mode force 16bpp input.
+ *
+ * Some sensors (like MT9M113 with IFP) always output 2 bytes per pixel
+ * even when configured for "Processed Bayer" mode. The MIPI data type
+ * might be RAW8 (0x2A) but the actual data width is still 16 bits.
+ *
+ * When enabled, the CAMIF is configured to expect 16 bpp input for RDI
+ * regardless of the mbus format. This allows capture of 1280 bytes for
+ * 640 pixels instead of the expected 640 bytes.
+ *
+ * 0 = use format's actual bpp (8 for RAW8, 10 for RAW10, etc.)
+ * 1 = force 16 bpp for all RDI formats
+ */
+static int vfe31_rdi_force_16bpp = 0;
+module_param(vfe31_rdi_force_16bpp, int, 0644);
+MODULE_PARM_DESC(vfe31_rdi_force_16bpp,
+		 "VFE31 RDI force 16bpp: 0=use format bpp, 1=force 16bpp (for MT9M113 IFP)");
+
+/*
+ * BUS_CFG default value per webOS register dumps.
+ */
+static inline u32 vfe31_get_bus_cfg(void)
+{
+	return 0x02AAA771;
+}
+
 /*
  * BUS_CMD reload default value per webOS code (includes pingpong reload bit 14).
- * Only used during VFE reset/init when no DMA is active.
  */
 static inline u32 vfe31_get_bus_cmd_reload(void)
 {
@@ -2312,6 +2428,16 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	vfe->vfe31_reset_done = true;
 }
 
+static void vfe31_halt_request(struct vfe_device *vfe)
+{
+	writel_relaxed(VFE_0_AXI_CMD_HALT, vfe->base + VFE_0_AXI_CMD);
+}
+
+static void vfe31_halt_clear(struct vfe_device *vfe)
+{
+	writel_relaxed(0x0, vfe->base + VFE_0_AXI_CMD);
+}
+
 /*
  * vfe31_dump_axi_wm_debug - Dump AXI and WM status for debugging
  * @vfe: VFE device
@@ -3913,6 +4039,29 @@ static int vfe31_disable(struct vfe_line *line)
 	return 0;
 }
 
+/* Gen1-specific operations for VFE31 */
+static void vfe31_enable_irq_common(struct vfe_device *vfe)
+{
+	/*
+	 * Enable common IRQs. Note: VFE31 reset acknowledge is in
+	 * STATUS_1 bit 22, not STATUS_0 bit 31 like later VFE versions.
+	 *
+	 * IMPORTANT: VFE31 IRQ_MASK_0/1 registers are WRITE-ONLY!
+	 * Reading them hangs the bus. We use shadow registers to track
+	 * the current mask values.
+	 */
+	vfe->irq_mask0_shadow = 0;
+	/* IRQ_MASK_1: webOS uses only RESET_ACK (0x00400000) */
+	vfe->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK;
+	vfe->irq_comp_mask_shadow = 0;  /* Clear composite mask shadow */
+
+	dev_info(vfe->camss->dev, "VFE31 enable_irq_common: mask0=0x%x mask1=0x%x\n",
+		 vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
+
+	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+}
+
 static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 {
 	u32 val, even_cfg, odd_cfg;
@@ -4241,6 +4390,14 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 
 	vfe->camif_pending = false;
 
+	wmb();
+}
+
+static void vfe31_bus_reload_wm(struct vfe_device *vfe, u8 wm)
+{
+	wmb();
+	writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(wm),
+		       vfe->base + VFE_0_BUS_CMD);
 	wmb();
 }
 
@@ -5308,6 +5465,46 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 					"VFE31: WM%d PONG readback MISMATCH! wrote=0x%08x read=0x%08x\n",
 					wm, addr, readback);
 		}
+	}
+}
+
+static int vfe31_wm_get_ping_pong_status(struct vfe_device *vfe, u8 wm)
+{
+	u32 val = readl_relaxed(vfe->base + VFE_0_BUS_PING_PONG_STATUS);
+
+	return (val >> wm) & 0x1;
+}
+
+static void vfe31_wm_set_framedrop_period(struct vfe_device *vfe, u8 wm,
+					  u8 per)
+{
+	/*
+	 * VFE31 uses global framedrop registers (0x504-0x520) for enc/view
+	 * paths, not per-WM registers like VFE41. For raw passthrough mode
+	 * (CAMIF_TO_BUS), framedrop is configured via the global registers.
+	 *
+	 * For WM0 (Y channel), use ENC_Y_CFG at 0x504.
+	 * The period value in bits [3:0].
+	 */
+	if (wm == 0) {
+		writel_relaxed(per, vfe->base + VFE31_FRAMEDROP_ENC_Y_CFG);
+	} else if (wm == 1) {
+		writel_relaxed(per, vfe->base + VFE31_FRAMEDROP_ENC_CBCR_CFG);
+	}
+	/* Other WMs use view path framedrop registers if needed */
+}
+
+static void vfe31_wm_set_framedrop_pattern(struct vfe_device *vfe, u8 wm,
+					   u32 pattern)
+{
+	/*
+	 * VFE31 uses global framedrop pattern registers.
+	 * For WM0, use ENC_Y_PATTERN at 0x50C.
+	 */
+	if (wm == 0) {
+		writel_relaxed(pattern, vfe->base + VFE31_FRAMEDROP_ENC_Y_PATTERN);
+	} else if (wm == 1) {
+		writel_relaxed(pattern, vfe->base + VFE31_FRAMEDROP_ENC_CBCR_PATTERN);
 	}
 }
 
