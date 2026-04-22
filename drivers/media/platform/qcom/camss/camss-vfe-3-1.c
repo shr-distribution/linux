@@ -6085,9 +6085,17 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/* RDI: route CAMIF data to AXI bus (raw bypass) */
-			camif_cfg = VFE_0_CAMIF_CFG_CAMIF2BUS;
+			/*
+			 * Use camif2vfe (0x40) even for RDI raw bypass.
+			 * On VFE31, the CAMIF_CFG bit 7 (camif2bus) may not
+			 * function as on VFE8x. The AXI output mode 0x60
+			 * handles the raw bypass routing at the AXI level.
+			 * camif2vfe ensures data flows through CAMIF into the
+			 * VFE internal bus where AXI=0x60 picks it up.
+			 */
+			camif_cfg = VFE_0_CAMIF_CFG_CAMIF2VFE;
 			dev_info(vfe->camss->dev,
-				 "VFE31: CAMIF_CFG=0x%02x (camif2bus for RDI)\n",
+				 "VFE31: CAMIF_CFG=0x%02x (camif2vfe for RDI, AXI=0x60 handles bypass)\n",
 				 camif_cfg);
 		} else {
 			/* PIX/VIDEO: route CAMIF data to VFE ISP pipeline */
