@@ -1375,8 +1375,21 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	/* Get source pad format (pad 1) for MIPI output configuration */
 	format = v4l2_subdev_state_get_format(state, 1);
 
-	/* Determine context based on resolution */
+	/* Determine context based on resolution and format */
 	use_context_b = (compose->width > 640 || compose->height > 480);
+
+	/*
+	 * Force Context B for RAW Bayer formats. Context A uses 2x2 binning
+	 * which destroys the Bayer CFA pattern. RAW output requires full
+	 * resolution readout (Context B, 1280x1024, read_mode=0x0024).
+	 * Confirmed by MT9M111/MT9M114 drivers which enforce the same.
+	 */
+	if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
+	    format->code == MEDIA_BUS_FMT_SGRBG10_1X10) {
+		if (!use_context_b)
+			dev_info(dev, "MT9M113: Forcing Context B for RAW Bayer (binning incompatible)\n");
+		use_context_b = true;
+	}
 
 	dev_info(dev, "MT9M113: %ux%u -> Context %c\n",
 		 compose->width, compose->height, use_context_b ? 'B' : 'A');
@@ -1513,10 +1526,12 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			goto error;
 		}
 
-		/* REFRESH to apply dimension and format changes */
-		ret = mt9m113_refresh(sensor);
-		if (ret)
-			goto error;
+		/*
+		 * No REFRESH here. Legacy drivers (webOS, Telechips, Willow,
+		 * Allwinner) never issue REFRESH during streaming transitions.
+		 * REFRESH only at init. The SEQ_CMD_RUN/CAPTURE below will
+		 * apply the changes atomically.
+		 */
 
 		/* Diagnostic: readback actual sensor configuration */
 		{
@@ -1635,14 +1650,11 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	}
 
 	/*
-	 * Pre-streaming REFRESH sequence from working commit 054aebb233460fb13196c0cadc46cf70ce165efb.
-	 * The configure_ifp function issues REFRESH_MODE + REFRESH before the streaming
-	 * sequence to ensure MCU is in a known state.
+	 * No pre-streaming REFRESH. Legacy drivers never issue REFRESH
+	 * during streaming transitions - only at init. Excessive REFRESH
+	 * commands (up to 5 per start_streaming) caused MCU lockup,
+	 * especially after YUV→RAW→YUV format changes.
 	 */
-	dev_info(dev, "MT9M113: Pre-streaming REFRESH sequence\n");
-	ret = mt9m113_refresh(sensor);
-	if (ret)
-		goto error;
 
 	/* Debug: dump MCU state before issuing SEQ_CMD */
 	{
@@ -1682,11 +1694,6 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		if (ret)
 			goto error;
 		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
-
-		/* Issue REFRESH_MODE then REFRESH after OUTPUT_CONTROL change */
-		ret = mt9m113_refresh(sensor);
-		if (ret)
-			goto error;
 
 		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
@@ -1812,11 +1819,6 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 					else
 						dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x re-written (Context B)\n",
 							 info->output_format);
-
-					/* REFRESH to apply CAM_OUTPUT_FORMAT change */
-					ret = mt9m113_refresh(sensor);
-					if (ret)
-						dev_warn(dev, "MT9M113: REFRESH after CAM_OUTPUT_FORMAT failed\n");
 				}
 			}
 		}
@@ -1848,15 +1850,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		if (ret)
 			goto error;
 		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
-
-		if (!sensor->was_streaming) {
-			ret = mt9m113_refresh(sensor);
-			if (ret)
-				goto error;
-		} else {
-			dev_info(dev, "MT9M113: Skipping REFRESH (restart)\n");
-			sensor->was_streaming = false;
-		}
+		sensor->was_streaming = false;
 
 		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
@@ -1933,10 +1927,6 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 						dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x re-written (Context A)\n",
 							 info->output_format);
 
-					/* REFRESH to apply CAM_OUTPUT_FORMAT change */
-					ret = mt9m113_refresh(sensor);
-					if (ret)
-						dev_warn(dev, "MT9M113: REFRESH after CAM_OUTPUT_FORMAT failed\n");
 				}
 			}
 		}
