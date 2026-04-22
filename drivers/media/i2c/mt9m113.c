@@ -1581,30 +1581,44 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			else
 				output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_RAW8;
 			/*
-			 * For RAW Bayer output, configure OFIFO to get raw sensor data.
-			 * Per MT9M113 datasheet R0x321C (output_control_status):
-			 *   Bit 7 (fifo_input_control): 1 = Sensor Bypass (raw from ADC)
-			 *   Bits 3:0 (output_select): 0 = FIFO Output Selected
-			 * Combined value 0x0080 routes RAW10 from ADC to TX FIFO.
+			 * RAW Bayer output: Sensor Bypass mode per datasheet.
+			 *
+			 * R0x321C (output_control_status):
+			 *   Bits [3:0] = 0x0001: Sensor Bypass (raw from ADC,
+			 *   bypasses both IFP and FIFO completely)
+			 *
+			 * R0x3210 (color_pipeline_control):
+			 *   Disable all ISP processing to prevent MCU from
+			 *   trying to run AE/AWB/gamma on disconnected IFP.
+			 *   Set to 0x0000 (all disabled, scaler bypassed).
+			 *   Default is 0x01B8 (scaler+gamma+ap+shading on).
 			 */
 			ret = cci_write(sensor->regmap, MT9M113_OFIFO_CONTROL_STATUS,
-					0x0080, NULL);
+					0x0001, NULL);
 			if (ret)
 				goto error;
-			dev_info(dev, "MT9M113: MIPI output RAW mode (code=0x%04x), OFIFO=0x0080 (Sensor→FIFO)\n",
+			ret = cci_write(sensor->regmap,
+					CCI_REG16(0x3210), 0x0000, NULL);
+			if (ret)
+				goto error;
+			dev_info(dev, "MT9M113: MIPI RAW mode (code=0x%04x), OFIFO=0x0001 (Sensor Bypass), pipeline disabled\n",
 				 format->code);
 		} else {
 			output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
 			/*
-			 * For YUV output, configure OFIFO to get SOC (IFP) data.
-			 * Bit 7 = 0 (SOC input), Bits 3:0 = 3 (FIFO Bypass)
-			 * Value 0x0003 routes IFP-processed YUV through.
+			 * YUV output: FIFO Bypass mode (default).
+			 * R0x321C[3:0] = 0x0003: FIFO Bypass
+			 * R0x3210: restore default pipeline (0x01B8)
 			 */
 			ret = cci_write(sensor->regmap, MT9M113_OFIFO_CONTROL_STATUS,
 					0x0003, NULL);
 			if (ret)
 				goto error;
-			dev_info(dev, "MT9M113: MIPI output YUV mode (code=0x%04x)\n",
+			ret = cci_write(sensor->regmap,
+					CCI_REG16(0x3210), 0x01B8, NULL);
+			if (ret)
+				goto error;
+			dev_info(dev, "MT9M113: MIPI YUV mode (code=0x%04x)\n",
 				 format->code);
 		}
 
