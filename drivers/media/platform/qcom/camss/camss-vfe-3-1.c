@@ -4492,8 +4492,22 @@ static void vfe31_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set)
 	 * This enables some timing/sync feature needed for proper operation.
 	 */
-	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE, vfe->base + VFE_0_CAMIF_CFG);
-	dev_info(vfe->camss->dev, "VFE31: EFS_CFG=0x40 (webOS value)\n");
+	{
+		bool is_rdi = (line->id == VFE_LINE_RDI0 ||
+			       line->id == VFE_LINE_RDI1 ||
+			       line->id == VFE_LINE_RDI2);
+		if (is_rdi) {
+			writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2BUS,
+				       vfe->base + VFE_0_CAMIF_CFG);
+			dev_info(vfe->camss->dev,
+				 "VFE31: CAMIF_CFG=0x80 (camif2bus for RDI)\n");
+		} else {
+			writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE,
+				       vfe->base + VFE_0_CAMIF_CFG);
+			dev_info(vfe->camss->dev,
+				 "VFE31: CAMIF_CFG=0x40 (camif2vfe for PIX)\n");
+		}
+	}
 
 	/*
 	 * FRAME_CFG at 0x1E8: WebOS does NOT set this register (leaves at 0).
@@ -5190,8 +5204,18 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 * EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set)
 	 * This enables some timing/sync feature needed for proper operation.
 	 */
-	dev_info(vfe->camss->dev, "VFE31: EFS_CFG (0x1E4) = 0x40 (webOS value)\n");
-	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE, vfe->base + VFE_0_CAMIF_CFG);
+	/*
+	 * Set CAMIF data routing early - must match the mode we're
+	 * configuring. RDI needs camif2bus from the start, not just
+	 * at enable_pending_camif time.
+	 */
+	if (is_rdi_line) {
+		dev_info(vfe->camss->dev, "VFE31: CAMIF_CFG=0x80 (camif2bus early for RDI)\n");
+		writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2BUS, vfe->base + VFE_0_CAMIF_CFG);
+	} else {
+		dev_info(vfe->camss->dev, "VFE31: CAMIF_CFG=0x40 (camif2vfe for PIX)\n");
+		writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE, vfe->base + VFE_0_CAMIF_CFG);
+	}
 
 	/*
 	 * VFE31 CAMIF register layout (based on WebOS register dump):
