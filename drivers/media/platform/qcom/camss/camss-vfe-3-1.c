@@ -1723,7 +1723,13 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
  * CAMIF_CMD_START: webOS header defines 0x5 but actual code writes 1.
  * Use 1 to match webOS runtime behavior (BIT(0) = enable).
  */
-#define VFE_0_CAMIF_CMD_START			0x1
+/*
+ * CAMIF_CMD_START = 0x5 per Samsung/webOS headers:
+ *   Bit 0 = START (enable CAMIF)
+ *   Bit 2 = CLEAR (clear CAMIF status counters)
+ * Both bits must be set for proper CAMIF initialization.
+ */
+#define VFE_0_CAMIF_CMD_START			0x5
 #define VFE_0_CAMIF_CMD_STOP_IMMEDIATELY	0x2
 #define VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY	0x0
 #define VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS	BIT(2)
