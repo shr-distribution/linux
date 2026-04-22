@@ -155,7 +155,7 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
 #define VFE31_XBAR_CFG1		VFE31_XBAR_PIX_VIDEO
 
 /* Module param for manual override/testing */
-int vfe31_xbar_cfg1 = 0;  /* 0 = auto-select based on mode */
+int vfe31_xbar_cfg1;  /* 0 = auto-select based on mode */
 module_param(vfe31_xbar_cfg1, int, 0644);
 MODULE_PARM_DESC(vfe31_xbar_cfg1,
 		 "VFE31 XBAR_CFG1 override (0=auto, 0x1a03=PIX, 0x1a1b=PIX+VIDEO)");
@@ -184,7 +184,7 @@ MODULE_PARM_DESC(vfe31_xbar_cfg1,
  *   0 = Normal PIX mode with DEMUX (default)
  *   1 = RAW-through-PIX mode (MODULE_CFG=0, WM0 only)
  */
-static int vfe31_raw_pix_mode = 0;
+static int vfe31_raw_pix_mode;
 module_param(vfe31_raw_pix_mode, int, 0644);
 MODULE_PARM_DESC(vfe31_raw_pix_mode,
 		 "VFE31 RAW-through-PIX mode (0=normal PIX+DEMUX, 1=bypass DEMUX for RAW)");
@@ -205,7 +205,7 @@ MODULE_PARM_DESC(vfe31_raw_pix_mode,
  * Debug: dump WM registers during first IRQs of each streaming session.
  * Set to 1 to enable verbose register dumps in dmesg.
  */
-static int vfe31_dump_wm_regs = 0;
+static int vfe31_dump_wm_regs;
 module_param(vfe31_dump_wm_regs, int, 0644);
 MODULE_PARM_DESC(vfe31_dump_wm_regs,
 		 "VFE31 dump WM registers (0=off, 1=on)");
@@ -244,7 +244,7 @@ static bool vfe31_pix_wm_pending;
  *   1 = Force 4:2:0 - treat all semi-planar formats as NV12/NV21
  *   2 = Force 4:2:2 - treat all semi-planar formats as NV16/NV61
  */
-int vfe31_force_422 = 0;
+int vfe31_force_422;
 module_param(vfe31_force_422, int, 0644);
 MODULE_PARM_DESC(vfe31_force_422,
 		 "VFE31 format mode: 0=auto, 1=force 4:2:0, 2=force 4:2:2");
@@ -299,7 +299,7 @@ MODULE_PARM_DESC(vfe31_force_422,
 #define VFE31_IRQ_COMP_MASK_PIX_VID_ZSL	0x00224411  /* Group 0: WM0+WM4, Group 1: WM2+WM6, Group 2: WM1+WM5 */
 
 /* Module param for manual override/testing */
-static int vfe31_irq_comp_mask = 0;  /* 0 = auto-select based on active lines */
+static int vfe31_irq_comp_mask;  /* 0 = auto-select based on active lines */
 module_param(vfe31_irq_comp_mask, int, 0644);
 MODULE_PARM_DESC(vfe31_irq_comp_mask,
 		 "VFE31 IRQ composite mask (0=auto, 0x11=pix, 0x13=pix+video, 0x02=video)");
@@ -333,7 +333,7 @@ MODULE_PARM_DESC(vfe31_rdi_efs_cfg,
  * 0 = use format's actual bpp (8 for RAW8, 10 for RAW10, etc.)
  * 1 = force 16 bpp for all RDI formats
  */
-static int vfe31_rdi_force_16bpp = 0;
+static int vfe31_rdi_force_16bpp;
 module_param(vfe31_rdi_force_16bpp, int, 0644);
 MODULE_PARM_DESC(vfe31_rdi_force_16bpp,
 		 "VFE31 RDI force 16bpp: 0=use format bpp, 1=force 16bpp (for MT9M113 IFP)");
@@ -645,6 +645,7 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 		if (is_420) {
 			/* NV12: CbCr at half-width data rate */
 			u32 cbcr_pixels = (width / 2) * height;
+
 			cbcr_depth = div_u64((u64)cbcr_pixels * ub_budget,
 					     total_bw_per_output);
 		} else {
@@ -767,6 +768,7 @@ static void vfe31_apply_wm_config(struct vfe_device *vfe, u8 wm,
 	/* WR_CFG: enable only (BIT(0)) - VFE31 doesn't use frame_based in bit 1 */
 	writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm));
 
+	/* Ensure WM configuration is committed before enabling */
 	wmb();
 }
 
@@ -829,9 +831,6 @@ static u32 vfe31_calc_xbar(bool pix_active, bool video_active, bool zsl_active)
 	return xbar;
 }
 
-/* External module parameters from camss-vfe.c */
-extern int software_sof_enable;
-extern int software_eof_enable;
 
 /*
  * MSM8660 Clock Controller addresses for VFE AXI clock forcing.
@@ -2172,7 +2171,7 @@ static u32 vfe31_hw_version(struct vfe_device *vfe)
 {
 	u32 hw_version;
 
-	dev_info(vfe->camss->dev, "VFE hw_version: ENTER base=%px\n", vfe->base);
+	dev_info(vfe->camss->dev, "VFE hw_version: ENTER base=%p\n", vfe->base);
 
 	hw_version = readl_relaxed(vfe->base + VFE_0_HW_VERSION);
 
@@ -2310,6 +2309,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev, "VFE reset: disabling IRQs (MASK=0)\n");
 	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_0);
 	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_1);
+	/* Ensure IRQ masks are cleared before reset sequence */
 	wmb();
 
 	/* Step 2: Clear all pending interrupts */
@@ -2317,11 +2317,13 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_0);
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_IRQ_CLEAR_1);
 	writel_relaxed(1, vfe->base + VFE_0_IRQ_CMD);  /* Acknowledge IRQ clear */
+	/* Ensure IRQ clear commands are visible to hardware */
 	wmb();
 
 	/* Step 3: Issue hardware reset command */
 	dev_info(vfe->camss->dev, "VFE reset: sending hardware reset cmd (0x3FF to 0x04)\n");
 	writel_relaxed(0x3FF, vfe->base + VFE_0_GLOBAL_RESET_CMD);
+	/* Ensure reset command is dispatched to hardware */
 	wmb();
 
 	/* Step 4: Wait for reset to complete - webOS waits for RESET_ACK IRQ, we use delay */
@@ -2340,6 +2342,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	/* Enable all internal clock gates (CGC_OVERRIDE) */
 	dev_info(vfe->camss->dev, "VFE reset: enabling CGC override (0xFFFFF)\n");
 	writel_relaxed(0xFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
+	/* Ensure clock gate override is applied before continuing */
 	wmb();
 
 	/* DEMUX gains - webOS default values */
@@ -2362,6 +2365,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev, "VFE reset: writing clamp config\n");
 	writel_relaxed(0xFFFFFF, vfe->base + VFE_0_CLAMP_ENC_MAX_CFG);
 	writel_relaxed(0, vfe->base + VFE_0_CLAMP_ENC_MIN_CFG);
+	/* Ensure clamp configuration is visible to hardware */
 	wmb();
 
 	/*
@@ -2387,6 +2391,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 			writel_relaxed(dummy_addr,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 		}
+		/* Ensure dummy addresses are written before reload */
 		wmb();
 	}
 
@@ -2408,6 +2413,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev, "VFE reset: reloading all WMs with pingpong (BUS_CMD=0x%04x)\n",
 		 vfe31_get_bus_cmd_reload());
 	writel_relaxed(vfe31_get_bus_cmd_reload(), vfe->base + VFE_0_BUS_CMD);
+	/* Ensure BUS_CMD reload is dispatched to hardware */
 	wmb();
 
 	/*
@@ -2418,6 +2424,7 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 */
 	dev_info(vfe->camss->dev, "VFE reset: clearing AXI halt (AXI_CMD=0)\n");
 	writel_relaxed(0x0, vfe->base + VFE_0_AXI_CMD);
+	/* Ensure AXI halt is cleared before continuing */
 	wmb();
 
 	dev_info(vfe->camss->dev, "VFE reset: complete, all defaults applied\n");
@@ -2619,6 +2626,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	 */
 	{
 		u8 pp_wm = output->wm_idx[0];  /* Default: Y plane WM */
+
 		if (output->wm_num == 2) {
 			/* Use CbCr plane WM - its PP bit actually toggles */
 			pp_wm = output->wm_idx[1];
@@ -2640,6 +2648,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	if (output->sequence == 0) {
 		u8 y_wm = output->wm_idx[0];
 		u8 cbcr_wm = (output->wm_num == 2) ? output->wm_idx[1] : 0xff;
+
 		dev_info(vfe->camss->dev,
 			"VFE31: FIRST FRAME WM%d dump:\n"
 			"  Y_WM%d: PING=0x%08x PONG=0x%08x CFG=0x%08x IMG_SIZE=0x%08x UB=0x%08x\n",
@@ -2714,8 +2723,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			bool addr_match = (returning_addr == expected_addr);
 
 			dev_dbg(vfe->camss->dev,
-				"VFE31: buf_verify seq=%d: PING=0x%08x PONG=0x%08x "
-				"active=%d expect_%s=0x%08x returning=0x%08x %s\n",
+				"VFE31: buf_verify seq=%d: PING=0x%08x PONG=0x%08x active=%d expect_%s=0x%08x returning=0x%08x %s\n",
 				output->sequence, hw_ping, hw_pong,
 				active_index, active_index ? "PING" : "PONG",
 				expected_addr, returning_addr,
@@ -2769,6 +2777,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		else
 			vfe31_wm_set_pong_addr(vfe, output->wm_idx[i], new_addr[i]);
 	}
+	/* Ensure address registers are written before reload */
 	wmb();
 
 	/*
@@ -2966,12 +2975,14 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		 */
 		writel_relaxed(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS | VFE_0_CAMIF_CMD_START,
 			       vfe->base + VFE_0_CAMIF_CMD);
+		/* Ensure CAMIF restart command is dispatched to hardware */
 		wmb();
 
 		/* If frame data is complete, trigger frame completion */
 		if (received_lines >= expected_lines - 2 && expected_lines > 0) {
 			/* Issue REG_UPDATE to latch shadow registers */
 			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+			/* Ensure REG_UPDATE command is dispatched to hardware */
 			wmb();
 
 			/*
@@ -3132,11 +3143,13 @@ static int vfe31_halt(struct vfe_device *vfe)
 	/* Step 1: Disable all IRQs before stopping CAMIF */
 	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_0);
 	writel_relaxed(0x0, vfe->base + VFE_0_IRQ_MASK_1);
+	/* Ensure IRQ masks are cleared before stopping CAMIF */
 	wmb();
 
 	/* Step 2: Stop CAMIF immediately */
 	writel_relaxed(VFE_0_CAMIF_CMD_STOP_IMMEDIATELY,
 		       vfe->base + VFE_0_CAMIF_CMD);
+	/* Ensure CAMIF stop command is dispatched to hardware */
 	wmb();
 
 	/* Step 3: Clear all pending IRQs */
@@ -3145,6 +3158,7 @@ static int vfe31_halt(struct vfe_device *vfe)
 
 	/* Step 4: Latch IRQ clear */
 	writel_relaxed(1, vfe->base + VFE_0_IRQ_CMD);
+	/* Ensure IRQ clear is latched by hardware */
 	wmb();
 
 	/* Step 5: Enable only RESET_ACK in MASK_1 for halt completion */
@@ -3154,6 +3168,7 @@ static int vfe31_halt(struct vfe_device *vfe)
 	/* Step 6: Issue AXI halt */
 	reinit_completion(&vfe->halt_complete);
 	writel_relaxed(VFE_0_AXI_CMD_HALT, vfe->base + VFE_0_AXI_CMD);
+	/* Ensure AXI halt command is dispatched to hardware */
 	wmb();
 
 	/* Step 7: Wait for halt ACK */
@@ -3684,6 +3699,7 @@ static int vfe31_enable(struct vfe_line *line)
 	if (output->wm_num == 2)
 		reg |= VFE_0_BUS_CMD_Mx_RLD_CMD(output->wm_idx[1]);  /* CbCr WM */
 	writel_relaxed(reg, vfe->base + VFE_0_BUS_CMD);
+	/* Ensure BUS_CMD reload is dispatched to hardware */
 	wmb();
 
 	/*
@@ -3813,6 +3829,7 @@ static int vfe31_enable(struct vfe_line *line)
 			writel_relaxed(vfe->irq_comp_mask_shadow,
 				       vfe->base +
 				       VFE_0_IRQ_COMPOSITE_MASK_0);
+			/* Ensure IRQ composite mask is visible to hardware */
 			wmb();
 		}
 
@@ -3926,6 +3943,7 @@ static int vfe31_enable(struct vfe_line *line)
 			writel_relaxed(vfe->irq_comp_mask_shadow,
 				       vfe->base +
 				       VFE_0_IRQ_COMPOSITE_MASK_0);
+			/* Ensure IRQ composite mask is visible to hardware */
 			wmb();
 		}
 
@@ -3970,7 +3988,7 @@ static int vfe31_enable(struct vfe_line *line)
 	output->gen1.active_buf = 0;
 
 	dev_info(vfe->camss->dev,
-		 "VFE31: Output state=%d (2=SINGLE, 3=CONTINUOUS) buf[0]=%px buf[1]=%px\n",
+		 "VFE31: Output state=%d (2=SINGLE, 3=CONTINUOUS) buf[0]=%p buf[1]=%p\n",
 		 output->state, output->buf[0], output->buf[1]);
 
 	dev_info(vfe->camss->dev,
@@ -4040,11 +4058,13 @@ static int vfe31_disable(struct vfe_line *line)
 	 */
 	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_0);
 	writel_relaxed(0, vfe->base + VFE_0_IRQ_MASK_1);
+	/* Ensure IRQ masks are cleared before stopping CAMIF */
 	wmb();
 
 	/* Stop CAMIF immediately (Samsung: CAMIF_COMMAND_STOP_IMMEDIATELY) */
 	writel_relaxed(VFE_0_CAMIF_CMD_STOP_IMMEDIATELY,
 		       vfe->base + VFE_0_CAMIF_CMD);
+	/* Ensure CAMIF stop command is dispatched to hardware */
 	wmb();
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
@@ -4413,6 +4433,7 @@ static void vfe31_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 
 	vfe->camif_pending = false;
 
+	/* Ensure all register writes complete before returning */
 	wmb();
 }
 
@@ -4474,11 +4495,10 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 */
 	rdi_use_16bpp = is_rdi_line && vfe31_rdi_force_16bpp;
 
-	if (is_rdi_line) {
+	if (is_rdi_line)
 		axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0;  /* 0x60 */
-	} else {
+	else
 		axi_mode = vfe31_axi_output_mode;
-	}
 
 	dev_info(vfe->camss->dev,
 		 "VFE31: Starting CAMIF for WM%d line%d (fmt %ux%u code=0x%x axi=0x%x)\n",
@@ -4558,6 +4578,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		} else {
 			bool video_active = (line_id == VFE_LINE_VIDEO);
 			bool zsl_active = (vfe31_zsl_state != VFE31_REC_IDLE);
+
 			xbar_value = vfe31_calc_xbar(true, video_active, zsl_active);
 		}
 
@@ -4572,6 +4593,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 		writel_relaxed(xbar_value, vfe->base + VFE_0_BUS_XBAR_CFG1);
 	}
+	/* Ensure bus and XBAR configuration is committed before continuing */
 	wmb();
 
 	/* Step 2: Configure WM registers (must be BEFORE CAMIF start) */
@@ -4611,6 +4633,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 */
 		{
 			u16 image_stride = (is_rdi_line && !rdi_use_16bpp) ? width : (width * 2);
+
 			reg = ((image_stride / 16) & 0xFFFF) << 16;
 			reg |= ((height - 1) << 4) | 2;
 
@@ -4685,6 +4708,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			 "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, input_wpl=%d)\n",
 			 wm, reg, (wpl / 8 - 1), wpl);
 		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
+		/* Ensure UB configuration is committed before continuing */
 		wmb();
 
 		/*
@@ -4737,6 +4761,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			 */
 			{
 				u16 input_stride = width * 2;  /* UYVY input stride */
+
 				reg = ((input_stride / 16) & 0xFFFF) << 16;
 				reg |= ((cbcr_height - 1) << 4) | 2;
 				dev_info(vfe->camss->dev,
@@ -4766,6 +4791,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 
 				if (fmt_is_420) {
 					u32 cbcr_pixels = (width / 2) * height;
+
 					cb_depth = div_u64((u64)cbcr_pixels * 912, total_bw);
 				} else {
 					cb_depth = y_depth;
@@ -4792,12 +4818,14 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			/* CbCr WM UB_CFG - MUST use INPUT stride (same as Y WM) */
 			{
 				u16 input_stride = width * 2;  /* UYVY input stride */
+
 				wpl = input_stride / 4;  /* Same as Y WM */
 			}
 			reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 			reg |= (cbcr_height - 1) & 0xFFFF;  /* Use cbcr_height, not height */
 			writel_relaxed(reg,
 				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(cbcr_wm));
+			/* Ensure CbCr UB configuration is committed before continuing */
 			wmb();
 		}
 	}
@@ -4911,6 +4939,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 */
 	dev_info(vfe->camss->dev, "VFE31: SUBSAMPLE_CFG_1 (0x1F8) = 0xFFFFFFFF (no skip)\n");
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+	/* Ensure subsample configuration is visible to hardware */
 	wmb();
 
 	dev_info(vfe->camss->dev, "VFE31: Step 3 - CAMIF registers configured\n");
@@ -4975,6 +5004,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	/* Add bit 6 - webOS always sets this (0x46 instead of 0x06) */
 	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
+	/* Ensure core configuration is visible to hardware */
 	wmb();
 
 	/*
@@ -5051,6 +5081,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				 * This matches webOS raw snapshot mode.
 				 */
 				u8 wm0 = line->output.wm_idx[0];
+
 				vfe->irq_comp_mask_shadow = (1 << (wm0 + 8));
 				dev_info(vfe->camss->dev,
 					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (RDI WM%d->group1)\n",
@@ -5099,6 +5130,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			}
 			writel_relaxed(vfe->irq_comp_mask_shadow,
 				       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+			/* Ensure IRQ composite mask is visible to hardware */
 			wmb();
 		}
 	}
@@ -5141,6 +5173,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 
 	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
 	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+	/* Ensure IRQ configuration is visible to hardware */
 	wmb();
 
 	/*
@@ -5157,6 +5190,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 */
 	dev_info(vfe->camss->dev, "VFE31: Issuing REG_UPDATE_CMD (CAMIF deferred to enable_pending)\n");
 	writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+	/* Ensure REG_UPDATE command is dispatched to hardware */
 	wmb();
 
 	/*
@@ -5193,6 +5227,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			 "VFE31: Step 7 - BUS_CMD reload WM%d (Y plane)\n", wm0);
 		writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(wm0),
 			       vfe->base + VFE_0_BUS_CMD);
+		/* Ensure BUS_CMD reload is dispatched to hardware */
 		wmb();
 	}
 
@@ -5205,6 +5240,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			 cbcr_wm);
 		writel_relaxed(VFE_0_BUS_CMD_Mx_RLD_CMD(cbcr_wm),
 			       vfe->base + VFE_0_BUS_CMD);
+		/* Ensure BUS_CMD reload is dispatched to hardware */
 		wmb();
 	}
 
@@ -5234,6 +5270,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				 "VFE31: Step 8 - PIX only, disabling VIDEO WM%d\n",
 				 VFE31_VIDEO_WM_Y);
 			writel_relaxed(0, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
+			/* Ensure WM disable is committed before continuing */
 			wmb();
 		}
 	}
@@ -5322,9 +5359,8 @@ static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
 	 * VFE31: Configure CAMIF FIRST if pending, before touching WR_CFG.
 	 * Writing to WR_CFG before CAMIF is configured causes hangs.
 	 */
-	if (enable && vfe->camif_pending) {
+	if (enable && vfe->camif_pending)
 		vfe31_configure_pending_camif(vfe, wm);
-	}
 
 	/*
 	 * VFE31 WM enable - write complete WR_CFG value.
@@ -5415,6 +5451,7 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		/* Readback verification */
 		{
 			u32 readback = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+
 			if (readback != addr)
 				dev_err(vfe->camss->dev,
 					"VFE31: WM%d PING readback MISMATCH! wrote=0x%08x read=0x%08x\n",
@@ -5480,6 +5517,7 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		/* Readback verification */
 		{
 			u32 readback = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+
 			if (readback != addr)
 				dev_err(vfe->camss->dev,
 					"VFE31: WM%d PONG readback MISMATCH! wrote=0x%08x read=0x%08x\n",
@@ -5550,6 +5588,7 @@ static void vfe31_force_enable_axi_clock(struct device *dev)
 		dev_warn(dev, "VFE AXI: VFE_AXI_CLK not enabled, forcing on\n");
 		vfe_cc_reg |= MSM8660_VFE_CC_REG_VFE_AXI_EN;
 		writel_relaxed(vfe_cc_reg, mmcc_base + MSM8660_VFE_CC_REG_OFFSET);
+		/* Ensure clock enable is visible to hardware */
 		wmb();
 	}
 
@@ -5600,6 +5639,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		/* UYVY demux pattern: combined 16-bit format (0xC9CA) to both registers */
 		writel_relaxed(0xc9ca, vfe->base + VFE_0_DEMUX_EVEN_CFG);
 		writel_relaxed(0xc9ca, vfe->base + VFE_0_DEMUX_ODD_CFG);
+		/* Ensure DEMUX configuration is visible to hardware */
 		wmb();
 
 		/*
@@ -5611,6 +5651,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		 */
 		{
 			u32 dim_width = vfe31_testgen_pixel_dims ? width : width_bytes;
+
 			dev_info(vfe->camss->dev, "VFE TESTGEN: TESTGEN_DIMS=%ux%u (%s)\n",
 				 dim_width, height,
 				 vfe31_testgen_pixel_dims ? "pixels" : "bytes");
@@ -5624,6 +5665,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		writel_relaxed(0xCAFEBABE, vfe->base + VFE_0_TESTGEN_SEED_1);
 		writel_relaxed(0x12345678, vfe->base + VFE_0_TESTGEN_SEED_2);
 		writel_relaxed(0x87654321, vfe->base + VFE_0_TESTGEN_SEED_3);
+		/* Ensure test generator seeds are written before continuing */
 		wmb();
 
 		/*
@@ -5646,6 +5688,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		/* SUBSAMPLE: line count minus 1, no skip */
 		writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
 		writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+		/* Ensure CAMIF window configuration is visible to hardware */
 		wmb();
 
 		/*
@@ -5657,6 +5700,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		writel_relaxed((vfe31_xbar_cfg1 != 0) ? vfe31_xbar_cfg1 :
 			       vfe31_calc_xbar(true, false, false),
 			       vfe->base + VFE_0_BUS_XBAR_CFG1);
+		/* Ensure bus and XBAR configuration is committed before continuing */
 		wmb();
 
 		/*
@@ -5667,6 +5711,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 			 vfe31_get_bus_cmd_reload());
 		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(vfe31_get_bus_cmd_reload(), vfe->base + VFE_0_BUS_CMD);
+		/* Ensure BUS_CFG and reload are dispatched to hardware */
 		wmb();
 
 		/*
@@ -5677,6 +5722,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(0));
 		writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(1));
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Enabled WM0 and WM1\n");
+		/* Ensure WM enables are committed before continuing */
 		wmb();
 
 		/*
@@ -5694,6 +5740,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
 		writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 		writel_relaxed(vfe->irq_comp_mask_shadow, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+		/* Ensure IRQ configuration is visible to hardware */
 		wmb();
 
 		/*
@@ -5705,6 +5752,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 			  VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
 		dev_info(vfe->camss->dev, "VFE TESTGEN: CORE_CFG=0x%02x (testgen input)\n", cfg_val);
 		writel_relaxed(cfg_val, vfe->base + VFE_0_CORE_CFG);
+		/* Ensure core configuration is visible to hardware */
 		wmb();
 
 		/*
@@ -5714,10 +5762,12 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Enabling pattern generator\n");
 		writel_relaxed(VFE_0_TESTGEN_CFG_ENABLE | VFE_0_TESTGEN_CFG_COLORBAR,
 			       vfe->base + VFE_0_TESTGEN_CFG);
+		/* Ensure test generator enable is visible to hardware */
 		wmb();
 
 		/* Issue REG_UPDATE to latch all configuration */
 		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+		/* Ensure REG_UPDATE command is dispatched to hardware */
 		wmb();
 
 		/* Small delay to allow testgen to start generating */
@@ -5726,6 +5776,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		/* Start CAMIF to begin capturing from testgen */
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Starting CAMIF\n");
 		writel_relaxed(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+		/* Ensure all register writes complete before starting CAMIF */
 		wmb();
 
 		/* Wait and read back status registers for debug */
@@ -5744,8 +5795,10 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		/* Stop test generator and CAMIF */
 		writel_relaxed(VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY,
 			       vfe->base + VFE_0_CAMIF_CMD);
+		/* Ensure CAMIF stop command is dispatched to hardware */
 		wmb();
 		writel_relaxed(0, vfe->base + VFE_0_TESTGEN_CFG);
+		/* Ensure test generator disable is visible to hardware */
 		wmb();
 		dev_info(vfe->camss->dev, "VFE TESTGEN: Stopped\n");
 	}
@@ -5838,6 +5891,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * Step 1: Force all VFE internal clocks on via CGC_OVERRIDE
 	 */
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CGC_OVERRIDE);
+	/* Ensure clock gate override is applied before continuing */
 	wmb();
 
 	/*
@@ -5880,6 +5934,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE, vfe->base + VFE_0_MODULE_CFG);
 		}
 	}
+	/* Ensure module configuration is visible to hardware */
 	wmb();
 
 	/*
@@ -6113,6 +6168,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				xbar_val = vfe31_xbar_cfg1;
 			} else {
 				bool vid = (line->id == VFE_LINE_VIDEO);
+
 				xbar_val = vfe31_calc_xbar(true, vid, zsl_active);
 			}
 			dev_info(vfe->camss->dev,
@@ -6155,6 +6211,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * Use 0x7FFF (not 0x3FFF) to include pingpong reload bit 14
 	 */
 	writel_relaxed(vfe31_get_bus_cmd_reload(), vfe->base + VFE_0_BUS_CMD);
+	/* Ensure BUS_CMD reload is dispatched to hardware */
 	wmb();
 
 	/*
@@ -6246,6 +6303,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			 * COMPOSITE_DONE_1 (IRQ bit 22) fires when WM completes.
 			 */
 			u32 comp_mask = (1 << (vfe->camif_pending_wm + 8));
+
 			dev_info(vfe->camss->dev,
 				 "VFE31: RDI COMPOSITE_MASK=0x%08x (WM%d->group1)\n",
 				 comp_mask, vfe->camif_pending_wm);
@@ -6334,6 +6392,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		}
 	}
+	/* Ensure IRQ composite mask is visible to hardware */
 	wmb();
 
 	/*
@@ -6358,6 +6417,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			writel_relaxed(BIT(0), vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[i]));
 		}
+		/* Ensure WM enables are committed before continuing */
 		wmb();
 		vfe31_pix_wm_pending = false;
 
@@ -6372,6 +6432,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * This latches all the shadow register values on the next VSYNC.
 	 */
 	writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+	/* Ensure REG_UPDATE command is dispatched to hardware */
 	wmb();
 
 	/*
@@ -6390,6 +6451,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 	vfe31_dump_axi_wm_debug(vfe);
 	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+	/* Ensure all register writes complete before starting CAMIF */
 	wmb();
 	dev_info(vfe->camss->dev, "VFE31: CAMIF started\n");
 
@@ -6400,6 +6462,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 */
 	writel_relaxed(1, vfe->base + VFE_0_BUS_PM_CFG);
 	writel_relaxed(1, vfe->base + VFE_0_BUS_PM_CMD);
+	/* Ensure PM configuration is visible to hardware */
 	wmb();
 
 	vfe->camif_pending = false;
