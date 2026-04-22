@@ -4527,21 +4527,26 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 
 		/*
 		 * Dynamic XBAR: build from active WM configuration.
-		 * Currently single-line (PIX or VIDEO), no simultaneous.
+		 * Check all active lines including ZSL which may have
+		 * been configured before enable_pending_camif runs.
 		 * Module param overrides for testing.
 		 */
 		if (vfe31_xbar_cfg1 != 0) {
 			xbar_value = vfe31_xbar_cfg1;
 		} else {
 			bool video_active = (line_id == VFE_LINE_VIDEO);
-			xbar_value = vfe31_calc_xbar(true, video_active, false);
+			bool zsl_active = (vfe31_zsl_state != VFE31_REC_IDLE);
+			xbar_value = vfe31_calc_xbar(true, video_active, zsl_active);
 		}
 
 		dev_info(vfe->camss->dev,
-			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x01, XBAR=0x%04x\n",
-			 VFE_0_BUS_CFG_WEBOS_VALUE, xbar_value);
+			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x%x, XBAR=0x%06x\n",
+			 VFE_0_BUS_CFG_WEBOS_VALUE,
+			 (vfe31_zsl_state != VFE31_REC_IDLE) ? 0x101 : 0x01,
+			 xbar_value);
 		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
-		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
+		writel_relaxed((vfe31_zsl_state != VFE31_REC_IDLE) ? 0x101 :
+			       VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 		writel_relaxed(xbar_value, vfe->base + VFE_0_BUS_XBAR_CFG1);
 	}
