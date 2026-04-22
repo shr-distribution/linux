@@ -6142,9 +6142,12 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 *   lastPixel = (firstPixel + width * 2) - 1
 	 */
 	{
+		bool is_rdi_line = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+				    vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+				    vfe->camif_pending_line_id == VFE_LINE_RDI2);
 		u32 camif_width;
 
-		if (is_rdi)
+		if (is_rdi_line)
 			camif_width = line->fmt[MSM_VFE_PAD_SINK].width * 2;
 		else
 			camif_width = width_bytes;
