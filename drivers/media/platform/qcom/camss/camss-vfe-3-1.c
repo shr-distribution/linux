@@ -835,7 +835,6 @@ extern int software_eof_enable;
 #define MSM8660_VFE_CC_REG_VFE_AXI_EN	BIT(1)
 
 #include "camss-vfe.h"
-#include "camss-vfe-gen1.h"
 
 /*
  * ============================================================================
