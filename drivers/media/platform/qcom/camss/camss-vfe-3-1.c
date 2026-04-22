@@ -6067,37 +6067,34 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
-		u32 axi_mode = is_rdi ? VFE_0_BUS_AXI_OUT_MODE_RAW_WM0 :
-					vfe31_axi_output_mode;
+		bool zsl_active = (vfe31_zsl_state != VFE31_REC_IDLE);
+		u32 axi_mode;
+
+		if (is_rdi)
+			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0;
+		else if (zsl_active)
+			axi_mode = 0x101;  /* ZSL dual output */
+		else
+			axi_mode = vfe31_axi_output_mode;
 
 		dev_info(vfe->camss->dev,
 			 "VFE31: AXI_OUT_MODE=0x%x (%s)\n",
-			 axi_mode, is_rdi ? "RDI raw bypass" : "PIX/DEMUX");
+			 axi_mode, is_rdi ? "RDI raw bypass" :
+			 zsl_active ? "ZSL dual" : "PIX/DEMUX");
 		writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
 		/* Only configure XBAR for PIX mode - RDI bypasses XBAR */
-		if (!is_rdi && axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
+		if (!is_rdi) {
 			u32 xbar_val;
 
-			/*
-			 * Auto-select XBAR based on CbCr WM assignment:
-			 *   - WM4 for CbCr: 0x1A03 (routes CbCr to WM4)
-			 *   - WM1 for CbCr: 0x1A1B (routes CbCr to WM1)
-			 *
-			 * Both PIX and VIDEO modes currently use WM0(Y)+WM4(CbCr),
-			 * so they should both use 0x1A03 for correct Cb/Cr order.
-			 *
-			 * The old logic selected 0x1A1B for VIDEO line, which
-			 * routes CbCr to WM1, causing Cb/Cr swap when WM4 is used.
-			 */
 			if (vfe31_xbar_cfg1 != 0) {
 				xbar_val = vfe31_xbar_cfg1;
 			} else {
 				bool vid = (line->id == VFE_LINE_VIDEO);
-				xbar_val = vfe31_calc_xbar(true, vid, false);
+				xbar_val = vfe31_calc_xbar(true, vid, zsl_active);
 			}
 			dev_info(vfe->camss->dev,
-				 "VFE31: XBAR=0x%04x\n", xbar_val);
+				 "VFE31: XBAR=0x%06x\n", xbar_val);
 			writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
 		}
 	}
