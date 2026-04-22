@@ -816,7 +816,7 @@ static u32 vfe31_calc_xbar(bool pix_active, bool video_active, bool zsl_active)
 		xbar |= (u32)VFE31_XBAR_ROUTE_Y_CH1_CBCR << 8;/* out1: WM1+WM5 */
 
 	if (zsl_active)
-		xbar |= (u32)VFE31_XBAR_ROUTE_Y_CH1_CBCR << 16;/* out2: WM2+WM6 */
+		xbar |= (u32)VFE31_XBAR_ROUTE_Y_CBCR << 16;/* out2: WM2(Y)+WM6(CbCr) */
 
 	return xbar;
 }
