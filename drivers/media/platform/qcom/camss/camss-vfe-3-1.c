@@ -503,7 +503,7 @@ static void vfe31_calc_rdi_config(struct vfe31_line_config *cfg,
 	cfg->y_plane_size = stride * height;
 	cfg->cbcr_offset = 0;
 	cfg->has_cbcr = false;
-	cfg->axi_mode = 0x60;  /* CAMIF_TO_AXI raw bypass */
+	cfg->axi_mode = 0x214101;  /* Samsung extended RAW via PIX path */
 	cfg->xbar_value = 0;   /* XBAR not used in RDI mode */
 	cfg->chroma_v_out = 0;
 	cfg->chroma_subs_cfg = 0;
@@ -3241,10 +3241,10 @@ static int vfe31_enable(struct vfe_line *line)
 			    line->id == VFE_LINE_RDI2);
 
 	if (is_rdi_line) {
-		/* RDI lines always use raw bypass mode */
-		axi_mode = 0x60;
+		/* RDI: Samsung extended RAW mode via PIX path */
+		axi_mode = 0x214101;
 		dev_info(vfe->camss->dev,
-			 "VFE31: RDI line %d - forcing RAW mode (axi=0x60)\n",
+			 "VFE31: RDI line %d - Samsung extended RAW (axi=0x214101)\n",
 			 line->id);
 	} else {
 		/* PIX/VIDEO lines use module parameter */
