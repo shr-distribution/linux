@@ -4532,8 +4532,8 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 * 4. Configure pixel pattern in CORE_CFG
 	 * 5. Enable IRQs and start CAMIF
 	 *
-	 * NOTE: VFE31 does NOT have camif2vfeEnable/camif2busEnable bits!
-	 * Data routing is controlled by AXI output mode only.
+	 * NOTE: VFE31 EFS_CFG (0x1E4) does NOT have camif2vfe/camif2bus bits
+	 * (those are VFE8x only). Data routing is via AXI output mode (0x040).
 	 *
 	 * Critical: AXI mode and WM addresses must be set BEFORE CAMIF starts.
 	 */
@@ -6044,26 +6044,18 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		break;
 	}
 	/*
-	 * Input mux enable (bit 6): Only for PIX/VIDEO modes.
-	 * Bit 6 routes CAMIF data into the DEMUX/ISP pipeline.
-	 * For raw bypass (AXI=0x60), Samsung/Opal explicitly clear
-	 * bit 6 (CORE_CFG & 0xbf). Raw data goes directly from
-	 * CAMIF to AXI bus without entering the DEMUX.
-	 * webOS PIX mode uses 0x46 (UYVY pattern + bit 6).
+	 * Input mux enable (bit 6): Must be set for MIPI sensors.
+	 *
+	 * HTC's decompiled HAL (vfe_operation_config) dynamically sets
+	 * CORE_CFG bits 6:4 based on sensor interface type:
+	 *   parallel (0) → 0x10 (bit 4 only)
+	 *   MIPI CSI-2 (2) → 0x40 (bit 6 = INPUT_MUX_ENABLE)
+	 * This runs for ALL operation modes including raw snapshot.
+	 *
+	 * Live register readback confirms: PIX (working) has CORE_CFG=0x46
+	 * (bit 6 set). Without bit 6, CAMIF_STATUS shows zero lines/pixels.
 	 */
-	/*
-	 * Input mux enable (bit 6): Only for PIX/VIDEO modes.
-	 * Bit 6 routes CAMIF data into the DEMUX/ISP pipeline.
-	 * For raw bypass (AXI=0x60), Samsung/Opal clear bit 6.
-	 */
-	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
-
-		if (!is_rdi)
-			val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
-	}
+	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 
 	/*
@@ -6109,19 +6101,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * RAW-through-PIX workaround: Use PIX path (camif2vfe)
-			 * for RDI raw capture. The AXI=0x60 CAMIF_TO_AXI raw
-			 * bypass path is non-functional on APQ8060 VFE 3.1.
-			 *
-			 * Proven by exhaustive testing:
-			 * - All Samsung/Opal register values matched exactly
-			 * - Hot-switch from active PIX streaming failed
-			 * - CAMIF_CFG=0x10/0x50, REG_UPDATE=0x1/0x7 all tried
-			 * - CSIPHY DATA_FORMAT fixed for RAW10
-			 *
-			 * RAW-through-PIX works: sensor outputs RAW10, VFE
-			 * routes through PIX path with DEMUX disabled. WM0
-			 * captures raw Bayer data. Verified with real images.
+			 * RDI raw bypass: 0x1E4 is EFS_CFG on VFE31
+			 * (NOT camif2vfe/camif2bus which are VFE8x only).
+			 * Samsung/Opal HAL uses 0x10 (bit 4) for raw mode.
 			 */
 			camif_cfg = 0x10;
 			dev_info(vfe->camss->dev,
