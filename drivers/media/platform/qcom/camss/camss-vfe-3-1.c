@@ -6055,7 +6055,20 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * INPUT_MUX_ENABLE (bit 6): Always set for all modes.
 	 * RDI uses RAW-through-PIX workaround (AXI=0x01) which
 	 * requires the input mux to route data into the VFE pipeline.
+	 *
+	 * For RDI, also override pixel pattern to UYVY (0x6) since
+	 * the PIX path expects UYVY-formatted input. The raw Bayer
+	 * data will be interpreted as UYVY by the CAMIF but with
+	 * DEMUX disabled (MODULE_CFG=0) it passes through as-is.
 	 */
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+
+		if (is_rdi)
+			val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
+	}
 	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 
