@@ -5936,16 +5936,21 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * RDI raw bypass: MODULE_CFG=0 (disable all ISP modules).
+			 * RDI raw bypass: MODULE_CFG=0x00000404
 			 *
-			 * Samsung raw snapshot (operation_mode=3) sets MODULE_CFG
-			 * to ~0 with minimal bits. Data bypasses ISP entirely
-			 * via AXI=0x60 (CAMIF_TO_AXI). DEMUX must NOT be enabled
-			 * for raw bypass - it would try to split raw data as YUV.
+			 * Cross-vendor confirmed minimum for AXI=0x60 raw bypass.
+			 * Bits 2 (DEMUX) and 10 (CHROMA_ENHAN) are internal data
+			 * path routing gates that must remain enabled even for raw
+			 * mode. Without them, CAMIF data cannot reach the AXI bridge.
+			 *
+			 * All vendors set these in vfe_set_default_cmd(buf, 5):
+			 *   Samsung: 0x00000404 (bits 2, 10)
+			 *   Opal:    0x00000404 base, then adds bits 11, 22
+			 *   webOS:   same vfe_set_default_cmd code
 			 */
+			writel_relaxed(0x00000404, vfe->base + VFE_0_MODULE_CFG);
 			dev_info(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x0 (RDI raw bypass)\n");
-			writel_relaxed(0, vfe->base + VFE_0_MODULE_CFG);
+				 "VFE31: MODULE_CFG=0x00000404 (RDI raw, path gates)\n");
 		} else if (vfe31_raw_pix_mode) {
 			/*
 			 * RAW-through-PIX mode: Use PIX path but disable DEMUX.
