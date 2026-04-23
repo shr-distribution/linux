@@ -1714,15 +1714,28 @@ int vfe_get(struct vfe_device *vfe)
 						if (rpm_pdev) {
 							rpm = dev_get_drvdata(&rpm_pdev->dev);
 							if (rpm) {
-								/* MM fabric halt: clear VFE port (bit 5) */
-								u32 halt_data[2] = {0, BIT(5)};  /* val=0, mask=BIT(5) */
+								/*
+								 * Unhalt ALL MMSS fabric master ports.
+								 * Samsung/HTC unhalt each port individually
+								 * in footswitch_enable(). Our GDSC driver
+								 * doesn't do this, potentially leaving all
+								 * MMSS AXI ports halted.
+								 *
+								 * Ports: ADM1(0) ROT(1) GFX3D(2) JPEGD(3)
+								 *        GFX2D0(4) VFE(5) VPE(6) JPEGE(7)
+								 *        GFX2D1(8) HDCODEC0(9) HDCODEC1(10)
+								 *
+								 * Halted GFX ports may also cause display
+								 * artifacts (random corruption, tearing).
+								 */
+								u32 halt_data[2] = {0, 0x7FF};  /* val=0, mask=all 11 ports */
 
 								int rc = qcom_rpm_write(rpm,
 									QCOM_RPM_ACTIVE_STATE,
 									QCOM_RPM_MM_FABRIC_HALT,
 									halt_data, 2);
 								dev_info(vfe->camss->dev,
-									 "VFE: RPM MM fabric unhalt VFE port: rc=%d\n", rc);
+									 "VFE: RPM MM fabric unhalt ALL ports (0x7FF): rc=%d\n", rc);
 							}
 						}
 					}
