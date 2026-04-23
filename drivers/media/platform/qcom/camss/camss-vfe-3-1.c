@@ -6538,11 +6538,10 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			 zsl_active ? "ZSL dual" : "PIX/DEMUX");
 		writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
-		/* Configure XBAR for PIX mode (not for RDI bypass) */
+		/* Configure XBAR: needed for PIX and RAW-through-PIX, not RDI 0x60 */
 		if (is_rdi && !vfe->raw_through_pix) {
 			/* RDI 0x60 bypasses XBAR - no config needed */
-		} else if (!is_rdi)
-		{
+		} else {
 			u32 xbar_val;
 
 			if (vfe31_xbar_cfg1 != 0) {
