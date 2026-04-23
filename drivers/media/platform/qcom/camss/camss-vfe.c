@@ -1684,6 +1684,43 @@ int vfe_get(struct vfe_device *vfe)
 						"VFE: CRITICAL - MISC_CC write failed!\n");
 				}
 
+				/*
+				 * Ensure VFE AXI port is unhalted.
+				 *
+				 * The VFE GDSC (footswitch) register at MMSS+0x0198
+				 * has a CLAMP bit (bit 5) that gates the VFE's AXI
+				 * bus port. Samsung/HTC downstream kernels explicitly
+				 * call msm_bus_axi_portunhalt(MSM_BUS_MASTER_VFE)
+				 * during footswitch enable, which clears this bit.
+				 *
+				 * Our mainline GDSC driver's legacy_fs_deassert_clamp
+				 * should clear bit 5, but verify and force-clear it.
+				 * Without this, CAMIF_TO_AXI (0x60) raw bypass DMA
+				 * is blocked at the system bus level while the PIX
+				 * path (which uses internal VFE DMA) still works.
+				 */
+				{
+					u32 gdsc_val = readl_relaxed(mmcc_base + 0x0198);
+
+					dev_info(vfe->camss->dev,
+						 "VFE: GDSC(0x198)=0x%08x (ENABLE=%d CLAMP=%d)\n",
+						 gdsc_val,
+						 !!(gdsc_val & BIT(8)),
+						 !!(gdsc_val & BIT(5)));
+
+					if (gdsc_val & BIT(5)) {
+						/* Clear CLAMP bit to unhalt AXI port */
+						gdsc_val &= ~BIT(5);
+						writel_relaxed(gdsc_val,
+							       mmcc_base + 0x0198);
+						/* Ensure clamp clear propagates */
+						wmb();
+						udelay(5);
+						dev_info(vfe->camss->dev,
+							 "VFE: Cleared GDSC CLAMP bit (AXI port unhalted)\n");
+					}
+				}
+
 				iounmap(mmcc_base);
 			}
 		}
