@@ -6480,7 +6480,23 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	}
 
 	/*
-	 * Step 12: Issue REG_UPDATE command
+	 * Step 12: Enable AXI out-of-order transactions.
+	 *
+	 * VFE_AXI_CFG at 0x600: Samsung, HTC, and Mako kernels all write
+	 * 0x80000000 in vfe31_start_common() for ALL capture modes.
+	 * Comment: "enable out of order option"
+	 *
+	 * webOS doesn't write this (VFE never power-cycled, bootloader
+	 * state preserved). Our GDSC power-cycles VFE on every use,
+	 * resetting this register to 0. Without bit 31, the AXI bridge
+	 * may not properly handle CAMIF_TO_AXI bypass transactions.
+	 */
+	writel_relaxed(0x80000000, vfe->base + 0x600);
+	/* Ensure AXI config is visible before REG_UPDATE */
+	wmb();
+
+	/*
+	 * Step 13: Issue REG_UPDATE command
 	 * This latches all the shadow register values on the next VSYNC.
 	 */
 	writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
@@ -6488,7 +6504,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	wmb();
 
 	/*
-	 * Step 13: Start CAMIF
+	 * Step 14: Start CAMIF
 	 *
 	 * configure_pending_camif() no longer starts CAMIF (it only does
 	 * REG_UPDATE), so we always start it here. This is the correct
