@@ -6111,9 +6111,14 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			 * Bit 6 (0x40) = camif2vfe (ISP pipeline, for PIX)
 			 * Bit 7 (0x80) = NOT used on VFE31 (VFE8x only)
 			 */
-			camif_cfg = 0x10;
+			/*
+			 * Gemini "Hail Mary": try 0x50 (bit 4 + bit 6).
+			 * Bit 6 may be master "CAMIF Output Enable" and
+			 * bit 4 the "Route to RDI" selector on some revisions.
+			 */
+			camif_cfg = 0x50;
 			dev_info(vfe->camss->dev,
-				 "VFE31: CAMIF_CFG=0x%02x (raw snapshot mode)\n",
+				 "VFE31: CAMIF_CFG=0x%02x (raw mode, bits 4+6)\n",
 				 camif_cfg);
 		} else {
 			/* PIX/VIDEO: route CAMIF data to VFE ISP pipeline */
@@ -6468,8 +6473,16 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 12: Issue REG_UPDATE command
 	 * This latches all the shadow register values on the next VSYNC.
+	 * For RDI mode, write 0x7 (bits 0+1+2) to ensure all shadow paths
+	 * including the raw bypass path are updated (Gemini suggestion).
 	 */
-	writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+	{
+		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+
+		writel(is_rdi ? 0x7 : 1, vfe->base + VFE_0_REG_UPDATE_CMD);
+	}
 	/* Ensure REG_UPDATE command is dispatched to hardware */
 	wmb();
 
