@@ -503,7 +503,7 @@ static void vfe31_calc_rdi_config(struct vfe31_line_config *cfg,
 	cfg->y_plane_size = stride * height;
 	cfg->cbcr_offset = 0;
 	cfg->has_cbcr = false;
-	cfg->axi_mode = 0x214101;  /* Samsung extended RAW via PIX path */
+	cfg->axi_mode = 0x01;  /* RAW-through-PIX (AXI=0x60 non-functional) */
 	cfg->xbar_value = 0;   /* XBAR not used in RDI mode */
 	cfg->chroma_v_out = 0;
 	cfg->chroma_subs_cfg = 0;
@@ -3241,11 +3241,16 @@ static int vfe31_enable(struct vfe_line *line)
 			    line->id == VFE_LINE_RDI2);
 
 	if (is_rdi_line) {
-		/* RDI: Samsung extended RAW mode via PIX path */
-		axi_mode = 0x214101;
+		/*
+		 * RAW-through-PIX: Use PIX path for raw capture.
+		 * AXI=0x60 (CAMIF_TO_AXI) is non-functional on APQ8060.
+		 * Samsung's 0x214101 is a HAL command format, not a register
+		 * value (hardware masks to 0x60). Use standard PIX mode.
+		 */
+		axi_mode = vfe31_axi_output_mode;
 		dev_info(vfe->camss->dev,
-			 "VFE31: RDI line %d - Samsung extended RAW (axi=0x214101)\n",
-			 line->id);
+			 "VFE31: RDI line %d - RAW-through-PIX (axi=0x%x)\n",
+			 line->id, axi_mode);
 	} else {
 		/* PIX/VIDEO lines use module parameter */
 		axi_mode = vfe31_axi_output_mode;
@@ -6186,14 +6191,14 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		u32 axi_mode;
 
 		/*
-		 * Samsung's actual RAW capture mode uses AXI=0x214101,
-		 * NOT 0x60. This is built on the PIX path (bit 0) with
-		 * extended raw routing bits (14, 16, 21). The 0x60
-		 * CAMIF_TO_AXI path is non-functional on APQ8060.
+		 * All modes use PIX path (AXI=0x01). RDI raw capture uses
+		 * PIX with DEMUX disabled (RAW-through-PIX workaround).
+		 *
+		 * AXI=0x60 (CAMIF_TO_AXI) is non-functional on APQ8060.
+		 * Samsung's 0x214101 is a HAL command format that the HW
+		 * masks to 0x60 (confirmed by register readback).
 		 */
-		if (is_rdi)
-			axi_mode = 0x214101;  /* Samsung extended RAW */
-		else if (zsl_active)
+		if (zsl_active)
 			axi_mode = 0x101;  /* ZSL dual output */
 		else
 			axi_mode = vfe31_axi_output_mode;
