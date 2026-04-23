@@ -160,16 +160,66 @@ Gemini identified three hypotheses:
 3. **CORE_CFG Input Mux** - Clearing bit 6 bypasses ISP input mux for raw.
    **IMPLEMENTED** per Samsung HAL, but didn't resolve the issue.
 
+## RAW-through-PIX Diagnostic Result (2026-04-23)
+
+**CRITICAL FINDING**: Setting the sensor to RAW10 output while keeping the VFE
+in PIX mode (AXI=0x01, CORE_CFG=0x46, CAMIF_CFG=0x40) **successfully captures
+data**. The CAMIF counts pixels, VFE IRQs fire, and 5 frames of 1280x1024 are
+captured at 3.4fps. The resulting image (Y plane as grayscale) shows a clear,
+recognizable scene with proper exposure.
+
+This proves:
+1. **The CAMIF front-end CAN see RAW10 MIPI packets** (DT=0x2B)
+2. **The CSIPHY/CSID/CAMIF pipeline is working correctly for RAW10**
+3. **The issue is strictly in the AXI=0x60 back-end routing**
+4. The DATA_FORMAT=0 (8-bit) in CSIPHY doesn't actually block RAW10 at the
+   CAMIF level - it affects unpacking but packets still reach the CAMIF
+
+The AXI=0x60 (CAMIF_TO_AXI_VIA_OUTPUT_2) raw bypass path appears non-functional
+on this VFE31 revision despite matching all known register values from Samsung
+and Opal HALs.
+
+## WM Assignment for Raw Capture
+
+**Confirmed: Samsung kernel uses WM0 only for CAMIF_TO_AXI raw snapshot.**
+
+From Samsung kernel `vfe31_config_axi()`:
+```c
+case CAMIF_TO_AXI_VIA_OUTPUT_2:  /* use wm0 only */
+    vfe31_ctrl->outpath.out1.ch0 = 0;  /* raw = WM0 */
+    p1 = ao + 6;   /* ao[6] → VFE 0x050 = WM0 PING_ADDR */
+```
+
+Samsung HAL `vfe_snapshot_raw_axi_init()`:
+- blob+0x08 = AXI_OUT_MODE = 0x60
+- blob+0x14 = WM0 PING_ADDR
+- blob+0x40 = WM0 ADDR_CFG = 0x397 (UB depth 911)
+- All other WMs zeroed
+
+No evidence of any vendor using WM1-WM6 for raw bypass. The CAMIF_TO_AXI
+path is hardwired to route through output2 to WM0 on VFE31.
+
+## Viable Workaround: RAW-through-PIX
+
+Since the CAMIF sees RAW10 through the PIX path, a workaround is possible:
+- Set AXI=0x01 (PIX mode) with MODULE_CFG=0 (DEMUX disabled)
+- Sensor outputs RAW10, VFE DEMUX is disabled
+- WM0 captures the raw data as-is (single WM, no Y/CbCr split)
+- Data needs Bayer demosaicing in userspace
+
+This approach was tested successfully: the Y plane of the NV12 output
+contains recognizable Bayer RAW data that can be processed offline.
+
 ## Remaining Questions
-1. Is there an EFS (Embedded Frame Sync) register that needs to be disabled
+1. Why does AXI=0x60 not work despite matching all vendor register values?
+   Is CAMIF_TO_AXI a silicon-level path that may be disabled/broken on
+   certain APQ8060 stepping/revision?
+2. Is there an EFS (Embedded Frame Sync) register that needs to be disabled
    for RAW MIPI mode? CAMIF_CFG=0x10 may not be sufficient.
-2. Samsung's raw snapshot uses a V31_START ioctl (command 3) after AXI config.
-   Does this trigger additional kernel-side register writes we don't replicate?
-3. The "RAW-through-PIX" verification test failed due to pipeline format
-   mismatch, so we couldn't determine if CAMIF can see RAW10 packets at all
-   through the PIX path (AXI=0x01).
-4. Could the CAMIF need a different start sequence for raw mode (e.g., start
-   CAMIF before enabling WMs, or a specific delay)?
+3. Samsung's raw snapshot uses a V31_START ioctl (command 3) after AXI config.
+   Does this trigger additional kernel-side register writes?
+4. Could the VFE31 require a "warm" CAMIF (run PIX first, then switch to
+   AXI=0x60 mid-stream) rather than a cold start in raw mode?
 
 ## Files
 - Driver: `drivers/media/platform/qcom/camss/camss-vfe-3-1.c`
