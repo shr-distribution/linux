@@ -476,16 +476,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		      MIPI_PROTOCOL_CONTROL_DECODE_ID_BMSK;
 		if (!ecc_disable)
 			val |= MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
-		/*
-		 * Force DATA_FORMAT=0 (8-bit passthrough).
-		 * The VFE31 RAW-through-PIX workaround routes all data
-		 * through the PIX path which expects 8-bit. Setting
-		 * DATA_FORMAT=1 (10-bit) causes the CSIPHY to unpack
-		 * RAW10 MIPI packets differently, breaking the PIX path.
-		 * With DATA_FORMAT=0, raw MIPI bytes pass through as-is
-		 * and the CAMIF handles them correctly.
-		 */
-		data_fmt = 0;
 		val |= (data_fmt << MIPI_PROTOCOL_CONTROL_DATA_FORMAT_SHFT);
 		/* Store for stream_on to re-apply after SW_RST */
 		csiphy->data_format = data_fmt;
