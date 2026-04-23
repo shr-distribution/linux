@@ -2235,6 +2235,12 @@
 	status = "okay";
 
 	/*
+	 * APQ8060 VFE 3.1 (HW 0x00030217): AXI=0x60 raw bypass path is
+	 * non-functional. Route RDI captures through PIX path instead.
+	 */
+	qcom,vfe31-raw-through-pix;
+
+	/*
 	 * VFE IOMMU enables scatter-gather DMA with contiguous virtual
 	 * addresses. Without this, vb2-dma-sg allocates non-contiguous
 	 * pages that VFE31 cannot handle (writes beyond first SG segment).

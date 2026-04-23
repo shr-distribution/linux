@@ -203,6 +203,8 @@ struct vfe_device {
 	 */
 	dma_addr_t dummy_buf_addr;
 	void *dummy_buf_vaddr;
+	/* VFE31: Route RDI captures through PIX path (DT: qcom,vfe31-raw-through-pix) */
+	bool raw_through_pix;
 };
 
 struct camss_subdev_resources;
