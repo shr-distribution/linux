@@ -213,24 +213,62 @@ All vendors use 0x02AAA771 for NV12/NV16 output.
 
 ### MODULE_CFG (0x010)
 
-webOS value: 0x01C00C0C. Enables ISP processing modules needed for YUV pipeline.
+Controls ISP module enables AND internal data path routing gates. Some bits
+must be set even for raw bypass mode (AXI=0x60) to keep the internal bus
+connected from CAMIF to the AXI bridge.
 
 ```
-0x01C00C0C = 0000_0001 1100_0000 0000_1100 0000_1100
+0x01C00C0C = 0000_0001 1100_0000 0000_1100 0000_1100  (webOS PIX)
+0x00400C04 = 0000_0000 0100_0000 0000_1100 0000_0100  (Opal RAW)
 ```
 
-**Confirmed from VFE31 vendor evidence (Samsung msm_vfe31.h + all kernels):**
+**Complete bit layout (cross-vendor verified):**
 
-| Bit | Value | Field | Evidence |
-|-----|-------|-------|----------|
-| 2 | **1** | **DEMUX** | All VFE31 kernels (webOS, Samsung, HTC, Mako) |
-| 3 | **1** | **CHROMA_UPSAMPLE** | All VFE31 kernels |
-| 5 | 0 | AE stats (AE_ENABLE_MASK = 0x20) | Samsung msm_vfe31.h |
-| 6 | 0 | AF stats (AF_ENABLE_MASK = 0x40) | Samsung msm_vfe31.h |
-| 7 | 0 | AWB stats (AWB_ENABLE_MASK = 0x80) | Samsung msm_vfe31.h |
-| 8 | 0 | RS stats (RS_ENABLE_MASK = 0x100) | Samsung msm_vfe31.h |
-| 9 | 0 | CS stats (CS_ENABLE_MASK = 0x200) | Samsung msm_vfe31.h |
-| 15 | 0 | IHIST stats (IHIST_ENABLE_MASK = 0x8000) | Samsung msm_vfe31.h |
+| Bit | Name | PIX | RAW | Evidence |
+|-----|------|-----|-----|----------|
+| 0 | SKIN_ENHAN (BSM) | · | · | Qualcomm naming convention |
+| 1 | COLOR_CORRECT | · | · | Qualcomm naming convention |
+| 2 | **DEMUX** | **✓** | **✓** | All kernels. **DATA PATH GATE** - must be set even for raw |
+| 3 | CHROMA_UPSAMPLE | ✓ | · | All kernels. Samsung sets for Bayer raw (case 1) |
+| 4 | DEMOSAIC | · | · | Qualcomm naming convention |
+| 5 | STATS_AE | · | · | Samsung AE_ENABLE_MASK = 0x20 |
+| 6 | STATS_AF | · | · | Samsung AF_ENABLE_MASK = 0x40 |
+| 7 | STATS_AWB | · | · | Samsung AWB_ENABLE_MASK = 0x80 |
+| 8 | STATS_RS | · | · | Samsung RS_ENABLE_MASK = 0x100 |
+| 9 | STATS_CS | · | · | Samsung CS_ENABLE_MASK = 0x200 |
+| 10 | **CHROMA_ENHAN** | **✓** | **✓** | webOS + Opal + Samsung. **DATA PATH GATE** - must be set for raw |
+| 11 | CHROMA_SUPPRESS | ✓ | ✓* | webOS + Opal. *Samsung does not set for raw |
+| 12 | SKIN_BHIST | · | · | Qualcomm naming convention |
+| 13-14 | unknown | · | · | |
+| 15 | STATS_IHIST | · | · | Samsung IHIST_ENABLE_MASK = 0x8000 |
+| 16 | LUMA_ADAPT | · | · | Qualcomm naming convention |
+| 17 | RGB_GAMMA | · | · | Qualcomm naming convention |
+| 18 | STATS_SKIN | · | · | Samsung STATS_ENABLE_MASK includes bit 18 |
+| 19-21 | unknown | · | · | |
+| 22 | **FOV_ENC** | **✓** | **✓*** | webOS + Opal. *Samsung does not set for raw. May be output path gate |
+| 23 | SCALE_ENC | ✓ | · | webOS PIX. VFE41 also at bit 23 |
+| 24 | CROP_ENC | ✓ | · | webOS PIX. Note: VFE41 has CROP at bit 27 |
+| 25-27 | unknown | · | · | |
+| 28 | MCE | · | · | Samsung MCE_EN_MASK = 0xEFFFFFFF (inverted) |
+| 29-31 | reserved | · | · | |
+
+**Cross-vendor MODULE_CFG values:**
+
+| Mode | Value | Bits Set | Source |
+|------|-------|----------|--------|
+| PIX/VIDEO (webOS) | 0x01C00C0C | 2,3,10,11,22,23,24 | webOS register dump, all vendors |
+| RAW snapshot (Opal) | 0x00400C04 | 2,10,11,22 | Opal APQ8060 HAL (unstripped, confirmed) |
+| RAW snapshot (Samsung case 1) | 0x0000040C | 2,3,10 | Samsung Quincy HAL (Bayer sensor) |
+| RAW snapshot (Samsung case 2) | 0x00000404 | 2,10 | Samsung Quincy HAL (other sensors) |
+| RAW default (all vendors) | 0x00000404 | 2,10 | vfe_set_default_cmd(buf,5) base value |
+
+**CRITICAL**: Setting MODULE_CFG=0 for raw mode disconnects the internal data
+path, causing CAMIF_TO_AXI (0x60) to produce zero data. The DEMUX (bit 2) and
+CHROMA_ENHAN (bit 10) bits function as data path routing gates, not just ISP
+processing enables. All vendors keep these bits set for raw bypass mode.
+
+**Safe minimum for raw mode**: 0x00000404 (bits 2 + 10, Samsung confirmed)
+**Recommended for raw mode**: 0x00400C04 (bits 2 + 10 + 11 + 22, Opal confirmed)
 
 **Confirmed from HTC VFE31 header masks (msm_vfe31_v4l2.h):**
 
