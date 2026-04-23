@@ -6498,90 +6498,10 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	dev_info(vfe->camss->dev, "VFE31: Pre-start CAMIF_STATUS=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
 
-	/*
-	 * RDI hot-switch: For CAMIF_TO_AXI (0x60) raw bypass, first start
-	 * the CAMIF in PIX mode (AXI=0x01) to prime the internal clock and
-	 * data path state machines, then switch to AXI=0x60 mid-stream.
-	 *
-	 * The AXI=0x60 path appears to require the CAMIF to have seen at
-	 * least one frame through the PIX pipeline before the raw bypass
-	 * path becomes functional. This was identified through Gemini AI
-	 * analysis of the VFE31 architecture.
-	 */
-	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
-
-		if (is_rdi) {
-			dev_info(vfe->camss->dev,
-				 "VFE31: RDI hot-switch: priming with PIX mode first\n");
-
-			/* Temporarily switch to PIX mode */
-			writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
-				       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-			writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE,
-				       vfe->base + VFE_0_CAMIF_CFG);
-			writel_relaxed(0x41, vfe->base + VFE_0_CORE_CFG);
-			/* Ensure PIX config is visible */
-			wmb();
-
-			/* REG_UPDATE to latch PIX config */
-			writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
-			/* Ensure REG_UPDATE is dispatched */
-			wmb();
-
-			/* Start CAMIF in PIX mode */
-			writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
-			/* Ensure CAMIF start is dispatched */
-			wmb();
-
-			/* Wait for 2 frames (~150ms at 14fps) */
-			usleep_range(150000, 200000);
-
-			dev_info(vfe->camss->dev,
-				 "VFE31: RDI hot-switch: PIX primed, CAMIF_STATUS=0x%08x PP=0x%08x\n",
-				 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS),
-				 readl_relaxed(vfe->base + VFE_0_BUS_PING_PONG_STATUS));
-
-			/* Stop CAMIF */
-			writel(VFE_0_CAMIF_CMD_STOP_IMMEDIATELY,
-			       vfe->base + VFE_0_CAMIF_CMD);
-			/* Ensure stop is dispatched */
-			wmb();
-			usleep_range(1000, 2000);
-
-			/* Switch to raw bypass mode */
-			writel_relaxed(VFE_0_BUS_AXI_OUT_MODE_RAW_WM0,
-				       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-			writel_relaxed(0x10, vfe->base + VFE_0_CAMIF_CFG);
-			writel_relaxed(0x01, vfe->base + VFE_0_CORE_CFG);
-			writel_relaxed(0, vfe->base + VFE_0_MODULE_CFG);
-			/* Ensure raw config is visible */
-			wmb();
-
-			/* REG_UPDATE to latch raw config */
-			writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
-			/* Ensure REG_UPDATE is dispatched */
-			wmb();
-			usleep_range(100, 200);
-
-			/* Restart CAMIF in raw mode */
-			writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
-			/* Ensure CAMIF restart is dispatched */
-			wmb();
-
-			dev_info(vfe->camss->dev,
-				 "VFE31: RDI hot-switch complete: AXI=0x%08x CAMIF_STATUS=0x%08x\n",
-				 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG),
-				 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
-		} else {
-			vfe31_dump_axi_wm_debug(vfe);
-			writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
-			/* Ensure all register writes complete before starting CAMIF */
-			wmb();
-		}
-	}
+	vfe31_dump_axi_wm_debug(vfe);
+	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+	/* Ensure all register writes complete before starting CAMIF */
+	wmb();
 	dev_info(vfe->camss->dev, "VFE31: CAMIF started\n");
 
 	/*
