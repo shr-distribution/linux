@@ -6229,9 +6229,10 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/*
 	 * Step 8: Configure BUS_CFG for DMA write paths
 	 *
-	 * For RDI mode, use format-aware BUS_CFG that sets the correct
-	 * RAW pixel data size bits based on bit depth (8/10/12-bit).
-	 * For PIX/VIDEO mode, use the base configuration.
+	 * All modes use PIX BUS_CFG (0x02AAA771) since RDI now routes
+	 * through the PIX path (RAW-through-PIX workaround).
+	 * The PIX path handles data as 8-bit internally regardless of
+	 * the sensor's actual bit depth.
 	 */
 	{
 		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
@@ -6239,7 +6240,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
 		u32 bus_cfg;
 
-		if (is_rdi) {
+		if (0) { /* RDI BUS_CFG disabled - using PIX path */
 			u8 raw_bpp = camss_format_get_bpp(line->formats,
 							  line->nformats,
 							  line->fmt[MSM_VFE_PAD_SINK].code);
