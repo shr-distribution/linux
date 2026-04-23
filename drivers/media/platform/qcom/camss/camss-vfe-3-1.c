@@ -6747,8 +6747,14 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				 *   VIDEO: Group 2 (WM1+WM5)
 				 */
 				comp_mask = 0;
-				if (pix_active)
-					comp_mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
+				if (pix_active) {
+					if (vfe31_raw_pix_mode &&
+					    pix_out->wm_num == 1)
+						comp_mask |= 0x01;
+					else
+						comp_mask |=
+						    VFE31_IRQ_COMP_MASK_PIX_ONLY;
+				}
 				if (zsl_active) {
 					/*
 					 * ZSL composite mask depends on wm_num:
