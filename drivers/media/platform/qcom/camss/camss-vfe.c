@@ -14,6 +14,8 @@
 #include <linux/iommu.h>
 #include <linux/iopoll.h>
 #include <linux/ktime.h>
+#include <linux/mfd/qcom_rpm.h>
+#include <dt-bindings/mfd/qcom-rpm.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -1685,39 +1687,44 @@ int vfe_get(struct vfe_device *vfe)
 				}
 
 				/*
-				 * Ensure VFE AXI port is unhalted.
+				 * Unhalt VFE AXI bus master port via RPM.
 				 *
-				 * The VFE GDSC (footswitch) register at MMSS+0x0198
-				 * has a CLAMP bit (bit 5) that gates the VFE's AXI
-				 * bus port. Samsung/HTC downstream kernels explicitly
-				 * call msm_bus_axi_portunhalt(MSM_BUS_MASTER_VFE)
-				 * during footswitch enable, which clears this bit.
+				 * Samsung/HTC downstream kernels call
+				 * msm_bus_axi_portunhalt(MSM_BUS_MASTER_VFE)
+				 * which sends a halt vector to RPM firmware to
+				 * clear the VFE port bit in the MM fabric halt
+				 * register. Without this, CAMIF_TO_AXI (0x60)
+				 * raw bypass DMA is blocked at the fabric level.
 				 *
-				 * Our mainline GDSC driver's legacy_fs_deassert_clamp
-				 * should clear bit 5, but verify and force-clear it.
-				 * Without this, CAMIF_TO_AXI (0x60) raw bypass DMA
-				 * is blocked at the system bus level while the PIX
-				 * path (which uses internal VFE DMA) still works.
+				 * VFE is port 5 in the MMSS fabric (enum order:
+				 * ADM1=0, ROT=1, GFX3D=2, JPEG_DEC=3, GFX2D0=4,
+				 * VFE=5). Unhalt = haltval=0, haltmask=BIT(port).
 				 */
 				{
-					u32 gdsc_val = readl_relaxed(mmcc_base + 0x0198);
+					struct qcom_rpm *rpm;
+					struct device_node *rpm_node;
 
-					dev_info(vfe->camss->dev,
-						 "VFE: GDSC(0x198)=0x%08x (ENABLE=%d CLAMP=%d)\n",
-						 gdsc_val,
-						 !!(gdsc_val & BIT(8)),
-						 !!(gdsc_val & BIT(5)));
+					rpm_node = of_find_compatible_node(NULL, NULL,
+									   "qcom,rpm-msm8660");
+					if (rpm_node) {
+						struct platform_device *rpm_pdev;
 
-					if (gdsc_val & BIT(5)) {
-						/* Clear CLAMP bit to unhalt AXI port */
-						gdsc_val &= ~BIT(5);
-						writel_relaxed(gdsc_val,
-							       mmcc_base + 0x0198);
-						/* Ensure clamp clear propagates */
-						wmb();
-						udelay(5);
-						dev_info(vfe->camss->dev,
-							 "VFE: Cleared GDSC CLAMP bit (AXI port unhalted)\n");
+						rpm_pdev = of_find_device_by_node(rpm_node);
+						of_node_put(rpm_node);
+						if (rpm_pdev) {
+							rpm = dev_get_drvdata(&rpm_pdev->dev);
+							if (rpm) {
+								/* MM fabric halt: clear VFE port (bit 5) */
+								u32 halt_data[2] = {0, BIT(5)};  /* val=0, mask=BIT(5) */
+
+								int rc = qcom_rpm_write(rpm,
+									QCOM_RPM_ACTIVE_STATE,
+									QCOM_RPM_MM_FABRIC_HALT,
+									halt_data, 2);
+								dev_info(vfe->camss->dev,
+									 "VFE: RPM MM fabric unhalt VFE port: rc=%d\n", rc);
+							}
+						}
 					}
 				}
 
