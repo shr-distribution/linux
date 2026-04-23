@@ -125,11 +125,20 @@ in both lanes_enable and stream_on. However, CAMIF still counts zero pixels.
 CAMIF_CFG (0x1E4) was set to 0x80 (bit 7, camif2bus) which doesn't exist on
 VFE31. Opal and Samsung HALs use 0x10 (bit 4) for raw snapshot mode.
 
-### 3. CORE_CFG INPUT_MUX_ENABLE for raw mode (FIXED)
-**Commit**: `57ec55a39d93`
+### 3. CORE_CFG INPUT_MUX_ENABLE for raw mode (RE-ENABLED)
+**Commit**: `57ec55a39d93` (cleared), `0866425079f2` (re-enabled for all modes)
 
-Samsung HAL explicitly clears bit 6 (`& 0xbf`) for raw mode. Bit 6 routes
-data into the DEMUX which raw bypass doesn't use. Now only set for PIX/VIDEO.
+Previously cleared bit 6 based on Samsung HAL analysis (`& 0xbf`). However,
+re-analysis of the Samsung decompiled code shows the `& 0xbf` operates on
+buffer offset 0, NOT CORE_CFG at offset 0x1488. Samsung's actual CORE_CFG
+handling: `& 0x8f | 0x10` (always bit 4, no interface-type check).
+
+HTC's decompiled HAL (vfe_operation_config) sets CORE_CFG bits 6:4 based
+on sensor interface type: MIPI CSI-2 → 0x40 (bit 6 = INPUT_MUX_ENABLE).
+This runs for ALL operation modes including raw snapshot.
+
+Live register readback during working PIX capture confirms: CORE_CFG=0x46
+(bit 6 set) → CAMIF counts pixels. Without bit 6 → CAMIF_STATUS=0.
 
 ### 4. FRAME_CFG and WINDOW width (FIXED)
 **Commit**: `b9a88529442a`
