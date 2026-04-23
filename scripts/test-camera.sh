@@ -1375,15 +1375,14 @@ test_at_resolution() {
                 fi
                 ;;
             rdi)
-                # RDI mode: Raw bypass through CAMIF (AXI=0x60)
-                # On MSM8660/VFE31, there's no hardware RDI path - all data goes
-                # through CAMIF. RDI is emulated via AXI output mode 0x60.
-                #
-                # CSID pad 4 connects to all VFE entities.
-                # VC filtering is handled by the CSID driver.
+                # RDI mode: RAW-through-PIX workaround
+                # On APQ8060/VFE31, the AXI=0x60 raw bypass path is non-functional.
+                # Raw capture routes through the PIX path (AXI=0x01) with DEMUX
+                # disabled. The sensor outputs RAW but the pipeline uses UYVY format.
+                # The PIX V4L2 device (video3) captures the raw Bayer data.
                 CSID_PAD=4
-                VFE_ENTITY='msm_vfe0_rdi0'
-                # VFE_FMT will be set after USE_RAW_FORMAT check below
+                VFE_ENTITY='msm_vfe0_pix'
+                VFE_FMT='UYVY8_1X16'
                 ;;
             video)
                 # VIDEO mode: CSID pad 4 -> VFE VIDEO
@@ -1419,21 +1418,19 @@ test_at_resolution() {
         # RAW8 mode is triggered when format is GRBG (V4L2 8-bit Bayer GRGR/BGBG)
         # RAW10 mode is triggered when format is pgAA (V4L2 10-bit Bayer GRGR/BGBG Packed)
         if [ \"\$PIXFMT\" = \"pgAA\" ] || [ \"\$PIXFMT\" = \"SGRBG10\" ]; then
-            # RAW Bayer 10-bit for true raw capture (Context B full resolution)
+            # RAW10: Sensor outputs RAW Bayer, pipeline uses UYVY (RAW-through-PIX)
             SENSOR_FMT='SGRBG10_1X10'
-            # VFE must also use RAW10 format to match sensor
-            VFE_FMT='SGRBG10_1X10'
-            # V4L2 pixel format is pgAA (10-bit Bayer GRGR/BGBG Packed)
-            PIXFMT='pgAA'
-            echo 'Configuring sensor for RAW10 RDI mode (RAW Bayer GRBG 10-bit packed)...'
+            VFE_FMT='UYVY8_1X16'
+            # Capture as NV12 on PIX device - Y plane contains raw Bayer data
+            PIXFMT='NV12'
+            echo 'Configuring sensor for RAW10 via RAW-through-PIX (NV12 output)...'
         elif [ \"\$PIXFMT\" = \"GRBG\" ] || [ \"\$PIXFMT\" = \"GREY\" ] || [ \"\$PIXFMT\" = \"SGRBG8\" ]; then
-            # RAW Bayer 8-bit for raw capture (processed Bayer through IFP)
+            # RAW8: Sensor outputs RAW Bayer, pipeline uses UYVY (RAW-through-PIX)
             SENSOR_FMT='SGRBG8_1X8'
-            # VFE must also use RAW format to match sensor
-            VFE_FMT='SGRBG8_1X8'
-            # V4L2 pixel format is GRBG (8-bit Bayer GRGR/BGBG)
-            PIXFMT='GRBG'
-            echo 'Configuring sensor for RAW8 RDI mode (RAW Bayer GRBG 8-bit)...'
+            VFE_FMT='UYVY8_1X16'
+            # Capture as NV12 on PIX device - Y plane contains raw Bayer data
+            PIXFMT='NV12'
+            echo 'Configuring sensor for RAW8 via RAW-through-PIX (NV12 output)...'
         else
             SENSOR_FMT='UYVY8_1X16'
             # For non-RAW RDI mode, use UYVY
@@ -1445,13 +1442,14 @@ test_at_resolution() {
         media-ctl -d /dev/media0 -V '\"\$SENSOR\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
         media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
 
-        # Set CSIPHY format
-        media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":0[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
-        media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":1[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
+        # Set CSIPHY format - use VFE_FMT for pipeline (UYVY for RAW-through-PIX)
+        PIPE_FMT=\${VFE_FMT:-\$SENSOR_FMT}
+        media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":0[fmt:\${PIPE_FMT}/${width}x${height}]\" 2>&1 || true
+        media-ctl -d /dev/media0 -V \"\\\"$csiphy\\\":1[fmt:\${PIPE_FMT}/${width}x${height}]\" 2>&1 || true
 
         # Set CSID formats (input and output)
-        media-ctl -d /dev/media0 -V \"\\\"$csid\\\":0[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
-        media-ctl -d /dev/media0 -V \"\\\"$csid\\\":\${CSID_PAD}[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
+        media-ctl -d /dev/media0 -V \"\\\"$csid\\\":0[fmt:\${PIPE_FMT}/${width}x${height}]\" 2>&1 || true
+        media-ctl -d /dev/media0 -V \"\\\"$csid\\\":\${CSID_PAD}[fmt:\${PIPE_FMT}/${width}x${height}]\" 2>&1 || true
 
         # Set VFE entity format - must match CSID output
         media-ctl -d /dev/media0 -V \"\\\"\${VFE_ENTITY}\\\":0[fmt:\${VFE_FMT}/${width}x${height}]\" 2>&1 || true
@@ -1688,9 +1686,9 @@ test_comprehensive() {
     # Test RDI mode (video0) at both resolutions
     log_step "=== RDI Mode Tests (video0) ==="
     echo ""
-    test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1
+    test_at_resolution 640 480 rdi video3 msm_csid1 msm_csiphy1
     echo ""
-    test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1
+    test_at_resolution 1280 1024 rdi video3 msm_csid1 msm_csiphy1
     echo ""
 
     # Test VIDEO mode (video4) at both resolutions
@@ -2176,38 +2174,38 @@ main() {
             ;;
         rdi640)
             ensure_camera_ready
-            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 UYVY
+            test_at_resolution 640 480 rdi video3 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
         rdi640-raw8)
             ensure_camera_ready
             # RAW8 at 640x480 goes through IFP (processed Bayer, Context A)
-            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 GRBG
+            test_at_resolution 640 480 rdi video3 msm_csid1 msm_csiphy1 GRBG
             check_dmesg
             ;;
         rdi640-raw10)
             ensure_camera_ready
             # RAW10 at 640x480 - note: sensor outputs full resolution in RAW10,
             # so this may still use Context B internally
-            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 pgAA
+            test_at_resolution 640 480 rdi video3 msm_csid1 msm_csiphy1 pgAA
             check_dmesg
             ;;
         rdi1280)
             ensure_camera_ready
             # UYVY at 1280x1024 uses Context B (full resolution)
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 UYVY
+            test_at_resolution 1280 1024 rdi video3 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
         rdi1280-raw8)
             ensure_camera_ready
             # RAW8 at 1280x1024 - MT9M113 Context B full resolution
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 GRBG
+            test_at_resolution 1280 1024 rdi video3 msm_csid1 msm_csiphy1 GRBG
             check_dmesg
             ;;
         rdi1280-raw10)
             ensure_camera_ready
             # RAW10 at 1280x1024 - MT9M113 Context B full resolution
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 pgAA
+            test_at_resolution 1280 1024 rdi video3 msm_csid1 msm_csiphy1 pgAA
             check_dmesg
             ;;
         video640)
