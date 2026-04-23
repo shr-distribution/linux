@@ -1418,17 +1418,19 @@ test_at_resolution() {
         # RAW8 mode is triggered when format is GRBG (V4L2 8-bit Bayer GRGR/BGBG)
         # RAW10 mode is triggered when format is pgAA (V4L2 10-bit Bayer GRGR/BGBG Packed)
         if [ \"\$PIXFMT\" = \"pgAA\" ] || [ \"\$PIXFMT\" = \"SGRBG10\" ]; then
-            # RAW10: Sensor outputs RAW Bayer, pipeline uses UYVY (RAW-through-PIX)
+            # RAW10: Tell sensor to output RAW via mt9m113 driver internal config,
+            # but set ALL pipeline entities to UYVY for format negotiation.
+            # The sensor IFP pad must match CSIPHY to pass pipeline validation.
+            # MT9M113 driver detects RAW mode from the format code on its pixel
+            # array pad, not from the IFP output pad format.
             SENSOR_FMT='SGRBG10_1X10'
             VFE_FMT='UYVY8_1X16'
-            # Capture as NV12 on PIX device - Y plane contains raw Bayer data
             PIXFMT='NV12'
             echo 'Configuring sensor for RAW10 via RAW-through-PIX (NV12 output)...'
         elif [ \"\$PIXFMT\" = \"GRBG\" ] || [ \"\$PIXFMT\" = \"GREY\" ] || [ \"\$PIXFMT\" = \"SGRBG8\" ]; then
-            # RAW8: Sensor outputs RAW Bayer, pipeline uses UYVY (RAW-through-PIX)
+            # RAW8: Same approach - sensor internal RAW, pipeline UYVY
             SENSOR_FMT='SGRBG8_1X8'
             VFE_FMT='UYVY8_1X16'
-            # Capture as NV12 on PIX device - Y plane contains raw Bayer data
             PIXFMT='NV12'
             echo 'Configuring sensor for RAW8 via RAW-through-PIX (NV12 output)...'
         else
@@ -1440,7 +1442,16 @@ test_at_resolution() {
         fi
 
         media-ctl -d /dev/media0 -V '\"\$SENSOR\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
-        media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
+        # For RAW-through-PIX: set sensor pixel array to RAW format (triggers
+        # RAW mode internally), but set IFP output pad to UYVY to match pipeline.
+        # For normal modes: both pads use SENSOR_FMT.
+        if [ \"\$VFE_FMT\" = \"UYVY8_1X16\" ] && [ \"\$SENSOR_FMT\" != \"UYVY8_1X16\" ]; then
+            # RAW-through-PIX: sensor pad 0 = RAW (internal config), pad 1 = UYVY (pipeline)
+            media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":0[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
+            media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:\${VFE_FMT}/${width}x${height}]\" 2>&1 || true
+        else
+            media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
+        fi
 
         # Set CSIPHY format - use VFE_FMT for pipeline (UYVY for RAW-through-PIX)
         PIPE_FMT=\${VFE_FMT:-\$SENSOR_FMT}
