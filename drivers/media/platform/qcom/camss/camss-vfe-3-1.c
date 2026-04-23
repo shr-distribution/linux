@@ -6858,10 +6858,11 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
 
 	vfe31_dump_axi_wm_debug(vfe);
-	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
+	writel(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS | VFE_0_CAMIF_CMD_START,
+	       vfe->base + VFE_0_CAMIF_CMD);
 	/* Ensure all register writes complete before starting CAMIF */
 	wmb();
-	dev_info(vfe->camss->dev, "VFE31: CAMIF started\n");
+	dev_info(vfe->camss->dev, "VFE31: CAMIF started (CMD=0x5)\n");
 
 	/*
 	 * Step 14: Enable BUS power management (from webOS vfe31_capture)
