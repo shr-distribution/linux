@@ -1813,6 +1813,12 @@ main() {
             rdi1280-raw10)
                 MODE="rdi1280-raw10"
                 ;;
+            rawpix640)
+                MODE="rawpix640"
+                ;;
+            rawpix1280)
+                MODE="rawpix1280"
+                ;;
             video640)
                 MODE="video640"
                 ;;
@@ -1928,6 +1934,8 @@ main() {
                 echo "  rdi640-raw10 RDI mode at 640x480 (RAW10 Bayer via RAW-through-PIX)"
                 echo "  rdi1280    RDI mode at 1280x1024 (RAW8 Bayer via RAW-through-PIX)"
                 echo "  rdi1280-raw10 RDI mode at 1280x1024 (RAW10 Bayer via RAW-through-PIX)"
+                echo "  rawpix640  RAW via PIX node at 640x480 (sensor RAW, DEMUX disabled)"
+                echo "  rawpix1280 RAW via PIX node at 1280x1024 (sensor RAW, DEMUX disabled)"
                 echo "  video640   VIDEO mode at 640x480"
                 echo "  video1280  VIDEO mode at 1280x1024"
                 echo "  testgen640   TESTGEN mode at 640x480"
@@ -2183,6 +2191,22 @@ main() {
             ensure_camera_ready
             # RAW10 Bayer at 1280x1024 via RAW-through-PIX
             test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 pgAA
+            check_dmesg
+            ;;
+        rawpix640)
+            ensure_camera_ready
+            # RAW via PIX node: sensor outputs RAW, PIX path with DEMUX disabled
+            run_on_device "echo 1 > /sys/module/qcom_camss/parameters/vfe31_raw_pix_mode 2>/dev/null || true"
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 GRBG
+            run_on_device "echo 0 > /sys/module/qcom_camss/parameters/vfe31_raw_pix_mode 2>/dev/null || true"
+            check_dmesg
+            ;;
+        rawpix1280)
+            ensure_camera_ready
+            # RAW via PIX node: sensor outputs RAW, PIX path with DEMUX disabled
+            run_on_device "echo 1 > /sys/module/qcom_camss/parameters/vfe31_raw_pix_mode 2>/dev/null || true"
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 GRBG
+            run_on_device "echo 0 > /sys/module/qcom_camss/parameters/vfe31_raw_pix_mode 2>/dev/null || true"
             check_dmesg
             ;;
         video640)
