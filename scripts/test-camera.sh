@@ -1815,20 +1815,14 @@ main() {
             pix1280-nv16)
                 MODE="pix1280-nv16"
                 ;;
-            rdi640)
+            rdi640|rdi640-raw|rdi640-raw8)
                 MODE="rdi640"
-                ;;
-            rdi640-raw|rdi640-raw8)
-                MODE="rdi640-raw8"
                 ;;
             rdi640-raw10)
                 MODE="rdi640-raw10"
                 ;;
-            rdi1280)
+            rdi1280|rdi1280-raw|rdi1280-raw8)
                 MODE="rdi1280"
-                ;;
-            rdi1280-raw|rdi1280-raw8)
-                MODE="rdi1280-raw8"
                 ;;
             rdi1280-raw10)
                 MODE="rdi1280-raw10"
@@ -1944,12 +1938,10 @@ main() {
                 echo "Resolution-specific modes (NV12 - 4:2:0 default):"
                 echo "  pix640     PIX mode at 640x480"
                 echo "  pix1280    PIX mode at 1280x1024"
-                echo "  rdi640     RDI mode at 640x480 (UYVY, Context A)"
-                echo "  rdi640-raw8  RDI mode at 640x480 (RAW8 processed Bayer, Context A)"
-                echo "  rdi640-raw10 RDI mode at 640x480 (RAW10 true raw)"
-                echo "  rdi1280    RDI mode at 1280x1024 (UYVY, Context B)"
-                echo "  rdi1280-raw8  RDI mode at 1280x1024 (RAW8 processed Bayer, Context B)"
-                echo "  rdi1280-raw10 RDI mode at 1280x1024 (RAW10 true raw, RECOMMENDED)"
+                echo "  rdi640     RDI mode at 640x480 (RAW8 Bayer via RAW-through-PIX)"
+                echo "  rdi640-raw10 RDI mode at 640x480 (RAW10 Bayer via RAW-through-PIX)"
+                echo "  rdi1280    RDI mode at 1280x1024 (RAW8 Bayer via RAW-through-PIX)"
+                echo "  rdi1280-raw10 RDI mode at 1280x1024 (RAW10 Bayer via RAW-through-PIX)"
                 echo "  video640   VIDEO mode at 640x480"
                 echo "  video1280  VIDEO mode at 1280x1024"
                 echo "  testgen640   TESTGEN mode at 640x480"
@@ -2185,37 +2177,25 @@ main() {
             ;;
         rdi640)
             ensure_camera_ready
-            test_at_resolution 640 480 rdi video3 msm_csid1 msm_csiphy1 UYVY
-            check_dmesg
-            ;;
-        rdi640-raw8)
-            ensure_camera_ready
-            # RAW8 at 640x480 goes through IFP (processed Bayer, Context A)
+            # RAW8 Bayer at 640x480 via RAW-through-PIX
             test_at_resolution 640 480 rdi video3 msm_csid1 msm_csiphy1 GRBG
             check_dmesg
             ;;
         rdi640-raw10)
             ensure_camera_ready
-            # RAW10 at 640x480 - note: sensor outputs full resolution in RAW10,
-            # so this may still use Context B internally
+            # RAW10 Bayer at 640x480 via RAW-through-PIX
             test_at_resolution 640 480 rdi video3 msm_csid1 msm_csiphy1 pgAA
             check_dmesg
             ;;
         rdi1280)
             ensure_camera_ready
-            # UYVY at 1280x1024 uses Context B (full resolution)
-            test_at_resolution 1280 1024 rdi video3 msm_csid1 msm_csiphy1 UYVY
-            check_dmesg
-            ;;
-        rdi1280-raw8)
-            ensure_camera_ready
-            # RAW8 at 1280x1024 - MT9M113 Context B full resolution
+            # RAW8 Bayer at 1280x1024 via RAW-through-PIX
             test_at_resolution 1280 1024 rdi video3 msm_csid1 msm_csiphy1 GRBG
             check_dmesg
             ;;
         rdi1280-raw10)
             ensure_camera_ready
-            # RAW10 at 1280x1024 - MT9M113 Context B full resolution
+            # RAW10 Bayer at 1280x1024 via RAW-through-PIX
             test_at_resolution 1280 1024 rdi video3 msm_csid1 msm_csiphy1 pgAA
             check_dmesg
             ;;
