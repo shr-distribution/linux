@@ -477,6 +477,8 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		if (!ecc_disable)
 			val |= MIPI_PROTOCOL_CONTROL_ECC_EN_BMSK;
 		val |= (data_fmt << MIPI_PROTOCOL_CONTROL_DATA_FORMAT_SHFT);
+		/* Store for stream_on to re-apply after SW_RST */
+		csiphy->data_format = data_fmt;
 		dev_info(csiphy->camss->dev,
 			 "CSIPHY%d: PROTOCOL_CONTROL=0x%08x (ECC %s, data_fmt=%d)\n",
 			 csiphy->id, val, ecc_disable ? "DISABLED" : "enabled",

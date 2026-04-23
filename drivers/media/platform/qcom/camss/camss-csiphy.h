@@ -113,6 +113,8 @@ struct csiphy_device {
 	struct csiphy_device_regs *regs;
 	/* MSM8660: lanes configured during set_power to run before VFE s_stream */
 	bool lanes_enabled;
+	/* MIPI DATA_FORMAT (0=8bit, 1=10bit, 2=12bit) for PROTOCOL_CONTROL */
+	u8 data_format;
 };
 
 struct camss_subdev_resources;
