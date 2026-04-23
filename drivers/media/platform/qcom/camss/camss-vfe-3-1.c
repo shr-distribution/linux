@@ -6186,11 +6186,14 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		u32 axi_mode;
 
 		/*
-		 * All modes use PIX path (AXI=0x01). RDI raw capture uses
-		 * PIX with DEMUX disabled (RAW-through-PIX workaround).
-		 * AXI=0x60 is non-functional on APQ8060 VFE 3.1.
+		 * Samsung's actual RAW capture mode uses AXI=0x214101,
+		 * NOT 0x60. This is built on the PIX path (bit 0) with
+		 * extended raw routing bits (14, 16, 21). The 0x60
+		 * CAMIF_TO_AXI path is non-functional on APQ8060.
 		 */
-		if (zsl_active)
+		if (is_rdi)
+			axi_mode = 0x214101;  /* Samsung extended RAW */
+		else if (zsl_active)
 			axi_mode = 0x101;  /* ZSL dual output */
 		else
 			axi_mode = vfe31_axi_output_mode;
