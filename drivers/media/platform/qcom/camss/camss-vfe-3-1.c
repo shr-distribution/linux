@@ -3320,12 +3320,13 @@ static int vfe31_enable(struct vfe_line *line)
 
 	default:
 		/* Other formats: follow axi_mode setting */
-		if (axi_mode == 0x01) {
+		if (axi_mode == 0x01 && !vfe31_raw_pix_mode) {
 			output->wm_num = 2;
 			dev_info(vfe->camss->dev, "VFE31: PIX mode - using 2 WMs (Y+CbCr)\n");
 		} else {
 			output->wm_num = 1;
-			dev_info(vfe->camss->dev, "VFE31: Raw/RDI mode - using 1 WM\n");
+			dev_info(vfe->camss->dev, "VFE31: %s - using 1 WM\n",
+				 vfe31_raw_pix_mode ? "RAW-through-PIX" : "Raw/RDI");
 		}
 		break;
 	}
