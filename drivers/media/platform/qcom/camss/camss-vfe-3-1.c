@@ -4882,17 +4882,20 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	if (is_rdi_line && vfe->raw_through_pix) {
 		/*
 		 * RAW-through-PIX: RDI line routed through PIX path.
-		 * Use PIX bus config and AXI=0x01, but no XBAR/DEMUX
-		 * since raw data goes straight to WM0 as Y-only.
+		 * Use PIX bus config, AXI=0x01, and standard XBAR routing.
+		 * XBAR is still needed to route data to WM0, even though
+		 * DEMUX is disabled (MODULE_CFG=0). Without XBAR, data
+		 * has no path from the internal bus to the write master.
 		 */
+		u32 xbar_value = vfe31_calc_xbar(true, false, false);
+
 		dev_info(vfe->camss->dev,
-			 "VFE31: Step 1 - RAW-through-PIX: BUS_CFG=0x%08x, AXI=0x01\n",
-			 VFE_0_BUS_CFG_WEBOS_VALUE);
+			 "VFE31: Step 1 - RAW-through-PIX: BUS_CFG=0x%08x, AXI=0x01, XBAR=0x%06x\n",
+			 VFE_0_BUS_CFG_WEBOS_VALUE, xbar_value);
 		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
 		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-		/* XBAR zeroed - no DEMUX routing needed for raw */
-		writel_relaxed(0, vfe->base + VFE_0_BUS_XBAR_CFG1);
+		writel_relaxed(xbar_value, vfe->base + VFE_0_BUS_XBAR_CFG1);
 	} else if (axi_mode == VFE_0_BUS_AXI_OUT_MODE_RAW_WM0) {
 		/*
 		 * RDI mode (0x60): Raw bypass, configure based on format bit depth.
