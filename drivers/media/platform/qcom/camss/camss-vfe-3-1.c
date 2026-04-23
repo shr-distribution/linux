@@ -3670,9 +3670,15 @@ static int vfe31_enable(struct vfe_line *line)
 
 		/* Calculate configuration based on line type */
 		if (is_rdi_line) {
-			u8 bpp = camss_format_get_bpp(line->formats, line->nformats,
-						      line->fmt[MSM_VFE_PAD_SINK].code);
-			vfe31_calc_rdi_config(&cfg, width, height, bpp);
+			/*
+			 * RAW-through-PIX: Use PIX config for RDI since
+			 * data routes through the PIX path (AXI=0x01).
+			 * The PIX path uses UYVY stride (width*2) regardless
+			 * of actual sensor bit depth.
+			 */
+			vfe31_calc_pix_config(&cfg, width, height,
+					      width * 2, V4L2_PIX_FMT_NV12,
+					      2, 0);
 			cfg.path = line->id;
 		} else {
 			/*
