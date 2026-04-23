@@ -6348,15 +6348,14 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * RDI: Map RDI WM to composite group 1.
-			 * RDI0→WM2, RDI1→WM3, RDI2→WM6.
-			 * COMPOSITE_DONE_1 (IRQ bit 22) fires when WM completes.
+			 * RAW-through-PIX: RDI uses PIX path, so use PIX
+			 * composite mask. WM0+WM4 in group 0 (same as PIX).
 			 */
-			u32 comp_mask = (1 << (vfe->camif_pending_wm + 8));
+			u32 comp_mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: RDI COMPOSITE_MASK=0x%08x (WM%d->group1)\n",
-				 comp_mask, vfe->camif_pending_wm);
+				 "VFE31: RDI COMPOSITE_MASK=0x%08x (PIX mode, WM0+WM4->group0)\n",
+				 comp_mask);
 			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		} else {
 			/* PIX/VIDEO/ZSL mode - check which lines are active */
