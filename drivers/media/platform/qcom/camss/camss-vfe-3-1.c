@@ -5938,9 +5938,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			 *   Opal:    0x00000404 base, then adds bits 11, 22
 			 *   webOS:   same vfe_set_default_cmd code
 			 */
-			writel_relaxed(0x00000404, vfe->base + VFE_0_MODULE_CFG);
+			writel_relaxed(0x00400C04, vfe->base + VFE_0_MODULE_CFG);
 			dev_info(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x00000404 (RDI raw, path gates)\n");
+				 "VFE31: MODULE_CFG=0x00400C04 (RDI raw, Opal value)\n");
 		} else if (vfe31_raw_pix_mode) {
 			/*
 			 * RAW-through-PIX mode: Use PIX path but disable DEMUX.
