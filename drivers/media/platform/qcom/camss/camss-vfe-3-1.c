@@ -5457,8 +5457,12 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				u32 mask = 0;
 				const char *mode_str;
 
-				if (pix_active)
-					mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
+				if (pix_active) {
+					if (vfe31_raw_pix_mode && pix_out->wm_num == 1)
+						mask |= 0x01; /* WM0 only */
+					else
+						mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
+				}
 				if (zsl_active) {
 					if (zsl_out->wm_num == 2)
 						mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
