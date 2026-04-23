@@ -1724,12 +1724,11 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
  * Use 1 to match webOS runtime behavior (BIT(0) = enable).
  */
 /*
- * CAMIF_CMD_START = 0x5 per Samsung/webOS headers:
- *   Bit 0 = START (enable CAMIF)
- *   Bit 2 = CLEAR (clear CAMIF status counters)
- * Both bits must be set for proper CAMIF initialization.
+ * CAMIF_CMD_START: Samsung/webOS headers define 0x5 (START+CLEAR)
+ * but the actual kernel CODE in vfe31_start_common() writes 1.
+ * Use value 1 to match what the code actually does.
  */
-#define VFE_0_CAMIF_CMD_START			0x5
+#define VFE_0_CAMIF_CMD_START			0x1
 #define VFE_0_CAMIF_CMD_STOP_IMMEDIATELY	0x2
 #define VFE_0_CAMIF_CMD_STOP_AT_FRAME_BOUNDARY	0x0
 #define VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS	BIT(2)
@@ -6298,10 +6297,15 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			 * Both COMPOSITE_DONE_1 and WM0_PING_PONG are enabled so
 			 * whichever fires will trigger frame completion.
 			 */
-			vfe->irq_mask0_shadow = 0x00EFE021 |
-				VFE_0_IRQ_MASK_0_IMAGE_MASTER_n_PING_PONG(0);
+			/*
+			 * Use Samsung's exact IRQ_MASK_0 for raw snapshot:
+			 * 0x00E00021 = SOF + REG_UPDATE + COMP_DONE_0/1/2
+			 * Samsung does NOT enable individual WM ping-pong
+			 * or stats IRQ bits for raw mode.
+			 */
+			vfe->irq_mask0_shadow = 0x00E00021;
 			dev_info(vfe->camss->dev,
-				 "VFE31: RDI IRQ_MASK_0=0x%08x (COMPOSITE+WM0_PP)\n",
+				 "VFE31: RDI IRQ_MASK_0=0x%08x (Samsung raw)\n",
 				 vfe->irq_mask0_shadow);
 		} else {
 			/* PIX mode: Use webOS value with composite interrupts */
