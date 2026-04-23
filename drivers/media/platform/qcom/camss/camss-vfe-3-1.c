@@ -17,6 +17,7 @@
 #include <linux/ktime.h>
 #include <linux/math64.h>
 #include <linux/module.h>
+#include <linux/of.h>
 
 #include "camss.h"
 
@@ -3642,7 +3643,9 @@ static int vfe31_enable(struct vfe_line *line)
 	 * Both 0x01 (OUTPUT_1_AND_3) and 0x200 (OUTPUT_2) use the ISP pipeline.
 	 * For RDI mode (axi=0x60), data bypasses the ISP entirely.
 	 */
-	if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE || axi_mode == 0x200) {
+	if (is_rdi_line && vfe->raw_through_pix) {
+		dev_info(vfe->camss->dev, "VFE31: Step 1b - Skip ISP config (RAW-through-PIX)\n");
+	} else if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE || axi_mode == 0x200) {
 		dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure demux/scale/crop (axi=0x%x)\n", axi_mode);
 		vfe31_set_demux_cfg(vfe, line);
 		vfe31_set_scale_cfg(vfe, line);
@@ -4513,10 +4516,14 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 */
 	rdi_use_16bpp = is_rdi_line && vfe31_rdi_force_16bpp;
 
-	if (is_rdi_line)
-		axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0;  /* 0x60 */
-	else
+	if (is_rdi_line) {
+		if (vfe->raw_through_pix)
+			axi_mode = VFE_0_BUS_XBAR_CFG0_PIX_MODE; /* 0x01 */
+		else
+			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0; /* 0x60 */
+	} else {
 		axi_mode = vfe31_axi_output_mode;
+	}
 
 	dev_info(vfe->camss->dev,
 		 "VFE31: Starting CAMIF for WM%d line%d (fmt %ux%u code=0x%x axi=0x%x)\n",
@@ -4553,7 +4560,21 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 * BUS_CFG at 0x03C must be set to enable the write paths.
 	 * webOS uses 0x02AAA771 which enables view/enc Y/CbCr paths.
 	 */
-	if (axi_mode == VFE_0_BUS_AXI_OUT_MODE_RAW_WM0) {
+	if (is_rdi_line && vfe->raw_through_pix) {
+		/*
+		 * RAW-through-PIX: RDI line routed through PIX path.
+		 * Use PIX bus config and AXI=0x01, but no XBAR/DEMUX
+		 * since raw data goes straight to WM0 as Y-only.
+		 */
+		dev_info(vfe->camss->dev,
+			 "VFE31: Step 1 - RAW-through-PIX: BUS_CFG=0x%08x, AXI=0x01\n",
+			 VFE_0_BUS_CFG_WEBOS_VALUE);
+		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
+		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
+			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+		/* XBAR zeroed - no DEMUX routing needed for raw */
+		writel_relaxed(0, vfe->base + VFE_0_BUS_XBAR_CFG1);
+	} else if (axi_mode == VFE_0_BUS_AXI_OUT_MODE_RAW_WM0) {
 		/*
 		 * RDI mode (0x60): Raw bypass, configure based on format bit depth.
 		 * BUS_CFG RAW pixel size field (bits 2-3) must match the format:
@@ -5922,23 +5943,22 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
 
-		if (is_rdi) {
+		if (is_rdi && vfe->raw_through_pix) {
 			/*
-			 * RDI raw bypass: MODULE_CFG=0x00000404
-			 *
-			 * Cross-vendor confirmed minimum for AXI=0x60 raw bypass.
-			 * Bits 2 (DEMUX) and 10 (CHROMA_ENHAN) are internal data
-			 * path routing gates that must remain enabled even for raw
-			 * mode. Without them, CAMIF data cannot reach the AXI bridge.
-			 *
-			 * All vendors set these in vfe_set_default_cmd(buf, 5):
-			 *   Samsung: 0x00000404 (bits 2, 10)
-			 *   Opal:    0x00000404 base, then adds bits 11, 22
-			 *   webOS:   same vfe_set_default_cmd code
+			 * RAW-through-PIX: disable all ISP modules.
+			 * Raw data passes through PIX path without processing.
+			 */
+			writel_relaxed(0, vfe->base + VFE_0_MODULE_CFG);
+			dev_info(vfe->camss->dev,
+				 "VFE31: MODULE_CFG=0x0 (RAW-through-PIX)\n");
+		} else if (is_rdi) {
+			/*
+			 * RDI raw bypass (AXI=0x60): MODULE_CFG with
+			 * internal data path gates enabled for raw mode.
 			 */
 			writel_relaxed(0x00400C04, vfe->base + VFE_0_MODULE_CFG);
 			dev_info(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x00400C04 (RDI raw, Opal value)\n");
+				 "VFE31: MODULE_CFG=0x00400C04 (RDI raw)\n");
 		} else if (vfe31_raw_pix_mode) {
 			/*
 			 * RAW-through-PIX mode: Use PIX path but disable DEMUX.
@@ -6179,8 +6199,10 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		bool zsl_active = (vfe31_zsl_state != VFE31_REC_IDLE);
 		u32 axi_mode;
 
-		if (is_rdi)
-			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0;
+		if (is_rdi && vfe->raw_through_pix)
+			axi_mode = VFE_0_BUS_XBAR_CFG0_PIX_MODE; /* 0x01 */
+		else if (is_rdi)
+			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0; /* 0x60 */
 		else if (zsl_active)
 			axi_mode = 0x101;  /* ZSL dual output */
 		else
@@ -6188,12 +6210,16 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		dev_info(vfe->camss->dev,
 			 "VFE31: AXI_OUT_MODE=0x%x (%s)\n",
-			 axi_mode, is_rdi ? "RDI raw bypass" :
+			 axi_mode,
+			 (is_rdi && vfe->raw_through_pix) ? "RAW-through-PIX" :
+			 is_rdi ? "RDI raw bypass" :
 			 zsl_active ? "ZSL dual" : "PIX/DEMUX");
 		writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
-		/* Only configure XBAR for PIX mode - RDI bypasses XBAR */
-		if (!is_rdi)
+		/* Configure XBAR for PIX mode (not for RDI bypass) */
+		if (is_rdi && !vfe->raw_through_pix) {
+			/* RDI 0x60 bypasses XBAR - no config needed */
+		} else if (!is_rdi)
 		{
 			u32 xbar_val;
 
@@ -6224,7 +6250,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
 		u32 bus_cfg;
 
-		if (is_rdi) {
+		if (is_rdi && !vfe->raw_through_pix) {
 			u8 raw_bpp = camss_format_get_bpp(line->formats,
 							  line->nformats,
 							  line->fmt[MSM_VFE_PAD_SINK].code);
@@ -6235,7 +6261,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		} else {
 			bus_cfg = vfe31_get_bus_cfg();
 			dev_info(vfe->camss->dev,
-				 "VFE31: BUS_CFG=0x%08x (PIX/VIDEO)\n", bus_cfg);
+				 "VFE31: BUS_CFG=0x%08x (%s)\n", bus_cfg,
+				 (is_rdi && vfe->raw_through_pix) ?
+				 "RAW-through-PIX" : "PIX/VIDEO");
 		}
 		writel_relaxed(bus_cfg, vfe->base + VFE_0_BUS_CFG);
 	}
@@ -6269,21 +6297,16 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
 
-		if (is_rdi) {
+		if (is_rdi && vfe->raw_through_pix) {
+			/* RAW-through-PIX: use PIX IRQ config */
+			vfe->irq_mask0_shadow = 0x00EFE021;
+			dev_info(vfe->camss->dev,
+				 "VFE31: RAW-through-PIX IRQ_MASK_0=0x%08x\n",
+				 vfe->irq_mask0_shadow);
+		} else if (is_rdi) {
 			/*
-			 * RDI mode: Use PIX IRQ_MASK_0 plus WM0 PING_PONG.
-			 *
-			 * In raw bypass (AXI=0x60, MODULE_CFG=0), the ISP pipeline
-			 * is disabled so COMPOSITE_DONE may not fire. Enable the
-			 * individual WM0 PING_PONG interrupt (bit 8) as fallback.
-			 * Both COMPOSITE_DONE_1 and WM0_PING_PONG are enabled so
-			 * whichever fires will trigger frame completion.
-			 */
-			/*
-			 * Use Samsung's exact IRQ_MASK_0 for raw snapshot:
+			 * RDI mode (AXI=0x60): Samsung's exact IRQ_MASK_0
 			 * 0x00E00021 = SOF + REG_UPDATE + COMP_DONE_0/1/2
-			 * Samsung does NOT enable individual WM ping-pong
-			 * or stats IRQ bits for raw mode.
 			 */
 			vfe->irq_mask0_shadow = 0x00E00021;
 			dev_info(vfe->camss->dev,
@@ -6335,9 +6358,18 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
 
-		if (is_rdi) {
+		if (is_rdi && vfe->raw_through_pix) {
 			/*
-			 * RDI: Map WM0 to composite group 1.
+			 * RAW-through-PIX: WM0 in group 0 (like PIX).
+			 * 0x01 = WM0 triggers COMPOSITE_DONE_0.
+			 */
+			writel_relaxed(0x01,
+				       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+			dev_info(vfe->camss->dev,
+				 "VFE31: RAW-through-PIX COMPOSITE_MASK=0x01\n");
+		} else if (is_rdi) {
+			/*
+			 * RDI (AXI=0x60): Map WM to composite group 1.
 			 * COMPOSITE_DONE_1 fires when WM completes.
 			 */
 			u32 comp_mask = (1 << (vfe->camif_pending_wm + 8));
@@ -6787,6 +6819,12 @@ static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
 			dev_warn(dev, "VFE31: Failed to allocate dummy buffer\n");
 		}
 	}
+
+	/* Check DT for RAW-through-PIX mode (APQ8060 AXI=0x60 workaround) */
+	vfe->raw_through_pix = of_property_read_bool(dev->of_node,
+						     "qcom,vfe31-raw-through-pix");
+	if (vfe->raw_through_pix)
+		dev_info(dev, "VFE31: RAW-through-PIX mode enabled via DT\n");
 
 	dev_info(dev, "VFE31 subdev_init: complete\n");
 }
