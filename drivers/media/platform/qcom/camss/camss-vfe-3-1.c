@@ -503,7 +503,7 @@ static void vfe31_calc_rdi_config(struct vfe31_line_config *cfg,
 	cfg->y_plane_size = stride * height;
 	cfg->cbcr_offset = 0;
 	cfg->has_cbcr = false;
-	cfg->axi_mode = 0x60;  /* CAMIF_TO_AXI raw bypass */
+	cfg->axi_mode = 0x01;  /* RAW-through-PIX (AXI=0x60 non-functional) */
 	cfg->xbar_value = 0;   /* XBAR not used in RDI mode */
 	cfg->chroma_v_out = 0;
 	cfg->chroma_subs_cfg = 0;
@@ -3241,11 +3241,16 @@ static int vfe31_enable(struct vfe_line *line)
 			    line->id == VFE_LINE_RDI2);
 
 	if (is_rdi_line) {
-		/* RDI: CAMIF_TO_AXI raw bypass with BUS_CMD reload */
-		axi_mode = 0x60;
+		/*
+		 * RAW-through-PIX: Use PIX path for raw capture.
+		 * AXI=0x60 (CAMIF_TO_AXI) is non-functional on APQ8060.
+		 * Samsung's 0x214101 is a HAL command format, not a register
+		 * value (hardware masks to 0x60). Use standard PIX mode.
+		 */
+		axi_mode = vfe31_axi_output_mode;
 		dev_info(vfe->camss->dev,
-			 "VFE31: RDI line %d - raw bypass (axi=0x60)\n",
-			 line->id);
+			 "VFE31: RDI line %d - RAW-through-PIX (axi=0x%x)\n",
+			 line->id, axi_mode);
 	} else {
 		/* PIX/VIDEO lines use module parameter */
 		axi_mode = vfe31_axi_output_mode;
@@ -3665,10 +3670,15 @@ static int vfe31_enable(struct vfe_line *line)
 
 		/* Calculate configuration based on line type */
 		if (is_rdi_line) {
-			u8 bpp = camss_format_get_bpp(line->formats, line->nformats,
-						      line->fmt[MSM_VFE_PAD_SINK].code);
-
-			vfe31_calc_rdi_config(&cfg, width, height, bpp);
+			/*
+			 * RAW-through-PIX: Use PIX config for RDI since
+			 * data routes through the PIX path (AXI=0x01).
+			 * The PIX path uses UYVY stride (width*2) regardless
+			 * of actual sensor bit depth.
+			 */
+			vfe31_calc_pix_config(&cfg, width, height,
+					      width * 2, V4L2_PIX_FMT_NV12,
+					      2, 0);
 			cfg.path = line->id;
 		} else {
 			/*
@@ -6048,19 +6058,24 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * webOS PIX mode uses 0x46 (UYVY pattern + bit 6).
 	 */
 	/*
-	 * Input mux enable (bit 6): Only for PIX/VIDEO modes.
-	 * Bit 6 routes CAMIF data into the DEMUX/ISP pipeline.
-	 * For raw bypass (AXI=0x60), Samsung/Opal explicitly clear
-	 * bit 6. Raw data goes directly from CAMIF to AXI bus.
+	 * INPUT_MUX_ENABLE (bit 6): Always set for all modes.
+	 * RDI uses RAW-through-PIX workaround (AXI=0x01) which
+	 * requires the input mux to route data into the VFE pipeline.
+	 *
+	 * For RDI, also override pixel pattern to UYVY (0x6) since
+	 * the PIX path expects UYVY-formatted input. The raw Bayer
+	 * data will be interpreted as UYVY by the CAMIF but with
+	 * DEMUX disabled (MODULE_CFG=0) it passes through as-is.
 	 */
 	{
 		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
 
-		if (!is_rdi)
-			val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
+		if (is_rdi)
+			val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
 	}
+	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
 
 	/*
@@ -6106,12 +6121,23 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * CAMIF_CFG = 0x10 for raw snapshot mode.
-			 * Confirmed from Opal/Samsung HALs.
+			 * RAW-through-PIX workaround: Use PIX path (camif2vfe)
+			 * for RDI raw capture. The AXI=0x60 CAMIF_TO_AXI raw
+			 * bypass path is non-functional on APQ8060 VFE 3.1.
+			 *
+			 * Proven by exhaustive testing:
+			 * - All Samsung/Opal register values matched exactly
+			 * - Hot-switch from active PIX streaming failed
+			 * - CAMIF_CFG=0x10/0x50, REG_UPDATE=0x1/0x7 all tried
+			 * - CSIPHY DATA_FORMAT fixed for RAW10
+			 *
+			 * RAW-through-PIX works: sensor outputs RAW10, VFE
+			 * routes through PIX path with DEMUX disabled. WM0
+			 * captures raw Bayer data. Verified with real images.
 			 */
-			camif_cfg = 0x10;
+			camif_cfg = VFE_0_CAMIF_CFG_CAMIF2VFE;
 			dev_info(vfe->camss->dev,
-				 "VFE31: CAMIF_CFG=0x%02x (raw snapshot mode)\n",
+				 "VFE31: CAMIF_CFG=0x%02x (RAW-through-PIX workaround)\n",
 				 camif_cfg);
 		} else {
 			/* PIX/VIDEO: route CAMIF data to VFE ISP pipeline */
@@ -6184,30 +6210,26 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		u32 axi_mode;
 
 		/*
-		 * RDI: Use AXI=0x60 (CAMIF_TO_AXI raw bypass) with
-		 * atomic BUS_CMD reload. Samsung/HTC/Opal all write
-		 * BUS_CMD=0x3FFF together with AXI_OUT_MODE=0x60 in the
-		 * same blob, so the WM reload happens atomically with
-		 * the AXI mode switch. Without this reload, the AXI
-		 * bridge may not connect to WM0.
+		 * All modes use PIX path (AXI=0x01). RDI raw capture uses
+		 * PIX with DEMUX disabled (RAW-through-PIX workaround).
+		 *
+		 * AXI=0x60 (CAMIF_TO_AXI) is non-functional on APQ8060.
+		 * Samsung's 0x214101 is a HAL command format that the HW
+		 * masks to 0x60 (confirmed by register readback).
 		 */
-		if (is_rdi) {
-			/* Write BUS_CMD + BUS_CFG + AXI_OUT_MODE atomically */
-			writel_relaxed(0x3FFF, vfe->base + VFE_0_BUS_CMD);
-			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0;
-		} else if (zsl_active)
+		if (zsl_active)
 			axi_mode = 0x101;  /* ZSL dual output */
 		else
 			axi_mode = vfe31_axi_output_mode;
 
 		dev_info(vfe->camss->dev,
 			 "VFE31: AXI_OUT_MODE=0x%x (%s)\n",
-			 axi_mode, is_rdi ? "RDI raw bypass" :
+			 axi_mode, is_rdi ? "RDI via PIX" :
 			 zsl_active ? "ZSL dual" : "PIX/DEMUX");
 		writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
-		/* Only configure XBAR for PIX mode - RDI bypasses XBAR */
-		if (!is_rdi) {
+		/* Configure XBAR for all modes (RDI also uses PIX path) */
+		{
 			u32 xbar_val;
 
 			if (vfe31_xbar_cfg1 != 0) {
@@ -6237,7 +6259,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
 		u32 bus_cfg;
 
-		if (is_rdi) {
+		if (0) { /* RDI BUS_CFG disabled - using PIX path */
 			u8 raw_bpp = camss_format_get_bpp(line->formats,
 							  line->nformats,
 							  line->fmt[MSM_VFE_PAD_SINK].code);
@@ -6345,14 +6367,14 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * RDI: Map WM0 to composite group 1.
-			 * COMPOSITE_DONE_1 (IRQ bit 22) fires when WM completes.
+			 * RAW-through-PIX: RDI uses PIX path, so use PIX
+			 * composite mask. WM0+WM4 in group 0 (same as PIX).
 			 */
-			u32 comp_mask = (1 << (vfe->camif_pending_wm + 8));
+			u32 comp_mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: RDI COMPOSITE_MASK=0x%08x (WM%d->group1)\n",
-				 comp_mask, vfe->camif_pending_wm);
+				 "VFE31: RDI COMPOSITE_MASK=0x%08x (PIX mode, WM0+WM4->group0)\n",
+				 comp_mask);
 			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		} else {
 			/* PIX/VIDEO/ZSL mode - check which lines are active */
