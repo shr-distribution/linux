@@ -2204,6 +2204,7 @@ static inline void vfe31_reg_update_clear(struct vfe_device *vfe,
 static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line);
 static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line);
 static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line);
+static void vfe31_set_isp_modules(struct vfe_device *vfe, struct vfe_line *line);
 
 /*
  * vfe31_get_cbcr_offset - Calculate CbCr plane offset for semi-planar formats
