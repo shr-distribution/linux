@@ -4873,13 +4873,12 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 * configuring. RDI needs camif2bus from the start, not just
 	 * at enable_pending_camif time.
 	 */
-	if (is_rdi_line) {
-		dev_info(vfe->camss->dev, "VFE31: CAMIF_CFG=0x80 (camif2bus early for RDI)\n");
-		writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2BUS, vfe->base + VFE_0_CAMIF_CFG);
-	} else {
-		dev_info(vfe->camss->dev, "VFE31: CAMIF_CFG=0x40 (camif2vfe for PIX)\n");
-		writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE, vfe->base + VFE_0_CAMIF_CFG);
-	}
+	/*
+	 * EFS_CFG (0x1E4): webOS uses 0x40 for all modes.
+	 * Bit 6 enables MIPI APS (Automatic Packet Sync) mode.
+	 */
+	dev_info(vfe->camss->dev, "VFE31: EFS_CFG=0x40 (MIPI APS mode)\n");
+	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE, vfe->base + VFE_0_CAMIF_CFG);
 
 	/*
 	 * VFE31 CAMIF register layout (based on WebOS register dump):
@@ -6101,19 +6100,20 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi) {
 			/*
-			 * RDI raw bypass: 0x1E4 is EFS_CFG on VFE31
-			 * (NOT camif2vfe/camif2bus which are VFE8x only).
-			 * Samsung/Opal HAL uses 0x10 (bit 4) for raw mode.
+			 * RDI raw bypass: 0x1E4 is EFS_CFG on VFE31.
+			 * webOS uses 0x40 for ALL modes (PIX and raw).
+			 * Samsung HAL uses 0x10 for raw, but that's for
+			 * parallel sensors - MIPI needs 0x40 (APS mode).
 			 */
-			camif_cfg = 0x10;
+			camif_cfg = 0x40;
 			dev_info(vfe->camss->dev,
-				 "VFE31: CAMIF_CFG=0x%02x (raw snapshot mode)\n",
+				 "VFE31: CAMIF_CFG=0x%02x (MIPI APS mode)\n",
 				 camif_cfg);
 		} else {
-			/* PIX/VIDEO: route CAMIF data to VFE ISP pipeline */
+			/* PIX/VIDEO: same EFS_CFG as webOS (0x40) */
 			camif_cfg = VFE_0_CAMIF_CFG_CAMIF2VFE;
 			dev_info(vfe->camss->dev,
-				 "VFE31: CAMIF_CFG=0x%02x (camif2vfe for PIX)\n",
+				 "VFE31: CAMIF_CFG=0x%02x (MIPI APS for PIX)\n",
 				 camif_cfg);
 		}
 		writel_relaxed(camif_cfg, vfe->base + VFE_0_CAMIF_CFG);
