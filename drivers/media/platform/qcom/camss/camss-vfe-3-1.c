@@ -3646,10 +3646,11 @@ static int vfe31_enable(struct vfe_line *line)
 	if (is_rdi_line && vfe->raw_through_pix) {
 		dev_info(vfe->camss->dev, "VFE31: Step 1b - Skip ISP config (RAW-through-PIX)\n");
 	} else if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE || axi_mode == 0x200) {
-		dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure demux/scale/crop (axi=0x%x)\n", axi_mode);
+		dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure ISP pipeline (axi=0x%x)\n", axi_mode);
 		vfe31_set_demux_cfg(vfe, line);
 		vfe31_set_scale_cfg(vfe, line);
 		vfe31_set_crop_cfg(vfe, line);
+		vfe31_set_isp_modules(vfe, line);
 	} else {
 		dev_info(vfe->camss->dev, "VFE31: Step 1b - Skip ISP config (RDI mode)\n");
 	}
@@ -4124,6 +4125,323 @@ static int vfe31_disable(struct vfe_line *line)
 	vfe31_pix_wm_pending = false;
 
 	return 0;
+}
+
+/*
+ * VFE31 ISP Module Configuration Functions
+ *
+ * These configure the ISP processing pipeline for YUV data from the sensor.
+ * Register values are identity/passthrough defaults that can be tuned later
+ * via V4L2 controls. The MT9M113 outputs UYVY so Bayer-specific modules
+ * (black level, rolloff, demosaic, ABF, color correction) are not configured.
+ *
+ * Processing pipeline order (YUV path):
+ *   DEMUX → Chroma Enhancement → Chroma Suppression → MCE → SCE →
+ *   ASF → Luma Adaptation → Gamma → Scale → Crop → Clamp → Output
+ */
+
+/* Register offsets for ISP modules */
+#define VFE31_CHROMA_EN_OFF		0x3C4
+#define VFE31_CHROMA_EN_LEN		36	/* 9 x 32-bit registers */
+#define VFE31_CHROMA_SUP_OFF		0x3E8
+#define VFE31_CHROMA_SUP_LEN		12	/* 3 x 32-bit registers */
+#define VFE31_MCE_OFF			0x3F4
+#define VFE31_MCE_LEN			36	/* 9 x 32-bit registers */
+#define VFE31_SCE_OFF			0x418
+#define VFE31_SCE_LEN			136	/* 34 x 32-bit registers */
+#define VFE31_ASF_OFF			0x4A0
+#define VFE31_ASF_LEN			48	/* 12 x 32-bit registers */
+#define VFE31_LA_OFF			0x3C0
+#define VFE31_GAMMA_CFG_OFF		0x3BC
+#define VFE31_COLOR_COR_OFF		0x388
+#define VFE31_COLOR_COR_LEN		52	/* 13 x 32-bit registers */
+#define VFE31_BLACK_LEVEL_OFF		0x264
+#define VFE31_BLACK_LEVEL_LEN		16	/* 4 x 32-bit registers */
+
+/* DMI (Data Memory Interface) registers */
+#define VFE31_DMI_CFG			0x598
+#define VFE31_DMI_ADDR			0x59C
+#define VFE31_DMI_DATA_HI		0x5A0
+#define VFE31_DMI_DATA_LO		0x5A4
+
+/* DMI RAM bank select values */
+#define VFE31_DMI_NO_MEM_SELECTED	0
+#define VFE31_DMI_RGBLUT_RAM_CH0_BANK0	0x1
+#define VFE31_DMI_RGBLUT_RAM_CH0_BANK1	0x2
+#define VFE31_DMI_RGBLUT_RAM_CH1_BANK0	0x3
+#define VFE31_DMI_RGBLUT_RAM_CH1_BANK1	0x4
+#define VFE31_DMI_RGBLUT_RAM_CH2_BANK0	0x5
+#define VFE31_DMI_RGBLUT_RAM_CH2_BANK1	0x6
+#define VFE31_DMI_LUMA_ADAPT_LUT_BANK0	0xB
+#define VFE31_DMI_LUMA_ADAPT_LUT_BANK1	0xC
+#define VFE31_DMI_ROLLOFF_RAM		0x1
+
+/* Number of gamma LUT entries (packed as 2 per 32-bit word) */
+#define VFE31_GAMMA_NUM_ENTRIES		64
+
+static void vfe31_program_dmi_cfg(struct vfe_device *vfe, u8 bank_sel)
+{
+	/* Bit 8 = auto-increment address */
+	writel_relaxed(0x100 | bank_sel, vfe->base + VFE31_DMI_CFG);
+	writel_relaxed(0, vfe->base + VFE31_DMI_ADDR);
+}
+
+/*
+ * Chroma Enhancement (Color Conversion Matrix)
+ * Register block at 0x3C4, 9 x 32-bit words
+ * MODULE_CFG bit 10 (already enabled in 0x01C00C0C)
+ *
+ * For YUV input, use identity matrix (passthrough).
+ * The coefficients are in Q8 format (8 fractional bits).
+ */
+static void vfe31_set_chroma_enhan_cfg(struct vfe_device *vfe)
+{
+	/*
+	 * Identity chroma enhancement for YUV passthrough:
+	 * am=0x80 (1.0), ap=0x80 (1.0), bm=bp=cm=cp=dm=dp=0
+	 * kcr=0x80 (128), kcb=0x80 (128)
+	 * RGBtoY: V0=0x4D (0.299), V1=0x96 (0.587), V2=0x1D (0.114)
+	 * Offset=0
+	 *
+	 * Register layout (from msm_vfe31.h struct vfe_cmd_chroma_enhan_config):
+	 *   Word 0: [15:0]=am, [31:16]=ap
+	 *   Word 1: [15:0]=bm, [31:16]=bp
+	 *   Word 2: [15:0]=cm, [31:16]=cp
+	 *   Word 3: [15:0]=dm, [31:16]=dp
+	 *   Word 4: [15:0]=kcb, [31:16]=kcr
+	 *   Word 5: [15:0]=V0, [31:16]=V1
+	 *   Word 6: [15:0]=V2, [31:16]=offset
+	 *   Words 7-8: reserved
+	 */
+	writel_relaxed(0x00800080, vfe->base + VFE31_CHROMA_EN_OFF + 0x00);
+	writel_relaxed(0x00000000, vfe->base + VFE31_CHROMA_EN_OFF + 0x04);
+	writel_relaxed(0x00000000, vfe->base + VFE31_CHROMA_EN_OFF + 0x08);
+	writel_relaxed(0x00000000, vfe->base + VFE31_CHROMA_EN_OFF + 0x0C);
+	writel_relaxed(0x00800080, vfe->base + VFE31_CHROMA_EN_OFF + 0x10);
+	writel_relaxed(0x0096004D, vfe->base + VFE31_CHROMA_EN_OFF + 0x14);
+	writel_relaxed(0x0000001D, vfe->base + VFE31_CHROMA_EN_OFF + 0x18);
+	writel_relaxed(0x00000000, vfe->base + VFE31_CHROMA_EN_OFF + 0x1C);
+	writel_relaxed(0x00000000, vfe->base + VFE31_CHROMA_EN_OFF + 0x20);
+}
+
+/*
+ * Chroma Suppression (Chroma Noise Reduction)
+ * Register block at 0x3E8, 3 x 32-bit words
+ * MODULE_CFG bit 11 (already enabled in 0x01C00C0C)
+ *
+ * Default: mild suppression that reduces chroma noise without
+ * affecting saturated colors.
+ */
+static void vfe31_set_chroma_sup_cfg(struct vfe_device *vfe)
+{
+	/*
+	 * Register layout:
+	 *   Word 0: [7:0]=m1 (Cb threshold), [15:8]=m3 (Cr threshold),
+	 *           [23:16]=n1 (Cb clip), [31:24]=n3 (Cr clip)
+	 *   Word 1: [7:0]=nn1 (negative Cb clip), [15:8]=mm1 (negative Cr clip)
+	 *   Word 2: enable bits
+	 *
+	 * Use high thresholds for passthrough (no suppression):
+	 */
+	writel_relaxed(0xFFFF00FF, vfe->base + VFE31_CHROMA_SUP_OFF + 0x00);
+	writel_relaxed(0x000000FF, vfe->base + VFE31_CHROMA_SUP_OFF + 0x04);
+	writel_relaxed(0x00000001, vfe->base + VFE31_CHROMA_SUP_OFF + 0x08);
+}
+
+/*
+ * ASF - Adaptive Spatial Filter (Sharpening)
+ * Register block at 0x4A0, 12 x 32-bit words
+ * Controlled by its own enable bit in the register, not MODULE_CFG
+ *
+ * Default: disabled (no sharpening). Can be enabled via V4L2 control.
+ */
+static void vfe31_set_asf_cfg(struct vfe_device *vfe)
+{
+	int i;
+
+	/* Write all zeros (disabled) */
+	for (i = 0; i < VFE31_ASF_LEN / 4; i++)
+		writel_relaxed(0, vfe->base + VFE31_ASF_OFF + i * 4);
+}
+
+/*
+ * Gamma Correction (Tone Mapping)
+ * Config register at 0x3BC, LUT via DMI RAM
+ * MODULE_CFG bit 17 (not enabled by default)
+ *
+ * Programs a linear (identity) gamma table. Can be replaced with
+ * sRGB or custom curves via V4L2 control.
+ */
+static void vfe31_set_gamma_cfg(struct vfe_device *vfe)
+{
+	int ch, i;
+	static const u8 dmi_banks[] = {
+		VFE31_DMI_RGBLUT_RAM_CH0_BANK0,
+		VFE31_DMI_RGBLUT_RAM_CH1_BANK0,
+		VFE31_DMI_RGBLUT_RAM_CH2_BANK0,
+	};
+
+	/* Bank select = 0 (use bank 0) */
+	writel_relaxed(0, vfe->base + VFE31_GAMMA_CFG_OFF);
+
+	/* Program linear gamma LUT for all 3 channels (R, G, B) */
+	for (ch = 0; ch < 3; ch++) {
+		vfe31_program_dmi_cfg(vfe, dmi_banks[ch]);
+
+		/*
+		 * 64 entries, packed 2 per 32-bit word = 32 words.
+		 * Each entry is 8-bit: entry[i] = i * 4 (linear ramp 0-252).
+		 * Packed as [15:0]=even, [31:16]=odd.
+		 */
+		for (i = 0; i < VFE31_GAMMA_NUM_ENTRIES / 2; i++) {
+			u16 even = (i * 2) * 4;
+			u16 odd = (i * 2 + 1) * 4;
+
+			if (even > 255)
+				even = 255;
+			if (odd > 255)
+				odd = 255;
+			writel_relaxed((odd << 16) | even,
+				       vfe->base + VFE31_DMI_DATA_LO);
+		}
+
+		vfe31_program_dmi_cfg(vfe, VFE31_DMI_NO_MEM_SELECTED);
+	}
+}
+
+/*
+ * Luma Adaptation (Adaptive Brightness)
+ * Config register at 0x3C0, LUT via DMI RAM
+ * MODULE_CFG bit 16 (not enabled by default)
+ *
+ * Programs a linear (identity) LA table.
+ */
+static void vfe31_set_la_cfg(struct vfe_device *vfe)
+{
+	int i;
+
+	/* Bank select = 0 */
+	writel_relaxed(0, vfe->base + VFE31_LA_OFF);
+
+	vfe31_program_dmi_cfg(vfe, VFE31_DMI_LUMA_ADAPT_LUT_BANK0);
+
+	/*
+	 * 64 entries, packed 2 per 32-bit word = 32 words.
+	 * Linear identity: entry[i] = i * 4.
+	 */
+	for (i = 0; i < 32; i++) {
+		u16 even = (i * 2) * 4;
+		u16 odd = (i * 2 + 1) * 4;
+
+		if (even > 255)
+			even = 255;
+		if (odd > 255)
+			odd = 255;
+		writel_relaxed((odd << 16) | even,
+			       vfe->base + VFE31_DMI_DATA_LO);
+	}
+
+	vfe31_program_dmi_cfg(vfe, VFE31_DMI_NO_MEM_SELECTED);
+}
+
+/*
+ * Color Correction Matrix
+ * Register block at 0x388, 13 x 32-bit words
+ * MODULE_CFG bit 1 (not enabled by default for YUV)
+ *
+ * Identity matrix for passthrough. Only useful for Bayer sensors.
+ */
+static void vfe31_set_color_cor_cfg(struct vfe_device *vfe)
+{
+	/*
+	 * 3x3 identity matrix in Q7 format:
+	 *   C0=0x80(1.0) C1=0 C2=0
+	 *   C3=0 C4=0x80(1.0) C5=0
+	 *   C6=0 C7=0 C8=0x80(1.0)
+	 * K0=K1=K2=0 (offsets), Q-factor=7
+	 */
+	writel_relaxed(0x0080, vfe->base + VFE31_COLOR_COR_OFF + 0x00); /* C0 */
+	writel_relaxed(0x0000, vfe->base + VFE31_COLOR_COR_OFF + 0x04); /* C1 */
+	writel_relaxed(0x0000, vfe->base + VFE31_COLOR_COR_OFF + 0x08); /* C2 */
+	writel_relaxed(0x0000, vfe->base + VFE31_COLOR_COR_OFF + 0x0C); /* C3 */
+	writel_relaxed(0x0080, vfe->base + VFE31_COLOR_COR_OFF + 0x10); /* C4 */
+	writel_relaxed(0x0000, vfe->base + VFE31_COLOR_COR_OFF + 0x14); /* C5 */
+	writel_relaxed(0x0000, vfe->base + VFE31_COLOR_COR_OFF + 0x18); /* C6 */
+	writel_relaxed(0x0000, vfe->base + VFE31_COLOR_COR_OFF + 0x1C); /* C7 */
+	writel_relaxed(0x0080, vfe->base + VFE31_COLOR_COR_OFF + 0x20); /* C8 */
+	writel_relaxed(0x0000, vfe->base + VFE31_COLOR_COR_OFF + 0x24); /* K0 */
+	writel_relaxed(0x0000, vfe->base + VFE31_COLOR_COR_OFF + 0x28); /* K1 */
+	writel_relaxed(0x0000, vfe->base + VFE31_COLOR_COR_OFF + 0x2C); /* K2 */
+	writel_relaxed(0x0007, vfe->base + VFE31_COLOR_COR_OFF + 0x30); /* Q-factor */
+}
+
+/*
+ * Black Level Correction
+ * Register block at 0x264, 4 x 32-bit words
+ * No MODULE_CFG bit required
+ *
+ * Default: no correction (all zeros).
+ */
+static void vfe31_set_black_level_cfg(struct vfe_device *vfe)
+{
+	writel_relaxed(0, vfe->base + VFE31_BLACK_LEVEL_OFF + 0x00);
+	writel_relaxed(0, vfe->base + VFE31_BLACK_LEVEL_OFF + 0x04);
+	writel_relaxed(0, vfe->base + VFE31_BLACK_LEVEL_OFF + 0x08);
+	writel_relaxed(0, vfe->base + VFE31_BLACK_LEVEL_OFF + 0x0C);
+}
+
+/*
+ * MCE - Memory Color Enhancement
+ * Register block at 0x3F4, 9 x 32-bit words
+ * MODULE_CFG bit 28
+ *
+ * Default: disabled (all zeros).
+ */
+static void vfe31_set_mce_cfg(struct vfe_device *vfe)
+{
+	int i;
+
+	for (i = 0; i < VFE31_MCE_LEN / 4; i++)
+		writel_relaxed(0, vfe->base + VFE31_MCE_OFF + i * 4);
+}
+
+/*
+ * SCE - Skin Color Enhancement
+ * Register block at 0x418, 34 x 32-bit words
+ * MODULE_CFG bit 0
+ *
+ * Default: disabled (all zeros).
+ */
+static void vfe31_set_sce_cfg(struct vfe_device *vfe)
+{
+	int i;
+
+	for (i = 0; i < VFE31_SCE_LEN / 4; i++)
+		writel_relaxed(0, vfe->base + VFE31_SCE_OFF + i * 4);
+}
+
+/*
+ * Configure all ISP processing modules with defaults.
+ * Called during PIX/VIDEO stream start (not for RDI raw bypass).
+ */
+static void vfe31_set_isp_modules(struct vfe_device *vfe, struct vfe_line *line)
+{
+	/* Phase 1: Already-enabled modules (MODULE_CFG bits 10, 11) */
+	vfe31_set_chroma_enhan_cfg(vfe);
+	vfe31_set_chroma_sup_cfg(vfe);
+
+	/* Phase 2: Additional modules (initialize with defaults) */
+	vfe31_set_asf_cfg(vfe);
+	vfe31_set_gamma_cfg(vfe);
+	vfe31_set_la_cfg(vfe);
+	vfe31_set_mce_cfg(vfe);
+	vfe31_set_sce_cfg(vfe);
+
+	/* Phase 3: Bayer modules (identity/disabled for YUV sensors) */
+	vfe31_set_color_cor_cfg(vfe);
+	vfe31_set_black_level_cfg(vfe);
+
+	dev_info(vfe->camss->dev, "VFE31: ISP modules initialized\n");
 }
 
 static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
