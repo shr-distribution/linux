@@ -3646,7 +3646,13 @@ static int vfe31_enable(struct vfe_line *line)
 	 * For RDI mode (axi=0x60), data bypasses the ISP entirely.
 	 */
 	if (is_rdi_line && vfe->raw_through_pix) {
-		dev_info(vfe->camss->dev, "VFE31: Step 1b - Skip ISP config (RAW-through-PIX)\n");
+		/*
+		 * RAW-through-PIX: skip DEMUX (raw data) but configure
+		 * Scale/FOV/Crop so CAMIF knows the frame dimensions.
+		 */
+		dev_info(vfe->camss->dev, "VFE31: Step 1b - RAW-through-PIX: scale/crop only (no DEMUX)\n");
+		vfe31_set_scale_cfg(vfe, line);
+		vfe31_set_crop_cfg(vfe, line);
 	} else if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE || axi_mode == 0x200) {
 		dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure ISP pipeline (axi=0x%x)\n", axi_mode);
 		vfe31_set_demux_cfg(vfe, line);
