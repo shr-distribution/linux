@@ -298,9 +298,8 @@
 		apcs0: clock-controller@2041000 {
 			compatible = "qcom,apq8060-apcs", "qcom,msm8660-apcs";
 			reg = <0x02041000 0x1000>,
-			      <0x00903200 0x100>,
-			      <0x00903400 0x100>;
-			reg-names = "acc", "scpll", "l2-scpll";
+			      <0x00903200 0x100>;
+			reg-names = "acc", "scpll";
 			#clock-cells = <0>;
 			clock-output-names = "cpu0_clk";
 		};
@@ -387,7 +386,6 @@
 			compatible = "qcom,mmcc-msm8660";
 			#clock-cells = <1>;
 			#reset-cells = <1>;
-			#power-domain-cells = <1>;
 			reg = <0x04000000 0x1000>;
 			clocks = <&pxo_board>, <&gcc PLL8_VOTE>, <&rpmcc RPM_MM_FABRIC_CLK>;
 			clock-names = "pxo", "pll8_vote", "mmfab";
@@ -1014,10 +1012,8 @@
 			#interconnect-cells = <1>;
 			qcom,rpm = <&rpm>;
 			clocks = <&rpmcc RPM_APPS_FABRIC_CLK>,
-				 <&rpmcc RPM_APPS_FABRIC_A_CLK>,
-				 <&rpmcc RPM_EBI1_CLK>,
-				 <&rpmcc RPM_EBI1_A_CLK>;
-			clock-names = "bus", "bus_a", "ebi1", "ebi1_a";
+				 <&rpmcc RPM_APPS_FABRIC_A_CLK>;
+			clock-names = "bus", "bus_a";
 		};
 
 		system_fabric: interconnect@1 {
