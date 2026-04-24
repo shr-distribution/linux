@@ -3657,11 +3657,18 @@ static int vfe31_enable(struct vfe_line *line)
 		vfe31_set_scale_cfg(vfe, line);
 		vfe31_set_crop_cfg(vfe, line);
 	} else if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE || axi_mode == 0x200) {
-		dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure ISP pipeline (axi=0x%x)\n", axi_mode);
-		vfe31_set_demux_cfg(vfe, line);
-		vfe31_set_scale_cfg(vfe, line);
-		vfe31_set_crop_cfg(vfe, line);
-		vfe31_set_isp_modules(vfe, line);
+		if (vfe31_raw_pix_mode) {
+			/* RAW via PIX: scale/crop only, no DEMUX/ISP */
+			dev_info(vfe->camss->dev, "VFE31: Step 1b - raw_pix_mode: scale/crop only\n");
+			vfe31_set_scale_cfg(vfe, line);
+			vfe31_set_crop_cfg(vfe, line);
+		} else {
+			dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure ISP pipeline (axi=0x%x)\n", axi_mode);
+			vfe31_set_demux_cfg(vfe, line);
+			vfe31_set_scale_cfg(vfe, line);
+			vfe31_set_crop_cfg(vfe, line);
+			vfe31_set_isp_modules(vfe, line);
+		}
 	} else {
 		dev_info(vfe->camss->dev, "VFE31: Step 1b - Skip ISP config (RDI mode)\n");
 	}
