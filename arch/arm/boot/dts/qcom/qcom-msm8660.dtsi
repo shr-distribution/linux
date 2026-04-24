@@ -1010,6 +1010,7 @@
 		apps_fabric: interconnect@0 {
 			compatible = "qcom,msm8660-apps-fabric";
 			#interconnect-cells = <1>;
+			qcom,rpm = <&rpm>;
 			clocks = <&rpmcc RPM_APPS_FABRIC_CLK>,
 				 <&rpmcc RPM_APPS_FABRIC_A_CLK>;
 			clock-names = "bus", "bus_a";
@@ -1018,6 +1019,7 @@
 		system_fabric: interconnect@1 {
 			compatible = "qcom,msm8660-system-fabric";
 			#interconnect-cells = <1>;
+			qcom,rpm = <&rpm>;
 			clocks = <&rpmcc RPM_SYS_FABRIC_CLK>,
 				 <&rpmcc RPM_SYS_FABRIC_A_CLK>;
 			clock-names = "bus", "bus_a";
@@ -1026,6 +1028,7 @@
 		mmss_fabric: interconnect@2 {
 			compatible = "qcom,msm8660-mmss-fabric";
 			#interconnect-cells = <1>;
+			qcom,rpm = <&rpm>;
 			clocks = <&rpmcc RPM_MM_FABRIC_CLK>,
 				 <&rpmcc RPM_MM_FABRIC_A_CLK>,
 				 <&rpmcc RPM_SMI_CLK>,
