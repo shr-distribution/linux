@@ -24,6 +24,7 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 
@@ -81,11 +82,68 @@
 #define FREQ_SCPLL_MIN		432000000UL
 #define FREQ_SCPLL_MAX		1512000000UL
 
+/* Maximum regulator voltage for vdd_mem/vdd_dig (PM8058 S0/S1) */
+#define VDD_MEM_MAX		1350000
+#define VDD_DIG_MAX		1350000
+
+/*
+ * vdd_mem and vdd_dig voltage requirements per CPU frequency.
+ * Derived from legacy webOS acpuclock-8x60.c.
+ * Indexed by (L_VAL - SCPLL_L_VAL_MIN).
+ */
+struct vdd_req {
+	unsigned int vdd_mem;	/* PM8058 S0 target voltage in uV */
+	unsigned int vdd_dig;	/* PM8058 S1 target voltage in uV */
+};
+
+#define VDD_MEM_PLL8		1100000
+#define VDD_DIG_PLL8		1000000
+
+static const struct vdd_req vdd_table[] = {
+	[0x00] = { 1100000, 1000000 },	/* L_VAL 0x08: 432 MHz */
+	[0x01] = { 1100000, 1000000 },	/* L_VAL 0x09: 486 MHz */
+	[0x02] = { 1100000, 1000000 },	/* L_VAL 0x0A: 540 MHz */
+	[0x03] = { 1100000, 1000000 },	/* L_VAL 0x0B: 594 MHz */
+	[0x04] = { 1100000, 1100000 },	/* L_VAL 0x0C: 648 MHz */
+	[0x05] = { 1100000, 1100000 },	/* L_VAL 0x0D: 702 MHz */
+	[0x06] = { 1100000, 1100000 },	/* L_VAL 0x0E: 756 MHz */
+	[0x07] = { 1100000, 1100000 },	/* L_VAL 0x0F: 810 MHz */
+	[0x08] = { 1100000, 1100000 },	/* L_VAL 0x10: 864 MHz */
+	[0x09] = { 1100000, 1100000 },	/* L_VAL 0x11: 918 MHz */
+	[0x0A] = { 1100000, 1100000 },	/* L_VAL 0x12: 972 MHz */
+	[0x0B] = { 1125000, 1100000 },	/* L_VAL 0x13: 1026 MHz */
+	[0x0C] = { 1200000, 1100000 },	/* L_VAL 0x14: 1080 MHz */
+	[0x0D] = { 1200000, 1100000 },	/* L_VAL 0x15: 1134 MHz */
+	[0x0E] = { 1200000, 1200000 },	/* L_VAL 0x16: 1188 MHz */
+	[0x0F] = { 1250000, 1200000 },	/* L_VAL 0x17: 1242 MHz */
+	[0x10] = { 1250000, 1200000 },	/* L_VAL 0x18: 1296 MHz */
+	[0x11] = { 1250000, 1200000 },	/* L_VAL 0x19: 1350 MHz */
+	[0x12] = { 1250000, 1200000 },	/* L_VAL 0x1A: 1404 MHz */
+	[0x13] = { 1250000, 1200000 },	/* L_VAL 0x1B: 1458 MHz */
+	[0x14] = { 1250000, 1200000 },	/* L_VAL 0x1C: 1512 MHz */
+};
+
+static const struct vdd_req *get_vdd_req(u32 l_val)
+{
+	unsigned int idx;
+
+	if (l_val < SCPLL_L_VAL_MIN)
+		return NULL;
+
+	idx = l_val - SCPLL_L_VAL_MIN;
+	if (idx >= ARRAY_SIZE(vdd_table))
+		return &vdd_table[ARRAY_SIZE(vdd_table) - 1];
+
+	return &vdd_table[idx];
+}
+
 /**
  * struct apcs_cpu_clk - Per-CPU clock structure
  * @hw: clk_hw for clock framework
  * @acc_base: ACC (Application Core Cluster) register base
  * @scpll_base: SCPLL register base for this CPU
+ * @vdd_mem: memory voltage regulator (PM8058 S0), optional
+ * @vdd_dig: digital core voltage regulator (PM8058 S1), optional
  * @current_rate: current CPU frequency
  * @current_src: current clock source (AFAB, PLL8, SCPLL)
  * @calibrated: true if SCPLL has been calibrated
@@ -95,6 +153,8 @@ struct apcs_cpu_clk {
 	struct clk_hw hw;
 	void __iomem *acc_base;
 	void __iomem *scpll_base;
+	struct regulator *vdd_mem;
+	struct regulator *vdd_dig;
 	unsigned long current_rate;
 	int current_src;
 	bool calibrated;
@@ -222,6 +282,41 @@ static int scpll_change_freq(void __iomem *base, u32 l_val)
 	return (timeout > 0) ? 0 : -ETIMEDOUT;
 }
 
+/*
+ * Increase vdd_mem/vdd_dig before frequency increase.
+ * Order: vdd_mem first, then vdd_dig.
+ */
+static int apcs_increase_vdd(struct apcs_cpu_clk *c, unsigned int vdd_mem,
+			     unsigned int vdd_dig)
+{
+	int ret;
+
+	if (c->vdd_mem) {
+		ret = regulator_set_voltage(c->vdd_mem, vdd_mem, VDD_MEM_MAX);
+		if (ret)
+			return ret;
+	}
+	if (c->vdd_dig) {
+		ret = regulator_set_voltage(c->vdd_dig, vdd_dig, VDD_DIG_MAX);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+/*
+ * Decrease vdd_mem/vdd_dig after frequency decrease.
+ * Order: vdd_dig first, then vdd_mem (reverse of increase).
+ */
+static void apcs_decrease_vdd(struct apcs_cpu_clk *c, unsigned int vdd_mem,
+			      unsigned int vdd_dig)
+{
+	if (c->vdd_dig)
+		regulator_set_voltage(c->vdd_dig, vdd_dig, VDD_DIG_MAX);
+	if (c->vdd_mem)
+		regulator_set_voltage(c->vdd_mem, vdd_mem, VDD_MEM_MAX);
+}
+
 static void select_clk_source(struct apcs_cpu_clk *c, int src)
 {
 	u32 regval;
@@ -285,8 +380,10 @@ static int apcs_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 				 unsigned long parent_rate)
 {
 	struct apcs_cpu_clk *c = to_apcs_cpu_clk(hw);
+	const struct vdd_req *vdd_new, *vdd_old;
 	u32 ctl, l_val_cur, l_val_new;
 	unsigned long flags;
+	bool freq_increasing;
 	int ret = 0;
 
 	ctl = readl(c->scpll_base + SCPLL_CTL);
@@ -295,25 +392,33 @@ static int apcs_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	if (rate <= FREQ_PLL8) {
 		/* TODO: Switch to PLL8 source for low frequencies */
 		c->current_rate = FREQ_PLL8;
+		apcs_decrease_vdd(c, VDD_MEM_PLL8, VDD_DIG_PLL8);
 		return 0;
 	}
 
 	l_val_new = DIV_ROUND_CLOSEST(rate, SCPLL_RATE_FACTOR);
 	l_val_new = clamp_t(u32, l_val_new, SCPLL_L_VAL_MIN, SCPLL_L_VAL_MAX);
 
+	freq_increasing = rate > c->current_rate;
+
+	/* Look up target vdd_mem/vdd_dig requirements */
+	vdd_new = get_vdd_req(l_val_new);
+
+	/* Increase voltage BEFORE frequency increase */
+	if (freq_increasing && vdd_new) {
+		ret = apcs_increase_vdd(c, vdd_new->vdd_mem, vdd_new->vdd_dig);
+		if (ret)
+			return ret;
+	}
+
 	if (l_val_new == l_val_cur) {
 		c->current_rate = (unsigned long)l_val_cur * SCPLL_RATE_FACTOR;
-		return 0;
+		goto done;
 	}
 
 	/*
 	 * Change SCPLL frequency using complex slew.
-	 * Voltage scaling is handled by cpufreq-dt via the SAW regulator
-	 * (cpu-supply property in device tree).
-	 *
-	 * cpufreq-dt ensures voltage is increased BEFORE frequency increase
-	 * and decreased AFTER frequency decrease, so it's safe to just
-	 * change the frequency here.
+	 * vdd_sc scaling is handled by cpufreq-dt via the SAW regulator.
 	 */
 	spin_lock_irqsave(&c->lock, flags);
 
@@ -321,13 +426,24 @@ static int apcs_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	if (ret) {
 		pr_err("apcs: freq change to L=%u failed: %d\n", l_val_new, ret);
 		spin_unlock_irqrestore(&c->lock, flags);
+		/* Roll back voltage on failure */
+		if (freq_increasing) {
+			vdd_old = get_vdd_req(l_val_cur);
+			if (vdd_old)
+				apcs_decrease_vdd(c, vdd_old->vdd_mem,
+						  vdd_old->vdd_dig);
+		}
 		return ret;
 	}
 
 	c->current_rate = (unsigned long)l_val_new * SCPLL_RATE_FACTOR;
 	spin_unlock_irqrestore(&c->lock, flags);
 
-	pr_debug("apcs: freq changed to %lu Hz (L=%u)\n", c->current_rate, l_val_new);
+done:
+	/* Decrease voltage AFTER frequency decrease */
+	if (!freq_increasing && vdd_new)
+		apcs_decrease_vdd(c, vdd_new->vdd_mem, vdd_new->vdd_dig);
+
 	return 0;
 }
 
@@ -372,6 +488,21 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 	cpu_clk->acc_base = acc_base;
 	cpu_clk->scpll_base = scpll_base;
 	spin_lock_init(&cpu_clk->lock);
+
+	/* Acquire optional vdd_mem/vdd_dig regulators for voltage co-voting */
+	cpu_clk->vdd_mem = devm_regulator_get_optional(dev, "vdd-mem");
+	if (IS_ERR(cpu_clk->vdd_mem)) {
+		if (PTR_ERR(cpu_clk->vdd_mem) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		cpu_clk->vdd_mem = NULL;
+	}
+
+	cpu_clk->vdd_dig = devm_regulator_get_optional(dev, "vdd-dig");
+	if (IS_ERR(cpu_clk->vdd_dig)) {
+		if (PTR_ERR(cpu_clk->vdd_dig) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		cpu_clk->vdd_dig = NULL;
+	}
 
 	/*
 	 * Skip SCPLL calibration for now - assume bootloader already did it.
