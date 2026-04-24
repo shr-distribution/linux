@@ -3707,7 +3707,7 @@ static int vfe31_enable(struct vfe_line *line)
 			 * dual-output UB allocation.
 			 */
 			vfe31_calc_pix_config(&cfg, width, height, bytesperline,
-					      pix->pixelformat, 2, 0);
+					      pix->pixelformat, 1, 0);
 			cfg.path = line->id;
 		}
 
@@ -6893,12 +6893,10 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * may not properly handle CAMIF_TO_AXI bypass transactions.
 	 */
 	/*
-	 * VFE_AXI_CFG: 0x80000000 enables out-of-order AXI transactions.
-	 * Disabled: causes 640x480 frame drift due to DMA reordering.
-	 * Samsung/HTC enable this, but their DMA buffer management
-	 * may handle reordering differently.
+	 * VFE_AXI_CFG: Samsung/Mako enable out-of-order AXI (0x80000000).
+	 * webOS TouchPad kernel does NOT write this register.
+	 * Keep disabled - not needed and webOS never used it.
 	 */
-	writel_relaxed(0x00000000, vfe->base + 0x600);
 	/* Ensure AXI config is visible before REG_UPDATE */
 	wmb();
 
