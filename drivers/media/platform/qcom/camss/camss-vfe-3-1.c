@@ -4512,10 +4512,17 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * Each nibble = 0xC means "send to Y output". No bytes go to CbCr.
 	 * WM0 captures the complete raw Bayer stream contiguously.
 	 */
-	if (vfe31_raw_pix_mode || vfe->raw_through_pix) {
-		even_cfg = 0xcc;
-		odd_cfg = 0xcc;
-		goto write_demux;
+	{
+		bool is_rdi = (line->id == VFE_LINE_RDI0 ||
+			       line->id == VFE_LINE_RDI1 ||
+			       line->id == VFE_LINE_RDI2);
+
+		if (vfe31_raw_pix_mode ||
+		    (vfe->raw_through_pix && is_rdi)) {
+			even_cfg = 0xcc;
+			odd_cfg = 0xcc;
+			goto write_demux;
+		}
 	}
 
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
