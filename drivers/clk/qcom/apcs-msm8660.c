@@ -576,6 +576,8 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 	/* Acquire optional vdd_mem/vdd_dig regulators for voltage co-voting */
 	cpu_clk->vdd_mem = devm_regulator_get_optional(dev, "vdd-mem");
 	if (IS_ERR(cpu_clk->vdd_mem)) {
+		dev_info(dev, "vdd-mem regulator: error %ld\n",
+			 PTR_ERR(cpu_clk->vdd_mem));
 		if (PTR_ERR(cpu_clk->vdd_mem) == -EPROBE_DEFER)
 			return -EPROBE_DEFER;
 		cpu_clk->vdd_mem = NULL;
@@ -583,10 +585,17 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 
 	cpu_clk->vdd_dig = devm_regulator_get_optional(dev, "vdd-dig");
 	if (IS_ERR(cpu_clk->vdd_dig)) {
+		dev_info(dev, "vdd-dig regulator: error %ld\n",
+			 PTR_ERR(cpu_clk->vdd_dig));
 		if (PTR_ERR(cpu_clk->vdd_dig) == -EPROBE_DEFER)
 			return -EPROBE_DEFER;
 		cpu_clk->vdd_dig = NULL;
 	}
+
+	if (cpu_clk->vdd_mem && cpu_clk->vdd_dig)
+		dev_info(dev, "vdd_mem/vdd_dig co-voting enabled\n");
+	else
+		dev_info(dev, "vdd_mem/vdd_dig co-voting not available\n");
 
 	/*
 	 * Skip SCPLL calibration for now - assume bootloader already did it.
