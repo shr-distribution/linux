@@ -14,8 +14,6 @@
 #include <linux/iommu.h>
 #include <linux/iopoll.h>
 #include <linux/ktime.h>
-#include <linux/mfd/qcom_rpm.h>
-#include <dt-bindings/mfd/qcom-rpm.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
@@ -1705,59 +1703,10 @@ int vfe_get(struct vfe_device *vfe)
 				}
 
 				/*
-				 * Unhalt VFE AXI bus master port via RPM.
-				 *
-				 * Samsung/HTC downstream kernels call
-				 * msm_bus_axi_portunhalt(MSM_BUS_MASTER_VFE)
-				 * which sends a halt vector to RPM firmware to
-				 * clear the VFE port bit in the MM fabric halt
-				 * register. Without this, CAMIF_TO_AXI (0x60)
-				 * raw bypass DMA is blocked at the fabric level.
-				 *
-				 * VFE is port 5 in the MMSS fabric (enum order:
-				 * ADM1=0, ROT=1, GFX3D=2, JPEG_DEC=3, GFX2D0=4,
-				 * VFE=5). Unhalt = haltval=0, haltmask=BIT(port).
+				 * MMSS fabric AXI port unhalting is now handled
+				 * by the MMCC driver (mmcc-msm8660.c) at probe
+				 * time for all 11 ports including VFE.
 				 */
-				{
-					struct qcom_rpm *rpm;
-					struct device_node *rpm_node;
-
-					rpm_node = of_find_compatible_node(NULL, NULL,
-									   "qcom,rpm-msm8660");
-					if (rpm_node) {
-						struct platform_device *rpm_pdev;
-
-						rpm_pdev = of_find_device_by_node(rpm_node);
-						of_node_put(rpm_node);
-						if (rpm_pdev) {
-							rpm = dev_get_drvdata(&rpm_pdev->dev);
-							if (rpm) {
-								/*
-								 * Unhalt ALL MMSS fabric master ports.
-								 * Samsung/HTC unhalt each port individually
-								 * in footswitch_enable(). Our GDSC driver
-								 * doesn't do this, potentially leaving all
-								 * MMSS AXI ports halted.
-								 *
-								 * Ports: ADM1(0) ROT(1) GFX3D(2) JPEGD(3)
-								 *        GFX2D0(4) VFE(5) VPE(6) JPEGE(7)
-								 *        GFX2D1(8) HDCODEC0(9) HDCODEC1(10)
-								 *
-								 * Halted GFX ports may also cause display
-								 * artifacts (random corruption, tearing).
-								 */
-								u32 halt_data[2] = {0, 0x7FF};  /* val=0, mask=all 11 ports */
-
-								int rc = qcom_rpm_write(rpm,
-									QCOM_RPM_ACTIVE_STATE,
-									QCOM_RPM_MM_FABRIC_HALT,
-									halt_data, 2);
-								dev_info(vfe->camss->dev,
-									 "VFE: RPM MM fabric unhalt ALL ports (0x7FF): rc=%d\n", rc);
-							}
-						}
-					}
-				}
 
 				iounmap(mmcc_base);
 			}
