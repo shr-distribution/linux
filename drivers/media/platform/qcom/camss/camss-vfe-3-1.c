@@ -3938,10 +3938,14 @@ static int vfe31_enable(struct vfe_line *line)
 
 			vfe31_calc_pix_config(&pix_cfg, pix_w, pix_h,
 					     pix_bpl, pix_fmt, 2, 0);
-			vfe31_apply_wm_config(vfe, &pix_cfg,
-					     pix_line->output.wm_idx[0],
-					     (pix_line->output.wm_num == 2) ?
-					     pix_line->output.wm_idx[1] : 0xff);
+			/* Reconfigure Y WM UB */
+			vfe31_apply_wm_config(vfe, pix_line->output.wm_idx[0],
+					     &pix_cfg.y_wm);
+			/* Reconfigure CbCr WM UB if active */
+			if (pix_line->output.wm_num == 2)
+				vfe31_apply_wm_config(vfe,
+						     pix_line->output.wm_idx[1],
+						     &pix_cfg.cbcr_wm);
 			dev_info(vfe->camss->dev,
 				 "VFE31: Reconfigured PIX UB to first half (num_outputs=2)\n");
 		}
