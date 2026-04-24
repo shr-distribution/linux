@@ -3066,7 +3066,6 @@
 		pinconf {
 			pins = "gpio25";
 			function = "normal";
-			output-high;
 			bias-disable;
 			power-source = <PM8058_GPIO_VPH>;
 		};
@@ -3467,23 +3466,6 @@
 		output-low;
 		power-source = <PM8901_MPP_VPH>;
 	};
-};
-
-/*
- * APCS clock controller voltage co-voting.
- * PM8058 S0 (vdd_mem) and S1 (vdd_dig) must track CPU frequency.
- * Without this, the system risks instability at frequencies above 1 GHz.
- * Both APCS instances share the same PM8058 regulators since vdd_mem
- * and vdd_dig are global (not per-core like vdd_sc/SAW).
- */
-&apcs0 {
-	vdd-mem-supply = <&pm8058_s0>;
-	vdd-dig-supply = <&pm8058_s1>;
-};
-
-&apcs1 {
-	vdd-mem-supply = <&pm8058_s0>;
-	vdd-dig-supply = <&pm8058_s1>;
 };
 
 /*
