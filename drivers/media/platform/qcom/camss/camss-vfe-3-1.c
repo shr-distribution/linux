@@ -6281,12 +6281,17 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 		if (is_rdi && vfe->raw_through_pix) {
 			/*
-			 * RAW-through-PIX: disable all ISP modules.
-			 * Raw data passes through PIX path without processing.
+			 * RAW-through-PIX: use standard PIX MODULE_CFG.
+			 * Data path gates (bits 2,10) MUST remain enabled
+			 * for data to flow from CAMIF through XBAR to WMs.
+			 * ISP modules use identity defaults so raw data
+			 * passes through unmodified.
 			 */
-			writel_relaxed(0, vfe->base + VFE_0_MODULE_CFG);
+			writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE,
+				       vfe->base + VFE_0_MODULE_CFG);
 			dev_info(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x0 (RAW-through-PIX)\n");
+				 "VFE31: MODULE_CFG=0x%08x (RAW-through-PIX)\n",
+				 VFE_0_MODULE_CFG_WEBOS_VALUE);
 		} else if (is_rdi) {
 			/*
 			 * RDI raw bypass (AXI=0x60): MODULE_CFG with
@@ -6297,14 +6302,15 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				 "VFE31: MODULE_CFG=0x00400C04 (RDI raw)\n");
 		} else if (vfe31_raw_pix_mode) {
 			/*
-			 * RAW-through-PIX mode: Use PIX path but disable DEMUX.
-			 * This allows RAW data to pass through without
-			 * interpretation as YUV. Only WM0 (Y plane) will
-			 * receive data - CbCr is meaningless for RAW.
+			 * RAW-through-PIX via module param: use standard PIX
+			 * MODULE_CFG to keep data path gates open. ISP modules
+			 * use identity defaults so raw data passes unmodified.
 			 */
 			dev_info(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x0 (RAW-through-PIX, DEMUX disabled)\n");
-			writel_relaxed(0, vfe->base + VFE_0_MODULE_CFG);
+				 "VFE31: MODULE_CFG=0x%08x (raw_pix_mode)\n",
+				 VFE_0_MODULE_CFG_WEBOS_VALUE);
+			writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE,
+				       vfe->base + VFE_0_MODULE_CFG);
 		} else {
 			dev_info(vfe->camss->dev,
 				 "VFE31: MODULE_CFG=0x%08x (PIX with DEMUX)\n",
