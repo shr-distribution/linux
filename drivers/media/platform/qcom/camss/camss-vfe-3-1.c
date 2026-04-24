@@ -3675,7 +3675,11 @@ static int vfe31_enable(struct vfe_line *line)
 			vfe31_set_demux_cfg(vfe, line);
 			vfe31_set_scale_cfg(vfe, line);
 			vfe31_set_crop_cfg(vfe, line);
-			vfe31_set_isp_modules(vfe, line);
+			/* ISP modules use identity defaults - skip for now
+			 * to avoid potential timing impact on 640x480.
+			 * TODO: re-enable once frame drift is investigated.
+			 * vfe31_set_isp_modules(vfe, line);
+			 */
 		}
 	} else {
 		dev_info(vfe->camss->dev, "VFE31: Step 1b - Skip ISP config (RDI mode)\n");
@@ -6919,8 +6923,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
 
 	vfe31_dump_axi_wm_debug(vfe);
-	writel(VFE_0_CAMIF_CMD_CLEAR_CAMIF_STATUS | VFE_0_CAMIF_CMD_START,
-	       vfe->base + VFE_0_CAMIF_CMD);
+	writel(VFE_0_CAMIF_CMD_START, vfe->base + VFE_0_CAMIF_CMD);
 	/* Ensure all register writes complete before starting CAMIF */
 	wmb();
 	dev_info(vfe->camss->dev, "VFE31: CAMIF started (CMD=0x5)\n");
