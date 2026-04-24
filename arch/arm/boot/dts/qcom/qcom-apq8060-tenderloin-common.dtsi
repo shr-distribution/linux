@@ -3066,6 +3066,7 @@
 		pinconf {
 			pins = "gpio25";
 			function = "normal";
+			output-high;
 			bias-disable;
 			power-source = <PM8058_GPIO_VPH>;
 		};
