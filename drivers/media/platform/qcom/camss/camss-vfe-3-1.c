@@ -3938,14 +3938,30 @@ static int vfe31_enable(struct vfe_line *line)
 
 			vfe31_calc_pix_config(&pix_cfg, pix_w, pix_h,
 					     pix_bpl, pix_fmt, 2, 0);
-			/* Reconfigure Y WM UB */
-			vfe31_apply_wm_config(vfe, pix_line->output.wm_idx[0],
-					     &pix_cfg.y_wm);
-			/* Reconfigure CbCr WM UB if active */
-			if (pix_line->output.wm_num == 2)
-				vfe31_apply_wm_config(vfe,
-						     pix_line->output.wm_idx[1],
-						     &pix_cfg.cbcr_wm);
+			/*
+			 * Only update ADDR_CFG (UB start+depth) for PIX WMs.
+			 * Do NOT use vfe31_apply_wm_config() which would
+			 * overwrite PING/PONG addresses with zeros and crash.
+			 */
+			{
+				u8 y_wm = pix_line->output.wm_idx[0];
+				u32 reg;
+
+				reg = (pix_cfg.y_wm.burst_lines << 16) |
+				      (pix_cfg.y_wm.burst_words & 0xFFFF);
+				writel_relaxed(reg, vfe->base +
+					VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(y_wm));
+
+				if (pix_line->output.wm_num == 2) {
+					u8 cb_wm = pix_line->output.wm_idx[1];
+
+					reg = (pix_cfg.cbcr_wm.burst_lines << 16) |
+					      (pix_cfg.cbcr_wm.burst_words & 0xFFFF);
+					writel_relaxed(reg, vfe->base +
+						VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(cb_wm));
+				}
+				wmb();
+			}
 			dev_info(vfe->camss->dev,
 				 "VFE31: Reconfigured PIX UB to first half (num_outputs=2)\n");
 		}
