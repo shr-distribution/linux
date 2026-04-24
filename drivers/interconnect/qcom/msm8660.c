@@ -168,6 +168,8 @@ enum {
 static const struct clk_bulk_data msm8660_afab_clocks[] = {
 	{ .id = "bus" },
 	{ .id = "bus_a" },
+	{ .id = "ebi1" },
+	{ .id = "ebi1_a" },
 };
 
 static const struct clk_bulk_data msm8660_sfab_clocks[] = {
