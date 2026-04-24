@@ -3922,6 +3922,30 @@ static int vfe31_enable(struct vfe_line *line)
 			}
 		}
 
+		/*
+		 * Reconfigure PIX WM0+WM4 UB to use first half of budget.
+		 * PIX was configured with num_outputs=1 (full 912 entries)
+		 * for drift-free 640x480. Now that ZSL joins, split UB so
+		 * ZSL's second half (456-911) doesn't overlap PIX.
+		 */
+		{
+			struct vfe_line *pix_line = &vfe->line[VFE_LINE_PIX];
+			struct vfe31_line_config pix_cfg = {0};
+			u32 pix_fmt = pix_line->video_out.active_fmt.fmt.pix_mp.pixelformat;
+			u16 pix_w = pix_line->fmt[MSM_VFE_PAD_SINK].width;
+			u16 pix_h = pix_line->fmt[MSM_VFE_PAD_SINK].height;
+			u16 pix_bpl = pix_line->video_out.active_fmt.fmt.pix_mp.plane_fmt[0].bytesperline;
+
+			vfe31_calc_pix_config(&pix_cfg, pix_w, pix_h,
+					     pix_bpl, pix_fmt, 2, 0);
+			vfe31_apply_wm_config(vfe, &pix_cfg,
+					     pix_line->output.wm_idx[0],
+					     (pix_line->output.wm_num == 2) ?
+					     pix_line->output.wm_idx[1] : 0xff);
+			dev_info(vfe->camss->dev,
+				 "VFE31: Reconfigured PIX UB to first half (num_outputs=2)\n");
+		}
+
 		/* Configure WM2+WM6 registers directly */
 		{
 			struct vfe31_line_config cfg = {0};
