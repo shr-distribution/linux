@@ -2172,20 +2172,19 @@ main() {
         rdi640)
             ensure_camera_ready
             # RAW-through-PIX via RDI: sensor Bayer in UYVY wrapper
-            # Pipeline stays UYVY, DT property routes RDI through PIX
+            # Use UYVY output (stride=width*2) to match DEMUX 0xCCCC all-to-Y routing
             run_on_device "
                 media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
             "
-            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 NV12
+            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 NV16
             check_dmesg
             ;;
         rdi640-raw10)
             ensure_camera_ready
-            # Same as rdi640 (sensor always outputs via UYVY wrapper)
             run_on_device "
                 media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
             "
-            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 NV12
+            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 NV16
             check_dmesg
             ;;
         rdi1280)
@@ -2194,16 +2193,15 @@ main() {
             run_on_device "
                 media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
             "
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 NV12
+            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 NV16
             check_dmesg
             ;;
         rdi1280-raw10)
             ensure_camera_ready
-            # RAW-through-PIX via RDI at full resolution
             run_on_device "
                 media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
             "
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 NV12
+            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 NV16
             check_dmesg
             ;;
         rawpix640)
