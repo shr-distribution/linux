@@ -1284,6 +1284,8 @@
 				 <&mmcc IJPEG_AXI_CLK>,
 				 <&mmcc IJPEG_AHB_CLK>;
 			clock-names = "core", "axi", "ahb";
+			power-domains = <&mmcc IJPEG_GDSC>;
+			iommus = <&ijpeg_iommu>;
 			interconnects = <&mmss_fabric MMFAB_MAS_JPEG_ENC
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "jpeg-mem";
@@ -1356,6 +1358,9 @@
 				 <&mmcc VCODEC_AHB_CLK>,
 				 <&mmcc VCODEC_AXI_CLK>;
 			clock-names = "core", "iface", "axi";
+			power-domains = <&mmcc VED_GDSC>;
+			iommus = <&vcodec_a_iommu>,
+				 <&vcodec_b_iommu>;
 			interconnects = <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "video-mem";
