@@ -18,9 +18,13 @@
 #include <linux/module.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
+#include <linux/mfd/qcom_rpm.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/regmap.h>
 
 #include <dt-bindings/clock/qcom,mmcc-msm8960.h>
+#include <dt-bindings/mfd/qcom-rpm.h>
 #include <dt-bindings/reset/qcom,mmcc-msm8960.h>
 
 #include "common.h"
@@ -2751,6 +2755,54 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 	regmap_update_bits(regmap, JPEGD_CC_REG, CC_FORCE_CORE_ON_MASK, CC_FORCE_CORE_ON_VAL);
 }
 
+/*
+ * Unhalt all MMSS fabric AXI master ports via RPM.
+ *
+ * Samsung/HTC downstream kernels unhalt each port individually in
+ * footswitch_enable() when each GDSC powers on.  Our mainline GDSC
+ * driver does not do this, leaving MMSS AXI ports in their default
+ * (potentially halted) state.  This can cause DMA stalls and display
+ * artifacts on the GPU (GFX3D port 2) and 2D engines (GFX2D0 port 4,
+ * GFX2D1 port 8).
+ *
+ * MMSS fabric master ports:
+ *   0: ADM1       1: ROTATOR    2: GFX3D      3: JPEG_DEC
+ *   4: GFX2D0     5: VFE        6: VPE        7: JPEG_ENC
+ *   8: GFX2D1     9: HDCODEC0  10: HDCODEC1
+ */
+static void mmcc_msm8660_unhalt_mmss_ports(struct device *dev)
+{
+	struct device_node *rpm_node;
+	struct platform_device *rpm_pdev;
+	struct qcom_rpm *rpm;
+	u32 halt_data[2] = {0, 0x7FF};  /* val=0 (unhalt), mask=all 11 ports */
+	int rc;
+
+	rpm_node = of_find_compatible_node(NULL, NULL, "qcom,rpm-msm8660");
+	if (!rpm_node)
+		return;
+
+	rpm_pdev = of_find_device_by_node(rpm_node);
+	of_node_put(rpm_node);
+	if (!rpm_pdev)
+		return;
+
+	rpm = dev_get_drvdata(&rpm_pdev->dev);
+	if (!rpm) {
+		put_device(&rpm_pdev->dev);
+		return;
+	}
+
+	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
+			    QCOM_RPM_MM_FABRIC_HALT, halt_data, 2);
+	if (rc)
+		dev_warn(dev, "MMSS fabric unhalt failed: %d\n", rc);
+	else
+		dev_info(dev, "MMSS fabric: unhalted all 11 AXI ports\n");
+
+	put_device(&rpm_pdev->dev);
+}
+
 static int mmcc_msm8660_probe(struct platform_device *pdev)
 {
 	struct regmap *regmap;
@@ -2761,6 +2813,12 @@ static int mmcc_msm8660_probe(struct platform_device *pdev)
 
 	/* Initialize MMCC hardware before registering clocks */
 	mmcc_msm8660_init_hw(regmap);
+
+	/*
+	 * Unhalt all MMSS fabric AXI master ports.  Must happen before
+	 * any MMSS block (GPU, display, camera, video) performs DMA.
+	 */
+	mmcc_msm8660_unhalt_mmss_ports(&pdev->dev);
 
 	return qcom_cc_really_probe(&pdev->dev, &mmcc_msm8660_desc, regmap);
 }
