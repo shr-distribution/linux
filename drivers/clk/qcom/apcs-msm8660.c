@@ -23,6 +23,7 @@
 #include <linux/of.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
+#include <linux/cpufreq.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
@@ -137,6 +138,17 @@ static const struct vdd_req *get_vdd_req(u32 l_val)
 	return &vdd_table[idx];
 }
 
+/*
+ * L2 cache SCPLL frequency scaling.
+ * The L2 cache has its own SCPLL (same register layout as CPU SCPLLs).
+ * Legacy coupled L2 frequency to CPU frequency using 3 tiers.
+ */
+#define L2_L_VAL_LOW	0x08	/* 432 MHz */
+#define L2_L_VAL_MID	0x12	/* 972 MHz */
+#define L2_L_VAL_HIGH	0x1A	/* 1404 MHz */
+#define L2_THRESH_MID_KHZ	972000
+#define L2_THRESH_HIGH_KHZ	1080000
+
 /**
  * struct apcs_cpu_clk - Per-CPU clock structure
  * @hw: clk_hw for clock framework
@@ -162,6 +174,14 @@ struct apcs_cpu_clk {
 };
 
 #define to_apcs_cpu_clk(_hw) container_of(_hw, struct apcs_cpu_clk, hw)
+
+/* L2 SCPLL shared state — initialized by first CPU to probe */
+static void __iomem *l2_scpll_base;
+static void __iomem *l2_clk_sel_base;
+static DEFINE_SPINLOCK(l2_lock);
+static u32 l2_current_l_val;
+static bool l2_initialized;
+static u32 l2_vote[NR_CPUS];
 
 /*
  * Calibrate the SCPLL for the full frequency range.
@@ -453,6 +473,70 @@ static const struct clk_ops apcs_cpu_clk_ops = {
 	.set_rate = apcs_cpu_clk_set_rate,
 };
 
+static u32 cpu_to_l2_l_val(unsigned int cpu_khz)
+{
+	if (cpu_khz >= L2_THRESH_HIGH_KHZ)
+		return L2_L_VAL_HIGH;
+	if (cpu_khz >= L2_THRESH_MID_KHZ)
+		return L2_L_VAL_MID;
+	return L2_L_VAL_LOW;
+}
+
+static void l2_set_freq(u32 l_val)
+{
+	unsigned long flags;
+	u32 regval;
+
+	spin_lock_irqsave(&l2_lock, flags);
+
+	if (l_val == l2_current_l_val) {
+		spin_unlock_irqrestore(&l2_lock, flags);
+		return;
+	}
+
+	if (l2_current_l_val == 0) {
+		/* First time — enable L2 SCPLL via shot-switch */
+		scpll_enable_at_l_val(l2_scpll_base, l_val);
+		mb();
+		/* Select SCPLL as L2 source (bits [1:0], shift=0) */
+		regval = readl(l2_clk_sel_base);
+		regval &= ~0x3;
+		regval |= SRC_SEL_SCPLL;
+		writel(regval, l2_clk_sel_base);
+	} else {
+		scpll_change_freq(l2_scpll_base, l_val);
+	}
+
+	l2_current_l_val = l_val;
+	spin_unlock_irqrestore(&l2_lock, flags);
+}
+
+static int l2_cpufreq_notifier(struct notifier_block *nb,
+			       unsigned long event, void *data)
+{
+	struct cpufreq_freqs *freqs = data;
+	u32 max_l_val;
+	int cpu;
+
+	if (!l2_initialized || event != CPUFREQ_POSTCHANGE)
+		return NOTIFY_DONE;
+
+	l2_vote[freqs->policy->cpu] = cpu_to_l2_l_val(freqs->new);
+
+	max_l_val = L2_L_VAL_LOW;
+	for_each_online_cpu(cpu) {
+		if (l2_vote[cpu] > max_l_val)
+			max_l_val = l2_vote[cpu];
+	}
+
+	l2_set_freq(max_l_val);
+	return NOTIFY_OK;
+}
+
+static struct notifier_block l2_cpufreq_nb = {
+	.notifier_call = l2_cpufreq_notifier,
+};
+
 static int apcs_msm8660_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -544,6 +628,44 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 
 	dev_info(dev, "CPU clock registered at %lu MHz\n",
 		 cpu_clk->current_rate / 1000000);
+
+	/* Initialize L2 SCPLL — only once, by first CPU to probe */
+	if (!l2_initialized) {
+		struct resource *l2_res;
+
+		l2_res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						      "l2-scpll");
+		if (l2_res) {
+			l2_scpll_base = devm_ioremap(dev, l2_res->start,
+						     resource_size(l2_res));
+			if (!l2_scpll_base) {
+				dev_warn(dev, "Failed to map L2 SCPLL\n");
+				goto skip_l2;
+			}
+
+			l2_clk_sel_base = acc_base + SPSS_L2_CLK_SEL;
+
+			ret = scpll_calibrate(l2_scpll_base);
+			if (ret) {
+				dev_warn(dev, "L2 SCPLL calibration failed\n");
+				goto skip_l2;
+			}
+
+			l2_current_l_val = 0;
+			l2_set_freq(L2_L_VAL_LOW);
+
+			ret = cpufreq_register_notifier(&l2_cpufreq_nb,
+						CPUFREQ_TRANSITION_NOTIFIER);
+			if (ret) {
+				dev_warn(dev, "L2 cpufreq notifier failed\n");
+				goto skip_l2;
+			}
+
+			l2_initialized = true;
+			dev_info(dev, "L2 SCPLL scaling initialized\n");
+		}
+	}
+skip_l2:
 
 	return 0;
 }
