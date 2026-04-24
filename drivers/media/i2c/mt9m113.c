@@ -1698,15 +1698,12 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	 * driver pattern (REFRESH after config, then SEQ_CMD).
 	 */
 	/*
-	 * Restore OFIFO and color pipeline defaults before REFRESH.
-	 * RAW mode sets OFIFO=0x0080 (sensor bypass) and disables the
-	 * color pipeline (0x3210=0x0000). These must be restored to
-	 * YUV defaults before REFRESH so the MCU can process the pipeline.
-	 * Done here (not stop_streaming) because MCU is confirmed idle.
+	 * NOTE: Do NOT write OFIFO or color_pipeline (0x3210) before
+	 * REFRESH. These hardware registers are managed by the MCU and
+	 * writing them before REFRESH causes REFRESH_MODE timeout.
+	 * The correct OFIFO/pipeline values are set AFTER REFRESH in
+	 * the RAW vs YUV configuration block below.
 	 */
-	cci_write(sensor->regmap, MT9M113_OFIFO_CONTROL_STATUS, 0x0003, NULL);
-	cci_write(sensor->regmap, CCI_REG16(0x3210), 0x01B8, NULL);
-
 	ret = mt9m113_refresh(sensor);
 	if (ret)
 		dev_warn(dev, "MT9M113: REFRESH failed, continuing\n");
