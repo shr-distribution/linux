@@ -2171,42 +2171,60 @@ main() {
             ;;
         rdi640)
             ensure_camera_ready
-            # RAW8 Bayer at 640x480 via RAW-through-PIX
-            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 GRBG
+            # RAW-through-PIX via RDI: sensor Bayer in UYVY wrapper
+            # Pipeline stays UYVY, DT property routes RDI through PIX
+            run_on_device "
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
+            "
+            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 NV12
             check_dmesg
             ;;
         rdi640-raw10)
             ensure_camera_ready
-            # RAW10 Bayer at 640x480 via RAW-through-PIX
-            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 pgAA
+            # Same as rdi640 (sensor always outputs via UYVY wrapper)
+            run_on_device "
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
+            "
+            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 NV12
             check_dmesg
             ;;
         rdi1280)
             ensure_camera_ready
-            # RAW8 Bayer at 1280x1024 via RAW-through-PIX
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 GRBG
+            # RAW-through-PIX via RDI at full resolution
+            run_on_device "
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
+            "
+            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 NV12
             check_dmesg
             ;;
         rdi1280-raw10)
             ensure_camera_ready
-            # RAW10 Bayer at 1280x1024 via RAW-through-PIX
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 pgAA
+            # RAW-through-PIX via RDI at full resolution
+            run_on_device "
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
+            "
+            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 NV12
             check_dmesg
             ;;
         rawpix640)
             ensure_camera_ready
-            # RAW via PIX node: sensor outputs RAW, PIX path with DEMUX disabled
-            run_on_device "echo 1 > /sys/module/qcom_camss/parameters/vfe31_raw_pix_mode 2>/dev/null || true"
-            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 GRBG
-            run_on_device "echo 0 > /sys/module/qcom_camss/parameters/vfe31_raw_pix_mode 2>/dev/null || true"
+            # RAW-through-PIX: sensor MCU outputs Bayer in UYVY wrapper.
+            # Pipeline stays UYVY, sensor pixel array set to RAW internally.
+            # Y plane of NV12 output contains raw Bayer data.
+            run_on_device "
+                # Set sensor pixel array to RAW (triggers MCU RAW mode)
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
+            "
+            test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12
             check_dmesg
             ;;
         rawpix1280)
             ensure_camera_ready
-            # RAW via PIX node: sensor outputs RAW, PIX path with DEMUX disabled
-            run_on_device "echo 1 > /sys/module/qcom_camss/parameters/vfe31_raw_pix_mode 2>/dev/null || true"
-            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 GRBG
-            run_on_device "echo 0 > /sys/module/qcom_camss/parameters/vfe31_raw_pix_mode 2>/dev/null || true"
+            # RAW-through-PIX: sensor MCU outputs Bayer in UYVY wrapper.
+            run_on_device "
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
+            "
+            test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12
             check_dmesg
             ;;
         video640)
