@@ -3653,13 +3653,25 @@ static int vfe31_enable(struct vfe_line *line)
 		 * RAW-through-PIX: skip DEMUX (raw data) but configure
 		 * Scale/FOV/Crop so CAMIF knows the frame dimensions.
 		 */
-		dev_info(vfe->camss->dev, "VFE31: Step 1b - RAW-through-PIX: scale/crop only (no DEMUX)\n");
+		/*
+		 * RAW-through-PIX: DEMUX must be configured (CFG != 0) for
+		 * data to flow through the data path gate. Raw data gets
+		 * "demuxed" as UYVY but WM0 captures the Y channel which
+		 * contains alternating raw bytes.
+		 */
+		dev_info(vfe->camss->dev, "VFE31: Step 1b - RAW-through-PIX: demux+scale/crop\n");
+		vfe31_set_demux_cfg(vfe, line);
 		vfe31_set_scale_cfg(vfe, line);
 		vfe31_set_crop_cfg(vfe, line);
 	} else if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE || axi_mode == 0x200) {
 		if (vfe31_raw_pix_mode) {
-			/* RAW via PIX: scale/crop only, no DEMUX/ISP */
-			dev_info(vfe->camss->dev, "VFE31: Step 1b - raw_pix_mode: scale/crop only\n");
+			/*
+			 * RAW via PIX: configure DEMUX for data flow but
+			 * skip ISP modules. DEMUX_CFG must be non-zero for
+			 * data to pass through the DEMUX data path gate.
+			 */
+			dev_info(vfe->camss->dev, "VFE31: Step 1b - raw_pix_mode: demux+scale/crop\n");
+			vfe31_set_demux_cfg(vfe, line);
 			vfe31_set_scale_cfg(vfe, line);
 			vfe31_set_crop_cfg(vfe, line);
 		} else {
