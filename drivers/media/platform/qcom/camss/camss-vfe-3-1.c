@@ -3675,13 +3675,7 @@ static int vfe31_enable(struct vfe_line *line)
 			vfe31_set_demux_cfg(vfe, line);
 			vfe31_set_scale_cfg(vfe, line);
 			vfe31_set_crop_cfg(vfe, line);
-			/*
-			 * TODO: ISP modules disabled - ~100+ register writes
-			 * including DMI RAM (gamma/LA LUTs) delay CAMIF start
-			 * and may cause 640x480 frame drift. Move to VFE reset
-			 * or one-time init instead of per-stream setup.
-			 * vfe31_set_isp_modules(vfe, line);
-			 */
+			vfe31_set_isp_modules(vfe, line);
 		}
 	} else {
 		dev_info(vfe->camss->dev, "VFE31: Step 1b - Skip ISP config (RDI mode)\n");
