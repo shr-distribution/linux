@@ -2176,7 +2176,7 @@ main() {
             run_on_device "
                 media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
             "
-            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 NV16
+            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
         rdi640-raw10)
@@ -2184,7 +2184,7 @@ main() {
             run_on_device "
                 media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
             "
-            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 NV16
+            test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
         rdi1280)
@@ -2193,7 +2193,7 @@ main() {
             run_on_device "
                 media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
             "
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 NV16
+            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
         rdi1280-raw10)
@@ -2201,7 +2201,7 @@ main() {
             run_on_device "
                 media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
             "
-            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 NV16
+            test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
             ;;
         rawpix640)

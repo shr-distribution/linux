@@ -3287,21 +3287,17 @@ static int vfe31_enable(struct vfe_line *line)
 	case V4L2_PIX_FMT_YUYV:
 	case V4L2_PIX_FMT_YVYU:
 		/*
-		 * Packed format: Force RDI mode to avoid buffer overflow.
-		 * PIX mode with 2 WMs would write NV16 layout (5MB at 1280x1024)
-		 * but UYVY buffer is only sized for packed layout (2.5MB).
+		 * Packed format: single WM, stride = width * 2.
+		 * For normal operation, force RDI mode (AXI=0x60).
+		 * For RAW-through-PIX, keep AXI=0x01 (PIX path with
+		 * DEMUX 0xCCCC routing all bytes to Y channel).
 		 */
-		if (axi_mode == 0x01) {
-			dev_info(vfe->camss->dev,
-				 "VFE31: Packed format %c%c%c%c - switching to RDI mode (single WM)\n",
-				 (pix->pixelformat >> 0) & 0xff,
-				 (pix->pixelformat >> 8) & 0xff,
-				 (pix->pixelformat >> 16) & 0xff,
-				 (pix->pixelformat >> 24) & 0xff);
+		if (axi_mode == 0x01 && !vfe->raw_through_pix) {
 			axi_mode = 0x60;  /* Force RDI passthrough */
 		}
 		output->wm_num = 1;
-		dev_info(vfe->camss->dev, "VFE31: Packed format - using 1 WM (RDI passthrough)\n");
+		dev_info(vfe->camss->dev, "VFE31: Packed format - 1 WM (%s)\n",
+			 vfe->raw_through_pix ? "RAW-through-PIX" : "RDI passthrough");
 		break;
 
 	case V4L2_PIX_FMT_NV16:
@@ -4512,6 +4508,19 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * Each nibble = 0xC means "send to Y output". No bytes go to CbCr.
 	 * WM0 captures the complete raw Bayer stream contiguously.
 	 */
+	{
+		bool is_rdi = (line->id == VFE_LINE_RDI0 ||
+			       line->id == VFE_LINE_RDI1 ||
+			       line->id == VFE_LINE_RDI2);
+
+		if (vfe31_raw_pix_mode ||
+		    (vfe->raw_through_pix && is_rdi)) {
+			even_cfg = 0xcc;
+			odd_cfg = 0xcc;
+			goto write_demux;
+		}
+	}
+
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -4570,6 +4579,7 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * Previous code only wrote to EVEN_CFG, leaving ODD_CFG uninitialized.
 	 * This caused the DEMUX to output Y on both Y and CbCr channels.
 	 */
+write_demux:
 	/*
 	 * VFE31 writes the combined 16-bit value to both EVEN and ODD registers.
 	 * This was the working state at 20:04 CET - separate 8-bit values broke
