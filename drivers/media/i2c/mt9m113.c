@@ -265,6 +265,7 @@ struct mt9m113 {
 	bool streaming;
 	bool was_streaming;	/* set by stop, cleared by start - skips REFRESH on restart */
 	bool in_standby;
+	bool test_pattern_active;
 
 	/* Pixel Array sub-device */
 	struct {
@@ -2676,15 +2677,24 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 
 	case V4L2_CID_TEST_PATTERN:
 		if (ctrl->val == 0) {
-			/* Disable test pattern, restart MCU and return to normal mode */
-			dev_info(&sensor->client->dev,
-				 "MT9M113: Disabling test pattern, restarting MCU\n");
-			/* Restart MCU from boot mode */
-			cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE, 0x0000, &ret);
-			usleep_range(10000, 15000);
-			/* Return to normal mode */
-			ret = mt9m113_write_mcu_var(sensor, MT9M113_CAM_MODE_SELECT,
-						    MT9M113_CAM_MODE_SELECT_NORMAL);
+			/*
+			 * Disable test pattern. Only restart MCU if test
+			 * pattern was previously active. On first call
+			 * (ctrl_handler_setup default), the MCU is already
+			 * in normal mode - restarting it here would disrupt
+			 * the MCU state and cause REFRESH timeouts.
+			 */
+			if (sensor->test_pattern_active) {
+				dev_info(&sensor->client->dev,
+					 "MT9M113: Disabling test pattern, restarting MCU\n");
+				cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE,
+					  0x0000, &ret);
+				usleep_range(10000, 15000);
+				ret = mt9m113_write_mcu_var(sensor,
+							    MT9M113_CAM_MODE_SELECT,
+							    MT9M113_CAM_MODE_SELECT_NORMAL);
+				sensor->test_pattern_active = false;
+			}
 		} else {
 			/*
 			 * Enable test pattern mode.
@@ -2696,6 +2706,7 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			 * 2. Issue refresh to apply settings
 			 * 3. Hold MCU in boot mode to prevent override
 			 */
+			sensor->test_pattern_active = true;
 			dev_info(&sensor->client->dev,
 				 "MT9M113: Enabling test pattern %d\n", ctrl->val);
 			ret = mt9m113_write_mcu_var(sensor,
