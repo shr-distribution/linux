@@ -3470,6 +3470,21 @@
 };
 
 /*
+ * APCS clock controller voltage co-voting.
+ * PM8058 S0 (vdd_mem) and S1 (vdd_dig) must track CPU frequency.
+ * Without this, the system risks instability at frequencies above 1 GHz.
+ */
+&apcs0 {
+	vdd-mem-supply = <&pm8058_s0>;
+	vdd-dig-supply = <&pm8058_s1>;
+};
+
+&apcs1 {
+	vdd-mem-supply = <&pm8058_s0>;
+	vdd-dig-supply = <&pm8058_s1>;
+};
+
+/*
  * Use direct LPAIF hardware path for audio instead of Q6 DSP.
  * This is similar to how webOS handled audio on the TouchPad.
  * To switch back to Q6/APR path, remove this include.
