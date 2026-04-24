@@ -3241,7 +3241,10 @@ static int vfe31_enable(struct vfe_line *line)
 			    line->id == VFE_LINE_RDI1 ||
 			    line->id == VFE_LINE_RDI2);
 
-	if (is_rdi_line) {
+	if (is_rdi_line && vfe->raw_through_pix) {
+		/* RAW-through-PIX: use PIX path for RDI */
+		axi_mode = 0x01;
+	} else if (is_rdi_line) {
 		/* RDI: CAMIF_TO_AXI raw bypass */
 		axi_mode = 0x60;
 		dev_info(vfe->camss->dev,
