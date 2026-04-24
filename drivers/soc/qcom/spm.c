@@ -71,6 +71,7 @@ struct spm_reg_data {
 	u32 avs_limit;
 	u8 seq[MAX_SEQ_DATA];
 	u8 start_index[PM_SLEEP_MODE_NR];
+	bool no_seq_ram;	/* SAW v1.0: register-based mode, no sequence RAM */
 
 	smp_call_func_t set_vdd;
 	/* for now we support only a single range */
@@ -244,6 +245,7 @@ static const u16 spm_reg_offset_8660[SPM_REG_NR] = {
 	[SPM_REG_SPM_CTL]	= 0x14,
 	[SPM_REG_PMIC_DLY]	= 0x18,	/* SAW_SPM_SLP_TMR_DLY */
 	[SPM_REG_PMIC_DATA_0]	= 0x20,	/* SAW_SPM_PMIC_CTL */
+	[SPM_REG_RST]		= 0x34,	/* SLP_RST_EN */
 	/* No sequence entry on 8660 - different architecture */
 };
 
@@ -289,6 +291,7 @@ static const struct spm_reg_data spm_reg_8660_cpu = {
 	/* All init values set to 0 - don't write anything at probe */
 	.spm_cfg = 0,
 	.pmic_dly = 0,
+	.no_seq_ram = true,
 	.set_vdd = smp_set_vdd_8660,
 	.range = &spm_8660_regulator_range,
 	.init_uV = 1100000,		/* awake_vlevel 0xA0 = ~1.1V */
@@ -329,12 +332,62 @@ static inline u32 spm_register_read(struct spm_driver_data *drv,
 	return readl_relaxed(drv->reg_base + drv->reg_data->reg_offset[reg]);
 }
 
+/*
+ * MSM8660/APQ8060 SAW v1.0 mode setting.
+ *
+ * SAW v1.0 has NO sequence RAM — SPM_CTL uses register-based mode selection:
+ *   Bits [2:0] = mode encoding (0x00=clock gate, 0x02=retention/PC)
+ *   Bit 3 = RPM bypass (1=standalone, no RPM notification)
+ *   Bits [6:4] = event output selection (preserve bootloader value)
+ *
+ * SLP_RST_EN (offset 0x34) distinguishes retention from power collapse:
+ *   0x00 = retention (no core reset)
+ *   0x01 = power collapse (core reset asserts during power-down)
+ */
+static void spm_set_low_power_mode_8660(struct spm_driver_data *drv,
+					enum pm_sleep_mode mode)
+{
+	u32 ctl_val;
+
+	ctl_val = spm_register_read(drv, SPM_REG_SPM_CTL);
+
+	/* Preserve bits [7:4] (event output + upper config), update [3:0] */
+	ctl_val &= ~0x0F;
+
+	switch (mode) {
+	case PM_SLEEP_MODE_SPC:
+		/* Standalone power collapse: mode=0x02, rpm_bypass=1, rst=1 */
+		ctl_val |= (1 << 3) | 0x02;
+		spm_register_write(drv, SPM_REG_RST, 0x01);
+		break;
+	case PM_SLEEP_MODE_RET:
+		/* Retention: mode=0x02, rpm_bypass=1, rst=0 */
+		ctl_val |= (1 << 3) | 0x02;
+		spm_register_write(drv, SPM_REG_RST, 0x00);
+		break;
+	default:
+		/* Standby / clock gating: mode=0x00, rpm_bypass=1, rst=0 */
+		ctl_val |= (1 << 3) | 0x00;
+		spm_register_write(drv, SPM_REG_RST, 0x00);
+		break;
+	}
+
+	spm_register_write_sync(drv, SPM_REG_SPM_CTL, ctl_val);
+}
+
 void spm_set_low_power_mode(struct spm_driver_data *drv,
 			    enum pm_sleep_mode mode)
 {
 	u32 start_index;
 	u32 ctl_val;
 
+	/* MSM8660/APQ8060 SAW v1.0: register-based mode, no sequence index */
+	if (drv->reg_data->no_seq_ram) {
+		spm_set_low_power_mode_8660(drv, mode);
+		return;
+	}
+
+	/* SAW v1.1+ with sequence RAM */
 	start_index = drv->reg_data->start_index[mode];
 
 	ctl_val = spm_register_read(drv, SPM_REG_SPM_CTL);

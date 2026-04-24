@@ -36,6 +36,7 @@
 			operating-points-v2 = <&cpu_opp_table>;
 			qcom,saw = <&saw0>;
 			cpu-supply = <&saw0_reg>;
+			cpu-idle-states = <&cpu_spc>;
 		};
 
 		cpu1: cpu@1 {
@@ -49,12 +50,22 @@
 			operating-points-v2 = <&cpu_opp_table>;
 			qcom,saw = <&saw1>;
 			cpu-supply = <&saw1_reg>;
+			cpu-idle-states = <&cpu_spc>;
 		};
 
 		l2: l2-cache {
 			compatible = "cache";
 			cache-level = <2>;
 			cache-unified;
+		};
+
+		idle-states {
+			cpu_spc: cpu-spc {
+				compatible = "qcom,idle-state-spc";
+				entry-latency-us = <400>;
+				exit-latency-us = <900>;
+				min-residency-us = <3000>;
+			};
 		};
 	};
 
