@@ -646,12 +646,15 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 			l2_clk_sel_base = acc_base + SPSS_L2_CLK_SEL;
 
 			/*
-			 * Skip L2 SCPLL calibration — assume bootloader
-			 * already calibrated it (same as CPU SCPLLs).
+			 * TODO: L2 SCPLL enable hangs — the L2 SCPLL
+			 * hardware does not respond to the same power-up
+			 * sequence as CPU SCPLLs (power_down → standby →
+			 * shot-switch → normal). Needs investigation with
+			 * register dumps to determine correct sequence.
+			 * Disable for now — L2 runs at bootloader default.
 			 */
-
-			l2_current_l_val = 0;
-			l2_set_freq(L2_L_VAL_LOW);
+			dev_info(dev, "L2 SCPLL: disabled pending init sequence investigation\n");
+			goto skip_l2;
 
 			ret = cpufreq_register_notifier(&l2_cpufreq_nb,
 						CPUFREQ_TRANSITION_NOTIFIER);
