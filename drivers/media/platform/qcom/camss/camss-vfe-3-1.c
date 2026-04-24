@@ -3989,9 +3989,10 @@ static int vfe31_enable(struct vfe_line *line)
 			{
 				struct vfe_line *pix_line = &vfe->line[VFE_LINE_PIX];
 				u32 pix_fmt = pix_line->video_out.active_fmt.fmt.pix_mp.pixelformat;
+				u16 pix_bpl = pix_line->video_out.active_fmt.fmt.pix_mp.plane_fmt[0].bytesperline;
 
 				vfe31_calc_pix_config(&cfg, width, height,
-						     bytesperline,
+						     pix_bpl,
 						     pix_fmt, 2, 912 / 2);
 			}
 
