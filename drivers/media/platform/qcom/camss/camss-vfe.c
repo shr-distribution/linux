@@ -465,6 +465,11 @@ const struct camss_formats vfe_formats_pix_vfe31 = {
  *   - RAW10:     10 bpp (packed, 10/8 bytes per pixel)
  */
 static const struct camss_format_info formats_rdi_vfe31[] = {
+	/* NV12/NV16 semi-planar for RAW-through-PIX mode */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	/* YUV 4:2:2 formats - 16 bits per pixel */
 	{ MEDIA_BUS_FMT_UYVY8_1X16, 16, V4L2_PIX_FMT_UYVY, 1,
 	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
