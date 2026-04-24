@@ -1697,6 +1697,16 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	 * caused MCU lockup. One is sufficient and matches the Allwinner
 	 * driver pattern (REFRESH after config, then SEQ_CMD).
 	 */
+	/*
+	 * Restore OFIFO and color pipeline defaults before REFRESH.
+	 * RAW mode sets OFIFO=0x0080 (sensor bypass) and disables the
+	 * color pipeline (0x3210=0x0000). These must be restored to
+	 * YUV defaults before REFRESH so the MCU can process the pipeline.
+	 * Done here (not stop_streaming) because MCU is confirmed idle.
+	 */
+	cci_write(sensor->regmap, MT9M113_OFIFO_CONTROL_STATUS, 0x0003, NULL);
+	cci_write(sensor->regmap, CCI_REG16(0x3210), 0x01B8, NULL);
+
 	ret = mt9m113_refresh(sensor);
 	if (ret)
 		dev_warn(dev, "MT9M113: REFRESH failed, continuing\n");
@@ -2025,22 +2035,7 @@ static int mt9m113_stop_streaming(struct mt9m113 *sensor)
 	if (ret < 0)
 		dev_dbg(dev, "MT9M113: SEQ_CMD did not complete before stop\n");
 
-	/*
-	 * Restore YUV defaults after streaming. Without this, RAW mode
-	 * settings (CAM_OUTPUT_FORMAT, OFIFO, color pipeline) persist and
-	 * cause MCU lockup on next start_streaming REFRESH when switching
-	 * back to YUV or between RAW/YUV modes.
-	 */
-	/* Restore OFIFO to FIFO bypass (YUV default) */
-	cci_write(sensor->regmap, MT9M113_OFIFO_CONTROL_STATUS, 0x0003, NULL);
-	/* Restore color pipeline (scaler+gamma+ap+shading) */
-	cci_write(sensor->regmap, CCI_REG16(0x3210), 0x01B8, NULL);
-	/* Clear RAW output format - restore YUV for both contexts */
-	mt9m113_write_mcu_var(sensor, 0xc86c, 0x0000);
-	mt9m113_write_mcu_var(sensor, MT9M113_MODE_OUTPUT_FORMAT_A, 0x0000);
-	mt9m113_write_mcu_var(sensor, MT9M113_MODE_OUTPUT_FORMAT_B, 0x0000);
-
-	dev_info(dev, "MT9M113: streaming stopped (YUV defaults restored)\n");
+	dev_info(dev, "MT9M113: streaming stopped\n");
 
 	pm_runtime_put_autosuspend(dev);
 	return 0;
