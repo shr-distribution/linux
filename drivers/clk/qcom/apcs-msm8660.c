@@ -485,7 +485,7 @@ static u32 cpu_to_l2_l_val(unsigned int cpu_khz)
 static void l2_set_freq(u32 l_val)
 {
 	unsigned long flags;
-	u32 regval;
+	u32 regval, ctl;
 
 	spin_lock_irqsave(&l2_lock, flags);
 
@@ -495,14 +495,36 @@ static void l2_set_freq(u32 l_val)
 	}
 
 	if (l2_current_l_val == 0) {
-		/* First time — enable L2 SCPLL via shot-switch */
-		scpll_enable_at_l_val(l2_scpll_base, l_val);
-		mb();
-		/* Select SCPLL as L2 source (bits [1:0], shift=0) */
-		regval = readl(l2_clk_sel_base);
-		regval &= ~0x3;
-		regval |= SRC_SEL_SCPLL;
-		writel(regval, l2_clk_sel_base);
+		/*
+		 * First time — the bootloader leaves the L2 SCPLL running
+		 * in NORMAL mode at 432 MHz but with CLK_SEL on the PLL
+		 * divider mux. Don't power-cycle the SCPLL — just switch
+		 * CLK_SEL to SCPLL source, then slew to target frequency.
+		 */
+		ctl = readl(l2_scpll_base + SCPLL_CTL);
+		if ((ctl & 0x7) == SCPLL_NORMAL) {
+			/* SCPLL already running — read current L_VAL */
+			u32 cur = (ctl >> 3) & 0x3f;
+
+			/* Select SCPLL as L2 source (bits [1:0], shift=0) */
+			regval = readl(l2_clk_sel_base);
+			regval &= ~0x3;
+			regval |= SRC_SEL_SCPLL;
+			writel(regval, l2_clk_sel_base);
+			mb();
+
+			/* Slew to target if different from current */
+			if (l_val != cur)
+				scpll_change_freq(l2_scpll_base, l_val);
+		} else {
+			/* SCPLL not running — enable via shot-switch */
+			scpll_enable_at_l_val(l2_scpll_base, l_val);
+			mb();
+			regval = readl(l2_clk_sel_base);
+			regval &= ~0x3;
+			regval |= SRC_SEL_SCPLL;
+			writel(regval, l2_clk_sel_base);
+		}
 	} else {
 		scpll_change_freq(l2_scpll_base, l_val);
 	}
@@ -655,15 +677,11 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 			l2_clk_sel_base = acc_base + SPSS_L2_CLK_SEL;
 
 			/*
-			 * TODO: L2 SCPLL enable hangs — the L2 SCPLL
-			 * hardware does not respond to the same power-up
-			 * sequence as CPU SCPLLs (power_down → standby →
-			 * shot-switch → normal). Needs investigation with
-			 * register dumps to determine correct sequence.
-			 * Disable for now — L2 runs at bootloader default.
+			 * Don't calibrate L2 SCPLL — the bootloader
+			 * already did it and left it running in NORMAL
+			 * mode at 432 MHz. l2_set_freq() detects this
+			 * and avoids power-cycling the SCPLL.
 			 */
-			dev_info(dev, "L2 SCPLL: disabled pending init sequence investigation\n");
-			goto skip_l2;
 
 			ret = cpufreq_register_notifier(&l2_cpufreq_nb,
 						CPUFREQ_TRANSITION_NOTIFIER);
