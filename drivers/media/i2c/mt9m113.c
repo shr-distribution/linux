@@ -2782,9 +2782,22 @@ static int mt9m113_power_on(struct mt9m113 *sensor)
 
 		cci_read(sensor->regmap, MT9M113_CLOCKS_CONTROL, &clocks_val, NULL);
 		if (clocks_val != 0) {
-			dev_info(dev, "MT9M113 already initialized\n");
-			msleep(50);
-			return 0;
+			u64 seq_cmd = 0;
+
+			/*
+			 * Sensor already has clocks running (warm reboot or
+			 * resume). Check if MCU is responsive by reading
+			 * SEQ_CMD. If stuck (non-zero), do full soft reset
+			 * instead of skipping init.
+			 */
+			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
+			if (seq_cmd == 0) {
+				dev_info(dev, "MT9M113 already initialized, MCU OK\n");
+				msleep(50);
+				return 0;
+			}
+			dev_warn(dev, "MT9M113: MCU stuck (SEQ_CMD=0x%llx), forcing soft reset\n",
+				 seq_cmd);
 		}
 
 		/* Soft reset */
