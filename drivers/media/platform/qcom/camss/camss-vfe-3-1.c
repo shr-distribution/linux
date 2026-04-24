@@ -3675,11 +3675,7 @@ static int vfe31_enable(struct vfe_line *line)
 			vfe31_set_demux_cfg(vfe, line);
 			vfe31_set_scale_cfg(vfe, line);
 			vfe31_set_crop_cfg(vfe, line);
-			/* ISP modules use identity defaults - skip for now
-			 * to avoid potential timing impact on 640x480.
-			 * TODO: re-enable once frame drift is investigated.
-			 * vfe31_set_isp_modules(vfe, line);
-			 */
+			vfe31_set_isp_modules(vfe, line);
 		}
 	} else {
 		dev_info(vfe->camss->dev, "VFE31: Step 1b - Skip ISP config (RDI mode)\n");
