@@ -386,6 +386,7 @@
 			compatible = "qcom,mmcc-msm8660";
 			#clock-cells = <1>;
 			#reset-cells = <1>;
+			#power-domain-cells = <1>;
 			reg = <0x04000000 0x1000>;
 			clocks = <&pxo_board>, <&gcc PLL8_VOTE>, <&rpmcc RPM_MM_FABRIC_CLK>;
 			clock-names = "pxo", "pll8_vote", "mmfab";
