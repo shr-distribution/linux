@@ -4501,10 +4501,23 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * | YVYU    | 5    | 0xAC9C       | YCrYCb |
 	 * | UYVY    | 6    | 0xC9CA       | CbYCrY (webOS default) |
 	 * | VYUY    | 7    | 0xCAC9       | CrYCbY |
+	 * | RAW     | -    | 0xCCCC       | All bytes → Y channel |
 	 *
 	 * The 16-bit value is written to both DEMUX_EVEN_CFG and DEMUX_ODD_CFG.
 	 * even_cfg = upper byte, odd_cfg = lower byte
 	 */
+
+	/*
+	 * RAW-through-PIX: route ALL input bytes to Y channel (0xCCCC).
+	 * Each nibble = 0xC means "send to Y output". No bytes go to CbCr.
+	 * WM0 captures the complete raw Bayer stream contiguously.
+	 */
+	if (vfe31_raw_pix_mode || vfe->raw_through_pix) {
+		even_cfg = 0xcc;
+		odd_cfg = 0xcc;
+		goto write_demux;
+	}
+
 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
@@ -4563,6 +4576,7 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * Previous code only wrote to EVEN_CFG, leaving ODD_CFG uninitialized.
 	 * This caused the DEMUX to output Y on both Y and CbCr channels.
 	 */
+write_demux:
 	/*
 	 * VFE31 writes the combined 16-bit value to both EVEN and ODD registers.
 	 * This was the working state at 20:04 CET - separate 8-bit values broke
