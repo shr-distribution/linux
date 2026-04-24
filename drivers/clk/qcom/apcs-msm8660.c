@@ -645,11 +645,10 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 
 			l2_clk_sel_base = acc_base + SPSS_L2_CLK_SEL;
 
-			ret = scpll_calibrate(l2_scpll_base);
-			if (ret) {
-				dev_warn(dev, "L2 SCPLL calibration failed\n");
-				goto skip_l2;
-			}
+			/*
+			 * Skip L2 SCPLL calibration — assume bootloader
+			 * already calibrated it (same as CPU SCPLLs).
+			 */
 
 			l2_current_l_val = 0;
 			l2_set_freq(L2_L_VAL_LOW);
