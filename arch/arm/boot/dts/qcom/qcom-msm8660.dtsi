@@ -1013,8 +1013,10 @@
 			#interconnect-cells = <1>;
 			qcom,rpm = <&rpm>;
 			clocks = <&rpmcc RPM_APPS_FABRIC_CLK>,
-				 <&rpmcc RPM_APPS_FABRIC_A_CLK>;
-			clock-names = "bus", "bus_a";
+				 <&rpmcc RPM_APPS_FABRIC_A_CLK>,
+				 <&rpmcc RPM_EBI1_CLK>,
+				 <&rpmcc RPM_EBI1_A_CLK>;
+			clock-names = "bus", "bus_a", "ebi1", "ebi1_a";
 		};
 
 		system_fabric: interconnect@1 {
