@@ -1159,6 +1159,20 @@ static int adm_dma_probe(struct platform_device *pdev)
 		adev->channels[i].initialized = 1;
 	}
 
+	/*
+	 * Diagnostic: read back CH_CONF and RSLT_CONF for all channels.
+	 * Helps identify if writes don't stick (clock/SD ownership issue).
+	 */
+	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
+		u32 ch_conf, rslt_conf;
+
+		ch_conf = readl_relaxed(adev->regs + ADM_CH_CONF(i, adev->ee));
+		rslt_conf = readl_relaxed(adev->regs + ADM_CH_RSLT_CONF(i, adev->ee));
+		dev_info(adev->dev,
+			 "ADM ch%d EE%d: CH_CONF=0x%08x RSLT_CONF=0x%08x\n",
+			 i, adev->ee, ch_conf, rslt_conf);
+	}
+
 	ret = devm_request_irq(adev->dev, adev->irq, adm_dma_irq,
 			       0, "adm_dma", adev);
 	if (ret)
