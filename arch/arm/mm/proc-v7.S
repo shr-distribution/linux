@@ -313,6 +313,11 @@ __v7_scorpion_setup:
 	movt	r0, #0xC005
 	mcr	p15, 3, r0, c15, c0, 1		@ WCP15_L2CR0
 
+	/* BPCR: Enable full branch history and address participation */
+	movw	r0, #0x01FF
+	movt	r0, #0x01FF
+	mcr	p15, 7, r0, c15, c0, 2		@ WCP15_BPCR
+
 	mov	r10, #0
 #ifdef CONFIG_SMP
 	orr	r10, r10, #(1 << 6)		@ Enable SMP/nAMP mode
@@ -322,7 +327,19 @@ __v7_scorpion_setup:
 	teq	r10, r0				@ Were they already set?
 	mcrne	p15, 0, r10, c1, c0, 1		@ No, update register
 #endif
-	b	__v7_setup_cont
+	/*
+	 * Run common v7 setup (TTB, errata, PRRR/NMRR, SCTLR), then
+	 * override NMRR with Scorpion-optimized value before returning.
+	 * Save lr in r11 (callee-saved, preserved through __v7_setup_cont)
+	 * since __v7_setup_cont returns directly via "ret lr".
+	 */
+	mov	r11, lr
+	bl	__v7_setup_cont
+	/* Override NMRR: 0x40e040e0 (generic) -> 0x40e080e0 (Scorpion) */
+	movw	r6, #0x80e0
+	movt	r6, #0x40e0
+	mcr	p15, 0, r6, c10, c2, 1		@ write Scorpion NMRR
+	ret	r11
 
 __v7_ca5mp_setup:
 __v7_ca9mp_setup:
