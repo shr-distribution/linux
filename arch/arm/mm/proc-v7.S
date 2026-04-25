@@ -801,45 +801,6 @@ __v7_ca75_proc_info:
 	.size	__v7_ca75_proc_info, . - __v7_ca75_proc_info
 
 	/*
-	 * Qualcomm Inc. Scorpion processors (MSM8660/APQ8060).
-	 *
-	 * L2CR0 and L2CR1 are Scorpion-specific CP15 registers that come up
-	 * in unpredictable state after reset and must be configured before
-	 * the L2 cache is used. They can only be safely written pre-MMU
-	 * (before caches are live and TrustZone policy is applied).
-	 *
-	 * Writing these from a driver probe function causes a boot hang
-	 * because: (a) the L2 is already active with live cache lines,
-	 * (b) TrustZone may trap opc1=3 CP15 accesses from NS-PL1, and
-	 * (c) changing L2CR1 DBB bit post-boot breaks SMP coherency.
-	 */
-__scorpion_setup:
-	do_invalidate_l1
-
-	/* L2CR1: Disable Barrier Broadcast (DBB) for SMP stability */
-	mov	r0, #0x100
-	mcr	p15, 3, r0, c15, c0, 3		@ WCP15_L2CR1
-
-	/* L2CR0: Enable out-of-order bus attributes, error reporting */
-	ldr	r0, =0xC0050F0F
-	mcr	p15, 3, r0, c15, c0, 1		@ WCP15_L2CR0
-
-#ifdef CONFIG_SMP
-	ALT_SMP(mrc	p15, 0, r0, c1, c0, 1)
-	ALT_UP(mov	r0, #(1 << 6))		@ fake it for UP
-	orr	r0, r0, #(1 << 6)		@ Enable SMP/nAMP mode
-	mcr	p15, 0, r0, c1, c0, 1
-#endif
-	b	__v7_setup_cont
-
-	.type	__scorpion_proc_info, #object
-__scorpion_proc_info:
-	.long	0x510f02d0		@ Required ID value (Scorpion MP)
-	.long	0xff0ff0f0		@ Mask for ID (match part 0x02d, any rev)
-	__v7_proc __scorpion_proc_info, __scorpion_setup
-	.size	__scorpion_proc_info, . - __scorpion_proc_info
-
-	/*
 	 * Qualcomm Inc. Krait processors.
 	 */
 	.type	__krait_proc_info, #object
