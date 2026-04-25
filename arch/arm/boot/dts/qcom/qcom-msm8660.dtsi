@@ -275,38 +275,22 @@
 			reg = <0x46d00000 0x100000>;
 			no-map;
 		};
+
+		/*
+		 * vMPM (virtual MPM) shared memory region within RPM.
+		 * Used by the MPM driver to access wakeup interrupt
+		 * registers without conflicting with the RPM's memory claim.
+		 */
+		mpm_sram: mpm@1049d8 {
+			reg = <0x001049d8 0x448>;
+			no-map;
+		};
 	};
 
 	firmware {
 		scm {
 			compatible = "qcom,scm-msm8660", "qcom,scm";
 		};
-	};
-
-	/*
-	 * MPM (MSM Power Manager) wakeup interrupt controller.
-	 * Always-on controller that routes wakeup events to RPM
-	 * when CPUs are power-collapsed.
-	 *
-	 * Placed outside soc{} because the vMPM registers at
-	 * RPM_BASE + 0x9D8 overlap the RPM's memory region.
-	 * Inside soc{}, the simple-bus won't create a platform
-	 * device for an overlapping address range.
-	 */
-	mpm: interrupt-controller@1049d8 {
-		compatible = "qcom,msm8660-mpm", "qcom,mpm";
-		reg = <0x001049d8 0x448>;
-		interrupts = <GIC_SPI 2 IRQ_TYPE_EDGE_RISING>;
-		mboxes = <&gcc_ipc 1>;
-		interrupt-controller;
-		#interrupt-cells = <2>;
-		#power-domain-cells = <0>;
-		interrupt-parent = <&intc>;
-		qcom,mpm-pin-count = <64>;
-		qcom,mpm-pin-map = <25 100>,	/* USB1_HS */
-				   <26 50>,	/* TV_ENC */
-				   <27 79>;	/* HDMI */
-		status = "disabled";
 	};
 
 	soc: soc {
@@ -321,6 +305,27 @@
 			#interrupt-cells = <3>;
 			reg = < 0x02080000 0x1000 >,
 			      < 0x02081000 0x1000 >;
+		};
+
+		/*
+		 * MPM (MSM Power Manager) wakeup interrupt controller.
+		 * Uses qcom,rpm-msg-ram to reference the vMPM shared
+		 * memory region, avoiding reg overlap with the RPM node.
+		 */
+		mpm: interrupt-controller {
+			compatible = "qcom,msm8660-mpm", "qcom,mpm";
+			qcom,rpm-msg-ram = <&mpm_sram>;
+			interrupts = <GIC_SPI 2 IRQ_TYPE_EDGE_RISING>;
+			mboxes = <&gcc_ipc 1>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			#power-domain-cells = <0>;
+			interrupt-parent = <&intc>;
+			qcom,mpm-pin-count = <64>;
+			qcom,mpm-pin-map = <25 100>,	/* USB1_HS */
+					   <26 50>,	/* TV_ENC */
+					   <27 79>;	/* HDMI */
+			status = "disabled";
 		};
 
 		timer@2000000 {
