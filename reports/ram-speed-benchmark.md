@@ -1349,6 +1349,68 @@ Remaining performance gap vs webOS (1268 vs 2048 MB/s = 62%) is primarily due to
 
 ---
 
+---
+
+## eMMC Storage Benchmark
+
+**Test Date:** 2026-04-25
+**Kernel:** 6.18.0-luneos (with all Scorpion + SoC optimizations)
+**Device:** SEM32G 29.7 GiB eMMC
+**Controller:** SDCC1 at 0x12400000, **PIO mode** (ADM DMA not functional)
+**DMA Status:** ADM channels allocated but CH_CONF register issue prevents DMA transfers (see `reports/adm-dma-emmc-analysis.md`)
+
+### Results
+
+| Test | Speed | Notes |
+|------|-------|-------|
+| Sequential read 1M (cold) | **30.2 MB/s** | First read after boot, no buffer cache |
+| Sequential read 1M (warm, fast) | **380.7 MB/s** | Buffer cache hits (7/9 runs) |
+| Sequential read 1M (warm, slow) | **194.1 MB/s** | Partial cache eviction (2/9 runs) |
+| Sequential read 4K | **336.6 MB/s** (86K IOPS) | Fully cached in buffer cache |
+| Filesystem read (cache dropped) | **31.1 MB/s** | `echo 3 > /proc/sys/vm/drop_caches` before each run |
+
+### Raw Data
+
+**Sequential Read (1M blocks, 100 MB, 10 runs):**
+```
+Run  1: 3.315s (30.2 MB/s) - cold
+Run  2: 0.285s (350.9 MB/s)
+Run  3: 0.252s (397.3 MB/s)
+Run  4: 0.249s (401.6 MB/s)
+Run  5: 0.282s (354.6 MB/s)
+Run  6: 0.273s (366.3 MB/s)
+Run  7: 0.516s (193.8 MB/s)
+Run  8: 0.249s (401.6 MB/s)
+Run  9: 0.248s (403.2 MB/s)
+Run 10: 0.514s (194.6 MB/s)
+```
+
+**Filesystem Read (100 MB, caches dropped, 5 runs):**
+```
+Run 1: 3.260s (30.7 MB/s)
+Run 2: 3.165s (31.6 MB/s)
+Run 3: 3.332s (30.0 MB/s)
+Run 4: 3.113s (32.1 MB/s)
+Run 5: 3.229s (31.0 MB/s)
+```
+
+### Analysis
+
+The **real eMMC hardware throughput is ~31 MB/s** in PIO mode. The ~380 MB/s "warm"
+reads are hitting the kernel buffer cache. The 4K read IOPS (86K) are entirely cached.
+
+Previous PIO measurement (January 2026, from `adm-dma-emmc-analysis.md`) was **~73 MB/s**.
+The difference may be due to different kernel configurations, CPU frequency, or buffer
+cache state. The cold/cache-dropped reads (~31 MB/s) are the most reliable measure
+of actual eMMC throughput.
+
+**Potential improvements:**
+1. Fix ADM DMA (CH_CONF register issue) — would significantly increase eMMC throughput
+2. Investigate eMMC clock speed — may be running below maximum
+3. Enable 8-bit bus mode if not already active
+
+---
+
 ## Notes
 
 - The `dd` test measures practical throughput including CPU and kernel overhead, not raw hardware bandwidth
@@ -1358,4 +1420,5 @@ Remaining performance gap vs webOS (1268 vs 2048 MB/s = 62%) is primarily due to
 - VMSPLIT_2G is enabled in all tenderloin defconfigs
 - Scorpion NMRR is now stable when combined with L2CR0/L2CR1 initialization
 - Scorpion L2CR0/L2CR1 boot hang was caused by `ldr =value` literal pool issue in proc-v7.S, fixed with `movw`/`movt`
+- eMMC runs in PIO mode (~31 MB/s); ADM DMA not yet functional (see `reports/adm-dma-emmc-analysis.md`)
 - Current stable performance: **1145 MB/s median** memory BW (56% of webOS), best 1268 MB/s (62% of webOS)
