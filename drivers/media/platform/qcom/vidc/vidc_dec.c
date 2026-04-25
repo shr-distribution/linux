@@ -11,6 +11,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
+#include <media/v4l2-ctrls.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mem2mem.h>
@@ -733,6 +734,10 @@ static int vidc_dec_open(struct file *file)
 		goto err_m2m_release;
 	}
 
+	ret = v4l2_ctrl_handler_init(&inst->ctrl_handler, 0);
+	if (ret)
+		goto err_m2m_ctx_release;
+
 	v4l2_fh_init(&inst->fh, core->vfd_dec);
 	inst->fh.ctrl_handler = &inst->ctrl_handler;
 	file->private_data = &inst->fh;
@@ -746,6 +751,8 @@ static int vidc_dec_open(struct file *file)
 
 	return 0;
 
+err_m2m_ctx_release:
+	v4l2_m2m_ctx_release(inst->m2m_ctx);
 err_m2m_release:
 	v4l2_m2m_release(inst->m2m_dev);
 err_free:
@@ -765,6 +772,8 @@ static int vidc_dec_close(struct file *file)
 
 	v4l2_fh_del(&inst->fh, file);
 	v4l2_fh_exit(&inst->fh);
+
+	v4l2_ctrl_handler_free(&inst->ctrl_handler);
 
 	v4l2_m2m_ctx_release(inst->m2m_ctx);
 	v4l2_m2m_release(inst->m2m_dev);
