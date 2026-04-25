@@ -3484,9 +3484,13 @@
 	vdd-dig-supply = <&pm8058_s1>;
 };
 
-&mpm {
-	status = "okay";
-};
+/*
+ * MPM disabled — DT node placement issues cause boot hang.
+ * Needs further investigation of IRQCHIP_PLATFORM_DRIVER
+ * interaction with DT hierarchy on MSM8660.
+ *
+ * &mpm { status = "okay"; };
+ */
 
 /*
  * Use direct LPAIF hardware path for audio instead of Q6 DSP.
