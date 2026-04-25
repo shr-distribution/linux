@@ -458,10 +458,20 @@ static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 		if (!priv->base)
 			return -ENOMEM;
 	} else {
-		/* Otherwise, fall back to simple MMIO. */
-		priv->base = devm_platform_ioremap_resource(pdev, 0);
-		if (IS_ERR(priv->base))
-			return PTR_ERR(priv->base);
+		/*
+		 * Fall back to simple MMIO. Use devm_ioremap (not
+		 * devm_platform_ioremap_resource) because the vMPM
+		 * registers may reside within the RPM's memory region
+		 * which is already claimed. This is the case on MSM8660
+		 * where vMPM is at RPM_BASE + 0x9D8.
+		 */
+		struct resource *r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+
+		if (!r)
+			return -ENODEV;
+		priv->base = devm_ioremap(dev, r->start, resource_size(r));
+		if (!priv->base)
+			return -ENOMEM;
 	}
 
 	if (priv->msm8660_layout)
