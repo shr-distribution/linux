@@ -1173,6 +1173,47 @@ static int adm_dma_probe(struct platform_device *pdev)
 			 i, adev->ee, ch_conf, rslt_conf);
 	}
 
+	/*
+	 * Diagnostic: probe write-protect mask on CH_CONF for chan 2
+	 * (eMMC SDC1). Write 0xFFFFFFFF, read back, then restore the
+	 * intended value (SD(ee) | SHADOW_EN).
+	 */
+	{
+		u32 wp_mask, master_ch2, before;
+
+		/* Read master CH_CONF (EE=0) for chan 2 - compare with EE=1 */
+		master_ch2 = readl_relaxed(adev->regs +
+					   ADM_CH_CONF(2, 0));
+		dev_info(adev->dev,
+			 "ADM chan 2 EE0 (master): CH_CONF=0x%08x\n",
+			 master_ch2);
+
+		/* Save current EE value */
+		before = readl_relaxed(adev->regs +
+				       ADM_CH_CONF(2, adev->ee));
+
+		/* Write 0xFFFFFFFF and read back to find write-protect mask */
+		writel(0xFFFFFFFF, adev->regs +
+		       ADM_CH_CONF(2, adev->ee));
+		wp_mask = readl_relaxed(adev->regs +
+					ADM_CH_CONF(2, adev->ee));
+		dev_info(adev->dev,
+			 "ADM chan 2 EE%d: wrote 0xFFFFFFFF, readback=0x%08x (writable bits)\n",
+			 adev->ee, wp_mask);
+
+		/* Restore intended value */
+		writel(ADM_CH_CONF_SEC_DOMAIN(adev->ee) |
+		       ADM_CH_CONF_SHADOW_EN,
+		       adev->regs + ADM_CH_CONF(2, adev->ee));
+
+		/* Verify restore */
+		before = readl_relaxed(adev->regs +
+				       ADM_CH_CONF(2, adev->ee));
+		dev_info(adev->dev,
+			 "ADM chan 2 EE%d: after restore CH_CONF=0x%08x\n",
+			 adev->ee, before);
+	}
+
 	ret = devm_request_irq(adev->dev, adev->irq, adm_dma_irq,
 			       0, "adm_dma", adev);
 	if (ret)
