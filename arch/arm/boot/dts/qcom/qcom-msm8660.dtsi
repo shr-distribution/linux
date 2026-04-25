@@ -277,6 +277,12 @@
 		};
 	};
 
+	firmware {
+		scm {
+			compatible = "qcom,scm-msm8660", "qcom,scm";
+		};
+	};
+
 	soc: soc {
 		#address-cells = <1>;
 		#size-cells = <1>;
