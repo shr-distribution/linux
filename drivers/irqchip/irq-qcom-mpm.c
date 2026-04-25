@@ -481,12 +481,21 @@ static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 	if (priv->msm8660_layout)
 		priv->status_base = priv->base + MPM_8660_STATUS_OFFSET;
 
-	for (i = 0; i < priv->reg_stride; i++) {
-		qcom_mpm_write(priv, MPM_REG_ENABLE, i, 0);
-		qcom_mpm_write(priv, MPM_REG_FALLING_EDGE, i, 0);
-		qcom_mpm_write(priv, MPM_REG_RISING_EDGE, i, 0);
-		qcom_mpm_write(priv, MPM_REG_POLARITY, i, 0);
-		qcom_mpm_write(priv, MPM_REG_STATUS, i, 0);
+	/*
+	 * Clear all vMPM registers to start with a clean state.
+	 * Skip for MSM8660 — the vMPM registers are in live RPM shared
+	 * memory and zeroing them corrupts RPM state, causing a boot hang.
+	 * On MSM8660, the RPM firmware owns these registers and manages
+	 * their initial state.
+	 */
+	if (!priv->msm8660_layout) {
+		for (i = 0; i < priv->reg_stride; i++) {
+			qcom_mpm_write(priv, MPM_REG_ENABLE, i, 0);
+			qcom_mpm_write(priv, MPM_REG_FALLING_EDGE, i, 0);
+			qcom_mpm_write(priv, MPM_REG_RISING_EDGE, i, 0);
+			qcom_mpm_write(priv, MPM_REG_POLARITY, i, 0);
+			qcom_mpm_write(priv, MPM_REG_STATUS, i, 0);
+		}
 	}
 
 	irq = platform_get_irq(pdev, 0);
