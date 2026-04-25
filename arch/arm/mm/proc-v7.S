@@ -291,6 +291,39 @@ SYM_FUNC_END(cpu_pj4b_do_resume)
  *	It is assumed that:
  *	- cache type register is implemented
  */
+/*
+ * Qualcomm Scorpion (MSM8660/APQ8060) setup.
+ *
+ * L2CR0 and L2CR1 are Scorpion-specific CP15 registers that come up
+ * in unpredictable state after reset. They must be written pre-MMU
+ * before the L2 cache is used by the OS.
+ *
+ * Uses movw/movt instead of ldr =value to avoid literal pool issues
+ * in the .proc.info.init section context.
+ */
+__v7_scorpion_setup:
+	do_invalidate_l1
+
+	/* L2CR1: Disable Barrier Broadcast (DBB) for SMP stability */
+	mov	r0, #0x100
+	mcr	p15, 3, r0, c15, c0, 3		@ WCP15_L2CR1
+
+	/* L2CR0: Enable out-of-order bus attributes, error reporting */
+	movw	r0, #0x0F0F
+	movt	r0, #0xC005
+	mcr	p15, 3, r0, c15, c0, 1		@ WCP15_L2CR0
+
+	mov	r10, #0
+#ifdef CONFIG_SMP
+	orr	r10, r10, #(1 << 6)		@ Enable SMP/nAMP mode
+	ALT_SMP(mrc	p15, 0, r0, c1, c0, 1)
+	ALT_UP(mov	r0, r10)		@ fake it for UP
+	orr	r10, r10, r0			@ Set required bits
+	teq	r10, r0				@ Were they already set?
+	mcrne	p15, 0, r10, c1, c0, 1		@ No, update register
+#endif
+	b	__v7_setup_cont
+
 __v7_ca5mp_setup:
 __v7_ca9mp_setup:
 __v7_cr7mp_setup:
@@ -799,6 +832,16 @@ __v7_ca75_proc_info:
 	.long	0xff0ffff0
 	__v7_proc __v7_ca75_proc_info, __v7_setup, proc_fns = HARDENED_BPIALL_PROCESSOR_FUNCTIONS
 	.size	__v7_ca75_proc_info, . - __v7_ca75_proc_info
+
+	/*
+	 * Qualcomm Inc. Scorpion processors (MSM8660/APQ8060).
+	 */
+	.type	__v7_scorpion_proc_info, #object
+__v7_scorpion_proc_info:
+	.long	0x510f02d0		@ Required ID value (Scorpion MP)
+	.long	0xff0ff0f0		@ Mask for ID (match part 0x02d, any rev)
+	__v7_proc __v7_scorpion_proc_info, __v7_scorpion_setup
+	.size	__v7_scorpion_proc_info, . - __v7_scorpion_proc_info
 
 	/*
 	 * Qualcomm Inc. Krait processors.
