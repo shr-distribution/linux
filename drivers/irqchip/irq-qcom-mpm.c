@@ -69,6 +69,14 @@
 #define MPM_REG_POLARITY	3
 #define MPM_REG_STATUS		4
 
+/* MSM8660 uses a combined DETECT_CTL instead of separate FALLING/RISING */
+#define MPM_8660_REG_ENABLE	0
+#define MPM_8660_REG_DETECT_CTL	1
+#define MPM_8660_REG_POLARITY	2
+#define MPM_8660_REG_CLEAR	3
+
+#define MPM_8660_STATUS_OFFSET	0x420
+
 /* MPM pin map to GIC hwirq */
 struct mpm_gic_map {
 	int pin;
@@ -77,6 +85,7 @@ struct mpm_gic_map {
 
 struct qcom_mpm_priv {
 	void __iomem *base;
+	void __iomem *status_base;	/* separate status register base (MSM8660) */
 	raw_spinlock_t lock;
 	struct mbox_client mbox_client;
 	struct mbox_chan *mbox_chan;
@@ -85,12 +94,38 @@ struct qcom_mpm_priv {
 	unsigned int reg_stride;
 	struct irq_domain *domain;
 	struct generic_pm_domain genpd;
+	bool msm8660_layout;		/* use MSM8660 register layout */
 };
+
+static unsigned int qcom_mpm_8660_reg(unsigned int reg)
+{
+	switch (reg) {
+	case MPM_REG_ENABLE:
+		return MPM_8660_REG_ENABLE;
+	case MPM_REG_FALLING_EDGE:
+	case MPM_REG_RISING_EDGE:
+		return MPM_8660_REG_DETECT_CTL;
+	case MPM_REG_POLARITY:
+		return MPM_8660_REG_POLARITY;
+	case MPM_REG_STATUS:
+		return MPM_8660_REG_CLEAR;
+	default:
+		return reg;
+	}
+}
 
 static u32 qcom_mpm_read(struct qcom_mpm_priv *priv, unsigned int reg,
 			 unsigned int index)
 {
-	unsigned int offset = (reg * priv->reg_stride + index + 2) * 4;
+	unsigned int offset;
+
+	if (priv->msm8660_layout) {
+		if (reg == MPM_REG_STATUS)
+			return readl_relaxed(priv->status_base + index * 4);
+		offset = (qcom_mpm_8660_reg(reg) * priv->reg_stride + index) * 4;
+	} else {
+		offset = (reg * priv->reg_stride + index + 2) * 4;
+	}
 
 	return readl_relaxed(priv->base + offset);
 }
@@ -98,7 +133,18 @@ static u32 qcom_mpm_read(struct qcom_mpm_priv *priv, unsigned int reg,
 static void qcom_mpm_write(struct qcom_mpm_priv *priv, unsigned int reg,
 			   unsigned int index, u32 val)
 {
-	unsigned int offset = (reg * priv->reg_stride + index + 2) * 4;
+	unsigned int offset;
+
+	if (priv->msm8660_layout) {
+		if (reg == MPM_REG_STATUS) {
+			writel_relaxed(val, priv->status_base + index * 4);
+			wmb();
+			return;
+		}
+		offset = (qcom_mpm_8660_reg(reg) * priv->reg_stride + index) * 4;
+	} else {
+		offset = (reg * priv->reg_stride + index + 2) * 4;
+	}
 
 	writel_relaxed(val, priv->base + offset);
 
@@ -160,20 +206,35 @@ static int qcom_mpm_set_type(struct irq_data *d, unsigned int type)
 	unsigned int index = pin / 32;
 	unsigned int shift = pin % 32;
 
-	if (type & IRQ_TYPE_EDGE_RISING)
-		mpm_set_type(priv, true, MPM_REG_RISING_EDGE, index, shift);
-	else
-		mpm_set_type(priv, false, MPM_REG_RISING_EDGE, index, shift);
+	if (priv->msm8660_layout) {
+		/*
+		 * MSM8660 uses a single DETECT_CTL register instead of
+		 * separate FALLING_EDGE and RISING_EDGE registers:
+		 *   DETECT_CTL bit=1: edge-triggered, bit=0: level-triggered
+		 *   POLARITY   bit=1: rising/high,    bit=0: falling/low
+		 */
+		bool edge = !!(type & IRQ_TYPE_EDGE_BOTH);
+		bool polarity = !!(type & (IRQ_TYPE_EDGE_RISING |
+					   IRQ_TYPE_LEVEL_HIGH));
 
-	if (type & IRQ_TYPE_EDGE_FALLING)
-		mpm_set_type(priv, true, MPM_REG_FALLING_EDGE, index, shift);
-	else
-		mpm_set_type(priv, false, MPM_REG_FALLING_EDGE, index, shift);
+		mpm_set_type(priv, edge, MPM_REG_FALLING_EDGE, index, shift);
+		mpm_set_type(priv, polarity, MPM_REG_POLARITY, index, shift);
+	} else {
+		if (type & IRQ_TYPE_EDGE_RISING)
+			mpm_set_type(priv, true, MPM_REG_RISING_EDGE, index, shift);
+		else
+			mpm_set_type(priv, false, MPM_REG_RISING_EDGE, index, shift);
 
-	if (type & IRQ_TYPE_LEVEL_HIGH)
-		mpm_set_type(priv, true, MPM_REG_POLARITY, index, shift);
-	else
-		mpm_set_type(priv, false, MPM_REG_POLARITY, index, shift);
+		if (type & IRQ_TYPE_EDGE_FALLING)
+			mpm_set_type(priv, true, MPM_REG_FALLING_EDGE, index, shift);
+		else
+			mpm_set_type(priv, false, MPM_REG_FALLING_EDGE, index, shift);
+
+		if (type & IRQ_TYPE_LEVEL_HIGH)
+			mpm_set_type(priv, true, MPM_REG_POLARITY, index, shift);
+		else
+			mpm_set_type(priv, false, MPM_REG_POLARITY, index, shift);
+	}
 
 	if (!d->parent_data)
 		return 0;
@@ -337,6 +398,8 @@ static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 	if (!priv)
 		return -ENOMEM;
 
+	priv->msm8660_layout = of_device_is_compatible(np, "qcom,msm8660-mpm");
+
 	ret = of_property_read_u32(np, "qcom,mpm-pin-count", &pin_cnt);
 	if (ret) {
 		dev_err(dev, "failed to read qcom,mpm-pin-count: %d\n", ret);
@@ -400,6 +463,9 @@ static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 		if (IS_ERR(priv->base))
 			return PTR_ERR(priv->base);
 	}
+
+	if (priv->msm8660_layout)
+		priv->status_base = priv->base + MPM_8660_STATUS_OFFSET;
 
 	for (i = 0; i < priv->reg_stride; i++) {
 		qcom_mpm_write(priv, MPM_REG_ENABLE, i, 0);
@@ -479,6 +545,7 @@ remove_genpd:
 
 IRQCHIP_PLATFORM_DRIVER_BEGIN(qcom_mpm)
 IRQCHIP_MATCH("qcom,mpm", qcom_mpm_init)
+IRQCHIP_MATCH("qcom,msm8660-mpm", qcom_mpm_init)
 IRQCHIP_PLATFORM_DRIVER_END(qcom_mpm)
 MODULE_DESCRIPTION("Qualcomm Technologies, Inc. MSM Power Manager");
 MODULE_LICENSE("GPL v2");
