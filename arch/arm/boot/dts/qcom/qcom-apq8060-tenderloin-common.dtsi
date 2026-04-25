@@ -3484,6 +3484,10 @@
 	vdd-dig-supply = <&pm8058_s1>;
 };
 
+&mpm {
+	status = "okay";
+};
+
 /*
  * Use direct LPAIF hardware path for audio instead of Q6 DSP.
  * This is similar to how webOS handled audio on the TouchPad.
