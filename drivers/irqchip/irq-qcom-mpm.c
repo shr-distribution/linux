@@ -384,7 +384,7 @@ static bool gic_hwirq_is_mapped(struct mpm_gic_map *maps, int cnt, u32 hwirq)
 static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 {
 	struct platform_device *pdev = of_find_device_by_node(np);
-	struct device *dev = &pdev->dev;
+	struct device *dev;
 	struct irq_domain *parent_domain;
 	struct generic_pm_domain *genpd;
 	struct device_node *msgram_np;
@@ -394,11 +394,18 @@ static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 	int i, irq;
 	int ret;
 
+	pr_info("qcom_mpm: init entry, np=%pOF pdev=%p\n", np, pdev);
+
+	if (!pdev)
+		return -EPROBE_DEFER;
+	dev = &pdev->dev;
+
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
 	priv->msm8660_layout = of_device_is_compatible(np, "qcom,msm8660-mpm");
+	pr_info("qcom_mpm: msm8660_layout=%d\n", priv->msm8660_layout);
 
 	ret = of_property_read_u32(np, "qcom,mpm-pin-count", &pin_cnt);
 	if (ret) {
@@ -452,9 +459,12 @@ static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 			return ret;
 		}
 
+		pr_info("qcom_mpm: ioremap msg-ram %pa size %zx\n",
+			&res.start, (size_t)resource_size(&res));
 		/* Don't use devm_ioremap_resource, as we're accessing a shared region. */
 		priv->base = devm_ioremap(dev, res.start, resource_size(&res));
 		of_node_put(msgram_np);
+		pr_info("qcom_mpm: ioremap returned %p\n", priv->base);
 		if (!priv->base)
 			return -ENOMEM;
 	} else if (priv->msm8660_layout) {
@@ -523,7 +533,10 @@ static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 	}
 
 	priv->mbox_client.dev = dev;
+	pr_info("qcom_mpm: requesting mbox channel\n");
 	priv->mbox_chan = mbox_request_channel(&priv->mbox_client, 0);
+	pr_info("qcom_mpm: mbox channel = %ld\n",
+		IS_ERR(priv->mbox_chan) ? PTR_ERR(priv->mbox_chan) : 0);
 	if (IS_ERR(priv->mbox_chan)) {
 		ret = PTR_ERR(priv->mbox_chan);
 		dev_err(dev, "failed to acquire IPC channel: %d\n", ret);
