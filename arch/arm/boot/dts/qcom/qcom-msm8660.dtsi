@@ -275,16 +275,6 @@
 			reg = <0x46d00000 0x100000>;
 			no-map;
 		};
-
-		/*
-		 * vMPM (virtual MPM) shared memory region within RPM.
-		 * Used by the MPM driver to access wakeup interrupt
-		 * registers without conflicting with the RPM's memory claim.
-		 */
-		mpm_sram: mpm@1049d8 {
-			reg = <0x001049d8 0x448>;
-			no-map;
-		};
 	};
 
 	firmware {
@@ -309,12 +299,12 @@
 
 		/*
 		 * MPM (MSM Power Manager) wakeup interrupt controller.
-		 * Uses qcom,rpm-msg-ram to reference the vMPM shared
-		 * memory region, avoiding reg overlap with the RPM node.
+		 * Uses direct reg property — driver maps via devm_ioremap
+		 * (non-exclusive) to avoid conflict with RPM memory region.
 		 */
-		mpm: interrupt-controller {
+		mpm: interrupt-controller@1049d8 {
 			compatible = "qcom,msm8660-mpm", "qcom,mpm";
-			qcom,rpm-msg-ram = <&mpm_sram>;
+			reg = <0x001049d8 0x448>;
 			interrupts = <GIC_SPI 2 IRQ_TYPE_EDGE_RISING>;
 			mboxes = <&gcc_ipc 1>;
 			interrupt-controller;
