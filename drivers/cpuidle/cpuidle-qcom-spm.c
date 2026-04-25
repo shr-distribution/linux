@@ -31,25 +31,7 @@ struct cpuidle_qcom_spm_data {
 
 static int qcom_pm_collapse(unsigned long int unused)
 {
-	/*
-	 * On SAW v1.0 (MSM8660/APQ8060), the SCM cpu_power_down call is not
-	 * supported by the TrustZone firmware. Instead, the SPM hardware
-	 * executes the power collapse sequence autonomously when the CPU
-	 * enters WFI — the SPM mode has already been set to SPC by
-	 * qcom_cpu_spc() before cpu_suspend() calls us.
-	 *
-	 * On SAW v1.1+ (APQ8064 etc.), the SCM call handles the power-down.
-	 *
-	 * Try SCM first; if it returns (meaning it didn't power down),
-	 * fall back to WFI and let SAW hardware handle it.
-	 */
 	qcom_scm_cpu_power_down(QCOM_SCM_CPU_PWR_DOWN_L2_ON);
-
-	/*
-	 * SCM call returned — either not supported or interrupted.
-	 * Execute WFI directly so the SAW SPM can handle power collapse.
-	 */
-	wfi();
 
 	/*
 	 * Returns here only if there was a pending interrupt and we did not
