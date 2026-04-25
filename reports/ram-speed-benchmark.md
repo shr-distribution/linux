@@ -1246,6 +1246,77 @@ timing. However, the overall throughput is better due to more time spent in the 
 
 ---
 
+## Linux 6.18 (LuneOS) - Scorpion BPCR + NMRR Override
+
+**Test Date:** 2026-04-25
+**Kernel:** 6.18.0-luneos-g5c61a99bcfec
+**OS:** LuneOS 1.0 (initramfs debug environment)
+**CPU:** 2x Scorpion @ 1512 MHz, governor: performance
+**Config:** VMSPLIT_2G, CMA=32MB, HZ=100, L2 SCPLL, EBI1, vdd co-voting, L2CR0/L2CR1, BPCR, NMRR
+
+### Changes Applied
+
+Added to `__v7_scorpion_setup` in `proc-v7.S`:
+
+1. **BPCR** (CP15 c15, opc1=7, c0, opc2=2) = `0x01FF01FF` — Full branch history and
+   address participation for optimal branch prediction on Scorpion's dual-issue pipeline.
+
+2. **NMRR override** `0x40e040e0` → `0x40e080e0` — Scorpion-optimized inner cache policy
+   for WRITEALLOC memory type (Write-Through instead of Write-Back-Write-Allocate).
+   Uses `bl __v7_setup_cont` + post-override technique: saves `lr` in `r11`, runs the
+   common v7 setup (which writes generic NMRR), then overrides NMRR before returning.
+
+   This NMRR change was previously attempted (f2faab9387d8) and reverted (ba66d84b2f25)
+   due to boot instability. It is now stable because L2CR0 and L2CR1 are correctly
+   initialized in the same setup function — the previous instability was caused by
+   NMRR alone without the L2 cache control registers being set first.
+
+### Results (100-Run Benchmark, Settled System)
+
+**Memory Bandwidth (512 MB, 100 runs):**
+
+| Metric | Value |
+|--------|-------|
+| Fast runs (<0.7s) | 56/100 (56%) |
+| Slow runs (>=0.7s) | 44/100 (44%) |
+| Very slow (>1.1s) | 0/100 (0%) |
+| Overall average | 0.663s = **773 MB/s** |
+| Fast average | 0.423s = **1209 MB/s** |
+| Slow average | 0.967s = **529 MB/s** |
+| Best | 0.404s = **1268 MB/s** |
+| Worst | 1.033s = 496 MB/s |
+| Median | 0.447s = **1145 MB/s** |
+
+### Comparison: Cumulative Scorpion Optimizations
+
+| Metric | L2CR only | **+ BPCR + NMRR** | Change |
+|--------|----------|-------------------|--------|
+| Fast % | 54% | **56%** | +2 pts |
+| Fast avg | 1011 MB/s | **1209 MB/s** | **+20%** |
+| Slow avg | 515 MB/s | **529 MB/s** | +3% |
+| Overall avg | 700 MB/s | **773 MB/s** | **+10%** |
+| Median | 960 MB/s | **1145 MB/s** | **+19%** |
+| Best | 1097 MB/s | **1268 MB/s** | **+16%** |
+| Very slow | not tracked | **0%** | Clean |
+
+### Analysis
+
+The NMRR override delivers a clear **+20% improvement** in fast-run bandwidth and
+**+19% median** improvement. The bimodal behavior persists (56/44 split) but both
+clusters are faster. No very-slow outliers (0 runs > 1.1s).
+
+The NMRR write-through policy for inner WRITEALLOC improves Scorpion SMP cache
+coherency performance. Combined with L2CR0 (out-of-order bus), L2CR1 (DBB disable),
+and BPCR (branch predictor), this represents the full set of safe Scorpion CP15
+optimizations from the legacy webOS kernel.
+
+Remaining performance gap vs webOS (1268 vs 2048 MB/s = 62%) is primarily due to:
+- Missing Scorpion-optimized memcpy/memset/copy_page assembly routines
+- ARM_L1_CACHE_SHIFT=6 (64 bytes) vs Scorpion's actual 32-byte L1 cache lines
+- PVR speed-binned timing registers (not yet investigated)
+
+---
+
 ## Summary: Optimization Journey
 
 | Configuration | Memory BW | vs webOS | Improvement | Status |
@@ -1255,9 +1326,10 @@ timing. However, the overall throughput is better due to more time spent in the 
 | + CMA=32MB | 826 MB/s | 40% | +79% | Testing |
 | + Interconnect voting | 546 MB/s | 27% | +18% | Testing |
 | + VMSPLIT_2G (no HIGHMEM) | 1220 MB/s | 60% | +165% | Active |
-| ~~+ Scorpion NMRR~~ | ~~1484 MB/s~~ | ~~72%~~ | ~~+222%~~ | Reverted |
+| ~~+ Scorpion NMRR (alone)~~ | ~~1484 MB/s~~ | ~~72%~~ | ~~+222%~~ | Reverted |
 | + L2 SCPLL + EBI1 + vdd | 1300 MB/s | 63% | +182% | Active |
-| **+ Scorpion L2CR0/L2CR1** | **700 MB/s avg, 960 MB/s median** | **34%/47%** | **+52% (median)** | **Active** |
+| + Scorpion L2CR0/L2CR1 | 960 MB/s median | 47% | +108% (median) | Active |
+| **+ BPCR + NMRR** | **1145 MB/s median** | **56%** | **+148% (median)** | **Active** |
 | webOS 2.6.35 (target) | 2048 MB/s | 100% | - | - |
 
 **Key optimizations currently applied:**
@@ -1268,9 +1340,12 @@ timing. However, the overall throughput is better due to more time spent in the 
 5. **EBI1 DRAM clock voting** - DRAM clock at 384 MHz via ICC
 6. **vdd_mem/vdd_dig co-voting** - Memory/digital voltages track CPU frequency
 7. **Scorpion L2CR0/L2CR1** - Out-of-order bus attributes + DBB disable via proc-v7.S
+8. **Scorpion BPCR** - Full branch predictor history participation
+9. **Scorpion NMRR** - Write-Through inner cache policy for SMP coherency (now stable with L2CR)
 
-**Reverted optimizations (caused instability):**
-- **Scorpion NMRR** - CPU-specific memory type remapping (reverted in ba66d84b2f25)
+**Previously reverted, now re-enabled:**
+- **Scorpion NMRR** - Was reverted in ba66d84b2f25 due to instability. Now stable because
+  L2CR0/L2CR1 are initialized first in the same proc-v7.S setup function.
 
 ---
 
@@ -1278,9 +1353,9 @@ timing. However, the overall throughput is better due to more time spent in the 
 
 - The `dd` test measures practical throughput including CPU and kernel overhead, not raw hardware bandwidth
 - tmpfs performance is lower due to filesystem layer overhead
-- Results may vary based on system load and memory pressure
-- The remaining ~53% memory bandwidth gap vs webOS is due to Scorpion-specific optimizations not yet ported
+- Results may vary based on system load and memory pressure — run benchmarks on settled system (uptime > 60s)
+- The remaining ~38% memory bandwidth gap vs webOS is due to Scorpion-specific assembly routines not yet ported
 - VMSPLIT_2G is enabled in all tenderloin defconfigs
-- Scorpion NMRR optimization was reverted due to boot failures - will revisit in future
-- Scorpion L2CR0/L2CR1 fixed: previous boot hang was caused by `ldr =value` literal pool issue in proc-v7.S, fixed with `movw`/`movt`
-- Current stable performance: ~960 MB/s median memory BW (47% of webOS), ~381 MB/s tmpfs read best
+- Scorpion NMRR is now stable when combined with L2CR0/L2CR1 initialization
+- Scorpion L2CR0/L2CR1 boot hang was caused by `ldr =value` literal pool issue in proc-v7.S, fixed with `movw`/`movt`
+- Current stable performance: **1145 MB/s median** memory BW (56% of webOS), best 1268 MB/s (62% of webOS)
