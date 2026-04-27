@@ -313,16 +313,17 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 w, u32 h)
 	writel((128 * Wm * (Hm - 1) + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(3));
 	writel(GEMINI_OP_MAGIC_H1V1, base + GEMINI_OP_FORMAT_MAGIC);
 
-	writel(GEMINI_FE_BURST_OL_W0, base + GEMINI_OP_MATRIX(0));
-	writel(GEMINI_FE_BURST_OL_W1, base + GEMINI_OP_MATRIX(1));
-	writel(GEMINI_FE_BURST_OL_W2, base + GEMINI_OP_MATRIX(2));
-	writel(GEMINI_FE_BURST_OL_W3, base + GEMINI_OP_MATRIX(3));
-	writel(GEMINI_FE_BURST_OL_W4, base + GEMINI_OP_MATRIX(4));
-	writel(GEMINI_FE_BURST_OL_W5, base + GEMINI_OP_MATRIX(5));
-	writel(GEMINI_FE_BURST_OL_W6, base + GEMINI_OP_MATRIX(6));
-	writel(GEMINI_FE_BURST_OL_W7, base + GEMINI_OP_MATRIX(7));
-	writel(GEMINI_FE_BURST_OL_W8, base + GEMINI_OP_MATRIX(8));
-	pr_info("gemini cfg: A4 OP_* done\n");
+	/*
+	 * Diagnostic: skip OP_MATRIX writes. The cross-vendor
+	 * OL_BURST_TABLE values were captured for "mode=3 row, sl=1"
+	 * but OPAL's gemini_lib_hw_op_cfg picks them via a runtime
+	 * lookup keyed on mode_dims.mode that we can't statically
+	 * resolve. If those values are wrong for this config they
+	 * mis-direct the FE burst-read pattern and corrupt the source
+	 * read order. See if the HW reset defaults produce sensible
+	 * encode.
+	 */
+	pr_info("gemini cfg: A4 OP_MATRIX SKIPPED (using HW defaults)\n");
 
 	/* 3. we_cfg */
 	writel(0x20, base + GEMINI_WE_CFG);
