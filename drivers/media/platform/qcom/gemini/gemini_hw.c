@@ -111,18 +111,30 @@ void gemini_hw_we_post_reset_cfg(void __iomem *base)
 
 void gemini_hw_set_we_ping(void __iomem *base, dma_addr_t addr, u32 len)
 {
-	pr_info("gemini we_ping: C0 enter addr=0x%llx len=%u\n",
-		(u64)addr, len);
+	u32 half_len = (len / 2) & GEMINI_WE_BUFFER_LEN_MASK;
 
+	pr_info("gemini we_ping: C0 enter addr=0x%llx len=%u half=%u\n",
+		(u64)addr, len, half_len);
+
+	/*
+	 * Split the destination buffer into PING and PONG halves. PREVIOUSLY
+	 * we mirrored PING -> PONG (same address) which made the WE engine's
+	 * pingpong cycle write the second half of the encoded stream OVER
+	 * the first half — visible as alternating valid/black 32x32 mini-
+	 * square groups in the decoded output (every WE_THRESHOLD-bytes
+	 * worth of MCUs gets clobbered by the next pingpong cycle).
+	 *
+	 * PING starts at addr, PONG starts at addr + half_len. Each gets
+	 * half the available buffer.
+	 */
 	writel(addr, base + GEMINI_WE_Y_PING_ADDR);
 	pr_info("gemini we_ping: C1 WE_Y_PING_ADDR done\n");
 
-	writel(len & GEMINI_WE_BUFFER_LEN_MASK, base + GEMINI_WE_Y_PING_CFG);
+	writel(half_len, base + GEMINI_WE_Y_PING_CFG);
 
-	/* Mirror to PONG (see set_fe_ping for rationale). */
-	writel(addr, base + GEMINI_WE_Y_PONG_ADDR);
-	writel(len & GEMINI_WE_BUFFER_LEN_MASK, base + GEMINI_WE_Y_PONG_CFG);
-	pr_info("gemini we_ping: C2 WE_Y_PING+PONG done — exiting we_ping\n");
+	writel(addr + half_len, base + GEMINI_WE_Y_PONG_ADDR);
+	writel(half_len, base + GEMINI_WE_Y_PONG_CFG);
+	pr_info("gemini we_ping: C2 WE_Y_PING+PONG split done — exiting we_ping\n");
 }
 
 void gemini_hw_fe_reload(void __iomem *base)
