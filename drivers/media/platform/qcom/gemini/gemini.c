@@ -156,7 +156,7 @@ static int gemini_enum_fmt(struct file *file, void *priv, struct v4l2_fmtdesc *f
 
 static int gemini_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
 {
-	struct gemini_ctx *ctx = gemini_fh_to_ctx(priv);
+	struct gemini_ctx *ctx = gemini_fh_to_ctx(file->private_data);
 	struct gemini_frame *frame;
 	struct v4l2_pix_format *pix = &f->fmt.pix;
 
@@ -216,7 +216,7 @@ static int gemini_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 
 static int gemini_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 {
-	struct gemini_ctx *ctx = gemini_fh_to_ctx(priv);
+	struct gemini_ctx *ctx = gemini_fh_to_ctx(file->private_data);
 	struct gemini_frame *frame;
 	struct v4l2_pix_format *pix = &f->fmt.pix;
 	int ret;
