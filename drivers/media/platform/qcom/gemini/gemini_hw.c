@@ -103,17 +103,18 @@ void gemini_hw_we_post_reset_cfg(void __iomem *base)
 {
 	pr_info("gemini post_reset: P0 WE buffer cfg\n");
 	writel(0x01FF0000, base + GEMINI_WE_Y_UB_CFG);
+	writel((0x16A << 16) | 0x190, base + GEMINI_WE_Y_THRESHOLD);
+	writel((0x16A << 16) | 0x190, base + GEMINI_WE_CBCR_THRESHOLD);
 	/*
-	 * Diagnostic: max thresholds (0x1FF in both halves) instead of
-	 * legacy 0x16A/0x190. The 1280x1024 output has 8x alternating
-	 * 10-MCU-wide valid/black bands per row that may be caused by
-	 * WE pingpong cycling triggered every threshold-bytes of output.
-	 * If thresholds at max remove the band pattern, threshold-based
-	 * cycling is the cause.
+	 * Diagnostic Vector C: explicitly write 0x0007FFFF to undocumented
+	 * register 0x013C. Live OPAL trace shows this register set to
+	 * 0x0007FFFF during real camera capture; mainline never writes it.
+	 * 0x0007FFFF = 19 bits set — looks like a FIFO watermark, AXI
+	 * burst-length mask, or timeout counter. If the 1280x1024 band
+	 * cadence changes, this is the missing register.
 	 */
-	writel(0x01FF01FF, base + GEMINI_WE_Y_THRESHOLD);
-	writel(0x01FF01FF, base + GEMINI_WE_CBCR_THRESHOLD);
-	pr_info("gemini post_reset: P1 WE_Y_UB_CFG + WE_Y/CBCR_THRESHOLD done (max)\n");
+	writel(0x0007FFFF, base + 0x013C);
+	pr_info("gemini post_reset: P1 WE thresholds + 0x013C=0x7FFFF done\n");
 }
 
 void gemini_hw_set_we_ping(void __iomem *base, dma_addr_t addr, u32 len)
