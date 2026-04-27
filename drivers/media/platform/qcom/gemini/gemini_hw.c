@@ -298,16 +298,7 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 w, u32 h)
 	writel(0x10, base + GEMINI_FE_INPUT_FORMAT);
 	pr_info("gemini cfg: A1 FE_INPUT_FORMAT done\n");
 
-	/*
-	 * FE_DIMS encoding per OPAL fe_cfg disasm:
-	 *   FE_DIMS = (mode_dims[2] - 1) << 16 | (mode_dims[3] - 1)
-	 * where mode_dims[2] = Hm (height in MCU) and mode_dims[3] = Wm
-	 * (width in MCU). Note this is OPPOSITE of the cross-vendor doc's
-	 * struct field labels — the doc had Wm and Hm swapped at offsets
-	 * 8 and 12. Live OPAL trace at 1280x1024 captured FE_DIMS =
-	 * 0x003F004F = (Hm-1=63)<<16 | (Wm-1=79).
-	 */
-	writel(((Hm - 1) & 0x1FF) << 16 | ((Wm - 1) & 0x1FF),
+	writel(((Wm - 1) & 0x1FF) << 16 | ((Hm - 1) & 0x1FF),
 	       base + GEMINI_FE_DIMS);
 	pr_info("gemini cfg: A2 FE_DIMS done\n");
 
@@ -337,20 +328,7 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 w, u32 h)
 	 *   GEOM[3] = Hm*(Wm-1) * 128 + 16
 	 */
 	{
-		/*
-		 * OPAL op_cfg op_format=3 formula: base = param_2[2] *
-		 * (param_2[3]-1). The op_cfg caller swaps mode_dims fields
-		 * into a local struct so op_cfg's param_2[2] = Wm and
-		 * param_2[3] = Hm. So base = Wm * (Hm-1).
-		 *
-		 * For 1280x1024 the OPAL trace captured Wm*(Hm-1)*128 =
-		 * 80*63*128 = 0x9D800 (OP_GEOM[1]/[3]) and
-		 * 80*63*256 = 0x13B000 (OP_GEOM[0]/[2]). Earlier we used
-		 * Hm*(Wm-1) which gave 64*79=5056 instead of the correct
-		 * 80*63=5040 — small operand swap, large pixel impact at
-		 * MCU column counts that aren't powers of 2.
-		 */
-		u32 base_geom = Wm * (Hm - 1);
+		u32 base_geom = Hm * (Wm - 1);
 
 		writel(3, base + GEMINI_OP_ENCODE_MODE);
 		writel((base_geom * 256)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
