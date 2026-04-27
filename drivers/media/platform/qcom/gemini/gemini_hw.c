@@ -305,13 +305,38 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 w, u32 h)
 	writel(0x203, base + GEMINI_FE_PIPELINE_MODE);
 	pr_info("gemini cfg: A3 FE_PIPELINE_MODE=0x203 done\n");
 
-	/* 2. op_cfg */
-	writel(1, base + GEMINI_OP_ENCODE_MODE);
-	writel((16  * (Wm - 1))           & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
-	writel((16  * (Wm - 1))           & 0x03FFFFFF, base + GEMINI_OP_GEOM(1));
-	writel((256 * Wm * (Hm - 1) + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(2));
-	writel((128 * Wm * (Hm - 1) + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(3));
-	writel(GEMINI_OP_MAGIC_H1V1, base + GEMINI_OP_FORMAT_MAGIC);
+	/* 2. op_cfg
+	 *
+	 * Live OPAL trace on the TouchPad (webOS 3.0.6) shows that for
+	 * NV12 stills OPAL takes the op_format=3 branch of
+	 * gemini_lib_hw_op_cfg, NOT the op_format=1 branch the
+	 * cross-vendor doc had assumed. The op_format=3 branch:
+	 *   - sets OP_ENCODE_MODE = 3
+	 *   - sets OP_FORMAT_MAGIC = 0x03381801
+	 *   - uses different OP_GEOM formulas, with Hm and Wm SWAPPED
+	 *     in the operand position (op_cfg's caller passes a 4-dword
+	 *     struct where slots [2] and [3] are Hm and Wm respectively,
+	 *     opposite of the mode_dims layout).
+	 *
+	 * For our 320x240 test, captured live trace at 1024x1280
+	 * (Wm=64, Hm=80) shows OP_GEOM[3] = 80*63*128 + 16 = 0x9D810
+	 * exactly — i.e. the formula is Hm*(Wm-1)*128+16 in our naming.
+	 *
+	 *   GEOM[0] = Hm*(Wm-1) * 256
+	 *   GEOM[1] = Hm*(Wm-1) * 128
+	 *   GEOM[2] = Hm*(Wm-1) * 256 + 16
+	 *   GEOM[3] = Hm*(Wm-1) * 128 + 16
+	 */
+	{
+		u32 base_geom = Hm * (Wm - 1);
+
+		writel(3, base + GEMINI_OP_ENCODE_MODE);
+		writel((base_geom * 256)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
+		writel((base_geom * 128)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(1));
+		writel((base_geom * 256 + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(2));
+		writel((base_geom * 128 + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(3));
+		writel(GEMINI_OP_MAGIC_H2V2, base + GEMINI_OP_FORMAT_MAGIC);
+	}
 
 	writel(GEMINI_FE_BURST_OL_W0, base + GEMINI_OP_MATRIX(0));
 	writel(GEMINI_FE_BURST_OL_W1, base + GEMINI_OP_MATRIX(1));
