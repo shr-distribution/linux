@@ -618,6 +618,45 @@ static int gemini_start_streaming(struct vb2_queue *vq, unsigned int count)
 		pr_info("gemini ss: S2 reset done\n");
 
 		/*
+		 * Diagnostic: dump HW reset defaults of all key registers
+		 * BEFORE any writes. Compare to what we then write.
+		 */
+		pr_info("gemini RESET DEFAULTS:\n"
+			"  PIPELINE_CFG=0x%08x\n"
+			"  FE_INPUT_FMT=0x%08x  FE_DIMS=0x%08x  FE_PIPELINE_MODE=0x%08x\n"
+			"  OP_ENC_MODE=0x%08x  OP_FORMAT_MAGIC=0x%08x\n"
+			"  OP_GEOM[0..3]=0x%08x 0x%08x 0x%08x 0x%08x\n"
+			"  OP_MATRIX[0..8]=0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x\n"
+			"  WE_CFG=0x%08x WE_Y_UB_CFG=0x%08x  WE_Y_TH=0x%08x  WE_CBCR_TH=0x%08x\n"
+			"  DRI_INTERVAL=0x%08x  IRQ_MASK=0x%08x  IRQ_STATUS=0x%08x\n",
+			readl(gemini->base + GEMINI_PIPELINE_CFG),
+			readl(gemini->base + GEMINI_FE_INPUT_FORMAT),
+			readl(gemini->base + GEMINI_FE_DIMS),
+			readl(gemini->base + GEMINI_FE_PIPELINE_MODE),
+			readl(gemini->base + GEMINI_OP_ENCODE_MODE),
+			readl(gemini->base + GEMINI_OP_FORMAT_MAGIC),
+			readl(gemini->base + GEMINI_OP_GEOM(0)),
+			readl(gemini->base + GEMINI_OP_GEOM(1)),
+			readl(gemini->base + GEMINI_OP_GEOM(2)),
+			readl(gemini->base + GEMINI_OP_GEOM(3)),
+			readl(gemini->base + GEMINI_OP_MATRIX(0)),
+			readl(gemini->base + GEMINI_OP_MATRIX(1)),
+			readl(gemini->base + GEMINI_OP_MATRIX(2)),
+			readl(gemini->base + GEMINI_OP_MATRIX(3)),
+			readl(gemini->base + GEMINI_OP_MATRIX(4)),
+			readl(gemini->base + GEMINI_OP_MATRIX(5)),
+			readl(gemini->base + GEMINI_OP_MATRIX(6)),
+			readl(gemini->base + GEMINI_OP_MATRIX(7)),
+			readl(gemini->base + GEMINI_OP_MATRIX(8)),
+			readl(gemini->base + GEMINI_WE_CFG),
+			readl(gemini->base + GEMINI_WE_Y_UB_CFG),
+			readl(gemini->base + GEMINI_WE_Y_THRESHOLD),
+			readl(gemini->base + GEMINI_WE_CBCR_THRESHOLD),
+			readl(gemini->base + GEMINI_DRI_INTERVAL),
+			readl(gemini->base + GEMINI_IRQ_MASK),
+			readl(gemini->base + GEMINI_IRQ_STATUS));
+
+		/*
 		 * Legacy msm_gemini_core_reset writes WE_Y_UB_CFG +
 		 * WE_Y_THRESHOLD + WE_CBCR_THRESHOLD immediately after
 		 * RESET, before any other configure register. The values
