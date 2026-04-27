@@ -171,14 +171,16 @@ static void sync_for_cpu(struct msm_gem_object *msm_obj)
  * msm_gem_sync_for_gpu() - Sync GEM buffer for GPU access
  * @obj: the GEM object
  *
- * On non-coherent platforms like MSM8660 with Adreno 2XX GPU, after the
- * CPU writes to a write-combine buffer, the writes may still be in the
- * CPU's write-combine buffer and not yet visible to the GPU.
+ * On non-coherent ARMv7 platforms like MSM8660 (Scorpion + PL310 L2
+ * controller), CPU writes to GPU-readable buffers may sit in the
+ * write-combine buffer, the L1 dcache, or the PL310 L2 controller's
+ * pending writes — none of which are visible to the GPU's bus master
+ * read until explicitly drained.
  *
- * For write-combine (WC) memory, we need memory barriers to drain the
- * write-combine buffer to memory. This matches what the webOS KGSL driver
- * does in kgsl_ringbuffer_submit() with dsb/wmb/mb barriers before
- * submitting commands to the GPU.
+ * `dsb(sy)` only drains the CPU's store buffer. It does NOT drain the
+ * PL310 L2 controller. To match what the legacy webOS KGSL driver does
+ * before every submit, we must clean the inner (L1) and outer (L2)
+ * caches over each scatterlist segment, then issue a final dsb.
  *
  * Must be called before submitting commands that reference this buffer
  * to the GPU on non-coherent platforms.
@@ -186,18 +188,30 @@ static void sync_for_cpu(struct msm_gem_object *msm_obj)
 void msm_gem_sync_for_gpu(struct drm_gem_object *obj)
 {
 #ifdef CONFIG_ARM
-	/*
-	 * Memory barriers to ensure CPU writes have drained to memory.
-	 * Based on KGSL's kgsl_ringbuffer_submit():
-	 *   dsb(sy) - Data synchronization barrier, ensures all explicit
-	 *             memory accesses complete before continuing
-	 *   mb()    - Full memory barrier for proper ordering
-	 *
-	 * Note: wmb() is implicit in mb(), and outer_sync() is handled
-	 * by dsb() on modern ARM implementations with L2 cache.
-	 */
+	struct msm_gem_object *msm_obj = to_msm_bo(obj);
+	struct sg_table *sgt;
+	struct scatterlist *sg;
+	int i;
+
+	msm_gem_assert_locked(obj);
+
+	sgt = msm_obj->sgt;
+	if (!sgt) {
+		/* No mapping yet — at least drain the store buffer. */
+		dsb(sy);
+		return;
+	}
+
+	for_each_sgtable_sg(sgt, sg, i) {
+		void *vaddr = sg_virt(sg);
+		phys_addr_t phys = sg_phys(sg);
+		size_t len = sg->length;
+
+		if (vaddr)
+			dmac_flush_range(vaddr, vaddr + len);
+		outer_clean_range(phys, phys + len);
+	}
 	dsb(sy);
-	mb();
 #endif
 }
 
