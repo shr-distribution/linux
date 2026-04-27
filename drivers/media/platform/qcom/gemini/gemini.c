@@ -618,14 +618,16 @@ static int gemini_start_streaming(struct vb2_queue *vq, unsigned int count)
 		pr_info("gemini ss: S2 reset done\n");
 
 		/*
-		 * Legacy msm_gemini_core_reset writes WE_Y_UB_CFG +
-		 * WE_Y_THRESHOLD + WE_CBCR_THRESHOLD immediately after
-		 * RESET, before any other configure register. The values
-		 * must be valid before PIPELINE_CFG arms the offline
-		 * pipeline; otherwise the WE engine is armed with zero
-		 * thresholds and stalls / faults on first write.
+		 * Diagnostic: skip the legacy webOS post-reset WE
+		 * threshold writes (UB_CFG / Y_THRESHOLD / CBCR_THRESHOLD).
+		 * OPAL's gemini_lib_hw_we_cfg only sets WE_CFG (0x20) —
+		 * it does NOT write the threshold registers. Our values
+		 * (0x01FF0000 / 0x016A0190) came from legacy webOS msm-
+		 * gemini source which may have been for a different
+		 * silicon revision; if they're wrong they could miscalibrate
+		 * the WE engine and corrupt entropy output.
 		 */
-		gemini_hw_we_post_reset_cfg(gemini->base);
+		/* gemini_hw_we_post_reset_cfg(gemini->base); */
 
 		gemini_scale_quant_luma(ctx->q_luma, ctx->quality);
 		gemini_scale_quant_chroma(ctx->q_chroma, ctx->quality);
