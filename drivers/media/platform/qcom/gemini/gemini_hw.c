@@ -77,17 +77,16 @@ void gemini_hw_set_fe_ping(void __iomem *base, dma_addr_t y_addr,
 	pr_info("gemini fe_ping: B3 FE_CBCR_PING_ADDR done\n");
 
 	/*
-	 * Mirror the ping addresses into the pong slots. The IP runs FE in
-	 * a ping-pong loop and may sample PONG even on a single-frame
-	 * encode; if PONG points at uninitialized address 0, the FE stalls
-	 * after PING is consumed (FE_RD_DONE fires once, then nothing).
-	 * Pointing PONG at the same buffer is safe — for one frame the FE
-	 * never actually re-reads it, and if it did the data would be
-	 * identical.
+	 * Diagnostic: don't mirror PING -> PONG. Leave PONG addresses at 0.
+	 * If FE actually uses PONG during encode, this will produce a
+	 * bus-error or different corruption pattern; if FE only uses PING
+	 * for single-frame encodes, output stays the same. We need to know
+	 * which it is to diagnose the 10-MCU-group alternating valid/black
+	 * band corruption.
 	 */
-	writel(y_addr, base + GEMINI_FE_Y_PONG_ADDR);
-	writel(cbcr_addr, base + GEMINI_FE_CBCR_PONG_ADDR);
-	pr_info("gemini fe_ping: B3.5 PONG mirror done\n");
+	writel(0, base + GEMINI_FE_Y_PONG_ADDR);
+	writel(0, base + GEMINI_FE_CBCR_PONG_ADDR);
+	pr_info("gemini fe_ping: B3.5 PONG = 0 (diagnostic)\n");
 
 	writel(GEMINI_FE_CMD_RELOAD, base + GEMINI_FE_CMD);
 	pr_info("gemini fe_ping: B4 FE_CMD=RELOAD done\n");
