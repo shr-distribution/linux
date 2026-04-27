@@ -2775,8 +2775,8 @@ static void mmcc_msm8660_unhalt_mmss_ports(struct device *dev)
 	struct device_node *rpm_node;
 	struct platform_device *rpm_pdev;
 	struct qcom_rpm *rpm;
-	/* Unhalt only needed ports: 1=ROTATOR, 2=GFX3D, 5=VFE */
-	u32 halt_data[2] = {0, BIT(1) | BIT(2) | BIT(5)};
+	/* Unhalt only needed ports: 1=ROTATOR, 2=GFX3D, 5=VFE, 7=JPEG_ENC */
+	u32 halt_data[2] = {0, BIT(1) | BIT(2) | BIT(5) | BIT(7)};
 	int rc;
 
 	rpm_node = of_find_compatible_node(NULL, NULL, "qcom,rpm-msm8660");
@@ -2799,7 +2799,7 @@ static void mmcc_msm8660_unhalt_mmss_ports(struct device *dev)
 	if (rc)
 		dev_warn(dev, "MMSS fabric unhalt failed: %d\n", rc);
 	else
-		dev_info(dev, "MMSS fabric: unhalted ROTATOR+GFX3D+VFE ports\n");
+		dev_info(dev, "MMSS fabric: unhalted ROTATOR+GFX3D+VFE+JPEG_ENC ports\n");
 
 	put_device(&rpm_pdev->dev);
 }
