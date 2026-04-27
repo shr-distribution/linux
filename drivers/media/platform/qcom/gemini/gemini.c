@@ -10,6 +10,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/completion.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/interconnect.h>
@@ -27,6 +28,7 @@
 #include <media/videobuf2-dma-contig.h>
 
 #include "gemini_hw.h"
+#include "gemini_jpeg.h"
 
 #define GEMINI_NAME		"qcom-gemini"
 #define GEMINI_MAX_WIDTH	8192
@@ -81,6 +83,9 @@ struct gemini_dev {
 	struct mutex		lock;	/* device lock */
 
 	spinlock_t		irqlock;
+
+	/* Signaled when RESET_ACK arrives from the IRQ handler. */
+	struct completion	reset_done;
 };
 
 struct gemini_frame {
@@ -99,6 +104,11 @@ struct gemini_ctx {
 	struct gemini_frame	src;
 	struct gemini_frame	dst;
 	int			quality;
+
+	/* Scaled quant tables + cached header for the current frame */
+	u16			q_luma[64];
+	u16			q_chroma[64];
+	size_t			hdr_len;
 };
 
 static inline struct gemini_ctx *gemini_fh_to_ctx(struct v4l2_fh *fh)
@@ -297,32 +307,55 @@ static void gemini_device_run(void *priv)
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
 	dma_addr_t src_y, src_cbcr, dst_addr;
 	u32 num_mcu_rows;
+	u8 *dst_vaddr;
+	size_t hdr_len, hdr_aligned, we_room;
 
 	src_buf = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
 	dst_buf = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
 
-	/* Get source buffer addresses (NV12: Y plane followed by CbCr) */
 	src_y = vb2_dma_contig_plane_dma_addr(&src_buf->vb2_buf, 0);
 	src_cbcr = src_y + ctx->src.bytesperline * ctx->src.height;
 
-	/* Get destination buffer address */
 	dst_addr = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
+	dst_vaddr = vb2_plane_vaddr(&dst_buf->vb2_buf, 0);
 
 	/*
-	 * H2V2 NV12 uses 16x16 MCUs, so the per-row count is height/16.
-	 * The cross-vendor libgemini wire format (Hm = (H+15)>>4) confirms
-	 * this for all four surveyed vendor binaries.
+	 * Build the JPEG marker preamble at the start of the destination
+	 * buffer; the hardware will write the entropy-coded segment after
+	 * it. WE_Y_PING_ADDR requires 8-byte alignment, so round the header
+	 * length up; the gap will be overwritten harmlessly by the encoder
+	 * when it writes the first byte of the entropy stream.
+	 */
+	hdr_len = gemini_build_jpeg_header(dst_vaddr,
+					   ctx->src.width, ctx->src.height,
+					   ctx->q_luma, ctx->q_chroma);
+	hdr_aligned = ALIGN(hdr_len, 8);
+	ctx->hdr_len = hdr_len;
+
+	we_room = ctx->dst.sizeimage > hdr_aligned + 2 ?
+		  ctx->dst.sizeimage - hdr_aligned - 2 : 0;
+
+	/*
+	 * H2V2 NV12 uses 16×16 MCUs, so the per-row count is height/16, not
+	 * height/8. The cross-vendor libgemini wire format (Wm = (W+15)>>4,
+	 * Hm = (H+15)>>4) confirms this for all four vendor binaries.
 	 */
 	num_mcu_rows = (ctx->src.height + 15) / 16;
 
-	/* Configure hardware */
+	pr_info("gemini run: R0 device_run entered\n");
 	gemini_hw_set_fe_ping(gemini->base, src_y, src_cbcr, num_mcu_rows);
-	gemini_hw_set_we_ping(gemini->base, dst_addr, ctx->dst.sizeimage);
+	pr_info("gemini run: R1 set_fe_ping returned\n");
 
-	/* Enable frame done interrupt and start encoding */
+	gemini_hw_set_we_ping(gemini->base, dst_addr + hdr_aligned, we_room);
+	pr_info("gemini run: R2 set_we_ping returned\n");
+
 	gemini_hw_enable_irq(gemini->base, GEMINI_IRQ_FRAMEDONE |
-					   GEMINI_IRQ_BUS_ERROR);
+					   GEMINI_IRQ_BUS_ERROR |
+					   GEMINI_IRQ_VIOLATION);
+	pr_info("gemini run: R3 enable_irq returned, calling start_offline\n");
+
 	gemini_hw_start_offline(gemini->base);
+	pr_info("gemini run: R4 start_offline returned\n");
 }
 
 static irqreturn_t gemini_irq_handler(int irq, void *dev_id)
@@ -336,8 +369,52 @@ static irqreturn_t gemini_irq_handler(int irq, void *dev_id)
 	if (!status)
 		return IRQ_NONE;
 
+	pr_info("gemini IRQ: status=0x%08x\n", status);
+
 	gemini_hw_clear_irq(gemini->base, status);
-	gemini_hw_disable_irq(gemini->base);
+
+	/*
+	 * Only disable IRQs on terminal events. The encoder fires several
+	 * transient IRQs while a single frame progresses (FE_RD_DONE,
+	 * WE_Y_PINGPONG, etc.); if we mask everything on the first one,
+	 * the eventual FRAMEDONE never reaches the CPU and userspace times
+	 * out even though the encode succeeded.
+	 */
+	if (status & (GEMINI_IRQ_FRAMEDONE | GEMINI_IRQ_BUS_ERROR |
+		      GEMINI_IRQ_VIOLATION | GEMINI_IRQ_RESET_ACK))
+		gemini_hw_disable_irq(gemini->base);
+
+	if (status & GEMINI_IRQ_RESET_ACK) {
+		complete(&gemini->reset_done);
+		return IRQ_HANDLED;
+	}
+
+	/*
+	 * Transient IRQs (FE_RD_DONE, WE_*_PINGPONG, etc.) mean progress
+	 * but no user-visible completion yet. Re-arm IRQ_MASK (the IP
+	 * appears to auto-mask after firing) and ack. For FE_RD_DONE,
+	 * also re-issue FE_CMD = OFFLINE_CMD_START — legacy webOS does
+	 * this on every FE pingpong IRQ to advance the encoder. In our
+	 * single-buffer M2M case the same buffer gets re-read, but the
+	 * encoder needs the kick to progress past the read stage to
+	 * entropy + WE.
+	 */
+	if (!(status & (GEMINI_IRQ_FRAMEDONE | GEMINI_IRQ_BUS_ERROR |
+			GEMINI_IRQ_VIOLATION))) {
+		gemini_hw_enable_irq(gemini->base, GEMINI_IRQ_FRAMEDONE |
+						   GEMINI_IRQ_BUS_ERROR |
+						   GEMINI_IRQ_VIOLATION |
+						   GEMINI_IRQ_FE_RD_DONE |
+						   GEMINI_IRQ_WE_Y_PINGPONG |
+						   GEMINI_IRQ_WE_CBCR_PINGPONG);
+		if (status & GEMINI_IRQ_FE_RD_DONE) {
+			pr_info("gemini IRQ: FE_RD_DONE — re-issuing FE_CMD=START\n");
+			gemini_hw_fe_reload(gemini->base);
+			writel(GEMINI_OFFLINE_CMD_START,
+			       gemini->base + GEMINI_FE_CMD);
+		}
+		return IRQ_HANDLED;
+	}
 
 	ctx = v4l2_m2m_get_curr_priv(gemini->m2m_dev);
 	if (!ctx)
@@ -350,9 +427,18 @@ static irqreturn_t gemini_irq_handler(int irq, void *dev_id)
 		enum vb2_buffer_state state = VB2_BUF_STATE_DONE;
 
 		if (status & GEMINI_IRQ_FRAMEDONE) {
-			/* Get actual JPEG output size */
+			u8 *vaddr = vb2_plane_vaddr(&dst_buf->vb2_buf, 0);
+			size_t hdr_aligned = ALIGN(ctx->hdr_len, 8);
+			size_t payload;
+
 			output_size = gemini_hw_get_output_size(gemini->base);
-			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, output_size);
+
+			/* Append EOI right after the entropy stream */
+			vaddr[hdr_aligned + output_size + 0] = 0xFF;
+			vaddr[hdr_aligned + output_size + 1] = 0xD9;
+
+			payload = hdr_aligned + output_size + 2;
+			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, payload);
 		} else if (status & (GEMINI_IRQ_BUS_ERROR | GEMINI_IRQ_VIOLATION)) {
 			dev_err(gemini->dev, "JPEG encoding error: 0x%08x\n", status);
 			state = VB2_BUF_STATE_ERROR;
@@ -417,6 +503,90 @@ static void gemini_buf_queue(struct vb2_buffer *vb)
 	v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, to_vb2_v4l2_buffer(vb));
 }
 
+static void gemini_load_tables(struct gemini_ctx *ctx)
+{
+	void __iomem *base = ctx->gemini->base;
+	struct gemini_huff_pair luma_pairs[256] = {0};
+	struct gemini_huff_pair chroma_pairs[256] = {0};
+
+	pr_info("gemini tables: T0 enter (will load huffman then quant)\n");
+
+	/*
+	 * OPAL libgemini's gemini_lib_hw_config loads HUFFMAN BEFORE QUANT.
+	 * We previously did quant first; swap to match.
+	 *
+	 *   gemini_huff_tables[0] = DC luma
+	 *   gemini_huff_tables[1] = DC chroma
+	 *   gemini_huff_tables[2] = AC luma
+	 *   gemini_huff_tables[3] = AC chroma
+	 *
+	 * Build the per-huffval (code, size) pairs: AC table first, then DC
+	 * (DC entries override AC at low huffvals, matching libqcameralib's
+	 * gemini_lib_hw_set_huffman_tables behavior).
+	 */
+	gemini_build_huff_pairs(luma_pairs,
+				gemini_huff_tables[2].bits,
+				gemini_huff_tables[2].vals,
+				gemini_huff_tables[2].n_vals);
+	gemini_build_huff_pairs(luma_pairs,
+				gemini_huff_tables[0].bits,
+				gemini_huff_tables[0].vals,
+				gemini_huff_tables[0].n_vals);
+	gemini_build_huff_pairs(chroma_pairs,
+				gemini_huff_tables[3].bits,
+				gemini_huff_tables[3].vals,
+				gemini_huff_tables[3].n_vals);
+	gemini_build_huff_pairs(chroma_pairs,
+				gemini_huff_tables[1].bits,
+				gemini_huff_tables[1].vals,
+				gemini_huff_tables[1].n_vals);
+
+	pr_info("gemini tables: T1 huff pairs built, loading hw\n");
+	gemini_hw_load_huffman_tables(base, luma_pairs, chroma_pairs);
+	pr_info("gemini tables: T2 huffman load done\n");
+
+	gemini_hw_load_quant_table(base, false, ctx->q_luma);
+	pr_info("gemini tables: T3 quant luma done\n");
+
+	gemini_hw_load_quant_table(base, true,  ctx->q_chroma);
+	pr_info("gemini tables: T4 quant chroma done — exiting load_tables\n");
+}
+
+/*
+ * Soft-reset the encoder and wait for RESET_ACK via the IRQ handler.
+ *
+ * Legacy webOS arms IRQ_MASK *before* writing RESET_CMD so the GIC latches
+ * the RESET_ACK edge as the reset completes; userspace then waits for the
+ * ack interrupt with a 500ms timeout. Without this wait, subsequent
+ * register writes (FE_BUFFER_CFG, FE_*_PING_ADDR, FE_CMD) race the still-
+ * in-progress reset and the encoder discards them silently — the symptom
+ * is a clean hardware programming dump followed by IRQ_STATUS=0 forever.
+ */
+static int gemini_reset(struct gemini_dev *gemini)
+{
+	unsigned long timeout;
+
+	reinit_completion(&gemini->reset_done);
+
+	gemini_hw_clear_irq(gemini->base, GEMINI_IRQ_ALL);
+	gemini_hw_enable_irq(gemini->base, GEMINI_IRQ_RESET_ACK);
+
+	gemini_hw_reset(gemini->base);
+
+	timeout = wait_for_completion_timeout(&gemini->reset_done,
+					      msecs_to_jiffies(500));
+
+	gemini_hw_disable_irq(gemini->base);
+	gemini_hw_clear_irq(gemini->base, GEMINI_IRQ_ALL);
+
+	if (!timeout) {
+		dev_err(gemini->dev, "Timed out waiting for RESET_ACK\n");
+		return -ETIMEDOUT;
+	}
+
+	return 0;
+}
+
 static int gemini_start_streaming(struct vb2_queue *vq, unsigned int count)
 {
 	struct gemini_ctx *ctx = vb2_get_drv_priv(vq);
@@ -424,16 +594,40 @@ static int gemini_start_streaming(struct vb2_queue *vq, unsigned int count)
 	int ret;
 
 	if (V4L2_TYPE_IS_OUTPUT(vq->type)) {
+		pr_info("gemini ss: S0 streamon, runtime resume\n");
 		ret = pm_runtime_resume_and_get(gemini->dev);
 		if (ret < 0)
 			return ret;
 
-		ret = gemini_hw_reset(gemini->base);
+		pr_info("gemini ss: S1 reset begin\n");
+		ret = gemini_reset(gemini);
 		if (ret) {
 			dev_err(gemini->dev, "Hardware reset failed\n");
 			pm_runtime_put(gemini->dev);
 			return ret;
 		}
+		pr_info("gemini ss: S2 reset done\n");
+
+		/*
+		 * Legacy msm_gemini_core_reset writes WE_Y_UB_CFG +
+		 * WE_Y_THRESHOLD + WE_CBCR_THRESHOLD immediately after
+		 * RESET, before any other configure register. The values
+		 * must be valid before PIPELINE_CFG arms the offline
+		 * pipeline; otherwise the WE engine is armed with zero
+		 * thresholds and stalls / faults on first write.
+		 */
+		gemini_hw_we_post_reset_cfg(gemini->base);
+
+		gemini_scale_quant_luma(ctx->q_luma, ctx->quality);
+		gemini_scale_quant_chroma(ctx->q_chroma, ctx->quality);
+
+		pr_info("gemini ss: S3 entering configure_encode_h2v2\n");
+		gemini_hw_configure_encode_h2v2(gemini->base,
+						ctx->src.width,
+						ctx->src.height);
+		pr_info("gemini ss: S4 entering load_tables\n");
+		gemini_load_tables(ctx);
+		pr_info("gemini ss: S5 streamon done\n");
 	}
 
 	return 0;
@@ -659,6 +853,7 @@ static int gemini_probe(struct platform_device *pdev)
 
 	mutex_init(&gemini->lock);
 	spin_lock_init(&gemini->irqlock);
+	init_completion(&gemini->reset_done);
 
 	/* Get resources */
 	gemini->base = devm_platform_ioremap_resource(pdev, 0);
