@@ -401,18 +401,22 @@ static irqreturn_t gemini_irq_handler(int irq, void *dev_id)
 	 */
 	if (!(status & (GEMINI_IRQ_FRAMEDONE | GEMINI_IRQ_BUS_ERROR |
 			GEMINI_IRQ_VIOLATION))) {
+		/*
+		 * Diagnostic: do NOT re-issue FE_CMD=START on FE_RD_DONE.
+		 * Earlier diagnosis suspected this was needed to advance
+		 * the encoder, but the encoder fires FRAMEDONE either way;
+		 * the re-issue may be re-running source DMA into the
+		 * already-encoding pipeline and corrupting coefficient
+		 * state.
+		 */
 		gemini_hw_enable_irq(gemini->base, GEMINI_IRQ_FRAMEDONE |
 						   GEMINI_IRQ_BUS_ERROR |
 						   GEMINI_IRQ_VIOLATION |
 						   GEMINI_IRQ_FE_RD_DONE |
 						   GEMINI_IRQ_WE_Y_PINGPONG |
 						   GEMINI_IRQ_WE_CBCR_PINGPONG);
-		if (status & GEMINI_IRQ_FE_RD_DONE) {
-			pr_info("gemini IRQ: FE_RD_DONE — re-issuing FE_CMD=START\n");
-			gemini_hw_fe_reload(gemini->base);
-			writel(GEMINI_OFFLINE_CMD_START,
-			       gemini->base + GEMINI_FE_CMD);
-		}
+		if (status & GEMINI_IRQ_FE_RD_DONE)
+			pr_info("gemini IRQ: FE_RD_DONE (no re-issue this run)\n");
 		return IRQ_HANDLED;
 	}
 
