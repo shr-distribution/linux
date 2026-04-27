@@ -520,26 +520,27 @@ static void gemini_load_tables(struct gemini_ctx *ctx)
 	 *   gemini_huff_tables[2] = AC luma
 	 *   gemini_huff_tables[3] = AC chroma
 	 *
-	 * Build the per-huffval (code, size) pairs: AC table first, then DC
-	 * (DC entries override AC at low huffvals, matching libqcameralib's
-	 * gemini_lib_hw_set_huffman_tables behavior).
+	 * Diagnostic: swap merge order. Previously we did AC then DC so
+	 * DC entries override AC at low huffvals. Try DC then AC so AC
+	 * entries override DC at conflicting huffvals — see if that
+	 * changes the 1280x1024 band corruption.
 	 */
-	gemini_build_huff_pairs(luma_pairs,
-				gemini_huff_tables[2].bits,
-				gemini_huff_tables[2].vals,
-				gemini_huff_tables[2].n_vals);
 	gemini_build_huff_pairs(luma_pairs,
 				gemini_huff_tables[0].bits,
 				gemini_huff_tables[0].vals,
 				gemini_huff_tables[0].n_vals);
-	gemini_build_huff_pairs(chroma_pairs,
-				gemini_huff_tables[3].bits,
-				gemini_huff_tables[3].vals,
-				gemini_huff_tables[3].n_vals);
+	gemini_build_huff_pairs(luma_pairs,
+				gemini_huff_tables[2].bits,
+				gemini_huff_tables[2].vals,
+				gemini_huff_tables[2].n_vals);
 	gemini_build_huff_pairs(chroma_pairs,
 				gemini_huff_tables[1].bits,
 				gemini_huff_tables[1].vals,
 				gemini_huff_tables[1].n_vals);
+	gemini_build_huff_pairs(chroma_pairs,
+				gemini_huff_tables[3].bits,
+				gemini_huff_tables[3].vals,
+				gemini_huff_tables[3].n_vals);
 
 	pr_info("gemini tables: T1 huff pairs built, loading hw\n");
 	gemini_hw_load_huffman_tables(base, luma_pairs, chroma_pairs);
