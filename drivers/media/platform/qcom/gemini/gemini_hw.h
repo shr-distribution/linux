@@ -182,6 +182,7 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 width, u32 height);
 /* Quantization + Huffman tables */
 void gemini_hw_load_quant_table(void __iomem *base, bool chroma,
 				const u16 q[64]);
+void gemini_hw_readback_quant_tables(void __iomem *base);
 
 /*
  * One huffman code per JPEG symbol value. Caller fills a 256-entry array
