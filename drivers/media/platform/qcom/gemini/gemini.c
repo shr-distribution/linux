@@ -549,7 +549,16 @@ static void gemini_load_tables(struct gemini_ctx *ctx)
 	pr_info("gemini tables: T3 quant luma done\n");
 
 	gemini_hw_load_quant_table(base, true,  ctx->q_chroma);
-	pr_info("gemini tables: T4 quant chroma done — exiting load_tables\n");
+	pr_info("gemini tables: T4 quant chroma done\n");
+
+	/*
+	 * OPAL's gemini_lib_hw_config issues a quant-table READBACK pass
+	 * after the WRITE pass. Replicate that — without it, the encoder
+	 * may use stale (bootloader-default) quant values regardless of
+	 * what we wrote.
+	 */
+	gemini_hw_readback_quant_tables(base);
+	pr_info("gemini tables: T5 quant readback done — exiting load_tables\n");
 }
 
 /*

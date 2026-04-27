@@ -306,21 +306,12 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 w, u32 h)
 	pr_info("gemini cfg: A3 FE_PIPELINE_MODE=0x203 done\n");
 
 	/* 2. op_cfg */
-	/*
-	 * Diagnostic: keep OP_ENCODE_MODE = 1 (cross-vendor claim for
-	 * NV12) but use OP_MAGIC_H2V2 magic word so the produced MCU
-	 * layout matches the SOF0 sampling factors. With H1V1 magic the
-	 * decoded output had catastrophic alternating-block black/white
-	 * corruption; with H2V2 magic + ENCODE_MODE=3 the structural
-	 * corruption is gone but a per-pixel high-frequency oscillation
-	 * appeared. Try the third combination.
-	 */
 	writel(1, base + GEMINI_OP_ENCODE_MODE);
 	writel((16  * (Wm - 1))           & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
 	writel((16  * (Wm - 1))           & 0x03FFFFFF, base + GEMINI_OP_GEOM(1));
 	writel((256 * Wm * (Hm - 1) + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(2));
 	writel((128 * Wm * (Hm - 1) + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(3));
-	writel(GEMINI_OP_MAGIC_H2V2, base + GEMINI_OP_FORMAT_MAGIC);
+	writel(GEMINI_OP_MAGIC_H1V1, base + GEMINI_OP_FORMAT_MAGIC);
 
 	writel(GEMINI_FE_BURST_OL_W0, base + GEMINI_OP_MATRIX(0));
 	writel(GEMINI_FE_BURST_OL_W1, base + GEMINI_OP_MATRIX(1));
@@ -381,6 +372,37 @@ void gemini_hw_load_quant_table(void __iomem *base, bool chroma,
 
 	if (chroma)
 		gemini_table_select(base, GEMINI_TABLE_SEL_RELEASE);
+}
+
+/*
+ * Read back the quant tables. OPAL's gemini_lib_hw_config calls
+ * gemini_lib_hw_read_quant_tables() immediately after
+ * gemini_lib_hw_set_quant_tables(); the read sequence at @ 0x14aa10
+ * issues 128 READ commands (cmd=0x10) against the TABLE_DATA port,
+ * matching the 128 WRITE commands of set_quant_tables.
+ *
+ * Hypothesis: the quant table RAM is double-buffered or ping-pong
+ * latched; the WRITE side fills a shadow buffer, and the READ pass
+ * commits the shadow into the active table the encoder uses. Without
+ * this readback the encoder runs against whatever quant values were
+ * loaded by the bootloader / previous encode session, producing
+ * structurally valid but semantically wrong DCT coefficients.
+ */
+void gemini_hw_readback_quant_tables(void __iomem *base)
+{
+	int i;
+
+	pr_info("gemini quant: Q0 readback enter\n");
+
+	writel(0, base + GEMINI_TABLE_INDEX);
+	gemini_table_select(base, GEMINI_TABLE_SEL_QUANT);
+
+	for (i = 0; i < 128; i++)
+		(void)readl(base + GEMINI_TABLE_DATA);
+
+	gemini_table_select(base, GEMINI_TABLE_SEL_RELEASE);
+
+	pr_info("gemini quant: Q1 readback done (128 entries)\n");
 }
 
 /*
