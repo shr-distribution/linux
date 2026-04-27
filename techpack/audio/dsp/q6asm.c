@@ -3188,6 +3188,28 @@ static int __q6asm_open_read(struct audio_client *ac,
 	rc = q6asm_get_asm_topology_apptype(&cal_info);
 	open.preprocopo_id = cal_info.topology_id;
 
+	/*
+	 * BBRY/sdm660 ACDB v3 has no usable pre-proc topology for any
+	 * capture app_type on this device family — the cal data stored in
+	 * the vendor blob predates this kernel's expected schema. Whatever
+	 * q6asm_get_asm_topology_apptype() returns (DEFAULT_POPP_TOPOLOGY
+	 * fall-through, an ACDB-stored 0, or some other historical value),
+	 * the DSP rejects ASM_STREAM_CMD_OPEN_READ_V3 with ADSP_EUNSUPPORTED,
+	 * looping pcm_prepare on audio-record-voip and shredding the call's
+	 * playback FIFO (audible glitching during Telegram VoIP, no outgoing
+	 * audio at all). LOS22 hit the same wall and shipped the equivalent
+	 * fix as a == 0 guard (commit fa5a157251a3, "audio: ACDB topology
+	 * workarounds for VOIP recording") that happened to fire because in
+	 * 4.4 BBRY's ACDB returned 0; in 4.19 the upstream changes around
+	 * cal_data return non-zero junk, but the underlying ACDB still has
+	 * no useful pre-proc topology.
+	 *
+	 * Force NONE unconditionally for every capture session on this
+	 * board: the AFE still delivers clean PCM, and userspace WebRTC /
+	 * platform AEC/NS handle the processing fluence/ANC would have.
+	 * Same net effect LOS22 has been running with all along.
+	 */
+	open.preprocopo_id = ASM_STREAM_PREPROCOPO_ID_NONE;
 
 	open.bits_per_sample = bits_per_sample;
 	open.mode_flags = 0x0;
