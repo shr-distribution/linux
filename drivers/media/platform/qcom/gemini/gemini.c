@@ -296,7 +296,7 @@ static void gemini_device_run(void *priv)
 	struct gemini_dev *gemini = ctx->gemini;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
 	dma_addr_t src_y, src_cbcr, dst_addr;
-	u32 y_mcu_rows, cbcr_mcu_rows;
+	u32 num_mcu_rows;
 
 	src_buf = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
 	dst_buf = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
@@ -308,13 +308,15 @@ static void gemini_device_run(void *priv)
 	/* Get destination buffer address */
 	dst_addr = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
 
-	/* Calculate MCU rows (8 pixels per MCU for YUV420) */
-	y_mcu_rows = (ctx->src.height + 7) / 8;
-	cbcr_mcu_rows = (ctx->src.height / 2 + 7) / 8;
+	/*
+	 * H2V2 NV12 uses 16x16 MCUs, so the per-row count is height/16.
+	 * The cross-vendor libgemini wire format (Hm = (H+15)>>4) confirms
+	 * this for all four surveyed vendor binaries.
+	 */
+	num_mcu_rows = (ctx->src.height + 15) / 16;
 
 	/* Configure hardware */
-	gemini_hw_set_fe_ping(gemini->base, src_y, src_cbcr,
-			      y_mcu_rows, cbcr_mcu_rows);
+	gemini_hw_set_fe_ping(gemini->base, src_y, src_cbcr, num_mcu_rows);
 	gemini_hw_set_we_ping(gemini->base, dst_addr, ctx->dst.sizeimage);
 
 	/* Enable frame done interrupt and start encoding */
