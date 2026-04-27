@@ -609,6 +609,16 @@ static int gemini_runtime_resume(struct device *dev)
 	struct gemini_dev *gemini = dev_get_drvdata(dev);
 	int ret;
 
+	/*
+	 * The hardware does not respond to register writes (including the
+	 * reset command) at the 27 MHz default. Legacy webOS set 144 MHz
+	 * via clk_set_min_rate(); the closest mainline freq_tbl entry is
+	 * 153.6 MHz, which the RCG will round up to.
+	 */
+	ret = clk_set_rate(gemini->core_clk, 153600000);
+	if (ret)
+		return ret;
+
 	ret = clk_prepare_enable(gemini->core_clk);
 	if (ret)
 		return ret;
