@@ -448,7 +448,7 @@ void gemini_hw_readback_quant_tables(void __iomem *base)
  */
 void gemini_build_huff_pairs(struct gemini_huff_pair *pairs,
 			     const u8 bits[16], const u8 vals[],
-			     unsigned int n_vals)
+			     unsigned int n_vals, bool is_ac)
 {
 	u8  huff_size[256];
 	u16 huff_code[256];
@@ -481,9 +481,12 @@ void gemini_build_huff_pairs(struct gemini_huff_pair *pairs,
 		} while (huff_size[i] != l);
 	}
 
-	/* Lay out by huffval */
+	/* Lay out by huffval, with nibble-swap for AC tables. */
 	for (i = 0; i < p; i++) {
 		u8 v = vals[i];
+
+		if (is_ac)
+			v = ((v & 0x0F) << 4) | ((v & 0xF0) >> 4);
 
 		pairs[v].size = huff_size[i];
 		pairs[v].code = huff_code[i];

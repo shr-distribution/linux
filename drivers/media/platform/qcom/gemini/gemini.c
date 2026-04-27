@@ -520,27 +520,33 @@ static void gemini_load_tables(struct gemini_ctx *ctx)
 	 *   gemini_huff_tables[2] = AC luma
 	 *   gemini_huff_tables[3] = AC chroma
 	 *
-	 * Diagnostic: swap merge order. Previously we did AC then DC so
-	 * DC entries override AC at low huffvals. Try DC then AC so AC
-	 * entries override DC at conflicting huffvals — see if that
-	 * changes the 1280x1024 band corruption.
+	 * Build the per-pair-table buffers. For AC tables, the huffval
+	 * is nibble-swapped before indexing — OPAL's
+	 * gemini_lib_hw_create_huffman_table does this and our HW LUT
+	 * expects the same convention. Without the swap, AC codes land
+	 * at the wrong pair-buffer indices and the encoder produces
+	 * wrong Huffman codes for AC coefficients.
 	 */
 	gemini_build_huff_pairs(luma_pairs,
 				gemini_huff_tables[0].bits,
 				gemini_huff_tables[0].vals,
-				gemini_huff_tables[0].n_vals);
+				gemini_huff_tables[0].n_vals,
+				false);   /* DC luma */
 	gemini_build_huff_pairs(luma_pairs,
 				gemini_huff_tables[2].bits,
 				gemini_huff_tables[2].vals,
-				gemini_huff_tables[2].n_vals);
+				gemini_huff_tables[2].n_vals,
+				true);    /* AC luma */
 	gemini_build_huff_pairs(chroma_pairs,
 				gemini_huff_tables[1].bits,
 				gemini_huff_tables[1].vals,
-				gemini_huff_tables[1].n_vals);
+				gemini_huff_tables[1].n_vals,
+				false);   /* DC chroma */
 	gemini_build_huff_pairs(chroma_pairs,
 				gemini_huff_tables[3].bits,
 				gemini_huff_tables[3].vals,
-				gemini_huff_tables[3].n_vals);
+				gemini_huff_tables[3].n_vals,
+				true);    /* AC chroma */
 
 	pr_info("gemini tables: T1 huff pairs built, loading hw\n");
 	gemini_hw_load_huffman_tables(base, luma_pairs, chroma_pairs);

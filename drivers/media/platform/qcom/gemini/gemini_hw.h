@@ -200,13 +200,18 @@ void gemini_hw_load_huffman_tables(void __iomem *base,
 
 /*
  * Build a per-huffval pair buffer from JPEG BITS[16] + HUFFVAL[].
- * Pass it twice to merge a DC + AC table into a single pair buffer
- * (call once for AC, then again for DC — DC at low huffvals overrides
- * AC at the same indices, matching the camera HAL convention).
+ * Pass it twice to merge a DC + AC table into a single pair buffer.
+ *
+ * For AC tables, set is_ac = true: OPAL's gemini_lib_hw_create_huffman_table
+ * nibble-swaps the AC huffval before indexing into the pair buffer
+ * (`pair_index = (huffval & 0xF) << 4 | (huffval >> 4)`). The raw AC
+ * huffval is `(run << 4) | size`, so nibble-swap puts the size category
+ * in the high nibble — apparently what the HW Huffman LUT expects for
+ * its AC slot indexing.
  */
 void gemini_build_huff_pairs(struct gemini_huff_pair *pairs,
 			     const u8 bits[16], const u8 vals[],
-			     unsigned int n_vals);
+			     unsigned int n_vals, bool is_ac);
 
 /* Legacy single-table loader (no-op stub retained for ABI symmetry). */
 void gemini_hw_load_huffman_table(void __iomem *base, u32 table_id,
