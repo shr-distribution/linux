@@ -407,12 +407,18 @@ static irqreturn_t gemini_irq_handler(int irq, void *dev_id)
 						   GEMINI_IRQ_FE_RD_DONE |
 						   GEMINI_IRQ_WE_Y_PINGPONG |
 						   GEMINI_IRQ_WE_CBCR_PINGPONG);
-		if (status & GEMINI_IRQ_FE_RD_DONE) {
-			pr_info("gemini IRQ: FE_RD_DONE — re-issuing FE_CMD=START\n");
-			gemini_hw_fe_reload(gemini->base);
-			writel(GEMINI_OFFLINE_CMD_START,
-			       gemini->base + GEMINI_FE_CMD);
-		}
+		/*
+		 * Diagnostic: with the op_format=3 fix and DRI_INTERVAL bit
+		 * 16 cleared after Huffman load, the encoder should now
+		 * complete naturally (FE drives PINGPONG to completion and
+		 * FRAMEDONE fires). Stop re-issuing FE_CMD=START on every
+		 * FE_RD_DONE — that re-issue was a workaround for the wrong
+		 * op_format=1 path and was likely causing the encoder to
+		 * re-fetch source data and produce DC-only output for many
+		 * MCUs (decoded image shows grayscale squares).
+		 */
+		if (status & GEMINI_IRQ_FE_RD_DONE)
+			pr_info("gemini IRQ: FE_RD_DONE (no re-issue, encoder should self-advance)\n");
 		return IRQ_HANDLED;
 	}
 
