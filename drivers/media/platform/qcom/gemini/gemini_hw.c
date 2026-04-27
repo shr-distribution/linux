@@ -307,16 +307,15 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 w, u32 h)
 
 	/* 2. op_cfg */
 	/*
-	 * Diagnostic: try the natural H2V2 pair (OP_ENCODE_MODE=3 +
-	 * GEMINI_OP_MAGIC_H2V2). The cross-vendor analysis claimed
-	 * mcu_type=1 + H1V1 magic was the canonical NV12->YUV420 path,
-	 * but the decoded output shows alternating-block corruption
-	 * consistent with the encoder producing H1V1 MCUs (1 Y + 1 Cb +
-	 * 1 Cr per MCU) while the JFIF SOF0 declares H2V2 (4 Y + 1 Cb +
-	 * 1 Cr per MCU). With H2V2 magic the encoder should produce
-	 * MCUs matching the SOF0 layout.
+	 * Diagnostic: keep OP_ENCODE_MODE = 1 (cross-vendor claim for
+	 * NV12) but use OP_MAGIC_H2V2 magic word so the produced MCU
+	 * layout matches the SOF0 sampling factors. With H1V1 magic the
+	 * decoded output had catastrophic alternating-block black/white
+	 * corruption; with H2V2 magic + ENCODE_MODE=3 the structural
+	 * corruption is gone but a per-pixel high-frequency oscillation
+	 * appeared. Try the third combination.
 	 */
-	writel(3, base + GEMINI_OP_ENCODE_MODE);
+	writel(1, base + GEMINI_OP_ENCODE_MODE);
 	writel((16  * (Wm - 1))           & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
 	writel((16  * (Wm - 1))           & 0x03FFFFFF, base + GEMINI_OP_GEOM(1));
 	writel((256 * Wm * (Hm - 1) + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(2));
