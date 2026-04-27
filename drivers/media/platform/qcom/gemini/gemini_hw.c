@@ -562,6 +562,18 @@ void gemini_hw_load_huffman_tables(void __iomem *base,
 	}
 
 	gemini_table_select(base, GEMINI_TABLE_SEL_RELEASE);
+
+	/*
+	 * Exit huffman load mode: clear bit 16 of DRI_INTERVAL.
+	 * OPAL's gemini_lib_hw_set_huffman_tables ends with a WRITE_OR_AND
+	 * cmd that zeroes bits 0-16 of 0xF4. Without this clear, the
+	 * encoder stays in "huffman load mode" during encode and the
+	 * entropy coder produces wrong codes — symptom is per-MCU-column
+	 * coefficient corruption with the first MCU column decoding
+	 * correctly.
+	 */
+	dri = readl(base + GEMINI_DRI_INTERVAL) & ~0x0001FFFFu;
+	writel(dri, base + GEMINI_DRI_INTERVAL);
 }
 
 /* Legacy single-table loader retained for symmetry; not used. */
