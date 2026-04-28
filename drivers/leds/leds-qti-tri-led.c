@@ -62,7 +62,13 @@ struct qpnp_led_dev {
 	u8			id;
 	bool			blinking;
 	bool			breathing;
+	u32			delay_on_ms;
+	u32			delay_off_ms;
 };
+
+/* From drivers/pwm/pwm-qti-lpg.c */
+extern int qpnp_lpg_set_step_ms(struct pwm_device *pwm, u32 step_ms);
+extern u32 qpnp_lpg_get_pattern_length(struct pwm_device *pwm);
 
 struct qpnp_tri_led_chip {
 	struct device		*dev;
@@ -358,6 +364,91 @@ static ssize_t breath_show(struct device *dev, struct device_attribute *attr,
 	return snprintf(buf, PAGE_SIZE, "%d\n", led->led_setting.breath);
 }
 
+static int qpnp_led_apply_delay(struct qpnp_led_dev *led)
+{
+	u32 length, total, step;
+
+	if (!led->delay_on_ms || !led->delay_off_ms)
+		return 0;
+
+	length = qpnp_lpg_get_pattern_length(led->pwm_dev);
+	if (!length)
+		return 0;
+
+	/* With ramp-toggle, total cycle = 2 * length * step_ms.
+	 * total = on + off, so step = (on + off) / (2 * length). */
+	total = led->delay_on_ms + led->delay_off_ms;
+	step = total / (2 * length);
+	if (!step)
+		step = 1;
+
+	return qpnp_lpg_set_step_ms(led->pwm_dev, step);
+}
+
+static ssize_t delay_on_show(struct device *dev, struct device_attribute *attr,
+				char *buf)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+	struct qpnp_led_dev *led =
+		container_of(led_cdev, struct qpnp_led_dev, cdev);
+
+	return snprintf(buf, PAGE_SIZE, "%u\n", led->delay_on_ms);
+}
+
+static ssize_t delay_on_store(struct device *dev, struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+	struct qpnp_led_dev *led =
+		container_of(led_cdev, struct qpnp_led_dev, cdev);
+	u32 ms;
+	int rc;
+
+	rc = kstrtouint(buf, 10, &ms);
+	if (rc < 0)
+		return rc;
+
+	mutex_lock(&led->lock);
+	led->delay_on_ms = ms;
+	if (led->breathing)
+		qpnp_led_apply_delay(led);
+	mutex_unlock(&led->lock);
+
+	return count;
+}
+
+static ssize_t delay_off_show(struct device *dev, struct device_attribute *attr,
+				char *buf)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+	struct qpnp_led_dev *led =
+		container_of(led_cdev, struct qpnp_led_dev, cdev);
+
+	return snprintf(buf, PAGE_SIZE, "%u\n", led->delay_off_ms);
+}
+
+static ssize_t delay_off_store(struct device *dev, struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+	struct qpnp_led_dev *led =
+		container_of(led_cdev, struct qpnp_led_dev, cdev);
+	u32 ms;
+	int rc;
+
+	rc = kstrtouint(buf, 10, &ms);
+	if (rc < 0)
+		return rc;
+
+	mutex_lock(&led->lock);
+	led->delay_off_ms = ms;
+	if (led->breathing)
+		qpnp_led_apply_delay(led);
+	mutex_unlock(&led->lock);
+
+	return count;
+}
+
 static ssize_t breath_store(struct device *dev, struct device_attribute *attr,
 						const char *buf, size_t count)
 {
@@ -384,6 +475,8 @@ static ssize_t breath_store(struct device *dev, struct device_attribute *attr,
 	if (rc < 0)
 		dev_err(led->chip->dev, "Set led failed for %s, rc=%d\n",
 				led->label, rc);
+	else if (breath)
+		qpnp_led_apply_delay(led);
 
 unlock:
 	mutex_unlock(&led->lock);
@@ -391,8 +484,12 @@ unlock:
 }
 
 static DEVICE_ATTR_RW(breath);
+static DEVICE_ATTR_RW(delay_on);
+static DEVICE_ATTR_RW(delay_off);
 static const struct attribute *breath_attrs[] = {
 	&dev_attr_breath.attr,
+	&dev_attr_delay_on.attr,
+	&dev_attr_delay_off.attr,
 	NULL
 };
 

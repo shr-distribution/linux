@@ -1715,6 +1715,42 @@ static int qpnp_lpg_remove(struct platform_device *pdev)
 	return rc;
 }
 
+/*
+ * qpnp_lpg_set_step_ms - update the LUT ramp step duration at runtime.
+ * Used by leds-qti-tri-led so a HAL can translate framework flashOnMs/
+ * flashOffMs into a perceptually-smooth breath cycle (instead of being
+ * stuck with the DT-baked timing).
+ */
+int qpnp_lpg_set_step_ms(struct pwm_device *pwm, u32 step_ms)
+{
+	struct qpnp_lpg_channel *lpg;
+
+	if (!pwm || !pwm->chip || step_ms == 0)
+		return -EINVAL;
+
+	lpg = pwm_dev_to_qpnp_lpg(pwm->chip, pwm);
+	if (!lpg)
+		return -ENODEV;
+
+	/* qpnp_lpg_set_ramp_config calls qpnp_lpg_write / masked_write,
+	 * each of which already takes chip->bus_lock. Don't lock here too. */
+	lpg->ramp_config.step_ms = (u16)step_ms;
+	return qpnp_lpg_set_ramp_config(lpg);
+}
+EXPORT_SYMBOL(qpnp_lpg_set_step_ms);
+
+u32 qpnp_lpg_get_pattern_length(struct pwm_device *pwm)
+{
+	struct qpnp_lpg_channel *lpg;
+
+	if (!pwm || !pwm->chip)
+		return 0;
+
+	lpg = pwm_dev_to_qpnp_lpg(pwm->chip, pwm);
+	return lpg ? lpg->ramp_config.pattern_length : 0;
+}
+EXPORT_SYMBOL(qpnp_lpg_get_pattern_length);
+
 static const struct of_device_id qpnp_lpg_of_match[] = {
 	{ .compatible = "qcom,pwm-lpg",},
 	{ },
