@@ -179,18 +179,37 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_MH_MMU_MPU_BASE, 0x00000000);
 	gpu_write(gpu, REG_A2XX_MH_MMU_MPU_END, 0xfffff000);
 
+	/*
+	 * Match legacy webOS KGSL: configure ALL MH MMU client ports to
+	 * BEH_TRAN_FLT (translate, fault on miss) instead of BEH_TRAN_RNG
+	 * (translate, silently bypass on miss).
+	 *
+	 * Legacy msm8660_defconfig had CONFIG_MSM_KGSL_MMU_PAGE_FAULT=y, which
+	 * sets MMU_CONFIG=2 = BEH_TRAN_FLT in kgsl_yamato.c YAMATO_MMU_CONFIG.
+	 *
+	 * BEH_TRAN_RNG is dangerous: an out-of-range / unmapped GPU access is
+	 * silently passed through to raw physical address space, so the GPU
+	 * reads garbage memory instead of faulting. On Adreno 220 this maps
+	 * onto the intermittent faceted-rendering glmark2 symptom — the GPU
+	 * pulls garbage in place of real vertex/normal/uniform data and we
+	 * see no kernel-side warning.
+	 *
+	 * BEH_TRAN_FLT will turn those silent garbage reads into visible
+	 * MH page faults via the MH interrupt path, which both eliminates
+	 * the wrong-data outcome and gives us real diagnostics.
+	 */
 	gpu_write(gpu, REG_A2XX_MH_MMU_CONFIG, A2XX_MH_MMU_CONFIG_MMU_ENABLE |
-		A2XX_MH_MMU_CONFIG_RB_W_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
-		A2XX_MH_MMU_CONFIG_CP_W_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
-		A2XX_MH_MMU_CONFIG_CP_R0_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
-		A2XX_MH_MMU_CONFIG_CP_R1_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
-		A2XX_MH_MMU_CONFIG_CP_R2_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
-		A2XX_MH_MMU_CONFIG_CP_R3_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
-		A2XX_MH_MMU_CONFIG_CP_R4_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
-		A2XX_MH_MMU_CONFIG_VGT_R0_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
-		A2XX_MH_MMU_CONFIG_VGT_R1_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
-		A2XX_MH_MMU_CONFIG_TC_R_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
-		A2XX_MH_MMU_CONFIG_PA_W_CLNT_BEHAVIOR(BEH_TRAN_RNG));
+		A2XX_MH_MMU_CONFIG_RB_W_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
+		A2XX_MH_MMU_CONFIG_CP_W_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
+		A2XX_MH_MMU_CONFIG_CP_R0_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
+		A2XX_MH_MMU_CONFIG_CP_R1_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
+		A2XX_MH_MMU_CONFIG_CP_R2_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
+		A2XX_MH_MMU_CONFIG_CP_R3_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
+		A2XX_MH_MMU_CONFIG_CP_R4_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
+		A2XX_MH_MMU_CONFIG_VGT_R0_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
+		A2XX_MH_MMU_CONFIG_VGT_R1_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
+		A2XX_MH_MMU_CONFIG_TC_R_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
+		A2XX_MH_MMU_CONFIG_PA_W_CLNT_BEHAVIOR(BEH_TRAN_FLT));
 
 	/* same as parameters in adreno_gpu */
 	gpu_write(gpu, REG_A2XX_MH_MMU_VA_RANGE, SZ_16M |
