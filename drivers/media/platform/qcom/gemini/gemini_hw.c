@@ -12,9 +12,22 @@
 #include <linux/bits.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/moduleparam.h>
 #include <linux/printk.h>
 
 #include "gemini_hw.h"
+
+/*
+ * Diagnostic: FE_INPUT_FORMAT enum sweep. OPAL writes 0x10 (bit 4 set)
+ * but its trace was for the camera-VFE-output path which may have used
+ * a 10-bit packed format. For userspace mmap'd standard 8-bit NV12, the
+ * correct value is unknown — try 0x00, 0x01, 0x02, 0x03, 0x04 with the
+ * `gemini.fe_input_format=0xN` kernel command-line parameter.
+ */
+static unsigned int fe_input_format = 0x10;
+module_param_named(fe_input_format, fe_input_format, uint, 0644);
+MODULE_PARM_DESC(fe_input_format,
+	"FE_INPUT_FORMAT register value (default 0x10 matches OPAL trace; try 0x00..0x07 for 8-bit NV12 enum sweep)");
 
 int gemini_hw_reset(void __iomem *base)
 {
@@ -290,8 +303,9 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 w, u32 h)
 	pr_info("gemini cfg: A0 enter w=%u h=%u Wm=%u Hm=%u\n", w, h, Wm, Hm);
 
 	/* 1. fe_cfg */
-	writel(0x10, base + GEMINI_FE_INPUT_FORMAT);
-	pr_info("gemini cfg: A1 FE_INPUT_FORMAT done\n");
+	writel(fe_input_format & 0x000F0077, base + GEMINI_FE_INPUT_FORMAT);
+	pr_info("gemini cfg: A1 FE_INPUT_FORMAT=0x%08x done\n",
+		fe_input_format & 0x000F0077);
 
 	writel(((Wm - 1) & 0x1FF) << 16 | ((Hm - 1) & 0x1FF),
 	       base + GEMINI_FE_DIMS);
