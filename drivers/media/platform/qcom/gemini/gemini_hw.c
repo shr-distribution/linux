@@ -105,16 +105,7 @@ void gemini_hw_we_post_reset_cfg(void __iomem *base)
 	writel(0x01FF0000, base + GEMINI_WE_Y_UB_CFG);
 	writel((0x16A << 16) | 0x190, base + GEMINI_WE_Y_THRESHOLD);
 	writel((0x16A << 16) | 0x190, base + GEMINI_WE_CBCR_THRESHOLD);
-	/*
-	 * Diagnostic Vector C: explicitly write 0x0007FFFF to undocumented
-	 * register 0x013C. Live OPAL trace shows this register set to
-	 * 0x0007FFFF during real camera capture; mainline never writes it.
-	 * 0x0007FFFF = 19 bits set — looks like a FIFO watermark, AXI
-	 * burst-length mask, or timeout counter. If the 1280x1024 band
-	 * cadence changes, this is the missing register.
-	 */
-	writel(0x0007FFFF, base + 0x013C);
-	pr_info("gemini post_reset: P1 WE thresholds + 0x013C=0x7FFFF done\n");
+	pr_info("gemini post_reset: P1 WE thresholds done\n");
 }
 
 void gemini_hw_set_we_ping(void __iomem *base, dma_addr_t addr, u32 len)
@@ -165,16 +156,6 @@ void gemini_hw_start_offline(void __iomem *base)
 
 	writel(1, base + GEMINI_START_KICK);
 	pr_info("gemini start: D2 START_KICK=1 done\n");
-
-	/*
-	 * Diagnostic Vector D: let the HW state machine settle before we
-	 * fire FE_CMD=START. Mainline writes registers far faster than the
-	 * userspace ioctl path OPAL takes (each ioctl has copy_from_user +
-	 * malloc + cmd-stream processing latency). If the encoder needs
-	 * settling time between PIPELINE_CFG arming and the FE_CMD start,
-	 * a 100us delay should reveal it.
-	 */
-	udelay(100);
 
 	writel(GEMINI_OFFLINE_CMD_START, base + GEMINI_FE_CMD);
 	pr_info("gemini start: D3 FE_CMD=3 done\n");
