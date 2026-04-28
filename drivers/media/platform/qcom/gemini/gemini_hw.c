@@ -29,6 +29,21 @@ module_param_named(fe_input_format, fe_input_format, uint, 0644);
 MODULE_PARM_DESC(fe_input_format,
 	"FE_INPUT_FORMAT register value (default 0x10 matches OPAL trace; try 0x00..0x07 for 8-bit NV12 enum sweep)");
 
+static unsigned int we_y_threshold = 0x016A0190;
+module_param_named(we_y_threshold, we_y_threshold, uint, 0644);
+MODULE_PARM_DESC(we_y_threshold,
+	"WE_Y_THRESHOLD register value (default 0x016A0190 from OPAL; try 0x01FF01FF to disable)");
+
+static unsigned int we_cbcr_threshold = 0x016A0190;
+module_param_named(we_cbcr_threshold, we_cbcr_threshold, uint, 0644);
+MODULE_PARM_DESC(we_cbcr_threshold,
+	"WE_CBCR_THRESHOLD register value (default 0x016A0190 from OPAL)");
+
+static unsigned int we_y_ub_cfg = 0x01FF0000;
+module_param_named(we_y_ub_cfg, we_y_ub_cfg, uint, 0644);
+MODULE_PARM_DESC(we_y_ub_cfg,
+	"WE_Y_UB_CFG register value (default 0x01FF0000 from OPAL)");
+
 int gemini_hw_reset(void __iomem *base)
 {
 	/*
@@ -110,10 +125,11 @@ void gemini_hw_set_fe_ping(void __iomem *base, dma_addr_t y_addr,
  */
 void gemini_hw_we_post_reset_cfg(void __iomem *base)
 {
-	pr_info("gemini post_reset: P0 WE buffer cfg\n");
-	writel(0x01FF0000, base + GEMINI_WE_Y_UB_CFG);
-	writel((0x16A << 16) | 0x190, base + GEMINI_WE_Y_THRESHOLD);
-	writel((0x16A << 16) | 0x190, base + GEMINI_WE_CBCR_THRESHOLD);
+	pr_info("gemini post_reset: P0 WE buffer cfg ub=0x%08x y_th=0x%08x cbcr_th=0x%08x\n",
+		we_y_ub_cfg, we_y_threshold, we_cbcr_threshold);
+	writel(we_y_ub_cfg,       base + GEMINI_WE_Y_UB_CFG);
+	writel(we_y_threshold,    base + GEMINI_WE_Y_THRESHOLD);
+	writel(we_cbcr_threshold, base + GEMINI_WE_CBCR_THRESHOLD);
 	pr_info("gemini post_reset: P1 WE thresholds done\n");
 }
 
