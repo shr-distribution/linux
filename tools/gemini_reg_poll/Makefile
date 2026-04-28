@@ -7,7 +7,7 @@
 CC ?= arm-linux-gnueabihf-gcc
 CFLAGS ?= -O2 -Wall -Wextra -static
 
-all: gemini_reg_poll gemini_full_poll
+all: gemini_reg_poll gemini_full_poll gemini_oneshot
 
 gemini_reg_poll: gemini_reg_poll.c
 	$(CC) $(CFLAGS) -o $@ $<
@@ -15,5 +15,8 @@ gemini_reg_poll: gemini_reg_poll.c
 gemini_full_poll: gemini_full_poll.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+gemini_oneshot: gemini_oneshot.c
+	$(CC) $(CFLAGS) -o $@ $<
+
 clean:
-	rm -f gemini_reg_poll gemini_full_poll
+	rm -f gemini_reg_poll gemini_full_poll gemini_oneshot

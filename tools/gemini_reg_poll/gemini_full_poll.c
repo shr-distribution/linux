@@ -48,7 +48,15 @@
 
 #define GEMINI_PHYS_BASE	0x04600000UL
 #define GEMINI_REGION_SIZE	0x1000	/* 4 KB */
-#define N_WORDS			(GEMINI_REGION_SIZE / 4)
+/*
+ * Only poll bank 0 (0x000..0x1FF). The encoder mirrors all writes
+ * across 8 banks (verified via OPAL trace), so polling additional
+ * banks just generates noise. Polling only bank 0 also dramatically
+ * reduces /dev/mem read pressure during a fast encode (1280x1024
+ * runs in ~13 ms — we want most poll cycles to land within that
+ * window).
+ */
+#define N_WORDS			(0x200 / 4)	/* 128 words = bank 0 only */
 
 #define POLL_INTERVAL_US	100	/* ~10 kHz */
 #define IDLE_GRACE_NS		500000000LL
@@ -56,20 +64,32 @@
 
 /*
  * Registers whose READ has side effects (auto-increment, clear-on-read,
- * etc.). Skip these in the poll loop. Listed by 4-byte word offset.
+ * etc.). Skip these in the poll loop. The Gemini IP has 8 mirrored
+ * banks of 0x200 bytes each, so each side-effect register is mirrored
+ * at 8 offsets (0x12C, 0x32C, 0x52C, 0x72C, 0x92C, 0xB2C, 0xD2C, 0xF2C
+ * for TABLE_DATA).
+ *
+ * Reading a side-effect register can hang the AHB bus or auto-trigger
+ * encoder state — we must skip them at every bank.
  */
-static const uint32_t skip_offsets[] = {
-	0x012C / 4,	/* TABLE_DATA — auto-increments TABLE_INDEX */
-};
-#define N_SKIP_OFFSETS (sizeof(skip_offsets) / sizeof(skip_offsets[0]))
-
 static bool is_skip(uint32_t word_off)
 {
-	uint32_t i;
+	uint32_t off_in_bank = (word_off * 4) & 0x1FF;
 
-	for (i = 0; i < N_SKIP_OFFSETS; i++)
-		if (skip_offsets[i] == word_off)
-			return true;
+	/* TABLE_DATA at 0x12C — auto-increments TABLE_INDEX. */
+	if (off_in_bank == 0x12C)
+		return true;
+
+	/* Reserved / undocumented offsets that may have side effects.
+	 * Be conservative and skip the ranges we have no documentation
+	 * for: 0x100..0x10F, 0x130..0x13C, 0x140..0x1FF — anything
+	 * outside the cross-vendor doc's named registers.
+	 *
+	 * Actually — that's too aggressive. The cross-vendor reg map
+	 * mentions FSC at 0x110..0x120 (has read meaning), TABLE_SEL/
+	 * INDEX at 0x124/0x128 (write-only mostly), TABLE_DATA at 0x12C
+	 * (already skipped). 0x13C has been read repeatedly without
+	 * issue. So only skip TABLE_DATA. */
 	return false;
 }
 
