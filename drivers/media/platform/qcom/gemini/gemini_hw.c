@@ -77,16 +77,12 @@ void gemini_hw_set_fe_ping(void __iomem *base, dma_addr_t y_addr,
 	pr_info("gemini fe_ping: B3 FE_CBCR_PING_ADDR done\n");
 
 	/*
-	 * Diagnostic: don't mirror PING -> PONG. Leave PONG addresses at 0.
-	 * If FE actually uses PONG during encode, this will produce a
-	 * bus-error or different corruption pattern; if FE only uses PING
-	 * for single-frame encodes, output stays the same. We need to know
-	 * which it is to diagnose the 10-MCU-group alternating valid/black
-	 * band corruption.
+	 * Mirror PING -> PONG so the encoder's pong-side reads (if any)
+	 * land at the same physical pixel buffer. OPAL's libgemini does
+	 * the equivalent of this for single-frame still encodes.
 	 */
-	writel(0, base + GEMINI_FE_Y_PONG_ADDR);
-	writel(0, base + GEMINI_FE_CBCR_PONG_ADDR);
-	pr_info("gemini fe_ping: B3.5 PONG = 0 (diagnostic)\n");
+	writel(y_addr,    base + GEMINI_FE_Y_PONG_ADDR);
+	writel(cbcr_addr, base + GEMINI_FE_CBCR_PONG_ADDR);
 
 	writel(GEMINI_FE_CMD_RELOAD, base + GEMINI_FE_CMD);
 	pr_info("gemini fe_ping: B4 FE_CMD=RELOAD done\n");
