@@ -330,8 +330,8 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 w, u32 h)
 		u32 base_geom = Hm * (Wm - 1);
 
 		writel(3, base + GEMINI_OP_ENCODE_MODE);
-		writel((base_geom * 256)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
-		writel((base_geom * 128)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(1));
+		writel((base_geom * 128)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
+		writel((base_geom * 256)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(1));
 		writel((base_geom * 256 + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(2));
 		writel((base_geom * 128 + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(3));
 		writel(GEMINI_OP_MAGIC_H2V2, base + GEMINI_OP_FORMAT_MAGIC);
