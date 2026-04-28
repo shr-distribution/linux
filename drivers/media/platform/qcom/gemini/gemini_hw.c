@@ -62,11 +62,15 @@ void gemini_hw_set_fe_ping(void __iomem *base, dma_addr_t y_addr,
 	pr_info("gemini fe_ping: B0 enter rows=%u y=0x%llx cbcr=0x%llx\n",
 		num_mcu_rows, (u64)y_addr, (u64)cbcr_addr);
 
-	rows = num_mcu_rows - 1;
-	cfg = ((rows << GEMINI_FE_CBCR_MCU_ROWS_SHIFT) &
-	       GEMINI_FE_CBCR_MCU_ROWS_MASK) |
-	      ((rows << GEMINI_FE_Y_MCU_ROWS_SHIFT) &
-	       GEMINI_FE_Y_MCU_ROWS_MASK);
+	{
+		u32 chroma_rows = (num_mcu_rows / 2) - 1;
+
+		rows = num_mcu_rows - 1;
+		cfg = ((chroma_rows << GEMINI_FE_CBCR_MCU_ROWS_SHIFT) &
+		       GEMINI_FE_CBCR_MCU_ROWS_MASK) |
+		      ((rows << GEMINI_FE_Y_MCU_ROWS_SHIFT) &
+		       GEMINI_FE_Y_MCU_ROWS_MASK);
+	}
 	writel(cfg, base + GEMINI_FE_BUFFER_CFG);
 	pr_info("gemini fe_ping: B1 FE_BUFFER_CFG done\n");
 
