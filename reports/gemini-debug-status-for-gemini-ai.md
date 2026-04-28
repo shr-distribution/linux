@@ -1,174 +1,207 @@
-# Gemini JPEG encoder debug — concise status for handoff
+# Gemini JPEG Encoder Debug — Status for Gemini AI (2026-04-28 update)
 
-## Target
-Mainline Linux 6.18 driver for the **Qualcomm Gemini JPEG encoder** at
-`0x04600000` on the HP TouchPad (MSM8660 / APQ8060). Identical silicon
-to webOS 3.0.6 / OPAL — OPAL's stack produces correct JPEGs from this
-exact hardware (ground truth).
+**Hardware:** Qualcomm MSM8660/APQ8060 Gemini JPEG IP at phys
+`0x04600000`, HP TouchPad. Mainline kernel 6.18 V4L2 m2m driver at
+`drivers/media/platform/qcom/gemini/`. Branch
+`tenderloin/6.18/upstream-patches`. Latest HEAD: `1681f802b5a6`.
 
-## Symptom
-Encoder runs, fires `FRAMEDONE`, produces structurally valid JFIF.
-Test pattern: NV12 with `Y[y][x] = x ^ y`, `UV = 128` → expected
-grayscale XOR pattern.
+**Test:** `test_gemini` userspace tool feeds NV12 frame to `/dev/video6`,
+gets JPEG out. Tested at 320×240, 640×480, 1280×1024 with synthetic
+patterns: uniform Y (0/64/128/192/255 with UV=128) and XOR
+(`p[y*W+x] = (uint8_t)(x^y)` with UV=128).
 
-| Resolution | Decoded result |
-|---|---|
-| 320×240 | 100% grayscale (R==G==B), but pattern is scattered noise not XOR |
-| 640×480 | 0% grayscale — consistent chroma cast (89, 117, 126) |
-| 1280×1024 | 100% grayscale, **regular 4-valid + 4-zero band pattern** |
+## Recent Breakthrough — DC encoding restored
 
-The 1280×1024 pattern: every row has 8 horizontal bands of 160 px (10
-H2V2 MCUs) each, alternating "valid encoded" and "fully (0,0,0)".
-49% of every row is exactly black. Black runs in row 100:
+**Bug:** Encoder was producing DC delta = 0 for every 8x8 block
+regardless of input pixel value. Verified by parsing the entropy
+stream: every flat-Y test JPEG started with `00…` (DC luma cat-0
+Huffman code = delta 0). All flat inputs decoded to ~127 mid-gray. AC
+content varied (XOR gave 68KB), but DC was zero everywhere.
+
+**Root cause:** `OP_GEOM[0]` and `OP_GEOM[1]` had their `*128` and
+`*256` multipliers swapped versus the live OPAL register trace at
+`reports/opal-camera/tenderloin-live-traces/FINDINGS.md` (captured by
+`tools/gemini_reg_poll/gemini_reg_poll` running on stock webOS during
+a real still capture).
+
+OPAL writes (verified at 1024×1280 portrait, Wm=64, Hm=80):
 ```
-x=160..285 (126 px), 289..319 (31 px),
-x=480..605 (126 px), 609..639 (31 px),
-x=800..925 (126 px), 929..959 (31 px),
-x=1120..1245 (126 px), 1249..1279 (31 px)
-```
-
-## Fixes that landed (each required, each verified by live OPAL trace)
-
-1. **MMCC fabric AXI port-7 unhalt** — without it, JPEG_ENC port stays
-   halted by RPM and FRAMEDONE never fires.
-2. **`PIPELINE_CFG = 0x038061FB`** for offline NV12. Formula:
-   `0x61FB | (offline ? 0x02000000 : 0) | ((mode & 3) << 23)`.
-3. **Configure write order** — PIPELINE_CFG must be the LAST register
-   written in the configure path; writing it first hangs the AHB bus.
-4. **`OP_ENCODE_MODE = 3`** (not 1), **`OP_FORMAT_MAGIC = 0x03381801`**
-   (not 0x0107081F). OPAL takes the op_format=3 branch for stills.
-5. **OP_GEOM[0..3] = `Hm*(Wm-1)*{256,128,256,128}` (+16 for [2,3])** —
-   op_format=3 formula. Verified by live trace.
-6. **Post-reset WE config**: `WE_Y_UB_CFG=0x01FF0000`,
-   `WE_Y/CBCR_THRESHOLD=0x016A0190` (matches legacy webOS msm_gemini).
-7. **DRI_INTERVAL bit-16 cleared after Huffman load** — OPAL exits
-   "Huffman load mode" with a `WRITE_OR_AND` zeroing bits 0..16 of 0xF4.
-   Without this clear, encoder corrupts entropy past first MCU column.
-8. **Huffman tables loaded BEFORE quant tables** (OPAL order).
-9. **AC huffval nibble-swap before indexing pair buffer** — OPAL's
-   `gemini_lib_hw_create_huffman_table` nibble-swaps AC huffvals
-   (`(v & 0xF) << 4 | (v >> 4)`) before storing in pair[]. Mainline now
-   matches.
-10. **IRQ handler must NOT `disable_irq` on transient events** and
-    must re-issue `FE_CMD = OFFLINE_CMD_START` on each `FE_RD_DONE`
-    (without re-issue, FRAMEDONE never fires — confirmed by removing).
-
-## Diagnostic dead-ends (each produced byte-identical output)
-
-These knobs DO NOT influence the 1280×1024 band pattern:
-
-- WE PING/PONG mirror vs split vs zero
-- `WE_Y_THRESHOLD` legacy `0x16A/0x190` vs max `0x01FF01FF`
-- FE PONG = 0 vs mirror (FE doesn't use PONG for single-frame encode)
-- Huffman merge order (AC-then-DC vs DC-then-AC)
-- AC nibble-swap on vs off
-- Quant table readback pass after write
-
-## Diagnostics that REGRESSED output
-
-- FE_DIMS halves swap to OPAL convention `(Hm-1)<<16 | (Wm-1)`:
-  regressed 1280 to per-pixel garbage. Mainline writes
-  `(Wm-1)<<16 | (Hm-1)` and that's empirically what works.
-- OP_GEOM operand swap `Wm*(Hm-1)` vs `Hm*(Wm-1)`: same regression.
-- Drop FE_RD_DONE re-issue: encoder hangs.
-- Skip post-reset WE thresholds: WE_Y_OVERFLOW.
-- Skip OP_MATRIX writes: 320 OK, 640 row 0 clean grayscale, 1280
-  broken (HW reset defaults align with one specific MCU geometry).
-
-## Verified register parity with OPAL
-
-Captured live OPAL trace via `tools/gemini_reg_poll/` (`/dev/mem`-based
-poller, snapshots before/during/after a real camera capture). All
-written registers match OPAL byte-for-byte:
-
-```
-PIPELINE_CFG=0x038061FB  FE_INPUT_FORMAT=0x10  FE_PIPELINE_MODE=0x203
-OP_ENCODE_MODE=3  OP_FORMAT_MAGIC=0x03381801
-OP_GEOM[0..3] = Hm*(Wm-1)*{256,128,256,128} (+16 for [2,3])
-OP_MATRIX[0..8] = {0x303, 0xF0000F, 0xF0000F00, 0, 0,
-                   0xC0C0303, 0xC0C03030, 0, 0}
-WE_CFG=0x20  WE_Y/CBCR_THRESHOLD=0x016A0190  WE_Y_UB_CFG=0x01FF0000
-FE_BUFFER_CFG packs (Hm-1) in both Y and CBCR fields
-TABLE_INDEX after quant load = 0x80
+OP_GEOM[0] = Hm * (Wm-1) * 128
+OP_GEOM[1] = Hm * (Wm-1) * 256
+OP_GEOM[2] = Hm * (Wm-1) * 256 + 16
+OP_GEOM[3] = Hm * (Wm-1) * 128 + 16
 ```
 
-The only register OPAL has set that we don't write is **`0x013C =
-0x0007FFFF`** — searched OPAL/Samsung/HTC/Sony binaries, NO vendor
-binary explicitly writes `0x0007FFFF`. Almost certainly a HW power-up
-default, not a configuration we need to set.
+Mainline was writing `*256` for slot[0] and `*128` for slot[1]. Commit
+`cc5a367969b9` swapped them back to OPAL ordering. After fix, file
+sizes jumped from 5KB → 28KB at 640×480 for a flat input — actual
+content is now being encoded. Live readback at 640×480 confirmed:
+`OP_GEOM[0..3] = 0x00024900 0x00049200 0x00049210 0x00024910`.
 
-## Specific open questions
+## Residual Bug — "Bottom 20% is top 80% shifted right"
 
-1. **What controls the 10-MCU band cycling on 1280×1024 only?**
-   80 MCU cols ÷ 10 = 8 bands. The pattern is fully deterministic and
-   no register knob influences it. 320 (Wm=20) and 640 (Wm=40) — also
-   divisible by 10 — don't show this pattern. Why is it
-   width-specific to 1280?
+User-reported visual artifact, **identical at all three resolutions**:
 
-2. **Why does 640×480 have only chroma cast?** Wm=40 also divisible
-   by 10. We see no zero-bands, just chroma offset. What's different?
+> Bottom 20% of decoded image has the same data as top 80% rows, just
+> shifted to the right.
 
-3. **Are pair-table-indexed Huffman entries even used by the encoder?**
-   The nibble-swap fix produced byte-identical output, suggesting the
-   per-huffval pair[i] entries (i=0..175) loaded via main loop don't
-   affect AC encoding behavior on this silicon. So where does AC
-   actually pull codes from?
+Numerical analysis of the decoded XOR-pattern JPEG at 640×480:
 
-4. **Could there be a HW errata at MCU column count 80?**
-   Worth checking msm8x60 errata sheets if available.
+- Top 80% (rows 0..383): ~330–380 of 640 cols are non-background per
+  row, XOR pattern visible throughout the row.
+- Anomaly at rows 352–360 (74–75% mark): ~580 active cols (more than
+  the typical ~350).
+- Bottom 20% (rows 384..479): per-row active region collapses to mostly
+  cols 0..7, then mostly background (luma ≈ 79), with a few scattered
+  short runs further right.
 
-## Reproducer
+The split is sharp at exactly 80% / 20%:
 
-```bash
-# Build test harness once:
-arm-linux-gnueabihf-gcc -O2 -static \
-    /home/herrie/webos/touchpad-kernel/test_gemini.c \
-    -o /tmp/test_gemini
+- 320×240  → boundary at row 192 (= 0.8 × 240)
+- 640×480  → boundary at row 384 (= 0.8 × 480)
+- 1280×1024 → boundary at row 819 (≈ 0.8 × 1024)
 
-# Deploy and run:
-scp -P 22 /tmp/test_gemini root@172.16.42.2:/tmp/
-ssh -p 22 root@172.16.42.2 "/tmp/test_gemini -w 1280 -h 1024"
-scp -P 22 root@172.16.42.2:/tmp/test.jpg ./test_1280.jpg
+That's an exact 1.25× ratio — the encoder is **consuming input data
+1.25× too fast** somewhere, exhausting its read region by 80% of MCU
+rows and producing garbage for the rest.
 
-# Verify band pattern (49% black per row in regular 10-MCU stripes):
-python3 -c "
-from PIL import Image
-img = Image.open('test_1280.jpg'); img.load()
-y = 100; runs = []; in_b = False; s = 0
-for x in range(1280):
-    b = img.getpixel((x,y)) == (0,0,0)
-    if b and not in_b: s = x; in_b = True
-    elif not b and in_b: runs.append((s, x-1, x-s)); in_b = False
-print(runs)"
+Color is also wrong for flat-Y inputs (chroma seems off — likely
+related to or downstream of the same bug):
+
+| Y_in | Decoded RGB (320, 640, 1280 all match) |
+|------|---|
+| 0    | (≈8, ≈245, ≈9) bright green |
+| 64   | (≈234, ≈207, ≈244) light pink/lavender |
+| 128  | (≈13, 0, ≈20) near-black |
+| 192  | (0, ≈188, 0) pure green |
+| 255  | (≈13, 0, ≈20) near-black (same as Y=128!) |
+
+Note: Y=128 and Y=255 give **identical** decoded values — strongly
+suggests sign-extension or 8-bit signed wrap somewhere in the
+input/level-shift path.
+
+## What we tried and ruled out
+
+1. **`q_luma[0] = 1`** (force no DC quantization): bug persists.
+   Confirms it's not a quant magnitude issue.
+2. **`CBCR_MCU_ROWS = Hm/2 - 1`** (commit `5305bf4c8b1e`, reverted as
+   `1681f802b5a6`): encoder hangs (FRAMEDONE never fires, select
+   timeout) at every resolution. Confirms OPAL's "same value in Y and
+   CBCR fields" rule: both `FE_BUFFER_CFG` fields must be `Hm-1`.
+3. **`FE_PONG = PING`** (mirror, commit `a3fe99ab2620`): no effect on
+   the 80/20 artifact. PONG = 0 (zeroed) gave the same result.
+4. **OPAL has `gemini_hw_readback_quant_tables` after writing the quant
+   table** — implemented and confirmed to fire (128 entries readback);
+   no behavioural change.
+
+## Confirmed register state during encode (640×480, current HEAD)
+
+```
+PIPELINE_CFG    = 0x038061fb     ← matches OPAL
+FE_INPUT_FMT    = 0x00000010     ← matches OPAL ("0x10" = camera-path NV12 in)
+FE_DIMS         = 0x0027001D     ← (Wm-1)<<16 | (Hm-1) = (39<<16)|29
+FE_PIPELINE     = 0x00000203     ← matches OPAL
+OP_ENC_MODE     = 0x00000003     ← matches OPAL
+OP_GEOM[0..3]   = 0x24900 0x49200 0x49210 0x24910  ← matches OPAL
+OP_FORMAT_MAGIC = 0x03381801     ← matches OPAL (H2V2 / 4:2:0)
+OP_MATRIX[0..8] = 0x303 0xF0000F 0xF0000F00 0 0 0xC0C0303 0xC0C03030 0 0
+                                  ← matches OPAL exactly
+WE_CFG          = 0x00000020     ← matches OPAL
+WE_Y_PING_ADDR  = 0x7c500270     ← dst buffer + JPEG header offset
+WE_Y_PING_CFG   = 0x00095d8e     ← 613774 byte limit
+WE_Y_UB_CFG     = 0x01ff0000     ← matches OPAL
+WE_Y_THRESHOLD  = 0x016A0190     ← matches OPAL (low=0x16A=362, hi=0x190=400)
+WE_CBCR_THRESH  = 0x016A0190     ← matches OPAL
+FE_BUFFER_CFG   = 0x001D001D     ← (rows-1) in both Y and CBCR fields
+FE_Y_PING       = 0x7c180000     ← src_y dma_addr
+FE_CBCR_PING    = 0x7c1cb000     ← src_y + W*H = 0x7c180000 + 0x4b000
+DRI_INTERVAL    = 0x00000000     ← no restart markers
 ```
 
-## Key files for next reviewer
+Address arithmetic: `cbcr - y = 0x4b000 = 307200 = 640*480`. Correct
+NV12 layout (Y plane then CbCr plane, single contiguous buffer).
 
-- Mainline driver: `drivers/media/platform/qcom/gemini/`
-- Live OPAL trace: `reports/opal-camera/tenderloin-live-traces/`
-  - `tenderloin_gemini_during.txt` — full reg state during real capture
-  - `tenderloin_gemini_delta.log` — every register transition
-  - `FINDINGS.md` — diff analysis vs mainline at the time
-- Bit-by-bit Huffman comparison: `reports/opal-camera/HUFFMAN_LOAD_ANALYSIS.md`
-- OPAL Ghidra decomp: `reports/opal-camera/opal_libqcameralib_decompiled.c`
-- Tenderloin libqcameralib decomp: `/home/herrie/webos/touchpad-kernel/doctor305/ghidra_decompiled/libqcameralib_decompiled.c`
-- Legacy webOS kernel: `/home/herrie/webos/touchpad-kernel/webos-linux-kernel-touchpad/drivers/media/video/msm/msm_gemini_*.{c,h}`
-- Register poller (cross-build with `make CC=arm-linux-gnueabihf-gcc`):
-  `tools/gemini_reg_poll/`
+## Theory space — what's left
 
-## Latest deployed kernel
-SRCREV `9aed0ae1ed37` — has all 10 fixes above plus AC nibble-swap.
-Branch: `tenderloin/6.18/upstream-patches` on `shr-github`.
+**The 80/20 split is mathematically exact** — a 1.25× ratio. What
+register or buffer-size mismatch produces 1.25× input consumption?
 
-## Bottom line
+A. **Stride wrong by 25%** — encoder reads at stride `W * 1.25`,
+   exhausting the `W*H` Y plane in `0.8 * H` rows. But what register
+   controls input stride? FE_DIMS only encodes MCU dims; no explicit
+   stride register has been identified in the decoded register set.
 
-We have an encoder running to FRAMEDONE that produces structurally
-valid JFIF. Chroma reconstruction is correct (320 and 1280 decode
-to 100% grayscale on grayscale-input test). Luma reconstruction shows
-deterministic, width-dependent corruption that is unresponsive to
-every register/algorithm knob we have audited or experimented with.
-All written registers match OPAL byte-for-byte.
+B. **Row count off by 25%** — encoder thinks there are `1.25 * Hm` MCU
+   rows. But we wrote `Hm-1=29` in FE_DIMS lower 16 and FE_BUFFER_CFG
+   both fields; live readback confirms.
 
-The remaining bug is most likely either a HW timing/ordering
-constraint or a registered bit we haven't identified, NOT a wrong
-value in a register we already write.
+C. **Chroma 4:2:2 vs 4:2:0 confusion** — for a 4:2:2 input with the
+   same apparent W,H, the encoder reads 2× more chroma data. But
+   `OP_FORMAT_MAGIC = 0x03381801` matches OPAL's H2V2 (4:2:0) magic;
+   we're not in 4:2:2 mode.
+
+D. **WE buffer threshold premature swap** — `WE_Y_THRESHOLD = 0x016A0190`
+   means upper threshold = `0x190 = 400`, lower = `0x16A = 362`.
+   Suspiciously close to 80% of 480, but these are byte-level FIFO
+   thresholds, not row counts. Worth investigating whether they scale
+   per encode size or are fixed.
+
+E. **MCU column count interpretation** — for `Wm = 40` cols, encoder
+   reads `40 * 16 = 640` Y bytes per row. If encoder mistakenly reads
+   `40 * 16 + 40 * 4 = 800` bytes/row (adding 4 chroma bytes per MCU
+   somehow), that's stride 1.25× — exhausts buffer at 80%! This is the
+   leading hypothesis but requires understanding **why** the encoder
+   would add 25%.
+
+F. **`FE_INPUT_FORMAT = 0x10` semantics wrong** — bit 4 alone. Maybe
+   bit 4 = "interleaved chroma" vs "planar chroma" toggled the wrong
+   way for a `mmap`-fed test buffer. OPAL trace confirms `0x10` but
+   OPAL was tracing the camera-VFE-output path, which may differ
+   subtly from our `test_gemini` `mmap` path.
+
+G. **PIPELINE_CFG bit field misinterpreted** — `0x038061FB` includes
+   `0x02000000` (bit 25 = offline branch) and `0x01800000` (bits 23-24
+   = mode value 3). Could one of the smaller bits in `0x000061FB`
+   actually be selecting a 1.25×-stride mode that we leave on
+   unconditionally?
+
+## Files of interest
+
+- `drivers/media/platform/qcom/gemini/gemini.c` — V4L2 m2m driver,
+  device_run, IRQ handler
+- `drivers/media/platform/qcom/gemini/gemini_hw.c` — Hardware
+  programming helpers (`gemini_hw_set_fe_ping`,
+  `gemini_hw_configure_encode_h2v2`, `gemini_hw_load_quant_table`,
+  `gemini_hw_load_huffman_tables`, `gemini_hw_start_offline`)
+- `drivers/media/platform/qcom/gemini/gemini_hw.h` — Register offsets,
+  masks, magic constants
+- `drivers/media/platform/qcom/gemini/gemini_jpeg.c` — JFIF builder,
+  Annex K quant tables, standard Huffman tables
+- `reports/opal-camera/tenderloin-live-traces/FINDINGS.md` — live OPAL
+  register trace (ground truth)
+- `tools/gemini_reg_poll/` — userspace register pollers (used to
+  capture the OPAL trace on stock webOS)
+- `test_gemini.c` (in repo root) — userspace V4L2 m2m test client
+
+## Question to AI
+
+What stride / buffer / row-count register or field in this
+MSM8660/APQ8060 Gemini IP could plausibly cause **exactly 1.25× input
+consumption rate** (producing the 80/20 wraparound)?
+
+Specifically:
+
+1. Is there a known register, format flag, or sequence on this IP where
+   the encoder reads `W * 5/4` bytes per Y row instead of `W` — possibly
+   because of a chroma-interleaving misinterpretation ("read NV12 Y
+   plane plus interleaved chroma at +25% per row")?
+2. Could it be that `FE_INPUT_FORMAT = 0x10` selects a packed
+   "5-bytes-per-4-pixels" or "YYYYU" or similar non-standard
+   subsampling where the buffer must be laid out at 1.25× stride?
+3. Is the camera path (which is what OPAL traces) feeding the encoder
+   directly from a VFE rotator output that happens to use a different
+   in-memory format vs userspace `mmap` of plain NV12?
+4. The fact that **Y=128 and Y=255 decode identically** points at a
+   level-shift / sign-extension bug — does this IP have an "input is
+   signed int8" mode that we may have left on, where unsigned `0x80`
+   wraps to `-128 == 0x80` in level-shifted form?
