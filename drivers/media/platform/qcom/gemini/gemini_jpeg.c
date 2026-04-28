@@ -166,6 +166,13 @@ static void gemini_scale_quant_table(u16 out[64], const u8 std[64], int quality)
 void gemini_scale_quant_luma(u16 out[64], int quality)
 {
 	gemini_scale_quant_table(out, gemini_std_qtbl_luma, quality);
+	/*
+	 * Diagnostic: force DC luma quantizer to 1 to rule out DC quant
+	 * bug. Decoded JPEG will use q[0]=1 in DQT, encoder programs
+	 * reciprocal 0xFFFF for q[0]. If Y=0 input then decodes to black,
+	 * the DC path is correct and previous bug was quant-magnitude.
+	 */
+	out[0] = 1;
 }
 
 void gemini_scale_quant_chroma(u16 out[64], int quality)
