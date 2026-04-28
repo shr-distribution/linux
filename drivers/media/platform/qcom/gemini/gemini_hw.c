@@ -166,6 +166,16 @@ void gemini_hw_start_offline(void __iomem *base)
 	writel(1, base + GEMINI_START_KICK);
 	pr_info("gemini start: D2 START_KICK=1 done\n");
 
+	/*
+	 * Diagnostic Vector D: let the HW state machine settle before we
+	 * fire FE_CMD=START. Mainline writes registers far faster than the
+	 * userspace ioctl path OPAL takes (each ioctl has copy_from_user +
+	 * malloc + cmd-stream processing latency). If the encoder needs
+	 * settling time between PIPELINE_CFG arming and the FE_CMD start,
+	 * a 100us delay should reveal it.
+	 */
+	udelay(100);
+
 	writel(GEMINI_OFFLINE_CMD_START, base + GEMINI_FE_CMD);
 	pr_info("gemini start: D3 FE_CMD=3 done\n");
 
