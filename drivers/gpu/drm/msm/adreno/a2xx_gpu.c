@@ -48,31 +48,6 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	 */
 	(void)ctx_switch; /* unused for now */
 
-	/*
-	 * Invalidate the MH MMU TLB at the start of every submit, via the CP
-	 * cmd stream. Matches legacy webOS KGSL kgsl_yamato_setstate() which
-	 * queued PM4_WAIT_FOR_IDLE + a type-0 packet writing MH_MMU_INVALIDATE
-	 * rather than relying on direct CPU-side register writes from
-	 * a2xx_gpummu_map()/_unmap().
-	 *
-	 * Direct CPU-side writes to MH_MMU_INVALIDATE appear to be unreliable
-	 * on Adreno 220 — the MH state machine may not fully process the
-	 * invalidate when issued from the host bus while the GPU is otherwise
-	 * busy. Queueing the invalidate via the CP guarantees the GPU executes
-	 * it in-order, after WAIT_FOR_IDLE drains any prior submit's work, and
-	 * before the user's IBs that depend on a clean TLB.
-	 *
-	 * This is a candidate fix for the intermittent faceted-rendering bug
-	 * (smooth on first 1-3 invocations after fresh boot, then sticky
-	 * faceted) — pattern is consistent with stale TLB entries from the
-	 * previous context's mappings leaking into the new context.
-	 */
-	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
-	OUT_RING(ring, 0x00000000);
-	OUT_PKT0(ring, REG_A2XX_MH_MMU_INVALIDATE, 1);
-	OUT_RING(ring, A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
-		       A2XX_MH_MMU_INVALIDATE_INVALIDATE_TC);
-
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
 		case MSM_SUBMIT_CMD_IB_TARGET_BUF:
