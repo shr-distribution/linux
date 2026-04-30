@@ -886,6 +886,26 @@
 &i2c_6 {
 	nq@28 {
 		/delete-property/ qcom,nq-esepwr;
+		/* Only the PMIC gpio4 (CLK_REQ sense) goes in "default" so
+		 * device-core auto-applies it on probe. TLMM nfc gpios stay in
+		 * nfc_active to avoid conflicts with other drivers claiming
+		 * gpio31 (ESE) which we no longer use here.
+		 */
+		pinctrl-names = "default", "nfc_active", "nfc_suspend";
+		pinctrl-0 = <&athena_nfc_clk_biasoff>;
+		pinctrl-1 = <&nfc_int_active &nfc_enable_active>;
+		pinctrl-2 = <&nfc_int_suspend &nfc_enable_suspend>;
+	};
+};
+
+&pm660_gpios {
+	athena_nfc_clk_biasoff: athena_nfc_clk_biasoff {
+		pins = "gpio4";
+		function = "normal";
+		bias-disable;
+		input-enable;
+		output-disable;
+		power-source = <1>;
 	};
 };
 

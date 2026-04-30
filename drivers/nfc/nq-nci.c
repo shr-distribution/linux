@@ -1656,21 +1656,13 @@ static int nqx_probe(struct i2c_client *client,
 		/* ese gpio optional so we should continue */
 	}
 	if (gpio_is_valid(platform_data->clkreq_gpio)) {
-		r = gpio_request(platform_data->clkreq_gpio,
-			"nfc_clkreq_gpio");
-		if (r) {
-			dev_err(&client->dev,
-				"%s: unable to request nfc clkreq gpio [%d]\n",
-				__func__, platform_data->clkreq_gpio);
-			goto err_ese_gpio;
-		}
-		r = gpio_direction_input(platform_data->clkreq_gpio);
-		if (r) {
-			dev_err(&client->dev,
-			"%s: cannot set direction for nfc clkreq gpio [%d]\n",
-			__func__, platform_data->clkreq_gpio);
-			goto err_clkreq_gpio;
-		}
+		/* Do NOT gpio_request / gpio_direction_input the clkreq pin.
+		 * On athena that pin is PM660 gpio4, owned by the spmi-gpio
+		 * pinctrl (claimed via pinctrl-default with bias-disable so
+		 * chip's CLK_REQ HIGH gates BBCLK3-PIN). gpio_request demotes
+		 * it to a plain gpio and breaks the clkreq sense path; runtime
+		 * disable/enable then oopses.
+		 */
 	} else {
 		dev_err(&client->dev,
 			"%s: clkreq gpio not provided\n", __func__);
@@ -1804,8 +1796,6 @@ err_class_create:
 	unregister_chrdev_region(nqx_dev->devno, DEV_COUNT);
 err_char_dev_register:
 	mutex_destroy(&nqx_dev->read_mutex);
-err_clkreq_gpio:
-	gpio_free(platform_data->clkreq_gpio);
 err_ese_gpio:
 	/* optional gpio, not sure was configured in probe */
 	if (gpio_is_valid(platform_data->ese_gpio))
@@ -1858,7 +1848,7 @@ static int nqx_remove(struct i2c_client *client)
 	unregister_chrdev_region(nqx_dev->devno, DEV_COUNT);
 	mutex_destroy(&nqx_dev->read_mutex);
 	mutex_destroy(&nqx_dev->dev_ref_mutex);
-	gpio_free(nqx_dev->clkreq_gpio);
+	/* clkreq_gpio not gpio_request'd in probe (pinctrl-owned), don't free */
 	/* optional gpio, not sure was configured in probe */
 	if (nqx_dev->ese_gpio > 0)
 		gpio_free(nqx_dev->ese_gpio);
