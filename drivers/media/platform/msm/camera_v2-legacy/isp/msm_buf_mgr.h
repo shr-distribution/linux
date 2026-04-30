@@ -205,6 +205,10 @@ struct msm_isp_buf_mgr {
 	enum msm_isp_buf_mgr_state attach_state;
 	struct device *isp_dev;
 	struct mutex lock;
+	/* Protects bufq[] slot allocation in get/free_bufq_handle.
+	 * Must be a spinlock because free_bufq_handle is called from
+	 * spin_lock_irqsave context (release_bufq paths). */
+	spinlock_t bufq_alloc_lock;
 	/* Scratch buffer */
 	dma_addr_t scratch_buf_addr;
 	dma_addr_t scratch_buf_stats_addr;

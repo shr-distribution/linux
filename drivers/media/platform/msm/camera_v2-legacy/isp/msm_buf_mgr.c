@@ -124,11 +124,14 @@ static uint32_t msm_isp_get_buf_handle(
 {
 	int i;
 	uint32_t embedded_stream_id = 0;
+	uint32_t handle = 0;
+	unsigned long flags;
 
+	spin_lock_irqsave(&buf_mgr->bufq_alloc_lock, flags);
 	for (i = 0; i < buf_mgr->num_buf_q; i++) {
 		if (buf_mgr->bufq[i].session_id == session_id &&
 			buf_mgr->bufq[i].stream_id == stream_id)
-			return 0;
+			goto out;
 	}
 
 	/* put stream id in handle, if its stats, use FFFF */
@@ -141,10 +144,13 @@ static uint32_t msm_isp_get_buf_handle(
 		if (buf_mgr->bufq[i].bufq_handle == 0) {
 			buf_mgr->bufq[i].bufq_handle =
 				embedded_stream_id << 8 | i;
-			return buf_mgr->bufq[i].bufq_handle;
+			handle = buf_mgr->bufq[i].bufq_handle;
+			goto out;
 		}
 	}
-	return 0;
+out:
+	spin_unlock_irqrestore(&buf_mgr->bufq_alloc_lock, flags);
+	return handle;
 }
 
 static int msm_isp_free_bufq_handle(struct msm_isp_buf_mgr *buf_mgr,
@@ -152,9 +158,11 @@ static int msm_isp_free_bufq_handle(struct msm_isp_buf_mgr *buf_mgr,
 {
 	struct msm_isp_bufq *bufq =
 		msm_isp_get_bufq(buf_mgr, bufq_handle);
+	unsigned long flags;
 	if (!bufq)
 		return -EINVAL;
 
+	spin_lock_irqsave(&buf_mgr->bufq_alloc_lock, flags);
 	/* Set everything except lock to 0 */
 	bufq->bufq_handle = 0;
 	bufq->bufs = 0;
@@ -163,6 +171,7 @@ static int msm_isp_free_bufq_handle(struct msm_isp_buf_mgr *buf_mgr,
 	bufq->num_bufs = 0;
 	bufq->buf_type = 0;
 	INIT_LIST_HEAD(&bufq->head);
+	spin_unlock_irqrestore(&buf_mgr->bufq_alloc_lock, flags);
 
 	return 0;
 }
@@ -1549,6 +1558,7 @@ int msm_isp_create_isp_buf_mgr(
 	buf_mgr->secure_enable = NON_SECURE_MODE;
 	buf_mgr->scratch_buf_range = scratch_buf_range;
 	mutex_init(&buf_mgr->lock);
+	spin_lock_init(&buf_mgr->bufq_alloc_lock);
 
 	return 0;
 }
