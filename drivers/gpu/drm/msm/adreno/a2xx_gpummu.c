@@ -41,9 +41,6 @@ static int a2xx_gpummu_map(struct msm_mmu *mmu, uint64_t iova,
 	unsigned idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
 	struct sg_dma_page_iter dma_iter;
 	unsigned prot_bits = 0;
-	bool gpu_suspended;
-	int timeout;
-	uint32_t status;
 
 	WARN_ON(off != 0);
 
@@ -63,78 +60,20 @@ static int a2xx_gpummu_map(struct msm_mmu *mmu, uint64_t iova,
 			gpummu->table[idx++] = (addr + i) | prot_bits;
 	}
 
-	/*
-	 * Match legacy KGSL pagetable-update sequence:
-	 *
-	 *   mb(); dsb(); outer_sync();
-	 *
-	 * dma_sync_single_for_device() does an L1+L2 cache CLEAN of the page-
-	 * table buffer, but it does not necessarily drain the PL310's pending-
-	 * write FIFO. Add an explicit outer_sync() afterwards to match what
-	 * legacy KGSL did.
-	 */
+	/* Sync page table to device for non-coherent platforms (e.g. MSM8660) */
 	dma_sync_single_for_device(mmu->dev, gpummu->pt_base, TABLE_SIZE,
 				   DMA_TO_DEVICE);
-	mb();
-	dsb(sy);
-#ifdef CONFIG_OUTER_CACHE
-	outer_sync();
-#endif
 
-	/*
-	 * Test: do not write MH_MMU_INVALIDATE while the GPU may be mid-frame
-	 * on a previous submit.
-	 *
-	 * Legacy KGSL queues the MH_MMU_INVALIDATE register write into the CP
-	 * command stream after PM4_WAIT_FOR_IDLE, so the invalidate is
-	 * guaranteed to happen at GPU pace, after any in-flight TLB walks
-	 * complete. Mainline currently writes the register directly from the
-	 * CPU side at map-time, which can race a running submit and corrupt
-	 * its in-flight memory accesses — a candidate root cause of the
-	 * intermittent faceted glmark2 rendering on Adreno 220.
-	 *
-	 * Until we wire the invalidate into the cmd stream proper, mirror the
-	 * idle-wait the unmap path already does: drain the ringbuffer, wait
-	 * for RBBM idle, THEN issue the invalidate. If the GPU is runtime
-	 * suspended, skip the wait — the TLB will be empty when the GPU
-	 * resumes via a2xx_hw_init().
-	 */
-	gpu_suspended = pm_runtime_status_suspended(&gpummu->gpu->pdev->dev);
+	/* Ensure DMA sync completes before invalidating TLB */
+	wmb();
 
-	if (!gpu_suspended) {
-		/* Step 1: wait for ringbuffer drain (rptr == wptr) — up to 200ms */
-		timeout = 200;
-		while (timeout > 0) {
-			uint32_t rptr = gpu_read(gpummu->gpu, REG_AXXX_CP_RB_RPTR);
-			uint32_t wptr = gpu_read(gpummu->gpu, REG_AXXX_CP_RB_WPTR);
-			if (rptr == wptr)
-				break;
-			usleep_range(500, 1000);
-			timeout--;
-		}
-
-		/* Step 2: wait for RBBM idle — up to 200ms */
-		timeout = 200;
-		while (timeout > 0) {
-			status = gpu_read(gpummu->gpu, REG_A2XX_RBBM_STATUS);
-			/* Accept 0x110 or 0x010 — HIRQ_PENDING (bit 8) is OK */
-			if ((status & ~0x100) == 0x010)
-				break;
-			usleep_range(500, 1000);
-			timeout--;
-		}
-		if (timeout == 0)
-			dev_warn_ratelimited(mmu->dev,
-				"gpummu map: GPU busy after 200ms idle wait, status=0x%08x — issuing INVALIDATE anyway\n",
-				status);
-	}
-
+	/* we can improve by deferring flush for multiple map() */
 	gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE,
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_TC);
 
+	/* Wait for Memory Hub to process TLB invalidation */
 	mb();
-	dsb(sy);
 
 	return 0;
 }
