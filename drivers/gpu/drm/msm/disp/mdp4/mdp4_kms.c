@@ -186,13 +186,9 @@ int mdp4_disable(struct mdp4_kms *mdp4_kms)
 	if (WARN_ON(mdp4_enable_count <= 0))
 		return -EINVAL;
 
-	--mdp4_enable_count;
-	pr_info("mdp4_disable: count now %d\n", mdp4_enable_count);
-
-	if (mdp4_enable_count > 0)
+	if (--mdp4_enable_count > 0)
 		return 0;
 
-	pr_info("mdp4_disable: actually disabling clocks\n");
 	clk_disable_unprepare(mdp4_kms->clk);
 	clk_disable_unprepare(mdp4_kms->pclk);
 	clk_disable_unprepare(mdp4_kms->lut_clk);
@@ -204,17 +200,11 @@ int mdp4_disable(struct mdp4_kms *mdp4_kms)
 
 int mdp4_enable(struct mdp4_kms *mdp4_kms)
 {
-	int was_zero = (mdp4_enable_count == 0);
-
 	DBG("");
 
-	mdp4_enable_count++;
-	pr_info("mdp4_enable: count now %d\n", mdp4_enable_count);
-
-	if (!was_zero)
+	if (mdp4_enable_count++ > 0)
 		return 0;
 
-	pr_info("mdp4_enable: actually enabling clocks\n");
 	clk_prepare_enable(mdp4_kms->clk);
 	clk_prepare_enable(mdp4_kms->pclk);
 	clk_prepare_enable(mdp4_kms->lut_clk);
