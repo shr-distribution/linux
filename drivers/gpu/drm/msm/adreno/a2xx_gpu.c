@@ -20,33 +20,12 @@ static bool a2xx_idle(struct msm_gpu *gpu);
 
 static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
-	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
 	struct msm_ringbuffer *ring = submit->ring;
 	unsigned int i;
 	int wptr_delay;
-	bool ctx_switch;
 
 	/* Debug: log submit details */
 	a2xx_debug_log_submit(gpu, submit);
-
-	/* Detect context switch - critical for A22X state management */
-	ctx_switch = (ring->cur_ctx_seqno != submit->queue->ctx->seqno);
-
-	/*
-	 * A22X note: Previous attempts to restore GPU state here (before
-	 * Mesa's command buffer) did not fix random faceted rendering.
-	 * The issue can change MID-RUN, which means Mesa's command buffer
-	 * itself must be involved. Focus debugging on Mesa fd2 driver.
-	 *
-	 * Registers that were tested:
-	 * - SQ_INTERPOLATOR_CNTL (0xffffffff for smooth)
-	 * - A220_RB_LRZ_VSC_CONTROL (0)
-	 * - A220_GRAS_CONTROL (0)
-	 * - SQ_GPR_MANAGEMENT (0x00040400)
-	 *
-	 * None of these kernel-side restores fixed the random issue.
-	 */
-	(void)ctx_switch; /* unused for now */
 
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
