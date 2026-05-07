@@ -82,16 +82,43 @@ static int mdp4_hw_init(struct msm_kms *kms)
 	return 0;
 }
 
+/*
+ * Vote MDP fabric bandwidth. peak_kbps==0 means "no demand" (called on
+ * disable to drop the vote). All four ICC paths (mdp[01]-{ebi,smi}) are
+ * present so the framework keeps them mapped, but only EBI gets real
+ * bandwidth — that's where tenderloin framebuffers live. SMI paths get
+ * 0/0 to keep them registered without inflating fabric clock or
+ * arbitration.
+ */
+static void mdp4_icc_vote(struct mdp4_kms *mdp4_kms, u32 avg_kbps,
+			  u32 peak_kbps)
+{
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		if (mdp4_kms->path_ebi[i])
+			icc_set_bw(mdp4_kms->path_ebi[i],
+				   avg_kbps, peak_kbps);
+		if (mdp4_kms->path_smi[i])
+			icc_set_bw(mdp4_kms->path_smi[i], 0, 0);
+	}
+}
+
 static void mdp4_enable_commit(struct msm_kms *kms)
 {
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
+
+	mdp4_icc_vote(mdp4_kms, mdp4_kms->icc_avg_bw_kbps,
+		      mdp4_kms->icc_peak_bw_kbps);
 	mdp4_enable(mdp4_kms);
 }
 
 static void mdp4_disable_commit(struct msm_kms *kms)
 {
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
+
 	mdp4_disable(mdp4_kms);
+	mdp4_icc_vote(mdp4_kms, 0, 0);
 }
 
 static void mdp4_flush_commit(struct msm_kms *kms, unsigned crtc_mask)
@@ -596,80 +623,57 @@ static const struct dev_pm_ops mdp4_pm_ops = {
 #define MDP4_DEFAULT_BW_PEAK_KBPS	(700 * 1024)	/* 700 MB/s */
 
 /*
- * Set up interconnect paths for MDP to memory bandwidth.
- * This coordinates with the bus fabric to prevent USB RNDIS failures
- * when MDP is accessing memory on APQ8060/MSM8660.
+ * Look up MDP interconnect paths and stash them on mdp4_kms. Bandwidth is
+ * voted dynamically from enable_commit/disable_commit (mdp4_icc_vote()) so
+ * we don't hold a fabric reservation while the display is off.
  *
- * On APQ8060/MSM8660, MDP has both SMI (dedicated graphics memory) and
- * EBI (system memory) paths. The webOS kernel voted on BOTH path types
- * simultaneously to ensure proper bus fabric clock scaling. We replicate
- * that behavior here by voting on all available paths.
- *
- * Bandwidth can be configured via device tree properties:
- *   qcom,icc-bw-avg-kbps  - average bandwidth in kBps
- *   qcom,icc-bw-peak-kbps - peak bandwidth in kBps
+ * tenderloin allocates framebuffers in EBI (system RAM); the SMI paths are
+ * tracked so the framework registers them but they're voted at zero —
+ * voting equal bandwidth on both SMI and EBI inflates aggregation and
+ * arbitration without representing real demand.
  */
-static int mdp4_setup_interconnect(struct platform_device *pdev)
+static int mdp4_setup_interconnect(struct platform_device *pdev,
+				   struct mdp4_kms *mdp4_kms)
 {
 	struct device_node *np = pdev->dev.of_node;
-	struct icc_path *path0_smi, *path1_smi;
-	struct icc_path *path0_ebi, *path1_ebi;
-	u32 avg_bw = MDP4_DEFAULT_BW_AVG_KBPS;
-	u32 peak_bw = MDP4_DEFAULT_BW_PEAK_KBPS;
+	struct icc_path *path;
+	int i;
+	const char * const ebi_names[2] = { "mdp0-ebi", "mdp1-ebi" };
+	const char * const smi_names[2] = { "mdp0-smi", "mdp1-smi" };
+	const char * const mem_names[2] = { "mdp0-mem", "mdp1-mem" };
 
-	/* Get SMI paths (primary for dedicated graphics memory) */
-	path0_smi = msm_icc_get(&pdev->dev, "mdp0-smi");
-	path1_smi = msm_icc_get(&pdev->dev, "mdp1-smi");
+	mdp4_kms->icc_avg_bw_kbps = MDP4_DEFAULT_BW_AVG_KBPS;
+	mdp4_kms->icc_peak_bw_kbps = MDP4_DEFAULT_BW_PEAK_KBPS;
+	of_property_read_u32(np, "qcom,icc-bw-avg-kbps",
+			     &mdp4_kms->icc_avg_bw_kbps);
+	of_property_read_u32(np, "qcom,icc-bw-peak-kbps",
+			     &mdp4_kms->icc_peak_bw_kbps);
 
-	/* Get EBI paths (for proper fabric clock scaling) */
-	path0_ebi = msm_icc_get(&pdev->dev, "mdp0-ebi");
-	path1_ebi = msm_icc_get(&pdev->dev, "mdp1-ebi");
+	for (i = 0; i < 2; i++) {
+		path = msm_icc_get(&pdev->dev, ebi_names[i]);
+		if (IS_ERR(path))
+			return PTR_ERR(path);
+		mdp4_kms->path_ebi[i] = path;
 
-	/*
-	 * Fall back to generic memory paths if SMI not available.
-	 * This supports platforms without dedicated graphics memory.
-	 */
-	if (IS_ERR_OR_NULL(path0_smi))
-		path0_smi = msm_icc_get(&pdev->dev, "mdp0-mem");
-	if (IS_ERR_OR_NULL(path1_smi))
-		path1_smi = msm_icc_get(&pdev->dev, "mdp1-mem");
+		path = msm_icc_get(&pdev->dev, smi_names[i]);
+		if (IS_ERR(path))
+			return PTR_ERR(path);
+		if (!path)
+			path = msm_icc_get(&pdev->dev, mem_names[i]);
+		if (IS_ERR(path))
+			return PTR_ERR(path);
+		mdp4_kms->path_smi[i] = path;
+	}
 
-	if (IS_ERR(path0_smi))
-		return PTR_ERR(path0_smi);
-
-	if (!path0_smi) {
-		/*
-		 * No interconnect support is not fatal - the platform may
-		 * not have an interconnect driver yet. But warn about it
-		 * as it may cause USB issues on APQ8060/MSM8660.
-		 */
-		dev_warn(&pdev->dev, "No interconnect support - may cause USB/display conflicts!\n");
+	if (!mdp4_kms->path_ebi[0] && !mdp4_kms->path_smi[0]) {
+		dev_warn(&pdev->dev,
+			 "No interconnect support - may cause USB/display conflicts!\n");
 		return 0;
 	}
 
-	/* Read bandwidth from device tree if specified */
-	of_property_read_u32(np, "qcom,icc-bw-avg-kbps", &avg_bw);
-	of_property_read_u32(np, "qcom,icc-bw-peak-kbps", &peak_bw);
-
-	dev_dbg(&pdev->dev, "MDP interconnect bandwidth: avg=%u kBps, peak=%u kBps\n",
-		avg_bw, peak_bw);
-
-	/*
-	 * Vote on all available paths. On APQ8060/MSM8660, this includes
-	 * both SMI and EBI paths. The interconnect framework aggregates
-	 * these votes using max(sum_bw, max_peak_bw) to determine the
-	 * required bus clock rate.
-	 */
-	icc_set_bw(path0_smi, avg_bw, peak_bw);
-
-	if (!IS_ERR_OR_NULL(path1_smi))
-		icc_set_bw(path1_smi, avg_bw, peak_bw);
-
-	if (!IS_ERR_OR_NULL(path0_ebi))
-		icc_set_bw(path0_ebi, avg_bw, peak_bw);
-
-	if (!IS_ERR_OR_NULL(path1_ebi))
-		icc_set_bw(path1_ebi, avg_bw, peak_bw);
+	dev_dbg(&pdev->dev,
+		"MDP interconnect bandwidth (active): avg=%u kBps, peak=%u kBps\n",
+		mdp4_kms->icc_avg_bw_kbps, mdp4_kms->icc_peak_bw_kbps);
 
 	return 0;
 }
@@ -750,8 +754,8 @@ static int mdp4_probe(struct platform_device *pdev)
 	if (IS_ERR(mdp4_kms->vsync_clk))
 		return dev_err_probe(dev, PTR_ERR(mdp4_kms->vsync_clk), "failed to get vsync_clk\n");
 
-	/* Set up interconnect bandwidth to prevent display underrun */
-	ret = mdp4_setup_interconnect(pdev);
+	/* Look up interconnect paths; bandwidth is voted from enable_commit. */
+	ret = mdp4_setup_interconnect(pdev, mdp4_kms);
 	if (ret)
 		return ret;
 
