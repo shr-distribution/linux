@@ -450,8 +450,31 @@ static struct page **get_pages(struct drm_gem_object *obj)
 		 * the normal path, which is safe for (a).
 		 */
 		if (msm_obj->flags & MSM_BO_CONTIGUOUS) {
+			struct msm_drm_private *mpriv = dev->dev_private;
 			void *vaddr;
 			dma_addr_t dma_addr;
+
+			/*
+			 * Try the custom SMI pool first if available
+			 * (drm_smi_mem reserved-memory). This sidesteps
+			 * dma_alloc_from_dev_coherent's broken
+			 * memremap_wc-of-full-region path on 32-bit ARM.
+			 * Fall through to dma_alloc_wc (system CMA) if SMI
+			 * is full or absent.
+			 */
+			if (mpriv->smi) {
+				void __iomem *vio = NULL;
+				phys_addr_t phys =
+					msm_smi_alloc(dev, obj->size, &vio);
+				if (phys) {
+					msm_obj->vaddr        = (void *)vio;
+					msm_obj->dma_addr     = phys;
+					msm_obj->nomap_backed = true;
+					msm_obj->smi_backed   = true;
+					goto build_nomap_sgt;
+				}
+				/* Fall through to system CMA on SMI miss. */
+			}
 
 			vaddr = dma_alloc_wc(dev->dev, obj->size,
 					     &dma_addr, GFP_KERNEL);
@@ -474,6 +497,7 @@ static struct page **get_pages(struct drm_gem_object *obj)
 			if (msm_obj->nomap_backed) {
 				struct sg_table *sgt;
 
+build_nomap_sgt:
 				/*
 				 * No struct page available — build a
 				 * single-segment sgt with sg_dma_address set
@@ -481,32 +505,21 @@ static struct page **get_pages(struct drm_gem_object *obj)
 				 * sg_page_iter_dma_address, which works
 				 * without struct page. Cache management
 				 * (sync_for_gpu/cpu) is no-op for the
-				 * memremap_wc mapping. msm_obj->pages stays
-				 * NULL — callers that walk pages[] (e.g.
-				 * the mmap fault handler) check
-				 * nomap_backed and use dma_addr instead.
+				 * memremap_wc / ioremap_wc mapping.
+				 * msm_obj->pages stays NULL — callers that
+				 * walk pages[] (e.g. the mmap fault handler)
+				 * check nomap_backed and use dma_addr.
 				 */
 				sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
-				if (!sgt) {
-					dma_free_wc(dev->dev, obj->size,
-						    vaddr, dma_addr);
-					msm_obj->vaddr = NULL;
-					msm_obj->dma_addr = 0;
-					msm_obj->nomap_backed = false;
-					return ERR_PTR(-ENOMEM);
-				}
+				if (!sgt)
+					goto fail_nomap_sgt;
 				if (sg_alloc_table(sgt, 1, GFP_KERNEL)) {
 					kfree(sgt);
-					dma_free_wc(dev->dev, obj->size,
-						    vaddr, dma_addr);
-					msm_obj->vaddr = NULL;
-					msm_obj->dma_addr = 0;
-					msm_obj->nomap_backed = false;
-					return ERR_PTR(-ENOMEM);
+					goto fail_nomap_sgt;
 				}
 
 				sg_set_page(sgt->sgl, NULL, obj->size, 0);
-				sg_dma_address(sgt->sgl) = dma_addr;
+				sg_dma_address(sgt->sgl) = msm_obj->dma_addr;
 				sg_dma_len(sgt->sgl)     = obj->size;
 				sgt->nents      = 1;
 				sgt->orig_nents = 1;
@@ -521,6 +534,22 @@ static struct page **get_pages(struct drm_gem_object *obj)
 				 * nomap. Callers must check nomap_backed.
 				 */
 				return NULL;
+
+fail_nomap_sgt:
+				if (msm_obj->smi_backed) {
+					msm_smi_free(dev, msm_obj->dma_addr,
+						     obj->size,
+						     (void __iomem *)msm_obj->vaddr);
+				} else {
+					dma_free_wc(dev->dev, obj->size,
+						    msm_obj->vaddr,
+						    msm_obj->dma_addr);
+				}
+				msm_obj->vaddr        = NULL;
+				msm_obj->dma_addr     = 0;
+				msm_obj->nomap_backed = false;
+				msm_obj->smi_backed   = false;
+				return ERR_PTR(-ENOMEM);
 			}
 
 			/* Linear-map case: virt_to_page works. */
@@ -582,10 +611,11 @@ static void put_pages(struct drm_gem_object *obj)
 		drm_gpuvm_bo_gem_evict(obj, true);
 
 	/*
-	 * Nomap-backed BO: free via dma_free_wc back to the of-pool, drop
-	 * the synthetic sgt. No struct page coverage means no cache flush
-	 * (the memremap_wc mapping is non-cached and unique to this BO).
-	 * No drm_gem_put_pages — there's nothing in shmem.
+	 * Nomap-backed BO: free back to the originating pool (custom SMI
+	 * pool or system CMA via dma_free_wc), drop the synthetic sgt.
+	 * No struct page coverage means no cache flush — the
+	 * memremap_wc / ioremap_wc mapping is non-cached and unique to
+	 * this BO. No drm_gem_put_pages — there's no shmem backing.
 	 */
 	if (msm_obj->nomap_backed) {
 		struct drm_device *dev = obj->dev;
@@ -595,13 +625,17 @@ static void put_pages(struct drm_gem_object *obj)
 			kfree(msm_obj->sgt);
 			msm_obj->sgt = NULL;
 		}
-		if (msm_obj->vaddr) {
+		if (msm_obj->smi_backed) {
+			msm_smi_free(dev, msm_obj->dma_addr, obj->size,
+				     (void __iomem *)msm_obj->vaddr);
+		} else if (msm_obj->vaddr) {
 			dma_free_wc(dev->dev, obj->size,
 				    msm_obj->vaddr, msm_obj->dma_addr);
-			msm_obj->vaddr    = NULL;
-			msm_obj->dma_addr = 0;
 		}
+		msm_obj->vaddr        = NULL;
+		msm_obj->dma_addr     = 0;
 		msm_obj->nomap_backed = false;
+		msm_obj->smi_backed   = false;
 		update_device_mem(obj->dev->dev_private, -obj->size);
 		update_lru(obj);
 		return;

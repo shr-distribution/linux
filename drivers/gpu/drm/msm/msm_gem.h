@@ -225,17 +225,24 @@ struct msm_gem_object {
 
 	/*
 	 * Set when the BO was allocated from a no-map reserved-memory pool
-	 * (the device has of-pool dma_mem set up via memory-region in DT).
-	 * No struct page exists for these allocations — the sgt is built
-	 * from PFNs without sg_set_page(), and code that walks the sgt
-	 * (sync_for_gpu, sync_for_cpu, put_pages, mmap fault handler) must
-	 * take a separate path.
+	 * (the device has of-pool dma_mem set up via memory-region in DT)
+	 * OR from the custom msm_smi_pool. No struct page exists for these
+	 * allocations — the sgt is built from PFNs without sg_set_page(),
+	 * and code that walks the sgt (sync_for_gpu, sync_for_cpu,
+	 * put_pages, mmap fault handler) takes a separate path.
 	 *
-	 * The vaddr returned by dma_alloc_wc on a no-map of-pool comes
-	 * from memremap_wc — write-combine, NOT in the kernel's linear
-	 * map and NOT cached. virt_to_page() on it returns garbage.
+	 * vaddr is from ioremap_wc / memremap_wc — write-combine, NOT in
+	 * the kernel's linear map and NOT cached. virt_to_page() on it
+	 * returns garbage.
 	 */
 	bool nomap_backed;
+
+	/*
+	 * Set when the BO was allocated from the custom msm_smi_pool
+	 * (drm_smi_mem). On free we route to msm_smi_free() instead of
+	 * dma_free_wc(). Implies nomap_backed.
+	 */
+	bool smi_backed;
 
 	char name[32]; /* Identifier to print for the debugfs files */
 
