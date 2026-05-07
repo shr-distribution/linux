@@ -18,24 +18,6 @@ extern bool hang_debug;
 static void a2xx_dump(struct msm_gpu *gpu);
 static bool a2xx_idle(struct msm_gpu *gpu);
 
-/*
- * Maximum realistic memory bandwidth for Adreno 220 in kBps (icc units).
- *
- * The naive formula `Bps_to_icc(freq) * 8` (treating GPU clock × 8 byte/cycle
- * as bandwidth) yields ~2 GB/s peak at 266 MHz, which over-votes the MMSS
- * fabric clock and floods the AFAB arbiter — directly causing MDP4 display
- * underruns. Real A220 workloads peak around 500 MB/s. Cap the peak vote at
- * 600 MB/s to leave headroom for MDP scanout and USB traffic.
- */
-#define A2XX_ICC_PEAK_MAX_KBPS	(600 * 1000)
-
-static u32 a2xx_icc_peak_for_freq(unsigned long freq_hz)
-{
-	u64 bw_kBps = div_u64((u64)freq_hz * 8, 1000);
-
-	return min_t(u64, bw_kBps, A2XX_ICC_PEAK_MAX_KBPS);
-}
-
 static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
 	struct msm_ringbuffer *ring = submit->ring;
@@ -772,8 +754,7 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 
 	/* Restore max bandwidth after resume (cleared in suspend) */
 	if (a2xx_gpu->icc_path)
-		icc_set_bw(a2xx_gpu->icc_path, 0,
-			   a2xx_icc_peak_for_freq(gpu->fast_rate));
+		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
 
 	return 0;
 }
@@ -797,11 +778,12 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 		return;
 
 	/*
-	 * Scale bandwidth with frequency, capped at A2XX_ICC_PEAK_MAX_KBPS
-	 * to avoid over-voting the fabric and starving display/USB.
+	 * Set bandwidth proportional to frequency.
+	 * Use the same calculation as init: Bps_to_icc(freq) * 8
+	 * This approximates memory bandwidth needs for the GPU.
 	 */
 	if (a2xx_gpu->icc_path)
-		icc_set_bw(a2xx_gpu->icc_path, 0, a2xx_icc_peak_for_freq(freq));
+		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(freq) * 8);
 
 	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
 }
@@ -881,12 +863,11 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	}
 
 	/*
-	 * Set initial interconnect bandwidth, capped at a realistic peak.
-	 * Will be adjusted during runtime PM suspend/resume.
+	 * Set initial interconnect bandwidth to maximum.
+	 * This will be adjusted during runtime PM suspend/resume.
 	 */
 	if (a2xx_gpu->icc_path)
-		icc_set_bw(a2xx_gpu->icc_path, 0,
-			   a2xx_icc_peak_for_freq(gpu->fast_rate));
+		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
 
 	if (adreno_is_a20x(adreno_gpu))
 		adreno_gpu->registers = a200_registers;
