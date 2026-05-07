@@ -3409,7 +3409,22 @@
 		drm_smi_mem: framebuffer@38300000 {
 			compatible = "shared-dma-pool";
 			reg = <0x38300000 0x3d00000>; /* 61MB - exact webOS size */
-			no-map;
+			reusable;
+			/*
+			 * Use `reusable` (CMA pool) instead of `no-map`. The MDP
+			 * device declares this region via memory-region; dma_alloc_wc
+			 * pulls from it for MSM_BO_CONTIGUOUS allocations. With
+			 * `no-map`, kernel never creates struct page entries for
+			 * the region, so virt_to_page() in msm_gem.c::get_pages
+			 * returns garbage and the resulting sgt populates gpummu
+			 * with zero PTEs — causing GPU MMU faults at address 0
+			 * when surface-manager starts.
+			 *
+			 * `reusable` makes this a proper CMA pool: struct pages
+			 * exist, virt_to_page works, the kernel can use the region
+			 * for movable allocations when graphics doesn't need it
+			 * (and migrates them out on dma_alloc_wc demand).
+			 */
 		};
 
 		/*
