@@ -987,13 +987,24 @@
 			status = "okay";
 
 			/*
-			 * NOTE: webOS actually used EBI (system RAM) for framebuffers,
-			 * not SMI. The pmem_smipool existed but wasn't used for display.
-			 * Using SMI may cause display underruns due to different access
-			 * characteristics. The drm_smi_mem region is available if needed
-			 * but we match webOS behavior by not forcing SMI allocation.
+			 * Route MDP DMA allocations to the dedicated SMI region
+			 * (drm_smi_mem, 61 MiB no-map at 0x38300000). This is the
+			 * webOS pmem_smipool layout — graphics framebuffers and
+			 * EGL/GLES surfaces from a fixed physical region on the
+			 * MMSS fabric, isolated from EBI traffic.
+			 *
+			 * dma_alloc_wc() called from msm_gem.c on the MDP device
+			 * routes through dma_alloc_from_dev_coherent() and pulls
+			 * from this no-map of-pool. msm_gem.c has a dedicated
+			 * code path for no-map BOs (see commit aaf392e65d2c) that
+			 * builds an sgt without struct page coverage and skips
+			 * L1/L2 cache flushes (memremap_wc is non-cached).
+			 *
+			 * Earlier comment claiming "webOS used EBI for
+			 * framebuffers" was wrong; webOS pmem_smipool was
+			 * specifically for display + GPU userspace surfaces.
 			 */
-			/* memory-region = <&drm_smi_mem>; */
+			memory-region = <&drm_smi_mem>;
 
 			/*
 			 * Use LSB pack alignment to match webOS configuration.
