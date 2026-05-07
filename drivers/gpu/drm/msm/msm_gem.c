@@ -243,6 +243,17 @@ void msm_gem_sync_for_gpu(struct drm_gem_object *obj)
 
 	msm_gem_assert_locked(obj);
 
+	/*
+	 * Nomap-backed BO is allocated from a no-map of-pool with
+	 * memremap_wc — write-combine, non-cached. There are no L1/L2
+	 * cache lines to flush; we just need a barrier to drain the WC
+	 * store buffer before the GPU reads.
+	 */
+	if (msm_obj->nomap_backed) {
+		dsb(sy);
+		return;
+	}
+
 	sgt = msm_obj->sgt;
 	if (!sgt) {
 		/* No mapping yet — at least drain the store buffer. */
@@ -317,6 +328,16 @@ void msm_gem_sync_for_display(struct drm_gem_object *obj)
 	int i;
 
 	msm_gem_assert_locked(obj);
+
+	/*
+	 * Nomap-backed (memremap_wc) is non-cached — no L1/L2 to flush.
+	 * Drain the WC store buffer so the display controller sees the
+	 * latest GPU writes.
+	 */
+	if (msm_obj->nomap_backed) {
+		dsb(sy);
+		return;
+	}
 
 	sgt = msm_obj->sgt;
 	if (!sgt)
@@ -395,19 +416,42 @@ static struct page **get_pages(struct drm_gem_object *obj)
 
 	msm_gem_assert_locked(obj);
 
+	/*
+	 * Cache check: nomap-backed BOs leave msm_obj->pages NULL but set
+	 * msm_obj->sgt on first allocation. Use sgt as the "already
+	 * allocated" sentinel for them so we don't re-allocate every call.
+	 */
+	if (msm_obj->nomap_backed && msm_obj->sgt)
+		return NULL;
+
 	if (!msm_obj->pages) {
 		struct drm_device *dev = obj->dev;
 		struct page **p;
 		size_t npages = obj->size >> PAGE_SHIFT;
 
 		/*
-		 * For contiguous allocations (scanout without IOMMU),
-		 * use DMA API to get physically contiguous memory.
+		 * For contiguous allocations (scanout without IOMMU, or
+		 * FIX#2-forced via msm_gem_needs_contiguous), use DMA API
+		 * to get physically contiguous memory.
+		 *
+		 * Two sub-cases:
+		 *   (a) System CMA / regular dma-coherent pool: dma_alloc_wc
+		 *       returns vaddr in the kernel linear map -> virt_to_page
+		 *       works -> drm_prime_pages_to_sg builds a normal sgt.
+		 *   (b) No-map of-pool (memory-region pointing at a no-map
+		 *       reserved-memory): dma_alloc_wc routes through
+		 *       dma_alloc_from_dev_coherent and returns a vaddr from
+		 *       memremap_wc. No struct page exists for the underlying
+		 *       memory, so virt_to_page() returns garbage. We must
+		 *       build the sgt from PFNs directly via sg_dma_address.
+		 *
+		 * Detect (b) by virt_addr_valid() — true only for kernel
+		 * linear-map pages. Failing that detection we fall back to
+		 * the normal path, which is safe for (a).
 		 */
 		if (msm_obj->flags & MSM_BO_CONTIGUOUS) {
 			void *vaddr;
 			dma_addr_t dma_addr;
-			int i;
 
 			vaddr = dma_alloc_wc(dev->dev, obj->size,
 					     &dma_addr, GFP_KERNEL);
@@ -418,21 +462,79 @@ static struct page **get_pages(struct drm_gem_object *obj)
 				return ERR_PTR(-ENOMEM);
 			}
 
+			msm_obj->vaddr = vaddr;
+			msm_obj->dma_addr = dma_addr;
+			msm_obj->nomap_backed = !virt_addr_valid(vaddr);
+
+			dev_dbg(dev->dev,
+				"allocated %zu bytes contiguous at %pad (%s)\n",
+				obj->size, &dma_addr,
+				msm_obj->nomap_backed ? "no-map pool" : "linear map");
+
+			if (msm_obj->nomap_backed) {
+				struct sg_table *sgt;
+
+				/*
+				 * No struct page available — build a
+				 * single-segment sgt with sg_dma_address set
+				 * directly. gpummu_map iterates this via
+				 * sg_page_iter_dma_address, which works
+				 * without struct page. Cache management
+				 * (sync_for_gpu/cpu) is no-op for the
+				 * memremap_wc mapping. msm_obj->pages stays
+				 * NULL — callers that walk pages[] (e.g.
+				 * the mmap fault handler) check
+				 * nomap_backed and use dma_addr instead.
+				 */
+				sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+				if (!sgt) {
+					dma_free_wc(dev->dev, obj->size,
+						    vaddr, dma_addr);
+					msm_obj->vaddr = NULL;
+					msm_obj->dma_addr = 0;
+					msm_obj->nomap_backed = false;
+					return ERR_PTR(-ENOMEM);
+				}
+				if (sg_alloc_table(sgt, 1, GFP_KERNEL)) {
+					kfree(sgt);
+					dma_free_wc(dev->dev, obj->size,
+						    vaddr, dma_addr);
+					msm_obj->vaddr = NULL;
+					msm_obj->dma_addr = 0;
+					msm_obj->nomap_backed = false;
+					return ERR_PTR(-ENOMEM);
+				}
+
+				sg_set_page(sgt->sgl, NULL, obj->size, 0);
+				sg_dma_address(sgt->sgl) = dma_addr;
+				sg_dma_len(sgt->sgl)     = obj->size;
+				sgt->nents      = 1;
+				sgt->orig_nents = 1;
+
+				msm_obj->sgt   = sgt;
+				msm_obj->pages = NULL;
+
+				update_device_mem(dev->dev_private, obj->size);
+				update_lru(obj);
+				/*
+				 * Return NULL — pages[] doesn't exist for
+				 * nomap. Callers must check nomap_backed.
+				 */
+				return NULL;
+			}
+
+			/* Linear-map case: virt_to_page works. */
 			p = kvmalloc_array(npages, sizeof(*p), GFP_KERNEL);
 			if (!p) {
 				dma_free_wc(dev->dev, obj->size, vaddr, dma_addr);
 				return ERR_PTR(-ENOMEM);
 			}
 
-			/* Build pages array from contiguous allocation */
-			for (i = 0; i < npages; i++)
-				p[i] = virt_to_page(vaddr + i * PAGE_SIZE);
-
-			msm_obj->vaddr = vaddr;
-			msm_obj->dma_addr = dma_addr;
-
-			dev_dbg(dev->dev, "allocated %zu bytes contiguous at %pad\n",
-				obj->size, &dma_addr);
+			{
+				int i;
+				for (i = 0; i < npages; i++)
+					p[i] = virt_to_page(vaddr + i * PAGE_SIZE);
+			}
 		} else {
 			p = drm_gem_get_pages(obj);
 
@@ -478,6 +580,32 @@ static void put_pages(struct drm_gem_object *obj)
 	 */
 	if (kref_read(&obj->refcount))
 		drm_gpuvm_bo_gem_evict(obj, true);
+
+	/*
+	 * Nomap-backed BO: free via dma_free_wc back to the of-pool, drop
+	 * the synthetic sgt. No struct page coverage means no cache flush
+	 * (the memremap_wc mapping is non-cached and unique to this BO).
+	 * No drm_gem_put_pages — there's nothing in shmem.
+	 */
+	if (msm_obj->nomap_backed) {
+		struct drm_device *dev = obj->dev;
+
+		if (msm_obj->sgt) {
+			sg_free_table(msm_obj->sgt);
+			kfree(msm_obj->sgt);
+			msm_obj->sgt = NULL;
+		}
+		if (msm_obj->vaddr) {
+			dma_free_wc(dev->dev, obj->size,
+				    msm_obj->vaddr, msm_obj->dma_addr);
+			msm_obj->vaddr    = NULL;
+			msm_obj->dma_addr = 0;
+		}
+		msm_obj->nomap_backed = false;
+		update_device_mem(obj->dev->dev_private, -obj->size);
+		update_lru(obj);
+		return;
+	}
 
 	if (msm_obj->pages) {
 		if (msm_obj->sgt) {
@@ -626,7 +754,17 @@ static vm_fault_t msm_gem_fault(struct vm_fault *vmf)
 	/* We don't use vmf->pgoff since that has the fake offset: */
 	pgoff = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
 
-	pfn = page_to_pfn(pages[pgoff]);
+	if (msm_obj->nomap_backed) {
+		/*
+		 * No struct page available — derive the PFN directly from
+		 * the contiguous DMA address. The vma is already set up
+		 * with VM_IO/VM_PFNMAP by drm_gem_mmap_obj for our
+		 * private object init path.
+		 */
+		pfn = (msm_obj->dma_addr >> PAGE_SHIFT) + pgoff;
+	} else {
+		pfn = page_to_pfn(pages[pgoff]);
+	}
 
 	VERB("Inserting %p pfn %lx, pa %lx", (void *)vmf->address,
 			pfn, pfn << PAGE_SHIFT);
