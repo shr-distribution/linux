@@ -3439,30 +3439,22 @@
 		};
 
 		/*
-		 * Default CMA region used by:
-		 *   - VFE31 camera buffers (need contiguous; msm_iommu identity
-		 *     mode + vb2-dma-sg gives scattered pages otherwise)
-		 *   - GEM BOs forced into MSM_BO_CONTIGUOUS via FIX#2 in
-		 *     drivers/gpu/drm/msm/msm_gem.c
+		 * Default CMA region for VFE31 camera buffers and any non-
+		 * graphics CMA consumer. VFE31 needs physically contiguous
+		 * memory (msm_iommu identity mode + vb2-dma-sg would otherwise
+		 * give scattered pages).
 		 *
-		 * Bumped from 32 MiB → 96 MiB to handle the post-luna-surface-
-		 * manager Qt6 working set without exhaustion. luna-surface-
-		 * manager + Qt6 needs ~31 MiB across ~44 BOs at startup; with
-		 * the previous 32 MiB pool, the next allocation blocked in
-		 * cma_alloc waiting for migration and looked like a hang.
+		 * 32 MiB is sufficient now that graphics BOs (the heavy users)
+		 * route to drm_smi_mem (64 MiB at 0x38000000) instead of this
+		 * pool. Camera at 1280x1024 NV16 needs ~5 MiB per buffer; 32
+		 * MiB allows ~6 buffers in flight.
 		 *
-		 * webOS reference for graphics: pmem_smipool was 61 MiB
-		 * dedicated. We don't yet route MDP through SMI, so this CMA
-		 * pool serves both camera and forced-CONTIGUOUS GEM, giving
-		 * us slightly more headroom than webOS's smipool alone.
-		 *
-		 * Layout: 96 MiB at 0x76000000-0x7BFFFFFF, in upper System RAM
-		 * (0x48000000-0x7F5FFFFF). Leaves ~58 MiB of upper RAM beyond
-		 * the CMA region for normal allocations.
+		 * Layout: 32 MiB at 0x7C000000-0x7DFFFFFF, in upper System RAM
+		 * (0x48000000-0x7F5FFFFF).
 		 */
-		linux,cma@76000000 {
+		linux,cma@7c000000 {
 			compatible = "shared-dma-pool";
-			reg = <0x76000000 0x6000000>; /* 96 MiB */
+			reg = <0x7c000000 0x2000000>; /* 32 MiB */
 			reusable;
 			linux,cma-default;
 		};
