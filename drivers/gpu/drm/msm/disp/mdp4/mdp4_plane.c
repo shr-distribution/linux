@@ -138,11 +138,35 @@ static void mdp4_plane_atomic_update(struct drm_plane *plane,
 	WARN_ON(ret < 0);
 }
 
+/*
+ * Quiesce the pipe when the plane goes inactive. Without this, the
+ * pipe's PIPE_SRCP0_BASE / FETCH_CONFIG / OP_MODE retain their last-
+ * active values from the prior compositor session. setup_mixer
+ * correctly clears the LMIX_IN_CFG bit so the pipe is at STAGE_UNUSED,
+ * but the lingering fetch state can still cause stale-buffer artifacts
+ * across client transitions (e.g. luna-surface-manager → kmscube).
+ *
+ * Mode-set path (mdp4_plane_mode_set) already short-circuits when
+ * !crtc || !fb, so without an explicit atomic_disable nothing ever
+ * resets these registers.
+ */
+static void mdp4_plane_atomic_disable(struct drm_plane *plane,
+				      struct drm_atomic_state *state)
+{
+	struct mdp4_plane *mdp4_plane = to_mdp4_plane(plane);
+	struct mdp4_kms *mdp4_kms = get_kms(plane);
+	enum mdp4_pipe pipe = mdp4_plane->pipe;
+
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(pipe), 0);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(pipe), 0);
+}
+
 static const struct drm_plane_helper_funcs mdp4_plane_helper_funcs = {
 		.prepare_fb = mdp4_plane_prepare_fb,
 		.cleanup_fb = mdp4_plane_cleanup_fb,
 		.atomic_check = mdp4_plane_atomic_check,
 		.atomic_update = mdp4_plane_atomic_update,
+		.atomic_disable = mdp4_plane_atomic_disable,
 };
 
 static void mdp4_plane_set_scanout(struct drm_plane *plane,
