@@ -3406,35 +3406,24 @@
 		 * The first 3MB (0x38000000-0x382fffff) is reserved for
 		 * kernel SMI / video firmware (PMEM_KERNEL_SMI).
 		 */
-		drm_smi_mem: framebuffer@38000000 {
+		drm_smi_mem: framebuffer@38300000 {
 			compatible = "shared-dma-pool";
-			/*
-			 * Full 64 MiB SMI region. webOS used 61 MiB starting at
-			 * 0x38300000 (skipping the first 3 MiB for video firmware),
-			 * but Linux CMA requires base + size to be aligned to
-			 * ~4 MiB (pageblock_order on ARMv7). 0x38300000 + 0x3d00000
-			 * is not aligned, so the kernel rejected the region with
-			 * "incorrect alignment of CMA region".
-			 *
-			 * 0x38000000 / 0x4000000 (base / size, both 64 MiB) is
-			 * naturally aligned to anything we'd ever want, and we
-			 * gain 3 MiB of usable graphics memory vs webOS.
-			 */
-			reg = <0x38000000 0x4000000>; /* 64MB at SMI base */
+			reg = <0x38300000 0x3d00000>; /* 61MB - exact webOS size */
 			reusable;
 			/*
-			 * `reusable` (not `no-map`): CMA-style pool with struct
-			 * pages. dma_alloc_wc on the MDP device (which has
-			 * memory-region pointing here) allocates from this pool;
-			 * kernel can use it for movable allocations when graphics
-			 * doesn't need it and migrates them out on demand.
+			 * Use `reusable` (CMA pool) instead of `no-map`. The MDP
+			 * device declares this region via memory-region; dma_alloc_wc
+			 * pulls from it for MSM_BO_CONTIGUOUS allocations. With
+			 * `no-map`, kernel never creates struct page entries for
+			 * the region, so virt_to_page() in msm_gem.c::get_pages
+			 * returns garbage and the resulting sgt populates gpummu
+			 * with zero PTEs — causing GPU MMU faults at address 0
+			 * when surface-manager starts.
 			 *
-			 * `no-map` would skip kernel page bookkeeping entirely —
-			 * needed if the region is on a bus the CPU can't reach,
-			 * but SMI is normal RAM from the CPU's POV (just on a
-			 * separate fabric). Without struct pages, virt_to_page()
-			 * in msm_gem.c::get_pages returns garbage and Qt's
-			 * dma_cache_maint_page hits an Oops in v7_dma_inv_range.
+			 * `reusable` makes this a proper CMA pool: struct pages
+			 * exist, virt_to_page works, the kernel can use the region
+			 * for movable allocations when graphics doesn't need it
+			 * (and migrates them out on dma_alloc_wc demand).
 			 */
 		};
 
