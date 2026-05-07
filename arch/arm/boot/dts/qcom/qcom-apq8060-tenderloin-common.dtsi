@@ -976,13 +976,32 @@
 			status = "okay";
 
 			/*
-			 * NOTE: webOS actually used EBI (system RAM) for framebuffers,
-			 * not SMI. The pmem_smipool existed but wasn't used for display.
-			 * Using SMI may cause display underruns due to different access
-			 * characteristics. The drm_smi_mem region is available if needed
-			 * but we match webOS behavior by not forcing SMI allocation.
+			 * Route MDP DMA allocations through the dedicated SMI pool
+			 * at 0x38300000 (61 MiB), exactly matching webOS's
+			 * MSM_PMEM_SMIPOOL layout. This was the actual webOS graphics
+			 * memory architecture — pmem_smipool backed userspace DRM
+			 * framebuffers and EGL surfaces. Earlier comments here
+			 * claiming "webOS used EBI" were incorrect.
+			 *
+			 * Wiring memory-region makes dma_alloc_wc() called from
+			 * msm_gem.c (MSM_BO_CONTIGUOUS path, including FIX#2 in
+			 * msm_gem_needs_contiguous) pull from this pool instead of
+			 * the shared system CMA. That eliminates buddy-allocator
+			 * fragmentation as a contributor to the rendering corruption
+			 * we've been chasing, and frees the 96 MiB system CMA pool
+			 * for camera buffers / other consumers.
+			 *
+			 * SMI is on the MMSS fabric (separate from EBI on AFAB), so
+			 * graphics traffic doesn't compete with USB/CPU/video-codec
+			 * for AXI cycles — fewer underruns, less bandwidth pressure.
+			 *
+			 * Risk note: an earlier devmem read from 0x38300000 hung the
+			 * bus. That was raw CPU access through /dev/mem with no
+			 * IOMMU/dma routing. dma_alloc_wc here goes through the
+			 * proper bus path (MDP → MMSS fabric → SMI slave) which is
+			 * how webOS used SMI successfully.
 			 */
-			/* memory-region = <&drm_smi_mem>; */
+			memory-region = <&drm_smi_mem>;
 
 			/*
 			 * Use LSB pack alignment to match webOS configuration.
