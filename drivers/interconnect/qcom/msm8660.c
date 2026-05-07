@@ -303,10 +303,17 @@ DEFINE_QNODE(slv_ampss_l2, MSM8660_AFAB_SLV_AMPSS_L2, 8, -1, 1, 0);
  * Gateway nodes need links to both the cross-fabric gateway AND the memory
  * slave to enable cross-fabric paths. Without link to EBI_CH0, path_find()
  * can't route from MMSS/System fabric masters to main memory.
+ *
+ * AFAB_TO_MMSS doubles as AFAB master port 2 (the FAB_MMSS master). MDP
+ * scanout and GPU traffic enter AFAB through this gateway. Mark it
+ * ARB_TIER1 so display/multimedia traffic keeps priority over CPU L2
+ * misses inside the APPSS fabric — without this, MDP TIER1 priority
+ * earned in MMFAB is dropped at the AFAB boundary and MDP fetches lose
+ * arbitration to CPU traffic, producing PRIMARY_INTF_UDERRUN.
  */
-DEFINE_QNODE(afab_to_mmss, MSM8660_AFAB_TO_MMSS, 8, -1, 2, 0,
+DEFINE_QNODE(afab_to_mmss, MSM8660_AFAB_TO_MMSS, 8, 2, 2, ARB_TIER1,
 	     MSM8660_MMFAB_TO_APPSS, MSM8660_AFAB_SLV_EBI_CH0);
-DEFINE_QNODE(afab_to_system, MSM8660_AFAB_TO_SYSTEM, 8, -1, 3, 0,
+DEFINE_QNODE(afab_to_system, MSM8660_AFAB_TO_SYSTEM, 8, 3, 3, ARB_TIER2,
 	     MSM8660_SFAB_TO_APPSS, MSM8660_AFAB_SLV_EBI_CH0);
 
 static struct msm8660_icc_node * const msm8660_afab_nodes[] = {
