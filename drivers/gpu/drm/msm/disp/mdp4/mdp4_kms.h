@@ -15,6 +15,7 @@
 #include "mdp4.xml.h"
 
 struct device_node;
+struct icc_path;
 
 struct mdp4_kms {
 	struct mdp_kms base;
@@ -32,6 +33,18 @@ struct mdp4_kms {
 	struct clk *lut_clk;
 	struct clk *axi_clk;
 	struct clk *vsync_clk;
+
+	/*
+	 * Interconnect paths from the two MDP master ports out to memory.
+	 * MDP framebuffers live in EBI on tenderloin, so the EBI-targeted
+	 * paths carry real bandwidth; SMI paths are kept for completeness
+	 * but only voted at zero (so they keep mapping but don't add to
+	 * fabric clock or arbitration pressure).
+	 */
+	struct icc_path *path_ebi[2];
+	struct icc_path *path_smi[2];
+	u32 icc_avg_bw_kbps;
+	u32 icc_peak_bw_kbps;
 
 	struct mdp_irq error_handler;
 
