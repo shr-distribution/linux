@@ -483,9 +483,22 @@ DEFINE_QNODE(mmfab_mas_hd_codec_port0, MSM8660_MMFAB_MAS_HD_CODEC_PORT0, 16,
 DEFINE_QNODE(mmfab_mas_hd_codec_port1, MSM8660_MMFAB_MAS_HD_CODEC_PORT1, 16,
 	     13, -1, ARB_TIER2,
 	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-/* Gateway to APPSS: slave in MMSS fabric (slavep=1, tiered slave 2) */
-DEFINE_QNODE(mmfab_to_appss, MSM8660_MMFAB_TO_APPSS, 8, -1, 1, 0,
-	     MSM8660_AFAB_TO_MMSS);
+/*
+ * Gateway from APPSS into MMSS: slave (port 1) for outbound traffic
+ * leaving MMSS, AND master (port 2) for inbound traffic arriving from
+ * APPSS (e.g. CPU memremap_wc accesses to SMI BOs). Without the master
+ * port and the forward links into MMFAB slaves (SMI / MM_IMEM), the
+ * ICC path-finder has no route from AMPSS_M0 to MMFAB_SLV_SMI; the
+ * cross-fabric gateway only worked for outbound traffic (MMSS masters
+ * reaching APPSS slaves like EBI).
+ *
+ * ARB_TIER1 keeps AMPSS->SMI traffic high-priority within MMFAB so
+ * CPU mmap reads/writes to SMI BOs don't get starved by MDP scanout.
+ */
+DEFINE_QNODE(mmfab_to_appss, MSM8660_MMFAB_TO_APPSS, 8, 2, 1, ARB_TIER1,
+	     MSM8660_AFAB_TO_MMSS,
+	     MSM8660_MMFAB_SLV_SMI,
+	     MSM8660_MMFAB_SLV_MM_IMEM);
 DEFINE_QNODE(mmfab_slv_smi, MSM8660_MMFAB_SLV_SMI, 16, -1, 0, 0);
 DEFINE_QNODE(mmfab_slv_mm_imem, MSM8660_MMFAB_SLV_MM_IMEM, 8, -1, 3, 0);
 
