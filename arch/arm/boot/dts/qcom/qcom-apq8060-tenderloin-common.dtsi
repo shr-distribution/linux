@@ -26,20 +26,31 @@
 	compatible = "qcom,apq8060-tenderloin", "qcom,msm8660";
 
 	/*
-	 * SMI (System Memory Interface) memory region.
+	 * SMI (System Memory Interface) is NOT declared as kernel-managed
+	 * RAM here. It exists at 0x38000000-0x3BFFFFFF (64 MiB) on the MMSS
+	 * fabric — separate AXI slave from EBI/DRAM. The CPU cannot safely
+	 * access SMI through its standard cached linear map: a previous
+	 * attempt declared `memory@38000000` and made `drm_smi_mem`
+	 * reusable, which let the kernel allocate movable pages from SMI
+	 * during early init; the first kernel write through the linear map
+	 * hung the AXI bus at moboot's "Booting..." stage.
 	 *
-	 * The HP TouchPad has 64MB of SMI memory at 0x38000000 on a separate
-	 * MMSS fabric bus from EBI. webOS used pmem_smipool for display to
-	 * avoid bus contention with USB.
+	 * Reference Android-kernel BSPs for MSM8660 (HTC pyramid, Samsung Q1)
+	 * confirm SMI is never put in the meminfo / memblock map. They use
+	 * MEMTYPE_FLAGS_FIXED so reserve_memory_for_mempools() skips it
+	 * entirely — i.e. no struct page, no kernel cached mapping.
 	 *
-	 * SMI is accessible when RPM_SMI_CLK clocks are enabled. The MMSS
-	 * fabric interconnect driver enables these when MDP routes traffic
-	 * to MMFAB_SLV_SMI. DRM uses the drm_smi_mem reserved region.
+	 * SMI is reserved exclusively via the `drm_smi_mem` reserved-memory
+	 * node further down (no-map shared-dma-pool). Allocator support for
+	 * no-map memory in msm_gem.c is the next step (PFN-based sgt, no
+	 * virt_to_page).
+	 *
+	 * Setup magic: SMI requires both RPM_SMI_CLK enabled AND an
+	 * MSM_BUS_MASTER_AMPSS_M0 -> MSM_BUS_SLAVE_SMI vote whenever the
+	 * CPU touches SMI. The MMSS fabric ICC driver handles the MDP/GPU
+	 * vote already; we'll add the AMPSS->SMI vote when wiring CPU
+	 * access to drm_smi_mem.
 	 */
-	memory@38000000 {
-		device_type = "memory";
-		reg = <0x38000000 0x4000000>;  /* 64MB SMI: 0x38000000-0x3bffffff */
-	};
 
 	aliases {
 		mmc0 = &sdcc1;	/* mmcblk0 for eMMC/SD */
