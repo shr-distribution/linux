@@ -27,20 +27,31 @@
 #include "msm_kms.h"
 
 /*
- * FIX #2 (gated): force contiguous allocation for BOs at or above this
- * threshold (in pages) on non-cached-coherent platforms. 0 = disabled
- * (default). Set to e.g. 2 to force every BO ≥2 pages = ≥8KB to come
- * from CMA, sidestepping buddy fragmentation entirely.
+ * FIX #2 (gated): force contiguous allocation for BOs in a band of sizes on
+ * non-cached-coherent platforms. The lower bound is `force_contiguous_pages`
+ * (0 = disabled). The upper bound is `force_contiguous_max_pages` (0 = no
+ * upper bound) — set this to keep very large BOs OFF the CMA pool, since
+ * draining CMA causes cma_alloc to block on page migration (looks like a
+ * hang). On tenderloin our CMA pool is 32 MiB; sizing the upper bound to
+ * leave headroom for fbcon+other-CMA-users keeps surface-manager safe.
  *
- * Echoed into /sys/module/msm/parameters/force_contiguous_pages so we can
- * A/B test fix #1 (DSB ordering in sync_for_gpu) vs fix #2 (no fragmentation
- * to begin with) at runtime without a rebuild.
+ * Recommended starting point on tenderloin (32 MiB CMA):
+ *   force_contiguous_pages = 16    (force CMA for BOs ≥ 64 KB)
+ *   force_contiguous_max_pages = 256 (skip CMA for BOs ≥ 1 MB)
+ *
+ * Both knobs in /sys/module/msm/parameters/ are runtime-tunable.
  */
 static unsigned int msm_force_contiguous_pages;
 module_param_named(force_contiguous_pages, msm_force_contiguous_pages,
 		   uint, 0644);
 MODULE_PARM_DESC(force_contiguous_pages,
-	"Force MSM_BO_CONTIGUOUS allocation for non-coherent BOs of this many pages or more (0 = disabled)");
+	"Lower-bound (in pages) for forcing CMA-backed allocation on non-coherent platforms (0 = disabled)");
+
+static unsigned int msm_force_contiguous_max_pages;
+module_param_named(force_contiguous_max_pages, msm_force_contiguous_max_pages,
+		   uint, 0644);
+MODULE_PARM_DESC(force_contiguous_max_pages,
+	"Upper-bound (in pages) for forcing CMA-backed allocation; BOs at or above this fall back to buddy (0 = no upper bound)");
 
 /*
  * Check if contiguous memory is required for this object.
@@ -61,16 +72,17 @@ static bool msm_gem_needs_contiguous(struct drm_device *dev, uint32_t flags,
 
 	/*
 	 * FIX #2: on non-coherent platforms, optionally force CMA-backed
-	 * contiguous allocation for medium/large BOs. This eliminates the
-	 * fragmentation pattern (3 MB BO with nents=406) we saw post-LSM,
-	 * which we suspect of confusing the per-segment cache flush
-	 * sequence. Already-CONTIGUOUS BOs and small ones (< threshold)
-	 * are unaffected.
+	 * contiguous allocation for BOs in [lower, upper) page count band.
+	 * This eliminates the fragmentation pattern (3 MB BO with nents=406)
+	 * for the size range where it hurts most, while keeping very large
+	 * BOs off CMA so it doesn't get drained.
 	 */
 	if (!priv->has_cached_coherent &&
 	    msm_force_contiguous_pages > 0 &&
 	    !(flags & MSM_BO_CONTIGUOUS) &&
-	    size >= ((size_t)msm_force_contiguous_pages * PAGE_SIZE)) {
+	    size >= ((size_t)msm_force_contiguous_pages * PAGE_SIZE) &&
+	    (msm_force_contiguous_max_pages == 0 ||
+	     size < ((size_t)msm_force_contiguous_max_pages * PAGE_SIZE))) {
 		pr_info_ratelimited(
 			"msm_gem: FIX#2 forcing CONTIGUOUS for size=%zu pages flags=0x%x\n",
 			size / PAGE_SIZE, flags);
