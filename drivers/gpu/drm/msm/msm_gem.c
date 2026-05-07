@@ -27,20 +27,56 @@
 #include "msm_kms.h"
 
 /*
+ * FIX #2 (gated): force contiguous allocation for BOs at or above this
+ * threshold (in pages) on non-cached-coherent platforms. 0 = disabled
+ * (default). Set to e.g. 2 to force every BO ≥2 pages = ≥8KB to come
+ * from CMA, sidestepping buddy fragmentation entirely.
+ *
+ * Echoed into /sys/module/msm/parameters/force_contiguous_pages so we can
+ * A/B test fix #1 (DSB ordering in sync_for_gpu) vs fix #2 (no fragmentation
+ * to begin with) at runtime without a rebuild.
+ */
+static unsigned int msm_force_contiguous_pages;
+module_param_named(force_contiguous_pages, msm_force_contiguous_pages,
+		   uint, 0644);
+MODULE_PARM_DESC(force_contiguous_pages,
+	"Force MSM_BO_CONTIGUOUS allocation for non-coherent BOs of this many pages or more (0 = disabled)");
+
+/*
  * Check if contiguous memory is required for this object.
  * When running without IOMMU, scanout buffers need physically contiguous
  * memory because the display controller reads linearly from a single
  * base address and cannot handle scatter-gather.
  */
-static bool msm_gem_needs_contiguous(struct drm_device *dev, uint32_t flags)
+static bool msm_gem_needs_contiguous(struct drm_device *dev, uint32_t flags,
+				     size_t size)
 {
-#ifdef CONFIG_DRM_MSM_KMS
 	struct msm_drm_private *priv = dev->dev_private;
 
+#ifdef CONFIG_DRM_MSM_KMS
 	/* Scanout buffers without IOMMU need contiguous memory */
 	if ((flags & MSM_BO_SCANOUT) && priv->kms && !priv->kms->vm)
 		return true;
 #endif
+
+	/*
+	 * FIX #2: on non-coherent platforms, optionally force CMA-backed
+	 * contiguous allocation for medium/large BOs. This eliminates the
+	 * fragmentation pattern (3 MB BO with nents=406) we saw post-LSM,
+	 * which we suspect of confusing the per-segment cache flush
+	 * sequence. Already-CONTIGUOUS BOs and small ones (< threshold)
+	 * are unaffected.
+	 */
+	if (!priv->has_cached_coherent &&
+	    msm_force_contiguous_pages > 0 &&
+	    !(flags & MSM_BO_CONTIGUOUS) &&
+	    size >= ((size_t)msm_force_contiguous_pages * PAGE_SIZE)) {
+		pr_info_ratelimited(
+			"msm_gem: FIX#2 forcing CONTIGUOUS for size=%zu pages flags=0x%x\n",
+			size / PAGE_SIZE, flags);
+		return true;
+	}
+
 	return false;
 }
 
@@ -211,16 +247,46 @@ void msm_gem_sync_for_gpu(struct drm_gem_object *obj)
 		return;
 	}
 
-	for_each_sgtable_sg(sgt, sg, i) {
-		void *vaddr = sg_virt(sg);
-		phys_addr_t phys = sg_phys(sg);
-		size_t len = sg->length;
+	{
+		unsigned int nents = 0;
+		size_t total_len = 0;
 
-		if (vaddr)
-			dmac_flush_range(vaddr, vaddr + len);
-		outer_clean_range(phys, phys + len);
+		for_each_sgtable_sg(sgt, sg, i) {
+			void *vaddr = sg_virt(sg);
+			phys_addr_t phys = sg_phys(sg);
+			size_t len = sg->length;
+
+			if (vaddr)
+				dmac_flush_range(vaddr, vaddr + len);
+
+			/*
+			 * FIX #1: Order L1→L2→memory transitively. After
+			 * dmac_flush_range finishes its sequence of DCCMVAC
+			 * ops, dirty L1 lines are written into L2 — but those
+			 * L2 writes may still be pending in the L1↔L2 store
+			 * buffer when we issue outer_clean_range. Without an
+			 * intervening DSB, outer_clean_range can drain L2 to
+			 * memory before the freshly-evicted L1 data has
+			 * actually arrived in L2, leaving the page stale in
+			 * memory. Symptoms only appear when a BO's sgt is
+			 * heavily fragmented (many small per-page sg entries
+			 * in tight succession) — exactly the post-luna-
+			 * surface-manager state we observed (3 MB BO with
+			 * nents=406, 32 KB BO with nents=8).
+			 */
+			dsb(sy);
+			outer_clean_range(phys, phys + len);
+
+			total_len += len;
+			nents++;
+		}
+		dsb(sy);
+
+		if (nents > 1)
+			pr_info_ratelimited(
+				"msm_gem sync_for_gpu: nents=%u total=%zu (FIX#1 dsb-between-L1-L2 active)\n",
+				nents, total_len);
 	}
-	dsb(sy);
 #endif
 }
 
@@ -1497,7 +1563,7 @@ struct drm_gem_object *msm_gem_new(struct drm_device *dev, size_t size, uint32_t
 	 * Check if we need contiguous memory (scanout without IOMMU).
 	 * This must be done before msm_gem_new_impl() so the flag is set.
 	 */
-	use_contiguous = msm_gem_needs_contiguous(dev, flags);
+	use_contiguous = msm_gem_needs_contiguous(dev, flags, size);
 	if (use_contiguous)
 		flags |= MSM_BO_CONTIGUOUS;
 
