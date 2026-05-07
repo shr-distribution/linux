@@ -1008,13 +1008,28 @@
 			interconnect-names = "mdp0-smi", "mdp1-smi", "mdp0-ebi", "mdp1-ebi";
 
 			/*
-			 * MDP interconnect bandwidth from webOS board-tenderloin.c
-			 * mdp_app_vectors (two 1024x768 layers):
-			 *   ab = 377,487,360 (377 MB/s average)
-			 *   ib = 471,859,200 (471 MB/s peak/instantaneous)
+			 * MDP interconnect bandwidth, derived from the legacy
+			 * webOS board-tenderloin.c msm_bus use cases:
+			 *
+			 *   home     (1 layer  1024x768): ab=334.0  ib=417.6 MB/s
+			 *   app      (2 layers 1024x768): ab=377.5  ib=471.9 MB/s
+			 *   pip      (2 VGA video):       ab=432.8  ib=541.0 MB/s
+			 *   lowres   (720x576 video):     ab=414.8  ib=518.5 MB/s
+			 *   720p video:                   ab=460.4  ib=575.5 MB/s
+			 *   1080p video:                  ab=564.1  ib=705.1 MB/s
+			 *
+			 *   Pattern: ib = ab × 1.25 (25% peak headroom)
+			 *   Pattern: ab ≈ W × H × bpp × refresh × layers (for ≥2 layers)
+			 *
+			 * Use the 1080p_video values as the qualified upper bound
+			 * — that's the highest sustained MDP demand the legacy
+			 * driver ever asked the fabric for. Heavy GPU+display
+			 * scenarios (kmscube, glmark2 with the cube/gears scene)
+			 * approach this profile because the GPU repeatedly drains
+			 * the AXI between MDP scanout fetches.
 			 */
-			qcom,icc-bw-avg-kbps = <368640>;   /* 377487360 / 1024 */
-			qcom,icc-bw-peak-kbps = <460800>;  /* 471859200 / 1024 */
+			qcom,icc-bw-avg-kbps  = <564111>;  /* 564,111,360 Bps */
+			qcom,icc-bw-peak-kbps = <705139>;  /* 705,139,200 Bps */
 
 			/*
 			 * MDP IOMMU for display memory virtualization.
