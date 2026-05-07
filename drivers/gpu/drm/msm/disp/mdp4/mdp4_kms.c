@@ -85,10 +85,16 @@ static int mdp4_hw_init(struct msm_kms *kms)
 /*
  * Vote MDP fabric bandwidth. peak_kbps==0 means "no demand" (called on
  * disable to drop the vote). All four ICC paths (mdp[01]-{ebi,smi}) are
- * present so the framework keeps them mapped, but only EBI gets real
- * bandwidth — that's where tenderloin framebuffers live. SMI paths get
- * 0/0 to keep them registered without inflating fabric clock or
- * arbitration.
+ * present so the framework keeps them mapped.
+ *
+ * On tenderloin framebuffers can land in either EBI (system CMA) or SMI
+ * (drm_smi_mem custom pool — see msm_smi_alloc), depending on whether
+ * FIX#2 routes a CONTIGUOUS BO into the SMI pool. We don't know per-vote
+ * which pool any given pinned FB is in, so vote the full requested BW
+ * on BOTH EBI and SMI paths. RPM coalesces unused bandwidth at the
+ * fabric level, so over-voting one path is harmless when no traffic
+ * actually flows. Under-voting a path that does carry traffic, however,
+ * starves MDP reads and produces visible stripes / underruns.
  */
 static void mdp4_icc_vote(struct mdp4_kms *mdp4_kms, u32 avg_kbps,
 			  u32 peak_kbps)
@@ -100,7 +106,8 @@ static void mdp4_icc_vote(struct mdp4_kms *mdp4_kms, u32 avg_kbps,
 			icc_set_bw(mdp4_kms->path_ebi[i],
 				   avg_kbps, peak_kbps);
 		if (mdp4_kms->path_smi[i])
-			icc_set_bw(mdp4_kms->path_smi[i], 0, 0);
+			icc_set_bw(mdp4_kms->path_smi[i],
+				   avg_kbps, peak_kbps);
 	}
 }
 
