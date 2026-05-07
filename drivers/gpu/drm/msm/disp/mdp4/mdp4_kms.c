@@ -104,6 +104,40 @@ static void mdp4_icc_vote(struct mdp4_kms *mdp4_kms, u32 avg_kbps,
 	}
 }
 
+/*
+ * DIAGNOSTIC: dump bandwidth-critical MDP4 registers on every enable_commit
+ * so we can see if anything (e.g. a compositor session) leaves them in a
+ * different state than mdp4_hw_init programmed.
+ *
+ * The hypothesis being tested: surface-manager modifies READ_CNFG,
+ * FETCH_CONFIG, etc. and never restores them, so subsequent sessions
+ * inherit the broken values and underflow.
+ */
+static void mdp4_dump_bw_regs(struct mdp4_kms *mdp4_kms, const char *tag)
+{
+	static unsigned int seq;
+
+	pr_info("mdp4 BW regs [%s seq=%u]: "
+		"PORTMAP=%08x READ_CNFG=%08x "
+		"DMA_FETCH_P=%08x DMA_FETCH_E=%08x "
+		"PIPE_FETCH VG1=%08x VG2=%08x RGB1=%08x RGB2=%08x "
+		"LMIX_IN_CFG=%08x DISP_INTF=%08x LCDC_EN=%08x "
+		"LCDC_UFLOW_CLR=%08x\n",
+		tag, ++seq,
+		mdp4_read(mdp4_kms, REG_MDP4_PORTMAP_MODE),
+		mdp4_read(mdp4_kms, REG_MDP4_READ_CNFG),
+		mdp4_read(mdp4_kms, REG_MDP4_DMA_FETCH_CONFIG(DMA_P)),
+		mdp4_read(mdp4_kms, REG_MDP4_DMA_FETCH_CONFIG(DMA_E)),
+		mdp4_read(mdp4_kms, REG_MDP4_PIPE_FETCH_CONFIG(VG1)),
+		mdp4_read(mdp4_kms, REG_MDP4_PIPE_FETCH_CONFIG(VG2)),
+		mdp4_read(mdp4_kms, REG_MDP4_PIPE_FETCH_CONFIG(RGB1)),
+		mdp4_read(mdp4_kms, REG_MDP4_PIPE_FETCH_CONFIG(RGB2)),
+		mdp4_read(mdp4_kms, REG_MDP4_LAYERMIXER_IN_CFG),
+		mdp4_read(mdp4_kms, REG_MDP4_DISP_INTF_SEL),
+		mdp4_read(mdp4_kms, REG_MDP4_LCDC_ENABLE),
+		mdp4_read(mdp4_kms, REG_MDP4_LCDC_UNDERFLOW_CLR));
+}
+
 static void mdp4_enable_commit(struct msm_kms *kms)
 {
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
@@ -111,11 +145,17 @@ static void mdp4_enable_commit(struct msm_kms *kms)
 	mdp4_icc_vote(mdp4_kms, mdp4_kms->icc_avg_bw_kbps,
 		      mdp4_kms->icc_peak_bw_kbps);
 	mdp4_enable(mdp4_kms);
+
+	/* Diagnostic: snapshot BW-critical regs at session start. */
+	mdp4_dump_bw_regs(mdp4_kms, "enable_commit");
 }
 
 static void mdp4_disable_commit(struct msm_kms *kms)
 {
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
+
+	/* Diagnostic: snapshot BW-critical regs at session end. */
+	mdp4_dump_bw_regs(mdp4_kms, "disable_commit");
 
 	mdp4_disable(mdp4_kms);
 	mdp4_icc_vote(mdp4_kms, 0, 0);
