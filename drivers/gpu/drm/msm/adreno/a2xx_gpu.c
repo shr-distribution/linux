@@ -361,6 +361,30 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	/* clear ME_HALT to start micro engine */
 	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, 0);
 
+	/*
+	 * DIAGNOSTIC: dump key A2XX state at end of every hw_init. Fires once
+	 * per pm_resume cycle, so each session start prints exactly one line.
+	 * Use this to compare register state across sessions (kmscube on fresh
+	 * boot vs kmscube after surface-manager).
+	 */
+	{
+		static unsigned int hw_init_seq;
+
+		pr_info("a2xx hw_init seq=%u: PT_BASE=%08x MMU_CONFIG=%08x "
+			"TRAN_ERROR=%08x RBBM_STATUS=%08x "
+			"PM_OVERRIDE1=%08x PM_OVERRIDE2=%08x "
+			"SQ_INTERP=%08x SQ_GPR_MGMT=%08x\n",
+			++hw_init_seq,
+			gpu_read(gpu, REG_A2XX_MH_MMU_PT_BASE),
+			gpu_read(gpu, REG_A2XX_MH_MMU_CONFIG),
+			gpu_read(gpu, REG_A2XX_MH_MMU_TRAN_ERROR),
+			gpu_read(gpu, REG_A2XX_RBBM_STATUS),
+			gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE1),
+			gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2),
+			gpu_read(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL),
+			gpu_read(gpu, REG_A2XX_SQ_GPR_MANAGEMENT));
+	}
+
 	return a2xx_me_init(gpu) ? 0 : -EINVAL;
 }
 
