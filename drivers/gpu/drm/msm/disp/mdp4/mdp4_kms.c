@@ -7,6 +7,8 @@
 #include <linux/delay.h>
 #include <linux/interconnect.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/pm.h>
+#include <linux/pm_runtime.h>
 
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
@@ -245,45 +247,36 @@ static const struct mdp_kms_funcs kms_funcs = {
 };
 
 /*
- * Static reference count for clock enable/disable. Persists across deferred
- * probe retries since the mdp4_kms struct is reallocated on each retry
- * (devm_kzalloc). Only actually toggle clocks on first enable (0->1) and
- * last disable (1->0), preventing repeated clock toggles that cause
- * "mdp_axi_clk status stuck" warnings.
+ * Clock enable/disable now goes through proper runtime PM (see
+ * mdp4_runtime_resume/suspend below). The previous implementation
+ * used a static refcount with direct clk_prepare_enable, which
+ * combined with a runtime-PM-callback-less mdp4_pm_ops meant
+ * pm_runtime_get_sync() in mdp4_hw_init was a no-op for power.
+ * That left init writes to BW-critical regs (READ_CNFG, PORTMAP_MODE,
+ * PIPE_FETCH_CONFIG) racing the bootloader-default state.
+ *
+ * Now mdp4_enable/disable wrap pm_runtime_resume_and_get and
+ * pm_runtime_put_sync, the real clock work happens in the runtime
+ * callbacks, and pm_runtime_get_sync in hw_init reliably brings
+ * clocks/power up before register programming.
  */
-static int mdp4_enable_count;
-
 int mdp4_disable(struct mdp4_kms *mdp4_kms)
 {
 	DBG("");
 
-	if (WARN_ON(mdp4_enable_count <= 0))
-		return -EINVAL;
-
-	if (--mdp4_enable_count > 0)
-		return 0;
-
-	clk_disable_unprepare(mdp4_kms->clk);
-	clk_disable_unprepare(mdp4_kms->pclk);
-	clk_disable_unprepare(mdp4_kms->lut_clk);
-	clk_disable_unprepare(mdp4_kms->axi_clk);
-	clk_disable_unprepare(mdp4_kms->vsync_clk);
-
+	pm_runtime_put_sync(mdp4_kms->dev->dev);
 	return 0;
 }
 
 int mdp4_enable(struct mdp4_kms *mdp4_kms)
 {
+	int ret;
+
 	DBG("");
 
-	if (mdp4_enable_count++ > 0)
-		return 0;
-
-	clk_prepare_enable(mdp4_kms->clk);
-	clk_prepare_enable(mdp4_kms->pclk);
-	clk_prepare_enable(mdp4_kms->lut_clk);
-	clk_prepare_enable(mdp4_kms->axi_clk);
-	clk_prepare_enable(mdp4_kms->vsync_clk);
+	ret = pm_runtime_resume_and_get(mdp4_kms->dev->dev);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
@@ -660,9 +653,50 @@ fail:
 	return ret;
 }
 
+static int mdp4_runtime_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct msm_drm_private *priv = platform_get_drvdata(pdev);
+	struct mdp4_kms *mdp4_kms;
+
+	if (!priv || !priv->kms)
+		return 0;
+
+	mdp4_kms = to_mdp4_kms(to_mdp_kms(priv->kms));
+
+	clk_prepare_enable(mdp4_kms->clk);
+	clk_prepare_enable(mdp4_kms->pclk);
+	clk_prepare_enable(mdp4_kms->lut_clk);
+	clk_prepare_enable(mdp4_kms->axi_clk);
+	clk_prepare_enable(mdp4_kms->vsync_clk);
+
+	return 0;
+}
+
+static int mdp4_runtime_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct msm_drm_private *priv = platform_get_drvdata(pdev);
+	struct mdp4_kms *mdp4_kms;
+
+	if (!priv || !priv->kms)
+		return 0;
+
+	mdp4_kms = to_mdp4_kms(to_mdp_kms(priv->kms));
+
+	clk_disable_unprepare(mdp4_kms->vsync_clk);
+	clk_disable_unprepare(mdp4_kms->axi_clk);
+	clk_disable_unprepare(mdp4_kms->lut_clk);
+	clk_disable_unprepare(mdp4_kms->pclk);
+	clk_disable_unprepare(mdp4_kms->clk);
+
+	return 0;
+}
+
 static const struct dev_pm_ops mdp4_pm_ops = {
 	.prepare = msm_kms_pm_prepare,
 	.complete = msm_kms_pm_complete,
+	RUNTIME_PM_OPS(mdp4_runtime_suspend, mdp4_runtime_resume, NULL)
 };
 
 /* Default bandwidth values (in kBps) - used if not specified in DT */
