@@ -223,6 +223,20 @@ struct msm_gem_object {
 	/* For MSM_BO_CONTIGUOUS: DMA-allocated contiguous memory */
 	dma_addr_t dma_addr;
 
+	/*
+	 * Set when the BO was allocated from a no-map reserved-memory pool
+	 * (the device has of-pool dma_mem set up via memory-region in DT).
+	 * No struct page exists for these allocations — the sgt is built
+	 * from PFNs without sg_set_page(), and code that walks the sgt
+	 * (sync_for_gpu, sync_for_cpu, put_pages, mmap fault handler) must
+	 * take a separate path.
+	 *
+	 * The vaddr returned by dma_alloc_wc on a no-map of-pool comes
+	 * from memremap_wc — write-combine, NOT in the kernel's linear
+	 * map and NOT cached. virt_to_page() on it returns garbage.
+	 */
+	bool nomap_backed;
+
 	char name[32]; /* Identifier to print for the debugfs files */
 
 	/* userspace metadata backchannel */
