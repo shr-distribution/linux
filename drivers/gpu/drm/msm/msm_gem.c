@@ -403,11 +403,22 @@ static void put_pages(struct drm_gem_object *obj)
 
 	if (msm_obj->pages) {
 		if (msm_obj->sgt) {
-			/* For non-cached buffers, ensure the new
-			 * pages are clean because display controller,
-			 * GPU, etc. are not coherent:
+			struct msm_drm_private *priv = obj->dev->dev_private;
+
+			/*
+			 * On non-coherent platforms (e.g. MSM8660), CPU cache
+			 * lines for these pages may still be live when the
+			 * buffer is freed. Once pages return to the buddy
+			 * allocator and get reused, those stale cache lines
+			 * can later evict and overwrite the new owner's data.
+			 *
+			 * Match the submit-side behavior (sync_for_gpu on
+			 * every GPU-readable BO regardless of cache type):
+			 * invalidate CPU cache for ALL BOs on non-coherent
+			 * platforms, not just MSM_BO_WC.
 			 */
-			if (msm_obj->flags & MSM_BO_WC)
+			if ((msm_obj->flags & MSM_BO_WC) ||
+			    !priv->has_cached_coherent)
 				sync_for_cpu(msm_obj);
 
 			sg_free_table(msm_obj->sgt);
