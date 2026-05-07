@@ -9,7 +9,12 @@
 #include <linux/fault-inject.h>
 #include <linux/debugfs.h>
 #include <linux/of_address.h>
+#include <linux/sched.h>
 #include <linux/uaccess.h>
+
+#ifdef CONFIG_OUTER_CACHE
+#include <asm/outercache.h>
+#endif
 
 #include <drm/drm_drv.h>
 #include <drm/drm_file.h>
@@ -295,6 +300,10 @@ static void msm_postclose(struct drm_device *dev, struct drm_file *file)
 {
 	struct msm_drm_private *priv = dev->dev_private;
 	struct msm_context *ctx = file->driver_priv;
+	pid_t pid = task_pid_nr(current);
+
+	pr_info("msm_drv: postclose pid=%d (%s) — context teardown begin\n",
+		pid, current->comm);
 
 	/*
 	 * It is not possible to set sysprof param to non-zero if gpu
@@ -304,6 +313,34 @@ static void msm_postclose(struct drm_device *dev, struct drm_file *file)
 		msm_context_set_sysprof(ctx, priv->gpu, 0);
 
 	context_close(ctx);
+
+	/*
+	 * DIAG/SLEDGEHAMMER: drop the outer (PL310 L2) cache after every DRM
+	 * client exits, on non-cached-coherent platforms (MSM8660 / Scorpion).
+	 *
+	 * Hypothesis: when a heavy GPU client (luna-surface-manager) exits,
+	 * its BO pages return to the buddy allocator with stale L1/L2 lines
+	 * still in the CPU cache. Subsequent allocations get those pages back,
+	 * write new data via mmap, and the new data races stale-cache eviction
+	 * — visible as kmscube rendering with most vertex colors as zero
+	 * (only the first ~4KB segment looks correct because that's the
+	 * subset our per-BO sync_for_cpu actually invalidated).
+	 *
+	 * outer_flush_all() drops every PL310 line. Heavy hammer (~ms scale)
+	 * but only fires on file close, not in any hot path. If the bug
+	 * disappears with this, we've proven the issue is cache pollution
+	 * and can replace the sledgehammer with a per-segment fix in
+	 * sync_for_cpu().
+	 */
+#ifdef CONFIG_OUTER_CACHE
+	if (!priv->has_cached_coherent) {
+		pr_info("msm_drv: postclose pid=%d — outer_flush_all() to drop stale L2 lines\n",
+			pid);
+		outer_flush_all();
+	}
+#endif
+
+	pr_info("msm_drv: postclose pid=%d — context teardown done\n", pid);
 }
 
 /*

@@ -164,6 +164,15 @@ static void sync_for_cpu(struct msm_gem_object *msm_obj)
 {
 	struct device *dev = msm_obj->base.dev->dev;
 
+	/*
+	 * DIAG: log to see if this fires per-BO. If we see the count
+	 * scale with surface-manager's BO count, the cache invalidation
+	 * IS being attempted — meaning the bug must be in dma_unmap_sgtable
+	 * itself not invalidating ALL pages of a multi-page sg.
+	 */
+	pr_info_ratelimited("msm_gem sync_for_cpu: obj=%pK\n",
+			    &msm_obj->base);
+
 	dma_unmap_sgtable(dev, msm_obj->sgt, DMA_BIDIRECTIONAL, 0);
 }
 
@@ -404,6 +413,33 @@ static void put_pages(struct drm_gem_object *obj)
 	if (msm_obj->pages) {
 		if (msm_obj->sgt) {
 			struct msm_drm_private *priv = obj->dev->dev_private;
+
+			/*
+			 * DIAG: log sgt structure so we can see whether multi-
+			 * page BOs use chained sg entries (single sg covering
+			 * many pages) — `dma_unmap_sgtable(BIDIRECTIONAL)` may
+			 * only invalidate the first segment if so.
+			 */
+			{
+				struct scatterlist *sg;
+				unsigned int nents = 0;
+				size_t total_len = 0, first_len = 0;
+				int i;
+
+				for_each_sgtable_sg(msm_obj->sgt, sg, i) {
+					if (i == 0)
+						first_len = sg->length;
+					total_len += sg->length;
+					nents++;
+				}
+
+				pr_info_ratelimited(
+					"msm_gem put_pages: pid=%d obj=%pK size=%zu flags=0x%lx nents=%u first_sg=%zu total=%zu coherent=%d\n",
+					task_pid_nr(current), obj, obj->size,
+					msm_obj->flags, nents, first_len,
+					total_len,
+					(int)priv->has_cached_coherent);
+			}
 
 			/*
 			 * On non-coherent platforms (e.g. MSM8660), CPU cache
