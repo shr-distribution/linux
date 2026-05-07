@@ -18,6 +18,18 @@ extern bool hang_debug;
 static void a2xx_dump(struct msm_gpu *gpu);
 static bool a2xx_idle(struct msm_gpu *gpu);
 
+/*
+ * Memory bandwidth vote in icc units (kBps), proportional to GPU clock with
+ * 8 bytes/cycle on the 64-bit memory bus. Legacy webOS msm_bus voted
+ * ab=ib=2008 MB/s for grp3d_max — set both avg and peak so the AFAB
+ * aggregator (sum of avg, max of peak) sees the GPU's full demand and
+ * scales fabric clock appropriately.
+ */
+static u32 a2xx_icc_bw_for_freq(unsigned long freq_hz)
+{
+	return Bps_to_icc(freq_hz) * 8;
+}
+
 static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
 	struct msm_ringbuffer *ring = submit->ring;
@@ -752,9 +764,12 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 	if (ret)
 		return ret;
 
-	/* Restore max bandwidth after resume (cleared in suspend) */
-	if (a2xx_gpu->icc_path)
-		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
+	/* Restore bandwidth after resume (cleared in suspend) */
+	if (a2xx_gpu->icc_path) {
+		u32 bw = a2xx_icc_bw_for_freq(gpu->fast_rate);
+
+		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
+	}
 
 	return 0;
 }
@@ -778,12 +793,15 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 		return;
 
 	/*
-	 * Set bandwidth proportional to frequency.
-	 * Use the same calculation as init: Bps_to_icc(freq) * 8
-	 * This approximates memory bandwidth needs for the GPU.
+	 * Set both avg and peak bandwidth proportional to frequency,
+	 * matching the legacy webOS msm_bus grp3d_max_vectors pattern
+	 * (ab = ib = clock × 8 bytes/cycle).
 	 */
-	if (a2xx_gpu->icc_path)
-		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(freq) * 8);
+	if (a2xx_gpu->icc_path) {
+		u32 bw = a2xx_icc_bw_for_freq(freq);
+
+		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
+	}
 
 	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
 }
@@ -863,11 +881,15 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	}
 
 	/*
-	 * Set initial interconnect bandwidth to maximum.
-	 * This will be adjusted during runtime PM suspend/resume.
+	 * Set initial interconnect bandwidth to max (avg = peak), matching
+	 * legacy webOS grp3d_max_vectors. Adjusted during runtime PM and
+	 * devfreq scaling.
 	 */
-	if (a2xx_gpu->icc_path)
-		icc_set_bw(a2xx_gpu->icc_path, 0, Bps_to_icc(gpu->fast_rate) * 8);
+	if (a2xx_gpu->icc_path) {
+		u32 bw = a2xx_icc_bw_for_freq(gpu->fast_rate);
+
+		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
+	}
 
 	if (adreno_is_a20x(adreno_gpu))
 		adreno_gpu->registers = a200_registers;
