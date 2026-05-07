@@ -459,32 +459,24 @@ static struct page **get_pages(struct drm_gem_object *obj)
 		 * the normal path, which is safe for (a).
 		 */
 		if (msm_obj->flags & MSM_BO_CONTIGUOUS) {
-			struct msm_drm_private *mpriv = dev->dev_private;
 			void *vaddr;
 			dma_addr_t dma_addr;
 
 			/*
-			 * Try the custom SMI pool first if available
-			 * (drm_smi_mem reserved-memory). This sidesteps
-			 * dma_alloc_from_dev_coherent's broken
-			 * memremap_wc-of-full-region path on 32-bit ARM.
-			 * Fall through to dma_alloc_wc (system CMA) if SMI
-			 * is full or absent.
+			 * Note: an earlier iteration of this code routed
+			 * MSM_BO_CONTIGUOUS allocations through the custom
+			 * msm_smi_pool when available (drm_smi_mem at
+			 * 0x38300000 on tenderloin). The SMI allocator works
+			 * fine for kernel/userspace mmap, but MDP4 scanout
+			 * from the SMI region produces visible red/green
+			 * horizontal stripes — and cross-checked reference
+			 * kernels (webOS, HTC pyramid, Samsung Q1) confirm
+			 * MSM8660 framebuffers were always in EBI/main DDR;
+			 * SMI was reserved purely for camera/video codec
+			 * buffers via /dev/pmem_smipool. We follow that
+			 * pattern: contiguous BOs go to system CMA, the SMI
+			 * pool stays available for future non-display use.
 			 */
-			if (mpriv->smi) {
-				void __iomem *vio = NULL;
-				phys_addr_t phys =
-					msm_smi_alloc(dev, obj->size, &vio);
-				if (phys) {
-					msm_obj->vaddr        = (void *)vio;
-					msm_obj->dma_addr     = phys;
-					msm_obj->nomap_backed = true;
-					msm_obj->smi_backed   = true;
-					goto build_nomap_sgt;
-				}
-				/* Fall through to system CMA on SMI miss. */
-			}
-
 			vaddr = dma_alloc_wc(dev->dev, obj->size,
 					     &dma_addr, GFP_KERNEL);
 			if (!vaddr) {
