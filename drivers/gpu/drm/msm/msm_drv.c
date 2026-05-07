@@ -5,9 +5,11 @@
  * Author: Rob Clark <robdclark@gmail.com>
  */
 
+#include <linux/bitmap.h>
 #include <linux/dma-mapping.h>
 #include <linux/fault-inject.h>
 #include <linux/debugfs.h>
+#include <linux/io.h>
 #include <linux/of_address.h>
 #include <linux/uaccess.h>
 
@@ -66,6 +68,161 @@ bool msm_gpu_no_components(void)
 	return separate_gpu_kms;
 }
 
+/*
+ * =====================================================================
+ * SMI pool: custom bitmap allocator over drm_smi_mem reserved-memory
+ *
+ * See struct msm_smi_pool comment in msm_drv.h for rationale. Briefly:
+ * we can't use dma_alloc_from_dev_coherent on this region because
+ * memremap_wc doesn't reliably populate L2 page tables for a no-map
+ * region outside PHYS_OFFSET, and the dma-coherent helper unconditionally
+ * memsets the freshly-allocated buffer through that broken mapping
+ * (-> kernel paging fault). Manage it ourselves; ioremap_wc per
+ * allocation gets us reliable page-table coverage.
+ * =====================================================================
+ */
+
+#define SMI_RMEM_NODE_PATH "/reserved-memory/framebuffer@38300000"
+
+int msm_smi_init(struct drm_device *dev)
+{
+	struct msm_drm_private *priv = dev->dev_private;
+	struct msm_smi_pool *p;
+	struct device_node *np;
+	struct resource res;
+	int ret;
+
+	if (priv->smi)
+		return 0; /* already initialised */
+
+	np = of_find_node_by_path(SMI_RMEM_NODE_PATH);
+	if (!np) {
+		dev_dbg(dev->dev, "SMI: no %s node, pool disabled\n",
+			SMI_RMEM_NODE_PATH);
+		return 0; /* not fatal */
+	}
+
+	ret = of_address_to_resource(np, 0, &res);
+	of_node_put(np);
+	if (ret) {
+		dev_warn(dev->dev,
+			 "SMI: failed to read reg from %s: %d\n",
+			 SMI_RMEM_NODE_PATH, ret);
+		return 0;
+	}
+
+	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	p->base = res.start;
+	p->size = resource_size(&res);
+	p->nr_pages = p->size >> PAGE_SHIFT;
+	p->bitmap = bitmap_zalloc(p->nr_pages, GFP_KERNEL);
+	if (!p->bitmap) {
+		kfree(p);
+		return -ENOMEM;
+	}
+	mutex_init(&p->lock);
+
+	priv->smi = p;
+	dev_info(dev->dev,
+		 "SMI: pool initialised at %pap size %zu MiB (%zu pages)\n",
+		 &p->base, p->size >> 20, p->nr_pages);
+	return 0;
+}
+
+void msm_smi_fini(struct drm_device *dev)
+{
+	struct msm_drm_private *priv = dev->dev_private;
+	struct msm_smi_pool *p = priv->smi;
+
+	if (!p)
+		return;
+
+	if (!bitmap_empty(p->bitmap, p->nr_pages))
+		dev_warn(dev->dev,
+			 "SMI: pool teardown with allocations still live\n");
+
+	bitmap_free(p->bitmap);
+	mutex_destroy(&p->lock);
+	kfree(p);
+	priv->smi = NULL;
+}
+
+/*
+ * Find a contiguous run of `npages` clear bits, mark them set, ioremap
+ * them and return the physical address. Returns 0 on failure.
+ */
+phys_addr_t msm_smi_alloc(struct drm_device *dev, size_t size,
+			  void __iomem **vaddr_out)
+{
+	struct msm_drm_private *priv = dev->dev_private;
+	struct msm_smi_pool *p = priv->smi;
+	size_t npages = (PAGE_ALIGN(size)) >> PAGE_SHIFT;
+	void __iomem *vaddr;
+	phys_addr_t phys;
+	size_t offset;
+
+	*vaddr_out = NULL;
+
+	if (!p)
+		return 0;
+
+	mutex_lock(&p->lock);
+	offset = bitmap_find_next_zero_area(p->bitmap, p->nr_pages, 0, npages, 0);
+	if (offset >= p->nr_pages) {
+		mutex_unlock(&p->lock);
+		dev_warn_ratelimited(dev->dev,
+			"SMI: pool exhausted, requested %zu pages\n", npages);
+		return 0;
+	}
+	bitmap_set(p->bitmap, offset, npages);
+	mutex_unlock(&p->lock);
+
+	phys = p->base + (offset << PAGE_SHIFT);
+	vaddr = ioremap_wc(phys, npages << PAGE_SHIFT);
+	if (!vaddr) {
+		mutex_lock(&p->lock);
+		bitmap_clear(p->bitmap, offset, npages);
+		mutex_unlock(&p->lock);
+		dev_err(dev->dev,
+			"SMI: ioremap_wc failed for %pap size %zu\n",
+			&phys, npages << PAGE_SHIFT);
+		return 0;
+	}
+
+	*vaddr_out = vaddr;
+	return phys;
+}
+
+void msm_smi_free(struct drm_device *dev, phys_addr_t phys, size_t size,
+		  void __iomem *vaddr)
+{
+	struct msm_drm_private *priv = dev->dev_private;
+	struct msm_smi_pool *p = priv->smi;
+	size_t npages = (PAGE_ALIGN(size)) >> PAGE_SHIFT;
+	size_t offset;
+
+	if (!p)
+		return;
+
+	if (vaddr)
+		iounmap(vaddr);
+
+	if (phys < p->base || phys + (npages << PAGE_SHIFT) > p->base + p->size) {
+		dev_warn(dev->dev,
+			 "SMI: free of %pap not in pool [%pap+%zu]\n",
+			 &phys, &p->base, p->size);
+		return;
+	}
+
+	offset = (phys - p->base) >> PAGE_SHIFT;
+	mutex_lock(&p->lock);
+	bitmap_clear(p->bitmap, offset, npages);
+	mutex_unlock(&p->lock);
+}
+
 static int msm_drm_uninit(struct device *dev, const struct component_ops *gpu_ops)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -86,6 +243,8 @@ static int msm_drm_uninit(struct device *dev, const struct component_ops *gpu_op
 	}
 
 	msm_gem_shrinker_cleanup(ddev);
+
+	msm_smi_fini(ddev);
 
 	msm_perf_debugfs_cleanup(priv);
 	msm_rd_debugfs_cleanup(priv);
@@ -176,6 +335,16 @@ static int msm_drm_init(struct device *dev, const struct drm_driver *drv,
 	}
 
 	ret = msm_gem_shrinker_init(ddev);
+	if (ret)
+		goto err_msm_uninit;
+
+	/*
+	 * SMI pool init is best-effort: if drm_smi_mem isn't in DT, the
+	 * pool is left NULL and GEM allocations fall through to system
+	 * CMA via dma_alloc_wc. Failure to allocate the bitmap is fatal
+	 * (we wanted SMI but couldn't init it cleanly).
+	 */
+	ret = msm_smi_init(ddev);
 	if (ret)
 		goto err_msm_uninit;
 
