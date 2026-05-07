@@ -372,7 +372,12 @@ static void update_lru_active(struct drm_gem_object *obj)
 	struct msm_drm_private *priv = obj->dev->dev_private;
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
 
-	GEM_WARN_ON(!msm_obj->pages);
+	/*
+	 * nomap_backed BOs (SMI pool / of-pool) have permanent backing
+	 * for their entire lifetime — there are no struct pages, but the
+	 * BO is never in lru.unbacked. Skip the pages assertion for them.
+	 */
+	GEM_WARN_ON(!msm_obj->pages && !msm_obj->nomap_backed);
 
 	if (msm_obj->pin_count) {
 		drm_gem_lru_move_tail_locked(&priv->lru.pinned, obj);
@@ -392,7 +397,11 @@ static void update_lru_locked(struct drm_gem_object *obj)
 
 	msm_gem_assert_locked(&msm_obj->base);
 
-	if (!msm_obj->pages) {
+	/*
+	 * nomap_backed BOs always have backing — treat them as active
+	 * for LRU purposes regardless of pages == NULL.
+	 */
+	if (!msm_obj->pages && !msm_obj->nomap_backed) {
 		GEM_WARN_ON(msm_obj->pin_count);
 
 		drm_gem_lru_move_tail_locked(&priv->lru.unbacked, obj);
