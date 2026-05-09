@@ -298,6 +298,33 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 	OUT_RING(ring, 0);
 
 	for (slot = 0; slot < 8; slot++) {
+		/*
+		 * EXPERIMENTAL "dummy advance": CP_INVALIDATE_STATE with
+		 * mask 0x7fff (invalidate ALL hw state classes) at the top
+		 * of each scrub iteration. Per Gemini-AI's analysis of the
+		 * Adreno 220 SQ wavefront slot scheduler, packets that
+		 * "consume a slot" advance the scheduler's allocation
+		 * pointer; CP_INVALIDATE_STATE is one of the candidates.
+		 *
+		 * Mask 0x7fff = vertex shader (0x100) + pixel shader (0x200)
+		 * + all the other internal state-class bits the hardware
+		 * tracks. Mesa freedreno's old patch 0036 used this exact
+		 * mask before a shader upload.
+		 *
+		 * If this rotates the slot pointer, the subsequent
+		 * CP_LOAD_CONSTANT_CONTEXT writes will land on different
+		 * slots across the 8 iterations, scrubbing all of them
+		 * (rather than re-writing the same slot 8 times).
+		 *
+		 * Followed by WFI to ensure the invalidate is fully retired
+		 * before the next packet. CP_INVALIDATE_STATE alone may not
+		 * stall.
+		 */
+		OUT_PKT3(ring, CP_INVALIDATE_STATE, 1);
+		OUT_RING(ring, 0x00007fff);
+		OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
+		OUT_RING(ring, 0);
+
 		if (have_shadow) {
 			/*
 			 * Bulk-load the entire ALU constant bank (512 vec4 =
