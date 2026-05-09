@@ -107,6 +107,42 @@ static int a2xx_alloc_shadow(struct msm_gpu *gpu)
 
 	memset(a2xx_gpu->shadow_vaddr, 0, SZ_8K);
 
+	/*
+	 * Pre-populate the SoC-reserved ALU slots with values the
+	 * fixed-function vertex pipeline relies on. Sampled from the
+	 * legacy webOS proprietary stack (KGSL + Qualcomm libGLESv2)
+	 * via gpu-regdump-webos -- see reports/fb-captures/
+	 * webos-soc-reference.txt.
+	 *
+	 * Only slots 1 and 2 hold non-zero SoC values; all other slots
+	 * in 0..31 read as zero on the proprietary stack and are left
+	 * zero here. The decoded values are mathematical constants that
+	 * appear to be used by the viewport-transform / LOD-bias /
+	 * fixed-function math units:
+	 *
+	 *   ALU[1] = (19984.0f, 1.0f, 0.5f, 0.0f)
+	 *   ALU[2] = (2.0f, 0.75f, 0.375f, 0.25f)
+	 *
+	 * Without these in the shadow, PM4_LOAD_CONSTANT_CONTEXT would
+	 * blindly write zero into slots 1/2 and break the vertex
+	 * pipeline (rendering goes degenerate / black). With them, the
+	 * packet's bulk-restore brings the GPU into the same starting
+	 * state as a fresh KGSL context.
+	 */
+	{
+		u32 *alu = (u32 *)a2xx_gpu->shadow_vaddr;
+		/* slot 1 */
+		alu[1 * 4 + 0] = 0x469c4000;  /* 19984.0f */
+		alu[1 * 4 + 1] = 0x3f800000;  /* 1.0f */
+		alu[1 * 4 + 2] = 0x3f000000;  /* 0.5f */
+		alu[1 * 4 + 3] = 0x00000000;
+		/* slot 2 */
+		alu[2 * 4 + 0] = 0x40000000;  /* 2.0f */
+		alu[2 * 4 + 1] = 0x3f400000;  /* 0.75f */
+		alu[2 * 4 + 2] = 0x3ec00000;  /* 0.375f */
+		alu[2 * 4 + 3] = 0x3e800000;  /* 0.25f */
+	}
+
 	return 0;
 }
 
@@ -140,25 +176,13 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 	const unsigned BOOL_CONSTANTS  = 8;
 	const unsigned LOOP_CONSTANTS  = 56;
 	/*
-	 * Gating: LOAD_CONSTANT_CONTEXT is currently disabled because the
-	 * shadow BO is all-zeros, but the packet's hardware DMA microengine
-	 * also blindly resets SoC-reserved ALU slots 0..31 (regardless of
-	 * the offset operand), wiping fixed-function vertex-pipeline
-	 * constants that the HW relies on (slot 1 = (0x469c4000, 1.0, 0.5, 0)
-	 * etc.). Direct A/B confirmed worse pixel output than the
-	 * CP_SET_CONSTANT fallback below.
-	 *
-	 * To re-enable safely we need to first sample slots 0..31 of the
-	 * ALU and texture-fetch banks from the legacy webOS proprietary
-	 * stack via gpu-regdump-webos and bake those values into the
-	 * shadow BO at allocation time. Once that's done, set this to
-	 * (a2xx_gpu->shadow_bo != NULL) to take the LOAD_CONSTANT_CONTEXT
-	 * path - which mirrors what KGSL did and is the architecturally
-	 * correct mechanism.
+	 * have_shadow: take the LOAD_CONSTANT_CONTEXT path if the shadow
+	 * BO was allocated successfully. The shadow is pre-populated with
+	 * SoC-reserved ALU defaults (slots 1, 2) confirmed stable across
+	 * 10 webOS runs - see a2xx_alloc_shadow().
 	 */
-	bool have_shadow = false;  /* a2xx_gpu->shadow_bo != NULL; */
+	bool have_shadow = a2xx_gpu->shadow_bo != NULL;
 	unsigned i;
-	(void)a2xx_gpu;  /* unused while have_shadow is forced false */
 
 	/* Drain anything in flight from the previous client. */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
@@ -166,25 +190,38 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 
 	if (have_shadow) {
 		/*
-		 * Bulk-load ALU constants from the kernel-pinned shadow
-		 * buffer via PM4_LOAD_CONSTANT_CONTEXT.  This mirrors the
-		 * KGSL legacy path exactly; the hardware DMA engine inside
-		 * the CP fetches USER_ALU_DWORDS dwords from shadow_iova
-		 * and writes them into ALU constant SRAM starting at
-		 * dword offset USER_ALU_OFFSET (slot 32).
+		 * Bulk-load the ENTIRE ALU constant bank (all 512 vec4 =
+		 * 2048 dwords) from the kernel-pinned shadow buffer via
+		 * PM4_LOAD_CONSTANT_CONTEXT. Mirrors the KGSL legacy
+		 * context-restore path exactly:
+		 *
+		 *   *cmd++ = pm4_type3_packet(PM4_LOAD_CONSTANT_CONTEXT, 3);
+		 *   *cmd++ = drawctxt->gpustate.gpuaddr & 0xFFFFE000;
+		 *   *cmd++ = (1 << 24) | (0 << 16) | 0;
+		 *   *cmd++ = ALU_CONSTANTS;   // = 2048
 		 *
 		 * Packet payload:
 		 *   addr  = shadow_iova (8 KB-aligned)
 		 *   ctrl  = (shadow_disable << 24) | (type << 16) | offset
-		 *           bit 24 = 0  (one-shot load, no write-back)
-		 *           bits 16-23 = 0  (type=0 ALU)
-		 *           bits 0-15 = 0x80  (dest dword offset)
-		 *   count = number of dwords
+		 *           bit 24 = 0   (one-shot load, no write-back -
+		 *                        we re-load fresh from the kernel-
+		 *                        owned shadow at every cross-context
+		 *                        boundary)
+		 *           bits 16-23 = 0   (type=0 ALU)
+		 *           bits 0-15 = 0    (dest dword offset 0 - full bank)
+		 *   count = 2048             (entire bank)
+		 *
+		 * Loading from offset 0 means SoC-reserved ALU slots 0..31
+		 * are also overwritten - that's the right thing to do here
+		 * because the shadow has the correct webOS-sampled values
+		 * for those slots pre-populated (see a2xx_alloc_shadow).
+		 * This is exactly what KGSL does.
 		 */
+		const unsigned ALU_CONSTANTS = 2048;
 		OUT_PKT3(ring, CP_LOAD_CONSTANT_CONTEXT, 3);
 		OUT_RING(ring, lower_32_bits(a2xx_gpu->shadow_iova));
-		OUT_RING(ring, (0 << 24) | (0 << 16) | USER_ALU_OFFSET);
-		OUT_RING(ring, USER_ALU_DWORDS);
+		OUT_RING(ring, (0 << 24) | (0 << 16) | 0);
+		OUT_RING(ring, ALU_CONSTANTS);
 	} else {
 		/*
 		 * Fall back to inline CP_SET_CONSTANT zero-fill if the
