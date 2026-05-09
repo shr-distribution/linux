@@ -115,9 +115,37 @@ static int a2xx_alloc_shadow(struct msm_gpu *gpu)
 		 &iova, &aligned_iova, &a2xx_gpu->shadow_tex_iova,
 		 &gpu->rb[0]->iova);
 
-	/* Zero ALU shadow (slots 1, 2 are pre-populated below) +
-	 * TEX shadow (vertex/texture fetch descriptors all zero). */
-	memset(a2xx_gpu->shadow_vaddr, 0, SZ_16K);
+	/* Zero ALU shadow (slots 1, 2 are pre-populated below). */
+	memset(a2xx_gpu->shadow_vaddr, 0, SZ_8K);
+
+	/*
+	 * DIAGNOSTIC: fill the TEX (fetch descriptor) shadow region
+	 * with 0xDEADBEEF instead of zeros.
+	 *
+	 * 100-run gl-cap test on the previous "8x scrub + TEX bank"
+	 * kernel produced byte-identical pixel hashes to the previous
+	 * "8x scrub" kernel, suggesting the kernel-side TEX bulk-load
+	 * via CP_LOAD_CONSTANT_CONTEXT was a no-op - either silently
+	 * failing or being overwritten by Mesa's per-draw fetch-
+	 * descriptor writes before any vertex fetch fires.
+	 *
+	 * If this 0xDEADBEEF fill changes the pixel output at all (any
+	 * new hash, missing triangle, kernel hang, etc.), the kernel
+	 * TEX load IS effective and we just need to figure out what
+	 * Mesa expects there.
+	 *
+	 * If pixel output stays byte-identical to the zero-fill case,
+	 * the TEX load is a confirmed no-op and the channel-drop bug
+	 * is somewhere else entirely.
+	 *
+	 * 192 dwords = 32 fetch slots * 6 dwords each = 768 bytes.
+	 */
+	{
+		u32 *tex = (u32 *)(a2xx_gpu->shadow_vaddr + SZ_8K);
+		unsigned i;
+		for (i = 0; i < 192; i++)
+			tex[i] = 0xDEADBEEF;
+	}
 
 	/*
 	 * Pre-populate the SoC-reserved ALU slots with values the
