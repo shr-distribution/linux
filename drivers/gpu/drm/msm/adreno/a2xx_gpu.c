@@ -142,20 +142,48 @@ static int a2xx_alloc_shadow(struct msm_gpu *gpu)
 		 &iova, &aligned_iova, &a2xx_gpu->shadow_tex_iova,
 		 &gpu->rb[0]->iova);
 
-	/* Zero ALU shadow (slots 1, 2 are pre-populated below) +
-	 * TEX shadow (vertex/texture fetch descriptors all zero).
+	/* Zero ALU shadow (slots 1, 2 are pre-populated below). */
+	memset(a2xx_gpu->shadow_vaddr, 0, SZ_8K);
+
+	/*
+	 * EXP1: Fill the TEX shadow with a "valid 4-channel RGBA"
+	 * default descriptor pattern (instead of zero), repeated for
+	 * all 32 fetch slots.
 	 *
-	 * The 0xDEADBEEF sentinel diagnostic in commit 84de002555e3
-	 * confirmed the kernel CP_LOAD_CONSTANT_CONTEXT for TEX does
-	 * broadcast to all 8 SQ wavefront slots - a 0xDEADBEEF fill
-	 * broke every one of the 8 cycle outputs, while a zero fill
-	 * leaves a known-good baseline that Mesa's per-draw inline
-	 * CP_SET_CONSTANT (active-slot-only) fixes up to varying
-	 * degrees depending on which slot is active when the user IB
-	 * runs. The Mesa-side fix (re-emit fetch descriptors so all 8
-	 * slots see them) is the next part.
+	 * Hypothesis (per Gemini analysis): for VFETCH instructions,
+	 * the SQ fetch unit consults dwords 2-5 of the slot to validate
+	 * format / channel selection. With dwords 2-5 zeroed, the unit
+	 * may interpret the slot as a 2-component (RG) descriptor
+	 * defaulting one or two channels (Blue, Alpha) to zero - which
+	 * matches our empirical "missing red OR blue, never green"
+	 * symptom on 6/7 broken cycle positions.
+	 *
+	 * Pattern lifted from KGSL's sys2gmem_tex_const[] in
+	 * kgsl_drawctxt.c (legacy webOS kernel reference). Encodes:
+	 *   - Format=8888_WZYX (32-bit RGBA)
+	 *   - DstSel=XYZW (all 4 channels selected)
+	 *   - MagFilt/MinFilt=Point, Mip=BaseMap
+	 *   - Dim=2D
+	 *
+	 * Mesa's per-draw CP_SET_CONSTANT to vbuf slot 20+ overwrites
+	 * dwords 0-1 (base address + size) for the active slot; dwords
+	 * 2-5 stay at this kernel-set valid default.
 	 */
-	memset(a2xx_gpu->shadow_vaddr, 0, SZ_16K);
+	{
+		static const u32 valid_tex_const[6] = {
+			0x00000002,                               /* d0: pitch (TBD by Mesa) */
+			0x00000800,                               /* d1: Format=8888_WZYX, ReqSize=256bit, NearestClamp=OGL */
+			0,                                        /* d2: width/height (TBD by Mesa) */
+			(0u << 1) | (1u << 4) | (2u << 7)
+				| (3u << 10) | (2u << 23),        /* d3: NumFormat=RF, DstSel=XYZW, MagFilt/MinFilt=Point, Mip=BaseMap */
+			0,                                        /* d4: VolMag/VolMin=Point, MinMipLvl=0, MaxMipLvl=1 */
+			(1u << 9),                                /* d5: BorderColor=ABGRBlack, Dim=2D */
+		};
+		u32 *tex = (u32 *)(a2xx_gpu->shadow_vaddr + SZ_8K);
+		unsigned i;
+		for (i = 0; i < 32; i++)
+			memcpy(&tex[i * 6], valid_tex_const, sizeof(valid_tex_const));
+	}
 
 	/*
 	 * Pre-populate the SoC-reserved ALU slots with values the
