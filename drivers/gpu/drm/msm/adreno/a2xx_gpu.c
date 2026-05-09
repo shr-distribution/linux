@@ -832,7 +832,10 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 	mstatus = gpu_read(gpu, REG_A2XX_MASTER_INT_SIGNAL);
 
 	if (mstatus & A2XX_MASTER_INT_SIGNAL_MH_INT_STAT) {
-		uint32_t fault_addr;
+		uint32_t fault_addr, tran_err, rbbm_st;
+		uint32_t rb_base, rb_rptr, rb_wptr;
+		uint32_t ib1_base, ib1_bufsz;
+		uint32_t clnt_cfg1, clnt_cfg2;
 
 		status = gpu_read(gpu, REG_A2XX_MH_INTERRUPT_STATUS);
 		fault_addr = gpu_read(gpu, REG_A2XX_MH_MMU_PAGE_FAULT);
@@ -840,8 +843,37 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 		dev_warn(gpu->dev->dev, "MH_INT: %08X\n", status);
 		dev_warn(gpu->dev->dev, "MMU_PAGE_FAULT: %08X\n", fault_addr);
 
-		/* Dump page table entry for the faulting address */
 		if (status & A2XX_MH_INTERRUPT_MASK_MMU_PAGE_FAULT) {
+			/*
+			 * Extra diagnostics for the deterministic
+			 * 0xc000428b fault. Dumps where the CP was in
+			 * the cmdstream, which IB, which MH client
+			 * generated the bad access, and the AXI
+			 * translation-error code.
+			 */
+			tran_err  = gpu_read(gpu, REG_A2XX_MH_MMU_TRAN_ERROR);
+			rbbm_st   = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
+			rb_base   = gpu_read(gpu, REG_AXXX_CP_RB_BASE);
+			rb_rptr   = gpu_read(gpu, REG_AXXX_CP_RB_RPTR);
+			rb_wptr   = gpu_read(gpu, REG_AXXX_CP_RB_WPTR);
+			ib1_base  = gpu_read(gpu, REG_AXXX_CP_IB1_BASE);
+			ib1_bufsz = gpu_read(gpu, REG_AXXX_CP_IB1_BUFSZ);
+			clnt_cfg1 = gpu_read(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1);
+			clnt_cfg2 = gpu_read(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG2);
+
+			dev_warn(gpu->dev->dev,
+				 "  TRAN_ERROR=%08x RBBM_STATUS=%08x\n",
+				 tran_err, rbbm_st);
+			dev_warn(gpu->dev->dev,
+				 "  RB_BASE=%08x RPTR=%08x WPTR=%08x\n",
+				 rb_base, rb_rptr, rb_wptr);
+			dev_warn(gpu->dev->dev,
+				 "  IB1_BASE=%08x IB1_BUFSZ=%08x\n",
+				 ib1_base, ib1_bufsz);
+			dev_warn(gpu->dev->dev,
+				 "  MH_CLNT_INTF_CFG1=%08x CFG2=%08x\n",
+				 clnt_cfg1, clnt_cfg2);
+
 			a2xx_gpummu_debug_fault(to_msm_vm(gpu->vm)->mmu, fault_addr);
 		}
 
