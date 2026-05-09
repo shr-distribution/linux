@@ -32,18 +32,14 @@ MODULE_PARM_DESC(a2xx_skip_preamble,
 		 "skip a2xx cross-context sanitizer preamble (0=emit, 1=skip)");
 
 /*
- * Track the last user IB1 across submits so the MMU fault handler can
- * dump its contents for forensic analysis of the 0xc000428b fault. The
- * pointer is valid only while the BO refcount we hold is alive (we
- * keep a kgem ref). We update it in a2xx_submit (sleepable context)
- * and read it from the IRQ handler (atomic context) - reads never
- * dereference NULL.
+ * Track the last user IB1 across submits for forensic dump on MMU
+ * fault. Only the IOVA + size are saved; the kvirt resolution is
+ * deferred to fault time and uses a gpummu page-table walk
+ * (a2xx_gpummu_iova_to_kvirt) which doesn't require GEM locking.
  */
 static struct {
 	u64 ib1_iova;
 	u32 ib1_size;
-	u32 *ib1_kvaddr;
-	struct drm_gem_object *ib1_bo;
 } a2xx_last_ib;
 
 static void a2xx_dump(struct msm_gpu *gpu);
@@ -382,35 +378,22 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 
 	/*
 	 * Track the FIRST user IB1 of this submit for forensic dump on
-	 * MMU fault. Replace any previous capture (release prior kvaddr
-	 * mapping) so we always have the most recent submit available.
+	 * MMU fault. Just save the IOVA + size; the kvirt resolution
+	 * happens at fault time via a page-table walk
+	 * (a2xx_gpummu_iova_to_kvirt) which doesn't require GEM locking.
+	 *
+	 * Earlier attempts to capture kvaddr at submit time via
+	 * msm_gem_get_vaddr failed (-EBUSY for DONTNEED BOs) and the
+	 * msm_gem_get_vaddr_active fallback deadlocked because the
+	 * submit path already holds the BO's reservation lock through
+	 * drm_exec.
 	 */
 	for (i = 0; i < submit->nr_cmds; i++) {
-		struct drm_gem_object *ib_bo;
-		void *kvaddr;
-
 		if (submit->cmd[i].type != MSM_SUBMIT_CMD_BUF)
 			continue;
 
-		if (a2xx_last_ib.ib1_bo) {
-			msm_gem_put_vaddr(a2xx_last_ib.ib1_bo);
-			a2xx_last_ib.ib1_bo     = NULL;
-			a2xx_last_ib.ib1_kvaddr = NULL;
-		}
-
-		ib_bo = submit->bos[submit->cmd[i].idx].obj;
-		kvaddr = msm_gem_get_vaddr(ib_bo);
-		dev_info(gpu->dev->dev,
-			 "a2xx capture IB1: cmd[%u] type=%u idx=%u iova=%016llx size=%u kvaddr=%s\n",
-			 i, submit->cmd[i].type, submit->cmd[i].idx,
-			 submit->cmd[i].iova, submit->cmd[i].size,
-			 IS_ERR(kvaddr) ? "ERR" : (kvaddr ? "OK" : "NULL"));
-		if (!IS_ERR_OR_NULL(kvaddr)) {
-			a2xx_last_ib.ib1_iova   = submit->cmd[i].iova;
-			a2xx_last_ib.ib1_size   = submit->cmd[i].size;
-			a2xx_last_ib.ib1_kvaddr = (u32 *)kvaddr;
-			a2xx_last_ib.ib1_bo     = ib_bo;
-		}
+		a2xx_last_ib.ib1_iova = submit->cmd[i].iova;
+		a2xx_last_ib.ib1_size = submit->cmd[i].size;
 		break;
 	}
 
@@ -946,28 +929,37 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 			 * Dump up to 64 dwords of the last submitted user IB1
 			 * so we can grep for the offending pointer (0xc000428b)
 			 * and find which packet / descriptor placed it there.
+			 *
+			 * Resolve IOVA -> kvirt at fault time via the gpummu
+			 * page table (no GEM locks taken). A single page (4 KB
+			 * = 1024 dwords) is enough; we cap at 64 dwords below.
 			 */
-			if (a2xx_last_ib.ib1_kvaddr && a2xx_last_ib.ib1_size) {
+			if (a2xx_last_ib.ib1_iova && a2xx_last_ib.ib1_size) {
+				u32 *ib_kv = a2xx_gpummu_iova_to_kvirt(
+					to_msm_vm(gpu->vm)->mmu,
+					a2xx_last_ib.ib1_iova);
 				u32 dwords = min(a2xx_last_ib.ib1_size, 64u);
 				u32 j;
 
 				dev_warn(gpu->dev->dev,
-					 "  last IB1 iova=%016llx size=%u dwords (dumping %u)\n",
+					 "  last IB1 iova=%016llx size=%u dwords kvirt=%p (dumping %u)\n",
 					 a2xx_last_ib.ib1_iova,
-					 a2xx_last_ib.ib1_size, dwords);
+					 a2xx_last_ib.ib1_size, ib_kv, dwords);
 
-				for (j = 0; j < dwords; j += 8) {
-					dev_warn(gpu->dev->dev,
-					    "  +%03x: %08x %08x %08x %08x %08x %08x %08x %08x\n",
-					    j * 4,
-					    a2xx_last_ib.ib1_kvaddr[j + 0],
-					    j + 1 < dwords ? a2xx_last_ib.ib1_kvaddr[j + 1] : 0,
-					    j + 2 < dwords ? a2xx_last_ib.ib1_kvaddr[j + 2] : 0,
-					    j + 3 < dwords ? a2xx_last_ib.ib1_kvaddr[j + 3] : 0,
-					    j + 4 < dwords ? a2xx_last_ib.ib1_kvaddr[j + 4] : 0,
-					    j + 5 < dwords ? a2xx_last_ib.ib1_kvaddr[j + 5] : 0,
-					    j + 6 < dwords ? a2xx_last_ib.ib1_kvaddr[j + 6] : 0,
-					    j + 7 < dwords ? a2xx_last_ib.ib1_kvaddr[j + 7] : 0);
+				if (ib_kv) {
+					for (j = 0; j < dwords; j += 8) {
+						dev_warn(gpu->dev->dev,
+						    "  +%03x: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+						    j * 4,
+						    ib_kv[j + 0],
+						    j + 1 < dwords ? ib_kv[j + 1] : 0,
+						    j + 2 < dwords ? ib_kv[j + 2] : 0,
+						    j + 3 < dwords ? ib_kv[j + 3] : 0,
+						    j + 4 < dwords ? ib_kv[j + 4] : 0,
+						    j + 5 < dwords ? ib_kv[j + 5] : 0,
+						    j + 6 < dwords ? ib_kv[j + 6] : 0,
+						    j + 7 < dwords ? ib_kv[j + 7] : 0);
+					}
 				}
 			}
 		}

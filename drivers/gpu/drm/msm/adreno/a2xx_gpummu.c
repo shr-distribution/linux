@@ -314,6 +314,36 @@ void a2xx_gpummu_params(struct msm_mmu *mmu, dma_addr_t *pt_base,
 	*tran_error = base + TABLE_SIZE; /* 32-byte aligned */
 }
 
+/*
+ * Translate a GPU IOVA to a CPU kernel-virtual pointer by walking the
+ * gpummu page table. Returns NULL if the IOVA is not mapped or out of
+ * range. Safe to call from atomic / IRQ context (no locks taken).
+ *
+ * The PTE format on a2xx_gpummu is { phys_addr & ~PAGE_MASK | prot_bits };
+ * physical addresses are in lowmem on 32-bit ARM (CMA / dma_alloc_wc),
+ * so phys_to_virt gives a valid kvirt directly.
+ */
+void *a2xx_gpummu_iova_to_kvirt(struct msm_mmu *mmu, uint64_t iova)
+{
+	struct a2xx_gpummu *gpummu = to_a2xx_gpummu(mmu);
+	uint32_t pte;
+	unsigned idx;
+	phys_addr_t phys;
+
+	if (iova < GPUMMU_VA_START ||
+	    iova >= GPUMMU_VA_START + GPUMMU_VA_RANGE)
+		return NULL;
+
+	idx = (iova - GPUMMU_VA_START) / GPUMMU_PAGE_SIZE;
+	pte = gpummu->table[idx];
+	phys = pte & ~(GPUMMU_PAGE_SIZE - 1);
+
+	if (phys == 0)
+		return NULL;
+
+	return phys_to_virt(phys) + (iova & (GPUMMU_PAGE_SIZE - 1));
+}
+
 void a2xx_gpummu_debug_fault(struct msm_mmu *mmu, uint32_t fault_addr)
 {
 	struct a2xx_gpummu *gpummu = to_a2xx_gpummu(mmu);
