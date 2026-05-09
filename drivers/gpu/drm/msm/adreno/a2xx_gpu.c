@@ -30,6 +30,84 @@ static u32 a2xx_icc_bw_for_freq(unsigned long freq_hz)
 	return Bps_to_icc(freq_hz) * 8;
 }
 
+/*
+ * a2xx_emit_sanitizer_preamble - reset GPU-internal SRAM state at
+ * cross-context boundaries.
+ *
+ * The Adreno 2xx hardware was designed for the legacy KGSL "thick
+ * state machine" paradigm: shader-constant SRAMs (vec4 ALU, texture-
+ * fetch, boolean, loop) and other GPU-internal SRAMs (SQ instruction
+ * cache, GPR file, VPC vertex param cache) retain their contents
+ * across PM4 cmdstream submissions. KGSL handled this by issuing a
+ * PM4_LOAD_CONSTANT_CONTEXT bulk-restore from per-context shadow
+ * memory at every context switch.
+ *
+ * Mainline freedreno + msm DRM does not implement per-context shadow
+ * memory and PM4_LOAD_CONSTANT_CONTEXT hangs in this code path
+ * (likely IOVA/ringbuffer-execution-context related, see
+ * reports/gpu-internal-state-nondeterminism.md). The result was
+ * stale shader-constant data leaking across DRM-client transitions,
+ * producing 9-of-10 distinct pixel outputs from byte-identical PM4
+ * cmdstreams in gl-capture diagnostic runs.
+ *
+ * Workaround: at every cross-context boundary, emit standard
+ * CP_SET_CONSTANT zero-fill packets directly from the kernel
+ * ringbuffer (BEFORE the user's IB1) to wipe the four constant-
+ * memory banks to a known state. Bracketed by WAIT_FOR_IDLE +
+ * CACHE_FLUSH_AND_INV_EVENT so the user's IB sees a settled GPU.
+ *
+ * This avoids:
+ *   - The PM4_LOAD_CONSTANT_CONTEXT hang (no DMA path used)
+ *   - The race we observed when the same writes were emitted from
+ *     userspace Mesa (kernel writes complete before user IB starts;
+ *     no ordering ambiguity with per-batch clear-color writes)
+ *
+ * Cost: ~1300 dwords of cmdstream once per cross-context boundary;
+ * zero overhead for sequential same-context submits.
+ */
+static void a2xx_emit_sanitizer_preamble(struct msm_ringbuffer *ring)
+{
+	const unsigned ALU_CONSTANTS  = 1024;  /* 256 vec4 (= VS+PS const space) */
+	const unsigned TEX_CONSTANTS  = 192;   /* 32 samplers x 6 dwords */
+	const unsigned BOOL_CONSTANTS = 8;     /* 256 bool flags */
+	const unsigned LOOP_CONSTANTS = 56;
+	unsigned i;
+
+	/* Drain anything in flight from the previous client. */
+	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
+	OUT_RING(ring, 0);
+
+	/* Type-0 ALU vec4 constants - 1024 dwords */
+	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + ALU_CONSTANTS);
+	OUT_RING(ring, (0 << 16) | 0);
+	for (i = 0; i < ALU_CONSTANTS; i++)
+		OUT_RING(ring, 0);
+
+	/* Type-1 texture/sampler descriptors - 192 dwords */
+	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + TEX_CONSTANTS);
+	OUT_RING(ring, (1 << 16) | 0);
+	for (i = 0; i < TEX_CONSTANTS; i++)
+		OUT_RING(ring, 0);
+
+	/* Type-2 bool constants - 8 dwords */
+	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + BOOL_CONSTANTS);
+	OUT_RING(ring, (2 << 16) | 0);
+	for (i = 0; i < BOOL_CONSTANTS; i++)
+		OUT_RING(ring, 0);
+
+	/* Type-3 loop control - 56 dwords */
+	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + LOOP_CONSTANTS);
+	OUT_RING(ring, (3 << 16) | 0);
+	for (i = 0; i < LOOP_CONSTANTS; i++)
+		OUT_RING(ring, 0);
+
+	/* Flush + invalidate caches so the writes settle before user IB. */
+	OUT_PKT3(ring, CP_EVENT_WRITE, 1);
+	OUT_RING(ring, CACHE_FLUSH_AND_INV_EVENT);
+	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
+	OUT_RING(ring, 0);
+}
+
 static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
 	struct msm_ringbuffer *ring = submit->ring;
@@ -38,6 +116,16 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 
 	/* Debug: log submit details */
 	a2xx_debug_log_submit(gpu, submit);
+
+	/*
+	 * Cross-context-boundary state-leak workaround: if this submit is
+	 * from a different DRM client than the previous one on this ring,
+	 * inject a sanitizer preamble that zeros all four shader-constant
+	 * SRAMs (ALU vec4, texture, bool, loop) before the user's IB runs.
+	 * See comment on a2xx_emit_sanitizer_preamble().
+	 */
+	if (ring->cur_ctx_seqno != submit->queue->ctx->seqno)
+		a2xx_emit_sanitizer_preamble(ring);
 
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
