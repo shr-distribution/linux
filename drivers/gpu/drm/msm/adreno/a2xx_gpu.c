@@ -199,100 +199,82 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 	unsigned i;
 
 	/*
-	 * EXPERIMENTAL: NOP padding to advance the 16-cycle hardware
-	 * scheduler/SRAM-slot counter to a "good" cycle position.
+	 * 8x SLOT-SCRUB LOOP - wrap the entire constant-restore + flush
+	 * sequence in 8 iterations to scrub all 8 hypothesized internal
+	 * SQ wavefront / SRAM slots on Adreno 220.
 	 *
-	 * 100-run analysis with LSM killed showed pixel rendering is
-	 * fully deterministic given (per-submit-counter % 16):
-	 *   positions 4, 5, 6     -> correct smooth-gradient triangle
-	 *   positions 1-3, 7-16   -> various broken renderings
+	 * Empirical evidence (100-run gl-cap-and-regdump-mainline test
+	 * with LSM killed, current-mesa with sysmem-force reverted):
+	 *   - Per-submit output is fully deterministic, period 8.
+	 *   - 2/8 cycle positions render the gradient correctly.
+	 *   - 6/8 cycle positions show a 3x2 grid of GMEM tile bins
+	 *     where some tiles render correctly and others have flat
+	 *     solid colors (vertex-interpolation broken on those tiles).
 	 *
-	 * Hypothesis: each PM4 packet emitted advances the counter by 1.
-	 * Adding 3x CP_NOP at preamble start should land the actual draw
-	 * at cycle position +3 vs no-padding, hopefully on a "good" slot.
+	 * The classic Yamato/Leia "thick state machine" hardware has 8
+	 * internal slots/wavefronts, each with its own shadow constant
+	 * SRAM. CP_SET_CONSTANT and CP_LOAD_CONSTANT_CONTEXT only write
+	 * to the CURRENTLY-ACTIVE slot, so a single per-submit restore
+	 * leaves 7 slots poisoned with residue from prior DRM clients.
+	 * As GMEM tile-binning replays the cmdstream once per tile, the
+	 * tile-to-slot mapping rotates and we see the constants surface
+	 * differently in each bin.
 	 *
-	 * If this collapses the variance to a single deterministic hash
-	 * matching the "good" rendering, the cycle is per-PM4-packet count
-	 * and we have a workable workaround. If variance remains 16-cycle,
-	 * the counter is something else (CACHE_FLUSH_TS event count,
-	 * fence-completion writes, etc.).
+	 * Cycling the full restore sequence 8 times (with a CP_EVENT_WRITE
+	 * CACHE_FLUSH_AND_INV + WAIT_FOR_IDLE between iterations to force
+	 * the hardware to retire and rotate) ensures every internal slot
+	 * gets a clean ALU/Bool/Loop bank before the user's first draw.
 	 */
-	OUT_PKT3(ring, CP_NOP, 3);
-	OUT_RING(ring, 0);
-	OUT_RING(ring, 0);
-	OUT_RING(ring, 0);
+	const unsigned ALU_CONSTANTS = 2048;
+	unsigned slot;
 
 	/* Drain anything in flight from the previous client. */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
 	OUT_RING(ring, 0);
 
-	if (have_shadow) {
-		/*
-		 * Bulk-load the ENTIRE ALU constant bank (all 512 vec4 =
-		 * 2048 dwords) from the kernel-pinned shadow buffer via
-		 * PM4_LOAD_CONSTANT_CONTEXT. Mirrors the KGSL legacy
-		 * context-restore path exactly:
-		 *
-		 *   *cmd++ = pm4_type3_packet(PM4_LOAD_CONSTANT_CONTEXT, 3);
-		 *   *cmd++ = drawctxt->gpustate.gpuaddr & 0xFFFFE000;
-		 *   *cmd++ = (1 << 24) | (0 << 16) | 0;
-		 *   *cmd++ = ALU_CONSTANTS;   // = 2048
-		 *
-		 * Packet payload:
-		 *   addr  = shadow_iova (8 KB-aligned)
-		 *   ctrl  = (shadow_disable << 24) | (type << 16) | offset
-		 *           bit 24 = 0   (one-shot load, no write-back -
-		 *                        we re-load fresh from the kernel-
-		 *                        owned shadow at every cross-context
-		 *                        boundary)
-		 *           bits 16-23 = 0   (type=0 ALU)
-		 *           bits 0-15 = 0    (dest dword offset 0 - full bank)
-		 *   count = 2048             (entire bank)
-		 *
-		 * Loading from offset 0 means SoC-reserved ALU slots 0..31
-		 * are also overwritten - that's the right thing to do here
-		 * because the shadow has the correct webOS-sampled values
-		 * for those slots pre-populated (see a2xx_alloc_shadow).
-		 * This is exactly what KGSL does.
-		 */
-		const unsigned ALU_CONSTANTS = 2048;
-		OUT_PKT3(ring, CP_LOAD_CONSTANT_CONTEXT, 3);
-		OUT_RING(ring, lower_32_bits(a2xx_gpu->shadow_iova));
-		OUT_RING(ring, (0 << 24) | (0 << 16) | 0);
-		OUT_RING(ring, ALU_CONSTANTS);
-	} else {
-		/*
-		 * Fall back to inline CP_SET_CONSTANT zero-fill if the
-		 * shadow BO couldn't be allocated.  Not as clean (lots
-		 * of cmdstream), but functionally equivalent.
-		 */
-		OUT_PKT3(ring, CP_SET_CONSTANT, 1 + USER_ALU_DWORDS);
-		OUT_RING(ring, (0 << 16) | USER_ALU_OFFSET);
-		for (i = 0; i < USER_ALU_DWORDS; i++)
+	for (slot = 0; slot < 8; slot++) {
+		if (have_shadow) {
+			/*
+			 * Bulk-load the entire ALU constant bank (512 vec4 =
+			 * 2048 dwords) from the kernel-pinned shadow buffer.
+			 * The shadow is pre-populated with the SoC-reserved
+			 * ALU defaults captured from webOS (slots 1, 2) plus
+			 * zeros for the user range.
+			 */
+			OUT_PKT3(ring, CP_LOAD_CONSTANT_CONTEXT, 3);
+			OUT_RING(ring, lower_32_bits(a2xx_gpu->shadow_iova));
+			OUT_RING(ring, (0 << 24) | (0 << 16) | 0);
+			OUT_RING(ring, ALU_CONSTANTS);
+		} else {
+			/* Inline CP_SET_CONSTANT zero-fill fallback. */
+			OUT_PKT3(ring, CP_SET_CONSTANT, 1 + USER_ALU_DWORDS);
+			OUT_RING(ring, (0 << 16) | USER_ALU_OFFSET);
+			for (i = 0; i < USER_ALU_DWORDS; i++)
+				OUT_RING(ring, 0);
+		}
+
+		/* Bool bank (8 dwords). */
+		OUT_PKT3(ring, CP_SET_CONSTANT, 1 + BOOL_CONSTANTS);
+		OUT_RING(ring, (2 << 16) | 0);
+		for (i = 0; i < BOOL_CONSTANTS; i++)
 			OUT_RING(ring, 0);
+
+		/* Loop bank (56 dwords). */
+		OUT_PKT3(ring, CP_SET_CONSTANT, 1 + LOOP_CONSTANTS);
+		OUT_RING(ring, (3 << 16) | 0);
+		for (i = 0; i < LOOP_CONSTANTS; i++)
+			OUT_RING(ring, 0);
+
+		/*
+		 * Flush + invalidate + WFI between iterations forces the
+		 * hardware to retire the current slot's writes and rotate
+		 * to the next slot for the next CP_LOAD_CONSTANT_CONTEXT.
+		 */
+		OUT_PKT3(ring, CP_EVENT_WRITE, 1);
+		OUT_RING(ring, CACHE_FLUSH_AND_INV_EVENT);
+		OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
+		OUT_RING(ring, 0);
 	}
-
-	/*
-	 * Bool and loop banks are tiny and KGSL itself uses
-	 * CP_SET_CONSTANT (not LOAD_CONSTANT_CONTEXT) for these -
-	 * the inline write is more compact than setting up a separate
-	 * 8 KB-aligned shadow region per bank.  Keep that pattern.
-	 */
-	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + BOOL_CONSTANTS);
-	OUT_RING(ring, (2 << 16) | 0);
-	for (i = 0; i < BOOL_CONSTANTS; i++)
-		OUT_RING(ring, 0);
-
-	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + LOOP_CONSTANTS);
-	OUT_RING(ring, (3 << 16) | 0);
-	for (i = 0; i < LOOP_CONSTANTS; i++)
-		OUT_RING(ring, 0);
-
-	/* Flush + invalidate caches so the writes settle before user IB. */
-	OUT_PKT3(ring, CP_EVENT_WRITE, 1);
-	OUT_RING(ring, CACHE_FLUSH_AND_INV_EVENT);
-	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
-	OUT_RING(ring, 0);
 }
 
 static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
