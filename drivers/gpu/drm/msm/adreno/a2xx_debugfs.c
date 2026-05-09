@@ -403,6 +403,66 @@ static int reset_set(void *data, u64 val)
 
 DEFINE_DEBUGFS_ATTRIBUTE(reset_fops, NULL, reset_set, "%llu\n");
 
+/*
+ * On-demand MMIO register read.
+ *
+ * Lets userspace probe any A2XX MMIO offset (in word units, matching
+ * the freedreno/registers/adreno/a2xx.xml convention). Useful for
+ * register-state-leak debugging when the static hangdump register
+ * list (a220_registers[]) doesn't cover the offset of interest.
+ *
+ * Usage:
+ *   echo 0x4000 > /sys/kernel/debug/dri/0/regrw_offset
+ *   cat /sys/kernel/debug/dri/0/regrw_value
+ *     -> 0xVVVVVVVV
+ *
+ * The offset is the WORD offset (a2xx.xml convention). Internally
+ * gpu_read() takes the same convention, so we pass it through.
+ *
+ * No write side - read-only register inspection. CAP_SYS_ADMIN
+ * required because arbitrary MMIO read can hit reserved/secure
+ * regions on other variants; A2XX is generally permissive but the
+ * upstream pattern is to gate.
+ */
+static u32 a2xx_regrw_offset;
+
+static int regrw_offset_set(void *data, u64 val)
+{
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	a2xx_regrw_offset = (u32)val;
+	return 0;
+}
+
+static int regrw_offset_get(void *data, u64 *val)
+{
+	*val = a2xx_regrw_offset;
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(regrw_offset_fops,
+			 regrw_offset_get, regrw_offset_set, "0x%08llx\n");
+
+static int regrw_value_get(void *data, u64 *val)
+{
+	struct drm_device *dev = data;
+	struct msm_drm_private *priv = dev->dev_private;
+	struct msm_gpu *gpu = priv->gpu;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	if (!gpu)
+		return -ENODEV;
+
+	pm_runtime_get_sync(&gpu->pdev->dev);
+	*val = gpu_read(gpu, a2xx_regrw_offset);
+	pm_runtime_put_sync(&gpu->pdev->dev);
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(regrw_value_fops,
+			 regrw_value_get, NULL, "0x%08llx\n");
+
 void a2xx_debugfs_init(struct msm_gpu *gpu, struct drm_minor *minor)
 {
 	struct drm_device *dev;
@@ -419,10 +479,19 @@ void a2xx_debugfs_init(struct msm_gpu *gpu, struct drm_minor *minor)
 	debugfs_create_file_unsafe("reset", 0200, minor->debugfs_root, dev,
 				   &reset_fops);
 
+	/* On-demand MMIO register read: write offset to regrw_offset,
+	 * then read regrw_value to get the live register value. Useful
+	 * for inspecting offsets the hangdump register-list doesn't cover.
+	 */
+	debugfs_create_file_unsafe("regrw_offset", 0600, minor->debugfs_root,
+				   dev, &regrw_offset_fops);
+	debugfs_create_file_unsafe("regrw_value", 0400, minor->debugfs_root,
+				   dev, &regrw_value_fops);
+
 	/* Initialize debug/test infrastructure */
 	a2xx_debug_init(minor);
 
 	dev_info(gpu->dev->dev,
-		 "A2XX debugfs: /sys/kernel/debug/dri/%d/{summary,cp,rbbm,mh,sq,rb,pa,reset,coherency_test,timing_test}\n",
+		 "A2XX debugfs: /sys/kernel/debug/dri/%d/{summary,cp,rbbm,mh,sq,rb,pa,reset,regrw_offset,regrw_value,coherency_test,timing_test}\n",
 		 minor->index);
 }
