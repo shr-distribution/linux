@@ -399,21 +399,7 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 		}
 
 		ib_bo = submit->bos[submit->cmd[i].idx].obj;
-		/* Try regular path first (takes lock internally). If the BO
-		 * was marked DONTNEED or is dma-buf imported, fall back to
-		 * the lock-required "active" variant that accepts any madv
-		 * state - documented for fault-dump scenarios. */
 		kvaddr = msm_gem_get_vaddr(ib_bo);
-		if (IS_ERR(kvaddr)) {
-			long err1 = PTR_ERR(kvaddr);
-			msm_gem_lock(ib_bo);
-			kvaddr = msm_gem_get_vaddr_active(ib_bo);
-			msm_gem_unlock(ib_bo);
-			dev_info(gpu->dev->dev,
-				 "a2xx IB1 vaddr fallback: regular=%ld active=%s\n",
-				 err1,
-				 IS_ERR(kvaddr) ? "ERR" : (kvaddr ? "OK" : "NULL"));
-		}
 		dev_info(gpu->dev->dev,
 			 "a2xx capture IB1: cmd[%u] type=%u idx=%u iova=%016llx size=%u kvaddr=%s\n",
 			 i, submit->cmd[i].type, submit->cmd[i].idx,
