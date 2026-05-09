@@ -303,38 +303,6 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 		OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
 		OUT_RING(ring, 0);
 	}
-
-	/*
-	 * Invalidate the SQ (Shader Sequencer) instruction-memory cache so
-	 * the next user IB's shader uploads aren't shadowed by stale shader
-	 * bytecode from a prior DRM client.
-	 *
-	 * KGSL emits this on every context switch as part of shader_restore
-	 * (drivers/gpu/msm/kgsl_drawctxt.c, build_shader_save_restore_cmds).
-	 * Mainline freedreno + msm has been missing it on the cross-context
-	 * boundary, leaving the SQ instruction prefetch / per-wavefront-slot
-	 * caches holding the previous client's shader on some slots. The
-	 * empirical fingerprint:
-	 *
-	 *   - Post-render MMIO state is byte-identical between "good" and
-	 *     "bad" cycle positions (verified via /sys/kernel/debug/dri/0/{
-	 *     summary,cp,rbbm,mh,sq,rb,pa} snapshots), so the variance lives
-	 *     in some hardware state not exposed through any register.
-	 *   - 5/8 broken cycle positions each produce a DIFFERENT unique
-	 *     hash (not a shared one), consistent with each wavefront slot
-	 *     having its OWN distinct stale shader.
-	 *   - The "single colour channel reads as zero" symptom is what you
-	 *     get when a stale vfetch instruction has the wrong dst_swiz /
-	 *     num_format / format encoding (Mesa patches these directly into
-	 *     the shader instruction dwords - fd2_program.c:patch_vtx_fetch).
-	 *
-	 * Mask 0x300 = 0x100 (Vertex SQ instruction state) | 0x200 (Pixel
-	 * SQ instruction state). Same mask KGSL uses.
-	 */
-	OUT_PKT3(ring, CP_INVALIDATE_STATE, 1);
-	OUT_RING(ring, 0x00000300);
-	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
-	OUT_RING(ring, 0);
 }
 
 static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
