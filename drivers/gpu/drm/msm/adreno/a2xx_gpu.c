@@ -300,8 +300,40 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 		}
 	}
 
+	/*
+	 * EXPERIMENTAL: force the low nibble of the seqno written to
+	 * CP_SCRATCH_REG2 to a value in the empirically-determined
+	 * "stable rendering" set.
+	 *
+	 * 50-run gl-capture analysis on Adreno 220 / HP TouchPad showed
+	 * pixel output is fully deterministic given submit->seqno & 0xF
+	 * (perfect 16-cycle pattern). 9 of 16 lo-nibbles produce the
+	 * "stable" rendering hash (lo = 0, 3, 4, 5, b, c, d, e, f); the
+	 * other 7 produce different per-position broken renderings:
+	 *
+	 *   lo=1: 78d9...  lo=2: 9f34...
+	 *   lo=6: 4d4c...  lo=7: 24c2...  lo=8: 0b59...
+	 *   lo=9: 6b08...  lo=a: 7b74...
+	 *
+	 * The seqno value is written to CP_SCRATCH_REG2 (debug-only HW
+	 * register, mainline doesn't depend on it for fence tracking -
+	 * fence completion uses the CACHE_FLUSH_TS event below which
+	 * stores into rbmemptr(ring, fence) memory). So masking the
+	 * lo-nibble of what we write to SCRATCH_REG2 is functionally
+	 * a no-op - except that the GPU's internal state machinery
+	 * apparently uses some bits of this register, producing the
+	 * 16-cycle variance we observe.
+	 *
+	 * Mask the seqno to (seqno & ~0xF) so SCRATCH_REG2 always lands
+	 * in the lo=0 "stable" slot. The CACHE_FLUSH_TS path below
+	 * keeps the unmasked seqno so fence completion still works.
+	 *
+	 * If this collapses the 50-run variance to a single hash, we've
+	 * confirmed SCRATCH_REG2's low bits drive a HW state machine
+	 * that affects rendering.
+	 */
 	OUT_PKT0(ring, REG_AXXX_CP_SCRATCH_REG2, 1);
-	OUT_RING(ring, submit->seqno);
+	OUT_RING(ring, submit->seqno & ~0xFu);
 
 	/* wait for idle before cache flush/interrupt */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
@@ -310,7 +342,7 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	OUT_PKT3(ring, CP_EVENT_WRITE, 3);
 	OUT_RING(ring, CACHE_FLUSH_TS);
 	OUT_RING(ring, rbmemptr(ring, fence));
-	OUT_RING(ring, submit->seqno);
+	OUT_RING(ring, submit->seqno);   /* unmasked - fence tracking */
 	OUT_PKT3(ring, CP_INTERRUPT, 1);
 	OUT_RING(ring, 0x80000000);
 
