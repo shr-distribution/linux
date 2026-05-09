@@ -105,6 +105,20 @@ static int a2xx_alloc_shadow(struct msm_gpu *gpu)
 	a2xx_gpu->shadow_iova = aligned_iova;
 	a2xx_gpu->shadow_vaddr = vaddr + offset;
 
+	/*
+	 * Diagnostic: log the shadow BO IOVA vs the ringbuffer IOVA so we
+	 * can verify they live in the same GPU address space (mainline's
+	 * gpu->vm is the global GPU VM that the ringbuffer also uses, so
+	 * they SHOULD be in the same domain - but the legacy KGSL had a
+	 * notion of a "privileged" pagetable for context-restore reads
+	 * which Gemini's analysis flagged as a possible mismatch source.
+	 * If the IOVAs are wildly different ranges, that's a clue.
+	 */
+	dev_info(gpu->dev->dev,
+		 "a2xx shadow: raw_iova=%pad aligned_iova=%pad ring_iova=%pad delta_to_ring=%lld\n",
+		 &iova, &aligned_iova, &gpu->rb[0]->iova,
+		 (long long)((s64)aligned_iova - (s64)gpu->rb[0]->iova));
+
 	memset(a2xx_gpu->shadow_vaddr, 0, SZ_8K);
 
 	/*
@@ -183,6 +197,30 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 	 */
 	bool have_shadow = a2xx_gpu->shadow_bo != NULL;
 	unsigned i;
+
+	/*
+	 * EXPERIMENTAL: NOP padding to advance the 16-cycle hardware
+	 * scheduler/SRAM-slot counter to a "good" cycle position.
+	 *
+	 * 100-run analysis with LSM killed showed pixel rendering is
+	 * fully deterministic given (per-submit-counter % 16):
+	 *   positions 4, 5, 6     -> correct smooth-gradient triangle
+	 *   positions 1-3, 7-16   -> various broken renderings
+	 *
+	 * Hypothesis: each PM4 packet emitted advances the counter by 1.
+	 * Adding 3x CP_NOP at preamble start should land the actual draw
+	 * at cycle position +3 vs no-padding, hopefully on a "good" slot.
+	 *
+	 * If this collapses the variance to a single deterministic hash
+	 * matching the "good" rendering, the cycle is per-PM4-packet count
+	 * and we have a workable workaround. If variance remains 16-cycle,
+	 * the counter is something else (CACHE_FLUSH_TS event count,
+	 * fence-completion writes, etc.).
+	 */
+	OUT_PKT3(ring, CP_NOP, 3);
+	OUT_RING(ring, 0);
+	OUT_RING(ring, 0);
+	OUT_RING(ring, 0);
 
 	/* Drain anything in flight from the previous client. */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
