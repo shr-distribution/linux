@@ -139,8 +139,26 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 	const unsigned USER_ALU_DWORDS = 1920;   /* slots 32..511 = 480 vec4 */
 	const unsigned BOOL_CONSTANTS  = 8;
 	const unsigned LOOP_CONSTANTS  = 56;
-	bool have_shadow = a2xx_gpu->shadow_bo != NULL;
+	/*
+	 * Gating: LOAD_CONSTANT_CONTEXT is currently disabled because the
+	 * shadow BO is all-zeros, but the packet's hardware DMA microengine
+	 * also blindly resets SoC-reserved ALU slots 0..31 (regardless of
+	 * the offset operand), wiping fixed-function vertex-pipeline
+	 * constants that the HW relies on (slot 1 = (0x469c4000, 1.0, 0.5, 0)
+	 * etc.). Direct A/B confirmed worse pixel output than the
+	 * CP_SET_CONSTANT fallback below.
+	 *
+	 * To re-enable safely we need to first sample slots 0..31 of the
+	 * ALU and texture-fetch banks from the legacy webOS proprietary
+	 * stack via gpu-regdump-webos and bake those values into the
+	 * shadow BO at allocation time. Once that's done, set this to
+	 * (a2xx_gpu->shadow_bo != NULL) to take the LOAD_CONSTANT_CONTEXT
+	 * path - which mirrors what KGSL did and is the architecturally
+	 * correct mechanism.
+	 */
+	bool have_shadow = false;  /* a2xx_gpu->shadow_bo != NULL; */
 	unsigned i;
+	(void)a2xx_gpu;  /* unused while have_shadow is forced false */
 
 	/* Drain anything in flight from the previous client. */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
