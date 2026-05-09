@@ -67,35 +67,54 @@ static u32 a2xx_icc_bw_for_freq(unsigned long freq_hz)
  */
 static void a2xx_emit_sanitizer_preamble(struct msm_ringbuffer *ring)
 {
-	const unsigned ALU_CONSTANTS  = 1024;  /* 256 vec4 (= VS+PS const space) */
-	const unsigned TEX_CONSTANTS  = 192;   /* 32 samplers x 6 dwords */
-	const unsigned BOOL_CONSTANTS = 8;     /* 256 bool flags */
-	const unsigned LOOP_CONSTANTS = 56;
+	/*
+	 * IMPORTANT: ALU constant slots 0-31 hold SoC-reserved system
+	 * constants the hardware fixed-function pipeline uses (vertex
+	 * transform helpers, viewport math, sampling LOD bias, etc.).
+	 * gl-cap-and-regdump-webos sampled the proprietary-stack values:
+	 *   slot 0 = (0,0,0,0)
+	 *   slot 1 = (0x469c4000, 1.0, 0.5, 0)
+	 *   slot 2 = (2.0, 0.75, 0.375, 0.25)
+	 * Zeroing these breaks the vertex pipeline (transforms produce
+	 * degenerate/clipped output - rendering goes black).
+	 *
+	 * Mesa places user constants at:
+	 *   VS_CONST_BASE = 0x20 (vec4 slot 32, dword offset 0x80)
+	 *   PS_CONST_BASE = 0x120 (vec4 slot 288, dword offset 0x480)
+	 * These plus everything between them is user-controlled and
+	 * safe to wipe. Cap at slot 511 (offset 0x7FC) - the end of the
+	 * 256-vec4 PS user range.
+	 *
+	 * Texture-fetch constants similarly may have system slots
+	 * (texfetch[0] sampled non-trivially on the proprietary stack),
+	 * so we leave those alone for now and re-evaluate if needed.
+	 *
+	 * Bool and loop are pure user-state - safe to wipe entirely.
+	 */
+	const unsigned USER_ALU_OFFSET = 0x80;   /* slot 32 = VS_CONST_BASE */
+	const unsigned USER_ALU_DWORDS = 1920;   /* slots 32..511 = 480 vec4 */
+	const unsigned BOOL_CONSTANTS  = 8;
+	const unsigned LOOP_CONSTANTS  = 56;
 	unsigned i;
 
 	/* Drain anything in flight from the previous client. */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
 	OUT_RING(ring, 0);
 
-	/* Type-0 ALU vec4 constants - 1024 dwords */
-	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + ALU_CONSTANTS);
-	OUT_RING(ring, (0 << 16) | 0);
-	for (i = 0; i < ALU_CONSTANTS; i++)
+	/* Type-0 ALU vec4 constants, USER range only (slots 32..511).
+	 * Slots 0..31 are SoC-reserved; never touch them. */
+	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + USER_ALU_DWORDS);
+	OUT_RING(ring, (0 << 16) | USER_ALU_OFFSET);
+	for (i = 0; i < USER_ALU_DWORDS; i++)
 		OUT_RING(ring, 0);
 
-	/* Type-1 texture/sampler descriptors - 192 dwords */
-	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + TEX_CONSTANTS);
-	OUT_RING(ring, (1 << 16) | 0);
-	for (i = 0; i < TEX_CONSTANTS; i++)
-		OUT_RING(ring, 0);
-
-	/* Type-2 bool constants - 8 dwords */
+	/* Type-2 bool constants - 8 dwords (256 bool flags). */
 	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + BOOL_CONSTANTS);
 	OUT_RING(ring, (2 << 16) | 0);
 	for (i = 0; i < BOOL_CONSTANTS; i++)
 		OUT_RING(ring, 0);
 
-	/* Type-3 loop control - 56 dwords */
+	/* Type-3 loop control - 56 dwords. */
 	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + LOOP_CONSTANTS);
 	OUT_RING(ring, (3 << 16) | 0);
 	for (i = 0; i < LOOP_CONSTANTS; i++)
