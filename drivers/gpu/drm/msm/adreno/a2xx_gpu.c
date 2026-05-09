@@ -65,56 +65,131 @@ static u32 a2xx_icc_bw_for_freq(unsigned long freq_hz)
  * Cost: ~1300 dwords of cmdstream once per cross-context boundary;
  * zero overhead for sequential same-context submits.
  */
-static void a2xx_emit_sanitizer_preamble(struct msm_ringbuffer *ring)
+/*
+ * Lazily allocate a 16 KB shadow buffer for the cross-context
+ * sanitizer.  The BO contents are zero-filled and we hand the
+ * GPU an 8 KB-aligned IOVA inside it (CP_LOAD_CONSTANT_CONTEXT
+ * masks its address operand with 0xFFFFE000, so 8 KB alignment
+ * is mandatory - per the legacy KGSL kgsl_drawctxt.c reference).
+ *
+ * Returns 0 on success, sets a2xx_gpu->shadow_bo / shadow_iova /
+ * shadow_vaddr.  On failure returns -errno; the caller falls
+ * back to CP_SET_CONSTANT zero-fills.
+ */
+static int a2xx_alloc_shadow(struct msm_gpu *gpu)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+	struct drm_gem_object *bo;
+	uint64_t iova;
+	void *vaddr;
+
+	if (a2xx_gpu->shadow_bo)
+		return 0;
+
+	/* 16 KB so we always have an 8 KB-aligned slot inside, even if
+	 * the IOMMU only guarantees 4 KB-aligned IOVAs. */
+	vaddr = msm_gem_kernel_new(gpu->dev, SZ_16K,
+				   MSM_BO_WC | MSM_BO_GPU_READONLY,
+				   gpu->vm, &bo, &iova);
+	if (IS_ERR(vaddr))
+		return PTR_ERR(vaddr);
+
+	/* Round IOVA up to 8 KB; corresponding offset in the BO maps
+	 * 1:1 (linear pinned IOVA range), so the kernel-vaddr is just
+	 * shifted by the same amount. */
+	uint64_t aligned_iova = ALIGN(iova, SZ_8K);
+	uint64_t offset = aligned_iova - iova;
+
+	a2xx_gpu->shadow_bo = bo;
+	a2xx_gpu->shadow_iova = aligned_iova;
+	a2xx_gpu->shadow_vaddr = vaddr + offset;
+
+	memset(a2xx_gpu->shadow_vaddr, 0, SZ_8K);
+
+	return 0;
+}
+
+static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
+					 struct msm_ringbuffer *ring)
 {
 	/*
 	 * IMPORTANT: ALU constant slots 0-31 hold SoC-reserved system
 	 * constants the hardware fixed-function pipeline uses (vertex
-	 * transform helpers, viewport math, sampling LOD bias, etc.).
+	 * transform helpers, viewport math, sampling LOD bias).
 	 * gl-cap-and-regdump-webos sampled the proprietary-stack values:
 	 *   slot 0 = (0,0,0,0)
 	 *   slot 1 = (0x469c4000, 1.0, 0.5, 0)
 	 *   slot 2 = (2.0, 0.75, 0.375, 0.25)
 	 * Zeroing these breaks the vertex pipeline (transforms produce
-	 * degenerate/clipped output - rendering goes black).
+	 * degenerate/clipped output).
 	 *
 	 * Mesa places user constants at:
 	 *   VS_CONST_BASE = 0x20 (vec4 slot 32, dword offset 0x80)
 	 *   PS_CONST_BASE = 0x120 (vec4 slot 288, dword offset 0x480)
 	 * These plus everything between them is user-controlled and
-	 * safe to wipe. Cap at slot 511 (offset 0x7FC) - the end of the
+	 * safe to wipe.  Cap at slot 511 (offset 0x7FC) - end of the
 	 * 256-vec4 PS user range.
-	 *
-	 * Texture-fetch constants similarly may have system slots
-	 * (texfetch[0] sampled non-trivially on the proprietary stack),
-	 * so we leave those alone for now and re-evaluate if needed.
 	 *
 	 * Bool and loop are pure user-state - safe to wipe entirely.
 	 */
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 	const unsigned USER_ALU_OFFSET = 0x80;   /* slot 32 = VS_CONST_BASE */
 	const unsigned USER_ALU_DWORDS = 1920;   /* slots 32..511 = 480 vec4 */
 	const unsigned BOOL_CONSTANTS  = 8;
 	const unsigned LOOP_CONSTANTS  = 56;
+	bool have_shadow = a2xx_gpu->shadow_bo != NULL;
 	unsigned i;
 
 	/* Drain anything in flight from the previous client. */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
 	OUT_RING(ring, 0);
 
-	/* Type-0 ALU vec4 constants, USER range only (slots 32..511).
-	 * Slots 0..31 are SoC-reserved; never touch them. */
-	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + USER_ALU_DWORDS);
-	OUT_RING(ring, (0 << 16) | USER_ALU_OFFSET);
-	for (i = 0; i < USER_ALU_DWORDS; i++)
-		OUT_RING(ring, 0);
+	if (have_shadow) {
+		/*
+		 * Bulk-load ALU constants from the kernel-pinned shadow
+		 * buffer via PM4_LOAD_CONSTANT_CONTEXT.  This mirrors the
+		 * KGSL legacy path exactly; the hardware DMA engine inside
+		 * the CP fetches USER_ALU_DWORDS dwords from shadow_iova
+		 * and writes them into ALU constant SRAM starting at
+		 * dword offset USER_ALU_OFFSET (slot 32).
+		 *
+		 * Packet payload:
+		 *   addr  = shadow_iova (8 KB-aligned)
+		 *   ctrl  = (shadow_disable << 24) | (type << 16) | offset
+		 *           bit 24 = 0  (one-shot load, no write-back)
+		 *           bits 16-23 = 0  (type=0 ALU)
+		 *           bits 0-15 = 0x80  (dest dword offset)
+		 *   count = number of dwords
+		 */
+		OUT_PKT3(ring, CP_LOAD_CONSTANT_CONTEXT, 3);
+		OUT_RING(ring, lower_32_bits(a2xx_gpu->shadow_iova));
+		OUT_RING(ring, (0 << 24) | (0 << 16) | USER_ALU_OFFSET);
+		OUT_RING(ring, USER_ALU_DWORDS);
+	} else {
+		/*
+		 * Fall back to inline CP_SET_CONSTANT zero-fill if the
+		 * shadow BO couldn't be allocated.  Not as clean (lots
+		 * of cmdstream), but functionally equivalent.
+		 */
+		OUT_PKT3(ring, CP_SET_CONSTANT, 1 + USER_ALU_DWORDS);
+		OUT_RING(ring, (0 << 16) | USER_ALU_OFFSET);
+		for (i = 0; i < USER_ALU_DWORDS; i++)
+			OUT_RING(ring, 0);
+	}
 
-	/* Type-2 bool constants - 8 dwords (256 bool flags). */
+	/*
+	 * Bool and loop banks are tiny and KGSL itself uses
+	 * CP_SET_CONSTANT (not LOAD_CONSTANT_CONTEXT) for these -
+	 * the inline write is more compact than setting up a separate
+	 * 8 KB-aligned shadow region per bank.  Keep that pattern.
+	 */
 	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + BOOL_CONSTANTS);
 	OUT_RING(ring, (2 << 16) | 0);
 	for (i = 0; i < BOOL_CONSTANTS; i++)
 		OUT_RING(ring, 0);
 
-	/* Type-3 loop control - 56 dwords. */
 	OUT_PKT3(ring, CP_SET_CONSTANT, 1 + LOOP_CONSTANTS);
 	OUT_RING(ring, (3 << 16) | 0);
 	for (i = 0; i < LOOP_CONSTANTS; i++)
@@ -139,12 +214,17 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	/*
 	 * Cross-context-boundary state-leak workaround: if this submit is
 	 * from a different DRM client than the previous one on this ring,
-	 * inject a sanitizer preamble that zeros all four shader-constant
-	 * SRAMs (ALU vec4, texture, bool, loop) before the user's IB runs.
-	 * See comment on a2xx_emit_sanitizer_preamble().
+	 * inject a sanitizer preamble that bulk-restores Mesa's user
+	 * shader-constant range from a kernel-pinned shadow BO via
+	 * PM4_LOAD_CONSTANT_CONTEXT (ALU bank) and CP_SET_CONSTANT (bool
+	 * + loop).  This matches the KGSL context-restore path on the
+	 * legacy 2.6 kernel.  See a2xx_emit_sanitizer_preamble().
 	 */
-	if (ring->cur_ctx_seqno != submit->queue->ctx->seqno)
-		a2xx_emit_sanitizer_preamble(ring);
+	if (ring->cur_ctx_seqno != submit->queue->ctx->seqno) {
+		(void)a2xx_alloc_shadow(gpu);  /* lazy-init, fall back to
+						* inline writes if it fails */
+		a2xx_emit_sanitizer_preamble(gpu, ring);
+	}
 
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
@@ -540,6 +620,11 @@ static void a2xx_destroy(struct msm_gpu *gpu)
 	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 
 	DBG("%s", gpu->name);
+
+	if (a2xx_gpu->shadow_bo) {
+		msm_gem_kernel_put(a2xx_gpu->shadow_bo, gpu->vm);
+		a2xx_gpu->shadow_bo = NULL;
+	}
 
 	adreno_gpu_cleanup(adreno_gpu);
 

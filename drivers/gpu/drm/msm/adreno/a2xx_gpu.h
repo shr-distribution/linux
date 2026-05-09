@@ -19,6 +19,30 @@ struct a2xx_gpu {
 	bool pm_enabled;
 	bool protection_disabled;
 	struct icc_path *icc_path;
+
+	/*
+	 * Shader-constant shadow memory for cross-context sanitization.
+	 *
+	 * KGSL on legacy kernels mirrored the per-context constant SRAMs
+	 * here and used PM4_LOAD_CONSTANT_CONTEXT to bulk-restore them
+	 * at every context switch.
+	 *
+	 * Mainline doesn't have a per-context shadow concept, so we
+	 * allocate a single shared all-zeros shadow buffer and use it
+	 * to wipe Mesa's user-controllable constant range
+	 * (vec4 slots 32..511, dwords 0x80..0x7FF) at every cross-DRM-
+	 * client boundary. SoC-reserved slots 0..31 are skipped via
+	 * the LOAD_CONSTANT_CONTEXT offset operand.
+	 *
+	 * Address alignment is critical: the LOAD_CONSTANT_CONTEXT
+	 * payload is masked to 0xFFFFE000 (8 KB granularity). We
+	 * allocate 16 KB and pick an 8 KB-aligned IOVA inside it so
+	 * the requirement is satisfied regardless of the underlying
+	 * IOMMU/page allocator's alignment behavior.
+	 */
+	struct drm_gem_object *shadow_bo;
+	uint64_t shadow_iova;       /* 8 KB-aligned, into the BO */
+	void *shadow_vaddr;
 };
 #define to_a2xx_gpu(x) container_of(x, struct a2xx_gpu, base)
 
