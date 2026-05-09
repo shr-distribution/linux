@@ -386,6 +386,9 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	 * mapping) so we always have the most recent submit available.
 	 */
 	for (i = 0; i < submit->nr_cmds; i++) {
+		struct drm_gem_object *ib_bo;
+		void *kvaddr;
+
 		if (submit->cmd[i].type != MSM_SUBMIT_CMD_BUF)
 			continue;
 
@@ -395,16 +398,18 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 			a2xx_last_ib.ib1_kvaddr = NULL;
 		}
 
-		{
-			struct drm_gem_object *ib_bo =
-				submit->bos[submit->cmd[i].idx].obj;
-			void *kvaddr = msm_gem_get_vaddr(ib_bo);
-			if (!IS_ERR(kvaddr)) {
-				a2xx_last_ib.ib1_iova   = submit->cmd[i].iova;
-				a2xx_last_ib.ib1_size   = submit->cmd[i].size;
-				a2xx_last_ib.ib1_kvaddr = (u32 *)kvaddr;
-				a2xx_last_ib.ib1_bo     = ib_bo;
-			}
+		ib_bo = submit->bos[submit->cmd[i].idx].obj;
+		kvaddr = msm_gem_get_vaddr(ib_bo);
+		dev_info(gpu->dev->dev,
+			 "a2xx capture IB1: cmd[%u] type=%u idx=%u iova=%016llx size=%u kvaddr=%s\n",
+			 i, submit->cmd[i].type, submit->cmd[i].idx,
+			 submit->cmd[i].iova, submit->cmd[i].size,
+			 IS_ERR(kvaddr) ? "ERR" : (kvaddr ? "OK" : "NULL"));
+		if (!IS_ERR_OR_NULL(kvaddr)) {
+			a2xx_last_ib.ib1_iova   = submit->cmd[i].iova;
+			a2xx_last_ib.ib1_size   = submit->cmd[i].size;
+			a2xx_last_ib.ib1_kvaddr = (u32 *)kvaddr;
+			a2xx_last_ib.ib1_bo     = ib_bo;
 		}
 		break;
 	}
