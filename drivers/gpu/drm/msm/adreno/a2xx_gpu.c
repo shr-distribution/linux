@@ -66,15 +66,21 @@ static u32 a2xx_icc_bw_for_freq(unsigned long freq_hz)
  * zero overhead for sequential same-context submits.
  */
 /*
- * Lazily allocate a 16 KB shadow buffer for the cross-context
- * sanitizer.  The BO contents are zero-filled and we hand the
- * GPU an 8 KB-aligned IOVA inside it (CP_LOAD_CONSTANT_CONTEXT
- * masks its address operand with 0xFFFFE000, so 8 KB alignment
- * is mandatory - per the legacy KGSL kgsl_drawctxt.c reference).
+ * Lazily allocate a 32 KB shadow buffer for the cross-context
+ * sanitizer.  Layout (8 KB-aligned regions):
+ *
+ *   shadow_iova + 0      ALU bank shadow  (2048 dwords / 8192 bytes)
+ *   shadow_iova + 0x2000 TEX bank shadow  ( 192 dwords /  768 bytes
+ *                                          padded to 8 KB)
+ *
+ * CP_LOAD_CONSTANT_CONTEXT masks its address operand with 0xFFFFE000,
+ * so each region must be independently 8 KB-aligned.  Reserving 32 KB
+ * total guarantees we get two consecutive 8 KB-aligned slots even if
+ * the IOMMU hands us a non-8KB-aligned base IOVA.
  *
  * Returns 0 on success, sets a2xx_gpu->shadow_bo / shadow_iova /
- * shadow_vaddr.  On failure returns -errno; the caller falls
- * back to CP_SET_CONSTANT zero-fills.
+ * shadow_tex_iova / shadow_vaddr.  On failure returns -errno; the
+ * caller falls back to CP_SET_CONSTANT zero-fills (ALU only).
  */
 static int a2xx_alloc_shadow(struct msm_gpu *gpu)
 {
@@ -87,9 +93,7 @@ static int a2xx_alloc_shadow(struct msm_gpu *gpu)
 	if (a2xx_gpu->shadow_bo)
 		return 0;
 
-	/* 16 KB so we always have an 8 KB-aligned slot inside, even if
-	 * the IOMMU only guarantees 4 KB-aligned IOVAs. */
-	vaddr = msm_gem_kernel_new(gpu->dev, SZ_16K,
+	vaddr = msm_gem_kernel_new(gpu->dev, SZ_32K,
 				   MSM_BO_WC | MSM_BO_GPU_READONLY,
 				   gpu->vm, &bo, &iova);
 	if (IS_ERR(vaddr))
@@ -103,23 +107,17 @@ static int a2xx_alloc_shadow(struct msm_gpu *gpu)
 
 	a2xx_gpu->shadow_bo = bo;
 	a2xx_gpu->shadow_iova = aligned_iova;
+	a2xx_gpu->shadow_tex_iova = aligned_iova + SZ_8K;
 	a2xx_gpu->shadow_vaddr = vaddr + offset;
 
-	/*
-	 * Diagnostic: log the shadow BO IOVA vs the ringbuffer IOVA so we
-	 * can verify they live in the same GPU address space (mainline's
-	 * gpu->vm is the global GPU VM that the ringbuffer also uses, so
-	 * they SHOULD be in the same domain - but the legacy KGSL had a
-	 * notion of a "privileged" pagetable for context-restore reads
-	 * which Gemini's analysis flagged as a possible mismatch source.
-	 * If the IOVAs are wildly different ranges, that's a clue.
-	 */
 	dev_info(gpu->dev->dev,
-		 "a2xx shadow: raw_iova=%pad aligned_iova=%pad ring_iova=%pad delta_to_ring=%lld\n",
-		 &iova, &aligned_iova, &gpu->rb[0]->iova,
-		 (long long)((s64)aligned_iova - (s64)gpu->rb[0]->iova));
+		 "a2xx shadow: raw_iova=%pad alu_iova=%pad tex_iova=%pad ring_iova=%pad\n",
+		 &iova, &aligned_iova, &a2xx_gpu->shadow_tex_iova,
+		 &gpu->rb[0]->iova);
 
-	memset(a2xx_gpu->shadow_vaddr, 0, SZ_8K);
+	/* Zero ALU shadow (slots 1, 2 are pre-populated below) +
+	 * TEX shadow (vertex/texture fetch descriptors all zero). */
+	memset(a2xx_gpu->shadow_vaddr, 0, SZ_16K);
 
 	/*
 	 * Pre-populate the SoC-reserved ALU slots with values the
@@ -226,6 +224,7 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 	 * gets a clean ALU/Bool/Loop bank before the user's first draw.
 	 */
 	const unsigned ALU_CONSTANTS = 2048;
+	const unsigned TEX_CONSTANTS = 192;   /* 32 fetch slots * 6 dwords */
 	unsigned slot;
 
 	/* Drain anything in flight from the previous client. */
@@ -245,6 +244,24 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 			OUT_RING(ring, lower_32_bits(a2xx_gpu->shadow_iova));
 			OUT_RING(ring, (0 << 24) | (0 << 16) | 0);
 			OUT_RING(ring, ALU_CONSTANTS);
+
+			/*
+			 * Bulk-load the TEX (texture/vertex fetch) bank from
+			 * the zero-filled shadow region 8 KB above the ALU
+			 * region. KGSL emits the same packet at every context
+			 * restore (kgsl_drawctxt.c "Texture Constants" path):
+			 * type=1 (TEX), offset=0, count=192 dwords.
+			 *
+			 * Without this, residue from prior DRM clients in TEX
+			 * SRAM bleeds into vertex-attribute fetches and shows
+			 * up as a single colour channel reading back as zero
+			 * on 5/8 internal slot positions (observed empirically
+			 * in the 100-cap test before this addition).
+			 */
+			OUT_PKT3(ring, CP_LOAD_CONSTANT_CONTEXT, 3);
+			OUT_RING(ring, lower_32_bits(a2xx_gpu->shadow_tex_iova));
+			OUT_RING(ring, (0 << 24) | (1 << 16) | 0);
+			OUT_RING(ring, TEX_CONSTANTS);
 		} else {
 			/* Inline CP_SET_CONSTANT zero-fill fallback. */
 			OUT_PKT3(ring, CP_SET_CONSTANT, 1 + USER_ALU_DWORDS);

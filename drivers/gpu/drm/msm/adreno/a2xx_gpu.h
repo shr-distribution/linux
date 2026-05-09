@@ -41,7 +41,8 @@ struct a2xx_gpu {
 	 * IOMMU/page allocator's alignment behavior.
 	 */
 	struct drm_gem_object *shadow_bo;
-	uint64_t shadow_iova;       /* 8 KB-aligned, into the BO */
+	uint64_t shadow_iova;       /* 8 KB-aligned ALU shadow IOVA */
+	uint64_t shadow_tex_iova;   /* 8 KB-aligned TEX shadow IOVA (=shadow_iova+8K) */
 	void *shadow_vaddr;
 };
 #define to_a2xx_gpu(x) container_of(x, struct a2xx_gpu, base)
