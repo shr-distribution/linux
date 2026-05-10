@@ -24,7 +24,14 @@ struct a2xx_gpummu {
 };
 #define to_a2xx_gpummu(x) container_of(x, struct a2xx_gpummu, base)
 
-#define GPUMMU_VA_START SZ_16M
+/*
+ * VA range start. webOS/KGSL uses 0x66000000 (live readback confirmed),
+ * mainline historically used SZ_16M (0x01000000). Per Gemini's
+ * cache-aliasing hypothesis, the upper VA bits may index into the L2 or
+ * MH cache; using mainline's low-RAM base may hit "dirty" cache lines
+ * webOS never touches. Try matching webOS exactly.
+ */
+#define GPUMMU_VA_START 0x66000000UL
 #define GPUMMU_VA_RANGE (0xfff * SZ_64K)
 #define GPUMMU_PAGE_SIZE SZ_4K
 #define TABLE_SIZE (sizeof(uint32_t) * GPUMMU_VA_RANGE / GPUMMU_PAGE_SIZE)
