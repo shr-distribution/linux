@@ -34,15 +34,28 @@ MODULE_PARM_DESC(a2xx_skip_preamble,
 /*
  * Pre-WPTR sync knobs (period-8 cycle investigation):
  *
- *   a2xx_rbbm_poll_enable: poll REG_A2XX_RBBM_STATUS::GUI_ACTIVE before each
- *     WPTR write. Falls back to mdelay(10) on >50ms timeout. Default on.
+ *   a2xx_rbbm_poll_enable: poll REG_A2XX_RBBM_STATUS sub-block bits before
+ *     each WPTR write. Falls back to mdelay(10) on >50ms timeout. Default on.
+ *
+ *   a2xx_rbbm_poll_mask: which RBBM_STATUS bits to spin on. The default
+ *     covers the sub-blocks Gemini's analysis identified as the "real" idle
+ *     signal (GUI_ACTIVE drops too early and is decorative):
+ *       0x00010000  CP_NRT_BUSY      (CP non-render traffic, sync tokens)
+ *       0x00040000  MH_BUSY          (memory hub - cache evictions etc.)
+ *       0x00080000  MH_COHERENCY_BUSY
+ *       0x08000000  SQ_CNTX17_BUSY   (shader context)
+ *       0x10000000  SQ_CNTX0_BUSY
+ *       0x40000000  RB_CNTX_BUSY     (render backend)
+ *     Set 0x80000000 to revert to legacy GUI_ACTIVE behaviour, or any
+ *     other combination to A/B without rebuilding.
  *
  *   a2xx_wptr_poll_enable: enable legacy KGSL WPTR-polling mode (CP polls a
  *     coherent memory mirror of WPTR rather than relying solely on the
  *     register write). Programs RB_CNTL.POLL_EN, RB_WPTR_BASE, RB_WPTR_DELAY
  *     at hw_init and writes ring->memptrs->wptr on each submit. Requires
  *     hw_init to take effect (sysrq b reboot or rmmod/insmod the gpu).
- *     Default off (set true to test).
+ *     Default off (set true to test). KNOWN BROKEN: hangs at ME_INIT,
+ *     under investigation.
  *
  *   a2xx_wptr_poll_delay: value programmed into REG_AXXX_CP_RB_WPTR_DELAY
  *     when WPTR-polling is enabled. KGSL uses 0; an alternate value
@@ -51,7 +64,18 @@ MODULE_PARM_DESC(a2xx_skip_preamble,
 bool a2xx_rbbm_poll_enable = true;
 module_param(a2xx_rbbm_poll_enable, bool, 0644);
 MODULE_PARM_DESC(a2xx_rbbm_poll_enable,
-		 "poll RBBM_STATUS::GUI_ACTIVE before WPTR write (0=skip, 1=poll)");
+		 "poll RBBM_STATUS sub-block bits before WPTR write (0=skip, 1=poll)");
+
+uint a2xx_rbbm_poll_mask =
+	A2XX_RBBM_STATUS_CP_NRT_BUSY |
+	A2XX_RBBM_STATUS_MH_BUSY |
+	A2XX_RBBM_STATUS_MH_COHERENCY_BUSY |
+	A2XX_RBBM_STATUS_SQ_CNTX17_BUSY |
+	A2XX_RBBM_STATUS_SQ_CNTX0_BUSY |
+	A2XX_RBBM_STATUS_RB_CNTX_BUSY;
+module_param(a2xx_rbbm_poll_mask, uint, 0644);
+MODULE_PARM_DESC(a2xx_rbbm_poll_mask,
+		 "bitmask of RBBM_STATUS bits to spin on (default: CP_NRT|MH|MH_COH|SQ_CNTX0/17|RB_CNTX)");
 
 bool a2xx_wptr_poll_enable = false;
 module_param(a2xx_wptr_poll_enable, bool, 0644);
@@ -563,14 +587,14 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	 * a different mechanism (e.g., poll a PLL-lock register or wait
 	 * after pm_resume).
 	 */
-	if (a2xx_rbbm_poll_enable) {
+	if (a2xx_rbbm_poll_enable && a2xx_rbbm_poll_mask) {
 		ktime_t start = ktime_get();
 		u32 status;
 		unsigned int spins = 0;
 
 		while (1) {
 			status = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
-			if (!(status & A2XX_RBBM_STATUS_GUI_ACTIVE))
+			if (!(status & a2xx_rbbm_poll_mask))
 				break;
 			spins++;
 			/* timeout at ~50ms to avoid hangs */
@@ -584,8 +608,8 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 
 		if (spins > 0)
 			pr_debug_ratelimited(
-				"a2xx submit: spun %u times waiting for RBBM idle (status=%08x)\n",
-				spins, status);
+				"a2xx submit: spun %u times waiting for RBBM idle (status=%08x mask=%08x)\n",
+				spins, status, a2xx_rbbm_poll_mask);
 	}
 
 	/* Debug: optional EXTRA delay before WPTR write (knob for tests) */
