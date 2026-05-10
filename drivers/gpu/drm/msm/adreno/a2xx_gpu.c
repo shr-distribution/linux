@@ -660,6 +660,20 @@ static bool a2xx_me_init(struct msm_gpu *gpu)
 		OUT_RING(ring, 1);
 	}
 
+	/*
+	 * If WPTR-polling mode is enabled, the CP reads the wptr value from
+	 * memptrs->wptr (programmed via REG_AXXX_CP_RB_WPTR_BASE in hw_init).
+	 * me_init runs before any user submit, so we must update the mirror
+	 * here too or the CP will poll a stale 0 value and never advance.
+	 */
+	if (a2xx_wptr_poll_enable) {
+		ring->memptrs->wptr = get_wptr(ring);
+		wmb();
+#ifdef CONFIG_OUTER_CACHE
+		outer_sync();
+#endif
+	}
+
 	adreno_flush(gpu, ring, REG_AXXX_CP_RB_WPTR);
 	return a2xx_idle(gpu);
 }
