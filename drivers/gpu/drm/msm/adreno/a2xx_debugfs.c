@@ -517,6 +517,38 @@ static int force_collapse_set(void *data, u64 val)
 	if (ret)
 		dev_warn(gdev, "force_collapse: power_on returned %d\n", ret);
 
+	/*
+	 * Mainline's gdsc_enable for LEGACY_FOOTSWITCH only resets the
+	 * AHB clock (gfx3d_gdsc.resets[] = { GFX3D_AHB_RESET }). The
+	 * legacy webOS footswitch-8x60.c additionally pulses GFX3D_RESET
+	 * (the core_clk reset, MMCC offset 0x0210 bit 12) AFTER the rail
+	 * is on - "Toggle core reset now that power is on (required for
+	 * some cores)". Without this pulse, the SQ wavefront scheduler
+	 * and VPC state machines come up from a cold rail in a
+	 * randomized state, which empirically produces per-pixel noise
+	 * (~13% of frame differs between consecutive renders, while
+	 * channel means stay stable).
+	 *
+	 * Pulse GFX3D_RESET here to give those state machines a clean
+	 * initialization. udelay(5) on each side matches the legacy
+	 * timing.
+	 */
+	{
+		void __iomem *resetr = ioremap(0x04000210, 4);
+		if (resetr) {
+			u32 v = readl(resetr);
+			dev_info(gdev, "force_collapse: GFX3D_RESET pre-toggle=0x%08x\n", v);
+			writel(v | BIT(12), resetr); /* assert core reset */
+			udelay(5);
+			writel(v & ~BIT(12), resetr); /* deassert */
+			udelay(5);
+			iounmap(resetr);
+			dev_info(gdev, "force_collapse: GFX3D_RESET toggle complete\n");
+		} else {
+			dev_warn(gdev, "force_collapse: ioremap GFX3D_RESET failed\n");
+		}
+	}
+
 	ret = pm_runtime_force_resume(gdev);
 	if (ret) {
 		dev_err(gdev, "force_collapse: pm_runtime_force_resume: %d\n", ret);
