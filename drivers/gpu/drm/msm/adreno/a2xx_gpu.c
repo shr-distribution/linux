@@ -510,7 +510,53 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	/* Debug: force cache flush before notifying GPU */
 	a2xx_debug_cache_flush();
 
-	/* Debug: optional delay before WPTR write */
+	/*
+	 * Pre-WPTR sync: targeted poll on RBBM_STATUS busy-bits to replace
+	 * the empirical udelay(10000) hack.
+	 *
+	 * Empirical finding: A22X needs a "settle" period before the WPTR
+	 * write or a deterministic 8-cycle of broken renderings emerges.
+	 * The brute-force fix was udelay(10000) (10ms CPU busy-wait) which
+	 * is unshippable. Try a hardware-driven poll first: spin on
+	 * RBBM_STATUS until all busy-bits are clear (GPU is fully retired
+	 * from the previous batch). Only fall back to udelay if the poll
+	 * times out without idle.
+	 *
+	 * The previous batch's CACHE_FLUSH_TS + CP_INTERRUPT have already
+	 * been issued at this point, so the GPU should retire quickly. The
+	 * poll lets us wait only as long as needed.
+	 *
+	 * If this fails to fix the cycle, the race isn't pipeline-busy but
+	 * something else (power/clock domain stabilization), and we'd need
+	 * a different mechanism (e.g., poll a PLL-lock register or wait
+	 * after pm_resume).
+	 */
+	{
+		ktime_t start = ktime_get();
+		u32 status;
+		unsigned int spins = 0;
+
+		while (1) {
+			status = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
+			if (!(status & A2XX_RBBM_BUSY_MASK))
+				break;
+			spins++;
+			/* timeout at ~50ms to avoid hangs */
+			if (ktime_us_delta(ktime_get(), start) > 50000) {
+				/* fall back to brute-force udelay */
+				udelay(10000);
+				break;
+			}
+			cpu_relax();
+		}
+
+		if (spins > 0)
+			pr_debug_ratelimited(
+				"a2xx submit: spun %u times waiting for RBBM idle (status=%08x)\n",
+				spins, status);
+	}
+
+	/* Debug: optional EXTRA delay before WPTR write (knob for tests) */
 	wptr_delay = a2xx_debug_get_wptr_delay();
 	if (wptr_delay > 0)
 		udelay(wptr_delay);
