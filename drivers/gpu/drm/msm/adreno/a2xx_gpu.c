@@ -639,6 +639,21 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_TC);
 
+	/*
+	 * MH ARBITER config - matches legacy KGSL's KGSL_CFG_YAMATO_MHARB
+	 * for both Yamato (a20x) and Leia (a22x = REV470). Live readback
+	 * from webOS/KGSL on a Leia REV470 (HP TouchPad) confirms
+	 * MH_ARBITER_CONFIG = 0x07c86590 for both generations.
+	 *
+	 * IN_FLIGHT_LIMIT_ENABLE (bit 15) is intentionally NOT set:
+	 * mainline used to set it (with IN_FLIGHT_LIMIT=8), but the MH
+	 * arbiter's per-tag tracking with the limit enforced was producing
+	 * a deterministic period-8 rendering cycle on a22x where 1/8 of
+	 * fresh DRM contexts rendered correctly and 7/8 had channel-drop
+	 * + GMEM-tile artifacts. KGSL leaves the limit unenforced (the
+	 * IN_FLIGHT_LIMIT(8) field is still written but the enable bit
+	 * is off, so the field is dead). Mirror KGSL exactly.
+	 */
 	gpu_write(gpu, REG_A2XX_MH_ARBITER_CONFIG,
 		A2XX_MH_ARBITER_CONFIG_SAME_PAGE_LIMIT(16) |
 		A2XX_MH_ARBITER_CONFIG_L1_ARB_ENABLE |
@@ -646,7 +661,6 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		A2XX_MH_ARBITER_CONFIG_PAGE_SIZE(1) |
 		A2XX_MH_ARBITER_CONFIG_TC_REORDER_ENABLE |
 		A2XX_MH_ARBITER_CONFIG_TC_ARB_HOLD_ENABLE |
-		A2XX_MH_ARBITER_CONFIG_IN_FLIGHT_LIMIT_ENABLE |
 		A2XX_MH_ARBITER_CONFIG_IN_FLIGHT_LIMIT(8) |
 		A2XX_MH_ARBITER_CONFIG_CP_CLNT_ENABLE |
 		A2XX_MH_ARBITER_CONFIG_VGT_CLNT_ENABLE |
@@ -655,18 +669,6 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		A2XX_MH_ARBITER_CONFIG_PA_CLNT_ENABLE);
 	if (!adreno_is_a20x(adreno_gpu))
 		gpu_write(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1, 0x00032f07);
-
-	/*
-	 * Speculative fix: write KGSL's non-LEIA CONFIG2 value 0x00472747 to
-	 * MH_CLNT_INTF_CTRL_CONFIG2. KGSL's LEIA REV470 init path skips this
-	 * register entirely; mainline freedreno also skips it; the bootloader
-	 * leaves 0x00cf2f47 in there. Test whether overriding to KGSL's
-	 * non-LEIA value changes the period-8 rendering cycle - if it does,
-	 * CONFIG2 contains the toxic bits; if not, the cycle source is
-	 * elsewhere.
-	 */
-	if (!adreno_is_a20x(adreno_gpu))
-		gpu_write(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG2, 0x00472747);
 
 	gpu_write(gpu, REG_A2XX_SQ_VS_PROGRAM, 0x00000000);
 	gpu_write(gpu, REG_A2XX_SQ_PS_PROGRAM, 0x00000000);
