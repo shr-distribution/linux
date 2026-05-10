@@ -538,13 +538,13 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 
 		while (1) {
 			status = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
-			if (!(status & A2XX_RBBM_BUSY_MASK))
+			if (!(status & A2XX_RBBM_STATUS_GUI_ACTIVE))
 				break;
 			spins++;
 			/* timeout at ~50ms to avoid hangs */
 			if (ktime_us_delta(ktime_get(), start) > 50000) {
-				/* fall back to brute-force udelay */
-				udelay(10000);
+				/* fall back to brute-force mdelay (udelay > 2000 is rejected) */
+				mdelay(10);
 				break;
 			}
 			cpu_relax();
