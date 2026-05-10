@@ -844,6 +844,13 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 			pr_info("a2xx MH probe: AXI_ERR=%08x INT_STATUS=%08x\n",
 				gpu_read(gpu, 0x0a45),
 				gpu_read(gpu, 0x0a43));
+			/* Undocumented MH regs - webOS/KGSL readback shows:
+			 * 0x0a56=0x765cab98, 0x0a57=0x00043210, 0x0a58=0x00000020
+			 * (the latter looks like an 8-port routing table). */
+			pr_info("a2xx MH probe: 0x0a56=%08x 0x0a57=%08x 0x0a58=%08x\n",
+				gpu_read(gpu, 0x0a56),
+				gpu_read(gpu, 0x0a57),
+				gpu_read(gpu, 0x0a58));
 			/* Extended sweep 0..63 - matches KGSL's postmortem dump.
 			 * Values 32..63 may expose hidden state hw_init alone misses. */
 			for (i = 0; i < 64; i++) {
