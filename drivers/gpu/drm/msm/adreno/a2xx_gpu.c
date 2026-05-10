@@ -656,6 +656,18 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	if (!adreno_is_a20x(adreno_gpu))
 		gpu_write(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1, 0x00032f07);
 
+	/*
+	 * Speculative fix: write KGSL's non-LEIA CONFIG2 value 0x00472747 to
+	 * MH_CLNT_INTF_CTRL_CONFIG2. KGSL's LEIA REV470 init path skips this
+	 * register entirely; mainline freedreno also skips it; the bootloader
+	 * leaves 0x00cf2f47 in there. Test whether overriding to KGSL's
+	 * non-LEIA value changes the period-8 rendering cycle - if it does,
+	 * CONFIG2 contains the toxic bits; if not, the cycle source is
+	 * elsewhere.
+	 */
+	if (!adreno_is_a20x(adreno_gpu))
+		gpu_write(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG2, 0x00472747);
+
 	gpu_write(gpu, REG_A2XX_SQ_VS_PROGRAM, 0x00000000);
 	gpu_write(gpu, REG_A2XX_SQ_PS_PROGRAM, 0x00000000);
 
@@ -823,14 +835,16 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		 * (0x0a4f) to dump all hidden MH state on every hw_init.
 		 */
 		{
-			u32 i, vals[32];
+			u32 i, vals[64];
 			pr_info("a2xx MH probe: CLNT_INTF_CFG1=%08x CFG2=%08x\n",
 				gpu_read(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1),
 				gpu_read(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG2));
 			pr_info("a2xx MH probe: AXI_ERR=%08x INT_STATUS=%08x\n",
 				gpu_read(gpu, 0x0a45),
 				gpu_read(gpu, 0x0a43));
-			for (i = 0; i < 32; i++) {
+			/* Extended sweep 0..63 - matches KGSL's postmortem dump.
+			 * Values 32..63 may expose hidden state hw_init alone misses. */
+			for (i = 0; i < 64; i++) {
 				gpu_write(gpu, 0x0a4e, i); /* MH_DEBUG_CNTL */
 				vals[i] = gpu_read(gpu, 0x0a4f); /* MH_DEBUG_DATA */
 			}
@@ -846,6 +860,18 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 			pr_info("a2xx MH_DEBUG[24..31]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
 				vals[24], vals[25], vals[26], vals[27],
 				vals[28], vals[29], vals[30], vals[31]);
+			pr_info("a2xx MH_DEBUG[32..39]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+				vals[32], vals[33], vals[34], vals[35],
+				vals[36], vals[37], vals[38], vals[39]);
+			pr_info("a2xx MH_DEBUG[40..47]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+				vals[40], vals[41], vals[42], vals[43],
+				vals[44], vals[45], vals[46], vals[47]);
+			pr_info("a2xx MH_DEBUG[48..55]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+				vals[48], vals[49], vals[50], vals[51],
+				vals[52], vals[53], vals[54], vals[55]);
+			pr_info("a2xx MH_DEBUG[56..63]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+				vals[56], vals[57], vals[58], vals[59],
+				vals[60], vals[61], vals[62], vals[63]);
 		}
 	}
 
