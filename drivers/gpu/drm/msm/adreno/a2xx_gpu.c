@@ -32,6 +32,38 @@ MODULE_PARM_DESC(a2xx_skip_preamble,
 		 "skip a2xx cross-context sanitizer preamble (0=emit, 1=skip)");
 
 /*
+ * Pre-WPTR sync knobs (period-8 cycle investigation):
+ *
+ *   a2xx_rbbm_poll_enable: poll REG_A2XX_RBBM_STATUS::GUI_ACTIVE before each
+ *     WPTR write. Falls back to mdelay(10) on >50ms timeout. Default on.
+ *
+ *   a2xx_wptr_poll_enable: enable legacy KGSL WPTR-polling mode (CP polls a
+ *     coherent memory mirror of WPTR rather than relying solely on the
+ *     register write). Programs RB_CNTL.POLL_EN, RB_WPTR_BASE, RB_WPTR_DELAY
+ *     at hw_init and writes ring->memptrs->wptr on each submit. Requires
+ *     hw_init to take effect (sysrq b reboot or rmmod/insmod the gpu).
+ *     Default off (set true to test).
+ *
+ *   a2xx_wptr_poll_delay: value programmed into REG_AXXX_CP_RB_WPTR_DELAY
+ *     when WPTR-polling is enabled. KGSL uses 0; an alternate value
+ *     0x70000010 was commented in the legacy source. Default 0.
+ */
+bool a2xx_rbbm_poll_enable = true;
+module_param(a2xx_rbbm_poll_enable, bool, 0644);
+MODULE_PARM_DESC(a2xx_rbbm_poll_enable,
+		 "poll RBBM_STATUS::GUI_ACTIVE before WPTR write (0=skip, 1=poll)");
+
+bool a2xx_wptr_poll_enable = false;
+module_param(a2xx_wptr_poll_enable, bool, 0644);
+MODULE_PARM_DESC(a2xx_wptr_poll_enable,
+		 "enable legacy KGSL WPTR-polling mode (0=disabled, 1=enabled, applied at hw_init)");
+
+uint a2xx_wptr_poll_delay = 0;
+module_param(a2xx_wptr_poll_delay, uint, 0644);
+MODULE_PARM_DESC(a2xx_wptr_poll_delay,
+		 "value for REG_AXXX_CP_RB_WPTR_DELAY when WPTR-polling enabled (KGSL: 0)");
+
+/*
  * Track the last user IB1 across submits for forensic dump on MMU
  * fault. Only the IOVA + size are saved; the kvirt resolution is
  * deferred to fault time and uses a gpummu page-table walk
@@ -531,7 +563,7 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	 * a different mechanism (e.g., poll a PLL-lock register or wait
 	 * after pm_resume).
 	 */
-	{
+	if (a2xx_rbbm_poll_enable) {
 		ktime_t start = ktime_get();
 		u32 status;
 		unsigned int spins = 0;
@@ -560,6 +592,20 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	wptr_delay = a2xx_debug_get_wptr_delay();
 	if (wptr_delay > 0)
 		udelay(wptr_delay);
+
+	/*
+	 * Legacy KGSL WPTR-polling mirror: when enabled, the CP polls a
+	 * coherent memory location for the WPTR value. Update it and barrier
+	 * before the register write so either path reaches the CP coherently.
+	 */
+	if (a2xx_wptr_poll_enable) {
+		ring->memptrs->wptr = get_wptr(ring);
+		/* ensure CP sees the wptr mirror update before the register kick */
+		wmb();
+#ifdef CONFIG_OUTER_CACHE
+		outer_sync();
+#endif
+	}
 
 	adreno_flush(gpu, ring, REG_AXXX_CP_RB_WPTR);
 }
@@ -799,8 +845,22 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	if (ret)
 		return ret;
 
-	gpu_write(gpu, REG_AXXX_CP_RB_CNTL,
-		MSM_GPU_RB_CNTL_DEFAULT | AXXX_CP_RB_CNTL_NO_UPDATE);
+	{
+		u32 rb_cntl = MSM_GPU_RB_CNTL_DEFAULT | AXXX_CP_RB_CNTL_NO_UPDATE;
+
+		if (a2xx_wptr_poll_enable) {
+			/* Match legacy KGSL setup: program WPTR mirror BEFORE
+			 * enabling POLL_EN so the CP doesn't read a stale
+			 * address as the polling target. */
+			gpu_write(gpu, REG_AXXX_CP_RB_WPTR_BASE,
+				lower_32_bits(rbmemptr(gpu->rb[0], wptr)));
+			gpu_write(gpu, REG_AXXX_CP_RB_WPTR_DELAY,
+				a2xx_wptr_poll_delay);
+			rb_cntl |= AXXX_CP_RB_CNTL_POLL_EN;
+		}
+
+		gpu_write(gpu, REG_AXXX_CP_RB_CNTL, rb_cntl);
+	}
 
 	gpu_write(gpu, REG_AXXX_CP_RB_BASE, lower_32_bits(gpu->rb[0]->iova));
 

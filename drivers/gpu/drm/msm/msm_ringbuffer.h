@@ -37,6 +37,13 @@ struct msm_rbmemptrs {
 	volatile struct msm_gpu_submit_stats stats[MSM_GPU_SUBMIT_STATS_COUNT];
 	volatile u64 ttbr0;
 	volatile u32 context_idr;
+
+	/*
+	 * WPTR mirror used by a2xx legacy WPTR-polling mode (matches KGSL
+	 * GSL_RB_MEMPTRS_WPTRPOLL_OFFSET behavior). Other GPU generations
+	 * leave this field unused.
+	 */
+	volatile uint32_t wptr;
 };
 
 struct msm_cp_state {
