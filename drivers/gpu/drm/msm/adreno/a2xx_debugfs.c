@@ -7,6 +7,7 @@
 
 #include <linux/debugfs.h>
 #include <linux/delay.h>
+#include <linux/io.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 
@@ -484,7 +485,32 @@ static int force_collapse_set(void *data, u64 val)
 	if (ret)
 		dev_warn(gdev, "force_collapse: power_off returned %d\n", ret);
 
-	mdelay(5);
+	/*
+	 * gdsc_disable for LEGACY_FOOTSWITCH only clears ENABLE (BIT 8) of
+	 * the GDSCR. RETENTION (BIT 9) remains set, which keeps the silicon
+	 * in "Logic-Off-Memory-On" mode - the rail technically drops but
+	 * SRAM contents are preserved.
+	 *
+	 * For our SRAM-clearing test we want true power-collapse, so also
+	 * clear bit 9 explicitly via direct register access. Hardcoded to
+	 * the GFX3D GDSCR at MMCC base 0x04000000 + offset 0x188.
+	 */
+	{
+		void __iomem *gdscr = ioremap(0x04000188, 4);
+		if (gdscr) {
+			u32 v = readl(gdscr);
+			dev_info(gdev, "force_collapse: GDSCR pre-clear=0x%08x\n", v);
+			writel(v & ~(BIT(9) | BIT(8)), gdscr); /* clear RET + ENABLE */
+			v = readl(gdscr);
+			dev_info(gdev, "force_collapse: GDSCR post-clear=0x%08x\n", v);
+			mdelay(5);
+			/* power_on below will set ENABLE again, deassert reset, etc. */
+			iounmap(gdscr);
+		} else {
+			dev_warn(gdev, "force_collapse: ioremap GDSCR failed\n");
+			mdelay(5);
+		}
+	}
 
 	dev_info(gdev, "force_collapse: power_on (gdsc_enable)\n");
 	ret = genpd->power_on(genpd);
