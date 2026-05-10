@@ -484,8 +484,17 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	 * confirmed SCRATCH_REG2's low bits drive a HW state machine
 	 * that affects rendering.
 	 */
+	/*
+	 * Aggressive test: write 0 unconditionally. The earlier
+	 * (seqno & ~0xFu) mask collapsed the 16-cycle to lo-nibble=0
+	 * but a residual 8-cycle persists in the 100-cap test (8
+	 * unique hashes per period). Write 0 always - if cycle
+	 * collapses to 100/100, SCRATCH_REG2 is fully the source.
+	 * If 8 unique hashes remain, the residual cycle is from
+	 * something else entirely.
+	 */
 	OUT_PKT0(ring, REG_AXXX_CP_SCRATCH_REG2, 1);
-	OUT_RING(ring, submit->seqno & ~0xFu);
+	OUT_RING(ring, 0);
 
 	/* wait for idle before cache flush/interrupt */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
