@@ -1488,6 +1488,107 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 	return ring->memptrs->rptr;
 }
 
+/*
+ * Force-collapse the GFX3D GDSC on every runtime suspend, and pulse
+ * GFX3D_RESET on every runtime resume.
+ *
+ * Background: the QCOM gdsc driver registers all MSM8660 MMCC GDSCs
+ * with gov=NULL, so the genpd framework never actually fires the
+ * gdsc_disable callback on idle. The GFX3D rail therefore stays
+ * permanently in "Logic-Off-Memory-On" retention mode (GDSCR bits
+ * ENABLE+RETENTION both set), preserving SQ wavefront scheduler and
+ * VPC SRAM state across submits. Symptom: deterministic period-8
+ * cycle of rendering nondeterminism, fingerprinted across many
+ * weeks of investigation (see reports/gpu-cycle-of-8-*.md).
+ *
+ * Mainline's gdsc_disable LEGACY_FOOTSWITCH path only clears ENABLE
+ * (BIT 8). Mainline's gdsc_enable only pulses the AHB reset
+ * (GFX3D_AHB_RESET); the core_clk reset (GFX3D_RESET) is never
+ * touched. Both are required for a true cold-rail cycle.
+ *
+ * Rather than patch generic gdsc.c (which serves many platforms),
+ * isolate the workaround here. Direct register writes via ioremap
+ * are layering violations but acceptable for an MSM8660-only quirk;
+ * the genpd state intentionally stays "on" since gov=NULL means it
+ * never actually transitions and the framework doesn't depend on
+ * the hardware-side state matching its software-side bookkeeping.
+ */
+#define A2XX_MMCC_GFX3D_GDSCR	0x04000188	/* MMCC + 0x188 */
+#define A2XX_MMCC_GFX3D_RESET	0x04000210	/* MMCC + 0x210 */
+#define A2XX_GDSCR_CLAMP	BIT(5)		/* LEGACY_FS_CLAMP_MASK */
+#define A2XX_GDSCR_ENABLE	BIT(8)		/* LEGACY_FS_ENABLE_MASK */
+#define A2XX_GDSCR_RETENTION	BIT(9)		/* LEGACY_FS_RETENTION_MASK */
+#define A2XX_GFX3D_RESET_BIT	BIT(12)		/* GFX3D_RESET in MMCC 0x0210 */
+
+bool a2xx_force_collapse_on_suspend = true;
+module_param(a2xx_force_collapse_on_suspend, bool, 0644);
+MODULE_PARM_DESC(a2xx_force_collapse_on_suspend,
+		 "force GFX3D GDSC collapse + core reset pulse on every "
+		 "pm_runtime cycle (1=enable, 0=disable for A/B testing)");
+
+static void a2xx_force_gdsc_collapse(struct msm_gpu *gpu)
+{
+	void __iomem *gdscr;
+	u32 v;
+
+	if (!a2xx_force_collapse_on_suspend)
+		return;
+
+	gdscr = ioremap(A2XX_MMCC_GFX3D_GDSCR, 4);
+	if (!gdscr)
+		return;
+
+	v = readl(gdscr);
+	/* Clamp I/O first, then drop ENABLE + RETENTION together. */
+	writel(v | A2XX_GDSCR_CLAMP, gdscr);
+	writel((v | A2XX_GDSCR_CLAMP)
+	       & ~(A2XX_GDSCR_ENABLE | A2XX_GDSCR_RETENTION), gdscr);
+	(void)readl(gdscr); /* posting read */
+	iounmap(gdscr);
+
+	udelay(50); /* allow rail to fully drain */
+}
+
+static void a2xx_force_gdsc_enable_and_reset(struct msm_gpu *gpu)
+{
+	void __iomem *gdscr, *resetr;
+	u32 v;
+
+	if (!a2xx_force_collapse_on_suspend)
+		return;
+
+	gdscr = ioremap(A2XX_MMCC_GFX3D_GDSCR, 4);
+	if (gdscr) {
+		v = readl(gdscr);
+		writel(v | A2XX_GDSCR_ENABLE, gdscr);
+		(void)readl(gdscr);
+		udelay(2); /* rail charge */
+		writel((v | A2XX_GDSCR_ENABLE) & ~A2XX_GDSCR_CLAMP, gdscr);
+		(void)readl(gdscr);
+		udelay(5); /* clamp settle */
+		iounmap(gdscr);
+	}
+
+	/*
+	 * Pulse GFX3D_RESET (core_clk reset) AFTER the rail is on but
+	 * BEFORE the clock controllers turn on the GFX3D clocks. This
+	 * mirrors arch/arm/mach-msm/footswitch-8x60.c's "Toggle core
+	 * reset now that power is on (required for some cores)" step
+	 * which mainline gdsc_enable skips for LEGACY_FOOTSWITCH.
+	 */
+	resetr = ioremap(A2XX_MMCC_GFX3D_RESET, 4);
+	if (resetr) {
+		v = readl(resetr);
+		writel(v | A2XX_GFX3D_RESET_BIT, resetr);
+		(void)readl(resetr);
+		udelay(5);
+		writel(v & ~A2XX_GFX3D_RESET_BIT, resetr);
+		(void)readl(resetr);
+		udelay(5);
+		iounmap(resetr);
+	}
+}
+
 static int a2xx_pm_suspend(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
@@ -1539,7 +1640,19 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 	 */
 	udelay(10);
 
-	return msm_gpu_pm_suspend(gpu);
+	{
+		int ret = msm_gpu_pm_suspend(gpu);
+
+		/*
+		 * After clocks are down and AXI is quiescent, force the
+		 * GFX3D rail to fully collapse. This clears the SQ
+		 * wavefront scheduler and VPC SRAM that would otherwise
+		 * persist in retention mode and drive the period-8 cycle.
+		 */
+		a2xx_force_gdsc_collapse(gpu);
+
+		return ret;
+	}
 }
 
 static int a2xx_pm_resume(struct msm_gpu *gpu)
@@ -1547,6 +1660,16 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
 	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 	int ret;
+
+	/*
+	 * Bring the GFX3D rail back BEFORE msm_gpu_pm_resume enables
+	 * the gfx3d clocks. The legacy MSM8660 footswitch power-on
+	 * sequence is: set ENABLE -> rail charge -> deassert clamp ->
+	 * pulse core reset. We do that here directly via ioremap (see
+	 * a2xx_force_gdsc_enable_and_reset for the full rationale) and
+	 * then let msm_gpu_pm_resume turn the clocks on as normal.
+	 */
+	a2xx_force_gdsc_enable_and_reset(gpu);
 
 	ret = msm_gpu_pm_resume(gpu);
 	if (ret)
