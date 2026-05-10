@@ -628,8 +628,14 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		A2XX_MH_MMU_CONFIG_TC_R_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
 		A2XX_MH_MMU_CONFIG_PA_W_CLNT_BEHAVIOR(BEH_TRAN_FLT));
 
-	/* same as parameters in adreno_gpu */
-	gpu_write(gpu, REG_A2XX_MH_MMU_VA_RANGE, SZ_16M |
+	/*
+	 * VA range. Match webOS/KGSL live readback (0x66000fff) instead
+	 * of mainline's historical SZ_16M base, paired with the matching
+	 * GPUMMU_VA_START change in a2xx_gpummu.c. Hypothesis: the upper
+	 * VA bits index the L2 / MH cache, and mainline's low-RAM base
+	 * may hit "dirty" cache lines webOS never touches.
+	 */
+	gpu_write(gpu, REG_A2XX_MH_MMU_VA_RANGE, 0x66000000UL |
 		A2XX_MH_MMU_VA_RANGE_NUM_64KB_REGIONS(0xfff));
 
 	gpu_write(gpu, REG_A2XX_MH_MMU_PT_BASE, pt_base);
@@ -851,6 +857,20 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 				gpu_read(gpu, 0x0a56),
 				gpu_read(gpu, 0x0a57),
 				gpu_read(gpu, 0x0a58));
+			/*
+			 * SQ slot/state probes per Gemini's analysis - the
+			 * cycle-of-8 may reflect SQ wavefront slot rotation
+			 * with 7 of 8 slots holding stale parameter SRAM.
+			 * SQ_INST_STORE_MANAGMENT (0x0d02) shows VS/PIX
+			 * instruction-base offsets; SQ_DEBUG_MISC (0x0d05)
+			 * exposes internal SQ debug state. SQ_FLOW_CONTROL
+			 * (0x0d01) may indicate which slot is current.
+			 */
+			pr_info("a2xx SQ probe: GPR_MGMT=%08x INST_STORE_MGMT=%08x FLOW_CTRL=%08x DEBUG_MISC=%08x\n",
+				gpu_read(gpu, 0x0d00),
+				gpu_read(gpu, 0x0d02),
+				gpu_read(gpu, 0x0d01),
+				gpu_read(gpu, 0x0d05));
 			/* Extended sweep 0..63 - matches KGSL's postmortem dump.
 			 * Values 32..63 may expose hidden state hw_init alone misses. */
 			for (i = 0; i < 64; i++) {
