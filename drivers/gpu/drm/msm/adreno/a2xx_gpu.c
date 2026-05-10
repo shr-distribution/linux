@@ -809,6 +809,44 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 			gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2),
 			gpu_read(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL),
 			gpu_read(gpu, REG_A2XX_SQ_GPR_MANAGEMENT));
+
+		/*
+		 * MH (Memory Hub) diagnostic dump - investigating period-8
+		 * cycle in rendering output. The MH ARBITER is configured for
+		 * IN_FLIGHT_LIMIT=8 (8 in-flight memory transactions). Per
+		 * Gemini's hypothesis the MH may use seqno-modulo-8 to select
+		 * an internal write buffer / transaction tag, with buffers
+		 * 1-7 holding stale config from bootloader/prior state.
+		 *
+		 * Read CLNT_INTF_CTRL_CONFIG1 + CONFIG2 and sweep MH_DEBUG_CNTL
+		 * (0x0a4e) writing values 0..31 and reading MH_DEBUG_DATA
+		 * (0x0a4f) to dump all hidden MH state on every hw_init.
+		 */
+		{
+			u32 i, vals[32];
+			pr_info("a2xx MH probe: CLNT_INTF_CFG1=%08x CFG2=%08x\n",
+				gpu_read(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1),
+				gpu_read(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG2));
+			pr_info("a2xx MH probe: AXI_ERR=%08x INT_STATUS=%08x\n",
+				gpu_read(gpu, 0x0a45),
+				gpu_read(gpu, 0x0a43));
+			for (i = 0; i < 32; i++) {
+				gpu_write(gpu, 0x0a4e, i); /* MH_DEBUG_CNTL */
+				vals[i] = gpu_read(gpu, 0x0a4f); /* MH_DEBUG_DATA */
+			}
+			pr_info("a2xx MH_DEBUG[ 0..7]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+				vals[0], vals[1], vals[2], vals[3],
+				vals[4], vals[5], vals[6], vals[7]);
+			pr_info("a2xx MH_DEBUG[ 8..15]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+				vals[8], vals[9], vals[10], vals[11],
+				vals[12], vals[13], vals[14], vals[15]);
+			pr_info("a2xx MH_DEBUG[16..23]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+				vals[16], vals[17], vals[18], vals[19],
+				vals[20], vals[21], vals[22], vals[23]);
+			pr_info("a2xx MH_DEBUG[24..31]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+				vals[24], vals[25], vals[26], vals[27],
+				vals[28], vals[29], vals[30], vals[31]);
+		}
 	}
 
 	return a2xx_me_init(gpu) ? 0 : -EINVAL;
