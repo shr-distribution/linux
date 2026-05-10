@@ -6,6 +6,8 @@
  */
 
 #include <linux/debugfs.h>
+#include <linux/delay.h>
+#include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 
 #include <drm/drm_debugfs.h>
@@ -404,6 +406,104 @@ static int reset_set(void *data, u64 val)
 DEFINE_DEBUGFS_ATTRIBUTE(reset_fops, NULL, reset_set, "%llu\n");
 
 /*
+ * Force a full GFX3D GDSC power-collapse cycle.
+ *
+ * Validates the "GDSC stays warm, SQ slot SRAM persists" theory by
+ * driving the GPU's parent genpd through a real power-off / power-on
+ * sequence (which the qcom GDSC driver registers with gov=NULL,
+ * preventing the framework from doing this on idle).
+ *
+ * Sequence:
+ *   1. pm_runtime_force_suspend(gpu_dev)  - releases device-side state
+ *      and drops the genpd ref. Without a governor the parent genpd
+ *      stays "on" at this point.
+ *   2. genpd->power_off(genpd)            - calls gdsc_disable, which
+ *      for LEGACY_FOOTSWITCH | SW_RESET on MSM8660 asserts AHB reset,
+ *      clamps I/O, and clears the rail-enable bit. Silicon is now
+ *      electrically off; SRAM contents are lost.
+ *   3. mdelay(5)                          - ensure rail fully drains
+ *      before we re-enable.
+ *   4. genpd->power_on(genpd)             - calls gdsc_enable; ramps
+ *      the rail back up, deasserts reset, unclamps. ~7us.
+ *   5. pm_runtime_force_resume(gpu_dev)   - kernel runs the full a2xx
+ *      runtime-resume callback chain including a2xx_hw_init, which
+ *      re-initializes MMU, reloads PM4/PFP firmware, runs ME_INIT.
+ *
+ * Usage:
+ *   echo 1 > /sys/kernel/debug/dri/0/force_collapse
+ *
+ * Expected outcome:
+ *   - period-8 hash cycle collapses to a single deterministic hash
+ *     (channel means matching the webOS reference render).
+ *   - if so: the cycle is GDSC-persistent SQ slot SRAM, fix path is
+ *     either Option A (kernel governor for gfx3d_gdsc) or Option B
+ *     (driver-side a2xx_pm_runtime_suspend explicit genpd toggle).
+ */
+static int force_collapse_set(void *data, u64 val)
+{
+	struct drm_device *dev = data;
+	struct msm_drm_private *priv = dev->dev_private;
+	struct msm_gpu *gpu = priv->gpu;
+	struct device *gdev;
+	struct generic_pm_domain *genpd;
+	int ret;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	if (!gpu)
+		return -ENODEV;
+	if (!val)
+		return 0;
+
+	gdev = &gpu->pdev->dev;
+	if (!gdev->pm_domain) {
+		dev_err(gdev, "force_collapse: no pm_domain on adreno device\n");
+		return -ENODEV;
+	}
+	genpd = pd_to_genpd(gdev->pm_domain);
+	if (!genpd || !genpd->power_off || !genpd->power_on) {
+		dev_err(gdev, "force_collapse: genpd has no power callbacks\n");
+		return -ENODEV;
+	}
+
+	dev_info(gdev, "force_collapse: cycling %s genpd via runtime suspend/resume\n",
+		 genpd->name);
+
+	mutex_lock(&gpu->lock);
+	gpu->needs_hw_init = true;
+	mutex_unlock(&gpu->lock);
+
+	ret = pm_runtime_force_suspend(gdev);
+	if (ret) {
+		dev_err(gdev, "force_collapse: pm_runtime_force_suspend: %d\n", ret);
+		return ret;
+	}
+
+	dev_info(gdev, "force_collapse: power_off (gdsc_disable)\n");
+	ret = genpd->power_off(genpd);
+	if (ret)
+		dev_warn(gdev, "force_collapse: power_off returned %d\n", ret);
+
+	mdelay(5);
+
+	dev_info(gdev, "force_collapse: power_on (gdsc_enable)\n");
+	ret = genpd->power_on(genpd);
+	if (ret)
+		dev_warn(gdev, "force_collapse: power_on returned %d\n", ret);
+
+	ret = pm_runtime_force_resume(gdev);
+	if (ret) {
+		dev_err(gdev, "force_collapse: pm_runtime_force_resume: %d\n", ret);
+		return ret;
+	}
+
+	dev_info(gdev, "force_collapse: complete\n");
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(force_collapse_fops, NULL, force_collapse_set, "%llu\n");
+
+/*
  * On-demand MMIO register read.
  *
  * Lets userspace probe any A2XX MMIO offset (in word units, matching
@@ -479,6 +579,9 @@ void a2xx_debugfs_init(struct msm_gpu *gpu, struct drm_minor *minor)
 	debugfs_create_file_unsafe("reset", 0200, minor->debugfs_root, dev,
 				   &reset_fops);
 
+	debugfs_create_file_unsafe("force_collapse", 0200, minor->debugfs_root,
+				   dev, &force_collapse_fops);
+
 	/* On-demand MMIO register read: write offset to regrw_offset,
 	 * then read regrw_value to get the live register value. Useful
 	 * for inspecting offsets the hangdump register-list doesn't cover.
@@ -492,6 +595,6 @@ void a2xx_debugfs_init(struct msm_gpu *gpu, struct drm_minor *minor)
 	a2xx_debug_init(minor);
 
 	dev_info(gpu->dev->dev,
-		 "A2XX debugfs: /sys/kernel/debug/dri/%d/{summary,cp,rbbm,mh,sq,rb,pa,reset,regrw_offset,regrw_value,coherency_test,timing_test}\n",
+		 "A2XX debugfs: /sys/kernel/debug/dri/%d/{summary,cp,rbbm,mh,sq,rb,pa,reset,force_collapse,regrw_offset,regrw_value,coherency_test,timing_test}\n",
 		 minor->index);
 }
