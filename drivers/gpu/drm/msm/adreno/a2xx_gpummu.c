@@ -360,8 +360,8 @@ void a2xx_gpummu_debug_fault(struct msm_mmu *mmu, uint32_t fault_addr)
 	/* Check if address is in valid range */
 	if (fault_addr < GPUMMU_VA_START ||
 	    fault_addr >= GPUMMU_VA_START + GPUMMU_VA_RANGE) {
-		dev_err(mmu->dev, "GPUMMU fault addr 0x%08x outside VA range [0x%x-0x%lx]\n",
-			fault_addr, GPUMMU_VA_START,
+		dev_err(mmu->dev, "GPUMMU fault addr 0x%08x outside VA range [0x%lx-0x%lx]\n",
+			fault_addr, (unsigned long)GPUMMU_VA_START,
 			(unsigned long)(GPUMMU_VA_START + GPUMMU_VA_RANGE));
 		return;
 	}
