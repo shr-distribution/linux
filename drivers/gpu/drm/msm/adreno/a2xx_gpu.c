@@ -1560,37 +1560,42 @@ MODULE_PARM_DESC(a2xx_pulse_reset_on_submit,
 		 "to clear SQ/VPC state without wiping GMEM (1=enable)");
 
 /*
- * Pulse RBBM_SOFT_RESET with all bits set EXCEPT bit 0 (CP) to
- * clear the SQ wavefront scheduler, VPC, RB, MH state machines
- * WITHOUT resetting the CP firmware state and WITHOUT touching
- * the GDSC rail (so GMEM SRAM is preserved).
+ * Pulse RBBM_SOFT_RESET with a SURGICAL mask that clears only the
+ * sub-blocks responsible for the period-8 cycle and per-pixel
+ * jitter, WITHOUT touching CP (would wipe microcode), MH (would
+ * lose IOMMU state), or the GDSC rail (would wipe GMEM SRAM).
  *
- * Per legacy KGSL kgsl_yamato.c:797-802, RBBM_SOFT_RESET is per-
- * sub-block: bit 0 = CP, other bits = other sub-blocks. KGSL uses
- * 0xFFFFFFFF for full reset, 0x00000001 for "reset CP only" on
- * LEIA_REV470 (our chip). For a mid-flight scrub we want
- * "everything except CP" = 0xFFFFFFFE.
+ * Per Gemini AI's A2XX bit-map (update 24 reply):
+ *
+ *   BIT(0) - VGT (Vertex Geometry Tester)
+ *   BIT(1) - PA/VPC (Primitive Assembly / Vertex Parameter Cache)
+ *   BIT(2) - SQ (Shader / Wavefront Scheduler)
+ *   BIT(3) - SX (Shader Export)
+ *   BIT(4) - TC (Texture Cache)
+ *   BIT(5) - ROP (Render Backend)
+ *   BIT(7) - MH (Memory Hub) -- DO NOT TOUCH
+ *   BIT(8) - CP (Command Processor) -- DO NOT TOUCH
+ *
+ * Target mask = 0x1F = VGT | PA/VPC | SQ | SX | TC. This is the
+ * recommended scrub set: it kills the wavefront-scheduler state
+ * (the 8-cycle), the varying interpolator state (per-pixel jitter),
+ * and the texture cache, while leaving CP, MH, ROP, and GMEM SRAM
+ * untouched.
  *
  * Called from a2xx_submit right before adreno_flush() writes WPTR.
- * The CP is idle at this point (waiting for new work). Pulsing
- * the sub-block resets clears the period-8 cycle's residual state
- * (SQ wavefront slots, VPC varying-cache state) while leaving the
- * CP firmware loaded and GMEM tile routing SRAM intact.
+ * The CP is idle at this point (waiting for new work), so the
+ * sub-block resets are safe.
  *
- * Earlier attempt used GFX3D_RESET (MMCC 0x0210 bit 12) which
- * resets the ENTIRE core including the CP - that wiped CP state
- * and hung every submit at rptr/wptr=20/2C5. RBBM_SOFT_RESET with
- * bit 0 masked off is the correct granularity.
+ * Earlier attempts that didn't work:
+ *   - GFX3D_RESET (MMCC 0x0210 bit 12): wipes CP, hangs at rptr=20
+ *   - RBBM_SOFT_RESET=0xFFFFFFFE: too broad, resets MH (IOMMU)
  */
 static void a2xx_pulse_gfx3d_reset(struct msm_gpu *gpu)
 {
 	if (!a2xx_pulse_reset_on_submit)
 		return;
 
-	/* Reset everything except CP (bit 0). Mirrors KGSL's per-sub-block
-	 * reset pattern but excludes the CP so its microcode + ring state
-	 * survive the pulse. */
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xFFFFFFFE);
+	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x0000001F);
 	udelay(5);
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000000);
 	udelay(5);
