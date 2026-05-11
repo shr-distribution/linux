@@ -88,6 +88,75 @@ MODULE_PARM_DESC(a2xx_scrub_iterations,
 		 "hypothesis (8 iter = +4 slot phase shift, so 16 iter "
 		 "would be +8 = full cycle = collapse to single hash).");
 
+/*
+ * Option G (real): kernel-side dummy-draw scrub of SQ wavefront slots.
+ *
+ * Prior experiments showed constant-load scrubs (Mesa 0081, kernel 8x
+ * loop) and reset pulses (Option H) all leave the 8-cycle intact -
+ * the cycle's seat is in internal SQ wavefront SRAM that only an actual
+ * DRAW packet can advance. Per Gemini AI's analysis, each CP_DRAW_INDX
+ * is one of the few PM4 packets that DEFINITIVELY consumes a wavefront
+ * slot. 8 dummy draws => 8 slot advances => all slots touched with our
+ * scrub state => cycle should collapse to one hash.
+ *
+ * Previous Mesa-side attempt (patch 0070) hung the GPU using
+ * SQ_PROGRAM_CNTL with VS_REGS=63 + RECTLIST. Per Gemini, 32 GPRs is
+ * safer than 63. KGSL's gmem2sys_vtx_pgm/frag_pgm uses minimal regs
+ * with a known-working SQ_PROGRAM_CNTL Leia value 0x10018001, so we
+ * lift those verbatim.
+ *
+ * State setup based on KGSL build_gmem2sys_cmds (kgsl_drawctxt.c:646-
+ * 853): valid shaders, scissor=tiny, color writes masked off (so the
+ * draws produce no visible output), POINTLIST count=1 (minimum cost).
+ *
+ * Default OFF for safety - flip to Y to test, leave OFF if it hangs.
+ */
+bool a2xx_dummy_draw_enable = false;
+module_param(a2xx_dummy_draw_enable, bool, 0644);
+MODULE_PARM_DESC(a2xx_dummy_draw_enable,
+		 "emit 8 dummy POINT draws at end of sanitizer preamble to "
+		 "advance the SQ wavefront slot pointer (Option G proper). "
+		 "Default OFF - enable to test. Risk: GPU hang if state "
+		 "setup is off, the original Mesa-side variant (patch 0070) "
+		 "hung the GPU.");
+
+/*
+ * CP_REG: encode a register-write CP_SET_CONSTANT header for registers
+ * in the 0x2000+ range. Mirrors Mesa freedreno's CP_REG macro
+ * (freedreno_util.h:223) - the type-4 constant-context selector and
+ * register-offset minus the 0x2000 base.
+ *
+ * Used only by the Option G dummy-draw scrub below. The existing
+ * preamble code emits raw type-0 ALU / type-1 TEX / etc. constants
+ * via different encodings (see scrub loop above).
+ */
+#define CP_REG(reg) ((0x4 << 16) | ((unsigned int)((reg) - 0x2000)))
+
+/*
+ * Scrub shaders lifted from legacy KGSL kgsl_drawctxt.c. These are
+ * the smallest known-working A2XX shaders that compile to valid
+ * wavefront-consuming draws on Adreno 220/Leia. We don't care about
+ * their output (color writes are masked off) - we just need them to
+ * be valid so DRAW_INDX doesn't crash the SQ.
+ */
+static const u32 a2xx_scrub_vs_pgm[] = {
+	/* gmem2sys_vtx_pgm: simple "pass through position" VS */
+	0x00011003, 0x00001000, 0xc2000000,
+	0x00001004, 0x00001000, 0xc4000000,
+	0x00001005, 0x00002000, 0x00000000,
+	0x1cb81000, 0x00398a88, 0x00000003,
+	0x140f803e, 0x00000000, 0xe2010100,
+	0x14000000, 0x00000000, 0xe2000000,
+};
+
+static const u32 a2xx_scrub_fs_pgm[] = {
+	/* gmem2sys_frag_pgm: minimal "output clear color" FS */
+	0x00000000, 0x1002c400, 0x10000000,
+	0x00001003, 0x00002000, 0x00000000,
+	0x140f8000, 0x00000000, 0x22000000,
+	0x14000000, 0x00000000, 0xe2000000,
+};
+
 #define A2XX_MMCC_GFX3D_GDSCR	0x04000188	/* MMCC + 0x188 */
 #define A2XX_MMCC_GFX3D_RESET	0x04000210	/* MMCC + 0x210 */
 #define A2XX_GDSCR_CLAMP	BIT(5)		/* LEGACY_FS_CLAMP_MASK */
@@ -505,6 +574,120 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 		OUT_RING(ring, CACHE_FLUSH_AND_INV_EVENT);
 		OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
 		OUT_RING(ring, 0);
+	}
+
+	/*
+	 * Option G (real): 8 dummy POINT draws to advance the SQ wavefront
+	 * slot pointer. Each CP_DRAW_INDX definitively consumes one slot;
+	 * 8 of them = full cycle = all slots touched = subsequent user
+	 * draws land on slot 0 deterministically = cycle collapse.
+	 *
+	 * Default OFF (a2xx_dummy_draw_enable). Risk: GPU hang if state
+	 * setup is wrong (Mesa patch 0070 had this fail with VS_REGS=63).
+	 * We use KGSL's Leia SQ_PROGRAM_CNTL=0x10018001 which has worked
+	 * for the gmem2sys quad render path. Safety guards:
+	 *   - Scissor = (0,0)-(1,1): rasterizer rejects almost all pixels
+	 *   - RB_COLOR_MASK = 0: no RB color writes even if pixel passes
+	 *   - RB_DEPTHCONTROL = 0/8: no depth test
+	 *   - POINTLIST count=1: minimum-cost primitive
+	 *   - VS+FS uploaded inline via CP_IM_LOAD_IMMEDIATE (no BO needed)
+	 *
+	 * The user IB will re-emit all this state, so we don't restore -
+	 * we just need to leave the GPU not-hung.
+	 */
+	if (a2xx_dummy_draw_enable) {
+		const u32 vs_dwords = ARRAY_SIZE(a2xx_scrub_vs_pgm);
+		const u32 fs_dwords = ARRAY_SIZE(a2xx_scrub_fs_pgm);
+		unsigned d, idx;
+
+		/* Drain any pending state from the constant scrub above. */
+		OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
+		OUT_RING(ring, 0);
+
+		/* Invalidate all state classes before reconfiguring. */
+		OUT_PKT3(ring, CP_INVALIDATE_STATE, 1);
+		OUT_RING(ring, 0x00007fff);
+
+		/* Upload scrub VS via CP_IM_LOAD_IMMEDIATE (target=0=VS). */
+		OUT_PKT3(ring, CP_IM_LOAD_IMMEDIATE, 2 + vs_dwords);
+		OUT_RING(ring, 0); /* 0 = vertex shader */
+		OUT_RING(ring, vs_dwords);
+		for (idx = 0; idx < vs_dwords; idx++)
+			OUT_RING(ring, a2xx_scrub_vs_pgm[idx]);
+
+		/* Upload scrub FS (target=1=PS). */
+		OUT_PKT3(ring, CP_IM_LOAD_IMMEDIATE, 2 + fs_dwords);
+		OUT_RING(ring, 1); /* 1 = pixel shader */
+		OUT_RING(ring, fs_dwords);
+		for (idx = 0; idx < fs_dwords; idx++)
+			OUT_RING(ring, a2xx_scrub_fs_pgm[idx]);
+
+		/* SET_SHADER_BASES: VS base=0, PS base=0x180, valid bit set. */
+		OUT_PKT3(ring, CP_SET_SHADER_BASES, 1);
+		OUT_RING(ring, 0x80000180);
+
+		/* SQ_PROGRAM_CNTL: lift KGSL Leia value (gmem2sys path). */
+		OUT_PKT3(ring, CP_SET_CONSTANT, 3);
+		OUT_RING(ring, CP_REG(REG_A2XX_SQ_PROGRAM_CNTL));
+		OUT_RING(ring, 0x10018001); /* SQ_PROGRAM_CNTL */
+		OUT_RING(ring, 0x00000008); /* SQ_CONTEXT_MISC */
+
+		OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+		OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_VTE_CNTL));
+		OUT_RING(ring, 0x00000b00); /* premultiplied X/Y/Z by W */
+
+		OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+		OUT_RING(ring, CP_REG(REG_A2XX_PA_SU_SC_MODE_CNTL));
+		OUT_RING(ring, 0x00080240); /* no cull, point provoking last */
+
+		/* Scissor = (0,0)-(1,1): rasterizer rejects ~all pixels. */
+		OUT_PKT3(ring, CP_SET_CONSTANT, 3);
+		OUT_RING(ring, CP_REG(REG_A2XX_PA_SC_SCREEN_SCISSOR_TL));
+		OUT_RING(ring, 0);                       /* TL = (0,0) */
+		OUT_RING(ring, (1 << 16) | 1);           /* BR = (1,1) */
+
+		OUT_PKT3(ring, CP_SET_CONSTANT, 3);
+		OUT_RING(ring, CP_REG(REG_A2XX_PA_SC_WINDOW_SCISSOR_TL));
+		OUT_RING(ring, (1U << 31) | 0);          /* TL = (0,0), disable */
+		OUT_RING(ring, (1 << 16) | 1);           /* BR = (1,1) */
+
+		/* Disable color writes entirely. */
+		OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+		OUT_RING(ring, CP_REG(REG_A2XX_RB_COLOR_MASK));
+		OUT_RING(ring, 0x00000000);
+
+		/* Disable depth/stencil writes. */
+		OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+		OUT_RING(ring, CP_REG(REG_A2XX_RB_DEPTHCONTROL));
+		OUT_RING(ring, 0x00000008); /* Leia: BACKFACE_ENABLE only */
+
+		OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+		OUT_RING(ring, CP_REG(REG_A2XX_RB_MODECONTROL));
+		OUT_RING(ring, 0x00000000); /* no resolve, sysmem mode */
+
+		/* Clip control: enable clipping, disable user clip planes. */
+		OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+		OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_CLIP_CNTL));
+		OUT_RING(ring, 0x00010000);
+
+		/*
+		 * 8 dummy POINT draws. DRAW(POINTLIST=9, AUTO_INDEX=2,
+		 * IGN=0/0, IGNORE_VIS=0, instances=0) | bit 14 set:
+		 *   9 | (2 << 6) | (1 << 14) = 0x00004089
+		 */
+		for (d = 0; d < 8; d++) {
+			OUT_PKT3(ring, CP_DRAW_INDX, 3);
+			OUT_RING(ring, 0x00000000); /* viz query info */
+			OUT_RING(ring, 0x00004089); /* draw initiator */
+			OUT_RING(ring, 1);          /* NumIndices = 1 */
+
+			/* Force retirement between draws so each consumes
+			 * a distinct slot. */
+			OUT_PKT3(ring, CP_EVENT_WRITE, 1);
+			OUT_RING(ring, CACHE_FLUSH_AND_INV_EVENT);
+			OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
+			OUT_RING(ring, 0);
+		}
 	}
 }
 
