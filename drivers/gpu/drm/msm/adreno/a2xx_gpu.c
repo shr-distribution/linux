@@ -631,6 +631,15 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 #endif
 	}
 
+	/*
+	 * Option D fix for the period-8 cycle (see report 23). Pulse
+	 * GFX3D_RESET right before WPTR to clear SQ/VPC logic state
+	 * (the seat of the 8-cycle wavefront-scheduler residue) WITHOUT
+	 * touching the GDSC rail (which would wipe GMEM SRAM and break
+	 * tile-based rendering, as we observed with Option C).
+	 */
+	a2xx_pulse_gfx3d_reset(gpu);
+
 	adreno_flush(gpu, ring, REG_AXXX_CP_RB_WPTR);
 }
 
@@ -1520,11 +1529,68 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 #define A2XX_GDSCR_RETENTION	BIT(9)		/* LEGACY_FS_RETENTION_MASK */
 #define A2XX_GFX3D_RESET_BIT	BIT(12)		/* GFX3D_RESET in MMCC 0x0210 */
 
-bool a2xx_force_collapse_on_suspend = true;
+/*
+ * Initial Option C (force GDSC collapse on pm_runtime suspend + core
+ * reset pulse on resume) successfully cleared the SQ/VPC logic state
+ * that was driving the period-8 cycle - but it also wiped the GMEM
+ * SRAM which is on the same GFX3D power rail. Result: tile-boundary
+ * artefacts (vertical stripe at x=512), edge spurs, off-triangle
+ * garbage. We traded one bug for another.
+ *
+ * Option D (Gemini AI update-23 reply): keep the GDSC permanently
+ * powered (preserving GMEM), and pulse just GFX3D_RESET (the
+ * core_clk reset that resets the LOGIC blocks SQ/VPC) at the start
+ * of every submit, right before the WPTR write. This clears the
+ * toxic Wavefront Scheduler state without losing the GMEM tile
+ * routing SRAM.
+ *
+ * Default true - this is the shippable knob.
+ */
+bool a2xx_force_collapse_on_suspend = false;
 module_param(a2xx_force_collapse_on_suspend, bool, 0644);
 MODULE_PARM_DESC(a2xx_force_collapse_on_suspend,
-		 "force GFX3D GDSC collapse + core reset pulse on every "
-		 "pm_runtime cycle (1=enable, 0=disable for A/B testing)");
+		 "DEPRECATED: force GFX3D GDSC collapse on pm_runtime cycle. "
+		 "This corrupts GMEM SRAM, prefer a2xx_pulse_reset_on_submit");
+
+bool a2xx_pulse_reset_on_submit = true;
+module_param(a2xx_pulse_reset_on_submit, bool, 0644);
+MODULE_PARM_DESC(a2xx_pulse_reset_on_submit,
+		 "pulse GFX3D_RESET (core_clk reset) before each WPTR write "
+		 "to clear SQ/VPC state without wiping GMEM (1=enable)");
+
+/*
+ * Pulse GFX3D_RESET (MMCC offset 0x0210 bit 12) to clear the SQ
+ * wavefront scheduler and VPC logic blocks WITHOUT touching the
+ * GDSC rail and therefore WITHOUT wiping GMEM SRAM. Per Gemini's
+ * Option D analysis, this is the targeted intervention that
+ * addresses the period-8 cycle without introducing tile-boundary
+ * corruption.
+ *
+ * Called from a2xx_submit right before adreno_flush() writes the
+ * WPTR register. The GPU is at-rest at this point (waiting for
+ * new work), so pulsing the core_clk reset is safe.
+ */
+static void a2xx_pulse_gfx3d_reset(struct msm_gpu *gpu)
+{
+	void __iomem *resetr;
+	u32 v;
+
+	if (!a2xx_pulse_reset_on_submit)
+		return;
+
+	resetr = ioremap(A2XX_MMCC_GFX3D_RESET, 4);
+	if (!resetr)
+		return;
+
+	v = readl(resetr);
+	writel(v | A2XX_GFX3D_RESET_BIT, resetr);
+	(void)readl(resetr);
+	udelay(5);
+	writel(v & ~A2XX_GFX3D_RESET_BIT, resetr);
+	(void)readl(resetr);
+	udelay(5);
+	iounmap(resetr);
+}
 
 static void a2xx_force_gdsc_collapse(struct msm_gpu *gpu)
 {
