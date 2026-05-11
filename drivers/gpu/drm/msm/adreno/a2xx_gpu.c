@@ -1547,16 +1547,16 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
  *
  * Default true - this is the shippable knob.
  */
-bool a2xx_force_collapse_on_suspend = true;
+bool a2xx_force_collapse_on_suspend = false;
 module_param(a2xx_force_collapse_on_suspend, bool, 0644);
 MODULE_PARM_DESC(a2xx_force_collapse_on_suspend,
 		 "force GFX3D GDSC collapse + core reset pulse on every "
-		 "pm_runtime cycle. Empirically the ONLY mechanism that "
-		 "clears the SQ wavefront residue (period-8 cycle). "
-		 "Caveat: also wipes GMEM SRAM, producing tile-boundary "
-		 "artefacts unless paired with extra init in a2xx_hw_init "
-		 "(Option C-fixed). RBBM_SOFT_RESET via CPU MMIO is inert "
-		 "while CP is alive, so it's not a substitute. Default true.");
+		 "pm_runtime cycle. Clears the SQ wavefront residue but "
+		 "wipes GMEM SRAM, producing tile-boundary artefacts. Per "
+		 "Gemini update 27 the tile noise is *more distracting* "
+		 "than the baseline 8-cycle's wrong-colour renders, so the "
+		 "shippable default is OFF. Kept as A/B knob for testing. "
+		 "The proper fix is the Mesa-side SQ scrub (Option E).");
 
 bool a2xx_pulse_reset_on_submit = true;
 module_param(a2xx_pulse_reset_on_submit, bool, 0644);
