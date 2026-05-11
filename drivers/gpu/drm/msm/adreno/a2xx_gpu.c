@@ -32,6 +32,70 @@ MODULE_PARM_DESC(a2xx_skip_preamble,
 		 "skip a2xx cross-context sanitizer preamble (0=emit, 1=skip)");
 
 /*
+ * Option H (per SoC-init audit 2026-05-11): replicate webOS
+ * msm_clk_soc_init() boot-time GFX3D reset that mainline never does.
+ *
+ * webOS arch/arm/mach-msm/clock-8x60.c:2560-2567 sequence:
+ *   local_clk_set_rate(GFX3D, 27 MHz);
+ *   local_clk_enable(GFX3D);          // clock running
+ *   writel(BIT(12), SW_RESET_CORE_REG);
+ *   udelay(5);
+ *   writel(0, SW_RESET_CORE_REG);
+ *   local_clk_disable(GFX3D);
+ *
+ * The reset is asserted with the clock running so flop clock-edges
+ * latch the reset value through all internal state - including the
+ * SQ wavefront SRAM that survives our existing RBBM_SOFT_RESET pulse
+ * and that update-27 register-invariance proved holds the 8-cycle.
+ *
+ * Mainline only resets GFX3D via the GDSC enable path (per-pm_runtime
+ * cycle), and that path is gated by LEGACY_FOOTSWITCH SW_RESET flag
+ * which is missing from msm8660's gfx3d_gdsc definition. So the
+ * outer GFX3D core reset has effectively never run on this kernel.
+ *
+ * Run once per kernel uptime at first a2xx_hw_init. By that point
+ * the GFX3D rail is on and the core clock is running (pm_runtime
+ * resume has fired), matching webOS's "clock enabled during reset".
+ */
+bool a2xx_boot_reset_enable = true;
+module_param(a2xx_boot_reset_enable, bool, 0644);
+MODULE_PARM_DESC(a2xx_boot_reset_enable,
+		 "one-shot MMCC SW_RESET_CORE_REG BIT(12) pulse at first "
+		 "a2xx_hw_init to replicate webOS boot-time GFX3D reset. "
+		 "Audit 2026-05-11 identified this as the missing SoC-init "
+		 "delta vs webOS - hypothesis is it clears SQ wavefront "
+		 "SRAM cleanly without GMEM disturbance (1=enable, default).");
+
+/*
+ * Number of iterations of the sanitizer-preamble constant-scrub loop.
+ *
+ * Empirical (2026-05-11 100-cap test with a2xx_skip_preamble=Y vs N):
+ * 8 iterations advance the cycle phase by +4 slots. If slot-advance
+ * scales linearly with iteration count, 16 iterations should advance
+ * by +8 slots = a full cycle = every submit lands on the same slot =
+ * cycle collapse to a single hash.
+ *
+ * Linear-scaling hypothesis is testable cheaply with this knob without
+ * a kernel rebuild. If 16 collapses the cycle, we ship at 16. If it
+ * just shifts to a different 8-cycle phase, scaling is non-linear and
+ * we need the dummy-draw scrub instead.
+ */
+uint a2xx_scrub_iterations = 8;
+module_param(a2xx_scrub_iterations, uint, 0644);
+MODULE_PARM_DESC(a2xx_scrub_iterations,
+		 "iterations of constant-scrub loop in sanitizer preamble. "
+		 "Default 8 (current). Try 16 to test linear slot-advance "
+		 "hypothesis (8 iter = +4 slot phase shift, so 16 iter "
+		 "would be +8 = full cycle = collapse to single hash).");
+
+#define A2XX_MMCC_GFX3D_GDSCR	0x04000188	/* MMCC + 0x188 */
+#define A2XX_MMCC_GFX3D_RESET	0x04000210	/* MMCC + 0x210 */
+#define A2XX_GDSCR_CLAMP	BIT(5)		/* LEGACY_FS_CLAMP_MASK */
+#define A2XX_GDSCR_ENABLE	BIT(8)		/* LEGACY_FS_ENABLE_MASK */
+#define A2XX_GDSCR_RETENTION	BIT(9)		/* LEGACY_FS_RETENTION_MASK */
+#define A2XX_GFX3D_RESET_BIT	BIT(12)		/* GFX3D_RESET in MMCC 0x0210 */
+
+/*
  * Pre-WPTR sync knobs (period-8 cycle investigation):
  *
  *   a2xx_rbbm_poll_enable: poll REG_A2XX_RBBM_STATUS sub-block bits before
@@ -354,7 +418,7 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
 	OUT_RING(ring, 0);
 
-	for (slot = 0; slot < 8; slot++) {
+	for (slot = 0; slot < a2xx_scrub_iterations; slot++) {
 		/*
 		 * EXPERIMENTAL "dummy advance": CP_INVALIDATE_STATE with
 		 * mask 0x7fff (invalidate ALL hw state classes) at the top
@@ -712,6 +776,56 @@ static bool a2xx_me_init(struct msm_gpu *gpu)
 	return a2xx_idle(gpu);
 }
 
+/*
+ * Option H one-shot boot-time GFX3D core reset.
+ *
+ * Replicates the webOS msm_clk_soc_init() reset sequence that mainline
+ * never executes. At first a2xx_hw_init the GFX3D rail is on and the
+ * core clock is running (pm_runtime resume fired), so we satisfy the
+ * webOS pre-condition "clock enabled during reset".
+ *
+ * Runs exactly ONCE per kernel uptime, gated by a2xx_boot_reset_done.
+ * The static flag survives pm_runtime cycles but resets on module
+ * reload / reboot, mirroring webOS's "once at SoC bringup" semantics.
+ *
+ * Pulse is via MMCC SW_RESET_CORE_REG BIT(12) - the OUTER GFX3D core
+ * reset that resets the entire power-domain logic block, including
+ * the SQ wavefront SRAM that the INNER RBBM_SOFT_RESET (which we
+ * already do at line ~735) cannot reach.
+ */
+static bool a2xx_boot_reset_done = false;
+
+static void a2xx_one_shot_boot_reset(struct msm_gpu *gpu)
+{
+	void __iomem *resetr;
+	u32 v;
+
+	if (!a2xx_boot_reset_enable)
+		return;
+	if (a2xx_boot_reset_done)
+		return;
+
+	resetr = ioremap(A2XX_MMCC_GFX3D_RESET, 4);
+	if (!resetr) {
+		dev_warn(gpu->dev->dev,
+			 "a2xx_one_shot_boot_reset: ioremap MMCC reset failed\n");
+		return;
+	}
+
+	v = readl(resetr);
+	writel(v | A2XX_GFX3D_RESET_BIT, resetr);
+	(void)readl(resetr); /* posting read */
+	udelay(5);           /* matches webOS clock-8x60.c:2563 */
+	writel(v & ~A2XX_GFX3D_RESET_BIT, resetr);
+	(void)readl(resetr);
+	udelay(5);           /* settle */
+	iounmap(resetr);
+
+	a2xx_boot_reset_done = true;
+	dev_info(gpu->dev->dev,
+		 "a2xx: one-shot GFX3D boot reset pulsed (Option H)\n");
+}
+
 static int a2xx_hw_init(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
@@ -723,6 +837,13 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	a2xx_gpummu_params(to_msm_vm(gpu->vm)->mmu, &pt_base, &tran_error);
 
 	DBG("%s", gpu->name);
+
+	/*
+	 * Option H: one-shot boot-time MMCC GFX3D core reset. Done BEFORE
+	 * any other hw_init work because it resets the entire GFX3D power-
+	 * domain logic block including state RBBM_SOFT_RESET cannot reach.
+	 */
+	a2xx_one_shot_boot_reset(gpu);
 
 	/* halt ME to avoid ucode upload issues on a20x */
 	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, AXXX_CP_ME_CNTL_HALT);
@@ -1523,12 +1644,10 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
  * never actually transitions and the framework doesn't depend on
  * the hardware-side state matching its software-side bookkeeping.
  */
-#define A2XX_MMCC_GFX3D_GDSCR	0x04000188	/* MMCC + 0x188 */
-#define A2XX_MMCC_GFX3D_RESET	0x04000210	/* MMCC + 0x210 */
-#define A2XX_GDSCR_CLAMP	BIT(5)		/* LEGACY_FS_CLAMP_MASK */
-#define A2XX_GDSCR_ENABLE	BIT(8)		/* LEGACY_FS_ENABLE_MASK */
-#define A2XX_GDSCR_RETENTION	BIT(9)		/* LEGACY_FS_RETENTION_MASK */
-#define A2XX_GFX3D_RESET_BIT	BIT(12)		/* GFX3D_RESET in MMCC 0x0210 */
+/* MMCC register addresses + GFX3D bits - defined near top of file for
+ * use by a2xx_one_shot_boot_reset (called early in a2xx_hw_init) as
+ * well as a2xx_force_gdsc_*. Moved here from inline GDSC block.
+ */
 
 /*
  * Initial Option C (force GDSC collapse on pm_runtime suspend + core
