@@ -1559,20 +1559,37 @@ MODULE_PARM_DESC(a2xx_pulse_reset_on_submit,
 		 "pulse RBBM_SOFT_RESET before each WPTR write to clear "
 		 "SQ/VPC state without wiping GMEM (1=enable)");
 
-uint a2xx_pulse_reset_mask = 0x0000001F;
+uint a2xx_pulse_reset_mask = 0x0000003F;
 module_param(a2xx_pulse_reset_mask, uint, 0644);
 MODULE_PARM_DESC(a2xx_pulse_reset_mask,
 		 "mask written to RBBM_SOFT_RESET during the per-submit "
-		 "pulse. Gemini A2XX bit-map: BIT(0)=VGT BIT(1)=PA/VPC "
-		 "BIT(2)=SQ BIT(3)=SX BIT(4)=TC BIT(5)=ROP BIT(7)=MH "
-		 "BIT(8)=CP. KGSL bit-0 was reportedly CP. Default 0x1F = "
-		 "first 5 (VGT|PA|SQ|SX|TC). Tunable for A/B testing.");
+		 "pulse. A2XX bit-map: BIT(0)=VGT BIT(1)=PA/VPC BIT(2)=SQ "
+		 "BIT(3)=SX BIT(4)=TC BIT(5)=RB BIT(6)=BC BIT(7)=MH (DO "
+		 "NOT TOUCH) BIT(8)=CP (DO NOT TOUCH). Default 0x3F = "
+		 "VGT|PA|SQ|SX|TC|RB (per Gemini update 25 - RB needed "
+		 "because the 8-cycle is GMEM-tile aligned).");
 
-uint a2xx_pulse_reset_udelay = 5;
+uint a2xx_pulse_reset_udelay = 10;
 module_param(a2xx_pulse_reset_udelay, uint, 0644);
 MODULE_PARM_DESC(a2xx_pulse_reset_udelay,
 		 "udelay (microseconds) for both halves of the per-submit "
-		 "RBBM_SOFT_RESET pulse. Default 5us.");
+		 "RBBM_SOFT_RESET pulse. Default 10us.");
+
+bool a2xx_pulse_reset_force_clocks = true;
+module_param(a2xx_pulse_reset_force_clocks, bool, 0644);
+MODULE_PARM_DESC(a2xx_pulse_reset_force_clocks,
+		 "force all sub-block clocks on via PM_OVERRIDE1/2 before "
+		 "the reset pulse. Without this, dynamic clock gating may "
+		 "leave target sub-blocks clock-gated and the reset signal "
+		 "won't propagate through the flip-flops (the reset write "
+		 "'takes' but the logic never resets).");
+
+bool a2xx_pulse_reset_halt_cp = false;
+module_param(a2xx_pulse_reset_halt_cp, bool, 0644);
+MODULE_PARM_DESC(a2xx_pulse_reset_halt_cp,
+		 "additionally halt the CP via CP_ME_CNTL.HALT before the "
+		 "pulse and unhalt after. Optional safety measure if the "
+		 "pulse races with CP activity. Default off.");
 
 /*
  * Pulse RBBM_SOFT_RESET with a SURGICAL mask that clears only the
@@ -1607,15 +1624,58 @@ MODULE_PARM_DESC(a2xx_pulse_reset_udelay,
  */
 static void a2xx_pulse_gfx3d_reset(struct msm_gpu *gpu)
 {
+	u32 saved_pm1 = 0, saved_pm2 = 0;
+	u32 saved_me_cntl = 0;
+
 	if (!a2xx_pulse_reset_on_submit)
 		return;
 
+	/*
+	 * Force all sub-block clocks on before pulsing the reset.
+	 * Without this, dynamic clock gating leaves target sub-blocks
+	 * with their clocks off, and the synchronous reset signal can't
+	 * propagate through the flip-flops. The reset register write
+	 * "takes" but the logic never actually resets. This is the
+	 * primary suspect for our previous bit-identical Phase A/B
+	 * result with mask=0x1F (per Gemini update 25 reply).
+	 */
+	if (a2xx_pulse_reset_force_clocks) {
+		saved_pm1 = gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE1);
+		saved_pm2 = gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2);
+		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0xFFFFFFFF);
+		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0xFFFFFFFF);
+		(void)gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2);
+	}
+
+	/*
+	 * Optionally halt the CP first so it can't race the pulse.
+	 * Off by default - the pulse is supposed to happen pre-WPTR
+	 * when the CP is idle waiting for new work anyway.
+	 */
+	if (a2xx_pulse_reset_halt_cp) {
+		saved_me_cntl = gpu_read(gpu, REG_AXXX_CP_ME_CNTL);
+		gpu_write(gpu, REG_AXXX_CP_ME_CNTL,
+			  saved_me_cntl | AXXX_CP_ME_CNTL_HALT);
+		(void)gpu_read(gpu, REG_AXXX_CP_ME_CNTL);
+	}
+
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, a2xx_pulse_reset_mask);
-	(void)gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET); /* readback to verify */
+	(void)gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
 	udelay(a2xx_pulse_reset_udelay);
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000000);
 	(void)gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
 	udelay(a2xx_pulse_reset_udelay);
+
+	if (a2xx_pulse_reset_halt_cp) {
+		gpu_write(gpu, REG_AXXX_CP_ME_CNTL, saved_me_cntl);
+		(void)gpu_read(gpu, REG_AXXX_CP_ME_CNTL);
+	}
+
+	if (a2xx_pulse_reset_force_clocks) {
+		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, saved_pm1);
+		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, saved_pm2);
+		(void)gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2);
+	}
 }
 
 static void a2xx_force_gdsc_collapse(struct msm_gpu *gpu)
