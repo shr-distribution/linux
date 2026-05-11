@@ -100,6 +100,7 @@ static struct {
 
 static void a2xx_dump(struct msm_gpu *gpu);
 static bool a2xx_idle(struct msm_gpu *gpu);
+static void a2xx_pulse_gfx3d_reset(struct msm_gpu *gpu);
 
 /*
  * Memory bandwidth vote in icc units (kBps), proportional to GPU clock with
