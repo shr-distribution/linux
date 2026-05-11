@@ -1556,8 +1556,23 @@ MODULE_PARM_DESC(a2xx_force_collapse_on_suspend,
 bool a2xx_pulse_reset_on_submit = true;
 module_param(a2xx_pulse_reset_on_submit, bool, 0644);
 MODULE_PARM_DESC(a2xx_pulse_reset_on_submit,
-		 "pulse GFX3D_RESET (core_clk reset) before each WPTR write "
-		 "to clear SQ/VPC state without wiping GMEM (1=enable)");
+		 "pulse RBBM_SOFT_RESET before each WPTR write to clear "
+		 "SQ/VPC state without wiping GMEM (1=enable)");
+
+uint a2xx_pulse_reset_mask = 0x0000001F;
+module_param(a2xx_pulse_reset_mask, uint, 0644);
+MODULE_PARM_DESC(a2xx_pulse_reset_mask,
+		 "mask written to RBBM_SOFT_RESET during the per-submit "
+		 "pulse. Gemini A2XX bit-map: BIT(0)=VGT BIT(1)=PA/VPC "
+		 "BIT(2)=SQ BIT(3)=SX BIT(4)=TC BIT(5)=ROP BIT(7)=MH "
+		 "BIT(8)=CP. KGSL bit-0 was reportedly CP. Default 0x1F = "
+		 "first 5 (VGT|PA|SQ|SX|TC). Tunable for A/B testing.");
+
+uint a2xx_pulse_reset_udelay = 5;
+module_param(a2xx_pulse_reset_udelay, uint, 0644);
+MODULE_PARM_DESC(a2xx_pulse_reset_udelay,
+		 "udelay (microseconds) for both halves of the per-submit "
+		 "RBBM_SOFT_RESET pulse. Default 5us.");
 
 /*
  * Pulse RBBM_SOFT_RESET with a SURGICAL mask that clears only the
@@ -1595,10 +1610,12 @@ static void a2xx_pulse_gfx3d_reset(struct msm_gpu *gpu)
 	if (!a2xx_pulse_reset_on_submit)
 		return;
 
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x0000001F);
-	udelay(5);
+	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, a2xx_pulse_reset_mask);
+	(void)gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET); /* readback to verify */
+	udelay(a2xx_pulse_reset_udelay);
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000000);
-	udelay(5);
+	(void)gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
+	udelay(a2xx_pulse_reset_udelay);
 }
 
 static void a2xx_force_gdsc_collapse(struct msm_gpu *gpu)
