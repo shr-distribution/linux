@@ -121,6 +121,33 @@ MODULE_PARM_DESC(a2xx_dummy_draw_enable,
 		 "hung the GPU.");
 
 /*
+ * Option I (Gemini hypothesis A - update 28 reply): pin CP_SCRATCH_REG0..7
+ * to zero at start of every sanitizer preamble.
+ *
+ * Theory: the period-8 render cycle is a firmware-managed "submit phase
+ * counter" that lives in CP_SCRATCH_REG. The CP firmware uses (or appears
+ * to use) the lower bits as a context ID indexing internal SQ/VPC SRAM
+ * for varying interpolation. Since mainline never writes these registers
+ * (treating them as firmware-owned), the counter increments naturally
+ * across CP_INDIRECT_BUFFER calls, producing the 8-cycle.
+ *
+ * Pinning all 8 scratch regs to 0 at every cross-context boundary forces
+ * every submit to land on the same firmware-side phase, hypothesised to
+ * collapse the cycle to a single hash (ideally bit-exact 5adc3160 since
+ * that's what slot 0 produces in our prior testing).
+ *
+ * This is the cheapest remaining test - 8 MMIO writes per preamble.
+ * Either falsifies hypothesis A or confirms the cycle's root cause.
+ * Default ON for the test pass.
+ */
+bool a2xx_scratch_reset_enable = true;
+module_param(a2xx_scratch_reset_enable, bool, 0644);
+MODULE_PARM_DESC(a2xx_scratch_reset_enable,
+		 "zero CP_SCRATCH_REG0..7 at start of sanitizer preamble "
+		 "(Option I - Gemini hypothesis A about firmware phase "
+		 "counter). Default ON to test; toggle OFF for A/B control.");
+
+/*
  * CP_REG: encode a register-write CP_SET_CONSTANT header for registers
  * in the 0x2000+ range. Mirrors Mesa freedreno's CP_REG macro
  * (freedreno_util.h:223) - the type-4 constant-context selector and
@@ -486,6 +513,22 @@ static void a2xx_emit_sanitizer_preamble(struct msm_gpu *gpu,
 	/* Drain anything in flight from the previous client. */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
 	OUT_RING(ring, 0);
+
+	/*
+	 * Option I (Gemini hypothesis A): pin CP_SCRATCH_REG0..7 = 0.
+	 *
+	 * Emit as PM4 TYPE0 register writes so the CP processes them in
+	 * the cmdstream (not via MMIO from CPU side, which would race the
+	 * CP's own scratch usage). 8 consecutive registers at 0x578-0x57F
+	 * can be written with one OUT_PKT0 burst.
+	 */
+	if (a2xx_scratch_reset_enable) {
+		OUT_PKT0(ring, REG_AXXX_CP_SCRATCH_REG0, 8);
+		for (i = 0; i < 8; i++)
+			OUT_RING(ring, 0);
+		OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
+		OUT_RING(ring, 0);
+	}
 
 	for (slot = 0; slot < a2xx_scrub_iterations; slot++) {
 		/*
