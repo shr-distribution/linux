@@ -116,6 +116,36 @@ A22X drops some legacy A20X PM4 ops and replaces them with the LRZ_VSC_CONTROL=3
 
 So the proprietary libGLESv2 owns the binning state setup entirely; KGSL only ensures clean zero state on context switch.
 
+### Cross-kernel verification (2026-05-11)
+
+Checked three other MSM-era kernels (newer KGSL with `a2xx_reg.h` + `adreno_a2xx.c`):
+- **raden ampang-AOSP-mako-kernel** (android-msm-mako-3.4-kk-mr1): Nexus 4, MSM8064 / A320
+- **LineageOS lge-kernel-mako** (cm-14.1): same hardware, more recent
+- **LineageOS sony-kernel-msm8960** (jellybean): MSM8960 / A225 — REV471 sibling
+- **LG G2 k2wl/g2_kernel** (kitkat-4.4.4): MSM8974 / A330
+
+All four kernels agree:
+- `0x0C00` is **NOT defined** in any `a2xx_reg.h` — the master VSC enable is purely a userspace-only knob across the entire KGSL kernel family
+- `REG_A220_RB_LRZ_VSC_CONTROL = 0x2209` defined, but **no bitfield documentation** in any kernel
+- All `adreno_a2xx.c` writes to LRZ_VSC_CONTROL use the value `0x00000000` (in GMEM save/restore command sequences)
+- **No KGSL kernel ever writes the value `3`** to LRZ_VSC_CONTROL — only the closed-source userspace does
+
+**Important defensive finding (Sony MSM8960 KGSL `adreno_a2xx.c:902`)** emits a `CP_SET_BIN_BASE_OFFSET` (PM4 opcode 0x4b) on context restore. We saw yamato (A20X) emit the same on touchpad webOS. BUT webOS `kgsl_drawctxt.c:1923-1924` has:
+
+```c
+cmds[0] = pm4_type3_packet(PM4_SET_BIN_BASE_OFFSET, 1);
+cmds[1] = drawctxt->bin_base_offset;
+if (device->chip_id != KGSL_CHIPID_LEIA_REV470)
+    kgsl_ringbuffer_issuecmds(device, 0, cmds, 2);
+```
+
+**Leia REV470 (our exact chip!) is EXPLICITLY excluded** from `CP_SET_BIN_BASE_OFFSET` emission. This confirms `bin_base_offset` is NOT part of the A22X REV470 binning pipeline — A22X uses the `LRZ_VSC_CONTROL=3` mechanism instead. We can ignore CP_SET_BIN_BASE_OFFSET entirely in any port effort.
+
+**Net:** The cross-kernel survey produced no new documentation but provided strong negative evidence:
+- 0xC00 enable is not kernel-tracked anywhere → must be a transient "engage" register, not a persistent one
+- LRZ_VSC_CONTROL bitfields remain undocumented across ALL public Qualcomm KGSL code
+- bin_base_offset is irrelevant for our chip (REV470) — Mesa port should NOT emit CP_SET_BIN_BASE_OFFSET
+
 ## Caveat (important)
 
 **A20X ≠ A22X.** They are different chips with related but distinct binning hardware. Anything in this document marked "A20X reference" is comparative material only, not a template to be copied. A22X (Leia / REV470) has its own binning mechanism that the proprietary webOS stack engages via `leia_configure_binning_pass` and `leia_binning_grow_vis_stream_buffer` — these have NO A20X equivalents in the Mesa freedreno codebase.
