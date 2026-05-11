@@ -398,8 +398,22 @@ static int a2xx_alloc_shadow(struct msm_gpu *gpu)
 		};
 		u32 *tex = (u32 *)(a2xx_gpu->shadow_vaddr + SZ_8K);
 		unsigned i;
-		for (i = 0; i < 32; i++)
+		for (i = 0; i < 32; i++) {
 			memcpy(&tex[i * 6], valid_tex_const, sizeof(valid_tex_const));
+			/*
+			 * Option G/B2 (Gemini update-28 fix): patch d1 to
+			 * point address[31:12] at our shadow BO base IOVA.
+			 * Without a valid address, the Option-G scrub VS's
+			 * VFETCH hits unmapped memory and triggers 100% MMU
+			 * faults (which kill wavefronts before retirement so
+			 * they never advance the SQ slot pointer - which was
+			 * the whole point of the scrub draws).
+			 *
+			 * shadow_iova is SZ_8K-aligned so its [11:0] bits are
+			 * already zero - simple OR works.
+			 */
+			tex[i * 6 + 1] |= (u32)(a2xx_gpu->shadow_iova & 0xfffff000);
+		}
 	}
 
 	/*
