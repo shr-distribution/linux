@@ -1215,10 +1215,26 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	 */
 	gpu_write(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL, 0xffffffff);
 
-	/* Initialize SQ_GPR_MANAGEMENT to allocate 64 GPRs each for VS/PS.
-	 * KGSL initializes this to 0x00040400. Without proper initialization,
-	 * random values from GPU power-on could starve one shader type of GPRs.
+	/* Initialize SQ_GPR_MANAGEMENT.
+	 *
+	 * EXPERIMENT (2026-05-11): pulse the webOS binning shader partition
+	 * value (0x0007f010 = VTX=127, PIX=1, static) at cold-start before
+	 * settling to the KGSL default (0x00040400 = VTX=64, PIX=64, static).
+	 *
+	 * Hypothesis: the A22X period-8 render cycle is caused by the binner
+	 * coming up at cold-start with an uninitialized wavefront-slot pointer
+	 * that rotates through 8 stable mis-indexed states. Pulsing the binning
+	 * partition value at hw_init - before any draw or ring-buffer activity
+	 * - might snap all 8 VSC pipe pointers to a known boundary.
+	 *
+	 * Per-batch Mesa-side pulse (patch 0093 Fork D) shifted 4/7 wrong
+	 * hashes but didn't collapse the period-8 cycle. This is the
+	 * cold-start variant of that experiment.
+	 *
+	 * KGSL writes only 0x00040400. Without proper init, random power-on
+	 * values could starve one shader type of GPRs.
 	 */
+	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, 0x0007f010);
 	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, 0x00040400);
 
 	/* note: gsl doesn't set this */
