@@ -1560,37 +1560,40 @@ MODULE_PARM_DESC(a2xx_pulse_reset_on_submit,
 		 "to clear SQ/VPC state without wiping GMEM (1=enable)");
 
 /*
- * Pulse GFX3D_RESET (MMCC offset 0x0210 bit 12) to clear the SQ
- * wavefront scheduler and VPC logic blocks WITHOUT touching the
- * GDSC rail and therefore WITHOUT wiping GMEM SRAM. Per Gemini's
- * Option D analysis, this is the targeted intervention that
- * addresses the period-8 cycle without introducing tile-boundary
- * corruption.
+ * Pulse RBBM_SOFT_RESET with all bits set EXCEPT bit 0 (CP) to
+ * clear the SQ wavefront scheduler, VPC, RB, MH state machines
+ * WITHOUT resetting the CP firmware state and WITHOUT touching
+ * the GDSC rail (so GMEM SRAM is preserved).
  *
- * Called from a2xx_submit right before adreno_flush() writes the
- * WPTR register. The GPU is at-rest at this point (waiting for
- * new work), so pulsing the core_clk reset is safe.
+ * Per legacy KGSL kgsl_yamato.c:797-802, RBBM_SOFT_RESET is per-
+ * sub-block: bit 0 = CP, other bits = other sub-blocks. KGSL uses
+ * 0xFFFFFFFF for full reset, 0x00000001 for "reset CP only" on
+ * LEIA_REV470 (our chip). For a mid-flight scrub we want
+ * "everything except CP" = 0xFFFFFFFE.
+ *
+ * Called from a2xx_submit right before adreno_flush() writes WPTR.
+ * The CP is idle at this point (waiting for new work). Pulsing
+ * the sub-block resets clears the period-8 cycle's residual state
+ * (SQ wavefront slots, VPC varying-cache state) while leaving the
+ * CP firmware loaded and GMEM tile routing SRAM intact.
+ *
+ * Earlier attempt used GFX3D_RESET (MMCC 0x0210 bit 12) which
+ * resets the ENTIRE core including the CP - that wiped CP state
+ * and hung every submit at rptr/wptr=20/2C5. RBBM_SOFT_RESET with
+ * bit 0 masked off is the correct granularity.
  */
 static void a2xx_pulse_gfx3d_reset(struct msm_gpu *gpu)
 {
-	void __iomem *resetr;
-	u32 v;
-
 	if (!a2xx_pulse_reset_on_submit)
 		return;
 
-	resetr = ioremap(A2XX_MMCC_GFX3D_RESET, 4);
-	if (!resetr)
-		return;
-
-	v = readl(resetr);
-	writel(v | A2XX_GFX3D_RESET_BIT, resetr);
-	(void)readl(resetr);
+	/* Reset everything except CP (bit 0). Mirrors KGSL's per-sub-block
+	 * reset pattern but excludes the CP so its microcode + ring state
+	 * survive the pulse. */
+	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xFFFFFFFE);
 	udelay(5);
-	writel(v & ~A2XX_GFX3D_RESET_BIT, resetr);
-	(void)readl(resetr);
+	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000000);
 	udelay(5);
-	iounmap(resetr);
 }
 
 static void a2xx_force_gdsc_collapse(struct msm_gpu *gpu)
