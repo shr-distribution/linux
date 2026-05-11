@@ -294,14 +294,24 @@ int main(int argc, char **argv) {
     };
 
     glViewport(0, 0, W, H);
-    glClearColor(0.10f, 0.20f, 0.30f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
     glEnableVertexAttribArray(0);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), verts);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), verts + 2);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glFinish();
+
+    /* If FD2_VSC_DUMP is set, render twice. First render lets the binner
+     * write visibility data into its per-pipe BOs. Second render's
+     * fd2_emit_tile_init (in Mesa) dumps those BOs to /tmp before
+     * overwriting for batch 2. End result: /tmp/vsc_pipe<P>_batch<N>.dump
+     * with N=0 (empty, before any binning) and N=1 (binner output from
+     * the first render). */
+    int n_renders = getenv("FD2_VSC_DUMP") ? 2 : 1;
+    for (int render = 0; render < n_renders; render++) {
+        glClearColor(0.10f, 0.20f, 0.30f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+    }
 
     /* >>> sample registers HERE - GPU just finished, GL context still active */
     dump_regs(REGS_PATH);
