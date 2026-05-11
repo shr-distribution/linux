@@ -178,6 +178,28 @@ static void vgt_print(struct msm_gpu *gpu, struct drm_printer *p)
 	if (!adreno_is_a20x(adreno_gpu)) {
 		drm_printf(p, "\nA22X VSC:\n");
 		drm_printf(p, "  VSC_BIN_SIZE:      %08x\n", gpu_read(gpu, REG_A2XX_A220_VSC_BIN_SIZE));
+
+		/* Reg 0xC00 - undocumented "VSC enable" master switch that
+		 * webOS proprietary userspace writes to 1 during binning prelude.
+		 * Read it back to see if our writes persist. */
+		drm_printf(p, "  VSC_REG_0xC00:     %08x\n", gpu_read(gpu, 0x0C00));
+
+		/* Per-pipe state. VSC_PIPE array at 0xC06 stride 3:
+		 *   offset 0 = CONFIG (h<<24)|(w<<20)|(y<<10)|x  in tile coords
+		 *   offset 1 = DATA_ADDRESS (GPU iova of pipe BO)
+		 *   offset 2 = DATA_LENGTH (bytes binner wrote / pipe capacity)
+		 *
+		 * DATA_LENGTH after a submit shows how many bytes the binner
+		 * generated per pipe — variation across the period-8 hash cycle
+		 * would localise the cycle source to the binner itself.
+		 */
+		for (int i = 0; i < 8; i++) {
+			u32 cfg = gpu_read(gpu, REG_A2XX_VSC_PIPE_CONFIG(i));
+			u32 addr = gpu_read(gpu, REG_A2XX_VSC_PIPE_DATA_ADDRESS(i));
+			u32 len = gpu_read(gpu, REG_A2XX_VSC_PIPE_DATA_LENGTH(i));
+			drm_printf(p, "  VSC_PIPE[%d]:       CFG=%08x ADDR=%08x LEN=%08x\n",
+				   i, cfg, addr, len);
+		}
 	}
 }
 
