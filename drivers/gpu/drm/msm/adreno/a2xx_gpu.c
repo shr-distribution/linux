@@ -1452,22 +1452,14 @@ static void a2xx_recover(struct msm_gpu *gpu)
 	int i;
 	u32 rptr, wptr, ib1_base, ib1_bufsz, rbbm_status;
 
-	adreno_dump_info(gpu);
-
-	/* Use pr_err so the dump shows up via netconsole (default printk
-	 * level is KERN_WARNING which netconsole filters out on this device).
+	/* Dump CP state + SCRATCH FIRST, before adreno_dump_info, so we get
+	 * this info even if adreno_dump_info hangs on register reads. Use
+	 * pr_err to ensure netconsole (KERN_ERR filter) shows the output.
 	 *
-	 * CP_SCRATCH_REG0..6 are used as milestone markers by Mesa (Fork A/B
-	 * patch 0096). Any REG[N] reading 0 means the CP did not reach that
-	 * milestone.
+	 * CP_SCRATCH_REG0..6 are used as milestone markers by Mesa Fork A/B
+	 * patch 0096. Any REG[N] reading 0 means the CP did not reach that
+	 * milestone in fd2_emit_tile_init.
 	 */
-	for (i = 0; i < 8; i++) {
-		pr_err("a2xx_recover: CP_SCRATCH_REG%d: 0x%08x\n", i,
-			gpu_read(gpu, REG_AXXX_CP_SCRATCH_REG0 + i));
-	}
-
-	/* Dump CP state so we can see where in the ringbuffer the CP got
-	 * stuck and which indirect buffer (IB) it was executing. */
 	rptr = gpu_read(gpu, REG_AXXX_CP_RB_RPTR);
 	wptr = gpu_read(gpu, REG_AXXX_CP_RB_WPTR);
 	ib1_base = gpu_read(gpu, REG_AXXX_CP_IB1_BASE);
@@ -1475,6 +1467,12 @@ static void a2xx_recover(struct msm_gpu *gpu)
 	rbbm_status = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
 	pr_err("a2xx_recover: CP rptr=0x%x wptr=0x%x ib1_base=0x%x ib1_bufsz=%u rbbm_status=0x%08x\n",
 		rptr, wptr, ib1_base, ib1_bufsz, rbbm_status);
+	for (i = 0; i < 8; i++) {
+		pr_err("a2xx_recover: CP_SCRATCH_REG%d: 0x%08x\n", i,
+			gpu_read(gpu, REG_AXXX_CP_SCRATCH_REG0 + i));
+	}
+
+	adreno_dump_info(gpu);
 
 	/* dump registers before resetting gpu, if enabled: */
 	if (hang_debug)
