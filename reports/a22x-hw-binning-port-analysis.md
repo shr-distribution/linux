@@ -146,6 +146,24 @@ if (device->chip_id != KGSL_CHIPID_LEIA_REV470)
 - LRZ_VSC_CONTROL bitfields remain undocumented across ALL public Qualcomm KGSL code
 - bin_base_offset is irrelevant for our chip (REV470) — Mesa port should NOT emit CP_SET_BIN_BASE_OFFSET
 
+### Cross-userspace binary verification (2026-05-11)
+
+Surveyed all 5 decompiled libGLESv2.so binaries in `reports/ghidra-decomp/decomp-txt/`:
+
+| Binary | configure_binning_pass | grow_vis_stream_buffer | LRZ_VSC_CONTROL=3 | 0xC00 site |
+|---|---|---|---|---|
+| webOS (HP TouchPad, REV470) | Full 756B | Full 892B | 6 sites | Written **= 1** in binning_pass |
+| Generic `libGLESv2.so` | Full | Full | 6 sites | Written = 1 |
+| HTC `adreno200` | **absent** | 158B stub | None | Written **= 0** in resolve |
+| Samsung `adreno200` | **absent** | 158B stub (byte-identical to HTC) | None | = 0 in resolve |
+| Xiaomi `adreno200` | **absent** | 160B stub | None | = 0 in resolve |
+
+Only webOS and the generic Qualcomm reference engage the A22X binner. HTC/Samsung/Xiaomi userspace **explicitly disables** binning — writes `0` to register `0xC00` at the end of every resolve, has stripped grow_vis_stream_buffer with no PM4 emit, no configure_binning_pass at all.
+
+The likely reason is **firmware pairing**: webOS bundled `leia_pm4_470.fw` (9220 bytes) + `leia_pfp_470.fw` (1156 bytes) specifically validated with binning enabled. OEMs may have shipped different microcode without binning support.
+
+**Strategic implication:** Mainline tenderloin uses the **webOS-derived firmware**. This means binning IS validated to work on our exact hw+fw combination. The OEM "disable binning" pattern is OEM choice, not a HW limitation. The webOS binary is the right reference; the OEM binaries are negative-space evidence (showing where they differ doesn't help us, but confirms the binning path is OEM-specific in deployment).
+
 ## Caveat (important)
 
 **A20X ≠ A22X.** They are different chips with related but distinct binning hardware. Anything in this document marked "A20X reference" is comparative material only, not a template to be copied. A22X (Leia / REV470) has its own binning mechanism that the proprietary webOS stack engages via `leia_configure_binning_pass` and `leia_binning_grow_vis_stream_buffer` — these have NO A20X equivalents in the Mesa freedreno codebase.
