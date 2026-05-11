@@ -1547,11 +1547,16 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
  *
  * Default true - this is the shippable knob.
  */
-bool a2xx_force_collapse_on_suspend = false;
+bool a2xx_force_collapse_on_suspend = true;
 module_param(a2xx_force_collapse_on_suspend, bool, 0644);
 MODULE_PARM_DESC(a2xx_force_collapse_on_suspend,
-		 "DEPRECATED: force GFX3D GDSC collapse on pm_runtime cycle. "
-		 "This corrupts GMEM SRAM, prefer a2xx_pulse_reset_on_submit");
+		 "force GFX3D GDSC collapse + core reset pulse on every "
+		 "pm_runtime cycle. Empirically the ONLY mechanism that "
+		 "clears the SQ wavefront residue (period-8 cycle). "
+		 "Caveat: also wipes GMEM SRAM, producing tile-boundary "
+		 "artefacts unless paired with extra init in a2xx_hw_init "
+		 "(Option C-fixed). RBBM_SOFT_RESET via CPU MMIO is inert "
+		 "while CP is alive, so it's not a substitute. Default true.");
 
 bool a2xx_pulse_reset_on_submit = true;
 module_param(a2xx_pulse_reset_on_submit, bool, 0644);
