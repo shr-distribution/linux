@@ -294,40 +294,46 @@ SYM_FUNC_END(cpu_pj4b_do_resume)
 /*
  * Qualcomm Scorpion (MSM8660/APQ8060) setup.
  *
- * Conservative variant: applies only those writes that are observed
- * to actually take effect on a real Scorpion running Non-Secure
- * Linux. CP15 readback at arch_initcall time on HP TouchPad
- * (APQ8060, MIDR 0x510f02d2) showed:
+ * Empirical history: removing the c15 implementation-defined writes
+ * (L2CR0, L2CR1, BPCR) made boot hang at "Zone ranges:" even though
+ * post-boot CP15 readback suggested the writes were silently dropped
+ * (L2CR1 / BPCR) or only partially landing (L2CR0 — high half lost).
+ * That readback was misleading: the MCR sequence is load-bearing for
+ * boot on this part. Either the partial L2CR0 state (`0x00050F0F`)
+ * is what L2 actually needs (vs. the hardware default `0x0003c007`),
+ * or the c15 MCR instructions have a config-commit side effect on
+ * Scorpion beyond just storing bits. Either way: keep the writes.
  *
- *   NMRR  override: APPLIED  (c10 is NS-accessible)
- *   L2CR0 override: PARTIAL  (only low 16 bits stick)
- *   L2CR1 override: DROPPED  (whole write ignored)
- *   BPCR  override: DROPPED  (whole write ignored)
+ * Bits that we know stick (verifiable via scorpion-verify):
+ *   NMRR Scorpion override (c10, NS-accessible)
+ *   ACTLR L1/L2 error reporting + Scorpion MP SMP enable
  *
- * The c15 implementation-defined cluster is Secure-only on this
- * part. Partial writes (L2CR0) are worse than no write — they leave
- * the cache controller in a state the silicon was never validated
- * against and were observed to correlate with mid-boot SMP hangs.
- * Drop all three c15 overrides. Legacy webOS does the same: its
- * arch-init-scorpion.S has __cpu_early_init that writes these regs,
- * but it has zero callers in the kernel tree — it was bootloader/
- * SBL code that was never wired up to the OS image. The bootloader
- * + TZ firmware programs the c15 cluster before kernel handoff and
- * Linux trusts those values.
+ * Bits where the write is required to boot but readback shows
+ * incomplete take-up — leave them anyway, the silicon expects to
+ * see the sequence:
+ *   L2CR1 = 0x100  (DBB-related; reads back as 0)
+ *   L2CR0 = 0xC0050F0F  (reads back as 0x00050F0F)
+ *   BPCR  = 0x01FF01FF  (reads back as 0)
  *
- * Scorpion's ACTLR bit layout also differs from generic Cortex-A
- * (bit 0 is part of an L1/L2 error-reporting cluster on Scorpion,
- * not "Cache/TLB ops broadcasting"; SMP enable on Scorpion is bit
- * 24, not bit 6). Program ACTLR with the legacy-documented Scorpion
- * bits (0x37 for error reporting + bit 24 for SMP under CONFIG_SMP),
- * read-modify-write, matching legacy webOS proc-v7.S.
- *
- * Net result: this setup runs the full generic-v7 init via
- * __v7_setup_cont, applies Scorpion-specific ACTLR programming,
- * then applies the NMRR Scorpion memory-attribute tuning.
+ * Uses movw/movt instead of ldr =value to avoid literal pool issues
+ * in the .proc.info.init section context.
  */
 __v7_scorpion_setup:
 	do_invalidate_l1
+
+	/* L2CR1: Disable Barrier Broadcast (DBB) for SMP stability */
+	mov	r0, #0x100
+	mcr	p15, 3, r0, c15, c0, 3		@ WCP15_L2CR1
+
+	/* L2CR0: Enable out-of-order bus attributes, error reporting */
+	movw	r0, #0x0F0F
+	movt	r0, #0xC005
+	mcr	p15, 3, r0, c15, c0, 1		@ WCP15_L2CR0
+
+	/* BPCR: Enable full branch history and address participation */
+	movw	r0, #0x01FF
+	movt	r0, #0x01FF
+	mcr	p15, 7, r0, c15, c0, 2		@ WCP15_BPCR
 
 	/*
 	 * Program ACTLR with Scorpion-specific bit semantics, mirroring
@@ -336,16 +342,13 @@ __v7_scorpion_setup:
 	 *   bits 0..5 (0x37) = L1/L2 error reporting cluster
 	 *   bit 24           = Scorpion MP SMP enable (CONFIG_SMP)
 	 *
-	 * The generic-v7 Cortex-A* paths use a different ACTLR layout
-	 * (bit 0 = "Cache/TLB ops broadcasting", bit 6 = SMP/nAMP).
-	 * Setting those bits on Scorpion either does nothing useful (bit
-	 * 6) or actively hangs early boot (bit 0 — a partial half-set of
-	 * the error-reporting cluster). Stick to the legacy-documented
-	 * bits. The scorpion-verify arch_initcall reports back which
-	 * bits actually stuck.
-	 *
-	 * Read-modify-write so we don't clobber whatever bootloader/TZ
-	 * may have already set.
+	 * The generic-v7 Cortex-A* ACTLR layout differs (bit 0 = "Cache/
+	 * TLB ops broadcasting", bit 6 = SMP/nAMP). Setting bit 0 on
+	 * Scorpion actively hangs early boot (it is a partial half-set
+	 * of the error-reporting cluster). Stick to the legacy-documented
+	 * bits. Read-modify-write so we don't clobber bootloader/TZ-set
+	 * bits. scorpion-verify arch_initcall reports back which bits
+	 * actually stuck.
 	 */
 	mrc	p15, 0, r0, c1, c0, 1		@ read ACTLR
 	orr	r0, r0, #0x37			@ Scorpion L1/L2 error reporting
