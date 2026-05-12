@@ -22,10 +22,18 @@
 #include "vidc_enc.h"
 
 /* Supported encode formats */
+/*
+ * The encoder hardware reads its source frame from DRAM in 64x32
+ * tile-NV12 layout (matches the decoder's DPB layout — same plane-
+ * stride math: ALIGN(width, 128) × ALIGN(height, 32)). Userspace
+ * must therefore provide tile-NV12 input, not linear NV12.
+ * Advertise V4L2_PIX_FMT_NV12MT so consumers know to either feed
+ * pre-tiled data or run a software/HW tile pass before QBUF.
+ */
 static const struct vidc_format vidc_enc_fmts[] = {
 	/* Output formats (raw input) */
 	{
-		.pixfmt = V4L2_PIX_FMT_NV12,
+		.pixfmt = V4L2_PIX_FMT_NV12MT,
 		.num_planes = 1,
 		.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
 		.codec = 0, /* raw format */
@@ -102,7 +110,8 @@ static u32 vidc_enc_get_framesize_raw(u32 width, u32 height)
 {
 	u32 y_stride, uv_stride, y_plane, uv_plane;
 
-	/* NV12 format */
+	/* Tile-NV12 (V4L2_PIX_FMT_NV12MT) - same total bytes as linear
+	 * NV12 with the standard 128-pixel stride alignment. */
 	y_stride = ALIGN(width, 128);
 	uv_stride = y_stride;
 	y_plane = y_stride * ALIGN(height, 32);
@@ -155,7 +164,7 @@ static int vidc_enc_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
 	fmt = vidc_enc_find_format(pixmp->pixelformat, f->type);
 	if (!fmt) {
 		if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
-			pixmp->pixelformat = V4L2_PIX_FMT_NV12;
+			pixmp->pixelformat = V4L2_PIX_FMT_NV12MT;
 		else
 			pixmp->pixelformat = V4L2_PIX_FMT_H264;
 		fmt = vidc_enc_find_format(pixmp->pixelformat, f->type);
@@ -833,7 +842,7 @@ static int vidc_enc_open(struct file *file)
 	init_completion(&inst->done);
 
 	/* Set default formats */
-	inst->fmt_out = vidc_enc_find_format(V4L2_PIX_FMT_NV12,
+	inst->fmt_out = vidc_enc_find_format(V4L2_PIX_FMT_NV12MT,
 					     V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
 	inst->fmt_cap = vidc_enc_find_format(V4L2_PIX_FMT_H264,
 					     V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
