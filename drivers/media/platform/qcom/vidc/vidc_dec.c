@@ -666,6 +666,7 @@ static void vidc_dec_device_run(void *priv)
 			.type = V4L2_EVENT_SOURCE_CHANGE,
 			.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
 		};
+		int dpb_ret;
 
 		if (inst->seq_width)
 			inst->width = inst->seq_width;
@@ -675,9 +676,27 @@ static void vidc_dec_device_run(void *priv)
 		inst->seq_parsed = true;
 
 		dev_info(core->dev,
-			 "Sequence parsed: %ux%u, min_dpb=%u — emitting SOURCE_CHANGE\n",
+			 "Sequence parsed: %ux%u, min_dpb=%u — initialising DPB\n",
 			 inst->seq_width, inst->seq_height,
 			 inst->min_dpb_count);
+
+		/*
+		 * Allocate DPB pool and send INIT_BUFFERS. We do this before
+		 * the SOURCE_CHANGE event so that once userspace re-allocates
+		 * its CAPTURE buffers and queues them, the decoder is already
+		 * primed to write into the internal DPB on the next
+		 * FRAME_DATA submission.
+		 *
+		 * If DPB init fails the channel is in an unrecoverable state;
+		 * propagate the error to userspace via the m2m buffer state
+		 * but still emit SOURCE_CHANGE so a well-behaved consumer can
+		 * decide to bail out cleanly.
+		 */
+		dpb_ret = vidc_init_buffers(inst);
+		if (dpb_ret)
+			dev_err(core->dev,
+				"DPB init failed: %d (channel unrecoverable)\n",
+				dpb_ret);
 
 		v4l2_event_queue_fh(&inst->fh, &ev);
 
@@ -685,11 +704,15 @@ static void vidc_dec_device_run(void *priv)
 		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
 
 		src_buf->sequence = inst->sequence_out++;
-		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+		v4l2_m2m_buf_done(src_buf,
+				  dpb_ret ? VB2_BUF_STATE_ERROR
+					  : VB2_BUF_STATE_DONE);
 
 		if (dst_buf) {
 			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
-			v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+			v4l2_m2m_buf_done(dst_buf,
+					  dpb_ret ? VB2_BUF_STATE_ERROR
+						  : VB2_BUF_STATE_DONE);
 		}
 
 		core->curr_inst = NULL;
