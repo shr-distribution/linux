@@ -31,7 +31,7 @@
 
 static int __init scorpion_verify_init(void)
 {
-	u32 midr, nmrr, prrr;
+	u32 midr, nmrr, prrr, actlr;
 	u32 l2cr0, l2cr1, bpcr;
 
 	asm volatile("mrc p15, 0, %0, c0, c0, 0" : "=r" (midr));
@@ -42,12 +42,18 @@ static int __init scorpion_verify_init(void)
 
 	asm volatile("mrc p15, 0, %0, c10, c2, 1" : "=r" (nmrr));
 	asm volatile("mrc p15, 0, %0, c10, c2, 0" : "=r" (prrr));
+	asm volatile("mrc p15, 0, %0, c1,  c0, 1" : "=r" (actlr));
 	asm volatile("mrc p15, 3, %0, c15, c0, 1" : "=r" (l2cr0));
 	asm volatile("mrc p15, 3, %0, c15, c0, 3" : "=r" (l2cr1));
 	asm volatile("mrc p15, 7, %0, c15, c0, 2" : "=r" (bpcr));
 
 	pr_info("scorpion: MIDR=0x%08x NMRR=0x%08x PRRR=0x%08x\n",
 		midr, nmrr, prrr);
+	pr_info("scorpion: ACTLR=0x%08x (err_rep=%s mp=%s smp_nAMP=%s)\n",
+		actlr,
+		(actlr & 0x37) == 0x37 ? "on" : "off",
+		(actlr & (1U << 24))   ? "on" : "off",
+		(actlr & (1U <<  6))   ? "on" : "off");
 	pr_info("scorpion: L2CR0=0x%08x L2CR1=0x%08x BPCR=0x%08x\n",
 		l2cr0, l2cr1, bpcr);
 
