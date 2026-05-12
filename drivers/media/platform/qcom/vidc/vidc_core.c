@@ -331,13 +331,23 @@ int vidc_load_firmware(struct vidc_core *core)
 	}
 
 	/*
+	 * Allocate one block covering both the firmware and a context-memory
+	 * pool for per-instance state. The on-chip RISC addresses everything
+	 * via DRAM_BASE_A — open-channel commands pass per-instance context
+	 * offsets as (offset_in_dram_base_a >> 11), so context buffers must
+	 * live in the same physical region as the firmware.
+	 *
 	 * Over-allocate by SZ_128K so we can guarantee a 128 KB-aligned
-	 * pointer inside the buffer. The hardware register VIDC_REG_DRAM_BASE_A
-	 * encodes the firmware base in bits [31:17] (i.e. address aligned
-	 * down to 128 KB), so any sub-128 KB offset of the firmware would be
-	 * silently dropped and the on-chip RISC would fetch garbage.
+	 * firmware pointer inside the buffer. The hardware register
+	 * VIDC_REG_DRAM_BASE_A encodes the firmware base in bits [31:17]
+	 * (i.e. address aligned down to 128 KB), so any sub-128 KB offset
+	 * of the firmware would be silently dropped and the on-chip RISC
+	 * would fetch garbage.
 	 */
-	core->fw_alloc_size = core->fw->size + SZ_128K;
+	core->ctxt_pool_size = VIDC_MAX_INSTANCES * VIDC_CTXT_MEM_SIZE;
+	core->ctxt_pool_used = 0;
+	core->fw_alloc_size = ALIGN(core->fw->size, SZ_4K)
+			    + core->ctxt_pool_size + SZ_128K;
 	core->fw_alloc_vaddr = dma_alloc_coherent(core->dev,
 						  core->fw_alloc_size,
 						  &core->fw_alloc_dma_addr,
@@ -413,6 +423,177 @@ void vidc_unload_firmware(struct vidc_core *core)
 	}
 
 	core->fw_loaded = false;
+}
+
+/*
+ * Map V4L2-side vidc_codec values to the RISC firmware's codec ID. The
+ * mainline enum values are arranged to match the firmware's encoding
+ * directly (decode 0..9, encode 16..18) so we can cast in most cases —
+ * but make the mapping explicit so a future enum reorder doesn't
+ * silently break the firmware handshake.
+ */
+static u32 vidc_codec_to_fw(enum vidc_codec codec)
+{
+	switch (codec) {
+	case VIDC_CODEC_H264_DEC:	return 0;
+	case VIDC_CODEC_VC1_DEC:	return 1;
+	case VIDC_CODEC_MPEG4_DEC:	return 2;
+	case VIDC_CODEC_MPEG2_DEC:	return 3;
+	case VIDC_CODEC_H263_DEC:	return 4;
+	case VIDC_CODEC_VC1_RCV_DEC:	return 5;
+	case VIDC_CODEC_DIVX311_DEC:	return 6;
+	case VIDC_CODEC_DIVX412_DEC:	return 7;
+	case VIDC_CODEC_DIVX502_DEC:	return 8;
+	case VIDC_CODEC_DIVX503_DEC:	return 9;
+	case VIDC_CODEC_H264_ENC:	return 16;
+	case VIDC_CODEC_MPEG4_ENC:	return 17;
+	case VIDC_CODEC_H263_ENC:	return 18;
+	default:			return 0;	/* default to H264 dec */
+	}
+}
+
+/*
+ * Open a channel with the on-chip RISC for one decoder/encoder instance.
+ *
+ * Allocates a 16 KB context buffer from the firmware-adjacent pool,
+ * then issues HOST2RISC OPEN_CH with four arguments:
+ *
+ *   arg1: codec ID (see vidc_codec_to_fw)
+ *   arg2: pixel-cache control (decode disables; encode enables)
+ *   arg3: context-memory offset in DRAM_BASE_A, shifted right by 11
+ *         (legacy DDL convention - matches CH0_Y_ADDR shift)
+ *   arg4: context-memory size in bytes
+ *
+ * The on-chip RISC initialises its per-instance state in the context
+ * buffer and acknowledges with RISC2HOST RESP_OPEN_CH, which the IRQ
+ * handler turns into a completion on inst->done.
+ *
+ * Must be called with the channel currently closed (inst->ch_open == 0).
+ */
+int vidc_open_channel(struct vidc_inst *inst)
+{
+	struct vidc_core *core = inst->core;
+	unsigned long flags;
+	u32 fw_codec, pcache, ctxt_offset_shifted;
+	int ret;
+
+	if (inst->ch_open)
+		return 0;
+
+	mutex_lock(&core->lock);
+
+	if (core->ctxt_pool_used + VIDC_CTXT_MEM_SIZE > core->ctxt_pool_size) {
+		dev_err(core->dev, "context-memory pool exhausted (%zu/%zu)\n",
+			core->ctxt_pool_used, core->ctxt_pool_size);
+		ret = -ENOMEM;
+		goto unlock;
+	}
+
+	/*
+	 * Context buffers live in the firmware allocation, immediately
+	 * after the firmware image. Pool is ALIGN(fw_size, 4K) aligned
+	 * inside fw_vaddr.
+	 */
+	inst->ctxt_mem_offset = ALIGN(core->fw_size, SZ_4K)
+			      + core->ctxt_pool_used;
+	inst->ctxt_mem_vaddr = core->fw_vaddr + inst->ctxt_mem_offset;
+	inst->ctxt_mem_dma_addr = core->fw_dma_addr + inst->ctxt_mem_offset;
+
+	memset(inst->ctxt_mem_vaddr, 0, VIDC_CTXT_MEM_SIZE);
+
+	core->ctxt_pool_used += VIDC_CTXT_MEM_SIZE;
+
+	mutex_unlock(&core->lock);
+
+	fw_codec = vidc_codec_to_fw(inst->codec);
+	pcache = inst->decoder ? VIDC_PCACHE_DEC_DISABLE : VIDC_PCACHE_ENC_ENABLE;
+	ctxt_offset_shifted = inst->ctxt_mem_offset >> VIDC_ADDR_SHIFT;
+
+	spin_lock_irqsave(&core->irqlock, flags);
+	core->curr_inst = inst;
+	reinit_completion(&inst->done);
+	inst->error = 0;
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	dev_dbg(core->dev,
+		"OPEN_CH codec=%u pcache=%u ctxt_off=0x%x sz=%u\n",
+		fw_codec, pcache, ctxt_offset_shifted, VIDC_CTXT_MEM_SIZE);
+
+	ret = vidc_send_cmd(core, VIDC_CMD_OPEN_CH, fw_codec, pcache,
+			    ctxt_offset_shifted, VIDC_CTXT_MEM_SIZE);
+	if (ret) {
+		dev_err(core->dev, "OPEN_CH send failed: %d\n", ret);
+		goto release_ctxt;
+	}
+
+	if (!wait_for_completion_timeout(&inst->done,
+					 msecs_to_jiffies(1000))) {
+		dev_err(core->dev, "OPEN_CH timeout\n");
+		ret = -ETIMEDOUT;
+		goto release_ctxt;
+	}
+
+	if (inst->error) {
+		dev_err(core->dev, "OPEN_CH firmware error: %d\n",
+			inst->error);
+		ret = inst->error;
+		goto release_ctxt;
+	}
+
+	inst->ch_open = true;
+	dev_info(core->dev,
+		 "VIDC channel opened (codec=%u, ctxt off=0x%x sz=%u)\n",
+		 fw_codec, inst->ctxt_mem_offset, VIDC_CTXT_MEM_SIZE);
+	return 0;
+
+release_ctxt:
+	mutex_lock(&core->lock);
+	core->ctxt_pool_used -= VIDC_CTXT_MEM_SIZE;
+unlock:
+	mutex_unlock(&core->lock);
+	return ret;
+}
+
+/*
+ * Close the channel previously opened with vidc_open_channel().
+ *
+ * Sends HOST2RISC CLOSE_CH with no codec arg and waits for the
+ * RESP_CLOSE_CH acknowledgement. The context buffer slot is NOT
+ * recycled back into the pool — the pool's lifetime is one firmware
+ * load, and concurrent-instance count is bounded by VIDC_MAX_INSTANCES.
+ *
+ * Safe to call when the channel is already closed (returns 0).
+ */
+int vidc_close_channel(struct vidc_inst *inst)
+{
+	struct vidc_core *core = inst->core;
+	unsigned long flags;
+	int ret;
+
+	if (!inst->ch_open)
+		return 0;
+
+	spin_lock_irqsave(&core->irqlock, flags);
+	core->curr_inst = inst;
+	reinit_completion(&inst->done);
+	inst->error = 0;
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	ret = vidc_send_cmd(core, VIDC_CMD_CLOSE_CH, 0, 0, 0, 0);
+	if (ret) {
+		dev_err(core->dev, "CLOSE_CH send failed: %d\n", ret);
+		return ret;
+	}
+
+	if (!wait_for_completion_timeout(&inst->done,
+					 msecs_to_jiffies(1000))) {
+		dev_err(core->dev, "CLOSE_CH timeout\n");
+		return -ETIMEDOUT;
+	}
+
+	inst->ch_open = false;
+	dev_dbg(core->dev, "VIDC channel closed\n");
+	return inst->error;
 }
 
 int vidc_core_init(struct vidc_core *core)

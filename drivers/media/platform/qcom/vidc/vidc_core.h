@@ -91,6 +91,20 @@
 /* Address shift for hardware registers */
 #define VIDC_ADDR_SHIFT			11
 
+/* Pixel-cache control values for OPEN_CH arg2 */
+#define VIDC_PCACHE_DEC_DISABLE		3
+#define VIDC_PCACHE_ENC_ENABLE		0
+
+/*
+ * Per-instance context memory size (legacy DDL_CONTEXT_MEMORY: 15 KB
+ * per client). Round up to 16 KB so each instance is page-aligned in
+ * the shared firmware allocation.
+ */
+#define VIDC_CTXT_MEM_SIZE		SZ_16K
+
+/* Concurrent instance ceiling for context-memory pool sizing */
+#define VIDC_MAX_INSTANCES		4
+
 /* Channel 0 registers (decode/encode instance 0) */
 #define VIDC_REG_CH0_STREAM_ADDR	0x0100
 #define VIDC_REG_CH0_STREAM_SIZE	0x0104
@@ -226,6 +240,18 @@ struct vidc_core {
 	size_t fw_size;
 	size_t fw_align_off;
 
+	/*
+	 * Context-memory pool. Sits immediately after the firmware
+	 * within the same dma_alloc_coherent() block so that each
+	 * instance's context buffer has a small, fixed offset from
+	 * fw_dma_addr (which the on-chip RISC sees as DRAM_BASE_A).
+	 * ctxt_pool_next is bumped per vidc_open_channel(); we don't
+	 * recycle slots — open/close cycles within one driver lifetime
+	 * are bounded by VIDC_MAX_INSTANCES.
+	 */
+	size_t ctxt_pool_size;
+	size_t ctxt_pool_used;
+
 	/* V4L2 */
 	struct v4l2_device v4l2_dev;
 	struct video_device *vfd_dec;
@@ -296,6 +322,17 @@ struct vidc_inst {
 
 	/* Last frame result */
 	u32 result_size;
+
+	/*
+	 * Per-instance context memory. Allocated as a sub-region of the
+	 * core's firmware buffer (so the offset from DRAM_BASE_A is a
+	 * single u32 the on-chip RISC can address). Filled in by
+	 * vidc_open_channel(); zero when the instance has no open channel.
+	 */
+	dma_addr_t ctxt_mem_dma_addr;
+	void *ctxt_mem_vaddr;
+	u32 ctxt_mem_offset;	/* offset from core->fw_dma_addr */
+	bool ch_open;
 };
 
 /* Core functions */
@@ -303,6 +340,10 @@ int vidc_core_init(struct vidc_core *core);
 void vidc_core_deinit(struct vidc_core *core);
 int vidc_load_firmware(struct vidc_core *core);
 void vidc_unload_firmware(struct vidc_core *core);
+
+/* Channel management */
+int vidc_open_channel(struct vidc_inst *inst);
+int vidc_close_channel(struct vidc_inst *inst);
 
 /* Hardware access */
 static inline u32 vidc_read(struct vidc_core *core, u32 reg)

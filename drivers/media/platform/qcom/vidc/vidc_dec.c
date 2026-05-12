@@ -459,6 +459,25 @@ static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 			if (ret < 0)
 				goto unlock;
 
+			/*
+			 * Open the firmware channel for this decode instance.
+			 * Sends HOST2RISC OPEN_CH with the selected codec and
+			 * a per-instance context-memory slot allocated from
+			 * the pool adjacent to the firmware. The on-chip RISC
+			 * acknowledges with RESP_OPEN_CH; vidc_open_channel()
+			 * blocks on the completion for up to 1 s.
+			 *
+			 * Without this the subsequent CH0_INST_ID writes in
+			 * vidc_dec_submit_frame() target a channel the
+			 * firmware does not know about and the SEQ_DONE /
+			 * FRAME_DONE responses never arrive.
+			 */
+			ret = vidc_open_channel(inst);
+			if (ret) {
+				pm_runtime_put(core->dev);
+				goto unlock;
+			}
+
 			inst->streamon_out = true;
 			inst->sequence_out = 0;
 		}
@@ -491,6 +510,16 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 			v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
 
 		if (inst->streamon_out) {
+			/*
+			 * Close the firmware channel before dropping the
+			 * runtime-PM reference. Channel close releases the
+			 * context-memory slot's per-instance state on the
+			 * RISC; if we skipped this and pm_runtime_put()
+			 * powered the codec off, the next stream-on for any
+			 * instance would see stale firmware state.
+			 */
+			vidc_close_channel(inst);
+
 			inst->streamon_out = false;
 			pm_runtime_put(core->dev);
 		}
