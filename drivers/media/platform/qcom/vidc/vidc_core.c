@@ -263,6 +263,7 @@ static irqreturn_t vidc_isr(int irq, void *data)
 	switch (cmd) {
 	case VIDC_RESP_SYS_INIT:
 		dev_info(core->dev, "Firmware initialized\n");
+		complete(&core->sys_init_done);
 		break;
 
 	case VIDC_RESP_OPEN_CH:
@@ -458,28 +459,18 @@ int vidc_load_firmware(struct vidc_core *core)
 	 */
 	writel(0, core->shm_vaddr + VIDC_SHM_METADATA_ENABLE);
 
-	/*
-	 * Program DRAM_BASE_A/B with the physical address of the firmware
-	 * buffer. The register field is bits [31:17] = phys >> 17.
-	 *
-	 * (Earlier mainline code used phys >> 11, which left the low 6 bits
-	 * of address misaligned to the hardware's 128 KB-aligned field — the
-	 * RISC then read its instruction stream from an address 64× off
-	 * from where we wrote the firmware. This was the "DRAM base shift
-	 * bug" recorded in project_touchpad_kernel_port.md.)
-	 */
-	vidc_write(core, VIDC_REG_DRAM_BASE_A, core->fw_dma_addr >> 17);
-	vidc_write(core, VIDC_REG_DRAM_BASE_B, core->fw_dma_addr >> 17);
-
-	/* Send SYS_INIT command */
-	ret = vidc_send_cmd(core, VIDC_CMD_SYS_INIT, 0, 0, 0, 0);
-	if (ret) {
-		dev_err(core->dev, "failed to send SYS_INIT\n");
-		goto err_free_dma;
-	}
-
 	core->fw_loaded = true;
-	core->fw_version = vidc_read(core, VIDC_REG_FW_VERSION);
+	core->fw_running = false;
+
+	/*
+	 * Boot the on-chip RISC from the just-loaded DRAM buffer.
+	 * Split out so vidc_runtime_resume() can re-issue it when the
+	 * GDSC drop has wiped the firmware boot state.
+	 */
+	ret = vidc_boot_firmware(core);
+	if (ret)
+		goto err_free_dma;
+
 	dev_info(core->dev,
 		 "Firmware loaded at %pad (alloc %pad, off=%zu), version 0x%08x\n",
 		 &core->fw_dma_addr, &core->fw_alloc_dma_addr,
@@ -492,10 +483,62 @@ err_free_dma:
 			  core->fw_alloc_vaddr, core->fw_alloc_dma_addr);
 	core->fw_alloc_vaddr = NULL;
 	core->fw_vaddr = NULL;
+	core->fw_loaded = false;
 err_release_fw:
 	release_firmware(core->fw);
 	core->fw = NULL;
 	return ret;
+}
+
+/*
+ * Boot the on-chip RISC: program DRAM_BASE_A/B and send SYS_INIT.
+ *
+ * This is the part of firmware bring-up that must be repeated after
+ * any GDSC drop (i.e., after every runtime suspend in the current
+ * driver). The DRAM contents are preserved across suspend because
+ * the firmware buffer lives in CMA-backed coherent memory, but the
+ * RISC's own boot state is gone.
+ *
+ * Caller must ensure clocks are enabled. The function is idempotent
+ * for fw_running=true: callers can pass through unconditionally
+ * after a pm_runtime_resume_and_get() and the boot only happens
+ * when needed.
+ */
+int vidc_boot_firmware(struct vidc_core *core)
+{
+	int ret;
+
+	if (!core->fw_loaded || !core->fw_vaddr)
+		return -EINVAL;
+
+	if (core->fw_running)
+		return 0;
+
+	/*
+	 * Program DRAM_BASE_A/B with the physical address of the firmware
+	 * buffer. The register field is bits [31:17] = phys >> 17.
+	 */
+	vidc_write(core, VIDC_REG_DRAM_BASE_A, core->fw_dma_addr >> 17);
+	vidc_write(core, VIDC_REG_DRAM_BASE_B, core->fw_dma_addr >> 17);
+
+	reinit_completion(&core->sys_init_done);
+	ret = vidc_send_cmd(core, VIDC_CMD_SYS_INIT, 0, 0, 0, 0);
+	if (ret) {
+		dev_err(core->dev, "failed to send SYS_INIT: %d\n", ret);
+		return ret;
+	}
+
+	if (!wait_for_completion_timeout(&core->sys_init_done,
+					 msecs_to_jiffies(1000))) {
+		dev_err(core->dev, "SYS_INIT timeout\n");
+		return -ETIMEDOUT;
+	}
+
+	core->fw_running = true;
+	core->fw_version = vidc_read(core, VIDC_REG_FW_VERSION);
+	dev_dbg(core->dev, "Firmware booted, version 0x%08x\n",
+		core->fw_version);
+	return 0;
 }
 
 void vidc_unload_firmware(struct vidc_core *core)
@@ -1246,6 +1289,7 @@ static int vidc_probe(struct platform_device *pdev)
 	core->dev = dev;
 	mutex_init(&core->lock);
 	spin_lock_init(&core->irqlock);
+	init_completion(&core->sys_init_done);
 	INIT_LIST_HEAD(&core->instances);
 
 	/* Map registers */
@@ -1381,8 +1425,17 @@ static int vidc_runtime_suspend(struct device *dev)
 	if (core->icc_path)
 		icc_set_bw(core->icc_path, 0, 0);
 
-	if (core->gdsc)
+	if (core->gdsc) {
 		regulator_disable(core->gdsc);
+		/*
+		 * GDSC drop wipes the RISC's boot state. The DRAM-resident
+		 * firmware image is preserved (coherent DMA buffer survives
+		 * power cycles), but DRAM_BASE_A/B registers and the RISC's
+		 * own boot pointer are gone. Mark fw_running=false so the
+		 * next resume re-programs registers + re-sends SYS_INIT.
+		 */
+		core->fw_running = false;
+	}
 
 	return 0;
 }
@@ -1411,8 +1464,26 @@ static int vidc_runtime_resume(struct device *dev)
 	if (ret)
 		goto err_icc;
 
+	/*
+	 * Re-boot the firmware if a GDSC drop in the previous suspend
+	 * wiped the boot state. No-op if fw_running was already true
+	 * (e.g. first resume after probe, or quick suspend that didn't
+	 * actually drop the regulator).
+	 *
+	 * If fw_loaded is false (probe hasn't yet called
+	 * vidc_load_firmware), this is also a no-op via the !fw_loaded
+	 * early-return in vidc_boot_firmware().
+	 */
+	ret = vidc_boot_firmware(core);
+	if (ret && core->fw_loaded) {
+		dev_err(dev, "firmware boot failed on resume: %d\n", ret);
+		goto err_clk;
+	}
+
 	return 0;
 
+err_clk:
+	vidc_clk_disable(core);
 err_icc:
 	if (core->icc_path)
 		icc_set_bw(core->icc_path, 0, 0);
@@ -1424,6 +1495,8 @@ err_gdsc:
 
 static const struct dev_pm_ops vidc_pm_ops = {
 	SET_RUNTIME_PM_OPS(vidc_runtime_suspend, vidc_runtime_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
 };
 
 static const struct of_device_id vidc_of_match[] = {

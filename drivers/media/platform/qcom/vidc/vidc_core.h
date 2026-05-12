@@ -358,8 +358,20 @@ struct vidc_core {
 	/* State */
 	struct mutex lock;
 	spinlock_t irqlock;
+	/*
+	 * fw_loaded - request_firmware() succeeded and the binary is
+	 *             memcpy'd into fw_vaddr; the DRAM contents survive
+	 *             runtime suspend / GDSC drop. One-time per probe.
+	 * fw_running - the on-chip RISC has been booted via DRAM_BASE_A
+	 *              programming + SYS_INIT and ack'd; cleared when
+	 *              runtime suspend drops the GDSC. Must be re-set
+	 *              via vidc_boot_firmware() on the next resume
+	 *              before any HOST2RISC command will be honoured.
+	 */
 	bool fw_loaded;
+	bool fw_running;
 	u32 fw_version;
+	struct completion sys_init_done;
 
 	/* Instance management */
 	struct list_head instances;
@@ -521,6 +533,7 @@ int vidc_core_init(struct vidc_core *core);
 void vidc_core_deinit(struct vidc_core *core);
 int vidc_load_firmware(struct vidc_core *core);
 void vidc_unload_firmware(struct vidc_core *core);
+int vidc_boot_firmware(struct vidc_core *core);
 
 /* Channel management */
 int vidc_open_channel(struct vidc_inst *inst);
