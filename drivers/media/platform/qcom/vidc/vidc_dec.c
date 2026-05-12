@@ -20,11 +20,23 @@
 #include "vidc_core.h"
 #include "vidc_dec.h"
 
-/* Supported decode formats */
+/*
+ * Supported decode formats.
+ *
+ * Capture side advertises V4L2_PIX_FMT_NV12MT (64x32 macroblock-tile
+ * NV12) rather than plain V4L2_PIX_FMT_NV12. The on-chip RISC writes
+ * decoded frames into the DPB in tile format and we memcpy slot-to-
+ * dst without detiling - so the bytes in the userspace CAPTURE
+ * buffer are tile-NV12 too. Advertising NV12 (linear) would lie about
+ * the layout and a naive consumer (gst-plugin, ffmpeg raw save) would
+ * display garbage. NV12MT consumers know to either pass tiled data to
+ * a tile-aware sink (MDP4 supports composition from tile-NV12 in HW)
+ * or run a software detile pass (libyuv has ConvertNV12_TileToNV12).
+ */
 static const struct vidc_format vidc_dec_fmts[] = {
 	/* Capture formats (decoded output) */
 	{
-		.pixfmt = V4L2_PIX_FMT_NV12,
+		.pixfmt = V4L2_PIX_FMT_NV12MT,
 		.num_planes = 1,
 		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
 		.codec = 0, /* raw format */
@@ -118,7 +130,13 @@ static u32 vidc_dec_get_framesize(u32 pixfmt, u32 width, u32 height)
 	u32 y_stride, uv_stride, y_plane, uv_plane;
 
 	switch (pixfmt) {
-	case V4L2_PIX_FMT_NV12:
+	case V4L2_PIX_FMT_NV12MT:
+		/*
+		 * 64x32 tiled NV12. Same total byte count as linear NV12
+		 * with 128-pixel stride alignment: each tile is 64x32 bytes
+		 * for luma, and the plane is rounded up to a whole number
+		 * of tile rows. Two tiles abreast fill the 128-pixel stride.
+		 */
 		y_stride = ALIGN(width, 128);
 		uv_stride = y_stride;
 		y_plane = y_stride * ALIGN(height, 32);
@@ -165,7 +183,7 @@ static int vidc_dec_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
 	fmt = vidc_dec_find_format(pixmp->pixelformat, f->type);
 	if (!fmt) {
 		if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
-			pixmp->pixelformat = V4L2_PIX_FMT_NV12;
+			pixmp->pixelformat = V4L2_PIX_FMT_NV12MT;
 		else
 			pixmp->pixelformat = V4L2_PIX_FMT_H264;
 		fmt = vidc_dec_find_format(pixmp->pixelformat, f->type);
@@ -1005,7 +1023,7 @@ static int vidc_dec_open(struct file *file)
 	/* Set default formats */
 	inst->fmt_out = vidc_dec_find_format(V4L2_PIX_FMT_H264,
 					     V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
-	inst->fmt_cap = vidc_dec_find_format(V4L2_PIX_FMT_NV12,
+	inst->fmt_cap = vidc_dec_find_format(V4L2_PIX_FMT_NV12MT,
 					     V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
 	inst->codec = VIDC_CODEC_H264_DEC;
 	inst->width = VIDC_DEFAULT_WIDTH;
