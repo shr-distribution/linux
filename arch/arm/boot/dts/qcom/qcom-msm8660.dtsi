@@ -1091,6 +1091,20 @@
 				clocks = <&pxo_board>;
 				clock-names = "pxo";
 			};
+
+			/*
+			 * RPM sleep-set programmer. Companion to the
+			 * cpu_pc cluster idle state — when all CPUs
+			 * signal sleep via SPM master_stat (mode PC,
+			 * rpm_bypass=0), the RPM applies the SLEEP-
+			 * context votes that this driver programs at
+			 * probe time, dropping PXO/EBI/SMI/L2 to their
+			 * deepest safe values for the cluster-sleep
+			 * window.
+			 */
+			rpm_sleep_set: rpm-sleep-set {
+				compatible = "qcom,rpm-sleep-set-msm8660";
+			};
 		};
 
 		apps_fabric: interconnect@0 {

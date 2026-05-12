@@ -236,6 +236,21 @@ config QCOM_SPM
 	  to manage cores, L2 low power modes and to configure the internal
 	  Adaptive Voltage Scaler parameters, where supported.
 
+config QCOM_RPM_SLEEP_SET_MSM8660
+	tristate "Qualcomm RPM sleep-set programmer for MSM8660/APQ8060"
+	depends on (ARCH_QCOM || COMPILE_TEST) && MFD_QCOM_RPM
+	help
+	  On MSM8660/APQ8060, the cluster-idle "Power Collapse" state
+	  relies on the RPM dropping shared resources (PXO, EBI, SMI,
+	  L2) to sleep-set values when all CPU masters signal sleep.
+	  This driver programs those static sleep-set votes at probe
+	  time. Without it, "PM_SLEEP_MODE_PC" only saves the L2
+	  leakage current; with it, the cluster can actually drop
+	  vdd_mem / vdd_dig and kill PXO during deep idle.
+
+	  Say Y here if you are building a kernel for an APQ8060
+	  device (HP TouchPad).
+
 config QCOM_STATS
 	tristate "Qualcomm Technologies, Inc. (QTI) Sleep stats driver"
 	depends on (ARCH_QCOM && DEBUG_FS) || COMPILE_TEST
