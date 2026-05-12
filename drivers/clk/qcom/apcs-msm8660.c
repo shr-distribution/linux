@@ -144,13 +144,24 @@ static const struct vdd_req *get_vdd_req(u32 l_val)
 /*
  * L2 cache SCPLL frequency scaling.
  * The L2 cache has its own SCPLL (same register layout as CPU SCPLLs).
- * Legacy coupled L2 frequency to CPU frequency using 3 tiers.
+ *
+ * L2 frequency is locked in step with the CPU L_VAL so the CPU's
+ * existing vdd_mem/vdd_dig vote always covers L2's voltage needs.
+ * This matches the mainline Qualcomm pattern (Krait/Kryo drivers do
+ * no L2-specific voltage voting and rely on shared CPU/L2 rails
+ * being voted by the CPU path).
+ *
+ * The previous 3-tier mapping (LOW/MID/HIGH) jumped L2 to 1404 MHz
+ * once CPU reached 1080 MHz, but the CPU vdd vote at 1080 MHz is
+ * vdd_mem=1.2V/vdd_dig=1.1V — insufficient for L2 at 1404 MHz which
+ * needs 1.25V/1.2V per the legacy L2 freq table. That left L2
+ * undervolted in the 1080–1134 MHz CPU range.
+ *
+ * L2 is capped at L_VAL 0x1A (1404 MHz) because legacy validated no
+ * L2 rate above that (CPU at 1512 MHz uses L2 1404 MHz per legacy
+ * acpu_freq_tbl_v2[16]).
  */
-#define L2_L_VAL_LOW	0x08	/* 432 MHz */
-#define L2_L_VAL_MID	0x12	/* 972 MHz */
-#define L2_L_VAL_HIGH	0x1A	/* 1404 MHz */
-#define L2_THRESH_MID_KHZ	972000
-#define L2_THRESH_HIGH_KHZ	1080000
+#define L2_L_VAL_MAX	0x1A	/* 1404 MHz, legacy-validated L2 ceiling */
 
 /**
  * struct apcs_cpu_clk - Per-CPU clock structure
@@ -541,11 +552,23 @@ static const struct clk_ops apcs_cpu_clk_ops = {
 
 static u32 cpu_to_l2_l_val(unsigned int cpu_khz)
 {
-	if (cpu_khz >= L2_THRESH_HIGH_KHZ)
-		return L2_L_VAL_HIGH;
-	if (cpu_khz >= L2_THRESH_MID_KHZ)
-		return L2_L_VAL_MID;
-	return L2_L_VAL_LOW;
+	u32 l_val;
+
+	/* CPU below SCPLL minimum (PLL8 path): hold L2 at SCPLL floor */
+	if (cpu_khz < FREQ_SCPLL_MIN / 1000)
+		return SCPLL_L_VAL_MIN;
+
+	/*
+	 * Lockstep: L2 L_VAL = CPU L_VAL. This guarantees the CPU's
+	 * vdd_mem/vdd_dig vote (computed from CPU L_VAL via vdd_table)
+	 * also covers L2 at the same L_VAL, matching the mainline
+	 * Qualcomm pattern (Krait/Kryo do no separate L2 vdd vote).
+	 *
+	 * Capped at L2_L_VAL_MAX (1404 MHz) because legacy validated no
+	 * L2 rate above that — at CPU 1512 MHz, L2 stays at 1404 MHz.
+	 */
+	l_val = DIV_ROUND_CLOSEST(cpu_khz * 1000, SCPLL_RATE_FACTOR);
+	return clamp_t(u32, l_val, SCPLL_L_VAL_MIN, L2_L_VAL_MAX);
 }
 
 static void l2_set_freq(u32 l_val)
@@ -612,7 +635,7 @@ static int l2_cpufreq_notifier(struct notifier_block *nb,
 
 	l2_vote[freqs->policy->cpu] = cpu_to_l2_l_val(freqs->new);
 
-	max_l_val = L2_L_VAL_LOW;
+	max_l_val = SCPLL_L_VAL_MIN;
 	for_each_online_cpu(cpu) {
 		if (l2_vote[cpu] > max_l_val)
 			max_l_val = l2_vote[cpu];
