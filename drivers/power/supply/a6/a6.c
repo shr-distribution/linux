@@ -4592,6 +4592,18 @@ static int a6_probe(struct i2c_client *client)
 		dev_warn(&client->dev, "Failed to create debug interface\n");
 #endif
 
+	/*
+	 * Enable wake-capability at the device level. The DT wakeup-source
+	 * property + this call together tell the PM core that the A6 IRQ
+	 * may wake the system from suspend; the actual enable_irq_wake()
+	 * happens in a6_suspend() below. Match legacy webOS behaviour where
+	 * the A6 power-GPIO IRQ was always set up as a wake source so the
+	 * SoC could sleep through long idle periods and only wake on
+	 * charge-source / threshold / emergency-reset events.
+	 */
+	if (client->irq)
+		device_init_wakeup(&client->dev, true);
+
 	dev_info(&client->dev, "A6 battery controller initialized\n");
 	return 0;
 
@@ -4618,8 +4630,29 @@ static void a6_i2c_remove(struct i2c_client *client)
 		destroy_workqueue(state->ka6d_fw_workqueue);
 }
 
-#ifdef CONFIG_PM
-/* Modern PM ops */
+#ifdef CONFIG_PM_SLEEP
+/*
+ * Suspend / resume PM ops.
+ *
+ * Wake-source semantics:
+ *   device_init_wakeup(dev, true) is called from probe so the device is
+ *   permanently flagged wake-capable. During each suspend, if user policy
+ *   still allows wake (sysfs /sys/.../power/wakeup = "enabled"),
+ *   enable_irq_wake() actually marks the IRQ as a system wake source so
+ *   the SoC can drop into deeper sleep states while still being
+ *   interruptible by A6 events (charge source detect, battery threshold
+ *   crossings, emergency-reset latch).
+ *
+ *   This mirrors legacy webOS a6.c:4391-4404 which did:
+ *       set_bit(IS_SUSPENDED, ...);
+ *       enable_irq_wake(gpio_to_irq(pwr_gpio));
+ *
+ *   The previous mainline implementation called device_init_wakeup() in
+ *   suspend, which doesn't actually arm the IRQ as a wake source — it
+ *   only sets the wake-capability flag, which is a probe-time concern.
+ *   That left the A6 IRQ un-armed for wake, so charge events couldn't
+ *   wake the host from suspend.
+ */
 static int a6_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
@@ -4627,9 +4660,8 @@ static int a6_suspend(struct device *dev)
 
 	set_bit(IS_SUSPENDED, state->flags);
 
-	/* Configure A6 IRQ as wake source if available */
-	if (client->irq)
-		device_init_wakeup(dev, true);
+	if (client->irq && device_may_wakeup(dev))
+		enable_irq_wake(client->irq);
 
 	return 0;
 }
@@ -4638,6 +4670,9 @@ static int a6_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct a6_device_state *state = i2c_get_clientdata(client);
+
+	if (client->irq && device_may_wakeup(dev))
+		disable_irq_wake(client->irq);
 
 	clear_bit(IS_SUSPENDED, state->flags);
 
@@ -4649,7 +4684,7 @@ static int a6_resume(struct device *dev)
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(a6_pm_ops, a6_suspend, a6_resume);
-#endif /* CONFIG_PM */
+#endif /* CONFIG_PM_SLEEP */
 
 /* Device tree match table */
 static const struct of_device_id a6_of_match[] = {
