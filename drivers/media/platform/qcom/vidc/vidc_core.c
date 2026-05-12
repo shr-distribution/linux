@@ -315,7 +315,13 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		if (inst) {
 			vidc_handle_enc_complete(core, inst);
 			inst->error = 0;
-			complete(&inst->done);
+			/*
+			 * Encoder-side analog of the decoder FRAME_DONE
+			 * dispatch: post-frame work (buf_done, payload set,
+			 * m2m_job_finish) lives in vidc_enc_complete_work
+			 * because vb2 locks aren't acquirable from IRQ.
+			 */
+			queue_work(system_wq, &inst->enc_complete_work);
 		}
 		break;
 
