@@ -182,6 +182,19 @@
 #define VIDC_REG_DEC_DISPLAY_STATUS	0x0170
 #define VIDC_REG_DEC_DECODE_STATUS	0x0174
 
+/*
+ * Display-status field in VIDC_REG_DEC_DISPLAY_STATUS. Legacy
+ * VIDC_1080P_SI_RG7_DISPLAY_STATUS_MASK occupies the low nibble;
+ * higher bits encode display-coding and resolution-change flags
+ * we don't yet consume.
+ */
+#define VIDC_DISPLAY_STATUS_MASK		0xF
+#define VIDC_DISPLAY_STATUS_DECODE_ONLY		0
+#define VIDC_DISPLAY_STATUS_DECODE_AND_DISPLAY	1
+#define VIDC_DISPLAY_STATUS_DISPLAY_ONLY	2
+#define VIDC_DISPLAY_STATUS_DPB_EMPTY		3
+#define VIDC_DISPLAY_STATUS_NOOP		4
+
 /* Encode result registers (after ENC_COMPLETE) */
 #define VIDC_REG_ENC_FRAME_SIZE		0x0140
 #define VIDC_REG_ENC_PICTURE_COUNT	0x0144
@@ -411,6 +424,16 @@ struct vidc_inst {
 	u32 result_size;
 	u32 display_y_raw;
 	u32 display_c_raw;
+
+	/*
+	 * display_status from VIDC_REG_DEC_DISPLAY_STATUS, low nibble.
+	 * Tells frame_done_work whether the current FRAME_DONE event
+	 * means "decoded a new frame and want to display it now"
+	 * (DECODE_AND_DISPLAY) vs "decoded a B-frame, holding it back
+	 * for later reorder" (DECODE_ONLY) vs other special cases.
+	 * See VIDC_DISPLAY_STATUS_* in vidc_core.h.
+	 */
+	u32 display_status;
 
 	/*
 	 * Per-instance context memory. Allocated as a sub-region of the
