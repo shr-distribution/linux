@@ -3014,6 +3014,14 @@
 		interrupt-parent = <&tlmm>;
 		interrupts = <37 IRQ_TYPE_EDGE_FALLING>;
 
+		/*
+		 * Marks the A6 IRQ as a system wakeup source. Inert until the
+		 * MPM resume path is functional, but harmless to declare now
+		 * — the input/power-supply subsystem treats this as a hint
+		 * that this device can wake the system from suspend.
+		 */
+		wakeup-source;
+
 		pinctrl-names = "default";
 		pinctrl-0 = <&a6_0_default>;
 	};
@@ -3032,6 +3040,9 @@
 		/* Interrupt GPIO - DVT/PVT uses GPIO 94 (pre-DVT: 132) */
 		interrupt-parent = <&tlmm>;
 		interrupts = <94 IRQ_TYPE_EDGE_FALLING>;
+
+		/* See a6_0 above */
+		wakeup-source;
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&a6_1_default>;
@@ -3249,6 +3260,14 @@
 &usb1 {
 	status = "okay";
 	dr_mode = "otg";
+	/*
+	 * Mark USB1 as a system wakeup source — events on the USB bus
+	 * (cable plug, charger attach, host bus activity) should wake the
+	 * system from suspend. The kernel will only honour this once the
+	 * MPM wakeup-controller resume path is functional, but it is
+	 * harmless to declare now and saves an edit later.
+	 */
+	wakeup-source;
 	/*
 	 * USB bandwidth removed - webOS didn't use explicit bandwidth voting.
 	 * Instead, it used dfab_usb_hs_clk as a fabric clock voter.
