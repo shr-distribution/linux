@@ -1384,38 +1384,39 @@ int vidc_apply_dec_codec_config(struct vidc_inst *inst)
 	case VIDC_CODEC_MPEG4_DEC:
 	case VIDC_CODEC_H263_DEC:
 		/*
-		 * Legacy programs MPEG-4 post-loop-filter via
-		 * REG_152500 (absolute offset 0x848 in the VIDC reg
-		 * block). The mainline vidc_core.h register map doesn't
-		 * yet name this; without datasheet confirmation of the
-		 * mapping I won't blindly poke an unverified offset.
-		 *
-		 * Without this register write the decoder still
-		 * produces frames, but with the default post-filter
-		 * configuration which legacy didn't trust enough to
-		 * leave alone. Visual artifacts at block boundaries
-		 * are the expected symptom.
+		 * Enable the post-loop deblock filter. Without this MPEG-4
+		 * and H.263 decode show visible blocking artifacts at the
+		 * 16-pixel macroblock boundaries. Legacy writes
+		 * decoder->post_filter.post_filter which defaults to 1
+		 * (enabled).
 		 */
-		dev_warn_once(core->dev,
-			      "MPEG-4/H.263 decode without post-filter config (legacy REG_152500)\n");
+		vidc_write(core, VIDC_REG_DEC_MPEG4_PP_FILTER, 1);
 		return 0;
 
 	case VIDC_CODEC_DIVX311_DEC:
+		/*
+		 * DivX 3.11 manual resolution override. The bitstream
+		 * lacks resolution info, so the host must supply
+		 * dimensions before SEQ_HEADER fires. inst->width /
+		 * inst->height come from the S_FMT request prior to
+		 * STREAMON.
+		 *
+		 * The legacy code only writes the override for the
+		 * VCD_CODEC_DIVX_3 case (vcd_ddl_vidc.c:128) and writes
+		 * zeros for other DivX variants - same pattern here.
+		 */
+		vidc_write(core, VIDC_REG_DEC_DIVX3_WIDTH, inst->width);
+		vidc_write(core, VIDC_REG_DEC_DIVX3_HEIGHT, inst->height);
+		return 0;
+
 	case VIDC_CODEC_DIVX412_DEC:
 	case VIDC_CODEC_DIVX502_DEC:
 	case VIDC_CODEC_DIVX503_DEC:
-		/*
-		 * DivX 3.11 in particular has no resolution info in
-		 * its bitstream; legacy hard-codes it via
-		 * vidc_1080p_set_decode_divx3_resolution_ch0
-		 * (REG_175608 width + REG_612810 height,
-		 * absolute offset 0x2050 for height). Without this
-		 * the decoder will fault on the first SEQ_HEADER
-		 * because it can't derive frame dimensions.
-		 */
-		dev_warn_once(core->dev,
-			      "DivX %d decode without resolution override - SEQ_HEADER likely to fail\n",
-			      inst->codec);
+		/* DivX 4/5 carry resolution in their bitstream; clear the
+		 * DivX3 override registers in case stale values were left
+		 * from a previous DivX3 session. */
+		vidc_write(core, VIDC_REG_DEC_DIVX3_WIDTH, 0);
+		vidc_write(core, VIDC_REG_DEC_DIVX3_HEIGHT, 0);
 		return 0;
 
 	case VIDC_CODEC_VC1_DEC:
