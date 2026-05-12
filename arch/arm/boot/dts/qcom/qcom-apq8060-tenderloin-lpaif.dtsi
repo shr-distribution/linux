@@ -57,6 +57,25 @@
 		pinctrl-0 = <&primary_i2s_pins>;
 
 		/*
+		 * Headphone insert detection. TLMM GPIO 57 is the
+		 * HEAD_MIC_DET signal from the WM8958 codec's external
+		 * jack-detect circuitry. Active LOW = jack inserted.
+		 *
+		 * On HP TouchPad the codec's IRQ-based mic detection is
+		 * disabled because the codec's IRQ status registers return
+		 * I2C ENXIO (see drivers/mfd/wm8994-core.c). This GPIO
+		 * provides a fallback insert/remove signal so ALSA can route
+		 * audio between speakers and headphones — without it, audio
+		 * always comes out the speakers even when headphones are
+		 * plugged in.
+		 *
+		 * Mic discrimination and inline-remote buttons are NOT
+		 * available through this path (those require codec internal
+		 * logic).
+		 */
+		headphone-detect-gpios = <&tlmm 57 GPIO_ACTIVE_LOW>;
+
+		/*
 		 * Speaker amplifier control via WM8958 GPIO1.
 		 * The codec handles this internally, no SoC GPIO needed.
 		 */
