@@ -1116,6 +1116,153 @@ int vidc_flush_channel(struct vidc_inst *inst, u32 flush_type)
 }
 
 /*
+ * Encoder analog of vidc_init_buffers.
+ *
+ * Allocates recon (reconstruction) buffers - the encoder's analog
+ * to the decoder's DPB. The encoder reads from the source frame
+ * provided via the OUTPUT queue and writes its reconstructed
+ * reference frames into these slots so subsequent inter-predicted
+ * frames have something to look back at.
+ *
+ * Pre-conditions:
+ *   - vidc_open_channel() has acked (inst->ch_open == true)
+ *   - inst->out_width / out_height set via VIDIOC_S_FMT
+ *
+ * Hardware register layout differs from decoder DPB:
+ *   - DPB_LUMA / CHROMA / MV are 3 separate register arrays at
+ *     0x300 / 0x380 / 0x400 with 4-byte stride per slot
+ *   - RECON_LUMA / CHROMA are interleaved at 0x480 with 8-byte
+ *     stride per slot (LUMA_i at 0x480 + i*8, CHROMA_i at +0x484 + i*8)
+ *
+ * Slot count is fixed at 4 (VIDC_MAX_RECON_BUFFERS) - matches
+ * legacy vcd_ddl_vidc.c:473 `const u32 recon_bufs = 4;`. No firmware
+ * SEQ_DONE feedback like the decoder; for H.264 baseline 2 recon
+ * suffice but 4 covers Main/High profiles with B-frames.
+ *
+ * Re-uses the dpb_* fields in struct vidc_inst for tracking - a
+ * single instance is either decoder OR encoder, never both.
+ */
+int vidc_init_enc_buffers(struct vidc_inst *inst)
+{
+	struct vidc_core *core = inst->core;
+	unsigned long flags;
+	u32 i;
+	u32 y_size, c_size, slot_size, total_size;
+	dma_addr_t slot_base;
+	u32 fw_relative;
+	int ret;
+
+	if (inst->dpb_inited)
+		return 0;
+
+	if (!inst->out_width || !inst->out_height) {
+		dev_err(core->dev,
+			"vidc_init_enc_buffers: encode geometry not set\n");
+		return -EINVAL;
+	}
+
+	inst->dpb_count = VIDC_MAX_RECON_BUFFERS;
+
+	vidc_dpb_calc_sizes(inst->out_width, inst->out_height,
+			    &y_size, &c_size);
+
+	inst->dpb_y_size = y_size;
+	inst->dpb_c_size = c_size;
+	inst->dpb_mv_size = 0;	/* MV/col-zero buffers not yet wired */
+
+	slot_size = ALIGN(y_size + c_size, SZ_4K);
+	total_size = slot_size * inst->dpb_count;
+
+	inst->dpb_y_vaddr = dma_alloc_coherent(core->dev, total_size,
+					       &inst->dpb_y_dma_addr,
+					       GFP_KERNEL);
+	if (!inst->dpb_y_vaddr) {
+		dev_err(core->dev,
+			"recon pool alloc failed (%u slots × %u bytes)\n",
+			inst->dpb_count, slot_size);
+		return -ENOMEM;
+	}
+	inst->dpb_y_alloc_size = total_size;
+
+	if (inst->dpb_y_dma_addr < core->fw_dma_addr) {
+		dev_err(core->dev,
+			"recon pool below firmware base (%pad < %pad)\n",
+			&inst->dpb_y_dma_addr, &core->fw_dma_addr);
+		ret = -ERANGE;
+		goto err_free_dma;
+	}
+
+	/*
+	 * Program RECON register slots. Layout differs from DPB: each
+	 * slot is a (LUMA, CHROMA) pair at 8-byte stride starting from
+	 * VIDC_REG_RECON_LUMA_0 = 0x480.
+	 */
+	for (i = 0; i < inst->dpb_count; i++) {
+		slot_base = inst->dpb_y_dma_addr + i * slot_size;
+		fw_relative = slot_base - core->fw_dma_addr;
+
+		vidc_write(core, VIDC_REG_RECON_LUMA_0 + i * 8,
+			   fw_relative >> VIDC_ADDR_SHIFT);
+		vidc_write(core, VIDC_REG_RECON_CHROMA_0 + i * 8,
+			   (fw_relative + y_size) >> VIDC_ADDR_SHIFT);
+	}
+
+	dev_info(core->dev,
+		 "recon pool: %u slots × (y=%u c=%u), total %u bytes at %pad\n",
+		 inst->dpb_count, y_size, c_size, total_size,
+		 &inst->dpb_y_dma_addr);
+
+	/* Publish sizes to SHM (same offsets as decoder uses) */
+	writel(y_size,
+	       core->shm_vaddr + VIDC_SHM_ALLOCATED_LUMA_DPB_SIZE);
+	writel(c_size,
+	       core->shm_vaddr + VIDC_SHM_ALLOCATED_CHROMA_DPB_SIZE);
+
+	spin_lock_irqsave(&core->irqlock, flags);
+	core->curr_inst = inst;
+	reinit_completion(&inst->done);
+	inst->error = 0;
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
+	core->cmd_seq_num++;
+	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
+	vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
+
+	vidc_write(core, VIDC_REG_CH0_INST_ID,
+		   VIDC_OP_INIT_BUFFERS | inst->inst_id);
+
+	if (!wait_for_completion_timeout(&inst->done,
+					 msecs_to_jiffies(1000))) {
+		dev_err(core->dev, "encoder INIT_BUFFERS timeout\n");
+		ret = -ETIMEDOUT;
+		goto err_free_dma;
+	}
+
+	if (inst->error) {
+		dev_err(core->dev,
+			"encoder INIT_BUFFERS firmware error: %d\n",
+			inst->error);
+		ret = inst->error;
+		goto err_free_dma;
+	}
+
+	inst->dpb_inited = true;
+	dev_info(core->dev,
+		 "VIDC encoder recon initialised, %u slots active\n",
+		 inst->dpb_count);
+	return 0;
+
+err_free_dma:
+	dma_free_coherent(core->dev, inst->dpb_y_alloc_size,
+			  inst->dpb_y_vaddr, inst->dpb_y_dma_addr);
+	inst->dpb_y_vaddr = NULL;
+	inst->dpb_y_dma_addr = 0;
+	inst->dpb_y_alloc_size = 0;
+	return ret;
+}
+
+/*
  * Apply codec-specific configuration that the firmware can't auto-
  * derive from the bitstream. Called after vidc_open_channel() and
  * before the first SEQ_HEADER submission so any per-codec register
@@ -1223,15 +1370,23 @@ void vidc_free_buffers(struct vidc_inst *inst)
 		return;
 
 	/*
-	 * Clear DPB register slots so a subsequent OPEN_CH on the same
+	 * Clear register slots so a subsequent OPEN_CH on the same
 	 * channel starts from a clean slate — stale offsets would point
 	 * at freed memory and the firmware would happily DMA into it.
+	 * Decoder and encoder use different register groups.
 	 */
-	for (i = 0; i < inst->dpb_count; i++) {
-		vidc_write(core, VIDC_REG_DPB_LUMA_BASE + i * 4, 0);
-		vidc_write(core, VIDC_REG_DPB_CHROMA_BASE + i * 4, 0);
-		if (inst->dpb_mv_size)
-			vidc_write(core, VIDC_REG_DPB_MV_BASE + i * 4, 0);
+	if (inst->decoder) {
+		for (i = 0; i < inst->dpb_count; i++) {
+			vidc_write(core, VIDC_REG_DPB_LUMA_BASE + i * 4, 0);
+			vidc_write(core, VIDC_REG_DPB_CHROMA_BASE + i * 4, 0);
+			if (inst->dpb_mv_size)
+				vidc_write(core, VIDC_REG_DPB_MV_BASE + i * 4, 0);
+		}
+	} else {
+		for (i = 0; i < inst->dpb_count; i++) {
+			vidc_write(core, VIDC_REG_RECON_LUMA_0 + i * 8, 0);
+			vidc_write(core, VIDC_REG_RECON_CHROMA_0 + i * 8, 0);
+		}
 	}
 
 	dma_free_coherent(core->dev, inst->dpb_y_alloc_size,

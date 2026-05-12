@@ -539,6 +539,7 @@ int vidc_boot_firmware(struct vidc_core *core);
 int vidc_open_channel(struct vidc_inst *inst);
 int vidc_close_channel(struct vidc_inst *inst);
 int vidc_init_buffers(struct vidc_inst *inst);
+int vidc_init_enc_buffers(struct vidc_inst *inst);
 void vidc_free_buffers(struct vidc_inst *inst);
 int vidc_apply_dec_codec_config(struct vidc_inst *inst);
 int vidc_flush_channel(struct vidc_inst *inst, u32 flush_type);

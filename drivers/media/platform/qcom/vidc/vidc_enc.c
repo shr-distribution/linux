@@ -564,6 +564,22 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 				goto unlock;
 			}
 
+			/*
+			 * Allocate recon (reference) frame buffers and issue
+			 * encoder INIT_BUFFERS. Unlike the decoder, the encoder
+			 * has all the geometry it needs from S_FMT before the
+			 * first frame, so we don't wait for a SEQ_DONE-style
+			 * roundtrip - just allocate at fixed VIDC_MAX_RECON_BUFFERS
+			 * slots and program the RECON_LUMA / RECON_CHROMA register
+			 * arrays.
+			 */
+			ret = vidc_init_enc_buffers(inst);
+			if (ret) {
+				vidc_close_channel(inst);
+				pm_runtime_put(core->dev);
+				goto unlock;
+			}
+
 			inst->streamon_out = true;
 			inst->sequence_out = 0;
 		}
