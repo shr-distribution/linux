@@ -340,8 +340,27 @@ struct vidc_inst {
 	u32 seq_height;
 	u32 min_dpb_count;
 
-	/* Last frame result */
+	/*
+	 * Last frame result.
+	 *
+	 * result_size       - bytes the firmware decoded (legacy
+	 *                     SEQ_FRAME_SIZE register). Currently only
+	 *                     used for the encode path; the decode path
+	 *                     computes plane sizes from inst->width /
+	 *                     inst->height instead because the firmware's
+	 *                     value is the compressed-frame consumed size,
+	 *                     not the output payload size.
+	 * display_y_raw     - DEC_DISPLAY_Y register value (fw-relative
+	 *                     offset >> VIDC_ADDR_SHIFT). Used by the
+	 *                     device_run thread to identify which DPB
+	 *                     slot the firmware wrote the displayable
+	 *                     frame into, so we can memcpy it out to
+	 *                     the userspace CAPTURE buffer.
+	 * display_c_raw     - same for the chroma plane (DEC_DISPLAY_C).
+	 */
 	u32 result_size;
+	u32 display_y_raw;
+	u32 display_c_raw;
 
 	/*
 	 * Per-instance context memory. Allocated as a sub-region of the
@@ -400,6 +419,8 @@ int vidc_open_channel(struct vidc_inst *inst);
 int vidc_close_channel(struct vidc_inst *inst);
 int vidc_init_buffers(struct vidc_inst *inst);
 void vidc_free_buffers(struct vidc_inst *inst);
+int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
+			 size_t dst_size, size_t *out_payload);
 
 /* Hardware access */
 static inline u32 vidc_read(struct vidc_core *core, u32 reg)

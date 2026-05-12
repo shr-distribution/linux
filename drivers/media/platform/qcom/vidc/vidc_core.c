@@ -177,17 +177,22 @@ static void vidc_clear_interrupt(struct vidc_core *core)
 static void vidc_handle_frame_done(struct vidc_core *core,
 				   struct vidc_inst *inst)
 {
-	u32 display_y, display_c;
+	/*
+	 * Read decoded frame DPB-slot addresses. These are fw-relative
+	 * offsets shifted right by VIDC_ADDR_SHIFT — same encoding the
+	 * host used when programming DPB_LUMA_BASE / DPB_CHROMA_BASE in
+	 * vidc_init_buffers(). The device_run thread will reverse the
+	 * encoding to pick the DPB slot to copy out of.
+	 */
+	inst->display_y_raw = vidc_read(core, VIDC_REG_DEC_DISPLAY_Y);
+	inst->display_c_raw = vidc_read(core, VIDC_REG_DEC_DISPLAY_C);
 
-	/* Read decoded frame addresses */
-	display_y = vidc_read(core, VIDC_REG_DEC_DISPLAY_Y);
-	display_c = vidc_read(core, VIDC_REG_DEC_DISPLAY_C);
+	dev_dbg(core->dev, "Frame done: Y_raw=0x%x C_raw=0x%x (offsets 0x%x / 0x%x)\n",
+		inst->display_y_raw, inst->display_c_raw,
+		inst->display_y_raw << VIDC_ADDR_SHIFT,
+		inst->display_c_raw << VIDC_ADDR_SHIFT);
 
-	dev_dbg(core->dev, "Frame done: Y=0x%x C=0x%x\n",
-		display_y << VIDC_ADDR_SHIFT,
-		display_c << VIDC_ADDR_SHIFT);
-
-	/* Read the decoded frame size */
+	/* Read the decoded compressed-frame consumed size */
 	inst->result_size = vidc_read(core, VIDC_REG_SEQ_FRAME_SIZE);
 }
 
@@ -789,6 +794,103 @@ err_free_dma:
 	inst->dpb_y_dma_addr = 0;
 	inst->dpb_y_alloc_size = 0;
 	return ret;
+}
+
+/*
+ * Copy a displayed DPB slot to the userspace CAPTURE buffer.
+ *
+ * After a successful FRAME_DONE, the firmware has filled one of our
+ * internal DPB slots with the decoded frame (tile-NV12 layout). The
+ * IRQ handler captured the slot's fw-relative offset into
+ * inst->display_y_raw (luma) and inst->display_c_raw (chroma), both
+ * encoded as offset_from_fw_dma_addr >> VIDC_ADDR_SHIFT.
+ *
+ * Reverse that encoding to find which DPB slot vaddr to read from,
+ * then memcpy Y then C into the dst buffer. The data we copy is in
+ * tile-NV12 layout — userspace consumers expecting linear NV12 need
+ * to detile (or we expose V4L2_PIX_FMT_NV12MT, a follow-up).
+ *
+ * out_payload receives the byte count actually written (y_size + c_size).
+ */
+int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
+			 size_t dst_size, size_t *out_payload)
+{
+	struct vidc_core *core = inst->core;
+	u32 y_offset, c_offset, slot_size, slot_idx;
+	size_t y_size, c_size, frame_size;
+	void *slot_y, *slot_c;
+	dma_addr_t slot_phys;
+
+	if (!inst->dpb_inited || !inst->dpb_y_vaddr) {
+		dev_err(core->dev, "copy_dpb_to_dst: DPB not initialised\n");
+		return -EINVAL;
+	}
+
+	y_offset = inst->display_y_raw << VIDC_ADDR_SHIFT;
+	c_offset = inst->display_c_raw << VIDC_ADDR_SHIFT;
+	y_size = inst->dpb_y_size;
+	c_size = inst->dpb_c_size;
+	frame_size = y_size + c_size;
+
+	if (dst_size < frame_size) {
+		dev_err(core->dev,
+			"dst buffer too small: %zu < %zu\n",
+			dst_size, frame_size);
+		return -ENOSPC;
+	}
+
+	/*
+	 * Translate fw-relative luma offset back to a DPB slot index.
+	 * slot_size matches the per-slot stride from vidc_init_buffers():
+	 *   ALIGN(y_size + c_size + mv_size, SZ_4K)
+	 * We re-derive it from dpb_y_alloc_size / dpb_count rather than
+	 * re-aligning so any future allocator change stays consistent.
+	 */
+	slot_size = inst->dpb_y_alloc_size / inst->dpb_count;
+	slot_phys = core->fw_dma_addr + y_offset;
+
+	if (slot_phys < inst->dpb_y_dma_addr ||
+	    slot_phys >= inst->dpb_y_dma_addr + inst->dpb_y_alloc_size) {
+		dev_err(core->dev,
+			"display Y phys %pad outside DPB pool [%pad..+%zu]\n",
+			&slot_phys, &inst->dpb_y_dma_addr,
+			inst->dpb_y_alloc_size);
+		return -EFAULT;
+	}
+
+	slot_idx = (slot_phys - inst->dpb_y_dma_addr) / slot_size;
+	if (slot_idx >= inst->dpb_count) {
+		dev_err(core->dev, "computed slot %u >= count %u\n",
+			slot_idx, inst->dpb_count);
+		return -EFAULT;
+	}
+
+	slot_y = inst->dpb_y_vaddr + slot_idx * slot_size;
+	slot_c = slot_y + y_size;
+
+	/*
+	 * Sanity-check the chroma offset matches the slot we picked.
+	 * If the firmware reported a chroma plane from a different slot
+	 * than the luma plane, something is very wrong — bail rather
+	 * than copy mismatched halves.
+	 */
+	if (c_offset != y_offset + y_size) {
+		dev_warn(core->dev,
+			 "luma/chroma offset mismatch: y=0x%x c=0x%x (expected c=0x%x)\n",
+			 y_offset, c_offset, y_offset + (u32)y_size);
+	}
+
+	memcpy(dst_vaddr, slot_y, y_size);
+	memcpy(dst_vaddr + y_size, slot_c, c_size);
+
+	if (out_payload)
+		*out_payload = frame_size;
+
+	dev_dbg(core->dev,
+		"copy_dpb_to_dst: slot=%u y=%zu c=%zu total=%zu\n",
+		slot_idx, y_size, c_size, frame_size);
+
+	return 0;
 }
 
 void vidc_free_buffers(struct vidc_inst *inst)

@@ -731,19 +731,38 @@ static void vidc_dec_device_run(void *priv)
 		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
 		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
 	} else {
-		/* Set output buffer payload from hardware result */
-		if (inst->result_size > 0)
-			vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
-					      inst->result_size);
-		else
-			vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
-					      vidc_dec_get_framesize(
-						      inst->fmt_cap->pixfmt,
-						      inst->width,
-						      inst->height));
+		/*
+		 * Copy the decoded frame from the internal DPB slot the
+		 * firmware reported into the userspace CAPTURE buffer. The
+		 * IRQ handler stashed the slot's fw-relative offset in
+		 * inst->display_y_raw / display_c_raw; vidc_copy_dpb_to_dst
+		 * translates that back to a slot index and memcpys the
+		 * tile-NV12 Y + C planes into dst_vaddr.
+		 *
+		 * The data we hand back is tile-NV12 (64×32 macroblock layout
+		 * from the 1080p hardware). The driver still advertises the
+		 * V4L2 pixfmt as plain V4L2_PIX_FMT_NV12 (linear) — userspace
+		 * either needs to detile, or a follow-up patch should expose
+		 * V4L2_PIX_FMT_NV12MT and adjust vidc_dec_get_framesize().
+		 */
+		u8 *dst_vaddr = vb2_plane_vaddr(&dst_buf->vb2_buf, 0);
+		size_t dst_size = vb2_plane_size(&dst_buf->vb2_buf, 0);
+		size_t payload = 0;
+		int copy_ret;
 
-		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
-		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+		copy_ret = vidc_copy_dpb_to_dst(inst, dst_vaddr, dst_size,
+						&payload);
+		if (copy_ret) {
+			dev_err(core->dev, "DPB->dst copy failed: %d\n",
+				copy_ret);
+			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
+			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
+			v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
+		} else {
+			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, payload);
+			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+			v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+		}
 	}
 
 	/* Clear current instance */
