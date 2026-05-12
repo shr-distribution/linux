@@ -341,6 +341,18 @@
 			reg-names = "acc", "scpll", "l2-scpll";
 			#clock-cells = <0>;
 			clock-output-names = "cpu0_clk";
+
+			/*
+			 * CPU → EBI (DDR) interconnect path. Mirrors legacy
+			 * webOS acpuclock-8x60.c "acpuclock" msm-bus client
+			 * which votes EBI bandwidth alongside CPU/L2 freq.
+			 * Without this vote DDR stays at the RPM handoff
+			 * default, which starves the L2 cache at high CPU
+			 * rates and can also bottleneck GPU/video traffic.
+			 */
+			interconnects = <&apps_fabric AFAB_MAS_AMPSS_M0
+					 &apps_fabric AFAB_SLV_EBI_CH0>;
+			interconnect-names = "cpu-mem";
 		};
 
 		apcs1: clock-controller@2051000 {
