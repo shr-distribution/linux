@@ -126,6 +126,13 @@
 #define VIDC_DPB_REG_SLOTS		32
 
 /*
+ * Per-channel scratch ("descriptor") buffer the firmware uses to
+ * record per-frame state during SEQ_HEADER parse and FRAME_DATA
+ * decode. Legacy vcd_ddl_helper.c:585 allocates 128 KB.
+ */
+#define VIDC_DESC_BUF_SIZE			SZ_128K
+
+/*
  * Shared-memory region used to pass per-command parameters between
  * host and on-chip RISC. Layout matches legacy
  * webos-linux-kernel-touchpad/drivers/video/msm/vidc/1080p/ddl/
@@ -291,6 +298,14 @@ struct vidc_core {
 	 */
 	size_t ctxt_pool_size;
 	size_t ctxt_pool_used;
+
+	/*
+	 * Per-channel descriptor (scratch) buffer. Used by the firmware
+	 * for per-frame state during SEQ_HEADER + FRAME_DATA. Address
+	 * goes in CH0_DESC_ADDR (>>VIDC_ADDR_SHIFT encoding) and the
+	 * size in CH0_DESC_BUF_SIZE (raw bytes).
+	 */
+	u32 desc_offset;	/* fw-relative byte offset */
 
 	/*
 	 * Shared-memory region. One per channel (we use ch0 only).
