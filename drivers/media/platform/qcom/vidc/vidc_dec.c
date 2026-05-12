@@ -702,46 +702,128 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
  * to the userspace CAPTURE buffer, mark buffers DONE, and finish
  * the m2m job so the worker can pick up the next queued pair.
  */
+/*
+ * Helper: copy from the firmware-indicated DPB slot to dst, mark
+ * dst DONE with the resulting payload, and return error code.
+ * Caller already removed dst from the m2m queue.
+ */
+static int vidc_dec_emit_dpb(struct vidc_inst *inst,
+			     struct vb2_v4l2_buffer *dst_buf)
+{
+	struct vidc_core *core = inst->core;
+	u8 *dst_vaddr = vb2_plane_vaddr(&dst_buf->vb2_buf, 0);
+	size_t dst_size = vb2_plane_size(&dst_buf->vb2_buf, 0);
+	size_t payload = 0;
+	int copy_ret;
+
+	copy_ret = vidc_copy_dpb_to_dst(inst, dst_vaddr, dst_size, &payload);
+	if (copy_ret) {
+		dev_err(core->dev, "DPB->dst copy failed: %d\n", copy_ret);
+		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
+		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
+	} else {
+		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, payload);
+		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+	}
+	return copy_ret;
+}
+
 static void vidc_dec_frame_done_work(struct work_struct *w)
 {
 	struct vidc_inst *inst =
 		container_of(w, struct vidc_inst, frame_done_work);
 	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
-	u8 *dst_vaddr;
-	size_t dst_size;
-	size_t payload = 0;
-	int copy_ret;
 
-	src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
-	dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
+	/*
+	 * Dispatch on display_status captured by vidc_handle_frame_done().
+	 *
+	 * The mapping between the firmware's response and the V4L2 m2m
+	 * buffer pair is:
+	 *
+	 *   DECODE_AND_DISPLAY — typical low-latency: src consumed, dst
+	 *                        receives the decoded frame, both DONE.
+	 *
+	 *   DECODE_ONLY        — B-frame held back for reorder. src is
+	 *                        consumed (input_done fires on legacy
+	 *                        msm72k), but dst stays in the m2m queue
+	 *                        because the firmware has nothing to put
+	 *                        in it yet. A later FRAME_DONE will
+	 *                        report DISPLAY_ONLY for the held frame.
+	 *
+	 *   DISPLAY_ONLY       — the firmware has a decoded-but-pending
+	 *                        frame ready to emit, but didn't consume
+	 *                        a fresh source this cycle. dst gets the
+	 *                        held frame; we leave src in the queue
+	 *                        (will be consumed by a future FRAME_DATA).
+	 *
+	 *   DPB_EMPTY          — EOS drain complete. Mark both buffers
+	 *                        DONE; the dst gets payload=0 and the
+	 *                        V4L2_BUF_FLAG_LAST flag so userspace
+	 *                        knows the stream is finished.
+	 *
+	 *   NOOP / others      — unexpected; log and treat as
+	 *                        DECODE_AND_DISPLAY for safety.
+	 */
+	switch (inst->display_status) {
+	case VIDC_DISPLAY_STATUS_DECODE_ONLY:
+		src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
+		if (src_buf) {
+			src_buf->sequence = inst->sequence_out++;
+			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+		}
+		break;
 
-	if (!src_buf || !dst_buf) {
+	case VIDC_DISPLAY_STATUS_DISPLAY_ONLY:
+		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
+		if (dst_buf) {
+			dst_buf->sequence = inst->sequence_cap++;
+			vidc_dec_emit_dpb(inst, dst_buf);
+		}
+		break;
+
+	case VIDC_DISPLAY_STATUS_DPB_EMPTY:
+		src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
+		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
+		if (src_buf) {
+			src_buf->sequence = inst->sequence_out++;
+			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+		}
+		if (dst_buf) {
+			dst_buf->sequence = inst->sequence_cap++;
+			dst_buf->flags |= V4L2_BUF_FLAG_LAST;
+			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
+			v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+		}
+		break;
+
+	case VIDC_DISPLAY_STATUS_NOOP:
 		dev_warn(core->dev,
-			 "frame_done_work: missing buffer (src=%p dst=%p)\n",
-			 src_buf, dst_buf);
-		goto out;
+			 "frame_done_work: firmware reported NOOP\n");
+		fallthrough;
+
+	case VIDC_DISPLAY_STATUS_DECODE_AND_DISPLAY:
+	default:
+		src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
+		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
+
+		if (!src_buf || !dst_buf) {
+			dev_warn(core->dev,
+				 "frame_done_work: missing buffer (src=%p dst=%p)\n",
+				 src_buf, dst_buf);
+			break;
+		}
+
+		src_buf->sequence = inst->sequence_out++;
+		dst_buf->sequence = inst->sequence_cap++;
+
+		if (vidc_dec_emit_dpb(inst, dst_buf))
+			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
+		else
+			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+		break;
 	}
 
-	src_buf->sequence = inst->sequence_out++;
-	dst_buf->sequence = inst->sequence_cap++;
-
-	dst_vaddr = vb2_plane_vaddr(&dst_buf->vb2_buf, 0);
-	dst_size = vb2_plane_size(&dst_buf->vb2_buf, 0);
-
-	copy_ret = vidc_copy_dpb_to_dst(inst, dst_vaddr, dst_size, &payload);
-	if (copy_ret) {
-		dev_err(core->dev, "DPB->dst copy failed: %d\n", copy_ret);
-		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
-		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
-		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
-	} else {
-		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, payload);
-		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
-		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
-	}
-
-out:
 	core->curr_inst = NULL;
 	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
 }
