@@ -536,6 +536,25 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			if (ret < 0)
 				goto unlock;
 
+			/*
+			 * Open the firmware channel for this encoder instance.
+			 * Same mechanism as the decoder side (B1 of the staged
+			 * bring-up): send HOST2RISC OPEN_CH with the selected
+			 * codec and a context-memory slot from the pool. The
+			 * codec ID encoded by vidc_codec_to_fw() naturally
+			 * separates encoder (16..18) from decoder (0..9), so
+			 * the firmware knows which engine to spin up.
+			 *
+			 * Without this the subsequent CH0_INST_ID writes in
+			 * vidc_enc_submit_frame() target a channel the firmware
+			 * doesn't recognise and ENC_COMPLETE never arrives.
+			 */
+			ret = vidc_open_channel(inst);
+			if (ret) {
+				pm_runtime_put(core->dev);
+				goto unlock;
+			}
+
 			inst->streamon_out = true;
 			inst->sequence_out = 0;
 		}
@@ -568,6 +587,8 @@ static void vidc_enc_stop_streaming(struct vb2_queue *q)
 			v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
 
 		if (inst->streamon_out) {
+			/* Close firmware channel before dropping PM ref */
+			vidc_close_channel(inst);
 			inst->streamon_out = false;
 			pm_runtime_put(core->dev);
 		}
@@ -640,6 +661,19 @@ static void vidc_enc_submit_frame(struct vidc_inst *inst,
 	/* Write output stream buffer address for compressed bitstream */
 	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, dst_addr >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, dst_size);
+
+	/*
+	 * Point the firmware at the per-channel descriptor buffer +
+	 * shared-memory region. Same mechanism as the decoder path
+	 * (commits 2f69eab07774 + cf0e5730fcd2). The encoder also uses
+	 * the descriptor buffer for per-frame scratch state and the
+	 * shared-memory region for rate-control feedback (frame size,
+	 * QP usage, etc.).
+	 */
+	vidc_write(core, VIDC_REG_CH0_DESC_ADDR,
+		   core->desc_offset >> VIDC_ADDR_SHIFT);
+	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
+	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 
 	/* Increment and write command sequence number */
 	core->cmd_seq_num++;
