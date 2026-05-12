@@ -28,6 +28,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/interconnect.h>
 #include <linux/stop_machine.h>
 #include <asm/cacheflush.h>
 
@@ -158,8 +159,10 @@ static const struct vdd_req *get_vdd_req(u32 l_val)
  * @scpll_base: SCPLL register base for this CPU
  * @vdd_mem: memory voltage regulator (PM8058 S0), optional
  * @vdd_dig: digital core voltage regulator (PM8058 S1), optional
+ * @icc_cpu_mem: CPU → EBI (DDR) interconnect path, optional
  * @current_rate: current CPU frequency
  * @current_src: current clock source (AFAB, PLL8, SCPLL)
+ * @current_bw_kbps: current CPU → EBI bandwidth vote, in kBps
  * @calibrated: true if SCPLL has been calibrated
  * @lock: spinlock for register access
  */
@@ -169,13 +172,60 @@ struct apcs_cpu_clk {
 	void __iomem *scpll_base;
 	struct regulator *vdd_mem;
 	struct regulator *vdd_dig;
+	struct icc_path *icc_cpu_mem;
 	unsigned long current_rate;
 	int current_src;
+	unsigned int current_bw_kbps;
 	bool calibrated;
 	spinlock_t lock;
 };
 
 #define to_apcs_cpu_clk(_hw) container_of(_hw, struct apcs_cpu_clk, hw)
+
+/*
+ * CPU → EBI bandwidth tiers (peak ib, in kBps) matching legacy webOS
+ * acpuclock-8x60.c bw_level_tbl[]. RPM translates this into an EBI clock
+ * rate (the bus controller picks a rate that delivers at least the
+ * requested ib).
+ *
+ * Mapping from CPU frequency to bw tier (per legacy acpu_freq_tbl_v2):
+ *   CPU <  648 MHz   → tier 0 (824 MB/s,  ~103 MHz EBI)
+ *   CPU 648–864 MHz  → tier 1 (1336 MB/s, ~167 MHz EBI)
+ *   CPU 918–1134 MHz → tier 2 (2008 MB/s, ~251 MHz EBI)
+ *   CPU ≥ 1188 MHz   → tier 3 (2480 MB/s, ~310 MHz EBI)
+ */
+#define APCS_BW_KBPS_TIER0	 824000U
+#define APCS_BW_KBPS_TIER1	1336000U
+#define APCS_BW_KBPS_TIER2	2008000U
+#define APCS_BW_KBPS_TIER3	2480000U
+
+static unsigned int apcs_bw_for_rate(unsigned long rate_hz)
+{
+	unsigned long rate_khz = rate_hz / 1000;
+
+	if (rate_khz >= 1188000)
+		return APCS_BW_KBPS_TIER3;
+	if (rate_khz >= 918000)
+		return APCS_BW_KBPS_TIER2;
+	if (rate_khz >= 648000)
+		return APCS_BW_KBPS_TIER1;
+	return APCS_BW_KBPS_TIER0;
+}
+
+static int apcs_set_bus_bw(struct apcs_cpu_clk *c, unsigned int bw_kbps)
+{
+	int ret;
+
+	if (!c->icc_cpu_mem || bw_kbps == c->current_bw_kbps)
+		return 0;
+
+	ret = icc_set_bw(c->icc_cpu_mem, 0, bw_kbps);
+	if (ret)
+		return ret;
+
+	c->current_bw_kbps = bw_kbps;
+	return 0;
+}
 
 /* L2 SCPLL shared state — initialized by first CPU to probe */
 static void __iomem *l2_scpll_base;
@@ -415,6 +465,7 @@ static int apcs_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 		/* TODO: Switch to PLL8 source for low frequencies */
 		c->current_rate = FREQ_PLL8;
 		apcs_decrease_vdd(c, VDD_MEM_PLL8, VDD_DIG_PLL8);
+		apcs_set_bus_bw(c, apcs_bw_for_rate(FREQ_PLL8));
 		return 0;
 	}
 
@@ -432,6 +483,15 @@ static int apcs_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 		if (ret)
 			return ret;
 	}
+
+	/*
+	 * Increase EBI bandwidth vote BEFORE the frequency increase so DDR
+	 * is at the higher rate when the CPU starts demanding it. (Legacy
+	 * votes after speed-change; we vote before, which is strictly more
+	 * conservative.)
+	 */
+	if (freq_increasing)
+		apcs_set_bus_bw(c, apcs_bw_for_rate(rate));
 
 	if (l_val_new == l_val_cur) {
 		c->current_rate = (unsigned long)l_val_cur * SCPLL_RATE_FACTOR;
@@ -462,6 +522,10 @@ static int apcs_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	spin_unlock_irqrestore(&c->lock, flags);
 
 done:
+	/* Decrease EBI bandwidth vote AFTER frequency decrease */
+	if (!freq_increasing)
+		apcs_set_bus_bw(c, apcs_bw_for_rate(rate));
+
 	/* Decrease voltage AFTER frequency decrease */
 	if (!freq_increasing && vdd_new)
 		apcs_decrease_vdd(c, vdd_new->vdd_mem, vdd_new->vdd_dig);
@@ -622,6 +686,18 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 	else
 		dev_info(dev, "vdd_mem/vdd_dig co-voting not available\n");
 
+	/* Acquire CPU → EBI interconnect path for bus bandwidth voting */
+	cpu_clk->icc_cpu_mem = devm_of_icc_get(dev, "cpu-mem");
+	if (IS_ERR(cpu_clk->icc_cpu_mem)) {
+		if (PTR_ERR(cpu_clk->icc_cpu_mem) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		dev_info(dev, "cpu-mem interconnect: error %ld (bandwidth voting disabled)\n",
+			 PTR_ERR(cpu_clk->icc_cpu_mem));
+		cpu_clk->icc_cpu_mem = NULL;
+	} else {
+		dev_info(dev, "CPU → EBI bandwidth voting enabled\n");
+	}
+
 	/*
 	 * Skip SCPLL calibration for now - assume bootloader already did it.
 	 * TODO: Add proper calibration if needed.
@@ -710,6 +786,17 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 
 		/* Record current L_VAL so the notifier path skips a no-op slew */
 		l2_current_l_val = (ctl >> 3) & 0x3f;
+
+		/*
+		 * Vote EBI bandwidth up to the tier appropriate for the
+		 * current SCPLL L_VAL before flipping the L2 source mux.
+		 * This ensures DDR is ready to service L2 cache traffic at
+		 * the new rate the instant the mux switches — without this
+		 * pre-vote, the L2 controller can stall waiting for DDR.
+		 */
+		apcs_set_bus_bw(cpu_clk,
+			apcs_bw_for_rate((unsigned long)l2_current_l_val *
+					 SCPLL_RATE_FACTOR));
 
 		/* Quiesced one-time switch of L2 source mux to SCPLL */
 		ret = stop_machine(l2_quiesced_clksel_switch, NULL,
