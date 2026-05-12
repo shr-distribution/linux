@@ -315,7 +315,6 @@
 			qcom,mpm-pin-map = <25 100>,	/* USB1_HS */
 					   <26 50>,	/* TV_ENC */
 					   <27 79>;	/* HDMI */
-			status = "disabled";
 		};
 
 		timer@2000000 {
