@@ -190,6 +190,35 @@ int wm8994_irq_init(struct wm8994 *wm8994)
 		return 0;
 	}
 
+	/*
+	 * Pre-init the IRQ mask, status and top-level control registers
+	 * with blind writes before handing off to regmap_add_irq_chip.
+	 *
+	 * regmap_add_irq_chip uses regmap_update_bits on the mask
+	 * registers, which is a read-modify-write. If the codec is in a
+	 * state where those registers aren't reliably readable yet (e.g.
+	 * on a board where probe time follows a bootloader handoff and
+	 * the codec's IRQ subsystem hasn't been touched), the read can
+	 * return I2C -ENXIO and the whole IRQ chip setup falls over.
+	 *
+	 * Legacy webOS wm8994-irq.c:253-258 unconditionally writes
+	 * 0xFFFF to the mask registers without reading first. Mirror
+	 * that here so the on-chip mask state and regmap's cache agree
+	 * before regmap-irq does anything: mask everything, clear any
+	 * latched status, and set the top-level IM_IRQ mask in 0x740 to
+	 * keep the IRQ line de-asserted until regmap-irq is ready.
+	 *
+	 * Failures are non-fatal — the codec might genuinely not have
+	 * an IRQ subsystem ready; regmap_add_irq_chip will surface the
+	 * actual error.
+	 */
+	regmap_write(wm8994->regmap, WM8994_INTERRUPT_STATUS_1_MASK, 0xffff);
+	regmap_write(wm8994->regmap, WM8994_INTERRUPT_STATUS_2_MASK, 0xffff);
+	regmap_write(wm8994->regmap, WM8994_INTERRUPT_STATUS_1, 0xffff);
+	regmap_write(wm8994->regmap, WM8994_INTERRUPT_STATUS_2, 0xffff);
+	regmap_write(wm8994->regmap, WM8994_INTERRUPT_CONTROL,
+		     WM8994_IM_IRQ);
+
 	/* select user or default irq flags */
 	irqflags = IRQF_TRIGGER_HIGH | IRQF_ONESHOT;
 	if (pdata->irq_flags)
