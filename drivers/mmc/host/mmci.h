@@ -471,6 +471,7 @@ struct mmci_host {
 	u8			dma_in_progress:1;
 	u8			datactrl_first:1;
 	u8			dma_issue_deferred:1;
+	u8			dma_engaged_once:1;	/* diagnostic flag */
 	void			*dma_priv;
 
 	s32			next_cookie;
