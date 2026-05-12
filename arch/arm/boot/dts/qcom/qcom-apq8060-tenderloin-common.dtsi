@@ -3219,18 +3219,18 @@
 };
 
 /*
- * PM8058 MPP configuration for Class-D amplifier enable.
- * Hardware MPP10 (CLASS_D0_EN) controls external Class-D amplifier #0.
- * Pin naming is 1-based, so hardware index 10 = "mpp11".
+ * PM8058 MPP11 (CLASS_D0_EN) and PM8901 MPP1 (CLASS_D1_EN) are
+ * inherited from the QRD8x60 reference design and are NOT used on HP
+ * TouchPad. The Class-D amplifier on TouchPad is enabled via the
+ * WM8994 codec's internal GPIO1 register (legacy webOS
+ * board-tenderloin.c:4422 sets gpio_defaults[0] = 0x0001 with comment
+ * "GPIO1 AUDIO_AMP_EN write 0x41 to enable AMP"). No external SoC or
+ * PMIC GPIO is involved in amp enable on this board.
+ *
+ * Removing the previously-orphaned class_d0_mpp / class_d1_mpp
+ * pinctrl states — they were defined but never referenced via any
+ * node's pinctrl-0, so they were dead code that confused audits.
  */
-&pm8058_mpps {
-	class_d0_mpp: class-d0-state {
-		pins = "mpp11";
-		function = "digital";
-		output-low;
-		power-source = <PM8058_GPIO_S3>;
-	};
-};
 
 &pm8058_keypad {
 	linux,keymap = <
@@ -3620,19 +3620,6 @@
 
 &mdp_port1_iommu {
 	status = "okay";
-};
-
-/*
- * PM8901 MPP configuration for Class-D amplifier enable.
- * MPP0 (CLASS_D1_EN) controls external Class-D amplifier #1.
- */
-&pm8901_mpps {
-	class_d1_mpp: class-d1-state {
-		pins = "mpp1";
-		function = "digital";
-		output-low;
-		power-source = <PM8901_MPP_VPH>;
-	};
 };
 
 /*
