@@ -1504,6 +1504,18 @@
 			"gpio14", "gpio15", "gpio16", "gpio17", "gpio18", "gpio19", "gpio20",
 			"gpio21", "gpio22", "gpio23", "gpio24", "gpio25", "gpio26", "gpio27";
 			function = "lcdc";
+
+			/*
+			 * Legacy webOS gpiomux-tenderloin.c uses
+			 *   GPIOMUX_DRV_14MA + GPIOMUX_PULL_NONE
+			 * for active LCDC pins (LCDC_ACTIVE_CFG). The earlier
+			 * mainline DT relied on bootloader-set values, which
+			 * worked for the initial framebuffer but provides no
+			 * signal-integrity margin once the panel is driven
+			 * from mainline. Match legacy explicitly.
+			 */
+			drive-strength = <14>;
+			bias-disable;
 		};
 	};
 
