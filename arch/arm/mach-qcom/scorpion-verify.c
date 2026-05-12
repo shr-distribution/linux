@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Boot-time verification of __v7_scorpion_setup register writes.
+ *
+ * The Scorpion-specific procinfo entry (__v7_scorpion_proc_info in
+ * arch/arm/mm/proc-v7.S) overrides several CP15 registers vs. the
+ * generic v7 path:
+ *
+ *   NMRR  = 0x40e080e0 (Scorpion)   vs  0x40e040e0 (generic)
+ *   L2CR1 = 0x100                   (DBB disabled for SMP stability)
+ *   L2CR0 = 0xC0050F0F              (OoO bus attrs, error reporting)
+ *   BPCR  = 0x01FF01FF              (full branch history)
+ *
+ * If MIDR matches Scorpion but NMRR is the generic value, the
+ * Scorpion procinfo entry was not selected at boot — that's the
+ * audit gap flagged as P0 #4 (Scorpion proc-v7.S NMRR path
+ * verification).
+ *
+ * Read the registers back at arch_initcall time (after MMU and
+ * printk are up) and pr_info the result so we can confirm the
+ * Scorpion setup ran on every boot.
+ */
+
+#include <linux/init.h>
+#include <linux/printk.h>
+
+#define SCORPION_MIDR_MATCH	0x510f02d0	/* per proc-v7.S:858 */
+#define SCORPION_MIDR_MASK	0xff0ff0f0	/* per proc-v7.S:859 */
+#define SCORPION_NMRR_EXPECT	0x40e080e0
+#define GENERIC_V7_NMRR		0x40e040e0
+
+static int __init scorpion_verify_init(void)
+{
+	u32 midr, nmrr, prrr;
+	u32 l2cr0, l2cr1, bpcr;
+
+	asm volatile("mrc p15, 0, %0, c0, c0, 0" : "=r" (midr));
+
+	if ((midr & SCORPION_MIDR_MASK) !=
+	    (SCORPION_MIDR_MATCH & SCORPION_MIDR_MASK))
+		return 0;
+
+	asm volatile("mrc p15, 0, %0, c10, c2, 1" : "=r" (nmrr));
+	asm volatile("mrc p15, 0, %0, c10, c2, 0" : "=r" (prrr));
+	asm volatile("mrc p15, 3, %0, c15, c0, 1" : "=r" (l2cr0));
+	asm volatile("mrc p15, 3, %0, c15, c0, 3" : "=r" (l2cr1));
+	asm volatile("mrc p15, 7, %0, c15, c0, 2" : "=r" (bpcr));
+
+	pr_info("scorpion: MIDR=0x%08x NMRR=0x%08x PRRR=0x%08x\n",
+		midr, nmrr, prrr);
+	pr_info("scorpion: L2CR0=0x%08x L2CR1=0x%08x BPCR=0x%08x\n",
+		l2cr0, l2cr1, bpcr);
+
+	if (nmrr == SCORPION_NMRR_EXPECT)
+		pr_info("scorpion: __v7_scorpion_setup confirmed (Scorpion NMRR applied)\n");
+	else if (nmrr == GENERIC_V7_NMRR)
+		pr_warn("scorpion: NMRR is generic v7 value — Scorpion proc_info NOT selected!\n");
+	else
+		pr_warn("scorpion: NMRR unexpected (0x%08x) — investigate\n", nmrr);
+
+	return 0;
+}
+arch_initcall(scorpion_verify_init);
