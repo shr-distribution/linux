@@ -583,6 +583,19 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		    ALIGN(inst->height, 32)) >> VIDC_ADDR_SHIFT);
 
 	/*
+	 * Point the firmware at our descriptor (scratch) buffer.
+	 * Legacy vidc.c:524-528 writes both DESC_ADDR (>>VIDC_ADDR_SHIFT
+	 * encoding) and DESC_BUF_SIZE (raw bytes) on every SEQ_HEADER and
+	 * FRAME_DATA command. The buffer is per-channel scratch the
+	 * firmware uses to record decode state — without it the firmware
+	 * may stall waiting for a write target or return
+	 * "descriptor missing" errors on FRAME_DATA.
+	 */
+	vidc_write(core, VIDC_REG_CH0_DESC_ADDR,
+		   core->desc_offset >> VIDC_ADDR_SHIFT);
+	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
+
+	/*
 	 * Re-point the firmware at our shared-memory region. The legacy
 	 * DDL writes this on every command that exchanges parameters via
 	 * SHM (SEQ_HEADER, INIT_BUFFERS, FRAME_DATA); since CH0_SHARED_MEM

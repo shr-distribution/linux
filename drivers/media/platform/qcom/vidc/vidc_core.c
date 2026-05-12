@@ -353,6 +353,7 @@ int vidc_load_firmware(struct vidc_core *core)
 	core->ctxt_pool_used = 0;
 	core->fw_alloc_size = ALIGN(core->fw->size, SZ_4K)
 			    + core->ctxt_pool_size
+			    + VIDC_DESC_BUF_SIZE
 			    + VIDC_SHM_SIZE
 			    + SZ_128K;
 	core->fw_alloc_vaddr = dma_alloc_coherent(core->dev,
@@ -372,13 +373,23 @@ int vidc_load_firmware(struct vidc_core *core)
 	memcpy(core->fw_vaddr, core->fw->data, core->fw->size);
 
 	/*
-	 * Carve out the shared-memory region. Sits at the very end of the
-	 * firmware-adjacent allocation, after the context-memory pool, so
-	 * its fw-relative byte offset is fixed across instance lifetimes.
-	 *   layout: [fw (fw_size, 4K-aligned)][ctxt pool][shm pool]
+	 * Carve out per-channel scratch regions inside the firmware
+	 * allocation. Each gets a fixed fw-relative offset across
+	 * instance lifetimes:
+	 *
+	 *   layout: [fw (fw_size, 4K-aligned)]
+	 *           [ctxt pool (VIDC_MAX_INSTANCES × 16 KB)]
+	 *           [descriptor buffer (128 KB)]
+	 *           [shared-memory region (4 KB)]
+	 *
+	 * Descriptor buffer hosts firmware scratch state during
+	 * SEQ_HEADER parse and per-frame FRAME_DATA decode. Shared-memory
+	 * region carries parameter blobs between host and firmware.
 	 */
-	core->shm_offset = ALIGN(core->fw_size, SZ_4K) + core->ctxt_pool_size;
+	core->desc_offset = ALIGN(core->fw_size, SZ_4K) + core->ctxt_pool_size;
+	core->shm_offset = core->desc_offset + VIDC_DESC_BUF_SIZE;
 	core->shm_vaddr = core->fw_vaddr + core->shm_offset;
+	memset(core->fw_vaddr + core->desc_offset, 0, VIDC_DESC_BUF_SIZE);
 	memset(core->shm_vaddr, 0, VIDC_SHM_SIZE);
 
 	/*
