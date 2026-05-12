@@ -294,31 +294,35 @@ SYM_FUNC_END(cpu_pj4b_do_resume)
 /*
  * Qualcomm Scorpion (MSM8660/APQ8060) setup.
  *
- * L2CR0 and L2CR1 are Scorpion-specific CP15 registers that come up
- * in unpredictable state after reset. They must be written pre-MMU
- * before the L2 cache is used by the OS.
+ * Conservative variant: applies only those writes that are observed
+ * to actually take effect on a real Scorpion running Non-Secure
+ * Linux. CP15 readback at arch_initcall time on HP TouchPad
+ * (APQ8060, MIDR 0x510f02d2) showed:
  *
- * Uses movw/movt instead of ldr =value to avoid literal pool issues
- * in the .proc.info.init section context.
+ *   NMRR  override: APPLIED  (c10 is NS-accessible)
+ *   L2CR0 override: PARTIAL  (only low 16 bits stick)
+ *   L2CR1 override: DROPPED  (whole write ignored)
+ *   BPCR  override: DROPPED  (whole write ignored)
+ *
+ * The c15 implementation-defined cluster appears to be Secure-only
+ * on this part. Partial writes (L2CR0) are worse than no write —
+ * they leave the cache controller in a state the silicon was never
+ * validated against and were observed to correlate with mid-boot
+ * SMP coherency hangs. Drop all three c15 overrides.
+ *
+ * Without functional L2CR1.DBB control we cannot rely on the
+ * Disable-Barrier-Broadcast scheme that the original setup intended
+ * for SMP coherency. Fall back to ACTLR bit 0 (Cache/TLB ops
+ * broadcasting) — same as the generic-v7 Cortex-A* setup paths.
+ *
+ * Net result: this setup runs the full generic-v7 init via
+ * __v7_setup_cont, then applies the NMRR Scorpion memory-attribute
+ * tuning. Equivalent to "generic v7 + Scorpion NMRR".
  */
 __v7_scorpion_setup:
 	do_invalidate_l1
 
-	/* L2CR1: Disable Barrier Broadcast (DBB) for SMP stability */
-	mov	r0, #0x100
-	mcr	p15, 3, r0, c15, c0, 3		@ WCP15_L2CR1
-
-	/* L2CR0: Enable out-of-order bus attributes, error reporting */
-	movw	r0, #0x0F0F
-	movt	r0, #0xC005
-	mcr	p15, 3, r0, c15, c0, 1		@ WCP15_L2CR0
-
-	/* BPCR: Enable full branch history and address participation */
-	movw	r0, #0x01FF
-	movt	r0, #0x01FF
-	mcr	p15, 7, r0, c15, c0, 2		@ WCP15_BPCR
-
-	mov	r10, #0
+	mov	r10, #(1 << 0)			@ Cache/TLB ops broadcasting
 #ifdef CONFIG_SMP
 	orr	r10, r10, #(1 << 6)		@ Enable SMP/nAMP mode
 	ALT_SMP(mrc	p15, 0, r0, c1, c0, 1)
