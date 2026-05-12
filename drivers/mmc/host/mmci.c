@@ -1096,7 +1096,11 @@ void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
 	 * Give up with DMA and switch back to PIO mode.
 	 */
 	if (status & MCI_RXDATAAVLBLMASK) {
-		dev_err(mmc_dev(host->mmc), "buggy DMA detected. Taking evasive action.\n");
+		dev_err(mmc_dev(host->mmc),
+			"buggy DMA detected: status=0x%08x after %d iters, dir=%s, blksz=%u, blkcnt=%u — disabling DMA\n",
+			status, i,
+			(data->flags & MMC_DATA_READ) ? "read" : "write",
+			data->blksz, data->blocks);
 		mmci_dma_release(host);
 	}
 
@@ -1239,6 +1243,17 @@ int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 	}
 
 	*datactrl |= MCI_DPSM_DMAENABLE;
+
+	/*
+	 * One-shot diagnostic: log the first successful DMA submit so we
+	 * can confirm in dmesg that DMA actually engages for eMMC transfers
+	 * (vs. silently falling back to PIO). Subsequent submits are silent.
+	 */
+	if (!host->dma_engaged_once) {
+		host->dma_engaged_once = true;
+		dev_info(mmc_dev(host->mmc),
+			 "DMA submit OK (first transfer) — driver is using DMA path\n");
+	}
 
 	return 0;
 }
