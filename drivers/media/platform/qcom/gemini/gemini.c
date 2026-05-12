@@ -342,6 +342,40 @@ static void gemini_device_run(void *priv)
 	 */
 	num_mcu_rows = (ctx->src.height + 15) / 16;
 
+	/*
+	 * Cache coherency for the offline DMA path.
+	 *
+	 * The Gemini hardware reads the source frame from DRAM and writes
+	 * the entropy-coded JPEG stream back to DRAM. APQ8060/MSM8660 is a
+	 * non-coherent platform — peripheral DMA does NOT snoop the CPU
+	 * caches. Without explicit syncs, the encoder reads whatever
+	 * DRAM-resident bytes happen to be there (often zeros from initial
+	 * allocation, with occasional cache lines that got written through
+	 * the L1/L2 to DRAM by chance), not the bytes the CPU just wrote
+	 * via mmap. That produces deterministic but wrong output —
+	 * historically the "10-MCU band, 49% black" corruption pattern.
+	 *
+	 * Sync source planes for the device before kicking the encoder, so
+	 * any CPU-side dirty cache lines (from userspace mmap writes +
+	 * msync) are forced out to DRAM. Use DMA_TO_DEVICE because we are
+	 * making CPU writes visible to the device.
+	 *
+	 * For the destination plane we use DMA_BIDIRECTIONAL: the CPU just
+	 * wrote the JPEG header at the start of the buffer, AND the
+	 * hardware will write the entropy segment to the rest. The header
+	 * needs to be visible to the device; the entropy segment will
+	 * later need to be visible to the CPU (handled in the IRQ handler
+	 * via dma_sync_single_for_cpu before vb2_set_plane_payload).
+	 */
+	dma_sync_single_for_device(gemini->dev, src_y,
+				   ctx->src.sizeimage, DMA_TO_DEVICE);
+	dma_sync_single_for_device(gemini->dev, dst_addr,
+				   ctx->dst.sizeimage, DMA_BIDIRECTIONAL);
+
+	pr_info("gemini run: src_y=%pad src_cbcr=%pad dst=%pad src_sz=%u dst_sz=%u hdr=%zu\n",
+		&src_y, &src_cbcr, &dst_addr,
+		ctx->src.sizeimage, ctx->dst.sizeimage, hdr_aligned);
+
 	pr_info("gemini run: R0 device_run entered\n");
 	gemini_hw_set_fe_ping(gemini->base, src_y, src_cbcr, num_mcu_rows);
 	pr_info("gemini run: R1 set_fe_ping returned\n");
@@ -428,8 +462,22 @@ static irqreturn_t gemini_irq_handler(int irq, void *dev_id)
 
 		if (status & GEMINI_IRQ_FRAMEDONE) {
 			u8 *vaddr = vb2_plane_vaddr(&dst_buf->vb2_buf, 0);
+			dma_addr_t dst_addr = vb2_dma_contig_plane_dma_addr(
+					&dst_buf->vb2_buf, 0);
 			size_t hdr_aligned = ALIGN(ctx->hdr_len, 8);
 			size_t payload;
+
+			/*
+			 * The encoder wrote the entropy segment to DRAM via
+			 * its own DMA path; the CPU caches for that range
+			 * are stale. Invalidate them before we read /
+			 * write-EOI through the vaddr mapping. See the
+			 * matching dma_sync_single_for_device() in
+			 * gemini_device_run() for the full rationale.
+			 */
+			dma_sync_single_for_cpu(gemini->dev, dst_addr,
+						ctx->dst.sizeimage,
+						DMA_FROM_DEVICE);
 
 			output_size = gemini_hw_get_output_size(gemini->base);
 
