@@ -393,6 +393,34 @@ int vidc_load_firmware(struct vidc_core *core)
 	memset(core->shm_vaddr, 0, VIDC_SHM_SIZE);
 
 	/*
+	 * Explicitly clear the metadata-enable bitfield. Legacy DDL
+	 * (vcd_ddl_metadata.c:356-393, ddl_vidc_metadata_enable) writes
+	 * this on both SEQ_HEADER (vcd_ddl_vidc.c:200) and FRAME_DATA
+	 * (line 573) paths.
+	 *
+	 * The memset above already wrote 0 to this offset, but legacy
+	 * uses a *32-bit write* (DDL_MEM_WRITE_32), which on this
+	 * non-coherent platform forces a store-buffer drain that
+	 * memset+memcpy may not. Issue an explicit writel here so the
+	 * firmware sees a definitive transaction on the metadata-enable
+	 * cell before it reads any other SHM field.
+	 *
+	 * Bit layout:
+	 *   bit 6: extradata pass-through
+	 *   bit 5: encoder slice-size reporting
+	 *   bit 4: VUI parameters
+	 *   bit 3: SEI NAL data
+	 *   bit 2: VC-1 parameters
+	 *   bit 1: concealed-MB reporting
+	 *   bit 0: per-MB QP array
+	 *
+	 * For plain "give me decoded NV12" all bits stay 0. None of
+	 * the metadata streams are wired up to V4L2 extradata yet so
+	 * enabling any of them would just waste firmware cycles.
+	 */
+	writel(0, core->shm_vaddr + VIDC_SHM_METADATA_ENABLE);
+
+	/*
 	 * Program DRAM_BASE_A/B with the physical address of the firmware
 	 * buffer. The register field is bits [31:17] = phys >> 17.
 	 *
