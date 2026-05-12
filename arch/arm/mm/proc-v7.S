@@ -321,8 +321,21 @@ SYM_FUNC_END(cpu_pj4b_do_resume)
 __v7_scorpion_setup:
 	do_invalidate_l1
 
-	/* L2CR1: Disable Barrier Broadcast (DBB) for SMP stability */
-	mov	r0, #0x100
+	/*
+	 * L2CR1 = 0x33: enable Scorpion I/D L2 prefetch (bits 0,1,4,5).
+	 *
+	 * The previous value 0x100 was inherited from legacy QSD8650A
+	 * "Halcyon" bootloader code (arch-init-scorpion.S:226) where it
+	 * meant "Disable Barrier Broadcast"; that semantic does not apply
+	 * to ScorpionMP (8x60/APQ8060). Legacy webOS proc-v7.S writes
+	 * 0x33 unconditionally for CONFIG_ARCH_MSM_SCORPION — the
+	 * documented "default Instruction and data prefetching values".
+	 *
+	 * Like our existing L2CR0 write, this is load-bearing for boot
+	 * even though scorpion-verify readback shows L2CR1 as 0 (the
+	 * MCR has cache-controller side effects beyond what's visible).
+	 */
+	mov	r0, #0x33
 	mcr	p15, 3, r0, c15, c0, 3		@ WCP15_L2CR1
 
 	/* L2CR0: Enable out-of-order bus attributes, error reporting */
