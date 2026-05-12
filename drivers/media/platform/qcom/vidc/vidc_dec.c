@@ -582,6 +582,15 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		   (dst_addr + ALIGN(inst->width, 128) *
 		    ALIGN(inst->height, 32)) >> VIDC_ADDR_SHIFT);
 
+	/*
+	 * Re-point the firmware at our shared-memory region. The legacy
+	 * DDL writes this on every command that exchanges parameters via
+	 * SHM (SEQ_HEADER, INIT_BUFFERS, FRAME_DATA); since CH0_SHARED_MEM
+	 * is a single register shared with INIT_BUFFERS, re-write it here
+	 * to be defensive against the firmware having clobbered it.
+	 */
+	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
+
 	/* Increment and write command sequence number */
 	core->cmd_seq_num++;
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
