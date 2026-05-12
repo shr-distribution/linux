@@ -216,6 +216,26 @@
 #define VIDC_REG_ENC_LUMA_ADDR		0x0164
 #define VIDC_REG_ENC_CHROMA_ADDR	0x014c
 
+/*
+ * Codec-specific decoder configuration registers. Offsets sourced
+ * from legacy
+ * webos-linux-kernel-touchpad/drivers/video/msm/vidc/1080p/ddl/
+ * vidc_hwio_reg.h (REG_152500 / REG_612810 / REG_175608).
+ *
+ * VIDC_REG_DEC_MPEG4_PP_FILTER : 2-bit LF_CONTROL field; 0 disables
+ *                                the post-loop deblock filter, 1
+ *                                enables it. Required for MPEG-4 /
+ *                                H.263 decode quality.
+ *
+ * VIDC_REG_DEC_DIVX3_HEIGHT    : DivX 3.11 manual frame-height
+ * VIDC_REG_DEC_DIVX3_WIDTH       override - DivX 3.11 bitstreams
+ *                                lack resolution info; without these
+ *                                the decoder faults on SEQ_HEADER.
+ */
+#define VIDC_REG_DEC_MPEG4_PP_FILTER	0x0848
+#define VIDC_REG_DEC_DIVX3_HEIGHT	0x2050
+#define VIDC_REG_DEC_DIVX3_WIDTH	0x2054
+
 /* Encode configuration registers */
 #define VIDC_REG_ENC_FRAME_WIDTH	0x0180
 #define VIDC_REG_ENC_FRAME_HEIGHT	0x0184
