@@ -125,6 +125,26 @@
 /* Hardware DPB slot count cap (matches VIDC_MAX_DPB_BUFFERS below) */
 #define VIDC_DPB_REG_SLOTS		32
 
+/*
+ * Shared-memory region used to pass per-command parameters between
+ * host and on-chip RISC. Layout matches legacy
+ * webos-linux-kernel-touchpad/drivers/video/msm/vidc/1080p/ddl/
+ * vcd_ddl_shared_mem.c — exact byte offsets are part of the firmware
+ * ABI, do not reorder.
+ *
+ * One region per channel (we use ch0 only). The region's fw-relative
+ * offset (bytes, not shifted) is programmed into CH0_SHARED_MEM
+ * before every command that reads/writes it: SEQ_HEADER, INIT_BUFFERS,
+ * FRAME_DATA.
+ */
+#define VIDC_SHM_SIZE				SZ_4K	/* legacy uses 1 page */
+
+#define VIDC_SHM_ALLOCATED_LUMA_DPB_SIZE	0x0064
+#define VIDC_SHM_ALLOCATED_CHROMA_DPB_SIZE	0x0068
+#define VIDC_SHM_ALLOCATED_MV_SIZE		0x006c
+#define VIDC_SHM_MIN_LUMA_DPB_SIZE		0x00b0
+#define VIDC_SHM_MIN_CHROMA_DPB_SIZE		0x00bc
+
 /* Channel 0 registers (decode/encode instance 0) */
 #define VIDC_REG_CH0_STREAM_ADDR	0x0100
 #define VIDC_REG_CH0_STREAM_SIZE	0x0104
@@ -271,6 +291,20 @@ struct vidc_core {
 	 */
 	size_t ctxt_pool_size;
 	size_t ctxt_pool_used;
+
+	/*
+	 * Shared-memory region. One per channel (we use ch0 only).
+	 * Sits inside the firmware-adjacent allocation so its
+	 * fw-relative offset is a byte value the firmware can use
+	 * directly (no shift). Programmed into CH0_SHARED_MEM before
+	 * each command that reads/writes parameters.
+	 *
+	 *   shm_vaddr     - kernel virtual base of the SHM area
+	 *   shm_offset    - byte offset from fw_dma_addr (== value
+	 *                   written to CH0_SHARED_MEM register)
+	 */
+	void *shm_vaddr;
+	u32 shm_offset;
 
 	/* V4L2 */
 	struct v4l2_device v4l2_dev;

@@ -352,7 +352,9 @@ int vidc_load_firmware(struct vidc_core *core)
 	core->ctxt_pool_size = VIDC_MAX_INSTANCES * VIDC_CTXT_MEM_SIZE;
 	core->ctxt_pool_used = 0;
 	core->fw_alloc_size = ALIGN(core->fw->size, SZ_4K)
-			    + core->ctxt_pool_size + SZ_128K;
+			    + core->ctxt_pool_size
+			    + VIDC_SHM_SIZE
+			    + SZ_128K;
 	core->fw_alloc_vaddr = dma_alloc_coherent(core->dev,
 						  core->fw_alloc_size,
 						  &core->fw_alloc_dma_addr,
@@ -368,6 +370,16 @@ int vidc_load_firmware(struct vidc_core *core)
 	core->fw_size = core->fw->size;
 
 	memcpy(core->fw_vaddr, core->fw->data, core->fw->size);
+
+	/*
+	 * Carve out the shared-memory region. Sits at the very end of the
+	 * firmware-adjacent allocation, after the context-memory pool, so
+	 * its fw-relative byte offset is fixed across instance lifetimes.
+	 *   layout: [fw (fw_size, 4K-aligned)][ctxt pool][shm pool]
+	 */
+	core->shm_offset = ALIGN(core->fw_size, SZ_4K) + core->ctxt_pool_size;
+	core->shm_vaddr = core->fw_vaddr + core->shm_offset;
+	memset(core->shm_vaddr, 0, VIDC_SHM_SIZE);
 
 	/*
 	 * Program DRAM_BASE_A/B with the physical address of the firmware
@@ -752,12 +764,39 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		 inst->dpb_count, y_size, c_size, mv_size, total_size,
 		 &inst->dpb_y_dma_addr);
 
+	/*
+	 * Publish the per-slot buffer sizes via the shared-memory region.
+	 * The firmware reads these on INIT_BUFFERS to compute its own
+	 * per-slot strides; without them the legacy DDL trace shows the
+	 * firmware ack'ing INIT_BUFFERS with an "alloc size mismatch" error
+	 * (vcd_ddl_errors.c). Offsets are part of the firmware ABI -
+	 * mirror the legacy VIDC_SM_ALLOCATED_*_DPB_SIZE_ADDR constants.
+	 */
+	writel(y_size,
+	       core->shm_vaddr + VIDC_SHM_ALLOCATED_LUMA_DPB_SIZE);
+	writel(c_size,
+	       core->shm_vaddr + VIDC_SHM_ALLOCATED_CHROMA_DPB_SIZE);
+	if (mv_size)
+		writel(mv_size,
+		       core->shm_vaddr + VIDC_SHM_ALLOCATED_MV_SIZE);
+
 	/* Issue INIT_BUFFERS command */
 	spin_lock_irqsave(&core->irqlock, flags);
 	core->curr_inst = inst;
 	reinit_completion(&inst->done);
 	inst->error = 0;
 	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	/*
+	 * Point the firmware at the shared-memory region we just populated.
+	 * Value is byte offset from fw_dma_addr (no shift). Every command
+	 * that exchanges parameters via SHM needs this; for now we only
+	 * issue it before commands that read SHM (INIT_BUFFERS here, and
+	 * SEQ_HEADER / FRAME_DATA in vidc_dec_submit_frame). Once async
+	 * device_run lands the SHM register should be written from a
+	 * common helper.
+	 */
+	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 
 	/* Sequence number + DPB count visible to the firmware */
 	core->cmd_seq_num++;
