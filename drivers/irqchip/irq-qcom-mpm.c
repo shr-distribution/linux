@@ -492,34 +492,6 @@ static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 		priv->status_base = priv->base + MPM_8660_STATUS_OFFSET;
 
 	/*
-	 * Diagnostic: on MSM8660, read back the vMPM registers post-mapping
-	 * to confirm the register layout matches the hardware. Per legacy
-	 * webOS hardware capture (power-collapse-warm-boot-analysis.md),
-	 * MPM registers are all zero on a running system that hasn't
-	 * configured any wakeup sources. Non-zero values here mean we're
-	 * either reading from the wrong offsets (layout mismatch) or
-	 * landing on live RPM state (wrong base).
-	 */
-	if (priv->msm8660_layout) {
-		pr_info("qcom_mpm: pin_cnt=%u reg_stride=%u map_cnt=%u\n",
-			pin_cnt, priv->reg_stride, priv->map_cnt);
-		pr_info("qcom_mpm: base=%p status_base=%p (status offset=0x%x)\n",
-			priv->base, priv->status_base, MPM_8660_STATUS_OFFSET);
-		for (i = 0; i < priv->reg_stride; i++) {
-			unsigned int clear_off =
-				(MPM_8660_REG_CLEAR * priv->reg_stride + i) * 4;
-
-			pr_info("qcom_mpm: reg[%d] ENABLE=0x%08x DETECT=0x%08x POLARITY=0x%08x CLEAR=0x%08x PENDING=0x%08x\n",
-				i,
-				qcom_mpm_read(priv, MPM_REG_ENABLE, i),
-				qcom_mpm_read(priv, MPM_REG_FALLING_EDGE, i),
-				qcom_mpm_read(priv, MPM_REG_POLARITY, i),
-				readl_relaxed(priv->base + clear_off),
-				readl_relaxed(priv->status_base + i * 4));
-		}
-	}
-
-	/*
 	 * Clear all vMPM registers to start with a clean state.
 	 * Skip for MSM8660 — the vMPM registers are in live RPM shared
 	 * memory and zeroing them corrupts RPM state, causing a boot hang.
