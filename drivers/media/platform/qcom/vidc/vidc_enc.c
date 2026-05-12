@@ -728,52 +728,32 @@ static void vidc_enc_submit_frame(struct vidc_inst *inst,
 		&src_addr, inst->out_width, inst->out_height, &dst_addr);
 }
 
-static void vidc_enc_device_run(void *priv)
+/*
+ * Workqueue handler for RESP_ENC_COMPLETE.
+ *
+ * Mirrors the decoder vidc_dec_frame_done_work: dequeues the
+ * src/dst pair, sets the dst payload from the firmware-reported
+ * encoded size (already stashed in inst->result_size by
+ * vidc_handle_enc_complete in the IRQ), marks both buffers DONE,
+ * and finishes the m2m job so the worker can pick up the next
+ * queued pair.
+ */
+static void vidc_enc_complete_work(struct work_struct *w)
 {
-	struct vidc_inst *inst = priv;
+	struct vidc_inst *inst =
+		container_of(w, struct vidc_inst, enc_complete_work);
 	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
-	dma_addr_t src_addr, dst_addr;
-	u32 src_size, dst_size;
 
-	src_buf = v4l2_m2m_next_src_buf(inst->m2m_ctx);
-	dst_buf = v4l2_m2m_next_dst_buf(inst->m2m_ctx);
-
-	if (!src_buf || !dst_buf) {
-		v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
-		return;
-	}
-
-	/* Save current buffers for completion handler */
-	inst->src_buf = src_buf;
-	inst->dst_buf = dst_buf;
-
-	src_addr = vb2_dma_contig_plane_dma_addr(&src_buf->vb2_buf, 0);
-	dst_addr = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
-	src_size = vb2_get_plane_payload(&src_buf->vb2_buf, 0);
-	dst_size = vb2_plane_size(&dst_buf->vb2_buf, 0);
-
-	/* Initialize completion for this frame */
-	reinit_completion(&inst->done);
-	inst->error = 0;
-
-	/* Submit encode command to hardware */
-	vidc_enc_submit_frame(inst, src_addr, src_size, dst_addr, dst_size);
-
-	/*
-	 * Wait for encode completion with timeout.
-	 * In a production driver, this would be fully async with
-	 * the completion handled in a workqueue.
-	 */
-	if (!wait_for_completion_timeout(&inst->done,
-					 msecs_to_jiffies(1000))) {
-		dev_err(core->dev, "Encode timeout\n");
-		inst->error = -ETIMEDOUT;
-	}
-
-	/* Remove buffers and mark as done */
 	src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
 	dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
+
+	if (!src_buf || !dst_buf) {
+		dev_warn(core->dev,
+			 "enc_complete_work: missing buffer (src=%p dst=%p)\n",
+			 src_buf, dst_buf);
+		goto out;
+	}
 
 	src_buf->sequence = inst->sequence_out++;
 	dst_buf->sequence = inst->sequence_cap++;
@@ -782,7 +762,8 @@ static void vidc_enc_device_run(void *priv)
 		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
 		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
 	} else {
-		/* Set output buffer payload from hardware result */
+		/* result_size = compressed bitstream bytes the firmware
+		 * wrote to the dst buffer (VIDC_REG_ENC_FRAME_SIZE) */
 		if (inst->result_size > 0)
 			vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
 					      inst->result_size);
@@ -796,10 +777,45 @@ static void vidc_enc_device_run(void *priv)
 		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
 	}
 
-	/* Clear current instance */
+out:
 	core->curr_inst = NULL;
-
 	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+}
+
+/*
+ * V4L2 m2m device_run callback - encoder side.
+ *
+ * Kicks the hardware and returns immediately. Post-frame work runs
+ * from vidc_enc_complete_work, scheduled by the IRQ handler when
+ * RESP_ENC_COMPLETE fires. Mirrors the decoder B5 refactor in
+ * 6c75519a215f.
+ */
+static void vidc_enc_device_run(void *priv)
+{
+	struct vidc_inst *inst = priv;
+	struct vb2_v4l2_buffer *src_buf, *dst_buf;
+	dma_addr_t src_addr, dst_addr;
+	u32 src_size, dst_size;
+
+	src_buf = v4l2_m2m_next_src_buf(inst->m2m_ctx);
+	dst_buf = v4l2_m2m_next_dst_buf(inst->m2m_ctx);
+
+	if (!src_buf || !dst_buf) {
+		v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+		return;
+	}
+
+	inst->src_buf = src_buf;
+	inst->dst_buf = dst_buf;
+
+	src_addr = vb2_dma_contig_plane_dma_addr(&src_buf->vb2_buf, 0);
+	dst_addr = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
+	src_size = vb2_get_plane_payload(&src_buf->vb2_buf, 0);
+	dst_size = vb2_plane_size(&dst_buf->vb2_buf, 0);
+
+	inst->error = 0;
+	vidc_enc_submit_frame(inst, src_addr, src_size, dst_addr, dst_size);
+	/* Return without waiting. IRQ schedules enc_complete_work. */
 }
 
 static void vidc_enc_job_abort(void *priv)
@@ -870,6 +886,7 @@ static int vidc_enc_open(struct file *file)
 	mutex_init(&inst->lock);
 	INIT_LIST_HEAD(&inst->list);
 	init_completion(&inst->done);
+	INIT_WORK(&inst->enc_complete_work, vidc_enc_complete_work);
 
 	/* Set default formats */
 	inst->fmt_out = vidc_enc_find_format(V4L2_PIX_FMT_NV12MT,
@@ -928,6 +945,9 @@ static int vidc_enc_close(struct file *file)
 {
 	struct vidc_inst *inst = vidc_file_to_inst(file);
 	struct vidc_core *core = inst->core;
+
+	/* Flush async completion work before tearing down state. */
+	cancel_work_sync(&inst->enc_complete_work);
 
 	mutex_lock(&core->lock);
 	list_del(&inst->list);

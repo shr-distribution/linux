@@ -526,6 +526,14 @@ struct vidc_inst {
 	 */
 	struct work_struct seq_done_work;
 	struct work_struct frame_done_work;
+
+	/*
+	 * enc_complete_work — encoder-side analog of frame_done_work.
+	 * Scheduled from the IRQ handler on RESP_ENC_COMPLETE.
+	 * INIT_WORK happens in vidc_enc_open (decoder instances leave
+	 * it uninitialised since they never see ENC_COMPLETE).
+	 */
+	struct work_struct enc_complete_work;
 };
 
 /* Core functions */
