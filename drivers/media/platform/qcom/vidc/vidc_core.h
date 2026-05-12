@@ -456,6 +456,28 @@ struct vidc_inst {
 	u32 dpb_mv_size;
 	u32 dpb_count;
 	bool dpb_inited;
+
+	/*
+	 * Async completion work. The IRQ handler can't sleep, but the
+	 * post-frame work (V4L2 event queue, vb2 buf_done, DPB copy)
+	 * involves locking that can. Have the IRQ stash response state
+	 * and schedule one of these workqueue items; the work runs in
+	 * process context where blocking is fine.
+	 *
+	 *   seq_done_work   — fired on RESP_SEQ_DONE. Allocates DPB,
+	 *                     issues INIT_BUFFERS (synchronously),
+	 *                     emits V4L2_EVENT_SOURCE_CHANGE, marks
+	 *                     the consumed buffers DONE.
+	 *   frame_done_work — fired on RESP_FRAME_DONE. Copies the
+	 *                     displayed DPB slot to the userspace
+	 *                     CAPTURE buffer and marks both buffers
+	 *                     DONE.
+	 *
+	 * Both end with v4l2_m2m_job_finish so the m2m worker is free
+	 * to call device_run again for the next queued pair.
+	 */
+	struct work_struct seq_done_work;
+	struct work_struct frame_done_work;
 };
 
 /* Core functions */
