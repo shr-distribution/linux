@@ -565,6 +565,20 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			}
 
 			/*
+			 * Apply codec-specific session-stable config (profile/
+			 * level, rate-control mode, QP range, reaction
+			 * coefficient). Per-frame mutable settings (bitrate,
+			 * framerate, width/height) are programmed in
+			 * vidc_enc_submit_frame on every QBUF.
+			 */
+			ret = vidc_apply_enc_codec_config(inst);
+			if (ret) {
+				vidc_close_channel(inst);
+				pm_runtime_put(core->dev);
+				goto unlock;
+			}
+
+			/*
 			 * Allocate recon (reference) frame buffers and issue
 			 * encoder INIT_BUFFERS. Unlike the decoder, the encoder
 			 * has all the geometry it needs from S_FMT before the

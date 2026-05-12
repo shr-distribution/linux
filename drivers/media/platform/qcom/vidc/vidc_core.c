@@ -1292,6 +1292,76 @@ err_free_dma:
  * register offset that needs decoding against this kernel's
  * vidc_core.h to be enabled.
  */
+/*
+ * Apply per-encoder configuration that the firmware needs at session
+ * open time. The mainline submit_frame already writes per-frame
+ * mutable settings (width/height/bitrate/framerate); this function
+ * writes the session-stable settings (profile/level, rate-control
+ * config, reaction coefficient, QP range).
+ *
+ * Values are conservative defaults until v4l2 controls land:
+ *
+ *   PROFILE_LEVEL  : codec-dependent encoding. H.264 packs profile
+ *                    in the high byte (Baseline=1) and level in the
+ *                    low byte (3.0=30). MPEG-4 / H.263 use their own
+ *                    profile encodings.
+ *   RC_CONFIG      : 0 = CBR (constant bitrate). VBR / off / disabled
+ *                    are non-zero values in the legacy enum but
+ *                    documented values aren't easily mapped without
+ *                    a datasheet.
+ *   REACTION_COEFF : 0x14 (= 20). Higher = slower rate-control
+ *                    response. Conservative default; legacy chose
+ *                    this value for streaming-oriented profiles.
+ *   QP_RANGE       : packs (max_qp << 16) | min_qp. H.264 range is
+ *                    0..51; using 10..40 keeps quality acceptable
+ *                    without driving bitrate to absurd levels.
+ *
+ * Returns 0 even for unsupported codecs (firmware uses its defaults).
+ */
+int vidc_apply_enc_codec_config(struct vidc_inst *inst)
+{
+	struct vidc_core *core = inst->core;
+	u32 profile_level;
+	u32 qp_range;
+
+	switch (inst->codec) {
+	case VIDC_CODEC_H264_ENC:
+		/* Baseline profile, Level 3.0 (1080p capable: L4.0=40) */
+		profile_level = (1 << 8) | 30;
+		break;
+
+	case VIDC_CODEC_MPEG4_ENC:
+		/* Simple Profile, Level 5 (common for SD video) */
+		profile_level = (0 << 8) | 5;
+		break;
+
+	case VIDC_CODEC_H263_ENC:
+		/* Baseline profile, Level 70 (legacy default) */
+		profile_level = (0 << 8) | 70;
+		break;
+
+	default:
+		dev_warn_once(core->dev,
+			      "unknown encoder codec %d - profile/level left default\n",
+			      inst->codec);
+		profile_level = 0;
+		break;
+	}
+
+	qp_range = (40 << 16) | 10;	/* min=10, max=40 */
+
+	vidc_write(core, VIDC_REG_ENC_PROFILE_LEVEL, profile_level);
+	vidc_write(core, VIDC_REG_ENC_RC_CONFIG, 0);		/* CBR */
+	vidc_write(core, VIDC_REG_ENC_REACTION_COEFF, 0x14);
+	vidc_write(core, VIDC_REG_ENC_QP_RANGE, qp_range);
+
+	dev_dbg(core->dev,
+		"encoder config: profile_level=0x%x qp_range=0x%x\n",
+		profile_level, qp_range);
+
+	return 0;
+}
+
 int vidc_apply_dec_codec_config(struct vidc_inst *inst)
 {
 	struct vidc_core *core = inst->core;
