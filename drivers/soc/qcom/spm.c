@@ -355,6 +355,25 @@ static void spm_set_low_power_mode_8660(struct spm_driver_data *drv,
 	ctl_val &= ~0x0F;
 
 	switch (mode) {
+	case PM_SLEEP_MODE_PC:
+		/*
+		 * Full power collapse with RPM coordination:
+		 *   mode=0x02 (power collapse), rpm_bypass=0 (notify RPM),
+		 *   rst=1 (core reset asserts).
+		 *
+		 * Clearing bit 3 (rpm_bypass) makes the SPM signal its sleep
+		 * state to the RPM via the master_stat bits. If RPM sees all
+		 * CPU masters signalling sleep AND no other masters are voting
+		 * for shared resources, it can drop L2 / vdd_mem / vdd_dig /
+		 * pxo to their sleep-set levels. Without separate RPM resource
+		 * voting (rpmrs - see follow-up patch) the cluster sleep will
+		 * only proceed as deep as the *default* RPM sleep-set, but
+		 * that is still deeper than SPC because the L2 cache can be
+		 * powered off via QCOM_SCM_CPU_PWR_DOWN_L2_OFF on the way in.
+		 */
+		ctl_val |= 0x02;
+		spm_register_write(drv, SPM_REG_RST, 0x01);
+		break;
 	case PM_SLEEP_MODE_SPC:
 		/* Standalone power collapse: mode=0x02, rpm_bypass=1, rst=1 */
 		ctl_val |= (1 << 3) | 0x02;
