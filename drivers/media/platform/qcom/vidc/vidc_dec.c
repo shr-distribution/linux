@@ -338,6 +338,46 @@ static int vidc_dec_streamoff(struct file *file, void *fh,
 	return v4l2_m2m_streamoff(file, inst->m2m_ctx, type);
 }
 
+/*
+ * V4L2_DEC_CMD_STOP — userspace signals end-of-stream.
+ *
+ * The standard stateful-decoder protocol is:
+ *   1. Userspace sends V4L2_DEC_CMD_STOP
+ *   2. Driver flushes the firmware's input queue + drains remaining
+ *      held-back frames (firmware emits DISPLAY_ONLY events for each
+ *      still-pending DPB slot, then a DPB_EMPTY event)
+ *   3. CAPTURE queue gets one buffer with V4L2_BUF_FLAG_LAST
+ *
+ * The frame_done_work handler at vidc_dec.c already sets BUF_FLAG_LAST
+ * when display_status==DPB_EMPTY, so this command just needs to issue
+ * VIDC_CMD_FLUSH and let the existing IRQ→work path emit the LAST
+ * marker buffer.
+ */
+static int vidc_dec_decoder_cmd(struct file *file, void *fh,
+				struct v4l2_decoder_cmd *dec_cmd)
+{
+	struct vidc_inst *inst = vidc_file_to_inst(file);
+
+	switch (dec_cmd->cmd) {
+	case V4L2_DEC_CMD_STOP:
+		if (!inst->ch_open)
+			return 0;
+		return vidc_flush_channel(inst, VIDC_FLUSH_ALL);
+
+	case V4L2_DEC_CMD_START:
+		/*
+		 * Resume after a previous STOP. Channel state is already
+		 * fine (CLOSE_CH wasn't issued, just flush); nothing to do
+		 * on the firmware side. m2m core will start scheduling
+		 * device_run again as buffers get queued.
+		 */
+		return 0;
+
+	default:
+		return -EINVAL;
+	}
+}
+
 static int vidc_dec_subscribe_event(struct v4l2_fh *fh,
 				    const struct v4l2_event_subscription *sub)
 {
@@ -370,6 +410,7 @@ static const struct v4l2_ioctl_ops vidc_dec_ioctl_ops = {
 	.vidioc_expbuf = vidc_dec_expbuf,
 	.vidioc_streamon = vidc_dec_streamon,
 	.vidioc_streamoff = vidc_dec_streamoff,
+	.vidioc_decoder_cmd = vidc_dec_decoder_cmd,
 	.vidioc_subscribe_event = vidc_dec_subscribe_event,
 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
 };

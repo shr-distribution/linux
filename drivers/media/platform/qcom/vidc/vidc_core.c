@@ -1010,6 +1010,69 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 }
 
 /*
+ * Issue VIDC_CMD_FLUSH to discard in-flight buffers without tearing
+ * down the channel. Used by V4L2_DEC_CMD_STOP (drain) and as a
+ * recovery primitive after an error response.
+ *
+ * Caller must hold no irq-side state - this function blocks on the
+ * RESP_FLUSH_DONE completion (the IRQ handler already handles
+ * RESP_FLUSH_DONE → complete(inst->done)).
+ *
+ * flush_type: VIDC_FLUSH_INPUT, VIDC_FLUSH_OUTPUT, or VIDC_FLUSH_ALL.
+ *   Legacy doesn't expose named constants for these; the bitmap is
+ *   inferred from convention. If the firmware rejects the value
+ *   it will surface as a RESP_ERROR in the IRQ.
+ */
+int vidc_flush_channel(struct vidc_inst *inst, u32 flush_type)
+{
+	struct vidc_core *core = inst->core;
+	unsigned long flags;
+	int ret;
+
+	if (!inst->ch_open) {
+		dev_warn(core->dev, "flush_channel on closed channel\n");
+		return -EINVAL;
+	}
+
+	/* Flush type goes into the per-flush SHM cell; INBUF1/2 are
+	 * for partial-input flushes (specific input buffers), unused
+	 * here for the full-flush case. */
+	writel(flush_type, core->shm_vaddr + VIDC_SHM_FLUSH_CMD_TYPE);
+	writel(0, core->shm_vaddr + VIDC_SHM_FLUSH_CMD_INBUF1);
+	writel(0, core->shm_vaddr + VIDC_SHM_FLUSH_CMD_INBUF2);
+
+	spin_lock_irqsave(&core->irqlock, flags);
+	core->curr_inst = inst;
+	reinit_completion(&inst->done);
+	inst->error = 0;
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
+	core->cmd_seq_num++;
+	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
+
+	ret = vidc_send_cmd(core, VIDC_CMD_FLUSH, flush_type, 0, 0, 0);
+	if (ret) {
+		dev_err(core->dev, "FLUSH send failed: %d\n", ret);
+		return ret;
+	}
+
+	if (!wait_for_completion_timeout(&inst->done,
+					 msecs_to_jiffies(1000))) {
+		dev_err(core->dev, "FLUSH timeout\n");
+		return -ETIMEDOUT;
+	}
+
+	if (inst->error) {
+		dev_err(core->dev, "FLUSH firmware error: %d\n", inst->error);
+		return inst->error;
+	}
+
+	dev_dbg(core->dev, "VIDC channel flushed (type=0x%x)\n", flush_type);
+	return 0;
+}
+
+/*
  * Apply codec-specific configuration that the firmware can't auto-
  * derive from the bitstream. Called after vidc_open_channel() and
  * before the first SEQ_HEADER submission so any per-codec register

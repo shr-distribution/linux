@@ -150,8 +150,21 @@
 #define VIDC_SHM_ALLOCATED_LUMA_DPB_SIZE	0x0064
 #define VIDC_SHM_ALLOCATED_CHROMA_DPB_SIZE	0x0068
 #define VIDC_SHM_ALLOCATED_MV_SIZE		0x006c
+#define VIDC_SHM_FLUSH_CMD_TYPE			0x0080
+#define VIDC_SHM_FLUSH_CMD_INBUF1		0x0084
+#define VIDC_SHM_FLUSH_CMD_INBUF2		0x0088
 #define VIDC_SHM_MIN_LUMA_DPB_SIZE		0x00b0
 #define VIDC_SHM_MIN_CHROMA_DPB_SIZE		0x00bc
+
+/*
+ * VIDC_CMD_FLUSH type values written to VIDC_SHM_FLUSH_CMD_TYPE
+ * before issuing the flush command. The legacy DDL doesn't expose
+ * named constants for these; values are inferred from typical
+ * Qualcomm bitmap conventions.
+ */
+#define VIDC_FLUSH_INPUT			BIT(0)
+#define VIDC_FLUSH_OUTPUT			BIT(1)
+#define VIDC_FLUSH_ALL				(VIDC_FLUSH_INPUT | VIDC_FLUSH_OUTPUT)
 
 /* Channel 0 registers (decode/encode instance 0) */
 #define VIDC_REG_CH0_STREAM_ADDR	0x0100
@@ -515,6 +528,7 @@ int vidc_close_channel(struct vidc_inst *inst);
 int vidc_init_buffers(struct vidc_inst *inst);
 void vidc_free_buffers(struct vidc_inst *inst);
 int vidc_apply_dec_codec_config(struct vidc_inst *inst);
+int vidc_flush_channel(struct vidc_inst *inst, u32 flush_type);
 int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 			 size_t dst_size, size_t *out_payload);
 
