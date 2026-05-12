@@ -28,6 +28,8 @@
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/stop_machine.h>
+#include <asm/cacheflush.h>
 
 /*
  * Register offsets from ACC base
@@ -485,7 +487,6 @@ static u32 cpu_to_l2_l_val(unsigned int cpu_khz)
 static void l2_set_freq(u32 l_val)
 {
 	unsigned long flags;
-	u32 regval, ctl;
 
 	spin_lock_irqsave(&l2_lock, flags);
 
@@ -494,43 +495,45 @@ static void l2_set_freq(u32 l_val)
 		return;
 	}
 
-	if (l2_current_l_val == 0) {
-		/*
-		 * First time — the bootloader leaves the L2 SCPLL running
-		 * in NORMAL mode at 432 MHz but with CLK_SEL on the PLL
-		 * divider mux. Don't power-cycle the SCPLL — just switch
-		 * CLK_SEL to SCPLL source, then slew to target frequency.
-		 */
-		ctl = readl(l2_scpll_base + SCPLL_CTL);
-		if ((ctl & 0x7) == SCPLL_NORMAL) {
-			/* SCPLL already running — read current L_VAL */
-			u32 cur = (ctl >> 3) & 0x3f;
-
-			/* Select SCPLL as L2 source (bits [1:0], shift=0) */
-			regval = readl(l2_clk_sel_base);
-			regval &= ~0x3;
-			regval |= SRC_SEL_SCPLL;
-			writel(regval, l2_clk_sel_base);
-			mb();
-
-			/* Slew to target if different from current */
-			if (l_val != cur)
-				scpll_change_freq(l2_scpll_base, l_val);
-		} else {
-			/* SCPLL not running — enable via shot-switch */
-			scpll_enable_at_l_val(l2_scpll_base, l_val);
-			mb();
-			regval = readl(l2_clk_sel_base);
-			regval &= ~0x3;
-			regval |= SRC_SEL_SCPLL;
-			writel(regval, l2_clk_sel_base);
-		}
-	} else {
-		scpll_change_freq(l2_scpll_base, l_val);
-	}
+	/*
+	 * L2 is already running off SCPLL (CLK_SEL was switched in probe
+	 * via a quiesced stop_machine path). SCPLL complex-slew is glitch-
+	 * free by hardware design, so changing L2 frequency while CPUs use
+	 * L2 is safe without further quiescing.
+	 */
+	scpll_change_freq(l2_scpll_base, l_val);
 
 	l2_current_l_val = l_val;
 	spin_unlock_irqrestore(&l2_lock, flags);
+}
+
+/*
+ * stop_machine callback to switch L2 source mux from PLL divider to SCPLL.
+ * Must run with all CPUs stopped and L1 caches drained, otherwise the L2
+ * controller can deadlock when its source clock changes mid-transaction.
+ */
+static int l2_quiesced_clksel_switch(void *data)
+{
+	u32 regval;
+
+	/* Drain L1 D-cache so no L1 writes are in flight to L2 */
+	flush_cache_all();
+
+	/* Order the cache drain before the source mux change */
+	dsb(sy);
+	isb();
+
+	/* Switch L2 source mux to SCPLL (bits [1:0], shift=0) */
+	regval = readl_relaxed(l2_clk_sel_base);
+	regval &= ~0x3;
+	regval |= SRC_SEL_SCPLL;
+	writel_relaxed(regval, l2_clk_sel_base);
+
+	/* Ensure the mux write is committed before any CPU resumes */
+	dsb(sy);
+	isb();
+
+	return 0;
 }
 
 static int l2_cpufreq_notifier(struct notifier_block *nb,
@@ -555,7 +558,7 @@ static int l2_cpufreq_notifier(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
-static struct notifier_block l2_cpufreq_nb __maybe_unused = {
+static struct notifier_block l2_cpufreq_nb = {
 	.notifier_call = l2_cpufreq_notifier,
 };
 
@@ -661,15 +664,78 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 		 cpu_clk->current_rate / 1000000);
 
 	/*
-	 * L2 SCPLL scaling disabled: switching L2 CLK_SEL from the PLL
-	 * divider mux (bootloader/legacy default) to SCPLL while CPUs are
-	 * running from cache causes intermittent very-early-boot hangs.
-	 * Hardware-verified via novacom on legacy webOS 2.6.35: L2 CLK_SEL
-	 * stays at 0x00000000 even at 1.5 GHz CPU. Keep L2 at the
-	 * bootloader default to match legacy. Re-enable via a quiesced
-	 * (stop_machine + cache-clean) path if the L2 perf gain is needed.
+	 * Initialize L2 SCPLL — only once, by first CPU to probe.
+	 *
+	 * The CLK_SEL switch from the PLL divider mux to SCPLL is done in
+	 * a quiesced (stop_machine + L1 cache flush) context. Switching
+	 * the L2 source mux while CPUs are actively running from L2 causes
+	 * intermittent very-early-boot hangs because the L2 controller can
+	 * deadlock on a mid-transaction clock change. With all CPUs parked
+	 * in the stopper thread and L1 caches drained, no L2 access is in
+	 * flight when the mux flips, so the controller transitions cleanly.
+	 *
+	 * Subsequent SCPLL slews (via the cpufreq notifier) are glitch-free
+	 * by hardware design (complex-slew FSM) and safe without quiescing.
 	 */
-	dev_info(dev, "L2 SCPLL scaling disabled (boot hang workaround)\n");
+	if (!l2_initialized) {
+		struct resource *l2_res;
+		u32 ctl;
+
+		l2_res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						      "l2-scpll");
+		if (!l2_res)
+			goto skip_l2;
+
+		l2_scpll_base = devm_ioremap(dev, l2_res->start,
+					     resource_size(l2_res));
+		if (!l2_scpll_base) {
+			dev_warn(dev, "Failed to map L2 SCPLL\n");
+			goto skip_l2;
+		}
+
+		l2_clk_sel_base = acc_base + SPSS_L2_CLK_SEL;
+
+		/*
+		 * Verify the bootloader left the L2 SCPLL in NORMAL mode.
+		 * If not, skip — re-enabling the SCPLL from a cold state
+		 * is not implemented here (would need shot-switch + cal).
+		 */
+		ctl = readl(l2_scpll_base + SCPLL_CTL);
+		if ((ctl & 0x7) != SCPLL_NORMAL) {
+			dev_warn(dev,
+				 "L2 SCPLL not in NORMAL mode (ctl=0x%x), skipping\n",
+				 ctl);
+			goto skip_l2;
+		}
+
+		/* Record current L_VAL so the notifier path skips a no-op slew */
+		l2_current_l_val = (ctl >> 3) & 0x3f;
+
+		/* Quiesced one-time switch of L2 source mux to SCPLL */
+		ret = stop_machine(l2_quiesced_clksel_switch, NULL,
+				   cpu_online_mask);
+		if (ret) {
+			dev_warn(dev,
+				 "L2 quiesced source switch failed: %d\n",
+				 ret);
+			goto skip_l2;
+		}
+
+		ret = cpufreq_register_notifier(&l2_cpufreq_nb,
+						CPUFREQ_TRANSITION_NOTIFIER);
+		if (ret) {
+			dev_warn(dev, "L2 cpufreq notifier failed\n");
+			goto skip_l2;
+		}
+
+		l2_initialized = true;
+		dev_info(dev,
+			 "L2 SCPLL scaling initialized at L_VAL=0x%x (%lu MHz)\n",
+			 l2_current_l_val,
+			 (unsigned long)l2_current_l_val * SCPLL_RATE_FACTOR /
+				 1000000);
+	}
+skip_l2:
 
 	return 0;
 }
