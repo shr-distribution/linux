@@ -4540,17 +4540,14 @@ static int a6_probe(struct i2c_client *client)
 	rc = misc_register(&state->pmem_mdev);
 	if (rc < 0) {
 		dev_err(&client->dev, "Failed to register pmem misc device\n");
-		misc_deregister(&state->mdev);
-		return rc;
+		goto err_misc;
 	}
 
 	/* Create device files */
 	rc = a6_create_dev_files(state, &client->dev);
 	if (rc < 0) {
 		dev_err(&client->dev, "Failed to create sysfs files: %d\n", rc);
-		misc_deregister(&state->pmem_mdev);
-		misc_deregister(&state->mdev);
-		return rc;
+		goto err_pmem;
 	}
 
 #ifdef A6_PQ
@@ -4580,10 +4577,9 @@ static int a6_probe(struct i2c_client *client)
 	/* Register power supply - device is present and responding */
 	rc = a6_register_power_supply(state);
 	if (rc < 0) {
-		a6_remove_dev_files(state, &client->dev);
-		misc_deregister(&state->pmem_mdev);
-		misc_deregister(&state->mdev);
-		return rc;
+		dev_err(&client->dev,
+			"Failed to register power supply: %d\n", rc);
+		goto err_dispatch;
 	}
 
 #if defined(A6_PQ) && defined(A6_DEBUG)
@@ -4607,6 +4603,26 @@ static int a6_probe(struct i2c_client *client)
 	dev_info(&client->dev, "A6 battery controller initialized\n");
 	return 0;
 
+	/*
+	 * Cleanup chain on probe failure. Each rung undoes one
+	 * registration / setup step; jump to the rung that matches the
+	 * last successful step.  Order mirrors registration order
+	 * (reverse for teardown):
+	 *
+	 *   misc_register(mdev)         <- err_misc
+	 *   misc_register(pmem_mdev)    <- err_pmem
+	 *   a6_create_dev_files()       <- err_devfiles
+	 *   a6_start_ai_dispatch_task() <- err_dispatch  (A6_PQ only)
+	 *
+	 * a6_init_state() and a6_register_power_supply() have no
+	 * matching teardown step here — init_state failure returns 0
+	 * (hot-plug path); power_supply failure jumps to err_dispatch
+	 * because the dispatch task was already running.
+	 */
+err_dispatch:
+#ifdef A6_PQ
+	a6_stop_ai_dispatch_task(state);
+#endif
 err_devfiles:
 	a6_remove_dev_files(state, &client->dev);
 err_pmem:
