@@ -3165,6 +3165,25 @@
 		};
 	};
 
+	/*
+	 * USB OTG ID detect — PM8058 GPIO 37 in schematic
+	 * (driver/binding 0-index = 36) is the USB_HS_ID signal,
+	 * routed via R301 to the high-speed USB transceiver. Ground =
+	 * USB host mode, floating/VBUS = USB device mode. Legacy webOS
+	 * board-tenderloin.c configures this as an input with no
+	 * internal pull (external pull-up to VBUS provides the high
+	 * state for device mode).
+	 */
+	usb_id_pins: usb-id-state {
+		pinconf {
+			pins = "gpio37";
+			function = "normal";
+			input-enable;
+			bias-disable;
+			power-source = <PM8058_GPIO_S3>;
+		};
+	};
+
 	/* GPS control pins (Broadcom BCM4751) */
 	gps_pins: gps-state {
 		/* GPIO 4: GPS LNA enable (REGPU) */
@@ -3257,9 +3276,43 @@
 	};
 };
 
+/ {
+	/*
+	 * USB OTG ID detect provider.
+	 *
+	 * PM8058 GPIO 37 (1-indexed in schematic, 36 in driver) is the
+	 * USB_HS_ID signal. Cable inserted with ID grounded → host mode;
+	 * cable inserted with ID floating → device mode. Legacy webOS
+	 * does not consume this for role switching (the OTG framework on
+	 * downstream MSM kernels used a different path that was disabled
+	 * for tenderloin), but the GPIO is physically wired per the
+	 * Topaz schematic, so mainline can use the standard
+	 * extcon-usb-gpio + usb-role-switch pattern.
+	 *
+	 * The extcon-usb-gpio driver registers both USB and USB_HOST
+	 * cables but we only have an id-gpios source — VBUS detection
+	 * still comes from the ci_hdrc PHY internally, so device-mode
+	 * behaviour is unchanged. The ID signal only adds host-mode
+	 * capability when a host-mode cable (OTG adapter) is plugged in.
+	 */
+	usb_id: usb-id {
+		compatible = "linux,extcon-usb-gpio";
+		id-gpios = <&pm8058_gpio 36 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&usb_id_pins>;
+	};
+};
+
 &usb1 {
 	status = "okay";
 	dr_mode = "otg";
+	/*
+	 * USB role switching via extcon. The ci_hdrc driver consumes the
+	 * USB_HOST cable from extcon-usb-gpio to switch into host mode
+	 * when ID is grounded; otherwise it falls back to device mode
+	 * via internal VBUS sense.
+	 */
+	extcon = <&usb_id>;
 	/*
 	 * Mark USB1 as a system wakeup source — events on the USB bus
 	 * (cable plug, charger attach, host bus activity) should wake the
