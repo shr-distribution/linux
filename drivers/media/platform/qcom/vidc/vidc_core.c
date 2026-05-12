@@ -573,6 +573,14 @@ int vidc_close_channel(struct vidc_inst *inst)
 	if (!inst->ch_open)
 		return 0;
 
+	/*
+	 * Tear down DPB before closing the firmware channel. The CLOSE_CH
+	 * command releases per-instance state on the RISC; if we did it
+	 * before freeing the DPB, the firmware might still hold dangling
+	 * references into our about-to-be-freed pool.
+	 */
+	vidc_free_buffers(inst);
+
 	spin_lock_irqsave(&core->irqlock, flags);
 	core->curr_inst = inst;
 	reinit_completion(&inst->done);
@@ -607,6 +615,212 @@ int vidc_close_channel(struct vidc_inst *inst)
 
 	dev_dbg(core->dev, "VIDC channel closed\n");
 	return inst->error;
+}
+
+/*
+ * Compute tile-NV12 plane sizes for one DPB slot. Width is rounded up
+ * to 128 px, height to 32 px; chroma plane is half the luma plane.
+ *
+ * Matches webos-linux-kernel-touchpad/drivers/video/msm/vidc/1080p/ddl/
+ * vcd_ddl_helper.c::ddl_get_yuv_buf_size for the tile path. We do NOT
+ * apply DDL_TILE_MULTIPLY_FACTOR alignment on top — the legacy DDL did
+ * that to handle pixel-cache granularity which is hardware-internal
+ * and irrelevant to the buffer allocator.
+ */
+static void vidc_dpb_calc_sizes(u32 width, u32 height,
+				u32 *y_size, u32 *c_size)
+{
+	u32 w = ALIGN(width, VIDC_DPB_TILE_ALIGN_WIDTH);
+	u32 h = ALIGN(height, VIDC_DPB_TILE_ALIGN_HEIGHT);
+
+	*y_size = w * h;
+	*c_size = (w * h) / 2;
+}
+
+/*
+ * Allocate and program the DPB (display picture buffer) pool, then
+ * issue the VIDC_OP_INIT_BUFFERS command to the firmware.
+ *
+ * Pre-conditions:
+ *   - vidc_open_channel() has acked (inst->ch_open == true)
+ *   - vidc_handle_seq_done() ran and populated inst->seq_width /
+ *     seq_height / min_dpb_count (i.e. inst->seq_parsed is true)
+ *
+ * Steps:
+ *   1. Compute per-slot Y / C / MV sizes from seq dimensions
+ *   2. Allocate one contiguous DMA block holding dpb_count copies of
+ *      (Y + C + MV) so we can program slot offsets as fw-relative
+ *      and the firmware can stride through the pool with one base
+ *   3. For each slot, write Y / C / MV register-field values
+ *      (offset_from_fw_dma_addr >> VIDC_ADDR_SHIFT) into the
+ *      DPB_*_BASE register arrays
+ *   4. Send HOST2RISC INIT_BUFFERS via CH0_INST_ID and wait
+ *      on RESP_INIT_BUFFERS
+ *
+ * On any failure the entire allocation is unwound — partial state
+ * would leave the firmware confused about how many DPB slots exist.
+ */
+int vidc_init_buffers(struct vidc_inst *inst)
+{
+	struct vidc_core *core = inst->core;
+	unsigned long flags;
+	u32 i;
+	u32 y_size, c_size, mv_size, slot_size, total_size;
+	dma_addr_t slot_base;
+	u32 fw_relative;
+	int ret;
+
+	if (inst->dpb_inited)
+		return 0;
+
+	if (!inst->seq_parsed) {
+		dev_err(core->dev,
+			"vidc_init_buffers called before SEQ parse\n");
+		return -EINVAL;
+	}
+
+	if (!inst->seq_width || !inst->seq_height) {
+		dev_err(core->dev,
+			"vidc_init_buffers: bitstream geometry not set\n");
+		return -EINVAL;
+	}
+
+	inst->dpb_count = inst->min_dpb_count;
+	if (!inst->dpb_count)
+		inst->dpb_count = 4;	/* sane default if firmware skipped it */
+	if (inst->dpb_count > VIDC_DPB_REG_SLOTS)
+		inst->dpb_count = VIDC_DPB_REG_SLOTS;
+
+	vidc_dpb_calc_sizes(inst->seq_width, inst->seq_height,
+			    &y_size, &c_size);
+	mv_size = (inst->codec == VIDC_CODEC_H264_DEC) ?
+		  VIDC_DPB_MV_SIZE : 0;
+
+	inst->dpb_y_size = y_size;
+	inst->dpb_c_size = c_size;
+	inst->dpb_mv_size = mv_size;
+
+	slot_size = ALIGN(y_size + c_size + mv_size, SZ_4K);
+	total_size = slot_size * inst->dpb_count;
+
+	inst->dpb_y_vaddr = dma_alloc_coherent(core->dev, total_size,
+					       &inst->dpb_y_dma_addr,
+					       GFP_KERNEL);
+	if (!inst->dpb_y_vaddr) {
+		dev_err(core->dev,
+			"DPB pool alloc failed (%u slots × %u bytes)\n",
+			inst->dpb_count, slot_size);
+		return -ENOMEM;
+	}
+	inst->dpb_y_alloc_size = total_size;
+
+	/*
+	 * DPB pool must be addressable as a positive offset from
+	 * fw_dma_addr — the register field is unsigned. CMA usually hands
+	 * out high addresses, but verify explicitly.
+	 */
+	if (inst->dpb_y_dma_addr < core->fw_dma_addr) {
+		dev_err(core->dev,
+			"DPB pool below firmware base (%pad < %pad)\n",
+			&inst->dpb_y_dma_addr, &core->fw_dma_addr);
+		ret = -ERANGE;
+		goto err_free_dma;
+	}
+
+	/* Program DPB register slots */
+	for (i = 0; i < inst->dpb_count; i++) {
+		slot_base = inst->dpb_y_dma_addr + i * slot_size;
+		fw_relative = slot_base - core->fw_dma_addr;
+
+		vidc_write(core, VIDC_REG_DPB_LUMA_BASE + i * 4,
+			   fw_relative >> VIDC_ADDR_SHIFT);
+		vidc_write(core, VIDC_REG_DPB_CHROMA_BASE + i * 4,
+			   (fw_relative + y_size) >> VIDC_ADDR_SHIFT);
+		if (mv_size)
+			vidc_write(core, VIDC_REG_DPB_MV_BASE + i * 4,
+				   (fw_relative + y_size + c_size)
+				    >> VIDC_ADDR_SHIFT);
+	}
+
+	dev_info(core->dev,
+		 "DPB pool: %u slots × (y=%u c=%u mv=%u), total %u bytes at %pad\n",
+		 inst->dpb_count, y_size, c_size, mv_size, total_size,
+		 &inst->dpb_y_dma_addr);
+
+	/* Issue INIT_BUFFERS command */
+	spin_lock_irqsave(&core->irqlock, flags);
+	core->curr_inst = inst;
+	reinit_completion(&inst->done);
+	inst->error = 0;
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	/* Sequence number + DPB count visible to the firmware */
+	core->cmd_seq_num++;
+	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
+	vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
+
+	/* Kick INIT_BUFFERS via the operation-type bits in INST_ID */
+	vidc_write(core, VIDC_REG_CH0_INST_ID,
+		   VIDC_OP_INIT_BUFFERS | inst->inst_id);
+
+	if (!wait_for_completion_timeout(&inst->done,
+					 msecs_to_jiffies(1000))) {
+		dev_err(core->dev, "INIT_BUFFERS timeout\n");
+		ret = -ETIMEDOUT;
+		goto err_free_dma;
+	}
+
+	if (inst->error) {
+		dev_err(core->dev, "INIT_BUFFERS firmware error: %d\n",
+			inst->error);
+		ret = inst->error;
+		goto err_free_dma;
+	}
+
+	inst->dpb_inited = true;
+	dev_info(core->dev, "VIDC DPB initialised, %u slots active\n",
+		 inst->dpb_count);
+	return 0;
+
+err_free_dma:
+	dma_free_coherent(core->dev, inst->dpb_y_alloc_size,
+			  inst->dpb_y_vaddr, inst->dpb_y_dma_addr);
+	inst->dpb_y_vaddr = NULL;
+	inst->dpb_y_dma_addr = 0;
+	inst->dpb_y_alloc_size = 0;
+	return ret;
+}
+
+void vidc_free_buffers(struct vidc_inst *inst)
+{
+	struct vidc_core *core = inst->core;
+	u32 i;
+
+	if (!inst->dpb_y_vaddr)
+		return;
+
+	/*
+	 * Clear DPB register slots so a subsequent OPEN_CH on the same
+	 * channel starts from a clean slate — stale offsets would point
+	 * at freed memory and the firmware would happily DMA into it.
+	 */
+	for (i = 0; i < inst->dpb_count; i++) {
+		vidc_write(core, VIDC_REG_DPB_LUMA_BASE + i * 4, 0);
+		vidc_write(core, VIDC_REG_DPB_CHROMA_BASE + i * 4, 0);
+		if (inst->dpb_mv_size)
+			vidc_write(core, VIDC_REG_DPB_MV_BASE + i * 4, 0);
+	}
+
+	dma_free_coherent(core->dev, inst->dpb_y_alloc_size,
+			  inst->dpb_y_vaddr, inst->dpb_y_dma_addr);
+	inst->dpb_y_vaddr = NULL;
+	inst->dpb_y_dma_addr = 0;
+	inst->dpb_y_alloc_size = 0;
+	inst->dpb_count = 0;
+	inst->dpb_y_size = 0;
+	inst->dpb_c_size = 0;
+	inst->dpb_mv_size = 0;
+	inst->dpb_inited = false;
 }
 
 int vidc_core_init(struct vidc_core *core)

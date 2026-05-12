@@ -105,6 +105,26 @@
 /* Concurrent instance ceiling for context-memory pool sizing */
 #define VIDC_MAX_INSTANCES		4
 
+/*
+ * DPB (display picture buffer) sizing for the 1080p tile-NV12 format
+ * the hardware writes into. Mirrors legacy DDL helpers in
+ * webos-linux-kernel-touchpad/drivers/video/msm/vidc/1080p/ddl/
+ * vcd_ddl_helper.c (ddl_get_yuv_buf_size) + vcd_ddl_core.h.
+ */
+#define VIDC_DPB_TILE_ALIGN_WIDTH	128
+#define VIDC_DPB_TILE_ALIGN_HEIGHT	32
+
+/*
+ * Per-DPB-slot motion-vector buffer size, conservative upper bound for
+ * H.264 at 1080p. Legacy computes this from the slice/macroblock count
+ * dynamically; using a fixed 32 KB per slot is wasteful (~half a megabyte
+ * total at min_dpb=8) but safe and simple for the initial port.
+ */
+#define VIDC_DPB_MV_SIZE		SZ_32K
+
+/* Hardware DPB slot count cap (matches VIDC_MAX_DPB_BUFFERS below) */
+#define VIDC_DPB_REG_SLOTS		32
+
 /* Channel 0 registers (decode/encode instance 0) */
 #define VIDC_REG_CH0_STREAM_ADDR	0x0100
 #define VIDC_REG_CH0_STREAM_SIZE	0x0104
@@ -344,6 +364,29 @@ struct vidc_inst {
 	 * Cleared again on vidc_close_channel().
 	 */
 	bool seq_parsed;
+
+	/*
+	 * Internal DPB (reference frame) pool. Allocated after SEQ_DONE
+	 * once the firmware reports min_dpb_count + bitstream dimensions.
+	 * The hardware writes decoded frames into these buffers; we copy
+	 * out to the userspace CAPTURE buffer in the FRAME_DONE handler.
+	 *
+	 *   dpb_*_vaddr        - dma_alloc_coherent return values
+	 *   dpb_*_dma_addr     - bus addresses (same coherent alloc)
+	 *   dpb_y_size         - per-slot luma size (NV12 tile geometry)
+	 *   dpb_c_size         - per-slot chroma size (= dpb_y_size / 2)
+	 *   dpb_mv_size        - per-slot MV size (H.264 only, else 0)
+	 *   dpb_count          - actual allocated slot count (>= min_dpb_count)
+	 *   dpb_inited         - true once RESP_INIT_BUFFERS has acked
+	 */
+	void *dpb_y_vaddr;
+	dma_addr_t dpb_y_dma_addr;
+	size_t dpb_y_alloc_size;
+	u32 dpb_y_size;
+	u32 dpb_c_size;
+	u32 dpb_mv_size;
+	u32 dpb_count;
+	bool dpb_inited;
 };
 
 /* Core functions */
@@ -355,6 +398,8 @@ void vidc_unload_firmware(struct vidc_core *core);
 /* Channel management */
 int vidc_open_channel(struct vidc_inst *inst);
 int vidc_close_channel(struct vidc_inst *inst);
+int vidc_init_buffers(struct vidc_inst *inst);
+void vidc_free_buffers(struct vidc_inst *inst);
 
 /* Hardware access */
 static inline u32 vidc_read(struct vidc_core *core, u32 reg)
