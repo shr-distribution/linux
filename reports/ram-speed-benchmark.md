@@ -1502,6 +1502,61 @@ of actual eMMC throughput.
 
 ---
 
+## eMMC Storage Benchmark — May 2026 Re-test
+
+**Test Date:** 2026-05-12
+**Kernel:** 6.18.0-luneos-g990f718adff0
+**Tip commit:** `990f718adff0` (all Scorpion + L2 + EBI + regulator commits)
+**Controller:** SDCC1 at 0x12400000, **PIO mode** (ADM DMA still not functional)
+**Test script:** `scripts/benchmark-emmc.sh 10 100`
+
+### Purpose
+
+Re-run after applying the SMP/EBI/L2 stack to determine whether any of those
+memory-bandwidth and coherency improvements help eMMC throughput.
+
+### Results
+
+| Block size | Median read speed |
+|------------|-------------------|
+| 64K | 26.7 MB/s |
+| **1M** | **29.9 MB/s** |
+| 4M | 29.7 MB/s |
+| Varied offset (1M, 10 regions) | 28.5 MB/s |
+
+### Comparison vs April 2026 baseline
+
+| Test | April 2026 | May 2026 | Delta |
+|------|-----------|----------|-------|
+| Sequential 1M cold read | 30.2 MB/s | 29.9 MB/s | -1% (noise) |
+| Filesystem read (drop_caches) | 31.1 MB/s | n/a (different harness) | — |
+
+**No measurable improvement.** eMMC throughput is unchanged within run-to-run
+noise.
+
+### Why our memory-bandwidth changes don't help eMMC
+
+The eMMC bottleneck is **PIO**, not memory bandwidth:
+- 30 MB/s × 8 bits = 240 Mbps — orders of magnitude below DRAM (multi-GB/s)
+- Bottleneck is the SDCC1 controller's CPU-driven FIFO transfer, not memory
+- SMP scaling: PIO is single-thread sequential — no parallelism
+- L2 cache frequency: data flows through the SDCC PIO register, not main RAM
+- EBI bandwidth voting: fabric is idle compared to its capacity during eMMC I/O
+
+The only kernel-level work that would meaningfully improve eMMC throughput on
+this platform is fixing ADM DMA (see `reports/adm-dma-emmc-analysis.md`).
+Legacy webOS numbers suggest 70+ MB/s should be reachable with DMA — a 2-3x
+win vs the current PIO ceiling.
+
+### Confirmed: eMMC unaffected by current stack
+
+This is a useful negative result — it confirms our SMP/EBI/L2 commits do
+nothing to eMMC, neither helping nor regressing. eMMC perf is gated entirely
+by the ADM DMA fix (a separate effort) and possibly by SDCC clock /
+bus-width tuning.
+
+---
+
 ## Notes
 
 - The `dd` test measures practical throughput including CPU and kernel overhead, not raw hardware bandwidth
