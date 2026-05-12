@@ -478,6 +478,20 @@ static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 				goto unlock;
 			}
 
+			/*
+			 * Codec-specific config that the firmware cannot
+			 * auto-derive from the bitstream. For H.264 this is
+			 * a no-op; for MPEG-4/H.263/DivX/VC-1 it emits a
+			 * warn-once and continues (full implementations
+			 * pending).
+			 */
+			ret = vidc_apply_dec_codec_config(inst);
+			if (ret) {
+				vidc_close_channel(inst);
+				pm_runtime_put(core->dev);
+				goto unlock;
+			}
+
 			inst->streamon_out = true;
 			inst->sequence_out = 0;
 		}
