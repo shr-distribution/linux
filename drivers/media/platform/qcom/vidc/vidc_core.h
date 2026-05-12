@@ -203,11 +203,28 @@ struct vidc_core {
 	u32 icc_bw_avg;		/* average bandwidth in bytes/sec */
 	u32 icc_bw_peak;	/* peak bandwidth in bytes/sec */
 
-	/* Firmware */
+	/*
+	 * Firmware buffer.
+	 *
+	 * VIDC_REG_DRAM_BASE_A/B encodes the firmware base address in bits
+	 * [31:17] of the register — i.e. the firmware buffer must be aligned
+	 * to a 128 KB (2^17) boundary in DRAM. dma_alloc_coherent() only
+	 * guarantees page (4 KB) alignment, so we over-allocate by 128 KB
+	 * and align the firmware pointer manually within the buffer.
+	 *
+	 *   alloc_*   - the actual dma_alloc_coherent() return values; used
+	 *               for the matching dma_free_coherent() at unload.
+	 *   fw_*      - the 128 KB-aligned view passed to the hardware.
+	 *   align_off - byte offset of fw_vaddr inside alloc_vaddr.
+	 */
 	const struct firmware *fw;
+	dma_addr_t fw_alloc_dma_addr;
+	void *fw_alloc_vaddr;
+	size_t fw_alloc_size;
 	dma_addr_t fw_dma_addr;
 	void *fw_vaddr;
 	size_t fw_size;
+	size_t fw_align_off;
 
 	/* V4L2 */
 	struct v4l2_device v4l2_dev;

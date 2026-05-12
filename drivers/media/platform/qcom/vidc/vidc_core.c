@@ -21,6 +21,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
+#include <linux/sizes.h>
 #include <linux/slab.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
@@ -329,19 +330,42 @@ int vidc_load_firmware(struct vidc_core *core)
 		goto err_release_fw;
 	}
 
-	core->fw_vaddr = dma_alloc_coherent(core->dev, core->fw->size,
-					    &core->fw_dma_addr, GFP_KERNEL);
-	if (!core->fw_vaddr) {
+	/*
+	 * Over-allocate by SZ_128K so we can guarantee a 128 KB-aligned
+	 * pointer inside the buffer. The hardware register VIDC_REG_DRAM_BASE_A
+	 * encodes the firmware base in bits [31:17] (i.e. address aligned
+	 * down to 128 KB), so any sub-128 KB offset of the firmware would be
+	 * silently dropped and the on-chip RISC would fetch garbage.
+	 */
+	core->fw_alloc_size = core->fw->size + SZ_128K;
+	core->fw_alloc_vaddr = dma_alloc_coherent(core->dev,
+						  core->fw_alloc_size,
+						  &core->fw_alloc_dma_addr,
+						  GFP_KERNEL);
+	if (!core->fw_alloc_vaddr) {
 		ret = -ENOMEM;
 		goto err_release_fw;
 	}
 
-	memcpy(core->fw_vaddr, core->fw->data, core->fw->size);
+	core->fw_dma_addr = ALIGN(core->fw_alloc_dma_addr, SZ_128K);
+	core->fw_align_off = core->fw_dma_addr - core->fw_alloc_dma_addr;
+	core->fw_vaddr = core->fw_alloc_vaddr + core->fw_align_off;
 	core->fw_size = core->fw->size;
 
-	/* Initialize memory controller with firmware address */
-	vidc_write(core, VIDC_REG_DRAM_BASE_A, core->fw_dma_addr >> 11);
-	vidc_write(core, VIDC_REG_DRAM_BASE_B, core->fw_dma_addr >> 11);
+	memcpy(core->fw_vaddr, core->fw->data, core->fw->size);
+
+	/*
+	 * Program DRAM_BASE_A/B with the physical address of the firmware
+	 * buffer. The register field is bits [31:17] = phys >> 17.
+	 *
+	 * (Earlier mainline code used phys >> 11, which left the low 6 bits
+	 * of address misaligned to the hardware's 128 KB-aligned field — the
+	 * RISC then read its instruction stream from an address 64× off
+	 * from where we wrote the firmware. This was the "DRAM base shift
+	 * bug" recorded in project_touchpad_kernel_port.md.)
+	 */
+	vidc_write(core, VIDC_REG_DRAM_BASE_A, core->fw_dma_addr >> 17);
+	vidc_write(core, VIDC_REG_DRAM_BASE_B, core->fw_dma_addr >> 17);
 
 	/* Send SYS_INIT command */
 	ret = vidc_send_cmd(core, VIDC_CMD_SYS_INIT, 0, 0, 0, 0);
@@ -352,14 +376,18 @@ int vidc_load_firmware(struct vidc_core *core)
 
 	core->fw_loaded = true;
 	core->fw_version = vidc_read(core, VIDC_REG_FW_VERSION);
-	dev_info(core->dev, "Firmware loaded, version 0x%08x\n",
-		 core->fw_version);
+	dev_info(core->dev,
+		 "Firmware loaded at %pad (alloc %pad, off=%zu), version 0x%08x\n",
+		 &core->fw_dma_addr, &core->fw_alloc_dma_addr,
+		 core->fw_align_off, core->fw_version);
 
 	return 0;
 
 err_free_dma:
-	dma_free_coherent(core->dev, core->fw_size, core->fw_vaddr,
-			  core->fw_dma_addr);
+	dma_free_coherent(core->dev, core->fw_alloc_size,
+			  core->fw_alloc_vaddr, core->fw_alloc_dma_addr);
+	core->fw_alloc_vaddr = NULL;
+	core->fw_vaddr = NULL;
 err_release_fw:
 	release_firmware(core->fw);
 	core->fw = NULL;
@@ -371,9 +399,11 @@ void vidc_unload_firmware(struct vidc_core *core)
 	if (!core->fw_loaded)
 		return;
 
-	if (core->fw_vaddr) {
-		dma_free_coherent(core->dev, core->fw_size, core->fw_vaddr,
-				  core->fw_dma_addr);
+	if (core->fw_alloc_vaddr) {
+		dma_free_coherent(core->dev, core->fw_alloc_size,
+				  core->fw_alloc_vaddr,
+				  core->fw_alloc_dma_addr);
+		core->fw_alloc_vaddr = NULL;
 		core->fw_vaddr = NULL;
 	}
 
