@@ -304,25 +304,34 @@ SYM_FUNC_END(cpu_pj4b_do_resume)
  *   L2CR1 override: DROPPED  (whole write ignored)
  *   BPCR  override: DROPPED  (whole write ignored)
  *
- * The c15 implementation-defined cluster appears to be Secure-only
- * on this part. Partial writes (L2CR0) are worse than no write —
- * they leave the cache controller in a state the silicon was never
- * validated against and were observed to correlate with mid-boot
- * SMP coherency hangs. Drop all three c15 overrides.
+ * The c15 implementation-defined cluster is Secure-only on this
+ * part. Partial writes (L2CR0) are worse than no write — they leave
+ * the cache controller in a state the silicon was never validated
+ * against and were observed to correlate with mid-boot SMP hangs.
+ * Drop all three c15 overrides. Legacy webOS does the same: its
+ * arch-init-scorpion.S has __cpu_early_init that writes these regs,
+ * but it has zero callers in the kernel tree — it was bootloader/
+ * SBL code that was never wired up to the OS image. The bootloader
+ * + TZ firmware programs the c15 cluster before kernel handoff and
+ * Linux trusts those values.
  *
- * Without functional L2CR1.DBB control we cannot rely on the
- * Disable-Barrier-Broadcast scheme that the original setup intended
- * for SMP coherency. Fall back to ACTLR bit 0 (Cache/TLB ops
- * broadcasting) — same as the generic-v7 Cortex-A* setup paths.
+ * Scorpion's ACTLR bit layout also differs from generic Cortex-A
+ * (bit 0 is part of an L1/L2 error-reporting cluster on Scorpion,
+ * not "Cache/TLB ops broadcasting"; SMP enable on Scorpion is bit
+ * 24, not bit 6). Setting a stray bit there breaks boot. Leave
+ * ACTLR alone in this path — TZ defaults are correct — and only OR
+ * in the generic bit 6 if CONFIG_SMP, matching the original
+ * Qualcomm-authored Scorpion setup that worked.
  *
  * Net result: this setup runs the full generic-v7 init via
  * __v7_setup_cont, then applies the NMRR Scorpion memory-attribute
- * tuning. Equivalent to "generic v7 + Scorpion NMRR".
+ * tuning. Equivalent to "generic v7 minus generic ACTLR.bit0 plus
+ * Scorpion NMRR".
  */
 __v7_scorpion_setup:
 	do_invalidate_l1
 
-	mov	r10, #(1 << 0)			@ Cache/TLB ops broadcasting
+	mov	r10, #0
 #ifdef CONFIG_SMP
 	orr	r10, r10, #(1 << 6)		@ Enable SMP/nAMP mode
 	ALT_SMP(mrc	p15, 0, r0, c1, c0, 1)
