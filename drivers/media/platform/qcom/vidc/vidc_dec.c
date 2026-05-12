@@ -560,6 +560,7 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 {
 	struct vidc_core *core = inst->core;
 	unsigned long flags;
+	u32 op;
 
 	spin_lock_irqsave(&core->irqlock, flags);
 
@@ -585,14 +586,23 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	core->cmd_seq_num++;
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
 
-	/* Write channel instance ID with operation type to start decode */
-	vidc_write(core, VIDC_REG_CH0_INST_ID,
-		   VIDC_OP_FRAME_DATA | inst->inst_id);
+	/*
+	 * Choose the operation type bits encoded in INST_ID. The first
+	 * submission on a freshly-opened channel is the sequence-header
+	 * parse (firmware reads SPS/PPS for H.264, VOL for MPEG-4, etc.
+	 * out of the OUTPUT buffer and responds with RESP_SEQ_DONE +
+	 * geometry registers populated). Once that has happened the
+	 * driver flips inst->seq_parsed and subsequent submissions are
+	 * normal frame data.
+	 */
+	op = inst->seq_parsed ? VIDC_OP_FRAME_DATA : VIDC_OP_SEQ_HEADER;
+	vidc_write(core, VIDC_REG_CH0_INST_ID, op | inst->inst_id);
 
 	spin_unlock_irqrestore(&core->irqlock, flags);
 
-	dev_dbg(core->dev, "Decode submit: src=0x%pad size=%u dst=0x%pad\n",
-		&src_addr, src_size, &dst_addr);
+	dev_dbg(core->dev,
+		"Decode submit: op=0x%x src=0x%pad size=%u dst=0x%pad\n",
+		op, &src_addr, src_size, &dst_addr);
 }
 
 static void vidc_dec_device_run(void *priv)
@@ -635,6 +645,56 @@ static void vidc_dec_device_run(void *priv)
 					 msecs_to_jiffies(1000))) {
 		dev_err(core->dev, "Decode timeout\n");
 		inst->error = -ETIMEDOUT;
+	}
+
+	/*
+	 * Sequence-header parse path. If the IRQ handler reported
+	 * RESP_SEQ_DONE for this submission, the firmware has extracted
+	 * the bitstream's geometry into inst->seq_width / seq_height /
+	 * min_dpb_count but produced no decoded frame. Tell userspace
+	 * via V4L2_EVENT_SOURCE_CHANGE so it re-queries S_FMT and
+	 * re-allocates CAPTURE buffers to match the actual stream, then
+	 * return both buffers — src consumed by the SPS parse, dst with
+	 * payload = 0 because nothing was decoded into it.
+	 *
+	 * The next submission will go down the FRAME_DATA path because
+	 * we flip inst->seq_parsed here.
+	 */
+	if (!inst->error && inst->state == VIDC_STATE_SEQ_PARSED &&
+	    !inst->seq_parsed) {
+		struct v4l2_event ev = {
+			.type = V4L2_EVENT_SOURCE_CHANGE,
+			.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
+		};
+
+		if (inst->seq_width)
+			inst->width = inst->seq_width;
+		if (inst->seq_height)
+			inst->height = inst->seq_height;
+
+		inst->seq_parsed = true;
+
+		dev_info(core->dev,
+			 "Sequence parsed: %ux%u, min_dpb=%u — emitting SOURCE_CHANGE\n",
+			 inst->seq_width, inst->seq_height,
+			 inst->min_dpb_count);
+
+		v4l2_event_queue_fh(&inst->fh, &ev);
+
+		src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
+		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
+
+		src_buf->sequence = inst->sequence_out++;
+		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+
+		if (dst_buf) {
+			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
+			v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+		}
+
+		core->curr_inst = NULL;
+		v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+		return;
 	}
 
 	/* Remove buffers and mark as done */

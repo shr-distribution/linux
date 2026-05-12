@@ -592,6 +592,19 @@ int vidc_close_channel(struct vidc_inst *inst)
 	}
 
 	inst->ch_open = false;
+
+	/*
+	 * Reset the sequence-parsed gate so a subsequent STREAMON cycle
+	 * re-parses whatever bitstream is fed in next. Real userspace
+	 * (e.g. gstreamer playlists) closes + reopens between segments
+	 * and the new segment may have completely different SPS.
+	 */
+	inst->seq_parsed = false;
+	inst->state = VIDC_STATE_IDLE;
+	inst->seq_width = 0;
+	inst->seq_height = 0;
+	inst->min_dpb_count = 0;
+
 	dev_dbg(core->dev, "VIDC channel closed\n");
 	return inst->error;
 }

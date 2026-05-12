@@ -333,6 +333,17 @@ struct vidc_inst {
 	void *ctxt_mem_vaddr;
 	u32 ctxt_mem_offset;	/* offset from core->fw_dma_addr */
 	bool ch_open;
+
+	/*
+	 * Stateful-decoder gate. False until the firmware has parsed the
+	 * stream's sequence header (SPS for H.264, VOL for MPEG-4, etc.)
+	 * and responded with RESP_SEQ_DONE. While false, frame submissions
+	 * use VIDC_OP_SEQ_HEADER so the firmware treats the buffer as a
+	 * codec-config blob; after the SOURCE_CHANGE event is emitted to
+	 * userspace, subsequent submissions use VIDC_OP_FRAME_DATA.
+	 * Cleared again on vidc_close_channel().
+	 */
+	bool seq_parsed;
 };
 
 /* Core functions */
