@@ -2888,11 +2888,33 @@
 		 * initial probe. The wm8994-ldo driver sets always_on=1 for
 		 * LDO2 to prevent regulator framework issues.
 		 *
-		 * Since LDO1 is always driven by the gpio-hog, tell the driver
-		 * to skip the software reset during suspend (which would cause
-		 * I2C failures as the codec becomes unresponsive after reset).
+		 * Note: previously we set wlf,ldo-ena-always-driven here under
+		 * the theory that the always-driven LDO1 hog let us skip the
+		 * software reset and avoid post-reset I2C issues. That flag in
+		 * drivers/mfd/wm8994-core.c actually controls THREE behaviours
+		 * bundled together:
+		 *   1. Skip the LDO1ENA_PD/LDO2ENA_PD pulldown writes at
+		 *      suspend — wanted (hog drives LDO1ENA HIGH; internal PD
+		 *      would fight it).
+		 *   2. Skip the SOFTWARE_RESET write at probe — NOT wanted.
+		 *      WM8958 has no hardware reset pin (datasheet rev 3.2
+		 *      pin table — no CSB). Software reset is the only way to
+		 *      bring the codec into its known-good initial state.
+		 *      Without it the codec inherits whatever the bootloader
+		 *      / a previous Linux session left in registers, which is
+		 *      what was causing the IRQ status registers at 0x730/
+		 *      0x731 to return I2C -ENXIO (codec stuck in a state
+		 *      where the IRQ subsystem isn't responsive).
+		 *   3. Force-clear wm8994->irq = 0 — also not wanted, kills
+		 *      jack/mic/button detect entirely.
+		 *
+		 * Drop the property so the codec gets a clean software reset
+		 * at probe. Legacy webOS resets the codec the same way and
+		 * audio + IRQ both work. The pulldown-during-suspend side
+		 * effect only matters once MPM resume works, which is a
+		 * separate problem; deal with it then via a more targeted
+		 * quirk if needed.
 		 */
-		wlf,ldo-ena-always-driven;
 		wlf,ldo2ena-gpios = <&tlmm 108 GPIO_ACTIVE_HIGH>;
 
 		/* GPIO configuration for WM8958 internal GPIOs */
