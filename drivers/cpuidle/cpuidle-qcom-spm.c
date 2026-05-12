@@ -29,7 +29,7 @@ struct cpuidle_qcom_spm_data {
 	struct spm_driver_data *spm;
 };
 
-static int qcom_pm_collapse(unsigned long int unused)
+static int qcom_pm_collapse_l2_on(unsigned long int unused)
 {
 	qcom_scm_cpu_power_down(QCOM_SCM_CPU_PWR_DOWN_L2_ON);
 
@@ -40,12 +40,25 @@ static int qcom_pm_collapse(unsigned long int unused)
 	return -1;
 }
 
+static int qcom_pm_collapse_l2_off(unsigned long int unused)
+{
+	/*
+	 * L2 cache is powered off on power-down. The SCM TZ entry handles
+	 * L2 clean+invalidate before deassert; on resume the L2 will cold-
+	 * boot. Only safe when RPM has agreed (rpm_bypass=0 in SPM_CTL)
+	 * and no other CPU master is voting for L2.
+	 */
+	qcom_scm_cpu_power_down(QCOM_SCM_CPU_PWR_DOWN_L2_OFF);
+
+	return -1;
+}
+
 static int qcom_cpu_spc(struct spm_driver_data *drv)
 {
 	int ret;
 
 	spm_set_low_power_mode(drv, PM_SLEEP_MODE_SPC);
-	ret = cpu_suspend(0, qcom_pm_collapse);
+	ret = cpu_suspend(0, qcom_pm_collapse_l2_on);
 	/*
 	 * ARM common code executes WFI without calling into our driver and
 	 * if the SPM mode is not reset, then we may accidentally power down the
@@ -57,8 +70,34 @@ static int qcom_cpu_spc(struct spm_driver_data *drv)
 	return ret;
 }
 
-static __cpuidle int spm_enter_idle_state(struct cpuidle_device *dev,
-					  struct cpuidle_driver *drv, int idx)
+static int qcom_cpu_pc(struct spm_driver_data *drv)
+{
+	int ret;
+
+	/*
+	 * Full power collapse with RPM coordination.
+	 *
+	 * SPM mode PC clears the rpm_bypass bit so the SPM signals the RPM
+	 * via master_stat when this CPU enters sleep. If the other CPU is
+	 * also in PC and no other master is voting for shared resources,
+	 * the RPM can drop L2 / vdd_mem / vdd_dig to their sleep-set values
+	 * for the duration of the cluster sleep, and the L2 cache itself is
+	 * powered off via the L2_OFF SCM call.
+	 *
+	 * This state is intended to be entered only by the last CPU online;
+	 * the cpuidle menu governor selects it based on the larger residency
+	 * window, but DT must mark it as the deeper state so it isn't picked
+	 * when shorter idle windows would suffice.
+	 */
+	spm_set_low_power_mode(drv, PM_SLEEP_MODE_PC);
+	ret = cpu_suspend(0, qcom_pm_collapse_l2_off);
+	spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
+
+	return ret;
+}
+
+static __cpuidle int spm_enter_spc(struct cpuidle_device *dev,
+				   struct cpuidle_driver *drv, int idx)
 {
 	struct cpuidle_qcom_spm_data *data = container_of(drv, struct cpuidle_qcom_spm_data,
 							  cpuidle_driver);
@@ -66,11 +105,20 @@ static __cpuidle int spm_enter_idle_state(struct cpuidle_device *dev,
 	return CPU_PM_CPU_IDLE_ENTER_PARAM(qcom_cpu_spc, idx, data->spm);
 }
 
+static __cpuidle int spm_enter_pc(struct cpuidle_device *dev,
+				  struct cpuidle_driver *drv, int idx)
+{
+	struct cpuidle_qcom_spm_data *data = container_of(drv, struct cpuidle_qcom_spm_data,
+							  cpuidle_driver);
+
+	return CPU_PM_CPU_IDLE_ENTER_PARAM(qcom_cpu_pc, idx, data->spm);
+}
+
 static struct cpuidle_driver qcom_spm_idle_driver = {
 	.name = "qcom_spm",
 	.owner = THIS_MODULE,
 	.states[0] = {
-		.enter			= spm_enter_idle_state,
+		.enter			= spm_enter_spc,
 		.exit_latency		= 1,
 		.target_residency	= 1,
 		.power_usage		= UINT_MAX,
@@ -80,7 +128,8 @@ static struct cpuidle_driver qcom_spm_idle_driver = {
 };
 
 static const struct of_device_id qcom_idle_state_match[] = {
-	{ .compatible = "qcom,idle-state-spc", .data = spm_enter_idle_state },
+	{ .compatible = "qcom,idle-state-spc", .data = spm_enter_spc },
+	{ .compatible = "qcom,idle-state-pc",  .data = spm_enter_pc  },
 	{ },
 };
 

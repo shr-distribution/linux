@@ -36,7 +36,7 @@
 			operating-points-v2 = <&cpu_opp_table>;
 			qcom,saw = <&saw0>;
 			cpu-supply = <&saw0_reg>;
-			cpu-idle-states = <&cpu_spc>;
+			cpu-idle-states = <&cpu_spc>, <&cpu_pc>;
 		};
 
 		cpu1: cpu@1 {
@@ -50,7 +50,7 @@
 			operating-points-v2 = <&cpu_opp_table>;
 			qcom,saw = <&saw1>;
 			cpu-supply = <&saw1_reg>;
-			cpu-idle-states = <&cpu_spc>;
+			cpu-idle-states = <&cpu_spc>, <&cpu_pc>;
 		};
 
 		l2: l2-cache {
@@ -65,6 +65,34 @@
 				entry-latency-us = <400>;
 				exit-latency-us = <900>;
 				min-residency-us = <3000>;
+			};
+
+			/*
+			 * Full power collapse with L2 powered off.
+			 *
+			 * Entered by the last-online CPU when the residency
+			 * window is long enough to amortise the extra cost
+			 * of:
+			 *   - L2 clean+invalidate before power-down
+			 *   - L2 cold-boot + cache refill on resume
+			 *   - RPM master_stat handshake (rpm_bypass=0 in
+			 *     the SPM_CTL register)
+			 *
+			 * Latency/residency are ballparked from legacy
+			 * pm-8x60.c "Power Collapse" mode measurements on
+			 * APQ8060 with the L2 cache off. Without separate
+			 * RPM resource voting (rpmrs - follow-up patch) the
+			 * RPM does not drop vdd_mem / vdd_dig / pxo, so the
+			 * marginal power saving over SPC is roughly the L2
+			 * leakage current — single-digit mW. With rpmrs
+			 * voting layered on top, this state becomes the
+			 * "weeks of standby" enabler.
+			 */
+			cpu_pc: cpu-pc {
+				compatible = "qcom,idle-state-pc";
+				entry-latency-us = <1500>;
+				exit-latency-us = <6500>;
+				min-residency-us = <9000>;
 			};
 		};
 	};
