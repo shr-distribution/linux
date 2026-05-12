@@ -627,10 +627,142 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		op, &src_addr, src_size, &dst_addr);
 }
 
+/*
+ * Workqueue handler for RESP_SEQ_DONE.
+ *
+ * Runs in process context (system_wq) — safe to call vidc_init_buffers
+ * (which blocks on its own wait_for_completion for RESP_INIT_BUFFERS),
+ * v4l2_event_queue_fh (which takes the fh event-list spinlock with
+ * irqs off), and the vb2 buf_done helpers (which acquire the vb2
+ * queue lock).
+ *
+ * The IRQ already populated inst->seq_width / seq_height /
+ * min_dpb_count via vidc_handle_seq_done() before scheduling us, so
+ * all we need is the geometry update + DPB allocation + event
+ * emission.
+ */
+static void vidc_dec_seq_done_work(struct work_struct *w)
+{
+	struct vidc_inst *inst =
+		container_of(w, struct vidc_inst, seq_done_work);
+	struct vidc_core *core = inst->core;
+	struct vb2_v4l2_buffer *src_buf, *dst_buf;
+	struct v4l2_event ev = {
+		.type = V4L2_EVENT_SOURCE_CHANGE,
+		.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
+	};
+	int dpb_ret;
+
+	if (inst->seq_width)
+		inst->width = inst->seq_width;
+	if (inst->seq_height)
+		inst->height = inst->seq_height;
+
+	inst->seq_parsed = true;
+
+	dev_info(core->dev,
+		 "Sequence parsed: %ux%u, min_dpb=%u — initialising DPB\n",
+		 inst->seq_width, inst->seq_height, inst->min_dpb_count);
+
+	dpb_ret = vidc_init_buffers(inst);
+	if (dpb_ret)
+		dev_err(core->dev,
+			"DPB init failed: %d (channel unrecoverable)\n",
+			dpb_ret);
+
+	v4l2_event_queue_fh(&inst->fh, &ev);
+
+	src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
+	dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
+
+	if (src_buf) {
+		src_buf->sequence = inst->sequence_out++;
+		v4l2_m2m_buf_done(src_buf,
+				  dpb_ret ? VB2_BUF_STATE_ERROR
+					  : VB2_BUF_STATE_DONE);
+	}
+
+	if (dst_buf) {
+		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
+		v4l2_m2m_buf_done(dst_buf,
+				  dpb_ret ? VB2_BUF_STATE_ERROR
+					  : VB2_BUF_STATE_DONE);
+	}
+
+	core->curr_inst = NULL;
+	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+}
+
+/*
+ * Workqueue handler for RESP_FRAME_DONE.
+ *
+ * The IRQ stashed the displayed DPB slot's fw-relative offset in
+ * inst->display_y_raw / display_c_raw via vidc_handle_frame_done().
+ * We translate that back to a slot index, memcpy tile-NV12 contents
+ * to the userspace CAPTURE buffer, mark buffers DONE, and finish
+ * the m2m job so the worker can pick up the next queued pair.
+ */
+static void vidc_dec_frame_done_work(struct work_struct *w)
+{
+	struct vidc_inst *inst =
+		container_of(w, struct vidc_inst, frame_done_work);
+	struct vidc_core *core = inst->core;
+	struct vb2_v4l2_buffer *src_buf, *dst_buf;
+	u8 *dst_vaddr;
+	size_t dst_size;
+	size_t payload = 0;
+	int copy_ret;
+
+	src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
+	dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
+
+	if (!src_buf || !dst_buf) {
+		dev_warn(core->dev,
+			 "frame_done_work: missing buffer (src=%p dst=%p)\n",
+			 src_buf, dst_buf);
+		goto out;
+	}
+
+	src_buf->sequence = inst->sequence_out++;
+	dst_buf->sequence = inst->sequence_cap++;
+
+	dst_vaddr = vb2_plane_vaddr(&dst_buf->vb2_buf, 0);
+	dst_size = vb2_plane_size(&dst_buf->vb2_buf, 0);
+
+	copy_ret = vidc_copy_dpb_to_dst(inst, dst_vaddr, dst_size, &payload);
+	if (copy_ret) {
+		dev_err(core->dev, "DPB->dst copy failed: %d\n", copy_ret);
+		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
+		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
+		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
+	} else {
+		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, payload);
+		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+	}
+
+out:
+	core->curr_inst = NULL;
+	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+}
+
+/*
+ * V4L2 m2m device_run callback.
+ *
+ * Kicks the hardware and returns immediately. Post-frame work
+ * (buffer DONE marking, payload copy, V4L2_EVENT_SOURCE_CHANGE
+ * emission, m2m_job_finish) runs from vidc_dec_seq_done_work or
+ * vidc_dec_frame_done_work, scheduled by the IRQ handler when
+ * the corresponding response arrives from the firmware.
+ *
+ * Buffers are NOT removed from the m2m queues here — that happens
+ * in the work handlers. This means v4l2_m2m_next_*_buf still
+ * returns them for inspection, but a second device_run call will
+ * not happen until job_finish runs (the m2m core serialises us).
+ */
 static void vidc_dec_device_run(void *priv)
 {
 	struct vidc_inst *inst = priv;
-	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
 	dma_addr_t src_addr, dst_addr;
 	u32 src_size;
@@ -643,7 +775,7 @@ static void vidc_dec_device_run(void *priv)
 		return;
 	}
 
-	/* Save current buffers for completion handler */
+	/* Cache for the work handlers (race-free: m2m serialises runs) */
 	inst->src_buf = src_buf;
 	inst->dst_buf = dst_buf;
 
@@ -651,146 +783,15 @@ static void vidc_dec_device_run(void *priv)
 	dst_addr = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
 	src_size = vb2_get_plane_payload(&src_buf->vb2_buf, 0);
 
-	/* Initialize completion for this frame */
-	reinit_completion(&inst->done);
 	inst->error = 0;
-
-	/* Submit decode command to hardware */
 	vidc_dec_submit_frame(inst, src_addr, src_size, dst_addr);
 
 	/*
-	 * Wait for decode completion with timeout.
-	 * In a production driver, this would be fully async with
-	 * the completion handled in a workqueue.
+	 * Return without waiting. The IRQ will fire RESP_SEQ_DONE or
+	 * RESP_FRAME_DONE and queue seq_done_work / frame_done_work,
+	 * which calls v4l2_m2m_job_finish to release the m2m worker
+	 * for the next pair.
 	 */
-	if (!wait_for_completion_timeout(&inst->done,
-					 msecs_to_jiffies(1000))) {
-		dev_err(core->dev, "Decode timeout\n");
-		inst->error = -ETIMEDOUT;
-	}
-
-	/*
-	 * Sequence-header parse path. If the IRQ handler reported
-	 * RESP_SEQ_DONE for this submission, the firmware has extracted
-	 * the bitstream's geometry into inst->seq_width / seq_height /
-	 * min_dpb_count but produced no decoded frame. Tell userspace
-	 * via V4L2_EVENT_SOURCE_CHANGE so it re-queries S_FMT and
-	 * re-allocates CAPTURE buffers to match the actual stream, then
-	 * return both buffers — src consumed by the SPS parse, dst with
-	 * payload = 0 because nothing was decoded into it.
-	 *
-	 * The next submission will go down the FRAME_DATA path because
-	 * we flip inst->seq_parsed here.
-	 */
-	if (!inst->error && inst->state == VIDC_STATE_SEQ_PARSED &&
-	    !inst->seq_parsed) {
-		struct v4l2_event ev = {
-			.type = V4L2_EVENT_SOURCE_CHANGE,
-			.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
-		};
-		int dpb_ret;
-
-		if (inst->seq_width)
-			inst->width = inst->seq_width;
-		if (inst->seq_height)
-			inst->height = inst->seq_height;
-
-		inst->seq_parsed = true;
-
-		dev_info(core->dev,
-			 "Sequence parsed: %ux%u, min_dpb=%u — initialising DPB\n",
-			 inst->seq_width, inst->seq_height,
-			 inst->min_dpb_count);
-
-		/*
-		 * Allocate DPB pool and send INIT_BUFFERS. We do this before
-		 * the SOURCE_CHANGE event so that once userspace re-allocates
-		 * its CAPTURE buffers and queues them, the decoder is already
-		 * primed to write into the internal DPB on the next
-		 * FRAME_DATA submission.
-		 *
-		 * If DPB init fails the channel is in an unrecoverable state;
-		 * propagate the error to userspace via the m2m buffer state
-		 * but still emit SOURCE_CHANGE so a well-behaved consumer can
-		 * decide to bail out cleanly.
-		 */
-		dpb_ret = vidc_init_buffers(inst);
-		if (dpb_ret)
-			dev_err(core->dev,
-				"DPB init failed: %d (channel unrecoverable)\n",
-				dpb_ret);
-
-		v4l2_event_queue_fh(&inst->fh, &ev);
-
-		src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
-		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
-
-		src_buf->sequence = inst->sequence_out++;
-		v4l2_m2m_buf_done(src_buf,
-				  dpb_ret ? VB2_BUF_STATE_ERROR
-					  : VB2_BUF_STATE_DONE);
-
-		if (dst_buf) {
-			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
-			v4l2_m2m_buf_done(dst_buf,
-					  dpb_ret ? VB2_BUF_STATE_ERROR
-						  : VB2_BUF_STATE_DONE);
-		}
-
-		core->curr_inst = NULL;
-		v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
-		return;
-	}
-
-	/* Remove buffers and mark as done */
-	src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
-	dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
-
-	src_buf->sequence = inst->sequence_out++;
-	dst_buf->sequence = inst->sequence_cap++;
-
-	if (inst->error) {
-		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
-		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
-	} else {
-		/*
-		 * Copy the decoded frame from the internal DPB slot the
-		 * firmware reported into the userspace CAPTURE buffer. The
-		 * IRQ handler stashed the slot's fw-relative offset in
-		 * inst->display_y_raw / display_c_raw; vidc_copy_dpb_to_dst
-		 * translates that back to a slot index and memcpys the
-		 * tile-NV12 Y + C planes into dst_vaddr.
-		 *
-		 * The data we hand back is tile-NV12 (64×32 macroblock layout
-		 * from the 1080p hardware). The driver still advertises the
-		 * V4L2 pixfmt as plain V4L2_PIX_FMT_NV12 (linear) — userspace
-		 * either needs to detile, or a follow-up patch should expose
-		 * V4L2_PIX_FMT_NV12MT and adjust vidc_dec_get_framesize().
-		 */
-		u8 *dst_vaddr = vb2_plane_vaddr(&dst_buf->vb2_buf, 0);
-		size_t dst_size = vb2_plane_size(&dst_buf->vb2_buf, 0);
-		size_t payload = 0;
-		int copy_ret;
-
-		copy_ret = vidc_copy_dpb_to_dst(inst, dst_vaddr, dst_size,
-						&payload);
-		if (copy_ret) {
-			dev_err(core->dev, "DPB->dst copy failed: %d\n",
-				copy_ret);
-			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
-			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
-			v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
-		} else {
-			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, payload);
-			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
-			v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
-		}
-	}
-
-	/* Clear current instance */
-	core->curr_inst = NULL;
-
-	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
 }
 
 static void vidc_dec_job_abort(void *priv)
@@ -861,6 +862,8 @@ static int vidc_dec_open(struct file *file)
 	mutex_init(&inst->lock);
 	INIT_LIST_HEAD(&inst->list);
 	init_completion(&inst->done);
+	INIT_WORK(&inst->seq_done_work, vidc_dec_seq_done_work);
+	INIT_WORK(&inst->frame_done_work, vidc_dec_frame_done_work);
 
 	/* Set default formats */
 	inst->fmt_out = vidc_dec_find_format(V4L2_PIX_FMT_H264,
@@ -917,6 +920,15 @@ static int vidc_dec_close(struct file *file)
 {
 	struct vidc_inst *inst = vidc_file_to_inst(file);
 	struct vidc_core *core = inst->core;
+
+	/*
+	 * Flush any pending async work before tearing down state.
+	 * The m2m_ctx release below will reject buffer ops, so if a
+	 * frame-done IRQ raced our close it must finish (and call
+	 * v4l2_m2m_job_finish) before we free inst.
+	 */
+	cancel_work_sync(&inst->seq_done_work);
+	cancel_work_sync(&inst->frame_done_work);
 
 	mutex_lock(&core->lock);
 	list_del(&inst->list);

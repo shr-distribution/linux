@@ -260,7 +260,15 @@ static irqreturn_t vidc_isr(int irq, void *data)
 	case VIDC_RESP_SEQ_DONE:
 		if (inst) {
 			vidc_handle_seq_done(core, inst);
-			complete(&inst->done);
+			/*
+			 * SEQ_DONE post-processing (DPB alloc, INIT_BUFFERS,
+			 * V4L2 event queue) can sleep — defer to a workqueue
+			 * instead of completing the synchronous wait. The
+			 * work runs in process context and ends with
+			 * v4l2_m2m_job_finish so the m2m worker can pick up
+			 * the next queued frame.
+			 */
+			queue_work(system_wq, &inst->seq_done_work);
 		}
 		break;
 
@@ -268,7 +276,13 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		if (inst) {
 			vidc_handle_frame_done(core, inst);
 			inst->error = 0;
-			complete(&inst->done);
+			/*
+			 * FRAME_DONE → DPB copy → buf_done lives in
+			 * frame_done_work because the memcpy and
+			 * vb2_buf_done calls take vb2 queue locks that
+			 * cannot be acquired from IRQ context.
+			 */
+			queue_work(system_wq, &inst->frame_done_work);
 		}
 		break;
 
