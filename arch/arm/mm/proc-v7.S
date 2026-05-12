@@ -318,28 +318,41 @@ SYM_FUNC_END(cpu_pj4b_do_resume)
  * Scorpion's ACTLR bit layout also differs from generic Cortex-A
  * (bit 0 is part of an L1/L2 error-reporting cluster on Scorpion,
  * not "Cache/TLB ops broadcasting"; SMP enable on Scorpion is bit
- * 24, not bit 6). Setting a stray bit there breaks boot. Leave
- * ACTLR alone in this path — TZ defaults are correct — and only OR
- * in the generic bit 6 if CONFIG_SMP, matching the original
- * Qualcomm-authored Scorpion setup that worked.
+ * 24, not bit 6). Program ACTLR with the legacy-documented Scorpion
+ * bits (0x37 for error reporting + bit 24 for SMP under CONFIG_SMP),
+ * read-modify-write, matching legacy webOS proc-v7.S.
  *
  * Net result: this setup runs the full generic-v7 init via
- * __v7_setup_cont, then applies the NMRR Scorpion memory-attribute
- * tuning. Equivalent to "generic v7 minus generic ACTLR.bit0 plus
- * Scorpion NMRR".
+ * __v7_setup_cont, applies Scorpion-specific ACTLR programming,
+ * then applies the NMRR Scorpion memory-attribute tuning.
  */
 __v7_scorpion_setup:
 	do_invalidate_l1
 
-	mov	r10, #0
+	/*
+	 * Program ACTLR with Scorpion-specific bit semantics, mirroring
+	 * legacy webOS arch/arm/mm/proc-v7.S:
+	 *
+	 *   bits 0..5 (0x37) = L1/L2 error reporting cluster
+	 *   bit 24           = Scorpion MP SMP enable (CONFIG_SMP)
+	 *
+	 * The generic-v7 Cortex-A* paths use a different ACTLR layout
+	 * (bit 0 = "Cache/TLB ops broadcasting", bit 6 = SMP/nAMP).
+	 * Setting those bits on Scorpion either does nothing useful (bit
+	 * 6) or actively hangs early boot (bit 0 — a partial half-set of
+	 * the error-reporting cluster). Stick to the legacy-documented
+	 * bits. The scorpion-verify arch_initcall reports back which
+	 * bits actually stuck.
+	 *
+	 * Read-modify-write so we don't clobber whatever bootloader/TZ
+	 * may have already set.
+	 */
+	mrc	p15, 0, r0, c1, c0, 1		@ read ACTLR
+	orr	r0, r0, #0x37			@ Scorpion L1/L2 error reporting
 #ifdef CONFIG_SMP
-	orr	r10, r10, #(1 << 6)		@ Enable SMP/nAMP mode
-	ALT_SMP(mrc	p15, 0, r0, c1, c0, 1)
-	ALT_UP(mov	r0, r10)		@ fake it for UP
-	orr	r10, r10, r0			@ Set required bits
-	teq	r10, r0				@ Were they already set?
-	mcrne	p15, 0, r10, c1, c0, 1		@ No, update register
+	orr	r0, r0, #(1 << 24)		@ Scorpion MP SMP enable
 #endif
+	mcr	p15, 0, r0, c1, c0, 1		@ write ACTLR
 	/*
 	 * Run common v7 setup (TTB, errata, PRRR/NMRR, SCTLR), then
 	 * override NMRR with Scorpion-optimized value before returning.
