@@ -858,9 +858,35 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 				dev_warn(dev, "RPM buffer alloc failed, ARB disabled\n");
 				qp->rpm = NULL;
 			} else {
+				int rc;
+
 				dev_info(dev, "RPM fabric ARB enabled (%d masters, %d slaves, %d tiered)\n",
 					 desc->nmasters, desc->nslaves,
 					 desc->ntieredslaves);
+
+				/*
+				 * One-shot sleep-context vote of zero bandwidth.
+				 * Without an explicit SLEEP_STATE write, RPM has no
+				 * fabric bandwidth target for deep-sleep and may
+				 * keep the active vote applied indefinitely,
+				 * preventing DDR from dropping its rate when CPUs
+				 * power-collapse. The buffer is devm_kcalloc'd so
+				 * it is all-zero at this point — written before
+				 * any consumer can drive an active vote that would
+				 * dirty it.
+				 *
+				 * msm8660_rpm_commit() writes ACTIVE_STATE only;
+				 * SLEEP_STATE remains zero for the provider's
+				 * lifetime, so this vote does not need refreshing.
+				 */
+				rc = qcom_rpm_write(qp->rpm,
+						    QCOM_RPM_SLEEP_STATE,
+						    desc->rpm_resource,
+						    qp->rpm_buf,
+						    desc->rpm_buf_size);
+				if (rc)
+					dev_warn(dev, "RPM fabric sleep vote failed: %d\n",
+						 rc);
 			}
 		}
 	}
