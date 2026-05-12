@@ -70,6 +70,31 @@ static int __init scorpion_verify_init(void)
 	asm volatile("mrc p15, 3, %0, c15, c0, 2" : "=r" (l2cpucr));
 	asm volatile("mrc p15, 0, %0, c9,  c7, 0" : "=r" (spcr));
 
+	/*
+	 * Adaptive Voltage Scaling (AVS) register cluster — c15/opc1=7.
+	 * Legacy webOS avs_hw.S + avs.c run a ring-oscillator-based loop
+	 * that trims per-CPU Vcore based on real silicon margin. The
+	 * mainline tree has no Scorpion AVS driver. The previous Scorpion
+	 * perf audit recommended reading these back here to determine
+	 * whether the AVS hardware is reachable from NS world — if
+	 * non-zero readbacks come back, AVS is a real perf/power
+	 * opportunity worth porting; if all read as 0, AVS is locked
+	 * behind TZ like the other c15 cluster and not worth pursuing.
+	 *
+	 *   AVSCSR  p15,7,c15,c1,7  — AVS control / status (ring osc)
+	 *   AVSDSCR p15,7,c15,c0,6  — AVS data/setpoint register
+	 *   TSCSR   p15,7,c15,c1,0  — temperature sensor control/status
+	 */
+	{
+		u32 avscsr, avsdscr, tscsr;
+
+		asm volatile("mrc p15, 7, %0, c15, c1, 7" : "=r" (avscsr));
+		asm volatile("mrc p15, 7, %0, c15, c0, 6" : "=r" (avsdscr));
+		asm volatile("mrc p15, 7, %0, c15, c1, 0" : "=r" (tscsr));
+		pr_info("scorpion: AVSCSR=0x%08x AVSDSCR=0x%08x TSCSR=0x%08x\n",
+			avscsr, avsdscr, tscsr);
+	}
+
 	pr_info("scorpion: MIDR=0x%08x NMRR=0x%08x PRRR=0x%08x\n",
 		midr, nmrr, prrr);
 	pr_info("scorpion: ACTLR=0x%08x (err_rep=%s mp=%s smp_nAMP=%s)\n",
