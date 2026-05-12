@@ -856,7 +856,7 @@ __v7_ca75_proc_info:
 	.type	__v7_scorpion_proc_info, #object
 __v7_scorpion_proc_info:
 	.long	0x510f02d0		@ Required ID value (Scorpion MP)
-	.long	0xff0ff0f0		@ Mask for ID (match part 0x02d, any rev)
+	.long	0xff0ffff0		@ Mask for ID (match part 0x02d, any rev)
 	__v7_proc __v7_scorpion_proc_info, __v7_scorpion_setup
 	.size	__v7_scorpion_proc_info, . - __v7_scorpion_proc_info
 
