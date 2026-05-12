@@ -459,24 +459,34 @@
 					regulator-always-on;
 				};
 				/*
-				 * L4 (2.6V), L5 (2.85V), L6 (2.2V): MMSS rails
-				 * webOS board-tenderloin.c initialises all three
-				 * as always-on at SoC bringup (board-tenderloin.c
-				 * lines 3029-3031 RPM_VREG_INIT_LDO PM8901_L4/L5/L6
-				 * with default_use=1). Mainline DTS previously left
-				 * these consumer-less, so the regulator framework
-				 * would have left L4/L6 OFF since no driver requests
-				 * them via a *-supply phandle. That deviates from
-				 * the SoC's expected initial state and could explain
-				 * intermittent boot failures plus GPU/VFE first-
-				 * frame timing-margin glitches. Match webOS
-				 * always-on behaviour.
+				 * L4 (2.6V), L5 (2.85V), L6 (2.2V).
+				 *
+				 * The prior comment here claimed legacy webOS
+				 * board-tenderloin.c forced these always-on via
+				 * RPM_VREG_INIT_LDO default_use=1 — this was a
+				 * misread. The legacy macro's second argument is
+				 * _always_on (0 for all three at lines 3029-3031);
+				 * default_use=1 is an unrelated rpm_vreg_pdata
+				 * field for regulator-framework binding, not a
+				 * runtime always-on flag.
+				 *
+				 * Hardware-verified on running legacy webOS
+				 * 2.6.35 via novacom (sysfs regulator):
+				 *   8901_l4: state=disabled, num_users=0
+				 *   8901_l5: state=enabled,  num_users=1 (sdcc1 vmmc)
+				 *   8901_l6: state=disabled, num_users=0
+				 *
+				 * So L4 and L6 are never enabled by legacy — drop
+				 * the spurious always-on. L5 stays always-on
+				 * because sdcc1 already pulls it up via vmmc-supply
+				 * and legacy keeps it enabled, but the AO is now
+				 * defensive (sdcc1 binding would enable it on its
+				 * own).
 				 */
 				pm8901_l4: l4 {
 					regulator-min-microvolt = <2600000>;
 					regulator-max-microvolt = <2600000>;
 					bias-pull-down;
-					regulator-always-on;
 				};
 				pm8901_l5: l5 {
 					regulator-min-microvolt = <2850000>;
@@ -488,7 +498,6 @@
 					regulator-min-microvolt = <2200000>;
 					regulator-max-microvolt = <2200000>;
 					bias-pull-down;
-					regulator-always-on;
 				};
 
 				/* s0 and s1 are SAW regulators controlled over SPM */
