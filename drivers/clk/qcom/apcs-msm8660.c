@@ -555,7 +555,7 @@ static int l2_cpufreq_notifier(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
-static struct notifier_block l2_cpufreq_nb = {
+static struct notifier_block l2_cpufreq_nb __maybe_unused = {
 	.notifier_call = l2_cpufreq_notifier,
 };
 
@@ -660,41 +660,16 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 	dev_info(dev, "CPU clock registered at %lu MHz\n",
 		 cpu_clk->current_rate / 1000000);
 
-	/* Initialize L2 SCPLL — only once, by first CPU to probe */
-	if (!l2_initialized) {
-		struct resource *l2_res;
-
-		l2_res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-						      "l2-scpll");
-		if (l2_res) {
-			l2_scpll_base = devm_ioremap(dev, l2_res->start,
-						     resource_size(l2_res));
-			if (!l2_scpll_base) {
-				dev_warn(dev, "Failed to map L2 SCPLL\n");
-				goto skip_l2;
-			}
-
-			l2_clk_sel_base = acc_base + SPSS_L2_CLK_SEL;
-
-			/*
-			 * Don't calibrate L2 SCPLL — the bootloader
-			 * already did it and left it running in NORMAL
-			 * mode at 432 MHz. l2_set_freq() detects this
-			 * and avoids power-cycling the SCPLL.
-			 */
-
-			ret = cpufreq_register_notifier(&l2_cpufreq_nb,
-						CPUFREQ_TRANSITION_NOTIFIER);
-			if (ret) {
-				dev_warn(dev, "L2 cpufreq notifier failed\n");
-				goto skip_l2;
-			}
-
-			l2_initialized = true;
-			dev_info(dev, "L2 SCPLL scaling initialized\n");
-		}
-	}
-skip_l2:
+	/*
+	 * L2 SCPLL scaling disabled: switching L2 CLK_SEL from the PLL
+	 * divider mux (bootloader/legacy default) to SCPLL while CPUs are
+	 * running from cache causes intermittent very-early-boot hangs.
+	 * Hardware-verified via novacom on legacy webOS 2.6.35: L2 CLK_SEL
+	 * stays at 0x00000000 even at 1.5 GHz CPU. Keep L2 at the
+	 * bootloader default to match legacy. Re-enable via a quiesced
+	 * (stop_machine + cache-clean) path if the L2 perf gain is needed.
+	 */
+	dev_info(dev, "L2 SCPLL scaling disabled (boot hang workaround)\n");
 
 	return 0;
 }
