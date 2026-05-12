@@ -370,6 +370,16 @@ __v7_scorpion_setup:
 	orr	r0, r0, #(1 << 21)		@ Scorpion MP optimal bit
 	mcr	p15, 3, r0, c15, c0, 2		@ WCP15_L2CPUCR final
 
+	/*
+	 * SPCR (p15,0,c9,c7,0) = 0x0F: enable all Scorpion error
+	 * reporting. Per legacy webOS bootloader arch-init-scorpion.S:
+	 * 326-329, the reset value of this register is "unpredictable
+	 * for most bits", so it must be programmed for deterministic
+	 * error reporting behaviour. We have not been writing it.
+	 */
+	mov	r0, #0x0F
+	mcr	p15, 0, r0, c9, c7, 0		@ WCP15_SPCR
+
 	/* BPCR: Enable full branch history and address participation */
 	movw	r0, #0x01FF
 	movt	r0, #0x01FF
