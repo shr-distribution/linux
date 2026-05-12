@@ -343,6 +343,33 @@ __v7_scorpion_setup:
 	movt	r0, #0xC005
 	mcr	p15, 3, r0, c15, c0, 1		@ WCP15_L2CR0
 
+	/*
+	 * L2CPUCR (p15,3,c15,c0,2): L2 CPU control register.
+	 *
+	 * Two writes here, matching what legacy webOS does at two
+	 * different stages:
+	 *   1. Bootloader (arch-init-scorpion.S:319-324) writes 0xe0 —
+	 *      bits [7:5] enable L2 parity error reporting for modified,
+	 *      tag, and data parity errors. Reset value is unpredictable
+	 *      per the comment; rewriting is required for deterministic
+	 *      operation.
+	 *   2. Legacy proc-v7.S SCORPIONMP block (lines 270-273) further
+	 *      ORs bit 21, commented as "optimal setting for Scorpion MP".
+	 *      This is the runtime tweak our mainline has been missing.
+	 *
+	 * Earlier audits in this tree confused this encoding (p15,3,
+	 * c15,c0,2) with BPCR (p15,7,c15,c0,2) — the CRn/CRm/op2 match,
+	 * only opc1 differs. They are distinct registers.
+	 *
+	 * Do the base write then the RMW so we're robust against TZ
+	 * having wiped the bootloader's value.
+	 */
+	mov	r0, #0xe0
+	mcr	p15, 3, r0, c15, c0, 2		@ WCP15_L2CPUCR base
+	mrc	p15, 3, r0, c15, c0, 2		@ read back
+	orr	r0, r0, #(1 << 21)		@ Scorpion MP optimal bit
+	mcr	p15, 3, r0, c15, c0, 2		@ WCP15_L2CPUCR final
+
 	/* BPCR: Enable full branch history and address participation */
 	movw	r0, #0x01FF
 	movt	r0, #0x01FF
