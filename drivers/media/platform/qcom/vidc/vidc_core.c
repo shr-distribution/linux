@@ -1009,6 +1009,105 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 	return 0;
 }
 
+/*
+ * Apply codec-specific configuration that the firmware can't auto-
+ * derive from the bitstream. Called after vidc_open_channel() and
+ * before the first SEQ_HEADER submission so any per-codec register
+ * writes happen on a freshly-opened channel.
+ *
+ * Codec-specific knobs from legacy DDL (vcd_ddl_vidc.c +
+ * vcd_ddl_properties.c):
+ *
+ *   H.264         — none (firmware parses entropy_sel / profile /
+ *                   level from the SPS itself)
+ *   MPEG-4 / H.263— post-loop-filter control (legacy
+ *                   vidc_1080p_set_decode_mpeg4_pp_filter; 2-bit
+ *                   LF_CONTROL field at legacy REG_152500 / +0x848)
+ *   DivX 3        — manual width/height override (legacy
+ *                   vidc_1080p_set_decode_divx3_resolution_ch0;
+ *                   width at legacy REG_175608, height at REG_612810
+ *                   / +0x2050); the bitstream lacks resolution info
+ *                   so the host must supply it
+ *   VC-1          — RCV-format resolution swap
+ *   MPEG-2        — none
+ *
+ * Currently only the H.264 path is exercised end-to-end. The
+ * non-H.264 entries are wired as stubs with WARN_ONCE so a user
+ * trying to feed those codecs into the driver gets a clear hint
+ * that the codec-specific config is incomplete, rather than a
+ * silent FRAME_DATA stall. Each stub also documents the legacy
+ * register offset that needs decoding against this kernel's
+ * vidc_core.h to be enabled.
+ */
+int vidc_apply_dec_codec_config(struct vidc_inst *inst)
+{
+	struct vidc_core *core = inst->core;
+
+	switch (inst->codec) {
+	case VIDC_CODEC_H264_DEC:
+		/* Firmware reads entropy/profile/level from SPS itself */
+		return 0;
+
+	case VIDC_CODEC_MPEG2_DEC:
+		/* No host-side codec config required */
+		return 0;
+
+	case VIDC_CODEC_MPEG4_DEC:
+	case VIDC_CODEC_H263_DEC:
+		/*
+		 * Legacy programs MPEG-4 post-loop-filter via
+		 * REG_152500 (absolute offset 0x848 in the VIDC reg
+		 * block). The mainline vidc_core.h register map doesn't
+		 * yet name this; without datasheet confirmation of the
+		 * mapping I won't blindly poke an unverified offset.
+		 *
+		 * Without this register write the decoder still
+		 * produces frames, but with the default post-filter
+		 * configuration which legacy didn't trust enough to
+		 * leave alone. Visual artifacts at block boundaries
+		 * are the expected symptom.
+		 */
+		dev_warn_once(core->dev,
+			      "MPEG-4/H.263 decode without post-filter config (legacy REG_152500)\n");
+		return 0;
+
+	case VIDC_CODEC_DIVX311_DEC:
+	case VIDC_CODEC_DIVX412_DEC:
+	case VIDC_CODEC_DIVX502_DEC:
+	case VIDC_CODEC_DIVX503_DEC:
+		/*
+		 * DivX 3.11 in particular has no resolution info in
+		 * its bitstream; legacy hard-codes it via
+		 * vidc_1080p_set_decode_divx3_resolution_ch0
+		 * (REG_175608 width + REG_612810 height,
+		 * absolute offset 0x2050 for height). Without this
+		 * the decoder will fault on the first SEQ_HEADER
+		 * because it can't derive frame dimensions.
+		 */
+		dev_warn_once(core->dev,
+			      "DivX %d decode without resolution override - SEQ_HEADER likely to fail\n",
+			      inst->codec);
+		return 0;
+
+	case VIDC_CODEC_VC1_DEC:
+	case VIDC_CODEC_VC1_RCV_DEC:
+		/*
+		 * VC-1 RCV-format streams need a resolution-swap
+		 * register write. AP/MP profiles parse from the
+		 * bitstream and don't need it.
+		 */
+		dev_warn_once(core->dev,
+			      "VC-1 decode without RCV resolution swap\n");
+		return 0;
+
+	default:
+		dev_warn_once(core->dev,
+			      "unknown codec %d - no codec config applied\n",
+			      inst->codec);
+		return 0;
+	}
+}
+
 void vidc_free_buffers(struct vidc_inst *inst)
 {
 	struct vidc_core *core = inst->core;
