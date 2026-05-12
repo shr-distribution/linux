@@ -630,7 +630,13 @@
 					bias-pull-down;
 				};
 				pm8058_l12: l12 {
-					/* USB OTG power */
+					/*
+					 * 1.8V. No consumer on Tenderloin (matches legacy
+					 * webOS which also leaves L12 unused — USB-OTG
+					 * uses L6/L7 in both legacy and mainline). The
+					 * prior "USB OTG power" comment was a copy-paste
+					 * from another board and was incorrect.
+					 */
 					regulator-min-microvolt = <1800000>;
 					regulator-max-microvolt = <1800000>;
 					bias-pull-down;
@@ -650,17 +656,35 @@
 					bias-pull-down;
 				};
 				pm8058_l16: l16 {
+					/*
+					 * 1.8V. Schematic function: BB HF_PLL, HDMI,
+					 * MIPI_CSI, CAP_TS, LCD2_MIMP (Topaz3G schematic
+					 * VREG_L16A_1V8). On Tenderloin only the lm8502
+					 * LED controller references it via vcc-supply.
+					 *
+					 * always-on matches legacy webOS, where
+					 * board-tenderloin.c:RPM_VREG_INIT_LDO has
+					 * _always_on=1 for PM8058_L16 — one of the five
+					 * authentic legacy AO rails (L16, L21, S3, S4,
+					 * PM8901_LVS0). Hardware-verified enabled on
+					 * running legacy webOS 2.6.35.
+					 */
 					regulator-min-microvolt = <1800000>;
 					regulator-max-microvolt = <1800000>;
 					bias-pull-down;
-					/*
-					 * RPM driver can't handle always-on regulators that are
-					 * supplied by regulators initialized after them.
-					 */
 					regulator-always-on;
 				};
 				pm8058_l17: l17 {
-					// 1.5V according to schematic
+					/*
+					 * 2.6V, RF SWITCHES per Topaz3G schematic
+					 * (VREG_L17A net labelled "2V8" but function
+					 * column says 2.6V; legacy DT and mainline both
+					 * set 2.6V, so the "2V8" net name is stale).
+					 *
+					 * 3G-variant only — no consumer on WiFi
+					 * Tenderloin. The prior "1.5V according to
+					 * schematic" comment was wrong.
+					 */
 					regulator-min-microvolt = <2600000>;
 					regulator-max-microvolt = <2600000>;
 					bias-pull-down;
@@ -683,13 +707,19 @@
 					bias-pull-down;
 				};
 				pm8058_l21: l21 {
+					/*
+					 * 1.2V. Schematic function: NT_PLL, PXO (Topaz3G
+					 * schematic VREG_L21A_1V2; schematic annotation
+					 * lists 1.1V nominal but both legacy and mainline
+					 * operate at 1.2V).
+					 *
+					 * always-on matches legacy webOS — one of the
+					 * five authentic legacy AO rails. No DT consumer
+					 * needed; the AO flag drives the rail by itself.
+					 */
 					regulator-min-microvolt = <1200000>;
 					regulator-max-microvolt = <1200000>;
 					bias-pull-down;
-					/*
-					 * RPM driver can't handle always-on regulators that are
-					 * supplied by regulators initialized after them.
-					 */
 					regulator-always-on;
 				};
 				pm8058_l22: l22 {
