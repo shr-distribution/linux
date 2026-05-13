@@ -335,22 +335,6 @@ static int qcom_boot_secondary(unsigned int cpu, int (*func)(unsigned int))
 
 static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 {
-	/*
-	 * On MSM8660 (Scorpion-MP), `qcom_cpu_die` is just `wfi()` — the
-	 * CPU is supposed to stay powered and wake on the wake-IPI sent
-	 * by qcom_boot_secondary below. In practice, after a hotplug-down
-	 * cycle the IPI alone does not wake CPU1 on this hardware: the
-	 * SPM state machine retains the last-programmed low-power mode
-	 * (SPC or PC if cpuidle had used those) and the CPU drops into
-	 * actual power-collapse on the next wfi.
-	 *
-	 * Force the per-cpu `cold_boot_done` flag back to false so the
-	 * full scss_release_secondary sequence (clear GFS clamp, release
-	 * CPU reset, set CORE_PWRDUP) re-runs on every online attempt,
-	 * not just the first cold boot. That brings the CPU back from
-	 * power-collapse reliably.
-	 */
-	per_cpu(cold_boot_done, cpu) = false;
 	return qcom_boot_secondary(cpu, scss_release_secondary);
 }
 
