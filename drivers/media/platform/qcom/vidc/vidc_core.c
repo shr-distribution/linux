@@ -96,7 +96,32 @@ static void vidc_clk_disable(struct vidc_core *core)
 	clk_disable_unprepare(core->iface_clk);
 }
 
-int vidc_hw_reset(struct vidc_core *core)
+/*
+ * Bring the VIDC core out of reset and arm the firmware boot.
+ *
+ * Mirrors legacy webOS DDL bring-up sequence
+ * (webos-linux-kernel-touchpad/drivers/video/msm/vidc/1080p/ddl/
+ * vcd_ddl_vidc.c:30 ddl_vidc_core_init):
+ *
+ *   1. SW_RESET stage 1: progressively assert resets on VI, RISC,
+ *      VIDCCORE+DMX. msleep(1) between stage 1 and stage 2 (legacy
+ *      DDL_SW_RESET_SLEEP).
+ *   2. SW_RESET stage 2: full RESET_ALL then release everything
+ *      except RISC. RISC stays held in reset across the DRAM_BASE
+ *      programming so it doesn't speculatively fetch from
+ *      DRAM_BASE = 0 (stale value from before our write).
+ *   3. Program DRAM_BASE_A/B with the 128 KB-aligned firmware
+ *      physical address (caller pre-shifts by 17). Hardware field
+ *      is bits [31:17] of the register.
+ *   4. AXI halt + reset + burst config + per-channel inst ID init
+ *      + clear pending cmd/response registers.
+ *   5. Release SW_RESET (RESET_NONE). This is the point the RISC
+ *      begins executing the firmware from DRAM_BASE_A; once the
+ *      firmware boot stub initialises, it fires an unsolicited
+ *      RISC2HOST FW_STATUS_RET IRQ which vidc_boot_firmware()
+ *      waits on before issuing SYS_INIT.
+ */
+int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 {
 	u32 axi_status;
 	int timeout = 100;
@@ -110,9 +135,19 @@ int vidc_hw_reset(struct vidc_core *core)
 		   VIDC_RESET_NONE & ~(VIDC_RESET_VI | VIDC_RESET_RISC |
 				       VIDC_RESET_VIDCCORE | VIDC_RESET_DMX));
 
+	msleep(1);
+
 	/* Stage 2: Full reset then bring RISC out of reset */
 	vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_ALL);
 	vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_RISC);
+
+	/*
+	 * Program DRAM_BASE_A/B while the RISC is held in reset, so the
+	 * first instruction fetch after RESET_NONE points at the firmware
+	 * we just memcpy'd into the coherent buffer.
+	 */
+	vidc_write(core, VIDC_REG_DRAM_BASE_A, dram_base_shifted);
+	vidc_write(core, VIDC_REG_DRAM_BASE_B, dram_base_shifted);
 
 	/* Halt AXI */
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_HALT_REQ);
@@ -269,6 +304,20 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		cmd, arg1, arg2, inst);
 
 	switch (cmd) {
+	case VIDC_RESP_FW_STATUS:
+		/*
+		 * Unsolicited "RISC is alive" announcement raised once the
+		 * boot stub finishes its DMA-init handshake after we
+		 * released SW_RESET. vidc_boot_firmware() blocks on this
+		 * completion before sending SYS_INIT — the firmware will
+		 * silently drop a SYS_INIT that arrives ahead of its own
+		 * FW_STATUS_RET, which is the failure mode the mainline
+		 * driver hit pre-fix (SYS_INIT timeout, no IRQ).
+		 */
+		dev_dbg(core->dev, "Firmware status ack (FW_STATUS_RET)\n");
+		complete(&core->fw_status_done);
+		break;
+
 	case VIDC_RESP_SYS_INIT:
 		dev_info(core->dev, "Firmware initialized\n");
 		complete(&core->sys_init_done);
@@ -529,14 +578,47 @@ int vidc_boot_firmware(struct vidc_core *core)
 		return 0;
 
 	/*
-	 * Program DRAM_BASE_A/B with the physical address of the firmware
-	 * buffer. The register field is bits [31:17] = phys >> 17.
+	 * Arm both boot-handshake completions before kicking the RISC.
+	 * FW_STATUS_RET fires from inside vidc_hw_reset() once we release
+	 * the RISC from SW_RESET, so the completion must be initialised
+	 * before that release happens — otherwise the IRQ slips in and
+	 * complete()s a completion that won't be wait_for_completion'd
+	 * until later, which is harmless but masks ordering errors.
 	 */
-	vidc_write(core, VIDC_REG_DRAM_BASE_A, core->fw_dma_addr >> 17);
-	vidc_write(core, VIDC_REG_DRAM_BASE_B, core->fw_dma_addr >> 17);
-
+	reinit_completion(&core->fw_status_done);
 	reinit_completion(&core->sys_init_done);
-	ret = vidc_send_cmd(core, VIDC_CMD_SYS_INIT, 0, 0, 0, 0);
+
+	/*
+	 * Drive the full reset sequence and program DRAM_BASE_A/B in the
+	 * window between stage-2 reset and RESET_NONE. The function ends
+	 * with RESET_NONE which is the actual "RISC, go fetch and run"
+	 * trigger — from that point the firmware boot stub will fire
+	 * FW_STATUS_RET when it's done with its DMA-init handshake.
+	 */
+	ret = vidc_hw_reset(core, core->fw_dma_addr >> 17);
+	if (ret) {
+		dev_err(core->dev, "hw reset failed before SYS_INIT: %d\n",
+			ret);
+		return ret;
+	}
+
+	if (!wait_for_completion_timeout(&core->fw_status_done,
+					 msecs_to_jiffies(1000))) {
+		dev_err(core->dev,
+			"FW_STATUS_RET timeout (firmware did not come alive after SW_RESET release)\n");
+		return -ETIMEDOUT;
+	}
+
+	/*
+	 * Issue SYS_INIT with arg1 = the size of the firmware-adjacent
+	 * coherent allocation. Legacy DDL passes the equivalent
+	 * (DDL_FW_INST_GLOBAL_CONTEXT_SPACE_SIZE) so the firmware can
+	 * verify it has enough memory to fit its instance context block
+	 * (replies in SYS_INIT_RET arg1 with the size it actually needs;
+	 * if our value were smaller, the firmware would reject).
+	 */
+	ret = vidc_send_cmd(core, VIDC_CMD_SYS_INIT,
+			    core->fw_alloc_size, 0, 0, 0);
 	if (ret) {
 		dev_err(core->dev, "failed to send SYS_INIT: %d\n", ret);
 		return ret;
@@ -1510,29 +1592,6 @@ void vidc_free_buffers(struct vidc_inst *inst)
 	inst->dpb_inited = false;
 }
 
-int vidc_core_init(struct vidc_core *core)
-{
-	int ret;
-
-	ret = vidc_clk_enable(core);
-	if (ret)
-		return ret;
-
-	ret = vidc_hw_reset(core);
-	if (ret) {
-		vidc_clk_disable(core);
-		return ret;
-	}
-
-	ret = vidc_load_firmware(core);
-	if (ret) {
-		vidc_clk_disable(core);
-		return ret;
-	}
-
-	return 0;
-}
-
 void vidc_core_deinit(struct vidc_core *core)
 {
 	vidc_unload_firmware(core);
@@ -1553,6 +1612,7 @@ static int vidc_probe(struct platform_device *pdev)
 	core->dev = dev;
 	mutex_init(&core->lock);
 	spin_lock_init(&core->irqlock);
+	init_completion(&core->fw_status_done);
 	init_completion(&core->sys_init_done);
 
 	/*
