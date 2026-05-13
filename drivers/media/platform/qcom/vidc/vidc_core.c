@@ -137,9 +137,23 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 
 	msleep(1);
 
-	/* Stage 2: Full reset then bring RISC out of reset */
+	/*
+	 * Stage 2: Full reset, then release everything except RISC.
+	 *
+	 * The second write here mirrors legacy webOS DDL's
+	 * VIDC_1080P_RESET_RISC = 0x3fe (i.e. VIDC_RESET_NONE & ~BIT(0)):
+	 * all blocks released, *only* the RISC core held in reset across
+	 * the DRAM_BASE programming that follows. Writing the single-bit
+	 * mask VIDC_RESET_RISC (= BIT(0)) here would do the OPPOSITE —
+	 * hold every block in reset *except* RISC, including VIDCCORE +
+	 * COMMON which gate the AHB slave interface — and the very next
+	 * writel() hangs in arm_heavy_mb (dsb waiting for the store to
+	 * drain on a now-dead bus). That was the symptom of the original
+	 * mainline bug fixed here.
+	 */
 	vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_ALL);
-	vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_RISC);
+	vidc_write(core, VIDC_REG_SW_RESET,
+		   VIDC_RESET_NONE & ~VIDC_RESET_RISC);
 
 	/*
 	 * Program DRAM_BASE_A/B while the RISC is held in reset, so the
