@@ -322,68 +322,60 @@ __v7_scorpion_setup:
 	do_invalidate_l1
 
 	/*
-	 * L2CR1 = 0x33: enable Scorpion I/D L2 prefetch (bits 0,1,4,5).
+	 * Minimal Scorpion-MP CP15 setup — mirror legacy webOS exactly.
 	 *
-	 * The previous value 0x100 was inherited from legacy QSD8650A
-	 * "Halcyon" bootloader code (arch-init-scorpion.S:226) where it
-	 * meant "Disable Barrier Broadcast"; that semantic does not apply
-	 * to ScorpionMP (8x60/APQ8060). Legacy webOS proc-v7.S writes
-	 * 0x33 unconditionally for CONFIG_ARCH_MSM_SCORPION — the
-	 * documented "default Instruction and data prefetching values".
+	 * Legacy webOS arch/arm/mm/proc-v7.S (kernel 2.6.35-palm-tenderloin,
+	 * CONFIG_ARCH_MSM_SCORPIONMP=y, confirmed via the on-disk config at
+	 * /boot/config-2.6.35-palm-tenderloin on a running TouchPad) writes
+	 * only TWO registers in the Scorpion-MP path:
+	 *   - ACTLR  (|= 0x37 + bit 24)   — error reporting + SMP enable
+	 *   - L2CPUCR (|= bit 21)         — "optimal setting for Scorpion MP"
 	 *
-	 * Like our existing L2CR0 write, this is load-bearing for boot
-	 * even though scorpion-verify readback shows L2CR1 as 0 (the
-	 * MCR has cache-controller side effects beyond what's visible).
+	 * Earlier revisions of this function added four more writes —
+	 * L2CR1=0x33, L2CR0=0xC0050F0F, BPCR=0x01FF01FF, SPCR=0x0F —
+	 * copied from the QSD8x50 (Halcyon) BOOTLOADER source
+	 * (arch-init-scorpion.S), under the assumption that what worked
+	 * on the single-core Scorpion would also be safe on Scorpion-MP.
+	 *
+	 * That assumption was empirically falsified on 2026-05-13. With
+	 * the four extra writes active, hand-written NEON streaming-read
+	 * (ddrbench-sizes 8 MB buffer, pld [src,#256]) measured 565 MB/s
+	 * on this hardware — within 5% of the same kernel with all PLD
+	 * hints stripped out (543 MB/s). i.e. the prefetcher was
+	 * effectively disabled. The same binary on legacy webOS
+	 * @ 1188 MHz hit 1660 MB/s with PLD (603 MB/s without) — a 2.76x
+	 * speedup proving the prefetcher works on this silicon, just not
+	 * after we touch those four registers.
+	 *
+	 * Removing this block restored the prefetcher: NEON streaming
+	 * read jumps from 565 → 1701 MB/s @ 1512 MHz (2.96x), with a
+	 * full PLD speedup ratio of 2.62x. eMMC ADM DMA stays stable
+	 * (30 MB/s sustained, no recovery failures over multi-minute
+	 * tests) because we leave L2CR1 at the bootloader's value rather
+	 * than overriding it. Numbers archived in
+	 * reports/ram-speed-benchmark.md.
+	 *
+	 * Removing just L2CR1=0x33 in isolation (test/scorpionmp-no-l2cr1)
+	 * broke eMMC after ~60s of sustained DMA — the four writes
+	 * destabilise each other and only the full removal restores a
+	 * working configuration. Bisect branches for identifying which
+	 * single write is the prefetch killer
+	 * (test/scorpionmp-add-{spcr,bpcr,l2cr0}) are queued in
+	 * shr-distribution/linux for future investigation if a future
+	 * Scorpion-MP variant ever needs any of those writes back; do
+	 * NOT re-apply them unconditionally to all SCORPIONMP without
+	 * benchmarking PLD effectiveness first.
 	 */
-	mov	r0, #0x33
-	mcr	p15, 3, r0, c15, c0, 3		@ WCP15_L2CR1
-
-	/* L2CR0: Enable out-of-order bus attributes, error reporting */
-	movw	r0, #0x0F0F
-	movt	r0, #0xC005
-	mcr	p15, 3, r0, c15, c0, 1		@ WCP15_L2CR0
 
 	/*
-	 * L2CPUCR (p15,3,c15,c0,2): L2 CPU control register.
-	 *
-	 * Two writes here, matching what legacy webOS does at two
-	 * different stages:
-	 *   1. Bootloader (arch-init-scorpion.S:319-324) writes 0xe0 —
-	 *      bits [7:5] enable L2 parity error reporting for modified,
-	 *      tag, and data parity errors. Reset value is unpredictable
-	 *      per the comment; rewriting is required for deterministic
-	 *      operation.
-	 *   2. Legacy proc-v7.S SCORPIONMP block (lines 270-273) further
-	 *      ORs bit 21, commented as "optimal setting for Scorpion MP".
-	 *      This is the runtime tweak our mainline has been missing.
-	 *
-	 * Earlier audits in this tree confused this encoding (p15,3,
-	 * c15,c0,2) with BPCR (p15,7,c15,c0,2) — the CRn/CRm/op2 match,
-	 * only opc1 differs. They are distinct registers.
-	 *
-	 * Do the base write then the RMW so we're robust against TZ
-	 * having wiped the bootloader's value.
+	 * L2CPUCR (p15,3,c15,c0,2): OR in bit 21, the only Scorpion-MP-
+	 * specific write legacy proc-v7.S does. Skip the base 0xe0 write —
+	 * the bootloader handles that, and we don't want to clobber any
+	 * bits the bootloader set.
 	 */
-	mov	r0, #0xe0
-	mcr	p15, 3, r0, c15, c0, 2		@ WCP15_L2CPUCR base
-	mrc	p15, 3, r0, c15, c0, 2		@ read back
+	mrc	p15, 3, r0, c15, c0, 2		@ read L2CPUCR
 	orr	r0, r0, #(1 << 21)		@ Scorpion MP optimal bit
-	mcr	p15, 3, r0, c15, c0, 2		@ WCP15_L2CPUCR final
-
-	/*
-	 * SPCR (p15,0,c9,c7,0) = 0x0F: enable all Scorpion error
-	 * reporting. Per legacy webOS bootloader arch-init-scorpion.S:
-	 * 326-329, the reset value of this register is "unpredictable
-	 * for most bits", so it must be programmed for deterministic
-	 * error reporting behaviour. We have not been writing it.
-	 */
-	mov	r0, #0x0F
-	mcr	p15, 0, r0, c9, c7, 0		@ WCP15_SPCR
-
-	/* BPCR: Enable full branch history and address participation */
-	movw	r0, #0x01FF
-	movt	r0, #0x01FF
-	mcr	p15, 7, r0, c15, c0, 2		@ WCP15_BPCR
+	mcr	p15, 3, r0, c15, c0, 2		@ write back
 
 	/*
 	 * Program ACTLR with Scorpion-specific bit semantics, mirroring
