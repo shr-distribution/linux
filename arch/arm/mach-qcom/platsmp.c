@@ -6,6 +6,8 @@
  *  Copyright (c) 2014 The Linux Foundation. All rights reserved.
  */
 
+#include <linux/cache.h>
+#include <linux/export.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/delay.h>
@@ -16,6 +18,9 @@
 #include <linux/io.h>
 #include <linux/firmware/qcom/qcom_scm.h>
 
+#include <asm/barrier.h>
+#include <asm/cacheflush.h>
+#include <asm/outercache.h>
 #include <asm/smp_plat.h>
 
 
@@ -43,6 +48,33 @@
 #define APCS_SAW2_2_VCTL	0x1c
 
 extern void secondary_startup_arm(void);
+
+/*
+ * Holding-pen shared variable for MSM8660 (Scorpion-MP) SMP bring-up.
+ *
+ * msm8660_secondary_startup (arch/arm/mach-qcom/headsmp.S) is the
+ * cold-boot entry pointed at by qcom_scm_set_cold_boot_addr — CPU1
+ * lands there when scss_release_secondary takes it out of reset and
+ * sits in a wfe loop polling this variable. The boot CPU writes
+ * pen_release = cpu, flushes the cache line, executes `sev`, and
+ * (defensively) sends a wakeup IPI. CPU1 sees its own id in
+ * pen_release, writes -1 back as ack, and branches to
+ * secondary_startup.
+ *
+ * Why this matters: GIC SGI delivery to a CPU in plain wfi is
+ * unreliable on this silicon (the SGI is "marked pending" but the
+ * handler never runs — observed as idle=N/1/0x40000000 in RCU
+ * stalls). Wake via the WFE/SEV event mechanism plus a memory token
+ * is what legacy webOS uses for the same reason.
+ *
+ * Volatile + flushed-on-write keeps the writer's update visible to
+ * the reader running with cache off. Cacheline-aligned to avoid false
+ * sharing with adjacent global state.
+ */
+volatile int pen_release __cacheline_aligned = -1;
+EXPORT_SYMBOL(pen_release);
+
+extern void msm8660_secondary_startup(void);
 
 #ifdef CONFIG_HOTPLUG_CPU
 static void qcom_cpu_die(unsigned int cpu)
@@ -358,9 +390,83 @@ static int qcom_boot_secondary(unsigned int cpu, int (*func)(unsigned int))
 	return ret;
 }
 
+/*
+ * MSM8660 (Scorpion-MP) boot_secondary using pen_release + sev.
+ *
+ * Mirrors what legacy webOS does (the qcom_boot_secondary above is a
+ * plain "IPI and hope" mechanism that works on most QC SoCs but is
+ * not reliable on Scorpion-MP; the IPI sometimes doesn't wake CPU1).
+ *
+ * Sequence:
+ *   1. cold-boot path: scss_release_secondary takes CPU1 out of reset
+ *      so it lands at msm8660_secondary_startup (the cold-boot addr
+ *      set by msm8660_smp_prepare_cpus). On warm hotplug-up the CPU is
+ *      already in our headsmp.S wfe loop from qcom_cpu_die.
+ *   2. Write pen_release = cpu and flush the cache line — CPU1 reads
+ *      pen_release from DRAM with cache off, so we MUST flush before
+ *      it can see the new value.
+ *   3. asm("sev") wakes any CPU sitting in wfe (which includes CPU1
+ *      polling pen_release in headsmp.S).
+ *   4. dsb() ensures the SEV is globally observed before the IPI.
+ *   5. arch_send_wakeup_ipi_mask is the belt-and-braces backup —
+ *      delivers an SGI just in case the SEV path is somehow missed.
+ *      Harmless if CPU1 is already past the wfe loop.
+ *   6. Poll pen_release until CPU1 writes -1 (the ack from
+ *      msm8660_secondary_startup), with a SECONDARY_CPU_WAIT_MS
+ *      cap (~10 ms) to avoid wedging if CPU1 truly never starts.
+ */
+#define SECONDARY_CPU_WAIT_MS	10
+
 static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 {
-	return qcom_boot_secondary(cpu, scss_release_secondary);
+	int ret;
+	int cnt = 0;
+
+	if (!per_cpu(cold_boot_done, cpu)) {
+		ret = scss_release_secondary(cpu);
+		if (ret)
+			return ret;
+		per_cpu(cold_boot_done, cpu) = true;
+	}
+
+	/*
+	 * Release CPU1 from the holding pen via pen_release + sev.
+	 * Cache is off on CPU1 at this point so we must flush our
+	 * write all the way to DRAM before signalling.
+	 */
+	pen_release = cpu;
+	__cpuc_flush_dcache_area((void *)&pen_release, sizeof(pen_release));
+	outer_clean_range(__pa(&pen_release),
+			  __pa(&pen_release) + sizeof(pen_release));
+	dsb(ishst);
+	sev();
+
+	/* Backup: also poke via IPI in case sev didn't take. */
+	arch_send_wakeup_ipi_mask(cpumask_of(cpu));
+
+	/*
+	 * Wait for CPU1 to acknowledge by writing pen_release back to
+	 * -1 (mvn r7,#0; str r7,[r6] in headsmp.S). We have to
+	 * invalidate our cache line each iteration because CPU1's ack
+	 * is a memory write with cache off, so it won't appear in our
+	 * cached view automatically.
+	 */
+	while (pen_release != -1) {
+		__cpuc_flush_dcache_area((void *)&pen_release, sizeof(pen_release));
+		outer_inv_range(__pa(&pen_release),
+				__pa(&pen_release) + sizeof(pen_release));
+		if (cnt++ >= SECONDARY_CPU_WAIT_MS)
+			break;
+		usleep_range(1000, 1500);
+	}
+
+	if (pen_release != -1) {
+		pr_warn("CPU%u: pen_release ack timed out (pen=%d)\n",
+			cpu, pen_release);
+		return -ETIMEDOUT;
+	}
+
+	return 0;
 }
 
 static int cortex_a7_boot_secondary(unsigned int cpu, struct task_struct *idle)
@@ -392,8 +498,27 @@ static void __init qcom_smp_prepare_cpus(unsigned int max_cpus)
 	}
 }
 
+/*
+ * MSM8660 needs the holding-pen stub (msm8660_secondary_startup) as the
+ * cold-boot address rather than the generic secondary_startup_arm —
+ * see headsmp.S and pen_release for why.
+ */
+static void __init msm8660_smp_prepare_cpus(unsigned int max_cpus)
+{
+	int cpu;
+
+	if (qcom_scm_set_cold_boot_addr(msm8660_secondary_startup)) {
+		for_each_present_cpu(cpu) {
+			if (cpu == smp_processor_id())
+				continue;
+			set_cpu_present(cpu, false);
+		}
+		pr_warn("Failed to set CPU boot address, disabling SMP\n");
+	}
+}
+
 static const struct smp_operations smp_msm8660_ops __initconst = {
-	.smp_prepare_cpus	= qcom_smp_prepare_cpus,
+	.smp_prepare_cpus	= msm8660_smp_prepare_cpus,
 	.smp_boot_secondary	= msm8660_boot_secondary,
 #ifdef CONFIG_HOTPLUG_CPU
 	.cpu_die		= qcom_cpu_die,
