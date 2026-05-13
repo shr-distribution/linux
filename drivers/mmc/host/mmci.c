@@ -535,6 +535,28 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		clk |= variant->clkreg_neg_edge_enable;
 
 	mmci_write_clkreg(host, clk);
+
+	/*
+	 * Legacy webOS msm_sdcc waits 50 us after every MMCICLOCK write
+	 * (msm_sdcc.c:1173 udelay(50)) before issuing further register
+	 * writes or starting a data transfer. The generic mmci_reg_delay
+	 * called by other callers only waits ndelay(120) once cclk is
+	 * above 25 MHz — 400x shorter than legacy — which leaves the
+	 * SDCC controller's clock-divider re-lock window straddling the
+	 * subsequent DPSM start. On the Tenderloin SanDisk SEM32G that's
+	 * enough to push the first large multi-block READ at HS rates
+	 * past the data-line setup margin: DATACRCFAIL on the first
+	 * 256 KB transfer after probe, recovery CMD6 SWITCH then times
+	 * out and the bus falls back to 1-bit / 5.4 MB/s for the rest
+	 * of the session.
+	 *
+	 * Match legacy's 50 us settle here so callers don't need to
+	 * remember an extra delay. Gated on qcom_datactrl_delay so other
+	 * mmci variants (PL180, ST, STM32, ux500) keep their lower
+	 * ndelay path.
+	 */
+	if (variant->qcom_datactrl_delay)
+		udelay(50);
 }
 
 static void mmci_dma_release(struct mmci_host *host)
