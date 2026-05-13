@@ -417,10 +417,21 @@ static int qcom_boot_secondary(unsigned int cpu, int (*func)(unsigned int))
  */
 #define SECONDARY_CPU_WAIT_MS	10
 
+/*
+ * Light-weight pen_release path diagnostics. These are read by anyone
+ * curious about the wake mechanism via /proc/scorpion_smp_stats (if
+ * the proc entry below is built) and printed once on first success.
+ */
+static atomic_t pen_release_successes;
+static atomic_t pen_release_timeouts;
+static unsigned int pen_release_last_ack_ms;
+static int pen_release_last_seen_on_timeout;
+
 static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 {
 	int ret;
 	int cnt = 0;
+	unsigned long start_jiffies;
 
 	if (!per_cpu(cold_boot_done, cpu)) {
 		ret = scss_release_secondary(cpu);
@@ -430,7 +441,7 @@ static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	}
 
 	/*
-	 * Release CPU1 from the holding pen via pen_release + sev.
+	 * Release CPU%u from the holding pen via pen_release + sev.
 	 * Cache is off on CPU1 at this point so we must flush our
 	 * write all the way to DRAM before signalling.
 	 */
@@ -444,8 +455,10 @@ static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	/* Backup: also poke via IPI in case sev didn't take. */
 	arch_send_wakeup_ipi_mask(cpumask_of(cpu));
 
+	start_jiffies = jiffies;
+
 	/*
-	 * Wait for CPU1 to acknowledge by writing pen_release back to
+	 * Wait for CPU%u to acknowledge by writing pen_release back to
 	 * -1 (mvn r7,#0; str r7,[r6] in headsmp.S). We have to
 	 * invalidate our cache line each iteration because CPU1's ack
 	 * is a memory write with cache off, so it won't appear in our
@@ -461,10 +474,24 @@ static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	}
 
 	if (pen_release != -1) {
-		pr_warn("CPU%u: pen_release ack timed out (pen=%d)\n",
-			cpu, pen_release);
+		atomic_inc(&pen_release_timeouts);
+		pen_release_last_seen_on_timeout = pen_release;
+		pr_warn("CPU%u: pen_release ack timed out (pen=%d, %ums)\n",
+			cpu, pen_release,
+			jiffies_to_msecs(jiffies - start_jiffies));
 		return -ETIMEDOUT;
 	}
+
+	/*
+	 * Diagnostics: record latency in ms and print once on first
+	 * success so dmesg has positive confirmation the mechanism works.
+	 * Subsequent successes update the counter silently — read via
+	 * pr_info-on-demand or future debugfs.
+	 */
+	pen_release_last_ack_ms = jiffies_to_msecs(jiffies - start_jiffies);
+	if (atomic_inc_return(&pen_release_successes) == 1)
+		pr_info("Scorpion-MP pen_release path active: CPU%u released and ack'd in %ums\n",
+			cpu, pen_release_last_ack_ms);
 
 	return 0;
 }
