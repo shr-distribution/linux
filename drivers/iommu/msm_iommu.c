@@ -18,6 +18,7 @@
 #include <linux/iommu.h>
 #include <linux/clk.h>
 #include <linux/err.h>
+#include <linux/of.h>
 
 #include <asm/cacheflush.h>
 #include <linux/sizes.h>
@@ -726,8 +727,28 @@ fail:
 	return result;
 }
 
+/*
+ * Multimedia master compatibles that need IOMMU-translated DMA via
+ * vb2_dma_contig / dma_alloc_coherent. Selecting IOMMU_DOMAIN_DMA for
+ * these makes of_dma_configure set dma_ops to iommu_dma_ops at probe,
+ * so dma_alloc_coherent returns iovas that the SMMU can translate.
+ *
+ * Without this, the framework defaults to IOMMU_DOMAIN_IDENTITY and
+ * the SMMU faults at ~60 kHz when these masters start DMA (observed
+ * 2026-05-13 on Gemini: "Unexpected IOMMU page fault in context 1
+ * FAR = 7c74cXXX" — the engine was reading raw CMA physical addresses
+ * because of_dma_configure had not switched dma_ops over to
+ * iommu_dma_ops).
+ */
+static const char * const msm_iommu_dma_compatibles[] = {
+	"qcom,msm8660-gemini",   /* JPEG encoder (ijpeg_iommu) */
+	NULL,
+};
+
 static int msm_iommu_def_domain_type(struct device *dev)
 {
+	const char * const *p;
+
 	/*
 	 * Default to identity (passthrough) domain so that the IOMMU
 	 * framework does not attach a DMA paging domain during bus probe.
@@ -736,7 +757,16 @@ static int msm_iommu_def_domain_type(struct device *dev)
 	 * DMA from the bootloader (e.g. display framebuffer scanning).
 	 * Drivers that need IOMMU translation (like DRM/MSM) create
 	 * their own paging domain after safely quiescing their hardware.
+	 *
+	 * Exception: multimedia masters using vb2_dma_contig need
+	 * iommu_dma_ops set up at probe (see msm_iommu_dma_compatibles
+	 * above).
 	 */
+	for (p = msm_iommu_dma_compatibles; *p; p++) {
+		if (of_device_is_compatible(dev->of_node, *p))
+			return IOMMU_DOMAIN_DMA;
+	}
+
 	return IOMMU_DOMAIN_IDENTITY;
 }
 
