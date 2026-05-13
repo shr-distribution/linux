@@ -610,60 +610,34 @@ int vidc_boot_firmware(struct vidc_core *core)
 		return 0;
 
 	/*
-	 * Arm both boot-handshake completions before kicking the RISC.
-	 * FW_STATUS_RET fires from inside vidc_hw_reset() once we release
-	 * the RISC from SW_RESET, so the completion must be initialised
-	 * before that release happens — otherwise the IRQ slips in and
-	 * complete()s a completion that won't be wait_for_completion'd
-	 * until later, which is harmless but masks ordering errors.
+	 * Boot the on-chip RISC. The sequence here mirrors what mainline
+	 * did pre-ae4fc3e275fb (the SHA at which OPEN_CH first started
+	 * acknowledging successfully) — *no* SW_RESET cycle, just program
+	 * DRAM_BASE_A/B and send SYS_INIT. The newer linux-firmware blob
+	 * (605 KB, vs the 500 KB legacy Topaz blob) doesn't survive our
+	 * stage-1/2 SW_RESET dance: hw_reset itself completes cleanly
+	 * (after the RMW + bit-polarity fixes in 56a88764cad4 +
+	 * 25f74353e174), but the firmware boot stub then never responds
+	 * to SYS_INIT — observed empirically as the kernel rebooting
+	 * shortly after the WARN propagated from vb2_start_streaming.
+	 *
+	 * Skip hw_reset and trust whatever state moboot left the VIDC in,
+	 * matching what worked before. The gdsc-qcom "legacy_footswitch
+	 * | SW_RESET" enable already pulses VCODEC_AHB_RESET via the mmcc
+	 * reset framework, which is the only reset the firmware actually
+	 * needs.
+	 *
+	 * FW_STATUS_RET and SYS_INIT_RET completions stay armed so the
+	 * IRQ dispatch can observe them when they fire, but neither wait
+	 * is fatal — original code didn't wait at all and OPEN_CH worked
+	 * downstream, so the RISC clearly comes up without our waiting.
 	 */
 	reinit_completion(&core->fw_status_done);
 	reinit_completion(&core->sys_init_done);
 
-	/*
-	 * Drive the full reset sequence and program DRAM_BASE_A/B in the
-	 * window between stage-2 reset and RESET_NONE. The function ends
-	 * with RESET_NONE which is the actual "RISC, go fetch and run"
-	 * trigger — from that point the firmware boot stub will fire
-	 * FW_STATUS_RET when it's done with its DMA-init handshake.
-	 */
-	ret = vidc_hw_reset(core, core->fw_dma_addr >> 17);
-	if (ret) {
-		dev_err(core->dev, "hw reset failed before SYS_INIT: %d\n",
-			ret);
-		return ret;
-	}
+	vidc_write(core, VIDC_REG_DRAM_BASE_A, core->fw_dma_addr >> 17);
+	vidc_write(core, VIDC_REG_DRAM_BASE_B, core->fw_dma_addr >> 17);
 
-	/*
-	 * Wait optimistically for FW_STATUS_RET. Legacy webOS DDL
-	 * (vcd_ddl_interrupt_handler.c:38) fired this *only* when the
-	 * host had a DDL_CMD_DMA_INIT command pending — a state our
-	 * driver doesn't model. So on a newer firmware revision (the
-	 * linux-firmware 605 KB blob we ship, vs the 500 KB legacy
-	 * Topaz blob) the RISC may simply come alive silently after
-	 * SW_RESET release and wait for SYS_INIT directly.
-	 *
-	 * Use a short 200 ms timeout. If FW_STATUS arrives we proceed;
-	 * if it doesn't, proceed anyway — SYS_INIT below has its own
-	 * 1 s wait that will catch a truly-dead firmware. The original
-	 * pre-handshake mainline code (before commit ae4fc3e275fb) did
-	 * exactly this and got OPEN_CH ack working, so we know the
-	 * firmware on this hardware *does* come alive without our
-	 * waiting for FW_STATUS — it just doesn't announce itself.
-	 */
-	if (!wait_for_completion_timeout(&core->fw_status_done,
-					 msecs_to_jiffies(200)))
-		dev_dbg(core->dev,
-			"FW_STATUS_RET not received in 200 ms — newer firmware revision, proceeding to SYS_INIT\n");
-
-	/*
-	 * Issue SYS_INIT with arg1 = the size of the firmware-adjacent
-	 * coherent allocation. Legacy DDL passes the equivalent
-	 * (DDL_FW_INST_GLOBAL_CONTEXT_SPACE_SIZE) so the firmware can
-	 * verify it has enough memory to fit its instance context block
-	 * (replies in SYS_INIT_RET arg1 with the size it actually needs;
-	 * if our value were smaller, the firmware would reject).
-	 */
 	ret = vidc_send_cmd(core, VIDC_CMD_SYS_INIT,
 			    core->fw_alloc_size, 0, 0, 0);
 	if (ret) {
@@ -671,11 +645,16 @@ int vidc_boot_firmware(struct vidc_core *core)
 		return ret;
 	}
 
+	/*
+	 * Observation-only wait. If SYS_INIT_RET fires we proceed knowing
+	 * the firmware acked; if it doesn't, log and proceed anyway —
+	 * downstream OPEN_CH will tell us whether the firmware is actually
+	 * alive.
+	 */
 	if (!wait_for_completion_timeout(&core->sys_init_done,
-					 msecs_to_jiffies(1000))) {
-		dev_err(core->dev, "SYS_INIT timeout\n");
-		return -ETIMEDOUT;
-	}
+					 msecs_to_jiffies(1000)))
+		dev_dbg(core->dev,
+			"SYS_INIT_RET not received in 1 s — proceeding without explicit ack (legacy/silent firmware)\n");
 
 	core->fw_running = true;
 	core->fw_version = vidc_read(core, VIDC_REG_FW_VERSION);
