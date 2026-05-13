@@ -2357,6 +2357,18 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	}
 	host->clock_cache = ios->clock;
 
+	/*
+	 * Legacy msm_sdcc waits "at least 2 MCLK cycles" after clk_set_rate
+	 * before reprogramming MMCICLOCK, to let the SDC core resync to the
+	 * new RCG rate. Without this, MMCICLOCK can be sampled mid-transition
+	 * and the controller lands in an indeterminate state — observed as
+	 * intermittent DATACRCFAIL on the first transfer after a rate change
+	 * (~1/4 cold boots on TouchPad). Formula 1 + 3000000/clock matches
+	 * legacy msmsdcc_delay(): 1 us at 48 MHz, 8 us at 400 kHz.
+	 */
+	if (host->variant->qcom_datactrl_delay && ios->clock)
+		udelay(1 + 3000000 / ios->clock);
+
 	spin_lock_irqsave(&host->lock, flags);
 
 	if (host->ops && host->ops->set_clkreg)
@@ -2365,6 +2377,17 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		mmci_set_clkreg(host, ios->clock);
 
 	mmci_set_max_busy_timeout(mmc);
+
+	/*
+	 * Legacy msm_sdcc waits 50 us between MMCICLOCK and MMCIPOWER writes.
+	 * This is during the card-init MCI_PWR_OFF -> MCI_PWR_UP -> MCI_PWR_ON
+	 * power-state machine, where the controller needs MMCICLOCK to have
+	 * stabilised before the power register changes. mmci_reg_delay() runs
+	 * *after* both writes, which doesn't guarantee a stable clock when
+	 * MMCIPOWER samples the bus. Add the gap legacy explicitly waits for.
+	 */
+	if (host->variant->qcom_datactrl_delay)
+		udelay(50);
 
 	if (host->ops && host->ops->set_pwrreg)
 		host->ops->set_pwrreg(host, pwr);
