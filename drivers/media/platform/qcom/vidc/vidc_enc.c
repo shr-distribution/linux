@@ -921,6 +921,7 @@ static int vidc_enc_open(struct file *file)
 
 	v4l2_fh_init(&inst->fh, core->vfd_enc);
 	inst->fh.ctrl_handler = &inst->ctrl_handler;
+	inst->fh.m2m_ctx = inst->m2m_ctx;	/* required by v4l2_m2m_fop_mmap */
 	file->private_data = &inst->fh;
 	v4l2_fh_add(&inst->fh, file);
 
