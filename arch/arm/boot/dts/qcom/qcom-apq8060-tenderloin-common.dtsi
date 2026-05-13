@@ -2917,6 +2917,32 @@
 		 */
 		wlf,ldo2ena-gpios = <&tlmm 108 GPIO_ACTIVE_HIGH>;
 
+		/*
+		 * Disable the codec's regmap-irq chip.
+		 *
+		 * Runtime I2C reads of the codec's IRQ status registers
+		 * (0x730/0x731/0x738/0x739) return -ENXIO on this board.
+		 * Without DSP firmware loaded the codec never has anything
+		 * useful to report there anyway, but if the IRQ chip is
+		 * registered then the threaded handler spins trying to ack
+		 * a status it can't read, turning irq/N-wm8994 into a CPU
+		 * hog (~7% of CPU0 on 1512 MHz Scorpion, observed
+		 * 2026-05-13 on kernel g6bb2931b38ee).
+		 *
+		 * Side effect we accept: jack/mic detect via the codec's
+		 * internal logic is unavailable. We don't lose anything
+		 * because the codec's set_jack op returns -ENOTSUPP here
+		 * regardless (no DSP), and the apq8060-lpaif sound driver
+		 * has a GPIO-based fallback (HEAD_MIC_DET on TLMM 57) that
+		 * now becomes claimable since IRQ 58 isn't held by the
+		 * codec's regmap-irq.
+		 *
+		 * This is decoupled from wlf,ldo-ena-always-driven (which
+		 * also skips the codec SOFTWARE_RESET at probe — we DO
+		 * want the reset, just not the IRQ chip).
+		 */
+		wlf,disable-irq;
+
 		/* GPIO configuration for WM8958 internal GPIOs */
 		wlf,gpio-cfg = <
 			0x0041  /* GPIO1: AUDIO_AMP_EN - output high to enable amp */
