@@ -242,7 +242,7 @@
 				 <&gcc ADM0_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
-			qcom,ee = <1>;
+			qcom,ee = <0>;
 
 			/*
 			 * EBI interconnect path for DMA memory access.
@@ -274,7 +274,7 @@
 				 <&gcc ADM1_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
-			qcom,ee = <1>;
+			qcom,ee = <0>;
 
 			/*
 			 * EBI interconnect path for DMA memory access.
