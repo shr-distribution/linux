@@ -12,6 +12,7 @@
 
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/firmware.h>
 #include <linux/interconnect.h>
 #include <linux/interrupt.h>
@@ -1522,6 +1523,30 @@ static int vidc_probe(struct platform_device *pdev)
 	mutex_init(&core->lock);
 	spin_lock_init(&core->irqlock);
 	init_completion(&core->sys_init_done);
+
+	/*
+	 * Set up DMA parameters needed by vb2_dma_contig. Without this,
+	 * the first VIDIOC_MMAP from userspace crashes the kernel in
+	 * vb2_mmap → dma_get_max_seg_size → NULL deref on dev->dma_parms.
+	 * Discovered 2026-05-13 when v4l2-ctl --stream-out-mmap on
+	 * /dev/video6 took down the device:
+	 *   Unable to handle kernel NULL pointer dereference at 0x000001b8
+	 *   PC is at vb2_mmap+0x60/0x2bc
+	 *   LR is at v4l2_m2m_fop_mmap+0x3c/0x40
+	 *
+	 * 32-bit DMA mask is correct for this hardware — VIDC uses
+	 * sub-4GB physical addresses (CMA region at 0x7c000000-0x7dffffff).
+	 */
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (ret) {
+		dev_err(dev, "failed to set DMA mask: %d\n", ret);
+		return ret;
+	}
+	dev->dma_parms = devm_kzalloc(dev, sizeof(*dev->dma_parms),
+				      GFP_KERNEL);
+	if (!dev->dma_parms)
+		return -ENOMEM;
+	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
 	INIT_LIST_HEAD(&core->instances);
 
 	/* Map registers */
