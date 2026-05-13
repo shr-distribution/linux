@@ -15,6 +15,7 @@
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
+#include <linux/ratelimit.h>
 #include <linux/iommu.h>
 #include <linux/clk.h>
 #include <linux/err.h>
@@ -712,10 +713,34 @@ irqreturn_t msm_iommu_fault_handler(int irq, void *dev_id)
 	for (i = 0; i < iommu->ncb; i++) {
 		fsr = GET_FSR(iommu->base, i);
 		if (fsr) {
-			dev_err(iommu->dev,
-				"Unexpected IOMMU page fault in context %d\n",
-				i);
-			print_ctx_regs(iommu->dev, iommu->base, i);
+			/*
+			 * Rate-limit BOTH the dev_err header line AND the
+			 * print_ctx_regs() multi-line dump together. On
+			 * Tenderloin/APQ8060 with Gemini using the IDENTITY
+			 * (passthrough) default domain — necessary because
+			 * IOMMU_DOMAIN_DMA with msm_iommu deadlocks the
+			 * system — every JPEG encode generates thousands of
+			 * these prints. The engine reads raw CMA physical
+			 * addresses, the SMMU has no mapping for them, but
+			 * the read still completes through the passthrough
+			 * so the encode produces correct output. The "fault"
+			 * is purely a logging event, not a data error. At
+			 * full rate the prints saturate netconsole and hide
+			 * everything else.
+			 *
+			 * Keep the FSR clear and IRQ_HANDLED accounting
+			 * outside the ratelimit gate — those are functional,
+			 * not logging.
+			 */
+			static DEFINE_RATELIMIT_STATE(rs,
+				DEFAULT_RATELIMIT_INTERVAL,
+				DEFAULT_RATELIMIT_BURST);
+			if (__ratelimit(&rs)) {
+				dev_err(iommu->dev,
+					"Unexpected IOMMU page fault in context %d\n",
+					i);
+				print_ctx_regs(iommu->dev, iommu->base, i);
+			}
 			SET_FSR(iommu->base, i, 0x4000000F);
 			result = IRQ_HANDLED;
 		}
