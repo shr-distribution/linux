@@ -640,8 +640,43 @@ static int regrw_value_get(void *data, u64 *val)
 	return 0;
 }
 
+/*
+ * On-demand MMIO register WRITE for cycle-counter / state-leak debugging.
+ *
+ * Set regrw_offset first (word offset, a2xx.xml convention), then
+ * write a value to regrw_value to push it to the GPU MMIO.
+ *
+ *   echo 0xee2          > /sys/kernel/debug/dri/0/regrw_offset
+ *   echo 0x15020202     > /sys/kernel/debug/dri/0/regrw_value
+ *
+ * Used to test the cycle-counter at word 0x0ee2 (byte 0x3b88) -
+ * an undocumented TC/TP-area state register that advances per render
+ * and drives the period-16 A22X render cycle.  Writing the kernel-
+ * boot value before each render should pin the cycle if the register
+ * is the upstream state machine driver.
+ *
+ * Same CAP_SYS_ADMIN gate as read.  Use with care - arbitrary MMIO
+ * writes can crash the GPU.
+ */
+static int regrw_value_set(void *data, u64 val)
+{
+	struct drm_device *dev = data;
+	struct msm_drm_private *priv = dev->dev_private;
+	struct msm_gpu *gpu = priv->gpu;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	if (!gpu)
+		return -ENODEV;
+
+	pm_runtime_get_sync(&gpu->pdev->dev);
+	gpu_write(gpu, a2xx_regrw_offset, (u32)val);
+	pm_runtime_put_sync(&gpu->pdev->dev);
+	return 0;
+}
+
 DEFINE_DEBUGFS_ATTRIBUTE(regrw_value_fops,
-			 regrw_value_get, NULL, "0x%08llx\n");
+			 regrw_value_get, regrw_value_set, "0x%08llx\n");
 
 void a2xx_debugfs_init(struct msm_gpu *gpu, struct drm_minor *minor)
 {
@@ -668,7 +703,7 @@ void a2xx_debugfs_init(struct msm_gpu *gpu, struct drm_minor *minor)
 	 */
 	debugfs_create_file_unsafe("regrw_offset", 0600, minor->debugfs_root,
 				   dev, &regrw_offset_fops);
-	debugfs_create_file_unsafe("regrw_value", 0400, minor->debugfs_root,
+	debugfs_create_file_unsafe("regrw_value", 0600, minor->debugfs_root,
 				   dev, &regrw_value_fops);
 
 	/* Initialize debug/test infrastructure */
