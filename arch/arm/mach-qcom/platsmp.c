@@ -49,6 +49,31 @@ static void qcom_cpu_die(unsigned int cpu)
 {
 	wfi();
 }
+
+/*
+ * MSM8660/APQ8060 (Scorpion-MP) hotplug-down/up cycle does NOT work
+ * reliably with mainline's wfi()+IPI mechanism. CPU1 enters wfi via
+ * qcom_cpu_die but never wakes from a subsequent IPI: it goes into a
+ * state ("CPU1: failed to come online") that nothing in the platsmp
+ * path recovers. See `project_cpu1_hotplug_complex.md` for the full
+ * diagnosis.
+ *
+ * Until we have a working power-collapse + wake path that matches
+ * legacy webOS (which used MPM-routed wake events plus secondary_
+ * startup re-entry — MPM itself is currently disabled in our DT, so
+ * that path is blocked), the safe behaviour is to refuse hotplug-
+ * down on MSM8660 entirely. Both CPUs stay online from boot, which
+ * is what existing test workloads expect anyway.
+ *
+ * Userspace `echo 0 > /sys/.../cpu1/online` will return -EBUSY with
+ * a clear error rather than silently breaking. cpu_can_disable is
+ * the right hook — it gates the whole offline path at the cpuhp
+ * framework level before cpu_disable/cpu_die get invoked.
+ */
+static bool msm8660_cpu_can_disable(unsigned int cpu)
+{
+	return false;
+}
 #endif
 
 static int scss_release_secondary(unsigned int cpu)
@@ -372,6 +397,7 @@ static const struct smp_operations smp_msm8660_ops __initconst = {
 	.smp_boot_secondary	= msm8660_boot_secondary,
 #ifdef CONFIG_HOTPLUG_CPU
 	.cpu_die		= qcom_cpu_die,
+	.cpu_can_disable	= msm8660_cpu_can_disable,
 #endif
 };
 CPU_METHOD_OF_DECLARE(qcom_smp, "qcom,gcc-msm8660", &smp_msm8660_ops);
