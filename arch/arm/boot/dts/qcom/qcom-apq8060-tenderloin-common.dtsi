@@ -1447,17 +1447,37 @@
 	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
 
 	/* eMMC pins, all 8 data lines connected */
+	/*
+	 * SDC1 (eMMC) pad configuration.
+	 *
+	 * Drive strength reduced from 16 mA / 10 mA to 8 mA across all pins
+	 * to match SDC4's legacy-validated configuration in webOS — same
+	 * controller block, same 48 MHz HS rate.
+	 *
+	 * Legacy board-tenderloin.c sets sdc4_pad_on_drv_cfg = 8 mA for
+	 * CLK / CMD / DATA explicitly, and does NOT override SDC1 drive
+	 * (uses TLMM defaults). With our previous 16 mA CLK / 10 mA
+	 * CMD+DATA, signal edges were aggressive enough to cause
+	 * intermittent DATACRCFAIL on cold-boot eMMC reads (~1-in-3 boots),
+	 * with the boot-time bias matching the silicon edge-rate
+	 * temperature dependence (cold = sharper = more ringing).
+	 *
+	 * 8 mA is the empirically-validated value on the same silicon for
+	 * a similar 48 MHz workload (SDC4 SDIO at 4-bit). eMMC is 8-bit
+	 * vs SDC4's 4-bit but the per-pin signal-integrity envelope is
+	 * the same.
+	 */
 	emmc_pins: sdcc1-state {
 		clk-pins {
 			pins = "gpio167"; /* SDC1 CLK */
 			function = "sdc1";
-			drive-strength = <16>;
+			drive-strength = <8>;
 			bias-disable;
 		};
 		cmd-pins {
 			pins = "gpio168"; /* SDC1 CMD */
 			function = "sdc1";
-			drive-strength = <10>;
+			drive-strength = <8>;
 			bias-pull-up;
 		};
 		data-pins {
@@ -1465,7 +1485,7 @@
 			pins = "gpio159", "gpio160", "gpio161", "gpio162",
 				 "gpio163", "gpio164", "gpio165", "gpio166";
 			function = "sdc1";
-			drive-strength = <10>;
+			drive-strength = <8>;
 			bias-pull-up;
 		};
 	};
