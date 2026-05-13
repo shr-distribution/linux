@@ -211,6 +211,76 @@ priority than mmci-pl18x's DMA reads, the CPU loses ground every
 time the eMMC does a burst. Legacy webOS likely sets AP higher.
 This would be a tunable in the `qnoc-msm8660` interconnect provider.
 
+## 2026-05-13 (later) — eMMC re-test on the minimal Scorpion-MP kernel
+
+After landing the minimal `__v7_scorpion_setup` (commit
+`2a0c9af18904` on `tenderloin/6.18/upstream-patches`, dropping the
+four speculative CP15 writes — see ram-speed-benchmark.md for the
+PLD-prefetch story), eMMC was re-measured to confirm DMA stability.
+
+**Kernel:** `6.18.0-luneos-gce854abe059f` (= functionally identical
+to the new main HEAD `2a0c9af18904` — just a polished commit message).
+**Config:** CPU0 perf gov @ 1512 MHz, CPU1 offline, 100 MB sequential
++ 1000 random 4 KiB.
+
+### Sequential read
+
+| Block size | DMA-fix Throughput |
+|-----------:|-------------------:|
+| 4 KiB      |  5.6 MB/s          |
+| 16 KiB     | 15.1 MB/s          |
+| 64 KiB     | 23.4 MB/s          |
+| 256 KiB    | 28.8 MB/s          |
+| **1 MiB**  | **29.5 MB/s**      |
+
+### Random 4 KiB read
+
+| Pattern        | Throughput | IOPS |
+|---------------:|----------:|----:|
+| Random 4 KiB   | 4.2 MB/s | **1077 IOPS** |
+
+### CPU usage during 200 MB sustained read
+
+```
+%Cpu(s):  5.1 us,  7.7 sy,  0.0 ni, 15.4 id, 71.8 wa
+209715200 bytes (210 MB, 200 MiB) copied, 7.10358 s, 29.5 MB/s
+```
+
+**71.8% in I/O wait** — DMA is fully offloading the transfer. CPU is
+free to do other work during sustained eMMC I/O. Same as on the
+prior DMA-fix kernel — the CPU-side prefetch change doesn't affect
+eMMC DMA pathway.
+
+### Final summary table
+
+| Pattern        | webOS (ADM DMA) | mainline PIO (pre-fix) | mainline DMA-fix | mainline DMA + minimal-CP15 (HEAD) |
+|---------------:|----------------:|-----------------------:|-----------------:|-----------------------------------:|
+| Seq 4 KiB      |  3.8 MB/s       |  5.6 MB/s              |  4.7 MB/s        |  5.6 MB/s |
+| Seq 16 KiB     | 10.8            | 12.1                   | 11.7             | 15.1 |
+| Seq 64 KiB     | 18.8            | 23.8                   | 22.1             | 23.4 |
+| Seq 256 KiB    | 23.7            | 28.4                   | 26.8             | 28.8 |
+| **Seq 1 MiB**  | **25.4**        | **30.1**               | **28.4**         | **29.5** |
+| Random 4 KiB   | 835 IOPS        | 1038 IOPS              | 895 IOPS         | **1077 IOPS** |
+
+Mainline with DMA + minimal-CP15 is at the **highest random-IOPS
+number we've measured** (1077 vs webOS 835 ADM-DMA, mainline-pre-DMA
+1038). Sequential 1 MiB is at the controller wire ceiling (~30 MB/s).
+
+The DMA fix kernel dipped slightly vs PIO in raw throughput (-5%) but
+recovered with the CP15 fix — likely because the prior bus
+contention was making the CPU side spend cycles polling DMA
+completion, and that's gone now that the prefetcher is also working.
+
+### eMMC is now considered fully resolved on this hardware
+
+All four targeted improvements have landed and verified:
+
+1. ✅ ADM EE selector matches legacy webOS (`qcom,ee=<1>`)
+2. ✅ CH_CONF rewrite skipped (matches legacy webOS — driver trusts
+     bootloader's master-view values)
+3. ✅ Destructive write-probe diagnostic reverted
+4. ✅ Minimal CP15 setup (no L2 controller state mismatch under DMA)
+
 ## Notes
 
 - The 4 KiB sequential-read result (3.8 MB/s) is the worst case and

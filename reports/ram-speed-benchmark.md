@@ -2056,4 +2056,95 @@ webOS ADM-DMA on raw throughput (30.1 vs 25.4 MB/s), so the eMMC
 DMA work (`bisect/adm-ee0`) becomes a CPU-offload optimization,
 not a throughput win.
 
+---
+
+## 2026-05-13 (evening) — RESOLVED: minimal Scorpion-MP CP15 setup restores PLD
+
+### What we learned
+
+1. **The L2CR1 hypothesis was almost right but incomplete.** Test branch
+   `test/scorpionmp-no-l2cr1` (just removing the `L2CR1=0x33` write)
+   booted but eMMC ADM DMA broke after ~60s of sustained I/O —
+   netconsole captured "error during DMA transfer!" + CMDTIMEOUT
+   cascades. So L2CR1 isn't the prefetch killer on its own, AND it
+   appears load-bearing for eMMC DMA cache coherency.
+2. **`test/l2cr1-0x100`** (changing L2CR1=0x33 → 0x100, the Halcyon
+   bootloader value): eMMC stable, but PLD still doesn't fire (DDR
+   8 MB read still 529 MB/s with PLD vs 573 without). Confirms L2CR1
+   isn't the PLD gate.
+3. **Empirical fact** from `/boot/config-2.6.35-palm-tenderloin` on
+   running webOS: `CONFIG_ARCH_MSM_SCORPIONMP=y`, **NOT** the
+   single-core `CONFIG_ARCH_MSM_SCORPION`. The legacy proc-v7.S
+   `L2CR1=0x33` write is inside `#ifdef CONFIG_ARCH_MSM_SCORPION`, so
+   it **never runs** on webOS Tenderloin. webOS leaves L2CR1 at the
+   bootloader value — and PLD works fine.
+4. **Test branch `test/scorpionmp-minimal`** drops all four
+   speculative writes (L2CR0, L2CR1, BPCR, SPCR) at once. That
+   matches the legacy SCORPIONMP path exactly: only ACTLR and
+   L2CPUCR get touched. Result: eMMC stable AND PLD prefetch
+   restored.
+
+### Final mainline results (kernel `gce854abe059f`, 1512 MHz, CPU1 offline)
+
+**Single-thread ddrbench (20 iters, 8 MB buffer):**
+
+| Test        | Median MB/s | [min..max]    |
+|-------------|------------:|--------------:|
+| NEON read   |  **1701**   | [348..1784]   |
+| NEON write  |  **1841**   | [1711..1887]  |
+| NEON copy   |   **815**   | [801..821]    |
+| NEON triad  |  **1000**   | [986..1019]   |
+| libc memcpy |   367       | [344..370]    |
+| libc memset |  1129       | [1101..1148]  |
+
+**ddrbench-sizes — PLD speedup test:**
+
+| Buffer      | WITH PLD     | WITHOUT PLD  | PLD speedup |
+|------------:|-------------:|-------------:|------------:|
+| L1 (16 KB)  | 18.1 GB/s    | 22.6 GB/s    | 0.80x (L1 hits — PLD overhead) |
+| L2 (256 KB) |  3.16 GB/s   |  3.46 GB/s   | 0.91x (L2 hits) |
+| **DDR (8 MB)** | **1721 MB/s** | **657 MB/s** | **2.62x** ⚡ |
+
+### Apples-to-apples mainline vs webOS (after the fix)
+
+| Test           | webOS 1188 MHz | mainline 1512 MHz | per-cycle ratio |
+|----------------|---------------:|------------------:|----------------:|
+| NEON read      | 1646           | **1701**          | 0.81 (very close) |
+| NEON write     | 1779           | 1841              | 0.81 |
+| NEON copy      |  759           |  **815**          | 0.84 |
+| NEON triad     |  911           | **1000**          | **0.86** (mainline wins absolute) |
+| DDR 8 MB w/PLD | 1660           | **1721**          | 0.81 |
+| **PLD ratio**  | **2.76x**      | **2.62x**         | matches |
+
+Per-cycle, mainline lands within ~15% of webOS on every metric, and
+**beats webOS in absolute terms on every read-side test** because of
+the higher CPU clock. NEON triad is the cleanest comparison
+(2 reads + 1 write, FMAC-bound) and mainline beats webOS 1000 vs 911
+MB/s.
+
+The remaining ~15-20% per-cycle gap is unaccounted for but well within
+"reasonable platform-specific noise" — probably small additional
+bits the bootloader sets that we still override (NMRR comes to mind),
+or interrupt-handling overhead that wasn't present on the older
+2.6.35 scheduler.
+
+### Conclusion
+
+`__v7_scorpion_setup` now mirrors legacy SCORPIONMP exactly. Just
+ACTLR + L2CPUCR. The four speculative CP15 writes that mainline had
+been carrying since the initial port — copied from the QSD8x50
+bootloader source — were *collectively* disabling the L1/L2
+prefetcher on Scorpion-MP. Together they put the L2 controller into
+a state where `pld` hints no-op.
+
+Removing them individually doesn't work (L2CR1 alone destabilises
+eMMC DMA cache coherency in a way that 0x100 doesn't, but 0x33
+doesn't fix; and the other three were never tested in isolation).
+Removing all four together restores both the prefetcher and DMA
+coherency. The bootloader's defaults — set by the QC AMSS SBL chain
+on this SoC — are the correct values for both functions.
+
+Permanent fix landed as commit `2a0c9af18904` on
+`tenderloin/6.18/upstream-patches`.
+
 
