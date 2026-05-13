@@ -37,20 +37,30 @@
 			qcom,saw = <&saw0>;
 			cpu-supply = <&saw0_reg>;
 			/*
-			 * cpu-idle-states intentionally not wired up: the deep
-			 * SPM-driven idle states (spc, pc) need MPM to deliver
-			 * IPI/IRQ wakeups when the core is in WFI behind SPM.
-			 * MPM probe is currently disabled on this platform
-			 * (see project_mpm_enable_hangs_post_diagnostic). Without
-			 * a working MPM, CPU1 in spc/pc never wakes — observed
-			 * as workqueue lockup + RCU stall ~minutes into uptime,
-			 * with idle=N/1/0x40000000 (TICK_NOHZ_STOPPED). Fall back
-			 * to arch_cpu_idle (plain WFI) which wakes on any IRQ.
+			 * Wire SPC only (not PC) so cpuidle-qcom-spm handles
+			 * idle via SPM. Bare arch_cpu_idle (plain wfi) on
+			 * Scorpion-MP has an IPI-from-WFI wake bug — IPIs
+			 * delivered while the core is in wfi sometimes don't
+			 * fire the GIC handler, so the CPU stays parked. Both
+			 * cores observed this independently: CPU1 at t=80s on
+			 * a kernel with deep cpuidle disabled, then CPU0 at
+			 * t=154s on the same kernel. SPM-managed idle (SPC)
+			 * works around it because SPM internally arms wake
+			 * sources at idle-entry and steers wake-up back into
+			 * the GIC SGI path on exit — bypassing whatever
+			 * silicon path drops the IPI when bare WFI is active.
 			 *
-			 * Re-add `cpu-idle-states = <&cpu_spc>, <&cpu_pc>;` once
-			 * MPM is wired (the 4 candidate fix paths are sketched in
-			 * project_cpu1_hotplug_complex.md).
+			 * PC (full power collapse) intentionally NOT wired
+			 * because it needs MPM to keep wake interrupts armed
+			 * across the L2-off transition, and MPM is currently
+			 * disabled (project_mpm_enable_hangs_post_diagnostic).
+			 * Without MPM, PC entry would drop wake sources and
+			 * hang the core indefinitely. SPC keeps L1 cache and
+			 * L2 powered, so it works regardless of MPM state.
+			 *
+			 * Re-add `<&cpu_pc>` once MPM probe is wired.
 			 */
+			cpu-idle-states = <&cpu_spc>;
 		};
 
 		cpu1: cpu@1 {
@@ -64,7 +74,8 @@
 			operating-points-v2 = <&cpu_opp_table>;
 			qcom,saw = <&saw1>;
 			cpu-supply = <&saw1_reg>;
-			/* See cpu0 above — deep idle disabled until MPM works */
+			/* See cpu0 above — SPC only, no PC until MPM works */
+			cpu-idle-states = <&cpu_spc>;
 		};
 
 		l2: l2-cache {
