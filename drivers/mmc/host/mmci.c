@@ -1564,38 +1564,6 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 			clk &= ~MCI_CLK_PWRSAVE;
 
 		mmci_write_clkreg(host, clk);
-
-		/*
-		 * Diagnostic: log the SDIO-path clkreg modification and
-		 * the data transfer parameters. Ratelimited so we can see
-		 * the first failing transaction without spamming.
-		 */
-		if (variant->qcom_datactrl_delay) {
-			static DEFINE_RATELIMIT_STATE(rs, HZ, 5);
-
-			if (__ratelimit(&rs))
-				dev_info(mmc_dev(host->mmc),
-					 "start_data SDIO: blksz=%u blocks=%u flags=0x%x clk_reg(pre)=0x%08x clk_reg(written)=0x%08x\n",
-					 data->blksz, data->blocks,
-					 data->flags, host->clk_reg, clk);
-		}
-	} else if (host->variant->qcom_datactrl_delay) {
-		/*
-		 * Diagnostic: log when the SDIO branch is *not* taken on
-		 * the SDIO controller — i.e. host->mmc->card is NULL or
-		 * not yet typed as SDIO. If the failing BMI transaction
-		 * ends up here, the PWRSAVE-off in the SDIO branch never
-		 * applied to it.
-		 */
-		static DEFINE_RATELIMIT_STATE(rs, HZ, 5);
-
-		if (__ratelimit(&rs))
-			dev_info(mmc_dev(host->mmc),
-				 "start_data non-SDIO: blksz=%u blocks=%u flags=0x%x card=%p card_type=%d clk_reg=0x%08x\n",
-				 data->blksz, data->blocks, data->flags,
-				 host->mmc->card,
-				 host->mmc->card ? host->mmc->card->type : -1,
-				 host->clk_reg);
 	}
 
 	if (host->mmc->ios.timing == MMC_TIMING_UHS_DDR50 ||
