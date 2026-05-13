@@ -634,12 +634,27 @@ int vidc_boot_firmware(struct vidc_core *core)
 		return ret;
 	}
 
+	/*
+	 * Wait optimistically for FW_STATUS_RET. Legacy webOS DDL
+	 * (vcd_ddl_interrupt_handler.c:38) fired this *only* when the
+	 * host had a DDL_CMD_DMA_INIT command pending — a state our
+	 * driver doesn't model. So on a newer firmware revision (the
+	 * linux-firmware 605 KB blob we ship, vs the 500 KB legacy
+	 * Topaz blob) the RISC may simply come alive silently after
+	 * SW_RESET release and wait for SYS_INIT directly.
+	 *
+	 * Use a short 200 ms timeout. If FW_STATUS arrives we proceed;
+	 * if it doesn't, proceed anyway — SYS_INIT below has its own
+	 * 1 s wait that will catch a truly-dead firmware. The original
+	 * pre-handshake mainline code (before commit ae4fc3e275fb) did
+	 * exactly this and got OPEN_CH ack working, so we know the
+	 * firmware on this hardware *does* come alive without our
+	 * waiting for FW_STATUS — it just doesn't announce itself.
+	 */
 	if (!wait_for_completion_timeout(&core->fw_status_done,
-					 msecs_to_jiffies(1000))) {
-		dev_err(core->dev,
-			"FW_STATUS_RET timeout (firmware did not come alive after SW_RESET release)\n");
-		return -ETIMEDOUT;
-	}
+					 msecs_to_jiffies(200)))
+		dev_dbg(core->dev,
+			"FW_STATUS_RET not received in 200 ms — newer firmware revision, proceeding to SYS_INIT\n");
 
 	/*
 	 * Issue SYS_INIT with arg1 = the size of the firmware-adjacent
