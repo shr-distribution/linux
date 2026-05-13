@@ -74,6 +74,16 @@ struct spm_reg_data {
 	bool no_seq_ram;	/* SAW v1.0: register-based mode, no sequence RAM */
 
 	smp_call_func_t set_vdd;
+	/*
+	 * Optional hardware-readback for the live voltage selector. When
+	 * NULL the regulator framework reports the cached drv->volt_sel,
+	 * which goes stale on regulators that aren't touched by cpufreq
+	 * (e.g. cpu1_vdd on a single-policy SMP where cpufreq-dt only
+	 * drives one regulator). When provided, spm_get_voltage_sel
+	 * refreshes drv->volt_sel from the SAW status register before
+	 * returning it.
+	 */
+	void (*get_vdd)(struct spm_driver_data *drv);
 	/* for now we support only a single range */
 	struct linear_range *range;
 	unsigned int ramp_delay;
@@ -251,6 +261,7 @@ static const u16 spm_reg_offset_8660[SPM_REG_NR] = {
 
 static void smp_set_vdd_v1_1(void *data);
 static void smp_set_vdd_8660(void *data);
+static void smp_get_vdd_8660(struct spm_driver_data *drv);
 
 /* SPM register data for 8064 */
 static struct linear_range spm_v1_1_regulator_range =
@@ -293,6 +304,7 @@ static const struct spm_reg_data spm_reg_8660_cpu = {
 	.pmic_dly = 0,
 	.no_seq_ram = true,
 	.set_vdd = smp_set_vdd_8660,
+	.get_vdd = smp_get_vdd_8660,
 	.range = &spm_8660_regulator_range,
 	.init_uV = 1100000,		/* awake_vlevel 0xA0 = ~1.1V */
 	.ramp_delay = 1250,
@@ -430,6 +442,16 @@ static int spm_get_voltage_sel(struct regulator_dev *rdev)
 {
 	struct spm_driver_data *drv = rdev_get_drvdata(rdev);
 
+	/*
+	 * If the SoC variant provides a hardware readback, refresh the
+	 * cached selector from the SAW status register. Reads are MMIO
+	 * (readl_relaxed) and can run from any CPU — no IPI required,
+	 * which also means the readback works while the target CPU is
+	 * hotplugged offline.
+	 */
+	if (drv->reg_data->get_vdd)
+		drv->reg_data->get_vdd(drv);
+
 	return drv->volt_sel;
 }
 
@@ -544,6 +566,33 @@ static void smp_set_vdd_8660(void *data)
 	dev_err_ratelimited(drv->dev,
 		"timeout setting voltage: sts=0x%x, requested vlevel=0x%x\n",
 		sts, vlevel);
+}
+
+/*
+ * MSM8660/APQ8060 voltage readback. STS0[17:10] reflects the current PMIC
+ * voltage level (the 8-bit vlevel including the band marker that was last
+ * written to VCTL[7:0]). Strip the band bit (0x80) to recover the pure
+ * volt_sel that the regulator framework uses as a linear-range index.
+ *
+ * Why this exists: the regulator framework's regulator_get_voltage_sel
+ * path returns drv->volt_sel directly, which is only updated when
+ * spm_set_voltage_sel runs. On a single-cpufreq-policy SMP system the
+ * inactive CPU's regulator is never written (cpufreq-dt drives just one
+ * cpu_supply per policy), so its drv->volt_sel stays at init_uV=1100000
+ * indefinitely and sysfs reports a stale ~1.1V even though the SAW is
+ * actually programmed (by the bootloader or by the active core's
+ * master-slave coupling) to the correct higher voltage.
+ *
+ * Reading STS0 is just readl_relaxed on the SAW's MMIO window; safe from
+ * any CPU and works while the regulator's "owner" CPU is hotplugged
+ * offline.
+ */
+static void smp_get_vdd_8660(struct spm_driver_data *drv)
+{
+	unsigned int sts0;
+
+	sts0 = spm_register_read(drv, SPM_REG_STS0);
+	drv->volt_sel = (sts0 >> 10) & 0x7F;  /* mask off band bit (0x80) */
 }
 
 static int spm_get_cpu(struct device *dev)
