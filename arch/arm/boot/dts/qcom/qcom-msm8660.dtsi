@@ -237,11 +237,17 @@
 		 * "Overclock to 1.8GHz" commit (c533dc2, Jan 2012) which has
 		 * a multi-year history of stable use on this hardware.
 		 *
-		 * 1728 MHz @ 1350 mV is moderately overclocked; 1836 MHz at
-		 * 1450 mV is aggressive and depends on silicon binning.
-		 * Mainline has no thermal management on this platform yet —
-		 * sustained top-OPP workloads can overheat the device since
-		 * there's no passive cooling and no tsens-driven throttling.
+		 * 1728 MHz @ 1350 mV is moderately overclocked. The 1836 MHz
+		 * OPP @ 1450 mV — exposed previously — proved unstable under
+		 * sustained DDR / memory-bandwidth load on multiple TouchPad
+		 * silicon binnings: kernel crashes with PSR mode bits scrambled
+		 * to invalid values (USER_26/ISA Jazelle, or "bad mode: 0" in
+		 * the idle thread). Symptom is hardware-level CPU state
+		 * corruption, not a memory or driver bug. Removed until either
+		 * (a) the platform gets tsens-driven throttling and a per-SKU
+		 * Vcore margin policy, or (b) the legacy webOS Vcore ladder
+		 * is replicated more faithfully (legacy used a different
+		 * SAW step structure at the top of the range).
 		 *
 		 * To restrict the max OPP at runtime (e.g. for battery life
 		 * or thermal safety), set
@@ -251,11 +257,6 @@
 		opp-1728000000 {
 			opp-hz = /bits/ 64 <1728000000>;
 			opp-microvolt = <1350000>;
-		};
-
-		opp-1836000000 {
-			opp-hz = /bits/ 64 <1836000000>;
-			opp-microvolt = <1450000>;
 		};
 	};
 
