@@ -322,20 +322,41 @@ __v7_scorpion_setup:
 	do_invalidate_l1
 
 	/*
-	 * L2CR1 = 0x33: enable Scorpion I/D L2 prefetch (bits 0,1,4,5).
+	 * TEST: L2CR1 = 0x100 instead of 0x33.
 	 *
-	 * The previous value 0x100 was inherited from legacy QSD8650A
-	 * "Halcyon" bootloader code (arch-init-scorpion.S:226) where it
-	 * meant "Disable Barrier Broadcast"; that semantic does not apply
-	 * to ScorpionMP (8x60/APQ8060). Legacy webOS proc-v7.S writes
-	 * 0x33 unconditionally for CONFIG_ARCH_MSM_SCORPION — the
-	 * documented "default Instruction and data prefetching values".
+	 * Background: removing the L2CR1 MCR entirely on test branch
+	 * test/scorpionmp-no-l2cr1 (commit 3915507d09f4) broke eMMC ADM
+	 * DMA after ~60s of sustained I/O — confirms the MCR has L2-
+	 * controller side effects on cache coherency for non-CPU masters,
+	 * not just CPU prefetch control. So we must write *something*.
 	 *
-	 * Like our existing L2CR0 write, this is load-bearing for boot
-	 * even though scorpion-verify readback shows L2CR1 as 0 (the
-	 * MCR has cache-controller side effects beyond what's visible).
+	 * BUT 0x33 also doesn't enable PLD-based read prefetching on
+	 * Scorpion-MP per ddrbench-sizes (DDR 8 MB = 565 MB/s with PLD
+	 * vs 543 MB/s without — zero speedup), while webOS at 1188 MHz
+	 * gets 2.76x speedup from PLD (1660 vs 603 MB/s). webOS leaves
+	 * L2CR1 at whatever the bootloader set it to (legacy proc-v7.S
+	 * does NOT write L2CR1 on the SCORPIONMP path).
+	 *
+	 * Try 0x100 — Halcyon (QSD8x50) bootloader value (per
+	 * arch-init-scorpion.S:226). Comment there labels it "Disable
+	 * Barrier Broadcast", but that interpretation came from a
+	 * different SoC and may not be what the bits actually mean on
+	 * Scorpion-MP. If 0x100 keeps the eMMC-coherency side effect
+	 * AND enables read prefetch, that's a clear win.
+	 *
+	 * Pass criteria after flashing:
+	 *   1. Boot + eMMC mount succeed
+	 *   2. ddrbench full survives 200+ MB transfers (no recovery
+	 *      failures, no I/O errors over 5+ minutes of activity)
+	 *   3. ddrbench-sizes DDR 8 MB jumps to ~1500-1700 MB/s with PLD
+	 *
+	 * If eMMC dies again like on test/scorpionmp-no-l2cr1, the MCR
+	 * is even more value-sensitive than expected. If eMMC works but
+	 * PLD still doesn't speed up DDR reads, L2CR1 isn't the gate
+	 * for PLD on this SoC — move investigation to ACTLR / L2CR0 /
+	 * BPCR bits.
 	 */
-	mov	r0, #0x33
+	mov	r0, #0x100
 	mcr	p15, 3, r0, c15, c0, 3		@ WCP15_L2CR1
 
 	/* L2CR0: Enable out-of-order bus attributes, error reporting */
