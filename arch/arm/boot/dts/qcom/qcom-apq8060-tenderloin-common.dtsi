@@ -2125,6 +2125,24 @@
 	max-frequency = <48000000>;
 
 	/*
+	 * Explicit 8-bit data bus. Matches legacy webOS Tenderloin
+	 * platform data:
+	 *
+	 *   CONFIG_MMC_MSM_SDC1_8_BIT_SUPPORT=y in
+	 *   webos-linux-kernel-touchpad/arch/arm/configs/tenderloin_defconfig
+	 *   → board-tenderloin.c:5444 mmc_bus_width = MMC_CAP_8_BIT_DATA
+	 *
+	 * Without this property, mmc_of_parse falls back to "assume 1 bit"
+	 * (drivers/mmc/core/host.c:283 "bus-width property is missing").
+	 * The kernel was previously discovering 8-bit via EXT_CSD probe
+	 * anyway — the partition probe succeeds at 8-bit — but making the
+	 * DT side explicit aligns host->caps with what the controller +
+	 * pads actually support, and matches the property the upstream
+	 * msm8660 sdcc binding documents as expected.
+	 */
+	bus-width = <8>;
+
+	/*
 	 * DMA configuration for QCOM ADM:
 	 * - Channel 2 on ADM1 for both RX and TX (global channel 18)
 	 * - CRCI 1 for SDC1 (passed via qcom,sdcc-crci property)
