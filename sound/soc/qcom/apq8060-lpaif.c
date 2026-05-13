@@ -304,45 +304,56 @@ static int apq8060_lpaif_dai_init(struct snd_soc_pcm_runtime *rtd)
 		snd_jack_set_key(data->jack.jack, SND_JACK_BTN_2, KEY_VOLUMEDOWN);
 
 		/*
-		 * Try the codec's own jack-detect first (WM8958 IRQ-based mic
-		 * detection). On HP TouchPad this is intentionally disabled
-		 * (codec IRQ status registers return I2C ENXIO, so the
-		 * wm8994-core driver clamps wm8994->irq = 0). snd_soc_component
-		 * _set_jack returns -ENOTSUPP in that case and we fall back to
-		 * the GPIO-based detection below.
+		 * Try the codec's own jack-detect first. WM8958 supports
+		 * IRQ-based mic detection via its internal status registers.
+		 * If that succeeds, the codec drives jack events and we MUST
+		 * NOT register the GPIO fallback below: both paths would
+		 * compete for the same TLMM GPIO IRQ line (the codec's IRQ
+		 * output and HEAD_MIC_DET are on the same physical pin) with
+		 * incompatible IRQF_TRIGGER flags — leading to "genirq: Flags
+		 * mismatch irq N" at boot and one path failing.
+		 *
+		 * Only when the codec rejects set_jack with -ENOTSUPP (its
+		 * IRQ wasn't initialised — older boards or boards where the
+		 * codec's IRQ status registers aren't accessible) do we fall
+		 * back to GPIO-based insertion detection.
 		 */
 		ret = snd_soc_component_set_jack(component, &data->jack, NULL);
-		if (ret && ret != -ENOTSUPP) {
-			dev_warn(card->dev, "Failed to set codec jack: %d\n", ret);
-		}
-
-		/*
-		 * GPIO-based headphone insert detection. The
-		 * "headphone-detect-gpios" property on the card node points to
-		 * the HEAD_MIC_DET signal (TLMM GPIO 57 on TouchPad). Falling
-		 * edge = jack inserted; rising edge = jack removed. We don't
-		 * get mic-vs-headphone discrimination or button events from
-		 * this path (those need codec internal logic), but the audio
-		 * subsystem can route speakers <-> headphones correctly based
-		 * on the SND_JACK_HEADPHONE state alone.
-		 *
-		 * If the property is absent (board doesn't have a jack-detect
-		 * GPIO), snd_soc_jack_add_gpiods returns -ENOENT and we skip
-		 * the GPIO path silently. Boards relying solely on the codec
-		 * IRQ path are unaffected.
-		 */
-		ret = snd_soc_jack_add_gpiods(card->dev, &data->jack,
-					      1, &jack_gpio);
-		if (ret == -ENOENT) {
+		if (ret == 0) {
 			dev_info(card->dev,
-				 "no headphone-detect-gpios; codec-only jack detection\n");
-		} else if (ret) {
-			dev_warn(card->dev,
-				 "Failed to set up GPIO jack detect: %d\n",
-				 ret);
+				 "codec-driven jack detection enabled\n");
+		} else if (ret == -ENOTSUPP) {
+			/*
+			 * GPIO-based headphone insert detection (fallback).
+			 * The "headphone-detect-gpios" property on the card
+			 * node points to the HEAD_MIC_DET signal (TLMM GPIO 57
+			 * on TouchPad). Falling edge = jack inserted; rising
+			 * edge = jack removed. We don't get mic-vs-headphone
+			 * discrimination or button events from this path
+			 * (those need codec internal logic), but the audio
+			 * subsystem can route speakers <-> headphones based on
+			 * SND_JACK_HEADPHONE state alone.
+			 *
+			 * If the property is absent (board doesn't have a
+			 * jack-detect GPIO), snd_soc_jack_add_gpiods returns
+			 * -ENOENT and we log and continue without jack
+			 * detection.
+			 */
+			ret = snd_soc_jack_add_gpiods(card->dev, &data->jack,
+						      1, &jack_gpio);
+			if (ret == -ENOENT) {
+				dev_info(card->dev,
+					 "codec-jack unsupported and no GPIO fallback configured; jack events unavailable\n");
+			} else if (ret) {
+				dev_warn(card->dev,
+					 "Failed to set up GPIO jack detect: %d\n",
+					 ret);
+			} else {
+				dev_info(card->dev,
+					 "GPIO-based headphone jack detection enabled (codec fallback)\n");
+			}
 		} else {
-			dev_info(card->dev,
-				 "GPIO-based headphone jack detection enabled\n");
+			dev_warn(card->dev, "Failed to set codec jack: %d\n", ret);
 		}
 
 		data->jack_setup = true;
