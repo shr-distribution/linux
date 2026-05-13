@@ -368,47 +368,6 @@ __v7_scorpion_setup:
 	 */
 
 	/*
-	 * Restore the two writes the QC bootloader source
-	 * (arch-init-scorpion.S in legacy webOS, kernel/mach-msm/) annotates
-	 * as "reset value is unpredictable for most bits" — L2CR0 and SPCR.
-	 *
-	 * These are the SMP-critical pieces of CP15 init that legacy webOS
-	 * inherits from Palm's APPSBL but our (moboot-prefixed) chain may
-	 * not consistently leave in a correct state, particularly for the
-	 * secondary CPU on warm bring-up. With both registers omitted,
-	 * Scorpion-MP exhibits an "IPI delivered while CPU is in WFI never
-	 * fires the GIC handler" hang ~minutes into uptime — the IPI sender
-	 * marks NMI pending on the target (idle=N/1/0x40000000 in RCU
-	 * dumps) but the target stays parked and the handler never runs.
-	 *
-	 * L2CR0 = 0xC0050F0F: bootloader comment says "enable out of order
-	 * bus attributes and error reporting" + "this register comes up
-	 * unpredictable after reset." On Scorpion-MP the L2 sits between
-	 * each CPU's cache interface and the SoC bus to other masters
-	 * including the GIC distributor. If L2 mishandles out-of-order
-	 * accesses, GIC SGI delivery to a CPU sleeping in wfi can be lost.
-	 *
-	 * SPCR  = 0x0F:        bootloader comment says "enable all error
-	 * reporting (reset value is unpredicatble for most bits)." Less
-	 * obviously SMP-relevant on its own but the bootloader pairs it
-	 * with L2CR0 and we want to mirror that exactly.
-	 *
-	 * NOT restored:
-	 *   L2CR1 = 0x33 — empirically kills PLD prefetch (NEON streaming
-	 *     read drops 1701 -> 565 MB/s). The bootloader's L2CR1 default
-	 *     is fine for prefetch; leave it alone.
-	 *   BPCR  = 0x01FF01FF — branch-predictor GHRM tuning, comment
-	 *     says "Different settings can be used to improve performance"
-	 *     i.e. performance-only, not correctness. Leave at hardware
-	 *     default to avoid the prefetch-killer pattern.
-	 */
-	movw	r0, #0x0F0F		@ L2CR0 low half
-	movt	r0, #0xC005		@ L2CR0 high half
-	mcr	p15, 3, r0, c15, c0, 1	@ WCP15_L2CR0
-	mov	r0, #0x0F
-	mcr	p15, 0, r0, c9, c7, 0	@ WCP15_SPCR
-
-	/*
 	 * L2CPUCR (p15,3,c15,c0,2): OR in bit 21, the only Scorpion-MP-
 	 * specific write legacy proc-v7.S does. Skip the base 0xe0 write —
 	 * the bootloader handles that, and we don't want to clobber any
