@@ -2186,6 +2186,19 @@
 	pinctrl-0 = <&sdcc4_pins>, <&wlan_gpios>;
 
 	/*
+	 * 4-bit SDIO bus to the AR6003 (matches legacy
+	 * board-tenderloin.c:5464 mmc_bus_width = MMC_CAP_4_BIT_DATA
+	 * and legacy boot log "mmc1: 4 bit data mode enabled").
+	 * The TLMM "sdc4_data" function group routes 4 lines
+	 * (D0..D3); 8-bit isn't even physically supported on SDC4
+	 * (CONFIG_MMC_MSM_SDC4_8_BIT_SUPPORT is unset in legacy
+	 * tenderloin_defconfig). Without this property, mmc_of_parse
+	 * falls back to 1-bit, which CRCs on the first BMI handshake
+	 * and ath6kl probe fails with -EILSEQ.
+	 */
+	bus-width = <4>;
+
+	/*
 	 * Limit clock to 24MHz for SDIO stability.
 	 * Legacy kernel used msmsdcc_fmid=24000000 for intermediate operations.
 	 * Higher clocks (48MHz) can cause CRC errors with AR6003.
