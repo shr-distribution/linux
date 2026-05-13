@@ -747,16 +747,29 @@ static void adm_start_dma(struct adm_chan *achan)
 
 	if (!achan->initialized) {
 		/*
-		 * Channel should already be initialized from probe,
-		 * but handle late initialization just in case.
-		 * Match webOS: only SHADOW_EN + SEC_DOMAIN in CH_CONF
-		 * IRQ enable goes in RSLT_CONF only
+		 * On MSM8660/APQ8060 (Tenderloin) we INTENTIONALLY do NOT
+		 * rewrite CH_CONF here. The bootloader programs CH_CONF in
+		 * the EE=0 master view with the correct security-domain (SD)
+		 * field for each channel — e.g. ch2 (eMMC) = 0x180008d5 with
+		 * SD=1 (bit 4 set). The ADM scheduler honours those master-
+		 * view values regardless of which EE window the host writes
+		 * commands through.
+		 *
+		 * The previous RMW pattern (clear SEC_DOMAIN(7), set
+		 * SEC_DOMAIN(ee) | SHADOW_EN) was harmless when adev->ee = 1
+		 * because writes to the EE=1 CH_CONF window are silently
+		 * dropped on this SoC. But it became destructive at EE=0
+		 * because writes there DO stick, and SEC_DOMAIN(7) clears
+		 * bit 4 — flipping the SD field from 1 → 0 and causing the
+		 * eMMC channel to stop responding (CMDTIMEOUT on every
+		 * subsequent transfer).
+		 *
+		 * Legacy webOS msm_dmov.c does write CH_CONF, but at EE=1
+		 * where the writes don't stick, so the bootloader values are
+		 * preserved by accident. We replicate the working behaviour
+		 * intentionally: just enable IRQ + FLUSH in RSLT_CONF (which
+		 * IS writable at EE=1) and leave CH_CONF alone.
 		 */
-		u32 conf = readl_relaxed(adev->regs + ADM_CH_CONF(achan->id, adev->ee));
-		conf &= ~ADM_CH_CONF_SEC_DOMAIN(7);
-		conf |= ADM_CH_CONF_SEC_DOMAIN(adev->ee) | ADM_CH_CONF_SHADOW_EN;
-		writel(conf, adev->regs + ADM_CH_CONF(achan->id, adev->ee));
-
 		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
 		       adev->regs + ADM_CH_RSLT_CONF(achan->id, adev->ee));
 
@@ -1141,19 +1154,14 @@ static int adm_dma_probe(struct platform_device *pdev)
 			ADM_CRCI_CTL(i, adev->ee));
 
 	/*
-	 * Initialize channels like webOS kernel:
-	 * - Only write SHADOW_EN and SEC_DOMAIN to CH_CONF (not IRQ_EN)
-	 * - Write IRQ_EN and FLUSH_EN to RSLT_CONF
+	 * Initialize per-channel state. RSLT_CONF gets the IRQ + FLUSH
+	 * enable; CH_CONF is deliberately NOT rewritten — see the long
+	 * comment in the channel-alloc path above for why. The
+	 * bootloader-programmed CH_CONF values (visible in the master
+	 * EE=0 view) carry the correct SD field for each channel and
+	 * must not be touched.
 	 */
 	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
-		u32 conf;
-
-		/* Read current value, modify SD bits, add SHADOW_EN */
-		conf = readl_relaxed(adev->regs + ADM_CH_CONF(i, adev->ee));
-		conf &= ~ADM_CH_CONF_SEC_DOMAIN(7);  /* Clear SD bits */
-		conf |= ADM_CH_CONF_SEC_DOMAIN(adev->ee) | ADM_CH_CONF_SHADOW_EN;
-		writel(conf, adev->regs + ADM_CH_CONF(i, adev->ee));
-
 		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
 		       adev->regs + ADM_CH_RSLT_CONF(i, adev->ee));
 		adev->channels[i].initialized = 1;
