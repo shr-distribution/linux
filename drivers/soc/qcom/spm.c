@@ -294,8 +294,21 @@ static const struct spm_reg_data spm_reg_8064_cpu = {
  * registers during probe can crash the system. We only provide
  * voltage regulation functionality.
  */
+/*
+ * PM8901 SMPS Band 2 spans 700-1400 mV in 12.5 mV steps (selectors 0..56).
+ * The webos-uber-kernel "Overclock to 1.8 GHz" series demonstrates the
+ * controller silently accepts selectors above 56 as well, with the PMIC
+ * tracking the requested voltage up to ~1.6 V — that's what the
+ * `regulator-max-microvolt = <1600000>` in our DT saw0/saw1 nodes is
+ * relying on.
+ *
+ * Extend the linear range to selector 72 so the OPP framework will
+ * accept opp-microvolt values up to 1600 mV. Without this, OPPs at
+ * 1450 mV (1836 MHz overclock target) get marked unsupported and
+ * disappear from cpufreq.
+ */
 static struct linear_range spm_8660_regulator_range =
-	REGULATOR_LINEAR_RANGE(700000, 0, 56, 12500);
+	REGULATOR_LINEAR_RANGE(700000, 0, 72, 12500);
 
 static const struct spm_reg_data spm_reg_8660_cpu = {
 	.reg_offset = spm_reg_offset_8660,

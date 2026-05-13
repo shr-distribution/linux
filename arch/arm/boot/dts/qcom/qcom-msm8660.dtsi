@@ -188,14 +188,23 @@
 			opp-microvolt = <1187500>;
 		};
 
+		/*
+		 * Uber-kernel ships 1242 MHz @ 1.190 V and 1350 MHz @ 1.195 V
+		 * but the SAW regulator (PM8901 SMPS via SPM linear-range)
+		 * snaps to a 12.5 mV grid based at 700 mV — 1190 and 1195
+		 * are not on grid (1187.5 and 1200 are the nearest steps).
+		 * Bump both to 1200 mV (same step as 1458 MHz). Slight
+		 * overvolt but matches an already-validated working point,
+		 * and keeps these OPPs visible in cpufreq.
+		 */
 		opp-1242000000 {
 			opp-hz = /bits/ 64 <1242000000>;
-			opp-microvolt = <1190000>;
+			opp-microvolt = <1200000>;
 		};
 
 		opp-1350000000 {
 			opp-hz = /bits/ 64 <1350000000>;
-			opp-microvolt = <1195000>;
+			opp-microvolt = <1200000>;
 		};
 
 		opp-1458000000 {
