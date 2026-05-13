@@ -1810,3 +1810,250 @@ substantial ground — 1707/2048 = **83% of webOS peak**, up from the
 - Scorpion L2CR0/L2CR1 boot hang was caused by `ldr =value` literal pool issue in proc-v7.S, fixed with `movw`/`movt`
 - eMMC runs in PIO mode (~31 MB/s); ADM DMA not yet functional (see `reports/adm-dma-emmc-analysis.md`)
 - Current stable performance: **1145 MB/s median** memory BW (56% of webOS), best 1268 MB/s (62% of webOS)
+
+---
+
+## 2026-05-13 — NEON DDR-bandwidth benchmark on webOS (apples-to-apples reference)
+
+### Why this section exists
+
+All prior runs in this file used `dd if=/dev/zero of=/dev/null bs=1M`,
+which actually measures the kernel's `read_zero()` → `clear_user()`
+path, not DDR bandwidth. The 461 → 1268 → 1707 MB/s progression above
+reflects improvements to *clear_user / kernel zero-fill* throughput,
+not pure DDR. To get an honest hardware-bandwidth comparison vs webOS,
+we built a static-linked userspace ARM benchmark (`tools/ddrbench/`)
+that runs hand-written NEON 128-bit `vld1/vst1` loops against an 8 MB
+buffer (well above Scorpion's 512 KB L2). Same binary runs on both
+kernels.
+
+### Test configuration
+
+- Binary: `ddrbench` (32-bit ARM ELF, statically linked,
+  built with `-mfpu=neon -mfloat-abi=softfp -O2`)
+- Buffer: 8 MB per array (every iteration fully spills L1+L2)
+- Allocator: `posix_memalign` + pre-touched `mlock`'d pages
+- Inner loops: hand-written NEON, 64 bytes per iteration
+  (`pld [src,#256]; vld1.32 {q0-q1}!; vld1.32 {q2-q3}!; …`)
+- Pinning: `taskset` + `sched_setaffinity`
+- Timing: `clock_gettime(CLOCK_MONOTONIC)`, median + min + max
+  over 10-20 iterations after one warmup pass
+- Pre-test: `echo performance > scaling_governor` on both cores
+
+### Results — webOS 2.6.35-palm-tenderloin @ 1188 MHz
+
+**Single-thread, CPU0 pinned, CPU1 online idle (10 iters):**
+
+| Test        | Median MB/s | [min..max] |
+|-------------|------------:|-----------:|
+| NEON read   | 1597 | [1398..1793] |
+| NEON write  | 1630 | [1247..1898] |
+| NEON copy   | 722  | [681..790]   |
+| NEON triad  | 903  | [790..969]   |
+| libc memcpy | 337  | [316..354]   |
+| libc memset | 823  | [694..892]   |
+
+**Single-thread, CPU1 offline (20 iters, lowest-variance):**
+
+| Test        | Median MB/s | [min..max] |
+|-------------|------------:|-----------:|
+| NEON read   | 1646 | [1199..1765] |
+| NEON write  | 1779 | [1346..1895] |
+| NEON copy   | 759  | [664..812]   |
+| NEON triad  | 911  | [777..968]   |
+| libc memcpy | 351  | [244..362]   |
+| libc memset | 843  | [724..887]   |
+
+**Dual-thread, one ddrbench instance per CPU, running simultaneously
+(10 iters each):**
+
+| Test       | CPU0 med | CPU0 [min..max] | CPU1 med | CPU1 [min..max] | **Aggregate (medians)** | vs single-thread |
+|------------|---------:|----------------:|---------:|----------------:|------------------------:|-----------------:|
+| NEON read  | 601 | [360..1779] | 648 | [409..1791] | **1249** | **78%** (less than single-thread) |
+| NEON write | 867 | [409..1870] | 709 | [437..1814] | **1576** | **97%** (saturated) |
+| NEON copy  | 346 | [253..774]  | 364 | [260..725]  | **710**  | **98%** (saturated) |
+| NEON triad | 538 | [291..1055] | 487 | [383..543]  | **1025** | 113% |
+
+The very wide min..max spread in dual-thread mode (e.g., CPU0 read
+360..1779) reflects bursty bus arbitration — momentarily one thread
+gets exclusive DDR access, then they alternate.
+
+### Key takeaways
+
+1. **The DDR bus is the bottleneck for sustained R+W mixes**, not the
+   CPU. Adding a second core does not help — aggregate dual-thread
+   copy (710 MB/s) is *less* than single-thread copy (722). The bus
+   is fully saturated by one Scorpion at 1188 MHz.
+
+2. **Streaming-write is the highest-bandwidth pattern** (~1800 MB/s)
+   because EBI handles bursts of writes more efficiently than mixed
+   R+W. Streaming-read tops out around 1600 MB/s.
+
+3. **libc memcpy is NOT NEON** in our static-linked build — only 351
+   MB/s, half of what NEON copy achieves at the same load. The prior
+   "2087 MB/s webOS" figure from `dd if=/dev/zero` was matching the
+   NEON-write number here (≈1900 peak), not memcpy — because the
+   kernel's `clear_user` path is effectively a streaming write with
+   no read side.
+
+4. **Implication for mainline 6.18:** if mainline single-thread NEON
+   copy (the apples-to-apples metric) is below 720 MB/s, mainline
+   has a downstream regression. If it's at 720-800 MB/s, the prior
+   "18% gap" was a kernel-side `clear_user` software effect, not a
+   hardware-config issue. If it's above 800 MB/s, mainline's DDR
+   setup is actually *better* than webOS's — and there's no real
+   gap at all on this metric.
+
+### Results — mainline 6.18 (kernel `6.18.0-luneos-gfbb7fe01f7be`) @ 1512 MHz
+
+**Single-thread, CPU0 pinned, CPU1 offline, perf gov, 20 iters:**
+
+| Test        | Median MB/s | [min..max] |
+|-------------|------------:|-----------:|
+| NEON read   |  575 | [433..643]   |
+| NEON write  | 1843 | [1536..1929] |
+| NEON copy   |  425 | [142..502]   |
+| NEON triad  |  715 | [560..806]   |
+| libc memcpy |  198 | [180..234]   |
+| libc memset | 1070 | [927..1151]  |
+
+### Apples-to-apples comparison (webOS 1188 MHz vs mainline 1512 MHz)
+
+| Test        | webOS | mainline | absolute ratio | **per-cycle ratio** |
+|-------------|------:|---------:|---------------:|--------------------:|
+| NEON read   | 1646  | **575**  | 0.35           | **0.27** ⚠️ |
+| NEON write  | 1779  | **1843** | 1.04           | 0.82                |
+| NEON copy   |  759  |  **425** | 0.56           | 0.44                |
+| NEON triad  |  911  |  **715** | 0.79           | 0.62                |
+| libc memcpy |  351  |   198    | 0.56           | 0.44                |
+| libc memset |  843  | **1070** | 1.27           | 1.00                |
+
+(per-cycle ratio = mainline_MB_s / 1.512 GHz  ÷  webOS_MB_s / 1.188 GHz)
+
+### Key finding: streaming-read regression on mainline
+
+The asymmetry is striking:
+
+- **Writes are at parity or better** per-cycle. NEON write hits 1843
+  MB/s on mainline vs 1779 on webOS; `libc memset` 1070 vs 843. The
+  write path / streaming-store / EBI write-combining buffers are
+  fully functional.
+- **Reads are 65% slower in absolute terms**, 73% slower per-cycle.
+  NEON read drops from 1646 → 575 MB/s. Triad (2 reads + 1 write)
+  drops less because writes pull the average up. Copy is half what
+  it should be.
+
+This is **not** a DDR clock or CPU clock issue (mainline runs the CPU
+*faster*, and the write path proves DDR is fine). It's a CPU-side
+read-path issue — likely **L1 or L2 read prefetcher / read-allocate
+not enabled**, or a **Scorpion-specific outstanding-read-transaction
+register** that legacy webOS programs and our proc-v7 init does not.
+
+The CP15 stack we ported (L2CR1=0x33 prefetch, L2CPUCR bit 21,
+SPCR=0x0F) primarily affects write-path coalescing and L1↔L2
+coherency, which is consistent with the write-side parity we're
+seeing. Read-prefetch is presumably in another bit we haven't yet
+programmed.
+
+### Open question — what we'd look at next for the read gap
+
+1. **Scorpion ACTLR full bit map** — legacy `proc-scorpion.S`
+   in webOS sets more bits than just `0x37 + bit24 + bit21`. Diff
+   against legacy boot path to find missing bits.
+2. **AOSTRP / load-store prefetcher** — Scorpion has an Adaptive
+   Outstanding Reads Per Port register; if set to 1, every read
+   stalls. We never touch it.
+3. **L1 D-cache mode** — if mainline mounts the test buffer with
+   write-through or non-cacheable attributes, reads would always
+   miss. Verify via `cat /sys/kernel/debug/...` and `pgprot_*`.
+4. **PLD honored?** — `pld [src,#256]` may be a no-op if the
+   prefetcher gate bit isn't enabled. We'd see this as
+   PLD-vs-non-PLD identical throughput.
+
+---
+
+## 2026-05-13 (afternoon) — Root cause identified: PLD doesn't reach prefetcher on mainline
+
+Built a second benchmark — `tools/ddrbench-sizes` — that sweeps
+buffer sizes from 4 KB to 8 MB and runs the inner loop both WITH
+and WITHOUT the `pld [src,#256]` prefetch hint. Ran on webOS at
+1188 MHz (CPU0 perf gov, CPU1 offline, 5 iters per size).
+
+### webOS buffer-size sweep
+
+| Buffer  | WITH PLD     | WITHOUT PLD   | PLD speedup |
+|--------:|-------------:|--------------:|------------:|
+| 4 KB    | 13.6 GB/s    | (n/a)         | —           |
+| 16 KB   | 14.3 GB/s    | **17.6 GB/s** | **0.81x**   |
+| 32 KB   | 11.7 GB/s    | (n/a)         | —           |
+| 128 KB  |  2.61 GB/s   | (n/a)         | —           |
+| 256 KB  |  2.55 GB/s   |  2.64 GB/s    | 0.97x       |
+| 384 KB  |  2.30 GB/s   | (n/a)         | —           |
+| 1 MB    |  1.65 GB/s   | (n/a)         | —           |
+| 2 MB    |  1.65 GB/s   | (n/a)         | —           |
+| **8 MB**| **1.66 GB/s**| **0.60 GB/s** | **2.76x**   |
+
+Two important observations from this sweep:
+
+1. **L1 (16 KB) is faster without PLD** (17.6 vs 14.3 GB/s) — the
+   `pld` instruction wastes a cycle when data is already in L1.
+   This is expected on any sane prefetcher.
+2. **DDR (8 MB) is 2.76x faster with PLD** on webOS (1.66 GB/s vs
+   0.60 GB/s). The prefetcher is firing and hiding DDR round-trip
+   latency.
+
+### Cross-reference with mainline
+
+Mainline NEON read on the same 8 MB buffer with PLD: **575 MB/s**
+(see 2026-05-13 morning table above). That's **identical to webOS's
+NO-PLD number of 603 MB/s** — within 5%.
+
+**Conclusion: on mainline 6.18 on this hardware, `pld [src,#256]`
+provides zero speedup. The prefetcher does not honour PLD hints.**
+
+This is the root cause of the read regression. The bus, EBI, L2,
+NEON load unit, and DDR controller all work — what's missing is the
+prefetch-on-demand gate that lets a `pld` hint trigger an
+asynchronous cache-line fill ahead of the load.
+
+### What we know about the gate
+
+- Legacy webOS `arch/arm/mm/proc-v7.S` **does not write L2CR1=0x33
+  on Scorpion-MP**. The L2CR1=0x33 write lives inside
+  `#ifdef CONFIG_ARCH_MSM_SCORPION`, never inside the SCORPIONMP
+  block. So on TouchPad (Scorpion-MP) webOS, L2CR1 stays at
+  whatever the bootloader left.
+- Mainline `__v7_scorpion_setup` (the Scorpion-MP init path) writes
+  L2CR1=0x33 unconditionally. The comment cited "legacy proc-v7.S"
+  but that legacy write is plain-Scorpion-only, not Scorpion-MP.
+- The 0x100 value in legacy QSD8x50 bootloader code meant "DBB" —
+  not a prefetch bit. So the rationale for 0x33 was based on a
+  register name collision: same opcode, different SoC, possibly
+  different bit semantics.
+
+**Working hypothesis:** writing `L2CR1=0x33` from NS Linux on
+Scorpion-MP **disables** the prefetcher state the bootloader
+configured. Test branch `test/scorpionmp-no-l2cr1` removes the
+write; flashing it should restore PLD effectiveness if the
+hypothesis holds.
+
+Expected on the test branch (if hypothesis confirmed):
+
+- NEON read 8 MB jumps from 575 → ~1700+ MB/s (matching webOS
+  per-cycle, possibly higher because we run at 1512 MHz)
+- NEON copy improves proportionally (it's read-bottlenecked)
+- NEON write unchanged (write path doesn't depend on PLD)
+- ddrbench-sizes shows 2.5-3x PLD speedup on DDR-sized buffers
+
+If the hypothesis is **wrong** (PLD still doesn't work after
+removing the L2CR1 write), the next candidates are the L2CR0 /
+BPCR / SPCR writes — also legacy-bootloader-only on Halcyon, not
+necessarily safe to replicate on Scorpion-MP.
+
+eMMC numbers also captured on this same boot — see
+`reports/emmc-speed-benchmark.md`. Mainline PIO actually *beats*
+webOS ADM-DMA on raw throughput (30.1 vs 25.4 MB/s), so the eMMC
+DMA work (`bisect/adm-ee0`) becomes a CPU-offload optimization,
+not a throughput win.
+
+
