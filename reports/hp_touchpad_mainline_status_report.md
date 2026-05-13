@@ -535,7 +535,7 @@ The GEM memory shrinker was disabled with `#if 0` during USB/DRM coexistence deb
 | **Dual CPU** | PASS | 2x ARMv7 Scorpion cores detected |
 | **Memory** | PASS | ~960MB RAM available (VMSPLIT_2G, no HIGHMEM) |
 | **USB RNDIS** | PASS | Network gadget working, survives display init |
-| **eMMC** | PASS | mmcblk0 with 14 partitions |
+| **eMMC** | PASS | mmcblk0 with 14 partitions; 8-bit HS-SDR @ 48 MHz; ADM DMA; ~30 MB/s steady-state (faster than legacy webOS @ 25.4 MB/s) |
 | **Display (DRM)** | PASS | MDP4/LCDC, 1024x768 LVDS, 96MHz pixel clock, fbcon working |
 | **GPU 3D** | PASS | Adreno 220, kmscube ~24 FPS, devfreq scaling |
 | **Backlight** | PASS | PWM control, brightness 0-7 |

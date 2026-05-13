@@ -1,8 +1,38 @@
 # HP TouchPad eMMC Speed Benchmark
 
 Comparative eMMC throughput between webOS (working ADM DMA) and
-mainline 6.18 (PIO-only — ADM DMA fix pending; see
-`project_adm_uses_ee0_not_ee1.md`).
+mainline 6.18 (ADM DMA working as of `6bb2931b38ee`, 8-bit HS-SDR
+at 48 MHz capped via DT `max-frequency`).
+
+## Status as of 2026-05-13 evening (post triple-fix `bcd1e95f4dab` +
+`9d729647fb36` + `fca45cf2c704`)
+
+- ADM DMA: **working** (path: `mmci-pl18x → adm_dma1 ch2 CRCI 1`).
+  dmesg confirms `DMA submit OK (first transfer) — driver is using
+  DMA path` and CPU profile during sustained `dd` shows 71% idle +
+  23% iowait + 5.6% sys (textbook DMA-bound, not PIO).
+- Bus width: 8-bit (explicit `bus-width = <8>` in DT).
+- Clock: 48 MHz HS-SDR (explicit `max-frequency = <48000000>` cap).
+- Boot reliability: zero `DATACRCFAIL` on mmc0 across recent boots.
+- Steady-state `/dev/mmcblk0` raw read: **~30 MB/s** (`bs=1M`),
+  ~27 MB/s (`bs=4M`), ~29 MB/s (varied offset).
+
+The older "PIO-only — ADM DMA fix pending" framing in this document
+refers to the historical state before:
+
+- `6bb2931b38ee` (don't rewrite CH_CONF on MSM8660 — trust
+  bootloader) — landed the ADM EE handling fix.
+- `bcd1e95f4dab` (DT max-frequency = 48 MHz) — capped HS rate to
+  legacy `msmsdcc_fmax`.
+- `9d729647fb36` (DT explicit bus-width = 8) — fixed mmc_of_parse
+  1-bit fallback.
+- `fca45cf2c704` (mmci 50us settle after MMCICLOCK) — matched
+  legacy `msm_sdcc.c:1173 udelay(50)`.
+
+The legacy-vs-mainline result tables in §Results below are
+historically accurate for their dated snapshots; the "Updated
+mainline" subsection at the end of §Results captures the current
+state after the triple-fix.
 
 ## Hardware
 
@@ -405,3 +435,88 @@ investigating next.
 Recommended interim: `fsck -y /dev/mmcblk0p13` from initramfs after
 any clean shutdown, and treat `/uboot` writes as "best effort" until
 the boot-time CRC fail is resolved.
+
+## 2026-05-13 (evening) — boot-time DATACRCFAIL RESOLVED via triple-fix
+
+The "Boot-time DATACRCFAIL still present" section above was overtaken
+by three commits landed late in the day:
+
+| Commit | Change | Effect |
+|---|---|---|
+| `bcd1e95f4dab` | DT: `max-frequency = <48000000>` on `&sdcc1` | Caps eMMC clock at legacy `msmsdcc_fmax` (was running at `card->ext_csd.hs_max_dtr = 52 MHz` because variant_qcom.f_max=208MHz let it). |
+| `9d729647fb36` | DT: `bus-width = <8>` explicit on `&sdcc1` | Property was missing; mmc_of_parse was falling back to "assume 1-bit". |
+| `fca45cf2c704` | mmci.c: `udelay(50)` after MMCICLOCK write on qcom variant | Matches legacy `msm_sdcc.c:1173 udelay(50)`. Generic mmci was ndelay(120) above 25 MHz — 400× shorter — and the data-line setup margin on the first multi-block READ at HS rates was being violated. |
+
+### Boot reliability — before vs after triple-fix
+
+| Metric | Before triple-fix | After triple-fix |
+|---|---|---|
+| Boot-time `DATACRCFAIL` on `mmc0` | ~1 of every 3-4 cold boots | **Zero across all recent boots** |
+| Recovery path | `mmc0: switch to bus width 8 failed` → bus pinned at 1-bit for session | N/A (no recovery triggered) |
+| Steady-state `/dev/mmcblk0` raw read | 5.4 MB/s when 1-bit fallback hit | Consistent ~28-30 MB/s |
+| `ext3 error count since last fsck` on /uboot | grew on bad-boot path | unchanged across boots |
+
+### Bench results (kernel `6.18.0-luneos-gfca45cf2c704`)
+
+`scripts/benchmark-emmc.sh 10 100` on `/dev/mmcblk0` (raw block device,
+not page-cached):
+
+| Block size | Min | Max | Avg | **Median** |
+|---|---:|---:|---:|---:|
+| bs=1M | 27.1 | 31.9 | 29.7 | **30.5 MB/s** |
+| bs=64K | 23.9 | 28.1 | 26.1 | **26.9 MB/s** |
+| bs=4M | 24.7 | 31.0 | 27.6 | **27.0 MB/s** |
+| Varied offset (32 GB span) | 27.5 | 31.8 | 29.1 | **28.9 MB/s** |
+
+### CPU profile — DMA confirmed active
+
+300 MB sustained read via `dd if=/dev/mmcblk0 bs=1M count=300
+iflag=direct` took 11.09 s @ 28.4 MB/s. `/proc/stat` delta during the
+transfer:
+
+| State | Δjiffies | % of total |
+|---|---:|---:|
+| user | 3 | 0.1% |
+| **system (kernel)** | **124** | **5.6%** |
+| **idle** | **1574** | **71.3%** |
+| **iowait** | **506** | **22.9%** |
+| irq+softirq | 1 | 0.05% |
+
+71% idle + 23% iowait + 5.6% sys is textbook DMA-bound IO. If this were
+PIO, system% would dominate. Confirmed in dmesg:
+
+```
+[2.250] mmci-pl18x 12400000.mmc: DMA channels RX dma1chan2, TX dma1chan2, CRCI 1
+[2.546] mmci-pl18x 12400000.mmc: DMA submit OK (first transfer) — driver is using DMA path
+```
+
+### Final comparison vs legacy webOS
+
+| Metric | Legacy webOS 2.6.35 | **Today 6.18 (post triple-fix)** | Delta |
+|---|---:|---:|---:|
+| CPU | 1188 MHz | 1512 MHz | +27% |
+| Bus | 8-bit HS @ 48 MHz | 8-bit HS @ 48 MHz | same |
+| Transfer mode | ADM DMA | **ADM DMA** ✓ | same |
+| 1 MiB seq | 25.4 MB/s | **30.5 MB/s** | +20% |
+| 64 KiB seq | 18.8 MB/s | **26.9 MB/s** | +43% |
+| 4 KiB seq | 3.8 MB/s | (not in script grid) | — |
+| Random 4 KiB | 835 IOPS | (not in script grid) | — |
+
+We're now **faster than legacy across all measured patterns**. Bus
+config, DMA path, and clock are identical to legacy; the win is
+CPU clock (+27%) and modern v6.18 mmci block-layer scheduling.
+
+### Status: eMMC closed
+
+All four targeted improvements have landed and verified:
+
+1. ✅ ADM EE selector matches legacy (`6bb2931b38ee`)
+2. ✅ CH_CONF rewrite skipped (`6bb2931b38ee`)
+3. ✅ Bus negotiation pinned to legacy parameters (`bcd1e95f4dab` + `9d729647fb36` + `fca45cf2c704`)
+4. ✅ Minimal CP15 setup (no L2 controller state mismatch under DMA)
+
+Reliability + throughput are now both at or above the legacy webOS
+baseline. No further eMMC work expected unless DMA-error storms reappear
+on long-running workloads (a couple of stray `error during DMA transfer!`
+lines were observed during the v4l2-ctl experimentation window; need
+to be watched but didn't affect the bench run).

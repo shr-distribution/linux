@@ -2157,7 +2157,10 @@
 	 *
 	 * The legacy webOS kernel used dfab_sdc_clk clock voter at 64 MHz
 	 * to keep the Daytona Fabric (DFAB) active during eMMC operations.
-	 * eMMC uses 8-bit bus at up to 48 MHz (DDR) for ~48 MB/s peak.
+	 * eMMC uses 8-bit bus at 48 MHz HS-SDR (NOT DDR — neither legacy
+	 * webOS nor mainline enable MMC_CAP_1_8V_DDR / MMC_CAP_UHS_DDR50
+	 * on Tenderloin). Measured ~28-31 MB/s steady-state at the
+	 * controller wire with ADM DMA.
 	 *
 	 * Path: SDC1 -> DFAB -> SFAB -> AFAB -> EBI (system memory)
 	 */
