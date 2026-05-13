@@ -2108,6 +2108,23 @@
 	vqmmc-supply = <&pm8901_lvs0>;
 
 	/*
+	 * Cap the eMMC clock at 48 MHz to match the legacy webOS
+	 * msm_sdcc Tenderloin platform data:
+	 *
+	 *   board-tenderloin.c:5450  .msmsdcc_fmax = 48000000
+	 *
+	 * Without this cap, mmc-core reads card->ext_csd.hs_max_dtr =
+	 * 52 MHz for the SanDisk SEM32G eMMC and runs the bus there
+	 * (variant_qcom.f_max = 208 MHz so there's no host-side ceiling).
+	 * The 8% extra clock over legacy is enough that the first large
+	 * multi-block READ after probe fails with DATACRCFAIL — recovery
+	 * CMD6 SWITCH to drop bus width then times out, kernel pins the
+	 * bus at 1-bit and steady-state /dev/mmcblk0 read sits at 5.4 MB/s
+	 * (~2% of expected HS-8bit throughput). Reproduced 2026-05-13.
+	 */
+	max-frequency = <48000000>;
+
+	/*
 	 * DMA configuration for QCOM ADM:
 	 * - Channel 2 on ADM1 for both RX and TX (global channel 18)
 	 * - CRCI 1 for SDC1 (passed via qcom,sdcc-crci property)
