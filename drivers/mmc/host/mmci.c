@@ -515,26 +515,10 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		 *
 		 * Generic mmci has this commented out as "not proven
 		 * worthwhile", but legacy webOS on Tenderloin uses it
-		 * unconditionally above 400 kHz for eMMC and the
-		 * controller behaves identically.
-		 *
-		 * EXCEPT for SDIO. Legacy msm_sdcc exports
-		 * msmsdcc_set_pwrsave() and the SDIO subsystem calls it
-		 * with pwrsave=0 when the SDIO function becomes active
-		 * (drivers/mmc/sdio_al.c), only re-enabling pwrsave when
-		 * the function idles. On SDIO each small BMI transaction
-		 * is preceded by a clock-restart window during which the
-		 * card may miss sample edges — observed empirically as
-		 * DATACRCFAIL on the very first 4-byte BMI response from
-		 * AR6003 (probe with error -84 EILSEQ). Match legacy
-		 * behaviour: gate PWRSAVE on non-SDIO buses only. The
-		 * qcom_datactrl_first DT flag is the closest mainline
-		 * signal we have for "this is the SDIO controller, not
-		 * the eMMC controller" (we only set it on &sdcc4 in DT,
-		 * not &sdcc1).
+		 * unconditionally above 400 kHz and the controller behaves
+		 * identically.
 		 */
-		if (variant->qcom_datactrl_delay && desired > 400000 &&
-		    !host->datactrl_first)
+		if (variant->qcom_datactrl_delay && desired > 400000)
 			clk |= MCI_CLK_PWRSAVE;
 	}
 
