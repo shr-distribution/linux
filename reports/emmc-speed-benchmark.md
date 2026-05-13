@@ -281,6 +281,41 @@ All four targeted improvements have landed and verified:
 3. ✅ Destructive write-probe diagnostic reverted
 4. ✅ Minimal CP15 setup (no L2 controller state mismatch under DMA)
 
+## 2026-05-13 (late evening) — eMMC across all OPPs (1.188 / 1.512 / 1.728 / 1.836 GHz)
+
+After commits `f56b2ba1c033` + `1e85053a396f` + `4710f9a3696a`
+landed the higher CPU OPPs (up to 1.836 GHz), eMMC was re-tested
+at four operating points to verify the DMA path stays
+controller-wire-limited regardless of CPU clock.
+
+**Kernel:** `6.18.0-luneos-g4710f9a3696a`
+**Config:** CPU0 perf gov clamped to each target OPP via
+scaling_min/max_freq, CPU1 offline. 100 MB sequential + 1000
+random 4 KiB per pattern.
+
+| OPP | Seq 4K | Seq 16K | Seq 64K | Seq 256K | **Seq 1M** | Random 4K |
+|----:|-------:|--------:|--------:|---------:|-----------:|----------:|
+| 1.188 GHz | 5.4 | 14.5 | 23.3 | 28.5 | **29.3 MB/s** | 1034 IOPS |
+| 1.512 GHz | 5.6 | 15.1 | 23.4 | 28.8 | **29.5 MB/s** | 1077 IOPS |
+| 1.728 GHz | 5.3 | 14.6 | 22.8 | 28.4 | **29.1 MB/s** | 1025 IOPS |
+| 1.836 GHz | 5.3 | 14.6 | 23.2 | 26.5 | **28.5 MB/s** | 1041 IOPS |
+
+eMMC throughput is essentially flat across the entire OPP range —
+the SDC1 controller wire ceiling (8-bit MMC × 48 MHz × ~0.5
+efficiency ≈ ~24-30 MB/s practical, ~30 MB/s peak) is hit at every
+clock. CPU clock affects neither raw throughput nor random-read
+IOPS in any meaningful way.
+
+The implication: **for I/O-heavy workloads (storage-bound apps,
+log replay, filesystem benchmarks), running at 1.188 GHz CPU
+clock is essentially free vs 1.836 GHz** — same eMMC speed,
+much lower power draw and thermal load.
+
+This is the expected result once DMA is offloading the byte
+movement. The CPU's role during sustained eMMC reads is to set
+up descriptors, wait on completion interrupts, and run the block
+layer — none of which is CPU-bound at any reasonable clock.
+
 ## Notes
 
 - The 4 KiB sequential-read result (3.8 MB/s) is the worst case and

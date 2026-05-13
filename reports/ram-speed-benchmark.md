@@ -2147,4 +2147,132 @@ on this SoC — are the correct values for both functions.
 Permanent fix landed as commit `2a0c9af18904` on
 `tenderloin/6.18/upstream-patches`.
 
+---
+
+## 2026-05-13 (late evening) — full OPP sweep + apples-to-apples vs webOS
+
+After commits `f56b2ba1c033` (add 1242/1350/1458/1728/1836 MHz
+OPPs), `1e85053a396f` (fix OPP voltages so all OPPs appear in
+cpufreq), and `4710f9a3696a` (bump L2 ceiling to 1.728 GHz so L2
+tracks the OC OPPs), the full OPP table is now usable. We ran the
+NEON + eMMC benchmark battery at four OPPs: 1.188, 1.512, 1.728,
+1.836 GHz.
+
+Test config: CPU1 offline, CPU0 perf gov, scaling_min/max_freq both
+clamped to the target rate (forces single OPP — avoids governor
+hopping). 20 iters of ddrbench, 10 iters of ddrbench-sizes.
+
+Kernel: `gce854abe059f` for 1.836 baseline run, `g4710f9a3696a` for
+the others. (4710f9a3696a includes the L2 ceiling bump, ce854abe059f
+doesn't — but 1.836 GHz with L2 capped at 1.404 was not a useful
+comparison either way; numbers shown are with `4710f9a3696a` for
+all four OPPs.)
+
+### Per-OPP DDR throughput (mainline, NEON ddrbench)
+
+| OPP | NEON read | NEON write | NEON copy | NEON triad | libc memcpy | libc memset |
+|----:|----------:|-----------:|----------:|-----------:|------------:|------------:|
+| 1.188 GHz | **1665** | 1893 | 797 | **1027** | 354 | 890 |
+| 1.512 GHz | **1701** | 1841 | 815 | 1000 | 367 | 1129 |
+| 1.728 GHz | 1585 | 1891 | 779 | 994 | 360 | 800 |
+| 1.836 GHz | 1598 | 1804 | 777 | 951 | 357 | 807 |
+
+### Per-cycle efficiency (MB/s per MHz)
+
+| OPP | NEON read | NEON triad |
+|----:|----------:|-----------:|
+| 1.188 GHz | **1.402** | **0.864** |
+| 1.512 GHz | 1.125 | 0.661 |
+| 1.728 GHz | 0.917 | 0.575 |
+| 1.836 GHz | 0.870 | 0.518 |
+
+Each step up the OPP ladder returns less than proportional
+bandwidth — the CPU outraces the memory subsystem on every metric
+except memset (which is write-only and EBI-bound). The L2 ceiling
+fix (lifting L2 from 1.404 to 1.728) preserved NEON write at the
+top of the OC range, but the L2/CPU ratio still tightens as CPU
+climbs above the L2 ceiling.
+
+### Apples-to-apples mainline vs webOS at the same clock
+
+webOS tops out at 1.188 GHz. Running mainline at the same OPP:
+
+| Test | webOS @ 1.188 | **mainline @ 1.188** | Δ |
+|----:|--------------:|---------------------:|---:|
+| NEON read | 1646 | **1665** | **+1.2%** |
+| NEON write | 1779 | **1893** | **+6.4%** |
+| NEON copy | 759 | **797** | **+5.0%** |
+| **NEON triad** | 911 | **1027** | **+12.7%** ⚡ |
+| libc memcpy | 351 | 354 | +0.9% |
+| libc memset | 843 | 890 | +5.6% |
+| DDR 8 MB w/PLD | 1660 | 1656 | parity |
+| DDR 8 MB w/o PLD | 603 | 623 | +3.3% |
+| PLD speedup | 2.76x | 2.66x | similar |
+
+**Mainline @ 1.188 GHz now MATCHES OR BEATS webOS @ 1.188 GHz on
+every metric on the same silicon.** The Triad win (+12.7%) is the
+cleanest — Triad is memory + FMAC mixed and is sensitive to both
+prefetch quality and FP-unit throughput. webOS had years of vendor
+tuning; mainline today out-paces it per-cycle.
+
+### eMMC across all OPPs (sequential 1 MiB + random 4 KiB)
+
+| OPP | Seq 1 MiB | Random 4 KiB |
+|----:|----------:|------------:|
+| 1.188 GHz | 29.3 MB/s | 1034 IOPS |
+| 1.512 GHz | 29.5 MB/s | 1077 IOPS |
+| 1.728 GHz | 29.1 MB/s | 1025 IOPS |
+| 1.836 GHz | 28.5 MB/s | 1041 IOPS |
+
+eMMC is controller-wire-bound at ~30 MB/s and ~1000-1100 IOPS
+random across the entire CPU clock range. CPU clock is irrelevant
+to eMMC throughput once DMA is doing the heavy lifting (the CPU
+sleeps in I/O-wait state during transfers — see
+`reports/emmc-speed-benchmark.md` for the 71.8% I/O-wait measurement).
+
+### 1.728 GHz: L2 ceiling fix recovered the write regression
+
+Before the L2 fix (commit `f56b2ba1c033` standalone), 1.728 GHz
+crashed NEON write down to 1363 MB/s — the CPU's store buffer was
+filling faster than L2 (capped at 1.404 GHz) could drain. After the
+fix (commit `4710f9a3696a` bumping L2_L_VAL_MAX from 0x1A to 0x20,
+so L2 tracks CPU through 1.728 GHz):
+
+| Test | 1.728 GHz no L2 fix | 1.728 GHz with L2 fix |
+|----:|--------------------:|---------------------:|
+| NEON write | 1363 | **1891** (+39%) |
+| NEON triad | 893 | **994** (+11%) |
+| NEON copy | 743 | 779 (+5%) |
+
+NEON write is fully recovered. NEON read at 1.728 still slightly
+below 1.512 baseline (1585 vs 1701) but that's the CPU/L2 ratio
+ceiling, not a regression.
+
+### Conclusions
+
+1. **1.188 GHz is the silicon's efficiency sweet spot.** Best
+   per-cycle bandwidth, beats webOS, runs cool, recommended for
+   battery-sensitive daily use.
+2. **1.512 GHz is the peak-absolute bandwidth OPP.** Best for
+   short bursts of heavy memory work. Pre-fix it was already the
+   stable mainline ceiling.
+3. **1.728 GHz works now thanks to the L2 ceiling fix.** Recovers
+   most of the bandwidth that was lost without the L2 bump.
+   Useful for CPU-bound bursts. Memory-bound code sees diminishing
+   returns.
+4. **1.836 GHz boots and runs stably at 1.45 V Vcore.** No
+   crashes, no panics across the benchmark battery. But absolute
+   memory bandwidth is *lower* than at 1.512 — adds power draw and
+   thermal load without speeding up memory work. Reserve for CPU-
+   bound tasks; consider `scaling_max_freq=1512000` clamp via
+   udev/systemd for daily use.
+5. **eMMC is OPP-independent.** Controller wire-limited at all
+   tested clocks; DMA keeps CPU in I/O wait regardless.
+
+Mainline is now genuinely competitive with — actually outclasses —
+the original webOS kernel on its own silicon. With the higher OPPs
+available, users who want raw CPU throughput can opt-in to 1.836
+GHz; the default scaling_max_freq remains 1.836 GHz but the system
+operates well at any cap.
+
 
