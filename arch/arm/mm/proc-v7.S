@@ -81,6 +81,40 @@ SYM_TYPED_FUNC_START(cpu_v7_do_idle)
 	ret	lr
 SYM_FUNC_END(cpu_v7_do_idle)
 
+/*
+ *	cpu_v7_do_idle_wfe()  — Scorpion-MP runtime idle (Mode B)
+ *
+ *	Same contract as cpu_v7_do_idle but uses WFE instead of WFI.
+ *	Required on Scorpion-MP (APQ8060/MSM8660) where plain WFI does
+ *	not reliably wake from an SGI/IPI even though the GIC marks
+ *	the interrupt pending (the kernel logs "Sending NMI ... idle=
+ *	N/1/0x40000000" and the target never processes the handler).
+ *
+ *	WFE wakes on:
+ *	  - any pending interrupt (same as WFI), AND
+ *	  - an SEV instruction from another CPU.
+ *
+ *	The kernel's spinlock unlock path emits SEV regularly, plus
+ *	smp_cross_call in the IPI sender path emits SEV (via
+ *	__send_event_wakeup), which means a CPU sitting in WFE wakes
+ *	deterministically whenever the boot CPU wants to do anything.
+ *
+ *	IRQs are already disabled when arch_cpu_idle calls this; the
+ *	hardware still raises IRQ-pending on WFE which exits the
+ *	instruction, then the caller re-enables interrupts and the
+ *	handler runs normally.
+ *
+ *	Power: WFE on Scorpion-MP is roughly equivalent to "halt clock
+ *	to the core" for the duration of the wfe, similar to WFI. The
+ *	practical power difference vs WFI is small; the correctness
+ *	difference (no missed IPIs) is what matters.
+ */
+SYM_TYPED_FUNC_START(cpu_v7_do_idle_wfe)
+	dsb					@ WFE may enter a low-power mode
+	wfe
+	ret	lr
+SYM_FUNC_END(cpu_v7_do_idle_wfe)
+
 SYM_TYPED_FUNC_START(cpu_v7_dcache_clean_area)
 	ALT_SMP(W(nop))			@ MP extensions imply L1 PTW
 	ALT_UP_B(1f)
@@ -756,6 +790,22 @@ ENDPROC(__v7_setup)
 	globl_equ	cpu_ca15_do_suspend,	cpu_v7_do_suspend
 	globl_equ	cpu_ca15_do_resume,	cpu_v7_do_resume
 	define_processor_functions ca15, dabort=v7_early_abort, pabort=v7_pabort, suspend=1, bugs=cpu_v7_ca15_ibe
+
+	@ Scorpion-MP — uses WFE instead of WFI for runtime idle to work
+	@ around an SGI-from-WFI wake-up quirk on APQ8060/MSM8660. See the
+	@ commentary on cpu_v7_do_idle_wfe above. All other procvec slots
+	@ are the standard v7 implementations.
+	globl_equ	cpu_scorpion_proc_init,		cpu_v7_proc_init
+	globl_equ	cpu_scorpion_proc_fin,		cpu_v7_proc_fin
+	globl_equ	cpu_scorpion_reset,		cpu_v7_reset
+	globl_equ	cpu_scorpion_do_idle,		cpu_v7_do_idle_wfe
+	globl_equ	cpu_scorpion_dcache_clean_area,	cpu_v7_dcache_clean_area
+	globl_equ	cpu_scorpion_switch_mm,		cpu_v7_switch_mm
+	globl_equ	cpu_scorpion_set_pte_ext,	cpu_v7_set_pte_ext
+	globl_equ	cpu_scorpion_suspend_size,	cpu_v7_suspend_size
+	globl_equ	cpu_scorpion_do_suspend,	cpu_v7_do_suspend
+	globl_equ	cpu_scorpion_do_resume,		cpu_v7_do_resume
+	define_processor_functions scorpion, dabort=v7_early_abort, pabort=v7_pabort, suspend=1, bugs=cpu_v7_bugs_init
 #ifdef CONFIG_CPU_PJ4B
 	define_processor_functions pj4b, dabort=v7_early_abort, pabort=v7_pabort, suspend=1
 #endif
@@ -924,11 +974,19 @@ __v7_ca75_proc_info:
 	/*
 	 * Qualcomm Inc. Scorpion processors (MSM8660/APQ8060).
 	 */
+	/*
+	 * Qualcomm Scorpion-MP (APQ8060/MSM8660). MIDR matches dual-core
+	 * Scorpion silicon. proc_fns overridden to scorpion_processor_functions
+	 * so runtime idle uses WFE (cpu_v7_do_idle_wfe) instead of WFI —
+	 * WFI on this silicon has an SGI-from-WFI wake-up quirk that
+	 * occasionally drops IPIs, leading to RCU stalls under load. WFE
+	 * wakes deterministically.
+	 */
 	.type	__v7_scorpion_proc_info, #object
 __v7_scorpion_proc_info:
 	.long	0x510f02d0		@ Required ID value (Scorpion MP)
 	.long	0xff0ffff0		@ Mask for ID (match part 0x02d, any rev)
-	__v7_proc __v7_scorpion_proc_info, __v7_scorpion_setup
+	__v7_proc __v7_scorpion_proc_info, __v7_scorpion_setup, proc_fns = scorpion_processor_functions
 	.size	__v7_scorpion_proc_info, . - __v7_scorpion_proc_info
 
 	/*
