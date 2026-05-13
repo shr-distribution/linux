@@ -624,6 +624,30 @@ int vidc_open_channel(struct vidc_inst *inst)
 	if (inst->ch_open)
 		return 0;
 
+	/*
+	 * Lazy firmware load. vidc_probe doesn't request_firmware (the
+	 * V4L2 device-node registration shouldn't block on FS availability
+	 * at boot), so the firmware blob isn't loaded and the per-instance
+	 * context-memory pool isn't sized until the first user actually
+	 * opens a channel. vidc_load_firmware is idempotent: it returns
+	 * immediately if fw_loaded is already true. On first call here it
+	 * does:
+	 *   request_firmware(VIDC_FW_NAME)
+	 *   dma_alloc_coherent for fw + ctxt pool + desc + shm
+	 *   memcpy firmware to its 128 KB-aligned slot
+	 *   sets ctxt_pool_size = VIDC_MAX_INSTANCES * VIDC_CTXT_MEM_SIZE
+	 *   calls vidc_boot_firmware (which programs DRAM_BASE etc.)
+	 * If we skipped this, the pool size stays 0 and the next check
+	 * fails with "context-memory pool exhausted (0/0)".
+	 *
+	 * Called after the m2m start_streaming pm_runtime_resume_and_get,
+	 * so GDSC + clocks are on and vidc_boot_firmware can safely write
+	 * the boot-control registers.
+	 */
+	ret = vidc_load_firmware(core);
+	if (ret)
+		return ret;
+
 	mutex_lock(&core->lock);
 
 	if (core->ctxt_pool_used + VIDC_CTXT_MEM_SIZE > core->ctxt_pool_size) {
