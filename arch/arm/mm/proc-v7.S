@@ -378,6 +378,20 @@ __v7_scorpion_setup:
 	 */
 
 	/*
+	 * BISECT: add L2CR0=0xC0050F0F back on top of the minimal config.
+	 * Original comment claimed this enables "out-of-order bus
+	 * attributes". If bits 30-31 actually DISABLE read OOO on
+	 * Scorpion-MP, that's exactly the symptom: serial outstanding
+	 * reads → 575 MB/s ≈ 1 cache line per ~110 ns. Top suspect.
+	 *
+	 * If PLD still works, L2CR0 is innocent.
+	 * If PLD stops, L2CR0 is the prefetch killer.
+	 */
+	movw	r0, #0x0F0F
+	movt	r0, #0xC005
+	mcr	p15, 3, r0, c15, c0, 1		@ WCP15_L2CR0
+
+	/*
 	 * L2CPUCR (p15,3,c15,c0,2): OR in bit 21, the only Scorpion-MP-
 	 * specific write legacy proc-v7.S does. Skip the base 0xe0 write —
 	 * the bootloader handles that, and we don't want to clobber any
