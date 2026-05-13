@@ -312,6 +312,8 @@ static int wm8994_set_pdata_from_of(struct wm8994 *wm8994)
 	pdata->ldo_ena_always_driven =
 		of_property_read_bool(np, "wlf,ldo-ena-always-driven");
 
+	pdata->disable_irq = of_property_read_bool(np, "wlf,disable-irq");
+
 	pdata->spkmode_pu = of_property_read_bool(np, "wlf,spkmode-pu");
 
 	pdata->csnaddr_pd = of_property_read_bool(np, "wlf,csnaddr-pd");
@@ -659,15 +661,27 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 	 * active to avoid runtime PM suspend/resume cycles. The codec stays
 	 * powered anyway, so there's no benefit to runtime suspend, and it
 	 * avoids issues with the codec not being ready after resume.
-	 *
-	 * Also disable IRQ support in this case. On HP TouchPad, the codec's
-	 * IRQ status registers (0x738/0x739) cannot be read - I2C always
-	 * returns -ENXIO. This causes an IRQ storm as the handler keeps
-	 * failing to acknowledge interrupts. The codec works fine for audio
-	 * playback without interrupt support (no jack detection).
 	 */
-	if (wm8994->ldo_ena_always_driven) {
+	if (wm8994->ldo_ena_always_driven)
 		pm_runtime_get_noresume(wm8994->dev);
+
+	/*
+	 * Independent codec-IRQ disable for systems where the codec's
+	 * regmap-irq status registers (0x730/0x731/0x738/0x739) aren't
+	 * reliably accessible at runtime — e.g. HP TouchPad, where
+	 * runtime I2C reads of those addresses return -ENXIO. Without
+	 * this, the threaded IRQ handler spins acking an interrupt
+	 * source it can't read, turning irq/N-wm8994 into a CPU hog.
+	 * On boards that need this, jack/mic detect via the codec is
+	 * unavailable anyway (no DSP firmware loaded).
+	 *
+	 * Decoupled from ldo_ena_always_driven so the codec can still
+	 * be soft-reset at probe (which the always_driven flag used to
+	 * skip when bundling these behaviours together).
+	 */
+	if (pdata->disable_irq) {
+		dev_info(wm8994->dev,
+			 "wlf,disable-irq set — skipping codec IRQ chip\n");
 		wm8994->irq = 0;
 	}
 
