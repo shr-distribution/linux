@@ -515,26 +515,19 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		 *
 		 * Generic mmci has this commented out as "not proven
 		 * worthwhile", but legacy webOS on Tenderloin uses it
-		 * unconditionally above 400 kHz for eMMC and the
-		 * controller behaves identically.
+		 * unconditionally above 400 kHz and the controller behaves
+		 * identically.
 		 *
-		 * EXCEPT for SDIO. Legacy msm_sdcc exports
-		 * msmsdcc_set_pwrsave() and the SDIO subsystem calls it
-		 * with pwrsave=0 when the SDIO function becomes active
-		 * (drivers/mmc/sdio_al.c), only re-enabling pwrsave when
-		 * the function idles. On SDIO each small BMI transaction
-		 * is preceded by a clock-restart window during which the
-		 * card may miss sample edges — observed empirically as
-		 * DATACRCFAIL on the very first 4-byte BMI response from
-		 * AR6003 (probe with error -84 EILSEQ). Match legacy
-		 * behaviour: gate PWRSAVE on non-SDIO buses only. The
-		 * qcom_datactrl_first DT flag is the closest mainline
-		 * signal we have for "this is the SDIO controller, not
-		 * the eMMC controller" (we only set it on &sdcc4 in DT,
-		 * not &sdcc1).
+		 * For SDIO instances PWRSAVE is forced off in the data
+		 * submission path (see mmci_start_data, the
+		 * mmc_card_sdio() branch) — legacy msm_sdcc does the
+		 * equivalent via msmsdcc_set_pwrsave(0) on SDIO function
+		 * activation. We keep the unconditional enable here for
+		 * eMMC compatibility; the SDIO override happens at every
+		 * data transaction so the PWRSAVE bit is consistently
+		 * cleared by the time the AR6003 sees the bus clock.
 		 */
-		if (variant->qcom_datactrl_delay && desired > 400000 &&
-		    !host->datactrl_first)
+		if (variant->qcom_datactrl_delay && desired > 400000)
 			clk |= MCI_CLK_PWRSAVE;
 	}
 
@@ -1554,6 +1547,21 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 			clk = host->clk_reg & ~variant->clkreg_enable;
 		else
 			clk = host->clk_reg | variant->clkreg_enable;
+
+		/*
+		 * Force MCI_CLK_PWRSAVE off for SDIO transactions on the
+		 * qcom variant. Legacy msm_sdcc calls
+		 * msmsdcc_set_pwrsave(host, 0) when an SDIO function
+		 * becomes active (drivers/mmc/sdio_al.c) — the bus
+		 * clock-gating between bytes that PWRSAVE introduces
+		 * leaves AR6003 missing sample edges on small
+		 * fast-response transfers, observed as DATACRCFAIL on
+		 * the 4-byte BMI get-target-info read (ath6kl_sdio probe
+		 * fails -84 EILSEQ). Touch only the qcom variant so other
+		 * mmci users (PL180/ST/STM32/ux500) aren't affected.
+		 */
+		if (variant->qcom_datactrl_delay)
+			clk &= ~MCI_CLK_PWRSAVE;
 
 		mmci_write_clkreg(host, clk);
 	}
