@@ -123,17 +123,35 @@ static void vidc_clk_disable(struct vidc_core *core)
  */
 int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 {
-	u32 axi_status;
+	u32 axi_status, sw_reset;
 	int timeout = 100;
 
-	/* Stage 1: Reset VI, RISC, VIDCCORE, DMX */
-	vidc_write(core, VIDC_REG_SW_RESET,
-		   VIDC_RESET_NONE & ~VIDC_RESET_VI);
-	vidc_write(core, VIDC_REG_SW_RESET,
-		   VIDC_RESET_NONE & ~(VIDC_RESET_VI | VIDC_RESET_RISC));
-	vidc_write(core, VIDC_REG_SW_RESET,
-		   VIDC_RESET_NONE & ~(VIDC_RESET_VI | VIDC_RESET_RISC |
-				       VIDC_RESET_VIDCCORE | VIDC_RESET_DMX));
+	/*
+	 * Stage 1: Progressive assert of VI / RISC / VIDCCORE / DMX into
+	 * reset. Use read-modify-write so we walk down from whatever state
+	 * the GDSC left us in (the gdsc-qcom ved entry sets
+	 * LEGACY_FOOTSWITCH | SW_RESET and pulses VCODEC_AHB_RESET on
+	 * enable, which may leave VIDC_REG_SW_RESET at a value other than
+	 * the 0x3ff "all released" default). Legacy webOS DDL does the
+	 * same RMW (see webos-linux-kernel-touchpad/drivers/video/msm/vidc/
+	 * 1080p/ddl/vidc.c:84 — VIDC_HWIO_IN then progressively clear
+	 * bits).
+	 *
+	 * Why RMW matters: hardcoded 0x3f7 / 0x3f6 / 0x3e2 unconditionally
+	 * RELEASES blocks that the GDSC's pulse just held in reset. The
+	 * second write (transition releasing only-VI-in-reset →
+	 * VI+RISC-in-reset) wedged the AHB on the actual hardware; the
+	 * post-write dsb never drained. Read-modify-write makes the writes
+	 * structural no-ops when the GDSC already put everything in reset
+	 * — same behaviour as legacy, no surprise transitions.
+	 */
+	sw_reset = vidc_read(core, VIDC_REG_SW_RESET);
+	sw_reset &= ~VIDC_RESET_VI;
+	vidc_write(core, VIDC_REG_SW_RESET, sw_reset);
+	sw_reset &= ~VIDC_RESET_RISC;
+	vidc_write(core, VIDC_REG_SW_RESET, sw_reset);
+	sw_reset &= ~(VIDC_RESET_VIDCCORE | VIDC_RESET_DMX);
+	vidc_write(core, VIDC_REG_SW_RESET, sw_reset);
 
 	msleep(1);
 
