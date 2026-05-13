@@ -2346,28 +2346,50 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	if (!ios->clock && variant->pwrreg_clkgate)
 		pwr &= ~MCI_PWR_ON;
 
-	if (host->variant->explicit_mclk_control &&
-	    ios->clock != host->clock_cache) {
-		ret = clk_set_rate(host->clk, ios->clock);
-		if (ret < 0)
-			dev_err(mmc_dev(host->mmc),
-				"Error setting clock rate (%d)\n", ret);
-		else
-			host->mclk = clk_get_rate(host->clk);
-	}
-	host->clock_cache = ios->clock;
-
 	/*
-	 * Legacy msm_sdcc waits "at least 2 MCLK cycles" after clk_set_rate
-	 * before reprogramming MMCICLOCK, to let the SDC core resync to the
-	 * new RCG rate. Without this, MMCICLOCK can be sampled mid-transition
-	 * and the controller lands in an indeterminate state — observed as
-	 * intermittent DATACRCFAIL on the first transfer after a rate change
-	 * (~1/4 cold boots on TouchPad). Formula 1 + 3000000/clock matches
-	 * legacy msmsdcc_delay(): 1 us at 48 MHz, 8 us at 400 kHz.
+	 * Legacy msm_sdcc snaps any (fmid, fmax) = (24, 48) MHz request down
+	 * to 24 MHz. gcc-msm8660's clk_tbl_sdc[] has only discrete steps
+	 * {400 kHz, 16, 17.07, 20.21, 24, 48} MHz — nothing between 24 and
+	 * 48. If the MMC core asks for, e.g., 26 MHz (legacy MMC HS or the
+	 * intermediate of a DDR50 probe), the clock framework may round UP
+	 * to 48 MHz before the controller is configured for HS mode. Signal
+	 * sampling at the wrong edge then produces DATACRCFAIL on the first
+	 * transfer at that rate. Mirror legacy's defensive clamp.
+	 *
+	 * clock_cache tracks the applied (post-snap) rate so re-requests of
+	 * the same in-between rate hit the cache and skip clk_set_rate.
 	 */
-	if (host->variant->qcom_datactrl_delay && ios->clock)
-		udelay(1 + 3000000 / ios->clock);
+	{
+		unsigned int set_rate = ios->clock;
+
+		if (host->variant->qcom_datactrl_delay && set_rate &&
+		    set_rate < mmc->f_max && set_rate > 24000000)
+			set_rate = 24000000;
+
+		if (host->variant->explicit_mclk_control &&
+		    set_rate != host->clock_cache) {
+			ret = clk_set_rate(host->clk, set_rate);
+			if (ret < 0)
+				dev_err(mmc_dev(host->mmc),
+					"Error setting clock rate (%d)\n", ret);
+			else
+				host->mclk = clk_get_rate(host->clk);
+		}
+		host->clock_cache = set_rate;
+
+		/*
+		 * Legacy msm_sdcc waits "at least 2 MCLK cycles" after
+		 * clk_set_rate before reprogramming MMCICLOCK, to let the
+		 * SDC core resync to the new RCG rate. Without this,
+		 * MMCICLOCK can be sampled mid-transition and the controller
+		 * lands in an indeterminate state — observed as intermittent
+		 * DATACRCFAIL on the first transfer after a rate change.
+		 * Formula 1 + 3000000/clock matches legacy msmsdcc_delay():
+		 * 1 us at 48 MHz, 8 us at 400 kHz.
+		 */
+		if (host->variant->qcom_datactrl_delay && set_rate)
+			udelay(1 + 3000000 / set_rate);
+	}
 
 	spin_lock_irqsave(&host->lock, flags);
 
