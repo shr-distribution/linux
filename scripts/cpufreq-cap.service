@@ -1,0 +1,11 @@
+[Unit]
+Description=Cap CPU max frequency to 1512 MHz (legacy webOS ceiling)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq; do echo 1512000 > "$c"; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

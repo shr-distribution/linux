@@ -2275,4 +2275,102 @@ available, users who want raw CPU throughput can opt-in to 1.836
 GHz; the default scaling_max_freq remains 1.836 GHz but the system
 operates well at any cap.
 
+---
+
+## 2026-05-13 (later) — 1.836 GHz unstable under sustained memory load; capping at 1.512
+
+**Kernel:** `6.18.0-luneos-gb3c0c60b56d7` (eMMC mmci-pl18x **full-FIFO
+burst fix** — `b3c0c60b56d7`, drops burst from `fifohalfsize>>2` (32 B)
+to `fifosize>>2` (64 B) to match legacy `msm_sdcc`).
+
+The "operates well at any cap" line above was optimistic. Running the
+`scripts/benchmark-ram.sh` shell harness at default `scaling_max_freq
+= 1836000` reliably **crashes the device** within ~125 s of sustained
+`dd if=/dev/zero of=/dev/null bs=1M count=512`:
+
+```
+[  124.546799][ T1534] Code: bad PC value
+[  124.546995][ T1534] CPU: 1 UID: 0 PID: 1534 Comm: benchmark-ram.s
+[  124.560253][ T1534] PC is at 0xe320f000
+[  124.565629][ T1534] LR is at 0xe320f000
+[  124.569369][ T1534] pc : [<e320f000>]    lr : [<e320f000>]    psr: e320f000
+[  124.573195][ T1534] sp : e320f000  ip : e8ddffff  fp : e1801f92
+[  124.580133][ T1534] r10: e24d0004  r9 : e16ff005  r8 : ee030f10
+[  124.586037][ T1534] r7 : e59d0048  r6 : f10c0080  r5 : eb00bb6c  r4 : e1a0200d
+[  124.591929][ T1534] r3 : e58d0048  r2 : ee130f10  r1 : ee1d9f70  r0 : e887007c
+[  124.599254][ T1534] Flags: NZCv  IRQs on  FIQs on  Mode USER_26  ISA Jazelle
+```
+
+Followed by:
+
+```
+[  130.847948][ T1534] Insufficient stack space to handle exception!
+[  130.864564][ T1534] Internal error: kernel stack overflow: 0 [#1] SMP ARM
+[  130.870208][ T1534] PC is at __dabt_svc+0x14/0x80
+[  130.876896][ T1534] LR is at force_sig_info_to_task+0x17c/0x184
+[  130.901371][ T1534] pc : [<80100b14>]    lr : [<8014c020>]    psr: 40010193
+[  133.325075][ T1534] Kernel panic - not syncing: Fatal exception
+```
+
+Signature: every register stuffed to `0xe320f000` (the ARM opcode for
+`nop`), PSR mode bits scrambled to invalid `USER_26 / ISA Jazelle`.
+The userspace signal frame got memcpy-stomped during sustained DDR
+read traffic. The kernel then took a data-abort while delivering
+SIGSEGV via `force_sig_info_to_task`, the abort handler entered with
+`sp=0x00000032` (a value, not a stack address) and overflowed the
+exception stack.
+
+This is **not** a regression from `b3c0c60b56d7` — that commit only
+touches mmci-pl18x burst sizing. It's a previously-unobserved
+instability of the 1.728 / 1.836 OC OPPs surfaced because the new
+bench script keeps the CPU+DDR at full bandwidth for several seconds
+of continuous `dd`, longer than the previous `ddrbench` 8 MB buffer
+loops did.
+
+### Workaround landed: `scripts/cpufreq-cap.service`
+
+A systemd one-shot unit caps both CPUs at `1512000` after
+`local-fs.target`, leaving the higher OPPs visible in cpufreq for
+selective opt-in via `systemctl stop cpufreq-cap` + manual write to
+`scaling_max_freq`.
+
+Install:
+```
+./scripts/install-cpufreq-cap.sh root@172.16.42.2
+```
+
+### `dd`-based RAM bench at 1.512 GHz (post-cap, full-FIFO eMMC kernel)
+
+Tooling: `scripts/benchmark-ram.sh` (BusyBox-friendly `dd` loop with
+drop_caches between iterations — different methodology than the
+`ddrbench` NEON harness above; numbers are not directly comparable to
+the earlier MB/s figures because `dd` includes syscall + page-cache
+overhead). The intent is to verify stability and capture a baseline
+for the corruption-class bug, **not** to re-do per-cycle bandwidth.
+
+| Test | Block size | Iter | Min | Max | Avg |
+|---|---:|---:|---:|---:|---:|
+| `/dev/zero` → `/dev/null` (anon mem) | 1 M | 20 | 1190.7 MB/s | 437.6 MB/s | **654.7 MB/s** |
+| tmpfs write (`dd if=/dev/zero of=/tmp/ramtest`) | 1 M | 20 | 134.7 | 85.3 | **104.4 MB/s** |
+| tmpfs read (`dd if=/tmp/ramtest of=/dev/null`) | 1 M | 20 | 457.1 | 237.0 | **305.5 MB/s** |
+
+Fabric clocks were stable at `AFAB:SFAB:MMFAB = 384:384:384 MHz`
+throughout — zero changes, zero bimodality. No userspace
+corruption, no kernel panic, no stack overflow. Bench ran end-to-end
+on the same kernel that crashed at 1.836 GHz, so the only variable
+was the 1.512 MHz cap.
+
+### Updated OPP recommendation
+
+| OPP | Status |
+|----:|--------|
+| 1.188 GHz | ✅ Efficiency sweet spot — recommended default for battery-conscious daily use |
+| 1.512 GHz | ✅ Peak absolute bandwidth, stable under sustained load — **new recommended `scaling_max_freq` for systemd-managed daily use** |
+| 1.728 GHz | ⚠️ Stable for `ddrbench` 8 MB loops, **not yet retested for sustained `dd`** — may inherit the same instability class as 1.836 |
+| 1.836 GHz | ❌ **Unstable** — sustained DDR read crashes userspace and the kernel. Reserve for short CPU-bound bursts at most, or until further OC validation. |
+
+This supersedes Conclusion #4 of the prior section. The 1.836 GHz
+"boots and runs stably" line referred to the `ddrbench` battery,
+which apparently doesn't keep the bus loaded long enough to hit the
+corruption window.
 

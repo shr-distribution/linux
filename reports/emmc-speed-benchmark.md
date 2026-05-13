@@ -332,3 +332,76 @@ layer — none of which is CPU-bound at any reasonable clock.
   is lower. Confirm against mainline data once captured.
 - Use the canonical comparison metric: **sequential 1 MiB block-size
   throughput**. Single-number summary going forward.
+
+## 2026-05-13 (later) — mmci-pl18x full-FIFO burst fix + 1.512 GHz cap
+
+**Kernel:** `6.18.0-luneos-gb3c0c60b56d7`
+**Patch:** `b3c0c60b56d7` — `mmc: mmci: use full-FIFO burst on qcom variant`.
+The qcom variant used to compute `burst_words = fifohalfsize >> 2`
+(32 B), but legacy `msm_sdcc` programs the ADM box descriptor with
+`MCI_FIFOSIZE = 64 B` per row. This commit changes mmci-pl18x to
+`burst_words = fifosize >> 2` (64 B) on `qcom_fifo` variants — i.e.
+**full-FIFO bursts**, matching legacy behaviour.
+
+**CPU config:** `scaling_max_freq` clamped to 1.512 GHz on both
+CPUs via `scripts/cpufreq-cap.service` (systemd one-shot — see
+`reports/ram-speed-benchmark.md` for the 1.836 GHz crash
+that motivated the cap). Governor `performance`, both CPUs online.
+
+**Tooling:** `scripts/benchmark-ram.sh` and `scripts/benchmark-emmc.sh`
+(BusyBox-friendly `dd` loops). **Not directly comparable** to the
+O_DIRECT `tools/emmcbench` numbers above — `dd` here goes through
+the kernel page cache after `drop_caches` and uses bs=1M/4M/64K.
+
+### Sequential read (20 iters, 100 MB per run)
+
+| Test | Block size | Min | Max | Avg | **Median** |
+|------|---:|---:|---:|---:|---:|
+| Test 1 | 1 M | 32.2 MB/s | 27.0 MB/s | 30.5 MB/s | **30.9 MB/s** |
+| Test 2 | 64 K | 28.0 MB/s | 23.9 MB/s | 26.5 MB/s | **27.0 MB/s** |
+| Test 3 | 4 M | 30.7 MB/s | 26.4 MB/s | 29.3 MB/s | **30.0 MB/s** |
+| Test 4 (varied offset, 1.3 GB jumps over 32 GB) | 1 M | 31.7 MB/s | 27.4 MB/s | 29.2 MB/s | **29.0 MB/s** |
+
+Bench-window error count: **0** (`DATACRCFAIL`, `MCI ERROR`,
+`error during DMA` — none observed once `mmcblk0` was up). All ~20
+of each test ran to completion; throughput consistent across blocks,
+no outliers > 1.4× of median. Full-FIFO burst hasn't shifted the
+controller-wire ceiling — still ~30 MB/s — but it's also not
+*hurting*, and one boot-failure mechanism has been ruled out.
+
+### Boot-time DATACRCFAIL still present (separate bug)
+
+The full-FIFO burst fix did **not** resolve the intermittent
+boot-time `DATACRCFAIL` that affects ~1/3-1/4 of cold boots.
+Pattern on this kernel:
+
+```
+[    6.474677] mmci-pl18x 121c0000.mmc: DATACRCFAIL: blksz=4 blocks=1 flags=0x100   (mmc1 SDIO init)
+[    8.060184] mmci-pl18x 12400000.mmc: DATACRCFAIL: blksz=512 blocks=504 flags=0x200 (mmc0 boot1)
+[   50.520713] mmci-pl18x 12400000.mmc: DATACRCFAIL: blksz=512 blocks=256 flags=0x200 (mmc0 runtime)
+[   62.720472] mmci-pl18x 12400000.mmc: DATACRCFAIL: blksz=512 blocks=216 flags=0x200 (mmc0 runtime)
+```
+
+Pattern characteristics:
+- All errors are at boot or early runtime (< 65 s uptime). Never
+  during steady-state operation.
+- Bigger transfers (504, 256, 216 blocks = 252, 128, 108 KiB) — i.e.
+  long bursts crossing FIFO refills under high clock immediately
+  after card init.
+- ext3 on `mmcblk0p13` (the `/uboot` partition) records `error count
+  since last fsck: 5` — file corruption is leaking from the failed
+  transfers into on-disk state. The systemd cap unit's file got
+  truncated to whitespace once by this mechanism.
+
+The hypothesis was that legacy used 64-byte ADM box-descriptor row
+size and we were using 32-byte half-FIFO bursts — but the 64-byte
+fix didn't shift the failure rate measurably (full retest beyond
+this single boot is still pending). Likely the actual cause is in
+the **clock-ramp / power-up sequence** path: legacy `msm_sdcc`
+programs `MCI_CLK` and the SDC1 controller registers in a specific
+order during card init that mmci-pl18x doesn't replicate. Worth
+investigating next.
+
+Recommended interim: `fsck -y /dev/mmcblk0p13` from initramfs after
+any clean shutdown, and treat `/uboot` writes as "best effort" until
+the boot-time CRC fail is resolved.
