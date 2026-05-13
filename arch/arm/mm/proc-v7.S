@@ -378,6 +378,15 @@ __v7_scorpion_setup:
 	 */
 
 	/*
+	 * BISECT: add BPCR=0x01FF01FF back on top of the minimal config.
+	 * If PLD still works, BPCR is innocent.
+	 * If PLD stops, BPCR is the prefetch killer.
+	 */
+	movw	r0, #0x01FF
+	movt	r0, #0x01FF
+	mcr	p15, 7, r0, c15, c0, 2		@ WCP15_BPCR
+
+	/*
 	 * L2CPUCR (p15,3,c15,c0,2): OR in bit 21, the only Scorpion-MP-
 	 * specific write legacy proc-v7.S does. Skip the base 0xe0 write —
 	 * the bootloader handles that, and we don't want to clobber any
