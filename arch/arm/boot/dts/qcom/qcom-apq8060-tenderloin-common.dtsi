@@ -241,25 +241,8 @@
 				 <&gcc ADM0_C1_RESET>,
 				 <&gcc ADM0_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
-			/*
-			 * EE 0 — HLOS owns the ADM scheduler at EE=0 on
-			 * Tenderloin. Verified empirically 2026-05-13 by
-			 * reading /dev/mem from running webOS: EE=0 CH_CONF
-			 * window holds the live programming (ch2 = 0x180008d5
-			 * for eMMC at 25 MB/s sustained); EE=1 window is all
-			 * zeros while eMMC DMA is active. So Palm's TZ chain
-			 * mapped HLOS to EE=0 here, contrary to the standard
-			 * MSM8660 stock binding where HLOS = EE=1.
-			 *
-			 * Writing to EE=1 from Linux silently no-ops (writes
-			 * succeed in readback because the EE=1 window exists,
-			 * but the ADM scheduler reads channel config from
-			 * EE=0 and ignores EE=1 on this SoC variant).
-			 *
-			 * Recorded in memory:
-			 *   project_adm_uses_ee0_not_ee1.md
-			 */
-			qcom,ee = <0>;
+			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
+			qcom,ee = <1>;
 
 			/*
 			 * EBI interconnect path for DMA memory access.
@@ -290,25 +273,8 @@
 				 <&gcc ADM1_C1_RESET>,
 				 <&gcc ADM1_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
-			/*
-			 * EE 0 — HLOS owns the ADM scheduler at EE=0 on
-			 * Tenderloin. Verified empirically 2026-05-13 by
-			 * reading /dev/mem from running webOS: EE=0 CH_CONF
-			 * window holds the live programming (ch2 = 0x180008d5
-			 * for eMMC at 25 MB/s sustained); EE=1 window is all
-			 * zeros while eMMC DMA is active. So Palm's TZ chain
-			 * mapped HLOS to EE=0 here, contrary to the standard
-			 * MSM8660 stock binding where HLOS = EE=1.
-			 *
-			 * Writing to EE=1 from Linux silently no-ops (writes
-			 * succeed in readback because the EE=1 window exists,
-			 * but the ADM scheduler reads channel config from
-			 * EE=0 and ignores EE=1 on this SoC variant).
-			 *
-			 * Recorded in memory:
-			 *   project_adm_uses_ee0_not_ee1.md
-			 */
-			qcom,ee = <0>;
+			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
+			qcom,ee = <1>;
 
 			/*
 			 * EBI interconnect path for DMA memory access.
