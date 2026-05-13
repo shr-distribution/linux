@@ -11,6 +11,7 @@
 
 #include <linux/clk.h>
 #include <linux/completion.h>
+#include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/interconnect.h>
@@ -957,6 +958,33 @@ static int gemini_probe(struct platform_device *pdev)
 	mutex_init(&gemini->lock);
 	spin_lock_init(&gemini->irqlock);
 	init_completion(&gemini->reset_done);
+
+	/*
+	 * Set up DMA parameters. Without this:
+	 *   - vb2_mmap NULL-derefs on dev->dma_parms->max_segment_size
+	 *   - vb2_dma_contig_plane_dma_addr may return raw CMA physical
+	 *     addresses instead of IOMMU-translated iovas, which then
+	 *     fault when the JPEG engine tries to read them through its
+	 *     SMMU (ijpeg_iommu @ 0x7800000).
+	 *
+	 * Observed 2026-05-13: JPEG engine kicked off with
+	 * `src_y=0x7c500000`, `we=0x7c700270` (raw CMA addresses), then
+	 * the SMMU emitted "Unexpected IOMMU page fault in context 1
+	 * FAR = 7c74c4f0" at ~60 kHz rate until the device locked up.
+	 *
+	 * 32-bit DMA mask is correct: JPEG sub-4GB addressing, CMA at
+	 * 0x7c000000-0x7dffffff.
+	 */
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (ret) {
+		dev_err(dev, "failed to set DMA mask: %d\n", ret);
+		return ret;
+	}
+	dev->dma_parms = devm_kzalloc(dev, sizeof(*dev->dma_parms),
+				      GFP_KERNEL);
+	if (!dev->dma_parms)
+		return -ENOMEM;
+	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
 
 	/* Get resources */
 	gemini->base = devm_platform_ioremap_resource(pdev, 0);
