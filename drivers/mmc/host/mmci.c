@@ -505,8 +505,21 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 
 		clk |= variant->clkreg_enable;
 		clk |= MCI_CLK_ENABLE;
-		/* This hasn't proven to be worthwhile */
-		/* clk |= MCI_CLK_PWRSAVE; */
+		/*
+		 * MCI_CLK_PWRSAVE auto-gates the SDC bus clock between
+		 * transfers — set it for qcom once we're past the 400 kHz
+		 * card-identification phase, matching legacy msm_sdcc's
+		 * msmsdcc_is_pwrsave() = (clk_rate > 400000). Without this
+		 * the SD/MMC clock free-runs whenever the controller is
+		 * powered, costing a few mW continuously.
+		 *
+		 * Generic mmci has this commented out as "not proven
+		 * worthwhile", but legacy webOS on Tenderloin uses it
+		 * unconditionally above 400 kHz and the controller behaves
+		 * identically.
+		 */
+		if (variant->qcom_datactrl_delay && desired > 400000)
+			clk |= MCI_CLK_PWRSAVE;
 	}
 
 	/* Set actual clock for debug */
