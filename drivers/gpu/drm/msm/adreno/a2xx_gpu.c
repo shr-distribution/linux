@@ -29,7 +29,31 @@ extern bool hang_debug;
 bool a2xx_skip_preamble = false;
 module_param(a2xx_skip_preamble, bool, 0644);
 MODULE_PARM_DESC(a2xx_skip_preamble,
-		 "skip a2xx cross-context sanitizer preamble (0=emit, 1=skip)");
+		 "skip the sanitizer preamble on context switch");
+
+/*
+ * Force the sanitizer preamble (8x slot-scrub + LOAD_CONSTANT_CONTEXT
+ * + state restore) to fire on EVERY submit, not just context switches.
+ *
+ * Mainline mesa freedreno uses one DRM context per process, so the
+ * sanitizer preamble rarely fires for single-app workloads (e.g., our
+ * cap-binary test).  Legacy KGSL emits equivalent state restore via
+ * kgsl_drawctxt_switch when CTXT_FLAGS_SHADER_RESTORE is set - which
+ * is set on the FIRST submit after context create, and persists.  Mesa
+ * doesn't trigger the equivalent reset, so the slot-scrub never re-
+ * exercises the SQ state machine after the very first batch.
+ *
+ * This knob forces it to fire every submit, matching what KGSL would
+ * effectively do if every user IB triggered a fresh save/restore.
+ *
+ * Testing path:
+ *   echo 1 > /sys/module/msm/parameters/a2xx_always_preamble
+ *   (run cap-binary, observe 0x0ee2 progression)
+ */
+bool a2xx_always_preamble = false;
+module_param(a2xx_always_preamble, bool, 0644);
+MODULE_PARM_DESC(a2xx_always_preamble,
+		 "fire sanitizer preamble on EVERY submit (test for slot scrub-driven period-16 cycle fix)");
 
 /*
  * Option H (per SoC-init audit 2026-05-11): replicate webOS
@@ -766,7 +790,8 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	 * + loop).  This matches the KGSL context-restore path on the
 	 * legacy 2.6 kernel.  See a2xx_emit_sanitizer_preamble().
 	 */
-	if (ring->cur_ctx_seqno != submit->queue->ctx->seqno &&
+	if ((ring->cur_ctx_seqno != submit->queue->ctx->seqno ||
+	     a2xx_always_preamble) &&
 	    !a2xx_skip_preamble) {
 		(void)a2xx_alloc_shadow(gpu);  /* lazy-init, fall back to
 						* inline writes if it fails */
