@@ -36,7 +36,21 @@
 			operating-points-v2 = <&cpu_opp_table>;
 			qcom,saw = <&saw0>;
 			cpu-supply = <&saw0_reg>;
-			cpu-idle-states = <&cpu_spc>, <&cpu_pc>;
+			/*
+			 * cpu-idle-states intentionally not wired up: the deep
+			 * SPM-driven idle states (spc, pc) need MPM to deliver
+			 * IPI/IRQ wakeups when the core is in WFI behind SPM.
+			 * MPM probe is currently disabled on this platform
+			 * (see project_mpm_enable_hangs_post_diagnostic). Without
+			 * a working MPM, CPU1 in spc/pc never wakes — observed
+			 * as workqueue lockup + RCU stall ~minutes into uptime,
+			 * with idle=N/1/0x40000000 (TICK_NOHZ_STOPPED). Fall back
+			 * to arch_cpu_idle (plain WFI) which wakes on any IRQ.
+			 *
+			 * Re-add `cpu-idle-states = <&cpu_spc>, <&cpu_pc>;` once
+			 * MPM is wired (the 4 candidate fix paths are sketched in
+			 * project_cpu1_hotplug_complex.md).
+			 */
 		};
 
 		cpu1: cpu@1 {
@@ -50,7 +64,7 @@
 			operating-points-v2 = <&cpu_opp_table>;
 			qcom,saw = <&saw1>;
 			cpu-supply = <&saw1_reg>;
-			cpu-idle-states = <&cpu_spc>, <&cpu_pc>;
+			/* See cpu0 above — deep idle disabled until MPM works */
 		};
 
 		l2: l2-cache {
