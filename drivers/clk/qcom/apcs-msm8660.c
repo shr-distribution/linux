@@ -194,26 +194,43 @@ struct apcs_cpu_clk {
 #define to_apcs_cpu_clk(_hw) container_of(_hw, struct apcs_cpu_clk, hw)
 
 /*
- * CPU → EBI bandwidth tiers (peak ib, in kBps) matching legacy webOS
- * acpuclock-8x60.c bw_level_tbl[]. RPM translates this into an EBI clock
- * rate (the bus controller picks a rate that delivers at least the
- * requested ib).
+ * CPU → EBI bandwidth tiers (peak ib, in kBps).
  *
- * Mapping from CPU frequency to bw tier (per legacy acpu_freq_tbl_v2):
+ * Tiers 0-3 match legacy webOS acpuclock-8x60.c bw_level_tbl[]. RPM
+ * translates the request into an EBI clock rate (the bus controller
+ * picks a rate that delivers at least the requested ib).
+ *
+ * Tier 4 extends the table for the 1512 MHz OPP that we support but
+ * webOS did not. Legacy capped at 1188 MHz so the original table
+ * stopped at tier 3 (310 MHz EBI). On hardware the bootloader scales
+ * ebi1_clk roughly as CPU_top_freq / 4 — empirically 384 MHz at 1512
+ * MHz CPU vs 310 MHz at 1188 MHz CPU (3.94x and 3.83x respectively).
+ * Tier 4 requests an ib that maps to ~378 MHz EBI so apcs's vote
+ * matches the bootloader's setting rather than under-voting from
+ * tier 3's webOS-era ceiling.
+ *
+ * If we ever land an OPP higher than 1512 MHz, add tier 5 here.
+ *
+ * Mapping from CPU frequency to bw tier (per legacy acpu_freq_tbl_v2,
+ * extended for ours):
  *   CPU <  648 MHz   → tier 0 (824 MB/s,  ~103 MHz EBI)
  *   CPU 648–864 MHz  → tier 1 (1336 MB/s, ~167 MHz EBI)
  *   CPU 918–1134 MHz → tier 2 (2008 MB/s, ~251 MHz EBI)
- *   CPU ≥ 1188 MHz   → tier 3 (2480 MB/s, ~310 MHz EBI)
+ *   CPU 1188–1404    → tier 3 (2480 MB/s, ~310 MHz EBI)
+ *   CPU ≥ 1512 MHz   → tier 4 (3024 MB/s, ~378 MHz EBI)
  */
 #define APCS_BW_KBPS_TIER0	 824000U
 #define APCS_BW_KBPS_TIER1	1336000U
 #define APCS_BW_KBPS_TIER2	2008000U
 #define APCS_BW_KBPS_TIER3	2480000U
+#define APCS_BW_KBPS_TIER4	3024000U
 
 static unsigned int apcs_bw_for_rate(unsigned long rate_hz)
 {
 	unsigned long rate_khz = rate_hz / 1000;
 
+	if (rate_khz >= 1512000)
+		return APCS_BW_KBPS_TIER4;
 	if (rate_khz >= 1188000)
 		return APCS_BW_KBPS_TIER3;
 	if (rate_khz >= 918000)
