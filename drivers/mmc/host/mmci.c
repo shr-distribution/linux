@@ -1117,13 +1117,33 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	struct variant_data *variant = host->variant;
 	struct qcom_adm_peripheral_config periph_conf = {};
+	/*
+	 * For the qcom variant with CRCI flow-control via ADM, the box
+	 * descriptor's "row" must match the full SDC FIFO size (64 bytes
+	 * on MSM8660). The CRCI is asserted only when the FIFO is half-
+	 * empty — and the ADM doesn't start the next row until CRCI
+	 * fires again, so each row transfers an entire FIFO-full of data
+	 * between CRCI assertions. If the row is only half the FIFO
+	 * (the default for non-qcom mmci variants), boundary conditions
+	 * during boot-time CPU/bus transitions intermittently corrupt
+	 * data → DATACRCFAIL ~1/3 of boots.
+	 *
+	 * Legacy webOS msm_sdcc.c uses MCI_FIFOSIZE (= full fifosize)
+	 * as box row size and is reliable. Match that for qcom variant.
+	 *
+	 * Standard mmci variants keep the original behaviour (half-FIFO
+	 * burst, matching the half-empty trigger semantics of generic
+	 * ARM PrimeCell).
+	 */
+	unsigned int burst_words = variant->qcom_fifo ? (variant->fifosize >> 2)
+						      : (variant->fifohalfsize >> 2);
 	struct dma_slave_config conf = {
 		.src_addr = host->phybase + MMCIFIFO,
 		.dst_addr = host->phybase + MMCIFIFO,
 		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
 		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
-		.src_maxburst = variant->fifohalfsize >> 2, /* # of words */
-		.dst_maxburst = variant->fifohalfsize >> 2, /* # of words */
+		.src_maxburst = burst_words,
+		.dst_maxburst = burst_words,
 		.device_fc = variant->dma_flow_controller,
 	};
 	struct dma_chan *chan;
