@@ -34,7 +34,14 @@
 #include "vidc_enc.h"
 
 #define VIDC_FW_NAME		"qcom/vidc_1080p.fw"
-#define VIDC_FW_SIZE_MAX	(512 * 1024)
+/*
+ * VIDC firmware blob size cap. The legacy Palm webOS-shipped
+ * vidc_1080p.fw is 605428 bytes (~592 KB); the previous 512 KB cap
+ * was set before the actual blob size was checked. Cap at 1 MB —
+ * the firmware-adjacent DMA buffer sizes from this value so we want
+ * a sane upper bound, not "open-ended whatever is in /lib/firmware".
+ */
+#define VIDC_FW_SIZE_MAX	(1024 * 1024)
 
 #define VIDC_INIT_CH_INST_ID	0x0000ffff
 
