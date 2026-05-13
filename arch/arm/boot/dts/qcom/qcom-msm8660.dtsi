@@ -188,9 +188,51 @@
 			opp-microvolt = <1187500>;
 		};
 
+		opp-1242000000 {
+			opp-hz = /bits/ 64 <1242000000>;
+			opp-microvolt = <1190000>;
+		};
+
+		opp-1350000000 {
+			opp-hz = /bits/ 64 <1350000000>;
+			opp-microvolt = <1195000>;
+		};
+
+		opp-1458000000 {
+			opp-hz = /bits/ 64 <1458000000>;
+			opp-microvolt = <1200000>;
+		};
+
 		opp-1512000000 {
 			opp-hz = /bits/ 64 <1512000000>;
 			opp-microvolt = <1250000>;
+		};
+
+		/*
+		 * Overclocked OPPs above the legacy webOS / vendor-validated
+		 * 1512 MHz ceiling. Values from rwhitby/webos-uber-kernel's
+		 * "Overclock to 1.8GHz" commit (c533dc2, Jan 2012) which has
+		 * a multi-year history of stable use on this hardware.
+		 *
+		 * 1728 MHz @ 1350 mV is moderately overclocked; 1836 MHz at
+		 * 1450 mV is aggressive and depends on silicon binning.
+		 * Mainline has no thermal management on this platform yet —
+		 * sustained top-OPP workloads can overheat the device since
+		 * there's no passive cooling and no tsens-driven throttling.
+		 *
+		 * To restrict the max OPP at runtime (e.g. for battery life
+		 * or thermal safety), set
+		 *   /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq
+		 * to a lower value at boot via udev/systemd.
+		 */
+		opp-1728000000 {
+			opp-hz = /bits/ 64 <1728000000>;
+			opp-microvolt = <1350000>;
+		};
+
+		opp-1836000000 {
+			opp-hz = /bits/ 64 <1836000000>;
+			opp-microvolt = <1450000>;
 		};
 	};
 
@@ -405,7 +447,16 @@
 			saw0_reg: regulator {
 				regulator-name = "cpu0_vdd";
 				regulator-min-microvolt = <840000>;
-				regulator-max-microvolt = <1250000>;
+				/*
+				 * Was 1250000. Bumped to 1600000 to match
+				 * rwhitby/webos-uber-kernel — needed for the
+				 * 1.45V Vcore at 1836 MHz OPP. PM8901 SMPS
+				 * Band 2 hardware supports up to ~1.65V.
+				 * Lower OPPs still get their lower voltages;
+				 * cpufreq only requests the higher Vcore when
+				 * the matching OPP is actually selected.
+				 */
+				regulator-max-microvolt = <1600000>;
 			};
 		};
 
@@ -417,7 +468,16 @@
 			saw1_reg: regulator {
 				regulator-name = "cpu1_vdd";
 				regulator-min-microvolt = <840000>;
-				regulator-max-microvolt = <1250000>;
+				/*
+				 * Was 1250000. Bumped to 1600000 to match
+				 * rwhitby/webos-uber-kernel — needed for the
+				 * 1.45V Vcore at 1836 MHz OPP. PM8901 SMPS
+				 * Band 2 hardware supports up to ~1.65V.
+				 * Lower OPPs still get their lower voltages;
+				 * cpufreq only requests the higher Vcore when
+				 * the matching OPP is actually selected.
+				 */
+				regulator-max-microvolt = <1600000>;
 			};
 		};
 

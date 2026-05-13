@@ -78,13 +78,13 @@
 
 /* L_VAL limits: freq = 2 * 27MHz * L_VAL */
 #define SCPLL_L_VAL_MIN		0x08	/* 432 MHz */
-#define SCPLL_L_VAL_MAX		0x1c	/* 1512 MHz */
+#define SCPLL_L_VAL_MAX		0x22	/* 1836 MHz (uber-kernel overclock ceiling) */
 #define SCPLL_RATE_FACTOR	54000000UL
 
 /* Frequency thresholds */
 #define FREQ_PLL8		384000000UL
 #define FREQ_SCPLL_MIN		432000000UL
-#define FREQ_SCPLL_MAX		1512000000UL
+#define FREQ_SCPLL_MAX		1836000000UL
 
 /* Maximum regulator voltage for vdd_mem/vdd_dig (PM8058 S0/S1) */
 #define VDD_MEM_MAX		1350000
@@ -124,7 +124,21 @@ static const struct vdd_req vdd_table[] = {
 	[0x11] = { 1250000, 1200000 },	/* L_VAL 0x19: 1350 MHz */
 	[0x12] = { 1250000, 1200000 },	/* L_VAL 0x1A: 1404 MHz */
 	[0x13] = { 1250000, 1200000 },	/* L_VAL 0x1B: 1458 MHz */
-	[0x14] = { 1250000, 1200000 },	/* L_VAL 0x1C: 1512 MHz */
+	[0x14] = { 1250000, 1300000 },	/* L_VAL 0x1C: 1512 MHz */
+	/*
+	 * Overclocked OPPs above webOS / vendor-validated ceiling.
+	 * Values from rwhitby/webos-uber-kernel — these are the
+	 * vdd_mem/vdd_dig (PM8058 S0/S1) RPM-rail votes, NOT cpu
+	 * Vcore. CPU Vcore comes from the SAW regulator
+	 * (cpu0_vdd/cpu1_vdd) via the DT opp-microvolt fields and is
+	 * driven by cpufreq-dt.
+	 */
+	[0x15] = { 1300000, 1300000 },	/* L_VAL 0x1D: 1566 MHz */
+	[0x16] = { 1300000, 1300000 },	/* L_VAL 0x1E: 1620 MHz */
+	[0x17] = { 1300000, 1300000 },	/* L_VAL 0x1F: 1674 MHz */
+	[0x18] = { 1300000, 1300000 },	/* L_VAL 0x20: 1728 MHz */
+	[0x19] = { 1300000, 1300000 },	/* L_VAL 0x21: 1782 MHz */
+	[0x1A] = { 1300000, 1300000 },	/* L_VAL 0x22: 1836 MHz */
 };
 
 static const struct vdd_req *get_vdd_req(u32 l_val)
@@ -209,26 +223,34 @@ struct apcs_cpu_clk {
  * matches the bootloader's setting rather than under-voting from
  * tier 3's webOS-era ceiling.
  *
- * If we ever land an OPP higher than 1512 MHz, add tier 5 here.
+ * Tier 5 extends further for the overclocked OPPs at 1728 MHz and
+ * 1836 MHz (rwhitby/webos-uber-kernel values). EBI scales roughly as
+ * CPU_freq/4 on this platform so 1728 MHz → ~432 MHz EBI and 1836
+ * MHz → ~459 MHz EBI. We use a single tier 5 covering both with a
+ * bandwidth target of 3680 MB/s, equivalent to ~460 MHz EBI.
  *
  * Mapping from CPU frequency to bw tier (per legacy acpu_freq_tbl_v2,
  * extended for ours):
  *   CPU <  648 MHz   → tier 0 (824 MB/s,  ~103 MHz EBI)
  *   CPU 648–864 MHz  → tier 1 (1336 MB/s, ~167 MHz EBI)
  *   CPU 918–1134 MHz → tier 2 (2008 MB/s, ~251 MHz EBI)
- *   CPU 1188–1404    → tier 3 (2480 MB/s, ~310 MHz EBI)
- *   CPU ≥ 1512 MHz   → tier 4 (3024 MB/s, ~378 MHz EBI)
+ *   CPU 1188–1458    → tier 3 (2480 MB/s, ~310 MHz EBI)
+ *   CPU 1512 MHz     → tier 4 (3024 MB/s, ~378 MHz EBI)
+ *   CPU ≥ 1728 MHz   → tier 5 (3680 MB/s, ~460 MHz EBI)
  */
 #define APCS_BW_KBPS_TIER0	 824000U
 #define APCS_BW_KBPS_TIER1	1336000U
 #define APCS_BW_KBPS_TIER2	2008000U
 #define APCS_BW_KBPS_TIER3	2480000U
 #define APCS_BW_KBPS_TIER4	3024000U
+#define APCS_BW_KBPS_TIER5	3680000U
 
 static unsigned int apcs_bw_for_rate(unsigned long rate_hz)
 {
 	unsigned long rate_khz = rate_hz / 1000;
 
+	if (rate_khz >= 1728000)
+		return APCS_BW_KBPS_TIER5;
 	if (rate_khz >= 1512000)
 		return APCS_BW_KBPS_TIER4;
 	if (rate_khz >= 1188000)
