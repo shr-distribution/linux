@@ -171,31 +171,11 @@ static const struct vdd_req *get_vdd_req(u32 l_val)
  * needs 1.25V/1.2V per the legacy L2 freq table. That left L2
  * undervolted in the 1080–1134 MHz CPU range.
  *
- * L2 was previously capped at L_VAL 0x1A (1404 MHz) because legacy
- * webOS validated no L2 rate above that — webOS topped out at 1188
- * MHz CPU + 1404 MHz L2 (acpu_freq_tbl_v2[16]).
- *
- * The 1.728 / 1.836 GHz overclock OPPs introduced in commit
- * f56b2ba1c033 push CPU well above the L2 1404 MHz ceiling. With
- * L2 staying at 1.404 GHz and CPU at 1.728 GHz, the CPU is now
- * 1.23x faster than its L2 — L1 misses serialise behind L2 fills
- * that the L2 can't keep up with. ddrbench measured:
- *
- *     freq       NEON read     NEON write
- *     1512 MHz   1701 MB/s     1841 MB/s
- *     1728 MHz   1573 MB/s     1363 MB/s    <- write -26%
- *
- * The write hit is the smoking gun (store buffer fills faster than
- * L2 drains). Bumping L2_L_VAL_MAX to 0x20 (1728 MHz) lets L2
- * track the CPU for the new overclock OPPs and should recover
- * the bandwidth. Uber-kernel's l2_freq_tbl_v2 also lifts L2 to
- * 1.512 GHz at idx 16, so this is in the validated envelope.
- *
- * Voltage: at L2 1728 MHz, vdd_mem/vdd_dig need ~1.30V each, which
- * vdd_table[0x18] already provides (matches the OC OPP entries
- * landed in f56b2ba1c033).
+ * L2 is capped at L_VAL 0x1A (1404 MHz) because legacy validated no
+ * L2 rate above that (CPU at 1512 MHz uses L2 1404 MHz per legacy
+ * acpu_freq_tbl_v2[16]).
  */
-#define L2_L_VAL_MAX	0x20	/* 1728 MHz — tracks CPU OC ceiling */
+#define L2_L_VAL_MAX	0x1A	/* 1404 MHz, legacy-validated L2 ceiling */
 
 /**
  * struct apcs_cpu_clk - Per-CPU clock structure
