@@ -391,6 +391,22 @@ struct vidc_core {
 	bool fw_loaded;
 	bool fw_running;
 	u32 fw_version;
+	/*
+	 * Boot handshake completions. Legacy webOS DDL (see
+	 * webos-linux-kernel-touchpad/drivers/video/msm/vidc/1080p/ddl/
+	 * vcd_ddl_interrupt_handler.c:38) shows the on-chip RISC fires
+	 * two separate IRQs on bring-up:
+	 *
+	 *   FW_STATUS_RET  (cmd=9) — unsolicited "I'm alive" raised when
+	 *                            SW_RESET is released
+	 *   SYS_INIT_RET   (cmd=8) — response to HOST2RISC SYS_INIT
+	 *
+	 * Host must wait for FW_STATUS before sending SYS_INIT. Sending
+	 * SYS_INIT before the RISC is ready was the failure mode for the
+	 * mainline driver — it timed out on sys_init_done because the
+	 * firmware hadn't even started executing.
+	 */
+	struct completion fw_status_done;
 	struct completion sys_init_done;
 
 	/* Instance management */
@@ -557,7 +573,6 @@ struct vidc_inst {
 };
 
 /* Core functions */
-int vidc_core_init(struct vidc_core *core);
 void vidc_core_deinit(struct vidc_core *core);
 int vidc_load_firmware(struct vidc_core *core);
 void vidc_unload_firmware(struct vidc_core *core);
@@ -586,7 +601,7 @@ static inline void vidc_write(struct vidc_core *core, u32 reg, u32 val)
 	writel(val, core->base + reg);
 }
 
-int vidc_hw_reset(struct vidc_core *core);
+int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted);
 int vidc_send_cmd(struct vidc_core *core, u32 cmd, u32 arg1, u32 arg2,
 		  u32 arg3, u32 arg4);
 int vidc_get_response(struct vidc_core *core, u32 *cmd, u32 *arg1,
