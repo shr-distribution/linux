@@ -503,20 +503,26 @@ static int vidc_dec_buf_prepare(struct vb2_buffer *vb)
 	return 0;
 }
 
+/*
+ * vb2 framework holds vq->lock (== inst->lock, see vidc_dec_queue_init)
+ * across start_streaming / stop_streaming / buf_queue / etc. Re-acquiring
+ * inst->lock here would self-deadlock — observed as v4l2-ctl blocked for
+ * 122+ seconds with "blocked on a mutex likely owned by task v4l2-ctl"
+ * during VIDIOC_STREAMON. So don't take the lock; the vb2 wrapper has us
+ * covered.
+ */
 static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct vidc_inst *inst = vb2_get_drv_priv(q);
 	struct vidc_core *core = inst->core;
 	int ret;
 
-	mutex_lock(&inst->lock);
-
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		/* Start decode session */
 		if (!inst->streamon_out) {
 			ret = pm_runtime_resume_and_get(core->dev);
 			if (ret < 0)
-				goto unlock;
+				return ret;
 
 			/*
 			 * Open the firmware channel for this decode instance.
@@ -534,7 +540,7 @@ static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 			ret = vidc_open_channel(inst);
 			if (ret) {
 				pm_runtime_put(core->dev);
-				goto unlock;
+				return ret;
 			}
 
 			/*
@@ -548,7 +554,7 @@ static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 			if (ret) {
 				vidc_close_channel(inst);
 				pm_runtime_put(core->dev);
-				goto unlock;
+				return ret;
 			}
 
 			inst->streamon_out = true;
@@ -561,12 +567,7 @@ static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 		}
 	}
 
-	mutex_unlock(&inst->lock);
 	return 0;
-
-unlock:
-	mutex_unlock(&inst->lock);
-	return ret;
 }
 
 static void vidc_dec_stop_streaming(struct vb2_queue *q)
@@ -574,8 +575,6 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 	struct vidc_inst *inst = vb2_get_drv_priv(q);
 	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *vbuf;
-
-	mutex_lock(&inst->lock);
 
 	/* Return all buffers to userspace */
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
@@ -602,8 +601,6 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 
 		inst->streamon_cap = false;
 	}
-
-	mutex_unlock(&inst->lock);
 }
 
 static void vidc_dec_buf_queue(struct vb2_buffer *vb)
