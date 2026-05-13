@@ -322,21 +322,31 @@ __v7_scorpion_setup:
 	do_invalidate_l1
 
 	/*
-	 * L2CR1 = 0x33: enable Scorpion I/D L2 prefetch (bits 0,1,4,5).
+	 * TEST BRANCH: L2CR1 write SUPPRESSED on Scorpion-MP.
 	 *
-	 * The previous value 0x100 was inherited from legacy QSD8650A
-	 * "Halcyon" bootloader code (arch-init-scorpion.S:226) where it
-	 * meant "Disable Barrier Broadcast"; that semantic does not apply
-	 * to ScorpionMP (8x60/APQ8060). Legacy webOS proc-v7.S writes
-	 * 0x33 unconditionally for CONFIG_ARCH_MSM_SCORPION — the
-	 * documented "default Instruction and data prefetching values".
+	 * Hypothesis: writing L2CR1=0x33 here disables the L1/L2 hardware
+	 * prefetcher that the bootloader had enabled, causing `pld` hints
+	 * to no-op on Scorpion-MP (APQ8060/MSM8660).
 	 *
-	 * Like our existing L2CR0 write, this is load-bearing for boot
-	 * even though scorpion-verify readback shows L2CR1 as 0 (the
-	 * MCR has cache-controller side effects beyond what's visible).
+	 * Evidence: ddrbench-sizes on running webOS shows PLD gives 2.76x
+	 * speedup on DDR-bound reads (1662 vs 603 MB/s). The same binary
+	 * on mainline shows PLD gives zero speedup (575 MB/s either way).
+	 *
+	 * Legacy webOS proc-v7.S only writes L2CR1=0x33 for plain SCORPION
+	 * (QSD8x50), NOT for SCORPIONMP. Mainline blindly wrote it on
+	 * Scorpion-MP because legacy bootloader (Halcyon) writes 0x100 in
+	 * the same register slot — but 0x100 there meant "DBB" on Halcyon,
+	 * a bit that probably has a different (or no) meaning on Scorpion-MP.
+	 *
+	 * If removing this write recovers PLD effectiveness on Scorpion-MP,
+	 * the fix is permanent: gate this write behind CONFIG_ARCH_MSM_SCORPION
+	 * (single-core) and skip for CONFIG_ARCH_MSM_SCORPIONMP (the
+	 * Scorpion-MP path is __v7_scorpion_setup).
+	 *
+	 * Previous code preserved here for reference:
+	 *   mov  r0, #0x33
+	 *   mcr  p15, 3, r0, c15, c0, 3     @ WCP15_L2CR1
 	 */
-	mov	r0, #0x33
-	mcr	p15, 3, r0, c15, c0, 3		@ WCP15_L2CR1
 
 	/* L2CR0: Enable out-of-order bus attributes, error reporting */
 	movw	r0, #0x0F0F
