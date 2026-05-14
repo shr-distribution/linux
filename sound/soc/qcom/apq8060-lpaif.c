@@ -153,8 +153,20 @@ static int apq8060_lpaif_hw_params(struct snd_pcm_substream *substream,
 		dev_info(rtd->dev, "BCLK-only mode: LRCLK_FRC=1, rate=%u (width=%u, ch=%u)\n",
 			 lrclk_rate, width, channels);
 
-		/* Set AIF1_LRCLK_FRC to force internal LRCLK generation */
-		snd_soc_component_update_bits(component, WM8994_AIF1_CONTROL_1,
+		/*
+		 * Set AIF1_LRCLK_FRC to force internal LRCLK generation.
+		 *
+		 * Bit AIF1_LRCLK_FRC (0x1000) lives in R770 (0x302) AIF1
+		 * Master/Slave register, NOT R768 (0x300) AIF1 Control 1.
+		 * Earlier revisions of this driver wrote it to 0x300, where
+		 * bit 12 has no meaning — the codec stayed in pure-slave
+		 * LRCLK mode with no LRCLK wire to listen to, so frame sync
+		 * never occurred and the LPAIF I2S serializer froze with
+		 * 32 bytes prefetched into its FIFO. Confirmed by reg dump:
+		 *   0x300 = 0x7010 (bit 12 set — useless)
+		 *   0x302 = 0x0000 (bit 12 NOT set — where it belongs)
+		 */
+		snd_soc_component_update_bits(component, WM8994_AIF1_MASTER_SLAVE,
 					      WM8994_AIF1_LRCLK_FRC,
 					      WM8994_AIF1_LRCLK_FRC);
 
