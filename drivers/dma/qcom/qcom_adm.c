@@ -779,26 +779,10 @@ static void adm_start_dma(struct adm_chan *achan)
 	/* set the crci block size if this transaction requires CRCI */
 	if (async_desc->crci) {
 		u32 crci_val = async_desc->mux | async_desc->blk_size;
-		/*
-		 * CRCI_CTL must be written to the EE=0 window on Tenderloin
-		 * (APQ8060). Writes to the EE=1 CRCI_CTL window are silently
-		 * dropped — the same TrustZone-policy quirk that affects
-		 * CH_CONF on this SoC. The eMMC channel works on mainline
-		 * today only because the bootloader pre-programs its CRCI
-		 * (CRCI=1, blk_size=1) at EE=0; channels with CRCIs the
-		 * bootloader leaves zero (e.g. the QCE crypto engine's
-		 * CRCIs 4 and 5) need the driver to populate EE=0 directly.
-		 *
-		 * Other registers (CMD_PTR, RSLT_CONF) keep using adev->ee
-		 * because their EE=1 writes do stick on this hardware.
-		 * Probe-time CRCI reset stays at adev->ee too — at EE=1 it
-		 * is a harmless no-op, and rerouting it to EE=0 would
-		 * clobber the bootloader-set MMC value.
-		 */
 		writel(crci_val,
-		       adev->regs + ADM_CRCI_CTL(async_desc->crci, 0));
+		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
 		dev_dbg(adev->dev,
-			"ADM start_dma: CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=%d) [EE=0]\n",
+			"ADM start_dma: CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=%d)\n",
 			async_desc->crci, crci_val,
 			async_desc->mux, async_desc->blk_size);
 	}
