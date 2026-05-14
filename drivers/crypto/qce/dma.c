@@ -25,7 +25,6 @@ static int qce_dma_configure_crci(struct qce_device *qce, struct dma_chan *chan,
 				  u32 crci)
 {
 	struct qcom_adm_peripheral_config periph_conf = {};
-	int ret;
 	struct dma_slave_config conf = {
 		.device_fc = true,
 		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
@@ -50,28 +49,7 @@ static int qce_dma_configure_crci(struct qce_device *qce, struct dma_chan *chan,
 	conf.peripheral_config = &periph_conf;
 	conf.peripheral_size = sizeof(periph_conf);
 
-	ret = dmaengine_slave_config(chan, &conf);
-	if (ret)
-		return ret;
-
-	/*
-	 * Tenderloin quirk: on this SoC the live CRCI_CTL register lives
-	 * in the EE=0 ADM window; mainline's per-descriptor write to EE=1
-	 * is silently dropped (same TrustZone-policy quirk that affects
-	 * CH_CONF). The bootloader pre-programs CRCI_CTL[1][EE=0] for the
-	 * eMMC controller, which is why mainline MMC works at all; QCE's
-	 * CRCIs (4=CE_IN, 5=CE_OUT) are left blank by the bootloader and
-	 * need to be programmed by the consumer. We do it once here at
-	 * probe so we never write to the live CRCI mid-traffic (that
-	 * corrupts the in-flight burst, as a previous attempt to do this
-	 * inside adm_start_dma demonstrated by killing eMMC).
-	 *
-	 * blk_size encoding: 0=16-byte burst, 1=32-byte burst, 2=64-byte,
-	 * etc. We use src/dst_maxburst=8 words × 4-byte addr_width =
-	 * 32-byte burst → blk_size=1. Matches adm_get_blksize().
-	 */
-	qcom_adm_program_crci_ee0(chan, 0x1);
-	return 0;
+	return dmaengine_slave_config(chan, &conf);
 }
 
 int devm_qce_dma_request(struct qce_device *qce, struct qce_dma_data *dma)
