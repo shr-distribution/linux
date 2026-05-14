@@ -216,6 +216,16 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	/* Release reset */
 	vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_NONE);
 
+	dev_info(core->dev, "hw_reset: released RISC, DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
+		 vidc_read(core, VIDC_REG_DRAM_BASE_A),
+		 vidc_read(core, VIDC_REG_DRAM_BASE_B));
+	dev_info(core->dev, "hw_reset: CH0_INST_ID=0x%08x CH1_INST_ID=0x%08x\n",
+		 vidc_read(core, VIDC_REG_CH0_INST_ID),
+		 vidc_read(core, VIDC_REG_CH1_INST_ID));
+	dev_info(core->dev, "hw_reset: HOST2RISC_CMD=0x%08x RISC2HOST_CMD=0x%08x\n",
+		 vidc_read(core, VIDC_REG_HOST2RISC_CMD),
+		 vidc_read(core, VIDC_REG_RISC2HOST_CMD));
+
 	return 0;
 }
 
@@ -688,11 +698,17 @@ int vidc_boot_firmware(struct vidc_core *core)
 
 	dev_info(core->dev, "boot_fw: about to call vidc_hw_reset (dram_base>>17=0x%08x)\n",
 		 (u32)(core->fw_dma_addr >> 17));
+	dev_info(core->dev, "boot_fw: pre-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
+		 vidc_read(core, VIDC_REG_SW_RESET),
+		 vidc_read(core, VIDC_REG_FW_VERSION));
 	ret = vidc_hw_reset(core, core->fw_dma_addr >> 17);
 	if (ret) {
 		dev_err(core->dev, "hw reset failed: %d\n", ret);
 		return ret;
 	}
+	dev_info(core->dev, "boot_fw: post-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
+		 vidc_read(core, VIDC_REG_SW_RESET),
+		 vidc_read(core, VIDC_REG_FW_VERSION));
 	dev_info(core->dev, "boot_fw: hw_reset returned ok, waiting FW_STATUS_RET (200ms)\n");
 
 	{
