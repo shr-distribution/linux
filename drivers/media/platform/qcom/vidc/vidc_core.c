@@ -610,33 +610,42 @@ int vidc_boot_firmware(struct vidc_core *core)
 		return 0;
 
 	/*
-	 * Boot the on-chip RISC. The sequence here mirrors what mainline
-	 * did pre-ae4fc3e275fb (the SHA at which OPEN_CH first started
-	 * acknowledging successfully) — *no* SW_RESET cycle, just program
-	 * DRAM_BASE_A/B and send SYS_INIT. The newer linux-firmware blob
-	 * (605 KB, vs the 500 KB legacy Topaz blob) doesn't survive our
-	 * stage-1/2 SW_RESET dance: hw_reset itself completes cleanly
-	 * (after the RMW + bit-polarity fixes in 56a88764cad4 +
-	 * 25f74353e174), but the firmware boot stub then never responds
-	 * to SYS_INIT — observed empirically as the kernel rebooting
-	 * shortly after the WARN propagated from vb2_start_streaming.
+	 * Bring the RISC out of reset and program firmware. We need
+	 * vidc_hw_reset() here because the gdsc-qcom ved entry's
+	 * LEGACY_FOOTSWITCH | SW_RESET only resets the AHB slave
+	 * interface (VCODEC_AHB_RESET via mmcc) — NOT the internal
+	 * RISC. Without our explicit SW_RESET dance ending in
+	 * VIDC_RESET_NONE, the RISC stays in reset and SYS_INIT
+	 * fires into the void.
 	 *
-	 * Skip hw_reset and trust whatever state moboot left the VIDC in,
-	 * matching what worked before. The gdsc-qcom "legacy_footswitch
-	 * | SW_RESET" enable already pulses VCODEC_AHB_RESET via the mmcc
-	 * reset framework, which is the only reset the firmware actually
-	 * needs.
+	 * Empirical evidence: with hw_reset removed (commit
+	 * 0e83a80e959c), VIDC_REG_FW_VERSION reads back as 0xdeadc0de
+	 * (the placeholder value) and OPEN_CH later times out. With
+	 * hw_reset back, the RISC actually executes the firmware and
+	 * VIDC_REG_FW_VERSION reflects the real fw version.
 	 *
-	 * FW_STATUS_RET and SYS_INIT_RET completions stay armed so the
-	 * IRQ dispatch can observe them when they fire, but neither wait
-	 * is fatal — original code didn't wait at all and OPEN_CH worked
-	 * downstream, so the RISC clearly comes up without our waiting.
+	 * Both completions are armed before hw_reset so the IRQ
+	 * dispatch can observe FW_STATUS_RET (fires inside hw_reset
+	 * when the RISC is released) and SYS_INIT_RET. Both waits
+	 * are lenient and non-fatal:
+	 *  - FW_STATUS_RET: 200 ms (newer firmware blobs don't emit
+	 *    this signal, so we proceed regardless)
+	 *  - SYS_INIT_RET: 1 s (observation-only — downstream OPEN_CH
+	 *    is the load-bearing health check)
 	 */
 	reinit_completion(&core->fw_status_done);
 	reinit_completion(&core->sys_init_done);
 
-	vidc_write(core, VIDC_REG_DRAM_BASE_A, core->fw_dma_addr >> 17);
-	vidc_write(core, VIDC_REG_DRAM_BASE_B, core->fw_dma_addr >> 17);
+	ret = vidc_hw_reset(core, core->fw_dma_addr >> 17);
+	if (ret) {
+		dev_err(core->dev, "hw reset failed: %d\n", ret);
+		return ret;
+	}
+
+	if (!wait_for_completion_timeout(&core->fw_status_done,
+					 msecs_to_jiffies(200)))
+		dev_dbg(core->dev,
+			"FW_STATUS_RET not received in 200 ms (silent firmware revision)\n");
 
 	ret = vidc_send_cmd(core, VIDC_CMD_SYS_INIT,
 			    core->fw_alloc_size, 0, 0, 0);
@@ -645,21 +654,15 @@ int vidc_boot_firmware(struct vidc_core *core)
 		return ret;
 	}
 
-	/*
-	 * Observation-only wait. If SYS_INIT_RET fires we proceed knowing
-	 * the firmware acked; if it doesn't, log and proceed anyway —
-	 * downstream OPEN_CH will tell us whether the firmware is actually
-	 * alive.
-	 */
 	if (!wait_for_completion_timeout(&core->sys_init_done,
 					 msecs_to_jiffies(1000)))
 		dev_dbg(core->dev,
-			"SYS_INIT_RET not received in 1 s — proceeding without explicit ack (legacy/silent firmware)\n");
+			"SYS_INIT_RET not received in 1 s — proceeding without explicit ack\n");
 
 	core->fw_running = true;
 	core->fw_version = vidc_read(core, VIDC_REG_FW_VERSION);
-	dev_dbg(core->dev, "Firmware booted, version 0x%08x\n",
-		core->fw_version);
+	dev_info(core->dev, "Firmware booted, version 0x%08x\n",
+		 core->fw_version);
 	return 0;
 }
 
