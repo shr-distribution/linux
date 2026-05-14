@@ -34,6 +34,16 @@ struct qce_dma_data {
 	void *ignore_buf;
 	u32 rx_crci;	/* CRCI for RX channel (ADM flow control) */
 	u32 tx_crci;	/* CRCI for TX channel (ADM flow control) */
+
+	/*
+	 * Per-request bookkeeping so qce_dma_*_callback() can fail the
+	 * outstanding request when ADM signals an rxchan error. Only one
+	 * request is in flight at a time (qce_handle_queue serialises).
+	 */
+	dma_cookie_t rx_cookie;
+	atomic_t completion_done;
+	dma_async_tx_callback user_cb;
+	void *user_cb_param;
 };
 
 struct qce_device;

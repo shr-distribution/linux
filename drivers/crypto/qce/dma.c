@@ -136,7 +136,8 @@ qce_sgtable_add(struct sg_table *sgt, struct scatterlist *new_sgl,
 static int qce_dma_prep_sg(struct dma_chan *chan, struct scatterlist *sg,
 			   int nents, unsigned long flags,
 			   enum dma_transfer_direction dir,
-			   dma_async_tx_callback cb, void *cb_param)
+			   dma_async_tx_callback cb, void *cb_param,
+			   dma_cookie_t *cookie_out)
 {
 	struct dma_async_tx_descriptor *desc;
 	dma_cookie_t cookie;
@@ -151,8 +152,49 @@ static int qce_dma_prep_sg(struct dma_chan *chan, struct scatterlist *sg,
 	desc->callback = cb;
 	desc->callback_param = cb_param;
 	cookie = dmaengine_submit(desc);
+	if (cookie_out)
+		*cookie_out = cookie;
 
 	return dma_submit_error(cookie);
+}
+
+/*
+ * rxchan completion. In the success path the engine waits to produce
+ * output until rxchan has finished pushing input, so the caller's
+ * callback runs from the tx completion below. In the error path
+ * (ADM rejects the rxchan submission with err=1) the engine never
+ * produces output, the txchan completion never fires, and the user
+ * request would otherwise hang in wait_for_completion for hung-task
+ * timeouts. Detect that case here and forward the failure to the
+ * caller's callback so the request gets failed cleanly.
+ */
+static void qce_dma_rx_callback(void *data)
+{
+	struct qce_dma_data *dma = data;
+	enum dma_status status;
+
+	status = dma_async_is_tx_complete(dma->rxchan, dma->rx_cookie,
+					  NULL, NULL);
+	if (status != DMA_ERROR)
+		return;
+
+	if (atomic_xchg(&dma->completion_done, 1) != 0)
+		return;
+
+	dmaengine_terminate_async(dma->txchan);
+	if (dma->user_cb)
+		dma->user_cb(dma->user_cb_param);
+}
+
+static void qce_dma_tx_callback(void *data)
+{
+	struct qce_dma_data *dma = data;
+
+	if (atomic_xchg(&dma->completion_done, 1) != 0)
+		return;
+
+	if (dma->user_cb)
+		dma->user_cb(dma->user_cb_param);
 }
 
 int qce_dma_prep_sgs(struct qce_dma_data *dma, struct scatterlist *rx_sg,
@@ -164,13 +206,17 @@ int qce_dma_prep_sgs(struct qce_dma_data *dma, struct scatterlist *rx_sg,
 	unsigned long flags = DMA_PREP_INTERRUPT | DMA_CTRL_ACK;
 	int ret;
 
+	atomic_set(&dma->completion_done, 0);
+	dma->user_cb = cb;
+	dma->user_cb_param = cb_param;
+
 	ret = qce_dma_prep_sg(rxchan, rx_sg, rx_nents, flags, DMA_MEM_TO_DEV,
-			     NULL, NULL);
+			      qce_dma_rx_callback, dma, &dma->rx_cookie);
 	if (ret)
 		return ret;
 
 	return qce_dma_prep_sg(txchan, tx_sg, tx_nents, flags, DMA_DEV_TO_MEM,
-			       cb, cb_param);
+			       qce_dma_tx_callback, dma, NULL);
 }
 
 void qce_dma_issue_pending(struct qce_dma_data *dma)
