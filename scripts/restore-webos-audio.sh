@@ -53,33 +53,41 @@
 # Mixer Controls Reference
 # =============================================================================
 #
-# NOTE: webOS amixer is broken for numid-based commands (cset/cget).
-# Use control names with sset/sget instead.
+# NOTE: webOS amixer (2.6.35-palm-tenderloin) silently no-ops `sset "Name" on`
+# and `cset name="Name"` for BOOLEAN switch controls — only `cset numid=N`
+# actually toggles them. Earlier versions of this script used `sset` and
+# appeared to succeed (volumes stuck, exit 0) but left the switches off, so
+# audio failed.
 #
-#   Control Name                      Purpose
-#   --------------------------------  ----------------------------------
-#   DAC1                              Enable DAC1 L/R + volume
-#   DAC1L Mixer AIF1.1                Route AIF1 to DAC1L
-#   DAC1R Mixer AIF1.1                Route AIF1 to DAC1R
-#   Left Output Mixer DAC             Route DAC to Left Output Mixer
-#   Right Output Mixer DAC            Route DAC to Right Output Mixer
-#   SPKL DAC1                         Speaker Left DAC1 input
-#   SPKR DAC1                         Speaker Right DAC1 input
-#   SPKL Output                       Speaker Left output enable
-#   SPKR Output                       Speaker Right output enable
-#   Speaker                           Main speaker enable + volume
-#   SPKL Boost SPKL                   Speaker Left boost
-#   SPKR Boost SPKR                   Speaker Right boost
-#   LINEOUT1 Mixer Output             LINEOUT1 mixer from output mixer
-#   LINEOUT2 Mixer Output             LINEOUT2 mixer from output mixer
-#   LINEOUT1N                         LINEOUT1 negative enable
-#   LINEOUT1P                         LINEOUT1 positive enable
-#   LINEOUT2N                         LINEOUT2 negative enable
-#   LINEOUT2P                         LINEOUT2 positive enable
-#   LINEOUT1                          LINEOUT1 volume (0-1)
-#   LINEOUT2                          LINEOUT2 volume (0-1)
-#   Speaker Mixer                     Speaker mixer volume (0-3)
-#   AIF1DAC1                          AIF1 DAC1 volume (0-96)
+# The numids below were captured from `amixer -c 0 contents` on the device.
+# If a future webOS update reorders them, re-derive with:
+#     novacom run file:///usr/bin/amixer -- -c 0 contents | grep -B1 "<name>"
+#
+#   numid  Control Name                       Purpose
+#   -----  ---------------------------------  ----------------------------------
+#    144   DAC1 Switch                        Enable DAC1 L/R
+#    143   DAC1 Volume                        DAC1 volume (0-96)
+#    206   DAC1L Mixer AIF1.1 Switch          Route AIF1.1 to DAC1L
+#    201   DAC1R Mixer AIF1.1 Switch          Route AIF1.1 to DAC1R
+#    257   Left Output Mixer DAC Switch       Route DAC to Left Output Mixer
+#    249   Right Output Mixer DAC Switch      Route DAC to Right Output Mixer
+#    191   SPKL DAC1 Switch                   Speaker Left DAC1 input
+#    186   SPKR DAC1 Switch                   Speaker Right DAC1 input
+#    190   SPKL Output Switch                 Speaker Left output enable
+#    185   SPKR Output Switch                 Speaker Right output enable
+#     87   Speaker Switch                     Main speaker enable
+#    237   SPKL Boost SPKL Switch             Speaker Left boost
+#    235   SPKR Boost SPKR Switch             Speaker Right boost
+#    232   LINEOUT1 Mixer Output Switch       LINEOUT1 mixer from output mixer
+#    229   LINEOUT2 Mixer Output Switch       LINEOUT2 mixer from output mixer
+#     95   LINEOUT1N Switch                   LINEOUT1 negative enable
+#     96   LINEOUT1P Switch                   LINEOUT1 positive enable
+#     98   LINEOUT2N Switch                   LINEOUT2 negative enable
+#     99   LINEOUT2P Switch                   LINEOUT2 positive enable
+#     97   LINEOUT1 Volume                    LINEOUT1 volume (0-1)
+#    100   LINEOUT2 Volume                    LINEOUT2 volume (0-1)
+#     85   Speaker Mixer Volume               Speaker mixer volume (0-3)
+#    112   AIF1DAC1 Volume                    AIF1 DAC1 volume (0-119)
 #
 # =============================================================================
 
@@ -103,52 +111,65 @@ fi
 echo -e "${GREEN}Device connected.${NC} Restoring audio routing..."
 echo ""
 
-# Full audio routing restore using sset with control names
-# Note: webOS amixer ignores numid-based cset commands, so we use sset with names
-novacom run file://bin/sh -- -c '
-echo "Enabling DAC1..."
-amixer -c 0 sset "DAC1" on >/dev/null 2>&1
-amixer -c 0 sset "DAC1" 96 >/dev/null 2>&1
+# Full audio routing restore using cset numid.
+# DO NOT switch this back to `sset "Name" on` — it silently no-ops on webOS
+# amixer for BOOLEAN switches. See header note.
+#
+# Stage the restore script on the device and run it in one shell, so each
+# cset call doesn't pay novacom round-trip latency.
+REMOTE_SCRIPT=/tmp/restore-webos-audio-body.sh
+LOCAL_TMP=$(mktemp)
+cat > "$LOCAL_TMP" <<'REMOTE_EOF'
+#!/bin/sh
+set -e
+A() { /usr/bin/amixer -c 0 cset "numid=$1" "$2" >/dev/null; }
 
-echo "Enabling AIF1 -> DAC1 routing..."
-amixer -c 0 sset "DAC1L Mixer AIF1.1" on >/dev/null 2>&1
-amixer -c 0 sset "DAC1R Mixer AIF1.1" on >/dev/null 2>&1
+echo "Enabling DAC1..."
+A 144 on        # DAC1 Switch
+A 143 96        # DAC1 Volume
+
+echo "Enabling AIF1.1 -> DAC1 routing..."
+A 206 on        # DAC1L Mixer AIF1.1 Switch
+A 201 on        # DAC1R Mixer AIF1.1 Switch
 
 echo "Enabling Output Mixer DAC path..."
-amixer -c 0 sset "Left Output Mixer DAC" on >/dev/null 2>&1
-amixer -c 0 sset "Right Output Mixer DAC" on >/dev/null 2>&1
+A 257 on        # Left Output Mixer DAC Switch
+A 249 on        # Right Output Mixer DAC Switch
 
 echo "Enabling Speaker mixer routing..."
-amixer -c 0 sset "SPKL DAC1" on >/dev/null 2>&1
-amixer -c 0 sset "SPKR DAC1" on >/dev/null 2>&1
-amixer -c 0 sset "Speaker Mixer" 3 >/dev/null 2>&1
+A 191 on        # SPKL DAC1 Switch
+A 186 on        # SPKR DAC1 Switch
+A 85 3          # Speaker Mixer Volume
 
 echo "Enabling Speaker output..."
-amixer -c 0 sset "SPKL Output" on >/dev/null 2>&1
-amixer -c 0 sset "SPKR Output" on >/dev/null 2>&1
-amixer -c 0 sset "Speaker" on >/dev/null 2>&1
-amixer -c 0 sset "Speaker" 57 >/dev/null 2>&1
+A 190 on        # SPKL Output Switch
+A 185 on        # SPKR Output Switch
+A 87 on         # Speaker Switch
 
 echo "Enabling Speaker boost..."
-amixer -c 0 sset "SPKL Boost SPKL" on >/dev/null 2>&1
-amixer -c 0 sset "SPKR Boost SPKR" on >/dev/null 2>&1
+A 237 on        # SPKL Boost SPKL Switch
+A 235 on        # SPKR Boost SPKR Switch
 
 echo "Enabling LINEOUT path (external Class-D amp)..."
-amixer -c 0 sset "LINEOUT1 Mixer Output" on >/dev/null 2>&1
-amixer -c 0 sset "LINEOUT2 Mixer Output" on >/dev/null 2>&1
-amixer -c 0 sset "LINEOUT1N" on >/dev/null 2>&1
-amixer -c 0 sset "LINEOUT1P" on >/dev/null 2>&1
-amixer -c 0 sset "LINEOUT2N" on >/dev/null 2>&1
-amixer -c 0 sset "LINEOUT2P" on >/dev/null 2>&1
-amixer -c 0 sset "LINEOUT1" 1 >/dev/null 2>&1
-amixer -c 0 sset "LINEOUT2" 1 >/dev/null 2>&1
+A 232 on        # LINEOUT1 Mixer Output Switch
+A 229 on        # LINEOUT2 Mixer Output Switch
+A 95  on        # LINEOUT1N Switch
+A 96  on        # LINEOUT1P Switch
+A 98  on        # LINEOUT2N Switch
+A 99  on        # LINEOUT2P Switch
+A 97  1         # LINEOUT1 Volume
+A 100 1         # LINEOUT2 Volume
 
 echo "Setting AIF1DAC1 volume..."
-amixer -c 0 sset "AIF1DAC1" 96 >/dev/null 2>&1
+A 112 96        # AIF1DAC1 Volume
 
-echo ""
 echo "Audio routing restored!"
-'
+REMOTE_EOF
+
+novacom put file://"$REMOTE_SCRIPT" < "$LOCAL_TMP" >/dev/null
+rm -f "$LOCAL_TMP"
+novacom run file://bin/sh -- "$REMOTE_SCRIPT"
+novacom run file://bin/rm -- "$REMOTE_SCRIPT" >/dev/null 2>&1 || true
 
 echo ""
 echo -e "${GREEN}=== Done ===${NC}"
