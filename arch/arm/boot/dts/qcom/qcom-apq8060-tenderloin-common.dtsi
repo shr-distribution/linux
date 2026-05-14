@@ -615,15 +615,28 @@
 					regulator-max-microvolt = <2850000>;
 					bias-pull-down;
 				};
+				/* USB HSUSB PHY 3.3V (vbus / v3p3) */
 				pm8058_l6: l6 {
 					regulator-min-microvolt = <3000000>;
 					regulator-max-microvolt = <3600000>;
 					bias-pull-down;
+					/*
+					 * Legacy webOS runs this in opmode=fast for
+					 * USB HS PHY stability; matches the
+					 * HPM-everywhere policy webOS uses across
+					 * all enabled PMIC rails.
+					 */
+					regulator-allow-set-load;
+					regulator-system-load = <50000>;
 				};
+				/* USB HSUSB PHY 1.8V (v1p8) */
 				pm8058_l7: l7 {
 					regulator-min-microvolt = <1800000>;
 					regulator-max-microvolt = <1800000>;
 					bias-pull-down;
+					/* Legacy: opmode=fast (HPM). */
+					regulator-allow-set-load;
+					regulator-system-load = <50000>;
 				};
 				pm8058_l8: l8 {
 					regulator-min-microvolt = <2900000>;
