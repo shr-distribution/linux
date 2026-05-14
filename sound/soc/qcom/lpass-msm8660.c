@@ -300,6 +300,29 @@ static const struct lpass_variant msm8660_data = {
 	.wrdma_channel_start	= 5,
 
 	/*
+	 * RDMACTL audio_intf field (bits 7:4) selects which I2S interface
+	 * consumes the DMA stream. Per webOS audio_dma_msm8k.h:
+	 *   0 = AUDIO_INTF_NONE  (DMA goes nowhere — invalid!)
+	 *   1 = AUDIO_INTF_CODEC (WM8958 codec, what we want for codec_spkr)
+	 *   2 = AUDIO_INTF_PCM
+	 *   3 = AUDIO_INTF_SEC_I2S
+	 *   4 = AUDIO_INTF_MI2S
+	 *   5 = AUDIO_INTF_HDMI
+	 *
+	 * The platform driver computes
+	 *   audio_intf = i2s_port + dmactl_audif_start
+	 * where i2s_port is the DAI driver id (0 for codec speaker).
+	 * Without this offset, RDMACTL.audio_intf would be 0 (NONE),
+	 * and the DMA controller fills its internal FIFO once but
+	 * never advances because no I2S interface is wired to drain it.
+	 * Result: aplay -> kernel ALSA xrun -> EIO within ~1 period.
+	 *
+	 * All other LPASS variants (apq8016, sc7180, sc7280) set this to 1.
+	 * MSM8660 needs it too.
+	 */
+	.dmactl_audif_start	= 1,
+
+	/*
 	 * I2SCTL register fields (at offset 0x0004)
 	 * Based on webOS audio_dma_msm8k.h bit definitions:
 	 *   [15]    = loopback
