@@ -670,15 +670,26 @@
 				};
 				pm8058_l12: l12 {
 					/*
-					 * 1.8V. No consumer on Tenderloin (matches legacy
-					 * webOS which also leaves L12 unused — USB-OTG
-					 * uses L6/L7 in both legacy and mainline). The
-					 * prior "USB OTG power" comment was a copy-paste
-					 * from another board and was incorrect.
+					 * 1.8V. Legacy webOS uses this for the MPU3050
+					 * gyroscope vlogic supply on Topaz3G > DVT and
+					 * Topaz > DVT board revisions (board-tenderloin.c
+					 * power_up_gyroscope() with board_type gating).
+					 * On earlier revs legacy uses pm8901_lvs3 instead;
+					 * the previous "no consumer" comment here was
+					 * based on the lvs3 path being chosen in our DT.
+					 *
+					 * On any rev where this rail is enabled, legacy
+					 * runs it in opmode=fast (HPM). Confirmed by
+					 * webOS regulator sysfs readback: 8058_l12
+					 * opmode=fast even with num_users=1. HPM keeps
+					 * the gyro's logic-supply ripple low for clean
+					 * sensor reads.
 					 */
 					regulator-min-microvolt = <1800000>;
 					regulator-max-microvolt = <1800000>;
 					bias-pull-down;
+					regulator-allow-set-load;
+					regulator-system-load = <20000>;
 				};
 				pm8058_l13: l13 {
 					regulator-min-microvolt = <2050000>;
@@ -689,10 +700,19 @@
 					regulator-min-microvolt = <2850000>;
 					regulator-max-microvolt = <2850000>;
 				};
+				/* Gyroscope (MPU3050) VDD supply */
 				pm8058_l15: l15 {
 					regulator-min-microvolt = <2850000>;
 					regulator-max-microvolt = <2850000>;
 					bias-pull-down;
+					/*
+					 * Legacy webOS opmode=fast (HPM). 20 mA
+					 * floor — MPU3050 active draw is ~6 mA,
+					 * 20 mA comfortably exceeds the PM8058 LDO
+					 * HPM threshold without overspecifying.
+					 */
+					regulator-allow-set-load;
+					regulator-system-load = <20000>;
 				};
 				pm8058_l16: l16 {
 					/*
