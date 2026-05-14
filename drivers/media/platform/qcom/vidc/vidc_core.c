@@ -328,17 +328,26 @@ static irqreturn_t vidc_isr(int irq, void *data)
 
 	spin_lock_irqsave(&core->irqlock, flags);
 
-	vidc_clear_interrupt(core);
+	/*
+	 * Legacy webOS DDL (vcd_ddl_interrupt_handler.c:
+	 * ddl_read_and_clear_interrupt) ACKs the IRQ in this specific
+	 * order:
+	 *   1. Read RISC2HOST_CMD + args   (snapshot the message)
+	 *   2. Clear RISC2HOST_CMD         (write EMPTY → message ack)
+	 *   3. Clear VIDC_REG_INTERRUPT    (write 0 → IRQ status ack)
+	 *
+	 * Doing the interrupt-status clear BEFORE the response-register
+	 * clear causes a spurious-IRQ storm: the hardware sees the
+	 * response register still non-empty when the IRQ-status write
+	 * lands, immediately re-asserts the IRQ, and the handler spins
+	 * (~164 k cb/sec observed). Match legacy order exactly.
+	 */
 	vidc_get_response(core, &cmd, &arg1, &arg2, &arg3, &arg4);
+	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
+	vidc_clear_interrupt(core);
 
 	inst = core->curr_inst;
 
-	/*
-	 * Diagnostic: log every IRQ (ratelimited to 5/HZ) so we can see
-	 * an IRQ storm if the firmware response register isn't being
-	 * cleared correctly. cmd==0 (VIDC_RESP_EMPTY) on a fired IRQ is
-	 * the smoking-gun signature of a spurious-IRQ loop.
-	 */
 	if (__ratelimit(&rs))
 		dev_info(core->dev,
 			 "VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
@@ -450,7 +459,12 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		break;
 	}
 
-	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
+	/*
+	 * RISC2HOST_CMD already cleared at the top of the handler
+	 * (before VIDC_REG_INTERRUPT) to match legacy ACK ordering.
+	 * Don't re-clear here — leaves a window where a fresh response
+	 * could be overwritten.
+	 */
 
 	spin_unlock_irqrestore(&core->irqlock, flags);
 
