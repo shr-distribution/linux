@@ -228,7 +228,16 @@
 		 */
 		adm_dma0: dma-controller@18320000 {
 			compatible = "qcom,adm";
-			reg = <0x18320000 0x100000>;
+			/*
+			 * 0x80000 (512 KB) covers all ADM register accesses the
+			 * driver makes — max offset is ADM_CH_RSLT_CONF +
+			 * channel/EE windows = ~0x4000. The earlier 0x100000
+			 * (1 MB) sizing was wildly oversized and caused ADM1
+			 * (next instance at 0x18420000 + 0x100000) to overlap
+			 * the crypto@18500000 MMIO, blocking the qce driver
+			 * with -EBUSY "can't request region".
+			 */
+			reg = <0x18320000 0x80000>;
 			interrupts = <GIC_SPI 171 IRQ_TYPE_LEVEL_HIGH>;
 			#dma-cells = <1>;
 
@@ -260,7 +269,8 @@
 
 		adm_dma1: dma-controller@18420000 {
 			compatible = "qcom,adm";
-			reg = <0x18420000 0x100000>;
+			/* 0x80000 — fits below crypto@18500000 (was overlapping at 0x100000) */
+			reg = <0x18420000 0x80000>;
 			interrupts = <GIC_SPI 167 IRQ_TYPE_LEVEL_HIGH>;
 			#dma-cells = <1>;
 
