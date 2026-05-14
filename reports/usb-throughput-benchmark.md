@@ -238,6 +238,143 @@ without hardware multiplier).
    the "chacha20 vs aes128-ctr is a tie" reading as the safest
    interpretation.
 
+## Userspace setup to actually use the QCE hardware crypto
+
+Kernel side is enabled in `09f2d2d89b85` (CONFIG_CRYPTO_DEV_QCE +
+CONFIG_CRYPTO_USER_API_*). That gives:
+
+- A `qce-crypto` platform driver that binds to the
+  `crypto@18500000` DT node, registering hardware AES / SHA / GCM
+  cipher implementations in `/proc/crypto` with priority 300
+  (vs 100 for the generic software fallbacks). The kernel-side
+  consumer (dm-crypt, ipsec, wireguard, etc.) automatically picks
+  the highest-priority match — so any in-kernel cipher consumer
+  gets QCE acceleration for free once the driver probes.
+- AF_ALG sockets (`socket(AF_ALG, ...)`), the userspace bridge to
+  the kernel crypto API. OpenSSL / wpa_supplicant / SSH can use
+  AF_ALG indirectly via libcrypto's engine plumbing.
+
+But OpenSSL doesn't pick AF_ALG automatically — it has its own
+software implementations and needs to be told to route cipher
+operations through the kernel. Two more things are needed
+userspace-side:
+
+### 1. OpenSSL afalg engine binary
+
+OpenSSL 3.x still ships the afalg engine as a legacy *engine*
+(not a provider — the AF_ALG provider hasn't been migrated yet
+as of OpenSSL 3.2). The engine is normally built when openssl is
+configured with `enable-afalgeng`, producing
+`/usr/lib/engines-3/afalg.so` (path varies by distro).
+
+LuneOS scarthgap defaults probably don't include the afalg engine
+binary. Two paths:
+
+**Option A** — patch the openssl Yocto recipe (preferred):
+```bash
+# In meta-webos-ports or meta-webosose recipe:
+# poky/meta/recipes-connectivity/openssl/openssl_3.x.bb
+PACKAGECONFIG:append = " afalg"
+# OR if PACKAGECONFIG entries don't exist for afalg, hand-tweak:
+EXTRA_OECONF += "enable-afalgeng"
+```
+Rebuild openssl + image; afalg.so lands in `/usr/lib/engines-3/`.
+
+**Option B** — build afalg.so out-of-tree against on-device libcrypto:
+```bash
+# On host (cross compile) or on device (slow):
+git clone https://github.com/openssl/openssl
+cd openssl/engines
+# Build just afalg.c against the installed libcrypto-dev headers
+arm-webos-linux-gnueabi-gcc -fPIC -shared -o afalg.so \
+    -I/path/to/openssl-include afalg.c afalg_aes.c \
+    -L/path/to/openssl-lib -lcrypto
+scp -O afalg.so root@172.16.42.2:/usr/lib/engines-3/
+```
+
+### 2. OpenSSL config to actually load the engine
+
+The afalg engine needs to be enabled via `/etc/ssl/openssl.cnf`.
+Currently LuneOS scarthgap likely has the default file with no
+engines section. Append (or merge if an `openssl_init` section
+already exists):
+
+```ini
+openssl_conf = openssl_init
+
+[openssl_init]
+engines = engine_section
+
+[engine_section]
+afalg = afalg_section
+
+[afalg_section]
+engine_id = afalg
+dynamic_path = /usr/lib/engines-3/afalg.so
+default_algorithms = ALL
+init = 1
+```
+
+Test the engine loaded with:
+```sh
+openssl engine -t -c
+# Expected output:
+# (afalg) AFALG engine support
+#  [AES-128-CBC, AES-192-CBC, AES-256-CBC, ...]
+#      [ available ]
+```
+
+vs. current device state where `(dynamic) Dynamic engine loading
+support [ unavailable ]` is all that's reported.
+
+### 3. Verify SSH picks it up
+
+OpenSSH uses `libcrypto`'s `EVP_*` API which goes through the
+engine plumbing automatically — no SSH-side config changes
+needed. Confirm by:
+
+```sh
+strace -e openat,connect ssh root@some-host true 2>&1 | grep -iE "alg|engine|afalg"
+# Should show /proc/crypto checks and socket(AF_ALG, ...) calls
+```
+
+### 4. Re-run the cipher benchmark
+
+After the above lands, the cipher table from this report should
+flip dramatically:
+
+  - Software AES-128-GCM at 5 MB/s → hardware QCE AES-128-GCM
+    expected at significantly higher rate (QCE on MSM8660
+    spec-rated around 25-30 MB/s sustained for AES-GCM on bulk
+    data when fed via ADM DMA)
+  - Software ChaCha20-Poly1305 stays at ~10 MB/s — ChaCha20
+    isn't hardware-accelerated by QCE (only AES variants are)
+  - Best AES cipher would become the right pick for SSH transfers
+
+Once measured, update the **Cipher comparison** table above with
+the post-QCE numbers and revise the "stick with chacha20" advice
+if AES-GCM jumps ahead.
+
+### Caveats
+
+- **AF_ALG syscall overhead**: each cipher operation through
+  AF_ALG involves a `recvmsg` syscall round-trip. For very small
+  buffers (SSH key exchange, etc.) the syscall cost can exceed
+  the hardware speedup. SSH bulk data transfer (16 KB+ records)
+  should win clearly; SSH connection setup may not.
+- **QCE driver bringup**: on first boot after the kernel
+  with QCE enabled, watch for probe errors in dmesg —
+  `qce-crypto crypto@18500000: ...`. The driver needs a working
+  ADM DMA path (already in tree per `b22cd014f55c`) and the
+  QCE clock + interconnect (DT node should already wire these).
+  If probe fails, look at `/sys/bus/platform/drivers/qce-crypto/`
+  to confirm binding.
+- **cryptodev alternative**: some older Yocto layers ship
+  cryptodev-linux (out-of-tree module) as a faster OpenSSL <->
+  kernel bridge than AF_ALG. AF_ALG is the in-tree path and is
+  preferred; cryptodev is only worth pulling in if AF_ALG syscall
+  overhead empirically dominates.
+
 ## Notes on test reproducibility
 
 1. **Host IP**: the USB gadget IP on the host changes interface
