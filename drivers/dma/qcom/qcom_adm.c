@@ -699,8 +699,45 @@ static int adm_terminate_all(struct dma_chan *chan)
 	return 0;
 }
 
-static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
+/*
+ * qcom_adm_program_crci_ee0 - one-shot CRCI_CTL write to EE=0 window.
+ *
+ * On APQ8060/MSM8660 (Tenderloin) CRCI_CTL writes to EE=1 are silently
+ * dropped; the live register lives at EE=0. The bootloader pre-programs
+ * EE=0 for peripherals it enables (eMMC CRCI=1, SDC, NAND). Peripherals
+ * the bootloader never touched — QCE crypto CRCI=4 (CE_IN) and CRCI=5
+ * (CE_OUT) — read as zero at both EE windows after boot. Without a valid
+ * EE=0 entry the CRCI handshake never fires: ADM pushes the first burst
+ * into the QCE FIFO and then stalls indefinitely waiting for a flow-
+ * control assertion that never comes.
+ *
+ * Call once at probe while the channel is idle. Writing mid-transfer
+ * corrupts the in-flight burst (an earlier patch that did this inside
+ * adm_start_dma killed eMMC — see git log).
+ */
+int qcom_adm_program_crci_ee0(struct dma_chan *chan, u32 crci_val)
 {
+	struct adm_chan *achan;
+	struct adm_device *adev;
+
+	if (!chan || !chan->device)
+		return -EINVAL;
+
+	achan = to_adm_chan(chan);
+	adev  = achan->adev;
+
+	if (!achan->crci)
+		return -EINVAL;
+
+	writel(crci_val, adev->regs + ADM_CRCI_CTL(achan->crci, 0));
+	dev_dbg(adev->dev,
+		"ADM program_crci_ee0: chan=%d crci=%d val=0x%x\n",
+		achan->id, achan->crci, crci_val);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(qcom_adm_program_crci_ee0);
+
+static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 	struct adm_chan *achan = to_adm_chan(chan);
 	struct qcom_adm_peripheral_config *config = cfg->peripheral_config;
 	unsigned long flag;

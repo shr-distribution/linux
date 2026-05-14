@@ -16,6 +16,7 @@
 #include <linux/types.h>
 #include <crypto/algapi.h>
 #include <crypto/internal/hash.h>
+#include <linux/dma/qcom_adm.h>
 
 #include "core.h"
 #include "cipher.h"
@@ -273,6 +274,24 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	ret = devm_qce_dma_request(qce, &qce->dma);
 	if (ret)
 		return ret;
+
+	/*
+	 * On CE2 (MSM8660/APQ8060), program CRCI_CTL at EE=0 for crypto channels.
+	 * The bootloader doesn't pre-configure QCE's CRCI lines (4=CE_IN, 5=CE_OUT),
+	 * so we must set them up once at probe while channels are idle.
+	 * Value 0x1 = 32-byte burst size (CE2_ADM_BURST_SIZE / 2).
+	 * MUST be done before any transfers start to avoid corrupting eMMC.
+	 */
+	if (qce->version == QCE_VERSION_CE2) {
+		ret = qcom_adm_program_crci_ee0(qce->dma.rxchan, 0x1);
+		if (ret) {
+			dev_warn(dev, "Failed to program RX CRCI at EE=0: %d\n", ret);
+		}
+		ret = qcom_adm_program_crci_ee0(qce->dma.txchan, 0x1);
+		if (ret) {
+			dev_warn(dev, "Failed to program TX CRCI at EE=0: %d\n", ret);
+		}
+	}
 
 	ret = qce_check_version(qce);
 	if (ret)
