@@ -36,7 +36,8 @@ struct qce_dma_data {
 	u32 tx_crci;	/* CRCI for TX channel (ADM flow control) */
 };
 
-int devm_qce_dma_request(struct device *dev, struct qce_dma_data *dma);
+struct qce_device;
+int devm_qce_dma_request(struct qce_device *qce, struct qce_dma_data *dma);
 int qce_dma_prep_sgs(struct qce_dma_data *dma, struct scatterlist *sg_in,
 		     int in_ents, struct scatterlist *sg_out, int out_ents,
 		     dma_async_tx_callback cb, void *cb_param);

@@ -9,6 +9,7 @@
 #include <linux/of.h>
 #include <crypto/scatterwalk.h>
 
+#include "core.h"
 #include "dma.h"
 
 static void qce_dma_release(void *data)
@@ -20,7 +21,8 @@ static void qce_dma_release(void *data)
 	kfree(dma->result_buf);
 }
 
-static int qce_dma_configure_crci(struct dma_chan *chan, u32 crci)
+static int qce_dma_configure_crci(struct qce_device *qce, struct dma_chan *chan,
+				  u32 crci)
 {
 	struct qcom_adm_peripheral_config periph_conf = {};
 	struct dma_slave_config conf = {
@@ -29,6 +31,15 @@ static int qce_dma_configure_crci(struct dma_chan *chan, u32 crci)
 		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
 		.src_maxburst = 8,
 		.dst_maxburst = 8,
+		/*
+		 * ADM box descriptors carry the peripheral-side bus address
+		 * even when CRCI flow control is on, so they must point at
+		 * the QCE FIFO registers (DATA_IN @ +0x00, DATA_OUT @ +0x10).
+		 * Without these the controller writes to physical address 0
+		 * and aborts with err=1.
+		 */
+		.src_addr = qce->phys_base + 0x10,
+		.dst_addr = qce->phys_base + 0x00,
 	};
 
 	if (!crci)
@@ -41,8 +52,9 @@ static int qce_dma_configure_crci(struct dma_chan *chan, u32 crci)
 	return dmaengine_slave_config(chan, &conf);
 }
 
-int devm_qce_dma_request(struct device *dev, struct qce_dma_data *dma)
+int devm_qce_dma_request(struct qce_device *qce, struct qce_dma_data *dma)
 {
+	struct device *dev = qce->dev;
 	int ret;
 
 	/* Read CRCI values for QCOM ADM DMA flow control */
@@ -54,7 +66,7 @@ int devm_qce_dma_request(struct device *dev, struct qce_dma_data *dma)
 		return PTR_ERR(dma->txchan);
 
 	/* Configure TX channel with CRCI for ADM flow control */
-	ret = qce_dma_configure_crci(dma->txchan, dma->tx_crci);
+	ret = qce_dma_configure_crci(qce, dma->txchan, dma->tx_crci);
 	if (ret) {
 		dev_err(dev, "Failed to configure TX CRCI: %d\n", ret);
 		goto error_tx_config;
@@ -67,7 +79,7 @@ int devm_qce_dma_request(struct device *dev, struct qce_dma_data *dma)
 	}
 
 	/* Configure RX channel with CRCI for ADM flow control */
-	ret = qce_dma_configure_crci(dma->rxchan, dma->rx_crci);
+	ret = qce_dma_configure_crci(qce, dma->rxchan, dma->rx_crci);
 	if (ret) {
 		dev_err(dev, "Failed to configure RX CRCI: %d\n", ret);
 		goto error_rx_config;

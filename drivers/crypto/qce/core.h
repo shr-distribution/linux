@@ -8,6 +8,7 @@
 
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
+#include <crypto/algapi.h>
 
 #include "dma.h"
 
@@ -47,6 +48,7 @@ struct qce_device {
 	struct crypto_async_request *req;
 	int result;
 	void __iomem *base;
+	phys_addr_t phys_base;
 	struct device *dev;
 	struct clk *core, *iface, *bus;
 	struct icc_path *mem_path;

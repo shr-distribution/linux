@@ -228,6 +228,13 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	if (drvdata)
 		qce->version = drvdata->version;
 
+	{
+		struct resource *res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+		if (!res)
+			return -ENODEV;
+		qce->phys_base = res->start;
+	}
+
 	qce->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(qce->base))
 		return PTR_ERR(qce->base);
@@ -263,7 +270,7 @@ static int qce_crypto_probe(struct platform_device *pdev)
 			return ret;
 	}
 
-	ret = devm_qce_dma_request(qce->dev, &qce->dma);
+	ret = devm_qce_dma_request(qce, &qce->dma);
 	if (ret)
 		return ret;
 
