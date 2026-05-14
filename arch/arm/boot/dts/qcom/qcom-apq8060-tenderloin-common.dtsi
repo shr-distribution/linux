@@ -506,11 +506,24 @@
 					regulator-max-microvolt = <2600000>;
 					bias-pull-down;
 				};
+				/* eMMC VMMC (card power) 2.85V */
 				pm8901_l5: l5 {
 					regulator-min-microvolt = <2850000>;
 					regulator-max-microvolt = <2850000>;
 					bias-pull-down;
 					regulator-always-on;
+					/*
+					 * Legacy webOS opmode=fast on this rail
+					 * (eMMC SEM32G card power supply). 100 mA
+					 * floor — covers typical eMMC steady-state
+					 * draw (read ~50-80 mA, write peaks higher
+					 * but bursty). HPM avoids ripple on the
+					 * card supply that could degrade signal
+					 * integrity on the data/CMD lines under
+					 * heavy IO.
+					 */
+					regulator-allow-set-load;
+					regulator-system-load = <100000>;
 				};
 				pm8901_l6: l6 {
 					regulator-min-microvolt = <2200000>;
