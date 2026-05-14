@@ -910,9 +910,49 @@ static int vidc_enc_open(struct file *file)
 		goto err_m2m_release;
 	}
 
-	ret = v4l2_ctrl_handler_init(&inst->ctrl_handler, 0);
+	/*
+	 * GStreamer's v4l2h264enc (and v4l2videoenc in general) queries
+	 * V4L2_CID_MPEG_VIDEO_H264_PROFILE and _LEVEL during negotiation
+	 * and crashes with a bus error if they are absent. Register them
+	 * here with the values the VIDC 1080p hardware supports:
+	 *   - Profile: Baseline (0) through High (4)
+	 *   - Level:   1 through 4 (hardware cap is 4.0 / 1080p30)
+	 *
+	 * Also register V4L2_CID_MPEG_VIDEO_BITRATE and
+	 * V4L2_CID_MPEG_VIDEO_FRAME_RATE so applications can tune
+	 * rate-control without resorting to S_PARM.
+	 */
+	ret = v4l2_ctrl_handler_init(&inst->ctrl_handler, 4);
 	if (ret)
 		goto err_m2m_ctx_release;
+
+	v4l2_ctrl_new_std_menu(&inst->ctrl_handler,
+			       NULL,
+			       V4L2_CID_MPEG_VIDEO_H264_PROFILE,
+			       V4L2_MPEG_VIDEO_H264_PROFILE_HIGH,
+			       0,
+			       V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE);
+
+	v4l2_ctrl_new_std_menu(&inst->ctrl_handler,
+			       NULL,
+			       V4L2_CID_MPEG_VIDEO_H264_LEVEL,
+			       V4L2_MPEG_VIDEO_H264_LEVEL_4_0,
+			       0,
+			       V4L2_MPEG_VIDEO_H264_LEVEL_1_0);
+
+	v4l2_ctrl_new_std(&inst->ctrl_handler,
+			  NULL,
+			  V4L2_CID_MPEG_VIDEO_BITRATE,
+			  VIDC_MIN_BITRATE,
+			  VIDC_MAX_BITRATE,
+			  1,
+			  VIDC_DEFAULT_BITRATE);
+
+	if (inst->ctrl_handler.error) {
+		ret = inst->ctrl_handler.error;
+		v4l2_ctrl_handler_free(&inst->ctrl_handler);
+		goto err_m2m_ctx_release;
+	}
 
 	v4l2_fh_init(&inst->fh, core->vfd_enc);
 	inst->fh.ctrl_handler = &inst->ctrl_handler;
