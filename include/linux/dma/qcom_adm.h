@@ -4,6 +4,8 @@
 
 #include <linux/types.h>
 
+struct dma_chan;
+
 struct qcom_adm_peripheral_config {
 	u32 crci;
 	u32 mux;
