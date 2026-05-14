@@ -324,6 +324,7 @@ static irqreturn_t vidc_isr(int irq, void *data)
 	struct vidc_inst *inst;
 	u32 cmd, arg1, arg2, arg3, arg4;
 	unsigned long flags;
+	static DEFINE_RATELIMIT_STATE(rs, HZ, 5);
 
 	spin_lock_irqsave(&core->irqlock, flags);
 
@@ -332,8 +333,16 @@ static irqreturn_t vidc_isr(int irq, void *data)
 
 	inst = core->curr_inst;
 
-	dev_dbg(core->dev, "VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
-		cmd, arg1, arg2, inst);
+	/*
+	 * Diagnostic: log every IRQ (ratelimited to 5/HZ) so we can see
+	 * an IRQ storm if the firmware response register isn't being
+	 * cleared correctly. cmd==0 (VIDC_RESP_EMPTY) on a fired IRQ is
+	 * the smoking-gun signature of a spurious-IRQ loop.
+	 */
+	if (__ratelimit(&rs))
+		dev_info(core->dev,
+			 "VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
+			 cmd, arg1, arg2, inst);
 
 	switch (cmd) {
 	case VIDC_RESP_FW_STATUS:
@@ -636,32 +645,44 @@ int vidc_boot_firmware(struct vidc_core *core)
 	reinit_completion(&core->fw_status_done);
 	reinit_completion(&core->sys_init_done);
 
+	dev_info(core->dev, "boot_fw: about to call vidc_hw_reset (dram_base>>17=0x%08x)\n",
+		 (u32)(core->fw_dma_addr >> 17));
 	ret = vidc_hw_reset(core, core->fw_dma_addr >> 17);
 	if (ret) {
 		dev_err(core->dev, "hw reset failed: %d\n", ret);
 		return ret;
 	}
+	dev_info(core->dev, "boot_fw: hw_reset returned ok, waiting FW_STATUS_RET (200ms)\n");
 
-	if (!wait_for_completion_timeout(&core->fw_status_done,
-					 msecs_to_jiffies(200)))
-		dev_dbg(core->dev,
-			"FW_STATUS_RET not received in 200 ms (silent firmware revision)\n");
+	{
+		unsigned long ret_jif = wait_for_completion_timeout(
+				&core->fw_status_done, msecs_to_jiffies(200));
+		dev_info(core->dev,
+			 "boot_fw: FW_STATUS wait returned, jiffies_left=%lu (%s)\n",
+			 ret_jif, ret_jif ? "got signal" : "timed out");
+	}
 
+	dev_info(core->dev, "boot_fw: about to send SYS_INIT (arg1=%zu)\n",
+		 core->fw_alloc_size);
 	ret = vidc_send_cmd(core, VIDC_CMD_SYS_INIT,
 			    core->fw_alloc_size, 0, 0, 0);
 	if (ret) {
 		dev_err(core->dev, "failed to send SYS_INIT: %d\n", ret);
 		return ret;
 	}
+	dev_info(core->dev, "boot_fw: SYS_INIT sent, waiting SYS_INIT_RET (1s)\n");
 
-	if (!wait_for_completion_timeout(&core->sys_init_done,
-					 msecs_to_jiffies(1000)))
-		dev_dbg(core->dev,
-			"SYS_INIT_RET not received in 1 s — proceeding without explicit ack\n");
+	{
+		unsigned long ret_jif = wait_for_completion_timeout(
+				&core->sys_init_done, msecs_to_jiffies(1000));
+		dev_info(core->dev,
+			 "boot_fw: SYS_INIT wait returned, jiffies_left=%lu (%s)\n",
+			 ret_jif, ret_jif ? "got signal" : "timed out");
+	}
 
 	core->fw_running = true;
 	core->fw_version = vidc_read(core, VIDC_REG_FW_VERSION);
-	dev_info(core->dev, "Firmware booted, version 0x%08x\n",
+	dev_info(core->dev, "boot_fw: done, FW_VERSION=0x%08x\n",
 		 core->fw_version);
 	return 0;
 }
@@ -762,9 +783,13 @@ int vidc_open_channel(struct vidc_inst *inst)
 	 * so GDSC + clocks are on and vidc_boot_firmware can safely write
 	 * the boot-control registers.
 	 */
+	dev_info(core->dev, "open_ch: about to call vidc_load_firmware\n");
 	ret = vidc_load_firmware(core);
-	if (ret)
+	if (ret) {
+		dev_err(core->dev, "open_ch: load_firmware failed: %d\n", ret);
 		return ret;
+	}
+	dev_info(core->dev, "open_ch: load_firmware returned ok\n");
 
 	mutex_lock(&core->lock);
 
@@ -805,18 +830,28 @@ int vidc_open_channel(struct vidc_inst *inst)
 		"OPEN_CH codec=%u pcache=%u ctxt_off=0x%x sz=%u\n",
 		fw_codec, pcache, ctxt_offset_shifted, VIDC_CTXT_MEM_SIZE);
 
+	dev_info(core->dev,
+		 "open_ch: sending OPEN_CH codec=%u pcache=%u ctxt_off=0x%x\n",
+		 fw_codec, pcache, ctxt_offset_shifted);
 	ret = vidc_send_cmd(core, VIDC_CMD_OPEN_CH, fw_codec, pcache,
 			    ctxt_offset_shifted, VIDC_CTXT_MEM_SIZE);
 	if (ret) {
 		dev_err(core->dev, "OPEN_CH send failed: %d\n", ret);
 		goto release_ctxt;
 	}
+	dev_info(core->dev, "open_ch: OPEN_CH sent, waiting RESP_OPEN_CH (1s)\n");
 
-	if (!wait_for_completion_timeout(&inst->done,
-					 msecs_to_jiffies(1000))) {
-		dev_err(core->dev, "OPEN_CH timeout\n");
-		ret = -ETIMEDOUT;
-		goto release_ctxt;
+	{
+		unsigned long ret_jif = wait_for_completion_timeout(
+				&inst->done, msecs_to_jiffies(1000));
+		dev_info(core->dev,
+			 "open_ch: wait returned, jiffies_left=%lu (%s)\n",
+			 ret_jif, ret_jif ? "got signal" : "timed out");
+		if (!ret_jif) {
+			dev_err(core->dev, "OPEN_CH timeout\n");
+			ret = -ETIMEDOUT;
+			goto release_ctxt;
+		}
 	}
 
 	if (inst->error) {
