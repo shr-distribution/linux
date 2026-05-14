@@ -445,6 +445,16 @@
 					regulator-max-microvolt = <3300000>;
 					bias-pull-down;
 					regulator-always-on;
+					/*
+					 * Force HPM/PWM mode — legacy webOS
+					 * runs this LDO in opmode=fast for WiFi
+					 * stability. 100 mA is a comfortable
+					 * margin above the AR6003 receive-path
+					 * draw (RX ~50 mA, TX bursts higher
+					 * but flow through pm8901_l3 PA rail).
+					 */
+					regulator-allow-set-load;
+					regulator-system-load = <100000>;
 				};
 				pm8901_l2: l2 {
 					regulator-min-microvolt = <2850000>;
@@ -457,6 +467,14 @@
 					regulator-max-microvolt = <3300000>;
 					bias-pull-down;
 					regulator-always-on;
+					/*
+					 * WiFi PA — TX bursts can pull
+					 * 500-800 mA. Set HPM floor at 200 mA
+					 * to cover steady-state PA bias. Legacy
+					 * runs this in opmode=fast.
+					 */
+					regulator-allow-set-load;
+					regulator-system-load = <200000>;
 				};
 				/*
 				 * L4 (2.6V), L5 (2.85V), L6 (2.2V).
@@ -623,6 +641,14 @@
 					regulator-max-microvolt = <3050000>;
 					bias-pull-down;
 					regulator-always-on;
+					/*
+					 * WiFi 3.05V (also used by touchscreen).
+					 * Legacy runs this in opmode=fast. Force
+					 * HPM to keep ripple off the WiFi rail
+					 * during HS-mode SDIO transactions.
+					 */
+					regulator-allow-set-load;
+					regulator-system-load = <100000>;
 				};
 				pm8058_l11: l11 {
 					regulator-min-microvolt = <2850000>;
@@ -700,6 +726,13 @@
 					regulator-max-microvolt = <1800000>;
 					bias-pull-down;
 					regulator-always-on;
+					/*
+					 * WiFi radio I/O 1.8V — legacy
+					 * opmode=fast. HPM avoids ripple
+					 * coupling into the analog RF section.
+					 */
+					regulator-allow-set-load;
+					regulator-system-load = <50000>;
 				};
 				pm8058_l20: l20 {
 					regulator-min-microvolt = <1800000>;
@@ -776,6 +809,24 @@
 					qcom,switch-mode-frequency = <1600000>;
 					bias-pull-down;
 					regulator-allow-set-load;
+					/*
+					 * 100 mA system-load floor — forces the
+					 * PM8058 SMPS3 SMPS into PWM (HPM) mode
+					 * for clean 1.8V SDIO I/O voltage. Without
+					 * this the SMPS sits in pulse-skipping
+					 * (LPM) at low loads and the 1.8V rail has
+					 * enough ripple to break HS-mode SDIO data
+					 * sampling on the AR6003 — observed as
+					 * DATACRCFAIL blksz=4 blocks=1 on the
+					 * first BMI 4-byte read at 24 MHz, ath6kl
+					 * probe fails -84 EILSEQ. Legacy webOS
+					 * (2.6.35-palm-tenderloin) explicitly
+					 * forces opmode=fast on this regulator
+					 * during WiFi power-up (confirmed by
+					 * sysfs regulator opmode readback on a
+					 * working webOS boot).
+					 */
+					regulator-system-load = <100000>;
 					/* Core 1.8V rail for audio, WiFi, sensors - must be on early */
 					regulator-boot-on;
 					regulator-always-on;
