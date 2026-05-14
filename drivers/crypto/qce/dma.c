@@ -25,6 +25,10 @@ static int qce_dma_configure_crci(struct dma_chan *chan, u32 crci)
 	struct qcom_adm_peripheral_config periph_conf = {};
 	struct dma_slave_config conf = {
 		.device_fc = true,
+		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+		.src_maxburst = 8,
+		.dst_maxburst = 8,
 	};
 
 	if (!crci)
