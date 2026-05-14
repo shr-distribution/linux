@@ -836,6 +836,17 @@ static void adm_start_dma(struct adm_chan *achan)
 	/* write next command list out to the CMD FIFO */
 	writel(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3,
 	       adev->regs + ADM_CH_CMD_PTR(achan->id, adev->ee));
+
+	/*
+	 * EXPERIMENTAL: On MSM8660/APQ8060 (Tenderloin), also write CMD_PTR
+	 * to EE=0. Most peripherals work with EE=1-only writes, but QCE crypto
+	 * (channels 2-3 on ADM0) seems to require EE=0 writes as well.
+	 * This is a workaround pending proper root-cause analysis.
+	 */
+	if (adev->ee == 1) {
+		writel(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3,
+		       adev->regs + ADM_CH_CMD_PTR(achan->id, 0));
+	}
 }
 
 /**
