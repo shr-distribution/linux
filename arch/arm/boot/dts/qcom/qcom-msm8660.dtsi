@@ -1542,8 +1542,16 @@
 				 <&mmcc VCODEC_AXI_CLK>;
 			clock-names = "core", "iface", "axi";
 			power-domains = <&mmcc VED_GDSC>;
-			iommus = <&vcodec_a_iommu 0>,
-				 <&vcodec_b_iommu 0>;
+			/*
+			 * IOMMU intentionally omitted: the vidc_1080p.fw
+			 * firmware binary uses physical addresses internally
+			 * (it was built for the webOS kernel which ran the
+			 * codec without an IOMMU). Attaching the vcodec
+			 * IOMMUs causes page faults as the firmware accesses
+			 * addresses outside the DMA-mapped window. Without
+			 * iommus the device uses physical addresses directly,
+			 * matching the original webOS behaviour.
+			 */
 			interconnects = <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "video-mem";
