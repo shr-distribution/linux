@@ -496,15 +496,21 @@ int vidc_load_firmware(struct vidc_core *core)
 {
 	int ret;
 
-	if (core->fw_loaded)
-		return 0;
+	dev_info(core->dev, "load_firmware: entry, fw_loaded=%d\n", core->fw_loaded);
 
+	if (core->fw_loaded) {
+		dev_info(core->dev, "load_firmware: already loaded, returning\n");
+		return 0;
+	}
+
+	dev_info(core->dev, "load_firmware: requesting firmware %s\n", VIDC_FW_NAME);
 	ret = request_firmware(&core->fw, VIDC_FW_NAME, core->dev);
 	if (ret) {
 		dev_err(core->dev, "failed to load firmware %s: %d\n",
 			VIDC_FW_NAME, ret);
 		return ret;
 	}
+	dev_info(core->dev, "load_firmware: got firmware, size=%zu\n", core->fw->size);
 
 	if (core->fw->size > VIDC_FW_SIZE_MAX) {
 		dev_err(core->dev, "firmware too large: %zu > %d\n",
