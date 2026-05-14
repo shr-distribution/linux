@@ -353,6 +353,27 @@ static irqreturn_t vidc_isr(int irq, void *data)
 			 "VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
 			 cmd, arg1, arg2, inst);
 
+	/*
+	 * Storm guard: if firmware boot has stalled, the hardware can
+	 * re-assert the IRQ line indefinitely with RISC2HOST_CMD =
+	 * VIDC_RESP_EMPTY. The handler then re-enters at ~165 k/s and
+	 * starves the rest of the system. After a streak of empty IRQs
+	 * the chip is wedged regardless — disable the line so the
+	 * kernel stays alive and userspace can time out cleanly.
+	 */
+	if (cmd == VIDC_RESP_EMPTY) {
+		if (++core->empty_irq_streak >= 64 &&
+		    !core->irq_disabled_by_storm) {
+			core->irq_disabled_by_storm = true;
+			disable_irq_nosync(core->irq);
+			dev_err(core->dev,
+				"VIDC IRQ storm (>=64 empty IRQs) — disabling IRQ %d; reboot required to recover\n",
+				core->irq);
+		}
+	} else {
+		core->empty_irq_streak = 0;
+	}
+
 	switch (cmd) {
 	case VIDC_RESP_FW_STATUS:
 		/*

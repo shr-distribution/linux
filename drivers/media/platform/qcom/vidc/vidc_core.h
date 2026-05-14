@@ -409,6 +409,17 @@ struct vidc_core {
 	struct completion fw_status_done;
 	struct completion sys_init_done;
 
+	/*
+	 * Defensive IRQ-storm guard. The hardware will raise cmd=0
+	 * (RISC2HOST_CMD = EMPTY) IRQs in tight loops when the on-chip
+	 * RISC is wedged — e.g. when boot stub never completes and the
+	 * firmware never sends FW_STATUS_RET. After exceeding the
+	 * threshold the ISR disables its own line via disable_irq_nosync
+	 * to keep the kernel alive while userspace times out cleanly.
+	 */
+	unsigned int empty_irq_streak;
+	bool irq_disabled_by_storm;
+
 	/* Instance management */
 	struct list_head instances;
 	unsigned int num_instances;
