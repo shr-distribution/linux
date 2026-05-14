@@ -186,19 +186,57 @@ crypto cost, not USB throughput. Confirmed by:
 - ssh+cat (crypto, no SCP) is identical to scp at ~10 MB/s.
 - Removing SSH from the path doubles the measurement.
 
+### Cipher comparison (separate 3-run study, 200 MB scp)
+
+Tested whether picking a different SSH cipher would close the gap
+to wget. Hypothesis going in: AES-GCM should beat ChaCha20-Poly1305
+on Scorpion. Hypothesis was *wrong* — measurement showed the
+opposite.
+
+| Cipher | Run 1 | Run 2 | Run 3 | Median | Avg |
+|---|---:|---:|---:|---:|---:|
+| `chacha20-poly1305@openssh.com` (default) | 9.54 | 8.73 | 13.02 | 9.54 | 10.43 |
+| `aes128-gcm@openssh.com` | 6.06 | 5.13 | 4.55 | 5.13 | 5.25 |
+| `aes256-gcm@openssh.com` | 6.54 | 4.95 | 8.03 | 6.54 | 6.50 |
+| `aes128-ctr` (HMAC-SHA1) | 7.22 | 12.46 | 10.46 | **10.46** | 10.05 |
+
+Rankings (median, MB/s):
+1. **aes128-ctr**: 10.46 (slightly above default)
+2. **chacha20-poly1305 (default)**: 9.54
+3. aes256-gcm: 6.54
+4. aes128-gcm: 5.13 (worst — *half* of default)
+
+### Why AES-GCM is so slow here
+
+ARMv7 Scorpion has NEON SIMD but **no PMULL** instruction
+(carryless polynomial multiply). GHASH — the authenticator inside
+GCM — is essentially a long sequence of carryless 128-bit
+multiplications over GF(2^128). Without PMULL it gets implemented
+in software as repeated XOR/shift loops, which is slow. ChaCha20
++ Poly1305, by contrast, are designed for software-only
+implementations and run respectably even on a 1.5 GHz in-order
+ARMv7. The aes128-ctr path combines reasonably-priced AES-CTR
+(table-based, fits in cache) with HMAC-SHA1 (cheaper than GHASH
+without hardware multiplier).
+
 ### Practical takeaways
 
 1. **For large file transfers** (kernel deploys, log pulls,
    debug dumps), prefer wget over a local `python3 -m http.server`
-   if speed matters — about 2× faster than scp.
+   if speed matters — about 2× faster than any SSH method.
 2. **For everyday workflow** (small files, command exec, log
    tailing), the SSH overhead is invisible because connection
    setup dominates.
-3. **If SSH transfer speed becomes critical**, try
-   `rsync --rsh="ssh -c aes128-gcm@openssh.com"` or
-   `scp -c aes128-gcm@openssh.com` to pick a faster cipher.
-   `chacha20-poly1305` is typically slowest on ARMv7-without-NEON-AES;
-   AES-GCM may be measurably faster.
+3. **If SSH transfer speed matters and wget isn't an option**,
+   the default `chacha20-poly1305@openssh.com` is already
+   near-optimal on this hardware. Trying `aes128-ctr` may give a
+   marginal improvement (~10% median). Do **not** switch to
+   aes128-gcm — it makes things ~half as fast.
+4. **Run-to-run variance is high** (e.g. chacha20 ranged 8.7-13.0
+   MB/s across 3 runs). The 3-run cipher comparison medians are
+   close enough that small differences aren't conclusive; treat
+   the "chacha20 vs aes128-ctr is a tie" reading as the safest
+   interpretation.
 
 ## Notes on test reproducibility
 
