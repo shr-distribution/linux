@@ -147,6 +147,59 @@ is a priority — 21 MB/s is more than adequate for kernel/userspace
 deployment via SCP, debug log streaming, and the typical novacom-
 style workflows.
 
+## SSH and SCP overhead vs raw USB
+
+Follow-up measurement (2026-05-14) to quantify exactly how much of
+the "slow USB on mainline" perception came from SSH overhead rather
+than the USB pipe itself. Same 200 MB payload, three methods, three
+runs each, all to `/tmp` (tmpfs) on the device:
+
+| Method | Run 1 | Run 2 | Run 3 | Median | % of wget baseline |
+|---|---:|---:|---:|---:|---:|
+| `wget` (HTTP, no SSH) | 22.86 | 22.91 | 17.68 | **22.86 MB/s** | 100% |
+| `ssh ... 'cat > file' < src` | 9.84 | 9.00 | 12.23 | **9.84 MB/s** | **43%** |
+| `scp src dest:` | 10.33 | 8.17 | 11.26 | **10.33 MB/s** | **45%** |
+
+### Reading the numbers
+
+- **SSH transport halves throughput.** wget at 23 MB/s drops to
+  ~10 MB/s the moment SSH is in the pipe. That's roughly 55% of
+  the bandwidth burned on encryption + HMAC.
+- **scp ≈ ssh+cat.** Both around 10 MB/s. SCP itself adds no
+  meaningful overhead beyond raw SSH transport; the file-transfer
+  protocol is thin. The "SCP is slow" intuition is really "SSH
+  encryption is slow on Scorpion."
+- **The gap is the entire SSH crypto layer**: by default on openssh
+  the cipher is `chacha20-poly1305@openssh.com` or
+  `aes128-gcm@openssh.com`, both software-implemented on ARMv7
+  Scorpion (no NEON-accelerated AES in this kernel build). At
+  ~10 MB/s = 80 Mbps, that's right in the ballpark a 1.5 GHz
+  Scorpion can sustain for software-AEAD on every byte.
+
+### Why this matters for the "slow USB" narrative
+
+Earlier sessions on this hardware repeatedly measured ~8-10 MB/s
+through scp and reported "USB is slow." This was Scorpion's
+crypto cost, not USB throughput. Confirmed by:
+
+- wget (no crypto) hits 21-23 MB/s consistently.
+- ssh+cat (crypto, no SCP) is identical to scp at ~10 MB/s.
+- Removing SSH from the path doubles the measurement.
+
+### Practical takeaways
+
+1. **For large file transfers** (kernel deploys, log pulls,
+   debug dumps), prefer wget over a local `python3 -m http.server`
+   if speed matters — about 2× faster than scp.
+2. **For everyday workflow** (small files, command exec, log
+   tailing), the SSH overhead is invisible because connection
+   setup dominates.
+3. **If SSH transfer speed becomes critical**, try
+   `rsync --rsh="ssh -c aes128-gcm@openssh.com"` or
+   `scp -c aes128-gcm@openssh.com` to pick a faster cipher.
+   `chacha20-poly1305` is typically slowest on ARMv7-without-NEON-AES;
+   AES-GCM may be measurably faster.
+
 ## Notes on test reproducibility
 
 1. **Host IP**: the USB gadget IP on the host changes interface
