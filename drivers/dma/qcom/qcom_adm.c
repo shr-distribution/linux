@@ -738,6 +738,7 @@ int qcom_adm_program_crci_ee0(struct dma_chan *chan, u32 crci_val)
 EXPORT_SYMBOL_GPL(qcom_adm_program_crci_ee0);
 
 static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
+{
 	struct adm_chan *achan = to_adm_chan(chan);
 	struct qcom_adm_peripheral_config *config = cfg->peripheral_config;
 	unsigned long flag;
