@@ -408,29 +408,25 @@
 		 * (non-exclusive) to avoid conflict with RPM memory region.
 		 */
 		/*
-		 * MPM (MSM Power Manager) wakeup interrupt controller.
-		 * DISABLED: Even with syscon approach, early irqchip init causes
-		 * boot hang during reserved memory parsing. Need alternative
-		 * approach - either make MPM a regular platform driver (not early
-		 * irqchip) or implement minimal MSM8660-specific wakeup handler.
-		 *
-		 * mpm: interrupt-controller {
-		 *	compatible = "qcom,msm8660-mpm", "qcom,mpm";
-		 *	qcom,rpm-syscon = <&rpm>;
-		 *	qcom,mpm-offset = <0x9d8>;
-		 *	interrupts = <GIC_SPI 2 IRQ_TYPE_EDGE_RISING>;
-		 *	mboxes = <&gcc_ipc 1>;
-		 *	interrupt-controller;
-		 *	#interrupt-cells = <2>;
-		 *	#power-domain-cells = <0>;
-		 *	interrupt-parent = <&intc>;
-		 *	qcom,mpm-pin-count = <64>;
-		 *	qcom,mpm-pin-map = <25 100>,
-		 *			   <26 50>,
-		 *			   <27 79>;
-		 *	status = "disabled";
-		 * };
+		 * MSM8660 Wakeup interrupt controller.
+		 * Platform driver (not early IRQCHIP_MATCH) to allow proper
+		 * syscon/regmap initialization and RPM dependency handling.
 		 */
+		wakeup: interrupt-controller {
+			compatible = "qcom,msm8660-wakeup";
+			qcom,rpm-syscon = <&rpm>;
+			qcom,mpm-offset = <0x9d8>;
+			interrupts = <GIC_SPI 2 IRQ_TYPE_EDGE_RISING>;
+			mboxes = <&gcc_ipc 1>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			interrupt-parent = <&intc>;
+			qcom,mpm-pin-count = <64>;
+			qcom,mpm-pin-map = <25 100>,	/* USB1_HS */
+					   <26 50>,	/* TV_ENC */
+					   <27 79>;	/* HDMI */
+			status = "disabled";
+		};
 
 		timer@2000000 {
 			compatible = "qcom,scss-timer", "qcom,msm-timer";

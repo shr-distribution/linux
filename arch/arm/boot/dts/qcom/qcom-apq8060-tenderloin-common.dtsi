@@ -3737,12 +3737,12 @@
 	vdd-dig-supply = <&pm8058_s1>;
 };
 
-/* MPM disabled - syscon approach still causes boot hang during
- * early irqchip init at reserved memory parsing. The IRQCHIP_MATCH
- * framework initializes too early, before platform devices are ready.
- *
- * &mpm { status = "okay"; };
+/* MSM8660 wakeup controller - platform driver version avoids
+ * IRQCHIP_MATCH early init timing issues.
  */
+&wakeup {
+	status = "okay";
+};
 
 &gemini {
 	status = "okay";
