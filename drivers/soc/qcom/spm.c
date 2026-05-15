@@ -15,6 +15,7 @@
 #include <linux/linear_range.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
@@ -875,21 +876,22 @@ static int spm_dev_probe(struct platform_device *pdev)
 		 */
 		if (drv->reg_data->no_seq_ram) {
 			u32 slp_clk_en;
-			int cpu;
+			u32 cpu_idx = 0;
+			int ret;
 
 			/* Get CPU index for per-CPU differences */
-			cpu = of_property_read_u32(pdev->dev.of_node, "reg", &cpu);
-			if (cpu < 0)
-				cpu = 0;  /* Fallback if DT doesn't have reg property */
+			ret = of_property_read_u32(pdev->dev.of_node, "reg", &cpu_idx);
+			if (ret < 0)
+				cpu_idx = 0;  /* Fallback if DT doesn't have reg property */
 
 			/*
 			 * CPU0 uses SLP_CLK_EN=0x01, CPU1 uses 0x13 (enables
 			 * clock for different sleep modes). This is a hardware
 			 * asymmetry in the platform.
 			 */
-			slp_clk_en = (cpu == 1) ? 0x13 : drv->reg_data->slp_clk_en;
+			slp_clk_en = (cpu_idx == 1) ? 0x13 : drv->reg_data->slp_clk_en;
 
-			dev_info(&pdev->dev, "SAW init: CPU%d, writing 11 registers\n", cpu);
+			dev_info(&pdev->dev, "SAW init: CPU%u, writing 11 registers\n", cpu_idx);
 
 			spm_register_write(drv, SPM_REG_WAKE_TMR_DLY,
 					   drv->reg_data->wake_tmr_dly);
