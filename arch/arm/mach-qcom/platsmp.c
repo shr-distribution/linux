@@ -531,6 +531,13 @@ static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	if (drv) {
 		pr_info("CPU%u: restoring SPM to standby mode\n", cpu);
 		spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
+		/*
+		 * Give SPM hardware time to transition from power collapse
+		 * back to standby. The SPM state machine may need to power
+		 * up the CPU before we can successfully release it from reset.
+		 */
+		udelay(100);
+		pr_info("CPU%u: SPM standby restore complete\n", cpu);
 	} else {
 		pr_warn("CPU%u: SPM driver not found!\n", cpu);
 	}
