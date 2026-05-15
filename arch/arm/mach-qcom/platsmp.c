@@ -151,11 +151,26 @@ static void qcom_cpu_die(unsigned int cpu)
 static bool msm8660_cpu_can_disable(unsigned int cpu)
 {
 	/*
-	 * Enable hotplug now that SPM initialization is in place.
-	 * CPU1 can be offlined, which allows testing of single-core
-	 * power collapse via cpuidle cpu-spc state.
+	 * Disable CPU hotplug on MSM8660/Scorpion.
+	 *
+	 * After extensive testing, MSM8660 doesn't support bringing a CPU back
+	 * online after it's been offlined:
+	 *
+	 * 1. Simple WFI approach: CPU sleeps in wfi() but IPI delivery fails
+	 *    after hotplug offline. The GIC or CPU state prevents wakeup.
+	 *
+	 * 2. Power collapse (SPC) approach: CPU powers down successfully but
+	 *    cannot be powered back up. Unlike Krait platforms with ACC for
+	 *    power rail control, Scorpion only has SPM which manages power-down
+	 *    sequences but not power-up.
+	 *
+	 * The only working wake path is cold boot via scss_release_secondary,
+	 * but that requires the CPU to be actually reset, not just sleeping.
+	 *
+	 * Deep idle via cpuidle (SPC state) works fine because the CPU wakes
+	 * from timer interrupts while still powered, never going fully offline.
 	 */
-	return true;
+	return false;
 }
 #endif
 
