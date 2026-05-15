@@ -32,6 +32,23 @@
 /* CE2 uses ADM DMA with smaller burst size than BAM */
 #define CE2_ADM_BURST_SIZE	64
 
+/* Module parameters for CE2 diagnostics */
+static bool qce_test_adm_domain = false;
+module_param_named(test_adm_domain, qce_test_adm_domain, bool, 0644);
+MODULE_PARM_DESC(test_adm_domain, "Test ADM channel domain/EE register conflict (Gemini theory)");
+
+static bool qce_fix_adm_domain = false;
+module_param_named(fix_adm_domain, qce_fix_adm_domain, bool, 0644);
+MODULE_PARM_DESC(fix_adm_domain, "Attempt to fix ADM domain conflict by clearing secure world bits");
+
+static bool qce_use_pio_mode = false;
+module_param_named(use_pio_mode, qce_use_pio_mode, bool, 0644);
+MODULE_PARM_DESC(use_pio_mode, "Use PIO (polled I/O) mode instead of DMA to isolate QCE vs ADM issues");
+
+static bool qce_try_scm_unlock = false;
+module_param_named(try_scm_unlock, qce_try_scm_unlock, bool, 0644);
+MODULE_PARM_DESC(try_scm_unlock, "Attempt SCM call to unlock CE2 from TrustZone");
+
 /* Driver data for different CE versions */
 struct qce_driver_data {
 	enum qce_version version;
@@ -212,6 +229,201 @@ static int qce_check_version(struct qce_device *qce)
 	return 0;
 }
 
+/*
+ * CE2 Diagnostic: Test ADM Domain Conflict (Gemini Theory)
+ *
+ * Tests whether ADM channels are locked to secure world (Domain 3) at EE=0,
+ * preventing Linux (non-secure, EE=1) from using them for DMA.
+ */
+static int qce_test_adm_domain_conflict(struct device *dev)
+{
+	void __iomem *adm0_ee0, *adm0_ee1;
+	void __iomem *adm1_ee0, *adm1_ee1;
+	u32 ch_conf_val;
+	int domain;
+	bool conflict_found = false;
+
+	dev_info(dev, "=== CE2 Diagnostic: ADM Domain/EE Register Test ===\n");
+
+	/* Map both ADM controllers at both EE levels */
+	adm0_ee0 = ioremap(0x18320000, 0x1000);  /* ADM0 EE=0 (secure) */
+	adm0_ee1 = ioremap(0x18320800, 0x1000);  /* ADM0 EE=1 (non-secure) */
+	adm1_ee0 = ioremap(0x18420000, 0x1000);  /* ADM1 EE=0 (secure) */
+	adm1_ee1 = ioremap(0x18420800, 0x1000);  /* ADM1 EE=1 (non-secure) */
+
+	if (!adm0_ee0 || !adm0_ee1 || !adm1_ee0 || !adm1_ee1) {
+		dev_err(dev, "Failed to map ADM registers for diagnostic\n");
+		goto cleanup;
+	}
+
+	/* Test ADM1 channels 4 & 5 (used by QCE) */
+	dev_info(dev, "ADM1 Channel 4 (CE_IN) register dump:\n");
+	ch_conf_val = readl_relaxed(adm1_ee0 + 0x208);  /* CH_CONF offset */
+	domain = (ch_conf_val >> 27) & 0x3;
+	dev_info(dev, "  EE=0 CH_CONF: 0x%08x (Domain=%d)\n", ch_conf_val, domain);
+	if (domain == 3) {
+		dev_warn(dev, "  *** Channel 4 locked to Domain 3 (Secure World) ***\n");
+		conflict_found = true;
+	}
+
+	ch_conf_val = readl_relaxed(adm1_ee1 + 0x208);
+	dev_info(dev, "  EE=1 CH_CONF: 0x%08x\n", ch_conf_val);
+
+	dev_info(dev, "ADM1 Channel 5 (CE_OUT) register dump:\n");
+	ch_conf_val = readl_relaxed(adm1_ee0 + 0x288);  /* CH_CONF offset */
+	domain = (ch_conf_val >> 27) & 0x3;
+	dev_info(dev, "  EE=0 CH_CONF: 0x%08x (Domain=%d)\n", ch_conf_val, domain);
+	if (domain == 3) {
+		dev_warn(dev, "  *** Channel 5 locked to Domain 3 (Secure World) ***\n");
+		conflict_found = true;
+	}
+
+	ch_conf_val = readl_relaxed(adm1_ee1 + 0x288);
+	dev_info(dev, "  EE=1 CH_CONF: 0x%08x\n", ch_conf_val);
+
+	/* Also check ADM0 channels for reference */
+	dev_info(dev, "ADM0 Channel 2 reference:\n");
+	ch_conf_val = readl_relaxed(adm0_ee0 + 0x108);
+	domain = (ch_conf_val >> 27) & 0x3;
+	dev_info(dev, "  EE=0 CH_CONF: 0x%08x (Domain=%d)\n", ch_conf_val, domain);
+
+	if (conflict_found) {
+		dev_err(dev, "*** DOMAIN CONFLICT DETECTED ***\n");
+		dev_err(dev, "ADM channels locked to secure world, Linux cannot use them.\n");
+		dev_err(dev, "This explains why DMA completion never arrives!\n");
+		dev_err(dev, "Try: insmod qce.ko fix_adm_domain=1\n");
+	} else {
+		dev_info(dev, "No domain conflict detected, channels accessible to Linux.\n");
+	}
+
+cleanup:
+	if (adm0_ee0) iounmap(adm0_ee0);
+	if (adm0_ee1) iounmap(adm0_ee1);
+	if (adm1_ee0) iounmap(adm1_ee0);
+	if (adm1_ee1) iounmap(adm1_ee1);
+
+	return conflict_found ? -EACCES : 0;
+}
+
+/*
+ * CE2 Diagnostic: Attempt to Fix ADM Domain Conflict
+ *
+ * Tries to clear Domain bits (27-28) at EE=0 to unlock channels for Linux.
+ * If XPU/PAC hardware blocks this write, CE2 is permanently fused to secure world.
+ */
+static int qce_fix_adm_domain_conflict(struct device *dev)
+{
+	void __iomem *adm1_ee0;
+	u32 ch4_before, ch4_after, ch5_before, ch5_after;
+	bool fixed = false;
+
+	dev_info(dev, "=== CE2 Diagnostic: Attempting ADM Domain Fix ===\n");
+
+	adm1_ee0 = ioremap(0x18420000, 0x1000);
+	if (!adm1_ee0) {
+		dev_err(dev, "Failed to map ADM1 EE=0 registers\n");
+		return -ENOMEM;
+	}
+
+	/* Read current values */
+	ch4_before = readl_relaxed(adm1_ee0 + 0x208);
+	ch5_before = readl_relaxed(adm1_ee0 + 0x288);
+
+	dev_info(dev, "Before: CH4=0x%08x CH5=0x%08x\n", ch4_before, ch5_before);
+
+	/* Attempt to clear domain bits (27-28) to 0 (non-secure) */
+	writel_relaxed(ch4_before & ~(0x3 << 27), adm1_ee0 + 0x208);
+	writel_relaxed(ch5_before & ~(0x3 << 27), adm1_ee0 + 0x288);
+
+	/* Also try writing BCR (Block Control Reset) to clear XPU error state */
+	void __iomem *gcc_base = ioremap(0x00900000, 0x10000);
+	if (gcc_base) {
+		u32 bcr = readl_relaxed(gcc_base + 0x2740);
+		dev_info(dev, "Toggling BCR bit 7 to clear XPU error state\n");
+		writel_relaxed(bcr | BIT(7), gcc_base + 0x2740);
+		udelay(10);
+		writel_relaxed(bcr & ~BIT(7), gcc_base + 0x2740);
+		iounmap(gcc_base);
+	}
+
+	/* Verify if write succeeded */
+	ch4_after = readl_relaxed(adm1_ee0 + 0x208);
+	ch5_after = readl_relaxed(adm1_ee0 + 0x288);
+
+	dev_info(dev, "After:  CH4=0x%08x CH5=0x%08x\n", ch4_after, ch5_after);
+
+	if (((ch4_after >> 27) & 0x3) == 0 && ((ch5_after >> 27) & 0x3) == 0) {
+		dev_info(dev, "*** SUCCESS: Domain bits cleared, channels unlocked! ***\n");
+		fixed = true;
+	} else {
+		dev_err(dev, "*** FAILED: Hardware refused write, permanently locked ***\n");
+		dev_err(dev, "CE2 is fused to secure world, cannot be used by Linux.\n");
+	}
+
+	iounmap(adm1_ee0);
+	return fixed ? 0 : -EPERM;
+}
+
+/*
+ * CE2 Diagnostic: PIO Mode Test
+ *
+ * Bypasses DMA entirely by directly writing to CE2_REG_DATA_IN and polling
+ * CE2_REG_STATUS. If this works, QCE hardware is functional and problem is
+ * isolated to ADM DMA path.
+ */
+static int qce_test_pio_mode(struct qce_device *qce)
+{
+	u32 status, test_data = 0x12345678;
+	int timeout;
+
+	dev_info(qce->dev, "=== CE2 Diagnostic: PIO Mode Test ===\n");
+
+	/* Check initial status */
+	status = readl_relaxed(qce->base + CE2_REG_STATUS);
+	dev_info(qce->dev, "Initial STATUS: 0x%08x\n", status);
+
+	if (!(status & BIT(CE2_DIN_RDY_SHIFT))) {
+		dev_err(qce->dev, "DIN_RDY not set, hardware not ready for input\n");
+		return -EIO;
+	}
+
+	/* Write test data directly to DATA_IN FIFO */
+	dev_info(qce->dev, "Writing test data 0x%08x to DATA_IN\n", test_data);
+	writel_relaxed(test_data, qce->base + CE2_REG_DATA_IN);
+
+	/* Poll for DOUT_RDY (bit 3) */
+	timeout = 1000;
+	while (timeout--) {
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if (status & BIT(CE2_DOUT_RDY_SHIFT))
+			break;
+		udelay(10);
+	}
+
+	if (timeout <= 0) {
+		dev_err(qce->dev, "*** TIMEOUT: DOUT_RDY never set ***\n");
+		dev_err(qce->dev, "QCE hardware itself is locked/broken, not just DMA.\n");
+		return -ETIMEDOUT;
+	}
+
+	/* Read result from DATA_OUT */
+	u32 result = readl_relaxed(qce->base + CE2_REG_DATA_OUT);
+	dev_info(qce->dev, "Read result 0x%08x from DATA_OUT\n", result);
+
+	status = readl_relaxed(qce->base + CE2_REG_STATUS);
+	dev_info(qce->dev, "Final STATUS: 0x%08x\n", status);
+
+	if (status & BIT(CE2_SW_ERR_SHIFT)) {
+		dev_err(qce->dev, "SW_ERR bit set, operation failed\n");
+		return -EIO;
+	}
+
+	dev_info(qce->dev, "*** PIO MODE WORKS: QCE hardware is functional! ***\n");
+	dev_info(qce->dev, "Problem is isolated to ADM DMA path, not QCE itself.\n");
+
+	return 0;
+}
+
 static int qce_crypto_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -383,6 +595,43 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		ret = qcom_adm_program_crci_ee0(qce->dma.txchan, 0x1);
 		if (ret) {
 			dev_warn(dev, "Failed to program TX CRCI at EE=0: %d\n", ret);
+		}
+
+		/*
+		 * CE2 Diagnostics (module parameters enable these):
+		 * 1. Test ADM domain conflict (Gemini theory)
+		 * 2. Attempt to fix domain conflict
+		 * 3. Test PIO mode to isolate QCE vs DMA issues
+		 */
+		if (qce_test_adm_domain) {
+			ret = qce_test_adm_domain_conflict(dev);
+			if (ret == -EACCES && !qce_fix_adm_domain) {
+				dev_warn(dev, "Domain conflict found. Reinsert with fix_adm_domain=1 to attempt fix.\n");
+			}
+		}
+
+		if (qce_fix_adm_domain) {
+			ret = qce_fix_adm_domain_conflict(dev);
+			if (ret) {
+				dev_err(dev, "Failed to fix domain conflict, CE2 permanently locked.\n");
+				return ret;
+			}
+		}
+
+		if (qce_use_pio_mode) {
+			/* PIO test needs qce struct, so do it here */
+			ret = qce_test_pio_mode(qce);
+			if (ret) {
+				dev_err(dev, "PIO mode test failed, QCE hardware non-functional.\n");
+				return ret;
+			}
+		}
+
+		if (qce_try_scm_unlock) {
+			dev_info(dev, "=== CE2 Diagnostic: SCM Unlock Attempt ===\n");
+			dev_info(dev, "SCM call not yet implemented - requires qcom_scm_set_remote_state()\n");
+			dev_info(dev, "Service ID: 0x01, Command ID: 0x01, Resource: 0x14 (CE2)\n");
+			/* TODO: Add actual SCM call when we have the API */
 		}
 	}
 

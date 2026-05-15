@@ -11,10 +11,17 @@ linux-6.18-tenderloin — Linux 6.18 kernel port for the HP TouchPad (Qualcomm A
 ## Domain Index
 | Domain | File | Summary | Status |
 |--------|------|---------|--------|
+| spm-init | cavekit-spm-init.md | Initialize SPM/SAW registers at probe for MSM8660 power collapse | draft |
 
 ## Cross-Reference Map
 | Domain A | Interacts With | Interaction Type |
 |----------|---------------|-----------------|
+| spm-init | cpuidle | Enables | Provides register init for cpu-spc state |
+| spm-init | cpu-hotplug | Enables | Provides register init for hotplug power collapse |
 
 ## Dependency Graph
-No domains defined yet. Run `/ck:sketch` to create kits.
+```
+spm-init (foundation)
+  ├─> cpu-hotplug (already implemented)
+  └─> cpuidle-spc (pending RPM orchestrator)
+```
