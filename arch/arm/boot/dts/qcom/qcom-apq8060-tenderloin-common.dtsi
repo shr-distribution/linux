@@ -329,7 +329,8 @@
 			dma-names = "rx", "tx";
 			qcom,rx-crci = <4>;
 			qcom,tx-crci = <5>;
-			status = "okay";
+			/* Temporarily disabled for software crypto baseline benchmark */
+			status = "disabled";
 		};
 
 		gsbi4: gsbi@16300000 {
