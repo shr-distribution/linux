@@ -619,6 +619,17 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		iounmap(gcc_base);
 
 		dev_info(dev, "CE2: Hardware initialized successfully\n");
+
+		/*
+		 * Initialize CE2 CONFIG register. The internal CE2 clock (CLK_EN_N)
+		 * and software reset (SW_RST) must be cleared for operations to work.
+		 * This is separate from the GCC CE2_HCLK clock we enabled above.
+		 */
+		u32 ce2_config = 0;
+		ce2_config &= ~BIT(1);  /* Clear CLK_EN_N to enable internal clock */
+		ce2_config &= ~BIT(0);  /* Clear SW_RST to release from reset */
+		writel_relaxed(ce2_config, qce->base + 0x024);  /* CE2_REG_CONFIG */
+		dev_info(dev, "CE2: Wrote CONFIG=0x%08x (internal clock enabled, reset cleared)\n", ce2_config);
 	}
 
 	/* Interconnect is optional - CE2 uses RPM for bus voting */
