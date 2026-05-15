@@ -273,7 +273,7 @@ enum vidc_inst_state {
 /* AXI control bits */
 #define VIDC_AXI_HALT_REQ		BIT(0)
 #define VIDC_AXI_RESET			BIT(1)
-#define VIDC_AXI_HALT_ACK_MASK		0x0c
+#define VIDC_AXI_HALT_ACK_MASK		0x3  /* Bits 1:0, not 3:2 */
 
 /* Codec types */
 enum vidc_codec {

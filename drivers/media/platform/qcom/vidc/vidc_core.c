@@ -217,7 +217,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 		axi_status = vidc_read(core, VIDC_REG_AXI_STATUS);
 		if (timeout % 50 == 0)  /* Log every ~5ms */
 			printk(KERN_EMERG "VIDC: hw_reset: AXI_STATUS=0x%08x\n", axi_status);
-		axi_status = (axi_status & VIDC_AXI_HALT_ACK_MASK) >> 2;
+		axi_status = axi_status & VIDC_AXI_HALT_ACK_MASK;  /* Bits 1:0, no shift */
 		if (axi_status == 0x3)
 			break;
 		usleep_range(100, 200);
