@@ -474,14 +474,18 @@ static int vidc_enc_queue_setup(struct vb2_queue *q,
 	struct vidc_inst *inst = vb2_get_drv_priv(q);
 	u32 size;
 
+	dev_info(inst->core->dev, "queue_setup: type=%d num_buffers=%d\n", q->type, *num_buffers);
+
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		/* Raw input */
 		size = vidc_enc_get_framesize_raw(inst->out_width,
 						  inst->out_height);
+		dev_info(inst->core->dev, "queue_setup: OUTPUT size=%u\n", size);
 	} else {
 		/* Compressed output */
 		size = vidc_enc_get_framesize_compressed(inst->width,
 							 inst->height);
+		dev_info(inst->core->dev, "queue_setup: CAPTURE size=%u\n", size);
 	}
 
 	if (*num_planes) {
