@@ -413,13 +413,20 @@ static int qce_test_pio_mode(struct qce_device *qce)
 	writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT2);
 	writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT3);
 
-	/* Step 4: Configure for high-speed mode, mask interrupts */
-	config = BIT(CE2_MASK_DOUT_INTR_SHIFT) | BIT(CE2_MASK_DIN_INTR_SHIFT) |
-		 BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) | BIT(CE2_MASK_ERR_INTR_SHIFT);
+	/* Step 4: Configure for high-speed mode, mask interrupts
+	 * CRITICAL: Read current CONFIG and modify it to preserve CLK_EN_N
+	 * and SW_RST clear state from initialization.
+	 */
+	config = readl_relaxed(qce->base + CE2_REG_CONFIG);
+	/* Set interrupt masks */
+	config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) | BIT(CE2_MASK_DIN_INTR_SHIFT) |
+		  BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) | BIT(CE2_MASK_ERR_INTR_SHIFT);
 	/* Enable high speed by clearing the _EN_N bits */
 	config &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
 		    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
 		    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
+	/* Ensure CLK_EN_N (bit 1) and SW_RST (bit 0) stay cleared */
+	config &= ~(BIT(1) | BIT(0));
 	writel_relaxed(config, qce->base + CE2_REG_CONFIG);
 
 	/* Step 5: Check DIN_RDY before writing */
