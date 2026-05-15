@@ -402,10 +402,19 @@ static int qce_test_pio_mode(struct qce_device *qce)
 	writel_relaxed(0x10325476, qce->base + CE2_REG_AUTH_IV3);  /* SHA1_H3 */
 	writel_relaxed(0xC3D2E1F0, qce->base + CE2_REG_AUTH_IV4);  /* SHA1_H4 */
 
-	/* Step 4: Configure for little-endian, no interrupts */
-	config = BIT(CE2_DBG_EN_SHIFT);  /* Enable debug mode */
-	config |= (BIT(CE2_MASK_DOUT_INTR_SHIFT) | BIT(CE2_MASK_DIN_INTR_SHIFT) |
-		   BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) | BIT(CE2_MASK_ERR_INTR_SHIFT));
+	/* Step 3b: Clear byte count registers for first block */
+	writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT0);
+	writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT1);
+	writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT2);
+	writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT3);
+
+	/* Step 4: Configure for high-speed mode, mask interrupts */
+	config = BIT(CE2_MASK_DOUT_INTR_SHIFT) | BIT(CE2_MASK_DIN_INTR_SHIFT) |
+		 BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) | BIT(CE2_MASK_ERR_INTR_SHIFT);
+	/* Enable high speed by clearing the _EN_N bits */
+	config &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
+		    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
+		    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
 	writel_relaxed(config, qce->base + CE2_REG_CONFIG);
 
 	/* Step 5: Check DIN_RDY before writing */
