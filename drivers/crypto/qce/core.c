@@ -368,57 +368,102 @@ static int qce_fix_adm_domain_conflict(struct device *dev)
 /*
  * CE2 Diagnostic: PIO Mode Test
  *
- * Bypasses DMA entirely by directly writing to CE2_REG_DATA_IN and polling
- * CE2_REG_STATUS. If this works, QCE hardware is functional and problem is
- * isolated to ADM DMA path.
+ * Bypasses DMA entirely by directly writing to QCE registers for a minimal
+ * SHA1 hash operation. If this works, QCE hardware is functional and problem
+ * is isolated to ADM DMA path.
  */
 static int qce_test_pio_mode(struct qce_device *qce)
 {
-	u32 status, test_data = 0x12345678;
+	u32 status, config, seg_cfg;
 	int timeout;
+	/* Test data: 4 bytes "test" = 0x74657374 (big-endian) */
+	u32 test_data = 0x74657374;
+	/* Expected SHA1 of "test" first word: 0xa94a8fe5 */
 
-	dev_info(qce->dev, "=== CE2 Diagnostic: PIO Mode Test ===\n");
+	dev_info(qce->dev, "=== CE2 Diagnostic: PIO Mode Test (SHA1) ===\n");
 
-	/* Check initial status */
+	/* Step 1: Configure SHA1 operation */
+	seg_cfg = 0;
+	seg_cfg |= (CE2_AUTH_ALG_SHA << CE2_AUTH_ALG_SHIFT);      /* SHA algorithm */
+	seg_cfg |= (CE2_AUTH_SIZE_SHA1 << CE2_AUTH_SIZE_SHIFT);   /* SHA1 (160-bit) */
+	seg_cfg |= (CE2_AUTH_POS_BEFORE << CE2_AUTH_POS_SHIFT);   /* Auth before encrypt */
+	seg_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT);    /* Single-shot */
+	writel_relaxed(seg_cfg, qce->base + CE2_REG_SEG_CFG);
+	dev_info(qce->dev, "Configured SEG_CFG: 0x%08x (SHA1, FIRST|LAST)\n", seg_cfg);
+
+	/* Step 2: Set segment size (4 bytes) */
+	writel_relaxed(4, qce->base + CE2_REG_SEG_SIZE);
+	writel_relaxed((4 << CE2_AUTH_SEG_SIZE_SHIFT), qce->base + CE2_REG_AUTH_SEG_CFG);
+
+	/* Step 3: Write SHA1 initial values (H0-H4) */
+	writel_relaxed(0x67452301, qce->base + CE2_REG_AUTH_IV0);  /* SHA1_H0 */
+	writel_relaxed(0xEFCDAB89, qce->base + CE2_REG_AUTH_IV1);  /* SHA1_H1 */
+	writel_relaxed(0x98BADCFE, qce->base + CE2_REG_AUTH_IV2);  /* SHA1_H2 */
+	writel_relaxed(0x10325476, qce->base + CE2_REG_AUTH_IV3);  /* SHA1_H3 */
+	writel_relaxed(0xC3D2E1F0, qce->base + CE2_REG_AUTH_IV4);  /* SHA1_H4 */
+
+	/* Step 4: Configure for little-endian, no interrupts */
+	config = BIT(CE2_DBG_EN_SHIFT);  /* Enable debug mode */
+	config |= (BIT(CE2_MASK_DOUT_INTR_SHIFT) | BIT(CE2_MASK_DIN_INTR_SHIFT) |
+		   BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) | BIT(CE2_MASK_ERR_INTR_SHIFT));
+	writel_relaxed(config, qce->base + CE2_REG_CONFIG);
+
+	/* Step 5: Check DIN_RDY before writing */
 	status = readl_relaxed(qce->base + CE2_REG_STATUS);
-	dev_info(qce->dev, "Initial STATUS: 0x%08x\n", status);
+	dev_info(qce->dev, "Pre-write STATUS: 0x%08x\n", status);
 
 	if (!(status & BIT(CE2_DIN_RDY_SHIFT))) {
-		dev_err(qce->dev, "DIN_RDY not set, hardware not ready for input\n");
+		dev_err(qce->dev, "DIN_RDY not set, hardware not ready\n");
 		return -EIO;
 	}
 
-	/* Write test data directly to DATA_IN FIFO */
+	/* Step 6: Write test data */
 	dev_info(qce->dev, "Writing test data 0x%08x to DATA_IN\n", test_data);
 	writel_relaxed(test_data, qce->base + CE2_REG_DATA_IN);
 
-	/* Poll for DOUT_RDY (bit 3) */
-	timeout = 1000;
+	/* Step 7: Trigger GO */
+	dev_info(qce->dev, "Triggering GOPROC\n");
+	writel_relaxed(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+
+	/* Step 8: Poll for AUTH_DONE or DOUT_RDY */
+	timeout = 10000;  /* 100ms timeout */
 	while (timeout--) {
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if (status & BIT(CE2_AUTH_DONE_SHIFT))
+			break;
 		if (status & BIT(CE2_DOUT_RDY_SHIFT))
 			break;
 		udelay(10);
 	}
 
 	if (timeout <= 0) {
-		dev_err(qce->dev, "*** TIMEOUT: DOUT_RDY never set ***\n");
-		dev_err(qce->dev, "QCE hardware itself is locked/broken, not just DMA.\n");
+		dev_err(qce->dev, "*** TIMEOUT: AUTH_DONE never set ***\n");
+		dev_err(qce->dev, "Final STATUS: 0x%08x\n", status);
 		return -ETIMEDOUT;
 	}
 
-	/* Read result from DATA_OUT */
-	u32 result = readl_relaxed(qce->base + CE2_REG_DATA_OUT);
-	dev_info(qce->dev, "Read result 0x%08x from DATA_OUT\n", result);
+	dev_info(qce->dev, "Operation completed, STATUS: 0x%08x\n", status);
 
-	status = readl_relaxed(qce->base + CE2_REG_STATUS);
-	dev_info(qce->dev, "Final STATUS: 0x%08x\n", status);
-
+	/* Step 9: Check for errors */
 	if (status & BIT(CE2_SW_ERR_SHIFT)) {
-		dev_err(qce->dev, "SW_ERR bit set, operation failed\n");
+		dev_err(qce->dev, "SW_ERR bit set - configuration error\n");
+		return -EIO;
+	}
+	if (status & BIT(CE2_DIN_ERR_SHIFT)) {
+		dev_err(qce->dev, "DIN_ERR bit set - input error\n");
+		return -EIO;
+	}
+	if (status & BIT(CE2_DOUT_ERR_SHIFT)) {
+		dev_err(qce->dev, "DOUT_ERR bit set - output error\n");
 		return -EIO;
 	}
 
+	/* Step 10: Read result from AUTH_IV registers */
+	u32 h0 = readl_relaxed(qce->base + CE2_REG_AUTH_IV0);
+	u32 h1 = readl_relaxed(qce->base + CE2_REG_AUTH_IV1);
+	dev_info(qce->dev, "Result H0=0x%08x H1=0x%08x (expected H0=0xa94a8fe5...)\n", h0, h1);
+
+	/* Success if we got here without errors */
 	dev_info(qce->dev, "*** PIO MODE WORKS: QCE hardware is functional! ***\n");
 	dev_info(qce->dev, "Problem is isolated to ADM DMA path, not QCE itself.\n");
 
