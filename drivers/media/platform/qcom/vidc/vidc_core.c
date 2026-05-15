@@ -232,11 +232,16 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	printk(KERN_EMERG "VIDC: hw_reset: AXI halt ack received\n");
 
 	/* Reset AXI */
+	printk(KERN_EMERG "VIDC: hw_reset: about to reset AXI\n");
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_RESET);
+	printk(KERN_EMERG "VIDC: hw_reset: AXI reset bit set\n");
 	vidc_write(core, VIDC_REG_AXI_CTRL, 0);
+	printk(KERN_EMERG "VIDC: hw_reset: AXI reset cleared\n");
 
 	/* Configure burst sizes */
+	printk(KERN_EMERG "VIDC: hw_reset: about to configure burst sizes\n");
 	vidc_write(core, VIDC_REG_BURST_CONFIG, (8 << 8) | 8);
+	printk(KERN_EMERG "VIDC: hw_reset: burst config done\n");
 
 	/* Initialize channel instance IDs */
 	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
