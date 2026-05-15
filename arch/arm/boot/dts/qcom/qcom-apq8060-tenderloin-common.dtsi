@@ -199,10 +199,9 @@
 		/*
 		 * AR6003 needs time after reset deassert to enter BMI
 		 * (Boot Mode Interface) for firmware download.
-		 * WebOS uses 250ms delay + 5ms reset pulse = ~260ms total.
-		 * Increase to 300ms to ensure regulators are stable.
+		 * Legacy kernel uses 5ms, but 200ms provides margin.
 		 */
-		post-power-on-delay-ms = <300>;
+		post-power-on-delay-ms = <200>;
 	};
 
 	soc {
@@ -464,12 +463,6 @@
 					regulator-max-microvolt = <3300000>;
 					bias-pull-down;
 					regulator-always-on;
-					/*
-					 * Force HPM/PWM mode for WiFi stability.
-					 * WebOS runs this in opmode=fast.
-					 */
-					regulator-allow-set-load;
-					regulator-system-load = <100000>;
 				};
 				pm8901_l2: l2 {
 					regulator-min-microvolt = <2850000>;
@@ -482,12 +475,6 @@
 					regulator-max-microvolt = <3300000>;
 					bias-pull-down;
 					regulator-always-on;
-					/*
-					 * WiFi PA - TX bursts pull 500-800mA.
-					 * Set HPM floor at 200mA for PA bias.
-					 */
-					regulator-allow-set-load;
-					regulator-system-load = <200000>;
 				};
 				/*
 				 * L4 (2.6V), L5 (2.85V), L6 (2.2V).
@@ -654,12 +641,6 @@
 					regulator-max-microvolt = <3050000>;
 					bias-pull-down;
 					regulator-always-on;
-					/*
-					 * WiFi 3.05V - WebOS runs in opmode=fast.
-					 * Force HPM to avoid ripple on WiFi rail.
-					 */
-					regulator-allow-set-load;
-					regulator-system-load = <100000>;
 				};
 				pm8058_l11: l11 {
 					regulator-min-microvolt = <2850000>;
@@ -737,12 +718,6 @@
 					regulator-max-microvolt = <1800000>;
 					bias-pull-down;
 					regulator-always-on;
-					/*
-					 * WiFi I/O 1.8V - WebOS opmode=fast.
-					 * HPM avoids ripple coupling to RF.
-					 */
-					regulator-allow-set-load;
-					regulator-system-load = <50000>;
 				};
 				pm8058_l20: l20 {
 					regulator-min-microvolt = <1800000>;
@@ -819,15 +794,6 @@
 					qcom,switch-mode-frequency = <1600000>;
 					bias-pull-down;
 					regulator-allow-set-load;
-					/*
-					 * CRITICAL: 100mA system-load forces PM8058 SMPS3
-					 * into PWM (HPM) mode for clean 1.8V SDIO I/O voltage.
-					 * Without this, SMPS sits in pulse-skipping (LPM) at
-					 * low loads and ripple breaks AR6003 HS-mode SDIO
-					 * (CMD53 timeouts during WiFi BMI init). WebOS
-					 * explicitly forces opmode=fast on this rail.
-					 */
-					regulator-system-load = <100000>;
 					/* Core 1.8V rail for audio, WiFi, sensors - must be on early */
 					regulator-boot-on;
 					regulator-always-on;
