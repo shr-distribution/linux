@@ -1513,8 +1513,16 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 	if (status)
 		return status;
 
-	/* WAR to avoid SDIO CRC err */
-	if (ar->hw.flags & ATH6KL_HW_SDIO_CRC_ERROR_WAR) {
+	/*
+	 * WAR to avoid SDIO CRC err - DISABLED for HP TouchPad
+	 *
+	 * The legacy webOS staging ath6kl driver doesn't have this workaround
+	 * and WiFi works fine. The mainline driver's GPIO writes fail with
+	 * CMD53 timeout on Tenderloin's msm_sdcc-via-mmci setup.
+	 *
+	 * Since webOS works without this WAR, disable it for compatibility.
+	 */
+	if (0 && (ar->hw.flags & ATH6KL_HW_SDIO_CRC_ERROR_WAR)) {
 		ath6kl_err("temporary war to avoid sdio crc error\n");
 
 		param = 0x28;
