@@ -97,6 +97,42 @@ mpm: interrupt-controller@1049d8 {
 
 **Result:** Still hangs at "Zone ranges:" during early boot. The overlap with RPM memory causes conflict during DT resource parsing.
 
+### Attempt 3: Syscon Approach (FAILED)
+**Commits:** 87ab6e9eee4a, then disabled
+
+Implemented full syscon support:
+- Added "syscon" compatible to RPM node
+- Modified MPM driver to use regmap (syscon_regmap_lookup_by_phandle)
+- Removed `reg` property from MPM node
+- Added `qcom,rpm-syscon` and `qcom,mpm-offset` properties
+
+```dts
+rpm: rpm@104000 {
+    compatible = "qcom,rpm-msm8660", "syscon";
+    reg = <0x00104000 0x1000>;
+    ...
+};
+
+mpm: interrupt-controller {
+    compatible = "qcom,msm8660-mpm", "qcom,mpm";
+    qcom,rpm-syscon = <&rpm>;
+    qcom,mpm-offset = <0x9d8>;
+    ...
+};
+```
+
+**Result:** Boot progressed past "Zone ranges:" (avoiding previous hang!) but now hangs at reserved memory parsing for smem@40000000:
+```
+[    0.000000][    T0] Zone ranges:
+[    0.000000][    T0]   Normal   [mem 0x0000000040200000-0x000000007f5fffff]
+[    0.000000][    T0] Movable zone start for each node
+...
+[    0.000000][    T0] OF: reserved mem: 0x40000000..0x401fffff (2048 KiB) nomap non-reusable smem@40000000
+<HANG>
+```
+
+**Root cause:** The MPM driver uses `IRQCHIP_MATCH` which initializes during early irqchip init, before platform devices are ready. The `of_find_device_by_node()` call in `qcom_mpm_init()` fails or hangs because platform device infrastructure isn't fully initialized yet.
+
 ## Possible Solutions
 
 ### Option A: Remove reg Property, Use Syscon
@@ -196,15 +232,35 @@ static void msm_mpm_init(void) {
 
 No device tree node, no resource reservation - just a hardcoded address offset within RPM's already-mapped region.
 
-## Recommendation
+## Root Cause: IRQCHIP_MATCH Early Init Timing
 
-**Option A (syscon)** is the cleanest mainline-compatible approach:
-1. Add "syscon" compatible to RPM node
-2. Remove `reg` property from MPM node
-3. Add `qcom,rpm-syscon` and `qcom,mpm-offset` properties
-4. Modify MPM driver to use regmap instead of direct MMIO
+The fundamental issue is that MPM uses `IRQCHIP_MATCH` which initializes during `irqchip_init()`, very early in boot. At this point:
+- Platform device infrastructure is not ready
+- `of_find_device_by_node()` cannot create platform devices
+- Syscon/regmap infrastructure may not be fully initialized
 
-This avoids the resource conflict while maintaining proper abstraction.
+The MPM driver was designed for newer SoCs where vMPM lives in dedicated shared memory that doesn't overlap with other devices. MSM8660's architecture (vMPM inside RPM region) is incompatible with early irqchip init.
+
+## Recommendation: Option C - Platform Driver Conversion
+
+Convert MPM from early irqchip (IRQCHIP_MATCH) to regular platform driver:
+
+**Advantages:**
+- Probes after platform device infrastructure is ready
+- Can use syscon/regmap without timing issues  
+- Can properly handle -EPROBE_DEFER for RPM dependency
+
+**Disadvantages:**
+- Not available during early boot (but MSM8660 doesn't need that)
+- Requires refactoring driver from IRQCHIP_MATCH to platform_driver
+
+**Alternative: Option D - MSM8660-Specific Minimal Driver**
+
+Create `drivers/irqchip/irq-msm8660-wakeup.c` as a platform driver:
+- Minimal implementation, just enough for cpuidle SPC/PC
+- Direct register access (RPM driver can export base + offset)
+- No genpd, no hierarchical irqdomain complexity
+- MSM8660-specific, not trying to fit generic MPM model
 
 ## Next Steps
 
@@ -224,7 +280,18 @@ This avoids the resource conflict while maintaining proper abstraction.
 
 ## Commits
 
-- bfce295a7a15: ARM: dts: tenderloin: Test enabling MPM (FAILED - boot hang)
-- dcd05c5f0d78: Revert "ARM: dts: tenderloin: Test enabling MPM" (this revert)
+- bfce295a7a15: ARM: dts: tenderloin: Test enabling MPM (FAILED - boot hang at "Zone ranges:")
+- dcd05c5f0d78: Revert "ARM: dts: tenderloin: Test enabling MPM"
+- 7594ac5e722b: Comment out MPM node, document boot hang issue
+- 87ab6e9eee4a: irqchip/qcom-mpm: Add syscon support (PARTIAL - boot progressed but still hangs)
+- (uncommitted): Disable MPM again, syscon approach hangs at reserved memory parsing
 - 4c8f9ad4a200: Remove broken mpm_sram reserved-memory node
 - e1e634e559d7: Revert previous MPM re-enable attempt
+
+## Next Action Required
+
+Either:
+1. Convert irq-qcom-mpm.c from IRQCHIP_MATCH to platform_driver (complex, affects all SoCs)
+2. Create new drivers/irqchip/irq-msm8660-wakeup.c as platform driver (simpler, MSM8660-specific)
+
+Option 2 is recommended for faster progress on PM-2 (cpuidle deep sleep).

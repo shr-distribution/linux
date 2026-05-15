@@ -3737,13 +3737,12 @@
 	vdd-dig-supply = <&pm8058_s1>;
 };
 
-/* MPM: Using syscon approach to access vMPM registers via RPM.
- * This avoids the resource conflict that caused boot hang with
- * direct reg property (MPM registers are inside RPM memory region).
+/* MPM disabled - syscon approach still causes boot hang during
+ * early irqchip init at reserved memory parsing. The IRQCHIP_MATCH
+ * framework initializes too early, before platform devices are ready.
+ *
+ * &mpm { status = "okay"; };
  */
-&mpm {
-	status = "okay";
-};
 
 &gemini {
 	status = "okay";
