@@ -199,8 +199,17 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	 * open commands.
 	 */
 
+	/*
+	 * WebOS kernel has significant delay between DRAM_BASE write and
+	 * AXI halt - it sets up 24 function pointers first. Add a small
+	 * delay here to let hardware settle after DRAM_BASE programming.
+	 */
+	msleep(10);
+
 	/* Halt AXI */
+	printk(KERN_EMERG "VIDC: hw_reset: about to halt AXI\n");
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_HALT_REQ);
+	printk(KERN_EMERG "VIDC: hw_reset: AXI halt request sent\n");
 
 	/* Wait for AXI halt acknowledgment */
 	do {
