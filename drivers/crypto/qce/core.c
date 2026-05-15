@@ -382,14 +382,23 @@ static int qce_test_pio_mode(struct qce_device *qce)
 
 	dev_info(qce->dev, "=== CE2 Diagnostic: PIO Mode Test (SHA1) ===\n");
 
-	/* Step 1: Configure SHA1 operation */
+	/* Step 1: Unlock the crypto engine if locked */
+	status = readl_relaxed(qce->base + CE2_REG_STATUS);
+	if ((status >> CE2_CRYPTO_STATE_SHIFT) & 0x7) {
+		dev_info(qce->dev, "Engine in state %d, writing REGISTER_LOCK\n",
+			 (status >> CE2_CRYPTO_STATE_SHIFT) & 0x7);
+		writel_relaxed(0, qce->base + CE2_REG_REGISTER_LOCK);
+	}
+
+	/* Step 2: Configure SHA1 operation */
 	seg_cfg = 0;
 	seg_cfg |= (CE2_AUTH_ALG_SHA << CE2_AUTH_ALG_SHIFT);      /* SHA algorithm */
 	seg_cfg |= (CE2_AUTH_SIZE_SHA1 << CE2_AUTH_SIZE_SHIFT);   /* SHA1 (160-bit) */
 	seg_cfg |= (CE2_AUTH_POS_BEFORE << CE2_AUTH_POS_SHIFT);   /* Auth before encrypt */
 	seg_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT);    /* Single-shot */
+	seg_cfg |= BIT(CE2_CLR_CNTXT_SHIFT);                       /* Clear context */
 	writel_relaxed(seg_cfg, qce->base + CE2_REG_SEG_CFG);
-	dev_info(qce->dev, "Configured SEG_CFG: 0x%08x (SHA1, FIRST|LAST)\n", seg_cfg);
+	dev_info(qce->dev, "Configured SEG_CFG: 0x%08x (SHA1, FIRST|LAST|CLR_CNTXT)\n", seg_cfg);
 
 	/* Step 2: Set segment size (4 bytes) */
 	writel_relaxed(4, qce->base + CE2_REG_SEG_SIZE);
