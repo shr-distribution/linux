@@ -546,12 +546,19 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct vidc_core *core = inst->core;
 	int ret;
 
+	printk(KERN_EMERG "VIDC: start_streaming called, type=%d count=%d\n", q->type, count);
+
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
+		printk(KERN_EMERG "VIDC: OUTPUT queue streaming, streamon_out=%d\n", inst->streamon_out);
 		/* Start encode session */
 		if (!inst->streamon_out) {
+			printk(KERN_EMERG "VIDC: First OUTPUT stream, calling pm_runtime_resume_and_get\n");
 			ret = pm_runtime_resume_and_get(core->dev);
-			if (ret < 0)
+			if (ret < 0) {
+				printk(KERN_EMERG "VIDC: pm_runtime_resume_and_get failed: %d\n", ret);
 				return ret;
+			}
+			printk(KERN_EMERG "VIDC: pm_runtime resumed successfully\n");
 
 			/*
 			 * Open the firmware channel for this encoder instance.
@@ -566,11 +573,14 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			 * vidc_enc_submit_frame() target a channel the firmware
 			 * doesn't recognise and ENC_COMPLETE never arrives.
 			 */
+			printk(KERN_EMERG "VIDC: Calling vidc_open_channel...\n");
 			ret = vidc_open_channel(inst);
 			if (ret) {
+				printk(KERN_EMERG "VIDC: vidc_open_channel failed: %d\n", ret);
 				pm_runtime_put(core->dev);
 				return ret;
 			}
+			printk(KERN_EMERG "VIDC: vidc_open_channel succeeded\n");
 
 			/*
 			 * Apply codec-specific session-stable config (profile/
@@ -579,12 +589,15 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			 * framerate, width/height) are programmed in
 			 * vidc_enc_submit_frame on every QBUF.
 			 */
+			printk(KERN_EMERG "VIDC: Applying codec config...\n");
 			ret = vidc_apply_enc_codec_config(inst);
 			if (ret) {
+				printk(KERN_EMERG "VIDC: codec config failed: %d\n", ret);
 				vidc_close_channel(inst);
 				pm_runtime_put(core->dev);
 				return ret;
 			}
+			printk(KERN_EMERG "VIDC: Codec config applied successfully\n");
 
 			/*
 			 * Allocate recon (reference) frame buffers and issue
@@ -595,23 +608,30 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			 * slots and program the RECON_LUMA / RECON_CHROMA register
 			 * arrays.
 			 */
+			printk(KERN_EMERG "VIDC: Initializing encoder buffers...\n");
 			ret = vidc_init_enc_buffers(inst);
 			if (ret) {
+				printk(KERN_EMERG "VIDC: init_enc_buffers failed: %d\n", ret);
 				vidc_close_channel(inst);
 				pm_runtime_put(core->dev);
 				return ret;
 			}
+			printk(KERN_EMERG "VIDC: Encoder buffers initialized successfully\n");
 
 			inst->streamon_out = true;
 			inst->sequence_out = 0;
+			printk(KERN_EMERG "VIDC: OUTPUT streaming fully initialized\n");
 		}
 	} else {
+		printk(KERN_EMERG "VIDC: CAPTURE queue streaming\n");
 		if (!inst->streamon_cap) {
 			inst->streamon_cap = true;
 			inst->sequence_cap = 0;
+			printk(KERN_EMERG "VIDC: CAPTURE streaming initialized\n");
 		}
 	}
 
+	printk(KERN_EMERG "VIDC: start_streaming returning success\n");
 	return 0;
 }
 

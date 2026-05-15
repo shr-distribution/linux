@@ -877,12 +877,27 @@ static int spm_dev_probe(struct platform_device *pdev)
 		if (drv->reg_data->no_seq_ram) {
 			u32 slp_clk_en;
 			u32 cpu_idx = 0;
-			int ret;
+			struct device_node *cpu_node;
+			int cpu;
 
-			/* Get CPU index for per-CPU differences */
-			ret = of_property_read_u32(pdev->dev.of_node, "reg", &cpu_idx);
-			if (ret < 0)
-				cpu_idx = 0;  /* Fallback if DT doesn't have reg property */
+			/*
+			 * Find which CPU node references this SAW via qcom,saw phandle.
+			 * CPU nodes have reg=<0> or reg=<1> which is the actual CPU index.
+			 */
+			for_each_possible_cpu(cpu) {
+				cpu_node = of_cpu_device_node_get(cpu);
+				if (cpu_node) {
+					struct device_node *saw_node;
+					saw_node = of_parse_phandle(cpu_node, "qcom,saw", 0);
+					of_node_put(cpu_node);
+					if (saw_node == pdev->dev.of_node) {
+						of_node_put(saw_node);
+						cpu_idx = cpu;
+						break;
+					}
+					of_node_put(saw_node);
+				}
+			}
 
 			/*
 			 * CPU0 uses SLP_CLK_EN=0x01, CPU1 uses 0x13 (enables
