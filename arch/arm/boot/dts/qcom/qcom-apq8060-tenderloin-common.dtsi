@@ -3737,13 +3737,13 @@
 	vdd-dig-supply = <&pm8058_s1>;
 };
 
-/* MPM: Test enabling with direct reg approach (no reserved-memory).
- * The mpm node now uses direct reg property which avoids the
- * reserved-memory boot hang. Testing if probe succeeds.
+/* MPM disabled — boot hangs in reserved-memory parsing.
+ * The mpm_sram node uses an MMIO address (RPM register space) which
+ * the reserved-memory framework cannot handle (DRAM only).
+ * Need to use a different DT approach (direct reg or syscon).
+ *
+ * &mpm { status = "okay"; };
  */
-&mpm {
-	status = "okay";
-};
 
 &gemini {
 	status = "okay";
