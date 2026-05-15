@@ -492,68 +492,74 @@ static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	/*
 	 * On first boot, run scss_release_secondary to take the CPU out of
 	 * reset and start it at the cold boot address (msm8660_secondary_startup).
-	 * On subsequent online attempts after hotplug, the CPU is just sleeping
-	 * in WFI and will wake from the IPI below.
+	 * The CPU will poll pen_release in headsmp.S until we write its ID.
 	 */
 	if (!per_cpu(cold_boot_done, cpu)) {
 		ret = scss_release_secondary(cpu);
 		if (ret)
 			return ret;
 		per_cpu(cold_boot_done, cpu) = true;
-	}
 
-	/*
-	 * Release CPU%u from the holding pen via pen_release + sev.
-	 * Cache is off on CPU1 at this point so we must flush our
-	 * write all the way to DRAM before signalling.
-	 */
-	pen_release = cpu;
-	__cpuc_flush_dcache_area((void *)&pen_release, sizeof(pen_release));
-	outer_clean_range(__pa(&pen_release),
-			  __pa(&pen_release) + sizeof(pen_release));
-	dsb(ishst);
-	sev();
-
-	/* Backup: also poke via IPI in case sev didn't take. */
-	arch_send_wakeup_ipi_mask(cpumask_of(cpu));
-
-	start_jiffies = jiffies;
-
-	/*
-	 * Wait for CPU%u to acknowledge by writing pen_release back to
-	 * -1 (mvn r7,#0; str r7,[r6] in headsmp.S). We have to
-	 * invalidate our cache line each iteration because CPU1's ack
-	 * is a memory write with cache off, so it won't appear in our
-	 * cached view automatically.
-	 */
-	while (pen_release != -1) {
+		/*
+		 * Release CPU%u from the holding pen via pen_release + sev.
+		 * Cache is off on CPU1 at this point so we must flush our
+		 * write all the way to DRAM before signalling.
+		 */
+		pen_release = cpu;
 		__cpuc_flush_dcache_area((void *)&pen_release, sizeof(pen_release));
-		outer_inv_range(__pa(&pen_release),
-				__pa(&pen_release) + sizeof(pen_release));
-		if (cnt++ >= SECONDARY_CPU_WAIT_MS)
-			break;
-		usleep_range(1000, 1500);
-	}
+		outer_clean_range(__pa(&pen_release),
+				  __pa(&pen_release) + sizeof(pen_release));
+		dsb(ishst);
+		sev();
 
-	if (pen_release != -1) {
-		atomic_inc(&pen_release_timeouts);
-		pen_release_last_seen_on_timeout = pen_release;
-		pr_warn("CPU%u: pen_release ack timed out (pen=%d, %ums)\n",
-			cpu, pen_release,
-			jiffies_to_msecs(jiffies - start_jiffies));
-		return -ETIMEDOUT;
-	}
+		/* Backup: also poke via IPI in case sev didn't take. */
+		arch_send_wakeup_ipi_mask(cpumask_of(cpu));
 
-	/*
-	 * Diagnostics: record latency in ms and print once on first
-	 * success so dmesg has positive confirmation the mechanism works.
-	 * Subsequent successes update the counter silently — read via
-	 * pr_info-on-demand or future debugfs.
-	 */
-	pen_release_last_ack_ms = jiffies_to_msecs(jiffies - start_jiffies);
-	if (atomic_inc_return(&pen_release_successes) == 1)
-		pr_info("Scorpion-MP pen_release path active: CPU%u released and ack'd in %ums\n",
-			cpu, pen_release_last_ack_ms);
+		start_jiffies = jiffies;
+
+		/*
+		 * Wait for CPU%u to acknowledge by writing pen_release back to
+		 * -1 (mvn r7,#0; str r7,[r6] in headsmp.S). We have to
+		 * invalidate our cache line each iteration because CPU1's ack
+		 * is a memory write with cache off, so it won't appear in our
+		 * cached view automatically.
+		 */
+		while (pen_release != -1) {
+			__cpuc_flush_dcache_area((void *)&pen_release, sizeof(pen_release));
+			outer_inv_range(__pa(&pen_release),
+					__pa(&pen_release) + sizeof(pen_release));
+			if (cnt++ >= SECONDARY_CPU_WAIT_MS)
+				break;
+			usleep_range(1000, 1500);
+		}
+
+		if (pen_release != -1) {
+			atomic_inc(&pen_release_timeouts);
+			pen_release_last_seen_on_timeout = pen_release;
+			pr_warn("CPU%u: pen_release ack timed out (pen=%d, %ums)\n",
+				cpu, pen_release,
+				jiffies_to_msecs(jiffies - start_jiffies));
+			return -ETIMEDOUT;
+		}
+
+		/*
+		 * Diagnostics: record latency in ms and print once on first
+		 * success so dmesg has positive confirmation the mechanism works.
+		 * Subsequent successes update the counter silently — read via
+		 * pr_info-on-demand or future debugfs.
+		 */
+		pen_release_last_ack_ms = jiffies_to_msecs(jiffies - start_jiffies);
+		if (atomic_inc_return(&pen_release_successes) == 1)
+			pr_info("Scorpion-MP pen_release path active: CPU%u released and ack'd in %ums\n",
+				cpu, pen_release_last_ack_ms);
+	} else {
+		/*
+		 * Warm boot after hotplug: CPU is sleeping in WFI in cpu_die.
+		 * Just send an IPI to wake it up. No pen_release needed since
+		 * the CPU isn't in headsmp.S - it's in the kernel's WFI loop.
+		 */
+		arch_send_wakeup_ipi_mask(cpumask_of(cpu));
+	}
 
 	return 0;
 }

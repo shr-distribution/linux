@@ -382,13 +382,9 @@ static int qce_test_pio_mode(struct qce_device *qce)
 
 	dev_info(qce->dev, "=== CE2 Diagnostic: PIO Mode Test (SHA1) ===\n");
 
-	/* Step 1: Unlock the crypto engine if locked */
-	status = readl_relaxed(qce->base + CE2_REG_STATUS);
-	if ((status >> CE2_CRYPTO_STATE_SHIFT) & 0x7) {
-		dev_info(qce->dev, "Engine in state %d, writing REGISTER_LOCK\n",
-			 (status >> CE2_CRYPTO_STATE_SHIFT) & 0x7);
-		writel_relaxed(0, qce->base + CE2_REG_REGISTER_LOCK);
-	}
+	/* Step 1: Unlock the crypto engine (always do this first) */
+	writel_relaxed(0, qce->base + CE2_REG_REGISTER_LOCK);
+	dev_info(qce->dev, "Wrote REGISTER_LOCK=0 to unlock engine\n");
 
 	/* Step 2: Configure SHA1 operation */
 	seg_cfg = 0;
