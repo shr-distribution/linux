@@ -110,32 +110,40 @@ static void qcom_cpu_die(unsigned int cpu)
 		spm_set_low_power_mode(drv, PM_SLEEP_MODE_SPC);
 
 		/*
-		 * Enter power collapse via cpu_suspend(). This:
+		 * Loop until power collapse succeeds. cpu_suspend() can return
+		 * if there are pending IRQs when SCM tries to power down.
+		 * Keep retrying until we actually power off.
+		 *
+		 * cpu_suspend():
 		 * 1. Saves CPU context (registers, VFP state)
 		 * 2. Flushes caches
 		 * 3. Calls qcom_pm_collapse_standalone (SCM + WFI)
 		 * 4. SPM hardware manages power down when WFI executes
 		 *
-		 * On wake (pen_release write from boot CPU):
-		 * - SPM brings CPU back up
-		 * - cpu_suspend returns here
-		 * - We restore SPM to standby mode
+		 * This function never returns under normal hotplug. If it does
+		 * return, it means we were woken up (pen_release written) for
+		 * online, and SPM needs to be restored to standby.
 		 */
-		cpu_suspend(0, qcom_pm_collapse_standalone);
-
-		/*
-		 * Restore SPM to standby mode (clock gating). Without this,
-		 * the next WFI would trigger power collapse again, which is
-		 * not what we want for regular idle.
-		 */
-		spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
+		while (1) {
+			int ret = cpu_suspend(0, qcom_pm_collapse_standalone);
+			if (ret == 0) {
+				/*
+				 * Successfully woke from power collapse.
+				 * Restore SPM to standby mode (clock gating).
+				 */
+				spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
+				break;
+			}
+			/* Pending IRQ prevented collapse, retry */
+		}
 	} else {
 		/*
 		 * Fallback if SPM driver not available (shouldn't happen
 		 * on MSM8660 with proper DT, but safe to have).
 		 */
 		pr_warn("CPU%u: SPM not found, using plain WFI\n", cpu);
-		wfi();
+		while (1)
+			wfi();
 	}
 }
 
