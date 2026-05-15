@@ -315,8 +315,8 @@
 			compatible = "qcom,msm8660-qce";
 			reg = <0x18500000 0x10000>;
 			interrupts = <GIC_SPI 195 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&gcc CE2_H_CLK>;
-			clock-names = "iface";
+			clocks = <&gcc CE2_P_CLK>, <&gcc CE2_H_CLK>;
+			clock-names = "core", "iface";
 			dmas = <&adm_dma0 2>, <&adm_dma0 3>;
 			dma-names = "rx", "tx";
 			qcom,rx-crci = <4>;

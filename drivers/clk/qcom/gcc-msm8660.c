@@ -1558,6 +1558,24 @@ static struct clk_branch ce2_h_clk = {
 	},
 };
 
+/*
+ * CE2 core/peripheral clock. On MSM8660, the core functional clock and
+ * AHB interface clock share the same hardware control register and bit.
+ * Vendor kernels map both "core_clk" and "iface_clk" to this same clock.
+ */
+static struct clk_branch ce2_p_clk = {
+	.halt_reg = 0x2fd4,
+	.halt_bit = 0,
+	.clkr = {
+		.enable_reg = 0x2740,
+		.enable_mask = BIT(4),
+		.hw.init = &(struct clk_init_data){
+			.name = "ce2_p_clk",
+			.ops = &clk_branch_ops,
+		},
+	},
+};
+
 static struct clk_rcg prng_src = {
 	.ns_reg = 0x2e80,
 	.p = {
@@ -2609,6 +2627,7 @@ static struct clk_regmap *gcc_msm8660_clks[] = {
 	[PMEM_CLK] = &pmem_clk.clkr,
 	[PPSS_H_CLK] = &ppss_h_clk.clkr,
 	[CE2_H_CLK] = &ce2_h_clk.clkr,
+	[CE2_P_CLK] = &ce2_p_clk.clkr,
 	[PRNG_SRC] = &prng_src.clkr,
 	[PRNG_CLK] = &prng_clk.clkr,
 	[SDC1_SRC] = &sdc1_src.clkr,
