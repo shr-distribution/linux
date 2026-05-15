@@ -601,6 +601,9 @@ int vidc_load_firmware(struct vidc_core *core)
 
 	memcpy(core->fw_vaddr, core->fw->data, core->fw->size);
 
+	/* Ensure firmware is visible to VIDC before DRAM_BASE write */
+	wmb();
+
 	/*
 	 * Carve out per-channel scratch regions inside the firmware
 	 * allocation. Each gets a fixed fw-relative offset across
