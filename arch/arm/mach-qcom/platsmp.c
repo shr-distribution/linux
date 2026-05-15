@@ -107,60 +107,22 @@ static void qcom_cpu_die(unsigned int cpu)
 {
 	struct spm_driver_data *drv;
 
-	drv = spm_get_drv_by_cpu(cpu);
-	if (drv) {
-		/*
-		 * Set SPM to standalone power collapse mode (SPC).
-		 * This programs SPM_CTL with rpm_bypass=1 (standalone, don't
-		 * notify RPM) and mode=0x02 (power collapse with reset).
-		 */
-		spm_set_low_power_mode(drv, PM_SLEEP_MODE_SPC);
-
-		/*
-		 * Clear cold_boot_done for this CPU. After power collapse with
-		 * reset, the CPU is fully powered down and needs the complete
-		 * hardware initialization sequence (scss_release_secondary) on
-		 * next boot, not just the pen_release wake path.
-		 */
-		per_cpu(cold_boot_done, cpu) = false;
-
-		/*
-		 * Loop until power collapse succeeds. cpu_suspend() can return
-		 * if there are pending IRQs when SCM tries to power down.
-		 * Keep retrying until we actually power off.
-		 *
-		 * cpu_suspend():
-		 * 1. Saves CPU context (registers, VFP state)
-		 * 2. Flushes caches
-		 * 3. Calls qcom_pm_collapse_standalone (SCM + WFI)
-		 * 4. SPM hardware manages power down when WFI executes
-		 *
-		 * This function never returns under normal hotplug. If it does
-		 * return, it means we were woken up (pen_release written) for
-		 * online, and SPM needs to be restored to standby.
-		 */
-		while (1) {
-			int ret = cpu_suspend(0, qcom_pm_collapse_standalone);
-			if (ret == 0) {
-				/*
-				 * Successfully woke from power collapse.
-				 * Restore SPM to standby mode (clock gating).
-				 */
-				spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
-				break;
-			}
-			/* Pending IRQ prevented collapse, retry */
-		}
-	} else {
-		/*
-		 * Fallback if SPM driver not available (shouldn't happen
-		 * on MSM8660 with proper DT, but safe to have).
-		 */
-		pr_warn("CPU%u: SPM not found, using plain WFI\n", cpu);
-		per_cpu(cold_boot_done, cpu) = false;
-		while (1)
-			wfi();
-	}
+	/*
+	 * On MSM8660 Scorpion, use simple WFI for hotplug rather than full
+	 * power collapse. The hardware doesn't support automatic power-up
+	 * after SPC mode - there's no ACC (like Krait platforms have) to
+	 * control power rails, and the SPM only manages power-down sequences.
+	 *
+	 * When the boot CPU wants to bring this CPU back online, it will:
+	 * 1. Write to pen_release
+	 * 2. Send SEV (to wake from WFE in headsmp.S on cold boot)
+	 * 3. Send IPI (to wake from WFI here on warm boot)
+	 *
+	 * Since we're not power collapsing, cold_boot_done stays true and
+	 * scss_release_secondary won't be called on subsequent online attempts.
+	 */
+	while (1)
+		wfi();
 }
 
 /*
@@ -527,32 +489,17 @@ static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	 * SPM is still programmed for power-down mode. We must restore it
 	 * to standby so the CPU can actually run when we release it from reset.
 	 */
-	drv = spm_get_drv_by_cpu(cpu);
-	if (drv) {
-		pr_info("CPU%u: restoring SPM to standby mode\n", cpu);
-		spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
-		/*
-		 * Give SPM hardware time to transition from power collapse
-		 * back to standby. The SPM state machine may need to power
-		 * up the CPU before we can successfully release it from reset.
-		 */
-		udelay(100);
-		pr_info("CPU%u: SPM standby restore complete\n", cpu);
-	} else {
-		pr_warn("CPU%u: SPM driver not found!\n", cpu);
-	}
-
+	/*
+	 * On first boot, run scss_release_secondary to take the CPU out of
+	 * reset and start it at the cold boot address (msm8660_secondary_startup).
+	 * On subsequent online attempts after hotplug, the CPU is just sleeping
+	 * in WFI and will wake from the IPI below.
+	 */
 	if (!per_cpu(cold_boot_done, cpu)) {
-		pr_info("CPU%u: calling scss_release_secondary\n", cpu);
 		ret = scss_release_secondary(cpu);
-		if (ret) {
-			pr_err("CPU%u: scss_release_secondary failed: %d\n", cpu, ret);
+		if (ret)
 			return ret;
-		}
 		per_cpu(cold_boot_done, cpu) = true;
-		pr_info("CPU%u: scss_release_secondary done, cold_boot_done=true\n", cpu);
-	} else {
-		pr_info("CPU%u: cold_boot_done already true, skipping scss_release_secondary\n", cpu);
 	}
 
 	/*
