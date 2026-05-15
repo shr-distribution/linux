@@ -472,6 +472,40 @@ static void spm_set_low_power_mode_8660(struct spm_driver_data *drv,
 	spm_register_write_sync(drv, SPM_REG_SPM_CTL, ctl_val);
 }
 
+/**
+ * spm_get_drv_by_cpu - Get SPM driver data for a CPU
+ * @cpu: CPU number
+ *
+ * Returns SPM driver data for the specified CPU, or NULL if not found.
+ * Used by CPU hotplug path to access SPM for power collapse.
+ */
+struct spm_driver_data *spm_get_drv_by_cpu(unsigned int cpu)
+{
+	struct device_node *cpu_node, *saw_node;
+	struct platform_device *pdev;
+	struct spm_driver_data *drv = NULL;
+
+	cpu_node = of_cpu_device_node_get(cpu);
+	if (!cpu_node)
+		return NULL;
+
+	saw_node = of_parse_phandle(cpu_node, "qcom,saw", 0);
+	of_node_put(cpu_node);
+	if (!saw_node)
+		return NULL;
+
+	pdev = of_find_device_by_node(saw_node);
+	of_node_put(saw_node);
+	if (!pdev)
+		return NULL;
+
+	drv = dev_get_drvdata(&pdev->dev);
+	put_device(&pdev->dev);
+
+	return drv;
+}
+EXPORT_SYMBOL(spm_get_drv_by_cpu);
+
 void spm_set_low_power_mode(struct spm_driver_data *drv,
 			    enum pm_sleep_mode mode)
 {
@@ -493,6 +527,7 @@ void spm_set_low_power_mode(struct spm_driver_data *drv,
 	ctl_val |= SPM_CTL_EN;
 	spm_register_write_sync(drv, SPM_REG_SPM_CTL, ctl_val);
 }
+EXPORT_SYMBOL(spm_set_low_power_mode);
 
 static int spm_set_voltage_sel(struct regulator_dev *rdev, unsigned int selector)
 {

@@ -22,6 +22,9 @@
 #include <asm/cacheflush.h>
 #include <asm/outercache.h>
 #include <asm/smp_plat.h>
+#include <asm/suspend.h>
+
+#include <soc/qcom/spm.h>
 
 
 #define VDD_SC1_ARRAY_CLAMP_GFS_CTL	0x35a0
@@ -77,9 +80,63 @@ EXPORT_SYMBOL(pen_release);
 extern void msm8660_secondary_startup(void);
 
 #ifdef CONFIG_HOTPLUG_CPU
+/*
+ * CPU power collapse helper called from cpu_suspend().
+ * This runs with MMU off, enters SCM to request power down,
+ * then executes WFI. The SPM hardware state machine (already
+ * programmed to SPC mode) handles the actual power collapse.
+ */
+static int qcom_pm_collapse_standalone(unsigned long unused)
+{
+	qcom_scm_cpu_power_down(QCOM_SCM_CPU_PWR_DOWN_L2_ON);
+	/*
+	 * Returns here only if there was a pending interrupt and we did not
+	 * power down as a result.
+	 */
+	return -1;
+}
+
 static void qcom_cpu_die(unsigned int cpu)
 {
-	wfi();
+	struct spm_driver_data *drv;
+
+	drv = spm_get_drv_by_cpu(cpu);
+	if (drv) {
+		/*
+		 * Set SPM to standalone power collapse mode (SPC).
+		 * This programs SPM_CTL with rpm_bypass=1 (standalone, don't
+		 * notify RPM) and mode=0x02 (power collapse with reset).
+		 */
+		spm_set_low_power_mode(drv, PM_SLEEP_MODE_SPC);
+
+		/*
+		 * Enter power collapse via cpu_suspend(). This:
+		 * 1. Saves CPU context (registers, VFP state)
+		 * 2. Flushes caches
+		 * 3. Calls qcom_pm_collapse_standalone (SCM + WFI)
+		 * 4. SPM hardware manages power down when WFI executes
+		 *
+		 * On wake (pen_release write from boot CPU):
+		 * - SPM brings CPU back up
+		 * - cpu_suspend returns here
+		 * - We restore SPM to standby mode
+		 */
+		cpu_suspend(0, qcom_pm_collapse_standalone);
+
+		/*
+		 * Restore SPM to standby mode (clock gating). Without this,
+		 * the next WFI would trigger power collapse again, which is
+		 * not what we want for regular idle.
+		 */
+		spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
+	} else {
+		/*
+		 * Fallback if SPM driver not available (shouldn't happen
+		 * on MSM8660 with proper DT, but safe to have).
+		 */
+		pr_warn("CPU%u: SPM not found, using plain WFI\n", cpu);
+		wfi();
+	}
 }
 
 /*
