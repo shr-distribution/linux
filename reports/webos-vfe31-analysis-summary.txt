@@ -1,0 +1,134 @@
+==========================================
+  VFE31 WEBOS REGISTER ANALYSIS SUMMARY
+  Date: 2026-04-04
+==========================================
+
+WEBOS REGISTER DUMPS CAPTURED:
+1. Preview mode (camera app viewfinder)
+2. Video recording mode
+3. Picture capture mode (polling during shutter)
+
+==========================================
+  KEY DISCOVERY #1: CbCr Write Masters Disabled
+==========================================
+
+WebOS ONLY enables CbCr write masters during PICTURE CAPTURE:
+
+PREVIEW/VIDEO MODE:
+  WM0 (Y)    = 0x01 (ENABLED)
+  WM1 (CbCr) = 0x00 (DISABLED!)
+  WM4 (Y)    = 0x01 (ENABLED)
+  WM5 (CbCr) = 0x00 (DISABLED!)
+
+PICTURE CAPTURE MODE (caught via polling):
+  WM0 (Y)    = 0x01 (ENABLED)
+  WM1 (CbCr) = 0x01 (ENABLED!)
+  WM4 (Y)    = 0x01 (ENABLED)
+  WM5 (CbCr) = 0x01 (ENABLED!)
+
+IMPLICATION: WebOS only captures Y (luma) plane during preview/video,
+not CbCr (chroma). Color for preview is likely reconstructed from
+the raw UYVY input before DEMUX, or software-converted.
+
+==========================================
+  KEY DISCOVERY #2: XBAR_CFG1 Routing
+==========================================
+
+XBAR_CFG1 = 0x1A1B (both preview and video modes)
+
+Bit breakdown:
+  bits [3:0]  = 0xB = Y routing to WM0 + WM4
+  bits [7:4]  = 0x1 = CbCr routing to WM1 ONLY (not WM5!)
+  bits [15:8] = 0x1A = ISP path standard
+
+IMPORTANT: CbCr is routed to WM1 only, NOT to WM5!
+  - 0x1A1B: CbCr → WM1
+  - 0x1A9B: CbCr → WM1 + WM5 (dual mode)
+
+If Linux driver uses VIDEO line (WM4/WM5) but keeps XBAR at 0x1A1B,
+then WM5 receives NO CbCr data!
+
+==========================================
+  LINUX DRIVER ANALYSIS
+==========================================
+
+Current vfe31_enable() code:
+1. Sets output->wm_num = 2 for PIX mode (correct)
+2. For PIX line: uses WM0 (Y) + WM1 (CbCr)
+3. For VIDEO line: uses WM4 (Y) + WM5 (CbCr)
+4. Configures both WM addresses, sizes, enables
+5. Uses XBAR_CFG1 = 0x1A1B (module param default)
+
+POTENTIAL BUG: If using VIDEO line, CbCr doesn't reach WM5!
+
+The code DOES enable WM1 (line 1738 in camss-vfe-3-1.c):
+  writel_relaxed(BIT(0), vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm1));
+
+So WM1 SHOULD be enabled...
+
+==========================================
+  OTHER CONFIGURATION MATCHES
+==========================================
+
+These registers match webOS exactly:
+  - DEMUX_EVEN_CFG = 0xC9CA (correct byte order)
+  - DEMUX_ODD_CFG  = 0xC9CA
+  - DEMUX_CFG      = 0x03
+  - CORE_CFG       = 0x46 (UYVY pixel pattern)
+  - AXI_OUT_MODE   = 0x01 (PIX mode)
+  - BUS_CFG        = 0x02AAA771
+
+==========================================
+  POSSIBLE ROOT CAUSES FOR Y-LIKE CbCr DATA
+==========================================
+
+1. XBAR_CFG1 routing issue:
+   - If using VIDEO line, CbCr only goes to WM1, not WM5
+   - Need 0x1A9B for dual output
+
+2. WM1 not actually enabled:
+   - Enable might be cleared by later code
+   - Timing issue with enable sequence
+
+3. DEMUX not separating correctly:
+   - Even though registers match, hardware may behave differently
+   - Possible silicon bug or undocumented behavior
+
+4. Buffer addressing:
+   - CbCr offset calculation might be wrong
+   - WM1 might be writing to wrong memory location
+
+5. ISP path not configured:
+   - The 0x1A ISP path bits might need different configuration
+
+==========================================
+  RECOMMENDED TESTS
+==========================================
+
+1. Verify which video device/line is being used:
+   - Check if /dev/video0 uses PIX or VIDEO line
+   - If VIDEO line, change XBAR to 0x1A9B
+
+2. Test with PIX line explicitly:
+   - Make sure we're using WM0/WM1, not WM4/WM5
+
+3. Add register readback after enable:
+   - Verify WM1 WR_CFG is actually set to 0x01
+   - Verify XBAR_CFG1 hasn't changed
+
+4. Try different XBAR values:
+   echo 0x1A13 > /sys/module/qcom_camss/parameters/vfe31_xbar_cfg1
+   echo 0x1A1B > /sys/module/qcom_camss/parameters/vfe31_xbar_cfg1
+   echo 0x1A9B > /sys/module/qcom_camss/parameters/vfe31_xbar_cfg1
+
+5. Dump registers during Linux capture:
+   - Compare actual hardware state vs expected state
+
+==========================================
+  FILES CREATED
+==========================================
+
+reports/webos-preview-mode-dump.txt    - Full VFE31 preview dump
+reports/webos-video-mode-dump.txt      - Full VFE31 video recording dump
+reports/webos-capture-polling-analysis.txt - Picture capture transitions
+reports/webos-vfe31-analysis-summary.txt   - This summary

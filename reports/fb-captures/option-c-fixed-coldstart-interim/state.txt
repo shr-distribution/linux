@@ -1,0 +1,8 @@
+  1  8c976ad1  pre=suspended  post-sleep=suspended  delta_susp_ms=204
+  2  0aad1f0a  pre=suspended  post-sleep=suspended  delta_susp_ms=197
+  3  e07d266d  pre=suspended  post-sleep=suspended  delta_susp_ms=546
+  4  7d71564c  pre=suspended  post-sleep=suspended  delta_susp_ms=547
+  5  810f1aad  pre=suspended  post-sleep=suspended  delta_susp_ms=200
+  6  0e8c23bc  pre=suspended  post-sleep=suspended  delta_susp_ms=196
+  7  9d51c0f0  pre=suspended  post-sleep=suspended  delta_susp_ms=567
+  8  1e5c6f60  pre=suspended  post-sleep=suspended  delta_susp_ms=195

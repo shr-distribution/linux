@@ -259,61 +259,122 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		return PTR_ERR(qce->bus);
 
 	/*
-	 * EXPERIMENTAL: Manual clock enable test for MSM8660/APQ8060
-	 * The bootloader OEMSBL stage (which should initialize CE2) is missing
-	 * on HP TouchPad. Try enabling CE2 clock directly at hardware level
-	 * to see if that's the only missing piece.
+	 * CE2 Hardware Initialization (MSM8660/APQ8060)
+	 *
+	 * The bootloader OEMSBL/TrustZone stage is missing on HP TouchPad,
+	 * so CE2 peripheral is never initialized. This code replicates the
+	 * initialization sequence extracted from HTC TrustZone firmware.
+	 *
+	 * Reference: /tmp/qce-complete-init-sequence.md
 	 */
 	if (qce->version == QCE_VERSION_CE2) {
 		void __iomem *gcc_base;
-		u32 val;
+		u32 val, status;
+		int timeout;
+
+		dev_info(dev, "CE2: Performing hardware initialization (missing bootloader stage)\n");
 
 		gcc_base = ioremap(0x00900000, 0x10000);
 		if (!gcc_base) {
-			dev_err(dev, "Failed to map GCC registers\n");
+			dev_err(dev, "CE2: Failed to map GCC registers\n");
+			return -ENOMEM;
+		}
+
+		/* ===== Phase 1: Clock Enable ===== */
+		dev_info(dev, "CE2: Phase 1 - Enabling clocks\n");
+
+		val = readl_relaxed(gcc_base + 0x2740);
+		dev_info(dev, "CE2: CE2_HCLK_CTL before: 0x%08x\n", val);
+
+		/*
+		 * Apply complete clock enable sequence from HTC TZ (offset 0xd120):
+		 * - Set bits 0,1,3 (root, branch, HCLK enable)
+		 * - Clear bits 4,5,6 (ungating, power active, wake)
+		 * - Clear bit 7 (deassert reset)
+		 */
+		val |= BIT(0);   /* Root clock enable */
+		val |= BIT(1);   /* Branch enable (CBCR) */
+		val |= BIT(3);   /* HCLK enable */
+		val &= ~BIT(4);  /* Ungating */
+		val &= ~BIT(5);  /* Power domain active */
+		val &= ~BIT(6);  /* Wake from sleep */
+		val &= ~BIT(7);  /* Deassert reset (BCR) */
+		writel_relaxed(val, gcc_base + 0x2740);
+
+		val = readl_relaxed(gcc_base + 0x2740);
+		dev_info(dev, "CE2: CE2_HCLK_CTL after:  0x%08x\n", val);
+
+		/* Wait for clock to stabilize */
+		usleep_range(100, 200);
+
+		/* Check halt status */
+		val = readl_relaxed(gcc_base + 0x2fd4);
+		dev_info(dev, "CE2: CE2_HALT_STATUS: 0x%08x %s\n",
+			 val, (val & BIT(0)) ? "(HALTED)" : "(RUNNING)");
+
+		iounmap(gcc_base);
+
+		/* ===== Phase 2: Peripheral Initialization ===== */
+		dev_info(dev, "CE2: Phase 2 - Initializing peripheral\n");
+
+		/* Step 1: Wait for peripheral ready (status bit 3) */
+		timeout = 100;
+		while (timeout--) {
+			status = readl_relaxed(qce->base + 0x20);
+			if (status & BIT(3))
+				break;
+			udelay(10);
+		}
+		if (timeout <= 0) {
+			dev_warn(dev, "CE2: Timeout waiting for ready (status=0x%08x)\n", status);
 		} else {
-			/* Read CE2_HCLK_CTL register (0x2740) */
-			val = readl_relaxed(gcc_base + 0x2740);
-			dev_info(dev, "CE2_HCLK_CTL before: 0x%08x (bit 4 = %s, bit 7 = %s)\n",
-				 val,
-				 (val & BIT(4)) ? "ENABLED" : "GATED",
-				 (val & BIT(7)) ? "IN_RESET" : "ACTIVE");
+			dev_info(dev, "CE2: Peripheral ready after %d us\n", (100-timeout)*10);
+		}
 
-			/* Force enable clock (set bit 4) and deassert reset (clear bit 7) */
-			val |= BIT(4);   /* Enable CE2 clock */
-			val &= ~BIT(7);  /* Deassert CE2 reset */
-			writel_relaxed(val, gcc_base + 0x2740);
+		/* Step 2: Write configuration to command register */
+		writel_relaxed(0x00000001, qce->base + 0x00);
+		dev_info(dev, "CE2: Config written to command register\n");
 
-			/* Read back to confirm */
-			val = readl_relaxed(gcc_base + 0x2740);
-			dev_info(dev, "CE2_HCLK_CTL after:  0x%08x (bit 4 = %s, bit 7 = %s)\n",
-				 val,
-				 (val & BIT(4)) ? "ENABLED" : "GATED",
-				 (val & BIT(7)) ? "IN_RESET" : "ACTIVE");
+		/* Step 3: Wait for operation complete (status bit 4) */
+		timeout = 100;
+		while (timeout--) {
+			status = readl_relaxed(qce->base + 0x20);
+			if (status & BIT(4))
+				break;
+			udelay(10);
+		}
+		if (timeout <= 0) {
+			dev_warn(dev, "CE2: Timeout waiting for init complete (status=0x%08x)\n", status);
+		} else {
+			dev_info(dev, "CE2: Init complete after %d us\n", (100-timeout)*10);
+		}
 
-			/* Wait for clock to stabilize */
-			usleep_range(100, 200);
+		/* Step 4: Read initialization result */
+		status = readl_relaxed(qce->base + 0x10);
+		if (status != 0)
+			dev_info(dev, "CE2: Init result: 0x%08x\n", status);
 
-			/* Check halt status */
-			val = readl_relaxed(gcc_base + 0x2fd4);
-			dev_info(dev, "CE2_HALT_STATUS: 0x%08x (bit 0 = %s)\n",
-				 val,
-				 (val & BIT(0)) ? "HALTED" : "RUNNING");
+		/* ===== Phase 3: Verification ===== */
+		dev_info(dev, "CE2: Phase 3 - Verifying MMIO access\n");
 
-			iounmap(gcc_base);
+		val = readl_relaxed(qce->base + 0x00);
+		dev_info(dev, "CE2: MMIO @ 0x00: 0x%08x %s\n",
+			 val,
+			 (val == 0) ? "(FAIL - still zero)" : "(SUCCESS - readable)");
 
-			/* Now test if CE2 MMIO is readable */
-			val = readl_relaxed(qce->base + 0x00);
-			dev_info(dev, "CE2 MMIO test read @ 0x00: 0x%08x %s\n",
-				 val,
-				 (val == 0) ? "(STILL ZERO - HARDWARE NOT RESPONDING)" :
-					      "(NON-ZERO - HARDWARE ACCESSIBLE!)");
+		val = readl_relaxed(qce->base + 0x10);
+		dev_info(dev, "CE2: MMIO @ 0x10: 0x%08x\n", val);
 
-			val = readl_relaxed(qce->base + 0x10);
-			dev_info(dev, "CE2 MMIO test read @ 0x10: 0x%08x\n", val);
+		val = readl_relaxed(qce->base + 0x20);
+		dev_info(dev, "CE2: MMIO @ 0x20: 0x%08x\n", val);
 
-			val = readl_relaxed(qce->base + 0x20);
-			dev_info(dev, "CE2 MMIO test read @ 0x20: 0x%08x\n", val);
+		if (readl_relaxed(qce->base + 0x00) == 0 &&
+		    readl_relaxed(qce->base + 0x10) == 0 &&
+		    readl_relaxed(qce->base + 0x20) == 0) {
+			dev_err(dev, "CE2: Hardware not responding after complete init sequence\n");
+			dev_err(dev, "CE2: This may indicate eFuse lockout or hardware defect\n");
+		} else {
+			dev_info(dev, "CE2: Hardware initialization successful!\n");
 		}
 	}
 

@@ -1,0 +1,30 @@
+# A2XX MMIO register dump via /sys/kernel/debug/dri/0/* (mainline DRM)
+# captured immediately after rendering the gl-capture test triangle
+# format: offset  name  = value
+0x01c0  CP_RB_BASE              = 0x01001000
+0x01c1  CP_RB_CNTL              = 0x0800020c
+0x01c5  CP_RB_RPTR              = 0x00000023
+0x01c6  CP_RB_WPTR              = 0x00000023
+0x017e  CP_INT_CNTL             = 0xcf800000
+0x01f4  CP_INT_STATUS           = 0x00000000
+0x0578  SCRATCH_REG0            = 0x0000cf08
+0x0579  SCRATCH_REG1            = 0x80635151
+0x057a  SCRATCH_REG2            = 0xffffff0e
+0x057b  SCRATCH_REG3            = 0x292c4506
+0x057c  SCRATCH_REG4            = 0xc145b736
+0x057d  SCRATCH_REG5            = 0x31d7c360
+0x057e  SCRATCH_REG6            = 0x63d0d0e0
+0x057f  SCRATCH_REG7            = 0xa1163e1b
+0x0058  RBBM_PM_OVERRIDE1       = 0xffffffff
+0x0059  RBBM_PM_OVERRIDE2       = 0x000003a0
+0x005c  RBBM_DEBUG              = 0x01f80000
+0x017f  RBBM_STATUS             = 0x00000110
+0x0061  RBBM_INT_CNTL           = 0x00000001
+0x0062  RBBM_INT_STATUS         = 0x00080000
+0x0050  MH_INTERRUPT_MASK       = 0x00000007
+0x0051  MH_INTERRUPT_STATUS     = 0x00000000
+0x0052  MH_AXI_ERROR            = N/A
+0x040c  MH_MMU_CONFIG           = 0x02aaaaa1
+0x03b7  MASTER_INT_SIGNAL       = N/A
+0x0e1e  TP0_CHICKEN             = 0x00000002
+0x0f01  RB_BC_CONTROL           = N/A
