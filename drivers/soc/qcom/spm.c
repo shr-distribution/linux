@@ -55,6 +55,13 @@ enum spm_reg {
 	SPM_REG_AVS_CTL,
 	SPM_REG_AVS_LIMIT,
 	SPM_REG_RST,
+	/* MSM8660-specific registers (SAW v1.0) */
+	SPM_REG_WAKE_TMR_DLY,
+	SPM_REG_SLP_CLK_EN,
+	SPM_REG_SLP_HSFS_PRECLMP_EN,
+	SPM_REG_SLP_HSFS_POSTCLMP_EN,
+	SPM_REG_SLP_CLMP_EN,
+	SPM_REG_SPM_MPM_CFG,
 	SPM_REG_NR,
 };
 
@@ -72,6 +79,16 @@ struct spm_reg_data {
 	u8 seq[MAX_SEQ_DATA];
 	u8 start_index[PM_SLEEP_MODE_NR];
 	bool no_seq_ram;	/* SAW v1.0: register-based mode, no sequence RAM */
+
+	/* MSM8660-specific init values (SAW v1.0 only) */
+	u32 spm_ctl_init;		/* Initial SPM_CTL value */
+	u32 wake_tmr_dly;		/* SAW_SPM_WAKE_TMR_DLY */
+	u32 slp_clk_en;			/* SAW_SLP_CLK_EN (CPU-specific) */
+	u32 slp_hsfs_preclmp_en;	/* SAW_SLP_HSFS_PRECLMP_EN */
+	u32 slp_hsfs_postclmp_en;	/* SAW_SLP_HSFS_POSTCLMP_EN */
+	u32 slp_clmp_en;		/* SAW_SLP_CLMP_EN */
+	u32 slp_rst_en_init;		/* Initial SAW_SLP_RST_EN */
+	u32 spm_mpm_cfg;		/* SAW_SPM_MPM_CFG */
 
 	smp_call_func_t set_vdd;
 	/*
@@ -247,15 +264,21 @@ static const u16 spm_reg_offset_v1_1[SPM_REG_NR] = {
  * Based on webOS kernel arch/arm/mach-msm/spm.c
  */
 static const u16 spm_reg_offset_8660[SPM_REG_NR] = {
-	[SPM_REG_AVS_CTL]	= 0x04,
-	[SPM_REG_VCTL]		= 0x08,
-	[SPM_REG_STS0]		= 0x0c,	/* SAW_STS */
-	[SPM_REG_STS1]		= 0x0c,	/* Same as STS0 on 8660 */
-	[SPM_REG_CFG]		= 0x10,
-	[SPM_REG_SPM_CTL]	= 0x14,
-	[SPM_REG_PMIC_DLY]	= 0x18,	/* SAW_SPM_SLP_TMR_DLY */
-	[SPM_REG_PMIC_DATA_0]	= 0x20,	/* SAW_SPM_PMIC_CTL */
-	[SPM_REG_RST]		= 0x34,	/* SLP_RST_EN */
+	[SPM_REG_AVS_CTL]		= 0x04,
+	[SPM_REG_VCTL]			= 0x08,
+	[SPM_REG_STS0]			= 0x0c,	/* SAW_STS */
+	[SPM_REG_STS1]			= 0x0c,	/* Same as STS0 on 8660 */
+	[SPM_REG_CFG]			= 0x10,
+	[SPM_REG_SPM_CTL]		= 0x14,
+	[SPM_REG_PMIC_DLY]		= 0x18,	/* SAW_SPM_SLP_TMR_DLY */
+	[SPM_REG_WAKE_TMR_DLY]		= 0x1c,	/* SAW_SPM_WAKE_TMR_DLY */
+	[SPM_REG_PMIC_DATA_0]		= 0x20,	/* SAW_SPM_PMIC_CTL */
+	[SPM_REG_SLP_CLK_EN]		= 0x24,	/* SAW_SLP_CLK_EN */
+	[SPM_REG_SLP_HSFS_PRECLMP_EN]	= 0x28,	/* SAW_SLP_HSFS_PRECLMP_EN */
+	[SPM_REG_SLP_HSFS_POSTCLMP_EN]	= 0x2c,	/* SAW_SLP_HSFS_POSTCLMP_EN */
+	[SPM_REG_SLP_CLMP_EN]		= 0x30,	/* SAW_SLP_CLMP_EN */
+	[SPM_REG_RST]			= 0x34,	/* SLP_RST_EN */
+	[SPM_REG_SPM_MPM_CFG]		= 0x38,	/* SAW_SPM_MPM_CFG */
 	/* No sequence entry on 8660 - different architecture */
 };
 
@@ -289,10 +312,13 @@ static const struct spm_reg_data spm_reg_8064_cpu = {
  * Voltage range: 840mV - 1250mV from webOS saw_s0_init_data.
  * awake_vlevel = 0xA0 corresponds to ~1.1V
  *
- * IMPORTANT: We do NOT initialize SPM registers at probe time.
- * The bootloader already configured SPM, and writing to these
- * registers during probe can crash the system. We only provide
- * voltage regulation functionality.
+ * IMPORTANT: Bootloader investigation (HTC TrustZone, HTC SBL3, TouchPad APPSBL)
+ * shows ZERO SAW register initialization. The comment claiming "bootloader already
+ * configured SPM" was incorrect. We MUST initialize SPM registers at probe, matching
+ * legacy webOS kernel behavior (arch/arm/mach-msm/board-tenderloin.c lines 335-395).
+ *
+ * Hardware reads SPM_CTL=0x08 at boot (bootloader default), not the required 0x68.
+ * Without explicit initialization, power collapse will not function correctly.
  */
 /*
  * PM8901 SMPS Band 2 spans 700-1400 mV in 12.5 mV steps (selectors 0..56).
@@ -312,9 +338,36 @@ static struct linear_range spm_8660_regulator_range =
 
 static const struct spm_reg_data spm_reg_8660_cpu = {
 	.reg_offset = spm_reg_offset_8660,
-	/* All init values set to 0 - don't write anything at probe */
-	.spm_cfg = 0,
-	.pmic_dly = 0,
+
+	/*
+	 * SPM register initialization values from legacy webOS kernel
+	 * arch/arm/mach-msm/board-tenderloin.c msm_spm_data[]
+	 */
+	.spm_cfg = 0x1C,		/* SAW_CFG: IRQ edge sensitive, config bits */
+	.pmic_dly = 0x0C0CFFFF,		/* SAW_SPM_SLP_TMR_DLY: sleep timer delay */
+	.wake_tmr_dly = 0x78780FFF,	/* SAW_SPM_WAKE_TMR_DLY: wake timer delay */
+
+	/*
+	 * Initial SPM_CTL value at boot (clock gating mode).
+	 * Bits [7:4] = 0x6: event output config
+	 * Bits [3]   = 1:   rpm_bypass (standalone mode at boot)
+	 * Bits [1:0] = 0x0: mode = CLOCK_GATING
+	 */
+	.spm_ctl_init = 0x68,
+
+	/*
+	 * Clock enable for different sleep modes.
+	 * NOTE: CPU0 uses 0x01, CPU1 uses 0x13 (per-CPU difference!)
+	 * This field will be overridden in probe based on CPU index.
+	 */
+	.slp_clk_en = 0x01,		/* CPU0 default, see probe for CPU1 */
+
+	.slp_hsfs_preclmp_en = 0x07,	/* HS/FS pre-clamp enable */
+	.slp_hsfs_postclmp_en = 0x00,	/* HS/FS post-clamp enable */
+	.slp_clmp_en = 0x01,		/* Clamp enable */
+	.slp_rst_en_init = 0x00,	/* Core reset NOT asserted at boot */
+	.spm_mpm_cfg = 0x00,		/* MPM config */
+
 	.no_seq_ram = true,
 	.set_vdd = smp_set_vdd_8660,
 	.get_vdd = smp_get_vdd_8660,
@@ -765,10 +818,6 @@ static int spm_dev_probe(struct platform_device *pdev)
 	 * On some SoC if the control registers are written first and if the
 	 * CPU was held in reset, the reset signal could trigger the SPM state
 	 * machine, before the sequences are completely written.
-	 *
-	 * For MSM8660/APQ8060, we skip initialization entirely (spm_cfg == 0)
-	 * because the bootloader already configured SPM and writing to these
-	 * registers can crash the system.
 	 */
 	if (drv->reg_data->spm_cfg) {
 		spm_register_write(drv, SPM_REG_AVS_CTL, drv->reg_data->avs_ctl);
@@ -780,6 +829,58 @@ static int spm_dev_probe(struct platform_device *pdev)
 					drv->reg_data->pmic_data[0]);
 		spm_register_write(drv, SPM_REG_PMIC_DATA_1,
 					drv->reg_data->pmic_data[1]);
+
+		/*
+		 * MSM8660-specific SAW v1.0 initialization.
+		 * Bootloaders (HTC TrustZone, HTC SBL3, TouchPad APPSBL) do NOT
+		 * initialize SPM registers. Analysis shows zero SAW base address
+		 * references in any bootloader. Hardware reads SPM_CTL=0x08 at boot
+		 * (default) vs required 0x68. Must explicitly initialize all 11
+		 * registers matching legacy webOS kernel.
+		 */
+		if (drv->reg_data->no_seq_ram) {
+			u32 slp_clk_en;
+			int cpu;
+
+			/* Get CPU index for per-CPU differences */
+			cpu = of_property_read_u32(pdev->dev.of_node, "reg", &cpu);
+			if (cpu < 0)
+				cpu = 0;  /* Fallback if DT doesn't have reg property */
+
+			/*
+			 * CPU0 uses SLP_CLK_EN=0x01, CPU1 uses 0x13 (enables
+			 * clock for different sleep modes). This is a hardware
+			 * asymmetry in the platform.
+			 */
+			slp_clk_en = (cpu == 1) ? 0x13 : drv->reg_data->slp_clk_en;
+
+			dev_info(&pdev->dev, "SAW init: CPU%d, writing 11 registers\n", cpu);
+
+			spm_register_write(drv, SPM_REG_WAKE_TMR_DLY,
+					   drv->reg_data->wake_tmr_dly);
+			spm_register_write(drv, SPM_REG_SLP_CLK_EN, slp_clk_en);
+			spm_register_write(drv, SPM_REG_SLP_HSFS_PRECLMP_EN,
+					   drv->reg_data->slp_hsfs_preclmp_en);
+			spm_register_write(drv, SPM_REG_SLP_HSFS_POSTCLMP_EN,
+					   drv->reg_data->slp_hsfs_postclmp_en);
+			spm_register_write(drv, SPM_REG_SLP_CLMP_EN,
+					   drv->reg_data->slp_clmp_en);
+			spm_register_write(drv, SPM_REG_RST,
+					   drv->reg_data->slp_rst_en_init);
+			spm_register_write(drv, SPM_REG_SPM_MPM_CFG,
+					   drv->reg_data->spm_mpm_cfg);
+
+			/*
+			 * Write initial SPM_CTL (clock gating mode at boot).
+			 * spm_set_low_power_mode() will update this at runtime.
+			 */
+			if (drv->reg_data->spm_ctl_init)
+				spm_register_write(drv, SPM_REG_SPM_CTL,
+						   drv->reg_data->spm_ctl_init);
+
+			dev_info(&pdev->dev, "SAW init complete: SPM_CTL=0x%x SLP_CLK_EN=0x%x\n",
+				 drv->reg_data->spm_ctl_init, slp_clk_en);
+		}
 
 		/* Set up Standby as the default low power mode */
 		if (drv->reg_data->reg_offset[SPM_REG_SPM_CTL])
