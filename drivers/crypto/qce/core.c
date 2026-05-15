@@ -5,10 +5,12 @@
 
 #include <linux/cleanup.h>
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/interconnect.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/of.h>
@@ -255,6 +257,65 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	qce->bus = devm_clk_get_optional_enabled(qce->dev, "bus");
 	if (IS_ERR(qce->bus))
 		return PTR_ERR(qce->bus);
+
+	/*
+	 * EXPERIMENTAL: Manual clock enable test for MSM8660/APQ8060
+	 * The bootloader OEMSBL stage (which should initialize CE2) is missing
+	 * on HP TouchPad. Try enabling CE2 clock directly at hardware level
+	 * to see if that's the only missing piece.
+	 */
+	if (qce->version == QCE_VERSION_CE2) {
+		void __iomem *gcc_base;
+		u32 val;
+
+		gcc_base = ioremap(0x00900000, 0x10000);
+		if (!gcc_base) {
+			dev_err(dev, "Failed to map GCC registers\n");
+		} else {
+			/* Read CE2_HCLK_CTL register (0x2740) */
+			val = readl_relaxed(gcc_base + 0x2740);
+			dev_info(dev, "CE2_HCLK_CTL before: 0x%08x (bit 4 = %s, bit 7 = %s)\n",
+				 val,
+				 (val & BIT(4)) ? "ENABLED" : "GATED",
+				 (val & BIT(7)) ? "IN_RESET" : "ACTIVE");
+
+			/* Force enable clock (set bit 4) and deassert reset (clear bit 7) */
+			val |= BIT(4);   /* Enable CE2 clock */
+			val &= ~BIT(7);  /* Deassert CE2 reset */
+			writel_relaxed(val, gcc_base + 0x2740);
+
+			/* Read back to confirm */
+			val = readl_relaxed(gcc_base + 0x2740);
+			dev_info(dev, "CE2_HCLK_CTL after:  0x%08x (bit 4 = %s, bit 7 = %s)\n",
+				 val,
+				 (val & BIT(4)) ? "ENABLED" : "GATED",
+				 (val & BIT(7)) ? "IN_RESET" : "ACTIVE");
+
+			/* Wait for clock to stabilize */
+			usleep_range(100, 200);
+
+			/* Check halt status */
+			val = readl_relaxed(gcc_base + 0x2fd4);
+			dev_info(dev, "CE2_HALT_STATUS: 0x%08x (bit 0 = %s)\n",
+				 val,
+				 (val & BIT(0)) ? "HALTED" : "RUNNING");
+
+			iounmap(gcc_base);
+
+			/* Now test if CE2 MMIO is readable */
+			val = readl_relaxed(qce->base + 0x00);
+			dev_info(dev, "CE2 MMIO test read @ 0x00: 0x%08x %s\n",
+				 val,
+				 (val == 0) ? "(STILL ZERO - HARDWARE NOT RESPONDING)" :
+					      "(NON-ZERO - HARDWARE ACCESSIBLE!)");
+
+			val = readl_relaxed(qce->base + 0x10);
+			dev_info(dev, "CE2 MMIO test read @ 0x10: 0x%08x\n", val);
+
+			val = readl_relaxed(qce->base + 0x20);
+			dev_info(dev, "CE2 MMIO test read @ 0x20: 0x%08x\n", val);
+		}
+	}
 
 	/* Interconnect is optional - CE2 uses RPM for bus voting */
 	qce->mem_path = devm_of_icc_get(qce->dev, "memory");
