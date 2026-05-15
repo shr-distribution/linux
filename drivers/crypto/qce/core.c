@@ -275,7 +275,8 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	 * Reference: reports/ce2-investigation/CE2-BREAKTHROUGH-SUCCESS.md
 	 */
 	if (qce->version == QCE_VERSION_CE2) {
-		u32 val;
+		u32 val, status;
+		int timeout;
 
 		dev_info(dev, "CE2: Verifying hardware initialization\n");
 
@@ -309,6 +310,50 @@ static int qce_crypto_probe(struct platform_device *pdev)
 
 			dev_info(dev, "CE2: Hardware accessible despite zero version register\n");
 		}
+
+		/*
+		 * Phase 2: Peripheral Initialization
+		 * The cleanup commit removed this assuming it served no purpose,
+		 * but it may be required to enable interrupts properly.
+		 */
+		dev_info(dev, "CE2: Performing peripheral initialization\n");
+
+		/* Step 1: Wait for peripheral ready (status bit 3) */
+		timeout = 100;
+		while (timeout--) {
+			status = readl_relaxed(qce->base + 0x20);
+			if (status & BIT(3))
+				break;
+			udelay(10);
+		}
+		if (timeout <= 0) {
+			dev_warn(dev, "CE2: Timeout waiting for ready (status=0x%08x)\n", status);
+		} else {
+			dev_info(dev, "CE2: Peripheral ready after %d us\n", (100-timeout)*10);
+		}
+
+		/* Step 2: Write configuration to command register */
+		writel_relaxed(0x00000001, qce->base + 0x00);
+		dev_info(dev, "CE2: Config written to command register\n");
+
+		/* Step 3: Wait for operation complete (status bit 4) */
+		timeout = 100;
+		while (timeout--) {
+			status = readl_relaxed(qce->base + 0x20);
+			if (status & BIT(4))
+				break;
+			udelay(10);
+		}
+		if (timeout <= 0) {
+			dev_warn(dev, "CE2: Timeout waiting for init complete (status=0x%08x)\n", status);
+		} else {
+			dev_info(dev, "CE2: Init complete after %d us\n", (100-timeout)*10);
+		}
+
+		/* Step 4: Read initialization result */
+		status = readl_relaxed(qce->base + 0x10);
+		if (status != 0)
+			dev_info(dev, "CE2: Init result: 0x%08x\n", status);
 
 		dev_info(dev, "CE2: Hardware initialized successfully\n");
 	}
