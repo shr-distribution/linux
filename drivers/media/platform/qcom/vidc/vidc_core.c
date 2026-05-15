@@ -191,15 +191,13 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	       vidc_read(core, VIDC_REG_DRAM_BASE_B));
 
 	/*
-	 * Clear the returned channel instance ID register. This register at
-	 * 0x2000 is used by the firmware to return channel IDs after OPEN_CH
-	 * commands. WebOS kernel clears it to 0xffff during initialization
-	 * before releasing the RISC from reset.
+	 * Skip RETURNED_CH_INST_ID write here. WebOS kernel writes this register
+	 * (0x2000) much earlier in ddl_vidc_core_init(), right after DRAM_BASE
+	 * setup and before any AXI operations. Writing it at this late stage
+	 * (right before AXI halt) causes system hang. The register will be
+	 * initialized properly when firmware actually needs it during channel
+	 * open commands.
 	 */
-	printk(KERN_EMERG "VIDC: hw_reset: about to write RETURNED_CH_INST_ID at 0x%03x\n",
-	       VIDC_REG_RETURNED_CH_INST_ID);
-	vidc_write(core, VIDC_REG_RETURNED_CH_INST_ID, VIDC_INIT_CH_INST_ID);
-	printk(KERN_EMERG "VIDC: hw_reset: RETURNED_CH_INST_ID write completed\n");
 
 	/* Halt AXI */
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_HALT_REQ);
