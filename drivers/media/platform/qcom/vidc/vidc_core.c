@@ -212,8 +212,11 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	printk(KERN_EMERG "VIDC: hw_reset: AXI halt request sent\n");
 
 	/* Wait for AXI halt acknowledgment */
+	printk(KERN_EMERG "VIDC: hw_reset: polling for AXI halt ack (need 0x3)\n");
 	do {
 		axi_status = vidc_read(core, VIDC_REG_AXI_STATUS);
+		if (timeout % 50 == 0)  /* Log every ~5ms */
+			printk(KERN_EMERG "VIDC: hw_reset: AXI_STATUS=0x%08x\n", axi_status);
 		axi_status = (axi_status & VIDC_AXI_HALT_ACK_MASK) >> 2;
 		if (axi_status == 0x3)
 			break;
@@ -221,9 +224,12 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	} while (--timeout > 0);
 
 	if (timeout == 0) {
+		printk(KERN_EMERG "VIDC: hw_reset: AXI halt timeout, final status=0x%08x\n",
+		       vidc_read(core, VIDC_REG_AXI_STATUS));
 		dev_err(core->dev, "AXI halt timeout\n");
 		return -ETIMEDOUT;
 	}
+	printk(KERN_EMERG "VIDC: hw_reset: AXI halt ack received\n");
 
 	/* Reset AXI */
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_RESET);
