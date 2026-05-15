@@ -24,6 +24,7 @@
 #include "cipher.h"
 #include "sha.h"
 #include "aead.h"
+#include "regs-ce2.h"
 #define QCE_MAJOR_VERSION5	0x05
 #define QCE_QUEUE_LENGTH	1
 

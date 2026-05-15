@@ -79,6 +79,13 @@ EXPORT_SYMBOL(pen_release);
 
 extern void msm8660_secondary_startup(void);
 
+/*
+ * Per-CPU flag tracking whether each core has completed its initial
+ * cold boot sequence (scss_release_secondary). Used for hotplug to
+ * determine whether to run full cold boot or just wake from pen_release.
+ */
+static DEFINE_PER_CPU(int, cold_boot_done);
+
 #ifdef CONFIG_HOTPLUG_CPU
 /*
  * CPU power collapse helper called from cpu_suspend().
@@ -449,8 +456,6 @@ out_acc:
 
 	return ret;
 }
-
-static DEFINE_PER_CPU(int, cold_boot_done);
 
 static int qcom_boot_secondary(unsigned int cpu, int (*func)(unsigned int))
 {
