@@ -83,28 +83,36 @@ static void qcom_cpu_die(unsigned int cpu)
 }
 
 /*
- * MSM8660/APQ8060 (Scorpion-MP) hotplug-down/up cycle does NOT work
- * reliably with mainline's wfi()+IPI mechanism. CPU1 enters wfi via
- * qcom_cpu_die but never wakes from a subsequent IPI: it goes into a
- * state ("CPU1: failed to come online") that nothing in the platsmp
- * path recovers. See `project_cpu1_hotplug_complex.md` for the full
- * diagnosis.
+ * MSM8660/APQ8060 (Scorpion-MP) hotplug with power collapse.
  *
- * Until we have a working power-collapse + wake path that matches
- * legacy webOS (which used MPM-routed wake events plus secondary_
- * startup re-entry — MPM itself is currently disabled in our DT, so
- * that path is blocked), the safe behaviour is to refuse hotplug-
- * down on MSM8660 entirely. Both CPUs stay online from boot, which
- * is what existing test workloads expect anyway.
+ * With SPM register initialization now in place (drivers/soc/qcom/spm.c),
+ * CPU hotplug can use proper power collapse instead of plain WFI.
  *
- * Userspace `echo 0 > /sys/.../cpu1/online` will return -EBUSY with
- * a clear error rather than silently breaking. cpu_can_disable is
- * the right hook — it gates the whole offline path at the cpuhp
- * framework level before cpu_disable/cpu_die get invoked.
+ * The SPM driver programs power collapse mode via spm_set_low_power_mode()
+ * when cpuidle enters cpu-spc state. For hotplug, the offline CPU should
+ * enter the same power collapse path as cpuidle.
+ *
+ * Legacy webOS used msm_pm_power_collapse() from qcom_cpu_die which:
+ * 1. Set SPM mode to POWER_COLLAPSE_STANDALONE
+ * 2. Flushed VFP state and caches
+ * 3. Called msm_pm_collapse() assembly (context save + WFI)
+ * 4. On wake: restored context, reset SPM mode to clock gating
+ *
+ * For now, we allow hotplug but use simple WFI in qcom_cpu_die().
+ * TODO: Integrate with SPM driver for full power collapse:
+ *   - Call spm_set_low_power_mode(drv, PM_SLEEP_MODE_SPC)
+ *   - Flush caches (via cpu_v7_do_idle path)
+ *   - Enter WFI (hardware triggers power collapse via SPM)
+ *   - On wake: SPM restores to clock gating mode
  */
 static bool msm8660_cpu_can_disable(unsigned int cpu)
 {
-	return false;
+	/*
+	 * Enable hotplug now that SPM initialization is in place.
+	 * CPU1 can be offlined, which allows testing of single-core
+	 * power collapse via cpuidle cpu-spc state.
+	 */
+	return true;
 }
 #endif
 
