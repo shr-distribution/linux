@@ -261,6 +261,9 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 
 	dev_info(core->dev, "hw_reset: released RISC from reset\n");
 
+	/* Give firmware CPU time to boot and initialize */
+	msleep(10);
+
 	return 0;
 }
 
