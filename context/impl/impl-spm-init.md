@@ -151,31 +151,45 @@ All SPM registers initialized correctly:
 - CPU1 SLP_CLK_EN = 0x13 ✅
 - CPU0 SLP_RST_EN = 0x01 (runtime state, acceptable)
 
-### Test 2: CPU Hotplug Power Collapse ⚠️ IN PROGRESS
-Discovered and fixed **three** kernel bugs during testing:
+### Test 2: CPU Hotplug Power Collapse ✅ PASS
+Discovered and fixed **four** implementation issues during testing:
 
-**Bug 1:** NULL pointer in `tick_nohz_get_sleep_length()`
-- Crash: `tick_nohz_get_sleep_length+0x80/0xf4`
-- Fix: Added NULL check (commit 5548d5d0a35a)
+**Issue 1-2:** NULL pointer crashes in tick device functions
+- Crash: `tick_nohz_get_sleep_length+0x80/0xf4`, `tick_nohz_get_next_hrtimer+0x24/0x2c`
+- Fix: Added NULL checks (commits 5548d5d0a35a, 0b43ae11216b)
 
-**Bug 2:** NULL pointer in `tick_nohz_get_next_hrtimer()`  
-- Crash: `tick_nohz_get_next_hrtimer+0x24/0x2c`
-- Fix: Added NULL check (commit 0b43ae11216b)
+**Issue 3:** Simple WFI approach failed
+- Problem: IPI delivery failed after hotplug offline
+- Attempted: Change to simple WFI loop
+- Result: "CPU1: failed to come online" - no IPI wake
+- Fix: Abandoned WFI-only approach
 
-**Bug 3:** `cpu_die()` returns on pending IRQ
-- Issue: "CPU1: smp_ops.cpu_die() returned, trying to resuscitate"
-- Fix: Loop until power collapse succeeds (commit c68530e9a5fc)
+**Issue 4:** Power collapse without polling failed
+- Problem: CPU powered down but couldn't power back up
+- Attempted: SPC mode without pen_release polling
+- Result: CPU entered power collapse but never woke
+- Fix: Implement pen_release polling loop (matches webOS)
 
-All three bugs fixed and pushed. Ready for retest.
+**Final Solution (commit fb4c08e029b9):**
+- CPU enters loop: power collapse → wake from interrupt → check pen_release → repeat
+- Boot CPU writes pen_release = cpu to signal wake
+- Sleeping CPU wakes periodically (timer ticks), sees pen_release match, returns
+- This matches legacy webOS kernel `pm-8x60.c platform_cpu_die()`
+
+**Test Results:**
+- ✅ CPU offline succeeds (enters power collapse loop)
+- ✅ CPU online succeeds (pen_release polling works)
+- ✅ Multiple cycles stable (5+ consecutive offline/online cycles)
+- ✅ No crashes or timeouts
 
 ## Next Steps
 
 1. ✅ ~~Deploy kernel to TouchPad device~~ - Done
 2. ✅ ~~Run register verification test~~ - PASS
-3. ⏳ Retest CPU hotplug with all three fixes
-4. Test CPU online/offline cycling
-5. Test cpuidle cpu-spc state entry
-6. Document final results
+3. ✅ ~~Test CPU hotplug with pen_release polling~~ - PASS
+4. ✅ ~~Test CPU online/offline cycling~~ - PASS (5+ cycles)
+5. ⏳ Test cpuidle cpu-spc state entry (requires cpuidle driver integration)
+6. ⏳ Document final results
 
 ## Cross-References
 

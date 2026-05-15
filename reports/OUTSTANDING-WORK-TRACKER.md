@@ -9,47 +9,46 @@ This document tracks known issues, untested features, and ongoing investigations
 
 ## Active Investigations
 
-### PM-1: CPU Power Collapse Testing Blocked by Hotplug Panic
-**Status:** FIXED (commit 5548d5d0a35a)
+### PM-1: CPU Power Collapse and Hotplug
+**Status:** ✅ COMPLETE (commit fb4c08e029b9)
 **Severity:** P1 (was blocking power collapse validation)
 
-**Problem:**
-Testing CPU hotplug power collapse (`echo 0 > /sys/devices/system/cpu/cpu1/hotplug/target`) triggered kernel panic in `tick_nohz_get_sleep_length+0x80`.
+**Achievement:**
+Successfully implemented CPU hotplug with power collapse on MSM8660/Scorpion using pen_release polling mechanism.
 
-**Root Cause:**
-Race condition during CPU hotplug teardown:
-1. `CPUHP_AP_TICK_DYING` tears down tick device → `evtdev` becomes NULL
-2. CPU enters idle with cpuidle still active
-3. Menu governor calls `tick_nohz_get_sleep_length()`
-4. Crashes accessing `dev->next_event` (dev is NULL)
+**Final Implementation (commit fb4c08e029b9):**
+- CPU enters loop in qcom_cpu_die: power collapse → wake → check pen_release → repeat
+- Wakes periodically from interrupts (timer ticks)
+- Boot CPU writes pen_release = cpu to signal wake
+- Sleeping CPU sees pen_release match and returns (comes online)
+- Matches legacy webOS kernel `pm-8x60.c platform_cpu_die()`
 
-**Fix Applied:**
-Added NULL check in `kernel/time/tick-sched.c`:
-```c
-if (unlikely(!dev)) {
-    *delta_next = 0;
-    return 0;  // Force shortest sleep during hotplug teardown
-}
-```
+**Test Results:**
+- ✅ SPM registers initialized correctly (all values verified via devmem)
+- ✅ CPU offline succeeds (enters power collapse loop)
+- ✅ CPU online succeeds (pen_release polling works)
+- ✅ Multiple cycles stable (5+ consecutive offline/online cycles tested)
+- ✅ No crashes or timeouts
 
-**SPM Register Verification:**
-All SPM initialization registers verified correct before hitting hotplug bug:
-- ✅ CPU0 SAW_CFG = 0x1C
-- ✅ CPU0 SPM_CTL = 0x68
-- ✅ CPU0 SLP_CLK_EN = 0x01
-- ✅ CPU1 SLP_CLK_EN = 0x13
-
-**Next Steps:**
-1. Rebuild kernel with hotplug panic fix
-2. Retest CPU hotplug power collapse
-3. Test cpuidle power collapse (cpu-spc state)
-4. Document results in `reports/power-collapse/`
+**Bugs Fixed During Development:**
+1. NULL pointer in `tick_nohz_get_sleep_length()` (commit 0b43ae11216b)
+2. NULL pointer in `tick_nohz_get_next_hrtimer()` (commit 0b43ae11216b)
+3. Simple WFI approach - IPI delivery failed after offline (abandoned)
+4. Power collapse without polling - CPU couldn't wake (led to pen_release solution)
 
 **Related Commits:**
 - efcc84bb7319: SPM register initialization
 - e811e223049c: CPU index detection fix v2
-- 3e823a185257: Full power collapse in hotplug path
-- 5548d5d0a35a: Tick device NULL check fix (NEW)
+- 0b43ae11216b: Tick device NULL checks
+- fb4c08e029b9: pen_release polling implementation (FINAL)
+
+**Documentation:**
+- Implementation: `context/impl/impl-spm-init.md`
+- Requirements: `context/kits/cavekit-spm-init.md`
+- Investigation: `reports/power-collapse/SPM-INIT-INVESTIGATION-RESULTS.md`
+
+**Next Steps:**
+- PM-2: cpuidle integration for automatic power collapse during idle
 
 ---
 
