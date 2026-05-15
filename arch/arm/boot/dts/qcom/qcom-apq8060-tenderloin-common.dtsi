@@ -315,16 +315,8 @@
 			compatible = "qcom,msm8660-qce";
 			reg = <0x18500000 0x10000>;
 			interrupts = <GIC_SPI 195 IRQ_TYPE_LEVEL_HIGH>;
-			/*
-			 * On MSM8660, core and bus clocks share the same
-			 * hardware register (CE2_HCLK_CTL 0x2740 bit 4).
-			 * Vendor kernels map ce2_p_clk to "core_clk" only,
-			 * but mainline driver expects all three.
-			 */
-			clocks = <&gcc CE2_P_CLK>, <&gcc CE2_H_CLK>, <&gcc CE2_P_CLK>;
-			clock-names = "core", "iface", "bus";
-			resets = <&gcc CE2_RESET>;
-			reset-names = "clk";
+			clocks = <&gcc CE2_P_CLK>, <&gcc CE2_H_CLK>;
+			clock-names = "core", "iface";
 			dmas = <&adm_dma0 2>, <&adm_dma0 3>;
 			dma-names = "rx", "tx";
 			qcom,rx-crci = <4>;
