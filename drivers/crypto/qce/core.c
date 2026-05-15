@@ -312,48 +312,39 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		}
 
 		/*
-		 * Phase 2: Peripheral Initialization
-		 * The cleanup commit removed this assuming it served no purpose,
-		 * but it may be required to enable interrupts properly.
+		 * Phase 1: Clock Enable (THE CRITICAL FIX)
+		 * TouchPad bootloader doesn't enable CE2 clocks. Must manually enable
+		 * via GCC register. This is THE KEY that makes CE2 work.
+		 * Reference: CE2-BREAKTHROUGH-SUCCESS.md
 		 */
-		dev_info(dev, "CE2: Performing peripheral initialization\n");
+		void __iomem *gcc_base;
 
-		/* Step 1: Wait for peripheral ready (status bit 3) */
-		timeout = 100;
-		while (timeout--) {
-			status = readl_relaxed(qce->base + 0x20);
-			if (status & BIT(3))
-				break;
-			udelay(10);
-		}
-		if (timeout <= 0) {
-			dev_warn(dev, "CE2: Timeout waiting for ready (status=0x%08x)\n", status);
-		} else {
-			dev_info(dev, "CE2: Peripheral ready after %d us\n", (100-timeout)*10);
+		gcc_base = ioremap(0x00900000, 0x10000);
+		if (!gcc_base) {
+			dev_err(dev, "CE2: Failed to map GCC registers\n");
+			return -ENOMEM;
 		}
 
-		/* Step 2: Write configuration to command register */
-		writel_relaxed(0x00000001, qce->base + 0x00);
-		dev_info(dev, "CE2: Config written to command register\n");
+		dev_info(dev, "CE2: Enabling hardware clocks\n");
 
-		/* Step 3: Wait for operation complete (status bit 4) */
-		timeout = 100;
-		while (timeout--) {
-			status = readl_relaxed(qce->base + 0x20);
-			if (status & BIT(4))
-				break;
-			udelay(10);
-		}
-		if (timeout <= 0) {
-			dev_warn(dev, "CE2: Timeout waiting for init complete (status=0x%08x)\n", status);
-		} else {
-			dev_info(dev, "CE2: Init complete after %d us\n", (100-timeout)*10);
-		}
+		val = readl_relaxed(gcc_base + 0x2740);  /* CE2_HCLK_CTL */
+		dev_info(dev, "CE2: CE2_HCLK_CTL before: 0x%08x\n", val);
 
-		/* Step 4: Read initialization result */
-		status = readl_relaxed(qce->base + 0x10);
-		if (status != 0)
-			dev_info(dev, "CE2: Init result: 0x%08x\n", status);
+		/*
+		 * Set bit 4 (clock enable) and clear bit 7 (deassert reset).
+		 * This simple pattern from breakthrough testing is sufficient.
+		 */
+		val |= BIT(4);   /* Clock enable */
+		val &= ~BIT(7);  /* Deassert reset */
+		writel_relaxed(val, gcc_base + 0x2740);
+
+		val = readl_relaxed(gcc_base + 0x2740);
+		dev_info(dev, "CE2: CE2_HCLK_CTL after: 0x%08x\n", val);
+
+		/* Wait for clock to stabilize */
+		usleep_range(100, 200);
+
+		iounmap(gcc_base);
 
 		dev_info(dev, "CE2: Hardware initialized successfully\n");
 	}
