@@ -774,7 +774,7 @@ static void vidc_enc_complete_work(struct work_struct *w)
 
 out:
 	core->curr_inst = NULL;
-	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+	v4l2_m2m_job_finish(inst->core->m2m_dev_enc, inst->m2m_ctx);
 }
 
 /*
@@ -796,7 +796,7 @@ static void vidc_enc_device_run(void *priv)
 	dst_buf = v4l2_m2m_next_dst_buf(inst->m2m_ctx);
 
 	if (!src_buf || !dst_buf) {
-		v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+		v4l2_m2m_job_finish(inst->core->m2m_dev_enc, inst->m2m_ctx);
 		return;
 	}
 
@@ -817,7 +817,7 @@ static void vidc_enc_job_abort(void *priv)
 {
 	struct vidc_inst *inst = priv;
 
-	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+	v4l2_m2m_job_finish(inst->core->m2m_dev_enc, inst->m2m_ctx);
 }
 
 static const struct v4l2_m2m_ops vidc_enc_m2m_ops = {
@@ -896,18 +896,12 @@ static int vidc_enc_open(struct file *file)
 	inst->framerate = VIDC_DEFAULT_FRAMERATE;
 	inst->bitrate = VIDC_DEFAULT_BITRATE;
 
-	/* Initialize M2M device */
-	inst->m2m_dev = v4l2_m2m_init(&vidc_enc_m2m_ops);
-	if (IS_ERR(inst->m2m_dev)) {
-		ret = PTR_ERR(inst->m2m_dev);
-		goto err_free;
-	}
-
-	inst->m2m_ctx = v4l2_m2m_ctx_init(inst->m2m_dev, inst,
+	/* Initialize M2M context (uses shared m2m_dev from core) */
+	inst->m2m_ctx = v4l2_m2m_ctx_init(core->m2m_dev_enc, inst,
 					  vidc_enc_queue_init);
 	if (IS_ERR(inst->m2m_ctx)) {
 		ret = PTR_ERR(inst->m2m_ctx);
-		goto err_m2m_release;
+		goto err_free;
 	}
 
 	/*
@@ -970,8 +964,6 @@ static int vidc_enc_open(struct file *file)
 
 err_m2m_ctx_release:
 	v4l2_m2m_ctx_release(inst->m2m_ctx);
-err_m2m_release:
-	v4l2_m2m_release(inst->m2m_dev);
 err_free:
 	kfree(inst);
 	return ret;
@@ -996,7 +988,7 @@ static int vidc_enc_close(struct file *file)
 	v4l2_ctrl_handler_free(&inst->ctrl_handler);
 
 	v4l2_m2m_ctx_release(inst->m2m_ctx);
-	v4l2_m2m_release(inst->m2m_dev);
+	/* Don't release m2m_dev — it's shared and owned by vidc_core */
 
 	kfree(inst);
 
@@ -1019,9 +1011,16 @@ int vidc_enc_register(struct vidc_core *core)
 	struct video_device *vdev;
 	int ret;
 
+	/* Initialize shared M2M device for encoder instances */
+	core->m2m_dev_enc = v4l2_m2m_init(&vidc_enc_m2m_ops);
+	if (IS_ERR(core->m2m_dev_enc))
+		return PTR_ERR(core->m2m_dev_enc);
+
 	vdev = video_device_alloc();
-	if (!vdev)
-		return -ENOMEM;
+	if (!vdev) {
+		ret = -ENOMEM;
+		goto err_m2m_release;
+	}
 
 	strscpy(vdev->name, "qcom-vidc-enc", sizeof(vdev->name));
 	vdev->release = video_device_release;
@@ -1036,12 +1035,17 @@ int vidc_enc_register(struct vidc_core *core)
 	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret) {
 		video_device_release(vdev);
-		return ret;
+		goto err_m2m_release;
 	}
 
 	core->vfd_enc = vdev;
 
 	return 0;
+
+err_m2m_release:
+	v4l2_m2m_release(core->m2m_dev_enc);
+	core->m2m_dev_enc = NULL;
+	return ret;
 }
 
 void vidc_enc_unregister(struct vidc_core *core)
@@ -1049,5 +1053,9 @@ void vidc_enc_unregister(struct vidc_core *core)
 	if (core->vfd_enc) {
 		video_unregister_device(core->vfd_enc);
 		core->vfd_enc = NULL;
+	}
+	if (core->m2m_dev_enc) {
+		v4l2_m2m_release(core->m2m_dev_enc);
+		core->m2m_dev_enc = NULL;
 	}
 }

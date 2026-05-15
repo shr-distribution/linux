@@ -760,7 +760,7 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
 	}
 
 	core->curr_inst = NULL;
-	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+	v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);
 }
 
 /*
@@ -895,7 +895,7 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 	}
 
 	core->curr_inst = NULL;
-	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+	v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);
 }
 
 /*
@@ -923,7 +923,7 @@ static void vidc_dec_device_run(void *priv)
 	dst_buf = v4l2_m2m_next_dst_buf(inst->m2m_ctx);
 
 	if (!src_buf || !dst_buf) {
-		v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+		v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);
 		return;
 	}
 
@@ -950,7 +950,7 @@ static void vidc_dec_job_abort(void *priv)
 {
 	struct vidc_inst *inst = priv;
 
-	v4l2_m2m_job_finish(inst->m2m_dev, inst->m2m_ctx);
+	v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);
 }
 
 static const struct v4l2_m2m_ops vidc_dec_m2m_ops = {
@@ -1028,18 +1028,12 @@ static int vidc_dec_open(struct file *file)
 	inst->out_width = VIDC_DEFAULT_WIDTH;
 	inst->out_height = VIDC_DEFAULT_HEIGHT;
 
-	/* Initialize M2M device */
-	inst->m2m_dev = v4l2_m2m_init(&vidc_dec_m2m_ops);
-	if (IS_ERR(inst->m2m_dev)) {
-		ret = PTR_ERR(inst->m2m_dev);
-		goto err_free;
-	}
-
-	inst->m2m_ctx = v4l2_m2m_ctx_init(inst->m2m_dev, inst,
+	/* Initialize M2M context (uses shared m2m_dev from core) */
+	inst->m2m_ctx = v4l2_m2m_ctx_init(core->m2m_dev_dec, inst,
 					  vidc_dec_queue_init);
 	if (IS_ERR(inst->m2m_ctx)) {
 		ret = PTR_ERR(inst->m2m_ctx);
-		goto err_m2m_release;
+		goto err_free;
 	}
 
 	ret = v4l2_ctrl_handler_init(&inst->ctrl_handler, 0);
@@ -1062,8 +1056,6 @@ static int vidc_dec_open(struct file *file)
 
 err_m2m_ctx_release:
 	v4l2_m2m_ctx_release(inst->m2m_ctx);
-err_m2m_release:
-	v4l2_m2m_release(inst->m2m_dev);
 err_free:
 	kfree(inst);
 	return ret;
@@ -1094,7 +1086,7 @@ static int vidc_dec_close(struct file *file)
 	v4l2_ctrl_handler_free(&inst->ctrl_handler);
 
 	v4l2_m2m_ctx_release(inst->m2m_ctx);
-	v4l2_m2m_release(inst->m2m_dev);
+	/* Don't release m2m_dev — it's shared and owned by vidc_core */
 
 	kfree(inst);
 
@@ -1117,9 +1109,16 @@ int vidc_dec_register(struct vidc_core *core)
 	struct video_device *vdev;
 	int ret;
 
+	/* Initialize shared M2M device for decoder instances */
+	core->m2m_dev_dec = v4l2_m2m_init(&vidc_dec_m2m_ops);
+	if (IS_ERR(core->m2m_dev_dec))
+		return PTR_ERR(core->m2m_dev_dec);
+
 	vdev = video_device_alloc();
-	if (!vdev)
-		return -ENOMEM;
+	if (!vdev) {
+		ret = -ENOMEM;
+		goto err_m2m_release;
+	}
 
 	strscpy(vdev->name, "qcom-vidc-dec", sizeof(vdev->name));
 	vdev->release = video_device_release;
@@ -1134,12 +1133,17 @@ int vidc_dec_register(struct vidc_core *core)
 	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret) {
 		video_device_release(vdev);
-		return ret;
+		goto err_m2m_release;
 	}
 
 	core->vfd_dec = vdev;
 
 	return 0;
+
+err_m2m_release:
+	v4l2_m2m_release(core->m2m_dev_dec);
+	core->m2m_dev_dec = NULL;
+	return ret;
 }
 
 void vidc_dec_unregister(struct vidc_core *core)
@@ -1147,5 +1151,9 @@ void vidc_dec_unregister(struct vidc_core *core)
 	if (core->vfd_dec) {
 		video_unregister_device(core->vfd_dec);
 		core->vfd_dec = NULL;
+	}
+	if (core->m2m_dev_dec) {
+		v4l2_m2m_release(core->m2m_dev_dec);
+		core->m2m_dev_dec = NULL;
 	}
 }

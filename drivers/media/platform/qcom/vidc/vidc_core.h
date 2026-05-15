@@ -435,7 +435,6 @@ struct vidc_inst {
 	struct vidc_core *core;
 	struct v4l2_fh fh;
 	struct v4l2_ctrl_handler ctrl_handler;
-	struct v4l2_m2m_dev *m2m_dev;
 	struct v4l2_m2m_ctx *m2m_ctx;
 	struct mutex lock;
 	struct list_head list;
