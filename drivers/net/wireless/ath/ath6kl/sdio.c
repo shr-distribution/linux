@@ -1076,10 +1076,16 @@ static int ath6kl_sdio_bmi_credits(struct ath6kl *ar)
 		 * read will hit the counter and cause a decrement, while the
 		 * remaining 3 bytes has no effect. The rationale behind this
 		 * is to make all HIF accesses 4-byte aligned.
+		 *
+		 * HP TouchPad fix: Use FIXED address mode instead of INCREMENT.
+		 * The webOS staging driver uses HIF_RD_SYNC_BYTE_FIX here.
+		 * Reading with increment may be trying to read 4 consecutive
+		 * registers (0x450, 0x451, 0x452, 0x453) instead of reading
+		 * the same counter register 4 times.
 		 */
 		ret = ath6kl_sdio_read_write_sync(ar, addr,
 					 (u8 *)&ar->bmi.cmd_credits, 4,
-					 HIF_RD_SYNC_BYTE_INC);
+					 HIF_RD_SYNC_BYTE_FIX);
 		if (ret) {
 			ath6kl_err("Unable to decrement the command credit count register: %d\n",
 				   ret);
