@@ -612,7 +612,7 @@ static inline void vidc_write(struct vidc_core *core, u32 reg, u32 val)
 	writel(val, core->base + reg);
 }
 
-int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted);
+int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr);
 int vidc_send_cmd(struct vidc_core *core, u32 cmd, u32 arg1, u32 arg2,
 		  u32 arg3, u32 arg4);
 int vidc_get_response(struct vidc_core *core, u32 *cmd, u32 *arg1,

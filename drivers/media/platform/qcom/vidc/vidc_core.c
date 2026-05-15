@@ -121,7 +121,7 @@ static void vidc_clk_disable(struct vidc_core *core)
  *      RISC2HOST FW_STATUS_RET IRQ which vidc_boot_firmware()
  *      waits on before issuing SYS_INIT.
  */
-int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
+int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 {
 	u32 axi_status, sw_reset;
 	int timeout = 100;
@@ -178,14 +178,19 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	 * first instruction fetch after RESET_NONE points at the firmware
 	 * we just memcpy'd into the coherent buffer.
 	 *
+	 * Write the FULL physical address (not shifted). The hardware
+	 * register layout uses bits 31:17 for the address (mask 0xfffe0000),
+	 * implying 17-bit alignment, but webOS writes the full address and
+	 * the hardware handles it correctly.
+	 *
 	 * Note: These registers appear to be write-only; readback always
 	 * returns 0x00000000 even after writing. This matches webOS kernel
 	 * behavior which never reads these registers back.
 	 */
 	printk(KERN_EMERG "VIDC: hw_reset: writing DRAM_BASE=0x%08x to offsets 0x%03x/0x%03x\n",
-	       dram_base_shifted, VIDC_REG_DRAM_BASE_A, VIDC_REG_DRAM_BASE_B);
-	vidc_write(core, VIDC_REG_DRAM_BASE_A, dram_base_shifted);
-	vidc_write(core, VIDC_REG_DRAM_BASE_B, dram_base_shifted);
+	       dram_base_addr, VIDC_REG_DRAM_BASE_A, VIDC_REG_DRAM_BASE_B);
+	vidc_write(core, VIDC_REG_DRAM_BASE_A, dram_base_addr);
+	vidc_write(core, VIDC_REG_DRAM_BASE_B, dram_base_addr);
 	printk(KERN_EMERG "VIDC: hw_reset: readback DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
 	       vidc_read(core, VIDC_REG_DRAM_BASE_A),
 	       vidc_read(core, VIDC_REG_DRAM_BASE_B));
@@ -726,12 +731,12 @@ int vidc_boot_firmware(struct vidc_core *core)
 	reinit_completion(&core->fw_status_done);
 	reinit_completion(&core->sys_init_done);
 
-	dev_info(core->dev, "boot_fw: about to call vidc_hw_reset (dram_base>>17=0x%08x)\n",
-		 (u32)(core->fw_dma_addr >> 17));
+	dev_info(core->dev, "boot_fw: about to call vidc_hw_reset (dram_base=0x%08x)\n",
+		 (u32)core->fw_dma_addr);
 	dev_info(core->dev, "boot_fw: pre-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
 		 vidc_read(core, VIDC_REG_SW_RESET),
 		 vidc_read(core, VIDC_REG_FW_VERSION));
-	ret = vidc_hw_reset(core, core->fw_dma_addr >> 17);
+	ret = vidc_hw_reset(core, core->fw_dma_addr);
 	if (ret) {
 		dev_err(core->dev, "hw reset failed: %d\n", ret);
 		return ret;
