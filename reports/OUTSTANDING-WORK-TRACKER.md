@@ -1,13 +1,57 @@
 # Outstanding Work Tracker
 ## HP TouchPad Mainline Linux 6.18
 
-**Last Updated:** 2026-05-15
+**Last Updated:** 2026-05-15 (PM update: SPM init + hotplug panic fix)
 
 This document tracks known issues, untested features, and ongoing investigations.
 
 ---
 
 ## Active Investigations
+
+### PM-1: CPU Power Collapse Testing Blocked by Hotplug Panic
+**Status:** FIXED (commit 5548d5d0a35a)
+**Severity:** P1 (was blocking power collapse validation)
+
+**Problem:**
+Testing CPU hotplug power collapse (`echo 0 > /sys/devices/system/cpu/cpu1/hotplug/target`) triggered kernel panic in `tick_nohz_get_sleep_length+0x80`.
+
+**Root Cause:**
+Race condition during CPU hotplug teardown:
+1. `CPUHP_AP_TICK_DYING` tears down tick device → `evtdev` becomes NULL
+2. CPU enters idle with cpuidle still active
+3. Menu governor calls `tick_nohz_get_sleep_length()`
+4. Crashes accessing `dev->next_event` (dev is NULL)
+
+**Fix Applied:**
+Added NULL check in `kernel/time/tick-sched.c`:
+```c
+if (unlikely(!dev)) {
+    *delta_next = 0;
+    return 0;  // Force shortest sleep during hotplug teardown
+}
+```
+
+**SPM Register Verification:**
+All SPM initialization registers verified correct before hitting hotplug bug:
+- ✅ CPU0 SAW_CFG = 0x1C
+- ✅ CPU0 SPM_CTL = 0x68
+- ✅ CPU0 SLP_CLK_EN = 0x01
+- ✅ CPU1 SLP_CLK_EN = 0x13
+
+**Next Steps:**
+1. Rebuild kernel with hotplug panic fix
+2. Retest CPU hotplug power collapse
+3. Test cpuidle power collapse (cpu-spc state)
+4. Document results in `reports/power-collapse/`
+
+**Related Commits:**
+- efcc84bb7319: SPM register initialization
+- e811e223049c: CPU index detection fix v2
+- 3e823a185257: Full power collapse in hotplug path
+- 5548d5d0a35a: Tick device NULL check fix (NEW)
+
+---
 
 ### VIDC-1: Video Codec Hang During Firmware Boot
 **Status:** DEBUGGING (as of commit 8fd2d292b5f9)
@@ -135,6 +179,15 @@ First working QCE CE2 on MSM8660 mainline Linux! All vendors avoided CE2. Hardwa
 
 ## Completed Work (Recent)
 
+### ✅ SPM Register Initialization (2026-05-15)
+- **Commits:** efcc84bb7319, e811e223049c, 5548d5d0a35a
+- **Status:** COMPLETE + VERIFIED ON HARDWARE
+- **Achievement:** First proper SPM/SAW register initialization on MSM8660 mainline
+- **Finding:** Bootloaders (HTC TrustZone, SBL3, TouchPad APPSBL) do NOT initialize SPM registers contrary to mainline driver assumptions
+- **Implementation:** Added 11-register initialization sequence matching legacy webOS kernel
+- **Verification:** All registers read back correctly via devmem after boot
+- **Bonus:** Fixed kernel panic in CPU hotplug discovered during testing
+
 ### ✅ CE2 Crypto Hardware Enablement
 - **Commits:** fc0964d73cc5 (working version), plus 14 investigation reports
 - **Status:** FUNCTIONAL (needs cleanup per CE2-1)
@@ -174,7 +227,9 @@ First working QCE CE2 on MSM8660 mainline Linux! All vendors avoided CE2. Hardwa
 | eMMC Storage | ✅ TESTED | Working |
 | VIDC Video | ⚠️ DEBUGGING | Probes but hangs during use |
 | Suspend/Resume | ❌ UNTESTED | No testing performed |
-| Deep Sleep | ❌ UNTESTED | No testing performed |
+| SPM Init | ✅ TESTED | Hardware verified, registers correct |
+| CPU Hotplug PC | ⚠️ IN PROGRESS | SPM ready, kernel panic fixed, needs retest |
+| Deep Sleep | ❌ UNTESTED | Blocked on RPM orchestrator (Task #7) |
 | 3G Modem | ❌ UNTESTED | WiFi variant doesn't have modem |
 
 ---
@@ -182,12 +237,14 @@ First working QCE CE2 on MSM8660 mainline Linux! All vendors avoided CE2. Hardwa
 ## Priority Actions
 
 1. **P0:** Fix CE2-1 F-001 (dangerous register write) - blocks upstream submission
-2. **P1:** Resolve VIDC-1 hang - blocks video functionality
-3. **P1:** Test suspend/resume basic functionality - critical for mobile device
-4. **P1:** Run VIDC functional tests (if hang resolved)
-5. **P2:** CE2 code cleanup (F-002 through F-007)
-6. **P2:** Suspend/resume stress testing (10/100 cycles)
-7. **P3:** Extended power management testing
+2. **P1:** Rebuild kernel and retest CPU hotplug power collapse - fix committed, needs validation
+3. **P1:** Resolve VIDC-1 hang - blocks video functionality
+4. **P1:** Test suspend/resume basic functionality - critical for mobile device
+5. **P1:** Run VIDC functional tests (if hang resolved)
+6. **P2:** CE2 code cleanup (F-002 through F-007)
+7. **P2:** Suspend/resume stress testing (10/100 cycles)
+8. **P3:** Extended power management testing
+9. **P3:** RPM sleep orchestrator implementation (enables deep cpuidle states)
 
 ---
 
