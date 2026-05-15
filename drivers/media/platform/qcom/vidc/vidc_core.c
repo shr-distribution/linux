@@ -177,14 +177,15 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	 * Program DRAM_BASE_A/B while the RISC is held in reset, so the
 	 * first instruction fetch after RESET_NONE points at the firmware
 	 * we just memcpy'd into the coherent buffer.
+	 *
+	 * Note: These registers appear to be write-only; readback always
+	 * returns 0x00000000 even after writing. This matches webOS kernel
+	 * behavior which never reads these registers back.
 	 */
 	dev_info(core->dev, "hw_reset: writing DRAM_BASE=0x%08x to offsets 0x%03x/0x%03x\n",
 		 dram_base_shifted, VIDC_REG_DRAM_BASE_A, VIDC_REG_DRAM_BASE_B);
 	vidc_write(core, VIDC_REG_DRAM_BASE_A, dram_base_shifted);
 	vidc_write(core, VIDC_REG_DRAM_BASE_B, dram_base_shifted);
-	dev_info(core->dev, "hw_reset: readback DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
-		 vidc_read(core, VIDC_REG_DRAM_BASE_A),
-		 vidc_read(core, VIDC_REG_DRAM_BASE_B));
 
 	/* Halt AXI */
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_HALT_REQ);
@@ -221,15 +222,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	/* Release reset */
 	vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_NONE);
 
-	dev_info(core->dev, "hw_reset: released RISC, DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
-		 vidc_read(core, VIDC_REG_DRAM_BASE_A),
-		 vidc_read(core, VIDC_REG_DRAM_BASE_B));
-	dev_info(core->dev, "hw_reset: CH0_INST_ID=0x%08x CH1_INST_ID=0x%08x\n",
-		 vidc_read(core, VIDC_REG_CH0_INST_ID),
-		 vidc_read(core, VIDC_REG_CH1_INST_ID));
-	dev_info(core->dev, "hw_reset: HOST2RISC_CMD=0x%08x RISC2HOST_CMD=0x%08x\n",
-		 vidc_read(core, VIDC_REG_HOST2RISC_CMD),
-		 vidc_read(core, VIDC_REG_RISC2HOST_CMD));
+	dev_info(core->dev, "hw_reset: released RISC from reset\n");
 
 	return 0;
 }
