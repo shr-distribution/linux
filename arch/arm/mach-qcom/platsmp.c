@@ -528,14 +528,24 @@ static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	 * to standby so the CPU can actually run when we release it from reset.
 	 */
 	drv = spm_get_drv_by_cpu(cpu);
-	if (drv)
+	if (drv) {
+		pr_info("CPU%u: restoring SPM to standby mode\n", cpu);
 		spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
+	} else {
+		pr_warn("CPU%u: SPM driver not found!\n", cpu);
+	}
 
 	if (!per_cpu(cold_boot_done, cpu)) {
+		pr_info("CPU%u: calling scss_release_secondary\n", cpu);
 		ret = scss_release_secondary(cpu);
-		if (ret)
+		if (ret) {
+			pr_err("CPU%u: scss_release_secondary failed: %d\n", cpu, ret);
 			return ret;
+		}
 		per_cpu(cold_boot_done, cpu) = true;
+		pr_info("CPU%u: scss_release_secondary done, cold_boot_done=true\n", cpu);
+	} else {
+		pr_info("CPU%u: cold_boot_done already true, skipping scss_release_secondary\n", cpu);
 	}
 
 	/*
