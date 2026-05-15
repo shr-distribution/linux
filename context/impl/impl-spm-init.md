@@ -188,8 +188,25 @@ Discovered and fixed **four** implementation issues during testing:
 2. ✅ ~~Run register verification test~~ - PASS
 3. ✅ ~~Test CPU hotplug with pen_release polling~~ - PASS
 4. ✅ ~~Test CPU online/offline cycling~~ - PASS (5+ cycles)
-5. ⏳ Test cpuidle cpu-spc state entry (requires cpuidle driver integration)
-6. ⏳ Document final results
+5. ❌ ~~Test cpuidle cpu-spc state entry~~ - BLOCKED by MPM requirement
+6. ✅ ~~Document final results~~ - Done
+
+## PM-1 Complete, PM-2 Blocked
+
+**PM-1 Achievement (CPU Hotplug Power Collapse):** ✅ COMPLETE
+- SPM registers initialized correctly
+- CPU hotplug with power collapse works via pen_release polling
+- Multiple offline/online cycles stable
+
+**PM-2 Status (cpuidle Deep Sleep):** ❌ BLOCKED
+- cpuidle-qcom-spm driver loads and registers states
+- cpu-spc and cpu-pc states defined in device tree
+- **BUT**: States intentionally disabled (commit 811c2c3f7191)
+- **Reason**: MPM (MSM Power Manager) required to deliver wake interrupts
+- **Symptom without MPM**: CPU enters SPC/PC and never wakes (RCU stalls, workqueue lockups)
+- **Why hotplug works but cpuidle doesn't**: Hotplug uses pen_release polling with periodic timer wakes; cpuidle relies on MPM for wake delivery
+
+**Next Cavekit:** PM-2 requires fixing MPM probe/initialization first
 
 ## Cross-References
 
