@@ -182,13 +182,13 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	 * returns 0x00000000 even after writing. This matches webOS kernel
 	 * behavior which never reads these registers back.
 	 */
-	dev_info(core->dev, "hw_reset: writing DRAM_BASE=0x%08x to offsets 0x%03x/0x%03x\n",
-		 dram_base_shifted, VIDC_REG_DRAM_BASE_A, VIDC_REG_DRAM_BASE_B);
+	printk(KERN_EMERG "VIDC: hw_reset: writing DRAM_BASE=0x%08x to offsets 0x%03x/0x%03x\n",
+	       dram_base_shifted, VIDC_REG_DRAM_BASE_A, VIDC_REG_DRAM_BASE_B);
 	vidc_write(core, VIDC_REG_DRAM_BASE_A, dram_base_shifted);
 	vidc_write(core, VIDC_REG_DRAM_BASE_B, dram_base_shifted);
-	dev_info(core->dev, "hw_reset: readback DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
-		 vidc_read(core, VIDC_REG_DRAM_BASE_A),
-		 vidc_read(core, VIDC_REG_DRAM_BASE_B));
+	printk(KERN_EMERG "VIDC: hw_reset: readback DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
+	       vidc_read(core, VIDC_REG_DRAM_BASE_A),
+	       vidc_read(core, VIDC_REG_DRAM_BASE_B));
 
 	/*
 	 * Clear the returned channel instance ID register. This register at
@@ -196,8 +196,10 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	 * commands. WebOS kernel clears it to 0xffff during initialization
 	 * before releasing the RISC from reset.
 	 */
-	dev_info(core->dev, "hw_reset: clearing RETURNED_CH_INST_ID\n");
+	printk(KERN_EMERG "VIDC: hw_reset: about to write RETURNED_CH_INST_ID at 0x%03x\n",
+	       VIDC_REG_RETURNED_CH_INST_ID);
 	vidc_write(core, VIDC_REG_RETURNED_CH_INST_ID, VIDC_INIT_CH_INST_ID);
+	printk(KERN_EMERG "VIDC: hw_reset: RETURNED_CH_INST_ID write completed\n");
 
 	/* Halt AXI */
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_HALT_REQ);
