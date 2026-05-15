@@ -186,6 +186,18 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 		 dram_base_shifted, VIDC_REG_DRAM_BASE_A, VIDC_REG_DRAM_BASE_B);
 	vidc_write(core, VIDC_REG_DRAM_BASE_A, dram_base_shifted);
 	vidc_write(core, VIDC_REG_DRAM_BASE_B, dram_base_shifted);
+	dev_info(core->dev, "hw_reset: readback DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
+		 vidc_read(core, VIDC_REG_DRAM_BASE_A),
+		 vidc_read(core, VIDC_REG_DRAM_BASE_B));
+
+	/*
+	 * Clear the returned channel instance ID register. This register at
+	 * 0x2000 is used by the firmware to return channel IDs after OPEN_CH
+	 * commands. WebOS kernel clears it to 0xffff during initialization
+	 * before releasing the RISC from reset.
+	 */
+	dev_info(core->dev, "hw_reset: clearing RETURNED_CH_INST_ID\n");
+	vidc_write(core, VIDC_REG_RETURNED_CH_INST_ID, VIDC_INIT_CH_INST_ID);
 
 	/* Halt AXI */
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_HALT_REQ);
