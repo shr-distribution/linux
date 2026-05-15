@@ -284,25 +284,53 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		dev_info(dev, "CE2: Phase 1 - Enabling clocks\n");
 
 		val = readl_relaxed(gcc_base + 0x2740);
-		dev_info(dev, "CE2: CE2_HCLK_CTL before: 0x%08x\n", val);
+		dev_info(dev, "CE2: CE2_HCLK_CTL before: 0x%08x (bits: %c%c%c%c %c%c%c%c)\n",
+			 val,
+			 (val & BIT(7)) ? '7' : '.', (val & BIT(6)) ? '6' : '.',
+			 (val & BIT(5)) ? '5' : '.', (val & BIT(4)) ? '4' : '.',
+			 (val & BIT(3)) ? '3' : '.', (val & BIT(2)) ? '2' : '.',
+			 (val & BIT(1)) ? '1' : '.', (val & BIT(0)) ? '0' : '.');
 
 		/*
-		 * Apply complete clock enable sequence from HTC TZ (offset 0xd120):
-		 * - Set bits 0,1,3 (root, branch, HCLK enable)
-		 * - Clear bits 4,5,6 (ungating, power active, wake)
-		 * - Clear bit 7 (deassert reset)
+		 * CE2_HCLK_CTL bit meanings (MSM8660):
+		 * Bit 4: Clock branch enable (1=ON, 0=GATED)
+		 * Bit 7: Block control reset (1=IN_RESET, 0=ACTIVE)
+		 *
+		 * The kernel CCF already set bit 4, we just need to ensure
+		 * bit 7 is clear. Try multiple enable strategies.
 		 */
-		val |= BIT(0);   /* Root clock enable */
-		val |= BIT(1);   /* Branch enable (CBCR) */
-		val |= BIT(3);   /* HCLK enable */
-		val &= ~BIT(4);  /* Ungating */
-		val &= ~BIT(5);  /* Power domain active */
-		val &= ~BIT(6);  /* Wake from sleep */
-		val &= ~BIT(7);  /* Deassert reset (BCR) */
+
+		/* Strategy 1: Simple enable - just ensure bit 4 set, bit 7 clear */
+		dev_info(dev, "CE2: Trying Strategy 1 (simple enable)\n");
+		val |= BIT(4);   /* Ensure clock enabled */
+		val &= ~BIT(7);  /* Ensure reset deasserted */
 		writel_relaxed(val, gcc_base + 0x2740);
 
 		val = readl_relaxed(gcc_base + 0x2740);
-		dev_info(dev, "CE2: CE2_HCLK_CTL after:  0x%08x\n", val);
+		dev_info(dev, "CE2: CE2_HCLK_CTL after S1: 0x%08x (bits: %c%c%c%c %c%c%c%c)\n",
+			 val,
+			 (val & BIT(7)) ? '7' : '.', (val & BIT(6)) ? '6' : '.',
+			 (val & BIT(5)) ? '5' : '.', (val & BIT(4)) ? '4' : '.',
+			 (val & BIT(3)) ? '3' : '.', (val & BIT(2)) ? '2' : '.',
+			 (val & BIT(1)) ? '1' : '.', (val & BIT(0)) ? '0' : '.');
+
+		/* Is register read-only? Test by writing different patterns */
+		if (val == 0) {
+			dev_warn(dev, "CE2: Clock register cleared itself! Testing if writable...\n");
+
+			/* Try writing 0xFFFFFFFF and read back */
+			writel_relaxed(0xFFFFFFFF, gcc_base + 0x2740);
+			val = readl_relaxed(gcc_base + 0x2740);
+			dev_info(dev, "CE2: Write 0xFFFFFFFF -> read 0x%08x (writable mask)\n", val);
+
+			/* Try writing specific enable pattern */
+			writel_relaxed(0x00000010, gcc_base + 0x2740);
+			val = readl_relaxed(gcc_base + 0x2740);
+			dev_info(dev, "CE2: Write 0x00000010 -> read 0x%08x\n", val);
+
+			/* Check if CCF still controls this register */
+			dev_info(dev, "CE2: Register may be CCF-managed and we're bypassing it incorrectly\n");
+		}
 
 		/* Wait for clock to stabilize */
 		usleep_range(100, 200);
@@ -311,6 +339,28 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		val = readl_relaxed(gcc_base + 0x2fd4);
 		dev_info(dev, "CE2: CE2_HALT_STATUS: 0x%08x %s\n",
 			 val, (val & BIT(0)) ? "(HALTED)" : "(RUNNING)");
+
+		/* Scan nearby GCC registers to find what's controlling CE2 */
+		dev_info(dev, "CE2: Scanning nearby GCC registers:\n");
+		dev_info(dev, "  0x273c: 0x%08x (possible CE2_CORE_CLK_CTL)\n",
+			 readl_relaxed(gcc_base + 0x273c));
+		dev_info(dev, "  0x2740: 0x%08x (CE2_HCLK_CTL)\n",
+			 readl_relaxed(gcc_base + 0x2740));
+		dev_info(dev, "  0x2744: 0x%08x (possible CE2_HCLK_FS)\n",
+			 readl_relaxed(gcc_base + 0x2744));
+		dev_info(dev, "  0x2748: 0x%08x (next register)\n",
+			 readl_relaxed(gcc_base + 0x2748));
+		dev_info(dev, "  0x2fd4: 0x%08x (CE2_HALT_STATUS)\n",
+			 readl_relaxed(gcc_base + 0x2fd4));
+		dev_info(dev, "  0x2fd8: 0x%08x (next register)\n",
+			 readl_relaxed(gcc_base + 0x2fd8));
+
+		/* Check if power domain register exists */
+		dev_info(dev, "CE2: Checking power domain registers:\n");
+		dev_info(dev, "  0x3000: 0x%08x (GCC general control)\n",
+			 readl_relaxed(gcc_base + 0x3000));
+		dev_info(dev, "  0x3080: 0x%08x (possible power domain)\n",
+			 readl_relaxed(gcc_base + 0x3080));
 
 		iounmap(gcc_base);
 
