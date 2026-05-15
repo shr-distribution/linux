@@ -1350,6 +1350,16 @@ ktime_t tick_nohz_get_sleep_length(ktime_t *delta_next)
 
 	WARN_ON_ONCE(!tick_sched_flag_test(ts, TS_FLAG_INIDLE));
 
+	/*
+	 * During CPU hotplug teardown, the tick device may be NULL when
+	 * CPUHP_AP_TICK_DYING removes it but cpuidle is still active.
+	 * Return 0 to force the shortest sleep in this race window.
+	 */
+	if (unlikely(!dev)) {
+		*delta_next = 0;
+		return 0;
+	}
+
 	*delta_next = ktime_sub(dev->next_event, now);
 
 	if (!can_stop_idle_tick(cpu, ts))
