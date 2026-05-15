@@ -2354,7 +2354,7 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	switch (ios->power_mode) {
 	case MMC_POWER_OFF:
 		/* Set low load on qcom variant before power off */
-		if (variant->qcom_variant && (mmc->caps & MMC_CAP_SDIO_IRQ)) {
+		if (variant->qcom_fifo && (mmc->caps & MMC_CAP_SDIO_IRQ)) {
 			if (!IS_ERR(mmc->supply.vqmmc))
 				regulator_set_load(mmc->supply.vqmmc, 0);
 			if (!IS_ERR(mmc->supply.vmmc))
@@ -2393,7 +2393,7 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		}
 
 		/* Set high load for SDIO WiFi on qcom variant */
-		if (variant->qcom_variant && (mmc->caps & MMC_CAP_SDIO_IRQ)) {
+		if (variant->qcom_fifo && (mmc->caps & MMC_CAP_SDIO_IRQ)) {
 			if (!IS_ERR(mmc->supply.vqmmc))
 				regulator_set_load(mmc->supply.vqmmc, 100000);
 			if (!IS_ERR(mmc->supply.vmmc))
