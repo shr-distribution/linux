@@ -263,19 +263,21 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	 *
 	 * On some devices (e.g., HP TouchPad), the bootloader OEMSBL/TrustZone
 	 * stage is missing or incomplete, so CE2 peripheral is never properly
-	 * initialized. This workaround enables the clock and verifies hardware
-	 * responds to MMIO reads.
+	 * initialized. This workaround verifies hardware responds to MMIO reads.
 	 *
-	 * The Clock Control Framework (CCF) should handle CE2_P_CLK enable via
-	 * the device tree clock bindings. This code only serves as a safety check
-	 * and provides diagnostic output during probe.
+	 * The Clock Control Framework (CCF) handles CE2_P_CLK enable via
+	 * the device tree clock bindings. This code only verifies the hardware
+	 * is accessible after CCF enables the clocks.
+	 *
+	 * Verbose logging helps debug CE2 on other MSM8660/APQ8060 platforms
+	 * where bootloader initialization may differ.
 	 *
 	 * Reference: reports/ce2-investigation/CE2-BREAKTHROUGH-SUCCESS.md
 	 */
 	if (qce->version == QCE_VERSION_CE2) {
 		u32 val;
 
-		dev_dbg(dev, "CE2: Verifying hardware initialization\n");
+		dev_info(dev, "CE2: Verifying hardware initialization\n");
 
 		/*
 		 * Verify CE2 MMIO is accessible. If all registers read as zero,
@@ -285,14 +287,16 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		 * 0x10 contains status, and 0x20 contains hardware capabilities.
 		 */
 		val = readl_relaxed(qce->base + 0x00);
-		dev_dbg(dev, "CE2: Version register: 0x%08x\n", val);
+		dev_info(dev, "CE2: Version register (0x00): 0x%08x\n", val);
 
 		if (val == 0) {
+			dev_info(dev, "CE2: Version register is zero, checking other registers...\n");
+
 			val = readl_relaxed(qce->base + 0x10);
-			dev_dbg(dev, "CE2: Status register: 0x%08x\n", val);
+			dev_info(dev, "CE2: Status register (0x10): 0x%08x\n", val);
 
 			val = readl_relaxed(qce->base + 0x20);
-			dev_dbg(dev, "CE2: Capabilities register: 0x%08x\n", val);
+			dev_info(dev, "CE2: Capabilities register (0x20): 0x%08x\n", val);
 
 			if (readl_relaxed(qce->base + 0x00) == 0 &&
 			    readl_relaxed(qce->base + 0x10) == 0 &&
@@ -302,6 +306,8 @@ static int qce_crypto_probe(struct platform_device *pdev)
 				dev_err(dev, "CE2: or eFuse lockout. Crypto operations will likely fail.\n");
 				return -EIO;
 			}
+
+			dev_info(dev, "CE2: Hardware accessible despite zero version register\n");
 		}
 
 		dev_info(dev, "CE2: Hardware initialized successfully\n");
