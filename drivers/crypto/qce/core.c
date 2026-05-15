@@ -340,28 +340,6 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		dev_info(dev, "CE2: CE2_HALT_STATUS: 0x%08x %s\n",
 			 val, (val & BIT(0)) ? "(HALTED)" : "(RUNNING)");
 
-		/* Scan nearby GCC registers to find what's controlling CE2 */
-		dev_info(dev, "CE2: Scanning nearby GCC registers:\n");
-		dev_info(dev, "  0x273c: 0x%08x (possible CE2_CORE_CLK_CTL)\n",
-			 readl_relaxed(gcc_base + 0x273c));
-		dev_info(dev, "  0x2740: 0x%08x (CE2_HCLK_CTL)\n",
-			 readl_relaxed(gcc_base + 0x2740));
-		dev_info(dev, "  0x2744: 0x%08x (possible CE2_HCLK_FS)\n",
-			 readl_relaxed(gcc_base + 0x2744));
-		dev_info(dev, "  0x2748: 0x%08x (next register)\n",
-			 readl_relaxed(gcc_base + 0x2748));
-		dev_info(dev, "  0x2fd4: 0x%08x (CE2_HALT_STATUS)\n",
-			 readl_relaxed(gcc_base + 0x2fd4));
-		dev_info(dev, "  0x2fd8: 0x%08x (next register)\n",
-			 readl_relaxed(gcc_base + 0x2fd8));
-
-		/* Check if power domain register exists */
-		dev_info(dev, "CE2: Checking power domain registers:\n");
-		dev_info(dev, "  0x3000: 0x%08x (GCC general control)\n",
-			 readl_relaxed(gcc_base + 0x3000));
-		dev_info(dev, "  0x3080: 0x%08x (possible power domain)\n",
-			 readl_relaxed(gcc_base + 0x3080));
-
 		iounmap(gcc_base);
 
 		/* ===== Phase 2: Peripheral Initialization ===== */
