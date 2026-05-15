@@ -718,9 +718,11 @@ int vidc_boot_firmware(struct vidc_core *core)
 		dev_err(core->dev, "hw reset failed: %d\n", ret);
 		return ret;
 	}
+	printk(KERN_EMERG "VIDC: boot_fw: about to read post-reset registers\n");
 	dev_info(core->dev, "boot_fw: post-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
 		 vidc_read(core, VIDC_REG_SW_RESET),
 		 vidc_read(core, VIDC_REG_FW_VERSION));
+	printk(KERN_EMERG "VIDC: boot_fw: post-reset register reads completed\n");
 	dev_info(core->dev, "boot_fw: hw_reset returned ok, waiting FW_STATUS_RET (200ms)\n");
 
 	{
