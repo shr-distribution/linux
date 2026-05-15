@@ -83,35 +83,20 @@ static int vidc_clk_enable(struct vidc_core *core)
 	}
 
 	/*
-	 * WORKAROUND: CCF calls above don't actually enable VCODEC_CLK in hardware.
-	 * Register 0x040000f8 (VCODEC_CLK enable) stays 0x00000000 after
-	 * clk_prepare_enable(core_clk), but webOS shows 0x00ff0006.
-	 * Additionally, VCODEC_AHB_RESET (bit 1 of 0x0400020c) stays asserted.
-	 * Manually write to MMCC registers to match webOS state.
+	 * DEBUG: Check if CCF actually enabled VCODEC_CLK.
+	 * Previous test showed register 0xf8 was 0xc0ff00a5 after CCF calls
+	 * (bit 0 set = enabled, but config bits differ from webOS 0x00ff0006).
 	 */
 	mmcc = ioremap(0x04000000, 0x1000);
-	if (!mmcc) {
-		dev_err(core->dev, "failed to map MMCC registers\n");
-		ret = -ENOMEM;
-		goto err_axi_clk;
+	if (mmcc) {
+		val = readl_relaxed(mmcc + 0xf8);
+		dev_info(core->dev, "MMCC: VCODEC_CLK (0xf8) = 0x%08x (bit 0 = %s)\n",
+			 val, (val & BIT(0)) ? "ENABLED" : "DISABLED");
+		val = readl_relaxed(mmcc + 0x20c);
+		dev_info(core->dev, "MMCC: reset reg (0x20c) = 0x%08x (AHB_RESET bit 1 = %s)\n",
+			 val, (val & BIT(1)) ? "ASSERTED" : "DEASSERTED");
+		iounmap(mmcc);
 	}
-
-	/* Enable VCODEC_CLK (register 0xf8, bit 0) */
-	val = readl_relaxed(mmcc + 0xf8);
-	dev_info(core->dev, "MMCC: pre-workaround VCODEC_CLK (0xf8) = 0x%08x\n", val);
-	writel_relaxed(0x00ff0006, mmcc + 0xf8);
-	val = readl_relaxed(mmcc + 0xf8);
-	dev_info(core->dev, "MMCC: post-workaround VCODEC_CLK (0xf8) = 0x%08x\n", val);
-
-	/* Deassert VCODEC_AHB_RESET (register 0x20c, bit 1) */
-	val = readl_relaxed(mmcc + 0x20c);
-	dev_info(core->dev, "MMCC: pre-workaround reset reg (0x20c) = 0x%08x\n", val);
-	val &= ~BIT(1);
-	writel_relaxed(val, mmcc + 0x20c);
-	val = readl_relaxed(mmcc + 0x20c);
-	dev_info(core->dev, "MMCC: post-workaround reset reg (0x20c) = 0x%08x\n", val);
-
-	iounmap(mmcc);
 
 	return 0;
 
