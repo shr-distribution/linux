@@ -110,6 +110,14 @@ static void qcom_cpu_die(unsigned int cpu)
 		spm_set_low_power_mode(drv, PM_SLEEP_MODE_SPC);
 
 		/*
+		 * Clear cold_boot_done for this CPU. After power collapse with
+		 * reset, the CPU is fully powered down and needs the complete
+		 * hardware initialization sequence (scss_release_secondary) on
+		 * next boot, not just the pen_release wake path.
+		 */
+		per_cpu(cold_boot_done, cpu) = false;
+
+		/*
 		 * Loop until power collapse succeeds. cpu_suspend() can return
 		 * if there are pending IRQs when SCM tries to power down.
 		 * Keep retrying until we actually power off.
@@ -142,6 +150,7 @@ static void qcom_cpu_die(unsigned int cpu)
 		 * on MSM8660 with proper DT, but safe to have).
 		 */
 		pr_warn("CPU%u: SPM not found, using plain WFI\n", cpu);
+		per_cpu(cold_boot_done, cpu) = false;
 		while (1)
 			wfi();
 	}
