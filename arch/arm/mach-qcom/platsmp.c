@@ -107,22 +107,48 @@ static void qcom_cpu_die(unsigned int cpu)
 {
 	struct spm_driver_data *drv;
 
-	/*
-	 * On MSM8660 Scorpion, use simple WFI for hotplug rather than full
-	 * power collapse. The hardware doesn't support automatic power-up
-	 * after SPC mode - there's no ACC (like Krait platforms have) to
-	 * control power rails, and the SPM only manages power-down sequences.
-	 *
-	 * When the boot CPU wants to bring this CPU back online, it will:
-	 * 1. Write to pen_release
-	 * 2. Send SEV (to wake from WFE in headsmp.S on cold boot)
-	 * 3. Send IPI (to wake from WFI here on warm boot)
-	 *
-	 * Since we're not power collapsing, cold_boot_done stays true and
-	 * scss_release_secondary won't be called on subsequent online attempts.
-	 */
-	while (1)
-		wfi();
+	drv = spm_get_drv_by_cpu(cpu);
+	if (drv) {
+		/*
+		 * MSM8660 hotplug strategy (matches legacy webOS kernel):
+		 *
+		 * Enter power collapse in a loop, checking pen_release on each
+		 * wake. The CPU will wake periodically from power collapse due to
+		 * interrupts (likely timer ticks), check pen_release, and either
+		 * go back to sleep or break out if the boot CPU wrote our ID.
+		 *
+		 * This works because:
+		 * - SPM power collapse is not "full power down" - CPU can wake
+		 *   from interrupts
+		 * - Checking pen_release gives the boot CPU a way to signal wake
+		 * - Loop retries until wake is intended (pen_release == cpu)
+		 */
+		spm_set_low_power_mode(drv, PM_SLEEP_MODE_SPC);
+
+		for (;;) {
+			int ret = cpu_suspend(0, qcom_pm_collapse_standalone);
+
+			/*
+			 * We woke from power collapse (likely timer interrupt).
+			 * Check if boot CPU wants us online by looking at pen_release.
+			 */
+			if (pen_release == cpu) {
+				/* Proper wakeup requested, we're done */
+				pen_release = -1;
+				spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
+				return;
+			}
+
+			/*
+			 * Spurious wake (timer or other interrupt), not a real
+			 * online request. Go back to power collapse.
+			 */
+		}
+	} else {
+		/* Fallback if SPM not available */
+		while (1)
+			wfi();
+	}
 }
 
 /*
@@ -151,26 +177,16 @@ static void qcom_cpu_die(unsigned int cpu)
 static bool msm8660_cpu_can_disable(unsigned int cpu)
 {
 	/*
-	 * Disable CPU hotplug on MSM8660/Scorpion.
+	 * Enable CPU hotplug on MSM8660/Scorpion.
 	 *
-	 * After extensive testing, MSM8660 doesn't support bringing a CPU back
-	 * online after it's been offlined:
+	 * Hotplug works via the pen_release mechanism: qcom_cpu_die enters a
+	 * loop where it power collapses and checks pen_release on each wake.
+	 * When the boot CPU wants to bring it online, it writes pen_release = cpu
+	 * and the sleeping CPU breaks out of the loop.
 	 *
-	 * 1. Simple WFI approach: CPU sleeps in wfi() but IPI delivery fails
-	 *    after hotplug offline. The GIC or CPU state prevents wakeup.
-	 *
-	 * 2. Power collapse (SPC) approach: CPU powers down successfully but
-	 *    cannot be powered back up. Unlike Krait platforms with ACC for
-	 *    power rail control, Scorpion only has SPM which manages power-down
-	 *    sequences but not power-up.
-	 *
-	 * The only working wake path is cold boot via scss_release_secondary,
-	 * but that requires the CPU to be actually reset, not just sleeping.
-	 *
-	 * Deep idle via cpuidle (SPC state) works fine because the CPU wakes
-	 * from timer interrupts while still powered, never going fully offline.
+	 * This matches the legacy webOS kernel implementation.
 	 */
-	return false;
+	return true;
 }
 #endif
 
@@ -507,74 +523,68 @@ static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	/*
 	 * On first boot, run scss_release_secondary to take the CPU out of
 	 * reset and start it at the cold boot address (msm8660_secondary_startup).
-	 * The CPU will poll pen_release in headsmp.S until we write its ID.
 	 */
 	if (!per_cpu(cold_boot_done, cpu)) {
 		ret = scss_release_secondary(cpu);
 		if (ret)
 			return ret;
 		per_cpu(cold_boot_done, cpu) = true;
+	}
 
-		/*
-		 * Release CPU%u from the holding pen via pen_release + sev.
-		 * Cache is off on CPU1 at this point so we must flush our
-		 * write all the way to DRAM before signalling.
-		 */
-		pen_release = cpu;
+	/*
+	 * Release the CPU via pen_release.
+	 *
+	 * On first boot: CPU is polling pen_release in headsmp.S (cache off).
+	 * On warm boot: CPU is in qcom_cpu_die loop, waking periodically from
+	 * power collapse to check pen_release (cache on, so no flush needed).
+	 *
+	 * Write pen_release = cpu to signal the target CPU to proceed. For
+	 * cold boot we must flush since CPU1 reads with cache off.
+	 */
+	pen_release = cpu;
+	if (!per_cpu(cold_boot_done, cpu)) {
 		__cpuc_flush_dcache_area((void *)&pen_release, sizeof(pen_release));
 		outer_clean_range(__pa(&pen_release),
 				  __pa(&pen_release) + sizeof(pen_release));
-		dsb(ishst);
-		sev();
-
-		/* Backup: also poke via IPI in case sev didn't take. */
-		arch_send_wakeup_ipi_mask(cpumask_of(cpu));
-
-		start_jiffies = jiffies;
-
-		/*
-		 * Wait for CPU%u to acknowledge by writing pen_release back to
-		 * -1 (mvn r7,#0; str r7,[r6] in headsmp.S). We have to
-		 * invalidate our cache line each iteration because CPU1's ack
-		 * is a memory write with cache off, so it won't appear in our
-		 * cached view automatically.
-		 */
-		while (pen_release != -1) {
-			__cpuc_flush_dcache_area((void *)&pen_release, sizeof(pen_release));
-			outer_inv_range(__pa(&pen_release),
-					__pa(&pen_release) + sizeof(pen_release));
-			if (cnt++ >= SECONDARY_CPU_WAIT_MS)
-				break;
-			usleep_range(1000, 1500);
-		}
-
-		if (pen_release != -1) {
-			atomic_inc(&pen_release_timeouts);
-			pen_release_last_seen_on_timeout = pen_release;
-			pr_warn("CPU%u: pen_release ack timed out (pen=%d, %ums)\n",
-				cpu, pen_release,
-				jiffies_to_msecs(jiffies - start_jiffies));
-			return -ETIMEDOUT;
-		}
-
-		/*
-		 * Diagnostics: record latency in ms and print once on first
-		 * success so dmesg has positive confirmation the mechanism works.
-		 * Subsequent successes update the counter silently — read via
-		 * pr_info-on-demand or future debugfs.
-		 */
-		pen_release_last_ack_ms = jiffies_to_msecs(jiffies - start_jiffies);
-		if (atomic_inc_return(&pen_release_successes) == 1)
-			pr_info("Scorpion-MP pen_release path active: CPU%u released and ack'd in %ums\n",
-				cpu, pen_release_last_ack_ms);
-	} else {
-		/*
-		 * Warm boot after hotplug: CPU is sleeping in WFI in cpu_die.
-		 * Just send an IPI to wake it up. No pen_release needed since
-		 * the CPU isn't in headsmp.S - it's in the kernel's WFI loop.
-		 */
-		arch_send_wakeup_ipi_mask(cpumask_of(cpu));
 	}
+	dsb(ishst);
+	sev();
+
+	/* Backup: also poke via IPI in case sev didn't take. */
+	arch_send_wakeup_ipi_mask(cpumask_of(cpu));
+
+	start_jiffies = jiffies;
+
+	/*
+	 * Wait for the CPU to acknowledge by writing pen_release back to -1.
+	 *
+	 * For cold boot: headsmp.S writes -1 with cache off.
+	 * For warm boot: qcom_cpu_die writes -1 with cache on.
+	 *
+	 * We invalidate our cache line each iteration to see the ack.
+	 */
+	while (pen_release != -1) {
+		__cpuc_flush_dcache_area((void *)&pen_release, sizeof(pen_release));
+		outer_inv_range(__pa(&pen_release),
+				__pa(&pen_release) + sizeof(pen_release));
+		if (cnt++ >= SECONDARY_CPU_WAIT_MS)
+			break;
+		usleep_range(1000, 1500);
+	}
+
+	if (pen_release != -1) {
+		atomic_inc(&pen_release_timeouts);
+		pen_release_last_seen_on_timeout = pen_release;
+		pr_warn("CPU%u: pen_release ack timed out (pen=%d, %ums)\n",
+			cpu, pen_release,
+			jiffies_to_msecs(jiffies - start_jiffies));
+		return -ETIMEDOUT;
+	}
+
+	pen_release_last_ack_ms = jiffies_to_msecs(jiffies - start_jiffies);
+	if (atomic_inc_return(&pen_release_successes) == 1)
+		pr_info("Scorpion-MP pen_release path active: CPU%u released and ack'd in %ums\n",
+			cpu, pen_release_last_ack_ms);
 
 	return 0;
 }
