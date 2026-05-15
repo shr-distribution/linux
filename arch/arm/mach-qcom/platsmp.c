@@ -519,6 +519,17 @@ static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	int ret;
 	int cnt = 0;
 	unsigned long start_jiffies;
+	struct spm_driver_data *drv;
+
+	/*
+	 * Restore SPM to standby mode before attempting to bring CPU online.
+	 * If the CPU was previously offlined via power collapse (SPC), its
+	 * SPM is still programmed for power-down mode. We must restore it
+	 * to standby so the CPU can actually run when we release it from reset.
+	 */
+	drv = spm_get_drv_by_cpu(cpu);
+	if (drv)
+		spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
 
 	if (!per_cpu(cold_boot_done, cpu)) {
 		ret = scss_release_secondary(cpu);
