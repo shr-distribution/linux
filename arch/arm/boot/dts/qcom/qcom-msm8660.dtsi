@@ -409,29 +409,25 @@
 		 */
 		/*
 		 * MPM (MSM Power Manager) wakeup interrupt controller.
-		 *
-		 * DISABLED: Causes early boot hang during device tree parsing.
-		 * The reg property overlaps with RPM memory region which causes
-		 * a resource conflict. Need to use syscon approach or find
-		 * alternative way to access vMPM registers without claiming
-		 * the memory region.
-		 *
-		 * mpm: interrupt-controller@1049d8 {
-		 *	compatible = "qcom,msm8660-mpm", "qcom,mpm";
-		 *	reg = <0x001049d8 0x448>;
-		 *	interrupts = <GIC_SPI 2 IRQ_TYPE_EDGE_RISING>;
-		 *	mboxes = <&gcc_ipc 1>;
-		 *	interrupt-controller;
-		 *	#interrupt-cells = <2>;
-		 *	#power-domain-cells = <0>;
-		 *	interrupt-parent = <&intc>;
-		 *	qcom,mpm-pin-count = <64>;
-		 *	qcom,mpm-pin-map = <25 100>,
-		 *			   <26 50>,
-		 *			   <27 79>;
-		 *	status = "disabled";
-		 * };
+		 * Uses syscon to access vMPM registers within RPM memory region
+		 * without claiming overlapping memory (which caused boot hang).
 		 */
+		mpm: interrupt-controller {
+			compatible = "qcom,msm8660-mpm", "qcom,mpm";
+			qcom,rpm-syscon = <&rpm>;
+			qcom,mpm-offset = <0x9d8>;
+			interrupts = <GIC_SPI 2 IRQ_TYPE_EDGE_RISING>;
+			mboxes = <&gcc_ipc 1>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			#power-domain-cells = <0>;
+			interrupt-parent = <&intc>;
+			qcom,mpm-pin-count = <64>;
+			qcom,mpm-pin-map = <25 100>,	/* USB1_HS */
+					   <26 50>,	/* TV_ENC */
+					   <27 79>;	/* HDMI */
+			status = "disabled";
+		};
 
 		timer@2000000 {
 			compatible = "qcom,scss-timer", "qcom,msm-timer";
@@ -1180,7 +1176,7 @@
 		};
 
 		rpm: rpm@104000 {
-			compatible = "qcom,rpm-msm8660";
+			compatible = "qcom,rpm-msm8660", "syscon";
 			reg = <0x00104000 0x1000>;
 			qcom,ipc = <&l2cc 0x8 2>;
 

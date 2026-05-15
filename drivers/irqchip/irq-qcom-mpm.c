@@ -12,12 +12,14 @@
 #include <linux/irqchip.h>
 #include <linux/irqdomain.h>
 #include <linux/mailbox_client.h>
+#include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
+#include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/soc/qcom/irq.h>
 #include <linux/spinlock.h>
@@ -86,6 +88,8 @@ struct mpm_gic_map {
 struct qcom_mpm_priv {
 	void __iomem *base;
 	void __iomem *status_base;	/* separate status register base (MSM8660) */
+	struct regmap *regmap;		/* syscon regmap (MSM8660 via RPM) */
+	unsigned int regmap_offset;	/* offset within syscon region */
 	raw_spinlock_t lock;
 	struct mbox_client mbox_client;
 	struct mbox_chan *mbox_chan;
@@ -118,15 +122,25 @@ static u32 qcom_mpm_read(struct qcom_mpm_priv *priv, unsigned int reg,
 			 unsigned int index)
 {
 	unsigned int offset;
+	u32 val;
 
 	if (priv->msm8660_layout) {
-		if (reg == MPM_REG_STATUS)
+		if (reg == MPM_REG_STATUS) {
+			if (priv->regmap) {
+				regmap_read(priv->regmap, priv->regmap_offset + MPM_8660_STATUS_OFFSET + index * 4, &val);
+				return val;
+			}
 			return readl_relaxed(priv->status_base + index * 4);
+		}
 		offset = (qcom_mpm_8660_reg(reg) * priv->reg_stride + index) * 4;
 	} else {
 		offset = (reg * priv->reg_stride + index + 2) * 4;
 	}
 
+	if (priv->regmap) {
+		regmap_read(priv->regmap, priv->regmap_offset + offset, &val);
+		return val;
+	}
 	return readl_relaxed(priv->base + offset);
 }
 
@@ -137,6 +151,10 @@ static void qcom_mpm_write(struct qcom_mpm_priv *priv, unsigned int reg,
 
 	if (priv->msm8660_layout) {
 		if (reg == MPM_REG_STATUS) {
+			if (priv->regmap) {
+				regmap_write(priv->regmap, priv->regmap_offset + MPM_8660_STATUS_OFFSET + index * 4, val);
+				return;
+			}
 			writel_relaxed(val, priv->status_base + index * 4);
 			wmb();
 			return;
@@ -144,6 +162,11 @@ static void qcom_mpm_write(struct qcom_mpm_priv *priv, unsigned int reg,
 		offset = (qcom_mpm_8660_reg(reg) * priv->reg_stride + index) * 4;
 	} else {
 		offset = (reg * priv->reg_stride + index + 2) * 4;
+	}
+
+	if (priv->regmap) {
+		regmap_write(priv->regmap, priv->regmap_offset + offset, val);
+		return;
 	}
 
 	writel_relaxed(val, priv->base + offset);
@@ -450,9 +473,24 @@ static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 
 	raw_spin_lock_init(&priv->lock);
 
+	/* MSM8660 syscon approach: access vMPM via RPM syscon */
+	if (priv->msm8660_layout && of_property_read_bool(np, "qcom,rpm-syscon")) {
+		priv->regmap = syscon_regmap_lookup_by_phandle(np, "qcom,rpm-syscon");
+		if (IS_ERR(priv->regmap)) {
+			dev_err(dev, "failed to get RPM syscon: %ld\n", PTR_ERR(priv->regmap));
+			return PTR_ERR(priv->regmap);
+		}
+
+		ret = of_property_read_u32(np, "qcom,mpm-offset", &priv->regmap_offset);
+		if (ret) {
+			dev_err(dev, "failed to read qcom,mpm-offset: %d\n", ret);
+			return ret;
+		}
+
+		dev_info(dev, "using syscon regmap with offset 0x%x\n", priv->regmap_offset);
+	}
 	/* If we have a handle to an RPM message ram partition, use it. */
-	msgram_np = of_parse_phandle(np, "qcom,rpm-msg-ram", 0);
-	if (msgram_np) {
+	else if ((msgram_np = of_parse_phandle(np, "qcom,rpm-msg-ram", 0))) {
 		ret = of_address_to_resource(msgram_np, 0, &res);
 		if (ret) {
 			of_node_put(msgram_np);
@@ -488,7 +526,7 @@ static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 			return PTR_ERR(priv->base);
 	}
 
-	if (priv->msm8660_layout)
+	if (priv->msm8660_layout && priv->base)
 		priv->status_base = priv->base + MPM_8660_STATUS_OFFSET;
 
 	/*

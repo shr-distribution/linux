@@ -3737,13 +3737,13 @@
 	vdd-dig-supply = <&pm8058_s1>;
 };
 
-/* MPM disabled — boot hangs in reserved-memory parsing.
- * The mpm_sram node uses an MMIO address (RPM register space) which
- * the reserved-memory framework cannot handle (DRAM only).
- * Need to use a different DT approach (direct reg or syscon).
- *
- * &mpm { status = "okay"; };
+/* MPM: Using syscon approach to access vMPM registers via RPM.
+ * This avoids the resource conflict that caused boot hang with
+ * direct reg property (MPM registers are inside RPM memory region).
  */
+&mpm {
+	status = "okay";
+};
 
 &gemini {
 	status = "okay";
