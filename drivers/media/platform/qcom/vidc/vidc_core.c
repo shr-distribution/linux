@@ -178,8 +178,13 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_shifted)
 	 * first instruction fetch after RESET_NONE points at the firmware
 	 * we just memcpy'd into the coherent buffer.
 	 */
+	dev_info(core->dev, "hw_reset: writing DRAM_BASE=0x%08x to offsets 0x%03x/0x%03x\n",
+		 dram_base_shifted, VIDC_REG_DRAM_BASE_A, VIDC_REG_DRAM_BASE_B);
 	vidc_write(core, VIDC_REG_DRAM_BASE_A, dram_base_shifted);
 	vidc_write(core, VIDC_REG_DRAM_BASE_B, dram_base_shifted);
+	dev_info(core->dev, "hw_reset: readback DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
+		 vidc_read(core, VIDC_REG_DRAM_BASE_A),
+		 vidc_read(core, VIDC_REG_DRAM_BASE_B));
 
 	/* Halt AXI */
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_HALT_REQ);
