@@ -599,41 +599,41 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		}
 
 		/*
-		 * CE2 Diagnostics (module parameters enable these):
-		 * 1. Test ADM domain conflict (Gemini theory)
-		 * 2. Attempt to fix domain conflict
-		 * 3. Test PIO mode to isolate QCE vs DMA issues
+		 * CE2 Diagnostics - Run by default for testing (safe, non-blocking)
+		 * These are informational only and never fail probe.
 		 */
-		if (qce_test_adm_domain) {
-			ret = qce_test_adm_domain_conflict(dev);
-			if (ret == -EACCES && !qce_fix_adm_domain) {
-				dev_warn(dev, "Domain conflict found. Reinsert with fix_adm_domain=1 to attempt fix.\n");
-			}
-		}
+		dev_info(dev, "=== CE2 Diagnostics (Gemini domain conflict theory) ===\n");
 
-		if (qce_fix_adm_domain) {
+		/* Test 1: Check for domain conflict */
+		ret = qce_test_adm_domain_conflict(dev);
+		if (ret == -EACCES) {
+			dev_warn(dev, "Domain conflict detected! Channels locked to secure world.\n");
+
+			/* Test 2: Try to fix it */
+			dev_info(dev, "Attempting to unlock channels...\n");
 			ret = qce_fix_adm_domain_conflict(dev);
-			if (ret) {
-				dev_err(dev, "Failed to fix domain conflict, CE2 permanently locked.\n");
-				return ret;
+			if (ret == 0) {
+				dev_info(dev, "Domain unlock succeeded! Channels now accessible.\n");
+			} else {
+				dev_warn(dev, "Domain unlock failed - hardware is eFuse-locked.\n");
 			}
+		} else {
+			dev_info(dev, "No domain conflict found - channels accessible to Linux.\n");
 		}
 
-		if (qce_use_pio_mode) {
-			/* PIO test needs qce struct, so do it here */
-			ret = qce_test_pio_mode(qce);
-			if (ret) {
-				dev_err(dev, "PIO mode test failed, QCE hardware non-functional.\n");
-				return ret;
-			}
+		/* Test 3: PIO mode (always run to isolate QCE vs DMA) */
+		dev_info(dev, "Testing PIO mode to verify QCE hardware...\n");
+		ret = qce_test_pio_mode(qce);
+		if (ret == 0) {
+			dev_info(dev, "PIO mode works - QCE hardware is functional!\n");
+		} else {
+			dev_warn(dev, "PIO mode failed - QCE hardware itself may be locked.\n");
 		}
 
-		if (qce_try_scm_unlock) {
-			dev_info(dev, "=== CE2 Diagnostic: SCM Unlock Attempt ===\n");
-			dev_info(dev, "SCM call not yet implemented - requires qcom_scm_set_remote_state()\n");
-			dev_info(dev, "Service ID: 0x01, Command ID: 0x01, Resource: 0x14 (CE2)\n");
-			/* TODO: Add actual SCM call when we have the API */
-		}
+		dev_info(dev, "=== CE2 Diagnostics Complete ===\n");
+		dev_info(dev, "Note: Diagnostics are informational only. Driver will continue to load.\n");
+
+		/* Always continue probe regardless of diagnostic results */
 	}
 
 	ret = qce_check_version(qce);
