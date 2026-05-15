@@ -199,9 +199,9 @@
 		/*
 		 * AR6003 needs time after reset deassert to enter BMI
 		 * (Boot Mode Interface) for firmware download.
-		 * Legacy kernel uses 5ms, but 200ms provides margin.
+		 * WebOS uses 250ms delay after reset before SDIO detection.
 		 */
-		post-power-on-delay-ms = <200>;
+		post-power-on-delay-ms = <500>;
 	};
 
 	soc {
