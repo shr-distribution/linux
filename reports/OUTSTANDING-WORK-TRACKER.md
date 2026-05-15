@@ -148,6 +148,12 @@ First working QCE CE2 on MSM8660 mainline Linux! All vendors avoided CE2. Hardwa
 - **Finding:** Unlike CE2, PMIC works despite missing TrustZone init because RPM firmware + kernel drivers handle full initialization
 - **Tested:** 60+ regulators, GPIO/MPP, battery sensing, interrupts - all working
 
+### ✅ Audio Path Verification
+- **Date:** 2026-05-15
+- **Status:** FULLY FUNCTIONAL
+- **Tested:** Speaker output (LINEOUT via PM8901 MPP3 Class-D amp), Headphone output (HPOUT1L/R), automatic jack detection
+- **Test samples:** 440Hz sine, stereo test tones, frequency sweep - all working on both outputs
+
 ---
 
 ## Test Coverage Summary
@@ -158,7 +164,7 @@ First working QCE CE2 on MSM8660 mainline Linux! All vendors avoided CE2. Hardwa
 | Touchscreen (Cypress) | ✅ TESTED | Working |
 | WiFi (AR6003) | ✅ TESTED | Working |
 | Bluetooth | ✅ TESTED | Working |
-| Audio (WM8994) | ✅ TESTED | Working (after LRCLK + RDMACTL fixes) |
+| Audio (WM8994) | ✅ TESTED | Working (speakers + headphones, jack detection OK) |
 | Camera (MT9M113) | ✅ TESTED | Working (after sensor MCU recovery) |
 | GPU (A220) | ✅ TESTED | Working (with period-8 cycle workaround) |
 | CE2 Crypto | ✅ TESTED | Working (needs code cleanup) |
