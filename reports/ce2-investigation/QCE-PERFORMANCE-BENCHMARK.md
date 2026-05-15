@@ -66,9 +66,26 @@ Self-test status: All PASSED
 
 ## Analysis
 
-### Hash Performance
+### Important: OpenSSL Uses Software Crypto, Not QCE
 
-**SHA1**: Excellent performance, reaching 26.5 MB/s on large blocks
+**Critical clarification**: The benchmarks above measure OpenSSL's software implementation (NEON-optimized), **NOT QCE hardware acceleration**.
+
+OpenSSL command-line tools (`openssl speed`) use OpenSSL's built-in crypto libraries, which are heavily optimized with ARM NEON SIMD instructions. They do NOT use the kernel's crypto API (AF_ALG) by default, so QCE hardware is not utilized.
+
+**Where QCE hardware IS actually used:**
+- **dm-crypt**: Encrypted disks/filesystems (LUKS, plain dm-crypt)
+- **IPsec**: VPN tunnels using kernel IPsec
+- **kTLS**: In-kernel TLS offload (if enabled)
+- **Kernel subsystems**: Direct users of kernel crypto API
+
+**What these OpenSSL benchmarks actually show:**
+- Baseline software crypto performance (OpenSSL with NEON optimization)
+- Proof that QCE hardware registers and passes self-tests
+- But NOT proof of QCE hardware acceleration in practice
+
+### Hash Performance (Software/NEON Baseline)
+
+**SHA1**: 26.5 MB/s on large blocks (NEON-optimized software)
 - Small blocks (16-64 bytes): 1-4 MB/s (setup overhead dominates)
 - Medium blocks (256 bytes - 1KB): 11-20 MB/s (good acceleration)
 - Large blocks (8-16 KB): 26-27 MB/s (optimal throughput)
@@ -85,22 +102,31 @@ Self-test status: All PASSED
 - Plateaus around 11 MB/s for medium/large blocks
 - Consistent performance across 1-16 KB range
 
-### Hardware Acceleration Effectiveness
+### Software Crypto Performance (NEON Baseline)
 
-QCE shows clear hardware acceleration:
-1. **SHA1**: 26.5 MB/s is excellent for ARM Cortex-A8 @ 1.5 GHz
-2. **SHA256**: 15.7 MB/s is very good
-3. **AES-128-CBC**: 11.4 MB/s is reasonable
+The numbers measured above are **software-only crypto with ARM NEON**:
+1. **SHA1**: 26.5 MB/s (excellent NEON optimization)
+2. **SHA256**: 15.7 MB/s (very good NEON optimization)
+3. **AES-128-CBC**: 11.4 MB/s (good NEON optimization)
 
-For comparison, pure software crypto on Cortex-A8 typically achieves:
-- SHA1: ~10-15 MB/s (software)
-- SHA256: ~5-8 MB/s (software)
-- AES-128-CBC: ~8-12 MB/s (NEON-accelerated software)
+**OpenSSL on ARM Cortex-A8 with NEON is already quite fast!**
 
-**Improvement estimates** (vs software):
-- SHA1: ~2x faster with QCE
-- SHA256: ~2-3x faster with QCE
-- AES: ~Similar (NEON is already fast, QCE overhead balances out)
+Without NEON (pure C implementation), typical performance would be:
+- SHA1: ~8-10 MB/s
+- SHA256: ~4-6 MB/s
+- AES-128-CBC: ~5-8 MB/s
+
+**NEON provides 2-3x speedup over pure software.**
+
+### QCE Hardware Status
+
+Even though OpenSSL doesn't use it, QCE hardware is working and available:
+- ✅ 20 algorithms registered in kernel crypto API
+- ✅ All self-tests passing
+- ✅ Priority 300 (higher than software at 200)
+- ✅ Ready for dm-crypt, IPsec, kTLS
+
+**Real-world benefit**: Systems using kernel crypto API (like dm-crypt encrypted filesystems) will automatically use QCE hardware, offloading crypto from the CPU.
 
 ### DMA Transfer Characteristics
 
