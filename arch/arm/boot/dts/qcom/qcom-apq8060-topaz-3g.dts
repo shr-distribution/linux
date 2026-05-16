@@ -141,6 +141,28 @@
 };
 
 /* ===========================================================================
+ * WiFi (Atheros AR6003) board data -- override board-id for 3G variant
+ *
+ * Topaz3G has different antenna routing (shares space with the 3G modem
+ * antennas), so it ships its own RF calibration data. The webOS firmware
+ * package contains 3g_bdata.SD32.bin alongside bdata.SD32.bin for exactly
+ * this reason -- using the WiFi-variant board data on 3G hardware would
+ * apply wrong PA gain steps and TX power tables, which breaks the chip's
+ * BMI init sequence (chip stalls in OTP/firmware upload).
+ *
+ * Setting atheros,board-id = "SD32_3G" makes ath6kl request
+ * bdata.SD32_3G.bin instead of bdata.SD32.bin so the right calibration
+ * is loaded for this board. Both files must be present in /lib/firmware/
+ * ath6k/AR6003/hw2.1.1/ (supplied by the initramfs).
+ * ===========================================================================
+ */
+&sdcc4 {
+	wifi@1 {
+		atheros,board-id = "SD32_3G";
+	};
+};
+
+/* ===========================================================================
  * Pinctrl overrides
  *
  * Every override below is a full /delete-node/ + redefinition rather than a
