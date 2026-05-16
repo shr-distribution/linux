@@ -518,6 +518,18 @@ config QCOM_MPM
 	  MSM Power Manager driver to manage and configure wakeup
 	  IRQs for Qualcomm Technologies Inc (QTI) mobile chips.
 
+config MSM8660_WAKEUP
+	bool "MSM8660 Wakeup Interrupt Controller"
+	depends on ARCH_QCOM
+	depends on MFD_SYSCON
+	select IRQ_DOMAIN_HIERARCHY
+	default y
+	help
+	  Platform driver for MSM8660 wakeup interrupt controller (vMPM).
+	  This is a platform driver alternative to the generic QCOM_MPM
+	  driver which uses early IRQCHIP_MATCH init. Required for cpuidle
+	  deep sleep states (SPC/PC) on MSM8660/APQ8060 SoCs.
+
 config CSKY_MPINTC
 	bool
 	depends on CSKY

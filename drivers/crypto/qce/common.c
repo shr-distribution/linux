@@ -151,15 +151,22 @@ static u32 qce_config_reg(struct qce_device *qce, int little)
 		 * - No pipe pair select (uses ADM, not BAM)
 		 * - No request size (ADM handles this)
 		 * - Mask interrupts in config register
+		 *
+		 * CRITICAL: Read current CONFIG to preserve CLK_EN_N (bit 1)
+		 * and SW_RST (bit 0) clear state from initialization.
 		 */
-		config = BIT(CE2_MASK_DOUT_INTR_SHIFT) |
-			 BIT(CE2_MASK_DIN_INTR_SHIFT) |
-			 BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
-			 BIT(CE2_MASK_ERR_INTR_SHIFT);
+		config = qce_read(qce, qce_reg_config(qce));
+		/* Set interrupt masks */
+		config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) |
+			  BIT(CE2_MASK_DIN_INTR_SHIFT) |
+			  BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
+			  BIT(CE2_MASK_ERR_INTR_SHIFT);
 		/* Enable high speed mode */
 		config &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
 			    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
 			    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
+		/* Ensure CLK_EN_N (bit 1) and SW_RST (bit 0) stay cleared */
+		config &= ~(BIT(1) | BIT(0));
 		/* Note: CE2 doesn't have little endian mode bit */
 	} else {
 		u32 beats = (qce->burst_size >> 3) - 1;
