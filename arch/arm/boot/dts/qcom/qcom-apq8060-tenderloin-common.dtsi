@@ -315,9 +315,16 @@
 		 * - arch/arm/mach-msm/board-msm8x60.c: qcrypto resources
 		 * - arch/arm/mach-msm/include/mach/dma.h: DMOV_CE_* defines
 		 *
-		 * ADM DMA channels and CRCI for CE2:
-		 * - RX: Channel 2, CRCI 4 (DMOV_CE_IN_CHAN, DMOV_CE_IN_CRCI)
-		 * - TX: Channel 3, CRCI 5 (DMOV_CE_OUT_CHAN, DMOV_CE_OUT_CRCI)
+		 * MSM8660 has three CE2 CRCI signals:
+		 *   DMOV_CE_IN_CRCI   = 4  (input data flow control)
+		 *   DMOV_CE_OUT_CRCI  = 5  (cipher output flow control)
+		 *   DMOV_CE_HASH_CRCI = 15 (hash digest output flow control)
+		 *
+		 * Hash operations require CRCI 15 on the TX channel. CRCI 5
+		 * would cause TX DMA to hang forever since CE2 never signals
+		 * CRCI 5 for SHA/HMAC operations. Cipher (skcipher) output via
+		 * CRCI 5 will need a multi-CRCI ADM chain to coexist - not yet
+		 * wired in mainline qce; hash works today.
 		 */
 		crypto@18500000 {
 			compatible = "qcom,msm8660-qce";
@@ -336,7 +343,7 @@
 			dmas = <&adm_dma0 2>, <&adm_dma0 3>;
 			dma-names = "rx", "tx";
 			qcom,rx-crci = <4>;
-			qcom,tx-crci = <5>;
+			qcom,tx-crci = <15>;
 			status = "okay";
 		};
 
@@ -3653,6 +3660,18 @@
 		 * The first 3MB (0x38000000-0x382fffff) is reserved for
 		 * kernel SMI / video firmware (PMEM_KERNEL_SMI).
 		 */
+		/*
+		 * VIDC firmware region in SMI (System Memory Interface).
+		 * webOS: PMEM_KERNEL_SMI_BASE = 0x38000000, size = 0x300000 (3MB).
+		 * The VIDC RISC CPU fetches instructions through the MMSS fabric
+		 * SMI slave port — it cannot access EBI/DRAM. Firmware MUST live
+		 * here, not in CMA/DMA-coherent memory.
+		 */
+		vidc_fw_mem: vidc-fw@38000000 {
+			no-map;
+			reg = <0x38000000 0x300000>; /* 3MB - matches PMEM_KERNEL_SMI_SIZE */
+		};
+
 		drm_smi_mem: framebuffer@38300000 {
 			compatible = "shared-dma-pool";
 			reg = <0x38300000 0x3d00000>; /* 61MB - exact webOS size */
@@ -3765,6 +3784,19 @@
 
 &vidc {
 	status = "okay";
+	/*
+	 * Firmware must live in SMI memory (0x38000000). The VIDC RISC CPU
+	 * fetches instructions via MMFAB→SMI; it cannot access EBI/DRAM.
+	 * This matches webOS PMEM_KERNEL_SMI_BASE allocation.
+	 */
+	memory-region = <&vidc_fw_mem>;
+	/*
+	 * RISC fetches from SMI, not EBI. Vote on the MMFAB→SMI path.
+	 * Keep EBI vote for DPB/output buffers which live in DRAM.
+	 */
+	interconnects = <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0 &mmss_fabric MMFAB_SLV_SMI>,
+			<&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0 &apps_fabric AFAB_SLV_EBI_CH0>;
+	interconnect-names = "video-smi", "video-ebi";
 };
 
 /*
