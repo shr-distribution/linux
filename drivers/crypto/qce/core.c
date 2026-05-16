@@ -551,7 +551,6 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	 */
 	if (qce->version == QCE_VERSION_CE2) {
 		u32 val, status;
-		int timeout;
 
 		dev_info(dev, "CE2: Verifying hardware initialization\n");
 
@@ -624,15 +623,23 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		dev_info(dev, "CE2: Hardware initialized successfully\n");
 
 		/*
-		 * Initialize CE2 CONFIG register. The internal CE2 clock (CLK_EN_N)
-		 * and software reset (SW_RST) must be cleared for operations to work.
-		 * This is separate from the GCC CE2_HCLK clock we enabled above.
+		 * Initialize CE2 CONFIG register. Perform a proper SW_RST pulse
+		 * to clear SW_ERR (STATUS bit 0) which is set at boot on TouchPad
+		 * because the bootloader never initializes CE2.
+		 *
+		 * Without this cycle: SW_ERR stays set → CE2 never processes data
+		 * → CRCI-CE_OUT never fires → ADM TX DMA hangs forever.
 		 */
-		u32 ce2_config = 0;
-		ce2_config &= ~BIT(1);  /* Clear CLK_EN_N to enable internal clock */
-		ce2_config &= ~BIT(0);  /* Clear SW_RST to release from reset */
-		writel_relaxed(ce2_config, qce->base + 0x024);  /* CE2_REG_CONFIG */
-		dev_info(dev, "CE2: Wrote CONFIG=0x%08x (internal clock enabled, reset cleared)\n", ce2_config);
+		/* Assert SW_RST (keep CLK_EN_N=0 so clock stays enabled) */
+		writel_relaxed(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
+		usleep_range(10, 20);
+		/* Deassert SW_RST */
+		writel_relaxed(0, qce->base + CE2_REG_CONFIG);
+		usleep_range(10, 20);
+
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		dev_info(dev, "CE2: STATUS after SW_RST: 0x%08x (SW_ERR=%d)\n",
+			 status, status & BIT(CE2_SW_ERR_SHIFT));
 	}
 
 	/* Interconnect is optional - CE2 uses RPM for bus voting */
