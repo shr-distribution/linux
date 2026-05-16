@@ -97,15 +97,13 @@ static int qce_ahash_async_req_handle(struct crypto_async_request *async_req)
 	}
 
 	if (qce_is_ce2(qce)) {
-		/* CE2 hash path: configure registers + GOPROC via qce_start,
-		 * then drive the input/result via PIO. ADM DMA does not
-		 * currently fire CRCI handshakes for CE2 hash; PIO is the
-		 * only proven-working path (HTC sbl3 bootloader behaviour).
+		/* CE2 hash path: do all register programming + GOPROC + data
+		 * feed + result readback inside qce_ce2_pio_run_hash. The
+		 * generic qce_setup_regs_ahash sequence (STATUS=0, CONFIG
+		 * twice, AUTH_IV before SEG_CFG) yields garbage AUTH_IV output
+		 * on CE2; the PIO function uses the order proven by the
+		 * standalone diagnostic and the HTC sbl3 bootloader.
 		 */
-		ret = qce_start(async_req, tmpl->crypto_alg_type);
-		if (ret)
-			return ret;
-
 		ret = qce_ce2_pio_run_hash(async_req);
 
 		req->src = rctx->src_orig;
