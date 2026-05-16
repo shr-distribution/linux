@@ -17,6 +17,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
+#include <linux/irqchip/chained_irq.h>
 #include <linux/irqdomain.h>
 #include <linux/mailbox_client.h>
 #include <linux/mfd/syscon.h>
@@ -395,7 +396,7 @@ err_remove_domain:
 	return ret;
 }
 
-static int msm8660_wakeup_remove(struct platform_device *pdev)
+static void msm8660_wakeup_remove(struct platform_device *pdev)
 {
 	struct msm8660_wakeup *wakeup = platform_get_drvdata(pdev);
 
@@ -403,8 +404,6 @@ static int msm8660_wakeup_remove(struct platform_device *pdev)
 		mbox_free_channel(wakeup->mbox_chan);
 
 	irq_domain_remove(wakeup->domain);
-
-	return 0;
 }
 
 static const struct of_device_id msm8660_wakeup_of_match[] = {
