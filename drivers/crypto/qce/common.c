@@ -886,6 +886,19 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	if (!rctx->last_blk && req->nbytes % blocksize)
 		return -EINVAL;
 
+	/* Pulse SW_RST in CE2_CONFIG to flush any residual engine state.
+	 *
+	 * The standalone PIO diagnostic at probe time works correctly, but
+	 * later AF_ALG calls produced wrong digests because residual
+	 * AUTH_IV5..7 / CNTR / internal state was leaking between
+	 * operations. SW_RST pulse before each setup restores the engine
+	 * to the same clean state the probe-time diagnostic enjoys.
+	 */
+	qce_write(qce, CE2_REG_CONFIG, BIT(CE2_SW_RST_SHIFT));
+	udelay(10);
+	qce_write(qce, CE2_REG_CONFIG, 0);
+	udelay(10);
+
 	/* Build SEG_CFG with CE2 bit positions */
 	auth_cfg = qce_auth_cfg_ce2(rctx->flags);
 	if (rctx->last_blk)
@@ -905,7 +918,15 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	/* 3) SEG_SIZE (total bytes in this segment) */
 	qce_write(qce, CE2_REG_SEG_SIZE, req->nbytes);
 
-	/* 4) AUTH_IV0..N */
+	/* 4) AUTH_IV0..15: clear all 16 first to wipe any residual state from
+	 *    prior operations, then program the algorithm-specific IVs. SHA1
+	 *    uses IV0..4 (5 words); SHA256 uses IV0..7 (8 words). The
+	 *    remaining slots must be zero for the engine to produce correct
+	 *    output (observed empirically: residual values in IV5..7 from a
+	 *    prior SHA256 operation corrupted subsequent SHA1 results).
+	 */
+	qce_clear_array(qce, CE2_REG_AUTH_IV0, 16);
+
 	if (rctx->first_blk)
 		memcpy(auth, rctx->digest, digestsize);
 	else
