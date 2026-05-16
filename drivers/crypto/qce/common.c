@@ -888,6 +888,26 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 
 	/* qce_setup_regs_ahash() was already called -- regs configured + GOPROC */
 
+	/* DIAGNOSTIC: dump what was actually programmed (regs still readable in LOCKED) */
+	dev_info(qce->dev,
+		 "CE2 hash: SEG_CFG=0x%08x AUTH_SEG_CFG=0x%08x SEG_SIZE=0x%08x req->nbytes=%u first=%d last=%d\n",
+		 qce_read(qce, CE2_REG_SEG_CFG),
+		 qce_read(qce, CE2_REG_AUTH_SEG_CFG),
+		 qce_read(qce, CE2_REG_SEG_SIZE),
+		 req->nbytes, rctx->first_blk, rctx->last_blk);
+	dev_info(qce->dev,
+		 "CE2 hash: AUTH_IV0..3 = %08x %08x %08x %08x\n",
+		 qce_read(qce, CE2_REG_AUTH_IV0),
+		 qce_read(qce, CE2_REG_AUTH_IV1),
+		 qce_read(qce, CE2_REG_AUTH_IV2),
+		 qce_read(qce, CE2_REG_AUTH_IV3));
+	dev_info(qce->dev,
+		 "CE2 hash: AUTH_IV4..7 = %08x %08x %08x %08x\n",
+		 qce_read(qce, CE2_REG_AUTH_IV4),
+		 qce_read(qce, CE2_REG_AUTH_IV5),
+		 qce_read(qce, CE2_REG_AUTH_IV6),
+		 qce_read(qce, CE2_REG_AUTH_IV7));
+
 	/* Wait for engine to leave IDLE (transition to LOCKED, then PROCESSING) */
 	for (timeout = 1000; timeout > 0; timeout--) {
 		status = qce_read(qce, qce_reg_status(qce));
@@ -921,6 +941,10 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 
 	if (req->nbytes)
 		sg_copy_to_buffer(req->src, sg_nents(req->src), buf, req->nbytes);
+
+	dev_info(qce->dev,
+		 "CE2 hash: feeding %u bytes (padded to %u), first 16 bytes: %*ph\n",
+		 req->nbytes, total, min(total, 16U), buf);
 
 	/* Feed data in 4-dword chunks, polling DIN_RDY between each dword */
 	dwords = total / 4;
@@ -971,9 +995,15 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		__be32 result[SHA256_DIGEST_SIZE / sizeof(__be32)];
 		unsigned int words = digestsize / sizeof(u32);
 
-		for (i = 0; i < words; i++)
-			result[i] = cpu_to_be32(qce_read(qce,
-				CE2_REG_AUTH_IV0 + i * sizeof(u32)));
+		dev_info(qce->dev, "CE2 hash: post-AUTH_DONE STATUS=0x%08x\n",
+			 status);
+		for (i = 0; i < words; i++) {
+			u32 raw = qce_read(qce,
+				CE2_REG_AUTH_IV0 + i * sizeof(u32));
+			dev_info(qce->dev,
+				 "CE2 hash: AUTH_IV%u raw=0x%08x\n", i, raw);
+			result[i] = cpu_to_be32(raw);
+		}
 
 		memcpy(rctx->digest, result, digestsize);
 		if (req->result && rctx->last_blk)
