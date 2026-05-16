@@ -425,30 +425,47 @@ static int qce_test_pio_mode(struct qce_device *qce)
 	config &= ~(BIT(1) | BIT(0));
 	writel_relaxed(config, qce->base + CE2_REG_CONFIG);
 
-	/* Step 5: Check DIN_RDY before writing */
+	/* Step 5: Pre-trigger status snapshot */
 	status = readl_relaxed(qce->base + CE2_REG_STATUS);
-	dev_info(qce->dev, "Pre-write STATUS: 0x%08x\n", status);
+	dev_info(qce->dev, "Pre-GOPROC STATUS: 0x%08x\n", status);
 
-	if (!(status & BIT(CE2_DIN_RDY_SHIFT))) {
-		dev_err(qce->dev, "DIN_RDY not set, hardware not ready\n");
-		return -EIO;
-	}
-
-	/* Step 6: Write test data to DATA_SHADOW0 (CE2 input, not DATA_IN fifo) */
-	dev_info(qce->dev, "Writing test data 0x%08x to DATA_SHADOW0\n", test_data);
-	writel_relaxed(test_data, qce->base + CE2_REG_DATA_SHADOW0);
-
-	/* Step 7: Trigger GO */
-	dev_info(qce->dev, "Triggering GOPROC\n");
+	/* Step 6: Trigger GO BEFORE feeding data (matches HTC sbl3 sequence).
+	 * CE2 enters PROCESSING and waits for DIN_RDY-gated input writes.
+	 */
+	dev_info(qce->dev, "Triggering GOPROC (before data)\n");
 	writel_relaxed(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
 
-	/* Step 8: Poll for AUTH_DONE or DOUT_RDY */
-	timeout = 10000;  /* 100ms timeout */
+	/* Wait for engine to acknowledge GO (CRYPTO_STATE leaves IDLE) */
+	timeout = 1000;
+	while (timeout--) {
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if (status & CE2_CRYPTO_STATE_MASK)
+			break;
+		udelay(10);
+	}
+	dev_info(qce->dev, "Post-GOPROC STATUS: 0x%08x (CRYPTO_STATE=%u)\n",
+		 status, (status & CE2_CRYPTO_STATE_MASK) >> CE2_CRYPTO_STATE_SHIFT);
+
+	/* Step 7: Write test data to DATA_IN with DIN_RDY polling (HTC pattern) */
+	dev_info(qce->dev, "Polling DIN_RDY then writing 0x%08x to DATA_IN\n", test_data);
+	timeout = 1000;
+	while (timeout--) {
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if (status & BIT(CE2_DIN_RDY_SHIFT))
+			break;
+		udelay(10);
+	}
+	if (timeout <= 0) {
+		dev_err(qce->dev, "DIN_RDY never set after GOPROC; STATUS=0x%08x\n", status);
+		return -ETIMEDOUT;
+	}
+	writel_relaxed(test_data, qce->base + CE2_REG_DATA_IN);
+
+	/* Step 8: Poll for AUTH_DONE */
+	timeout = 10000;  /* 100ms */
 	while (timeout--) {
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
 		if (status & BIT(CE2_AUTH_DONE_SHIFT))
-			break;
-		if (status & BIT(CE2_DOUT_RDY_SHIFT))
 			break;
 		udelay(10);
 	}
