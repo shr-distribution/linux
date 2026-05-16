@@ -3432,7 +3432,7 @@
 
 &usb1 {
 	status = "okay";
-	dr_mode = "otg";
+	dr_mode = "peripheral";
 	/*
 	 * Mark USB1 as a system wakeup source — events on the USB bus
 	 * (cable plug, charger attach, host bus activity) should wake the
