@@ -942,6 +942,24 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
 	qce_write(qce, CE2_REG_CONFIG, config);
 
+	/* DIAGNOSTIC: read back what we just programmed before firing GO */
+	dev_info(qce->dev,
+		 "CE2 hash pre-GO: SEG_CFG=0x%08x AUTH_SEG_CFG=0x%08x SEG_SIZE=0x%08x CONFIG=0x%08x\n",
+		 qce_read(qce, CE2_REG_SEG_CFG),
+		 qce_read(qce, CE2_REG_AUTH_SEG_CFG),
+		 qce_read(qce, CE2_REG_SEG_SIZE),
+		 qce_read(qce, CE2_REG_CONFIG));
+	dev_info(qce->dev,
+		 "CE2 hash pre-GO: AUTH_IV0..3 = %08x %08x %08x %08x AUTH_IV4..7 = %08x %08x %08x %08x\n",
+		 qce_read(qce, CE2_REG_AUTH_IV0),
+		 qce_read(qce, CE2_REG_AUTH_IV1),
+		 qce_read(qce, CE2_REG_AUTH_IV2),
+		 qce_read(qce, CE2_REG_AUTH_IV3),
+		 qce_read(qce, CE2_REG_AUTH_IV4),
+		 qce_read(qce, CE2_REG_AUTH_IV5),
+		 qce_read(qce, CE2_REG_AUTH_IV6),
+		 qce_read(qce, CE2_REG_AUTH_IV7));
+
 	/* 7) GOPROC */
 	qce_write(qce, CE2_REG_GOPROC, BIT(CE2_GO_SHIFT));
 
@@ -1022,9 +1040,15 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		__be32 result[SHA256_DIGEST_SIZE / sizeof(__be32)];
 		unsigned int words = digestsize / sizeof(u32);
 
-		for (i = 0; i < words; i++)
-			result[i] = cpu_to_be32(qce_read(qce,
-				CE2_REG_AUTH_IV0 + i * sizeof(u32)));
+		dev_info(qce->dev,
+			 "CE2 hash post-DONE: STATUS=0x%08x\n", status);
+		for (i = 0; i < words; i++) {
+			u32 raw = qce_read(qce,
+				CE2_REG_AUTH_IV0 + i * sizeof(u32));
+			dev_info(qce->dev, "CE2 hash post-DONE: AUTH_IV%u=0x%08x\n",
+				 i, raw);
+			result[i] = cpu_to_be32(raw);
+		}
 
 		memcpy(rctx->digest, result, digestsize);
 		if (req->result && rctx->last_blk)
