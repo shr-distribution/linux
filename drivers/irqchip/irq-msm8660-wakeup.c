@@ -17,7 +17,6 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
-#include <linux/irqchip/chained_irq.h>
 #include <linux/irqdomain.h>
 #include <linux/mailbox_client.h>
 #include <linux/mfd/syscon.h>
@@ -348,10 +347,11 @@ static int msm8660_wakeup_probe(struct platform_device *pdev)
 	}
 
 	/* Create IRQ domain */
-	wakeup->domain = irq_domain_add_hierarchy(parent_domain, 0,
-						  MSM8660_MPM_PIN_COUNT,
-						  np, &msm8660_wakeup_domain_ops,
-						  wakeup);
+	wakeup->domain = irq_domain_create_hierarchy(parent_domain, 0,
+						     MSM8660_MPM_PIN_COUNT,
+						     of_node_to_fwnode(np),
+						     &msm8660_wakeup_domain_ops,
+						     wakeup);
 	if (!wakeup->domain) {
 		dev_err(dev, "failed to create IRQ domain\n");
 		return -ENOMEM;
