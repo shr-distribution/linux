@@ -772,6 +772,34 @@ int vidc_boot_firmware(struct vidc_core *core)
 		 vidc_read(core, VIDC_REG_SW_RESET),
 		 vidc_read(core, VIDC_REG_FW_VERSION));
 	printk(KERN_EMERG "VIDC: boot_fw: post-reset register reads completed\n");
+
+	/*
+	 * Poll RISC2HOST_CMD and INTERRUPT register directly to detect RISC
+	 * activity independent of IRQ delivery. This distinguishes between:
+	 *   a) RISC not executing (RISC2HOST_CMD stays 0, INTR stays 0)
+	 *   b) RISC executing but IRQ not delivered to ARM
+	 *      (RISC2HOST_CMD changes, INTR changes, but completion never fires)
+	 */
+	{
+		int poll;
+		u32 r2h, intr, fwver;
+
+		for (poll = 0; poll < 200; poll++) {
+			r2h   = vidc_read(core, VIDC_REG_RISC2HOST_CMD);
+			intr  = vidc_read(core, VIDC_REG_INTERRUPT);
+			fwver = vidc_read(core, VIDC_REG_FW_VERSION);
+			if (r2h || intr || fwver) {
+				printk(KERN_EMERG
+				       "VIDC: poll[%d]: RISC2HOST_CMD=0x%08x INTR=0x%08x FW_VERSION=0x%08x\n",
+				       poll, r2h, intr, fwver);
+				break;
+			}
+			usleep_range(10000, 11000);
+		}
+		if (!r2h && !intr && !fwver)
+			printk(KERN_EMERG "VIDC: poll: no RISC activity after 2s (RISC not executing)\n");
+	}
+
 	dev_info(core->dev, "boot_fw: hw_reset returned ok, waiting FW_STATUS_RET (2000ms)\n");
 
 	{
