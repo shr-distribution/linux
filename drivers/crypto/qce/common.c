@@ -886,6 +886,32 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	if (!rctx->last_blk && req->nbytes % blocksize)
 		return -EINVAL;
 
+	/* Wait for CE2 to be fully IDLE before configuring. After AUTH_DONE
+	 * on a previous op, CE2 transitions through FINAL_READ/CTXT_CLEARING/
+	 * UNLOCKING (states 5/6/7) before returning to IDLE (0). Writing
+	 * SEG_CFG before that completes causes CFG_CHNG_ERR + SEG_CHNG_ERR
+	 * (status bits 16 + 17) and the new op's AUTH_DONE never fires.
+	 *
+	 * If the engine is wedged in PROCESSING from a prior failed op,
+	 * pulse SW_RST to clear it.
+	 */
+	for (timeout = 1000; timeout > 0; timeout--) {
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if ((status & CE2_CRYPTO_STATE_MASK) == 0)
+			break;
+		udelay(10);
+	}
+	if (timeout <= 0) {
+		dev_warn(qce->dev,
+			 "CE2 hash: engine wedged (STATUS=0x%08x), pulsing SW_RST\n",
+			 status);
+		writel_relaxed(BIT(CE2_SW_RST_SHIFT),
+			       qce->base + CE2_REG_CONFIG);
+		udelay(100);
+		writel_relaxed(0, qce->base + CE2_REG_CONFIG);
+		udelay(100);
+	}
+
 	/* Exact mirror of the working qce_test_pio_mode() diagnostic in
 	 * core.c. Uses writel_relaxed throughout (no memory barriers
 	 * between writes). The order is:
