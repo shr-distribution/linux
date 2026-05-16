@@ -886,26 +886,23 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	if (!rctx->last_blk && req->nbytes % blocksize)
 		return -EINVAL;
 
-	/* Programming order MUST match the mako kernel (msm_8x60 generation
-	 * qce.c::_sha_ce_setup):
+	/* Programming order matches the mako kernel _sha_ce_setup:
 	 *   1) AUTH_IV0..N
-	 *   2) AUTH_BYTECNT0..1 (only 2 words, not 4)
+	 *   2) AUTH_BYTECNT0..1
 	 *   3) AUTH_SEG_CFG
-	 *   4) SEG_CFG (algorithm + FIRST + LAST -- NO CLR_CNTXT)
+	 *   4) SEG_CFG
 	 *   5) SEG_SIZE
 	 *   6) GOPROC + mb()
 	 *
-	 * Writing SEG_CFG before AUTH_IV (as we did before) latches the
-	 * engine into a state that processes the wrong IVs, yielding wrong
-	 * digests. Setting CLR_CNTXT (bit 19) is not part of the mako flow
-	 * and isn't needed; the engine resets state on the first GOPROC
-	 * with FIRST=1.
-	 *
-	 * Build SEG_CFG -- without CLR_CNTXT.
+	 * SEG_CFG additionally sets CLR_CNTXT (bit 19) for first_blk because
+	 * our standalone PIO diagnostic in core.c proves that bit is what
+	 * actually flushes the engine's internal SHA working state on
+	 * TouchPad CE2. Mako relies on DMA-side clearing (CMD_*_SWAP +
+	 * BAM context resets) that we don't have in this PIO path.
 	 */
 	auth_cfg = qce_auth_cfg_ce2(rctx->flags);
 	if (rctx->first_blk)
-		auth_cfg |= BIT(CE2_FIRST_SHIFT);
+		auth_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_CLR_CNTXT_SHIFT);
 	if (rctx->last_blk)
 		auth_cfg |= BIT(CE2_LAST_SHIFT);
 
