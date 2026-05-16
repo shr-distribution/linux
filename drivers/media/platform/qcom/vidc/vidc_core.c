@@ -60,8 +60,6 @@ static const unsigned long vidc_clk_rates[] = {
 
 static int vidc_clk_enable(struct vidc_core *core)
 {
-	void __iomem *mmcc;
-	u32 val;
 	int ret;
 
 	ret = clk_prepare_enable(core->iface_clk);
@@ -82,26 +80,8 @@ static int vidc_clk_enable(struct vidc_core *core)
 		goto err_core_clk;
 	}
 
-	/*
-	 * DEBUG: Check if CCF actually enabled VCODEC_CLK.
-	 * Previous test showed register 0xf8 was 0xc0ff00a5 after CCF calls
-	 * (bit 0 set = enabled, but config bits differ from webOS 0x00ff0006).
-	 */
-	mmcc = ioremap(0x04000000, 0x1000);
-	if (mmcc) {
-		val = readl_relaxed(mmcc + 0xf8);
-		dev_info(core->dev, "MMCC: VCODEC_CLK (0xf8) = 0x%08x (bit 0 = %s)\n",
-			 val, (val & BIT(0)) ? "ENABLED" : "DISABLED");
-		val = readl_relaxed(mmcc + 0x20c);
-		dev_info(core->dev, "MMCC: reset reg (0x20c) = 0x%08x (AHB_RESET bit 1 = %s)\n",
-			 val, (val & BIT(1)) ? "ASSERTED" : "DEASSERTED");
-		iounmap(mmcc);
-	}
-
 	return 0;
 
-err_axi_clk:
-	clk_disable_unprepare(core->axi_clk);
 err_core_clk:
 	clk_disable_unprepare(core->core_clk);
 err_iface_clk:
