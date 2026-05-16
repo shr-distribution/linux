@@ -26,6 +26,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/swab.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mem2mem.h>
@@ -610,7 +611,21 @@ int vidc_load_firmware(struct vidc_core *core)
 
 	core->fw_size = core->fw->size;
 
-	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw->size);
+	/*
+	 * The VIDC embedded RISC is big-endian. The firmware blob stored in
+	 * /lib/firmware is in little-endian host word order. Byte-swap each
+	 * 32-bit word during the copy, matching webOS DDL ddl_fw_change_endian()
+	 * (vcd_ddl_utils.c, #define DDL_FW_CHANGE_ENDIAN). Without this the
+	 * RISC executes reversed bytes and never fires FW_STATUS_RET.
+	 */
+	{
+		const u32 *src = (const u32 *)core->fw->data;
+		u32 __iomem *dst = core->fw_vaddr;
+		size_t i, nwords = core->fw->size / sizeof(u32);
+
+		for (i = 0; i < nwords; i++)
+			iowrite32(swab32(src[i]), &dst[i]);
+	}
 
 	/* Ensure firmware is visible to VIDC RISC before DRAM_BASE write */
 	wmb();
