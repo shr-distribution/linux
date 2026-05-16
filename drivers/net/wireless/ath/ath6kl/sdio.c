@@ -1387,8 +1387,10 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	 * With the driver loaded as a module, probe may run 50+ seconds after
 	 * card detection.  Pulsing reset guarantees the chip re-enters BMI
 	 * mode regardless of when probe is called.
+	 *
+	 * NOTE: the SDIO host is NOT claimed at this point in probe; GPIO
+	 * operations do not require the host lock.
 	 */
-	sdio_release_host(func);
 	{
 		struct gpio_desc *reset_gpio;
 
@@ -1403,7 +1405,6 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 				   "AR6003 reset via GPIO, entering BMI mode\n");
 		}
 	}
-	sdio_claim_host(func);
 
 	ret = ath6kl_sdio_config(ar);
 	if (ret) {
