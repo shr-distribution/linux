@@ -1360,22 +1360,19 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	ar->hif_priv = ar_sdio;
 	ar->hif_ops = &ath6kl_sdio_ops;
 	/*
-	 * Limit BMI data size to 116 bytes so that all CMD53 transfers
-	 * during firmware upload stay at or under 128 bytes and use PIO
-	 * instead of DMA (Qualcomm SDCC dma_threshold is set to 256).
+	 * BMI data size: matches upstream mainline and webOS staging driver.
 	 *
-	 * With BMI_WRITE_MEMORY (12-byte header): 12 + 116 = 128 bytes
-	 * With BMI_LZ_DATA (8-byte header): 8 + 116 = 124 bytes
-	 * Both are <= 256 (variant_qcom dma_threshold), so PIO is used.
+	 * The chip's LZ decompressor used by bmi_fast_download (OTP/firmware
+	 * upload) buffers data internally and only refreshes the BMI command
+	 * credit register after consuming a full chunk. With smaller chunks
+	 * (116 bytes), the chip waits for more bytes that never come and the
+	 * next credit read times out with -110.
 	 *
-	 * Tested PIO sizes: 64 bytes OK, 128 bytes OK, 192+ bytes FAIL.
-	 * PIO transfers > 128 bytes timeout on Qualcomm SDCC because the
-	 * 64-byte FIFO requires 3+ interrupt-driven refills, and the
-	 * DPSM times out before PIO can complete.
-	 *
-	 * At 116 bytes, firmware upload takes ~34s (vs ~78s at 52 bytes).
+	 * Set to 256 to match the chip's expected chunk size. This pushes
+	 * CMD53 transfers above the Qualcomm SDCC PIO-safe limit (~128 bytes),
+	 * so DMA must be used for these transfers.
 	 */
-	ar->bmi.max_data_size = 116;
+	ar->bmi.max_data_size = 256;
 
 	ath6kl_sdio_set_mbox_info(ar);
 
