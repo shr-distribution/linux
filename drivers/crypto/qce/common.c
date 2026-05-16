@@ -851,19 +851,32 @@ int qce_start(struct crypto_async_request *async_req, u32 type)
 
 #ifdef CONFIG_CRYPTO_DEV_QCE_SHA
 /*
- * CE2 hash PIO data path.
+ * CE2 hash via CPU PIO. Mirrors the webOS downstream _sha_ce_setup
+ * (drivers/crypto/msm/qce.c) which is the proven-working sequence on
+ * this exact MSM8660/APQ8060 silicon. webOS uses ADM DMA for data
+ * feed; we replace that step with a DIN_RDY-gated CPU PIO loop, but
+ * keep webOS's exact register write order and barrier discipline.
  *
- * Mirrors the standalone CE2 PIO diagnostic that returns correct
- * SHA1("test") = a94a8fe5...: write registers in this exact order, fire
- * GOPROC, then feed data in 16-byte chunks while polling DIN_RDY.
+ * Order: AUTH_IV0..N -> AUTH_BYTECNT0/1 -> AUTH_SEG_CFG -> SEG_CFG
+ *        -> SEG_SIZE -> wmb -> GOPROC -> wmb -> DIN_RDY+DATA_IN loop
+ *        -> AUTH_DONE -> read AUTH_IV0..N.
  *
- * Doing the register programming inside this function (instead of via
- * qce_setup_regs_ahash) was required because the qce_setup_regs_ahash
- * path writes STATUS=0 + CONFIG twice + AUTH_IV before SEG_CFG, which
- * appears to leave CE2 in a state where AUTH_DONE fires with garbage
- * AUTH_IV output. The diagnostic PIO test inside core.c does it in the
- * order seen in HTC's sbl3 bootloader: SEG_CFG -> sizes -> IVs ->
- * BYTECNT -> CONFIG -> GOPROC -> data, and that works.
+ * CLR_CNTXT is NOT set: webOS never sets it, and on this engine the
+ * second SHA256 op (with CLR_CNTXT) wedged in state=PROCESSING with
+ * no AUTH_DONE. The FIRST bit alone tells the engine to seed from the
+ * IV registers, which is sufficient.
+ *
+ * AUTH_BYTECNT0/1 only (no 2/3): mako/webOS only program 64 bits of
+ * counter; the upper words read back zero and writing them has caused
+ * undefined engine behavior in earlier experiments.
+ *
+ * IV5..15 are NOT pre-cleared: writing IV0..N for the current algo
+ * (5 words SHA1, 8 words SHA256) is sufficient since the engine only
+ * reads the words the algorithm needs.
+ *
+ * STATUS/CONFIG/IDLE-wait are NOT touched per-op: probe-time SW_RST
+ * + CONFIG=mask_bits leaves the engine in a clean state, and the
+ * GOPROC handshake plus DIN_RDY gating self-sequences between ops.
  */
 int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 {
@@ -876,61 +889,17 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	unsigned int blocksize = crypto_tfm_alg_blocksize(async_req->tfm);
 	__be32 auth[SHA256_DIGEST_SIZE / sizeof(__be32)] = {0};
 	unsigned int iv_words, total, dwords, i;
-	u32 auth_cfg, config, status, *p;
+	u32 auth_cfg, status, *p;
 	u8 *buf;
 	int timeout, ret = 0;
 
-	/* If not the last block, size must be on the block boundary
-	 * (matches qce_setup_regs_ahash precondition).
-	 */
+	/* If not the last block, size must be on the block boundary */
 	if (!rctx->last_blk && req->nbytes % blocksize)
 		return -EINVAL;
 
-	/* Wait for CE2 to be fully IDLE before configuring. After AUTH_DONE
-	 * on a previous op, CE2 transitions through FINAL_READ/CTXT_CLEARING/
-	 * UNLOCKING (states 5/6/7) before returning to IDLE (0). Writing
-	 * SEG_CFG before that completes causes CFG_CHNG_ERR + SEG_CHNG_ERR
-	 * (status bits 16 + 17) and the new op's AUTH_DONE never fires.
-	 *
-	 * If the engine is wedged in PROCESSING from a prior failed op,
-	 * pulse SW_RST to clear it.
-	 */
-	for (timeout = 1000; timeout > 0; timeout--) {
-		status = readl_relaxed(qce->base + CE2_REG_STATUS);
-		if ((status & CE2_CRYPTO_STATE_MASK) == 0)
-			break;
-		udelay(10);
-	}
-	if (timeout <= 0) {
-		dev_warn(qce->dev,
-			 "CE2 hash: engine wedged (STATUS=0x%08x), pulsing SW_RST\n",
-			 status);
-		writel_relaxed(BIT(CE2_SW_RST_SHIFT),
-			       qce->base + CE2_REG_CONFIG);
-		udelay(100);
-		writel_relaxed(0, qce->base + CE2_REG_CONFIG);
-		udelay(100);
-	}
-
-	/* Clear sticky AUTH_DONE / DIN_INTR / DOUT_INTR / ERR_INTR bits in
-	 * STATUS from any previous operation. Writing 0 to STATUS clears
-	 * write-1-to-clear bits. The first-ever op after probe has STATUS
-	 * == 0x10200004 (no AUTH_DONE), so the PIO test in core.c works
-	 * without this. AF_ALG ops 2..N inherit AUTH_DONE=1 sticky from
-	 * the previous op, and writing SEG_CFG while AUTH_DONE is still
-	 * asserted makes CE2 compute a non-standard hash.
-	 */
-	writel_relaxed(0, qce->base + CE2_REG_STATUS);
-
-	/* Exact mirror of the working qce_test_pio_mode() diagnostic in
-	 * core.c. Uses writel_relaxed throughout (no memory barriers
-	 * between writes). The order is:
-	 *   SEG_CFG -> AUTH_SEG_CFG -> SEG_SIZE -> AUTH_IV -> AUTH_BYTECNT
-	 *   -> CONFIG (read-modify-write) -> GOPROC
-	 */
 	auth_cfg = qce_auth_cfg_ce2(rctx->flags);
 	if (rctx->first_blk)
-		auth_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_CLR_CNTXT_SHIFT);
+		auth_cfg |= BIT(CE2_FIRST_SHIFT);
 	if (rctx->last_blk)
 		auth_cfg |= BIT(CE2_LAST_SHIFT);
 
@@ -944,66 +913,38 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	else
 		qce_cpu_to_be32p_array(auth, rctx->digest, digestsize);
 
-	/* SEG_CFG / AUTH_SEG_CFG / SEG_SIZE first */
-	writel_relaxed(auth_cfg, qce->base + CE2_REG_SEG_CFG);
-	writel_relaxed(req->nbytes << CE2_AUTH_SEG_SIZE_SHIFT,
-		       qce->base + CE2_REG_AUTH_SEG_CFG);
-	writel_relaxed(req->nbytes, qce->base + CE2_REG_SEG_SIZE);
+	/* 1) AUTH_IV0..N (webOS order: IV before SEG_CFG) */
+	p = (u32 *)auth;
+	for (i = 0; i < iv_words; i++)
+		writel(p[i], qce->base + CE2_REG_AUTH_IV0 + i * sizeof(u32));
 
-	/* AUTH_IV: clear IV5..15 first (residual from prior ops corrupts
-	 * SHA1 results), then write the algorithm IVs.
-	 */
-	{
-		unsigned int j;
-		u32 *iv32 = (u32 *)auth;
-
-		for (j = iv_words; j < 16; j++)
-			writel_relaxed(0, qce->base +
-				CE2_REG_AUTH_IV0 + j * sizeof(u32));
-		for (j = 0; j < iv_words; j++)
-			writel_relaxed(iv32[j], qce->base +
-				CE2_REG_AUTH_IV0 + j * sizeof(u32));
-	}
-
-	/* AUTH_BYTECNT0..3 */
+	/* 2) AUTH_BYTECNT0/1 only (mako/webOS pattern) */
 	if (rctx->first_blk) {
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT0);
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT1);
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT2);
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT3);
+		writel(0, qce->base + CE2_REG_AUTH_BYTECNT0);
+		writel(0, qce->base + CE2_REG_AUTH_BYTECNT1);
 	} else {
-		writel_relaxed((__force u32)rctx->byte_count[0],
-			       qce->base + CE2_REG_AUTH_BYTECNT0);
-		writel_relaxed((__force u32)rctx->byte_count[1],
-			       qce->base + CE2_REG_AUTH_BYTECNT1);
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT2);
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT3);
+		writel((__force u32)rctx->byte_count[0],
+		       qce->base + CE2_REG_AUTH_BYTECNT0);
+		writel((__force u32)rctx->byte_count[1],
+		       qce->base + CE2_REG_AUTH_BYTECNT1);
 	}
 
-	/* CONFIG: read-modify-write matching PIO diagnostic (set interrupt
-	 * masks, enable high-speed paths, ensure CLK_EN_N=0 and SW_RST=0)
-	 */
-	config = readl_relaxed(qce->base + CE2_REG_CONFIG);
-	config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) |
-		  BIT(CE2_MASK_DIN_INTR_SHIFT) |
-		  BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
-		  BIT(CE2_MASK_ERR_INTR_SHIFT);
-	config &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
-		    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
-		    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
-	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
-	writel_relaxed(config, qce->base + CE2_REG_CONFIG);
+	/* 3) AUTH_SEG_CFG (size << 16) */
+	writel(req->nbytes << CE2_AUTH_SEG_SIZE_SHIFT,
+	       qce->base + CE2_REG_AUTH_SEG_CFG);
 
-	/* Diagnostic */
-	dev_info(qce->dev,
-		 "CE2 hash pre-GO: SEG_CFG=0x%08x SEG_SIZE=%u CONFIG=0x%08x first=%d last=%d\n",
-		 auth_cfg, req->nbytes, config,
-		 rctx->first_blk, rctx->last_blk);
+	/* 4) SEG_CFG (alg + FIRST + LAST + AUTH_SIZE_xxx) */
+	writel(auth_cfg, qce->base + CE2_REG_SEG_CFG);
 
-	/* GOPROC */
-	writel_relaxed(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+	/* 5) SEG_SIZE */
+	writel(req->nbytes, qce->base + CE2_REG_SEG_SIZE);
 
-	/* 8) Wait for engine to leave IDLE (transition to LOCKED) */
+	/* 6) Barrier + GOPROC + barrier (matches webOS wmb() pattern) */
+	wmb();
+	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+	wmb();
+
+	/* 7) Wait for engine to leave IDLE (transition into LOCKED/GO) */
 	for (timeout = 1000; timeout > 0; timeout--) {
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
 		if (status & CE2_CRYPTO_STATE_MASK)
@@ -1017,12 +958,14 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		return -ETIMEDOUT;
 	}
 
-	/* 9) Feed input in 16-byte chunks. CE2 FIFO consumes 16 bytes per
-	 *    CRCI handshake; trailing bytes past SEG_SIZE are ignored.
+	/* 8) Feed input via PIO. Pad to dword boundary; CE2 ignores bytes
+	 *    past SEG_SIZE. Byte-swap to big-endian: CE2 reads each DATA_IN
+	 *    write MSB-first as the next four message bytes.
 	 */
-	total = round_up(req->nbytes, 16);
-	if (total == 0)
-		total = 16;
+	dwords = (req->nbytes + 3) / 4;
+	if (dwords == 0)
+		dwords = 1;
+	total = dwords * 4;
 
 	buf = kzalloc(total, GFP_KERNEL);
 	if (!buf)
@@ -1032,20 +975,6 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		sg_copy_to_buffer(req->src, sg_nents(req->src), buf,
 				  req->nbytes);
 
-	/* Byte-swap each 4-byte chunk to big-endian for DATA_IN. CE2 interprets
-	 * each 32-bit DATA_IN write MSB-first as the next four message bytes.
-	 *
-	 * Example: input bytes "test" = 74 65 73 74 must be presented to CE2
-	 * as u32 0x74657374 (MSB-first reads as 0x74 'e' 's' 't'). But buf
-	 * holds bytes in CPU-native order; on ARM LE, *(u32 *)buf would give
-	 * 0x74736574 -- which CE2 reads as bytes "tset" and hashes that.
-	 * The probe-time PIO test in core.c hardcoded test_data=0x74657374,
-	 * which is why it produced correct SHA1("test") -- it skipped this
-	 * conversion since the constant was already in BE form.
-	 */
-	dwords = total / 4;
-	dev_info(qce->dev,
-		 "CE2 hash: feeding %u dwords (BE-swapped from buf)\n", dwords);
 	for (i = 0; i < dwords; i++) {
 		u32 word = ((u32)buf[i * 4 + 0] << 24) |
 			   ((u32)buf[i * 4 + 1] << 16) |
@@ -1065,10 +994,10 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 			ret = -ETIMEDOUT;
 			goto out;
 		}
-		writel_relaxed(word, qce->base + CE2_REG_DATA_IN);
+		writel(word, qce->base + CE2_REG_DATA_IN);
 	}
 
-	/* 10) Wait for AUTH_DONE */
+	/* 9) Wait for AUTH_DONE */
 	timeout = max(50000U, dwords * 100U);
 	for (; timeout > 0; timeout--) {
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
@@ -1090,20 +1019,14 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		goto out;
 	}
 
-	/* 11) Read digest from AUTH_IV0..N. cpu_to_be32 turns the CPU u32
-	 *     into the spec's big-endian byte stream when memcpy'd as bytes.
-	 */
+	/* 10) Read digest from AUTH_IV0..N */
 	{
 		__be32 result[SHA256_DIGEST_SIZE / sizeof(__be32)];
 		unsigned int words = digestsize / sizeof(u32);
 
-		dev_info(qce->dev,
-			 "CE2 hash post-DONE: STATUS=0x%08x\n", status);
 		for (i = 0; i < words; i++) {
 			u32 raw = readl_relaxed(qce->base +
 				CE2_REG_AUTH_IV0 + i * sizeof(u32));
-			dev_info(qce->dev, "CE2 hash post-DONE: AUTH_IV%u=0x%08x\n",
-				 i, raw);
 			result[i] = cpu_to_be32(raw);
 		}
 
