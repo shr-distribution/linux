@@ -886,54 +886,55 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	if (!rctx->last_blk && req->nbytes % blocksize)
 		return -EINVAL;
 
-	/* NOTE: SW_RST pulse per-op was tried and BROKE completion: AUTH_DONE
-	 * never fires after a SW_RST while CE2 was previously active. The
-	 * AUTH_IV0..15 clear (step 4 below) is sufficient to flush the
-	 * residual state that was contaminating subsequent operations.
+	/* Programming order MUST match the mako kernel (msm_8x60 generation
+	 * qce.c::_sha_ce_setup):
+	 *   1) AUTH_IV0..N
+	 *   2) AUTH_BYTECNT0..1 (only 2 words, not 4)
+	 *   3) AUTH_SEG_CFG
+	 *   4) SEG_CFG (algorithm + FIRST + LAST -- NO CLR_CNTXT)
+	 *   5) SEG_SIZE
+	 *   6) GOPROC + mb()
+	 *
+	 * Writing SEG_CFG before AUTH_IV (as we did before) latches the
+	 * engine into a state that processes the wrong IVs, yielding wrong
+	 * digests. Setting CLR_CNTXT (bit 19) is not part of the mako flow
+	 * and isn't needed; the engine resets state on the first GOPROC
+	 * with FIRST=1.
+	 *
+	 * Build SEG_CFG -- without CLR_CNTXT.
 	 */
-
-	/* Build SEG_CFG with CE2 bit positions */
 	auth_cfg = qce_auth_cfg_ce2(rctx->flags);
+	if (rctx->first_blk)
+		auth_cfg |= BIT(CE2_FIRST_SHIFT);
 	if (rctx->last_blk)
 		auth_cfg |= BIT(CE2_LAST_SHIFT);
-	if (rctx->first_blk)
-		auth_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_CLR_CNTXT_SHIFT);
 
-	/* Programming order matches the working PIO diagnostic in core.c */
-
-	/* 1) SEG_CFG (algorithm + first/last/clr_cntxt) */
-	qce_write(qce, CE2_REG_SEG_CFG, auth_cfg);
-
-	/* 2) AUTH_SEG_CFG (size in upper 16 bits, auth_start in lower) */
-	qce_write(qce, CE2_REG_AUTH_SEG_CFG,
-		  req->nbytes << CE2_AUTH_SEG_SIZE_SHIFT);
-
-	/* 3) SEG_SIZE (total bytes in this segment) */
-	qce_write(qce, CE2_REG_SEG_SIZE, req->nbytes);
-
-	/* 4) AUTH_IV0..15: clear all 16 first to wipe any residual state from
-	 *    prior operations, then program the algorithm-specific IVs. SHA1
-	 *    uses IV0..4 (5 words); SHA256 uses IV0..7 (8 words). The
-	 *    remaining slots must be zero for the engine to produce correct
-	 *    output (observed empirically: residual values in IV5..7 from a
-	 *    prior SHA256 operation corrupted subsequent SHA1 results).
+	/* 1) AUTH_IV0..N. Standard initial vectors for first_blk, intermediate
+	 *    digest from rctx->digest (in big-endian wire order) for
+	 *    continuation. Mako writes only 5 or 8 words; we additionally wipe
+	 *    AUTH_IV5..15 first because earlier observation showed residual
+	 *    values from prior ops can leak into the next computation.
 	 */
-	qce_clear_array(qce, CE2_REG_AUTH_IV0, 16);
+	if (!IS_SHA1(rctx->flags) && !IS_SHA1_HMAC(rctx->flags))
+		iv_words = 8;
+	else
+		iv_words = 5;
 
 	if (rctx->first_blk)
 		memcpy(auth, rctx->digest, digestsize);
 	else
 		qce_cpu_to_be32p_array(auth, rctx->digest, digestsize);
 
-	iv_words = (IS_SHA1(rctx->flags) || IS_SHA1_HMAC(rctx->flags)) ? 5 : 8;
+	qce_clear_array(qce, CE2_REG_AUTH_IV0 + iv_words * sizeof(u32),
+			16 - iv_words);
 	qce_write_array(qce, CE2_REG_AUTH_IV0, (u32 *)auth, iv_words);
 
-	/* 5) AUTH_BYTECNT */
+	/* 2) AUTH_BYTECNT0..1 (just 2 words). For first_blk both are 0; for
+	 *    continuation pass the cumulative byte count from rctx.
+	 */
 	if (rctx->first_blk) {
 		qce_write(qce, CE2_REG_AUTH_BYTECNT0, 0);
 		qce_write(qce, CE2_REG_AUTH_BYTECNT1, 0);
-		qce_write(qce, CE2_REG_AUTH_BYTECNT2, 0);
-		qce_write(qce, CE2_REG_AUTH_BYTECNT3, 0);
 	} else {
 		qce_write(qce, CE2_REG_AUTH_BYTECNT0,
 			  (__force u32)rctx->byte_count[0]);
@@ -941,20 +942,22 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 			  (__force u32)rctx->byte_count[1]);
 	}
 
-	/* 6) CONFIG: enable high-speed paths + mask interrupts (engine-driven
-	 *    DMA isn't used for hash; we poll). Read-modify-write to preserve
-	 *    CLK_EN_N=0/SW_RST=0 set during probe.
+	/* 3) AUTH_SEG_CFG (size in upper 16 bits, auth_start in lower) */
+	qce_write(qce, CE2_REG_AUTH_SEG_CFG,
+		  req->nbytes << CE2_AUTH_SEG_SIZE_SHIFT);
+
+	/* 4) SEG_CFG (algorithm + FIRST + LAST) */
+	qce_write(qce, CE2_REG_SEG_CFG, auth_cfg);
+
+	/* 5) SEG_SIZE (total bytes in this segment) */
+	qce_write(qce, CE2_REG_SEG_SIZE, req->nbytes);
+
+	/* CONFIG: mako leaves this alone (set once at init). The masks were
+	 * programmed during probe (qce_setup_config wasn't run because the
+	 * caller branches around qce_start). Read it back just to verify; if
+	 * the kernel ever pokes it elsewhere we want to know.
 	 */
 	config = qce_read(qce, CE2_REG_CONFIG);
-	config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) |
-		  BIT(CE2_MASK_DIN_INTR_SHIFT) |
-		  BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
-		  BIT(CE2_MASK_ERR_INTR_SHIFT);
-	config &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
-		    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
-		    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
-	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
-	qce_write(qce, CE2_REG_CONFIG, config);
 
 	/* DIAGNOSTIC: read back what we just programmed before firing GO */
 	dev_info(qce->dev,
