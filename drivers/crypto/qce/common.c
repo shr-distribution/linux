@@ -886,18 +886,11 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	if (!rctx->last_blk && req->nbytes % blocksize)
 		return -EINVAL;
 
-	/* Pulse SW_RST in CE2_CONFIG to flush any residual engine state.
-	 *
-	 * The standalone PIO diagnostic at probe time works correctly, but
-	 * later AF_ALG calls produced wrong digests because residual
-	 * AUTH_IV5..7 / CNTR / internal state was leaking between
-	 * operations. SW_RST pulse before each setup restores the engine
-	 * to the same clean state the probe-time diagnostic enjoys.
+	/* NOTE: SW_RST pulse per-op was tried and BROKE completion: AUTH_DONE
+	 * never fires after a SW_RST while CE2 was previously active. The
+	 * AUTH_IV0..15 clear (step 4 below) is sufficient to flush the
+	 * residual state that was contaminating subsequent operations.
 	 */
-	qce_write(qce, CE2_REG_CONFIG, BIT(CE2_SW_RST_SHIFT));
-	udelay(10);
-	qce_write(qce, CE2_REG_CONFIG, 0);
-	udelay(10);
 
 	/* Build SEG_CFG with CE2 bit positions */
 	auth_cfg = qce_auth_cfg_ce2(rctx->flags);
