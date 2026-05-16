@@ -561,7 +561,7 @@ static irqreturn_t ci_irq_handler(int irq, void *data)
 	 * Handle vbus change interrupt, it indicates device connection
 	 * and disconnection events.
 	 */
-	if (ci->is_otg && (otgsc & OTGSC_BSVIE) && (otgsc & OTGSC_BSVIS)) {
+	if (ci->wq && (otgsc & OTGSC_BSVIE) && (otgsc & OTGSC_BSVIS)) {
 		ci->b_sess_valid_event = true;
 		/* Clear BSV irq */
 		hw_write_otgsc(ci, OTGSC_BSVIS, OTGSC_BSVIS);
@@ -964,7 +964,7 @@ static inline void ci_role_destroy(struct ci_hdrc *ci)
 {
 	ci_hdrc_gadget_destroy(ci);
 	ci_hdrc_host_destroy(ci);
-	if (ci->is_otg && ci->roles[CI_ROLE_GADGET])
+	if (ci->wq)
 		ci_hdrc_otg_destroy(ci);
 }
 
@@ -1182,7 +1182,7 @@ static int ci_hdrc_probe(struct platform_device *pdev)
 		goto deinit_gadget;
 	}
 
-	if (ci->is_otg && ci->roles[CI_ROLE_GADGET]) {
+	if (ci->roles[CI_ROLE_GADGET]) {
 		ret = ci_hdrc_otg_init(ci);
 		if (ret) {
 			dev_err(dev, "init otg fails, ret = %d\n", ret);
@@ -1246,7 +1246,7 @@ stop:
 	if (ci->role_switch)
 		usb_role_switch_unregister(ci->role_switch);
 deinit_otg:
-	if (ci->is_otg && ci->roles[CI_ROLE_GADGET])
+	if (ci->wq)
 		ci_hdrc_otg_destroy(ci);
 deinit_gadget:
 	ci_hdrc_gadget_destroy(ci);
