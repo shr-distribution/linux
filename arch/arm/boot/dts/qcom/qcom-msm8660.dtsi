@@ -208,9 +208,19 @@
 			opp-microvolt = <1162500>;
 		};
 
+		/*
+		 * Bumped from 1187500 to 1200000 to match the legacy webOS
+		 * palm-tenderloin acpuclock-8x60.c table. The 1188-bin
+		 * downstream table from CodeAurora (CM, Evervolv) keeps 1.1875 V
+		 * at the topmost OPP for chips that have no QFPROM speed-bin
+		 * fuse (speed_bin == 0x0, max 1188 MHz). webOS validated 1188
+		 * MHz at 1.20 V instead — same 12.5 mV step on the SAW grid.
+		 * The extra 12.5 mV is cheap headroom at the most-used OPP and
+		 * matches what the device shipped with for ~10 years.
+		 */
 		opp-1188000000 {
 			opp-hz = /bits/ 64 <1188000000>;
-			opp-microvolt = <1187500>;
+			opp-microvolt = <1200000>;
 		};
 
 		/*
@@ -488,15 +498,29 @@
 				regulator-name = "cpu0_vdd";
 				regulator-min-microvolt = <840000>;
 				/*
-				 * Was 1250000. Bumped to 1600000 to match
-				 * rwhitby/webos-uber-kernel — needed for the
-				 * 1.45V Vcore at 1836 MHz OPP. PM8901 SMPS
-				 * Band 2 hardware supports up to ~1.65V.
-				 * Lower OPPs still get their lower voltages;
-				 * cpufreq only requests the higher Vcore when
-				 * the matching OPP is actually selected.
+				 * Clamped to 1.350 V. Every downstream
+				 * msm8660 binning table (codeaurora-derived
+				 * CM, Evervolv HTC, invisiblek tenderloin)
+				 * tops out at 1.325 V at the absolute peak
+				 * "1.7 GHz slowest" PVS corner; the highest
+				 * voltage any OPP in our DT requests is
+				 * 1.350 V at 1728 MHz, which is itself an
+				 * overclock above vendor-validated 1512 MHz.
+				 * Old 1.600 V ceiling was a leftover from a
+				 * since-removed 1836 MHz @ 1.45 V experiment
+				 * (rwhitby/webos-uber-kernel) and let any
+				 * malformed OPP voltage through unchallenged.
+				 * 1.350 V matches the absolute peak any OPP
+				 * in the current DT requests (1728 MHz @
+				 * 1.350 V). That is itself an overclock
+				 * above the 1512 MHz @ 1.250 V vendor
+				 * ceiling -- once `qcom-cpufreq-nvmem`
+				 * gains msm8660 speed-bin support and the
+				 * 1.7 GHz binnings get their own OPPs, this
+				 * limit should drop further or move into a
+				 * per-bin opp-microvolt-supply property.
 				 */
-				regulator-max-microvolt = <1600000>;
+				regulator-max-microvolt = <1350000>;
 			};
 		};
 
@@ -508,16 +532,8 @@
 			saw1_reg: regulator {
 				regulator-name = "cpu1_vdd";
 				regulator-min-microvolt = <840000>;
-				/*
-				 * Was 1250000. Bumped to 1600000 to match
-				 * rwhitby/webos-uber-kernel — needed for the
-				 * 1.45V Vcore at 1836 MHz OPP. PM8901 SMPS
-				 * Band 2 hardware supports up to ~1.65V.
-				 * Lower OPPs still get their lower voltages;
-				 * cpufreq only requests the higher Vcore when
-				 * the matching OPP is actually selected.
-				 */
-				regulator-max-microvolt = <1600000>;
+				/* See saw0_reg above for the 1.350 V rationale. */
+				regulator-max-microvolt = <1350000>;
 			};
 		};
 
