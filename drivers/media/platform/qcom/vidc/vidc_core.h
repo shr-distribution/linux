@@ -308,7 +308,8 @@ struct vidc_core {
 	struct regulator *gdsc;
 
 	/* Interconnect */
-	struct icc_path *icc_path;
+	struct icc_path *icc_path;	/* video-smi: RISC fetch from SMI */
+	struct icc_path *icc_ebi_path;	/* video-ebi: RISC fetch from EBI/DRAM */
 	u32 icc_bw_avg;		/* average bandwidth in bytes/sec */
 	u32 icc_bw_peak;	/* peak bandwidth in bytes/sec */
 

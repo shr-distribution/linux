@@ -622,8 +622,12 @@ int vidc_load_firmware(struct vidc_core *core)
 			dst[i] = swab32(src[i]);
 	}
 
-	printk(KERN_EMERG "VIDC: fw[0]=0x%08x dma_addr=0x%08x (fw_alloc_dma=0x%08x align_off=%zu)\n",
-	       *(u32 *)core->fw_vaddr, (u32)core->fw_dma_addr,
+	/* fw[0] is in the ARM exception vector table (all zeros); fw[64] is
+	 * the first non-zero word at offset 0x100 (should be 0x15000000 with
+	 * endian swap, 0x00000015 without swap). */
+	printk(KERN_EMERG "VIDC: fw[0]=0x%08x fw[64]=0x%08x dma_addr=0x%08x (fw_alloc_dma=0x%08x align_off=%zu)\n",
+	       ((u32 *)core->fw_vaddr)[0], ((u32 *)core->fw_vaddr)[64],
+	       (u32)core->fw_dma_addr,
 	       (u32)core->fw_alloc_dma_addr, core->fw_align_off);
 
 	/*
@@ -770,11 +774,11 @@ int vidc_boot_firmware(struct vidc_core *core)
 		 vidc_read(core, VIDC_REG_SW_RESET),
 		 vidc_read(core, VIDC_REG_FW_VERSION));
 	printk(KERN_EMERG "VIDC: boot_fw: post-reset register reads completed\n");
-	dev_info(core->dev, "boot_fw: hw_reset returned ok, waiting FW_STATUS_RET (200ms)\n");
+	dev_info(core->dev, "boot_fw: hw_reset returned ok, waiting FW_STATUS_RET (2000ms)\n");
 
 	{
 		unsigned long ret_jif = wait_for_completion_timeout(
-				&core->fw_status_done, msecs_to_jiffies(200));
+				&core->fw_status_done, msecs_to_jiffies(2000));
 		dev_info(core->dev,
 			 "boot_fw: FW_STATUS wait returned, jiffies_left=%lu (%s)\n",
 			 ret_jif, ret_jif ? "got signal" : "timed out");
@@ -1901,14 +1905,24 @@ static int vidc_probe(struct platform_device *pdev)
 		}
 	}
 
-	/* Get optional interconnect path (video-smi for RISC fetch path) */
+	/* video-smi: optional (RISC fetch from SMI — CPU cannot write SMI) */
 	core->icc_path = devm_of_icc_get(dev, "video-smi");
 	if (IS_ERR(core->icc_path)) {
 		ret = PTR_ERR(core->icc_path);
 		if (ret == -EPROBE_DEFER)
 			return ret;
-		dev_dbg(dev, "interconnect not available: %d\n", ret);
+		dev_dbg(dev, "video-smi interconnect not available: %d\n", ret);
 		core->icc_path = NULL;
+	}
+
+	/* video-ebi: optional (RISC fetch from EBI/DRAM — firmware placed here) */
+	core->icc_ebi_path = devm_of_icc_get(dev, "video-ebi");
+	if (IS_ERR(core->icc_ebi_path)) {
+		ret = PTR_ERR(core->icc_ebi_path);
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		dev_dbg(dev, "video-ebi interconnect not available: %d\n", ret);
+		core->icc_ebi_path = NULL;
 	}
 
 	/*
@@ -1981,6 +1995,8 @@ static int vidc_runtime_suspend(struct device *dev)
 
 	if (core->icc_path)
 		icc_set_bw(core->icc_path, 0, 0);
+	if (core->icc_ebi_path)
+		icc_set_bw(core->icc_ebi_path, 0, 0);
 
 	if (core->gdsc) {
 		regulator_disable(core->gdsc);
@@ -2011,9 +2027,17 @@ static int vidc_runtime_resume(struct device *dev)
 	if (core->icc_path) {
 		ret = icc_set_bw(core->icc_path, core->icc_bw_avg, core->icc_bw_peak);
 		if (ret) {
-			dev_err(dev, "failed to set interconnect bandwidth: %d\n",
+			dev_err(dev, "failed to set video-smi bandwidth: %d\n",
 				ret);
 			goto err_gdsc;
+		}
+	}
+	if (core->icc_ebi_path) {
+		ret = icc_set_bw(core->icc_ebi_path, core->icc_bw_avg, core->icc_bw_peak);
+		if (ret) {
+			dev_err(dev, "failed to set video-ebi bandwidth: %d\n",
+				ret);
+			goto err_icc_smi;
 		}
 	}
 
@@ -2042,6 +2066,9 @@ static int vidc_runtime_resume(struct device *dev)
 err_clk:
 	vidc_clk_disable(core);
 err_icc:
+	if (core->icc_ebi_path)
+		icc_set_bw(core->icc_ebi_path, 0, 0);
+err_icc_smi:
 	if (core->icc_path)
 		icc_set_bw(core->icc_path, 0, 0);
 err_gdsc:
