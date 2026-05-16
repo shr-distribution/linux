@@ -571,38 +571,42 @@ int vidc_load_firmware(struct vidc_core *core)
 	}
 
 	/*
-	 * Layout firmware + context pool + descriptor + shared-mem in a
-	 * coherent DMA buffer in EBI/DRAM. The VIDC RISC reaches EBI via
-	 * MMFAB_MAS_HD_CODEC_PORT0 → AFAB_SLV_EBI_CH0 — confirmed by the
-	 * interconnect node in the DT. EBI placement is used because the CPU
-	 * cannot write to SMI (0x38000000) through the normal AXI path; CPU
-	 * ioremap writes to SMI are silently dropped at the bus level.
+	 * Place firmware + context pool + descriptor + shared-mem in SMI
+	 * (System Memory Interface SRAM at 0x38000000). The RISC is designed
+	 * to boot from SMI; it cannot execute from EBI/DRAM even though the
+	 * interconnect topology permits it.
 	 *
-	 * DRAM_BASE_A/B requires 128KB (2^17) alignment. dma_alloc_coherent
-	 * gives page-aligned addresses; over-allocate by SZ_128K so we can
-	 * bump fw_dma_addr up to the next 128KB boundary.
+	 * CPU writes to SMI via ioremap DO reach physical SMI SRAM — confirmed
+	 * by webOS DDL which uses the same ioremap+write approach (ddl_fw_init,
+	 * vcd_ddl_utils.c). CPU reads from SMI return 0 (SMI is write-only
+	 * from the CPU AXI path), so do not use readback to verify the write.
+	 *
+	 * 0x38000000 is already 128KB-aligned so fw_align_off is 0.
 	 */
 	core->ctxt_pool_size = VIDC_MAX_INSTANCES * VIDC_CTXT_MEM_SIZE;
 	core->ctxt_pool_used = 0;
 	core->fw_alloc_size = ALIGN(core->fw->size, SZ_4K)
 			    + core->ctxt_pool_size
 			    + VIDC_DESC_BUF_SIZE
-			    + VIDC_SHM_SIZE
-			    + SZ_128K;	/* alignment headroom */
+			    + VIDC_SHM_SIZE;
 
-	core->fw_alloc_vaddr = dma_alloc_coherent(core->dev, core->fw_alloc_size,
-						   &core->fw_alloc_dma_addr,
-						   GFP_KERNEL);
-	if (!core->fw_alloc_vaddr) {
-		dev_err(core->dev, "failed to allocate %zu bytes for firmware\n",
-			core->fw_alloc_size);
+	core->fw_dma_addr = ALIGN(core->fw_phys_base, SZ_128K);
+	core->fw_align_off = core->fw_dma_addr - core->fw_phys_base;
+
+	if (core->fw_dma_addr + core->fw_alloc_size >
+	    core->fw_phys_base + core->fw_phys_size) {
+		dev_err(core->dev,
+			"fw+ctx (%zu bytes) exceeds SMI region (%zu bytes)\n",
+			core->fw_alloc_size, core->fw_phys_size);
 		ret = -ENOMEM;
 		goto err_release_fw;
 	}
 
-	core->fw_dma_addr = ALIGN(core->fw_alloc_dma_addr, SZ_128K);
-	core->fw_align_off = core->fw_dma_addr - core->fw_alloc_dma_addr;
-	core->fw_vaddr = core->fw_alloc_vaddr + core->fw_align_off;
+	core->fw_vaddr = ioremap(core->fw_dma_addr, core->fw_alloc_size);
+	if (!core->fw_vaddr) {
+		ret = -ENOMEM;
+		goto err_release_fw;
+	}
 
 	core->fw_size = core->fw->size;
 
@@ -615,20 +619,16 @@ int vidc_load_firmware(struct vidc_core *core)
 	 */
 	{
 		const u32 *src = (const u32 *)core->fw->data;
-		u32 *dst = (u32 *)core->fw_vaddr;
+		void __iomem *dst = (void __iomem *)core->fw_vaddr;
 		size_t i, nwords = core->fw->size / sizeof(u32);
 
 		for (i = 0; i < nwords; i++)
-			dst[i] = swab32(src[i]);
+			iowrite32(swab32(src[i]), dst + i * sizeof(u32));
 	}
 
-	/* fw[0] is in the ARM exception vector table (all zeros); fw[64] is
-	 * the first non-zero word at offset 0x100 (should be 0x15000000 with
-	 * endian swap, 0x00000015 without swap). */
-	printk(KERN_EMERG "VIDC: fw[0]=0x%08x fw[64]=0x%08x dma_addr=0x%08x (fw_alloc_dma=0x%08x align_off=%zu)\n",
-	       ((u32 *)core->fw_vaddr)[0], ((u32 *)core->fw_vaddr)[64],
-	       (u32)core->fw_dma_addr,
-	       (u32)core->fw_alloc_dma_addr, core->fw_align_off);
+	/* CPU reads from SMI return 0; readback is not meaningful. */
+	printk(KERN_EMERG "VIDC: SMI fw written: dma_addr=0x%08x alloc_size=%zu fw_size=%zu\n",
+	       (u32)core->fw_dma_addr, core->fw_alloc_size, core->fw_size);
 
 	/*
 	 * Carve out per-channel scratch regions inside the firmware
@@ -697,9 +697,7 @@ int vidc_load_firmware(struct vidc_core *core)
 	return 0;
 
 err_free_dma:
-	dma_free_coherent(core->dev, core->fw_alloc_size,
-			  core->fw_alloc_vaddr, core->fw_alloc_dma_addr);
-	core->fw_alloc_vaddr = NULL;
+	iounmap((void __iomem *)core->fw_vaddr);
 	core->fw_vaddr = NULL;
 	core->fw_loaded = false;
 err_release_fw:
@@ -814,10 +812,8 @@ void vidc_unload_firmware(struct vidc_core *core)
 	if (!core->fw_loaded)
 		return;
 
-	if (core->fw_alloc_vaddr) {
-		dma_free_coherent(core->dev, core->fw_alloc_size,
-				  core->fw_alloc_vaddr, core->fw_alloc_dma_addr);
-		core->fw_alloc_vaddr = NULL;
+	if (core->fw_vaddr) {
+		iounmap((void __iomem *)core->fw_vaddr);
 		core->fw_vaddr = NULL;
 	}
 
