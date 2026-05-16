@@ -16,6 +16,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/gpio/consumer.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/host.h>
@@ -1378,6 +1379,31 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	ar->bmi.max_data_size = 116;
 
 	ath6kl_sdio_set_mbox_info(ar);
+
+	/*
+	 * Reset the AR6003 via WLAN_RST_N (GPIO 135) before starting BMI.
+	 * The chip has a BMI inactivity timeout: if no BMI commands arrive
+	 * within ~30s of power-on, it exits BMI mode and CMD53 stops working.
+	 * With the driver loaded as a module, probe may run 50+ seconds after
+	 * card detection.  Pulsing reset guarantees the chip re-enters BMI
+	 * mode regardless of when probe is called.
+	 */
+	sdio_release_host(func);
+	{
+		struct gpio_desc *reset_gpio;
+
+		reset_gpio = devm_gpiod_get_optional(&func->dev, "reset",
+						     GPIOD_OUT_HIGH);
+		if (!IS_ERR_OR_NULL(reset_gpio)) {
+			/* ACTIVE_LOW: logical 1 = physical LOW = reset asserted */
+			msleep(10);
+			gpiod_set_value_cansleep(reset_gpio, 0); /* deassert */
+			msleep(500); /* wait for chip to reach BMI mode */
+			ath6kl_dbg(ATH6KL_DBG_BOOT,
+				   "AR6003 reset via GPIO, entering BMI mode\n");
+		}
+	}
+	sdio_claim_host(func);
 
 	ret = ath6kl_sdio_config(ar);
 	if (ret) {
