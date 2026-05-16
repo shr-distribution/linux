@@ -145,14 +145,19 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 			hw_write_id_reg(ci, HS_PHY_GENCONFIG_2,
 					HS_PHY_ULPI_TX_PKT_EN_CLR_FIX, 0);
 
-		if (!IS_ERR(ci->platdata->vbus_extcon.edev) || ci->role_switch) {
-			hw_write_id_reg(ci, HS_PHY_GENCONFIG_2,
-					HS_PHY_SESS_VLD_CTRL_EN,
-					HS_PHY_SESS_VLD_CTRL_EN);
-			hw_write(ci, OP_USBCMD, HSPHY_SESS_VLD_CTRL,
-				 HSPHY_SESS_VLD_CTRL);
-
-		}
+		/*
+		 * Enable PHY session-valid control unconditionally.  This wires
+		 * the ULPI PHY's B-Session Valid signal into the controller so
+		 * VBUS removal and reconnection are detected without needing an
+		 * extcon device.  The webOS msm_otg driver set SESS_VLD_CTRL
+		 * unconditionally; the extcon guard here is too conservative for
+		 * MSM8660 hardware which always requires this path.
+		 */
+		hw_write_id_reg(ci, HS_PHY_GENCONFIG_2,
+				HS_PHY_SESS_VLD_CTRL_EN,
+				HS_PHY_SESS_VLD_CTRL_EN);
+		hw_write(ci, OP_USBCMD, HSPHY_SESS_VLD_CTRL,
+			 HSPHY_SESS_VLD_CTRL);
 		break;
 	case CI_HDRC_CONTROLLER_STOPPED_EVENT:
 		dev_dbg(dev, "CI_HDRC_CONTROLLER_STOPPED_EVENT received\n");
