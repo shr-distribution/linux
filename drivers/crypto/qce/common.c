@@ -4,6 +4,7 @@
  */
 
 #include <crypto/internal/hash.h>
+#include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/types.h>
