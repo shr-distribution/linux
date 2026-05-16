@@ -1557,9 +1557,18 @@
 			 * iommus the device uses physical addresses directly,
 			 * matching the original webOS behaviour.
 			 */
+			/*
+			 * video-smi: RISC AXI fetch path from SMI SRAM (firmware
+			 * is loaded at 0x38000000 = MMFAB_SLV_SMI). Without this
+			 * bandwidth vote the MMSS fabric blocks RISC instruction
+			 * fetches and the RISC stalls silently on first fetch.
+			 * video-ebi: RISC access to EBI DRAM (decoded frame buffers).
+			 */
 			interconnects = <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0
+					 &mmss_fabric MMFAB_SLV_SMI>,
+					<&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
-			interconnect-names = "video-mem";
+			interconnect-names = "video-smi", "video-ebi";
 			/*
 			 * Video codec bandwidth from webOS vcd_res_tracker.h.
 			 * 164 MB/s average, 1309 MB/s peak for 1080p encode/decode.
