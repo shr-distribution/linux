@@ -2758,25 +2758,28 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 /*
  * Unhalt all MMSS fabric AXI master ports via RPM.
  *
- * Samsung/HTC downstream kernels unhalt each port individually in
- * footswitch_enable() when each GDSC powers on.  Our mainline GDSC
- * driver does not do this, leaving MMSS AXI ports in their default
- * (potentially halted) state.  This can cause DMA stalls and display
- * artifacts on the GPU (GFX3D port 2) and 2D engines (GFX2D0 port 4,
- * GFX2D1 port 8).
+ * webOS downstream kernels unhalt each port individually in
+ * footswitch_enable() when each GDSC powers on (msm_bus_axi_portunhalt).
+ * Our mainline GDSC driver does not do this, leaving MMSS AXI ports in
+ * their default (potentially halted) state after a power-domain cycle.
  *
- * MMSS fabric master ports:
- *   0: ADM1       1: ROTATOR    2: GFX3D      3: JPEG_DEC
- *   4: GFX2D0     5: VFE        6: VPE        7: JPEG_ENC
- *   8: GFX2D1     9: HDCODEC0  10: HDCODEC1
+ * MMSS fabric master ports (from webOS msm_bus_board_8660.c enum):
+ *   0: MDP_PORT0   1: MDP_PORT1   2: ADM1_PORT0   3: ROTATOR
+ *   4: GFX3D       5: JPEG_DEC    6: GFX2D0        7: VFE
+ *   8: VPE         9: JPEG_ENC   10: GFX2D1        11: APPS_FAB
+ *  12: HDCODEC0   13: HDCODEC1
+ *
+ * Unhalt all 14 known ports unconditionally (no-op if already unhalted).
+ * HDCODEC0/1 (ports 12-13) are needed for the VIDC 1080p RISC to fetch
+ * firmware from SMI.
  */
 static void mmcc_msm8660_unhalt_mmss_ports(struct device *dev)
 {
 	struct device_node *rpm_node;
 	struct platform_device *rpm_pdev;
 	struct qcom_rpm *rpm;
-	/* Unhalt only needed ports: 1=ROTATOR, 2=GFX3D, 5=VFE, 7=JPEG_ENC */
-	u32 halt_data[2] = {0, BIT(1) | BIT(2) | BIT(5) | BIT(7)};
+	/* halt_data[0]=0 = CLK_UNHALT for all bits; halt_data[1] = port mask */
+	u32 halt_data[2] = {0, GENMASK(13, 0)};
 	int rc;
 
 	rpm_node = of_find_compatible_node(NULL, NULL, "qcom,rpm-msm8660");
@@ -2799,7 +2802,7 @@ static void mmcc_msm8660_unhalt_mmss_ports(struct device *dev)
 	if (rc)
 		dev_warn(dev, "MMSS fabric unhalt failed: %d\n", rc);
 	else
-		dev_info(dev, "MMSS fabric: unhalted ROTATOR+GFX3D+VFE+JPEG_ENC ports\n");
+		dev_info(dev, "MMSS fabric: unhalted all MMSS master ports (0-13)\n");
 
 	put_device(&rpm_pdev->dev);
 }

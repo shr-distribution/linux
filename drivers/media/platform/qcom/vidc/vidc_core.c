@@ -26,7 +26,6 @@
 #include <linux/regulator/consumer.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
-#include <linux/swab.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mem2mem.h>
@@ -82,6 +81,11 @@ static int vidc_clk_enable(struct vidc_core *core)
 		dev_err(core->dev, "failed to enable axi clock: %d\n", ret);
 		goto err_core_clk;
 	}
+
+	printk(KERN_EMERG "VIDC: clk_enable: core_clk=%lu Hz iface_clk=%lu Hz axi_clk=%lu Hz\n",
+	       clk_get_rate(core->core_clk),
+	       clk_get_rate(core->iface_clk),
+	       clk_get_rate(core->axi_clk));
 
 	return 0;
 
@@ -611,20 +615,16 @@ int vidc_load_firmware(struct vidc_core *core)
 	core->fw_size = core->fw->size;
 
 	/*
-	 * The VIDC embedded RISC is big-endian. The firmware blob is stored
-	 * in little-endian host word order. Byte-swap each 32-bit word during
-	 * copy, matching webOS DDL ddl_fw_change_endian() (vcd_ddl_utils.c,
-	 * #define DDL_FW_CHANGE_ENDIAN). Without this the RISC executes
-	 * reversed bytes and never fires FW_STATUS_RET.
+	 * The VIDC embedded RISC is big-endian. The firmware blob shipped by
+	 * the firmware-hp-tenderloin Yocto package (605 KB) is stored in
+	 * big-endian byte order — the same byte order the RISC reads. Copy
+	 * it verbatim with memcpy_toio; no byte-swapping needed.
+	 *
+	 * (The 500 KB webOS-doctor blob uses little-endian storage and would
+	 * require swab32 per word, matching webOS ddl_fw_change_endian().
+	 * The Yocto blob is the one on the target device.)
 	 */
-	{
-		const u32 *src = (const u32 *)core->fw->data;
-		void __iomem *dst = (void __iomem *)core->fw_vaddr;
-		size_t i, nwords = core->fw->size / sizeof(u32);
-
-		for (i = 0; i < nwords; i++)
-			iowrite32(swab32(src[i]), dst + i * sizeof(u32));
-	}
+	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw->size);
 
 	/* CPU reads from SMI return 0; readback is not meaningful. */
 	printk(KERN_EMERG "VIDC: SMI fw written: dma_addr=0x%08x alloc_size=%zu fw_size=%zu\n",
