@@ -189,16 +189,8 @@
 	ath6kl_pwrseq: ath6kl-pwrseq {
 		compatible = "mmc-pwrseq-simple";
 
-		/*
-		 * WLAN_RST_N (GPIO 135) is NOT listed here. It is owned by the
-		 * ath6kl_sdio driver via the reset-gpios property on wifi@1 below.
-		 * The driver resets the chip at probe time, which guarantees BMI
-		 * mode regardless of when the module loads (e.g. late via udev).
-		 *
-		 * Having the GPIO here AND in the driver causes a conflict: the
-		 * mmc-pwrseq-simple driver holds the GPIO permanently, preventing
-		 * ath6kl from ever claiming it.
-		 */
+		/* WLAN_RST_N (GPIO 135) - deasserted by mmc-pwrseq at SDIO power-on */
+		reset-gpios = <&tlmm 135 GPIO_ACTIVE_LOW>;
 
 		/* 32kHz sleep clock for AR6003 low-power mode */
 		clocks = <&sleep_clk>;
@@ -2318,13 +2310,6 @@
 		compatible = "atheros,ath6kl";
 		reg = <1>;
 		atheros,board-id = "SD32";
-		/*
-		 * WLAN_RST_N - active low reset for AR6003.
-		 * Owned by ath6kl_sdio (not mmc-pwrseq-simple) so the driver
-		 * can pulse it at probe time to guarantee BMI mode regardless
-		 * of when the module loads.
-		 */
-		reset-gpios = <&tlmm 135 GPIO_ACTIVE_LOW>;
 	};
 };
 
