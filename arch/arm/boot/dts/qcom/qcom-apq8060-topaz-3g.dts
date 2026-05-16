@@ -97,12 +97,20 @@
  *
  *   HDMI       : DDC/CEC/HPD on GPIO 169/170/171/172 -- collides with
  *                ISP1763 DACK and 3G_DISABLE_N. No HDMI on 3G hardware.
- *   MT9M113    : reset-gpios collides with MDM6600 3V3_EN on gpio106 (DVT).
  *   LSM303DLH  : Topaz WiFi variant already disables these; gpio124
  *                (default accel IRQ) is EBI2_A_D on 3G hardware so the
  *                pinctrl is unsafe anyway. Disable until verified present.
  *   GSBI5/GPS  : BCM4751 GPS dedicated chip is Opal-only; Topaz3G relies
  *                on the MDM6600 internal A-GPS over USB.
+ *
+ * MT9M113 webcam IS present on Topaz3G PVT (verified via /dev/video0 +
+ * msm_camera_mt9m113.0 on legacy webOS; live GPIO probe shows the
+ * sensor PWDN line on gpio107 toggling on camera open/close). The
+ * earlier perception that gpio106 collides with the modem 3V3 rail
+ * was a misread of the legacy code -- on this PVT board, gpio106 is
+ * never driven by the SoC, and the modem rail comes up by hardware
+ * default. The camera node is therefore enabled with its common-DT
+ * pin assignments unchanged.
  */
 
 /dts-v1/;
@@ -391,12 +399,19 @@
 			drive-strength = <2>;
 			bias-pull-down;
 		};
-		power-pins {
-			pins = "gpio106";		/* 3G_3V3_EN_DVT (EVT uses gpio82) */
-			function = "gpio";
-			drive-strength = <2>;
-			bias-disable;
-		};
+		/*
+		 * NB: the modem 3.3V rail is NOT a software-controlled SoC
+		 * GPIO on Topaz3G PVT. The schematic puts VDD_3V3_3G_EN on
+		 * gpio158 (a stuffing option also shows gpio132), while the
+		 * legacy webOS code labels gpio106 "VDD_3V3_EN" but never
+		 * actually drives it -- a live probe confirms gpio106 stays
+		 * `in hi` through camera and airplane-mode toggles. The
+		 * modem rail comes up by board default and Linux must NOT
+		 * mux gpio106/gpio158 as a plain GPIO output here, or it
+		 * will collide with the webcam (gpio106 = WEBCAM_RST per
+		 * the schematic). So: no power-pins entry, no power-gpios
+		 * on the isp1763 node.
+		 */
 		modem-disable-pins {
 			pins = "gpio171";		/* 3G_DISABLE_N */
 			function = "gpio";
@@ -521,10 +536,29 @@
 &gsbi5        { status = "disabled"; };
 &gsbi5_serial { status = "disabled"; };
 
+/*
+ * Front-facing 1.3MP webcam (Aptina MT9M113) -- present on Topaz3G PVT
+ * (verified: /dev/video0 + msm_camera_mt9m113.0 in legacy webOS, plus
+ * "1.3M CAMERA CONNECTOR" annotation in the schematic).
+ *
+ * The earlier 3G DT disabled this node because the WiFi-variant DT
+ * routes the sensor's reset-gpios to gpio106, and the legacy 3G code
+ * also lays claim to gpio106 as a misnamed "VDD_3V3_EN" -- a real
+ * software collision on paper. A live-device GPIO probe (Camera app
+ * open/close, airplane-mode toggle) shows gpio106 never moves: the
+ * line is held high by the board, not by the SoC. The schematic
+ * confirms gpio106 is the WEBCAM_RST net (ball AL8, line 3086) and
+ * places the modem 3V3 enable on gpio158 (line 4916, TP172) instead.
+ *
+ * So the collision is a phantom: keep the WiFi-variant binding for
+ * reset-gpios/powerdown-gpios and just re-enable the node. We do NOT
+ * drive gpio106 from the isp1763 power-gpios on this variant (see
+ * comment on the isp1763 node above) so there is no longer any
+ * pinctrl/gpio-consumer fight between camera and modem.
+ */
 &gsbi4_i2c {
 	camera@3c {
-		/* gpio106 reset collides with MDM6600 3V3_EN on DVT hardware */
-		status = "disabled";
+		status = "okay";
 	};
 };
 
@@ -612,7 +646,14 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&isp1763_pins>;
 
-		power-gpios = <&tlmm 106 GPIO_ACTIVE_HIGH>;	/* DVT: 106, EVT: 82 */
+		/*
+		 * No power-gpios: VDD_3V3_3G_EN is not a software-controlled
+		 * line on Topaz3G PVT. The legacy webOS code claims gpio106
+		 * for this rail but a live probe shows the pin never moves,
+		 * and the schematic puts the actual VDD_3V3_3G_EN net on
+		 * gpio158 (TP172) -- still hardware-default-on. Driving
+		 * gpio106 from here would collide with the WEBCAM_RST line.
+		 */
 		reset-gpios = <&tlmm 152 GPIO_ACTIVE_HIGH>;
 	};
 };
