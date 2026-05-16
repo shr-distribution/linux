@@ -611,23 +611,17 @@ int vidc_load_firmware(struct vidc_core *core)
 	core->fw_size = core->fw->size;
 
 	/*
-	 * The VIDC embedded RISC is big-endian. The firmware blob is stored
-	 * in little-endian host word order. Byte-swap each 32-bit word during
-	 * copy, matching webOS DDL ddl_fw_change_endian() (vcd_ddl_utils.c,
-	 * #define DDL_FW_CHANGE_ENDIAN). Without this the RISC executes
-	 * reversed bytes and never fires FW_STATUS_RET.
+	 * TEST: write firmware WITHOUT endian swap using memcpy_toio + dsb().
+	 * If RISC shows ANY activity (even garbage execution/crash) after reset,
+	 * writes reach physical SMI → swap direction is wrong.
+	 * If RISC stays completely silent → writes are being dropped at bus level.
 	 */
-	{
-		const u32 *src = (const u32 *)core->fw->data;
-		void __iomem *dst = (void __iomem *)core->fw_vaddr;
-		size_t i, nwords = core->fw->size / sizeof(u32);
-
-		for (i = 0; i < nwords; i++)
-			iowrite32(swab32(src[i]), dst + i * sizeof(u32));
-	}
+	memcpy_toio((void __iomem *)core->fw_vaddr, core->fw->data, core->fw->size);
+	/* Ensure all writes are visible to hardware before releasing RISC */
+	dsb(sy);
 
 	/* CPU reads from SMI return 0; readback is not meaningful. */
-	printk(KERN_EMERG "VIDC: SMI fw written: dma_addr=0x%08x alloc_size=%zu fw_size=%zu\n",
+	printk(KERN_EMERG "VIDC: SMI fw written (NO endian swap): dma_addr=0x%08x alloc_size=%zu fw_size=%zu\n",
 	       (u32)core->fw_dma_addr, core->fw_alloc_size, core->fw_size);
 
 	/*
