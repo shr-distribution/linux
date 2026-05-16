@@ -342,15 +342,29 @@ static int qce_setup_regs_ahash(struct crypto_async_request *async_req)
 		auth_cfg &= ~BIT(AUTH_FIRST_SHIFT);
 
 go_proc:
-	qce_write(qce, REG_AUTH_SEG_CFG, auth_cfg);
-	qce_write(qce, REG_AUTH_SEG_SIZE, req->nbytes);
-	qce_write(qce, REG_AUTH_SEG_START, 0);
-	qce_write(qce, REG_ENCR_SEG_CFG, 0);
-	qce_write(qce, REG_SEG_SIZE, req->nbytes);
+	if (qce_is_ce2(qce)) {
+		/*
+		 * CE2 uses different register layout for hash operations.
+		 * SEG_CFG at 0x030 holds the combined config (set above).
+		 * AUTH_SEG_CFG at 0x038 holds auth size/start.
+		 * SEG_SIZE at 0x03C holds the total segment size.
+		 * No separate ENCR_SEG_CFG write needed for hash-only.
+		 */
+		qce_write(qce, CE2_REG_SEG_CFG, auth_cfg);
+		qce_write(qce, CE2_REG_AUTH_SEG_CFG,
+			  req->nbytes << CE2_AUTH_SEG_SIZE_SHIFT);
+		qce_write(qce, CE2_REG_SEG_SIZE, req->nbytes);
+	} else {
+		qce_write(qce, REG_AUTH_SEG_CFG, auth_cfg);
+		qce_write(qce, REG_AUTH_SEG_SIZE, req->nbytes);
+		qce_write(qce, REG_AUTH_SEG_START, 0);
+		qce_write(qce, REG_ENCR_SEG_CFG, 0);
+		qce_write(qce, REG_SEG_SIZE, req->nbytes);
+	}
 
 	/* get little endianness */
 	config = qce_config_reg(qce, 1);
-	qce_write(qce, REG_CONFIG, config);
+	qce_write(qce, qce_reg_config(qce), config);
 
 	qce_crypto_go(qce, true);
 
