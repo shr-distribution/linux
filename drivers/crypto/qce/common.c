@@ -886,19 +886,16 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	if (!rctx->last_blk && req->nbytes % blocksize)
 		return -EINVAL;
 
-	/* Programming order matches the mako kernel _sha_ce_setup:
-	 *   1) AUTH_IV0..N
-	 *   2) AUTH_BYTECNT0..1
-	 *   3) AUTH_SEG_CFG
-	 *   4) SEG_CFG
-	 *   5) SEG_SIZE
-	 *   6) GOPROC + mb()
+	/* Exact mirror of the working qce_test_pio_mode() diagnostic in
+	 * core.c. Uses writel_relaxed throughout (no memory barriers
+	 * between writes). The order is:
+	 *   SEG_CFG -> AUTH_SEG_CFG -> SEG_SIZE -> AUTH_IV -> AUTH_BYTECNT
+	 *   -> CONFIG (read-modify-write) -> GOPROC
 	 *
-	 * SEG_CFG additionally sets CLR_CNTXT (bit 19) for first_blk because
-	 * our standalone PIO diagnostic in core.c proves that bit is what
-	 * actually flushes the engine's internal SHA working state on
-	 * TouchPad CE2. Mako relies on DMA-side clearing (CMD_*_SWAP +
-	 * BAM context resets) that we don't have in this PIO path.
+	 * Empirically: using qce_write (writel + dsb) and any other order
+	 * yields wrong digests despite identical register values appearing
+	 * in diagnostic readbacks. The barriers and/or write order seems to
+	 * disturb CE2's internal SHA setup.
 	 */
 	auth_cfg = qce_auth_cfg_ce2(rctx->flags);
 	if (rctx->first_blk)
@@ -906,12 +903,6 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	if (rctx->last_blk)
 		auth_cfg |= BIT(CE2_LAST_SHIFT);
 
-	/* 1) AUTH_IV0..N. Standard initial vectors for first_blk, intermediate
-	 *    digest from rctx->digest (in big-endian wire order) for
-	 *    continuation. Mako writes only 5 or 8 words; we additionally wipe
-	 *    AUTH_IV5..15 first because earlier observation showed residual
-	 *    values from prior ops can leak into the next computation.
-	 */
 	if (!IS_SHA1(rctx->flags) && !IS_SHA1_HMAC(rctx->flags))
 		iv_words = 8;
 	else
@@ -922,64 +913,68 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	else
 		qce_cpu_to_be32p_array(auth, rctx->digest, digestsize);
 
-	qce_clear_array(qce, CE2_REG_AUTH_IV0 + iv_words * sizeof(u32),
-			16 - iv_words);
-	qce_write_array(qce, CE2_REG_AUTH_IV0, (u32 *)auth, iv_words);
+	/* SEG_CFG / AUTH_SEG_CFG / SEG_SIZE first */
+	writel_relaxed(auth_cfg, qce->base + CE2_REG_SEG_CFG);
+	writel_relaxed(req->nbytes << CE2_AUTH_SEG_SIZE_SHIFT,
+		       qce->base + CE2_REG_AUTH_SEG_CFG);
+	writel_relaxed(req->nbytes, qce->base + CE2_REG_SEG_SIZE);
 
-	/* 2) AUTH_BYTECNT0..1 (just 2 words). For first_blk both are 0; for
-	 *    continuation pass the cumulative byte count from rctx.
+	/* AUTH_IV: clear IV5..15 first (residual from prior ops corrupts
+	 * SHA1 results), then write the algorithm IVs.
 	 */
-	if (rctx->first_blk) {
-		qce_write(qce, CE2_REG_AUTH_BYTECNT0, 0);
-		qce_write(qce, CE2_REG_AUTH_BYTECNT1, 0);
-	} else {
-		qce_write(qce, CE2_REG_AUTH_BYTECNT0,
-			  (__force u32)rctx->byte_count[0]);
-		qce_write(qce, CE2_REG_AUTH_BYTECNT1,
-			  (__force u32)rctx->byte_count[1]);
+	{
+		unsigned int j;
+		u32 *iv32 = (u32 *)auth;
+
+		for (j = iv_words; j < 16; j++)
+			writel_relaxed(0, qce->base +
+				CE2_REG_AUTH_IV0 + j * sizeof(u32));
+		for (j = 0; j < iv_words; j++)
+			writel_relaxed(iv32[j], qce->base +
+				CE2_REG_AUTH_IV0 + j * sizeof(u32));
 	}
 
-	/* 3) AUTH_SEG_CFG (size in upper 16 bits, auth_start in lower) */
-	qce_write(qce, CE2_REG_AUTH_SEG_CFG,
-		  req->nbytes << CE2_AUTH_SEG_SIZE_SHIFT);
+	/* AUTH_BYTECNT0..3 */
+	if (rctx->first_blk) {
+		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT0);
+		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT1);
+		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT2);
+		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT3);
+	} else {
+		writel_relaxed((__force u32)rctx->byte_count[0],
+			       qce->base + CE2_REG_AUTH_BYTECNT0);
+		writel_relaxed((__force u32)rctx->byte_count[1],
+			       qce->base + CE2_REG_AUTH_BYTECNT1);
+		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT2);
+		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT3);
+	}
 
-	/* 4) SEG_CFG (algorithm + FIRST + LAST) */
-	qce_write(qce, CE2_REG_SEG_CFG, auth_cfg);
-
-	/* 5) SEG_SIZE (total bytes in this segment) */
-	qce_write(qce, CE2_REG_SEG_SIZE, req->nbytes);
-
-	/* CONFIG: mako leaves this alone (set once at init). The masks were
-	 * programmed during probe (qce_setup_config wasn't run because the
-	 * caller branches around qce_start). Read it back just to verify; if
-	 * the kernel ever pokes it elsewhere we want to know.
+	/* CONFIG: read-modify-write matching PIO diagnostic (set interrupt
+	 * masks, enable high-speed paths, ensure CLK_EN_N=0 and SW_RST=0)
 	 */
-	config = qce_read(qce, CE2_REG_CONFIG);
+	config = readl_relaxed(qce->base + CE2_REG_CONFIG);
+	config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) |
+		  BIT(CE2_MASK_DIN_INTR_SHIFT) |
+		  BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
+		  BIT(CE2_MASK_ERR_INTR_SHIFT);
+	config &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
+		    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
+		    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
+	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
+	writel_relaxed(config, qce->base + CE2_REG_CONFIG);
 
-	/* DIAGNOSTIC: read back what we just programmed before firing GO */
+	/* Diagnostic */
 	dev_info(qce->dev,
-		 "CE2 hash pre-GO: SEG_CFG=0x%08x AUTH_SEG_CFG=0x%08x SEG_SIZE=0x%08x CONFIG=0x%08x\n",
-		 qce_read(qce, CE2_REG_SEG_CFG),
-		 qce_read(qce, CE2_REG_AUTH_SEG_CFG),
-		 qce_read(qce, CE2_REG_SEG_SIZE),
-		 qce_read(qce, CE2_REG_CONFIG));
-	dev_info(qce->dev,
-		 "CE2 hash pre-GO: AUTH_IV0..3 = %08x %08x %08x %08x AUTH_IV4..7 = %08x %08x %08x %08x\n",
-		 qce_read(qce, CE2_REG_AUTH_IV0),
-		 qce_read(qce, CE2_REG_AUTH_IV1),
-		 qce_read(qce, CE2_REG_AUTH_IV2),
-		 qce_read(qce, CE2_REG_AUTH_IV3),
-		 qce_read(qce, CE2_REG_AUTH_IV4),
-		 qce_read(qce, CE2_REG_AUTH_IV5),
-		 qce_read(qce, CE2_REG_AUTH_IV6),
-		 qce_read(qce, CE2_REG_AUTH_IV7));
+		 "CE2 hash pre-GO: SEG_CFG=0x%08x SEG_SIZE=%u CONFIG=0x%08x first=%d last=%d\n",
+		 auth_cfg, req->nbytes, config,
+		 rctx->first_blk, rctx->last_blk);
 
-	/* 7) GOPROC */
-	qce_write(qce, CE2_REG_GOPROC, BIT(CE2_GO_SHIFT));
+	/* GOPROC */
+	writel_relaxed(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
 
 	/* 8) Wait for engine to leave IDLE (transition to LOCKED) */
 	for (timeout = 1000; timeout > 0; timeout--) {
-		status = qce_read(qce, CE2_REG_STATUS);
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
 		if (status & CE2_CRYPTO_STATE_MASK)
 			break;
 		udelay(10);
@@ -1010,7 +1005,7 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	p = (u32 *)buf;
 	for (i = 0; i < dwords; i++) {
 		for (timeout = 10000; timeout > 0; timeout--) {
-			status = qce_read(qce, CE2_REG_STATUS);
+			status = readl_relaxed(qce->base + CE2_REG_STATUS);
 			if (status & BIT(CE2_DIN_RDY_SHIFT))
 				break;
 			udelay(10);
@@ -1022,13 +1017,13 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 			ret = -ETIMEDOUT;
 			goto out;
 		}
-		qce_write(qce, CE2_REG_DATA_IN, p[i]);
+		writel_relaxed(p[i], qce->base + CE2_REG_DATA_IN);
 	}
 
 	/* 10) Wait for AUTH_DONE */
 	timeout = max(50000U, dwords * 100U);
 	for (; timeout > 0; timeout--) {
-		status = qce_read(qce, CE2_REG_STATUS);
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
 		if (status & BIT(CE2_AUTH_DONE_SHIFT))
 			break;
 		udelay(10);
@@ -1057,7 +1052,7 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		dev_info(qce->dev,
 			 "CE2 hash post-DONE: STATUS=0x%08x\n", status);
 		for (i = 0; i < words; i++) {
-			u32 raw = qce_read(qce,
+			u32 raw = readl_relaxed(qce->base +
 				CE2_REG_AUTH_IV0 + i * sizeof(u32));
 			dev_info(qce->dev, "CE2 hash post-DONE: AUTH_IV%u=0x%08x\n",
 				 i, raw);
@@ -1070,8 +1065,10 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	}
 
 	/* Capture byte count for streaming-hash continuation */
-	rctx->byte_count[0] = cpu_to_be32(qce_read(qce, CE2_REG_AUTH_BYTECNT0));
-	rctx->byte_count[1] = cpu_to_be32(qce_read(qce, CE2_REG_AUTH_BYTECNT1));
+	rctx->byte_count[0] = cpu_to_be32(readl_relaxed(
+		qce->base + CE2_REG_AUTH_BYTECNT0));
+	rctx->byte_count[1] = cpu_to_be32(readl_relaxed(
+		qce->base + CE2_REG_AUTH_BYTECNT1));
 
 out:
 	kfree(buf);
