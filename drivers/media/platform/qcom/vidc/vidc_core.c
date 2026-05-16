@@ -19,6 +19,8 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
@@ -568,43 +570,49 @@ int vidc_load_firmware(struct vidc_core *core)
 	}
 
 	/*
-	 * Allocate one block covering both the firmware and a context-memory
-	 * pool for per-instance state. The on-chip RISC addresses everything
-	 * via DRAM_BASE_A — open-channel commands pass per-instance context
-	 * offsets as (offset_in_dram_base_a >> 11), so context buffers must
-	 * live in the same physical region as the firmware.
-	 *
-	 * Over-allocate by SZ_128K so we can guarantee a 128 KB-aligned
-	 * firmware pointer inside the buffer. The hardware register
-	 * VIDC_REG_DRAM_BASE_A encodes the firmware base in bits [31:17]
-	 * (i.e. address aligned down to 128 KB), so any sub-128 KB offset
-	 * of the firmware would be silently dropped and the on-chip RISC
-	 * would fetch garbage.
+	 * Layout firmware + context pool + descriptor + shared-mem in the
+	 * SMI reserved region. The VIDC RISC fetches via MMFAB→SMI; it
+	 * cannot access EBI/DRAM. SMI base (0x38000000) is already 128KB-
+	 * aligned, so no over-allocation needed.
 	 */
 	core->ctxt_pool_size = VIDC_MAX_INSTANCES * VIDC_CTXT_MEM_SIZE;
 	core->ctxt_pool_used = 0;
 	core->fw_alloc_size = ALIGN(core->fw->size, SZ_4K)
 			    + core->ctxt_pool_size
 			    + VIDC_DESC_BUF_SIZE
-			    + VIDC_SHM_SIZE
-			    + SZ_128K;
-	core->fw_alloc_vaddr = dma_alloc_coherent(core->dev,
-						  core->fw_alloc_size,
-						  &core->fw_alloc_dma_addr,
-						  GFP_KERNEL);
-	if (!core->fw_alloc_vaddr) {
+			    + VIDC_SHM_SIZE;
+
+	if (core->fw_alloc_size > core->fw_phys_size) {
+		dev_err(core->dev,
+			"SMI region too small: need %zu, have %zu\n",
+			core->fw_alloc_size, core->fw_phys_size);
 		ret = -ENOMEM;
 		goto err_release_fw;
 	}
 
-	core->fw_dma_addr = ALIGN(core->fw_alloc_dma_addr, SZ_128K);
-	core->fw_align_off = core->fw_dma_addr - core->fw_alloc_dma_addr;
-	core->fw_vaddr = core->fw_alloc_vaddr + core->fw_align_off;
+	/*
+	 * SMI is not accessible via the CPU's normal memory bus. Use
+	 * ioremap_wc() to get write-combining CPU access for the firmware
+	 * copy. The RISC accesses the same physical region through its own
+	 * MMSS fabric master port — no CPU mapping required after copy.
+	 */
+	core->fw_dma_addr = core->fw_phys_base; /* already 128KB-aligned */
+	core->fw_vaddr = ioremap_wc(core->fw_phys_base, core->fw_alloc_size);
+	if (!core->fw_vaddr) {
+		dev_err(core->dev, "failed to ioremap SMI firmware region\n");
+		ret = -ENOMEM;
+		goto err_release_fw;
+	}
+	/* Legacy fields unused but zeroed to avoid stale pointer dereference */
+	core->fw_alloc_dma_addr = 0;
+	core->fw_alloc_vaddr = NULL;
+	core->fw_align_off = 0;
+
 	core->fw_size = core->fw->size;
 
-	memcpy(core->fw_vaddr, core->fw->data, core->fw->size);
+	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw->size);
 
-	/* Ensure firmware is visible to VIDC before DRAM_BASE write */
+	/* Ensure firmware is visible to VIDC RISC before DRAM_BASE write */
 	wmb();
 
 	/*
@@ -668,16 +676,13 @@ int vidc_load_firmware(struct vidc_core *core)
 		goto err_free_dma;
 
 	dev_info(core->dev,
-		 "Firmware loaded at %pad (alloc %pad, off=%zu), version 0x%08x\n",
-		 &core->fw_dma_addr, &core->fw_alloc_dma_addr,
-		 core->fw_align_off, core->fw_version);
+		 "Firmware loaded into SMI at 0x%08x (%zu bytes), version 0x%08x\n",
+		 (u32)core->fw_dma_addr, core->fw_size, core->fw_version);
 
 	return 0;
 
 err_free_dma:
-	dma_free_coherent(core->dev, core->fw_alloc_size,
-			  core->fw_alloc_vaddr, core->fw_alloc_dma_addr);
-	core->fw_alloc_vaddr = NULL;
+	iounmap(core->fw_vaddr);
 	core->fw_vaddr = NULL;
 	core->fw_loaded = false;
 err_release_fw:
@@ -792,11 +797,8 @@ void vidc_unload_firmware(struct vidc_core *core)
 	if (!core->fw_loaded)
 		return;
 
-	if (core->fw_alloc_vaddr) {
-		dma_free_coherent(core->dev, core->fw_alloc_size,
-				  core->fw_alloc_vaddr,
-				  core->fw_alloc_dma_addr);
-		core->fw_alloc_vaddr = NULL;
+	if (core->fw_vaddr) {
+		iounmap(core->fw_vaddr);
 		core->fw_vaddr = NULL;
 	}
 
@@ -1856,8 +1858,36 @@ static int vidc_probe(struct platform_device *pdev)
 		core->gdsc = NULL;
 	}
 
-	/* Get optional interconnect path */
-	core->icc_path = devm_of_icc_get(dev, "video-mem");
+	/*
+	 * Read SMI reserved-memory region for firmware placement.
+	 * The VIDC RISC CPU can only fetch from SMI (0x38000000); firmware
+	 * placed in EBI/DRAM is unreachable for the RISC.
+	 */
+	if (dev->of_node) {
+		struct device_node *mem_node;
+		struct resource r;
+
+		mem_node = of_parse_phandle(dev->of_node, "memory-region", 0);
+		if (mem_node) {
+			if (of_address_to_resource(mem_node, 0, &r) == 0) {
+				core->fw_phys_base = r.start;
+				core->fw_phys_size = resource_size(&r);
+				dev_info(dev, "SMI firmware region: 0x%08x size 0x%zx\n",
+					 (u32)core->fw_phys_base, core->fw_phys_size);
+			} else {
+				dev_err(dev, "failed to get SMI memory-region address\n");
+				of_node_put(mem_node);
+				return -EINVAL;
+			}
+			of_node_put(mem_node);
+		} else {
+			dev_err(dev, "no memory-region specified; firmware cannot be placed in SMI\n");
+			return -EINVAL;
+		}
+	}
+
+	/* Get optional interconnect path (video-smi for RISC fetch path) */
+	core->icc_path = devm_of_icc_get(dev, "video-smi");
 	if (IS_ERR(core->icc_path)) {
 		ret = PTR_ERR(core->icc_path);
 		if (ret == -EPROBE_DEFER)

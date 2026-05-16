@@ -313,26 +313,36 @@ struct vidc_core {
 	u32 icc_bw_peak;	/* peak bandwidth in bytes/sec */
 
 	/*
-	 * Firmware buffer.
+	 * Firmware buffer — lives in SMI (System Memory Interface) memory.
 	 *
-	 * VIDC_REG_DRAM_BASE_A/B encodes the firmware base address in bits
-	 * [31:17] of the register — i.e. the firmware buffer must be aligned
-	 * to a 128 KB (2^17) boundary in DRAM. dma_alloc_coherent() only
-	 * guarantees page (4 KB) alignment, so we over-allocate by 128 KB
-	 * and align the firmware pointer manually within the buffer.
+	 * The VIDC RISC CPU fetches instructions via the MMSS fabric SMI
+	 * slave port. It cannot reach EBI/DRAM. Firmware must be placed in
+	 * the reserved SMI region (vidc_fw_mem, 0x38000000, 3MB).
 	 *
-	 *   alloc_*   - the actual dma_alloc_coherent() return values; used
-	 *               for the matching dma_free_coherent() at unload.
-	 *   fw_*      - the 128 KB-aligned view passed to the hardware.
-	 *   align_off - byte offset of fw_vaddr inside alloc_vaddr.
+	 * SMI is not DMA-able from the CPU perspective; we use ioremap_wc()
+	 * for write access during firmware copy, then iounmap() it. The RISC
+	 * uses the raw physical address via DRAM_BASE_A/B.
+	 *
+	 * DRAM_BASE_A/B must be 128KB-aligned (bits [31:17] are used).
+	 * SMI base 0x38000000 is already 128KB-aligned.
+	 *
+	 *   fw_phys_base  - physical base of the SMI reserved region (from DT)
+	 *   fw_phys_size  - size of the reserved region
+	 *   fw_dma_addr   - 128KB-aligned physical address written to DRAM_BASE
+	 *   fw_vaddr      - ioremap_wc() mapping for CPU write access
+	 *   fw_size       - size of the firmware blob
+	 *   fw_alloc_size - total allocated size (fw + ctxt pool + desc + shm)
 	 */
 	const struct firmware *fw;
+	phys_addr_t fw_phys_base;	/* SMI reserved region physical base */
+	size_t fw_phys_size;		/* SMI reserved region size */
+	dma_addr_t fw_dma_addr;		/* 128KB-aligned phys for DRAM_BASE */
+	void *fw_vaddr;			/* ioremap_wc() virtual address */
+	size_t fw_size;			/* firmware blob size */
+	size_t fw_alloc_size;		/* total layout size in SMI */
+	/* Legacy fields — kept for iounmap reference tracking */
 	dma_addr_t fw_alloc_dma_addr;
 	void *fw_alloc_vaddr;
-	size_t fw_alloc_size;
-	dma_addr_t fw_dma_addr;
-	void *fw_vaddr;
-	size_t fw_size;
 	size_t fw_align_off;
 
 	/*
