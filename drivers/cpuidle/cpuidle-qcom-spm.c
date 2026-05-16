@@ -67,6 +67,14 @@ static int qcom_cpu_spc(struct spm_driver_data *drv)
 	 */
 	spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
 
+	/*
+	 * If TZ rejected the collapse (pending interrupt), fall back to plain
+	 * WFI so the CPU actually sleeps instead of busy-looping back through
+	 * the cpuidle governor at ~23K/s.
+	 */
+	if (ret)
+		cpu_do_idle();
+
 	return ret;
 }
 
@@ -93,6 +101,9 @@ static int qcom_cpu_pc(struct spm_driver_data *drv)
 	ret = cpu_suspend(0, qcom_pm_collapse_l2_off);
 	spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
 
+	if (ret)
+		cpu_do_idle();
+
 	return ret;
 }
 
@@ -101,9 +112,8 @@ static __cpuidle int spm_enter_spc(struct cpuidle_device *dev,
 {
 	struct cpuidle_qcom_spm_data *data = container_of(drv, struct cpuidle_qcom_spm_data,
 							  cpuidle_driver);
-	int ret = CPU_PM_CPU_IDLE_ENTER_PARAM(qcom_cpu_spc, idx, data->spm);
 
-	return ret ? ret : idx;
+	return CPU_PM_CPU_IDLE_ENTER_PARAM(qcom_cpu_spc, idx, data->spm);
 }
 
 static __cpuidle int spm_enter_pc(struct cpuidle_device *dev,
@@ -111,9 +121,8 @@ static __cpuidle int spm_enter_pc(struct cpuidle_device *dev,
 {
 	struct cpuidle_qcom_spm_data *data = container_of(drv, struct cpuidle_qcom_spm_data,
 							  cpuidle_driver);
-	int ret = CPU_PM_CPU_IDLE_ENTER_PARAM(qcom_cpu_pc, idx, data->spm);
 
-	return ret ? ret : idx;
+	return CPU_PM_CPU_IDLE_ENTER_PARAM(qcom_cpu_pc, idx, data->spm);
 }
 
 static struct cpuidle_driver qcom_spm_idle_driver = {
