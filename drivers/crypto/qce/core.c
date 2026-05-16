@@ -670,6 +670,24 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
 		dev_info(dev, "CE2: STATUS after SW_RST: 0x%08x (SW_ERR=%d)\n",
 			 status, status & BIT(CE2_SW_ERR_SHIFT));
+
+		/* ENGINES_AVAIL @ +0x044: which crypto engines are physically
+		 * implemented on this die. Log each engine so we know what's
+		 * usable on this specific MSM8660/APQ8060 silicon.
+		 */
+		val = readl_relaxed(qce->base + CE2_REG_ENGINES_AVAIL);
+		dev_info(dev, "CE2: ENGINES_AVAIL=0x%08x:%s%s%s%s%s%s%s%s\n",
+			 val,
+			 (val & CE2_AES_SEL_MASK) == CE2_AES_SEL_FAST ? " AES(fast)" :
+			   (val & CE2_AES_SEL_MASK) == CE2_AES_SEL_SLOW ? " AES(slow)" :
+			   "",
+			 (val & BIT(CE2_C2_SEL_SHIFT)) ? " C2" : "",
+			 (val & BIT(CE2_DES_SEL_SHIFT)) ? " DES/3DES" : "",
+			 (val & BIT(CE2_SHA_SEL_SHIFT)) ? " SHA1/SHA256" : "",
+			 (val & BIT(CE2_SHA512_SEL_SHIFT)) ? " SHA384/SHA512" : "",
+			 (val & BIT(CE2_HMAC_SEL_SHIFT)) ? " HMAC" : "",
+			 (val & BIT(CE2_F8_SEL_SHIFT)) ? " F8" : "",
+			 (val & BIT(CE2_F9_SEL_SHIFT)) ? " F9" : "");
 	}
 
 	/* Interconnect is optional - CE2 uses RPM for bus voting */
