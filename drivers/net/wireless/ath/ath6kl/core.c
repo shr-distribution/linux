@@ -119,7 +119,31 @@ int ath6kl_core_init(struct ath6kl *ar, enum ath6kl_htc_type htc_type)
 
 	ar->testmode = testmode;
 
-	ret = ath6kl_init_fetch_firmwares(ar);
+	/*
+	 * The AR6003 has a BMI inactivity timeout: if no BMI command arrives
+	 * for ~30-45 s after power-on the chip silently exits BMI mode and
+	 * CMD53 starts returning -ETIMEDOUT.  When the driver is built-in
+	 * (=y) probe runs right after card detection (~t+6 s), but firmware
+	 * lives on the rootfs which may not be mounted yet (~t+36 s).
+	 *
+	 * Work around this by polling for firmware with a BMI GET_TARGET_INFO
+	 * keepalive between attempts.  Any received BMI command resets the
+	 * inactivity timer, so this keeps the chip in BMI mode until the
+	 * rootfs is ready.  The loop exits as soon as firmware is found or if
+	 * the keepalive itself fails (BMI unrecoverably timed out).
+	 */
+	{
+		int fw_retries;
+
+		for (fw_retries = 0; fw_retries < 120; fw_retries++) {
+			ret = ath6kl_init_fetch_firmwares(ar);
+			if (ret != -ENOENT)
+				break;
+			if (ath6kl_bmi_get_target_info(ar, &targ_info) != 0)
+				break;
+			msleep(1000);
+		}
+	}
 	if (ret)
 		goto err_htc_cleanup;
 
