@@ -1360,19 +1360,24 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	ar->hif_priv = ar_sdio;
 	ar->hif_ops = &ath6kl_sdio_ops;
 	/*
-	 * BMI data size: matches upstream mainline and webOS staging driver.
+	 * BMI data size: 116 bytes keeps all CMD53 transfers <= 128 bytes
+	 * which is the Qualcomm SDCC PIO-safe limit. Setting this to the
+	 * mainline default of 256 causes mmci CMD53 timeouts because
+	 * mainline mmci falls back to PIO for sdcc4 (DMA channels are
+	 * allocated but not used). Until the mmci DMA path is wired up
+	 * for sdcc4, we must stay at 116.
 	 *
-	 * The chip's LZ decompressor used by bmi_fast_download (OTP/firmware
-	 * upload) buffers data internally and only refreshes the BMI command
-	 * credit register after consuming a full chunk. With smaller chunks
-	 * (116 bytes), the chip waits for more bytes that never come and the
-	 * next credit read times out with -110.
-	 *
-	 * Set to 256 to match the chip's expected chunk size. This pushes
-	 * CMD53 transfers above the Qualcomm SDCC PIO-safe limit (~128 bytes),
-	 * so DMA must be used for these transfers.
+	 * Caveat: bmi_fast_download (LZ stream, used for OTP/firmware
+	 * upload) appears to require the chip to receive its expected
+	 * chunk size. At 116-byte data chunks (108-byte LZ payload), the
+	 * chip's LZ decompressor stops refreshing the BMI command credit
+	 * register and the next credit read times out with -110. This is
+	 * a known limitation tracked separately; fixing it requires
+	 * either getting mmci DMA working for sdcc4 transfers so we can
+	 * bump max_data_size to 256, or finding a way to make the chip
+	 * accept smaller LZ chunks.
 	 */
-	ar->bmi.max_data_size = 256;
+	ar->bmi.max_data_size = 116;
 
 	ath6kl_sdio_set_mbox_info(ar);
 
