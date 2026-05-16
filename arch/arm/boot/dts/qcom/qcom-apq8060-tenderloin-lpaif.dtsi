@@ -54,26 +54,37 @@
 		 * are all configured as I2S outputs from LPASS.
 		 */
 		pinctrl-names = "default";
-		pinctrl-0 = <&primary_i2s_pins>;
+		pinctrl-0 = <&primary_i2s_pins>, <&hp_det_pins>;
 
 		/*
-		 * Headphone insert detection. TLMM GPIO 57 is the
-		 * HEAD_MIC_DET signal from the WM8958 codec's external
-		 * jack-detect circuitry. Active LOW = jack inserted.
+		 * Headphone insert detection.
 		 *
-		 * On HP TouchPad the codec's IRQ-based mic detection is
-		 * disabled because the codec's IRQ status registers return
-		 * I2C ENXIO (see drivers/mfd/wm8994-core.c). This GPIO
-		 * provides a fallback insert/remove signal so ALSA can route
-		 * audio between speakers and headphones — without it, audio
-		 * always comes out the speakers even when headphones are
-		 * plugged in.
+		 * The HP TouchPad has two separate jack-detect signals:
+		 *   GPIO 57 (HEAD_MIC_DET) -- mic-present indicator from the
+		 *                             WM8958 codec's external bias
+		 *                             circuit. Used to discriminate
+		 *                             headset (mic+headphones) from
+		 *                             plain headphones.
+		 *   GPIO 67 ("hp-gpio")    -- jack-insert / sleeve-detect
+		 *                             switch. Active LOW = jack
+		 *                             inserted. This is what the
+		 *                             legacy webOS kernel uses as
+		 *                             snd_soc_jack_gpio for
+		 *                             SND_JACK_HEADPHONE (verified
+		 *                             via sound/soc/msm/msm8x60.c
+		 *                             hp_jack_gpios[]).
+		 *
+		 * The lpaif sound card's GPIO-based fallback path only knows
+		 * how to consume an insert/remove signal, so we wire it to
+		 * GPIO 67 (the actual insert switch), not GPIO 57 (which only
+		 * tells us whether the inserted plug has a mic).
 		 *
 		 * Mic discrimination and inline-remote buttons are NOT
-		 * available through this path (those require codec internal
-		 * logic).
+		 * available through this fallback path (those require either
+		 * codec-internal jackdet logic or a userspace daemon reading
+		 * both GPIO 57 and GPIO 67 together).
 		 */
-		headphone-detect-gpios = <&tlmm 57 GPIO_ACTIVE_LOW>;
+		headphone-detect-gpios = <&tlmm 67 GPIO_ACTIVE_LOW>;
 
 		/*
 		 * Speaker amplifier control via WM8958 GPIO1.
@@ -120,6 +131,18 @@
 			codec {
 				sound-dai = <&wm8958>;
 			};
+		};
+	};
+};
+
+&tlmm {
+	hp_det_pins: hp-det-state {
+		hp-pins {
+			pins = "gpio67";	/* hp-gpio (headphone insert) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
 		};
 	};
 };

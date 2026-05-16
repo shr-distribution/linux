@@ -5,6 +5,14 @@
  * Codename: TENDERLOIN_3G (TOPAZ_3G_DVT / TOPAZ_3G_PVT board revisions)
  * Hardware: Qualcomm APQ8060 + MDM6600 3G modem behind ISP1763 USB host
  *
+ * PVT pin map validated against a live HP TouchPad 4G (HSTNH-I30C,
+ * boardtype=topaz-3G-pvt, HWoRev=A) running the legacy webOS 2.6.35
+ * kernel. The legacy board file selects tenderloin_pins_3g_dvt[] for
+ * any board_type >= TOPAZ_3G_DVT, so DVT and PVT share the same pin
+ * assignments (in particular 3G_3V3_EN=gpio106, A6_0_TCK=156, A6_0_IRQ=37,
+ * A6_1_WAKEUP=78, A6_1_IRQ=94). EVT/EVT4/early boards use different
+ * GPIOs and are not supported here.
+ *
  * ============================================================================
  * Why the WiFi DTB does not boot on Topaz3G (and how this DT fixes it)
  * ============================================================================
@@ -399,12 +407,20 @@
 
 	/* --- MDM6600 modem control --- */
 	mdm6600_pins: mdm6600-state {
+		/*
+		 * 3G_WAKE_N (gpio38) is an INPUT to the host with an external
+		 * pull-up; the modem pulls it low to signal "I have data".
+		 * The legacy webOS gpiomux configures it as GPIO_IN_8M_PU
+		 * (active) / GPIO_IN_2M_PU (suspend) and the live PVT device
+		 * boots with this pin in "in hi" state. Do not drive it as an
+		 * output from Linux -- doing so fights the modem.
+		 */
 		wake-pins {
-			pins = "gpio38";		/* 3G_WAKE_N */
+			pins = "gpio38";		/* 3G_WAKE_N (host-side input) */
 			function = "gpio";
 			drive-strength = <2>;
-			bias-disable;
-			output-low;
+			bias-pull-up;
+			input-enable;
 		};
 		sim-detect-pins {
 			pins = "gpio61";		/* 3G_UIM_CD_N */
@@ -523,6 +539,9 @@
 		compatible = "gpio-keys";
 		autorepeat;
 
+		pinctrl-names = "default";
+		pinctrl-0 = <&core_navi_pins>;
+
 		key-volume-up {
 			label = "Volume Up";
 			gpios = <&pm8058_gpio 5 GPIO_ACTIVE_LOW>;
@@ -535,6 +554,32 @@
 			gpios = <&pm8058_gpio 6 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_VOLUMEDOWN>;
 			debounce-interval = <15>;
+		};
+
+		/*
+		 * Capacitive "Home" button under the screen. The legacy webOS
+		 * kernel labels it "core navi" and registers it as an edge-both
+		 * IRQ on gpio40 (IRQ 296 on the PVT device). KEY_HOMEPAGE
+		 * matches what most touchpad-class Linux userspace expects.
+		 */
+		key-home {
+			label = "Home";
+			gpios = <&tlmm 40 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_HOMEPAGE>;
+			debounce-interval = <15>;
+			wakeup-source;
+		};
+	};
+};
+
+&tlmm {
+	core_navi_pins: core-navi-state {
+		home-pins {
+			pins = "gpio40";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
 		};
 	};
 };
@@ -588,7 +633,18 @@
 		compatible = "motorola,mdm6600-simple";
 		status = "disabled";
 
-		wake-gpios = <&tlmm 38 GPIO_ACTIVE_LOW>;	/* 3G_WAKE_N */
+		/*
+		 * 3G_WAKE_N is wired as an input to the host (the modem
+		 * actively pulls it low). Expose it as an interrupt so a
+		 * future modem driver can wake the system on a falling edge;
+		 * `wake-gpios` would imply we drive the line, which we must
+		 * not do.
+		 */
+		interrupt-parent = <&tlmm>;
+		interrupts = <38 IRQ_TYPE_EDGE_FALLING>;	/* 3G_WAKE_N */
+		interrupt-names = "wake";
+		wakeup-source;
+
 		sim-detect-gpios = <&tlmm 61 GPIO_ACTIVE_LOW>;	/* 3G_UIM_CD_N */
 
 		pinctrl-names = "default";
