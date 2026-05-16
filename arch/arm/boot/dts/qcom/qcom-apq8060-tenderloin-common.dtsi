@@ -63,7 +63,10 @@
 
 	chosen {
 		/* Bootloader passes console=tty1, which overrides stdout-path */
-		bootargs = "console=ttyMSM0,115200 console=ttyGS0,115200 clk_ignore_unused log_buf_len=4M deferred_probe_timeout=5 loglevel=8 ignore_loglevel";
+		/* firmware_class.path: the initramfs mounts the real rootfs at /rfs
+		 * before switch_root; this lets request_firmware() find ath6k
+		 * firmware at t~36s (dm-8 mount), 12s before the AR6003 BMI timeout */
+		bootargs = "console=ttyMSM0,115200 console=ttyGS0,115200 clk_ignore_unused log_buf_len=4M deferred_probe_timeout=5 loglevel=8 ignore_loglevel firmware_class.path=/rfs/usr/lib/firmware";
 		stdout-path = "serial0:115200n8";
 #if USE_FRAMEBUFFER
 		#address-cells = <1>;
