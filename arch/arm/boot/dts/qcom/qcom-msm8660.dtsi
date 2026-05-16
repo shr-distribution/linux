@@ -123,89 +123,130 @@
 	};
 
 	/*
-	 * CPU OPP (Operating Performance Points) table
-	 * Frequencies based on webOS acpuclock-8x60.c
-	 * Voltages are placeholders - actual voltage scaling requires
-	 * regulator support which is not yet implemented.
+	 * CPU OPP (Operating Performance Points) table.
+	 *
+	 * Frequencies derived from the Palm webOS 2.6.35 acpuclock-8x60.c
+	 * tables; voltages picked from the most-conservative downstream
+	 * binning table for each rung (see context/refs/msm8660-cpufreq-survey.md
+	 * for the full cross-reference against legacy webOS, CodeAurora
+	 * htc-msm8660, Evervolv, and invisiblek tenderloin CM14.1).
+	 *
+	 * `operating-points-v2-krait-cpu` lets drivers/cpufreq/qcom-cpufreq-nvmem.c
+	 * consume this table. At probe time it reads `speedbin` out of QFPROM
+	 * PTE_EFUSE (qfprom@700000 below), runs `get_krait_bin_format_a()` -- the
+	 * same bit layout the downstream Scorpion driver uses -- and clamps the
+	 * advertised OPPs to whatever the chip is silicon-binned for:
+	 *
+	 *   speed_bin == 0  => max 1188 MHz  (untreated / "unfused" silicon)
+	 *   speed_bin == 1  => max 1512 MHz  (vendor-validated, common Topaz)
+	 *   speed_bin == 2  => max 1674 MHz  (Topaz3G "4G" PVT silicon, ~rare)
+	 *
+	 * `opp-supported-hw` on each OPP encodes the bin mask:
+	 *   BIT(0)=speed_bin 0, BIT(1)=speed_bin 1, BIT(2)=speed_bin 2.
+	 * A chip that fuses as speed_bin 1 has `BIT(1) = 0x2` in `versions`
+	 * after qcom_cpufreq_krait_name_version(), so an OPP marked
+	 * `opp-supported-hw = <0x6>` (BIT(1)|BIT(2)) is available there and
+	 * one marked `<0x4>` (BIT(2)) is not.
+	 *
+	 * Per-PVS voltage variants would go in `opp-microvolt-speedN-pvsM-v0`
+	 * sub-properties; not added here because the current single
+	 * `opp-microvolt` value is already the safest across all PVS tables.
 	 */
 	cpu_opp_table: opp-table-cpu {
-		compatible = "operating-points-v2";
+		compatible = "operating-points-v2", "operating-points-v2-krait-cpu";
+		nvmem-cells = <&speedbin_efuse>;
+		nvmem-cell-names = "speedbin";
 		opp-shared;
 
 		opp-384000000 {
 			opp-hz = /bits/ 64 <384000000>;
 			opp-microvolt = <875000>;
+			opp-supported-hw = <0x7>;	/* all bins */
 			clock-latency-ns = <100000>;
 		};
 
 		opp-432000000 {
 			opp-hz = /bits/ 64 <432000000>;
 			opp-microvolt = <887500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-486000000 {
 			opp-hz = /bits/ 64 <486000000>;
 			opp-microvolt = <912500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-540000000 {
 			opp-hz = /bits/ 64 <540000000>;
 			opp-microvolt = <925000>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-594000000 {
 			opp-hz = /bits/ 64 <594000000>;
 			opp-microvolt = <937500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-648000000 {
 			opp-hz = /bits/ 64 <648000000>;
 			opp-microvolt = <950000>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-702000000 {
 			opp-hz = /bits/ 64 <702000000>;
 			opp-microvolt = <975000>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-756000000 {
 			opp-hz = /bits/ 64 <756000000>;
 			opp-microvolt = <1000000>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-810000000 {
 			opp-hz = /bits/ 64 <810000000>;
 			opp-microvolt = <1012500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-864000000 {
 			opp-hz = /bits/ 64 <864000000>;
 			opp-microvolt = <1037500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-918000000 {
 			opp-hz = /bits/ 64 <918000000>;
 			opp-microvolt = <1062500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-972000000 {
 			opp-hz = /bits/ 64 <972000000>;
 			opp-microvolt = <1087500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-1026000000 {
 			opp-hz = /bits/ 64 <1026000000>;
 			opp-microvolt = <1125000>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-1080000000 {
 			opp-hz = /bits/ 64 <1080000000>;
 			opp-microvolt = <1137500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-1134000000 {
 			opp-hz = /bits/ 64 <1134000000>;
 			opp-microvolt = <1162500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		/*
@@ -221,6 +262,7 @@
 		opp-1188000000 {
 			opp-hz = /bits/ 64 <1188000000>;
 			opp-microvolt = <1200000>;
+			opp-supported-hw = <0x7>;	/* all bins */
 		};
 
 		/*
@@ -235,21 +277,25 @@
 		opp-1242000000 {
 			opp-hz = /bits/ 64 <1242000000>;
 			opp-microvolt = <1200000>;
+			opp-supported-hw = <0x6>;	/* 1.5G + 1.7G bins */
 		};
 
 		opp-1350000000 {
 			opp-hz = /bits/ 64 <1350000000>;
 			opp-microvolt = <1200000>;
+			opp-supported-hw = <0x6>;
 		};
 
 		opp-1458000000 {
 			opp-hz = /bits/ 64 <1458000000>;
 			opp-microvolt = <1200000>;
+			opp-supported-hw = <0x6>;
 		};
 
 		opp-1512000000 {
 			opp-hz = /bits/ 64 <1512000000>;
 			opp-microvolt = <1250000>;
+			opp-supported-hw = <0x6>;
 		};
 
 		/*
@@ -278,6 +324,7 @@
 		opp-1728000000 {
 			opp-hz = /bits/ 64 <1728000000>;
 			opp-microvolt = <1350000>;
+			opp-supported-hw = <0x4>;	/* 1.7G bin only (overclock) */
 		};
 	};
 
@@ -410,6 +457,35 @@
 			#interrupt-cells = <3>;
 			reg = < 0x02080000 0x1000 >,
 			      < 0x02081000 0x1000 >;
+		};
+
+		/*
+		 * Qualcomm Process Programmable Read-Only Memory (QFPROM).
+		 *
+		 * Carries factory-blown silicon characterisation fuses. The
+		 * cpufreq driver consumes the PTE_EFUSE word at offset 0xC0 to
+		 * derive `speed_bin` (low nibble; nibble 1 if low == 0xF) and
+		 * `pvs` (bits 12:10; bits 15:13 if low == 0x7) -- the same bit
+		 * layout the Palm webOS 2.6.35 acpuclock-8x60.c driver reads
+		 * at MSM_QFPROM_BASE + 0xC0. Mainline `qcom-cpufreq-nvmem`
+		 * `get_krait_bin_format_a()` happens to use the identical
+		 * layout, so the existing Krait code path can be reused
+		 * unchanged once `qcom,msm8660` / `qcom,apq8060` are added to
+		 * its compatible list.
+		 *
+		 * The region is 4 KB starting at physical 0x00700000 per the
+		 * legacy iomap header (MSM_QFPROM_PHYS / MSM_QFPROM_SIZE).
+		 */
+		qfprom: efuse@700000 {
+			compatible = "qcom,msm8660-qfprom", "qcom,qfprom";
+			reg = <0x00700000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			speedbin_efuse: speedbin@c0 {
+				reg = <0xc0 0x4>;
+				bits = <0 32>;
+			};
 		};
 
 		/*
