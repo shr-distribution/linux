@@ -446,20 +446,33 @@ static int qce_test_pio_mode(struct qce_device *qce)
 	dev_info(qce->dev, "Post-GOPROC STATUS: 0x%08x (CRYPTO_STATE=%u)\n",
 		 status, (status & CE2_CRYPTO_STATE_MASK) >> CE2_CRYPTO_STATE_SHIFT);
 
-	/* Step 7: Write test data to DATA_IN with DIN_RDY polling (HTC pattern) */
-	dev_info(qce->dev, "Polling DIN_RDY then writing 0x%08x to DATA_IN\n", test_data);
-	timeout = 1000;
-	while (timeout--) {
-		status = readl_relaxed(qce->base + CE2_REG_STATUS);
-		if (status & BIT(CE2_DIN_RDY_SHIFT))
-			break;
-		udelay(10);
+	/* Step 7: Write 4 dwords (16 bytes) to DATA_IN. HTC sbl3 always feeds
+	 * CE2 in 16-byte chunks, even for inputs smaller than 16 bytes - the
+	 * extra bytes past SEG_SIZE are ignored by the engine but the 16-byte
+	 * granularity is required by the input FIFO. First dword = test data,
+	 * remaining dwords = 0.
+	 */
+	{
+		u32 chunk[4] = { test_data, 0, 0, 0 };
+		int i;
+
+		for (i = 0; i < 4; i++) {
+			timeout = 1000;
+			while (timeout--) {
+				status = readl_relaxed(qce->base + CE2_REG_STATUS);
+				if (status & BIT(CE2_DIN_RDY_SHIFT))
+					break;
+				udelay(10);
+			}
+			if (timeout <= 0) {
+				dev_err(qce->dev, "DIN_RDY stuck after %d dwords; STATUS=0x%08x\n",
+					i, status);
+				return -ETIMEDOUT;
+			}
+			writel_relaxed(chunk[i], qce->base + CE2_REG_DATA_IN);
+		}
+		dev_info(qce->dev, "Wrote 4 dwords (16 bytes) to DATA_IN\n");
 	}
-	if (timeout <= 0) {
-		dev_err(qce->dev, "DIN_RDY never set after GOPROC; STATUS=0x%08x\n", status);
-		return -ETIMEDOUT;
-	}
-	writel_relaxed(test_data, qce->base + CE2_REG_DATA_IN);
 
 	/* Step 8: Poll for AUTH_DONE */
 	timeout = 10000;  /* 100ms */
