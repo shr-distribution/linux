@@ -834,7 +834,8 @@
 			compatible = "qcom,ci-hdrc";
 			reg = <0x12500000 0x200>,
 			      <0x12500200 0x200>;
-			interrupts = <GIC_SPI 100 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-parent = <&wakeup>;
+			interrupts = <100 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&gcc USB_HS1_XCVR_CLK>,
 				 <&gcc USB_HS1_H_CLK>,
 				 <&rpmcc RPM_DAYTONA_FABRIC_CLK>;
