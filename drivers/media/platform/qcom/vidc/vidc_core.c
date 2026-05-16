@@ -593,12 +593,15 @@ int vidc_load_firmware(struct vidc_core *core)
 
 	/*
 	 * SMI is not accessible via the CPU's normal memory bus. Use
-	 * ioremap_wc() to get write-combining CPU access for the firmware
-	 * copy. The RISC accesses the same physical region through its own
-	 * MMSS fabric master port — no CPU mapping required after copy.
+	 * plain ioremap() (Device/strongly-ordered) rather than ioremap_wc()
+	 * so each write is immediately committed to the AXI bus — matching
+	 * webOS DDL which uses ioremap() for the PMEM_MEMTYPE_SMI region.
+	 * ioremap_wc writes can be held in the WC write-buffer past the wmb()
+	 * on the Scorpion core and never arrive at SMI before the RISC begins
+	 * fetching.
 	 */
 	core->fw_dma_addr = core->fw_phys_base; /* already 128KB-aligned */
-	core->fw_vaddr = ioremap_wc(core->fw_phys_base, core->fw_alloc_size);
+	core->fw_vaddr = ioremap(core->fw_phys_base, core->fw_alloc_size);
 	if (!core->fw_vaddr) {
 		dev_err(core->dev, "failed to ioremap SMI firmware region\n");
 		ret = -ENOMEM;
@@ -629,6 +632,10 @@ int vidc_load_firmware(struct vidc_core *core)
 
 	/* Ensure firmware is visible to VIDC RISC before DRAM_BASE write */
 	wmb();
+
+	/* Verify first word of firmware is visible in kernel's own mapping */
+	printk(KERN_EMERG "VIDC: fw[0] readback=0x%08x (0=writes not reaching SMI)\n",
+	       ioread32(core->fw_vaddr));
 
 	/*
 	 * Carve out per-channel scratch regions inside the firmware
