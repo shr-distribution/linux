@@ -1032,15 +1032,26 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		sg_copy_to_buffer(req->src, sg_nents(req->src), buf,
 				  req->nbytes);
 
+	/* Byte-swap each 4-byte chunk to big-endian for DATA_IN. CE2 interprets
+	 * each 32-bit DATA_IN write MSB-first as the next four message bytes.
+	 *
+	 * Example: input bytes "test" = 74 65 73 74 must be presented to CE2
+	 * as u32 0x74657374 (MSB-first reads as 0x74 'e' 's' 't'). But buf
+	 * holds bytes in CPU-native order; on ARM LE, *(u32 *)buf would give
+	 * 0x74736574 -- which CE2 reads as bytes "tset" and hashes that.
+	 * The probe-time PIO test in core.c hardcoded test_data=0x74657374,
+	 * which is why it produced correct SHA1("test") -- it skipped this
+	 * conversion since the constant was already in BE form.
+	 */
 	dwords = total / 4;
-	p = (u32 *)buf;
 	dev_info(qce->dev,
-		 "CE2 hash: feeding %u dwords, p[0..3]=%08x %08x %08x %08x\n",
-		 dwords, dwords > 0 ? p[0] : 0,
-		 dwords > 1 ? p[1] : 0,
-		 dwords > 2 ? p[2] : 0,
-		 dwords > 3 ? p[3] : 0);
+		 "CE2 hash: feeding %u dwords (BE-swapped from buf)\n", dwords);
 	for (i = 0; i < dwords; i++) {
+		u32 word = ((u32)buf[i * 4 + 0] << 24) |
+			   ((u32)buf[i * 4 + 1] << 16) |
+			   ((u32)buf[i * 4 + 2] <<  8) |
+			   ((u32)buf[i * 4 + 3] <<  0);
+
 		for (timeout = 10000; timeout > 0; timeout--) {
 			status = readl_relaxed(qce->base + CE2_REG_STATUS);
 			if (status & BIT(CE2_DIN_RDY_SHIFT))
@@ -1054,7 +1065,7 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 			ret = -ETIMEDOUT;
 			goto out;
 		}
-		writel_relaxed(p[i], qce->base + CE2_REG_DATA_IN);
+		writel_relaxed(word, qce->base + CE2_REG_DATA_IN);
 	}
 
 	/* 10) Wait for AUTH_DONE */
