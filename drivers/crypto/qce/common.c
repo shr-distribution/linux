@@ -912,16 +912,21 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		udelay(100);
 	}
 
+	/* Clear sticky AUTH_DONE / DIN_INTR / DOUT_INTR / ERR_INTR bits in
+	 * STATUS from any previous operation. Writing 0 to STATUS clears
+	 * write-1-to-clear bits. The first-ever op after probe has STATUS
+	 * == 0x10200004 (no AUTH_DONE), so the PIO test in core.c works
+	 * without this. AF_ALG ops 2..N inherit AUTH_DONE=1 sticky from
+	 * the previous op, and writing SEG_CFG while AUTH_DONE is still
+	 * asserted makes CE2 compute a non-standard hash.
+	 */
+	writel_relaxed(0, qce->base + CE2_REG_STATUS);
+
 	/* Exact mirror of the working qce_test_pio_mode() diagnostic in
 	 * core.c. Uses writel_relaxed throughout (no memory barriers
 	 * between writes). The order is:
 	 *   SEG_CFG -> AUTH_SEG_CFG -> SEG_SIZE -> AUTH_IV -> AUTH_BYTECNT
 	 *   -> CONFIG (read-modify-write) -> GOPROC
-	 *
-	 * Empirically: using qce_write (writel + dsb) and any other order
-	 * yields wrong digests despite identical register values appearing
-	 * in diagnostic readbacks. The barriers and/or write order seems to
-	 * disturb CE2's internal SHA setup.
 	 */
 	auth_cfg = qce_auth_cfg_ce2(rctx->flags);
 	if (rctx->first_blk)
@@ -1029,6 +1034,12 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 
 	dwords = total / 4;
 	p = (u32 *)buf;
+	dev_info(qce->dev,
+		 "CE2 hash: feeding %u dwords, p[0..3]=%08x %08x %08x %08x\n",
+		 dwords, dwords > 0 ? p[0] : 0,
+		 dwords > 1 ? p[1] : 0,
+		 dwords > 2 ? p[2] : 0,
+		 dwords > 3 ? p[3] : 0);
 	for (i = 0; i < dwords; i++) {
 		for (timeout = 10000; timeout > 0; timeout--) {
 			status = readl_relaxed(qce->base + CE2_REG_STATUS);
