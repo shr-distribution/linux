@@ -1929,24 +1929,29 @@ static int vidc_probe(struct platform_device *pdev)
 		}
 	}
 
-	/* video-smi: optional (RISC fetch from SMI — CPU cannot write SMI) */
+	/* video-smi: RISC AXI fetch from SMI (critical: without this vote the
+	 * MMSS fabric blocks RISC instruction fetches and RISC stalls silently) */
 	core->icc_path = devm_of_icc_get(dev, "video-smi");
 	if (IS_ERR(core->icc_path)) {
 		ret = PTR_ERR(core->icc_path);
 		if (ret == -EPROBE_DEFER)
 			return ret;
-		dev_dbg(dev, "video-smi interconnect not available: %d\n", ret);
+		dev_err(dev, "video-smi ICC path failed (err=%d): RISC will stall on first fetch\n", ret);
 		core->icc_path = NULL;
+	} else if (core->icc_path) {
+		dev_info(dev, "video-smi ICC path acquired OK\n");
 	}
 
-	/* video-ebi: optional (RISC fetch from EBI/DRAM — firmware placed here) */
+	/* video-ebi: RISC access to EBI DRAM (decoded frame buffers) */
 	core->icc_ebi_path = devm_of_icc_get(dev, "video-ebi");
 	if (IS_ERR(core->icc_ebi_path)) {
 		ret = PTR_ERR(core->icc_ebi_path);
 		if (ret == -EPROBE_DEFER)
 			return ret;
-		dev_dbg(dev, "video-ebi interconnect not available: %d\n", ret);
+		dev_err(dev, "video-ebi ICC path failed (err=%d)\n", ret);
 		core->icc_ebi_path = NULL;
+	} else if (core->icc_ebi_path) {
+		dev_info(dev, "video-ebi ICC path acquired OK\n");
 	}
 
 	/*
@@ -2049,12 +2054,17 @@ static int vidc_runtime_resume(struct device *dev)
 	}
 
 	if (core->icc_path) {
+		dev_info(dev, "voting video-smi bw: avg=%u peak=%u kbps\n",
+			 core->icc_bw_avg, core->icc_bw_peak);
 		ret = icc_set_bw(core->icc_path, core->icc_bw_avg, core->icc_bw_peak);
 		if (ret) {
 			dev_err(dev, "failed to set video-smi bandwidth: %d\n",
 				ret);
 			goto err_gdsc;
 		}
+		dev_info(dev, "video-smi bandwidth vote ok\n");
+	} else {
+		dev_err(dev, "video-smi ICC path is NULL — RISC fetch will be blocked\n");
 	}
 	if (core->icc_ebi_path) {
 		ret = icc_set_bw(core->icc_ebi_path, core->icc_bw_avg, core->icc_bw_peak);
