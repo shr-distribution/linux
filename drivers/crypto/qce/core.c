@@ -434,9 +434,9 @@ static int qce_test_pio_mode(struct qce_device *qce)
 		return -EIO;
 	}
 
-	/* Step 6: Write test data */
-	dev_info(qce->dev, "Writing test data 0x%08x to DATA_IN\n", test_data);
-	writel_relaxed(test_data, qce->base + CE2_REG_DATA_IN);
+	/* Step 6: Write test data to DATA_SHADOW0 (CE2 input, not DATA_IN fifo) */
+	dev_info(qce->dev, "Writing test data 0x%08x to DATA_SHADOW0\n", test_data);
+	writel_relaxed(test_data, qce->base + CE2_REG_DATA_SHADOW0);
 
 	/* Step 7: Trigger GO */
 	dev_info(qce->dev, "Triggering GOPROC\n");

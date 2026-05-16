@@ -11,6 +11,7 @@
 
 #include "core.h"
 #include "dma.h"
+#include "regs-ce2.h"
 
 static void qce_dma_release(void *data)
 {
@@ -34,12 +35,22 @@ static int qce_dma_configure_crci(struct qce_device *qce, struct dma_chan *chan,
 		/*
 		 * ADM box descriptors carry the peripheral-side bus address
 		 * even when CRCI flow control is on, so they must point at
-		 * the QCE FIFO registers (DATA_IN @ +0x00, DATA_OUT @ +0x10).
-		 * Without these the controller writes to physical address 0
-		 * and aborts with err=1.
+		 * the correct QCE registers.
+		 *
+		 * CE2 (MSM8660/APQ8060): Input data goes to DATA_SHADOW (0x8000),
+		 * a large shadow register block that ADM writes to via CRCI.
+		 * Hash results are read from AUTH_IV0 (0x100) after CRCI fires.
+		 * Using DATA_IN/DATA_OUT (0x00/0x10) causes CE2 to ignore the
+		 * data and never signal AUTH_DONE.
+		 *
+		 * v5 (BAM-based): Uses DATA_IN @ +0x00 and DATA_OUT @ +0x10.
 		 */
-		.src_addr = qce->phys_base + 0x10,
-		.dst_addr = qce->phys_base + 0x00,
+		.src_addr = (qce->version == QCE_VERSION_CE2) ?
+				qce->phys_base + CE2_REG_AUTH_IV0 :
+				qce->phys_base + 0x10,
+		.dst_addr = (qce->version == QCE_VERSION_CE2) ?
+				qce->phys_base + CE2_REG_DATA_SHADOW0 :
+				qce->phys_base + 0x00,
 	};
 
 	if (!crci)
