@@ -571,71 +571,60 @@ int vidc_load_firmware(struct vidc_core *core)
 	}
 
 	/*
-	 * Layout firmware + context pool + descriptor + shared-mem in the
-	 * SMI reserved region. The VIDC RISC fetches via MMFAB→SMI; it
-	 * cannot access EBI/DRAM. SMI base (0x38000000) is already 128KB-
-	 * aligned, so no over-allocation needed.
+	 * Layout firmware + context pool + descriptor + shared-mem in a
+	 * coherent DMA buffer in EBI/DRAM. The VIDC RISC reaches EBI via
+	 * MMFAB_MAS_HD_CODEC_PORT0 → AFAB_SLV_EBI_CH0 — confirmed by the
+	 * interconnect node in the DT. EBI placement is used because the CPU
+	 * cannot write to SMI (0x38000000) through the normal AXI path; CPU
+	 * ioremap writes to SMI are silently dropped at the bus level.
+	 *
+	 * DRAM_BASE_A/B requires 128KB (2^17) alignment. dma_alloc_coherent
+	 * gives page-aligned addresses; over-allocate by SZ_128K so we can
+	 * bump fw_dma_addr up to the next 128KB boundary.
 	 */
 	core->ctxt_pool_size = VIDC_MAX_INSTANCES * VIDC_CTXT_MEM_SIZE;
 	core->ctxt_pool_used = 0;
 	core->fw_alloc_size = ALIGN(core->fw->size, SZ_4K)
 			    + core->ctxt_pool_size
 			    + VIDC_DESC_BUF_SIZE
-			    + VIDC_SHM_SIZE;
+			    + VIDC_SHM_SIZE
+			    + SZ_128K;	/* alignment headroom */
 
-	if (core->fw_alloc_size > core->fw_phys_size) {
-		dev_err(core->dev,
-			"SMI region too small: need %zu, have %zu\n",
-			core->fw_alloc_size, core->fw_phys_size);
+	core->fw_alloc_vaddr = dma_alloc_coherent(core->dev, core->fw_alloc_size,
+						   &core->fw_alloc_dma_addr,
+						   GFP_KERNEL);
+	if (!core->fw_alloc_vaddr) {
+		dev_err(core->dev, "failed to allocate %zu bytes for firmware\n",
+			core->fw_alloc_size);
 		ret = -ENOMEM;
 		goto err_release_fw;
 	}
 
-	/*
-	 * SMI is not accessible via the CPU's normal memory bus. Use
-	 * plain ioremap() (Device/strongly-ordered) rather than ioremap_wc()
-	 * so each write is immediately committed to the AXI bus — matching
-	 * webOS DDL which uses ioremap() for the PMEM_MEMTYPE_SMI region.
-	 * ioremap_wc writes can be held in the WC write-buffer past the wmb()
-	 * on the Scorpion core and never arrive at SMI before the RISC begins
-	 * fetching.
-	 */
-	core->fw_dma_addr = core->fw_phys_base; /* already 128KB-aligned */
-	core->fw_vaddr = ioremap(core->fw_phys_base, core->fw_alloc_size);
-	if (!core->fw_vaddr) {
-		dev_err(core->dev, "failed to ioremap SMI firmware region\n");
-		ret = -ENOMEM;
-		goto err_release_fw;
-	}
-	/* Legacy fields unused but zeroed to avoid stale pointer dereference */
-	core->fw_alloc_dma_addr = 0;
-	core->fw_alloc_vaddr = NULL;
-	core->fw_align_off = 0;
+	core->fw_dma_addr = ALIGN(core->fw_alloc_dma_addr, SZ_128K);
+	core->fw_align_off = core->fw_dma_addr - core->fw_alloc_dma_addr;
+	core->fw_vaddr = core->fw_alloc_vaddr + core->fw_align_off;
 
 	core->fw_size = core->fw->size;
 
 	/*
-	 * The VIDC embedded RISC is big-endian. The firmware blob stored in
-	 * /lib/firmware is in little-endian host word order. Byte-swap each
-	 * 32-bit word during the copy, matching webOS DDL ddl_fw_change_endian()
-	 * (vcd_ddl_utils.c, #define DDL_FW_CHANGE_ENDIAN). Without this the
-	 * RISC executes reversed bytes and never fires FW_STATUS_RET.
+	 * The VIDC embedded RISC is big-endian. The firmware blob is stored
+	 * in little-endian host word order. Byte-swap each 32-bit word during
+	 * copy, matching webOS DDL ddl_fw_change_endian() (vcd_ddl_utils.c,
+	 * #define DDL_FW_CHANGE_ENDIAN). Without this the RISC executes
+	 * reversed bytes and never fires FW_STATUS_RET.
 	 */
 	{
 		const u32 *src = (const u32 *)core->fw->data;
-		u32 __iomem *dst = core->fw_vaddr;
+		u32 *dst = (u32 *)core->fw_vaddr;
 		size_t i, nwords = core->fw->size / sizeof(u32);
 
 		for (i = 0; i < nwords; i++)
-			iowrite32(swab32(src[i]), &dst[i]);
+			dst[i] = swab32(src[i]);
 	}
 
-	/* Ensure firmware is visible to VIDC RISC before DRAM_BASE write */
-	wmb();
-
-	/* Verify first word of firmware is visible in kernel's own mapping */
-	printk(KERN_EMERG "VIDC: fw[0] readback=0x%08x (0=writes not reaching SMI)\n",
-	       ioread32(core->fw_vaddr));
+	printk(KERN_EMERG "VIDC: fw[0]=0x%08x dma_addr=0x%08x (fw_alloc_dma=0x%08x align_off=%zu)\n",
+	       *(u32 *)core->fw_vaddr, (u32)core->fw_dma_addr,
+	       (u32)core->fw_alloc_dma_addr, core->fw_align_off);
 
 	/*
 	 * Carve out per-channel scratch regions inside the firmware
@@ -698,13 +687,15 @@ int vidc_load_firmware(struct vidc_core *core)
 		goto err_free_dma;
 
 	dev_info(core->dev,
-		 "Firmware loaded into SMI at 0x%08x (%zu bytes), version 0x%08x\n",
+		 "Firmware loaded at dma=0x%08x (%zu bytes), version 0x%08x\n",
 		 (u32)core->fw_dma_addr, core->fw_size, core->fw_version);
 
 	return 0;
 
 err_free_dma:
-	iounmap(core->fw_vaddr);
+	dma_free_coherent(core->dev, core->fw_alloc_size,
+			  core->fw_alloc_vaddr, core->fw_alloc_dma_addr);
+	core->fw_alloc_vaddr = NULL;
 	core->fw_vaddr = NULL;
 	core->fw_loaded = false;
 err_release_fw:
@@ -819,8 +810,10 @@ void vidc_unload_firmware(struct vidc_core *core)
 	if (!core->fw_loaded)
 		return;
 
-	if (core->fw_vaddr) {
-		iounmap(core->fw_vaddr);
+	if (core->fw_alloc_vaddr) {
+		dma_free_coherent(core->dev, core->fw_alloc_size,
+				  core->fw_alloc_vaddr, core->fw_alloc_dma_addr);
+		core->fw_alloc_vaddr = NULL;
 		core->fw_vaddr = NULL;
 	}
 
