@@ -26,12 +26,17 @@ static int qce_dma_configure_crci(struct qce_device *qce, struct dma_chan *chan,
 				  u32 crci)
 {
 	struct qcom_adm_peripheral_config periph_conf = {};
+	/* CE2 FIFO operates in 16-byte chunks per CRCI handshake.  maxburst is
+	 * in dword units, so 4 dwords = 16 bytes matches CE2's burst size. v5
+	 * BAM hardware historically uses 8-dword bursts so keep that branch.
+	 */
+	unsigned int burst = (qce->version == QCE_VERSION_CE2) ? 4 : 8;
 	struct dma_slave_config conf = {
 		.device_fc = true,
 		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
 		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
-		.src_maxburst = 8,
-		.dst_maxburst = 8,
+		.src_maxburst = burst,
+		.dst_maxburst = burst,
 		/*
 		 * ADM box descriptors carry the peripheral-side bus address
 		 * even when CRCI flow control is on, so they must point at

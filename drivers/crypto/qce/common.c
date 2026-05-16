@@ -19,12 +19,6 @@
 #include "sha.h"
 #include "aead.h"
 
-/* Helper to check if this is CE2 hardware */
-static inline bool qce_is_ce2(struct qce_device *qce)
-{
-	return qce->version == QCE_VERSION_CE2;
-}
-
 /*
  * CE2 register offset translation
  * CE2 has different register layout than v5
@@ -228,9 +222,40 @@ static inline void qce_crypto_go(struct qce_device *qce, bool result_dump)
 }
 
 #if defined(CONFIG_CRYPTO_DEV_QCE_SHA) || defined(CONFIG_CRYPTO_DEV_QCE_AEAD)
-static u32 qce_auth_cfg(unsigned long flags, u32 key_size, u32 auth_size)
+/*
+ * CE2 SEG_CFG bit layout differs from v5 (see regs-ce2.h):
+ *   AUTH_ALG at bit 9-10 (v5: 0-2)
+ *   AUTH_SIZE at bit 11-13 (v5: 9-13)
+ *   AUTH_POS at bit 14-15 (same)
+ *   FIRST at bit 17 (same)
+ *   LAST at bit 18 (v5: 16)
+ * Using v5 constants on CE2 silently maps SHA256 size to bit 9 where CE2
+ * reads only AUTH_ALG -> SHA256 collapses to SHA1 (value 0 at bit 11-13).
+ */
+static u32 qce_auth_cfg_ce2(unsigned long flags)
 {
 	u32 cfg = 0;
+
+	cfg |= CE2_AUTH_ALG_SHA << CE2_AUTH_ALG_SHIFT;
+
+	if (IS_SHA1(flags) || IS_SHA1_HMAC(flags))
+		cfg |= CE2_AUTH_SIZE_SHA1 << CE2_AUTH_SIZE_SHIFT;
+	else if (IS_SHA256(flags) || IS_SHA256_HMAC(flags))
+		cfg |= CE2_AUTH_SIZE_SHA256 << CE2_AUTH_SIZE_SHIFT;
+
+	if (IS_SHA(flags) || IS_SHA_HMAC(flags))
+		cfg |= CE2_AUTH_POS_BEFORE << CE2_AUTH_POS_SHIFT;
+
+	return cfg;
+}
+
+static u32 qce_auth_cfg(struct qce_device *qce, unsigned long flags,
+			u32 key_size, u32 auth_size)
+{
+	u32 cfg = 0;
+
+	if (qce_is_ce2(qce))
+		return qce_auth_cfg_ce2(flags);
 
 	if (IS_CCM(flags) || IS_CMAC(flags))
 		cfg |= AUTH_ALG_AES << AUTH_ALG_SHIFT;
@@ -301,14 +326,15 @@ static int qce_setup_regs_ahash(struct crypto_async_request *async_req)
 		qce_clear_array(qce, REG_AUTH_KEY0, 16);
 		qce_clear_array(qce, REG_AUTH_BYTECNT0, 4);
 
-		auth_cfg = qce_auth_cfg(rctx->flags, rctx->authklen, digestsize);
+		auth_cfg = qce_auth_cfg(qce, rctx->flags, rctx->authklen,
+					digestsize);
 	}
 
 	if (IS_SHA_HMAC(rctx->flags) || IS_CMAC(rctx->flags)) {
 		u32 authkey_words = rctx->authklen / sizeof(u32);
 
 		qce_cpu_to_be32p_array(mackey, rctx->authkey, rctx->authklen);
-		qce_write_array(qce, REG_AUTH_KEY0, (u32 *)mackey,
+		qce_write_array(qce, qce_reg_auth_key0(qce), (u32 *)mackey,
 				authkey_words);
 	}
 
@@ -321,25 +347,37 @@ static int qce_setup_regs_ahash(struct crypto_async_request *async_req)
 		qce_cpu_to_be32p_array(auth, rctx->digest, digestsize);
 
 	iv_words = (IS_SHA1(rctx->flags) || IS_SHA1_HMAC(rctx->flags)) ? 5 : 8;
-	qce_write_array(qce, REG_AUTH_IV0, (u32 *)auth, iv_words);
+	qce_write_array(qce, qce_reg_auth_iv0(qce), (u32 *)auth, iv_words);
 
 	if (rctx->first_blk)
-		qce_clear_array(qce, REG_AUTH_BYTECNT0, 4);
+		qce_clear_array(qce, qce_reg_auth_bytecnt0(qce), 4);
 	else
-		qce_write_array(qce, REG_AUTH_BYTECNT0,
+		qce_write_array(qce, qce_reg_auth_bytecnt0(qce),
 				(u32 *)rctx->byte_count, 2);
 
-	auth_cfg = qce_auth_cfg(rctx->flags, 0, digestsize);
+	auth_cfg = qce_auth_cfg(qce, rctx->flags, 0, digestsize);
 
-	if (rctx->last_blk)
-		auth_cfg |= BIT(AUTH_LAST_SHIFT);
-	else
-		auth_cfg &= ~BIT(AUTH_LAST_SHIFT);
+	if (qce_is_ce2(qce)) {
+		if (rctx->last_blk)
+			auth_cfg |= BIT(CE2_LAST_SHIFT);
+		if (rctx->first_blk)
+			auth_cfg |= BIT(CE2_FIRST_SHIFT);
+		/* CLR_CNTXT on the first block prevents state leakage from any
+		 * prior operation (the engine retains AUTH_IV until cleared).
+		 */
+		if (rctx->first_blk)
+			auth_cfg |= BIT(CE2_CLR_CNTXT_SHIFT);
+	} else {
+		if (rctx->last_blk)
+			auth_cfg |= BIT(AUTH_LAST_SHIFT);
+		else
+			auth_cfg &= ~BIT(AUTH_LAST_SHIFT);
 
-	if (rctx->first_blk)
-		auth_cfg |= BIT(AUTH_FIRST_SHIFT);
-	else
-		auth_cfg &= ~BIT(AUTH_FIRST_SHIFT);
+		if (rctx->first_blk)
+			auth_cfg |= BIT(AUTH_FIRST_SHIFT);
+		else
+			auth_cfg &= ~BIT(AUTH_FIRST_SHIFT);
+	}
 
 go_proc:
 	if (qce_is_ce2(qce)) {
@@ -734,8 +772,8 @@ static int qce_setup_regs_aead(struct crypto_async_request *async_req)
 		encr_cfg |= BIT(ENCODE_SHIFT);
 	qce_write(qce, REG_ENCR_SEG_CFG, encr_cfg);
 
-	/* Set up AUTH_SEG_CFG */
-	auth_cfg = qce_auth_cfg(rctx->flags, auth_keylen, ctx->authsize);
+	/* Set up AUTH_SEG_CFG (AEAD path -- CE2 returns -EINVAL earlier, so qce is always v5 here) */
+	auth_cfg = qce_auth_cfg(qce, rctx->flags, auth_keylen, ctx->authsize);
 	auth_cfg |= BIT(AUTH_LAST_SHIFT);
 	auth_cfg |= BIT(AUTH_FIRST_SHIFT);
 	if (IS_ENCRYPT(flags)) {
@@ -809,6 +847,149 @@ int qce_start(struct crypto_async_request *async_req, u32 type)
 #define STATUS_ERRORS_CE2	\
 		(BIT(CE2_SW_ERR_SHIFT) | BIT(CE2_DIN_ERR_SHIFT) | \
 		 BIT(CE2_DOUT_ERR_SHIFT) | BIT(CE2_ACCESS_VIOL_SHIFT))
+
+#ifdef CONFIG_CRYPTO_DEV_QCE_SHA
+/*
+ * CE2 hash PIO data path.
+ *
+ * The mainline qce ADM DMA path doesn't drive CE2 correctly for hash:
+ * CRCI 4 (CE_IN) and CRCI 15 (CE_HASH) handshakes don't fire when ADM is
+ * configured in box mode targeting DATA_SHADOW0. CE2 enters PROCESSING
+ * and never completes, hanging hash_sendmsg in wait_for_completion.
+ *
+ * The HTC sbl3 bootloader does CE2 hash via pure PIO and works perfectly.
+ * Mirror its sequence:
+ *
+ *   1. qce_setup_regs_ahash() has already programmed SEG_CFG/AUTH_SEG_CFG/
+ *      SEG_SIZE/AUTH_IV/CONFIG and written GOPROC.
+ *   2. Wait for engine to leave IDLE (CRYPTO_STATE != 0).
+ *   3. Copy req->src into a linear buffer padded to 16-byte boundary.
+ *   4. For each 4-dword chunk: poll DIN_RDY (STATUS bit 2), write DATA_IN.
+ *   5. Poll AUTH_DONE (STATUS bit 1).
+ *   6. Read AUTH_IV0..N -> rctx->digest.
+ *
+ * Returns 0 on success and stores the digest in rctx->digest; negative on
+ * error.  Caller is responsible for copying to req->result and signalling
+ * the crypto request as complete via qce->async_req_done.
+ */
+int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
+{
+	struct ahash_request *req = ahash_request_cast(async_req);
+	struct crypto_ahash *ahash = __crypto_ahash_cast(async_req->tfm);
+	struct qce_sha_reqctx *rctx = ahash_request_ctx_dma(req);
+	struct qce_alg_template *tmpl = to_ahash_tmpl(async_req->tfm);
+	struct qce_device *qce = tmpl->qce;
+	unsigned int digestsize = crypto_ahash_digestsize(ahash);
+	unsigned int total, dwords, i;
+	u8 *buf;
+	u32 status, *p;
+	int timeout, ret = 0;
+
+	/* qce_setup_regs_ahash() was already called -- regs configured + GOPROC */
+
+	/* Wait for engine to leave IDLE (transition to LOCKED, then PROCESSING) */
+	for (timeout = 1000; timeout > 0; timeout--) {
+		status = qce_read(qce, qce_reg_status(qce));
+		if (status & CE2_CRYPTO_STATE_MASK)
+			break;
+		udelay(10);
+	}
+	if (timeout <= 0) {
+		dev_err(qce->dev, "CE2 hash: engine never left IDLE; STATUS=0x%08x\n",
+			status);
+		return -ETIMEDOUT;
+	}
+
+	/* CE2 input FIFO consumes data in 16-byte chunks per CRCI handshake.
+	 * Round up the buffer; bytes past req->nbytes are ignored by the
+	 * engine (SEG_SIZE constrains processing) but the 16-byte granularity
+	 * is mandatory for DIN handshakes.
+	 */
+	total = round_up(req->nbytes, 16);
+	if (total == 0) {
+		/* Empty input -- engine still wants a 16-byte handshake to finish
+		 * a non-zero hash; for true zero-length, sha.c short-circuits to
+		 * hash_zero before we get here, so this path shouldn't trigger.
+		 */
+		total = 16;
+	}
+
+	buf = kzalloc(total, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	if (req->nbytes)
+		sg_copy_to_buffer(req->src, sg_nents(req->src), buf, req->nbytes);
+
+	/* Feed data in 4-dword chunks, polling DIN_RDY between each dword */
+	dwords = total / 4;
+	p = (u32 *)buf;
+	for (i = 0; i < dwords; i++) {
+		for (timeout = 10000; timeout > 0; timeout--) {
+			status = qce_read(qce, qce_reg_status(qce));
+			if (status & BIT(CE2_DIN_RDY_SHIFT))
+				break;
+			udelay(10);
+		}
+		if (timeout <= 0) {
+			dev_err(qce->dev,
+				"CE2 hash: DIN_RDY stuck after %u/%u dwords; STATUS=0x%08x\n",
+				i, dwords, status);
+			ret = -ETIMEDOUT;
+			goto out;
+		}
+		qce_write(qce, CE2_REG_DATA_IN, p[i]);
+	}
+
+	/* Wait for AUTH_DONE -- 1ms per dword headroom, min 50ms */
+	timeout = max(50000U, dwords * 100U);
+	for (; timeout > 0; timeout--) {
+		status = qce_read(qce, qce_reg_status(qce));
+		if (status & BIT(CE2_AUTH_DONE_SHIFT))
+			break;
+		udelay(10);
+	}
+	if (timeout <= 0) {
+		dev_err(qce->dev, "CE2 hash: AUTH_DONE timeout; STATUS=0x%08x\n",
+			status);
+		ret = -ETIMEDOUT;
+		goto out;
+	}
+
+	if (status & BIT(CE2_SW_ERR_SHIFT)) {
+		dev_err(qce->dev, "CE2 hash: SW_ERR set; STATUS=0x%08x\n", status);
+		ret = -EIO;
+		goto out;
+	}
+
+	/* Read digest from AUTH_IV0..N. The registers hold big-endian words
+	 * already in CPU-readable form (PIO test confirmed H0=0xa94a8fe5 for
+	 * SHA1("test") matches the standard digest exactly).
+	 */
+	{
+		__be32 result[SHA256_DIGEST_SIZE / sizeof(__be32)];
+		unsigned int words = digestsize / sizeof(u32);
+
+		for (i = 0; i < words; i++)
+			result[i] = cpu_to_be32(qce_read(qce,
+				CE2_REG_AUTH_IV0 + i * sizeof(u32)));
+
+		memcpy(rctx->digest, result, digestsize);
+		if (req->result && rctx->last_blk)
+			memcpy(req->result, result, digestsize);
+	}
+
+	/* Capture byte count for streaming-hash continuation (multi-update) */
+	rctx->byte_count[0] = cpu_to_be32(qce_read(qce,
+		CE2_REG_AUTH_BYTECNT0));
+	rctx->byte_count[1] = cpu_to_be32(qce_read(qce,
+		CE2_REG_AUTH_BYTECNT1));
+
+out:
+	kfree(buf);
+	return ret;
+}
+#endif
 
 int qce_check_status(struct qce_device *qce, u32 *status)
 {

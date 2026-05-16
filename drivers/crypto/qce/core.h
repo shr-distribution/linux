@@ -75,4 +75,9 @@ struct qce_algo_ops {
 	int (*async_req_handle)(struct crypto_async_request *async_req);
 };
 
+static inline bool qce_is_ce2(const struct qce_device *qce)
+{
+	return qce->version == QCE_VERSION_CE2;
+}
+
 #endif /* _CORE_H_ */

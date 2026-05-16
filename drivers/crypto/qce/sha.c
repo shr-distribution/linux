@@ -96,6 +96,27 @@ static int qce_ahash_async_req_handle(struct crypto_async_request *async_req)
 		return rctx->src_nents;
 	}
 
+	if (qce_is_ce2(qce)) {
+		/* CE2 hash path: configure registers + GOPROC via qce_start,
+		 * then drive the input/result via PIO. ADM DMA does not
+		 * currently fire CRCI handshakes for CE2 hash; PIO is the
+		 * only proven-working path (HTC sbl3 bootloader behaviour).
+		 */
+		ret = qce_start(async_req, tmpl->crypto_alg_type);
+		if (ret)
+			return ret;
+
+		ret = qce_ce2_pio_run_hash(async_req);
+
+		req->src = rctx->src_orig;
+		req->nbytes = rctx->nbytes_orig;
+		rctx->last_blk = false;
+		rctx->first_blk = false;
+
+		qce->async_req_done(qce, ret);
+		return 0;
+	}
+
 	ret = dma_map_sg(qce->dev, req->src, rctx->src_nents, DMA_TO_DEVICE);
 	if (!ret)
 		return -EIO;
