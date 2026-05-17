@@ -1066,48 +1066,70 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	else
 		qce_cpu_to_be32p_array(auth, rctx->digest, digestsize);
 
+	/*
+	 * Use writel() (with implicit dmb/dsb barriers) instead of
+	 * writel_relaxed() for every register write below.  Samsung's MSM8960
+	 * QCE3 TrustZone (reverse-engineered from tz.mbn) issues a `dsb sy`
+	 * after every CE register access without exception -- they don't trust
+	 * the engine to see writes in program order without explicit barriers.
+	 * On QCE2 silicon with two ADM channels sharing the engine, in-flight
+	 * writes can reorder relative to the GOPROC trigger, contributing to
+	 * race-window state corruption that manifests as the SHA256 back-to-
+	 * back wedge.  writel()'s wmb() before each I/O matches the Samsung
+	 * pattern.
+	 */
+
 	/* SEG_CFG / AUTH_SEG_CFG / SEG_SIZE first */
-	writel_relaxed(auth_cfg, qce->base + CE2_REG_SEG_CFG);
-	writel_relaxed(req->nbytes << CE2_AUTH_SEG_SIZE_SHIFT,
-		       qce->base + CE2_REG_AUTH_SEG_CFG);
-	writel_relaxed(req->nbytes, qce->base + CE2_REG_SEG_SIZE);
+	writel(auth_cfg, qce->base + CE2_REG_SEG_CFG);
+	writel(req->nbytes << CE2_AUTH_SEG_SIZE_SHIFT,
+	       qce->base + CE2_REG_AUTH_SEG_CFG);
+	writel(req->nbytes, qce->base + CE2_REG_SEG_SIZE);
 
 	/*
-	 * AUTH_IV0..N: write only the algorithm IV words (5 for SHA1, 8 for
-	 * SHA256).  Do NOT zero IV5..15: webOS / mako never touch those
-	 * registers, and writing to them while the engine is still in
-	 * CTXT_CLEARING / UNLOCKING (states 6/7) appears to corrupt the
-	 * internal cleanup, contributing to the SHA256 back-to-back wedge.
+	 * AUTH_IV0..7: zero-prime the full SHA256 IV register block, then
+	 * write the algorithm IV.  Samsung MSM8960 TZ explicitly zeros
+	 * AUTH_IV[0/1] before every op rather than trusting hardware
+	 * auto-init.  Doing this for all 8 SHA256 IV slots ensures any
+	 * residual digest words from a previous op (which the engine left
+	 * in AUTH_IV0..7 after AUTH_DONE) are cleared before the new op
+	 * primes its initial vector.
+	 *
+	 * For SHA1 we only need 5 IV words -- the upper 3 (IV5..7) get
+	 * zeroed and stay zero, no harm.  For SHA256 the same zero-prime
+	 * gets immediately overwritten with the algorithm's initial vector
+	 * in the next loop.
 	 */
 	{
 		unsigned int j;
 		u32 *iv32 = (u32 *)auth;
 
+		for (j = 0; j < 8; j++)
+			writel(0, qce->base +
+				CE2_REG_AUTH_IV0 + j * sizeof(u32));
+
 		for (j = 0; j < iv_words; j++)
-			writel_relaxed(iv32[j], qce->base +
+			writel(iv32[j], qce->base +
 				CE2_REG_AUTH_IV0 + j * sizeof(u32));
 	}
 
 	/*
 	 * AUTH_BYTECNT0/1 only.  webOS / mako only program 64 bits of
-	 * counter (BYTECNT0/1).  BYTECNT2/3 are not used by SHA1/SHA256 and
-	 * writing them was a defensive-only addition that is not in any
-	 * working reference.
+	 * counter (BYTECNT0/1).  BYTECNT2/3 are not used by SHA1/SHA256.
 	 */
 	if (rctx->first_blk) {
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT0);
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT1);
+		writel(0, qce->base + CE2_REG_AUTH_BYTECNT0);
+		writel(0, qce->base + CE2_REG_AUTH_BYTECNT1);
 	} else {
-		writel_relaxed((__force u32)rctx->byte_count[0],
-			       qce->base + CE2_REG_AUTH_BYTECNT0);
-		writel_relaxed((__force u32)rctx->byte_count[1],
-			       qce->base + CE2_REG_AUTH_BYTECNT1);
+		writel((__force u32)rctx->byte_count[0],
+		       qce->base + CE2_REG_AUTH_BYTECNT0);
+		writel((__force u32)rctx->byte_count[1],
+		       qce->base + CE2_REG_AUTH_BYTECNT1);
 	}
 
 	/* CONFIG: read-modify-write matching PIO diagnostic (set interrupt
 	 * masks, enable high-speed paths, ensure CLK_EN_N=0 and SW_RST=0)
 	 */
-	config = readl_relaxed(qce->base + CE2_REG_CONFIG);
+	config = readl(qce->base + CE2_REG_CONFIG);
 	config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) |
 		  BIT(CE2_MASK_DIN_INTR_SHIFT) |
 		  BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
@@ -1116,7 +1138,7 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
 		    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
 	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
-	writel_relaxed(config, qce->base + CE2_REG_CONFIG);
+	writel(config, qce->base + CE2_REG_CONFIG);
 
 	/* Diagnostic */
 	dev_info(qce->dev,
@@ -1124,8 +1146,10 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		 auth_cfg, req->nbytes, config,
 		 rctx->first_blk, rctx->last_blk);
 
-	/* GOPROC */
-	writel_relaxed(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+	/* GOPROC -- use writel() for the barrier; the engine must observe
+	 * all setup writes above before it starts processing.
+	 */
+	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
 
 	/* 8) Wait for engine to leave IDLE (transition to LOCKED) */
 	for (timeout = 1000; timeout > 0; timeout--) {
@@ -1189,7 +1213,13 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 			ret = -ETIMEDOUT;
 			goto out;
 		}
-		writel_relaxed(word, qce->base + CE2_REG_DATA_IN);
+		/*
+		 * writel() (not writel_relaxed) so each DATA_IN word fully
+		 * commits before we poll DIN_RDY for the next.  Samsung's TZ
+		 * does a dsb after every DATA_IN write; this is the Linux
+		 * equivalent.
+		 */
+		writel(word, qce->base + CE2_REG_DATA_IN);
 	}
 
 	/* 10) Wait for AUTH_DONE */
