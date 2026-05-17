@@ -153,6 +153,27 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 * — same behaviour as legacy, no surprise transitions.
 	 */
 	sw_reset = vidc_read(core, VIDC_REG_SW_RESET);
+
+	/*
+	 * Cold-start pre-pulse: after a GDSC power cycle SW_RESET reads 0x000
+	 * (every block in reset). The stage-2 RESET_ALL write below is then a
+	 * structural no-op — it writes 0x000 to a register already 0x000 — so
+	 * the reset signals never see the falling edge (1→0 transition) that
+	 * the hardware needs before it will latch a DRAM_BASE write.
+	 *
+	 * Fix: briefly release non-RISC blocks (0x3fe), let the AHB settle,
+	 * then re-assert (0x000) to create that falling edge. Stage 1+2 then
+	 * proceed identically to the warm-boot path.
+	 */
+	if (sw_reset == 0) {
+		vidc_write(core, VIDC_REG_SW_RESET,
+			   VIDC_RESET_NONE & ~VIDC_RESET_RISC);
+		msleep(1);
+		vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_ALL);
+		msleep(1);
+		sw_reset = vidc_read(core, VIDC_REG_SW_RESET);
+	}
+
 	sw_reset &= ~VIDC_RESET_VI;
 	vidc_write(core, VIDC_REG_SW_RESET, sw_reset);
 	sw_reset &= ~VIDC_RESET_RISC;
