@@ -4,13 +4,13 @@
  */
 
 #include <crypto/internal/hash.h>
-#include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
+#include <linux/reset.h>
 #include <linux/types.h>
 #include <crypto/scatterwalk.h>
 #include <crypto/sha1.h>
@@ -1210,27 +1210,26 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		return -EINVAL;
 
 	/*
-	 * Per-op CE clock gate-and-restore.  Empirically the CE2 engine on
+	 * Per-op engine hardware reset.  Empirically the CE2 engine on
 	 * APQ8060 has a hard limit of ~5 hash ops per power-on before it
-	 * silently stops processing (returns AUTH_IV unchanged).  webOS /
-	 * mako downstream kernels disable the CE clock after every op and
-	 * re-enable at the start of the next -- this serves as a hardware
-	 * reset of the engine's internal state machine, lifting the per-
-	 * boot op limit.
+	 * silently stops processing (returns AUTH_IV unchanged).  Clock
+	 * gating alone was tried and did NOT lift the limit -- engine
+	 * register state is preserved across a clock gate; only an actual
+	 * hardware reset clears the internal counter / state.
 	 *
-	 * On tenderloin, all three clocks (core/iface/bus) map to the same
-	 * GCC_CE2_HCLK gate (qcom-apq8060-tenderloin-common.dtsi:
-	 *   clocks = <&gcc CE2_P_CLK>, <&gcc CE2_H_CLK>, <&gcc CE2_P_CLK>;
-	 * ), so toggling any one suffices.  The "iface" clock is the one
-	 * with refcount=1 from our single devm_clk_get_optional_enabled at
-	 * probe; cycling it gates HCLK_CTL bit 4 briefly.
-	 *
-	 * A 10 us delay between disable and enable is enough for the engine
-	 * to see the power transition and clear its internal counter / state.
+	 * GCC_CE2_RESET (DT: reset-names = "clk") asserts the engine's
+	 * reset line.  10 us is enough for the engine to fully reset (the
+	 * probe-time SW_RST sequence in core.c uses similar timing).
+	 * After deassert the engine is back to power-on state -- our
+	 * per-op SEG_CFG/AUTH_IV/AUTH_BYTECNT/CONFIG/GOPROC writes below
+	 * re-program it from scratch.
 	 */
-	clk_disable(qce->iface);
-	udelay(10);
-	clk_enable(qce->iface);
+	if (qce->reset) {
+		reset_control_assert(qce->reset);
+		udelay(10);
+		reset_control_deassert(qce->reset);
+		udelay(10);
+	}
 
 	/*
 	 * Wait for CE2 to be fully IDLE before configuring. After AUTH_DONE

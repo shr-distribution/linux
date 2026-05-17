@@ -51,6 +51,7 @@ struct qce_device {
 	phys_addr_t phys_base;
 	struct device *dev;
 	struct clk *core, *iface, *bus;
+	struct reset_control *reset;
 	struct icc_path *mem_path;
 	struct qce_dma_data dma;
 	int burst_size;

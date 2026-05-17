@@ -15,6 +15,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/reset.h>
 #include <linux/types.h>
 #include <crypto/algapi.h>
 #include <crypto/internal/hash.h>
@@ -562,6 +563,10 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	qce->bus = devm_clk_get_optional_enabled(qce->dev, "bus");
 	if (IS_ERR(qce->bus))
 		return PTR_ERR(qce->bus);
+
+	qce->reset = devm_reset_control_get_optional_exclusive(qce->dev, "clk");
+	if (IS_ERR(qce->reset))
+		return PTR_ERR(qce->reset);
 
 	/*
 	 * CE2 Hardware Initialization (MSM8660/APQ8060)
