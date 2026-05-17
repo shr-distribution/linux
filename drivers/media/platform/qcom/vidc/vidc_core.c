@@ -1720,13 +1720,19 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 
 	qp_range = (40 << 16) | 10;	/* min=10, max=40 */
 
+	vidc_write(core, VIDC_REG_ENC_FRAME_WIDTH, inst->out_width);
+	vidc_write(core, VIDC_REG_ENC_FRAME_HEIGHT, inst->out_height);
+	vidc_write(core, VIDC_REG_ENC_TARGET_BITRATE, inst->bitrate);
+	vidc_write(core, VIDC_REG_ENC_FRAME_RATE, inst->framerate);
 	vidc_write(core, VIDC_REG_ENC_PROFILE_LEVEL, profile_level);
 	vidc_write(core, VIDC_REG_ENC_RC_CONFIG, 0);		/* CBR */
 	vidc_write(core, VIDC_REG_ENC_REACTION_COEFF, 0x14);
 	vidc_write(core, VIDC_REG_ENC_QP_RANGE, qp_range);
 
 	dev_dbg(core->dev,
-		"encoder config: profile_level=0x%x qp_range=0x%x\n",
+		"encoder config: %ux%u fps=%u bitrate=%u profile_level=0x%x qp_range=0x%x\n",
+		inst->out_width, inst->out_height,
+		inst->framerate, inst->bitrate,
 		profile_level, qp_range);
 
 	return 0;
