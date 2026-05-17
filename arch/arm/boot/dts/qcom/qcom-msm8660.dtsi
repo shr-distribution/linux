@@ -574,29 +574,28 @@
 				regulator-name = "cpu0_vdd";
 				regulator-min-microvolt = <840000>;
 				/*
-				 * Clamped to 1.350 V. Every downstream
-				 * msm8660 binning table (codeaurora-derived
-				 * CM, Evervolv HTC, invisiblek tenderloin)
-				 * tops out at 1.325 V at the absolute peak
-				 * "1.7 GHz slowest" PVS corner; the highest
-				 * voltage any OPP in our DT requests is
-				 * 1.350 V at 1728 MHz, which is itself an
-				 * overclock above vendor-validated 1512 MHz.
-				 * Old 1.600 V ceiling was a leftover from a
-				 * since-removed 1836 MHz @ 1.45 V experiment
-				 * (rwhitby/webos-uber-kernel) and let any
-				 * malformed OPP voltage through unchallenged.
-				 * 1.350 V matches the absolute peak any OPP
-				 * in the current DT requests (1728 MHz @
-				 * 1.350 V). That is itself an overclock
-				 * above the 1512 MHz @ 1.250 V vendor
-				 * ceiling -- once `qcom-cpufreq-nvmem`
-				 * gains msm8660 speed-bin support and the
-				 * 1.7 GHz binnings get their own OPPs, this
-				 * limit should drop further or move into a
-				 * per-bin opp-microvolt-supply property.
+				 * TEMPORARY: relaxed back to 1.60 V to match
+				 * pre-69eb43995d78 behavior while we chase a
+				 * cold-boot hang regression. With the 1.35 V
+				 * clamp every active OPP in our DT (top is
+				 * 1.250 V @ 1512 MHz after speed-bin gating)
+				 * sits within range, but `regulator_set_voltage`
+				 * round-trips through the qcom SAW driver which
+				 * may briefly request a transitional value that
+				 * clips against a tight ceiling -- when that
+				 * happens apcs_increase_vdd() returns -EINVAL
+				 * and the following scpll_change_freq() spins
+				 * on SCPLL_STATUS forever because Vcore was
+				 * never raised. The earlier 1.6 V ceiling
+				 * absorbed that overshoot and the pre-69eb43995d78
+				 * boots ran reliably.
+				 *
+				 * The clamp will return once the SCPLL slew
+				 * path either grows a timeout or the
+				 * regulator_set_voltage transition becomes
+				 * fully on-grid for every OPP we expose.
 				 */
-				regulator-max-microvolt = <1350000>;
+				regulator-max-microvolt = <1600000>;
 			};
 		};
 
@@ -608,8 +607,8 @@
 			saw1_reg: regulator {
 				regulator-name = "cpu1_vdd";
 				regulator-min-microvolt = <840000>;
-				/* See saw0_reg above for the 1.350 V rationale. */
-				regulator-max-microvolt = <1350000>;
+				/* See saw0_reg above -- temporary 1.6 V ceiling. */
+				regulator-max-microvolt = <1600000>;
 			};
 		};
 
