@@ -1,5 +1,36 @@
 # CE2 SHA Wedge Deep Dive — 2026-05-17
 
+## RESOLVED — 6/6 + sustained 30/30 OK
+
+The CE2 hash wedge is fully fixed.  Test results on commit
+`34df6297937d` (with byte-swap, chained DMA, and per-op
+`GCC_CE2_RESET`):
+
+- Mode 6 (3 back-to-back SHA256) from fresh boot: **3/3 OK**
+- Full vector test (3x SHA1 + 3x SHA256): **6/6 OK**
+- Sustained 5x full vector test runs: **30/30 OK** (no engine wedge,
+  no AUTH_IV-unchanged failure, no per-boot limit)
+
+Winning combination (3 commits):
+1. **`bf401e78a607`** — Byte-swap DATA_IN writes to BE.  CE2 reads
+   each DATA_IN dword MSB-first as 4 message bytes.
+2. **`2189e898d518`** — Single-channel chained ADM DMA.  BOX
+   (input -> DATA_SHADOW0, CRCI 4) and SINGLE (AUTH_IV0 -> result,
+   CRCI 15) descriptors on the SAME ADM channel, walked back-to-back
+   without `dmaengine_terminate_sync()` between.  Matches webOS
+   `_setup_cmd_template` pattern.
+3. **`34df6297937d`** — Per-op `GCC_CE2_RESET` hardware reset.
+   `reset_control_assert` + 10us + `reset_control_deassert` at start
+   of every hash op.  Clock gate alone preserves register state;
+   only an actual hardware reset clears the engine's internal counter
+   that otherwise caps ops at ~5 per power-on.
+
+The investigation below documents every attempt that didn't fully
+work, kept for reference.
+
+---
+
+
 Multi-source comparison of CE2/QCE hash sequences across webOS, mako, HTC sbl3
 bootloader, Sony MSM8930, mainline qce/v5, and qce40/qce50 (CE3/CE5
 generations), to find the root cause of the back-to-back SHA256 wedge.
