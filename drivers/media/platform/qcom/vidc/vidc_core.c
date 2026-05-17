@@ -268,6 +268,21 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 
 	dev_info(core->dev, "hw_reset: released RISC from reset\n");
 
+	/* Sample AXI_STATUS immediately and after short delays to detect RISC instruction fetches */
+	{
+		int i;
+		u32 axi_st, sw_rst, fwver;
+
+		for (i = 0; i < 5; i++) {
+			axi_st = vidc_read(core, VIDC_REG_AXI_STATUS);
+			sw_rst = vidc_read(core, VIDC_REG_SW_RESET);
+			fwver  = vidc_read(core, VIDC_REG_FW_VERSION);
+			printk(KERN_EMERG "VIDC: post-release[%d]: AXI_STATUS=0x%08x SW_RESET=0x%08x FW_VERSION=0x%08x\n",
+			       i, axi_st, sw_rst, fwver);
+			usleep_range(2000, 2100);
+		}
+	}
+
 	/* Give firmware CPU time to boot and initialize */
 	msleep(10);
 
@@ -1964,9 +1979,9 @@ static int vidc_probe(struct platform_device *pdev)
 		u32 val;
 
 		if (!of_property_read_u32(dev->of_node, "qcom,icc-bw-avg-kbps", &val))
-			core->icc_bw_avg = val * 1024;  /* kBps to Bps */
+			core->icc_bw_avg = val;
 		if (!of_property_read_u32(dev->of_node, "qcom,icc-bw-peak-kbps", &val))
-			core->icc_bw_peak = val * 1024;  /* kBps to Bps */
+			core->icc_bw_peak = val;
 	}
 
 	/* Register V4L2 device */
