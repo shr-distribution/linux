@@ -986,6 +986,131 @@ out_free:
 }
 
 /*
+ * Feed CE2 hash input via ADM DMA on rxchan with CRCI 4 (CE_IN)
+ * handshake to DATA_SHADOW0 (+0x8000).
+ *
+ * Path A v3: replace the PIO writel(DATA_IN) loop with ADM DMA.
+ * The webOS / mako reference pattern uses DMA for both input and
+ * output -- the CRCI 4 handshake on input is part of the engine's
+ * full state-machine sequencing, just like CRCI 15 on output.
+ * PIO data feed (writel DATA_IN with DIN_RDY polling) gets the
+ * data in but skips the formal handshake, leaving internal
+ * counters in different states than what the output-side CRCI 15
+ * cleanup expects.
+ *
+ * The buffer is byte-swapped to BE per dword before DMA: CE2 reads
+ * each 32-bit beat from DATA_SHADOW0 MSB-first as the next four
+ * message bytes.  ADM just delivers the bytes verbatim (qcom_adm
+ * doesn't expose CMD_DST_SWAP_BYTES like webOS does), so we have
+ * to swap in software.
+ */
+static int qce_ce2_dma_feed_input(struct qce_device *qce,
+				  struct scatterlist *src, unsigned int nbytes)
+{
+	struct dma_chan *chan = qce->dma.rxchan;
+	struct qcom_adm_peripheral_config periph = { .crci = qce->dma.rx_crci };
+	struct dma_slave_config conf = {
+		.direction = DMA_MEM_TO_DEV,
+		.dst_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
+		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+		/* 4 beats * 4 bytes = 16 byte burst = CE2 FIFO chunk size */
+		.dst_maxburst = 4,
+		.peripheral_config = &periph,
+		.peripheral_size = sizeof(periph),
+	};
+	struct dma_async_tx_descriptor *desc;
+	struct completion done;
+	dma_cookie_t cookie;
+	dma_addr_t dma_addr;
+	u8 *coherent_buf;
+	__le32 *words;
+	enum dma_status status;
+	unsigned int total, ndwords, i;
+	u8 *src_buf;
+	int ret;
+
+	/* Round up to 16-byte FIFO chunk; CE2 ignores bytes past SEG_SIZE */
+	total = round_up(nbytes, 16);
+	if (total == 0)
+		total = 16;
+
+	src_buf = kzalloc(total, GFP_KERNEL);
+	if (!src_buf)
+		return -ENOMEM;
+	if (nbytes)
+		sg_copy_to_buffer(src, sg_nents(src), src_buf, nbytes);
+
+	coherent_buf = dma_alloc_coherent(qce->dev, total, &dma_addr, GFP_KERNEL);
+	if (!coherent_buf) {
+		ret = -ENOMEM;
+		goto out_free_src;
+	}
+
+	/* Byte-swap each dword: ARM LE u32 at coherent_buf[i*4] becomes BE
+	 * (MSB-first) when CE2 reads it.
+	 */
+	ndwords = total / 4;
+	words = (__le32 *)coherent_buf;
+	for (i = 0; i < ndwords; i++) {
+		u32 w = ((u32)src_buf[i * 4 + 0] << 24) |
+			((u32)src_buf[i * 4 + 1] << 16) |
+			((u32)src_buf[i * 4 + 2] <<  8) |
+			((u32)src_buf[i * 4 + 3] <<  0);
+		words[i] = cpu_to_le32(w);
+	}
+
+	ret = dmaengine_slave_config(chan, &conf);
+	if (ret) {
+		dev_err(qce->dev, "CE2 hash: input slave_config: %d\n", ret);
+		goto out_free_coh;
+	}
+
+	desc = dmaengine_prep_slave_single(chan, dma_addr, total,
+					   DMA_MEM_TO_DEV,
+					   DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+	if (!desc) {
+		dev_err(qce->dev, "CE2 hash: input DMA prep failed\n");
+		ret = -ENOMEM;
+		goto out_terminate;
+	}
+
+	init_completion(&done);
+	desc->callback = qce_ce2_dma_done;
+	desc->callback_param = &done;
+
+	cookie = dmaengine_submit(desc);
+	if (dma_submit_error(cookie)) {
+		dev_err(qce->dev, "CE2 hash: input DMA submit failed\n");
+		ret = -EIO;
+		goto out_terminate;
+	}
+	dma_async_issue_pending(chan);
+
+	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(500))) {
+		dev_err(qce->dev, "CE2 hash: input DMA timeout\n");
+		ret = -ETIMEDOUT;
+		goto out_terminate;
+	}
+
+	status = dma_async_is_tx_complete(chan, cookie, NULL, NULL);
+	if (status != DMA_COMPLETE) {
+		dev_err(qce->dev, "CE2 hash: input DMA incomplete (%d)\n",
+			status);
+		ret = -EIO;
+		goto out_terminate;
+	}
+	ret = 0;
+
+out_terminate:
+	dmaengine_terminate_sync(chan);
+out_free_coh:
+	dma_free_coherent(qce->dev, total, coherent_buf, dma_addr);
+out_free_src:
+	kfree(src_buf);
+	return ret;
+}
+
+/*
  * CE2 hash PIO data path.
  *
  * Mirrors the standalone CE2 PIO diagnostic that returns correct
@@ -1010,9 +1135,8 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	unsigned int digestsize = crypto_ahash_digestsize(ahash);
 	unsigned int blocksize = crypto_tfm_alg_blocksize(async_req->tfm);
 	__be32 auth[SHA256_DIGEST_SIZE / sizeof(__be32)] = {0};
-	unsigned int iv_words, total, dwords, i;
-	u32 auth_cfg, config, status, *p;
-	u8 *buf;
+	unsigned int iv_words;
+	u32 auth_cfg, config, status;
 	int timeout, ret = 0;
 
 	/* If not the last block, size must be on the block boundary
@@ -1141,59 +1265,23 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		return -ETIMEDOUT;
 	}
 
-	/* 9) Feed input in 16-byte chunks. CE2 FIFO consumes 16 bytes per
-	 *    CRCI handshake; trailing bytes past SEG_SIZE are ignored.
+	/*
+	 * 9) Feed input via ADM DMA to DATA_SHADOW0 with CRCI 4 handshake.
+	 *    Path A v3 replaces PIO writel(DATA_IN) with full DMA so the
+	 *    engine sees the formal CRCI 4 handshake on input alongside
+	 *    the CRCI 15 handshake on output.  webOS / mako depend on
+	 *    both for the engine's state-machine cleanup between ops.
 	 */
-	total = round_up(req->nbytes, 16);
-	if (total == 0)
-		total = 16;
-
-	buf = kzalloc(total, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	if (req->nbytes)
-		sg_copy_to_buffer(req->src, sg_nents(req->src), buf,
-				  req->nbytes);
-
-	/* Byte-swap each 4-byte chunk to big-endian for DATA_IN. CE2 interprets
-	 * each 32-bit DATA_IN write MSB-first as the next four message bytes.
-	 *
-	 * Example: input bytes "test" = 74 65 73 74 must be presented to CE2
-	 * as u32 0x74657374 (MSB-first reads as 0x74 'e' 's' 't'). But buf
-	 * holds bytes in CPU-native order; on ARM LE, *(u32 *)buf would give
-	 * 0x74736574 -- which CE2 reads as bytes "tset" and hashes that.
-	 * The probe-time PIO test in core.c hardcoded test_data=0x74657374,
-	 * which is why it produced correct SHA1("test") -- it skipped this
-	 * conversion since the constant was already in BE form.
-	 */
-	dwords = total / 4;
-	dev_info(qce->dev,
-		 "CE2 hash: feeding %u dwords (BE-swapped from buf)\n", dwords);
-	for (i = 0; i < dwords; i++) {
-		u32 word = ((u32)buf[i * 4 + 0] << 24) |
-			   ((u32)buf[i * 4 + 1] << 16) |
-			   ((u32)buf[i * 4 + 2] <<  8) |
-			   ((u32)buf[i * 4 + 3] <<  0);
-
-		for (timeout = 10000; timeout > 0; timeout--) {
-			status = readl_relaxed(qce->base + CE2_REG_STATUS);
-			if (status & BIT(CE2_DIN_RDY_SHIFT))
-				break;
-			udelay(10);
-		}
-		if (timeout <= 0) {
-			dev_err(qce->dev,
-				"CE2 hash: DIN_RDY stuck after %u/%u dwords; STATUS=0x%08x\n",
-				i, dwords, status);
-			ret = -ETIMEDOUT;
-			goto out;
-		}
-		writel_relaxed(word, qce->base + CE2_REG_DATA_IN);
+	ret = qce_ce2_dma_feed_input(qce, req->src, req->nbytes);
+	if (ret) {
+		dev_err(qce->dev, "CE2 hash: DMA input feed failed: %d\n", ret);
+		return ret;
 	}
 
-	/* 10) Wait for AUTH_DONE */
-	timeout = max(50000U, dwords * 100U);
+	/* 10) Wait for AUTH_DONE.  500 ms is generous; SHA over a 16 KB max
+	 *     scatter-gather buffer completes in well under 1 ms.
+	 */
+	timeout = 50000;
 	for (; timeout > 0; timeout--) {
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
 		if (status & BIT(CE2_AUTH_DONE_SHIFT))
@@ -1240,7 +1328,6 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		qce->base + CE2_REG_AUTH_BYTECNT1));
 
 out:
-	kfree(buf);
 	return ret;
 }
 #endif
