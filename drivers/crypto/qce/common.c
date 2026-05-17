@@ -862,6 +862,194 @@ static void qce_ce2_dma_done(void *param)
 }
 
 /*
+ * Chain input data feed + digest readout on a single ADM channel.
+ * Mirrors the webOS qce.c::_setup_cmd_template pattern:
+ *
+ *   cmd 1 (BOX, MEM_TO_DEV): input data -> DATA_SHADOW0 (+0x8000),
+ *                            CRCI 4 (CE_IN) handshake gates writes
+ *   cmd 2 (SINGLE, DEV_TO_MEM, CMD_LC): AUTH_IV0..N -> result_buf,
+ *                                       CRCI 15 (CE_HASH) handshake
+ *
+ * Both descriptors execute back-to-back on the SAME channel (rxchan).
+ * The qcom_adm driver doesn't natively support per-descriptor CRCI
+ * override, so we slave_config between preps -- the prep functions
+ * capture src/dst/CRCI into the box_desc / single_desc at prep time,
+ * subsequent slave_config calls only affect future preps.
+ *
+ * Critically: NO dmaengine_terminate_sync() between the two
+ * descriptors.  Earlier attempts that used separate rxchan + txchan
+ * with a terminate between them gave 4/6 (wedge after 1-2 SHA256
+ * ops) because the engine sees the channel teardown as an
+ * abnormal end-of-transaction, leaving internal context in a state
+ * the next op can't recover from.  Letting ADM walk both descriptors
+ * within a single submit-issue-pending transaction matches webOS
+ * exactly.
+ */
+static int qce_ce2_dma_chain_input_digest(struct qce_device *qce,
+					  struct scatterlist *src,
+					  unsigned int nbytes,
+					  void *digest, unsigned int digestsize)
+{
+	struct dma_chan *chan = qce->dma.rxchan;
+	struct qcom_adm_peripheral_config in_periph = {
+		.crci = qce->dma.rx_crci,	/* CRCI 4 = CE_IN */
+	};
+	struct qcom_adm_peripheral_config out_periph = {
+		.crci = qce->dma.tx_crci,	/* CRCI 15 = CE_HASH */
+	};
+	struct dma_slave_config in_conf = {
+		.direction = DMA_MEM_TO_DEV,
+		.dst_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
+		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+		.dst_maxburst = 4,	/* 16 byte burst, CE2 FIFO chunk */
+		.peripheral_config = &in_periph,
+		.peripheral_size = sizeof(in_periph),
+	};
+	struct dma_slave_config out_conf = {
+		.direction = DMA_DEV_TO_MEM,
+		.src_addr = qce->phys_base + CE2_REG_AUTH_IV0,
+		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+		.src_maxburst = 8,	/* 32 byte burst, fits SHA256 in 1 row */
+		.peripheral_config = &out_periph,
+		.peripheral_size = sizeof(out_periph),
+	};
+	struct dma_async_tx_descriptor *in_desc, *out_desc;
+	struct completion done;
+	dma_cookie_t in_cookie, out_cookie;
+	dma_addr_t in_dma, out_dma;
+	u8 *in_buf;
+	__le32 *in_words;
+	__le32 *out_buf;
+	enum dma_status status;
+	unsigned int in_total, in_dwords, words = digestsize / sizeof(u32);
+	unsigned int i;
+	u8 *src_copy;
+	int ret;
+
+	/* Input buffer: round up to 16-byte FIFO chunk, byte-swap to BE */
+	in_total = round_up(nbytes, 16);
+	if (in_total == 0)
+		in_total = 16;
+
+	src_copy = kzalloc(in_total, GFP_KERNEL);
+	if (!src_copy)
+		return -ENOMEM;
+	if (nbytes)
+		sg_copy_to_buffer(src, sg_nents(src), src_copy, nbytes);
+
+	in_buf = dma_alloc_coherent(qce->dev, in_total, &in_dma, GFP_KERNEL);
+	if (!in_buf) {
+		ret = -ENOMEM;
+		goto out_free_src;
+	}
+
+	out_buf = dma_alloc_coherent(qce->dev, digestsize, &out_dma, GFP_KERNEL);
+	if (!out_buf) {
+		ret = -ENOMEM;
+		goto out_free_in;
+	}
+
+	/* Byte-swap input dwords to BE: CE2 reads each beat MSB-first */
+	in_dwords = in_total / 4;
+	in_words = (__le32 *)in_buf;
+	for (i = 0; i < in_dwords; i++) {
+		u32 w = ((u32)src_copy[i * 4 + 0] << 24) |
+			((u32)src_copy[i * 4 + 1] << 16) |
+			((u32)src_copy[i * 4 + 2] <<  8) |
+			((u32)src_copy[i * 4 + 3] <<  0);
+		in_words[i] = cpu_to_le32(w);
+	}
+
+	/* Prep descriptor 1: input MEM_TO_DEV with CRCI 4 */
+	ret = dmaengine_slave_config(chan, &in_conf);
+	if (ret) {
+		dev_err(qce->dev, "CE2 hash: input slave_config failed: %d\n", ret);
+		goto out_free_out_only;
+	}
+
+	in_desc = dmaengine_prep_slave_single(chan, in_dma, in_total,
+					      DMA_MEM_TO_DEV, DMA_CTRL_ACK);
+	if (!in_desc) {
+		dev_err(qce->dev, "CE2 hash: input prep failed\n");
+		ret = -ENOMEM;
+		goto out_terminate;
+	}
+
+	/* Prep descriptor 2: digest DEV_TO_MEM with CRCI 15.  Reconfigure
+	 * slave config -- the in_desc above has already captured its CRCI=4
+	 * and dst_addr into the box descriptor, so changing the channel's
+	 * slave config here only affects this next prep.
+	 */
+	ret = dmaengine_slave_config(chan, &out_conf);
+	if (ret) {
+		dev_err(qce->dev, "CE2 hash: digest slave_config failed: %d\n", ret);
+		goto out_terminate;
+	}
+
+	out_desc = dmaengine_prep_slave_single(chan, out_dma, digestsize,
+					       DMA_DEV_TO_MEM,
+					       DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+	if (!out_desc) {
+		dev_err(qce->dev, "CE2 hash: digest prep failed\n");
+		ret = -ENOMEM;
+		goto out_terminate;
+	}
+
+	init_completion(&done);
+	out_desc->callback = qce_ce2_dma_done;
+	out_desc->callback_param = &done;
+
+	in_cookie = dmaengine_submit(in_desc);
+	if (dma_submit_error(in_cookie)) {
+		dev_err(qce->dev, "CE2 hash: input submit failed\n");
+		ret = -EIO;
+		goto out_terminate;
+	}
+	out_cookie = dmaengine_submit(out_desc);
+	if (dma_submit_error(out_cookie)) {
+		dev_err(qce->dev, "CE2 hash: digest submit failed\n");
+		ret = -EIO;
+		goto out_terminate;
+	}
+
+	dma_async_issue_pending(chan);
+
+	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(1000))) {
+		dev_err(qce->dev,
+			"CE2 hash: chained DMA timeout (input+digest)\n");
+		ret = -ETIMEDOUT;
+		goto out_terminate;
+	}
+
+	status = dma_async_is_tx_complete(chan, out_cookie, NULL, NULL);
+	if (status != DMA_COMPLETE) {
+		dev_err(qce->dev, "CE2 hash: chained DMA incomplete (%d)\n",
+			status);
+		ret = -EIO;
+		goto out_terminate;
+	}
+
+	/* Convert digest words from raw LE u32 (ADM-read) to BE bytes (SHA spec) */
+	{
+		__be32 *out_be = digest;
+
+		for (i = 0; i < words; i++)
+			out_be[i] = cpu_to_be32(le32_to_cpu(out_buf[i]));
+	}
+	ret = 0;
+
+out_terminate:
+	dmaengine_terminate_sync(chan);
+out_free_out_only:
+	dma_free_coherent(qce->dev, digestsize, out_buf, out_dma);
+out_free_in:
+	dma_free_coherent(qce->dev, in_total, in_buf, in_dma);
+out_free_src:
+	kfree(src_copy);
+	return ret;
+}
+
+/*
  * Read CE2 hash digest via ADM DMA from AUTH_IV0 with CRCI 15
  * (CE_HASH_CRCI) handshake.  The CRCI 15 handshake is what drives
  * the engine's FINAL_READ -> CTXT_CLEARING -> UNLOCKING -> IDLE
@@ -1010,9 +1198,8 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	unsigned int digestsize = crypto_ahash_digestsize(ahash);
 	unsigned int blocksize = crypto_tfm_alg_blocksize(async_req->tfm);
 	__be32 auth[SHA256_DIGEST_SIZE / sizeof(__be32)] = {0};
-	unsigned int iv_words, total, dwords, i;
-	u32 auth_cfg, config, status, *p;
-	u8 *buf;
+	unsigned int iv_words;
+	u32 auth_cfg, config, status;
 	int timeout, ret = 0;
 
 	/* If not the last block, size must be on the block boundary
@@ -1165,96 +1352,23 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		return -ETIMEDOUT;
 	}
 
-	/* 9) Feed input in 16-byte chunks. CE2 FIFO consumes 16 bytes per
-	 *    CRCI handshake; trailing bytes past SEG_SIZE are ignored.
-	 */
-	total = round_up(req->nbytes, 16);
-	if (total == 0)
-		total = 16;
-
-	buf = kzalloc(total, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	if (req->nbytes)
-		sg_copy_to_buffer(req->src, sg_nents(req->src), buf,
-				  req->nbytes);
-
-	/* Byte-swap each 4-byte chunk to big-endian for DATA_IN. CE2 interprets
-	 * each 32-bit DATA_IN write MSB-first as the next four message bytes.
-	 *
-	 * Example: input bytes "test" = 74 65 73 74 must be presented to CE2
-	 * as u32 0x74657374 (MSB-first reads as 0x74 'e' 's' 't'). But buf
-	 * holds bytes in CPU-native order; on ARM LE, *(u32 *)buf would give
-	 * 0x74736574 -- which CE2 reads as bytes "tset" and hashes that.
-	 * The probe-time PIO test in core.c hardcoded test_data=0x74657374,
-	 * which is why it produced correct SHA1("test") -- it skipped this
-	 * conversion since the constant was already in BE form.
-	 */
-	dwords = total / 4;
-	dev_info(qce->dev,
-		 "CE2 hash: feeding %u dwords (BE-swapped from buf)\n", dwords);
-	for (i = 0; i < dwords; i++) {
-		u32 word = ((u32)buf[i * 4 + 0] << 24) |
-			   ((u32)buf[i * 4 + 1] << 16) |
-			   ((u32)buf[i * 4 + 2] <<  8) |
-			   ((u32)buf[i * 4 + 3] <<  0);
-
-		for (timeout = 10000; timeout > 0; timeout--) {
-			status = readl_relaxed(qce->base + CE2_REG_STATUS);
-			if (status & BIT(CE2_DIN_RDY_SHIFT))
-				break;
-			udelay(10);
-		}
-		if (timeout <= 0) {
-			dev_err(qce->dev,
-				"CE2 hash: DIN_RDY stuck after %u/%u dwords; STATUS=0x%08x\n",
-				i, dwords, status);
-			ret = -ETIMEDOUT;
-			goto out;
-		}
-		/*
-		 * writel() (not writel_relaxed) so each DATA_IN word fully
-		 * commits before we poll DIN_RDY for the next.  Samsung's TZ
-		 * does a dsb after every DATA_IN write; this is the Linux
-		 * equivalent.
-		 */
-		writel(word, qce->base + CE2_REG_DATA_IN);
-	}
-
-	/* 10) Wait for AUTH_DONE */
-	timeout = max(50000U, dwords * 100U);
-	for (; timeout > 0; timeout--) {
-		status = readl_relaxed(qce->base + CE2_REG_STATUS);
-		if (status & BIT(CE2_AUTH_DONE_SHIFT))
-			break;
-		udelay(10);
-	}
-	if (timeout <= 0) {
-		dev_err(qce->dev, "CE2 hash: AUTH_DONE timeout; STATUS=0x%08x\n",
-			status);
-		ret = -ETIMEDOUT;
-		goto out;
-	}
-
-	if (status & BIT(CE2_SW_ERR_SHIFT)) {
-		dev_err(qce->dev, "CE2 hash: SW_ERR set; STATUS=0x%08x\n",
-			status);
-		ret = -EIO;
-		goto out;
-	}
-
 	/*
-	 * Read digest via ADM DMA from AUTH_IV0 with CRCI 15 handshake.
-	 * This is what drives the engine through FINAL_READ ->
-	 * CTXT_CLEARING -> UNLOCKING -> IDLE so that the next op can run.
-	 * Plain readl() returns correct bytes but doesn't fire the
-	 * handshake, leading to a wedge after ~2 SHA256 ops.
+	 * 9) Chained DMA: input feed + digest readout on the SAME ADM
+	 *    channel as two back-to-back descriptors.  ADM gates the input
+	 *    on CRCI 4 (CE_IN) and the digest on CRCI 15 (CE_HASH).  The
+	 *    engine's AUTH_DONE -> CRCI 15 firing serves as the synchroniz-
+	 *    ation point between the two descriptors; no PIO AUTH_DONE poll
+	 *    needed.
+	 *
+	 *    This matches the webOS _setup_cmd_template chain pattern --
+	 *    the structural difference between our previous attempts (which
+	 *    hit 4/6 ceiling) and the working webOS path.
 	 */
 	{
 		__be32 result[SHA256_DIGEST_SIZE / sizeof(__be32)];
 
-		ret = qce_ce2_dma_read_digest(qce, result, digestsize);
+		ret = qce_ce2_dma_chain_input_digest(qce, req->src, req->nbytes,
+						     result, digestsize);
 		if (ret)
 			goto out;
 
@@ -1264,13 +1378,12 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	}
 
 	/* Capture byte count for streaming-hash continuation */
-	rctx->byte_count[0] = cpu_to_be32(readl_relaxed(
+	rctx->byte_count[0] = cpu_to_be32(readl(
 		qce->base + CE2_REG_AUTH_BYTECNT0));
-	rctx->byte_count[1] = cpu_to_be32(readl_relaxed(
+	rctx->byte_count[1] = cpu_to_be32(readl(
 		qce->base + CE2_REG_AUTH_BYTECNT1));
 
 out:
-	kfree(buf);
 	return ret;
 }
 #endif
