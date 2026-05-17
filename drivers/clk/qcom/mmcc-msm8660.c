@@ -2756,30 +2756,44 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 }
 
 /*
- * Unhalt all MMSS fabric AXI master ports via RPM.
+ * Unhalt all RPM fabric AXI master ports.
  *
- * webOS downstream kernels unhalt each port individually in
- * footswitch_enable() when each GDSC powers on (msm_bus_axi_portunhalt).
- * Our mainline GDSC driver does not do this, leaving MMSS AXI ports in
- * their default (potentially halted) state after a power-domain cycle.
+ * webOS downstream kernels (msm_bus_board_8660.c) program halt registers
+ * on three fabrics: APPS (4 masters), SYSTEM (17 masters), MMSS
+ * (14 masters). The downstream GDSC driver calls msm_bus_axi_portunhalt()
+ * in footswitch_enable() when each power domain comes up; mainline GDSC
+ * does not, leaving fabric master ports in their default (potentially
+ * halted) state. This can cause DMA stalls and arbitration hangs.
  *
- * MMSS fabric master ports (from webOS msm_bus_board_8660.c enum):
- *   0: MDP_PORT0   1: MDP_PORT1   2: ADM1_PORT0   3: ROTATOR
- *   4: GFX3D       5: JPEG_DEC    6: GFX2D0        7: VFE
- *   8: VPE         9: JPEG_ENC   10: GFX2D1        11: APPS_FAB
- *  12: HDCODEC0   13: HDCODEC1
+ * MMSS fabric master ports (port:name from webOS enum):
+ *   0:MDP_PORT0   1:MDP_PORT1   2:ADM1_PORT0  3:ROTATOR
+ *   4:GFX3D       5:JPEG_DEC    6:GFX2D0      7:VFE
+ *   8:VPE         9:JPEG_ENC   10:GFX2D1     11:APPS_FAB
+ *  12:HDCODEC0   13:HDCODEC1
  *
- * Unhalt all 14 known ports unconditionally (no-op if already unhalted).
- * HDCODEC0/1 (ports 12-13) are needed for the VIDC 1080p RISC to fetch
- * firmware from SMI.
+ * SYSTEM fabric master ports:
+ *   0:APPSS_FAB    1:SPS         2:ADM0_PORT0  3:ADM0_PORT1
+ *   4:ADM1_PORT0   5:ADM1_PORT1  6:LPASS_PROC  7:MSS_PROCI
+ *   8:MSS_PROCD    9:MDM_PORT0  10:LPASS      11:CPSS_FPB
+ *  12:SYSTEM_FPB  13:MMSS_FPB   14:ADM1_AHB   15:ADM0_AHB
+ *  16:MSS_MDM_PORT1
+ *
+ * APPS fabric has 4 masters; unhalting all is safe.
+ *
+ * Driven from mmcc probe because it runs after the qcom_rpm platform
+ * driver registers (mmcc is module_platform_driver, RPM is platform_init).
+ * Doing the same in gcc probe (core_initcall) is too early -- RPM is
+ * not yet bound and qcom_rpm_write() has no target.
  */
-static void mmcc_msm8660_unhalt_mmss_ports(struct device *dev)
+static void mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 {
 	struct device_node *rpm_node;
 	struct platform_device *rpm_pdev;
 	struct qcom_rpm *rpm;
 	/* halt_data[0]=0 = CLK_UNHALT for all bits; halt_data[1] = port mask */
-	u32 halt_data[2] = {0, GENMASK(13, 0)};
+	u32 mmss_halt[2] = {0, GENMASK(13, 0)};
+	u32 sys_halt[2]  = {0, GENMASK(16, 0)};
+	u32 apps_halt[2] = {0, GENMASK(3, 0)};
 	int rc;
 
 	rpm_node = of_find_compatible_node(NULL, NULL, "qcom,rpm-msm8660");
@@ -2798,11 +2812,25 @@ static void mmcc_msm8660_unhalt_mmss_ports(struct device *dev)
 	}
 
 	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
-			    QCOM_RPM_MM_FABRIC_HALT, halt_data, 2);
+			    QCOM_RPM_MM_FABRIC_HALT, mmss_halt, 2);
 	if (rc)
 		dev_warn(dev, "MMSS fabric unhalt failed: %d\n", rc);
 	else
-		dev_info(dev, "MMSS fabric: unhalted all MMSS master ports (0-13)\n");
+		dev_info(dev, "MMSS fabric: unhalted all master ports (0-13)\n");
+
+	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
+			    QCOM_RPM_SYS_FABRIC_HALT, sys_halt, 2);
+	if (rc)
+		dev_warn(dev, "system fabric unhalt failed: %d\n", rc);
+	else
+		dev_info(dev, "system fabric: unhalted all master ports (0-16)\n");
+
+	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
+			    QCOM_RPM_APPS_FABRIC_HALT, apps_halt, 2);
+	if (rc)
+		dev_warn(dev, "apps fabric unhalt failed: %d\n", rc);
+	else
+		dev_info(dev, "apps fabric: unhalted all master ports (0-3)\n");
 
 	put_device(&rpm_pdev->dev);
 }
@@ -2819,10 +2847,13 @@ static int mmcc_msm8660_probe(struct platform_device *pdev)
 	mmcc_msm8660_init_hw(regmap);
 
 	/*
-	 * Unhalt all MMSS fabric AXI master ports.  Must happen before
-	 * any MMSS block (GPU, display, camera, video) performs DMA.
+	 * Unhalt all MMSS / SYSTEM / APPS fabric AXI master ports.  Must
+	 * happen before any peripheral (MMSS block for MMSS fabric;
+	 * CE2/ADM/SDC/USB for SYSTEM fabric) performs DMA.  Driven from
+	 * mmcc probe because it runs after the qcom_rpm platform driver
+	 * has bound (gcc core_initcall is too early).
 	 */
-	mmcc_msm8660_unhalt_mmss_ports(&pdev->dev);
+	mmcc_msm8660_unhalt_fabric_ports(&pdev->dev);
 
 	return qcom_cc_really_probe(&pdev->dev, &mmcc_msm8660_desc, regmap);
 }

@@ -6,17 +6,14 @@
 #include <linux/kernel.h>
 #include <linux/bitops.h>
 #include <linux/err.h>
-#include <linux/mfd/qcom_rpm.h>
 #include <linux/platform_device.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
 
 #include <dt-bindings/clock/qcom,gcc-msm8660.h>
-#include <dt-bindings/mfd/qcom-rpm.h>
 #include <dt-bindings/reset/qcom,gcc-msm8660.h>
 
 #include "common.h"
@@ -2829,86 +2826,9 @@ static const struct of_device_id gcc_msm8660_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, gcc_msm8660_match_table);
 
-/*
- * Unhalt system fabric and apps fabric AXI master ports via RPM.
- *
- * webOS downstream kernels (msm_bus_board_8660.c) program halt registers
- * on three fabrics: APPS (4 masters), SYSTEM (17 masters), MMSS
- * (14 masters; handled separately in mmcc-msm8660.c). After reset the
- * fabrics may leave masters halted, which manifests as DMA stalls.
- *
- * SYSTEM fabric masters (port numbers from webOS):
- *   0: APPSS_FAB    1: SPS         2: ADM0_PORT0   3: ADM0_PORT1
- *   4: ADM1_PORT0   5: ADM1_PORT1  6: LPASS_PROC   7: MSS_PROCI
- *   8: MSS_PROCD    9: MDM_PORT0  10: LPASS       11: CPSS_FPB
- *  12: SYSTEM_FPB  13: MMSS_FPB   14: ADM1_AHB_CI 15: ADM0_AHB_CI
- *  16: MSS_MDM_PORT1
- *
- * ADM0/ADM1 (ports 2-5) are needed for any ADM-driven peripheral
- * (CE2 crypto, SDC, USB) to make forward progress on DMA. Without
- * unhalting these, ADM box-mode transfers to peripherals that sit
- * on the system fabric can stall in arbitration.
- *
- * APPS fabric has 4 masters; unhalting all is safe.
- */
-static void gcc_msm8660_unhalt_fabric_ports(struct device *dev)
-{
-	struct device_node *rpm_node;
-	struct platform_device *rpm_pdev;
-	struct qcom_rpm *rpm;
-	/* halt_data[0]=0 = CLK_UNHALT; halt_data[1] = port mask */
-	u32 sys_halt_data[2]  = {0, GENMASK(16, 0)};
-	u32 apps_halt_data[2] = {0, GENMASK(3, 0)};
-	int rc;
-
-	rpm_node = of_find_compatible_node(NULL, NULL, "qcom,rpm-msm8660");
-	if (!rpm_node)
-		return;
-
-	rpm_pdev = of_find_device_by_node(rpm_node);
-	of_node_put(rpm_node);
-	if (!rpm_pdev)
-		return;
-
-	rpm = dev_get_drvdata(&rpm_pdev->dev);
-	if (!rpm) {
-		put_device(&rpm_pdev->dev);
-		return;
-	}
-
-	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
-			    QCOM_RPM_SYS_FABRIC_HALT, sys_halt_data, 2);
-	if (rc)
-		dev_warn(dev, "system fabric unhalt failed: %d\n", rc);
-	else
-		dev_info(dev, "system fabric: unhalted all master ports (0-16)\n");
-
-	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
-			    QCOM_RPM_APPS_FABRIC_HALT, apps_halt_data, 2);
-	if (rc)
-		dev_warn(dev, "apps fabric unhalt failed: %d\n", rc);
-	else
-		dev_info(dev, "apps fabric: unhalted all master ports (0-3)\n");
-
-	put_device(&rpm_pdev->dev);
-}
-
 static int gcc_msm8660_probe(struct platform_device *pdev)
 {
-	int ret;
-
-	ret = qcom_cc_probe(pdev, &gcc_msm8660_desc);
-	if (ret)
-		return ret;
-
-	/*
-	 * Unhalt SYSTEM and APPS fabric AXI master ports. Must happen after
-	 * clocks register (RPM is available) but ideally before any DMA-
-	 * driven peripheral does its first transfer.
-	 */
-	gcc_msm8660_unhalt_fabric_ports(&pdev->dev);
-
-	return 0;
+	return qcom_cc_probe(pdev, &gcc_msm8660_desc);
 }
 
 static struct platform_driver gcc_msm8660_driver = {
