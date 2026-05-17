@@ -720,12 +720,20 @@
 					regulator-max-microvolt = <2200000>;
 					bias-pull-down;
 				};
-				/* WiFi 1.8V I/O supply (VDD_1.8) */
+				/*
+				 * WiFi 1.8V I/O supply (VDD_1.8) -- consumed by the
+				 * AR6003 chip's internal logic (LZ decompressor, RF
+				 * stages). regulator-allow-set-load lets the ath6kl
+				 * SDIO driver request HPM mode at probe time; webOS
+				 * explicitly powers this rail before bringing the
+				 * chip out of reset.
+				 */
 				pm8058_l19: l19 {
 					regulator-min-microvolt = <1800000>;
 					regulator-max-microvolt = <1800000>;
 					bias-pull-down;
 					regulator-always-on;
+					regulator-allow-set-load;
 				};
 				pm8058_l20: l20 {
 					regulator-min-microvolt = <1800000>;
@@ -2332,6 +2340,14 @@
 		compatible = "atheros,ath6kl";
 		reg = <1>;
 		atheros,board-id = "SD32";
+		/*
+		 * AR6003 internal 1.8V supply. Without this in HPM mode,
+		 * the chip's LZ decompressor stalls during OTP/firmware
+		 * upload and the BMI command credit register stops being
+		 * refreshed, causing CMD53 timeouts. WebOS legacy driver
+		 * powers this rail explicitly via tenderloin_wifi_power().
+		 */
+		vdd-1v8-supply = <&pm8058_l19>;
 	};
 };
 

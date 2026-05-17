@@ -23,6 +23,7 @@
 #include <linux/mmc/sdio_ids.h>
 #include <linux/mmc/sdio.h>
 #include <linux/mmc/sd.h>
+#include <linux/regulator/consumer.h>
 #include "hif.h"
 #include "hif-ops.h"
 #include "target.h"
@@ -67,6 +68,15 @@ struct ath6kl_sdio {
 
 	/* protects access to wr_asyncq */
 	spinlock_t wr_async_lock;
+
+	/*
+	 * Optional 1.8V chip-internal supply. On AR6003 boards where the
+	 * chip's RF/LZ engine power comes from a separate rail (e.g. HP
+	 * TouchPad's pm8058_l19), the rail must be in High Power Mode
+	 * during BMI/firmware upload or the chip stops responding mid-
+	 * upload (credit register stops being refreshed).
+	 */
+	struct regulator *vdd_1v8;
 };
 
 #define CMD53_ARG_READ          0
@@ -1332,6 +1342,32 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	ar_sdio->id = id;
 	ar_sdio->is_disabled = true;
 
+	/*
+	 * Optional chip-internal 1.8V supply (vdd-1v8-supply on the wifi
+	 * node in DT). If present, switch it into High Power Mode before
+	 * we start talking to the chip -- the AR6003 RF/LZ engine needs
+	 * full current during BMI firmware upload, and a low-power
+	 * supply silently stalls the BMI command-credit refresh path on
+	 * boards where this rail is consumer-managed (HP TouchPad's
+	 * pm8058_l19 is the documented example).
+	 */
+	ar_sdio->vdd_1v8 = devm_regulator_get_optional(&func->dev, "vdd-1v8");
+	if (IS_ERR(ar_sdio->vdd_1v8)) {
+		if (PTR_ERR(ar_sdio->vdd_1v8) != -ENODEV)
+			ath6kl_warn("failed to get vdd-1v8 regulator: %ld\n",
+				    PTR_ERR(ar_sdio->vdd_1v8));
+		ar_sdio->vdd_1v8 = NULL;
+	} else {
+		ret = regulator_set_load(ar_sdio->vdd_1v8, 100000);
+		if (ret < 0)
+			ath6kl_warn("vdd-1v8 set_load(100mA) failed: %d\n", ret);
+		ret = regulator_enable(ar_sdio->vdd_1v8);
+		if (ret) {
+			ath6kl_err("failed to enable vdd-1v8: %d\n", ret);
+			goto err_dma;
+		}
+	}
+
 	spin_lock_init(&ar_sdio->lock);
 	spin_lock_init(&ar_sdio->scat_lock);
 	spin_lock_init(&ar_sdio->wr_async_lock);
@@ -1352,7 +1388,7 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	if (!ar) {
 		ath6kl_err("Failed to alloc ath6kl core\n");
 		ret = -ENOMEM;
-		goto err_dma;
+		goto err_regulator;
 	}
 
 	ar_sdio->ar = ar;
@@ -1397,6 +1433,9 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 
 err_core_alloc:
 	ath6kl_core_destroy(ar_sdio->ar);
+err_regulator:
+	if (ar_sdio->vdd_1v8)
+		regulator_disable(ar_sdio->vdd_1v8);
 err_dma:
 	kfree(ar_sdio->dma_buffer);
 err_hif:
@@ -1420,6 +1459,9 @@ static void ath6kl_sdio_remove(struct sdio_func *func)
 
 	ath6kl_core_cleanup(ar_sdio->ar);
 	ath6kl_core_destroy(ar_sdio->ar);
+
+	if (ar_sdio->vdd_1v8)
+		regulator_disable(ar_sdio->vdd_1v8);
 
 	kfree(ar_sdio->dma_buffer);
 	kfree(ar_sdio);
