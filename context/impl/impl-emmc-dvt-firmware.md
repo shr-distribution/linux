@@ -3,6 +3,8 @@ domain: emmc-dvt-firmware
 created: "2026-05-17"
 last_updated: "2026-05-17"
 status: open
+related:
+  - impl-overview.md
 ---
 
 # Implementation: eMMC EXT_CSD returns OTP-only on DVT/EVT cards
@@ -192,6 +194,85 @@ A step is considered to clear the bug only when all four pass on the
 DVT card. Steps that don't fix it should be reverted before trying
 the next step so the diff is clean per attempt.
 
+## Addendum 2026-05-17: cross-rev DTS delta audit
+
+After the first investigation suggested the recent voltage / WiFi
+regulator commits, the legacy webOS kernel was audited end-to-end for
+board-revision-conditional code paths (every subsystem). This rules
+out the board-rev-misconfiguration class of explanation for the
+EXT_CSD failure on the DVT/EVT WiFi unit.
+
+### Topaz WiFi board-rev delta (webOS view)
+
+The Topaz WiFi pre-DVT vs DVT+ delta in the entire webOS kernel
+amounts to **one configuration swap**: the A6 IRQ GPIO pins.
+
+  - `gpiomux-tenderloin.c:1711` `tenderloin_gpiomux_cfgs` (proto/EVT)
+    contains `msm8x60_a6_configs`
+  - `gpiomux-tenderloin.c:1817` `tenderloin_dvt_gpiomux_cfgs` (DVT+)
+    contains `msm8x60_a6_configs_dvt`
+  - every other entry (PMIC, UART, BT, WLAN, LCDC, sensor, lighting,
+    kbdgpio, charger, touchscreen, cam, audio, aux_pcm,
+    system_gpio, ctp) is byte-identical between the two tables.
+
+The pin-table delta (`gpiomux-tenderloin.h:205 tenderloin_pins_wifi`
+vs `:257 tenderloin_pins_wifi_dvt`) is the same single difference,
+just expressed as a per-pin assignment:
+
+  - `[TENDERLOIN_A6_0_MSM_IRQ_PIN] = TENDERLOIN_A6_0_MSM_IRQ` (proto:
+    gpio156) -> `..._DVT` (DVT+: gpio37)
+  - `[TENDERLOIN_A6_1_MSM_IRQ_PIN] = TENDERLOIN_A6_1_MSM_IRQ` (proto:
+    gpio132) -> `..._DVT` (DVT+: gpio94)
+
+The MAX8903B charger has a separate three-way split on PMIC current
+table (`board-tenderloin.c:1186-1230`):
+  - PROTO/PROTO2: 900/1000/1500/2000 mA
+  - EVT1 only: 750/900/1500/1400 mA, with 2000 mA blocked -> 1500 mA
+  - **EVT2+/DVT/PVT**: 750/900/2000/1400 mA
+
+### Mainline DTS state vs the webOS rule
+
+| Item | webOS rule | mainline DTS | match? |
+|------|-----------|--------------|--------|
+| A6_0 IRQ GPIO | proto: gpio156 / DVT+: gpio37 | `gpio37` (a6_0_default irq-pins) | DVT/PVT |
+| A6_1 IRQ GPIO | proto: gpio132 / DVT+: gpio94 | `gpio94` (a6_1_default irq-pins) | DVT/PVT |
+| A6 SBW (TCK/TDIO/WAKEUP) | same across all WiFi revs | gpio157/158/155 + gpio115/116/141 | match |
+| MAX8903B current table | EVT2+/DVT/PVT order | `750000 0, 900000 1, 1400000 3, 2000000 2` (max8903b node) | EVT2+ |
+| USUS_in polarity | inverted on >EVT1 | `usus-gpios = ... GPIO_ACTIVE_LOW` | >EVT1 |
+| L12 (gyro 1.8 V) | enabled only WiFi-PVT (>DVT) | declared as supply on mpu3050 | needs runtime verify |
+| 3G modem (mdmgpio / ISP1763) | only `boardtype_is_3g()` | qcom-apq8060-topaz-3g.dts only | match |
+
+### Implication for this bug
+
+Our mainline DTS is **fully calibrated for DVT/PVT WiFi boards**.
+For the broken unit:
+
+  - **If it is DVT**: the DTS is correct. The eMMC failure has to be
+    driver-side (CMD8 sequencing vs Samsung firmware revision 9.0).
+  - **If it is EVT1-3**: only A6 IRQ pins are wrong (gpio37/94 vs
+    gpio132/156); that would cause battery/charging anomalies, not
+    the EXT_CSD shape observed. Charger current table is
+    EVT2+-compatible (works on EVT2-3, only EVT1 is special).
+
+Either way the EXT_CSD-returns-3-OTP-bytes symptom is **not** board
+revision miswiring -- the audit positively excludes that.
+
+### How to determine EVT vs DVT on the broken unit (without opening)
+
+Boot the diagnostic kernel and probe both candidate A6 IRQ pins:
+
+```
+mount -t debugfs none /sys/kernel/debug 2>/dev/null
+# Pre-DVT A6_0 IRQ candidate
+cat /sys/kernel/debug/gpio | grep -E "gpio-(156|37|132|94) "
+# Then press the power button briefly and re-read; whichever pin
+# shows a transient transition is the live A6 IRQ line.
+```
+
+DVT/PVT shows activity on gpio37/94, EVT1-3 shows it on gpio156/132.
+Visible inspection of the device's QA sticker (see ../schematics/
+page 12 marker resistor) also identifies the rev.
+
 ## References
 
 - `reports/adm-dma-emmc-analysis.md` — prior ADM burst-size and
@@ -200,5 +281,9 @@ the next step so the diff is clean per attempt.
 - `reports/mmci-legacy-deep-dive.md` — webOS msm_sdcc.c sequence trace
 - `/tmp/webos-dmesg.log` — DVT device booting webOS successfully
 - WebOS `msm_sdcc.c` source — `../webos-linux-kernel-touchpad/drivers/mmc/host/msm_sdcc.c`
+- WebOS gpiomux source —
+  `../webos-linux-kernel-touchpad/arch/arm/mach-msm/gpiomux-tenderloin.c`
+- WebOS pin tables —
+  `../webos-linux-kernel-touchpad/arch/arm/mach-msm/gpiomux-tenderloin.h`
 - Reverted diagnostic commit: `67cf748b5981`
   (reverts `8610aa3f35c8` "bump qcom dma_threshold to 4096 to force PIO")
