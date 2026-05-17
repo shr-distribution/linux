@@ -1486,6 +1486,64 @@ int vidc_flush_channel(struct vidc_inst *inst, u32 flush_type)
 }
 
 /*
+ * Send encoder SEQ_HEADER command and wait for SEQ_DONE.
+ *
+ * The webOS DDL encoder state machine requires a SEQ_HEADER round-trip
+ * between OPEN_CH and INIT_BUFFERS. Without it, the firmware's rate-
+ * control and codec-state initialisation haven't run, and INIT_BUFFERS
+ * fails with error 0x51 (DIVIDE_BY_ZERO).
+ *
+ * Allocates a small DMA buffer to receive the generated SPS/PPS; the
+ * caller can ignore its contents — we just need the SEQ_DONE ack.
+ */
+int vidc_enc_send_seq_header(struct vidc_inst *inst)
+{
+	struct vidc_core *core = inst->core;
+	void *hdr_vaddr;
+	dma_addr_t hdr_dma;
+	unsigned long flags;
+	int ret;
+
+	hdr_vaddr = dma_alloc_coherent(core->dev, SZ_4K, &hdr_dma, GFP_KERNEL);
+	if (!hdr_vaddr)
+		return -ENOMEM;
+
+	spin_lock_irqsave(&core->irqlock, flags);
+	core->curr_inst = inst;
+	reinit_completion(&inst->done);
+	inst->error = 0;
+	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
+	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, hdr_dma >> VIDC_ADDR_SHIFT);
+	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, SZ_4K);
+	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
+	core->cmd_seq_num++;
+	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
+	vidc_write(core, VIDC_REG_CH0_INST_ID,
+		   VIDC_OP_SEQ_HEADER | inst->inst_id);
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	if (!wait_for_completion_timeout(&inst->done, msecs_to_jiffies(1000))) {
+		dev_err(core->dev, "encoder SEQ_HEADER timeout\n");
+		ret = -ETIMEDOUT;
+		goto err_free;
+	}
+
+	if (inst->error) {
+		dev_err(core->dev, "encoder SEQ_HEADER error: %d\n",
+			inst->error);
+		ret = inst->error;
+		goto err_free;
+	}
+
+	dev_info(core->dev, "encoder SEQ_HEADER done\n");
+	ret = 0;
+
+err_free:
+	dma_free_coherent(core->dev, SZ_4K, hdr_vaddr, hdr_dma);
+	return ret;
+}
+
+/*
  * Encoder analog of vidc_init_buffers.
  *
  * Allocates recon (reconstruction) buffers - the encoder's analog
@@ -1497,6 +1555,7 @@ int vidc_flush_channel(struct vidc_inst *inst, u32 flush_type)
  * Pre-conditions:
  *   - vidc_open_channel() has acked (inst->ch_open == true)
  *   - inst->out_width / out_height set via VIDIOC_S_FMT
+ *   - vidc_enc_send_seq_header() has been called and returned success
  *
  * Hardware register layout differs from decoder DPB:
  *   - DPB_LUMA / CHROMA / MV are 3 separate register arrays at

@@ -600,13 +600,24 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			printk(KERN_EMERG "VIDC: Codec config applied successfully\n");
 
 			/*
+			 * The encoder firmware requires a SEQ_HEADER round-trip
+			 * between OPEN_CH and INIT_BUFFERS to initialise its
+			 * internal rate-control and codec state.  Without this,
+			 * INIT_BUFFERS fails with error 0x51 (DIVIDE_BY_ZERO).
+			 */
+			printk(KERN_EMERG "VIDC: Sending SEQ_HEADER...\n");
+			ret = vidc_enc_send_seq_header(inst);
+			if (ret) {
+				printk(KERN_EMERG "VIDC: SEQ_HEADER failed: %d\n", ret);
+				vidc_close_channel(inst);
+				pm_runtime_put(core->dev);
+				return ret;
+			}
+			printk(KERN_EMERG "VIDC: SEQ_HEADER done\n");
+
+			/*
 			 * Allocate recon (reference) frame buffers and issue
-			 * encoder INIT_BUFFERS. Unlike the decoder, the encoder
-			 * has all the geometry it needs from S_FMT before the
-			 * first frame, so we don't wait for a SEQ_DONE-style
-			 * roundtrip - just allocate at fixed VIDC_MAX_RECON_BUFFERS
-			 * slots and program the RECON_LUMA / RECON_CHROMA register
-			 * arrays.
+			 * encoder INIT_BUFFERS. Geometry is known from S_FMT.
 			 */
 			printk(KERN_EMERG "VIDC: Initializing encoder buffers...\n");
 			ret = vidc_init_enc_buffers(inst);
@@ -891,6 +902,13 @@ static int vidc_enc_queue_init(void *priv, struct vb2_queue *src_vq,
 
 /* File operations */
 
+static void vidc_enc_seq_done_work(struct work_struct *w)
+{
+	struct vidc_inst *inst = container_of(w, struct vidc_inst, seq_done_work);
+
+	complete(&inst->done);
+}
+
 static int vidc_enc_open(struct file *file)
 {
 	struct vidc_core *core = video_drvdata(file);
@@ -906,6 +924,7 @@ static int vidc_enc_open(struct file *file)
 	mutex_init(&inst->lock);
 	INIT_LIST_HEAD(&inst->list);
 	init_completion(&inst->done);
+	INIT_WORK(&inst->seq_done_work, vidc_enc_seq_done_work);
 	INIT_WORK(&inst->enc_complete_work, vidc_enc_complete_work);
 
 	/* Set default formats */
@@ -1000,6 +1019,7 @@ static int vidc_enc_close(struct file *file)
 	struct vidc_core *core = inst->core;
 
 	/* Flush async completion work before tearing down state. */
+	cancel_work_sync(&inst->seq_done_work);
 	cancel_work_sync(&inst->enc_complete_work);
 
 	mutex_lock(&core->lock);
