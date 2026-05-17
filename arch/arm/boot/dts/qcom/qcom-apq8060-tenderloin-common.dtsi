@@ -772,22 +772,59 @@
 					bias-pull-down;
 				};
 
+				/*
+				 * PM8058 S0 (VDD_MEM) and S1 (VDD_DIG) are the
+				 * SoC memory and digital-logic rails. They feed
+				 * DDR PHY, APCS (CPU vdd_mem/vdd_dig vote inputs),
+				 * GPU, and most digital cores. They CANNOT be
+				 * brought below their operating range without the
+				 * chip browning out -- the kernel cannot execute,
+				 * DDR refresh stops, etc.
+				 *
+				 * Previous values here (min=500000) were the raw
+				 * PMIC hardware range, NOT the operating range.
+				 * The regulator framework saw no consumer
+				 * references at boot (cpufreq-dt/APCS attach
+				 * later) and dutifully brought both rails down
+				 * to 0.5 V to satisfy the min constraint:
+				 *   s0: Bringing 0uV into 500000-500000uV
+				 *   s1: Bringing 0uV into 500000-500000uV
+				 * This is the cause of the intermittent
+				 * cold-boot hangs on Topaz3G PVT: by the time
+				 * pm8058_s0/s1 land at 500 mV the SoC starts
+				 * mis-executing and the kernel wedges in
+				 * whatever code happened to be running.
+				 *
+				 * Operating range from APCS vdd_table[] (which
+				 * is the consumer of these rails) is 1.10 V min
+				 * (vdd at 432 MHz) up to 1.25 V vdd_mem /
+				 * 1.30 V vdd_dig at 1.5 GHz top OPP. webOS keeps
+				 * both at 1.10 V always-on (live probe:
+				 *   8058_s0 state=enabled u=1100000
+				 *   8058_s1 state=enabled u=1100000
+				 * ), with APCS voting them up as freq scales.
+				 *
+				 * regulator-always-on + regulator-boot-on ensure
+				 * the framework treats these as "running, leave
+				 * alone" instead of "no consumer, drop to min".
+				 */
 				pm8058_s0: s0 {
-					// regulator-min-microvolt = <800000>;
-					// regulator-max-microvolt = <1325000>;
-					regulator-min-microvolt = <500000>;
-					regulator-max-microvolt = <1350000>;
+					regulator-name = "vdd_mem";
+					regulator-min-microvolt = <1100000>;
+					regulator-max-microvolt = <1300000>;
 					qcom,switch-mode-frequency = <1600000>;
 					bias-pull-down;
+					regulator-always-on;
+					regulator-boot-on;
 				};
 				pm8058_s1: s1 {
-					// regulator-min-microvolt = <800000>;
-					// regulator-max-microvolt = <1325000>;
-					regulator-min-microvolt = <500000>;
-					regulator-max-microvolt = <1350000>;
+					regulator-name = "vdd_dig";
+					regulator-min-microvolt = <1100000>;
+					regulator-max-microvolt = <1300000>;
 					qcom,switch-mode-frequency = <1600000>;
 					bias-pull-down;
-					//regulator-always-on;
+					regulator-always-on;
+					regulator-boot-on;
 				};
 				pm8058_s2: s2 {
 					// 1.3 V according to schematic
