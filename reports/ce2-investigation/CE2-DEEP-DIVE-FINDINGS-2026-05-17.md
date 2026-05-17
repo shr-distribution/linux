@@ -97,34 +97,71 @@ since those registers are part of the context block being purged.
 
 ## Path forward
 
-### Path B (cheap PIO experiments)
+### Path B — tried (commit e242a87b7497), NO improvement
 
-Try these in order, smallest diff first:
+Dropped per-op SW_RST, AUTH_IV5..15 zeroing, AUTH_BYTECNT2/3 writes,
+STATUS=0 write; extended IDLE wait to 100ms.  Identical 4/6 on the full
+vector test.  Confirms SW_RST and IV5..15 zeroing were not the wedge
+triggers.
 
-1. **Remove AUTH_IV5..15 zeroing.** May be the actual corruption trigger.
-   Web/mako never touch IV5..15; only write the algorithm's IV words.
-2. **Remove per-op SW_RST** (revert `c4138244a7a0`). Restores webOS pattern
-   of one SW_RST at probe, never per-op.
-3. **Lengthen post-AUTH_DONE IDLE wait.** Wait longer for state machine to
-   reach IDLE (current 10ms may not be enough on this silicon).
-4. **Try writing 0 to GOPROC after digest read.** May coax engine out of
-   FINAL_READ when CRCI 15 isn't firing.
+### Hybrid PIO-feed + DMA-CRCI15-readback — tried (commit 659cd2f65dd0,
+reverted 9b181ee167c5), WORSE
 
-### Path A (real fix)
+Kept PIO data feed, switched only digest readback to ADM DMA on txchan
+with CRCI 15 handshake.  Result: 2/6 (regressed from 4/6).  Three
+problems uncovered:
 
-Match webOS exactly:
+1. **ADM box-mode keeps src_addr fixed for DEV_TO_MEM.**  Reading 32
+   bytes from AUTH_IV0 reads AUTH_IV0..3, wraps, re-reads AUTH_IV0..3.
+   SHA256 digest output had 16 correct bytes (byte-reversed) followed
+   by 16 duplicate bytes.  See
+   `drivers/dma/qcom/qcom_adm.c::adm_process_fc_descriptors`: the
+   `row_offset = burst` line only advances the destination; the
+   peripheral source stays fixed (FIFO semantics).
+2. **DMA writes AUTH_IV bytes to memory as raw LE u32**, reversed vs
+   the SHA spec's BE digest byte order.  PIO already handles this with
+   `cpu_to_be32()` -- would need the same swap after DMA.
+3. **DMA readback consumed CRCI 15 but engine wedged sooner.**  Only
+   1 op per algorithm completed before subsequent DMA digest reads
+   timed out.  Either ADM holds the channel in a state that blocks CE2
+   from re-firing CRCI 15, or CE2 only fires CRCI 15 once per SW_RST
+   and ADM-consumption doesn't re-arm it.
 
-1. Rework `qce/dma.c` to chain two descriptors on one ADM channel:
-   - BOX: input data → DATA_SHADOW0 (+0x8000), peripheral CRCI 4
-   - SINGLE: AUTH_IV0..N (+0x100) → result_buf, peripheral CRCI 15
-2. Rework `qce/sha.c` CE2 path to use this DMA chain instead of PIO.
-3. Remove all per-op heuristic state mgmt.
+### Path A — real fix (NOT YET ATTEMPTED)
 
-Linux 6.18 dmaengine supports multi-descriptor chains via
-`dmaengine_prep_slave_sg()` + `dmaengine_prep_slave_single()` with
-descriptors submitted in order. The qcom ADM driver
-(`drivers/dma/qcom/hidma.c` / `qcom_adm.c`) needs to support per-descriptor
-peripheral_config CRCI selection — verify this works.
+Match webOS exactly by:
+
+1. **Patching `drivers/dma/qcom/qcom_adm.c`** to support source-side
+   auto-increment for DEV_TO_MEM box descriptors.  A new
+   `slave.src_auto_inc` flag, or a new BOX descriptor format that sets
+   `row_offset = (burst << 16) | burst` for DEV_TO_MEM (instead of
+   `row_offset = burst` which only advances destination).  Without
+   this, the ADM driver fundamentally cannot walk a register range
+   like AUTH_IV0..7 on DEV_TO_MEM.
+2. Rewriting `qce/sha.c` CE2 path to chain two descriptors on one ADM
+   channel matching webOS's `_setup_cmd_template`:
+   - BOX: input data → DATA_SHADOW0 (+0x8000), peripheral CRCI 4,
+     source-incrementing memory address, fixed peripheral destination
+   - linear BOX/SINGLE: AUTH_IV0..N (+0x100) → result_buf,
+     peripheral CRCI 15, fixed memory destination,
+     **source-incrementing peripheral address** (the new ADM feature)
+3. Removing the per-op SW_RST + state-management heuristics.
+
+This spans the ADM driver and the qce driver.  Significant change with
+risk to GSBI / SDC / USB users that genuinely want fixed peripheral
+addresses.  Estimated: a day of focused work plus test on multiple
+8x60 / 7x30 platforms.
+
+## Current state (after Path B + hybrid revert)
+
+- 4/6 on `qce-hash-test` full vector test from fresh boot.
+- SHA1 chains reliable (3+ ops back-to-back).
+- First SHA256 after a SHA1 chain reliable.
+- Back-to-back SHA256: 2 succeed, 3rd wedges in PROCESSING.
+- Once wedged, all subsequent hash ops fail until reboot.
+- Documented limitation; CE2 SHA256 priority should be lowered so the
+  kernel crypto framework falls back to software SHA256 for chained
+  use cases (e.g., dm-verity, IPsec, FIPS test mode).
 
 ## References
 
