@@ -1723,17 +1723,17 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 	vidc_write(core, VIDC_REG_ENC_FRAME_WIDTH, inst->out_width);
 	vidc_write(core, VIDC_REG_ENC_FRAME_HEIGHT, inst->out_height);
 	vidc_write(core, VIDC_REG_ENC_TARGET_BITRATE, inst->bitrate);
-	vidc_write(core, VIDC_REG_ENC_FRAME_RATE, inst->framerate);
+	/* Firmware expects framerate in millifps (fps * 1000) */
+	vidc_write(core, VIDC_REG_ENC_FRAME_RATE, inst->framerate * 1000);
 	vidc_write(core, VIDC_REG_ENC_PROFILE_LEVEL, profile_level);
 	vidc_write(core, VIDC_REG_ENC_RC_CONFIG, 0);		/* CBR */
 	vidc_write(core, VIDC_REG_ENC_REACTION_COEFF, 0x14);
 	vidc_write(core, VIDC_REG_ENC_QP_RANGE, qp_range);
 
 	dev_dbg(core->dev,
-		"encoder config: %ux%u fps=%u bitrate=%u profile_level=0x%x qp_range=0x%x\n",
+		"encoder config: %ux%u fps=%u bitrate=%u profile_level=0x%x\n",
 		inst->out_width, inst->out_height,
-		inst->framerate, inst->bitrate,
-		profile_level, qp_range);
+		inst->framerate, inst->bitrate, profile_level);
 
 	return 0;
 }

@@ -705,7 +705,8 @@ static void vidc_enc_submit_frame(struct vidc_inst *inst,
 	vidc_write(core, VIDC_REG_ENC_FRAME_WIDTH, inst->out_width);
 	vidc_write(core, VIDC_REG_ENC_FRAME_HEIGHT, inst->out_height);
 	vidc_write(core, VIDC_REG_ENC_TARGET_BITRATE, inst->bitrate);
-	vidc_write(core, VIDC_REG_ENC_FRAME_RATE, inst->framerate);
+	/* Firmware expects framerate in millifps (fps * 1000) */
+	vidc_write(core, VIDC_REG_ENC_FRAME_RATE, inst->framerate * 1000);
 
 	/* Calculate Y plane size for NV12 format */
 	y_stride = ALIGN(inst->out_width, 128);
