@@ -4,7 +4,10 @@
  */
 
 #include <crypto/internal/hash.h>
+#include <linux/completion.h>
 #include <linux/delay.h>
+#include <linux/dmaengine.h>
+#include <linux/dma-mapping.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/types.h>
@@ -15,6 +18,7 @@
 #include "cipher.h"
 #include "common.h"
 #include "core.h"
+#include "dma.h"
 #include "regs-v5.h"
 #include "regs-ce2.h"
 #include "sha.h"
@@ -850,6 +854,88 @@ int qce_start(struct crypto_async_request *async_req, u32 type)
 		 BIT(CE2_DOUT_ERR_SHIFT) | BIT(CE2_ACCESS_VIOL_SHIFT))
 
 #ifdef CONFIG_CRYPTO_DEV_QCE_SHA
+static void qce_ce2_dma_read_done(void *param)
+{
+	complete(param);
+}
+
+/*
+ * Read CE2 hash digest via ADM DMA with the CRCI 15 (CE_HASH) handshake,
+ * not raw PIO readl().
+ *
+ * The CRCI 15 hardware handshake is what tells the engine "host has
+ * consumed the digest, you may transition through FINAL_READ ->
+ * CTXT_CLEARING -> UNLOCKING -> IDLE".  A PIO readl() of AUTH_IV0..N
+ * reads the bytes correctly but does NOT fire CRCI 15, leaving the
+ * engine's internal hash-state buffers half-cleared.  After ~2 SHA256
+ * ops the engine wedges in PROCESSING with AUTH_DONE never asserting.
+ *
+ * This routine uses txchan (which has tx-crci=15 in the device tree) to
+ * issue a DEV_TO_MEM transfer from AUTH_IV0 (+0x100) into a coherent
+ * buffer.  The ADM driver gates the read on CRCI 15 firing, fires the
+ * acknowledgement back to CE2 after consuming the data, and the engine
+ * sees the handshake.
+ */
+static int qce_ce2_dma_read_digest(struct qce_device *qce, void *digest,
+				   unsigned int digestsize)
+{
+	struct dma_chan *chan = qce->dma.txchan;
+	struct dma_async_tx_descriptor *desc;
+	struct completion done;
+	dma_cookie_t cookie;
+	dma_addr_t dma_addr;
+	void *coherent_buf;
+	enum dma_status status;
+	int ret = 0;
+
+	coherent_buf = dma_alloc_coherent(qce->dev, digestsize, &dma_addr,
+					  GFP_KERNEL);
+	if (!coherent_buf)
+		return -ENOMEM;
+
+	desc = dmaengine_prep_slave_single(chan, dma_addr, digestsize,
+					   DMA_DEV_TO_MEM,
+					   DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+	if (!desc) {
+		dev_err(qce->dev, "CE2 hash: prep DMA digest read failed\n");
+		ret = -ENOMEM;
+		goto out_free;
+	}
+
+	init_completion(&done);
+	desc->callback = qce_ce2_dma_read_done;
+	desc->callback_param = &done;
+
+	cookie = dmaengine_submit(desc);
+	if (dma_submit_error(cookie)) {
+		dev_err(qce->dev, "CE2 hash: DMA submit failed\n");
+		ret = -EIO;
+		goto out_free;
+	}
+	dma_async_issue_pending(chan);
+
+	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(500))) {
+		dmaengine_terminate_sync(chan);
+		dev_err(qce->dev, "CE2 hash: DMA digest read timeout\n");
+		ret = -ETIMEDOUT;
+		goto out_free;
+	}
+
+	status = dma_async_is_tx_complete(chan, cookie, NULL, NULL);
+	if (status != DMA_COMPLETE) {
+		dev_err(qce->dev, "CE2 hash: DMA digest read incomplete (%d)\n",
+			status);
+		ret = -EIO;
+		goto out_free;
+	}
+
+	memcpy(digest, coherent_buf, digestsize);
+
+out_free:
+	dma_free_coherent(qce->dev, digestsize, coherent_buf, dma_addr);
+	return ret;
+}
+
 /*
  * CE2 hash PIO data path.
  *
@@ -1079,22 +1165,25 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		goto out;
 	}
 
-	/* 11) Read digest from AUTH_IV0..N. cpu_to_be32 turns the CPU u32
-	 *     into the spec's big-endian byte stream when memcpy'd as bytes.
+	/*
+	 * Read digest via ADM DMA from AUTH_IV0 with the CRCI 15 handshake.
+	 * This is what drives the CE2 state machine through FINAL_READ ->
+	 * CTXT_CLEARING -> UNLOCKING -> IDLE for the next op.  A raw readl()
+	 * loop returns correct bytes but does not fire CRCI 15, which after
+	 * a couple of SHA256 ops wedges the engine in PROCESSING.
+	 *
+	 * The ADM walks AUTH_IV0..N as a linear address range starting at
+	 * src_addr (configured to phys_base + CE2_REG_AUTH_IV0 in dma.c).
+	 * The bytes land in the coherent buffer in CE2's natural big-endian
+	 * byte order, which is exactly what the SHA spec expects, so we
+	 * memcpy straight into rctx->digest / req->result without any swap.
 	 */
 	{
-		__be32 result[SHA256_DIGEST_SIZE / sizeof(__be32)];
-		unsigned int words = digestsize / sizeof(u32);
+		u8 result[SHA256_DIGEST_SIZE];
 
-		dev_info(qce->dev,
-			 "CE2 hash post-DONE: STATUS=0x%08x\n", status);
-		for (i = 0; i < words; i++) {
-			u32 raw = readl_relaxed(qce->base +
-				CE2_REG_AUTH_IV0 + i * sizeof(u32));
-			dev_info(qce->dev, "CE2 hash post-DONE: AUTH_IV%u=0x%08x\n",
-				 i, raw);
-			result[i] = cpu_to_be32(raw);
-		}
+		ret = qce_ce2_dma_read_digest(qce, result, digestsize);
+		if (ret)
+			goto out;
 
 		memcpy(rctx->digest, result, digestsize);
 		if (req->result && rctx->last_blk)
