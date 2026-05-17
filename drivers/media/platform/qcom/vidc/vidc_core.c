@@ -604,7 +604,7 @@ int vidc_load_firmware(struct vidc_core *core)
 	 */
 	core->ctxt_pool_size = VIDC_MAX_INSTANCES * VIDC_CTXT_MEM_SIZE;
 	core->ctxt_pool_used = 0;
-	core->fw_alloc_size = ALIGN(core->fw->size, SZ_4K)
+	core->fw_alloc_size = ALIGN(core->fw->size, SZ_128K)
 			    + core->ctxt_pool_size
 			    + VIDC_DESC_BUF_SIZE
 			    + VIDC_SHM_SIZE;
@@ -659,7 +659,7 @@ int vidc_load_firmware(struct vidc_core *core)
 	 * SEQ_HEADER parse and per-frame FRAME_DATA decode. Shared-memory
 	 * region carries parameter blobs between host and firmware.
 	 */
-	core->desc_offset = ALIGN(core->fw_size, SZ_4K) + core->ctxt_pool_size;
+	core->desc_offset = ALIGN(core->fw_size, SZ_128K) + core->ctxt_pool_size;
 	core->shm_offset = core->desc_offset + VIDC_DESC_BUF_SIZE;
 	core->shm_vaddr = core->fw_vaddr + core->shm_offset;
 	memset(core->fw_vaddr + core->desc_offset, 0, VIDC_DESC_BUF_SIZE);
@@ -961,11 +961,12 @@ int vidc_open_channel(struct vidc_inst *inst)
 	}
 
 	/*
-	 * Context buffers live in the firmware allocation, immediately
-	 * after the firmware image. Pool is ALIGN(fw_size, 4K) aligned
-	 * inside fw_vaddr.
+	 * Context buffers live in the firmware allocation, starting at
+	 * ALIGN(fw_size, 128K) to clear the firmware's global data footprint.
+	 * The Yocto blob's SYS_INIT_RET reports 0x97000 (618 KB) used;
+	 * ALIGN(605 KB code, 128 KB) = 640 KB is safely past that.
 	 */
-	inst->ctxt_mem_offset = ALIGN(core->fw_size, SZ_4K)
+	inst->ctxt_mem_offset = ALIGN(core->fw_size, SZ_128K)
 			      + core->ctxt_pool_used;
 	inst->ctxt_mem_vaddr = core->fw_vaddr + inst->ctxt_mem_offset;
 	inst->ctxt_mem_dma_addr = core->fw_dma_addr + inst->ctxt_mem_offset;
