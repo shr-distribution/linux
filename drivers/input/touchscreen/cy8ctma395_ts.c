@@ -456,7 +456,7 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 					t->hover_y = t->y;
 					t->hover_delay = HOVER_DEBOUNCE_DELAY;
 
-					pr_info("cy8ctma395: touch detected at (%d,%d) val=%d weight=%d\n",
+					pr_debug("cy8ctma395: touch detected at (%d,%d) val=%d weight=%d\n",
 						t->x, t->y, highest_val, tweight);
 					tpc++;
 				}
@@ -593,7 +593,7 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 
 	if (tpc > 0) {
 		input_sync(ts->input);
-		pr_info("cy8ctma395: reporting %d touch(es)\n", tpc);
+		pr_debug("cy8ctma395: reporting %d touch(es)\n", tpc);
 	}
 
 	ts->previoustpc = tpc;
