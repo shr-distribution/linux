@@ -372,14 +372,27 @@ static struct variant_data variant_qcom = {
 	.qcom_data_timeout_2x	= true,
 	.dma_flow_controller	= true,
 	/*
-	 * Force PIO for transfers <= 256 bytes.  ADM DMA on msm8x60
-	 * corrupts data during SDIO firmware upload (BMI phase) due to
-	 * the tight credit-polling transfer pattern.  PIO works reliably
-	 * up to 128 bytes (2x FIFO); 192+ byte PIO fails because the
-	 * DPSM times out waiting for 3+ interrupt-driven FIFO refills.
-	 * Post-BMI WiFi data frames (1500+ bytes) use DMA correctly.
+	 * DIAGNOSTIC: temporarily forces PIO for ALL transfers up to 4 KB
+	 * (was 256 bytes). On a Topaz3G EVT/DVT device the eMMC SEM32G
+	 * enumerates with capacity 0 B because CMD8 SEND_EXT_CSD over ADM
+	 * DMA returns a 512-byte buffer with only 3 bytes non-zero:
+	 *   byte[175]=0x01 (RST_n_FUNCTION, OTP)
+	 *   byte[214]=0xb7 byte[215]=0x03 (SEC_COUNT[2..3], factory)
+	 * The pattern is bit-identical across 5 successive reads at the
+	 * 400 kHz init clock -- not signal margin, not voltage, but a
+	 * deterministic data-path or descriptor issue. Raise the threshold
+	 * above 512 so EXT_CSD goes through PIO. If eMMC enumerates with
+	 * full capacity, the ADM DMA path is the bug. Revert this to 256
+	 * once the underlying ADM/burst/CRCI issue is identified.
+	 *
+	 * Historical rationale for 256: ADM DMA on msm8x60 corrupts data
+	 * during SDIO firmware upload (BMI phase) due to the tight credit-
+	 * polling transfer pattern. PIO works reliably up to 128 bytes
+	 * (2x FIFO); 192+ byte PIO fails because the DPSM times out
+	 * waiting for 3+ interrupt-driven FIFO refills. Post-BMI WiFi data
+	 * frames (1500+ bytes) use DMA correctly.
 	 */
-	.dma_threshold		= 256,
+	.dma_threshold		= 4096,
 	.mmcimask1		= true,
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
 	/*
