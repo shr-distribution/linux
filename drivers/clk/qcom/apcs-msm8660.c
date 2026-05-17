@@ -231,17 +231,16 @@ static const struct vdd_req *get_vdd_req(u32 l_val)
  * no L2-specific voltage voting and rely on shared CPU/L2 rails
  * being voted by the CPU path).
  *
- * The previous 3-tier mapping (LOW/MID/HIGH) jumped L2 to 1404 MHz
- * once CPU reached 1080 MHz, but the CPU vdd vote at 1080 MHz is
- * vdd_mem=1.2V/vdd_dig=1.1V — insufficient for L2 at 1404 MHz which
- * needs 1.25V/1.2V per the legacy L2 freq table. That left L2
- * undervolted in the 1080–1134 MHz CPU range.
- *
- * L2 is capped at L_VAL 0x1A (1404 MHz) because legacy validated no
- * L2 rate above that (CPU at 1512 MHz uses L2 1404 MHz per legacy
- * acpu_freq_tbl_v2[16]).
+ * L2 is capped at L_VAL 0x1C (1512 MHz) to match uber-kernel's
+ * l2_freq_tbl_v2[]. uber-kernel never validated an L2 rate above
+ * 1512 MHz: at CPU 1728 MHz and 1836 MHz it points the freq table
+ * at L2(16) (1512 MHz, vdd_mem=1.25 V, vdd_dig=1.30 V). Capping the
+ * lockstep here replicates that behaviour exactly. Our vdd_table[]
+ * entries for CPU L_VAL 0x20..0x22 (1728..1836 MHz) carry
+ * 1.30 V/1.30 V which covers L2's 1.25 V/1.30 V floor with a small
+ * vdd_mem margin.
  */
-#define L2_L_VAL_MAX	0x1A	/* 1404 MHz, legacy-validated L2 ceiling */
+#define L2_L_VAL_MAX	0x1C	/* 1512 MHz, uber-kernel L2(16) ceiling */
 
 /**
  * struct apcs_cpu_clk - Per-CPU clock structure
@@ -766,13 +765,12 @@ static u32 cpu_to_l2_l_val(unsigned int cpu_khz)
 		return SCPLL_L_VAL_MIN;
 
 	/*
-	 * Lockstep: L2 L_VAL = CPU L_VAL. This guarantees the CPU's
+	 * Lockstep: L2 L_VAL = CPU L_VAL up to L2_L_VAL_MAX. The CPU's
 	 * vdd_mem/vdd_dig vote (computed from CPU L_VAL via vdd_table)
-	 * also covers L2 at the same L_VAL, matching the mainline
-	 * Qualcomm pattern (Krait/Kryo do no separate L2 vdd vote).
-	 *
-	 * Capped at L2_L_VAL_MAX (1404 MHz) because legacy validated no
-	 * L2 rate above that — at CPU 1512 MHz, L2 stays at 1404 MHz.
+	 * is set high enough at the overclock OPPs (1.30 V/1.30 V at
+	 * CPU L_VAL 0x20..0x22 = 1728..1836 MHz) to cover L2 running at
+	 * 1512 MHz, matching uber-kernel's l2_freq_tbl_v2[16] requirement
+	 * of vdd_mem=1.25 V, vdd_dig=1.30 V.
 	 */
 	l_val = DIV_ROUND_CLOSEST(cpu_khz * 1000, SCPLL_RATE_FACTOR);
 	return clamp_t(u32, l_val, SCPLL_L_VAL_MIN, L2_L_VAL_MAX);

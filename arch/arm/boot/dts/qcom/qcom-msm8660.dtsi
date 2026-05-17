@@ -169,7 +169,16 @@
 		 */
 		opp-192000000 {
 			opp-hz = /bits/ 64 <192000000>;
-			opp-microvolt = <875000>;
+			/*
+			 * 812.5 mV matches uber-kernel acpu_freq_tbl_v2[0]
+			 * (vdd_uV = 812500 at 192 MHz). webOS used the same
+			 * value but its CPU-freq driver bypassed the regulator
+			 * framework's min constraint -- mainline cpufreq-dt
+			 * enforces saw0_reg/saw1_reg's regulator-min-microvolt,
+			 * which is set to 812500 below so this OPP can actually
+			 * be applied. PM8901 SMPS Band 2 sel 9 (700 + 9*12.5).
+			 */
+			opp-microvolt = <812500>;
 			opp-supported-hw = <0x7>;	/* all bins */
 			clock-latency-ns = <100000>;
 		};
@@ -320,17 +329,28 @@
 		 * "Overclock to 1.8GHz" commit (c533dc2, Jan 2012) which has
 		 * a multi-year history of stable use on this hardware.
 		 *
-		 * 1728 MHz @ 1350 mV is moderately overclocked. The 1836 MHz
-		 * OPP @ 1450 mV — exposed previously — proved unstable under
-		 * sustained DDR / memory-bandwidth load on multiple TouchPad
-		 * silicon binnings: kernel crashes with PSR mode bits scrambled
-		 * to invalid values (USER_26/ISA Jazelle, or "bad mode: 0" in
-		 * the idle thread). Symptom is hardware-level CPU state
-		 * corruption, not a memory or driver bug. Removed until either
-		 * (a) the platform gets tsens-driven throttling and a per-SKU
-		 * Vcore margin policy, or (b) the legacy webOS Vcore ladder
-		 * is replicated more faithfully (legacy used a different
-		 * SAW step structure at the top of the range).
+		 * Vcore values match uber-kernel:
+		 *   1728 MHz: 1.35 V (Band 2 selector 52)
+		 *   1836 MHz: 1.50 V (Band 3 floor, see below)
+		 *
+		 * uber-kernel set 1836 MHz at 1.45 V, but PM8901 SMPS doesn't
+		 * have a 1.45 V set point: the gap between Band 2 max
+		 * (1.40 V) and Band 3 first valid set point (1.50 V) is
+		 * rejected by the PMIC. saw-regulator.c in uber-kernel
+		 * "rounds down" 1.45 V requests to 1.40 V, so the device
+		 * actually ran 1836 MHz at 1.40 V there. We instead pick
+		 * the next legal step up (1.50 V) -- electrically safer
+		 * (more margin) and within the chip's nominal Vcore.
+		 *
+		 * Earlier removal note (PSR mode bits scrambled, "bad mode:0"
+		 * crashes): root caused to undervolted L2 cache, not Vcore.
+		 * The L2 SCPLL was being slewed in lockstep with the CPU
+		 * SCPLL up past 1404 MHz, but vdd_mem/vdd_dig only got
+		 * voted up for L2 voltage requirements at 1404 MHz. uber-
+		 * kernel caps L2 at 1512 MHz with vdd_mem=1.25 V/vdd_dig=
+		 * 1.30 V; we now match that in apcs-msm8660.c via
+		 * L2_L_VAL_MAX = 0x1C and the corresponding vdd_table[]
+		 * entries.
 		 *
 		 * To restrict the max OPP at runtime (e.g. for battery life
 		 * or thermal safety), set
@@ -340,6 +360,12 @@
 		opp-1728000000 {
 			opp-hz = /bits/ 64 <1728000000>;
 			opp-microvolt = <1350000>;
+			opp-supported-hw = <0x4>;	/* 1.7G bin only (overclock) */
+		};
+
+		opp-1836000000 {
+			opp-hz = /bits/ 64 <1836000000>;
+			opp-microvolt = <1500000>;
 			opp-supported-hw = <0x4>;	/* 1.7G bin only (overclock) */
 		};
 	};
@@ -588,32 +614,25 @@
 
 			saw0_reg: regulator {
 				regulator-name = "cpu0_vdd";
-				regulator-min-microvolt = <840000>;
+				regulator-min-microvolt = <812500>;
 				/*
-				 * Capped at PM8901 SMPS Band 2 maximum (1.40 V).
-				 * The qcom_spm driver in drivers/soc/qcom/spm.c
-				 * encodes vlevel as `band[7:6] | sel[5:0]` with
-				 * a hard-coded Band 2 marker (0x80) on writes,
-				 * so anything above selector 56 (1.40 V) ends
-				 * up encoded in a different band than the
-				 * driver intended -- see the comment on
-				 * `spm_8660_regulator_range` in spm.c.
+				 * Ceiling at 1.50 V = Band 3 first valid set
+				 * point (PM8901 SMPS Band 3 sel 2). qcom_spm
+				 * exposes a two-range linear table -- Band 2
+				 * (700-1400 mV, 12.5 mV step) and Band 3
+				 * (1500-3300 mV, 50 mV step) -- and emits the
+				 * correct band marker (0x80 / 0xC0) per
+				 * selector, so the regulator framework can
+				 * pick either side cleanly.
 				 *
-				 * Every OPP in cpu_opp_table maxes out at
-				 * 1.25 V (1512 MHz on a speed_bin=1 chip after
-				 * gating), so 1.40 V leaves headroom for any
-				 * future per-PVS opp-microvolt bump without
-				 * crossing the band boundary. The previous
-				 * 1.60 V ceiling worked only by accident, by
-				 * letting the framework accept requests the
-				 * driver actually misencoded.
-				 *
-				 * If a future overclock OPP needs 1.45 V+, add
-				 * a Band 3 entry to spm_8660_regulator_range
-				 * and a band-aware marker in
-				 * smp_set_vdd_8660() before lifting this.
+				 * 1.50 V is enough headroom for the 1836 MHz
+				 * overclock OPP (Vcore = 1.50 V) without
+				 * exposing higher Band 3 set points that no
+				 * OPP requires. Raising further is safe driver-
+				 * wise but extends the framework's accepted
+				 * range needlessly.
 				 */
-				regulator-max-microvolt = <1400000>;
+				regulator-max-microvolt = <1500000>;
 			};
 		};
 
@@ -624,9 +643,9 @@
 
 			saw1_reg: regulator {
 				regulator-name = "cpu1_vdd";
-				regulator-min-microvolt = <840000>;
-				/* See saw0_reg -- Band 2 max. */
-				regulator-max-microvolt = <1400000>;
+				regulator-min-microvolt = <812500>;
+				/* See saw0_reg -- Band 3 floor (1836 MHz Vcore). */
+				regulator-max-microvolt = <1500000>;
 			};
 		};
 

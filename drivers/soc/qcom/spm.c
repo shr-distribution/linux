@@ -102,8 +102,14 @@ struct spm_reg_data {
 	 * returning it.
 	 */
 	void (*get_vdd)(struct spm_driver_data *drv);
-	/* for now we support only a single range */
-	struct linear_range *range;
+	const struct linear_range *ranges;
+	unsigned int n_ranges;
+	/*
+	 * For MSM8660 Band 2/Band 3 split: selectors <= band2_max_sel use
+	 * Band 2 marker (0x80); selectors above it use Band 3 marker (0xC0).
+	 * Only consulted when n_ranges > 1 and a band-aware set_vdd is wired.
+	 */
+	unsigned int band2_max_sel;
 	unsigned int ramp_delay;
 	unsigned int init_uV;
 };
@@ -288,8 +294,9 @@ static void smp_set_vdd_8660(void *data);
 static void smp_get_vdd_8660(struct spm_driver_data *drv);
 
 /* SPM register data for 8064 */
-static struct linear_range spm_v1_1_regulator_range =
-	REGULATOR_LINEAR_RANGE(700000, 0, 56, 12500);
+static const struct linear_range spm_v1_1_regulator_ranges[] = {
+	REGULATOR_LINEAR_RANGE(700000, 0, 56, 12500),
+};
 
 static const struct spm_reg_data spm_reg_8064_cpu = {
 	.reg_offset = spm_reg_offset_v1_1,
@@ -302,7 +309,8 @@ static const struct spm_reg_data spm_reg_8064_cpu = {
 	.start_index[PM_SLEEP_MODE_STBY] = 0,
 	.start_index[PM_SLEEP_MODE_SPC] = 2,
 	.set_vdd = smp_set_vdd_v1_1,
-	.range = &spm_v1_1_regulator_range,
+	.ranges = spm_v1_1_regulator_ranges,
+	.n_ranges = ARRAY_SIZE(spm_v1_1_regulator_ranges),
 	.init_uV = 1300000,
 	.ramp_delay = 1250,
 };
@@ -328,31 +336,41 @@ static const struct spm_reg_data spm_reg_8064_cpu = {
  *
  *   Band 1: 350--650 mV, 6.25 mV step, marker 0x40 (sel 0..48)
  *   Band 2: 700--1400 mV, 12.5 mV step, marker 0x80 (sel 0..56)
- *   Band 3: 1400--3300 mV, 50 mV step, marker 0xC0 (sel 0..38)
+ *   Band 3: 1500--3300 mV, 50 mV step, marker 0xC0 (sel 2..38)
  *
- * smp_set_vdd_8660() always emits the Band 2 marker. That keeps the
- * encoding correct *only* while the requested voltage sits inside
- * Band 2 (700..1400 mV). Beyond selector 56 the upper bits of the
- * "selector" overlap the band-marker field and the PMIC sees a
- * different band entirely than intended -- e.g. a 1.6 V request
- * (uber-kernel global sel 72) is encoded `0x80 | 72 = 0xC8`, which the
- * PMIC reads as Band 3 sel 8 = 1.8 V (or rejects). The previous
- * linear range that ran selectors 0..72 was thus relying on
- * accidental PMIC tolerance / undefined behavior.
+ * Two ranges exposed to the regulator framework: Band 2 (selectors
+ * 0..56) and Band 3 (selectors 57..93 in the framework's continuous
+ * selector space, corresponding to PMIC local selectors 2..38). Band 3
+ * local selectors 0 and 1 (1.40 V, 1.45 V) sit in the Band 2/Band 3 gap
+ * that the PMIC firmware rejects, so we skip them -- per uber-kernel's
+ * saw-regulator.c "Round down for set points in the gaps between
+ * bands" rule.
  *
- * Truncate the linear range to Band 2's actual extent. Every OPP in
- * the tenderloin/topaz3g table after speed-bin gating tops out at
- * 1.25 V (1512 MHz on the 1.5 GHz bin), comfortably inside Band 2,
- * so we don't need Band 1 or Band 3 entries -- and not advertising
- * them stops the regulator framework from accepting requests the
- * driver can't actually encode safely.
+ * The framework picks a continuous selector across both ranges; the
+ * 8660-specific set/get helpers translate that selector into the
+ * `band[7:6] | local_sel[5:0]` form the PMIC expects:
  *
- * Future work: if we want to expose the 1836 MHz @ 1.45 V overclock
- * OPP again, add a second `linear_range` for Band 3 plus a band-aware
- * write in smp_set_vdd_8660() (`band = sel >= 57 ? 0xC0 : 0x80`).
+ *   continuous sel <= band2_max_sel (56)
+ *       -> Band 2, local_sel = continuous_sel,        vlevel = 0x80 | sel
+ *   continuous sel  > band2_max_sel
+ *       -> Band 3, local_sel = continuous_sel - 55,   vlevel = 0xC0 | local_sel
+ *
+ * (-55 because Band 3 starts at continuous sel 57 which is local sel 2;
+ * 57 - 55 = 2.)
+ *
+ * Band 1 (350--650 mV) is intentionally not exposed: no CPU OPP in
+ * either webOS or upstream lands in that range and the PMIC firmware
+ * has its own minimum operating point above 650 mV.
  */
-static const struct linear_range spm_8660_regulator_range =
-	REGULATOR_LINEAR_RANGE(700000, 0, 56, 12500);
+#define SPM_8660_BAND2_MAX_SEL		56
+#define SPM_8660_BAND3_SEL_OFFSET	55	/* continuous -> Band 3 local */
+
+static const struct linear_range spm_8660_regulator_ranges[] = {
+	/* Band 2: 700..1400 mV, 12.5 mV step */
+	REGULATOR_LINEAR_RANGE(700000, 0, 56, 12500),
+	/* Band 3: 1500..3300 mV, 50 mV step (continuous sel 57..93) */
+	REGULATOR_LINEAR_RANGE(1500000, 57, 93, 50000),
+};
 
 static const struct spm_reg_data spm_reg_8660_cpu = {
 	.reg_offset = spm_reg_offset_8660,
@@ -389,7 +407,9 @@ static const struct spm_reg_data spm_reg_8660_cpu = {
 	.no_seq_ram = true,
 	.set_vdd = smp_set_vdd_8660,
 	.get_vdd = smp_get_vdd_8660,
-	.range = &spm_8660_regulator_range,
+	.ranges = spm_8660_regulator_ranges,
+	.n_ranges = ARRAY_SIZE(spm_8660_regulator_ranges),
+	.band2_max_sel = SPM_8660_BAND2_MAX_SEL,
 	.init_uV = 1100000,		/* awake_vlevel 0xA0 = ~1.1V */
 	.ramp_delay = 1250,
 };
@@ -641,12 +661,51 @@ enable_avs:
 }
 
 /*
+ * Encode the continuous regulator-framework selector for the 8660 SAW
+ * into the PMIC 8-bit vlevel `band[7:6] | local_sel[5:0]`. See the
+ * commentary on spm_8660_regulator_ranges for the mapping rule.
+ */
+static u8 spm_8660_encode_vlevel(const struct spm_reg_data *rd,
+				 unsigned int volt_sel)
+{
+	if (volt_sel <= rd->band2_max_sel)
+		return 0x80 | (volt_sel & 0x3F);
+	return 0xC0 | ((volt_sel - SPM_8660_BAND3_SEL_OFFSET) & 0x3F);
+}
+
+/*
+ * Decode the PMIC 8-bit vlevel read back from STS0 into the continuous
+ * regulator-framework selector. Inverse of spm_8660_encode_vlevel.
+ * Returns drv->volt_sel-shaped value; preserves the last cached selector
+ * for unknown/empty band markers so a transient zero read doesn't snap
+ * the framework's idea of the live voltage down to selector 0.
+ */
+static unsigned int spm_8660_decode_vlevel(struct spm_driver_data *drv,
+					   u8 vlevel)
+{
+	u8 band = vlevel & 0xC0;
+	u8 local = vlevel & 0x3F;
+
+	if (band == 0x80)
+		return local;
+	if (band == 0xC0) {
+		/* Band 3 local sel 0..1 are in the band gap; clamp to floor. */
+		if (local < 2)
+			local = 2;
+		return local + SPM_8660_BAND3_SEL_OFFSET;
+	}
+	/* Band 1 (0x40) or unset: keep the cached value. */
+	return drv->volt_sel;
+}
+
+/*
  * MSM8660/APQ8060 voltage setting function.
  * Based on webOS kernel msm_spm_set_vdd() in arch/arm/mach-msm/spm.c
  * and saw-regulator.c voltage band calculations.
  *
- * PM8901 SMPS Band 2: 700mV-1400mV with 12.5mV steps
- * The voltage level sent to SAW must include the band bits (0x80).
+ * PM8901 SMPS Band 2: 700-1400 mV, 12.5 mV step, marker 0x80.
+ * PM8901 SMPS Band 3: 1500-3300 mV, 50 mV step, marker 0xC0.
+ * The vlevel sent to SAW VCTL is `band[7:6] | local_sel[5:0]`.
  */
 static void smp_set_vdd_8660(void *data)
 {
@@ -656,8 +715,7 @@ static void smp_set_vdd_8660(void *data)
 	int timeout_us = 50;
 
 	volt_sel = drv->volt_sel;
-	/* Add Band 2 marker (0x80) - required for PM8901 SMPS */
-	vlevel = volt_sel | 0x80;
+	vlevel = spm_8660_encode_vlevel(drv->reg_data, volt_sel);
 
 	/* Read current VCTL and update voltage level (bits 7:0) */
 	vctl = spm_register_read(drv, SPM_REG_VCTL);
@@ -688,10 +746,11 @@ static void smp_set_vdd_8660(void *data)
 }
 
 /*
- * MSM8660/APQ8060 voltage readback. STS0[17:10] reflects the current PMIC
- * voltage level (the 8-bit vlevel including the band marker that was last
- * written to VCTL[7:0]). Strip the band bit (0x80) to recover the pure
- * volt_sel that the regulator framework uses as a linear-range index.
+ * MSM8660/APQ8060 voltage readback. STS0[17:10] reflects the live PMIC
+ * 8-bit vlevel (the value last written to VCTL[7:0], in the
+ * `band[7:6] | local_sel[5:0]` form). spm_8660_decode_vlevel translates
+ * that back into the continuous selector the regulator framework uses
+ * to index our two-range linear-range table.
  *
  * Why this exists: the regulator framework's regulator_get_voltage_sel
  * path returns drv->volt_sel directly, which is only updated when
@@ -709,9 +768,11 @@ static void smp_set_vdd_8660(void *data)
 static void smp_get_vdd_8660(struct spm_driver_data *drv)
 {
 	unsigned int sts0;
+	u8 vlevel;
 
 	sts0 = spm_register_read(drv, SPM_REG_STS0);
-	drv->volt_sel = (sts0 >> 10) & 0x7F;  /* mask off band bit (0x80) */
+	vlevel = (sts0 >> 10) & 0xFF;
+	drv->volt_sel = spm_8660_decode_vlevel(drv, vlevel);
 }
 
 static int spm_get_cpu(struct device *dev)
@@ -764,8 +825,8 @@ static int spm_register_regulator(struct device *dev, struct spm_driver_data *dr
 	rdesc->owner = THIS_MODULE;
 	rdesc->ops = &spm_reg_ops;
 
-	rdesc->linear_ranges = drv->reg_data->range;
-	rdesc->n_linear_ranges = 1;
+	rdesc->linear_ranges = drv->reg_data->ranges;
+	rdesc->n_linear_ranges = drv->reg_data->n_ranges;
 	rdesc->n_voltages = rdesc->linear_ranges[rdesc->n_linear_ranges - 1].max_sel + 1;
 	rdesc->ramp_delay = drv->reg_data->ramp_delay;
 
@@ -779,9 +840,11 @@ static int spm_register_regulator(struct device *dev, struct spm_driver_data *dr
 	/*
 	 * Program initial voltage, otherwise registration will also try
 	 * setting the voltage, which might result in undervolting the CPU.
-	 * Use linear_range_get_selector_high() to convert init_uV to selector.
+	 * init_uV is always inside the first range (Band 2 for 8660, the
+	 * single 700-1400 mV range for 8064), so resolving against
+	 * ranges[0] is sufficient.
 	 */
-	ret = linear_range_get_selector_high(drv->reg_data->range,
+	ret = linear_range_get_selector_high(&drv->reg_data->ranges[0],
 					     drv->reg_data->init_uV,
 					     &drv->volt_sel,
 					     &found);
