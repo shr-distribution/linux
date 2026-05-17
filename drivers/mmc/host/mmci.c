@@ -526,9 +526,18 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		 * eMMC compatibility; the SDIO override happens at every
 		 * data transaction so the PWRSAVE bit is consistently
 		 * cleared by the time the AR6003 sees the bus clock.
+		 *
+		 * DISABLED: enabling PWRSAVE > 400 kHz caused CMDTIMEOUT
+		 * (data=yes) on the credit-counter CMD53 read that follows
+		 * BMI_LZ_STREAM_START during ath6kl OTP upload. The chip's
+		 * BMI engine ACKs the command header but the bus auto-
+		 * gating leaves it without enough setup time to drive the
+		 * data lines for the small 4-byte fast read. Without this
+		 * bit the bus clock free-runs and small post-stream-start
+		 * reads complete normally. Legacy webOS does set PWRSAVE
+		 * but apparently with different chip-side behaviour; until
+		 * we have a proper fix, leave it off here so WiFi works.
 		 */
-		if (variant->qcom_datactrl_delay && desired > 400000)
-			clk |= MCI_CLK_PWRSAVE;
 	}
 
 	/* Set actual clock for debug */
