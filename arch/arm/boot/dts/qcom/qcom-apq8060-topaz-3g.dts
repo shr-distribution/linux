@@ -660,6 +660,25 @@
 		compatible = "nxp,usb-isp1763";
 		reg = <3 0x0 0x6000>;		/* CS3, offset 0, 24KB window */
 
+		/*
+		 * TEMPORARILY DISABLED for boot-hang diagnostic. On TP4G the
+		 * kernel reliably hangs at "io scheduler mq-deadline registered"
+		 * (~t=1.4s) while the same kernel boots fine on a WiFi-only
+		 * Topaz that has no isp1763. Suspicion: qcom-ebi2 probe writes
+		 * CS3 SLOW_CFG / FAST_CFG to the EBI2 XMEM regs while the system
+		 * fabric is still halted (commit ca1687f77e89 moved the
+		 * SYS/APPS fabric unhalt from gcc probe to mmcc probe, so the
+		 * unhalt now happens AFTER ebi2 probe). With `status =
+		 * "disabled"` the EBI2 for_each_available_child loop skips this
+		 * node entirely, so no CS3 writes happen. If TP4G then boots,
+		 * the fabric-vs-EBI2 ordering is confirmed and the right fix is
+		 * to either unhalt the fabric earlier or defer EBI2 probe.
+		 *
+		 * USB host on this node was not yet functional on mainline, so
+		 * there is no regression in disabling this for the diagnostic.
+		 */
+		status = "disabled";
+
 		interrupts-extended = <&tlmm 172 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-names = "host";
 
