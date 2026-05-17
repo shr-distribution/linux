@@ -179,9 +179,6 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_ALL);
 	vidc_write(core, VIDC_REG_SW_RESET,
 		   VIDC_RESET_NONE & ~VIDC_RESET_RISC);
-	printk(KERN_EMERG "VIDC: hw_reset: post-stage2 SW_RESET=0x%08x (want 0x%08x)\n",
-	       vidc_read(core, VIDC_REG_SW_RESET),
-	       VIDC_RESET_NONE & ~VIDC_RESET_RISC);
 
 	/*
 	 * Program DRAM_BASE_A/B while the RISC is held in reset, so the
