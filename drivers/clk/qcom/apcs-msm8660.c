@@ -29,8 +29,6 @@
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/interconnect.h>
-#include <linux/stop_machine.h>
-#include <asm/cacheflush.h>
 
 /*
  * Register offsets from ACC base
@@ -39,10 +37,24 @@
 #define SPSS_CLK_CTL		0x00
 #define SPSS_CLK_SEL		0x04
 
-/* L2 clock selection register */
-#define SPSS_L2_CLK_SEL		0x38
+/*
+ * NOTE: the L2 clock-source select register is *not* at ACC base + 0x38.
+ * Palm's downstream acpuclock-8x60.c places it at MSM_GCC_BASE + 0x38
+ * (physical 0x02082038), an entirely different functional block from
+ * the per-CPU ACC region (CPU0 ACC = 0x02041000, CPU1 ACC = 0x02051000).
+ * The previous quiesced stop_machine() path here mapped acc_base + 0x38
+ * (0x02041038) and wrote into the wrong register; it never actually
+ * touched the L2 source mux. The HP lk bootloader leaves L2 already
+ * tracking SCPLL (Palm's L2-locked-to-CPU-SCPLL design), so the entire
+ * mux-flip sequence was both broken *and* unnecessary, while still
+ * exposing a stop_machine deadlock window vs uncached bus masters
+ * (msm-dma, USB host, MMC, GPU, RPM firmware). That window is the
+ * cause of the intermittent very-early-boot hangs we observed on
+ * Topaz3G PVT (boot frozen between t=0.531s and the next printk, fb
+ * still painting the Tux logo). See commit log for the analysis.
+ */
 
-/* Clock source selection values */
+/* Clock source selection values (informational, used by L2 SCPLL slewing) */
 #define SRC_SEL_AFAB		0	/* 27 MHz */
 #define SRC_SEL_PLL8		3	/* 384 MHz */
 #define SRC_SEL_SCPLL		1	/* Dynamic SCPLL */
@@ -279,7 +291,6 @@ static int apcs_set_bus_bw(struct apcs_cpu_clk *c, unsigned int bw_kbps)
 
 /* L2 SCPLL shared state — initialized by first CPU to probe */
 static void __iomem *l2_scpll_base;
-static void __iomem *l2_clk_sel_base;
 static DEFINE_SPINLOCK(l2_lock);
 static u32 l2_current_l_val;
 static bool l2_initialized;
@@ -622,44 +633,15 @@ static void l2_set_freq(u32 l_val)
 	}
 
 	/*
-	 * L2 is already running off SCPLL (CLK_SEL was switched in probe
-	 * via a quiesced stop_machine path). SCPLL complex-slew is glitch-
-	 * free by hardware design, so changing L2 frequency while CPUs use
-	 * L2 is safe without further quiescing.
+	 * L2 is already running off SCPLL — HP lk hands the kernel a chip
+	 * with L2 locked to the CPU SCPLL (Palm's downstream design). SCPLL
+	 * complex-slew is glitch-free by hardware design, so changing L2
+	 * frequency while CPUs use L2 is safe without further quiescing.
 	 */
 	scpll_change_freq(l2_scpll_base, l_val);
 
 	l2_current_l_val = l_val;
 	spin_unlock_irqrestore(&l2_lock, flags);
-}
-
-/*
- * stop_machine callback to switch L2 source mux from PLL divider to SCPLL.
- * Must run with all CPUs stopped and L1 caches drained, otherwise the L2
- * controller can deadlock when its source clock changes mid-transaction.
- */
-static int l2_quiesced_clksel_switch(void *data)
-{
-	u32 regval;
-
-	/* Drain L1 D-cache so no L1 writes are in flight to L2 */
-	flush_cache_all();
-
-	/* Order the cache drain before the source mux change */
-	dsb(sy);
-	isb();
-
-	/* Switch L2 source mux to SCPLL (bits [1:0], shift=0) */
-	regval = readl_relaxed(l2_clk_sel_base);
-	regval &= ~0x3;
-	regval |= SRC_SEL_SCPLL;
-	writel_relaxed(regval, l2_clk_sel_base);
-
-	/* Ensure the mux write is committed before any CPU resumes */
-	dsb(sy);
-	isb();
-
-	return 0;
 }
 
 static int l2_cpufreq_notifier(struct notifier_block *nb,
@@ -802,18 +784,46 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 		 cpu_clk->current_rate / 1000000);
 
 	/*
-	 * Initialize L2 SCPLL — only once, by first CPU to probe.
+	 * Initialize L2 SCPLL tracking — only once, by first CPU to probe.
 	 *
-	 * The CLK_SEL switch from the PLL divider mux to SCPLL is done in
-	 * a quiesced (stop_machine + L1 cache flush) context. Switching
-	 * the L2 source mux while CPUs are actively running from L2 causes
-	 * intermittent very-early-boot hangs because the L2 controller can
-	 * deadlock on a mid-transaction clock change. With all CPUs parked
-	 * in the stopper thread and L1 caches drained, no L2 access is in
-	 * flight when the mux flips, so the controller transitions cleanly.
+	 * Prior code here flipped an L2 source-mux register inside a
+	 * stop_machine() + flush_cache_all() block, on the assumption that
+	 * HP lk handed off with L2 still on the PLL divider mux. Two
+	 * problems with that:
 	 *
-	 * Subsequent SCPLL slews (via the cpufreq notifier) are glitch-free
-	 * by hardware design (complex-slew FSM) and safe without quiescing.
+	 *   1. The L2 CLK_SEL register on msm8660 lives at GCC + 0x38
+	 *      (physical 0x02082038), not at any ACC base + 0x38. The
+	 *      previous code wrote into (acc_base + 0x38) = 0x02041038,
+	 *      which is in CPU0's ACC region and unrelated to the L2
+	 *      source mux. The write was a no-op for L2 routing.
+	 *
+	 *   2. Per Palm's downstream acpuclock-8x60.c the L2 SCPLL is
+	 *      already running in NORMAL mode at handoff (webOS keeps L2
+	 *      locked to the CPU SCPLL), so even a *correct* write would
+	 *      have set the same bits the hardware already had.
+	 *
+	 * Net effect: the stop_machine block accomplished nothing useful
+	 * but still opened a deadlock window vs uncached bus masters
+	 * (msm-dma, USB, MMC, GPU, RPM) that can hit L2 while CPUs are
+	 * parked in the stopper thread. That is the cause of the
+	 * intermittent very-early-boot hangs on Topaz3G PVT.
+	 *
+	 * What we keep:
+	 *   - reading SCPLL_CTL to confirm L2 SCPLL is in NORMAL mode
+	 *     (bail if not — re-enabling from a cold state would need
+	 *     shot-switch + calibration that this driver doesn't implement),
+	 *   - recording l2_current_l_val so the cpufreq notifier path knows
+	 *     where L2 starts and can skip no-op slews,
+	 *   - registering the cpufreq notifier so subsequent CPU freq
+	 *     transitions can drive L2 in lockstep (those slews use the
+	 *     SCPLL complex-slew FSM and are glitch-free in hardware).
+	 *
+	 * What we drop:
+	 *   - stop_machine(l2_quiesced_clksel_switch, ...) — the source
+	 *     mux flip and its deadlock window,
+	 *   - the (incorrectly addressed) l2_clk_sel_base mapping,
+	 *   - the pre-vote of EBI bandwidth that existed only to back the
+	 *     mux flip.
 	 */
 	if (!l2_initialized) {
 		struct resource *l2_res;
@@ -831,13 +841,6 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 			goto skip_l2;
 		}
 
-		l2_clk_sel_base = acc_base + SPSS_L2_CLK_SEL;
-
-		/*
-		 * Verify the bootloader left the L2 SCPLL in NORMAL mode.
-		 * If not, skip — re-enabling the SCPLL from a cold state
-		 * is not implemented here (would need shot-switch + cal).
-		 */
 		ctl = readl(l2_scpll_base + SCPLL_CTL);
 		if ((ctl & 0x7) != SCPLL_NORMAL) {
 			dev_warn(dev,
@@ -848,27 +851,6 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 
 		/* Record current L_VAL so the notifier path skips a no-op slew */
 		l2_current_l_val = (ctl >> 3) & 0x3f;
-
-		/*
-		 * Vote EBI bandwidth up to the tier appropriate for the
-		 * current SCPLL L_VAL before flipping the L2 source mux.
-		 * This ensures DDR is ready to service L2 cache traffic at
-		 * the new rate the instant the mux switches — without this
-		 * pre-vote, the L2 controller can stall waiting for DDR.
-		 */
-		apcs_set_bus_bw(cpu_clk,
-			apcs_bw_for_rate((unsigned long)l2_current_l_val *
-					 SCPLL_RATE_FACTOR));
-
-		/* Quiesced one-time switch of L2 source mux to SCPLL */
-		ret = stop_machine(l2_quiesced_clksel_switch, NULL,
-				   cpu_online_mask);
-		if (ret) {
-			dev_warn(dev,
-				 "L2 quiesced source switch failed: %d\n",
-				 ret);
-			goto skip_l2;
-		}
 
 		ret = cpufreq_register_notifier(&l2_cpufreq_nb,
 						CPUFREQ_TRANSITION_NOTIFIER);
