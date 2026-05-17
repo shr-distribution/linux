@@ -754,6 +754,18 @@ int vidc_boot_firmware(struct vidc_core *core)
 	core->ctxt_pool_used = 0;
 
 	/*
+	 * If the IRQ storm guard fired during a previous run it called
+	 * disable_irq_nosync() and set irq_disabled_by_storm. Re-enable
+	 * the IRQ now so the freshly-booted firmware can deliver responses.
+	 * Reset the streak counter too so the guard can arm again if needed.
+	 */
+	if (core->irq_disabled_by_storm) {
+		enable_irq(core->irq);
+		core->irq_disabled_by_storm = false;
+	}
+	core->empty_irq_streak = 0;
+
+	/*
 	 * Bring the RISC out of reset and program firmware. We need
 	 * vidc_hw_reset() here because the gdsc-qcom ved entry's
 	 * LEGACY_FOOTSWITCH | SW_RESET only resets the AHB slave
@@ -1515,6 +1527,9 @@ int vidc_enc_send_seq_header(struct vidc_inst *inst)
 	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
 	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, hdr_dma >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, SZ_4K);
+	vidc_write(core, VIDC_REG_CH0_DESC_ADDR,
+		   core->desc_offset >> VIDC_ADDR_SHIFT);
+	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 	core->cmd_seq_num++;
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
