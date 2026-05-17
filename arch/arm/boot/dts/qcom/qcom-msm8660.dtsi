@@ -574,28 +574,30 @@
 				regulator-name = "cpu0_vdd";
 				regulator-min-microvolt = <840000>;
 				/*
-				 * TEMPORARY: relaxed back to 1.60 V to match
-				 * pre-69eb43995d78 behavior while we chase a
-				 * cold-boot hang regression. With the 1.35 V
-				 * clamp every active OPP in our DT (top is
-				 * 1.250 V @ 1512 MHz after speed-bin gating)
-				 * sits within range, but `regulator_set_voltage`
-				 * round-trips through the qcom SAW driver which
-				 * may briefly request a transitional value that
-				 * clips against a tight ceiling -- when that
-				 * happens apcs_increase_vdd() returns -EINVAL
-				 * and the following scpll_change_freq() spins
-				 * on SCPLL_STATUS forever because Vcore was
-				 * never raised. The earlier 1.6 V ceiling
-				 * absorbed that overshoot and the pre-69eb43995d78
-				 * boots ran reliably.
+				 * Capped at PM8901 SMPS Band 2 maximum (1.40 V).
+				 * The qcom_spm driver in drivers/soc/qcom/spm.c
+				 * encodes vlevel as `band[7:6] | sel[5:0]` with
+				 * a hard-coded Band 2 marker (0x80) on writes,
+				 * so anything above selector 56 (1.40 V) ends
+				 * up encoded in a different band than the
+				 * driver intended -- see the comment on
+				 * `spm_8660_regulator_range` in spm.c.
 				 *
-				 * The clamp will return once the SCPLL slew
-				 * path either grows a timeout or the
-				 * regulator_set_voltage transition becomes
-				 * fully on-grid for every OPP we expose.
+				 * Every OPP in cpu_opp_table maxes out at
+				 * 1.25 V (1512 MHz on a speed_bin=1 chip after
+				 * gating), so 1.40 V leaves headroom for any
+				 * future per-PVS opp-microvolt bump without
+				 * crossing the band boundary. The previous
+				 * 1.60 V ceiling worked only by accident, by
+				 * letting the framework accept requests the
+				 * driver actually misencoded.
+				 *
+				 * If a future overclock OPP needs 1.45 V+, add
+				 * a Band 3 entry to spm_8660_regulator_range
+				 * and a band-aware marker in
+				 * smp_set_vdd_8660() before lifting this.
 				 */
-				regulator-max-microvolt = <1600000>;
+				regulator-max-microvolt = <1400000>;
 			};
 		};
 
@@ -607,8 +609,8 @@
 			saw1_reg: regulator {
 				regulator-name = "cpu1_vdd";
 				regulator-min-microvolt = <840000>;
-				/* See saw0_reg above -- temporary 1.6 V ceiling. */
-				regulator-max-microvolt = <1600000>;
+				/* See saw0_reg -- Band 2 max. */
+				regulator-max-microvolt = <1400000>;
 			};
 		};
 

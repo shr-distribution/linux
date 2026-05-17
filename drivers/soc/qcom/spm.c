@@ -322,20 +322,37 @@ static const struct spm_reg_data spm_reg_8064_cpu = {
  * Without explicit initialization, power collapse will not function correctly.
  */
 /*
- * PM8901 SMPS Band 2 spans 700-1400 mV in 12.5 mV steps (selectors 0..56).
- * The webos-uber-kernel "Overclock to 1.8 GHz" series demonstrates the
- * controller silently accepts selectors above 56 as well, with the PMIC
- * tracking the requested voltage up to ~1.6 V — that's what the
- * `regulator-max-microvolt = <1600000>` in our DT saw0/saw1 nodes is
- * relying on.
+ * PM8901 SMPS voltage encoding (per webos-uber-kernel saw-regulator.c):
+ * the 8-bit vlevel sent to SAW VCTL is `band[7:6] | local_sel[5:0]`, with
+ * three valid bands:
  *
- * Extend the linear range to selector 72 so the OPP framework will
- * accept opp-microvolt values up to 1600 mV. Without this, OPPs at
- * 1450 mV (1836 MHz overclock target) get marked unsupported and
- * disappear from cpufreq.
+ *   Band 1: 350--650 mV, 6.25 mV step, marker 0x40 (sel 0..48)
+ *   Band 2: 700--1400 mV, 12.5 mV step, marker 0x80 (sel 0..56)
+ *   Band 3: 1400--3300 mV, 50 mV step, marker 0xC0 (sel 0..38)
+ *
+ * smp_set_vdd_8660() always emits the Band 2 marker. That keeps the
+ * encoding correct *only* while the requested voltage sits inside
+ * Band 2 (700..1400 mV). Beyond selector 56 the upper bits of the
+ * "selector" overlap the band-marker field and the PMIC sees a
+ * different band entirely than intended -- e.g. a 1.6 V request
+ * (uber-kernel global sel 72) is encoded `0x80 | 72 = 0xC8`, which the
+ * PMIC reads as Band 3 sel 8 = 1.8 V (or rejects). The previous
+ * linear range that ran selectors 0..72 was thus relying on
+ * accidental PMIC tolerance / undefined behavior.
+ *
+ * Truncate the linear range to Band 2's actual extent. Every OPP in
+ * the tenderloin/topaz3g table after speed-bin gating tops out at
+ * 1.25 V (1512 MHz on the 1.5 GHz bin), comfortably inside Band 2,
+ * so we don't need Band 1 or Band 3 entries -- and not advertising
+ * them stops the regulator framework from accepting requests the
+ * driver can't actually encode safely.
+ *
+ * Future work: if we want to expose the 1836 MHz @ 1.45 V overclock
+ * OPP again, add a second `linear_range` for Band 3 plus a band-aware
+ * write in smp_set_vdd_8660() (`band = sel >= 57 ? 0xC0 : 0x80`).
  */
-static struct linear_range spm_8660_regulator_range =
-	REGULATOR_LINEAR_RANGE(700000, 0, 72, 12500);
+static const struct linear_range spm_8660_regulator_range =
+	REGULATOR_LINEAR_RANGE(700000, 0, 56, 12500);
 
 static const struct spm_reg_data spm_reg_8660_cpu = {
 	.reg_offset = spm_reg_offset_8660,
