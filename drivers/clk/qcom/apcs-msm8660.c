@@ -84,6 +84,36 @@
 #define SRC_SEL_SCPLL		1	/* (core_src_sel value, not acpuclk_src_sel) */
 
 /*
+ * SPSS_CLK_SEL register layout (per uber-kernel select_core_source /
+ * select_clk_source_div):
+ *
+ *   bit 0      : active PLL-divider-mux bank (0 or 1)
+ *   bits[2:1]  : core_src_sel -- selects what the CPU clock takes:
+ *                  0 = output of the PLL divider mux (bank-selected)
+ *                  1 = SCPLL direct
+ *
+ * SPSS_CLK_CTL register layout (per-bank, 8 bits each):
+ *
+ *   bank 0: bits[3:0] = src_div, bits[7:4] = src_sel
+ *   bank 1: bits[11:8] = src_div, bits[15:12] = src_sel
+ *
+ *   src_sel = acpuclk_src_sel field (1=AFAB, 3=PLL_8)
+ *   src_div = (N - 1) where N is the divider. div=0 -> /1, div=1 -> /2.
+ *
+ * Switching the mux to a new (src,div) is done glitch-free by writing
+ * the *inactive* bank in SPSS_CLK_CTL, then flipping the active-bank
+ * bit in SPSS_CLK_SEL with a single 32-bit write.
+ */
+#define CLK_SEL_BANK_BIT		BIT(0)
+#define CLK_SEL_CORE_SRC_SHIFT		1
+#define CLK_SEL_CORE_SRC_MASK		(0x3 << CLK_SEL_CORE_SRC_SHIFT)
+#define CORE_SRC_MUX			0	/* CLK_SEL[2:1] = 0b00 */
+#define CORE_SRC_SCPLL			1	/* CLK_SEL[2:1] = 0b01 */
+#define CLK_CTL_BANK_FIELD_WIDTH	8	/* bits per bank in CLK_CTL */
+#define CLK_CTL_SRC_SEL_SHIFT		4	/* within a bank field */
+#define CLK_CTL_SRC_DIV_SHIFT		0	/* within a bank field */
+
+/*
  * SCPLL register offsets
  */
 #define SCPLL_DEBUG		0x00
@@ -222,7 +252,11 @@ static const struct vdd_req *get_vdd_req(u32 l_val)
  * @vdd_dig: digital core voltage regulator (PM8058 S1), optional
  * @icc_cpu_mem: CPU → EBI (DDR) interconnect path, optional
  * @current_rate: current CPU frequency
- * @current_src: current clock source (AFAB, PLL8, SCPLL)
+ * @current_src: current core source select bits [2:1] of SPSS_CLK_SEL
+ *               (CORE_SRC_MUX = 0, CORE_SRC_SCPLL = 1). Tracks where the
+ *               CPU is actually taking its clock from. Distinct from the
+ *               per-bank `acpuclk_src_sel` (SRC_SEL_AFAB / SRC_SEL_PLL8)
+ *               which only matters when current_src == CORE_SRC_MUX.
  * @current_bw_kbps: current CPU → EBI bandwidth vote, in kBps
  * @calibrated: true if SCPLL has been calibrated
  * @lock: spinlock for register access
@@ -474,59 +508,131 @@ static void apcs_decrease_vdd(struct apcs_cpu_clk *c, unsigned int vdd_mem,
 		regulator_set_voltage(c->vdd_mem, vdd_mem, VDD_MEM_MAX);
 }
 
-static void select_clk_source(struct apcs_cpu_clk *c, int src)
+/*
+ * Program the *inactive* PLL-divider-mux bank with (src, div), then flip
+ * the active-bank bit in SPSS_CLK_SEL with a single write. The CPU mux
+ * sees a glitch-free transition to the new (src, div) combination.
+ *
+ * Callable only when the CPU is currently consuming the mux output -- i.e.
+ * core_src_sel = CORE_SRC_MUX -- or while preparing the mux for an
+ * upcoming MUX-takeover (caller is responsible for not toggling the bank
+ * while CPU is on SCPLL, since a bank toggle would do nothing in that case
+ * but the next CORE_SRC switch must see the prepared bank).
+ *
+ * src: acpuclk_src_sel value to write into the bank's src_sel field
+ *      (SRC_SEL_AFAB=1, SRC_SEL_PLL8=3).
+ * div: divider field value, N-1 for divide-by-N. 0 = /1, 1 = /2.
+ */
+static void program_pll_div_mux(struct apcs_cpu_clk *c, u32 src, u32 div)
 {
-	u32 regval;
+	u32 sel, ctl, new_bank, shift;
 
-	/* Read current selection */
-	regval = readl(c->acc_base + SPSS_CLK_SEL);
+	sel = readl(c->acc_base + SPSS_CLK_SEL);
+	new_bank = (sel & CLK_SEL_BANK_BIT) ^ 1;
+	shift = new_bank * CLK_CTL_BANK_FIELD_WIDTH;
 
-	/*
-	 * For CPU cores, source select bits are at [2:1] (shift=1).
-	 * L2 would use [1:0] (shift=0) but we don't handle L2 here.
-	 */
-	regval &= ~(0x3 << 1);
-	regval |= ((src & 0x3) << 1);
+	ctl = readl(c->acc_base + SPSS_CLK_CTL);
+	ctl &= ~(0xFFU << shift);
+	ctl |= ((src & 0xF) << CLK_CTL_SRC_SEL_SHIFT) << shift;
+	ctl |= ((div & 0xF) << CLK_CTL_SRC_DIV_SHIFT) << shift;
+	writel(ctl, c->acc_base + SPSS_CLK_CTL);
 
+	/* Activate the bank we just programmed. */
+	sel ^= CLK_SEL_BANK_BIT;
+	writel(sel, c->acc_base + SPSS_CLK_SEL);
+}
+
+/* Switch the CPU's core source mux. new_src is CORE_SRC_MUX or CORE_SRC_SCPLL. */
+static void select_core_src(struct apcs_cpu_clk *c, u32 new_src)
+{
+	u32 regval = readl(c->acc_base + SPSS_CLK_SEL);
+
+	regval &= ~CLK_SEL_CORE_SRC_MASK;
+	regval |= (new_src << CLK_SEL_CORE_SRC_SHIFT) & CLK_SEL_CORE_SRC_MASK;
 	writel(regval, c->acc_base + SPSS_CLK_SEL);
+	c->current_src = new_src;
+}
 
-	c->current_src = src;
+/* Read the current core source mux value (bits [2:1] of SPSS_CLK_SEL). */
+static u32 read_core_src(struct apcs_cpu_clk *c)
+{
+	u32 regval = readl(c->acc_base + SPSS_CLK_SEL);
+
+	return (regval & CLK_SEL_CORE_SRC_MASK) >> CLK_SEL_CORE_SRC_SHIFT;
+}
+
+/*
+ * Read the mux output rate when core_src_sel = CORE_SRC_MUX, by inspecting
+ * the active bank's src_sel and div fields.
+ */
+static unsigned long read_mux_output_rate(struct apcs_cpu_clk *c)
+{
+	u32 sel = readl(c->acc_base + SPSS_CLK_SEL);
+	u32 active_bank = sel & CLK_SEL_BANK_BIT;
+	u32 shift = active_bank * CLK_CTL_BANK_FIELD_WIDTH;
+	u32 ctl = readl(c->acc_base + SPSS_CLK_CTL);
+	u32 field = (ctl >> shift) & 0xFF;
+	u32 src = (field >> CLK_CTL_SRC_SEL_SHIFT) & 0xF;
+	u32 div = (field >> CLK_CTL_SRC_DIV_SHIFT) & 0xF;
+	unsigned long parent_rate;
+
+	switch (src) {
+	case SRC_SEL_PLL8:
+		parent_rate = FREQ_PLL8;
+		break;
+	case SRC_SEL_AFAB:
+		/* HP lk boot-handoff rate; not a vendor-validated mux input. */
+		parent_rate = 310500000UL;
+		break;
+	default:
+		/* Unknown source; report current_rate as fallback. */
+		return c->current_rate;
+	}
+
+	return parent_rate / (div + 1);
 }
 
 static unsigned long apcs_cpu_clk_recalc_rate(struct clk_hw *hw,
 					      unsigned long parent_rate)
 {
 	struct apcs_cpu_clk *c = to_apcs_cpu_clk(hw);
-	u32 ctl, l_val;
+	u32 core_src, ctl, l_val;
 
-	/* Read actual rate from hardware */
-	ctl = readl(c->scpll_base + SCPLL_CTL);
-	if ((ctl & 0x7) == SCPLL_NORMAL) {
-		l_val = (ctl >> 3) & 0x3f;
-		c->current_rate = (unsigned long)l_val * SCPLL_RATE_FACTOR;
+	core_src = read_core_src(c);
+	if (core_src == CORE_SRC_SCPLL) {
+		ctl = readl(c->scpll_base + SCPLL_CTL);
+		if ((ctl & 0x7) == SCPLL_NORMAL) {
+			l_val = (ctl >> 3) & 0x3f;
+			c->current_rate = (unsigned long)l_val * SCPLL_RATE_FACTOR;
+		}
+		c->current_src = CORE_SRC_SCPLL;
+	} else if (core_src == CORE_SRC_MUX) {
+		c->current_rate = read_mux_output_rate(c);
+		c->current_src = CORE_SRC_MUX;
 	}
 
 	return c->current_rate;
 }
+
+#define FREQ_PLL8_DIV2		(FREQ_PLL8 / 2)	/* 192 MHz */
 
 static int apcs_cpu_clk_determine_rate(struct clk_hw *hw,
 				       struct clk_rate_request *req)
 {
 	unsigned long rate = req->rate;
 
-	/* Clamp to supported range */
-	if (rate < FREQ_PLL8)
-		rate = FREQ_PLL8;
-	else if (rate > FREQ_SCPLL_MAX)
+	if (rate >= FREQ_SCPLL_MAX) {
 		rate = FREQ_SCPLL_MAX;
-
-	/* Round to nearest SCPLL step if using SCPLL */
-	if (rate >= FREQ_SCPLL_MIN) {
+	} else if (rate >= FREQ_SCPLL_MIN) {
+		/* SCPLL grid: 2 * 27 MHz * L_VAL (= SCPLL_RATE_FACTOR). */
 		u32 l_val = DIV_ROUND_CLOSEST(rate, SCPLL_RATE_FACTOR);
+
 		l_val = clamp_t(u32, l_val, SCPLL_L_VAL_MIN, SCPLL_L_VAL_MAX);
 		rate = (unsigned long)l_val * SCPLL_RATE_FACTOR;
+	} else if (rate >= FREQ_PLL8) {
+		rate = FREQ_PLL8;		/* PLL_8 direct = 384 MHz */
 	} else {
-		rate = FREQ_PLL8;
+		rate = FREQ_PLL8_DIV2;		/* PLL_8 / 2 = 192 MHz */
 	}
 
 	req->rate = rate;
@@ -538,26 +644,47 @@ static int apcs_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 {
 	struct apcs_cpu_clk *c = to_apcs_cpu_clk(hw);
 	const struct vdd_req *vdd_new, *vdd_old;
-	u32 ctl, l_val_cur, l_val_new;
+	u32 ctl, l_val_cur, l_val_new, cur_src;
 	unsigned long flags;
-	bool freq_increasing;
+	bool freq_increasing, going_to_mux;
 	int ret = 0;
 
 	ctl = readl(c->scpll_base + SCPLL_CTL);
 	l_val_cur = (ctl >> 3) & 0x3f;
 
-	if (rate <= FREQ_PLL8) {
-		/* TODO: Switch to PLL8 source for low frequencies */
-		c->current_rate = FREQ_PLL8;
+	cur_src = read_core_src(c);
+	c->current_src = cur_src;
+	freq_increasing = rate > c->current_rate;
+	going_to_mux = (rate <= FREQ_PLL8);
+
+	if (going_to_mux) {
+		/*
+		 * Targets at or below PLL_8 (384 MHz) run from the PLL
+		 * divider mux. 192 MHz uses div=1 (PLL_8/2); 384 MHz uses
+		 * div=0 (PLL_8/1). Going "down" by definition here, so:
+		 *   - reprogram the inactive mux bank with PLL_8 at the
+		 *     right divider, then activate that bank,
+		 *   - flip core_src_sel from SCPLL to MUX (if not already
+		 *     on MUX) so the CPU actually runs from the mux output,
+		 *   - drop vdd_mem/vdd_dig + EBI BW vote to PLL_8 levels.
+		 */
+		u32 div = (rate <= FREQ_PLL8_DIV2) ? 1 : 0;
+
+		spin_lock_irqsave(&c->lock, flags);
+		program_pll_div_mux(c, SRC_SEL_PLL8, div);
+		if (cur_src != CORE_SRC_MUX)
+			select_core_src(c, CORE_SRC_MUX);
+		c->current_rate = (div == 1) ? FREQ_PLL8_DIV2 : FREQ_PLL8;
+		spin_unlock_irqrestore(&c->lock, flags);
+
+		apcs_set_bus_bw(c, apcs_bw_for_rate(c->current_rate));
 		apcs_decrease_vdd(c, VDD_MEM_PLL8, VDD_DIG_PLL8);
-		apcs_set_bus_bw(c, apcs_bw_for_rate(FREQ_PLL8));
 		return 0;
 	}
 
+	/* SCPLL path */
 	l_val_new = DIV_ROUND_CLOSEST(rate, SCPLL_RATE_FACTOR);
 	l_val_new = clamp_t(u32, l_val_new, SCPLL_L_VAL_MIN, SCPLL_L_VAL_MAX);
-
-	freq_increasing = rate > c->current_rate;
 
 	/* Look up target vdd_mem/vdd_dig requirements */
 	vdd_new = get_vdd_req(l_val_new);
@@ -578,35 +705,41 @@ static int apcs_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	if (freq_increasing)
 		apcs_set_bus_bw(c, apcs_bw_for_rate(rate));
 
-	if (l_val_new == l_val_cur) {
-		c->current_rate = (unsigned long)l_val_cur * SCPLL_RATE_FACTOR;
-		goto done;
+	spin_lock_irqsave(&c->lock, flags);
+
+	/*
+	 * Slew SCPLL to the target L_VAL while the CPU is still on whatever
+	 * source it's on (mux or SCPLL). If we were on MUX the CPU is
+	 * unaffected by this slew; if we were on SCPLL the slew is the
+	 * actual freq transition (glitch-free per the complex-slew FSM).
+	 */
+	if (l_val_new != l_val_cur) {
+		ret = scpll_change_freq(c->scpll_base, l_val_new);
+		if (ret) {
+			pr_err("apcs: freq change to L=%u failed: %d\n",
+			       l_val_new, ret);
+			spin_unlock_irqrestore(&c->lock, flags);
+			if (freq_increasing) {
+				vdd_old = get_vdd_req(l_val_cur);
+				if (vdd_old)
+					apcs_decrease_vdd(c, vdd_old->vdd_mem,
+							  vdd_old->vdd_dig);
+			}
+			return ret;
+		}
 	}
 
 	/*
-	 * Change SCPLL frequency using complex slew.
-	 * vdd_sc scaling is handled by cpufreq-dt via the SAW regulator.
+	 * If the CPU was on the PLL divider mux, flip it over to SCPLL now
+	 * that SCPLL is sitting at the right L_VAL. This is a one-write
+	 * mux switch -- glitch-free.
 	 */
-	spin_lock_irqsave(&c->lock, flags);
-
-	ret = scpll_change_freq(c->scpll_base, l_val_new);
-	if (ret) {
-		pr_err("apcs: freq change to L=%u failed: %d\n", l_val_new, ret);
-		spin_unlock_irqrestore(&c->lock, flags);
-		/* Roll back voltage on failure */
-		if (freq_increasing) {
-			vdd_old = get_vdd_req(l_val_cur);
-			if (vdd_old)
-				apcs_decrease_vdd(c, vdd_old->vdd_mem,
-						  vdd_old->vdd_dig);
-		}
-		return ret;
-	}
+	if (cur_src != CORE_SRC_SCPLL)
+		select_core_src(c, CORE_SRC_SCPLL);
 
 	c->current_rate = (unsigned long)l_val_new * SCPLL_RATE_FACTOR;
 	spin_unlock_irqrestore(&c->lock, flags);
 
-done:
 	/* Decrease EBI bandwidth vote AFTER frequency decrease */
 	if (!freq_increasing)
 		apcs_set_bus_bw(c, apcs_bw_for_rate(rate));
@@ -774,12 +907,26 @@ static int apcs_msm8660_probe(struct platform_device *pdev)
 	dev_info(dev, "SCPLL assumed calibrated by bootloader\n");
 
 	/*
-	 * Don't change CPU clock during probe - the system may not be ready.
-	 * Just record the current state (assume PLL8 at boot) and let
-	 * cpufreq handle frequency changes later when the system is stable.
+	 * Read the actual core source select and current rate from
+	 * hardware rather than assuming PLL_8. HP lk hands the kernel
+	 * a chip running on AFAB at ~310.5 MHz (per webOS dmesg:
+	 * `cpufreq: cpu0 init at 310500 switching to 192000`), with
+	 * SCPLL already calibrated in NORMAL mode but not yet routed
+	 * as the core source. cpufreq's first transition will switch
+	 * us over.
 	 */
-	cpu_clk->current_rate = FREQ_PLL8;
-	cpu_clk->current_src = SRC_SEL_PLL8;
+	cpu_clk->current_src = read_core_src(cpu_clk);
+	if (cpu_clk->current_src == CORE_SRC_SCPLL) {
+		u32 ctl = readl(cpu_clk->scpll_base + SCPLL_CTL);
+
+		if ((ctl & 0x7) == SCPLL_NORMAL)
+			cpu_clk->current_rate =
+				((ctl >> 3) & 0x3f) * SCPLL_RATE_FACTOR;
+		else
+			cpu_clk->current_rate = FREQ_PLL8;
+	} else {
+		cpu_clk->current_rate = read_mux_output_rate(cpu_clk);
+	}
 
 	init.name = "cpu_clk";
 	if (of_property_read_string(dev->of_node, "clock-output-names",

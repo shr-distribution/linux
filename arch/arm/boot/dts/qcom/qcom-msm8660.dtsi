@@ -158,6 +158,22 @@
 		nvmem-cell-names = "speedbin";
 		opp-shared;
 
+		/*
+		 * 192 MHz idle OPP: PLL_8 (384 MHz) routed through the PLL
+		 * divider mux with div=1 (/2). Voltage matches our 384 MHz
+		 * OPP (875 mV) rather than Palm's 812.5 mV; the SAW min is
+		 * 840 mV so a sub-840 mV vote would be rejected by the
+		 * regulator framework before reaching the PMIC. 875 mV is
+		 * still well below the 1.25 V top-OPP request and gives
+		 * meaningful idle-power savings vs running at 384 MHz.
+		 */
+		opp-192000000 {
+			opp-hz = /bits/ 64 <192000000>;
+			opp-microvolt = <875000>;
+			opp-supported-hw = <0x7>;	/* all bins */
+			clock-latency-ns = <100000>;
+		};
+
 		opp-384000000 {
 			opp-hz = /bits/ 64 <384000000>;
 			opp-microvolt = <875000>;
