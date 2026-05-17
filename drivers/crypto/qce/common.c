@@ -886,57 +886,28 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	if (!rctx->last_blk && req->nbytes % blocksize)
 		return -EINVAL;
 
-	/* Wait for CE2 to be fully IDLE before configuring. After AUTH_DONE
-	 * on a previous op, CE2 transitions through FINAL_READ/CTXT_CLEARING/
-	 * UNLOCKING (states 5/6/7) before returning to IDLE (0). Writing
-	 * SEG_CFG before that completes causes CFG_CHNG_ERR + SEG_CHNG_ERR
-	 * (status bits 16 + 17) and the new op's AUTH_DONE never fires.
+	/*
+	 * Wait for CE2 to be fully IDLE before configuring. After AUTH_DONE
+	 * on a previous op, CE2 transitions through:
+	 *   PROCESSING -> FINAL_READ -> CTXT_CLEARING -> UNLOCKING -> IDLE
+	 *
+	 * On webOS / mako, this transition is driven by an ADM DMA read of
+	 * AUTH_IV0 with CRCI 15 (CE_HASH_CRCI) handshake -- the hardware
+	 * handshake is what tells the engine "host consumed the digest, you
+	 * can clear context now".  Our PIO readl() of AUTH_IV does NOT fire
+	 * CRCI 15, so the engine takes considerably longer to reach IDLE
+	 * (or, after multiple ops, fails to fully clear internal state at
+	 * all -- this is the SHA256 back-to-back wedge).
+	 *
+	 * Wait up to 100 ms (vs the previous 10 ms) to give the engine the
+	 * full state-machine settling time.
 	 */
-	for (timeout = 1000; timeout > 0; timeout--) {
+	for (timeout = 10000; timeout > 0; timeout--) {
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
 		if ((status & CE2_CRYPTO_STATE_MASK) == 0)
 			break;
 		udelay(10);
 	}
-
-	/*
-	 * Per-op engine re-init, matching webOS _init_ce_engine
-	 * (drivers/crypto/msm/qce.c) on the production touchpad kernel:
-	 *
-	 *   writel(SW_RST, CONFIG); mb(); msleep(1);
-	 *   writel(mask_bits, CONFIG); mb();
-	 *
-	 * Without this, back-to-back SHA256 ops wedge: STATUS=0x10201104
-	 * (state=PROCESSING + AUTH_BUSY=1) with AUTH_DONE never firing.
-	 * The first SHA256 after a series of SHA1 ops works because the
-	 * alg transition implicitly resets internal hash state; consecutive
-	 * SHA256 ops do not.
-	 *
-	 * An earlier per-op SW_RST attempt (commit 2f22dbeff320) also
-	 * never asserted AUTH_DONE, but used CONFIG=0 after SW_RST which
-	 * cleared the interrupt masks; CE2 needs them set (= masked) for
-	 * the status-poll completion model to work.  This version writes
-	 * mask_bits like webOS does.
-	 */
-	writel(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
-	wmb();
-	usleep_range(1000, 1500);
-	writel(BIT(CE2_MASK_DOUT_INTR_SHIFT) |
-	       BIT(CE2_MASK_DIN_INTR_SHIFT) |
-	       BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
-	       BIT(CE2_MASK_ERR_INTR_SHIFT),
-	       qce->base + CE2_REG_CONFIG);
-	wmb();
-
-	/* Clear sticky AUTH_DONE / DIN_INTR / DOUT_INTR / ERR_INTR bits in
-	 * STATUS from any previous operation. Writing 0 to STATUS clears
-	 * write-1-to-clear bits. The first-ever op after probe has STATUS
-	 * == 0x10200004 (no AUTH_DONE), so the PIO test in core.c works
-	 * without this. AF_ALG ops 2..N inherit AUTH_DONE=1 sticky from
-	 * the previous op, and writing SEG_CFG while AUTH_DONE is still
-	 * asserted makes CE2 compute a non-standard hash.
-	 */
-	writel_relaxed(0, qce->base + CE2_REG_STATUS);
 
 	/* Exact mirror of the working qce_test_pio_mode() diagnostic in
 	 * core.c. Uses writel_relaxed throughout (no memory barriers
@@ -966,34 +937,36 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		       qce->base + CE2_REG_AUTH_SEG_CFG);
 	writel_relaxed(req->nbytes, qce->base + CE2_REG_SEG_SIZE);
 
-	/* AUTH_IV: clear IV5..15 first (residual from prior ops corrupts
-	 * SHA1 results), then write the algorithm IVs.
+	/*
+	 * AUTH_IV0..N: write only the algorithm IV words (5 for SHA1, 8 for
+	 * SHA256).  Do NOT zero IV5..15: webOS / mako never touch those
+	 * registers, and writing to them while the engine is still in
+	 * CTXT_CLEARING / UNLOCKING (states 6/7) appears to corrupt the
+	 * internal cleanup, contributing to the SHA256 back-to-back wedge.
 	 */
 	{
 		unsigned int j;
 		u32 *iv32 = (u32 *)auth;
 
-		for (j = iv_words; j < 16; j++)
-			writel_relaxed(0, qce->base +
-				CE2_REG_AUTH_IV0 + j * sizeof(u32));
 		for (j = 0; j < iv_words; j++)
 			writel_relaxed(iv32[j], qce->base +
 				CE2_REG_AUTH_IV0 + j * sizeof(u32));
 	}
 
-	/* AUTH_BYTECNT0..3 */
+	/*
+	 * AUTH_BYTECNT0/1 only.  webOS / mako only program 64 bits of
+	 * counter (BYTECNT0/1).  BYTECNT2/3 are not used by SHA1/SHA256 and
+	 * writing them was a defensive-only addition that is not in any
+	 * working reference.
+	 */
 	if (rctx->first_blk) {
 		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT0);
 		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT1);
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT2);
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT3);
 	} else {
 		writel_relaxed((__force u32)rctx->byte_count[0],
 			       qce->base + CE2_REG_AUTH_BYTECNT0);
 		writel_relaxed((__force u32)rctx->byte_count[1],
 			       qce->base + CE2_REG_AUTH_BYTECNT1);
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT2);
-		writel_relaxed(0, qce->base + CE2_REG_AUTH_BYTECNT3);
 	}
 
 	/* CONFIG: read-modify-write matching PIO diagnostic (set interrupt
