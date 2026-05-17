@@ -97,14 +97,19 @@
 #define VIDC_PCACHE_ENC_ENABLE		0
 
 /*
- * Per-instance context memory size (legacy DDL_CONTEXT_MEMORY: 15 KB
- * per client). Round up to 16 KB so each instance is page-aligned in
- * the shared firmware allocation.
+ * Per-instance context memory size: H.264 decode requires 800 KB per
+ * channel (DDL_FW_H264DEC_CONTEXT_SPACE_SIZE). The firmware enforces
+ * this minimum and returns VIDC_1080P_ERROR_INSUFFICIENT_CONTEXT_SIZE
+ * (25) if the OPEN_CH arg4 is smaller.
  */
-#define VIDC_CTXT_MEM_SIZE		SZ_16K
+#define VIDC_CTXT_MEM_SIZE		(800 * SZ_1K)
 
-/* Concurrent instance ceiling for context-memory pool sizing */
-#define VIDC_MAX_INSTANCES		4
+/*
+ * Concurrent instance ceiling. With 800 KB per channel the layout is:
+ *   fw (~592 KB) + 2×800 KB ctx + 128 KB desc + 4 KB shm ≈ 2.3 MB
+ * which fits within the 3 MB vidc_fw_mem SMI reservation.
+ */
+#define VIDC_MAX_INSTANCES		2
 
 /*
  * DPB (display picture buffer) sizing for the 1080p tile-NV12 format
