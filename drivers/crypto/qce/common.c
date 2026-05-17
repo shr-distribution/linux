@@ -891,9 +891,6 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	 * UNLOCKING (states 5/6/7) before returning to IDLE (0). Writing
 	 * SEG_CFG before that completes causes CFG_CHNG_ERR + SEG_CHNG_ERR
 	 * (status bits 16 + 17) and the new op's AUTH_DONE never fires.
-	 *
-	 * If the engine is wedged in PROCESSING from a prior failed op,
-	 * pulse SW_RST to clear it.
 	 */
 	for (timeout = 1000; timeout > 0; timeout--) {
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
@@ -901,16 +898,35 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 			break;
 		udelay(10);
 	}
-	if (timeout <= 0) {
-		dev_warn(qce->dev,
-			 "CE2 hash: engine wedged (STATUS=0x%08x), pulsing SW_RST\n",
-			 status);
-		writel_relaxed(BIT(CE2_SW_RST_SHIFT),
-			       qce->base + CE2_REG_CONFIG);
-		udelay(100);
-		writel_relaxed(0, qce->base + CE2_REG_CONFIG);
-		udelay(100);
-	}
+
+	/*
+	 * Per-op engine re-init, matching webOS _init_ce_engine
+	 * (drivers/crypto/msm/qce.c) on the production touchpad kernel:
+	 *
+	 *   writel(SW_RST, CONFIG); mb(); msleep(1);
+	 *   writel(mask_bits, CONFIG); mb();
+	 *
+	 * Without this, back-to-back SHA256 ops wedge: STATUS=0x10201104
+	 * (state=PROCESSING + AUTH_BUSY=1) with AUTH_DONE never firing.
+	 * The first SHA256 after a series of SHA1 ops works because the
+	 * alg transition implicitly resets internal hash state; consecutive
+	 * SHA256 ops do not.
+	 *
+	 * An earlier per-op SW_RST attempt (commit 2f22dbeff320) also
+	 * never asserted AUTH_DONE, but used CONFIG=0 after SW_RST which
+	 * cleared the interrupt masks; CE2 needs them set (= masked) for
+	 * the status-poll completion model to work.  This version writes
+	 * mask_bits like webOS does.
+	 */
+	writel(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
+	wmb();
+	usleep_range(1000, 1500);
+	writel(BIT(CE2_MASK_DOUT_INTR_SHIFT) |
+	       BIT(CE2_MASK_DIN_INTR_SHIFT) |
+	       BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
+	       BIT(CE2_MASK_ERR_INTR_SHIFT),
+	       qce->base + CE2_REG_CONFIG);
+	wmb();
 
 	/* Clear sticky AUTH_DONE / DIN_INTR / DOUT_INTR / ERR_INTR bits in
 	 * STATUS from any previous operation. Writing 0 to STATUS clears
