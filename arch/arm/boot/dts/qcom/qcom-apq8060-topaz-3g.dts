@@ -435,10 +435,11 @@
 		 * on the isp1763 node.
 		 */
 		modem-disable-pins {
-			pins = "gpio171";		/* 3G_DISABLE_N */
+			pins = "gpio171";		/* 3G_DISABLE_N (active-low) */
 			function = "gpio";
 			drive-strength = <2>;
 			bias-disable;
+			output-high;			/* deassert disable -> modem enabled */
 		};
 	};
 
@@ -676,7 +677,31 @@
 		 * gpio158 (TP172) -- still hardware-default-on. Driving
 		 * gpio106 from here would collide with the WEBCAM_RST line.
 		 */
-		reset-gpios = <&tlmm 152 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 152 GPIO_ACTIVE_LOW>;
+
+		/*
+		 * EBI2 CS3 timing (mirrors legacy webOS board-tenderloin.c which
+		 * writes 0x51010112 / 0x01000020 directly to EBI2_XMEM_CS3_*_CFG
+		 * for boardtype_is_3g()). Without these the qcom-ebi2 driver
+		 * keeps the CS at controller-reset defaults that are too fast
+		 * for the ISP1763, the scratch-register test reads back as 0
+		 * and the chip never enumerates.
+		 *
+		 *   SLOW_CFG = 0x51010112
+		 *     RECOVERY=5  WR_HOLD=1  WR_DELTA=1  RD_DELTA=1
+		 *     WR_WAIT=1   RD_WAIT=2
+		 *   FAST_CFG = 0x01000020
+		 *     RD_HOLD=1   ADV_OE_RECOVERY=0   ADDR_HOLD_ENA=1
+		 */
+		qcom,xmem-recovery-cycles = <5>;
+		qcom,xmem-write-hold-cycles = <1>;
+		qcom,xmem-write-delta-cycles = <1>;
+		qcom,xmem-read-delta-cycles = <1>;
+		qcom,xmem-write-wait-cycles = <1>;
+		qcom,xmem-read-wait-cycles = <2>;
+		qcom,xmem-read-hold-cycles = <1>;
+		qcom,xmem-adv-to-oe-recovery-cycles = <0>;
+		qcom,xmem-address-hold-enable;
 	};
 };
 
