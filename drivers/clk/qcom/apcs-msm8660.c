@@ -34,8 +34,20 @@
  * Register offsets from ACC base
  * Each CPU has its own ACC at different base addresses
  */
-#define SPSS_CLK_CTL		0x00
-#define SPSS_CLK_SEL		0x04
+/*
+ * Per-CPU clock control / source-select registers in the ACC region.
+ * Offsets verified against Palm's downstream acpuclock-8x60.c:
+ *   #define SPSS0_CLK_CTL_ADDR  (MSM_ACC0_BASE + 0x04)
+ *   #define SPSS0_CLK_SEL_ADDR  (MSM_ACC0_BASE + 0x08)
+ * The previous values (0x00, 0x04) were off by 4 bytes and pointed
+ * select_clk_source() at the divider register instead of the source
+ * select register. That helper is currently unreachable from the
+ * active set_rate path so this never produced a visible failure, but
+ * fixing the constants before we wire up the low-freq PLL_8 source
+ * switch (TODO at apcs_cpu_clk_set_rate, rate <= FREQ_PLL8).
+ */
+#define SPSS_CLK_CTL		0x04
+#define SPSS_CLK_SEL		0x08
 
 /*
  * NOTE: the L2 clock-source select register is *not* at ACC base + 0x38.
@@ -54,10 +66,22 @@
  * still painting the Tux logo). See commit log for the analysis.
  */
 
-/* Clock source selection values (informational, used by L2 SCPLL slewing) */
-#define SRC_SEL_AFAB		0	/* 27 MHz */
-#define SRC_SEL_PLL8		3	/* 384 MHz */
-#define SRC_SEL_SCPLL		1	/* Dynamic SCPLL */
+/*
+ * Source-select values used in the per-bank acpuclk_src_sel field of
+ * SPSS_CLK_CTL (bits [4..7] for bank 0, [12..15] for bank 1) when the
+ * core mux output is taken from the PLL divider mux.
+ *
+ * AFAB here is the Application Fabric clock at ~310.5 MHz (this is
+ * Palm's "MAX_AXI" rate, 310500 KHz, which is also the freq HP lk
+ * hands the kernel running at). NOT the 27 MHz TCXO (PXO) the previous
+ * comment claimed -- PXO never reaches the CPU mux directly.
+ *
+ * SCPLL is selected via CLK_SEL[2:1] (the core_src_sel field), not via
+ * this acpuclk_src_sel field; the value defined here is informational.
+ */
+#define SRC_SEL_AFAB		1	/* AFAB ~310.5 MHz */
+#define SRC_SEL_PLL8		3	/* PLL_8 384 MHz */
+#define SRC_SEL_SCPLL		1	/* (core_src_sel value, not acpuclk_src_sel) */
 
 /*
  * SCPLL register offsets
