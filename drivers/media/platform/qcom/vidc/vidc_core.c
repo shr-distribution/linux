@@ -746,6 +746,14 @@ int vidc_boot_firmware(struct vidc_core *core)
 		return 0;
 
 	/*
+	 * Fresh firmware boot: reset the context-pool cursor so the first
+	 * OPEN_CH after a power cycle always gets slot 0. The DMA buffer
+	 * is still mapped; slot contents are zeroed in vidc_open_channel
+	 * before each use.
+	 */
+	core->ctxt_pool_used = 0;
+
+	/*
 	 * Bring the RISC out of reset and program firmware. We need
 	 * vidc_hw_reset() here because the gdsc-qcom ved entry's
 	 * LEGACY_FOOTSWITCH | SW_RESET only resets the AHB slave
@@ -1040,9 +1048,8 @@ unlock:
  * Close the channel previously opened with vidc_open_channel().
  *
  * Sends HOST2RISC CLOSE_CH with no codec arg and waits for the
- * RESP_CLOSE_CH acknowledgement. The context buffer slot is NOT
- * recycled back into the pool — the pool's lifetime is one firmware
- * load, and concurrent-instance count is bounded by VIDC_MAX_INSTANCES.
+ * RESP_CLOSE_CH acknowledgement. Recycles the context pool cursor so
+ * sequential single-instance use reuses slot 0.
  *
  * Safe to call when the channel is already closed (returns 0).
  */
@@ -1082,6 +1089,24 @@ int vidc_close_channel(struct vidc_inst *inst)
 	}
 
 	inst->ch_open = false;
+
+	/*
+	 * Recycle the context pool slot. This makes sequential single-instance
+	 * use reuse slot 0 on every open/close cycle instead of walking the
+	 * pool forward until it exhausts. The context DMA memory is still
+	 * mapped; it will be zeroed again in vidc_open_channel before the
+	 * next OPEN_CH.
+	 *
+	 * Concurrent multi-instance callers must close in LIFO order for
+	 * this to remain correct (last-opened instance is closed first),
+	 * which matches the normal V4L2 usage pattern. VIDC_MAX_INSTANCES
+	 * caps concurrent opens to 2 so the worst-case wasted stride is
+	 * one VIDC_CTXT_MEM_SIZE slot.
+	 */
+	mutex_lock(&core->lock);
+	if (core->ctxt_pool_used >= VIDC_CTXT_MEM_SIZE)
+		core->ctxt_pool_used -= VIDC_CTXT_MEM_SIZE;
+	mutex_unlock(&core->lock);
 
 	/*
 	 * Reset the sequence-parsed gate so a subsequent STREAMON cycle
