@@ -2068,17 +2068,23 @@ static int vidc_runtime_suspend(struct device *dev)
 	if (core->icc_ebi_path)
 		icc_set_bw(core->icc_ebi_path, 0, 0);
 
-	if (core->gdsc) {
+	if (core->gdsc)
 		regulator_disable(core->gdsc);
-		/*
-		 * GDSC drop wipes the RISC's boot state. The DRAM-resident
-		 * firmware image is preserved (coherent DMA buffer survives
-		 * power cycles), but DRAM_BASE_A/B registers and the RISC's
-		 * own boot pointer are gone. Mark fw_running=false so the
-		 * next resume re-programs registers + re-sends SYS_INIT.
-		 */
-		core->fw_running = false;
-	}
+
+	/*
+	 * Clocks are cut at this point regardless of whether GDSC is
+	 * managed here. The RISC is frozen mid-execution; its internal
+	 * state on clock-restore is undefined. Always mark fw_running=false
+	 * so the next vidc_runtime_resume unconditionally runs vidc_boot_firmware
+	 * (hw_reset + SYS_INIT), giving the RISC a clean slate every time.
+	 *
+	 * Previously this was gated on core->gdsc != NULL (GDSC drop assumed
+	 * to be the only state-wiping event), but on tenderloin the video-codec
+	 * DT node has no gdsc-supply, so core->gdsc is NULL and fw_running
+	 * was never cleared — the second OPEN_CH received cmd=0 (RESP_EMPTY)
+	 * from the RISC because it had been interrupted mid-cleanup.
+	 */
+	core->fw_running = false;
 
 	return 0;
 }
