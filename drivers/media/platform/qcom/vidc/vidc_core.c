@@ -181,6 +181,14 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 		   VIDC_RESET_NONE & ~VIDC_RESET_RISC);
 
 	/*
+	 * When starting from a clean GDSC power-up (all blocks in reset,
+	 * SW_RESET = 0 on entry), VIDCCORE + COMMON come out of reset for
+	 * the first time with the write above. Give the AHB interface a
+	 * brief settling period before touching DRAM_BASE registers.
+	 */
+	msleep(1);
+
+	/*
 	 * Program DRAM_BASE_A/B while the RISC is held in reset, so the
 	 * first instruction fetch after RESET_NONE points at the firmware
 	 * we just memcpy'd into the coherent buffer.
@@ -764,6 +772,27 @@ int vidc_boot_firmware(struct vidc_core *core)
 		core->irq_disabled_by_storm = false;
 	}
 	core->empty_irq_streak = 0;
+
+	/*
+	 * Re-copy firmware to SMI SRAM and re-zero scratch regions.
+	 *
+	 * SMI SRAM (0x38000000) is not in the VIDC GDSC power domain and
+	 * retains its content across GDSC cycles. The firmware's .data/.bss
+	 * (embedded in the blob) and per-instance context state from the
+	 * previous run are therefore intact after each resume. Without a
+	 * re-copy the RISC wakes up into stale global state: old instance
+	 * pointers still live in firmware globals, causing a spurious
+	 * RISC2HOST response (cmd=51, old inst ID) that trips the IRQ
+	 * storm guard and permanently wedges all subsequent commands.
+	 *
+	 * Re-copying the full firmware blob reinitialises the RISC's
+	 * .data/.bss to the clean initial values the linker embedded in
+	 * the image, identical to what vidc_load_firmware does on first
+	 * load. Desc buffer and SHM are zeroed for the same reason.
+	 */
+	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
+	memset(core->fw_vaddr + core->desc_offset, 0, VIDC_DESC_BUF_SIZE);
+	memset(core->shm_vaddr, 0, VIDC_SHM_SIZE);
 
 	/*
 	 * Bring the RISC out of reset and program firmware. We need
