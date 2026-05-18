@@ -1418,6 +1418,185 @@ static void qce_ce2_skc_dma_done(void *param)
 }
 
 /*
+ * Run a 16-byte AES-128 ECB encrypt "warmup" op against a hardcoded
+ * key/plaintext via the same dual-channel ADM DMA path the real op
+ * uses.  After per-op SW_RST + GCC_CE2_RESET, certain alg/direction
+ * combinations (notably 3DES-CBC decrypt) come up in bypass mode --
+ * the engine receives input but doesn't transform it.  Running one
+ * "throwaway" cipher op first appears to fully bring up the ENCR
+ * block's state machine; the real op that follows then works.
+ *
+ * Costs ~5-10 ms per real cipher request -- already a slow path
+ * dominated by per-op DMA setup so the relative impact is small.
+ */
+static int qce_ce2_warmup_op(struct qce_device *qce)
+{
+	static const u32 warmup_key[4] = {
+		(__force u32)cpu_to_be32(0xdeadbeef),
+		(__force u32)cpu_to_be32(0xcafebabe),
+		(__force u32)cpu_to_be32(0x12345678),
+		(__force u32)cpu_to_be32(0xfedcba98),
+	};
+	struct dma_chan *rx = qce->dma.rxchan;
+	struct dma_chan *tx = qce->dma.txchan;
+	struct qcom_adm_peripheral_config in_periph = {
+		.crci = qce->dma.rx_crci,
+	};
+	struct qcom_adm_peripheral_config out_periph = {
+		.crci = 5,
+	};
+	struct dma_slave_config in_conf = {
+		.direction = DMA_MEM_TO_DEV,
+		.dst_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
+		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+		.dst_maxburst = 4,
+		.peripheral_config = &in_periph,
+		.peripheral_size = sizeof(in_periph),
+	};
+	struct dma_slave_config out_conf = {
+		.direction = DMA_DEV_TO_MEM,
+		.src_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
+		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+		.src_maxburst = 4,
+		.peripheral_config = &out_periph,
+		.peripheral_size = sizeof(out_periph),
+	};
+	struct dma_async_tx_descriptor *in_desc, *out_desc;
+	struct completion done;
+	dma_cookie_t in_cookie, out_cookie;
+	dma_addr_t in_dma, out_dma;
+	u32 *in_buf, *out_buf;
+	u32 encr_cfg, config, status;
+	int timeout, ret, i;
+
+	in_buf = dma_alloc_coherent(qce->dev, 16, &in_dma, GFP_KERNEL);
+	if (!in_buf)
+		return -ENOMEM;
+	out_buf = dma_alloc_coherent(qce->dev, 16, &out_dma, GFP_KERNEL);
+	if (!out_buf) {
+		ret = -ENOMEM;
+		goto out_free_in;
+	}
+
+	/* Dummy plaintext: 16 bytes of incrementing pattern, byte-swapped
+	 * (CE2 reads each dword MSB-first as message bytes -- same as real
+	 * op).  We don't care about the output value here, only that the
+	 * engine cycles through PROCESSING.
+	 */
+	for (i = 0; i < 4; i++)
+		in_buf[i] = cpu_to_le32(0x10203040 + i * 0x01010101);
+
+	/* Wait for IDLE */
+	for (timeout = 10000; timeout > 0; timeout--) {
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if ((status & CE2_CRYPTO_STATE_MASK) == 0)
+			break;
+		udelay(10);
+	}
+
+	/* AES-128 ECB encrypt setup */
+	encr_cfg = (CE2_ENCR_ALG_AES << CE2_ENCR_ALG_SHIFT) |
+		   (CE2_ENCR_KEY_SZ_AES128 << CE2_ENCR_KEY_SZ_SHIFT) |
+		   (CE2_ENCR_MODE_ECB << CE2_ENCR_MODE_SHIFT) |
+		   BIT(CE2_ENCODE_SHIFT) | BIT(CE2_AUTH_POS_SHIFT) |
+		   BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT) |
+		   BIT(CE2_CLR_CNTXT_SHIFT);
+
+	writel(0, qce->base + CE2_REG_AUTH_SEG_CFG);
+	for (i = 0; i < 4; i++)
+		writel(warmup_key[i],
+		       qce->base + CE2_REG_AES_RNDKEY0 + i * 4);
+	writel(encr_cfg, qce->base + CE2_REG_SEG_CFG);
+	writel(16U << CE2_ENCR_SEG_SIZE_SHIFT,
+	       qce->base + CE2_REG_ENCR_SEG_CFG);
+	writel(16, qce->base + CE2_REG_SEG_SIZE);
+
+	config = readl(qce->base + CE2_REG_CONFIG);
+	config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) |
+		  BIT(CE2_MASK_DIN_INTR_SHIFT) |
+		  BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
+		  BIT(CE2_MASK_ERR_INTR_SHIFT);
+	config &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
+		    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
+		    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
+	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
+	writel(config, qce->base + CE2_REG_CONFIG);
+
+	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+
+	for (timeout = 1000; timeout > 0; timeout--) {
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if (status & CE2_CRYPTO_STATE_MASK)
+			break;
+		udelay(10);
+	}
+	if (timeout <= 0) {
+		dev_err(qce->dev, "CE2 warmup: engine never left IDLE\n");
+		ret = -ETIMEDOUT;
+		goto out_free_out;
+	}
+
+	/* Run the dummy DMA: 16 bytes in, 16 bytes out */
+	ret = dmaengine_slave_config(rx, &in_conf);
+	if (ret)
+		goto out_free_out;
+	in_desc = dmaengine_prep_slave_single(rx, in_dma, 16,
+					      DMA_MEM_TO_DEV, DMA_CTRL_ACK);
+	if (!in_desc) {
+		ret = -ENOMEM;
+		goto out_term_rx;
+	}
+
+	ret = dmaengine_slave_config(tx, &out_conf);
+	if (ret)
+		goto out_term_rx;
+	out_desc = dmaengine_prep_slave_single(tx, out_dma, 16,
+					       DMA_DEV_TO_MEM,
+					       DMA_PREP_INTERRUPT |
+					       DMA_CTRL_ACK);
+	if (!out_desc) {
+		ret = -ENOMEM;
+		goto out_term_rx;
+	}
+
+	init_completion(&done);
+	out_desc->callback = qce_ce2_skc_dma_done;
+	out_desc->callback_param = &done;
+
+	in_cookie = dmaengine_submit(in_desc);
+	if (dma_submit_error(in_cookie)) {
+		ret = -EIO;
+		goto out_term;
+	}
+	out_cookie = dmaengine_submit(out_desc);
+	if (dma_submit_error(out_cookie)) {
+		ret = -EIO;
+		goto out_term;
+	}
+
+	dma_async_issue_pending(rx);
+	dma_async_issue_pending(tx);
+
+	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(500))) {
+		dev_warn(qce->dev, "CE2 warmup: DMA timeout\n");
+		ret = -ETIMEDOUT;
+		goto out_term;
+	}
+
+	ret = 0;
+
+out_term:
+	dmaengine_terminate_sync(tx);
+out_term_rx:
+	dmaengine_terminate_sync(rx);
+out_free_out:
+	dma_free_coherent(qce->dev, 16, out_buf, out_dma);
+out_free_in:
+	dma_free_coherent(qce->dev, 16, in_buf, in_dma);
+	return ret;
+}
+
+/*
  * Dual-channel ADM DMA for CE2 cipher I/O.
  *
  * rxchan (CRCI 4 = CE_IN):  memory -> DATA_SHADOW0 (peripheral)
@@ -1687,13 +1866,22 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 * state machine.  Probe does both at init time; the per-op path
 	 * needs SW_RST too for 3DES-CBC decrypt cold-start, which
 	 * otherwise returns stale DATA_SHADOW0 bytes (engine not
-	 * processing at all).  Mirrors the probe-time SW_RST pulse
-	 * timing (10 us assert, 10 us deassert).
+	 * processing at all).
 	 */
 	writel_relaxed(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
 	usleep_range(10, 20);
 	writel_relaxed(0, qce->base + CE2_REG_CONFIG);
 	usleep_range(10, 20);
+
+	/* Dummy AES-128 ECB warmup op after the reset.  Without this,
+	 * 3DES-CBC decrypt comes up in bypass mode (output = input
+	 * unchanged).  Running a throwaway cipher op first appears to
+	 * fully bring up the ENCR block's state machine for subsequent
+	 * algorithms / directions.  See qce_ce2_warmup_op() comment.
+	 */
+	ret = qce_ce2_warmup_op(qce);
+	if (ret)
+		dev_warn(qce->dev, "CE2 warmup failed (%d); continuing\n", ret);
 
 	/* Wait for IDLE before configuring */
 	for (timeout = 10000; timeout > 0; timeout--) {
