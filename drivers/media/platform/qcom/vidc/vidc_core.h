@@ -89,6 +89,12 @@
 #define VIDC_OP_LAST_FRAME		0x00030000
 #define VIDC_OP_INIT_BUFFERS		0x00040000
 
+/*
+ * INIT_CH sentinel: written to VIDC_REG_CH0_INST_ID before every
+ * command to put the channel in a known idle state (DDL requirement).
+ */
+#define VIDC_INIT_CH_INST_ID		0x0000ffff
+
 /* Address shift for hardware registers */
 #define VIDC_ADDR_SHIFT			11
 

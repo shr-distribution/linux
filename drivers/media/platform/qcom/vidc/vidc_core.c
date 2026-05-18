@@ -45,8 +45,6 @@
  */
 #define VIDC_FW_SIZE_MAX	(1024 * 1024)
 
-#define VIDC_INIT_CH_INST_ID	0x0000ffff
-
 /* Interconnect bandwidth for 1080p video (in bytes/sec) */
 #define VIDC_BW_AVG		(245 * 1024 * 1024)	/* 245 MB/s average */
 #define VIDC_BW_PEAK		(500 * 1024 * 1024)	/* 500 MB/s peak */
