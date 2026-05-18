@@ -604,8 +604,10 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		break;
 
 	case VIDC_RESP_OPEN_CH:
-		dev_dbg(core->dev, "Channel opened\n");
 		if (inst) {
+			inst->inst_id = vidc_read(core, VIDC_REG_RETURNED_CH_INST_ID);
+			vidc_write(core, VIDC_REG_RETURNED_CH_INST_ID, VIDC_INIT_CH_INST_ID);
+			dev_dbg(core->dev, "Channel opened, inst_id=0x%08x\n", inst->inst_id);
 			inst->state = VIDC_STATE_OPEN;
 			complete(&inst->done);
 		}
