@@ -15,6 +15,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <linux/delay.h>
+
 #include "core.h"
 #include "hif-ops.h"
 #include "target.h"
@@ -36,6 +38,51 @@ int ath6kl_bmi_done(struct ath6kl *ar)
 	if (ret) {
 		ath6kl_err("Unable to send bmi done: %d\n", ret);
 		return ret;
+	}
+
+	/*
+	 * Post-BMI settle + wakeup poll for AR6003 over Qualcomm SDCC.
+	 *
+	 * After BMI_DONE, the AR6003 ARM core jumps from boot-ROM into the
+	 * uploaded SRAM firmware. During this transition the chip's
+	 * host-interface logic resets, and its aggressive power-management
+	 * state machine can treat any SDIO clock irregularity (caused by
+	 * fabric contention on a shared ADM controller -- e.g. eMMC DMA on
+	 * the same adm_dma1) as a sleep signal, locking the chip in deep
+	 * sleep with its SDIO command path shut down. The host then sees
+	 * CMDTIMEOUT on the first post-BMI CMD53 ("failed to read reg
+	 * table") and ath6kl gives up.
+	 *
+	 * Mitigation: explicit settle delay, then a CMD52-paced wakeup loop
+	 * doing single-byte reads of HOST_INT_STATUS_ADDRESS. The CMD52
+	 * traffic keeps the chip's SDIO state machine awake until firmware
+	 * completes its entry sequence and starts responding. Errors during
+	 * the poll are expected (chip silent during transition) and ignored;
+	 * the first successful read confirms the chip is alive.
+	 */
+	if (ar->hif_type == ATH6KL_HIF_TYPE_SDIO) {
+		u8 tmp;
+		int i;
+
+		msleep(30);
+
+		for (i = 0; i < 50; i++) {
+			ret = hif_read_write_sync(ar, HOST_INT_STATUS_ADDRESS,
+						  &tmp, 1,
+						  HIF_RD_SYNC_BYTE_INC);
+			if (ret == 0)
+				break;
+			usleep_range(1000, 1500);
+		}
+
+		if (i == 50) {
+			ath6kl_warn("post-BMI wakeup poll didn't see chip respond in ~50 ms; letting htc_wait_target try anyway\n");
+		} else {
+			ath6kl_dbg(ATH6KL_DBG_BMI,
+				   "post-BMI: chip responded after %d CMD52 polls (~%d ms total)\n",
+				   i + 1, 30 + i);
+		}
+		/* Don't return ret; htc_wait_target has its own retry/timeout. */
 	}
 
 	return 0;
