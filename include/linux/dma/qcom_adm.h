@@ -2,13 +2,41 @@
 #ifndef __LINUX_DMA_QCOM_ADM_H
 #define __LINUX_DMA_QCOM_ADM_H
 
+#include <linux/bits.h>
 #include <linux/types.h>
 
 struct dma_chan;
 
+/*
+ * Optional cmd_flags bits.  When set, the ADM hardware applies the
+ * corresponding byte/short/word reorder to data flowing between memory
+ * and the peripheral port, in-flight, per CRCI handshake.  The flags are
+ * direction-agnostic in this API: the driver applies SRC_SWAP_* on
+ * DMA_DEV_TO_MEM transfers (reorder data leaving the peripheral) and
+ * DST_SWAP_* on DMA_MEM_TO_DEV transfers (reorder data entering the
+ * peripheral).  In both cases the swap happens on the peripheral side
+ * -- "swap whichever byte order the peripheral disagrees with my memory
+ * layout on".
+ *
+ * Combined SWAP_BYTES | SWAP_SHORTS produces a full 32-bit byte reverse
+ * (equivalent to cpu_to_be32 between LE memory and a BE peripheral).
+ *
+ * Set on the peripheral_config passed to dmaengine_slave_config().
+ */
+#define QCOM_ADM_CMD_FLAG_SWAP_BYTES	BIT(0)
+#define QCOM_ADM_CMD_FLAG_SWAP_SHORTS	BIT(1)
+#define QCOM_ADM_CMD_FLAG_SWAP_WORDS	BIT(2)
+
 struct qcom_adm_peripheral_config {
 	u32 crci;
 	u32 mux;
+
+	/*
+	 * Bitmask of QCOM_ADM_CMD_FLAG_* values OR'd into every BOX/SINGLE
+	 * ADM command emitted on this channel.  Zero (unset) preserves
+	 * existing behaviour (no in-flight swap).
+	 */
+	u32 cmd_flags;
 
 	/*
 	 * Optional pre-submit hook. If set, the ADM driver calls

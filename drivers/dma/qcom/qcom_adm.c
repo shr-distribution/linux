@@ -93,6 +93,18 @@
 #define ADM_CMD_DST_CRCI(n)		(((n) & 0xf) << 7)
 #define ADM_CMD_SRC_CRCI(n)		(((n) & 0xf) << 3)
 
+/*
+ * In-flight byte/short/word swap bits on the SRC or DST side of each
+ * BOX/SINGLE command.  The hardware reorders bytes on the peripheral
+ * port during the DMA transfer, per CRCI handshake.
+ */
+#define ADM_CMD_SRC_SWAP_BYTES		BIT(11)
+#define ADM_CMD_SRC_SWAP_SHORTS		BIT(12)
+#define ADM_CMD_SRC_SWAP_WORDS		BIT(13)
+#define ADM_CMD_DST_SWAP_BYTES		BIT(14)
+#define ADM_CMD_DST_SWAP_SHORTS		BIT(15)
+#define ADM_CMD_DST_SWAP_WORDS		BIT(16)
+
 #define ADM_CMD_TYPE_SINGLE		0x0
 #define ADM_CMD_TYPE_BOX		0x3
 
@@ -163,6 +175,7 @@ struct adm_chan {
 	struct dma_slave_config slave;
 	u32 crci;
 	u32 mux;
+	u32 cmd_flags;	/* QCOM_ADM_CMD_FLAG_* from peripheral_config */
 
 	/*
 	 * Per-channel exec_func, set via adm_slave_config from
@@ -449,11 +462,32 @@ static void *adm_process_fc_descriptors(struct adm_chan *achan, void *desc,
 		row_offset = burst;
 		src = &achan->slave.src_addr;
 		dst = &mem_addr;
+		/*
+		 * Data flows peripheral -> memory; the peripheral is the
+		 * source.  Map the direction-agnostic peripheral_config
+		 * swap flags onto the SRC swap bits so the ADM reorders
+		 * bytes as they leave the peripheral.
+		 */
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_BYTES)
+			crci_cmd |= ADM_CMD_SRC_SWAP_BYTES;
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_SHORTS)
+			crci_cmd |= ADM_CMD_SRC_SWAP_SHORTS;
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_WORDS)
+			crci_cmd |= ADM_CMD_SRC_SWAP_WORDS;
 	} else {
 		crci_cmd = ADM_CMD_DST_CRCI(crci);
 		row_offset = burst << 16;
 		src = &mem_addr;
 		dst = &achan->slave.dst_addr;
+		/* Data flows memory -> peripheral; the peripheral is the
+		 * destination.  Map the swap flags onto the DST swap bits.
+		 */
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_BYTES)
+			crci_cmd |= ADM_CMD_DST_SWAP_BYTES;
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_SHORTS)
+			crci_cmd |= ADM_CMD_DST_SWAP_SHORTS;
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_WORDS)
+			crci_cmd |= ADM_CMD_DST_SWAP_WORDS;
 	}
 
 	while (remainder >= burst) {
@@ -777,15 +811,16 @@ static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 	memcpy(&achan->slave, cfg, sizeof(struct dma_slave_config));
 	if (cfg->peripheral_size == sizeof(*config)) {
 		achan->crci = config->crci;
+		achan->cmd_flags = config->cmd_flags;
 		achan->exec_func = config->exec_func;
 		achan->exec_user = config->exec_user;
 	}
 	spin_unlock_irqrestore(&achan->vc.lock, flag);
 
 	dev_dbg(achan->adev->dev,
-		"ADM slave_config: chan=%d device_fc=%d crci=%d "
+		"ADM slave_config: chan=%d device_fc=%d crci=%d cmd_flags=0x%x "
 		"src_maxburst=%d dst_maxburst=%d src_addr_width=%d dst_addr_width=%d\n",
-		achan->id, cfg->device_fc, achan->crci,
+		achan->id, cfg->device_fc, achan->crci, achan->cmd_flags,
 		cfg->src_maxburst, cfg->dst_maxburst,
 		cfg->src_addr_width, cfg->dst_addr_width);
 

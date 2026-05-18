@@ -1449,11 +1449,25 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 {
 	struct dma_chan *rx = qce->dma.rxchan;
 	struct dma_chan *tx = qce->dma.txchan;
+	/*
+	 * ADM hardware byte+short swap on both directions: the CE2 engine
+	 * reads/writes data MSB-first on its DATA_SHADOW0 port; LuneOS RAM
+	 * is LE.  Byte+short combined = full 32-bit byte reverse, matching
+	 * the legacy webOS qce.c (CMD_DST_SWAP_BYTES | CMD_DST_SWAP_SHORTS
+	 * on CE_IN, CMD_SRC_SWAP_* on CE_OUT) and Samsung qce.ko patterns.
+	 * Doing the swap in hardware per CRCI handshake instead of in
+	 * software before DMA changes the pacing the engine sees, which is
+	 * the primary suspect for the 4-AES-block cap on the SW-swap path.
+	 */
 	struct qcom_adm_peripheral_config in_periph = {
 		.crci = qce->dma.rx_crci,	/* CRCI 4 = CE_IN */
+		.cmd_flags = QCOM_ADM_CMD_FLAG_SWAP_BYTES |
+			     QCOM_ADM_CMD_FLAG_SWAP_SHORTS,
 	};
 	struct qcom_adm_peripheral_config out_periph = {
 		.crci = 5,			/* CRCI 5 = CE_OUT */
+		.cmd_flags = QCOM_ADM_CMD_FLAG_SWAP_BYTES |
+			     QCOM_ADM_CMD_FLAG_SWAP_SHORTS,
 	};
 	struct dma_slave_config in_conf = {
 		.direction = DMA_MEM_TO_DEV,
@@ -1487,13 +1501,10 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	enum dma_status status;
 	unsigned int burst_bytes = block_dwords * 4;
 	unsigned int padded = round_up(nbytes, burst_bytes);
-	unsigned int dwords;
-	unsigned int i;
 	int ret;
 
 	if (!padded)
 		return -EINVAL;
-	dwords = padded / 4;
 
 	src_copy = kzalloc(padded, GFP_KERNEL);
 	if (!src_copy)
@@ -1516,14 +1527,13 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		goto out_free_in;
 	}
 
-	/* Byte-swap input dwords to BE (CE2 reads MSB-first) */
-	for (i = 0; i < dwords; i++) {
-		u32 w = ((u32)src_copy[i * 4 + 0] << 24) |
-			((u32)src_copy[i * 4 + 1] << 16) |
-			((u32)src_copy[i * 4 + 2] <<  8) |
-			((u32)src_copy[i * 4 + 3] <<  0);
-		in_buf[i] = cpu_to_le32(w);
-	}
+	/*
+	 * Copy src bytes verbatim.  The ADM hardware does the byte+short
+	 * swap on each CRCI handshake (see in_periph.cmd_flags above), so
+	 * no software swap here -- this is what legacy webOS qce.c and
+	 * Samsung qce.ko do.
+	 */
+	memcpy(in_buf, src_copy, padded);
 
 	/* Configure rxchan for input (CRCI 4 -> DATA_SHADOW0).  Earlier
 	 * hash ops may have left rxchan reconfigured for digest readback
@@ -1598,15 +1608,13 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		goto out_terminate;
 	}
 
-	/* Byte-swap output dwords from raw LE u32 -> BE bytes */
-	for (i = 0; i < dwords; i++) {
-		u32 w = le32_to_cpu(out_buf[i]);
-
-		dst_copy[i * 4 + 0] = (w >> 24) & 0xff;
-		dst_copy[i * 4 + 1] = (w >> 16) & 0xff;
-		dst_copy[i * 4 + 2] = (w >>  8) & 0xff;
-		dst_copy[i * 4 + 3] = (w >>  0) & 0xff;
-	}
+	/*
+	 * ADM hardware did the byte+short swap on each CRCI handshake while
+	 * draining the engine's DATA_SHADOW0 port (see out_periph.cmd_flags
+	 * above), so out_buf already holds the ciphertext bytes in their
+	 * natural memory order.  Just copy out.
+	 */
+	memcpy(dst_copy, out_buf, padded);
 	sg_copy_from_buffer(dst, sg_nents(dst), dst_copy, nbytes);
 
 	ret = 0;
