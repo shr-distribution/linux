@@ -507,6 +507,26 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		complete(&core->fw_status_done);
 		break;
 
+	case 51:
+		/*
+		 * cmd=51 (0x33) is the firmware's FW_STATUS announcement
+		 * when it boots with stale .data/.bss after a GDSC power
+		 * cycle (recovery mode).  The normal clean-boot path sends
+		 * cmd=9 (VIDC_RESP_FW_STATUS); the recovery path sends 0x33
+		 * instead and then waits for SYS_INIT.  If we sit on the
+		 * 2-second FW_STATUS timeout before sending SYS_INIT, the
+		 * firmware abandons its wait and responds to every subsequent
+		 * command with FW_VERSION garbage (0x120719) rather than the
+		 * expected response codes.
+		 *
+		 * Treating cmd=51 as FW_STATUS here causes SYS_INIT to be
+		 * sent within ~10 ms of the recovery announcement, while the
+		 * firmware is still actively waiting for it.
+		 */
+		dev_info(core->dev, "Firmware recovery-mode boot (cmd=51)\n");
+		complete(&core->fw_status_done);
+		break;
+
 	case VIDC_RESP_SYS_INIT:
 		dev_info(core->dev, "Firmware initialized\n");
 		complete(&core->sys_init_done);
