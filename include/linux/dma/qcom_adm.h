@@ -27,6 +27,22 @@ struct dma_chan;
 #define QCOM_ADM_CMD_FLAG_SWAP_SHORTS	BIT(1)
 #define QCOM_ADM_CMD_FLAG_SWAP_WORDS	BIT(2)
 
+/*
+ * Use the ADM controller's scatter-gather command mode instead of the
+ * default BOX/SINGLE descriptors.  In SG mode the controller walks two
+ * separate descriptor lists (one for each side of the transfer) per
+ * CRCI handshake, which is what legacy webOS qce.c uses for the CE2
+ * crypto engine -- BOX-mode multi-row internal walking doesn't pace
+ * correctly through the CE2 engine's per-block CRCI flow control past
+ * the first 1-2 blocks.
+ *
+ * When this flag is set, the peripheral provides a scatterlist via
+ * dmaengine_prep_slave_sg() for the memory side; the ADM driver emits a
+ * single SG command pointing at that scatterlist plus a single-entry
+ * descriptor at the peripheral port (slave.{src,dst}_addr).
+ */
+#define QCOM_ADM_CMD_FLAG_MODE_SG	BIT(3)
+
 struct qcom_adm_peripheral_config {
 	u32 crci;
 	u32 mux;

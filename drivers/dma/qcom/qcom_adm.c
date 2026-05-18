@@ -106,7 +106,20 @@
 #define ADM_CMD_DST_SWAP_WORDS		BIT(16)
 
 #define ADM_CMD_TYPE_SINGLE		0x0
+#define ADM_CMD_MODE_SG			0x1
 #define ADM_CMD_TYPE_BOX		0x3
+
+/* SG-mode descriptor entry: bit 31 of `len` marks list terminator. */
+#define ADM_SG_DESC_LAST		BIT(31)
+
+/*
+ * SG-cmd "control" word (4th u32 in adm_desc_hw_sg).  LI marks the
+ * last index group; SRC/DST_INDEX point at the starting offset within
+ * each descriptor array.
+ */
+#define ADM_SG_CTRL_LI			BIT(31)
+#define ADM_SG_CTRL_SRC_INDEX(i)	(((i) & 0x3fff) << 16)
+#define ADM_SG_CTRL_DST_INDEX(i)	((i) & 0x3fff)
 
 #define ADM_CRCI_MUX_SEL		BIT(4)
 #define ADM_DESC_ALIGN			8
@@ -134,6 +147,20 @@ struct adm_desc_hw_single {
 	u32 src_addr;
 	u32 dst_addr;
 	u32 len;
+};
+
+/* SG-mode command (4 dwords): src_dscr / dst_dscr are physical pointers
+ * to arrays of struct adm_sg_desc. */
+struct adm_desc_hw_sg {
+	u32 cmd;
+	u32 src_dscr;
+	u32 dst_dscr;
+	u32 sg_ctrl;
+};
+
+struct adm_sg_desc {
+	u32 addr;
+	u32 len;	/* bit 31 = ADM_SG_DESC_LAST */
 };
 
 struct adm_async_desc {
@@ -619,6 +646,111 @@ static void *adm_process_non_fc_descriptors(struct adm_chan *achan, void *desc,
 }
 
 /**
+ * adm_build_sg_mode - Emit a single SG-mode command into the CPL buffer.
+ *
+ * @achan: ADM channel (provides slave config, crci, swap flags)
+ * @async_desc: descriptor wrapper (provides cpl base + cp_addr)
+ * @sgl: scatterlist on the memory side (1..ADM_SG_MAX_DESCS entries)
+ * @sg_len: number of valid sgl entries
+ * @direction: DMA transfer direction
+ *
+ * Layout written into async_desc->cpl:
+ *
+ *   +0:                 struct adm_desc_hw_sg cmd
+ *   +sizeof(cmd):       struct adm_sg_desc user_descs[sg_len]
+ *   +after user_descs:  struct adm_sg_desc peripheral_desc (1 entry)
+ *
+ * The cmd's src_dscr / dst_dscr are physical pointers into the CPL
+ * buffer at the user_descs / peripheral_desc offsets.  Returns the
+ * end-of-data pointer (where the caller will place the cple).
+ *
+ * Required only when achan->cmd_flags has QCOM_ADM_CMD_FLAG_MODE_SG.
+ */
+static void *adm_build_sg_mode(struct adm_chan *achan,
+			       struct adm_async_desc *async_desc,
+			       struct scatterlist *sgl,
+			       unsigned int sg_len,
+			       enum dma_transfer_direction direction,
+			       void *desc_start)
+{
+	struct adm_desc_hw_sg *sg_cmd;
+	struct adm_sg_desc *user_descs;
+	struct adm_sg_desc *peripheral_desc;
+	struct scatterlist *sg;
+	void *desc;
+	u32 cmd;
+	u32 total = 0;
+	dma_addr_t cpl_base_phys = async_desc->dma_addr;
+	void *cpl_base = async_desc->cpl;
+	unsigned int i;
+
+	desc = desc_start;
+	sg_cmd = desc;
+	desc += sizeof(*sg_cmd);
+
+	user_descs = desc;
+	desc += sg_len * sizeof(*user_descs);
+
+	peripheral_desc = desc;
+	desc += sizeof(*peripheral_desc);
+
+	/* Fill memory-side descriptors from the scatterlist. */
+	for_each_sg(sgl, sg, sg_len, i) {
+		user_descs[i].addr = sg_dma_address(sg);
+		user_descs[i].len = sg_dma_len(sg);
+		total += sg_dma_len(sg);
+	}
+	user_descs[sg_len - 1].len |= ADM_SG_DESC_LAST;
+
+	/* Fill peripheral-side descriptor (single entry at slave addr). */
+	peripheral_desc->len = total | ADM_SG_DESC_LAST;
+	if (direction == DMA_DEV_TO_MEM)
+		peripheral_desc->addr = achan->slave.src_addr;
+	else
+		peripheral_desc->addr = achan->slave.dst_addr;
+
+	/* Compose the cmd word. */
+	cmd = ADM_CMD_MODE_SG | ADM_CMD_LC;
+	if (direction == DMA_DEV_TO_MEM) {
+		cmd |= ADM_CMD_SRC_CRCI(achan->crci);
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_BYTES)
+			cmd |= ADM_CMD_SRC_SWAP_BYTES;
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_SHORTS)
+			cmd |= ADM_CMD_SRC_SWAP_SHORTS;
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_WORDS)
+			cmd |= ADM_CMD_SRC_SWAP_WORDS;
+		sg_cmd->src_dscr = cpl_base_phys +
+				   ((u8 *)peripheral_desc - (u8 *)cpl_base);
+		sg_cmd->dst_dscr = cpl_base_phys +
+				   ((u8 *)user_descs - (u8 *)cpl_base);
+	} else {
+		cmd |= ADM_CMD_DST_CRCI(achan->crci);
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_BYTES)
+			cmd |= ADM_CMD_DST_SWAP_BYTES;
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_SHORTS)
+			cmd |= ADM_CMD_DST_SWAP_SHORTS;
+		if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_SWAP_WORDS)
+			cmd |= ADM_CMD_DST_SWAP_WORDS;
+		sg_cmd->src_dscr = cpl_base_phys +
+				   ((u8 *)user_descs - (u8 *)cpl_base);
+		sg_cmd->dst_dscr = cpl_base_phys +
+				   ((u8 *)peripheral_desc - (u8 *)cpl_base);
+	}
+
+	sg_cmd->cmd = cmd;
+	sg_cmd->sg_ctrl = ADM_SG_CTRL_LI |
+			  ADM_SG_CTRL_SRC_INDEX(0) |
+			  ADM_SG_CTRL_DST_INDEX(0);
+
+	dev_dbg(achan->adev->dev,
+		"ADM sg cmd=0x%x src_dscr=0x%x dst_dscr=0x%x sg_ctrl=0x%x sg_len=%u total=%u dir=%d\n",
+		sg_cmd->cmd, sg_cmd->src_dscr, sg_cmd->dst_dscr,
+		sg_cmd->sg_ctrl, sg_len, total, direction);
+
+	return desc;
+}
+
+/**
  * adm_prep_slave_sg - Prep slave sg transaction
  *
  * @chan: dma channel
@@ -675,6 +807,63 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 			dev_err(adev->dev, "invalid crci value\n");
 			return NULL;
 		}
+	}
+
+	/* SG-mode shortcut: one sg_cmd + N user-side adm_sg_desc entries
+	 * + 1 peripheral-side adm_sg_desc entry.  No BOX/SINGLE walking.
+	 */
+	if (achan->cmd_flags & QCOM_ADM_CMD_FLAG_MODE_SG) {
+		size_t sg_mode_size;
+
+		if (!crci) {
+			dev_err(adev->dev,
+				"SG mode requires crci (flow control)\n");
+			return NULL;
+		}
+
+		sg_mode_size = sizeof(struct adm_desc_hw_sg) +
+			       (sg_len + 1) * sizeof(struct adm_sg_desc) +
+			       sizeof(*cple) + 2 * ADM_DESC_ALIGN;
+
+		if (sg_mode_size <= ADM_CPL_BUF_SIZE) {
+			async_desc = adm_desc_get(adev);
+			if (async_desc)
+				async_desc->dma_len = sg_mode_size;
+		} else {
+			async_desc = NULL;
+		}
+		if (!async_desc) {
+			async_desc = adm_desc_alloc_fallback(adev, sg_mode_size);
+			if (!async_desc) {
+				dev_err(adev->dev,
+					"SG mode: unable to allocate descriptor\n");
+				return NULL;
+			}
+		}
+
+		async_desc->mux = achan->mux ? ADM_CRCI_CTL_MUX_SEL : 0;
+		async_desc->crci = crci;
+		async_desc->blk_size = blk_size;
+		async_desc->exec_func = achan->exec_func;
+		async_desc->exec_user = achan->exec_user;
+
+		/* Layout: cple first (8 B aligned), then SG cmd + descriptors. */
+		cple = PTR_ALIGN(async_desc->cpl, ADM_DESC_ALIGN);
+		desc = PTR_ALIGN(cple + 1, ADM_DESC_ALIGN);
+
+		(void)adm_build_sg_mode(achan, async_desc, sgl, sg_len,
+					direction, desc);
+
+		/* cple points at the SG cmd (first descriptor after cple). */
+		*cple = ADM_CPLE_LP |
+			((async_desc->dma_addr +
+			  ((u8 *)desc - (u8 *)async_desc->cpl)) >> 3);
+
+		for_each_sg(sgl, sg, sg_len, i)
+			async_desc->length += sg_dma_len(sg);
+
+		async_desc->dir = direction;
+		return vchan_tx_prep(&achan->vc, &async_desc->vd, flags);
 	}
 
 	/* iterate through sgs and compute allocation size of structures */

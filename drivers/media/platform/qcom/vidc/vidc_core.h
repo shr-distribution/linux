@@ -493,6 +493,16 @@ struct vidc_core {
 	 */
 	unsigned int empty_irq_streak;
 	bool irq_disabled_by_storm;
+	/*
+	 * True when the firmware booted in recovery mode (GDSC cycle
+	 * wipe, cmd=51 seen on re-init).  In recovery mode the on-chip
+	 * RISC ACKs SEQ_HEADER with cmd=0 (EMPTY) instead of a proper
+	 * RESP_SEQ_DONE (cmd=4).  This flag guards the recovery path in
+	 * the EMPTY IRQ handler so that the same EMPTY IRQ that fires as
+	 * a normal command-received ACK in clean-boot mode is not
+	 * mishandled as an early SEQ_DONE.
+	 */
+	bool fw_recovery_mode;
 
 	/* Instance management */
 	struct list_head instances;

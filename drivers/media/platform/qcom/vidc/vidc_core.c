@@ -517,25 +517,34 @@ static irqreturn_t vidc_isr(int irq, void *data)
 	switch (cmd) {
 	case VIDC_RESP_EMPTY:
 		/*
-		 * In recovery-mode boots (stale .data/.bss after GDSC cycle)
-		 * the firmware ACKs the SEQ_HEADER command with an EMPTY IRQ
-		 * (cmd=0) instead of RESP_SEQ_DONE (cmd=4).  If the encoder
-		 * has a SEQ_HEADER in flight (seq_header_pending), treat this
-		 * EMPTY as the completion signal by queuing seq_done_work.
+		 * In clean-boot mode the firmware sends a cmd=0 (EMPTY) IRQ as
+		 * an immediate command-received ACK after the HOST2RISC trigger
+		 * register is written.  The real response (SEQ_DONE, FRAME_DONE,
+		 * etc.) comes in a separate IRQ once processing is complete.
+		 * These ACK-EMPTYs must not be treated as completions.
 		 *
-		 * All other EMPTY IRQs are benign noise (handled by the storm
-		 * guard above the switch) and fall through to break.
+		 * In recovery-mode boots (GDSC cycle, stale .data/.bss) the
+		 * firmware uses cmd=0 as the final SEQ_DONE / other completion.
+		 * Guard the recovery path with fw_recovery_mode so that the
+		 * ACK-EMPTY in clean-boot mode is silently discarded.
+		 *
+		 * Without the guard, the EMPTY ACK at ~8 ms causes premature
+		 * vidc_init_buffers while the firmware is still parsing the
+		 * bitstream, sending an out-of-order INIT_BUFFERS command that
+		 * causes the firmware to return HEADER_NOT_FOUND (error 52).
 		 */
-		if (inst && inst->seq_header_pending) {
-			dev_info(core->dev,
-				 "recovery SEQ_HEADER ack via EMPTY IRQ\n");
-			inst->seq_header_pending = false;
-			queue_work(system_wq, &inst->seq_done_work);
-		} else if (inst && inst->seq_hdr_direct) {
-			dev_info(core->dev,
-				 "recovery decoder SEQ_HEADER ack via EMPTY IRQ\n");
-			vidc_handle_seq_done(core, inst);
-			queue_work(system_wq, &inst->seq_done_work);
+		if (core->fw_recovery_mode) {
+			if (inst && inst->seq_header_pending) {
+				dev_info(core->dev,
+					 "recovery SEQ_HEADER ack via EMPTY IRQ\n");
+				inst->seq_header_pending = false;
+				queue_work(system_wq, &inst->seq_done_work);
+			} else if (inst && inst->seq_hdr_direct) {
+				dev_info(core->dev,
+					 "recovery decoder SEQ_HEADER ack via EMPTY IRQ\n");
+				vidc_handle_seq_done(core, inst);
+				queue_work(system_wq, &inst->seq_done_work);
+			}
 		}
 		break;
 
@@ -550,6 +559,7 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		 * driver hit pre-fix (SYS_INIT timeout, no IRQ).
 		 */
 		dev_dbg(core->dev, "Firmware status ack (FW_STATUS_RET)\n");
+		core->fw_recovery_mode = false;
 		complete(&core->fw_status_done);
 		break;
 
@@ -570,6 +580,7 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		 * firmware is still actively waiting for it.
 		 */
 		dev_info(core->dev, "Firmware recovery-mode boot (cmd=51)\n");
+		core->fw_recovery_mode = true;
 		complete(&core->fw_status_done);
 		break;
 
