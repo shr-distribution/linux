@@ -1481,6 +1481,16 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		 * (other 8 read back as zero from DATA_SHADOW0).
 		 */
 		.dst_maxburst = block_dwords,
+		/* CRCI flow control: the ADM must wait for the engine to
+		 * assert DIN_RDY between bursts so we don't overrun its DIN
+		 * FIFO (4-block AES depth on this silicon).  Without
+		 * device_fc=1 qcom_adm routes through the non-flow-controlled
+		 * SINGLE-cmd path which ignores both crci and cmd_flags --
+		 * that was the real cause of the long-standing 4-block AES
+		 * cap.  Same goes for the swap bits below; they only kick in
+		 * on the flow-controlled path.
+		 */
+		.device_fc = true,
 		.peripheral_config = &in_periph,
 		.peripheral_size = sizeof(in_periph),
 	};
@@ -1489,6 +1499,7 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		.src_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
 		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
 		.src_maxburst = block_dwords,
+		.device_fc = true,
 		.peripheral_config = &out_periph,
 		.peripheral_size = sizeof(out_periph),
 	};
