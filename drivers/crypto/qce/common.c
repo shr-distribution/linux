@@ -1765,13 +1765,6 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 */
 	qce_cpu_to_be32p_array(enckey, ctx->enc_key, keylen);
 	if (IS_DES(flags) || IS_3DES(flags)) {
-		/* Zero AES_RNDKEY bank: prior AES op may have left a full
-		 * schedule that the engine could spuriously read.  GCC_CE2_RESET
-		 * may or may not clear this bank (silicon-dependent); be
-		 * defensive.
-		 */
-		for (k = 0; k < CE2_AES_RNDKEYS; k++)
-			writel(0, qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
 		for (k = 0; k < enckey_words; k++)
 			writel((__force u32)enckey[k],
 			       qce->base + CE2_REG_DES_KEY0 + k * 4);
