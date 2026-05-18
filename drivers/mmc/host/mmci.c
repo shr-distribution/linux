@@ -507,27 +507,25 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		clk |= MCI_CLK_ENABLE;
 		/*
 		 * MCI_CLK_PWRSAVE auto-gates the SDC bus clock between
-		 * transfers — set it for qcom once we're past the 400 kHz
-		 * card-identification phase, matching legacy msm_sdcc's
-		 * msmsdcc_is_pwrsave() = (clk_rate > 400000). Without this
-		 * the SD/MMC clock free-runs whenever the controller is
-		 * powered, costing a few mW continuously.
+		 * transfers — useful on eMMC for power savings, but the
+		 * AR6003 SDIO chip cannot tolerate the clock-gating during
+		 * BMI LZ FastDownload: the chip's command-credit counter
+		 * stops refreshing mid-stream and the next CMD53 read times
+		 * out -110 (cf. wifi-bringup-summary.md, working Jan 2026
+		 * config simply had PWRSAVE commented out).
 		 *
-		 * Generic mmci has this commented out as "not proven
-		 * worthwhile", but legacy webOS on Tenderloin uses it
-		 * unconditionally above 400 kHz and the controller behaves
-		 * identically.
+		 * Earlier attempts to clear PWRSAVE in the data-submission
+		 * path (mmci_start_data SDIO branch) didn't fix it -- the
+		 * clkreg write happens just before DPSM/CMD53 setup, but
+		 * the bit doesn't take effect fast enough to keep the chip
+		 * synchronised across the LZ stream.
 		 *
-		 * For SDIO instances PWRSAVE is forced off in the data
-		 * submission path (see mmci_start_data, the
-		 * mmc_card_sdio() branch) — legacy msm_sdcc does the
-		 * equivalent via msmsdcc_set_pwrsave(0) on SDIO function
-		 * activation. We keep the unconditional enable here for
-		 * eMMC compatibility; the SDIO override happens at every
-		 * data transaction so the PWRSAVE bit is consistently
-		 * cleared by the time the AR6003 sees the bus clock.
+		 * Gate on cap-sdio-irq: SDIO instances (mmc1 / WiFi) skip
+		 * PWRSAVE entirely; eMMC (mmc0, no SDIO-IRQ cap) keeps it
+		 * for power savings.
 		 */
-		if (variant->qcom_datactrl_delay && desired > 400000)
+		if (variant->qcom_datactrl_delay && desired > 400000 &&
+		    !(host->mmc->caps & MMC_CAP_SDIO_IRQ))
 			clk |= MCI_CLK_PWRSAVE;
 	}
 
@@ -1550,17 +1548,13 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 
 		/*
 		 * Force MCI_CLK_PWRSAVE off for SDIO transactions on the
-		 * qcom variant. Legacy msm_sdcc calls
-		 * msmsdcc_set_pwrsave(host, 0) when an SDIO function
-		 * becomes active (drivers/mmc/sdio_al.c) — the bus
-		 * clock-gating between bytes that PWRSAVE introduces
-		 * leaves AR6003 missing sample edges on small
-		 * fast-response transfers, observed as DATACRCFAIL on
-		 * the 4-byte BMI get-target-info read (ath6kl_sdio probe
-		 * fails -84 EILSEQ). Touch only the qcom variant so other
-		 * mmci users (PL180/ST/STM32/ux500) aren't affected.
+		 * qcom variant. PWRSAVE is already gated off for SDIO in
+		 * mmci_set_clkreg (cap-sdio-irq check), so this is a
+		 * belt-and-braces clear in case set_ios runs out of order.
+		 * Gate on the same SDIO predicate so eMMC keeps its bit.
 		 */
-		if (variant->qcom_datactrl_delay)
+		if (variant->qcom_datactrl_delay &&
+		    (host->mmc->caps & MMC_CAP_SDIO_IRQ))
 			clk &= ~MCI_CLK_PWRSAVE;
 
 		mmci_write_clkreg(host, clk);
