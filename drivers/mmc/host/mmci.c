@@ -372,22 +372,14 @@ static struct variant_data variant_qcom = {
 	.qcom_data_timeout_2x	= true,
 	.dma_flow_controller	= true,
 	/*
-	 * Push almost everything through ADM DMA. Only tiny transfers
-	 * (<= 32 B, below the half-FIFO threshold) stay on PIO because
-	 * DMA setup overhead dominates at that size and PIO writes
-	 * trivially fit a single FIFO without needing a refill IRQ.
-	 *
-	 * The previous 256 B threshold was set when ADM DMA appeared
-	 * to corrupt SDIO BMI uploads, but the real cause was DMA-vs-DMA
-	 * register interleaving between sdcc1 (eMMC ch2) and sdcc4
-	 * (WiFi ch5) on the shared adm_dma1 controller. With the
-	 * qcom_adm per-controller submit_lock (commit 9aa91a0b21bf)
-	 * that race is closed; routing WiFi BMI's 52 B CMD53 writes
-	 * through DMA now also removes the PIO-vs-DMA cross-channel
-	 * IRQ-latency race that was DATACRCFAILing sdcc4 whenever eMMC
-	 * DMA was active.
+	 * Force PIO for transfers <= 256 bytes.  ADM DMA on msm8x60
+	 * corrupts data during SDIO firmware upload (BMI phase) due to
+	 * the tight credit-polling transfer pattern.  PIO works reliably
+	 * up to 128 bytes (2x FIFO); 192+ byte PIO fails because the
+	 * DPSM times out waiting for 3+ interrupt-driven FIFO refills.
+	 * Post-BMI WiFi data frames (1500+ bytes) use DMA correctly.
 	 */
-	.dma_threshold		= 32,
+	.dma_threshold		= 256,
 	.mmcimask1		= true,
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
 	/*
