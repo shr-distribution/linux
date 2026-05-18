@@ -1677,8 +1677,17 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			flags, keylen);
 		return -EINVAL;
 	}
-	if (IS_ENCRYPT(flags))
+	if (IS_ENCRYPT(flags)) {
 		encr_cfg |= BIT(CE2_ENCODE_SHIFT);
+		/* webOS _ce_setup sets AUTH_POS (bit 14) for encrypt
+		 * direction only.  On a pure-cipher op the bit nominally
+		 * controls auth ordering, but CE2 also uses it as part of
+		 * the cipher direction state machine; without it, decrypt
+		 * after encrypt leaves the engine confused (ECB decrypt
+		 * passthrough, CTR decrypt garbage).
+		 */
+		encr_cfg |= BIT(CE2_AUTH_POS_SHIFT);
+	}
 	encr_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT) |
 		    BIT(CE2_CLR_CNTXT_SHIFT);
 
@@ -1731,9 +1740,9 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
 	writel(config, qce->base + CE2_REG_CONFIG);
 
-	dev_dbg(qce->dev,
-		"CE2 skc pre-GO: SEG_CFG=0x%08x len=%u CONFIG=0x%08x flags=0x%lx\n",
-		encr_cfg, rctx->cryptlen, config, flags);
+	dev_info(qce->dev,
+		 "CE2 skc pre-GO: SEG_CFG=0x%08x len=%u CONFIG=0x%08x flags=0x%lx keylen=%u\n",
+		 encr_cfg, rctx->cryptlen, config, flags, keylen);
 
 	/* GOPROC */
 	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
@@ -1754,6 +1763,9 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 
 	/* Dual-channel DMA: input -> DATA_SHADOW0, output <- DATA_SHADOW0 */
 	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen);
+	dev_info(qce->dev,
+		 "CE2 skc post-DMA: ret=%d STATUS=0x%08x\n", ret,
+		 readl_relaxed(qce->base + CE2_REG_STATUS));
 	if (ret)
 		return ret;
 
