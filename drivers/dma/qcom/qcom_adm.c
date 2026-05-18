@@ -1333,8 +1333,23 @@ static int adm_dma_probe(struct platform_device *pdev)
 			 i, adev->ee, ch_conf, rslt_conf);
 	}
 
-	ret = devm_request_irq(adev->dev, adev->irq, adm_dma_irq,
-			       0, "adm_dma", adev);
+	/*
+	 * Request the ADM IRQ as threaded. The hardirq stub just wakes the
+	 * thread; channel completion processing (vchan_cookie_complete and
+	 * the per-channel re-arm via adm_start_dma) runs in process context.
+	 *
+	 * This is the missing piece for safe concurrent eMMC DMA + WiFi PIO
+	 * on Tenderloin: with the old hardirq handler, eMMC DMA-completion
+	 * IRQs running on the same GIC as sdcc4 added enough latency between
+	 * sdcc4's DATACTRL/CMD53 setup and its TXFIFOHALFEMPTY refill IRQ
+	 * that DPSM clocked stale FIFO data and the AR6003 returned a
+	 * CRC-bad write-status. Pushing the ADM completion work into a
+	 * thread keeps the hardirq path microscopic (read SD_IRQ_STATUS,
+	 * wake handler) so it no longer delays SDCC PIO refills.
+	 */
+	ret = devm_request_threaded_irq(adev->dev, adev->irq,
+					NULL, adm_dma_irq,
+					IRQF_ONESHOT, "adm_dma", adev);
 	if (ret)
 		goto err_disable_clks;
 
