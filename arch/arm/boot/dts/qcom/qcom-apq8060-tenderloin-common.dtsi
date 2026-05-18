@@ -2205,14 +2205,21 @@
 	 * - CRCI 1 for SDC1 (passed via qcom,sdcc-crci property)
 	 * From webOS kernel: DMOV_SDC1_CHAN=18, DMOV_SDC1_CRCI=1
 	 *
-	 * Re-enabled now that qcom_adm has per-controller submit_lock
-	 * serialization (legacy msm_dmov pattern). adm_start_dma calls
-	 * across sdcc1 and sdcc4 on the same adm_dma1 controller can no
-	 * longer interleave their CMD_PTR writes.
+	 * DISABLED: even with the qcom_adm per-controller submit_lock
+	 * (DMA-vs-DMA serialization), eMMC DMA activity on adm_dma1
+	 * still triggers WiFi DATACRCFAIL on the 52-byte BMI PIO writes
+	 * to sdcc4 -- presumably eMMC's DMA-completion IRQ latency
+	 * delays sdcc4's PIO FIFO-refill IRQ enough that DPSM clocks
+	 * stale FIFO data out, the WiFi chip's CRC check fails, and the
+	 * BMI sequence aborts. submit_lock only protects DMA-vs-DMA;
+	 * DMA-vs-PIO requires either pre-filling sdcc4 FIFO before
+	 * CMD53 or shifting WiFi BMI off PIO. Until then, leave eMMC on
+	 * PIO. eMMC PIO at 8-bit/48 MHz still sustains usable
+	 * throughput.
 	 */
-	dmas = <&adm_dma1 2>, <&adm_dma1 2>;
-	dma-names = "rx", "tx";
-	qcom,sdcc-crci = <1>;
+	/* dmas = <&adm_dma1 2>, <&adm_dma1 2>; */
+	/* dma-names = "rx", "tx"; */
+	/* qcom,sdcc-crci = <1>; */
 
 	/*
 	 * DFAB interconnect path for eMMC.
