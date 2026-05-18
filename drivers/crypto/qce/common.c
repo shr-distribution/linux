@@ -1861,16 +1861,18 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 * DIN_RDY / DOUT_RDY.  qce_ce2_dma_inout_cipher writes GOPROC
 	 * AFTER it has issued both channels -- if we wrote GOPROC here, the
 	 * engine would enter PROCESSING with no ADM listening yet, and on
-	 * this silicon that races into a wedge (engine sits asserting
-	 * DIN_RDY indefinitely; later issue_pending finds the engine
-	 * already past PROCESSING and the CRCI handshake never fires).
+	 * this silicon that races into a wedge.
 	 *
-	 * Burst: 256 B (64 dw) for AES, 32 B (8 dw) for DES/3DES.  qcom_adm
-	 * only accepts burst values in {8,16,32,64,128,192,256} bytes per
-	 * adm_get_blksize().
+	 * Burst MUST equal the cipher block size: AES = 4 dwords (16 B),
+	 * DES/3DES = 2 dwords (8 B).  Each CRCI handshake delivers exactly
+	 * one block, the engine consumes it, asserts DIN_RDY for the next.
+	 * Using a larger burst (e.g. 256 B / 64 dw) over-delivers per
+	 * handshake: the engine consumes the first SEG_SIZE bytes, moves to
+	 * FINAL_READ, deasserts CRCI, leaving the ADM stuck with un-asked-for
+	 * data and the DMA deadlocks.  This was the 4-block AES cap.
 	 */
 	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen,
-				       (IS_DES(flags) || IS_3DES(flags)) ? 8 : 64);
+				       (IS_DES(flags) || IS_3DES(flags)) ? 2 : 4);
 	dev_info(qce->dev,
 		 "CE2 skc post-DMA: ret=%d STATUS=0x%08x\n", ret,
 		 readl_relaxed(qce->base + CE2_REG_STATUS));
