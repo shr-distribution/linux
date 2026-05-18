@@ -832,8 +832,16 @@ int vidc_boot_firmware(struct vidc_core *core)
 	 * load. Desc buffer and SHM are zeroed for the same reason.
 	 */
 	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
-	memset(core->fw_vaddr + core->desc_offset, 0, VIDC_DESC_BUF_SIZE);
-	memset(core->shm_vaddr, 0, VIDC_SHM_SIZE);
+	/*
+	 * Zero everything after the firmware blob: alignment gap, context
+	 * pool, descriptor buffer, and SHM. The context pool in particular
+	 * retains "valid" magic markers from the previous run; without
+	 * zeroing it the firmware finds them on boot and tries to recover
+	 * the old channels, producing a spurious cmd=51 response with the
+	 * stale instance IDs that trips the IRQ storm guard.
+	 */
+	memset(core->fw_vaddr + core->fw_size, 0,
+	       core->fw_alloc_size - core->fw_size);
 
 	/*
 	 * Bring the RISC out of reset and program firmware. We need
