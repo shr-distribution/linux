@@ -2005,6 +2005,17 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 	vidc_write(core, VIDC_REG_ENC_RC_CONFIG, (1 << 9) | 26);
 	vidc_write(core, VIDC_REG_ENC_REACTION_COEFF, 0x14);
 	vidc_write(core, VIDC_REG_ENC_QP_RANGE, qp_range);
+	/*
+	 * REG_783891: encode picture period (I/B-frame interval).
+	 * bit 18: ENC_PIC_TYPE_USE=1, bits 17:16: B_FRM_CTRL=0 (no B-frames),
+	 * bits 15:0: I_FRM_CTRL = p_frames+1.
+	 * Hardware default is 0; I_FRM_CTRL=0 causes firmware to divide by
+	 * zero during SEQ_HEADER processing (error 0x51 = DIVIDE_BY_ZERO).
+	 * Use I_FRM_CTRL=30 (every 30th frame is an I-frame at 30fps).
+	 */
+	vidc_write(core, VIDC_REG_ENC_PICTURE_PERIOD, (1 << 18) | 30);
+	/* REG_645603: input frame format. 3 = TILE_64x32 for NV12MT. */
+	vidc_write(core, VIDC_REG_ENC_FRAME_FORMAT, 3);
 
 	/*
 	 * Shared-memory encoder params (VIDC_SM_* offsets from

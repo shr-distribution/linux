@@ -258,6 +258,11 @@
  *   REG_109072 = QP range @ +0xc5ac
  *     bits 13:8 = max_qp, bits 5:0 = min_qp
  *   REG_550322 = reaction coefficient @ +0xc5b0
+ *   REG_783891 = encode picture period @ +0xc504
+ *     bit 18: ENC_PIC_TYPE_USE, bits 17:16: B_FRM_CTRL, bits 15:0: I_FRM_CTRL
+ *     I_FRM_CTRL=0 (HW default) causes firmware DIVIDE_BY_ZERO in SEQ_HEADER
+ *   REG_645603 = input frame format @ +0xc51c
+ *     0=planar, 3=TILE_64x32 (NV12MT)
  */
 #define VIDC_REG_ENC_FRAME_WIDTH	0x0818
 #define VIDC_REG_ENC_FRAME_HEIGHT	0x081c
@@ -267,6 +272,8 @@
 #define VIDC_REG_ENC_TARGET_BITRATE	0xc5a8
 #define VIDC_REG_ENC_REACTION_COEFF	0xc5b0
 #define VIDC_REG_ENC_QP_RANGE		0xc5ac
+#define VIDC_REG_ENC_PICTURE_PERIOD	0xc504
+#define VIDC_REG_ENC_FRAME_FORMAT	0xc51c
 
 /* Shared-memory offsets for encoder-only params (written via core->shm_vaddr) */
 #define VIDC_SHM_ENC_EXT_CTRL		0x0028	/* VIDC_SM_ENC_EXT_CTRL_ADDR   */
