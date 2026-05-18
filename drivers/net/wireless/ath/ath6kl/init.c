@@ -1588,34 +1588,41 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 		return status;
 
 	/*
-	 * transfer One time Programmable data
+	 * Some boards (HP TouchPad) ship an AR6003 chip whose OTP, firmware
+	 * and patch images are already loaded from EEPROM/internal silicon.
+	 * On those boards bmi_fast_download (LZ stream) hangs the chip's BMI
+	 * state machine: BMI_LZ_STREAM_START is ACKed but the credit-counter
+	 * register stops being refreshed, and the next CMD53 read times out
+	 * with -110. This affects all three LZ upload steps (OTP, firmware,
+	 * patch).
 	 *
-	 * Some boards (HP TouchPad) ship an AR6003 chip whose OTP is already
-	 * loaded from EEPROM/silicon. In that case bmi_fast_download to
-	 * app_load_addr 0x1234 hangs the chip's BMI state machine (it ACKs
-	 * BMI_LZ_STREAM_START but stops refreshing the command-credit
-	 * register, so the next CMD53 times out with -110). Honour the
-	 * "atheros,skip-otp-upload" DT property to skip this step. Matches
-	 * what the legacy Palm webOS ar6000 driver does when modprobed
-	 * with skipOtp=1.
+	 * Honour the "atheros,skip-otp-upload" DT property as a unified
+	 * "chip has internal images, do not push them over BMI" hint. We
+	 * still upload the board-data file (regular bmi_write, no LZ) and
+	 * the testscript -- those don't go through fast_download.
+	 *
+	 * Equivalent to the legacy Palm webOS ar6000 driver's skipOtp=1
+	 * behaviour on the same hardware. Discovered by inspecting the
+	 * factory ar6000.ko binary's module_param table.
 	 */
 	if (ath6kl_dt_skip_otp()) {
 		ath6kl_dbg(ATH6KL_DBG_BOOT,
-			   "DT requests skip-otp-upload; bypassing OTP step\n");
+			   "DT: skip-otp-upload set -- bypassing OTP, firmware, and patch uploads\n");
 	} else {
+		/* transfer One time Programmable data */
 		status = ath6kl_upload_otp(ar);
 		if (status)
 			return status;
+
+		/* Download Target firmware */
+		status = ath6kl_upload_firmware(ar);
+		if (status)
+			return status;
+
+		status = ath6kl_upload_patch(ar);
+		if (status)
+			return status;
 	}
-
-	/* Download Target firmware */
-	status = ath6kl_upload_firmware(ar);
-	if (status)
-		return status;
-
-	status = ath6kl_upload_patch(ar);
-	if (status)
-		return status;
 
 	/* Download the test script */
 	status = ath6kl_upload_testscript(ar);
