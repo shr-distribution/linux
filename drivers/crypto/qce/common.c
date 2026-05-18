@@ -1728,6 +1728,15 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		 */
 		encr_cfg |= BIT(CE2_AUTH_POS_SHIFT);
 	}
+	/* 3DES decrypt cold-start otherwise returns passthrough output
+	 * (input = output) with AUTH_POS=0.  Setting AUTH_POS=1 also for
+	 * 3DES regardless of direction routes the engine through the same
+	 * state-machine path encrypt uses, which works.  3DES is not
+	 * mathematically symmetric so we still need ENCODE=0 for decrypt;
+	 * only the AUTH_POS bit gets forced.
+	 */
+	if (IS_3DES(flags))
+		encr_cfg |= BIT(CE2_AUTH_POS_SHIFT);
 	encr_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT) |
 		    BIT(CE2_CLR_CNTXT_SHIFT);
 
