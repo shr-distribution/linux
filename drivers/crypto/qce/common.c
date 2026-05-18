@@ -1802,12 +1802,16 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	}
 
 	/* Dual-channel DMA: input -> DATA_SHADOW0, output <- DATA_SHADOW0.
-	 * DES/3DES use 8-byte blocks (2 dwords); AES uses 16-byte (4 dwords).
-	 * The ADM burst must match the engine's block size so the per-block
-	 * CRCI handshake aligns with what the engine produces/consumes.
+	 *
+	 * Burst size = CE2_ADM_BURST_SIZE (64 B = 16 dwords) for AES, half
+	 * that for DES/3DES which has 8-byte blocks.  Smaller bursts
+	 * (matching cipher block size) caused multi-block ops to silently
+	 * produce wrong output past the first 3-4 blocks -- the engine
+	 * apparently expects ADM to deliver data at the natural 64 B burst
+	 * granularity, not block-by-block.
 	 */
 	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen,
-				       (IS_DES(flags) || IS_3DES(flags)) ? 2 : 4);
+				       (IS_DES(flags) || IS_3DES(flags)) ? 8 : 16);
 	dev_info(qce->dev,
 		 "CE2 skc post-DMA: ret=%d STATUS=0x%08x\n", ret,
 		 readl_relaxed(qce->base + CE2_REG_STATUS));
