@@ -517,6 +517,25 @@ static irqreturn_t vidc_isr(int irq, void *data)
 	}
 
 	switch (cmd) {
+	case VIDC_RESP_EMPTY:
+		/*
+		 * In recovery-mode boots (stale .data/.bss after GDSC cycle)
+		 * the firmware ACKs the SEQ_HEADER command with an EMPTY IRQ
+		 * (cmd=0) instead of RESP_SEQ_DONE (cmd=4).  If the encoder
+		 * has a SEQ_HEADER in flight (seq_header_pending), treat this
+		 * EMPTY as the completion signal by queuing seq_done_work.
+		 *
+		 * All other EMPTY IRQs are benign noise (handled by the storm
+		 * guard above the switch) and fall through to break.
+		 */
+		if (inst && inst->seq_header_pending) {
+			dev_info(core->dev,
+				 "recovery SEQ_HEADER ack via EMPTY IRQ\n");
+			inst->seq_header_pending = false;
+			queue_work(system_wq, &inst->seq_done_work);
+		}
+		break;
+
 	case VIDC_RESP_FW_STATUS:
 		/*
 		 * Unsolicited "RISC is alive" announcement raised once the
@@ -560,20 +579,23 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		/*
 		 * In recovery-mode boots (stale .data/.bss after GDSC cycle)
 		 * the firmware uses cmd=0x120719 (its own firmware version) as
-		 * a universal ACK for ALL commands: SYS_INIT_RET, OPEN_CH_RET,
-		 * and CLOSE_CH_RET all arrive as 0x120719 instead of the
-		 * normal cmd=8, cmd=1, cmd=2.
+		 * a universal ACK for multiple commands: SYS_INIT_RET,
+		 * OPEN_CH_RET, CLOSE_CH_RET, and INIT_BUFFERS_RET all arrive
+		 * as 0x120719 instead of the normal cmd=8, cmd=1, cmd=2, cmd=15.
 		 *
 		 * Complete both the SYS_INIT waiter and any per-instance waiter
-		 * that is currently pending (OPEN_CH, CLOSE_CH, flush, etc.).
+		 * that is currently pending (OPEN_CH, CLOSE_CH, INIT_BUFFERS).
 		 * close_ch() always resets inst->state to IDLE itself so we
-		 * set VIDC_STATE_OPEN here to satisfy open_ch() callers — the
-		 * close path overwrites it unconditionally.
+		 * set VIDC_STATE_RUNNING here (covers INIT_BUFFERS callers) —
+		 * the close path overwrites it unconditionally.
+		 *
+		 * Note: SEQ_HEADER in recovery mode uses cmd=0 (EMPTY) instead;
+		 * that is handled by the VIDC_RESP_EMPTY case above.
 		 */
 		dev_info(core->dev, "Firmware recovery ACK (cmd=0x120719)\n");
 		complete(&core->sys_init_done);
 		if (inst) {
-			inst->state = VIDC_STATE_OPEN;
+			inst->state = VIDC_STATE_RUNNING;
 			complete(&inst->done);
 		}
 		break;
@@ -1689,6 +1711,7 @@ int vidc_enc_send_seq_header(struct vidc_inst *inst)
 	core->curr_inst = inst;
 	reinit_completion(&inst->done);
 	inst->error = 0;
+	inst->seq_header_pending = true;
 	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
 	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, hdr_dma >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, SZ_4K);
@@ -1703,6 +1726,9 @@ int vidc_enc_send_seq_header(struct vidc_inst *inst)
 	spin_unlock_irqrestore(&core->irqlock, flags);
 
 	if (!wait_for_completion_timeout(&inst->done, msecs_to_jiffies(1000))) {
+		spin_lock_irqsave(&core->irqlock, flags);
+		inst->seq_header_pending = false;
+		spin_unlock_irqrestore(&core->irqlock, flags);
 		dev_err(core->dev, "encoder SEQ_HEADER timeout\n");
 		ret = -ETIMEDOUT;
 		goto err_free;

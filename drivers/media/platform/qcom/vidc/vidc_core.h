@@ -597,6 +597,16 @@ struct vidc_inst {
 	 * it uninitialised since they never see ENC_COMPLETE).
 	 */
 	struct work_struct enc_complete_work;
+
+	/*
+	 * Set true by vidc_enc_send_seq_header() just before issuing the
+	 * SEQ_HEADER command.  In recovery-mode boots the firmware acks
+	 * SEQ_HEADER with an EMPTY IRQ (cmd=0) rather than RESP_SEQ_DONE;
+	 * the ISR checks this flag on EMPTY to trigger seq_done_work and
+	 * unblock the caller.  Cleared by the ISR (recovery path) or by
+	 * vidc_enc_seq_done_work (normal path) or on timeout.
+	 */
+	bool seq_header_pending;
 };
 
 /* Core functions */

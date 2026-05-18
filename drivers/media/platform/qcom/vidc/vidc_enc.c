@@ -906,6 +906,7 @@ static void vidc_enc_seq_done_work(struct work_struct *w)
 {
 	struct vidc_inst *inst = container_of(w, struct vidc_inst, seq_done_work);
 
+	inst->seq_header_pending = false;
 	complete(&inst->done);
 }
 
