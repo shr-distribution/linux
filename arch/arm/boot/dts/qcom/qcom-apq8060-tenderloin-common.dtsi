@@ -2357,8 +2357,19 @@
 		 * The factory Palm ar6000 module accepts skipOtp=1 as a
 		 * module parameter and skips the OTP upload step; we honour
 		 * the equivalent boolean DT property here.
+		 *
+		 * When skip-otp-upload is set the driver can no longer
+		 * discover the chip's preloaded OTP entry via
+		 * bmi_read_hi32(hi_app_start) (chip refuses that read
+		 * without a prior fast_download). The address below is
+		 * the constant the factory ar6000.ko's per-target_ver
+		 * dispatch table at .text+0xfa80 uses for target_ver
+		 * 0x30000582 (AR6003 HW 2.1.1 on HP TouchPad). The driver
+		 * BMI_Executes this address to run the chip-internal OTP
+		 * code as the firmware-init routine.
 		 */
 		atheros,skip-otp-upload;
+		atheros,app-start-override-addr = <0x00945d00>;
 	};
 };
 

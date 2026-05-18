@@ -68,19 +68,6 @@ static const struct ath6kl_hw hw_list[] = {
 		.refclk_hz			= 26000000,
 		.uarttx_pin			= 8,
 		.testscript_addr		= 0x57ef74,
-		/*
-		 * On boards where OTP is preloaded from chip-internal silicon
-		 * (HP TouchPad, see "atheros,skip-otp-upload" DT property),
-		 * the driver cannot bmi_read_hi32(hi_app_start) to discover
-		 * the chip's preloaded OTP entry -- the chip won't service
-		 * that read without a preceding bmi_fast_download (which
-		 * itself fails). Provide a fallback address that matches
-		 * the constant the legacy Palm webOS ar6000 driver uses for
-		 * target_ver 0x30000582 (extracted from the factory ar6000.ko
-		 * binary): if skip-otp-upload is set we BMI_Execute at this
-		 * address to run the chip's internal OTP code.
-		 */
-		.app_start_override_addr	= 0x00945d00,
 		.flags				= ATH6KL_HW_SDIO_CRC_ERROR_WAR,
 
 		.fw = {
@@ -743,6 +730,32 @@ static bool ath6kl_dt_skip_otp(void)
 }
 
 /*
+ * Read "atheros,app-start-override-addr" (u32) from any atheros,ath6kl
+ * DT node. Returns 0 if no node has the property. Used together with
+ * atheros,skip-otp-upload: on boards with chip-internal OTP we cannot
+ * discover the chip's preloaded OTP entry via bmi_read_hi32, so the DT
+ * supplies the address for BMI_Execute. The value is chip-revision
+ * specific -- see the per-rev dispatch table in the legacy Palm webOS
+ * factory ar6000.ko (e.g. 0x00945d00 for target_ver 0x30000582 on HP
+ * TouchPad).
+ */
+static u32 ath6kl_dt_app_start_override(void)
+{
+	struct device_node *node;
+	u32 addr = 0;
+
+	for_each_compatible_node(node, NULL, "atheros,ath6kl") {
+		if (!of_property_read_u32(node,
+					  "atheros,app-start-override-addr",
+					  &addr)) {
+			of_node_put(node);
+			break;
+		}
+	}
+	return addr;
+}
+
+/*
  * Check the device tree for a board-id and use it to construct
  * the pathname to the firmware file.  Used (for now) to find a
  * fallback to the "bdata.bin" file--typically a symlink to the
@@ -786,6 +799,10 @@ static bool check_device_tree(struct ath6kl *ar)
 static bool ath6kl_dt_skip_otp(void)
 {
 	return false;
+}
+static u32 ath6kl_dt_app_start_override(void)
+{
+	return 0;
 }
 #endif /* CONFIG_OF */
 
@@ -1364,26 +1381,34 @@ static int ath6kl_upload_otp(struct ath6kl *ar)
 	int ret;
 
 	if (skip_dl) {
+		u32 override;
+
 		/*
 		 * Boards with chip-internal OTP (HP TouchPad). Skip the
 		 * bmi_fast_download payload and the bmi_read_hi32 (which
 		 * the chip won't service without a prior fast_download).
-		 * Use the hardcoded app_start_override_addr from the
-		 * hw_list table to BMI_Execute the chip's preloaded OTP
-		 * code -- this is the runtime-init step the firmware
-		 * needs before bmi_done, matching what the factory Palm
-		 * ar6000 driver does for skipOtp=1.
+		 * Use the board-supplied app-start-override-addr from DT
+		 * to BMI_Execute the chip's preloaded OTP code -- this is
+		 * the runtime-init step the firmware needs before
+		 * bmi_done, matching what the factory Palm ar6000 driver
+		 * does for skipOtp=1.
 		 */
-		if (ar->hw.app_start_override_addr == 0) {
-			ath6kl_err("skip-otp-upload set but no hardcoded app_start_override_addr for chip 0x%x\n",
+		override = ath6kl_dt_app_start_override();
+		if (!override)
+			override = ar->hw.app_start_override_addr;
+
+		if (!override) {
+			ath6kl_err("skip-otp-upload set but no atheros,app-start-override-addr provided for chip 0x%x\n",
 				   ar->version.target_ver);
 			return -EINVAL;
 		}
+
 		ath6kl_dbg(ATH6KL_DBG_BOOT,
 			   "skip-otp-upload: not downloading OTP; executing chip-internal OTP at 0x%x\n",
-			   ar->hw.app_start_override_addr);
+			   override);
 		param = 0;
-		ath6kl_bmi_execute(ar, ar->hw.app_start_override_addr, &param);
+		ar->hw.app_start_override_addr = override;
+		ath6kl_bmi_execute(ar, override, &param);
 		return 0;
 	}
 
