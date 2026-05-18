@@ -1677,13 +1677,15 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 */
 	if (qce->reset) {
 		reset_control_assert(qce->reset);
-		udelay(10);
-		reset_control_deassert(qce->reset);
-		/* 1 ms settle -- diagnostic.  If cold-start AES-256-CBC
-		 * is fixed by this, it confirms the issue is timing.  If
-		 * not, we need a different approach (e.g. dummy warm-up
-		 * op after reset).
+		/* longer assert + deassert hold than hash path.
+		 * 1ms post-deassert alone fixed AES-256-CBC encrypt at
+		 * cold-start but decrypt still failed block-2 passthrough.
+		 * Try a longer assert too -- maybe the AES core's decrypt
+		 * pipeline needs a fuller reset cycle than the simple
+		 * 10us hash settle covers.
 		 */
+		usleep_range(1000, 1500);
+		reset_control_deassert(qce->reset);
 		usleep_range(1000, 1500);
 	}
 
