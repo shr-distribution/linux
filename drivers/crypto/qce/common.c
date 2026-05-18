@@ -1677,17 +1677,23 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 */
 	if (qce->reset) {
 		reset_control_assert(qce->reset);
-		/* longer assert + deassert hold than hash path.
-		 * 1ms post-deassert alone fixed AES-256-CBC encrypt at
-		 * cold-start but decrypt still failed block-2 passthrough.
-		 * Try a longer assert too -- maybe the AES core's decrypt
-		 * pipeline needs a fuller reset cycle than the simple
-		 * 10us hash settle covers.
-		 */
 		usleep_range(1000, 1500);
 		reset_control_deassert(qce->reset);
 		usleep_range(1000, 1500);
 	}
+
+	/* Additional SW_RST pulse via CONFIG register.  GCC_CE2_RESET
+	 * resets the clock domain; SW_RST resets the engine's internal
+	 * state machine.  Probe does both at init time; the per-op path
+	 * needs SW_RST too for 3DES-CBC decrypt cold-start, which
+	 * otherwise returns stale DATA_SHADOW0 bytes (engine not
+	 * processing at all).  Mirrors the probe-time SW_RST pulse
+	 * timing (10 us assert, 10 us deassert).
+	 */
+	writel_relaxed(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
+	usleep_range(10, 20);
+	writel_relaxed(0, qce->base + CE2_REG_CONFIG);
+	usleep_range(10, 20);
 
 	/* Wait for IDLE before configuring */
 	for (timeout = 10000; timeout > 0; timeout--) {
