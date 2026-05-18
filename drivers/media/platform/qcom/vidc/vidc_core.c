@@ -793,6 +793,28 @@ int vidc_boot_firmware(struct vidc_core *core)
 	core->empty_irq_streak = 0;
 
 	/*
+	 * After a GDSC power cycle SW_RESET reads 0x000: all blocks in the
+	 * VIDC block are held in reset, including the internal SMI bus
+	 * arbiter that forwards CPU writes to SMI SRAM (0x38000000). With
+	 * the arbiter in reset, memcpy_toio to fw_vaddr is silently dropped
+	 * and the firmware re-copy below never reaches the hardware.
+	 *
+	 * Fix: if SW_RESET is 0, release the non-RISC blocks (0x3fe) before
+	 * the copy. This matches the state the GDSC footswitch leaves on
+	 * first power-up, so the SMI arbiter is live when we write. The RISC
+	 * bit stays asserted (bit 0 clear in 0x3fe) so the RISC cannot
+	 * speculatively fetch from the not-yet-updated firmware image.
+	 * vidc_hw_reset() will then see SW_RESET=0x3fe on entry and follow
+	 * the warm-boot path, producing the stage-2 RESET_ALL falling edge
+	 * that the hardware requires before latching DRAM_BASE writes.
+	 */
+	if (vidc_read(core, VIDC_REG_SW_RESET) == 0) {
+		vidc_write(core, VIDC_REG_SW_RESET,
+			   VIDC_RESET_NONE & ~VIDC_RESET_RISC);
+		msleep(1);
+	}
+
+	/*
 	 * Re-copy firmware to SMI SRAM and re-zero scratch regions.
 	 *
 	 * SMI SRAM (0x38000000) is not in the VIDC GDSC power domain and
