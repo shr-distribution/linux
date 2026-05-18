@@ -1443,7 +1443,8 @@ static void qce_ce2_skc_dma_done(void *param)
 static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 				    struct scatterlist *src,
 				    struct scatterlist *dst,
-				    unsigned int nbytes)
+				    unsigned int nbytes,
+				    unsigned int block_dwords)
 {
 	struct dma_chan *rx = qce->dma.rxchan;
 	struct dma_chan *tx = qce->dma.txchan;
@@ -1457,7 +1458,14 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		.direction = DMA_MEM_TO_DEV,
 		.dst_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
 		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
-		.dst_maxburst = 4,
+		/* burst = cipher block size: ADM walks one block per CRCI
+		 * handshake so the engine can fully produce/consume a block
+		 * before the next handshake fires.  AES = 4 dw (16 B);
+		 * DES/3DES = 2 dw (8 B).  Using 4 dw for 3DES caused ADM to
+		 * read 16 bytes while engine only produced 8 valid bytes
+		 * (other 8 read back as zero from DATA_SHADOW0).
+		 */
+		.dst_maxburst = block_dwords,
 		.peripheral_config = &in_periph,
 		.peripheral_size = sizeof(in_periph),
 	};
@@ -1465,7 +1473,7 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		.direction = DMA_DEV_TO_MEM,
 		.src_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
 		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
-		.src_maxburst = 4,
+		.src_maxburst = block_dwords,
 		.peripheral_config = &out_periph,
 		.peripheral_size = sizeof(out_periph),
 	};
@@ -1476,7 +1484,8 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	__le32 *in_buf, *out_buf;
 	u8 *src_copy = NULL, *dst_copy = NULL;
 	enum dma_status status;
-	unsigned int padded = round_up(nbytes, 16);
+	unsigned int burst_bytes = block_dwords * 4;
+	unsigned int padded = round_up(nbytes, burst_bytes);
 	unsigned int dwords;
 	unsigned int i;
 	int ret;
@@ -1677,14 +1686,21 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			flags, keylen);
 		return -EINVAL;
 	}
-	if (IS_ENCRYPT(flags)) {
+	/* CTR mode is symmetric (P xor keystream = C; C xor keystream = P).
+	 * On CE2, ENCODE=0 in CTR mode appears to flip the engine to
+	 * AES_decrypt(input) xor counter instead of input xor AES_encrypt(
+	 * counter) -- empirically CTR encrypt works but CTR decrypt returns
+	 * garbage.  Force ENCODE=1 + AUTH_POS=1 for CTR regardless of the
+	 * crypto-API direction so the engine always runs the symmetric
+	 * encrypt-counter path.
+	 */
+	if (IS_ENCRYPT(flags) || IS_CTR(flags)) {
 		encr_cfg |= BIT(CE2_ENCODE_SHIFT);
 		/* webOS _ce_setup sets AUTH_POS (bit 14) for encrypt
 		 * direction only.  On a pure-cipher op the bit nominally
 		 * controls auth ordering, but CE2 also uses it as part of
 		 * the cipher direction state machine; without it, decrypt
-		 * after encrypt leaves the engine confused (ECB decrypt
-		 * passthrough, CTR decrypt garbage).
+		 * after encrypt leaves the engine confused.
 		 */
 		encr_cfg |= BIT(CE2_AUTH_POS_SHIFT);
 	}
@@ -1761,8 +1777,13 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		return -ETIMEDOUT;
 	}
 
-	/* Dual-channel DMA: input -> DATA_SHADOW0, output <- DATA_SHADOW0 */
-	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen);
+	/* Dual-channel DMA: input -> DATA_SHADOW0, output <- DATA_SHADOW0.
+	 * DES/3DES use 8-byte blocks (2 dwords); AES uses 16-byte (4 dwords).
+	 * The ADM burst must match the engine's block size so the per-block
+	 * CRCI handshake aligns with what the engine produces/consumes.
+	 */
+	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen,
+				       (IS_DES(flags) || IS_3DES(flags)) ? 2 : 4);
 	dev_info(qce->dev,
 		 "CE2 skc post-DMA: ret=%d STATUS=0x%08x\n", ret,
 		 readl_relaxed(qce->base + CE2_REG_STATUS));
