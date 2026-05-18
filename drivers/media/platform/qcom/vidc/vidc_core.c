@@ -301,16 +301,29 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
 		memset(core->fw_vaddr + core->fw_size, 0,
 		       core->fw_alloc_size - core->fw_size);
-		/* Verify that CPU writes actually land in SMI SRAM */
+		/* Verify that CPU writes actually land in SMI SRAM (check a non-zero offset) */
 		{
-			u32 rb0 = readl_relaxed(core->fw_vaddr);
-			u32 rb4 = readl_relaxed(core->fw_vaddr + 4);
-			u32 ex0 = ((const u32 *)core->fw->data)[0];
-			u32 ex4 = ((const u32 *)core->fw->data)[1];
-			printk(KERN_EMERG
-			       "VIDC: fw recopy rb[0]=0x%08x exp=0x%08x %s rb[4]=0x%08x exp=0x%08x %s\n",
-			       rb0, ex0, rb0 == ex0 ? "OK" : "MISMATCH",
-			       rb4, ex4, rb4 == ex4 ? "OK" : "MISMATCH");
+			/* Find first non-zero dword in firmware for a meaningful check */
+			const u32 *fw32 = (const u32 *)core->fw->data;
+			u32 chk_off = 0;
+			int i;
+
+			for (i = 0; i < 256; i++) {
+				if (fw32[i]) {
+					chk_off = i * 4;
+					break;
+				}
+			}
+			if (chk_off) {
+				u32 rb  = readl_relaxed(core->fw_vaddr + chk_off);
+				u32 exp = fw32[chk_off / 4];
+				printk(KERN_EMERG
+				       "VIDC: fw recopy rb[0x%x]=0x%08x exp=0x%08x %s\n",
+				       chk_off, rb, exp,
+				       rb == exp ? "OK" : "MISMATCH");
+			} else {
+				printk(KERN_EMERG "VIDC: fw recopy: first 1KB all zeros, cannot verify\n");
+			}
 		}
 	}
 
@@ -546,13 +559,23 @@ static irqreturn_t vidc_isr(int irq, void *data)
 	case 0x120719:
 		/*
 		 * In recovery-mode boots (stale .data/.bss after GDSC cycle)
-		 * the firmware responds to SYS_INIT with cmd=0x120719 (its
-		 * own firmware version) instead of the normal cmd=8.  All
-		 * arg fields also carry 0x120719.  Treat this as SYS_INIT_RET
-		 * so the boot sequence proceeds to OPEN_CH.
+		 * the firmware uses cmd=0x120719 (its own firmware version) as
+		 * a universal ACK for ALL commands: SYS_INIT_RET, OPEN_CH_RET,
+		 * and CLOSE_CH_RET all arrive as 0x120719 instead of the
+		 * normal cmd=8, cmd=1, cmd=2.
+		 *
+		 * Complete both the SYS_INIT waiter and any per-instance waiter
+		 * that is currently pending (OPEN_CH, CLOSE_CH, flush, etc.).
+		 * close_ch() always resets inst->state to IDLE itself so we
+		 * set VIDC_STATE_OPEN here to satisfy open_ch() callers — the
+		 * close path overwrites it unconditionally.
 		 */
-		dev_info(core->dev, "Firmware recovery SYS_INIT_RET (cmd=0x120719)\n");
+		dev_info(core->dev, "Firmware recovery ACK (cmd=0x120719)\n");
 		complete(&core->sys_init_done);
+		if (inst) {
+			inst->state = VIDC_STATE_OPEN;
+			complete(&inst->done);
+		}
 		break;
 
 	case VIDC_RESP_OPEN_CH:
