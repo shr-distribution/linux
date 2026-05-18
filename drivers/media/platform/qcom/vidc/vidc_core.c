@@ -604,13 +604,10 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		complete(&core->sys_init_done);
 		if (inst) {
 			if (inst->state == VIDC_STATE_IDLE) {
-				inst->inst_id = vidc_read(core,
-						VIDC_REG_RETURNED_CH_INST_ID);
-				vidc_write(core, VIDC_REG_RETURNED_CH_INST_ID,
-					   VIDC_INIT_CH_INST_ID);
+				inst->inst_id = arg1;
 				dev_info(core->dev,
-					 "Recovery OPEN_CH ack: inst_id=0x%08x\n",
-					 inst->inst_id);
+					 "Recovery OPEN_CH ack: arg1=0x%08x inst_id=0x%08x\n",
+					 arg1, inst->inst_id);
 				inst->state = VIDC_STATE_OPEN;
 			} else {
 				inst->state = VIDC_STATE_RUNNING;
@@ -621,9 +618,19 @@ static irqreturn_t vidc_isr(int irq, void *data)
 
 	case VIDC_RESP_OPEN_CH:
 		if (inst) {
-			inst->inst_id = vidc_read(core, VIDC_REG_RETURNED_CH_INST_ID);
-			vidc_write(core, VIDC_REG_RETURNED_CH_INST_ID, VIDC_INIT_CH_INST_ID);
-			dev_dbg(core->dev, "Channel opened, inst_id=0x%08x\n", inst->inst_id);
+			u32 ret_ch;
+			/*
+			 * webOS ddl_channel_set_callback uses response_cmd_ch_id
+			 * = arg1 (base+0x48) as instance_id, NOT RETURNED_CH_INST_ID
+			 * (base+0x2000). The firmware puts the channel handle in arg1
+			 * for OPEN_CH; 0x2000 is used by SEQ_DONE/FRAME_DONE only.
+			 * Log both for comparison during bring-up.
+			 */
+			ret_ch = vidc_read(core, VIDC_REG_RETURNED_CH_INST_ID);
+			inst->inst_id = arg1;
+			dev_info(core->dev,
+				 "Channel opened, arg1=0x%08x ret_ch=0x%08x inst_id=0x%08x\n",
+				 arg1, ret_ch, inst->inst_id);
 			inst->state = VIDC_STATE_OPEN;
 			complete(&inst->done);
 		}

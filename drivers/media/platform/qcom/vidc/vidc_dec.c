@@ -701,6 +701,16 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
 
 	/*
+	 * Clear DivX3 resolution registers before every command.  For H.264
+	 * and all non-DivX3 codecs, webOS ddl_vidc_decode_init_codec calls
+	 * vidc_set_divx3_resolution(0, 0) which writes 0 to 0x2050/0x2054
+	 * before the SEQ_HEADER command registers.  Without this, stale values
+	 * from a previous GDSC power cycle can confuse the firmware.
+	 */
+	vidc_write(core, VIDC_REG_CH0_Y_ADDR, 0);
+	vidc_write(core, VIDC_REG_CH0_C_ADDR, 0);
+
+	/*
 	 * All VIDC buffer addresses are firmware-relative: byte offset from
 	 * fw_dma_addr (the SMI SRAM base, 0x38000000), shifted right by
 	 * VIDC_ADDR_SHIFT.  This mirrors DDL_OFFSET(dram_base_a, buf_phys)
