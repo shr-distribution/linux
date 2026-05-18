@@ -718,12 +718,20 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	 * Issuing DMA before CMD causes CRC errors (card not ready).
 	 * Writing DATACTRL after CMD causes hangs (DPSM won't start).
 	 *
-	 * For non-datactrl_first writes and all reads, issue immediately.
+	 * GATED: only SDIO instances need the deferred path. eMMC writes
+	 * use immediate DMA issue (no CRC issue observed on eMMC and no
+	 * watchdog overhead). The deferred-DMA watchdog (3 s) was racing
+	 * with eMMC's natural multi-block-write busy windows after WiFi
+	 * DMA started, killing the rootfs.
+	 *
+	 * For non-datactrl_first writes, eMMC, and all reads, issue
+	 * immediately.
 	 */
 	if (host->ops && host->ops->dma_issue_pending) {
 		if (host->datactrl_first &&
 		    !(data->flags & MMC_DATA_READ) &&
-		    host->variant->qcom_dml) {
+		    host->variant->qcom_dml &&
+		    (host->mmc->caps & MMC_CAP_SDIO_IRQ)) {
 			host->dma_issue_deferred = true;
 		} else {
 			host->ops->dma_issue_pending(host);
@@ -1887,9 +1895,19 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 				readl(host->base + MMCISTATUS),
 				cmd->resp[0]);
 			host->ops->dma_issue_pending(host);
+			/*
+			 * 500 ms is enough for any real DMA — typical SDIO
+			 * transfers complete in microseconds. The previous 3 s
+			 * timeout was wide enough to coincide with eMMC's
+			 * natural multi-block-write busy windows, falsely
+			 * triggering a forced terminate that cascaded into
+			 * eMMC journal abort. Only legitimate WiFi-chip hangs
+			 * (waiting on response that never comes) need this
+			 * watchdog now and 500 ms catches those just fine.
+			 */
 			schedule_delayed_work(
 				&host->qcom_dma_timeout_work,
-				msecs_to_jiffies(3000));
+				msecs_to_jiffies(500));
 		}
 	}
 }
