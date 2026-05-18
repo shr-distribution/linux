@@ -700,8 +700,16 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	 */
 	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
 
-	/* Write stream buffer address and payload size */
-	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, src_addr >> VIDC_ADDR_SHIFT);
+	/*
+	 * All VIDC buffer addresses are firmware-relative: byte offset from
+	 * fw_dma_addr (the SMI SRAM base, 0x38000000), shifted right by
+	 * VIDC_ADDR_SHIFT.  This mirrors DDL_OFFSET(dram_base_a, buf_phys)
+	 * from the legacy vidc_1080p driver.  Writing src_addr directly
+	 * (without subtracting fw_dma_addr) pointed the firmware at DDR
+	 * garbage and caused a silent firmware hang on every SEQ_HEADER.
+	 */
+	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
+		   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_STREAM_SIZE, src_size);
 
 	/*
