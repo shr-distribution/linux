@@ -23,9 +23,9 @@
 #include <linux/of_platform.h>
 #include <linux/regmap.h>
 
-#include <dt-bindings/clock/qcom,mmcc-msm8960.h>
+#include <dt-bindings/clock/qcom,mmcc-msm8660.h>
 #include <dt-bindings/mfd/qcom-rpm.h>
-#include <dt-bindings/reset/qcom,mmcc-msm8960.h>
+#include <dt-bindings/reset/qcom,mmcc-msm8660.h>
 
 #include "common.h"
 #include "clk-regmap.h"

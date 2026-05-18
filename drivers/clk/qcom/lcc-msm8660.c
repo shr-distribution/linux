@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2026, LuneOS Project.
+ *
+ * Qualcomm MSM8660/APQ8060/MSM8260 LPASS Clock Controller driver.
+ *
+ * Split from lcc-msm8960.c because MSM8660/APQ8060/MSM8260 are a separate
+ * SoC generation (Scorpion) from MSM8960 (Krait). The clock topology is
+ * compatible but PLL4 runs at a different rate (540.672 MHz, L=22) and the
+ * driver has no need for the MDM9615 CXO patch or the 492 MHz frequency plan.
  */
 
 #include <linux/kernel.h>
@@ -12,7 +20,7 @@
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
 
-#include <dt-bindings/clock/qcom,lcc-msm8960.h>
+#include <dt-bindings/clock/qcom,lcc-msm8660.h>
 
 #include "common.h"
 #include "clk-regmap.h"
@@ -21,10 +29,6 @@
 #include "clk-branch.h"
 #include "clk-regmap-divider.h"
 #include "clk-regmap-mux.h"
-
-static struct clk_parent_data pxo_parent_data = {
-	.fw_name = "pxo", .name = "pxo_board",
-};
 
 static struct clk_pll pll4 = {
 	.l_reg = 0x4,
@@ -36,7 +40,9 @@ static struct clk_pll pll4 = {
 	.status_bit = 16,
 	.clkr.hw.init = &(struct clk_init_data){
 		.name = "pll4",
-		.parent_data = &pxo_parent_data,
+		.parent_data = &(const struct clk_parent_data){
+			.fw_name = "pxo", .name = "pxo_board",
+		},
 		.num_parents = 1,
 		.ops = &clk_pll_ops,
 	},
@@ -52,23 +58,28 @@ static const struct parent_map lcc_pxo_pll4_map[] = {
 	{ P_PLL4, 2 }
 };
 
-static struct clk_parent_data lcc_pxo_pll4[] = {
+static const struct clk_parent_data lcc_pxo_pll4[] = {
 	{ .fw_name = "pxo", .name = "pxo_board" },
 	{ .fw_name = "pll4_vote", .name = "pll4_vote" },
 };
 
-static const struct freq_tbl clk_tbl_aif_osr_492[] = {
-	{   512000, P_PLL4, 4, 1, 240 },
-	{   768000, P_PLL4, 4, 1, 160 },
-	{  1024000, P_PLL4, 4, 1, 120 },
-	{  1536000, P_PLL4, 4, 1,  80 },
-	{  2048000, P_PLL4, 4, 1,  60 },
-	{  3072000, P_PLL4, 4, 1,  40 },
-	{  4096000, P_PLL4, 4, 1,  30 },
-	{  6144000, P_PLL4, 4, 1,  20 },
-	{  8192000, P_PLL4, 4, 1,  15 },
-	{ 12288000, P_PLL4, 4, 1,  10 },
-	{ 24576000, P_PLL4, 4, 1,   5 },
+/*
+ * MSM8660/APQ8060 PLL4 runs at 540.672 MHz (24.576 MHz * 22, L=0x16).
+ * Divisors taken from the legacy webOS clock-8x60.c driver.
+ * AIF_OSR has an 8-bit M/N counter, so 512000 Hz is not achievable with
+ * this PLL frequency and is intentionally omitted from the 540 MHz tables.
+ */
+static const struct freq_tbl clk_tbl_aif_osr_540[] = {
+	{   768000, P_PLL4, 4, 1, 176 },
+	{  1024000, P_PLL4, 4, 1, 132 },
+	{  1536000, P_PLL4, 4, 1,  88 },
+	{  2048000, P_PLL4, 4, 1,  66 },
+	{  3072000, P_PLL4, 4, 1,  44 },
+	{  4096000, P_PLL4, 4, 1,  33 },
+	{  6144000, P_PLL4, 4, 1,  22 },
+	{  8192000, P_PLL4, 2, 1,  33 },
+	{ 12288000, P_PLL4, 4, 1,  11 },
+	{ 24576000, P_PLL4, 2, 1,  11 },
 	{ 27000000, P_PXO,  1, 0,   0 },
 	{ }
 };
@@ -206,11 +217,17 @@ CLK_AIF_OSR_DIV_CLK(mi2s, 0x48, 4)
 CLK_AIF_OSR_BIT_DIV_CLK(mi2s, 0x48, 0x50, 15)
 CLK_AIF_OSR_BIT_CLK(mi2s, 0x48, 14)
 
+/*
+ * CLK_AIF_OSR_DIV - Audio Interface with divider clocks.
+ * Enable bits per legacy MSM8660 kernel:
+ *   - OSR branch enable: BIT(17)
+ *   - BIT_DIV branch enable: BIT(15)
+ */
 #define CLK_AIF_OSR_DIV(prefix, _ns, _md, hr)			\
 	CLK_AIF_OSR_SRC(prefix, _ns, _md)			\
-	CLK_AIF_OSR_CLK(prefix, _ns, hr, 21)			\
+	CLK_AIF_OSR_CLK(prefix, _ns, hr, 17)			\
 	CLK_AIF_OSR_DIV_CLK(prefix, _ns, 8)			\
-	CLK_AIF_OSR_BIT_DIV_CLK(prefix, _ns, hr, 19)		\
+	CLK_AIF_OSR_BIT_DIV_CLK(prefix, _ns, hr, 15)		\
 	CLK_AIF_OSR_BIT_CLK(prefix, _ns, 18)
 
 CLK_AIF_OSR_DIV(codec_i2s_mic, 0x60, 0x64, 0x68);
@@ -218,19 +235,20 @@ CLK_AIF_OSR_DIV(spare_i2s_mic, 0x78, 0x7c, 0x80);
 CLK_AIF_OSR_DIV(codec_i2s_spkr, 0x6c, 0x70, 0x74);
 CLK_AIF_OSR_DIV(spare_i2s_spkr, 0x84, 0x88, 0x8c);
 
-static const struct freq_tbl clk_tbl_pcm_492[] = {
-	{   256000, P_PLL4, 4, 1, 480 },
-	{   512000, P_PLL4, 4, 1, 240 },
-	{   768000, P_PLL4, 4, 1, 160 },
-	{  1024000, P_PLL4, 4, 1, 120 },
-	{  1536000, P_PLL4, 4, 1,  80 },
-	{  2048000, P_PLL4, 4, 1,  60 },
-	{  3072000, P_PLL4, 4, 1,  40 },
-	{  4096000, P_PLL4, 4, 1,  30 },
-	{  6144000, P_PLL4, 4, 1,  20 },
-	{  8192000, P_PLL4, 4, 1,  15 },
-	{ 12288000, P_PLL4, 4, 1,  10 },
-	{ 24576000, P_PLL4, 4, 1,   5 },
+/* PCM frequency table for MSM8660/APQ8060 with PLL4 at 540.672 MHz */
+static const struct freq_tbl clk_tbl_pcm_540[] = {
+	{   256000, P_PLL4, 4, 1, 528 },
+	{   512000, P_PLL4, 4, 1, 264 },
+	{   768000, P_PLL4, 4, 1, 176 },
+	{  1024000, P_PLL4, 4, 1, 132 },
+	{  1536000, P_PLL4, 4, 1,  88 },
+	{  2048000, P_PLL4, 4, 1,  66 },
+	{  3072000, P_PLL4, 4, 1,  44 },
+	{  4096000, P_PLL4, 4, 1,  33 },
+	{  6144000, P_PLL4, 4, 1,  22 },
+	{  8192000, P_PLL4, 2, 1,  33 },
+	{ 12288000, P_PLL4, 4, 1,  11 },
+	{ 24576000, P_PLL4, 2, 1,  11 },
 	{ 27000000, P_PXO,  1, 0,   0 },
 	{ }
 };
@@ -248,7 +266,6 @@ static const struct freq_tbl clk_tbl_pcm_393[] = {
 	{  8192000, P_PLL4, 4, 1,  12 },
 	{ 12288000, P_PLL4, 4, 1,   8 },
 	{ 24576000, P_PLL4, 4, 1,   4 },
-	{ 27000000, P_PXO,  1, 0,   0 },
 	{ }
 };
 
@@ -393,7 +410,7 @@ static struct clk_branch sps_slimbus_clk = {
 	},
 };
 
-static struct clk_regmap *lcc_msm8960_clks[] = {
+static struct clk_regmap *lcc_msm8660_clks[] = {
 	[PLL4] = &pll4.clkr,
 	[MI2S_OSR_SRC] = &mi2s_osr_src.clkr,
 	[MI2S_OSR_CLK] = &mi2s_osr_clk.clkr,
@@ -428,7 +445,7 @@ static struct clk_regmap *lcc_msm8960_clks[] = {
 	[SPARE_I2S_SPKR_BIT_CLK] = &spare_i2s_spkr_bit_clk.clkr,
 };
 
-static const struct regmap_config lcc_msm8960_regmap_config = {
+static const struct regmap_config lcc_msm8660_regmap_config = {
 	.reg_bits	= 32,
 	.reg_stride	= 4,
 	.val_bits	= 32,
@@ -436,63 +453,65 @@ static const struct regmap_config lcc_msm8960_regmap_config = {
 	.fast_io	= true,
 };
 
-static const struct qcom_cc_desc lcc_msm8960_desc = {
-	.config = &lcc_msm8960_regmap_config,
-	.clks = lcc_msm8960_clks,
-	.num_clks = ARRAY_SIZE(lcc_msm8960_clks),
+static const struct qcom_cc_desc lcc_msm8660_desc = {
+	.config = &lcc_msm8660_regmap_config,
+	.clks = lcc_msm8660_clks,
+	.num_clks = ARRAY_SIZE(lcc_msm8660_clks),
 };
 
-static const struct of_device_id lcc_msm8960_match_table[] = {
-	{ .compatible = "qcom,lcc-msm8960" },
-	{ .compatible = "qcom,lcc-apq8064" },
-	{ .compatible = "qcom,lcc-mdm9615" },
+static const struct of_device_id lcc_msm8660_match_table[] = {
+	{ .compatible = "qcom,lcc-msm8660" },
+	{ .compatible = "qcom,lcc-apq8060" },
 	{ }
 };
-MODULE_DEVICE_TABLE(of, lcc_msm8960_match_table);
+MODULE_DEVICE_TABLE(of, lcc_msm8660_match_table);
 
-static int lcc_msm8960_probe(struct platform_device *pdev)
+static int lcc_msm8660_probe(struct platform_device *pdev)
 {
-	u32 val;
 	struct regmap *regmap;
+	u32 val;
 
-	/* patch for the cxo <-> pxo difference */
-	if (of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-mdm9615")) {
-		pxo_parent_data.fw_name = "cxo";
-		pxo_parent_data.name = "cxo_board";
-		lcc_pxo_pll4[0].fw_name = "cxo";
-		lcc_pxo_pll4[0].name = "cxo_board";
-	}
-
-	regmap = qcom_cc_map(pdev, &lcc_msm8960_desc);
+	regmap = qcom_cc_map(pdev, &lcc_msm8660_desc);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	/* Use the correct frequency plan depending on speed of PLL4 */
+	/*
+	 * MSM8660/APQ8060 should always boot with PLL4 L=22 (540.672 MHz).
+	 * Detect anyway so a board with a non-standard L value still gets a
+	 * coherent frequency plan instead of silently producing wrong rates.
+	 */
 	regmap_read(regmap, 0x4, &val);
-	if (val == 0x12) {
-		slimbus_src.freq_tbl = clk_tbl_aif_osr_492;
-		mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_492;
-		codec_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_492;
-		spare_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_492;
-		codec_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_492;
-		spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_492;
-		pcm_src.freq_tbl = clk_tbl_pcm_492;
+	if (val == 0x16) {
+		dev_info(&pdev->dev,
+			 "PLL4 L=0x%x, using 540MHz frequency plan\n", val);
+		slimbus_src.freq_tbl = clk_tbl_aif_osr_540;
+		mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+		codec_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+		spare_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+		codec_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+		spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
+		pcm_src.freq_tbl = clk_tbl_pcm_540;
+	} else {
+		dev_info(&pdev->dev,
+			 "PLL4 L=0x%x, using fallback 393MHz frequency plan\n",
+			 val);
 	}
+
 	/* Enable PLL4 source on the LPASS Primary PLL Mux */
 	regmap_write(regmap, 0xc4, 0x1);
 
-	return qcom_cc_really_probe(&pdev->dev, &lcc_msm8960_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, &lcc_msm8660_desc, regmap);
 }
 
-static struct platform_driver lcc_msm8960_driver = {
-	.probe		= lcc_msm8960_probe,
+static struct platform_driver lcc_msm8660_driver = {
+	.probe		= lcc_msm8660_probe,
 	.driver		= {
-		.name	= "lcc-msm8960",
-		.of_match_table = lcc_msm8960_match_table,
+		.name	= "lcc-msm8660",
+		.of_match_table = lcc_msm8660_match_table,
 	},
 };
-module_platform_driver(lcc_msm8960_driver);
+module_platform_driver(lcc_msm8660_driver);
 
-MODULE_DESCRIPTION("QCOM LCC MSM8960 Driver");
+MODULE_DESCRIPTION("Qualcomm MSM8660/APQ8060 LPASS Clock Controller driver");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("platform:lcc-msm8960");
+MODULE_ALIAS("platform:lcc-msm8660");

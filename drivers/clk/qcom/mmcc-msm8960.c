@@ -1977,11 +1977,6 @@ static struct clk_branch mdp_axi_clk = {
 		.enable_mask = BIT(23),
 		.hw.init = &(struct clk_init_data){
 			.name = "mdp_axi_clk",
-			.parent_data = &(const struct clk_parent_data){
-				.fw_name = "mmfab",
-			},
-			.num_parents = 1,
-			.flags = CLK_SET_RATE_PARENT,
 			.ops = &clk_branch_ops,
 		},
 	},
@@ -3176,8 +3171,7 @@ static int mmcc_msm8960_probe(struct platform_device *pdev)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	if (desc == &mmcc_apq8064_desc)
-		clk_pll_configure_sr(&pll15, regmap, &pll15_config, false);
+	clk_pll_configure_sr(&pll15, regmap, &pll15_config, false);
 
 	return qcom_cc_really_probe(&pdev->dev, desc, regmap);
 }
