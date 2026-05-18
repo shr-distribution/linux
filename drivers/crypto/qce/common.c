@@ -12,7 +12,6 @@
 #include <linux/interrupt.h>
 #include <linux/reset.h>
 #include <linux/types.h>
-#include <crypto/aes.h>
 #include <crypto/scatterwalk.h>
 #include <crypto/sha1.h>
 #include <crypto/sha2.h>
@@ -1740,60 +1739,20 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	/* No auth segment for skcipher-only */
 	writel(0, qce->base + CE2_REG_AUTH_SEG_CFG);
 
-	/* Key writes.  DES/3DES: 2/6 dwords at DES_KEY0..5.
-	 *
-	 * AES: write the full FIPS-197 round-key schedule (60 dwords) to
-	 * AES_RNDKEY0..59, NOT just the raw 4-8 key dwords.  ENGINES_AVAIL
-	 * reports CRYPTO_AES_SEL_FAST but HTC sbl3 (decompiled at
-	 * sbl3.disasm:5f30c) pre-expands the schedule and writes all 60
-	 * words in a loop:
-	 *
-	 *   r8 = 0x18500200            ; AES_RNDKEY0
-	 *   r5 = 0
-	 * loop:
-	 *   ...                        ; fetch source word
-	 *   str r0, [r8, r5, lsl #2]   ; AES_RNDKEY[r5] = word
-	 *   r5++; cmp r5, #60; bcc loop
-	 *
-	 * Empirically the engine's internal AES key expansion (fast mode)
-	 * appears broken or pipeline-limited on this silicon; without the
-	 * pre-expanded full schedule, AES processing caps at 4 blocks per
-	 * op (blocks 5+ come back wrong).  DES is unaffected (it uses
-	 * DES_KEY0..5 directly).
+	/* Key writes: DES_KEY0..5 for DES/3DES, AES_RNDKEY0..N for AES.
+	 * APQ8060 CE2 reports CRYPTO_AES_SEL_FAST in ENGINES_AVAIL, so
+	 * the raw key is written and the engine expands the round-key
+	 * schedule internally (webOS pce_dev->fastaes=1 path).
 	 */
+	qce_cpu_to_be32p_array(enckey, ctx->enc_key, keylen);
 	if (IS_DES(flags) || IS_3DES(flags)) {
-		qce_cpu_to_be32p_array(enckey, ctx->enc_key, keylen);
 		for (k = 0; k < enckey_words; k++)
 			writel((__force u32)enckey[k],
 			       qce->base + CE2_REG_DES_KEY0 + k * 4);
 	} else {	/* AES */
-		struct crypto_aes_ctx aes_ctx = {0};
-		int aerr;
-
-		aerr = aes_expandkey(&aes_ctx, ctx->enc_key, keylen);
-		if (aerr) {
-			dev_err(qce->dev,
-				"CE2 cipher: aes_expandkey failed (%d)\n",
-				aerr);
-			return aerr;
-		}
-		/*
-		 * aes_expandkey reads input bytes via get_unaligned_le32,
-		 * so key_enc[k] is packed LE-form (byte 0 in low bits).
-		 * The CE2 engine expects BE-form (byte 0 in high bits) --
-		 * confirmed by webOS slow-path which uses
-		 * _byte_stream_to_net_words (BE packing) before its own
-		 * key expansion, then writel's the BE-form words directly.
-		 * Convert each word via cpu_to_be32() before writing.
-		 *
-		 * For AES-128 only the first 44 words are populated;
-		 * aes_ctx was zero-initialised so the remaining 16 stay 0,
-		 * matching HTC sbl3's pre-expanded buffer for keylen < 32 B.
-		 */
-		for (k = 0; k < CE2_AES_RNDKEYS; k++)
-			writel((__force u32)cpu_to_be32(aes_ctx.key_enc[k]),
+		for (k = 0; k < enckey_words; k++)
+			writel((__force u32)enckey[k],
 			       qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
-		memzero_explicit(&aes_ctx, sizeof(aes_ctx));
 	}
 
 	/* IV: CNTR0..3.  Skip for ECB (no IV) */
