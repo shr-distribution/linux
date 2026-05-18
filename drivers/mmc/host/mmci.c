@@ -1618,9 +1618,12 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 	 *
 	 * iowrite32_rep with ((count + 3) >> 2) words gives the same
 	 * uneven-tail handling as mmci_pio_write (1..3 byte tail
-	 * rounds up to a u32 write). sg_miter is left running so the
-	 * data IRQ / PIO IRQ paths see a consistent state; with
-	 * host->size == 0 the PIO IRQ loop body is a no-op.
+	 * rounds up to a u32 write). sg_miter_stop is mandatory -- the
+	 * SG_MITER_ATOMIC flag in mmci_init_sg means sg_miter_next
+	 * calls kmap_local_atomic, which disables preemption.  Without
+	 * the matching stop, preempt_count stays raised and the next
+	 * mmc_wait_for_req call (e.g. ath6kl's next BMI op) triggers
+	 * "scheduling while atomic" BUG.
 	 */
 	if (host->variant->qcom_datactrl_delay &&
 	    !(data->flags & MMC_DATA_READ) &&
@@ -1636,6 +1639,7 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 			sg_miter->consumed = chunk;
 			host->size -= chunk;
 		}
+		sg_miter_stop(sg_miter);
 		irqmask = 0;
 	}
 
