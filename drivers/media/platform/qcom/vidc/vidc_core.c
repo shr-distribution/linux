@@ -586,11 +586,16 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		 * OPEN_CH_RET, CLOSE_CH_RET, and INIT_BUFFERS_RET all arrive
 		 * as 0x120719 instead of the normal cmd=8, cmd=1, cmd=2, cmd=15.
 		 *
-		 * Complete both the SYS_INIT waiter and any per-instance waiter
-		 * that is currently pending (OPEN_CH, CLOSE_CH, INIT_BUFFERS).
-		 * close_ch() always resets inst->state to IDLE itself so we
-		 * set VIDC_STATE_RUNNING here (covers INIT_BUFFERS callers) —
-		 * the close path overwrites it unconditionally.
+		 * We discriminate OPEN_CH from other commands by inst->state:
+		 *   VIDC_STATE_IDLE   → OPEN_CH ack   → read RETURNED_CH_INST_ID
+		 *   VIDC_STATE_OPEN   → INIT_BUFFERS  → just complete
+		 *   VIDC_STATE_RUNNING→ CLOSE_CH etc. → just complete
+		 *
+		 * Reading RETURNED_CH_INST_ID for the OPEN_CH case is critical:
+		 * without it inst->inst_id stays 0, and the subsequent
+		 * INIT_BUFFERS command is sent with inst_id=0 which the firmware
+		 * does not recognise as a valid channel — it silently discards the
+		 * command, leaving us waiting for a completion that never fires.
 		 *
 		 * Note: SEQ_HEADER in recovery mode uses cmd=0 (EMPTY) instead;
 		 * that is handled by the VIDC_RESP_EMPTY case above.
@@ -598,7 +603,18 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		dev_info(core->dev, "Firmware recovery ACK (cmd=0x120719)\n");
 		complete(&core->sys_init_done);
 		if (inst) {
-			inst->state = VIDC_STATE_RUNNING;
+			if (inst->state == VIDC_STATE_IDLE) {
+				inst->inst_id = vidc_read(core,
+						VIDC_REG_RETURNED_CH_INST_ID);
+				vidc_write(core, VIDC_REG_RETURNED_CH_INST_ID,
+					   VIDC_INIT_CH_INST_ID);
+				dev_info(core->dev,
+					 "Recovery OPEN_CH ack: inst_id=0x%08x\n",
+					 inst->inst_id);
+				inst->state = VIDC_STATE_OPEN;
+			} else {
+				inst->state = VIDC_STATE_RUNNING;
+			}
 			complete(&inst->done);
 		}
 		break;
