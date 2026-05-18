@@ -1802,12 +1802,21 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	}
 
 	/* Dual-channel DMA: input -> DATA_SHADOW0, output <- DATA_SHADOW0.
-	 * DES/3DES use 8-byte blocks (2 dwords); AES uses 16-byte (4 dwords).
-	 * The ADM burst must match the engine's block size so the per-block
-	 * CRCI handshake aligns with what the engine produces/consumes.
+	 *
+	 * Use the largest ADM block size (256 B = 64 dwords) for AES,
+	 * and 32 B (8 dwords) for DES/3DES.  qcom_adm only accepts burst
+	 * values in {8,16,32,64,128,192,256} bytes per adm_get_blksize().
+	 *
+	 * Empirically the CE2 engine produces correct output only when
+	 * the data fits within a single ADM CRCI handshake (one burst);
+	 * additional bursts in the same op fail to chain CBC.  Setting
+	 * burst > op size makes qcom_adm emit a SINGLE descriptor (one
+	 * CRCI fire for the whole transfer) instead of multiple BOX rows,
+	 * so all 256/32 B (16 AES blocks / 4 DES blocks) per op chain
+	 * correctly.
 	 */
 	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen,
-				       (IS_DES(flags) || IS_3DES(flags)) ? 2 : 4);
+				       (IS_DES(flags) || IS_3DES(flags)) ? 8 : 64);
 	dev_info(qce->dev,
 		 "CE2 skc post-DMA: ret=%d STATUS=0x%08x\n", ret,
 		 readl_relaxed(qce->base + CE2_REG_STATUS));
