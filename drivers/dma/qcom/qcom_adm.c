@@ -186,13 +186,21 @@ struct adm_chan {
 	void *exec_user;
 
 	/*
-	 * Result read by the hardirq, consumed by the completion
-	 * tasklet. The hardirq reads CH_RSLT (which acks the IRQ in
-	 * the device) and stashes the value here so the tasklet can
-	 * dispatch errors / vchan_cookie_complete / adm_start_dma
-	 * out of IRQ context. Cleared by the tasklet when read.
+	 * Result + descriptor captured by the hardirq, consumed by
+	 * the completion tasklet. The hardirq reads CH_RSLT (which
+	 * acks the IRQ in the device), claims the in-flight
+	 * descriptor (curr_txd -> NULL), and stashes both here so
+	 * the tasklet can dispatch errors / vchan_cookie_complete /
+	 * adm_start_dma out of IRQ context without racing against a
+	 * peripheral driver re-submitting a fresh request between
+	 * the hardirq and the tasklet running.
+	 *
+	 * pending_completed gets the descriptor pointer; the tasklet
+	 * takes ownership and clears it. Cleared back to NULL when
+	 * the tasklet picks it up.
 	 */
 	u32 pending_result;
+	struct adm_async_desc *pending_completed;
 
 	struct list_head node;
 
@@ -965,14 +973,18 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 	/*
 	 * Minimal hardirq path. For each channel that fired, read
 	 * STATUS + CH_RSLT (the RSLT read is what acks the IRQ in the
-	 * device); stash the result for the tasklet and remember
-	 * which channels to process. Heavy work -- error logging,
-	 * vchan_cookie_complete, next-descriptor adm_start_dma --
-	 * is deferred to the completion tasklet so it can't delay
+	 * device), then atomically claim curr_txd under the channel's
+	 * vc.lock so a peripheral driver re-submitting a fresh request
+	 * between this hardirq and the tasklet running can't overwrite
+	 * the descriptor we're about to complete. Heavy work -- error
+	 * logging, vchan_cookie_complete, next-descriptor adm_start_dma
+	 * -- is deferred to the completion tasklet so it can't delay
 	 * other GIC hardirqs (notably the SDCC PIO refill IRQ).
 	 */
 	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
+		struct adm_chan *achan = &adev->channels[i];
 		u32 status, result;
+		unsigned long flags;
 
 		if (!(srcs & BIT(i)))
 			continue;
@@ -987,7 +999,12 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		if (!(result & ADM_CH_RSLT_VALID))
 			continue;
 
-		adev->channels[i].pending_result = result;
+		spin_lock_irqsave(&achan->vc.lock, flags);
+		achan->pending_result = result;
+		achan->pending_completed = achan->curr_txd;
+		achan->curr_txd = NULL;
+		spin_unlock_irqrestore(&achan->vc.lock, flags);
+
 		set_bit(i, &adev->pending_completion);
 	}
 
@@ -1015,29 +1032,35 @@ static void adm_completion_tasklet_fn(struct tasklet_struct *t)
 		struct adm_chan *achan = &adev->channels[i];
 		struct adm_async_desc *async_desc;
 		unsigned long flags;
-		u32 result = achan->pending_result;
+		u32 result;
 
-		if (result & ADM_CH_RSLT_ERR) {
+		spin_lock_irqsave(&achan->vc.lock, flags);
+		async_desc = achan->pending_completed;
+		achan->pending_completed = NULL;
+		result = achan->pending_result;
+
+		if (result & ADM_CH_RSLT_ERR)
 			achan->error = 1;
+
+		if (async_desc) {
+			vchan_cookie_complete(&async_desc->vd);
+			/* kick off next DMA on this channel if any queued */
+			adm_start_dma(achan);
+		}
+
+		spin_unlock_irqrestore(&achan->vc.lock, flags);
+
+		/*
+		 * Log errors outside the channel lock to avoid printk
+		 * latency under contention.
+		 */
+		if (result & ADM_CH_RSLT_ERR)
 			dev_err(adev->dev,
 				"ADM DMA error: chan=%d result=0x%08x (err=%d flush=%d tpd=%d)\n",
 				i, result,
 				!!(result & ADM_CH_RSLT_ERR),
 				!!(result & ADM_CH_RSLT_FLUSH),
 				!!(result & ADM_CH_RSLT_TPD));
-		}
-
-		spin_lock_irqsave(&achan->vc.lock, flags);
-		async_desc = achan->curr_txd;
-		achan->curr_txd = NULL;
-
-		if (async_desc) {
-			vchan_cookie_complete(&async_desc->vd);
-			/* kick off next DMA */
-			adm_start_dma(achan);
-		}
-
-		spin_unlock_irqrestore(&achan->vc.lock, flags);
 	}
 }
 
