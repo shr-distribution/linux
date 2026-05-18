@@ -2205,19 +2205,17 @@
 	 * - CRCI 1 for SDC1 (passed via qcom,sdcc-crci property)
 	 * From webOS kernel: DMOV_SDC1_CHAN=18, DMOV_SDC1_CRCI=1
 	 *
-	 * TEMPORARILY DISABLED for WiFi firmware-boot regression bisect:
-	 * at commit a3d505749026 (last known working ar6003 fw 3.2.0.144)
-	 * eMMC was PIO. Current HEAD has eMMC DMA + the IRQ-pin fix, and
-	 * WiFi BMI completes cleanly but the AR6003 chip is silent on the
-	 * first post-BMI CMD53 (CMDTIMEOUT). To isolate whether eMMC-DMA
-	 * itself causes the chip to lock up vs. some other commit in the
-	 * 41-commit window, this DT keeps the IRQ-pin + tasklet-split
-	 * infrastructure but reverts sdcc1 to PIO. Revert this hunk once
-	 * the bisect is complete.
+	 * Re-enabled now that qcom_adm splits its IRQ into hardirq +
+	 * completion tasklet: hardirq just acks per-channel CH_RSLT,
+	 * all dispatch/vchan/next-DMA work runs in the tasklet
+	 * (softirq context). That keeps the ADM IRQ off the critical
+	 * path of sdcc4's PIO refill IRQ on the shared GIC -- the
+	 * DMA-vs-PIO cross-channel race that previously DATACRCFAILed
+	 * WiFi BMI is closed.
 	 */
-	/* dmas = <&adm_dma1 2>, <&adm_dma1 2>; */
-	/* dma-names = "rx", "tx"; */
-	/* qcom,sdcc-crci = <1>; */
+	dmas = <&adm_dma1 2>, <&adm_dma1 2>;
+	dma-names = "rx", "tx";
+	qcom,sdcc-crci = <1>;
 
 	/*
 	 * DFAB interconnect path for eMMC.
