@@ -198,10 +198,11 @@
 
 		/*
 		 * AR6003 needs time after reset deassert to enter BMI
-		 * (Boot Mode Interface) for firmware download.
-		 * WebOS uses 250ms delay after reset before SDIO detection.
+		 * (Boot Mode Interface) for firmware download. Legacy
+		 * kernel uses 5ms; 200ms provides margin and was the
+		 * known-working value in Jan 2026 (37d55b9678c0).
 		 */
-		post-power-on-delay-ms = <500>;
+		post-power-on-delay-ms = <200>;
 	};
 
 	soc {
@@ -2340,21 +2341,6 @@
 		compatible = "atheros,ath6kl";
 		reg = <1>;
 		atheros,board-id = "SD32";
-		/*
-		 * AR6003 internal 1.8V supply. Without this in HPM mode,
-		 * the chip's LZ decompressor stalls during OTP/firmware
-		 * upload and the BMI command credit register stops being
-		 * refreshed, causing CMD53 timeouts. WebOS legacy driver
-		 * powers this rail explicitly via tenderloin_wifi_power().
-		 */
-		vdd-1v8-supply = <&pm8058_l19>;
-		/*
-		 * BMI_Execute address for AR6003 HW 2.1.1 = 0x945d00 (from
-		 * the factory ar6000.ko per-target_ver dispatch table at
-		 * .text+0xfa80, target_ver 0x30000582). Used by ath6kl_upload_otp()
-		 * after fast_download to launch the chip's OTP entry point.
-		 */
-		atheros,app-start-override-addr = <0x00945d00>;
 	};
 };
 

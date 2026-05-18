@@ -1587,28 +1587,23 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 
 	/*
 	 * SDIO pin slew/drive setup required by the AR6003 BMI LZ decompressor.
+	 * Without these GPIO writes the chip's LZ engine stalls (BMI command-credit
+	 * counter stops refreshing) and the next CMD53 times out with -110.
 	 *
-	 * Ghidra decompile of the factory Palm ar6000.ko ar6000_sysfs_bmi_get_config()
-	 * shows that for target_ver AR6003_HW_2.0 and AR6003_HW_2.1.1 it writes
-	 * value 0x20 via BMIWriteSOCRegister to four GPIO_BASE + GPIO_PINx
-	 * registers BEFORE any LZ FastDownload. Without these writes the chip's
-	 * LZ engine stalls (BMI command-credit counter stops refreshing) and the
-	 * next CMD53 times out with -110 -- exactly the failure mainline ath6kl
-	 * was hitting on TouchPad.
-	 *
-	 * The earlier "if (0)" disable here (commit 12c298016598) was based on
-	 * the wrong reference: the webOS staging ath6kl tree doesn't do this,
-	 * but the factory ar6000.ko binary that webOS actually runs DOES, and
-	 * webOS WiFi is what proves the sequence works. Restore it, matched to
-	 * the legacy: value 0x20 to all four pins (PIN9..PIN12), no PIN13 write.
+	 * This block was force-disabled by commit 12c298016598 based on the wrong
+	 * reference (the webOS staging ath6kl tree doesn't do this) -- but the
+	 * factory ar6000.ko binary that webOS actually runs DOES make these writes
+	 * via ar6000_sysfs_bmi_get_config, and HP TouchPad WiFi was confirmed
+	 * working in Jan 2026 with this WAR enabled (commit 37d55b9678c0).
 	 */
 	if (ar->hw.flags & ATH6KL_HW_SDIO_CRC_ERROR_WAR) {
-		param = 0x20;
-
+		param = 0x28;
 		address = GPIO_BASE_ADDRESS + GPIO_PIN9_ADDRESS;
 		status = ath6kl_bmi_reg_write(ar, address, param);
 		if (status)
 			return status;
+
+		param = 0x20;
 
 		address = GPIO_BASE_ADDRESS + GPIO_PIN10_ADDRESS;
 		status = ath6kl_bmi_reg_write(ar, address, param);
@@ -1621,6 +1616,11 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 			return status;
 
 		address = GPIO_BASE_ADDRESS + GPIO_PIN12_ADDRESS;
+		status = ath6kl_bmi_reg_write(ar, address, param);
+		if (status)
+			return status;
+
+		address = GPIO_BASE_ADDRESS + GPIO_PIN13_ADDRESS;
 		status = ath6kl_bmi_reg_write(ar, address, param);
 		if (status)
 			return status;
