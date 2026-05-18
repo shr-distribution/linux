@@ -452,8 +452,8 @@ static void vidc_handle_seq_done(struct vidc_core *core,
 	inst->seq_width = vidc_read(core, VIDC_REG_SEQ_IMG_SIZE_X);
 	inst->min_dpb_count = vidc_read(core, VIDC_REG_SEQ_MIN_DPB);
 
-	dev_dbg(core->dev, "Sequence done: %ux%u, min_dpb=%u\n",
-		inst->seq_width, inst->seq_height, inst->min_dpb_count);
+	dev_info(core->dev, "Sequence done: %ux%u, min_dpb=%u\n",
+		 inst->seq_width, inst->seq_height, inst->min_dpb_count);
 
 	inst->state = VIDC_STATE_SEQ_PARSED;
 }
