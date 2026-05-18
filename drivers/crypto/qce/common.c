@@ -1663,13 +1663,18 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	if (rctx->cryptlen == 0)
 		return 0;
 
-	/* Per-op engine reset -- same per-op-counter limit as hash. */
-	if (qce->reset) {
-		reset_control_assert(qce->reset);
-		udelay(10);
-		reset_control_deassert(qce->reset);
-		udelay(10);
-	}
+	/* Note: no per-op reset_control here.  The hash path needs it
+	 * because the CE2 AUTH block has a hard ~5-op-per-power-on counter
+	 * that wedges without an explicit hardware reset between ops.  The
+	 * ENCR block doesn't appear to have that quota.  Worse, resetting
+	 * before every cipher op wipes ENCR-block state that the engine
+	 * needs to encrypt correctly: the FIRST AES-256-CBC encrypt after
+	 * a fresh reset returns block 1 correct but passes block 2
+	 * through unchanged; all subsequent ops work fine even with
+	 * per-op reset.  Skipping reset_control here keeps the ENCR block
+	 * primed across ops.  If cipher ops later show a wedge symptom
+	 * comparable to hash, this needs reconsidering.
+	 */
 
 	/* Wait for IDLE before configuring */
 	for (timeout = 10000; timeout > 0; timeout--) {
