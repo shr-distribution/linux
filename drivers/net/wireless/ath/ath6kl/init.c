@@ -1406,7 +1406,17 @@ static int ath6kl_upload_otp(struct ath6kl *ar)
 		ath6kl_dbg(ATH6KL_DBG_BOOT,
 			   "skip-otp-upload: not downloading OTP; executing chip-internal OTP at 0x%x\n",
 			   override);
-		param = 0;
+		/*
+		 * Pass param=3 to BMI_EXECUTE. The factory Palm ar6000.ko
+		 * binary unconditionally sets r3=3 before storing into
+		 * param ahead of its BMIExecute() call at .text+0xf39c
+		 * (regardless of which chip rev branch the dispatch took).
+		 * Different value will likely make the chip's preloaded
+		 * OTP code take a different init path -- e.g. param=0 may
+		 * be "first-time-after-upload init" while param=3 means
+		 * "re-init from chip-internal state".
+		 */
+		param = 3;
 		ar->hw.app_start_override_addr = override;
 		ath6kl_bmi_execute(ar, override, &param);
 		return 0;
