@@ -1679,7 +1679,12 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		reset_control_assert(qce->reset);
 		udelay(10);
 		reset_control_deassert(qce->reset);
-		udelay(100);
+		/* 1 ms settle -- diagnostic.  If cold-start AES-256-CBC
+		 * is fixed by this, it confirms the issue is timing.  If
+		 * not, we need a different approach (e.g. dummy warm-up
+		 * op after reset).
+		 */
+		usleep_range(1000, 1500);
 	}
 
 	/* Wait for IDLE before configuring */
