@@ -68,6 +68,19 @@ static const struct ath6kl_hw hw_list[] = {
 		.refclk_hz			= 26000000,
 		.uarttx_pin			= 8,
 		.testscript_addr		= 0x57ef74,
+		/*
+		 * On boards where OTP is preloaded from chip-internal silicon
+		 * (HP TouchPad, see "atheros,skip-otp-upload" DT property),
+		 * the driver cannot bmi_read_hi32(hi_app_start) to discover
+		 * the chip's preloaded OTP entry -- the chip won't service
+		 * that read without a preceding bmi_fast_download (which
+		 * itself fails). Provide a fallback address that matches
+		 * the constant the legacy Palm webOS ar6000 driver uses for
+		 * target_ver 0x30000582 (extracted from the factory ar6000.ko
+		 * binary): if skip-otp-upload is set we BMI_Execute at this
+		 * address to run the chip's internal OTP code.
+		 */
+		.app_start_override_addr	= 0x00945d00,
 		.flags				= ATH6KL_HW_SDIO_CRC_ERROR_WAR,
 
 		.fw = {
@@ -1347,7 +1360,32 @@ static int ath6kl_upload_otp(struct ath6kl *ar)
 {
 	u32 address, param;
 	bool from_hw = false;
+	bool skip_dl = ath6kl_dt_skip_otp();
 	int ret;
+
+	if (skip_dl) {
+		/*
+		 * Boards with chip-internal OTP (HP TouchPad). Skip the
+		 * bmi_fast_download payload and the bmi_read_hi32 (which
+		 * the chip won't service without a prior fast_download).
+		 * Use the hardcoded app_start_override_addr from the
+		 * hw_list table to BMI_Execute the chip's preloaded OTP
+		 * code -- this is the runtime-init step the firmware
+		 * needs before bmi_done, matching what the factory Palm
+		 * ar6000 driver does for skipOtp=1.
+		 */
+		if (ar->hw.app_start_override_addr == 0) {
+			ath6kl_err("skip-otp-upload set but no hardcoded app_start_override_addr for chip 0x%x\n",
+				   ar->version.target_ver);
+			return -EINVAL;
+		}
+		ath6kl_dbg(ATH6KL_DBG_BOOT,
+			   "skip-otp-upload: not downloading OTP; executing chip-internal OTP at 0x%x\n",
+			   ar->hw.app_start_override_addr);
+		param = 0;
+		ath6kl_bmi_execute(ar, ar->hw.app_start_override_addr, &param);
+		return 0;
+	}
 
 	if (ar->fw_otp == NULL)
 		return 0;
@@ -1594,28 +1632,28 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 	 * BMI state machine (LZ_STREAM_START ACKed, credit-counter stops
 	 * refreshing, next CMD53 times out with -110).
 	 *
-	 * The "atheros,skip-otp-upload" DT property bypasses all three LZ
-	 * upload steps. We still write the board-data file (regular
-	 * bmi_write) and let the chip self-boot its preloaded code after
-	 * bmi_done. With this skip alone the chip's firmware does start
-	 * but it crashes at HTC handshake -- the chip's preloaded OTP
-	 * code apparently needs to be BMI_Execute'd as part of init, and
-	 * we don't currently have a way to learn its entry address
-	 * without doing the fast_download first. Tracked separately;
-	 * leaving the skip in so other diagnostics aren't blocked.
+	 * The "atheros,skip-otp-upload" DT property handles this:
+	 *   - ath6kl_upload_otp() skips its fast_download and bmi_read_hi32,
+	 *     and instead BMI_Executes at the hardcoded app_start_override
+	 *     address from the hw_list table. This runs the chip-internal
+	 *     OTP code as the runtime-init step the firmware needs.
+	 *   - Firmware and patch uploads are skipped entirely; their
+	 *     payloads are already in chip memory and ath6kl_bmi_set_app_
+	 *     start would overwrite the chip's internal entry pointer.
 	 *
-	 * Equivalent (in intent) to the legacy Palm webOS ar6000 driver's
-	 * skipOtp=1 module parameter.
+	 * Equivalent to the legacy Palm webOS ar6000 driver's skipOtp=1
+	 * behaviour on the same hardware.
 	 */
+
+	/* transfer One time Programmable data (or just execute it if skipped) */
+	status = ath6kl_upload_otp(ar);
+	if (status)
+		return status;
+
 	if (ath6kl_dt_skip_otp()) {
 		ath6kl_dbg(ATH6KL_DBG_BOOT,
-			   "DT: skip-otp-upload set -- bypassing OTP, firmware, and patch uploads\n");
+			   "skip-otp-upload: bypassing firmware and patch uploads\n");
 	} else {
-		/* transfer One time Programmable data */
-		status = ath6kl_upload_otp(ar);
-		if (status)
-			return status;
-
 		/* Download Target firmware */
 		status = ath6kl_upload_firmware(ar);
 		if (status)
