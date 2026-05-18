@@ -706,6 +706,30 @@ static int ath6kl_get_fw(struct ath6kl *ar, const char *filename,
 
 #ifdef CONFIG_OF
 /*
+ * Check the device tree for an "atheros,skip-otp-upload" boolean property
+ * on any atheros,ath6kl node. Some boards (notably HP TouchPad: factory
+ * ar6000 module accepts skipOtp=1) ship an AR6003 chip whose OTP is
+ * already loaded from EEPROM/silicon, and BMI_LZ_DATA fast-download to
+ * app_load_addr 0x1234 hangs the chip's BMI state machine. Skipping
+ * the OTP upload step lets the chip self-boot and the firmware upload
+ * that follows behaves normally.
+ */
+static bool ath6kl_dt_skip_otp(void)
+{
+	struct device_node *node;
+	bool skip = false;
+
+	for_each_compatible_node(node, NULL, "atheros,ath6kl") {
+		if (of_property_read_bool(node, "atheros,skip-otp-upload")) {
+			skip = true;
+			of_node_put(node);
+			break;
+		}
+	}
+	return skip;
+}
+
+/*
  * Check the device tree for a board-id and use it to construct
  * the pathname to the firmware file.  Used (for now) to find a
  * fallback to the "bdata.bin" file--typically a symlink to the
@@ -743,6 +767,10 @@ static bool check_device_tree(struct ath6kl *ar)
 }
 #else
 static bool check_device_tree(struct ath6kl *ar)
+{
+	return false;
+}
+static bool ath6kl_dt_skip_otp(void)
 {
 	return false;
 }
@@ -1559,10 +1587,26 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 	if (status)
 		return status;
 
-	/* transfer One time Programmable data */
-	status = ath6kl_upload_otp(ar);
-	if (status)
-		return status;
+	/*
+	 * transfer One time Programmable data
+	 *
+	 * Some boards (HP TouchPad) ship an AR6003 chip whose OTP is already
+	 * loaded from EEPROM/silicon. In that case bmi_fast_download to
+	 * app_load_addr 0x1234 hangs the chip's BMI state machine (it ACKs
+	 * BMI_LZ_STREAM_START but stops refreshing the command-credit
+	 * register, so the next CMD53 times out with -110). Honour the
+	 * "atheros,skip-otp-upload" DT property to skip this step. Matches
+	 * what the legacy Palm webOS ar6000 driver does when modprobed
+	 * with skipOtp=1.
+	 */
+	if (ath6kl_dt_skip_otp()) {
+		ath6kl_dbg(ATH6KL_DBG_BOOT,
+			   "DT requests skip-otp-upload; bypassing OTP step\n");
+	} else {
+		status = ath6kl_upload_otp(ar);
+		if (status)
+			return status;
+	}
 
 	/* Download Target firmware */
 	status = ath6kl_upload_firmware(ar);

@@ -2348,6 +2348,17 @@
 		 * powers this rail explicitly via tenderloin_wifi_power().
 		 */
 		vdd-1v8-supply = <&pm8058_l19>;
+		/*
+		 * The AR6003 chip on HP TouchPad ships with OTP code already
+		 * loaded from EEPROM/silicon. bmi_fast_download to
+		 * app_load_addr 0x1234 hangs the chip's BMI state machine
+		 * (BMI_LZ_STREAM_START is ACKed but the credit register
+		 * stops being refreshed, next CMD53 times out -110).
+		 * The factory Palm ar6000 module accepts skipOtp=1 as a
+		 * module parameter and skips the OTP upload step; we honour
+		 * the equivalent boolean DT property here.
+		 */
+		atheros,skip-otp-upload;
 	};
 };
 
