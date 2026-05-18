@@ -744,6 +744,13 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
 	}
 
+	dev_info(core->dev,
+		 "submit_frame: op=0x%x inst_id=0x%x src_phys=0x%pad fw_rel=0x%x size=%u desc_off=0x%x\n",
+		 op, inst->inst_id, &src_addr,
+		 (u32)((src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT),
+		 src_size,
+		 (u32)(core->desc_offset >> VIDC_ADDR_SHIFT));
+
 	/* Trigger: operation type | instance id */
 	vidc_write(core, VIDC_REG_CH0_INST_ID, op | inst->inst_id);
 
