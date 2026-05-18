@@ -400,11 +400,30 @@ static int vidc_dec_decoder_cmd(struct file *file, void *fh,
 static int vidc_dec_subscribe_event(struct v4l2_fh *fh,
 				    const struct v4l2_event_subscription *sub)
 {
+	struct vidc_inst *inst = container_of(fh, struct vidc_inst, fh);
+	int ret;
+
 	switch (sub->type) {
 	case V4L2_EVENT_EOS:
 		return v4l2_event_subscribe(fh, sub, 2, NULL);
 	case V4L2_EVENT_SOURCE_CHANGE:
-		return v4l2_src_change_event_subscribe(fh, sub);
+		ret = v4l2_src_change_event_subscribe(fh, sub);
+		if (!ret && inst->seq_parsed) {
+			/*
+			 * GStreamer subscribes inside its decoding thread,
+			 * which starts AFTER the first OUTPUT buffer is sent.
+			 * seq_done_work may have already fired and queued
+			 * SOURCE_CHANGE before this subscription was registered,
+			 * silently dropping the event.  Re-deliver it now so the
+			 * decoding thread does not stall forever.
+			 */
+			struct v4l2_event ev = {
+				.type = V4L2_EVENT_SOURCE_CHANGE,
+				.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
+			};
+			v4l2_event_queue_fh(fh, &ev);
+		}
+		return ret;
 	default:
 		return v4l2_ctrl_subscribe_event(fh, sub);
 	}
