@@ -1605,9 +1605,20 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	dma_async_issue_pending(rx);
 	dma_async_issue_pending(tx);
 
+	/*
+	 * Both ADM channels are now armed and stalled at the CRCI line.
+	 * Writing GOPROC kicks the engine into PROCESSING; the engine
+	 * asserts DIN_RDY, the rx channel CRCI handshake fires, data
+	 * streams in, output flows out, DOUT_RDY fires the tx channel
+	 * handshake.  The wait_for_completion below blocks on the tx
+	 * descriptor's callback.
+	 */
+	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+
 	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(1000))) {
-		dev_err(qce->dev, "CE2 cipher: DMA timeout (%u bytes)\n",
-			padded);
+		dev_err(qce->dev,
+			"CE2 cipher: DMA timeout (%u bytes) STATUS=0x%08x\n",
+			padded, readl_relaxed(qce->base + CE2_REG_STATUS));
 		ret = -ETIMEDOUT;
 		goto out_terminate;
 	}
@@ -1843,36 +1854,20 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		 "CE2 skc pre-GO: SEG_CFG=0x%08x len=%u CONFIG=0x%08x flags=0x%lx keylen=%u\n",
 		 encr_cfg, rctx->cryptlen, config, flags, keylen);
 
-	/* GOPROC */
-	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
-
-	/* Wait for engine to leave IDLE (transition to LOCKED/PROCESSING) */
-	for (timeout = 1000; timeout > 0; timeout--) {
-		status = readl_relaxed(qce->base + CE2_REG_STATUS);
-		if (status & CE2_CRYPTO_STATE_MASK)
-			break;
-		udelay(10);
-	}
-	if (timeout <= 0) {
-		dev_err(qce->dev,
-			"CE2 skc: engine never left IDLE; STATUS=0x%08x\n",
-			status);
-		return -ETIMEDOUT;
-	}
-
 	/* Dual-channel DMA: input -> DATA_SHADOW0, output <- DATA_SHADOW0.
 	 *
-	 * Use the largest ADM block size (256 B = 64 dwords) for AES,
-	 * and 32 B (8 dwords) for DES/3DES.  qcom_adm only accepts burst
-	 * values in {8,16,32,64,128,192,256} bytes per adm_get_blksize().
+	 * Arm both ADM channels with device_fc=true (CRCI flow control) so
+	 * the controller stops at the CRCI line until the engine asserts
+	 * DIN_RDY / DOUT_RDY.  qce_ce2_dma_inout_cipher writes GOPROC
+	 * AFTER it has issued both channels -- if we wrote GOPROC here, the
+	 * engine would enter PROCESSING with no ADM listening yet, and on
+	 * this silicon that races into a wedge (engine sits asserting
+	 * DIN_RDY indefinitely; later issue_pending finds the engine
+	 * already past PROCESSING and the CRCI handshake never fires).
 	 *
-	 * Empirically the CE2 engine produces correct output only when
-	 * the data fits within a single ADM CRCI handshake (one burst);
-	 * additional bursts in the same op fail to chain CBC.  Setting
-	 * burst > op size makes qcom_adm emit a SINGLE descriptor (one
-	 * CRCI fire for the whole transfer) instead of multiple BOX rows,
-	 * so all 256/32 B (16 AES blocks / 4 DES blocks) per op chain
-	 * correctly.
+	 * Burst: 256 B (64 dw) for AES, 32 B (8 dw) for DES/3DES.  qcom_adm
+	 * only accepts burst values in {8,16,32,64,128,192,256} bytes per
+	 * adm_get_blksize().
 	 */
 	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen,
 				       (IS_DES(flags) || IS_3DES(flags)) ? 8 : 64);
