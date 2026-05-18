@@ -1625,46 +1625,6 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 		udelay(5);
 	}
 
-	/*
-	 * For Qualcomm SDCC PIO writes that fit entirely in the controller
-	 * FIFO (<= fifosize): pre-fill the FIFO right now, before the SD
-	 * command is sent. Once CMD is on the wire and the card responds,
-	 * DPSM clocks the pre-filled data straight out -- no FIFO-refill
-	 * IRQ needed during the transfer.
-	 *
-	 * This makes small WiFi BMI writes (52 B CMD53s on sdcc4) immune
-	 * to IRQ latency from eMMC DMA-completion IRQs on sdcc1, which
-	 * otherwise was delaying the TXFIFOHALFEMPTY refill long enough
-	 * that the DPSM clocked stale FIFO data, the AR6003 card returned
-	 * a CRC-bad write-status, and BMI aborted with -84 EILSEQ.
-	 *
-	 * Disable the TXFIFOHALFEMPTY mask since no refill is needed;
-	 * DATAEND IRQ alone signals completion.
-	 */
-	if (host->variant->qcom_datactrl_delay &&
-	    !(data->flags & MMC_DATA_READ) &&
-	    host->size <= variant->fifosize) {
-		struct sg_mapping_iter *sg_miter = &host->sg_miter;
-		unsigned int prefill = host->size;
-
-		while (prefill > 0 && sg_miter_next(sg_miter)) {
-			unsigned int chunk = min_t(unsigned int, prefill,
-						   sg_miter->length);
-			/*
-			 * MMCIFIFO only accepts 32-bit writes; round up so a
-			 * trailing 1..3 byte tail becomes a single u32 write
-			 * (matches mmci_pio_write).
-			 */
-			iowrite32_rep(base + MMCIFIFO, sg_miter->addr,
-				      (chunk + 3) >> 2);
-			sg_miter->consumed = chunk;
-			prefill -= chunk;
-		}
-		sg_miter_stop(sg_miter);
-		host->size = 0;
-		irqmask = 0;
-	}
-
 	writel(readl(base + MMCIMASK0) & ~MCI_DATAENDMASK, base + MMCIMASK0);
 	mmci_set_mask1(host, irqmask);
 }
