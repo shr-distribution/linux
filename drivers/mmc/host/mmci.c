@@ -507,16 +507,26 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		clk |= MCI_CLK_ENABLE;
 		/*
 		 * MCI_CLK_PWRSAVE auto-gates the SDC bus clock between
-		 * transfers. Worth a few mW on eMMC in theory, but in
-		 * practice the AR6003 SDIO LZ engine on Tenderloin times
-		 * out -110 with it set, and gating it only for SDIO via
-		 * cap-sdio-irq broke eMMC DMA (DATATIMEOUT cascading to
-		 * journal abort within seconds of WiFi DMA starting).
+		 * transfers — useful on eMMC for power savings, but the
+		 * AR6003 SDIO chip cannot tolerate the clock-gating during
+		 * BMI LZ FastDownload: the chip's command-credit counter
+		 * stops refreshing mid-stream and the next CMD53 read times
+		 * out -110 (cf. wifi-bringup-summary.md, working Jan 2026
+		 * config simply had PWRSAVE commented out).
 		 *
-		 * Match the Jan 28 2026 known-working config (37d55b9678c0):
-		 * leave PWRSAVE entirely unset on the qcom variant.
+		 * Earlier attempts to clear PWRSAVE in the data-submission
+		 * path (mmci_start_data SDIO branch) didn't fix it -- the
+		 * clkreg write happens just before DPSM/CMD53 setup, but
+		 * the bit doesn't take effect fast enough to keep the chip
+		 * synchronised across the LZ stream.
+		 *
+		 * Gate on cap-sdio-irq: SDIO instances (mmc1 / WiFi) skip
+		 * PWRSAVE entirely; eMMC (mmc0, no SDIO-IRQ cap) keeps it
+		 * for power savings.
 		 */
-		/* clk |= MCI_CLK_PWRSAVE; */
+		if (variant->qcom_datactrl_delay && desired > 400000 &&
+		    !(host->mmc->caps & MMC_CAP_SDIO_IRQ))
+			clk |= MCI_CLK_PWRSAVE;
 	}
 
 	/* Set actual clock for debug */
@@ -1537,11 +1547,14 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 			clk = host->clk_reg | variant->clkreg_enable;
 
 		/*
-		 * PWRSAVE is left unset in mmci_set_clkreg for the qcom
-		 * variant (see comment there); the explicit clear here
-		 * would have masked any stale bit from earlier set_ios.
+		 * Force MCI_CLK_PWRSAVE off for SDIO transactions on the
+		 * qcom variant. PWRSAVE is already gated off for SDIO in
+		 * mmci_set_clkreg (cap-sdio-irq check), so this is a
+		 * belt-and-braces clear in case set_ios runs out of order.
+		 * Gate on the same SDIO predicate so eMMC keeps its bit.
 		 */
-		if (variant->qcom_datactrl_delay)
+		if (variant->qcom_datactrl_delay &&
+		    (host->mmc->caps & MMC_CAP_SDIO_IRQ))
 			clk &= ~MCI_CLK_PWRSAVE;
 
 		mmci_write_clkreg(host, clk);
