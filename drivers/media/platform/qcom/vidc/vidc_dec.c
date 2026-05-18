@@ -580,6 +580,15 @@ static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 
 			inst->streamon_out = true;
 			inst->sequence_out = 0;
+
+			/*
+			 * GStreamer queues the SEQ_HEADER buffer before calling
+			 * STREAMON, so buf_queue's streamon_out check was false
+			 * at queue time and seq_header_work was never scheduled.
+			 * Trigger it now that streaming is active.
+			 */
+			if (!inst->seq_parsed && !inst->seq_hdr_direct)
+				queue_work(system_wq, &inst->seq_header_work);
 		}
 	} else {
 		if (!inst->streamon_cap) {
