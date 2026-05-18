@@ -1407,13 +1407,13 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	 * upload) appears to require the chip to receive its expected
 	 * chunk size. At 116-byte data chunks (108-byte LZ payload), the
 	 * chip's LZ decompressor stops refreshing the BMI command credit
-	 * register and the next credit read times out with -110. This is
-	 * a known limitation tracked separately; fixing it requires
-	 * either getting mmci DMA working for sdcc4 transfers so we can
-	 * bump max_data_size to 256, or finding a way to make the chip
-	 * accept smaller LZ chunks.
+	 * register and the next credit read times out with -110. Force
+	 * 64-byte total CMD53 transfers (52-byte LZ payload, single FIFO
+	 * fill) which matches the earlier pre-optimization workaround
+	 * before fast-PIO was added. Slow (~78s firmware upload) but
+	 * the chip's LZ engine keeps the credit register refreshed.
 	 */
-	ar->bmi.max_data_size = 116;
+	ar->bmi.max_data_size = 52;
 
 	ath6kl_sdio_set_mbox_info(ar);
 
