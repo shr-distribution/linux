@@ -1377,50 +1377,21 @@ static int ath6kl_upload_otp(struct ath6kl *ar)
 {
 	u32 address, param;
 	bool from_hw = false;
-	bool skip_dl = ath6kl_dt_skip_otp();
 	int ret;
 
-	if (skip_dl) {
-		u32 override;
-
-		/*
-		 * Boards with chip-internal OTP (HP TouchPad). Skip the
-		 * bmi_fast_download payload and the bmi_read_hi32 (which
-		 * the chip won't service without a prior fast_download).
-		 * Use the board-supplied app-start-override-addr from DT
-		 * to BMI_Execute the chip's preloaded OTP code -- this is
-		 * the runtime-init step the firmware needs before
-		 * bmi_done, matching what the factory Palm ar6000 driver
-		 * does for skipOtp=1.
-		 */
-		override = ath6kl_dt_app_start_override();
-		if (!override)
-			override = ar->hw.app_start_override_addr;
-
-		if (!override) {
-			ath6kl_err("skip-otp-upload set but no atheros,app-start-override-addr provided for chip 0x%x\n",
-				   ar->version.target_ver);
-			return -EINVAL;
-		}
-
-		ath6kl_dbg(ATH6KL_DBG_BOOT,
-			   "skip-otp-upload: not downloading OTP; executing chip-internal OTP at 0x%x\n",
-			   override);
-		/*
-		 * Pass param=3 to BMI_EXECUTE. The factory Palm ar6000.ko
-		 * binary unconditionally sets r3=3 before storing into
-		 * param ahead of its BMIExecute() call at .text+0xf39c
-		 * (regardless of which chip rev branch the dispatch took).
-		 * Different value will likely make the chip's preloaded
-		 * OTP code take a different init path -- e.g. param=0 may
-		 * be "first-time-after-upload init" while param=3 means
-		 * "re-init from chip-internal state".
-		 */
-		param = 3;
-		ar->hw.app_start_override_addr = override;
-		ath6kl_bmi_execute(ar, override, &param);
+	/*
+	 * Boards with chip-internal OTP (HP TouchPad) carry the
+	 * "atheros,skip-otp-upload" DT property. The chip already has OTP
+	 * code in silicon and rejects bmi_fast_download. Skip the upload
+	 * entirely; the factory Palm ar6000 driver's kernel init path
+	 * also does not call BMI_Execute -- userspace only invokes that
+	 * via the ar6000_sysfs_bmi_get_config sysfs handler when
+	 * skipOtp=0 (i.e. when a fresh OTP image really has been
+	 * uploaded). For skipOtp=1 / chip-internal mode the chip's
+	 * preloaded OTP runs as part of its own bmi_done sequence.
+	 */
+	if (ath6kl_dt_skip_otp())
 		return 0;
-	}
 
 	if (ar->fw_otp == NULL)
 		return 0;
