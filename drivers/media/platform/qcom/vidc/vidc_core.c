@@ -301,6 +301,17 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
 		memset(core->fw_vaddr + core->fw_size, 0,
 		       core->fw_alloc_size - core->fw_size);
+		/* Verify that CPU writes actually land in SMI SRAM */
+		{
+			u32 rb0 = readl_relaxed(core->fw_vaddr);
+			u32 rb4 = readl_relaxed(core->fw_vaddr + 4);
+			u32 ex0 = ((const u32 *)core->fw->data)[0];
+			u32 ex4 = ((const u32 *)core->fw->data)[1];
+			printk(KERN_EMERG
+			       "VIDC: fw recopy rb[0]=0x%08x exp=0x%08x %s rb[4]=0x%08x exp=0x%08x %s\n",
+			       rb0, ex0, rb0 == ex0 ? "OK" : "MISMATCH",
+			       rb4, ex4, rb4 == ex4 ? "OK" : "MISMATCH");
+		}
 	}
 
 	/* Initialize channel instance IDs */
@@ -529,6 +540,18 @@ static irqreturn_t vidc_isr(int irq, void *data)
 
 	case VIDC_RESP_SYS_INIT:
 		dev_info(core->dev, "Firmware initialized\n");
+		complete(&core->sys_init_done);
+		break;
+
+	case 0x120719:
+		/*
+		 * In recovery-mode boots (stale .data/.bss after GDSC cycle)
+		 * the firmware responds to SYS_INIT with cmd=0x120719 (its
+		 * own firmware version) instead of the normal cmd=8.  All
+		 * arg fields also carry 0x120719.  Treat this as SYS_INIT_RET
+		 * so the boot sequence proceeds to OPEN_CH.
+		 */
+		dev_info(core->dev, "Firmware recovery SYS_INIT_RET (cmd=0x120719)\n");
 		complete(&core->sys_init_done);
 		break;
 
