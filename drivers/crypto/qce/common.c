@@ -1411,6 +1411,372 @@ out:
 }
 #endif
 
+#ifdef CONFIG_CRYPTO_DEV_QCE_SKCIPHER
+static void qce_ce2_skc_dma_done(void *param)
+{
+	complete(param);
+}
+
+/*
+ * Dual-channel ADM DMA for CE2 cipher I/O.
+ *
+ * rxchan (CRCI 4 = CE_IN):  memory -> DATA_SHADOW0 (peripheral)
+ * txchan (CRCI 5 = CE_OUT): DATA_SHADOW0 -> memory
+ *
+ * Mirrors webOS cmd_list_ce_in / cmd_list_ce_out:
+ *   cmd_list_ce_in:  CMD_DST_CRCI(crci_in)  src=memory  dst=DATA_SHADOW0
+ *   cmd_list_ce_out: CMD_SRC_CRCI(crci_out) src=DATA_SHADOW0 dst=memory
+ *
+ * The CE2 engine pipes plaintext bytes through DATA_SHADOW0 in,
+ * pumps them through the ENCR block, and emits ciphertext bytes
+ * back via DATA_SHADOW0 out -- ADM gates each direction on its
+ * own CRCI handshake.
+ *
+ * Byte-swap notes (same as hash):
+ *   CE2 reads each input dword MSB-first as 4 message bytes, and
+ *   writes output dwords MSB-first.  ADM moves raw u32 words to/
+ *   from memory in CPU endianness, so we swap input bytes -> BE
+ *   before DMA, and swap output dwords from raw u32 -> BE bytes
+ *   after DMA.  Matches CMD_DST_SWAP_BYTES/SHORTS the webOS ADM
+ *   command list set on both directions.
+ */
+static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
+				    struct scatterlist *src,
+				    struct scatterlist *dst,
+				    unsigned int nbytes)
+{
+	struct dma_chan *rx = qce->dma.rxchan;
+	struct dma_chan *tx = qce->dma.txchan;
+	struct qcom_adm_peripheral_config in_periph = {
+		.crci = qce->dma.rx_crci,	/* CRCI 4 = CE_IN */
+	};
+	struct qcom_adm_peripheral_config out_periph = {
+		.crci = 5,			/* CRCI 5 = CE_OUT */
+	};
+	struct dma_slave_config in_conf = {
+		.direction = DMA_MEM_TO_DEV,
+		.dst_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
+		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+		.dst_maxburst = 4,
+		.peripheral_config = &in_periph,
+		.peripheral_size = sizeof(in_periph),
+	};
+	struct dma_slave_config out_conf = {
+		.direction = DMA_DEV_TO_MEM,
+		.src_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
+		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+		.src_maxburst = 4,
+		.peripheral_config = &out_periph,
+		.peripheral_size = sizeof(out_periph),
+	};
+	struct dma_async_tx_descriptor *in_desc, *out_desc;
+	struct completion done;
+	dma_cookie_t in_cookie, out_cookie;
+	dma_addr_t in_dma, out_dma;
+	__le32 *in_buf, *out_buf;
+	u8 *src_copy = NULL, *dst_copy = NULL;
+	enum dma_status status;
+	unsigned int padded = round_up(nbytes, 16);
+	unsigned int dwords;
+	unsigned int i;
+	int ret;
+
+	if (!padded)
+		return -EINVAL;
+	dwords = padded / 4;
+
+	src_copy = kzalloc(padded, GFP_KERNEL);
+	if (!src_copy)
+		return -ENOMEM;
+	dst_copy = kzalloc(padded, GFP_KERNEL);
+	if (!dst_copy) {
+		ret = -ENOMEM;
+		goto out_free_src_copy;
+	}
+	sg_copy_to_buffer(src, sg_nents(src), src_copy, nbytes);
+
+	in_buf = dma_alloc_coherent(qce->dev, padded, &in_dma, GFP_KERNEL);
+	if (!in_buf) {
+		ret = -ENOMEM;
+		goto out_free_dst_copy;
+	}
+	out_buf = dma_alloc_coherent(qce->dev, padded, &out_dma, GFP_KERNEL);
+	if (!out_buf) {
+		ret = -ENOMEM;
+		goto out_free_in;
+	}
+
+	/* Byte-swap input dwords to BE (CE2 reads MSB-first) */
+	for (i = 0; i < dwords; i++) {
+		u32 w = ((u32)src_copy[i * 4 + 0] << 24) |
+			((u32)src_copy[i * 4 + 1] << 16) |
+			((u32)src_copy[i * 4 + 2] <<  8) |
+			((u32)src_copy[i * 4 + 3] <<  0);
+		in_buf[i] = cpu_to_le32(w);
+	}
+
+	/* Configure rxchan for input (CRCI 4 -> DATA_SHADOW0).  Earlier
+	 * hash ops may have left rxchan reconfigured for digest readback
+	 * (CRCI 15, src=AUTH_IV0) so we re-establish the cipher input
+	 * config here unconditionally.
+	 */
+	ret = dmaengine_slave_config(rx, &in_conf);
+	if (ret) {
+		dev_err(qce->dev,
+			"CE2 cipher: in slave_config failed: %d\n", ret);
+		goto out_free_out;
+	}
+	in_desc = dmaengine_prep_slave_single(rx, in_dma, padded,
+					      DMA_MEM_TO_DEV, DMA_CTRL_ACK);
+	if (!in_desc) {
+		dev_err(qce->dev, "CE2 cipher: in prep failed\n");
+		ret = -ENOMEM;
+		goto out_terminate_rx;
+	}
+
+	/* Configure txchan for output (CRCI 5 <- DATA_SHADOW0).  Default
+	 * config from probe points txchan at AUTH_IV0 with CRCI 15 for
+	 * the hash digest path; override here for cipher output.
+	 */
+	ret = dmaengine_slave_config(tx, &out_conf);
+	if (ret) {
+		dev_err(qce->dev,
+			"CE2 cipher: out slave_config failed: %d\n", ret);
+		goto out_terminate_rx;
+	}
+	out_desc = dmaengine_prep_slave_single(tx, out_dma, padded,
+					       DMA_DEV_TO_MEM,
+					       DMA_PREP_INTERRUPT |
+					       DMA_CTRL_ACK);
+	if (!out_desc) {
+		dev_err(qce->dev, "CE2 cipher: out prep failed\n");
+		ret = -ENOMEM;
+		goto out_terminate_rx;
+	}
+
+	init_completion(&done);
+	out_desc->callback = qce_ce2_skc_dma_done;
+	out_desc->callback_param = &done;
+
+	in_cookie = dmaengine_submit(in_desc);
+	if (dma_submit_error(in_cookie)) {
+		dev_err(qce->dev, "CE2 cipher: in submit failed\n");
+		ret = -EIO;
+		goto out_terminate;
+	}
+	out_cookie = dmaengine_submit(out_desc);
+	if (dma_submit_error(out_cookie)) {
+		dev_err(qce->dev, "CE2 cipher: out submit failed\n");
+		ret = -EIO;
+		goto out_terminate;
+	}
+
+	dma_async_issue_pending(rx);
+	dma_async_issue_pending(tx);
+
+	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(1000))) {
+		dev_err(qce->dev, "CE2 cipher: DMA timeout (%u bytes)\n",
+			padded);
+		ret = -ETIMEDOUT;
+		goto out_terminate;
+	}
+
+	status = dma_async_is_tx_complete(tx, out_cookie, NULL, NULL);
+	if (status != DMA_COMPLETE) {
+		dev_err(qce->dev, "CE2 cipher: DMA incomplete (%d)\n", status);
+		ret = -EIO;
+		goto out_terminate;
+	}
+
+	/* Byte-swap output dwords from raw LE u32 -> BE bytes */
+	for (i = 0; i < dwords; i++) {
+		u32 w = le32_to_cpu(out_buf[i]);
+
+		dst_copy[i * 4 + 0] = (w >> 24) & 0xff;
+		dst_copy[i * 4 + 1] = (w >> 16) & 0xff;
+		dst_copy[i * 4 + 2] = (w >>  8) & 0xff;
+		dst_copy[i * 4 + 3] = (w >>  0) & 0xff;
+	}
+	sg_copy_from_buffer(dst, sg_nents(dst), dst_copy, nbytes);
+
+	ret = 0;
+
+out_terminate:
+	dmaengine_terminate_sync(tx);
+out_terminate_rx:
+	dmaengine_terminate_sync(rx);
+out_free_out:
+	dma_free_coherent(qce->dev, padded, out_buf, out_dma);
+out_free_in:
+	dma_free_coherent(qce->dev, padded, in_buf, in_dma);
+out_free_dst_copy:
+	kfree(dst_copy);
+out_free_src_copy:
+	kfree(src_copy);
+	return ret;
+}
+
+/*
+ * CE2 cipher PIO+DMA path.  Mirror of qce_ce2_pio_run_hash():
+ *
+ *   1. Per-op GCC_CE2_RESET (otherwise the engine wedges after ~5 ops)
+ *   2. Wait for IDLE
+ *   3. Write keys, IV, CNTR_MASK, SEG_CFG, ENCR_SEG_CFG, SEG_SIZE,
+ *      CONFIG in the order proven by webOS _ce_setup
+ *   4. GOPROC, wait engine to leave IDLE
+ *   5. Dual-channel ADM DMA for input + output via DATA_SHADOW0
+ *   6. Read back CNTR0..3 for CBC/CTR IV chaining
+ *
+ * Bypasses qce_setup_regs_skcipher() + qce_dma_prep_sgs() because the
+ * v5 path has the wrong register-write order for CE2 (STATUS=0 +
+ * CONFIG before SEG_CFG yields garbage on CE2) and the qce_dma_*
+ * helpers configure both channels for the hash digest readback at
+ * probe time.
+ */
+int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
+{
+	struct skcipher_request *req = skcipher_request_cast(async_req);
+	struct qce_cipher_reqctx *rctx = skcipher_request_ctx(req);
+	struct qce_cipher_ctx *ctx = crypto_tfm_ctx(async_req->tfm);
+	struct qce_alg_template *tmpl =
+		to_cipher_tmpl(crypto_skcipher_reqtfm(req));
+	struct qce_device *qce = tmpl->qce;
+	unsigned long flags = rctx->flags;
+	unsigned int keylen = ctx->enc_keylen;
+	__be32 enckey[QCE_MAX_CIPHER_KEY_SIZE / sizeof(__be32)] = {0};
+	__be32 enciv[QCE_MAX_IV_SIZE / sizeof(__be32)] = {0};
+	unsigned int enckey_words = keylen / sizeof(u32);
+	unsigned int enciv_words = 0;
+	u32 encr_cfg, config, status;
+	int timeout, ret;
+	unsigned int k;
+
+	if (rctx->cryptlen == 0)
+		return 0;
+
+	/* Per-op engine reset -- same per-op-counter limit as hash. */
+	if (qce->reset) {
+		reset_control_assert(qce->reset);
+		udelay(10);
+		reset_control_deassert(qce->reset);
+		udelay(10);
+	}
+
+	/* Wait for IDLE before configuring */
+	for (timeout = 10000; timeout > 0; timeout--) {
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if ((status & CE2_CRYPTO_STATE_MASK) == 0)
+			break;
+		udelay(10);
+	}
+
+	encr_cfg = qce_encr_cfg_ce2(flags, keylen);
+	if (encr_cfg == ~0U) {
+		dev_err(qce->dev,
+			"CE2 cipher: unsupported alg/mode flags=0x%lx keylen=%u\n",
+			flags, keylen);
+		return -EINVAL;
+	}
+	if (IS_ENCRYPT(flags))
+		encr_cfg |= BIT(CE2_ENCODE_SHIFT);
+	encr_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT) |
+		    BIT(CE2_CLR_CNTXT_SHIFT);
+
+	/* No auth segment for skcipher-only */
+	writel(0, qce->base + CE2_REG_AUTH_SEG_CFG);
+
+	/* Key writes: DES_KEY0..5 for DES/3DES, AES_RNDKEY0..N for AES.
+	 * APQ8060 CE2 reports CRYPTO_AES_SEL_FAST in ENGINES_AVAIL, so
+	 * the raw key is written and the engine expands the round-key
+	 * schedule internally (webOS pce_dev->fastaes=1 path).
+	 */
+	qce_cpu_to_be32p_array(enckey, ctx->enc_key, keylen);
+	if (IS_DES(flags) || IS_3DES(flags)) {
+		for (k = 0; k < enckey_words; k++)
+			writel((__force u32)enckey[k],
+			       qce->base + CE2_REG_DES_KEY0 + k * 4);
+	} else {	/* AES */
+		for (k = 0; k < enckey_words; k++)
+			writel((__force u32)enckey[k],
+			       qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
+	}
+
+	/* IV: CNTR0..3.  Skip for ECB (no IV) */
+	if (!IS_ECB(flags) && rctx->iv && rctx->ivsize) {
+		qce_cpu_to_be32p_array(enciv, rctx->iv, rctx->ivsize);
+		enciv_words = rctx->ivsize / sizeof(u32);
+		for (k = 0; k < enciv_words; k++)
+			writel((__force u32)enciv[k],
+			       qce->base + CE2_REG_CNTR0_IV0 + k * 4);
+	}
+
+	if (IS_CTR(flags))
+		writel(0xffff, qce->base + CE2_REG_CNTR_MASK);
+
+	/* SEG_CFG -> ENCR_SEG_CFG -> SEG_SIZE (webOS order) */
+	writel(encr_cfg, qce->base + CE2_REG_SEG_CFG);
+	writel(rctx->cryptlen << CE2_ENCR_SEG_SIZE_SHIFT,
+	       qce->base + CE2_REG_ENCR_SEG_CFG);
+	writel(rctx->cryptlen, qce->base + CE2_REG_SEG_SIZE);
+
+	/* CONFIG: high-speed enable + interrupt masks (same as hash) */
+	config = readl(qce->base + CE2_REG_CONFIG);
+	config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) |
+		  BIT(CE2_MASK_DIN_INTR_SHIFT) |
+		  BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
+		  BIT(CE2_MASK_ERR_INTR_SHIFT);
+	config &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
+		    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
+		    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
+	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
+	writel(config, qce->base + CE2_REG_CONFIG);
+
+	dev_dbg(qce->dev,
+		"CE2 skc pre-GO: SEG_CFG=0x%08x len=%u CONFIG=0x%08x flags=0x%lx\n",
+		encr_cfg, rctx->cryptlen, config, flags);
+
+	/* GOPROC */
+	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+
+	/* Wait for engine to leave IDLE (transition to LOCKED/PROCESSING) */
+	for (timeout = 1000; timeout > 0; timeout--) {
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if (status & CE2_CRYPTO_STATE_MASK)
+			break;
+		udelay(10);
+	}
+	if (timeout <= 0) {
+		dev_err(qce->dev,
+			"CE2 skc: engine never left IDLE; STATUS=0x%08x\n",
+			status);
+		return -ETIMEDOUT;
+	}
+
+	/* Dual-channel DMA: input -> DATA_SHADOW0, output <- DATA_SHADOW0 */
+	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen);
+	if (ret)
+		return ret;
+
+	/* Read back IV from CNTR0..3 for CBC/CTR chaining.  ADM has done
+	 * the actual encryption already; the engine has updated CNTR
+	 * registers with either the last ciphertext block (CBC) or the
+	 * incremented counter (CTR).  Convert from raw u32 to BE bytes
+	 * before handing back to caller.
+	 */
+	if (!IS_ECB(flags) && rctx->iv && enciv_words) {
+		for (k = 0; k < enciv_words; k++) {
+			u32 w = readl(qce->base +
+				      CE2_REG_CNTR0_IV0 + k * 4);
+			__be32 be = cpu_to_be32(w);
+
+			memcpy(rctx->iv + k * 4, &be, sizeof(be));
+		}
+	}
+
+	return 0;
+}
+#endif	/* CONFIG_CRYPTO_DEV_QCE_SKCIPHER */
+
 int qce_check_status(struct qce_device *qce, u32 *status)
 {
 	int ret = 0;

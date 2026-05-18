@@ -78,6 +78,22 @@ qce_skcipher_async_req_handle(struct crypto_async_request *async_req)
 	rctx->ivsize = crypto_skcipher_ivsize(skcipher);
 	rctx->cryptlen = req->cryptlen;
 
+	if (qce_is_ce2(qce)) {
+		/*
+		 * CE2 skcipher path: register programming + dual-channel
+		 * ADM DMA happen inside qce_ce2_pio_run_skcipher().  The
+		 * generic v5 path (qce_setup_regs_skcipher +
+		 * qce_dma_prep_sgs) doesn't work on CE2 because both DMA
+		 * channels are wired to the hash digest readback layout
+		 * (txchan src=AUTH_IV0 + CRCI 15) and the v5 register
+		 * write order corrupts CE2 cipher state.
+		 */
+		int ret2 = qce_ce2_pio_run_skcipher(async_req);
+
+		qce->async_req_done(qce, ret2);
+		return 0;
+	}
+
 	diff_dst = (req->src != req->dst) ? true : false;
 	dir_src = diff_dst ? DMA_TO_DEVICE : DMA_BIDIRECTIONAL;
 	dir_dst = diff_dst ? DMA_FROM_DEVICE : DMA_BIDIRECTIONAL;
