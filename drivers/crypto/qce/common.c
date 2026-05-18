@@ -1728,8 +1728,13 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		 */
 		encr_cfg |= BIT(CE2_AUTH_POS_SHIFT);
 	}
-	encr_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT) |
-		    BIT(CE2_CLR_CNTXT_SHIFT);
+	/* webOS _ce_setup sets FIRST | LAST only -- NOT CLR_CNTXT for
+	 * cipher.  Adding CLR_CNTXT empirically caps AES at 4 blocks per
+	 * op (output for blocks 5+ is wrong); DES is unaffected.  Match
+	 * webOS exactly and let the per-op SW_RST + GCC_CE2_RESET above
+	 * handle context clearing.
+	 */
+	encr_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT);
 
 	/* No auth segment for skcipher-only */
 	writel(0, qce->base + CE2_REG_AUTH_SEG_CFG);
