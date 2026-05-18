@@ -587,8 +587,11 @@ static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 			 * at queue time and seq_header_work was never scheduled.
 			 * Trigger it now that streaming is active.
 			 */
-			if (!inst->seq_parsed && !inst->seq_hdr_direct)
+			if (!inst->seq_parsed && !inst->seq_hdr_direct) {
+				dev_info(core->dev,
+					 "start_streaming: queuing seq_header_work\n");
 				queue_work(system_wq, &inst->seq_header_work);
+			}
 		}
 	} else {
 		if (!inst->streamon_cap) {
@@ -636,7 +639,13 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 static void vidc_dec_buf_queue(struct vb2_buffer *vb)
 {
 	struct vidc_inst *inst = vb2_get_drv_priv(vb->vb2_queue);
+	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+
+	dev_info(core->dev,
+		 "buf_queue: type=%u seq_parsed=%d hdr_direct=%d streamon_out=%d\n",
+		 vb->type, inst->seq_parsed, inst->seq_hdr_direct,
+		 inst->streamon_out);
 
 	v4l2_m2m_buf_queue(inst->m2m_ctx, vbuf);
 
@@ -754,14 +763,20 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 {
 	struct vidc_inst *inst =
 		container_of(w, struct vidc_inst, seq_header_work);
+	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *src_buf;
 	dma_addr_t src_addr;
 	u32 src_size;
+
+	dev_info(core->dev,
+		 "seq_header_work: seq_parsed=%d hdr_direct=%d\n",
+		 inst->seq_parsed, inst->seq_hdr_direct);
 
 	if (inst->seq_parsed || inst->seq_hdr_direct)
 		return;
 
 	src_buf = v4l2_m2m_next_src_buf(inst->m2m_ctx);
+	dev_info(core->dev, "seq_header_work: src_buf=%p\n", src_buf);
 	if (!src_buf)
 		return;
 
