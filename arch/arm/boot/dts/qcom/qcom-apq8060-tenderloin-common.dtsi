@@ -2204,10 +2204,18 @@
 	 * - Channel 2 on ADM1 for both RX and TX (global channel 18)
 	 * - CRCI 1 for SDC1 (passed via qcom,sdcc-crci property)
 	 * From webOS kernel: DMOV_SDC1_CHAN=18, DMOV_SDC1_CRCI=1
+	 *
+	 * DISABLED: eMMC and SDIO/WiFi (sdcc4) both share adm_dma1,
+	 * which leads to eMMC DATATIMEOUT/journal-abort 3 s after WiFi
+	 * starts its first DMA transfer (matches the qcom_dma_timeout_work
+	 * watchdog interval). Falls into PIO via the qcom dml dma_threshold
+	 * cap (256 B), which is enough to stay stable. Re-enable once the
+	 * ADM channel contention/deferred-DMA watchdog interaction is
+	 * fixed.
 	 */
-	dmas = <&adm_dma1 2>, <&adm_dma1 2>;
-	dma-names = "rx", "tx";
-	qcom,sdcc-crci = <1>;
+	/* dmas = <&adm_dma1 2>, <&adm_dma1 2>; */
+	/* dma-names = "rx", "tx"; */
+	/* qcom,sdcc-crci = <1>; */
 
 	/*
 	 * DFAB interconnect path for eMMC.
