@@ -249,6 +249,7 @@ static int vidc_dec_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
 		inst->codec = fmt->codec;
 		inst->out_width = pixmp->width;
 		inst->out_height = pixmp->height;
+		inst->out_buf_size = pixmp->plane_fmt[0].sizeimage;
 	} else if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 		inst->fmt_cap = fmt;
 		inst->width = pixmp->width;
@@ -442,20 +443,21 @@ static int vidc_dec_queue_setup(struct vb2_queue *q,
 				struct device *alloc_devs[])
 {
 	struct vidc_inst *inst = vb2_get_drv_priv(q);
-	u32 width, height, size;
+	u32 size;
 
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		width = inst->out_width;
-		height = inst->out_height;
+		/*
+		 * Use the sizeimage negotiated in S_FMT so the VB2 buffer
+		 * size matches what GStreamer (and other apps) stored from the
+		 * S_FMT response. Recomputing vidc_dec_get_framesize() for
+		 * compressed formats returns the raw YUV size (wrong), causing
+		 * GStreamer's MMAP allocator to reject the buffer as too small.
+		 */
+		size = inst->out_buf_size;
 	} else {
-		width = inst->width;
-		height = inst->height;
+		size = vidc_dec_get_framesize(inst->fmt_cap->pixfmt,
+					      inst->width, inst->height);
 	}
-
-	size = vidc_dec_get_framesize(
-		q->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ?
-		inst->fmt_cap->pixfmt : inst->fmt_out->pixfmt,
-		width, height);
 
 	if (*num_planes) {
 		if (*num_planes != 1 || sizes[0] < size)

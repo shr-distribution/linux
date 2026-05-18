@@ -500,6 +500,7 @@ struct vidc_inst {
 	u32 height;
 	u32 out_width;
 	u32 out_height;
+	u32 out_buf_size;	/* OUTPUT queue sizeimage from S_FMT (compressed input) */
 
 	/* Streaming state */
 	bool streamon_out;
