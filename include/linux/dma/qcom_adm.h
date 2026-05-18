@@ -9,6 +9,26 @@ struct dma_chan;
 struct qcom_adm_peripheral_config {
 	u32 crci;
 	u32 mux;
+
+	/*
+	 * Optional pre-submit hook. If set, the ADM driver calls
+	 * exec_func(exec_user) inside its per-controller submit lock,
+	 * immediately before writing the channel's CMD_PTR register.
+	 * Matches the legacy webOS msm_dmov "exec_func" pattern: the
+	 * peripheral can write its own MMIO registers (e.g. SDCC
+	 * DATACTRL + CMD) atomically with the ADM start, with all other
+	 * channels on the same ADM controller blocked.
+	 *
+	 * Constraints:
+	 *  - Called in atomic context with submit_lock held + IRQs off.
+	 *  - Must not sleep, must not take other locks that nest above
+	 *    submit_lock, must complete promptly (target: a handful of
+	 *    register writes, microseconds).
+	 *  - Called once per submission; the peripheral driver owns
+	 *    lifetimes of exec_user.
+	 */
+	void (*exec_func)(void *exec_user);
+	void *exec_user;
 };
 
 /**

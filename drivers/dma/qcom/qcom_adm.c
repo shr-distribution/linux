@@ -139,6 +139,14 @@ struct adm_async_desc {
 	u32 mux;
 	u32 blk_size;
 
+	/*
+	 * Peripheral pre-submit hook (legacy webOS msm_dmov exec_func
+	 * pattern). Called under adev->submit_lock right before the
+	 * channel's CMD_PTR write in adm_start_dma.
+	 */
+	void (*exec_func)(void *exec_user);
+	void *exec_user;
+
 	/* Pool management */
 	struct list_head pool_node;
 	int pool_index;		/* -1 = dynamic alloc, >=0 = pooled */
@@ -155,6 +163,15 @@ struct adm_chan {
 	struct dma_slave_config slave;
 	u32 crci;
 	u32 mux;
+
+	/*
+	 * Per-channel exec_func, set via adm_slave_config from
+	 * struct qcom_adm_peripheral_config. Inherited by descriptors
+	 * prepared on this channel.
+	 */
+	void (*exec_func)(void *exec_user);
+	void *exec_user;
+
 	struct list_head node;
 
 	int error;
@@ -191,6 +208,16 @@ struct adm_device {
 	dma_addr_t cpl_pool_dma;		/* DMA address of CPL pool */
 	struct list_head desc_free_list;	/* Free descriptor list */
 	spinlock_t pool_lock;			/* Protects free list */
+
+	/*
+	 * Per-controller submit serialization. Held across the
+	 * peripheral exec_func call and the CMD_PTR write in
+	 * adm_start_dma, so that submissions from different channels
+	 * on the same ADM controller don't interleave their SDCC/MMIO
+	 * setup with each other's ADM CMD_PTR write -- matching the
+	 * legacy webOS msm_dmov per-ADM spinlock behaviour.
+	 */
+	spinlock_t submit_lock;
 };
 
 /**
@@ -623,6 +650,9 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 	async_desc->mux = achan->mux ? ADM_CRCI_CTL_MUX_SEL : 0;
 	async_desc->crci = crci;
 	async_desc->blk_size = blk_size;
+	/* Inherit exec_func from channel slave config */
+	async_desc->exec_func = achan->exec_func;
+	async_desc->exec_user = achan->exec_user;
 
 	/* both command list entry and descriptors must be 8 byte aligned */
 	cple = PTR_ALIGN(async_desc->cpl, ADM_DESC_ALIGN);
@@ -745,8 +775,11 @@ static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 
 	spin_lock_irqsave(&achan->vc.lock, flag);
 	memcpy(&achan->slave, cfg, sizeof(struct dma_slave_config));
-	if (cfg->peripheral_size == sizeof(*config))
+	if (cfg->peripheral_size == sizeof(*config)) {
 		achan->crci = config->crci;
+		achan->exec_func = config->exec_func;
+		achan->exec_user = config->exec_user;
+	}
 	spin_unlock_irqrestore(&achan->vc.lock, flag);
 
 	dev_dbg(achan->adev->dev,
@@ -814,6 +847,23 @@ static void adm_start_dma(struct adm_chan *achan)
 		achan->initialized = 1;
 	}
 
+	/*
+	 * Per-ADM-controller submit serialization, plus peripheral
+	 * exec_func atomic hook. Matches the legacy webOS msm_dmov
+	 * pattern: while we set up CRCI_CTL, call the peripheral's
+	 * pre-submit hook (e.g. mmci writes DATACTRL + CMD), and write
+	 * CMD_PTR, no other channel on this ADM controller can start
+	 * its own submission.
+	 *
+	 * IRQs are saved/restored so adm_start_dma can also be called
+	 * from the IRQ handler (after a channel completion, picking up
+	 * the next pending descriptor).
+	 */
+	{
+	unsigned long submit_flags;
+
+	spin_lock_irqsave(&adev->submit_lock, submit_flags);
+
 	/* set the crci block size if this transaction requires CRCI */
 	if (async_desc->crci) {
 		u32 crci_val = async_desc->mux | async_desc->blk_size;
@@ -827,6 +877,15 @@ static void adm_start_dma(struct adm_chan *achan)
 
 	/* make sure IRQ enable doesn't get reordered */
 	wmb();
+
+	/*
+	 * Peripheral pre-submit hook (legacy msm_dmov exec_func). Called
+	 * with submit_lock held, IRQs off, right before the CMD_PTR write.
+	 * Lets the consumer driver (mmci, etc.) commit its own MMIO setup
+	 * atomically with the ADM start.
+	 */
+	if (async_desc->exec_func)
+		async_desc->exec_func(async_desc->exec_user);
 
 	dev_dbg(adev->dev, "ADM start_dma: chan=%d crci=%d cmd_ptr=0x%08x len=%zu\n",
 		achan->id, async_desc->crci,
@@ -846,6 +905,9 @@ static void adm_start_dma(struct adm_chan *achan)
 	if (adev->ee == 1) {
 		writel(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3,
 		       adev->regs + ADM_CH_CMD_PTR(achan->id, 0));
+	}
+
+	spin_unlock_irqrestore(&adev->submit_lock, submit_flags);
 	}
 }
 
@@ -1066,6 +1128,12 @@ static int adm_dma_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	adev->dev = &pdev->dev;
+
+	/*
+	 * Per-controller submit serialization (legacy msm_dmov pattern).
+	 * Initialised early so adm_start_dma can always take it.
+	 */
+	spin_lock_init(&adev->submit_lock);
 
 	adev->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(adev->regs))
