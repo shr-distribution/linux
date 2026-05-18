@@ -1961,18 +1961,23 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 
 	switch (inst->codec) {
 	case VIDC_CODEC_H264_ENC:
-		/* Baseline profile, Level 3.0 (1080p capable: L4.0=40) */
-		profile_level = (1 << 8) | 30;
+		/*
+		 * Register REG_63643: bits 15:8 = level, bits 5:0 = profile.
+		 * H264 profiles: Main=0, High=1, Baseline=2 (VIDC_1080P_PROFILE_*).
+		 * H264 levels: VIDC_1080P_H264_LEVEL3=30, LEVEL4=40, etc.
+		 * Use Baseline profile (2), Level 3.0 (30).
+		 */
+		profile_level = (30 << 8) | 2;
 		break;
 
 	case VIDC_CODEC_MPEG4_ENC:
-		/* Simple Profile, Level 5 (common for SD video) */
-		profile_level = (0 << 8) | 5;
+		/* Simple Profile (0), Level 5 */
+		profile_level = (5 << 8) | 0;
 		break;
 
 	case VIDC_CODEC_H263_ENC:
-		/* Baseline profile, Level 70 (legacy default) */
-		profile_level = (0 << 8) | 70;
+		/* Profile 0, Level 70 */
+		profile_level = (70 << 8) | 0;
 		break;
 
 	default:
@@ -1983,7 +1988,12 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 		break;
 	}
 
-	qp_range = (40 << 16) | 10;	/* min=10, max=40 */
+	/*
+	 * REG_109072 QP range: bits 13:8 = max_qp, bits 5:0 = min_qp.
+	 * REG_559908 RC config: bit 9 = frame_level_rc, bit 8 = mb_level_rc,
+	 *                       bits 5:0 = I-frame QP.
+	 */
+	qp_range = (40 << 8) | 10;			/* max=40, min=10 */
 
 	vidc_write(core, VIDC_REG_ENC_FRAME_WIDTH, inst->out_width);
 	vidc_write(core, VIDC_REG_ENC_FRAME_HEIGHT, inst->out_height);
@@ -1991,9 +2001,24 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 	/* Firmware expects framerate in millifps (fps * 1000) */
 	vidc_write(core, VIDC_REG_ENC_FRAME_RATE, inst->framerate * 1000);
 	vidc_write(core, VIDC_REG_ENC_PROFILE_LEVEL, profile_level);
-	vidc_write(core, VIDC_REG_ENC_RC_CONFIG, 0);		/* CBR */
+	/* CBR: enable frame-level RC (bit 9), I-frame QP = 26 */
+	vidc_write(core, VIDC_REG_ENC_RC_CONFIG, (1 << 9) | 26);
 	vidc_write(core, VIDC_REG_ENC_REACTION_COEFF, 0x14);
 	vidc_write(core, VIDC_REG_ENC_QP_RANGE, qp_range);
+
+	/*
+	 * Shared-memory encoder params (VIDC_SM_* offsets from
+	 * vcd_ddl_shared_mem.c). The firmware reads these during SEQ_HEADER
+	 * processing; leaving them at 0 (default memset) causes a
+	 * DIVIDE_BY_ZERO when frame-level RC divides by the initial bitrate.
+	 *
+	 * VOP timing: enable=1 (bit 31), time_resolution = fps*2 (bits 30:16),
+	 *   frame_delta=0. Matches ddl_set_default_enc_vop_timing().
+	 * Init RC value: initial bitrate in bps at offset 0x11c.
+	 */
+	writel((1U << 31) | ((inst->framerate * 2) << 16),
+	       core->shm_vaddr + VIDC_SHM_ENC_VOP_TIMING);
+	writel(inst->bitrate, core->shm_vaddr + VIDC_SHM_ENC_INIT_RC_VALUE);
 
 	dev_dbg(core->dev,
 		"encoder config: %ux%u fps=%u bitrate=%u profile_level=0x%x\n",

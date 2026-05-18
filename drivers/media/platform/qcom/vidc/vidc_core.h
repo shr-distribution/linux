@@ -242,15 +242,37 @@
 #define VIDC_REG_DEC_DIVX3_HEIGHT	0x2050
 #define VIDC_REG_DEC_DIVX3_WIDTH	0x2054
 
-/* Encode configuration registers */
-#define VIDC_REG_ENC_FRAME_WIDTH	0x0180
-#define VIDC_REG_ENC_FRAME_HEIGHT	0x0184
-#define VIDC_REG_ENC_PROFILE_LEVEL	0x0188
-#define VIDC_REG_ENC_RC_CONFIG		0x018c
-#define VIDC_REG_ENC_FRAME_RATE		0x0190
-#define VIDC_REG_ENC_TARGET_BITRATE	0x0194
-#define VIDC_REG_ENC_REACTION_COEFF	0x0198
-#define VIDC_REG_ENC_QP_RANGE		0x019c
+/*
+ * Encode configuration registers.
+ * Offsets from vidc_hwio_reg.h (VIDC_BLACKBIRD_REG_BASE + offset):
+ *   REG_934655 = frame width  @ +0x818
+ *   REG_179070 = frame height @ +0x81c
+ *   REG_63643  = profile/level @ +0x830
+ *     bits 15:8 = level, bits 5:0 = profile
+ *     H264 profiles: Main=0, High=1, Baseline=2
+ *     H264 levels:   Level3=30, Level4=40, etc.
+ *   REG_559908 = RC config @ +0xc5a0
+ *     bit 9: frame_level_rc, bit 8: mb_level_rc, bits 5:0: frame_qp
+ *   REG_977937 = frame rate (millifps, fps*1000) @ +0xd0d0
+ *   REG_166135 = target bitrate (bps) @ +0xc5a8
+ *   REG_109072 = QP range @ +0xc5ac
+ *     bits 13:8 = max_qp, bits 5:0 = min_qp
+ *   REG_550322 = reaction coefficient @ +0xc5b0
+ */
+#define VIDC_REG_ENC_FRAME_WIDTH	0x0818
+#define VIDC_REG_ENC_FRAME_HEIGHT	0x081c
+#define VIDC_REG_ENC_PROFILE_LEVEL	0x0830
+#define VIDC_REG_ENC_RC_CONFIG		0xc5a0
+#define VIDC_REG_ENC_FRAME_RATE		0xd0d0
+#define VIDC_REG_ENC_TARGET_BITRATE	0xc5a8
+#define VIDC_REG_ENC_REACTION_COEFF	0xc5b0
+#define VIDC_REG_ENC_QP_RANGE		0xc5ac
+
+/* Shared-memory offsets for encoder-only params (written via core->shm_vaddr) */
+#define VIDC_SHM_ENC_EXT_CTRL		0x0028	/* VIDC_SM_ENC_EXT_CTRL_ADDR   */
+#define VIDC_SHM_ENC_VOP_TIMING	0x0030	/* VIDC_SM_ENC_VOP_TIMING_ADDR */
+#define VIDC_SHM_ENC_HEC_PERIOD	0x0034	/* VIDC_SM_ENC_HEC_PERIOD_ADDR */
+#define VIDC_SHM_ENC_INIT_RC_VALUE	0x011c	/* vidc_sm_set_encoder_init_rc_value */
 
 /* DPB buffer registers (decode) */
 #define VIDC_REG_DPB_LUMA_BASE		0x0300
