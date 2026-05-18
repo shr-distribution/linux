@@ -424,12 +424,12 @@ static void vidc_handle_frame_done(struct vidc_core *core,
 	status = vidc_read(core, VIDC_REG_DEC_DISPLAY_STATUS);
 	inst->display_status = status & VIDC_DISPLAY_STATUS_MASK;
 
-	dev_dbg(core->dev,
-		"Frame done: Y_raw=0x%x C_raw=0x%x (offsets 0x%x / 0x%x) status=%u\n",
-		inst->display_y_raw, inst->display_c_raw,
-		inst->display_y_raw << VIDC_ADDR_SHIFT,
-		inst->display_c_raw << VIDC_ADDR_SHIFT,
-		inst->display_status);
+	dev_info(core->dev,
+		 "Frame done: Y_raw=0x%x C_raw=0x%x (offsets 0x%x / 0x%x) status=%u\n",
+		 inst->display_y_raw, inst->display_c_raw,
+		 inst->display_y_raw << VIDC_ADDR_SHIFT,
+		 inst->display_c_raw << VIDC_ADDR_SHIFT,
+		 inst->display_status);
 
 	/* Read the decoded compressed-frame consumed size */
 	inst->result_size = vidc_read(core, VIDC_REG_SEQ_FRAME_SIZE);
@@ -1645,9 +1645,9 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 	if (out_payload)
 		*out_payload = frame_size;
 
-	dev_dbg(core->dev,
-		"copy_dpb_to_dst: slot=%u y=%zu c=%zu total=%zu\n",
-		slot_idx, y_size, c_size, frame_size);
+	dev_info(core->dev,
+		 "copy_dpb_to_dst: slot=%u y=%zu c=%zu total=%zu\n",
+		 slot_idx, y_size, c_size, frame_size);
 
 	return 0;
 }

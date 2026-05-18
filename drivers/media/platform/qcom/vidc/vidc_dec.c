@@ -1029,6 +1029,9 @@ static void vidc_dec_device_run(void *priv)
 	dst_buf = v4l2_m2m_next_dst_buf(inst->m2m_ctx);
 
 	if (!src_buf || !dst_buf) {
+		dev_info(inst->core->dev,
+			 "device_run: no buffers (src=%p dst=%p), aborting\n",
+			 src_buf, dst_buf);
 		v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);
 		return;
 	}
@@ -1041,6 +1044,9 @@ static void vidc_dec_device_run(void *priv)
 	dst_addr = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
 	src_size = vb2_get_plane_payload(&src_buf->vb2_buf, 0);
 
+	dev_info(inst->core->dev,
+		 "device_run: FRAME_DATA src=0x%pad size=%u seq_parsed=%d\n",
+		 &src_addr, src_size, inst->seq_parsed);
 	inst->error = 0;
 	vidc_dec_submit_frame(inst, src_addr, src_size, dst_addr);
 
