@@ -673,38 +673,33 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	/* Clear previous response */
 	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
 
-	/* Write stream buffer address and size (shifted by 11 bits) */
+	/*
+	 * INIT_CH: write 0xffff to INST_ID before programming parameters.
+	 * The legacy DDL (vidc_1080p_decode_seq_start_ch0) always does this
+	 * first to put the channel in a known idle state before writing the
+	 * command parameters.  Without it the firmware may read stale values
+	 * from a previous command.
+	 */
+	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
+
+	/* Write stream buffer address and payload size */
 	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, src_addr >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_STREAM_SIZE, src_size);
-	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, src_size);
-
-	/* Write output buffer address for decoded frame */
-	vidc_write(core, VIDC_REG_CH0_Y_ADDR, dst_addr >> VIDC_ADDR_SHIFT);
-	/* Chroma follows luma in NV12 format */
-	vidc_write(core, VIDC_REG_CH0_C_ADDR,
-		   (dst_addr + ALIGN(inst->width, 128) *
-		    ALIGN(inst->height, 32)) >> VIDC_ADDR_SHIFT);
 
 	/*
 	 * Point the firmware at our descriptor (scratch) buffer.
-	 * Legacy vidc.c:524-528 writes both DESC_ADDR (>>VIDC_ADDR_SHIFT
-	 * encoding) and DESC_BUF_SIZE (raw bytes) on every SEQ_HEADER and
-	 * FRAME_DATA command. The buffer is per-channel scratch the
-	 * firmware uses to record decode state — without it the firmware
-	 * may stall waiting for a write target or return
-	 * "descriptor missing" errors on FRAME_DATA.
+	 * Legacy vidc_1080p_decode_seq_start_ch0 writes DESC_ADDR
+	 * (>>VIDC_ADDR_SHIFT) and DESC_BUF_SIZE on every SEQ_HEADER and
+	 * FRAME_DATA command.  The buffer is per-channel scratch the
+	 * firmware uses to record decode state.
 	 */
 	vidc_write(core, VIDC_REG_CH0_DESC_ADDR,
 		   core->desc_offset >> VIDC_ADDR_SHIFT);
+
+	/* STREAM_BUF_SIZE: total capacity of the stream buffer (may equal payload) */
+	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, src_size);
 	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
 
-	/*
-	 * Re-point the firmware at our shared-memory region. The legacy
-	 * DDL writes this on every command that exchanges parameters via
-	 * SHM (SEQ_HEADER, INIT_BUFFERS, FRAME_DATA); since CH0_SHARED_MEM
-	 * is a single register shared with INIT_BUFFERS, re-write it here
-	 * to be defensive against the firmware having clobbered it.
-	 */
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 
 	/* Increment and write command sequence number */
@@ -712,15 +707,18 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
 
 	/*
-	 * Choose the operation type bits encoded in INST_ID. The first
-	 * submission on a freshly-opened channel is the sequence-header
-	 * parse (firmware reads SPS/PPS for H.264, VOL for MPEG-4, etc.
-	 * out of the OUTPUT buffer and responds with RESP_SEQ_DONE +
-	 * geometry registers populated). Once that has happened the
-	 * driver flips inst->seq_parsed and subsequent submissions are
-	 * normal frame data.
+	 * FRAME_DATA additionally requires DPB_RELEASE and DPB_CONFIG.
+	 * Legacy vidc_1080p_decode_frame_start_ch0 always writes these.
+	 * DPB_RELEASE = 0: do not release any DPB slots back to firmware.
+	 * DPB_CONFIG  = dpb_count: tell firmware how many DPB slots exist.
 	 */
 	op = inst->seq_parsed ? VIDC_OP_FRAME_DATA : VIDC_OP_SEQ_HEADER;
+	if (op == VIDC_OP_FRAME_DATA) {
+		vidc_write(core, VIDC_REG_CH0_DPB_RELEASE, 0);
+		vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
+	}
+
+	/* Trigger: operation type | instance id */
 	vidc_write(core, VIDC_REG_CH0_INST_ID, op | inst->inst_id);
 
 	spin_unlock_irqrestore(&core->irqlock, flags);

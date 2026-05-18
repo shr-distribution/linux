@@ -708,48 +708,51 @@ static void vidc_enc_submit_frame(struct vidc_inst *inst,
 	/* Clear previous response */
 	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
 
+	/* INIT_CH before parameters (vidc_1080p_encode_frame_start_ch0 pattern) */
+	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
+
 	/*
-	 * Set encode configuration registers.
-	 * These would normally be set during session open, but we
-	 * ensure they're correct here.
+	 * Per-frame encoder configuration: dimensions + rate-control params.
+	 * Written here rather than in codec_config so they track any
+	 * future dynamic resolution/bitrate changes.
 	 */
 	vidc_write(core, VIDC_REG_ENC_FRAME_WIDTH, inst->out_width);
 	vidc_write(core, VIDC_REG_ENC_FRAME_HEIGHT, inst->out_height);
 	vidc_write(core, VIDC_REG_ENC_TARGET_BITRATE, inst->bitrate);
-	/* Firmware expects framerate in millifps (fps * 1000) */
 	vidc_write(core, VIDC_REG_ENC_FRAME_RATE, inst->framerate * 1000);
 
 	/* Calculate Y plane size for NV12 format */
 	y_stride = ALIGN(inst->out_width, 128);
 	y_size = y_stride * ALIGN(inst->out_height, 32);
 
-	/* Write raw input frame address (Y and C planes, shifted) */
+	/*
+	 * Encoder command parameter layout (vidc_1080p_encode_frame_start_ch0):
+	 *   0x2044 = output bitstream buffer addr (STREAM_ADDR)
+	 *   0x204c = total output buffer capacity  (ENC_OUT_BUF_SIZE)
+	 *   0x2050 = current input Y addr          (CH0_Y_ADDR)
+	 *   0x2054 = current input C addr          (CH0_C_ADDR)
+	 *   0x2058 = intra_frame flag              (CH0_INTRA_FRAME)
+	 *   0x2064 = shared mem                    (CH0_SHARED_MEM)
+	 *   0x2068 = input_flush (= 0, normal)     (CH0_DPB_CONFIG)
+	 *   0x206c = cmd_seq_num
+	 *
+	 * Note: encoder does NOT use a descriptor buffer (0x204c/0x205c
+	 * are decoder-only registers).
+	 */
+	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, dst_addr >> VIDC_ADDR_SHIFT);
+	vidc_write(core, VIDC_REG_ENC_OUT_BUF_SIZE, dst_size);
 	vidc_write(core, VIDC_REG_CH0_Y_ADDR, src_addr >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_C_ADDR,
 		   (src_addr + y_size) >> VIDC_ADDR_SHIFT);
-
-	/* Write output stream buffer address for compressed bitstream */
-	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, dst_addr >> VIDC_ADDR_SHIFT);
-	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, dst_size);
-
-	/*
-	 * Point the firmware at the per-channel descriptor buffer +
-	 * shared-memory region. Same mechanism as the decoder path
-	 * (commits 2f69eab07774 + cf0e5730fcd2). The encoder also uses
-	 * the descriptor buffer for per-frame scratch state and the
-	 * shared-memory region for rate-control feedback (frame size,
-	 * QP usage, etc.).
-	 */
-	vidc_write(core, VIDC_REG_CH0_DESC_ADDR,
-		   core->desc_offset >> VIDC_ADDR_SHIFT);
-	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
+	vidc_write(core, VIDC_REG_CH0_INTRA_FRAME, 0);	/* P-frame; firmware uses I_FRM_CTRL */
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
+	vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, 0);	/* input_flush = 0 */
 
 	/* Increment and write command sequence number */
 	core->cmd_seq_num++;
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
 
-	/* Write channel instance ID with operation type to start encode */
+	/* Trigger: FRAME_DATA | inst_id */
 	vidc_write(core, VIDC_REG_CH0_INST_ID,
 		   VIDC_OP_FRAME_DATA | inst->inst_id);
 

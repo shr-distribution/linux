@@ -172,34 +172,51 @@
 #define VIDC_FLUSH_OUTPUT			BIT(1)
 #define VIDC_FLUSH_ALL				(VIDC_FLUSH_INPUT | VIDC_FLUSH_OUTPUT)
 
-/* Channel 0 registers (decode/encode instance 0) */
-#define VIDC_REG_CH0_STREAM_ADDR	0x0100
-#define VIDC_REG_CH0_STREAM_SIZE	0x0104
-#define VIDC_REG_CH0_DESC_ADDR		0x0108
-#define VIDC_REG_CH0_STREAM_BUF_SIZE	0x010c
-#define VIDC_REG_CH0_DESC_BUF_SIZE	0x0110
-#define VIDC_REG_CH0_SHARED_MEM		0x0114
-#define VIDC_REG_CH0_CMD_SEQ_NUM	0x0118
-#define VIDC_REG_CH0_DPB_CONFIG		0x011c
-#define VIDC_REG_CH0_DPB_RELEASE	0x0120
-#define VIDC_REG_CH0_Y_ADDR		0x0124
-#define VIDC_REG_CH0_C_ADDR		0x0128
-#define VIDC_REG_CH0_INTRA_FRAME	0x012c
+/*
+ * Channel 0 command parameter registers (decode/encode instance 0).
+ * Addresses confirmed from webOS vidc_hwio_reg.h (VIDC_BLACKBIRD_REG_BASE +
+ * offset).  The 0x0100-0x01FF range does NOT exist in the VIDC hardware —
+ * registers jump from 0x0080 to 0x0508 with nothing in between.
+ *
+ * Decoder and encoder share the 0x2040-0x206c block but assign different
+ * meanings to some registers:
+ *   0x204c: decoder = descriptor_buffer_addr; encoder = stream_buffer_size
+ *   0x2050: decoder = DivX3 height override; encoder = current_y_addr
+ *   0x2054: decoder = DivX3 width override;  encoder = current_c_addr
+ *   0x2058: decoder = stream_buffersize (total capacity); encoder = intra_frame
+ */
+#define VIDC_REG_CH0_STREAM_ADDR	0x2044	/* REG_117192 */
+#define VIDC_REG_CH0_STREAM_SIZE	0x2048	/* REG_145068 - decoder stream_frame_size */
+#define VIDC_REG_CH0_DESC_ADDR		0x204c	/* REG_921356 - decoder desc addr */
+#define VIDC_REG_CH0_STREAM_BUF_SIZE	0x2058	/* REG_190381 - decoder stream total capacity */
+#define VIDC_REG_CH0_DESC_BUF_SIZE	0x205c	/* REG_85655 */
+#define VIDC_REG_CH0_DPB_RELEASE	0x2060	/* REG_86830 */
+#define VIDC_REG_CH0_SHARED_MEM		0x2064	/* REG_889944 */
+#define VIDC_REG_CH0_DPB_CONFIG		0x2068	/* REG_404623 */
+#define VIDC_REG_CH0_CMD_SEQ_NUM	0x206c	/* REG_397087 */
 
-/* Sequence info registers (after SEQ_DONE) */
-#define VIDC_REG_SEQ_IMG_SIZE_Y		0x0140
-#define VIDC_REG_SEQ_IMG_SIZE_X		0x0144
-#define VIDC_REG_SEQ_MIN_DPB		0x0148
-#define VIDC_REG_SEQ_FRAME_SIZE		0x014c
-#define VIDC_REG_SEQ_DISPLAY_INFO	0x0150
+/* Encoder input frame addresses (same 0x2040-0x206c block, encoder usage) */
+#define VIDC_REG_CH0_Y_ADDR		0x2050	/* REG_612810 - encoder current_y_addr */
+#define VIDC_REG_CH0_C_ADDR		0x2054	/* REG_175608 - encoder current_c_addr */
+#define VIDC_REG_CH0_INTRA_FRAME	0x2058	/* REG_190381 - encoder intra_frame flag */
+
+/* Encoder output buffer capacity (0x204c has different meaning for encoder) */
+#define VIDC_REG_ENC_OUT_BUF_SIZE	0x204c	/* REG_921356 - encoder stream_buffer_size */
+
+/* Sequence info registers (after SEQ_DONE) — REG_845544..REG_853667 */
+#define VIDC_REG_SEQ_IMG_SIZE_Y		0x2004	/* REG_845544 - height */
+#define VIDC_REG_SEQ_IMG_SIZE_X		0x2008	/* REG_859906 - width */
+#define VIDC_REG_SEQ_MIN_DPB		0x200c	/* REG_490078 */
+#define VIDC_REG_SEQ_FRAME_SIZE		0x2018	/* REG_489688 - dec_frm_size */
+#define VIDC_REG_SEQ_DISPLAY_INFO	0x201c	/* REG_853667 - progressive/crop */
 
 /* Decode result registers (after FRAME_DONE) */
-#define VIDC_REG_DEC_DISPLAY_Y		0x0160
-#define VIDC_REG_DEC_DISPLAY_C		0x0164
-#define VIDC_REG_DEC_DECODE_Y		0x0168
-#define VIDC_REG_DEC_DECODE_C		0x016c
-#define VIDC_REG_DEC_DISPLAY_STATUS	0x0170
-#define VIDC_REG_DEC_DECODE_STATUS	0x0174
+#define VIDC_REG_DEC_DISPLAY_Y		0x2010	/* REG_640904 */
+#define VIDC_REG_DEC_DISPLAY_C		0x2014	/* REG_60114 */
+#define VIDC_REG_DEC_DECODE_Y		0x2024	/* REG_378318 */
+#define VIDC_REG_DEC_DECODE_C		0x2028	/* REG_203487 */
+#define VIDC_REG_DEC_DISPLAY_STATUS	0x201c	/* REG_853667 */
+#define VIDC_REG_DEC_DECODE_STATUS	0x202c	/* REG_692991 */
 
 /*
  * Display-status field in VIDC_REG_DEC_DISPLAY_STATUS. Legacy
@@ -214,13 +231,17 @@
 #define VIDC_DISPLAY_STATUS_DPB_EMPTY		3
 #define VIDC_DISPLAY_STATUS_NOOP		4
 
-/* Encode result registers (after ENC_COMPLETE) */
-#define VIDC_REG_ENC_FRAME_SIZE		0x0140
-#define VIDC_REG_ENC_PICTURE_COUNT	0x0144
-#define VIDC_REG_ENC_WRITE_PTR		0x0148
-#define VIDC_REG_ENC_FRAME_TYPE		0x0160
-#define VIDC_REG_ENC_LUMA_ADDR		0x0164
-#define VIDC_REG_ENC_CHROMA_ADDR	0x014c
+/*
+ * Encode result registers (after ENC_COMPLETE).
+ * The 0x2004-0x2018 block is shared with decode SEQ_DONE result registers;
+ * the firmware repurposes them depending on the operation type.
+ */
+#define VIDC_REG_ENC_FRAME_SIZE		0x2004	/* REG_845544 */
+#define VIDC_REG_ENC_PICTURE_COUNT	0x2008	/* REG_859906 */
+#define VIDC_REG_ENC_WRITE_PTR		0x200c	/* REG_490078 */
+#define VIDC_REG_ENC_FRAME_TYPE		0x2010	/* REG_640904 */
+#define VIDC_REG_ENC_LUMA_ADDR		0x2014	/* REG_60114 */
+#define VIDC_REG_ENC_CHROMA_ADDR	0x2018	/* REG_489688 */
 
 /*
  * Codec-specific decoder configuration registers. Offsets sourced
@@ -281,10 +302,10 @@
 #define VIDC_SHM_ENC_HEC_PERIOD	0x0034	/* VIDC_SM_ENC_HEC_PERIOD_ADDR */
 #define VIDC_SHM_ENC_INIT_RC_VALUE	0x011c	/* vidc_sm_set_encoder_init_rc_value */
 
-/* DPB buffer registers (decode) */
-#define VIDC_REG_DPB_LUMA_BASE		0x0300
-#define VIDC_REG_DPB_CHROMA_BASE	0x0380
-#define VIDC_REG_DPB_MV_BASE		0x0400
+/* DPB buffer registers (decode) — REG_515200/REG_759068/REG_2067 arrays */
+#define VIDC_REG_DPB_LUMA_BASE		0x0700	/* REG_759068 base */
+#define VIDC_REG_DPB_CHROMA_BASE	0x0600	/* REG_515200 base */
+#define VIDC_REG_DPB_MV_BASE		0x0780	/* MV collocated data base */
 #define VIDC_MAX_DPB_BUFFERS		32
 
 /* Recon buffer registers (encode) */

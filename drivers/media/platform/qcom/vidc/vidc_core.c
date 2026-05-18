@@ -1498,6 +1498,8 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	 * device_run lands the SHM register should be written from a
 	 * common helper.
 	 */
+	/* INIT_CH before parameters (DDL pattern for every command) */
+	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 
 	/* Sequence number + DPB count visible to the firmware */
@@ -1726,11 +1728,11 @@ int vidc_enc_send_seq_header(struct vidc_inst *inst)
 	inst->error = 0;
 	inst->seq_header_pending = true;
 	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
+	/* INIT_CH before parameters (vidc_1080p_encode_seq_start_ch0 pattern) */
+	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
 	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, hdr_dma >> VIDC_ADDR_SHIFT);
-	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, SZ_4K);
-	vidc_write(core, VIDC_REG_CH0_DESC_ADDR,
-		   core->desc_offset >> VIDC_ADDR_SHIFT);
-	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
+	/* Encoder uses 0x204c (VIDC_REG_ENC_OUT_BUF_SIZE) for total output capacity */
+	vidc_write(core, VIDC_REG_ENC_OUT_BUF_SIZE, SZ_4K);
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 	core->cmd_seq_num++;
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
@@ -1872,6 +1874,8 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 	inst->error = 0;
 	spin_unlock_irqrestore(&core->irqlock, flags);
 
+	/* INIT_CH before parameters (DDL pattern for every command) */
+	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 	core->cmd_seq_num++;
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
