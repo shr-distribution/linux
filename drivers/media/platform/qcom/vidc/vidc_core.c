@@ -533,6 +533,11 @@ static irqreturn_t vidc_isr(int irq, void *data)
 				 "recovery SEQ_HEADER ack via EMPTY IRQ\n");
 			inst->seq_header_pending = false;
 			queue_work(system_wq, &inst->seq_done_work);
+		} else if (inst && inst->seq_hdr_direct) {
+			dev_info(core->dev,
+				 "recovery decoder SEQ_HEADER ack via EMPTY IRQ\n");
+			vidc_handle_seq_done(core, inst);
+			queue_work(system_wq, &inst->seq_done_work);
 		}
 		break;
 
@@ -1386,9 +1391,17 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	}
 
 	if (!inst->seq_width || !inst->seq_height) {
-		dev_err(core->dev,
-			"vidc_init_buffers: bitstream geometry not set\n");
-		return -EINVAL;
+		if (inst->width && inst->height) {
+			dev_info(core->dev,
+				 "vidc_init_buffers: firmware geometry missing, using S_FMT %ux%u\n",
+				 inst->width, inst->height);
+			inst->seq_width  = inst->width;
+			inst->seq_height = inst->height;
+		} else {
+			dev_err(core->dev,
+				"vidc_init_buffers: bitstream geometry not set\n");
+			return -EINVAL;
+		}
 	}
 
 	inst->dpb_count = inst->min_dpb_count;
