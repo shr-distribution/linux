@@ -1347,21 +1347,37 @@ static int ath6kl_upload_otp(struct ath6kl *ar)
 {
 	u32 address, param;
 	bool from_hw = false;
+	bool skip_dl = ath6kl_dt_skip_otp();
 	int ret;
 
-	if (ar->fw_otp == NULL)
-		return 0;
+	/*
+	 * When the DT asserts "atheros,skip-otp-upload" (e.g. HP TouchPad),
+	 * the chip's OTP code is already loaded from internal silicon, so
+	 * we skip the bmi_fast_download payload. We must still read
+	 * hi_app_start and BMI_Execute it -- the OTP code runs as the
+	 * chip's runtime-init routine, returning control to BMI before
+	 * the firmware starts. Without that execute the chip's firmware
+	 * will not be initialised and crashes during HTC handshake.
+	 */
+	if (skip_dl) {
+		ath6kl_dbg(ATH6KL_DBG_BOOT,
+			   "skip-otp-upload set: not downloading OTP, still executing chip-internal OTP entry\n");
+	} else {
+		if (ar->fw_otp == NULL)
+			return 0;
 
-	address = ar->hw.app_load_addr;
+		address = ar->hw.app_load_addr;
 
-	ath6kl_dbg(ATH6KL_DBG_BOOT, "writing otp to 0x%x (%zd B)\n", address,
-		   ar->fw_otp_len);
+		ath6kl_dbg(ATH6KL_DBG_BOOT,
+			   "writing otp to 0x%x (%zd B)\n", address,
+			   ar->fw_otp_len);
 
-	ret = ath6kl_bmi_fast_download(ar, address, ar->fw_otp,
-				       ar->fw_otp_len);
-	if (ret) {
-		ath6kl_err("Failed to upload OTP file: %d\n", ret);
-		return ret;
+		ret = ath6kl_bmi_fast_download(ar, address, ar->fw_otp,
+					       ar->fw_otp_len);
+		if (ret) {
+			ath6kl_err("Failed to upload OTP file: %d\n", ret);
+			return ret;
+		}
 	}
 
 	/* read firmware start address */
@@ -1593,27 +1609,31 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 	 * On those boards bmi_fast_download (LZ stream) hangs the chip's BMI
 	 * state machine: BMI_LZ_STREAM_START is ACKed but the credit-counter
 	 * register stops being refreshed, and the next CMD53 read times out
-	 * with -110. This affects all three LZ upload steps (OTP, firmware,
-	 * patch).
+	 * with -110. This affects all three LZ upload steps.
 	 *
-	 * Honour the "atheros,skip-otp-upload" DT property as a unified
-	 * "chip has internal images, do not push them over BMI" hint. We
-	 * still upload the board-data file (regular bmi_write, no LZ) and
-	 * the testscript -- those don't go through fast_download.
+	 * Honour the "atheros,skip-otp-upload" DT property by:
+	 *   - ath6kl_upload_otp() itself skips its bmi_fast_download but
+	 *     still runs the BMI_Execute on the chip-internal OTP entry,
+	 *     which performs runtime initialisation the firmware needs.
+	 *   - ath6kl_upload_firmware() and ath6kl_upload_patch() are
+	 *     skipped entirely -- the chip's firmware is already in place
+	 *     and bmi_set_app_start should NOT override the chip's
+	 *     internal entry point.
 	 *
 	 * Equivalent to the legacy Palm webOS ar6000 driver's skipOtp=1
 	 * behaviour on the same hardware. Discovered by inspecting the
 	 * factory ar6000.ko binary's module_param table.
 	 */
+
+	/* transfer One time Programmable data (or just execute it if skipped) */
+	status = ath6kl_upload_otp(ar);
+	if (status)
+		return status;
+
 	if (ath6kl_dt_skip_otp()) {
 		ath6kl_dbg(ATH6KL_DBG_BOOT,
-			   "DT: skip-otp-upload set -- bypassing OTP, firmware, and patch uploads\n");
+			   "skip-otp-upload set: bypassing firmware and patch uploads\n");
 	} else {
-		/* transfer One time Programmable data */
-		status = ath6kl_upload_otp(ar);
-		if (status)
-			return status;
-
 		/* Download Target firmware */
 		status = ath6kl_upload_firmware(ar);
 		if (status)
