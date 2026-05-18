@@ -1863,16 +1863,25 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 * engine would enter PROCESSING with no ADM listening yet, and on
 	 * this silicon that races into a wedge.
 	 *
-	 * Burst MUST equal the cipher block size: AES = 4 dwords (16 B),
-	 * DES/3DES = 2 dwords (8 B).  Each CRCI handshake delivers exactly
-	 * one block, the engine consumes it, asserts DIN_RDY for the next.
-	 * Using a larger burst (e.g. 256 B / 64 dw) over-delivers per
-	 * handshake: the engine consumes the first SEG_SIZE bytes, moves to
-	 * FINAL_READ, deasserts CRCI, leaving the ADM stuck with un-asked-for
-	 * data and the DMA deadlocks.  This was the 4-block AES cap.
+	 * Burst MUST match the CRCI block-size programmed into CRCI_CTL.
+	 * Probe set CRCI_CTL[4]=1, CRCI_CTL[5]=1 via qcom_adm_program_crci_ee0,
+	 * matching webOS qce.c's dmov_conf{blk_size=1} for CE_IN/CE_OUT.
+	 * The ADM peripheral encoding for blk_size=1 is 32 bytes per CRCI
+	 * handshake -- adm_get_blksize(burst=32) returns 1, matching.
+	 *
+	 * For AES (16-byte block) we set burst = 32 B (8 dwords) = 2 blocks
+	 * per CRCI fire.  For DES/3DES (8-byte block) we set burst = 8 B
+	 * (2 dwords) which qcom_adm encodes as blk_size=1 too (special case
+	 * for burst=8 in adm_get_blksize).
+	 *
+	 * A burst smaller than the CRCI granularity (e.g. AES with burst=16)
+	 * causes DIN_ERR mid-stream: the engine signals via CRCI for the
+	 * full 32 B and the ADM only delivers 16 B before stalling.
+	 * A burst larger than SEG_SIZE causes the engine to deassert CRCI
+	 * before the ADM finishes its row, hence the prior 256 B deadlock.
 	 */
 	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen,
-				       (IS_DES(flags) || IS_3DES(flags)) ? 2 : 4);
+				       (IS_DES(flags) || IS_3DES(flags)) ? 2 : 8);
 	dev_info(qce->dev,
 		 "CE2 skc post-DMA: ret=%d STATUS=0x%08x\n", ret,
 		 readl_relaxed(qce->base + CE2_REG_STATUS));
