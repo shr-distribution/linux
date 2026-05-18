@@ -477,7 +477,18 @@ static int qce_skcipher_register_one(const struct qce_skcipher_def *def,
 	alg->encrypt			= qce_skcipher_encrypt;
 	alg->decrypt			= qce_skcipher_decrypt;
 
-	alg->base.cra_priority		= 275;
+	/*
+	 * On CE2 (MSM8660/APQ8060) the engine only chains CBC correctly
+	 * within a single ADM macro burst (CE2_ADM_BURST_SIZE = 64 B = 4
+	 * AES blocks).  Multi-burst ops silently emit wrong ciphertext
+	 * for blocks 5+.  Until that's fixed, keep qce_skcipher priority
+	 * below aes-generic (100) so the kernel never auto-picks qce for
+	 * cbc(aes); the driver remains accessible by explicit driver
+	 * name for testing.  v5 BAM hardware doesn't have this limit, so
+	 * give it the original priority.
+	 */
+	alg->base.cra_priority		= (qce->version == QCE_VERSION_CE2) ?
+					  50 : 275;
 	alg->base.cra_flags		= CRYPTO_ALG_ASYNC |
 					  CRYPTO_ALG_ALLOCATES_MEMORY |
 					  CRYPTO_ALG_KERN_DRIVER_ONLY;
