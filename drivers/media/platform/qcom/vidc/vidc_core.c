@@ -155,23 +155,21 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	sw_reset = vidc_read(core, VIDC_REG_SW_RESET);
 
 	/*
-	 * Cold-start pre-pulse: after a GDSC power cycle SW_RESET reads 0x000
-	 * (every block in reset). The stage-2 RESET_ALL write below is then a
-	 * structural no-op — it writes 0x000 to a register already 0x000 — so
-	 * the reset signals never see the falling edge (1→0 transition) that
-	 * the hardware needs before it will latch a DRAM_BASE write.
+	 * Cold-start normalisation: after a GDSC power cycle SW_RESET reads
+	 * 0x000 (every block in reset). Stage-1 RMW then becomes a structural
+	 * no-op, and stage-2 RESET_ALL also hits a register already at 0x000,
+	 * so the reset signals never see the 1→0 falling edge that the VIDC
+	 * hardware requires before it will latch a DRAM_BASE write.
 	 *
-	 * Fix: briefly release non-RISC blocks (0x3fe), let the AHB settle,
-	 * then re-assert (0x000) to create that falling edge. Stage 1+2 then
-	 * proceed identically to the warm-boot path.
+	 * Fix: force SW_RESET to RESET_NONE & ~RISC (0x3fe) — the same state
+	 * the GDSC footswitch leaves on first power-up — so stage-1 and
+	 * stage-2 proceed identically to the warm-boot path. Stage-2's
+	 * RESET_ALL write then produces the required 1→0 falling edge.
 	 */
 	if (sw_reset == 0) {
-		vidc_write(core, VIDC_REG_SW_RESET,
-			   VIDC_RESET_NONE & ~VIDC_RESET_RISC);
+		sw_reset = VIDC_RESET_NONE & ~VIDC_RESET_RISC;
+		vidc_write(core, VIDC_REG_SW_RESET, sw_reset);
 		msleep(1);
-		vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_ALL);
-		msleep(1);
-		sw_reset = vidc_read(core, VIDC_REG_SW_RESET);
 	}
 
 	sw_reset &= ~VIDC_RESET_VI;
