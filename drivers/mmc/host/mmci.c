@@ -1616,26 +1616,30 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 	 * fills FIFO ahead of CMD response and DPSM holds until CMD
 	 * has gone out).
 	 *
-	 * iowrite32_rep with ((count + 3) >> 2) words gives the same
-	 * uneven-tail handling as mmci_pio_write (1..3 byte tail
-	 * rounds up to a u32 write). sg_miter is left running so the
-	 * data IRQ / PIO IRQ paths see a consistent state; with
-	 * host->size == 0 the PIO IRQ loop body is a no-op.
+	 * Use mmci_pio_write so it does the same uneven-tail handling
+	 * (the last 1..3 bytes become a full u32 write) as the normal
+	 * IRQ-driven path, and leaves sg_miter in a consistent state.
 	 */
 	if (host->variant->qcom_datactrl_delay &&
 	    !(data->flags & MMC_DATA_READ) &&
 	    host->size <= variant->fifosize) {
 		struct sg_mapping_iter *sg_miter = &host->sg_miter;
+		u32 status = readl(base + MMCISTATUS);
 
 		while (host->size && sg_miter_next(sg_miter)) {
-			unsigned int chunk =
-				min_t(unsigned int, host->size,
-				      sg_miter->length);
-			iowrite32_rep(base + MMCIFIFO, sg_miter->addr,
-				      (chunk + 3) >> 2);
-			sg_miter->consumed = chunk;
-			host->size -= chunk;
+			unsigned int len =
+				mmci_pio_write(host, sg_miter->addr,
+					       sg_miter->length, status);
+			sg_miter->consumed = len;
+			host->size -= len;
+			status = readl(base + MMCISTATUS);
 		}
+		/*
+		 * Don't sg_miter_stop here -- the data IRQ path or
+		 * mmci_pio_irq (if it sneaks in) will handle it. With
+		 * host->size == 0, any subsequent PIO IRQ is a no-op
+		 * (the loop's host->size check exits immediately).
+		 */
 		irqmask = 0;
 	}
 
