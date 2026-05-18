@@ -1602,47 +1602,6 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 		udelay(5);
 	}
 
-	/*
-	 * Pre-fill the TX FIFO for short qcom PIO writes that fit in
-	 * the FIFO. mmci_request holds host->lock with spin_lock_irqsave
-	 * across mmci_start_data + mmci_start_command, which means the
-	 * TXFIFOHALFEMPTY refill IRQ cannot fire between us enabling
-	 * the PIO mask and the CMD reg write below -- it only fires
-	 * after mmci_request returns and IRQs are re-enabled, by which
-	 * time CMD53 has been on the bus long enough for the AR6003 to
-	 * have started clocking from an empty FIFO. DPSM only clocks
-	 * after CMD-with-data has been issued, so writing data into
-	 * the FIFO BEFORE CMD reg is safe (matches the DMA path: ADM
-	 * fills FIFO ahead of CMD response and DPSM holds until CMD
-	 * has gone out).
-	 *
-	 * Use mmci_pio_write so it does the same uneven-tail handling
-	 * (the last 1..3 bytes become a full u32 write) as the normal
-	 * IRQ-driven path, and leaves sg_miter in a consistent state.
-	 */
-	if (host->variant->qcom_datactrl_delay &&
-	    !(data->flags & MMC_DATA_READ) &&
-	    host->size <= variant->fifosize) {
-		struct sg_mapping_iter *sg_miter = &host->sg_miter;
-		u32 status = readl(base + MMCISTATUS);
-
-		while (host->size && sg_miter_next(sg_miter)) {
-			unsigned int len =
-				mmci_pio_write(host, sg_miter->addr,
-					       sg_miter->length, status);
-			sg_miter->consumed = len;
-			host->size -= len;
-			status = readl(base + MMCISTATUS);
-		}
-		/*
-		 * Don't sg_miter_stop here -- the data IRQ path or
-		 * mmci_pio_irq (if it sneaks in) will handle it. With
-		 * host->size == 0, any subsequent PIO IRQ is a no-op
-		 * (the loop's host->size check exits immediately).
-		 */
-		irqmask = 0;
-	}
-
 	writel(readl(base + MMCIMASK0) & ~MCI_DATAENDMASK, base + MMCIMASK0);
 	mmci_set_mask1(host, irqmask);
 }
