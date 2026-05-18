@@ -1419,9 +1419,28 @@ static int adm_dma_probe(struct platform_device *pdev)
 	}
 
 	ret = devm_request_irq(adev->dev, adev->irq, adm_dma_irq,
-			       0, "adm_dma", adev);
+			       IRQF_NOBALANCING, "adm_dma", adev);
 	if (ret)
 		goto err_disable_clks;
+
+	/*
+	 * Pin the ADM completion IRQ to CPU1 when available.
+	 *
+	 * Tenderloin (APQ8060) shares adm_dma1 between sdcc1 (eMMC, DMA) and
+	 * sdcc4 (WiFi, PIO for BMI). When both IRQs land on CPU0, the ADM
+	 * hardirq + tasklet path delays the sdcc4 PIO TXFIFOHALFEMPTY refill
+	 * IRQ enough that DPSM underflows the 64-byte FIFO and the AR6003
+	 * BMI write times out. Moving the ADM IRQ to the second core lets the
+	 * two run in parallel.
+	 */
+	if (num_online_cpus() > 1 && cpu_online(1)) {
+		int aff_ret = irq_set_affinity_and_hint(adev->irq,
+							cpumask_of(1));
+		if (aff_ret)
+			dev_warn(adev->dev,
+				 "Failed to pin ADM IRQ to CPU1: %d\n",
+				 aff_ret);
+	}
 
 	platform_set_drvdata(pdev, adev);
 
