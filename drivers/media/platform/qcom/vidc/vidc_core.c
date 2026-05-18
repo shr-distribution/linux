@@ -282,6 +282,27 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	vidc_write(core, VIDC_REG_BURST_CONFIG, (8 << 8) | 8);
 	printk(KERN_EMERG "VIDC: hw_reset: burst config done\n");
 
+	/*
+	 * Re-copy firmware and zero the post-firmware region (context pool,
+	 * descriptor buffer, SHM) now that the AXI path is fully initialised.
+	 *
+	 * CPU writes to SMI SRAM (fw_vaddr → physical 0x38000000) require the
+	 * VIDC's AXI master to be out of reset and the burst/halt handshake
+	 * above to have completed. Attempting the copy earlier — before the
+	 * AXI halt+reset+burst sequence — results in silently dropped writes:
+	 * the SMI fabric port is not yet fully alive, so physical 0x38000000
+	 * does not see the data and the RISC wakes into stale state.
+	 *
+	 * At this point: SW_RESET = RESET_NONE & ~RISC (RISC still in reset,
+	 * all other blocks active, AXI configured). The RISC cannot prefetch
+	 * yet, so the copy is safe.
+	 */
+	if (core->fw_vaddr && core->fw && core->fw->data) {
+		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
+		memset(core->fw_vaddr + core->fw_size, 0,
+		       core->fw_alloc_size - core->fw_size);
+	}
+
 	/* Initialize channel instance IDs */
 	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
 	vidc_write(core, VIDC_REG_CH1_INST_ID, VIDC_INIT_CH_INST_ID);
