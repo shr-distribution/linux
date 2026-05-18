@@ -2204,10 +2204,18 @@
 	 * - Channel 2 on ADM1 for both RX and TX (global channel 18)
 	 * - CRCI 1 for SDC1 (passed via qcom,sdcc-crci property)
 	 * From webOS kernel: DMOV_SDC1_CHAN=18, DMOV_SDC1_CRCI=1
+	 *
+	 * DISABLED: eMMC and WiFi (sdcc4) both run channels through
+	 * adm_dma1. Even with the deferred-DMA SDIO gating and shortened
+	 * watchdog, eMMC ADM activity racing against WiFi's small PIO
+	 * BMI transfers causes DATACRCFAIL on the WiFi side. Keep eMMC
+	 * on PIO until a proper per-ADM-controller serialization is in
+	 * place. eMMC PIO at 8-bit/48 MHz still sustains usable
+	 * throughput for rootfs.
 	 */
-	dmas = <&adm_dma1 2>, <&adm_dma1 2>;
-	dma-names = "rx", "tx";
-	qcom,sdcc-crci = <1>;
+	/* dmas = <&adm_dma1 2>, <&adm_dma1 2>; */
+	/* dma-names = "rx", "tx"; */
+	/* qcom,sdcc-crci = <1>; */
 
 	/*
 	 * DFAB interconnect path for eMMC.
