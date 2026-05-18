@@ -12,6 +12,7 @@
 #include <linux/interrupt.h>
 #include <linux/reset.h>
 #include <linux/types.h>
+#include <crypto/aes.h>
 #include <crypto/scatterwalk.h>
 #include <crypto/sha1.h>
 #include <crypto/sha2.h>
@@ -1739,20 +1740,61 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	/* No auth segment for skcipher-only */
 	writel(0, qce->base + CE2_REG_AUTH_SEG_CFG);
 
-	/* Key writes: DES_KEY0..5 for DES/3DES, AES_RNDKEY0..N for AES.
-	 * APQ8060 CE2 reports CRYPTO_AES_SEL_FAST in ENGINES_AVAIL, so
-	 * the raw key is written and the engine expands the round-key
-	 * schedule internally (webOS pce_dev->fastaes=1 path).
+	/* Key writes: DES_KEY0..5 for DES/3DES, AES_RNDKEY0..59 for AES.
+	 *
+	 * History: an earlier raw-key fast-path (webOS pce_dev->fastaes=1
+	 * style) wrote just the 4-8 user key words to RNDKEY0..N and let
+	 * the engine expand internally.  That path passed all NIST vectors
+	 * <= 32 B but capped AES at 4 blocks/op on real workloads -- the
+	 * engine's internal fast-expander appears to wedge after the first
+	 * 4 blocks on this silicon.
+	 *
+	 * Samsung's MSM8660 qce.ko (decompiled at SGH-I727 system.img.ext4)
+	 * always writes a fully-expanded FIPS-197 round-key schedule
+	 * regardless of the AES_SEL_FAST bit.  Match that pattern.
+	 *
+	 * Subtle seeding bug to avoid: aes_expandkey() reads input bytes
+	 * via get_unaligned_le32(), so bytes [b0,b1,b2,b3] become word
+	 * 0xb3b2b1b0.  Samsung (and webOS slow-path) seed from BE-packed
+	 * words: bytes [b0,b1,b2,b3] -> word 0xb0b1b2b3.  Different seed
+	 * -> different FIPS-197 expansion -> wrong schedule beyond word 0.
+	 * Workaround: BE-pack the user key into enckey first, then pass
+	 * (u8 *)enckey to aes_expandkey().  On LE ARM the BE word is
+	 * stored byte-reversed in memory, so the LE-read inside reconstitutes
+	 * the original BE-packed word -- matching Samsung's seed.
 	 */
 	qce_cpu_to_be32p_array(enckey, ctx->enc_key, keylen);
 	if (IS_DES(flags) || IS_3DES(flags)) {
+		/* Zero AES_RNDKEY bank: prior AES op may have left a full
+		 * schedule that the engine could spuriously read.  GCC_CE2_RESET
+		 * may or may not clear this bank (silicon-dependent); be
+		 * defensive.
+		 */
+		for (k = 0; k < CE2_AES_RNDKEYS; k++)
+			writel(0, qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
 		for (k = 0; k < enckey_words; k++)
 			writel((__force u32)enckey[k],
 			       qce->base + CE2_REG_DES_KEY0 + k * 4);
 	} else {	/* AES */
-		for (k = 0; k < enckey_words; k++)
-			writel((__force u32)enckey[k],
+		struct crypto_aes_ctx aes_ctx = {0};
+		int aerr;
+
+		aerr = aes_expandkey(&aes_ctx, (const u8 *)enckey, keylen);
+		if (aerr) {
+			dev_err(qce->dev,
+				"CE2 cipher: aes_expandkey failed (%d)\n",
+				aerr);
+			return aerr;
+		}
+		/* Write all 60 expanded dwords.  For AES-128 only the first
+		 * 44 are populated by FIPS-197; aes_ctx was zero-initialised
+		 * so the remaining 16 stay 0.  Mirrors Samsung's _ce_setup
+		 * auStack_160 buffer layout.
+		 */
+		for (k = 0; k < CE2_AES_RNDKEYS; k++)
+			writel(aes_ctx.key_enc[k],
 			       qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
+		memzero_explicit(&aes_ctx, sizeof(aes_ctx));
 	}
 
 	/* IV: CNTR0..3.  Skip for ECB (no IV) */
