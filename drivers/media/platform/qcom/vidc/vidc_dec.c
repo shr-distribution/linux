@@ -611,6 +611,18 @@ static void vidc_dec_buf_queue(struct vb2_buffer *vb)
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 
 	v4l2_m2m_buf_queue(inst->m2m_ctx, vbuf);
+
+	/*
+	 * Stateful decode: the M2M scheduler only calls device_run when
+	 * BOTH queues have buffers, but V4L2_EVENT_SOURCE_CHANGE (which
+	 * prompts userspace to configure the CAPTURE queue) only comes
+	 * after SEQ_HEADER is processed. Trigger seq_header_work directly
+	 * when the first OUTPUT buffer arrives so SEQ_HEADER can fire
+	 * without waiting for CAPTURE to be ready.
+	 */
+	if (vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&
+	    !inst->seq_parsed && !inst->seq_hdr_direct && inst->streamon_out)
+		queue_work(system_wq, &inst->seq_header_work);
 }
 
 static const struct vb2_ops vidc_dec_vb2_ops = {
@@ -700,6 +712,46 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 }
 
 /*
+ * Workqueue handler: submit SEQ_HEADER without going through the M2M
+ * scheduler. The M2M framework requires both OUTPUT and CAPTURE queues
+ * to have buffers before invoking device_run, but the V4L2 stateful
+ * decoder protocol requires SEQ_HEADER to be processed with only the
+ * OUTPUT buffer present (CAPTURE isn't configured until after
+ * V4L2_EVENT_SOURCE_CHANGE). This bypasses that constraint.
+ *
+ * Sets inst->seq_hdr_direct so that the resulting seq_done_work skips
+ * the v4l2_m2m_job_finish call (there is no M2M job to finish).
+ * dst=0 is safe for SEQ_HEADER; the firmware only reads the stream
+ * buffer and never writes decoded pixels during header parsing.
+ */
+static void vidc_dec_seq_header_work_fn(struct work_struct *w)
+{
+	struct vidc_inst *inst =
+		container_of(w, struct vidc_inst, seq_header_work);
+	struct vb2_v4l2_buffer *src_buf;
+	dma_addr_t src_addr;
+	u32 src_size;
+
+	if (inst->seq_parsed || inst->seq_hdr_direct)
+		return;
+
+	src_buf = v4l2_m2m_next_src_buf(inst->m2m_ctx);
+	if (!src_buf)
+		return;
+
+	inst->src_buf = src_buf;
+	inst->dst_buf = NULL;
+
+	src_addr = vb2_dma_contig_plane_dma_addr(&src_buf->vb2_buf, 0);
+	src_size = vb2_get_plane_payload(&src_buf->vb2_buf, 0);
+	if (!src_size)
+		src_size = vb2_plane_size(&src_buf->vb2_buf, 0);
+
+	inst->seq_hdr_direct = true;
+	vidc_dec_submit_frame(inst, src_addr, src_size, 0);
+}
+
+/*
  * Workqueue handler for RESP_SEQ_DONE.
  *
  * Runs in process context (system_wq) — safe to call vidc_init_buffers
@@ -762,7 +814,18 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
 	}
 
 	core->curr_inst = NULL;
-	v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);
+
+	/*
+	 * SEQ_HEADER submitted via seq_header_work bypasses the M2M job
+	 * scheduler (seq_hdr_direct=true). There is no M2M job to finish
+	 * in that case, so skip the job_finish call that would otherwise
+	 * double-finish and confuse the M2M state machine.
+	 */
+	if (inst->seq_hdr_direct) {
+		inst->seq_hdr_direct = false;
+	} else {
+		v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);
+	}
 }
 
 /*
@@ -1018,6 +1081,7 @@ static int vidc_dec_open(struct file *file)
 	init_completion(&inst->done);
 	INIT_WORK(&inst->seq_done_work, vidc_dec_seq_done_work);
 	INIT_WORK(&inst->frame_done_work, vidc_dec_frame_done_work);
+	INIT_WORK(&inst->seq_header_work, vidc_dec_seq_header_work_fn);
 
 	/* Set default formats */
 	inst->fmt_out = vidc_dec_find_format(V4L2_PIX_FMT_H264,
@@ -1074,6 +1138,7 @@ static int vidc_dec_close(struct file *file)
 	 * frame-done IRQ raced our close it must finish (and call
 	 * v4l2_m2m_job_finish) before we free inst.
 	 */
+	cancel_work_sync(&inst->seq_header_work);
 	cancel_work_sync(&inst->seq_done_work);
 	cancel_work_sync(&inst->frame_done_work);
 

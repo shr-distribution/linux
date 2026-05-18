@@ -613,12 +613,25 @@ struct vidc_inst {
 	 *                     displayed DPB slot to the userspace
 	 *                     CAPTURE buffer and marks both buffers
 	 *                     DONE.
+	 *   seq_header_work — decoder only. The V4L2 M2M scheduler
+	 *                     requires both queues to have buffers
+	 *                     before calling device_run, but stateful
+	 *                     decoders need to send SEQ_HEADER with
+	 *                     just an OUTPUT buffer present (before
+	 *                     the CAPTURE queue is configured).
+	 *                     seq_header_work bypasses M2M and submits
+	 *                     SEQ_HEADER directly when the first OUTPUT
+	 *                     buffer is queued.
 	 *
-	 * Both end with v4l2_m2m_job_finish so the m2m worker is free
-	 * to call device_run again for the next queued pair.
+	 * seq_done_work and frame_done_work end with v4l2_m2m_job_finish
+	 * so the m2m worker is free to call device_run again.
+	 * seq_header_work does NOT go through M2M; seq_hdr_direct flags
+	 * this so seq_done_work skips the job_finish call.
 	 */
 	struct work_struct seq_done_work;
 	struct work_struct frame_done_work;
+	struct work_struct seq_header_work;
+	bool seq_hdr_direct;		/* SEQ_HEADER sent outside M2M job */
 
 	/*
 	 * enc_complete_work — encoder-side analog of frame_done_work.
