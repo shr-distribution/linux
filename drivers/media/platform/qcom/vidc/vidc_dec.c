@@ -732,9 +732,28 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	vidc_write(core, VIDC_REG_CH0_DESC_ADDR,
 		   core->desc_offset >> VIDC_ADDR_SHIFT);
 
-	/* STREAM_BUF_SIZE: total capacity of the stream buffer (may equal payload) */
-	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, src_size);
+	/*
+	 * STREAM_BUF_SIZE: total allocated capacity of the stream buffer,
+	 * not the payload size.  webOS uses client_input_buf_req.sz (≥1 MB
+	 * minimum enforced by the DDL).  The firmware validates this field
+	 * before parsing and returns error 26 (0x1a) when it is too small.
+	 * Use the vb2 plane allocation size (the OUTPUT buffer capacity as
+	 * set by S_FMT / queue_setup) instead of the per-submit payload.
+	 */
+	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
+		   (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0));
 	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
+
+	/*
+	 * Metadata start address (SHM+0x0044): webOS DDL always writes a
+	 * valid fw-relative address here before SEQ_HEADER and FRAME_DATA,
+	 * even when all METADATA_ENABLE bits are 0.  Leaving it at 0 causes
+	 * the firmware to return error 26 (0x1a) before reading the stream.
+	 * Point it at the descriptor buffer — a valid SMI SRAM allocation
+	 * that the firmware may inspect but will not corrupt (it owns it).
+	 */
+	writel(core->desc_offset >> VIDC_ADDR_SHIFT,
+	       core->shm_vaddr + VIDC_SHM_EXT_METADATA_START_ADDR);
 
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 
@@ -755,10 +774,11 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	}
 
 	dev_info(core->dev,
-		 "submit_frame: op=0x%x inst_id=0x%x src_phys=0x%pad fw_rel=0x%x size=%u desc_off=0x%x\n",
+		 "submit_frame: op=0x%x inst_id=0x%x src_phys=0x%pad fw_rel=0x%x payload=%u buf_sz=%zu desc_off=0x%x\n",
 		 op, inst->inst_id, &src_addr,
 		 (u32)((src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT),
 		 src_size,
+		 vb2_plane_size(&inst->src_buf->vb2_buf, 0),
 		 (u32)(core->desc_offset >> VIDC_ADDR_SHIFT));
 
 	/* Trigger: operation type | instance id */
