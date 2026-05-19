@@ -3,11 +3,13 @@
  *
  * Copyright (c) 2011, The Linux Foundation. All rights reserved.
  */
+#include <linux/delay.h>
 #include <linux/of.h>
 #include <linux/of_dma.h>
 #include <linux/bitops.h>
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
+#include <linux/dma/qcom_adm.h>
 #include "mmci.h"
 
 /* Registers */
@@ -68,6 +70,43 @@ static bool qcom_dma_is_adm(struct device_node *np)
 	return is_adm;
 }
 
+/*
+ * exec_func callback invoked by the qcom_adm driver from inside its
+ * per-controller submit_lock, immediately before the channel's CMD_PTR
+ * register is written. Writes the SDCC DATACTRL + CMD ARG + CMD REG
+ * atomically with the ADM start, replicating the legacy msm_sdcc
+ * msmsdcc_dma_exec_func() pattern.
+ *
+ * Constraints (per <linux/dma/qcom_adm.h>):
+ *  - Called in atomic context with submit_lock held + IRQs off.
+ *  - Must not sleep, must complete promptly.
+ *
+ * Closes a documented mainline-vs-legacy gap: without this, mmci writes
+ * DATACTRL/ARG/CMD outside any cross-channel lock, so under AHB-fabric
+ * contention (e.g. eMMC + WiFi DMA both bursting on adm_dma1) the gap
+ * between those writes can be split by another ADM channel's CMD_PTR
+ * write, breaking the SDCC's atomic command+data setup.
+ */
+void mmci_qcom_atomic_exec_func(void *exec_user)
+{
+	struct mmci_host *host = exec_user;
+	void __iomem *base = host->base;
+
+	writel_relaxed(host->atomic_submit.datactrl, base + MMCIDATACTRL);
+	/*
+	 * Qualcomm SDCC needs a brief delay between DATACTRL and CMD reg
+	 * writes. The legacy msm_sdcc driver uses msmsdcc_delay() here.
+	 */
+	if (host->variant->qcom_datactrl_delay)
+		udelay(1);
+
+	writel_relaxed(host->atomic_submit.cmd_arg, base + MMCIARGUMENT);
+	if (host->variant->qcom_datactrl_delay)
+		udelay(1);
+
+	writel(host->atomic_submit.cmd_reg, base + MMCICOMMAND);
+}
+
 static int qcom_dma_start(struct mmci_host *host, unsigned int *datactrl)
 {
 	u32 config;
@@ -79,10 +118,18 @@ static int qcom_dma_start(struct mmci_host *host, unsigned int *datactrl)
 	if (qcom_dma_is_adm(np)) {
 		/*
 		 * For ADM DMA: submit descriptor but don't issue pending.
-		 * The DATACTRL register must be written before the ADM DMA
-		 * starts, matching the legacy msm_sdcc driver's exec_func
-		 * sequence. mmci_dma_start() will call our dma_issue_pending
-		 * callback after writing DATACTRL.
+		 *
+		 * Two paths from here:
+		 *  - atomic_submit.active = true (variant->qcom_dml_atomic_submit
+		 *    + qualifying write request): mmci_dma_start stashes
+		 *    DATACTRL on host->atomic_submit; mmci_start_command stashes
+		 *    ARG + CMD reg; mmci_request kicks dma_issue_pending after
+		 *    stashing, and the ADM driver fires our exec_func from
+		 *    inside its submit_lock to do all three writes atomically
+		 *    with the ADM CMD_PTR.
+		 *  - otherwise: legacy mainline behaviour — mmci_dma_start
+		 *    writes DATACTRL, mmci_start_command writes ARG+CMD,
+		 *    cmd_irq later fires dma_issue_pending.
 		 */
 		ret = mmci_dmae_submit(host, datactrl);
 		return ret;

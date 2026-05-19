@@ -382,6 +382,7 @@ struct variant_data {
 	u8			qcom_dml:1;
 	u8			qcom_datactrl_delay:1;
 	u8			qcom_data_timeout_2x:1;
+	u8			qcom_dml_atomic_submit:1;
 	u8			reversed_irq_handling:1;
 	u8			mmcimask1:1;
 	unsigned int		irq_pio_mask;
@@ -474,6 +475,26 @@ struct mmci_host {
 	u8			dma_engaged_once:1;	/* diagnostic flag */
 	void			*dma_priv;
 
+	/*
+	 * Atomic-submission staging for variants whose DMA backend
+	 * supports a peripheral-config "exec_func" hook (currently
+	 * qcom_adm). When variant->qcom_dml_atomic_submit is set and
+	 * a request qualifies (DMA-eligible, datactrl_first, write),
+	 * mmci_start_data / mmci_start_command stash the SDCC register
+	 * values here instead of writing them. The DMA backend then
+	 * calls the variant's exec_func from inside its per-controller
+	 * submit lock, immediately before writing the channel's
+	 * CMD_PTR -- so the SDCC DATACTRL/ARG/CMD writes happen
+	 * atomically with the ADM start, replicating the legacy
+	 * msm_sdcc/msm_dmov "exec_func" pattern.
+	 */
+	struct {
+		u32 datactrl;
+		u32 cmd_arg;
+		u32 cmd_reg;
+		bool active;
+	}			atomic_submit;
+
 	s32			next_cookie;
 	struct delayed_work	ux500_busy_timeout_work;
 	struct delayed_work	qcom_dma_timeout_work;
@@ -506,8 +527,10 @@ void mmci_dmae_error(struct mmci_host *host);
 
 #ifdef CONFIG_MMC_QCOM_DML
 void qcom_variant_init(struct mmci_host *host);
+void mmci_qcom_atomic_exec_func(void *exec_user);
 #else
 static inline void qcom_variant_init(struct mmci_host *host) {}
+static inline void mmci_qcom_atomic_exec_func(void *exec_user) {}
 #endif
 
 #ifdef CONFIG_MMC_STM32_SDMMC

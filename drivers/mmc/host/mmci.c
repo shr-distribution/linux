@@ -370,6 +370,20 @@ static struct variant_data variant_qcom = {
 	.qcom_dml		= true,
 	.qcom_datactrl_delay	= true,
 	.qcom_data_timeout_2x	= true,
+	/*
+	 * Use the qcom_adm "exec_func" hook to perform SDCC
+	 * DATACTRL + ARG + CMD register writes atomically with the
+	 * ADM channel's CMD_PTR write. Replicates the legacy
+	 * msm_sdcc/msm_dmov pattern and closes a documented race
+	 * under heavy AHB-fabric contention when two ADM channels
+	 * (e.g. eMMC on sdcc1 + WiFi on sdcc4) are both bursting.
+	 *
+	 * Only kicks in for DMA-eligible WRITE requests on hosts with
+	 * datactrl_first + SDIO_IRQ caps -- the same condition that
+	 * previously triggered the "deferred via cmd_irq" fallback,
+	 * which this replaces with a more robust mechanism.
+	 */
+	.qcom_dml_atomic_submit	= true,
 	.dma_flow_controller	= true,
 	/*
 	 * Force PIO for transfers <= 256 bytes.  ADM DMA on msm8x60
@@ -655,6 +669,25 @@ static void mmci_get_next_data(struct mmci_host *host, struct mmc_data *data)
 		host->ops->get_next_data(host, data);
 }
 
+/*
+ * Decide whether a given (data) request qualifies for the
+ * atomic-submission path: variant must declare support, transfer must
+ * be a write, host must use datactrl_first sequencing, and the host
+ * must be an SDIO host (the original race we're closing is on the
+ * sdcc4 SDIO/WiFi DMA write path; eMMC datactrl_first writes go
+ * through the immediate-issue path and have never shown the same
+ * fabric-contention failure). Same predicate as the previous
+ * "deferred via cmd_irq" fallback, which this replaces.
+ */
+static inline bool mmci_should_atomic_submit(struct mmci_host *host,
+					     struct mmc_data *data)
+{
+	return host->variant->qcom_dml_atomic_submit &&
+	       !(data->flags & MMC_DATA_READ) &&
+	       host->datactrl_first &&
+	       (host->mmc->caps & MMC_CAP_SDIO_IRQ);
+}
+
 static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 {
 	struct mmc_data *data = host->data;
@@ -679,50 +712,67 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	if (ret)
 		return ret;
 
-	/* Trigger the DMA transfer */
-	mmci_write_datactrlreg(host, datactrl);
-
 	/*
-	 * Qualcomm SDCC requires a delay after writing DATACTRL to allow
-	 * the Data Path State Machine (DPSM) to initialize before DMA
-	 * starts pushing data into the FIFO. The legacy msm_sdcc driver
-	 * uses writel_delay() with 1us after DATACTRL, followed by CMD
-	 * register writes which add additional delay before DMA data flow.
+	 * Commit to the atomic-submission path only AFTER dma_start
+	 * succeeded. If we'd set this earlier and dma_start had failed,
+	 * the PIO fallback in mmci_start_data + mmci_start_command
+	 * would mis-route their writes into the stash buffer.
 	 */
-	if (host->variant->qcom_datactrl_delay) {
-		wmb();
-		udelay(1);
-	}
+	if (mmci_should_atomic_submit(host, data))
+		host->atomic_submit.active = true;
 
-	/*
-	 * For Qualcomm ADM DMA with datactrl_first writes:
-	 * Defer DMA issue_pending to after CMD completes. The correct
-	 * sequence matching legacy msm_sdcc exec_func is:
-	 *   DMA submit → DATACTRL → CMD53 → DMA issue
-	 * This ensures:
-	 *   1. DPSM is initialized (DATACTRL written)
-	 *   2. Card knows data is coming (CMD53 sent)
-	 *   3. ADM fills FIFO (DMA issued after CMD)
-	 * Issuing DMA before CMD causes CRC errors (card not ready).
-	 * Writing DATACTRL after CMD causes hangs (DPSM won't start).
-	 *
-	 * GATED: only SDIO instances need the deferred path. eMMC writes
-	 * use immediate DMA issue (no CRC issue observed on eMMC and no
-	 * watchdog overhead). The deferred-DMA watchdog (3 s) was racing
-	 * with eMMC's natural multi-block-write busy windows after WiFi
-	 * DMA started, killing the rootfs.
-	 *
-	 * For non-datactrl_first writes, eMMC, and all reads, issue
-	 * immediately.
-	 */
-	if (host->ops && host->ops->dma_issue_pending) {
-		if (host->datactrl_first &&
-		    !(data->flags & MMC_DATA_READ) &&
-		    host->variant->qcom_dml &&
-		    (host->mmc->caps & MMC_CAP_SDIO_IRQ)) {
-			host->dma_issue_deferred = true;
-		} else {
-			host->ops->dma_issue_pending(host);
+	if (host->atomic_submit.active) {
+		/*
+		 * Atomic-submission path (variant->qcom_dml_atomic_submit +
+		 * qualifying write). Don't write DATACTRL here; stash it
+		 * for the qcom_adm exec_func, which will write
+		 * DATACTRL + ARG + CMD atomically with the ADM CMD_PTR.
+		 * mmci_request will dma_issue_pending after the matching
+		 * mmci_start_command has stashed its ARG/CMD values too.
+		 */
+		host->atomic_submit.datactrl = datactrl;
+	} else {
+		/* Trigger the DMA transfer */
+		mmci_write_datactrlreg(host, datactrl);
+
+		/*
+		 * Qualcomm SDCC requires a delay after writing DATACTRL to
+		 * allow the Data Path State Machine (DPSM) to initialize
+		 * before DMA starts pushing data into the FIFO. The legacy
+		 * msm_sdcc driver uses writel_delay() with 1us after
+		 * DATACTRL, followed by CMD register writes which add
+		 * additional delay before DMA data flow.
+		 */
+		if (host->variant->qcom_datactrl_delay) {
+			wmb();
+			udelay(1);
+		}
+
+		/*
+		 * For Qualcomm ADM DMA with datactrl_first writes:
+		 * Defer DMA issue_pending to after CMD completes. The
+		 * correct sequence matching legacy msm_sdcc exec_func is:
+		 *   DMA submit → DATACTRL → CMD53 → DMA issue
+		 * This ensures:
+		 *   1. DPSM is initialized (DATACTRL written)
+		 *   2. Card knows data is coming (CMD53 sent)
+		 *   3. ADM fills FIFO (DMA issued after CMD)
+		 * Issuing DMA before CMD causes CRC errors (card not ready).
+		 * Writing DATACTRL after CMD causes hangs (DPSM won't start).
+		 *
+		 * GATED: only SDIO instances need the deferred path.
+		 * For non-datactrl_first writes, eMMC, and all reads,
+		 * issue immediately.
+		 */
+		if (host->ops && host->ops->dma_issue_pending) {
+			if (host->datactrl_first &&
+			    !(data->flags & MMC_DATA_READ) &&
+			    host->variant->qcom_dml &&
+			    (host->mmc->caps & MMC_CAP_SDIO_IRQ)) {
+				host->dma_issue_deferred = true;
+			} else {
+				host->ops->dma_issue_pending(host);
+			}
 		}
 	}
 
@@ -1217,6 +1267,29 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		conf.peripheral_size = sizeof(periph_conf);
 	}
 
+	/*
+	 * Atomic-submission opt-in: for variants whose DMA backend
+	 * supports a peripheral exec_func hook (currently qcom_adm) and
+	 * for write requests on this host (where the SDCC requires
+	 * DATACTRL + CMD reg to be set up atomically with the ADM
+	 * CMD_PTR write -- legacy msm_sdcc "exec_func" pattern), wire
+	 * up the callback now. The exec_func is invoked by qcom_adm
+	 * from inside its per-controller submit_lock right before the
+	 * channel's CMD_PTR write.
+	 *
+	 * Gated on the same condition as mmci_should_atomic_submit().
+	 * host->atomic_submit.active is set later by mmci_dma_start,
+	 * only after ops->dma_start has succeeded, so a PIO fallback
+	 * keeps the conventional write path even if exec_func was
+	 * configured here.
+	 */
+	if (mmci_should_atomic_submit(host, data)) {
+		periph_conf.exec_func = mmci_qcom_atomic_exec_func;
+		periph_conf.exec_user = host;
+		conf.peripheral_config = &periph_conf;
+		conf.peripheral_size = sizeof(periph_conf);
+	}
+
 	if (data->flags & MMC_DATA_READ) {
 		conf.direction = DMA_DEV_TO_MEM;
 		chan = dmae->rx_channel;
@@ -1662,6 +1735,20 @@ mmci_start_command(struct mmci_host *host, struct mmc_command *cmd, u32 c)
 		c |= host->variant->data_cmd_enable;
 
 	host->cmd = cmd;
+
+	if (host->atomic_submit.active) {
+		/*
+		 * Atomic-submission path: stash ARG/CMD for the qcom_adm
+		 * exec_func instead of writing them directly. exec_func
+		 * will perform the DATACTRL + ARG + CMD writes inside the
+		 * ADM submit_lock, atomically with the channel's CMD_PTR
+		 * write. mmci_request will issue the DMA pending right
+		 * after this returns.
+		 */
+		host->atomic_submit.cmd_arg = cmd->arg;
+		host->atomic_submit.cmd_reg = c;
+		return;
+	}
 
 	writel(cmd->arg, base + MMCIARGUMENT);
 
@@ -2293,6 +2380,7 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	spin_lock_irqsave(&host->lock, flags);
 
 	host->mrq = mrq;
+	host->atomic_submit.active = false; /* committed only if DMA path succeeds */
 
 	if (mrq->data)
 		mmci_get_next_data(host, mrq->data);
@@ -2308,6 +2396,24 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		mmci_start_command(host, mrq->sbc, 0);
 	else
 		mmci_start_command(host, mrq->cmd, 0);
+
+	/*
+	 * Atomic-submission path: data/cmd register writes have been
+	 * stashed on host->atomic_submit; fire the DMA now so the ADM
+	 * driver invokes our exec_func from inside its submit_lock and
+	 * performs the SDCC writes atomically with its CMD_PTR write.
+	 *
+	 * This replaces the legacy "deferred via cmd_irq" fallback for
+	 * the qualifying SDIO write path: the SDCC CMD is on the bus
+	 * BEFORE ADM data starts (because exec_func writes CMD last,
+	 * just before submit_lock releases and CMD_PTR fires), so the
+	 * card-not-ready CRC race that motivated the deferral can't
+	 * occur here.
+	 */
+	if (host->atomic_submit.active && host->ops &&
+	    host->ops->dma_issue_pending) {
+		host->ops->dma_issue_pending(host);
+	}
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
