@@ -98,6 +98,31 @@ The bootloader has specific uImage format requirements:
 
 The `pack-uimage.sh` script handles all of this automatically.
 
+## WiFi (AR6003 / ath6kl) Firmware Requirements
+
+The AR6003 WiFi chip requires firmware files in `/lib/firmware/ath6k/AR6003/hw2.1.1/`.
+
+**Firmware loading waterfall (ath6kl tries in order, first found wins):**
+1. `fw-5.bin` — API 5, newest; non-fatal if missing
+2. `fw-4.bin` — API 4; non-fatal if missing
+3. `fw-3.bin` — API 3; non-fatal if missing
+4. `fw-2.bin` — API 2; non-fatal if missing
+5. `athwlan.bin` — API 1 fallback; **required** if none of the above exist
+
+**Hard requirement:** At least one firmware binary must be present or the driver fails to probe.
+
+**Currently installed on tenderloin:** `fw-3.bin` (API 3), `fw-2.bin`, `athwlan.bin`
+
+**Board data (required for correct RF calibration):**
+- `bdata.SD32.bin` — board-specific calibration (Board ID "SD32" for TouchPad WiFi variant)
+- `bdata.bin` — symlink/copy used when no board ID match; required
+
+**Optional:**
+- `otp.bin` — OTP calibration patch; safe to omit
+- `data.patch.bin` — patch data
+
+**Note:** fw-5.bin and fw-4.bin "failed" messages in dmesg are expected and non-fatal on the current firmware set. ath6kl proceeds with fw-3.bin.
+
 ## Upstream Status
 
 See `UPSTREAM_PATCH_PLAN.md` for the 28-patch submission plan organized into 10 series:

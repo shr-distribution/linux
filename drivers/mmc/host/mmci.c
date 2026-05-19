@@ -2544,15 +2544,14 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 				     "dummy52: dispatching before opcode=%u\n",
 				     mrq->cmd->opcode);
 		/*
-		 * Pass MCI_CPSM_QCOM_PROGENA so the SDCC CPSM exercises the
-		 * data-path programming-done detection during the CMD52,
-		 * which is what actually drains the residual state from the
-		 * previous CMD53 WRITE. Legacy msm_sdcc passes the same flag
-		 * (msmsdcc_start_command(host, &dummy52cmd, MCI_CPSM_PROGENA)).
-		 * Without it the CMD52 completes too quickly to drain.
+		 * Do NOT pass MCI_CPSM_QCOM_PROGENA here. PROGENA makes the
+		 * CPSM busy-wait for DAT0 release after CMD52; with PWRSAVE
+		 * off the AR6003 holds DAT0 low for ~500 ms in this state,
+		 * and the subsequent CMD53 DATA phase then fails with
+		 * DATACRCFAIL. CMD52 (function 0, CCCR reg 0 read) has no
+		 * programming phase so PROGENA serves no purpose here.
 		 */
-		mmci_start_command(host, &host->dummy52_cmd,
-				   MCI_CPSM_QCOM_PROGENA);
+		mmci_start_command(host, &host->dummy52_cmd, 0);
 		spin_unlock_irqrestore(&host->lock, flags);
 		return;
 	}
