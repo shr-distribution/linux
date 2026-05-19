@@ -1444,6 +1444,7 @@ static void qce_ce2_skc_dma_done(void *param)
 static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 				    struct scatterlist *src,
 				    struct scatterlist *dst,
+				    unsigned int sg_offset,
 				    unsigned int nbytes,
 				    unsigned int block_dwords)
 {
@@ -1503,7 +1504,7 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		ret = -ENOMEM;
 		goto out_free_src_copy;
 	}
-	sg_copy_to_buffer(src, sg_nents(src), src_copy, nbytes);
+	sg_pcopy_to_buffer(src, sg_nents(src), src_copy, nbytes, sg_offset);
 
 	in_buf = dma_alloc_coherent(qce->dev, padded, &in_dma, GFP_KERNEL);
 	if (!in_buf) {
@@ -1607,7 +1608,7 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		dst_copy[i * 4 + 2] = (w >>  8) & 0xff;
 		dst_copy[i * 4 + 3] = (w >>  0) & 0xff;
 	}
-	sg_copy_from_buffer(dst, sg_nents(dst), dst_copy, nbytes);
+	sg_pcopy_from_buffer(dst, sg_nents(dst), dst_copy, nbytes, sg_offset);
 
 	ret = 0;
 
@@ -1729,13 +1730,13 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		 */
 		encr_cfg |= BIT(CE2_AUTH_POS_SHIFT);
 	}
-	/* webOS _ce_setup sets FIRST | LAST only -- NOT CLR_CNTXT for
-	 * cipher.  Adding CLR_CNTXT empirically caps AES at 4 blocks per
-	 * op (output for blocks 5+ is wrong); DES is unaffected.  Match
-	 * webOS exactly and let the per-op SW_RST + GCC_CE2_RESET above
-	 * handle context clearing.
+	/* FIRST | LAST get set per-chunk inside the loop below.  Keep the
+	 * base encr_cfg without them so the chunk loop can OR them in.
+	 *
+	 * The webOS SW_RST + GCC_CE2_RESET above handles context clearing
+	 * at op start; CLR_CNTXT inside SEG_CFG is not needed and caps AES
+	 * at 4 blocks per op if set.
 	 */
-	encr_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT);
 
 	/* No auth segment for skcipher-only */
 	writel(0, qce->base + CE2_REG_AUTH_SEG_CFG);
@@ -1802,13 +1803,9 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	if (IS_CTR(flags))
 		writel(0xffff, qce->base + CE2_REG_CNTR_MASK);
 
-	/* SEG_CFG -> ENCR_SEG_CFG -> SEG_SIZE (webOS order) */
-	writel(encr_cfg, qce->base + CE2_REG_SEG_CFG);
-	writel(rctx->cryptlen << CE2_ENCR_SEG_SIZE_SHIFT,
-	       qce->base + CE2_REG_ENCR_SEG_CFG);
-	writel(rctx->cryptlen, qce->base + CE2_REG_SEG_SIZE);
-
-	/* CONFIG: high-speed enable + interrupt masks (same as hash) */
+	/* CONFIG: high-speed enable + interrupt masks (same as hash).
+	 * Written once before the chunk loop -- doesn't change per chunk.
+	 */
 	config = readl(qce->base + CE2_REG_CONFIG);
 	config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) |
 		  BIT(CE2_MASK_DIN_INTR_SHIFT) |
@@ -1820,48 +1817,79 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
 	writel(config, qce->base + CE2_REG_CONFIG);
 
-	dev_info(qce->dev,
-		 "CE2 skc pre-GO: SEG_CFG=0x%08x len=%u CONFIG=0x%08x flags=0x%lx keylen=%u\n",
-		 encr_cfg, rctx->cryptlen, config, flags, keylen);
-
-	/* GOPROC */
-	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
-
-	/* Wait for engine to leave IDLE (transition to LOCKED/PROCESSING) */
-	for (timeout = 1000; timeout > 0; timeout--) {
-		status = readl_relaxed(qce->base + CE2_REG_STATUS);
-		if (status & CE2_CRYPTO_STATE_MASK)
-			break;
-		udelay(10);
-	}
-	if (timeout <= 0) {
-		dev_err(qce->dev,
-			"CE2 skc: engine never left IDLE; STATUS=0x%08x\n",
-			status);
-		return -ETIMEDOUT;
-	}
-
-	/* Dual-channel DMA: input -> DATA_SHADOW0, output <- DATA_SHADOW0.
+	/*
+	 * Chunked DMA loop.  CE2 AES engine has a ~64 B internal FIFO; ops
+	 * larger than 4 AES blocks (64 B) overflow the FIFO and produce
+	 * silent corruption past block 4.  Split AES > 64 B into 64-byte
+	 * chunks, each with its own SEG_CFG + GOPROC + DMA round-trip.
+	 * Between chunks the engine preserves cipher state in CNTR0..3 for
+	 * CBC/CTR chaining (do NOT reset between chunks).
 	 *
-	 * Use the largest ADM block size (256 B = 64 dwords) for AES,
-	 * and 32 B (8 dwords) for DES/3DES.  qcom_adm only accepts burst
-	 * values in {8,16,32,64,128,192,256} bytes per adm_get_blksize().
+	 * SEG_CFG bits per chunk position:
+	 *   first chunk:  FIRST=1, LAST=0
+	 *   middle:       FIRST=0, LAST=0
+	 *   last chunk:   FIRST=0, LAST=1
+	 *   single-shot:  FIRST=1, LAST=1
 	 *
-	 * Empirically the CE2 engine produces correct output only when
-	 * the data fits within a single ADM CRCI handshake (one burst);
-	 * additional bursts in the same op fail to chain CBC.  Setting
-	 * burst > op size makes qcom_adm emit a SINGLE descriptor (one
-	 * CRCI fire for the whole transfer) instead of multiple BOX rows,
-	 * so all 256/32 B (16 AES blocks / 4 DES blocks) per op chain
-	 * correctly.
+	 * DES/3DES don't appear to hit the FIFO ceiling -- skip chunking,
+	 * one shot up to SEG_SIZE max (65535 B).
 	 */
-	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen,
-				       (IS_DES(flags) || IS_3DES(flags)) ? 8 : 64);
-	dev_info(qce->dev,
-		 "CE2 skc post-DMA: ret=%d STATUS=0x%08x\n", ret,
-		 readl_relaxed(qce->base + CE2_REG_STATUS));
-	if (ret)
-		return ret;
+	{
+		unsigned int max_chunk = IS_AES(flags) ? 64 : 65535;
+		unsigned int burst = (IS_DES(flags) || IS_3DES(flags)) ? 8 : 64;
+		unsigned int sg_off = 0;
+		unsigned int total = rctx->cryptlen;
+
+		while (sg_off < total) {
+			unsigned int chunk_len =
+				(total - sg_off > max_chunk) ?
+				max_chunk : (total - sg_off);
+			bool is_first = (sg_off == 0);
+			bool is_last = (sg_off + chunk_len == total);
+			u32 chunk_cfg = encr_cfg;
+
+			if (is_first)
+				chunk_cfg |= BIT(CE2_FIRST_SHIFT);
+			if (is_last)
+				chunk_cfg |= BIT(CE2_LAST_SHIFT);
+
+			writel(chunk_cfg, qce->base + CE2_REG_SEG_CFG);
+			writel(chunk_len << CE2_ENCR_SEG_SIZE_SHIFT,
+			       qce->base + CE2_REG_ENCR_SEG_CFG);
+			writel(chunk_len, qce->base + CE2_REG_SEG_SIZE);
+
+			dev_info(qce->dev,
+				 "CE2 skc chunk off=%u len=%u SEG_CFG=0x%08x first=%d last=%d\n",
+				 sg_off, chunk_len, chunk_cfg, is_first, is_last);
+
+			/* GOPROC + wait for engine to leave IDLE */
+			writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+			for (timeout = 1000; timeout > 0; timeout--) {
+				status = readl_relaxed(qce->base +
+						       CE2_REG_STATUS);
+				if (status & CE2_CRYPTO_STATE_MASK)
+					break;
+				udelay(10);
+			}
+			if (timeout <= 0) {
+				dev_err(qce->dev,
+					"CE2 skc: engine never left IDLE; STATUS=0x%08x\n",
+					status);
+				return -ETIMEDOUT;
+			}
+
+			ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst,
+						       sg_off, chunk_len, burst);
+			dev_info(qce->dev,
+				 "CE2 skc post-DMA: off=%u ret=%d STATUS=0x%08x\n",
+				 sg_off, ret,
+				 readl_relaxed(qce->base + CE2_REG_STATUS));
+			if (ret)
+				return ret;
+
+			sg_off += chunk_len;
+		}
+	}
 
 	/* Read back IV from CNTR0..3 for CBC/CTR chaining.  ADM has done
 	 * the actual encryption already; the engine has updated CNTR
