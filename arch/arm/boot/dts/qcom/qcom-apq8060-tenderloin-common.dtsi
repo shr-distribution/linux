@@ -2218,15 +2218,26 @@
 	qcom,sdcc-crci = <1>;
 
 	/*
-	 * Per-request size cap to mitigate AHB-fabric contention when
-	 * sdcc4 (WiFi/AR6003) is also doing DMA on the same adm_dma1.
-	 * Without this, multi-hundred-block reads can DATACRCFAIL when
-	 * both ADM channels burst on the shared fabric simultaneously.
-	 * 16 KB = 32 blocks per request; ADM relinquishes the fabric
-	 * every ~340 us at peak SDCC clock, giving sdcc4 command-path
-	 * accesses room to break through. See mmci.c "qcom,max-req-kb".
+	 * qcom,max-req-kb cap is intentionally NOT set here.
+	 *
+	 * The 16 KB cap was tested (commit 57a87f122f43, mmci.c
+	 * "qcom,max-req-kb" support) and turned out to make things
+	 * worse, not better, on Tenderloin:
+	 *
+	 *  - sequential throughput dropped from ~29 MB/s to ~15 MB/s
+	 *  - the higher ADM IRQ rate (~900/s with 16 KB caps vs ~120/s
+	 *    without) perturbed the AR6003 firmware-entry window
+	 *    enough to defeat the post-BMI CMD52 wakeup poll
+	 *    (commit b40ed0d52a0c), reintroducing the
+	 *    "failed to read reg table" CMDTIMEOUT
+	 *
+	 * The mmci.c support is left in for future experimentation
+	 * if a different value or a different board needs it, but
+	 * Tenderloin runs uncapped: normal workloads work fine, and
+	 * heavy concurrent eMMC stress + WiFi traffic is a usage
+	 * pattern we accept as imperfect rather than degrade everyday
+	 * use to mitigate.
 	 */
-	qcom,max-req-kb = <16>;
 
 	/*
 	 * DFAB interconnect path for eMMC.
