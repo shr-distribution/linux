@@ -733,13 +733,14 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	}
 
 	/*
-	 * Point the firmware at our descriptor (scratch) buffer.
-	 * Legacy vidc_1080p_decode_seq_start_ch0 writes DESC_ADDR
-	 * (>>VIDC_ADDR_SHIFT) and DESC_BUF_SIZE on every SEQ_HEADER and
-	 * FRAME_DATA command.  The buffer is per-channel scratch the
-	 * firmware uses to record decode state.
+	 * Descriptor buffer: webOS DDL passes desc_addr=0, desc_size=0 for
+	 * SEQ_HEADER because the per-decoder desc buffer (hw_bufs.desc) is
+	 * not allocated until INIT_BUFFERS (which follows SEQ_DONE).  Only
+	 * FRAME_DATA uses the desc buffer; point it at our global descriptor
+	 * scratch allocation for those commands.
 	 */
 	vidc_write(core, VIDC_REG_CH0_DESC_ADDR,
+		   op == VIDC_OP_SEQ_HEADER ? 0 :
 		   core->desc_offset >> VIDC_ADDR_SHIFT);
 
 	/*
@@ -760,7 +761,8 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	else
 		vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
 			   (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0));
-	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
+	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE,
+		   op == VIDC_OP_SEQ_HEADER ? 0 : VIDC_DESC_BUF_SIZE);
 
 	/*
 	 * Metadata start address (SHM+0x0044): webOS DDL always writes a
