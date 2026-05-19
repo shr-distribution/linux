@@ -2529,31 +2529,32 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	spin_lock_irqsave(&host->lock, flags);
 
 	/*
-	 * Qualcomm SDCC dummy CMD52 errata: if the previous request was a
-	 * CMD53/CMD54 WRITE, the SDCC's data-path state machine is still
-	 * half-closed and the next CMD on the bus would see DATACRCFAIL.
-	 * Drain the residual state by issuing a CMD52 (read of CCCR reg 0,
-	 * function 0) first, then dispatch the real request from the
-	 * dummy52-completion path in mmci_cmd_irq.
+	 * Qualcomm SDCC dummy CMD52 errata: after a CMD53 WRITE, the SDCC
+	 * DPSM is left half-closed and a subsequent CMD53 WRITE would see
+	 * DATACRCFAIL. Drain the residual state by issuing a CMD52 (read
+	 * of CCCR reg 0, function 0) first, then dispatch the real request
+	 * from the dummy52-completion path in mmci_cmd_irq.
+	 *
+	 * Only applies to the WRITE->WRITE case. CMD53 READs following a
+	 * WRITE do not hit DATACRCFAIL because the half-closed DPSM only
+	 * affects the WRITE data path. Dispatching dummy52 before a READ
+	 * would delay it into the AR6003 SDIO reset window (e.g. after
+	 * BMI_DONE) causing an 800 ms data timeout and WMI poll failure.
 	 */
 	if (host->dummy52_required && host->dummy52_needed) {
 		host->dummy52_needed = false;
-		host->dummy52_in_progress = true;
-		host->pending_mrq = mrq;
-		dev_info_ratelimited(mmc_dev(mmc),
-				     "dummy52: dispatching before opcode=%u\n",
-				     mrq->cmd->opcode);
-		/*
-		 * Do NOT pass MCI_CPSM_QCOM_PROGENA here. PROGENA makes the
-		 * CPSM busy-wait for DAT0 release after CMD52; with PWRSAVE
-		 * off the AR6003 holds DAT0 low for ~500 ms in this state,
-		 * and the subsequent CMD53 DATA phase then fails with
-		 * DATACRCFAIL. CMD52 (function 0, CCCR reg 0 read) has no
-		 * programming phase so PROGENA serves no purpose here.
-		 */
-		mmci_start_command(host, &host->dummy52_cmd, 0);
-		spin_unlock_irqrestore(&host->lock, flags);
-		return;
+		if (mrq->cmd->opcode == SD_IO_RW_EXTENDED &&
+		    mrq->data && (mrq->data->flags & MMC_DATA_WRITE)) {
+			host->dummy52_in_progress = true;
+			host->pending_mrq = mrq;
+			dev_info_ratelimited(mmc_dev(mmc),
+					     "dummy52: dispatching before opcode=%u\n",
+					     mrq->cmd->opcode);
+			mmci_start_command(host, &host->dummy52_cmd, 0);
+			spin_unlock_irqrestore(&host->lock, flags);
+			return;
+		}
+		/* READ or non-CMD53: clear the flag and fall through */
 	}
 
 	__mmci_start_request(host, mrq);
