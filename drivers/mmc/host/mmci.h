@@ -510,6 +510,34 @@ struct mmci_host {
 	s32			next_cookie;
 	struct delayed_work	ux500_busy_timeout_work;
 	struct delayed_work	qcom_dma_timeout_work;
+	/*
+	 * Qualcomm SDCC silicon errata: after every CMD53/CMD54 WRITE,
+	 * the SDCC data-path state machine does not fully close, leaving
+	 * the controller in a state where the next CMD on the bus can
+	 * see DATACRCFAIL / CMDTIMEOUT. The legacy CAF msm_sdcc driver
+	 * works around it with a "dummy CMD52" inserted before the next
+	 * command -- the act of running the CMD52 through the CPSM drains
+	 * the residual state. This is enabled per-host via the DT property
+	 * "qcom,dummy52-required" because different boards wire SDIO to
+	 * different SDCC instances and only the SDIO-bearing instances
+	 * need it.
+	 *
+	 * dummy52_required:    DT-driven, host is subject to the errata.
+	 * dummy52_needed:      a CMD53/CMD54 WRITE just completed; next
+	 *                      request must be preceded by a CMD52.
+	 * dummy52_in_progress: the dummy CMD52 is currently on the bus;
+	 *                     pending_mrq is the real request stashed
+	 *                     until the dummy completes.
+	 * dummy52_cmd:         pre-built CMD52 (SD_IO_RW_DIRECT, read of
+	 *                     CCCR reg 0 on function 0). Response content
+	 *                     is ignored.
+	 * pending_mrq:         the real mmc_request waiting on dummy52.
+	 */
+	bool			dummy52_required;
+	bool			dummy52_needed;
+	bool			dummy52_in_progress;
+	struct mmc_command	dummy52_cmd;
+	struct mmc_request	*pending_mrq;
 };
 
 #define dma_inprogress(host)	((host)->dma_in_progress)
