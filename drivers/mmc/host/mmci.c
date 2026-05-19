@@ -2927,6 +2927,47 @@ static int mmci_probe(struct amba_device *dev,
 	 */
 	mmc->max_blk_count = mmc->max_req_size >> variant->datactrl_blocksz;
 
+	/*
+	 * Optional DT-driven cap on per-request size, used to mitigate
+	 * AHB-fabric contention between two ADM channels on shared bus.
+	 *
+	 * On APQ8060/MSM8660 (Tenderloin) adm_dma1 is shared between sdcc1
+	 * (eMMC) and sdcc4 (WiFi/AR6003). When both channels burst on the
+	 * fabric simultaneously, the AHB bridge arbiter saturates and the
+	 * non-bursting controller's CPU register accesses stall; sdcc1
+	 * sees multi-hundred-block DATACRCFAIL and the rootfs goes RO.
+	 *
+	 * The mitigation (per Gemini diagnostic): clamp the per-request size
+	 * on the bulk-storage controller so the ADM periodically relinquishes
+	 * the fabric, letting the other controller's command path break
+	 * through. 16 KB is the suggested starting value -- small enough to
+	 * give the fabric breathing room every ~340 us at peak SDCC clock,
+	 * still large enough for sustained throughput.
+	 *
+	 * Property is opt-in: absent or zero leaves the defaults alone.
+	 */
+	{
+		u32 max_req_kb = 0;
+		struct device_node *np = mmc_dev(mmc)->of_node;
+
+		if (np && !of_property_read_u32(np, "qcom,max-req-kb",
+						&max_req_kb) &&
+		    max_req_kb > 0) {
+			u32 cap = max_req_kb * 1024;
+
+			if (cap < mmc->max_req_size) {
+				mmc->max_req_size = cap;
+				mmc->max_seg_size = cap;
+				mmc->max_blk_count =
+					cap >> variant->datactrl_blocksz;
+				dev_info(mmc_dev(mmc),
+					 "qcom,max-req-kb=%u -> max_req=%u max_blk_count=%u\n",
+					 max_req_kb, mmc->max_req_size,
+					 mmc->max_blk_count);
+			}
+		}
+	}
+
 	spin_lock_init(&host->lock);
 
 	writel(0, host->base + MMCIMASK0);

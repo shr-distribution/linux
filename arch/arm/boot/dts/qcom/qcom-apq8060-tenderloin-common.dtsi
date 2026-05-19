@@ -2218,6 +2218,17 @@
 	qcom,sdcc-crci = <1>;
 
 	/*
+	 * Per-request size cap to mitigate AHB-fabric contention when
+	 * sdcc4 (WiFi/AR6003) is also doing DMA on the same adm_dma1.
+	 * Without this, multi-hundred-block reads can DATACRCFAIL when
+	 * both ADM channels burst on the shared fabric simultaneously.
+	 * 16 KB = 32 blocks per request; ADM relinquishes the fabric
+	 * every ~340 us at peak SDCC clock, giving sdcc4 command-path
+	 * accesses room to break through. See mmci.c "qcom,max-req-kb".
+	 */
+	qcom,max-req-kb = <16>;
+
+	/*
 	 * DFAB interconnect path for eMMC.
 	 *
 	 * The legacy webOS kernel used dfab_sdc_clk clock voter at 64 MHz
