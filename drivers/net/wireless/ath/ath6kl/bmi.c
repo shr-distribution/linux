@@ -41,46 +41,47 @@ int ath6kl_bmi_done(struct ath6kl *ar)
 	}
 
 	/*
-	 * Post-BMI settle + wakeup poll for AR6003 over Qualcomm SDCC.
+	 * Post-BMI tight-poll wakeup for AR6003 over Qualcomm SDCC.
 	 *
-	 * After BMI_DONE, the AR6003 ARM core jumps from boot-ROM into the
-	 * uploaded SRAM firmware. During this transition the chip's
-	 * host-interface logic resets, and its aggressive power-management
-	 * state machine can treat any SDIO clock irregularity (caused by
-	 * fabric contention on a shared ADM controller -- e.g. eMMC DMA on
-	 * the same adm_dma1) as a sleep signal, locking the chip in deep
-	 * sleep with its SDIO command path shut down. The host then sees
-	 * CMDTIMEOUT on the first post-BMI CMD53 ("failed to read reg
-	 * table") and ath6kl gives up.
+	 * After BMI_DONE the AR6003 ARM core jumps from boot-ROM into the
+	 * uploaded SRAM firmware. The firmware re-arms an aggressive PM
+	 * state machine: if SDIO SCLK gates for more than ~tens of µs
+	 * (MCI_CLK_PWRSAVE auto-gates between transfers on qcom SDCC) the
+	 * chip slips into deep sleep with its SDIO command path off, and
+	 * the next CMD53 from ath6kl_htc_wait_target sees CMDTIMEOUT.
 	 *
-	 * Mitigation: explicit settle delay, then a CMD52-paced wakeup loop
-	 * doing single-byte reads of HOST_INT_STATUS_ADDRESS. The CMD52
-	 * traffic keeps the chip's SDIO state machine awake until firmware
-	 * completes its entry sequence and starts responding. Errors during
-	 * the poll are expected (chip silent during transition) and ignored;
-	 * the first successful read confirms the chip is alive.
+	 * Mitigation: continuous tight loop of CMD52 byte reads with only
+	 * udelay(10) between iterations — no msleep, no usleep_range, no
+	 * scheduler entry. Each CMD52 burst takes ~20 µs of SCLK toggling,
+	 * leaving an inter-transfer gap small enough to stay under the
+	 * chip's sleep-entry threshold. The CMD52 reads will error while
+	 * firmware is still inside its boot sequence; we ignore the error
+	 * and keep polling. The first successful read confirms the chip
+	 * has finished firmware entry and is ready for HTC.
+	 *
+	 * Budget: up to 5000 iterations ≈ 100–150 ms wall, well under
+	 * htc_wait_target's own multi-second retry; the typical observed
+	 * value is <30 iterations.
 	 */
 	if (ar->hif_type == ATH6KL_HIF_TYPE_SDIO) {
 		u8 tmp;
 		int i;
 
-		msleep(30);
-
-		for (i = 0; i < 50; i++) {
+		for (i = 0; i < 5000; i++) {
 			ret = hif_read_write_sync(ar, HOST_INT_STATUS_ADDRESS,
 						  &tmp, 1,
 						  HIF_RD_SYNC_BYTE_INC);
 			if (ret == 0)
 				break;
-			usleep_range(1000, 1500);
+			udelay(10);
 		}
 
-		if (i == 50) {
-			ath6kl_warn("post-BMI wakeup poll didn't see chip respond in ~50 ms; letting htc_wait_target try anyway\n");
+		if (i == 5000) {
+			ath6kl_warn("post-BMI tight-poll didn't see chip respond in ~5000 iters; letting htc_wait_target try anyway\n");
 		} else {
 			ath6kl_dbg(ATH6KL_DBG_BMI,
-				   "post-BMI: chip responded after %d CMD52 polls (~%d ms total)\n",
-				   i + 1, 30 + i);
+				   "post-BMI: chip responded after %d CMD52 polls\n",
+				   i + 1);
 		}
 		/* Don't return ret; htc_wait_target has its own retry/timeout. */
 	}
