@@ -13,6 +13,7 @@
 #include <linux/interrupt.h>
 #include <linux/reset.h>
 #include <linux/types.h>
+#include <linux/unaligned.h>
 #include <crypto/aes.h>
 #include <crypto/scatterwalk.h>
 #include <crypto/sha1.h>
@@ -2148,16 +2149,65 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 						drain, sg_off);
 			}
 
-			/* Capture updated CNTR0..3 for the next chunk's IV.
-			 * Reads are u32 register values; we feed them straight
-			 * back via writel() above on the next iteration so no
-			 * byte-swap dance is needed here.
+			/* Capture next-chunk IV.
+			 *
+			 * For CBC: the IV for chunk N+1 is mathematically the
+			 * last cipher block of chunk N -- we already have that
+			 * sitting in bounce.dst_copy from the byte-swap step
+			 * inside qce_ce2_dma_inout_cipher().  Use the buffer
+			 * directly instead of reading the engine's CNTR0..3
+			 * registers.  This eliminates a delicate timing
+			 * window: STATUS goes IDLE one cycle before the
+			 * engine's final write to CNTR fully commits to the
+			 * readable bank on this silicon, so an occasional
+			 * CNTR read returns stale state and corrupts block 0
+			 * of the next chunk.  Empirically observed:
+			 *   - 256 B chunk 4 block 0 failure (byte 192)
+			 *   - 8 KB chunk 26 block 0 failure (byte 1248)
+			 *   - 32 KB chunks 149 & 465 block 0 failures
+			 * All exactly at chunk boundary block 0 -- the
+			 * signature of stale CNTR readback.
+			 *
+			 * For CTR: the counter increments inside the engine
+			 * per AES block and the post-chunk value is NOT
+			 * derivable from ciphertext, so we still need the
+			 * CNTR readback (and tolerate the rare timing race
+			 * for CTR mode -- not used by the kernel CBC paths
+			 * we care about).
+			 *
+			 * dst_copy holds post-byte-swap output in big-endian
+			 * byte order, which is the same byte order CNTR
+			 * readback would produce (cast to __be32).  memcpy
+			 * preserves byte order; the next chunk's writel
+			 * loop above does the same cast we used originally.
 			 */
 			if (!IS_ECB(flags) && enciv_words) {
-				for (k = 0; k < enciv_words; k++)
-					enciv[k] = (__force __be32)readl(
-						qce->base + CE2_REG_CNTR0_IV0 +
-						k * 4);
+				if (IS_CBC(flags)) {
+					/* dst_copy holds BE-byte ciphertext.
+					 * Chip's CNTR0..3 are u32 with the
+					 * cipher block's first byte at MSB
+					 * (BE-packed); the existing readback
+					 * stores chip's u32 verbatim into
+					 * enciv[] (raw u32 on LE memory).
+					 * Reproduce that layout: read each
+					 * 4-byte BE chunk of dst_copy as a
+					 * u32 and store it as the BE-packed
+					 * value chip would have produced.
+					 */
+					const u8 *p = bounce.dst_copy +
+						      chunk_len -
+						      enciv_words * 4;
+					for (k = 0; k < enciv_words; k++)
+						enciv[k] = (__force __be32)
+							get_unaligned_be32(
+								p + k * 4);
+				} else {
+					for (k = 0; k < enciv_words; k++)
+						enciv[k] = (__force __be32)readl(
+							qce->base +
+							CE2_REG_CNTR0_IV0 +
+							k * 4);
+				}
 			}
 
 			sg_off += chunk_len;
@@ -2166,20 +2216,17 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		qce_ce2_free_bounce(qce, &bounce);
 	}
 
-	/* Read back IV from CNTR0..3 for CBC/CTR chaining.  ADM has done
-	 * the actual encryption already; the engine has updated CNTR
-	 * registers with either the last ciphertext block (CBC) or the
-	 * incremented counter (CTR).  Convert from raw u32 to BE bytes
-	 * before handing back to caller.
+	/* Final IV writeback to caller for chained mode.
+	 *
+	 * enciv[] in both paths (CBC via dst_copy or CTR via CNTR readl)
+	 * holds chip-format BE-packed u32 values stored as raw u32 in
+	 * LE memory.  Convert each u32 to BE byte order for the caller's
+	 * rctx->iv (which uses the standard FIPS-byte AES convention).
 	 */
 	if (!IS_ECB(flags) && rctx->iv && enciv_words) {
-		for (k = 0; k < enciv_words; k++) {
-			u32 w = readl(qce->base +
-				      CE2_REG_CNTR0_IV0 + k * 4);
-			__be32 be = cpu_to_be32(w);
-
-			memcpy(rctx->iv + k * 4, &be, sizeof(be));
-		}
+		for (k = 0; k < enciv_words; k++)
+			put_unaligned_be32((__force u32)enciv[k],
+					   rctx->iv + k * 4);
 	}
 
 	return 0;
