@@ -856,11 +856,19 @@ static void adm_start_dma(struct adm_chan *achan)
 		/*
 		 * On MSM8660/APQ8060 (Tenderloin) we INTENTIONALLY do NOT
 		 * rewrite CH_CONF here. The bootloader programs CH_CONF in
-		 * the EE=0 master view with the correct security-domain (SD)
-		 * field for each channel — e.g. ch2 (eMMC) = 0x180008d5 with
-		 * SD=1 (bit 4 set). The ADM scheduler honours those master-
-		 * view values regardless of which EE window the host writes
-		 * commands through.
+		 * the EE=0 window with the correct priority + security-domain
+		 * (SD) fields. Verified by /dev/mem dump of running webOS
+		 * 2.6.35-palm (reports/adm-investigation/webos-live-dump.txt):
+		 *   ch2 (sdcc1 eMMC, CRCI 1) = 0x000008D5 (priority=5, SD=1)
+		 *   ch5 (sdcc4 WiFi, CRCI 5) = 0x000008D6 (priority=6, SD=1)
+		 * SD layout: bit 4 = SD bit 0, bit 5 = SD bit 1, bit 14 = SD
+		 * bit 2.  Priority bits 0-3.  Bits 26-28 are per-channel
+		 * attribute bits (set on ADM0 ch0-3 audio path only, NOT on
+		 * any ADM1 SDCC channel; not SD bits).
+		 *
+		 * Bootloader explicitly gives sdcc4 (WiFi) one priority level
+		 * above sdcc1 (eMMC), so mainline benefits from this routing
+		 * without touching the registers.
 		 *
 		 * The previous RMW pattern (clear SEC_DOMAIN(7), set
 		 * SEC_DOMAIN(ee) | SHADOW_EN) was harmless when adev->ee = 1
@@ -1378,16 +1386,34 @@ static int adm_dma_probe(struct platform_device *pdev)
 
 	/*
 	 * Diagnostic: read back CH_CONF and RSLT_CONF for all channels.
-	 * Helps identify if writes don't stick (clock/SD ownership issue).
+	 *
+	 * On MSM8660/APQ8060 (Tenderloin) the live CH_CONF + RSLT_CONF
+	 * windows are at EE=0 (offset 0x240 / 0x300), not at adev->ee=1
+	 * where the kernel writes RSLT_CONF. Reading at adev->ee=1
+	 * returns all zeros and masks the actual bootloader-programmed
+	 * priorities. Verified by live /dev/mem dump of running webOS
+	 * 2.6.35-palm: EE=0 holds the truth, EE=1/2/3 read 0.
+	 *
+	 * Real values on Tenderloin ADM1 (sample, EE=0):
+	 *   ch2 (sdcc1 eMMC, CRCI 1) = 0x000008D5 (priority=5, SD=1)
+	 *   ch5 (sdcc4 WiFi, CRCI 5) = 0x000008D6 (priority=6, SD=1)
+	 *
+	 * So bootloader explicitly gives sdcc4 (WiFi) one priority level
+	 * higher than sdcc1 (eMMC) on the ADM channel arbiter. The driver
+	 * does not need to touch CH_CONF -- bootloader has it covered.
+	 *
+	 * Read at EE=0 here regardless of adev->ee, so the diagnostic is
+	 * actually useful on this SoC.
 	 */
 	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
 		u32 ch_conf, rslt_conf;
 
-		ch_conf = readl_relaxed(adev->regs + ADM_CH_CONF(i, adev->ee));
-		rslt_conf = readl_relaxed(adev->regs + ADM_CH_RSLT_CONF(i, adev->ee));
+		ch_conf = readl_relaxed(adev->regs + ADM_CH_CONF(i, 0));
+		rslt_conf = readl_relaxed(adev->regs +
+					  ADM_CH_RSLT_CONF(i, 0));
 		dev_info(adev->dev,
-			 "ADM ch%d EE%d: CH_CONF=0x%08x RSLT_CONF=0x%08x\n",
-			 i, adev->ee, ch_conf, rslt_conf);
+			 "ADM ch%d (EE=0 live): CH_CONF=0x%08x RSLT_CONF=0x%08x\n",
+			 i, ch_conf, rslt_conf);
 	}
 
 	ret = devm_request_irq(adev->dev, adev->irq, adm_dma_irq,
