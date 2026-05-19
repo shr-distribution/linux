@@ -521,25 +521,22 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		clk |= MCI_CLK_ENABLE;
 		/*
 		 * MCI_CLK_PWRSAVE auto-gates the SDC bus clock between
-		 * transfers — useful on eMMC for power savings, but the
-		 * AR6003 SDIO chip cannot tolerate the clock-gating during
-		 * BMI LZ FastDownload: the chip's command-credit counter
-		 * stops refreshing mid-stream and the next CMD53 read times
-		 * out -110 (cf. wifi-bringup-summary.md, working Jan 2026
-		 * config simply had PWRSAVE commented out).
+		 * transfers. Legacy webOS enables it on both eMMC (SDCC1
+		 * CLKREG=0x9f00) and WiFi (SDCC4 CLKREG=0x9b00) — it
+		 * matters on Tenderloin not just for power but for fabric
+		 * arbitration: SCLK toggling on an idle SDCC4 contends
+		 * with SDCC1 DMA on the shared adm_dma1 path and is the
+		 * root cause of eMMC DATATIMEOUT/DATACRCFAIL under WiFi
+		 * load. Gate by clock rate only (>400 kHz, i.e. past
+		 * identification phase) so SDIO instances get it too.
 		 *
-		 * Earlier attempts to clear PWRSAVE in the data-submission
-		 * path (mmci_start_data SDIO branch) didn't fix it -- the
-		 * clkreg write happens just before DPSM/CMD53 setup, but
-		 * the bit doesn't take effect fast enough to keep the chip
-		 * synchronised across the LZ stream.
-		 *
-		 * Gate on cap-sdio-irq: SDIO instances (mmc1 / WiFi) skip
-		 * PWRSAVE entirely; eMMC (mmc0, no SDIO-IRQ cap) keeps it
-		 * for power savings.
+		 * AR6003 carve-out: the chip's BMI/post-BMI window needs
+		 * SCLK active or it falls into deep sleep and stops
+		 * responding to CMD53. We compensate on the function-driver
+		 * side (ath6kl_bmi_done tight-poll keeps SCLK busy across
+		 * the BMI→firmware-boot→HTC transition).
 		 */
-		if (variant->qcom_datactrl_delay && desired > 400000 &&
-		    !(host->mmc->caps & MMC_CAP_SDIO_IRQ))
+		if (variant->qcom_datactrl_delay && desired > 400000)
 			clk |= MCI_CLK_PWRSAVE;
 	}
 
@@ -1617,17 +1614,6 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 		else
 			clk = host->clk_reg | variant->clkreg_enable;
 
-		/*
-		 * Force MCI_CLK_PWRSAVE off for SDIO transactions on the
-		 * qcom variant. PWRSAVE is already gated off for SDIO in
-		 * mmci_set_clkreg (cap-sdio-irq check), so this is a
-		 * belt-and-braces clear in case set_ios runs out of order.
-		 * Gate on the same SDIO predicate so eMMC keeps its bit.
-		 */
-		if (variant->qcom_datactrl_delay &&
-		    (host->mmc->caps & MMC_CAP_SDIO_IRQ))
-			clk &= ~MCI_CLK_PWRSAVE;
-
 		mmci_write_clkreg(host, clk);
 	}
 
@@ -1816,7 +1802,8 @@ static void mmci_diag_dump_state(struct mmci_host *host, const char *reason)
 	 * dump of running 2.6.35-palm):
 	 *   SDCC1 (eMMC):  CLKREG = 0x00009f00  (PWRSAVE+FLOWENA+FBCLK set)
 	 *   SDCC4 (WiFi):  CLKREG = 0x00009b00  (PWRSAVE+FLOWENA+FBCLK set)
-	 * Difference from mainline = bit 9 (MCI_CLK_PWRSAVE).
+	 * Mainline now matches both (PWRSAVE on for SDIO too, post-BMI
+	 * wakeup compensated by ath6kl_bmi_done tight-poll).
 	 */
 	dev_warn(mmc_dev(host->mmc),
 		 "DIAG[%s]: CLKREG=0x%08x (legacy=0x9f00 sdcc1 / 0x9b00 sdcc4)\n",
