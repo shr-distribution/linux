@@ -844,6 +844,43 @@ int vidc_load_firmware(struct vidc_core *core)
 	memset(core->shm_vaddr, 0, VIDC_SHM_SIZE);
 
 	/*
+	 * Initialise the metadata input buffer at VIDC_META_INPUT_OFF within
+	 * the SHM page.  webOS ddl_set_default_meta_data_hdr() writes
+	 * version=0x00000101 / port=1 / VCD_METADATA_* type entries starting
+	 * at word 33 (byte offset 132) of this buffer before every SEQ_HEADER.
+	 * The firmware validates this structure during SEQ_HEADER processing;
+	 * leaving it zeroed causes error 26 (0x1a).
+	 *
+	 * Entry layout (3 words each, from ddl_metadata_hdr_entry decoder path):
+	 *   word+0: version = 0x00000101
+	 *   word+1: port    = 1
+	 *   word+2: type    = VCD_METADATA_* bitmask value
+	 * Entries (in skip-word order):
+	 *   DATANONE=0x001, QPARRAY=0x004, CONCEALMB=0x008, VC1=0x040,
+	 *   SEI=0x010, VUI=0x020, PASSTHROUGH=0x080, QCOMFILLER=0x002
+	 */
+	{
+		static const u32 meta_types[] = {
+			0x001, /* VCD_METADATA_DATANONE    */
+			0x004, /* VCD_METADATA_QPARRAY     */
+			0x008, /* VCD_METADATA_CONCEALMB   */
+			0x040, /* VCD_METADATA_VC1         */
+			0x010, /* VCD_METADATA_SEI         */
+			0x020, /* VCD_METADATA_VUI         */
+			0x080, /* VCD_METADATA_PASSTHROUGH */
+			0x002, /* VCD_METADATA_QCOMFILLER  */
+		};
+		void *meta = core->shm_vaddr + VIDC_META_INPUT_OFF;
+		int i;
+
+		for (i = 0; i < ARRAY_SIZE(meta_types); i++) {
+			writel(0x00000101,   meta + (33 + i * 3) * 4);
+			writel(1,            meta + (34 + i * 3) * 4);
+			writel(meta_types[i], meta + (35 + i * 3) * 4);
+		}
+	}
+
+	/*
 	 * Explicitly clear the metadata-enable bitfield. Legacy DDL
 	 * (vcd_ddl_metadata.c:356-393, ddl_vidc_metadata_enable) writes
 	 * this on both SEQ_HEADER (vcd_ddl_vidc.c:200) and FRAME_DATA

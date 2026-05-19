@@ -158,6 +158,16 @@
  */
 #define VIDC_SHM_SIZE				SZ_4K	/* legacy uses 1 page */
 
+/*
+ * Offset within the SHM page for the metadata input buffer.
+ * webOS DDL uses a separate allocation (metadata_shared_input) for this;
+ * we carve out 256 bytes (DDL_METADATA_CLIENT_INPUTBUFSIZE) from the
+ * high half of the 4 KB SHM page, safely above all SHM fields (max ~0x120).
+ * The fw-relative raw byte address written to SHM+0x0044 is therefore
+ * (core->shm_offset + VIDC_META_INPUT_OFF).
+ */
+#define VIDC_META_INPUT_OFF			0x200
+
 #define VIDC_SHM_METADATA_ENABLE		0x0038
 #define VIDC_SHM_EXT_METADATA_START_ADDR	0x0044
 #define VIDC_SHM_ALLOCATED_LUMA_DPB_SIZE	0x0064

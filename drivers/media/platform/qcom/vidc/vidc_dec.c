@@ -766,17 +766,16 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 
 	/*
 	 * Metadata start address (SHM+0x0044): webOS DDL always writes a
-	 * valid fw-relative address here before SEQ_HEADER and FRAME_DATA,
-	 * even when all METADATA_ENABLE bits are 0.  Leaving it at 0 causes
-	 * the firmware to return error 26 (0x1a) before reading the stream.
-	 * Point it at the descriptor buffer — a valid SMI SRAM allocation
-	 * that the firmware may inspect but will not corrupt (it owns it).
-	 *
-	 * webOS vidc_sm_set_metadata_start_address writes the RAW byte offset
-	 * from fw_dma_addr (DDL_ADDR_OFFSET = buf_phys - dram_base), NOT the
-	 * VIDC_ADDR_SHIFT-divided value used by hardware address registers.
+	 * valid fw-relative RAW byte offset here before SEQ_HEADER and
+	 * FRAME_DATA (not the >>11-shifted value used by hw address regs).
+	 * The firmware reads version=0x00000101 header entries from this
+	 * address; leaving it at zero (or pointing at a zeroed buffer) causes
+	 * error 26 (0x1a).  Point it at VIDC_META_INPUT_OFF within the SHM
+	 * page, which vidc_load_firmware() initialises with the 8 decoder
+	 * entry headers (DATANONE, QPARRAY, CONCEALMB, VC1, SEI, VUI,
+	 * PASSTHROUGH, QCOMFILLER) matching ddl_set_default_meta_data_hdr().
 	 */
-	writel(core->desc_offset,
+	writel(core->shm_offset + VIDC_META_INPUT_OFF,
 	       core->shm_vaddr + VIDC_SHM_EXT_METADATA_START_ADDR);
 
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
@@ -797,14 +796,26 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	}
 
 	dev_info(core->dev,
-		 "submit_frame: op=0x%x inst_id=0x%x src_phys=0x%pad fw_rel=0x%x payload=%u buf_sz=%u desc_off=0x%x\n",
+		 "submit_frame: op=0x%x inst_id=0x%x src_phys=0x%pad fw_rel=0x%x payload=%u buf_sz=%u desc_addr=0x%x meta_addr=0x%x\n",
 		 op, inst->inst_id, &src_addr,
 		 (u32)((src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT),
 		 src_size,
 		 op == VIDC_OP_SEQ_HEADER ?
 			 ALIGN(src_size + 2048 + 256, 4) :
 			 (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0),
-		 (u32)(core->desc_offset >> VIDC_ADDR_SHIFT));
+		 op == VIDC_OP_SEQ_HEADER ? 0 :
+			 (u32)(core->desc_offset >> VIDC_ADDR_SHIFT),
+		 core->shm_offset + VIDC_META_INPUT_OFF);
+
+	if (op == VIDC_OP_SEQ_HEADER) {
+		dev_info(core->dev,
+			 "SEQ_HDR SHM[0x38]=0x%08x SHM[0x44]=0x%08x meta_hdr[v/p/t]=0x%08x/0x%08x/0x%08x\n",
+			 readl(core->shm_vaddr + VIDC_SHM_METADATA_ENABLE),
+			 readl(core->shm_vaddr + VIDC_SHM_EXT_METADATA_START_ADDR),
+			 readl(core->shm_vaddr + VIDC_META_INPUT_OFF + 33 * 4),
+			 readl(core->shm_vaddr + VIDC_META_INPUT_OFF + 34 * 4),
+			 readl(core->shm_vaddr + VIDC_META_INPUT_OFF + 35 * 4));
+	}
 
 	/* Trigger: operation type | instance id */
 	vidc_write(core, VIDC_REG_CH0_INST_ID, op | inst->inst_id);
