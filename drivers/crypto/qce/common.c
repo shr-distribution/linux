@@ -1879,20 +1879,19 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			if (sg_off != 0) {
 				/* Light reset between chunks: SW_RST pulse
 				 * only, no GCC_CE2_RESET assert/deassert.
+				 * The full GCC reset cycling every chunk
+				 * accumulated a ~5% per-chunk failure rate
+				 * that grew with chunk count.  SW_RST via
+				 * CONFIG[0] is cheaper (~200 us vs ~2 ms)
+				 * and resets the engine state machine +
+				 * FIFOs without touching the clock domain.
 				 *
-				 * The full reset every chunk caused an
-				 * accumulating failure rate (~5% per chunk)
-				 * that grew with chunk count -- 4 KB always
-				 * failed.  Hypothesis: rapid GCC_CE2_RESET
-				 * cycling races against ADM channel or
-				 * clock-domain state somewhere.
-				 *
-				 * SW_RST via CONFIG[0] is cheaper (~200 us
-				 * vs ~2 ms) and resets the engine state
-				 * machine + FIFOs without touching the
-				 * clock domain.  Keys (AES_RNDKEY,
-				 * DES_KEY) survive SW_RST -- so we DON'T
-				 * need to re-write them per chunk.
+				 * SW_RST DOES clear the key register banks
+				 * (AES_RNDKEY, DES_KEY) on this silicon --
+				 * verified empirically: dropping the key
+				 * re-write caused 0/3 pass at all sizes
+				 * including 256 B.  So we still write keys
+				 * per chunk but skip the GCC reset.
 				 */
 				writel_relaxed(BIT(CE2_SW_RST_SHIFT),
 					       qce->base + CE2_REG_CONFIG);
@@ -1909,6 +1908,28 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 
 				/* Re-write AUTH_SEG_CFG (cleared by SW_RST). */
 				writel(0, qce->base + CE2_REG_AUTH_SEG_CFG);
+
+				/* Re-write keys (cleared by SW_RST). */
+				if (IS_DES(flags) || IS_3DES(flags)) {
+					for (k = 0; k < enckey_words; k++)
+						writel((__force u32)enckey[k],
+						       qce->base +
+						       CE2_REG_DES_KEY0 + k * 4);
+				} else {
+					struct crypto_aes_ctx aes_ctx = {0};
+
+					if (!aes_expandkey(&aes_ctx,
+							   (const u8 *)enckey,
+							   keylen)) {
+						for (k = 0; k < CE2_AES_RNDKEYS; k++)
+							writel(aes_ctx.key_enc[k],
+							       qce->base +
+							       CE2_REG_AES_RNDKEY0 +
+							       k * 4);
+					}
+					memzero_explicit(&aes_ctx,
+							 sizeof(aes_ctx));
+				}
 
 				if (IS_CTR(flags))
 					writel(0xffff, qce->base + CE2_REG_CNTR_MASK);
