@@ -803,6 +803,10 @@ static void mmci_dma_error(struct mmci_host *host)
 		host->ops->dma_error(host);
 }
 
+/* Forward declaration: used by mmci_cmd_irq dummy52-completion path. */
+static void __mmci_start_request(struct mmci_host *host,
+				 struct mmc_request *mrq);
+
 static void
 mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 {
