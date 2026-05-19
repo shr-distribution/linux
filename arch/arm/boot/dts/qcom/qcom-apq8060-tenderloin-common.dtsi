@@ -2298,6 +2298,19 @@
 	 * upload timeouts. Only enable for SDIO (WiFi), not eMMC.
 	 */
 	qcom,datactrl-first;
+
+	/*
+	 * Qualcomm SDCC silicon errata: after every SDIO CMD53/CMD54
+	 * WRITE, the data-path state machine does not fully close. With
+	 * MCI_CLK_PWRSAVE on (legacy SDCC4 steady-state CLKREG=0x9b00),
+	 * SCLK gates immediately and the next CMD on the bus sees
+	 * DATACRCFAIL. The legacy CAF msm_sdcc driver works around this
+	 * with a dummy CMD52 inserted before the next command (gated by
+	 * plat->dummy52_required, set to 1 on SDCC4 in tenderloin's
+	 * board file). Opt into the same workaround here; mainline mmci
+	 * implements it as the "qcom,dummy52-required" property.
+	 */
+	qcom,dummy52-required;
 	#address-cells = <1>;
 	#size-cells = <0>;
 	disable-wp;
