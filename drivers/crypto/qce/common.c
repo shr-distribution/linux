@@ -2003,10 +2003,7 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			 * when the last byte lands in memory, but the engine
 			 * may still be cycling FINAL_READ -> CTXT_CLEARING
 			 * -> UNLOCKING -> IDLE at that point.  Reading CNTR
-			 * mid-transition gives stale / partial state and
-			 * the next chunk's IV is wrong.  Found this via
-			 * per-chunk failure rate ~5% which scales with
-			 * chunk count and matches racing CNTR readback.
+			 * mid-transition gives stale / partial state.
 			 */
 			for (timeout = 1000; timeout > 0; timeout--) {
 				status = readl_relaxed(qce->base +
@@ -2014,6 +2011,36 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 				if ((status & CE2_CRYPTO_STATE_MASK) == 0)
 					break;
 				udelay(10);
+			}
+
+			/* Drain any residual DOUT FIFO dwords.  If even one
+			 * dword leaks across the chunk boundary, the engine's
+			 * internal block pointer slips relative to the data
+			 * it sees on the next chunk, producing the random
+			 * mid-stream divergence we observe past ~64 chunks.
+			 *
+			 * DATA_OUT (0x010) is the direct PIO drain port --
+			 * distinct from DATA_SHADOW0 (0x8000) which bypasses
+			 * the FIFO pointer logic.  Cap the drain count at 8
+			 * since DOUT_SIZE_AVAIL is a 3-bit field (max 7).
+			 */
+			{
+				int drain;
+
+				for (drain = 0; drain < 8; drain++) {
+					u32 s = readl_relaxed(qce->base +
+							      CE2_REG_STATUS);
+					u32 avail = (s >> CE2_DOUT_SIZE_AVAIL_SHIFT)
+						    & 0x7;
+					if (avail == 0)
+						break;
+					readl_relaxed(qce->base +
+						      CE2_REG_DATA_OUT);
+				}
+				if (drain > 0)
+					dev_dbg(qce->dev,
+						"CE2 skc DOUT drained %d dword(s) post-chunk off=%u\n",
+						drain, sg_off);
 			}
 
 			/* Capture updated CNTR0..3 for the next chunk's IV.
