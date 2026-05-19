@@ -2958,10 +2958,17 @@ static int mmci_probe(struct amba_device *dev,
 			if (cap < mmc->max_req_size) {
 				mmc->max_req_size = cap;
 				mmc->max_seg_size = cap;
-				mmc->max_blk_count =
-					cap >> variant->datactrl_blocksz;
+				/*
+				 * Do NOT clamp max_blk_count here -- the MMC
+				 * core enforces min(max_req_size,
+				 * blksize * max_blk_count). Capping
+				 * max_blk_count using datactrl_blocksz
+				 * (max block size = 2048) makes the cap
+				 * pessimistic at the typical 512 B block
+				 * size used for eMMC.
+				 */
 				dev_info(mmc_dev(mmc),
-					 "qcom,max-req-kb=%u -> max_req=%u max_blk_count=%u\n",
+					 "qcom,max-req-kb=%u -> max_req=%u (max_blk_count=%u unchanged)\n",
 					 max_req_kb, mmc->max_req_size,
 					 mmc->max_blk_count);
 			}
