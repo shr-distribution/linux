@@ -1442,12 +1442,31 @@ static void qce_ce2_skc_dma_done(void *param)
  *   after DMA.  Matches CMD_DST_SWAP_BYTES/SHORTS the webOS ADM
  *   command list set on both directions.
  */
+/*
+ * Bounce buffer set for chunked AES.  Allocated ONCE in
+ * qce_ce2_pio_run_skcipher (sized to the worst-case chunk that the
+ * cipher path can pass in), reused across every chunk so we avoid
+ * hammering the dma-coherent pool in a tight loop -- per-chunk
+ * dma_alloc_coherent / dma_free_coherent churn was a suspect for
+ * the cumulative >2 KB failure pattern.
+ */
+struct qce_ce2_bounce {
+	u8 *src_copy;
+	u8 *dst_copy;
+	__le32 *in_buf;
+	__le32 *out_buf;
+	dma_addr_t in_dma;
+	dma_addr_t out_dma;
+	size_t size;
+};
+
 static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 				    struct scatterlist *src,
 				    struct scatterlist *dst,
 				    unsigned int sg_offset,
 				    unsigned int nbytes,
-				    unsigned int block_dwords)
+				    unsigned int block_dwords,
+				    struct qce_ce2_bounce *b)
 {
 	struct dma_chan *rx = qce->dma.rxchan;
 	struct dma_chan *tx = qce->dma.txchan;
@@ -1461,13 +1480,6 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		.direction = DMA_MEM_TO_DEV,
 		.dst_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
 		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
-		/* burst = cipher block size: ADM walks one block per CRCI
-		 * handshake so the engine can fully produce/consume a block
-		 * before the next handshake fires.  AES = 4 dw (16 B);
-		 * DES/3DES = 2 dw (8 B).  Using 4 dw for 3DES caused ADM to
-		 * read 16 bytes while engine only produced 8 valid bytes
-		 * (other 8 read back as zero from DATA_SHADOW0).
-		 */
 		.dst_maxburst = block_dwords,
 		.peripheral_config = &in_periph,
 		.peripheral_size = sizeof(in_periph),
@@ -1483,9 +1495,9 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	struct dma_async_tx_descriptor *in_desc, *out_desc;
 	struct completion done;
 	dma_cookie_t in_cookie, out_cookie;
-	dma_addr_t in_dma, out_dma;
-	__le32 *in_buf, *out_buf;
-	u8 *src_copy = NULL, *dst_copy = NULL;
+	dma_addr_t in_dma = b->in_dma, out_dma = b->out_dma;
+	__le32 *in_buf = b->in_buf, *out_buf = b->out_buf;
+	u8 *src_copy = b->src_copy, *dst_copy = b->dst_copy;
 	enum dma_status status;
 	unsigned int burst_bytes = block_dwords * 4;
 	unsigned int padded = round_up(nbytes, burst_bytes);
@@ -1493,30 +1505,13 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	unsigned int i;
 	int ret;
 
-	if (!padded)
+	if (!padded || padded > b->size)
 		return -EINVAL;
 	dwords = padded / 4;
 
-	src_copy = kzalloc(padded, GFP_KERNEL);
-	if (!src_copy)
-		return -ENOMEM;
-	dst_copy = kzalloc(padded, GFP_KERNEL);
-	if (!dst_copy) {
-		ret = -ENOMEM;
-		goto out_free_src_copy;
-	}
+	memset(src_copy, 0, padded);
+	memset(dst_copy, 0, padded);
 	sg_pcopy_to_buffer(src, sg_nents(src), src_copy, nbytes, sg_offset);
-
-	in_buf = dma_alloc_coherent(qce->dev, padded, &in_dma, GFP_KERNEL);
-	if (!in_buf) {
-		ret = -ENOMEM;
-		goto out_free_dst_copy;
-	}
-	out_buf = dma_alloc_coherent(qce->dev, padded, &out_dma, GFP_KERNEL);
-	if (!out_buf) {
-		ret = -ENOMEM;
-		goto out_free_in;
-	}
 
 	/* Byte-swap input dwords to BE (CE2 reads MSB-first) */
 	for (i = 0; i < dwords; i++) {
@@ -1536,7 +1531,7 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	if (ret) {
 		dev_err(qce->dev,
 			"CE2 cipher: in slave_config failed: %d\n", ret);
-		goto out_free_out;
+		return ret;
 	}
 	in_desc = dmaengine_prep_slave_single(rx, in_dma, padded,
 					      DMA_MEM_TO_DEV, DMA_CTRL_ACK);
@@ -1617,15 +1612,54 @@ out_terminate:
 	dmaengine_terminate_sync(tx);
 out_terminate_rx:
 	dmaengine_terminate_sync(rx);
-out_free_out:
-	dma_free_coherent(qce->dev, padded, out_buf, out_dma);
-out_free_in:
-	dma_free_coherent(qce->dev, padded, in_buf, in_dma);
-out_free_dst_copy:
-	kfree(dst_copy);
-out_free_src_copy:
-	kfree(src_copy);
 	return ret;
+}
+
+/* Allocate the bounce-buffer set for AES chunked path.  Sized once
+ * at the start of qce_ce2_pio_run_skcipher and reused across all
+ * chunks; freed at the end.
+ */
+static int qce_ce2_alloc_bounce(struct qce_device *qce,
+				struct qce_ce2_bounce *b, size_t size)
+{
+	memset(b, 0, sizeof(*b));
+	b->size = size;
+	b->src_copy = kzalloc(size, GFP_KERNEL);
+	if (!b->src_copy)
+		return -ENOMEM;
+	b->dst_copy = kzalloc(size, GFP_KERNEL);
+	if (!b->dst_copy)
+		goto free_src;
+	b->in_buf = dma_alloc_coherent(qce->dev, size, &b->in_dma,
+				       GFP_KERNEL);
+	if (!b->in_buf)
+		goto free_dst;
+	b->out_buf = dma_alloc_coherent(qce->dev, size, &b->out_dma,
+					GFP_KERNEL);
+	if (!b->out_buf)
+		goto free_in;
+	return 0;
+
+free_in:
+	dma_free_coherent(qce->dev, size, b->in_buf, b->in_dma);
+free_dst:
+	kfree(b->dst_copy);
+free_src:
+	kfree(b->src_copy);
+	memset(b, 0, sizeof(*b));
+	return -ENOMEM;
+}
+
+static void qce_ce2_free_bounce(struct qce_device *qce,
+				struct qce_ce2_bounce *b)
+{
+	if (!b->size)
+		return;
+	dma_free_coherent(qce->dev, b->size, b->out_buf, b->out_dma);
+	dma_free_coherent(qce->dev, b->size, b->in_buf, b->in_dma);
+	kfree(b->dst_copy);
+	kfree(b->src_copy);
+	memset(b, 0, sizeof(*b));
 }
 
 /*
@@ -1846,6 +1880,23 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		unsigned int total = rctx->cryptlen;
 		u32 chunk_cfg = encr_cfg | BIT(CE2_FIRST_SHIFT) |
 				BIT(CE2_LAST_SHIFT);
+		struct qce_ce2_bounce bounce;
+		unsigned int bounce_sz;
+
+		/* Bounce sized to worst case: AES = burst-rounded chunk (256
+		 * B for burst=64dw); DES/3DES = full cryptlen padded up to
+		 * the burst.  Allocate ONCE here; reuse for every chunk.
+		 */
+		bounce_sz = IS_AES(flags) ?
+			    round_up(max_chunk, burst * 4) :
+			    round_up(total, burst * 4);
+		ret = qce_ce2_alloc_bounce(qce, &bounce, bounce_sz);
+		if (ret) {
+			dev_err(qce->dev,
+				"CE2 skc: bounce alloc (%u B) failed: %d\n",
+				bounce_sz, ret);
+			return ret;
+		}
 
 		while (sg_off < total) {
 			unsigned int chunk_len =
@@ -1985,16 +2036,19 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 				dev_err(qce->dev,
 					"CE2 skc: engine never left IDLE; STATUS=0x%08x\n",
 					status);
+				qce_ce2_free_bounce(qce, &bounce);
 				return -ETIMEDOUT;
 			}
 
 			ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst,
-						       sg_off, chunk_len, burst);
+						       sg_off, chunk_len, burst,
+						       &bounce);
 			if (ret) {
 				dev_err(qce->dev,
 					"CE2 skc DMA failed at off=%u: ret=%d STATUS=0x%08x\n",
 					sg_off, ret,
 					readl_relaxed(qce->base + CE2_REG_STATUS));
+				qce_ce2_free_bounce(qce, &bounce);
 				return ret;
 			}
 
@@ -2057,6 +2111,8 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 
 			sg_off += chunk_len;
 		}
+
+		qce_ce2_free_bounce(qce, &bounce);
 	}
 
 	/* Read back IV from CNTR0..3 for CBC/CTR chaining.  ADM has done
