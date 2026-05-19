@@ -1460,16 +1460,19 @@ struct qce_ce2_bounce {
 	size_t size;
 };
 
-static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
-				    struct scatterlist *src,
-				    struct scatterlist *dst,
-				    unsigned int sg_offset,
-				    unsigned int nbytes,
-				    unsigned int block_dwords,
-				    struct qce_ce2_bounce *b)
+/*
+ * Configure ADM rx/tx channels for the CE2 cipher data path.  Called
+ * ONCE per skcipher request before the chunk loop in
+ * qce_ce2_pio_run_skcipher; the per-chunk path then only preps and
+ * submits descriptors, skipping the slave-config write.
+ *
+ * Earlier hash ops may have left rxchan reconfigured for the digest
+ * readback (CRCI 15, src=AUTH_IV0); we re-establish the cipher
+ * configuration here unconditionally.
+ */
+static int qce_ce2_dma_setup_cipher_chans(struct qce_device *qce,
+					  unsigned int block_dwords)
 {
-	struct dma_chan *rx = qce->dma.rxchan;
-	struct dma_chan *tx = qce->dma.txchan;
 	struct qcom_adm_peripheral_config in_periph = {
 		.crci = qce->dma.rx_crci,	/* CRCI 4 = CE_IN */
 	};
@@ -1492,6 +1495,33 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		.peripheral_config = &out_periph,
 		.peripheral_size = sizeof(out_periph),
 	};
+	int ret;
+
+	ret = dmaengine_slave_config(qce->dma.rxchan, &in_conf);
+	if (ret) {
+		dev_err(qce->dev,
+			"CE2 cipher: in slave_config failed: %d\n", ret);
+		return ret;
+	}
+	ret = dmaengine_slave_config(qce->dma.txchan, &out_conf);
+	if (ret) {
+		dev_err(qce->dev,
+			"CE2 cipher: out slave_config failed: %d\n", ret);
+		return ret;
+	}
+	return 0;
+}
+
+static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
+				    struct scatterlist *src,
+				    struct scatterlist *dst,
+				    unsigned int sg_offset,
+				    unsigned int nbytes,
+				    unsigned int block_dwords,
+				    struct qce_ce2_bounce *b)
+{
+	struct dma_chan *rx = qce->dma.rxchan;
+	struct dma_chan *tx = qce->dma.txchan;
 	struct dma_async_tx_descriptor *in_desc, *out_desc;
 	struct completion done;
 	dma_cookie_t in_cookie, out_cookie;
@@ -1522,17 +1552,10 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		in_buf[i] = cpu_to_le32(w);
 	}
 
-	/* Configure rxchan for input (CRCI 4 -> DATA_SHADOW0).  Earlier
-	 * hash ops may have left rxchan reconfigured for digest readback
-	 * (CRCI 15, src=AUTH_IV0) so we re-establish the cipher input
-	 * config here unconditionally.
+	/* slave_config for both channels is done ONCE by
+	 * qce_ce2_dma_setup_cipher_chans() before the chunk loop -- no
+	 * per-chunk reconfig here.
 	 */
-	ret = dmaengine_slave_config(rx, &in_conf);
-	if (ret) {
-		dev_err(qce->dev,
-			"CE2 cipher: in slave_config failed: %d\n", ret);
-		return ret;
-	}
 	in_desc = dmaengine_prep_slave_single(rx, in_dma, padded,
 					      DMA_MEM_TO_DEV, DMA_CTRL_ACK);
 	if (!in_desc) {
@@ -1541,16 +1564,6 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		goto out_terminate_rx;
 	}
 
-	/* Configure txchan for output (CRCI 5 <- DATA_SHADOW0).  Default
-	 * config from probe points txchan at AUTH_IV0 with CRCI 15 for
-	 * the hash digest path; override here for cipher output.
-	 */
-	ret = dmaengine_slave_config(tx, &out_conf);
-	if (ret) {
-		dev_err(qce->dev,
-			"CE2 cipher: out slave_config failed: %d\n", ret);
-		goto out_terminate_rx;
-	}
 	out_desc = dmaengine_prep_slave_single(tx, out_dma, padded,
 					       DMA_DEV_TO_MEM,
 					       DMA_PREP_INTERRUPT |
@@ -1895,6 +1908,19 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			dev_err(qce->dev,
 				"CE2 skc: bounce alloc (%u B) failed: %d\n",
 				bounce_sz, ret);
+			return ret;
+		}
+
+		/* Configure ADM rx/tx slave channels ONCE for this op.
+		 * The per-chunk path inside qce_ce2_dma_inout_cipher now
+		 * only preps + submits descriptors; slave_config is constant
+		 * across chunks (same CRCIs, same burst, same shadow-port
+		 * address), so we eliminate ~N redundant slave_config writes
+		 * for an N-chunk transfer.
+		 */
+		ret = qce_ce2_dma_setup_cipher_chans(qce, burst);
+		if (ret) {
+			qce_ce2_free_bounce(qce, &bounce);
 			return ret;
 		}
 
