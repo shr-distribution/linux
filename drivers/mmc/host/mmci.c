@@ -1812,6 +1812,16 @@ static void mmci_diag_dump_state(struct mmci_host *host, const char *reason)
 	status_reg  = readl(base + MMCISTATUS);
 	fifocnt_reg = host->variant->qcom_fifo ? readl(base + 0x44) : 0;
 
+	/* Compare against legacy webOS reference (verified via /dev/mem
+	 * dump of running 2.6.35-palm):
+	 *   SDCC1 (eMMC):  CLKREG = 0x00009f00  (PWRSAVE+FLOWENA+FBCLK set)
+	 *   SDCC4 (WiFi):  CLKREG = 0x00009b00  (PWRSAVE+FLOWENA+FBCLK set)
+	 * Difference from mainline = bit 9 (MCI_CLK_PWRSAVE).
+	 */
+	dev_warn(mmc_dev(host->mmc),
+		 "DIAG[%s]: CLKREG=0x%08x (legacy=0x9f00 sdcc1 / 0x9b00 sdcc4)\n",
+		 reason, readl(base + MMCICLOCK));
+
 	if (host->dma_in_progress)
 		dma_state = "DMA_IN_PROGRESS";
 	else if (host->dma_issue_deferred)
