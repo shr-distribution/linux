@@ -852,10 +852,9 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 	 *    because VIDC_ADDR_SHIFT=11 means the address register has 2048-
 	 *    byte granularity — a 6-byte pointer advance is truncated to 0.
 	 *
-	 * 2. IDR/slice truncation: firmware SEQ_HEADER only needs SPS (7) +
-	 *    PPS (8).  Encountering a non-header NAL after PPS causes
-	 *    HEADER_NOT_FOUND.  Truncate src_size at the first start code
-	 *    that follows PPS so the firmware only sees SPS+PPS.
+	 * 2. Slice truncation: firmware SEQ_HEADER must not contain slice
+	 *    data (IDR=5, non-IDR=1).  SEI (type 6) may follow PPS and is
+	 *    kept; only truncate at the first slice NAL after PPS.
 	 */
 	{
 		u8 *kva = vb2_plane_vaddr(&src_buf->vb2_buf, 0);
@@ -887,7 +886,7 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 			/* src_addr stays at the aligned buffer base */
 		}
 
-		/* Step 2: truncate at first non-SPS/PPS NAL after PPS */
+		/* Step 2: truncate at first slice NAL (IDR=5, non-IDR=1) after PPS */
 		{
 			u32 pos = 0;
 			bool after_pps = false;
@@ -899,9 +898,10 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 
 					if (nal_type == 8) {
 						after_pps = true;
-					} else if (after_pps) {
+					} else if (after_pps &&
+						   (nal_type == 1 || nal_type == 5)) {
 						dev_info(core->dev,
-							 "seq_header_work: truncated %u bytes of NAL type %u after PPS\n",
+							 "seq_header_work: truncated %u bytes of slice NAL type %u after PPS\n",
 							 src_size - pos, nal_type);
 						src_size = pos;
 						break;
