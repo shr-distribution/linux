@@ -822,34 +822,14 @@ static void mmci_dma_error(struct mmci_host *host)
  * enable count per host activity transition, which signals RPM to
  * re-evaluate fabric arbitration weights.
  *
- * Replicate that signaling here: vote the host's max sustainable
- * bandwidth for the duration of each request, drop back to zero
- * after a short hysteresis. icc_set_bw can sleep (SMD message to
+ * Replicate that signaling here: vote a higher BW level for the
+ * duration of each request, drop back to a low idle vote after a
+ * short hysteresis. icc_set_bw can sleep (sends an SMD message to
  * RPM), so the idle drop is deferred to delayed_work.
- *
- * The active BW value is derived from f_max * bus_width / 8 so it
- * scales correctly across SoCs and host configurations without any
- * driver hardcoding -- the same code works for MSM8660 sdcc1
- * (8-bit @ 48 MHz -> 48 MB/s), SDIO sdcc4 (4-bit @ 48 MHz ->
- * 24 MB/s), and any other variant whose DT supplies an icc path.
  */
+#define MMCI_ICC_BW_ACTIVE	400000	/* KBps -- matches probe-time vote */
+#define MMCI_ICC_BW_IDLE	50000	/* KBps -- small floor, keeps path alive */
 #define MMCI_ICC_IDLE_DELAY_MS	50
-
-static u32 mmci_icc_active_bw_kbps(struct mmci_host *host)
-{
-	struct mmc_host *mmc = host->mmc;
-	u32 bits = 1;
-
-	if (mmc->caps & MMC_CAP_8_BIT_DATA)
-		bits = 8;
-	else if (mmc->caps & MMC_CAP_4_BIT_DATA)
-		bits = 4;
-
-	/* (Hz * bits) / 8 -> bytes/sec; / 1000 -> KBps. Combine the
-	 * divides as / 8000 so we don't lose precision on slow clocks.
-	 */
-	return (u32)((u64)mmc->f_max * bits / 8000);
-}
 
 static void mmci_icc_idle_work(struct work_struct *work)
 {
@@ -859,7 +839,7 @@ static void mmci_icc_idle_work(struct work_struct *work)
 	if (!host->icc_path || !host->icc_active)
 		return;
 
-	if (icc_set_bw(host->icc_path, 0, 0) == 0)
+	if (icc_set_bw(host->icc_path, 0, MMCI_ICC_BW_IDLE) == 0)
 		host->icc_active = false;
 }
 
@@ -875,7 +855,7 @@ static void mmci_icc_request_active(struct mmci_host *host)
 	cancel_delayed_work(&host->icc_idle_work);
 	if (host->icc_active)
 		return;
-	if (icc_set_bw(host->icc_path, 0, mmci_icc_active_bw_kbps(host)) == 0)
+	if (icc_set_bw(host->icc_path, 0, MMCI_ICC_BW_ACTIVE) == 0)
 		host->icc_active = true;
 }
 
@@ -3025,25 +3005,23 @@ static int mmci_probe(struct amba_device *dev,
 
 	if (host->icc_path) {
 		/*
-		 * Start idle (no vote). mmci_icc_request_active() bumps to
-		 * the per-host max bandwidth (derived from f_max * bus_width)
-		 * on each incoming request; a delayed_work drops back to 0
-		 * after a short hysteresis. This re-vote signaling is what
+		 * Start at the idle vote level. mmci_icc_request_active()
+		 * bumps to MMCI_ICC_BW_ACTIVE on each incoming request and
+		 * a delayed_work drops back to MMCI_ICC_BW_IDLE after a
+		 * short hysteresis window. This re-vote signaling is what
 		 * tells the Qualcomm RPM to update fabric arbitration
 		 * weights per active master -- legacy webOS did this via
 		 * clk_enable/disable on dfab_sdc_clk; mainline uses the
 		 * interconnect framework equivalent.
 		 */
 		INIT_DELAYED_WORK(&host->icc_idle_work, mmci_icc_idle_work);
-		ret = icc_set_bw(host->icc_path, 0, 0);
+		ret = icc_set_bw(host->icc_path, 0, MMCI_ICC_BW_IDLE);
 		if (ret) {
 			dev_err(&dev->dev, "failed to set interconnect bw: %d\n", ret);
 			goto clk_disable;
 		}
 		host->icc_active = false;
-		dev_dbg(&dev->dev,
-			"interconnect dynamic voting enabled (active=%u KBps)\n",
-			mmci_icc_active_bw_kbps(host));
+		dev_dbg(&dev->dev, "interconnect bandwidth voting enabled\n");
 	}
 
 	if (variant->qcom_fifo)
