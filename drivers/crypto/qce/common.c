@@ -1887,7 +1887,21 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 * one shot up to SEG_SIZE max (65535 B).
 	 */
 	{
-		unsigned int max_chunk = IS_AES(flags) ? 64 : 65535;
+		/* AES chunk size = 48 B (3 blocks).  The silicon FIFO-cap
+		 * symptom is a stochastic ~3-5% per-chunk corruption of the
+		 * LAST AES block when a chunk hits the 4-block (64 B) ceiling
+		 * dead-on.  Empirically observed: with max_chunk=64 we see
+		 * scattered failures at "byte 48 of chunk N" -- exactly the
+		 * 4th block.  Backing off to 3 blocks per chunk keeps the
+		 * engine a safe distance below the cap.  Cost: 33% more
+		 * chunks per stream (more CNTR readback + reset overhead),
+		 * benefit: eliminates the block-3 failure mode.
+		 *
+		 * Burst stays at 64 dw (256 B) so the bounce buffer is sized
+		 * for round_up(48, 256) = 256 B per chunk -- same allocation
+		 * as before.
+		 */
+		unsigned int max_chunk = IS_AES(flags) ? 48 : 65535;
 		unsigned int burst = (IS_DES(flags) || IS_3DES(flags)) ? 8 : 64;
 		unsigned int sg_off = 0;
 		unsigned int total = rctx->cryptlen;
@@ -2084,6 +2098,16 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			 * may still be cycling FINAL_READ -> CTXT_CLEARING
 			 * -> UNLOCKING -> IDLE at that point.  Reading CNTR
 			 * mid-transition gives stale / partial state.
+			 *
+			 * After STATUS reads IDLE we additionally settle for
+			 * a few us before reading CNTR0..3 -- empirically we
+			 * see occasional block-0 corruption in chunk N+1
+			 * that's consistent with reading CNTR exactly as the
+			 * engine's final write to those registers is in
+			 * flight from CTXT_CLEARING.  The state-machine bit
+			 * goes IDLE one cycle before the CNTR register
+			 * write fully commits to the readable bank on this
+			 * silicon.
 			 */
 			for (timeout = 1000; timeout > 0; timeout--) {
 				status = readl_relaxed(qce->base +
@@ -2092,6 +2116,7 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 					break;
 				udelay(10);
 			}
+			udelay(5);
 
 			/* Drain any residual DOUT FIFO dwords.  If even one
 			 * dword leaks across the chunk boundary, the engine's
