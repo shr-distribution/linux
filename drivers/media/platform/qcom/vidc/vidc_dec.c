@@ -683,6 +683,8 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	unsigned long flags;
 	u32 op;
 
+	op = inst->seq_parsed ? VIDC_OP_FRAME_DATA : VIDC_OP_SEQ_HEADER;
+
 	spin_lock_irqsave(&core->irqlock, flags);
 
 	/* Set current instance for IRQ handler */
@@ -722,12 +724,12 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_STREAM_SIZE, src_size);
 
-	/* DEBUG: dump first 32 bytes to verify buffer content and format */
+	/* DEBUG: dump first 40 bytes of the stream the firmware will read */
 	if (inst->src_buf) {
 		const u8 *kva = vb2_plane_vaddr(&inst->src_buf->vb2_buf, 0);
 		if (kva)
-			print_hex_dump(KERN_INFO, "vidc stream[0:32]: ",
-				       DUMP_PREFIX_NONE, 16, 1, kva, 32, false);
+			print_hex_dump(KERN_INFO, "vidc stream[0:40]: ",
+				       DUMP_PREFIX_NONE, 16, 1, kva, 40, false);
 	}
 
 	/*
@@ -741,15 +743,23 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		   core->desc_offset >> VIDC_ADDR_SHIFT);
 
 	/*
-	 * STREAM_BUF_SIZE: total allocated capacity of the stream buffer,
-	 * not the payload size.  webOS uses client_input_buf_req.sz (≥1 MB
-	 * minimum enforced by the DDL).  The firmware validates this field
-	 * before parsing and returns error 26 (0x1a) when it is too small.
-	 * Use the vb2 plane allocation size (the OUTPUT buffer capacity as
-	 * set by S_FMT / queue_setup) instead of the per-submit payload.
+	 * STREAM_BUF_SIZE: buffer capacity for this command.
+	 *
+	 * For SEQ_HEADER: use payload + alignment padding (matching webOS
+	 * seq_size = header_len + DDL_LINEAR_BUFFER_ALIGN_BYTES(2048) +
+	 * VCD_SEQ_HDR_PADDING_BYTES(256)).  Using the full 2MB plane size
+	 * causes the firmware to scan the entire buffer looking for SPS,
+	 * which takes 15+ ms and returns HEADER_NOT_FOUND.
+	 *
+	 * For FRAME_DATA: use the full plane allocation size so the firmware
+	 * knows the maximum bytes available for decoding.
 	 */
-	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
-		   (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0));
+	if (op == VIDC_OP_SEQ_HEADER)
+		vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
+			   ALIGN(src_size + 2048 + 256, 4));
+	else
+		vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
+			   (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0));
 	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
 
 	/*
@@ -779,18 +789,19 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	 * DPB_RELEASE = 0: do not release any DPB slots back to firmware.
 	 * DPB_CONFIG  = dpb_count: tell firmware how many DPB slots exist.
 	 */
-	op = inst->seq_parsed ? VIDC_OP_FRAME_DATA : VIDC_OP_SEQ_HEADER;
 	if (op == VIDC_OP_FRAME_DATA) {
 		vidc_write(core, VIDC_REG_CH0_DPB_RELEASE, 0);
 		vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
 	}
 
 	dev_info(core->dev,
-		 "submit_frame: op=0x%x inst_id=0x%x src_phys=0x%pad fw_rel=0x%x payload=%u buf_sz=%zu desc_off=0x%x\n",
+		 "submit_frame: op=0x%x inst_id=0x%x src_phys=0x%pad fw_rel=0x%x payload=%u buf_sz=%u desc_off=0x%x\n",
 		 op, inst->inst_id, &src_addr,
 		 (u32)((src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT),
 		 src_size,
-		 vb2_plane_size(&inst->src_buf->vb2_buf, 0),
+		 op == VIDC_OP_SEQ_HEADER ?
+			 ALIGN(src_size + 2048 + 256, 4) :
+			 (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0),
 		 (u32)(core->desc_offset >> VIDC_ADDR_SHIFT));
 
 	/* Trigger: operation type | instance id */
@@ -866,6 +877,10 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 		if (!kva)
 			goto submit;
 
+		print_hex_dump(KERN_INFO, "vidc seq_hdr BEFORE[0:16]: ",
+			       DUMP_PREFIX_NONE, 16, 1, kva,
+			       min_t(u32, src_size, 16), false);
+
 		/* Step 1: strip leading AUD */
 		if (src_size >= 6 &&
 		    kva[0] == 0 && kva[1] == 0 && kva[2] == 0 && kva[3] == 1 &&
@@ -915,6 +930,18 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 				}
 			}
 		}
+
+		print_hex_dump(KERN_INFO, "vidc seq_hdr AFTER[0:40]: ",
+			       DUMP_PREFIX_NONE, 16, 1, kva,
+			       min_t(u32, src_size, 40), false);
+
+		/*
+		 * Flush CPU write-combine/cache stores to DRAM after memmove.
+		 * The memmove modified the DMA-coherent buffer in-place.
+		 * dma_sync ensures the VIDC DMA engine sees the updated content.
+		 */
+		dma_sync_single_for_device(core->dev, src_addr,
+					   src_size, DMA_TO_DEVICE);
 	}
 submit:
 
