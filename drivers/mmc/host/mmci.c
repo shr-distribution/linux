@@ -825,8 +825,12 @@ mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 	 */
 	if (host->dummy52_required && mrq && mrq->cmd &&
 	    mrq->data && (mrq->data->flags & MMC_DATA_WRITE) &&
-	    mrq->cmd->opcode == SD_IO_RW_EXTENDED)
+	    mrq->cmd->opcode == SD_IO_RW_EXTENDED) {
 		host->dummy52_needed = true;
+		dev_info_ratelimited(mmc_dev(host->mmc),
+				     "dummy52: armed after CMD53 WRITE %u blocks\n",
+				     mrq->data->blocks);
+	}
 
 	mmc_request_done(host->mmc, mrq);
 }
@@ -2536,7 +2540,19 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		host->dummy52_needed = false;
 		host->dummy52_in_progress = true;
 		host->pending_mrq = mrq;
-		mmci_start_command(host, &host->dummy52_cmd, 0);
+		dev_info_ratelimited(mmc_dev(mmc),
+				     "dummy52: dispatching before opcode=%u\n",
+				     mrq->cmd->opcode);
+		/*
+		 * Pass MCI_CPSM_QCOM_PROGENA so the SDCC CPSM exercises the
+		 * data-path programming-done detection during the CMD52,
+		 * which is what actually drains the residual state from the
+		 * previous CMD53 WRITE. Legacy msm_sdcc passes the same flag
+		 * (msmsdcc_start_command(host, &dummy52cmd, MCI_CPSM_PROGENA)).
+		 * Without it the CMD52 completes too quickly to drain.
+		 */
+		mmci_start_command(host, &host->dummy52_cmd,
+				   MCI_CPSM_QCOM_PROGENA);
 		spin_unlock_irqrestore(&host->lock, flags);
 		return;
 	}
@@ -3030,6 +3046,8 @@ static int mmci_probe(struct amba_device *dev,
 		host->dummy52_cmd.arg = 0;
 		host->dummy52_cmd.flags = MMC_RSP_R5 | MMC_CMD_AC;
 		host->dummy52_cmd.data = NULL;
+		dev_info(mmc_dev(mmc),
+			 "qcom,dummy52-required enabled (CMD52 after CMD53 WRITE)\n");
 	}
 	host->mclk = clk_get_rate(host->clk);
 	/*
