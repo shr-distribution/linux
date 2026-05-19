@@ -714,11 +714,14 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 
 	/*
 	 * Commit to the atomic-submission path only AFTER dma_start
-	 * succeeded. If we'd set this earlier and dma_start had failed,
-	 * the PIO fallback in mmci_start_data + mmci_start_command
-	 * would mis-route their writes into the stash buffer.
+	 * succeeded AND _mmci_dmae_prep_data confirmed the channel
+	 * actually carries the qcom_adm exec_func wiring (armed). If
+	 * dma_start had failed, the PIO fallback in mmci_start_data +
+	 * mmci_start_command would mis-route their writes into the
+	 * stash. If the channel isn't ADM (e.g. BAM), armed stays
+	 * false and we keep the conventional write path.
 	 */
-	if (mmci_should_atomic_submit(host, data))
+	if (host->atomic_submit.armed)
 		host->atomic_submit.active = true;
 
 	if (host->atomic_submit.active) {
@@ -1260,32 +1263,42 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	int nr_sg;
 	unsigned long flags = DMA_CTRL_ACK;
 
-	/* Pass CRCI to QCOM ADM DMA controller for flow control */
+	/*
+	 * Pass CRCI + (when applicable) atomic-submit exec_func to the
+	 * Qualcomm ADM DMA controller. Both fields live in struct
+	 * qcom_adm_peripheral_config, so the peripheral_config block
+	 * is only valid when the channel is actually an ADM channel.
+	 *
+	 * dmae->crci is set from the "qcom,sdcc-crci" DT property which
+	 * is only present on ADM-DMA hosts (BAM hosts use a different
+	 * peripheral_config layout). Gating on dmae->crci therefore
+	 * implicitly restricts this block to ADM channels.
+	 */
 	if (dmae->crci) {
 		periph_conf.crci = dmae->crci;
-		conf.peripheral_config = &periph_conf;
-		conf.peripheral_size = sizeof(periph_conf);
-	}
 
-	/*
-	 * Atomic-submission opt-in: for variants whose DMA backend
-	 * supports a peripheral exec_func hook (currently qcom_adm) and
-	 * for write requests on this host (where the SDCC requires
-	 * DATACTRL + CMD reg to be set up atomically with the ADM
-	 * CMD_PTR write -- legacy msm_sdcc "exec_func" pattern), wire
-	 * up the callback now. The exec_func is invoked by qcom_adm
-	 * from inside its per-controller submit_lock right before the
-	 * channel's CMD_PTR write.
-	 *
-	 * Gated on the same condition as mmci_should_atomic_submit().
-	 * host->atomic_submit.active is set later by mmci_dma_start,
-	 * only after ops->dma_start has succeeded, so a PIO fallback
-	 * keeps the conventional write path even if exec_func was
-	 * configured here.
-	 */
-	if (mmci_should_atomic_submit(host, data)) {
-		periph_conf.exec_func = mmci_qcom_atomic_exec_func;
-		periph_conf.exec_user = host;
+		/*
+		 * Atomic-submission opt-in: when the variant supports the
+		 * peripheral exec_func hook and this request qualifies
+		 * (write + datactrl_first + SDIO_IRQ host -- the same
+		 * predicate as the previous "deferred via cmd_irq"
+		 * fallback that this replaces), wire up the callback. The
+		 * exec_func is invoked by qcom_adm from inside its
+		 * per-controller submit_lock right before the channel's
+		 * CMD_PTR write, performing SDCC DATACTRL + ARG + CMD
+		 * writes atomically with the ADM start.
+		 *
+		 * host->atomic_submit.active is set later by mmci_dma_start
+		 * only after ops->dma_start() has succeeded, so a PIO
+		 * fallback keeps the conventional write path even if
+		 * exec_func was configured here.
+		 */
+		if (mmci_should_atomic_submit(host, data)) {
+			periph_conf.exec_func = mmci_qcom_atomic_exec_func;
+			periph_conf.exec_user = host;
+			host->atomic_submit.armed = true;
+		}
+
 		conf.peripheral_config = &periph_conf;
 		conf.peripheral_size = sizeof(periph_conf);
 	}
@@ -2380,6 +2393,7 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	spin_lock_irqsave(&host->lock, flags);
 
 	host->mrq = mrq;
+	host->atomic_submit.armed = false;  /* wired only if ADM channel + qualifying request */
 	host->atomic_submit.active = false; /* committed only if DMA path succeeds */
 
 	if (mrq->data)

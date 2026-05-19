@@ -492,6 +492,18 @@ struct mmci_host {
 		u32 datactrl;
 		u32 cmd_arg;
 		u32 cmd_reg;
+		/*
+		 * @armed: set by _mmci_dmae_prep_data when the DMA channel
+		 *         actually supports exec_func (i.e. the
+		 *         peripheral_config carries qcom_adm_peripheral_config
+		 *         and we wired up exec_func + exec_user). Acts as
+		 *         the "atomic-submit is wired for this transfer"
+		 *         gate that mmci_dma_start checks before committing.
+		 * @active: committed atomic-submit path; mmci_start_command
+		 *         and mmci_dma_start stash register values here
+		 *         instead of writing them.
+		 */
+		bool armed;
 		bool active;
 	}			atomic_submit;
 
