@@ -733,36 +733,28 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	}
 
 	/*
-	 * Descriptor buffer: webOS DDL passes desc_addr=0, desc_size=0 for
-	 * SEQ_HEADER because the per-decoder desc buffer (hw_bufs.desc) is
-	 * not allocated until INIT_BUFFERS (which follows SEQ_DONE).  Only
-	 * FRAME_DATA uses the desc buffer; point it at our global descriptor
-	 * scratch allocation for those commands.
+	 * Descriptor buffer: webOS DDL always allocates a 128 KB desc buffer
+	 * (DDL_KILO_BYTE(128), unconditionally in ddl_calc_dec_hw_buffers_size)
+	 * during the OPEN_CH callback, before SEQ_HEADER is issued.  Both
+	 * SEQ_HEADER and FRAME_DATA receive a non-zero desc address pointing
+	 * at this buffer.  Pass our global 128 KB SMI SRAM descriptor scratch
+	 * buffer for both operations.
 	 */
 	vidc_write(core, VIDC_REG_CH0_DESC_ADDR,
-		   op == VIDC_OP_SEQ_HEADER ? 0 :
 		   core->desc_offset >> VIDC_ADDR_SHIFT);
 
 	/*
 	 * STREAM_BUF_SIZE: buffer capacity for this command.
 	 *
-	 * For SEQ_HEADER: use payload + alignment padding (matching webOS
-	 * seq_size = header_len + DDL_LINEAR_BUFFER_ALIGN_BYTES(2048) +
-	 * VCD_SEQ_HDR_PADDING_BYTES(256)).  Using the full 2MB plane size
-	 * causes the firmware to scan the entire buffer looking for SPS,
-	 * which takes 15+ ms and returns HEADER_NOT_FOUND.
-	 *
-	 * For FRAME_DATA: use the full plane allocation size so the firmware
-	 * knows the maximum bytes available for decoding.
+	 * webOS DDL sets stream_buffersize = max(client_input_buf_req.sz,
+	 * header_len + DDL_LINEAR_BUFFER_ALIGN_BYTES + VCD_SEQ_HDR_PADDING_BYTES)
+	 * for SEQ_HEADER (vcd_ddl_vidc.c:227-232).  client_input_buf_req.sz is
+	 * the full allocated input buffer, so the result equals vb2_plane_size.
+	 * Use vb2_plane_size for both SEQ_HEADER and FRAME_DATA to match webOS.
 	 */
-	if (op == VIDC_OP_SEQ_HEADER)
-		vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
-			   ALIGN(src_size + 2048 + 256, 4));
-	else
-		vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
-			   (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0));
-	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE,
-		   op == VIDC_OP_SEQ_HEADER ? 0 : VIDC_DESC_BUF_SIZE);
+	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
+		   (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0));
+	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
 
 	/*
 	 * Metadata start address (SHM+0x0044): webOS DDL always writes a
@@ -800,11 +792,8 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		 op, inst->inst_id, &src_addr,
 		 (u32)((src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT),
 		 src_size,
-		 op == VIDC_OP_SEQ_HEADER ?
-			 ALIGN(src_size + 2048 + 256, 4) :
-			 (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0),
-		 op == VIDC_OP_SEQ_HEADER ? 0 :
-			 (u32)(core->desc_offset >> VIDC_ADDR_SHIFT),
+		 (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0),
+		 (u32)(core->desc_offset >> VIDC_ADDR_SHIFT),
 		 core->shm_offset + VIDC_META_INPUT_OFF);
 
 	if (op == VIDC_OP_SEQ_HEADER) {
