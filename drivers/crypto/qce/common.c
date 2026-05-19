@@ -1821,15 +1821,19 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 * Chunked DMA loop.  CE2 AES engine has a ~64 B internal FIFO; ops
 	 * larger than 4 AES blocks (64 B) overflow the FIFO and produce
 	 * silent corruption past block 4.  Split AES > 64 B into 64-byte
-	 * chunks, each with its own SEG_CFG + GOPROC + DMA round-trip.
-	 * Between chunks the engine preserves cipher state in CNTR0..3 for
-	 * CBC/CTR chaining (do NOT reset between chunks).
+	 * chunks, each driven as an independent FIRST+LAST single-shot op
+	 * with explicit IV chaining via CNTR0..3 between chunks.
 	 *
-	 * SEG_CFG bits per chunk position:
-	 *   first chunk:  FIRST=1, LAST=0
-	 *   middle:       FIRST=0, LAST=0
-	 *   last chunk:   FIRST=0, LAST=1
-	 *   single-shot:  FIRST=1, LAST=1
+	 * Empirically the engine does NOT preserve CNTR state across
+	 * chunks even when SEG_CFG.LAST=0 on the prior chunk -- the
+	 * CTXT_CLEARING stage at op end wipes it regardless.  So we read
+	 * back CNTR0..3 after each chunk (engine has updated them with the
+	 * last ciphertext block for CBC / incremented counter for CTR) and
+	 * write them back as the IV for the next chunk before its GOPROC.
+	 *
+	 * Each chunk uses FIRST=1, LAST=1 (single-shot SEG_CFG); the
+	 * software IV-chaining via CNTR readback/restore is what makes the
+	 * stream concatenate correctly.
 	 *
 	 * DES/3DES don't appear to hit the FIFO ceiling -- skip chunking,
 	 * one shot up to SEG_SIZE max (65535 B).
@@ -1839,19 +1843,24 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		unsigned int burst = (IS_DES(flags) || IS_3DES(flags)) ? 8 : 64;
 		unsigned int sg_off = 0;
 		unsigned int total = rctx->cryptlen;
+		u32 chunk_cfg = encr_cfg | BIT(CE2_FIRST_SHIFT) |
+				BIT(CE2_LAST_SHIFT);
 
 		while (sg_off < total) {
 			unsigned int chunk_len =
 				(total - sg_off > max_chunk) ?
 				max_chunk : (total - sg_off);
-			bool is_first = (sg_off == 0);
-			bool is_last = (sg_off + chunk_len == total);
-			u32 chunk_cfg = encr_cfg;
 
-			if (is_first)
-				chunk_cfg |= BIT(CE2_FIRST_SHIFT);
-			if (is_last)
-				chunk_cfg |= BIT(CE2_LAST_SHIFT);
+			/* Re-install IV (CNTR0..3) for non-first chunks --
+			 * holds the previous chunk's tail block / next CTR.
+			 * IV for first chunk was already written above.
+			 */
+			if (sg_off != 0 && !IS_ECB(flags) && enciv_words) {
+				for (k = 0; k < enciv_words; k++)
+					writel((__force u32)enciv[k],
+					       qce->base + CE2_REG_CNTR0_IV0 +
+					       k * 4);
+			}
 
 			writel(chunk_cfg, qce->base + CE2_REG_SEG_CFG);
 			writel(chunk_len << CE2_ENCR_SEG_SIZE_SHIFT,
@@ -1859,8 +1868,8 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			writel(chunk_len, qce->base + CE2_REG_SEG_SIZE);
 
 			dev_info(qce->dev,
-				 "CE2 skc chunk off=%u len=%u SEG_CFG=0x%08x first=%d last=%d\n",
-				 sg_off, chunk_len, chunk_cfg, is_first, is_last);
+				 "CE2 skc chunk off=%u len=%u\n",
+				 sg_off, chunk_len);
 
 			/* GOPROC + wait for engine to leave IDLE */
 			writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
@@ -1880,12 +1889,25 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 
 			ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst,
 						       sg_off, chunk_len, burst);
-			dev_info(qce->dev,
-				 "CE2 skc post-DMA: off=%u ret=%d STATUS=0x%08x\n",
-				 sg_off, ret,
-				 readl_relaxed(qce->base + CE2_REG_STATUS));
-			if (ret)
+			if (ret) {
+				dev_err(qce->dev,
+					"CE2 skc DMA failed at off=%u: ret=%d STATUS=0x%08x\n",
+					sg_off, ret,
+					readl_relaxed(qce->base + CE2_REG_STATUS));
 				return ret;
+			}
+
+			/* Capture updated CNTR0..3 for the next chunk's IV.
+			 * Reads are u32 register values; we feed them straight
+			 * back via writel() above on the next iteration so no
+			 * byte-swap dance is needed here.
+			 */
+			if (!IS_ECB(flags) && enciv_words) {
+				for (k = 0; k < enciv_words; k++)
+					enciv[k] = (__force __be32)readl(
+						qce->base + CE2_REG_CNTR0_IV0 +
+						k * 4);
+			}
 
 			sg_off += chunk_len;
 		}
