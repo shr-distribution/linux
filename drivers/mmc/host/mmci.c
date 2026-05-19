@@ -845,10 +845,12 @@ static u32 mmci_icc_active_bw_kbps(struct mmci_host *host)
 	else if (mmc->caps & MMC_CAP_4_BIT_DATA)
 		bits = 4;
 
-	/* (Hz * bits) / 8 -> bytes/sec; / 1000 -> KBps. Combine the
-	 * divides as / 8000 so we don't lose precision on slow clocks.
+	/* (Hz / 1000) * bits / 8  -> KBps. Done in u32; divide first
+	 * to avoid overflow at high clock rates (f_max can be up to
+	 * ~200 MHz on existing SoCs) and to avoid pulling in the
+	 * __aeabi_uldivmod helper on ARM 32-bit.
 	 */
-	return (u32)((u64)mmc->f_max * bits / 8000);
+	return (mmc->f_max / 1000) * bits / 8;
 }
 
 static void mmci_icc_idle_work(struct work_struct *work)
