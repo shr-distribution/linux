@@ -502,12 +502,12 @@ static irqreturn_t vidc_isr(int irq, void *data)
 	 * kernel stays alive and userspace can time out cleanly.
 	 */
 	if (cmd == VIDC_RESP_EMPTY) {
-		if (++core->empty_irq_streak >= 64 &&
+		if (++core->empty_irq_streak >= 4096 &&
 		    !core->irq_disabled_by_storm) {
 			core->irq_disabled_by_storm = true;
 			disable_irq_nosync(core->irq);
 			dev_err(core->dev,
-				"VIDC IRQ storm (>=64 empty IRQs) — disabling IRQ %d; reboot required to recover\n",
+				"VIDC IRQ storm (>=4096 empty IRQs) — disabling IRQ %d; reboot required to recover\n",
 				core->irq);
 		}
 	} else {
