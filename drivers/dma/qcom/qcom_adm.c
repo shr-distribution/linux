@@ -1416,6 +1416,64 @@ static int adm_dma_probe(struct platform_device *pdev)
 			 i, ch_conf, rslt_conf);
 	}
 
+	/*
+	 * Optional per-channel priority overrides via DT.
+	 *
+	 * The legacy webOS dma.h documents bits 0-3 of CH_CONF as the
+	 * DMOV_CONF_PRIORITY field for ADM-internal channel arbitration.
+	 * Verified by live /dev/mem dump of webOS 2.6.35-palm: the
+	 * bootloader programs different priorities for different
+	 * peripherals (Tenderloin ADM1: ch2 sdcc1 eMMC = 5, ch5 sdcc4
+	 * SDIO/WiFi = 6 -- so WiFi outranks eMMC on the channel
+	 * arbiter).
+	 *
+	 * Under sustained concurrent traffic the higher-priority channel
+	 * can starve the other (eMMC DATATIMEOUT mid-transfer when WiFi
+	 * is bursty). Some boards may want to rebalance the priorities;
+	 * provide an opt-in DT property for that:
+	 *
+	 *   qcom,channel-priority-overrides = <CHAN PRIO>, <CHAN PRIO>...
+	 *
+	 * Each pair sets channel CHAN's priority bits (0-3 of CH_CONF
+	 * at EE=0) to PRIO, preserving all other bits in the bootloader-
+	 * programmed CH_CONF value.
+	 *
+	 * No override = preserve bootloader values (current behaviour).
+	 */
+	{
+		struct device_node *np = pdev->dev.of_node;
+		int n, j;
+
+		n = of_property_count_u32_elems(np,
+				"qcom,channel-priority-overrides");
+		if (n > 0 && n % 2 == 0) {
+			for (j = 0; j < n; j += 2) {
+				u32 chan, prio, val;
+
+				of_property_read_u32_index(np,
+					"qcom,channel-priority-overrides",
+					j, &chan);
+				of_property_read_u32_index(np,
+					"qcom,channel-priority-overrides",
+					j + 1, &prio);
+				if (chan >= ADM_MAX_CHANNELS || prio > 0xF) {
+					dev_warn(adev->dev,
+						"priority-override ch%u prio%u skipped (out of range)\n",
+						chan, prio);
+					continue;
+				}
+				val = readl_relaxed(adev->regs +
+						ADM_CH_CONF(chan, 0));
+				val = (val & ~0xF) | prio;
+				writel_relaxed(val, adev->regs +
+						ADM_CH_CONF(chan, 0));
+				dev_info(adev->dev,
+					"ADM ch%u priority override: -> 0x%08x (priority=%u)\n",
+					chan, val, prio);
+			}
+		}
+	}
+
 	ret = devm_request_irq(adev->dev, adev->irq, adm_dma_irq,
 			       IRQF_NOBALANCING, "adm_dma", adev);
 	if (ret)

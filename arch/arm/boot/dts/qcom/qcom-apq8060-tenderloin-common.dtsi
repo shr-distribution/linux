@@ -288,6 +288,25 @@
 			qcom,ee = <1>;
 
 			/*
+			 * Channel priority overrides (CH_CONF bits 0-3,
+			 * written at EE=0). Bootloader assigns ch2 (sdcc1
+			 * eMMC) priority 5 and ch5 (sdcc4 SDIO/WiFi)
+			 * priority 6, meaning WiFi outranks eMMC on the
+			 * ADM-internal channel arbiter. Under sustained
+			 * concurrent traffic, WiFi DMA bursts can starve
+			 * eMMC DMA mid-transfer (DATATIMEOUT around 3 s
+			 * after WiFi starts moving data).
+			 *
+			 * Raise ch2 to priority 7 so eMMC can break through
+			 * WiFi's window. SDIO BMI traffic on ch5 is light
+			 * and short, so degrading WiFi's relative priority
+			 * is acceptable.
+			 *
+			 * Format: <channel priority>, <channel priority>...
+			 */
+			qcom,channel-priority-overrides = <2 7>;
+
+			/*
 			 * EBI interconnect path for DMA memory access.
 			 *
 			 * The legacy webOS kernel used ebi1_adm_clk clock voter
