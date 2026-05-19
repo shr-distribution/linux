@@ -722,6 +722,14 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_STREAM_SIZE, src_size);
 
+	/* DEBUG: dump first 32 bytes to verify buffer content and format */
+	if (inst->src_buf) {
+		const u8 *kva = vb2_plane_vaddr(&inst->src_buf->vb2_buf, 0);
+		if (kva)
+			print_hex_dump(KERN_INFO, "vidc stream[0:32]: ",
+				       DUMP_PREFIX_NONE, 16, 1, kva, 32, false);
+	}
+
 	/*
 	 * Point the firmware at our descriptor (scratch) buffer.
 	 * Legacy vidc_1080p_decode_seq_start_ch0 writes DESC_ADDR
