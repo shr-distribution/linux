@@ -521,29 +521,25 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		clk |= MCI_CLK_ENABLE;
 		/*
 		 * MCI_CLK_PWRSAVE auto-gates the SDC bus clock between
-		 * transfers, giving the host extra timing slack on PIO
-		 * refill before the card sees an underflow on the bus.
+		 * transfers — useful on eMMC for power savings, but the
+		 * AR6003 SDIO chip cannot tolerate the clock-gating during
+		 * BMI LZ FastDownload: the chip's command-credit counter
+		 * stops refreshing mid-stream and the next CMD53 read times
+		 * out -110 (cf. wifi-bringup-summary.md, working Jan 2026
+		 * config simply had PWRSAVE commented out).
 		 *
-		 * Live deep dump of running webOS 2.6.35-palm confirmed
-		 * legacy sets this bit on BOTH eMMC (sdcc1: CLKREG=0x9f00)
-		 * AND SDIO (sdcc4: CLKREG=0x9b00).
+		 * Earlier attempts to clear PWRSAVE in the data-submission
+		 * path (mmci_start_data SDIO branch) didn't fix it -- the
+		 * clkreg write happens just before DPSM/CMD53 setup, but
+		 * the bit doesn't take effect fast enough to keep the chip
+		 * synchronised across the LZ stream.
 		 *
-		 * Mainline previously cleared it on SDIO hosts because
-		 * AR6003's LZ FastDownload BMI mode is incompatible with
-		 * clock-gating (command-credit counter stalls). Mainline
-		 * ath6kl_sdio doesn't use LZ FastDownload -- only the
-		 * non-LZ BMI path, which tolerates PWRSAVE the same as
-		 * the rest of the SDIO protocol.
-		 *
-		 * Without PWRSAVE on SDCC4 (WiFi), a 52-byte BMI CMD53
-		 * write can DATACRCFAIL under CPU0 IRQ load (udev/i2c_qup/
-		 * IPI burst during ath6kl probe). ftrace captured the IRQ
-		 * cascade arriving on CPU0 just before the SDCC4 PIO
-		 * refill IRQ -- the refill arrives late, FIFO underflows,
-		 * card sees garbage, CRC fails. PWRSAVE gates SCLK off
-		 * during the gap, removing the FIFO-underflow window.
+		 * Gate on cap-sdio-irq: SDIO instances (mmc1 / WiFi) skip
+		 * PWRSAVE entirely; eMMC (mmc0, no SDIO-IRQ cap) keeps it
+		 * for power savings.
 		 */
-		if (variant->qcom_datactrl_delay && desired > 400000)
+		if (variant->qcom_datactrl_delay && desired > 400000 &&
+		    !(host->mmc->caps & MMC_CAP_SDIO_IRQ))
 			clk |= MCI_CLK_PWRSAVE;
 	}
 
@@ -1622,17 +1618,15 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 			clk = host->clk_reg | variant->clkreg_enable;
 
 		/*
-		 * NOTE: previously cleared MCI_CLK_PWRSAVE here for SDIO
-		 * hosts on the qcom variant. That was needed for the
-		 * AR6003 LZ FastDownload BMI mode (which mainline
-		 * ath6kl_sdio doesn't use). Clearing it on plain non-LZ
-		 * BMI removed the clock-gating slack that lets PIO refill
-		 * IRQs land before FIFO underflows on CPU0 contention,
-		 * which is exactly the DATACRCFAIL signature we observed
-		 * on Tenderloin (52-byte BMI write to sdcc4). Leaving
-		 * PWRSAVE set matches what legacy webOS does for both
-		 * sdcc1 and sdcc4 (live dump: 0x9f00 / 0x9b00).
+		 * Force MCI_CLK_PWRSAVE off for SDIO transactions on the
+		 * qcom variant. PWRSAVE is already gated off for SDIO in
+		 * mmci_set_clkreg (cap-sdio-irq check), so this is a
+		 * belt-and-braces clear in case set_ios runs out of order.
+		 * Gate on the same SDIO predicate so eMMC keeps its bit.
 		 */
+		if (variant->qcom_datactrl_delay &&
+		    (host->mmc->caps & MMC_CAP_SDIO_IRQ))
+			clk &= ~MCI_CLK_PWRSAVE;
 
 		mmci_write_clkreg(host, clk);
 	}
