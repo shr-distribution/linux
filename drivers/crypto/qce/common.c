@@ -1879,15 +1879,15 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			if (sg_off != 0) {
 				if (qce->reset) {
 					reset_control_assert(qce->reset);
-					usleep_range(5000, 6000);
+					usleep_range(1000, 1500);
 					reset_control_deassert(qce->reset);
-					usleep_range(5000, 6000);
+					usleep_range(1000, 1500);
 				}
 				writel_relaxed(BIT(CE2_SW_RST_SHIFT),
 					       qce->base + CE2_REG_CONFIG);
-				usleep_range(100, 200);
+				usleep_range(10, 20);
 				writel_relaxed(0, qce->base + CE2_REG_CONFIG);
-				usleep_range(100, 200);
+				usleep_range(10, 20);
 				for (timeout = 10000; timeout > 0; timeout--) {
 					status = readl_relaxed(qce->base +
 							       CE2_REG_STATUS);
