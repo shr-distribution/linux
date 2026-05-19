@@ -1913,6 +1913,12 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 					enciv[k] = (__force __be32)readl(
 						qce->base + CE2_REG_CNTR0_IV0 +
 						k * 4);
+				dev_info(qce->dev,
+					 "CE2 skc post-chunk off=%u CNTR=%08x %08x %08x %08x STATUS=0x%08x\n",
+					 sg_off,
+					 (u32)enciv[0], (u32)enciv[1],
+					 (u32)enciv[2], (u32)enciv[3],
+					 readl_relaxed(qce->base + CE2_REG_STATUS));
 			}
 
 			sg_off += chunk_len;
