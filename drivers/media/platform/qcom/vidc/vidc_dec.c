@@ -759,8 +759,12 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	 * the firmware to return error 26 (0x1a) before reading the stream.
 	 * Point it at the descriptor buffer — a valid SMI SRAM allocation
 	 * that the firmware may inspect but will not corrupt (it owns it).
+	 *
+	 * webOS vidc_sm_set_metadata_start_address writes the RAW byte offset
+	 * from fw_dma_addr (DDL_ADDR_OFFSET = buf_phys - dram_base), NOT the
+	 * VIDC_ADDR_SHIFT-divided value used by hardware address registers.
 	 */
-	writel(core->desc_offset >> VIDC_ADDR_SHIFT,
+	writel(core->desc_offset,
 	       core->shm_vaddr + VIDC_SHM_EXT_METADATA_START_ADDR);
 
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
