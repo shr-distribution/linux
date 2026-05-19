@@ -842,24 +842,29 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 		src_size = vb2_plane_size(&src_buf->vb2_buf, 0);
 
 	/*
-	 * GStreamer's h264parse prepends an AUD (NAL type 9, 00 00 00 01 09 xx)
-	 * before the SPS for alignment=au output.  The VIDC firmware's
-	 * SEQ_HEADER parser scans for NAL type 7 (SPS) and returns error 52
-	 * (HEADER_NOT_FOUND) when NAL type 9 (AUD) is first.  webOS DDL always
-	 * passes bare SPS+PPS without AUD to the SEQ_HEADER command.
+	 * WebOS DDL always passes bare SPS+PPS to the SEQ_HEADER command —
+	 * no AUD, no IDR/slice data.  GStreamer's h264parse alignment=au
+	 * output prepends an AUD (NAL 9) and appends an IDR slice (NAL 5)
+	 * to the first buffer.  Strip both ends:
 	 *
-	 * Adjusting src_addr is not viable: VIDC_ADDR_SHIFT = 11 means the
-	 * firmware address register has 2048-byte granularity; a 6-byte AUD
-	 * skip is truncated to 0 by the shift.
+	 * 1. AUD removal: VIDC firmware returns error 52 (HEADER_NOT_FOUND)
+	 *    when NAL type 9 is the first NAL.  memmove the body to byte 0
+	 *    because VIDC_ADDR_SHIFT=11 means the address register has 2048-
+	 *    byte granularity — a 6-byte pointer advance is truncated to 0.
 	 *
-	 * Instead memmove the data in-place so the SPS starts at byte 0 of
-	 * the DMA-coherent buffer.  The buffer is owned by the driver while
-	 * queued to the OUTPUT queue; GStreamer cannot read it back.
+	 * 2. IDR/slice truncation: firmware SEQ_HEADER only needs SPS (7) +
+	 *    PPS (8).  Encountering a non-header NAL after PPS causes
+	 *    HEADER_NOT_FOUND.  Truncate src_size at the first start code
+	 *    that follows PPS so the firmware only sees SPS+PPS.
 	 */
 	{
 		u8 *kva = vb2_plane_vaddr(&src_buf->vb2_buf, 0);
 
-		if (kva && src_size >= 6 &&
+		if (!kva)
+			goto submit;
+
+		/* Step 1: strip leading AUD */
+		if (src_size >= 6 &&
 		    kva[0] == 0 && kva[1] == 0 && kva[2] == 0 && kva[3] == 1 &&
 		    (kva[4] & 0x1f) == 9) {
 			u32 skip = 5; /* past 4-byte start code + AUD NAL type */
@@ -876,12 +881,39 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 			}
 			dev_info(core->dev,
 				 "seq_header_work: memmove past %u-byte AUD; next NAL=0x%02x\n",
-				 skip, kva[skip + 3] & 0x1f);
+				 skip, kva[skip + 4] & 0x1f);
 			memmove(kva, kva + skip, src_size - skip);
 			src_size -= skip;
 			/* src_addr stays at the aligned buffer base */
 		}
+
+		/* Step 2: truncate at first non-SPS/PPS NAL after PPS */
+		{
+			u32 pos = 0;
+			bool after_pps = false;
+
+			while (pos + 5 <= src_size) {
+				if (kva[pos] == 0 && kva[pos + 1] == 0 &&
+				    kva[pos + 2] == 0 && kva[pos + 3] == 1) {
+					u8 nal_type = kva[pos + 4] & 0x1f;
+
+					if (nal_type == 8) {
+						after_pps = true;
+					} else if (after_pps) {
+						dev_info(core->dev,
+							 "seq_header_work: truncated %u bytes of NAL type %u after PPS\n",
+							 src_size - pos, nal_type);
+						src_size = pos;
+						break;
+					}
+					pos += 5;
+				} else {
+					pos++;
+				}
+			}
+		}
 	}
+submit:
 
 	inst->seq_hdr_direct = true;
 	vidc_dec_submit_frame(inst, src_addr, src_size, 0);
