@@ -23,6 +23,7 @@
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/sd.h>
+#include <linux/mmc/sdio.h>
 #include <linux/mmc/slot-gpio.h>
 #include <linux/amba/bus.h>
 #include <linux/clk.h>
@@ -521,25 +522,20 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		clk |= MCI_CLK_ENABLE;
 		/*
 		 * MCI_CLK_PWRSAVE auto-gates the SDC bus clock between
-		 * transfers — useful on eMMC for power savings, but the
-		 * AR6003 SDIO chip cannot tolerate the clock-gating during
-		 * BMI LZ FastDownload: the chip's command-credit counter
-		 * stops refreshing mid-stream and the next CMD53 read times
-		 * out -110 (cf. wifi-bringup-summary.md, working Jan 2026
-		 * config simply had PWRSAVE commented out).
+		 * transfers. Legacy webOS enables it on both eMMC (SDCC1
+		 * CLKREG=0x9f00) and WiFi (SDCC4 CLKREG=0x9b00) in steady
+		 * state. We match that here: PWRSAVE on by default once past
+		 * 400 kHz identification.
 		 *
-		 * Earlier attempts to clear PWRSAVE in the data-submission
-		 * path (mmci_start_data SDIO branch) didn't fix it -- the
-		 * clkreg write happens just before DPSM/CMD53 setup, but
-		 * the bit doesn't take effect fast enough to keep the chip
-		 * synchronised across the LZ stream.
-		 *
-		 * Gate on cap-sdio-irq: SDIO instances (mmc1 / WiFi) skip
-		 * PWRSAVE entirely; eMMC (mmc0, no SDIO-IRQ cap) keeps it
-		 * for power savings.
+		 * Earlier attempts to enable PWRSAVE on SDIO regressed BMI
+		 * with DATACRCFAIL because the SDCC's data-path state
+		 * machine does not fully close after a CMD53 WRITE; once
+		 * SCLK gates the next CMD on the bus sees residual state.
+		 * The "qcom,dummy52-required" workaround in this driver
+		 * inserts a CMD52 between CMD53 writes and the next request
+		 * to drain that state, making PWRSAVE-on-SDIO safe again.
 		 */
-		if (variant->qcom_datactrl_delay && desired > 400000 &&
-		    !(host->mmc->caps & MMC_CAP_SDIO_IRQ))
+		if (variant->qcom_datactrl_delay && desired > 400000)
 			clk |= MCI_CLK_PWRSAVE;
 	}
 
@@ -816,6 +812,17 @@ mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 
 	host->mrq = NULL;
 	host->cmd = NULL;
+
+	/*
+	 * Qualcomm SDCC dummy CMD52 errata: arm the follow-up if the just
+	 * completed request was a CMD53/CMD54 WRITE. The next call to
+	 * mmci_request will insert a CMD52 before the real command so the
+	 * SDCC data-path state machine drains cleanly between SDIO writes.
+	 */
+	if (host->dummy52_required && mrq && mrq->cmd &&
+	    mrq->data && (mrq->data->flags & MMC_DATA_WRITE) &&
+	    mrq->cmd->opcode == SD_IO_RW_EXTENDED)
+		host->dummy52_needed = true;
 
 	mmc_request_done(host->mmc, mrq);
 }
@@ -1617,17 +1624,6 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 		else
 			clk = host->clk_reg | variant->clkreg_enable;
 
-		/*
-		 * Force MCI_CLK_PWRSAVE off for SDIO transactions on the
-		 * qcom variant. PWRSAVE is already gated off for SDIO in
-		 * mmci_set_clkreg (cap-sdio-irq check), so this is a
-		 * belt-and-braces clear in case set_ios runs out of order.
-		 * Gate on the same SDIO predicate so eMMC keeps its bit.
-		 */
-		if (variant->qcom_datactrl_delay &&
-		    (host->mmc->caps & MMC_CAP_SDIO_IRQ))
-			clk &= ~MCI_CLK_PWRSAVE;
-
 		mmci_write_clkreg(host, clk);
 	}
 
@@ -1952,6 +1948,30 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 
 	if (!cmd)
 		return;
+
+	/*
+	 * Dummy CMD52 completion path: the response content is ignored
+	 * (any of CMDSENT / CMDRESPEND / CMDCRCFAIL / CMDTIMEOUT means
+	 * the CPSM has finished running and the residual SDCC data-path
+	 * state has been drained). Clear in-progress, dispatch the real
+	 * request that was stashed at request entry.
+	 */
+	if (host->dummy52_in_progress && cmd == &host->dummy52_cmd) {
+		if (!(status & (MCI_CMDSENT | MCI_CMDRESPEND |
+				MCI_CMDCRCFAIL | MCI_CMDTIMEOUT)))
+			return;
+
+		host->cmd = NULL;
+		host->dummy52_in_progress = false;
+
+		if (host->pending_mrq) {
+			struct mmc_request *real_mrq = host->pending_mrq;
+
+			host->pending_mrq = NULL;
+			__mmci_start_request(host, real_mrq);
+		}
+		return;
+	}
 
 	sbc = (cmd == host->mrq->sbc);
 	busy_resp = !!(cmd->flags & MMC_RSP_BUSY);
@@ -2449,24 +2469,20 @@ static irqreturn_t mmci_irq_thread(int irq, void *dev_id)
 	return host->irq_action;
 }
 
-static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
+/*
+ * Locked helper: start a real mmc_request. Assumes host->lock is held
+ * and host->mrq is NULL.
+ *
+ * Factored out so it can be invoked both from mmci_request() (after
+ * lock acquisition) and from the dummy52-completion path in
+ * mmci_cmd_irq() where the lock is already held by the IRQ handler.
+ */
+static void __mmci_start_request(struct mmci_host *host,
+				 struct mmc_request *mrq)
 {
-	struct mmci_host *host = mmc_priv(mmc);
-	unsigned long flags;
-
-	WARN_ON(host->mrq != NULL);
-
-	mrq->cmd->error = mmci_validate_data(host, mrq->data);
-	if (mrq->cmd->error) {
-		mmc_request_done(mmc, mrq);
-		return;
-	}
-
-	spin_lock_irqsave(&host->lock, flags);
-
 	host->mrq = mrq;
-	host->atomic_submit.armed = false;  /* wired only if ADM channel + qualifying request */
-	host->atomic_submit.active = false; /* committed only if DMA path succeeds */
+	host->atomic_submit.armed = false;
+	host->atomic_submit.active = false;
 
 	if (mrq->data)
 		mmci_get_next_data(host, mrq->data);
@@ -2483,23 +2499,45 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	else
 		mmci_start_command(host, mrq->cmd, 0);
 
-	/*
-	 * Atomic-submission path: data/cmd register writes have been
-	 * stashed on host->atomic_submit; fire the DMA now so the ADM
-	 * driver invokes our exec_func from inside its submit_lock and
-	 * performs the SDCC writes atomically with its CMD_PTR write.
-	 *
-	 * This replaces the legacy "deferred via cmd_irq" fallback for
-	 * the qualifying SDIO write path: the SDCC CMD is on the bus
-	 * BEFORE ADM data starts (because exec_func writes CMD last,
-	 * just before submit_lock releases and CMD_PTR fires), so the
-	 * card-not-ready CRC race that motivated the deferral can't
-	 * occur here.
-	 */
 	if (host->atomic_submit.active && host->ops &&
 	    host->ops->dma_issue_pending) {
 		host->ops->dma_issue_pending(host);
 	}
+}
+
+static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
+{
+	struct mmci_host *host = mmc_priv(mmc);
+	unsigned long flags;
+
+	WARN_ON(host->mrq != NULL);
+
+	mrq->cmd->error = mmci_validate_data(host, mrq->data);
+	if (mrq->cmd->error) {
+		mmc_request_done(mmc, mrq);
+		return;
+	}
+
+	spin_lock_irqsave(&host->lock, flags);
+
+	/*
+	 * Qualcomm SDCC dummy CMD52 errata: if the previous request was a
+	 * CMD53/CMD54 WRITE, the SDCC's data-path state machine is still
+	 * half-closed and the next CMD on the bus would see DATACRCFAIL.
+	 * Drain the residual state by issuing a CMD52 (read of CCCR reg 0,
+	 * function 0) first, then dispatch the real request from the
+	 * dummy52-completion path in mmci_cmd_irq.
+	 */
+	if (host->dummy52_required && host->dummy52_needed) {
+		host->dummy52_needed = false;
+		host->dummy52_in_progress = true;
+		host->pending_mrq = mrq;
+		mmci_start_command(host, &host->dummy52_cmd, 0);
+		spin_unlock_irqrestore(&host->lock, flags);
+		return;
+	}
+
+	__mmci_start_request(host, mrq);
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
@@ -2975,6 +3013,20 @@ static int mmci_probe(struct amba_device *dev,
 	host->datactrl_first = variant->datactrl_first;
 	if (np && of_property_read_bool(np, "qcom,datactrl-first"))
 		host->datactrl_first = true;
+
+	/*
+	 * Qualcomm SDCC dummy CMD52 errata. Opt-in per controller via
+	 * "qcom,dummy52-required" so boards can enable it only on SDCC
+	 * instances that actually need the workaround (typically the one
+	 * wired to an SDIO function device like AR6003 WiFi).
+	 */
+	if (np && of_property_read_bool(np, "qcom,dummy52-required")) {
+		host->dummy52_required = true;
+		host->dummy52_cmd.opcode = SD_IO_RW_DIRECT;
+		host->dummy52_cmd.arg = 0;
+		host->dummy52_cmd.flags = MMC_RSP_R5 | MMC_CMD_AC;
+		host->dummy52_cmd.data = NULL;
+	}
 	host->mclk = clk_get_rate(host->clk);
 	/*
 	 * According to the spec, mclk is max 100 MHz,
