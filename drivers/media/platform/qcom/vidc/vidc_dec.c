@@ -890,7 +890,7 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 			/* src_addr stays at the aligned buffer base */
 		}
 
-		/* Step 2: truncate at first slice NAL (IDR=5, non-IDR=1) after PPS */
+		/* Step 2: truncate at first NAL after PPS — webOS sends SPS+PPS only */
 		{
 			u32 pos = 0;
 			bool after_pps = false;
@@ -902,10 +902,9 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 
 					if (nal_type == 8) {
 						after_pps = true;
-					} else if (after_pps &&
-						   (nal_type == 1 || nal_type == 5)) {
+					} else if (after_pps) {
 						dev_info(core->dev,
-							 "seq_header_work: truncated %u bytes of slice NAL type %u after PPS\n",
+							 "seq_header_work: truncated %u bytes at NAL type %u after PPS\n",
 							 src_size - pos, nal_type);
 						src_size = pos;
 						break;
