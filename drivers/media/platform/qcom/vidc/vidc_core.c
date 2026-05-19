@@ -488,10 +488,13 @@ static irqreturn_t vidc_isr(int irq, void *data)
 
 	inst = core->curr_inst;
 
-	if (__ratelimit(&rs))
+	if (cmd != VIDC_RESP_EMPTY)
 		dev_info(core->dev,
 			 "VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
 			 cmd, arg1, arg2, inst);
+	else if (__ratelimit(&rs))
+		dev_info(core->dev,
+			 "VIDC IRQ: cmd=0 (empty) inst=%p\n", inst);
 
 	/*
 	 * Storm guard: if firmware boot has stalled, the hardware can
