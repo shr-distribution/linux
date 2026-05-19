@@ -1948,20 +1948,8 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			writel(chunk_len, qce->base + CE2_REG_SEG_SIZE);
 			writel(config, qce->base + CE2_REG_CONFIG);
 
-			if (!IS_ECB(flags) && enciv_words) {
-				u32 v0 = readl(qce->base + CE2_REG_CNTR0_IV0);
-				u32 v1 = readl(qce->base + CE2_REG_CNTR0_IV0 + 4);
-				u32 v2 = readl(qce->base + CE2_REG_CNTR0_IV0 + 8);
-				u32 v3 = readl(qce->base + CE2_REG_CNTR0_IV0 + 12);
-
-				dev_info(qce->dev,
-					 "CE2 skc chunk off=%u len=%u pre-GO CNTR=%08x %08x %08x %08x\n",
-					 sg_off, chunk_len, v0, v1, v2, v3);
-			} else {
-				dev_info(qce->dev,
-					 "CE2 skc chunk off=%u len=%u\n",
-					 sg_off, chunk_len);
-			}
+			dev_dbg(qce->dev, "CE2 skc chunk off=%u len=%u\n",
+				sg_off, chunk_len);
 
 			/* GOPROC + wait for engine to leave IDLE */
 			writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
@@ -1999,12 +1987,6 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 					enciv[k] = (__force __be32)readl(
 						qce->base + CE2_REG_CNTR0_IV0 +
 						k * 4);
-				dev_info(qce->dev,
-					 "CE2 skc post-chunk off=%u CNTR=%08x %08x %08x %08x STATUS=0x%08x\n",
-					 sg_off,
-					 (u32)enciv[0], (u32)enciv[1],
-					 (u32)enciv[2], (u32)enciv[3],
-					 readl_relaxed(qce->base + CE2_REG_STATUS));
 			}
 
 			sg_off += chunk_len;
