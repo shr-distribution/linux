@@ -22,7 +22,7 @@
 #include "hci_uart.h"
 
 /* Debug flag - set to 1 to enable verbose TX/RX logging */
-static int serdev_debug = 1;
+static int serdev_debug;
 module_param(serdev_debug, int, 0644);
 MODULE_PARM_DESC(serdev_debug, "Enable serdev TX/RX debug logging");
 

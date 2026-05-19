@@ -614,14 +614,14 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 	if (skb != NULL) {
 		struct sk_buff *nskb;
 
-		BT_INFO("BCSP: dequeuing unrel pkt type %d len %d",
-			hci_skb_pkt_type(skb), skb->len);
+		BT_DBG("BCSP: dequeuing unrel pkt type %d len %d",
+		       hci_skb_pkt_type(skb), skb->len);
 		nskb = bcsp_prepare_pkt(bcsp, skb->data, skb->len,
 					hci_skb_pkt_type(skb));
 		if (nskb) {
 			/* Debug: show first bytes of prepared packet */
 			if (hci_skb_pkt_type(skb) == BCSP_LE_PKT && nskb->len <= 16)
-				BT_INFO("BCSP: TX LE pkt: %*ph", nskb->len, nskb->data);
+				BT_DBG("BCSP: TX LE pkt: %*ph", nskb->len, nskb->data);
 			kfree_skb(skb);
 			return nskb;
 		} else {
@@ -767,16 +767,16 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	}
 
 	/* Log raw bytes of LE packet for debugging */
-	BT_INFO("BCSP: RX LE payload: %02x %02x %02x %02x",
-		bcsp->rx_skb->data[4], bcsp->rx_skb->data[5],
-		bcsp->rx_skb->data[6], bcsp->rx_skb->data[7]);
+	BT_DBG("BCSP: RX LE payload: %02x %02x %02x %02x",
+	       bcsp->rx_skb->data[4], bcsp->rx_skb->data[5],
+	       bcsp->rx_skb->data[6], bcsp->rx_skb->data[7]);
 
 	/* Handle sync packet - device is starting link establishment */
 	if (!memcmp(&bcsp->rx_skb->data[4], sync_pkt, 4)) {
 		struct sk_buff *nskb;
 
-		BT_INFO("BCSP: sync received%s",
-			bcsp->warm_reset_sent ? " (after WARM_RESET)" : "");
+		BT_DBG("BCSP: sync received%s",
+		       bcsp->warm_reset_sent ? " (after WARM_RESET)" : "");
 
 		/*
 		 * In serdev mode after WARM_RESET: The chip has restarted
@@ -849,7 +849,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		skb_put_data(nskb, sync_rsp_pkt, 4);
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
-		BT_INFO("BCSP: sending sync_rsp");
+		BT_DBG("BCSP: sending sync_rsp");
 		skb_queue_head(&bcsp->unrel, nskb);  /* Head for immediate response */
 		hci_uart_tx_wakeup(hu);
 	}
@@ -1130,9 +1130,9 @@ static void bcsp_complete_rx_pkt(struct hci_uart *hu)
 			pass_up = 1;
 		} else if ((bcsp->rx_skb->data[1] & 0x0f) == 1 &&
 			   !(bcsp->rx_skb->data[0] & 0x80)) {
-			BT_INFO("BCSP: RX LE hdr: %02x %02x %02x %02x",
-				bcsp->rx_skb->data[0], bcsp->rx_skb->data[1],
-				bcsp->rx_skb->data[2], bcsp->rx_skb->data[3]);
+			BT_DBG("BCSP: RX LE hdr: %02x %02x %02x %02x",
+			       bcsp->rx_skb->data[0], bcsp->rx_skb->data[1],
+			       bcsp->rx_skb->data[2], bcsp->rx_skb->data[3]);
 			bcsp_handle_le_pkt(hu);
 			/*
 			 * bcsp_handle_le_pkt may free rx_skb (e.g., during
@@ -2077,22 +2077,22 @@ static void bcsp_timed_event(struct timer_list *t)
 	 * Meanwhile, we also respond to chip's sync with our sync_rsp.
 	 */
 	if (bcsp->link_state == BCSP_LINK_UNINIT) {
-		BT_INFO("BCSP: timer sending sync (link_state=%d)", bcsp->link_state);
+		BT_DBG("BCSP: timer sending sync (link_state=%d)", bcsp->link_state);
 		bcsp_send_link_pkt(bcsp, sync_pkt, sizeof(sync_pkt));
 	}
 
 	/* Send conf packets in INIT state */
 	if (bcsp->link_state == BCSP_LINK_INIT) {
-		BT_INFO("BCSP: timer sending conf (link_state=%d)", bcsp->link_state);
+		BT_DBG("BCSP: timer sending conf (link_state=%d)", bcsp->link_state);
 		bcsp_send_link_pkt(bcsp, conf_pkt, sizeof(conf_pkt));
 	}
 
 	/* Re-arm timer if link not yet active */
-	BT_INFO("BCSP: timer check link_state=%d (ACTIVE=%d)",
-		bcsp->link_state, BCSP_LINK_ACTIVE);
+	BT_DBG("BCSP: timer check link_state=%d (ACTIVE=%d)",
+	       bcsp->link_state, BCSP_LINK_ACTIVE);
 	if (bcsp->link_state != BCSP_LINK_ACTIVE) {
 		mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
-		BT_INFO("BCSP: timer re-armed");
+		BT_DBG("BCSP: timer re-armed");
 	}
 
 	/* Handle retransmission of reliable packets */
