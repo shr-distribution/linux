@@ -843,23 +843,28 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 
 	/*
 	 * GStreamer's h264parse prepends an AUD (NAL type 9, 00 00 00 01 09 xx)
-	 * before the SPS for alignment=au output.  The VIDC firmware processes
-	 * SEQ_HEADER by scanning for NAL type 7 (SPS); it returns error 52
-	 * (HEADER_NOT_FOUND) when it encounters an AUD first.  webOS DDL always
-	 * passes bare SPS+PPS to the SEQ_HEADER command (no AUD).
+	 * before the SPS for alignment=au output.  The VIDC firmware's
+	 * SEQ_HEADER parser scans for NAL type 7 (SPS) and returns error 52
+	 * (HEADER_NOT_FOUND) when NAL type 9 (AUD) is first.  webOS DDL always
+	 * passes bare SPS+PPS without AUD to the SEQ_HEADER command.
 	 *
-	 * Scan the buffer kernel VA and skip any leading AUD NAL so the firmware
-	 * sees the SPS as the first NAL unit.
+	 * Adjusting src_addr is not viable: VIDC_ADDR_SHIFT = 11 means the
+	 * firmware address register has 2048-byte granularity; a 6-byte AUD
+	 * skip is truncated to 0 by the shift.
+	 *
+	 * Instead memmove the data in-place so the SPS starts at byte 0 of
+	 * the DMA-coherent buffer.  The buffer is owned by the driver while
+	 * queued to the OUTPUT queue; GStreamer cannot read it back.
 	 */
 	{
-		const u8 *kva = vb2_plane_vaddr(&src_buf->vb2_buf, 0);
+		u8 *kva = vb2_plane_vaddr(&src_buf->vb2_buf, 0);
 
 		if (kva && src_size >= 6 &&
 		    kva[0] == 0 && kva[1] == 0 && kva[2] == 0 && kva[3] == 1 &&
 		    (kva[4] & 0x1f) == 9) {
-			u32 skip = 5; /* past start-code + NAL type */
+			u32 skip = 5; /* past 4-byte start code + AUD NAL type */
 
-			/* AUD payload is 1 byte; scan forward to next start code */
+			/* AUD payload is 1 byte; scan for next start code */
 			while (skip + 3 < src_size) {
 				if (kva[skip] == 0 && kva[skip + 1] == 0 &&
 				    kva[skip + 2] == 0 && kva[skip + 3] == 1)
@@ -870,10 +875,11 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 				skip++;
 			}
 			dev_info(core->dev,
-				 "seq_header_work: skipped %u-byte AUD, next NAL type=0x%02x\n",
+				 "seq_header_work: memmove past %u-byte AUD; next NAL=0x%02x\n",
 				 skip, kva[skip + 3] & 0x1f);
-			src_addr += skip;
+			memmove(kva, kva + skip, src_size - skip);
 			src_size -= skip;
+			/* src_addr stays at the aligned buffer base */
 		}
 	}
 
