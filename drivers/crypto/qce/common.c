@@ -1851,6 +1851,81 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 				(total - sg_off > max_chunk) ?
 				max_chunk : (total - sg_off);
 
+			/*
+			 * Between chunks, the CE2 engine's DOUT FIFO retains
+			 * stale data from the prior chunk -- on next GOPROC
+			 * the engine flushes it as the first 2 blocks of
+			 * "output" without processing the new input.  This
+			 * was confirmed via a deterministic all-zero
+			 * plaintext test: chunk 1 output came back as
+			 * literally blocks 3-4 of chunk 0 repeated.
+			 *
+			 * Re-running the full per-op reset between chunks
+			 * (GCC_CE2_RESET + SW_RST pulse + wait-IDLE) clears
+			 * the FIFO.  Keys + CONFIG survive the reset since
+			 * they live in different register banks; only the
+			 * engine state machine resets.  But we must re-write
+			 * the keys after reset (the register bank IS wiped
+			 * by the reset on this silicon, even though the
+			 * CONFIG bits aren't).
+			 *
+			 * Cost: ~2 ms per reset.  At 4 AES blocks per chunk
+			 * the effective HW throughput is ~30 KB/s -- slow,
+			 * but cra_priority on the qce CE2 cipher is 50
+			 * (below aes-generic's 100), so the kernel uses
+			 * software AES by default; HW path is for explicit-
+			 * driver-name testing.
+			 */
+			if (sg_off != 0) {
+				if (qce->reset) {
+					reset_control_assert(qce->reset);
+					usleep_range(1000, 1500);
+					reset_control_deassert(qce->reset);
+					usleep_range(1000, 1500);
+				}
+				writel_relaxed(BIT(CE2_SW_RST_SHIFT),
+					       qce->base + CE2_REG_CONFIG);
+				usleep_range(10, 20);
+				writel_relaxed(0, qce->base + CE2_REG_CONFIG);
+				usleep_range(10, 20);
+				for (timeout = 10000; timeout > 0; timeout--) {
+					status = readl_relaxed(qce->base +
+							       CE2_REG_STATUS);
+					if ((status & CE2_CRYPTO_STATE_MASK) == 0)
+						break;
+					udelay(10);
+				}
+
+				/* Re-write AUTH_SEG_CFG (cleared by reset). */
+				writel(0, qce->base + CE2_REG_AUTH_SEG_CFG);
+
+				/* Re-write keys (RNDKEY bank or DES_KEY
+				 * registers got wiped by the reset).
+				 */
+				if (IS_DES(flags) || IS_3DES(flags)) {
+					for (k = 0; k < enckey_words; k++)
+						writel((__force u32)enckey[k],
+						       qce->base +
+						       CE2_REG_DES_KEY0 + k * 4);
+				} else {
+					struct crypto_aes_ctx aes_ctx = {0};
+
+					if (!aes_expandkey(&aes_ctx,
+							   (const u8 *)enckey,
+							   keylen)) {
+						for (k = 0; k < CE2_AES_RNDKEYS; k++)
+							writel(aes_ctx.key_enc[k],
+							       qce->base +
+							       CE2_REG_AES_RNDKEY0 +
+							       k * 4);
+					}
+					memzero_explicit(&aes_ctx,
+							 sizeof(aes_ctx));
+				}
+				if (IS_CTR(flags))
+					writel(0xffff, qce->base + CE2_REG_CNTR_MASK);
+			}
+
 			/* Re-install IV (CNTR0..3) for non-first chunks --
 			 * holds the previous chunk's tail block / next CTR.
 			 * IV for first chunk was already written above.
