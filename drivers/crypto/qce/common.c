@@ -1977,6 +1977,24 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 				return ret;
 			}
 
+			/* Wait for engine to finish processing AND drop back
+			 * to IDLE before reading CNTR.  ADM completion fires
+			 * when the last byte lands in memory, but the engine
+			 * may still be cycling FINAL_READ -> CTXT_CLEARING
+			 * -> UNLOCKING -> IDLE at that point.  Reading CNTR
+			 * mid-transition gives stale / partial state and
+			 * the next chunk's IV is wrong.  Found this via
+			 * per-chunk failure rate ~5% which scales with
+			 * chunk count and matches racing CNTR readback.
+			 */
+			for (timeout = 1000; timeout > 0; timeout--) {
+				status = readl_relaxed(qce->base +
+						       CE2_REG_STATUS);
+				if ((status & CE2_CRYPTO_STATE_MASK) == 0)
+					break;
+				udelay(10);
+			}
+
 			/* Capture updated CNTR0..3 for the next chunk's IV.
 			 * Reads are u32 register values; we feed them straight
 			 * back via writel() above on the next iteration so no
